@@ -75,12 +75,13 @@ class HttpMessage {
            http::HeaderSize(http::ContentLength.size(), nchars(bodyLen));
   }
 
-  static constexpr std::size_t NeededBodyHeadersSize(std::size_t bodySize, std::size_t contentTypeSize) {
-    if (bodySize == 0) {
+  static constexpr std::size_t NeededBodyHeadersSize(std::size_t bodyLen, std::size_t contentTypeLen,
+                                                     bool sendContentLengthHeader = true) {
+    if (bodyLen == 0) {
       return 0;
     }
-    return http::HeaderSize(http::ContentType.size(), contentTypeSize) +
-           http::HeaderSize(http::ContentLength.size(), nchars(bodySize));
+    return http::HeaderSize(http::ContentType.size(), contentTypeLen) +
+           (sendContentLengthHeader ? http::HeaderSize(http::ContentLength.size(), nchars(bodyLen)) : 0);
   }
 
   // --------/
@@ -449,14 +450,26 @@ class HttpMessage {
       _payloadVariant = {};
     }
 
-    const auto contentTypeHeaderSize = http::HeaderSize(http::ContentType.size(), contentType.size());
-    const auto maxLenNbDigits = ndigits(maxLen);
-    const auto contentLengthHeaderSize = http::HeaderSize(http::ContentLength.size(), maxLenNbDigits);
+    std::size_t bodyHeadersSize = http::HeaderSize(http::ContentType.size(), contentType.size());
+    char* pData;
+#ifdef AERONET_ENABLE_HTTP2
+    if (_opts.sendContentLengthHeader()) {
+#endif
+      const auto maxLenNbDigits = ndigits(maxLen);
+      bodyHeadersSize += http::HeaderSize(http::ContentLength.size(), maxLenNbDigits);
 
-    // Reserve exact capacity (no exponential growth)
-    _data.reserve(_data.size() + contentTypeHeaderSize + contentLengthHeaderSize + maxLen);
+      // Reserve exact capacity (no exponential growth)
+      _data.ensureAvailableCapacity(bodyHeadersSize + maxLen);
 
-    char* pData = addContentTypeAndContentLengthHeaders(contentType, maxLen, maxLenNbDigits);
+      pData = addContentTypeAndContentLengthHeaders(contentType, maxLen, maxLenNbDigits);
+#ifdef AERONET_ENABLE_HTTP2
+    } else {
+      // Reserve exact capacity (no exponential growth)
+      _data.ensureAvailableCapacity(bodyHeadersSize + maxLen);
+
+      pData = addContentTypeHeader(contentType);
+    }
+#endif
 
     // Call writer at body start position
     std::size_t written;
@@ -467,10 +480,9 @@ class HttpMessage {
       written = static_cast<std::size_t>(std::invoke(std::forward<Writer>(writer), pData));
     }
 
-    // If nothing was written, remove the content-type header
     if (written == 0) {
-      // erase both content-length and content-type headers
-      _data.setSize(_data.size() - contentLengthHeaderSize - contentTypeHeaderSize - internalBodyAndTrailersLen());
+      // nothing was written - erase body headers added just above (content-type + content-length if added)
+      _data.setSize(_data.size() - bodyHeadersSize - internalBodyAndTrailersLen());
       CopyFixed<http::CRLF>(_data.end() - http::CRLF.size());
       setBodyStartPos(_data.size());
     } else {
@@ -481,7 +493,7 @@ class HttpMessage {
         _data.setEnd(pData + written);
       }
 
-      replaceHeaderValueNoRealloc(getContentLengthValuePtr(), written);
+      replaceContentLengthValueNoRealloc(written);
     }
   }
 
@@ -518,13 +530,16 @@ class HttpMessage {
     }
 
     const auto contentTypeValueSize = contentType.empty() ? defaultContentType.size() : contentType.size();
-    const auto contentTypeHeaderSize = http::HeaderSize(http::ContentType.size(), contentTypeValueSize);
     const std::size_t oldBodyLen = _payloadVariant.isSizeOnly() ? _payloadVariant.size() : internalBodyAndTrailersLen();
     const auto maxBodyLen = oldBodyLen + maxLen;
-    const auto nCharsMaxBodyLen = nchars(maxBodyLen);
-    const auto contentLengthHeaderSize = http::HeaderSize(http::ContentLength.size(), nCharsMaxBodyLen);
 
-    std::size_t neededCapacity = contentTypeHeaderSize + contentLengthHeaderSize + maxLen;
+    std::size_t bodyHeadersSize = http::HeaderSize(http::ContentType.size(), contentTypeValueSize);
+    if (_opts.sendContentLengthHeader()) {
+      const auto nCharsMaxBodyLen = nchars(maxBodyLen);
+      bodyHeadersSize += http::HeaderSize(http::ContentLength.size(), nCharsMaxBodyLen);
+    }
+
+    std::size_t neededCapacity = bodyHeadersSize + maxLen;
     if (_opts.isAutomaticDirectCompression()) {
       // Not ideal - we started a streaming compression and client now calls bodyInlineAppend which is not compatible
       // with direct compression. So we will write the body uncompressed and then apply compression to the whole body at
@@ -549,20 +564,20 @@ class HttpMessage {
     if (written == 0) {
       // No data written, remove the content-type header we just added if there is no body
       if (oldBodyLen == 0 && !_opts.isAutomaticDirectCompression()) {
-        // erase both content-length and content-type headers
-        _data.setSize(_data.size() - contentLengthHeaderSize - contentTypeHeaderSize);
+        // erase body headers added above (content-type and content-length if added)
+        _data.setSize(_data.size() - bodyHeadersSize);
+
         CopyFixed<http::CRLF>(_data.end() - http::CRLF.size());
-        adjustBodyStartNoCheck(-static_cast<int64_t>(contentLengthHeaderSize) -
-                               static_cast<int64_t>(contentTypeHeaderSize));
+        adjustBodyStartNoCheck(-static_cast<int64_t>(bodyHeadersSize));
       } else {
         // we need to restore the previous content-length value
-        replaceHeaderValueNoRealloc(getContentLengthValuePtr(), maxBodyLen - (maxLen - written));
+        replaceContentLengthValueNoRealloc(maxBodyLen - (maxLen - written));
       }
     } else {
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
       if (_opts.isAutomaticDirectCompression()) {
-        // during streaming compression, if the output buffer is too small,
-        // encoders do NOT fail - they keep compressed data in their internal state and wait for more output space.
+        // during streaming compression, if the output buffer is too small, encoders do NOT fail - they keep compressed
+        // data in their internal state and wait for more output space.
         written = appendEncodedInlineOrThrow(first, written);
       }
 #endif
@@ -571,7 +586,7 @@ class HttpMessage {
       } else {
         _data.addSize(written);
       }
-      replaceHeaderValueNoRealloc(getContentLengthValuePtr(), maxBodyLen - (maxLen - written));
+      replaceContentLengthValueNoRealloc(maxBodyLen - (maxLen - written));
     }
   }
 
@@ -687,16 +702,17 @@ class HttpMessage {
    public:
     using BmpType = uint16_t;
 
-    static constexpr BmpType Close = 1U << 0;
-    static constexpr BmpType AddTrailerHeader = 1U << 1;
-    static constexpr BmpType IsHeadMethod = 1U << 2;
-    static constexpr BmpType Prepared = 1U << 3;
-    static constexpr BmpType AddVaryAcceptEncoding = 1U << 4;
-    static constexpr BmpType HasContentEncoding = 1U << 5;
-    static constexpr BmpType AutomaticDirectCompression = 1U << 6;
-    static constexpr BmpType StreamingBody = 1U << 7;
-    static constexpr BmpType IsHttpRequest = 1U << 8;
-    static constexpr BmpType HasProxy = 1U << 9;
+    static constexpr BmpType Close = 1U << 0U;
+    static constexpr BmpType AddTrailerHeader = 1U << 1U;
+    static constexpr BmpType IsHeadMethod = 1U << 2U;
+    static constexpr BmpType Prepared = 1U << 3U;
+    static constexpr BmpType AddVaryAcceptEncoding = 1U << 4U;
+    static constexpr BmpType HasContentEncoding = 1U << 5U;
+    static constexpr BmpType AutomaticDirectCompression = 1U << 6U;
+    static constexpr BmpType StreamingBody = 1U << 7U;
+    static constexpr BmpType IsHttpRequest = 1U << 8U;
+    static constexpr BmpType HasProxy = 1U << 9U;
+    static constexpr BmpType DoNotSendContentLengthHeader = 1U << 10U;
 
     Options() noexcept = default;
 
@@ -730,6 +746,14 @@ class HttpMessage {
     [[nodiscard]] constexpr bool hasProxy() const noexcept { return (_optionsBitmap & HasProxy) != 0; }
 #endif
 
+#ifdef AERONET_ENABLE_HTTP2
+    [[nodiscard]] constexpr bool sendContentLengthHeader() const noexcept {
+      return (_optionsBitmap & DoNotSendContentLengthHeader) == 0;
+    }
+#else
+    [[nodiscard]] static constexpr bool sendContentLengthHeader() noexcept { return true; }
+#endif
+
     // Tells whether the response has been pre-configured already.
     // If it's the case, then global headers have already been applied, addTrailerHeader and headMethod options
     // are known. Close is only best effort - it may still be changed later (from not close to close).
@@ -761,6 +785,10 @@ class HttpMessage {
 #ifdef AERONET_ENABLE_HTTP_CLIENT
     constexpr void setHttpRequest() noexcept { _optionsBitmap |= IsHttpRequest; }
     constexpr void setHasProxy() noexcept { _optionsBitmap |= HasProxy; }
+#endif
+
+#ifdef AERONET_ENABLE_HTTP2
+    constexpr void setDoNotSendContentLengthHeader() noexcept { _optionsBitmap |= DoNotSendContentLengthHeader; }
 #endif
 
     constexpr void setPrepared() noexcept { _optionsBitmap |= Prepared; }
@@ -870,37 +898,58 @@ class HttpMessage {
     _posBitmap += static_cast<std::uint64_t>(diff) << kHeaderPosNbBits;
   }
 
-  [[nodiscard]] const char* getContentLengthValueEndPtr() const {
+  // Get a pointer to the end of the header value before the body starts.
+  // It is either content-length (if _opts.sendContentLengthHeader() is true) or content-type (if
+  // _opts.sendContentLengthHeader() is false) value.
+  [[nodiscard]] const char* getLastHeaderValueEndPtr() const {
     return _data.data() + bodyStartPos() - http::DoubleCRLF.size();
   }
 
-  char* getContentLengthValueEndPtr() { return const_cast<char*>(std::as_const(*this).getContentLengthValueEndPtr()); }
+  char* getLastHeaderValueEndPtr() { return const_cast<char*>(std::as_const(*this).getLastHeaderValueEndPtr()); }
 
-  char* getContentLengthValuePtr() {
-    char* ptr = getContentLengthValueEndPtr() - http::HeaderSep.size() - 1U;
-    for (; *ptr != ':'; --ptr) {
+  char* getContentTypeEndValuePtr() {
+    if (_opts.sendContentLengthHeader()) {
+      return getLastHeaderLinePtr();
+    }
+    return getLastHeaderValueEndPtr();
+  }
+
+  // Get a pointer to the beginning of the last header value before the body starts.
+  // It is either content-length (if _opts.sendContentLengthHeader() is true) or content-type (if
+  // _opts.sendContentLengthHeader() is false) value.
+  char* getLastHeaderValuePtr() {
+    char* ptr = getLastHeaderValueEndPtr() - http::HeaderSep.size() - 1U;
+    while (*ptr != ':') {
+      --ptr;
     }
     return ptr + http::HeaderSep.size();
   }
 
-  // Returns a pointer to the beginning of the Content-Length header line (starting on CRLF before the header name).
-  [[nodiscard]] const char* getContentLengthHeaderLinePtr() const {
-    const char* ptr =
-        getContentLengthValueEndPtr() - http::HeaderSep.size() - http::ContentLength.size() - http::CRLF.size() - 1U;
-    for (; *ptr != '\r'; --ptr) {
+  // Returns a pointer to the beginning of the last header line (starting on CRLF before the header name).
+  // It is either content-length (if _opts.sendContentLengthHeader() is true) or content-type (if
+  // _opts.sendContentLengthHeader() is false) value.
+  [[nodiscard]] const char* getLastHeaderLinePtr() const {
+    const auto nbCharsToSkip = _opts.sendContentLengthHeader()
+                                   ? http::HeaderSize(http::ContentLength.size(), 1U)
+                                   : http::HeaderSize(http::ContentType.size(), http::ContentTypeMinLen);
+    const char* ptr = getLastHeaderValueEndPtr() - nbCharsToSkip;
+    while (*ptr != '\r') {
+      --ptr;
     }
     return ptr;
   }
 
-  char* getContentLengthHeaderLinePtr() {
-    return const_cast<char*>(std::as_const(*this).getContentLengthHeaderLinePtr());
-  }
+  char* getLastHeaderLinePtr() { return const_cast<char*>(std::as_const(*this).getLastHeaderLinePtr()); }
 
   // Returns a pointer to the beginning of the Content-Type header line (starting on CRLF before the header name).
   [[nodiscard]] const char* getContentTypeHeaderLinePtr() const {
-    const char* ptr =
-        getContentLengthHeaderLinePtr() - http::HeaderSize(http::ContentType.size(), http::ContentTypeMinLen);
-    for (; *ptr != '\r'; --ptr) {
+    const char* ptr = getLastHeaderLinePtr();
+    if (_opts.sendContentLengthHeader()) {
+      ptr -= http::HeaderSize(http::ContentType.size(), http::ContentTypeMinLen);
+
+      while (*ptr != '\r') {
+        --ptr;
+      }
     }
     return ptr;
   }
@@ -924,11 +973,14 @@ class HttpMessage {
     Copy(newValue, first);
   }
 
-  void replaceHeaderValueNoRealloc(char* first, std::size_t newValue) {
-    const auto newValueLen = ndigits(newValue);
+  void replaceContentLengthValueNoRealloc(std::size_t newValue) {
+    if (_opts.sendContentLengthHeader()) {
+      char* pContentLengthValuePtr = getLastHeaderValuePtr();
+      const auto newValueLen = ndigits(newValue);
 
-    resizeHeaderValue(first, newValueLen);
-    WriteUInt(first, newValue, newValueLen);
+      resizeHeaderValue(pContentLengthValuePtr, newValueLen);
+      WriteUInt(pContentLengthValuePtr, newValue, newValueLen);
+    }
   }
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
@@ -945,8 +997,19 @@ class HttpMessage {
   char* addContentTypeAndContentLengthHeaders(std::string_view contentType, std::size_t bodySize,
                                               uint8_t nbDigitsBodySize);
 
+#ifdef AERONET_ENABLE_HTTP2
+  // For special case in HTTP/2 where we choose to add only the Content-Type header without the Content-Length header.
+  char* addContentTypeHeader(std::string_view contentType);
+#endif
+
   void finalizeForHttp1(http::Version version, Options opts, const ConcatenatedHeaders* pGlobalHeaders,
                         std::size_t minCapturedBodySize);
+
+  void setBodyStartPosAndDataEnd(const char* pDataEnd) {
+    const auto bodyStartPos = static_cast<std::uint64_t>(pDataEnd - _data.data());
+    setBodyStartPos(bodyStartPos);
+    _data.setSize(bodyStartPos);
+  }
 
   RawChars _data;
   // headersStartPos: position where the headers start, exactly at the first CRLF after the status line.

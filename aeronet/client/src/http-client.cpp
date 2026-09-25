@@ -644,6 +644,8 @@ HttpRequest::Options HttpClient::makeRequestOptions() noexcept {
     opts.setHasProxy();
   }
   opts.setHttpRequest();
+  // We cannot know at this point if we are in HTTP/2 mode, so we cannot decide whether to set the
+  // DoNotSendContentLengthHeader option. This will have to be handled later when the protocol is known.
   opts.setPrepared();
   return opts;
 }

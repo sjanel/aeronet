@@ -30,6 +30,7 @@
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/direct-compression-mode.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/features.hpp"
 #include "aeronet/file-helpers.hpp"
 #include "aeronet/file-sys-test-support.hpp"
 #include "aeronet/file.hpp"
@@ -68,39 +69,48 @@ class HttpResponseTest : public ::testing::Test {
     bool addVaryAcceptEncoding = false;
     bool addTrailerHeader = false;
     bool close = false;
+    bool sendContentLengthHeader = true;
     Encoding expectedEncoding = Encoding::none;
     // if we remove {}, we get a compiler warning about missing initializer...
     // NOLINTNEXTLINE(readability-redundant-member-init)
     ConcatenatedHeaders gh{};
   };
 
-  HttpResponse makePrepared(const PreparedOptions& opts) {
-    HttpResponse resp;
+  HttpResponse makePrepared(const PreparedOptions& opts, http::StatusCode statusCode = http::StatusCodeOK,
+                            std::string_view body = "", std::size_t additionalCapacity = 0) {
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
-    resp._opts = HttpResponse::Options(compressionState, opts.expectedEncoding);
+    HttpMessage::Options httpMessageOpts(compressionState, opts.expectedEncoding);
+#else
+    HttpMessage::Options httpMessageOpts;
 #endif
-    resp._opts.setPrepared();
+    httpMessageOpts.setPrepared();
     for (std::string_view headerNameAndValue : opts.gh) {
       const auto sepPos = headerNameAndValue.find(http::HeaderSep);
       if (sepPos == std::string_view::npos) {
         throw std::invalid_argument("Invalid header in global headers");
       }
-      resp.headerAddLine(LowerAsciiKey{headerNameAndValue.substr(0, sepPos)},
-                         headerNameAndValue.substr(sepPos + http::HeaderSep.size()));
     }
     if (opts.head) {
-      resp._opts.setHeadMethod();
+      httpMessageOpts.setHeadMethod();
     }
     if (opts.addVaryAcceptEncoding) {
-      resp._opts.addVaryAcceptEncoding();
+      httpMessageOpts.addVaryAcceptEncoding();
     }
     if (opts.addTrailerHeader) {
-      resp._opts.addTrailerHeader();
+      httpMessageOpts.addTrailerHeader();
     }
     if (opts.close) {
-      resp._opts.setClose();
+      httpMessageOpts.setClose();
     }
-    return resp;
+#ifdef AERONET_ENABLE_HTTP2
+    if (!opts.sendContentLengthHeader) {
+      httpMessageOpts.setDoNotSendContentLengthHeader();
+    }
+#endif
+    return {
+        additionalCapacity,         statusCode,      opts.gh.fullStringWithLastSep(), body,
+        http::ContentTypeTextPlain, httpMessageOpts,
+    };
   }
 
   static void FinalizeCompressedBody([[maybe_unused]] HttpResponse& resp) {
@@ -1834,11 +1844,20 @@ TEST_F(HttpResponseTest, AppendBodyRvalueSpanBytesDefaultContentType) {
   EXPECT_EQ(resp.headerValue(http::ContentType), "application/octet-stream");
 }
 
+#ifdef AERONET_ENABLE_HTTP2
+TEST_F(HttpResponseTest, AppendBodyWithoutContentLengthHeader) {
+  HttpResponse resp = makePrepared(PreparedOptions{.sendContentLengthHeader = false});
+  resp.body("payload");
+  EXPECT_FALSE(resp.headerValue(http::ContentLength));
+}
+#endif
+
 TEST_F(HttpResponseTest, AppendHeaderValueKeepsBodyIntact) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
   resp.header("x-trace", "alpha");
   resp.body("payload");
+  EXPECT_TRUE(resp.headerValue(http::ContentLength));
   resp.headerAppendValue("x-trace", "beta");
   auto full = concatenated(std::move(resp));
   EXPECT_TRUE(full.contains("x-trace: alpha, beta\r\n")) << full;
@@ -1883,6 +1902,41 @@ TEST_F(HttpResponseTest, BodyAppendToCapturedBody) {
   EXPECT_EQ(resp.bodyInMemory(), "captured appended body more");
   EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "27");       // updated content-length
   EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/more");  // changed since contentType was provided
+}
+
+TEST_F(HttpResponseTest, BodyFromConstructorAndNoContentLengthHeaderTest) {
+  for (bool sendContentLengthHeader : {!http2Enabled(), true}) {
+    HttpResponse resp = makePrepared(PreparedOptions{.sendContentLengthHeader = sendContentLengthHeader},
+                                     http::StatusCodeOK, "some body", 0UL);
+
+    EXPECT_EQ(resp.bodyInMemory(), "some body");
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), http::ContentTypeTextPlain);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), sendContentLengthHeader ? "9" : "");
+
+    resp.headerRemoveLine(http::ContentLength);  // should be no-op
+
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), http::ContentTypeTextPlain);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), sendContentLengthHeader ? "9" : "");
+
+    resp.bodyInlineAppend(16U, kAppendZeroOrOneA);
+    resp.bodyInlineAppend(16U, kAppendZeroOrOneA);
+
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), http::ContentTypeTextPlain);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), sendContentLengthHeader ? "10" : "");
+
+    // clear body
+    resp.body(std::string_view{});
+    EXPECT_EQ(resp.bodyInMemory(), "");
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "");
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "");
+
+    resp.bodyInlineAppend(16U, kAppendZeroOrOneA);
+    resp.bodyInlineAppend(16U, kAppendZeroOrOneA);
+
+    EXPECT_EQ(resp.bodyInMemory(), "A");
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), http::ContentTypeTextPlain);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), sendContentLengthHeader ? "1" : "");
+  }
 }
 
 TEST_F(HttpResponseTest, BodyFromConstCharStar) {
@@ -2241,23 +2295,34 @@ TEST_F(HttpResponseTest, SendFileZeroLengthPayload) {
   // Create an empty temp file
   test::ScopedTempDir tmpDir;
   test::ScopedTempFile tmp(tmpDir, "");
-  File file(tmp.filePath().string());
-  ASSERT_TRUE(file);
-  const auto sz = file.size();
-  EXPECT_EQ(sz, 0U);
 
-  auto resp = HttpResponse(http::StatusCodeOK, "OK");
-  resp.file(std::move(file));
+  for (bool sendContentLengthHeader : {!http2Enabled(), true}) {
+    File file(tmp.filePath().string());
+    ASSERT_TRUE(file);
+    const auto sz = file.size();
+    EXPECT_EQ(sz, 0U);
 
-  auto prepared = finalizePrepared(std::move(resp));
-  ASSERT_NE(prepared.getIfFilePayload(), nullptr);
-  EXPECT_EQ(prepared.fileLength(), 0U);
+    auto resp =
+        makePrepared(PreparedOptions{.sendContentLengthHeader = sendContentLengthHeader}, http::StatusCodeOK, "OK");
+    resp.file(std::move(file));
 
-  std::string headers(prepared.firstBuffer());
-  EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine(http::ContentLength, "0")));
-  EXPECT_FALSE(headers.contains(http::TransferEncoding));
-  // An empty file already declares its own Content-Length: 0; finalization must not synthesize a second one.
-  EXPECT_EQ(CountSubstr(headers, http::ContentLength), 1U);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), http::ContentTypeApplicationOctetStream);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), sendContentLengthHeader ? "0" : "");
+
+    if (!sendContentLengthHeader) {
+      continue;
+    }
+
+    auto prepared = finalizePrepared(std::move(resp));
+    ASSERT_NE(prepared.getIfFilePayload(), nullptr);
+    EXPECT_EQ(prepared.fileLength(), 0U);
+
+    std::string headers(prepared.firstBuffer());
+    EXPECT_EQ(headers.contains(MakeHttp1HeaderLine(http::ContentLength, "0")), sendContentLengthHeader);
+    EXPECT_FALSE(headers.contains(http::TransferEncoding));
+    // An empty file already declares its own Content-Length: 0; finalization must not synthesize a second one.
+    EXPECT_EQ(CountSubstr(headers, http::ContentLength), 1U * static_cast<uint32_t>(sendContentLengthHeader));
+  }
 }
 
 // -----------------------------------------------------------------------------

@@ -425,27 +425,36 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
   const std::size_t contentEncodingHeaderLineSz =
       http::HeaderSize(http::ContentEncoding.size(), contentEncodingStr.size());
 
+  const bool sendContentLengthHeader = msg._opts.sendContentLengthHeader();
+
   // Compute offsets for the reserved tail (Content-Type + Content-Length + DoubleCRLF).
-  const auto nDigitsBodySz = ndigits(bodySz);
   const auto nDigitsMaxCompressedSize = ndigits(maxCompressedBytes);
   const std::size_t contentTypeLinePos = static_cast<std::size_t>(msg.getContentTypeHeaderLinePtr() - pData);
-  const std::size_t contentLengthLinePos = static_cast<std::size_t>(msg.getContentLengthHeaderLinePtr() - pData);
   const std::size_t oldDataSz = msg._data.size();
 
-  // Reserve once (no realloc after we start reading internal body).
-  // We reserve for:
-  //   - worst-case tail growth (using current body digit count as upper bound)
-  //   - temp compressed output (capped by maxCompressedBytes + 1)
-  //   - final compressed output (capped by maxCompressedBytes)
-  const std::size_t contentTypeLineLen = contentLengthLinePos - contentTypeLinePos;
-  const std::size_t contentLengthLineLen = http::HeaderSize(http::ContentLength.size(), nDigitsBodySz);
-  const std::size_t upperContentLengthLineLen = http::HeaderSize(http::ContentLength.size(), nDigitsMaxCompressedSize);
+  std::size_t contentTypeLineLen;
+  if (sendContentLengthHeader) {
+    const std::size_t contentLengthLinePos = static_cast<std::size_t>(msg.getLastHeaderLinePtr() - pData);
+
+    contentTypeLineLen = contentLengthLinePos - contentTypeLinePos;
+  } else {
+    const std::size_t lastHeaderValueEndPos = static_cast<std::size_t>(msg.getLastHeaderValueEndPtr() - pData);
+    contentTypeLineLen = lastHeaderValueEndPos - contentTypeLinePos;
+  }
 
   static_assert(http::HeaderSize(http::ContentEncoding.size(), 1U) >= std::numeric_limits<std::size_t>::digits10 + 1,
                 "headersShift cannot be negative for below logic");
 
-  const std::size_t headersShift =
-      additionalVaryLen + contentEncodingHeaderLineSz + upperContentLengthLineLen - contentLengthLineLen;
+  std::size_t headersShift = additionalVaryLen + contentEncodingHeaderLineSz;
+
+  if (sendContentLengthHeader) {
+    const std::size_t contentLengthLineLen = http::HeaderSize(http::ContentLength.size(), ndigits(bodySz));
+    const std::size_t upperContentLengthLineLen =
+        http::HeaderSize(http::ContentLength.size(), nDigitsMaxCompressedSize);
+
+    headersShift += upperContentLengthLineLen - contentLengthLineLen;
+  }
+
   const std::size_t capturedTrailerGrowth = hasBodyCaptured ? trailersSz : 0UL;
 
   const std::size_t initialCompressionBufferLimit =
@@ -453,6 +462,11 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
   const std::size_t initialCompressedBytes = std::min<std::size_t>(maxCompressedBytes, initialCompressionBufferLimit);
   const std::size_t initialNeededCapacity = oldDataSz + initialCompressedBytes + headersShift + capturedTrailerGrowth;
 
+  // Reserve once (no realloc after we start reading internal body).
+  // We reserve for:
+  //   - worst-case tail growth (using current body digit count as upper bound)
+  //   - temp compressed output (capped by maxCompressedBytes + 1)
+  //   - final compressed output (capped by maxCompressedBytes)
   msg.reserve(initialNeededCapacity);
 
   // Note: we are before the finalization of the HttpResponse here, so there is no Transfer-Encoding: chunked case to
@@ -558,7 +572,7 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
   // 1) trailers
   // 2) compressed body (only if inlined, for captured bodies the compressed body is already in its final position)
   // 3) Double CRLF (before the compressed body)
-  // 4) new Content-Length header line (with padding if needed)
+  // 4) (optional) new Content-Length header line (with padding if needed)
   // 5) Content-Type header line (moved)
   // 6) new Content-Encoding header line (added)
   // 7) new Vary header line or value update (added or updated if needed)
@@ -569,9 +583,20 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
   //   [headers][content-type][content-length][CRLF][<headersShift>][compressed body]
   //   [uncompressed body][trailers]
 
-  const auto nbDigitsContentLen = ndigits(totalCompSize);
-  const auto contentLengthPadding = static_cast<uint8_t>(nDigitsMaxCompressedSize - nbDigitsContentLen);
-  const bool useLeadingZeroes = compressionConfig.useLeadingZeroesInContentLength;
+  auto newBodyStartPos = msg.bodyStartPos() + headersShift;
+
+  uint8_t nbDigitsContentLen = 0;
+  uint8_t contentLengthPadding = 0;
+  bool useLeadingZeroes = false;
+  if (sendContentLengthHeader) {
+    nbDigitsContentLen = ndigits(totalCompSize);
+    contentLengthPadding = static_cast<uint8_t>(nDigitsMaxCompressedSize - nbDigitsContentLen);
+    useLeadingZeroes = compressionConfig.useLeadingZeroesInContentLength;
+
+    if (!useLeadingZeroes) {
+      newBodyStartPos -= contentLengthPadding;
+    }
+  }
 
   // Buffer layout after trailers move to their final position:
   //  For inline bodies:
@@ -579,11 +604,6 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
   //  For captured bodies:
   //   [headers][content-type][content-length][CRLF][<headersShift>][compressed body][trailers]
   //   [uncompressed body]
-  auto newBodyStartPos = msg.bodyStartPos() + headersShift;
-
-  if (!useLeadingZeroes) {
-    newBodyStartPos -= contentLengthPadding;
-  }
 
   // The trailers must follow the compressed body at its final position.
 
@@ -626,22 +646,24 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
   char* pOut = msg._data.data() + newBodyStartPos - http::DoubleCRLF.size();
   CopyFixed<http::DoubleCRLF>(pOut);
 
-  // Write new Content-Length, padded with zeroes as prefix if the number of chars of the actual compressed size is
-  // smaller than the number of chars of the declared max compressed size (worst case). Example:
-  //  'content-length: 0001234' if the actual compressed size is 1234 and uncompressed size had 7 digits.
-  WriteUInt(pOut - nbDigitsContentLen, totalCompSize, nbDigitsContentLen);
-  pOut -= nbDigitsContentLen;
+  if (sendContentLengthHeader) {
+    // Write new Content-Length, padded with zeroes as prefix if the number of chars of the actual compressed size is
+    // smaller than the number of chars of the declared max compressed size (worst case). Example:
+    //  'content-length: 0001234' if the actual compressed size is 1234 and uncompressed size had 7 digits.
+    WriteUInt(pOut - nbDigitsContentLen, totalCompSize, nbDigitsContentLen);
+    pOut -= nbDigitsContentLen;
 
-  // Prefix with zeroes if needed. Width must match the reserved upper bound (nDigitsMaxCompressedSize),
-  // the same value used to compute upperContentLengthLineLen / headersShift above.
-  if (useLeadingZeroes && contentLengthPadding != 0) {
-    std::memset(pOut - contentLengthPadding, '0', contentLengthPadding);
-    pOut -= contentLengthPadding;
+    // Prefix with zeroes if needed. Width must match the reserved upper bound (nDigitsMaxCompressedSize),
+    // the same value used to compute upperContentLengthLineLen / headersShift above.
+    if (useLeadingZeroes && contentLengthPadding != 0) {
+      std::memset(pOut - contentLengthPadding, '0', contentLengthPadding);
+      pOut -= contentLengthPadding;
+    }
+
+    // Write '\r\nContent-Length: ' just before the new Content-Length value.
+    CopyFixed<http::CRLFContentLengthHeaderSep>(pOut - http::CRLFContentLengthHeaderSep.size());
+    pOut -= http::CRLFContentLengthHeaderSep.size();
   }
-
-  // Write '\r\nContent-Length: ' just before the new Content-Length value.
-  CopyFixed<http::CRLFContentLengthHeaderSep>(pOut - http::CRLFContentLengthHeaderSep.size());
-  pOut -= http::CRLFContentLengthHeaderSep.size();
 
   // Write '\r\nContent-Type: XXXX' just before the Content-Length line.
   std::memmove(pOut - contentTypeLineLen, msg._data.data() + contentTypeLinePos, contentTypeLineLen);
