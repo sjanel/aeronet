@@ -83,6 +83,7 @@ int main(int argc, char** argv) {
     http2cfg.enableH2c = true;
     http2cfg.enableH2cUpgrade = true;
     http2cfg.maxConcurrentStreams = 100;
+    http2cfg.sendContentLengthHeader = false;
 
     HttpServerConfig cfg;
     cfg.withPort(port);

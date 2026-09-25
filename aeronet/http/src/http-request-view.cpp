@@ -187,6 +187,9 @@ void HttpRequestView::init(const HttpServerConfig& config, CompressionState& com
   _pGlobalHeaders = &config.globalHeaders;
   _addTrailerHeader = config.addTrailerHeader;
   _addVaryAcceptEncoding = config.compression.addVaryAcceptEncodingHeader;
+#ifdef AERONET_ENABLE_HTTP2
+  _doNotSendContentLengthHeader = !config.http2.sendContentLengthHeader;
+#endif
   _pCompressionState = &compressionState;
 }
 
@@ -576,6 +579,11 @@ HttpResponse::Options HttpRequestView::makeResponseOptions() const noexcept {
   if (method() == http::Method::HEAD) {
     opts.setHeadMethod();
   }
+#ifdef AERONET_ENABLE_HTTP2
+  if (isHttp2() && _doNotSendContentLengthHeader) {
+    opts.setDoNotSendContentLengthHeader();
+  }
+#endif
   opts.setPrepared();
   return opts;
 }

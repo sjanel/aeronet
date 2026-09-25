@@ -739,6 +739,9 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
   if (pCorsPolicy != nullptr && pCorsPolicy->wouldApply(request) == CorsPolicy::ApplyStatus::OriginDenied) {
     HttpResponse::Options opts;
     opts.setPrepared();
+    if (!_pServerConfig->http2.sendContentLengthHeader) {
+      opts.setDoNotSendContentLengthHeader();
+    }
     HttpResponse corsResp(0ULL, http::StatusCodeForbidden, _pServerConfig->globalHeaders.fullStringWithLastSep(),
                           "Forbidden by CORS policy", http::ContentTypeTextPlain, std::move(opts));
     ApplyResponseMiddleware(request, corsResp, responseMiddleware, _pRouter->globalResponseMiddleware(),
@@ -763,6 +766,9 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
   }
   if (request.method() == http::Method::HEAD) {
     opts.setHeadMethod();
+  }
+  if (!_pServerConfig->http2.sendContentLengthHeader) {
+    opts.setDoNotSendContentLengthHeader();
   }
   opts.setPrepared();
 
