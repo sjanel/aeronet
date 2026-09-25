@@ -200,14 +200,12 @@ class HttpResponseWriter {
   /// @param compressionConfig  Compression configuration (thresholds, etc.).
   /// @param compressionState   Shared compression state (encoder pool).
   /// @param globalHeadersStr   Pre-formatted global headers string (with trailing separator).
-  /// @param addTrailerHeader   Whether to auto-add the Trailer header.
+  /// @param opts   Options for the HTTP message (e.g., whether to auto-add the Trailer header).
   HttpResponseWriter(IWriterTransport& transport, const HttpRequestView& request, Encoding encoding,
                      const CompressionConfig& compressionConfig, CompressionState& compressionState,
-                     std::string_view globalHeadersStr, bool addTrailerHeader);
+                     std::string_view globalHeadersStr, HttpMessage::Options opts);
 
   void ensureHeadersSent();
-
-  bool accumulateInPreCompressBuffer(std::string_view data);
 
   // Combine transient booleans into a single state machine to reduce memory and make transitions explicit.
   enum class State : std::uint8_t { Opened, HeadersSent, Ended, Failed };
@@ -217,7 +215,6 @@ class HttpResponseWriter {
   bool _head;
   State _state{State::Opened};
   Encoding _encoding;
-  bool _compressionActivated{false};
   // needed along with fixedResponse because once headers emitted, the buffer will be empty, and it is impossible to
   // access status code from it.
   http::StatusCode _statusCode{http::StatusCodeOK};

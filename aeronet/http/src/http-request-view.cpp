@@ -142,42 +142,28 @@ bool HttpRequestView::wantClose() const {
 }
 
 HttpResponse HttpRequestView::makeResponse(std::size_t additionalCapacity, http::StatusCode statusCode) const {
-  HttpResponse resp(additionalCapacity, statusCode, _pGlobalHeaders->fullStringWithLastSep(), {}, {},
-                    HttpResponse::Check::No);
-  resp._opts = makeResponseOptions();
-  return resp;
+  return {additionalCapacity, statusCode, _pGlobalHeaders->fullStringWithLastSep(), {}, {}, makeResponseOptions()};
 }
 
 HttpResponse HttpRequestView::makeResponse(std::string_view body, std::string_view contentType) const {
-  HttpResponse resp(0UL, http::StatusCodeOK, _pGlobalHeaders->fullStringWithLastSep(), body, contentType,
-                    HttpResponse::Check::No);
-  resp._opts = makeResponseOptions();
-  return resp;
+  return {0UL, http::StatusCodeOK, _pGlobalHeaders->fullStringWithLastSep(), body, contentType, makeResponseOptions()};
 }
 
 HttpResponse HttpRequestView::makeResponse(http::StatusCode statusCode, std::string_view body,
                                            std::string_view contentType) const {
-  HttpResponse resp(0UL, statusCode, _pGlobalHeaders->fullStringWithLastSep(), body, contentType,
-                    HttpResponse::Check::No);
-  resp._opts = makeResponseOptions();
-  return resp;
+  return {0UL, statusCode, _pGlobalHeaders->fullStringWithLastSep(), body, contentType, makeResponseOptions()};
 }
 
 HttpResponse HttpRequestView::makeResponse(std::span<const std::byte> body, std::string_view contentType) const {
   std::string_view asBody(reinterpret_cast<const char*>(body.data()), body.size());
-  HttpResponse resp(0UL, http::StatusCodeOK, _pGlobalHeaders->fullStringWithLastSep(), asBody, contentType,
-                    HttpResponse::Check::No);
-  resp._opts = makeResponseOptions();
-  return resp;
+  return {0UL,    http::StatusCodeOK, _pGlobalHeaders->fullStringWithLastSep(),
+          asBody, contentType,        makeResponseOptions()};
 }
 
 HttpResponse HttpRequestView::makeResponse(http::StatusCode statusCode, std::span<const std::byte> body,
                                            std::string_view contentType) const {
   std::string_view asBody(reinterpret_cast<const char*>(body.data()), body.size());
-  HttpResponse resp(0UL, statusCode, _pGlobalHeaders->fullStringWithLastSep(), asBody, contentType,
-                    HttpResponse::Check::No);
-  resp._opts = makeResponseOptions();
-  return resp;
+  return {0UL, statusCode, _pGlobalHeaders->fullStringWithLastSep(), asBody, contentType, makeResponseOptions()};
 }
 
 bool HttpRequestView::hasExpectContinue() const noexcept {
