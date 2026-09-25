@@ -36,6 +36,11 @@ struct Http2Config {
     return *this;
   }
 
+  Http2Config& withSendContentLengthHeader(bool on) {
+    sendContentLengthHeader = on;
+    return *this;
+  }
+
   Http2Config& withMaxConcurrentStreams(uint32_t maxStreams) {
     maxConcurrentStreams = maxStreams;
     return *this;
@@ -137,10 +142,23 @@ struct Http2Config {
   bool enablePriority{true};
 
   /// Whether to merge multiple header values for unknown request headers.
-  /// If true, multiple values for unknown headers are concatenated with commas,
-  /// per RFC 9113 §8.1.2. If false, only the last value is kept.
-  /// Default: true.
+  /// If true, multiple values for unknown headers are concatenated with commas, per RFC 9113 §8.1.2. If false, only the
+  /// last value is kept. Default: true.
   bool mergeUnknownRequestHeaders{true};
+
+  /// Whether to automatically add a Content-Length header to HTTP/2 responses built via
+  /// HttpRequestView::makeResponse(). Content-Length is optional in HTTP/2, but sending it can improve interoperability
+  /// with some clients and intermediaries.
+  ///
+  /// Only applies to responses produced by makeResponse(); manually constructed HttpResponse objects are unaffected.
+  /// Not yet honored for outgoing HttpClient requests.
+  ///
+  /// Disabling this can be a worthwhile optimization when headers and body share the same buffer: it avoids relocating
+  /// the body every time the content length's digit count changes (e.g. during automatic compression or incremental
+  /// body appends).
+  ///
+  /// Default: true.
+  bool sendContentLengthHeader{true};
 
   /// SETTINGS_HEADER_TABLE_SIZE (0x1): Maximum size of the HPACK dynamic table.
   /// Default: 4096 bytes (RFC 9113 default).

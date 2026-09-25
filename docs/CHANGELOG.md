@@ -66,6 +66,7 @@ All notable changes to aeronet are documented in this file.
 - **Changed content-length padding in automatic compression re-writing to zeroes prefix**: added a configuration toggle to control the behavior. See `CompressionConfig.useLeadingZeroesInContentLength` documentation for more details. Previously, the padding was forced (no configuration possible) and added trailing spaces instead of zeroes prefix.
 - **HTTP/1.X requests are now all accepted by the server**: RFC 9110 says that the minor version represent the maximum minor version supported by the client.
 - **HttpResponseWriter skips data copy to internal temporary buffer if first chunk of writeBody is large enough**: if first call to `writeBody` has data larger than `CompressionConfig.minBytes`, does not copy data in a temporary internal buffer before compression is triggered, directly call compression on the body chunk view.
+- **Configurable automatic Content-Length header (`Http2Config::sendContentLengthHeader`)**: responses built via `HttpRequestView::makeResponse()` can now opt out of the automatic `Content-Length` header, which HTTP/2 makes optional (RFC 9113). Disabling it (default remains `true`) avoids relocating the response body when the encoded length's digit count changes, which matters for use cases sharing one buffer for headers and body across automatic compression or incremental body appends. Not yet honored for outgoing HttpClient requests.
 
 ## Others
 
