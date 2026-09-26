@@ -10,6 +10,7 @@
 #include <span>
 #include <type_traits>
 
+#include "../src/http2-frame-type-str.hpp"
 #include "aeronet/http2-error-code-name.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-process-result-error-msg-strings.hpp"
@@ -663,6 +664,20 @@ TEST(Http2Frame, ErrorMsg) {
 
     EXPECT_FALSE(ConvertProcessResultErrorMsgToSv(errorMsg).empty());
   }
+}
+
+TEST(Http2Frame, FrameTypeName) {
+  EXPECT_EQ(FrameTypeName(FrameType::Data), "data");
+  EXPECT_EQ(FrameTypeName(FrameType::Headers), "headers");
+  EXPECT_EQ(FrameTypeName(FrameType::Priority), "priority");
+  EXPECT_EQ(FrameTypeName(FrameType::RstStream), "rst_stream");
+  EXPECT_EQ(FrameTypeName(FrameType::Settings), "settings");
+  EXPECT_EQ(FrameTypeName(FrameType::PushPromise), "push_promise");
+  EXPECT_EQ(FrameTypeName(FrameType::Ping), "ping");
+  EXPECT_EQ(FrameTypeName(FrameType::GoAway), "goaway");
+  EXPECT_EQ(FrameTypeName(FrameType::WindowUpdate), "window_update");
+  EXPECT_EQ(FrameTypeName(FrameType::Continuation), "continuation");
+  EXPECT_EQ(FrameTypeName(static_cast<FrameType>(0xFF)), "unknown");
 }
 
 }  // namespace aeronet::http2

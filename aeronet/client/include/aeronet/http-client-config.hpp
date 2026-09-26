@@ -45,6 +45,7 @@ constexpr Encoding DefaultRequestEncoding() {
 // minimise padding); the variable-length strings are packed into a single contiguous buffer
 // (one allocation, trivially relocatable) and exposed through a small fluent method API, mirroring
 // how aeronet's other config objects (e.g. TLSConfig) store their strings.
+// TODO: support json / yaml serialization for HttpClientConfig.
 class HttpClientConfig {
  public:
   using Duration = std::chrono::milliseconds;

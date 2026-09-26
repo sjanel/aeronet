@@ -108,6 +108,7 @@ TEST(HttpServerConfigTest, AdvancedTlsConvenienceBuildersEnableTlsAndForwardSett
 
   EXPECT_TRUE(cfg.tls.enabled);
   EXPECT_EQ(cfg.tls.ocspResponseFile(), "server.ocsp.der");
+  EXPECT_STREQ(cfg.tls.ocspResponseFileCstr(), "server.ocsp.der");
   EXPECT_EQ(cfg.tls.crlFile(), "clients.crl");
   EXPECT_TRUE(cfg.tls.crlCheckAll);
   EXPECT_EQ(cfg.tls.revocationCallback, &NoRevocationOpinion);
@@ -274,6 +275,40 @@ TEST(TLSConfigTest, SniCertificateEquality) {
 
   cert2.setKeyPem("-----BEGIN PRIVATE KEY-----\nDIFFERENT\n-----END PRIVATE KEY-----\n");
   EXPECT_NE(cert1, cert2);
+}
+
+TEST(TLSConfigTest, SniCertificateIsCopyable) {
+  TLSConfig::SniCertificate cert1;
+  cert1.setPattern("example.com");
+  cert1.isWildcard = false;
+  cert1.setCertPem(kDummyCertPem);
+  cert1.setKeyPem(kDummyKeyPem);
+
+  TLSConfig::SniCertificate cert2 = cert1;  // copy constructor
+  EXPECT_EQ(cert1, cert2);
+
+  TLSConfig::SniCertificate cert3;
+  cert3 = cert1;  // copy assignment
+  EXPECT_EQ(cert1, cert3);
+}
+
+TEST(TLSConfigTest, SniCertificateIsMovable) {
+  TLSConfig::SniCertificate cert1;
+  cert1.setPattern("example.com");
+  cert1.isWildcard = false;
+  cert1.setCertPem(kDummyCertPem);
+  cert1.setKeyPem(kDummyKeyPem);
+
+  TLSConfig::SniCertificate cert2 = std::move(cert1);  // move constructor
+  EXPECT_EQ(cert2.pattern(), "example.com");
+  EXPECT_EQ(cert2.certPem(), kDummyCertPem);
+  EXPECT_EQ(cert2.keyPem(), kDummyKeyPem);
+
+  TLSConfig::SniCertificate cert3;
+  cert3 = std::move(cert2);  // move assignment
+  EXPECT_EQ(cert3.pattern(), "example.com");
+  EXPECT_EQ(cert3.certPem(), kDummyCertPem);
+  EXPECT_EQ(cert3.keyPem(), kDummyKeyPem);
 }
 
 TEST(TLSConfigTest, RequiresCertAndKeyWhenEnabled) {
@@ -617,6 +652,27 @@ TEST(GlazeAdaptersTest, TlsVersionYamlSerializesValidVersionAsShortForm) {
   ASSERT_TRUE(yaml);
 
   EXPECT_TRUE(yaml.value().contains("1.3"));
+}
+
+TEST(GlazeAdaptersTest, SniCertificate) {
+  TLSConfig::SniCertificate cert;
+  cert.setPattern("example.com");
+  cert.isWildcard = false;
+  cert.setCertPem("some cert pem");
+  cert.setKeyPem("some key pem");
+
+  EXPECT_EQ(cert.pattern(), "example.com");
+  EXPECT_EQ(cert.certPem(), "some cert pem");
+  EXPECT_EQ(cert.keyPem(), "some key pem");
+
+  auto json = glz::write<glz::opts{.format = glz::JSON}>(cert);
+  ASSERT_TRUE(json);
+
+  auto str = json.value();
+
+  EXPECT_TRUE(str.contains("example.com")) << str;
+  EXPECT_TRUE(str.contains("some cert pem")) << str;
+  EXPECT_TRUE(str.contains("some key pem")) << str;
 }
 
 #endif

@@ -43,7 +43,7 @@ ErrorCode Http2Stream::onSendHeaders(bool endStream) noexcept {
       return ErrorCode::NoError;
 
     default:
-      assert(_state != StreamState::ReservedLocal);  // TODO: Not implemented yet
+      assert(_state != StreamState::ReservedLocal);  // TODO: Not implemented yet, should we?
       return ErrorCode::StreamClosed;
   }
 }
@@ -71,7 +71,7 @@ ErrorCode Http2Stream::onRecvHeaders(bool endStream) noexcept {
       return ErrorCode::NoError;
 
     default:
-      assert(_state != StreamState::ReservedRemote);  // TODO: Not implemented yet
+      assert(_state != StreamState::ReservedRemote);  // TODO: Not implemented yet, should we?
       return ErrorCode::StreamClosed;
   }
 }
