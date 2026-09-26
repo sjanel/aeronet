@@ -11,6 +11,7 @@
 #include <exception>
 #include <memory>
 #include <optional>
+#include <ratio>
 #include <span>
 #include <string_view>
 #include <system_error>
