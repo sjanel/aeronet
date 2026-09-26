@@ -242,7 +242,7 @@ EncoderResult EncodeChunk(EncoderContext& ctx, std::string_view data, RawChars& 
 void EndStream(EncoderContext& ctx, RawChars& out) {
   while (true) {
     out.ensureAvailableCapacityExponential(ctx.endChunkSize());
-    const auto result = ctx.end(out.availableCapacity(), out.data() + out.size());
+    const auto result = ctx.end(out.availableCapacity(), out.end());
     if (result.hasError()) {
       out.clear();
       break;

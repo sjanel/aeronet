@@ -987,7 +987,7 @@ class HttpMessage {
   // Returns the number of written bytes
   std::size_t appendEncodedInlineOrThrow(const char* pData, std::size_t sz);
 
-  void finalizeInlineBody(int64_t additionalCapacity = 0);
+  void finalizeInlineBody(std::size_t additionalCapacity = 0);
 #endif
 
   void removeBodyAndItsHeaders();

@@ -266,8 +266,7 @@ void HttpResponseWriter::end() {
     _compressedBuffer.clear();
     while (true) {
       _compressedBuffer.ensureAvailableCapacityExponential(endChunkSize);
-      const auto result = _activeEncoderCtx->end(_compressedBuffer.availableCapacity(),
-                                                 _compressedBuffer.data() + _compressedBuffer.size());
+      const auto result = _activeEncoderCtx->end(_compressedBuffer.availableCapacity(), _compressedBuffer.end());
       if (result.hasError()) [[unlikely]] {
         _state = State::Failed;
         return;
