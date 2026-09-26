@@ -762,7 +762,9 @@ void HttpMessage::trailerAddLineImpl(LowerAsciiKey name, std::string_view value)
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
     if (_opts.isAutomaticDirectCompression()) {
-      finalizeInlineBody(neededCapacity);
+      // At this point, for an enormous body size and a tiny trailer line (more than 17 digits size), neededCapacity
+      // can theoretically be negative (minimum value of -3).
+      finalizeInlineBody(static_cast<std::size_t>(std::max<int64_t>(0, neededCapacity)));
     }
 #endif
   } else if (addTrailerHeader) {
@@ -883,21 +885,23 @@ std::size_t HttpMessage::appendEncodedInlineOrThrow(const char* pData, std::size
   return GetWrittenOrThrow(result, "HttpMessage::appendEncodedInlineOrThrow compression failed");
 }
 
-void HttpMessage::finalizeInlineBody(int64_t additionalCapacity) {
+void HttpMessage::finalizeInlineBody(std::size_t additionalCapacity) {
   assert(_opts.isAutomaticDirectCompression() && !isHead() && !hasBodyCaptured() && !hasBodyFile());
   std::size_t bodyLen = internalBodyAndTrailersLen();
   auto& encoder = *_opts._pCompressionState->context(_opts._pickedEncoding);
   const std::size_t chunkSize = encoder.endChunkSize();
   while (true) {
-    int64_t neededCapacity = additionalCapacity + static_cast<int64_t>(chunkSize);
+    std::size_t reservedCapacity = additionalCapacity;
 
     if (_opts.sendContentLengthHeader()) {
-      neededCapacity += static_cast<int64_t>(nchars(bodyLen + chunkSize) - nchars(bodyLen));
+      // This difference is positive because adding a chunk to the body cannot decrease the number of digits needed
+      // for the content-length header.
+      reservedCapacity += nchars(bodyLen + chunkSize) - nchars(bodyLen);
     }
 
-    _data.ensureAvailableCapacityExponential(neededCapacity);
+    _data.ensureAvailableCapacityExponential(chunkSize + reservedCapacity);
 
-    const auto result = encoder.end(_data.availableCapacity(), _data.end());
+    const auto result = encoder.end(_data.availableCapacity() - reservedCapacity, _data.end());
     const auto written = GetWrittenOrThrow(result, "HttpMessage::finalizeInlineBody compression failed");
     if (written == 0) {
       break;
@@ -1135,7 +1139,7 @@ void HttpMessage::finalizeForHttp1(http::Version version, Options opts, const Co
     if (trailersSize() == 0) {
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
       if (_opts.isAutomaticDirectCompression()) {
-        finalizeInlineBody(static_cast<int64_t>(totalNewHeadersSize));
+        finalizeInlineBody(totalNewHeadersSize);
         bodySz = bodyInlinedSize();
       } else {
 #endif

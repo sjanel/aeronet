@@ -558,11 +558,12 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
       if (result.hasError()) {
         return ConvertEncoderResultErrorToCompressResponseResult(result);
       }
-      if (result.writtenIfNoError() == 0) {
+      const auto written = result.writtenIfNoError();
+      if (written == 0) {
         // compression finished, we can proceed with this compressed body (meets compression ratio requirement)
         break;
       }
-      totalCompSize += result.writtenIfNoError();
+      totalCompSize += written;
       assert(totalCompSize <= maxCompressedBytes);
     }
   }

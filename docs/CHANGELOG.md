@@ -37,6 +37,7 @@ All notable changes to aeronet are documented in this file.
 - **HttpResponseWriter::trailerAddLine now trims the value**: because it is forbidden to have OWS around trailer values in HTTP/2. And this mirrors the headers process.
 - **Concatenated headers in HttpResponse constructors were not checking if the value was trimmed**: it is now enforced, and will throw `std::invalid_argument` if user passes a header value with trailing / prefix OWS.
 - **Fix compilation when AERONET_ENABLE_HTTP2 is OFF but AERONET_ENABLE_WEBSOCKET is ON**: unfortunately I cannot run all combinations of features in the CI, it would take too much time.
+- **Fixed possible out of bounds that could occur in direct automatic compression finalization in HttpResponse**: we provided the full available capacity to the encoders for the finalization of their compressed bytes writes. In the very unlikely event that it uses all the given capacity, it would use the 'additionalCapacity' and the content-length size difference reserved space at the same time, and it would provide out of bounds writes.
 
 ## Improvements
 
