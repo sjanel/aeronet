@@ -7,7 +7,6 @@
 #include <string_view>
 #include <utility>
 
-#include "aeronet/concatenated-headers.hpp"
 #include "aeronet/file-payload.hpp"
 #include "aeronet/header-write.hpp"
 #include "aeronet/http-headers-view.hpp"
@@ -30,11 +29,10 @@ namespace aeronet::http2 {
 /// pending-send maps for deferred flushing.
 class Http2WriterTransport final : public IWriterTransport {
  public:
-  Http2WriterTransport(Http2Connection& connection, uint32_t streamId, const ConcatenatedHeaders& globalHeaders,
-                       const char* cachedDateHeader, std::size_t existingDeferredBytes,
-                       uint32_t maxConnectionPendingBytes, uint32_t maxStreamPendingBytes)
+  Http2WriterTransport(Http2Connection& connection, uint32_t streamId, const char* cachedDateHeader,
+                       std::size_t existingDeferredBytes, uint32_t maxConnectionPendingBytes,
+                       uint32_t maxStreamPendingBytes)
       : _pConnection(&connection),
-        _globalHeaders(globalHeaders),
         _pCachedDateHeader(cachedDateHeader),
         _existingDeferredBytes(existingDeferredBytes),
         _maxConnectionPendingBytes(maxConnectionPendingBytes),
@@ -51,8 +49,7 @@ class Http2WriterTransport final : public IWriterTransport {
     CopyCRLFDateHeader(_pCachedDateHeader, response._data.data() + response.dateHeaderStartPos());
 
     // TODO: adding global headers is probably not needed - they are already added in the HttpResponse
-    const std::size_t globalHeadersSize = _globalHeaders.fullStringWithLastSep().size();
-    const std::size_t headerBytes = FrameHeader::kSize + response.headersFlatViewWithDate().size() + globalHeadersSize;
+    const std::size_t headerBytes = FrameHeader::kSize + response.headersFlatViewWithDate().size();
     if (headerBytes > _maxConnectionPendingBytes || !hasConnectionCapacity(headerBytes)) {
       markOverflow();
       return false;
@@ -64,8 +61,8 @@ class Http2WriterTransport final : public IWriterTransport {
     // We delay END_STREAM to emitEnd() since the writer always calls end().
     static constexpr bool kEndStream = false;
 
-    const ErrorCode err = _pConnection->sendHeaders(
-        _streamId, response.status(), HeadersView(response.headersFlatViewWithDate()), kEndStream, &_globalHeaders);
+    const ErrorCode err = _pConnection->sendHeaders(_streamId, response.status(),
+                                                    HeadersView(response.headersFlatViewWithDate()), kEndStream);
     if (err != ErrorCode::NoError) {
       log::error("HTTP/2 streaming: failed to send headers on stream {}: {}", _streamId, ErrorCodeName(err));
       return false;
@@ -232,7 +229,6 @@ class Http2WriterTransport final : public IWriterTransport {
   }
 
   Http2Connection* _pConnection;
-  const ConcatenatedHeaders& _globalHeaders;
   const char* _pCachedDateHeader;
   std::size_t _existingDeferredBytes;
   uint32_t _maxConnectionPendingBytes;

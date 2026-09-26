@@ -753,8 +753,8 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
   }
 
   // Create H2 transport and writer
-  Http2WriterTransport transport(_connection, streamId, _pServerConfig->globalHeaders, _pCachedDateHeader,
-                                 _deferredOutputBytes, _pServerConfig->maxOutboundBufferBytes,
+  Http2WriterTransport transport(_connection, streamId, _pCachedDateHeader, _deferredOutputBytes,
+                                 _pServerConfig->maxOutboundBufferBytes,
                                  _connection.localSettings().maxStreamPendingBytes);
 
   HttpMessage::Options opts;
