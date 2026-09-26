@@ -889,11 +889,12 @@ void HttpMessage::finalizeInlineBody(int64_t additionalCapacity) {
   auto& encoder = *_opts._pCompressionState->context(_opts._pickedEncoding);
   const std::size_t chunkSize = encoder.endChunkSize();
   while (true) {
-    const auto nbCharsOldBodyLen = nchars(bodyLen);
-    const auto nbCharsNewBodyLen = nchars(bodyLen + chunkSize);
+    int64_t neededCapacity = additionalCapacity + static_cast<int64_t>(chunkSize);
 
-    const int64_t neededCapacity =
-        additionalCapacity + static_cast<int64_t>(chunkSize + nbCharsNewBodyLen - nbCharsOldBodyLen);
+    if (_opts.sendContentLengthHeader()) {
+      neededCapacity += static_cast<int64_t>(nchars(bodyLen + chunkSize) - nchars(bodyLen));
+    }
+
     _data.ensureAvailableCapacityExponential(neededCapacity);
 
     const auto result = encoder.end(_data.availableCapacity(), _data.end());
