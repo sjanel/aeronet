@@ -474,10 +474,9 @@ class HttpMessage {
     // Call writer at body start position
     std::size_t written;
     if constexpr (std::is_invocable_r_v<std::size_t, W, std::byte*>) {
-      written =
-          static_cast<std::size_t>(std::invoke(std::forward<Writer>(writer), reinterpret_cast<std::byte*>(pData)));
+      written = std::invoke(std::forward<Writer>(writer), reinterpret_cast<std::byte*>(pData));
     } else {
-      written = static_cast<std::size_t>(std::invoke(std::forward<Writer>(writer), pData));
+      written = std::invoke(std::forward<Writer>(writer), pData);
     }
 
     if (written == 0) {
@@ -505,7 +504,8 @@ class HttpMessage {
   // This is an efficient way to set the inline body as it avoids copies and limits allocations.
   // Growing of the internal buffer is exponential.
   // You can call this method several times (it will append data to existing inline body).
-  // However, it is not compatible with direct automatic compression because the zero-copy would not be guaranteed.
+  // It also works when direct automatic compression is active, but loses its zero-copy property in that case:
+  // the writer's raw bytes are first staged in a scratch area, then compressed into their final position.
   // To erase the body, call 'body' with an empty buffer.
   // ContentType is optional - if non-empty, it replaces current body content type.
   // Otherwise, initializes content type to 'application/octet-stream' if content type is not already set.
@@ -542,8 +542,9 @@ class HttpMessage {
     std::size_t neededCapacity = bodyHeadersSize + maxLen;
     if (_opts.isAutomaticDirectCompression()) {
       // Not ideal - we started a streaming compression and client now calls bodyInlineAppend which is not compatible
-      // with direct compression. So we will write the body uncompressed and then apply compression to the whole body at
-      // the end, which is not zero-copy but still correct.
+      // with direct compression's zero-copy path. So instead we let the writer write its raw bytes into a scratch
+      // area of size 'maxLen' just past the real body position, then compress that chunk in place into its final
+      // spot. Still correct (compression is incremental, same as the zero-copy path), just not zero-copy.
       neededCapacity += maxLen;
     }
 
@@ -555,10 +556,9 @@ class HttpMessage {
 
     std::size_t written;
     if constexpr (std::is_invocable_r_v<std::size_t, W, std::byte*>) {
-      written =
-          static_cast<std::size_t>(std::invoke(std::forward<Writer>(writer), reinterpret_cast<std::byte*>(first)));
+      written = std::invoke(std::forward<Writer>(writer), reinterpret_cast<std::byte*>(first));
     } else {
-      written = static_cast<std::size_t>(std::invoke(std::forward<Writer>(writer), first));
+      written = std::invoke(std::forward<Writer>(writer), first);
     }
 
     if (written == 0) {
