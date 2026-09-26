@@ -147,6 +147,7 @@ CorsPolicy::ApplyStatus CorsPolicy::applyToResponse(const HttpRequestView& reque
 CorsPolicy::PreflightResult CorsPolicy::handlePreflight(const HttpRequestView& request,
                                                         http::MethodBmp routeMethods) const {
   PreflightResult result;
+
   if (!_active || !isPreflightRequest(request)) {
     return result;
   }
@@ -179,7 +180,10 @@ CorsPolicy::PreflightResult CorsPolicy::handlePreflight(const HttpRequestView& r
     }
   }
 
-  auto& response = result.response;
+  result.response = request.makeResponse(http::StatusCodeNoContent);
+
+  auto& response = *result.response;
+
   applyResponseHeaders(response, origin);
 
   FixedCapacityVector<char, http::kAllMethodsStrLen + static_cast<uint32_t>((http::kNbMethods - 1U) * 2U)> acamValues;

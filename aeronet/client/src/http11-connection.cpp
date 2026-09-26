@@ -188,12 +188,12 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
         .tmp = &client._codec.decompressTmp,
     });
   }
-  HttpResponse resp;
   RawChars& responseBuffer = client.responseBuffer();
   responseBuffer.clear();  // reuse the buffer's allocation across requests
   bool eof = false;
   const auto minReadChunkBytes = config.minReadChunkBytes;
 
+  HttpResponse resp;
   while (true) {
     responseBuffer.ensureAvailableCapacityExponential(minReadChunkBytes);
     const TransportResult transportRes =
