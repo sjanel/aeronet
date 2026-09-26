@@ -28,6 +28,7 @@
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/vector.hpp"
+#include "http2-frame-type-str.hpp"
 #include "http2-read-write.hpp"
 
 #ifndef NDEBUG
@@ -60,33 +61,6 @@ constexpr uint32_t kMaxMaxFrameSize = 16777215;  // Maximum allowed SETTINGS_MAX
 constexpr std::size_t kMaxInlineDataFrameCopySize = 256;
 
 static_assert(kMaxInlineDataFrameCopySize <= kMinMaxFrameSize);
-
-constexpr std::string_view FrameTypeName(FrameType type) noexcept {
-  switch (type) {
-    case FrameType::Data:
-      return "data";
-    case FrameType::Headers:
-      return "headers";
-    case FrameType::Priority:
-      return "priority";
-    case FrameType::RstStream:
-      return "rst_stream";
-    case FrameType::Settings:
-      return "settings";
-    case FrameType::PushPromise:
-      return "push_promise";
-    case FrameType::Ping:
-      return "ping";
-    case FrameType::GoAway:
-      return "goaway";
-    case FrameType::WindowUpdate:
-      return "window_update";
-    case FrameType::Continuation:
-      return "continuation";
-    default:
-      return "unknown";
-  }
-}
 
 }  // namespace
 

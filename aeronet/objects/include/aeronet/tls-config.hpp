@@ -84,7 +84,7 @@ class TLSConfig {
     }
 
     [[nodiscard]] std::string_view ocspResponseFile() const noexcept { return _strings[kOcspResponseFile]; }
-    [[nodiscard]] auto ocspResponseFileCstr() const noexcept { return _strings.c_str(kOcspResponseFile); }
+    [[nodiscard]] const char* ocspResponseFileCstr() const noexcept { return _strings.c_str(kOcspResponseFile); }
     void setOcspResponseFile(std::string_view value) { _strings.set(kOcspResponseFile, value); }
 
     [[nodiscard]] bool hasFiles() const noexcept { return !certFile().empty() || !keyFile().empty(); }
