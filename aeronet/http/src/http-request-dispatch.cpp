@@ -77,7 +77,7 @@ std::optional<HttpResponse> ProcessSpecialMethods(const HttpRequestView& request
   if (request.method() == http::Method::OPTIONS) {
     if (request.path() == "*") {
       // OPTIONS * request (target="*") should return an Allow header listing supported methods.
-      result = HttpResponse(http::StatusCodeOK);
+      result = request.makeResponse(http::StatusCodeOK);
       const http::MethodBmp allowed = router.allowedMethods("*");
       BuildAllowHeader(allowed, *result);
       return result;
@@ -90,18 +90,16 @@ std::optional<HttpResponse> ProcessSpecialMethods(const HttpRequestView& request
         case CorsPolicy::PreflightResult::Status::Allowed:
           result = std::move(preflight.response);
           return result;
+        case CorsPolicy::PreflightResult::Status::HeadersDenied:
+          [[fallthrough]];
         case CorsPolicy::PreflightResult::Status::OriginDenied:
-          result = HttpResponse(http::StatusCodeForbidden);
+          result = request.makeResponse(http::StatusCodeForbidden);
           result->body(http::ReasonForbidden);
           return result;
         case CorsPolicy::PreflightResult::Status::MethodDenied:
-          result = HttpResponse(http::StatusCodeMethodNotAllowed);
+          result = request.makeResponse(http::StatusCodeMethodNotAllowed);
           result->body(http::ReasonMethodNotAllowed);
           BuildAllowHeader(routeMethods, *result);
-          return result;
-        case CorsPolicy::PreflightResult::Status::HeadersDenied:
-          result = HttpResponse(http::StatusCodeForbidden);
-          result->body(http::ReasonForbidden);
           return result;
         default:
           // Not a preflight, fall through to normal processing
@@ -131,12 +129,12 @@ std::optional<HttpResponse> ProcessSpecialMethods(const HttpRequestView& request
 
     if (allowTrace && !requestData.empty()) {
       // Echo the raw request data
-      result = HttpResponse(requestData, http::ContentTypeMessageHttp);
+      result = request.makeResponse(requestData, http::ContentTypeMessageHttp);
       return result;
     }
 
     // TRACE disabled or no request data -> Method Not Allowed
-    result = HttpResponse(http::StatusCodeMethodNotAllowed);
+    result = request.makeResponse(http::StatusCodeMethodNotAllowed);
     result->body(http::ReasonMethodNotAllowed);
   }
   return result;
@@ -164,11 +162,11 @@ std::optional<HttpResponse> RunRequestMiddleware(HttpRequestView& request, std::
       } catch (const std::exception& ex) {
         threwEx = true;
         log::error("Exception in {} request middleware: {}", isGlobal ? "global" : "route", ex.what());
-        result = HttpResponse(http::StatusCodeInternalServerError);
+        result = request.makeResponse(http::StatusCodeInternalServerError);
       } catch (...) {
         threwEx = true;
         log::error("Unknown exception in {} request middleware", isGlobal ? "global" : "route");
-        result = HttpResponse(http::StatusCodeInternalServerError);
+        result = request.makeResponse(http::StatusCodeInternalServerError);
       }
 
       if (spanScope.span) {

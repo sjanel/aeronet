@@ -30,6 +30,7 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/nchars.hpp"
@@ -848,6 +849,7 @@ char* HttpMessage::resizeHeaderValue(char* first, std::size_t newValueLen) {
     // content-length value with zeroes? For instance: content-length: 00000000000000045678\r\n
     // Question is - how many zeroes to allocate ? Heuristic keeping only needed + n ? Or
     // std::numeric_limits<std::size_t>::digits10 + 1 ?
+    // We are already doing that in http-codec, so it would be consistent to do it here as well.
     const auto diff = static_cast<int64_t>(newValueLen) - static_cast<int64_t>(oldValueLen);
     std::memmove(last + diff, last, static_cast<std::size_t>(end - last));
     _data.adjustSize(diff);

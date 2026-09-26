@@ -202,8 +202,9 @@ class HpackEncoder {
   /// @param name The header field name.
   /// @param value The header field value (should be trimmed from OWS).
   /// @param mode The indexing mode for the header field (default is Indexed).
-  void encode(RawBytes& output, std::string_view name, std::string_view value,
-              IndexingMode mode = IndexingMode::Indexed);
+  /// @return The size of the encoded header field in bytes.
+  uint64_t encode(RawBytes& output, std::string_view name, std::string_view value,
+                  IndexingMode mode = IndexingMode::Indexed);
 
   /// Encode a dynamic table size update.
   void encodeDynamicTableSizeUpdate(RawBytes& output, uint32_t newSize);
