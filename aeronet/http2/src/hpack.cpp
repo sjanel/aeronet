@@ -1246,12 +1246,15 @@ void EncodeNameValue(RawBytes& output, std::string_view name, std::string_view v
 
 }  // namespace
 
-void HpackEncoder::encode(RawBytes& output, std::string_view name, std::string_view value, IndexingMode mode) {
+uint64_t HpackEncoder::encode(RawBytes& output, std::string_view name, std::string_view value, IndexingMode mode) {
   // Check for pending table size update
   if (_hasPendingTableSizeUpdate) {
     encodeDynamicTableSizeUpdate(output, _pendingTableSizeUpdate);
     _hasPendingTableSizeUpdate = false;
   }
+
+  // Compute the size of the header field as it would be represented in the HPACK dynamic table (32 bytes of overhead)
+  const auto headerFieldSize = name.size() + value.size() + 32U;
 
   // Try to find in tables
   const auto lookup = findHeader(name, value);
@@ -1260,7 +1263,7 @@ void HpackEncoder::encode(RawBytes& output, std::string_view name, std::string_v
     // Indexed Header Field (RFC 7541 §6.1)
     // Format: 1xxxxxxx
     EncodeInteger(output, lookup.index, 7, 0x80);
-    return;
+    return headerFieldSize;
   }
 
   if (mode == IndexingMode::Indexed) {
@@ -1290,6 +1293,8 @@ void HpackEncoder::encode(RawBytes& output, std::string_view name, std::string_v
     // Format: 0000xxxx
     EncodeNameValue(output, name, value, lookup, 4, 0x00);
   }
+
+  return headerFieldSize;
 }
 
 void HpackEncoder::encodeDynamicTableSizeUpdate(RawBytes& output, uint32_t newSize) {

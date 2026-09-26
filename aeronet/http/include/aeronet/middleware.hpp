@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string_view>
 #include <utility>
 
@@ -14,16 +15,13 @@ namespace aeronet {
 // Result of running a middleware stage.
 class MiddlewareResult {
  public:
-  enum class Decision : std::uint8_t { Continue, ShortCircuit };
-
   // Default to Continue.
   // Synonym of MiddlewareResult::Continue.
   MiddlewareResult() noexcept = default;
 
   // Constructor to short-circuit response with given one.
   // Synonym of MiddlewareResult::ShortCircuit.
-  explicit MiddlewareResult(HttpResponse response) noexcept
-      : _decision(Decision::ShortCircuit), _response(std::move(response)) {}
+  explicit MiddlewareResult(HttpResponse response) noexcept : _response(std::move(response)) {}
 
   // Returns a MiddlewareResult indicating to continue processing.
   static MiddlewareResult Continue() noexcept { return {}; }
@@ -31,15 +29,14 @@ class MiddlewareResult {
   // Returns a MiddlewareResult indicating to short-circuit with the given response.
   static MiddlewareResult ShortCircuit(HttpResponse response) noexcept { return MiddlewareResult{std::move(response)}; }
 
-  [[nodiscard]] bool shouldContinue() const noexcept { return _decision == Decision::Continue; }
+  [[nodiscard]] bool shouldContinue() const noexcept { return !_response.has_value(); }
 
-  [[nodiscard]] bool shouldShortCircuit() const noexcept { return _decision == Decision::ShortCircuit; }
+  [[nodiscard]] bool shouldShortCircuit() const noexcept { return _response.has_value(); }
 
-  [[nodiscard]] HttpResponse&& takeResponse() && noexcept { return std::move(_response); }
+  [[nodiscard]] HttpResponse&& takeResponse() && noexcept { return std::move(*_response); }
 
  private:
-  Decision _decision{Decision::Continue};
-  HttpResponse _response;
+  std::optional<HttpResponse> _response;
 };
 
 struct MiddlewareMetrics {

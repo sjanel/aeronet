@@ -16,6 +16,7 @@ All notable changes to aeronet are documented in this file.
 - **HttpServerConfig.zerocopyMinBytes** cannot be `0` anymore. The recommended value is to be `10KB` at minimum anyway when used.
 - **RetryConfig.retryStatuses** is now a `std::set` like container instead of a `std::vector` like container.
 - **HttpClientConfig stricter validation**: timeouts, retry config and other fields now check at validation time silly values, and will throw `std::invalid_argument` in case of incorrect config.
+- **Removed MiddlewareResult::Decision**: this enum was internal (but publicly exposed) and should not be very useful for the client.
 
 ## Bug Fixes
 

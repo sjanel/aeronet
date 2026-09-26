@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include <string_view>
 
 #include "aeronet/concatenated-header-values.hpp"
@@ -30,7 +31,7 @@ class CorsPolicy {
     enum class Status : std::uint8_t { NotPreflight, Allowed, OriginDenied, MethodDenied, HeadersDenied };
 
     Status status{Status::NotPreflight};
-    HttpResponse response{http::StatusCodeNoContent};
+    std::optional<HttpResponse> response;
   };
 
   // Default constructor: policy disabled by default. To enable, call the explicit
