@@ -28,6 +28,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/http-version.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/single-http-server.hpp"
@@ -74,14 +75,14 @@ auto port = ts.port();
 
 struct RequestDataAndExpectedStatusCode {
   [[nodiscard]] std::string_view expectedReqStart() {
-    char* pLast = writeStatusCode(statusStrBuf + std::size(aeronet::http::kHttpPrefix) + 1U + 1U + 1U, statusCode);
+    char* pLast = writeStatusCode(statusStrBuf + std::size(http::kHttpPrefix) + 1U + 1U + 1U, statusCode);
     *pLast = ' ';
     return {statusStrBuf, std::size(statusStrBuf)};
   }
 
   std::string_view data;
   http::StatusCode statusCode{};
-  char statusStrBuf[std::size(aeronet::http::kHttpPrefix) + 1U + 1U + 1U + http::StatusCodeLen + 1U]{"HTTP/1.1 "};
+  char statusStrBuf[std::size(http::kHttpPrefix) + 1U + 1U + 1U + http::StatusCodeLen + 1U]{"HTTP/1.1 "};
 };
 
 }  // namespace

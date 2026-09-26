@@ -61,11 +61,6 @@ constexpr std::size_t kMaxInlineDataFrameCopySize = 256;
 
 static_assert(kMaxInlineDataFrameCopySize <= kMinMaxFrameSize);
 
-constexpr uint64_t HpackHeaderFieldSize(std::string_view name, std::string_view value) noexcept {
-  constexpr uint64_t kEntryOverhead = 32;
-  return name.size() + value.size() + kEntryOverhead;
-}
-
 constexpr std::string_view FrameTypeName(FrameType type) noexcept {
   switch (type) {
     case FrameType::Data:
@@ -608,19 +603,17 @@ ErrorCode Http2Connection::sendRequestHeaders(uint32_t streamId, http::Method me
   _outputBuffer.addSize(FrameHeader::kSize);
 
   const auto oldSize = _outputBuffer.size();
+
   uint64_t headerListSize = 0;
   if (!target.empty()) {
     // pseudo headers for requests.
     const std::string_view methodStr = http::MethodToStr(method);
     const std::string_view scheme = isTlsRequest ? "https" : "http";
-    headerListSize = HpackHeaderFieldSize(http::PseudoHeaderMethod, methodStr) +
-                     HpackHeaderFieldSize(http::PseudoHeaderScheme, scheme) +
-                     HpackHeaderFieldSize(http::PseudoHeaderAuthority, authority) +
-                     HpackHeaderFieldSize(http::PseudoHeaderPath, target);
-    _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderMethod, methodStr);
-    _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderScheme, scheme);
-    _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderAuthority, authority);
-    _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderPath, target);
+
+    headerListSize += _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderMethod, methodStr);
+    headerListSize += _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderScheme, scheme);
+    headerListSize += _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderAuthority, authority);
+    headerListSize += _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderPath, target);
   }
 
   // Encode headers
@@ -1370,8 +1363,7 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
     char statusBuf[3];
     writeStatusCode(statusBuf, statusCode);
     const std::string_view statusStr(statusBuf, sizeof(statusBuf));
-    headerListSize += HpackHeaderFieldSize(http::PseudoHeaderStatus, statusStr);
-    _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderStatus, statusStr);
+    headerListSize += _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderStatus, statusStr);
   }
 
   for (; headersFirst != headersLast; ++headersFirst) {
@@ -1384,8 +1376,7 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
     // tolerated). HttpMessage / HttpResponse guarantees that values are always trimmed.
     assert(value == TrimOws(value));
 
-    headerListSize += HpackHeaderFieldSize(name, value);
-    _hpackEncoder.encode(_outputBuffer, name, value);
+    headerListSize += _hpackEncoder.encode(_outputBuffer, name, value);
   }
 
   if (pGlobalHeaders != nullptr) {
@@ -1402,8 +1393,7 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
       }
 
       assert(headerValue == TrimOws(headerValue));
-      headerListSize += HpackHeaderFieldSize(headerName, headerValue);
-      _hpackEncoder.encode(_outputBuffer, headerName, headerValue);
+      headerListSize += _hpackEncoder.encode(_outputBuffer, headerName, headerValue);
     }
   }
 

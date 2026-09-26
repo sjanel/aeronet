@@ -451,9 +451,10 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
   // the request is sent without waiting for the server's SETTINGS (RFC 9113 §3.4).
   conn.sendClientPreface();
 
-  HttpResponse resp;
   RawChars& bodyBuf = client.responseBuffer();
   bodyBuf.clear();  // reuse the buffer's allocation across requests
+
+  HttpResponse resp;
   const uint32_t streamId = engine.beginExchange(resp, bodyBuf, config.maxResponseBytes);
 
   // The request body is either held in memory (inlined or captured) or a captured file payload streamed

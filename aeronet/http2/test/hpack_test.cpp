@@ -349,7 +349,7 @@ TEST(HpackDecoder, AcceptsPseudoHeaderViaFullIndex) {
   auto decoder = CreateHpackDecoder();
 
   // Indexed Header Field, static table index 2 = ":method" / "GET"
-  static constexpr uint8_t encoded[]{0x82};
+  static constexpr uint8_t encoded[]{0x82U};
 
   auto result = decoder.decode(AsBytes(encoded));
 
