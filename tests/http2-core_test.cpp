@@ -1908,6 +1908,34 @@ TEST(Http2Streaming, MultipleCustomHeaders) {
   EXPECT_EQ(response.body, R"({"ok":true})");
 }
 
+TEST(Http2Streaming, GlobalHeadersAreSent) {
+  ts.server.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.withGlobalHeaders({});
+    cfg.addGlobalHeader(http::Header{"X-Global", "gvalue"});
+    cfg.addGlobalHeader(http::Header{"X-Custom", "global"});
+  });
+  ts.http().router().setPath(http::Method::GET, "/multi-hdr",
+                             [](const HttpRequestView& /*req*/, HttpResponseWriter& writer) {
+                               writer.status(http::StatusCode{200});
+                               writer.contentType("application/json");
+                               writer.header("x-custom", "abc-123");
+                               writer.header("cache-control", "no-cache");
+                               writer.writeBody(R"({"ok":true})");
+                               writer.end();
+                             });
+
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto response = client.get("/multi-hdr");
+  EXPECT_EQ(response.statusCode, 200);
+  EXPECT_EQ(response.header(http::ContentType), "application/json");
+  EXPECT_EQ(response.header("X-Global"), "gvalue");
+  EXPECT_EQ(response.header("X-Custom"), "abc-123");
+  EXPECT_EQ(response.header("cache-control"), "no-cache");
+  EXPECT_EQ(response.body, R"({"ok":true})");
+}
+
 // ============================================================================
 // HEAD request on streaming endpoint
 // ============================================================================

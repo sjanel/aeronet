@@ -315,7 +315,8 @@ TEST(ConfigLoaderTest, TlsSniCertificates) {
         "sniCertificates": [
           {"pattern": "example.com", "certFile": "/certs/example.crt", "keyFile": "/certs/example.key",
            "ocspResponseFile": "/certs/example.ocsp.der"},
-          {"pattern": "other.com", "certPem": "pem-cert", "keyPem": "pem-key"}
+          {"pattern": "other.com", "certPem": "pem-cert", "keyPem": "pem-key"},
+          {"pattern": "null.com", "certPem": "", "keyPem": ""}
         ]
       }
     }
@@ -474,7 +475,7 @@ TEST(ConfigLoaderTest, TelemetryConfig) {
         "dogstatsdSocketPath": "/var/run/datadog/dsd.socket",
         "dogstatsdNamespace": "myns",
         "dogstatsdTags": ["env:prod", "region:us-east"],
-        "httpHeaders": ["Authorization:Bearer token123"]
+        "httpHeaders": ["Authorization:Bearer token123", "invalid"]
       }
     }
   })",
