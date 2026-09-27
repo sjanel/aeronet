@@ -1017,6 +1017,13 @@ class HttpMessage {
   // Bitmap layout: [40 bits bodyStartPos][24 bits headersStartPos]
   std::uint64_t _posBitmap{};
   // Variant that can hold an external captured payload (HttpPayload).
+  // TODO: think about storing the payload in _data bytes, at the place of the body, for trivially relocatable types
+  // (FilePayload especially). This would shrink sizeof(HttpMessage) by 24 bytes by avoiding the need for an external
+  // variant. With more careful memory management though, because only std::string is not trivially relocatable, maybe
+  // the whole HttpPayload could be stored in-place within _data. Also, we need to be careful about alignment. If we are
+  // choosing a design which stores the full HttpPayload in-place, we must be extra careful if the payload is a captured
+  // std::string for each reallocation, which are not possible anymore (new allocation + move + free would be needed in
+  // that case).
   HttpPayload _payloadVariant;
   // When HEAD is known (prepared options), body/trailer storage can be suppressed while preserving lengths.
   Options _opts;

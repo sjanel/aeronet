@@ -62,12 +62,10 @@ class HttpPayload {
   explicit HttpPayload(std::vector<std::byte> vec) noexcept : _data(std::move(vec)) {}
 
   // Constructs a HttpPayload by taking ownership of the given buffer.
-  explicit HttpPayload(std::unique_ptr<char[]> buf, std::size_t size) noexcept
-      : _data(CharBuffer{std::move(buf), size}) {}
+  HttpPayload(std::unique_ptr<char[]> buf, std::size_t size) noexcept : _data(CharBuffer{std::move(buf), size}) {}
 
   // Constructs a HttpPayload by taking ownership of the given buffer.
-  explicit HttpPayload(std::unique_ptr<std::byte[]> buf, std::size_t size) noexcept
-      : _data(BytesBuffer{std::move(buf), size}) {}
+  HttpPayload(std::unique_ptr<std::byte[]> buf, std::size_t size) noexcept : _data(BytesBuffer{std::move(buf), size}) {}
 
   explicit HttpPayload(RawChars rawChars) noexcept : _data(std::move(rawChars)) {}
 
