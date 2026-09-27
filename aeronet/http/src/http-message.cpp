@@ -181,127 +181,127 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
     throw std::logic_error("Cannot set body after the first trailer");
   }
 
-  contentTypeValue = CheckContentType(newBodySize == 0, contentTypeValue);
-
   const auto oldBodyLen = bodyLength();
   const bool hadBody = oldBodyLen != 0 || _opts.isAutomaticDirectCompression();
   if (newBodySize == 0) {
     if (hadBody) {
       removeBodyAndItsHeaders();
     }
-  } else {
-    const auto newContentTypeHeaderSize = http::HeaderSize(http::ContentType.size(), contentTypeValue.size());
-    const bool setInlineBody = context == BodySetContext::Inline && !isHead();
-
-    std::size_t neededNewSize = newContentTypeHeaderSize;
-    if (_opts.sendContentLengthHeader()) {
-      const auto newContentLengthHeaderSize = http::HeaderSize(http::ContentLength.size(), nchars(newBodySize));
-      neededNewSize += newContentLengthHeaderSize;
-    }
-
-#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
-    const bool hadDirectCompression = _opts.isAutomaticDirectCompression();
-    // We do NOT use direct compression for captured bodies - they will be compressed at finalization if needed.
-    // We also do not activate direct compression for HEAD responses to avoid extra CPU work (see docs/FEATURES.md).
-    // Note that this behavior is not strictly respecting RFC 9110 in this aspect. This could be configurable in the
-    // future.
-    const bool tryCompression = setInlineBody && (!hasContentEncoding() || hadDirectCompression) &&
-                                _opts.directCompressionPossible(newBodySize, contentTypeValue);
-    const bool addEncodingHeaders = tryCompression && !hasContentEncoding();
-
-    // invariant: if we had direct compression, we must have had content encoding, because it's forbidden to remove
-    // content encoding header when body is set.
-    assert(!hadDirectCompression || hasContentEncoding());
-
-    const bool removeEncodingHeaders = hadDirectCompression && !tryCompression;
-
-    bool addVaryHeader = false;
-    bool appendVaryValue = false;
-    if (addEncodingHeaders) {
-      neededNewSize += http::HeaderSize(http::ContentEncoding.size(), GetEncodingStr(_opts._pickedEncoding).size());
-      if (_opts.isAddVaryAcceptEncoding()) {
-        const auto [varyFirst, varyLast] = HeadersLinearSearch(headersFlatView(), http::Vary);
-        if (varyFirst == nullptr) {
-          addVaryHeader = true;
-          neededNewSize += http::HeaderSize(http::Vary.size(), http::AcceptEncoding.size());
-        } else if (!VaryContainsAcceptEncodingToken(std::string_view(varyFirst, varyLast))) {
-          appendVaryValue = true;
-          neededNewSize += http::AcceptEncoding.size() + kVaryHeaderValueSep.size();
-        }
-      }
-    }
-    // do not remove the space taken by content encoding and vary headers when removing content encoding to keep code
-    // simple, but could be added if we want to be more aggressive on saving space when switching from compressed to
-    // uncompressed response
-
-    const auto adjustEncodingHeaders = [this, addEncodingHeaders, removeEncodingHeaders, addVaryHeader,
-                                        appendVaryValue] {
-      if (addEncodingHeaders) {
-        if (addVaryHeader) {
-          headerAddLineUnchecked(http::Vary, http::AcceptEncoding);
-        } else if (appendVaryValue) {
-          headerAppendValueImpl(http::Vary, http::AcceptEncoding, kVaryHeaderValueSep);
-        }
-        headerAddLineUnchecked(http::ContentEncoding, GetEncodingStr(_opts._pickedEncoding));
-        _opts.setHasContentEncoding();
-        _opts.setAutomaticDirectCompression();
-      } else if (removeEncodingHeaders) {
-        headerRemoveLineImpl(http::ContentEncoding);
-        _opts.resetHasContentEncoding();
-        _opts.resetAutomaticDirectCompression();
-        if (_opts.isAddVaryAcceptEncoding()) {
-          headerRemoveValueImpl(http::Vary, http::AcceptEncoding);
-        }
-      }
-    };
-#endif
-
-    // only reserve body size if not captured (so inline) and not head
-    if (setInlineBody) {
-#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
-      if (tryCompression) {
-        auto& compressionState = *_opts._pCompressionState;
-        auto& encoderCtx = *compressionState.makeContext(_opts._pickedEncoding);
-
-        neededNewSize += encoderCtx.minEncodeChunkCapacity(newBodySize);
-      } else {
-#endif
-        neededNewSize += newBodySize;
-#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
-      }
-#endif
-    }
-
-    char* pData;
-    if (!hadBody) {
-      _data.ensureAvailableCapacityExponential(neededNewSize);
-#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
-      adjustEncodingHeaders();
-#endif
-      pData = WriteHeader(http::ContentType, contentTypeValue, _data.data() + bodyStartPos() - http::CRLF.size());
-    } else {
-      const uint64_t bodyStart = bodyStartPos();
-      const uint64_t oldContentTypeAndLengthSize =
-          bodyStart - static_cast<uint64_t>(getContentTypeHeaderLinePtr() - _data.data()) - http::DoubleCRLF.size();
-      const uint64_t oldBodyLenInlined = internalBodyAndTrailersLen();
-
-      if (neededNewSize > oldContentTypeAndLengthSize + oldBodyLenInlined) {
-        _data.ensureAvailableCapacityExponential(neededNewSize - oldContentTypeAndLengthSize - oldBodyLenInlined);
-      }
-#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
-      // tell adjustEncodingHeaders that body is empty to avoid moving memory around
-      _data.setSize(bodyStart);
-      adjustEncodingHeaders();
-#endif
-
-      pData = Append(contentTypeValue, GetContentTypeValuePtr(getContentTypeEndValuePtr()));
-    }
-    if (_opts.sendContentLengthHeader()) {
-      pData = WriteCRLFHeader(http::ContentLength, newBodySize, pData);
-    }
-    pData = AppendFixed<http::DoubleCRLF>(pData);
-    setBodyStartPosAndDataEnd(pData);
+    return;
   }
+
+  contentTypeValue = CheckContentType(newBodySize == 0, contentTypeValue);
+
+  const auto newContentTypeHeaderSize = http::HeaderSize(http::ContentType.size(), contentTypeValue.size());
+  const bool setInlineBody = context == BodySetContext::Inline && !isHead();
+
+  std::size_t neededNewSize = newContentTypeHeaderSize;
+  if (_opts.sendContentLengthHeader()) {
+    const auto newContentLengthHeaderSize = http::HeaderSize(http::ContentLength.size(), nchars(newBodySize));
+    neededNewSize += newContentLengthHeaderSize;
+  }
+
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+  const bool hadDirectCompression = _opts.isAutomaticDirectCompression();
+  // We do NOT use direct compression for captured bodies - they will be compressed at finalization if needed.
+  // We also do not activate direct compression for HEAD responses to avoid extra CPU work (see docs/FEATURES.md).
+  // Note that this behavior is not strictly respecting RFC 9110 in this aspect. This could be configurable in the
+  // future.
+  const bool tryCompression = setInlineBody && (!hasContentEncoding() || hadDirectCompression) &&
+                              _opts.directCompressionPossible(newBodySize, contentTypeValue);
+  const bool addEncodingHeaders = tryCompression && !hasContentEncoding();
+
+  // invariant: if we had direct compression, we must have had content encoding, because it's forbidden to remove
+  // content encoding header when body is set.
+  assert(!hadDirectCompression || hasContentEncoding());
+
+  const bool removeEncodingHeaders = hadDirectCompression && !tryCompression;
+
+  bool addVaryHeader = false;
+  bool appendVaryValue = false;
+  if (addEncodingHeaders) {
+    neededNewSize += http::HeaderSize(http::ContentEncoding.size(), GetEncodingStr(_opts._pickedEncoding).size());
+    if (_opts.isAddVaryAcceptEncoding()) {
+      const auto [varyFirst, varyLast] = HeadersLinearSearch(headersFlatView(), http::Vary);
+      if (varyFirst == nullptr) {
+        addVaryHeader = true;
+        neededNewSize += http::HeaderSize(http::Vary.size(), http::AcceptEncoding.size());
+      } else if (!VaryContainsAcceptEncodingToken(std::string_view(varyFirst, varyLast))) {
+        appendVaryValue = true;
+        neededNewSize += http::AcceptEncoding.size() + kVaryHeaderValueSep.size();
+      }
+    }
+  }
+  // do not remove the space taken by content encoding and vary headers when removing content encoding to keep code
+  // simple, but could be added if we want to be more aggressive on saving space when switching from compressed to
+  // uncompressed response
+
+  const auto adjustEncodingHeaders = [this, addEncodingHeaders, removeEncodingHeaders, addVaryHeader, appendVaryValue] {
+    if (addEncodingHeaders) {
+      if (addVaryHeader) {
+        headerAddLineUnchecked(http::Vary, http::AcceptEncoding);
+      } else if (appendVaryValue) {
+        headerAppendValueImpl(http::Vary, http::AcceptEncoding, kVaryHeaderValueSep);
+      }
+      headerAddLineUnchecked(http::ContentEncoding, GetEncodingStr(_opts._pickedEncoding));
+      _opts.setHasContentEncoding();
+      _opts.setAutomaticDirectCompression();
+    } else if (removeEncodingHeaders) {
+      headerRemoveLineImpl(http::ContentEncoding);
+      _opts.resetHasContentEncoding();
+      _opts.resetAutomaticDirectCompression();
+      if (_opts.isAddVaryAcceptEncoding()) {
+        headerRemoveValueImpl(http::Vary, http::AcceptEncoding);
+      }
+    }
+  };
+#endif
+
+  // only reserve body size if not captured (so inline) and not head
+  if (setInlineBody) {
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+    if (tryCompression) {
+      auto& compressionState = *_opts._pCompressionState;
+      auto& encoderCtx = *compressionState.makeContext(_opts._pickedEncoding);
+
+      neededNewSize += encoderCtx.minEncodeChunkCapacity(newBodySize);
+    } else {
+#endif
+      neededNewSize += newBodySize;
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+    }
+#endif
+  }
+
+  char* pData;
+  if (!hadBody) {
+    _data.ensureAvailableCapacityExponential(neededNewSize);
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+    adjustEncodingHeaders();
+#endif
+    pData = WriteHeader(http::ContentType, contentTypeValue, _data.data() + bodyStartPos() - http::CRLF.size());
+  } else {
+    const uint64_t bodyStart = bodyStartPos();
+    const uint64_t oldContentTypeAndLengthSize =
+        bodyStart - static_cast<uint64_t>(getContentTypeHeaderLinePtr() - _data.data()) - http::DoubleCRLF.size();
+    const uint64_t oldBodyLenInlined = internalBodyAndTrailersLen();
+
+    if (neededNewSize > oldContentTypeAndLengthSize + oldBodyLenInlined) {
+      _data.ensureAvailableCapacityExponential(neededNewSize - oldContentTypeAndLengthSize - oldBodyLenInlined);
+    }
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+    // tell adjustEncodingHeaders that body is empty to avoid moving memory around
+    _data.setSize(bodyStart);
+    adjustEncodingHeaders();
+#endif
+
+    pData = Append(contentTypeValue, GetContentTypeValuePtr(getContentTypeEndValuePtr()));
+  }
+  if (_opts.sendContentLengthHeader()) {
+    pData = WriteCRLFHeader(http::ContentLength, newBodySize, pData);
+  }
+  pData = AppendFixed<http::DoubleCRLF>(pData);
+  setBodyStartPosAndDataEnd(pData);
 }
 
 void HttpMessage::setBodyInternal(std::string_view newBody) {

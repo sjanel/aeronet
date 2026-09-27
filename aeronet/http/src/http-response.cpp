@@ -1,6 +1,7 @@
 #include "aeronet/http-response.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -179,6 +180,11 @@ HttpResponse::HttpResponse(std::size_t additionalCapacity, http::StatusCode code
   }
   setBodyStartPos(bodyStartPos);
   _data.setSize(bodyStartPos + body.size());
+}
+
+http::StatusCode HttpResponse::status() const noexcept {
+  assert(_data.data() != nullptr);
+  return static_cast<http::StatusCode>(read3(_data.data() + kStatusCodeBeg));
 }
 
 HttpResponse& HttpResponse::status(http::StatusCode statusCode) & {

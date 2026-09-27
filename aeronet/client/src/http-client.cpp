@@ -218,7 +218,7 @@ HttpClientResult HttpClient::requestProcess(HttpRequest&& req) {
     cacheKey = buildCacheKey(req);
     const HttpResponse* pCachedHttpResponse = cacheLookupFresh(cacheKey);
     if (pCachedHttpResponse != nullptr) {
-      return pCachedHttpResponse->cloneFinalized();
+      return HttpResponse(*pCachedHttpResponse);
     }
   }
   HttpClientResult result = requestUncached(std::move(req));
@@ -228,7 +228,7 @@ HttpClientResult HttpClient::requestProcess(HttpRequest&& req) {
   // 200 here; asserted rather than left as a permanently-uncovered branch.
   assert(!result || result->status() >= 200);
   if (isCacheEligible && result && result->status() < 300) {
-    cacheStore(cacheKey, result->cloneFinalized());
+    cacheStore(cacheKey, HttpResponse(*result));
   }
 
   return result;

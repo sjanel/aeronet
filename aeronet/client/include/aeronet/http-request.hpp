@@ -696,7 +696,7 @@ class HttpRequest final : public HttpMessage {
                                                    const DecompressionConfig& decompressionConfig) const;
 
   [[nodiscard]] HttpRequest finalizeTrailersForHttp11(std::size_t minCapturedBodySize) const {
-    HttpRequest copy = clone();
+    HttpRequest copy = *this;
     // req is never mutated by finalizeForHttp1 (only its clone is), so a fresh clone can't already be chunked.
     assert(!std::string_view(copy._data).ends_with("\r\n0\r\n"));
     copy.finalizeForHttp1(http::HTTP_1_1, copy._opts, nullptr, minCapturedBodySize);
@@ -708,8 +708,6 @@ class HttpRequest final : public HttpMessage {
   }
 
   [[nodiscard]] std::string_view capturedPayloadForHttp11() const noexcept { return _payloadVariant.view(); }
-
-  [[nodiscard]] HttpRequest clone() const;
 
   // URL data - will be set at construction time and cannot be modified.
   uint16_t _hostLen;       // length of host
