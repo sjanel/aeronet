@@ -192,10 +192,6 @@ class HttpResponseTest : public ::testing::Test {
     return count;
   }
 
-#ifdef AERONET_ENABLE_HTTP_CLIENT
-  static auto cloneFinalized(const HttpResponse& resp) { return resp.cloneFinalized(); }
-#endif
-
   static void FinalizeHeadersAndBody(HttpResponse& resp) { resp.finalizeHeadersAndBody(); }
 };
 
@@ -4905,58 +4901,5 @@ TEST_F(HttpResponseTest, TrailersAutoChunkedBodySizeEdgeCases) {
     EXPECT_TRUE(result.contains("\r\n0\r\n")) << "Missing last-chunk for size " << sz;
   }
 }
-
-#ifdef AERONET_ENABLE_HTTP_CLIENT
-
-TEST_F(HttpResponseTest, CloneEmptyMessage) {
-  HttpResponse resp(http::StatusCodeNotFound);
-  HttpResponse copy = cloneFinalized(resp);
-  EXPECT_EQ(copy.status(), http::StatusCodeNotFound);
-  EXPECT_EQ(copy.bodyInMemory(), resp.bodyInMemory());
-  EXPECT_EQ(copy.headersFlatView(), resp.headersFlatView());
-  // Two independent clones serialize to identical bytes.
-  EXPECT_EQ(concatenated(cloneFinalized(resp)), concatenated(cloneFinalized(copy)));
-}
-
-TEST_F(HttpResponseTest, CloneWithHeadersAndInlineBody) {
-  HttpResponse resp(http::StatusCodeOK, "hello world", "text/plain");
-  resp.reason("OK");
-  resp.header("x-custom", "abc");
-  resp.headerAddLine("x-multi", "1");
-  resp.headerAddLine("x-multi", "2");
-
-  HttpResponse copy = cloneFinalized(resp);
-  EXPECT_EQ(copy.status(), resp.status());
-  EXPECT_EQ(copy.reason(), resp.reason());
-  EXPECT_EQ(copy.bodyInMemory(), "hello world");
-  EXPECT_EQ(copy.headersFlatView(), resp.headersFlatView());
-  EXPECT_EQ(copy.headerValueOrEmpty("x-custom"), "abc");
-
-  // The clone is a deep, independent copy: mutating it never touches the original.
-  copy.body("changed");
-  copy.header("x-custom", "z");
-  EXPECT_EQ(resp.bodyInMemory(), "hello world");
-  EXPECT_EQ(resp.headerValueOrEmpty("x-custom"), "abc");
-
-  // Serialized bytes of two clones of the untouched original match exactly.
-  EXPECT_EQ(concatenated(cloneFinalized(resp)), concatenated(cloneFinalized(resp)));
-}
-
-TEST_F(HttpResponseTest, CloneWithCapturedBodyOwnsIndependentCopy) {
-  const std::string payload(4096, 'x');
-  HttpResponse resp(http::StatusCodeOK);
-  resp.body(std::string(payload));
-  ASSERT_TRUE(resp.hasBodyCaptured());
-
-  HttpResponse copy = cloneFinalized(resp);
-  EXPECT_TRUE(copy.hasBodyCaptured());
-  EXPECT_EQ(copy.bodyInMemory(), resp.bodyInMemory());
-  EXPECT_NE(copy.bodyInMemory().data(), resp.bodyInMemory().data());
-
-  resp.body("changed");
-  EXPECT_EQ(copy.bodyInMemory(), payload);
-}
-
-#endif
 
 }  // namespace aeronet

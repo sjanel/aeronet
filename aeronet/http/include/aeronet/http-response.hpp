@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -13,7 +12,6 @@
 #include "aeronet/http-message.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
-#include "aeronet/simple-charconv.hpp"
 #include "aeronet/time-constants.hpp"
 
 namespace aeronet {
@@ -168,12 +166,9 @@ class HttpResponse final : public HttpMessage {
   // --------/
 
   // Get the current status code stored in this HttpResponse.
-  [[nodiscard]] http::StatusCode status() const noexcept {
-    assert(_data.data() != nullptr);
-    return static_cast<http::StatusCode>(read3(_data.data() + kStatusCodeBeg));
-  }
+  [[nodiscard]] http::StatusCode status() const noexcept;
 
-  // Get the current status code string view stored in this HttpResponse
+  // Get the current status code string view stored in this HttpResponse.
   [[nodiscard]] std::string_view statusStr() const noexcept {
     return {_data.data() + kStatusCodeBeg, http::StatusCodeLen};
   }
@@ -739,9 +734,6 @@ class HttpResponse final : public HttpMessage {
   friend class http2::Http2ProtocolHandler;
   friend class http2::Http2WriterTransport;
 #endif
-#ifdef AERONET_ENABLE_HTTP_CLIENT
-  friend class HttpClient;
-#endif
 
   // The RFC does not specify a maximum length for the reason phrase, but in practice it should be reasonable.
   // It's not really used by clients, as they mostly rely on the status code instead.
@@ -765,28 +757,6 @@ class HttpResponse final : public HttpMessage {
   [[nodiscard]] uint32_t dateHeaderStartPos() const noexcept {
     return static_cast<uint32_t>(headersStartPos() - http::HeaderSize(http::Date.size(), RFC7231DateStrLen));
   }
-
-#ifdef AERONET_ENABLE_HTTP_CLIENT
-  // Deep-copy this message into an independent, fully-owning HttpMessage. HttpMessage is otherwise move-only
-  // (it may own a move-only captured payload), so this is the explicit way to duplicate one: it copies the
-  // head buffer, the normalization state and the (in-memory) body - a captured body is re-materialized into
-  // an owning buffer, behaviourally identical since a payload is only ever consumed as a byte view. Intended
-  // for callers that must retain a copy of a message they do not own (e.g. HttpClient's response cache).
-  // File payloads and HEAD size-only payloads are not supported (asserted): parsed client responses can own
-  // captured receive/decode buffers, but never carry either of those payload forms.
-  [[nodiscard]] HttpResponse cloneFinalized() const {
-    HttpResponse copy(HttpMessage::Check{HttpMessage::Check::No});
-    copy._data = _data;
-    copy._posBitmap = _posBitmap;
-    assert(!_payloadVariant.isFilePayload());
-    assert(!_payloadVariant.isSizeOnly());
-    if (!_payloadVariant.empty()) {
-      copy._payloadVariant = HttpPayload(RawChars(_payloadVariant.view()));
-    }
-    copy._opts = _opts;
-    return copy;
-  }
-#endif
 
   // IMPORTANT: This method finalizes the response by appending reserved headers,
   // and returns the internal buffers stolen from this HttpMessage instance.
