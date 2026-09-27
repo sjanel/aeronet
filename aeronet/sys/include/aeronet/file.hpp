@@ -85,6 +85,7 @@ class File {
   // If not found, return 'application/octet-stream'.
   [[nodiscard]] std::string_view detectedContentType() const;
 
+  // A File is trivially relocatable.
   using trivially_relocatable = amc::is_trivially_relocatable<BaseFd>::type;
 
  private:

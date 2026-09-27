@@ -604,7 +604,9 @@ void Http2ProtocolHandler::flushPendingFileSends() {
     // so all entries here have a live stream.
     assert(_connection.getStream(streamId) != nullptr && "pending file send references a dead stream");
 
-    const bool endStreamAfterBody = pending.trailersData.empty();
+    // File + trailers is unreachable via the public HttpResponse API (trailerAddLine
+    // requires an in-memory body, which file() clears), so endStreamAfterBody is always true.
+    constexpr bool endStreamAfterBody = true;
     const ErrorCode err = sendPendingFileBody(streamId, pending.filePayload, endStreamAfterBody);
     if (err != ErrorCode::NoError) [[unlikely]] {
       it = _streams.erase(it);
@@ -616,10 +618,6 @@ void Http2ProtocolHandler::flushPendingFileSends() {
       ++it;
       continue;
     }
-
-    // File + trailers is unreachable via the public HttpResponse API (trailerAddLine
-    // requires an in-memory body, which file() clears), so endStreamAfterBody is always true.
-    assert(endStreamAfterBody && "file + trailers is not supported by the current HttpResponse API");
 
     it->second.pending.reset();
 
@@ -804,8 +802,6 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
   if (transport.hasPendingFile()) {
     PendingFileSend pendingFile;
     pendingFile.filePayload = transport.extractPendingFile();
-    pendingFile.trailersData = transport.extractPendingTrailers();
-    pendingFile.trailersView = HeadersView(pendingFile.trailersData);
     state.pending = _pendingWorkPool.allocateAndConstructPoolPtr(std::move(pendingFile));
   } else if (transport.hasPendingData()) {
     RawChars pendingBuffer = transport.extractPendingBuffer();

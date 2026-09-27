@@ -11,7 +11,6 @@
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/file-payload.hpp"
 #include "aeronet/file.hpp"
-#include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http2-config.hpp"
@@ -195,8 +194,6 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
 
   struct PendingFileSend {
     FilePayload filePayload;
-    RawChars trailersData;
-    HeadersView trailersView;
   };
 
   /// Buffered streaming body data when flow-control windows are exhausted.
