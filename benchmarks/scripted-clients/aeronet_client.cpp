@@ -26,9 +26,11 @@ aeronet::HttpClientConfig MakeConfig(const ClientBenchConfig& cfg, const Scenari
       .withDecompression(spec.decode)  // aeronet decodes the gzip body natively (its zlib-ng codec)
       .withDefaultAcceptEncoding(spec.acceptEncoding)
       .withTcpNoDelay();
+#ifdef AERONET_ENABLE_HTTP2
   // Pin the HTTP version: HTTP/2 for h2c (prior-knowledge cleartext) and h2-tls (ALPN "h2"), HTTP/1.1
   // otherwise. Explicit rather than Auto so the measured path is always the requested protocol.
   config.withHttpVersion(cfg.isHttp2() ? aeronet::HttpVersionMode::Http2 : aeronet::HttpVersionMode::Http1_1);
+#endif
 #ifdef AERONET_ENABLE_OPENSSL
   if (cfg.isTls()) {
     config.tlsVerifyPeer = false;  // the bench uses a self-signed cert not in any trust store

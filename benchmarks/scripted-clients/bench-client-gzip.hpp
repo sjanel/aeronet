@@ -11,7 +11,7 @@
 #include <cstdint>
 #include <string_view>
 
-#ifdef AERONET_BENCH_HAVE_ZLIBNG
+#ifdef AERONET_ENABLE_ZLIBNG
 #include <zlib-ng.h>
 #endif
 
@@ -21,9 +21,8 @@ namespace aeronet::bench {
 // when the body is not gzip-framed (covers a client that already auto-decoded) or when zlib-ng is not
 // compiled in. Returns -1 on a corrupt stream.
 inline long GunzipDecodedSize(std::string_view data) {
-#ifdef AERONET_BENCH_HAVE_ZLIBNG
-  if (data.size() >= 2 && static_cast<unsigned char>(data[0]) == 0x1F &&
-      static_cast<unsigned char>(data[1]) == 0x8B) {
+#ifdef AERONET_ENABLE_ZLIBNG
+  if (data.size() >= 2 && static_cast<unsigned char>(data[0]) == 0x1F && static_cast<unsigned char>(data[1]) == 0x8B) {
     zng_stream zs{};
     if (zng_inflateInit2(&zs, 15 + 16) != Z_OK) {  // 15 + 16 => gzip framing
       return -1;

@@ -198,6 +198,7 @@ TEST_F(HttpClientTlsE2ETest, PostFileBodyOverTlsUsesReadWriteFallback) {
 
   HttpClientConfig cfg;
   cfg.tlsVerifyPeer = false;
+  cfg.decompression.maxExpansionRatio = 10000;
   HttpClient client(cfg);
   auto req = client.makeRequest(http::Method::POST, url("/echo")).file(std::move(file), "application/octet-stream");
   auto resp = client.request(std::move(req)).value();
