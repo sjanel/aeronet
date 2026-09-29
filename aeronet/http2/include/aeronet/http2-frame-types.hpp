@@ -15,7 +15,8 @@ inline constexpr std::string_view kConnectionPreface = "PRI * HTTP/2.0\r\n\r\nSM
 // ALPN protocol identifier for HTTP/2 over TLS
 inline constexpr std::string_view kAlpnH2 = "h2";
 
-// ALPN protocol identifier for HTTP/2 cleartext (upgrade from HTTP/1.1)
+// Protocol token for HTTP/2 over cleartext TCP (RFC 9113 §3.1). It is not negotiated via ALPN, and its use as an
+// HTTP/1.1 Upgrade token is deprecated: aeronet only speaks h2c with prior knowledge.
 inline constexpr std::string_view kAlpnH2c = "h2c";
 
 // HTTP/2 Frame Types (RFC 9113 §6)

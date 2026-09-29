@@ -41,11 +41,10 @@ struct UpgradeValidationResult {
 
 /// Utility functions for protocol upgrade handling.
 ///
-/// This module provides validation and response generation for:
-///   - WebSocket upgrades (RFC 6455)
-///   - HTTP/2 cleartext upgrades (h2c, RFC 9113 §3.2)
+/// This module provides validation and response generation for WebSocket upgrades (RFC 6455).
 ///
-/// For HTTP/2 over TLS (h2), ALPN negotiation is used instead of Upgrade.
+/// `Upgrade: h2c` is not supported on purpose: RFC 9113 §3.1 deprecated it, so such requests are answered over
+/// HTTP/1.1. HTTP/2 is reached through ALPN "h2" over TLS, or with prior knowledge over cleartext.
 namespace upgrade {
 
 /// Check if a Connection header value contains "upgrade" (case-insensitive).
@@ -73,27 +72,13 @@ namespace upgrade {
                                                                const WebSocketUpgradeConfig& config);
 #endif
 
-#ifdef AERONET_ENABLE_HTTP2
-/// Check if the request contains an Upgrade header requesting HTTP/2 (h2c).
-///
-/// Validates:
-///   - Upgrade: h2c
-///   - Connection: Upgrade, HTTP2-Settings
-///   - HTTP2-Settings header present (base64url encoded SETTINGS frame payload)
-///
-/// @param headers  Map of HTTP request headers
-/// @return         Validation result
-[[nodiscard]] UpgradeValidationResult ValidateHttp2Upgrade(const SvToSvMap& headers);
-#endif
-
 /// Detect the upgrade target from an HTTP request.
 ///
 /// Examines the Upgrade header and returns the target protocol.
-/// Does NOT perform full validation - use ValidateWebSocketUpgrade() or
-/// ValidateHttp2Upgrade() for complete validation.
+/// Does NOT perform full validation - use ValidateWebSocketUpgrade() for complete validation.
 ///
-/// @param request  The incoming HTTP request
-/// @return         Target protocol type, or Http11 if no valid upgrade requested
+/// @param upgradeHeaderValue  Value of the Upgrade request header (empty if absent)
+/// @return                    Target protocol type, or Http11 if no supported upgrade is requested (including "h2c")
 [[nodiscard]] ProtocolType DetectUpgradeTarget(std::string_view upgradeHeaderValue);
 
 #ifdef AERONET_ENABLE_WEBSOCKET
@@ -108,18 +93,6 @@ std::size_t ComputeWebSocketUpgradeResponseSize(const UpgradeValidationResult& v
 ///
 /// @param validationResult  Result from ValidateWebSocketUpgrade() (must be valid)
 void BuildWebSocketUpgradeResponse(const UpgradeValidationResult& validationResult, char* pData);
-#endif
-
-#ifdef AERONET_ENABLE_HTTP2
-/// Generate a raw 101 Switching Protocols response for HTTP/2 upgrade.
-///
-/// Returns the complete HTTP response as raw bytes, ready to be written to the socket.
-/// Note: After sending this response, the server must immediately send the
-/// HTTP/2 connection preface (SETTINGS frame), and then respond to the
-/// original request using HTTP/2.
-///
-/// @return                  Complete 101 response as raw bytes
-[[nodiscard]] std::string_view BuildHttp2UpgradeResponse();
 #endif
 
 }  // namespace upgrade

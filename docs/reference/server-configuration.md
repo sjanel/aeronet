@@ -102,12 +102,13 @@ CRL and callback settings require `requestClientCert` or `requireClientCert`. OC
 
 ## HTTP/2 configuration
 
-HTTP/2 requires `AERONET_ENABLE_HTTP2=ON`; `Http2Config::enable` defaults to true. TLS uses ALPN, while cleartext can accept prior-knowledge h2c and HTTP/1.1 Upgrade when their options are enabled.
+HTTP/2 requires `AERONET_ENABLE_HTTP2=ON`; `Http2Config::enable` defaults to true. TLS uses ALPN, while cleartext accepts prior-knowledge h2c when `enableH2c` is set. `Upgrade: h2c` requests are always answered over HTTP/1.1 (RFC 9113 §3.1 deprecated that mechanism).
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `enable`, `enablePush` | true, false | Global HTTP/2 switch and server push advertisement. |
-| `enableH2c`, `enableH2cUpgrade` | true, true | Prior-knowledge and Upgrade cleartext HTTP/2 paths. |
+| `enableH2c` | true | Accept prior-knowledge cleartext HTTP/2 (client sends the connection preface directly). |
+| `enableH2cUpgrade` | false | Deprecated, no effect: kept so existing code and configuration files still compile and load. |
 | `enablePriority`, `maxPriorityTreeDepth` | true, 256 | PRIORITY processing and dependency-tree resource cap. |
 | `mergeUnknownRequestHeaders` | true | Comma-merge unknown duplicate headers for HTTP/2. |
 | `headerTableSize` | 4096 | `SETTINGS_HEADER_TABLE_SIZE`. |

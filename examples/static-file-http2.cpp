@@ -12,7 +12,7 @@
 ///
 /// Test examples:
 ///   curl --http2-prior-knowledge http://localhost:8080/           # h2c prior knowledge
-///   curl --http2 http://localhost:8080/                         # h2c upgrade
+///   curl --http2 http://localhost:8080/                         # Upgrade: h2c is ignored, served over HTTP/1.1
 ///   curl -k --http2 https://localhost:8443/                     # ALPN h2 (TLS)
 
 #include <aeronet/aeronet-server.hpp>
@@ -81,7 +81,6 @@ int main(int argc, char** argv) {
     Http2Config http2cfg;
     http2cfg.enable = true;
     http2cfg.enableH2c = true;
-    http2cfg.enableH2cUpgrade = true;
     http2cfg.maxConcurrentStreams = 100;
     http2cfg.sendContentLengthHeader = false;
 
