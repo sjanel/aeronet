@@ -2,7 +2,7 @@
 // This helps tune the kZeroCopyMinPayloadSize threshold.
 #include <benchmark/benchmark.h>
 
-#include <aeronet/aeronet.hpp>
+#include <aeronet/aeronet-server.hpp>
 #include <cstddef>
 #include <cstring>
 #include <string>

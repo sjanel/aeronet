@@ -149,10 +149,13 @@ test::TestServer CreateTestServer() {
   // is descheduled (heavy parallel-test load) between the TCP handshake and sending its request, which
   // surfaces as a rare terminal failure of the in-flight request. See the compression e2e test for detail.
 
-  test::TestServer testServer(HttpServerConfig{}
-                                  .withPort(0)
-                                  .withKeepAliveTimeout(std::chrono::seconds{5})
-                                  .withPollInterval(std::chrono::milliseconds{20}));
+  HttpServerConfig serverConfig;
+
+  serverConfig.withPort(0)
+      .withKeepAliveTimeout(std::chrono::seconds{5})
+      .withPollInterval(std::chrono::milliseconds{20});
+
+  test::TestServer testServer(std::move(serverConfig));
 
   auto routerProxy = testServer.router();
   routerProxy.setPath(http::Method::GET | http::Method::POST, "/reflect", ReflectRequestHeaders);
@@ -922,9 +925,13 @@ TEST_F(HttpClientE2ETest, PostFileBodyLargeMultiChunk) {
   File file(tmp.filePath().string());
   ASSERT_TRUE(file);
 
-  HttpClient client;
+  HttpClientConfig clientConfig;
+  clientConfig.decompression.maxExpansionRatio = 10000.0;
+  HttpClient client(clientConfig);
   auto req = client.makeRequest(http::Method::POST, Url("/echo")).file(std::move(file), "application/octet-stream");
-  auto resp = client.request(std::move(req)).value();
+  auto optValue = client.request(std::move(req));
+  ASSERT_TRUE(optValue.has_value());
+  auto resp = std::move(optValue.value());
   EXPECT_EQ(resp.status(), 200);
   ASSERT_EQ(resp.bodyInMemory().size(), payload.size());
   EXPECT_EQ(resp.bodyInMemory(), payload);
@@ -972,7 +979,7 @@ TEST_F(HttpClientE2ETest, FileBodyOverKeepAliveConnection) {
   test::ScopedTempFile tmpSecond(tmpDir, second);
 
   HttpClientConfig cfg;
-  cfg.decompression.maxExpansionRatio = 1000;
+  cfg.decompression.maxExpansionRatio = 10000;
   cfg.keepAlive = true;
   HttpClient client(std::move(cfg));
   {
@@ -1084,7 +1091,7 @@ TEST_F(HttpClientE2ETest, AlternatingOriginsSwapLoopRegistration) {
 // across the partial-write / event-loop pump.
 TEST_F(HttpClientE2ETest, LargePostBlocksWriteThenReadsBack) {
   HttpClientConfig cfg;
-  cfg.decompression.maxExpansionRatio = 100000;
+  cfg.decompression.maxExpansionRatio = 1000000;
   HttpClient client(std::move(cfg));
   const std::string body(16UL << 20U, 'x');  // 16 MiB: far exceeds socket buffers, so the write must block
   auto resp = client.post(Url("/echo"), body, "application/test").value();

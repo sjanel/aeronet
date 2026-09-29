@@ -104,7 +104,9 @@ int main(int argc, char* argv[]) {
   config.compression.minBytes = kCompressionMinBytes;  // Compress responses larger than 16 bytes
   config.compression.preferredFormats = {Encoding::gzip};
   config.zerocopyMode = ZerocopyMode::Disabled;  // because we're benchmarking on localhost
+#ifdef AERONET_ENABLE_HTTP2
   config.http2.sendContentLengthHeader = false;
+#endif
 
   // Configure TLS if enabled
   if (benchCfg.tlsEnabled) {
