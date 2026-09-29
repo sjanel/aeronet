@@ -1,0 +1,102 @@
+name: Flag combinations (periodic)
+
+on:
+  schedule:
+    - cron: '0 3 * * 0,3'   # every Sunday and Wednesday 03:00 UTC (runs on the default branch only)
+  workflow_dispatch:
+    inputs:
+      count:
+        description: 'Number of random combinations'
+        default: '20'
+      seed:
+        description: 'Seed (empty = run number)'
+        default: ''
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    name: Generate matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Generate matrix
+        id: gen
+        env:
+          COUNT: ${{ inputs.count || '20' }}
+          SEED: ${{ inputs.seed || github.run_number }}
+        run: |
+          echo "matrix=$(python3 scripts/gen-flag-matrix.py --count "$COUNT" --seed "$SEED")" >> "$GITHUB_OUTPUT"
+          echo "Seed: $SEED (count: $COUNT)" >> "$GITHUB_STEP_SUMMARY"
+
+  build-test:
+    name: clang-21 #${{ matrix.id }}
+    needs: generate
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.generate.outputs.matrix) }}
+    env:
+      CC: clang-21
+      CXX: clang++-21
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Show flags
+        run: echo "${{ matrix.cmake_args }}" | tr ' ' '\n'
+
+      # Optional system libs are always installed: the flags decide whether the code uses them.
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y ninja-build libjsoncpp-dev uuid-dev libssl-dev \
+            libcurl4-openssl-dev libprotobuf-dev protobuf-compiler
+
+      - name: Install Clang/LLVM toolchain
+        run: |
+          wget --retry-connrefused --waitretry=5 --tries=5 https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 21
+          sudo apt-get install -y lld-21
+
+      - name: Configure (CMake)
+        run: |
+          ./scripts/retry.sh cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DAERONET_BUILD_TESTS=ON \
+            -DAERONET_ENABLE_TEST_HOOKS=ON \
+            -DAERONET_BUILD_EXAMPLES=OFF \
+            -DAERONET_ENABLE_ASAN=OFF \
+            -DAERONET_ENABLE_CLANG_TIDY=OFF \
+            ${{ matrix.cmake_args }}
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Run unit tests
+        run: ctest --test-dir build --output-on-failure --timeout 60 -j
+
+  report:
+    name: Report failures
+    needs: build-test
+    if: ${{ failure() && github.event_name == 'schedule' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "Periodic flag-combination build failed ($(date -u +%F))" \
+            --body "See ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID} . Failing legs show their exact CMake flags; the run summary shows the seed."
