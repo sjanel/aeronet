@@ -96,7 +96,7 @@ void Observe(const HttpRequestView& req) {
 HttpClient MakeHttp2Client() {
   HttpClientConfig cfg;
   cfg.withHttpVersion(HttpVersionMode::Http2);
-  cfg.decompression.maxExpansionRatio = 10000;
+  cfg.decompression.maxExpansionRatio = 100000;
   return HttpClient(std::move(cfg));
 }
 
@@ -105,7 +105,7 @@ test::TestServer CreateTestServer() {
   cfg.withPort(0);
   cfg.withKeepAliveTimeout(std::chrono::seconds{5});
   cfg.withPollInterval(std::chrono::milliseconds{20});
-  cfg.decompression.maxExpansionRatio = 10000;
+  cfg.decompression.maxExpansionRatio = 100000;
   test::TestServer testServer(std::move(cfg));
 
   auto routerProxy = testServer.router();
@@ -859,11 +859,13 @@ TEST(HttpClientHttp2E2ETest, RequestBodyCompression) {
   HttpClientConfig cfg;
   cfg.withHttpVersion(HttpVersionMode::Http2).withRequestCompression(true);
   cfg.requestCompression.codec.minBytes = 16;
-  cfg.decompression.maxExpansionRatio = 10000;
+  cfg.decompression.maxExpansionRatio = 1000000;
   HttpClient client(std::move(cfg));
-  auto resp = client.post(Url("/echo"), payload, "application/octet-stream").value();
-  EXPECT_EQ(resp.status(), 200);
-  EXPECT_EQ(resp.bodyInMemorySize(), payload.size());
+  auto optResp = client.post(Url("/echo"), payload, "application/octet-stream");
+  ASSERT_TRUE(optResp.has_value());
+  auto resp = std::move(optResp.value());
+  ASSERT_EQ(resp.status(), 200);
+  ASSERT_EQ(resp.bodyInMemorySize(), payload.size());
   EXPECT_EQ(resp.bodyInMemory(), payload);
 }
 
@@ -1070,7 +1072,7 @@ HttpClientConfig TlsClientConfig(HttpVersionMode mode) {
   HttpClientConfig cfg;
   cfg.tlsVerifyPeer = false;  // ephemeral self-signed test certificate
   cfg.withHttpVersion(mode);
-  cfg.decompression.maxExpansionRatio = 10000;
+  cfg.decompression.maxExpansionRatio = 100000;
   return cfg;
 }
 

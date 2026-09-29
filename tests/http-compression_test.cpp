@@ -117,12 +117,8 @@ TEST(HttpCompression, NoAcceptEncodingHeaderStillCompressesDefault) {
   EXPECT_EQ(it->second, "br");
 }
 
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB)
 TEST(HttpCompression, PreservesUserContentTypeWhenCompressing) {
-  static_assert(brotliEnabled() || zlibEnabled(), "At least one compression encoder must be available");
-  if constexpr (!brotliEnabled() && !zlibEnabled()) {
-    GTEST_SKIP();
-  }
-
   const std::string customType = "application/vnd.acme.resource+json";
   std::string acceptEncoding;
   std::string expectedEncoding;
@@ -157,6 +153,7 @@ TEST(HttpCompression, PreservesUserContentTypeWhenCompressing) {
   EXPECT_EQ(it->second, expectedEncoding);
   EXPECT_LT(resp.body.size(), payload.size());
 }
+#endif  // defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB)
 
 TEST(HttpCompression, InlineBodyCompressionMovesToCapturedPayload) {
 #if !defined(AERONET_ENABLE_BROTLI) && !defined(AERONET_ENABLE_ZLIB)
@@ -657,12 +654,8 @@ TEST(HttpCompression, StreamingBelowThresholdIdentity) {
   EXPECT_TRUE(resp.body.contains(smallStr));
 }
 
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB)
 TEST(HttpCompression, StreamingUserProvidedContentEncodingIdentityPreventsActivation) {
-  static_assert(brotliEnabled() || zlibEnabled(), "At least one compression encoder must be available");
-  if constexpr (!brotliEnabled() && !zlibEnabled()) {
-    GTEST_SKIP();
-  }
-
   std::string expectedEncoding;
   std::string acceptEncoding;
   if constexpr (brotliEnabled()) {
@@ -696,11 +689,10 @@ TEST(HttpCompression, StreamingUserProvidedContentEncodingIdentityPreventsActiva
   // Body should contain literal 'Z' sequences (chunked framing around them)
   EXPECT_TRUE(resp.body.contains('Z'));
 }
+#endif  // defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB)
 
+#ifdef AERONET_ENABLE_ZLIB
 TEST(HttpCompression, StreamingQValuesInfluenceStreamingSelection) {
-  if constexpr (!zlibEnabled()) {
-    GTEST_SKIP();
-  }
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.compression.minBytes = 16;
     cfg.compression.preferredFormats = {Encoding::gzip, Encoding::deflate};
@@ -718,13 +710,10 @@ TEST(HttpCompression, StreamingQValuesInfluenceStreamingSelection) {
   ASSERT_NE(it, resp.headers.end());
   EXPECT_EQ(it->second, "deflate");
 }
+#endif
 
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB)
 TEST(HttpCompression, GzipStreamingIdentityForbiddenNoAlternativesReturns406) {
-  static_assert(brotliEnabled() || zlibEnabled(), "At least one compression encoder must be available");
-  if constexpr (!brotliEnabled() && !zlibEnabled()) {
-    GTEST_SKIP();
-  }
-
   if constexpr (brotliEnabled()) {
     ts.postConfigUpdate([](HttpServerConfig& cfg) {
       cfg.compression.minBytes = 1;
@@ -750,11 +739,10 @@ TEST(HttpCompression, GzipStreamingIdentityForbiddenNoAlternativesReturns406) {
   EXPECT_EQ(resp.body, "No acceptable content-coding available");
   EXPECT_FALSE(handlerInvoked.load());
 }
+#endif  // defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB)
 
+#ifdef AERONET_ENABLE_ZSTD
 TEST(HttpCompression, ZstdAppliedWhenEligible) {
-  if constexpr (!zstdEnabled()) {
-    GTEST_SKIP();
-  }
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.compression.minBytes = 32;
     cfg.compression.preferredFormats = {Encoding::zstd};
@@ -774,9 +762,6 @@ TEST(HttpCompression, ZstdAppliedWhenEligible) {
 }
 
 TEST(HttpCompression, WildcardSelectsZstdIfPreferred) {
-  if constexpr (!zstdEnabled()) {
-    GTEST_SKIP();
-  }
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.compression.minBytes = 16;
     cfg.compression.preferredFormats = {Encoding::zstd};
@@ -795,9 +780,6 @@ TEST(HttpCompression, WildcardSelectsZstdIfPreferred) {
 }
 
 TEST(HttpCompression, TieBreakAgainstGzipHigherQ) {
-  if constexpr (!zstdEnabled()) {
-    GTEST_SKIP();
-  }
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.compression.minBytes = 16;
     cfg.compression.preferredFormats = {Encoding::zstd};
@@ -815,9 +797,6 @@ TEST(HttpCompression, TieBreakAgainstGzipHigherQ) {
 }
 
 TEST(HttpCompression, ZstdActivatesAfterThreshold) {
-  if constexpr (!zstdEnabled()) {
-    GTEST_SKIP();
-  }
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.compression.minBytes = 128;
     cfg.compression.preferredFormats = {Encoding::zstd};
@@ -844,9 +823,6 @@ TEST(HttpCompression, ZstdActivatesAfterThreshold) {
 }
 
 TEST(HttpCompression, ZstdBelowThresholdIdentity) {
-  if constexpr (!zstdEnabled()) {
-    GTEST_SKIP();
-  }
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.compression.minBytes = 1024;
     cfg.compression.preferredFormats = {Encoding::zstd};
@@ -864,13 +840,13 @@ TEST(HttpCompression, ZstdBelowThresholdIdentity) {
   EXPECT_TRUE(it == resp.headers.end());  // identity
   EXPECT_TRUE(resp.plainBody == data) << "identity path should match input exactly";
 }
+#endif
 
 // =============================================================================
 // Direct Compression (inline body compressed at body-set time via req.makeResponse())
 // =============================================================================
 
 #ifdef AERONET_ENABLE_ZLIB
-
 TEST(HttpCompression, DirectCompression_GzipRoundTrip) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.compression.minBytes = 32;
