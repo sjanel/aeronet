@@ -419,8 +419,7 @@ int main(int argc, char* argv[]) {
   std::cout << "aeronet benchmark server starting on port " << benchCfg.port << " with " << benchCfg.numThreads
             << " threads\n";
 #ifdef AERONET_ENABLE_HTTP2
-  std::cout << "HTTP/2 support: enabled (h2c=" << config.http2.enableH2c
-            << ", h2c-upgrade=" << config.http2.enableH2cUpgrade << ")\n";
+  std::cout << "HTTP/2 support: enabled (h2c=" << config.http2.enableH2c << ")\n";
 #else
   std::cout << "HTTP/2 support: disabled (not compiled with AERONET_ENABLE_HTTP2)\n";
 #endif

@@ -275,6 +275,10 @@ bool SingleHttpServer::processConnectionInput(ConnectionIt cnxIt) {
         state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState,
                                                                   _decompressionState, _telemetry, _sharedBuffers.buf,
                                                                   false, _dateHeader.data(), state.clientAddress());
+        // Flag the connection as HTTP/2 like the ALPN path does: async resumption, stream deadline sweeps and
+        // the HTTP/2 connection count all key off it.
+        ++_connectionSweepState.http2Connections;
+        state.protocol = ProtocolType::Http2;
         installH2TunnelBridge(cnxIt->fd(), state);
         return processSpecialProtocolHandler(cnxIt);
       }
@@ -477,37 +481,9 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
                                                             .count()));
     }
 
-    // Check for HTTP/2 cleartext upgrade (h2c) - only on plaintext listeners
-#ifdef AERONET_ENABLE_HTTP2
-    if (_config.http2.enable && !_config.tls.enabled &&
-        upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)) == ProtocolType::Http2) {
-      const auto upgradeValidation = upgrade::ValidateHttp2Upgrade(request.headers());
-      if (!upgradeValidation.valid) {
-        // If h2c upgrade validation failed, respond with error
-        emitSimpleError(cnxIt, http::StatusCodeBadRequest, upgradeValidation.errorMessage);
-        break;
-      }
-      // Generate and send 101 Switching Protocols response
-      state.inBuffer.erase_front(request.headSpanSize());
-
-      // Create HTTP/2 protocol handler using unified dispatch
-      state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState,
-                                                                _decompressionState, _telemetry, _sharedBuffers.buf,
-                                                                false, _dateHeader.data(), state.clientAddress());
-      ++_connectionSweepState.http2Connections;
-      state.protocol = ProtocolType::Http2;
-      installH2TunnelBridge(cnxFd, state);
-
-      // Queue the upgrade response
-      state.outBuffer.append(upgrade::BuildHttp2UpgradeResponse());
-      flushOutbound(cnxIt);
-
-      log::debug("HTTP/2 connection established via h2c upgrade on fd {}", cnxFd);
-
-      // Return - the connection is now HTTP/2 and will be handled differently
-      return false;
-    }
-#endif
+    // `Upgrade: h2c` (HTTP/1.1 -> cleartext HTTP/2) is deliberately not honored: RFC 9113 §3.1 deprecated that
+    // mechanism and RFC 9110 §7.8 lets a server ignore Upgrade, so such a request is answered over HTTP/1.1 like any
+    // other. Cleartext HTTP/2 is only available with prior knowledge (Http2Config::enableH2c).
 
 #ifdef AERONET_ENABLE_WEBSOCKET
     // Check for WebSocket upgrade request

@@ -1,5 +1,5 @@
 /// @file http2.cpp
-/// @brief Minimal HTTP/2 server example demonstrating ALPN (h2) and h2c upgrade.
+/// @brief Minimal HTTP/2 server example demonstrating ALPN (h2) and cleartext h2c (prior knowledge).
 ///
 /// Build with HTTP/2 support:
 ///   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAERONET_ENABLE_HTTP2=ON
@@ -12,7 +12,7 @@
 ///
 /// Test:
 ///   curl --http2-prior-knowledge http://localhost:8080/hello  # h2c prior knowledge
-///   curl --http2 http://localhost:8080/hello                  # h2c upgrade
+///   curl --http2 http://localhost:8080/hello                  # Upgrade: h2c is ignored, served over HTTP/1.1
 ///   curl -k --http2 https://localhost:8443/hello              # ALPN h2
 
 #include <aeronet/aeronet-server.hpp>
@@ -101,8 +101,7 @@ int main(int argc, char** argv) {
     http2Config.enable = true;
     http2Config.maxConcurrentStreams = 100;
     http2Config.initialWindowSize = 65535;
-    http2Config.enableH2c = true;         // Allow cleartext HTTP/2 (prior knowledge)
-    http2Config.enableH2cUpgrade = true;  // Allow HTTP/1.1 -> HTTP/2 upgrade
+    http2Config.enableH2c = true;  // Allow cleartext HTTP/2 (prior knowledge)
 
     // Configure server with HTTP/2 settings
     HttpServerConfig config;
@@ -130,7 +129,6 @@ int main(int argc, char** argv) {
       std::cout << " (cleartext h2c)\n";
       std::cout << "Test with h2c prior knowledge: curl --http2-prior-knowledge http://localhost:" << server.port()
                 << "/hello\n";
-      std::cout << "Test with h2c upgrade: curl --http2 http://localhost:" << server.port() << "/hello\n";
     }
 
     server.run();  // blocking run, until Ctrl+C

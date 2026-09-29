@@ -96,6 +96,7 @@ struct Http2Config {
     return *this;
   }
 
+  /// Deprecated: no effect, see enableH2cUpgrade.
   Http2Config& withEnableH2cUpgrade(bool on) {
     enableH2cUpgrade = on;
     return *this;
@@ -131,10 +132,11 @@ struct Http2Config {
   // Default: true (useful for internal microservices).
   bool enableH2c{true};
 
-  /// Enable cleartext HTTP/2 (h2c) via HTTP/1.1 Upgrade mechanism.
-  /// Allows clients to upgrade from HTTP/1.1 to HTTP/2 on plaintext connections.
-  /// Default: true.
-  bool enableH2cUpgrade{true};
+  /// Deprecated, ignored: the HTTP/1.1 `Upgrade: h2c` mechanism is not supported (RFC 9113 §3.1 deprecated it).
+  /// Such requests are answered over HTTP/1.1 whatever this value is; clients wanting cleartext HTTP/2 must use
+  /// prior knowledge (see enableH2c). Kept so that existing code and configuration files still compile and load.
+  /// Default: false.
+  bool enableH2cUpgrade{false};
 
   /// Enable HTTP/2 priority handling (PRIORITY frames and stream dependencies).
   /// When disabled, PRIORITY frames are acknowledged but not processed.

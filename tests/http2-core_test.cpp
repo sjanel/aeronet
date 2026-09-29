@@ -330,7 +330,7 @@ class Http2Loopback {
 }
 
 // NOLINTNEXTLINE(bugprone-throwing-static-initialization)
-test::TestServer h2ts(HttpServerConfig{}.withHttp2(Http2Config{}.withEnableH2c(true).withEnableH2cUpgrade(true)));
+test::TestServer h2ts(HttpServerConfig{}.withHttp2(Http2Config{}.withEnableH2c(true)));
 
 }  // namespace
 
@@ -338,22 +338,28 @@ test::TestServer h2ts(HttpServerConfig{}.withHttp2(Http2Config{}.withEnableH2c(t
 // Handshake / settings
 // ============================
 
-TEST(Http2Core, Http2H2cUpgradeSwitchesProtocolAndReturns101) {
+TEST(Http2Core, H2cUpgradeRequestIsAnsweredOverHttp1) {
+  // `Upgrade: h2c` is deliberately ignored (RFC 9113 §3.1 deprecated it): the request is served over HTTP/1.1 and the
+  // connection stays usable. The server used to reply 101 and then never answer that request on stream 1, so Upgrade
+  // clients (curl --http2, Java's HttpClient) hung until keepAliveTimeout closed the connection.
   h2ts.resetRouterAndGet().setPath(http::Method::GET, "/h2c-upgrade", [](const HttpRequestView& req) {
-    return req.makeResponse("should-not-be-used-after-upgrade");
+    return req.makeResponse(req.isHttp2() ? "http/2" : "http/1.1");
   });
 
   for (bool enableHttp2 : {false, true}) {
-    h2ts.postConfigUpdate([enableHttp2](HttpServerConfig& config) { config.http2.enable = enableHttp2; });
-    for (bool enableH2c : {false, true}) {
-      h2ts.postConfigUpdate([enableH2c](HttpServerConfig& config) { config.http2.withEnableH2c(enableH2c); });
+    // enableH2cUpgrade is deprecated and must not bring the broken 101 back.
+    for (bool enableH2cUpgrade : {false, true}) {
+      h2ts.postConfigUpdate([enableHttp2, enableH2cUpgrade](HttpServerConfig& config) {
+        config.http2.enable = enableHttp2;
+        config.http2.withEnableH2cUpgrade(enableH2cUpgrade);
+      });
 
-      for (bool upgradeFail : {false, true}) {
+      for (bool wellFormedUpgrade : {true, false}) {
         test::ClientConnection client(h2ts.port());
         ASSERT_NE(client.fd(), -1);
         std::string rawReq = "GET /h2c-upgrade HTTP/1.1\r\n";
         rawReq += "host: localhost\r\n";
-        if (!upgradeFail) {
+        if (wellFormedUpgrade) {
           rawReq += "connection: Upgrade, HTTP2-Settings\r\n";
         }
         rawReq += "upgrade: h2c\r\n";
@@ -361,27 +367,18 @@ TEST(Http2Core, Http2H2cUpgradeSwitchesProtocolAndReturns101) {
         rawReq += "\r\n";
         test::sendAll(client.fd(), rawReq);
 
-        const std::string response = test::recvWithTimeout(client.fd(), std::chrono::milliseconds{5000}, 71UL);
+        const std::string response = test::recvWithTimeout(client.fd(), std::chrono::milliseconds{5000});
         const auto parsed = test::parseResponseOrThrow(response);
+        EXPECT_EQ(parsed.statusCode, http::StatusCodeOK) << response;
+        EXPECT_EQ(parsed.body, "http/1.1") << response;
+        EXPECT_TRUE(parsed.headers.find("upgrade") == parsed.headers.end()) << response;
 
-        if (!enableHttp2) {
-          EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
-          continue;
-        }
-        if (upgradeFail) {
-          EXPECT_EQ(parsed.statusCode, http::StatusCodeBadRequest);
-          continue;
-        }
-
-        EXPECT_EQ(parsed.statusCode, http::StatusCodeSwitchingProtocols) << response;
-
-        const auto itUpgrade = parsed.headers.find("upgrade");
-        ASSERT_NE(itUpgrade, parsed.headers.end()) << response;
-        EXPECT_EQ(test::toLower(itUpgrade->second), "h2c") << response;
-
-        const auto itConnection = parsed.headers.find("connection");
-        ASSERT_NE(itConnection, parsed.headers.end()) << response;
-        EXPECT_EQ(test::toLower(itConnection->second), "upgrade") << response;
+        // A follow-up request on the same connection is still plain HTTP/1.1.
+        test::sendAll(client.fd(), "GET /h2c-upgrade HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\n");
+        const std::string followUp = test::recvWithTimeout(client.fd(), std::chrono::milliseconds{5000});
+        const auto parsedFollowUp = test::parseResponseOrThrow(followUp);
+        EXPECT_EQ(parsedFollowUp.statusCode, http::StatusCodeOK) << followUp;
+        EXPECT_EQ(parsedFollowUp.body, "http/1.1") << followUp;
       }
     }
   }
