@@ -13,6 +13,7 @@
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/hpack.hpp"
 #include "aeronet/http-headers-view.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-event-sink.hpp"
@@ -21,10 +22,6 @@
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/vector.hpp"
-
-#ifdef AERONET_ENABLE_HTTP_CLIENT
-#include "aeronet/http-method.hpp"
-#endif
 
 namespace aeronet::tracing {
 class TelemetryContext;
