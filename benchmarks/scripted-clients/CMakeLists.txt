@@ -19,12 +19,11 @@ function(AeronetConfigureClientDriver target)
 endfunction()
 
 # The competitor drivers decode the `compress` scenario's gzip body with the SAME codec aeronet uses
-# internally — zlib-ng (native mode) — so the content-coding comparison is fair (only the integration
+# internally - zlib-ng (native mode) - so the content-coding comparison is fair (only the integration
 # differs, not the codec). Attach it to a driver that includes bench-client-gzip.hpp.
 function(AeronetAttachZlibNg target)
   if(TARGET ZLIBNG::ZLIBNG)
     target_link_libraries(${target} PRIVATE ZLIBNG::ZLIBNG)
-    target_compile_definitions(${target} PRIVATE AERONET_BENCH_HAVE_ZLIBNG)
   else()
     message(WARNING "[aeronet][bench] ZLIBNG::ZLIBNG not found; ${target} compress scenario will not decode")
   endif()

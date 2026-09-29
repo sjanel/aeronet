@@ -56,8 +56,13 @@ if(AERONET_BENCH_ENABLE_DROGON)
   set(BUILD_CTL OFF CACHE BOOL "" FORCE)
   set(BUILD_ORM OFF CACHE BOOL "" FORCE)
   set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-  set(BUILD_CTL OFF CACHE BOOL "" FORCE)
-  set(BUILD_ORM OFF CACHE BOOL "" FORCE)
+
+  # Drogon defaults to a shared lib, which can't link the non-PIC static zlib.
+  set(_aeronet_saved_bsl "${BUILD_SHARED_LIBS}")
+  set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(drogon)
+  set(BUILD_SHARED_LIBS "${_aeronet_saved_bsl}" CACHE BOOL "" FORCE)
+
   FetchContent_MakeAvailable(drogon)
 endif()
 
@@ -107,8 +112,8 @@ set(AERONET_BENCH_INTERNAL_DECIMAL_WRITER ${AERONET_BENCH_ROOT}/internal/decimal
 set(AERONET_BENCH_INTERNAL_INIT_TRY_SET_HEAD ${AERONET_BENCH_ROOT}/internal/init-try-set-head_bench.cpp)
 set(AERONET_BENCH_INTERNAL_HTTP_MESSAGE_HEADER_SEARCH ${AERONET_BENCH_ROOT}/internal/http-message-header-search_bench.cpp)
 set(AERONET_BENCH_INTERNAL_KEEP_ALIVE_DEADLINE_QUEUE ${AERONET_BENCH_ROOT}/internal/keep-alive-deadline-queue_bench.cpp)
-set(AERONET_BENCH_INTERNAL_REQUEST_PARSE ${AERONET_BENCH_ROOT}/internal/request-parse_bench.cpp)
 if(AERONET_ENABLE_HTTP_SERVER)
+  set(AERONET_BENCH_INTERNAL_REQUEST_PARSE ${AERONET_BENCH_ROOT}/internal/request-parse_bench.cpp)
   set(AERONET_BENCH_INTERNAL_RATE_LIMIT ${AERONET_BENCH_ROOT}/internal/rate-limit_bench.cpp)
 endif()
 set(AERONET_BENCH_INTERNAL_ROUTER ${AERONET_BENCH_ROOT}/internal/router_bench.cpp)
@@ -118,7 +123,6 @@ set(AERONET_BENCH_INTERNAL_MEMORY_UTILS ${AERONET_BENCH_ROOT}/internal/memory-ut
 set(AERONET_BENCH_INTERNAL_DATE_HEADER_CACHE ${AERONET_BENCH_ROOT}/internal/date-header-cache_bench.cpp)
 set(AERONET_BENCH_INTERNAL_RESERVED_HEADER_CHECK ${AERONET_BENCH_ROOT}/internal/reserved-header-check_bench.cpp)
 set(AERONET_BENCH_INTERNAL_ZEROCOPY ${AERONET_BENCH_ROOT}/internal/zerocopy_bench.cpp)
-set(AERONET_BENCH_INTERNAL_EVENT_LOOP_POLL_TIMEOUT ${AERONET_BENCH_ROOT}/internal/event-loop-poll-timeout_bench.cpp)
 set(AERONET_BENCH_INTERNAL_TRANSPORT_DISPATCH ${AERONET_BENCH_ROOT}/internal/transport-dispatch_bench.cpp)
 
 include(CheckIPOSupported)
@@ -161,29 +165,31 @@ function(AeronetAddProjectBenchmark target)
   endif()
 endfunction()
 
-AeronetAddProjectBenchmark(aeronet-bench-internal-decimal-writer ${AERONET_BENCH_INTERNAL_DECIMAL_WRITER})
+AeronetAddProjectBenchmark(aeronet-bench-internal-decimal-writer ${AERONET_BENCH_INTERNAL_DECIMAL_WRITER}
+                           LIBRARIES aeronet_tech)
 set_target_properties(aeronet-bench-internal-decimal-writer PROPERTIES FOLDER "benchmarks/internal")
 
-AeronetAddProjectBenchmark(aeronet-bench-internal-init-try-set-head ${AERONET_BENCH_INTERNAL_INIT_TRY_SET_HEAD})
+AeronetAddProjectBenchmark(aeronet-bench-internal-init-try-set-head ${AERONET_BENCH_INTERNAL_INIT_TRY_SET_HEAD}
+                           LIBRARIES aeronet_http)
 set_target_properties(aeronet-bench-internal-init-try-set-head PROPERTIES FOLDER "benchmarks/internal")
 
 AeronetAddProjectBenchmark(aeronet-bench-internal-http-message-header-search
                            ${AERONET_BENCH_INTERNAL_HTTP_MESSAGE_HEADER_SEARCH} LIBRARIES aeronet_http)
 set_target_properties(aeronet-bench-internal-http-message-header-search PROPERTIES FOLDER "benchmarks/internal")
 
-AeronetAddProjectBenchmark(aeronet-bench-internal-keep-alive-deadline-queue ${AERONET_BENCH_INTERNAL_KEEP_ALIVE_DEADLINE_QUEUE})
-set_target_properties(aeronet-bench-internal-keep-alive-deadline-queue PROPERTIES FOLDER "benchmarks/internal")
-
-AeronetAddProjectBenchmark(aeronet-bench-internal-request-parse ${AERONET_BENCH_INTERNAL_REQUEST_PARSE})
-set_target_properties(aeronet-bench-internal-request-parse PROPERTIES FOLDER "benchmarks/internal")
-
 if(AERONET_ENABLE_HTTP_SERVER)
+  AeronetAddProjectBenchmark(aeronet-bench-internal-keep-alive-deadline-queue ${AERONET_BENCH_INTERNAL_KEEP_ALIVE_DEADLINE_QUEUE})
+  set_target_properties(aeronet-bench-internal-keep-alive-deadline-queue PROPERTIES FOLDER "benchmarks/internal")
+
+  AeronetAddProjectBenchmark(aeronet-bench-internal-request-parse ${AERONET_BENCH_INTERNAL_REQUEST_PARSE})
+  set_target_properties(aeronet-bench-internal-request-parse PROPERTIES FOLDER "benchmarks/internal")
+
   AeronetAddProjectBenchmark(aeronet-bench-internal-rate-limit ${AERONET_BENCH_INTERNAL_RATE_LIMIT} LIBRARIES aeronet_server)
   set_target_properties(aeronet-bench-internal-rate-limit PROPERTIES FOLDER "benchmarks/internal")
-endif()
 
-AeronetAddProjectBenchmark(aeronet-bench-internal-router ${AERONET_BENCH_INTERNAL_ROUTER})
-set_target_properties(aeronet-bench-internal-router PROPERTIES FOLDER "benchmarks/internal")
+  AeronetAddProjectBenchmark(aeronet-bench-internal-router ${AERONET_BENCH_INTERNAL_ROUTER})
+  set_target_properties(aeronet-bench-internal-router PROPERTIES FOLDER "benchmarks/internal")
+endif()
 
 AeronetAddProjectBenchmark(aeronet-bench-internal-search-crlf ${AERONET_BENCH_INTERNAL_SEARCH_CRLF} LIBRARIES aeronet_tech)
 set_target_properties(aeronet-bench-internal-search-crlf PROPERTIES FOLDER "benchmarks/internal")
@@ -194,15 +200,20 @@ set_target_properties(aeronet-bench-internal-string-equal-ignore-case PROPERTIES
 AeronetAddProjectBenchmark(aeronet-bench-internal-memory-utils ${AERONET_BENCH_INTERNAL_MEMORY_UTILS} LIBRARIES aeronet_tech)
 set_target_properties(aeronet-bench-internal-memory-utils PROPERTIES FOLDER "benchmarks/internal")
 
-AeronetAddProjectBenchmark(aeronet-bench-internal-date-header-cache ${AERONET_BENCH_INTERNAL_DATE_HEADER_CACHE}
-                           LIBRARIES aeronet_server)
-set_target_properties(aeronet-bench-internal-date-header-cache PROPERTIES FOLDER "benchmarks/internal")
+if(AERONET_ENABLE_HTTP_SERVER)
+  AeronetAddProjectBenchmark(aeronet-bench-internal-date-header-cache ${AERONET_BENCH_INTERNAL_DATE_HEADER_CACHE}
+                            LIBRARIES aeronet_server)
+  set_target_properties(aeronet-bench-internal-date-header-cache PROPERTIES FOLDER "benchmarks/internal")
+endif()
 
 AeronetAddProjectBenchmark(aeronet-bench-internal-reserved-header-check ${AERONET_BENCH_INTERNAL_RESERVED_HEADER_CHECK} LIBRARIES aeronet_objects)
 set_target_properties(aeronet-bench-internal-reserved-header-check PROPERTIES FOLDER "benchmarks/internal")
 
-AeronetAddProjectBenchmark(aeronet-bench-internal-zerocopy ${AERONET_BENCH_INTERNAL_ZEROCOPY})
-set_target_properties(aeronet-bench-internal-zerocopy PROPERTIES FOLDER "benchmarks/internal")
+if(AERONET_ENABLE_HTTP_SERVER)
+  AeronetAddProjectBenchmark(aeronet-bench-internal-zerocopy ${AERONET_BENCH_INTERNAL_ZEROCOPY}
+                             LIBRARIES aeronet_server aeronet_test_support)
+  set_target_properties(aeronet-bench-internal-zerocopy PROPERTIES FOLDER "benchmarks/internal")
+endif()
 
 AeronetAddProjectBenchmark(aeronet-bench-internal-transport-dispatch ${AERONET_BENCH_INTERNAL_TRANSPORT_DISPATCH}
                            LIBRARIES aeronet_sys)
@@ -211,7 +222,8 @@ if(AERONET_ENABLE_OPENSSL)
 endif()
 set_target_properties(aeronet-bench-internal-transport-dispatch PROPERTIES FOLDER "benchmarks/internal")
 
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+if(AERONET_ENABLE_HTTP_SERVER AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(AERONET_BENCH_INTERNAL_EVENT_LOOP_POLL_TIMEOUT ${AERONET_BENCH_ROOT}/internal/event-loop-poll-timeout_bench.cpp)
   AeronetAddProjectBenchmark(aeronet-bench-internal-event-loop-poll-timeout ${AERONET_BENCH_INTERNAL_EVENT_LOOP_POLL_TIMEOUT})
   set_target_properties(aeronet-bench-internal-event-loop-poll-timeout PROPERTIES FOLDER "benchmarks/internal")
 endif()
@@ -231,16 +243,16 @@ if(AERONET_ENABLE_HTTP2)
   set(AERONET_BENCH_INTERNAL_H2_FRAME ${AERONET_BENCH_ROOT}/internal/http2-frame_bench.cpp)
   set(AERONET_BENCH_INTERNAL_H2_FLOW ${AERONET_BENCH_ROOT}/internal/http2-flow-control_bench.cpp)
 
-  AeronetAddProjectBenchmark(aeronet-bench-internal-hpack ${AERONET_BENCH_INTERNAL_HPACK})
-  target_link_libraries(aeronet-bench-internal-hpack PRIVATE aeronet_http2)
+  AeronetAddProjectBenchmark(aeronet-bench-internal-hpack ${AERONET_BENCH_INTERNAL_HPACK}
+                             LIBRARIES aeronet_http2)
   set_target_properties(aeronet-bench-internal-hpack PROPERTIES FOLDER "benchmarks/internal")
 
-  AeronetAddProjectBenchmark(aeronet-bench-internal-http2-frame ${AERONET_BENCH_INTERNAL_H2_FRAME})
-  target_link_libraries(aeronet-bench-internal-http2-frame PRIVATE aeronet_http2)
+  AeronetAddProjectBenchmark(aeronet-bench-internal-http2-frame ${AERONET_BENCH_INTERNAL_H2_FRAME}
+                             LIBRARIES aeronet_http2)
   set_target_properties(aeronet-bench-internal-http2-frame PROPERTIES FOLDER "benchmarks/internal")
 
-  AeronetAddProjectBenchmark(aeronet-bench-internal-http2-flow-control ${AERONET_BENCH_INTERNAL_H2_FLOW})
-  target_link_libraries(aeronet-bench-internal-http2-flow-control PRIVATE aeronet_http2)
+  AeronetAddProjectBenchmark(aeronet-bench-internal-http2-flow-control ${AERONET_BENCH_INTERNAL_H2_FLOW}
+                            LIBRARIES aeronet_http2)
   set_target_properties(aeronet-bench-internal-http2-flow-control PROPERTIES FOLDER "benchmarks/internal")
 endif()
 
@@ -248,52 +260,54 @@ endif()
 if(AERONET_ENABLE_WEBSOCKET)
   set(AERONET_BENCH_INTERNAL_WS_MASK ${AERONET_BENCH_ROOT}/internal/websocket-mask_bench.cpp)
 
-  AeronetAddProjectBenchmark(aeronet-bench-internal-websocket-mask ${AERONET_BENCH_INTERNAL_WS_MASK})
-  target_link_libraries(aeronet-bench-internal-websocket-mask PRIVATE aeronet_websocket)
+  AeronetAddProjectBenchmark(aeronet-bench-internal-websocket-mask ${AERONET_BENCH_INTERNAL_WS_MASK}
+                             LIBRARIES aeronet_websocket aeronet_tech)
   set_target_properties(aeronet-bench-internal-websocket-mask PROPERTIES FOLDER "benchmarks/internal")
 endif()
 
-# Throughput benchmark (simple skeleton; not using Google Benchmark intentionally)
-AeronetAddProjectBenchmark(aeronet-bench-throughput ${AERONET_BENCH_ROOT}/e2e/bench_throughput_local.cpp)
+if(AERONET_ENABLE_HTTP_SERVER)
+  # Throughput benchmark (simple skeleton; not using Google Benchmark intentionally)
+  AeronetAddProjectBenchmark(aeronet-bench-throughput ${AERONET_BENCH_ROOT}/e2e/bench_throughput_local.cpp)
 
-# Comparative framework benchmark (aeronet vs optional drogon/oatpp)
-set(AERONET_BENCH_FRAMEWORKS_SOURCES ${AERONET_BENCH_ROOT}/frameworks/bench_frameworks_basic.cpp)
-AeronetAddProjectBenchmark(aeronet-bench-frameworks ${AERONET_BENCH_FRAMEWORKS_SOURCES})
-target_include_directories(aeronet-bench-frameworks PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+  # Comparative framework benchmark (aeronet vs optional drogon/oatpp)
+  set(AERONET_BENCH_FRAMEWORKS_SOURCES ${AERONET_BENCH_ROOT}/frameworks/bench_frameworks_basic.cpp)
+  AeronetAddProjectBenchmark(aeronet-bench-frameworks ${AERONET_BENCH_FRAMEWORKS_SOURCES})
+  target_include_directories(aeronet-bench-frameworks PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 
-if(AERONET_BENCH_ENABLE_HTTPLIB AND DEFINED cpp_httplib_SOURCE_DIR)
-  target_include_directories(aeronet-bench-frameworks PRIVATE ${cpp_httplib_SOURCE_DIR})
-  target_compile_definitions(aeronet-bench-frameworks PRIVATE AERONET_BENCH_ENABLE_HTTPLIB)
-endif()
-
-if(AERONET_BENCH_ENABLE_DROGON AND TARGET drogon)
-  message(STATUS "[aeronet][bench] Including drogon in framework benchmarks")
-  target_link_libraries(aeronet-bench-frameworks PRIVATE drogon)
-  target_compile_definitions(aeronet-bench-frameworks PRIVATE AERONET_BENCH_ENABLE_DROGON)
-endif()
-
-if(AERONET_BENCH_ENABLE_OATPP)
-  # Support either plain 'oatpp' or namespace target 'oatpp::oatpp' depending on version.
-  set(_AERONET_OATPP_TARGET "")
-  if(TARGET oatpp::oatpp)
-    set(_AERONET_OATPP_TARGET oatpp::oatpp)
-  elseif(TARGET oatpp)
-    set(_AERONET_OATPP_TARGET oatpp)
+  if(AERONET_BENCH_ENABLE_HTTPLIB AND DEFINED cpp_httplib_SOURCE_DIR)
+    target_include_directories(aeronet-bench-frameworks PRIVATE ${cpp_httplib_SOURCE_DIR})
+    target_compile_definitions(aeronet-bench-frameworks PRIVATE AERONET_BENCH_ENABLE_HTTPLIB)
   endif()
-  if(_AERONET_OATPP_TARGET)
-    message(STATUS "[aeronet][bench] Including oatpp in framework benchmarks using target '${_AERONET_OATPP_TARGET}'")
-    target_link_libraries(aeronet-bench-frameworks PRIVATE ${_AERONET_OATPP_TARGET})
-    target_compile_definitions(aeronet-bench-frameworks PRIVATE AERONET_BENCH_ENABLE_OATPP)
-    # Some releases may not export the 'src' directory as an include path; add it if available.
-    if(DEFINED oatpp_SOURCE_DIR AND EXISTS "${oatpp_SOURCE_DIR}/src/oatpp/web/server/HttpRouter.hpp")
-      target_include_directories(aeronet-bench-frameworks PRIVATE ${oatpp_SOURCE_DIR}/src)
+
+  if(AERONET_BENCH_ENABLE_DROGON AND TARGET drogon)
+    message(STATUS "[aeronet][bench] Including drogon in framework benchmarks")
+    target_link_libraries(aeronet-bench-frameworks PRIVATE drogon)
+    target_compile_definitions(aeronet-bench-frameworks PRIVATE AERONET_BENCH_ENABLE_DROGON)
+  endif()
+
+  if(AERONET_BENCH_ENABLE_OATPP)
+    # Support either plain 'oatpp' or namespace target 'oatpp::oatpp' depending on version.
+    set(_AERONET_OATPP_TARGET "")
+    if(TARGET oatpp::oatpp)
+      set(_AERONET_OATPP_TARGET oatpp::oatpp)
+    elseif(TARGET oatpp)
+      set(_AERONET_OATPP_TARGET oatpp)
     endif()
-  else()
-    message(WARNING "[aeronet][bench] Oatpp target not found after FetchContent; Oatpp benchmarks disabled")
+    if(_AERONET_OATPP_TARGET)
+      message(STATUS "[aeronet][bench] Including oatpp in framework benchmarks using target '${_AERONET_OATPP_TARGET}'")
+      target_link_libraries(aeronet-bench-frameworks PRIVATE ${_AERONET_OATPP_TARGET})
+      target_compile_definitions(aeronet-bench-frameworks PRIVATE AERONET_BENCH_ENABLE_OATPP)
+      # Some releases may not export the 'src' directory as an include path; add it if available.
+      if(DEFINED oatpp_SOURCE_DIR AND EXISTS "${oatpp_SOURCE_DIR}/src/oatpp/web/server/HttpRouter.hpp")
+        target_include_directories(aeronet-bench-frameworks PRIVATE ${oatpp_SOURCE_DIR}/src)
+      endif()
+    else()
+      message(WARNING "[aeronet][bench] Oatpp target not found after FetchContent; Oatpp benchmarks disabled")
+    endif()
   endif()
+  set_target_properties(aeronet-bench-frameworks PROPERTIES FOLDER "benchmarks")
 endif()
 
-set_target_properties(aeronet-bench-frameworks PROPERTIES FOLDER "benchmarks")
 
 # Convenience run targets
 set(_AERONET_BENCH_DEPS
