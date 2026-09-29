@@ -37,7 +37,7 @@ TEST(Http2Config, DefaultValues) {
   EXPECT_EQ(config.maxStreamsPerConnection, 1000000U);
   EXPECT_EQ(config.maxStreamPendingBytes, 4U << 20U);
   EXPECT_TRUE(config.enableH2c);
-  EXPECT_TRUE(config.enableH2cUpgrade);
+  EXPECT_FALSE(config.enableH2cUpgrade);  // deprecated, ignored
   EXPECT_TRUE(config.enablePriority);
   EXPECT_EQ(config.maxPriorityTreeDepth, 256U);
 }

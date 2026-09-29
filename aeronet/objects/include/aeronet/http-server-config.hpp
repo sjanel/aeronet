@@ -263,7 +263,8 @@ struct HttpServerConfig {
   /// Use `http2.enable` to control whether HTTP/2 is globally enabled.
   /// When enabled and a client supports HTTP/2:
   /// - TLS connections negotiating "h2" via ALPN will use HTTP/2
-  /// - Cleartext connections may upgrade via h2c (if http2.enableH2c is true)
+  /// - Cleartext connections sending the HTTP/2 preface use h2c with prior knowledge (if http2.enableH2c is true).
+  ///   `Upgrade: h2c` requests are answered over HTTP/1.1 (that mechanism is deprecated by RFC 9113 §3.1).
   /// The same handlers (RequestHandler, StreamingHandler, AsyncRequestHandler)
   /// work transparently for both HTTP/1.1 and HTTP/2.
   Http2Config http2;

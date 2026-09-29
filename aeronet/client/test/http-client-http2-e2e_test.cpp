@@ -54,6 +54,11 @@
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include "aeronet/http-response.hpp"
+#include "aeronet/request-task.hpp"
+#endif
+
 #ifdef AERONET_ENABLE_OPENSSL
 #include <csignal>
 
@@ -764,6 +769,28 @@ TEST(HttpClientHttp2E2ETest, SlowHandlerLargeResponseSurvivesKeepAliveSweep) {
   EXPECT_EQ(result->status(), 200);
   EXPECT_EQ(result->bodyInMemory(), MakeLargeBody());
 }
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+TEST(HttpClientHttp2E2ETest, DeferWorkHandlerResumesOverPriorKnowledgeH2c) {
+  // Regression: a connection switched to HTTP/2 by the prior-knowledge preface was not flagged as HTTP/2 (only ALPN
+  // "h2" was), so the event loop never handed deferWork() completions to the HTTP/2 handler and the suspended
+  // coroutine was never resumed: the stream hung until the client gave up.
+  test::TestServer asyncServer(HttpServerConfig{}.withPort(0).withPollInterval(std::chrono::milliseconds{5}));
+  asyncServer.router().setPath(http::Method::GET, "/deferred", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
+    const int value = co_await req.deferWork([] { return 42; });
+    co_return req.makeResponse(http::StatusCodeOK, std::to_string(value), "text/plain");
+  });
+
+  HttpClientConfig cfg;
+  cfg.withHttpVersion(HttpVersionMode::Http2);
+  cfg.requestTimeout = std::chrono::seconds{5};
+  HttpClient client(cfg);
+  auto result = client.get("http://127.0.0.1:" + std::to_string(asyncServer.port()) + "/deferred");
+  ASSERT_TRUE(result.has_value()) << "exchange failed with error " << static_cast<int>(result.error());
+  EXPECT_EQ(result->status(), 200);
+  EXPECT_EQ(result->bodyInMemory(), "42");
+}
+#endif
 
 TEST(HttpClientHttp2E2ETest, TransparentResponseDecompression) {
   // Default client: Accept-Encoding advertised, the (highly repetitive) 1 MiB body is compressed by the
