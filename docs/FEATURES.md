@@ -3173,7 +3173,7 @@ WebSocket handlers run on the same reactor thread as HTTP handlers. The `WebSock
 | Flow control | ✔ | Per-stream and connection-level |
 | ALPN "h2" negotiation | ✔ | Over TLS (requires OpenSSL) |
 | h2c (cleartext prior knowledge) | ✔ | Client sends HTTP/2 preface directly |
-| h2c upgrade (HTTP/1.1 → HTTP/2) | ✔ | Via `Upgrade: h2c` header |
+| h2c upgrade (HTTP/1.1 → HTTP/2) | ✗ | Deprecated by RFC 9113 §3.1: `Upgrade: h2c` is ignored, the request is answered over HTTP/1.1 |
 | Server push | ✗ | Disabled (rarely used by modern clients) |
 | PRIORITY frames | ✔ | Optional, configurable |
 | Request trailers | ✔ | Trailing `HEADERS` block (RFC 9113 §8.1) surfaced via `HttpRequestView::trailers()` |
@@ -3302,7 +3302,7 @@ The server automatically detects the negotiated protocol and routes the connecti
 
 ### Cleartext HTTP/2 (h2c)
 
-HTTP/2 over cleartext (without TLS) is supported via two mechanisms.
+HTTP/2 over cleartext (without TLS) is supported with prior knowledge.
 
 #### Prior Knowledge
 
@@ -3310,12 +3310,12 @@ Client sends the HTTP/2 connection preface (`PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n`) 
 
 ```cpp
 Http2Config config;
-config.enableH2c = true;  // Accept direct HTTP/2 preface on plaintext
+config.enableH2c = true;  // Accept direct HTTP/2 preface on plaintext (default)
 ```
 
-#### HTTP/1.1 Upgrade
+#### HTTP/1.1 Upgrade (not supported)
 
-Client sends an HTTP/1.1 request with upgrade headers:
+The `Upgrade: h2c` mechanism is deprecated by [RFC 9113 §3.1](https://www.rfc-editor.org/rfc/rfc9113#section-3.1) and is not implemented. A request such as:
 
 ```text
 GET / HTTP/1.1
@@ -3325,12 +3325,7 @@ Upgrade: h2c
 HTTP2-Settings: AAMAAABkAAQBAAAAAAIAAAAA
 ```
 
-The server responds with `101 Switching Protocols` and transitions to HTTP/2:
-
-```cpp
-Http2Config config;
-config.enableH2cUpgrade = true;  // Enable Upgrade mechanism
-```
+is answered over HTTP/1.1, as [RFC 9110 §7.8](https://www.rfc-editor.org/rfc/rfc9110#section-7.8) allows, and the connection stays on HTTP/1.1. Clients that attempt the upgrade (`curl --http2` on an `http://` URL, Java's `java.net.http.HttpClient`) simply keep using HTTP/1.1. `Http2Config::enableH2cUpgrade` is deprecated and has no effect.
 
 ### Testing HTTP/2
 
@@ -3343,7 +3338,7 @@ curl -k --http2 https://localhost:8443/hello
 # h2c (cleartext) with prior knowledge
 curl --http2-prior-knowledge http://localhost:8080/hello
 
-# h2c via upgrade
+# Upgrade: h2c is ignored: answered over HTTP/1.1
 curl --http2 http://localhost:8080/hello
 ```
 

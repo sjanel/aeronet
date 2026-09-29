@@ -297,8 +297,7 @@ aeronet::HttpServerConfig config;
 aeronet::Http2Config http2;
 http2.withMaxConcurrentStreams(128)
     .withPingInterval(std::chrono::seconds{30})
-    .withEnableH2c(false)
-    .withEnableH2cUpgrade(false);
+    .withEnableH2c(false);
 
 config.withTlsAlpnProtocols({"h2", "http/1.1"}).withHttp2(http2);
 ```

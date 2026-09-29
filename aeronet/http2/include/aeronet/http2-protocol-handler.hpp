@@ -53,7 +53,8 @@ namespace http2 {
 /// - Flow control integration
 ///
 /// Usage:
-/// The handler is installed after ALPN negotiates "h2" or after h2c upgrade.
+/// The handler is installed after ALPN negotiates "h2", or when a cleartext client sends the HTTP/2 connection
+/// preface directly (h2c prior knowledge).
 /// The server then routes all I/O through this handler instead of HTTP/1.1 parsing.
 ///
 /// Thread safety: NOT thread-safe. Executes on the single-threaded event loop.

@@ -423,88 +423,6 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_ConnectionWithMultipleTok
 #endif
 
 // ============================================================================
-// ValidateHttp2Upgrade tests
-// ============================================================================
-
-#ifdef AERONET_ENABLE_HTTP2
-
-TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_ValidRequest) {
-  const auto status = parse(BuildRawHttp11("GET", "/resource",
-                                           "Upgrade: h2c\r\n"
-                                           "Connection: Upgrade, HTTP2-Settings\r\n"
-                                           "HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n"));
-  ASSERT_EQ(status, http::StatusCodeOK);
-
-  const auto result = upgrade::ValidateHttp2Upgrade(request.headers());
-  EXPECT_TRUE(result.valid);
-  EXPECT_EQ(result.targetProtocol, ProtocolType::Http2);
-}
-
-TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_MissingUpgradeHeader) {
-  const auto status = parse(BuildRawHttp11("GET", "/resource",
-                                           "Connection: Upgrade, HTTP2-Settings\r\n"
-                                           "HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n"));
-  ASSERT_EQ(status, http::StatusCodeOK);
-
-  const auto result = upgrade::ValidateHttp2Upgrade(request.headers());
-  EXPECT_FALSE(result.valid);
-}
-
-TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_WrongUpgradeValue) {
-  const auto status = parse(BuildRawHttp11("GET", "/resource",
-                                           "Upgrade: websocket\r\n"
-                                           "Connection: Upgrade, HTTP2-Settings\r\n"
-                                           "HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n"));
-  ASSERT_EQ(status, http::StatusCodeOK);
-
-  const auto result = upgrade::ValidateHttp2Upgrade(request.headers());
-  EXPECT_FALSE(result.valid);
-}
-
-TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_MissingConnectionHeader) {
-  const auto status = parse(BuildRawHttp11("GET", "/resource",
-                                           "Upgrade: h2c\r\n"
-                                           "HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n"));
-  ASSERT_EQ(status, http::StatusCodeOK);
-
-  const auto result = upgrade::ValidateHttp2Upgrade(request.headers());
-  EXPECT_FALSE(result.valid);
-}
-
-TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_ConnectionWithoutUpgrade) {
-  const auto status = parse(BuildRawHttp11("GET", "/resource",
-                                           "Upgrade: h2c\r\n"
-                                           "Connection: keep-alive\r\n"
-                                           "HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n"));
-  ASSERT_EQ(status, http::StatusCodeOK);
-
-  const auto result = upgrade::ValidateHttp2Upgrade(request.headers());
-  EXPECT_FALSE(result.valid);
-}
-
-TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_MissingSettings) {
-  const auto status = parse(BuildRawHttp11("GET", "/resource",
-                                           "Upgrade: h2c\r\n"
-                                           "Connection: Upgrade, HTTP2-Settings\r\n"));
-  ASSERT_EQ(status, http::StatusCodeOK);
-
-  const auto result = upgrade::ValidateHttp2Upgrade(request.headers());
-  EXPECT_FALSE(result.valid);
-}
-
-TEST_F(UpgradeHandlerHarness, ValidateHttp2Upgrade_EmptySettings) {
-  const auto status = parse(BuildRawHttp11("GET", "/resource",
-                                           "Upgrade: h2c\r\n"
-                                           "Connection: Upgrade, HTTP2-Settings\r\n"
-                                           "HTTP2-Settings: \r\n"));
-  ASSERT_EQ(status, http::StatusCodeOK);
-
-  const auto result = upgrade::ValidateHttp2Upgrade(request.headers());
-  EXPECT_FALSE(result.valid);
-}
-#endif
-
-// ============================================================================
 // DetectUpgradeTarget tests
 // ============================================================================
 
@@ -530,28 +448,14 @@ TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_WebSocketCaseInsensitive) {
 #endif
 }
 
-#ifdef AERONET_ENABLE_HTTP2
-TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_Http2) {
-  const auto status = parse(BuildRawHttp11("GET", "/", "Upgrade: h2c\r\n"));
-  ASSERT_EQ(status, http::StatusCodeOK);
-
-  EXPECT_EQ(upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)), ProtocolType::Http2);
-}
-
-TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_Http2CaseInsensitive) {
-  const auto status = parse(BuildRawHttp11("GET", "/", "Upgrade: H2C\r\n"));
-  ASSERT_EQ(status, http::StatusCodeOK);
-
-  EXPECT_EQ(upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)), ProtocolType::Http2);
-}
-#else
-TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_Http2IgnoredWhenDisabled) {
+// The deprecated HTTP/1.1 -> h2c Upgrade (RFC 9113 §3.1) is never a target: such requests stay on HTTP/1.1.
+TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_H2cIsIgnored) {
   const auto status = parse(BuildRawHttp11("GET", "/", "Upgrade: h2c\r\n"));
   ASSERT_EQ(status, http::StatusCodeOK);
 
   EXPECT_EQ(upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)), ProtocolType::Http11);
+  EXPECT_EQ(upgrade::DetectUpgradeTarget("H2C"), ProtocolType::Http11);
 }
-#endif
 
 TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_NoUpgrade) {
   const auto status = parse(BuildRawHttp11("GET", "/"));
@@ -653,24 +557,6 @@ TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_WithDeflate) {
   EXPECT_TRUE(responseView.contains(expectedExtensions));
   // client_max_window_bits=15 is default, should not appear
   EXPECT_FALSE(responseView.contains("client_max_window_bits"));
-  EXPECT_TRUE(responseView.ends_with(http::DoubleCRLF));
-}
-#endif
-
-// Tests for BuildHttp2UpgradeResponse
-#ifdef AERONET_ENABLE_HTTP2
-TEST(UpgradeHandlerTest, BuildHttp2UpgradeResponse_Basic) {
-  const auto response = upgrade::BuildHttp2UpgradeResponse();
-  const std::string_view responseView(response.data(), response.size());
-
-  // Check status line
-  EXPECT_TRUE(responseView.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
-
-  // Check required headers are present
-  EXPECT_TRUE(responseView.contains(MakeHttp1HeaderLine(http::Upgrade, "h2c")));
-  EXPECT_TRUE(responseView.contains(MakeHttp1HeaderLine(http::Connection, http::Upgrade)));
-
-  // Check response ends with double CRLF
   EXPECT_TRUE(responseView.ends_with(http::DoubleCRLF));
 }
 #endif
