@@ -5,11 +5,17 @@ on:
     - cron: '0 3 * * 0,3'   # every Sunday and Wednesday 03:00 UTC (runs on the default branch only)
   workflow_dispatch:
     inputs:
-      count:
-        description: 'Number of random combinations'
+      wave_count:
+        description: 'Combinations per wave (keep constant during a campaign)'
         default: '20'
+      random_count:
+        description: 'Additional random combinations'
+        default: '0'
+      wave:
+        description: 'Wave number (empty = run number - 1)'
+        default: ''
       seed:
-        description: 'Seed (empty = run number)'
+        description: 'Seed of the random combinations (empty = run number)'
         default: ''
 
 concurrency:
@@ -28,17 +34,31 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Install numpy
+        run: python3 -m pip install --disable-pip-version-check --quiet numpy
+
       - name: Generate matrix
         id: gen
         env:
-          COUNT: ${{ inputs.count || '20' }}
+          WAVE_COUNT: ${{ inputs.wave_count || '20' }}
+          RANDOM_COUNT: ${{ inputs.random_count || '0' }}
+          WAVE: ${{ inputs.wave || '' }}
+          RUN_NUMBER: ${{ github.run_number }}
+          # Run number of the first run of the current campaign. Set it to the next run number
+          # whenever FLAGS or the constraints of gen-flag-matrix.py change, to restart from wave 0.
+          FIRST_RUN_NUMBER: 1
           SEED: ${{ inputs.seed || github.run_number }}
         run: |
-          echo "matrix=$(python3 scripts/gen-flag-matrix.py --count "$COUNT" --seed "$SEED")" >> "$GITHUB_OUTPUT"
-          echo "Seed: $SEED (count: $COUNT)" >> "$GITHUB_STEP_SUMMARY"
+          # Every run (scheduled or manual) advances one wave; the first run of the campaign is wave 0.
+          wave="${WAVE:-$(( RUN_NUMBER - FIRST_RUN_NUMBER ))}"
+          matrix=$(python3 scripts/gen-flag-matrix.py \
+            --wave-count "$WAVE_COUNT" --wave "$wave" \
+            --random-count "$RANDOM_COUNT" --seed "$SEED" \
+            --info-file "$GITHUB_STEP_SUMMARY")
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   build-test:
-    name: clang-21 #${{ matrix.id }}
+    name: clang-21 ${{ matrix.kind }} #${{ matrix.id }}
     needs: generate
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -77,6 +97,13 @@ jobs:
             -DAERONET_BUILD_EXAMPLES=OFF \
             -DAERONET_ENABLE_ASAN=OFF \
             -DAERONET_ENABLE_CLANG_TIDY=OFF \
+            -DAERONET_BENCH_ENABLE_OATPP=OFF \
+            -DAERONET_BENCH_ENABLE_DROGON=OFF \
+            -DAERONET_BENCH_ENABLE_HTTPLIB=OFF \
+            -DAERONET_BENCH_ENABLE_PISTACHE=OFF \
+            -DAERONET_BENCH_ENABLE_CROW=OFF \
+            -DAERONET_BENCH_ENABLE_BEAST=OFF \
+            -DAERONET_BENCH_ENABLE_UWEBSOCKETS=OFF \
             ${{ matrix.cmake_args }}
 
       - name: Build
@@ -99,4 +126,4 @@ jobs:
         run: |
           gh issue create --repo "$GITHUB_REPOSITORY" \
             --title "Periodic flag-combination build failed ($(date -u +%F))" \
-            --body "See ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID} . Failing legs show their exact CMake flags; the run summary shows the seed."
+            --body "See ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID} . Failing legs show their exact CMake flags; the run summary shows the wave and the seed."
