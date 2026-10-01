@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "aeronet/concatenated-headers.hpp"
+#include "aeronet/file-payload.hpp"
 #include "aeronet/header-write.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
@@ -238,21 +239,19 @@ HttpMessageData HttpResponse::finalizeForHttp1(const char* cachedDateHeader, htt
 
   HttpMessage::finalizeForHttp1(version, opts, pGlobalHeaders, minCapturedBodySize);
 
-  // TODO: HttpMessageData could be optimized to carry the HttpPayload like HttpMessage. Some code could be factorized
-  // for that.
-  HttpPayload payload = releaseEmbeddedPayload();
-
   if (opts.isHeadMethod()) {
     // TODO: cannot we move this code to HttpMessage::finalizeForHttp1 ? Check HttpRequest process.
-    auto* pFilePayload = payload.getIfFilePayload();
+    FilePayload* pFilePayload = filePayloadPtr();
     if (pFilePayload != nullptr) {
       pFilePayload->length = 0;
     }
   }
 
-  // Be careful, payload should be released BEFORE calling std::move(_data) and in C++, evaluation order of parameters
-  // for a function call is unspecified
-  return {std::move(_data), std::move(payload)};
+  // The buffer is handed over as is: the embedded payload (if any) stays in place, right after the wire bytes, and is
+  // now owned by the returned HttpMessageData.
+  const std::size_t wireSize = wireDataSize();
+  _opts.resetHasEmbeddedPayload();
+  return {std::move(_data), wireSize};
 }
 
 }  // namespace aeronet

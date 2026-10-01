@@ -16,6 +16,7 @@
 
 namespace aeronet {
 
+class EmbeddedPayload;
 class HttpMessage;
 
 // Convenient wrapper of common user-types for HTTP body storage.
@@ -147,6 +148,7 @@ class HttpPayload {
   static constexpr char kSizeOnlySentinel{};
 
  private:
+  friend class EmbeddedPayload;
   friend class HttpMessage;
 
   using Variant = std::variant<std::monostate, FilePayload, std::string, std::string_view, std::vector<char>,

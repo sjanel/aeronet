@@ -308,6 +308,7 @@ AeronetAddUnitTest(
     test/http-message-data_test.cpp
     LIBRARIES
     aeronet_objects
+    aeronet_basic_test_support
 )
 
 AeronetAddUnitTest(

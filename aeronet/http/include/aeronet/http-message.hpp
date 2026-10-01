@@ -1,6 +1,5 @@
 #pragma once
 
-#include <bit>
 #include <cassert>
 #include <concepts>
 #include <cstddef>
@@ -8,7 +7,6 @@
 #include <functional>
 #include <limits>
 #include <memory>
-#include <new>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -21,6 +19,7 @@
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/decimal-writer.hpp"
 #include "aeronet/direct-compression-mode.hpp"
+#include "aeronet/embedded-payload.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
@@ -470,7 +469,7 @@ class HttpMessage {
 
     std::size_t bodyHeadersSize = http::HeaderSize(http::ContentType.size(), contentType.size());
     // For HEAD, the written bytes are dropped and replaced by an embedded size-only payload.
-    const std::size_t bodyCapacity = maxLen + (isHead() ? kMaxPayloadFootprint : 0UL);
+    const std::size_t bodyCapacity = maxLen + (isHead() ? EmbeddedPayload::kMaxFootprint : 0UL);
     char* pData;
 #ifdef AERONET_ENABLE_HTTP2
     if (_opts.sendContentLengthHeader()) {
@@ -567,7 +566,7 @@ class HttpMessage {
     std::size_t neededCapacity = bodyHeadersSize + maxLen;
     if (isHead()) {
       // the written bytes are dropped and replaced by an embedded size-only payload
-      neededCapacity += kMaxPayloadFootprint;
+      neededCapacity += EmbeddedPayload::kMaxFootprint;
     } else if (_opts.isAutomaticDirectCompression()) {
       // Not ideal - we started a streaming compression and client now calls bodyInlineAppend which is not compatible
       // with direct compression's zero-copy path. So instead we let the writer write its raw bytes into a scratch
@@ -1079,44 +1078,22 @@ class HttpMessage {
     _data.setSize(bodyStartPos);
   }
 
-  // --- embedded payload layout ---
-  // Invariant: hasEmbeddedPayload() => no inline body/trailers, body headers present (see hasBodyHeaders()), and
-  //   _data.size() == payloadOffset() + sizeof(HttpPayload), the HttpPayload object living at payloadOffset().
-  // The padding bytes [bodyStartPos(), payloadOffset()) are uninitialized and must never reach the wire.
+  // --- embedded payload (see EmbeddedPayload for the layout) ---
+  // Invariant: hasEmbeddedPayload() => no inline body/trailers, body headers present (see hasBodyHeaders()), and the
+  // HttpPayload object lives in _data right after the head (bodyStartPos() bytes).
   // While a payload is embedded, _data must never be reallocated nor written after bodyStartPos(): head edits must go
   // through HeadGrowthManager, which temporarily extracts the payload.
-  static constexpr std::size_t kPayloadAlign = alignof(HttpPayload);
-
-  static_assert(std::has_single_bit(kPayloadAlign));
-  // Alignment is computed from the OFFSET only, this relies on RawChars buffers being malloc/realloc'ed.
-  static_assert(kPayloadAlign <= alignof(std::max_align_t));
-  static_assert(std::is_nothrow_move_constructible_v<HttpPayload>);
   static_assert(std::is_nothrow_move_assignable_v<HttpPayload>);
-  static_assert(std::is_nothrow_destructible_v<HttpPayload>);
-
-  // Upper bound of the number of bytes needed after bodyStartPos() to host the padding + the HttpPayload object.
-  static constexpr std::size_t kMaxPayloadFootprint = (kPayloadAlign - 1U) + sizeof(HttpPayload);
-
-  [[nodiscard]] constexpr std::size_t payloadOffset() const noexcept {
-    return (static_cast<std::size_t>(bodyStartPos()) + kPayloadAlign - 1U) & ~(kPayloadAlign - 1U);
-  }
-
-  // Number of bytes needed after bodyStartPos() to host padding + the HttpPayload object.
-  [[nodiscard]] constexpr std::size_t payloadFootprint() const noexcept {
-    return payloadOffset() - static_cast<std::size_t>(bodyStartPos()) + sizeof(HttpPayload);
-  }
 
   // Returns the embedded payload. Precondition: _opts.hasEmbeddedPayload().
   [[nodiscard]] const HttpPayload* getHttpPayload() const noexcept {
     assert(_opts.hasEmbeddedPayload());
-    assert(reinterpret_cast<std::uintptr_t>(_data.data()) % kPayloadAlign == 0);
-    assert(_data.size() == payloadOffset() + sizeof(HttpPayload));
-    // launder: the object was created by placement new inside a byte buffer
-    return std::launder(reinterpret_cast<const HttpPayload*>(_data.data() + payloadOffset()));
+    return EmbeddedPayload::Get(_data, bodyStartPos());
   }
 
   [[nodiscard]] HttpPayload* getHttpPayload() noexcept {
-    return const_cast<HttpPayload*>(std::as_const(*this).getHttpPayload());
+    assert(_opts.hasEmbeddedPayload());
+    return EmbeddedPayload::Get(_data, bodyStartPos());
   }
 
   void destroyEmbeddedPayload() noexcept;

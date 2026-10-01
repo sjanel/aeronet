@@ -2,16 +2,22 @@
 
 #include <gtest/gtest.h>
 
+#include <amc/type_traits.hpp>
 #include <cstddef>
 #include <cstring>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
+#include "aeronet/file-payload.hpp"
+#include "aeronet/file.hpp"
 #include "aeronet/http-payload.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/temp-file.hpp"
+#include "aeronet/vector.hpp"
 
 using namespace aeronet;
 
@@ -473,4 +479,162 @@ TEST(HttpResponseDataTest, BinaryData) {
   EXPECT_EQ(data.remainingSize(), 5U);
   EXPECT_EQ(data.firstBuffer().size(), 5U);
   EXPECT_EQ(std::memcmp(data.firstBuffer().data(), binaryData.data(), 5), 0);
+}
+
+// -----------------------------------------------------------------------------
+// Embedded payload: the captured body is constructed in place in the head buffer, right after the head.
+// -----------------------------------------------------------------------------
+
+TEST(HttpResponseDataTest, SmallAndTriviallyRelocatable) {
+  static_assert(sizeof(HttpMessageData) == sizeof(RawChars) + (2U * sizeof(std::size_t)));
+  static_assert(amc::is_trivially_relocatable_v<HttpMessageData>);
+  static_assert(!std::is_copy_constructible_v<HttpMessageData>);
+  static_assert(std::is_nothrow_move_constructible_v<HttpMessageData>);
+  static_assert(std::is_nothrow_move_assignable_v<HttpMessageData>);
+}
+
+TEST(HttpResponseDataTest, EmbeddedPayloadDoesNotMoveWithTheObject) {
+  // A short std::string uses SSO: its bytes live inside the payload object, itself inside the head buffer.
+  HttpMessageData data1(RawChars("Header"), HttpPayload(std::string("Body")));
+  const char* const pBody = data1.secondBuffer().data();
+
+  HttpMessageData data2(std::move(data1));
+  EXPECT_EQ(data2.secondBuffer().data(), pBody);
+  EXPECT_EQ(data2.firstBuffer(), "Header");
+  EXPECT_EQ(data2.secondBuffer(), "Body");
+
+  HttpMessageData data3;
+  data3 = std::move(data2);
+  EXPECT_EQ(data3.secondBuffer().data(), pBody);
+  EXPECT_EQ(data3.firstBuffer(), "Header");
+  EXPECT_EQ(data3.secondBuffer(), "Body");
+  EXPECT_EQ(data3.remainingSize(), 10U);
+  EXPECT_EQ(data3.retainedSize(), 10U);
+
+  // Moved-from objects are empty and reusable.
+  // NOLINTNEXTLINE(bugprone-use-after-move)
+  for (HttpMessageData* pMovedFrom : {&data1, &data2}) {
+    EXPECT_TRUE(pMovedFrom->empty());
+    EXPECT_EQ(pMovedFrom->firstBuffer(), "");
+    EXPECT_EQ(pMovedFrom->secondBuffer(), "");
+    EXPECT_EQ(pMovedFrom->getIfFilePayload(), nullptr);
+    pMovedFrom->append("reused");
+    EXPECT_EQ(pMovedFrom->firstBuffer(), "reused");
+    EXPECT_EQ(pMovedFrom->secondBuffer(), "");
+  }
+}
+
+TEST(HttpResponseDataTest, MoveAssignmentReplacesEmbeddedPayload) {
+  HttpMessageData target(RawChars("OldHeader"), HttpPayload(std::string(100, 'o')));
+  HttpMessageData source(RawChars("NewHeader"), HttpPayload(std::string("new body")));
+
+  target = std::move(source);
+  EXPECT_EQ(target.firstBuffer(), "NewHeader");
+  EXPECT_EQ(target.secondBuffer(), "new body");
+
+  // Self move assignment is a no-op.
+  HttpMessageData& alias = target;
+  target = std::move(alias);
+  EXPECT_EQ(target.firstBuffer(), "NewHeader");
+  EXPECT_EQ(target.secondBuffer(), "new body");
+
+  // Assigning a message without payload over one with a payload.
+  target = HttpMessageData(RawChars("Plain"));
+  EXPECT_EQ(target.firstBuffer(), "Plain");
+  EXPECT_EQ(target.secondBuffer(), "");
+  EXPECT_EQ(target.remainingSize(), 5U);
+}
+
+TEST(HttpResponseDataTest, VectorGrowthKeepsEmbeddedPayloads) {
+  static constexpr std::size_t kNbMessages = 100;
+  vector<HttpMessageData> messages;
+  std::vector<const char*> bodyPtrs;
+  for (std::size_t idx = 0; idx < kNbMessages; ++idx) {
+    // head sizes cover all the possible alignment paddings of the payload object
+    messages.emplace_back(RawChars(std::string(idx + 1U, 'h')), HttpPayload(std::string("body") + std::to_string(idx)));
+    bodyPtrs.push_back(messages.back().secondBuffer().data());
+  }
+  for (std::size_t idx = 0; idx < kNbMessages; ++idx) {
+    EXPECT_EQ(messages[idx].firstBuffer(), std::string(idx + 1U, 'h'));
+    EXPECT_EQ(messages[idx].secondBuffer(), std::string("body") + std::to_string(idx));
+    // relocation of the vector elements does not move the payloads
+    EXPECT_EQ(messages[idx].secondBuffer().data(), bodyPtrs[idx]);
+  }
+}
+
+TEST(HttpResponseDataTest, ClearDestroysEmbeddedPayload) {
+  HttpMessageData data(RawChars("Header"), HttpPayload(std::string("Body")));
+  data.addOffset(8);
+
+  data.clear();
+  EXPECT_TRUE(data.empty());
+  EXPECT_EQ(data.secondBuffer(), "");
+
+  // New data goes to the head, not to the destroyed payload.
+  data.append("New");
+  EXPECT_EQ(data.firstBuffer(), "New");
+  EXPECT_EQ(data.secondBuffer(), "");
+  EXPECT_EQ(data.remainingSize(), 3U);
+}
+
+TEST(HttpResponseDataTest, ShrinkToFitKeepsEmbeddedPayloadInPlace) {
+  RawChars head(1UL << 16U);
+  head.append("Small");
+  HttpMessageData data(std::move(head), HttpPayload(std::string("Content")));
+  const char* const pHead = data.firstBuffer().data();
+  const char* const pBody = data.secondBuffer().data();
+
+  // The head buffer is mostly unused, but it cannot be reallocated while it hosts the payload object.
+  data.shrink_to_fit();
+
+  EXPECT_EQ(data.firstBuffer().data(), pHead);
+  EXPECT_EQ(data.secondBuffer().data(), pBody);
+  EXPECT_EQ(data.firstBuffer(), "Small");
+  EXPECT_EQ(data.secondBuffer(), "Content");
+}
+
+TEST(HttpResponseDataTest, ShrinkToFitWithoutPayload) {
+  RawChars head(1UL << 16U);
+  head.append("Small");
+  HttpMessageData data(std::move(head));
+
+  data.shrink_to_fit();
+
+  EXPECT_EQ(data.firstBuffer(), "Small");
+  EXPECT_EQ(data.remainingSize(), 5U);
+}
+
+TEST(HttpResponseDataTest, EmptyPayloadIsNotEmbedded) {
+  HttpMessageData data(RawChars("Head"), HttpPayload{});
+
+  data.append(" more");
+  EXPECT_EQ(data.firstBuffer(), "Head more");
+  EXPECT_EQ(data.secondBuffer(), "");
+
+  char* const pData = data.resizeUp(4U);
+  std::memcpy(pData, " end", 4U);  // NOLINT(bugprone-not-null-terminated-result)
+  EXPECT_EQ(data.firstBuffer(), "Head more end");
+  EXPECT_EQ(data.remainingSize(), 13U);
+}
+
+TEST(HttpResponseDataTest, EmbeddedFilePayload) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, "file content");
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+
+  HttpMessageData data(RawChars("Header"), HttpPayload(FilePayload(std::move(file), 0, 12)));
+
+  FilePayload* pFilePayload = data.getIfFilePayload();
+  ASSERT_NE(pFilePayload, nullptr);
+  EXPECT_EQ(pFilePayload->length, 12U);
+  // The file content is not part of the buffers to write, it is sent separately.
+  EXPECT_EQ(data.firstBuffer(), "Header");
+  EXPECT_EQ(data.secondBuffer(), "");
+  EXPECT_EQ(data.remainingSize(), 6U);
+  EXPECT_EQ(data.retainedSize(), 6U);
+
+  HttpMessageData moved(std::move(data));
+  EXPECT_EQ(moved.getIfFilePayload(), pFilePayload);
+  EXPECT_EQ(data.getIfFilePayload(), nullptr);  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
 }

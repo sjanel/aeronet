@@ -7,7 +7,6 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
-#include <memory>
 #include <new>
 #include <optional>
 #include <stdexcept>
@@ -19,6 +18,7 @@
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/decimal-writer.hpp"
 #include "aeronet/direct-compression-mode.hpp"
+#include "aeronet/embedded-payload.hpp"
 #include "aeronet/encoder.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/file.hpp"
@@ -168,18 +168,15 @@ constexpr char* GetContentTypeValuePtr(char* pContentTypeValueEndPtr) {
 }  // namespace
 
 HttpMessage::HttpMessage(const HttpMessage& other)
-    : _data(other.wireDataSize() + (other._opts.hasEmbeddedPayload() ? kMaxPayloadFootprint : 0UL)),
+    : _data(other.wireDataSize() + (other._opts.hasEmbeddedPayload() ? EmbeddedPayload::kMaxFootprint : 0UL)),
       _posBitmap(other._posBitmap),
       _opts(other._opts) {
   _opts.resetHasEmbeddedPayload();
 
   _data.unchecked_append(other._data.data(), other.wireDataSize());
   if (other._opts.hasEmbeddedPayload()) {
-    const std::size_t offset = payloadOffset();
-    assert(offset + sizeof(HttpPayload) <= _data.capacity());
-    std::construct_at(reinterpret_cast<HttpPayload*>(_data.data() + offset), *other.getHttpPayload());
-
-    _data.setSize(offset + sizeof(HttpPayload));
+    // capacity already reserved above, so this does not reallocate
+    EmbeddedPayload::Construct(_data, bodyStartPos(), *other.getHttpPayload());
     _opts.setHasEmbeddedPayload();  // last: the bit means "object constructed"
   }
 }
@@ -336,7 +333,7 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
   } else {
     // A payload (captured body, file or HEAD size-only) will be embedded right after the head: reserve its storage now
     // to avoid a second reallocation (and a possible bad_alloc once the headers are already written).
-    neededNewSize += kMaxPayloadFootprint;
+    neededNewSize += EmbeddedPayload::kMaxFootprint;
   }
 
   char* pData;
@@ -1184,7 +1181,7 @@ void HttpMessage::finalizeForHttp1(http::Version version, Options opts, const Co
 
   // Extra capacity needed to put the embedded payload back at the end of _data (0 once the payload is dropped).
   const auto embeddedPayloadReserve = [&embeddedPayload] -> std::size_t {
-    return embeddedPayload.empty() ? 0UL : kMaxPayloadFootprint;
+    return embeddedPayload.empty() ? 0UL : EmbeddedPayload::kMaxFootprint;
   };
 
   // Bytes written in _data after the new headers, before the embedded payload (chunked framing of captured bodies).
@@ -1280,7 +1277,8 @@ void HttpMessage::finalizeForHttp1(http::Version version, Options opts, const Co
     } else {
       // Head untouched since the release: bodyStartPos() and the buffer are unchanged, so the payload goes back at
       // its original offset, where the capacity already sufficed (the old size was offset + sizeof(HttpPayload)).
-      assert(embeddedPayload.empty() || _data.capacity() >= payloadOffset() + sizeof(HttpPayload));
+      assert(embeddedPayload.empty() ||
+             _data.capacity() >= EmbeddedPayload::Offset(bodyStartPos()) + sizeof(HttpPayload));
     }
   } else {  // body > 0 && !isHeadMethod && !hasFileBody()
     const bool moveBodyInline = hasBodyCaptured && bodySz + trailersSize() <= minCapturedBodySize;
@@ -1505,11 +1503,10 @@ void HttpMessage::finalizeForHttp1(http::Version version, Options opts, const Co
     _data.addSize(totalNewHeadersSize);
   } else {
     adjustBodyStart(static_cast<int64_t>(totalNewHeadersSize + embeddedPayloadHeadExtra));
-    const std::size_t offset = payloadOffset();
-    assert(offset + sizeof(HttpPayload) <= _data.capacity());
-    std::construct_at(reinterpret_cast<HttpPayload*>(_data.data() + offset), std::move(embeddedPayload));
-
-    _data.setSize(offset + sizeof(HttpPayload));
+    // The new head bytes have been written up to bodyStartPos(), and the capacity reserved for the payload.
+    _data.setSize(bodyStartPos());
+    assert(_data.capacity() >= EmbeddedPayload::Offset(bodyStartPos()) + sizeof(HttpPayload));
+    EmbeddedPayload::Construct(_data, bodyStartPos(), std::move(embeddedPayload));
     _opts.setHasEmbeddedPayload();  // last: the bit means "object constructed"
   }
 
@@ -1521,21 +1518,11 @@ void HttpMessage::HeadGrowthManager::extractPayloadAndGrow(HttpMessage& message,
   assert(message._opts.hasEmbeddedPayload());
   _pMessage = &message;
 
-  // Extract the payload out of _data
-  HttpPayload* pPayload = message.getHttpPayload();
-  if (pPayload->isTriviallyRelocatable()) {
-    // Source object is not destroyed: its storage is simply reused (trivial relocation).
-    std::memcpy(_storage, static_cast<const void*>(pPayload), sizeof(HttpPayload));
-  } else {
-    std::construct_at(reinterpret_cast<HttpPayload*>(_storage), std::move(*pPayload));
-    std::destroy_at(pPayload);
-  }
-
+  EmbeddedPayload::RelocateOut(message._data, message.bodyStartPos(), _storage);
   message._opts.resetHasEmbeddedPayload();
-  message._data.setSize(static_cast<std::size_t>(message.bodyStartPos()));
 
   try {
-    Grow(message._data, maxHeadGrowth + static_cast<int64_t>(kMaxPayloadFootprint), growthStrategy);
+    Grow(message._data, maxHeadGrowth + static_cast<int64_t>(EmbeddedPayload::kMaxFootprint), growthStrategy);
   } catch (...) {
     reinstallPayload();
     throw;
@@ -1544,57 +1531,35 @@ void HttpMessage::HeadGrowthManager::extractPayloadAndGrow(HttpMessage& message,
 
 void HttpMessage::destroyEmbeddedPayload() noexcept {
   if (_opts.hasEmbeddedPayload()) {
-    HttpPayload* pPayload = getHttpPayload();
-    std::destroy_at(pPayload);
+    EmbeddedPayload::Destroy(_data, bodyStartPos());
     _opts.resetHasEmbeddedPayload();
-    _data.setSize(bodyStartPos());
   }
 }
 
 HttpPayload HttpMessage::releaseEmbeddedPayload() noexcept {
-  HttpPayload ret;
-  if (_opts.hasEmbeddedPayload()) {
-    HttpPayload* pPayload = getHttpPayload();
-    ret = std::move(*pPayload);
-    std::destroy_at(pPayload);
-    _opts.resetHasEmbeddedPayload();
-    _data.setSize(bodyStartPos());
+  if (!_opts.hasEmbeddedPayload()) {
+    return {};
   }
-  return ret;
+  _opts.resetHasEmbeddedPayload();
+  return EmbeddedPayload::Release(_data, bodyStartPos());
 }
 
 void HttpMessage::setEmbeddedPayload(HttpPayload&& newVal) {
   // Callers always drop the previous payload (if any) before installing a new one.
   assert(!_opts.hasEmbeddedPayload());
-  assert(_data.size() == bodyStartPos());
 
-  // Callers reserve kMaxPayloadFootprint in advance (setBodyHeaders, bodyInlineSet...), so that this normally does not
-  // reallocate. If it does, no payload is alive at this point, so a plain bitwise realloc is fine, and nothing has been
-  // modified yet if this throws.
-  _data.ensureAvailableCapacity(payloadFootprint());
-
-  const std::size_t offset = payloadOffset();
-  std::construct_at(reinterpret_cast<HttpPayload*>(_data.data() + offset), std::move(newVal));
-
-  _data.setSize(offset + sizeof(HttpPayload));
+  // Callers reserve EmbeddedPayload::kMaxFootprint in advance (setBodyHeaders, bodyInlineSet...), so that this normally
+  // does not reallocate. If it does, no payload is alive at this point, so a plain bitwise realloc is fine, and nothing
+  // has been modified yet if this throws.
+  EmbeddedPayload::Construct(_data, bodyStartPos(), std::move(newVal));
   _opts.setHasEmbeddedPayload();  // last: the bit means "object constructed"
 }
 
 void HttpMessage::HeadGrowthManager::reinstallPayload() noexcept {
   assert(_pMessage != nullptr);
   HttpMessage& message = *_pMessage;
-  assert(message._data.size() == message.bodyStartPos());
-  const std::size_t offset = message.payloadOffset();  // recomputed from the NEW bodyStartPos()
-  assert(message._data.capacity() >= offset + sizeof(HttpPayload));
-  void* dst = message._data.data() + offset;
-  HttpPayload* src = std::launder(reinterpret_cast<HttpPayload*>(_storage));
-  if (src->isTriviallyRelocatable()) {
-    std::memcpy(dst, _storage, sizeof(HttpPayload));
-  } else {
-    std::construct_at(reinterpret_cast<HttpPayload*>(dst), std::move(*src));
-    std::destroy_at(src);
-  }
-  message._data.setSize(offset + sizeof(HttpPayload));
+  // The payload offset is recomputed from the NEW bodyStartPos()
+  EmbeddedPayload::RelocateIn(message._data, message.bodyStartPos(), _storage);
   message._opts.setHasEmbeddedPayload();  // last: the bit means "object constructed"
   _pMessage = nullptr;
 }
