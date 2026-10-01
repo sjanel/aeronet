@@ -13,13 +13,9 @@ class HttpMessageData {
  public:
   HttpMessageData() noexcept = default;
 
-  explicit HttpMessageData(std::string_view data) : _buf(data) {}
-
   explicit HttpMessageData(RawChars head) noexcept : _buf(std::move(head)) {}
 
   HttpMessageData(RawChars head, HttpPayload body) noexcept : _buf(std::move(head)), _capturedBody(std::move(body)) {}
-
-  HttpMessageData(std::string_view head, HttpPayload body) noexcept : _buf(head), _capturedBody(std::move(body)) {}
 
   [[nodiscard]] std::string_view firstBuffer() const noexcept {
     return _offset < _buf.size() ? std::string_view(_buf.begin() + _offset, _buf.end()) : std::string_view();
@@ -36,10 +32,7 @@ class HttpMessageData {
 
   [[nodiscard]] bool empty() const noexcept { return remainingSize() == 0; }
 
-  [[nodiscard]] const File& file() const noexcept { return _capturedBody.getIfFilePayload()->file; }
-  [[nodiscard]] std::size_t fileLength() const noexcept { return _capturedBody.getIfFilePayload()->length; }
-
-  auto* getIfFilePayload() noexcept { return _capturedBody.getIfFilePayload(); }
+  FilePayload* getIfFilePayload() noexcept { return _capturedBody.getIfFilePayload(); }
 
   void addOffset(std::size_t sz) noexcept { _offset += sz; }
 
@@ -67,13 +60,11 @@ class HttpMessageData {
     return _capturedBody.data() + oldSize;
   }
 
-  void append(std::string_view data) { append(data.data(), data.size()); }
-
-  void append(const char* data, std::size_t size) {
+  void append(std::string_view sv) {
     if (_capturedBody.empty()) {
-      _buf.append(data, size);
+      _buf.append(sv.data(), sv.size());
     } else {
-      _capturedBody.append(data, size);
+      _capturedBody.append(sv.data(), sv.size());
     }
   }
 

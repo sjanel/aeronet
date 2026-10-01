@@ -206,9 +206,9 @@ bool CIEqualLibrary(std::string_view lhs, std::string_view rhs) noexcept { retur
 struct CaseInsensitiveHashBoostStyle {
   std::size_t operator()(std::string_view str) const noexcept {
     std::size_t hash = 0;
-    for (unsigned char c : str) {
-      hash ^= static_cast<std::size_t>(tolower(c)) + static_cast<std::size_t>(0x9e3779b97f4a7c15ULL) + (hash << 6) +
-              (hash >> 2);
+    for (char ch : str) {
+      hash ^= static_cast<std::size_t>(tolower(ch)) + static_cast<std::size_t>(0x9e3779b97f4a7c15ULL) + (hash << 6U) +
+              (hash >> 2U);
     }
     return hash;
   }
@@ -217,8 +217,8 @@ struct CaseInsensitiveHashBoostStyle {
 struct CaseInsensitiveHashFnv1Style {
   std::size_t operator()(std::string_view str) const noexcept {
     std::size_t hash = 14695981039346656037ULL;
-    for (char c : str) {
-      hash ^= tolower(c);
+    for (char ch : str) {
+      hash ^= static_cast<std::size_t>(tolower(ch));
       hash *= 1099511628211ULL;
     }
     return hash;
@@ -288,7 +288,7 @@ static void Hash_CI_Boost(benchmark::State& state) {
     }
   }
 
-  state.SetItemsProcessed(state.iterations() * kStorage.size());
+  state.SetItemsProcessed(static_cast<std::size_t>(state.iterations()) * kStorage.size());
 }
 
 static void Hash_CI_FNV1a(benchmark::State& state) {
@@ -300,7 +300,7 @@ static void Hash_CI_FNV1a(benchmark::State& state) {
     }
   }
 
-  state.SetItemsProcessed(state.iterations() * kStorage.size());
+  state.SetItemsProcessed(static_cast<std::size_t>(state.iterations()) * kStorage.size());
 }
 
 static void Hash_City(benchmark::State& state) {
@@ -312,7 +312,7 @@ static void Hash_City(benchmark::State& state) {
     }
   }
 
-  state.SetItemsProcessed(state.iterations() * kStorage.size());
+  state.SetItemsProcessed(static_cast<std::size_t>(state.iterations()) * kStorage.size());
 }
 
 static void UnorderedMap_Find_City(benchmark::State& state) {
@@ -325,7 +325,7 @@ static void UnorderedMap_Find_City(benchmark::State& state) {
     }
   }
 
-  state.SetItemsProcessed(state.iterations() * kStorage.size());
+  state.SetItemsProcessed(static_cast<std::size_t>(state.iterations()) * kStorage.size());
 }
 
 static void FlatHashMap_Find_City(benchmark::State& state) {
@@ -338,7 +338,7 @@ static void FlatHashMap_Find_City(benchmark::State& state) {
     }
   }
 
-  state.SetItemsProcessed(state.iterations() * kStorage.size());
+  state.SetItemsProcessed(static_cast<std::size_t>(state.iterations()) * kStorage.size());
 }
 
 static void FlatHashMap_Find_Sv(benchmark::State& state) {
@@ -351,7 +351,7 @@ static void FlatHashMap_Find_Sv(benchmark::State& state) {
     }
   }
 
-  state.SetItemsProcessed(state.iterations() * kStorage.size());
+  state.SetItemsProcessed(static_cast<std::size_t>(state.iterations()) * kStorage.size());
 }
 
 // ------------------------------------------------------------

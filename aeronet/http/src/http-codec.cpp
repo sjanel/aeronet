@@ -75,7 +75,7 @@ struct VaryResult {
   VaryResult res{.valueFirst = kNoVaryHeader, .valueLast = kNoVaryHeader};
 
   for (const auto& hdr : msg.headers()) {
-    if (!CaseInsensitiveEqual(hdr.name, http::Vary)) {
+    if (hdr.name != http::Vary) {
       continue;
     }
 
@@ -430,7 +430,7 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
   // Compute offsets for the reserved tail (Content-Type + Content-Length + DoubleCRLF).
   const auto nDigitsMaxCompressedSize = ndigits(maxCompressedBytes);
   const std::size_t contentTypeLinePos = static_cast<std::size_t>(msg.getContentTypeHeaderLinePtr() - pData);
-  const std::size_t oldDataSz = msg._data.size();
+  const std::size_t oldDataSz = msg.wireDataSize();
 
   std::size_t contentTypeLineLen;
   if (sendContentLengthHeader) {
@@ -462,6 +462,28 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
   const std::size_t initialCompressedBytes = std::min<std::size_t>(maxCompressedBytes, initialCompressionBufferLimit);
   const std::size_t initialNeededCapacity = oldDataSz + initialCompressedBytes + headersShift + capturedTrailerGrowth;
 
+  // Extract embedded payload (if any) from the buffer before overwriting its storage.
+  // It is put back if the compression is aborted, so that the response stays unmodified.
+  struct PayloadRestorer {
+    PayloadRestorer(HttpMessage& msg, HttpPayload payload) : msg(msg), payload(std::move(payload)) {}
+
+    PayloadRestorer(const PayloadRestorer&) = delete;
+    PayloadRestorer(PayloadRestorer&&) noexcept = delete;
+    PayloadRestorer& operator=(const PayloadRestorer&) = delete;
+    PayloadRestorer& operator=(PayloadRestorer&&) noexcept = delete;
+
+    ~PayloadRestorer() {
+      if (!committed && !payload.empty()) {
+        msg.setEmbeddedPayload(std::move(payload));  // capacity is already sufficient, cannot throw
+      }
+    }
+
+    HttpMessage& msg;
+    HttpPayload payload;
+    bool committed{false};
+  } payloadRestorer(msg, msg.releaseEmbeddedPayload());
+  const HttpPayload& embeddedPayload = payloadRestorer.payload;
+
   // Reserve once (no realloc after we start reading internal body).
   // We reserve for:
   //   - worst-case tail growth (using current body digit count as upper bound)
@@ -475,7 +497,13 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
   const std::size_t bodyCompStartPos = oldDataSz + headersShift;
   char* pCompBody = msg._data.data() + bodyCompStartPos;
 
-  std::string_view body = msg.bodyInMemory();
+  std::string_view body;
+  if (hasBodyCaptured) {
+    body = embeddedPayload.view();
+    body.remove_suffix(trailersSz);
+  } else {
+    body = msg.bodyInMemory();
+  }
 
   std::size_t totalCompSize;
   if (maxCompressedBytes <= initialCompressionBufferLimit) {
@@ -621,8 +649,7 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
 
     if (trailersSz != 0) {
       // Move trailers to their final position after the compressed body.
-      // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
-      Copy(msg.trailersFlatView().data(), trailersSz, msg._data.data() + newTrailersPos);
+      Copy(embeddedPayload.view().data() + bodySz, trailersSz, msg._data.data() + newTrailersPos);
     }
   } else {
     if (trailersSz != 0) {
@@ -692,7 +719,7 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
 
   // Finalize response metadata to reflect compression
   msg._data.setSize(newBodyStartPos + totalCompSize + trailersSz);
-  msg._payloadVariant = {};
+  payloadRestorer.committed = true;
 
   return CompressResponseResult::Compressed;
 }

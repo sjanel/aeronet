@@ -290,21 +290,21 @@ HttpRequest& HttpRequest::method(http::Method method) & {
   const auto newMethodStr = http::MethodToStr(method);
   const auto oldMethodLen = http::MethodToStr(oldMethod).size();
   const auto newMethodLen = newMethodStr.size();
-  const int8_t diffLen = static_cast<int8_t>(newMethodLen) - static_cast<int8_t>(oldMethodLen);
+  const int32_t diffLen = static_cast<int32_t>(newMethodLen) - static_cast<int32_t>(oldMethodLen);
 
-  _data.ensureAvailableCapacityExponential(diffLen);
+  HeadGrowthManager headEditGuard(*this, diffLen);
 
   // Shift the [method-end, end) tail by `diffLen` to make room for the new method string.
-  assert(_data.size() >= oldMethodLen);
+  assert(_data.size() >= oldMethodLen + _originKeyLen);
   std::memmove(_data.data() + newMethodLen + _originKeyLen, _data.data() + oldMethodLen + _originKeyLen,
                _data.size() - oldMethodLen - _originKeyLen);
-
-  Copy(newMethodStr, _data.data() + _originKeyLen);
 
   // Adjust positions and size
   adjustHeadersAndBodyStart(diffLen);
 
   _data.adjustSize(diffLen);
+
+  Copy(newMethodStr, _data.data() + _originKeyLen);
 
   return *this;
 }
@@ -319,7 +319,7 @@ HttpRequest& HttpRequest::target(std::string_view target) & {
 
   const int32_t diffLen = static_cast<int32_t>(newTargetLen) - static_cast<int32_t>(oldTargetLen);
 
-  _data.ensureAvailableCapacityExponential(diffLen);
+  HeadGrowthManager headEditGuard(*this, diffLen);
 
   char* pData = _data.data();
 
@@ -365,16 +365,16 @@ const char* HttpRequest::setNewUrl(const internal::UrlParseResult& res) {
       _originKeyLen + methodLen + 1U + res.target.size() + 1U + http::HTTP11Sv.size() + hostHeaderSize;
   const int32_t diffLen = static_cast<int32_t>(newHostHeaderEndPos) - static_cast<int32_t>(oldHostHeaderEndPos);
 
-  _data.ensureAvailableCapacityExponential(diffLen);
+  HeadGrowthManager headEditGuard(*this, diffLen);
 
   char* pData = _data.data();
 
   // Move everything after the origin key.
   std::memmove(pData + newHostHeaderEndPos, pData + oldHostHeaderEndPos, _data.size() - oldHostHeaderEndPos);
 
-  char* pInsert = InitData(method, hasNonTlsProxy, hostIsIpv6, res, _data.data());
+  char* pInsert = InitData(method, hasNonTlsProxy, hostIsIpv6, res, pData);
 
-  setHeadersStartPosNoCheck(static_cast<uint64_t>(pInsert - _data.data()) - hostHeaderSize);
+  setHeadersStartPosNoCheck(static_cast<uint64_t>(pInsert - pData) - hostHeaderSize);
   adjustBodyStart(diffLen);
   _data.adjustSize(diffLen);
   return pErrorMsg;
@@ -425,22 +425,22 @@ bool HttpRequest::resolveRedirect(std::string_view location) {
   }
 
   const auto newTargetLen = prefixLen + location.size();
-  const int32_t diffLen = static_cast<int32_t>(newTargetLen) - static_cast<int32_t>(oldTargetLen);
+  const int64_t diffLen = static_cast<int64_t>(newTargetLen) - static_cast<int64_t>(oldTargetLen);
 
-  _data.ensureAvailableCapacityExponential(diffLen);
+  HeadGrowthManager headEditGuard(*this, diffLen);
 
   char* pTarget = targetBeg();
 
   // Move everything after the target (" HTTP/1.1"...).
   std::memmove(pTarget + newTargetLen, pTarget + oldTargetLen,
                _data.size() - oldTargetLen - static_cast<std::size_t>(pTarget - _data.data()));
-
   // Overwrite the suffix.
   char* pEndTarget = Append(location, pTarget + prefixLen);
 
   const char* pErrorMsg =
       CheckTarget(std::string_view(pTarget, pEndTarget), HttpMessage::kHeaderPosNbBits, _originKeyLen);
   if (pErrorMsg != nullptr) {
+    // TODO: no adjust of headers and Body start in that case?
     return false;
   }
 

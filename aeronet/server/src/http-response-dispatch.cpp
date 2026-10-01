@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string_view>
 #include <system_error>
 #include <utility>
@@ -78,7 +79,7 @@ SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionI
                                              ? std::string_view(state.inBuffer.data(), consumedBytes)
                                              : std::string_view{};
 
-    auto result = ProcessSpecialMethods(request, _router, config, pCorsPolicy, requestData);
+    std::optional<HttpResponse> result = ProcessSpecialMethods(request, _router, config, pCorsPolicy, requestData);
     if (result) {
       finalizeAndSendResponseForHttp1(cnxIt, std::move(*result), pCorsPolicy);
       return LoopAction::Continue;
