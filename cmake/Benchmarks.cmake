@@ -111,6 +111,7 @@ endif()
 set(AERONET_BENCH_INTERNAL_DECIMAL_WRITER ${AERONET_BENCH_ROOT}/internal/decimal-writer_bench.cpp)
 set(AERONET_BENCH_INTERNAL_INIT_TRY_SET_HEAD ${AERONET_BENCH_ROOT}/internal/init-try-set-head_bench.cpp)
 set(AERONET_BENCH_INTERNAL_HTTP_MESSAGE_HEADER_SEARCH ${AERONET_BENCH_ROOT}/internal/http-message-header-search_bench.cpp)
+set(AERONET_BENCH_INTERNAL_HTTP_RESPONSE_PAYLOAD ${AERONET_BENCH_ROOT}/internal/http-response-payload_bench.cpp)
 set(AERONET_BENCH_INTERNAL_KEEP_ALIVE_DEADLINE_QUEUE ${AERONET_BENCH_ROOT}/internal/keep-alive-deadline-queue_bench.cpp)
 if(AERONET_ENABLE_HTTP_SERVER)
   set(AERONET_BENCH_INTERNAL_REQUEST_PARSE ${AERONET_BENCH_ROOT}/internal/request-parse_bench.cpp)
@@ -176,6 +177,10 @@ set_target_properties(aeronet-bench-internal-init-try-set-head PROPERTIES FOLDER
 AeronetAddProjectBenchmark(aeronet-bench-internal-http-message-header-search
                            ${AERONET_BENCH_INTERNAL_HTTP_MESSAGE_HEADER_SEARCH} LIBRARIES aeronet_http)
 set_target_properties(aeronet-bench-internal-http-message-header-search PROPERTIES FOLDER "benchmarks/internal")
+
+AeronetAddProjectBenchmark(aeronet-bench-internal-http-response-payload ${AERONET_BENCH_INTERNAL_HTTP_RESPONSE_PAYLOAD}
+                           LIBRARIES aeronet_http)
+set_target_properties(aeronet-bench-internal-http-response-payload PROPERTIES FOLDER "benchmarks/internal")
 
 if(AERONET_ENABLE_HTTP_SERVER)
   AeronetAddProjectBenchmark(aeronet-bench-internal-keep-alive-deadline-queue ${AERONET_BENCH_INTERNAL_KEEP_ALIVE_DEADLINE_QUEUE})

@@ -304,6 +304,13 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    embedded-payload_test
+    test/embedded-payload_test.cpp
+    LIBRARIES
+    aeronet_objects
+)
+
+AeronetAddUnitTest(
     http-message-data_test
     test/http-message-data_test.cpp
     LIBRARIES
