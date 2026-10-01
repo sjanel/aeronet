@@ -44,6 +44,7 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/log.hpp"
 #include "aeronet/nchars.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
@@ -62,8 +63,8 @@ class HttpResponseTest : public ::testing::Test {
 
   const RawChars kExpectedDateRaw = MakeHttp1HeaderLine(http::Date, "Thu, 01 Jan 1970 00:00:00 GMT");
 
-  CompressionConfig cfg;
-  CompressionState compressionState{cfg};
+  CompressionConfig compressionConfig;
+  CompressionState compressionState{compressionConfig};
 
   struct PreparedOptions {
     bool head = false;
@@ -160,8 +161,8 @@ class HttpResponseTest : public ::testing::Test {
     }
     auto prepared =
         finalizePrepared(std::move(resp), globalHeaders, head, addTrailerHeader, keepAliveFlag, minCapturedBodySize);
-    if (prepared.getIfFilePayload() != nullptr) {
-      EXPECT_EQ(prepared.fileLength(), expectedFileLen);
+    if (auto pFilePayload = prepared.getIfFilePayload(); pFilePayload != nullptr) {
+      EXPECT_EQ(pFilePayload->length, expectedFileLen);
     }
     return prepared;
   }
@@ -172,8 +173,8 @@ class HttpResponseTest : public ::testing::Test {
                                   bool addTrailerHeader = kAddTrailerHeader) {
     HttpMessageData httpResponseData =
         finalize(std::move(resp), globalHeaders, head, keepAliveFlag, addTrailerHeader, minCapturedBodySize);
-    auto firstBuf = httpResponseData.firstBuffer();
-    auto secondBuf = httpResponseData.secondBuffer();
+    std::string_view firstBuf = httpResponseData.firstBuffer();
+    std::string_view secondBuf = httpResponseData.secondBuffer();
     std::string out;
     out.reserve(firstBuf.size() + secondBuf.size());
     out.append(firstBuf);
@@ -1214,6 +1215,184 @@ TEST_F(HttpResponseTest, HeaderRemoveValueWithEmptySepartorShouldThrow) {
   EXPECT_THROW(HttpResponse{}.headerRemoveValue("x-test", "value1", ""), std::invalid_argument);
 }
 
+// ---------- empty value: the regression that used to corrupt the header ----------
+
+TEST_F(HttpResponseTest, HeaderRemoveValueEmptyValueNoEmptyTokenIsNoOp) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("x-test", "a, b");
+
+  resp.headerRemoveValue("x-test", "");
+
+  EXPECT_EQ(resp.headerValueOrEmpty("x-test"), "a, b");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueEmptyValueSingleTokenIsNoOp) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("x-test", "a");
+
+  resp.headerRemoveValue("x-test", "");
+
+  EXPECT_EQ(resp.headerValueOrEmpty("x-test"), "a");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueEmptyValueRemovesOnlyOneEmptyToken) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("x-test", "a, , , , b");
+
+  resp.headerRemoveValue("x-test", "");
+
+  EXPECT_EQ(resp.headerValueOrEmpty("x-test"), "a, , , b");
+
+  resp.headerRemoveValue("x-test", "", " ");  // should do nothing
+  EXPECT_EQ(resp.headerValueOrEmpty("x-test"), "a, , , b");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueEmptyValueRemovesWholeEmptyHeader) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("x-test", "");
+  ASSERT_TRUE(resp.hasHeader("x-test"));
+
+  resp.headerRemoveValue("x-test", "");
+
+  EXPECT_FALSE(resp.hasHeader("x-test"));
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueWhitespaceOnlyValueBehavesAsEmpty) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("x-test", "a, b");
+
+  resp.headerRemoveValue("x-test", "  ");  // trimmed to "", no empty token present
+
+  EXPECT_EQ(resp.headerValueOrEmpty("x-test"), "a, b");
+}
+
+// ---------- non-empty value: position ----------
+
+TEST_F(HttpResponseTest, HeaderRemoveValueFirstToken) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("x-test", "a, b, c");
+
+  resp.headerRemoveValue("x-test", "a");
+
+  EXPECT_EQ(resp.headerValueOrEmpty("x-test"), "b, c");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueMiddleToken) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("x-test", "a, b, c");
+
+  resp.headerRemoveValue("x-test", "b");
+
+  EXPECT_EQ(resp.headerValueOrEmpty("x-test"), "a, c");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueLastToken) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("x-test", "a, b, c");
+
+  resp.headerRemoveValue("x-test", "c");
+
+  EXPECT_EQ(resp.headerValueOrEmpty("x-test"), "a, b");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueOnlyFirstOccurrenceIsRemoved) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("x-test", "a, b, a");
+
+  resp.headerRemoveValue("x-test", "a");
+
+  EXPECT_EQ(resp.headerValueOrEmpty("x-test"), "b, a");
+}
+
+// ---------- non-empty value: must match a whole token ----------
+
+TEST_F(HttpResponseTest, HeaderRemoveValueNotPresentIsNoOp) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("x-test", "a, b");
+
+  resp.headerRemoveValue("x-test", "c");
+
+  EXPECT_EQ(resp.headerValueOrEmpty("x-test"), "a, b");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueSubstringOfTokenIsNotRemoved) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("x-test", "foobar, bazfoo");
+
+  resp.headerRemoveValue("x-test", "foo");  // prefix of one token, suffix of the other
+
+  EXPECT_EQ(resp.headerValueOrEmpty("x-test"), "foobar, bazfoo");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueSkipsSubstringThenRemovesRealToken) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("x-test", "foobar, foo");
+
+  resp.headerRemoveValue("x-test", "foo");  // first occurrence is a prefix of "foobar", must be skipped
+
+  EXPECT_EQ(resp.headerValueOrEmpty("x-test"), "foobar");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueRemovesWholeLineWhenValueEqualsHeader) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("x-test", "a");
+
+  resp.headerRemoveValue("x-test", "a");
+
+  EXPECT_FALSE(resp.hasHeader("x-test"));
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueIsTrimmed) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("x-test", "a, b");
+
+  resp.headerRemoveValue("x-test", " b ");
+
+  EXPECT_EQ(resp.headerValueOrEmpty("x-test"), "a");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueNextToEmptyToken) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("x-test", "a, , b");
+
+  resp.headerRemoveValue("x-test", "b");
+
+  // Pins the current behavior: only "b" and its preceding separator go, the empty token stays.
+  EXPECT_EQ(resp.headerValueOrEmpty("x-test"), "a, ");
+}
+
+// ---------- header selection and errors ----------
+
+TEST_F(HttpResponseTest, HeaderRemoveValueMissingHeaderIsNoOp) {
+  HttpResponse resp(http::StatusCodeOK);
+
+  EXPECT_NO_THROW(resp.headerRemoveValue("x-test", "a"));
+  EXPECT_FALSE(resp.hasHeader("x-test"));
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueTargetsLastOccurrenceOfDuplicatedHeader) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("x-test", "a, b");
+  resp.headerAddLine("x-test", "a, b");
+
+  resp.headerRemoveValue("x-test", "a");
+
+  std::vector<std::string_view> values;
+  for (const auto& [name, value] : resp.headers()) {
+    if (name == "x-test") {
+      values.push_back(value);
+    }
+  }
+  EXPECT_EQ(values, (std::vector<std::string_view>{"a, b", "b"}));
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveValueEmptySeparatorThrows) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("x-test", "a, b");
+
+  EXPECT_THROW(resp.headerRemoveValue("x-test", "a", ""), std::invalid_argument);
+}
+
 TEST_F(HttpResponseTest, ContentEncodingHeader) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
@@ -1847,6 +2026,30 @@ TEST_F(HttpResponseTest, AppendBodyWithoutContentLengthHeader) {
   resp.body("payload");
   EXPECT_FALSE(resp.headerValue(http::ContentLength));
 }
+
+TEST_F(HttpResponseTest, AppendBodyWithoutContentLengthHeaderAutomaticCompression) {
+  compressionConfig.minBytes = 1U;
+  for (Encoding enc : test::SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.sendContentLengthHeader = false, .expectedEncoding = enc})
+                            .directCompressionMode(DirectCompressionMode::Auto);
+
+    std::string totalBody;
+    for (int i = 0; i < 100; ++i) {
+      resp.bodyAppend("payload");
+      totalBody += "payload";
+    }
+
+    // should finalize inline body
+    resp.trailerAddLine("x-trailer", "trailer value");
+
+    const auto decompressedBody = test::Decompress(enc, resp.bodyInMemory());
+
+    EXPECT_FALSE(resp.hasHeader(http::ContentLength));
+    EXPECT_TRUE(resp.trailersFlatView().contains("x-trailer:"));
+    EXPECT_TRUE(resp.hasHeader(http::ContentType));
+    EXPECT_EQ(totalBody, std::string_view(decompressedBody));
+  }
+}
 #endif
 
 TEST_F(HttpResponseTest, AppendHeaderValueKeepsBodyIntact) {
@@ -2186,9 +2389,10 @@ TEST_F(HttpResponseTest, SendFileHeadMovesFileAndSuppressesLength) {
 
   auto prepared = finalizePrepared(std::move(resp), true /*head*/);
   // The file should be moved out, but head suppresses payload length to 0
-  ASSERT_NE(prepared.getIfFilePayload(), nullptr);
-  EXPECT_EQ(prepared.fileLength(), 0U);
-  EXPECT_EQ(prepared.file().size(), sz);
+  auto* pFilePayload = prepared.getIfFilePayload();
+  ASSERT_NE(pFilePayload, nullptr);
+  EXPECT_EQ(pFilePayload->length, 0U);
+  EXPECT_EQ(pFilePayload->file.size(), sz);
 
   std::string headers(prepared.firstBuffer());
   EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(sz))));
@@ -2208,8 +2412,9 @@ TEST_F(HttpResponseTest, SendFileHeadSuppressesPayload) {
   resp.file(std::move(file));
 
   auto prepared = finalizePrepared(std::move(resp), true /*head*/);
-  ASSERT_NE(prepared.getIfFilePayload(), nullptr);
-  EXPECT_EQ(prepared.fileLength(), 0U);
+  auto* pFilePayload = prepared.getIfFilePayload();
+  ASSERT_NE(pFilePayload, nullptr);
+  EXPECT_EQ(pFilePayload->length, 0U);
 
   std::string headers(prepared.firstBuffer());
   EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(sz))));
@@ -2237,9 +2442,10 @@ TEST_F(HttpResponseTest, SendFilePayload) {
   EXPECT_THROW(resp.trailerAddLine("x-trailer", "value");, std::logic_error);
 
   auto prepared = finalizePrepared(std::move(resp));
-  ASSERT_NE(prepared.getIfFilePayload(), nullptr);
-  EXPECT_EQ(prepared.fileLength(), sz);
-  EXPECT_EQ(prepared.file().size(), sz);
+  auto* pFilePayload = prepared.getIfFilePayload();
+  ASSERT_NE(pFilePayload, nullptr);
+  EXPECT_EQ(pFilePayload->length, sz);
+  EXPECT_EQ(pFilePayload->file.size(), sz);
 
   std::string headers(prepared.firstBuffer());
   EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(sz))));
@@ -2257,9 +2463,10 @@ TEST_F(HttpResponseTest, SendFilePayloadOffsetLength) {
   auto resp = HttpResponse(http::StatusCodeOK, "OK").file(std::move(file), 2, sz - 4);
 
   auto prepared = finalizePrepared(std::move(resp));
-  ASSERT_NE(prepared.getIfFilePayload(), nullptr);
-  EXPECT_EQ(prepared.fileLength(), sz - 4);
-  EXPECT_EQ(prepared.file().size(), sz);
+  auto* pFilePayload = prepared.getIfFilePayload();
+  ASSERT_NE(pFilePayload, nullptr);
+  EXPECT_EQ(pFilePayload->length, sz - 4);
+  EXPECT_EQ(pFilePayload->file.size(), sz);
 
   std::string headers(prepared.firstBuffer());
   EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(sz - 4))));
@@ -2279,9 +2486,10 @@ TEST_F(HttpResponseTest, SendFilePayloadOffsetLengthRvalue) {
   resp.file(std::move(file), 3, sz - 6);
 
   auto prepared = finalizePrepared(std::move(resp));
-  ASSERT_NE(prepared.getIfFilePayload(), nullptr);
-  EXPECT_EQ(prepared.fileLength(), sz - 6);
-  EXPECT_EQ(prepared.file().size(), sz);
+  auto* pFilePayload = prepared.getIfFilePayload();
+  ASSERT_NE(pFilePayload, nullptr);
+  EXPECT_EQ(pFilePayload->length, sz - 6);
+  EXPECT_EQ(pFilePayload->file.size(), sz);
 
   std::string headers(prepared.firstBuffer());
   EXPECT_TRUE(headers.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(sz - 6))));
@@ -2311,8 +2519,10 @@ TEST_F(HttpResponseTest, SendFileZeroLengthPayload) {
     }
 
     auto prepared = finalizePrepared(std::move(resp));
-    ASSERT_NE(prepared.getIfFilePayload(), nullptr);
-    EXPECT_EQ(prepared.fileLength(), 0U);
+
+    auto* pFilePayload = prepared.getIfFilePayload();
+    ASSERT_NE(pFilePayload, nullptr);
+    EXPECT_EQ(pFilePayload->length, 0U);
 
     std::string headers(prepared.firstBuffer());
     EXPECT_EQ(headers.contains(MakeHttp1HeaderLine(http::ContentLength, "0")), sendContentLengthHeader);
@@ -2859,7 +3069,7 @@ TEST_F(HttpResponseTest, BodyAppend_ContinuesStreamingCompression) {
 
 // Test that setting body() below minBytes threshold does NOT trigger direct compression (Auto mode)
 TEST_F(HttpResponseTest, Body_BelowMinBytes_NoDirectCompression) {
-  cfg.minBytes = 2048;
+  compressionConfig.minBytes = 2048;
   const std::string body(1024, 'A');  // Below 2048 threshold
   for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
@@ -2875,7 +3085,7 @@ TEST_F(HttpResponseTest, Body_BelowMinBytes_NoDirectCompression) {
 
 // Test that DirectCompressionMode::On bypasses minBytes threshold
 TEST_F(HttpResponseTest, Body_OnMode_BypassesMinBytes) {
-  cfg.minBytes = 2048;
+  compressionConfig.minBytes = 2048;
   const std::string body(256, 'B');  // Well below 2048 threshold
   for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
@@ -3247,8 +3457,8 @@ TEST_F(HttpResponseTest, Body_ExistingVaryHeader_Appends) {
 
 // Test: Content-Type allowlist filtering works in Auto mode
 TEST_F(HttpResponseTest, Body_ContentTypeNotInAllowList_NoCompression) {
-  cfg.contentTypeAllowList.append("text/html");
-  cfg.contentTypeAllowList.append("application/json");
+  compressionConfig.contentTypeAllowList.append("text/html");
+  compressionConfig.contentTypeAllowList.append("application/json");
 
   const std::string body(2048, 'I');
   for (Encoding enc : test::SupportedEncodings()) {
@@ -3265,8 +3475,8 @@ TEST_F(HttpResponseTest, Body_ContentTypeNotInAllowList_NoCompression) {
 
 // Test: Content-Type in allowlist allows compression
 TEST_F(HttpResponseTest, Body_ContentTypeInAllowList_CompressesBody) {
-  cfg.contentTypeAllowList.append("text/html");
-  cfg.contentTypeAllowList.append("application/json");
+  compressionConfig.contentTypeAllowList.append("text/html");
+  compressionConfig.contentTypeAllowList.append("application/json");
 
   const std::string body(2048, '{');
   for (Encoding enc : test::SupportedEncodings()) {
@@ -3283,7 +3493,7 @@ TEST_F(HttpResponseTest, Body_ContentTypeInAllowList_CompressesBody) {
 
 // Test: On mode bypasses content type allow list check
 TEST_F(HttpResponseTest, Body_OnMode_BypassesContentTypeAllowList) {
-  cfg.contentTypeAllowList.append("text/html");
+  compressionConfig.contentTypeAllowList.append("text/html");
 
   const std::string body(2048, 'P');
   for (Encoding enc : test::SupportedEncodings()) {
@@ -3314,7 +3524,7 @@ TEST_F(HttpResponseTest, Body_HeadMethod_NoDirectCompression) {
 
 // Test: large body with multiple bodyAppend cycles verifying round-trip
 TEST_F(HttpResponseTest, BodyAppend_LargeDataRoundTrip) {
-  cfg.minBytes = 256;
+  compressionConfig.minBytes = 256;
 
   for (Encoding enc : test::SupportedEncodings()) {
     HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
@@ -3399,15 +3609,15 @@ TEST_F(HttpResponseTest, TrailerAddLine_FinalizesDirectCompression) {
 // Test: defaultDirectCompressionMode from CompressionConfig is respected
 TEST_F(HttpResponseTest, DefaultDirectCompressionMode_FromConfig) {
   for (Encoding enc : test::SupportedEncodings()) {
-    cfg.defaultDirectCompressionMode = DirectCompressionMode::Off;
+    compressionConfig.defaultDirectCompressionMode = DirectCompressionMode::Off;
     HttpResponse resp1 = makePrepared(PreparedOptions{.expectedEncoding = enc});
     EXPECT_EQ(resp1.directCompressionMode(), DirectCompressionMode::Off);
 
-    cfg.defaultDirectCompressionMode = DirectCompressionMode::On;
+    compressionConfig.defaultDirectCompressionMode = DirectCompressionMode::On;
     HttpResponse resp2 = makePrepared(PreparedOptions{.expectedEncoding = enc});
     EXPECT_EQ(resp2.directCompressionMode(), DirectCompressionMode::On);
 
-    cfg.defaultDirectCompressionMode = DirectCompressionMode::Auto;
+    compressionConfig.defaultDirectCompressionMode = DirectCompressionMode::Auto;
     HttpResponse resp3 = makePrepared(PreparedOptions{.expectedEncoding = enc});
     EXPECT_EQ(resp3.directCompressionMode(), DirectCompressionMode::Auto);
   }
@@ -3678,6 +3888,8 @@ ParsedResponse parseResponse(std::string_view full, bool hasFile) {
     auto line = full.substr(cursor, eol - cursor);
     auto sep = line.find(http::HeaderSep);
     if (sep == std::string_view::npos) {
+      log::critical("No separator found in header line: {}", line);
+      log::critical("Full response:\n{}", full);
       throw std::runtime_error("No separator in header line in response");
     }
     pr.headers.emplace_back(line.substr(0, sep), line.substr(sep + 2));

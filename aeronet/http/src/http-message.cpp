@@ -17,6 +17,7 @@
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/decimal-writer.hpp"
 #include "aeronet/direct-compression-mode.hpp"
+#include "aeronet/encoder.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/header-write.hpp"
@@ -30,6 +31,7 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/log.hpp"
 #include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/memory-utils.hpp"
@@ -192,7 +194,7 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
 
   contentTypeValue = CheckContentType(newBodySize == 0, contentTypeValue);
 
-  const auto newContentTypeHeaderSize = http::HeaderSize(http::ContentType.size(), contentTypeValue.size());
+  const std::size_t newContentTypeHeaderSize = http::HeaderSize(http::ContentType.size(), contentTypeValue.size());
   const bool setInlineBody = context == BodySetContext::Inline && !isHead();
 
   std::size_t neededNewSize = newContentTypeHeaderSize;
@@ -261,8 +263,8 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
   if (setInlineBody) {
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
     if (tryCompression) {
-      auto& compressionState = *_opts._pCompressionState;
-      auto& encoderCtx = *compressionState.makeContext(_opts._pickedEncoding);
+      CompressionState& compressionState = *_opts._pCompressionState;
+      EncoderContext& encoderCtx = *compressionState.makeContext(_opts._pickedEncoding);
 
       neededNewSize += encoderCtx.minEncodeChunkCapacity(newBodySize);
     } else {
@@ -366,8 +368,8 @@ void HttpMessage::bodyAppendImpl(std::string_view body, std::string_view content
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
       if (_opts.isAutomaticDirectCompression()) {
         assert(_opts._pCompressionState != nullptr);
-        auto& compressionState = *_opts._pCompressionState;
-        auto& encoderCtx = *compressionState.context(_opts._pickedEncoding);
+        CompressionState& compressionState = *_opts._pCompressionState;
+        EncoderContext& encoderCtx = *compressionState.context(_opts._pickedEncoding);
         neededCapacity += static_cast<int64_t>(encoderCtx.minEncodeChunkCapacity(body.size()));
       } else {
         neededCapacity += static_cast<int64_t>(body.size());
@@ -621,64 +623,71 @@ void HttpMessage::headerRemoveValueImpl(LowerAsciiKey key, std::string_view valu
     throw std::invalid_argument("Cannot remove Host header value from HTTP request");
   }
 
+  value = TrimOws(value);  // same normalization as headerAppendValueImpl
+
   const std::string_view headerValue(first, last);
   if (value == headerValue) {
     // value matches the whole header value, we remove the whole header line
     const std::size_t lineSize = http::HeaderSize(key.size(), headerValue.size());
-    const std::size_t sizeToMove = _data.size() - static_cast<std::size_t>(last + http::CRLF.size() - _data.data());
-    char* dest = _data.data() + (first - _data.data()) - key.size() - http::HeaderSep.size();
+    const std::size_t lastPos = static_cast<std::size_t>(last - _data.data());
+    const std::size_t destPos = static_cast<std::size_t>(first - _data.data()) - key.size() - http::HeaderSep.size();
+    const int64_t bodyShift = -static_cast<int64_t>(lineSize);
 
-    std::memmove(dest, last + http::CRLF.size(), sizeToMove);
+    char* dest = _data.data() + destPos;
+    const std::size_t sizeToMove = _data.size() - (lastPos + http::CRLF.size());
+
+    std::memmove(dest, _data.data() + lastPos + http::CRLF.size(), sizeToMove);
+
     _data.setSize(_data.size() - lineSize);
-    adjustBodyStartNoCheck(-static_cast<int64_t>(lineSize));
+    adjustBodyStartNoCheck(bodyShift);
 
     return;
   }
 
-  const std::string_view occ = value.empty() ? sep : value;
+  const char* removeFirst = nullptr;
+  const char* removeLast = nullptr;
 
-  auto valueIt = first;
-  while (true) {
-    valueIt = std::search(valueIt, last, occ.begin(), occ.end());
-    if (valueIt == last) {
-      break;
-    }
-
-    // check if value is correctly surrounded by 'sep' (or at the beginning/end of the header value)
-    if (valueIt != first && !value.empty() &&
-        (first + sep.size() > valueIt || !std::equal(sep.begin(), sep.end(), valueIt - sep.size(), valueIt))) {
-      // not preceded by separator, go to next occurrence (if any)
-      valueIt += occ.size();
-      continue;
-    }
-
-    if (valueIt + occ.size() != last && !value.empty() &&
-        (last < valueIt + occ.size() + sep.size() ||
-         !std::equal(sep.begin(), sep.end(), valueIt + occ.size(), valueIt + occ.size() + sep.size()))) {
-      // not followed by separator, go to next occurrence (if any)
-      valueIt += occ.size();
-      continue;
-    }
-
-    // we found value to remove, we need to remove it along with the separator (if any)
-    char* toRemoveFirst = _data.data() + (valueIt - _data.data());
-    char* toRemoveLast = toRemoveFirst + occ.size();
-
-    if (!value.empty()) {
-      if (valueIt != first) {
-        toRemoveFirst -= sep.size();
-      } else {
-        assert(valueIt + occ.size() != last);
-        toRemoveLast += sep.size();
+  if (value.empty()) {
+    // Remove one separator adjacent to an empty token. A separator between two non-empty tokens is left alone.
+    for (const char* it = std::search(first, last, sep.begin(), sep.end()); it != last;
+         it = std::search(it + sep.size(), last, sep.begin(), sep.end())) {
+      const char* after = it + sep.size();
+      if (it == first || after == last ||
+          (static_cast<std::size_t>(last - after) >= sep.size() && std::equal(sep.begin(), sep.end(), after))) {
+        removeFirst = it;
+        removeLast = after;
+        break;
       }
     }
-
-    std::memmove(toRemoveFirst, toRemoveLast, _data.size() - static_cast<std::size_t>(toRemoveLast - _data.data()));
-    _data.setSize(_data.size() - static_cast<std::size_t>(toRemoveLast - toRemoveFirst));
-    adjustBodyStartNoCheck(-static_cast<int64_t>(toRemoveLast - toRemoveFirst));
-
-    break;
+  } else {
+    for (const char* it = std::search(first, last, value.begin(), value.end()); it != last;
+         it = std::search(it + value.size(), last, value.begin(), value.end())) {
+      const char* after = it + value.size();
+      const bool startsToken = it == first || (static_cast<std::size_t>(it - first) >= sep.size() &&
+                                               std::equal(sep.begin(), sep.end(), it - sep.size()));
+      const bool endsToken = after == last || (static_cast<std::size_t>(last - after) >= sep.size() &&
+                                               std::equal(sep.begin(), sep.end(), after));
+      if (!startsToken || !endsToken) {
+        continue;  // substring of a longer token
+      }
+      // whole-value match was handled above, so at least one neighbour separator exists
+      removeFirst = it == first ? it : it - sep.size();
+      removeLast = it == first ? after + sep.size() : after;
+      break;
+    }
   }
+
+  if (removeFirst == nullptr) {
+    return;
+  }
+
+  const std::size_t removeFirstPos = static_cast<std::size_t>(removeFirst - _data.data());
+  const std::size_t removeLastPos = static_cast<std::size_t>(removeLast - _data.data());
+  const int64_t bodyShift = -static_cast<int64_t>(removeLastPos - removeFirstPos);
+
+  std::memmove(_data.data() + removeFirstPos, _data.data() + removeLastPos, _data.size() - removeLastPos);
+  _data.setSize(_data.size() - (removeLastPos - removeFirstPos));
+  adjustBodyStartNoCheck(bodyShift);
 }
 
 void HttpMessage::finalizeHeadersAndBody() {
@@ -896,7 +905,7 @@ void HttpMessage::finalizeInlineBody(std::size_t additionalCapacity) {
     if (_opts.sendContentLengthHeader()) {
       // This difference is positive because adding a chunk to the body cannot decrease the number of digits needed
       // for the content-length header.
-      reservedCapacity += nchars(bodyLen + chunkSize) - nchars(bodyLen);
+      reservedCapacity += static_cast<std::size_t>(nchars(bodyLen + chunkSize) - nchars(bodyLen));
     }
 
     _data.ensureAvailableCapacityExponential(chunkSize + reservedCapacity);
@@ -1273,7 +1282,7 @@ void HttpMessage::finalizeForHttp1(http::Version version, Options opts, const Co
         std::size_t diffSz =
             hexDigits + kEndChunkedBody.size() + http::DoubleCRLF.size() + static_cast<std::size_t>(headerSizeDiff);
 
-        std::size_t neededSize = diffSz + totalNewHeadersSize;
+        std::size_t neededSize = totalNewHeadersSize + diffSz;
         _data.ensureAvailableCapacity(neededSize);
 
         const auto oldBodyStart = bodyStartPos();
