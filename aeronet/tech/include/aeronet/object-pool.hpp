@@ -256,7 +256,7 @@ T* ObjectPool<T, SizeType>::allocateAndConstruct(Args&&... args) {
   }
 
   try {
-    ::new (pSlot) Slot(std::forward<Args>(args)...);
+    std::construct_at(pSlot, std::forward<Args>(args)...);
   } catch (...) {
     pSlot->setFree(_pFreeList);
     _pFreeList = pSlot;

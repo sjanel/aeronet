@@ -1254,9 +1254,10 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
       const std::size_t immediateSize = std::min(bodyView.size(), windowLimit);
       if (immediateSize != 0) {
         const bool entireBody = immediateSize == bodyView.size();
-        const std::size_t bodyOffset = response.bodyStartPos();
-        const bool bodyIsInline = bodyView.data() == response._data.data() + bodyOffset;
-        if (entireBody && bodyIsInline) {
+        // Do not compare bodyView.data() with the buffer address: a captured short std::string (SSO) lives inside the
+        // embedded payload object, which may start exactly at bodyStartPos().
+        if (entireBody && response.hasBodyInlined()) {
+          const std::size_t bodyOffset = response.bodyStartPos();
           RawBytes owner(std::move(response._data));
           err = _connection.sendData(streamId, std::move(owner), bodyOffset, immediateSize, endStreamOnData);
           if (err == ErrorCode::NoError && hasTrailers) {

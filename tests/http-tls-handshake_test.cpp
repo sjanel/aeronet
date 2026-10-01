@@ -52,6 +52,11 @@ struct CertKeyCache {
     client = test::MakeEphemeralCertKey("client");
   }
 };
+
+// Upper bound to observe the server closing a rejected connection. WaitForPeerClose returns as soon as the peer closes,
+// so a generous bound costs nothing: it only absorbs event loop stalls of a loaded machine (sanitizers, parallel ctest),
+// which reached several hundreds of ms.
+constexpr auto kRejectedCloseTimeout = 5s;
 }  // namespace
 
 TEST(HttpTlsAlpnMismatch, HandshakeFailsWhenNoCommonProtocolAndMustMatch) {
@@ -275,7 +280,7 @@ TEST(HttpTlsHandshakeCallback, EmitsRejectedEventAndBucketsReasonOnConcurrencyLi
 
   // Second connection should be rejected immediately.
   test::ClientConnection rejected(ts.port());
-  EXPECT_TRUE(test::WaitForPeerClose(rejected.fd(), 500ms));
+  EXPECT_TRUE(test::WaitForPeerClose(rejected.fd(), kRejectedCloseTimeout));
 
   // active wait for callback to be invoked
   const auto now = std::chrono::steady_clock::now();
@@ -319,12 +324,13 @@ TEST(HttpTlsHandshakeCallback, EmitsRejectedEventAndBucketsReasonOnRateLimit) {
 
   ts.setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
-  // First connection consumes the single token.
+  // The readiness probe of the test server (a plain TCP connection) already consumes the single token: this first
+  // connection only guarantees that the bucket is empty, whatever the server startup does.
   test::ClientConnection first(ts.port());
 
   // Second connection in the same second should be rejected.
   test::ClientConnection rejected(ts.port());
-  EXPECT_TRUE(test::WaitForPeerClose(rejected.fd(), 500ms));
+  EXPECT_TRUE(test::WaitForPeerClose(rejected.fd(), kRejectedCloseTimeout));
 
   const auto now = std::chrono::steady_clock::now();
   const auto deadline = now + 1s;
@@ -437,7 +443,7 @@ TEST(HttpTlsHandshakeCallback, RefillsRateLimitAfterInterval) {
 
   ts.setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
-  // Consume the single token
+  // Consume the single token (already taken by the readiness probe of the test server, as above)
   test::ClientConnection first(ts.port());
   const auto firstHandshakeFinished = std::chrono::steady_clock::now();
   // Wait well over one second to ensure the seconds-based refill calculation
@@ -448,7 +454,7 @@ TEST(HttpTlsHandshakeCallback, RefillsRateLimitAfterInterval) {
 
   // Second connection in same second should be rejected
   test::ClientConnection rejected(ts.port());
-  EXPECT_TRUE(test::WaitForPeerClose(rejected.fd(), 500ms));
+  EXPECT_TRUE(test::WaitForPeerClose(rejected.fd(), kRejectedCloseTimeout));
 
   // Wait more than one second so refill happens (addIntervals > 0)
   const auto now = std::chrono::steady_clock::now();

@@ -129,34 +129,34 @@ TEST(HttpPayload, AppendDataFromStaticStringView) {
   EXPECT_EQ(body.view(), "start-end");
 }
 
-TEST(HttpPayload, ClearResetsSizeOrZeroesBuffer) {
+TEST(HttpPayload, ResetResetsSizeOrZeroesBuffer) {
   HttpPayload body(std::string("toreset"));
   EXPECT_EQ(body.size(), 7U);
-  body.clear();
+  body.reset();
   EXPECT_EQ(body.size(), 0U);
 
   body = HttpPayload(std::vector<char>{'x', 'y'});
   EXPECT_EQ(body.size(), 2U);
-  body.clear();
+  body.reset();
   EXPECT_EQ(body.size(), 0U);
 
   body = HttpPayload(std::vector<std::byte>{std::byte{'x'}, std::byte{'y'}});
   EXPECT_EQ(body.size(), 2U);
-  body.clear();
+  body.reset();
   EXPECT_EQ(body.size(), 0U);
 
   auto chars = std::make_unique<char[]>(5);
   std::memcpy(chars.get(), "hello", 5);
   body = HttpPayload(std::move(chars), 5);
   EXPECT_EQ(body.size(), 5U);
-  body.clear();
+  body.reset();
   EXPECT_EQ(body.size(), 0U);
 
   auto bytes = std::make_unique<std::byte[]>(5);
   std::memcpy(bytes.get(), "hello", 5);
   body = HttpPayload(std::move(bytes), 5);
   EXPECT_EQ(body.size(), 5U);
-  body.clear();
+  body.reset();
   EXPECT_EQ(body.size(), 0U);
 }
 
