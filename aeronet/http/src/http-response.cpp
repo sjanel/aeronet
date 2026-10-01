@@ -205,14 +205,14 @@ HttpResponse& HttpResponse::reason(std::string_view newReason) & {
 
   const int32_t diff = static_cast<int32_t>(newReason.size()) - static_cast<int32_t>(oldReasonSz);
 
-  _data.ensureAvailableCapacityExponential(diff);
+  HeadGrowthManager headEditGuard(*this, diff);
 
   // The mandatory SP that separates the status code from the reason-phrase (kReasonBeg - 1) is always
   // present, so only the reason characters themselves are inserted/removed: shift the [reason-end, end)
   // tail by `diff`. For an empty reason the reason region is itself empty (reason-end == kReasonBeg).
-  char* reasonEnd = _data.data() + kReasonBeg + oldReasonSz;
+  char* pReasonEnd = _data.data() + kReasonBeg + oldReasonSz;
 
-  std::memmove(reasonEnd + diff, reasonEnd, _data.size() - (kReasonBeg + oldReasonSz));
+  std::memmove(pReasonEnd + diff, pReasonEnd, _data.size() - (kReasonBeg + oldReasonSz));
 
   adjustHeadersAndBodyStart(diff);
   if (newReason.empty()) {
@@ -238,16 +238,21 @@ HttpMessageData HttpResponse::finalizeForHttp1(const char* cachedDateHeader, htt
 
   HttpMessage::finalizeForHttp1(version, opts, pGlobalHeaders, minCapturedBodySize);
 
-  HttpMessageData prepared(std::move(_data), std::move(_payloadVariant));
+  // TODO: HttpMessageData could be optimized to carry the HttpPayload like HttpMessage. Some code could be factorized
+  // for that.
+  HttpPayload payload = releaseEmbeddedPayload();
 
   if (opts.isHeadMethod()) {
-    auto* pFilePayload = prepared.getIfFilePayload();
+    // TODO: cannot we move this code to HttpMessage::finalizeForHttp1 ? Check HttpRequest process.
+    auto* pFilePayload = payload.getIfFilePayload();
     if (pFilePayload != nullptr) {
       pFilePayload->length = 0;
     }
   }
 
-  return prepared;
+  // Be careful, payload should be released BEFORE calling std::move(_data) and in C++, evaluation order of parameters
+  // for a function call is unspecified
+  return {std::move(_data), std::move(payload)};
 }
 
 }  // namespace aeronet

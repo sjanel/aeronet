@@ -213,6 +213,7 @@ class HttpResponseWriter {
   IWriterTransport* _transport;
   const HttpRequestView* _request;
   bool _head;
+  bool _isFile{false};  // the file payload is moved out of _fixedResponse when headers are emitted
   State _state{State::Opened};
   Encoding _encoding;
   // needed along with fixedResponse because once headers emitted, the buffer will be empty, and it is impossible to

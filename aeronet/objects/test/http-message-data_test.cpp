@@ -28,7 +28,7 @@ TEST(HttpResponseDataTest, DefaultConstructor) {
 // Test string_view constructor
 TEST(HttpResponseDataTest, StringViewConstructor) {
   const std::string_view content = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nHello";
-  HttpMessageData data(content);
+  HttpMessageData data(RawChars{content});
 
   EXPECT_FALSE(data.empty());
   EXPECT_EQ(data.remainingSize(), content.size());
@@ -68,7 +68,7 @@ TEST(HttpResponseDataTest, HeadAndBodyConstructorWithStringView) {
   HttpPayload body(std::string("World"));
   const std::size_t totalSize = head.size() + body.size();
 
-  HttpMessageData data(head, std::move(body));
+  HttpMessageData data(RawChars(head), std::move(body));
 
   EXPECT_FALSE(data.empty());
   EXPECT_EQ(data.remainingSize(), totalSize);
@@ -78,7 +78,7 @@ TEST(HttpResponseDataTest, HeadAndBodyConstructorWithStringView) {
 
 // Test firstBuffer method
 TEST(HttpResponseDataTest, FirstBuffer) {
-  HttpMessageData data("Test data");
+  HttpMessageData data(RawChars{"Test data"});
 
   EXPECT_EQ(data.firstBuffer(), "Test data");
 
@@ -141,7 +141,7 @@ TEST(HttpResponseDataTest, Empty) {
 
 // Test addOffset method
 TEST(HttpResponseDataTest, AddOffset) {
-  HttpMessageData data("0123456789");
+  HttpMessageData data(RawChars{"0123456789"});
 
   data.addOffset(5);
   EXPECT_EQ(data.firstBuffer(), "56789");
@@ -180,51 +180,9 @@ TEST(HttpResponseDataTest, AddOffsetWithHeadAndBody) {
   EXPECT_TRUE(data.empty());
 }
 
-// Test append method with HttpMessageData (no body set initially)
-TEST(HttpResponseDataTest, AppendHttpResponseDataNoBody) {
-  HttpMessageData data1("First");
-  HttpMessageData data2("Second");
-
-  data1.append(std::move(data2));
-
-  EXPECT_EQ(data1.firstBuffer(), "FirstSecond");
-  EXPECT_EQ(data1.remainingSize(), 11U);
-}
-
-// Test append method with HttpMessageData (body already set)
-TEST(HttpResponseDataTest, AppendHttpResponseDataWithBody) {
-  RawChars head("Header");
-  HttpPayload body(std::string("Body"));
-  HttpMessageData data1(std::move(head), std::move(body));
-
-  HttpMessageData data2("Extra");
-  data1.append(std::move(data2));
-
-  EXPECT_EQ(data1.firstBuffer(), "Header");
-  EXPECT_EQ(data1.secondBuffer(), "BodyExtra");
-  EXPECT_EQ(data1.remainingSize(), 15U);
-}
-
-// Test append method with HttpMessageData containing both head and body
-TEST(HttpResponseDataTest, AppendHttpResponseDataBothWithBody) {
-  RawChars head1("Head1");
-  HttpPayload body1(std::string("Body1"));
-  HttpMessageData data1(std::move(head1), std::move(body1));
-
-  RawChars head2("Head2");
-  HttpPayload body2(std::string("Body2"));
-  HttpMessageData data2(std::move(head2), std::move(body2));
-
-  data1.append(std::move(data2));
-
-  EXPECT_EQ(data1.firstBuffer(), "Head1");
-  EXPECT_EQ(data1.secondBuffer(), "Body1Head2Body2");
-  EXPECT_EQ(data1.remainingSize(), 20U);
-}
-
 // Test append method with string_view (no body set)
 TEST(HttpResponseDataTest, AppendStringViewNoBody) {
-  HttpMessageData data("Initial");
+  HttpMessageData data(RawChars{"Initial"});
 
   data.append(" content");
 
@@ -245,22 +203,8 @@ TEST(HttpResponseDataTest, AppendStringViewWithBody) {
   EXPECT_EQ(data.remainingSize(), 16U);
 }
 
-// Test append method with const char* + size (body already set)
-TEST(HttpResponseDataTest, AppendCharPointerWithBody) {
-  RawChars head("Header");
-  HttpPayload body(std::string("Body"));
-  HttpMessageData data(std::move(head), std::move(body));
-
-  const char extra[] = " plus";
-  data.append(extra, 5U);
-
-  EXPECT_EQ(data.firstBuffer(), "Header");
-  EXPECT_EQ(data.secondBuffer(), "Body plus");
-  EXPECT_EQ(data.remainingSize(), 15U);
-}
-
 TEST(HttpResponseDataTest, ResizeUpWithoutBodyReturnsStartOfNewRegion) {
-  HttpMessageData data("Head");
+  HttpMessageData data(RawChars{"Head"});
 
   char* const writePtr = data.resizeUp(5U);
   std::memcpy(writePtr, " data", 5U);  // NOLINT(bugprone-not-null-terminated-result)
@@ -328,7 +272,7 @@ TEST(HttpResponseDataTest, ShrinkToFit) {
 
 // Test with empty strings
 TEST(HttpResponseDataTest, EmptyStrings) {
-  HttpMessageData data1("");
+  HttpMessageData data1(RawChars{});
   EXPECT_TRUE(data1.empty());
 
   HttpMessageData data2;
@@ -414,7 +358,7 @@ TEST(HttpResponseDataTest, OffsetBoundaries) {
 
 // Test append after offset
 TEST(HttpResponseDataTest, AppendAfterOffset) {
-  HttpMessageData data("Initial");
+  HttpMessageData data(RawChars{"Initial"});
   data.addOffset(3);
 
   data.append(" More");
@@ -465,30 +409,6 @@ TEST(HttpResponseDataTest, MoveSemantics) {
   EXPECT_EQ(data2.remainingSize(), 10U);
 }
 
-// Test append empty HttpMessageData
-TEST(HttpResponseDataTest, AppendEmptyHttpResponseData) {
-  HttpMessageData data1("Content");
-  HttpMessageData data2;
-
-  data1.append(std::move(data2));
-
-  EXPECT_EQ(data1.firstBuffer(), "Content");
-  EXPECT_EQ(data1.remainingSize(), 7U);
-}
-
-// Test mixing append operations
-TEST(HttpResponseDataTest, MixedAppendOperations) {
-  HttpMessageData data("Start");
-
-  HttpMessageData other1(" Middle");
-  data.append(std::move(other1));
-
-  data.append(" End");
-
-  EXPECT_EQ(data.firstBuffer(), "Start Middle End");
-  EXPECT_EQ(data.remainingSize(), 16U);
-}
-
 // Test RawChars with reserved capacity
 TEST(HttpResponseDataTest, RawCharsWithReservedCapacity) {
   RawChars head(1000);
@@ -501,28 +421,17 @@ TEST(HttpResponseDataTest, RawCharsWithReservedCapacity) {
 
 // Test body transition during append
 TEST(HttpResponseDataTest, BodyTransitionDuringAppend) {
-  HttpMessageData data("Initial");
+  HttpMessageData data(RawChars{"Initial"});
 
   // First append creates head without body
   data.append(" text");
   EXPECT_EQ(data.firstBuffer(), "Initial text");
   EXPECT_EQ(data.secondBuffer(), "");
-
-  // Now add body via HttpMessageData append
-  RawChars head2("Head2");
-  HttpPayload body2(std::string("Body2"));
-  HttpMessageData data2(std::move(head2), std::move(body2));
-
-  data.append(std::move(data2));
-
-  // Since capturedBody was not set initially, everything goes into headAndOptionalBody
-  EXPECT_EQ(data.firstBuffer(), "Initial textHead2");
-  EXPECT_EQ(data.secondBuffer(), "Body2");
 }
 
 // Test offset beyond total size (edge case - causes underflow with size_t)
 TEST(HttpResponseDataTest, OffsetBeyondSize) {
-  HttpMessageData data("Short");
+  HttpMessageData data(RawChars{"Short"});
 
   data.addOffset(10);  // Offset beyond content
 
@@ -534,7 +443,7 @@ TEST(HttpResponseDataTest, OffsetBeyondSize) {
 
 // Test clear after partial consumption
 TEST(HttpResponseDataTest, ClearAfterPartialConsumption) {
-  HttpMessageData data("Content to consume");
+  HttpMessageData data(RawChars{"Content to consume"});
   data.addOffset(7);
 
   EXPECT_EQ(data.firstBuffer(), " to consume");
@@ -547,7 +456,7 @@ TEST(HttpResponseDataTest, ClearAfterPartialConsumption) {
 
 // Test append after clear
 TEST(HttpResponseDataTest, AppendAfterClear) {
-  HttpMessageData data("Old content");
+  HttpMessageData data(RawChars{"Old content"});
   data.clear();
 
   data.append("New content");
@@ -559,7 +468,7 @@ TEST(HttpResponseDataTest, AppendAfterClear) {
 // Test with binary data
 TEST(HttpResponseDataTest, BinaryData) {
   const std::string binaryData = std::string("\x00\x01\x02\x03\x04", 5);
-  HttpMessageData data(binaryData);
+  HttpMessageData data(RawChars{binaryData});
 
   EXPECT_EQ(data.remainingSize(), 5U);
   EXPECT_EQ(data.firstBuffer().size(), 5U);

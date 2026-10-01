@@ -70,7 +70,7 @@ TEST(ConnectionStateSendfileTest, KernelSendfileSuccess) {
 TEST(ConnectionStateTest, CannotCloseIfOutBufferNotEmpty) {
   ConnectionState state;
   state.closeMode = ConnectionState::CloseMode::DrainThenClose;
-  state.outBuffer.append(HttpMessageData{"test"});
+  state.outBuffer = HttpMessageData{RawChars("test")};
   EXPECT_FALSE(state.canCloseConnectionForDrain());
   state.outBuffer.clear();
   state.tunnelOrFileBuffer.append("data");
@@ -529,7 +529,7 @@ TEST(ConnectionStateTransportTest, TransportWriteHttpResponseSetsTlsEstablished)
   // ensure tlsEstablished is initially false
   state.tlsEstablished = false;
 
-  HttpMessageData resp("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n");
+  HttpMessageData resp(RawChars("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n"));
   const auto res = state.transportWrite(resp);
 
   // write should succeed and set tlsEstablished when handshakeDone() is true
@@ -603,14 +603,14 @@ TEST(ConnectionStateZerocopyTest, DelayedCompletionsPlateauAndLaterWritesFallBac
     } else {
 #ifdef AERONET_LINUX
       ASSERT_TRUE(state.prepareZerocopyWrite(retainedSize, maxPendingBytes));
-      state.holdBufferIfZerocopyPending(HttpMessageData(std::string(retainedSize, 'a')), true);
+      state.holdBufferIfZerocopyPending(HttpMessageData(RawChars(std::string(retainedSize, 'a'))), true);
 #endif
 
       retainedSize = 400U;
 
 #ifdef AERONET_LINUX
       ASSERT_TRUE(state.prepareZerocopyWrite(retainedSize, maxPendingBytes));
-      state.holdBufferIfZerocopyPending(HttpMessageData(std::string(retainedSize, 'b')), true);
+      state.holdBufferIfZerocopyPending(HttpMessageData(RawChars(std::string(retainedSize, 'b'))), true);
 #endif
       EXPECT_EQ(state.zerocopyRetainedBytes(), 1000U);
       EXPECT_EQ(state.zerocopyPendingBuffers.size(), 2U);
@@ -620,7 +620,7 @@ TEST(ConnectionStateZerocopyTest, DelayedCompletionsPlateauAndLaterWritesFallBac
 #ifdef AERONET_LINUX
       EXPECT_FALSE(state.prepareZerocopyWrite(retainedSize, maxPendingBytes));
       EXPECT_FALSE(raw->isZerocopyEnabled());
-      state.holdBufferIfZerocopyPending(HttpMessageData(std::string(retainedSize, 'c')), false);
+      state.holdBufferIfZerocopyPending(HttpMessageData(RawChars(std::string(retainedSize, 'c'))), false);
 #endif
       EXPECT_EQ(state.zerocopyRetainedBytes(), 1000U);
       EXPECT_EQ(state.zerocopyPendingBuffers.size(), 2U);
@@ -696,7 +696,7 @@ TEST(ConnectionStateTransportTest, TransportWriteHttpResponseWaitsUntilHandshake
   state.transport = std::move(fake);
   state.tlsEstablished = false;
 
-  HttpMessageData resp("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n");
+  HttpMessageData resp(RawChars("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n"));
 
   // First write: handshake not done yet, tlsEstablished should remain false
   const auto res1 = state.transportWrite(resp);
@@ -733,7 +733,7 @@ TEST(ConnectionStateTransportTest, TransportWriteHttpResponseSkipsHandshakeWhenA
   state.transport = Transport(sv[0], ZerocopyMode::Disabled, 0U);
   state.tlsEstablished = true;  // simulate prior completion
 
-  HttpMessageData resp("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+  HttpMessageData resp(RawChars("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"));
   const auto res = state.transportWrite(resp);
   EXPECT_GE(res.bytesProcessed, 0U);
   EXPECT_TRUE(state.tlsEstablished);  // remains true; handshake not re-checked
@@ -765,7 +765,7 @@ TEST(ConnectionStateSendfileTest, TlsPreadErrorTriggersCloseAndClearsActive) {
 TEST(ConnectionStateTest, AttachFilePayloadMustReturnFalseIfNoFile) {
   ConnectionState state;
 
-  state.outBuffer = HttpMessageData{"response data"};
+  state.outBuffer = HttpMessageData{RawChars("response data")};
 
   // With file attached, attachFilePayload should return false for non-empty output buffer
   EXPECT_FALSE(state.attachFilePayload(FilePayload{File{}, 2, 4}));
