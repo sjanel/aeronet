@@ -52,6 +52,13 @@ function(AeronetSetProjectProperties name)
   if(AERONET_ENABLE_ASAN)
     target_compile_options(${name} PRIVATE ${AERONET_ASAN_OPTIONS})
     target_link_options(${name} PRIVATE ${AERONET_ASAN_OPTIONS})
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+      # ASAN redzones already protect stack frames, so the stack protector (enabled by default on some distros,
+      # e.g. Ubuntu) is redundant. Disabling it also works around a GCC 13 x86 miscompilation where peephole2
+      # picks the canary scratch register equal to the register holding the canary slot address
+      # ('movq %fs:40, %rax; movq %rax, -8(%rax)'), crashing in static initializers of large ASAN test TUs.
+      target_compile_options(${name} PRIVATE -fno-stack-protector)
+    endif()
   endif()
 
   if(AERONET_ENABLE_CLANG_TIDY AND CLANG_TIDY)

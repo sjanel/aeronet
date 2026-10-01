@@ -1215,7 +1215,7 @@ void EncodeString(RawBytes& output, std::string_view str) {
       currentCode = (currentCode << code.bitLength) | code.code;
       currentBits += code.bitLength;
       while (currentBits >= 8U) {
-        currentBits -= 8U;
+        currentBits -= static_cast<uint8_t>(8U);
         *pData++ = static_cast<std::byte>((currentCode >> currentBits) & 0xFFU);
       }
     }
