@@ -18,55 +18,57 @@ class DogStatsdMetrics {
           cfg.dogstatsdNamespace().empty() ? cfg.serviceName() : cfg.dogstatsdNamespace();
       _client = DogStatsD(cfg.dogstatsdSocketPath(), metricNamespace);
 
-      _pTags = &cfg.dogstatsdTags();
+      // Copied rather than referenced: the owner of the telemetry context (HttpClient, SingleHttpServer) may be moved,
+      // giving its configuration a new address.
+      _tags = cfg.dogstatsdTags();
     }
   }
 
   void increment(std::string_view metric, uint64_t delta = 1UL) noexcept {
-    if (_pTags != nullptr) {
-      _client.increment(metric, delta, *_pTags);
+    if (_client.enabled()) {
+      _client.increment(metric, delta, _tags);
     }
   }
 
   void increment(std::string_view metric, uint64_t delta, MetricLabels labels) noexcept {
-    if (_pTags != nullptr) {
-      _client.increment(metric, delta, *_pTags, labels);
+    if (_client.enabled()) {
+      _client.increment(metric, delta, _tags, labels);
     }
   }
 
   void gauge(std::string_view metric, int64_t value) noexcept {
-    if (_pTags != nullptr) {
-      _client.gauge(metric, value, *_pTags);
+    if (_client.enabled()) {
+      _client.gauge(metric, value, _tags);
     }
   }
 
   void gauge(std::string_view metric, int64_t value, MetricLabels labels) noexcept {
-    if (_pTags != nullptr) {
-      _client.gauge(metric, value, *_pTags, labels);
+    if (_client.enabled()) {
+      _client.gauge(metric, value, _tags, labels);
     }
   }
 
   void histogram(std::string_view metric, double value) noexcept {
-    if (_pTags != nullptr) {
-      _client.histogram(metric, value, *_pTags);
+    if (_client.enabled()) {
+      _client.histogram(metric, value, _tags);
     }
   }
 
   void histogram(std::string_view metric, double value, MetricLabels labels) noexcept {
-    if (_pTags != nullptr) {
-      _client.histogram(metric, value, *_pTags, labels);
+    if (_client.enabled()) {
+      _client.histogram(metric, value, _tags, labels);
     }
   }
 
   void timing(std::string_view metric, std::chrono::milliseconds ms) noexcept {
-    if (_pTags != nullptr) {
-      _client.timing(metric, ms, *_pTags);
+    if (_client.enabled()) {
+      _client.timing(metric, ms, _tags);
     }
   }
 
   void timing(std::string_view metric, std::chrono::milliseconds ms, MetricLabels labels) noexcept {
-    if (_pTags != nullptr) {
-      _client.timing(metric, ms, *_pTags, labels);
+    if (_client.enabled()) {
+      _client.timing(metric, ms, _tags, labels);
     }
   }
 
@@ -74,7 +76,7 @@ class DogStatsdMetrics {
 
  private:
   DogStatsD _client;
-  const DogStatsD::DogStatsDTags* _pTags{nullptr};
+  DogStatsD::DogStatsDTags _tags;
 };
 
 }  // namespace aeronet::tracing::detail
