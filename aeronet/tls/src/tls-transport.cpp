@@ -215,15 +215,16 @@ KtlsEnableResult TlsTransport::enableKtlsSend() {
 }
 
 bool TlsTransport::enableZerocopy() noexcept {
-  const auto result = EnableZeroCopy(_fd);
-  _zerocopyState.setEnabled(result == ZeroCopyEnableResult::Enabled);
+  if (EnableZeroCopy(_fd) == ZeroCopyEnableResult::Enabled) {
+    _zerocopyState.enable(_minBytesForZerocopy);
+  } else {
+    _zerocopyState.disable();
+  }
   return _zerocopyState.enabled();
 }
 
 #ifdef AERONET_LINUX
-TransportResult TlsTransport::writeZerocopy(std::string_view data) {
-  return _zerocopyState.tryZerocopySend(_fd, _minBytesForZerocopy, data);
-}
+TransportResult TlsTransport::writeZerocopy(std::string_view data) { return _zerocopyState.tryZerocopySend(_fd, data); }
 #endif
 
 }  // namespace aeronet
