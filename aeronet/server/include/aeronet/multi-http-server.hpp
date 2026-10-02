@@ -247,7 +247,8 @@ class MultiHttpServer {
   //   std::stop_token is triggered. Handy for integrating with cooperative cancellation infrastructure.
   [[nodiscard]] AsyncHandle startDetachedWithStopToken(const std::stop_token& token);
 
-  // beginDrain(): forward graceful drain to every underlying SingleHttpServer.
+  // beginDrain(): forward graceful drain to every underlying SingleHttpServer (waiting for the startup of workers still
+  // starting up, so that the drain also applies to them).
   void beginDrain(std::chrono::milliseconds maxWait = std::chrono::milliseconds{0}) noexcept;
 
   // Checks if this instance is empty (ie: it contains no server instances and should not be configured).

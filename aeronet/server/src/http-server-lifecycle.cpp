@@ -524,14 +524,21 @@ void SingleHttpServer::stop() noexcept {
 }
 
 void SingleHttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
-  if (_lifecycle.cannotBeginDraining()) {
+  // Like stop(), wait for an in-flight startup instead of dropping the request: otherwise a drain requested right after
+  // start() (e.g. MultiHttpServer::beginDrain() while some workers are still in prepareRun()) would be lost, and these
+  // servers would then serve normal traffic and report ready.
+  const auto current = _lifecycle.waitWhileStarting();
+  if (current == internal::Lifecycle::State::Idle || current == internal::Lifecycle::State::Stopping) {
     return;
   }
 
   const bool hasDeadline = maxWait.count() > 0;
-  const auto deadline = hasDeadline ? _connections.now + maxWait : std::chrono::steady_clock::time_point{};
+  // Fresh clock read rather than the event loop's cached _connections.now: it is written by the event-loop thread, and
+  // is stale (or still default-initialized) until the first poll() of a just-started server returns.
+  const auto deadline =
+      hasDeadline ? std::chrono::steady_clock::now() + maxWait : std::chrono::steady_clock::time_point{};
 
-  if (_lifecycle.isDraining()) {
+  if (current == internal::Lifecycle::State::Draining) {
     if (hasDeadline) {
       _lifecycle.shrinkDeadline(deadline);
     }

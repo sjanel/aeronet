@@ -56,7 +56,19 @@ using namespace std::chrono_literals;
 
 namespace {
 constexpr std::size_t kChunkSize = 1UL << 13U;
+
+// Blocking recv() retried on EINTR: with SO_RCVTIMEO set, it is never restarted after a signal handler, and on Linux it
+// even fails with EINTR when the process is merely stopped then resumed (SIGSTOP / SIGCONT), see signal(7).
+auto BlockingRecv(NativeHandle fd, char* buf) {
+  for (;;) {
+    const auto recvBytes = ::recv(fd, buf, static_cast<int>(kChunkSize), 0);
+    if (recvBytes != -1 || LastSystemError() != error::kInterrupted) {
+      return recvBytes;
+    }
+  }
 }
+
+}  // namespace
 
 void sendAll(NativeHandle fd, std::string_view data, std::chrono::milliseconds totalTimeout) {
   const char* cursor = data.data();
@@ -84,8 +96,9 @@ void sendAll(NativeHandle fd, std::string_view data, std::chrono::milliseconds t
     const auto sent = SafeSend(fd, cursor, remaining);
     if (sent == -1) {
       const auto err = LastSystemError();
-      if (err == error::kWouldBlock) {
-        // SO_SNDTIMEO elapsed with no progress (or the socket is non-blocking): loop back and re-check maxTs.
+      if (err == error::kWouldBlock || err == error::kInterrupted) {
+        // SO_SNDTIMEO elapsed with no progress (or the socket is non-blocking), or the blocking send() was interrupted
+        // (see BlockingRecv): loop back and re-check maxTs.
         continue;
       }
       if (!alreadyLoggedError) {
@@ -243,7 +256,7 @@ std::string recvUntilClosed(NativeHandle fd, SysDuration recvTimeout) {
     }
 
     out.resize_and_overwrite(oldSize + kChunkSize, [fd, oldSize](char* data, [[maybe_unused]] std::size_t newCap) {
-      const auto recvBytes = ::recv(fd, data + oldSize, static_cast<int>(kChunkSize), 0);
+      const auto recvBytes = BlockingRecv(fd, data + oldSize);
       if (recvBytes == -1) {
         const auto recvErr = LastSystemError();
         if (recvErr == error::kWouldBlock) {

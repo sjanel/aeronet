@@ -455,6 +455,25 @@ TEST(HttpDrain, DeadlineForcesIdleConnectionsToClose) {
   ts.stop();
 }
 
+TEST(HttpDrain, BeginDrainRightAfterStartIsNotLost) {
+  HttpServerConfig cfg;
+  cfg.withPollInterval(5ms);
+  SingleHttpServer server(std::move(cfg));
+  const auto port = server.port();
+  auto handle = server.startDetached();
+
+  // No synchronization with the event loop: it is typically still starting up (in prepareRun()) here. The drain must
+  // then wait for the startup to complete instead of being dropped (which left the server Running, as if never drained).
+  server.beginDrain(5s);
+
+  // From now on the server is never Running, and as it has no connection, its drain completes by itself well before the
+  // deadline.
+  EXPECT_FALSE(test::WaitForServer(server, true, 50ms));
+  EXPECT_TRUE(test::WaitForListenerClosed(port, 1s));
+
+  handle.stop();
+}
+
 TEST(HttpConfigUpdate, InlineApplyWhenStopped) {
   // Post an update while server is stopped; it should be stored and applied when
   // the event loop next runs.
