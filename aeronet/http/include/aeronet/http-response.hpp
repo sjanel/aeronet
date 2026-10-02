@@ -285,6 +285,7 @@ class HttpResponse final : public HttpMessage {
   // will produce:
   //   "accept: text/html"
   //   "accept: text/html, application/json"
+  // Same rules as headerAddLine() for 'Content-Type', 'Content-Length' and 'Content-Encoding'.
   HttpResponse& headerAppendValue(LowerAsciiKey key, std::string_view value, std::string_view sep = ", ") & {
     headerAppendValueImpl(key, value, sep);
     return *this;
@@ -329,8 +330,8 @@ class HttpResponse final : public HttpMessage {
 
   // Remove the last occurrence of the header with the given lower-case key. If the header is not found, the
   // HttpMessage is not modified.
-  // Content-type and Content-Length headers cannot be removed, as they are managed by aeronet based on the body
-  // content.
+  // Content-type and Content-Length headers cannot be removed (the call does nothing), as they are managed by aeronet
+  // based on the body content. Removing 'Content-Encoding' while a body is set throws std::logic_error.
   HttpResponse& headerRemoveLine(LowerAsciiKey key) & {
     headerRemoveLineImpl(key);
     return *this;
@@ -346,6 +347,7 @@ class HttpResponse final : public HttpMessage {
   // HttpMessage is not modified. Separator must not be empty, and should be the same as the one used in
   // headerAppendValue() for the same header. The behavior is undefined if the header values can contain the separator
   // string.
+  // Same rules as headerRemoveLine() for 'Content-Type', 'Content-Length' and 'Content-Encoding'.
   HttpResponse& headerRemoveValue(LowerAsciiKey key, std::string_view value, std::string_view sep = ", ") & {
     headerRemoveValueImpl(key, value, sep);
     return *this;
