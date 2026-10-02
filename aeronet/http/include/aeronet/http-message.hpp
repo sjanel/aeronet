@@ -22,8 +22,8 @@
 #include "aeronet/encoding.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
-#include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/http-headers-view.hpp"
+#include "aeronet/http-message-common.hpp"
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-version.hpp"
@@ -645,6 +645,8 @@ class HttpMessage {
     _payloadVariant = HttpPayload(std::string_view(&HttpPayload::kSizeOnlySentinel, size));
   }
 
+  // Adds the header line 'key: value' without any check: at the end of the headers, or just before the body headers
+  // (Content-Type and Content-Length) when they are present.
   void headerAddLineUnchecked(LowerAsciiKey key, std::string_view value);
 
   // Warning: this method should only be called if the header already exists.
@@ -920,10 +922,10 @@ class HttpMessage {
     return getLastHeaderValueEndPtr();
   }
 
-  // Get a pointer to the beginning of the last header value before the body starts.
-  // It is either content-length (if _opts.sendContentLengthHeader() is true) or content-type (if
-  // _opts.sendContentLengthHeader() is false) value.
+  // Get a pointer to the beginning of the content-length value, which must be sent (the last header before the body).
+  // The backward search for ':' is only valid for this header: a content-type value may contain ':'.
   char* getLastHeaderValuePtr() {
+    assert(_opts.sendContentLengthHeader());
     char* ptr = getLastHeaderValueEndPtr() - http::HeaderSep.size() - 1U;
     while (*ptr != ':') {
       --ptr;
@@ -962,12 +964,19 @@ class HttpMessage {
 
   char* getContentTypeHeaderLinePtr() { return const_cast<char*>(std::as_const(*this).getContentTypeHeaderLinePtr()); }
 
+  // Returns a pointer to the beginning of the Content-Type header value. Computed from the start of its line, as the
+  // value itself may contain ':'.
+  char* getContentTypeValuePtr() {
+    return getContentTypeHeaderLinePtr() + http::HeaderSize(http::ContentType.size(), 0);
+  }
+
+  // An empty 'contentType' keeps or defaults the content type, a given one is checked as in CheckContentType().
   void bodyPrecheckContentType(std::string_view& contentType) const {
     if (trailersSize() != 0) [[unlikely]] {
       throw std::logic_error("Cannot set body after trailers have been added");
     }
     contentType = TrimOws(contentType);
-    if (!contentType.empty() && !http::IsValidHeaderValue(contentType)) [[unlikely]] {
+    if (!contentType.empty() && !IsValidContentType(contentType)) [[unlikely]] {
       throw std::invalid_argument("Invalid Content-Type header value");
     }
   }

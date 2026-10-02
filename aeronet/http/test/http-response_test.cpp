@@ -2199,6 +2199,94 @@ TEST_F(HttpResponseTest, UserContentEncodingIsRemovedWithCapturedOrFileBody) {
   }
 }
 
+// Every body setter accepts a content type as short as "a/b" (the shortest RFC 9110 media type) and keeps the other
+// headers intact, and rejects a shorter one: the Content-Type line is located assuming this minimum value length.
+TEST_F(HttpResponseTest, ShortContentTypesKeepHeadersIntact) {
+  static constexpr auto kWriteHello = [](char* buf) {
+    static constexpr std::string_view kHello = "hello";
+    std::memcpy(buf, kHello.data(), kHello.size());
+    return kHello.size();
+  };
+  using Setter = std::function<void(HttpResponse&, std::string_view)>;
+  const Setter setters[]{
+      [](HttpResponse& resp, std::string_view contentType) { resp.body("hello", contentType); },
+      [](HttpResponse& resp, std::string_view contentType) { resp.bodyAppend("hello", contentType); },
+      [](HttpResponse& resp, std::string_view contentType) {
+        resp.body("hel");
+        resp.bodyAppend("lo", contentType);
+      },
+      [](HttpResponse& resp, std::string_view contentType) { resp.bodyInlineSet(5, kWriteHello, contentType); },
+      [](HttpResponse& resp, std::string_view contentType) { resp.bodyInlineAppend(5, kWriteHello, contentType); },
+  };
+  for (std::size_t setterPos = 0; setterPos < std::size(setters); ++setterPos) {
+    for (const std::string_view tooShortContentType : {"x", "ab"}) {
+      SCOPED_TRACE(std::string(tooShortContentType) + " setter #" + std::to_string(setterPos));
+      HttpResponse resp(http::StatusCodeOK);
+      resp.headerAddLine("x-a", "1");
+      EXPECT_THROW(setters[setterPos](resp, tooShortContentType), std::invalid_argument);
+      EXPECT_EQ(resp.headerValueOrEmpty("x-a"), "1");
+      EXPECT_NE(resp.headerValueOrEmpty(http::ContentType), tooShortContentType);
+    }
+    {
+      static constexpr std::string_view contentType = "a/b";
+      SCOPED_TRACE("setter #" + std::to_string(setterPos));
+      HttpResponse resp(http::StatusCodeOK);
+      resp.headerAddLine("x-a", "1");
+      setters[setterPos](resp, contentType);
+      resp.headerAddLine("x-b", "2");
+
+      EXPECT_EQ(resp.headerValueOrEmpty("x-a"), "1");
+      EXPECT_EQ(resp.headerValueOrEmpty("x-b"), "2");
+      EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), contentType);
+      EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "5");
+      EXPECT_EQ(resp.bodyInMemory(), "hello");
+      const std::string_view headers = resp.headersFlatView();
+      EXPECT_LT(headers.find("x-b: 2"), headers.find(http::ContentType)) << headers;
+
+      resp.body("other body", "text/html");
+      EXPECT_EQ(resp.headerValueOrEmpty("x-a"), "1");
+      EXPECT_EQ(resp.headerValueOrEmpty("x-b"), "2");
+      EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/html");
+      EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "10");
+      EXPECT_EQ(resp.bodyInMemory(), "other body");
+    }
+  }
+}
+
+// A content type value may contain ':' (here in a multipart boundary): replacing it must not use a ':' of the value as
+// the header separator.
+TEST_F(HttpResponseTest, ContentTypeWithColonCanBeReplaced) {
+  static constexpr std::string_view kColonContentType = "multipart/mixed; boundary=abc:defghijklmnop";
+  using Replacer = std::function<void(HttpResponse&)>;
+  const Replacer replacers[]{
+      [](HttpResponse& resp) { resp.body("hello world", "text/html"); },
+      [](HttpResponse& resp) { resp.bodyAppend(" world", "text/html"); },
+      [](HttpResponse& resp) {
+        resp.bodyInlineAppend(
+            6,
+            [](char* buf) {
+              static constexpr std::string_view kWorld = " world";
+              std::memcpy(buf, kWorld.data(), kWorld.size());
+              return kWorld.size();
+            },
+            "text/html");
+      },
+  };
+  for (std::size_t replacerPos = 0; replacerPos < std::size(replacers); ++replacerPos) {
+    SCOPED_TRACE(replacerPos);
+    HttpResponse resp(http::StatusCodeOK);
+    resp.headerAddLine("x-a", "1");
+    resp.body("hello", kColonContentType);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), kColonContentType);
+
+    replacers[replacerPos](resp);
+    EXPECT_EQ(resp.headerValueOrEmpty("x-a"), "1");
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/html");
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "11");
+    EXPECT_EQ(resp.bodyInMemory(), "hello world");
+  }
+}
+
 TEST_F(HttpResponseTest, AppendHeaderValueKeepsBodyIntact) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");
@@ -3894,6 +3982,41 @@ TEST_F(HttpResponseTest, DefaultDirectCompressionMode_FromConfig) {
 }
 
 // Test: switching directCompressionMode at runtime before setting body
+// Replacing an uncompressed inline body by one compressed directly adds Content-Encoding (and Vary) before the body
+// headers of the replaced body. They used to be appended after Content-Length, and then overwritten by the new body
+// headers: the compressed body was sent without its Content-Encoding.
+TEST_F(HttpResponseTest, BodyReplacedByDirectlyCompressedBodyKeepsEncodingHeaders) {
+  const std::string body(4096, 'S');
+  // Without, then with, a Vary header to complete.
+  for (const std::string_view userVary : {"", "origin"}) {
+    for (Encoding enc : test::SupportedEncodings()) {
+      SCOPED_TRACE(std::string(GetEncodingStr(enc)) + " vary=" + std::string(userVary));
+      HttpResponse resp = makePrepared(PreparedOptions{.addVaryAcceptEncoding = true, .expectedEncoding = enc});
+      if (!userVary.empty()) {
+        resp.headerAddLine(http::Vary, userVary);
+      }
+      resp.body("small", http::ContentTypeTextPlain);  // below minBytes: not compressed
+      ASSERT_FALSE(IsAutomaticDirectCompression(resp));
+      ASSERT_FALSE(resp.hasHeader(http::ContentEncoding));
+
+      resp.body(body, http::ContentTypeTextPlain);
+      ASSERT_TRUE(IsAutomaticDirectCompression(resp));
+      FinalizeCompressedBody(resp);
+
+      EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+      EXPECT_EQ(resp.headerValueOrEmpty(http::Vary),
+                userVary.empty() ? std::string(http::AcceptEncoding)
+                                 : std::string(userVary) + ", " + std::string(http::AcceptEncoding));
+      EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), http::ContentTypeTextPlain);
+      EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), std::to_string(resp.bodyInMemoryLength()));
+      const std::string_view headers = resp.headersFlatView();
+      EXPECT_LT(headers.find(http::ContentEncoding), headers.find(http::ContentType)) << headers;
+      EXPECT_LT(headers.find(http::Vary), headers.find(http::ContentType)) << headers;
+      EXPECT_EQ(std::string_view(test::Decompress(enc, resp.bodyInMemory())), body);
+    }
+  }
+}
+
 TEST_F(HttpResponseTest, SwitchMode_BeforeBody) {
   const std::string body(4096, 'S');
   for (Encoding enc : test::SupportedEncodings()) {
