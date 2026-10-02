@@ -82,11 +82,16 @@ class HttpClient {
   // following, retry, ...).
   explicit HttpClient(HttpClientConfig config);
 
-  HttpClient(HttpClient&&) noexcept = default;
+  // Moves the client with its pooled connections and response cache. The moved-from client can only be destroyed or
+  // assigned to. HttpRequest objects made by 'rhs' (makeRequest()) keep referring to it: make new requests from this
+  // client instead.
+  HttpClient(HttpClient&& rhs) noexcept;
 
   // Duplicates a HttpClient from another instance's configuration.
   HttpClient(const HttpClient& rhs);
-  HttpClient& operator=(HttpClient&&) noexcept = default;
+
+  // Move-assigns the client, see the move constructor.
+  HttpClient& operator=(HttpClient&& rhs) noexcept;
 
   // Assigns a HttpClient from another instance's configuration.
   HttpClient& operator=(const HttpClient& rhs);
@@ -293,6 +298,7 @@ class HttpClient {
 
   void maybeCompressBody(HttpRequest& req);
 
+  // When adding a member, also move it in the move constructor and move assignment operator.
   HttpClientConfig _config;
   EventLoop _loop;
   // Single-fd registration cache for _loop: the fd currently watched (kInvalidHandle if none) and the

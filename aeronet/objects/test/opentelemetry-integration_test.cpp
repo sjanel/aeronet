@@ -29,6 +29,27 @@ namespace aeronet {
 
 namespace {
 constexpr bool kDefaultEnabled = aeronet::openTelemetryEnabled();
+
+#ifdef AERONET_POSIX
+// Unix datagram socket bound to 'socketPath', receiving the DogStatsD metrics (1s receive timeout).
+BaseFd BindDogStatsDSocket(std::string_view socketPath) {
+  BaseFd serverFd(::socket(AF_UNIX, SOCK_DGRAM, 0));
+  if (!serverFd) {
+    return serverFd;
+  }
+
+  sockaddr_un addr{};
+  addr.sun_family = AF_UNIX;
+  *Append(socketPath, addr.sun_path) = '\0';  // Null-terminate the path
+  if (::bind(serverFd.fd(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+    return BaseFd{};
+  }
+
+  // Use test helper to set a receive timeout on the socket.
+  test::setRecvTimeout(serverFd.fd(), std::chrono::seconds{1});
+  return serverFd;
+}
+#endif
 }  // namespace
 
 // Test basic TelemetryContext functionality
@@ -246,18 +267,8 @@ TEST(OpenTelemetryIntegration, DogStatsDMetricsEmission) {
   // Create an isolated temporary directory and use a socket path inside it.
   test::ScopedTempDir tmpDir("aeronet-dsd-dir-");
   const auto socketPath = tmpDir.dirPath() / "aeronet-dsd.sock";
-  std::string_view socketPathView(socketPath.c_str());
-
-  BaseFd serverFd(::socket(AF_UNIX, SOCK_DGRAM, 0));
+  BaseFd serverFd = BindDogStatsDSocket(socketPath.c_str());
   ASSERT_TRUE(serverFd);
-
-  sockaddr_un addr{};
-  addr.sun_family = AF_UNIX;
-  *Append(socketPathView, addr.sun_path) = '\0';  // Null-terminate the path
-  ASSERT_EQ(::bind(serverFd.fd(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)), 0);
-
-  // Use test helper to set a receive timeout on the socket.
-  test::setRecvTimeout(serverFd.fd(), std::chrono::seconds{1});
 
   TelemetryConfig cfg;
   cfg.otelEnabled = kDefaultEnabled;
@@ -280,6 +291,48 @@ TEST(OpenTelemetryIntegration, DogStatsDMetricsEmission) {
   EXPECT_EQ(payload.contains("service:test-service"), kDefaultEnabled);
   EXPECT_TRUE(payload.contains("aeronet.test.histogram:4.25|h"));
   EXPECT_TRUE(payload.contains("aeronet.test.timing:15|ms"));
+}
+
+// The telemetry context keeps its own copy of the DogStatsD tags: its owner (HttpClient, SingleHttpServer) may be
+// moved, moving the configuration the context was built from.
+TEST(OpenTelemetryIntegration, DogStatsDTagsDoNotReferToTheConfig) {
+  test::ScopedTempDir tmpDir("aeronet-dsd-dir-");
+  const auto socketPath = tmpDir.dirPath() / "aeronet-dsd.sock";
+  BaseFd serverFd = BindDogStatsDSocket(socketPath.c_str());
+  ASSERT_TRUE(serverFd);
+
+  TelemetryConfig cfg;
+  cfg.otelEnabled = kDefaultEnabled;
+  cfg.dogStatsDEnabled = true;
+  cfg.withDogStatsdSocketPath(socketPath.string());
+  cfg.withDogStatsdNamespace("aeronet");
+  cfg.addDogStatsdTag("env:test");
+  cfg.validate();
+
+  tracing::TelemetryContext telemetry(cfg);
+  cfg = TelemetryConfig{};
+  cfg.addDogStatsdTag("other:tag");
+
+  const MetricLabel labels[]{{"protocol", "h2"}};
+  telemetry.counterAdd("test.metric", 7);
+  telemetry.counterAdd("test.metric", 7, labels);
+  telemetry.gauge("test.gauge", 3);
+  telemetry.gauge("test.gauge", 3, labels);
+  telemetry.histogram("test.histogram", 4.25);
+  telemetry.histogram("test.histogram", 4.25, labels);
+  telemetry.timing("test.timing", std::chrono::milliseconds(15));
+  telemetry.timing("test.timing", std::chrono::milliseconds(15), labels);
+
+  // One datagram per metric, all of them with the tags of the original configuration.
+  auto payload = test::recvWithTimeout(serverFd.fd(), std::chrono::milliseconds{100});
+  EXPECT_TRUE(payload.contains("aeronet.test.metric:7|c")) << payload;
+  EXPECT_TRUE(payload.contains("aeronet.test.timing:15|ms")) << payload;
+  std::size_t nbTaggedMetrics = 0;
+  for (auto pos = payload.find("env:test"); pos != std::string::npos; pos = payload.find("env:test", pos + 1U)) {
+    ++nbTaggedMetrics;
+  }
+  EXPECT_EQ(nbTaggedMetrics, 8U) << payload;
+  EXPECT_FALSE(payload.contains("other:tag")) << payload;
 }
 #endif  // AERONET_POSIX
 
