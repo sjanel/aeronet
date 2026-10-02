@@ -60,6 +60,9 @@ constexpr uint32_t kMaxMaxFrameSize = 16777215;  // Maximum allowed SETTINGS_MAX
 // TODO: make this configurable?
 constexpr std::size_t kMaxInlineDataFrameCopySize = 256;
 
+// Minimum number of written blocks at the front of the output queue before they are erased (see onOutputWritten()).
+constexpr std::size_t kMinWrittenOutputBlocksToCompact = 16;
+
 static_assert(kMaxInlineDataFrameCopySize <= kMinMaxFrameSize);
 
 }  // namespace
@@ -393,6 +396,13 @@ void Http2Connection::onOutputWritten(std::size_t bytesWritten) {
   }
   if (_outputBlockReadPos == _outputBlocks.size()) {
     _outputBlocks.clear();
+    _outputBlockReadPos = 0;
+  } else if (_outputBlockReadPos >= kMinWrittenOutputBlocksToCompact &&
+             2U * _outputBlockReadPos >= _outputBlocks.size()) {
+    // A peer that keeps the queue from draining completely would otherwise make it grow forever with written (already
+    // released) blocks. Erasing them once they are at least half of the queue moves at most as many blocks as written.
+    _outputBlocks.erase(_outputBlocks.begin(),
+                        _outputBlocks.begin() + static_cast<std::ptrdiff_t>(_outputBlockReadPos));
     _outputBlockReadPos = 0;
   }
 

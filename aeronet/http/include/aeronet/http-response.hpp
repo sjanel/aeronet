@@ -154,9 +154,8 @@ class HttpResponse final : public HttpMessage {
   //   ""
   //   "HeaderName: Value\r\n"
   //   "HeaderName1: Value1\r\nHeaderName2: Value2\r\n"
-  // Empty concatenatedHeaders are allowed. Header names may use any valid ASCII case and are normalized to
-  // lower-case when stored.
-  // Throws std::invalid_argument if the concatenatedHeaders format is invalid.
+  // Empty concatenatedHeaders are allowed. Header names must be lower-case and values trimmed.
+  // Throws std::invalid_argument if the concatenatedHeaders format is invalid (including an upper-case header name).
   HttpResponse(std::size_t additionalCapacity, http::StatusCode code, std::string_view concatenatedHeaders,
                std::string_view body = {}, std::string_view contentType = http::ContentTypeTextPlain)
       : HttpResponse(additionalCapacity, code, concatenatedHeaders, body, contentType, Options()) {}

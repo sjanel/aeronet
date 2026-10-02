@@ -277,6 +277,8 @@ class Http2Connection {
   void setEventSink(EventSink* sink) noexcept { _sink = sink; }
 
  private:
+  friend class Http2ConnectionTest;
+
   using StreamsMap = flat_hash_map<uint32_t, Http2Stream>;
 
   class OutputBlock {
