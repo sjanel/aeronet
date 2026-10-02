@@ -125,15 +125,13 @@ using EcdsaSigPtr = std::unique_ptr<ECDSA_SIG, EcdsaSigDeleter>;
   }
 }
 
-#define AERONET_CHECK_OR_RETURN_DEFAULT(expr) \
-  if (!(expr)) return {                       \
-    }
-
 [[nodiscard]] bool DecodeB64Url(std::string_view in, RawChars& out) {
   assert(out.empty());
   out.reserve(B64UrlMaxDecodedLen(in.size()));
   std::size_t outLen = B64UrlDecode(in, out.data());
-  AERONET_CHECK_OR_RETURN_DEFAULT(outLen + 1UL != 0);
+  if (outLen + 1UL == 0) {
+    return {};
+  }
   out.setSize(outLen);
   return true;
 }
@@ -171,17 +169,31 @@ struct DecodeUrlsResult {
   BnPtr bnE(
       ::BN_bin2bn(reinterpret_cast<const unsigned char*>(exponent.data()), static_cast<int>(exponent.size()), nullptr));
   ParamBldPtr bld(::OSSL_PARAM_BLD_new());
-  AERONET_CHECK_OR_RETURN_DEFAULT(bnN && bnE && bld);
-  AERONET_CHECK_OR_RETURN_DEFAULT(::OSSL_PARAM_BLD_push_BN(bld.get(), OSSL_PKEY_PARAM_RSA_N, bnN.get()) == 1);
-  AERONET_CHECK_OR_RETURN_DEFAULT(::OSSL_PARAM_BLD_push_BN(bld.get(), OSSL_PKEY_PARAM_RSA_E, bnE.get()) == 1);
+  if (!bnN || !bnE || !bld) {
+    return {};
+  }
+  if (::OSSL_PARAM_BLD_push_BN(bld.get(), OSSL_PKEY_PARAM_RSA_N, bnN.get()) != 1) {
+    return {};
+  }
+  if (::OSSL_PARAM_BLD_push_BN(bld.get(), OSSL_PKEY_PARAM_RSA_E, bnE.get()) != 1) {
+    return {};
+  }
   OsslParamPtr params(::OSSL_PARAM_BLD_to_param(bld.get()));
-  AERONET_CHECK_OR_RETURN_DEFAULT(params);
+  if (!params) {
+    return {};
+  }
   PkeyCtxPtr ctx(::EVP_PKEY_CTX_new_from_name(nullptr, "RSA", nullptr));
-  AERONET_CHECK_OR_RETURN_DEFAULT(ctx);
-  AERONET_CHECK_OR_RETURN_DEFAULT(::EVP_PKEY_fromdata_init(ctx.get()) == 1);
+  if (!ctx) {
+    return {};
+  }
+  if (::EVP_PKEY_fromdata_init(ctx.get()) != 1) {
+    return {};
+  }
 
   EVP_PKEY* pKey = nullptr;
-  AERONET_CHECK_OR_RETURN_DEFAULT(::EVP_PKEY_fromdata(ctx.get(), &pKey, EVP_PKEY_PUBLIC_KEY, params.get()) == 1);
+  if (::EVP_PKEY_fromdata(ctx.get(), &pKey, EVP_PKEY_PUBLIC_KEY, params.get()) != 1) {
+    return {};
+  }
 
   return pKey;
 }
@@ -197,8 +209,12 @@ struct GroupName {
 // Build an EC public key from a curve name and base64url-decoded affine coordinates.
 [[nodiscard]] EVP_PKEY* EcPublicFromXY(GroupName groupName, std::size_t coordLen, std::span<const char> xCoord,
                                        std::span<const char> yCoord) {
-  AERONET_CHECK_OR_RETURN_DEFAULT(xCoord.size() == coordLen);
-  AERONET_CHECK_OR_RETURN_DEFAULT(yCoord.size() == coordLen);
+  if (xCoord.size() != coordLen) {
+    return {};
+  }
+  if (yCoord.size() != coordLen) {
+    return {};
+  }
   // Uncompressed point: 0x04 || X || Y.
   RawChars point(1U + (2U * coordLen));
   point.unchecked_push_back('\x04');
@@ -206,19 +222,32 @@ struct GroupName {
   point.unchecked_append(yCoord.data(), coordLen);
 
   ParamBldPtr bld(::OSSL_PARAM_BLD_new());
-  AERONET_CHECK_OR_RETURN_DEFAULT(bld);
-  AERONET_CHECK_OR_RETURN_DEFAULT(::OSSL_PARAM_BLD_push_utf8_string(bld.get(), OSSL_PKEY_PARAM_GROUP_NAME,
-                                                                    groupName.data, sizeof(groupName.data)) == 1);
-  AERONET_CHECK_OR_RETURN_DEFAULT(
-      ::OSSL_PARAM_BLD_push_octet_string(bld.get(), OSSL_PKEY_PARAM_PUB_KEY, point.data(), point.size()) == 1);
+  if (!bld) {
+    return {};
+  }
+  if (::OSSL_PARAM_BLD_push_utf8_string(bld.get(), OSSL_PKEY_PARAM_GROUP_NAME, groupName.data,
+                                        sizeof(groupName.data)) != 1) {
+    return {};
+  }
+  if (::OSSL_PARAM_BLD_push_octet_string(bld.get(), OSSL_PKEY_PARAM_PUB_KEY, point.data(), point.size()) != 1) {
+    return {};
+  }
   OsslParamPtr params(::OSSL_PARAM_BLD_to_param(bld.get()));
-  AERONET_CHECK_OR_RETURN_DEFAULT(params);
+  if (!params) {
+    return {};
+  }
   PkeyCtxPtr ctx(::EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr));
-  AERONET_CHECK_OR_RETURN_DEFAULT(ctx);
-  AERONET_CHECK_OR_RETURN_DEFAULT(::EVP_PKEY_fromdata_init(ctx.get()) == 1);
+  if (!ctx) {
+    return {};
+  }
+  if (::EVP_PKEY_fromdata_init(ctx.get()) != 1) {
+    return {};
+  }
 
   EVP_PKEY* pKey = nullptr;
-  AERONET_CHECK_OR_RETURN_DEFAULT(::EVP_PKEY_fromdata(ctx.get(), &pKey, EVP_PKEY_PUBLIC_KEY, params.get()) == 1);
+  if (::EVP_PKEY_fromdata(ctx.get(), &pKey, EVP_PKEY_PUBLIC_KEY, params.get()) != 1) {
+    return {};
+  }
   return pKey;
 }
 
@@ -226,7 +255,9 @@ struct GroupName {
 [[nodiscard]] bool EcdsaDerToRaw(JwtAlgorithm alg, std::span<const char> der, RawChars& out) {
   const auto* ptr = reinterpret_cast<const unsigned char*>(der.data());
   EcdsaSigPtr sig(::d2i_ECDSA_SIG(nullptr, &ptr, static_cast<long>(der.size())));
-  AERONET_CHECK_OR_RETURN_DEFAULT(sig);
+  if (!sig) {
+    return {};
+  }
   const BIGNUM* bnR = nullptr;
   const BIGNUM* bnS = nullptr;
   ::ECDSA_SIG_get0(sig.get(), &bnR, &bnS);
@@ -241,19 +272,31 @@ struct GroupName {
 // Convert a fixed-length JWS R||S ECDSA signature into DER for EVP verification.
 [[nodiscard]] bool EcdsaRawToDer(JwtAlgorithm alg, std::string_view raw, RawChars& out) {
   const std::size_t coord = EcCoordLen(alg);
-  AERONET_CHECK_OR_RETURN_DEFAULT(raw.size() == 2 * coord);
+  if (raw.size() != 2 * coord) {
+    return {};
+  }
   BnPtr bnR(::BN_bin2bn(reinterpret_cast<const unsigned char*>(raw.data()), static_cast<int>(coord), nullptr));
-  AERONET_CHECK_OR_RETURN_DEFAULT(bnR);
+  if (!bnR) {
+    return {};
+  }
   BnPtr bnS(::BN_bin2bn(reinterpret_cast<const unsigned char*>(raw.data()) + coord, static_cast<int>(coord), nullptr));
-  AERONET_CHECK_OR_RETURN_DEFAULT(bnS);
+  if (!bnS) {
+    return {};
+  }
   EcdsaSigPtr sig(::ECDSA_SIG_new());
-  AERONET_CHECK_OR_RETURN_DEFAULT(sig);
-  AERONET_CHECK_OR_RETURN_DEFAULT(::ECDSA_SIG_set0(sig.get(), bnR.get(), bnS.get()) == 1);
+  if (!sig) {
+    return {};
+  }
+  if (::ECDSA_SIG_set0(sig.get(), bnR.get(), bnS.get()) != 1) {
+    return {};
+  }
   bnR.release();  // NOLINT(bugprone-unused-return-value) ownership transferred to sig
   bnS.release();  // NOLINT(bugprone-unused-return-value) ownership transferred to sig
   unsigned char* der = nullptr;
   const int derLen = ::i2d_ECDSA_SIG(sig.get(), &der);
-  AERONET_CHECK_OR_RETURN_DEFAULT(derLen > 0);
+  if (derLen <= 0) {
+    return {};
+  }
   out.append(reinterpret_cast<const char*>(der), static_cast<RawChars::size_type>(derLen));
   ::OPENSSL_free(der);
   return true;
@@ -439,32 +482,42 @@ inline bool VerifyDigest(EVP_PKEY_CTX* pctx, JwtAlgorithm alg) {
 }  // namespace
 
 bool JwtKey::sign(JwtAlgorithm alg, std::string_view signingInput, RawChars& out) const {
-  AERONET_CHECK_OR_RETURN_DEFAULT(matchesFamily(alg));
+  assert(matchesFamily(alg));  // checked by Jwt::encode()
   const auto* pMsg = reinterpret_cast<const unsigned char*>(signingInput.data());
   if (IsHmac(alg)) {
     out.ensureAvailableCapacity(EVP_MAX_MD_SIZE);
     unsigned int macLen = 0;
-    AERONET_CHECK_OR_RETURN_DEFAULT(
-        ::HMAC(MdFor(alg), secret.data(), static_cast<int>(secret.size()), pMsg, signingInput.size(),
-               reinterpret_cast<unsigned char*>(out.data() + out.size()), &macLen) != nullptr);
+    if (::HMAC(MdFor(alg), secret.data(), static_cast<int>(secret.size()), pMsg, signingInput.size(),
+               reinterpret_cast<unsigned char*>(out.data() + out.size()), &macLen) == nullptr) {
+      return {};
+    }
     out.addSize(static_cast<RawChars::size_type>(macLen));
     return true;
   }
 
   MdCtxPtr ctx(::EVP_MD_CTX_new());
-  AERONET_CHECK_OR_RETURN_DEFAULT(ctx);
+  if (!ctx) {
+    return {};
+  }
 
   EVP_PKEY_CTX* pctx = nullptr;
-  AERONET_CHECK_OR_RETURN_DEFAULT(
-      ::EVP_DigestSignInit(ctx.get(), &pctx, MdFor(alg), nullptr, static_cast<EVP_PKEY*>(pKey)) == 1);
+  if (::EVP_DigestSignInit(ctx.get(), &pctx, MdFor(alg), nullptr, static_cast<EVP_PKEY*>(pKey)) != 1) {
+    return {};
+  }
 
-  AERONET_CHECK_OR_RETURN_DEFAULT(VerifyDigest(pctx, alg));
+  if (!VerifyDigest(pctx, alg)) {
+    return {};
+  }
 
   std::size_t sigLen = 0;
-  AERONET_CHECK_OR_RETURN_DEFAULT(::EVP_DigestSign(ctx.get(), nullptr, &sigLen, pMsg, signingInput.size()) == 1);
+  if (::EVP_DigestSign(ctx.get(), nullptr, &sigLen, pMsg, signingInput.size()) != 1) {
+    return {};
+  }
   RawChars sig(sigLen);
-  AERONET_CHECK_OR_RETURN_DEFAULT(::EVP_DigestSign(ctx.get(), reinterpret_cast<unsigned char*>(sig.data()), &sigLen,
-                                                   pMsg, signingInput.size()) == 1);
+  if (::EVP_DigestSign(ctx.get(), reinterpret_cast<unsigned char*>(sig.data()), &sigLen, pMsg, signingInput.size()) !=
+      1) {
+    return {};
+  }
   sig.setSize(static_cast<RawChars::size_type>(sigLen));
   if (family == KeyFamily::Ec) {
     return EcdsaDerToRaw(alg, sig, out);
@@ -474,28 +527,39 @@ bool JwtKey::sign(JwtAlgorithm alg, std::string_view signingInput, RawChars& out
 }
 
 bool JwtKey::verify(JwtAlgorithm alg, std::string_view signingInput, std::string_view signature) const {
-  AERONET_CHECK_OR_RETURN_DEFAULT(matchesFamily(alg));
+  assert(matchesFamily(alg));  // checked by Jwt::tryDecode()
   const auto* msg = reinterpret_cast<const unsigned char*>(signingInput.data());
   if (IsHmac(alg)) {
     unsigned char mac[EVP_MAX_MD_SIZE];
     unsigned int macLen = 0;
-    AERONET_CHECK_OR_RETURN_DEFAULT(::HMAC(MdFor(alg), secret.data(), static_cast<int>(secret.size()), msg,
-                                           signingInput.size(), mac, &macLen) != nullptr);
-    AERONET_CHECK_OR_RETURN_DEFAULT(signature.size() == macLen);
+    if (::HMAC(MdFor(alg), secret.data(), static_cast<int>(secret.size()), msg, signingInput.size(), mac, &macLen) ==
+        nullptr) {
+      return {};
+    }
+    if (signature.size() != macLen) {
+      return {};
+    }
     return ::CRYPTO_memcmp(mac, signature.data(), macLen) == 0;
   }
 
   MdCtxPtr ctx(::EVP_MD_CTX_new());
-  AERONET_CHECK_OR_RETURN_DEFAULT(ctx);
+  if (!ctx) {
+    return {};
+  }
   EVP_PKEY_CTX* pctx = nullptr;
-  AERONET_CHECK_OR_RETURN_DEFAULT(
-      ::EVP_DigestVerifyInit(ctx.get(), &pctx, MdFor(alg), nullptr, static_cast<EVP_PKEY*>(pKey)) == 1);
+  if (::EVP_DigestVerifyInit(ctx.get(), &pctx, MdFor(alg), nullptr, static_cast<EVP_PKEY*>(pKey)) != 1) {
+    return {};
+  }
 
-  AERONET_CHECK_OR_RETURN_DEFAULT(VerifyDigest(pctx, alg));
+  if (!VerifyDigest(pctx, alg)) {
+    return {};
+  }
 
   RawChars der;
   if (family == KeyFamily::Ec) {
-    AERONET_CHECK_OR_RETURN_DEFAULT(EcdsaRawToDer(alg, signature, der));
+    if (!EcdsaRawToDer(alg, signature, der)) {
+      return {};
+    }
     signature = der;
   }
   return ::EVP_DigestVerify(ctx.get(), reinterpret_cast<const unsigned char*>(signature.data()), signature.size(), msg,
@@ -503,5 +567,3 @@ bool JwtKey::verify(JwtAlgorithm alg, std::string_view signingInput, std::string
 }
 
 }  // namespace aeronet
-
-#undef AERONET_CHECK_OR_RETURN_DEFAULT
