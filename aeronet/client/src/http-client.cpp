@@ -194,14 +194,66 @@ HttpClient::HttpClient(HttpClientConfig config)
   _proxyPort = proxyRes.port;
 }
 
-HttpClient::HttpClient(const HttpClient& rhs) : HttpClient(rhs._config) {
+// Not defaulted: the compression state points into _config, whose address changes with the move.
+HttpClient::HttpClient(HttpClient&& rhs) noexcept
+    : _config(std::move(rhs._config)),
+      _loop(std::move(rhs._loop)),
+      _loopFd(rhs._loopFd),
+      _cachePruneCounter(rhs._cachePruneCounter),
+      _loopInterest(rhs._loopInterest),
+      _proxyPort(rhs._proxyPort),
+      _jitterState(rhs._jitterState),
+      _idle(std::move(rhs._idle)),
+      _cache(std::move(rhs._cache)),
+      _cacheKeyScratch(std::move(rhs._cacheKeyScratch)),
+      _reqBodyScratch(std::move(rhs._reqBodyScratch)),
+      _responseBuffer(std::move(rhs._responseBuffer)),
+#ifdef AERONET_ENABLE_HTTP2
+      _outputFragmentsScratch(std::move(rhs._outputFragmentsScratch)),
+#endif
+      // Still valid: it views the heap storage of the config strings, which the config move transfers.
+      _proxyHost(rhs._proxyHost),
+      _codec(std::move(rhs._codec)),
+#ifdef AERONET_ENABLE_OPENSSL
+      _tls(std::move(rhs._tls)),
+#endif
+      _telemetry(std::move(rhs._telemetry)) {
   _codec.compressionState.pCompressionConfig = &_config.requestCompression.codec;
+}
+
+HttpClient::HttpClient(const HttpClient& rhs) : HttpClient(rhs._config) {}
+
+HttpClient& HttpClient::operator=(HttpClient&& rhs) noexcept {
+  if (&rhs != this) {
+    _config = std::move(rhs._config);
+    _loop = std::move(rhs._loop);
+    _loopFd = rhs._loopFd;
+    _cachePruneCounter = rhs._cachePruneCounter;
+    _loopInterest = rhs._loopInterest;
+    _proxyPort = rhs._proxyPort;
+    _jitterState = rhs._jitterState;
+    _idle = std::move(rhs._idle);
+    _cache = std::move(rhs._cache);
+    _cacheKeyScratch = std::move(rhs._cacheKeyScratch);
+    _reqBodyScratch = std::move(rhs._reqBodyScratch);
+    _responseBuffer = std::move(rhs._responseBuffer);
+#ifdef AERONET_ENABLE_HTTP2
+    _outputFragmentsScratch = std::move(rhs._outputFragmentsScratch);
+#endif
+    _proxyHost = rhs._proxyHost;
+    _codec = std::move(rhs._codec);
+#ifdef AERONET_ENABLE_OPENSSL
+    _tls = std::move(rhs._tls);
+#endif
+    _telemetry = std::move(rhs._telemetry);
+    _codec.compressionState.pCompressionConfig = &_config.requestCompression.codec;
+  }
+  return *this;
 }
 
 HttpClient& HttpClient::operator=(const HttpClient& rhs) {
   if (&rhs != this) {
     *this = HttpClient(rhs._config);
-    _codec.compressionState.pCompressionConfig = &_config.requestCompression.codec;
   }
   return *this;
 }

@@ -22,6 +22,7 @@
 #include "aeronet/client-protocol.hpp"
 #include "aeronet/close-native-handle.hpp"
 #include "aeronet/compression-test-helpers.hpp"
+#include "aeronet/direct-compression-mode.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-client-config.hpp"
@@ -252,18 +253,21 @@ class HttpClientE2ETest : public ::testing::Test {
 
 }  // namespace
 
+// The source is destroyed before the moved client is used: the moved client must not refer to it anymore.
 TEST_F(HttpClientE2ETest, MoveConstructor) {
-  HttpClient client;
-  HttpClient movedClient(std::move(client));
+  auto client = std::make_unique<HttpClient>();
+  HttpClient movedClient(std::move(*client));
+  client.reset();
   auto resp = movedClient.get(Url("/hello")).value();
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), "world");
 }
 
 TEST_F(HttpClientE2ETest, MoveAssignment) {
-  HttpClient client;
+  auto client = std::make_unique<HttpClient>();
   HttpClient assignedClient;
-  assignedClient = std::move(client);
+  assignedClient = std::move(*client);
+  client.reset();
   auto resp = assignedClient.get(Url("/hello")).value();
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), "world");
@@ -275,6 +279,30 @@ TEST_F(HttpClientE2ETest, MoveAssignment) {
   EXPECT_EQ(resp2.status(), 200);
   EXPECT_EQ(resp2.bodyInMemory(), "world");
 }
+
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+// A moved client uses its own configuration, not the one of the moved-from client, which is then assigned another one.
+TEST_F(HttpClientE2ETest, MovedClientUsesItsOwnCompressionConfig) {
+  const auto makeClient = [](DirectCompressionMode mode) {
+    HttpClientConfig config;
+    config.requestCompression.codec.defaultDirectCompressionMode = mode;
+    return HttpClient(std::move(config));
+  };
+
+  HttpClient source = makeClient(DirectCompressionMode::Off);
+  HttpClient movedClient(std::move(source));
+  source = makeClient(DirectCompressionMode::On);
+  EXPECT_EQ(movedClient.makeRequest(http::Method::GET, Url("/hello")).directCompressionMode(),
+            DirectCompressionMode::Off);
+
+  HttpClient assignSource = makeClient(DirectCompressionMode::On);
+  HttpClient assignedClient = makeClient(DirectCompressionMode::Off);
+  assignedClient = std::move(assignSource);
+  assignSource = makeClient(DirectCompressionMode::Off);
+  EXPECT_EQ(assignedClient.makeRequest(http::Method::GET, Url("/hello")).directCompressionMode(),
+            DirectCompressionMode::On);
+}
+#endif
 
 TEST_F(HttpClientE2ETest, CopyConstructorShouldCopyConfig) {
   HttpClientConfig config;
