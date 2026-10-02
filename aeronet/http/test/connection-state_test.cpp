@@ -585,6 +585,33 @@ class DelayedZerocopyTransport final : public TransportBackend<DelayedZerocopyTr
   bool _enabled{true};
   bool _completed{false};
 };
+
+// Unlike DelayedZerocopyTransport, relies on the production zerocopy bookkeeping (SocketTransportState): a write of at
+// least the zerocopy threshold is recorded as an in-flight MSG_ZEROCOPY send until completeAll() simulates the kernel
+// completion notifications.
+// Same layout as TlsTransport: a custom backend that also owns the socket zerocopy state.
+// NOLINTNEXTLINE(misc-multiple-inheritance)
+class InFlightZerocopyTransport final : public TransportBackend<InFlightZerocopyTransport>,
+                                        public SocketTransportState {
+ public:
+  explicit InFlightZerocopyTransport(uint32_t minBytesForZerocopy) { _zerocopyState.enable(minBytesForZerocopy); }
+
+  static TransportResult read([[maybe_unused]] char* ptr, [[maybe_unused]] std::size_t sz) {
+    return {0U, TransportHint::ReadReady};
+  }
+
+  TransportResult write(std::string_view data) {
+    if (_zerocopyState.enabled() && data.size() >= _zerocopyState.minBytes) {
+      ++_zerocopyState.seqHi;
+    }
+    return {data.size(), TransportHint::None};
+  }
+
+  // No real socket: completions only arrive through completeAll().
+  static std::size_t pollZerocopyCompletions() noexcept { return 0; }
+
+  void completeAll() noexcept { _zerocopyState.seqLo = _zerocopyState.seqHi; }
+};
 }  // namespace
 
 TEST(ConnectionStateZerocopyTest, DelayedCompletionsPlateauAndLaterWritesFallBackToCopy) {
@@ -634,6 +661,59 @@ TEST(ConnectionStateZerocopyTest, DelayedCompletionsPlateauAndLaterWritesFallBac
     }
   }
 }
+
+#ifdef AERONET_LINUX
+// Disabling zerocopy at the retained-payload high-water mark must not release the buffers of the zerocopy sends already
+// in flight: the kernel keeps transmitting (and possibly retransmitting) from their pages until it reports completion.
+TEST(ConnectionStateZerocopyTest, InFlightBuffersAreKeptWhenZerocopyIsDisabledAtHighWaterMark) {
+  static constexpr uint32_t kMinBytesForZerocopy = 100;
+  static constexpr uint32_t kMaxPendingBytes = 1024;
+
+  ConnectionState state;
+  auto backend = std::make_unique<InFlightZerocopyTransport>(kMinBytesForZerocopy);
+  InFlightZerocopyTransport* raw = backend.get();
+  state.transport = std::move(backend);
+
+  // Same sequence as SingleHttpServer::queueData for a fully written response.
+  const auto sendResponse = [&state](std::size_t size, char ch) {
+    HttpMessageData data(std::string(size, ch));
+    const bool mayNeedHold = state.prepareZerocopyWrite(data.retainedSize(), kMaxPendingBytes);
+    const auto [written, want] = state.transportWrite(data);
+    EXPECT_EQ(written, data.remainingSize());
+    EXPECT_EQ(want, TransportHint::None);
+    state.holdBufferIfZerocopyPending(std::move(data), mayNeedHold);
+    return mayNeedHold;
+  };
+
+  EXPECT_TRUE(sendResponse(600, 'a'));
+  EXPECT_TRUE(sendResponse(400, 'b'));
+  EXPECT_EQ(state.zerocopyRetainedBytes(), 1000U);
+  ASSERT_EQ(state.zerocopyPendingBuffers.size(), 2U);
+
+  // The next response would cross the limit: zerocopy is disabled and the response is copied by the kernel instead.
+  EXPECT_FALSE(sendResponse(200, 'c'));
+  EXPECT_FALSE(state.transport.isZerocopyEnabled());
+
+  // Both previous sends are still in flight, so their buffers must survive any release attempt.
+  EXPECT_TRUE(state.transport.hasZerocopyPending());
+  state.releaseCompletedZerocopyBuffers();
+  state.reclaimMemoryFromOversizedBuffers();
+  EXPECT_EQ(state.zerocopyRetainedBytes(), 1000U);
+  ASSERT_EQ(state.zerocopyPendingBuffers.size(), 2U);
+  EXPECT_EQ(state.zerocopyPendingBuffers[0].firstBuffer(), std::string(600, 'a'));
+  EXPECT_EQ(state.zerocopyPendingBuffers[1].firstBuffer(), std::string(400, 'b'));
+
+  // Zerocopy stays disabled for the connection: later responses are neither zerocopy-sent nor retained.
+  EXPECT_FALSE(sendResponse(300, 'd'));
+  EXPECT_EQ(state.zerocopyPendingBuffers.size(), 2U);
+
+  raw->completeAll();
+  EXPECT_FALSE(state.transport.hasZerocopyPending());
+  state.releaseCompletedZerocopyBuffers();
+  EXPECT_EQ(state.zerocopyRetainedBytes(), 0U);
+  EXPECT_TRUE(state.zerocopyPendingBuffers.empty());
+}
+#endif
 
 TEST(ConnectionStateTransportTest, TransportWriteStringSetsTlsEstablished) {
   ConnectionState state;

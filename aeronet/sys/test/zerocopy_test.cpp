@@ -39,6 +39,21 @@ bool IsZeroCopyEnabled(int fd) noexcept {
 
 constexpr uint32_t kZeroCopyMinPayloadSize = 1024;  // Minimum size for zerocopy sends in tests
 
+#ifdef AERONET_LINUX
+[[nodiscard]] std::string RecvExactly(int fd, std::size_t size) {
+  std::string recvBuf(size, '\0');
+  for (std::size_t totalRecv = 0; totalRecv < size;) {
+    const auto rc = ::recv(fd, recvBuf.data() + totalRecv, recvBuf.size() - totalRecv, 0);
+    if (rc <= 0) {
+      ADD_FAILURE() << "recv failed with errno=" << errno;
+      break;
+    }
+    totalRecv += static_cast<std::size_t>(rc);
+  }
+  return recvBuf;
+}
+#endif
+
 }  // namespace
 
 TEST(ZeroCopyTest, EnableZerocopyOnTcpSocket) {
@@ -110,6 +125,32 @@ TEST(ZeroCopyTest, AllZerocopyCompletedLogic) {
   // With pending completions and different seq numbers
   state.seqHi = 10;
   EXPECT_TRUE(state.pendingCompletions());
+}
+
+TEST(ZeroCopyTest, DisableKeepsPendingCompletions) {
+  ZeroCopyState state;
+  EXPECT_FALSE(state.enabled());
+  EXPECT_FALSE(state.pendingCompletions());
+
+  state.enable(kZeroCopyMinPayloadSize);
+  EXPECT_TRUE(state.enabled());
+  EXPECT_EQ(state.minBytes, kZeroCopyMinPayloadSize);
+
+  // Three zerocopy sends issued, none completed yet.
+  state.seqHi = 3;
+  state.disable();
+  EXPECT_FALSE(state.enabled());
+  // The kernel may still read the buffers of these sends.
+  EXPECT_TRUE(state.pendingCompletions());
+
+  // Their completion is still tracked once zerocopy is disabled.
+  state.seqLo = 3;
+  EXPECT_FALSE(state.pendingCompletions());
+  EXPECT_FALSE(state.enabled());
+
+  state.enable(kZeroCopyMinPayloadSize);
+  EXPECT_TRUE(state.enabled());
+  EXPECT_FALSE(state.pendingCompletions());
 }
 
 #ifdef AERONET_LINUX
@@ -301,6 +342,90 @@ TEST(PlainTransportZeroCopy, ZerocopySendSuccessPathWithMockedSendmsg) {
   EXPECT_EQ(result.want, TransportHint::None);
 
   // Verify zerocopy was marked as pending (since send succeeded)
+  EXPECT_TRUE(transport.hasZerocopyPending());
+}
+
+TEST(PlainTransportZeroCopy, DisableKeepsInFlightSendPendingUntilCompletion) {
+  int sv[2];
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+  BaseFd guard0(sv[0]);
+  BaseFd guard1(sv[1]);
+
+  int sndbuf = 256 * 1024;
+  int rcvbuf = 256 * 1024;
+  ::setsockopt(sv[0], SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+  ::setsockopt(sv[1], SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+
+  test::PushSetsockoptAction({0, 0});
+  PlainTransport transport(sv[0], ZerocopyMode::Enabled, kZeroCopyMinPayloadSize);
+  ASSERT_TRUE(transport.isZerocopyEnabled());
+
+  const std::size_t payloadSize = kZeroCopyMinPayloadSize + 1024;
+  const std::string largeData(payloadSize, 'X');
+
+  // First sendmsg simulates a successful MSG_ZEROCOPY send. The second one would make the write fail if zerocopy were
+  // still attempted after being disabled.
+  test::SetSendmsgActions(sv[0], {IoAction{static_cast<int64_t>(payloadSize), 0}, IoAction{-1, EPIPE}});
+  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> sendmsgGuard(test::g_sendmsg_actions);
+
+  auto result = transport.write(largeData);
+  EXPECT_EQ(result.bytesProcessed, payloadSize);
+  EXPECT_EQ(result.want, TransportHint::None);
+  ASSERT_TRUE(transport.hasZerocopyPending());
+
+  transport.disableZerocopy();
+  EXPECT_FALSE(transport.isZerocopyEnabled());
+  // The kernel may still read the pages of the in-flight send: it must stay tracked.
+  EXPECT_TRUE(transport.hasZerocopyPending());
+
+  // Subsequent sends use the regular (copying) write path.
+  const std::string otherData(payloadSize, 'Y');
+  result = transport.write(otherData);
+  EXPECT_EQ(result.bytesProcessed, payloadSize);
+  EXPECT_EQ(result.want, TransportHint::None);
+  EXPECT_EQ(RecvExactly(sv[1], payloadSize), otherData);
+  EXPECT_TRUE(transport.hasZerocopyPending());
+
+  // The completion notification of the in-flight send releases it.
+  test::g_recvmsg_actions.setActions(sv[0], {IoAction{0, 0}, IoAction{-1, error::kWouldBlock}});
+  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> recvmsgGuard(test::g_recvmsg_actions);
+  EXPECT_EQ(transport.pollZerocopyCompletions(), 1U);
+  EXPECT_FALSE(transport.hasZerocopyPending());
+}
+
+TEST(PlainTransportZeroCopy, ZerocopySendNotSupportedDisablesZerocopyButKeepsInFlightSendPending) {
+  int sv[2];
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+  BaseFd guard0(sv[0]);
+  BaseFd guard1(sv[1]);
+
+  int sndbuf = 256 * 1024;
+  int rcvbuf = 256 * 1024;
+  ::setsockopt(sv[0], SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+  ::setsockopt(sv[1], SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+
+  test::PushSetsockoptAction({0, 0});
+  PlainTransport transport(sv[0], ZerocopyMode::Enabled, kZeroCopyMinPayloadSize);
+  ASSERT_TRUE(transport.isZerocopyEnabled());
+
+  const std::size_t payloadSize = kZeroCopyMinPayloadSize + 1024;
+  const std::string firstData(payloadSize, 'X');
+  const std::string secondData(payloadSize, 'Y');
+
+  // First send succeeds with MSG_ZEROCOPY, the second one reports that zerocopy is not supported.
+  test::SetSendmsgActions(sv[0], {IoAction{static_cast<int64_t>(payloadSize), 0}, IoAction{-1, EOPNOTSUPP}});
+  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> sendmsgGuard(test::g_sendmsg_actions);
+
+  auto result = transport.write(firstData);
+  EXPECT_EQ(result.bytesProcessed, payloadSize);
+  ASSERT_TRUE(transport.hasZerocopyPending());
+
+  // Falls back to the regular write path for this send, and disables zerocopy for the next ones.
+  result = transport.write(secondData);
+  EXPECT_EQ(result.bytesProcessed, payloadSize);
+  EXPECT_EQ(result.want, TransportHint::None);
+  EXPECT_EQ(RecvExactly(sv[1], payloadSize), secondData);
+  EXPECT_FALSE(transport.isZerocopyEnabled());
   EXPECT_TRUE(transport.hasZerocopyPending());
 }
 
