@@ -31,6 +31,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/http-version.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -279,6 +280,52 @@ TEST(Http10, KeepAliveOptInStillWorks) {
   test::sendAll(fd, req2);
   std::string second = test::recvWithTimeout(fd, 300ms);  // NOLINT(misc-include-cleaner)
   ASSERT_TRUE(second.starts_with("HTTP/1.0 200"));
+}
+
+// RFC 9110 §6.2: a request with a higher HTTP/1 minor version is processed, and answered, as HTTP/1.1.
+TEST(Http1HigherMinorVersion, AnsweredAsHttp11AndKeptAlive) {
+  ts.router().setDefault(
+      [](const HttpRequestView& req) { return HttpResponse(req.version() == http::HTTP_1_1 ? "v11" : "other"); });
+  test::ClientConnection clientConnection(ts.port());
+  NativeHandle fd = clientConnection.fd();
+  ASSERT_GE(fd, 0);
+  test::sendAll(fd, "GET /a HTTP/1.3\r\nhost: h\r\n\r\n");
+  std::string first = test::recvWithTimeout(fd, 300ms);  // NOLINT(misc-include-cleaner)
+  ASSERT_TRUE(first.starts_with("HTTP/1.1 200")) << first;
+  EXPECT_TRUE(first.ends_with("v11")) << first;
+  EXPECT_FALSE(first.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << first;
+  // Keep-alive by default, as for HTTP/1.1: the same connection serves the next request.
+  test::sendAll(fd, "GET /b HTTP/1.9\r\nhost: h\r\n\r\n");
+  std::string second = test::recvWithTimeout(fd, 300ms);  // NOLINT(misc-include-cleaner)
+  ASSERT_TRUE(second.starts_with("HTTP/1.1 200")) << second;
+  EXPECT_TRUE(second.ends_with("v11")) << second;
+}
+
+TEST(Http1HigherMinorVersion, MissingHostIsRejected) {
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("H"); });
+  std::string resp = test::sendAndCollect(ts.port(), "GET /x HTTP/1.2\r\nconnection: close\r\n\r\n");
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
+}
+
+TEST(Http1HigherMinorVersion, Interim100ContinueIsSent) {
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
+  std::string resp = test::sendAndCollect(
+      ts.port(),
+      "POST /p HTTP/1.2\r\nhost: h\r\ncontent-length: 5\r\nexpect: 100-continue\r\nconnection: close\r\n\r\nHELLO");
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 100 Continue")) << resp;
+  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.ends_with("HELLO")) << resp;
+}
+
+TEST(Http1HigherMinorVersion, StreamingHandlerCanBePicked) {
+  ts.resetRouterAndGet().setDefault([]([[maybe_unused]] const HttpRequestView& req, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+    writer.writeBody("streamed");
+    writer.end();
+  });
+  std::string resp = test::sendAndCollect(ts.port(), "GET /x HTTP/1.4\r\nhost: h\r\nconnection: close\r\n\r\n");
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.contains("streamed")) << resp;
 }
 
 TEST(HttpPipeline, TwoRequestsBackToBack) {

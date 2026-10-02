@@ -232,6 +232,9 @@ class HttpRequestViewTest : public ::testing::Test {
 
   [[nodiscard]] bool callWantClose() const { return req.wantClose(); }
 
+  // Keep-alive decision with keep-alive enabled, a running server and no request count limit reached.
+  [[nodiscard]] bool callIsKeepAliveForHttp1() const { return req.isKeepAliveForHttp1(true, 100U, true); }
+
   void attachSpan(tracing::SpanPtr span) { req._traceSpan = std::move(span); }
 
   void callEnd(http::StatusCode sc) { req.end(sc); }
@@ -619,6 +622,25 @@ TEST_F(HttpRequestViewTest, Http11WithoutHostShouldBeRejected) {
   EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\nX-Header: value\r\n\r\n")), http::StatusCodeOK);
   EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.1\r\nX-Header: value\r\n\r\n")), http::StatusCodeBadRequest);
   EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.1\r\nX-Header: value\r\nhost: test\r\n\r\n")), http::StatusCodeOK);
+}
+
+// RFC 9110 §6.2: a higher HTTP/1 minor version is accepted and processed as HTTP/1.1, the highest version the server
+// conforms to - Host is required, keep-alive is the default and 100-continue is honored.
+TEST_F(HttpRequestViewTest, HigherHttp1MinorVersionIsProcessedAsHttp11) {
+  for (const std::string_view version : {"HTTP/1.2", "HTTP/1.3", "HTTP/1.9"}) {
+    SCOPED_TRACE(version);
+    ASSERT_EQ(reqSet(BuildRaw("GET", "/p", version, MakeHttp1HeaderLine(http::Expect, "100-continue"))),
+              http::StatusCodeOK);
+    EXPECT_EQ(req.version(), http::HTTP_1_1);
+    EXPECT_TRUE(req.hasExpectContinue());
+    EXPECT_FALSE(callWantClose());
+    EXPECT_TRUE(callIsKeepAliveForHttp1());
+
+    RawChars noHost("GET /p ");
+    noHost.append(version);
+    noHost.append("\r\nX-Header: value\r\n\r\n");
+    EXPECT_EQ(reqSet(std::move(noHost)), http::StatusCodeBadRequest);
+  }
 }
 
 TEST_F(HttpRequestViewTest, InvalidHeaderKey) {
