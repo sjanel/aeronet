@@ -83,7 +83,9 @@ class TlsContext {
   // Callback arguments are declared before the contexts so they outlive every SSL_CTX during normal destruction and
   // constructor unwinding. TlsContext is non-movable, which keeps their addresses stable.
   AlpnData _alpnData;
-  RawBytes32 _ocspResponse;
+  // Default OCSP response, stored in _sniRoutes.charStorage like the SNI ones: StapleOcspResponse() expects a
+  // std::span<const std::byte> for both.
+  std::span<const std::byte> _ocspResponse;
   RevocationData _revocationData;
   std::unique_ptr<KeyLogWriter> _keyLogWriter;
   std::shared_ptr<TlsTicketKeyStore> _ticketKeyStore;

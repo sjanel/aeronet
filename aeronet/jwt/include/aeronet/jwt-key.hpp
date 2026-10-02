@@ -79,10 +79,12 @@ class JwtKey {
   [[nodiscard]] bool matchesFamily(JwtAlgorithm alg) const noexcept;
 
   // Sign `signingInput` (the "header.payload" ASCII) with `alg`, appending the raw signature bytes
-  // to `out`. Returns false on a key/alg mismatch or a low-level crypto failure.
+  // to `out`. The key must match the family of `alg` (see matchesFamily()). Returns false on a low-level crypto
+  // failure.
   [[nodiscard]] bool sign(JwtAlgorithm alg, std::string_view signingInput, RawChars& out) const;
 
   // Verify `signature` (raw bytes) over `signingInput` with `alg`. Constant-time for HMAC.
+  // The key must match the family of `alg` (see matchesFamily()).
   [[nodiscard]] bool verify(JwtAlgorithm alg, std::string_view signingInput, std::string_view signature) const;
 
   // Build a key from a pre-parsed JWK object view (used by Jwks to avoid a second parse).

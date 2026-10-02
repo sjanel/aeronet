@@ -397,15 +397,10 @@ TlsContext::TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> 
   LoadCertificateAndKey(ctx, cfg.certPem(), cfg.keyPem(), cfg.certFileCstr(), cfg.keyFileCstr());
   ConfigureClientVerification(ctx, cfg, &_revocationData, &TlsContext::VerifyPeerCertificate);
 
-  auto ocspResponse = LoadOcspResponse(_sniRoutes.charStorage, cfg.ocspResponseFile());
-  if (!ocspResponse.empty()) {
-    _ocspResponse.assign(ocspResponse);
-    _sniRoutes.charStorage.shrinkLastAllocated(reinterpret_cast<const char*>(ocspResponse.data()), 0);
-
-    if (::SSL_CTX_set_tlsext_status_arg(ctx, &_ocspResponse) != 1 ||
-        ::SSL_CTX_set_tlsext_status_cb(ctx, &TlsContext::StapleOcspResponse) != 1) {
-      throw std::runtime_error("Failed to configure the default TLS OCSP staple");
-    }
+  _ocspResponse = LoadOcspResponse(_sniRoutes.charStorage, cfg.ocspResponseFile());
+  if (!_ocspResponse.empty() && (::SSL_CTX_set_tlsext_status_arg(ctx, &_ocspResponse) != 1 ||
+                                 ::SSL_CTX_set_tlsext_status_cb(ctx, &TlsContext::StapleOcspResponse) != 1)) {
+    throw std::runtime_error("Failed to configure the default TLS OCSP staple");
   }
 
   if (!cfg.keyLogFile().empty()) {
@@ -469,7 +464,7 @@ TlsContext::TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> 
       char* pPattern = _sniRoutes.charStorage.allocateAndDefaultConstruct(entry.pattern().size());
       Copy(entry.pattern(), pPattern);
 
-      ocspResponse = LoadOcspResponse(_sniRoutes.charStorage, entry.ocspResponseFile());
+      const auto ocspResponse = LoadOcspResponse(_sniRoutes.charStorage, entry.ocspResponseFile());
 
       *pRoute = SniRoute(std::string_view(pPattern, entry.pattern().size()), entry.isWildcard, std::move(routeCtx),
                          ocspResponse);
@@ -501,10 +496,10 @@ TlsContext::TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> 
 }
 
 int TlsContext::StapleOcspResponse(SSL* ssl, void* arg) {
-  const auto& response = *static_cast<const RawBytes32*>(arg);
+  // 'arg' is the std::span<const std::byte> of the default context (_ocspResponse) or of a SNI route.
+  const auto& response = *static_cast<const std::span<const std::byte>*>(arg);
   assert(!response.empty());
-  auto* copy =
-      static_cast<unsigned char*>(::OPENSSL_memdup(response.data(), static_cast<std::size_t>(response.size())));
+  auto* copy = static_cast<unsigned char*>(::OPENSSL_memdup(response.data(), response.size()));
   if (copy == nullptr) {
     return SSL_TLSEXT_ERR_ALERT_FATAL;
   }

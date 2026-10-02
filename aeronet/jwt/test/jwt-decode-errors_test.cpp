@@ -127,6 +127,16 @@ TEST(JwtDecodeErrors, EcdsaWrongSignatureLength) {
   EXPECT_EQ(DecodeErr(token, JwtKey::FromPem(ec.publicPem), NoTemporal()), JwtError::InvalidSignature);
 }
 
+// An HMAC signature segment of the wrong size (but valid base64url) is an invalid signature.
+TEST(JwtDecodeErrors, HmacWrongSignatureLength) {
+  JwtKey key = JwtKey::Hmac("secret");
+  const std::string signingInput = B64Url(R"({"alg":"HS256"})") + "." + B64Url("{}");
+  const std::string tooLong(48, 'x');  // HS256 MACs are 32 bytes
+  for (const std::string_view signature : {std::string_view("too-short"), std::string_view(tooLong)}) {
+    EXPECT_EQ(DecodeErr(signingInput + "." + B64Url(signature), key, NoTemporal()), JwtError::InvalidSignature);
+  }
+}
+
 TEST(JwtKeyErrors, FactoriesReturnInvalidOnBadInput) {
   EXPECT_FALSE(JwtKey::Hmac("").valid());  // empty secret
   EXPECT_FALSE(JwtKey::FromPem("not a pem").valid());
