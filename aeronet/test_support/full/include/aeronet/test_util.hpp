@@ -22,7 +22,11 @@ class ClientConnection {
  public:
   ClientConnection() noexcept = default;
 
-  explicit ClientConnection(uint16_t port, std::chrono::milliseconds timeout = std::chrono::milliseconds{500});
+  // Connects to 'port' on loopback, retrying until 'timeout'. A positive 'receiveBufferSize' is set before connecting,
+  // so that the TCP window advertised to the server stays that small: its writes then quickly fill the socket, as for a
+  // slow reader. Throws on failure.
+  explicit ClientConnection(uint16_t port, std::chrono::milliseconds timeout = std::chrono::milliseconds{500},
+                            int receiveBufferSize = 0);
 
   [[nodiscard]] NativeHandle fd() const noexcept { return _socket.fd(); }
 
@@ -101,6 +105,9 @@ ParsedResponse parseResponseOrThrow(std::string_view raw);
 void setRecvTimeout(NativeHandle fd, SysDuration timeout);
 
 void setSendTimeout(NativeHandle fd, SysDuration timeout);
+
+// Sets the socket receive buffer size (SO_RCVBUF), which the kernel may round up. Throws on failure.
+void SetReceiveBufferSize(NativeHandle fd, int receiveBufferSize);
 
 std::string buildRequest(const RequestOptions& opt);
 

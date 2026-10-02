@@ -257,6 +257,18 @@ bool ShutdownReadWrite(NativeHandle fd) noexcept {
 #endif
 }
 
+bool SetAbortiveClose(NativeHandle fd) noexcept {
+  linger lingerOpt{};
+  lingerOpt.l_onoff = 1;
+  lingerOpt.l_linger = 0;
+#ifdef AERONET_WINDOWS
+  return ::setsockopt(fd, SOL_SOCKET, SO_LINGER, reinterpret_cast<const char*>(&lingerOpt), sizeof(lingerOpt)) == 0;
+#else
+  // NOLINTNEXTLINE(misc-include-cleaner) sys/socket.h is the correct header for SOL_SOCKET and SO_LINGER
+  return ::setsockopt(fd, SOL_SOCKET, SO_LINGER, &lingerOpt, sizeof(lingerOpt)) == 0;
+#endif
+}
+
 int64_t ReadOffset(NativeHandle fd, void* buffer, std::size_t len, std::size_t offset) noexcept {
 #ifdef AERONET_POSIX
   return static_cast<int64_t>(::pread(fd, buffer, len, static_cast<off_t>(offset)));

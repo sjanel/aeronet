@@ -713,6 +713,35 @@ TEST(ConnectionStateZerocopyTest, InFlightBuffersAreKeptWhenZerocopyIsDisabledAt
   EXPECT_EQ(state.zerocopyRetainedBytes(), 0U);
   EXPECT_TRUE(state.zerocopyPendingBuffers.empty());
 }
+
+// A drain close waits for the zerocopy sends of the connection: after close, the kernel would still send from their
+// buffers, released with the connection state.
+TEST(ConnectionStateZerocopyTest, DrainCloseWaitsForZerocopySendsInFlight) {
+  ConnectionState withoutTransport;
+  EXPECT_FALSE(withoutTransport.hasZerocopySendsInFlight());
+
+  ConnectionState state;
+  auto backend = std::make_unique<InFlightZerocopyTransport>(100U);
+  InFlightZerocopyTransport* raw = backend.get();
+  state.transport = std::move(backend);
+
+  HttpMessageData data(std::string(600, 'a'));
+  const bool mayNeedHold = state.prepareZerocopyWrite(data.retainedSize(), 1024U);
+  ASSERT_TRUE(mayNeedHold);
+  EXPECT_EQ(state.transportWrite(data).bytesProcessed, 600U);
+  state.holdBufferIfZerocopyPending(std::move(data), mayNeedHold);
+
+  state.requestDrainAndClose();
+  EXPECT_TRUE(state.hasZerocopySendsInFlight());
+  EXPECT_FALSE(state.canCloseConnectionForDrain());
+  EXPECT_EQ(state.zerocopyRetainedBytes(), 600U);
+
+  raw->completeAll();
+  EXPECT_TRUE(state.canCloseConnectionForDrain());
+  EXPECT_FALSE(state.hasZerocopySendsInFlight());
+  EXPECT_EQ(state.zerocopyRetainedBytes(), 0U);
+  EXPECT_TRUE(state.zerocopyPendingBuffers.empty());
+}
 #endif
 
 TEST(ConnectionStateTransportTest, TransportWriteStringSetsTlsEstablished) {

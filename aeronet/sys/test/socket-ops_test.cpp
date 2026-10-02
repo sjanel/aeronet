@@ -117,6 +117,23 @@ TEST_F(SocketOpsTest, SetTcpNoDelaySucceeds) {
 
 TEST_F(SocketOpsTest, SetTcpNoDelayFailsOnBadFd) { EXPECT_FALSE(SetTcpNoDelay(-1)); }
 
+#ifdef AERONET_POSIX
+TEST_F(SocketOpsTest, SetAbortiveCloseSetsZeroLinger) {
+  NativeHandle fd = CreateTestSocket();
+  ASSERT_GE(fd, 0);
+  EXPECT_TRUE(SetAbortiveClose(fd));
+  linger lingerOpt{};
+  socklen_t len = sizeof(lingerOpt);
+  // NOLINTNEXTLINE(misc-include-cleaner) sys/socket.h is the correct header for SOL_SOCKET and SO_LINGER
+  ASSERT_EQ(::getsockopt(fd, SOL_SOCKET, SO_LINGER, &lingerOpt, &len), 0);
+  EXPECT_NE(lingerOpt.l_onoff, 0);
+  EXPECT_EQ(lingerOpt.l_linger, 0);
+  CloseSocket(fd);
+}
+#endif
+
+TEST_F(SocketOpsTest, SetAbortiveCloseFailsOnBadFd) { EXPECT_FALSE(SetAbortiveClose(-1)); }
+
 TEST_F(SocketOpsTest, GetSocketErrorReturnsZeroForGoodSocket) {
   NativeHandle fd = CreateTestSocket();
   ASSERT_GE(fd, 0);

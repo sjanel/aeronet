@@ -405,6 +405,41 @@ TEST(HttpResponseDispatchErrors, FlushOutboundTransportError) {
   EXPECT_TRUE(test::WaitForPeerClose(client.fd(), 2000ms)) << resp;
 }
 
+// A file response produced while an interim response (here 100 Continue, the body coming with the request head) still
+// waits for the socket is queued behind it: its head after the buffered output, its file once that output is written.
+TEST(HttpResponseDispatchErrors, FileResponseQueuedBehindPendingInterimResponse) {
+  test::QueueResetGuard<decltype(test::g_writev_actions)> guardWritev(test::g_writev_actions);
+
+  constexpr std::string_view kPayload = "file response behind a pending interim response";
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, kPayload);
+  const std::string path = tmp.filePath().string();
+  ts.router().setDefault([&path](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK).file(File(path)); });
+
+  const auto prevAcceptCount = test::g_accept_count.load(std::memory_order_acquire);
+  test::ClientConnection client(ts.port());
+  int serverFd = -1;
+  const auto deadline = std::chrono::steady_clock::now() + 500ms;
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (test::g_accept_count.load(std::memory_order_acquire) > prevAcceptCount) {
+      serverFd = test::g_last_accepted_fd.load(std::memory_order_acquire);
+      break;
+    }
+    std::this_thread::sleep_for(1ms);
+  }
+  ASSERT_GE(serverFd, 0);
+
+  // The 100 Continue cannot be written, neither at once nor by the flush following it: it stays buffered.
+  test::SetWritevActions(serverFd, {{-1, error::kWouldBlock}, {-1, error::kWouldBlock}});
+  test::sendAll(client.fd(),
+                "POST /file HTTP/1.1\r\nhost: x\r\nexpect: 100-continue\r\ncontent-length: 5\r\n"
+                "connection: close\r\n\r\nhello");
+
+  const std::string resp = test::recvUntilClosed(client.fd());
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.ends_with(kPayload)) << resp;
+}
+
 // Test sendfile error path in flushFilePayload (line 532)
 TEST(HttpResponseDispatchErrors, SendfileError) {
   test::QueueResetGuard<decltype(test::g_sendfile_actions)> guard(test::g_sendfile_actions);

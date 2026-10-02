@@ -342,8 +342,9 @@ void ConnectionState::reset() {
   request.shrinkAndMaybeClear();
 
   shrinkAndClear(outBuffer);
-  // Release any buffers held for zerocopy lifetime - the fd is about to be closed
-  // (or already closed), so the kernel will release page references regardless.
+  // Release any buffers held for zerocopy lifetime. The socket is closed at this point, and the kernel no longer reads
+  // them: SingleHttpServer only closes a connection gracefully once its zerocopy sends completed, and aborts it
+  // otherwise (see ConnectionState::canCloseConnectionForDrain() and SingleHttpServer::closeConnection()).
   zerocopyPendingBuffers.shrink_to_fit();
   zerocopyPendingBuffers.clear();
   zerocopyPendingBytes = 0;
@@ -457,6 +458,19 @@ void ConnectionState::holdBufferIfZerocopyPending(HttpMessageData buf, bool mayN
   }
 }
 
+bool ConnectionState::hasZerocopySendsInFlight() noexcept {
+  if (transport && transport.hasZerocopyPending()) {
+    transport.pollZerocopyCompletions();
+    if (transport.hasZerocopyPending()) {
+      return true;
+    }
+  }
+  // All sends completed (possibly polled earlier, e.g. before a new zerocopy send): their buffers can be released.
+  zerocopyPendingBuffers.clear();
+  zerocopyPendingBytes = 0;
+  return false;
+}
+
 void ConnectionState::releaseCompletedZerocopyBuffers() {
   if (zerocopyPendingBuffers.empty()) {
     return;
@@ -468,6 +482,8 @@ void ConnectionState::releaseCompletedZerocopyBuffers() {
     zerocopyPendingBytes = 0;
   }
 }
+#else
+bool ConnectionState::hasZerocopySendsInFlight() noexcept { return false; }
 #endif
 
 void ConnectionState::clearBuffers() {

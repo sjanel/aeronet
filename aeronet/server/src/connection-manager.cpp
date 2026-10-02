@@ -650,6 +650,14 @@ void SingleHttpServer::acceptNewConnections() {
       closeNow = handleInTunneling(cnxIt) == CloseStatus::Close;
     }
     if (closeNow && !pCnx->hasPendingOutput() && pCnx->tunnelOrFileBuffer.empty() && !pCnx->isSendingFile()) {
+      // With zerocopy sends still in flight, close once they completed (see canCloseConnectionForDrain()) instead of
+      // aborting them (see closeConnection()).
+      pCnx->requestDrainAndClose();
+      closeNow = !pCnx->hasZerocopySendsInFlight();
+    } else {
+      closeNow = false;
+    }
+    if (closeNow) {
       closeConnection(cnxIt);
     } else {
       // A client that pipelines its first request with the connection setup (h2c prior knowledge sends
@@ -667,6 +675,19 @@ void SingleHttpServer::closeConnection(ConnectionIt cnxIt) {
   ConnectionState& state = _connections.connectionState(cnxIt);
 
   log::debug("closeConnection called for fd # {}", cfd);
+
+  // The buffers of zerocopy sends still in flight are released with the connection state, while the kernel would keep
+  // sending from them after a graceful close: abort such a connection (reset) so that the kernel drops them first.
+  // Drain closes wait for the completions instead (see ConnectionState::canCloseConnectionForDrain()).
+  const auto abortIfZerocopySendsInFlight = [this](ConnectionState& closingState, NativeHandle fd) {
+    if (closingState.hasZerocopySendsInFlight()) {
+      log::debug("Aborting fd # {} with zerocopy sends still in flight", fd);
+      if (!SetAbortiveClose(fd)) [[unlikely]] {
+        log::error("setsockopt(SO_LINGER) failed for fd # {} err={}", fd, LastSystemError());
+      }
+      _telemetry.counterAdd("aeronet.connections.aborted_with_zerocopy_in_flight");
+    }
+  };
 
   forgetConnectionMaintenance(state);
 
@@ -692,6 +713,7 @@ void SingleHttpServer::closeConnection(ConnectionIt cnxIt) {
           if (peerConnectionState.peerFd == cfd) [[likely]] {
         _eventLoop.del(peerFd);
         forgetConnectionMaintenance(peerConnectionState);
+        abortIfZerocopySendsInFlight(peerConnectionState, peerFd);
 #ifdef AERONET_ENABLE_OPENSSL
         _connections.recycleOrRelease(peerIt, _config.maxCachedConnections, _config.tls.enabled,
                                       _tls.handshakesInFlight);
@@ -722,6 +744,7 @@ void SingleHttpServer::closeConnection(ConnectionIt cnxIt) {
 #endif
 
   _eventLoop.del(cfd);
+  abortIfZerocopySendsInFlight(state, cfd);
 #ifdef AERONET_ENABLE_OPENSSL
   _connections.recycleOrRelease(cnxIt, _config.maxCachedConnections, _config.tls.enabled, _tls.handshakesInFlight);
 #else
@@ -739,6 +762,7 @@ void SingleHttpServer::closeConnection(ConnectionIt cnxIt) {
       upState.peerStreamId = 0;
       _eventLoop.del(upFd);
       forgetConnectionMaintenance(upState);
+      abortIfZerocopySendsInFlight(upState, upFd);
 #ifdef AERONET_ENABLE_OPENSSL
       _connections.recycleOrRelease(upIt, _config.maxCachedConnections, _config.tls.enabled, _tls.handshakesInFlight);
 #else
@@ -808,11 +832,17 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleWritableClient(ConnectionI
   }
   flushOutbound(cnxIt);
 
-  // HTTP/2 output backpressure can leave complete frames in the user-space input buffer. Once EPOLLOUT drains
-  // the high-water mark, resume those frames directly: edge-triggered polling may not deliver another read event.
+  // Output backpressure can leave complete input in the user-space input buffer: HTTP/2 frames above the output
+  // high-water mark, or HTTP/1 requests pipelined behind a response that waited for the socket (not processed after a
+  // close request). Once EPOLLOUT drained the output, resume them directly: edge-triggered polling may not deliver
+  // another read event.
   ConnectionState* pState = _connections.pConnectionState(fd);
-  if (pState != nullptr && !pState->hasPendingOutput() && pState->protocolHandler && !pState->inBuffer.empty()) {
-    (void)processSpecialProtocolHandler(_connections.iterator(fd));
+  if (pState != nullptr && !pState->hasPendingOutput() && !pState->inBuffer.empty()) {
+    if (pState->protocolHandler) {
+      (void)processSpecialProtocolHandler(_connections.iterator(fd));
+    } else if (!pState->isSendingFile() && !pState->isTunneling() && !pState->isAnyCloseRequested()) {
+      (void)processHttp1Requests(_connections.iterator(fd));
+    }
     pState = _connections.pConnectionState(fd);
   }
   return pState == nullptr || pState->canCloseConnectionForDrain() ? CloseStatus::Close : CloseStatus::Keep;
@@ -881,6 +911,12 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
 #ifdef AERONET_ENABLE_OPENSSL
       CheckHandshake(_config.tls.enabled && _tls.ctxHolder, *pCnx, _tls.metrics, _callbacks.tlsHandshake, fd);
 #endif
+      // An orderly EOF only tells that the peer stopped sending: while the kernel still sends with zerocopy, close once
+      // these sends completed instead of aborting them (see closeConnection()).
+      if (pCnx->hasZerocopySendsInFlight()) {
+        pCnx->requestDrainAndClose();
+        return CloseStatus::Keep;
+      }
       return CloseStatus::Close;
     }
 

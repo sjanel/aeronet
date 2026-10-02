@@ -55,9 +55,16 @@ struct ConnectionState {
     return !outBuffer.empty() || (protocolHandler != nullptr && protocolHandler->hasPendingOutput());
   }
 
-  [[nodiscard]] bool canCloseConnectionForDrain() const noexcept {
-    return isDrainCloseRequested() && !hasPendingOutput() && tunnelOrFileBuffer.empty() && !isSendingFile();
+  // Tells whether a requested drain close can proceed. Besides buffered output, it waits for the completion of the
+  // zerocopy sends: after close, the kernel would still send from their buffers, released with the connection.
+  [[nodiscard]] bool canCloseConnectionForDrain() noexcept {
+    return isDrainCloseRequested() && !hasPendingOutput() && tunnelOrFileBuffer.empty() && !isSendingFile() &&
+           !hasZerocopySendsInFlight();
   }
+
+  // Tells whether some zerocopy sends were not completed yet, polling their completions first (and releasing the
+  // buffers held for them once all are completed). Always false when zerocopy is not used.
+  [[nodiscard]] bool hasZerocopySendsInFlight() noexcept;
 
   // Request to close after draining currently buffered writes (graceful half-close semantics).
   void requestDrainAndClose() {

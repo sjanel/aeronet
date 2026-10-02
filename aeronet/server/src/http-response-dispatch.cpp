@@ -32,6 +32,35 @@
 
 namespace aeronet {
 
+namespace {
+
+// Appends 'data' (only its head for a file response, whose body is sent separately) after the output still buffered in
+// 'state', waiting for the socket to become writable.
+void AppendToOutBuffer(ConnectionState& state, HttpMessageData data, bool headOnly) {
+#ifdef AERONET_LINUX
+  if (state.outBufferMayNeedZerocopyHold && state.transport.hasZerocopyPending()) {
+    // Zerocopy sends already submitted may still read the buffered output: rather than growing it in place (which may
+    // reallocate it), continue with a copy of its unsent bytes, the original being held until their completion.
+    // The copy also reserves room for the new head, so that appending it below does not reallocate it again.
+    const std::string_view first = state.outBuffer.firstBuffer();
+    const std::string_view second = state.outBuffer.secondBuffer();
+    RawChars unsent(first.size() + second.size() + data.firstBuffer().size());
+    unsent.unchecked_append(first);
+    unsent.unchecked_append(second);
+    state.holdBufferIfZerocopyPending(std::move(state.outBuffer), true);
+    state.outBuffer = HttpMessageData(std::move(unsent));
+    state.outBufferMayNeedZerocopyHold = false;
+  }
+#endif
+  if (headOnly) {
+    state.outBuffer.append(data.firstBuffer());
+  } else {
+    state.outBuffer.append(std::move(data));
+  }
+}
+
+}  // namespace
+
 SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionIt& cnxIt, std::size_t consumedBytes,
                                                                      const CorsPolicy* pCorsPolicy) {
   ConnectionState& state = _connections.connectionState(cnxIt);
@@ -200,11 +229,23 @@ void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpMessageData httpRespons
 
   const auto bufferedSz = httpResponseData.remainingSize();
 
-  // flushOutbound() always drains outBuffer to empty before returning (spinning on EAGAIN
-  // until the kernel accepts bytes or a terminal error clears outBuffer). Errors set
-  // isAnyCloseRequested(), caught by the guard above. This path is therefore unreachable
-  // with the current synchronous transport architecture.
-  assert(state.outBuffer.empty());
+  if (!state.outBuffer.empty()) {
+    // Previous output still waits for the socket to become writable: queue this data after it.
+    AppendToOutBuffer(state, std::move(httpResponseData), haveFilePayload);
+    _stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz + extraQueuedBytes);
+    const std::size_t remainingSize = state.outBuffer.remainingSize();
+    _stats.maxConnectionOutboundBuffer = std::max(_stats.maxConnectionOutboundBuffer, remainingSize);
+    if (remainingSize > _config.maxOutboundBufferBytes) {
+      state.requestDrainAndClose();
+    }
+    if (haveFilePayload) {
+      // Sent by flushFilePayload() once the buffered output, ending with this response head, is written.
+      [[maybe_unused]] const bool sendNow = state.attachFilePayload(std::move(filePayload));
+      assert(!sendNow);
+    }
+    flushOutbound(cnxIt);
+    return;
+  }
 
   // Cork the socket to coalesce header + body into fewer TCP segments.
   // The guard uncorks on scope exit, flushing any accumulated data.
@@ -307,6 +348,9 @@ void SingleHttpServer::flushOutbound(ConnectionIt cnxIt) {
       state.outBuffer.addOffset(written);
       continue;
     }
+    // Nothing written: the socket is not writable. Wait for the writable event (enabled below) instead of retrying,
+    // which would block the whole event loop for as long as the peer does not read.
+    break;
   }
   if (state.protocolHandler != nullptr) {
     auto& fragments = _sharedBuffers.sv;
