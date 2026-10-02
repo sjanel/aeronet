@@ -2895,7 +2895,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerFilePayloadDeferred) {
                  StreamingHandler{[&filePath](const HttpRequestView&, HttpResponseWriter& writer) {
                    File fd(filePath);
                    writer.status(http::StatusCode{200});
-                   writer.file(std::move(fd));
+                   writer.file(std::move(fd), "text/plain");
                    writer.end();
                  }});
 
@@ -2917,6 +2917,8 @@ TEST(Http2ProtocolHandler, StreamingHandlerFilePayloadDeferred) {
 
   ASSERT_FALSE(loop.clientHeaders.empty());
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], ":status"), "200");
+  // Only the file Content-Type, not the writer placeholder.
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], "content-type"), "text/plain");
 
   std::string receivedData;
   for (const auto& ev : loop.clientData) {
