@@ -157,10 +157,10 @@ inline constexpr std::string_view ContentTypeMessageHttp = "message/http";
 inline constexpr std::string_view ContentTypeTextCss = "text/css";
 inline constexpr std::string_view ContentTypeTextJavascript = "text/javascript";
 
-// The shortest known content type is "text/n3" (length 7), so this is a lower bound on the length of any content type
-// value we expect to encounter. This can be used for optimizations in parsing code.
-// Source: https://www.iana.org/assignments/media-types/media-types.xhtml
-inline constexpr std::size_t ContentTypeMinLen = 7;
+// Minimum length of the Content-Type value of a message with a body. A media type is 'type "/" subtype' with non-empty
+// tokens (RFC 9110 §8.3.1), so the shortest one is "a/b". The backward scans locating the Content-Type header line rely
+// on this lower bound.
+inline constexpr std::size_t ContentTypeMinLen = 3;
 
 // Return the canonical reason phrase for a subset of status codes we care about.
 constexpr std::string_view ReasonPhraseFor(http::StatusCode status) noexcept {
