@@ -34,18 +34,16 @@ ZeroCopyEnableResult EnableZeroCopy(int fd) noexcept {
   return ZeroCopyEnableResult::Enabled;
 }
 
-TransportResult ZeroCopyState::tryZerocopySend(NativeHandle fd, std::uint32_t minBytesForZerocopy,
-                                               std::string_view firstBuffer, std::string_view secondBuffer) {
+TransportResult ZeroCopyState::tryZerocopySend(NativeHandle fd, std::string_view firstBuffer,
+                                               std::string_view secondBuffer) {
   const std::size_t size = firstBuffer.size() + secondBuffer.size();
   assert(size > 0);
 
   TransportResult res{};
 
-  if (!enabled() || size < minBytesForZerocopy) {
+  if (!enabled() || size < minBytes) {
     return res;
   }
-
-  assert(minBytesForZerocopy > 0);
 
   // Drain pending completion notifications before issuing a new zerocopy send.
   // Prevents the kernel error queue from growing unbounded, avoids kNoBufferSpace, and releases pinned pages promptly
@@ -77,8 +75,8 @@ TransportResult ZeroCopyState::tryZerocopySend(NativeHandle fd, std::uint32_t mi
     const int zcErr = LastSystemError();
 
     if (error::IsNotSupported(zcErr)) {
-      // Disable zerocopy for this transport
-      setEnabled(false);
+      // Disable zerocopy for this transport. Previous zerocopy sends, if any, remain tracked until their completion.
+      disable();
     } else if (zcErr == error::kWouldBlock) {
       res.want = TransportHint::WriteReady;
     } else if (zcErr == error::kInterrupted || zcErr == error::kNoBufferSpace) {

@@ -24,11 +24,11 @@
 namespace aeronet {
 
 PlainTransport::PlainTransport(NativeHandle fd, ZerocopyMode zerocopyMode, uint32_t minBytesForZerocopy)
-    : SocketTransportState(fd, minBytesForZerocopy) {
+    : SocketTransportState(fd) {
   if (zerocopyMode != ZerocopyMode::Disabled) {
-    const auto result = EnableZeroCopy(_fd);
-    _zerocopyState.setEnabled(result == ZeroCopyEnableResult::Enabled);
-    if (!_zerocopyState.enabled() && zerocopyMode == ZerocopyMode::Enabled) {
+    if (EnableZeroCopy(_fd) == ZeroCopyEnableResult::Enabled) {
+      _zerocopyState.enable(minBytesForZerocopy);
+    } else if (zerocopyMode == ZerocopyMode::Enabled) {
       log::warn("Failed to enable MSG_ZEROCOPY on fd # {}", fd);
     }
   }
@@ -56,7 +56,7 @@ TransportResult PlainTransport::read(char* buf, std::size_t len) {
 
 TransportResult PlainTransport::write(std::string_view data) {
 #ifdef AERONET_LINUX
-  TransportResult ret = _zerocopyState.tryZerocopySend(_fd, _minBytesForZerocopy, data);
+  TransportResult ret = _zerocopyState.tryZerocopySend(_fd, data);
   if (ret.bytesProcessed != 0 || ret.want != TransportHint::None) {
     return ret;
   }
@@ -98,7 +98,7 @@ TransportResult PlainTransport::write(std::string_view data) {
 
 TransportResult PlainTransport::write(std::string_view firstBuf, std::string_view secondBuf) {
 #ifdef AERONET_LINUX
-  TransportResult ret = _zerocopyState.tryZerocopySend(_fd, _minBytesForZerocopy, firstBuf, secondBuf);
+  TransportResult ret = _zerocopyState.tryZerocopySend(_fd, firstBuf, secondBuf);
   if (ret.bytesProcessed != 0 || ret.want != TransportHint::None) {
     return ret;
   }
