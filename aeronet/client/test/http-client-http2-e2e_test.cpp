@@ -222,18 +222,21 @@ class ScriptedHttp2Transport final : public TransportBackend<ScriptedHttp2Transp
       case Action::WriteWriteReady:
         return {0, TransportHint::WriteReady};
       default:
-        _bytesWritten += data.size();
+        _written.append(data);
         return {data.size(), TransportHint::None};
     }
   }
 
-  [[nodiscard]] std::size_t bytesWritten() const noexcept { return _bytesWritten; }
+  [[nodiscard]] std::size_t bytesWritten() const noexcept { return _written.size(); }
+
+  // All bytes accepted by write(), in order.
+  [[nodiscard]] std::string_view written() const noexcept { return _written; }
 
  private:
   Action _action;
   std::vector<std::string> _reads;
   std::size_t _nextRead{0};
-  std::size_t _bytesWritten{0};
+  std::string _written;
 };
 
 class LoopbackHttp2Transport final : public TransportBackend<LoopbackHttp2Transport> {
@@ -374,6 +377,33 @@ HttpRequest MakeFinalizedHttp2Request(HttpClient& client) {
   auto req = client.makeRequest(http::Method::GET, "http://example.test/resource");
   HttpRequestTest::Finalize(req);
   return req;
+}
+
+// Concatenation of the DATA frame payloads of 'streamId' in the bytes written by a client (connection preface first).
+std::string ClientDataPayload(std::string_view written, uint32_t streamId) {
+  std::string payload;
+  if (!written.starts_with(http2::kConnectionPreface)) {
+    ADD_FAILURE() << "client output does not start with the connection preface";
+    return payload;
+  }
+  written.remove_prefix(http2::kConnectionPreface.size());
+  while (!written.empty()) {
+    if (written.size() < http2::FrameHeader::kSize) {
+      ADD_FAILURE() << "truncated frame header in client output";
+      break;
+    }
+    const auto header = http2::ParseFrameHeader(std::as_bytes(std::span<const char>(written)));
+    written.remove_prefix(http2::FrameHeader::kSize);
+    if (written.size() < header.length) {
+      ADD_FAILURE() << "truncated frame payload in client output";
+      break;
+    }
+    if (header.type == http2::FrameType::Data && header.streamId == streamId) {
+      payload.append(written.substr(0, header.length));
+    }
+    written.remove_prefix(header.length);
+  }
+  return payload;
 }
 
 }  // namespace
@@ -712,6 +742,50 @@ TEST(HttpClientHttp2E2ETest, PostFileBodyReadErrorFailsExchange) {
 
   ASSERT_FALSE(result);
   EXPECT_EQ(result.error(), HttpClientErrc::writeError);
+}
+
+// A file truncated in the middle of a DATA frame makes readAt() return fewer bytes than the frame header (already
+// written) declares: the exchange must fail before flushing that frame, whose payload would otherwise carry stale
+// output buffer bytes. Covers a short first read and a short read after full DATA frames went out (16384-byte frames:
+// the server SETTINGS are never read, so the default SETTINGS_MAX_FRAME_SIZE applies).
+TEST(HttpClientHttp2E2ETest, PostFileBodyShortReadFailsWithoutSendingStaleBytes) {
+  static constexpr std::size_t kFrameSize = 16384;
+  const std::string payload = MakeLargeBody();
+
+  struct Case {
+    std::size_t truncatedSize;
+    std::size_t expectedDataBytes;  // full DATA frames flushed before the short read
+  };
+  for (const Case testCase :
+       {Case{100, 0}, Case{kFrameSize + 100, kFrameSize}, Case{(3 * kFrameSize) - 1, 2 * kFrameSize}}) {
+    SCOPED_TRACE(testCase.truncatedSize);
+    test::ScopedTempDir tmpDir;
+    test::ScopedTempFile tmp(tmpDir, payload);
+    File file(tmp.filePath().string());
+    ASSERT_TRUE(file);
+
+    HttpClient client = MakeHttp2Client();
+    auto req = client.makeRequest(http::Method::POST, "http://example.test/upload")
+                   .file(std::move(file), "application/octet-stream");
+    HttpRequestTest::Finalize(req);
+    std::filesystem::resize_file(tmp.filePath(), testCase.truncatedSize);
+
+    ScriptedHttp2Transport transport(ScriptedHttp2Transport::Action::CloseOnRead);
+    internal::ClientConnection connection(client.config());
+    bool requestSent = false;
+
+    auto result = connection.exchange(client, transport, kInvalidHandle, req,
+                                      SteadyClock::now() + std::chrono::seconds{1}, requestSent);
+
+    ASSERT_FALSE(result);
+    EXPECT_EQ(result.error(), HttpClientErrc::writeError);
+    EXPECT_TRUE(requestSent);
+    EXPECT_FALSE(connection.keepAlive());
+    // Only file bytes went out, in full frames.
+    const std::string dataPayload = ClientDataPayload(transport.written(), 1);
+    EXPECT_EQ(dataPayload.size(), testCase.expectedDataBytes);
+    EXPECT_TRUE(std::string_view(payload).starts_with(dataPayload));
+  }
 }
 
 TEST(HttpClientHttp2E2ETest, LargeResponseBodyReassembledAcrossDataFrames) {
