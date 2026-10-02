@@ -172,7 +172,7 @@ void HttpMessage::headerImpl(LowerAsciiKey key, std::string_view value) {
     return;
   }
 
-  CheckContentTypeLengthEncoding(key, hasBody());
+  CheckContentTypeLengthEncoding(key, hasBodyHeaders());
 
   overrideHeaderUnchecked(first, last, TrimOws(value));
 }
@@ -248,12 +248,7 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
       _opts.setHasContentEncoding();
       _opts.setAutomaticDirectCompression();
     } else if (removeEncodingHeaders) {
-      headerRemoveLineImpl(http::ContentEncoding);
-      _opts.resetHasContentEncoding();
-      _opts.resetAutomaticDirectCompression();
-      if (_opts.isAddVaryAcceptEncoding()) {
-        headerRemoveValueImpl(http::Vary, http::AcceptEncoding);
-      }
+      removeContentEncodingHeaders();
     }
   };
 #endif
@@ -489,7 +484,7 @@ void HttpMessage::headerAddLineImpl(LowerAsciiKey key, std::string_view value) {
   if (!http::IsValidHeaderValue(value)) [[unlikely]] {
     throw std::invalid_argument("HTTP header value is invalid");
   }
-  CheckContentTypeLengthEncoding(key, hasBody());
+  CheckContentTypeLengthEncoding(key, hasBodyHeaders());
 
   headerAddLineUnchecked(key, value);
 
@@ -548,6 +543,8 @@ void HttpMessage::headerAppendValueImpl(LowerAsciiKey key, std::string_view valu
     return;
   }
 
+  CheckContentTypeLengthEncoding(key, hasBodyHeaders());
+
   value = TrimOws(value);
   if (value.empty()) {
     // nothing to append; avoids dangling/whitespace-terminated separator.
@@ -579,18 +576,40 @@ void HttpMessage::headerAppendValueImpl(LowerAsciiKey key, std::string_view valu
   adjustBodyStart(static_cast<int64_t>(extraLen));
 }
 
+void HttpMessage::eraseHeaderLine(std::string_view key, const char* valueFirst, const char* valueLast) noexcept {
+  const std::size_t lineSize = http::HeaderSize(key.size(), static_cast<std::size_t>(valueLast - valueFirst));
+  const std::size_t lineEndPos = static_cast<std::size_t>(valueLast - _data.data()) + http::CRLF.size();
+  char* dest = _data.data() + (valueFirst - _data.data()) - key.size() - http::HeaderSep.size();
+
+  std::memmove(dest, _data.data() + lineEndPos, _data.size() - lineEndPos);
+  _data.setSize(_data.size() - lineSize);
+  adjustBodyStartNoCheck(-static_cast<int64_t>(lineSize));
+}
+
+void HttpMessage::removeContentEncodingHeaders() {
+  const auto [first, last] = HeadersReverseLinearSearch(headersFlatView(), http::ContentEncoding);
+  assert(first != nullptr);
+  eraseHeaderLine(http::ContentEncoding, first, last);
+  _opts.resetHasContentEncoding();
+  _opts.resetAutomaticDirectCompression();
+  if (_opts.isAddVaryAcceptEncoding()) {
+    headerRemoveValueImpl(http::Vary, http::AcceptEncoding);
+  }
+}
+
 void HttpMessage::headerRemoveLineImpl(LowerAsciiKey key) {
-  // We cannot remove Content-Type and Content-Length headers separately from the body,
-  // so we don't include them in the search when response has body.
-  const std::string_view flatHeaders = hasBody() ? headersFlatViewWithoutCTCL() : headersFlatView();
-  const auto [first, last] = HeadersReverseLinearSearch(flatHeaders, key);
+  // Content-Type and Content-Length are managed with the body: they cannot be removed separately from it.
+  if (key == http::ContentType || key == http::ContentLength) {
+    return;
+  }
+  const auto [first, last] = HeadersReverseLinearSearch(headersFlatView(), key);
   if (first == nullptr) {
     return;
   }
 
   if (key == http::ContentEncoding) {
-    if (hasBody()) {
-      throw std::logic_error("Cannot remove Content-Encoding header when response has body");
+    if (hasBodyHeaders()) {
+      throw std::logic_error("Cannot remove Content-Encoding header when message has body");
     }
     _opts.resetHasContentEncoding();
   }
@@ -599,22 +618,24 @@ void HttpMessage::headerRemoveLineImpl(LowerAsciiKey key) {
     throw std::invalid_argument("Cannot remove Host header from HTTP request");
   }
 
-  const std::size_t lineSize = http::HeaderSize(key.size(), static_cast<std::size_t>(last - first));
-  const std::size_t sizeToMove = _data.size() - static_cast<std::size_t>(last + http::CRLF.size() - _data.data());
-  char* dest = _data.data() + (first - _data.data()) - key.size() - http::HeaderSep.size();
-
-  std::memmove(dest, last + http::CRLF.size(), sizeToMove);
-  _data.setSize(_data.size() - lineSize);
-  adjustBodyStartNoCheck(-static_cast<int64_t>(lineSize));
+  eraseHeaderLine(key, first, last);
 }
 
 void HttpMessage::headerRemoveValueImpl(LowerAsciiKey key, std::string_view value, std::string_view sep) {
   if (sep.empty()) [[unlikely]] {
     throw std::invalid_argument("Separator cannot be empty when removing a header value");
   }
+  // Same rules as headerRemoveLineImpl for the headers managed with the body.
+  if (key == http::ContentType || key == http::ContentLength) {
+    return;
+  }
   const auto [first, last] = HeadersReverseLinearSearch(headersFlatView(), key);
   if (first == nullptr) {
     return;
+  }
+
+  if (key == http::ContentEncoding && hasBodyHeaders()) {
+    throw std::logic_error("Cannot remove Content-Encoding header value when message has body");
   }
 
   if (_opts.isHttpRequest() && key == http::Host) {
@@ -626,19 +647,10 @@ void HttpMessage::headerRemoveValueImpl(LowerAsciiKey key, std::string_view valu
   const std::string_view headerValue(first, last);
   if (value == headerValue) {
     // value matches the whole header value, we remove the whole header line
-    const std::size_t lineSize = http::HeaderSize(key.size(), headerValue.size());
-    const std::size_t lastPos = static_cast<std::size_t>(last - _data.data());
-    const std::size_t destPos = static_cast<std::size_t>(first - _data.data()) - key.size() - http::HeaderSep.size();
-    const int64_t bodyShift = -static_cast<int64_t>(lineSize);
-
-    char* dest = _data.data() + destPos;
-    const std::size_t sizeToMove = _data.size() - (lastPos + http::CRLF.size());
-
-    std::memmove(dest, _data.data() + lastPos + http::CRLF.size(), sizeToMove);
-
-    _data.setSize(_data.size() - lineSize);
-    adjustBodyStartNoCheck(bodyShift);
-
+    if (key == http::ContentEncoding) {
+      _opts.resetHasContentEncoding();
+    }
+    eraseHeaderLine(key, first, last);
     return;
   }
 
@@ -935,12 +947,7 @@ void HttpMessage::removeBodyAndItsHeaders() {
 
   // Also remove vary and content-encoding headers if present
   if (hasContentEncoding()) {
-    headerRemoveLineImpl(http::ContentEncoding);
-    assert(!hasContentEncoding());
-    _opts.resetAutomaticDirectCompression();
-    if (_opts.isAddVaryAcceptEncoding()) {
-      headerRemoveValueImpl(http::Vary, http::AcceptEncoding);
-    }
+    removeContentEncodingHeaders();
   }
 }
 

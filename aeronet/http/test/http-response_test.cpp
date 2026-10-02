@@ -2072,6 +2072,133 @@ TEST_F(HttpResponseTest, HeaderAddedWhileDirectCompressionHasNoOutputYetKeepsBod
 }
 #endif
 
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+// The body headers exist as soon as direct compression starts, even when the encoder (brotli, zstd) has not written any
+// byte of such a small body yet: Content-Encoding is frozen and Content-Type / Content-Length cannot be removed.
+TEST_F(HttpResponseTest, BodyHeadersAreProtectedWhileDirectCompressionHasNoOutputYet) {
+  static constexpr std::string_view kBody = "hello hello hello";
+  for (Encoding enc : test::SupportedEncodings()) {
+    SCOPED_TRACE(GetEncodingStr(enc));
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+    resp.directCompressionMode(DirectCompressionMode::On);
+    resp.body(kBody, http::ContentTypeTextPlain);
+    ASSERT_TRUE(IsAutomaticDirectCompression(resp));
+
+    EXPECT_THROW(resp.header(http::ContentEncoding, "identity"), std::logic_error);
+    EXPECT_THROW(resp.headerAddLine(http::ContentEncoding, "identity"), std::logic_error);
+    EXPECT_THROW(resp.headerAppendValue(http::ContentEncoding, "identity"), std::logic_error);
+    EXPECT_THROW(resp.headerRemoveLine(http::ContentEncoding), std::logic_error);
+    EXPECT_THROW(resp.headerRemoveValue(http::ContentEncoding, GetEncodingStr(enc)), std::logic_error);
+    resp.headerRemoveLine(http::ContentType);
+    resp.headerRemoveLine(http::ContentLength);
+    resp.headerRemoveValue(http::ContentType, http::ContentTypeTextPlain);
+    FinalizeCompressedBody(resp);
+
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), http::ContentTypeTextPlain);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), std::to_string(resp.bodyInMemoryLength()));
+    EXPECT_EQ(std::string_view(test::Decompress(enc, resp.bodyInMemory())), kBody);
+  }
+}
+
+// Removing the whole user Content-Encoding value with headerRemoveValue() lets aeronet compress the body again, as
+// headerRemoveLine() does. Removing only one of its values keeps the body user-encoded.
+TEST_F(HttpResponseTest, HeaderRemoveValueOfWholeContentEncodingReenablesDirectCompression) {
+  static constexpr std::string_view kBody = "hello hello hello";
+  for (Encoding enc : test::SupportedEncodings()) {
+    SCOPED_TRACE(GetEncodingStr(enc));
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+    resp.directCompressionMode(DirectCompressionMode::On);
+    resp.headerAddLine(http::ContentEncoding, "custom, other");
+    resp.headerRemoveValue(http::ContentEncoding, "custom");
+    resp.headerRemoveValue(http::ContentEncoding, "other");
+    EXPECT_FALSE(resp.hasHeader(http::ContentEncoding));
+    resp.body(kBody, http::ContentTypeTextPlain);
+    EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+
+    HttpResponse partial = makePrepared(PreparedOptions{.expectedEncoding = enc});
+    partial.directCompressionMode(DirectCompressionMode::On);
+    partial.headerAddLine(http::ContentEncoding, "custom, other");
+    partial.headerRemoveValue(http::ContentEncoding, "custom");
+    partial.body(kBody, http::ContentTypeTextPlain);
+    EXPECT_FALSE(IsAutomaticDirectCompression(partial));
+    EXPECT_EQ(partial.headerValueOrEmpty(http::ContentEncoding), "other");
+    EXPECT_EQ(partial.bodyInMemory(), kBody);
+  }
+}
+#endif
+
+// headerAppendValue() and headerRemoveValue() follow the same rules as the other header methods for the headers managed
+// with the body.
+TEST_F(HttpResponseTest, HeaderValueMethodsCannotChangeContentTypeAndLength) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("x-a", "1");
+  resp.body("hello");
+
+  EXPECT_THROW(resp.headerAppendValue(http::ContentLength, "6"), std::invalid_argument);
+  EXPECT_THROW(resp.headerAppendValue(http::ContentType, "x/y"), std::invalid_argument);
+  resp.headerRemoveValue(http::ContentType, http::ContentTypeTextPlain);
+  resp.headerRemoveValue(http::ContentLength, "5");
+  resp.headerAddLine("x-b", "2");
+
+  EXPECT_EQ(resp.headerValueOrEmpty("x-a"), "1");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-b"), "2");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), http::ContentTypeTextPlain);
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "5");
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.contains("x-b: 2\r\ncontent-type: text/plain\r\ncontent-length: 5\r\n")) << full;
+  EXPECT_TRUE(full.ends_with("\r\n\r\nhello")) << full;
+}
+
+TEST_F(HttpResponseTest, HeaderValueMethodsCannotChangeContentEncodingWithBody) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine(http::ContentEncoding, "gzip");
+  resp.body(std::string("captured"));
+
+  EXPECT_THROW(resp.headerAppendValue(http::ContentEncoding, "br"), std::logic_error);
+  EXPECT_THROW(resp.headerRemoveValue(http::ContentEncoding, "gzip"), std::logic_error);
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), "gzip");
+  EXPECT_EQ(resp.bodyInMemory(), "captured");
+}
+
+// Removing or inline-replacing a captured or file body also removes the user Content-Encoding header, after the
+// Content-Type line is already gone while the payload is still attached.
+TEST_F(HttpResponseTest, UserContentEncodingIsRemovedWithCapturedOrFileBody) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, "file-data");
+  for (const bool fileBody : {false, true}) {
+    SCOPED_TRACE(fileBody);
+    const auto makeResponse = [&] {
+      HttpResponse resp(http::StatusCodeOK);
+      resp.headerAddLine(http::ContentEncoding, "gzip");
+      if (fileBody) {
+        resp.file(File(tmp.filePath().string()));
+      } else {
+        resp.body(std::string(100, 'x'));
+      }
+      return resp;
+    };
+
+    HttpResponse removed = makeResponse();
+    removed.body("");
+    EXPECT_FALSE(removed.hasBody());
+    EXPECT_FALSE(removed.hasHeader(http::ContentType));
+    EXPECT_FALSE(removed.hasHeader(http::ContentLength));
+    EXPECT_FALSE(removed.hasHeader(http::ContentEncoding));
+
+    HttpResponse replaced = makeResponse();
+    replaced.bodyInlineSet(4, [](char* buf) {
+      static constexpr std::string_view kInline = "abcd";
+      std::memcpy(buf, kInline.data(), kInline.size());
+      return kInline.size();
+    });
+    EXPECT_EQ(replaced.bodyInMemory(), "abcd");
+    EXPECT_EQ(replaced.headerValueOrEmpty(http::ContentLength), "4");
+    EXPECT_FALSE(replaced.hasHeader(http::ContentEncoding));
+  }
+}
+
 TEST_F(HttpResponseTest, AppendHeaderValueKeepsBodyIntact) {
   HttpResponse resp(http::StatusCodeOK);
   resp.reason("OK");

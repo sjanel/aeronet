@@ -667,7 +667,7 @@ Usage guidelines:
   lower-case. Lower-case string literals are checked at compile time through `LowerAsciiKey`.
 - `headerAddLine()` and `trailerAddLine()` also require lower-case names through `LowerAsciiKey`. Header/trailer
   iteration and flat views therefore always expose lower-case names.
-- Do not use any of those to set `Content-Type` and `Content-Length`. The first one is set along with the `body` methods, and the second one is managed by the library.
+- Do not use any of those to set `Content-Type` and `Content-Length`. The first one is set along with the `body` methods, and the second one is managed by the library: setting or appending to them throws `std::invalid_argument`, removing them does nothing. Similarly, `Content-Encoding` cannot be changed or removed once a body is set (`std::logic_error`).
 - Chain on temporaries for concise construction; the rvalue-qualified overloads keep the object movable.
 - For maximum performance, fill the response in order, starting with status/reason, then headers, then body and trailers, to minimize memory shifts and reallocations.
 
