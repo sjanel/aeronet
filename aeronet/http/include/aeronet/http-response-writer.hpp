@@ -37,7 +37,8 @@ class HttpResponseWriter {
   void status(http::StatusCode code);
 
   // Sets or replace the reason phrase for this instance.
-  // Inserting empty reason is allowed.
+  // Inserting empty reason is allowed. Throws std::invalid_argument if the reason contains CR, LF or another character
+  // not allowed in a header value.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   void reason(std::string_view reason);
 
@@ -53,6 +54,7 @@ class HttpResponseWriter {
   // If not found, falls back to headerAddLine(). Use only when you must guarantee uniqueness; otherwise prefer
   // headerAddLine().
   // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
+  // Throws std::invalid_argument if the header name or value is invalid.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   void header(LowerAsciiKey name, std::string_view value);
 

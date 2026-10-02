@@ -201,6 +201,10 @@ HttpResponse& HttpResponse::reason(std::string_view newReason) & {
               kMaxReasonLength);
     newReason.remove_suffix(newReason.size() - kMaxReasonLength);
   }
+  // Same characters as a header value: in particular CR and LF would inject header lines.
+  if (!http::IsValidHeaderValue(newReason)) [[unlikely]] {
+    throw std::invalid_argument("HTTP reason phrase is invalid");
+  }
   const auto oldReasonSz = reasonLength();
 
   const int32_t diff = static_cast<int32_t>(newReason.size()) - static_cast<int32_t>(oldReasonSz);

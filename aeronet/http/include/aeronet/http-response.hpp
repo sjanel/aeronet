@@ -216,6 +216,7 @@ class HttpResponse final : public HttpMessage {
 
   // Sets or replace the reason phrase for this instance.
   // Inserting empty reason is allowed - this will remove any existing reason.
+  // Throws std::invalid_argument if the reason contains a character not allowed in a header value (such as CR or LF).
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   // Note that in modern HTTP, the reason phrase is optional and often omitted.
   // In HTTP/2, the reason phrase is not transmitted at all.
@@ -309,7 +310,7 @@ class HttpResponse final : public HttpMessage {
 
   // Add or replace first header 'key' with 'value'.
   // Performs a case-sensitive linear scan (slower than headerAddLine()) over normalized lower-case header names.
-  // The header name and value must be valid per HTTP specifications.
+  // The header name and value must be valid per HTTP specifications, otherwise std::invalid_argument is thrown.
   // As for 'headerAddLine()', do not insert any reserved header.
   HttpResponse& header(LowerAsciiKey key, std::string_view value) & {
     headerImpl(key, value);

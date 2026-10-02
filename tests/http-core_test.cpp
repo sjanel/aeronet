@@ -2670,6 +2670,25 @@ TEST(HttpStreaming, SendFileOverrideContentLength) {
   EXPECT_EQ(body, kPayload);
 }
 
+// Replacing a header or setting the reason of a streaming response validates the value: CR or LF would inject header
+// lines in the response.
+TEST(HttpStreaming, HeaderReplaceAndReasonRejectInvalidValues) {
+  ts.router().setDefault([](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.status(200);
+    writer.header("x-a", "1");
+    EXPECT_THROW(writer.header("x-a", "1\r\nset-cookie: evil=1"), std::invalid_argument);
+    EXPECT_THROW(writer.reason("OK\r\nset-cookie: evil=1"), std::invalid_argument);
+    writer.writeBody("body");
+    writer.end();
+  });
+
+  const std::string resp = BlockingFetch("GET", "/stream-injection");
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.contains("x-a: 1\r\n")) << resp;
+  EXPECT_FALSE(resp.contains("set-cookie")) << resp;
+  EXPECT_EQ(ExtractBody(resp), "body");
+}
+
 // The Content-Type placeholder of the writer is replaced by the one of the file body: a single Content-Type is sent,
 // whether given to file(), detected from the file, set again by a second file() or by contentType() afterwards.
 TEST(HttpStreaming, SendFileSendsSingleContentType) {
