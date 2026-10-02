@@ -685,6 +685,26 @@ TEST_F(HttpResponseTest, InsertingInvalidHeaderValueShouldThrow) {
   EXPECT_THROW(resp.header("x-test", "value\x7F"), std::invalid_argument);
 }
 
+// Replacing an existing header (header(), location()) validates the new value as adding one does, and so does
+// reason(): CR or LF would inject header lines (response splitting).
+TEST_F(HttpResponseTest, HeaderReplaceAndReasonRejectInvalidValues) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.reason("OK");
+  resp.header("x-a", "1");
+  resp.location("/first");
+  for (const std::string_view invalid : {"1\r\nset-cookie: evil=1", "1\nset-cookie: evil=1", "1\rx", "1\x7F"}) {
+    EXPECT_THROW(resp.header("x-a", invalid), std::invalid_argument);
+    EXPECT_THROW(resp.location(invalid), std::invalid_argument);
+    EXPECT_THROW(resp.reason(invalid), std::invalid_argument);
+  }
+  EXPECT_EQ(resp.headerValueOrEmpty("x-a"), "1");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::Location), "/first");
+  EXPECT_EQ(resp.reason(), "OK");
+  auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.starts_with("HTTP/1.1 200 OK\r\n")) << full;
+  EXPECT_FALSE(full.contains("set-cookie")) << full;
+}
+
 TEST_F(HttpResponseTest, ContentTypeAndContentLengthShouldBeAddedWhenSettingBody) {
   HttpResponse resp(http::StatusCodeOK);
   EXPECT_THROW(resp.header(http::ContentType, "text/plain"), std::invalid_argument);

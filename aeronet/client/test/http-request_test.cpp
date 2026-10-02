@@ -398,6 +398,18 @@ TEST_F(HttpRequestTest, LvalueFluentSetters) {
   EXPECT_EQ(req.target(), "/p");
 }
 
+// Replacing an existing header validates the new value, as adding one does: CR or LF would inject header lines. The
+// user may replace the Host header, but not with an invalid value.
+TEST_F(HttpRequestTest, HeaderReplaceRejectsInvalidValue) {
+  auto req = makeRequest(http::Method::GET, "http://h/p");
+  req.header("x-a", "1");
+  EXPECT_THROW(req.header("x-a", "1\r\nx-injected: 1"), std::invalid_argument);
+  EXPECT_THROW(req.header("host", "h\r\nx-injected: 1"), std::invalid_argument);
+  EXPECT_EQ(req.headerValueOrEmpty("x-a"), "1");
+  EXPECT_EQ(req.headerValueOrEmpty("host"), "h");
+  EXPECT_FALSE(req.hasHeader("x-injected"));
+}
+
 TEST_F(HttpRequestTest, RvalueFluentSetters) {
   auto req = makeRequest(http::Method::POST, "http://h/p");
   req = std::move(req).method(http::Method::PUT).header("x-a", "1").headerAddLine("x-b", "2").body("payload");
