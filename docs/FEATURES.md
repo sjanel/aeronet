@@ -128,7 +128,9 @@ Where to look: see the "OPTIONS & TRACE behavior" subsection below.
 - [x] 431 Request Header Fields Too Large (header limit)
 - [x] 500 Internal Server Error (invalid interim status returned by ExpectationHandler for instance)
 - [x] 501 Not Implemented (unsupported Transfer-Encoding)
-- [x] 505 HTTP Version Not Supported
+- [x] 505 HTTP Version Not Supported (HTTP/1 requests with a major version other than 1). A higher HTTP/1 minor version
+  (e.g. `HTTP/1.3`) is accepted and processed, and answered, as HTTP/1.1 (RFC 9110 §6.2). Tests:
+  `tests/http-errors_test.cpp` (`InvalidHTTPVersion`), `tests/http-additional_test.cpp` (`Http1HigherMinorVersion.*`).
   
   Note: aeronet already maps unknown request `Content-Encoding` values to **415** when the inbound
   decompression feature is enabled (see "Inbound Request Decompression"). However, automatic

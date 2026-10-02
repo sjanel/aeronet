@@ -330,6 +330,8 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
     // In other words, we accept something like HTTP/1.9
     return http::StatusCodeHTTPVersionNotSupported;
   }
+  // RFC 9110 §6.2 - a higher minor version is processed, and answered, as the highest version we conform to: HTTP/1.1.
+  _version = std::min(_version, http::HTTP_1_1);
 
   // Headers
   first = lineLast + http::CRLF.size();
