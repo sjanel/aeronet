@@ -324,7 +324,7 @@ class HttpMessage {
   void bodyImpl(std::string_view body, std::string_view contentType = http::ContentTypeTextPlain) {
     setBodyHeaders(contentType, body.size(), BodySetContext::Inline);
     setBodyInternal(body);
-    if (isHead()) {
+    if (isHead() && !body.empty()) {
       setHeadSize(body.size());
     } else {
       _payloadVariant = {};
@@ -444,7 +444,7 @@ class HttpMessage {
       }
     }
 
-    if (bodyLength() != 0 || _opts.isAutomaticDirectCompression()) {
+    if (hasBodyHeaders()) {
       removeBodyAndItsHeaders();
       // Clear any payload variant
       _payloadVariant = {};
@@ -681,6 +681,11 @@ class HttpMessage {
   // Check if this HttpMessage has either no body, or an inline body stored in its internal buffer.
   [[nodiscard]] bool hasNoExternalPayload() const noexcept { return _payloadVariant.empty(); }
 
+  // Check if the body headers (Content-Type, and Content-Length if sent) are present.
+  // Invariant: a payload (captured, file or HEAD size-only) always comes with its body headers, even when its length is
+  // 0 (empty file).
+  [[nodiscard]] bool hasBodyHeaders() const noexcept { return hasBody() || _opts.isAutomaticDirectCompression(); }
+
   [[nodiscard]] constexpr std::size_t internalBodyAndTrailersLen() const noexcept {
     return _data.size() - bodyStartPos();
   }
@@ -734,9 +739,13 @@ class HttpMessage {
       return (_optionsBitmap & HasContentEncoding) != 0;
     }
 
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
     [[nodiscard]] constexpr bool isAutomaticDirectCompression() const noexcept {
       return (_optionsBitmap & AutomaticDirectCompression) != 0;
     }
+#else
+    [[nodiscard]] static constexpr bool isAutomaticDirectCompression() noexcept { return false; }
+#endif
 
     [[nodiscard]] constexpr bool isStreamingBody() const noexcept { return (_optionsBitmap & StreamingBody) != 0; }
 
