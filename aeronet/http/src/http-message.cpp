@@ -51,6 +51,16 @@ namespace aeronet {
 
 namespace {
 
+// Returns 'value' without its surrounding whitespace, throws std::invalid_argument if it is not a valid header value
+// (in particular if it contains CR or LF, which would inject header lines).
+constexpr std::string_view TrimmedValidHeaderValue(std::string_view value) {
+  value = TrimOws(value);
+  if (!http::IsValidHeaderValue(value)) [[unlikely]] {
+    throw std::invalid_argument("HTTP header value is invalid");
+  }
+  return value;
+}
+
 constexpr void CheckContentTypeLengthEncoding(std::string_view headerName, bool hasBody) {
   // Fast path: most headers don't start with 'c'
   assert(!headerName.empty());
@@ -164,9 +174,10 @@ void HttpMessage::headerImpl(LowerAsciiKey key, std::string_view value) {
     return;
   }
 
+  value = TrimmedValidHeaderValue(value);
   CheckContentTypeLengthEncoding(key, hasBodyHeaders());
 
-  overrideHeaderUnchecked(first, last, TrimOws(value));
+  overrideHeaderUnchecked(first, last, value);
 }
 
 void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t newBodySize, BodySetContext context) {
@@ -485,10 +496,7 @@ void HttpMessage::headerAddLineImpl(LowerAsciiKey key, std::string_view value) {
   if (_opts.isHttpRequest() && http::IsReservedOrForbiddenRequestHeader(key)) [[unlikely]] {
     throw std::invalid_argument("Cannot add reserved or forbidden header to HTTP request");
   }
-  value = TrimOws(value);
-  if (!http::IsValidHeaderValue(value)) [[unlikely]] {
-    throw std::invalid_argument("HTTP header value is invalid");
-  }
+  value = TrimmedValidHeaderValue(value);
   CheckContentTypeLengthEncoding(key, hasBodyHeaders());
 
   headerAddLineUnchecked(key, value);

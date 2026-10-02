@@ -222,7 +222,7 @@ class HttpRequest final : public HttpMessage {
 
   // Add or replace first header 'key' with 'value'.
   // Performs a case-sensitive linear scan (slower than headerAddLine()) over normalized lower-case header names.
-  // The header name and value must be valid per HTTP specifications.
+  // The header name and value must be valid per HTTP specifications, otherwise std::invalid_argument is thrown.
   // As for 'headerAddLine()', do not insert any reserved header.
   HttpRequest& header(LowerAsciiKey key, std::string_view value) & {
     headerImpl(key, value);
