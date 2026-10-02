@@ -518,13 +518,15 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
       const std::size_t nread =
           filePayload->file.readAt(std::span<std::byte>(pData, chunkSize), filePayload->offset + bodyOff);
 
-      if (nread == 0 || nread == File::kError) {
+      // The DATA frame header already declares chunkSize payload bytes: a short read (file truncated under us) or an
+      // I/O error would leave stale buffer bytes in that frame. Fail before it is flushed - the connection is then
+      // dropped along with its unsent output.
+      if (nread != chunkSize) {
         log::error("HTTP/2 client: reading request file body on stream {} failed (offset={}, remaining={})", streamId,
                    filePayload->offset + bodyOff, bodyLen - bodyOff);
         engine.endExchange();
         return std::unexpected(HttpClientErrc::writeError);
       }
-      assert(nread == chunkSize);
     } else {
       std::span<const std::byte> chunk = std::as_bytes(std::span<const char>(body.data() + bodyOff, chunkSize));
       const auto dataErr = conn.sendData(streamId, chunk, endStream);
