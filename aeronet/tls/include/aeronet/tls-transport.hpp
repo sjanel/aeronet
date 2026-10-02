@@ -19,7 +19,7 @@ class TlsTransport final : public TransportBackend<TlsTransport, TransportKind::
   using SslPtr = std::unique_ptr<SSL, void (*)(SSL*)>;
 
   TlsTransport(SslPtr sslPtr, uint32_t minBytesForZerocopy)
-      : SocketTransportState(kInvalidHandle, minBytesForZerocopy), _ssl(std::move(sslPtr)) {}
+      : _ssl(std::move(sslPtr)), _minBytesForZerocopy(minBytesForZerocopy) {}
 
   TransportResult read(char* buf, std::size_t len);
 
@@ -68,6 +68,8 @@ class TlsTransport final : public TransportBackend<TlsTransport, TransportKind::
 #endif
 
   SslPtr _ssl;
+  // Applied to the zerocopy state by enableZerocopy(), once kTLS send is known to be enabled.
+  uint32_t _minBytesForZerocopy;
   bool _handshakeDone{false};
   KtlsEnableResult _ktlsResult{KtlsEnableResult::Unknown};
 };

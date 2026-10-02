@@ -48,17 +48,16 @@ class SocketTransportState {
   /// Check if any zerocopy sends are waiting for completion.
   [[nodiscard]] bool hasZerocopyPending() const noexcept { return _zerocopyState.pendingCompletions(); }
 
-  /// Disable zerocopy for this transport.
-  void disableZerocopy() noexcept { _zerocopyState.setEnabled(false); }
+  /// Disable zerocopy for subsequent sends of this transport.
+  /// Sends already issued with zerocopy stay pending (see hasZerocopyPending()) until their completion is polled.
+  void disableZerocopy() noexcept { _zerocopyState.disable(); }
 
  protected:
   SocketTransportState() noexcept = default;
 
-  SocketTransportState(NativeHandle fd, std::uint32_t minBytesForZerocopy)
-      : _minBytesForZerocopy(minBytesForZerocopy), _fd(fd) {}
+  explicit SocketTransportState(NativeHandle fd) noexcept : _fd(fd) {}
 
   ZeroCopyState _zerocopyState{};
-  std::uint32_t _minBytesForZerocopy{~0U};
   NativeHandle _fd{kInvalidHandle};
 };
 
