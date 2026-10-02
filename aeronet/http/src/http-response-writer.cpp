@@ -319,7 +319,15 @@ bool HttpResponseWriter::file(File file, std::uint64_t offset, std::uint64_t len
   _activeEncoderCtx = nullptr;
   _preCompressBuffer.clear();
 
+  // The file body comes with its own body headers: the Content-Type placeholder set at construction (or by
+  // contentType()) must not stay as a second Content-Type. Erased after the call, which may throw.
+  const bool hasContentTypePlaceholder = !_fixedResponse.hasBodyHeaders();
   _fixedResponse.file(std::move(file), offset, length, contentType);
+  if (hasContentTypePlaceholder) {
+    // The placeholder line is before the body headers, so it is the first Content-Type found.
+    const std::string_view placeholder = _fixedResponse.headerValueOrEmpty(http::ContentType);
+    _fixedResponse.eraseHeaderLine(http::ContentType, placeholder.data(), placeholder.data() + placeholder.size());
+  }
   _declaredLength = _fixedResponse.bodyLength();
   return true;
 }

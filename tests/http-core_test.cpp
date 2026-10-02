@@ -16,6 +16,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <memory>
 #include <ranges>
@@ -2667,6 +2668,93 @@ TEST(HttpStreaming, SendFileOverrideContentLength) {
   std::string body = resp.substr(headerEnd + http::DoubleCRLF.size());
   EXPECT_EQ(body.size(), 35);
   EXPECT_EQ(body, kPayload);
+}
+
+// Replacing a header or setting the reason of a streaming response validates the value: CR or LF would inject header
+// lines in the response.
+TEST(HttpStreaming, HeaderReplaceAndReasonRejectInvalidValues) {
+  ts.router().setDefault([](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.status(200);
+    writer.header("x-a", "1");
+    EXPECT_THROW(writer.header("x-a", "1\r\nset-cookie: evil=1"), std::invalid_argument);
+    EXPECT_THROW(writer.reason("OK\r\nset-cookie: evil=1"), std::invalid_argument);
+    writer.writeBody("body");
+    writer.end();
+  });
+
+  const std::string resp = BlockingFetch("GET", "/stream-injection");
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.contains("x-a: 1\r\n")) << resp;
+  EXPECT_FALSE(resp.contains("set-cookie")) << resp;
+  EXPECT_EQ(ExtractBody(resp), "body");
+}
+
+// The Content-Type placeholder of the writer is replaced by the one of the file body: a single Content-Type is sent,
+// whether given to file(), detected from the file, set again by a second file() or by contentType() afterwards.
+TEST(HttpStreaming, SendFileSendsSingleContentType) {
+  constexpr std::string_view kPayload = "file body";
+  constexpr std::string_view kOtherPayload = "other file body";
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, kPayload);
+  test::ScopedTempFile otherTmp(tmpDir, kOtherPayload);
+  const std::string path = tmp.filePath().string();
+  const std::string otherPath = otherTmp.filePath().string();
+
+  struct Scenario {
+    std::function<void(HttpResponseWriter&)> setBody;
+    std::string_view expectedContentType;
+    std::string_view expectedBody;
+  };
+  const Scenario scenarios[]{
+      {[&path](HttpResponseWriter& writer) { writer.file(File(path), "text/html"); }, "text/html", kPayload},
+      {
+          [&path](HttpResponseWriter& writer) {
+            writer.contentType("text/css");
+            writer.file(File(path));  // no extension: detected as application/octet-stream
+          },
+          http::ContentTypeApplicationOctetStream,
+          kPayload,
+      },
+      {
+          [&path, &otherPath](HttpResponseWriter& writer) {
+            writer.file(File(path), "text/plain");
+            writer.file(File(otherPath), "text/html");
+          },
+          "text/html",
+          kOtherPayload,
+      },
+      {
+          [&path](HttpResponseWriter& writer) {
+            writer.file(File(path), "text/plain");
+            writer.contentType("text/css");
+          },
+          "text/css",
+          kPayload,
+      },
+  };
+  for (std::size_t scenarioPos = 0; scenarioPos < std::size(scenarios); ++scenarioPos) {
+    SCOPED_TRACE(scenarioPos);
+    const Scenario& scenario = scenarios[scenarioPos];
+    ts.router().setDefault([&scenario](const HttpRequestView&, HttpResponseWriter& writer) {
+      writer.status(200);
+      scenario.setBody(writer);
+      writer.end();
+    });
+
+    const std::string resp = BlockingFetch("GET", "/file-content-type");
+    ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+    const std::string_view head = std::string_view(resp).substr(0, resp.find(http::DoubleCRLF));
+    std::size_t nbContentTypes = 0;
+    for (auto pos = head.find("\r\ncontent-type:"); pos != std::string_view::npos;
+         pos = head.find("\r\ncontent-type:", pos + 1U)) {
+      ++nbContentTypes;
+    }
+    EXPECT_EQ(nbContentTypes, 1U) << resp;
+    EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentType, scenario.expectedContentType))) << resp;
+    EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(scenario.expectedBody.size()))))
+        << resp;
+    EXPECT_EQ(ExtractBody(resp), scenario.expectedBody);
+  }
 }
 
 TEST(HttpStreaming, HeadSuppressedBody) {
