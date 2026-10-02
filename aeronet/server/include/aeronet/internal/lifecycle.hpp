@@ -107,15 +107,23 @@ struct Lifecycle {
     state.notify_all();
   }
 
-  // Blocks while the server is still starting up, then requests a stop if it reached Running/Draining.
-  // This makes stop() briefly slower when called immediately after start() (bounded by however long
-  // prepareRun() takes), but in exchange guarantees prepareRun() can only ever observe State::Starting.
-  State exchangeStopping() noexcept {
+  // Blocks while the server is still starting up, then returns the observed state (never Starting).
+  // Used by controller-thread requests (stop, drain) so that a request issued right after start() applies to the
+  // started server instead of being lost: it is briefly slower (bounded by however long prepareRun() takes), but in
+  // exchange prepareRun() can only ever observe State::Starting.
+  // PRECONDITION: never called from the thread running prepareRun() while Starting (it would wait for itself).
+  [[nodiscard]] State waitWhileStarting() const noexcept {
     State current = state.load(std::memory_order_acquire);
     while (current == State::Starting) {
       state.wait(current, std::memory_order_acquire);
       current = state.load(std::memory_order_acquire);
     }
+    return current;
+  }
+
+  // Waits for an in-flight startup (see waitWhileStarting()), then requests a stop if it reached Running/Draining.
+  State exchangeStopping() noexcept {
+    State current = waitWhileStarting();
     while (current == State::Running || current == State::Draining) {
       if (state.compare_exchange_weak(current, State::Stopping, std::memory_order_acq_rel, std::memory_order_acquire)) {
         drainDeadlineEnabled.store(false, std::memory_order_relaxed);
@@ -153,11 +161,6 @@ struct Lifecycle {
   [[nodiscard]] bool isStopping() const noexcept { return state.load(std::memory_order_acquire) == State::Stopping; }
 
   [[nodiscard]] bool isActive() const noexcept { return state.load(std::memory_order_acquire) != State::Idle; }
-
-  [[nodiscard]] bool cannotBeginDraining() const noexcept {
-    const State current = state.load(std::memory_order_acquire);
-    return current == State::Idle || current == State::Starting || current == State::Stopping;
-  }
 
   [[nodiscard]] bool hasDeadline() const noexcept { return drainDeadlineEnabled.load(std::memory_order_relaxed); }
 
