@@ -366,7 +366,8 @@ class SingleHttpServer {
   // sessions after their current in-flight response completes. When maxWait > 0 a deadline is
   // enforced, after which remaining connections are closed immediately. Safe to call from a
   // different thread. Calling beginDrain() while already draining updates the deadline to the
-  // earliest of the current and new values.
+  // earliest of the current and new values. If the server is still starting up (right after
+  // start()), waits for its startup to complete so that the drain is not lost.
   void beginDrain(std::chrono::milliseconds maxWait = std::chrono::milliseconds{0}) noexcept;
 
   // The config given to the server, with the actual allocated port if 0 was given.

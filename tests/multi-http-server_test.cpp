@@ -1154,6 +1154,35 @@ TEST(MultiHttpServerDedicatedProbes, ReadinessReportsNotReadyWhileDraining) {
   handle.rethrowIfError();
 }
 
+TEST(MultiHttpServerDedicatedProbes, BeginDrainRightAfterStartIsNotLostForStartingWorkers) {
+  const auto [appPort, probePort] = GrabTwoFreePorts();
+
+  HttpServerConfig cfg = MakeConfig(4U);
+  cfg.withPort(appPort);
+  BuiltinProbesConfig bp;
+  bp.enabled = true;
+  bp.withDedicatedPort(probePort);
+  cfg.withBuiltinProbes(bp);
+
+  MultiHttpServer multi(std::move(cfg));
+  auto handle = multi.startDetached();
+
+  // No synchronization with the workers: some of them are typically still starting up (in prepareRun()) here. The
+  // drain must then wait for their startup to complete instead of being dropped (which left them Running and ready).
+  multi.beginDrain();
+
+  // Every worker is now draining, or already drained as there is no connection: the pod is never ready again.
+  for (int probeNb = 0; probeNb < 5; ++probeNb) {
+    const std::string ready = test::simpleGet(probePort, "/readyz");
+    EXPECT_TRUE(ready.starts_with("HTTP/1.1 503")) << ready;
+  }
+  // Each drained worker closes its listener on the application port.
+  EXPECT_TRUE(test::WaitForListenerClosed(appPort, 1s));
+
+  handle.stop();
+  handle.rethrowIfError();
+}
+
 TEST(MultiHttpServerDedicatedProbes, DedicatedPortEqualToAppPortThrows) {
   const auto [appPort, unused] = GrabTwoFreePorts();
 

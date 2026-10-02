@@ -54,19 +54,34 @@ TEST(LifecycleTest, ResetClearsState) {
   EXPECT_FALSE(lifecycle.ready());
 }
 
-TEST(LifecycleTest, CannotBeginDraining) {
+TEST(LifecycleTest, WaitWhileStartingReturnsNonStartingStatesImmediately) {
   Lifecycle lifecycle;
 
-  EXPECT_TRUE(lifecycle.cannotBeginDraining());
+  EXPECT_EQ(lifecycle.waitWhileStarting(), Lifecycle::State::Idle);
   lifecycle.enterStarting();
-  EXPECT_TRUE(lifecycle.cannotBeginDraining());
   lifecycle.enterRunning();
-  EXPECT_FALSE(lifecycle.cannotBeginDraining());
+  EXPECT_EQ(lifecycle.waitWhileStarting(), Lifecycle::State::Running);
+  lifecycle.enterDraining({}, false);
+  EXPECT_EQ(lifecycle.waitWhileStarting(), Lifecycle::State::Draining);
 
-  EXPECT_EQ(lifecycle.exchangeStopping(), Lifecycle::State::Running);
-  EXPECT_TRUE(lifecycle.cannotBeginDraining());
+  EXPECT_EQ(lifecycle.exchangeStopping(), Lifecycle::State::Draining);
+  EXPECT_EQ(lifecycle.waitWhileStarting(), Lifecycle::State::Stopping);
 
   EXPECT_THROW(lifecycle.enterRunning(), std::logic_error);
+}
+
+TEST(LifecycleTest, WaitWhileStartingWaitsForStartupCompletion) {
+  Lifecycle lifecycle;
+  lifecycle.enterStarting();
+
+  // Simulates the worker thread finishing prepareRun() concurrently with a drain request issued right after start():
+  // whichever order these two threads interleave in, waitWhileStarting() must observe Running - never Starting.
+  std::jthread completer([&lifecycle] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    lifecycle.enterRunning();
+  });
+
+  EXPECT_EQ(lifecycle.waitWhileStarting(), Lifecycle::State::Running);
 }
 
 TEST(LifecycleTest, StartingStateIsActiveButNotReady) {
