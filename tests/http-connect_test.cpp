@@ -70,12 +70,14 @@ class AcceptedWriteResumeGuard {
 
 class PausingWriteTransport final : public TransportBackend<PausingWriteTransport> {
  public:
-  explicit PausingWriteTransport(Transport inner) : _inner(std::move(inner)) {}
+  PausingWriteTransport(Transport inner, NativeHandle fd) : _inner(std::move(inner)), _fd(fd) {}
 
   TransportResult read(char* buf, std::size_t len) {
     auto result = _inner.read(buf, len);
-    if (result.bytesProcessed != 0) {
-      gAcceptedFd.store(test::g_last_accepted_fd.load(std::memory_order_acquire), std::memory_order_release);
+    // Only the connection carrying the CONNECT request publishes its fd: any other accepted connection (e.g. the
+    // TestServer readiness probe) must not overwrite it.
+    if (std::string_view(buf, result.bytesProcessed).starts_with("CONNECT ")) {
+      gAcceptedFd.store(_fd, std::memory_order_release);
     }
     return result;
   }
@@ -101,6 +103,7 @@ class PausingWriteTransport final : public TransportBackend<PausingWriteTranspor
   }
 
   Transport _inner;
+  NativeHandle _fd;
 };
 
 void AllowConnectHost(test::TestServer& server, std::string_view host) {
@@ -161,8 +164,11 @@ bool WaitForFlag(const std::atomic<bool>& flag, std::chrono::milliseconds timeou
   return false;
 }
 
+// Runs on the server thread right after accept4(), so the last accepted fd is this connection's fd. Sampling it later
+// (e.g. on the first read) is racy: another accept() can update the process-wide value in between.
 Transport PauseAcceptedWriteCompletion(Transport transport) {
-  return Transport(std::make_unique<PausingWriteTransport>(std::move(transport)));
+  const NativeHandle fd = test::g_last_accepted_fd.load(std::memory_order_acquire);
+  return Transport(std::make_unique<PausingWriteTransport>(std::move(transport), fd));
 }
 
 }  // namespace

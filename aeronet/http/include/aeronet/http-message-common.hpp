@@ -10,10 +10,14 @@
 
 namespace aeronet {
 
+// Tells whether 'contentType' (already trimmed) can be the Content-Type value of a message with a body.
+constexpr bool IsValidContentType(std::string_view contentType) {
+  return contentType.size() >= http::ContentTypeMinLen && http::IsValidHeaderValue(contentType);
+}
+
 constexpr std::string_view CheckContentType(bool isBodyEmpty, std::string_view& contentType) {
   contentType = TrimOws(contentType);
-  if (!isBodyEmpty && (contentType.size() < http::ContentTypeMinLen || !http::IsValidHeaderValue(contentType)))
-      [[unlikely]] {
+  if (!isBodyEmpty && !IsValidContentType(contentType)) [[unlikely]] {
     throw std::invalid_argument("HTTP content-type header value is invalid");
   }
   return contentType;
