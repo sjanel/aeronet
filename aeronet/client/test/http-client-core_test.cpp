@@ -2400,6 +2400,21 @@ TEST(HttpClientErrorE2ETest, ClosedBeforeCompleteResponseReturnsError) {
   EXPECT_EQ(result.error(), HttpClientErrc::malformedResponse);
 }
 
+// RFC 9110 media types can be very short: any non-empty Content-Type sent by a server is kept. A value shorter than 7
+// characters used to make the request throw std::invalid_argument.
+TEST(HttpClientErrorE2ETest, ShortContentTypeFromServerIsAccepted) {
+  RawServer server([](NativeHandle fd, int) {
+    DrainRequest(fd);
+    SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-type: a/b\r\ncontent-length: 5\r\nconnection: close\r\n\r\nhello");
+  });
+  HttpClient client;
+  auto result = client.get(MakeUrl(server.port()));
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->status(), 200);
+  EXPECT_EQ(result->headerValueOrEmpty(http::ContentType), "a/b");
+  EXPECT_EQ(result->bodyInMemory(), "hello");
+}
+
 // The server reads the request but never answers, then closes after the deadline. The deadline must win even
 // if a descheduled client observes the late close as soon as its poll resumes.
 TEST(HttpClientErrorE2ETest, ReadTimeoutReturnsError) {
