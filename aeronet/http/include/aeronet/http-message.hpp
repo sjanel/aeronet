@@ -276,6 +276,7 @@ class HttpMessage {
   // will produce:
   //   "accept: text/html"
   //   "accept: text/html, application/json"
+  // Same rules as headerAddLineImpl() for 'Content-Type', 'Content-Length' and 'Content-Encoding'.
   void headerAppendValueImpl(LowerAsciiKey key, std::string_view value, std::string_view sep = ", ");
 
   // Convenient overload appending a numeric value.
@@ -296,8 +297,8 @@ class HttpMessage {
 
   // Remove the last occurrence of the header with the given lower-case key. If the header is not found, the
   // HttpMessage is not modified.
-  // Content-type and Content-Length headers cannot be removed, as they are managed by aeronet based on the body
-  // content.
+  // Content-type and Content-Length headers cannot be removed (the call does nothing), as they are managed by aeronet
+  // based on the body content. Removing 'Content-Encoding' while a body is set throws std::logic_error.
   void headerRemoveLineImpl(LowerAsciiKey key);
 
   // Remove the first 'value' from the last header with the given lower-case key. If the value is the only one for the
@@ -307,6 +308,7 @@ class HttpMessage {
   // HttpMessage is not modified. Separator must not be empty, and should be the same as the one used in
   // headerAppendValue() for the same header. The behavior is undefined if the header values can contain the separator
   // string.
+  // Same rules as headerRemoveLineImpl() for 'Content-Type', 'Content-Length' and 'Content-Encoding'.
   void headerRemoveValueImpl(LowerAsciiKey key, std::string_view value, std::string_view sep = ", ");
 
   // -------------/
@@ -696,11 +698,6 @@ class HttpMessage {
 
   void finalizeHeadersAndBody();
 
-  // Same as headersFlatView but without Content-Type and Content-Length headers.
-  [[nodiscard]] std::string_view headersFlatViewWithoutCTCL() const noexcept {
-    return {_data.data() + headersStartPos() + http::CRLF.size(), getContentTypeHeaderLinePtr() + http::CRLF.size()};
-  }
-
   // Simple bitmap class to pass finalization options with strong typing and better readability (passing several bools
   // is easy to get it wrong).
   class Options {
@@ -1000,6 +997,14 @@ class HttpMessage {
 #endif
 
   void removeBodyAndItsHeaders();
+
+  // Erases the header line 'key' whose value is [valueFirst, valueLast), without any check.
+  void eraseHeaderLine(std::string_view key, const char* valueFirst, const char* valueLast) noexcept;
+
+  // Removes the Content-Encoding header (which must be present), resets the content encoding and direct compression
+  // states and removes the 'accept-encoding' Vary value if aeronet adds it. Unlike headerRemoveLineImpl(), allowed
+  // while the body headers are present: for internal use when the body is replaced or removed.
+  void removeContentEncodingHeaders();
 
   // Add Content-Type and Content-Length headers for a new body, erasing any existing body and its headers if needed.
   // Returns a pointer to the position where the body should be written (immediately after the CRLFCRLF sequence).
