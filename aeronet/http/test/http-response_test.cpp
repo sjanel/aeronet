@@ -2050,6 +2050,26 @@ TEST_F(HttpResponseTest, AppendBodyWithoutContentLengthHeaderAutomaticCompressio
     EXPECT_EQ(totalBody, std::string_view(decompressedBody));
   }
 }
+
+TEST_F(HttpResponseTest, HeaderAddedWhileDirectCompressionHasNoOutputYetKeepsBodyHeadersLast) {
+  static constexpr std::string_view kBody = "hello hello hello";
+  for (Encoding enc : test::SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+    resp.directCompressionMode(DirectCompressionMode::On);
+    // Some encoders (brotli, zstd) buffer such a small input: nothing is written yet in the body.
+    resp.body(kBody, http::ContentTypeTextPlain);
+    ASSERT_TRUE(IsAutomaticDirectCompression(resp));
+
+    resp.headerAddLine("x-custom", "value");
+    FinalizeCompressedBody(resp);
+
+    const std::string_view headers = resp.headersFlatView();
+    EXPECT_LT(headers.find("x-custom"), headers.find(http::ContentType));
+    EXPECT_EQ(resp.headerValueOrEmpty("x-custom"), "value");
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), std::to_string(resp.bodyInMemoryLength()));
+    EXPECT_EQ(std::string_view(test::Decompress(enc, resp.bodyInMemory())), kBody);
+  }
+}
 #endif
 
 TEST_F(HttpResponseTest, AppendHeaderValueKeepsBodyIntact) {
@@ -2530,6 +2550,129 @@ TEST_F(HttpResponseTest, SendFileZeroLengthPayload) {
     // An empty file already declares its own Content-Length: 0; finalization must not synthesize a second one.
     EXPECT_EQ(CountSubstr(headers, http::ContentLength), 1U * static_cast<uint32_t>(sendContentLengthHeader));
   }
+}
+
+TEST_F(HttpResponseTest, EmptyFileThenInlineBodyReplacesFilePayload) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, "");
+
+  HttpResponse resp(http::StatusCodeOK);
+  resp.file(File(tmp.filePath().string()));
+  ASSERT_TRUE(resp.hasBodyFile());
+  EXPECT_EQ(resp.bodyLength(), 0U);
+
+  resp.body("hello");
+
+  EXPECT_FALSE(resp.hasBodyFile());
+  EXPECT_EQ(resp.bodyInMemory(), "hello");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "5");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), http::ContentTypeTextPlain);
+  EXPECT_EQ(CountSubstr(resp.headersFlatView(), http::ContentType), 1U);
+  EXPECT_EQ(CountSubstr(resp.headersFlatView(), http::ContentLength), 1U);
+
+  auto prepared = finalizePrepared(std::move(resp));
+  EXPECT_EQ(prepared.getIfFilePayload(), nullptr);
+  EXPECT_TRUE(std::string_view(prepared.firstBuffer()).ends_with("\r\n\r\nhello"));
+}
+
+TEST_F(HttpResponseTest, EmptyFileThenCapturedBodyReplacesFilePayload) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, "");
+
+  // short (SSO) and long std::string bodies
+  for (const std::string& body : {std::string("hi"), std::string(100, 'x')}) {
+    HttpResponse resp(http::StatusCodeOK);
+    resp.file(File(tmp.filePath().string()));
+
+    resp.body(std::string(body));
+
+    EXPECT_FALSE(resp.hasBodyFile());
+    EXPECT_TRUE(resp.hasBodyCaptured());
+    EXPECT_EQ(resp.bodyInMemory(), body);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), std::to_string(body.size()));
+    EXPECT_EQ(CountSubstr(resp.headersFlatView(), http::ContentType), 1U);
+    EXPECT_EQ(CountSubstr(resp.headersFlatView(), http::ContentLength), 1U);
+  }
+}
+
+TEST_F(HttpResponseTest, EmptyFileThenBodyInlineSetReplacesFilePayload) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, "");
+
+  HttpResponse resp(http::StatusCodeOK);
+  resp.file(File(tmp.filePath().string()));
+
+  resp.bodyInlineSet(16, [](char* buf) {
+    static constexpr std::string_view kBody = "inline";
+    std::memcpy(buf, kBody.data(), kBody.size());
+    return kBody.size();
+  });
+
+  EXPECT_FALSE(resp.hasBodyFile());
+  EXPECT_EQ(resp.bodyInMemory(), "inline");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "6");
+  EXPECT_EQ(CountSubstr(resp.headersFlatView(), http::ContentType), 1U);
+  EXPECT_EQ(CountSubstr(resp.headersFlatView(), http::ContentLength), 1U);
+}
+
+TEST_F(HttpResponseTest, EmptyFileThenEmptyBodyRemovesBodyHeaders) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, "");
+
+  HttpResponse resp(http::StatusCodeOK);
+  resp.file(File(tmp.filePath().string()));
+
+  resp.body("");
+
+  EXPECT_FALSE(resp.hasBody());
+  EXPECT_FALSE(resp.hasHeader(http::ContentType));
+  EXPECT_FALSE(resp.hasHeader(http::ContentLength));
+}
+
+TEST_F(HttpResponseTest, HeaderAddedAfterEmptyFileIsInsertedBeforeBodyHeaders) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, "");
+
+  HttpResponse resp(http::StatusCodeOK);
+  resp.file(File(tmp.filePath().string()));
+
+  resp.headerAddLine("x-custom", "value");
+
+  // Content-Type and Content-Length must stay the last headers, right before the body.
+  const std::string_view headers = resp.headersFlatView();
+  EXPECT_LT(headers.find("x-custom"), headers.find(http::ContentType));
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "0");
+
+  resp.body("abc");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-custom"), "value");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "3");
+  EXPECT_EQ(resp.bodyInMemory(), "abc");
+}
+
+TEST_F(HttpResponseTest, HeadEmptyBodyThenBodyReplacesSizeOnlyPayload) {
+  HttpResponse resp = makePrepared(PreparedOptions{.head = true});
+
+  resp.body("");
+  EXPECT_FALSE(resp.hasBody());
+  EXPECT_EQ(resp.bodyLength(), 0U);
+  // Consistent with non-HEAD responses: trailers require a non-empty body.
+  EXPECT_THROW(resp.trailerAddLine("x-trailer", "v"), std::logic_error);
+
+  resp.body("hello");
+  EXPECT_TRUE(resp.hasBody());
+  EXPECT_EQ(resp.bodyLength(), 5U);
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "5");
+
+  resp.body(std::string(100, 'x'));
+  EXPECT_EQ(resp.bodyLength(), 100U);
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "100");
+  EXPECT_EQ(CountSubstr(resp.headersFlatView(), http::ContentType), 1U);
+  EXPECT_EQ(CountSubstr(resp.headersFlatView(), http::ContentLength), 1U);
+
+  auto prepared = finalizePrepared(std::move(resp), true /*head*/);
+  const std::string_view head = prepared.firstBuffer();
+  EXPECT_TRUE(head.contains(MakeHttp1HeaderLine(http::ContentLength, "100")));
+  EXPECT_TRUE(head.ends_with(http::DoubleCRLF));
 }
 
 // -----------------------------------------------------------------------------

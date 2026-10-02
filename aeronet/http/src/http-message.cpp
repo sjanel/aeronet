@@ -31,7 +31,6 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
-#include "aeronet/log.hpp"
 #include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/memory-utils.hpp"
@@ -183,8 +182,8 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
     throw std::logic_error("Cannot set body after the first trailer");
   }
 
-  const auto oldBodyLen = bodyLength();
-  const bool hadBody = oldBodyLen != 0 || _opts.isAutomaticDirectCompression();
+  // Not based on bodyLength(): an empty file payload has a zero length but its body headers must be replaced.
+  const bool hadBody = hasBodyHeaders();
   if (newBodySize == 0) {
     if (hadBody) {
       removeBodyAndItsHeaders();
@@ -346,8 +345,7 @@ void HttpMessage::bodyAppendImpl(std::string_view body, std::string_view content
     }
 
     const auto oldBodyLen = bodyLength();
-    const bool hadBody = oldBodyLen != 0 || _opts.isAutomaticDirectCompression();
-    if (!hadBody) {
+    if (!hasBodyHeaders()) {
       if (contentType.empty()) {
         contentType = http::ContentTypeTextPlain;
       }
@@ -507,9 +505,9 @@ void HttpMessage::headerAddLineUnchecked(LowerAsciiKey key, std::string_view val
 
   char* pData = _data.data() + bodyStartPos() - http::DoubleCRLF.size();
 
-  const auto bodySz = bodyLength();
-
-  if (bodySz == 0) {
+  // Not based on bodyLength(): an empty file payload, or a direct compression that has not produced any output yet,
+  // have a zero length but their body headers must stay last.
+  if (!hasBodyHeaders()) {
     CopyFixed<http::DoubleCRLF>(pData + headerLineSize);
   } else {
     // We want to keep Content-Type and Content-Length together with the body (we use this property for optimization)
@@ -1044,9 +1042,7 @@ void HttpMessage::finalizeForHttp1(http::Version version, Options opts, const Co
   // buffered its input without yet flushing output has bodyLength() == 0 here, but its real (compressed) body
   // is emitted by the body branch below, which writes the actual Content-Length - so we must not add one here.
   const bool addContentLengthZero = bodySz == 0 && !isHeadMethod && !hasBodyFile() && !opts.isStreamingBody() &&
-#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
                                     !_opts.isAutomaticDirectCompression() &&
-#endif
                                     StatusAllowsSynthesizedContentLengthZero(opts.isHttpRequest(), _data.data());
 
   std::size_t totalNewHeadersSize =
@@ -1077,12 +1073,7 @@ void HttpMessage::finalizeForHttp1(http::Version version, Options opts, const Co
 
   char* headersInsertPtr = nullptr;
 
-  if ((bodySz == 0
-#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
-       && !_opts.isAutomaticDirectCompression()
-#endif
-           ) ||
-      isHeadMethod || hasBodyFile()) {
+  if ((bodySz == 0 && !_opts.isAutomaticDirectCompression()) || isHeadMethod || hasBodyFile()) {
     // For HEAD responses we must not transmit the body, but keep file payloads
     // intact so ownership can be transferred by finalizeForHttp1. For inline
     // bodies we still erase the inline bytes.
