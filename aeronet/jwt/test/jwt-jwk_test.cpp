@@ -96,6 +96,8 @@ TEST(Jwk, FactoryErrorsReturnInvalid) {
   EXPECT_FALSE(JwtKey::FromJwk(R"({"kty":"EC","crv":"P-256","x":"@@@","y":"AA"})").valid());
   // Correct coordinate lengths, but (0,0) is not a point on P-256 → key build fails.
   const std::string zero32(43, 'A');  // 43 base64url 'A's decode to 32 zero bytes
+  // A x coordinate of the right length, but not y.
+  EXPECT_FALSE(JwtKey::FromJwk(std::string(R"({"kty":"EC","crv":"P-256","x":")") + zero32 + R"(","y":"AA"})").valid());
   EXPECT_FALSE(
       JwtKey::FromJwk(std::string(R"({"kty":"EC","crv":"P-256","x":")") + zero32 + R"(","y":")" + zero32 + R"("})")
           .valid());

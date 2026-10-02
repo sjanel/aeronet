@@ -34,6 +34,13 @@
 
 namespace aeronet::http2 {
 
+class Http2ConnectionTest {
+ public:
+  [[nodiscard]] static std::size_t NbOutputBlocks(const Http2Connection& connection) noexcept {
+    return connection._outputBlocks.size();
+  }
+};
+
 namespace {
 
 struct WireDecodedHeadersDebug {
@@ -445,6 +452,67 @@ TEST(Http2Connection, SmallResponsesShareOneOutputFragment) {
     pos += FrameHeader::kSize + data.length;
   }
   EXPECT_EQ(pos, wire.size());
+}
+
+// A peer that never lets the output drain completely (each write leaves one byte pending) must not make the queue of
+// output blocks grow forever: written blocks are erased as it goes, without changing the bytes sent.
+TEST(Http2Connection, OutputBlocksQueueStaysBoundedWhenNeverFullyDrained) {
+  Http2Config config;
+  Http2Connection connection(config, true);
+  AdvanceToOpenAndDrainSettingsAck(connection);
+  ASSERT_EQ(connection.sendHeaders(1, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
+  (void)DrainPendingOutput(connection);
+
+  constexpr std::size_t kNbBlocks = 2000;
+  constexpr std::size_t kBlockSize = 512;  // above the inline copy size: each DATA payload is its own output block
+  RawBytes windowUpdates;
+  WriteWindowUpdateFrame(windowUpdates, 0, static_cast<uint32_t>(kNbBlocks * kBlockSize));
+  WriteWindowUpdateFrame(windowUpdates, 1, static_cast<uint32_t>(kNbBlocks * kBlockSize));
+  FeedConnection(connection, windowUpdates);
+
+  std::string expectedPayload;
+  std::string wire;
+  std::string pending;
+  vector<std::string_view> fragments;
+  std::size_t maxNbOutputBlocks = 0;
+  for (std::size_t blockPos = 0; blockPos < kNbBlocks; ++blockPos) {
+    RawBytes owner(kBlockSize);
+    owner.setSize(kBlockSize);
+    std::ranges::fill(owner, static_cast<std::byte>(blockPos));
+    expectedPayload.append(kBlockSize, static_cast<char>(blockPos));
+    ASSERT_EQ(connection.sendData(1, std::move(owner), 0, kBlockSize, false), ErrorCode::NoError);
+
+    connection.getPendingOutputFragments(fragments);
+    pending.clear();
+    for (const std::string_view fragment : fragments) {
+      pending.append(fragment);
+    }
+    wire.append(pending, 0, pending.size() - 1U);
+    connection.onOutputWritten(pending.size() - 1U);
+    maxNbOutputBlocks = std::max(maxNbOutputBlocks, Http2ConnectionTest::NbOutputBlocks(connection));
+  }
+  // Without erasing the written blocks, the queue would hold one entry per sent DATA frame.
+  EXPECT_LT(maxNbOutputBlocks, 64U);
+
+  connection.getPendingOutputFragments(fragments);
+  for (const std::string_view fragment : fragments) {
+    wire.append(fragment);
+  }
+  connection.onOutputWritten(connection.pendingOutputSize());
+  EXPECT_FALSE(connection.hasPendingOutput());
+
+  std::string payload;
+  for (std::size_t pos = 0; pos < wire.size();) {
+    ASSERT_GE(wire.size() - pos, FrameHeader::kSize);
+    const FrameHeader header =
+        ParseFrameHeader(std::as_bytes(std::span<const char>(wire.data() + pos, FrameHeader::kSize)));
+    ASSERT_EQ(header.type, FrameType::Data);
+    ASSERT_EQ(header.streamId, 1U);
+    pos += FrameHeader::kSize;
+    payload.append(wire, pos, header.length);
+    pos += header.length;
+  }
+  EXPECT_EQ(payload, expectedPayload);
 }
 
 TEST(Http2Connection, OwnedDataUsesGatherFragmentsAcrossPartialWrites) {
