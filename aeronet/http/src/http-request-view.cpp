@@ -21,6 +21,7 @@
 #include "aeronet/async-handler-state.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/find-char.hpp"
 #include "aeronet/header-line-parse.hpp"
 #include "aeronet/header-merge.hpp"
 #include "aeronet/http-codec-result.hpp"
@@ -269,6 +270,49 @@ static_assert([] {
   return true;
 }());
 
+constexpr bool IsAsciiAlpha(char ch) noexcept {
+  const auto lower = static_cast<unsigned char>(static_cast<unsigned char>(ch) | 0x20U);
+  return lower >= 'a' && lower <= 'z';
+}
+
+// RFC 3986 §3.1: characters allowed after the first one of a scheme: ALPHA / DIGIT / "+" / "-" / "."
+constexpr bool IsSchemeChar(char ch) noexcept {
+  static constexpr auto kSchemeCharTable = [] {
+    struct {
+      bool data[256];
+    } table{};
+    for (int ic = 0; ic < 256; ++ic) {
+      const char cc = static_cast<char>(ic);
+      table.data[ic] = IsAsciiAlpha(cc) || (cc >= '0' && cc <= '9') || cc == '+' || cc == '-' || cc == '.';
+    }
+    return table;
+  }();
+  return kSchemeCharTable.data[static_cast<unsigned char>(ch)];
+}
+
+// RFC 9112 §3.2: request-target = origin-form / absolute-form / authority-form / asterisk-form.
+// Only the form is checked here; the content is validated later (path decoding, CONNECT target parsing).
+constexpr bool IsValidRequestTargetForm(std::string_view target, http::Method method) noexcept {
+  if (target.empty()) {
+    return false;
+  }
+  if (target.front() == '/') {
+    return true;  // origin-form
+  }
+  if (method == http::Method::CONNECT) {
+    return true;  // authority-form
+  }
+  if (target == "*") {
+    return method == http::Method::OPTIONS;  // asterisk-form
+  }
+  // absolute-form, starting with scheme ":" where scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
+  if (!IsAsciiAlpha(target.front())) {
+    return false;
+  }
+  const auto schemeEnd = std::find_if_not(target.begin() + 1, target.end(), IsSchemeChar);
+  return schemeEnd != target.end() && *schemeEnd == ':';
+}
+
 }  // namespace
 
 http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawChars& tmpBuffer,
@@ -310,9 +354,9 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
 
   // Path
   first = nextSep + 1;
-  nextSep = std::find(first, lineLast, ' ');
+  nextSep = FindChar(first, lineLast, ' ');
 
-  if (!decodePath(first, nextSep)) {
+  if (!IsValidRequestTargetForm(std::string_view(first, nextSep), _method) || !decodePath(first, nextSep)) {
     return http::StatusCodeBadRequest;
   }
 
@@ -591,7 +635,14 @@ HttpResponse::Options HttpRequestView::makeResponseOptions() const noexcept {
 }
 
 bool HttpRequestView::decodePath(char* pathStart, char* pathEnd) {
-  char* questionMark = std::find(pathStart, pathEnd, '?');
+  // Control characters are never valid in a request-target (RFC 3986 §2). A bare LF in particular could end the
+  // request line for lenient parsers.
+  if (std::any_of(pathStart, pathEnd, [](char ch) {
+        return static_cast<unsigned char>(ch) < 0x20U || static_cast<unsigned char>(ch) == 0x7FU;
+      })) {
+    return false;
+  }
+  char* questionMark = FindChar(pathStart, pathEnd, '?');
   if (questionMark != pathEnd) {
     const char* paramsEnd = url::DecodeQueryParamsInPlace(questionMark + 1, pathEnd);
     _pDecodedQueryParams = questionMark + 1;
@@ -599,6 +650,9 @@ bool HttpRequestView::decodePath(char* pathStart, char* pathEnd) {
   } else {
     _decodedQueryParamsLength = 0;
   }
+  // Strict decoding also rejects a decoded NUL (%00): C APIs (file system...) would truncate the path there, while
+  // checks made on the full path (by middleware for instance) would see something else. A raw NUL has already been
+  // rejected above with the other control characters.
   const char* pathLast = url::DecodeInPlace(pathStart, questionMark);
   if (pathLast == nullptr || pathStart == pathLast) {
     return false;
