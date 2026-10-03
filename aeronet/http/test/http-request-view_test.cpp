@@ -624,6 +624,11 @@ TEST_F(HttpRequestViewTest, MethodIsCaseSensitive) {
   }
 }
 
+TEST_F(HttpRequestViewTest, EmptyMethodIsRejected) {
+  EXPECT_EQ(reqSet(BuildRaw("", "/")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(RawChars("  GET / HTTP/1.1\r\nHost: h\r\n\r\n")), http::StatusCodeBadRequest);
+}
+
 TEST_F(HttpRequestViewTest, InvalidPath) {
   EXPECT_EQ(reqSet(RawChars("GET   HTTP/1.1\r\n\r\n")), http::StatusCodeBadRequest);
   EXPECT_EQ(reqSet(RawChars("GET ?a=b HTTP/1.1\r\n\r\n")), http::StatusCodeBadRequest);
