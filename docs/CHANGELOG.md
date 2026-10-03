@@ -4,6 +4,8 @@ All notable changes to aeronet are documented in this file.
 
 ## Unreleased
 
+## [1.6.0] - 2026-10-03
+
 ### 1.6.0 Breaking changes
 
 - **`HttpMessage` header and trailer names are now stored in lower-case**: this applies to `HttpRequest`, `HttpResponse`, `HttpResponseWriter`, received client responses, flat views, iterators and HTTP/1.x serialization. All APIs taking one header or trailer name (`hasHeader`, `headerValue*`, `headerAddLine`, `header`, `headerAppendValue`, `headerRemove*`, `hasTrailer`, `trailerValue*`, `trailerAddLine`) now take `LowerAsciiKey`, so uppercase literals fail to compile and dynamic keys must be normalized before wrapping. Preserving title-case field names on HTTP/1.x is no longer supported; lower-case field names are valid in HTTP/1.x and required by HTTP/2. Empty header names are also enforced the same way.
