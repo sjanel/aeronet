@@ -110,10 +110,10 @@ inline constexpr uint32_t kMaxWindowSize = (1U << 31U) - 1U;  // Maximum flow co
 
 // HTTP/2 Stream States (RFC 9113 §5.1)
 // ====================================
+// The "reserved (local)" and "reserved (remote)" states only exist for server push, which aeronet does not
+// implement (SETTINGS_ENABLE_PUSH is always advertised as 0, and PUSH_PROMISE is a connection error).
 enum class StreamState : uint8_t {
   Idle,              // Stream not yet opened
-  ReservedLocal,     // Reserved (local) for server push
-  ReservedRemote,    // Reserved (remote) for server push
   Open,              // Stream is active
   HalfClosedLocal,   // Local side closed (sent END_STREAM)
   HalfClosedRemote,  // Remote side closed (received END_STREAM)

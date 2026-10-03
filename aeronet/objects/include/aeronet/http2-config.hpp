@@ -26,6 +26,7 @@ struct Http2Config {
     return *this;
   }
 
+  /// Deprecated: no effect, see enablePush.
   Http2Config& withEnablePush(bool on) {
     enablePush = on;
     return *this;
@@ -120,9 +121,9 @@ struct Http2Config {
   /// Default: true.
   bool enable{true};
 
-  /// SETTINGS_ENABLE_PUSH (0x2): Whether server push is enabled.
-  /// Modern clients rarely use push, so it's disabled by default.
-  /// Does not make sense for a client to enable push - this is a server-side setting.
+  /// Deprecated, ignored: server push is not supported. SETTINGS_ENABLE_PUSH (0x2) is always advertised as 0, by
+  /// servers (RFC 9113 §6.5.2 forbids them to send 1, clients reject it with a connection error) and by clients.
+  /// Kept so that existing code and configuration files still compile and load.
   /// Default: false.
   bool enablePush{false};
 

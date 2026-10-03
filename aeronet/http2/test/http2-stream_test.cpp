@@ -269,47 +269,6 @@ TEST(Http2Stream, InvalidTransition_RecvHeadersOnClosed) {
 }
 
 // ============================
-// PUSH_PROMISE Transitions
-// ============================
-
-TEST(Http2Stream, SendPushPromiseAllowedOnOpenAndHalfClosedRemote) {
-  Http2Stream openStream(1, kDefaultInitialWindowSize);
-  ASSERT_EQ(openStream.onRecvHeaders(false), ErrorCode::NoError);
-  ASSERT_EQ(openStream.state(), StreamState::Open);
-  EXPECT_EQ(openStream.onSendPushPromise(), ErrorCode::NoError);
-
-  Http2Stream halfClosedRemoteStream(1, kDefaultInitialWindowSize);
-  ASSERT_EQ(halfClosedRemoteStream.onRecvHeaders(true), ErrorCode::NoError);
-  ASSERT_EQ(halfClosedRemoteStream.state(), StreamState::HalfClosedRemote);
-  EXPECT_EQ(halfClosedRemoteStream.onSendPushPromise(), ErrorCode::NoError);
-}
-
-TEST(Http2Stream, SendPushPromiseInvalidStateReturnsProtocolError) {
-  Http2Stream stream(1, kDefaultInitialWindowSize);
-  ASSERT_EQ(stream.state(), StreamState::Idle);
-  EXPECT_EQ(stream.onSendPushPromise(), ErrorCode::ProtocolError);
-}
-
-TEST(Http2Stream, RecvPushPromiseAllowedOnOpenAndHalfClosedLocal) {
-  Http2Stream openStream(1, kDefaultInitialWindowSize);
-  ASSERT_EQ(openStream.onRecvHeaders(false), ErrorCode::NoError);
-  ASSERT_EQ(openStream.state(), StreamState::Open);
-  EXPECT_EQ(openStream.onRecvPushPromise(), ErrorCode::NoError);
-
-  Http2Stream halfClosedLocalStream(1, kDefaultInitialWindowSize);
-  ASSERT_EQ(halfClosedLocalStream.onSendHeaders(true), ErrorCode::NoError);
-  ASSERT_EQ(halfClosedLocalStream.state(), StreamState::HalfClosedLocal);
-  EXPECT_EQ(halfClosedLocalStream.onRecvPushPromise(), ErrorCode::NoError);
-}
-
-TEST(Http2Stream, RecvPushPromiseInvalidStateReturnsProtocolError) {
-  Http2Stream stream(1, kDefaultInitialWindowSize);
-  stream.onRecvRstStream();
-  ASSERT_EQ(stream.state(), StreamState::Closed);
-  EXPECT_EQ(stream.onRecvPushPromise(), ErrorCode::ProtocolError);
-}
-
-// ============================
 // Flow Control Tests
 // ============================
 

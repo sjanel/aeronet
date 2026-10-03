@@ -47,14 +47,11 @@ void HttpClientConfig::validate() const {
 
   retry.validate();
 
-  if (httpVersion != HttpVersionMode::Http1_1) {
 #ifdef AERONET_ENABLE_HTTP2
+  if (httpVersion != HttpVersionMode::Http1_1) {
     http2.validate();
-#endif
-    if (http2.enablePush) {
-      throw std::invalid_argument("HTTP/2 client cannot enable server push");
-    }
   }
+#endif
   if (cache.enabled()) {
     if (cache.maxEntries == 0) {
       throw std::invalid_argument("cache.maxEntries must be at least 1 when the response cache is enabled");
