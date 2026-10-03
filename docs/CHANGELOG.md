@@ -20,6 +20,7 @@ All notable changes to aeronet are documented in this file.
 - **`InMemoryTokenBucketRateLimitStore` has no default constructor anymore**: it takes its number of lock shards, `explicit InMemoryTokenBucketRateLimitStore(uint8_t nbShards)`.
 - **`CorsPolicy::PreflightResult::response` is now a `std::optional<HttpResponse>`**: it only holds the `204 No Content` preflight response when the status is `Allowed`, instead of always holding a response.
 - **TLS contexts now require TLS 1.2 or newer by default**: when `TLSConfig::minVersion` is not set, TLS 1.0 and 1.1 handshakes are refused. Set `minVersion` explicitly to accept older clients.
+- **HTTP methods are now case-sensitive** (RFC 9110 §9.1): HTTP/1.x request methods and `Access-Control-Request-Method` values must be spelled exactly (`GET`, not `get` or `GeT`), as HTTP/2 `:method` already had to. Other spellings are unknown methods, answered with `501 Not Implemented` (and a denied CORS preflight). Accepting them allowed bypassing intermediary rules written for the exact method name, a proxy forwarding `delete` untouched while only filtering `DELETE`.
 
 ### 1.6.0 Bug Fixes
 

@@ -508,6 +508,25 @@ TEST_F(CorsPolicyTest, PreflightUnknownMethodTokenIsDenied) {
   EXPECT_EQ(result.status, CorsPolicy::PreflightResult::Status::MethodDenied);
 }
 
+// Methods are case-sensitive (RFC 9110 §9.1, and byte-case-sensitive in the Fetch CORS check): "delete" is not an
+// allowed "DELETE".
+TEST_F(CorsPolicyTest, PreflightMethodTokenIsCaseSensitive) {
+  policy.allowAnyOrigin().allowMethods(http::Method::DELETE);
+
+  for (std::string_view method : {"delete", "Delete", "DELETe"}) {
+    std::string extraHeaders("Origin: https://any\r\nAccess-Control-Request-Method: ");
+    extraHeaders.append(method).append("\r\n");
+    ASSERT_EQ(parse(BuildRawHttp11(http::OPTIONS, "/files", extraHeaders)), http::StatusCodeOK);
+    EXPECT_EQ(policy.handlePreflight(request).status, CorsPolicy::PreflightResult::Status::MethodDenied) << method;
+  }
+
+  ASSERT_EQ(parse(BuildRawHttp11(http::OPTIONS, "/files",
+                                 "Origin: https://any\r\n"
+                                 "Access-Control-Request-Method: DELETE\r\n")),
+            http::StatusCodeOK);
+  EXPECT_EQ(policy.handlePreflight(request).status, CorsPolicy::PreflightResult::Status::Allowed);
+}
+
 TEST_F(CorsPolicyTest, RequestHeadersEmptyAfterTrimChecksEmptyAllowedList) {
   // leave allowed list empty
   policy.allowOrigin("https://hdrs.example");

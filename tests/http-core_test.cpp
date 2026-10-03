@@ -603,29 +603,27 @@ TEST(HttpMalformed, BadChunkExtensionHex) {
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 400"));
 }
 
-TEST(HttpMethodParsing, AcceptsCaseInsensitiveMethodTokens) {
-  // Ensure the server accepts method tokens in mixed case (robustness per RFC 9110 §2.5).
+// RFC 9110 §9.1: the method token is case-sensitive. A method in another case is an unknown method (501), so that a
+// request cannot bypass an intermediary rule written for the exact method name (e.g. "delete" vs "DELETE").
+TEST(HttpMethodParsing, MethodTokensAreCaseSensitive) {
   ts.router().setDefault([](const HttpRequestView& req) {
     HttpResponse resp;
-    // Echo the canonical method name (parser maps mixed-case to enum).
     resp.body(std::string("method=") + std::string(http::MethodToStr(req.method())));
     return resp;
   });
 
-  // Representative variants for common methods.
   static constexpr std::pair<std::string_view, std::string_view> cases[]{
-      {"GET /ci HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n", "GET"},
-      {"get /ci HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n", "GET"},
-      {"GeT /ci HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n", "GET"},
-      {"POST /ci HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n", "POST"},
-      {"pOsT /ci HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n", "POST"},
+      {"GET /ci HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n", "HTTP/1.1 200"},
+      {"POST /ci HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n", "HTTP/1.1 200"},
+      {"get /ci HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n", "HTTP/1.1 501"},
+      {"GeT /ci HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n", "HTTP/1.1 501"},
+      {"pOsT /ci HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n", "HTTP/1.1 501"},
+      {"delete /ci HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n", "HTTP/1.1 501"},
   };
 
-  for (const auto& pair : cases) {
-    std::string resp = sendRaw(pair.first);
-    // Response should be 200 and include the method echoed in the body.
-    EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << "Resp=" << resp;
-    EXPECT_TRUE(resp.contains(std::string("method=") + std::string(pair.second))) << "Resp=" << resp;
+  for (const auto& [request, expectedStatusLine] : cases) {
+    std::string resp = sendRaw(request);
+    EXPECT_TRUE(resp.starts_with(expectedStatusLine)) << "Req=" << request << "Resp=" << resp;
   }
 }
 
