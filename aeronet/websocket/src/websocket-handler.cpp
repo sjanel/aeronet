@@ -513,7 +513,7 @@ bool WebSocketHandler::drainOutputBuffer(HttpMessageData& dest) {
   }
   // Fall back to copy path (partial drain or non-empty dest).
   auto pending = getPendingOutput();
-  dest.append(reinterpret_cast<const char*>(pending.data()), pending.size());
+  dest.append(std::string_view(reinterpret_cast<const char*>(pending.data()), pending.size()));
   onOutputWritten(pending.size());
   return true;
 }

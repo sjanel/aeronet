@@ -700,16 +700,16 @@ class HttpRequest final : public HttpMessage {
   [[nodiscard]] HttpRequest finalizeTrailersForHttp11(std::size_t minCapturedBodySize) const {
     HttpRequest copy = *this;
     // req is never mutated by finalizeForHttp1 (only its clone is), so a fresh clone can't already be chunked.
-    assert(!std::string_view(copy._data).ends_with("\r\n0\r\n"));
+    assert(!std::string_view(_data.data(), wireDataSize()).ends_with("\r\n0\r\n"));
     copy.finalizeForHttp1(http::HTTP_1_1, copy._opts, nullptr, minCapturedBodySize);
     return copy;
   }
 
   [[nodiscard]] std::string_view completeRequestForHttp11() const {
-    return {_data.data() + _originKeyLen, _data.end()};
+    return {_data.data() + _originKeyLen, wireDataSize() - _originKeyLen};
   }
 
-  [[nodiscard]] std::string_view capturedPayloadForHttp11() const noexcept { return _payloadVariant.view(); }
+  [[nodiscard]] std::string_view capturedPayloadForHttp11() const noexcept { return getHttpPayload()->view(); }
 
   // URL data - will be set at construction time and cannot be modified.
   uint16_t _hostLen;       // length of host

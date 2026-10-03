@@ -1456,10 +1456,10 @@ bool SingleHttpServer::handleExpectHeader(ConnectionIt cnxIt, std::string_view e
 
           switch (status) {
             case 100:
-              queueData(cnxIt, HttpMessageData(http::HTTP11_100_CONTINUE));
+              queueData(cnxIt, HttpMessageData(RawChars{http::HTTP11_100_CONTINUE}));
               break;
             case 102:
-              queueData(cnxIt, HttpMessageData(http::HTTP11_102_PROCESSING));
+              queueData(cnxIt, HttpMessageData(RawChars{http::HTTP11_102_PROCESSING}));
               break;
             default: {
               static constexpr std::string_view kHttpResponseLinePrefix = "HTTP/1.1 ";
