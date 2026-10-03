@@ -207,6 +207,72 @@ TEST(HttpParserErrors, ChunkIncrementalFuzz) {
   ASSERT_TRUE(resp.contains(original.substr(0, 3))) << resp;  // sanity partial check
 }
 
+// HTTP Garden server #17: an empty chunk size is not a last-chunk.
+TEST(HttpParserErrors, EmptyChunkSizeIsRejected) {
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
+  for (std::string_view chunks : {"\r\n\r\n", ";ext\r\n\r\n"}) {
+    std::string req("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n");
+    req.append(chunks);
+    const std::string resp = test::sendAndCollect(port, req);
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
+    EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp;
+  }
+}
+
+// A parser accepting a bare LF as chunk line terminator (HTTP Garden transducer #13) reads "2;\nxx\r\nab\r\n" as a
+// 2-byte chunk "xx" followed by a 0xab-byte chunk, while a server skipping the chunk extension up to the CRLF reads it
+// as a 2-byte chunk "ab": the two disagree on where the body ends. Control characters in a chunk-ext are refused.
+TEST(HttpParserErrors, ControlCharactersInChunkExtensionAreRejected) {
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
+  std::string nulInExtension("1;a");
+  nulInExtension.push_back('\0');
+  nulInExtension.append("\r\nZ\r\n0\r\n\r\n");
+  for (std::string_view chunks : {std::string_view("2;\nxx\r\nab\r\n0\r\n\r\n"), std::string_view(nulInExtension)}) {
+    std::string req("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n");
+    req.append(chunks);
+    const std::string resp = test::sendAndCollect(port, req);
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
+    EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp;
+  }
+}
+
+// A chunk size overflowing 64 bits must not wrap around to a small value (a wrapped 0 would end the body early and let
+// the remaining bytes be parsed as a smuggled request). Only reachable when maxBodyBytes is (nearly) unbounded.
+TEST(HttpParserErrors, ChunkSizeOverflowIsRejected) {
+  HttpServerConfig cfg;
+  cfg.withMaxBodyBytes(SIZE_MAX);
+  test::TestServer unboundedServer(std::move(cfg));
+  unboundedServer.router().setDefault([](const HttpRequestView& req) { return req.makeResponse(req.path()); });
+
+  for (std::string_view chunkSize :
+       {"10000000000000000", "10000000000000001", "FFFFFFFFFFFFFFFF", "FFFFFFFFFFFFFFFE"}) {
+    SCOPED_TRACE(chunkSize);
+    std::string req("POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n");
+    req.append(chunkSize).append("\r\n\r\nGET /smuggled HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n");
+
+    test::ClientConnection conn(unboundedServer.port());
+    test::sendAll(conn.fd(), req);
+    const std::string resp = test::recvWithTimeout(conn.fd(), 300ms);
+    EXPECT_FALSE(resp.contains("/smuggled")) << resp;
+    EXPECT_FALSE(resp.starts_with("HTTP/1.1 200")) << resp;
+  }
+}
+
+// Same for a fixed-length body: headSpanSize + Content-Length must not wrap around.
+TEST(HttpParserErrors, ContentLengthNearSizeMaxDoesNotWrap) {
+  HttpServerConfig cfg;
+  cfg.withMaxBodyBytes(SIZE_MAX);
+  test::TestServer unboundedServer(std::move(cfg));
+  unboundedServer.router().setDefault(
+      [](const HttpRequestView& req) { return req.makeResponse(std::to_string(req.body().size())); });
+
+  test::ClientConnection conn(unboundedServer.port());
+  test::sendAll(conn.fd(), "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 18446744073709551615\r\n\r\nabc");
+  // The body can never be complete: the server must keep waiting instead of exposing an out-of-bounds body.
+  const std::string resp = test::recvWithTimeout(conn.fd(), 200ms);
+  EXPECT_TRUE(resp.empty()) << resp;
+}
+
 // =============================================================================
 // connection-manager.cpp error paths
 // =============================================================================

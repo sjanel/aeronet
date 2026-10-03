@@ -908,7 +908,7 @@ Chunk extensions allow metadata to be attached to individual chunks via semicolo
 <size-hex>;<extension-name>[=<extension-value>]
 ```
 
-**aeronet behavior**: Chunk extensions are **parsed and silently ignored**. The parser validates their syntax (presence of semicolon) but does not expose or process the extension data. This follows the RFC's guidance that chunk extensions are primarily for protocol extensions and should not affect basic message processing.
+**aeronet behavior**: Chunk extensions are **parsed and silently ignored**. The parser validates their syntax (presence of semicolon, no control characters such as a bare LF) but does not expose or process the extension data. This follows the RFC's guidance that chunk extensions are primarily for protocol extensions and should not affect basic message processing.
 
 Example (extension ignored but accepted):
 
@@ -1010,6 +1010,7 @@ cfg.maxHeaderBytes = 8 * 1024;           // Limit trailer header section size
 - Total body (all decoded chunks) is bounded by `maxBodyBytes`
 - Forbidden trailer headers are rejected to prevent request smuggling attacks
 - Chunk extensions are parsed but ignored to avoid complexity attacks
+- Chunk sizes are strict `1*HEXDIG`: empty sizes, `0x` / `+` / `-` prefixes, whitespace and sizes overflowing 64 bits are rejected, as are bare CR / LF in chunk lines. Every framing error closes the connection, so the following bytes are never parsed as another request
 
 ### Outbound Trailers (Response Trailers)
 
