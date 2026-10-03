@@ -1179,7 +1179,7 @@ Comprehensive test coverage includes:
 
 Handlers normally rely on automatic policy; unrecoverable errors escalate to Immediate.
 
-Keep-alive can be disabled globally by `cfg.withKeepAliveMode(false)`; per-request `Connection: close` or `Connection: keep-alive` headers are also honored (HTTP/1.1 default keep-alive, HTTP/1.0 requires explicit header).
+Keep-alive can be disabled globally by `cfg.withKeepAliveMode(false)`; per-request `Connection: close` or `Connection: keep-alive` headers are also honored (HTTP/1.1 default keep-alive, HTTP/1.0 requires explicit header). `Connection` is a list of connection options (RFC 9110 §7.6.1): `close` wins wherever it appears in the list (e.g. `Connection: keep-alive, close`, or several `Connection` lines), and an HTTP/1.0 connection persists only if `keep-alive` is one of the options (see [http-core_test.cpp](../tests/http-core_test.cpp) `HttpKeepAlive.CloseOptionInConnectionListClosesConnection`, `HttpKeepAlive10.KeepAliveOptionInConnectionList`).
 
 ### CloseMode Details
 

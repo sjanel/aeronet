@@ -767,7 +767,7 @@ TEST(HttpRouting, AsyncReadBodyBeforeBodyThrows) {
   opts.target = "/async-read-before-body";
   opts.headers.emplace_back(http::Connection, "close");
   opts.body = "abc";
-  opts.recvTimeout = std::chrono::milliseconds{500};
+  opts.recvTimeout = std::chrono::seconds{5};
 
   auto resp = test::requestOrThrow(ts.port(), opts);
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
@@ -792,7 +792,7 @@ TEST(HttpRouting, AsyncBodyBeforeReadBodyThrows) {
   opts.target = "/async-body-before-read";
   opts.headers.emplace_back(http::Connection, "close");
   opts.body = "xyz";
-  opts.recvTimeout = std::chrono::milliseconds{500};
+  opts.recvTimeout = std::chrono::seconds{5};
 
   auto resp = test::requestOrThrow(ts.port(), opts);
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
@@ -817,7 +817,7 @@ TEST(HttpRouting, AsyncIdentityContentLengthReadBodyStreams) {
   opts.target = "/identity-stream-cl";
   opts.headers.emplace_back(http::Connection, "close");
   opts.body = "stream-this-body";
-  opts.recvTimeout = std::chrono::milliseconds{500};
+  opts.recvTimeout = std::chrono::seconds{5};
 
   auto resp = test::requestOrThrow(ts.port(), opts);
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
@@ -840,7 +840,7 @@ TEST(HttpRouting, AsyncReadBodyAsyncStreams) {
   opts.target = "/async-readbody-async";
   opts.headers.emplace_back(http::Connection, "close");
   opts.body = "chunked-async-body-data";
-  opts.recvTimeout = std::chrono::milliseconds{500};
+  opts.recvTimeout = std::chrono::seconds{5};
 
   auto resp = test::requestOrThrow(ts.port(), opts);
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;

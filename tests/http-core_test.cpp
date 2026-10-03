@@ -567,6 +567,51 @@ TEST(HttpKeepAlive10, OptInWithHeader) {
   ASSERT_TRUE(second.contains(MakeHttp1HeaderLine(http::Connection, http::keepalive)));
 }
 
+// RFC 9112 §9.3: an HTTP/1.0 connection persists only with the keep-alive option, wherever it is in the Connection
+// list.
+TEST(HttpKeepAlive10, KeepAliveOptionInConnectionList) {
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("ok"); });
+  {
+    test::ClientConnection clientConnection(port);
+    NativeHandle fd = clientConnection.fd();
+    test::sendAll(fd, "GET /h HTTP/1.0\r\nhost: x\r\nconnection: x-option, Keep-Alive\r\n\r\n");
+    std::string resp = test::recvWithTimeout(fd);
+    EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, http::keepalive))) << resp;
+    test::sendAll(fd, "GET /h2 HTTP/1.0\r\nhost: x\r\n\r\n");
+    resp = test::recvUntilClosed(fd);
+    EXPECT_TRUE(resp.ends_with("ok")) << resp;
+  }
+  {
+    // Other connection options do not make an HTTP/1.0 connection persistent.
+    test::ClientConnection clientConnection(port);
+    NativeHandle fd = clientConnection.fd();
+    test::sendAll(fd, "GET /h HTTP/1.0\r\nhost: x\r\nconnection: x-option\r\n\r\n");
+    const std::string resp = test::recvUntilClosed(fd);
+    EXPECT_TRUE(resp.ends_with("ok")) << resp;
+    EXPECT_FALSE(resp.contains("connection:")) << resp;
+  }
+}
+
+// RFC 9110 §7.6.1: the close option closes the connection wherever it is in the Connection list, including when the
+// request repeats the Connection header line (merged into a single "close,close" list).
+TEST(HttpKeepAlive, CloseOptionInConnectionListClosesConnection) {
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("ok"); });
+  for (std::string_view connectionLines :
+       {"connection: keep-alive, close\r\n", "connection: close\r\nconnection: close\r\n"}) {
+    SCOPED_TRACE(connectionLines);
+    test::ClientConnection clientConnection(port);
+    NativeHandle fd = clientConnection.fd();
+    std::string req("GET /c HTTP/1.1\r\nhost: x\r\n");
+    req.append(connectionLines).append(http::CRLF);
+    test::sendAll(fd, req);
+    const std::string resp = test::recvWithTimeout(fd);
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+    EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << resp;
+    // Closed right after the response, well before the keep-alive timeout.
+    EXPECT_TRUE(test::WaitForPeerClose(fd, 2s));
+  }
+}
+
 namespace {
 std::string sendRaw(std::string_view raw) {
   test::ClientConnection clientConnection(port);
