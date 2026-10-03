@@ -1365,7 +1365,7 @@ By default, it contains a `server: aeronet` header unless you explicitly clear i
 - Query left raw; per-key/value decode on iteration (`queryParams()`).
 - `+` converted to space only in query pairs.
 - Missing `=` ⇒ empty value; duplicates preserved.
-- Malformed escapes in query components surfaced literally (non-fatal).
+- Malformed escapes in query components surfaced literally (non-fatal), as are `%00` and `%1F` (internal separators of decoded parameters).
 
 Example:
 

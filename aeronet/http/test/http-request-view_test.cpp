@@ -758,6 +758,23 @@ TEST_F(HttpRequestViewTest, QueryParamsRangeDuplicateKeysPreservedOrder) {
   EXPECT_TRUE(defIt == decltype(req.queryParamsRange().begin()){});
 }
 
+// Decoded query parameters are internally delimited with url::kNewPairSep / url::kNewKeyValueSep: these bytes must not
+// be produced by the decoding, otherwise a single parameter could be read as several.
+TEST_F(HttpRequestViewTest, QueryParamsCannotInjectSeparators) {
+  auto st = reqSet(BuildRaw("GET", "/p?a=1%00admin%1Ftrue&b%1Fc%00d=2"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+  vector<http::HeaderView> seen;
+  for (auto [key, val] : req.queryParamsRange()) {
+    seen.emplace_back(key, val);
+  }
+  ASSERT_EQ(seen.size(), 2U);
+  EXPECT_EQ(seen[0].name, "a");
+  EXPECT_EQ(seen[0].value, "1%00admin%1Ftrue");
+  EXPECT_EQ(seen[1].name, "b%1Fc%00d");
+  EXPECT_EQ(seen[1].value, "2");
+  EXPECT_FALSE(req.queryParams().contains("admin"));
+}
+
 TEST_F(HttpRequestViewTest, InvalidPathEscapeCauses400) {
   auto st = reqSet(BuildRaw("GET", "/bad%zz"));
   EXPECT_EQ(st, http::StatusCodeBadRequest);
