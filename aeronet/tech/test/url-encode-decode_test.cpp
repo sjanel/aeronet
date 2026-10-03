@@ -157,6 +157,29 @@ TEST(UrlEncodeDecode, InPlaceInvalid) {
   EXPECT_EQ(last, nullptr);
 }
 
+TEST(UrlEncodeDecode, InPlaceDecodesSeparatorBytesOutsideOfQueryParams) {
+  RawChars inputStr("a%00b%1Fc");
+  char* last = url::DecodeInPlace(inputStr.begin(), inputStr.end());
+  ASSERT_NE(last, nullptr);
+  EXPECT_EQ(std::string_view(inputStr.data(), last), std::string_view("a\0b\x1F"
+                                                                      "c",
+                                                                      5));
+}
+
+// The query parameter separators produced by DecodeQueryParamsInPlace cannot come from percent-decoding.
+TEST(UrlEncodeDecode, QueryParamsDoNotDecodeSeparatorBytes) {
+  RawChars inputStr("a=1%00b%1F2&c%1f=%2B%00");
+  char* last = url::DecodeQueryParamsInPlace(inputStr.begin(), inputStr.end());
+  std::string expected("a");
+  expected.push_back(url::kNewKeyValueSep);
+  expected.append("1%00b%1F2");
+  expected.push_back(url::kNewPairSep);
+  expected.append("c%1f");
+  expected.push_back(url::kNewKeyValueSep);
+  expected.append("+%00");
+  EXPECT_EQ(std::string_view(inputStr.data(), last), expected);
+}
+
 TEST(UrlEncodeDecode, InPlaceUTF8) {
   RawChars original("\xE2\x98\x83");  // snowman
   // Encode it using existing encoder predicate (will encode all non-unreserved)
