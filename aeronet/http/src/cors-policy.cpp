@@ -87,7 +87,7 @@ CorsPolicy& CorsPolicy::allowAnyRequestHeaders() {
 CorsPolicy& CorsPolicy::allowRequestHeader(std::string_view header) {
   _active = true;
   header = TrimOws(header);
-  if (!header.empty() && !_allowedRequestHeaders.contains(header)) {
+  if (!header.empty() && !_allowedRequestHeaders.containsCI(header)) {
     _allowedRequestHeaders.append(header);
   }
   return *this;
@@ -96,7 +96,7 @@ CorsPolicy& CorsPolicy::allowRequestHeader(std::string_view header) {
 CorsPolicy& CorsPolicy::exposeHeader(std::string_view header) {
   _active = true;
   header = TrimOws(header);
-  if (!header.empty() && !_exposedHeaders.contains(header)) {
+  if (!header.empty() && !_exposedHeaders.containsCI(header)) {
     _exposedHeaders.append(header);
   }
   return *this;
@@ -256,7 +256,8 @@ bool CorsPolicy::requestHeadersAllowed(std::string_view headerList) const {
     if (token.empty()) {
       continue;
     }
-    if (!_allowedRequestHeaders.contains(token)) {
+    // Header names are case-insensitive, and browsers send them lower-cased in Access-Control-Request-Headers.
+    if (!_allowedRequestHeaders.containsCI(token)) {
       return false;
     }
   } while (!headerList.empty());
