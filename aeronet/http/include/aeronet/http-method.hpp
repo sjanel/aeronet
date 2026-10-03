@@ -17,7 +17,7 @@ using MethodBmp = uint16_t;
 #endif
 
 // GET/POST dominate real traffic; PATCH/CONNECT/TRACE are rare. Ordering
-// matters here because kMethodUpperCodes.codes is scanned linearly.
+// matters here because the HTTP/1 request line parser scans the method codes linearly.
 enum class Method : MethodBmp {
   GET = 1 << 0,
   POST = 1 << 1,
