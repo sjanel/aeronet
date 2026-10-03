@@ -14,6 +14,7 @@
 
 #include "aeronet/city-hash.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/is-header-whitespace.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
@@ -343,6 +344,42 @@ TEST(HpackDecoder, RejectsNulInValue) {
 
   EXPECT_FALSE(result.isSuccess());
   EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::MalformedFieldValue);
+}
+
+// RFC 9113 §8.2.1: a field value must not start or end with SP or HTAB. Such a value would be silently altered when
+// translated to HTTP/1.1 (HTTP Garden "bonus bonus" bug #1: whitespace not stripped in HTTP/2 to HTTP/1.1 downgrades).
+TEST(HpackDecoder, RejectsLeadingOrTrailingWhitespaceInValue) {
+  for (std::string_view value : {"\ta\t", " a", "a ", "\ta", "a\t", " ", "\t"}) {
+    HpackEncoder encoder(4096);
+    auto decoder = CreateHpackDecoder();
+    RawBytes encoded;
+    encoder.encode(encoded, "test1", value);
+
+    const auto result = decoder.decode(encoded);
+
+    EXPECT_FALSE(result.isSuccess()) << '[' << value << ']';
+    EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::MalformedFieldValue) << '[' << value << ']';
+  }
+  // pseudo-header values are field values too
+  {
+    HpackEncoder encoder(4096);
+    auto decoder = CreateHpackDecoder();
+    RawBytes encoded;
+    encoder.encode(encoded, ":path", "/ ");
+    EXPECT_EQ(decoder.decode(encoded).error, HpackDecoder::DecodeResult::Error::MalformedFieldValue);
+  }
+  // inner whitespace and empty values are fine
+  for (std::string_view value : {"a b", "a\tb", ""}) {
+    HpackEncoder encoder(4096);
+    auto decoder = CreateHpackDecoder();
+    RawBytes encoded;
+    encoder.encode(encoded, "test1", value);
+
+    const auto result = decoder.decode(encoded);
+
+    ASSERT_TRUE(result.isSuccess()) << '[' << value << ']';
+    EXPECT_EQ(result.decodedHeaders.find("test1")->second, value);
+  }
 }
 
 TEST(HpackDecoder, AcceptsPseudoHeaderViaFullIndex) {
@@ -1464,7 +1501,12 @@ TEST(HpackHuffman, RoundTripsEveryPaddingRemainder) {
 TEST(HpackHuffman, RoundTripsEveryByteValue) {
   // Covers all 257 code lengths, including the 9..30 bit codes that bypass the fast table.
   for (int ch = 0; ch < 256; ++ch) {
-    const std::string value(4, static_cast<char>(ch));
+    std::string value(4, static_cast<char>(ch));
+    if (http::IsHeaderWhitespace(static_cast<char>(ch))) {
+      // A field value cannot start or end with whitespace (RFC 9113 §8.2.1): keep them inside the value.
+      value.insert(value.begin(), 'a');
+      value.push_back('a');
+    }
 
     if (ch == '\0' || ch == '\n' || ch == '\r') {
       // NUL, LF and CR are legal Huffman symbols - LF and CR in fact carry the
