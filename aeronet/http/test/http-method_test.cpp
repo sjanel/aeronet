@@ -106,16 +106,17 @@ TEST(HttpMethod, AllMethodsStringLengthMatchesSum) {
   EXPECT_EQ(sum, aeronet::http::kAllMethodsStrLen);
 }
 
-TEST(HttpMethodParse, ParsesTokensCaseInsensitive) {
+// RFC 9110 §9.1: the method token is case-sensitive.
+TEST(HttpMethodParse, ParsesTokensCaseSensitive) {
   for (const auto& methodCase : kMethodCases) {
     const auto canonical = ParseMethodStr(methodCase.token);
     EXPECT_EQ(canonical, methodCase.method);
 
     const auto lower = ParseMethodStr(ToLower(methodCase.token));
-    EXPECT_EQ(lower, methodCase.method);
+    EXPECT_EQ(lower, aeronet::http::kMethodInvalid) << ToLower(methodCase.token);
 
     const auto mixed = ParseMethodStr(AlternateCase(methodCase.token));
-    EXPECT_EQ(mixed, methodCase.method);
+    EXPECT_EQ(mixed, aeronet::http::kMethodInvalid) << AlternateCase(methodCase.token);
   }
 }
 

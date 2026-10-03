@@ -613,6 +613,22 @@ TEST_F(HttpRequestViewTest, InvalidMethod) {
   EXPECT_EQ(reqSet(RawChars("GETA / HTTP/1.1\r\n\r\n")), http::StatusCodeNotImplemented);
 }
 
+// RFC 9110 §9.1: the method token is case-sensitive.
+TEST_F(HttpRequestViewTest, MethodIsCaseSensitive) {
+  for (std::string_view method : {"get", "Get", "gET", "post", "Head", "delete", "OPTIONs", "connect", "pAtCh"}) {
+    EXPECT_EQ(reqSet(BuildRaw(method, "/")), http::StatusCodeNotImplemented) << method;
+  }
+  for (std::string_view method : {"GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH", "TRACE"}) {
+    ASSERT_EQ(reqSet(BuildRaw(method, "/")), http::StatusCodeOK) << method;
+    EXPECT_EQ(http::MethodToStr(req.method()), method);
+  }
+}
+
+TEST_F(HttpRequestViewTest, EmptyMethodIsRejected) {
+  EXPECT_EQ(reqSet(BuildRaw("", "/")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(RawChars("  GET / HTTP/1.1\r\nHost: h\r\n\r\n")), http::StatusCodeBadRequest);
+}
+
 TEST_F(HttpRequestViewTest, InvalidPath) {
   EXPECT_EQ(reqSet(RawChars("GET   HTTP/1.1\r\n\r\n")), http::StatusCodeBadRequest);
   EXPECT_EQ(reqSet(RawChars("GET ?a=b HTTP/1.1\r\n\r\n")), http::StatusCodeBadRequest);

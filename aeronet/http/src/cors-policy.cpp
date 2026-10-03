@@ -237,6 +237,9 @@ bool CorsPolicy::methodAllowed(std::string_view methodToken, http::MethodBmp rou
   if (effectiveMask == 0) {
     return false;
   }
+  // Unlike header names, methods are case-sensitive (RFC 9110 §9.1), and the Fetch CORS check compares them exactly:
+  // a browser sends `patch` as is (only DELETE, GET, HEAD, OPTIONS, POST and PUT are normalized to upper case), and the
+  // actual `patch` request would be rejected anyway.
   const auto method = http::ParseMethodStr(methodToken);
   if (method != http::kMethodInvalid) {
     return http::IsMethodSet(effectiveMask, method);

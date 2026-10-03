@@ -228,15 +228,15 @@ constexpr uint64_t SwarFindByte(uint64_t word, uint8_t needle) {
   return (diff - kLoBits) & ~diff & kHiBits;
 }
 
-struct MethodUpperCodes {
+struct MethodCodes {
   uint64_t codes[http::kNbMethods];
 };
 
-constexpr MethodUpperCodes kMethodUpperCodes = [] {
-  MethodUpperCodes codes{};
+constexpr MethodCodes kMethodCodes = [] {
+  MethodCodes codes{};
 
-  // Packs a literal (<= 8 chars) into a little-endian uint64_t, letters forced uppercase.
-  constexpr auto packUpper = [](http::MethodIdx methodIdx) {
+  // Packs a literal (<= 8 chars) into a uint64_t, as a memcpy of its bytes would on this platform.
+  constexpr auto pack = [](http::MethodIdx methodIdx) {
     uint64_t word = 0;
 
     // Bit-shift for the i-th memory byte (i=0 == first[0]) inside a uint64_t
@@ -250,13 +250,13 @@ constexpr MethodUpperCodes kMethodUpperCodes = [] {
     };
 
     for (uint8_t idx = 0; idx < http::MethodIdxToStr(methodIdx).size(); ++idx) {
-      word |= uint64_t{static_cast<uint8_t>(http::MethodIdxToStr(methodIdx)[idx]) & ~0x20U} << byteShift(idx);
+      word |= uint64_t{static_cast<uint8_t>(http::MethodIdxToStr(methodIdx)[idx])} << byteShift(idx);
     }
     return word;
   };
 
   for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
-    codes.codes[methodIdx] = packUpper(methodIdx);
+    codes.codes[methodIdx] = pack(methodIdx);
   }
   return codes;
 }();
@@ -341,14 +341,19 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
   }
 
   const auto methodLen = LeadingMatchIndex(spaceMask);
-  // Clear bit 5 of the method bytes to compare case-insensitively.
-  const uint64_t candidate = (start & 0xDFDFDFDFDFDFDFDFULL) & FirstNBytesMask(methodLen);
+  if (methodLen == 0) {
+    // request line starting with a space: empty method token
+    return http::StatusCodeBadRequest;
+  }
+  // RFC 9110 §9.1: the method token is case-sensitive ("get" is not "GET"). Matching it case-insensitively would let
+  // a request bypass an intermediary rule written for the exact method name.
+  const uint64_t candidate = start & FirstNBytesMask(methodLen);
 
-  const auto methodIt = std::ranges::find(kMethodUpperCodes.codes, candidate);
-  if (methodIt == std::end(kMethodUpperCodes.codes)) {
+  const auto methodIt = std::ranges::find(kMethodCodes.codes, candidate);
+  if (methodIt == std::end(kMethodCodes.codes)) {
     return http::StatusCodeNotImplemented;
   }
-  _method = http::MethodFromIdx(static_cast<http::MethodIdx>(methodIt - std::begin(kMethodUpperCodes.codes)));
+  _method = http::MethodFromIdx(static_cast<http::MethodIdx>(methodIt - std::begin(kMethodCodes.codes)));
 
   char* nextSep = first + methodLen;
 

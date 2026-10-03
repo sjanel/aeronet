@@ -55,7 +55,7 @@ Legend: [x] implemented, [ ] planned / not yet.
 - [x] Header field parsing (no folding / continuations)
 - [x] Case-insensitive header lookup helper
 - [x] Router path matching and allowed-method computation
-- [x] Method token parsing / matching is case-insensitive (incoming method tokens like `GET`, `get`, `GeT` are accepted and normalized)
+- [x] Method token parsing / matching is case-sensitive (RFC 9110 §9.1): `GET` is accepted, `get` or `GeT` are unknown methods answered with `501 Not Implemented`
 - [x] Pipelined sequential requests (no parallel handler execution)
 
 Where to look: see the "Core parsing & connection handling" and router sections below for details.
