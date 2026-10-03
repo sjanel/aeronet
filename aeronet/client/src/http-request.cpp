@@ -38,13 +38,23 @@ constexpr bool IsHex(unsigned char ch) noexcept {
   return (ch >= '0' && ch <= '9') || ((ch | 0x20U) >= 'a' && (ch | 0x20U) <= 'f');
 }
 
-bool IsValidRequestTarget(std::string_view target) noexcept {
-  if (target.empty()) {
-    return false;
-  }
+// Tells whether [pData, end) starts with the 2 hex digits ending a percent-escape.
+constexpr bool StartsWithHexPair(const unsigned char* pData, const unsigned char* end) noexcept {
+  return end - pData >= 2 && IsHex(pData[0]) && IsHex(pData[1]);
+}
 
-  const auto* pData = reinterpret_cast<const unsigned char*>(target.data());
-  const auto* end = pData + target.size();
+// Checks the chars of (a part of) a request-target, which may be empty.
+// If 'afterPercent' is true, 'chars' directly follows a '%' and must start with the 2 hex digits completing its escape.
+bool IsValidRequestTargetChars(std::string_view chars, bool afterPercent = false) noexcept {
+  const auto* pData = reinterpret_cast<const unsigned char*>(chars.data());
+  const auto* end = pData + chars.size();
+
+  if (afterPercent) {
+    if (!StartsWithHexPair(pData, end)) {
+      return false;
+    }
+    pData += 2;
+  }
 
   while (pData != end) {
     unsigned char ch = *pData++;
@@ -57,11 +67,7 @@ bool IsValidRequestTarget(std::string_view target) noexcept {
     }
 
     if (ch == '%') {
-      if (end - pData < 2) {
-        return false;
-      }
-
-      if (!IsHex(pData[0]) || !IsHex(pData[1])) {
+      if (!StartsWithHexPair(pData, end)) {
         return false;
       }
 
@@ -72,17 +78,25 @@ bool IsValidRequestTarget(std::string_view target) noexcept {
   return true;
 }
 
+bool IsValidRequestTarget(std::string_view target) noexcept {
+  return !target.empty() && IsValidRequestTargetChars(target);
+}
+
+// Maximum request-target length, so that the head up to the headers (origin key + request line) fits in
+// headerPosNbBits bits.
+constexpr uint32_t MaxTargetLen(uint8_t headerPosNbBits, uint32_t originKeyLen) {
+  static constexpr std::uint32_t kMaxMethodStrLen = static_cast<uint32_t>(
+      std::ranges::max_element(http::kMethodStrings, {}, [](std::string_view str) { return str.size(); })->size());
+
+  return static_cast<uint32_t>((1U << headerPosNbBits) - 1U - kMaxMethodStrLen - 2U - http::HTTP10Sv.size() -
+                               originKeyLen);
+}
+
 constexpr const char* CheckTarget(std::string_view target, uint8_t headerPosNbBits, uint32_t originKeyLen) {
   if (!IsValidRequestTarget(target)) {
     return "Invalid HTTP request target";
   }
-
-  static constexpr std::uint32_t kMaxMethodStrLen = static_cast<uint32_t>(
-      std::ranges::max_element(http::kMethodStrings, {}, [](std::string_view str) { return str.size(); })->size());
-
-  const uint32_t maxTargetLen = static_cast<uint32_t>((1U << headerPosNbBits) - 1U - kMaxMethodStrLen - 2U -
-                                                      http::HTTP10Sv.size() - originKeyLen);
-  if (target.size() > maxTargetLen) {
+  if (target.size() > MaxTargetLen(headerPosNbBits, originKeyLen)) {
     return "Request target exceeds maximum length";
   }
   return nullptr;
@@ -99,17 +113,15 @@ constexpr void CheckTargetOrThrow(std::string_view target, uint8_t headerPosNbBi
 constexpr std::size_t HttpRequestInitialSize(http::Method method, bool hasNonTlsProxy, uint8_t headerPosNbBits,
                                              uint32_t originKeyLen, std::string_view target) {
   CheckTargetOrThrow(target, headerPosNbBits, originKeyLen);
-  std::size_t sz = http::MethodToStr(method).size() + 1U;
+  std::size_t sz = http::MethodToStr(method).size() + 1U + target.size();
   if (hasNonTlsProxy) {
     // Absolute-form request-target for a cleartext proxy: "scheme://host:port" (the origin key) + origin-form.
-    sz += originKeyLen + target.size();
-  } else {
-    sz += target.size();
+    sz += originKeyLen;
   }
   return sz + 1U + http::HTTP10Sv.size() + http::DoubleCRLF.size();
 }
 
-constexpr char* AppendScheme(bool isTls, char* pData) {
+inline char* AppendScheme(bool isTls, char* pData) {
   if (isTls) {
     static constexpr std::string_view kHttps = "https://";
     pData = AppendFixed<kHttps>(pData);
@@ -338,25 +350,31 @@ HttpRequest& HttpRequest::target(std::string_view target) & {
 }
 
 const char* HttpRequest::setNewUrl(const internal::UrlParseResult& res) {
+  const auto portNbDigits = ndigits(res.port);
+  const auto schemeLen = static_cast<uint8_t>((res.isTls ? internal::kHttps : internal::kHttp).size());
+  const auto hostLen = SafeCast<decltype(_hostLen)>(res.host.size());
+  const auto originKeyLen =
+      SafeCast<decltype(_originKeyLen)>(schemeLen + kSchemeSep.size() + hostLen + 1U + portNbDigits);
+
+  // Validate before modifying anything, so that a rejected URL leaves this request unchanged.
+  const char* pErrorMsg = CheckTarget(res.target, HttpMessage::kHeaderPosNbBits, originKeyLen);
+  if (pErrorMsg != nullptr) {
+    return pErrorMsg;
+  }
+
   const auto* pHostHeaderEnd = SearchCRLF(
       _data.data() + http::CRLF.size() + headersStartPos() + http::Host.size() + http::HeaderSep.size(), _data.end());
   assert(pHostHeaderEnd != _data.end() && pHostHeaderEnd[1] == '\n');
   const auto oldHostHeaderEndPos = static_cast<uint64_t>(pHostHeaderEnd - _data.data());
 
-  const auto portNbDigits = ndigits(res.port);
   const bool hasNonTlsProxy = _opts.hasProxy() && !res.isTls;
+  // Read from the buffer with the old origin key length.
   const auto method = this->method();
   const auto methodLen = this->methodLen();
-  const auto schemeLen = static_cast<uint8_t>((res.isTls ? internal::kHttps : internal::kHttp).size());
 
-  _hostLen = SafeCast<decltype(_hostLen)>(res.host.size());
+  _hostLen = hostLen;
   _port = res.port;
-  _originKeyLen = SafeCast<decltype(_originKeyLen)>(schemeLen + kSchemeSep.size() + _hostLen + 1U + portNbDigits);
-
-  const char* pErrorMsg = CheckTarget(res.target, HttpMessage::kHeaderPosNbBits, _originKeyLen);
-  if (pErrorMsg != nullptr) {
-    return pErrorMsg;
-  }
+  _originKeyLen = originKeyLen;
 
   const bool hostIsIpv6 = res.host.contains(':');
   const auto hostHeaderSize = ComputeHostHeaderSize(res.host, hostIsIpv6, res.hasNonDefaultPort(), portNbDigits);
@@ -377,7 +395,7 @@ const char* HttpRequest::setNewUrl(const internal::UrlParseResult& res) {
   setHeadersStartPosNoCheck(static_cast<uint64_t>(pInsert - pData) - hostHeaderSize);
   adjustBodyStart(diffLen);
   _data.adjustSize(diffLen);
-  return pErrorMsg;
+  return nullptr;
 }
 
 bool HttpRequest::resolveRedirect(std::string_view location) {
@@ -401,31 +419,41 @@ bool HttpRequest::resolveRedirect(std::string_view location) {
     location = location.substr(0, hashPos);
   }
 
-  if (location.starts_with('/')) {
-    // Absolute path: keep origin, replace target.
-    target(location);
-    return true;
-  }
+  const std::string_view oldTarget = target();
+  const auto oldTargetLen = oldTarget.size();
 
-  std::string_view base = target();
-  const auto oldTargetLen = base.size();
-  if (const auto questionMarkPos = base.find('?'); questionMarkPos != std::string_view::npos) {
-    base = base.substr(0, questionMarkPos);
-  }
-
+  // Number of leading chars of the old target kept in the new one, followed by 'location'.
   uint32_t prefixLen;
 
-  if (location.starts_with('?')) {
+  if (location.starts_with('/')) {
+    // Absolute path: keep origin, replace target.
+    prefixLen = 0;
+  } else if (location.starts_with('?')) {
     // Keep the whole path and append the new query.
     prefixLen = static_cast<uint32_t>(oldTargetLen);
   } else {
     // Keep only the directory (including the trailing '/').
+    std::string_view base = oldTarget;
+    if (const auto questionMarkPos = base.find('?'); questionMarkPos != std::string_view::npos) {
+      base = base.substr(0, questionMarkPos);
+    }
     const auto lastSlashPos = base.rfind('/');
     prefixLen = lastSlashPos == std::string_view::npos ? 1U : static_cast<uint32_t>(lastSlashPos + 1);
   }
 
   const auto newTargetLen = prefixLen + location.size();
-  const int64_t diffLen = static_cast<int64_t>(newTargetLen) - static_cast<int64_t>(oldTargetLen);
+  assert(newTargetLen != 0);
+
+  // Validate the new target before touching the buffer, so that a rejected redirect leaves this request unchanged.
+  // The kept prefix comes from the old target, which is valid: it can only end inside a percent-escape when it is
+  // reduced to its first char, a '%' whose 2 hex digits must then start 'location'.
+  const bool prefixEndsWithPercent = prefixLen != 0 && oldTarget[prefixLen - 1] == '%';
+  if (!IsValidRequestTargetChars(location, prefixEndsWithPercent) ||
+      newTargetLen > MaxTargetLen(HttpMessage::kHeaderPosNbBits, _originKeyLen)) {
+    return false;
+  }
+
+  const int32_t diffLen = static_cast<int32_t>(newTargetLen) - static_cast<int32_t>(oldTargetLen);
 
   HeadGrowthManager headGrowthManager(*this, diffLen);
 
@@ -434,15 +462,9 @@ bool HttpRequest::resolveRedirect(std::string_view location) {
   // Move everything after the target (" HTTP/1.1"...).
   std::memmove(pTarget + newTargetLen, pTarget + oldTargetLen,
                _data.size() - oldTargetLen - static_cast<std::size_t>(pTarget - _data.data()));
-  // Overwrite the suffix.
-  char* pEndTarget = Append(location, pTarget + prefixLen);
 
-  const char* pErrorMsg =
-      CheckTarget(std::string_view(pTarget, pEndTarget), HttpMessage::kHeaderPosNbBits, _originKeyLen);
-  if (pErrorMsg != nullptr) {
-    // TODO: no adjust of headers and Body start in that case?
-    return false;
-  }
+  // Write 'location' after the kept prefix.
+  Copy(location, pTarget + prefixLen);
 
   adjustHeadersAndBodyStart(diffLen);
   _data.adjustSize(diffLen);

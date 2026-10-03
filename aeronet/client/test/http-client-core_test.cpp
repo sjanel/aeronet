@@ -238,6 +238,11 @@ test::TestServer CreateTestServer() {
     resp.location("ftp://unsupported/x");
     return resp;
   });
+  routerProxy.setPath(http::Method::GET, "/redirect-invalid-path", [](const HttpRequestView& req) {
+    auto resp = req.makeResponse(http::StatusCodeFound);
+    resp.location("/bad%zz-escape");
+    return resp;
+  });
   routerProxy.setPath(http::Method::PUT, "/put", [](const HttpRequestView& req) {
     return req.makeResponse(http::StatusCodeOK, req.body(), "text/plain");
   });
@@ -676,6 +681,15 @@ TEST_F(HttpClientE2ETest, RedirectWithUnresolvableLocationReturnsError) {
   // A 3xx whose Location uses an unsupported scheme cannot be followed: the malformed redirect target
   // surfaces as HttpClientErrc::invalidUrl rather than silently handing back the 3xx response.
   auto result = client.get(Url("/redirect-bad-location"));
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::invalidUrl);
+}
+
+TEST_F(HttpClientE2ETest, RedirectWithInvalidAbsolutePathReturnsError) {
+  HttpClient client;
+  // An absolute-path Location that is not a valid request-target (bad percent-escape) cannot be followed either: it
+  // surfaces as HttpClientErrc::invalidUrl instead of an exception thrown out of request().
+  auto result = client.get(Url("/redirect-invalid-path"));
   ASSERT_FALSE(result);
   EXPECT_EQ(result.error(), HttpClientErrc::invalidUrl);
 }
