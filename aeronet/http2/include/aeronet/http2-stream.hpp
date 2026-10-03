@@ -82,14 +82,6 @@ class Http2Stream {
   /// Transition state when receiving RST_STREAM.
   void onRecvRstStream() noexcept { _state = StreamState::Closed; }
 
-  /// Transition state when sending PUSH_PROMISE (server only).
-  /// @return ErrorCode if the transition is invalid, NoError otherwise
-  [[nodiscard]] ErrorCode onSendPushPromise() noexcept;
-
-  /// Transition state when receiving PUSH_PROMISE (client only).
-  /// @return ErrorCode if the transition is invalid, NoError otherwise
-  [[nodiscard]] ErrorCode onRecvPushPromise() noexcept;
-
   // ============================
   // Flow control
   // ============================

@@ -138,7 +138,7 @@ struct ParsedFrame {
   // Keep the same order as Http2Connection::sendSettings().
   std::array<SettingsEntry, 6> entries = {
       SettingsEntry{SettingsParameter::HeaderTableSize, cfg.headerTableSize},
-      SettingsEntry{SettingsParameter::EnablePush, cfg.enablePush ? 1U : 0U},
+      SettingsEntry{SettingsParameter::EnablePush, 0U},
       SettingsEntry{SettingsParameter::MaxConcurrentStreams, cfg.maxConcurrentStreams},
       SettingsEntry{SettingsParameter::InitialWindowSize, cfg.initialWindowSize},
       SettingsEntry{SettingsParameter::MaxFrameSize, cfg.maxFrameSize},
@@ -566,12 +566,26 @@ TEST(Http2Core, LoopbackHandshakeOpensConnection) {
   EXPECT_TRUE(h2.server.isOpen());
 }
 
+TEST(Http2Core, DeprecatedEnablePushDoesNotBreakHandshake) {
+  // enablePush used to make the server advertise SETTINGS_ENABLE_PUSH = 1, which RFC 9113 §6.5.2 forbids:
+  // clients (curl / nghttp2, and aeronet's own client) close the connection with a PROTOCOL_ERROR. It is now ignored.
+  Http2Config clientCfg;
+  clientCfg.enablePush = true;
+  Http2Config serverCfg;
+  serverCfg.enablePush = true;
+
+  Http2Loopback h2(clientCfg, serverCfg);
+  h2.connect(true);
+
+  EXPECT_TRUE(h2.client.isOpen());
+  EXPECT_TRUE(h2.server.isOpen());
+}
+
 TEST(Http2Core, PeerSettingsAreAppliedFromRemoteSettingsFrame) {
   Http2Config clientCfg;
   Http2Config serverCfg;
   serverCfg.maxFrameSize = 16384;  // must be in valid range
   serverCfg.maxHeaderListSize = 12345;
-  serverCfg.enablePush = false;
 
   Http2Loopback h2(clientCfg, serverCfg);
   h2.connect(true);
@@ -579,12 +593,10 @@ TEST(Http2Core, PeerSettingsAreAppliedFromRemoteSettingsFrame) {
   // Client peer settings should mirror server local settings.
   EXPECT_EQ(h2.client.peerSettings().maxFrameSize, serverCfg.maxFrameSize);
   EXPECT_EQ(h2.client.peerSettings().maxHeaderListSize, serverCfg.maxHeaderListSize);
-  EXPECT_FALSE(h2.client.peerSettings().enablePush);
 
   // Server peer settings should mirror client local settings.
   EXPECT_EQ(h2.server.peerSettings().maxFrameSize, clientCfg.maxFrameSize);
   EXPECT_EQ(h2.server.peerSettings().maxHeaderListSize, clientCfg.maxHeaderListSize);
-  EXPECT_EQ(h2.server.peerSettings().enablePush, clientCfg.enablePush);
 }
 
 TEST(Http2Core, InvalidPeerMaxFrameSizeCausesProtocolError) {
