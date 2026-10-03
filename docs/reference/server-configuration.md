@@ -106,7 +106,8 @@ HTTP/2 requires `AERONET_ENABLE_HTTP2=ON`; `Http2Config::enable` defaults to tru
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `enable`, `enablePush` | true, false | Global HTTP/2 switch and server push advertisement. |
+| `enable` | true | Global HTTP/2 switch. |
+| `enablePush` | false | Deprecated, no effect: server push is not supported and `SETTINGS_ENABLE_PUSH` is always advertised as 0. Kept so existing code and configuration files still compile and load. |
 | `enableH2c` | true | Accept prior-knowledge cleartext HTTP/2 (client sends the connection preface directly). |
 | `enableH2cUpgrade` | false | Deprecated, no effect: kept so existing code and configuration files still compile and load. |
 | `enablePriority`, `maxPriorityTreeDepth` | true, 256 | PRIORITY processing and dependency-tree resource cap. |
