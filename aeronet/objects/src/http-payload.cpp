@@ -375,25 +375,6 @@ void HttpPayload::addSize(std::size_t sz) {
       _data);
 }
 
-// NOLINTNEXTLINE(bugprone-exception-escape)
-void HttpPayload::clear() noexcept {
-  std::visit(
-      [](auto& val) -> void {
-        using T = std::decay_t<decltype(val)>;
-        if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::vector<char>> ||
-                      std::is_same_v<T, std::vector<std::byte>> || std::is_same_v<T, RawChars>) {
-          val.clear();
-        } else if constexpr (std::is_same_v<T, RawCharsSuffix>) {
-          val.size = 0;
-        } else if constexpr (std::is_same_v<T, CharBuffer> || std::is_same_v<T, BytesBuffer>) {
-          val.second = 0;
-        } else {
-          val = {};
-        }
-      },
-      _data);
-}
-
 void HttpPayload::shrink_to_fit() {
   std::visit(
       [this](auto& val) -> void {

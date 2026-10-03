@@ -13,6 +13,7 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <new>
 #include <optional>
 #include <random>
 #include <ranges>
@@ -48,6 +49,7 @@
 #include "aeronet/nchars.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/sys-test-support.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/vector.hpp"
 
@@ -2787,6 +2789,10 @@ TEST_F(HttpResponseTest, SendFileZeroLengthPayload) {
   }
 }
 
+// -----------------------------------------------------------------------------
+// Embedded payload (captured body, file or HEAD size-only payload stored inside the head buffer, after the head).
+// -----------------------------------------------------------------------------
+
 TEST_F(HttpResponseTest, EmptyFileThenInlineBodyReplacesFilePayload) {
   test::ScopedTempDir tmpDir;
   test::ScopedTempFile tmp(tmpDir, "");
@@ -2909,6 +2915,193 @@ TEST_F(HttpResponseTest, HeadEmptyBodyThenBodyReplacesSizeOnlyPayload) {
   EXPECT_TRUE(head.contains(MakeHttp1HeaderLine(http::ContentLength, "100")));
   EXPECT_TRUE(head.ends_with(http::DoubleCRLF));
 }
+
+TEST_F(HttpResponseTest, SizeInlinedAndSizeInMemoryExcludeEmbeddedPayloadObject) {
+  {
+    HttpResponse resp(http::StatusCodeOK);
+    resp.body(std::string(100, 'x'));
+    EXPECT_EQ(resp.sizeInlined(), resp.headSize());
+    EXPECT_EQ(resp.sizeInMemory(), resp.headSize() + 100U);
+  }
+  {
+    test::ScopedTempDir tmpDir;
+    test::ScopedTempFile tmp(tmpDir, "file content");
+    HttpResponse resp(http::StatusCodeOK);
+    resp.file(File(tmp.filePath().string()));
+    EXPECT_EQ(resp.sizeInlined(), resp.headSize());
+    EXPECT_EQ(resp.sizeInMemory(), resp.headSize());
+  }
+  {
+    HttpResponse resp = makePrepared(PreparedOptions{.head = true});
+    resp.body("hello");
+    EXPECT_EQ(resp.sizeInlined(), resp.headSize());
+  }
+  {
+    HttpResponse resp(http::StatusCodeOK);
+    resp.body("inline");
+    EXPECT_EQ(resp.sizeInlined(), resp.headSize() + 6U);
+    EXPECT_EQ(resp.sizeInMemory(), resp.sizeInlined());
+  }
+}
+
+TEST_F(HttpResponseTest, EmbeddedPayloadSurvivesHeadEditsCopiesAndMoves) {
+  test::ScopedTempDir tmpDir;
+  static constexpr std::string_view kFileContent = "file content";
+  test::ScopedTempFile tmp(tmpDir, kFileContent);
+
+  const std::string longBody(200, 'L');
+
+  struct BodyCase {
+    std::function<void(HttpResponse&)> setBody;
+    std::string_view expectedBody;
+    bool isFile;
+  };
+
+  const auto setUniquePtrBody = [](HttpResponse& resp) {
+    auto buf = std::make_unique<char[]>(3);
+    std::memcpy(buf.get(), "buf", 3);
+    resp.body(std::move(buf), 3);
+  };
+
+  // Covers both the trivially relocatable alternatives (memcpy) and the others (move + destroy, e.g. SSO std::string).
+  const BodyCase cases[] = {
+      {[](HttpResponse& resp) { resp.body(std::string("short")); }, "short", false},
+      {[&longBody](HttpResponse& resp) { resp.body(std::string(longBody)); }, longBody, false},
+      {[](HttpResponse& resp) { resp.bodyStatic("static body"); }, "static body", false},
+      {[](HttpResponse& resp) { resp.body(std::vector<char>{'v', 'e', 'c'}); }, "vec", false},
+      {setUniquePtrBody, "buf", false},
+      {[&tmp](HttpResponse& resp) { resp.file(File(tmp.filePath().string())); }, kFileContent, true},
+  };
+
+  for (const BodyCase& bodyCase : cases) {
+    const auto checkBody = [&bodyCase](const HttpResponse& resp) {
+      if (bodyCase.isFile) {
+        EXPECT_TRUE(resp.hasBodyFile());
+        EXPECT_EQ(resp.bodyLength(), bodyCase.expectedBody.size());
+        EXPECT_TRUE(resp.bodyInMemory().empty());
+      } else {
+        EXPECT_TRUE(resp.hasBodyCaptured());
+        EXPECT_EQ(resp.bodyInMemory(), bodyCase.expectedBody);
+      }
+      EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), std::to_string(bodyCase.expectedBody.size()));
+    };
+
+    HttpResponse resp(http::StatusCodeOK);
+    bodyCase.setBody(resp);
+    checkBody(resp);
+
+    // Grow the head by various amounts so that the payload is reinstalled at every possible alignment padding,
+    // with several reallocations of the head buffer.
+    for (std::size_t len = 1; len <= 16; ++len) {
+      resp.headerAddLine("x-grow", std::string(len, 'g'));
+      checkBody(resp);
+    }
+    resp.reason("A much longer reason phrase than the default one");
+    resp.headerAppendValue("x-grow", "appended");
+    resp.header("x-other", "value");
+    resp.header("x-other", "a longer overridden value");
+    checkBody(resp);
+
+    // Shrink the head back.
+    resp.headerRemoveValue("x-grow", "appended");
+    for (std::size_t len = 1; len <= 16; ++len) {
+      resp.headerRemoveLine("x-grow");
+    }
+    resp.reason("OK");
+    checkBody(resp);
+    EXPECT_FALSE(resp.hasHeader("x-grow"));
+    EXPECT_EQ(resp.headerValueOrEmpty("x-other"), "a longer overridden value");
+
+    resp.reserve(resp.sizeInlined() + 512U);
+    checkBody(resp);
+
+    // Copy construction, move construction and the four copy / move assignment combinations.
+    HttpResponse copy(resp);
+    checkBody(copy);
+    checkBody(resp);
+
+    HttpResponse moved(std::move(copy));
+    checkBody(moved);
+
+    HttpResponse assignedToNoPayload(http::StatusCodeNotFound);
+    assignedToNoPayload = moved;
+    checkBody(assignedToNoPayload);
+
+    HttpResponse assignedToPayload(http::StatusCodeOK);
+    assignedToPayload.body(std::string("previous payload"));
+    assignedToPayload = moved;
+    checkBody(assignedToPayload);
+
+    HttpResponse noPayload(http::StatusCodeAccepted);
+    assignedToPayload = noPayload;
+    EXPECT_FALSE(assignedToPayload.hasBody());
+    EXPECT_EQ(assignedToPayload.status(), http::StatusCodeAccepted);
+
+    HttpResponse otherNoPayload(http::StatusCodeNoContent);
+    otherNoPayload = noPayload;
+    EXPECT_FALSE(otherNoPayload.hasBody());
+    EXPECT_EQ(otherNoPayload.status(), http::StatusCodeAccepted);
+
+    assignedToPayload = std::move(moved);
+    checkBody(assignedToPayload);
+
+    // Self copy and move assignments are no-ops.
+    HttpResponse& alias = assignedToPayload;
+    assignedToPayload = alias;
+    checkBody(assignedToPayload);
+    assignedToPayload = std::move(alias);
+    checkBody(assignedToPayload);
+
+    // Mutating a copy does not affect the original.
+    if (!bodyCase.isFile) {
+      HttpResponse appended(resp);
+      appended.bodyAppend("-more");
+      EXPECT_EQ(appended.bodyInMemory(), std::string(bodyCase.expectedBody) + "-more");
+      checkBody(resp);
+    }
+
+    // The finalized message carries the payload out of the response.
+    auto prepared = finalizePrepared(std::move(resp));
+    EXPECT_TRUE(std::string_view(prepared.firstBuffer()).contains("x-other: a longer overridden value"));
+    if (bodyCase.isFile) {
+      ASSERT_NE(prepared.getIfFilePayload(), nullptr);
+      EXPECT_EQ(prepared.getIfFilePayload()->length, bodyCase.expectedBody.size());
+    }
+  }
+}
+
+#if AERONET_WANT_MALLOC_OVERRIDES
+TEST_F(HttpResponseTest, HeadEditAllocationFailureKeepsEmbeddedPayload) {
+  const std::string longBody(100, 'x');
+  for (bool staticBody : {false, true}) {
+    HttpResponse resp(http::StatusCodeOK);
+    // std::string is moved out of the buffer during the head edit, while the static view is memcpy relocated.
+    if (staticBody) {
+      resp.bodyStatic(longBody);
+    } else {
+      resp.body(std::string(longBody));
+    }
+    // Larger than the current capacity, so that the head buffer must be reallocated.
+    const std::string bigValue(resp.capacityInlined() * 2U, 'v');
+
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+    test::FailNextMalloc();
+#else
+    test::FailNextRealloc();
+#endif
+    EXPECT_THROW(resp.headerAddLine("x-big", bigValue), std::bad_alloc);
+
+    // The response is left unmodified, with its payload reinstalled.
+    EXPECT_FALSE(resp.hasHeader("x-big"));
+    EXPECT_TRUE(resp.hasBodyCaptured());
+    EXPECT_EQ(resp.bodyInMemory(), longBody);
+
+    resp.headerAddLine("x-big", bigValue);
+    EXPECT_EQ(resp.headerValueOrEmpty("x-big"), bigValue);
+    EXPECT_EQ(resp.bodyInMemory(), longBody);
+  }
+}
+#endif
 
 // -----------------------------------------------------------------------------
 // Synthesized `Content-Length: 0` for empty-body responses (keep-alive framing).

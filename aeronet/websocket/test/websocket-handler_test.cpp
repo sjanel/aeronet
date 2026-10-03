@@ -425,7 +425,7 @@ TEST_F(WebSocketHandlerTest, DrainOutputBufferAppendsToNonEmptyDestination) {
   const auto output = handler->getPendingOutput();
   std::string expected("prefix");
   expected.append(reinterpret_cast<const char*>(output.data()), output.size());
-  HttpMessageData dest(std::string_view("prefix"));
+  HttpMessageData dest(RawChars("prefix"));
 
   EXPECT_TRUE(handler->drainOutputBuffer(dest));
 

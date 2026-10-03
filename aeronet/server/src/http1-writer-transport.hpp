@@ -55,14 +55,14 @@ class Http1WriterTransport final : public IWriterTransport {
     if (chunked) {
       const std::size_t needed = http::HeaderSize(http::TransferEncoding.size(), http::chunked.size());
 
-      response._data.ensureAvailableCapacity(needed);
+      response.reserve(response.sizeInlined() + needed);
       response.headerAddLineUnchecked(http::TransferEncoding, http::chunked);
       _chunked = true;
     } else if (!response.hasBodyFile()) {
       const auto declaredLengthIntegralLen = ndigits(declaredLength);
       const std::size_t needed = http::HeaderSize(http::ContentLength.size(), declaredLengthIntegralLen);
 
-      response._data.ensureAvailableCapacity(needed);
+      response.reserve(response.sizeInlined() + needed);
       char declaredLenBuf[std::numeric_limits<decltype(declaredLength)>::digits10 + 1];
       std::string_view declaredLenStr(declaredLenBuf,
                                       WriteUInt(declaredLenBuf, declaredLength, declaredLengthIntegralLen));

@@ -587,7 +587,8 @@ void HttpClient::releaseConnection(const HttpRequest& req, ActiveConnection&& co
   bucket.emplace_back(std::move(conn));
 }
 
-HttpClientErrc HttpClient::finishConnect(ActiveConnection& conn, bool isTls, SteadyClock::time_point deadline) {
+HttpClientErrc HttpClient::finishConnect(ActiveConnection& conn, [[maybe_unused]] bool isTls,
+                                         SteadyClock::time_point deadline) {
   const NativeHandle fd = conn.cnx.fd();
   // The TCP connect (including multi-address fallback) is already complete here: connectNew() resolves it
   // synchronously via ConnectTCP's blocking fallback. Only the TLS handshake remains.
@@ -821,13 +822,18 @@ std::string_view HttpClient::buildCacheKey(const HttpRequest& req) {
   _cacheKeyScratch.clear();
   const FilePayload* filePayload = req.filePayloadPtr();
 
+  const std::size_t wireSize = req.wireDataSize();
+
   if (filePayload == nullptr) {
     const std::string_view bodyInMemory = req.bodyInMemory();
     const std::string_view trailers = req.trailersFlatView();
-    _cacheKeyScratch.reserve(req._data.size() + bodyInMemory.size() + trailers.size());
-    _cacheKeyScratch.unchecked_append(req._data);
+
+    _cacheKeyScratch.reserve(wireSize + bodyInMemory.size() + trailers.size());
+
+    _cacheKeyScratch.unchecked_append(req._data.data(), wireSize);
     _cacheKeyScratch.unchecked_append(bodyInMemory);
     _cacheKeyScratch.unchecked_append(trailers);
+
     return _cacheKeyScratch;
   }
 
@@ -844,7 +850,7 @@ std::string_view HttpClient::buildCacheKey(const HttpRequest& req) {
   };
 
   _cacheKeyScratch.reserve(File::kIdentitySize + sizeof(filePayload->offset) + sizeof(filePayload->length) +
-                           sizeof(lastModifiedCount) + sizeof(fileSz) + req._data.size());
+                           sizeof(lastModifiedCount) + sizeof(fileSz) + wireSize);
 
   char* pData = _cacheKeyScratch.data();
 
@@ -854,7 +860,7 @@ std::string_view HttpClient::buildCacheKey(const HttpRequest& req) {
   pData = appendNumber(filePayload->length, pData);
   pData = appendNumber(lastModifiedCount, pData);
   pData = appendNumber(fileSz, pData);
-  pData = Append(req._data, pData);
+  pData = Append(req._data.data(), wireSize, pData);
 
   _cacheKeyScratch.setEnd(pData);
 

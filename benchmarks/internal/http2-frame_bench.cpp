@@ -53,7 +53,8 @@ void BM_ParseDataFrame(benchmark::State& state) {
   buf.clear();
   std::string payload(payloadSize, 'X');
   auto payloadBytes = std::span<const std::byte>(reinterpret_cast<const std::byte*>(payload.data()), payload.size());
-  std::byte* pData = PrepareDataFrameGetStartPtr(buf, /*streamId=*/1, payloadBytes.size(), /*endStream=*/true);
+  std::byte* pData =
+      PrepareDataFrameGetStartPtr(buf, /*streamId=*/1, static_cast<uint32_t>(payloadBytes.size()), /*endStream=*/true);
   Copy(payloadBytes.data(), payloadBytes.size(), pData);
 
   // Parse just the payload portion (after 9-byte header)
@@ -125,7 +126,8 @@ void BM_WriteDataFrame(benchmark::State& state) {
 
   for ([[maybe_unused]] auto iter : state) {
     RawBytes buf;
-    std::byte* pData = PrepareDataFrameGetStartPtr(buf, /*streamId=*/1, payloadBytes.size(), /*endStream=*/false);
+    std::byte* pData = PrepareDataFrameGetStartPtr(buf, /*streamId=*/1, static_cast<uint32_t>(payloadBytes.size()),
+                                                   /*endStream=*/false);
     Copy(payloadBytes.data(), payloadBytes.size(), pData);
     benchmark::DoNotOptimize(pData);
     benchmark::DoNotOptimize(buf.data());
@@ -233,8 +235,8 @@ void BM_BulkParseDataFrames(benchmark::State& state) {
   // Build contiguous buffer with N DATA frames
   RawBytes bulkBuf;
   for (int ii = 0; ii < frameCount; ++ii) {
-    std::byte* pData =
-        PrepareDataFrameGetStartPtr(bulkBuf, /*streamId=*/1, payloadBytes.size(), /*endStream=*/(ii == frameCount - 1));
+    std::byte* pData = PrepareDataFrameGetStartPtr(bulkBuf, /*streamId=*/1U, static_cast<uint32_t>(payloadBytes.size()),
+                                                   /*endStream=*/(ii == frameCount - 1));
     Copy(payloadBytes.data(), payloadBytes.size(), pData);
   }
 

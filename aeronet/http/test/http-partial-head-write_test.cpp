@@ -48,7 +48,7 @@ class PartialWriteTransport final : public TransportBackend<PartialWriteTranspor
 TEST(PartialHeadWrite, BodyNotSentBeforeHeadPlain) {
   PartialWriteTransport plainWriteTransport;
   Transport transport = Transport::Borrow(plainWriteTransport);
-  HttpMessageData httpResponseData("HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n",
+  HttpMessageData httpResponseData(RawChars("HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n"),
                                    HttpPayload(std::string("hello world")));
 
   // First write will write partial head only
@@ -72,7 +72,7 @@ TEST(PartialHeadWrite, BodyNotSentBeforeHeadPlain) {
 TEST(PartialHeadWrite, BodyNotSentBeforeHeadTls) {
   PartialWriteTransport partialWriteTransport;
   Transport transport = Transport::Borrow(partialWriteTransport);
-  HttpMessageData httpResponseData("HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n",
+  HttpMessageData httpResponseData(RawChars("HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n"),
                                    HttpPayload(std::string("hello world")));
 
   const auto [w1, want1] = transport.write(httpResponseData.firstBuffer(), httpResponseData.secondBuffer());

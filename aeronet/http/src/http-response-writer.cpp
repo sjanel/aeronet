@@ -123,7 +123,7 @@ void HttpResponseWriter::ensureHeadersSent() {
     neededSize += http::HeaderSize(http::Vary.size(), http::AcceptEncoding.size());
   }
 
-  _fixedResponse._data.ensureAvailableCapacity(neededSize);
+  _fixedResponse.reserve(_fixedResponse.sizeInlined() + neededSize);
 
   // If compression already activated (delayed strategy) but header not sent yet, add Content-Encoding now.
   if (addContentEncoding) {
@@ -151,7 +151,7 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
               _state == State::Failed ? "writer-failed" : "already-ended");
     return false;
   }
-  if (_fixedResponse.hasBodyFile()) {
+  if (_isFile) {
     log::warn("Streaming: write ignored {} size={} reason=sendfile-active", _transport->logId(), data.size());
     return false;
   }
@@ -228,7 +228,7 @@ void HttpResponseWriter::trailerAddLine(LowerAsciiKey name, std::string_view val
               _state == State::Failed ? "writer-failed" : "already-ended");
     return;
   }
-  if (_fixedResponse.hasBodyFile()) {
+  if (_isFile) {
     log::warn("Streaming: trailerAddLine ignored {} name={} reason=sendfile-active", _transport->logId(), name.get());
     return;
   }
@@ -255,7 +255,7 @@ void HttpResponseWriter::end() {
     return;
   }
 
-  if (_fixedResponse.hasBodyFile()) {
+  if (_isFile) {
     _state = State::Ended;
     return;
   }
@@ -329,6 +329,7 @@ bool HttpResponseWriter::file(File file, std::uint64_t offset, std::uint64_t len
     _fixedResponse.eraseHeaderLine(http::ContentType, placeholder.data(), placeholder.data() + placeholder.size());
   }
   _declaredLength = _fixedResponse.bodyLength();
+  _isFile = true;
   return true;
 }
 
