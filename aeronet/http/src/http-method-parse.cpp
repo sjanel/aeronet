@@ -7,52 +7,14 @@
 namespace aeronet::http {
 
 Method ParseMethodStr(std::string_view str) {
-  switch (str.size()) {
-    case 3:  // GET, PUT
-      switch (str[0]) {
-        case 'G':
-          return str == "GET" ? Method::GET : kMethodInvalid;
-        case 'P':
-          return str == "PUT" ? Method::PUT : kMethodInvalid;
-        default:
-          return kMethodInvalid;
-      }
-
-    case 4:  // HEAD, POST
-      switch (str[0]) {
-        case 'H':
-          return str == "HEAD" ? Method::HEAD : kMethodInvalid;
-        case 'P':
-          return str == "POST" ? Method::POST : kMethodInvalid;
-        default:
-          return kMethodInvalid;
-      }
-
-    case 5:  // TRACE, PATCH
-      switch (str[0]) {
-        case 'T':
-          return str == "TRACE" ? Method::TRACE : kMethodInvalid;
-        case 'P':
-          return str == "PATCH" ? Method::PATCH : kMethodInvalid;
-        default:
-          return kMethodInvalid;
-      }
-
-    case 6:  // DELETE
-      return str == "DELETE" ? Method::DELETE : kMethodInvalid;
-
-    case 7:  // CONNECT, OPTIONS
-      switch (str[0]) {
-        case 'C':
-          return str == "CONNECT" ? Method::CONNECT : kMethodInvalid;
-        case 'O':
-          return str == "OPTIONS" ? Method::OPTIONS : kMethodInvalid;
-        default:
-          return kMethodInvalid;
-      }
-    default:
-      return kMethodInvalid;
+  // Compilers fully unroll this loop over the constexpr table into a dispatch on the length followed by one or two
+  // inlined integer comparisons - measured as fast as (or faster than) a hand-written switch with clang and gcc.
+  for (MethodIdx methodIdx = 0; methodIdx < kNbMethods; ++methodIdx) {
+    if (str == kMethodStrings[methodIdx]) {
+      return MethodFromIdx(methodIdx);
+    }
   }
+  return kMethodInvalid;
 }
 
 }  // namespace aeronet::http
