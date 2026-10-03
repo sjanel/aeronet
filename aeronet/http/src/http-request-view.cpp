@@ -297,6 +297,10 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
   }
 
   const auto methodLen = LeadingMatchIndex(spaceMask);
+  if (methodLen == 0) {
+    // request line starting with a space: empty method token
+    return http::StatusCodeBadRequest;
+  }
   // RFC 9110 §9.1: the method token is case-sensitive ("get" is not "GET"). Matching it case-insensitively would let
   // a request bypass an intermediary rule written for the exact method name.
   const uint64_t candidate = start & FirstNBytesMask(methodLen);
