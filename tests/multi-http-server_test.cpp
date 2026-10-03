@@ -966,19 +966,21 @@ TEST(MultiHttpServerDedicatedProbes, ProbesServedOnDedicatedPortAndNotOnAppPort)
 
   test::WaitForServer(multi);
 
+  // The probe endpoints are NOT exposed on the (contended) application port: they hit the default app handler.
+  // startDetached() returns before the worker threads have necessarily entered their event loops, so these completed
+  // application requests also synchronize with a Running worker before the dedicated readiness probe is queried.
+  auto resp = test::simpleGet(appPort, "/livez");
+  EXPECT_TRUE(resp.ends_with("APP")) << resp;
+  resp = test::simpleGet(appPort, "/readyz");
+  EXPECT_TRUE(resp.ends_with("APP")) << resp;
+
   // Probes answered on the dedicated port.
-  auto resp = test::simpleGet(probePort, "/livez");
+  resp = test::simpleGet(probePort, "/livez");
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
   resp = test::simpleGet(probePort, "/readyz");
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
   resp = test::simpleGet(probePort, "/startupz");
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
-
-  // The probe endpoints are NOT exposed on the (contended) application port: they hit the default app handler.
-  resp = test::simpleGet(appPort, "/livez");
-  EXPECT_TRUE(resp.ends_with("APP")) << resp;
-  resp = test::simpleGet(appPort, "/readyz");
-  EXPECT_TRUE(resp.ends_with("APP")) << resp;
 
   handle.stop();
   handle.rethrowIfError();
