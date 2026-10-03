@@ -293,7 +293,7 @@ std::string sendAndCollect(uint16_t port, std::string_view raw) {
 }
 
 namespace {
-Socket ConnectLoop(auto port, std::chrono::milliseconds timeout) {
+Socket ConnectLoop(auto port, std::chrono::milliseconds timeout, int receiveBufferSize) {
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_port = htons(port);
@@ -303,6 +303,9 @@ Socket ConnectLoop(auto port, std::chrono::milliseconds timeout) {
        std::this_thread::sleep_for(std::chrono::milliseconds{1})) {
     Socket sock(Socket::Type::Stream);
     auto fd = sock.fd();
+    if (receiveBufferSize > 0) {
+      SetReceiveBufferSize(fd, receiveBufferSize);
+    }
 
     if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
       return sock;
@@ -315,8 +318,8 @@ Socket ConnectLoop(auto port, std::chrono::milliseconds timeout) {
 }
 }  // namespace
 
-ClientConnection::ClientConnection(uint16_t port, std::chrono::milliseconds timeout)
-    : _socket(ConnectLoop(port, timeout)) {}
+ClientConnection::ClientConnection(uint16_t port, std::chrono::milliseconds timeout, int receiveBufferSize)
+    : _socket(ConnectLoop(port, timeout, receiveBufferSize)) {}
 
 int countOccurrences(std::string_view haystack, std::string_view needle) {
   if (needle.empty()) {
@@ -610,6 +613,18 @@ void setSendTimeout(NativeHandle fd, SysDuration timeout) {
   if (::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) == -1) {
 #endif
     ThrowSystemError("Error from setSendTimeout");
+  }
+}
+
+void SetReceiveBufferSize(NativeHandle fd, int receiveBufferSize) {
+#ifdef AERONET_WINDOWS
+  if (::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&receiveBufferSize),
+                   sizeof(receiveBufferSize)) == SOCKET_ERROR) {
+#else
+  // NOLINTNEXTLINE(misc-include-cleaner) sys/socket.h is the correct header for SOL_SOCKET and SO_RCVBUF
+  if (::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &receiveBufferSize, sizeof(receiveBufferSize)) == -1) {
+#endif
+    ThrowSystemError("Error from SetReceiveBufferSize");
   }
 }
 

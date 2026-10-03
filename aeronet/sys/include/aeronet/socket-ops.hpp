@@ -106,6 +106,11 @@ bool ShutdownWrite(NativeHandle fd) noexcept;
 // Returns true on success, false on error (errno is set).
 bool ShutdownReadWrite(NativeHandle fd) noexcept;
 
+// Make the next close of this TCP socket abortive (SO_LINGER with a zero timeout): the connection is reset and the
+// kernel drops its unsent and unacknowledged data at close, instead of sending it after close returns.
+// Returns true on success, false on error (errno is set).
+bool SetAbortiveClose(NativeHandle fd) noexcept;
+
 // Read from a given offset without changing the file pointer (pread semantics).
 // Returns the number of bytes read, or -1 on error (errno is set).
 int64_t ReadOffset(NativeHandle fd, void* buffer, std::size_t len, std::size_t offset) noexcept;
