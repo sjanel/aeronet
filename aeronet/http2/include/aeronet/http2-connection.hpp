@@ -252,9 +252,9 @@ class Http2Connection {
   [[nodiscard]] const Http2Config& localSettings() const noexcept { return _localSettings; }
 
   /// Get peer's settings.
+  /// SETTINGS_ENABLE_PUSH is not stored: aeronet never pushes, and a client rejects a server sending 1.
   struct PeerSettings {
     uint32_t headerTableSize{4096};
-    bool enablePush{true};
     uint32_t maxConcurrentStreams{100};
     uint32_t initialWindowSize{65535};
     uint32_t maxFrameSize{16384};

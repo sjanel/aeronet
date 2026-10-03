@@ -209,6 +209,21 @@ void AdvanceToOpenAndDrainSettingsAck(Http2Connection& conn) {
   }
 }
 
+// SETTINGS frame with a single SETTINGS_ENABLE_PUSH entry.
+[[nodiscard]] vector<std::byte> MakeEnablePushSettingsFrame(std::byte value) {
+  const std::array entry{
+      std::byte{0x00}, std::byte{0x02},                          // SETTINGS_ENABLE_PUSH
+      std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, value,  // value
+  };
+
+  FrameHeader header;
+  header.length = static_cast<uint32_t>(entry.size());
+  header.type = FrameType::Settings;
+  header.flags = FrameFlags::None;
+  header.streamId = 0;
+  return SerializeFrame(header, entry);
+}
+
 constexpr auto kClosedStreamsMaxRetainedForTest = 16U;
 
 // ============================
@@ -1009,7 +1024,6 @@ TEST(Http2Connection, DefaultPeerSettings) {
 
   const auto& peerSettings = conn.peerSettings();
   EXPECT_EQ(peerSettings.headerTableSize, 4096U);
-  EXPECT_TRUE(peerSettings.enablePush);
   EXPECT_EQ(peerSettings.maxConcurrentStreams, 100U);
   EXPECT_EQ(peerSettings.initialWindowSize, 65535U);
   EXPECT_EQ(peerSettings.maxFrameSize, 16384U);
@@ -1225,21 +1239,115 @@ TEST(Http2Connection, SettingsFrameInvalidEnablePushIsProtocolError) {
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
   // ENABLE_PUSH must be 0 or 1.
-  std::array entry{
-      std::byte{0x00}, std::byte{0x02},                                    // SETTINGS_ENABLE_PUSH
-      std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x02},  // value=2
-  };
-
-  FrameHeader header;
-  header.length = static_cast<uint32_t>(entry.size());
-  header.type = FrameType::Settings;
-  header.flags = FrameFlags::None;
-  header.streamId = 0;
-
-  auto bytes = SerializeFrame(header, entry);
+  auto bytes = MakeEnablePushSettingsFrame(std::byte{0x02});
   auto res = conn.processInput(bytes);
   EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
   EXPECT_EQ(res.errorCode, ErrorCode::ProtocolError);
+  EXPECT_EQ(res.errorMsg, ErrorMsg::InvalidENABLE_PUSHValue);
+}
+
+TEST(Http2Connection, ServerAcceptsEnablePushFromClient) {
+  // Clients may advertise SETTINGS_ENABLE_PUSH = 1 (browsers used to): the server simply never pushes.
+  Http2Config config;
+  Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
+  AdvanceToAwaitingSettingsAndDrainSettings(conn);
+
+  auto bytes = MakeEnablePushSettingsFrame(std::byte{0x01});
+  auto res = conn.processInput(bytes);
+  EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::OutputReady);
+  EXPECT_EQ(res.bytesConsumed, bytes.size());
+  EXPECT_EQ(conn.state(), ConnectionState::Open);
+}
+
+TEST(Http2Connection, ClientRejectsEnablePushFromServer) {
+  // RFC 9113 §6.5.2: a client MUST treat SETTINGS_ENABLE_PUSH = 1 from a server as a PROTOCOL_ERROR.
+  Http2Config config;
+  Http2Connection client(config, false);
+  RecordingEventSink clientSink(client);
+  client.sendClientPreface();
+  (void)DrainPendingOutput(client);
+
+  auto bytes = MakeEnablePushSettingsFrame(std::byte{0x01});
+  auto res = client.processInput(bytes);
+  EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
+  EXPECT_EQ(res.errorCode, ErrorCode::ProtocolError);
+  EXPECT_EQ(res.errorMsg, ErrorMsg::InvalidENABLE_PUSHValue);
+}
+
+TEST(Http2Connection, ClientAcceptsEnablePushZeroFromServer) {
+  Http2Config config;
+  Http2Connection client(config, false);
+  RecordingEventSink clientSink(client);
+  client.sendClientPreface();
+  (void)DrainPendingOutput(client);
+
+  auto bytes = MakeEnablePushSettingsFrame(std::byte{0x00});
+  auto res = client.processInput(bytes);
+  EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::OutputReady);
+  EXPECT_EQ(client.state(), ConnectionState::Open);
+}
+
+TEST(Http2Connection, SettingsAlwaysAdvertiseEnablePushZero) {
+  // A server MUST NOT advertise SETTINGS_ENABLE_PUSH = 1 (RFC 9113 §6.5.2): clients such as curl (nghttp2) answer
+  // it with a PROTOCOL_ERROR GOAWAY. Clients do not accept pushes either. The deprecated enablePush is ignored.
+  Http2Config config;
+  config.enablePush = true;
+  for (const bool isServer : {true, false}) {
+    Http2Connection conn(config, isServer);
+    RecordingEventSink connSink(conn);
+    if (isServer) {
+      auto preface = MakePreface();
+      (void)conn.processInput(preface);
+    } else {
+      conn.sendClientPreface();
+    }
+    const auto output = DrainPendingOutput(conn);
+    std::span<const std::byte> frames(output.data(), output.size());
+    if (!isServer) {
+      ASSERT_GE(frames.size(), kConnectionPreface.size());
+      frames = frames.subspan(kConnectionPreface.size());
+    }
+    ASSERT_GE(frames.size(), FrameHeader::kSize);
+    const FrameHeader header = ParseFrameHeader(frames);
+    ASSERT_EQ(header.type, FrameType::Settings);
+    ASSERT_GE(frames.size(), FrameHeader::kSize + header.length);
+    const auto payload = frames.subspan(FrameHeader::kSize, header.length);
+
+    bool foundEnablePush = false;
+    for (std::size_t pos = 0; pos + 6 <= payload.size(); pos += 6) {
+      if (payload[pos] == std::byte{0x00} && payload[pos + 1] == std::byte{0x02}) {
+        foundEnablePush = true;
+        EXPECT_TRUE(std::ranges::all_of(payload.subspan(pos + 2, 4), [](std::byte bt) { return bt == std::byte{0}; }))
+            << "isServer=" << isServer;
+      }
+    }
+    EXPECT_TRUE(foundEnablePush) << "isServer=" << isServer;
+  }
+}
+
+TEST(Http2Connection, ClientRejectsPushPromise) {
+  // aeronet clients advertise SETTINGS_ENABLE_PUSH = 0, so a PUSH_PROMISE is a PROTOCOL_ERROR (RFC 9113 §6.6).
+  // The server side is covered by UnexpectedPushPromiseIsProtocolError.
+  Http2Config config;
+  Http2Connection client(config, false);
+  RecordingEventSink clientSink(client);
+  client.sendClientPreface();
+  (void)DrainPendingOutput(client);
+
+  // Promised stream id 2 on stream 1, with an empty header block.
+  const std::array payload{std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x02}};
+  FrameHeader header;
+  header.length = static_cast<uint32_t>(payload.size());
+  header.type = FrameType::PushPromise;
+  header.flags = FrameFlags::HeadersEndHeaders;
+  header.streamId = 1;
+
+  auto bytes = SerializeFrame(header, payload);
+  auto res = client.processInput(bytes);
+  EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
+  EXPECT_EQ(res.errorCode, ErrorCode::ProtocolError);
+  EXPECT_EQ(res.errorMsg, ErrorMsg::UnexpectedPUSH_PROMISE);
 }
 
 TEST(Http2Connection, SettingsFrameInvalidMaxFrameSizeIsProtocolError) {
@@ -1935,6 +2043,7 @@ TEST(Http2Connection, UnexpectedPushPromiseIsProtocolError) {
   auto res = conn.processInput(bytes);
   EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
   EXPECT_EQ(res.errorCode, ErrorCode::ProtocolError);
+  EXPECT_EQ(res.errorMsg, ErrorMsg::UnexpectedPUSH_PROMISE);
 }
 
 // ============================

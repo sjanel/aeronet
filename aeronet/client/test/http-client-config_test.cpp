@@ -316,10 +316,11 @@ TEST(HttpClientConfigTest, ValidateChecksHttp2SettingsWhenHttp2IsPossible) {
 }
 
 #ifdef AERONET_ENABLE_HTTP2
-TEST(HttpClientConfigTest, ValidateRejectsHttp2Push) {
+TEST(HttpClientConfigTest, ValidateIgnoresDeprecatedHttp2EnablePush) {
+  // enablePush has no effect: the client always advertises SETTINGS_ENABLE_PUSH = 0.
   HttpClientConfig cfg;
   cfg.withHttpVersion(HttpVersionMode::Http2).withHttp2Config(Http2Config{}.withEnablePush(true));
-  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+  EXPECT_NO_THROW(cfg.validate());
 }
 #endif
 

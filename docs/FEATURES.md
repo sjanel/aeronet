@@ -3180,7 +3180,7 @@ WebSocket handlers run on the same reactor thread as HTTP handlers. The `WebSock
 | ALPN "h2" negotiation | ✔ | Over TLS (requires OpenSSL) |
 | h2c (cleartext prior knowledge) | ✔ | Client sends HTTP/2 preface directly |
 | h2c upgrade (HTTP/1.1 → HTTP/2) | ✗ | Deprecated by RFC 9113 §3.1: `Upgrade: h2c` is ignored, the request is answered over HTTP/1.1 |
-| Server push | ✗ | Disabled (rarely used by modern clients) |
+| Server push | ✗ | Not implemented (removed from major browsers): `SETTINGS_ENABLE_PUSH` is always advertised as 0 and a received `PUSH_PROMISE` is a connection error. `Http2Config::enablePush` is deprecated and has no effect |
 | PRIORITY frames | ✔ | Optional, configurable |
 | Request trailers | ✔ | Trailing `HEADERS` block (RFC 9113 §8.1) surfaced via `HttpRequestView::trailers()` |
 | Response trailers | ✔ | Buffered and streaming responses, sent as a trailing `HEADERS` block |

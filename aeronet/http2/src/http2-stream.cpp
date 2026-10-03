@@ -43,7 +43,6 @@ ErrorCode Http2Stream::onSendHeaders(bool endStream) noexcept {
       return ErrorCode::NoError;
 
     default:
-      assert(_state != StreamState::ReservedLocal);  // TODO: Not implemented yet, should we?
       return ErrorCode::StreamClosed;
   }
 }
@@ -71,7 +70,6 @@ ErrorCode Http2Stream::onRecvHeaders(bool endStream) noexcept {
       return ErrorCode::NoError;
 
     default:
-      assert(_state != StreamState::ReservedRemote);  // TODO: Not implemented yet, should we?
       return ErrorCode::StreamClosed;
   }
 }
@@ -112,24 +110,6 @@ ErrorCode Http2Stream::onRecvData(bool endStream) noexcept {
     default:
       return ErrorCode::StreamClosed;
   }
-}
-
-ErrorCode Http2Stream::onSendPushPromise() noexcept {
-  // Server sends PUSH_PROMISE on a client-initiated stream
-  // This reserves a new server-initiated stream (even ID)
-  if (_state == StreamState::Open || _state == StreamState::HalfClosedRemote) {
-    return ErrorCode::NoError;  // Parent stream state unchanged
-  }
-  return ErrorCode::ProtocolError;
-}
-
-ErrorCode Http2Stream::onRecvPushPromise() noexcept {
-  // Client receives PUSH_PROMISE on a client-initiated stream
-  // This reserves a new server-initiated stream (even ID)
-  if (_state == StreamState::Open || _state == StreamState::HalfClosedLocal) {
-    return ErrorCode::NoError;  // Parent stream state unchanged
-  }
-  return ErrorCode::ProtocolError;
 }
 
 // ============================
