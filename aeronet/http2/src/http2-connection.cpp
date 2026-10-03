@@ -836,7 +836,8 @@ Http2Connection::ProcessResult Http2Connection::processFrame(FrameHeader header,
     case FrameType::Settings:
       return handleSettingsFrame(header, payload);
     case FrameType::PushPromise:
-      // Server doesn't receive PUSH_PROMISE, client-only
+      // A server cannot receive PUSH_PROMISE (RFC 9113 §8.4), and aeronet clients disable push with
+      // SETTINGS_ENABLE_PUSH = 0, making it a connection error for them as well (RFC 9113 §6.6).
       return connectionError(ErrorCode::ProtocolError, ErrorMsg::UnexpectedPUSH_PROMISE);
     case FrameType::Ping:
       return handlePingFrame(header, payload);
@@ -1130,10 +1131,11 @@ Http2Connection::ProcessResult Http2Connection::handleSettingsFrame(FrameHeader 
         _hpackEncoder.setMaxDynamicTableSize(value);
         break;
       case SettingsParameter::EnablePush:
-        if (value > 1) {
+        // RFC 9113 §6.5.2: the value MUST be 0 or 1, and a server MUST NOT send 1. As aeronet never pushes,
+        // the value sent by a client is not needed.
+        if (value > 1U || (value == 1U && !_isServer)) {
           return connectionError(ErrorCode::ProtocolError, ErrorMsg::InvalidENABLE_PUSHValue);
         }
-        _peerSettings.enablePush = (value == 1);
         break;
       case SettingsParameter::MaxConcurrentStreams:
         _peerSettings.maxConcurrentStreams = value;
@@ -1457,7 +1459,8 @@ ErrorCode Http2Connection::decodeAndEmitHeaders(uint32_t streamId, std::span<con
 void Http2Connection::sendSettings() {
   const SettingsEntry entries[]{
       SettingsEntry{SettingsParameter::HeaderTableSize, _localSettings.headerTableSize},
-      SettingsEntry{SettingsParameter::EnablePush, static_cast<uint32_t>(_localSettings.enablePush)},
+      // Always 0: a server MUST NOT send 1 (RFC 9113 §6.5.2), and aeronet clients do not accept pushes.
+      SettingsEntry{SettingsParameter::EnablePush, 0},
       SettingsEntry{SettingsParameter::MaxConcurrentStreams, _localSettings.maxConcurrentStreams},
       SettingsEntry{SettingsParameter::InitialWindowSize, _localSettings.initialWindowSize},
       SettingsEntry{SettingsParameter::MaxFrameSize, _localSettings.maxFrameSize},
