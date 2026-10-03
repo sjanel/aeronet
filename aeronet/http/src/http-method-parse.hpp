@@ -7,9 +7,7 @@
 namespace aeronet::http {
 
 // Attempt to parse a HTTP method.
-// RFC 9110 §9.1: The method token is case-sensitive, BUT:
-// RFC 9110 §2.5. The spec encourages robustness:
-// "Although methods are case-sensitive, the implementation SHOULD be case-insensitive when parsing received messages.”
+// RFC 9110 §9.1: The method token is case-sensitive, so "get" is not "GET".
 // Returns kMethodInvalid if the method is not recognized.
 Method ParseMethodStr(std::string_view str);
 
