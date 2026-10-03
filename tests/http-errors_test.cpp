@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <initializer_list>
 #include <mutex>
 #include <random>
 #include <stdexcept>
@@ -23,6 +24,7 @@
 #include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
@@ -47,6 +49,7 @@
 #endif
 
 using namespace std::chrono_literals;
+using namespace std::string_view_literals;
 using namespace aeronet;
 
 namespace {
@@ -1060,5 +1063,510 @@ TEST(ConnectionManagerErrors, EpollCtlAddFailureDuringAccept) {
 
   // Server should still work for subsequent connections
   auto resp = test::simpleGet(localTs.port(), "/after-add-fail");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+}
+
+// =============================================================================
+// HTTP Garden regression payloads
+// =============================================================================
+//
+// Parsing anomalies catalogued by the HTTP Garden project (https://github.com/narfindustries/http-garden, mirrored at
+// https://github.com/Ramzansmith/http-garden-fuzzing-http-servers).
+//
+// Each case references the bug number of the Garden README ("server #N" for server bugs, "transducer #N" for proxy
+// bugs, "bonus #N" for bonus bugs). Payloads are the Garden ones, with a Host header added where it was missing:
+// a Host-less HTTP/1.1 request is rejected before the code path the payload targets is reached.
+//
+// Transducer (proxy) bugs are about what a proxy forwards. aeronet is the origin server in that picture, so for them we
+// check that aeronet, receiving the forwarded bytes, either rejects them or frames them the standard way.
+
+namespace {
+
+// Describes how the server interpreted the request, so that tests can check framing decisions.
+void InstallDescribeHandler() {
+  ts.router().setDefault([](const HttpRequestView& req) {
+    std::string out;
+    out.append("m=").append(http::MethodToStr(req.method()));
+    out.append(";p=[").append(req.path()).append("]");
+    out.append(";b=[").append(req.body()).append("]");
+    out.append(";t=[").append(req.trailerValueOrEmpty("x")).append("]");
+    return req.makeResponse(out);
+  });
+}
+
+struct GardenCase {
+  std::string_view ref;
+  std::string_view payload;
+  http::StatusCode expectedStatus;
+};
+
+std::string StatusLine(http::StatusCode statusCode) { return "HTTP/1.1 " + std::to_string(statusCode) + ' '; }
+
+// Sends the payload on a fresh connection and checks that the server answered with exactly one response with the
+// expected status, then closed the connection: nothing after the offending bytes may be read as another request.
+void ExpectSingleResponse(const GardenCase& gardenCase) {
+  SCOPED_TRACE(gardenCase.ref);
+  const std::string resp = test::sendAndCollect(port, gardenCase.payload);
+  EXPECT_TRUE(resp.starts_with(StatusLine(gardenCase.expectedStatus))) << resp;
+  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp;
+}
+
+void ExpectSingleResponses(std::initializer_list<GardenCase> gardenCases) {
+  InstallDescribeHandler();
+  for (const auto& gardenCase : gardenCases) {
+    ExpectSingleResponse(gardenCase);
+  }
+}
+
+}  // namespace
+
+// =============================================================================
+// Request line
+// =============================================================================
+
+TEST(HttpGardenRequestLine, MalformedRequestLinesAreRejected) {
+  ExpectSingleResponses({
+      // server #5: HTTP versions interpreted as their longest valid prefix.
+      {"server #5", "GET /test HTTP/1.32\r\nHost: a\r\n\r\n", http::StatusCodeBadRequest},
+      // server #15: HTTP versions not validated.
+      {"server #15", "GET / HTTP/\r\r1.1\r\nHost: a\r\n\r\n", http::StatusCodeBadRequest},
+      // server #24: 8-bit integer overflow in HTTP version numbers.
+      {"server #24", "GET / HTTP/4294967295.255\r\nHost: a\r\n\r\n", http::StatusCodeBadRequest},
+      // server #9: '\n' allowed as separating whitespace in a request line.
+      {"server #9", "GET /\nHTTP/1.1\r\nHost: a\r\n\r\n", http::StatusCodeBadRequest},
+      // server #6: HTTP methods interpreted as their longest valid prefix.
+      {"server #6", "G=\":<>(e),[T];?\" /get HTTP/1.1\r\nHost: a\r\n\r\n", http::StatusCodeNotImplemented},
+      // server #40: HTTP methods and versions not validated.
+      {"server #40", "\x00 / HTTP/............0596.7407.\r\nHost: a\r\n\r\n"sv, http::StatusCodeNotImplemented},
+      // server #12: a request without Host must get a 400 response, not a silent close.
+      {"server #12", "GET / HTTP/1.1\r\n\r\n", http::StatusCodeBadRequest},
+  });
+}
+
+TEST(HttpGardenRequestLine, ValidRequestTargetFormsAreAccepted) {
+  InstallDescribeHandler();
+  for (std::string_view target : {"/", "/a/b?c=d", "/%41", "http://a/abs"}) {
+    SCOPED_TRACE(target);
+    const std::string resp = test::sendAndCollect(
+        port, std::string("GET ") + std::string(target) + " HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n");
+    EXPECT_FALSE(resp.starts_with("HTTP/1.1 400")) << resp;
+  }
+  const std::string resp = test::sendAndCollect(port, "OPTIONS * HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+}
+
+// =============================================================================
+// Header names
+// =============================================================================
+
+TEST(HttpGardenHeaderNames, InvalidHeaderNamesAreRejected) {
+  ExpectSingleResponses({
+      // server #3: whitespace stripped from the end of header names.
+      {
+          "server #3",
+          "GET / HTTP/1.1\r\nHost: whatever\r\nContent-Length : 34\r\n\r\nGET / HTTP/1.1\r\nHost: whatever\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      // server #4: whitespace stripped from the beginning of the first header name.
+      {"server #4", "GET / HTTP/1.1\r\n\tContent-Length: 1\r\nHost: a\r\n\r\nX", http::StatusCodeBadRequest},
+      // server #8: non-ASCII bytes permitted in header names.
+      {
+          "server #8",
+          "GET / HTTP/1.1\r\nHost: a\r\n\xef"
+          "oo: bar\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      // server #14: disallowed ASCII characters permitted in header names.
+      {
+          "server #14",
+          "GET / HTTP/1.1\r\nHost: a\r\n"
+          "\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\x0b\x0c\x0e\x0f\x10\x11\x12\x13\x14\x15\x16"
+          "\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f \"(),/;<=>?@[/]{}: whatever\r\n\r\n"sv,
+          http::StatusCodeBadRequest,
+      },
+      // server #18: empty header names accepted.
+      {"server #18", "GET / HTTP/1.1\r\n: ignored\r\nHost: whatever\r\n\r\n", http::StatusCodeBadRequest},
+      // server #20: \xa0 and \x85 stripped from the end of header names.
+      {
+          "server #20",
+          "GET / HTTP/1.1\r\nHost: a\r\nContent-Length\x85: 10\r\n\r\n0123456789",
+          http::StatusCodeBadRequest,
+      },
+      // server #27: header block truncated on a header with neither name nor value.
+      {"server #27", "GET / HTTP/1.1\r\nHost: a\r\n:\r\nI: am chopped off\r\n\r\n", http::StatusCodeBadRequest},
+      // server #28: header name separated from the value by a space alone, no ':'.
+      {"server #28", "GET / HTTP/1.1\r\nHost: a\r\nContent-Length 10\r\n\r\n0123456789", http::StatusCodeBadRequest},
+      // server #36: field lines with no ':' ignored.
+      {
+          "server #36",
+          "GET / HTTP/1.1\r\nHost: whatever\r\nTest\r\nConnection: close\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      // server #37: header names continued across lines.
+      {
+          "server #37",
+          "POST / HTTP/1.1\r\nHost: whatever\r\nTransfer-\r\nEncoding: chunked\r\nContent-Length: 5\r\n\r\n0\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      // transducer #6: disallowed bytes in header names.
+      {"transducer #6", "GET / HTTP/1.1\r\nHost: fanout\r\nHeader\x85: value\r\n\r\n", http::StatusCodeBadRequest},
+      // transducer #14: field lines with no ':' (bare LF inside the name).
+      {
+          "transducer #14",
+          "GET / HTTP/1.1\r\nHost: whatever\r\nTe\nst: test\r\nConnection: close\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+  });
+}
+
+// server #11: header names containing any of !#$%&'*+.^_`|~ must be accepted (they are tchars).
+TEST(HttpGardenHeaderNames, TcharPunctuationIsAccepted) {
+  InstallDescribeHandler();
+  const std::string resp = test::sendAndCollect(
+      port, "GET / HTTP/1.1\r\nHost: a\r\nTe!st: a\r\nX-!#$%&'*+.^_`|~: b\r\nConnection: close\r\n\r\n");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+}
+
+// =============================================================================
+// Header values and line terminators
+// =============================================================================
+
+TEST(HttpGardenHeaderValues, InvalidHeaderValuesAreRejected) {
+  ExpectSingleResponses({
+      // server #2: \x00, \r or \n permitted in header values.
+      {"server #2", "GET / HTTP/1.1\r\nHost: a\r\nHeader: v\n\x00\ralue\r\n\r\n"sv, http::StatusCodeBadRequest},
+      // server #13: '\r' treated as a line terminator in header field lines.
+      {"server #13", "GET / HTTP/1.1\r\nHost: a\r\nVisible: :/\rSmuggled: :)\r\n\r\n", http::StatusCodeBadRequest},
+      // server #19: non-CRLF whitespace stripped from the beginning of header values.
+      {"server #19", "GET / HTTP/1.1\r\nHost: a\r\nUseless:\n\nGET / HTTP/1.1\r\n\r\n", http::StatusCodeBadRequest},
+      // server #34: '\r' permitted in header values.
+      {"server #34", "GET / HTTP/1.1\r\nHost: whatever\r\nHeader: va\rlue\r\n\r\n", http::StatusCodeBadRequest},
+      // server #35: header values truncated at \x00.
+      {
+          "server #35",
+          "GET / HTTP/1.1\r\nHost: whatever\r\nTest: test\x00THESE BYTES GET DROPPED\r\nConnection: close\r\n\r\n"sv,
+          http::StatusCodeBadRequest,
+      },
+      // server #41: \xa0 and \x85 stripped from header values.
+      {
+          "server #41",
+          "GET /login HTTP/1.1\r\nHost: a\r\nUser: \x85"
+          "admin\xa0\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      // server #43: \x00 stripped from the end of header values.
+      {"server #43", "GET / HTTP/1.1\r\nHost: a\r\nEvil: evil\x00\r\n\r\n"sv, http::StatusCodeBadRequest},
+      // server #46: bytes above \x80 stripped from header values.
+      {
+          "server #46",
+          "POST / HTTP/1.1\r\nHost: \xff"
+          "a\xff\r\nTransfer-Encoding: \xff"
+          "chunked\xff\r\n\r\n1\r\nZ\r\n0\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      // transducer #10: '\r' in header values.
+      {
+          "transducer #10",
+          "GET / HTTP/1.1\r\nHost: a\r\nInvalid-Header: this\rvalue\ris\rinvalid\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      // transducer #12: \x00 in header values.
+      {"transducer #12", "GET / HTTP/1.1\r\nHost: google.com\x00.kallus.org\r\n\r\n"sv, http::StatusCodeBadRequest},
+      // transducer #20: headers containing \x00 or \n concatenated into the previous header value.
+      {"transducer #20", "GET / HTTP/1.1\r\nHost: a\r\na:b\r\nc\x00\r\n\r\n"sv, http::StatusCodeBadRequest},
+  });
+}
+
+TEST(HttpGardenHeaderValues, HeaderBlockTerminatorsAreStrict) {
+  ExpectSingleResponses({
+      // server #30: header block terminated on \r\n\rX.
+      {
+          "server #30",
+          "GET / HTTP/1.1\r\nHost: a\r\n\rZGET /evil: HTTP/1.1\r\nHost: a\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      // transducer #16: bare '\n' line terminators are not accepted (the final CRLF only ends the request line).
+      {"transducer #16", "GET / HTTP/1.1\nHost: whatever\nConnection: close\n\r\n", http::StatusCodeBadRequest},
+  });
+}
+
+// =============================================================================
+// Content-Length
+// =============================================================================
+
+TEST(HttpGardenContentLength, InvalidContentLengthsAreRejected) {
+  ExpectSingleResponses({
+      // server #10: '_', '+' and '-' accepted in Content-Length values.
+      {"server #10", "GET / HTTP/1.1\r\nHost: a\r\nContent-Length: +1_0\r\n\r\n0123456789", http::StatusCodeBadRequest},
+      // server #16: empty Content-Length treated as 0.
+      {"server #16", "GET / HTTP/1.1\r\nHost: whatever\r\nContent-Length: \r\n\r\n", http::StatusCodeBadRequest},
+      // server #26: negative Content-Length forcing an infinite busy loop.
+      {"server #26", "GET / HTTP/1.1\r\nHost: a\r\nContent-Length: -48\r\n\r\n", http::StatusCodeBadRequest},
+      // server #29: invalid Content-Length interpreted as its longest valid prefix.
+      {"server #29", "GET / HTTP/1.1\r\nHost: a\r\nContent-Length: 1Z\r\n\r\nZ", http::StatusCodeBadRequest},
+      // server #38: empty Content-Length interpreted as "read until timeout".
+      {
+          "server #38",
+          "GET / HTTP/1.1\r\nHost: localhost\r\nContent-Length: \r\n\r\nGET / HTTP/1.1\r\nHost: localhost\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      // transducer #1: 0x-prefixed Content-Length.
+      {"transducer #1", "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 0x10\r\n\r\nZ", http::StatusCodeBadRequest},
+      // Content-Length overflowing 64 bits.
+      {
+          "overflow",
+          "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 18446744073709551616\r\n\r\nZ",
+          http::StatusCodeBadRequest,
+      },
+  });
+}
+
+TEST(HttpGardenContentLength, ConflictingContentLengthsAreRejected) {
+  ExpectSingleResponses({
+      // server #23: conflicting Content-Length headers, first one prioritized.
+      {
+          "server #23",
+          "GET / HTTP/1.1\r\nHost: a\r\nContent-Length: 1\r\nContent-Length: 0\r\n\r\nZ",
+          http::StatusCodeBadRequest,
+      },
+      // server #33: conflicting Content-Length headers, last one prioritized.
+      {
+          "server #33",
+          "GET / HTTP/1.1\r\nHost: a\r\nContent-Length: 0\r\nContent-Length: 1\r\n\r\nZ",
+          http::StatusCodeBadRequest,
+      },
+      // server #42 / transducer #11: empty Content-Length prioritized over a subsequent one.
+      {
+          "server #42",
+          "GET / HTTP/1.1\r\nHost: a\r\nContent-Length: \r\nContent-Length: 43\r\n\r\n"
+          "POST /evil HTTP/1.1\r\nContent-Length: 18\r\n\r\nGET / HTTP/1.1\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      // transducer #22: multiple Content-Length headers.
+      {
+          "transducer #22",
+          "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 0\r\nContent-Length: 31\r\n\r\n"
+          "GET /evil HTTP/1.1\r\nHost: a\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+  });
+}
+
+// server #32: Content-Length parsed with strtoll(,,0), so a leading 0 meant octal. It is decimal.
+TEST(HttpGardenContentLength, LeadingZerosAreDecimal) {
+  InstallDescribeHandler();
+  const std::string resp = test::sendAndCollect(
+      port, "POST / HTTP/1.1\r\nHost: whatever\r\nContent-Length: 010\r\nConnection: close\r\n\r\n0123456789");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.contains(";b=[0123456789];")) << resp;
+}
+
+// transducer #21: a GET body framed by Content-Length is consumed as a body, never parsed as a new request.
+TEST(HttpGardenContentLength, GetBodyIsConsumed) {
+  InstallDescribeHandler();
+  const std::string resp = test::sendAndCollect(
+      port, "GET / HTTP/1.1\r\nHost: a\r\nContent-Length: 10\r\nConnection: close\r\n\r\n1234567890");
+  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp;
+  EXPECT_TRUE(resp.contains(";b=[1234567890];")) << resp;
+}
+
+// =============================================================================
+// Transfer-Encoding
+// =============================================================================
+
+TEST(HttpGardenTransferEncoding, AmbiguousTransferEncodingsAreRejected) {
+  ExpectSingleResponses({
+      // server #21 / transducer #9 / #15 / #18: ",chunked" is neither ignored nor mapped to Content-Length framing.
+      {
+          "server #21",
+          "GET / HTTP/1.1\r\nHost: whatever\r\nTransfer-Encoding: ,chunked\r\nContent-Length: 5\r\n\r\n0\r\n\r\n",
+          http::StatusCodeNotImplemented,
+      },
+      {
+          "transducer #9",
+          "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: ,chunked\r\n\r\n0\r\n\r\n",
+          http::StatusCodeNotImplemented,
+      },
+      // server #44: unknown transfer codings treated as chunked.
+      {
+          "server #44",
+          "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: blegh\r\n\r\n1\r\nZ\r\n0\r\n\r\n",
+          http::StatusCodeNotImplemented,
+      },
+      // transducer #23: Content-Length together with Transfer-Encoding.
+      {
+          "transducer #23",
+          "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      // transducer #28: chunked applied twice (two Transfer-Encoding: chunked headers).
+      {
+          "transducer #28",
+          "POST / HTTP/1.1\r\nHost: whatever\r\nTransfer-Encoding: chunked\r\n"
+          "Transfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+          http::StatusCodeNotImplemented,
+      },
+      // Transfer-Encoding in a HTTP/1.0 request makes the framing faulty (RFC 9112 §6.1).
+      {
+          "HTTP/1.0 Transfer-Encoding",
+          "POST / HTTP/1.0\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+  });
+}
+
+// =============================================================================
+// Chunked framing
+// =============================================================================
+
+TEST(HttpGardenChunked, InvalidChunkSizesAreRejected) {
+  ExpectSingleResponses({
+      // server #1 / #22: chunk sizes interpreted as their longest valid prefix.
+      {
+          "server #1",
+          "GET / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n0_2e\r\n\r\n"
+          "GET / HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\n0\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      // server #25: 0x, + and - prefixes accepted (strtoll).
+      {
+          "server #25 (0x)",
+          "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n0x1\r\nZ\r\n0\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      {
+          "server #25 (+)",
+          "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n+1\r\nZ\r\n0\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      // transducer #2: invalid chunk sizes.
+      {
+          "transducer #2",
+          "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\nZ\r\nZZ\r\nZZZ\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      // transducer #7: chunk sizes interpreted as their longest valid prefix.
+      {
+          "transducer #7",
+          "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n"
+          "1these-bytes-never-get-validated\r\nZ\r\n0\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      // transducer #19: chunk sizes with +, - and 0x prefixes.
+      {
+          "transducer #19",
+          "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n-0x0\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      // transducer #24: whitespace-prefixed chunk sizes.
+      {
+          "transducer #24",
+          "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n           0\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      // transducer #17: an extra CRLF before the last chunk is an empty (invalid) chunk size.
+      {
+          "transducer #17",
+          "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n"
+          "17\r\n0\r\n\r\nGET / HTTP/1.1\r\n\r\n\r\n\r\n0\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+  });
+}
+
+TEST(HttpGardenChunked, InvalidChunkLineTerminatorsAreRejected) {
+  ExpectSingleResponses({
+      // server #31: chunk lines terminated on \rX.
+      {
+          "server #31",
+          "GET / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n"
+          "5\r\r;ABCD\r\n34\r\nE\r\n0\r\n\r\n"
+          "GET / HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\n0\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      // transducer #3: '\r' in chunk-ext whitespace before the ';'.
+      {
+          "transducer #3",
+          "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n2\r\r;a\r\n02\r\n41\r\n0\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      // transducer #13: bare '\n' as the chunk data terminator.
+      {
+          "transducer #13",
+          "GET / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\na\r\n0123456789\n0\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      // server #47: after an invalid chunk the connection must be closed, not resynchronized on the next CRLF.
+      {
+          "server #47",
+          "POST / HTTP/1.1\r\nHost: whatever\r\nTransfer-Encoding: chunked\r\n\r\n"
+          "INVALID!!!\r\nGET / HTTP/1.1\r\nHost: whatever\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+  });
+}
+
+TEST(HttpGardenChunked, ValidChunkExtensionsAreAccepted) {
+  InstallDescribeHandler();
+  const std::string resp =
+      test::sendAndCollect(port,
+                           "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+                           "2;name=value;q=\"quoted str\"\r\nab\r\n1;\tx\r\nc\r\n0\r\n\r\n");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.contains(";b=[abc];")) << resp;
+}
+
+// server #39: chunked bodies terminated on \r\nXX. "X:POST / HTTP/1.1" is a trailer field, not a new request.
+TEST(HttpGardenChunked, TrailerFieldIsNotParsedAsNextRequest) {
+  InstallDescribeHandler();
+  const std::string resp =
+      test::sendAndCollect(port,
+                           "GET / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+                           "0\r\nX:POST / HTTP/1.1\r\n\r\n");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp;
+  EXPECT_TRUE(resp.contains(";t=[POST / HTTP/1.1]")) << resp;
+}
+
+// =============================================================================
+// Message boundaries / pipelining
+// =============================================================================
+
+// server #45: an invalid request pipelined after a valid "Connection: close" one must not prevent the response to the
+// valid one (the trailing bytes are simply discarded).
+TEST(HttpGardenPipelining, InvalidRequestAfterConnectionCloseIsIgnored) {
+  InstallDescribeHandler();
+  const std::string resp =
+      test::sendAndCollect(port, "GET / HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\nInvalid\r\n\r\n");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp;
+}
+
+// server #48: pipelined requests are not merged into the body of the first one, even when it has Content-Length: 0.
+TEST(HttpGardenPipelining, PipelinedRequestsKeepTheirOwnFraming) {
+  InstallDescribeHandler();
+  test::ClientConnection conn(port);
+  test::sendAll(conn.fd(),
+                "POST / HTTP/1.1\r\nContent-Length: 0\r\nConnection:keep-alive\r\nHost: a\r\nid: 0\r\n\r\n"
+                "POST /second HTTP/1.1\r\nHost: a\r\nid: 1\r\nContent-Length: 34\r\nConnection: close\r\n\r\n");
+  std::this_thread::sleep_for(15ms);
+  test::sendAll(conn.fd(), "GET / HTTP/1.1\r\nHost: a\r\nid: 2\r\n\r\n");
+  const std::string resp = test::recvUntilClosed(conn.fd());
+  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 200"), 2) << resp;
+  EXPECT_TRUE(resp.contains("m=POST;p=[/];b=[];")) << resp;
+  EXPECT_TRUE(resp.contains("m=POST;p=[/second];b=[GET / HTTP/1.1\r\nHost: a\r\nid: 2\r\n\r\n];")) << resp;
+}
+
+// bonus #3: an extra byte after a chunked request crashed the server. It must be kept as the start of the next request.
+TEST(HttpGardenPipelining, ExtraByteAfterChunkedBody) {
+  InstallDescribeHandler();
+  {
+    test::ClientConnection conn(port);
+    test::sendAll(conn.fd(), "GET / HTTP/1.1\r\nHost: whatever\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n\x00"sv);
+    const std::string resp = test::recvWithTimeout(conn.fd());
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  }
+  // Server still alive.
+  const std::string resp = test::sendAndCollect(port, "GET / HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n");
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
 }
