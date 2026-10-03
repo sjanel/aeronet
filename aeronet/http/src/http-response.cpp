@@ -7,7 +7,6 @@
 #include <cstring>
 #include <stdexcept>
 #include <string_view>
-#include <utility>
 
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/header-write.hpp"
@@ -209,14 +208,14 @@ HttpResponse& HttpResponse::reason(std::string_view newReason) & {
 
   const int32_t diff = static_cast<int32_t>(newReason.size()) - static_cast<int32_t>(oldReasonSz);
 
-  _data.ensureAvailableCapacityExponential(diff);
+  HeadGrowthManager headGrowthManager(*this, diff);
 
   // The mandatory SP that separates the status code from the reason-phrase (kReasonBeg - 1) is always
   // present, so only the reason characters themselves are inserted/removed: shift the [reason-end, end)
   // tail by `diff`. For an empty reason the reason region is itself empty (reason-end == kReasonBeg).
-  char* reasonEnd = _data.data() + kReasonBeg + oldReasonSz;
+  char* pReasonEnd = _data.data() + kReasonBeg + oldReasonSz;
 
-  std::memmove(reasonEnd + diff, reasonEnd, _data.size() - (kReasonBeg + oldReasonSz));
+  std::memmove(pReasonEnd + diff, pReasonEnd, _data.size() - (kReasonBeg + oldReasonSz));
 
   adjustHeadersAndBodyStart(diff);
   if (newReason.empty()) {
@@ -242,16 +241,7 @@ HttpMessageData HttpResponse::finalizeForHttp1(const char* cachedDateHeader, htt
 
   HttpMessage::finalizeForHttp1(version, opts, pGlobalHeaders, minCapturedBodySize);
 
-  HttpMessageData prepared(std::move(_data), std::move(_payloadVariant));
-
-  if (opts.isHeadMethod()) {
-    auto* pFilePayload = prepared.getIfFilePayload();
-    if (pFilePayload != nullptr) {
-      pFilePayload->length = 0;
-    }
-  }
-
-  return prepared;
+  return releaseMessageData();
 }
 
 }  // namespace aeronet

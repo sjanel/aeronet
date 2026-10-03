@@ -4,6 +4,10 @@ All notable changes to aeronet are documented in this file.
 
 ## Unreleased
 
+### 1.7.0 Improvements
+
+- **`HttpResponse`, `HttpRequest` and the connection output buffer are much smaller**: the captured body payload (`std::string`, vectors, buffers, static views, files and HEAD size-only bodies) is no longer a 64-byte member of `HttpMessage` and of the HTTP/1 output buffer; it is constructed in place inside the head buffer, right after the head, reusing its spare capacity. A finalized response hands this buffer over to its connection without moving the payload. `sizeof(HttpResponse)` goes from 112 to 48 bytes (one cache line), `sizeof(HttpRequest)` from 120 to 56 bytes and the HTTP/1 output buffer (one per connection, plus one per pending zerocopy send) from 96 to 32 bytes on 64-bit Linux, which makes every move of a request / response (handler return values, `std::optional`, `std::expected`, coroutine frames, `HttpResponseWriter`) cheaper. Release A/B against 1.6.0 with `benchmarks/internal/http-response-payload_bench.cpp`: a response move is 25-39% faster, and the path from the handler to the connection output buffer is 7-16% faster for small bodies and about 3% faster for 4 KiB bodies.
+
 ## [1.6.0] - 2026-10-03
 
 ### 1.6.0 Breaking changes

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <amc/type_traits.hpp>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -14,6 +16,7 @@
 
 namespace aeronet {
 
+class EmbeddedPayload;
 class HttpMessage;
 
 // Convenient wrapper of common user-types for HTTP body storage.
@@ -41,6 +44,8 @@ class HttpPayload {
     RawCharsSuffix& operator=(RawCharsSuffix&&) noexcept = default;
 
     [[nodiscard]] std::string_view view() const noexcept { return {buffer.get() + offset, size}; }
+
+    using trivially_relocatable = std::true_type;
 
     std::unique_ptr<char, Free> buffer;
     std::size_t size{0};
@@ -135,7 +140,7 @@ class HttpPayload {
   // least size() + sz)
   void addSize(std::size_t sz);
 
-  void clear() noexcept;
+  void reset() noexcept { _data = std::monostate{}; }
 
   void shrink_to_fit();
 
@@ -143,15 +148,36 @@ class HttpPayload {
   static constexpr char kSizeOnlySentinel{};
 
  private:
+  friend class EmbeddedPayload;
   friend class HttpMessage;
+
+  using Variant = std::variant<std::monostate, FilePayload, std::string, std::string_view, std::vector<char>,
+                               std::vector<std::byte>, CharBuffer, BytesBuffer, RawChars, RawCharsSuffix>;
+
+  // Per-alternative relocatability table, generated from the variant alternatives so that it cannot go out of sync.
+  template <class V>
+  struct TriviallyRelocatableTable;
+
+  template <class... Ts>
+  struct TriviallyRelocatableTable<std::variant<Ts...>> {
+    static constexpr bool kValues[] = {amc::is_trivially_relocatable_v<Ts>...};
+  };
+
+  static_assert(amc::is_trivially_relocatable_v<FilePayload>);
+  static_assert(amc::is_trivially_relocatable_v<RawChars>);
+  static_assert(amc::is_trivially_relocatable_v<RawCharsSuffix>);
+
+  // Tells whether the ACTIVE alternative can be relocated with a plain memcpy (without move + destroy).
+  [[nodiscard]] bool isTriviallyRelocatable() const noexcept {
+    assert(!_data.valueless_by_exception());
+    return TriviallyRelocatableTable<Variant>::kValues[_data.index()];
+  }
 
   // Takes ownership of `rawChars` while exposing [suffixOffset, rawChars.size()) as the payload.
   HttpPayload(RawChars rawChars, std::size_t suffixOffset) noexcept
       : _data(RawCharsSuffix(std::move(rawChars), suffixOffset)) {}
 
-  std::variant<std::monostate, FilePayload, std::string, std::string_view, std::vector<char>, std::vector<std::byte>,
-               CharBuffer, BytesBuffer, RawChars, RawCharsSuffix>
-      _data;
+  Variant _data;
 };
 
 }  // namespace aeronet
