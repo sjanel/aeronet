@@ -1388,6 +1388,42 @@ TEST_F(HttpRequestViewTest, WantCloseAndHasExpectContinue) {
   }
 }
 
+// RFC 9110 §7.6.1: Connection is a list of connection options, so the close option is honored wherever it appears in
+// the list - including when repeated Connection header lines are merged into a single value.
+TEST_F(HttpRequestViewTest, ConnectionCloseOptionAnywhereInList) {
+  for (std::string_view headers : {"Connection: keep-alive, close\r\n", "Connection: Upgrade,CLOSE\r\n",
+                                   "Connection: close\r\nConnection: close\r\n",
+                                   "Connection: keep-alive\r\nConnection:  Close \r\n", "Connection: ,close,\r\n"}) {
+    SCOPED_TRACE(headers);
+    ASSERT_EQ(reqSet(BuildRaw("GET", "/p", "HTTP/1.1", headers)), http::StatusCodeOK);
+    EXPECT_TRUE(callWantClose());
+    EXPECT_FALSE(callIsKeepAliveForHttp1());
+  }
+  // Options merely containing "close" are distinct options
+  for (std::string_view headers :
+       {"Connection: closed\r\n", "Connection: not-close\r\n", "Connection: Upgrade\r\n", "Connection: ,\r\n"}) {
+    SCOPED_TRACE(headers);
+    ASSERT_EQ(reqSet(BuildRaw("GET", "/p", "HTTP/1.1", headers)), http::StatusCodeOK);
+    EXPECT_FALSE(callWantClose());
+    EXPECT_TRUE(callIsKeepAliveForHttp1());
+  }
+}
+
+// RFC 9112 §9.3: an HTTP/1.0 connection only persists when the request carries the keep-alive connection option.
+TEST_F(HttpRequestViewTest, Http10KeepAliveRequiresKeepAliveOption) {
+  struct Case {
+    std::string_view headers;
+    bool keepAlive;
+  };
+  for (const Case& tc : {Case{"", false}, Case{"Connection: Upgrade\r\n", false},
+                         Case{"Connection: keep-alive\r\n", true}, Case{"Connection: Upgrade, Keep-Alive\r\n", true},
+                         Case{"Connection: keep-alive\r\nConnection: close\r\n", false}}) {
+    SCOPED_TRACE(tc.headers);
+    ASSERT_EQ(reqSet(BuildRaw("GET", "/p", "HTTP/1.0", tc.headers)), http::StatusCodeOK);
+    EXPECT_EQ(callIsKeepAliveForHttp1(), tc.keepAlive);
+  }
+}
+
 TEST_F(HttpRequestViewTest, EndSetsSpanAttributesAndEnds) {
   // Reset fake span static state
   FakeSpan::lastStatusCode = -1;
