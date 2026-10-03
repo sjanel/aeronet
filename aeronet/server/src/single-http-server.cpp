@@ -737,17 +737,22 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
       }
     } else if (routingResult.redirectSlashMode() != Router::RoutingResult::RedirectSlashMode::None) {
       // Emit 301 redirect to canonical form.
+      // The path is percent-decoded: re-encode it so that the Location is a valid URI reference. Decoded control
+      // characters (CR, LF...) would otherwise make the header value invalid and throw outside of any handler.
       static constexpr std::string_view kRedirecting = "Redirecting";
       const std::string_view reqPath = request.path();
-      const std::size_t additionalCapacity =
-          HttpResponse::BodySize(kRedirecting.size()) + http::HeaderSize(http::Location.size(), reqPath.size() + 1U);
-      auto resp = request.makeResponse(additionalCapacity, http::StatusCodeMovedPermanently);
+      RawChars& location = _sharedBuffers.buf;
+      location.clear();
       if (routingResult.redirectSlashMode() == Router::RoutingResult::RedirectSlashMode::AddSlash) {
-        resp.headerAddLine(http::Location, reqPath);
-        resp.headerAppendValue(http::Location, '/', "");
+        http::AppendUrlEncodedPath(location, reqPath);
+        location.push_back('/');
       } else {
-        resp.headerAddLine(http::Location, reqPath.substr(0, reqPath.size() - 1));
+        http::AppendUrlEncodedPath(location, reqPath.substr(0, reqPath.size() - 1));
       }
+      const std::size_t additionalCapacity =
+          HttpResponse::BodySize(kRedirecting.size()) + http::HeaderSize(http::Location.size(), location.size());
+      auto resp = request.makeResponse(additionalCapacity, http::StatusCodeMovedPermanently);
+      resp.headerAddLine(http::Location, std::string_view(location));
 
       resp.body(kRedirecting);
 
