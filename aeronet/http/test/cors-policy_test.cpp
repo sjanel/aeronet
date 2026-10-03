@@ -276,6 +276,56 @@ TEST_F(CorsPolicyTest, AllowAnyRequestHeadersAcceptsPreflight) {
   EXPECT_EQ(result.response.value_or(HttpResponse{}).headerValueOrEmpty(http::AccessControlAllowHeaders), "*");
 }
 
+// Header names are case-insensitive (RFC 9110 §5.1), and browsers send Access-Control-Request-Headers byte-lowercased
+// (Fetch: "convert header names to a sorted-lowercase set"), whatever the case used by the script or the policy.
+TEST_F(CorsPolicyTest, PreflightRequestHeaderNamesAreCaseInsensitive) {
+  policy.allowAnyOrigin()
+      .allowMethods(http::Method::PUT)
+      .allowRequestHeader("X-Trace")
+      .allowRequestHeader("content-TYPE");
+
+  ASSERT_EQ(parse(BuildRawHttp11(http::OPTIONS, "/files",
+                                 "Origin: https://any\r\n"
+                                 "Access-Control-Request-Method: PUT\r\n"
+                                 "Access-Control-Request-Headers: content-type,x-trace\r\n")),
+            http::StatusCodeOK);
+  EXPECT_EQ(policy.handlePreflight(request).status, CorsPolicy::PreflightResult::Status::Allowed);
+
+  ASSERT_EQ(parse(BuildRawHttp11(http::OPTIONS, "/files",
+                                 "Origin: https://any\r\n"
+                                 "Access-Control-Request-Method: PUT\r\n"
+                                 "Access-Control-Request-Headers: X-TRACE, Content-Type\r\n")),
+            http::StatusCodeOK);
+  EXPECT_EQ(policy.handlePreflight(request).status, CorsPolicy::PreflightResult::Status::Allowed);
+
+  ASSERT_EQ(parse(BuildRawHttp11(http::OPTIONS, "/files",
+                                 "Origin: https://any\r\n"
+                                 "Access-Control-Request-Method: PUT\r\n"
+                                 "Access-Control-Request-Headers: x-other\r\n")),
+            http::StatusCodeOK);
+  EXPECT_EQ(policy.handlePreflight(request).status, CorsPolicy::PreflightResult::Status::HeadersDenied);
+}
+
+// Allowing / exposing the same header name twice, in different cases, does not duplicate it.
+TEST_F(CorsPolicyTest, AllowedAndExposedHeaderNamesAreDeduplicatedCaseInsensitively) {
+  policy.allowAnyOrigin().allowRequestHeader("X-Trace").allowRequestHeader("x-trace").exposeHeader("X-Id").exposeHeader(
+      "x-id");
+
+  ASSERT_EQ(parse(BuildRawHttp11(http::OPTIONS, "/files",
+                                 "Origin: https://any\r\n"
+                                 "Access-Control-Request-Method: GET\r\n"
+                                 "Access-Control-Request-Headers: x-trace\r\n")),
+            http::StatusCodeOK);
+  const auto result = policy.handlePreflight(request);
+  ASSERT_EQ(result.status, CorsPolicy::PreflightResult::Status::Allowed);
+  EXPECT_EQ(result.response.value_or(HttpResponse{}).headerValueOrEmpty(http::AccessControlAllowHeaders), "X-Trace");
+
+  ASSERT_EQ(parse(BuildRawHttp11(http::GET, "/files", "Origin: https://any\r\n")), http::StatusCodeOK);
+  HttpResponse resp;
+  ASSERT_EQ(policy.applyToResponse(request, resp), CorsPolicy::ApplyStatus::Applied);
+  EXPECT_EQ(resp.headerValueOrEmpty(http::AccessControlExposeHeaders), "X-Id");
+}
+
 TEST_F(CorsPolicyTest, ExposeHeadersAndVaryMerging) {
   policy.allowOrigin("https://expose.example");
   policy.exposeHeader("X-Exposed");
