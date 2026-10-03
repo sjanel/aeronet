@@ -28,6 +28,7 @@
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
+#include "aeronet/http-header.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -139,7 +140,13 @@ std::string_view HttpRequestView::readBody(std::size_t maxBytes) {
 }
 
 bool HttpRequestView::wantClose() const {
-  return CaseInsensitiveEqual(headerValueOrEmpty(http::Connection), http::close);
+  // Connection is a list of connection options (RFC 9110 §7.6.1), repeated header lines being merged into one list.
+  for (http::HeaderValueReverseTokensIterator<','> it(headerValueOrEmpty(http::Connection)); it.hasNext();) {
+    if (CaseInsensitiveEqual(it.next(), http::close)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 HttpResponse HttpRequestView::makeResponse(std::size_t additionalCapacity, http::StatusCode statusCode) const {
@@ -176,12 +183,19 @@ bool HttpRequestView::isKeepAliveForHttp1(bool enableKeepAlive, uint32_t maxRequ
   if (!enableKeepAlive || _pOwnerState->requestsServed >= maxRequestsPerConnection || !isServerRunning) {
     return false;
   }
-  const std::string_view connVal = headerValueOrEmpty(http::Connection);
-  if (connVal.empty()) {
-    // Default is keep-alive for HTTP/1.1, close for HTTP/1.0
-    return version() == http::HTTP_1_1;
+  // Connection is a list of connection options (RFC 9110 §7.6.1): the close option wins wherever it is.
+  bool keepAliveSeen = false;
+  for (http::HeaderValueReverseTokensIterator<','> it(headerValueOrEmpty(http::Connection)); it.hasNext();) {
+    const std::string_view option = it.next();
+    if (CaseInsensitiveEqual(option, http::close)) {
+      return false;
+    }
+    if (CaseInsensitiveEqual(option, http::keepalive)) {
+      keepAliveSeen = true;
+    }
   }
-  return !CaseInsensitiveEqual(connVal, http::close);
+  // HTTP/1.1 defaults to persistent connections, HTTP/1.0 requires the keep-alive option (RFC 9112 §9.3).
+  return keepAliveSeen || version() == http::HTTP_1_1;
 }
 
 void HttpRequestView::init(const HttpServerConfig& config, CompressionState& compressionState) {
