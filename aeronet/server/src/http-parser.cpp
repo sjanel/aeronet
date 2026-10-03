@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string_view>
 #include <system_error>
 
@@ -72,12 +73,13 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeFixedLengthBody(Conne
   if (expectContinue && declaredContentLen > 0) {
     queueData(cnxIt, HttpMessageData(RawChars{}, HttpPayload(http::HTTP11_100_CONTINUE)));
   }
-  std::size_t totalNeeded = headerEnd + declaredContentLen;
-  if (state.inBuffer.size() < totalNeeded) {
+  // Compare against the bytes following the head (headerEnd <= inBuffer.size()) rather than computing
+  // headerEnd + declaredContentLen, which could wrap around for a huge Content-Length if maxBodyBytes allows it.
+  if (state.inBuffer.size() - headerEnd < declaredContentLen) {
     return BodyDecodeStatus::NeedMore;  // need more bytes
   }
   request._body = {state.inBuffer.data() + headerEnd, declaredContentLen};
-  consumedBytes = totalNeeded;
+  consumedBytes = headerEnd + declaredContentLen;
   return BodyDecodeStatus::Ready;
 }
 
@@ -117,13 +119,29 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
       emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed chunk size line");
       return BodyDecodeStatus::Error;
     }
-    // ignore chunk extensions per RFC 7230 section 4.1.1
+    // chunk-size = 1*HEXDIG (RFC 9112 §7.1). An empty chunk-size is not a last-chunk.
     auto* sizeLineEnd = std::find(first, lineEnd, ';');
+    if (sizeLineEnd == first) {
+      emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Invalid chunk size");
+      return BodyDecodeStatus::Error;
+    }
+    // Chunk extensions are ignored, but must not contain control characters: a parser accepting a bare LF as chunk
+    // line terminator would otherwise not agree with us on where the chunk data starts.
+    if (!http::IsValidHeaderValue(std::string_view(sizeLineEnd, lineEnd))) {
+      emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Invalid chunk extension");
+      return BodyDecodeStatus::Error;
+    }
     std::size_t chunkSize = 0;
     for (auto* it = first; it != sizeLineEnd; ++it) {
       const int8_t digit = from_hex_digit(*it);
       if (digit < 0) {
         emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Invalid chunk size");
+        return BodyDecodeStatus::Error;
+      }
+      // Never let the chunk size wrap around (it could become 0, ending the body early) - can only happen if
+      // maxBodyBytes does not already bound it.
+      if (chunkSize > (std::numeric_limits<std::size_t>::max() >> 4U)) {
+        emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, {});
         return BodyDecodeStatus::Error;
       }
       chunkSize = (chunkSize << 4U) | static_cast<std::size_t>(digit);
@@ -135,8 +153,9 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
 
     pos = static_cast<std::size_t>(lineEnd - state.inBuffer.data()) + http::CRLF.size();
 
-    // First, check if we have at least the immediate terminating CRLF
-    if (state.inBuffer.size() < pos + chunkSize + http::CRLF.size()) {
+    // First, check if we have at least the immediate terminating CRLF (written so that it cannot overflow)
+    const std::size_t availableBytes = state.inBuffer.size() - pos;
+    if (availableBytes < http::CRLF.size() || availableBytes - http::CRLF.size() < chunkSize) {
       return BodyDecodeStatus::NeedMore;
     }
 
