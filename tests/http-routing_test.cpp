@@ -248,6 +248,27 @@ TEST_F(HttpTrailingSlash, RedirectPolicyAddSlash) {
   ASSERT_TRUE(withoutSlash.starts_with("HTTP/1.1 301"));
 }
 
+// The request path is percent-decoded: decoded control characters must be re-encoded in the Location header, which
+// would otherwise be invalid (and must neither inject header lines nor stop the server).
+TEST_F(HttpTrailingSlash, RedirectLocationIsReEncoded) {
+  setTrailingSlash(RouterConfig::TrailingSlashPolicy::Redirect);
+  ts.router().setPath(http::Method::GET, "/users/{id}", [](const HttpRequestView&) { return HttpResponse("user"); });
+  ts.router().setPath(http::Method::GET, "/dirs/{id}/", [](const HttpRequestView&) { return HttpResponse("dir"); });
+
+  auto resp = rawRequest(ts.port(), "/users/a%0d%0aSet-Cookie:%20x=1/");
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 301")) << resp;
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Location, "/users/a%0D%0ASet-Cookie:%20x=1"))) << resp;
+  EXPECT_FALSE(resp.contains("\r\nSet-Cookie")) << resp;
+
+  resp = rawRequest(ts.port(), "/dirs/a%0ab%20c");
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 301")) << resp;
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Location, "/dirs/a%0Ab%20c/"))) << resp;
+
+  // Server still serving.
+  resp = rawRequest(ts.port(), "/users/a");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+}
+
 TEST_F(HttpTrailingSlash, RootPathNotRedirected) {
   setTrailingSlash(RouterConfig::TrailingSlashPolicy::Redirect);
   auto resp = rawRequest(ts.port(), "/");  // no handlers => 404 but not 301
