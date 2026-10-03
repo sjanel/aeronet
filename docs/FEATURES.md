@@ -1361,7 +1361,8 @@ By default, it contains a `server: aeronet` header unless you explicitly clear i
 
 ### Query String & Parameters
 
-- Path percent-decoded once; invalid escape ⇒ 400.
+- Request-target must be in origin-form (`/...`), absolute-form, authority-form (`CONNECT` only) or asterisk-form (`OPTIONS *` only); control characters are rejected ⇒ 400.
+- Path percent-decoded once; invalid escape or decoded NUL (`%00`) ⇒ 400.
 - Query left raw; per-key/value decode on iteration (`queryParams()`).
 - `+` converted to space only in query pairs.
 - Missing `=` ⇒ empty value; duplicates preserved.

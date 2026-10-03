@@ -58,7 +58,9 @@ char* DecodeInPlaceImpl(char* first, const char* last, char plusAs, bool strictI
 }  // namespace
 
 char* DecodeInPlace(char* first, const char* last, char plusAs, bool strictInvalid) {
-  return DecodeInPlaceImpl(first, last, plusAs, strictInvalid, [](char) { return false; });
+  // In strict mode, a decoded NUL makes the decoding fail: it would truncate the decoded string for C APIs.
+  return DecodeInPlaceImpl(first, last, plusAs, strictInvalid,
+                           [strictInvalid](char ch) { return strictInvalid && ch == '\0'; });
 }
 
 char* DecodeQueryParamsInPlace(char* first, char* last) {

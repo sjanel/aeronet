@@ -618,6 +618,58 @@ TEST_F(HttpRequestViewTest, InvalidPath) {
   EXPECT_EQ(reqSet(RawChars("GET ?a=b HTTP/1.1\r\n\r\n")), http::StatusCodeBadRequest);
 }
 
+// RFC 9112 §3.2: request-target = origin-form / absolute-form / authority-form / asterisk-form.
+TEST_F(HttpRequestViewTest, RequestTargetForms) {
+  EXPECT_EQ(reqSet(BuildRaw("GET", "!")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(BuildRaw("GET", "a")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(BuildRaw("GET", "1http://a/")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(BuildRaw("GET", "ht_tp://a/")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(BuildRaw("GET", "http/a:b")), http::StatusCodeBadRequest);  // ':' is not the end of the scheme
+  EXPECT_EQ(reqSet(BuildRaw("GET", "*")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(BuildRaw("OPTIONS", "*/")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(BuildRaw("CONNECT", "?a")), http::StatusCodeBadRequest);  // empty path
+
+  EXPECT_EQ(reqSet(BuildRaw("OPTIONS", "*")), http::StatusCodeOK);
+  EXPECT_EQ(req.path(), "*");
+  EXPECT_EQ(reqSet(BuildRaw("CONNECT", "example.com:443")), http::StatusCodeOK);
+  EXPECT_EQ(req.path(), "example.com:443");
+  EXPECT_EQ(reqSet(BuildRaw("GET", "http://a/b")), http::StatusCodeOK);
+  EXPECT_EQ(reqSet(BuildRaw("GET", "coap+tcp.x-y://a/b")), http::StatusCodeOK);
+  EXPECT_EQ(reqSet(BuildRaw("GET", "h2c://a/b")), http::StatusCodeOK);
+  EXPECT_EQ(reqSet(BuildRaw("GET", "Z09azAZ://a/b")), http::StatusCodeOK);
+}
+
+// Control characters are never valid in a request-target, whatever its form.
+TEST_F(HttpRequestViewTest, ControlCharactersInRequestTargetAreRejected) {
+  for (int ch = 0; ch < 0x20; ++ch) {
+    if (ch == '\r') {
+      continue;  // tested as a request line terminator
+    }
+    RawChars inPath("GET /a");
+    inPath.push_back(static_cast<char>(ch));
+    inPath.append("b?c=d HTTP/1.1\r\nHost: h\r\n\r\n");
+    EXPECT_EQ(reqSet(std::move(inPath)), http::StatusCodeBadRequest) << "byte " << ch;
+
+    RawChars inQuery("GET /a?c=d");
+    inQuery.push_back(static_cast<char>(ch));
+    inQuery.append(" HTTP/1.1\r\nHost: h\r\n\r\n");
+    EXPECT_EQ(reqSet(std::move(inQuery)), http::StatusCodeBadRequest) << "byte " << ch;
+  }
+  EXPECT_EQ(reqSet(BuildRaw("GET", "/a\x7F")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(BuildRaw("CONNECT", "a\x01:443")), http::StatusCodeBadRequest);
+  // bytes above 0x7F are tolerated (raw UTF-8 paths)
+  EXPECT_EQ(reqSet(BuildRaw("GET", "/caf\xC3\xA9")), http::StatusCodeOK);
+}
+
+// A decoded NUL would truncate the path for C APIs (file system...) while middleware would check the full path.
+TEST_F(HttpRequestViewTest, DecodedNulInPathIsRejected) {
+  EXPECT_EQ(reqSet(BuildRaw("GET", "/.env%00.txt")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(BuildRaw("GET", "/%00")), http::StatusCodeBadRequest);
+  // other decoded control characters stay the business of the application
+  EXPECT_EQ(reqSet(BuildRaw("GET", "/a%0Ab")), http::StatusCodeOK);
+  EXPECT_EQ(req.path(), "/a\nb");
+}
+
 TEST_F(HttpRequestViewTest, Http11WithoutHostShouldBeRejected) {
   EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\nX-Header: value\r\n\r\n")), http::StatusCodeOK);
   EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.1\r\nX-Header: value\r\n\r\n")), http::StatusCodeBadRequest);

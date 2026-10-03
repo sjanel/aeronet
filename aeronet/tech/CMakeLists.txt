@@ -73,6 +73,11 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    find-char_test
+    test/find-char_test.cpp
+)
+
+AeronetAddUnitTest(
     flat-hash-map_test
     test/flat-hash-map_test.cpp
     LIBRARIES
