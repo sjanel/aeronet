@@ -359,37 +359,51 @@ const std::string_view kRequestLines[]{
     "GET /some-path HTTP/2.0\r\n",
 };
 
-#define DEFINE_PRODUCTION_PARSE_BENCH(BenchName, HeaderSetFn)                                                       \
-  void BenchName(benchmark::State& state) {                                                                         \
-    std::vector<std::string> requestLines;                                                                          \
-    requestLines.reserve(std::size(kRequestLines));                                                                 \
-    for (auto line : kRequestLines) {                                                                               \
-      requestLines.push_back(MakeRequestHead(line, HeaderSetFn()));                                                 \
-    }                                                                                                               \
-    auto request = HttpRequestViewTest::MakeRequest();                                                              \
-    RawChars tmpBuffer;                                                                                             \
-    uint64_t checksum = 0;                                                                                          \
-    uint32_t requestLineIdx = 0;                                                                                    \
-    for (auto st : state) {                                                                                         \
-      auto status = HttpRequestViewTest::ParseHead(                                                                 \
-          request, std::span<char>(requestLines[requestLineIdx].data(), requestLines[requestLineIdx].size()),       \
-          tmpBuffer);                                                                                               \
-      benchmark::DoNotOptimize(status);                                                                             \
-      checksum += static_cast<uint16_t>(status);                                                                    \
-      benchmark::ClobberMemory();                                                                                   \
-      if (++requestLineIdx >= requestLines.size()) {                                                                \
-        requestLineIdx = 0;                                                                                         \
-      }                                                                                                             \
-    }                                                                                                               \
-    state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(HeaderSetFn().size())); \
-    state.counters["checksum"] = benchmark::Counter(static_cast<double>(checksum));                                 \
-  }                                                                                                                 \
+// Longer request-targets, as seen for REST APIs and fingerprinted static assets: the request-target scans dominate.
+const std::string_view kLongTargetRequestLines[]{
+    "GET /api/v1/organizations/4f9c2a1e/projects/8812/builds/1234567/artifacts HTTP/1.1\r\n",
+    "GET /api/v1/search?q=high+performance+http+server&page=3&per_page=50&sort=-updated_at HTTP/1.1\r\n",
+    "GET /static/js/vendors-node_modules_react-dom_index_js.3f2a9c1b8e7d6f5a.chunk.js HTTP/1.1\r\n",
+    "POST /graphql?operationName=GetRepositoryPullRequests&variables=%7B%22first%22%3A20%7D HTTP/1.1\r\n",
+    "GET /images/products/2024/summer-collection/linen-shirt-white-front-1200x1600.webp HTTP/1.1\r\n",
+};
+
+#define DEFINE_PRODUCTION_PARSE_BENCH(BenchName, RequestLines, HeaderSetFn)                                           \
+  void BenchName(benchmark::State& state) {                                                                           \
+    std::vector<std::string> requestLines;                                                                            \
+    requestLines.reserve(std::size(RequestLines));                                                                    \
+    for (auto line : RequestLines) {                                                                                  \
+      requestLines.push_back(MakeRequestHead(line, HeaderSetFn()));                                                   \
+    }                                                                                                                 \
+    /* initTrySetHead decodes the request-target in place: parse a fresh copy each time, like new socket bytes */     \
+    std::string workBuffer(std::ranges::max(requestLines, {}, &std::string::size).size(), '\0');                      \
+    auto request = HttpRequestViewTest::MakeRequest();                                                                \
+    RawChars tmpBuffer;                                                                                               \
+    uint64_t checksum = 0;                                                                                            \
+    uint32_t requestLineIdx = 0;                                                                                      \
+    for (auto st : state) {                                                                                           \
+      const std::string& requestHead = requestLines[requestLineIdx];                                                  \
+      std::memcpy(workBuffer.data(), requestHead.data(), requestHead.size());                                         \
+      auto status =                                                                                                   \
+          HttpRequestViewTest::ParseHead(request, std::span<char>(workBuffer.data(), requestHead.size()), tmpBuffer); \
+      benchmark::DoNotOptimize(status);                                                                               \
+      checksum += static_cast<uint16_t>(status);                                                                      \
+      benchmark::ClobberMemory();                                                                                     \
+      if (++requestLineIdx >= requestLines.size()) {                                                                  \
+        requestLineIdx = 0;                                                                                           \
+      }                                                                                                               \
+    }                                                                                                                 \
+    state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(HeaderSetFn().size()));   \
+    state.counters["checksum"] = benchmark::Counter(static_cast<double>(checksum));                                   \
+  }                                                                                                                   \
   BENCHMARK(BenchName)
 
-DEFINE_PRODUCTION_PARSE_BENCH(ProductionParse_minimal_requests, MinimalRequestHeaders);
-DEFINE_PRODUCTION_PARSE_BENCH(ProductionParse_short_name_headers, ShortNamesHeaders);
-DEFINE_PRODUCTION_PARSE_BENCH(ProductionParse_typical_browser_headers, TypicalBrowserHeaders);
-DEFINE_PRODUCTION_PARSE_BENCH(ProductionParse_api_proxy_headers, ApiProxyHeaders);
+DEFINE_PRODUCTION_PARSE_BENCH(ProductionParse_minimal_requests, kRequestLines, MinimalRequestHeaders);
+DEFINE_PRODUCTION_PARSE_BENCH(ProductionParse_short_name_headers, kRequestLines, ShortNamesHeaders);
+DEFINE_PRODUCTION_PARSE_BENCH(ProductionParse_typical_browser_headers, kRequestLines, TypicalBrowserHeaders);
+DEFINE_PRODUCTION_PARSE_BENCH(ProductionParse_api_proxy_headers, kRequestLines, ApiProxyHeaders);
+DEFINE_PRODUCTION_PARSE_BENCH(ProductionParse_long_targets_minimal_requests, kLongTargetRequestLines,
+                              MinimalRequestHeaders);
 
 }  // namespace aeronet::http
 

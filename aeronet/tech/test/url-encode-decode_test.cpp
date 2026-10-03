@@ -157,9 +157,10 @@ TEST(UrlEncodeDecode, InPlaceInvalid) {
   EXPECT_EQ(last, nullptr);
 }
 
+// Outside of query params, the separator bytes are decoded (NUL only in lenient mode, see InPlaceEncodedNul).
 TEST(UrlEncodeDecode, InPlaceDecodesSeparatorBytesOutsideOfQueryParams) {
   RawChars inputStr("a%00b%1Fc");
-  char* last = url::DecodeInPlace(inputStr.begin(), inputStr.end());
+  char* last = url::DecodeInPlace(inputStr.begin(), inputStr.end(), '+', /*strictInvalid*/ false);
   ASSERT_NE(last, nullptr);
   EXPECT_EQ(std::string_view(inputStr.data(), last), std::string_view("a\0b\x1F"
                                                                       "c",
@@ -178,6 +179,21 @@ TEST(UrlEncodeDecode, QueryParamsDoNotDecodeSeparatorBytes) {
   expected.push_back(url::kNewKeyValueSep);
   expected.append("+%00");
   EXPECT_EQ(std::string_view(inputStr.data(), last), expected);
+}
+
+TEST(UrlEncodeDecode, InPlaceEncodedNul) {
+  // strict mode rejects an encoded NUL, wherever it is
+  for (std::string_view input : {"%00", "a%00", "%00b", "a%00b", "%2F%00%2F"}) {
+    RawChars inputStr(input);
+    EXPECT_EQ(url::DecodeInPlace(inputStr.begin(), inputStr.end()), nullptr) << input;
+  }
+  // other control characters are decoded
+  RawChars ctrl("a%01%0A%1Fb");
+  char* last = url::DecodeInPlace(ctrl.begin(), ctrl.end());
+  ASSERT_NE(last, nullptr);
+  EXPECT_EQ(std::string_view(ctrl.data(), last),
+            "a\x01\n\x1F"
+            "b");
 }
 
 TEST(UrlEncodeDecode, InPlaceUTF8) {
