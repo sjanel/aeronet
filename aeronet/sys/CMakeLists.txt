@@ -38,6 +38,13 @@ AeronetAddUnitTest(
     LIBRARIES
     aeronet_sys
 )
+# sendfile of File copies (duplicated descriptors) over a real TCP connection, on every platform
+AeronetAddUnitTest(
+    file-sendfile_test
+    test/file-sendfile_test.cpp
+    LIBRARIES
+    aeronet_basic_test_support
+)
 
 # The remaining sys tests use Linux-specific APIs (epoll, eventfd, timerfd,
 # accept4, zerocopy, AF_UNIX socketpair) or dlsym/RTLD_NEXT overrides.

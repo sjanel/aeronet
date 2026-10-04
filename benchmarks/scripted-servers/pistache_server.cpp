@@ -11,10 +11,13 @@
 #include <filesystem>
 #include <format>
 #include <iostream>
+#include <memory>
 #include <optional>
+#include <ostream>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 
 #include "pistache/endpoint.h"
 #include "pistache/http.h"
@@ -25,6 +28,25 @@
 #include "scripted-servers-helpers.hpp"
 
 namespace {
+
+// Pistache only serializes typed headers: raw headers (Header::Raw) added to a response are silently dropped, so the
+// generated headers of /headers were never sent. A typed header with a runtime name sends them like the other servers.
+class BenchHeader final : public Pistache::Http::Header::Header {
+ public:
+  BenchHeader(std::string name, std::string value) : _name(std::move(name)), _value(std::move(value)) {}
+
+  [[nodiscard]] const char* name() const override { return _name.c_str(); }
+
+  void write(std::ostream& stream) const override { stream << _value; }
+
+#ifdef SAFE_HEADER_CAST
+  [[nodiscard]] uint64_t hash() const override { return Pistache::Http::Header::detail::hash(_name.c_str()); }
+#endif
+
+ private:
+  std::string _name;
+  std::string _value;
+};
 constexpr unsigned char toupper(unsigned char ch) {
   if (ch >= 'a' && ch <= 'z') {
     ch &= 0xDF;  // clear lowercase bit
@@ -143,8 +165,8 @@ class BenchHandler : public Pistache::Http::Handler {
       std::size_t count = static_cast<std::size_t>(GetQueryParamOr(req, "count", 10));
       std::size_t headerSize = static_cast<std::size_t>(GetQueryParamOr(req, "size", 64));
       for (std::size_t pos = 0; pos < count; ++pos) {
-        response.headers().addRaw(Pistache::Http::Header::Raw(std::format("X-Bench-Header-{}", pos),
-                                                              bench::GenerateRandomString(headerSize)));
+        response.headers().add(std::make_shared<BenchHeader>(std::format("X-Bench-Header-{}", pos),
+                                                             bench::GenerateRandomString(headerSize)));
       }
       response.send(Pistache::Http::Code::Ok, std::format("Generated {} headers", count));
       return;

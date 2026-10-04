@@ -30,8 +30,15 @@ external load generator*, it is **one over-provisioned server + many client impl
   and worker because that is the common mode supported by every candidate (aeronet's `HttpClient`, libcurl
   easy, Drogon's synchronous `sendRequest`, and Beast's blocking I/O). A one-connection-per-CPU setup leaves
   each worker asleep while its request is handled by the server; the extra connections fill those gaps and
-  keep aggregate client CPU utilization near 100% without giving it more CPU time. The default connection
-  count is capped below the server worker count, so the server still has more workers than the client.
+  keep aggregate client CPU utilization near 100% without giving it more CPU time (with the CI topology - 1 client
+  CPU, the server on the other physical core - 1 connection per CPU left the aeronet client 57% busy on
+  `small-get`, and 3 connections 100% busy for almost twice the throughput).
+* **Saturation check**: a client benchmark measures the client only if the client is the bottleneck. Every
+  driver reports its CPU time over the measured window (`cpu_s`, warmup excluded) and the runner samples the
+  server CPU over the same window: each run prints `CPU: client X% of N, server Y% of M`, runs whose client
+  used less than 90% of its CPUs are flagged as not saturated, and both utilizations are recorded in the JSON
+  summary (`results.<scenario>.client_cpu` / `server_cpu`, with `"measured_side": "client"`) and rendered in
+  the HTML report.
 * **Cheap server side**: the runner enables dedicated `/client-bench/*` endpoints whose response bodies are
   generated or compressed once at startup and served as immutable buffers. Dynamic JSON construction,
   random-body generation, uppercasing, and gzip encoding therefore cannot become the measured bottleneck.
@@ -83,7 +90,7 @@ Options:
 --scenario a,b       comma-separated scenario subset
 --protocol P         http1 | h2c | h2-tls (default: http1); see Protocols below
 --threads N          logical CPUs reserved for the client (default: 4)
---connections N      synchronous connections (default: up to 3 per thread, fewer than server threads)
+--connections N      synchronous connections (default: 3 per thread)
 --server-threads N   aeronet-bench-server threads (default: unreserved CPUs)
 --duration D         measured window per run, e.g. 10s / 500ms (default: 30s)
 --warmup D           warmup window per run (default: 5s)
@@ -164,7 +171,12 @@ by the Python orchestrator:
 | `post`      | POST   | `/client-bench/post` (4 KiB) | Request body write path                                      |
 | `json`      | GET    | `/client-bench/json`        | Mixed small-payload parse                                     |
 | `compress`  | GET    | `/client-bench/compress`    | Automatic content decompression of a precompressed JSON body  |
-| `no-reuse`  | GET    | `/ping`                     | Fresh TCP connection per request (connect overhead)           |
+| `no-reuse`  | GET    | `/ping`                     | Fresh TCP connection per request (connect overhead), with `Connection: close` |
+
+`no-reuse` requests carry `Connection: close`, as RFC 9112 requires from a client that does not keep its
+connections alive: the server closes first and keeps the `TIME_WAIT` state. Otherwise the client closes first,
+and every `connect()` searches the ephemeral port range among thousands of client-side `TIME_WAIT` sockets: all
+clients then plateau around 14k connections/s on loopback, measuring the kernel instead of the client.
 
 ### Fair compression comparison
 
@@ -185,6 +197,7 @@ Per `(client × scenario)`:
 * **latency** — avg / p50 / p90 / p99 / max (µs), from a per-thread histogram merged across threads
 * **MB/s** — response transfer throughput
 * **RSS** — peak resident set size of the client process (`getrusage(ru_maxrss)`), for the memory story
+* **CPU** - client CPU utilization over the measured window (% of its reserved CPUs) and server CPU utilization
 
 ## Artifacts, HTML report and CI
 

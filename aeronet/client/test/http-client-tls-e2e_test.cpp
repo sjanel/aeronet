@@ -34,6 +34,7 @@
 #include "aeronet/http-client-exception.hpp"
 #include "aeronet/http-client-tls-context.hpp"
 #include "aeronet/http-client.hpp"
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -219,6 +220,33 @@ TEST_F(HttpClientTlsE2ETest, PostFileBodyOverTlsUsesReadWriteFallback) {
   EXPECT_EQ(resp.status(), 200);
   ASSERT_EQ(resp.bodyInMemory().size(), payload.size());
   EXPECT_EQ(resp.bodyInMemory(), payload);
+}
+
+// With keep-alive disabled, the wire head carrying the spliced 'Connection: close' header is built in the scratch
+// buffer that the TLS file fallback then reuses to stage the file chunks: the whole file must still be echoed back.
+TEST_F(HttpClientTlsE2ETest, PostFileBodyOverTlsWithKeepAliveOff) {
+  std::string payload((128UL * 1024) + 5, '\0');  // > 64 KiB chunk
+  for (std::size_t idx = 0; idx < payload.size(); ++idx) {
+    payload[idx] = static_cast<char>('a' + (idx % 23));
+  }
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, payload);
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+
+  HttpClientConfig cfg;
+  cfg.tlsVerifyPeer = false;
+  cfg.keepAlive = false;
+  cfg.decompression.maxExpansionRatio = 10000;
+  HttpClient client(cfg);
+  auto req = client.makeRequest(http::Method::POST, url("/echo")).file(std::move(file), "application/octet-stream");
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    auto resp = client.request(req).value();
+    EXPECT_EQ(resp.status(), 200);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::Connection), http::close);
+    ASSERT_EQ(resp.bodyInMemory().size(), payload.size());
+    EXPECT_EQ(resp.bodyInMemory(), payload);
+  }
 }
 
 TEST_F(HttpClientTlsE2ETest, KeepAliveOverTls) {

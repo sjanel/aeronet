@@ -26,6 +26,7 @@ aeronet::HttpClientConfig MakeConfig([[maybe_unused]] const ClientBenchConfig& c
       .withDecompression(spec.decode)  // aeronet decodes the gzip body natively (its zlib-ng codec)
       .withDefaultAcceptEncoding(spec.acceptEncoding)
       .withTcpNoDelay();
+  config.keepAlive = spec.reuse;  // no-reuse: 'Connection: close' and a fresh connection per request
 #ifdef AERONET_ENABLE_HTTP2
   // Pin the HTTP version: HTTP/2 for h2c (prior-knowledge cleartext) and h2-tls (ALPN "h2"), HTTP/1.1
   // otherwise. Explicit rather than Auto so the measured path is always the requested protocol.
@@ -43,7 +44,6 @@ class AeronetSession {
  public:
   AeronetSession(const ClientBenchConfig& cfg, const ScenarioSpec& spec)
       : _client(MakeConfig(cfg, spec)),
-        _spec(spec),
         _request(_client.makeRequest(spec.method == "POST" ? aeronet::http::Method::POST : aeronet::http::Method::GET,
                                      cfg.baseUrl + spec.path)) {
     for (const auto& [name, value] : spec.requestHeaders) {
@@ -55,9 +55,6 @@ class AeronetSession {
   }
 
   long doRequest() {
-    if (!_spec.reuse) {
-      _client.clearIdleConnections();  // force a fresh connection for the no-reuse scenario
-    }
     auto res = _client.request(_request);
     if (!res) {
       return -1;
@@ -67,7 +64,6 @@ class AeronetSession {
 
  private:
   aeronet::HttpClient _client;
-  const ScenarioSpec& _spec;
   aeronet::HttpRequest _request;  // built once, reused across requests
 };
 

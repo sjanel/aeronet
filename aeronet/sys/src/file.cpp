@@ -135,10 +135,25 @@ inline BaseFd DuplicateFileBaseFd(const BaseFd& src) {
   }
   return BaseFd(fd);
 #elifdef AERONET_WINDOWS
-  const int fd = _dup(static_cast<int>(src.fd()));
+  // A duplicated handle (_dup) would share the file object, hence the file position, with its source. Unlike POSIX
+  // pread() and sendfile(), readAt() and TransmitFile position the file before using it, so copies used concurrently
+  // (a cached File copied into the responses of several server threads, say) would race on that position: reopen the
+  // file instead, so that the copy has a file object of its own.
+  const HANDLE srcHandle = reinterpret_cast<HANDLE>(_get_osfhandle(static_cast<int>(src.fd())));
+  const HANDLE handle =
+      ::ReOpenFile(srcHandle, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, 0);
+  if (handle == INVALID_HANDLE_VALUE) [[unlikely]] {
+    const auto err = static_cast<int>(::GetLastError());
+    log::error("Unable to reopen file descriptor {} (error {}: {})", static_cast<int>(src.fd()), err,
+               SystemErrorMessage(err));
+    return BaseFd();
+  }
+  const int fd = _open_osfhandle(reinterpret_cast<intptr_t>(handle), _O_RDONLY | _O_BINARY);
   if (fd == -1) [[unlikely]] {
-    log::error("Unable to duplicate file descriptor {} (error {}: {})", static_cast<int>(src.fd()), errno,
-               SystemErrorMessage(errno));
+    log::error("Unable to associate a file descriptor to the reopened file descriptor {} (error {}: {})",
+               static_cast<int>(src.fd()), errno, SystemErrorMessage(errno));
+    ::CloseHandle(handle);
+    return BaseFd();
   }
   return BaseFd(static_cast<NativeHandle>(fd), BaseFd::HandleKind::CrtFd);
 #endif
@@ -188,7 +203,7 @@ std::size_t File::readAt(std::span<std::byte> dst, std::size_t offset) const {
 #ifdef AERONET_POSIX
     const auto readResult = ::pread(_fd.fd(), remaining.data(), remaining.size(), static_cast<off_t>(curOffset));
 #elifdef AERONET_WINDOWS
-    // Windows has no pread(); emulate by seeking + reading (file descriptors are not shared across threads here).
+    // Windows has no pread(); emulate by seeking + reading (each File, copies included, has its own file position).
     if (_lseeki64(static_cast<int>(_fd.fd()), static_cast<__int64>(curOffset), SEEK_SET) == -1) {
       log::error("Unable to seek file (fd {}, offset {}): error {}: {}", static_cast<int>(_fd.fd()), curOffset, errno,
                  SystemErrorMessage(errno));

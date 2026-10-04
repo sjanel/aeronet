@@ -1194,11 +1194,8 @@ void SingleHttpServer::eventLoop() {
         // EPOLLERR/EPOLLHUP/EPOLLRDHUP can be delivered without EPOLLIN.
         // Treat them as a read trigger so we promptly observe EOF/errors and close.
         if ((bmp & (EventIn | EventErr | EventHup | EventRdHup)) != 0) {
-          closeStatus = std::max(handleReadableClient(cnxIt), closeStatus);
-          if (closeStatus != CloseStatus::Close) {
-            // Request handlers run from this path and may have blocked for longer than keepAliveTimeout.
-            restartKeepAliveIdleWindow(fd);
-          }
+          closeStatus =
+              std::max(handleReadableClient(cnxIt, (bmp & (EventErr | EventHup | EventRdHup)) == 0), closeStatus);
         }
         if (closeStatus == CloseStatus::Close) {
           // A handler (e.g. shutdownTunnelPeerWrite) may have already recycled
@@ -1210,6 +1207,8 @@ void SingleHttpServer::eventLoop() {
         }
       }
     }
+    // Request handlers run from the read path and may have blocked for longer than keepAliveTimeout.
+    restartKeepAliveIdleWindows(events, now);
     _telemetry.counterAdd("aeronet.events.processed", static_cast<uint64_t>(events.size()));
   } else {
     // timeout / error::kInterrupted (treated as timeout). Retry pending writes to handle edge-triggered epoll timing
@@ -1234,7 +1233,7 @@ void SingleHttpServer::eventLoop() {
       if (!IsValid(_connections, pendingIt)) {
         continue;
       }
-      const CloseStatus cs = handleReadableClient(pendingIt);
+      const CloseStatus cs = handleReadableClient(pendingIt, false);
       if (cs == CloseStatus::Close) {
         const auto finalIt = _connections.iterator(pendingFd);
         if (IsValid(_connections, finalIt)) {

@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <functional>
 #include <iterator>
@@ -168,6 +169,14 @@ auto makeTcpNoDelayScope(TcpNoDelayMode mode) {
   return TcpNoDelayScope(
       ts, [](const HttpServerConfig& config) { return config.tcpNoDelay; },
       [](HttpServerConfig& config, TcpNoDelayMode mode) { config.withTcpNoDelayMode(mode); }, mode);
+}
+
+using KeepAliveTimeoutScope = test::ScopedConfigUpdate<std::chrono::milliseconds>;
+auto makeKeepAliveTimeoutScope(std::chrono::milliseconds timeout) {
+  return KeepAliveTimeoutScope(
+      ts, [](const HttpServerConfig& config) { return config.keepAliveTimeout; },
+      [](HttpServerConfig& config, std::chrono::milliseconds timeout) { config.withKeepAliveTimeout(timeout); },
+      timeout);
 }
 
 std::string httpGet(std::string_view target) {
@@ -445,6 +454,77 @@ TEST(HttpKeepAlive, MultipleSequentialRequests) {
   std::string resp2 = test::recvWithTimeout(fd);
   EXPECT_TRUE(resp2.contains("ECHO/two"));
   EXPECT_FALSE(resp2.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+}
+
+// Requests immediately followed by the client half-close are reported in a single readable event that also flags the
+// peer hang-up: the server answers them before observing the EOF, then closes the connection.
+TEST(HttpKeepAlive, RequestsFollowedByHalfCloseAreAnsweredThenClosed) {
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(std::format("ECHO{}", req.path())); });
+
+  test::ClientConnection cnx(port);
+  NativeHandle fd = cnx.fd();
+  test::sendAll(fd, "GET /first HTTP/1.1\r\nhost: x\r\n\r\nGET /second HTTP/1.1\r\nhost: x\r\n\r\n");
+  ASSERT_TRUE(ShutdownWrite(fd));
+
+  const std::string resp = test::recvUntilClosed(fd, std::chrono::seconds{2});
+  EXPECT_TRUE(resp.contains("ECHO/first")) << resp;
+  EXPECT_TRUE(resp.contains("ECHO/second")) << resp;
+  EXPECT_TRUE(test::WaitForPeerClose(fd, std::chrono::milliseconds{500}));
+}
+
+// The keep-alive deadline armed for a connection is not moved on each request: when it fires, the maintenance sweep
+// re-arms it from the last activity. A connection active for several keepAliveTimeout periods must stay open, and be
+// closed once it stays idle for longer than keepAliveTimeout.
+// The pause between two requests is kept well below keepAliveTimeout: loaded CI runners (macOS in particular) often
+// oversleep several times the requested duration.
+TEST(HttpKeepAlive, ActiveConnectionOutlivesSeveralKeepAliveTimeouts) {
+  static constexpr std::chrono::milliseconds kKeepAliveTimeout{400};
+  static constexpr std::chrono::milliseconds kPauseBetweenRequests = kKeepAliveTimeout / 5;
+  // Active for more than twice keepAliveTimeout: the deadline fires (and is re-armed) at least twice.
+  static constexpr int kNbRequests = 12;
+  auto timeoutScope = makeKeepAliveTimeoutScope(kKeepAliveTimeout);
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(std::format("ECHO{}", req.path())); });
+
+  test::ClientConnection cnx(port);
+  NativeHandle fd = cnx.fd();
+  for (int requestPos = 0; requestPos < kNbRequests; ++requestPos) {
+    test::sendAll(fd, std::format("GET /r{} HTTP/1.1\r\nhost: x\r\n\r\n", requestPos));
+    const std::string resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
+    ASSERT_TRUE(resp.contains(std::format("ECHO/r{}", requestPos))) << "request " << requestPos << ": " << resp;
+    std::this_thread::sleep_for(kPauseBetweenRequests);
+  }
+  EXPECT_TRUE(test::WaitForPeerClose(fd, kKeepAliveTimeout * 10));
+}
+
+// A synchronous handler slower than keepAliveTimeout must not get its own connection swept as idle: the idle window
+// restarts when the batch of events it was part of has been processed.
+// The client pauses are kept well below keepAliveTimeout: loaded CI runners (macOS in particular) often oversleep
+// several times the requested duration.
+TEST(HttpKeepAlive, SlowSynchronousHandlerDoesNotExpireItsConnection) {
+  static constexpr std::chrono::milliseconds kKeepAliveTimeout{200};
+  static constexpr std::chrono::milliseconds kClientPause = kKeepAliveTimeout / 10;
+  auto timeoutScope = makeKeepAliveTimeoutScope(kKeepAliveTimeout);
+  ts.router().setDefault([](const HttpRequestView& req) {
+    if (req.path() == "/slow") {
+      std::this_thread::sleep_for(kKeepAliveTimeout * 2);
+    }
+    return HttpResponse(std::format("ECHO{}", req.path()));
+  });
+
+  test::ClientConnection cnx(port);
+  NativeHandle fd = cnx.fd();
+  // Let the server accept the connection first, so that the request is served from a regular read event (a request
+  // pipelined with the connection setup is served from the accept path).
+  std::this_thread::sleep_for(kClientPause);
+  test::sendAll(fd, "GET /slow HTTP/1.1\r\nhost: x\r\n\r\n");
+  const std::string slowResp = test::recvWithTimeout(fd, std::chrono::seconds{2});
+  ASSERT_TRUE(slowResp.contains("ECHO/slow")) << slowResp;
+  // Reuse the connection after several maintenance sweeps (pollInterval is 1 ms) but well within keepAliveTimeout:
+  // they must not have closed it.
+  std::this_thread::sleep_for(kClientPause);
+  test::sendAll(fd, "GET /after HTTP/1.1\r\nhost: x\r\n\r\n");
+  const std::string afterResp = test::recvWithTimeout(fd, std::chrono::seconds{1});
+  EXPECT_TRUE(afterResp.contains("ECHO/after")) << afterResp;
 }
 
 TEST(HttpKeepAlive, EmptyBodyResponseCarriesContentLengthZeroAndReusesConnection) {

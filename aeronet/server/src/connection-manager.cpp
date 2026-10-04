@@ -110,10 +110,35 @@ void SingleHttpServer::refreshKeepAliveDeadline(ConnectionIt cnxIt) {
     _keepAliveDeadlines.remove(state);
     return;
   }
-  _keepAliveDeadlines.upsert(state, cnxIt->fd(), state.lastActivity + _config.keepAliveTimeout);
+  // An armed deadline is never later than lastActivity + keepAliveTimeout: lastActivity only moves forward, and a
+  // configuration update rebuilds the queue. Keep it: closeExpiredKeepAliveConnections() re-arms it from lastActivity
+  // when it fires, so that an active connection costs one heap update per keepAliveTimeout instead of one per event.
+  if (!internal::KeepAliveDeadlineQueue::contains(state)) {
+    _keepAliveDeadlines.upsert(state, cnxIt->fd(), state.lastActivity + _config.keepAliveTimeout);
+  }
 }
 
-void SingleHttpServer::restartKeepAliveIdleWindow(NativeHandle fd) {
+bool SingleHttpServer::isServerInternalFd(NativeHandle fd) const noexcept {
+  return fd == _listenSocket.fd() || fd == _lifecycle.wakeupFd.fd() || fd == _maintenanceTimer.fd();
+}
+
+void SingleHttpServer::restartKeepAliveIdleWindows(std::span<const EventLoop::EventFd> events,
+                                                   std::chrono::steady_clock::time_point batchStart) {
+  if (!_config.enableKeepAlive) {
+    return;
+  }
+  const auto workEnd = std::chrono::steady_clock::now();
+  if (batchStart + _config.keepAliveTimeout > workEnd) {
+    return;  // the whole batch was served well within the idle window: no armed deadline can be stale
+  }
+  for (const auto event : events) {
+    if (!isServerInternalFd(event.fd)) {
+      restartKeepAliveIdleWindow(event.fd, workEnd);
+    }
+  }
+}
+
+void SingleHttpServer::restartKeepAliveIdleWindow(NativeHandle fd, std::chrono::steady_clock::time_point workEnd) {
   if (!_config.enableKeepAlive) {
     return;
   }
@@ -127,7 +152,6 @@ void SingleHttpServer::restartKeepAliveIdleWindow(NativeHandle fd) {
   // bounds idleness *between* requests (see HttpServerConfig::keepAliveTimeout), so restart the idle window
   // from the instant the work completed. Without this the next maintenance sweep would close the connection
   // right after the response was produced, before the peer had any chance to read it.
-  const auto workEnd = std::chrono::steady_clock::now();
   if (state.lastActivity + _config.keepAliveTimeout > workEnd) {
     return;  // served well within the idle window: the armed deadline is still valid
   }
@@ -845,7 +869,7 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleWritableClient(ConnectionI
   return pState == nullptr || pState->canCloseConnectionForDrain() ? CloseStatus::Close : CloseStatus::Keep;
 }
 
-SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionIt cnxIt) {
+SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionIt cnxIt, bool stopOnShortRead) {
   ConnectionState* pCnx = _connections.pConnectionState(cnxIt);
   assert(pCnx != nullptr);
 
@@ -874,6 +898,13 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
   }
 
   std::size_t bytesReadThisEvent = 0;
+  // The bytes written while serving the input count toward the fairness budget too: a small request can have a large
+  // response, so a client pipelining such requests (an HTTP/2 client keeping several streams busy, say) would otherwise
+  // keep the event loop on its connection, while the other ones wait, until it has sent a whole budget of requests.
+  const auto bytesWrittenSoFar = [this] {
+    return _stats.totalBytesWrittenImmediate.load() + _stats.totalBytesWrittenFlush.load();
+  };
+  const uint64_t bytesWrittenAtEventStart = bytesWrittenSoFar();
   const auto fd = cnxIt->fd();
   while (true) {
     const std::size_t chunkSize = _config.computeReadChunkSize(bytesReadThisEvent);
@@ -919,6 +950,11 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
 
     bytesReadThisEvent += static_cast<std::size_t>(count);
 
+    // A plain socket read returning less than requested emptied the kernel receive queue. Edge-triggered polling
+    // reports any byte arriving after it, so the next read would only return EAGAIN: skip that syscall.
+    // TLS reads do not qualify - SSL_read returns at most one record even when more are buffered.
+    const bool drained = stopOnShortRead && count < chunkSize && pCnx->transport.isPlain();
+
     if (processConnectionInput(cnxIt)) {
       break;
     }
@@ -933,10 +969,13 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
       return handleInTunneling(cnxIt);
     }
 
-    if (_config.fairnessBudgetExhausted(bytesReadThisEvent)) {
+    // A drained read left nothing to read, and later data raises a new event: no need to defer the connection.
+    if (!drained &&
+        _config.fairnessBudgetExhausted(bytesReadThisEvent +
+                                        static_cast<std::size_t>(bytesWrittenSoFar() - bytesWrittenAtEventStart))) {
       // Edge-triggered polling (EPOLLET / EV_CLEAR): data may remain in the TCP buffer
       // after the fairness cap. No new read event fires on a non-empty→non-empty transition,
-      // so defer this fd for re-read at the start of the next event-loop iteration.
+      // so defer this fd to read it again after the other ready connections have been served.
       _pendingReadFds.push_back(fd);
       _lifecycle.wakeupFd.send();
       break;
@@ -957,6 +996,10 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
         _connections.now - pCnx->headerStartTp > _config.headerReadTimeout) {
       emitSimpleError(cnxIt, http::StatusCodeRequestTimeout, {});
       return CloseStatus::Close;
+    }
+
+    if (drained) {
+      break;
     }
   }
   // Try to flush again after reading new data, in case TLS needed the read to proceed with write

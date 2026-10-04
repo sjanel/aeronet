@@ -37,7 +37,7 @@ jobs:
   # Build: compile the scripted server + client benchmark binaries ONCE.#
   # bench / bench-h2 / bench-ws all need the exact same Release build   #
   # (identical CMake flags) - they only differ in which runtime params  #
-  # they pass to wrk/h2load/k6. Building once and sharing the binaries  #
+  # they pass to wrk/h2load/ws-loadgen. Building once and sharing them  #
   # avoids recompiling aeronet plus every fetched competitor framework  #
   # (drogon, pistache, crow, beast, uWebSockets, ...) up to 7x per run. #
   # ------------------------------------------------------------------ #
@@ -53,7 +53,8 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt update
-          sudo apt install -y build-essential libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
+          # zlib1g-dev: permessage-deflate support of the native WebSocket load generator (ws-loadgen).
+          sudo apt install -y build-essential libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev zlib1g-dev
 
       - name: Configure benchmark build
         run: |
@@ -152,6 +153,8 @@ jobs:
           # Resolve the shared libs (libdrogon.so.* / libtrantor.so.*) bundled by the build job.
           LD_LIBRARY_PATH: ${{github.workspace}}/build-pages/benchmarks/shared-libs
         run: |
+          # CPU topology: the runner pins the server and the load generator to disjoint CPUs (SMT aware).
+          lscpu -e=CPU,CORE,SOCKET,ONLINE || true
           # Decide duration, threads and sample count based on event type and inputs.
           # Defaults:
           #  - pull_request / non-main push => 5s, 1 thread, 1 sample (fast)
@@ -276,6 +279,7 @@ jobs:
           # Resolve the shared libs (libdrogon.so.* / libtrantor.so.*) bundled by the build job.
           LD_LIBRARY_PATH: ${{github.workspace}}/build-pages/benchmarks/shared-libs
         run: |
+          lscpu -e=CPU,CORE,SOCKET,ONLINE || true
           EVENT_NAME=${GITHUB_EVENT_NAME:-}
           REF=${GITHUB_REF:-}
           WARMUP=5s
@@ -340,7 +344,8 @@ jobs:
           if-no-files-found: ignore
 
   # ------------------------------------------------------------------ #
-  # WebSocket bench: k6-based WebSocket scenarios.                      #
+  # WebSocket bench: driven by the native ws-loadgen (k6 spends more    #
+  # CPU per message than the servers and cannot saturate them).         #
   # ------------------------------------------------------------------ #
   bench-ws:
     name: WS Bench
@@ -357,13 +362,6 @@ jobs:
           sudo apt update
           sudo apt install -y libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
 
-      - name: Install k6
-        run: |
-          K6_VERSION=v0.55.0
-          curl -fsSL "https://github.com/grafana/k6/releases/download/${K6_VERSION}/k6-${K6_VERSION}-linux-amd64.tar.gz" \
-            | tar xzf - --strip-components=1 -C /usr/local/bin "k6-${K6_VERSION}-linux-amd64/k6"
-          k6 version
-
       - name: Download build artifact
         uses: actions/download-artifact@v8
         with:
@@ -379,6 +377,7 @@ jobs:
           # Resolve the shared libs (libdrogon.so.* / libtrantor.so.*) bundled by the build job.
           LD_LIBRARY_PATH: ${{github.workspace}}/build-pages/benchmarks/shared-libs
         run: |
+          lscpu -e=CPU,CORE,SOCKET,ONLINE || true
           EVENT_NAME=${GITHUB_EVENT_NAME:-}
           REF=${GITHUB_REF:-}
           VUS=50
@@ -401,7 +400,9 @@ jobs:
 
           echo "WS bench: dur=$DUR vus=$VUS warmup=$WARMUP"
 
+          # --tool ws-loadgen: fail rather than silently fall back to k6 (which would not saturate the servers).
           ./run_ws_benchmarks.py \
+            --tool ws-loadgen \
             --vus "$VUS" \
             --duration "$DUR" \
             --warmup "$WARMUP" \
@@ -495,6 +496,7 @@ jobs:
           # Resolve the shared libs (libdrogon.so.* / libtrantor.so.*) bundled by the build job.
           LD_LIBRARY_PATH: ${{github.workspace}}/build-pages/benchmarks/shared-libs
         run: |
+          lscpu -e=CPU,CORE,SOCKET,ONLINE || true
           EVENT_NAME=${GITHUB_EVENT_NAME:-}
           REF=${GITHUB_REF:-}
           WARMUP=5s

@@ -194,18 +194,13 @@ Tests static file handler with various file sizes. Requires setup first.
 wrk -t4 -c100 -d30s -s lua/static_files.lua http://127.0.0.1:8080/index.html
 ```
 
-> **Note — wrk uses more threads here.** Fast servers (aeronet, drogon, …) serve
-> static files with `sendfile()`/`splice()`, so the server does almost no per-request
-> work while `wrk` still has to read every response byte back off the socket. At a 1:1
-> thread ratio `wrk` becomes the bottleneck and leaves the server cores idle. The
-> `run_benchmarks.py` runner therefore scales `wrk` up for the `files` scenario
-> (`Scenario.wrk_thread_multiplier`, 3×), **bounded by the cores the server does not
-> use** (`cpu_count - server_threads`) so the load generator and the server run on
-> disjoint cores rather than fighting for the same ones. On a box too small to spare
-> those cores (e.g. a 2-core CI runner) the scaling auto-disables and `wrk` falls back
-> to the 1:1 server thread count. The **server** thread count is never changed, so the
-> comparison stays fair, and the per-scenario `Threads` column in the summary table
-> reflects the effective `wrk` thread count.
+> **Note - files are kept small (1 MiB).** Fast servers (aeronet, drogon, ...) serve
+> static files with `sendfile()`, so the server does almost no per-request work while
+> `wrk` still has to copy every response byte out of the kernel. With multi-megabyte
+> files the load generator cannot saturate the server whatever its thread count, so the
+> scenario serves `medium.bin` (1 MiB). Like every scenario, it reports the server CPU
+> utilization so that a client-bound measurement is visible (see
+> [Saturation checks](#saturation-checks)).
 
 ### 7. Router Stress Test (`routing_stress.lua`)
 
@@ -266,7 +261,8 @@ Boost.Beast is also excluded from HTTP/2 benchmarks (Beast has no HTTP/2 server 
 ### Options
 
 ```bash
-run_benchmarks.py --threads 4        # Number of wrk/h2load threads (default: nproc/4)
+run_benchmarks.py --threads 4        # Server worker threads (and CPUs reserved for the server)
+run_benchmarks.py --loadgen-threads 6 # wrk/h2load threads (default: automatic, up to 3 per server thread)
 run_benchmarks.py --connections 100  # Number of connections (default: 100)
 run_benchmarks.py --duration 30s     # Benchmark duration per scenario
 run_benchmarks.py --warmup 5s        # Warmup duration before each run
@@ -286,6 +282,18 @@ run_benchmarks.py --server aeronet,beast,python --scenario headers,body,routing
 
 # Available scenarios: headers, body, static, cpu, mixed, files, routing, tls
 ```
+
+### Saturation checks
+
+A server benchmark measures the server only if the server is the bottleneck. On Linux (with `taskset`),
+`run_benchmarks.py` and `run_ws_benchmarks.py` therefore reserve CPUs for each side
+(`bench_utils.plan_server_benchmark_cpus`): the server gets `--threads` CPUs, one per physical core when
+possible, and the load generator every remaining CPU it needs (up to 3 per server thread), CPUs of other
+physical cores first and SMT siblings of the server last. The server CPU utilization (process tree, from
+`/proc`) is measured over each run: below 90% of its CPUs, the run is flagged as not saturated in the console,
+in the JSON summary (`results.<scenario>.server_cpu`) and in the HTML report (CPU table and warning banner).
+On a 4-vCPU CI runner (2 physical cores), 1 server thread and 3 load generator threads keep the server at
+94-100% in every HTTP/1.1, h2c and WebSocket scenario.
 
 For a focused CPU profile, enable perf access first and select one server/scenario:
 
@@ -334,6 +342,20 @@ All servers implement identical endpoints:
 | undertow | Java | `undertow_server/UndertowBenchServer.java` | High-perf Java NIO server |
 | go | Go | `go_server.go` | Standard library net/http |
 | python | Python | `python_server.py` | uvicorn + starlette (async) |
+
+Each server gets `--threads` request-processing threads, and is configured so that only its own work limits it
+(see [Saturation checks](#saturation-checks)):
+
+- **crow** keeps one of its `concurrency` threads for accepting connections: it runs with `--threads + 1`. Crow never
+  enables `TCP_NODELAY`, so a response sent in several writes (a few dozen headers) waited for the client's delayed
+  ACK (40 ms) and the server idled: the bench server sets it on the listening socket, inherited by accepted
+  connections on Linux.
+- **go** sets `GOMAXPROCS` to `--threads` (sysmon and blocked-syscall threads are mostly idle, GC workers take their
+  share of the `GOMAXPROCS` slots).
+- **pistache** sends the generated `/headers` as typed headers: raw headers (`Header::Raw`) are silently dropped from
+  its responses.
+- pistache answers `Connection: close` requests without closing the connection: wrk closes it and reconnects, holding
+  the `TIME_WAIT` state, so its `mixed` scenario stays below saturation.
 
 ### Building/Running Non-C++ Servers
 
@@ -517,34 +539,33 @@ Notes:
 
 ## WebSocket Benchmarks
 
-A separate orchestrator (`run_ws_benchmarks.py`) drives WebSocket-specific scenarios using
-[k6](https://k6.io/) for realistic load profiles and optionally
-[websocket-bench](https://github.com/matttomasetti/websocket-bench) for raw throughput.
+A separate orchestrator (`run_ws_benchmarks.py`) drives the WebSocket scenarios with `ws-loadgen`, a native
+epoll load generator built from [`ws_loadgen.cpp`](ws_loadgen.cpp) (Linux, target `ws-loadgen`; zlib enables
+its permessage-deflate support). Each connection performs the handshake, then keeps `--pipeline-depth`
+messages in flight, answering every echo / pong with the next message. Doing the minimum per message (one
+masked frame write, one frame parse), it costs about as much CPU per message as an efficient server (around
+4 us per 128-byte echo, system calls included), so its 3 threads per server thread leave ample headroom.
+[k6](https://k6.io/) (about 27 us of CPU per message: it cannot saturate the servers on small machines) remains
+available with `--tool k6`, and [websocket-bench](https://github.com/matttomasetti/websocket-bench) optionally
+adds a raw throughput run.
 
-### Prerequisites
+The server and the load generator are pinned to disjoint CPUs and the server CPU utilization is reported for
+every run, as for the HTTP benchmarks (see [Saturation checks](#saturation-checks)). `ws-loadgen` also reports
+its own CPU time over the measurement window (warmup excluded).
 
-```bash
-# Install k6
-# macOS
-brew install k6
-# Linux (snap)
-sudo snap install k6
-# or see https://k6.io/docs/get-started/installation/
+### WS Scenarios
 
-# (Optional) Install websocket-bench
-go install github.com/matttomasetti/websocket-bench@latest
-```
+| Scenario | ws-loadgen arguments | k6 script | Description |
+| ---------- | -------- | -------- | ------------- |
+| echo-small | `--mode echo --payload-size 128` | `k6/ws_echo_small.js` | 128 B text echo |
+| echo-medium | `--mode echo --payload-size 2048` | `k6/ws_echo_medium.js` | 2 KiB text echo |
+| echo-large | `--mode echo --payload-size 65536 --binary` | `k6/ws_echo_large.js` | 64 KiB binary echo (one message in flight per connection) |
+| mix | `--mode mix` | `k6/ws_mix_text_binary.js` | Alternating 256 B text and 512 B binary messages |
+| ping-pong | `--mode ping` | `k6/ws_ping_pong.js` | Control-frame round trips |
+| churn | `--mode churn` | `k6/ws_churn.js` | Connect, send one message, close handshake, reconnect (sessions/s) |
+| compression | `--mode echo --json-payload --compress` | `k6/ws_compression.js` | Compressible JSON over permessage-deflate (`/ws-compressed`, aeronet and uWebSockets only) |
 
-### WS Scenarios (k6)
-
-| Scenario | Script | Description |
-| ---------- | -------- | ------------- |
-| echo-small | `k6/ws_echo_small.js` | 128B text echo, measures RTT under load |
-| echo-medium | `k6/ws_echo_medium.js` | 2KB payload echo, higher bandwidth |
-| mix | `k6/ws_mix_text_binary.js` | Alternating text + binary frames |
-| ping-pong | `k6/ws_ping_pong.js` | Control-frame RTT (ping/pong latency) |
-| churn | `k6/ws_churn.js` | Rapid connect → send → close cycles |
-| compression | `k6/ws_compression.js` | Compressible JSON payloads (permessage-deflate comparison) |
+Latencies are message round trips, or session durations (connect to close) for `churn`.
 
 ### Running WebSocket Benchmarks
 
@@ -552,35 +573,39 @@ go install github.com/matttomasetti/websocket-bench@latest
 # Full suite - all servers, all scenarios
 ./run_ws_benchmarks.py
 
-# Quick smoke test (5s, 10 VUs)
+# Quick smoke test (5s, 10 connections)
 ./run_ws_benchmarks.py --smoke
 
 # Specific servers/scenarios
 ./run_ws_benchmarks.py --server aeronet,uwebsockets --scenario echo-small,churn
 
-# With raw throughput via websocket-bench
-./run_ws_benchmarks.py --websocket-bench
+# Server threads, load generator threads (default: automatic), connections, in-flight messages
+./run_ws_benchmarks.py --threads 1 --loadgen-threads 3 --vus 50 --pipeline-depth 1 --duration 30s
 
-# Custom parameters
-./run_ws_benchmarks.py --vus 100 --duration 60s --threads 4 --output ./my-results
+# k6 instead of ws-loadgen, plus a websocket-bench raw throughput run
+./run_ws_benchmarks.py --tool k6 --websocket-bench
+
+# The load generator directly
+./ws-loadgen --port 8080 --path /ws-uncompressed -c 50 -t 3 -d 10s --mode echo --payload-size 128
 
 # Render HTML report from a JSON run (interactive charts)
 python3 ./render_benchmarks_html.py --input ./ws-results/ws_benchmark_YYYYMMDD_HHMMSS.json --output ./ws-results/ws_benchmark_YYYYMMDD_HHMMSS.html
 ```
 
-Each `run_ws_benchmarks.py` execution now automatically generates:
+Each `run_ws_benchmarks.py` execution automatically generates:
 
 - text summary (`ws_benchmark_*.txt`)
-- machine-readable JSON (`ws_benchmark_*.json`)
+- machine-readable JSON (`ws_benchmark_*.json`), with the server and load generator CPU utilization per run
 - HTML report with charts (`ws_benchmark_*.html`)
 
 ### WS Server Support
 
-| Server | Port | WebSocket `/ws` |
-| -------- | ------ | ----------------- |
-| aeronet | 8080 | Yes |
-| drogon | 8081 | Yes |
-| uwebsockets | 8088 | Yes |
+| Server | Port | `/ws-uncompressed` | `/ws-compressed` |
+| -------- | ------ | ----------------- | ----------------- |
+| aeronet | 8080 | Yes | Yes |
+| drogon | 8081 | Yes | No |
+| uwebsockets | 8088 | Yes | Yes |
+| beast | 8089 | Yes | No |
 
 ## Adding New Servers
 
@@ -594,6 +619,6 @@ Each `run_ws_benchmarks.py` execution now automatically generates:
 - [x] Add HTTP/2 scenarios (h2load) - h2c and h2-tls modes via `--protocol`
 - [x] Add TLS benchmarks - h2-tls mode, self-signed certs generated at runtime
 - [ ] Integrate with CI for regression detection
-- [x] WebSocket scenarios (k6 + websocket-bench, see below)
+- [x] WebSocket scenarios (ws-loadgen or k6, + websocket-bench, see above)
 - [ ] Add streaming/chunked benchmark when comparable APIs exist across frameworks
 - [ ] Add automatic compression / decompression benchmarks for frameworks that support it

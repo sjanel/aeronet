@@ -38,6 +38,11 @@ class KeepAliveDeadlineQueue {
   /// Returns true if the queue contains no entries.
   [[nodiscard]] bool empty() const noexcept { return _heap.empty(); }
 
+  /// Returns true if a deadline is registered for state.
+  [[nodiscard]] static bool contains(const ConnectionState& state) noexcept {
+    return state.keepAliveDeadlineIndex != ConnectionState::kNoKeepAliveDeadlineIndex;
+  }
+
  private:
   void swapEntries(std::uint32_t lhsIdx, std::uint32_t rhsIdx) noexcept;
   void siftUp(std::uint32_t idx) noexcept;

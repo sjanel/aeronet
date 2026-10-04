@@ -22,7 +22,7 @@ config.withKeepAliveTimeout(25s)
 | `requestTimeout` | 30 s | Deadline for one connected request/response exchange. |
 | `maxResponseBytes` | 64 MiB | Maximum headers plus decoded body accepted before the client aborts. |
 | `followRedirects`, `maxRedirects` | true, 5 | Follow redirects and bound the chain. |
-| `keepAlive` | true | Reuse compatible HTTP connections. |
+| `keepAlive` | true | Reuse compatible HTTP connections. When false, each request uses a fresh connection and HTTP/1.1 requests carry `Connection: close` (RFC 9112 §9.6) unless they set their own `Connection` header, so that the server closes first and keeps the `TIME_WAIT` state. |
 | `keepAliveTimeout` / `withKeepAliveTimeout()` | 30 s | Maximum age of an idle pooled connection; 0 disables expiry. Also the period of the automatic sweep of expired idle connections over all origins. |
 | `maxIdleConnectionsPerHost` | 8 | Per-origin pool cap. |
 | `httpVersion` / `withHttpVersion()` | Auto | `Auto` uses HTTPS ALPN when available and otherwise HTTP/1.1; `Http1_1` disables HTTP/2; `Http2` requires HTTP/2, including prior-knowledge h2c for plaintext. |

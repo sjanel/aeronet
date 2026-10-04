@@ -153,6 +153,12 @@ class ClientConnection {
                                                              const FilePayload& filePayload,
                                                              SteadyClock::time_point deadline, bool& requestSent);
 
+  // Write a whole request without trailers with the two functions above: `head` (the request's
+  // completeRequestForHttp11(), possibly with extra header lines), then its captured in-memory or file body.
+  [[nodiscard]] static HttpClientErrc writeRequestForHttp11(HttpClient& client, Transport& transport, NativeHandle fd,
+                                                            const HttpRequest& req, std::string_view head,
+                                                            SteadyClock::time_point ioDeadline, bool& requestSent);
+
 #ifdef AERONET_ENABLE_HTTP2
   [[nodiscard]] HttpClientResult exchangeForHttp2(HttpClient& client, Transport& transport, NativeHandle fd,
                                                   const HttpRequest& req, SteadyClock::time_point ioDeadline,
