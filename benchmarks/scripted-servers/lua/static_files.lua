@@ -121,7 +121,7 @@ local file_index = 1
 
 function init(args)
   if #files == 0 then
-    error(string.format("static_files.lua: no files discovered in %s; please create test files (e.g. index.html, large.bin) in that directory", static_dir))
+    error(string.format("static_files.lua: no files discovered in %s; please create test files (e.g. index.html, medium.bin) in that directory", static_dir))
   end
   print(string.format("Static files test: %d files", #files))
   for i, file in ipairs(files) do

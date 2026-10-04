@@ -6,6 +6,10 @@ runs each compiled client driver (aeronet HttpClient vs libcurl / drogon / beast
 Each driver emits a single-line JSON result which we collect, then print a per-scenario comparison table and
 write JSON (and optionally HTML) artifacts.
 
+A client benchmark is meaningful only when the client is the bottleneck: the CPU utilization of the client
+(over its measured window, reported by the driver) and of the server are recorded for every run, and runs
+whose client used less than SATURATION_THRESHOLD_PCT of its CPUs are flagged as not saturated.
+
 Usage:
     ./run_client_benchmarks.py                          # all clients, all scenarios, defaults
     ./run_client_benchmarks.py --client aeronet,curl    # subset of clients
@@ -45,6 +49,9 @@ SCENARIO_BODY_SIZE: Dict[str, int] = {
 }
 
 DEFAULT_PORT = 8090
+# Synchronous connections per client CPU: while one waits for its response, the others keep the CPU busy.
+# A single connection per CPU leaves the client idle during every round trip (about 40% of the time on
+# loopback), so the result measures latency and wake-ups instead of the client.
 DEFAULT_CONNECTIONS_PER_THREAD = 3
 
 
@@ -154,9 +161,9 @@ def _select_median_result(samples: Sequence[dict], requested_samples: Optional[i
     return selected
 
 
-def _default_connections(client_threads: int, server_threads: int) -> int:
-    """Choose enough clients to hide synchronous waits without outnumbering server workers."""
-    return min(client_threads * DEFAULT_CONNECTIONS_PER_THREAD, max(1, server_threads - 1))
+def _default_connections(client_threads: int) -> int:
+    """Enough synchronous connections to keep every client CPU busy while the others wait for responses."""
+    return max(1, client_threads) * DEFAULT_CONNECTIONS_PER_THREAD
 
 
 def find_build_dir(script_dir: Path) -> Path:
@@ -252,6 +259,9 @@ def run_driver(
     command_prefix: Sequence[str] = (),
     sample: int = 0,
     repeat: int = 1,
+    server_pid: Optional[int] = None,
+    client_cpus: int = 1,
+    server_cpus: int = 1,
 ) -> Optional[dict]:
     cmd = [
         *command_prefix,
@@ -276,27 +286,45 @@ def run_driver(
         if repeat > 1:
             profile_parts.append(f"sample-{sample + 1}")
         cmd, profile_dir = profiler.wrap_command(cmd, profile_parts)
+    utils = _bench_utils()
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    # The driver warms up before measuring: sample the server CPU over the measured window only.
+    server_start: Optional[float] = None
+    start_wall = 0.0
+    if server_pid is not None:
+        time.sleep(utils.duration_to_seconds(warmup) or 0.0)
+        server_start = utils.process_tree_cpu_seconds(server_pid)
+        start_wall = time.monotonic()
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        stdout, stderr = proc.communicate(timeout=600)
     except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
         print(f"  ! {binary.name} timed out on {scenario}", file=sys.stderr)
         return None
+    server_cpu_s: Optional[float] = None
+    wall_s = time.monotonic() - start_wall
+    if server_start is not None:
+        server_end = utils.process_tree_cpu_seconds(server_pid)
+        server_cpu_s = None if server_end is None else server_end - server_start
     if profiler is not None and profile_dir is not None:
         try:
             profiler.process(profile_dir)
         except RuntimeError as exc:
             print(f"  ! {exc}", file=sys.stderr)
     # The JSON result is the last non-empty stdout line (drivers may print warnings to stderr).
-    for line in reversed(out.stdout.strip().splitlines()):
+    for line in reversed(stdout.strip().splitlines()):
         line = line.strip()
         if line.startswith("{"):
             try:
-                return json.loads(line)
+                result = json.loads(line)
             except json.JSONDecodeError:
                 break
-    print(f"  ! {binary.name} produced no result on {scenario} (exit {out.returncode})", file=sys.stderr)
-    if out.stderr.strip():
-        print("    " + out.stderr.strip().replace("\n", "\n    "), file=sys.stderr)
+            _add_cpu_usage(result, server_cpu_s, wall_s, client_cpus, server_cpus)
+            return result
+    print(f"  ! {binary.name} produced no result on {scenario} (exit {proc.returncode})", file=sys.stderr)
+    if stderr.strip():
+        print("    " + stderr.strip().replace("\n", "\n    "), file=sys.stderr)
     return None
 
 
@@ -332,14 +360,44 @@ def _table_printer():
 
 def _perf_profiler_class():
     """Import the profiler shared with the scripted-server runner."""
+    return _bench_utils().PerfProfiler
+
+
+def _bench_utils():
+    """Import the helpers shared with the scripted-server runner (bench_utils.py)."""
     server_dir = Path(__file__).resolve().parent.parent / "scripted-servers"
     if str(server_dir) not in sys.path:
         sys.path.insert(0, str(server_dir))
     try:
-        from bench_utils import PerfProfiler
+        import bench_utils  # noqa: local import
     except ImportError as exc:
-        raise BenchError(f"could not import PerfProfiler from {server_dir}: {exc}") from exc
-    return PerfProfiler
+        raise BenchError(f"could not import bench_utils from {server_dir}: {exc}") from exc
+    return bench_utils
+
+
+def _add_cpu_usage(
+    result: dict, server_cpu_s: Optional[float], wall_s: float, client_cpus: int, server_cpus: int,
+) -> None:
+    """Store the client and server CPU utilization (% of their reserved CPUs) of a driver run in ``result``."""
+    cpu_s, duration_s = result.get("cpu_s"), result.get("duration_s")
+    if isinstance(cpu_s, (int, float)) and isinstance(duration_s, (int, float)) and duration_s > 0:
+        result["client_cpu_pct"] = 100.0 * cpu_s / (duration_s * max(1, client_cpus))
+    if server_cpu_s is not None and wall_s > 0:
+        result["server_cpu_pct"] = 100.0 * server_cpu_s / (wall_s * max(1, server_cpus))
+
+
+def _format_cpu_usage(result: dict, client_cpus: int, server_cpus: int) -> str:
+    fmt = _bench_utils().format_pct
+    return (
+        f"CPU: client {fmt(result.get('client_cpu_pct'))} of {client_cpus}, "
+        f"server {fmt(result.get('server_cpu_pct'))} of {server_cpus}"
+    )
+
+
+def _client_saturated(result: dict) -> Optional[bool]:
+    """Whether the client was the bottleneck of the run (None when its CPU usage is unknown)."""
+    pct = result.get("client_cpu_pct")
+    return None if pct is None else pct >= _bench_utils().SATURATION_THRESHOLD_PCT
 
 
 def print_summary(results: List[dict], clients: List[str], scenarios: List[str]) -> None:
@@ -384,8 +442,14 @@ def to_pages_summary(results: List[dict], meta: dict, scenarios: List[str], clie
         latency: Dict[str, str] = {}
         transfer: Dict[str, str] = {}
         memory: Dict[str, dict] = {}
+        client_cpu: Dict[str, float] = {}
+        server_cpu: Dict[str, float] = {}
         for r in rows:
             client = r["client"]
+            if "client_cpu_pct" in r:
+                client_cpu[client] = round(r["client_cpu_pct"], 1)
+            if "server_cpu_pct" in r:
+                server_cpu[client] = round(r["server_cpu_pct"], 1)
             rps[client] = f"{r['rps']:.2f}"
             latency[client] = f"{r['avg_us'] / 1000.0:.3f}ms"
             transfer[client] = f"{r['bytes'] / (1024 * 1024):.2f}MB"  # total payload moved over the run
@@ -396,13 +460,20 @@ def to_pages_summary(results: List[dict], meta: dict, scenarios: List[str], clie
         out_results[scenario] = {
             "rps": rps, "latency": latency, "transfer": transfer, "memory": memory,
             "timeouts": {c: 0 for c in rps}, "winners": {"rps": winner} if winner else {},
+            "client_cpu": client_cpu, "server_cpu": server_cpu,
         }
     return {
         "protocol": meta["protocol"],
         "tool": "scripted-clients",
+        # The clients are measured: the renderer checks their CPU saturation, not the server's.
+        "measured_side": "client",
+        "saturation_threshold_pct": _bench_utils().SATURATION_THRESHOLD_PCT,
         "generated_at": meta["date"],
         "repeat": meta["repeat"],
         "threads": meta["threads"],
+        "server_threads": meta.get("server_threads"),
+        "client_cpus": meta.get("client_cpus", ""),
+        "server_cpus": meta.get("server_cpus", ""),
         "connections": meta["connections"],
         "duration": meta["duration"],
         "warmup": meta["warmup"],
@@ -498,8 +569,8 @@ def main() -> int:
     parser.add_argument(
         "--connections", type=int, default=None,
         help=(
-            f"synchronous client connections (default: up to {DEFAULT_CONNECTIONS_PER_THREAD} per thread, "
-            "fewer than server threads)"
+            f"synchronous client connections (default: {DEFAULT_CONNECTIONS_PER_THREAD} per thread, so that "
+            "the client CPUs stay busy while connections wait for their responses)"
         ),
     )
     parser.add_argument(
@@ -561,13 +632,9 @@ def main() -> int:
     server_prefix = ["taskset", "-c", _format_cpu_list(server_cpus)] if server_cpus else []
     default_server_threads = len(server_cpus) if server_cpus else len(available_cpus)
     server_threads = max(1, args.server_threads if args.server_threads is not None else default_server_threads)
-    if args.connections is None:
-        # Keep the server worker count strictly above the number of synchronous
-        # clients whenever the host has enough capacity. Dedicated cheap response
-        # endpoints then make the client CPU budget the limiting resource.
-        connections = _default_connections(client_threads, server_threads)
-    else:
-        connections = max(1, args.connections)
+    connections = _default_connections(client_threads) if args.connections is None else max(1, args.connections)
+    client_cpu_count = len(client_cpus) or client_threads
+    server_cpu_count = len(server_cpus) or server_threads
 
     profiler = None
     if args.profile:
@@ -622,6 +689,8 @@ def main() -> int:
         "threads": client_threads,
         "connections": connections,
         "server_threads": server_threads,
+        "client_cpus": _format_cpu_list(client_cpus),
+        "server_cpus": _format_cpu_list(server_cpus),
         "duration": args.duration,
         "warmup": args.warmup,
         "clients": [n for n, _ in available],
@@ -638,12 +707,6 @@ def main() -> int:
         print(f"CPU pin: client={_format_cpu_list(client_cpus)}  server={_format_cpu_list(server_cpus)}")
     elif not args.no_cpu_pin:
         print("CPU pin: disabled (not enough disjoint physical cores or taskset unavailable)")
-    if connections >= server_threads:
-        print(
-            "Warning: client connections are not below server threads; "
-            "the server may become the bottleneck",
-            file=sys.stderr,
-        )
 
     server = start_server(
         server_bin, args.port, server_threads, protocol, certs,
@@ -660,6 +723,7 @@ def main() -> int:
                         binary, base_url, scenario, connections, args.duration,
                         args.warmup, protocol, profiler,
                         command_prefix=client_prefix, sample=sample, repeat=repeat,
+                        server_pid=server.pid, client_cpus=client_cpu_count, server_cpus=server_cpu_count,
                     )
                     if res is not None:
                         samples.append(res)
@@ -670,8 +734,15 @@ def main() -> int:
                 print(
                     f"  {name:<10} {fmt_rps(res['rps']):>9} rps  "
                     f"p50={res['p50_us']:.1f}us p99={res['p99_us']:.1f}us  "
-                    f"{res['bytes_per_s'] / (1024 * 1024):.1f} MB/s  RSS={res['rss_kb'] / 1024:.1f}MB"
+                    f"{res['bytes_per_s'] / (1024 * 1024):.1f} MB/s  RSS={res['rss_kb'] / 1024:.1f}MB  "
+                    f"{_format_cpu_usage(res, client_cpu_count, server_cpu_count)}"
                 )
+                if _client_saturated(res) is False:
+                    print(
+                        f"    WARNING: {name} is not saturated on '{scenario}' (below "
+                        f"{_bench_utils().SATURATION_THRESHOLD_PCT:.0f}% of its CPUs): it waited on the server "
+                        "or the kernel, this does not measure its throughput"
+                    )
     finally:
         stop_server(server)
 
@@ -680,6 +751,9 @@ def main() -> int:
 
     client_names = [n for n, _ in available]
     print_summary(results, client_names, scenarios)
+    unsaturated = [f"{r['client']}/{r['scenario']}" for r in results if _client_saturated(r) is False]
+    if unsaturated:
+        print(f"WARNING: not saturated (server or kernel bound) client measurements: {', '.join(unsaturated)}")
     out_dir = Path(args.output)
     summary = to_pages_summary(results, meta, scenarios, client_names)
     latest = write_artifacts(summary, out_dir)

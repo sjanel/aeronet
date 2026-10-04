@@ -59,6 +59,7 @@ class CurlSession {
     if (!spec.reuse) {
       curl_easy_setopt(_handle, CURLOPT_FORBID_REUSE, 1L);
       curl_easy_setopt(_handle, CURLOPT_FRESH_CONNECT, 1L);
+      _headers = curl_slist_append(_headers, "Connection: close");
     }
     if (spec.method == "POST") {
       _headers = curl_slist_append(_headers, "Content-Type: application/octet-stream");

@@ -62,7 +62,10 @@ struct ScenarioSpec {
   // asks the server to gzip the response, which the client must then decode (see `decode`).
   std::string acceptEncoding{"identity"};
   bool decode{false};  // client decodes a gzip'd response body and counts the *decoded* bytes
-  bool reuse{true};    // keep-alive reuse across requests (false => fresh connection per request)
+  // keep-alive reuse across requests. false => fresh connection per request, announced with 'Connection: close'
+  // so that the server closes first and keeps the TIME_WAIT state: client-side TIME_WAIT sockets would make every
+  // connect() search the ephemeral port range, and measure that kernel cost instead of the client.
+  bool reuse{true};
 };
 
 // ----------------------------- Protocol ----------------------------- //
@@ -337,8 +340,23 @@ struct BenchResult {
   double p90Us{0.0};
   double p99Us{0.0};
   double maxUs{0.0};
+  double cpuSeconds{0.0};  // CPU time of the whole process over the measured window
   long rssKb{0};
 };
+
+// User + system CPU time consumed so far by all the threads of this process (0 where unsupported).
+inline double ProcessCpuSeconds() {
+#if defined(__unix__) || defined(__APPLE__)
+  struct rusage usage{};
+  if (getrusage(RUSAGE_SELF, &usage) == 0) {
+    const auto seconds = [](const timeval& tv) {
+      return static_cast<double>(tv.tv_sec) + (1e-6 * static_cast<double>(tv.tv_usec));
+    };
+    return seconds(usage.ru_utime) + seconds(usage.ru_stime);
+  }
+#endif
+  return 0.0;
+}
 
 inline long PeakRssKb() {
 #if defined(__unix__) || defined(__APPLE__)
@@ -361,20 +379,21 @@ inline void PrintResult(const BenchResult& r) {
       "    rps      : %.0f\n"
       "    transfer : %.2f MB/s\n"
       "    latency  : avg %.1fus  p50 %.1fus  p90 %.1fus  p99 %.1fus  max %.1fus\n"
+      "    cpu      : %.2fs\n"
       "    peak RSS : %ld KB\n",
       r.client.c_str(), r.scenario.c_str(), r.threads, static_cast<unsigned long long>(r.requests),
       static_cast<unsigned long long>(r.errors), r.durationSeconds, r.rps, r.bytesPerSecond / (1024.0 * 1024.0),
-      r.avgUs, r.p50Us, r.p90Us, r.p99Us, r.maxUs, r.rssKb);
+      r.avgUs, r.p50Us, r.p90Us, r.p99Us, r.maxUs, r.cpuSeconds, r.rssKb);
 }
 
 inline void PrintResultJson(const BenchResult& r) {
   std::printf(
       "{\"client\":\"%s\",\"scenario\":\"%s\",\"protocol\":\"%s\",\"threads\":%u,\"requests\":%llu,"
       "\"errors\":%llu,\"bytes\":%llu,\"duration_s\":%.3f,\"rps\":%.1f,\"bytes_per_s\":%.1f,\"avg_us\":%.3f,"
-      "\"p50_us\":%.3f,\"p90_us\":%.3f,\"p99_us\":%.3f,\"max_us\":%.3f,\"rss_kb\":%ld}\n",
+      "\"p50_us\":%.3f,\"p90_us\":%.3f,\"p99_us\":%.3f,\"max_us\":%.3f,\"cpu_s\":%.3f,\"rss_kb\":%ld}\n",
       r.client.c_str(), r.scenario.c_str(), r.protocol.c_str(), r.threads, static_cast<unsigned long long>(r.requests),
       static_cast<unsigned long long>(r.errors), static_cast<unsigned long long>(r.bytes), r.durationSeconds, r.rps,
-      r.bytesPerSecond, r.avgUs, r.p50Us, r.p90Us, r.p99Us, r.maxUs, r.rssKb);
+      r.bytesPerSecond, r.avgUs, r.p50Us, r.p90Us, r.p99Us, r.maxUs, r.cpuSeconds, r.rssKb);
 }
 
 // ----------------------------- Driver ------------------------------- //
@@ -474,6 +493,12 @@ int RunClientBench(int argc, char** argv, std::string_view clientName) {
   measuredEnd = warmupEnd + cfg.duration;
   go.store(true, std::memory_order_release);
 
+  // CPU time over the measured window only (warmup excluded): tells whether the client was the bottleneck.
+  std::this_thread::sleep_until(warmupEnd);
+  const double cpuStart = ProcessCpuSeconds();
+  std::this_thread::sleep_until(measuredEnd);
+  const double cpuSeconds = ProcessCpuSeconds() - cpuStart;
+
   for (auto& worker : workers) {
     worker.join();
   }
@@ -502,6 +527,7 @@ int RunClientBench(int argc, char** argv, std::string_view clientName) {
   result.p90Us = static_cast<double>(merged.percentileNs(90.0)) * kNsToUs;
   result.p99Us = static_cast<double>(merged.percentileNs(99.0)) * kNsToUs;
   result.maxUs = static_cast<double>(merged.maxNs()) * kNsToUs;
+  result.cpuSeconds = cpuSeconds;
   result.rssKb = PeakRssKb();
 
   if (cfg.json) {

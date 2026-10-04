@@ -41,6 +41,28 @@ local function prepare_pool()
   pool_size = #bodies
 end
 
+-- Requests are formatted once per wrk thread: building a request string of up to 1 MB in request() (and collecting it
+-- afterwards) costs the load generator more CPU than the server spends processing it, so that it could not saturate
+-- fast servers.
+local formatted_requests = {}
+
+local function prepare_requests()
+  formatted_requests = {}
+  for i = 1, #bodies do
+    local body = bodies[i]
+    local headers = {
+      ["Content-Type"] = "application/octet-stream",
+      ["Connection"] = "keep-alive"
+    }
+    if use_chunked then
+      headers["Transfer-Encoding"] = "chunked"
+    else
+      headers["Content-Length"] = tostring(#body)
+    end
+    formatted_requests[i] = wrk.format("POST", "/uppercase", headers, body)
+  end
+end
+
 function init(args)
   for i, arg in ipairs(args) do
     if arg == "--body-size" then
@@ -60,21 +82,11 @@ function init(args)
   end
   math.randomseed(42)
   prepare_pool()
+  prepare_requests()
 end
 
 function request()
-  local headers = {
-    ["Content-Type"] = "application/octet-stream",
-    ["Connection"] = "keep-alive"
-  }
-  local idx = math.random(1, pool_size)
-  local body = bodies[idx]
-  if use_chunked then
-    headers["Transfer-Encoding"] = "chunked"
-  else
-    headers["Content-Length"] = tostring(#body)
-  end
-  return wrk.format("POST", "/uppercase", headers, body)
+  return formatted_requests[math.random(1, #formatted_requests)]
 end
 
 function done(summary, latency, requests)

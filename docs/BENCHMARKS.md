@@ -24,7 +24,8 @@ It runs:
 
 - HTTP/1.1 benchmarks (wrk)
 - HTTP/2 benchmarks (h2load, h2c + h2-tls)
-- WebSocket benchmarks (k6)
+- WebSocket benchmarks (`ws-loadgen`, a native load generator)
+- Client benchmarks (aeronet `HttpClient` vs libcurl, Drogon and Beast, `benchmarks/scripted-clients/`)
 
 The same workflow publishes rendered dashboards and badge endpoint JSON files to GitHub Pages:
 
@@ -35,13 +36,34 @@ The same workflow publishes rendered dashboards and badge endpoint JSON files to
 
 For WebSocket runs, if aeronet reports benchmark check failures/errors, the benchmark CI job fails by design.
 
+## Saturation: measure the server, or the client, not the noise
+
+A throughput number only measures the side that is the bottleneck. When the load generator cannot keep the
+server busy, a server benchmark measures the load generator (and the scheduler); when a client waits on the
+server or on the kernel, a client benchmark measures them instead. Every runner therefore checks it:
+
+- **Server benchmarks** (`run_benchmarks.py` for HTTP/1.1 and HTTP/2, `run_ws_benchmarks.py` for WebSocket)
+  pin the server and the load generator to disjoint CPUs (one server CPU per physical core when possible, the
+  load generator on the remaining ones, SMT siblings of the server last) and measure the server CPU utilization
+  over each run (`bench_utils.CpuMeter`). The load generator gets up to 3 threads per server thread by default
+  (`--loadgen-threads` overrides it).
+- **Client benchmarks** (`run_client_benchmarks.py`) give each client 3 synchronous connections per reserved
+  CPU, so that the CPU stays busy while connections wait for responses, and record the client CPU time over
+  the measured window (reported by the driver itself) along with the server CPU utilization.
+
+A run whose measured side used less than 90% of its CPUs is flagged as not saturated: in the console, in the
+JSON summary (`results.<scenario>.server_cpu`, or `client_cpu` with `"measured_side": "client"`) and in the HTML
+report (CPU table and warning banner). The CI benchmark jobs print the CPU topology (`lscpu`) of their runner.
+
 ## WebSocket Benchmarks
 
 The WebSocket scripted benchmark harness lives under `benchmarks/scripted-servers/` and is driven by:
 
 - `run_ws_benchmarks.py` (orchestration)
-- k6 scenario scripts under `benchmarks/scripted-servers/k6/`
-- `render_ws_benchmarks_html.py` (dashboard generation)
+- `ws-loadgen` (`ws_loadgen.cpp`), the native epoll load generator used by default: k6 spends several times
+  more CPU per message than the servers and cannot saturate them on small machines
+- k6 scenario scripts under `benchmarks/scripted-servers/k6/` (with `--tool k6`)
+- `render_benchmarks_html.py` (dashboard generation)
 
 Run locally from the benchmark build directory:
 

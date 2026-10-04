@@ -442,6 +442,60 @@ TEST_F(HttpClientE2ETest, Http11WriteErrorBeforeAnyBytesLeavesRequestUnsent) {
   EXPECT_FALSE(requestSent);
 }
 
+// With keep-alive disabled, 'Connection: close' is spliced as the last header line of the wire head: an inlined body
+// follows the blank line in the same buffer, a captured one is written after it, straight from the request.
+TEST_F(HttpClientE2ETest, Http11KeepAliveOffSplicesConnectionCloseBeforeBody) {
+  static constexpr std::string_view kCloseThenBlankLine = "\r\nconnection: close\r\n\r\n";
+  HttpClientConfig cfg;
+  cfg.keepAlive = false;
+  HttpClient client(cfg);
+
+  for (const bool captured : {false, true}) {
+    const std::string payload(captured ? 128U : 5U, 'p');
+    auto req = client.makeRequest(http::Method::POST, Url("/echo"));
+    if (captured) {
+      req.body(std::string(payload), "text/plain");
+    } else {
+      req.body(std::string_view(payload), "text/plain");
+    }
+    HttpRequestTest::Finalize(req);
+    ASSERT_EQ(req.hasBodyCaptured(), captured);
+    ASSERT_EQ(req.hasBodyInlined(), !captured);
+    ScriptedHttp11Transport transport(ScriptedHttp11Transport::WriteMode::SplitAfterHead);
+    test::ClientConnection socket(ts.port());
+    internal::ClientConnection connection(internal::ClientConnection::Type::Http11);
+    bool requestSent = false;
+
+    auto result = connection.exchange(client, transport, socket.fd(), req, SteadyClock::now() + std::chrono::seconds{1},
+                                      requestSent);
+
+    ASSERT_TRUE(result);
+    EXPECT_TRUE(requestSent);
+    const std::string_view written = transport.written();
+    EXPECT_TRUE(written.starts_with("POST /echo HTTP/1.1\r\n")) << written;
+    EXPECT_TRUE(written.ends_with(std::string(kCloseThenBlankLine) + payload)) << written;
+    EXPECT_EQ(test::countOccurrences(written, "connection:"), 1) << written;
+    EXPECT_FALSE(req.hasHeader(http::Connection));
+  }
+}
+
+TEST_F(HttpClientE2ETest, Http11KeepAliveOffWriteErrorFailsExchange) {
+  HttpClientConfig cfg;
+  cfg.keepAlive = false;
+  HttpClient client(cfg);
+  auto req = client.makeRequest(http::Method::GET, Url("/hello"));
+  HttpRequestTest::Finalize(req);
+  ScriptedHttp11Transport transport(ScriptedHttp11Transport::WriteMode::Error);
+  internal::ClientConnection connection(internal::ClientConnection::Type::Http11);
+  bool requestSent = false;
+
+  auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
+
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::writeError);
+  EXPECT_FALSE(requestSent);
+}
+
 TEST_F(HttpClientE2ETest, Http11ReadAndWriteReadinessCanTimeoutBeforeSend) {
   HttpClient client;
   auto req = client.makeRequest(http::Method::GET, Url("/hello"));
@@ -986,6 +1040,60 @@ TEST_F(HttpClientE2ETest, PostFileBodySmall) {
   auto resp = client.request(std::move(req)).value();
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), payload);
+}
+
+// With keep-alive disabled, the 'Connection: close' header is spliced into the wire head only: the file body must still
+// be streamed intact after it, and the request stays unmodified, so it can be sent again.
+TEST_F(HttpClientE2ETest, PostFileBodyWithKeepAliveOff) {
+  const std::string payload = MakeFilePayload(4096);
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, payload);
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+
+  HttpClientConfig cfg;
+  cfg.keepAlive = false;
+  HttpClient client(cfg);
+  auto req = client.makeRequest(http::Method::POST, Url("/echo")).file(std::move(file), "application/test");
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    auto resp = client.request(req).value();
+    EXPECT_EQ(resp.status(), 200);
+    EXPECT_EQ(resp.bodyInMemory(), payload);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::Connection), http::close);  // the server received the close option
+  }
+  EXPECT_FALSE(req.hasHeader(http::Connection));
+}
+
+// Same with in-memory bodies, inlined in the head (small) or captured (large): they must be sent intact after the
+// spliced 'Connection: close' header.
+TEST_F(HttpClientE2ETest, PostInMemoryBodiesWithKeepAliveOff) {
+  HttpClientConfig cfg;
+  cfg.keepAlive = false;
+  HttpClient client(cfg);
+
+  const std::string inlinedPayload = MakeFilePayload(17);
+  auto inlinedReq = client.makeRequest(http::Method::POST, Url("/echo")).body(inlinedPayload, "application/test");
+  ASSERT_TRUE(inlinedReq.hasBodyInlined());
+
+  const std::string capturedPayload = MakeFilePayload(cfg.minCapturedBodySize * 8);
+  auto capturedReq =
+      client.makeRequest(http::Method::POST, Url("/echo")).body(std::string(capturedPayload), "application/test");
+  ASSERT_TRUE(capturedReq.hasBodyCaptured());
+
+  struct RequestCase {
+    const HttpRequest& req;
+    std::string_view payload;
+  };
+  for (const RequestCase& requestCase :
+       {RequestCase{inlinedReq, inlinedPayload}, RequestCase{capturedReq, capturedPayload}}) {
+    for (int attempt = 0; attempt < 2; ++attempt) {
+      auto resp = client.request(requestCase.req).value();
+      EXPECT_EQ(resp.status(), 200);
+      EXPECT_EQ(resp.bodyInMemory(), requestCase.payload);
+      EXPECT_EQ(resp.headerValueOrEmpty(http::Connection), http::close);
+    }
+    EXPECT_FALSE(requestCase.req.hasHeader(http::Connection));
+  }
 }
 
 // A file larger than the 64 KiB read/write chunk must be streamed across several read + write iterations
@@ -2432,19 +2540,19 @@ TEST_F(HttpClientProxyTlsE2ETest, Ipv6OriginIsBracketedInConnectAuthority) {
 
 namespace {
 
-// Read until the end of the request header block ("\r\n\r\n"). The tests only issue bodyless GETs, so
-// this is enough to know the client finished writing its request before we script the response.
-void DrainRequest(NativeHandle fd) {
+// Read until the end of the request header block ("\r\n\r\n") and return what was read. The tests only issue
+// bodyless GETs, so this is enough to know the client finished writing its request before we script the response.
+std::string DrainRequest(NativeHandle fd) {
   std::string buf;
   char tmp[1024];
   for (;;) {
     const auto sz = ::recv(fd, tmp, static_cast<int>(sizeof(tmp)), 0);
     if (sz <= 0) {
-      return;
+      return buf;
     }
     buf.append(tmp, static_cast<std::size_t>(sz));
     if (buf.contains("\r\n\r\n")) {
-      return;
+      return buf;
     }
   }
 }
@@ -2560,6 +2668,40 @@ std::string MakeUrl(uint16_t urlPort, std::string_view path = "/") {
   return "http://127.0.0.1:" + std::to_string(urlPort) + std::string(path);
 }
 
+std::size_t CountOccurrences(std::string_view text, std::string_view pattern) {
+  std::size_t count = 0;
+  for (auto pos = text.find(pattern); pos != std::string_view::npos; pos = text.find(pattern, pos + pattern.size())) {
+    ++count;
+  }
+  return count;
+}
+
+// Raw server answering every request with a 'Connection: close' response, recording the request heads it received.
+class RequestHeadRecorder {
+ public:
+  RequestHeadRecorder()
+      : _server([this](NativeHandle fd, int) {
+          std::string head = DrainRequest(fd);
+          {
+            std::scoped_lock lock(_mutex);
+            _heads.push_back(std::move(head));
+          }
+          SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok");
+        }) {}
+
+  [[nodiscard]] uint16_t port() const noexcept { return _server.port(); }
+
+  [[nodiscard]] std::vector<std::string> heads() {
+    std::scoped_lock lock(_mutex);
+    return _heads;
+  }
+
+ private:
+  std::mutex _mutex;
+  std::vector<std::string> _heads;
+  RawServer _server;  // last: stopped (and joined) before the recorded heads are destroyed
+};
+
 }  // namespace
 
 // A hard DNS resolution failure: .invalid is reserved (RFC 6761) and never resolves, so ConnectTCP
@@ -2623,6 +2765,54 @@ TEST(HttpClientErrorE2ETest, ShortContentTypeFromServerIsAccepted) {
   EXPECT_EQ(result->status(), 200);
   EXPECT_EQ(result->headerValueOrEmpty(http::ContentType), "a/b");
   EXPECT_EQ(result->bodyInMemory(), "hello");
+}
+
+// RFC 9112 section 9.6: with keep-alive disabled, every HTTP/1.1 request carries 'Connection: close' (so that the
+// server closes first and keeps the TIME_WAIT state), without modifying the user's request object.
+TEST(HttpClientRawServerTest, KeepAliveOffSendsConnectionClose) {
+  RequestHeadRecorder server;
+  HttpClientConfig cfg;
+  cfg.keepAlive = false;
+  HttpClient client(cfg);
+  auto req = client.makeRequest(http::Method::GET, MakeUrl(server.port(), "/a"));
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    auto resp = client.request(req);
+    ASSERT_TRUE(resp);
+    EXPECT_EQ(resp->bodyInMemory(), "ok");
+  }
+  EXPECT_FALSE(req.hasHeader(http::Connection));  // the header is added to a wire copy only
+  const auto heads = server.heads();
+  ASSERT_EQ(heads.size(), 2U);  // one fresh connection per request
+  for (const std::string& head : heads) {
+    EXPECT_TRUE(head.starts_with("GET /a HTTP/1.1\r\n")) << head;
+    EXPECT_EQ(CountOccurrences(head, "connection:"), 1U) << head;
+    EXPECT_TRUE(head.contains("\r\nconnection: close\r\n")) << head;
+  }
+}
+
+// A Connection header set by the user wins: it is sent as is, never duplicated.
+TEST(HttpClientRawServerTest, KeepAliveOffKeepsUserConnectionHeader) {
+  RequestHeadRecorder server;
+  HttpClientConfig cfg;
+  cfg.keepAlive = false;
+  HttpClient client(cfg);
+  auto req = client.makeRequest(http::Method::GET, MakeUrl(server.port()));
+  req.header(http::Connection, "close, x-custom");
+  ASSERT_TRUE(client.request(req));
+  const auto heads = server.heads();
+  ASSERT_EQ(heads.size(), 1U);
+  EXPECT_EQ(CountOccurrences(heads[0], "connection:"), 1U) << heads[0];
+  EXPECT_TRUE(heads[0].contains("\r\nconnection: close, x-custom\r\n")) << heads[0];
+}
+
+// With keep-alive enabled (default), HTTP/1.1 requests rely on the persistent default: no Connection header.
+TEST(HttpClientRawServerTest, KeepAliveOnSendsNoConnectionHeader) {
+  RequestHeadRecorder server;
+  HttpClient client;
+  ASSERT_TRUE(client.get(MakeUrl(server.port())));
+  const auto heads = server.heads();
+  ASSERT_EQ(heads.size(), 1U);
+  EXPECT_FALSE(heads[0].contains("connection:")) << heads[0];
 }
 
 // The server reads the request but never answers, then closes after the deadline. The deadline must win even

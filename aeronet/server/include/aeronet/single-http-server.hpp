@@ -467,8 +467,11 @@ class SingleHttpServer {
 
   // Returns true if connection has been closed, false otherwise.
   CloseStatus handleWritableClient(ConnectionIt cnxIt);
-  // Returns true if connection has been closed, false otherwise.
-  CloseStatus handleReadableClient(ConnectionIt cnxIt);
+  // Reads and processes available input of a connection.
+  // stopOnShortRead: the triggering event reported no hang-up / error, so a short plain-socket read proves the kernel
+  // receive queue drained and the final read that would only return EAGAIN can be skipped (edge-triggered polling
+  // reports any later data). Pass false when the event may carry a pending EOF, or when no event triggered the read.
+  CloseStatus handleReadableClient(ConnectionIt cnxIt, bool stopOnShortRead);
 
   // Dispatches input to appropriate handler based on protocol.
   // For HTTP/1.1, calls processHttp1Requests.
@@ -518,10 +521,18 @@ class SingleHttpServer {
 
   void closeConnection(ConnectionIt cnxIt);
 
+  // Registers (or unregisters) the keep-alive deadline of a connection according to its current state.
   void refreshKeepAliveDeadline(ConnectionIt cnxIt);
-  // Restart the keep-alive idle window from now when serving the request outlived keepAliveTimeout,
+  // Restart the keep-alive idle window from workEnd when serving the request outlived keepAliveTimeout,
   // so a slow handler cannot get its own response swept away as if the connection had been idle.
-  void restartKeepAliveIdleWindow(NativeHandle fd);
+  void restartKeepAliveIdleWindow(NativeHandle fd, std::chrono::steady_clock::time_point workEnd);
+  void restartKeepAliveIdleWindow(NativeHandle fd) { restartKeepAliveIdleWindow(fd, std::chrono::steady_clock::now()); }
+  // Same for the connections of a processed batch of events, read at batchStart: a single clock read when the whole
+  // batch was served within keepAliveTimeout, the common case.
+  void restartKeepAliveIdleWindows(std::span<const EventLoop::EventFd> events,
+                                   std::chrono::steady_clock::time_point batchStart);
+  // Listener, wakeup and maintenance timer fds, polled along with the connections.
+  [[nodiscard]] bool isServerInternalFd(NativeHandle fd) const noexcept;
   bool closeExpiredKeepAliveConnections();
   void rebuildKeepAliveDeadlines();
   void forgetConnectionMaintenance(ConnectionState& state) noexcept;
