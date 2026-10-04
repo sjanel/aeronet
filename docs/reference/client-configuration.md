@@ -23,7 +23,7 @@ config.withKeepAliveTimeout(25s)
 | `maxResponseBytes` | 64 MiB | Maximum headers plus decoded body accepted before the client aborts. |
 | `followRedirects`, `maxRedirects` | true, 5 | Follow redirects and bound the chain. |
 | `keepAlive` | true | Reuse compatible HTTP connections. |
-| `keepAliveTimeout` / `withKeepAliveTimeout()` | 30 s | Maximum age of an idle pooled connection; 0 disables expiry. |
+| `keepAliveTimeout` / `withKeepAliveTimeout()` | 30 s | Maximum age of an idle pooled connection; 0 disables expiry. Also the period of the automatic sweep of expired idle connections over all origins. |
 | `maxIdleConnectionsPerHost` | 8 | Per-origin pool cap. |
 | `httpVersion` / `withHttpVersion()` | Auto | `Auto` uses HTTPS ALPN when available and otherwise HTTP/1.1; `Http1_1` disables HTTP/2; `Http2` requires HTTP/2, including prior-knowledge h2c for plaintext. |
 | `http2` / `withHttp2Config()` | `Http2Config` defaults | Native HTTP/2 settings and flow-control limits. Server-only settings such as h2c, priority, and push do not affect a client. |
@@ -31,6 +31,18 @@ config.withKeepAliveTimeout(25s)
 | `globalHeaders` / `withGlobalHeaders()` / `addGlobalHeader()` | `user-agent: aeronet` | Headers supplied unless a request already provides a value. |
 | `addTrailerHeader` | true | Add a `Trailer` header to requests that contain trailers. |
 | `minCapturedBodySize` / `withMinCapturedBodySize()` | 1 KiB | Fold small captured HTTP/1.1 bodies into the request head buffer. |
+
+## Long-running clients
+
+An idle pooled connection older than `keepAliveTimeout` is closed when its origin is requested again, and by a sweep over all origins that runs at most once per `keepAliveTimeout`, when a request completes. A client talking to many origins (a crawler, a webhook dispatcher) thus does not keep the sockets, TLS sessions and HTTP/2 state of the origins it stopped requesting. The client has no background thread, so nothing is swept while it makes no requests: call `clearIdleConnections()` before a long pause to close every pooled connection.
+
+The request, response and decompression scratch buffers keep the capacity of the largest exchange so far, so that later requests do not allocate again. A single large exchange would thus pin its allocation for the lifetime of the client. `releaseUnusedMemory()` is meant to be called periodically to keep this memory bounded: it shrinks the scratch buffers gradually rather than freeing them (each call at most halves a mostly unused buffer, down to a small floor), so a client that keeps exchanging similar payloads does not reallocate them on every period. It also closes the expired idle connections and drops the expired cached responses. Valid pooled connections and fresh cache entries are kept, and responses already returned are not affected. To drop every pooled connection or cached response at once, use `clearIdleConnections()` / `clearResponseCache()`:
+
+```cpp
+aeronet::HttpClient client;
+// ... in the client's thread, e.g. once per minute between two requests ...
+client.releaseUnusedMemory();  // buffers left oversized by a past burst of large downloads shrink over a few calls
+```
 
 ## Compression and caching
 

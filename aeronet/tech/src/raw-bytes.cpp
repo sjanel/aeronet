@@ -116,6 +116,7 @@ void RawBytesBase<T, ViewType, SizeType>::shrink_to_fit() noexcept {
   if (kMinCapacity < _capacity && 4UL * _size < _capacity) {
     const size_type newCap = _capacity / 2;
 #ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+    // Using a new buffer to force a fresh allocation and catch invalid accesses more easily.
     pointer newBuf = static_cast<pointer>(std::malloc(newCap));
     if (newBuf != nullptr) [[likely]] {
       Copy(_buf, _size, newBuf);
