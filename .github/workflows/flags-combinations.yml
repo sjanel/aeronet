@@ -2,7 +2,8 @@ name: Flag combinations (periodic)
 
 on:
   schedule:
-    - cron: '0 3 * * 0,3'   # every Sunday and Wednesday 03:00 UTC (runs on the default branch only)
+    # Off the top of the hour: GitHub delays (or drops) scheduled runs most at minute 0.
+    - cron: '17 3 * * 0,3'   # every Sunday and Wednesday 03:17 UTC (runs on the default branch only)
   workflow_dispatch:
     inputs:
       wave_count:
