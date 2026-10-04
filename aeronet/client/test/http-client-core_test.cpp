@@ -74,6 +74,34 @@ class HttpRequestTest {
   static void Finalize(HttpRequest& req) { req.HttpMessage::finalizeHeadersAndBody(); }
 };
 
+class HttpClientTest {
+ public:
+  // Number of origins with an entry in the idle pool (possibly empty).
+  static std::size_t IdleOrigins(const HttpClient& client) { return client._idle.size(); }
+
+  // Total number of pooled idle connections, all origins together.
+  static std::size_t IdleConnections(const HttpClient& client) {
+    std::size_t nb = 0;
+    for (const auto& [origin, bucket] : client._idle) {
+      nb += bucket.size();
+    }
+    return nb;
+  }
+
+  static std::size_t CacheEntries(const HttpClient& client) { return client._cache.size(); }
+
+  // Summed capacity of the reusable request / response / decompression scratch buffers.
+  static std::size_t ScratchCapacity(const HttpClient& client) {
+    std::size_t capacity = client._cacheKeyScratch.capacity() + client._reqBodyScratch.capacity() +
+                           client._responseBuffer.capacity() + client._codec.decompressOut.capacity() +
+                           client._codec.decompressTmp.capacity();
+#ifdef AERONET_ENABLE_HTTP2
+    capacity += client._outputFragmentsScratch.capacity();
+#endif
+    return capacity;
+  }
+};
+
 namespace {
 
 class ScriptedHttp11Transport final : public TransportBackend<ScriptedHttp11Transport> {
@@ -1192,6 +1220,121 @@ TEST_F(HttpClientE2ETest, KeepAliveWithoutExpiryReusesConnection) {
 
 namespace {
 
+// A second origin (own port), answering "planet" on /hello.
+test::TestServer CreateSecondOrigin() {
+  test::TestServer server(HttpServerConfig{}
+                              .withPort(0)
+                              .withKeepAliveTimeout(std::chrono::seconds{5})
+                              .withPollInterval(std::chrono::milliseconds{20}));
+  server.router().setPath(http::Method::GET, "/hello", [](const HttpRequestView& req) {
+    return req.makeResponse(http::StatusCodeOK, "planet", "text/plain");
+  });
+  return server;
+}
+
+std::string SecondOriginUrl(const test::TestServer& server) {
+  return "http://127.0.0.1:" + std::to_string(server.port()) + "/hello";
+}
+
+}  // namespace
+
+// acquireConnection only expires the pooled connections of the origin being requested. Releasing a connection
+// periodically sweeps every origin, so an origin that is no longer requested does not keep its idle sockets
+// (and its pool entry) forever.
+TEST_F(HttpClientE2ETest, IdleSweepDropsExpiredConnectionsOfOtherOrigins) {
+  test::TestServer server2 = CreateSecondOrigin();
+  const std::string url2 = SecondOriginUrl(server2);
+
+  HttpClient client(HttpClientConfig{}.withKeepAliveTimeout(std::chrono::milliseconds{100}));
+  EXPECT_EQ(client.get(Url("/hello")).value().bodyInMemory(), "world");
+  EXPECT_EQ(client.get(url2).value().bodyInMemory(), "planet");
+  EXPECT_EQ(HttpClientTest::IdleOrigins(client), 2U);
+  EXPECT_EQ(HttpClientTest::IdleConnections(client), 2U);
+
+  std::this_thread::sleep_for(std::chrono::milliseconds{150});  // both pooled connections expire
+
+  // Only the second origin is requested again: its release sweeps the expired connection of the first one.
+  EXPECT_EQ(client.get(url2).value().bodyInMemory(), "planet");
+  EXPECT_EQ(HttpClientTest::IdleOrigins(client), 1U);
+  EXPECT_EQ(HttpClientTest::IdleConnections(client), 1U);
+
+  // The first origin reconnects transparently.
+  EXPECT_EQ(client.get(Url("/hello")).value().bodyInMemory(), "world");
+  EXPECT_EQ(HttpClientTest::IdleConnections(client), 2U);
+}
+
+// Without idle expiry, there is no automatic sweep and releaseUnusedMemory() keeps every pooled connection.
+TEST_F(HttpClientE2ETest, ReleaseUnusedMemoryWithoutExpiryKeepsPooledConnections) {
+  test::TestServer server2 = CreateSecondOrigin();
+  const std::string url2 = SecondOriginUrl(server2);
+
+  HttpClient client(HttpClientConfig{}.withKeepAliveTimeout(std::chrono::milliseconds{0}));
+  EXPECT_EQ(client.get(Url("/hello")).value().bodyInMemory(), "world");
+  EXPECT_EQ(client.get(url2).value().bodyInMemory(), "planet");
+  client.releaseUnusedMemory();
+  EXPECT_EQ(HttpClientTest::IdleOrigins(client), 2U);
+  EXPECT_EQ(HttpClientTest::IdleConnections(client), 2U);
+  EXPECT_EQ(client.get(Url("/hello")).value().bodyInMemory(), "world");
+  EXPECT_EQ(client.get(url2).value().bodyInMemory(), "planet");
+  EXPECT_EQ(HttpClientTest::IdleConnections(client), 2U);
+}
+
+// An origin whose pool entry holds no connection (here: a pool capped at 0 per host) has its entry erased.
+TEST_F(HttpClientE2ETest, ReleaseUnusedMemoryErasesEmptyPoolEntries) {
+  HttpClientConfig cfg;
+  cfg.maxIdleConnectionsPerHost = 0;
+  HttpClient client(cfg);
+  EXPECT_EQ(client.get(Url("/hello")).value().bodyInMemory(), "world");
+  EXPECT_EQ(HttpClientTest::IdleOrigins(client), 1U);
+  EXPECT_EQ(HttpClientTest::IdleConnections(client), 0U);
+  client.releaseUnusedMemory();
+  EXPECT_EQ(HttpClientTest::IdleOrigins(client), 0U);
+  EXPECT_EQ(client.get(Url("/hello")).value().bodyInMemory(), "world");
+}
+
+// A large response leaves its high-water allocation in the client scratch buffers, even after small responses.
+// releaseUnusedMemory() does not free them: each call at most halves a mostly unused buffer, so that calling it
+// periodically bounds the memory of a long-running client without making the next requests allocate from scratch.
+// It keeps the live pooled connection and leaves the responses already returned untouched. The client keeps working
+// (and reusing its connection) afterwards.
+TEST_F(HttpClientE2ETest, ReleaseUnusedMemoryShrinksScratchBuffers) {
+  HttpClient client(HttpClientConfig{}.withDecompression(false));
+  const std::string& largeBody = LargeIdentityResponseBody();
+  const auto largeResponse = client.get(Url("/large-identity")).value();
+  ASSERT_EQ(largeResponse.bodyInMemory(), largeBody);
+  const auto smallResponse = client.get(Url("/hello")).value();
+  ASSERT_EQ(smallResponse.bodyInMemory(), "world");
+  const std::size_t highWater = HttpClientTest::ScratchCapacity(client);
+  EXPECT_GE(highWater, largeBody.size());
+
+  client.releaseUnusedMemory();
+  const std::size_t afterOneCall = HttpClientTest::ScratchCapacity(client);
+  EXPECT_LT(afterOneCall, highWater);
+  EXPECT_GE(afterOneCall, highWater / 2);  // shrunk gradually, not freed
+  EXPECT_EQ(HttpClientTest::IdleConnections(client), 1U);
+  EXPECT_EQ(largeResponse.bodyInMemory(), largeBody);
+  EXPECT_EQ(smallResponse.bodyInMemory(), "world");
+
+  // Repeated calls (e.g. from a periodic maintenance task) converge to a small, stable capacity.
+  std::size_t converged = afterOneCall;
+  for (;;) {
+    client.releaseUnusedMemory();
+    const std::size_t capacity = HttpClientTest::ScratchCapacity(client);
+    ASSERT_LE(capacity, converged);
+    if (capacity == converged) {
+      break;
+    }
+    converged = capacity;
+  }
+  EXPECT_LE(converged, 4UL * 1024UL);  // a few KiB at most, far below the 1 MiB high-water mark
+
+  EXPECT_EQ(client.get(Url("/large-identity")).value().bodyInMemory(), largeBody);
+  EXPECT_EQ(client.get(Url("/hello")).value().bodyInMemory(), "world");
+  EXPECT_EQ(HttpClientTest::IdleConnections(client), 1U);
+}
+
+namespace {
+
 class HttpClientCacheE2ETest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -1408,6 +1551,20 @@ TEST_F(HttpClientCacheE2ETest, ClearResponseCacheForcesRefetch) {
   EXPECT_EQ(_counterHits.load(), 2);
 }
 
+TEST_F(HttpClientCacheE2ETest, ReleaseUnusedMemoryPrunesOnlyExpiredEntries) {
+  HttpClient client(HttpClientConfig{}.withCache(std::chrono::milliseconds{500}));
+  EXPECT_EQ(client.get(Url("/a")).value().bodyInMemory(), "a");
+  std::this_thread::sleep_for(std::chrono::milliseconds{600});   // /a expires
+  EXPECT_EQ(client.get(Url("/b")).value().bodyInMemory(), "b");  // fresh
+  EXPECT_EQ(HttpClientTest::CacheEntries(client), 2U);
+  client.releaseUnusedMemory();
+  EXPECT_EQ(HttpClientTest::CacheEntries(client), 1U);
+  EXPECT_EQ(client.get(Url("/b")).value().bodyInMemory(), "b");  // still served from the cache
+  EXPECT_EQ(_bHits.load(), 1);
+  EXPECT_EQ(client.get(Url("/a")).value().bodyInMemory(), "a");  // pruned -> refetch
+  EXPECT_EQ(_aHits.load(), 2);
+}
+
 TEST_F(HttpClientCacheE2ETest, MaxEntriesEvictsLeastRecentlyRefreshed) {
   HttpClient client(HttpClientConfig{}.withCache(std::chrono::seconds{30}).withCacheMaxEntries(1));
   EXPECT_EQ(client.get(Url("/a")).value().bodyInMemory(), "a");  // caches /a
@@ -1493,6 +1650,21 @@ TEST_F(HttpClientCompressionE2E, AutoDecompressesResponseByDefault) {
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), _blob);                             // transparently decoded
   EXPECT_TRUE(resp.headerValueOrEmpty("content-encoding").empty());  // header dropped after decode
+}
+
+// The decompression scratch buffers are shrunk too, and decoding keeps working afterwards.
+TEST_F(HttpClientCompressionE2E, ReleaseUnusedMemoryShrinksDecompressionBuffers) {
+  if (test::SupportedEncodings().empty()) {
+    GTEST_SKIP() << "no codec compiled in";
+  }
+  HttpClient client;
+  EXPECT_EQ(client.get(Url("/blob")).value().bodyInMemory(), _blob);
+  const std::size_t highWater = HttpClientTest::ScratchCapacity(client);
+  EXPECT_GT(highWater, 0U);
+  client.releaseUnusedMemory();
+  EXPECT_LT(HttpClientTest::ScratchCapacity(client), highWater);
+  EXPECT_GE(HttpClientTest::ScratchCapacity(client), highWater / 2);
+  EXPECT_EQ(client.get(Url("/blob")).value().bodyInMemory(), _blob);
 }
 
 TEST_F(HttpClientCompressionE2E, DisabledDecompressionLeavesBodyEncoded) {
