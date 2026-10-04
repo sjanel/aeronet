@@ -60,7 +60,6 @@
 #endif
 
 #ifdef AERONET_ENABLE_OPENSSL
-#include <csignal>
 
 #include "aeronet/test_server_http2_tls_fixture.hpp"
 #include "aeronet/test_server_tls_fixture.hpp"
@@ -1117,13 +1116,6 @@ test::TlsHttp2TestServer tlsTs;
 const uint16_t tlsPort = tlsTs.port();
 
 void ConfigureTlsTs(auto& testServer, bool enableHttp2 = true) {
-  // A client dropping its connection right after the handshake (the ALPN-mismatch test) can make the
-  // in-process server's OpenSSL stack write to a closed fd, raising SIGPIPE on Linux -- same mitigation
-  // as test_tls_client.cpp. Windows has no SIGPIPE concept.
-#ifdef AERONET_POSIX
-  std::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
-#endif
-
   testServer.server.postConfigUpdate([enableHttp2](HttpServerConfig& cfg) {
     cfg.http2.enable = enableHttp2;
     if (enableHttp2) {

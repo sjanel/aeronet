@@ -1,8 +1,9 @@
 #include "aeronet/transport.hpp"
 
 #ifdef AERONET_POSIX
+#include <sys/socket.h>
+#include <sys/types.h>
 #include <sys/uio.h>  // NOLINT(misc-include-cleaner) used by iovec
-#include <unistd.h>
 #elifdef AERONET_WINDOWS
 #include <ws2tcpip.h>
 #endif
@@ -23,6 +24,52 @@
 
 namespace aeronet {
 
+namespace {
+
+// Plain transports always operate on sockets: recv() / send() / sendmsg() go straight to the socket layer, skipping
+// the file layer checks of read() / write() / writev() (about 100 to 250 cycles per call on Linux).
+#ifdef AERONET_LINUX
+// Report EPIPE instead of raising SIGPIPE when the peer is gone (macOS sockets carry SO_NOSIGPIPE instead).
+constexpr int kSendFlags = MSG_NOSIGNAL;
+#else
+constexpr int kSendFlags = 0;
+#endif
+
+// Sends 'data' from offset 'ret.bytesProcessed' until it is fully written or the socket would block / fails.
+TransportResult SendAll(NativeHandle fd, std::string_view data, TransportResult ret) {
+  while (ret.bytesProcessed < data.size()) {
+#ifdef AERONET_POSIX
+    const auto nbWritten = ::send(fd, data.data() + ret.bytesProcessed, data.size() - ret.bytesProcessed, kSendFlags);
+#elifdef AERONET_WINDOWS
+    const auto nbWritten =
+        ::send(fd, data.data() + ret.bytesProcessed, static_cast<int>(data.size() - ret.bytesProcessed), kSendFlags);
+#endif
+    if (nbWritten == -1) {
+      const int err = LastSystemError();
+      if (err == error::kInterrupted) {
+        // Interrupted by signal, retry immediately
+        continue;
+      }
+      if (err == error::kWouldBlock) {
+        // Kernel send buffer full - caller should wait for writable event
+        ret.want = TransportHint::WriteReady;
+      } else {
+        // Fatal error (error::kConnectionReset, error::kBrokenPipe, etc.)
+        ret.want = TransportHint::Error;
+      }
+      break;
+    }
+    if (nbWritten == 0) [[unlikely]] {
+      break;
+    }
+
+    ret.bytesProcessed += static_cast<std::size_t>(nbWritten);
+  }
+  return ret;
+}
+
+}  // namespace
+
 PlainTransport::PlainTransport(NativeHandle fd, ZerocopyMode zerocopyMode, uint32_t minBytesForZerocopy)
     : SocketTransportState(fd) {
   if (zerocopyMode != ZerocopyMode::Disabled) {
@@ -36,7 +83,7 @@ PlainTransport::PlainTransport(NativeHandle fd, ZerocopyMode zerocopyMode, uint3
 
 TransportResult PlainTransport::read(char* buf, std::size_t len) {
 #ifdef AERONET_POSIX
-  const auto nbRead = ::read(_fd, buf, len);
+  const auto nbRead = ::recv(_fd, buf, len, 0);
 #elifdef AERONET_WINDOWS
   const auto nbRead = ::recv(_fd, buf, static_cast<int>(len), 0);
 #endif
@@ -65,35 +112,7 @@ TransportResult PlainTransport::write(std::string_view data) {
 #endif
 
   // Regular write path (fallback or small payloads)
-  // Note: Using write() for compatibility with existing test infrastructure.
-  // SIGPIPE is handled at the error level (error::kBrokenPipe).
-  while (ret.bytesProcessed < data.size()) {
-#ifdef AERONET_POSIX
-    const auto nbWritten = ::write(_fd, data.data() + ret.bytesProcessed, data.size() - ret.bytesProcessed);
-#elifdef AERONET_WINDOWS
-    const auto nbWritten =
-        ::send(_fd, data.data() + ret.bytesProcessed, static_cast<int>(data.size() - ret.bytesProcessed), 0);
-#endif
-    if (nbWritten == -1) {
-      const int err = LastSystemError();
-      if (err == error::kInterrupted) {
-        // Interrupted by signal, retry immediately
-        continue;
-      }
-      if (err == error::kWouldBlock) {
-        // Kernel send buffer full — caller should wait for writable event
-        ret.want = TransportHint::WriteReady;
-      } else {
-        // Fatal error (error::kConnectionReset, error::kBrokenPipe, etc.)
-        ret.want = TransportHint::Error;
-      }
-      break;
-    }
-
-    ret.bytesProcessed += static_cast<std::size_t>(nbWritten);
-  }
-
-  return ret;
+  return SendAll(_fd, data, ret);
 }
 
 TransportResult PlainTransport::write(std::string_view firstBuf, std::string_view secondBuf) {
@@ -102,7 +121,13 @@ TransportResult PlainTransport::write(std::string_view firstBuf, std::string_vie
   if (ret.bytesProcessed != 0 || ret.want != TransportHint::None) {
     return ret;
   }
+#else
+  TransportResult ret{};
 #endif
+  // A single buffer is the common case (head and small body stored contiguously): send() is cheaper than sendmsg().
+  if (secondBuf.empty()) {
+    return SendAll(_fd, firstBuf, ret);
+  }
   const std::string_view buffers[]{firstBuf, secondBuf};
   return write(std::span<const std::string_view>(buffers));
 }
@@ -141,7 +166,16 @@ TransportResult PlainTransport::write(std::span<const std::string_view> buffers)
     std::size_t ioVectorIndex = 0;
     while (ioVectorIndex < ioVectorCount) {
 #ifdef AERONET_POSIX
-      const auto nbWritten = ::writev(_fd, ioVectors + ioVectorIndex, static_cast<int>(ioVectorCount - ioVectorIndex));
+      ssize_t nbWritten;
+      if (ioVectorCount - ioVectorIndex == 1) {
+        // A single remaining buffer (for instance a WebSocket handler's contiguous output): send() is cheaper.
+        nbWritten = ::send(_fd, ioVectors[ioVectorIndex].iov_base, ioVectors[ioVectorIndex].iov_len, kSendFlags);
+      } else {
+        msghdr msg{};
+        msg.msg_iov = ioVectors + ioVectorIndex;
+        msg.msg_iovlen = static_cast<decltype(msg.msg_iovlen)>(ioVectorCount - ioVectorIndex);
+        nbWritten = ::sendmsg(_fd, &msg, kSendFlags);
+      }
 #elifdef AERONET_WINDOWS
       DWORD bytesSent = 0;
       const int wsaResult = ::WSASend(_fd, ioVectors + ioVectorIndex, static_cast<DWORD>(ioVectorCount - ioVectorIndex),

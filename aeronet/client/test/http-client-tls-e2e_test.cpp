@@ -1,8 +1,14 @@
 #include <gtest/gtest.h>
+#ifdef AERONET_LINUX
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#endif
 #include <openssl/bio.h>
 #include <openssl/ec.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
+#include <openssl/prov_ssl.h>
 #include <openssl/rsa.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
@@ -14,11 +20,14 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <stop_token>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
+#include "aeronet/base-fd.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"
@@ -31,12 +40,17 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/scoped-env-var.hpp"
+#include "aeronet/sigpipe-test-helpers.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test-tls-helper.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tls-raii.hpp"
+
+#ifdef AERONET_LINUX
+#include "aeronet/sigpipe-blocker.hpp"
+#endif
 
 namespace aeronet {
 namespace {
@@ -553,5 +567,84 @@ TEST(HttpClientMtlsTest, RejectsClientWithoutCert) {
   auto result = client.get(url);
   ASSERT_FALSE(result);
 }
+
+#ifdef AERONET_LINUX
+namespace {
+
+// TLS 1.2 server closing each connection right after its handshake. Its Finished message ends the handshake, so the
+// connection is closed before the client sends its request: the first write of the client meets a closed socket, which
+// its kernel answers with a reset, and the next one fails with EPIPE (raising SIGPIPE).
+class HandshakeThenCloseTlsServer {
+ public:
+  HandshakeThenCloseTlsServer() {
+    auto [certPem, keyPem] = test::MakeEphemeralCertKey("localhost");
+    auto certBio = MakeMemBio(certPem.data(), static_cast<int>(certPem.size()));
+    auto keyBio = MakeMemBio(keyPem.data(), static_cast<int>(keyPem.size()));
+    auto cert = MakeX509(::PEM_read_bio_X509(certBio.get(), nullptr, nullptr, nullptr));
+    auto key = MakePKey(::PEM_read_bio_PrivateKey(keyBio.get(), nullptr, nullptr, nullptr));
+    EXPECT_EQ(::SSL_CTX_use_certificate(_ctx.get(), cert.get()), 1);
+    EXPECT_EQ(::SSL_CTX_use_PrivateKey(_ctx.get(), key.get()), 1);
+    EXPECT_EQ(::SSL_CTX_set_max_proto_version(_ctx.get(), TLS1_2_VERSION), 1);
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    EXPECT_EQ(::bind(_listenFd.fd(), reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)), 0);
+    EXPECT_EQ(::listen(_listenFd.fd(), 8), 0);
+    socklen_t len = sizeof(addr);  // NOLINT(misc-include-cleaner)
+    EXPECT_EQ(::getsockname(_listenFd.fd(), reinterpret_cast<sockaddr*>(&addr), &len), 0);
+    _port = ntohs(addr.sin_port);
+    _thread = std::jthread([this](const std::stop_token& stopToken) { run(stopToken); });
+  }
+
+  [[nodiscard]] uint16_t port() const noexcept { return _port; }
+
+ private:
+  void run(const std::stop_token& stopToken) {
+    const SigpipeBlocker sigpipeBlocker;  // the writes of this test server must not interfere with the client's
+    while (!stopToken.stop_requested()) {
+      pollfd pfd{.fd = _listenFd.fd(), .events = POLLIN, .revents = 0};  // NOLINT(misc-include-cleaner)
+      if (::poll(&pfd, 1, 20) <= 0) {                                    // NOLINT(misc-include-cleaner)
+        continue;
+      }
+      BaseFd cnx(::accept4(_listenFd.fd(), nullptr, nullptr, SOCK_CLOEXEC));
+      if (!cnx) {
+        continue;
+      }
+      // Never hang the test on a stalled handshake.
+      const timeval timeout{.tv_sec = 5, .tv_usec = 0};                            // NOLINT(misc-include-cleaner)
+      ::setsockopt(cnx.fd(), SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));  // NOLINT(misc-include-cleaner)
+      SslPtr ssl(::SSL_new(_ctx.get()), ::SSL_free);
+      ::SSL_set_fd(ssl.get(), cnx.fd());
+      ::SSL_accept(ssl.get());
+      // The connection is closed here, without close_notify.
+    }
+  }
+
+  SslCtxPtr _ctx{::SSL_CTX_new(::TLS_server_method()), ::SSL_CTX_free};
+  BaseFd _listenFd{::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0)};
+  uint16_t _port{0};
+  std::jthread _thread;  // last: stopped and joined before the other members are destroyed
+};
+
+}  // namespace
+
+// OpenSSL writes TLS records on the socket itself, without MSG_NOSIGNAL: when the server closes the connection while
+// the request body is still being sent, a write fails with EPIPE and raises SIGPIPE, which terminates the process by
+// default. The client must report an error instead.
+TEST(HttpClientTlsSigpipeTest, ServerClosingDuringTheRequestDoesNotRaiseSigpipe) {
+  HandshakeThenCloseTlsServer server;
+  test::DefaultSigpipeScope sigpipeScope;  // a SIGPIPE reaching the process terminates the test
+  HttpClientConfig cfg;
+  cfg.tlsVerifyPeer = false;  // self-signed server cert
+  HttpClient client(cfg);
+  const std::string body(4UL << 20U, 'b');  // several TLS records: several writes
+  const auto result =
+      client.post("https://127.0.0.1:" + std::to_string(server.port()) + "/upload", body, "application/octet-stream");
+  EXPECT_FALSE(result);
+  EXPECT_FALSE(test::IsSigpipeBlocked());  // the exchange restored the signal mask
+  EXPECT_FALSE(test::IsSigpipePending());
+}
+#endif
 
 }  // namespace aeronet
