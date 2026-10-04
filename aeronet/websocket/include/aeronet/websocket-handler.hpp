@@ -162,6 +162,10 @@ class WebSocketHandler final : public IProtocolHandler {
   /// Check if compression is enabled.
   [[nodiscard]] bool hasCompression() const noexcept { return _deflateContext != nullptr; }
 
+  /// Enable permessage-deflate with the negotiated parameters, keeping the callbacks and configuration.
+  /// Used when compression is negotiated for a handler created without it (e.g. by an endpoint factory).
+  void enableCompression(DeflateNegotiatedParams deflateParams);
+
   /// Get the time when close was initiated (for timeout tracking).
   /// Returns a zero duration if not in closing state.
   [[nodiscard]] std::chrono::steady_clock::time_point closeInitiatedAt() const noexcept { return _closeInitiatedAt; }
@@ -225,9 +229,7 @@ class WebSocketHandler final : public IProtocolHandler {
   RawBytes _outputBuffer;                                   // Pending output data
   std::size_t _outputOffset{0};                             // Bytes already retrieved via getPendingOutput
   MessageState _message;                                    // Current message being assembled
-  RawBytes _inputBuffer;                                    // Carry-over from incomplete frames
   RawBytes _compressBuffer;                                 // Temporary buffer for compression/decompression
-  std::size_t _inputBufferOffset{0};                        // Offset into _inputBuffer for unconsumed data
   uint64_t _rngState{0};                                    // splitmix64 state for masking key generation
   CloseCode _closeCode{CloseCode::Normal};
   CloseState _closeState{CloseState::Open};
