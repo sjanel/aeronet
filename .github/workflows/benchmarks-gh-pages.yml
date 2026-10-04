@@ -7,7 +7,8 @@ on:
     branches: [ main ]
   # Weekly scheduled run on main to produce more stable benchmark results
   schedule:
-    - cron: '0 3 * * 0'  # every Sunday at 03:00 UTC
+    # Off the top of the hour: GitHub delays (or drops) scheduled runs most at minute 0.
+    - cron: '41 3 * * 0'  # every Sunday at 03:41 UTC
   # Allow manual runs via the Actions UI with an optional duration override
   workflow_dispatch:
     inputs:
