@@ -7,6 +7,7 @@ All notable changes to aeronet are documented in this file.
 ### 1.7.0 Bug Fixes
 
 - **HttpClient no longer keeps idle connections to origins it stopped requesting**: an idle pooled connection older than `keepAliveTimeout` was only closed when its origin was requested again, so a client talking to many origins kept the sockets (in `CLOSE_WAIT` once the server closed them), TLS sessions and HTTP/2 state of all of them, and a pool entry per origin ever requested. Completing a request now also sweeps the expired idle connections of every origin, at most once per `keepAliveTimeout`, and erases the pool entries left empty. Tests: `aeronet/client/test/http-client-core_test.cpp` (`IdleSweepDropsExpiredConnectionsOfOtherOrigins`).
+- **HTTP client: a rejected redirect `Location` no longer corrupts the request**: an invalid relative target (control character, space, bad percent-escape, too long) was only detected after it was written into the request buffer, and an invalid absolute URL after the request origin (host, port) had been updated, leaving the `HttpRequest` given to `HttpClient::request(HttpRequest&&)` inconsistent and unsafe to reuse. The new target is now validated first, so a rejected redirect leaves the request unchanged. In addition, an invalid absolute-path `Location` (e.g. `/a%zz`) made `request()` throw `std::invalid_argument` instead of returning `HttpClientErrc::invalidUrl` like the other unfollowable redirects.
 
 ### 1.7.0 Improvements
 

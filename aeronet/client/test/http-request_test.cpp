@@ -92,6 +92,20 @@ class HttpRequestTest : public ::testing::Test {
 
   static bool ResolveRedirect(HttpRequest& req, std::string_view location) { return req.resolveRedirect(location); }
 
+  // Checks that 'req' is identical to 'expected' (a copy taken before a rejected update).
+  static void ExpectSameRequest(const HttpRequest& req, const HttpRequest& expected) {
+    EXPECT_EQ(req.originKey(), expected.originKey());
+    EXPECT_EQ(CompleteRequestForHttp11(req), CompleteRequestForHttp11(expected));
+    EXPECT_EQ(req.method(), expected.method());
+    EXPECT_EQ(req.target(), expected.target());
+    EXPECT_EQ(req.scheme(), expected.scheme());
+    EXPECT_EQ(req.host(), expected.host());
+    EXPECT_EQ(req.port(), expected.port());
+    EXPECT_EQ(req.hostHeaderValue(), expected.hostHeaderValue());
+    EXPECT_EQ(req.headerValueOrEmpty(http::ContentType), expected.headerValueOrEmpty(http::ContentType));
+    EXPECT_EQ(req.bodyInMemory(), expected.bodyInMemory());
+  }
+
   HttpMessage::Options makeRequestOptions(bool addTrailerHeader = true) {
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
     HttpMessage::Options opts(compressionState, test::SupportedEncodings().front());
@@ -140,7 +154,14 @@ TEST_F(HttpRequestTest, TooBigTarget) {
   auto req = makeRequest(http::Method::GET, "http://host/" + bigTarget.substr(0, 1UL << 22U));
   EXPECT_THROW(req.target(bigTarget), std::invalid_argument);
   EXPECT_TRUE(ResolveRedirect(req, "http://host/" + bigTarget.substr(0, 1UL << 22U)));
+  const HttpRequest before = req;
   EXPECT_FALSE(ResolveRedirect(req, "http://host/" + bigTarget));
+  ExpectSameRequest(req, before);
+  // Too long relative and absolute paths are rejected (not thrown), without modifying the request.
+  EXPECT_FALSE(ResolveRedirect(req, bigTarget));
+  ExpectSameRequest(req, before);
+  EXPECT_FALSE(ResolveRedirect(req, "/" + bigTarget));
+  ExpectSameRequest(req, before);
 }
 
 TEST_F(HttpRequestTest, ConstructorWithProxy) {
@@ -1089,6 +1110,89 @@ TEST_F(HttpRequestTest, ResolveRedirectRelativeWithQuestionMarkNonEmptyPath) {
   EXPECT_EQ(req.host(), "example.com");
   EXPECT_EQ(req.port(), 443);
   EXPECT_EQ(req.target(), "/y?q=1");
+}
+
+TEST_F(HttpRequestTest, ResolveRedirectRejectedRelativeLeavesRequestUnchanged) {
+  // A rejected location is detected before the buffer is modified, whether the new target would be longer or shorter
+  // than the old one, and whether an inline body follows the head.
+  for (bool withBody : {false, true}) {
+    SCOPED_TRACE(withBody);
+    auto req = withBody ? makeRequest(http::Method::POST, "http://example.com/dir/old-target?q=1",
+                                      globalHeaders.fullStringWithLastSep(), "some body", "text/plain")
+                        : makeRequest(http::Method::GET, "http://example.com/dir/old-target?q=1");
+    const HttpRequest before = req;
+
+    for (std::string_view location : {
+             "y\r\nx-injected: 1",
+             "\r",
+             "a b",
+             "a%zz",
+             "a%4",
+             "a%",
+             "?q= 1",
+             "?q=\x7F",
+             "/abs path",
+             "/%zz",
+             "/\r\nx-injected: 1#fragment",
+         }) {
+      SCOPED_TRACE(location);
+      EXPECT_FALSE(ResolveRedirect(req, location));
+      ExpectSameRequest(req, before);
+    }
+
+    // The request is still fully usable.
+    EXPECT_TRUE(ResolveRedirect(req, "next%2Fpage"));
+    EXPECT_EQ(req.target(), "/dir/next%2Fpage");
+    EXPECT_EQ(req.originKey(), before.originKey());
+    EXPECT_EQ(req.hostHeaderValue(), "example.com");
+    EXPECT_EQ(req.bodyInMemory(), before.bodyInMemory());
+    EXPECT_TRUE(CompleteRequestForHttp11(req).starts_with(withBody ? "POST /dir/next%2Fpage HTTP/1.1\r\n"
+                                                                   : "GET /dir/next%2Fpage HTTP/1.1\r\n"));
+  }
+}
+
+TEST_F(HttpRequestTest, ResolveRedirectRejectedAbsoluteUrlLeavesRequestUnchanged) {
+  // The origin (scheme, host, port) is not updated either when the new target is rejected, whether the new origin key
+  // would be longer or shorter than the old one.
+  auto req = makeRequest(http::Method::POST, "http://example.com/x", globalHeaders.fullStringWithLastSep(), "some body",
+                         "text/plain");
+  const HttpRequest before = req;
+
+  for (std::string_view location : {
+           "https://a-much-longer-host.example.org:8443/a b",
+           "http://h/%zz",
+           "//another-host.example.org:8080/a\r\nx-injected: 1",
+       }) {
+    SCOPED_TRACE(location);
+    EXPECT_FALSE(ResolveRedirect(req, location));
+    ExpectSameRequest(req, before);
+  }
+
+  EXPECT_TRUE(ResolveRedirect(req, "https://a-much-longer-host.example.org:8443/y"));
+  EXPECT_EQ(req.scheme(), "https");
+  EXPECT_EQ(req.host(), "a-much-longer-host.example.org");
+  EXPECT_EQ(req.port(), 8443);
+  EXPECT_EQ(req.method(), http::Method::POST);
+  EXPECT_EQ(req.target(), "/y");
+  EXPECT_EQ(req.hostHeaderValue(), "a-much-longer-host.example.org:8443");
+  EXPECT_EQ(req.bodyInMemory(), "some body");
+}
+
+TEST_F(HttpRequestTest, ResolveRedirectRelativePathCompletesPercentEscapeOfKeptPrefix) {
+  // Without any '/', the relative resolution keeps the first char of the target. When it is a '%', the location has
+  // to provide the 2 hex digits of its escape.
+  auto req = makeRequest(http::Method::GET, "http://example.com/");
+  req.target("%41");
+  const HttpRequest before = req;
+
+  for (std::string_view location : {"", "4", "zz", "4z", "z4", "42 "}) {
+    SCOPED_TRACE(location);
+    EXPECT_FALSE(ResolveRedirect(req, location));
+    ExpectSameRequest(req, before);
+  }
+
+  EXPECT_TRUE(ResolveRedirect(req, "42x"));
+  EXPECT_EQ(req.target(), "%42x");
 }
 
 }  // namespace aeronet
