@@ -23,7 +23,7 @@ RateLimitConfig MakeConfig(std::uint32_t maxKeys) {
 }
 
 void BM_RateLimitConstruct(benchmark::State& state) {
-  const auto shardCount = static_cast<std::size_t>(state.range(0));
+  const auto shardCount = static_cast<uint8_t>(state.range(0));
   for ([[maybe_unused]] auto iteration : state) {
     InMemoryTokenBucketRateLimitStore store(shardCount);
     benchmark::DoNotOptimize(&store);

@@ -49,7 +49,7 @@ This document centralizes how to build, install, and consume **aeronet**.
 | `AERONET_ENABLE_BROTLI` | ON* | Enable brotli compression + decompression |
 | `AERONET_ENABLE_ASAN` | OFF | Address/UB sanitizers in debug builds |
 | `AERONET_ENABLE_CLANG_TIDY` | OFF | Run clang-tidy on targets |
-| `AERONET_WARNINGS_AS_ERRORS` | OFF | Treat warnings as errors |
+| `AERONET_WARNINGS_AS_ERRORS` | OFF | Treat warnings as errors (Debug builds, aeronet targets only) |
 | `AERONET_ASAN_OPTIONS` | (preset) | Override sanitizer flags |
 | `AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS` | OFF | Extra custom runtime memory checks |
 | `AERONET_ENABLE_TEST_HOOKS` | non-Release tests | Enable test-only transport hooks; keep OFF in production |

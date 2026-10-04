@@ -288,7 +288,7 @@ static void Hash_CI_Boost(benchmark::State& state) {
     }
   }
 
-  state.SetItemsProcessed(static_cast<std::size_t>(state.iterations()) * kStorage.size());
+  state.SetItemsProcessed(state.iterations() * static_cast<int64_t>(kStorage.size()));
 }
 
 static void Hash_CI_FNV1a(benchmark::State& state) {
@@ -300,7 +300,7 @@ static void Hash_CI_FNV1a(benchmark::State& state) {
     }
   }
 
-  state.SetItemsProcessed(static_cast<std::size_t>(state.iterations()) * kStorage.size());
+  state.SetItemsProcessed(state.iterations() * static_cast<int64_t>(kStorage.size()));
 }
 
 static void Hash_City(benchmark::State& state) {
@@ -312,7 +312,7 @@ static void Hash_City(benchmark::State& state) {
     }
   }
 
-  state.SetItemsProcessed(static_cast<std::size_t>(state.iterations()) * kStorage.size());
+  state.SetItemsProcessed(state.iterations() * static_cast<int64_t>(kStorage.size()));
 }
 
 static void UnorderedMap_Find_City(benchmark::State& state) {
@@ -325,7 +325,7 @@ static void UnorderedMap_Find_City(benchmark::State& state) {
     }
   }
 
-  state.SetItemsProcessed(static_cast<std::size_t>(state.iterations()) * kStorage.size());
+  state.SetItemsProcessed(state.iterations() * static_cast<int64_t>(kStorage.size()));
 }
 
 static void FlatHashMap_Find_City(benchmark::State& state) {
@@ -338,7 +338,7 @@ static void FlatHashMap_Find_City(benchmark::State& state) {
     }
   }
 
-  state.SetItemsProcessed(static_cast<std::size_t>(state.iterations()) * kStorage.size());
+  state.SetItemsProcessed(state.iterations() * static_cast<int64_t>(kStorage.size()));
 }
 
 static void FlatHashMap_Find_Sv(benchmark::State& state) {
@@ -351,7 +351,7 @@ static void FlatHashMap_Find_Sv(benchmark::State& state) {
     }
   }
 
-  state.SetItemsProcessed(static_cast<std::size_t>(state.iterations()) * kStorage.size());
+  state.SetItemsProcessed(state.iterations() * static_cast<int64_t>(kStorage.size()));
 }
 
 // ------------------------------------------------------------

@@ -20,7 +20,7 @@ namespace {
 using aeronet::bench::ClientBenchConfig;
 using aeronet::bench::ScenarioSpec;
 
-aeronet::HttpClientConfig MakeConfig(const ClientBenchConfig& cfg, const ScenarioSpec& spec) {
+aeronet::HttpClientConfig MakeConfig([[maybe_unused]] const ClientBenchConfig& cfg, const ScenarioSpec& spec) {
   aeronet::HttpClientConfig config;
   config
       .withDecompression(spec.decode)  // aeronet decodes the gzip body natively (its zlib-ng codec)

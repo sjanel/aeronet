@@ -25,7 +25,7 @@ endif()
 
 # Drogon benchmark server (only if drogon is enabled and available)
 if(AERONET_BENCH_ENABLE_DROGON AND TARGET drogon)
-  AeronetAddProjectExecutable(drogon-bench-server drogon_server.cpp)
+  AeronetAddExternalExecutable(drogon-bench-server drogon_server.cpp)
   target_link_libraries(drogon-bench-server PRIVATE drogon aeronet_objects)
   set_target_properties(drogon-bench-server PROPERTIES FOLDER "benchmarks/servers")
   
@@ -61,7 +61,7 @@ if(AERONET_BENCH_ENABLE_PISTACHE)
   
   FetchContent_MakeAvailable(pistache)
   
-  AeronetAddProjectExecutable(pistache-bench-server pistache_server.cpp)
+  AeronetAddExternalExecutable(pistache-bench-server pistache_server.cpp)
   target_link_libraries(pistache-bench-server PRIVATE pistache Threads::Threads aeronet_objects)
   set_target_properties(pistache-bench-server PROPERTIES FOLDER "benchmarks/servers")
   
@@ -110,7 +110,7 @@ if(AERONET_BENCH_ENABLE_CROW)
   
   FetchContent_MakeAvailable(Crow)
   
-  AeronetAddProjectExecutable(crow-bench-server crow_server.cpp)
+  AeronetAddExternalExecutable(crow-bench-server crow_server.cpp)
   target_link_libraries(crow-bench-server PRIVATE Crow::Crow Threads::Threads aeronet_objects)
   set_target_properties(crow-bench-server PROPERTIES FOLDER "benchmarks/servers")
   
@@ -221,7 +221,7 @@ if(AERONET_BENCH_ENABLE_BEAST)
 
   find_package(Threads REQUIRED)
 
-  AeronetAddProjectExecutable(beast-bench-server beast_server.cpp)
+  AeronetAddExternalExecutable(beast-bench-server beast_server.cpp)
   target_link_libraries(beast-bench-server PRIVATE Threads::Threads aeronet_objects)
   target_include_directories(beast-bench-server SYSTEM PRIVATE ${AERONET_BOOST_INCLUDE_DIRS})
   target_compile_definitions(beast-bench-server PRIVATE BOOST_ASIO_NO_DEPRECATED)
@@ -251,7 +251,7 @@ if(AERONET_BENCH_ENABLE_UWEBSOCKETS AND DEFINED uwebsockets_SOURCE_DIR AND DEFIN
   target_compile_definitions(usockets_static PUBLIC LIBUS_NO_SSL)
   set_target_properties(usockets_static PROPERTIES FOLDER "benchmarks/deps")
 
-  AeronetAddProjectExecutable(uwebsockets-bench-server uwebsockets_server.cpp)
+  AeronetAddExternalExecutable(uwebsockets-bench-server uwebsockets_server.cpp)
   target_include_directories(uwebsockets-bench-server PRIVATE
     "${uwebsockets_SOURCE_DIR}/src"
     "${usockets_SOURCE_DIR}/src"

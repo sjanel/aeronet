@@ -119,6 +119,8 @@ const auto kDynamicTableWorkload = BuildDynamicTableWorkload();
 // Candidate contiguous circular table. Slots are reused after eviction and logical HPACK indices are translated to
 // ring positions, so neither insertion nor eviction relocates live Header handles once the table reaches steady state.
 class CircularDynamicTable {
+  using size_type = vector<http::Header>::size_type;
+
  public:
   explicit CircularDynamicTable(std::size_t maxSizeBytes) noexcept : _maxSizeBytes(maxSizeBytes) {}
 
@@ -137,7 +139,7 @@ class CircularDynamicTable {
       if (_firstEntry != 0U) {
         vector<http::Header> linearized;
         linearized.reserve(_entries.size() + 1U);
-        for (std::size_t idx = 0; idx < _entryCount; ++idx) {
+        for (size_type idx = 0; idx < _entryCount; ++idx) {
           linearized.push_back(std::move(_entries[physicalIndex(idx)]));
         }
         _entries = std::move(linearized);
@@ -154,14 +156,14 @@ class CircularDynamicTable {
     return true;
   }
 
-  [[nodiscard]] const http::Header& operator[](std::size_t index) const noexcept {
+  [[nodiscard]] const http::Header& operator[](uint32_t index) const noexcept {
     return _entries[physicalIndex(_entryCount - 1U - index)];
   }
 
   [[nodiscard]] std::size_t entryCount() const noexcept { return _entryCount; }
 
  private:
-  [[nodiscard]] std::size_t physicalIndex(std::size_t logicalIndex) const noexcept {
+  [[nodiscard]] size_type physicalIndex(size_type logicalIndex) const noexcept {
     const auto index = _firstEntry + logicalIndex;
     return index < _entries.size() ? index : index - _entries.size();
   }
@@ -183,8 +185,8 @@ class CircularDynamicTable {
   vector<http::Header> _entries;
   std::size_t _currentSizeBytes{0U};
   std::size_t _maxSizeBytes;
-  std::size_t _firstEntry{0U};
-  std::size_t _entryCount{0U};
+  size_type _firstEntry{0U};
+  size_type _entryCount{0U};
 };
 
 // Segmented-queue candidate. This deliberately keeps deque's native block layout in the comparison.
@@ -242,10 +244,10 @@ void PopulateDynamicTable(Table& table) {
 
 template <typename Table>
 uint32_t FindDynamicHeader(const Table& table, std::string_view name, std::string_view value) {
-  for (std::size_t idx = 0; idx < table.entryCount(); ++idx) {
+  for (uint32_t idx = 0; idx < table.entryCount(); ++idx) {
     const auto& entry = table[idx];
     if (entry.name() == name && entry.value() == value) {
-      return static_cast<uint32_t>(idx + 1U);
+      return idx + 1U;
     }
   }
   return 0U;
@@ -256,7 +258,7 @@ uint32_t FindDynamicHeader(const Table& table, std::string_view name, std::strin
 // back to a linear lookup, preserving correctness. Periodic rebuilding bounds stale hashes left by FIFO eviction.
 class IndexedDynamicTable {
  public:
-  explicit IndexedDynamicTable(std::size_t maxSizeBytes) : _table(maxSizeBytes) {}
+  explicit IndexedDynamicTable(uint32_t maxSizeBytes) : _table(maxSizeBytes) {}
 
   bool add(std::string_view name, std::string_view value) {
     if (!_table.add(name, value)) {
@@ -534,7 +536,7 @@ BENCHMARK(BM_HpackFindHeader)->Arg(0)->Arg(10)->Arg(50)->Arg(100);
 // Production lookup policy across byte-sized tables. At 4 KiB this exercises the selected contiguous linear scan;
 // enlarged tables cross the lazy encoder-index threshold and exercise the selected hash/serial lookup.
 void BM_HpackFindHeaderByTableSize(benchmark::State& state) {
-  HpackEncoder encoder(static_cast<std::size_t>(state.range(0)));
+  HpackEncoder encoder(static_cast<uint32_t>(state.range(0)));
   RawBytes dummy;
   for (std::size_t idx = 0; idx < kDynamicTableWorkloadSize; ++idx) {
     encoder.encode(dummy, kDynamicTableWorkload.names[idx], kDynamicTableWorkload.values[idx]);
@@ -593,7 +595,7 @@ BENCHMARK(BM_HpackRoundTrip)->Arg(5)->Arg(20)->Arg(50);
 
 template <typename Table>
 void BM_HpackDynamicTableChurn(benchmark::State& state) {
-  Table table(static_cast<std::size_t>(state.range(0)));
+  Table table(static_cast<uint32_t>(state.range(0)));
   PopulateDynamicTable(table);
   std::size_t idx = 0U;
   for ([[maybe_unused]] auto iter : state) {
@@ -607,7 +609,7 @@ void BM_HpackDynamicTableChurn(benchmark::State& state) {
 
 template <typename Table>
 void BM_HpackDynamicTableIndexedAccess(benchmark::State& state) {
-  Table table(static_cast<std::size_t>(state.range(0)));
+  Table table(static_cast<uint32_t>(state.range(0)));
   PopulateDynamicTable(table);
   std::size_t idx = 0U;
   for ([[maybe_unused]] auto iter : state) {
@@ -620,7 +622,7 @@ void BM_HpackDynamicTableIndexedAccess(benchmark::State& state) {
 
 template <typename Table>
 void BM_HpackDynamicTableLinearLookup(benchmark::State& state) {
-  Table table(static_cast<std::size_t>(state.range(0)));
+  Table table(static_cast<uint32_t>(state.range(0)));
   PopulateDynamicTable(table);
   const auto middleIdx = table.entryCount() / 2U;
   const auto oldestIdx = table.entryCount() - 1U;
@@ -644,7 +646,7 @@ void BM_HpackDynamicTableLinearLookup(benchmark::State& state) {
 
 template <typename Table>
 void BM_HpackDynamicTableCombined(benchmark::State& state) {
-  Table table(static_cast<std::size_t>(state.range(0)));
+  Table table(static_cast<uint32_t>(state.range(0)));
   PopulateDynamicTable(table);
   std::size_t idx = 0U;
   for ([[maybe_unused]] auto iter : state) {
@@ -665,7 +667,7 @@ void BM_HpackDynamicTableCombined(benchmark::State& state) {
 }
 
 void BM_HpackDynamicTableIndexedLookup(benchmark::State& state) {
-  IndexedDynamicTable table(static_cast<std::size_t>(state.range(0)));
+  IndexedDynamicTable table(static_cast<uint32_t>(state.range(0)));
   PopulateDynamicTable(table);
   const auto middleIdx = table.entryCount() / 2U;
   const auto oldestIdx = table.entryCount() - 1U;
@@ -686,7 +688,7 @@ void BM_HpackDynamicTableIndexedLookup(benchmark::State& state) {
 }
 
 void BM_HpackDynamicTableIndexedCombined(benchmark::State& state) {
-  IndexedDynamicTable table(static_cast<std::size_t>(state.range(0)));
+  IndexedDynamicTable table(static_cast<uint32_t>(state.range(0)));
   PopulateDynamicTable(table);
   std::size_t idx = 0U;
   for ([[maybe_unused]] auto iter : state) {

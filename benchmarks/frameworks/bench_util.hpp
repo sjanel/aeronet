@@ -66,7 +66,7 @@ struct PregenPool {
     idx.store(0, std::memory_order_relaxed);
     rng.seed(seed);
     items.clear();
-    items.reserve(nbStr);
+    items.reserve(static_cast<decltype(items)::size_type>(nbStr));
 
     minSz = minStrSz;
     maxSz = maxStrSz;
