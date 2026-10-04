@@ -761,13 +761,13 @@ TEST(MultiHttpServer, BlockingRunMethod) {
     multi.run();  // This will block until servers complete
   });
 
-  std::this_thread::sleep_for(10ms);  // Give server time to start
-
-  EXPECT_THROW(multi.run(), std::logic_error);  // already running
-
-  // Verify servers are running and responsive
+  // Verify servers are running and responsive. The request is only answered once run() has started the servers,
+  // which guarantees the 'already running' check below cannot race with run() in serverThread (otherwise, the
+  // second run() could win, and serverThread would terminate the process with an uncaught std::logic_error).
   auto resp1 = test::simpleGet(port, "/test");
   EXPECT_TRUE(resp1.contains("Blocking:/test"));
+
+  EXPECT_THROW(multi.run(), std::logic_error);  // already running
 
   // Trigger graceful drain with short timeout to cause run() to complete
   // beginDrain() is safe to call concurrently with run()
