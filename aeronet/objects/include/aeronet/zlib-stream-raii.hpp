@@ -8,8 +8,13 @@
 namespace aeronet {
 
 struct ZStreamRAII {
-  enum class Variant : int8_t { uninitialized, gzip, deflate };
+  // gzip: gzip wrapper (RFC 1952). deflate: zlib wrapper (RFC 1950), the HTTP 'deflate' content-coding.
+  // raw: raw DEFLATE stream without wrapper (RFC 1951), as used by WebSocket permessage-deflate (RFC 7692).
+  enum class Variant : int8_t { uninitialized, gzip, deflate, raw };
   enum class Mode : int8_t { uninitialized, compress, decompress };
+
+  // Base two logarithm of the default (and maximum) window size.
+  static constexpr uint8_t kMaxWindowBits = 15;
 
   // Default constructor - leaves stream uninitialized.
   ZStreamRAII() noexcept = default;
@@ -30,13 +35,13 @@ struct ZStreamRAII {
 
   ~ZStreamRAII() { end(); }
 
-  /// Initialize (or reinitialize) a z_stream for compression.
+  /// Initialize (or reinitialize) a z_stream for compression, with a window of 2^windowBits bytes (9-15).
   /// Reuses internal state if already initialized for compression.
-  void initCompress(Variant variant, int8_t level);
+  void initCompress(Variant variant, int8_t level, uint8_t windowBits = kMaxWindowBits);
 
-  // Initialize (or reinitialize) a z_stream for decompression.
+  // Initialize (or reinitialize) a z_stream for decompression, with a window of 2^windowBits bytes (8-15).
   // Reuses internal state if already initialized for decompression.
-  void initDecompress(Variant variant);
+  void initDecompress(Variant variant, uint8_t windowBits = kMaxWindowBits);
 
   void end() noexcept;
 
@@ -49,6 +54,7 @@ struct ZStreamRAII {
   Variant _variant{Variant::uninitialized};
   Mode _mode{Mode::uninitialized};
   int8_t _level{};
+  uint8_t _windowBits{kMaxWindowBits};
 };
 
 }  // namespace aeronet

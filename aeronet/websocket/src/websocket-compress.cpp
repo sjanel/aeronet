@@ -23,14 +23,21 @@ constexpr std::array kDeflateTrailer{
 };
 // Chunk size for streaming decompression with size limit control
 constexpr std::size_t kDecompressChunkSize = 16UL * 1024;  // 16 KB
+// Output space reserved beyond deflateBound(): it bounds a Z_FINISH deflate, not the sync flush marker. The zlib manual
+// asks for more than 6 bytes of avail_out with Z_SYNC_FLUSH: a deflate call returning with avail_out == 0 emits a new
+// flush marker at the next call - an endless loop for an empty message, whose raw DEFLATE bound (5 bytes) is exactly
+// the size of its marker.
+constexpr std::size_t kSyncFlushMargin = 8;
 }  // namespace
 
 // ============================================================================
 // WebSocketCompressor
 // ============================================================================
 
-WebSocketCompressor::WebSocketCompressor(int8_t compressionLevel)
-    : _zs(ZStreamRAII::Variant::deflate, compressionLevel) {}
+WebSocketCompressor::WebSocketCompressor(int8_t compressionLevel, uint8_t windowBits) {
+  // permessage-deflate payloads are raw DEFLATE data (RFC 7692 section 7.2.1), without zlib header nor checksum.
+  _zs.initCompress(ZStreamRAII::Variant::raw, compressionLevel, windowBits);
+}
 
 const char* WebSocketCompressor::compress(std::span<const std::byte> input, RawBytes& output, bool resetContext) {
   auto& stream = _zs.stream;
@@ -42,7 +49,7 @@ const char* WebSocketCompressor::compress(std::span<const std::byte> input, RawB
   ZSetInput(stream, std::string_view{reinterpret_cast<const char*>(input.data()), input.size()});
 
   const std::size_t startSize = output.size();
-  const auto chunkCapacity = ZDeflateBound(&stream, input.size());
+  const auto chunkCapacity = ZDeflateBound(&stream, input.size()) + kSyncFlushMargin;
   do {
     output.ensureAvailableCapacityExponential(chunkCapacity);
 
@@ -74,6 +81,10 @@ const char* WebSocketCompressor::compress(std::span<const std::byte> input, RawB
 // ============================================================================
 // WebSocketDecompressor
 // ============================================================================
+
+WebSocketDecompressor::WebSocketDecompressor(uint8_t windowBits) {
+  _zs.initDecompress(ZStreamRAII::Variant::raw, windowBits);
+}
 
 const char* WebSocketDecompressor::decompress(std::span<const std::byte> input, RawBytes& output,
                                               std::size_t maxDecompressedSize, bool resetContext) {

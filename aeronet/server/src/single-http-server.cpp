@@ -503,12 +503,10 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
         std::unique_ptr<websocket::WebSocketHandler> wsHandler;
         if (endpoint.factory) {
           wsHandler = endpoint.factory(request);
-          // If factory doesn't set compression, we need to potentially upgrade it
           if (!wsHandler->hasCompression() && upgradeValidation.deflateParams.has_value()) {
-            // Factory didn't configure compression but it was negotiated - recreate handler
-            auto config = wsHandler->config();
-            wsHandler = std::make_unique<websocket::WebSocketHandler>(config, websocket::WebSocketCallbacks(),
-                                                                      upgradeValidation.deflateParams);
+            // Compression was negotiated but the factory did not configure it: enable it on the handler, keeping
+            // the callbacks the factory installed.
+            wsHandler->enableCompression(*upgradeValidation.deflateParams);
           }
         } else {
           auto config = endpoint.config;
