@@ -18,7 +18,7 @@ aeronet is deliberately modular. CMake options select code and dependencies at c
 | `AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS` | OFF | Enable aeronet's additional runtime memory checks. |
 | `AERONET_ENABLE_CLANG_TIDY` | OFF | Run clang-tidy during the build. |
 | `AERONET_ENABLE_WARNINGS` | top-level | Enable the project warning set. |
-| `AERONET_WARNINGS_AS_ERRORS` | OFF | Promote warnings to errors. |
+| `AERONET_WARNINGS_AS_ERRORS` | OFF | Promote warnings to errors in Debug builds, except for the benchmark executables built on competitor frameworks, whose warnings are kept as warnings. |
 | `AERONET_SPDLOG_USE_STD_FORMAT` | ON | Use `std::format` rather than fmt through spdlog. |
 
 ## Protocol and integration features

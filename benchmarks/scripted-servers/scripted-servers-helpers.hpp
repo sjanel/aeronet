@@ -13,7 +13,9 @@
 #include <string_view>
 #include <thread>
 
+#ifdef AERONET_ENABLE_ZLIB
 #include "aeronet/zlib-gateway.hpp"
+#endif
 
 namespace bench {
 
@@ -108,6 +110,8 @@ inline bool ContainsTokenInsensitive(std::string_view haystack, std::string_view
   return false;
 }
 
+// The competitor servers always have zlib: their CMake setup requires the ZLIBNG::ZLIBNG target.
+#ifdef AERONET_ENABLE_ZLIB
 inline std::optional<std::string> GzipCompress(std::string_view input, int level = Z_DEFAULT_COMPRESSION) {
   using namespace aeronet;
   zstream stream{};
@@ -161,6 +165,7 @@ inline std::optional<std::string> GzipDecompress(std::string_view input) {
   ZInflateEnd(stream);
   return output;
 }
+#endif
 
 struct BenchConfig {
   BenchConfig(uint16_t defaultPort, int argc, char* argv[])

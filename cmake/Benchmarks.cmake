@@ -137,21 +137,26 @@ else()
 endif()
 
 # Helper to create a benchmark executable with common properties.
-# Usage: AeronetAddProjectBenchmark(<target> <sources...> [LIBRARIES <libs...>])
+# Usage: AeronetAddProjectBenchmark(<target> <sources...> [LIBRARIES <libs...>] [NO_WARNINGS_AS_ERRORS])
 #
 # By default the benchmark links the umbrella `aeronet` library plus `aeronet_test_support`. Benchmarks that
 # only exercise a lower layer (e.g. header-only `tech` utilities) should pass an explicit, minimal LIBRARIES
 # list (e.g. `LIBRARIES aeronet_tech`): this avoids pulling in (and linking against) the entire library, which
 # noticeably speeds up their build/link.
+# NO_WARNINGS_AS_ERRORS: for benchmarks compiling third-party framework code (see AeronetAddExternalExecutable).
 function(AeronetAddProjectBenchmark target)
-  cmake_parse_arguments(PARSE_ARGV 1 ARG "" "" "LIBRARIES")
+  cmake_parse_arguments(PARSE_ARGV 1 ARG "NO_WARNINGS_AS_ERRORS" "" "LIBRARIES")
   set(sources ${ARG_UNPARSED_ARGUMENTS})
   if(NOT sources)
     message(FATAL_ERROR "AeronetAddProjectBenchmark requires at least target and one source")
   endif()
 
   # Create the executable using the project's helper macro
-  AeronetAddProjectExecutable(${target} ${sources})
+  if(ARG_NO_WARNINGS_AS_ERRORS)
+    AeronetAddExternalExecutable(${target} ${sources})
+  else()
+    AeronetAddProjectExecutable(${target} ${sources})
+  endif()
   if(ARG_LIBRARIES)
     target_link_libraries(${target} PRIVATE ${ARG_LIBRARIES} benchmark::benchmark)
   else()
@@ -276,7 +281,12 @@ if(AERONET_ENABLE_HTTP_SERVER)
 
   # Comparative framework benchmark (aeronet vs optional drogon/oatpp)
   set(AERONET_BENCH_FRAMEWORKS_SOURCES ${AERONET_BENCH_ROOT}/frameworks/bench_frameworks_basic.cpp)
-  AeronetAddProjectBenchmark(aeronet-bench-frameworks ${AERONET_BENCH_FRAMEWORKS_SOURCES})
+  # The competitor frameworks' headers and macros (e.g. oatpp code generation) emit warnings we cannot fix.
+  set(_AERONET_BENCH_FRAMEWORKS_OPTIONS "")
+  if(AERONET_BENCH_ENABLE_HTTPLIB OR AERONET_BENCH_ENABLE_DROGON OR AERONET_BENCH_ENABLE_OATPP)
+    set(_AERONET_BENCH_FRAMEWORKS_OPTIONS NO_WARNINGS_AS_ERRORS)
+  endif()
+  AeronetAddProjectBenchmark(aeronet-bench-frameworks ${AERONET_BENCH_FRAMEWORKS_SOURCES} ${_AERONET_BENCH_FRAMEWORKS_OPTIONS})
   target_include_directories(aeronet-bench-frameworks PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 
   if(AERONET_BENCH_ENABLE_HTTPLIB AND DEFINED cpp_httplib_SOURCE_DIR)

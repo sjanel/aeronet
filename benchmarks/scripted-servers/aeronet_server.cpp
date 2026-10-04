@@ -130,12 +130,14 @@ int main(int argc, char* argv[]) {
   // generation, uppercasing, and compression performed by the server benchmark routes.
   if (benchCfg.clientBenchMode) {
     auto payloads = std::make_shared<ClientBenchPayloads>();
+#ifdef AERONET_ENABLE_ZLIB
     auto compressed = bench::GzipCompress(payloads->compressBody);
     if (!compressed) {
       std::cerr << "Error: could not precompress the scripted-client benchmark payload\n";
       return 1;
     }
     payloads->compressedBody = std::move(*compressed);
+#endif
 
     router.setPath(http::Method::GET, "/client-bench/headers", [payloads](const HttpRequestView& req) {
       auto resp = req.makeResponse(4096UL, http::StatusCodeOK);
@@ -160,12 +162,14 @@ int main(int argc, char* argv[]) {
       resp.bodyStatic(payloads->jsonBody, http::ContentTypeApplicationJson);
       return resp;
     });
+#ifdef AERONET_ENABLE_ZLIB
     router.setPath(http::Method::GET, "/client-bench/compress", [payloads](const HttpRequestView& req) {
       auto resp = req.makeResponse(http::StatusCodeOK);
       resp.contentEncoding(http::gzip);
       resp.bodyStatic(payloads->compressedBody, http::ContentTypeApplicationJson);
       return resp;
     });
+#endif
     std::cout << "Prebuilt scripted-client endpoints registered at /client-bench/*\n";
   }
 

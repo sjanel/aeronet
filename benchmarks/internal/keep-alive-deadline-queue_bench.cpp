@@ -14,6 +14,7 @@ namespace aeronet::internal {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+using ConnectionIndex = vector<ConnectionState>::size_type;
 
 constexpr auto kKeepAliveTimeout = std::chrono::seconds{5};
 constexpr auto kTickStep = std::chrono::milliseconds{1};
@@ -37,7 +38,7 @@ auto MakeConnectionStates(std::int64_t nbConnections, Clock::time_point lastActi
 auto MakeDeadlineQueueSimulation(std::int64_t nbConnections, Clock::time_point lastActivity) {
   DeadlineQueueSimulation simulation{.states = MakeConnectionStates(nbConnections, lastActivity), .queue = {}};
   for (std::int64_t connectionIndex = 0; connectionIndex < nbConnections; ++connectionIndex) {
-    ConnectionState& connectionState = simulation.states[static_cast<std::size_t>(connectionIndex)];
+    ConnectionState& connectionState = simulation.states[static_cast<ConnectionIndex>(connectionIndex)];
     simulation.queue.upsert(connectionState, NativeHandle{static_cast<int>(connectionIndex + 1)},
                             lastActivity + kKeepAliveTimeout);
   }
@@ -53,7 +54,7 @@ void RefreshConnections(vector<ConnectionState>& states, Clock::time_point now, 
   const auto statesSize = static_cast<std::int64_t>(states.size());
   for (std::int64_t refreshedIndex = 0; refreshedIndex < nbRefreshed; ++refreshedIndex) {
     const auto connectionIndex = nextConnectionIndex;
-    states[static_cast<std::size_t>(connectionIndex)].lastActivity = now;
+    states[static_cast<ConnectionIndex>(connectionIndex)].lastActivity = now;
     nextConnectionIndex = (nextConnectionIndex + 1) % statesSize;
   }
 }
@@ -67,7 +68,7 @@ void RefreshConnections(DeadlineQueueSimulation& simulation, Clock::time_point n
   const auto statesSize = static_cast<std::int64_t>(simulation.states.size());
   for (std::int64_t refreshedIndex = 0; refreshedIndex < nbRefreshed; ++refreshedIndex) {
     const auto connectionIndex = nextConnectionIndex;
-    ConnectionState& connectionState = simulation.states[static_cast<std::size_t>(connectionIndex)];
+    ConnectionState& connectionState = simulation.states[static_cast<ConnectionIndex>(connectionIndex)];
     connectionState.lastActivity = now;
     simulation.queue.upsert(connectionState, NativeHandle{static_cast<int>(connectionIndex + 1)},
                             now + kKeepAliveTimeout);
@@ -174,7 +175,7 @@ void BM_DeadlineQueuePopExpired(benchmark::State& state) {
     const auto base = Clock::now();
     auto simulation = MakeDeadlineQueueSimulation(nbConnections, base + kKeepAliveTimeout);
     for (std::int64_t connectionIndex = 0; connectionIndex < nbExpired; ++connectionIndex) {
-      ConnectionState& connectionState = simulation.states[static_cast<std::size_t>(connectionIndex)];
+      ConnectionState& connectionState = simulation.states[static_cast<ConnectionIndex>(connectionIndex)];
       connectionState.lastActivity = base - kKeepAliveTimeout;
       simulation.queue.upsert(connectionState, NativeHandle{static_cast<int>(connectionIndex + 1)}, base);
     }

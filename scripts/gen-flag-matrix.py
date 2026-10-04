@@ -25,7 +25,7 @@ Maintenance:
   * To cover a new boolean option, append its full CMake name to FLAGS.
   * --wave-count must stay constant during a campaign (it defines the slicing of the sequence).
   * Adding/removing an option or changing is_valid() changes the sequence but does NOT reset the
-    wave number: set FIRST_RUN_NUMBER in .github/workflows/flag-combinations.yml to the next run
+    wave number: set FIRST_RUN_NUMBER in .github/workflows/flags-combinations.yml to the next run
     number to restart from wave 0. Bumping SALT also changes every sequence (same remark).
 
 Requires numpy (only when --wave-count > 0).

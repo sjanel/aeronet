@@ -1,4 +1,9 @@
+# Usage: AeronetSetProjectProperties(<target> [NO_WARNINGS_AS_ERRORS])
+#
+# NO_WARNINGS_AS_ERRORS keeps the warnings but ignores AERONET_WARNINGS_AS_ERRORS, for targets whose
+# warnings we cannot fully control (e.g. benchmark servers/clients built on third-party frameworks).
 function(AeronetSetProjectProperties name)
+  cmake_parse_arguments(PARSE_ARGV 1 ARG "NO_WARNINGS_AS_ERRORS" "" "")
 
   # Export the version string to consumers. Use a PUBLIC compile definition so
   # installed/exported targets provide AERONET_VERSION_STR to downstream
@@ -12,12 +17,12 @@ function(AeronetSetProjectProperties name)
       # Basic warnings
       if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
         target_compile_options(${name} PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion)
-        if (AERONET_WARNINGS_AS_ERRORS)
+        if (AERONET_WARNINGS_AS_ERRORS AND NOT ARG_NO_WARNINGS_AS_ERRORS)
             target_compile_options(${name} PRIVATE -Werror)
         endif()
       elseif (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
         target_compile_options(${name} PRIVATE /W4 /permissive- /external:anglebrackets /external:W0)
-        if (AERONET_WARNINGS_AS_ERRORS)
+        if (AERONET_WARNINGS_AS_ERRORS AND NOT ARG_NO_WARNINGS_AS_ERRORS)
             target_compile_options(${name} PRIVATE /WX)
         endif()
       endif()
@@ -238,5 +243,14 @@ function(AeronetAddProjectLibrary name)
   else()
     add_library(${name} STATIC ${ARGN})
   endif()
+
   AeronetSetProjectProperties(${name})
+endfunction()
+
+# Executable built on top of a third-party framework (competitor benchmark servers/clients): same properties
+# as AeronetAddProjectExecutable, but its warnings are never turned into errors.
+function(AeronetAddExternalExecutable name)
+  add_executable(${name} ${ARGN})
+  AeronetSetProjectProperties(${name} NO_WARNINGS_AS_ERRORS)
+  AeronetStageRuntimeDlls(${name})
 endfunction()
