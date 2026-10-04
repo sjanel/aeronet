@@ -203,6 +203,7 @@ HttpClient::HttpClient(HttpClient&& rhs) noexcept
       _loopInterest(rhs._loopInterest),
       _proxyPort(rhs._proxyPort),
       _jitterState(rhs._jitterState),
+      _nextIdleSweep(rhs._nextIdleSweep),
       _idle(std::move(rhs._idle)),
       _cache(std::move(rhs._cache)),
       _cacheKeyScratch(std::move(rhs._cacheKeyScratch)),
@@ -232,6 +233,7 @@ HttpClient& HttpClient::operator=(HttpClient&& rhs) noexcept {
     _loopInterest = rhs._loopInterest;
     _proxyPort = rhs._proxyPort;
     _jitterState = rhs._jitterState;
+    _nextIdleSweep = rhs._nextIdleSweep;
     _idle = std::move(rhs._idle);
     _cache = std::move(rhs._cache);
     _cacheKeyScratch = std::move(rhs._cacheKeyScratch);
@@ -343,6 +345,48 @@ void HttpClient::clearIdleConnections() {
     dropIdleBucket(bucket);
   }
   _idle.clear();
+}
+
+void HttpClient::sweepIdleConnections(SteadyClock::time_point now) noexcept {
+  const auto timeout = _config.keepAliveTimeout;
+  const bool expires = timeout.count() > 0;
+  for (auto it = _idle.begin(); it != _idle.end();) {
+    auto& bucket = it->second;
+    if (expires) {
+      // Buckets are LIFO: idleSince grows from front (oldest) to back (freshest), so the expired connections (same
+      // criterion as acquireConnection) form a prefix.
+      const auto firstLive = std::ranges::find_if(
+          bucket, [now, timeout](const ActiveConnection& conn) { return now - conn.idleSince <= timeout; });
+      for (auto connIt = bucket.begin(); connIt != firstLive; ++connIt) {
+        unregisterIfCurrent(connIt->cnx.fd());
+      }
+      bucket.erase(bucket.begin(), firstLive);
+    }
+    if (bucket.empty()) {
+      it = _idle.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  _nextIdleSweep = now + timeout;
+}
+
+void HttpClient::releaseUnusedMemory() {
+  const auto now = SteadyClock::now();
+  sweepIdleConnections(now);
+  _idle.shrink_to_fit();
+  pruneExpiredCache(now, EjectType::OnlyExpired);
+  _cache.shrink_to_fit();
+  // Shrink rather than free the scratch buffers: RawChars::shrink_to_fit() halves a mostly unused buffer, so periodic
+  // calls bound the high-water capacity of a long-running client while keeping room for the next exchanges.
+  _cacheKeyScratch.shrink_to_fit();
+  _reqBodyScratch.shrink_to_fit();
+  _responseBuffer.shrink_to_fit();
+  _codec.decompressOut.shrink_to_fit();
+  _codec.decompressTmp.shrink_to_fit();
+#ifdef AERONET_ENABLE_HTTP2
+  _outputFragmentsScratch.shrink_to_fit();
+#endif
 }
 
 void HttpClient::ActiveConnection::reset() noexcept {
@@ -583,8 +627,14 @@ void HttpClient::releaseConnection(const HttpRequest& req, ActiveConnection&& co
     dropConnection(conn);  // pool full: unregister its fd from the loop before it closes
     return;
   }
-  conn.idleSince = SteadyClock::now();  // stamp for idle-expiry on the next acquire
+  const auto now = SteadyClock::now();
+  conn.idleSince = now;  // stamp for idle-expiry on the next acquire
   bucket.emplace_back(std::move(conn));
+  // acquireConnection only expires the pooled connections of the requested origin: sweep the other origins too,
+  // at most once per keepAliveTimeout. Done after the insertion so that this (fresh) bucket is never erased.
+  if (_config.keepAliveTimeout.count() > 0 && now >= _nextIdleSweep) {
+    sweepIdleConnections(now);
+  }
 }
 
 HttpClientErrc HttpClient::finishConnect(ActiveConnection& conn, [[maybe_unused]] bool isTls,
