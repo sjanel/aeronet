@@ -73,14 +73,6 @@ def is_valid(cfg):
         cfg["AERONET_ENABLE_OPENSSL"] and cfg["AERONET_ENABLE_GLAZE"]
     ):
         return False
-    # benchmarks/scripted-servers/CMakeLists.txt: FATAL_ERROR when the ZLIBNG::ZLIBNG target is
-    # missing. It is checked whenever the benchmarks are built together with the server (the
-    # AERONET_BENCH_ENABLE_* third-party servers are ON by default), and the target only exists
-    # with zlib AND zlib-ng enabled.
-    if cfg["AERONET_BUILD_BENCHMARKS"] and cfg["AERONET_ENABLE_HTTP_SERVER"] and not (
-        cfg["AERONET_ENABLE_ZLIB"] and cfg["AERONET_ENABLE_ZLIBNG"]
-    ):
-        return False
     return True
 
 

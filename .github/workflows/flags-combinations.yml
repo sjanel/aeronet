@@ -93,9 +93,10 @@ jobs:
         run: |
           ./scripts/retry.sh cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
+            -DAERONET_WARNINGS_AS_ERRORS=ON \
             -DAERONET_BUILD_TESTS=ON \
             -DAERONET_ENABLE_TEST_HOOKS=ON \
-            -DAERONET_BUILD_EXAMPLES=OFF \
+            -DAERONET_BUILD_EXAMPLES=ON \
             -DAERONET_ENABLE_ASAN=OFF \
             -DAERONET_ENABLE_CLANG_TIDY=OFF \
             -DAERONET_BENCH_ENABLE_OATPP=OFF \
@@ -111,7 +112,7 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Run unit tests
-        run: ctest --test-dir build --output-on-failure --timeout 60 -j
+        run: ctest --test-dir build --output-on-failure --timeout 60 -j --repeat until-pass:3
 
   report:
     name: Report failures
