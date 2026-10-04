@@ -28,6 +28,7 @@
 #include "aeronet/base-fd.hpp"
 #include "aeronet/file-payload.hpp"
 #include "aeronet/file.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/transport-result.hpp"
@@ -869,6 +870,22 @@ TEST(ConnectionStateSendfileTest, TlsPreadErrorTriggersCloseAndClearsActive) {
   EXPECT_EQ(res.bytesDone, 0U);
   EXPECT_FALSE(state.fileSendActive);
   EXPECT_TRUE(state.isAnyCloseRequested());
+}
+
+// A connection closed in the middle of a file transfer is cached, then reset for a new connection, which must not
+// inherit the transfer: its requests would never be processed while a file send looks in progress.
+TEST(ConnectionStateTest, ResetEndsAnInterruptedFileTransfer) {
+  ConnectionState state;
+  state.outBuffer = HttpMessageData{RawChars("HTTP/1.1 200 OK\r\n\r\n")};  // response head not flushed yet
+  EXPECT_FALSE(state.attachFilePayload(FilePayload{File{}, 0, 4}));
+  ASSERT_TRUE(state.isSendingFile());
+  ASSERT_TRUE(state.fileSendHeadersPending);
+
+  state.reset();
+
+  EXPECT_FALSE(state.isSendingFile());
+  EXPECT_FALSE(state.fileSendHeadersPending);
+  EXPECT_EQ(state.fileSend.filePayload.length, 0U);
 }
 
 TEST(ConnectionStateTest, AttachFilePayloadMustReturnFalseIfNoFile) {

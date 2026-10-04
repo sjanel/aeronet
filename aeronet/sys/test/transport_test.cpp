@@ -22,6 +22,7 @@
 #define AERONET_WANT_SENDFILE_PREAD_OVERRIDES
 
 #include "aeronet/base-fd.hpp"
+#include "aeronet/sigpipe-test-helpers.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/transport-result.hpp"
@@ -53,7 +54,7 @@ TEST(TransportTest, WriteReturnsErrorWhenFdIsInvalid) {
 
 TEST(PlainTransport, ReadHandlesEINTRAndEAGAIN) {
   int fds[2];
-  ASSERT_EQ(pipe(fds), 0);
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
   const int readFd = fds[0];
   const int writeFd = fds[1];
 
@@ -95,7 +96,7 @@ TEST(PlainTransport, ReadHandlesEINTRAndEAGAIN) {
 
 TEST(PlainTransport, WriteHandlesEAGAINAndSuccess) {
   int fds[2];
-  ASSERT_EQ(::pipe(fds), 0);
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
   const int readFd = fds[0];
   const int writeFd = fds[1];
 
@@ -131,18 +132,18 @@ TEST(PlainTransport, WriteHandlesEAGAINAndSuccess) {
   EXPECT_EQ(std::memcmp(buf, data.data(), 6), 0);
 }
 
-TEST(PlainTransport, TwoBufWriteReturnsEarlyWhenWritevNeedsRetry) {
+TEST(PlainTransport, TwoBufWriteReturnsEarlyWhenSendmsgNeedsRetry) {
   int fds[2];
-  ASSERT_EQ(pipe(fds), 0);
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
   const int readFd = fds[0];
   const int writeFd = fds[1];
 
   BaseFd readFdGuard(readFd);
   BaseFd writeFdGuard(writeFd);
 
-  // Simulate writev returning EAGAIN -> caller should
+  // Simulate sendmsg returning EAGAIN -> caller should
   // receive a result with want != None and no data written.
-  test::SetWritevActions(writeFd, {IoAction{-1, error::kWouldBlock}});
+  test::SetSendmsgActions(writeFd, {IoAction{-1, error::kWouldBlock}});
 
   PlainTransport transport(writeFd, ZerocopyMode::Disabled, 0U);
   std::string_view head("HEAD");
@@ -153,22 +154,22 @@ TEST(PlainTransport, TwoBufWriteReturnsEarlyWhenWritevNeedsRetry) {
   EXPECT_EQ(res.want, TransportHint::WriteReady);
 }
 
-TEST(PlainTransport, TwoBufWriteReturnsEarlyWhenWritevReturnsZero) {
+TEST(PlainTransport, TwoBufWriteReturnsEarlyWhenSendmsgReturnsZero) {
   int fds[2];
-  ASSERT_EQ(pipe(fds), 0);
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
   const int readFd = fds[0];
   const int writeFd = fds[1];
 
   BaseFd readFdGuard(readFd);
   BaseFd writeFdGuard(writeFd);
 
-  // POSIX/Winsock don't define writev()/WSASend() returning 0 for a non-empty
+  // POSIX/Winsock don't define sendmsg()/WSASend() returning 0 for a non-empty
   // request as a normal "would block" outcome (that's -1/EAGAIN instead), but
   // the implementation guards against it defensively. Locks in that the guard
-  // returns immediately rather than re-issuing writev() forever: only one
+  // returns immediately rather than re-issuing sendmsg() forever: only one
   // action is registered, so a regression that removes the early return would
   // make this test fail loudly instead of hanging.
-  test::SetWritevActions(writeFd, {IoAction{0, 0}});
+  test::SetSendmsgActions(writeFd, {IoAction{0, 0}});
 
   PlainTransport transport(writeFd, ZerocopyMode::Disabled, 0U);
   std::string_view head("HEAD");
@@ -182,17 +183,17 @@ TEST(PlainTransport, TwoBufWriteReturnsEarlyWhenWritevReturnsZero) {
 
 TEST(PlainTransport, GatherWriteReturnsEarlyOnZeroWriteAfterPartialBatch) {
   int fds[2];
-  ASSERT_EQ(pipe(fds), 0);
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
   const int readFd = fds[0];
   const int writeFd = fds[1];
 
   BaseFd readFdGuard(readFd);
   BaseFd writeFdGuard(writeFd);
 
-  // First writev call reports a partial write (6 of 12 bytes), second returns 0.
+  // First sendmsg call reports a partial write (6 of 12 bytes), second returns 0.
   // Verifies bytesProcessed accumulated from the partial write is preserved,
-  // and that the 0-return does not trigger another writev call.
-  test::SetWritevActions(writeFd, {IoAction{6, 0}, IoAction{0, 0}});
+  // and that the 0-return does not trigger another sendmsg call.
+  test::SetSendmsgActions(writeFd, {IoAction{6, 0}, IoAction{0, 0}});
 
   PlainTransport transport(writeFd, ZerocopyMode::Disabled, 0U);
   const std::array<std::string_view, 3> fragments{"HEAD", "BODY", "TAIL"};
@@ -202,9 +203,9 @@ TEST(PlainTransport, GatherWriteReturnsEarlyOnZeroWriteAfterPartialBatch) {
   EXPECT_EQ(result.want, TransportHint::None);
 }
 
-TEST(PlainTransport, TwoBufWriteUsesWritevSuccessfully) {
+TEST(PlainTransport, TwoBufWriteUsesSendmsgSuccessfully) {
   int fds[2];
-  ASSERT_EQ(pipe(fds), 0);
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
   const int readFd = fds[0];
   const int writeFd = fds[1];
 
@@ -215,7 +216,7 @@ TEST(PlainTransport, TwoBufWriteUsesWritevSuccessfully) {
   std::string_view head("HEAD");
   std::string_view body("BODY");
 
-  // Write both buffers using writev
+  // Write both buffers with a single sendmsg
   auto res = transport.write(head, body);
   EXPECT_EQ(res.bytesProcessed, head.size() + body.size());
   EXPECT_EQ(res.want, TransportHint::None);
@@ -228,7 +229,7 @@ TEST(PlainTransport, TwoBufWriteUsesWritevSuccessfully) {
 
 TEST(PlainTransport, TwoBufWriteHandlesPartialWrite) {
   int fds[2];
-  ASSERT_EQ(pipe(fds), 0);
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
   const int readFd = fds[0];
   const int writeFd = fds[1];
 
@@ -241,16 +242,16 @@ TEST(PlainTransport, TwoBufWriteHandlesPartialWrite) {
 
   // Simulate partial write: only 2 bytes on first call, then EAGAIN
   // This tests that partial progress is correctly reported
-  test::SetWritevActions(writeFd, {IoAction{2, 0}, IoAction{-1, error::kWouldBlock}});
+  test::SetSendmsgActions(writeFd, {IoAction{2, 0}, IoAction{-1, error::kWouldBlock}});
 
   auto res = transport.write(head, body);
   EXPECT_EQ(res.bytesProcessed, 2U);
   EXPECT_EQ(res.want, TransportHint::WriteReady);
 }
 
-TEST(PlainTransport, GatherWriteUsesWritevForAllFragments) {
+TEST(PlainTransport, GatherWriteUsesSendmsgForAllFragments) {
   int fds[2];
-  ASSERT_EQ(pipe(fds), 0);
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
   BaseFd readFdGuard(fds[0]);
   BaseFd writeFdGuard(fds[1]);
 
@@ -269,7 +270,7 @@ TEST(PlainTransport, GatherWriteUsesWritevForAllFragments) {
 
 TEST(PlainTransport, GatherWriteProcessesMoreThanOneSystemBatch) {
   int fds[2];
-  ASSERT_EQ(pipe(fds), 0);
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
   BaseFd readFdGuard(fds[0]);
   BaseFd writeFdGuard(fds[1]);
 
@@ -289,11 +290,11 @@ TEST(PlainTransport, GatherWriteProcessesMoreThanOneSystemBatch) {
 
 TEST(PlainTransport, GatherWriteTracksPartialProgressAcrossFragments) {
   int fds[2];
-  ASSERT_EQ(pipe(fds), 0);
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
   BaseFd readFdGuard(fds[0]);
   BaseFd writeFdGuard(fds[1]);
 
-  test::SetWritevActions(fds[1], {IoAction{6, 0}, IoAction{-1, error::kWouldBlock}});
+  test::SetSendmsgActions(fds[1], {IoAction{6, 0}, IoAction{-1, error::kWouldBlock}});
 
   PlainTransport transport(fds[1], ZerocopyMode::Disabled, 0U);
   const std::array<std::string_view, 3> fragments{"HEAD", "BODY", "TAIL"};
@@ -302,6 +303,35 @@ TEST(PlainTransport, GatherWriteTracksPartialProgressAcrossFragments) {
   EXPECT_EQ(result.bytesProcessed, 6U);
   EXPECT_EQ(result.want, TransportHint::WriteReady);
 }
+
+#ifdef AERONET_LINUX
+// Writing to a connection the peer has closed must report an error and never raise SIGPIPE, whose default action
+// terminates the process: every plain transport write path sends with MSG_NOSIGNAL.
+TEST(PlainTransport, WritesToClosedPeerFailWithoutSigpipe) {
+  test::DefaultSigpipeScope sigpipeScope;
+
+  const std::array<std::string_view, 3> fragments{"HEAD", "BODY", "TAIL"};
+  for (int writePath = 0; writePath < 3; ++writePath) {
+    int fds[2];
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+    BaseFd writeFdGuard(fds[1]);
+    ::close(fds[0]);
+
+    PlainTransport transport(fds[1], ZerocopyMode::Disabled, 0U);
+    TransportResult result;
+    if (writePath == 0) {
+      result = transport.write("data");
+    } else if (writePath == 1) {
+      result = transport.write("head", "body");
+    } else {
+      result = transport.write(std::span<const std::string_view>(fragments));
+    }
+    EXPECT_EQ(result.bytesProcessed, 0U) << writePath;
+    EXPECT_EQ(result.want, TransportHint::Error) << writePath;
+  }
+}
+#endif
+
 namespace {
 
 // A minimal custom backend that provides only read/write, so Transport supplies the default capabilities.
@@ -655,19 +685,19 @@ TEST(PlainTransport, SendFileReportsErrorOnFatalFailureAndOnUnexpectedEof) {
 
 TEST(PlainTransport, TwoBufWriteRetriesOnEINTR) {
   int fds[2];
-  ASSERT_EQ(::pipe(fds), 0);
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
   const int readFd = fds[0];
   const int writeFd = fds[1];
 
   BaseFd readFdGuard(readFd);
   BaseFd writeFdGuard(writeFd);
 
-  // Simulate writev first returning error::kInterrupted, then succeed writing full payload
+  // Simulate sendmsg first returning error::kInterrupted, then succeed writing full payload
   // We emulate this by installing actions: first (-1, error::kInterrupted), then (total_bytes, 0)
   const std::string_view head("HEAD");
   const std::string_view body("BODY");
   const int64_t total = static_cast<int64_t>(head.size() + body.size());
-  test::SetWritevActions(writeFd, {IoAction{-1, error::kInterrupted}, IoAction{total, 0}});
+  test::SetSendmsgActions(writeFd, {IoAction{-1, error::kInterrupted}, IoAction{total, 0}});
 
   PlainTransport transport(writeFd, ZerocopyMode::Disabled, 0U);
   auto res = transport.write(head, body);
@@ -678,6 +708,75 @@ TEST(PlainTransport, TwoBufWriteRetriesOnEINTR) {
 
   // Note: the test support overrides return synthetic success values and do not
   // actually copy data into the fd. We therefore only verify reported progress.
+}
+
+TEST(PlainTransport, TwoBufWriteWithEmptySecondBufferUsesSingleSend) {
+  int fds[2];
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+  BaseFd readFdGuard(fds[0]);
+  BaseFd writeFdGuard(fds[1]);
+
+  PlainTransport transport(fds[1], ZerocopyMode::Disabled, 0U);
+  // A queued sendmsg failure must not be consumed: a single buffer is written with send().
+  test::SetSendmsgActions(fds[1], {IoAction{-1, error::kBrokenPipe}});
+  const auto res = transport.write("HEAD-AND-BODY", std::string_view{});
+  EXPECT_EQ(res.bytesProcessed, 13U);
+  EXPECT_EQ(res.want, TransportHint::None);
+  EXPECT_EQ(test::g_sendmsg_actions.size(fds[1]), 1U);
+  test::g_sendmsg_actions.reset();
+
+  std::array<char, 16> received{};
+  ASSERT_EQ(::read(fds[0], received.data(), received.size()), 13);
+  EXPECT_EQ(std::string_view(received.data(), 13), "HEAD-AND-BODY");
+
+  // send() faults on the single buffer path are reported as for any other write.
+  test::SetWriteActions(fds[1], {IoAction{4, 0}, IoAction{-1, error::kWouldBlock}});
+  const auto partial = transport.write("HEAD-AND-BODY", std::string_view{});
+  EXPECT_EQ(partial.bytesProcessed, 4U);
+  EXPECT_EQ(partial.want, TransportHint::WriteReady);
+}
+
+TEST(PlainTransport, SingleBufferWriteStopsWhenSendReturnsZero) {
+  int fds[2];
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+  BaseFd readFdGuard(fds[0]);
+  BaseFd writeFdGuard(fds[1]);
+
+  // send() never returns 0 for a non-empty request on a stream socket, but the loop must not spin on it.
+  test::SetWriteActions(fds[1], {IoAction{3, 0}, IoAction{0, 0}});
+  PlainTransport transport(fds[1], ZerocopyMode::Disabled, 0U);
+  const auto res = transport.write(std::string_view("payload"));
+  EXPECT_EQ(res.bytesProcessed, 3U);
+  EXPECT_EQ(res.want, TransportHint::None);
+}
+
+TEST(PlainTransport, GatherWriteWithSingleFragmentUsesSend) {
+  int fds[2];
+  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+  BaseFd readFdGuard(fds[0]);
+  BaseFd writeFdGuard(fds[1]);
+
+  PlainTransport transport(fds[1], ZerocopyMode::Disabled, 0U);
+  // Empty fragments are skipped: a single remaining buffer is written with send(), not sendmsg().
+  test::SetSendmsgActions(fds[1], {IoAction{-1, error::kBrokenPipe}});
+  const std::array<std::string_view, 3> fragments{"", "FRAME", ""};
+  const auto res = transport.write(std::span<const std::string_view>(fragments));
+  EXPECT_EQ(res.bytesProcessed, 5U);
+  EXPECT_EQ(res.want, TransportHint::None);
+  EXPECT_EQ(test::g_sendmsg_actions.size(fds[1]), 1U);
+  test::g_sendmsg_actions.reset();
+
+  std::array<char, 8> received{};
+  ASSERT_EQ(::read(fds[0], received.data(), received.size()), 5);
+  EXPECT_EQ(std::string_view(received.data(), 5), "FRAME");
+
+  // After a partial sendmsg of two fragments, the single remaining part goes through send().
+  test::SetSendmsgActions(fds[1], {IoAction{6, 0}});
+  test::SetWriteActions(fds[1], {IoAction{-1, error::kWouldBlock}});
+  const std::array<std::string_view, 2> twoFragments{"HEAD", "BODY"};
+  const auto partial = transport.write(std::span<const std::string_view>(twoFragments));
+  EXPECT_EQ(partial.bytesProcessed, 6U);
+  EXPECT_EQ(partial.want, TransportHint::WriteReady);
 }
 
 }  // namespace aeronet

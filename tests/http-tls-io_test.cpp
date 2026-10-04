@@ -18,6 +18,10 @@
 #include <thread>
 #include <utility>
 
+#ifdef AERONET_POSIX
+#include <optional>
+#endif
+
 #include "aeronet/compression-config.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/features.hpp"
@@ -29,6 +33,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/sigpipe-test-helpers.hpp"
 #include "aeronet/static-file-handler.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/temp-file.hpp"
@@ -316,6 +321,36 @@ TEST(HttpTlsBasic, LargePayload) {
   EXPECT_TRUE(raw.starts_with("HTTP/1.1 200"));
   EXPECT_TRUE(raw.ends_with(largeBody));
 }
+
+#ifdef AERONET_POSIX
+// A client that leaves while its response is being sent: once its kernel answered the first TLS records with a reset,
+// the next write OpenSSL makes on the socket fails with EPIPE and raises SIGPIPE, which terminates the process by
+// default. The server must survive it.
+TEST(HttpTlsBasic, ResponseToDepartedClientDoesNotRaiseSigpipe) {
+  const std::string payload(4UL << 20U, 't');  // more than the socket buffers: several writes
+  // TLS 1.2: no session tickets after the handshake, which the client would leave unread, its close then resetting the
+  // connection right away (ECONNRESET, without SIGPIPE).
+  test::TlsTestServer tlsServer({}, [&payload](HttpServerConfig& cfg) {
+    cfg.withTlsMaxVersion("TLS1.2").withMaxOutboundBufferBytes(static_cast<uint32_t>(payload.size()) + 1024U);
+  });
+  tlsServer.setDefault([&payload](const HttpRequestView& req) { return req.makeResponse(payload); });
+
+  // Repeated: the client may also receive the first records before leaving.
+  for (int attempt = 0; attempt < 10; ++attempt) {
+    std::optional<test::TlsClient> client(std::in_place, tlsServer.port());
+    ASSERT_TRUE(client->handshakeOk());
+    test::DefaultSigpipeScope sigpipeScope;  // after TlsClient, which ignores SIGPIPE process-wide
+    ASSERT_TRUE(client->writeAll("GET /big HTTP/1.1\r\nHost: localhost\r\n\r\n"));
+    client.reset();                     // leaves (close_notify, FIN) before reading anything
+    std::this_thread::sleep_for(20ms);  // the server writes into the closed connection meanwhile
+  }
+
+  test::TlsClient client(tlsServer.port());
+  const std::string resp = client.get("/big");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp.substr(0, 64);
+  EXPECT_TRUE(resp.ends_with(payload));
+}
+#endif
 
 #ifdef AERONET_ENABLE_HTTP2
 

@@ -1168,9 +1168,90 @@ extern "C" __attribute__((no_sanitize("address"))) ssize_t writev(int fd, const 
   return real(fd, iov, iovcnt);
 }
 
+#endif
+
+#if defined(AERONET_WANT_READ_WRITE_OVERRIDES) || defined(AERONET_WANT_SOCKET_OVERRIDES)
+
+// Socket I/O overrides, shared by both override families. PlainTransport reads with recv() and writes with send() /
+// sendmsg(): besides their dedicated queues, these overrides consume the fd-keyed read / write / writev actions, so
+// that a test injects faults on a socket the same way whatever the syscall used underneath.
+
+// NOLINTNEXTLINE
+extern "C" __attribute__((no_sanitize("address"))) ssize_t send(int sockfd, const void* buf, size_t len, int flags) {
+  auto act = aeronet::test::g_send_actions.pop();
+  if (!act) {
+    act = aeronet::test::g_write_actions.pop(sockfd);
+  }
+  if (!act) {
+    act = aeronet::test::g_writev_actions.pop(sockfd);
+  }
+  if (act) {
+    auto [ret, err] = *act;
+    if (ret >= 0) {
+      // Real send(2) never returns more than 'len'. Clamp for caller invariants.
+      return static_cast<ssize_t>(std::min<int64_t>(ret, static_cast<int64_t>(len)));
+    }
+    errno = err;
+    return -1;
+  }
+  if (aeronet::test::g_send_capture != nullptr) {
+    aeronet::test::g_send_capture->emplace_back(static_cast<const char*>(buf), len);
+    return static_cast<ssize_t>(len);
+  }
+  auto real = aeronet::test::ResolveRealSend();
+  return real(sockfd, buf, len, flags);
+}
+
+// NOLINTNEXTLINE
+extern "C" __attribute__((no_sanitize("address"))) ssize_t recv(int sockfd, void* buf, size_t len, int flags) {
+  char fill = 'R';
+  auto act = aeronet::test::g_recv_actions.pop(sockfd);
+  if (!act) {
+    act = aeronet::test::g_read_actions.pop(sockfd);
+    fill = 'A';
+  }
+  if (act) {
+    auto [ret, err] = *act;
+    if (ret >= 0) {
+      // Real recv(2) never returns more than 'len'. Clamp for caller invariants.
+      ret = std::min<int64_t>(ret, static_cast<int64_t>(len));
+      if (buf != nullptr && ret > 0) {
+        std::memset(buf, fill, static_cast<size_t>(ret));
+      }
+      return static_cast<ssize_t>(ret);
+    }
+    errno = err;
+    return -1;
+  }
+  auto real = aeronet::test::ResolveRealRecv();
+  return real(sockfd, buf, len, flags);
+}
+
+#ifdef __GLIBC__
+// Ubuntu's gcc packages enable _FORTIFY_SOURCE by default whenever any
+// optimization is requested (-O1+), even without the build asking for it.
+// That can turn a `recv(fd, buf, n, flags)` call site with a compile-time-
+// known destination size into a call to the internal __recv_chk symbol
+// instead of plain `recv`, silently bypassing the override above in
+// optimized builds. Intercept it too and funnel it through the same mock.
+extern "C" __attribute__((no_sanitize("address"))) ssize_t __recv_chk(int sockfd, void* buf, size_t len,
+                                                                      size_t /*buflen*/, int flags) {
+  return recv(sockfd, buf, len, flags);
+}
+#endif  // __GLIBC__
+
 // NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name)
 extern "C" __attribute__((no_sanitize("address"))) ssize_t sendmsg(int fd, const struct msghdr* msg, int flags) {
   auto act = aeronet::test::g_sendmsg_actions.pop(fd);
+#ifdef MSG_ZEROCOPY
+  // MSG_ZEROCOPY sends are only driven by their dedicated queue.
+  const bool regularSend = (flags & MSG_ZEROCOPY) == 0;
+#else
+  const bool regularSend = true;
+#endif
+  if (!act && regularSend) {
+    act = aeronet::test::g_writev_actions.pop(fd);
+  }
   if (act) {
     auto [ret, err] = *act;
     if (ret >= 0) {
@@ -1189,7 +1270,7 @@ extern "C" __attribute__((no_sanitize("address"))) ssize_t sendmsg(int fd, const
   return real(fd, msg, flags);
 }
 
-#endif
+#endif  // AERONET_WANT_READ_WRITE_OVERRIDES || AERONET_WANT_SOCKET_OVERRIDES
 
 #ifdef AERONET_WANT_SOCKET_OVERRIDES
 
@@ -1357,58 +1438,6 @@ extern "C" __attribute__((no_sanitize("address"))) int getsockname(int sockfd, s
   auto real = aeronet::test::ResolveRealGetsockname();
   return real(sockfd, addr, addrlen);
 }
-
-// NOLINTNEXTLINE
-extern "C" __attribute__((no_sanitize("address"))) ssize_t send(int sockfd, const void* buf, size_t len, int flags) {
-  auto act = aeronet::test::g_send_actions.pop();
-  if (act) {
-    auto [ret, err] = *act;
-    if (ret >= 0) {
-      return ret;
-    }
-    errno = err;
-    return -1;
-  }
-  if (aeronet::test::g_send_capture != nullptr) {
-    aeronet::test::g_send_capture->emplace_back(static_cast<const char*>(buf), len);
-    return static_cast<ssize_t>(len);
-  }
-  auto real = aeronet::test::ResolveRealSend();
-  return real(sockfd, buf, len, flags);
-}
-
-// NOLINTNEXTLINE
-extern "C" __attribute__((no_sanitize("address"))) ssize_t recv(int sockfd, void* buf, size_t len, int flags) {
-  auto act = aeronet::test::g_recv_actions.pop(sockfd);
-  if (act) {
-    auto [ret, err] = *act;
-    if (ret >= 0) {
-      // Real recv(2) never returns more than 'len'. Clamp for caller invariants.
-      ret = std::min<int64_t>(ret, static_cast<int64_t>(len));
-      if (buf != nullptr && ret > 0) {
-        std::memset(buf, 'R', static_cast<size_t>(ret));
-      }
-      return static_cast<ssize_t>(ret);
-    }
-    errno = err;
-    return -1;
-  }
-  auto real = aeronet::test::ResolveRealRecv();
-  return real(sockfd, buf, len, flags);
-}
-
-#ifdef __GLIBC__
-// Ubuntu's gcc packages enable _FORTIFY_SOURCE by default whenever any
-// optimization is requested (-O1+), even without the build asking for it.
-// That can turn a `recv(fd, buf, n, flags)` call site with a compile-time-
-// known destination size into a call to the internal __recv_chk symbol
-// instead of plain `recv`, silently bypassing the override above in
-// optimized builds. Intercept it too and funnel it through the same mock.
-extern "C" __attribute__((no_sanitize("address"))) ssize_t __recv_chk(int sockfd, void* buf, size_t len,
-                                                                      size_t /*buflen*/, int flags) {
-  return recv(sockfd, buf, len, flags);
-}
-#endif  // __GLIBC__
 
 #if AERONET_WANT_SYS_OVERRIDES
 // NOLINTNEXTLINE
