@@ -4,9 +4,14 @@ All notable changes to aeronet are documented in this file.
 
 ## Unreleased
 
+### 1.7.0 Bug Fixes
+
+- **HttpClient no longer keeps idle connections to origins it stopped requesting**: an idle pooled connection older than `keepAliveTimeout` was only closed when its origin was requested again, so a client talking to many origins kept the sockets (in `CLOSE_WAIT` once the server closed them), TLS sessions and HTTP/2 state of all of them, and a pool entry per origin ever requested. Completing a request now also sweeps the expired idle connections of every origin, at most once per `keepAliveTimeout`, and erases the pool entries left empty. Tests: `aeronet/client/test/http-client-core_test.cpp` (`IdleSweepDropsExpiredConnectionsOfOtherOrigins`).
+
 ### 1.7.0 Improvements
 
 - **`HttpResponse`, `HttpRequest` and the connection output buffer are much smaller**: the captured body payload (`std::string`, vectors, buffers, static views, files and HEAD size-only bodies) is no longer a 64-byte member of `HttpMessage` and of the HTTP/1 output buffer; it is constructed in place inside the head buffer, right after the head, reusing its spare capacity. A finalized response hands this buffer over to its connection without moving the payload. `sizeof(HttpResponse)` goes from 112 to 48 bytes (one cache line), `sizeof(HttpRequest)` from 120 to 56 bytes and the HTTP/1 output buffer (one per connection, plus one per pending zerocopy send) from 96 to 32 bytes on 64-bit Linux, which makes every move of a request / response (handler return values, `std::optional`, `std::expected`, coroutine frames, `HttpResponseWriter`) cheaper. Release A/B against 1.6.0 with `benchmarks/internal/http-response-payload_bench.cpp`: a response move is 25-39% faster, and the path from the handler to the connection output buffer is 7-16% faster for small bodies and about 3% faster for 4 KiB bodies.
+- **New `HttpClient::releaseUnusedMemory()`**: the request, response and decompression scratch buffers keep the capacity of the largest exchange so far. Called periodically, this method keeps the memory of a long-running client bounded: it shrinks these buffers gradually (each call at most halves a mostly unused one, so the next requests do not allocate from scratch), closes the expired idle pooled connections and drops the expired cached responses, keeping valid pooled connections and fresh cache entries. Tests: `aeronet/client/test/http-client-core_test.cpp` (`ReleaseUnusedMemory*`).
 
 ## [1.6.0] - 2026-10-03
 

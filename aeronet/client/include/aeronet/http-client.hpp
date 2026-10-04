@@ -171,9 +171,18 @@ class HttpClient {
   // when the cache is disabled. See HttpClientConfig::cache.
   void clearResponseCache() noexcept { _cache.clear(); }
 
-  // TODO: add a shrink_to_fit() method ? May be useful for long-running clients
+  // Trim the memory the client only keeps for reuse, so that a long-running client does not slowly grow forever.
+  // Closes the idle pooled connections older than keepAliveTimeout (and erases the per-origin pool entries left
+  // empty), drops the expired cached responses, and shrinks the request / response / decompression scratch buffers,
+  // which otherwise keep the capacity of the largest exchange so far. The buffers are not freed: each call at most
+  // halves a mostly unused one, so the next requests do not allocate from scratch. Still valid pooled connections and
+  // fresh cache entries are kept. Meant to be called periodically (e.g. from a maintenance timer); use
+  // clearIdleConnections() / clearResponseCache() to drop everything.
+  void releaseUnusedMemory();
 
  private:
+  friend class HttpClientTest;
+
   // A live transport (plain or TLS) plus the socket it owns.
   struct ActiveConnection {
     void reset() noexcept;
@@ -240,6 +249,11 @@ class HttpClient {
   HttpClientErrc establishProxyTunnel(Transport& transport, NativeHandle fd, const HttpRequest& req);
 
   void releaseConnection(const HttpRequest& req, ActiveConnection&& conn);
+
+  // Drop the idle pooled connections older than keepAliveTimeout (none when it is 0) of every origin, erase the
+  // pool entries left empty, and schedule the next automatic sweep. releaseConnection runs it at most once per
+  // keepAliveTimeout, so idle connections to origins that are no longer requested do not stay open forever.
+  void sweepIdleConnections(SteadyClock::time_point now) noexcept;
 
   // Drive the TLS handshake to completion (the TCP connect is already established by connectNew), then
   // resolve the negotiated application protocol (ALPN for https; HTTP/1.1 otherwise) into conn.protocol.
@@ -310,6 +324,7 @@ class HttpClient {
   EventBmp _loopInterest{0};
   uint16_t _proxyPort{0};                        // forward-proxy port (see _proxyHost)
   uint64_t _jitterState{0x9E3779B97F4A7C15ULL};  // backoff jitter PRNG state (non-zero seed)
+  SteadyClock::time_point _nextIdleSweep;        // earliest time of the next automatic idle pool sweep
 
   // Idle keep-alive connections keyed by origin ("scheme://host:port"); transparent string_view lookup.
   flat_hash_map<RawChars32, vector<ActiveConnection>, CityHash, std::equal_to<>> _idle;
