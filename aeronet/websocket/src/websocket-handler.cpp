@@ -1,6 +1,5 @@
 #include "aeronet/websocket-handler.hpp"
 
-#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
@@ -165,50 +164,22 @@ WebSocketHandler& WebSocketHandler::operator=(WebSocketHandler&&) noexcept = def
 
 void WebSocketHandler::setCallbacks(WebSocketCallbacks callbacks) { _callbacks = std::move(callbacks); }
 
+void WebSocketHandler::enableCompression(DeflateNegotiatedParams deflateParams) {
+  _deflateContext = std::make_unique<DeflateContext>(deflateParams, _config.deflateConfig, _config.isServerSide);
+}
+
 ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> data,
                                                      [[maybe_unused]] ConnectionState& state) {
+  // Only complete frames are consumed. The bytes of a trailing incomplete frame are left to the caller, which passes
+  // them again, followed by the next received bytes, at the next call (they are not copied here).
   ProtocolProcessResult result;
-
-  const std::size_t callerDataSize = data.size();
-  std::size_t carryOverBytes = 0;
-
-  // Append new data to any carry-over from previous call
-  if (_inputBufferOffset < _inputBuffer.size()) {
-    carryOverBytes = _inputBuffer.size() - _inputBufferOffset;
-    _inputBuffer.append(data);
-    data = {_inputBuffer.begin() + _inputBufferOffset, _inputBuffer.end()};
-  }
-
-  auto consumedFromCaller = [carryOverBytes, callerDataSize](std::size_t consumedTotal) -> std::size_t {
-    if (consumedTotal <= carryOverBytes) {
-      return 0;
-    }
-    return std::min(consumedTotal - carryOverBytes, callerDataSize);
-  };
-
-  std::size_t totalConsumed = 0;
   const bool allowRsv1 = (_deflateContext != nullptr);
 
-  // Process as many complete frames as possible
   while (!data.empty()) {
     const auto frameResult = ParseFrame(data, _config.maxFrameSize, _config.isServerSide, allowRsv1);
 
     if (frameResult.status == FrameParseResult::Status::Incomplete) {
-      // Need more data - save remainder for next call
-      if (_inputBuffer.empty()) {
-        _inputBuffer.append(data);
-        _inputBufferOffset = 0;
-      } else {
-        // Advance offset instead of memmove
-        _inputBufferOffset += totalConsumed;
-        // Compact if offset exceeds half the buffer to avoid unbounded growth
-        if (_inputBufferOffset > _inputBuffer.size() / 2) {
-          _inputBuffer.erase_front(_inputBufferOffset);
-          _inputBufferOffset = 0;
-        }
-      }
-      result.bytesConsumed = consumedFromCaller(totalConsumed);
-      return result;
+      break;
     }
 
     if (frameResult.status == FrameParseResult::Status::ProtocolError) {
@@ -218,7 +189,6 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
       }
       sendClose(CloseCode::ProtocolError, frameResult.errorMessage);
       result.action = ProtocolProcessResult::Action::Close;
-      result.bytesConsumed = consumedFromCaller(totalConsumed);
       return result;
     }
 
@@ -228,14 +198,13 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
       }
       sendClose(CloseCode::MessageTooBig, "Frame payload too large");
       result.action = ProtocolProcessResult::Action::Close;
-      result.bytesConsumed = consumedFromCaller(totalConsumed);
       return result;
     }
 
     // Frame complete - process it
     auto frameProcessResult = processFrame(frameResult);
 
-    totalConsumed += frameResult.bytesConsumed;
+    result.bytesConsumed += frameResult.bytesConsumed;
     data = data.subspan(frameResult.bytesConsumed);
 
     // Check if we need to stop processing
@@ -243,8 +212,6 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
     assert(frameProcessResult.action != ProtocolProcessResult::Action::CloseImmediate);
     if (frameProcessResult.action == ProtocolProcessResult::Action::Close) {
       result.action = frameProcessResult.action;
-      result.bytesConsumed = consumedFromCaller(totalConsumed);
-      _inputBuffer.clear();
       return result;
     }
 
@@ -253,10 +220,6 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
     }
   }
 
-  // All data consumed
-  _inputBuffer.clear();
-  _inputBufferOffset = 0;
-  result.bytesConsumed = consumedFromCaller(totalConsumed);
   return result;
 }
 
@@ -409,12 +372,15 @@ ProtocolProcessResult WebSocketHandler::handleControlFrame(const FrameHeader& he
       const auto closeInfo = ParseClosePayload(payload);
 
       if (_closeState == CloseState::Open) {
-        // Peer initiated close - respond with Close
+        // Peer initiated close - respond with Close. Both Close frames are then exchanged: a server closes the TCP
+        // connection right after sending its response, so that it holds the TIME_WAIT state and not the client
+        // (RFC 6455 section 7.1.1).
         _closeState = CloseState::CloseReceived;
         _closeCode = closeInfo.code;
         sendClose(closeInfo.code, closeInfo.reason);
         _closeState = CloseState::Closed;
-        result.action = ProtocolProcessResult::Action::ResponseReady;
+        result.action =
+            _config.isServerSide ? ProtocolProcessResult::Action::Close : ProtocolProcessResult::Action::ResponseReady;
       } else if (_closeState == CloseState::CloseSent) {
         // We initiated, peer responded - handshake complete
         _closeState = CloseState::Closed;
@@ -496,8 +462,6 @@ void WebSocketHandler::onTransportClosing() {
   _closeState = CloseState::Closed;
   _message.inProgress = false;
   _message.buffer.clear();
-  _inputBuffer.clear();
-  _inputBufferOffset = 0;
 }
 
 bool WebSocketHandler::drainOutputBuffer(HttpMessageData& dest) {

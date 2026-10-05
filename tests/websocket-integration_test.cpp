@@ -1,5 +1,9 @@
 #include <gtest/gtest.h>
 
+#ifndef AERONET_WINDOWS
+#include <sys/socket.h>
+#endif
+
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -14,6 +18,7 @@
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
+#include "aeronet/native-handle.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
@@ -21,6 +26,9 @@
 #include "aeronet/websocket-constants.hpp"
 #include "aeronet/websocket-endpoint.hpp"
 #include "aeronet/websocket-handler.hpp"
+#ifdef AERONET_ENABLE_ZLIB
+#include "aeronet/zlib-gateway.hpp"
+#endif
 
 using namespace std::chrono_literals;
 using namespace aeronet;
@@ -155,6 +163,58 @@ std::optional<ServerFrame> ParseServerFrame(std::span<const std::byte> data) {
   frame.payload.assign(data.begin() + static_cast<std::ptrdiff_t>(headerSize),
                        data.begin() + static_cast<std::ptrdiff_t>(headerSize + payloadLen));
   return frame;
+}
+
+// Masked client frame carrying arbitrary payload bytes (rsv1: permessage-deflate compressed message).
+vector<std::byte> BuildClientFrame(std::string_view payload, Opcode opcode, bool rsv1) {
+  vector<std::byte> frame;
+  frame.push_back(static_cast<std::byte>(0x80U | (rsv1 ? 0x40U : 0U) | static_cast<uint8_t>(opcode)));
+  if (payload.size() < 126) {
+    frame.push_back(static_cast<std::byte>(0x80U | payload.size()));
+  } else if (payload.size() < 65536) {
+    frame.push_back(static_cast<std::byte>(0x80U | 126U));
+    frame.push_back(static_cast<std::byte>((payload.size() >> 8U) & 0xFFU));
+    frame.push_back(static_cast<std::byte>(payload.size() & 0xFFU));
+  } else {
+    frame.push_back(static_cast<std::byte>(0x80U | 127U));
+    for (int idx = 7; idx >= 0; --idx) {
+      frame.push_back(static_cast<std::byte>((payload.size() >> (static_cast<uint32_t>(idx) * 8U)) & 0xFFU));
+    }
+  }
+  constexpr std::array maskKey{std::byte{0x5a}, std::byte{0x1c}, std::byte{0xe3}, std::byte{0x07}};
+  for (auto keyByte : maskKey) {
+    frame.push_back(keyByte);
+  }
+  for (std::size_t idx = 0; idx < payload.size(); ++idx) {
+    frame.push_back(static_cast<std::byte>(payload[idx]) ^ maskKey[idx % 4]);
+  }
+  return frame;
+}
+
+// Receives bytes until they hold one complete server frame. Returns the raw bytes (empty on timeout / close).
+std::string ReceiveServerFrameBytes(NativeHandle fd, std::chrono::milliseconds timeout) {
+  test::setRecvTimeout(fd, timeout);
+  std::string raw;
+  std::array<char, 16384> buf{};
+  while (!ParseServerFrame(std::span<const std::byte>(reinterpret_cast<const std::byte*>(raw.data()), raw.size()))) {
+    const auto nb = ::recv(fd, buf.data(), buf.size(), 0);
+    if (nb <= 0) {
+      return {};
+    }
+    raw.append(buf.data(), static_cast<std::size_t>(nb));
+  }
+  return raw;
+}
+
+// Receives the HTTP response head of an upgrade request (up to the empty line).
+std::string ReceiveResponseHead(NativeHandle fd, std::chrono::milliseconds timeout) {
+  test::setRecvTimeout(fd, timeout);
+  std::string head;
+  char ch{};
+  while (!head.ends_with("\r\n\r\n") && ::recv(fd, &ch, 1, 0) == 1) {
+    head.push_back(ch);
+  }
+  return head;
 }
 
 std::string PayloadToString(std::span<const std::byte> payload) {
@@ -309,6 +369,120 @@ TEST_F(WebSocketTest, SendAndReceiveTextMessage) {
   EXPECT_FALSE(_receivedMessages[0].second);  // Text, not binary
 }
 
+// A frame bigger than the loopback MSS is always received in several reads: the message must be delivered once and
+// intact, and the connection must stay usable (the bytes of an incomplete frame used to be processed twice).
+TEST_F(WebSocketTest, LargeFrameSplitAcrossReadsIsEchoedIntact) {
+  ts.postRouterUpdate([](Router& router) {
+    router.setWebSocket("/echo-large", WebSocketEndpoint::WithFactory([](const HttpRequestView& /*req*/) {
+                          auto handler = std::make_unique<WebSocketHandler>();
+                          handler->setCallbacks(WebSocketCallbacks{
+                              .onMessage = [handler = handler.get()](
+                                               std::span<const std::byte> payload,
+                                               bool /*isBinary*/) { handler->sendText(PayloadToString(payload)); },
+                              .onPing = {},
+                              .onPong = {},
+                              .onClose = {},
+                              .onError = {},
+                          });
+                          return handler;
+                        }));
+  });
+
+  test::ClientConnection conn(ts.port());
+  test::sendAll(conn.fd(), BuildUpgradeRequest("/echo-large"));
+  ASSERT_TRUE(test::recvWithTimeout(conn.fd(), 1000ms, 129UL).starts_with("HTTP/1.1 101"));
+
+  std::string text(100000, '\0');
+  for (std::size_t pos = 0; pos < text.size(); ++pos) {
+    text[pos] = static_cast<char>('a' + (pos % 26));
+  }
+  for (int round = 0; round < 3; ++round) {
+    const auto frame = BuildClientTextFrame(text);
+    test::sendAll(conn.fd(), std::string_view(reinterpret_cast<const char*>(frame.data()), frame.size()), 2000ms);
+    const std::string raw = ReceiveServerFrameBytes(conn.fd(), 2000ms);
+    const auto echo =
+        ParseServerFrame(std::span<const std::byte>(reinterpret_cast<const std::byte*>(raw.data()), raw.size()));
+    ASSERT_TRUE(echo.has_value()) << "round " << round;
+    EXPECT_EQ(echo.value_or(ServerFrame{}).opcode, Opcode::Text);
+    EXPECT_EQ(PayloadToString(echo.value_or(ServerFrame{}).payload), text) << "round " << round;
+  }
+}
+
+#ifdef AERONET_ENABLE_ZLIB
+// permessage-deflate interoperability with a standard client (raw DEFLATE payloads, RFC 7692), for an endpoint whose
+// factory does not configure compression itself: the server enables it on the handler, keeping its callbacks.
+TEST_F(WebSocketTest, CompressedMessageFromStandardClientIsEchoedCompressed) {
+  ts.postRouterUpdate([](Router& router) {
+    WebSocketConfig config;
+    config.deflateConfig.enabled = true;
+    config.deflateConfig.minCompressSize = 16;
+    auto endpoint = WebSocketEndpoint::WithFactory([config](const HttpRequestView& /*req*/) {
+      auto handler = std::make_unique<WebSocketHandler>(config);
+      handler->setCallbacks(WebSocketCallbacks{
+          .onMessage = [handler = handler.get()](std::span<const std::byte> payload,
+                                                 bool /*isBinary*/) { handler->sendText(PayloadToString(payload)); },
+          .onPing = {},
+          .onPong = {},
+          .onClose = {},
+          .onError = {},
+      });
+      return handler;
+    });
+    endpoint.config = config;
+    router.setWebSocket("/echo-deflate", std::move(endpoint));
+  });
+
+  test::ClientConnection conn(ts.port());
+  std::string upgrade = BuildUpgradeRequest("/echo-deflate");
+  upgrade.insert(upgrade.size() - 2,
+                 "Sec-WebSocket-Extensions: permessage-deflate; client_no_context_takeover; "
+                 "server_no_context_takeover\r\n");
+  test::sendAll(conn.fd(), upgrade);
+  const std::string upgradeResponse = ReceiveResponseHead(conn.fd(), 1000ms);
+  ASSERT_TRUE(upgradeResponse.starts_with("HTTP/1.1 101")) << upgradeResponse;
+  ASSERT_TRUE(upgradeResponse.contains("permessage-deflate")) << upgradeResponse;
+
+  std::string text;
+  for (int idx = 0; idx < 50; ++idx) {
+    text += R"({"id":)" + std::to_string(idx) + R"(,"tags":["benchmark","compression"]})";
+  }
+
+  // Compress like any RFC 7692 client: raw deflate, sync flush, trailing 0x00 0x00 0xff 0xff removed.
+  zstream deflater{};
+  ASSERT_EQ(ZDeflateInit2(deflater, 6, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY), Z_OK);
+  std::string compressed(text.size() + 256, '\0');
+  ZSetInput(deflater, text);
+  ZSetOutput(deflater, compressed.data(), compressed.size());
+  ASSERT_EQ(ZDeflate(deflater, Z_SYNC_FLUSH), Z_OK);
+  compressed.resize(compressed.size() - deflater.avail_out - 4);
+  ZDeflateEnd(deflater);
+
+  const auto frame = BuildClientFrame(compressed, Opcode::Text, true);
+  test::sendAll(conn.fd(), std::string_view(reinterpret_cast<const char*>(frame.data()), frame.size()));
+
+  const std::string raw = ReceiveServerFrameBytes(conn.fd(), 2000ms);
+  ASSERT_FALSE(raw.empty()) << "no echo received";
+  EXPECT_NE(static_cast<uint8_t>(raw[0]) & 0x40U, 0U) << "echo is not compressed (RSV1 not set)";
+  const auto echo =
+      ParseServerFrame(std::span<const std::byte>(reinterpret_cast<const std::byte*>(raw.data()), raw.size()));
+  ASSERT_TRUE(echo.has_value());
+
+  // Decompress like any RFC 7692 client: append the trailer and inflate raw data.
+  std::string echoPayload = PayloadToString(echo.value_or(ServerFrame{}).payload);
+  echoPayload.append("\x00\x00\xff\xff", 4);
+  zstream inflater{};
+  ASSERT_EQ(ZInflateInit2(inflater, -15), Z_OK);
+  std::string decompressed(text.size() * 2, '\0');
+  ZSetInput(inflater, echoPayload);
+  ZSetOutput(inflater, decompressed.data(), decompressed.size());
+  const auto ret = ZInflate(inflater, Z_SYNC_FLUSH);
+  EXPECT_TRUE(ret == Z_OK || ret == Z_BUF_ERROR) << ret;
+  decompressed.resize(decompressed.size() - inflater.avail_out);
+  ZInflateEnd(inflater);
+  EXPECT_EQ(decompressed, text);
+}
+#endif
+
 TEST_F(WebSocketTest, CloseHandshake) {
   ts.postRouterUpdate([this](Router& router) {
     router.setWebSocket("/ws", WebSocketEndpoint::WithCallbacks(WebSocketCallbacks{
@@ -352,6 +526,9 @@ TEST_F(WebSocketTest, CloseHandshake) {
   EXPECT_TRUE(_closeReceived);
   EXPECT_EQ(_closeCode, CloseCode::Normal);
   EXPECT_EQ(_closeReason, "goodbye");
+
+  // The server closes the TCP connection first (RFC 6455 section 7.1.1): the client sees EOF without closing.
+  EXPECT_TRUE(test::WaitForPeerClose(conn.fd(), 500ms));
 }
 
 TEST_F(WebSocketTest, WithConfigAndCallbacksCustomMaxMessageSize) {
