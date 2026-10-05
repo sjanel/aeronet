@@ -48,9 +48,11 @@ This document centralizes how to build, install, and consume **aeronet**.
 | `AERONET_ENABLE_ZSTD` | ON* | Enable zstd compression + decompression |
 | `AERONET_ENABLE_BROTLI` | ON* | Enable brotli compression + decompression |
 | `AERONET_ENABLE_ASAN` | OFF | Address/UB sanitizers in debug builds |
+| `AERONET_ENABLE_TSAN` | OFF | Thread sanitizer (cannot be combined with `AERONET_ENABLE_ASAN`) |
 | `AERONET_ENABLE_CLANG_TIDY` | OFF | Run clang-tidy on targets |
 | `AERONET_WARNINGS_AS_ERRORS` | OFF | Treat warnings as errors (Debug builds, aeronet targets only) |
 | `AERONET_ASAN_OPTIONS` | (preset) | Override sanitizer flags |
+| `AERONET_TSAN_OPTIONS` | (preset) | Override thread sanitizer flags |
 | `AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS` | OFF | Extra custom runtime memory checks |
 | `AERONET_ENABLE_TEST_HOOKS` | non-Release tests | Enable test-only transport hooks; keep OFF in production |
 | `AERONET_ENABLE_WARNINGS` | ON* | Enable the project warning set |
@@ -75,6 +77,15 @@ cmake -S . -B build-debug -DCMAKE_BUILD_TYPE=Debug \
   -DAERONET_ENABLE_ASAN=ON -DAERONET_BUILD_TESTS=ON
 cmake --build build-debug --parallel
 ctest --test-dir build-debug --output-on-failure
+```
+
+Debug with thread sanitizer + tests (a data race fails the test, TSan exiting with code 66):
+
+```bash
+cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=Debug \
+  -DAERONET_ENABLE_TSAN=ON -DAERONET_BUILD_TESTS=ON
+cmake --build build-tsan --parallel
+ctest --test-dir build-tsan --output-on-failure
 ```
 
 Plain HTTP only (no TLS / extra codecs):

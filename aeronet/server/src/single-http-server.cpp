@@ -141,41 +141,101 @@ RouterUpdateProxy SingleHttpServer::router() {
           [this] -> Router& { return _router; }};
 }
 
-void SingleHttpServer::setParserErrorCallback(ParserErrorCallback cb) { _callbacks.parserErr = std::move(cb); }
+void SingleHttpServer::setParserErrorCallback(ParserErrorCallback cb) {
+  submitCallbacksUpdate([cb = std::move(cb)](Callbacks& callbacks) { callbacks.parserErr = cb; });
+}
 
-void SingleHttpServer::setMetricsCallback(MetricsCallback cb) { _callbacks.metrics = std::move(cb); }
+void SingleHttpServer::setMetricsCallback(MetricsCallback cb) {
+  submitCallbacksUpdate([cb = std::move(cb)](Callbacks& callbacks) { callbacks.metrics = cb; });
+}
 
 #ifdef AERONET_ENABLE_OPENSSL
-void SingleHttpServer::setTlsHandshakeCallback(TlsHandshakeCallback cb) { _callbacks.tlsHandshake = std::move(cb); }
+void SingleHttpServer::setTlsHandshakeCallback(TlsHandshakeCallback cb) {
+  submitCallbacksUpdate([cb = std::move(cb)](Callbacks& callbacks) { callbacks.tlsHandshake = cb; });
+}
 #endif
 
 void SingleHttpServer::setExpectationHandler(ExpectationHandler handler) {
-  _callbacks.expectation = std::move(handler);
+  submitCallbacksUpdate([handler = std::move(handler)](Callbacks& callbacks) { callbacks.expectation = handler; });
 }
 
 void SingleHttpServer::setMiddlewareMetricsCallback(MiddlewareMetricsCallback cb) {
-  _callbacks.middlewareMetrics = std::move(cb);
+  submitCallbacksUpdate([cb = std::move(cb)](Callbacks& callbacks) { callbacks.middlewareMetrics = cb; });
+}
+
+void SingleHttpServer::submitCallbacksUpdate(std::function<void(Callbacks&)> updater) {
+  if (_lifecycle.isEventLoopThread()) {
+    // From a handler or a callback: the event loop is the thread using the callbacks.
+    updater(_callbacks);
+    return;
+  }
+
+  // While running, the change is applied by the event loop, and this call waits for it: the new callback is then used
+  // for everything happening after this call (the event loop may otherwise still process, in its current iteration, a
+  // connection initiated after it).
+  auto applied = std::make_shared<std::atomic<bool>>(false);
+  {
+    std::scoped_lock lock(_updates.lock);
+    if (_lifecycle.isIdle()) {
+      applyQueuedCallbacksUpdates();
+      updater(_callbacks);
+      return;
+    }
+    _callbacksUpdates.emplace_back([updater = std::move(updater), applied](Callbacks& callbacks) {
+      // Released even if the updater throws, so that the waiting caller does not wait for the server to stop.
+      const auto release = [&applied] noexcept { applied->store(true, std::memory_order_release); };
+      try {
+        updater(callbacks);
+      } catch (...) {
+        release();
+        throw;
+      }
+      release();
+    });
+    _hasCallbacksUpdates.store(true, std::memory_order_release);
+  }
+  _lifecycle.wakeupFd.send();
+
+  while (!applied->load(std::memory_order_acquire)) {
+    {
+      std::scoped_lock lock(_updates.lock);
+      if (_lifecycle.isIdle()) {
+        // The event loop exited before applying it: no thread uses the callbacks anymore.
+        applyQueuedCallbacksUpdates();
+        return;
+      }
+    }
+    // Bounded wait, so that the exit of the event loop is noticed even if the update is never applied by it.
+    std::this_thread::sleep_for(std::chrono::microseconds{100});
+  }
+}
+
+void SingleHttpServer::applyQueuedCallbacksUpdates() {
+  // Changes still queued (posted just before the event loop exited) first, so that the latest one wins.
+  for (auto& pendingUpdater : _callbacksUpdates) {
+    pendingUpdater(_callbacks);
+  }
+  _callbacksUpdates.clear();
+  _hasCallbacksUpdates.store(false, std::memory_order_relaxed);
 }
 
 void SingleHttpServer::postConfigUpdate(std::function<void(HttpServerConfig&)> updater) {
-  // Capture snapshot of immutable fields before queuing the update
-  ImmutableConfigSnapshot configSnapshot(_config);
-
   {
     std::scoped_lock lock(_updates.lock);
-    // Wrap user's updater with immutability enforcement: apply user changes then restore immutable fields
-
+    // Wrap user's updater with immutability enforcement: apply user changes then restore immutable fields.
+    // The snapshot is taken when applying the update, by the event loop: the config cannot be read from the calling
+    // thread, the event loop possibly applying a previous update at the same time.
     struct WrappedUpdater {
       void operator()(HttpServerConfig& cfg) {
+        ImmutableConfigSnapshot snapshot(cfg);
         userUpdater(cfg);
         snapshot.restore(cfg);
       }
 
       std::function<void(HttpServerConfig&)> userUpdater;
-      ImmutableConfigSnapshot snapshot;
     };
 
-    _updates.config.emplace_back(WrappedUpdater{std::move(updater), std::move(configSnapshot)});
+    _updates.config.emplace_back(WrappedUpdater{std::move(updater)});
     _updates.hasConfig.store(true, std::memory_order_release);
   }
   _lifecycle.wakeupFd.send();
@@ -1219,7 +1279,7 @@ void SingleHttpServer::eventLoop() {
         log::info("Server stopped");
       }
     } else if (_lifecycle.isDraining()) {
-      if (_lifecycle.hasDeadline() && now >= _lifecycle.deadline()) {
+      if (_lifecycle.drainDeadlineReached(now)) {
         log::warn("Drain deadline reached with {} active connection(s); forcing close", nbActiveConnections);
         closeListener();
         closeAllConnections();
@@ -1298,25 +1358,27 @@ void SingleHttpServer::closeAllConnections() {
 
 ServerStats SingleHttpServer::stats() const {
   ServerStats statsOut;
-  statsOut.totalBytesQueued = _stats.totalBytesQueued;
-  statsOut.totalBytesWrittenImmediate = _stats.totalBytesWrittenImmediate;
-  statsOut.totalBytesWrittenFlush = _stats.totalBytesWrittenFlush;
-  statsOut.deferredWriteEvents = _stats.deferredWriteEvents;
-  statsOut.flushCycles = _stats.flushCycles;
-  statsOut.epollModFailures = _stats.epollModFailures;
-  statsOut.maxConnectionOutboundBuffer = _stats.maxConnectionOutboundBuffer;
-  statsOut.totalRequestsServed = _stats.totalRequestsServed;
+  statsOut.totalBytesQueued = _stats.totalBytesQueued.load();
+  statsOut.totalBytesWrittenImmediate = _stats.totalBytesWrittenImmediate.load();
+  statsOut.totalBytesWrittenFlush = _stats.totalBytesWrittenFlush.load();
+  statsOut.deferredWriteEvents = _stats.deferredWriteEvents.load();
+  statsOut.flushCycles = _stats.flushCycles.load();
+  statsOut.epollModFailures = _stats.epollModFailures.load();
+  statsOut.maxConnectionOutboundBuffer = _stats.maxConnectionOutboundBuffer.load();
+  statsOut.totalRequestsServed = _stats.totalRequestsServed.load();
 #ifdef AERONET_ENABLE_OPENSSL
-  statsOut.tlsHandshakesSucceeded = _tls.metrics.handshakesSucceeded;
-  statsOut.tlsHandshakesFull = _tls.metrics.handshakesFull;
-  statsOut.tlsHandshakesResumed = _tls.metrics.handshakesResumed;
-  statsOut.tlsHandshakesFailed = _tls.metrics.handshakesFailed;
-  statsOut.tlsHandshakesRejectedConcurrency = _tls.metrics.handshakesRejectedConcurrency;
-  statsOut.tlsHandshakesRejectedRateLimit = _tls.metrics.handshakesRejectedRateLimit;
-  statsOut.tlsClientCertPresent = _tls.metrics.clientCertPresent;
+  statsOut.tlsHandshakesSucceeded = _tls.metrics.handshakesSucceeded.load();
+  statsOut.tlsHandshakesFull = _tls.metrics.handshakesFull.load();
+  statsOut.tlsHandshakesResumed = _tls.metrics.handshakesResumed.load();
+  statsOut.tlsHandshakesFailed = _tls.metrics.handshakesFailed.load();
+  statsOut.tlsHandshakesRejectedConcurrency = _tls.metrics.handshakesRejectedConcurrency.load();
+  statsOut.tlsHandshakesRejectedRateLimit = _tls.metrics.handshakesRejectedRateLimit.load();
+  statsOut.tlsClientCertPresent = _tls.metrics.clientCertPresent.load();
   if (_tls.ctxHolder) {
     statsOut.tlsAlpnStrictMismatches = _tls.ctxHolder->alpnStrictMismatches();
   }
+  // The maps are updated by the event loop on TLS handshakes.
+  std::scoped_lock lock(_tls.metrics.mapsMutex.mutex);
   statsOut.tlsAlpnDistribution.reserve(_tls.metrics.alpnDistribution.size());
   for (const auto& [key, value] : _tls.metrics.alpnDistribution) {
     statsOut.tlsAlpnDistribution.emplace_back(key, value);
@@ -1333,13 +1395,13 @@ ServerStats SingleHttpServer::stats() const {
   for (const auto& [key, value] : _tls.metrics.cipherCounts) {
     statsOut.tlsCipherCounts.emplace_back(key, value);
   }
-  statsOut.tlsHandshakeDurationCount = _tls.metrics.handshakeDurationCount;
-  statsOut.tlsHandshakeDurationTotalNs = _tls.metrics.handshakeDurationTotalNs;
-  statsOut.tlsHandshakeDurationMaxNs = _tls.metrics.handshakeDurationMaxNs;
-  statsOut.ktlsSendEnabledConnections = _tls.metrics.ktlsSendEnabledConnections;
-  statsOut.ktlsSendEnableFallbacks = _tls.metrics.ktlsSendEnableFallbacks;
-  statsOut.ktlsSendForcedShutdowns = _tls.metrics.ktlsSendForcedShutdowns;
-  statsOut.ktlsSendBytes = _tls.metrics.ktlsSendBytes;
+  statsOut.tlsHandshakeDurationCount = _tls.metrics.handshakeDurationCount.load();
+  statsOut.tlsHandshakeDurationTotalNs = _tls.metrics.handshakeDurationTotalNs.load();
+  statsOut.tlsHandshakeDurationMaxNs = _tls.metrics.handshakeDurationMaxNs.load();
+  statsOut.ktlsSendEnabledConnections = _tls.metrics.ktlsSendEnabledConnections.load();
+  statsOut.ktlsSendEnableFallbacks = _tls.metrics.ktlsSendEnableFallbacks.load();
+  statsOut.ktlsSendForcedShutdowns = _tls.metrics.ktlsSendForcedShutdowns.load();
+  statsOut.ktlsSendBytes = _tls.metrics.ktlsSendBytes.load();
 #endif
   return statsOut;
 }
@@ -1564,6 +1626,9 @@ void SingleHttpServer::applyPendingUpdates() {
   if (_updates.hasRouter.load(std::memory_order_acquire)) {
     ApplyPendingUpdates(_updates.lock, _updates.router, _updates.hasRouter, _router, "router");
     needsClamp = true;
+  }
+  if (_hasCallbacksUpdates.load(std::memory_order_acquire)) {
+    ApplyPendingUpdates(_updates.lock, _callbacksUpdates, _hasCallbacksUpdates, _callbacks, "callbacks");
   }
 
   if (needsClamp) {

@@ -8,6 +8,9 @@
 
 namespace aeronet {
 
+// Counts the MultiHttpServer workers whose thread is not done yet: each one is counted from its launch on the
+// controller thread (not once its event loop runs), so that waiting for all of them to stop also covers the ones that
+// stop - or fail to start - before the wait begins.
 class ServerLifecycleTracker {
  public:
   void clear() {
@@ -15,7 +18,7 @@ class ServerLifecycleTracker {
     _running = 0;
   }
 
-  void notifyServerRunning() {
+  void notifyServerLaunched() {
     std::scoped_lock lock(_mutex);
     ++_running;
     _cv.notify_all();
@@ -29,12 +32,6 @@ class ServerLifecycleTracker {
   }
 
   void notifyStopRequested() { _cv.notify_all(); }
-
-  bool waitUntilAnyRunning(const std::atomic<bool>& stopRequested) {
-    std::unique_lock lock(_mutex);
-    _cv.wait(lock, [&] { return _running > 0 || stopRequested.load(std::memory_order_relaxed); });
-    return _running > 0;
-  }
 
   void waitUntilAllStopped(const std::atomic<bool>& stopRequested) {
     std::unique_lock lock(_mutex);

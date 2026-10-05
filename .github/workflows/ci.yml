@@ -18,15 +18,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { compiler: gcc-13, features: OFF, client: OFF, server: ON, build: Debug }
-          - { compiler: gcc-13, features: ON, client: ON, server: ON, build: Debug }
-          - { compiler: clang-21, features: OFF, client: OFF, server: ON, build: Debug }
-          - { compiler: clang-21, features: ON, client: ON, server: ON, build: Debug }
-          - { compiler: clang-21, features: ON, client: ON, server: OFF, build: Debug }
+          - { compiler: gcc-13, features: OFF, client: OFF, server: ON, build: Debug, asan: ON, tsan: OFF}
+          - { compiler: gcc-13, features: ON, client: ON, server: ON, build: Debug, asan: ON, tsan: OFF }
+          - { compiler: clang-21, features: OFF, client: OFF, server: ON, build: Debug, asan: ON, tsan: OFF }
+          - { compiler: clang-21, features: ON, client: ON, server: ON, build: Debug, asan: ON, tsan: OFF }
+          - { compiler: clang-21, features: ON, client: ON, server: ON, build: Debug, asan: OFF, tsan: ON }
+          - { compiler: clang-21, features: ON, client: ON, server: OFF, build: Debug, asan: ON, tsan: OFF }
           # Release gets a single smoke leg here: Debug+ASAN is where bugs actually get
           # caught (Release's -DNDEBUG strips assert()-based invariants), and Release is
           # already exercised independently by the arm/macos/windows/packaging jobs.
-          - { compiler: gcc-13, features: ON, client: ON, server: ON, build: Release }
+          - { compiler: gcc-13, features: ON, client: ON, server: ON, build: Release, asan: OFF, tsan: OFF }
     runs-on: ubuntu-latest
 
     env:
@@ -91,7 +92,8 @@ jobs:
             -DAERONET_ENABLE_HTTP_CLIENT=${{ matrix.client }} \
             -DAERONET_ENABLE_HTTP_SERVER=${{ matrix.server }} \
             ${{ startsWith(matrix.compiler, 'clang') && '-DAERONET_ENABLE_CLANG_TIDY=OFF' || '' }} \
-            -DAERONET_ENABLE_ASAN=ON \
+            -DAERONET_ENABLE_ASAN=${{ matrix.asan }} \
+            -DAERONET_ENABLE_TSAN=${{ matrix.tsan }} \
             -DAERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=ON \
             -DAERONET_ENABLE_ASYNC_HANDLERS=${{ matrix.features }} \
             -DAERONET_ENABLE_GLAZE=${{ matrix.features }} \
@@ -109,8 +111,10 @@ jobs:
           cmake --build build --parallel
 
       - name: Run unit tests
+        # ThreadSanitizer instruments every memory access: CPU-heavy single-threaded tests (parsing / codec stress
+        # tests) run several times slower, http-request-view_test taking close to a minute on GitHub runners.
         run: |
-          ctest --test-dir build --repeat until-fail:3 --output-on-failure --timeout 60 -j
+          ctest --test-dir build --repeat until-fail:3 --output-on-failure --timeout ${{ matrix.tsan == 'ON' && 300 || 60 }} -j
 
       - name: Summary
         run: |

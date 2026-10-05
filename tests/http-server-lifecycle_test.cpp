@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
@@ -289,6 +290,33 @@ TEST(HttpServerRestart, RestartPossible) {
   ASSERT_TRUE(resp2.contains("ORIG:/mv2"));
 }
 
+#ifdef AERONET_LINUX
+TEST(HttpServerRestart, EphemeralReusePortStaysReservedWhileStopped) {
+  // The ephemeral port is rebound on restart: while stopped, it must not be obtainable by another process (which the
+  // restart would then silently share incoming connections with, thanks to SO_REUSEPORT).
+  HttpServerConfig config;
+  config.withReusePort().withPollInterval(1ms);
+  SingleHttpServer server(std::move(config));
+  const auto port = server.port();
+  server.router().setDefault([](const HttpRequestView& req) { return HttpResponse(std::string(req.path())); });
+
+  // No request before the checks: the server closes 'Connection: close' connections first, and their TIME_WAIT state
+  // would then also prevent the plain bind.
+  for (int cycle = 0; cycle < 2; ++cycle) {
+    server.start();
+    ASSERT_TRUE(test::WaitForServer(server));
+    server.stop();
+    EXPECT_FALSE(test::PortIsFreeForPlainBind(port));
+  }
+
+  server.start();
+  ASSERT_TRUE(test::WaitForServer(server));
+  EXPECT_EQ(server.port(), port);
+  EXPECT_TRUE(test::simpleGet(port, "/restarted").contains("/restarted"));
+  server.stop();
+}
+#endif
+
 TEST(HttpServerCopy, CopyAssignWhileStopped) {
   HttpServerConfig config;
   config.compression.minBytes = 64;
@@ -463,7 +491,8 @@ TEST(HttpDrain, BeginDrainRightAfterStartIsNotLost) {
   auto handle = server.startDetached();
 
   // No synchronization with the event loop: it is typically still starting up (in prepareRun()) here. The drain must
-  // then wait for the startup to complete instead of being dropped (which left the server Running, as if never drained).
+  // then wait for the startup to complete instead of being dropped (which left the server Running, as if never
+  // drained).
   server.beginDrain(5s);
 
   // From now on the server is never Running, and as it has no connection, its drain completes by itself well before the
@@ -478,7 +507,11 @@ TEST(HttpConfigUpdate, InlineApplyWhenStopped) {
   // Post an update while server is stopped; it should be stored and applied when
   // the event loop next runs.
   SingleHttpServer server(HttpServerConfig{});
-  server.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxRequestsPerConnection(12345); });
+  std::atomic_bool applied{false};
+  server.postConfigUpdate([&applied](HttpServerConfig& cfg) {
+    cfg.withMaxRequestsPerConnection(12345);
+    applied.store(true);
+  });
   EXPECT_NE(server.config().maxRequestsPerConnection, 12345U);
 
   // Start the server briefly to allow eventLoop to run and apply pending updates.
@@ -487,10 +520,11 @@ TEST(HttpConfigUpdate, InlineApplyWhenStopped) {
   test::WaitForServer(server);
 
   // isRunning() flips true in prepareRun(), before the event loop's first tick applies the posted
-  // update: stopping right after WaitForServer races the very first eventLoop() call. Poll for the
-  // observable effect instead of assuming one tick has already happened.
+  // update: stopping right after WaitForServer races the very first eventLoop() call. Wait for the update to be
+  // applied instead of assuming one tick has already happened (the config itself may only be read once the event loop
+  // is done with it).
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{1};
-  while (server.config().maxRequestsPerConnection != 12345U && std::chrono::steady_clock::now() < deadline) {
+  while (!applied.load() && std::chrono::steady_clock::now() < deadline) {
     std::this_thread::sleep_for(std::chrono::milliseconds{1});
   }
 
@@ -820,7 +854,7 @@ TEST(HttpServerAsyncHandle, MoveHandle) {
   // Move construct
   SingleHttpServer::AsyncHandle handle2(std::move(handle1));
   EXPECT_TRUE(handle2.started());
-  EXPECT_FALSE(handle1.started());  // NOLINT(bugprone-use-after-move)
+  EXPECT_FALSE(handle1.started());            // NOLINT(bugprone-use-after-move)
   EXPECT_NO_THROW(handle1.rethrowIfError());  // NOLINT(bugprone-use-after-move)
 
   auto resp = test::simpleGet(port, "/");
@@ -879,6 +913,68 @@ TEST(HttpServerAsyncHandle, RestartAfterStop) {
 
 // Test stop() called while already in Stopping state (else-if branch line 437)
 // Exercises the path where stop() is called twice - the second call should be a no-op.
+TEST(SingleHttpServer, StopLeavesTeardownToEventLoopRunByAnotherThread) {
+  // stop() on a server run by another thread used to close its listener and reset its lifecycle under its running event
+  // loop: the server could then even be restarted while that loop was still running. stop() now only requests the
+  // termination (it is not blocking), the event loop performing its own teardown.
+  HttpServerConfig config;
+  config.withPollInterval(1ms);
+  SingleHttpServer server(std::move(config));
+  std::promise<void> handlerEntered;
+  std::atomic<bool> handlerDone{false};
+  server.router().setPath(http::Method::GET, "/slow", [&](const HttpRequestView&) {
+    handlerEntered.set_value();
+    std::this_thread::sleep_for(200ms);
+    handlerDone.store(true, std::memory_order_relaxed);
+    return HttpResponse("slow");
+  });
+  server.router().setDefault([](const HttpRequestView& req) { return HttpResponse(std::string(req.path())); });
+
+  std::jthread runner([&server] { server.run(); });
+  ASSERT_TRUE(test::WaitForServer(server));
+  std::jthread client([port = server.port()] {
+    try {
+      static_cast<void>(test::simpleGet(port, "/slow"));
+    } catch (const std::exception&) {
+      // The response may be cut by the stop.
+    }
+  });
+
+  handlerEntered.get_future().wait();
+  server.stop();
+  EXPECT_FALSE(handlerDone.load(std::memory_order_relaxed));  // not blocking
+  EXPECT_THROW(server.start(), std::logic_error);             // its event loop has not exited yet
+
+  runner.join();  // run() returns once the event loop completed its teardown
+  EXPECT_TRUE(handlerDone.load(std::memory_order_relaxed));
+
+  server.start();
+  ASSERT_TRUE(test::WaitForServer(server));
+  EXPECT_TRUE(test::simpleGet(server.port(), "/restarted").contains("/restarted"));
+  server.stop();
+}
+
+TEST(SingleHttpServer, StopFromHandler) {
+  // From the event-loop thread, stop() must neither wait for nor join its own thread (start() used to std::terminate).
+  HttpServerConfig config;
+  config.withPollInterval(1ms);
+  SingleHttpServer server(std::move(config));
+  server.router().setPath(http::Method::GET, "/stop", [&server](const HttpRequestView&) {
+    server.stop();
+    return HttpResponse("stopping");
+  });
+
+  server.start();
+  ASSERT_TRUE(test::WaitForServer(server));
+  try {
+    static_cast<void>(test::simpleGet(server.port(), "/stop"));
+  } catch (const std::exception&) {
+    // The response may be cut by the stop.
+  }
+  EXPECT_TRUE(test::WaitForServer(server, false));
+  server.stop();  // joins the event-loop thread, which already stopped by itself
+}
+
 TEST(SingleHttpServer, DoubleStopIsNoOp) {
   HttpServerConfig cfg;
   cfg.withPollInterval(1ms);

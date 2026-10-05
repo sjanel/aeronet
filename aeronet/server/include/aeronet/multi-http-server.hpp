@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -50,17 +51,21 @@ class MultiHttpServer {
   //   handle.stop();  // or let handle destructor auto-stop
   //   handle.rethrowIfError();  // check for exceptions from any event loop
 
-  // ControlBlock: the two long-lived pieces of shared coordination state, folded into a single heap block so both the
-  // MultiHttpServer and its AsyncHandle reference them through one shared_ptr (instead of two) and one allocation:
+  // ControlBlock: the long-lived pieces of shared coordination state, folded into a single heap block so both the
+  // MultiHttpServer and its AsyncHandle reference them through one shared_ptr (instead of several) and one allocation:
   //  - stopRequested: single-writer (controller thread), multi-reader (worker threads) latch requesting shutdown. It
   //    avoids freezes when stop() races a server thread that has not yet entered its main loop after start().
-  //  - lifecycleTracker: running-instance counter + condition variable coordinating start/stop.
+  //  - lifecycleTracker: counter of the launched workers not done yet + condition variable coordinating start/stop.
+  //  - startMutex: held while a start builds and launches the workers, and by beginDrain(), so that a drain requested
+  //    concurrently with run() / start() reaches either none of the workers (drain before start, a no-op) or all of
+  //    them - never only the ones launched so far, the others then running forever.
   // Each underlying SingleHttpServer keeps a weak_ptr aliased onto lifecycleTracker (see lifecycleTrackerPtr()); the
-  // strong owners of BOTH sub-objects are exactly {MultiHttpServer, AsyncHandle}, which makes the merge
+  // strong owners of ALL sub-objects are exactly {MultiHttpServer, AsyncHandle}, which makes the merge
   // behaviour-neutral.
   struct ControlBlock {
     std::atomic<bool> stopRequested{false};
     ServerLifecycleTracker lifecycleTracker;
+    std::mutex startMutex;
   };
 
   // HandleState: the per-start shared state referenced by the AsyncHandle, the worker-thread stop predicates and (when
@@ -222,7 +227,7 @@ class MultiHttpServer {
   // Post-conditions:
   //   - Returns immediately (non-blocking); servers run in background threads.
   //   - Handler registration becomes immutable after this call.
-  void start() { _internalHandle.emplace(startDetached()); }
+  void start();
 
   // startDetached():
   //   Like start(), but returns an AsyncHandle for explicit lifetime management.
@@ -248,7 +253,8 @@ class MultiHttpServer {
   [[nodiscard]] AsyncHandle startDetachedWithStopToken(const std::stop_token& token);
 
   // beginDrain(): forward graceful drain to every underlying SingleHttpServer (waiting for the startup of workers still
-  // starting up, so that the drain also applies to them).
+  // starting up, so that the drain also applies to them). Safe to call concurrently with run() / start(): it then waits
+  // for all the workers to be launched.
   void beginDrain(std::chrono::milliseconds maxWait = std::chrono::milliseconds{0}) noexcept;
 
   // Checks if this instance is empty (ie: it contains no server instances and should not be configured).
@@ -261,7 +267,8 @@ class MultiHttpServer {
   //   Reflects the high-level lifecycle, not the liveness of each individual thread (a thread
   //   may have terminated due to an exception while isRunning() is still true). Use stats() or
   //   external health checks for deeper diagnostics.
-  [[nodiscard]] bool isRunning() const { return _internalHandle.has_value() || !_lastHandleState.expired(); }
+  //   Safe to call from any thread.
+  [[nodiscard]] bool isRunning() const;
 
   // isDraining(): true if all underlying servers are currently draining.
   [[nodiscard]] bool isDraining() const;
@@ -304,7 +311,7 @@ class MultiHttpServer {
   // stats():
   //   Collects statistics from each underlying SingleHttpServer and returns both per-instance and
   //   aggregated totals. Costs O(N) in number of servers and should be used sparingly in hot
-  //   telemetry paths. Thread-safe for read-only access under assumption that start()/stop()
+  //   telemetry paths. Safe to call from another thread while running, under assumption that start()/stop()
   //   are not racing with this call (class not fully synchronized).
   [[nodiscard]] AggregatedStats stats() const;
 
@@ -366,10 +373,14 @@ class MultiHttpServer {
   // When start() is called, the handle is stored here and the server takes ownership.
   // When startDetached() is called, the handle is returned to the caller.
   std::optional<AsyncHandle> _internalHandle;
+  // isRunning() with ControlBlock::startMutex held, which protects _internalHandle and _lastHandleState.
+  [[nodiscard]] bool isRunningLocked() const noexcept {
+    return _internalHandle.has_value() || !_lastHandleState.expired();
+  }
+
   // Weak view of the most recent handle's per-start state. Used to detect a still-running detached handle (isRunning),
-  // to neuter its stop callback when this server is destroyed first, and to wait for it to finish in stop().
+  // and to wait for it to finish in stop().
   std::weak_ptr<HandleState> _lastHandleState;
-  std::shared_ptr<std::atomic<bool>> _serversAlive{std::make_shared<std::atomic<bool>>(true)};
 };
 
 }  // namespace aeronet

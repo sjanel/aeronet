@@ -26,6 +26,7 @@
 #include <thread>
 #include <utility>
 
+#include "aeronet/base-fd.hpp"
 #include "aeronet/errno-throw.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -470,6 +471,17 @@ ParsedResponse simpleGet(uint16_t port, std::string_view target,
   }
   return out;
 }
+
+#ifdef AERONET_LINUX
+bool PortIsFreeForPlainBind(uint16_t port) {
+  const BaseFd fd(::socket(AF_INET, SOCK_STREAM, 0));
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  addr.sin_port = htons(port);
+  return ::bind(fd.fd(), reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == 0;
+}
+#endif
 
 std::string toLower(std::string input) {
   tolower(input.data(), input.size());

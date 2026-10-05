@@ -97,6 +97,12 @@ ParsedResponse simpleGet(uint16_t port, std::string_view target,
 
 std::string toLower(std::string input);
 
+#ifdef AERONET_LINUX
+// Whether a plain socket (without SO_REUSEADDR nor SO_REUSEPORT) can bind the given port, as an unrelated process
+// would.
+bool PortIsFreeForPlainBind(uint16_t port);
+#endif
+
 // Very small HTTP/1.1 response parser (not resilient to all malformed cases, just for test consumption)
 std::optional<ParsedResponse> parseResponse(std::string_view raw);
 

@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -21,12 +22,23 @@ using namespace std::chrono_literals;
 namespace aeronet {
 namespace {
 
-// Global fault policy that the decorator function reads.
+// Global fault policy that the decorator function reads (from the server event loop thread, on accept).
 // Must be set before the server accepts connections.
-test::FaultPolicy g_faultPolicy;  // NOLINT(misc-use-internal-linkage)
+std::mutex g_faultPolicyMutex;    // NOLINT(misc-use-internal-linkage)
+test::FaultPolicy g_faultPolicy;  // NOLINT(misc-use-internal-linkage) guarded by g_faultPolicyMutex
+
+void SetFaultPolicy(const test::FaultPolicy& policy) {
+  std::scoped_lock lock(g_faultPolicyMutex);
+  g_faultPolicy = policy;
+}
 
 Transport ApplyTestFaultPolicy(Transport transport) {
-  return Transport(std::make_unique<test::FaultInjectingTransport>(std::move(transport), g_faultPolicy));
+  test::FaultPolicy policy;
+  {
+    std::scoped_lock lock(g_faultPolicyMutex);
+    policy = g_faultPolicy;
+  }
+  return Transport(std::make_unique<test::FaultInjectingTransport>(std::move(transport), policy));
 }
 
 // --- Test fixture ---
@@ -36,7 +48,7 @@ test::TestServer ts;
 class NetworkFaultTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    g_faultPolicy = {};
+    SetFaultPolicy({});
 
     // Register test routes
     ts.router().setPath(http::Method::GET, "/hello",
@@ -50,7 +62,7 @@ class NetworkFaultTest : public ::testing::Test {
   void TearDown() override { _decorator.reset(); }
 
   void enableFaults(const test::FaultPolicy& policy) {
-    g_faultPolicy = policy;
+    SetFaultPolicy(policy);
     _decorator.emplace(&ApplyTestFaultPolicy);
   }
 
