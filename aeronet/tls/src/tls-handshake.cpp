@@ -109,27 +109,18 @@ TLSInfo FinalizeTlsHandshake(const SSL* ssl, NativeHandle fd, bool logHandshake,
   TLSInfo tlsInfo{handshakeStart, std::move(hs.parts)};
 
   if (!tlsInfo.selectedAlpn().empty()) {
-    auto [it, inserted] = metrics.alpnDistribution.emplace(tlsInfo.selectedAlpn(), 1);
-    if (!inserted) {
-      ++it->second;
-    }
+    metrics.incrementMapCount(metrics.alpnDistribution, tlsInfo.selectedAlpn());
   }
   if (!tlsInfo.negotiatedCipher().empty()) {
-    auto [it, inserted] = metrics.cipherCounts.emplace(tlsInfo.negotiatedCipher(), 1);
-    if (!inserted) {
-      ++it->second;
-    }
+    metrics.incrementMapCount(metrics.cipherCounts, tlsInfo.negotiatedCipher());
   }
   if (!tlsInfo.negotiatedVersion().empty()) {
-    auto [it, inserted] = metrics.versionCounts.emplace(tlsInfo.negotiatedVersion(), 1);
-    if (!inserted) {
-      ++it->second;
-    }
+    metrics.incrementMapCount(metrics.versionCounts, tlsInfo.negotiatedVersion());
   }
   if (hs.durationNs > 0) {
     ++metrics.handshakeDurationCount;
     metrics.handshakeDurationTotalNs += hs.durationNs;
-    metrics.handshakeDurationMaxNs = std::max(metrics.handshakeDurationMaxNs, hs.durationNs);
+    metrics.handshakeDurationMaxNs.updateMax(hs.durationNs);
   }
 
   if (!tlsHandshakeEventEmitted) {

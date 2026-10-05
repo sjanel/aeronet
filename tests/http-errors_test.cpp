@@ -441,7 +441,7 @@ TEST(HttpResponseDispatchErrors, FlushOutboundTransportError) {
   // Generate a large response to ensure buffering
   std::string largeBody(64UL * 1024, 'L');
   ts.router().setDefault(
-      [&largeBody](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK).body(largeBody); });
+      [largeBody](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK).body(largeBody); });
 
   const auto prevAcceptCount = test::g_accept_count.load(std::memory_order_acquire);
   test::ClientConnection client(ts.port());
@@ -483,7 +483,7 @@ TEST(HttpResponseDispatchErrors, FileResponseQueuedBehindPendingInterimResponse)
   test::ScopedTempDir tmpDir;
   test::ScopedTempFile tmp(tmpDir, kPayload);
   const std::string path = tmp.filePath().string();
-  ts.router().setDefault([&path](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK).file(File(path)); });
+  ts.router().setDefault([path](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK).file(File(path)); });
 
   const auto prevAcceptCount = test::g_accept_count.load(std::memory_order_acquire);
   test::ClientConnection client(ts.port());
@@ -519,7 +519,7 @@ TEST(HttpResponseDispatchErrors, SendfileError) {
   test::ScopedTempFile tmp(tmpDir, kPayload);
   std::string path = tmp.filePath().string();
 
-  ts.router().setDefault([&path](const HttpRequestView&, HttpResponseWriter& writer) {
+  ts.router().setDefault([path](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.file(File(path));
     writer.end();
@@ -555,7 +555,7 @@ TEST(HttpResponseDispatchErrors, SendfileWouldBlockWithRetry) {
   test::ScopedTempFile tmp(tmpDir, payload);
   std::string path = tmp.filePath().string();
 
-  ts.router().setDefault([&path](const HttpRequestView&, HttpResponseWriter& writer) {
+  ts.router().setDefault([path](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.file(File(path));
     writer.end();
@@ -600,7 +600,7 @@ TEST(HttpResponseDispatchErrors, UserSpaceTlsBufferError) {
   test::ScopedTempFile tmp(tmpDir, payload);
   std::string filePath = tmp.filePath().string();
 
-  tlsTs.setDefault([&filePath](const HttpRequestView&, HttpResponseWriter& writer) {
+  tlsTs.setDefault([filePath](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.file(File(filePath));
     writer.end();
@@ -869,7 +869,7 @@ TEST(HttpResponseDispatchErrors, PreadErrorDuringUserSpaceTlsFileSend) {
   test::ScopedTempFile tmp(tmpDir, payload);
   std::string filePath = tmp.filePath().string();
 
-  tlsTs.setDefault([&filePath](const HttpRequestView&, HttpResponseWriter& writer) {
+  tlsTs.setDefault([filePath](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.file(File(filePath));
     writer.end();
@@ -909,7 +909,7 @@ TEST(ConnectionManagerErrors, SweepRetriesPendingOutboundData) {
   test::TestServer localTs(std::move(cfg));
 
   std::string largeBody(64UL * 1024, 'S');
-  localTs.router().setDefault([&largeBody](const HttpRequestView&) { return HttpResponse(largeBody); });
+  localTs.router().setDefault([largeBody](const HttpRequestView&) { return HttpResponse(largeBody); });
 
   // Inject EAGAIN on first writev to leave data buffered, then let subsequent writes succeed
   test::g_on_accept_install_actions.push(test::AcceptInstallActions{
@@ -944,7 +944,7 @@ TEST(ConnectionManagerErrors, SweepRetriesPendingFilePayload) {
   test::ScopedTempFile tmp(tmpDir, payload);
   std::string filePath = tmp.filePath().string();
 
-  localTs.router().setDefault([&filePath](const HttpRequestView&, HttpResponseWriter& writer) {
+  localTs.router().setDefault([filePath](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.file(File(filePath));
     writer.end();
@@ -982,7 +982,7 @@ TEST(HttpResponseDispatchErrors, FlushOutboundClearsHeadersPending) {
   test::ScopedTempFile tmp(tmpDir, payload);
   std::string filePath = tmp.filePath().string();
 
-  ts.router().setDefault([&filePath](const HttpRequestView&, HttpResponseWriter& writer) {
+  ts.router().setDefault([filePath](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
     writer.file(File(filePath));
     writer.end();

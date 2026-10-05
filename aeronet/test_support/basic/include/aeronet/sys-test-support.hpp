@@ -257,16 +257,15 @@ Fn ResolveNext(const char* /*name*/) {
 #endif  // AERONET_POSIX
 
 // Disable overriding malloc/realloc for:
-// 1. Builds instrumented with AddressSanitizer - ASAN's runtime may call
-//    allocation functions very early during initialization and also during
-//    background thread setup (pthread_getattr_np), which can conflict with
-//    our failure injection overrides.
+// 1. Builds instrumented with AddressSanitizer or ThreadSanitizer - their runtime replaces the allocation functions,
+//    and may call them very early during initialization and also during background thread setup
+//    (pthread_getattr_np), which can conflict with our failure injection overrides.
 // 2. Non-glibc systems (like musl/Alpine) - without __libc_malloc fallback,
 //    dlsym resolution can deadlock or recurse during early initialization.
-#ifdef __SANITIZE_ADDRESS__
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
 #define AERONET_WANT_MALLOC_OVERRIDES 0
 #elif defined(__clang__) && defined(__has_feature)
-#if __has_feature(address_sanitizer)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
 #define AERONET_WANT_MALLOC_OVERRIDES 0
 #endif
 #endif
@@ -614,7 +613,7 @@ inline ActionQueue<EpollCtlAction> g_epoll_ctl_actions;
 inline ActionQueue<EpollCtlAction> g_epoll_ctl_add_actions;
 // Global flag to fail all epoll_ctl MOD operations for testing error handling
 inline std::atomic<bool> g_epoll_ctl_mod_fail{false};
-inline int g_epoll_ctl_mod_fail_errno = 0;
+inline std::atomic<int> g_epoll_ctl_mod_fail_errno{0};
 // Counter to track how many MOD operations were intercepted (for test validation)
 inline std::atomic<std::size_t> g_epoll_ctl_mod_fail_count{0};
 
@@ -640,12 +639,14 @@ inline ActionQueue<EpollWaitAction> g_epoll_wait_actions;
 // Optional default action used when the epoll_wait action queue is exhausted.
 // This is primarily to make tests deterministic when the system under test
 // calls epoll_wait more times than expected due to timing.
-inline std::optional<EpollWaitAction> g_epoll_wait_default_action;
+// Read by the epoll_wait hook from the server event loops, set and reset by the test threads.
+inline std::mutex g_epoll_wait_default_action_mutex;
+inline std::optional<EpollWaitAction> g_epoll_wait_default_action;  // guarded by g_epoll_wait_default_action_mutex
 
 // Helper to fail all epoll_ctl MOD operations with a specific error
 inline void FailAllEpollCtlMod(int err) {
   g_epoll_ctl_mod_fail.store(true, std::memory_order_release);
-  g_epoll_ctl_mod_fail_errno = err;
+  g_epoll_ctl_mod_fail_errno.store(err, std::memory_order_relaxed);
   g_epoll_ctl_mod_fail_count.store(0, std::memory_order_release);
 }
 #endif  // AERONET_WANT_SYS_OVERRIDES
@@ -682,10 +683,7 @@ inline void PushBioCtrlAction(int cmd, long ret, int err = 0) { g_bio_ctrl_actio
 #if defined(AERONET_ENABLE_OPENSSL) && defined(AERONET_POSIX)
 extern "C" long BIO_ctrl(BIO* b, int cmd, long larg, void* parg) {  // NOLINT
   using Fn = long (*)(BIO*, int, long, void*);
-  static Fn real_fn = nullptr;
-  if (real_fn == nullptr) {
-    real_fn = aeronet::test::ResolveNext<Fn>("BIO_ctrl");
-  }
+  static const Fn real_fn = aeronet::test::ResolveNext<Fn>("BIO_ctrl");
 
 #ifdef BIO_CTRL_GET_KTLS_SEND
   if (cmd == BIO_CTRL_GET_KTLS_SEND) {
@@ -700,10 +698,7 @@ extern "C" long BIO_ctrl(BIO* b, int cmd, long larg, void* parg) {  // NOLINT
 
 extern "C" BIO* SSL_get_wbio(const SSL* s) {  // NOLINT
   using Fn = BIO* (*)(const SSL*);
-  static Fn real_fn = nullptr;
-  if (real_fn == nullptr) {
-    real_fn = aeronet::test::ResolveNext<Fn>("SSL_get_wbio");
-  }
+  static const Fn real_fn = aeronet::test::ResolveNext<Fn>("SSL_get_wbio");
   int remaining = aeronet::test::g_ssl_get_wbio_force_null.load(std::memory_order_acquire);
   while (remaining > 0) {
     if (aeronet::test::g_ssl_get_wbio_force_null.compare_exchange_weak(
@@ -718,7 +713,7 @@ extern "C" BIO* SSL_get_wbio(const SSL* s) {  // NOLINT
 #if AERONET_WANT_SYS_OVERRIDES
 inline void ResetEpollCtlModFail() {
   g_epoll_ctl_mod_fail.store(false, std::memory_order_release);
-  g_epoll_ctl_mod_fail_errno = 0;
+  g_epoll_ctl_mod_fail_errno.store(0, std::memory_order_relaxed);
   g_epoll_ctl_mod_fail_count.store(0, std::memory_order_release);
 }
 
@@ -780,85 +775,58 @@ using EpollWaitFn = int (*)(int, struct epoll_event*, int, int);
 #endif  // AERONET_WANT_SYS_OVERRIDES
 
 inline SocketFn ResolveRealSocket() {
-  static SocketFn fn = nullptr;
-  if (fn != nullptr) {
-    return fn;
-  }
-  fn = aeronet::test::ResolveNext<SocketFn>("socket");
+  // Thread-safe initialization: the hooks are called from the server event loops and the test threads.
+  static const SocketFn fn = aeronet::test::ResolveNext<SocketFn>("socket");
   return fn;
 }
 
 inline SetsockoptFn ResolveRealSetsockopt() {
-  static SetsockoptFn fn = nullptr;
-  if (fn != nullptr) {
-    return fn;
-  }
-  fn = aeronet::test::ResolveNext<SetsockoptFn>("setsockopt");
+  // Thread-safe initialization: the hooks are called from the server event loops and the test threads.
+  static const SetsockoptFn fn = aeronet::test::ResolveNext<SetsockoptFn>("setsockopt");
   return fn;
 }
 
 inline BindFn ResolveRealBind() {
-  static BindFn fn = nullptr;
-  if (fn != nullptr) {
-    return fn;
-  }
-  fn = aeronet::test::ResolveNext<BindFn>("bind");
+  // Thread-safe initialization: the hooks are called from the server event loops and the test threads.
+  static const BindFn fn = aeronet::test::ResolveNext<BindFn>("bind");
   return fn;
 }
 
 inline ListenFn ResolveRealListen() {
-  static ListenFn fn = nullptr;
-  if (fn != nullptr) {
-    return fn;
-  }
-  fn = aeronet::test::ResolveNext<ListenFn>("listen");
+  // Thread-safe initialization: the hooks are called from the server event loops and the test threads.
+  static const ListenFn fn = aeronet::test::ResolveNext<ListenFn>("listen");
   return fn;
 }
 
 inline AcceptFn ResolveRealAccept() {
-  static AcceptFn fn = nullptr;
-  if (fn != nullptr) {
-    return fn;
-  }
-  fn = aeronet::test::ResolveNext<AcceptFn>("accept");
+  // Thread-safe initialization: the hooks are called from the server event loops and the test threads.
+  static const AcceptFn fn = aeronet::test::ResolveNext<AcceptFn>("accept");
   return fn;
 }
 
 #if AERONET_WANT_SYS_OVERRIDES
 inline Accept4Fn ResolveRealAccept4() {
-  static Accept4Fn fn = nullptr;
-  if (fn != nullptr) {
-    return fn;
-  }
-  fn = aeronet::test::ResolveNext<Accept4Fn>("accept4");
+  // Thread-safe initialization: the hooks are called from the server event loops and the test threads.
+  static const Accept4Fn fn = aeronet::test::ResolveNext<Accept4Fn>("accept4");
   return fn;
 }
 #endif  // AERONET_WANT_SYS_OVERRIDES
 
 inline GetsocknameFn ResolveRealGetsockname() {
-  static GetsocknameFn fn = nullptr;
-  if (fn != nullptr) {
-    return fn;
-  }
-  fn = aeronet::test::ResolveNext<GetsocknameFn>("getsockname");
+  // Thread-safe initialization: the hooks are called from the server event loops and the test threads.
+  static const GetsocknameFn fn = aeronet::test::ResolveNext<GetsocknameFn>("getsockname");
   return fn;
 }
 
 inline SendFn ResolveRealSend() {
-  static SendFn fn = nullptr;
-  if (fn != nullptr) {
-    return fn;
-  }
-  fn = aeronet::test::ResolveNext<SendFn>("send");
+  // Thread-safe initialization: the hooks are called from the server event loops and the test threads.
+  static const SendFn fn = aeronet::test::ResolveNext<SendFn>("send");
   return fn;
 }
 
 inline RecvFn ResolveRealRecv() {
-  static RecvFn fn = nullptr;
-  if (fn != nullptr) {
-    return fn;
-  }
-  fn = aeronet::test::ResolveNext<RecvFn>("recv");
+  // Thread-safe initialization: the hooks are called from the server event loops and the test threads.
+  static const RecvFn fn = aeronet::test::ResolveNext<RecvFn>("recv");
   return fn;
 }
 
@@ -866,36 +834,30 @@ inline RecvFn ResolveRealRecv() {
 
 #if AERONET_WANT_SYS_OVERRIDES
 inline EpollCtlFn ResolveRealEpollCtl() {
-  static EpollCtlFn fn = nullptr;
-  if (fn != nullptr) {
-    return fn;
-  }
-  fn = aeronet::test::ResolveNext<EpollCtlFn>("epoll_ctl");
+  // Thread-safe initialization: the hooks are called from the server event loops and the test threads.
+  static const EpollCtlFn fn = aeronet::test::ResolveNext<EpollCtlFn>("epoll_ctl");
   return fn;
 }
 
 inline EpollCreateFn ResolveRealEpollCreate1() {
-  static EpollCreateFn fn = nullptr;
-  if (fn != nullptr) {
-    return fn;
-  }
-  fn = aeronet::test::ResolveNext<EpollCreateFn>("epoll_create1");
+  // Thread-safe initialization: the hooks are called from the server event loops and the test threads.
+  static const EpollCreateFn fn = aeronet::test::ResolveNext<EpollCreateFn>("epoll_create1");
   return fn;
 }
 
 inline EpollWaitFn ResolveRealEpollWait() {
-  static EpollWaitFn fn = nullptr;
-  if (fn != nullptr) {
-    return fn;
-  }
-  fn = aeronet::test::ResolveNext<EpollWaitFn>("epoll_wait");
+  // Thread-safe initialization: the hooks are called from the server event loops and the test threads.
+  static const EpollWaitFn fn = aeronet::test::ResolveNext<EpollWaitFn>("epoll_wait");
   return fn;
 }
 
 inline void ResetEpollHooks() {
   test::g_epoll_create_actions.reset();
   test::g_epoll_wait_actions.reset();
-  test::g_epoll_wait_default_action.reset();
+  {
+    std::scoped_lock lock(test::g_epoll_wait_default_action_mutex);
+    test::g_epoll_wait_default_action.reset();
+  }
   test::ResetEpollCtlModFail();
   test::FailNextMalloc(0);
   test::FailNextRealloc(0);
@@ -906,10 +868,13 @@ inline void SetEpollCreateActions(std::initializer_list<EpollCreateAction> actio
 }
 
 inline void SetEpollWaitActions(vector<EpollWaitAction> actions) {
-  test::g_epoll_wait_default_action.reset();
-  if (!actions.empty()) {
-    // Repeat the last action if the queue is exhausted.
-    test::g_epoll_wait_default_action = actions.back();
+  {
+    std::scoped_lock lock(test::g_epoll_wait_default_action_mutex);
+    test::g_epoll_wait_default_action.reset();
+    if (!actions.empty()) {
+      // Repeat the last action if the queue is exhausted.
+      test::g_epoll_wait_default_action = actions.back();
+    }
   }
   test::g_epoll_wait_actions.setActions(std::move(actions));
 }
@@ -967,11 +932,8 @@ inline void PushConnectAction(std::pair<int, int> action) { g_connect_actions.pu
 using ConnectFn = int (*)(int, const struct sockaddr*, socklen_t);
 
 inline ConnectFn ResolveRealConnect() {
-  static ConnectFn fn = nullptr;
-  if (fn != nullptr) {
-    return fn;
-  }
-  fn = aeronet::test::ResolveNext<ConnectFn>("connect");
+  // Thread-safe initialization: the hooks are called from the server event loops and the test threads.
+  static const ConnectFn fn = aeronet::test::ResolveNext<ConnectFn>("connect");
   return fn;
 }
 #endif  // AERONET_POSIX
@@ -1001,38 +963,26 @@ inline KeyedActionQueue<int, IoAction> g_sendmsg_actions;
 
 #ifdef AERONET_POSIX
 inline ReadFn ResolveRealRead() {
-  static ReadFn fn = nullptr;
-  if (fn != nullptr) {
-    return fn;
-  }
-  fn = aeronet::test::ResolveNext<ReadFn>("read");
+  // Thread-safe initialization: the hooks are called from the server event loops and the test threads.
+  static const ReadFn fn = aeronet::test::ResolveNext<ReadFn>("read");
   return fn;
 }
 
 inline WriteFn ResolveRealWrite() {
-  static WriteFn fn = nullptr;
-  if (fn != nullptr) {
-    return fn;
-  }
-  fn = aeronet::test::ResolveNext<WriteFn>("write");
+  // Thread-safe initialization: the hooks are called from the server event loops and the test threads.
+  static const WriteFn fn = aeronet::test::ResolveNext<WriteFn>("write");
   return fn;
 }
 
 inline WritevFn ResolveRealWritev() {
-  static WritevFn fn = nullptr;
-  if (fn != nullptr) {
-    return fn;
-  }
-  fn = aeronet::test::ResolveNext<WritevFn>("writev");
+  // Thread-safe initialization: the hooks are called from the server event loops and the test threads.
+  static const WritevFn fn = aeronet::test::ResolveNext<WritevFn>("writev");
   return fn;
 }
 
 inline SendmsgFn ResolveRealSendmsg() {
-  static SendmsgFn fn = nullptr;
-  if (fn != nullptr) {
-    return fn;
-  }
-  fn = aeronet::test::ResolveNext<SendmsgFn>("sendmsg");
+  // Thread-safe initialization: the hooks are called from the server event loops and the test threads.
+  static const SendmsgFn fn = aeronet::test::ResolveNext<SendmsgFn>("sendmsg");
   return fn;
 }
 
@@ -1058,29 +1008,20 @@ using SendfileFn = ssize_t (*)(int, int, off_t*, size_t);
 using DupFn = int (*)(int);
 
 inline DupFn ResolveRealDup() {
-  static DupFn fn = nullptr;
-  if (fn != nullptr) {
-    return fn;
-  }
-  fn = aeronet::test::ResolveNext<DupFn>("dup");
+  // Thread-safe initialization: the hooks are called from the server event loops and the test threads.
+  static const DupFn fn = aeronet::test::ResolveNext<DupFn>("dup");
   return fn;
 }
 
 inline PreadFn ResolveRealPread() {
-  static PreadFn fn = nullptr;
-  if (fn != nullptr) {
-    return fn;
-  }
-  fn = aeronet::test::ResolveNext<PreadFn>("pread");
+  // Thread-safe initialization: the hooks are called from the server event loops and the test threads.
+  static const PreadFn fn = aeronet::test::ResolveNext<PreadFn>("pread");
   return fn;
 }
 
 inline SendfileFn ResolveRealSendfile() {
-  static SendfileFn fn = nullptr;
-  if (fn != nullptr) {
-    return fn;
-  }
-  fn = aeronet::test::ResolveNext<SendfileFn>("sendfile");
+  // Thread-safe initialization: the hooks are called from the server event loops and the test threads.
+  static const SendfileFn fn = aeronet::test::ResolveNext<SendfileFn>("sendfile");
   return fn;
 }
 
@@ -1485,7 +1426,7 @@ extern "C" __attribute__((no_sanitize("address"))) int epoll_ctl(int epfd, int o
     // Check global persistent fail flag first
     if (aeronet::test::g_epoll_ctl_mod_fail.load(std::memory_order_acquire)) {
       aeronet::test::g_epoll_ctl_mod_fail_count.fetch_add(1, std::memory_order_relaxed);
-      errno = aeronet::test::g_epoll_ctl_mod_fail_errno;
+      errno = aeronet::test::g_epoll_ctl_mod_fail_errno.load(std::memory_order_relaxed);
       return -1;
     }
     // Otherwise check action queue for per-call failures
@@ -1529,8 +1470,13 @@ extern "C" __attribute__((no_sanitize("address"))) int epoll_wait(int epfd, stru
   if (action) {
     return applyAction(*action);
   }
-  if (aeronet::test::g_epoll_wait_default_action) {
-    return applyAction(*aeronet::test::g_epoll_wait_default_action);
+  {
+    std::unique_lock lock(aeronet::test::g_epoll_wait_default_action_mutex);
+    if (aeronet::test::g_epoll_wait_default_action) {
+      const auto defaultAction = *aeronet::test::g_epoll_wait_default_action;
+      lock.unlock();
+      return applyAction(defaultAction);
+    }
   }
   auto real = aeronet::test::ResolveRealEpollWait();
   return real(epfd, events, maxevents, timeout);

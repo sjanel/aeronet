@@ -120,17 +120,14 @@ void TestServer::postConfigUpdate(std::function<void(HttpServerConfig&)> updater
   auto completion = std::make_shared<std::promise<void>>();
   auto future = completion->get_future();
 
-  server.postConfigUpdate([completion, updater = std::move(updater)](HttpServerConfig& config) mutable {
-    try {
-      updater(config);
-    } catch (...) {
-      completion->set_value();
-      throw;
-    }
-    completion->set_value();
-  });
-
+  // Read before posting the update: the event loop may write the config while applying updates.
   const auto waitTimeout = std::max(server.config().pollInterval * 10, std::chrono::milliseconds{200});
+
+  server.postConfigUpdate(std::move(updater));
+  // Completion is signaled by a second update: updates are applied in order, so the server is then done with the first
+  // one (including the restoration of its immutable fields, which happens after the given updater).
+  server.postConfigUpdate([completion](HttpServerConfig&) { completion->set_value(); });
+
   if (future.wait_for(waitTimeout) == std::future_status::timeout) {
     log::warn("Config update did not complete within {} ms", waitTimeout.count());
     // Fallback with a hard deadline to avoid hanging the test suite on a stuck event loop.
@@ -153,6 +150,9 @@ void TestServer::postRouterUpdate(std::function<void(Router&)> updater) {
   auto completion = std::make_shared<std::promise<void>>();
   auto future = completion->get_future();
 
+  // Read before posting the update: the event loop may write the config while applying updates.
+  const auto waitTimeout = std::max(server.config().pollInterval * 10, std::chrono::milliseconds{200});
+
   server.postRouterUpdate([completion, updater = std::move(updater)](Router& router) mutable {
     try {
       updater(router);
@@ -163,7 +163,6 @@ void TestServer::postRouterUpdate(std::function<void(Router&)> updater) {
     completion->set_value();
   });
 
-  const auto waitTimeout = std::max(server.config().pollInterval * 10, std::chrono::milliseconds{200});
   if (future.wait_for(waitTimeout) == std::future_status::timeout) {
     log::warn("Router update did not complete within {} ms", waitTimeout.count());
     // Fallback with a hard deadline to avoid hanging the test suite on a stuck event loop.
