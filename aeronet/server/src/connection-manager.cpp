@@ -66,10 +66,7 @@ namespace {
 
 #ifdef AERONET_ENABLE_OPENSSL
 inline void IncrementTlsFailureReason(TlsMetricsInternal& metrics, std::string_view reason) {
-  auto [it, inserted] = metrics.handshakeFailureReasons.emplace(reason, 1);
-  if (!inserted) {
-    ++it->second;
-  }
+  metrics.incrementMapCount(metrics.handshakeFailureReasons, reason);
 }
 
 inline void FailTlsHandshakeOnce(ConnectionState& state, TlsMetricsInternal& metrics, const TlsHandshakeCallback& cb,

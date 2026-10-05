@@ -52,13 +52,14 @@ class LifecycleTrackerGuard {
  public:
   explicit LifecycleTrackerGuard(std::weak_ptr<ServerLifecycleTracker> tracker) : _tracker(std::move(tracker)) {
     if (auto locked = _tracker.lock()) {
-      locked->notifyServerRunning();
+      locked->notifyServerLaunched();
     }
   }
 
   LifecycleTrackerGuard(const LifecycleTrackerGuard&) = delete;
   LifecycleTrackerGuard& operator=(const LifecycleTrackerGuard&) = delete;
-  LifecycleTrackerGuard(LifecycleTrackerGuard&&) = delete;
+  // Movable to be handed over to the worker thread: the moved-from guard (empty tracker) notifies nothing.
+  LifecycleTrackerGuard(LifecycleTrackerGuard&&) noexcept = default;
   LifecycleTrackerGuard& operator=(LifecycleTrackerGuard&&) = delete;
 
   ~LifecycleTrackerGuard() {
@@ -69,6 +70,24 @@ class LifecycleTrackerGuard {
 
  private:
   std::weak_ptr<ServerLifecycleTracker> _tracker;
+};
+
+// Publishes the calling thread as the event-loop thread for the duration of runUntilStarted().
+class EventLoopThreadRAII {
+ public:
+  explicit EventLoopThreadRAII(internal::Lifecycle& lifecycle) : _lifecycle(lifecycle) {
+    _lifecycle.eventLoopThread.store(std::this_thread::get_id(), std::memory_order_relaxed);
+  }
+
+  EventLoopThreadRAII(const EventLoopThreadRAII&) = delete;
+  EventLoopThreadRAII(EventLoopThreadRAII&&) noexcept = delete;
+  EventLoopThreadRAII& operator=(const EventLoopThreadRAII&) = delete;
+  EventLoopThreadRAII& operator=(EventLoopThreadRAII&&) noexcept = delete;
+
+  ~EventLoopThreadRAII() { _lifecycle.eventLoopThread.store(std::thread::id{}, std::memory_order_relaxed); }
+
+ private:
+  internal::Lifecycle& _lifecycle;
 };
 
 class LifecycleResetterRAII {
@@ -100,7 +119,9 @@ SingleHttpServer::AsyncHandle::AsyncHandle(std::jthread thread, std::shared_ptr<
     : _thread(std::move(thread)), _error(std::move(error)) {}
 
 void SingleHttpServer::AsyncHandle::stop() noexcept {
-  if (_thread.joinable()) {
+  // Not from the event-loop thread itself (e.g. SingleHttpServer::stop() called from a handler): it cannot join itself,
+  // and stops on its own once the current callback returns. It is then joined by a later stop() or the destructor.
+  if (_thread.joinable() && _thread.get_id() != std::this_thread::get_id()) {
     _thread.request_stop();
     _thread.join();
   }
@@ -170,6 +191,8 @@ SingleHttpServer::SingleHttpServer(const SingleHttpServer& other, NativeHandle s
         return other._callbacks;
       }()),
       _updates(other._updates),
+      _callbacksUpdates(other._callbacksUpdates),
+      _hasCallbacksUpdates(other._hasCallbacksUpdates.load(std::memory_order_relaxed)),
       _config(other._config),
       _compressionState(_config.compression),
       // do not copy the decompression state, we just use our own.
@@ -214,10 +237,13 @@ SingleHttpServer::SingleHttpServer(SingleHttpServer&& other)
       }()),
       _callbacks(std::move(other._callbacks)),
       _updates(std::move(other._updates)),
+      _callbacksUpdates(std::move(other._callbacksUpdates)),
+      _hasCallbacksUpdates(other._hasCallbacksUpdates.exchange(false, std::memory_order_relaxed)),
       _config(std::move(other._config)),
       _compressionState(std::move(other._compressionState)),
       _decompressionState(std::move(other._decompressionState)),
       _listenSocket(std::move(other._listenSocket)),
+      _portReservation(std::move(other._portReservation)),
       _maintenanceTimer(std::move(other._maintenanceTimer)),
       _eventLoop(std::move(other._eventLoop)),
       _lifecycle(std::move(other._lifecycle)),
@@ -254,6 +280,9 @@ SingleHttpServer& SingleHttpServer::operator=(SingleHttpServer&& other) {
     _stats = std::exchange(other._stats, {});
     _callbacks = std::move(other._callbacks);
     _updates = std::move(other._updates);
+    _callbacksUpdates = std::move(other._callbacksUpdates);
+    _hasCallbacksUpdates.store(other._hasCallbacksUpdates.exchange(false, std::memory_order_relaxed),
+                               std::memory_order_relaxed);
     _config = std::move(other._config);
 
     _compressionState = std::move(other._compressionState);
@@ -261,6 +290,7 @@ SingleHttpServer& SingleHttpServer::operator=(SingleHttpServer&& other) {
 
     _decompressionState = std::move(other._decompressionState);
     _listenSocket = std::move(other._listenSocket);
+    _portReservation = std::move(other._portReservation);
     _maintenanceTimer = std::move(other._maintenanceTimer);
     _eventLoop = std::move(other._eventLoop);
     _lifecycle = std::move(other._lifecycle);
@@ -355,8 +385,24 @@ void SingleHttpServer::initListener(NativeHandle listenFd) {
 #ifdef AERONET_MACOS
   if (listenFd == kInvalidHandle) {
 #endif
+#ifdef AERONET_LINUX
+    const bool ephemeralPort = _config.port == 0;
+#endif
     _listenSocket.bindAndListen(_config.reusePort, _config.port);
     listenFd = _listenSocket.fd();
+#ifdef AERONET_LINUX
+    // The resolved ephemeral port is kept across restarts (rebound by the next initListener()), but the listener is
+    // closed while stopped: another process could then obtain the port with bind(0), and with SO_REUSEPORT the restart
+    // would silently share the incoming connections with it. Reserve it with a bound socket that never listens:
+    // bind(0) never returns a port in use, and a socket that does not listen receives no connection.
+    // Linux only: on other platforms, a bound socket that does not listen may be picked for incoming connections.
+    if (ephemeralPort && _config.reusePort) {
+      Socket reservation(Socket::Type::StreamNonBlock);
+      if (reservation.tryBind(_config.reusePort, _config.port)) {
+        _portReservation = std::move(reservation);
+      }
+    }
+#endif
 #ifdef AERONET_MACOS
   }
 #endif
@@ -391,17 +437,21 @@ void SingleHttpServer::prepareRun() {
   _lifecycle.enterRunning();
 }
 
-void SingleHttpServer::run() {
+void SingleHttpServer::beginStartup() {
+  std::scoped_lock lock(_updates.lock);
   _lifecycle.enterStarting();
+}
+
+void SingleHttpServer::run() {
+  beginStartup();
   runUntilStarted([] { return false; });
 }
 
 void SingleHttpServer::runUntilStarted(const std::function<bool()>& predicate) {
+  EventLoopThreadRAII eventLoopThread(_lifecycle);
   LifecycleResetterRAII resetter(_lifecycle);
 
   prepareRun();
-
-  LifecycleTrackerGuard trackerGuard(_lifecycleTracker);
 
   while (_lifecycle.isActive() && !predicate()) {
     eventLoop();
@@ -420,7 +470,7 @@ void SingleHttpServer::start() { _internalHandle = startDetached(); }
 
 void SingleHttpServer::runUntil(const std::function<bool()>& predicate) {
   if (!predicate()) {
-    _lifecycle.enterStarting();
+    beginStartup();
     runUntilStarted(predicate);
   }
 }
@@ -428,12 +478,21 @@ void SingleHttpServer::runUntil(const std::function<bool()>& predicate) {
 SingleHttpServer::AsyncHandle SingleHttpServer::launchDetached(std::function<bool()> extraPredicate) {
   auto errorPtr = std::make_shared<std::exception_ptr>();
 
-  _lifecycle.enterStarting();
+  beginStartup();
   try {
+    // A MultiHttpServer worker is counted from its launch (on the controller thread) until its thread is done, not only
+    // while its event loop runs: MultiHttpServer::run() then waits for exactly the launched workers, including the ones
+    // that stop - or fail to start - before it gets to wait for them.
+    LifecycleTrackerGuard trackerGuard(_lifecycleTracker);
+
     // Construct the thread before moving errorPtr into AsyncHandle. The evaluations of the constructor arguments are
     // indeterminately sequenced: MSVC may move the shared_ptr first, leaving the worker's lambda with a null errorPtr
     // when its predicate throws.
-    std::jthread thread([this, pred = std::move(extraPredicate), errorPtr](const std::stop_token& st) {
+    std::jthread thread([this, pred = std::move(extraPredicate), errorPtr,
+                         trackerGuard = std::move(trackerGuard)](const std::stop_token& st) mutable {
+      // Notifies the end of this worker when leaving this scope, after runUntilStarted() has fully completed.
+      const LifecycleTrackerGuard exitGuard(std::move(trackerGuard));
+
       const auto captureError = [&errorPtr] {
         if (!*errorPtr) {
           *errorPtr = std::current_exception();
@@ -441,7 +500,7 @@ SingleHttpServer::AsyncHandle SingleHttpServer::launchDetached(std::function<boo
       };
 
       // A throwing predicate is treated as a normal stop request instead of letting the exception unwind
-      // across this thread's runUntilStarted() RAII guards (LifecycleResetterRAII, LifecycleTrackerGuard):
+      // across this thread's runUntilStarted() RAII guard (LifecycleResetterRAII):
       // captured here, at the call site, and surfaced later via rethrowIfError().
       auto safePredicate = [&st, &pred, &captureError] -> bool {
         if (st.stop_requested()) {
@@ -494,31 +553,23 @@ void SingleHttpServer::stop() noexcept {
   const auto prevState = _lifecycle.exchangeStopping();
   assert(prevState != internal::Lifecycle::State::Starting);
   if (prevState == internal::Lifecycle::State::Running || prevState == internal::Lifecycle::State::Draining) {
-    // Wake the event loop immediately so it notices the Stopping state and exits
-    // before we close the listen socket.  On Windows, closing the listen socket
-    // while WSAPoll holds it can cause WSAPoll to hang indefinitely.
+    // Wake the event loop immediately so it notices the Stopping state: the event-loop thread then closes the listener
+    // and the connections and resets the lifecycle itself. None of them may be touched from here while it may still run
+    // (it polls the listen socket, and a reset lifecycle would allow a restart while it is still running; on Windows,
+    // closing the listen socket while WSAPoll holds it can even hang).
     _lifecycle.wakeupFd.send();
 
-    // Stop internal handle if start() was used (non-blocking API).
-    // This joins the background thread, after which the thread has already called _lifecycle.reset().
+    // Joins the event-loop thread if start() was used (non-blocking API). Otherwise (run() / runUntil() from another
+    // thread, startDetached*(), or a MultiHttpServer worker), the thread running it is joined by its owner.
     _internalHandle.stop();
-
-    // In multi-server mode the background thread is NOT owned by _internalHandle - it is managed
-    // by MultiHttpServer::AsyncHandle and will be joined later.  The event-loop thread closes
-    // the listener itself when it processes the Stopping state, so we must NOT call
-    // closeListener() here - doing so would close the socket while WSAPoll still holds it,
-    // causing undefined behavior on Windows.
-    if (!isInMultiHttpServer()) {
-      // Close the listener AFTER the event-loop thread has exited (joined via _internalHandle),
-      // so WSAPoll never sees the invalidated listen socket fd.
-      closeListener();
-      _lifecycle.reset();
-    }
   } else if (prevState != internal::Lifecycle::State::Stopping) {
     // Idle - still ensure the listener is closed.
     // When Stopping, another stop() call (or the event-loop thread) is already
     // handling shutdown.  Calling closeListener() here would race with
     // the event-loop thread's WSAPoll on Windows.
+    // The event loop may also have stopped by itself (drain completed, stop() from a handler): join its thread if
+    // start() was used.
+    _internalHandle.stop();
     closeListener();
   }
 }
@@ -532,25 +583,19 @@ void SingleHttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
     return;
   }
 
-  const bool hasDeadline = maxWait.count() > 0;
-  // Fresh clock read rather than the event loop's cached _connections.now: it is written by the event-loop thread, and
-  // is stale (or still default-initialized) until the first poll() of a just-started server returns.
-  const auto deadline =
-      hasDeadline ? std::chrono::steady_clock::now() + maxWait : std::chrono::steady_clock::time_point{};
-
-  if (current == internal::Lifecycle::State::Draining) {
-    if (hasDeadline) {
-      _lifecycle.shrinkDeadline(deadline);
-    }
-    return;
+  if (maxWait.count() > 0) {
+    // Set before entering Draining, so that the event loop never observes Draining without it. If the server is already
+    // draining (possibly from a concurrent call), keeps the earliest of both deadlines.
+    // Fresh clock read rather than the event loop's cached _connections.now: it is written by the event-loop thread,
+    // and is stale (or still default-initialized) until the first poll() of a just-started server returns.
+    _lifecycle.shrinkDeadline(std::chrono::steady_clock::now() + maxWait);
   }
 
-  const auto nbActiveConnections = _connections.size();
-  if (nbActiveConnections != 0) {
-    log_noexcept::info("Initiating graceful drain with {} active connection(s)", nbActiveConnections);
+  // Only from Running: a concurrent stop() (Stopping) must not be turned back into a drain.
+  // The connections are owned by the event loop: their count cannot be read from here.
+  if (current == internal::Lifecycle::State::Running && _lifecycle.enterDraining()) {
+    log_noexcept::info("Initiating graceful drain");
   }
-
-  _lifecycle.enterDraining(deadline, hasDeadline);
   // Keep listener open during drain to allow health probes to connect and receive 503 status.
   // Regular connections will still be accepted but will receive Connection: close headers.
 }

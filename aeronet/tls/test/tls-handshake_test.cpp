@@ -123,7 +123,7 @@ TEST(TlsHandshakeTest, MaybeEnableKtlsSendUnsupported) {
       MaybeEnableKtlsSend(KtlsEnableResult::Unsupported, fd, TLSConfig::KtlsMode::Opportunistic, metrics);
 
   EXPECT_EQ(result, KtlsApplication::Disabled);
-  EXPECT_EQ(metrics.ktlsSendForcedShutdowns, 0);
+  EXPECT_EQ(metrics.ktlsSendForcedShutdowns.load(), 0);
 }
 
 TEST(TlsHandshakeTest, MaybeEnableKtlsSendEnabled) {
@@ -132,9 +132,9 @@ TEST(TlsHandshakeTest, MaybeEnableKtlsSendEnabled) {
   const auto result = MaybeEnableKtlsSend(KtlsEnableResult::Enabled, fd, TLSConfig::KtlsMode::Opportunistic, metrics);
 
   EXPECT_EQ(result, KtlsApplication::Enabled);
-  EXPECT_EQ(metrics.ktlsSendEnabledConnections, 1);
-  EXPECT_EQ(metrics.ktlsSendEnableFallbacks, 0);
-  EXPECT_EQ(metrics.ktlsSendForcedShutdowns, 0);
+  EXPECT_EQ(metrics.ktlsSendEnabledConnections.load(), 1);
+  EXPECT_EQ(metrics.ktlsSendEnableFallbacks.load(), 0);
+  EXPECT_EQ(metrics.ktlsSendForcedShutdowns.load(), 0);
 }
 
 TEST(TlsHandshakeTest, MaybeEnableKtlsSendUnsupportedWarnMode) {
@@ -143,8 +143,8 @@ TEST(TlsHandshakeTest, MaybeEnableKtlsSendUnsupportedWarnMode) {
   const auto result = MaybeEnableKtlsSend(KtlsEnableResult::Unsupported, fd, TLSConfig::KtlsMode::Enabled, metrics);
 
   EXPECT_EQ(result, KtlsApplication::Disabled);
-  EXPECT_EQ(metrics.ktlsSendEnableFallbacks, 1);
-  EXPECT_EQ(metrics.ktlsSendForcedShutdowns, 0);
+  EXPECT_EQ(metrics.ktlsSendEnableFallbacks.load(), 1);
+  EXPECT_EQ(metrics.ktlsSendForcedShutdowns.load(), 0);
 }
 
 TEST(TlsHandshakeTest, MaybeEnableKtlsSendUnsupportedForced) {
@@ -153,8 +153,8 @@ TEST(TlsHandshakeTest, MaybeEnableKtlsSendUnsupportedForced) {
   const auto result = MaybeEnableKtlsSend(KtlsEnableResult::Unsupported, fd, TLSConfig::KtlsMode::Required, metrics);
 
   EXPECT_EQ(result, KtlsApplication::CloseConnection);
-  EXPECT_EQ(metrics.ktlsSendEnableFallbacks, 1);
-  EXPECT_EQ(metrics.ktlsSendForcedShutdowns, 1);
+  EXPECT_EQ(metrics.ktlsSendEnableFallbacks.load(), 1);
+  EXPECT_EQ(metrics.ktlsSendForcedShutdowns.load(), 1);
 }
 
 TEST(TlsHandshakeTest, MaybeEnableKtlsSendDisabledOpportunistic) {
@@ -163,8 +163,8 @@ TEST(TlsHandshakeTest, MaybeEnableKtlsSendDisabledOpportunistic) {
   const auto result = MaybeEnableKtlsSend(KtlsEnableResult::Disabled, fd, TLSConfig::KtlsMode::Opportunistic, metrics);
 
   EXPECT_EQ(result, KtlsApplication::Disabled);
-  EXPECT_EQ(metrics.ktlsSendEnableFallbacks, 1);
-  EXPECT_EQ(metrics.ktlsSendForcedShutdowns, 0);
+  EXPECT_EQ(metrics.ktlsSendEnableFallbacks.load(), 1);
+  EXPECT_EQ(metrics.ktlsSendForcedShutdowns.load(), 0);
 }
 
 TEST(TlsHandshakeTest, MaybeEnableKtlsSendUnknownRequired) {
@@ -173,8 +173,8 @@ TEST(TlsHandshakeTest, MaybeEnableKtlsSendUnknownRequired) {
   const auto result = MaybeEnableKtlsSend(KtlsEnableResult::Unknown, fd, TLSConfig::KtlsMode::Required, metrics);
 
   EXPECT_EQ(result, KtlsApplication::CloseConnection);
-  EXPECT_EQ(metrics.ktlsSendEnableFallbacks, 1);
-  EXPECT_EQ(metrics.ktlsSendForcedShutdowns, 1);
+  EXPECT_EQ(metrics.ktlsSendEnableFallbacks.load(), 1);
+  EXPECT_EQ(metrics.ktlsSendForcedShutdowns.load(), 1);
 }
 
 TEST(TlsHandshakeTest, FinalizeTlsHandshake_NoCipherName) {
@@ -195,7 +195,7 @@ TEST(TlsHandshakeTest, FinalizeTlsHandshake_NoCipherName) {
   // negotiatedCipher should be empty when SSL_get_cipher_name returns nullptr
   EXPECT_TRUE(info.negotiatedCipher().empty());
   // Metrics should have one successful handshake counted
-  EXPECT_EQ(metrics.handshakesSucceeded, 1);
+  EXPECT_EQ(metrics.handshakesSucceeded.load(), 1);
 }
 
 TEST(TlsHandshakeTest, FinalizeTlsHandshake_PeerSubject_Absent) {
@@ -210,7 +210,7 @@ TEST(TlsHandshakeTest, FinalizeTlsHandshake_PeerSubject_Absent) {
   TLSInfo info = FinalizeTlsHandshake(ssl.get(), -1, false, false, TlsHandshakeCallback(),
                                       std::chrono::steady_clock::time_point{}, metrics);
   EXPECT_TRUE(info.peerSubject().empty());
-  EXPECT_EQ(metrics.handshakesSucceeded, 1);
+  EXPECT_EQ(metrics.handshakesSucceeded.load(), 1);
   g_tls_handshake_test_mode = 0;
 }
 
@@ -226,7 +226,7 @@ TEST(TlsHandshakeTest, FinalizeTlsHandshake_PeerSubject_PrintFail) {
   TLSInfo info = FinalizeTlsHandshake(ssl.get(), -1, false, false, TlsHandshakeCallback(),
                                       std::chrono::steady_clock::time_point{}, metrics);
   EXPECT_TRUE(info.peerSubject().empty());
-  EXPECT_EQ(metrics.handshakesSucceeded, 1);
+  EXPECT_EQ(metrics.handshakesSucceeded.load(), 1);
   g_tls_handshake_test_mode = 0;
 }
 
@@ -242,7 +242,7 @@ TEST(TlsHandshakeTest, FinalizeTlsHandshake_PeerSubject_BioPtrNull) {
   TLSInfo info = FinalizeTlsHandshake(ssl.get(), -1, false, false, TlsHandshakeCallback(),
                                       std::chrono::steady_clock::time_point{}, metrics);
   EXPECT_TRUE(info.peerSubject().empty());
-  EXPECT_EQ(metrics.handshakesSucceeded, 1);
+  EXPECT_EQ(metrics.handshakesSucceeded.load(), 1);
   g_tls_handshake_test_mode = 0;
 }
 
@@ -260,7 +260,7 @@ TEST(TlsHandshakeTest, FinalizeTlsHandshake_NoVersionStringEmpty) {
   EXPECT_TRUE(info.negotiatedVersion().empty());
   // versionCounts should not have an entry for an empty version
   EXPECT_EQ(metrics.versionCounts.size(), 0U);
-  EXPECT_EQ(metrics.handshakesSucceeded, 1);
+  EXPECT_EQ(metrics.handshakesSucceeded.load(), 1);
   g_tls_handshake_test_mode = 0;
 }
 
@@ -275,10 +275,10 @@ TEST(TlsHandshakeTest, FinalizeTlsHandshake_NoDurationRecorded) {
   // Pass a default-constructed time_point (epoch)
   TLSInfo info = FinalizeTlsHandshake(ssl.get(), -1, false, true, TlsHandshakeCallback(),
                                       std::chrono::steady_clock::time_point{}, metrics);
-  EXPECT_EQ(metrics.handshakeDurationCount, 0U);
-  EXPECT_EQ(metrics.handshakeDurationTotalNs, 0U);
-  EXPECT_EQ(metrics.handshakeDurationMaxNs, 0U);
-  EXPECT_EQ(metrics.handshakesSucceeded, 1);
+  EXPECT_EQ(metrics.handshakeDurationCount.load(), 0U);
+  EXPECT_EQ(metrics.handshakeDurationTotalNs.load(), 0U);
+  EXPECT_EQ(metrics.handshakeDurationMaxNs.load(), 0U);
+  EXPECT_EQ(metrics.handshakesSucceeded.load(), 1);
 }
 
 }  // namespace aeronet

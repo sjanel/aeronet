@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -227,33 +228,58 @@ std::string PayloadToString(std::span<const std::byte> payload) {
 
 class WebSocketTest : public ::testing::Test {
  protected:
+  struct CloseInfo {
+    bool received{false};
+    CloseCode code{CloseCode::Normal};
+    std::string reason;
+  };
+
   void SetUp() override {
+    std::scoped_lock lock(_mutex);
     _receivedMessages.clear();
-    _receivedPings.clear();
-    _closeReceived = false;
+    _close = {};
   }
 
-  // Capture callbacks for verification
+  // Called by the WebSocket callbacks, from the server event loop thread.
+  void recordMessage(std::span<const std::byte> payload, bool isBinary) {
+    std::scoped_lock lock(_mutex);
+    _receivedMessages.emplace_back(PayloadToString(payload), isBinary);
+  }
+
+  void recordClose(CloseCode code, std::string_view reason) {
+    std::scoped_lock lock(_mutex);
+    _close = CloseInfo{.received = true, .code = code, .reason = std::string(reason)};
+  }
+
+  // Snapshots for the test thread.
+  vector<std::pair<std::string, bool>> receivedMessages() const {
+    std::scoped_lock lock(_mutex);
+    return _receivedMessages;
+  }
+
+  CloseInfo closeInfo() const {
+    std::scoped_lock lock(_mutex);
+    return _close;
+  }
+
+ private:
+  // Captured by the callbacks (server event loop thread) and checked by the test thread.
+  mutable std::mutex _mutex;
   vector<std::pair<std::string, bool>> _receivedMessages;  // payload, isBinary
-  vector<std::string> _receivedPings;
-  bool _closeReceived{false};
-  CloseCode _closeCode{CloseCode::Normal};
-  std::string _closeReason;
+  CloseInfo _close;
 };
 
 TEST_F(WebSocketTest, UpgradeSuccessful) {
   // Register a WebSocket endpoint
   ts.postRouterUpdate([this](Router& router) {
-    router.setWebSocket(
-        "/ws",
-        WebSocketEndpoint::WithCallbacks(WebSocketCallbacks{
-            .onMessage = [this](std::span<const std::byte> payload,
-                                bool isBinary) { _receivedMessages.emplace_back(PayloadToString(payload), isBinary); },
-            .onPing = {},
-            .onPong = {},
-            .onClose = {},
-            .onError = {},
-        }));
+    router.setWebSocket("/ws", WebSocketEndpoint::WithCallbacks(WebSocketCallbacks{
+                                   .onMessage = [this](std::span<const std::byte> payload,
+                                                       bool isBinary) { recordMessage(payload, isBinary); },
+                                   .onPing = {},
+                                   .onPong = {},
+                                   .onClose = {},
+                                   .onError = {},
+                               }));
   });
 
   // Connect and send upgrade request
@@ -322,7 +348,7 @@ TEST_F(WebSocketTest, SendAndReceiveTextMessage) {
                           handler->setCallbacks(WebSocketCallbacks{
                               .onMessage =
                                   [this, handler = handler.get()](std::span<const std::byte> payload, bool isBinary) {
-                                    _receivedMessages.emplace_back(PayloadToString(payload), isBinary);
+                                    recordMessage(payload, isBinary);
                                     // Echo back
                                     if (!isBinary) {
                                       handler->sendText(PayloadToString(payload));
@@ -364,9 +390,10 @@ TEST_F(WebSocketTest, SendAndReceiveTextMessage) {
   EXPECT_EQ(PayloadToString(frame.value_or(ServerFrame{}).payload), "Hello, WebSocket!");
 
   // Verify server received our message
-  ASSERT_EQ(_receivedMessages.size(), 1);
-  EXPECT_EQ(_receivedMessages[0].first, "Hello, WebSocket!");
-  EXPECT_FALSE(_receivedMessages[0].second);  // Text, not binary
+  const auto receivedMessages = this->receivedMessages();
+  ASSERT_EQ(receivedMessages.size(), 1);
+  EXPECT_EQ(receivedMessages[0].first, "Hello, WebSocket!");
+  EXPECT_FALSE(receivedMessages[0].second);  // Text, not binary
 }
 
 // A frame bigger than the loopback MSS is always received in several reads: the message must be delivered once and
@@ -485,18 +512,14 @@ TEST_F(WebSocketTest, CompressedMessageFromStandardClientIsEchoedCompressed) {
 
 TEST_F(WebSocketTest, CloseHandshake) {
   ts.postRouterUpdate([this](Router& router) {
-    router.setWebSocket("/ws", WebSocketEndpoint::WithCallbacks(WebSocketCallbacks{
-                                   .onMessage = {},
-                                   .onPing = {},
-                                   .onPong = {},
-                                   .onClose =
-                                       [this](CloseCode code, std::string_view reason) {
-                                         _closeReceived = true;
-                                         _closeCode = code;
-                                         _closeReason = std::string(reason);
-                                       },
-                                   .onError = {},
-                               }));
+    router.setWebSocket("/ws",
+                        WebSocketEndpoint::WithCallbacks(WebSocketCallbacks{
+                            .onMessage = {},
+                            .onPing = {},
+                            .onPong = {},
+                            .onClose = [this](CloseCode code, std::string_view reason) { recordClose(code, reason); },
+                            .onError = {},
+                        }));
   });
 
   test::ClientConnection conn(ts.port());
@@ -523,9 +546,10 @@ TEST_F(WebSocketTest, CloseHandshake) {
   EXPECT_EQ(frame.value_or(ServerFrame{}).opcode, Opcode::Close);
 
   // Verify callback was invoked
-  EXPECT_TRUE(_closeReceived);
-  EXPECT_EQ(_closeCode, CloseCode::Normal);
-  EXPECT_EQ(_closeReason, "goodbye");
+  const auto close = closeInfo();
+  EXPECT_TRUE(close.received);
+  EXPECT_EQ(close.code, CloseCode::Normal);
+  EXPECT_EQ(close.reason, "goodbye");
 
   // The server closes the TCP connection first (RFC 6455 section 7.1.1): the client sees EOF without closing.
   EXPECT_TRUE(test::WaitForPeerClose(conn.fd(), 500ms));
@@ -538,10 +562,8 @@ TEST_F(WebSocketTest, WithConfigAndCallbacksCustomMaxMessageSize) {
   ts.postRouterUpdate([this, config](Router& router) {
     router.setWebSocket("/ws", WebSocketEndpoint::WithConfigAndCallbacks(
                                    config, WebSocketCallbacks{
-                                               .onMessage =
-                                                   [this](std::span<const std::byte> payload, bool isBinary) {
-                                                     _receivedMessages.emplace_back(PayloadToString(payload), isBinary);
-                                                   },
+                                               .onMessage = [this](std::span<const std::byte> payload,
+                                                                   bool isBinary) { recordMessage(payload, isBinary); },
                                                .onPing = {},
                                                .onPong = {},
                                                .onClose = {},
@@ -563,8 +585,9 @@ TEST_F(WebSocketTest, WithConfigAndCallbacksCustomMaxMessageSize) {
   // Wait for processing
   std::this_thread::sleep_for(50ms);
 
-  EXPECT_EQ(_receivedMessages.size(), 1);
-  EXPECT_EQ(_receivedMessages[0].first, "Small message");
+  const auto receivedMessages = this->receivedMessages();
+  ASSERT_EQ(receivedMessages.size(), 1);
+  EXPECT_EQ(receivedMessages[0].first, "Small message");
 }
 
 }  // namespace

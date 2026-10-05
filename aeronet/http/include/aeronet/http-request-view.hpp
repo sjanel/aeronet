@@ -134,6 +134,10 @@ class HttpRequestView {
         } catch (...) {
           state->exception = std::current_exception();
         }
+        // Hand the result over to the event loop before resuming it: the awaitable keeps it alive until the coroutine
+        // consumed it, so that it (and a captured exception) is always destroyed by the event loop thread, never by
+        // this one concurrently with its use.
+        state.reset();
         try {
           postCallback(handle, nullptr);
         } catch (const std::exception& ex) {

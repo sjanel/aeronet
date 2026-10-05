@@ -156,9 +156,13 @@ OtlpTestCollector::OtlpTestCollector() : _listen(Socket::Type::Stream) {
 OtlpTestCollector::~OtlpTestCollector() {
   _stop.store(true);
   if (_listen) {
+    // Wakes the collector thread up; the socket is only closed once that thread (which uses it) is joined.
     ShutdownReadWrite(_listen.fd());
-    _listen.close();
   }
+  if (_thread.joinable()) {
+    _thread.join();
+  }
+  _listen.close();
 }
 
 void OtlpTestCollector::run() {

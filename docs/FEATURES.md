@@ -1257,8 +1257,8 @@ The library exposes two related shutdown controls and they serve different inten
 
 - Semantics:
   - `stop()`:
-    - Non‑blocking request to terminate the event loop as soon as practical.
-    - Closes the listening socket and transitions the server into `Stopping` where connections are closed and the loop wakes to exit quickly.
+    - Non‑blocking request to terminate the event loop as soon as practical (when started with `start()`, the event-loop thread is joined).
+    - Transitions the server into `Stopping` and wakes the event loop, which closes the listening socket and the connections, then exits. Safe to call from a handler.
     - Intended for cases where you want the server to stop servicing immediately (e.g. fatal error, process shutdown).
   - `beginDrain(maxWait)`:
     - Non‑blocking request to begin a graceful drain.
@@ -1818,7 +1818,7 @@ SingleHttpServer server(cfg);
 uint16_t actual = server.port();
 ```
 
-Restart semantics: Both `SingleHttpServer` and `HttpServer` support restart via `run()` after a prior `stop()` or completed `beginDrain()`. The listening socket and reactor state are rebuilt on each `run()` call, allowing reuse of the same server object across multiple start/stop cycles.
+Restart semantics: Both `SingleHttpServer` and `HttpServer` support restart via `run()` after a prior `stop()` or completed `beginDrain()`. The listening socket and reactor state are rebuilt on each `run()` call, allowing reuse of the same server object across multiple start/stop cycles. An ephemeral port is kept across these cycles; on Linux with `reusePort`, it stays reserved while the server is stopped (by a bound socket that never listens), so that no other process can obtain it and share its incoming connections on restart.
 
 Removed experimental factory: a previous non-throwing `tryCreate` was dropped to keep API surface minimal.
 

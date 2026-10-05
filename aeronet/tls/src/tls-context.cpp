@@ -52,14 +52,23 @@ namespace {
 
 constexpr std::size_t kMaxOcspResponseBytes = 1U << 20U;
 
-// NOLINTNEXTLINE(bugprone-throwing-static-initialization)
-const int kTicketStoreIndex = ::SSL_CTX_get_ex_new_index(0, nullptr, nullptr, nullptr, nullptr);
+// SSL_CTX ex data indexes, allocated on first use: a TLS server may be created during the static initialization of
+// another translation unit (e.g. a global server), possibly before namespace-scope variables of this one are
+// initialized (they would still be 0, the index of the application data slot). Function-local statics are thread-safe.
+int TicketStoreIndex() noexcept {
+  static const int kIndex = ::SSL_CTX_get_ex_new_index(0, nullptr, nullptr, nullptr, nullptr);
+  return kIndex;
+}
 
-// NOLINTNEXTLINE(bugprone-throwing-static-initialization)
-const int kRevocationDataIndex = ::SSL_CTX_get_ex_new_index(0, nullptr, nullptr, nullptr, nullptr);
+int RevocationDataIndex() noexcept {
+  static const int kIndex = ::SSL_CTX_get_ex_new_index(0, nullptr, nullptr, nullptr, nullptr);
+  return kIndex;
+}
 
-// NOLINTNEXTLINE(bugprone-throwing-static-initialization)
-const int kKeyLogWriterIndex = ::SSL_CTX_get_ex_new_index(0, nullptr, nullptr, nullptr, nullptr);
+int KeyLogWriterIndex() noexcept {
+  static const int kIndex = ::SSL_CTX_get_ex_new_index(0, nullptr, nullptr, nullptr, nullptr);
+  return kIndex;
+}
 
 void ApplyCipherPolicy(SSL_CTX* ctx, const TLSConfig& cfg);
 
@@ -216,7 +225,7 @@ void ConfigureClientVerification(SSL_CTX* ctx, const TLSConfig& cfg, void* revoc
     // NOLINTNEXTLINE(bugprone-signed-bitwise)
     verifyMode |= SSL_VERIFY_FAIL_IF_NO_PEER_CERT;
   }
-  if (cfg.revocationCallback != nullptr && ::SSL_CTX_set_ex_data(ctx, kRevocationDataIndex, revocationData) != 1) {
+  if (cfg.revocationCallback != nullptr && ::SSL_CTX_set_ex_data(ctx, RevocationDataIndex(), revocationData) != 1) {
     throw std::runtime_error("Failed to attach the TLS revocation callback context");
   }
   ::SSL_CTX_set_verify(ctx, verifyMode, cfg.revocationCallback == nullptr ? nullptr : verifyCallback);
@@ -268,7 +277,7 @@ std::span<const std::byte> LoadOcspResponse(ObjectArrayPool<char>& charStorage, 
 int SessionTicketCallback(SSL* ssl, unsigned char* keyName, unsigned char* iv, EVP_CIPHER_CTX* cctx, EVP_MAC_CTX* mctx,
                           int enc) {
   SSL_CTX* sslCtx = ::SSL_get_SSL_CTX(ssl);
-  TlsTicketKeyStore* storePtr = static_cast<TlsTicketKeyStore*>(::SSL_CTX_get_ex_data(sslCtx, kTicketStoreIndex));
+  TlsTicketKeyStore* storePtr = static_cast<TlsTicketKeyStore*>(::SSL_CTX_get_ex_data(sslCtx, TicketStoreIndex()));
   // The callback is only registered when session tickets are enabled, which always sets the ex_data.
   assert(storePtr != nullptr && "SessionTicketCallback called with null ticket key store");
   return storePtr->processTicket(keyName, iv, EVP_MAX_IV_LENGTH, cctx, mctx, enc);
@@ -284,7 +293,7 @@ void ConfigureSessionTickets(SSL_CTX* ctx, const TLSConfig& cfg,
   [[maybe_unused]] const auto clearOpts = ::SSL_CTX_clear_options(ctx, SSL_OP_NO_TICKET);
   assert((clearOpts & SSL_OP_NO_TICKET) == 0 && "SSL_CTX_clear_options failed to clear SSL_OP_NO_TICKET");
   assert(ticketStore != nullptr);
-  ::SSL_CTX_set_ex_data(ctx, kTicketStoreIndex, ticketStore.get());
+  ::SSL_CTX_set_ex_data(ctx, TicketStoreIndex(), ticketStore.get());
   ::SSL_CTX_set_tlsext_ticket_key_evp_cb(ctx, &SessionTicketCallback);
 }
 
@@ -408,7 +417,7 @@ TlsContext::TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> 
     throw std::invalid_argument("TLS key logging is available only in debug builds");
 #else
     _keyLogWriter = std::make_unique<KeyLogWriter>(cfg.keyLogFile());
-    if (::SSL_CTX_set_ex_data(ctx, kKeyLogWriterIndex, _keyLogWriter.get()) != 1) {
+    if (::SSL_CTX_set_ex_data(ctx, KeyLogWriterIndex(), _keyLogWriter.get()) != 1) {
       throw std::runtime_error("Failed to attach the TLS key log writer");
     }
     ::SSL_CTX_set_keylog_callback(ctx, &TlsContext::LogSessionKeys);
@@ -419,7 +428,7 @@ TlsContext::TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> 
   const std::size_t wireLen = std::ranges::fold_left(
       alpnProtocols, std::size_t{0}, [](std::size_t sum, const auto& proto) { return sum + 1UL + proto.size(); });
   if (wireLen != 0) {
-    _alpnData = AlpnData{RawBytes32{wireLen}, 0, cfg.alpnMustMatch};
+    _alpnData = AlpnData{RawBytes32{wireLen}, {}, cfg.alpnMustMatch};
     for (const auto& proto : alpnProtocols) {
       _alpnData.wire.unchecked_push_back(static_cast<std::byte>(proto.size()));
       _alpnData.wire.unchecked_append(reinterpret_cast<const std::byte*>(proto.data()), proto.size());
@@ -475,7 +484,7 @@ TlsContext::TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> 
         throw std::runtime_error("Failed to configure an SNI TLS OCSP staple for: " + std::string(entry.pattern()));
       }
       if (_keyLogWriter) {
-        if (::SSL_CTX_set_ex_data(routeRaw, kKeyLogWriterIndex, _keyLogWriter.get()) != 1) {
+        if (::SSL_CTX_set_ex_data(routeRaw, KeyLogWriterIndex(), _keyLogWriter.get()) != 1) {
           throw std::runtime_error("Failed to attach the SNI TLS key log writer for: " + std::string(entry.pattern()));
         }
         ::SSL_CTX_set_keylog_callback(routeRaw, &TlsContext::LogSessionKeys);
@@ -520,7 +529,7 @@ int TlsContext::VerifyPeerCertificate(int preverifyOk, X509_STORE_CTX* storeCtx)
     return 0;
   }
   SSL_CTX* sslCtx = ::SSL_get_SSL_CTX(ssl);
-  auto* data = static_cast<RevocationData*>(::SSL_CTX_get_ex_data(sslCtx, kRevocationDataIndex));
+  auto* data = static_cast<RevocationData*>(::SSL_CTX_get_ex_data(sslCtx, RevocationDataIndex()));
   if (data == nullptr || data->callback == nullptr) {
     return 1;
   }
@@ -543,7 +552,7 @@ int TlsContext::VerifyPeerCertificate(int preverifyOk, X509_STORE_CTX* storeCtx)
 
 void TlsContext::LogSessionKeys(const SSL* ssl, const char* line) {
   SSL_CTX* sslCtx = ::SSL_get_SSL_CTX(ssl);
-  auto* writer = static_cast<KeyLogWriter*>(::SSL_CTX_get_ex_data(sslCtx, kKeyLogWriterIndex));
+  auto* writer = static_cast<KeyLogWriter*>(::SSL_CTX_get_ex_data(sslCtx, KeyLogWriterIndex()));
   if (writer != nullptr && line != nullptr) {
     writer->write(line);
   }

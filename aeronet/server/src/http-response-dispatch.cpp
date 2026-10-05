@@ -1,5 +1,4 @@
-﻿#include <algorithm>
-#include <cassert>
+﻿#include <cassert>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
@@ -235,7 +234,7 @@ void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpMessageData httpRespons
     AppendToOutBuffer(state, std::move(httpResponseData), haveFilePayload);
     _stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz + extraQueuedBytes);
     const std::size_t remainingSize = state.outBuffer.remainingSize();
-    _stats.maxConnectionOutboundBuffer = std::max(_stats.maxConnectionOutboundBuffer, remainingSize);
+    _stats.maxConnectionOutboundBuffer.updateMax(remainingSize);
     if (remainingSize > _config.maxOutboundBufferBytes) {
       state.requestDrainAndClose();
     }
@@ -287,7 +286,7 @@ void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpMessageData httpRespons
 
   const std::size_t remainingSize = state.outBuffer.remainingSize();
   _stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz + extraQueuedBytes);
-  _stats.maxConnectionOutboundBuffer = std::max(_stats.maxConnectionOutboundBuffer, remainingSize);
+  _stats.maxConnectionOutboundBuffer.updateMax(remainingSize);
   if (remainingSize > _config.maxOutboundBufferBytes) {
     state.requestDrainAndClose();
   }

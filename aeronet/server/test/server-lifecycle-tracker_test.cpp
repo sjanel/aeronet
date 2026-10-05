@@ -9,28 +9,39 @@
 
 namespace aeronet {
 
-TEST(ServerLifecycleTrackerTest, WaitUntilAnyRunningReturnsFalseWhenStopRequested) {
+TEST(ServerLifecycleTrackerTest, WaitUntilAllStoppedReturnsOnceAllLaunchedServersStopped) {
   ServerLifecycleTracker tracker;
   std::atomic<bool> stopRequested{false};
-  std::promise<void> waiterStarted;
-  auto waiterReady = waiterStarted.get_future();
 
-  std::atomic<bool> waitResult{true};
+  tracker.notifyServerLaunched();
+  tracker.notifyServerLaunched();
+
+  std::atomic<bool> waitReturned{false};
   std::jthread waiter([&] {
-    waiterStarted.set_value();
-    waitResult.store(tracker.waitUntilAnyRunning(stopRequested), std::memory_order_relaxed);
+    tracker.waitUntilAllStopped(stopRequested);
+    waitReturned.store(true, std::memory_order_relaxed);
   });
 
-  waiterReady.wait();
-
-  // Give the waiter a short window to evaluate the predicate in the false state before stop is requested.
+  tracker.notifyServerStopped();
   std::this_thread::sleep_for(std::chrono::milliseconds{20});
+  EXPECT_FALSE(waitReturned.load(std::memory_order_relaxed));  // one server still running
 
-  stopRequested.store(true, std::memory_order_relaxed);
-  tracker.notifyStopRequested();
-
+  tracker.notifyServerStopped();
   waiter.join();
-  EXPECT_FALSE(waitResult.load(std::memory_order_relaxed));
+  EXPECT_TRUE(waitReturned.load(std::memory_order_relaxed));
+}
+
+TEST(ServerLifecycleTrackerTest, WaitUntilAllStoppedReturnsWhenServersAlreadyStopped) {
+  // Servers that stopped (e.g. drained, or failed to start) before MultiHttpServer::run() reached the wait.
+  ServerLifecycleTracker tracker;
+  std::atomic<bool> stopRequested{false};
+
+  tracker.notifyServerLaunched();
+  tracker.notifyServerLaunched();
+  tracker.notifyServerStopped();
+  tracker.notifyServerStopped();
+
+  tracker.waitUntilAllStopped(stopRequested);
 }
 
 TEST(ServerLifecycleTrackerTest, WaitUntilAllStoppedReturnsWhenStopRequested) {
@@ -39,7 +50,7 @@ TEST(ServerLifecycleTrackerTest, WaitUntilAllStoppedReturnsWhenStopRequested) {
   std::promise<void> waiterStarted;
   auto waiterReady = waiterStarted.get_future();
 
-  tracker.notifyServerRunning();
+  tracker.notifyServerLaunched();
 
   std::atomic<bool> waitReturned{false};
   std::jthread waiter([&] {
