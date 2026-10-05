@@ -19,6 +19,7 @@
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/websocket-constants.hpp"
 #include "aeronet/websocket-frame.hpp"
 
@@ -98,10 +99,18 @@ class WebSocketHandlerTest : public ::testing::Test {
   }
 
   // Helper to process frame data
-  ProtocolProcessResult process(const RawBytes& data) { return handler->processInput(buf_bytes(data), dummyState); }
+  // Feeds data like the server does: bytes not consumed by a call (incomplete trailing frame) stay in the input
+  // buffer and are passed again, followed by the new data, at the next call.
+  ProtocolProcessResult process(const RawBytes& data) {
+    pendingInput.append(data.data(), data.size());
+    const auto result = handler->processInput(buf_bytes(pendingInput), dummyState);
+    pendingInput.erase_front(result.bytesConsumed);
+    return result;
+  }
 
   std::unique_ptr<WebSocketHandler> handler;
   ConnectionState dummyState;  // Not used in current implementation
+  RawBytes pendingInput;       // bytes of an incomplete frame, passed again with the next data (see process())
 
   // Tracking variables for callbacks
   std::string lastMessage;
@@ -472,6 +481,23 @@ TEST_F(WebSocketHandlerTest, CloseHandshakeInitiatedByPeer) {
   EXPECT_TRUE(handler->isClosing());
   EXPECT_TRUE(handler->isCloseComplete());
   EXPECT_TRUE(handler->hasPendingOutput());  // Should echo Close
+}
+
+// A server closes the TCP connection right after answering a client initiated close (RFC 6455 section 7.1.1), so
+// that it holds the TIME_WAIT state and not the client.
+TEST_F(WebSocketHandlerTest, ServerClosesConnectionAfterAnsweringPeerClose) {
+  WebSocketConfig config;
+  config.isServerSide = true;
+  auto serverHandler = std::make_unique<WebSocketHandler>(config, WebSocketCallbacks());
+
+  RawBytes closeFrame;
+  BuildCloseFrame(closeFrame, CloseCode::Normal, "bye", true, MaskingKey{0x12345678});
+  const auto result = serverHandler->processInput(buf_bytes(closeFrame), dummyState);
+
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
+  EXPECT_EQ(result.bytesConsumed, closeFrame.size());
+  EXPECT_TRUE(serverHandler->isCloseComplete());
+  EXPECT_TRUE(serverHandler->hasPendingOutput());  // the Close response, written before the connection is closed
 }
 
 // ============================================================================
@@ -1856,29 +1882,62 @@ TEST_F(WebSocketHandlerTest, InputBufferCompactionWhenOffsetExceedsHalf) {
   EXPECT_EQ(lastMessage, "Z");
 }
 
-TEST_F(WebSocketHandlerTest, BytesConsumedCountsOnlyCurrentInputWhenCarryOverExists) {
-  // 1. Build carry-over by sending an incomplete first frame.
+TEST_F(WebSocketHandlerTest, BytesConsumedCoversTheIncompleteFramePassedAgain) {
+  // 1. An incomplete frame is not consumed: the caller keeps its bytes.
   auto frame1 = BuildUnmaskedFrame(Opcode::Text, "A");
   RawBytes firstPartial;
   firstPartial.append(frame1.data(), frame1.size() - 1);
-  auto result = process(firstPartial);
+  auto result = handler->processInput(buf_bytes(firstPartial), dummyState);
   EXPECT_EQ(result.action, ProtocolProcessResult::Action::Continue);
   EXPECT_EQ(result.bytesConsumed, 0U);
+  EXPECT_EQ(messageCount, 0);
 
-  // 2. Send the remaining byte of frame1 plus a full second frame in one call.
-  //    The handler will consume buffered carry-over bytes + current input bytes,
-  //    but bytesConsumed must report only consumption from this current input.
+  // 2. The caller passes these bytes again, followed by the rest of frame1 and a full second frame.
   auto frame2 = BuildUnmaskedFrame(Opcode::Text, "B");
   RawBytes batch;
-  batch.append(frame1.data() + frame1.size() - 1, 1);
+  batch.append(frame1.data(), frame1.size());
   batch.append(frame2.data(), frame2.size());
 
-  result = process(batch);
+  result = handler->processInput(buf_bytes(batch), dummyState);
   EXPECT_EQ(result.action, ProtocolProcessResult::Action::Continue);
-  EXPECT_LE(result.bytesConsumed, batch.size());
   EXPECT_EQ(result.bytesConsumed, batch.size());
   EXPECT_EQ(messageCount, 2);
   EXPECT_EQ(lastMessage, "B");
+}
+
+// Regression: a frame received in two reads (a frame bigger than the loopback MSS is always split) was processed
+// twice. The handler copied the incomplete frame into an internal buffer while reporting it as not consumed, so the
+// server passed these bytes again: the message was corrupted and the bytes after it were parsed as a bogus frame,
+// closing the connection with a protocol error.
+TEST_F(WebSocketHandlerTest, FrameSplitAcrossReadsIsDeliveredOnce) {
+  std::string payload(70000, '\0');
+  for (std::size_t pos = 0; pos < payload.size(); ++pos) {
+    payload[pos] = static_cast<char>('a' + (pos % 26));
+  }
+  auto frame = BuildUnmaskedFrame(Opcode::Text, payload);
+  auto nextFrame = BuildUnmaskedFrame(Opcode::Text, "next");
+  constexpr std::size_t kFirstReadSize = 65483;  // loopback MSS
+
+  RawBytes firstRead;
+  firstRead.append(frame.data(), kFirstReadSize);
+  auto result = process(firstRead);
+  EXPECT_EQ(result.bytesConsumed, 0U);
+  EXPECT_EQ(messageCount, 0);
+
+  RawBytes secondRead;
+  secondRead.append(frame.data() + kFirstReadSize, frame.size() - kFirstReadSize);
+  result = process(secondRead);
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Continue);
+  EXPECT_EQ(messageCount, 1);
+  EXPECT_EQ(lastMessage, payload);
+  EXPECT_EQ(errorCount, 0);
+  EXPECT_FALSE(handler->hasPendingOutput());
+
+  result = process(nextFrame);
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Continue);
+  EXPECT_EQ(messageCount, 2);
+  EXPECT_EQ(lastMessage, "next");
+  EXPECT_EQ(errorCount, 0);
 }
 
 TEST_F(WebSocketHandlerTest, ForceCloseOnTimeout_NoOpIfNotClosing) {

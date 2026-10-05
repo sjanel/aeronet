@@ -10,7 +10,7 @@
 namespace aeronet {
 
 /// WebSocket-specific compression context for permessage-deflate (RFC 7692).
-/// This wraps zlib deflate/inflate with WebSocket-specific handling:
+/// This wraps zlib raw deflate/inflate (no zlib header nor checksum) with WebSocket-specific handling:
 /// - Removes trailing 0x00 0x00 0xff 0xff from compressed data per RFC 7692 §7.2.1
 /// - Appends the trailer back during decompression
 /// - Supports context reset for no_context_takeover mode
@@ -18,7 +18,8 @@ class WebSocketCompressor {
  public:
   /// Create a WebSocket compressor with the specified compression level.
   /// @param compressionLevel deflate compression level (0-9)
-  explicit WebSocketCompressor(int8_t compressionLevel);
+  /// @param windowBits base two logarithm of the LZ77 window (9-15): the negotiated *_max_window_bits of the sender
+  explicit WebSocketCompressor(int8_t compressionLevel, uint8_t windowBits = ZStreamRAII::kMaxWindowBits);
 
   /// Compress a WebSocket message payload.
   /// @param input Uncompressed message data
@@ -34,7 +35,8 @@ class WebSocketCompressor {
 /// WebSocket-specific decompression context for permessage-deflate (RFC 7692).
 class WebSocketDecompressor {
  public:
-  WebSocketDecompressor() = default;
+  /// @param windowBits base two logarithm of the LZ77 window (8-15): the negotiated *_max_window_bits of the peer
+  explicit WebSocketDecompressor(uint8_t windowBits = ZStreamRAII::kMaxWindowBits);
 
   /// Decompress a WebSocket message payload.
   /// @param input Compressed message data (without trailing 0x00 0x00 0xff 0xff)
@@ -46,7 +48,7 @@ class WebSocketDecompressor {
                                        std::size_t maxDecompressedSize, bool resetContext);
 
  private:
-  ZStreamRAII _zs{ZStreamRAII::Variant::deflate};
+  ZStreamRAII _zs;
 };
 
 }  // namespace aeronet

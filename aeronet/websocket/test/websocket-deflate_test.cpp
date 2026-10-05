@@ -43,6 +43,11 @@ TEST(WebSocketDeflateTest, DeflateConfigValidation) {
   EXPECT_THROW(config.validate(), std::invalid_argument);
   config.serverMaxWindowBits = 19;
   EXPECT_THROW(config.validate(), std::invalid_argument);
+  // zlib cannot compress raw DEFLATE data with a 256 bytes window.
+  config.serverMaxWindowBits = 8;
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+  config.serverMaxWindowBits = 9;
+  EXPECT_NO_THROW(config.validate());
   config.serverMaxWindowBits = 15;
   EXPECT_NO_THROW(config.validate());
 
@@ -127,6 +132,17 @@ TEST(WebSocketDeflateTest, ParseDeflateOffer_ServerMaxWindowBits) {
   EXPECT_EQ(result.value_or(DeflateNegotiatedParams{}).serverMaxWindowBits, 10);
 #else
   EXPECT_FALSE(result.has_value());
+#endif
+}
+
+// The server cannot compress with a 256 bytes window: an offer requiring it is declined (RFC 7692 section 7.1.2.1).
+TEST(WebSocketDeflateTest, ParseDeflateOffer_ServerMaxWindowBits8IsDeclined) {
+  DeflateConfig serverConfig;
+  EXPECT_FALSE(ParseDeflateOffer("permessage-deflate; server_max_window_bits=8", serverConfig).has_value());
+#ifdef AERONET_ENABLE_ZLIB
+  EXPECT_TRUE(ParseDeflateOffer("permessage-deflate; server_max_window_bits=9", serverConfig).has_value());
+  // A client compressing with 8 bits is fine: the server inflates with a window at least as large.
+  EXPECT_TRUE(ParseDeflateOffer("permessage-deflate; client_max_window_bits=8", serverConfig).has_value());
 #endif
 }
 

@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/zlib-gateway.hpp"
 
 namespace aeronet {
 namespace {
@@ -64,6 +65,26 @@ TEST_F(WebSocketCompressorTest, CompressEmptyInput) {
   const char* error = compressor.compress(StringToBytes(""), output, false);
   EXPECT_EQ(error, nullptr);
   // Even empty input may produce some bytes due to flush markers
+}
+
+// Whatever the free space of the output buffer, compressing a message ends (the sync flush needs more than 6 free
+// bytes, more than the 5 bytes raw DEFLATE bound of an empty message) and decompresses back to the message. The endless
+// flush loop showed with AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS (ASAN builds), where buffers grow exactly as
+// requested.
+TEST_F(WebSocketCompressorTest, CompressTinyInputsWithAnyOutputCapacity) {
+  for (const std::string_view message : {std::string_view{}, std::string_view{"a"}, std::string_view{"abc"}}) {
+    for (std::size_t capacity = 0; capacity <= 32; ++capacity) {
+      WebSocketCompressor tinyCompressor(6);
+      RawBytes compressed(capacity);
+      ASSERT_EQ(tinyCompressor.compress(StringToBytes(message), compressed, false), nullptr);
+      ASSERT_LE(compressed.size(), message.size() + 16U) << capacity;
+
+      WebSocketDecompressor decompressor;
+      RawBytes decompressed;
+      ASSERT_EQ(decompressor.decompress(compressed, decompressed, 0, false), nullptr) << capacity;  // 0: no limit
+      EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(decompressed.data()), decompressed.size()), message);
+    }
+  }
 }
 
 TEST_F(WebSocketCompressorTest, CompressSimpleText) {
@@ -686,18 +707,127 @@ TEST_F(WebSocketCompressEdgeCasesTest, ManuallyCorruptedCompressedData) {
   auto [compressOk, compressed] = CompressData("Test data for corruption", true);
   ASSERT_TRUE(compressOk);
 
-  // Corrupt the middle of the compressed data
-  if (compressed.size() > 5) {
-    std::string corrupted = compressed;
-    corrupted[compressed.size() / 2] = '\xFF';  // Flip a byte in the middle
+  // Raw DEFLATE data carries no checksum (permessage-deflate relies on TCP for integrity): only structural errors are
+  // detectable. Set the block type of the first block to the reserved value 3 (bits 1-2 of the first byte).
+  ASSERT_FALSE(compressed.empty());
+  std::string corrupted = compressed;
+  corrupted[0] = static_cast<char>(static_cast<unsigned char>(corrupted[0]) | 0x06U);
 
-    WebSocketDecompressor decompressor;
-    RawBytes output;
-    const char* error = decompressor.decompress(StringToBytes(corrupted), output, 0, true);
-    // This should fail with Z_DATA_ERROR
-    EXPECT_NE(error, nullptr);
-    EXPECT_STREQ(error, "inflate() failed");
+  WebSocketDecompressor decompressor;
+  RawBytes output;
+  const char* error = decompressor.decompress(StringToBytes(corrupted), output, 0, true);
+  // This should fail with Z_DATA_ERROR
+  EXPECT_NE(error, nullptr);
+  EXPECT_STREQ(error, "inflate() failed");
+}
+
+// ============================================================================
+// Interoperability: permessage-deflate payloads are raw DEFLATE data (RFC 7692 section 7.2.1)
+// ============================================================================
+
+namespace {
+
+// Compresses like any RFC 7692 peer: raw deflate, sync flush, trailing 0x00 0x00 0xff 0xff removed.
+std::string ReferenceRawDeflate(std::string_view input, int windowBits = 15) {
+  zstream stream{};
+  EXPECT_EQ(ZDeflateInit2(stream, 6, Z_DEFLATED, -windowBits, 8, Z_DEFAULT_STRATEGY), Z_OK);
+  std::string out(input.size() + 1024, '\0');
+  ZSetInput(stream, input);
+  ZSetOutput(stream, out.data(), out.size());
+  EXPECT_EQ(ZDeflate(stream, Z_SYNC_FLUSH), Z_OK);
+  out.resize(out.size() - stream.avail_out);
+  ZDeflateEnd(stream);
+  EXPECT_TRUE(out.ends_with(std::string_view("\x00\x00\xff\xff", 4)));
+  out.resize(out.size() - 4);
+  return out;
+}
+
+// Decompresses like any RFC 7692 peer. Returns false on a decompression error.
+// Output is produced in small chunks so that back references are resolved from the sliding window of 2^windowBits
+// bytes (within one large output buffer, zlib would resolve them from the output itself whatever the window).
+bool ReferenceRawInflate(std::string_view compressed, std::string& output, int windowBits = 15) {
+  zstream stream{};
+  EXPECT_EQ(ZInflateInit2(stream, -windowBits), Z_OK);
+  std::string input(compressed);
+  input.append("\x00\x00\xff\xff", 4);
+  ZSetInput(stream, input);
+  output.clear();
+  std::array<char, 256> chunk{};
+  bool ok = true;
+  do {
+    ZSetOutput(stream, chunk.data(), chunk.size());
+    const auto ret = ZInflate(stream, Z_SYNC_FLUSH);
+    if (ret != Z_OK && ret != Z_STREAM_END && ret != Z_BUF_ERROR) {
+      ok = false;
+      break;
+    }
+    output.append(chunk.data(), chunk.size() - stream.avail_out);
+  } while (stream.avail_out == 0);
+  ZInflateEnd(stream);
+  return ok;
+}
+
+std::string CompressibleText() {
+  std::string text;
+  for (int idx = 0; idx < 200; ++idx) {
+    text += R"({"id":)" + std::to_string(idx) + R"(,"name":"item","tags":["benchmark","compression"]})";
   }
+  return text;
+}
+
+}  // namespace
+
+TEST(WebSocketCompressInterop, DecompressesStandardRawDeflatePayload) {
+  const std::string text = CompressibleText();
+  const std::string compressed = ReferenceRawDeflate(text);
+
+  WebSocketDecompressor decompressor;
+  RawBytes output;
+  ASSERT_EQ(decompressor.decompress(StringToBytes(compressed), output, 0, true), nullptr);
+  EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(output.data()), output.size()), text);
+}
+
+TEST(WebSocketCompressInterop, ProducesStandardRawDeflatePayload) {
+  const std::string text = CompressibleText();
+  WebSocketCompressor compressor(6);
+  RawBytes compressed;
+  ASSERT_EQ(compressor.compress(StringToBytes(text), compressed, true), nullptr);
+
+  std::string decompressed;
+  ASSERT_TRUE(ReferenceRawInflate(std::string_view(reinterpret_cast<const char*>(compressed.data()), compressed.size()),
+                                  decompressed));
+  EXPECT_EQ(decompressed, text);
+}
+
+TEST(WebSocketCompressInterop, CompressorHonorsNegotiatedWindowBits) {
+  // A 1 KiB pseudo-random block repeated: matches are 1024 bytes back, beyond a 512 bytes (9 bits) window.
+  std::string block(1024, '\0');
+  uint32_t state = 12345;
+  for (auto& ch : block) {
+    state = (state * 1103515245U) + 12345U;
+    ch = static_cast<char>(state >> 24U);
+  }
+  const std::string text = block + block;
+
+  WebSocketCompressor compressor(6, 9);
+  RawBytes compressed;
+  ASSERT_EQ(compressor.compress(StringToBytes(text), compressed, true), nullptr);
+  std::string decompressed;
+  ASSERT_TRUE(ReferenceRawInflate(std::string_view(reinterpret_cast<const char*>(compressed.data()), compressed.size()),
+                                  decompressed, 9));
+  EXPECT_EQ(decompressed, text);
+
+  // Control: the same data compressed with a 32 KiB window refers 1024 bytes back, a 9 bits peer cannot decode it.
+  const std::string wideWindow = ReferenceRawDeflate(text, 15);
+  std::string rejected;
+  EXPECT_FALSE(ReferenceRawInflate(wideWindow, rejected, 9));
+
+  // The decompressor inflates any window up to its own.
+  WebSocketDecompressor decompressor(9);
+  RawBytes output;
+  ASSERT_EQ(decompressor.decompress(std::span<const std::byte>(compressed.data(), compressed.size()), output, 0, true),
+            nullptr);
+  EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(output.data()), output.size()), text);
 }
 
 }  // namespace aeronet

@@ -56,6 +56,9 @@ struct ExtensionParam {
   return {name, value};
 }
 
+// Smallest LZ77 window zlib can compress raw DEFLATE data with: a 256 bytes window (8 bits) is not supported.
+constexpr uint8_t kMinDeflateWindowBits = 9;
+
 // Parse window bits value (8-15)
 [[nodiscard]] uint8_t ParseWindowBits(std::string_view value) {
   uint8_t bits = 0;
@@ -80,8 +83,9 @@ void DeflateConfig::validate() const {
   if (compressionLevel < 0 || compressionLevel > 9) {
     throw std::invalid_argument("DeflateConfig: compressionLevel must be between 0 and 9");
   }
-  if (serverMaxWindowBits < 8 || serverMaxWindowBits > 15) {
-    throw std::invalid_argument("DeflateConfig: serverMaxWindowBits must be between 8 and 15");
+  if (serverMaxWindowBits < 9 || serverMaxWindowBits > 15) {
+    // zlib cannot compress raw DEFLATE data with a 256 bytes (8 bits) window.
+    throw std::invalid_argument("DeflateConfig: serverMaxWindowBits must be between 9 and 15");
   }
   if (clientMaxWindowBits < 8 || clientMaxWindowBits > 15) {
     throw std::invalid_argument("DeflateConfig: clientMaxWindowBits must be between 8 and 15");
@@ -139,6 +143,10 @@ std::optional<DeflateNegotiatedParams> ParseDeflateOffer([[maybe_unused]] std::s
         }
         // Server can accept client's request if it's <= our configured value
         params.serverMaxWindowBits = std::min(bits, serverConfig.serverMaxWindowBits);
+        if (params.serverMaxWindowBits < kMinDeflateWindowBits) {
+          // We cannot compress with a window that small: decline the offer (RFC 7692 section 7.1.2.1).
+          return std::nullopt;
+        }
       }
     } else if (CaseInsensitiveEqual(name, kClientMaxWindowBits) && value.has_value()) {
       const auto bits = ParseWindowBits(*value);
@@ -202,38 +210,34 @@ char* BuildDeflateResponse(DeflateNegotiatedParams params, char* pData) {
 }
 
 struct DeflateContext::Impl {
+  // Window bits and context takeover: own parameters when compressing, the peer's when decompressing.
 #ifdef AERONET_ENABLE_ZLIB
-  explicit Impl(int8_t compressionLevel) : compressor(compressionLevel) {}
+  Impl(int8_t compressionLevel, uint8_t deflateWindowBits, uint8_t inflateWindowBits, bool deflateNoContextTakeover,
+       bool inflateNoContextTakeover)
+      : compressor(compressionLevel, deflateWindowBits),
+        decompressor(inflateWindowBits),
+        deflateNoContextTakeover(deflateNoContextTakeover),
+        inflateNoContextTakeover(inflateNoContextTakeover) {}
 
   WebSocketCompressor compressor;
   WebSocketDecompressor decompressor;
 #else
-  explicit Impl([[maybe_unused]] int8_t compressionLevel) {}
+  Impl([[maybe_unused]] int8_t compressionLevel, [[maybe_unused]] uint8_t deflateWindowBits,
+       [[maybe_unused]] uint8_t inflateWindowBits, bool deflateNoContextTakeover, bool inflateNoContextTakeover)
+      : deflateNoContextTakeover(deflateNoContextTakeover), inflateNoContextTakeover(inflateNoContextTakeover) {}
 #endif
-  bool deflateNoContextTakeover{false};
-  bool inflateNoContextTakeover{false};
-  uint8_t deflateWindowBits{15};
-  uint8_t inflateWindowBits{15};
+  bool deflateNoContextTakeover;
+  bool inflateNoContextTakeover;
 };
 
 DeflateContext::DeflateContext(DeflateNegotiatedParams params, const DeflateConfig& config, bool isServerSide)
-    : _impl(std::make_unique<Impl>(config.compressionLevel)), _minCompressSize(config.minCompressSize) {
-  if (isServerSide) {
-    // Server compresses using its own window bits
-    _impl->deflateWindowBits = params.serverMaxWindowBits;
-    // Server decompresses using client's window bits
-    _impl->inflateWindowBits = params.clientMaxWindowBits;
-    _impl->deflateNoContextTakeover = params.serverNoContextTakeover;
-    _impl->inflateNoContextTakeover = params.clientNoContextTakeover;
-  } else {
-    // Client compresses using its own window bits
-    _impl->deflateWindowBits = params.clientMaxWindowBits;
-    // Client decompresses using server's window bits
-    _impl->inflateWindowBits = params.serverMaxWindowBits;
-    _impl->deflateNoContextTakeover = params.clientNoContextTakeover;
-    _impl->inflateNoContextTakeover = params.serverNoContextTakeover;
-  }
-}
+    : _impl(
+          isServerSide
+              ? std::make_unique<Impl>(config.compressionLevel, params.serverMaxWindowBits, params.clientMaxWindowBits,
+                                       params.serverNoContextTakeover, params.clientNoContextTakeover)
+              : std::make_unique<Impl>(config.compressionLevel, params.clientMaxWindowBits, params.serverMaxWindowBits,
+                                       params.clientNoContextTakeover, params.serverNoContextTakeover)),
+      _minCompressSize(config.minCompressSize) {}
 
 DeflateContext::~DeflateContext() = default;
 

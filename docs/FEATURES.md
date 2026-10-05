@@ -3090,6 +3090,8 @@ Common WebSocket close status codes:
 | 1009 | MessageTooBig | Message too large |
 | 1011 | InternalError | Server encountered an error |
 
+When the peer initiates the close handshake, the server answers with its Close frame and then closes the TCP connection, so that it holds the `TIME_WAIT` state and not the client (RFC 6455 §7.1.1). Frames may arrive split across any number of reads: the handler only consumes complete frames and leaves the bytes of a trailing incomplete frame to the connection buffer, without copying them. Tests: `aeronet/websocket/test/websocket-handler_test.cpp` (`ServerClosesConnectionAfterAnsweringPeerClose`, `FrameSplitAcrossReadsIsDeliveredOnce`), `tests/websocket-integration_test.cpp` (`LargeFrameSplitAcrossReadsIsEchoedIntact`).
+
 ### WebSocket Configuration
 
 WebSocket behavior can be configured via `WebSocketConfig`:
@@ -3127,7 +3129,7 @@ Compression is automatically negotiated during the WebSocket handshake when the 
 ```cpp
 websocket::DeflateConfig deflateConfig;
 deflateConfig.serverMaxWindowBits = 15;          // Server LZ77 window size (9-15)
-deflateConfig.clientMaxWindowBits = 15;          // Client LZ77 window size (9-15)
+deflateConfig.clientMaxWindowBits = 15;          // Client LZ77 window size (8-15)
 deflateConfig.serverNoContextTakeover = false;   // Reuse compression context
 deflateConfig.clientNoContextTakeover = false;   // Reuse decompression context
 deflateConfig.minCompressSize = 64;              // Don't compress messages < 64 bytes
@@ -3161,6 +3163,8 @@ router.setWebSocket("/ws",
 | `client_no_context_takeover` | Client resets compression context after each message |
 
 When negotiation succeeds, messages are automatically compressed/decompressed transparently—callbacks receive uncompressed payloads.
+
+Messages are raw DEFLATE data (RFC 7692 §7.2.1: no zlib header or checksum, trailing `00 00 ff ff` removed), interoperable with browsers and standard WebSocket libraries, and each side compresses with the LZ77 window negotiated for it. zlib cannot compress raw DEFLATE data with a 256-byte window, so `DeflateConfig::serverMaxWindowBits` accepts 9 to 15 and an offer requesting `server_max_window_bits=8` is declined (the connection proceeds without compression). When an endpoint factory returns a handler without compression and the client negotiated it, the server enables it on that handler (`WebSocketHandler::enableCompression()`), keeping its callbacks. Tests: `aeronet/websocket/test/websocket-compress_test.cpp` (`WebSocketCompressInterop.*`), `aeronet/websocket/test/websocket-deflate_test.cpp` (`ParseDeflateOffer_ServerMaxWindowBits8IsDeclined`), `tests/websocket-integration_test.cpp` (`CompressedMessageFromStandardClientIsEchoedCompressed`).
 
 ### Thread Safety
 
