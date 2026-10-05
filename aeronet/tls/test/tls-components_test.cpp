@@ -383,12 +383,12 @@ TEST(TlsContextTest, CollectsHandshakeInfo) {
   auto tlsInfo = FinalizeTlsHandshake(pair.serverSsl.get(), pair.serverFd.fd(), true, tlsHandshakeEventEmitted, {},
                                       start, metrics);
   EXPECT_EQ(tlsInfo.selectedAlpn(), "http/1.1");
-  EXPECT_EQ(metrics.handshakesSucceeded, 1U);
+  EXPECT_EQ(metrics.handshakesSucceeded.load(), 1U);
   EXPECT_EQ(metrics.alpnDistribution[RawChars32("http/1.1")], 1U);
   EXPECT_EQ(metrics.versionCounts.size(), 1U);
   EXPECT_EQ(metrics.cipherCounts.size(), 1U);
-  EXPECT_EQ(metrics.handshakeDurationCount, 1U);
-  EXPECT_EQ(metrics.handshakeDurationMaxNs, metrics.handshakeDurationTotalNs);
+  EXPECT_EQ(metrics.handshakeDurationCount.load(), 1U);
+  EXPECT_EQ(metrics.handshakeDurationMaxNs.load(), metrics.handshakeDurationTotalNs.load());
 }
 
 TEST(TlsContextTest, StaplesCachedOcspResponseWhenClientRequestsIt) {
@@ -1119,7 +1119,7 @@ TEST(TlsHandshakeTest, FinalizeTlsHandshakeLogsHandshake) {
   EXPECT_FALSE(tlsInfo.negotiatedCipher().empty());
   EXPECT_FALSE(tlsInfo.negotiatedVersion().empty());
   EXPECT_TRUE(tlsInfo.peerSubject().empty());
-  EXPECT_EQ(metrics.handshakesSucceeded, 1U);
+  EXPECT_EQ(metrics.handshakesSucceeded.load(), 1U);
 }
 
 TEST(TlsHandshakeTest, CollectTlsHandshakeInfoBeforeHandshake) {
@@ -1139,7 +1139,7 @@ TEST(TlsHandshakeTest, CollectTlsHandshakeInfoBeforeHandshake) {
   // (derived from the SSL_METHOD) so we don't assert on them.
   EXPECT_TRUE(tlsInfo.selectedAlpn().empty());
   EXPECT_TRUE(tlsInfo.peerSubject().empty());
-  EXPECT_EQ(metrics.handshakesSucceeded, 1U);
+  EXPECT_EQ(metrics.handshakesSucceeded.load(), 1U);
 }
 
 TEST(TlsHandshakeTest, CollectTlsHandshakeInfoNoAlpn) {

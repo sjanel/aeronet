@@ -40,6 +40,7 @@
 #include "aeronet/router-update-proxy.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
+#include "aeronet/single-writer-counter.hpp"
 #include "aeronet/socket.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/timer-fd.hpp"
@@ -245,6 +246,8 @@ class SingleHttpServer {
   // Lifetime:
   //   - May be set or replaced at any time; the latest callback is used for subsequent parse
   //     failures. Provide an empty std::function ({} ) to clear.
+  //   - While the server is running, a call from another thread waits for the event loop to install it (like
+  //     all the callback setters below).
   //
   // Exceptions:
   // - Exceptions escaping the callback are caught and ignored to preserve server stability.
@@ -269,15 +272,17 @@ class SingleHttpServer {
   //   - All string_view fields are only guaranteed valid for the duration of the callback.
   // Exceptions:
   //   - Exceptions escaping the callback are caught and ignored.
+  // Lifetime: same as setParserErrorCallback().
   void setTlsHandshakeCallback(TlsHandshakeCallback cb);
 #endif
 
   // Register or clear the expectation handler. This handler will be invoked from
   // the server's event-loop thread when a request contains an `Expect` header
   // with tokens other than "100-continue". To clear, pass an empty std::function.
+  // Lifetime: same as setParserErrorCallback().
   void setExpectationHandler(ExpectationHandler handler);
 
-  // Install a callback invoked with middleware metrics.
+  // Install a callback invoked with middleware metrics. Lifetime: same as setParserErrorCallback().
   void setMiddlewareMetricsCallback(MiddlewareMetricsCallback cb);
 
   // Run the server event loop until stop() is called (e.g. from another thread) or the process receives SIGINT/SIGTERM.
@@ -343,13 +348,13 @@ class SingleHttpServer {
   //   source.request_stop();  // triggers shutdown
   [[nodiscard]] AsyncHandle startDetachedWithStopToken(std::stop_token token);
 
-  // Requests cooperative termination of the event loop. Safe to invoke from a different thread
-  // (best‑effort). The maximum observable latency before run()/runUntil() return is bounded by
-  // the checkPeriod supplied to those functions (epoll returns earlier if events arrive).
-  // New incoming connections are prevented by closing the listening socket immediately;
-  // existing established connections are not force‑closed – they simply stop being serviced once the loop exits.
+  // Requests cooperative termination of the event loop. Safe to invoke from a different thread, or from a handler.
+  // The event loop is woken up immediately: it then closes the listening socket and the connections itself, and
+  // run()/runUntil() return.
   // Usually called from a different thread than the one that started the server, this method is not blocking,
-  // so the server might not be immediately stopped once the method returns to the caller.
+  // so the server might not be immediately stopped once the method returns to the caller: join the thread running it
+  // before restarting or destroying the server. Exception: when started with start(), the event-loop thread is joined
+  // (unless stop() is called from it).
   // Note that you can also call stop on a server that listens on a port without being running - in this case, it will
   // close the listening socket.
   //
@@ -400,7 +405,7 @@ class SingleHttpServer {
   // connections closed after current response), false otherwise.
   [[nodiscard]] bool isDraining() const { return _lifecycle.isDraining(); }
 
-  // Retrieve current server statistics snapshot.
+  // Retrieve current server statistics snapshot. Safe to call from any thread, also while running.
   [[nodiscard]] ServerStats stats() const;
 
   // Post a configuration update to be applied safely from the server's event loop thread.
@@ -439,6 +444,12 @@ class SingleHttpServer {
   using ConnectionIt = internal::ConnectionStorage::ConnectionIt;
 
   void initListener(NativeHandle listenFd = kInvalidHandle);
+
+  // Leaves Idle for Starting under _updates.lock: an update applied right away because the server is stopped (see
+  // submitRouterUpdate(), submitCallbacksUpdate()) then completes before the startup, every later one being queued
+  // for the event loop.
+  void beginStartup();
+
   void prepareRun();
 
   void runUntilStarted(const std::function<bool()>& predicate);
@@ -608,15 +619,16 @@ class SingleHttpServer {
   CloseStatus handleInH2Tunneling(ConnectionIt cnxIt);
 #endif
 
+  // Updated by the event loop, read by stats() from any thread.
   struct StatsInternal {
-    uint64_t totalBytesQueued{0};
-    uint64_t totalBytesWrittenImmediate{0};
-    uint64_t totalBytesWrittenFlush{0};
-    uint64_t deferredWriteEvents{0};
-    uint64_t flushCycles{0};
-    uint64_t epollModFailures{0};
-    std::size_t maxConnectionOutboundBuffer{0};
-    uint64_t totalRequestsServed{0};
+    SingleWriterCounter<uint64_t> totalBytesQueued;
+    SingleWriterCounter<uint64_t> totalBytesWrittenImmediate;
+    SingleWriterCounter<uint64_t> totalBytesWrittenFlush;
+    SingleWriterCounter<uint64_t> deferredWriteEvents;
+    SingleWriterCounter<uint64_t> flushCycles;
+    SingleWriterCounter<uint64_t> epollModFailures;
+    SingleWriterCounter<std::size_t> maxConnectionOutboundBuffer;
+    SingleWriterCounter<uint64_t> totalRequestsServed;
   } _stats;
 
   struct Callbacks {
@@ -629,7 +641,18 @@ class SingleHttpServer {
     ExpectationHandler expectation;
   } _callbacks;
 
+  // Applies a change of the callbacks: right away when stopped or when called from the event loop, otherwise by the
+  // event loop (the only thread using them while running), waiting for it (see applyPendingUpdates()).
+  void submitCallbacksUpdate(std::function<void(Callbacks&)> updater);
+
+  // Applies the changes queued by submitCallbacksUpdate(). PRECONDITION: _updates.lock held, server stopped.
+  void applyQueuedCallbacksUpdates();
+
   internal::PendingUpdates _updates;
+
+  // Callback changes queued by submitCallbacksUpdate() (protected by _updates.lock).
+  vector<std::function<void(Callbacks&)>> _callbacksUpdates;
+  std::atomic<bool> _hasCallbacksUpdates{false};
 
   HttpServerConfig _config;
 
@@ -637,6 +660,9 @@ class SingleHttpServer {
   DecompressionState _decompressionState;
 
   Socket _listenSocket;
+  // Linux only: bound (never listening) socket keeping an ephemeral port reserved for the whole life of this server
+  // when reusePort is enabled, see initListener(). Not copied: it stays with the server that resolved the port.
+  Socket _portReservation;
   TimerFd _maintenanceTimer;
   EventLoop _eventLoop;
 

@@ -24,6 +24,7 @@
 #include <thread>
 #include <utility>
 
+#include "aeronet/access-log-config.hpp"
 #include "aeronet/builtin-probes-config.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
@@ -304,6 +305,29 @@ TEST(MultiHttpServer, StartDetachedStopsWhenPredicateFires) {
 
 // Verifies that MultiHttpServer can be stopped and started again (restart) while reusing the same port by default.
 // SingleHttpServer itself remains single-shot; restart creates fresh SingleHttpServer instances internally.
+#ifdef AERONET_LINUX
+TEST(MultiHttpServer, EphemeralPortStaysReservedWhileStopped) {
+  // The ephemeral port is rebound on restart: while stopped, it must not be obtainable by another process, which the
+  // restart would otherwise silently share incoming connections with (SO_REUSEPORT).
+  MultiHttpServer multi(MakeConfig(2U));
+  multi.router().setDefault([](const HttpRequestView& req) { return HttpResponse(std::string(req.path())); });
+  const auto port = multi.port();
+
+  // No request before the checks: the server closes 'Connection: close' connections first, and their TIME_WAIT state
+  // would then also prevent the plain bind.
+  for (int cycle = 0; cycle < 2; ++cycle) {
+    auto handle = multi.startDetached();
+    handle.stop();
+    EXPECT_FALSE(test::PortIsFreeForPlainBind(port));
+  }
+
+  auto handle = multi.startDetached();
+  EXPECT_EQ(multi.port(), port);
+  EXPECT_TRUE(test::simpleGet(port, "/restarted").contains("/restarted"));
+  handle.stop();
+}
+#endif
+
 TEST(MultiHttpServer, RestartBasicSamePort) {
   MultiHttpServer multi(MakeConfig(2U));
   multi.router().setDefault([](const HttpRequestView&) { return HttpResponse("Phase1"); });
@@ -775,6 +799,25 @@ TEST(MultiHttpServer, BlockingRunMethod) {
 
   // Wait for run() to complete
   serverThread.join();
+}
+
+TEST(MultiHttpServer, BlockingRunReturnsWhenNoWorkerCanStart) {
+  // Every worker fails to start (its access log file cannot be opened): run() must return instead of waiting forever
+  // for one of them to be running.
+  const auto missingDir = std::filesystem::temp_directory_path() / "aeronet-missing-access-log-dir";
+  ASSERT_FALSE(std::filesystem::exists(missingDir));
+  HttpServerConfig cfg = MakeConfig(2U);
+  cfg.accessLog.sink = AccessLogConfig::Sink::File;
+  cfg.accessLog.filePath = (missingDir / "access.log").string();
+  MultiHttpServer multi(std::move(cfg));
+
+  auto runResult = std::async(std::launch::async, [&multi] { multi.run(); });
+  const bool returned = runResult.wait_for(5s) == std::future_status::ready;
+  if (!returned) {
+    multi.stop();  // unblocks run(), so that a regression fails this test instead of hanging it
+  }
+  runResult.get();
+  EXPECT_TRUE(returned);
 }
 
 TEST(MultiHttpServer, RunStopAndRestart) {

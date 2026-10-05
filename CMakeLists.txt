@@ -220,6 +220,7 @@ option(AERONET_SPDLOG_USE_STD_FORMAT "Use std::format instead of fmt::format in 
 
 # Linting
 option(AERONET_ENABLE_ASAN "Enable Address/Undefined Behavior Sanitizers" OFF)
+option(AERONET_ENABLE_TSAN "Enable Thread Sanitizer (cannot be combined with AERONET_ENABLE_ASAN)" OFF)
 option(AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS "Enable miscellaneous additional memory checks to complement ASAN" OFF)
 option(AERONET_ENABLE_CLANG_TIDY "Enable clang-tidy analysis" OFF)
 option(AERONET_ENABLE_WARNINGS "Enable extra compiler warnings" ${PROJECT_IS_TOP_LEVEL})
@@ -246,11 +247,22 @@ if(AERONET_ENABLE_CLANG_TIDY)
   endif()
 endif()
 
+if(AERONET_ENABLE_ASAN AND AERONET_ENABLE_TSAN)
+  message(FATAL_ERROR "AERONET_ENABLE_ASAN and AERONET_ENABLE_TSAN cannot be enabled together")
+endif()
+
 if(AERONET_ENABLE_ASAN)
   if (NOT AERONET_ASAN_OPTIONS)
     set(AERONET_ASAN_OPTIONS -fsanitize=address -fsanitize=undefined -fsanitize=float-divide-by-zero -fno-sanitize-recover)
   endif()
   message(STATUS "Activate asan with options ${AERONET_ASAN_OPTIONS}")
+endif()
+
+if(AERONET_ENABLE_TSAN)
+  if (NOT AERONET_TSAN_OPTIONS)
+    set(AERONET_TSAN_OPTIONS -fsanitize=thread -fno-omit-frame-pointer)
+  endif()
+  message(STATUS "Activate tsan with options ${AERONET_TSAN_OPTIONS}")
 endif()
 
 include(cmake/Dependencies.cmake)

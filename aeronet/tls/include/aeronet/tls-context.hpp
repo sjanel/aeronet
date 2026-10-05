@@ -7,6 +7,7 @@
 #include "aeronet/object-array-pool.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/single-writer-counter.hpp"
 #include "aeronet/tls-config.hpp"
 
 // Forward declare OpenSSL context structs (avoid pulling heavy headers into public interface).
@@ -39,13 +40,14 @@ class TlsContext {
 
   [[nodiscard]] void* raw() const noexcept { return static_cast<void*>(_ctx.get()); }
 
-  [[nodiscard]] uint64_t alpnStrictMismatches() const noexcept { return _alpnData.nbStrictMismatches; }
+  [[nodiscard]] uint64_t alpnStrictMismatches() const noexcept { return _alpnData.nbStrictMismatches.load(); }
 
  private:
   struct AlpnData {
     // private implementation detail (binary length-prefixed ALPN protocol list per RFC 7301)
     RawBytes32 wire;  // [len][bytes]...[len][bytes]
-    uint64_t nbStrictMismatches{0};
+    // Incremented by the ALPN selection callback (server event loop), read by stats() from any thread.
+    SingleWriterCounter<uint64_t> nbStrictMismatches;
     bool mustMatch{false};
   };
   struct CtxDel {

@@ -16,7 +16,8 @@ class SignalHandler {
   // Disables the signal handlers and restores default behavior.
   static void Disable();
 
-  // Returns true if a termination signal was received.
+  // Returns true if a termination signal was received. The first call observing it logs it (logging is not
+  // async-signal-safe, so it cannot be done by the signal handler itself).
   static bool IsStopRequested();
 
   // Returns the maximum drain period configured for signal handling.

@@ -523,7 +523,7 @@ int main() {
 Additional notes:
 
 - If `cfg.port` was 0 the kernel-chosen ephemeral port printed above will remain stable across any later `stop()` /
-  `start()` cycles for this `HttpServer` instance. To obtain a new ephemeral port you must construct a new `HttpServer` (or in a future API explicitly reset the base configuration before a restart to `port=0`).
+  `start()` cycles for this `HttpServer` instance. On Linux with `reusePort` (enforced with several threads), it stays reserved while stopped, so no other process can take it in between. To obtain a new ephemeral port you must construct a new `HttpServer` (or in a future API explicitly reset the base configuration before a restart to `port=0`).
 - You may call `stop()` and then `start()` again on the same `HttpServer` instance.
 - Handlers: global or path handlers registered are re-applied to the fresh servers on each
   restart. You may add/remove/replace path handlers using `postRouterUpdate()` or `router()` at any time (even during running).

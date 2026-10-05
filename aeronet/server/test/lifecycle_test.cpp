@@ -13,43 +13,37 @@ TEST(LifecycleTest, MoveConstructorCopiesState) {
   Lifecycle original;
   original.enterStarting();
   original.enterRunning();
-  original.drainDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-  original.drainDeadlineEnabled = true;
+  original.shrinkDeadline(std::chrono::steady_clock::now() + std::chrono::seconds(10));
 
   Lifecycle moved(std::move(original));
 
   EXPECT_EQ(moved.state.load(), Lifecycle::State::Running);
-  EXPECT_TRUE(moved.drainDeadlineEnabled);
-  EXPECT_NE(moved.drainDeadline.time_since_epoch().count(), 0);
+  EXPECT_TRUE(moved.hasDeadline());
 }
 
 TEST(LifecycleTest, MoveAssignmentCopiesState) {
   Lifecycle original;
   original.enterStarting();
   original.enterRunning();
-  original.drainDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-  original.drainDeadlineEnabled = true;
+  original.shrinkDeadline(std::chrono::steady_clock::now() + std::chrono::seconds(10));
 
   Lifecycle moved;
   moved = std::move(original);
 
   EXPECT_EQ(moved.state.load(), Lifecycle::State::Running);
-  EXPECT_TRUE(moved.drainDeadlineEnabled);
-  EXPECT_NE(moved.drainDeadline.time_since_epoch().count(), 0);
+  EXPECT_TRUE(moved.hasDeadline());
 }
 
 TEST(LifecycleTest, ResetClearsState) {
   Lifecycle lifecycle;
   lifecycle.enterStarting();
   lifecycle.enterRunning();
-  lifecycle.drainDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-  lifecycle.drainDeadlineEnabled = true;
+  lifecycle.shrinkDeadline(std::chrono::steady_clock::now() + std::chrono::seconds(10));
 
   lifecycle.reset();
 
   EXPECT_EQ(lifecycle.state.load(), Lifecycle::State::Idle);
-  EXPECT_FALSE(lifecycle.drainDeadlineEnabled);
-  EXPECT_EQ(lifecycle.drainDeadline.time_since_epoch().count(), 0);
+  EXPECT_FALSE(lifecycle.hasDeadline());
   EXPECT_FALSE(lifecycle.started());
   EXPECT_FALSE(lifecycle.ready());
 }
@@ -61,7 +55,7 @@ TEST(LifecycleTest, WaitWhileStartingReturnsNonStartingStatesImmediately) {
   lifecycle.enterStarting();
   lifecycle.enterRunning();
   EXPECT_EQ(lifecycle.waitWhileStarting(), Lifecycle::State::Running);
-  lifecycle.enterDraining({}, false);
+  EXPECT_TRUE(lifecycle.enterDraining());
   EXPECT_EQ(lifecycle.waitWhileStarting(), Lifecycle::State::Draining);
 
   EXPECT_EQ(lifecycle.exchangeStopping(), Lifecycle::State::Draining);
@@ -100,49 +94,84 @@ TEST(LifecycleTest, SelfMoveAssignmentIsNoop) {
   Lifecycle lifecycle;
   lifecycle.enterStarting();
   lifecycle.enterRunning();
-  lifecycle.drainDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-  lifecycle.drainDeadlineEnabled = true;
+  lifecycle.shrinkDeadline(std::chrono::steady_clock::now() + std::chrono::seconds(10));
 
   auto& self = lifecycle;
 
   lifecycle = std::move(self);
 
   EXPECT_EQ(lifecycle.state.load(), Lifecycle::State::Running);
-  EXPECT_TRUE(lifecycle.drainDeadlineEnabled);
-  EXPECT_NE(lifecycle.drainDeadline.time_since_epoch().count(), 0);
+  EXPECT_TRUE(lifecycle.hasDeadline());
   EXPECT_TRUE(lifecycle.started());
   EXPECT_TRUE(lifecycle.ready());
 }
 
-TEST(LifecycleTest, ShrinkDeadlineUpdatesDeadline) {
+TEST(LifecycleTest, ShrinkDeadlineSetsDeadline) {
   Lifecycle lifecycle;
-  lifecycle.enterDraining(std::chrono::steady_clock::now() + std::chrono::seconds(10), true);
+  EXPECT_FALSE(lifecycle.hasDeadline());
 
-  auto newDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  lifecycle.shrinkDeadline(newDeadline);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  lifecycle.shrinkDeadline(deadline);
 
-  EXPECT_EQ(lifecycle.drainDeadline, newDeadline);
+  EXPECT_TRUE(lifecycle.hasDeadline());
+  EXPECT_EQ(lifecycle.deadline(), deadline);
+  EXPECT_FALSE(lifecycle.drainDeadlineReached(deadline - std::chrono::nanoseconds(1)));
+  EXPECT_TRUE(lifecycle.drainDeadlineReached(deadline));
 }
 
-TEST(LifecycleTest, EnterDrainingDrainDeadlineDisabled) {
+TEST(LifecycleTest, ShrinkDeadlineUpdatesDeadline) {
   Lifecycle lifecycle;
-  lifecycle.enterDraining(std::chrono::steady_clock::now() + std::chrono::seconds(10), false);
+  lifecycle.shrinkDeadline(std::chrono::steady_clock::now() + std::chrono::seconds(10));
 
   auto newDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
   lifecycle.shrinkDeadline(newDeadline);
 
-  EXPECT_EQ(lifecycle.drainDeadline, newDeadline);
+  EXPECT_EQ(lifecycle.deadline(), newDeadline);
 }
 
 TEST(LifecycleTest, ShrinkDeadlineDoesNotUpdateIfLater) {
   Lifecycle lifecycle;
   auto originalDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  lifecycle.enterDraining(originalDeadline, true);
+  lifecycle.shrinkDeadline(originalDeadline);
 
   auto laterDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
   lifecycle.shrinkDeadline(laterDeadline);
 
-  EXPECT_EQ(lifecycle.drainDeadline, originalDeadline);
+  EXPECT_EQ(lifecycle.deadline(), originalDeadline);
+}
+
+TEST(LifecycleTest, EnterDrainingOnlyFromRunning) {
+  Lifecycle lifecycle;
+  EXPECT_FALSE(lifecycle.enterDraining());  // Idle
+  EXPECT_TRUE(lifecycle.isIdle());
+
+  lifecycle.enterStarting();
+  lifecycle.enterRunning();
+  EXPECT_TRUE(lifecycle.enterDraining());
+  EXPECT_TRUE(lifecycle.isDraining());
+  EXPECT_FALSE(lifecycle.enterDraining());  // already draining
+  EXPECT_TRUE(lifecycle.isDraining());
+}
+
+TEST(LifecycleTest, EnterDrainingDoesNotOverrideStopping) {
+  // A beginDrain() that observed Running, racing with a stop() that won: the stop must not be turned into a drain.
+  Lifecycle lifecycle;
+  lifecycle.enterStarting();
+  lifecycle.enterRunning();
+  EXPECT_EQ(lifecycle.exchangeStopping(), Lifecycle::State::Running);
+
+  EXPECT_FALSE(lifecycle.enterDraining());
+  EXPECT_TRUE(lifecycle.isStopping());
+}
+
+TEST(LifecycleTest, EnterRunningClearsDeadlineOfPreviousRun) {
+  Lifecycle lifecycle;
+  lifecycle.enterStarting();
+  // Stale deadline, e.g. set by a beginDrain() racing with the end of the previous run.
+  lifecycle.shrinkDeadline(std::chrono::steady_clock::now());
+  lifecycle.enterRunning();
+
+  EXPECT_FALSE(lifecycle.hasDeadline());
 }
 
 TEST(LifecycleTest, StopWaitsForStartingThenTransitionsFromRunning) {

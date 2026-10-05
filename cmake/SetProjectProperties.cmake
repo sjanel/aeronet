@@ -66,6 +66,12 @@ function(AeronetSetProjectProperties name)
     endif()
   endif()
 
+  # Thread sanitizer (activated via AERONET_ENABLE_TSAN)
+  if(AERONET_ENABLE_TSAN)
+    target_compile_options(${name} PRIVATE ${AERONET_TSAN_OPTIONS})
+    target_link_options(${name} PRIVATE ${AERONET_TSAN_OPTIONS})
+  endif()
+
   if(AERONET_ENABLE_CLANG_TIDY AND CLANG_TIDY)
     set_target_properties(${name} PROPERTIES
       CXX_CLANG_TIDY "clang-tidy;--extra-arg-before=--driver-mode=g++"
