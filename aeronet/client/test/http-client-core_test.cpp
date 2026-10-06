@@ -41,6 +41,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/retry-config.hpp"
 #include "aeronet/router.hpp"
+#include "aeronet/sigpipe-test-helpers.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
@@ -2589,6 +2590,28 @@ TEST(HttpClientErrorE2ETest, ClosedBeforeCompleteResponseReturnsError) {
 
 // RFC 9110 media types can be very short: any non-empty Content-Type sent by a server is kept. A value shorter than 7
 // characters used to make the request throw std::invalid_argument.
+#ifdef AERONET_LINUX
+// sendfile() raises SIGPIPE when the server closed the connection during the upload of a file body, which terminates
+// the process by default. The client must report an error instead.
+TEST(HttpClientErrorE2ETest, ServerClosingDuringFileUploadDoesNotRaiseSigpipe) {
+  RawServer server([](NativeHandle, int) {});  // closes each connection as soon as accepted
+  const std::string payload = MakeFilePayload(8UL << 20U);
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, payload);
+  test::DefaultSigpipeScope sigpipeScope;  // a SIGPIPE reaching the process terminates the test
+  HttpClient client;
+  // Repeated: the request head may also reach the server before it closes, which then resets the connection right away
+  // (ECONNRESET, without SIGPIPE).
+  for (int attempt = 0; attempt < 10; ++attempt) {
+    auto req = client.makeRequest(http::Method::POST, MakeUrl(server.port(), "/upload"))
+                   .file(File(tmp.filePath().string()), "application/octet-stream");
+    EXPECT_FALSE(client.request(std::move(req)));
+  }
+  EXPECT_FALSE(test::IsSigpipeBlocked());  // the exchanges restored the signal mask
+  EXPECT_FALSE(test::IsSigpipePending());
+}
+#endif
+
 TEST(HttpClientErrorE2ETest, ShortContentTypeFromServerIsAccepted) {
   RawServer server([](NativeHandle fd, int) {
     DrainRequest(fd);

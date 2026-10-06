@@ -25,6 +25,9 @@
 #include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-lifecycle-tracker.hpp"
+#ifdef AERONET_LINUX
+#include "aeronet/sigpipe-blocker.hpp"
+#endif
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/socket.hpp"
 #include "aeronet/timer-fd.hpp"
@@ -448,6 +451,12 @@ void SingleHttpServer::run() {
 }
 
 void SingleHttpServer::runUntilStarted(const std::function<bool()>& predicate) {
+#ifdef AERONET_LINUX
+  // sendfile() and OpenSSL's socket writes raise SIGPIPE on connections reset by the peer: keep it away from the
+  // process for the whole lifetime of the event loop, connection teardown included (declared first, destroyed last).
+  const SigpipeBlocker sigpipeBlocker;
+#endif
+
   EventLoopThreadRAII eventLoopThread(_lifecycle);
   LifecycleResetterRAII resetter(_lifecycle);
 

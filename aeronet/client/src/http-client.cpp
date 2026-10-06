@@ -39,6 +39,9 @@
 #include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/retry-config.hpp"
+#ifdef AERONET_LINUX
+#include "aeronet/sigpipe-blocker.hpp"
+#endif
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/tcp-connector.hpp"
@@ -765,6 +768,12 @@ namespace {
 }  // namespace
 
 HttpClientResult HttpClient::performExchange(HttpRequest& req) {
+#ifdef AERONET_LINUX
+  // TLS (OpenSSL writes on the socket itself) and file bodies (sendfile()) may raise SIGPIPE if the server resets the
+  // connection, terminating the process by default: keep it pending in this thread during the exchange, then discard
+  // it. Plain in-memory requests are sent with MSG_NOSIGNAL and need no system call for this.
+  const SigpipeBlocker sigpipeBlocker(req.isTlsRequest() || req.hasBodyFile());
+#endif
   const RetryConfig& retry = _config.retry;
   uint32_t attempt = 0;  // backoff retries already consumed (0-based index of the next one)
 
