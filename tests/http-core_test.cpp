@@ -43,6 +43,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/multi-http-server.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/rate-limit-middleware.hpp"
 #include "aeronet/rate-limit.hpp"
@@ -62,6 +63,7 @@
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/unix-dogstatsd-sink.hpp"
 #include "aeronet/vector.hpp"
+#include "aeronet/version.hpp"
 #include "aeronet/zerocopy-mode.hpp"
 
 #ifdef AERONET_ENABLE_ZLIB
@@ -71,6 +73,75 @@
 using namespace std::chrono_literals;
 
 namespace aeronet {
+
+TEST(CompileTimeTraits, StaticChecks) {
+  // Compile-time assurances for API ergonomics and client ergonomics.
+  static_assert(std::is_nothrow_default_constructible_v<aeronet::SingleHttpServer>);
+  static_assert(std::is_move_constructible_v<aeronet::SingleHttpServer>);
+  static_assert(std::is_move_assignable_v<aeronet::SingleHttpServer>);
+
+  static_assert(std::is_nothrow_default_constructible_v<aeronet::MultiHttpServer>);
+  static_assert(std::is_move_constructible_v<aeronet::MultiHttpServer>);
+  static_assert(std::is_move_assignable_v<aeronet::MultiHttpServer>);
+}
+
+TEST(CompileTimeTraits, Version) { EXPECT_FALSE(aeronet::version().empty()); }
+
+TEST(CompileTimeTraits, Features) {
+#ifdef AERONET_ENABLE_OPENSSL
+  EXPECT_TRUE(aeronet::openSslEnabled());
+#else
+  EXPECT_FALSE(aeronet::openSslEnabled());
+#endif
+
+#ifdef AERONET_ENABLE_SPDLOG
+  EXPECT_TRUE(aeronet::spdLogEnabled());
+#else
+  EXPECT_FALSE(aeronet::spdLogEnabled());
+#endif
+
+#ifdef AERONET_ENABLE_HTTP2
+  EXPECT_TRUE(aeronet::http2Enabled());
+#else
+  EXPECT_FALSE(aeronet::http2Enabled());
+#endif
+
+#ifdef AERONET_ENABLE_ZLIB
+  EXPECT_TRUE(aeronet::zlibEnabled());
+#else
+  EXPECT_FALSE(aeronet::zlibEnabled());
+#endif
+
+#ifdef AERONET_ENABLE_ZSTD
+  EXPECT_TRUE(aeronet::zstdEnabled());
+#else
+  EXPECT_FALSE(aeronet::zstdEnabled());
+#endif
+
+#ifdef AERONET_ENABLE_BROTLI
+  EXPECT_TRUE(aeronet::brotliEnabled());
+#else
+  EXPECT_FALSE(aeronet::brotliEnabled());
+#endif
+
+#ifdef AERONET_ENABLE_OPENTELEMETRY
+  EXPECT_TRUE(aeronet::openTelemetryEnabled());
+#else
+  EXPECT_FALSE(aeronet::openTelemetryEnabled());
+#endif
+
+#ifdef AERONET_ENABLE_WEBSOCKET
+  EXPECT_TRUE(aeronet::webSocketEnabled());
+#else
+  EXPECT_FALSE(aeronet::webSocketEnabled());
+#endif
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  EXPECT_TRUE(aeronet::asyncHandlersEnabled());
+#else
+  EXPECT_FALSE(aeronet::asyncHandlersEnabled());
+#endif
+}
 
 namespace {
 test::TestServer ts;
