@@ -379,6 +379,9 @@ void ConnectionState::reset() {
   tlsHandshakeInFlight = false;
 #endif
   fileSend = {};
+  // A connection may close in the middle of a file transfer (peer gone): its next user must not look busy sending it.
+  fileSendActive = false;
+  fileSendHeadersPending = false;
 
   // Reset protocol handler (e.g., WebSocket, HTTP/2)
   protocolHandler.reset();

@@ -2,6 +2,7 @@ aux_source_directory(src AERONET_SYS_SRC_LIST)
 
 # Remove zerocopy source file if not on Linux
 if(NOT (CMAKE_SYSTEM_NAME STREQUAL "Linux"))
+    list(REMOVE_ITEM AERONET_SYS_SRC_LIST src/sigpipe-blocker.cpp)
     list(REMOVE_ITEM AERONET_SYS_SRC_LIST src/zerocopy.cpp)
 endif()
 
@@ -87,6 +88,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     AeronetAddUnitTest(
         socket-ops_test
         test/socket-ops_test.cpp
+        LIBRARIES
+        aeronet_basic_test_support
+    )
+
+    AeronetAddUnitTest(
+        sigpipe-blocker_test
+        test/sigpipe-blocker_test.cpp
         LIBRARIES
         aeronet_basic_test_support
     )

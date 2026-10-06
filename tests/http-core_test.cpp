@@ -50,6 +50,7 @@
 #include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
+#include "aeronet/sigpipe-test-helpers.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/static-file-handler.hpp"
@@ -2858,6 +2859,69 @@ TEST(HttpStreaming, SendFileFixedLengthPlain) {
   ASSERT_NE(std::string::npos, headerEnd);
   std::string body = resp.substr(headerEnd + http::DoubleCRLF.size());
   EXPECT_EQ(body, kPayload);
+}
+
+#ifdef AERONET_POSIX
+// A client that leaves while a file is being sent: once its kernel answered the first bytes with a reset, the next
+// sendfile() fails with EPIPE and raises SIGPIPE, which terminates the process by default. The server must survive it.
+TEST(HttpStreaming, SendFileToDepartedClientDoesNotRaiseSigpipe) {
+  const std::string payload(8UL << 20U, 'f');  // more than the socket buffers: several sendfile() calls
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, payload);
+  const std::string path = tmp.filePath().string();
+  ts.router().setPath(http::Method::GET, "/big-file", [path](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+    writer.file(File(path));
+    writer.end();
+  });
+
+  test::DefaultSigpipeScope sigpipeScope;  // a SIGPIPE reaching the process terminates the test
+  // Repeated: the client may also receive the first bytes before leaving, its kernel then resetting the connection
+  // right away (ECONNRESET, without SIGPIPE).
+  for (int attempt = 0; attempt < 10; ++attempt) {
+    test::ClientConnection client(ts.port());
+    test::sendAll(client.fd(), test::SimpleGetRequest("/big-file", http::keepalive));
+    // Leaves (FIN) before reading anything: the server keeps sending the file into the closed connection.
+  }
+  std::this_thread::sleep_for(100ms);
+
+  const std::string resp = test::simpleGet(ts.port(), "/big-file");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp.substr(0, 64);
+  EXPECT_EQ(resp.size() - resp.find(http::DoubleCRLF) - http::DoubleCRLF.size(), payload.size());
+}
+#endif
+
+// A client leaving in the middle of a file transfer: the server closes the connection while the transfer is still in
+// progress. Closed connection states are cached and reused for new connections: a reused state must not still look like
+// it is sending a file, which kept its next requests waiting forever (and every later connection reusing it).
+TEST(HttpStreaming, ConnectionsAfterClientLeftDuringFileTransferAreServed) {
+  const std::string payload(32UL << 20U, 'g');  // much more than the socket buffers: the transfer waits for the client
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, payload);
+  const std::string path = tmp.filePath().string();
+  ts.router().setPath(http::Method::GET, "/huge-file", [path](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+    writer.file(File(path));
+    writer.end();
+  });
+  ts.router().setPath(http::Method::GET, "/after-departure",
+                      [](const HttpRequestView& req) { return req.makeResponse(http::StatusCodeOK, "served"); });
+
+  {
+    test::ClientConnection client(ts.port());
+    test::sendAll(client.fd(), test::SimpleGetRequest("/huge-file", http::keepalive));
+    // The transfer has started: leave without reading the rest, once the server waits for the socket to be writable.
+    ASSERT_FALSE(test::recvWithTimeout(client.fd(), 1000ms, 1).empty());
+    std::this_thread::sleep_for(50ms);
+  }
+  std::this_thread::sleep_for(50ms);  // the server closes the connection, with the file transfer still active
+
+  // Several connections, whichever cached connection state each one reuses.
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    const std::string resp = test::simpleGet(ts.port(), "/after-departure");
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << attempt << ": " << resp;
+    EXPECT_TRUE(resp.ends_with("served")) << attempt;
+  }
 }
 
 TEST(HttpStreaming, WriteBodyAndTrailersShouldFailIfSendFileIsUsed) {
