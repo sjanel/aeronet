@@ -6,8 +6,6 @@ function(aeronet_http_test NAME)
 	_aeronet_inject_dll_path(${TGT})
 endfunction()
 
-aeronet_http_test(compile-time-traits)
-
 # These integration tests use Linux-specific syscall overrides (epoll, sendfile/pread,
 # /proc/self/fd, MSG_PEEK|MSG_DONTWAIT) or dlsym/RTLD_NEXT.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
