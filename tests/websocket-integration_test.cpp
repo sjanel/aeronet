@@ -166,32 +166,6 @@ std::optional<ServerFrame> ParseServerFrame(std::span<const std::byte> data) {
   return frame;
 }
 
-// Masked client frame carrying arbitrary payload bytes (rsv1: permessage-deflate compressed message).
-vector<std::byte> BuildClientFrame(std::string_view payload, Opcode opcode, bool rsv1) {
-  vector<std::byte> frame;
-  frame.push_back(static_cast<std::byte>(0x80U | (rsv1 ? 0x40U : 0U) | static_cast<uint8_t>(opcode)));
-  if (payload.size() < 126) {
-    frame.push_back(static_cast<std::byte>(0x80U | payload.size()));
-  } else if (payload.size() < 65536) {
-    frame.push_back(static_cast<std::byte>(0x80U | 126U));
-    frame.push_back(static_cast<std::byte>((payload.size() >> 8U) & 0xFFU));
-    frame.push_back(static_cast<std::byte>(payload.size() & 0xFFU));
-  } else {
-    frame.push_back(static_cast<std::byte>(0x80U | 127U));
-    for (int idx = 7; idx >= 0; --idx) {
-      frame.push_back(static_cast<std::byte>((payload.size() >> (static_cast<uint32_t>(idx) * 8U)) & 0xFFU));
-    }
-  }
-  constexpr std::array maskKey{std::byte{0x5a}, std::byte{0x1c}, std::byte{0xe3}, std::byte{0x07}};
-  for (auto keyByte : maskKey) {
-    frame.push_back(keyByte);
-  }
-  for (std::size_t idx = 0; idx < payload.size(); ++idx) {
-    frame.push_back(static_cast<std::byte>(payload[idx]) ^ maskKey[idx % 4]);
-  }
-  return frame;
-}
-
 // Receives bytes until they hold one complete server frame. Returns the raw bytes (empty on timeout / close).
 std::string ReceiveServerFrameBytes(NativeHandle fd, std::chrono::milliseconds timeout) {
   test::setRecvTimeout(fd, timeout);
@@ -205,17 +179,6 @@ std::string ReceiveServerFrameBytes(NativeHandle fd, std::chrono::milliseconds t
     raw.append(buf.data(), static_cast<std::size_t>(nb));
   }
   return raw;
-}
-
-// Receives the HTTP response head of an upgrade request (up to the empty line).
-std::string ReceiveResponseHead(NativeHandle fd, std::chrono::milliseconds timeout) {
-  test::setRecvTimeout(fd, timeout);
-  std::string head;
-  char ch{};
-  while (!head.ends_with("\r\n\r\n") && ::recv(fd, &ch, 1, 0) == 1) {
-    head.push_back(ch);
-  }
-  return head;
 }
 
 std::string PayloadToString(std::span<const std::byte> payload) {
@@ -436,6 +399,48 @@ TEST_F(WebSocketTest, LargeFrameSplitAcrossReadsIsEchoedIntact) {
 }
 
 #ifdef AERONET_ENABLE_ZLIB
+
+namespace {
+
+// Masked client frame carrying arbitrary payload bytes (rsv1: permessage-deflate compressed message).
+vector<std::byte> BuildClientFrame(std::string_view payload, Opcode opcode, bool rsv1) {
+  vector<std::byte> frame;
+  frame.push_back(static_cast<std::byte>(0x80U | (rsv1 ? 0x40U : 0U) | static_cast<uint8_t>(opcode)));
+  if (payload.size() < 126) {
+    frame.push_back(static_cast<std::byte>(0x80U | payload.size()));
+  } else if (payload.size() < 65536) {
+    frame.push_back(static_cast<std::byte>(0x80U | 126U));
+    frame.push_back(static_cast<std::byte>((payload.size() >> 8U) & 0xFFU));
+    frame.push_back(static_cast<std::byte>(payload.size() & 0xFFU));
+  } else {
+    frame.push_back(static_cast<std::byte>(0x80U | 127U));
+    for (int idx = 7; idx >= 0; --idx) {
+      frame.push_back(static_cast<std::byte>((payload.size() >> (static_cast<uint32_t>(idx) * 8U)) & 0xFFU));
+    }
+  }
+  constexpr std::array maskKey{std::byte{0x5a}, std::byte{0x1c}, std::byte{0xe3}, std::byte{0x07}};
+  for (auto keyByte : maskKey) {
+    frame.push_back(keyByte);
+  }
+  for (std::size_t idx = 0; idx < payload.size(); ++idx) {
+    frame.push_back(static_cast<std::byte>(payload[idx]) ^ maskKey[idx % 4]);
+  }
+  return frame;
+}
+
+// Receives the HTTP response head of an upgrade request (up to the empty line).
+std::string ReceiveResponseHead(NativeHandle fd, std::chrono::milliseconds timeout) {
+  test::setRecvTimeout(fd, timeout);
+  std::string head;
+  char ch{};
+  while (!head.ends_with("\r\n\r\n") && ::recv(fd, &ch, 1, 0) == 1) {
+    head.push_back(ch);
+  }
+  return head;
+}
+
+}  // namespace
+
 // permessage-deflate interoperability with a standard client (raw DEFLATE payloads, RFC 7692), for an endpoint whose
 // factory does not configure compression itself: the server enables it on the handler, keeping its callbacks.
 TEST_F(WebSocketTest, CompressedMessageFromStandardClientIsEchoedCompressed) {
