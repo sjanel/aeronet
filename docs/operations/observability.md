@@ -31,6 +31,8 @@ config.withTelemetryConfig(std::move(telemetry));
 
 OpenTelemetry support is optional. Configure with `AERONET_ENABLE_OPENTELEMETRY=ON` when the application needs OTLP traces or metrics. Each `SingleHttpServer` owns an independent telemetry context; aeronet does not install a process global provider. `TelemetryConfig::endpoint()` is used as the trace endpoint, and aeronet derives `/v1/metrics` for the metric exporter. Export intervals, timeouts, trace sampling, exporter HTTP headers, and histogram buckets are all instance-specific.
 
+Ended spans are only queued by the event loop: a background thread exports them in batches, at the latest `exportInterval` after they end, so a slow or unreachable collector never delays request processing. A span ending while the queue is full (2048 spans by default) is dropped.
+
 DogStatsD metrics do not require OpenTelemetry at build time. They can be enabled alone or together with OTLP:
 
 ```cpp
@@ -117,7 +119,7 @@ Useful starting points for dashboards and alerts include:
 
 ### Runtime cost and object layout
 
-When telemetry is disabled, each detailed HTTP/2 instrumentation point is a predictable null check and does not allocate. Instrument recording and DogStatsD datagram emission occur on the event-loop thread; OTLP metric export runs periodically. Keep DogStatsD sockets local and non-blocking and configure OTLP export intervals appropriately. Existing unlabeled metric overloads keep their original call shape; only calls that supply labels construct and visit a `MetricLabels` span.
+When telemetry is disabled, each detailed HTTP/2 instrumentation point is a predictable null check and does not allocate. Instrument recording, span recording and DogStatsD datagram emission occur on the event-loop thread; OTLP metric and span exports run periodically on background threads. Keep DogStatsD sockets local and non-blocking and configure OTLP export intervals appropriately. Existing unlabeled metric overloads keep their original call shape; only calls that supply labels construct and visit a `MetricLabels` span.
 
 The implementation adds no counters or timestamps to `Http2Stream` or to the protocol handler's per-stream request state. Per-stream duration reuses the request start timestamp that already exists. `TelemetryContext` remains one pointer and `Http2Stream` remains 32 bytes on the project's 64-bit build; `Http2Connection` gains one optional pointer (8 bytes) for the telemetry destination.
 

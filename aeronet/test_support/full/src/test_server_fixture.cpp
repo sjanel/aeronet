@@ -27,11 +27,11 @@ namespace {
 
 void WaitReady(SingleHttpServer& server, std::chrono::milliseconds timeout) noexcept {
   // If builtin probes are enabled, actively poll the readiness probe path until we receive 200 OK
-  // or the timeout elapses. Otherwise fall back to the simple connect check used previously.
+  // or the timeout elapses. Otherwise wait for the event loop to run.
   const auto& cfg = server.config();
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
   if (cfg.builtinProbes.enabled) {
     const auto probePath = std::string(cfg.builtinProbes.readinessPath());
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
       try {
         RequestOptions opt;
@@ -49,12 +49,14 @@ void WaitReady(SingleHttpServer& server, std::chrono::milliseconds timeout) noex
     log_noexcept::error("server readiness probe did not return 200 within timeout");
   }
 
-  try {
-    // The listening socket is active immediately after server construction; a successful connect
-    // simply confirms the OS accepted it. We retry briefly to absorb transient startup latency.
-    ClientConnection cnx(server.port(), timeout);
-  } catch (const std::exception& ex) {
-    log_noexcept::error("ClientConnection constructor failed: {}", ex.what());
+  // The listening socket accepts connections (into its backlog) as soon as the server is constructed: no probe
+  // connection is needed. It would even be harmful: left for the event loop to accept at some later point, it could
+  // consume the accept hooks a test installs for its own next connection (g_on_accept_install_actions).
+  while (!server.isRunning() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(1ms);  // NOLINT(misc-include-cleaner)
+  }
+  if (!server.isRunning()) {
+    log_noexcept::error("server event loop not running within timeout");
   }
 }
 

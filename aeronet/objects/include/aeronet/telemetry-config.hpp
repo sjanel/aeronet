@@ -98,7 +98,8 @@ class TelemetryConfig {
   // Sampling ratio [0.0, 1.0]. 1.0 = sample all, 0.0 = sample none. Default: 1.0
   float sampleRate{1.0F};
 
-  // Interval between metric exports (default: 10000ms)
+  // Interval between metric exports, and maximum delay before ended spans are exported (default: 10000ms).
+  // Spans are exported in batches by a background thread, never by the event loop.
   std::chrono::milliseconds exportInterval{std::chrono::milliseconds{10000}};
 
   // Timeout for metric exports (default: 5000ms)
