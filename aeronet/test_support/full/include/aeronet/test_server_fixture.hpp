@@ -16,7 +16,7 @@ namespace aeronet::test {
 // Responsibilities:
 //  * Construct SingleHttpServer (binds & listens immediately)
 //  * Start event loop in a background jthread using runUntil(stopFlag)
-//  * Provide simple readiness wait (loopback connect) instead of arbitrary sleep_for
+//  * Wait for the event loop to run (or for the readiness probe when enabled) instead of arbitrary sleep_for
 //  * Stop & join automatically on destruction (idempotent)
 //
 // Usage pattern:
