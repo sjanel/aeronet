@@ -3,11 +3,21 @@
 #include <opentelemetry/proto/collector/trace/v1/trace_service.pb.h>
 #include <opentelemetry/proto/metrics/v1/metrics.pb.h>
 
+#ifdef AERONET_POSIX
+#include <netinet/in.h>
+#include <sys/socket.h>
+#elifdef AERONET_WINDOWS
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#endif
+
 #include <chrono>
+#include <cstdint>
 #include <exception>
 #include <string>
 #include <string_view>
 
+#include "aeronet/errno-throw.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -15,6 +25,7 @@
 #include "aeronet/metric-label.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/otlp_test_collector.hpp"
+#include "aeronet/socket.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
@@ -26,6 +37,39 @@ using namespace std::chrono_literals;
 namespace aeronet {
 
 namespace {
+
+// A collector that never answers: its listening socket never accepts, so the connections of the exporters stay in its
+// backlog and an export only ends at the exporter timeout. Closing it resets these connections.
+class UnresponsiveCollector {
+ public:
+  UnresponsiveCollector() : _listen(Socket::Type::Stream) {
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;  // ephemeral
+    if (::bind(_listen.fd(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+      ThrowSystemError("bind unresponsive collector socket");
+    }
+    if (::listen(_listen.fd(), 16) != 0) {
+      ThrowSystemError("listen unresponsive collector socket");
+    }
+    socklen_t len = sizeof(addr);  // NOLINT(misc-include-cleaner)
+    if (::getsockname(_listen.fd(), reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
+      ThrowSystemError("getsockname for unresponsive collector");
+    }
+    _port = ntohs(addr.sin_port);
+  }
+
+  [[nodiscard]] std::string endpointForTraces() const {
+    return "http://127.0.0.1:" + std::to_string(_port) + "/v1/traces";
+  }
+
+  void close() noexcept { _listen.close(); }
+
+ private:
+  Socket _listen;
+  uint16_t _port{0};
+};
 
 bool SpansContainHttpRequest(const ::opentelemetry::proto::collector::trace::v1::ExportTraceServiceRequest& proto) {
   for (const auto& resourceSpan : proto.resource_spans()) {
@@ -138,12 +182,17 @@ TEST(OpenTelemetryEndToEnd, EmitsTracesAndMetrics) {
   ASSERT_FALSE(response.empty());
   EXPECT_TRUE(response.contains("otel-ok"));
 
-  // Collect requests until we have both trace and metrics exports or timeout
+  // Collect requests until we have both trace and metrics exports or timeout. Both are exported periodically by
+  // background threads, in any order: several metrics exports may come before the trace one.
   vector<test::CapturedOtlpRequest> captured;
+  bool traceCaptured = false;
+  bool metricsCaptured = false;
   const auto deadline = std::chrono::steady_clock::now() + 3s;  // NOLINT(misc-include-cleaner)
-  while (captured.size() < 2 && std::chrono::steady_clock::now() < deadline) {
+  while ((!traceCaptured || !metricsCaptured) && std::chrono::steady_clock::now() < deadline) {
     try {
       captured.emplace_back(collector.waitForRequest(500ms));  // NOLINT(misc-include-cleaner)
+      traceCaptured |= captured.back().path == "/v1/traces";
+      metricsCaptured |= captured.back().path == "/v1/metrics";
     } catch (const std::exception&) {
       log::error("timed out waiting for a single request; loop and check overall deadline");
     }
@@ -174,7 +223,10 @@ TEST(OpenTelemetryEndToEnd, EmitsTracesAndMetrics) {
   ASSERT_TRUE(metricsProto.ParseFromString(metricsReq->body));
   EXPECT_TRUE(MetricsContainCounter(metricsProto, "aeronet.connections.accepted"));
 
-  EXPECT_TRUE(collector.drain().empty());  // No extra requests
+  // The single span is exported once. Metrics are exported periodically, so later metrics exports may be pending.
+  for (const auto& req : collector.drain()) {
+    EXPECT_NE(req.path, "/v1/traces");
+  }
 }
 
 TEST(OpenTelemetryEndToEnd, EmitsPerMeasurementLabels) {
@@ -278,6 +330,33 @@ TEST(OpenTelemetryEndToEnd, EmitsMiddlewareSpanAttributes) {
     }
   }
   EXPECT_TRUE(sawMiddlewareSpan);
+}
+
+// Spans end on the event loop thread. Exporting them there would stall all the connections of the server until the
+// collector answers - here until the exporter timeout (10 s by default) after each request.
+TEST(OpenTelemetryEndToEnd, UnresponsiveCollectorDoesNotDelayRequests) {
+  UnresponsiveCollector collector;
+
+  TelemetryConfig telemetryCfg;
+  telemetryCfg.otelEnabled = true;
+  telemetryCfg.withEndpoint(collector.endpointForTraces());
+
+  HttpServerConfig serverCfg;
+  serverCfg.withTelemetryConfig(telemetryCfg);
+  serverCfg.enableKeepAlive = false;
+
+  test::TestServer server(serverCfg);
+  server.router().setDefault([](const HttpRequestView&) { return HttpResponse("otel-ok"); });
+
+  const auto start = std::chrono::steady_clock::now();
+  for (int requestPos = 0; requestPos < 3; ++requestPos) {
+    EXPECT_TRUE(test::simpleGet(server.port(), "/otel").contains("otel-ok"));
+  }
+  EXPECT_LT(std::chrono::steady_clock::now() - start, 5s);
+
+  // Reset the connections of the exporters before the server flushes its telemetry on destruction, which would
+  // otherwise wait for the exporter timeouts.
+  collector.close();
 }
 
 }  // namespace aeronet

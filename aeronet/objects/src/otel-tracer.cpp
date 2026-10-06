@@ -21,12 +21,13 @@
 
 // Detect SDK and processor support
 #if __has_include( \
-    <opentelemetry/sdk/trace/tracer_provider.h>) && __has_include(<opentelemetry/sdk/trace/simple_processor.h>)
+    <opentelemetry/sdk/trace/tracer_provider.h>) && __has_include(<opentelemetry/sdk/trace/batch_span_processor.h>)
 #define AERONET_HAVE_OTEL_SDK 1
 #include <opentelemetry/sdk/resource/resource.h>
+#include <opentelemetry/sdk/trace/batch_span_processor.h>
+#include <opentelemetry/sdk/trace/batch_span_processor_options.h>
 #include <opentelemetry/sdk/trace/sampler.h>
 #include <opentelemetry/sdk/trace/samplers/trace_id_ratio.h>
-#include <opentelemetry/sdk/trace/simple_processor.h>
 #include <opentelemetry/sdk/trace/tracer_provider.h>
 #include <opentelemetry/trace/span.h>
 #include <opentelemetry/trace/tracer_provider.h>
@@ -192,9 +193,14 @@ TelemetryContext::TelemetryContext(const TelemetryConfig& cfg) {
 #error "No trace exporter available - neither OTLP HTTP nor ostream exporter found"
 #endif
 
-  // Processor (SimpleSpanProcessor for compatibility)
+  // Spans end on the event loop thread: they must not be exported there. A SimpleSpanProcessor exports each span
+  // synchronously when it ends, stalling the whole event loop for a collector round trip, and up to the exporter
+  // timeout when the collector is slow or unreachable. The batch processor only queues the ended span; its own thread
+  // exports the queued spans every exportInterval (or as soon as a batch is full).
+  opentelemetry::sdk::trace::BatchSpanProcessorOptions batchOpts;
+  batchOpts.schedule_delay_millis = cfg.exportInterval;
   auto processor = std::unique_ptr<opentelemetry::sdk::trace::SpanProcessor>(
-      new opentelemetry::sdk::trace::SimpleSpanProcessor(std::move(exporter)));
+      new opentelemetry::sdk::trace::BatchSpanProcessor(std::move(exporter), batchOpts));
 
   // Create provider - NO global singleton, keep it in this instance
   auto sampler = std::unique_ptr<opentelemetry::sdk::trace::Sampler>(

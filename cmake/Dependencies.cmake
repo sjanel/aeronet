@@ -349,6 +349,13 @@ if(AeronetFetchContentPackagesToMakeAvailable)
     endif()
   endif()
 
+  # ThreadSanitizer only sees the synchronization performed by instrumented code. The BatchSpanProcessor of
+  # opentelemetry-cpp hands the ended spans over to its export thread through a lock-free queue: built without TSan,
+  # its atomics are invisible, and TSan reports races on everything the export thread reads through these spans.
+  if(AERONET_ENABLE_TSAN AND opentelemetry_cpp_SOURCE_DIR)
+    aeronet_add_options_to_dir_targets("${opentelemetry_cpp_SOURCE_DIR}" ${AERONET_TSAN_OPTIONS})
+  endif()
+
   # Create ZLIBNG::ZLIBNG interface library for zlib-ng (native mode).
   # zlib-ng 2.3+ provides ALIAS targets (zlib-ng::zlib, zlib-ng::zlibstatic),
   # and CMake disallows ALIAS-of-ALIAS. Use INTERFACE library instead.
