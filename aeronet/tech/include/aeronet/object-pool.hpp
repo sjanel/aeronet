@@ -9,6 +9,8 @@
 #include <type_traits>
 #include <utility>
 
+#include "aeronet/asan-poison.hpp"
+
 namespace aeronet {
 
 namespace internal {
@@ -88,6 +90,8 @@ class PoolPtr;
 // Object pools for fast allocation/deallocation of frequently used objects.
 // Once allocated and constructed, object pointers remain valid along with the pool lifetime.
 // All allocated objects are destroyed when the pool is destroyed.
+// With AddressSanitizer, unallocated slots (free or never used) are poisoned, so that accesses to destroyed objects
+// (including double releases) are reported as 'use-after-poison'.
 template <class T, class SizeType = uint32_t>
 class ObjectPool {
  public:
@@ -193,11 +197,20 @@ class ObjectPool {
     pNewBlock->_pPrevBlock = _pLastBlock;
     pNewBlock->_blockSize = newBlockSize;
 
+    AsanPoison(slotBegin(pNewBlock), newBlockSize * sizeof(Slot));
+
     if (_pLastBlock != nullptr) {
       _totalCapacity += newBlockSize;
     }
     _pLastBlock = pNewBlock;
     _pNextSlot = slotBegin(pNewBlock);
+  }
+
+  // Links a slot without live object at the head of the free list.
+  void pushFree(Slot* pSlot) noexcept {
+    pSlot->setFree(_pFreeList);
+    _pFreeList = pSlot;
+    AsanPoison(pSlot, sizeof(Slot));
   }
 
   [[nodiscard]] static Slot* slotFromObject(T* pObj) noexcept {
@@ -250,16 +263,17 @@ T* ObjectPool<T, SizeType>::allocateAndConstruct(Args&&... args) {
 
     pSlot = _pNextSlot;
     ++_pNextSlot;
+    AsanUnpoison(pSlot, sizeof(Slot));
   } else {
     pSlot = _pFreeList;
+    AsanUnpoison(pSlot, sizeof(Slot));
     _pFreeList = pSlot->nextFree();
   }
 
   try {
     std::construct_at(pSlot, std::forward<Args>(args)...);
   } catch (...) {
-    pSlot->setFree(_pFreeList);
-    _pFreeList = pSlot;
+    pushFree(pSlot);
     throw;
   }
 
@@ -270,10 +284,7 @@ T* ObjectPool<T, SizeType>::allocateAndConstruct(Args&&... args) {
 
 template <class T, class SizeType>
 void ObjectPool<T, SizeType>::destroyAndRelease(T* pObj) noexcept {
-  Slot* pSlot = slotFromObject(pObj);
-
-  pSlot->setFree(_pFreeList);
-  _pFreeList = pSlot;
+  pushFree(slotFromObject(pObj));
   --_liveCount;
 }
 
@@ -281,11 +292,8 @@ template <class T, class SizeType>
 T ObjectPool<T, SizeType>::release(T* pObj) noexcept
   requires std::is_move_constructible_v<T>
 {
-  Slot* pSlot = slotFromObject(pObj);
-
   T ret(std::move(*pObj));
-  pSlot->setFree(_pFreeList);
-  _pFreeList = pSlot;
+  pushFree(slotFromObject(pObj));
   --_liveCount;
   return ret;
 }
@@ -297,10 +305,10 @@ void ObjectPool<T, SizeType>::clear() noexcept {
   for (Block* pBlock = _pLastBlock; pBlock != nullptr; pBlock = pBlock->_pPrevBlock) {
     const auto nbElems =
         pBlock == _pLastBlock ? static_cast<size_type>(_pNextSlot - slotBegin(pBlock)) : pBlock->_blockSize;
+    // Already free slots are poisoned, but setFree() needs to access them.
+    AsanUnpoison(slotBegin(pBlock), nbElems * sizeof(Slot));
     for (size_type pos = 0; pos < nbElems; ++pos) {
-      Slot* pSlot = slotBegin(pBlock) + pos;
-      pSlot->setFree(_pFreeList);
-      _pFreeList = pSlot;
+      pushFree(slotBegin(pBlock) + pos);
     }
   }
   _liveCount = 0U;
@@ -311,11 +319,10 @@ void ObjectPool<T, SizeType>::reset() noexcept {
   for (Block* pBlock = _pLastBlock; pBlock != nullptr;) {
     Block* pPrev = pBlock->_pPrevBlock;
     if constexpr (!std::is_trivially_destructible_v<T>) {
-      if (pBlock == _pLastBlock) {
-        std::destroy(slotBegin(pBlock), _pNextSlot);
-      } else {
-        std::destroy_n(slotBegin(pBlock), pBlock->_blockSize);
-      }
+      Slot* pEnd = pBlock == _pLastBlock ? _pNextSlot : slotEnd(pBlock);
+      // Free slots are poisoned, but ~Slot() needs to check whether they hold a live object.
+      AsanUnpoison(slotBegin(pBlock), static_cast<std::size_t>(pEnd - slotBegin(pBlock)) * sizeof(Slot));
+      std::destroy(slotBegin(pBlock), pEnd);
     }
 
     if (pPrev == nullptr) {

@@ -1330,9 +1330,12 @@ bool Http2ProtocolHandler::startAsyncHandler(StreamsMap::iterator it, const Asyn
     log::error("HTTP/2 async handler returned invalid task on stream {} for path {}", streamId, req.path());
     state.request = std::move(pendingRef.streamRequest);
     state.pending.reset();
-    (void)sendResponse(streamId, req.makeResponse(http::StatusCodeInternalServerError, "Async handler inactive"),
+    // req and pendingRef are dangling now that the pending task is released, use the restored request instead.
+    HttpRequestView& restoredReq = state.request.request;
+    (void)sendResponse(streamId,
+                       restoredReq.makeResponse(http::StatusCodeInternalServerError, "Async handler inactive"),
                        isHeadMethod);
-    onRequestCompleted(req, http::StatusCodeInternalServerError);
+    onRequestCompleted(restoredReq, http::StatusCodeInternalServerError);
     releaseStreamAfterResponse(it);
     return false;
   }
@@ -1420,13 +1423,16 @@ void Http2ProtocolHandler::onAsyncTaskCompleted(uint32_t streamId) {
     respStatusCode = http::StatusCodeInternalServerError;
     it->second.request = std::move(pAsync->streamRequest);
     it->second.pending.reset();
-    err = sendResponse(streamId, req.makeResponse(respStatusCode, ex.what()), isHeadMethod);
+    // req is dangling now that the pending task is released, use the restored request instead.
+    err = sendResponse(streamId, it->second.request.request.makeResponse(respStatusCode, ex.what()), isHeadMethod);
   } catch (...) {
     log::error("HTTP/2 async handler unknown exception on stream {}", streamId);
     respStatusCode = http::StatusCodeInternalServerError;
     it->second.request = std::move(pAsync->streamRequest);
     it->second.pending.reset();
-    err = sendResponse(streamId, req.makeResponse(respStatusCode, "Unknown error"), isHeadMethod);
+    // req is dangling now that the pending task is released, use the restored request instead.
+    err =
+        sendResponse(streamId, it->second.request.request.makeResponse(respStatusCode, "Unknown error"), isHeadMethod);
   }
 
   if (err != ErrorCode::NoError) [[unlikely]] {
