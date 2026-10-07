@@ -18,6 +18,19 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# Minimum CPU utilization (% of its reserved CPUs) of the measured side (the server, or the
+# client for client benchmarks) for a measurement to count as saturated, when the summary does
+# not record its own 'saturation_threshold_pct'.
+DEFAULT_SATURATION_THRESHOLD_PCT = 90.0
+
+# Per measured side ('measured_side' summary field, "server" by default): what a CPU
+# utilization below the saturation threshold means for the result.
+_UNSATURATED_MEANING = {
+    "server": "the server was not the bottleneck (load generator, kernel or latency bound): the result does not "
+              "measure its throughput",
+    "client": "the client was waiting on the server or the kernel: the result does not measure its throughput",
+}
+
 
 def load_summary(path: Path) -> Dict[str, Any]:
     with path.open("r", encoding="utf-8") as fp:
@@ -81,8 +94,11 @@ def _build_table(
     results: Dict[str, Any],
     metric_key: str,
     lower_is_better: bool = False,
+    saturation_threshold: float = DEFAULT_SATURATION_THRESHOLD_PCT,
 ) -> str:
     """Build an HTML table for a specific metric."""
+    if metric_key in _CPU_METRIC_KEYS:
+        return _build_cpu_table(servers, scenarios, results, metric_key, saturation_threshold)
     memory_metric_keys = {"memory", "memory_rss", "memory_peak"}
     rows = []
     for scenario in scenarios:
@@ -145,6 +161,58 @@ def _build_table(
 """
 
 
+def _build_cpu_table(
+    servers: List[str], scenarios: List[str], results: Dict[str, Any], cpu_key: str, threshold: float
+) -> str:
+    """CPU utilization table of the measured side: cells below ``threshold`` are not saturated."""
+    side = _CPU_METRIC_KEYS[cpu_key]
+    rows = []
+    for scenario in scenarios:
+        values = results.get(scenario, {}).get(cpu_key, {})
+        row_cells = [f"<td>{_esc(scenario)}</td>"]
+        all_saturated = True
+        for srv in servers:
+            val = values.get(srv) if isinstance(values, dict) else None
+            if isinstance(val, (int, float)):
+                saturated = val >= threshold
+                all_saturated = all_saturated and saturated
+                css = "" if saturated else " class='unsaturated-cell'"
+                row_cells.append(f"<td data-server='{_esc(srv)}'{css}>{val:.0f}%</td>")
+            else:
+                row_cells.append(f"<td data-server='{_esc(srv)}'>-</td>")
+        verdict = "yes" if all_saturated else "no"
+        css = "best-cell" if all_saturated else "unsaturated-cell"
+        row_cells.append(f"<td class='{css}'>{verdict}</td>")
+        rows.append("<tr>" + "".join(row_cells) + "</tr>")
+    header_cells = ["Scenario"] + servers + ["All saturated"]
+    header_html = "".join(f"<th>{_esc(h)}</th>" for h in header_cells)
+    return f"""
+<p class="table-note">Share of the CPUs reserved for the {side} used during the measurement. Below
+{threshold:.0f}%, {_UNSATURATED_MEANING[side]}.</p>
+<table class="benchmark-table">
+  <thead><tr>{header_html}</tr></thead>
+  <tbody>{''.join(rows)}</tbody>
+</table>
+"""
+
+
+def _unsaturated_measurements(summary: Dict[str, Any]) -> List[str]:
+    """``subject/scenario (NN%)`` entries whose measured side CPU utilization is below the threshold."""
+    threshold = _saturation_threshold(summary)
+    cpu_key = _cpu_key(summary)
+    entries = []
+    results = summary.get("results", {})
+    for scenario in summary.get("scenarios", []):
+        values = results.get(scenario, {}).get(cpu_key, {})
+        if not isinstance(values, dict):
+            continue
+        for srv in summary.get("servers", []):
+            val = values.get(srv)
+            if isinstance(val, (int, float)) and val < threshold:
+                entries.append(f"{srv}/{scenario} ({val:.0f}%)")
+    return entries
+
+
 def _is_websocket(summary: Dict[str, Any]) -> bool:
     return summary.get("benchmark_type") == "websocket"
 
@@ -186,6 +254,9 @@ def _validate_summary_schema(summary: Dict[str, Any], summary_name: str) -> None
             )
 
         for data_key in metric_data_keys:
+            if data_key in _CPU_METRIC_KEYS:
+                # Optional: a missing value (failed run) must not render as an unsaturated 0%.
+                continue
             if data_key in {"memory_rss", "memory_peak"}:
                 memory = scenario_data.get("memory")
                 if not isinstance(memory, dict):
@@ -258,6 +329,20 @@ _HTTP_METRICS = [
      "logarithmic", 1e-2, "memory", None, True),
 ]
 
+# Utilization of the CPUs reserved for the measured side during the measurement. Only shown
+# for summaries that record it: a benchmark is meaningful only when the measured side (the
+# server, or the client for client benchmarks) is saturated.
+_SERVER_CPU_METRIC = (
+    "server_cpu", "server_cpu", "server_cpu", "Server CPU usage (% of its reserved CPUs)", "CPU (%)",
+    "linear", 0, "percent", "Server CPU", False,
+)
+_CLIENT_CPU_METRIC = (
+    "client_cpu", "client_cpu", "client_cpu", "Client CPU usage (% of its reserved CPUs)", "CPU (%)",
+    "linear", 0, "percent", "Client CPU", False,
+)
+# CPU metric key -> measured side.
+_CPU_METRIC_KEYS = {"server_cpu": "server", "client_cpu": "client"}
+
 _WS_METRICS = [
     ("rps", "rps", "rps", "Messages/sec", "Messages/sec",
      "linear", 0, "rps", "Messages/sec", False),
@@ -266,7 +351,36 @@ _WS_METRICS = [
 ]
 
 
+def _measured_side(summary: Dict[str, Any]) -> str:
+    """Side whose saturation makes the results meaningful: "server" (default) or "client"."""
+    return "client" if summary.get("measured_side") == "client" else "server"
+
+
+def _cpu_key(summary: Dict[str, Any]) -> str:
+    return f"{_measured_side(summary)}_cpu"
+
+
+def _has_measured_cpu(summary: Dict[str, Any]) -> bool:
+    results = summary.get("results")
+    if not isinstance(results, dict):
+        return False
+    cpu_key = _cpu_key(summary)
+    return any(isinstance(data, dict) and data.get(cpu_key) for data in results.values())
+
+
+def _saturation_threshold(summary: Dict[str, Any]) -> float:
+    value = summary.get("saturation_threshold_pct")
+    return float(value) if isinstance(value, (int, float)) else DEFAULT_SATURATION_THRESHOLD_PCT
+
+
 def _get_metrics(summary: Dict[str, Any]) -> list:
+    metrics = _get_base_metrics(summary)
+    if _has_measured_cpu(summary):
+        metrics = [*metrics, _CLIENT_CPU_METRIC if _measured_side(summary) == "client" else _SERVER_CPU_METRIC]
+    return metrics
+
+
+def _get_base_metrics(summary: Dict[str, Any]) -> list:
     if _is_websocket(summary):
         return _WS_METRICS
 
@@ -385,6 +499,34 @@ def _extra_meta_cards(summary: Dict[str, Any]) -> str:
     return cards
 
 
+def _loadgen_meta_card(summary: Dict[str, Any]) -> str:
+    """Load generator threads card, for summaries that record them."""
+    loadgen_threads = summary.get("loadgen_threads")
+    if not isinstance(loadgen_threads, int):
+        return ""
+    return f'\n  <div><span>Load generator threads</span><strong>{loadgen_threads}</strong></div>'
+
+
+def _saturation_banner(summaries: List[Dict[str, Any]]) -> str:
+    """Warning listing the not saturated measurements of every configuration, if any."""
+    items = []
+    for summary in summaries:
+        entries = _unsaturated_measurements(summary)
+        if entries:
+            items.append(f"<li><strong>{_esc(_conn_label(summary))}</strong>: {_esc(', '.join(entries))}</li>")
+    if not items:
+        return ""
+    threshold = _saturation_threshold(summaries[0])
+    side = _measured_side(summaries[0])
+    return f"""
+<div class="saturation-warning">
+  <strong>Not saturated measurements</strong> - the {side} used less than {threshold:.0f}% of its CPUs, so
+  {_UNSATURATED_MEANING[side]}:
+  <ul>{''.join(items)}</ul>
+</div>
+"""
+
+
 def _conn_label(summary: Dict[str, Any]) -> str:
     """Human-readable label for a connection-count configuration."""
     conns = summary.get("connections")
@@ -433,6 +575,7 @@ def render_html(summaries: List[Dict[str, Any]]) -> str:
                 tables[key] = _build_table(
                     servers, scenarios, results, key,
                     lower_is_better=lower_is_better,
+                    saturation_threshold=_saturation_threshold(summary),
                 )
 
         chart_payload = _build_chart_payload(servers, scenarios, results, metrics)
@@ -509,8 +652,8 @@ def render_html(summaries: List[Dict[str, Any]]) -> str:
 <div class="meta-cards">
   <div><span>Protocol</span><strong>WebSocket</strong></div>
   <div><span>Tool</span><strong>{_esc(tool)}</strong></div>
-  <div><span>Threads</span><strong>{_esc(str(threads))}</strong></div>
-  <div><span>VUs</span><strong>{_esc(str(vus))}</strong></div>
+  <div><span>Server threads</span><strong>{_esc(str(threads))}</strong></div>{_loadgen_meta_card(first)}
+  <div><span>Connections</span><strong>{_esc(str(vus))}</strong></div>
   <div><span>Duration</span><strong>{_esc(str(duration))}</strong></div>
   <div><span>Warmup</span><strong>{_esc(str(warmup))}</strong></div>{_extra_meta_cards(first)}
 </div>
@@ -522,7 +665,7 @@ def render_html(summaries: List[Dict[str, Any]]) -> str:
 <div class="meta-cards">
   <div><span>Protocol</span><strong>{_esc(protocol_display)}</strong></div>
   <div><span>Tool</span><strong>{_esc(tool)}</strong></div>
-  <div><span>Threads</span><strong>{_esc(str(threads))}</strong></div>
+  <div><span>Server threads</span><strong>{_esc(str(threads))}</strong></div>{_loadgen_meta_card(first)}
   <div><span>{_esc(tool)} duration</span><strong>{_esc(str(duration))}</strong></div>
   <div><span>{_esc(tool)} warmup</span><strong>{_esc(str(warmup))}</strong></div>"""
         if h2_streams is not None:
@@ -584,7 +727,7 @@ def render_html(summaries: List[Dict[str, Any]]) -> str:
     html_out = (
         tpl.replace("__TABLE_TABS_HTML__", table_tabs_html)
         .replace("__PAYLOAD_JSON__", configs_js)
-        .replace("__META_CARDS__", meta_cards)
+        .replace("__META_CARDS__", meta_cards + _saturation_banner(summaries))
         .replace("__META_DESCRIPTION__", _esc(meta_description))
         .replace("__SCENARIO_OPTIONS__", scenario_options_html)
         .replace("__METRIC_OPTIONS__", metric_options_html)

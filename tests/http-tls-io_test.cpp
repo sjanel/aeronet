@@ -4,19 +4,25 @@
 #include <openssl/types.h>
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cerrno>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <format>
 #include <memory>
+#include <mutex>
 #include <ranges>
 #include <span>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #ifdef AERONET_POSIX
 #include <optional>
@@ -28,6 +34,7 @@
 #include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
@@ -320,6 +327,78 @@ TEST(HttpTlsBasic, LargePayload) {
   ASSERT_FALSE(raw.empty());
   EXPECT_TRUE(raw.starts_with("HTTP/1.1 200"));
   EXPECT_TRUE(raw.ends_with(largeBody));
+}
+
+// The fairness budget of a readable event also counts the bytes written while serving its input. A TLS connection is
+// read one record at a time: a client pipelining small requests for large responses, one per record, must yield to the
+// other ready connections once its responses reach the budget, instead of being served until it has sent a whole budget
+// of requests.
+TEST(HttpTlsFairness, PipelinedRequestsYieldToOtherConnectionsOnceResponsesReachTheBudget) {
+  static constexpr std::size_t kBudget = 8UL << 10U;
+  static constexpr std::size_t kBodySize = kBudget / 2;  // the second response exhausts the budget
+  static constexpr int kNbPipelinedRequests = 16;
+  test::TlsTestServer localTs({"http/1.1"}, [](HttpServerConfig& cfg) {
+    cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Disabled);
+    cfg.withMaxPerEventReadBytes(kBudget);
+  });
+
+  std::atomic<bool> inBlockingHandler{false};
+  std::atomic<bool> releaseBlockingHandler{false};
+  std::mutex orderMutex;
+  std::vector<std::string> processingOrder;
+  localTs.router().setPath(http::Method::GET, "/block", [&](const HttpRequestView&) {
+    inBlockingHandler.store(true);
+    while (!releaseBlockingHandler.load()) {
+      std::this_thread::sleep_for(1ms);
+    }
+    return HttpResponse("blocked");
+  });
+  localTs.setDefault([&](const HttpRequestView& req) {
+    {
+      std::scoped_lock lock(orderMutex);
+      processingOrder.emplace_back(req.path());
+    }
+    return HttpResponse(std::string(kBodySize, 'r'));
+  });
+
+  test::TlsClient blocker(localTs.port());
+  test::TlsClient pipelining(localTs.port());
+  test::TlsClient other(localTs.port());
+  ASSERT_TRUE(blocker.handshakeOk() && pipelining.handshakeOk() && other.handshakeOk());
+
+  // Block the event loop in a handler while the requests below are sent, so that its next poll reports them together,
+  // the pipelined ones first.
+  ASSERT_TRUE(blocker.writeAll("GET /block HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"));
+  while (!inBlockingHandler.load()) {
+    std::this_thread::sleep_for(1ms);
+  }
+  for (int requestPos = 0; requestPos < kNbPipelinedRequests; ++requestPos) {
+    // One TLS record per request.
+    ASSERT_TRUE(pipelining.writeAll(std::format("GET /p{} HTTP/1.1\r\nHost: x\r\n\r\n", requestPos)));
+  }
+  ASSERT_TRUE(other.writeAll("GET /other HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"));
+  releaseBlockingHandler.store(true);
+
+  EXPECT_TRUE(blocker.readAll().contains("blocked"));
+  EXPECT_TRUE(other.readAll().starts_with("HTTP/1.1 200"));
+  std::string pipelinedResponses;
+  std::array<char, 4096> buf;
+  const auto deadline = std::chrono::steady_clock::now() + 10s;
+  while (test::countOccurrences(pipelinedResponses, "HTTP/1.1 200") < kNbPipelinedRequests &&
+         std::chrono::steady_clock::now() < deadline) {
+    const std::string_view data = pipelining.readSome(buf);
+    if (data.empty()) {
+      std::this_thread::sleep_for(1ms);
+    }
+    pipelinedResponses.append(data);
+  }
+  EXPECT_EQ(test::countOccurrences(pipelinedResponses, "HTTP/1.1 200"), kNbPipelinedRequests);
+
+  std::scoped_lock lock(orderMutex);
+  ASSERT_EQ(processingOrder.size(), static_cast<std::size_t>(kNbPipelinedRequests) + 1U);
+  // The pipelining connection yields after two requests, instead of having all of them served before the other one.
+  const auto otherPos = std::ranges::find(processingOrder, "/other") - processingOrder.begin();
+  EXPECT_LT(otherPos, kNbPipelinedRequests / 2);
 }
 
 #ifdef AERONET_POSIX

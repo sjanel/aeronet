@@ -49,9 +49,10 @@ class File {
   // On failure, operator bool() returns false.
   explicit File(const char* path, OpenMode mode = OpenMode::ReadOnly);
 
-  // Copy: duplicates the underlying descriptor (dup/_dup) so the copy owns an independent, valid handle to the
-  // same underlying file. size()/lastModified()/detectedContentType() metadata is copied as-is from the source
-  // (not re-queried), since it describes the same file at the same open-time snapshot.
+  // Copy: the copy owns its own descriptor to the same underlying file, duplicated (dup) on POSIX, and reopened on
+  // Windows so that the copy also has its own file position (readAt() and sendfile position the file there).
+  // size()/lastModified()/detectedContentType() metadata is copied as-is from the source (not re-queried), since it
+  // describes the same file at the same open-time snapshot.
   // If duplication fails, the resulting File behaves like a failed open: operator bool() is false, size() is
   // kError, lastModified() is the invalid sentinel.
   File(const File& rhs);

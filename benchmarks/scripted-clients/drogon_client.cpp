@@ -41,6 +41,13 @@ class DrogonSession {
     req->setPath(_spec.path);
     req->setMethod(_isPost ? drogon::Post : drogon::Get);
     req->addHeader("Accept-Encoding", _spec.acceptEncoding);
+    if (!_spec.reuse) {
+      // Drogon's client overwrites any Connection header with 'Keep-Alive' unless the request is in pass-through
+      // mode, which also skips its automatic headers (fine for this body-less GET).
+      req->setPassThrough(true);
+      req->addHeader("Connection", "close");
+      req->addHeader("User-Agent", "DrogonClient");
+    }
     for (const auto& [name, value] : _spec.requestHeaders) {
       req->addHeader(name, value);
     }

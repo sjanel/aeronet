@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import os
+import re
+import resource
 import shutil
 import signal
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -280,3 +282,283 @@ class TablePrinter:
             return float(cleaned)
         except ValueError:
             return None
+
+
+# --------------------------- CPU placement & saturation --------------------------- #
+#
+# A *server* benchmark is only meaningful when the server is the bottleneck: the load
+# generator must be given enough CPU (and threads) to keep the server busy, otherwise
+# the numbers measure the client and the scheduler, not the server. The helpers below
+# reserve CPUs for the server and the load generator (SMT aware) and measure the CPU
+# utilization of both sides, so that every result can be flagged as saturated or not.
+
+# Minimum utilization of its reserved CPUs for a process to count as saturated.
+SATURATION_THRESHOLD_PCT = 90.0
+
+
+def parse_cpu_list(value: str) -> List[int]:
+    """Parse a Linux CPU list ("0-3,8,10-11") into CPU IDs."""
+    cpus: List[int] = []
+    for part in value.strip().split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start_text, end_text = part.split("-", 1)
+            cpus.extend(range(int(start_text), int(end_text) + 1))
+        else:
+            cpus.append(int(part))
+    return cpus
+
+
+def format_cpu_list(cpus: Sequence[int]) -> str:
+    """Format CPU IDs for ``taskset -c``, coalescing adjacent IDs into ranges."""
+    ordered = sorted(set(cpus))
+    if not ordered:
+        return ""
+    parts: List[str] = []
+    start = previous = ordered[0]
+    for cpu in ordered[1:]:
+        if cpu == previous + 1:
+            previous = cpu
+            continue
+        parts.append(str(start) if start == previous else f"{start}-{previous}")
+        start = previous = cpu
+    parts.append(str(start) if start == previous else f"{start}-{previous}")
+    return ",".join(parts)
+
+
+def available_cpus() -> List[int]:
+    """CPUs this process may run on (respects Linux cpusets / affinity)."""
+    if hasattr(os, "sched_getaffinity"):
+        return sorted(os.sched_getaffinity(0))
+    return list(range(os.cpu_count() or 1))
+
+
+def linux_sibling_map(cpus: Sequence[int]) -> Dict[int, List[int]]:
+    """Map each CPU to the SMT siblings (same physical core) among ``cpus``."""
+    available = set(cpus)
+    siblings: Dict[int, List[int]] = {}
+    for cpu in cpus:
+        path = Path(f"/sys/devices/system/cpu/cpu{cpu}/topology/thread_siblings_list")
+        try:
+            group = sorted(available.intersection(parse_cpu_list(path.read_text(encoding="ascii"))))
+        except (OSError, ValueError):
+            group = [cpu]
+        siblings[cpu] = group or [cpu]
+    return siblings
+
+
+@dataclass(frozen=True)
+class CpuPlan:
+    """CPUs reserved for the server and the load generator of a server benchmark."""
+
+    server_cpus: List[int]
+    loadgen_cpus: List[int]
+    loadgen_threads: int
+    # True when a load generator CPU is an SMT sibling of a server CPU (unavoidable on
+    # small machines such as 4-vCPU CI runners: 2 physical cores).
+    shares_server_cores: bool = False
+
+    @property
+    def pinned(self) -> bool:
+        return bool(self.server_cpus) and bool(self.loadgen_cpus)
+
+    def server_prefix(self) -> List[str]:
+        return ["taskset", "-c", format_cpu_list(self.server_cpus)] if self.pinned else []
+
+    def loadgen_prefix(self) -> List[str]:
+        return ["taskset", "-c", format_cpu_list(self.loadgen_cpus)] if self.pinned else []
+
+    def describe(self) -> str:
+        if not self.pinned:
+            return f"CPU pinning disabled, load generator threads: {self.loadgen_threads}"
+        note = " (load generator shares SMT cores with the server)" if self.shares_server_cores else ""
+        return (
+            f"server CPUs {format_cpu_list(self.server_cpus)}, load generator CPUs "
+            f"{format_cpu_list(self.loadgen_cpus)} ({self.loadgen_threads} threads){note}"
+        )
+
+    def to_json(self) -> Dict[str, Any]:
+        return {
+            "server_cpus": format_cpu_list(self.server_cpus),
+            "loadgen_cpus": format_cpu_list(self.loadgen_cpus),
+            "loadgen_threads": self.loadgen_threads,
+            "shares_server_cores": self.shares_server_cores,
+        }
+
+
+# Upper bound of load generator threads per server thread when sized automatically:
+# a loopback client costs about as much CPU per request as an efficient server, so
+# 3x leaves headroom to saturate the server without flooding big machines.
+DEFAULT_MAX_LOADGEN_RATIO = 3
+
+
+def plan_server_benchmark_cpus(
+    server_threads: int,
+    loadgen_threads: int = 0,
+    *,
+    pin: bool = True,
+    max_loadgen_ratio: int = DEFAULT_MAX_LOADGEN_RATIO,
+    cpus: Optional[Sequence[int]] = None,
+    sibling_map: Optional[Dict[int, List[int]]] = None,
+) -> CpuPlan:
+    """Reserve CPUs so that the load generator can always saturate the server.
+
+    The server gets ``server_threads`` CPUs, one per physical core when possible. The
+    load generator gets every remaining CPU it needs, CPUs of other physical cores
+    first and SMT siblings of the server last. ``loadgen_threads`` <= 0 sizes it
+    automatically: all remaining CPUs, up to ``max_loadgen_ratio`` per server thread.
+    """
+    server_threads = max(1, server_threads)
+    cpus = list(cpus) if cpus is not None else available_cpus()
+    auto_threads = max(1, min(len(cpus) - server_threads, max_loadgen_ratio * server_threads))
+    wanted_threads = loadgen_threads if loadgen_threads > 0 else auto_threads
+    if not pin or len(cpus) < server_threads + 1:
+        return CpuPlan([], [], max(1, wanted_threads))
+    sibling_map = sibling_map if sibling_map is not None else linux_sibling_map(cpus)
+
+    # Physical cores, as groups of SMT siblings ordered by their first CPU.
+    groups: List[List[int]] = []
+    seen: set = set()
+    for cpu in cpus:
+        if cpu in seen:
+            continue
+        group = sorted(set(sibling_map.get(cpu, [cpu])).intersection(cpus)) or [cpu]
+        seen.update(group)
+        groups.append(group)
+
+    server_cpus = [group[0] for group in groups[:server_threads]]
+    if len(server_cpus) < server_threads:
+        extra = [cpu for group in groups for cpu in group[1:]]
+        server_cpus += extra[: server_threads - len(server_cpus)]
+    server_set = set(server_cpus)
+    server_siblings = {cpu for group in groups if server_set.intersection(group) for cpu in group} - server_set
+    # One CPU per free physical core first, then their SMT siblings, then the server cores' siblings.
+    free_groups = [group for group in groups if not server_set.intersection(group)]
+    depth = max((len(group) for group in free_groups), default=0)
+    candidates = [group[level] for level in range(depth) for group in free_groups if level < len(group)]
+    candidates += sorted(server_siblings)
+    if not candidates:
+        return CpuPlan([], [], max(1, wanted_threads))
+    threads = max(1, min(wanted_threads, len(candidates)))
+    loadgen_cpus = candidates[:threads]
+    return CpuPlan(
+        server_cpus=server_cpus,
+        loadgen_cpus=loadgen_cpus,
+        loadgen_threads=threads,
+        shares_server_cores=bool(server_siblings.intersection(loadgen_cpus)),
+    )
+
+
+_CLOCK_TICKS = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+
+
+def process_tree_pids(pid: int) -> List[int]:
+    """``pid`` and its descendants (multi-process servers), from /proc."""
+    children: Dict[int, List[int]] = {}
+    try:
+        entries = list(Path("/proc").iterdir())
+    except OSError:
+        return [pid]
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = entry.joinpath("stat").read_text()
+        except OSError:
+            continue
+        fields = stat[stat.rfind(")") + 2:].split()
+        if len(fields) > 1:
+            children.setdefault(int(fields[1]), []).append(int(entry.name))
+    tree: List[int] = []
+    to_visit = [pid]
+    while to_visit:
+        current = to_visit.pop()
+        if current in tree:
+            continue
+        tree.append(current)
+        to_visit.extend(children.get(current, []))
+    return tree
+
+
+def process_tree_cpu_seconds(pid: int) -> Optional[float]:
+    """User + system CPU time consumed so far by ``pid`` and its descendants."""
+    total = 0.0
+    found = False
+    for proc_pid in process_tree_pids(pid):
+        try:
+            stat = Path(f"/proc/{proc_pid}/stat").read_text()
+        except OSError:
+            continue
+        fields = stat[stat.rfind(")") + 2:].split()
+        # fields[0] is the state (3rd field of /proc/<pid>/stat): utime / stime are the 14th / 15th.
+        if len(fields) > 12:
+            total += (int(fields[11]) + int(fields[12])) / _CLOCK_TICKS
+            found = True
+    return total if found else None
+
+
+def children_cpu_seconds() -> float:
+    """User + system CPU time of the terminated and waited-for children of this process."""
+    usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+    return usage.ru_utime + usage.ru_stime
+
+
+@dataclass
+class CpuUsage:
+    """CPU utilization over a measurement window, in % of the CPUs reserved for each side."""
+
+    server_pct: Optional[float] = None
+    loadgen_pct: Optional[float] = None
+
+    def server_saturated(self) -> Optional[bool]:
+        return None if self.server_pct is None else self.server_pct >= SATURATION_THRESHOLD_PCT
+
+
+@dataclass
+class CpuMeter:
+    """Measure the CPU utilization of a server process tree and of the load generator.
+
+    The load generator must be a child process run (and waited for) between ``start``
+    and ``stop``: its usage is taken from ``getrusage(RUSAGE_CHILDREN)``.
+    """
+
+    server_pid: Optional[int]
+    server_cpus: int
+    loadgen_cpus: int
+    _start_wall: float = field(default=0.0, init=False)
+    _start_server: Optional[float] = field(default=None, init=False)
+    _start_children: float = field(default=0.0, init=False)
+
+    def start(self) -> None:
+        self._start_server = process_tree_cpu_seconds(self.server_pid) if self.server_pid else None
+        self._start_children = children_cpu_seconds()
+        self._start_wall = time.monotonic()
+
+    def stop(self) -> CpuUsage:
+        wall = time.monotonic() - self._start_wall
+        usage = CpuUsage()
+        if wall <= 0:
+            return usage
+        if self.server_pid and self._start_server is not None:
+            end_server = process_tree_cpu_seconds(self.server_pid)
+            if end_server is not None:
+                usage.server_pct = 100.0 * (end_server - self._start_server) / (wall * max(1, self.server_cpus))
+        usage.loadgen_pct = (
+            100.0 * (children_cpu_seconds() - self._start_children) / (wall * max(1, self.loadgen_cpus))
+        )
+        return usage
+
+
+def duration_to_seconds(value: str) -> Optional[float]:
+    """Parse a load generator duration ("500ms", "30s", "2m", bare seconds) into seconds."""
+    match = re.match(r"^([0-9]*\.?[0-9]+)\s*(us|ms|s|m|h)?$", str(value).strip())
+    if match is None:
+        return None
+    factors = {"us": 1e-6, "ms": 1e-3, "s": 1.0, "m": 60.0, "h": 3600.0}
+    return float(match.group(1)) * factors[(match.group(2) or "s").lower()]
+
+
+def format_pct(value: Optional[float]) -> str:
+    return "-" if value is None else f"{value:.0f}%"

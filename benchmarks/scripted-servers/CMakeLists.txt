@@ -269,6 +269,24 @@ else()
   message(STATUS "[aeronet][bench] uWebSockets benchmark server disabled (AERONET_BENCH_ENABLE_UWEBSOCKETS=${AERONET_BENCH_ENABLE_UWEBSOCKETS})")
 endif()
 
+## Native WebSocket load generator (epoll): drives run_ws_benchmarks.py. k6 spends several times more CPU per
+## message than an efficient server, so it cannot saturate the servers under test on small machines.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  AeronetAddProjectExecutable(ws-loadgen ws_loadgen.cpp)
+  find_package(Threads REQUIRED)
+  target_link_libraries(ws-loadgen PRIVATE Threads::Threads)
+  # System zlib for permessage-deflate (compression scenario).
+  find_path(WS_LOADGEN_ZLIB_INCLUDE_DIR zlib.h)
+  find_library(WS_LOADGEN_ZLIB_LIBRARY z)
+  if(WS_LOADGEN_ZLIB_INCLUDE_DIR AND WS_LOADGEN_ZLIB_LIBRARY)
+    target_include_directories(ws-loadgen SYSTEM PRIVATE ${WS_LOADGEN_ZLIB_INCLUDE_DIR})
+    target_link_libraries(ws-loadgen PRIVATE ${WS_LOADGEN_ZLIB_LIBRARY})
+    target_compile_definitions(ws-loadgen PRIVATE WS_LOADGEN_HAVE_ZLIB)
+  endif()
+  set_target_properties(ws-loadgen PROPERTIES FOLDER "benchmarks/loadgen")
+  message(STATUS "[aeronet][bench] Native WebSocket load generator enabled (ws-loadgen)")
+endif()
+
 # Copy Lua scripts and runner to build directory for convenience
 set(SCRIPTED_SERVERS_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 set(SCRIPTED_SERVERS_BUILD_DIR ${CMAKE_CURRENT_BINARY_DIR})
@@ -350,6 +368,9 @@ if(TARGET beast-bench-server)
   add_dependencies(run-scripted-benchmarks beast-bench-server)
 endif()
 
+if(TARGET ws-loadgen)
+  add_dependencies(run-scripted-benchmarks ws-loadgen)
+endif()
 if(TARGET uwebsockets-bench-server)
   add_dependencies(run-scripted-benchmarks uwebsockets-bench-server)
 endif()

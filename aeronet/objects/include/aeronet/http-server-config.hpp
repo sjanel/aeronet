@@ -297,11 +297,14 @@ struct HttpServerConfig {
   // Defaults balance fairness and throughput while keeping nominal one-read behavior.
   std::uint32_t minReadChunkBytes{4096};
 
-  // Fairness cap for one event-loop iteration (must be > 0).
+  // Fairness budget of one readable event of a connection (must be > 0): the bytes read from the connection plus the
+  // bytes written while serving them. Once it is reached, the rest of the input of the connection is read after the
+  // other ready connections have been served, so that neither large uploads nor many small requests answered with large
+  // responses can keep the event loop on one connection.
   // The first read of an event attempts to consume up to this budget in one syscall; follow-up reads are clamped to
-  // remaining budget and minReadChunkBytes. If you expect large request bodies and low number of connections, you can
-  // favor high values to improve throughput. For workloads with many concurrent connections, lower values can improve
-  // fairness and latency at the cost of throughput. To approximate unlimited behavior, set this to
+  // remaining budget and minReadChunkBytes. If you expect large request bodies or responses and low number of
+  // connections, you can favor high values to improve throughput. For workloads with many concurrent connections, lower
+  // values can improve fairness and latency at the cost of throughput. To approximate unlimited behavior, set this to
   // std::numeric_limits<uint32_t>::max().
   std::uint32_t maxPerEventReadBytes{128U << 10U};
 
@@ -336,9 +339,10 @@ struct HttpServerConfig {
   ConcatenatedStrings32 _connectAllowlist;
 
  public:
-  // Check whether the per-event fairness cap has been reached after reading.
-  [[nodiscard]] bool fairnessBudgetExhausted(std::size_t bytesReadThisEvent) const {
-    return bytesReadThisEvent >= maxPerEventReadBytes;
+  // Check whether the per-event fairness budget has been reached, given the bytes read during the event (plus the bytes
+  // written while serving them, when the event serves its input between reads).
+  [[nodiscard]] bool fairnessBudgetExhausted(std::size_t bytesThisEvent) const {
+    return bytesThisEvent >= maxPerEventReadBytes;
   }
 
   // Compute the read chunk size for a connection, accounting for the per-event fairness cap.
@@ -528,7 +532,7 @@ struct HttpServerConfig {
   // Configure the minimum read chunk size when receiving request data. Returns *this.
   HttpServerConfig& withMinReadChunkBytes(std::size_t bytes);
 
-  // Configure a per-event read fairness cap (must be > 0).
+  // Configure the per-event fairness budget: bytes read plus bytes written while serving them (must be > 0).
   // To approximate unlimited behavior, use std::numeric_limits<uint32_t>::max().
   HttpServerConfig& withMaxPerEventReadBytes(std::size_t capBytes);
 

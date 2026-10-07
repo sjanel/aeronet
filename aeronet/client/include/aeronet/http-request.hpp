@@ -709,6 +709,12 @@ class HttpRequest final : public HttpMessage {
     return {_data.data() + _originKeyLen, wireDataSize() - _originKeyLen};
   }
 
+  // Position in completeRequestForHttp11() of the blank line (CRLFCRLF) ending the head, where header lines can be
+  // spliced in on the wire.
+  [[nodiscard]] std::size_t headEndForHttp11() const noexcept {
+    return static_cast<std::size_t>(bodyStartPos()) - _originKeyLen - http::DoubleCRLF.size();
+  }
+
   [[nodiscard]] std::string_view capturedPayloadForHttp11() const noexcept { return getHttpPayload()->view(); }
 
   // URL data - will be set at construction time and cannot be modified.

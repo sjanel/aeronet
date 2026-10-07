@@ -50,7 +50,7 @@ config.withPort(8080)
 | `pollInterval` / `withPollInterval()` | 500 ms | Maximum idle event-loop wait. Lower values improve stop responsiveness but increase wakeups. |
 | `pollIntervalMinFactor`, `pollIntervalMaxFactor` / `withPollIntervalFactors()` | 1.0, 1.0 | Adaptive poll bounds relative to `pollInterval`; `0.0, 2.0` permits a saturated spin and idle backoff. |
 | `minReadChunkBytes` / `withMinReadChunkBytes()` | 4 KiB | Minimum follow-up inbound read size. |
-| `maxPerEventReadBytes` / `withMaxPerEventReadBytes()` | 128 KiB | Fairness budget per connection event. Raise for few large uploads; lower for latency across many connections. |
+| `maxPerEventReadBytes` / `withMaxPerEventReadBytes()` | 128 KiB | Fairness budget per connection event: bytes read plus bytes written while serving them. Raise for few large uploads or downloads; lower for latency across many connections. |
 | `zerocopyMode` / `withZerocopyMode()` | Opportunistic | `MSG_ZEROCOPY` policy for eligible large writes; Linux-specific. |
 | `zerocopyMinBytes` / `withZerocopyMinBytes()` | 128 KiB | Minimum payload size for zero-copy attempts. |
 | `globalHeaders` / `withGlobalHeaders()` / `addGlobalHeader()` | `server: aeronet` | Headers added unless the response already supplies that header. Maximum 256 entries. |
