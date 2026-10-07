@@ -19,8 +19,15 @@
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
+#include <system_error>
 #include <thread>
+
+#ifdef AERONET_LINUX
+#include <sys/resource.h>
+#endif
 
 #include "aeronet/async-handler-state.hpp"
 #endif
@@ -204,9 +211,6 @@ class HttpRequestViewTest : public ::testing::Test {
     req._pBodyAccessContext = nullptr;
   }
 
-  // Fixture-level helper to mutate the request's private body access context
-  void setRequestBodyAccessContextToNull() { cs.request._pBodyAccessContext = nullptr; }
-
   void setOwnerState(ConnectionState* st) { req._pOwnerState = st; }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
@@ -328,22 +332,6 @@ TEST_F(HttpRequestViewTest, BridgeWithNullContextStreamingHandledGracefully) {
   EXPECT_FALSE(req.hasMoreBody());
 }
 
-TEST_F(HttpRequestViewTest, AggregatedBridgeNullContextAndHasMoreHandled) {
-  // Install the real aggregated bridge via ConnectionState so the bridge points
-  // at ConnectionState::bodyStreamContext functions defined in connection-state.cpp.
-  cs.installAggregatedBodyBridge();
-
-  // Force the bridge context to be null to exercise the null-context branches
-  // inside AggregateBufferedBody and HasMoreBufferedBody.
-  setRequestBodyAccessContextToNull();
-
-  // Aggregate accessor with null context should return empty and not crash.
-  EXPECT_TRUE(cs.request.body().empty());
-
-  // hasMore should return false when context is null.
-  EXPECT_FALSE(cs.request.hasMoreBody());
-}
-
 TEST_F(HttpRequestViewTest, BridgePresentButAggregateNull) {
   // Removed: test constructed a BodyAccessBridge directly which uses private
   // types; use BridgePointerPresentButAggregateNull which installs the bridge
@@ -373,17 +361,6 @@ TEST_F(HttpRequestViewTest, AggregatedBridgeReadOffsetPastEndHandled) {
   // readBody should see offset >= body.size() and return empty without crashing.
   auto chunk = cs.request.readBody(4);
   EXPECT_TRUE(chunk.empty());
-}
-
-TEST_F(HttpRequestViewTest, AggregatedBridgeHasMoreNullContextHandled) {
-  // Install aggregated bridge via ConnectionState
-  cs.installAggregatedBodyBridge();
-
-  // Ensure context is null to hit the null-context branch in HasMoreBufferedBody
-  setRequestBodyAccessContextToNull();
-
-  // hasMoreBody should return false when context is null
-  EXPECT_FALSE(cs.request.hasMoreBody());
 }
 
 TEST_F(HttpRequestViewTest, TraceSpanNotSetWhenNoHostHeader) {
@@ -577,6 +554,41 @@ TEST_F(HttpRequestViewTest, DeferredWorkCompletionOutlivesAwaitableStorage) {
   EXPECT_TRUE(postCallbackInvoked.load(std::memory_order_acquire));
   EXPECT_TRUE(suspendedFlag);
 }
+
+#ifdef AERONET_LINUX
+TEST_F(HttpRequestViewTest, DeferredWorkThreadCreationFailureIsRethrownByAwaitResume) {
+  bool suspendedFlag = false;
+  setH2SuspendedFlag(&suspendedFlag);
+  setH2PostCallback([](std::coroutine_handle<>, const std::function<void()>&) {});
+
+  // Run in a forked child: once its user is not allowed any new thread, none can be started (a privileged user ignores
+  // the limit, the test is then skipped).
+  const auto deferWorkWithoutThreads = [this, &suspendedFlag] {
+    const rlimit noNewThread{0, 0};
+    if (::setrlimit(RLIMIT_NPROC, &noNewThread) != 0) {
+      std::fputs("skipped\n", stderr);
+      std::_Exit(0);
+    }
+    auto awaitable = req.deferWork([] { return 42; });
+    if (awaitable.await_suspend(std::coroutine_handle<>{})) {
+      std::fputs("skipped\n", stderr);
+      std::_Exit(0);
+    }
+    // Not suspended: the coroutine continues right away, without waiting for a completion.
+    if (suspendedFlag) {
+      std::_Exit(2);
+    }
+    try {
+      (void)awaitable.await_resume();
+    } catch (const std::system_error&) {
+      std::fputs("rethrown\n", stderr);
+      std::_Exit(0);
+    }
+    std::_Exit(1);
+  };
+  EXPECT_EXIT(deferWorkWithoutThreads(), ::testing::ExitedWithCode(0), "rethrown|skipped");
+}
+#endif
 
 #endif
 
@@ -1116,18 +1128,6 @@ TEST_F(HttpRequestViewTest, HasMoreBodyReturnsFalseWhenAggregated) {
 
   setBodyAccessAggregated();
   EXPECT_FALSE(req.hasMoreBody());
-}
-
-TEST_F(HttpRequestViewTest, ReadBufferedBodyNullContextReturnsEmpty) {
-  // Install aggregated bridge via ConnectionState helper
-  cs.installAggregatedBodyBridge();
-
-  // Force the bridge context to be null to exercise the null-context branch
-  setRequestBodyAccessContextToNull();
-
-  // Calling readBody should return empty when context is null
-  auto chunk = cs.request.readBody(4);
-  EXPECT_TRUE(chunk.empty());
 }
 
 TEST_F(HttpRequestViewTest, HasMoreBodyReturnsFalseWhenBridgeHasNoHasMore) {

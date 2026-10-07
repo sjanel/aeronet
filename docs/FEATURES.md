@@ -336,7 +336,7 @@ Using `std::string_view` extensively would typically be an anti-pattern due to d
 1. The single-threaded event loop per server instance eliminates concurrency concerns
 2. Synchronous handler execution ensures the buffer cannot be modified during handler execution
 3. The per-connection buffer design provides clear ownership boundaries
-4. For asynchronous handlers awaiting body data, the server automatically copies head data (path, query params, headers) into a pinned buffer via `pinHeadStorage()`, so these views remain valid across suspensions
+4. For asynchronous handlers, the server copies head data (path, query and path params, headers) into a pinned buffer when the handler suspends, and does not read the next bytes of the connection until the handler completes (they stay in the socket), so all the views of the request, including its body, remain valid across suspensions
 
 #### Best Practices for Handlers
 
@@ -1400,6 +1400,8 @@ router.setPath(http::Method::GET, "/users/{id}", [](const HttpRequestView& req) 
 
 ### Coroutine Handlers (Async)
 
+> For a guided tour (use cases, lifetime and thread-safety rules, performance measurements), see the [Async handlers guide](guides/async-handlers.md).
+
 **aeronet** supports C++20 coroutines for request handling, allowing you to write asynchronous code that looks synchronous. This is particularly useful when your handler needs to perform asynchronous operations (like database queries, upstream HTTP requests, or timers) without blocking the event loop thread.
 
 #### Key Concepts
@@ -1418,19 +1420,8 @@ using namespace aeronet;
 
 struct User { int id; /* ... */ };
 
-// A hypothetical async database client
-// Minimal awaitable used for the demo: provides the three awaiter
-// methods so it can be consumed with `co_await` inside an async handler.
-struct GetUserAwaitable {
-  int id;
-  bool await_ready() const noexcept { return false; }
-  void await_suspend(std::coroutine_handle<> handle) noexcept { handle.resume(); }
-  User await_resume() const noexcept { return User{id}; }
-};
-
-GetUserAwaitable getUserAsync(int id) {
-  return GetUserAwaitable{id};
-}
+// A hypothetical blocking database client
+User getUserBlocking(int id) { return User{id}; }
 
 int main() {
   Router router;
@@ -1440,12 +1431,12 @@ int main() {
     // 1. Parse parameters (synchronous)
     int userId = std::stoi(std::string(req.pathParams().at("id")));
 
-    // 2. Suspend while fetching data (non-blocking)
+    // 2. Suspend while fetching data on a background thread (non-blocking)
     // The event loop is free to handle other requests while we wait.
-    User user = co_await getUserAsync(userId);
+    User user = co_await req.deferWork([userId] { return getUserBlocking(userId); });
 
     // 3. Resume and build response
-    co_return HttpResponse(200).body(std::to_string(userId));
+    co_return HttpResponse(200).body(std::to_string(user.id));
   });
 
   // Async body reading
@@ -1465,12 +1456,13 @@ When a route uses an async handler, request middleware may observe an empty body
 
 #### Awaitables
 
-You can `co_await` any type that satisfies the C++ coroutine awaitable concept.
 **aeronet** provides built-in awaitables:
 
 - `req.bodyAwaitable()`: Suspends until the full request body is available (buffered).
-- `req.readBodyAsync(maxBytes)`: (Future) Suspends until a chunk of body data is available.
+- `req.readBodyAsync(maxBytes)`: Suspends until the request body is available, then returns its next chunk (at most `maxBytes`), an empty one once it was fully read. Use it with `req.hasMoreBody()` to stream the body (HTTP/1.1 and HTTP/2).
 - `req.deferWork(work)`: Runs blocking work on a background thread, suspends the coroutine, and resumes when the work completes.
+
+Only these awaitables, `std::suspend_always` and `std::suspend_never` can be awaited in a `RequestTask` coroutine (see the `RequestTaskAwaitable` concept), other ones fail to compile: the server resumes right away a coroutine suspended by an awaitable it does not know, and one resuming the coroutine by itself (from another thread for instance) would resume it twice. To run asynchronous work, use `deferWork()`. A custom awaitable that never suspends (or resumes the coroutine before returning from its `await_suspend()`) can declare a `using AeronetAwaitableTag = void;` member to be accepted.
 
 #### Deferring Blocking Work to Background Threads
 
@@ -1534,9 +1526,11 @@ router.setPath(http::Method::POST, "/process", [](HttpRequestView& req) -> Reque
 
 **Implementation Notes:**
 
-- Each `deferWork` call spawns a new `std::thread` (consider using a thread pool for high-throughput scenarios).
+- Each `deferWork` call spawns a new `std::thread` (consider using a thread pool for high-throughput scenarios). If no thread can be started, the `std::system_error` is rethrown by `co_await`.
 - The coroutine resumes on the event loop thread, maintaining thread-safety for server state access.
-- The work function is moved into the background thread, so capture by value or use `std::move` for non-copyable types.
+- The work function is moved into the background thread: it may be move-only. It may return `void` or a type that is not default constructible (a returned reference is copied).
+- **Lifetime**: the coroutine frame and the request stay valid until the work completes, even if the connection (or the HTTP/2 stream) is closed meanwhile (by the client, a per-route timeout...): they are only released once it completes, so the work function may capture them by reference (the coroutine is not resumed in that case). Destroying the server waits for the work still running. There is no default timeout: a work function that never returns holds its connection (unless the route has a `timeout()`) and blocks the destruction of the server.
+- **Router updates**: the router can be updated while handlers are suspended. A suspended handler keeps its handler object (and its captures) alive even if its route is replaced or removed; the response middleware and the CORS policy applied to its response are the ones of its route when it completes.
 - **Exception Handling**: If the work function throws an exception, it is captured and rethrown when the coroutine resumes, propagating normally through the coroutine.
 - `deferWork()` is fully non-blocking for both HTTP/1.1 and HTTP/2. On HTTP/2, each stream owns its own async task; when a coroutine suspends (e.g., waiting for background work), other streams on the same connection continue to be processed without blocking.
 

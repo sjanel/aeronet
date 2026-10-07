@@ -367,13 +367,29 @@ TEST_F(PathHandlerEntryTest, AssignAsyncHandlerCopiesWithinSingleCall) {
   assignAsync(http::Method::GET | http::Method::POST, MakeAsyncHandler());
   assignAsync(http::Method::GET | http::Method::CONNECT | http::Method::HEAD | http::Method::POST, MakeAsyncHandler());
 
-  const AsyncRequestHandler* p0 = asyncHandlerPtr(entry, 0);
-  const AsyncRequestHandler* p1 = asyncHandlerPtr(entry, 1);
+  const SharedAsyncRequestHandler* p0 = asyncHandlerPtr(entry, 0);
+  const SharedAsyncRequestHandler* p1 = asyncHandlerPtr(entry, 1);
 
   ASSERT_NE(p0, nullptr);
   ASSERT_NE(p1, nullptr);
-  // Distinct storage slots are constructed from the same handler instance.
-  EXPECT_NE(p0, p1);
+  // Each method has its own copy of the handler, constructed from the same handler instance.
+  ASSERT_TRUE(*p0 && *p1);
+  EXPECT_NE(p0->get(), p1->get());
+}
+
+TEST_F(PathHandlerEntryTest, CopyClonesAsyncHandlerAndReplacementKeepsOldOneAlive) {
+  assignAsync(static_cast<http::MethodBmp>(http::Method::GET), MakeAsyncHandler());
+  const SharedAsyncRequestHandler original = *asyncHandlerPtr(entry, 0);
+
+  // A copy of the entry (a copied router) has its own handler object.
+  PathHandlerEntry copy(entry);
+  EXPECT_NE(asyncHandlerPtr(copy, 0)->get(), original.get());
+
+  // Replacing the handler while a request holds it (keep-alive of a suspended coroutine) does not destroy it.
+  assignAsync(static_cast<http::MethodBmp>(http::Method::GET), MakeAsyncHandler());
+  EXPECT_NE(asyncHandlerPtr(entry, 0)->get(), original.get());
+  EXPECT_EQ(original.use_count(), 1);
+  EXPECT_TRUE(static_cast<bool>(*original));
 }
 
 #endif

@@ -29,6 +29,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Per-attempt limit (seconds) of scripts/retry.sh: a stalled FetchContent download is retried instead of freezing the job.
+  RETRY_TIMEOUT: 900
+
 permissions:
   contents: read
 
@@ -44,6 +48,7 @@ jobs:
   build:
     name: Build scripted benchmarks
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout current main
         uses: actions/checkout@v7
@@ -52,9 +57,8 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt update
           # zlib1g-dev: permessage-deflate support of the native WebSocket load generator (ws-loadgen).
-          sudo apt install -y build-essential libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev zlib1g-dev
+          ./scripts/ci-apt-install.sh build-essential libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev zlib1g-dev
 
       - name: Configure benchmark build
         run: |
@@ -133,9 +137,10 @@ jobs:
           fetch-depth: 0
 
       - name: Install runtime dependencies
+        # Bench jobs have no job-level limit (scheduled runs legitimately take hours).
+        timeout-minutes: 30
         run: |
-          sudo apt update
-          sudo apt install -y wrk libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
+          ./scripts/ci-apt-install.sh wrk libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
           pip install uvicorn starlette
 
       - name: Download build artifact
@@ -254,10 +259,11 @@ jobs:
           fi
 
       - name: Install dependencies
+        # Bench jobs have no job-level limit (scheduled runs legitimately take hours).
+        timeout-minutes: 30
         if: steps.filter.outputs.skip != 'true'
         run: |
-          sudo apt update
-          sudo apt install -y nghttp2-client libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
+          ./scripts/ci-apt-install.sh nghttp2-client libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
           pip install uvicorn starlette hypercorn[h2]
           h2load --version
 
@@ -358,9 +364,10 @@ jobs:
           fetch-depth: 0
 
       - name: Install dependencies
+        # Bench jobs have no job-level limit (scheduled runs legitimately take hours).
+        timeout-minutes: 30
         run: |
-          sudo apt update
-          sudo apt install -y libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
+          ./scripts/ci-apt-install.sh libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
 
       - name: Download build artifact
         uses: actions/download-artifact@v8
@@ -473,10 +480,11 @@ jobs:
           fi
 
       - name: Install runtime dependencies
+        # Bench jobs have no job-level limit (scheduled runs legitimately take hours).
+        timeout-minutes: 30
         if: steps.filter.outputs.skip != 'true'
         run: |
-          sudo apt update
-          sudo apt install -y libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
+          ./scripts/ci-apt-install.sh libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev
 
       - name: Download build artifact
         if: steps.filter.outputs.skip != 'true'
@@ -549,6 +557,7 @@ jobs:
   publish:
     name: Publish Pages
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [bench, bench-h2, bench-ws, bench-client]
     if: always() && !cancelled()
     steps:

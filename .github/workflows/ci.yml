@@ -11,6 +11,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Per-attempt limit (seconds) of scripts/retry.sh: a stalled FetchContent download is retried instead of freezing the job.
+  RETRY_TIMEOUT: 900
+
 jobs:
   build-test:
     name: ubuntu x86_64
@@ -29,6 +33,7 @@ jobs:
           # already exercised independently by the arm/macos/windows/packaging jobs.
           - { compiler: gcc-13, features: ON, client: ON, server: ON, build: Release, asan: OFF, tsan: OFF }
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     env:
       CMAKE_BUILD_TYPE: ${{ matrix.build }}
@@ -38,32 +43,23 @@ jobs:
 
       - name: Install Release dependencies
         if: ${{ matrix.build == 'Release' }}
-        run: | 
-          sudo apt update
-          sudo apt install -y libjsoncpp-dev uuid-dev
+        run: ./scripts/ci-apt-install.sh libjsoncpp-dev uuid-dev
 
       - name: Install all dependencies with features
         if: ${{ matrix.features == 'ON' }}
-        run: |
-          sudo apt update
-          sudo apt install -y libssl-dev libcurl4-openssl-dev libprotobuf-dev protobuf-compiler
+        run: ./scripts/ci-apt-install.sh libssl-dev libcurl4-openssl-dev libprotobuf-dev protobuf-compiler
 
       - name: Install GCC toolchain
         if: ${{ startsWith(matrix.compiler, 'gcc') }}
-        run: |
-          sudo apt update
-          sudo apt install -y ${{ matrix.compiler }}
+        run: ./scripts/ci-apt-install.sh ${{ matrix.compiler }}
 
       - name: Install Clang/LLVM toolchain
         if: ${{ startsWith(matrix.compiler, 'clang') }}
         run: |
-            wget --retry-connrefused --waitretry=5 --tries=5 https://apt.llvm.org/llvm.sh
-            chmod +x llvm.sh
             compiler="${{ matrix.compiler }}"
             version="${compiler##*-}"
             echo "Detected clang version: $version"
-            sudo ./llvm.sh "$version"
-            sudo apt-get install -y "clang-tidy-$version" "lld-$version"
+            ./scripts/ci-apt-install.sh --llvm "$version" "clang-tidy-$version"
 
       - name: Derive CC/CXX environment
         run: |
@@ -151,6 +147,7 @@ jobs:
         features: [ON]
         build: [Debug, Release]
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
 
     env:
       CMAKE_BUILD_TYPE: ${{ matrix.build }}
@@ -160,15 +157,11 @@ jobs:
 
       - name: Install Release dependencies
         if: ${{ matrix.build == 'Release' }}
-        run: | 
-          sudo apt update
-          sudo apt install -y libjsoncpp-dev uuid-dev
+        run: ./scripts/ci-apt-install.sh libjsoncpp-dev uuid-dev
 
       - name: Install all dependencies with features
         if: ${{ matrix.features == 'ON' }}
-        run: |
-          sudo apt update
-          sudo apt install -y libssl-dev libcurl4-openssl-dev libprotobuf-dev protobuf-compiler
+        run: ./scripts/ci-apt-install.sh libssl-dev libcurl4-openssl-dev libprotobuf-dev protobuf-compiler
 
       - name: Configure (CMake)
         run: |
@@ -211,6 +204,7 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: read
       pull-requests: write
@@ -223,15 +217,10 @@ jobs:
 
       - name: Install coverage toolchain and dependencies (LLVM)
         run: |
-          sudo apt update
-          sudo apt install -y ninja-build build-essential python3-pip \
+          # A recent LLVM toolchain is required for llvm-profdata/llvm-cov
+          ./scripts/ci-apt-install.sh --llvm 21 ninja-build build-essential python3-pip \
             libjsoncpp-dev uuid-dev libssl-dev libcurl4-openssl-dev \
-            libprotobuf-dev protobuf-compiler wget
-          # Install a recent LLVM toolchain (required for llvm-profdata/llvm-cov)
-          wget --retry-connrefused --waitretry=5 --tries=5 https://apt.llvm.org/llvm.sh
-          chmod +x llvm.sh
-          sudo ./llvm.sh 21
-          sudo apt install -y clang-21 lldb-21 lld-21 llvm-21 llvm-21-tools
+            libprotobuf-dev protobuf-compiler llvm-21 llvm-21-tools
 
       - name: Configure with Clang source-based coverage flags
         run: |
@@ -350,26 +339,20 @@ jobs:
 
       - name: Install example dependencies
         run: |
-          sudo apt update
-          sudo apt install -y ninja-build libjsoncpp-dev uuid-dev \
+          ./scripts/ci-apt-install.sh ninja-build libjsoncpp-dev uuid-dev \
             libssl-dev libcurl4-openssl-dev libprotobuf-dev protobuf-compiler
 
       - name: Install GCC toolchain
         if: ${{ startsWith(matrix.compiler, 'gcc') }}
-        run: |
-          sudo apt update
-          sudo apt install -y ${{ matrix.compiler }}
+        run: ./scripts/ci-apt-install.sh ${{ matrix.compiler }}
 
       - name: Install Clang/LLVM toolchain
         if: ${{ startsWith(matrix.compiler, 'clang') }}
         run: |
-            wget --retry-connrefused --waitretry=5 --tries=5 https://apt.llvm.org/llvm.sh
-            chmod +x llvm.sh
             compiler="${{ matrix.compiler }}"
             version="${compiler##*-}"
             echo "Detected clang version: $version"
-            sudo ./llvm.sh "$version"
-            sudo apt-get install -y "clang-tidy-$version" "lld-$version"
+            ./scripts/ci-apt-install.sh --llvm "$version" "clang-tidy-$version"
 
       - name: Derive CC/CXX environment
         run: |
@@ -525,6 +508,7 @@ jobs:
           scripts/verify-md-code.py -j ${JOBS} --link --build-dir ${BUILD_DIR} --include aeronet/main/include \
             docs/guides/production-configuration.md \
             docs/guides/routing.md \
+            docs/guides/async-handlers.md \
             docs/guides/middleware-and-responses.md \
             docs/guides/bodies-streaming-and-files.md \
             docs/protocols/tls-and-http2.md \
@@ -546,6 +530,7 @@ jobs:
       matrix:
         build: [Debug, Release]
     runs-on: macos-26
+    timeout-minutes: 60
 
     env:
       CMAKE_BUILD_TYPE: ${{ matrix.build }}
@@ -624,6 +609,7 @@ jobs:
       matrix:
         build: [Debug, Release]
     runs-on: windows-latest
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -675,6 +661,7 @@ jobs:
   alpine-musl-debug:
     name: Alpine (musl) Debug build
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     container:
       image: alpine:3.24
     steps:

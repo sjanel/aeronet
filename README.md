@@ -100,20 +100,11 @@ router.setDefault([](const HttpRequestView& req, HttpResponseWriter& writer){
 For a large request body or an asynchronous operation that may take a long time, use an async handler returning `RequestTask<HttpResponse>`:
 
 ```cpp
-// Minimal awaitable used for the README demo so `co_await someAsyncOperation()` compiles.
-struct SomeAsyncAwaitable {
-  bool await_ready() const noexcept { return false; }
-  void await_suspend(std::coroutine_handle<> h) noexcept { h.resume(); }
-  std::string await_resume() const noexcept { return std::string("Hello from coroutine!"); }
-};
-
-SomeAsyncAwaitable someAsyncOperation() { return {}; }
-
 int main() {
   Router router;
   router.setPath(http::Method::GET, "/async", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
-    // Suspend execution without blocking the thread
-    auto result = co_await someAsyncOperation();
+    // Runs a blocking operation on a background thread: the event loop serves other requests meanwhile
+    std::string result = co_await req.deferWork([] { return std::string("Hello from coroutine!"); });
     co_return HttpResponse(200).body(result);
   });
 }

@@ -669,6 +669,9 @@ void SingleHttpServer::acceptNewConnections() {
     pCnx = _connections.pConnectionState(cnxFd);
     if (!closeNow && pCnx->isTunneling()) {
       closeNow = handleInTunneling(cnxIt) == CloseStatus::Close;
+    } else if (closeNow && !pCnx->isAnyCloseRequested()) {
+      // Input processing only stopped reading (an async handler holding the input, blocked output...).
+      closeNow = false;
     }
     if (closeNow && !pCnx->hasPendingOutput() && pCnx->tunnelOrFileBuffer.empty() && !pCnx->isSendingFile()) {
       // With zerocopy sends still in flight, close once they completed (see canCloseConnectionForDrain()) instead of
@@ -896,6 +899,12 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
 #endif
     return handleInTunneling(cnxIt);
   }
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  if (pCnx->protocolHandler == nullptr && PauseReadingDuringAsyncHandler(*pCnx)) {
+    return pCnx->canCloseConnectionForDrain() ? CloseStatus::Close : CloseStatus::Keep;
+  }
+#endif
 
   std::size_t bytesReadThisEvent = 0;
   // The bytes written while serving the input count toward the fairness budget too: a small request can have a large

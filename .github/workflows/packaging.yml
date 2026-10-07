@@ -15,6 +15,7 @@ jobs:
   conan:
     name: Conan Package Build
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -25,13 +26,12 @@ jobs:
 
       - name: Install build prereqs
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y build-essential python3-pip ninja-build cmake pkg-config git
+          ./scripts/ci-apt-install.sh build-essential python3-pip ninja-build cmake pkg-config git
           pipx install conan
           conan --version
           
       - name: Install all dependencies with features
-        run: sudo apt-get install -y libssl-dev libcurl4-openssl-dev
+        run: ./scripts/ci-apt-install.sh libssl-dev libcurl4-openssl-dev
         if: ${{ matrix.features == 'ON' }}
 
       - name: Conan profile detect
@@ -55,6 +55,7 @@ jobs:
   vcpkg:
     name: vcpkg Overlay Build
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: true
       matrix:
@@ -64,11 +65,10 @@ jobs:
 
       - name: Install prerequisites
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y build-essential ninja-build cmake pkg-config git
+          ./scripts/ci-apt-install.sh build-essential ninja-build cmake pkg-config git
 
       - name: Install all dependencies with features
-        run: sudo apt-get install -y libssl-dev libcurl4-openssl-dev
+        run: ./scripts/ci-apt-install.sh libssl-dev libcurl4-openssl-dev
         if: ${{ matrix.features == 'ON' }}
 
       - name: Verify vcpkg port version matches VERSION
@@ -81,6 +81,9 @@ jobs:
           fi
 
       - name: Bootstrap vcpkg
+        env:
+          # Per-attempt limit (seconds) of scripts/retry.sh: a stalled clone or download is retried instead of freezing the job.
+          RETRY_TIMEOUT: 600
         run: |
           ./scripts/retry.sh git clone https://github.com/microsoft/vcpkg.git
           ./scripts/retry.sh ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
