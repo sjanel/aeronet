@@ -9,11 +9,15 @@
 #include <type_traits>
 #include <utility>
 
+#include "aeronet/asan-poison.hpp"
+
 namespace aeronet {
 
 // Object array pools for fast allocation of frequently used objects.
 // Once allocated and constructed, object pointers remain valid along with the pool lifetime.
 // All allocated objects are destroyed when the pool is destroyed.
+// With AddressSanitizer, the unallocated part of each block is poisoned, so that accesses past the end of the last
+// allocated array, or to arrays destroyed by shrinkLastAllocated / clear, are reported as 'use-after-poison'.
 template <class T, class SizeType = std::size_t>
 class ObjectArrayPool {
  public:
@@ -62,8 +66,11 @@ class ObjectArrayPool {
   // You can call this method with newSize = 0 to free the entire last allocation.
   void shrinkLastAllocated(const T* arr, size_type newSize) noexcept {
     assert(_pCurrentBlock != nullptr && arr + newSize <= _pCurrentBlock->begin() + _pCurrentBlock->size);
-    std::destroy(const_cast<T*>(arr + newSize), _pCurrentBlock->begin() + _pCurrentBlock->size);
-    _pCurrentBlock->size = static_cast<size_type>(arr + newSize - _pCurrentBlock->begin());
+    T* pNewEnd = const_cast<T*>(arr + newSize);
+    T* pOldEnd = _pCurrentBlock->begin() + _pCurrentBlock->size;
+    std::destroy(pNewEnd, pOldEnd);
+    AsanPoison(pNewEnd, static_cast<std::size_t>(pOldEnd - pNewEnd) * sizeof(T));
+    _pCurrentBlock->size = static_cast<size_type>(pNewEnd - _pCurrentBlock->begin());
   }
 
   // Returns the current capacity (number of allocated slots) of the pool.
@@ -134,6 +141,8 @@ class ObjectArrayPool {
     pNewBlock->size = 0;
     pNewBlock->capacity = newBlockCapa;
 
+    AsanPoison(pNewBlock->begin(), newBlockCapa * sizeof(T));
+
     if (_pCurrentBlock != nullptr) {
       _pCurrentBlock->pNextBlock = pNewBlock;
       _totalCapacity += newBlockCapa;
@@ -179,7 +188,13 @@ T* ObjectArrayPool<T, SizeType>::allocateAndDefaultConstruct(size_type nbElems) 
 
   T* pSlot = _pCurrentBlock->begin() + _pCurrentBlock->size;
 
-  std::uninitialized_default_construct_n(pSlot, nbElems);
+  AsanUnpoison(pSlot, nbElems * sizeof(T));
+  try {
+    std::uninitialized_default_construct_n(pSlot, nbElems);
+  } catch (...) {
+    AsanPoison(pSlot, nbElems * sizeof(T));
+    throw;
+  }
 
   _pCurrentBlock->size += nbElems;
 
@@ -192,6 +207,7 @@ void ObjectArrayPool<T, SizeType>::clear() noexcept {
   // After clear, allocation should start from the first block again.
   for (Block* pBlock = _pFirstBlock; pBlock != nullptr; pBlock = pBlock->pNextBlock) {
     std::destroy_n(pBlock->begin(), pBlock->size);
+    AsanPoison(pBlock->begin(), pBlock->size * sizeof(T));
     pBlock->size = 0;
   }
 
