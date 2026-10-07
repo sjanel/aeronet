@@ -5,6 +5,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -25,6 +26,7 @@
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/signal-handler.hpp"
@@ -298,7 +300,7 @@ TEST(HttpServerRestart, EphemeralReusePortStaysReservedWhileStopped) {
   config.withReusePort().withPollInterval(1ms);
   SingleHttpServer server(std::move(config));
   const auto port = server.port();
-  server.router().setDefault([](const HttpRequestView& req) { return HttpResponse(std::string(req.path())); });
+  server.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.path()); });
 
   // No request before the checks: the server closes 'Connection: close' connections first, and their TIME_WAIT state
   // would then also prevent the plain bind.
@@ -928,15 +930,15 @@ TEST(SingleHttpServer, StopLeavesTeardownToEventLoopRunByAnotherThread) {
     handlerDone.store(true, std::memory_order_relaxed);
     return HttpResponse("slow");
   });
-  server.router().setDefault([](const HttpRequestView& req) { return HttpResponse(std::string(req.path())); });
+  server.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.path()); });
 
   std::jthread runner([&server] { server.run(); });
   ASSERT_TRUE(test::WaitForServer(server));
   std::jthread client([port = server.port()] {
     try {
       static_cast<void>(test::simpleGet(port, "/slow"));
-    } catch (const std::exception&) {
-      // The response may be cut by the stop.
+    } catch (const std::exception& ex) {
+      log::info("Exception caught while performing simpleGet to /slow: {}", ex.what());
     }
   });
 
@@ -968,8 +970,9 @@ TEST(SingleHttpServer, StopFromHandler) {
   ASSERT_TRUE(test::WaitForServer(server));
   try {
     static_cast<void>(test::simpleGet(server.port(), "/stop"));
-  } catch (const std::exception&) {
+  } catch (const std::exception& ex) {
     // The response may be cut by the stop.
+    log::info("Exception caught while performing simpleGet to /stop: {}", ex.what());
   }
   EXPECT_TRUE(test::WaitForServer(server, false));
   server.stop();  // joins the event-loop thread, which already stopped by itself

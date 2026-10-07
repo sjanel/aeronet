@@ -15,7 +15,7 @@ The detailed syntax, parameter decoding, trailing-slash behavior, and precedence
 
 `HttpRequestView` exposes the path, method, headers, query parameters, body, and trailers without asking the handler to own the connection. Its views are tied to the request lifetime, so copy data only when it must outlive the handler.
 
-For asynchronous handlers, wait for the body with the supported awaitable helpers before accessing a body that is still arriving. The [memory-management reference](../FEATURES.md#memory-management--stdstring_view-safety) explains these lifetime guarantees.
+For asynchronous handlers, wait for the body with the supported awaitable helpers before accessing a body that is still arriving. The [memory-management reference](../FEATURES.md#memory-management--stdstring_view-safety) explains these lifetime guarantees, and the [Async handlers](async-handlers.md) guide covers coroutine handlers in depth.
 
 ## A parameterized JSON-shaped response
 
@@ -33,6 +33,7 @@ The exact parameter syntax and precedence are documented in [routing patterns](.
 
 ## Continue from here
 
+- Run blocking work (databases, other services) without blocking the event loop with [Async handlers](async-handlers.md).
 - Add request and response policy with [Middleware and responses](middleware-and-responses.md).
 - Handle compressed, chunked, or multipart bodies in [Bodies, streaming, and static files](bodies-streaming-and-files.md).
 - Consult the complete [HTTP/1.1 feature matrix](../FEATURES.md#http11-feature-matrix) when checking a protocol behavior.

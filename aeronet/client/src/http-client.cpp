@@ -35,6 +35,7 @@
 #include "aeronet/internal/url-parsed-result.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"

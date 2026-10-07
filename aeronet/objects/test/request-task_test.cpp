@@ -51,6 +51,22 @@ RequestTask<void> make_guarded_void(std::shared_ptr<std::atomic<int>> alive) {
   co_return;
 }
 
+// An awaitable foreign to aeronet: the server would resume a coroutine suspended by it right away.
+struct ForeignAwaitable {
+  [[nodiscard]] bool await_ready() const noexcept { return false; }
+  void await_suspend(std::coroutine_handle<> /*handle*/) const noexcept {}
+  void await_resume() const noexcept {}
+};
+
+struct TaggedAwaitable : ForeignAwaitable {
+  using AeronetAwaitableTag = void;
+};
+
+static_assert(RequestTaskAwaitable<std::suspend_always>);
+static_assert(RequestTaskAwaitable<std::suspend_never>);
+static_assert(RequestTaskAwaitable<TaggedAwaitable>);
+static_assert(!RequestTaskAwaitable<ForeignAwaitable>);
+
 }  // namespace
 
 TEST(RequestTask, ResetDestroysActiveFrame_Value) {

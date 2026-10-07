@@ -5,6 +5,8 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <span>
 #include <utility>
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
@@ -14,6 +16,11 @@
 #include "aeronet/base-fd.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/connection.hpp"
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include "aeronet/async-handler-state.hpp"
+#include "aeronet/protocol-handler.hpp"
+#endif
 
 #ifdef AERONET_POSIX
 #include "aeronet/http-request-view.hpp"
@@ -76,6 +83,27 @@ struct TestCoroutine {
 };
 
 TestCoroutine makeTestCoroutine() { co_return; }
+
+// Protocol handler reporting background work in flight until told otherwise (dropAsyncTask() is not overridden).
+class AsyncWorkProtocolHandler final : public IProtocolHandler {
+ public:
+  [[nodiscard]] ProtocolType type() const noexcept override { return ProtocolType::Http2; }
+
+  [[nodiscard]] ProtocolProcessResult processInput(std::span<const std::byte> /*data*/,
+                                                   ConnectionState& /*state*/) override {
+    return {};
+  }
+
+  [[nodiscard]] std::span<const std::byte> getPendingOutput() const noexcept override { return {}; }
+
+  void onOutputWritten(std::size_t /*bytesWritten*/) override {}
+
+  void onTransportClosing() override {}
+
+  [[nodiscard]] bool hasAsyncWorkInFlight() const noexcept override { return workInFlight; }
+
+  bool workInFlight{true};
+};
 #endif
 
 }  // namespace
@@ -314,6 +342,73 @@ TEST(ConnectionStorage, RecycleOrReleaseWithHandleButNotActive) {
   // Recycle should clear the async state (covers the || branch)
   RecycleConnection(storage, 10, it);
 
+  EXPECT_EQ(storage.nbCachedConnections(), 1U);
+}
+
+TEST(ConnectionStorage, FindConnectionChecksFdAndGeneration) {
+  ConnectionStorage storage;
+
+  auto it = storage.emplace(Connection(BaseFd(700)));
+  const uint32_t generation = storage.connectionState(it).generation;
+
+  EXPECT_TRUE(storage.findConnection(700, generation) == it);
+  // Same fd, another connection.
+  EXPECT_TRUE(storage.findConnection(700, generation + 1) == storage.end());
+  // Fd never used.
+  EXPECT_TRUE(storage.findConnection(5000, generation) == storage.end());
+
+  RecycleConnection(storage, 10, it);
+  EXPECT_TRUE(storage.findConnection(700, generation) == storage.end());
+}
+
+TEST(ConnectionStorage, ClosedConnectionIsKeptUntilItsDeferredWorkCompletes) {
+  ConnectionStorage storage;
+
+  auto it = storage.emplace(Connection(BaseFd(500)));
+  auto coro = makeTestCoroutine();
+  const std::coroutine_handle<> handle = coro.handle;
+  auto& state = storage.connectionState(it);
+  const uint32_t generation = state.generation;
+  auto& asyncState = state.ensureAsyncState(storage.asyncHandlerStatePool());
+  asyncState.active = true;
+  asyncState.handle = coro.handle;
+  asyncState.awaitReason = AsyncHandlerState::AwaitReason::WaitingForCallback;
+  coro.handle = {};  // Transfer ownership
+
+  // The coroutine waits for deferred work, which may use it: the state is not reused.
+  RecycleConnection(storage, 10, it);
+  EXPECT_EQ(storage.nbCachedConnections(), 0U);
+  EXPECT_EQ(storage.nbOrphanedConnectionStates(), 1U);
+
+  // Completion of another connection.
+  storage.releaseOrphanedAsyncTask(generation + 1, handle, 10);
+  EXPECT_EQ(storage.nbOrphanedConnectionStates(), 1U);
+
+  storage.releaseOrphanedAsyncTask(generation, handle, 10);
+  EXPECT_FALSE(storage.hasOrphanedConnectionStates());
+  EXPECT_EQ(storage.nbCachedConnections(), 1U);
+}
+
+TEST(ConnectionStorage, ClosedConnectionIsKeptUntilAllItsDeferredWorkCompleted) {
+  ConnectionStorage storage;
+
+  auto it = storage.emplace(Connection(BaseFd(600)));
+  auto& state = storage.connectionState(it);
+  const uint32_t generation = state.generation;
+  auto handler = std::make_unique<AsyncWorkProtocolHandler>();
+  AsyncWorkProtocolHandler* pHandler = handler.get();
+  state.protocolHandler = std::move(handler);
+
+  RecycleConnection(storage, 10, it);
+  EXPECT_EQ(storage.nbOrphanedConnectionStates(), 1U);
+
+  // One work completed, another one still runs.
+  storage.releaseOrphanedAsyncTask(generation, std::coroutine_handle<>{}, 10);
+  EXPECT_EQ(storage.nbOrphanedConnectionStates(), 1U);
+
+  pHandler->workInFlight = false;
+  storage.releaseOrphanedAsyncTask(generation, std::coroutine_handle<>{}, 10);
+  EXPECT_FALSE(storage.hasOrphanedConnectionStates());
   EXPECT_EQ(storage.nbCachedConnections(), 1U);
 }
 #endif

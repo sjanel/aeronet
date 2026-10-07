@@ -25,6 +25,7 @@ description: Documentation for the high-performance, modular C++23 HTTP, HTTP/2,
 | Select CMake features or tune runtime settings | [Build configuration](reference/configuration.md), [server configuration](reference/server-configuration.md), or [client configuration](reference/client-configuration.md) |
 | Run a minimal HTTP server | [Your first server](getting-started/first-server.md) |
 | Define routes and process requests | [Routing and requests](guides/routing.md) |
+| Call a database or another service without blocking the server | [Async handlers](guides/async-handlers.md) |
 | Stream a response or serve a file | [Bodies, streaming, and static files](guides/bodies-streaming-and-files.md) |
 | Enable TLS or HTTP/2 | [TLS and HTTP/2](protocols/tls-and-http2.md) |
 | Add WebSocket support | [WebSocket](protocols/websocket.md) |

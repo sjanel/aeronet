@@ -1,10 +1,33 @@
 #pragma once
 
+#include <concepts>
 #include <coroutine>
 #include <exception>
+#include <type_traits>
 #include <utility>
 
 namespace aeronet {
+
+// Types that can be awaited in a RequestTask coroutine: the awaitables of aeronet (HttpRequestView::bodyAwaitable(),
+// readBodyAsync() and deferWork(), declaring an AeronetAwaitableTag type), std::suspend_always and std::suspend_never.
+// The server resumes right away a coroutine suspended by any other awaitable: one resuming the coroutine by itself
+// (from another thread for instance) would resume it twice. A custom awaitable may declare AeronetAwaitableTag if it
+// never suspends, or if it resumes the coroutine before returning from its await_suspend().
+template <class Awaitable>
+concept RequestTaskAwaitable = requires {
+  typename Awaitable::AeronetAwaitableTag;
+} || std::same_as<Awaitable, std::suspend_always> || std::same_as<Awaitable, std::suspend_never>;
+
+namespace detail {
+
+template <class Awaitable>
+Awaitable&& CheckRequestTaskAwaitable(Awaitable&& awaitable) noexcept {
+  static_assert(RequestTaskAwaitable<std::remove_cvref_t<Awaitable>>,
+                "Unsupported awaitable in a RequestTask coroutine (see RequestTaskAwaitable)");
+  return std::forward<Awaitable>(awaitable);
+}
+
+}  // namespace detail
 
 template <class T>
 class RequestTask {
@@ -18,6 +41,11 @@ class RequestTask {
     std::suspend_always final_suspend() noexcept { return {}; }
 
     void return_value(T value) noexcept(std::is_nothrow_move_constructible_v<T>) { _value = std::move(value); }
+
+    template <class Awaitable>
+    Awaitable&& await_transform(Awaitable&& awaitable) noexcept {
+      return detail::CheckRequestTaskAwaitable(std::forward<Awaitable>(awaitable));
+    }
 
     void unhandled_exception() noexcept { _exception = std::current_exception(); }
 
@@ -93,6 +121,11 @@ class RequestTask<void> {
     std::suspend_always final_suspend() noexcept { return {}; }
 
     void return_void() const noexcept {}
+
+    template <class Awaitable>
+    Awaitable&& await_transform(Awaitable&& awaitable) noexcept {
+      return detail::CheckRequestTaskAwaitable(std::forward<Awaitable>(awaitable));
+    }
     void unhandled_exception() noexcept { _exception = std::current_exception(); }
 
     void rethrow_if_needed() const {

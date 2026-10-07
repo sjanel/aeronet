@@ -5,7 +5,6 @@
 #include <cassert>
 #include <charconv>
 #include <chrono>
-#include <coroutine>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -47,6 +46,7 @@
 #include "aeronet/metric-label.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
+#include "aeronet/object-pool.hpp"
 #include "aeronet/path-handler-entry.hpp"
 #include "aeronet/path-handlers.hpp"
 #include "aeronet/protocol-handler.hpp"
@@ -61,6 +61,9 @@
 #include "http2-writer-transport.hpp"
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include <coroutine>
+#include <variant>
+
 #include "aeronet/request-task.hpp"
 #endif
 
@@ -92,11 +95,29 @@ Http2ProtocolHandler::Http2ProtocolHandler(const Http2Config& config, Router& ro
 
 Http2ProtocolHandler::~Http2ProtocolHandler() = default;
 
+Http2ProtocolHandler::StreamRequest::StreamRequest(StreamRequest&& other) noexcept { *this = std::move(other); }
+
+Http2ProtocolHandler::StreamRequest& Http2ProtocolHandler::StreamRequest::operator=(StreamRequest&& other) noexcept {
+  if (this != &other) [[likely]] {
+    request = std::move(other.request);
+    bodyBuffer = std::move(other.bodyBuffer);
+    headerStorage = std::move(other.headerStorage);
+    trailerStorage = std::move(other.trailerStorage);
+    bodyContext = other.bodyContext;
+    if (request._pBodyAccessContext == &other.bodyContext) {
+      request._pBodyAccessContext = &bodyContext;
+    }
+  }
+  return *this;
+}
+
 Http2ProtocolHandler::Http2ProtocolHandler(Http2ProtocolHandler&&) noexcept = default;
 Http2ProtocolHandler& Http2ProtocolHandler::operator=(Http2ProtocolHandler&&) noexcept = default;
 
 ProtocolProcessResult Http2ProtocolHandler::processInput(std::span<const std::byte> data,
-                                                         [[maybe_unused]] ::aeronet::ConnectionState& state) {
+                                                         ::aeronet::ConnectionState& state) {
+  // The requests decoded below belong to this connection (client address, TLS information).
+  _pConnectionState = &state;
   auto result = _connection.processInput(data, _pServerConfig->maxOutboundBufferBytes);
 
   // If the client granted more flow control (WINDOW_UPDATE), try to continue any pending sends.
@@ -210,6 +231,7 @@ void Http2ProtocolHandler::onHeadersDecoded(uint32_t streamId, const SvToSvMap& 
   HttpRequestView& req = streamReq.request;
 
   req.init(*_pServerConfig, *_pCompressionState);
+  req._pOwnerState = _pConnectionState;
   req._addTrailerHeader = false;  // no trailer header in HTTP/2
 
   const auto rejectMalformedRequest = [this, streamId](std::string_view reason) {
@@ -420,6 +442,9 @@ void Http2ProtocolHandler::finalizeRequestBodyAndDispatch(StreamsMap::iterator i
     }
   }
 
+  // The whole body is received: let the handlers read it with body() as well as with readBody() / readBodyAsync().
+  req.installAggregatedBodyBridge(streamReq.bodyContext);
+
   dispatchRequest(it);
 }
 
@@ -493,6 +518,9 @@ void Http2ProtocolHandler::onStreamClosed(uint32_t streamId) {
     _tunnelBridge->closeTunnel(upstreamFd);
   }
   releasePendingBytes(it->second);
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  orphanAsyncTask(it->second);
+#endif
   _streams.erase(it);
 }
 
@@ -890,7 +918,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
   }
 
   // Per-route body size limit (already clamped against global in prepareRun)
-  if (request.body().size() > routingResult.pathConfig().maxBodyBytes) {
+  if (request._body.size() > routingResult.pathConfig().maxBodyBytes) {
     [[maybe_unused]] ErrorCode err =
         sendResponse(streamId, request.makeResponse(http::StatusCodePayloadTooLarge), isHeadMethod);
     assert(err == ErrorCode::NoError);
@@ -918,7 +946,8 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
         return;
       }
 
-      if (startAsyncHandler(it, *asyncHandler, routingResult.corsPolicy(), routingResult.postMiddlewareRange())) {
+      if (startAsyncHandler(it, routingResult.sharedAsyncRequestHandler(), routingResult.corsPolicy(),
+                            routingResult.postMiddlewareRange())) {
         // Async handler is running; response will be sent later when it completes.
         return;
       }
@@ -1298,7 +1327,7 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 
-bool Http2ProtocolHandler::startAsyncHandler(StreamsMap::iterator it, const AsyncRequestHandler& handler,
+bool Http2ProtocolHandler::startAsyncHandler(StreamsMap::iterator it, const SharedAsyncRequestHandler& handler,
                                              const CorsPolicy* pCorsPolicy,
                                              std::span<const ResponseMiddleware> responseMiddleware) {
   const uint32_t streamId = it->first;
@@ -1309,6 +1338,8 @@ bool Http2ProtocolHandler::startAsyncHandler(StreamsMap::iterator it, const Asyn
   // so the HttpRequestView gets a stable memory address BEFORE we pass it by reference to the coroutine.
   auto pendingPtr = _pendingWorkPool.allocateAndConstructPoolPtr(PendingAsyncTask{});
   auto& pendingRef = std::get<PendingAsyncTask>(*pendingPtr);
+  // The coroutine may use the captures of the handler: keep it alive even if the router replaces it meanwhile.
+  pendingRef.handlerKeepAlive = handler;
   pendingRef.streamRequest = std::move(state.request);
   pendingRef.pCorsPolicy = pCorsPolicy;
   pendingRef.pResponseMiddleware = responseMiddleware.data();
@@ -1318,6 +1349,9 @@ bool Http2ProtocolHandler::startAsyncHandler(StreamsMap::iterator it, const Asyn
 
   HttpRequestView& req = pendingRef.streamRequest.request;
 
+  // The path parameter names are owned by the router, which may be updated while the coroutine is suspended.
+  req.pinPathParamKeys(pendingRef.pathParamKeys);
+
   // Install HTTP/2 async callback mechanism on the request now
   req._pH2SuspendedFlag = &pendingRef.suspended;
   req._h2PostCallback = _asyncPostCallback;
@@ -1325,11 +1359,10 @@ bool Http2ProtocolHandler::startAsyncHandler(StreamsMap::iterator it, const Asyn
   // Store in the variant
   state.pending = std::move(pendingPtr);
 
-  auto task = handler(pendingRef.streamRequest.request);
+  auto task = (*handler)(pendingRef.streamRequest.request);
   if (!task.valid()) {
     log::error("HTTP/2 async handler returned invalid task on stream {} for path {}", streamId, req.path());
-    state.request = std::move(pendingRef.streamRequest);
-    state.pending.reset();
+    ReleaseAsyncTask(state);
     // req and pendingRef are dangling now that the pending task is released, use the restored request instead.
     HttpRequestView& restoredReq = state.request.request;
     (void)sendResponse(streamId,
@@ -1342,27 +1375,20 @@ bool Http2ProtocolHandler::startAsyncHandler(StreamsMap::iterator it, const Asyn
 
   pendingRef.task = std::move(task);
 
-  // Resume the coroutine once (it starts suspended due to initial_suspend = suspend_always)
-  pendingRef.task.resume();
-
-  if (pendingRef.task.done()) {
-    // Coroutine completed immediately (synchronous fast path)
-    onAsyncTaskCompleted(streamId);
-    return false;
+  // Run the coroutine (it starts suspended due to initial_suspend = suspend_always) until it completes or suspends to
+  // wait for deferred work. A suspension by another awaitable (std::suspend_always for instance) does not need the
+  // event loop: resume it right away, like HTTP/1.
+  while (!pendingRef.task.done()) {
+    pendingRef.task.resume();
+    if (pendingRef.suspended && !pendingRef.task.done()) {
+      // Coroutine suspended on co_await (e.g., deferWork) - truly async.
+      // It will be resumed later via resumeAsyncTaskByHandle when the callback fires.
+      log::debug("HTTP/2 async handler suspended on stream {}", streamId);
+      return true;
+    }
   }
 
-  if (pendingRef.suspended) {
-    // Coroutine suspended on co_await (e.g., deferWork) - truly async.
-    // It will be resumed later via resumeAsyncTaskByHandle when the callback fires.
-    log::debug("HTTP/2 async handler suspended on stream {}", streamId);
-    return true;
-  }
-
-  // All current RequestTask coroutines either complete immediately or suspend via deferWork.
-  // A non-deferWork suspension point would indicate an unsupported awaitable.
-  assert(pendingRef.task.done() && "coroutine suspended without deferWork - unsupported by current RequestTask design");
-
-  onAsyncTaskCompleted(streamId);
+  onAsyncTaskCompleted(streamId, false);
   return false;
 }
 
@@ -1383,10 +1409,10 @@ void Http2ProtocolHandler::resumeAsyncTask(uint32_t streamId) {
     }
   }
 
-  onAsyncTaskCompleted(streamId);
+  onAsyncTaskCompleted(streamId, true);
 }
 
-void Http2ProtocolHandler::onAsyncTaskCompleted(uint32_t streamId) {
+void Http2ProtocolHandler::onAsyncTaskCompleted(uint32_t streamId, bool routeMayHaveChanged) {
   auto it = _streams.find(streamId);
   assert(it != _streams.end());
   // Called from startAsyncHandler (just inserted) or resumeAsyncTask (just found) - cannot be absent.
@@ -1402,10 +1428,18 @@ void Http2ProtocolHandler::onAsyncTaskCompleted(uint32_t streamId) {
     HttpResponse resp = pAsync->task.runSynchronously();
 
     std::span<const ResponseMiddleware> middlewareSpan(pAsync->pResponseMiddleware, pAsync->responseMiddlewareCount);
+    const CorsPolicy* pCorsPolicy = pAsync->pCorsPolicy;
+    if (routeMayHaveChanged) {
+      // The router may have been updated while the coroutine was suspended, possibly destroying the metadata of its
+      // route: look it up again.
+      const Router::RoutingResult routingResult = _pRouter->match(req.method(), req.path());
+      middlewareSpan = routingResult.postMiddlewareRange();
+      pCorsPolicy = routingResult.corsPolicy();
+    }
     ApplyResponseMiddleware(req, resp, middlewareSpan, _pRouter->globalResponseMiddleware(), *_pTelemetryContext, false,
                             {});
-    if (pAsync->pCorsPolicy != nullptr) {
-      (void)pAsync->pCorsPolicy->applyToResponse(req, resp);
+    if (pCorsPolicy != nullptr) {
+      (void)pCorsPolicy->applyToResponse(req, resp);
     }
 
     req.prefinalizeHttpResponse(resp, *_pTelemetryContext);
@@ -1414,21 +1448,18 @@ void Http2ProtocolHandler::onAsyncTaskCompleted(uint32_t streamId) {
     respStatusCode = resp.status();
     // Move request back to stream slot and free the pending variant so sendResponse
     // can store a deferred file send if needed.
-    it->second.request = std::move(pAsync->streamRequest);
-    it->second.pending.reset();
+    ReleaseAsyncTask(it->second);
     err = sendResponse(streamId, std::move(resp), isHeadMethod);
   } catch (const std::exception& ex) {
     log::error("HTTP/2 async handler exception on stream {}: {}", streamId, ex.what());
     respStatusCode = http::StatusCodeInternalServerError;
-    it->second.request = std::move(pAsync->streamRequest);
-    it->second.pending.reset();
+    ReleaseAsyncTask(it->second);
     // req is dangling now that the pending task is released, use the restored request instead.
     err = sendResponse(streamId, it->second.request.request.makeResponse(respStatusCode, ex.what()), isHeadMethod);
   } catch (...) {
     log::error("HTTP/2 async handler unknown exception on stream {}", streamId);
     respStatusCode = http::StatusCodeInternalServerError;
-    it->second.request = std::move(pAsync->streamRequest);
-    it->second.pending.reset();
+    ReleaseAsyncTask(it->second);
     // req is dangling now that the pending task is released, use the restored request instead.
     err =
         sendResponse(streamId, it->second.request.request.makeResponse(respStatusCode, "Unknown error"), isHeadMethod);
@@ -1443,6 +1474,23 @@ void Http2ProtocolHandler::onAsyncTaskCompleted(uint32_t streamId) {
   releaseStreamAfterResponse(it);
 }
 
+void Http2ProtocolHandler::ReleaseAsyncTask(StreamState& state) noexcept {
+  auto* pAsync = state.asyncTask();
+  assert(pAsync != nullptr);
+  state.request = std::move(pAsync->streamRequest);
+  // Their names were copied to the task, released below.
+  state.request.request._pathParams.clear();
+  state.pending.reset();
+}
+
+void Http2ProtocolHandler::orphanAsyncTask(StreamState& state) {
+  if (const auto* pAsync = state.asyncTask(); pAsync != nullptr && pAsync->suspended) {
+    // Its deferred work may still use the coroutine frame and the request: keep them until it completes (the frame
+    // address then also identifies the task without ambiguity, no other frame being allocated there meanwhile).
+    _orphanedAsyncTasks.push_back(std::move(state.pending));
+  }
+}
+
 bool Http2ProtocolHandler::resumeAsyncTaskByHandle(std::coroutine_handle<> handle) {
   auto pAsyncIt = std::ranges::find_if(_streams, [targetAddr = handle.address()](auto& pair) {
     auto* pAsync = pair.second.asyncTask();
@@ -1455,7 +1503,36 @@ bool Http2ProtocolHandler::resumeAsyncTaskByHandle(std::coroutine_handle<> handl
     return true;
   }
 
+  // The stream was closed while the work was running.
+  dropAsyncTask(handle);
   return false;
+}
+
+void Http2ProtocolHandler::dropAsyncTask(std::coroutine_handle<> handle) noexcept {
+  const auto isTask = [targetAddr = handle.address()](const PendingWork* pPendingWork) {
+    const auto* pAsync = std::get_if<PendingAsyncTask>(pPendingWork);
+    return pAsync != nullptr && pAsync->task.coroutineAddress() == targetAddr;
+  };
+  const auto orphanIt = std::ranges::find_if(
+      _orphanedAsyncTasks, [&isTask](const PoolPtr<PendingWork>& pendingWork) { return isTask(pendingWork.get()); });
+  if (orphanIt != _orphanedAsyncTasks.end()) {
+    _orphanedAsyncTasks.erase(orphanIt);
+    return;
+  }
+  // Task of a stream still open on a closed connection.
+  for (auto& [streamId, streamState] : _streams) {
+    if (streamState.pending && isTask(streamState.pending.get())) {
+      streamState.pending.reset();
+      return;
+    }
+  }
+}
+
+bool Http2ProtocolHandler::hasAsyncWorkInFlight() const noexcept {
+  return !_orphanedAsyncTasks.empty() || std::ranges::any_of(_streams, [](const auto& pair) {
+    const auto* pAsync = pair.second.asyncTask();
+    return pAsync != nullptr && pAsync->suspended;
+  });
 }
 
 #endif  // AERONET_ENABLE_ASYNC_HANDLERS
@@ -1473,7 +1550,7 @@ void Http2ProtocolHandler::onRequestCompleted(HttpRequestView& request, http::St
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - request.reqStart());
     _pTelemetryContext->counterAdd("aeronet.http2.stream.requests", 1UL, labels);
     _pTelemetryContext->histogram("aeronet.http2.stream.duration", duration.count(), labels);
-    _pTelemetryContext->histogram("aeronet.http2.stream.request.body.bytes", static_cast<double>(request.body().size()),
+    _pTelemetryContext->histogram("aeronet.http2.stream.request.body.bytes", static_cast<double>(request._body.size()),
                                   labels);
   }
 
@@ -1488,7 +1565,13 @@ void Http2ProtocolHandler::sweepStreams(std::chrono::steady_clock::time_point no
     auto& streamState = it->second;
     if (streamState.requestDeadline.time_since_epoch().count() != 0 && streamState.requestDeadline < now) {
       const uint32_t streamId = it->first;
-      HttpRequestView& request = it->second.request.request;
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+      // The request of an async handler is owned by its task.
+      auto* pAsync = streamState.asyncTask();
+      HttpRequestView& request = pAsync != nullptr ? pAsync->streamRequest.request : streamState.request.request;
+#else
+      HttpRequestView& request = streamState.request.request;
+#endif
       const bool isHeadMethod = request.method() == http::Method::HEAD;
 
       log::debug("HTTP/2 stream {} timed out (per-route request deadline exceeded)", streamId);
@@ -1499,6 +1582,9 @@ void Http2ProtocolHandler::sweepStreams(std::chrono::steady_clock::time_point no
       // Erase from our map before sendRstStream, because sendRstStream triggers
       // the onStreamClosed callback which also erases from _streams — doing both
       // would double-erase and invalidate the iterator.
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+      orphanAsyncTask(streamState);
+#endif
       it = _streams.erase(it);
       _connection.sendRstStream(streamId, ErrorCode::Cancel);
     } else {

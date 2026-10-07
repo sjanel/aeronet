@@ -6,7 +6,6 @@
 #include <openssl/types.h>
 #include <openssl/x509.h>
 
-#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstdint>

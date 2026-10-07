@@ -63,6 +63,8 @@ class HttpRequestView {
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   class BodyChunkAwaitable {
    public:
+    using AeronetAwaitableTag = void;
+
     BodyChunkAwaitable(HttpRequestView& request, std::size_t maxBytes) noexcept
         : _request(request), _maxBytes(maxBytes) {}
 
@@ -80,6 +82,8 @@ class HttpRequestView {
 
   class BodyAggregateAwaitable {
    public:
+    using AeronetAwaitableTag = void;
+
     explicit BodyAggregateAwaitable(HttpRequestView& request) noexcept : _request(request) {}
 
     [[nodiscard]] bool await_ready() const noexcept { return _request.isBodyReady(); }
@@ -104,13 +108,16 @@ class HttpRequestView {
   //
   // The coroutine suspends immediately, the work function executes on a new thread, and when complete,
   // the server's event loop is notified to resume the coroutine with the result.
+  // The coroutine frame and the request are kept alive until the work completed, even if the connection (or the HTTP/2
+  // stream) is closed meanwhile: a work function may thus capture them by reference.
   //
   // Exception handling: If the work function throws, the exception is captured and rethrown when
-  // await_resume() is called, propagating it through the coroutine normally.
-  template <typename Result>
+  // await_resume() is called, propagating it through the coroutine normally. The same goes for a failure to start the
+  // background thread (std::system_error).
+  template <typename Result, typename WorkFn = std::function<Result()>>
   class DeferredWorkAwaitable {
    public:
-    using WorkFn = std::function<Result()>;
+    using AeronetAwaitableTag = void;
 
     DeferredWorkAwaitable(HttpRequestView& request, WorkFn work)
         : _request(request),
@@ -120,48 +127,59 @@ class HttpRequestView {
 
     [[nodiscard]] bool await_ready() const noexcept { return false; }
 
-    void await_suspend(std::coroutine_handle<> handle) noexcept {
+    bool await_suspend(std::coroutine_handle<> handle) noexcept {
+      try {
+        std::thread([handle, work = std::move(_work), state = _state, postCallback = std::move(_postCallback)] mutable {
+          try {
+            if constexpr (std::is_void_v<Result>) {
+              work();
+            } else {
+              state->result.emplace(work());
+            }
+          } catch (...) {
+            state->exception = std::current_exception();
+          }
+          // Hand the result over to the event loop before resuming it: the awaitable keeps it alive until the coroutine
+          // consumed it, so that it (and a captured exception) is always destroyed by the event loop thread, never by
+          // this one concurrently with its use.
+          state.reset();
+          try {
+            postCallback(handle, nullptr);
+          } catch (const std::exception& ex) {
+            // Only fails on memory exhaustion: the coroutine is then never resumed.
+            // Logging is delegated to a non-template free function (defined in http-request.cpp) so the
+            // (heavy) logging dependency stays out of this widely-included header.
+            LogAsyncCallbackPostFailure(ex.what());
+          }
+        }).detach();
+      } catch (...) {
+        // No thread could be started (std::system_error): resume right away, await_resume() rethrowing the error.
+        _state->exception = std::current_exception();
+        return false;
+      }
+      // Marked once the thread is started only: the event loop running this coroutine cannot process its completion
+      // before this function returns.
       _request.markAwaitingCallback();
-
-      auto work = std::move(_work);
-      auto state = _state;
-      auto postCallback = std::move(_postCallback);
-
-      std::thread([handle, work = std::move(work), state = std::move(state),
-                   postCallback = std::move(postCallback)] mutable {
-        try {
-          state->result = work();
-        } catch (...) {
-          state->exception = std::current_exception();
-        }
-        // Hand the result over to the event loop before resuming it: the awaitable keeps it alive until the coroutine
-        // consumed it, so that it (and a captured exception) is always destroyed by the event loop thread, never by
-        // this one concurrently with its use.
-        state.reset();
-        try {
-          postCallback(handle, nullptr);
-        } catch (const std::exception& ex) {
-          // postCallback throws when the channel to the event loop is broken, which
-          // typically means the connection was closed while background work was running.
-          // The coroutine will never be resumed; the server's idle-sweep or drain-close
-          // will eventually reclaim any remaining connection resources.
-          // Logging is delegated to a non-template free function (defined in http-request.cpp) so the
-          // (heavy) logging dependency stays out of this widely-included header.
-          LogAsyncCallbackPostFailure(ex.what());
-        }
-      }).detach();
+      return true;
     }
 
-    [[nodiscard]] Result await_resume() {
+    Result await_resume() {
       if (_state->exception) {
         std::rethrow_exception(_state->exception);
       }
-      return std::move(_state->result);
+      if constexpr (std::is_void_v<Result>) {
+        return;
+      } else {
+        return std::move(*_state->result);
+      }
     }
 
    private:
+    struct NoResult {};
+
     struct State {
-      Result result{};
+      // std::optional: Result does not need to be default constructible.
+      std::conditional_t<std::is_void_v<Result>, NoResult, std::optional<Result>> result;
       std::exception_ptr exception;
     };
 
@@ -368,12 +386,17 @@ class HttpRequestView {
   //     return database.query("SELECT * FROM users WHERE id = ?", userId);
   //   });
   //
-  // Thread safety: The work function runs on a background thread. Be careful with captured references.
-  // Copy any data you need, or use thread-safe data structures.
+  // The work function may return void, a type that is not default constructible, and may be move-only. A returned
+  // reference is copied (the work may be over when the coroutine resumes).
+  //
+  // Thread safety: The work function runs on a background thread, concurrently with the event loop. The coroutine frame
+  // and this request stay valid until it completes, but they must not be modified by the coroutine meanwhile (it is
+  // suspended anyway), and other data shared with the event loop must be synchronized.
   template <typename WorkFn>
   [[nodiscard]] auto deferWork(WorkFn&& work) {
-    using Result = std::invoke_result_t<WorkFn>;
-    return DeferredWorkAwaitable<Result>(*this, std::forward<WorkFn>(work));
+    using Fn = std::decay_t<WorkFn>;
+    using Result = std::remove_cvref_t<std::invoke_result_t<Fn&>>;
+    return DeferredWorkAwaitable<Result, Fn>(*this, std::forward<WorkFn>(work));
   }
 
   // Awaitable helper for streaming body reads. Suspends cooperatively once real async body pipelines are wired; for
@@ -582,8 +605,25 @@ class HttpRequestView {
   void finalizeBeforeHandlerCall(std::span<const PathParamCapture> pathParams);
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  // Copies the request head (and the path parameter names, owned by the router) to asyncState.headBuffer and makes all
+  // the views of the request point there, so that they survive the changes of the connection buffer while an async
+  // handler is suspended.
   void pinHeadStorage(ConnectionState& state, AsyncHandlerStatePool& asyncStatePool);
+
+  // Copies the path parameter names (owned by the router, that may be updated while an async handler is suspended) to
+  // the end of the given buffer.
+  void pinPathParamKeys(RawChars& storage);
 #endif
+
+  // Read position of the aggregated body bridge (see installAggregatedBodyBridge()).
+  struct AggregatedBodyContext {
+    std::string_view body;
+    std::size_t offset{0};
+  };
+
+  // Lets readBody() / hasMoreBody() stream the fully received body through ctx (no-op if a bridge is already
+  // installed). ctx must stay at the same address while the request is handled.
+  void installAggregatedBodyBridge(AggregatedBodyContext& ctx) noexcept;
 
   void shrinkAndMaybeClear();
 

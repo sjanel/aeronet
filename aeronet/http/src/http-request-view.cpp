@@ -35,11 +35,13 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/major-minor-version.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/path-param-capture.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/safe-cast.hpp"
 #include "aeronet/search-crlf.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/template-constants.hpp"
 #include "aeronet/tolower-str.hpp"
 #include "aeronet/tracing/tracer.hpp"
@@ -524,15 +526,41 @@ void HttpRequestView::finalizeBeforeHandlerCall(std::span<const PathParamCapture
 }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
+namespace {
+
+std::size_t PathParamKeysSize(const SvToSvMap& pathParams) noexcept {
+  std::size_t keysSize = 0;
+  for (const auto& [key, value] : pathParams) {
+    keysSize += key.size();
+  }
+  return keysSize;
+}
+
+// Appends the path parameter names to 'storage' and makes them point there.
+// PRECONDITION: the capacity of 'storage' is large enough for all of them, so that it is not reallocated meanwhile.
+void UncheckedPinPathParamKeys(SvToSvMap& pathParams, RawChars& storage) {
+  char* insertPtr = storage.data() + storage.size();
+  for (auto& [key, value] : pathParams) {
+    const char* keyBeg = insertPtr;
+    insertPtr = Append(key, insertPtr);
+    key = {keyBeg, key.size()};
+  }
+  storage.setEnd(insertPtr);
+}
+
+}  // namespace
+
 void HttpRequestView::pinHeadStorage(ConnectionState& state, AsyncHandlerStatePool& asyncStatePool) {
   if (_headPinned || _headSpanSize == 0) {
     return;
   }
   const char* oldBase = state.inBuffer.data();
-  auto& asyncState = state.ensureAsyncState(asyncStatePool);
-  asyncState.headBuffer.assign(oldBase, _headSpanSize);
+  RawChars& headBuffer = state.ensureAsyncState(asyncStatePool).headBuffer;
+  // A single allocation: the views remapped below must not be invalidated by a later reallocation.
+  headBuffer.reserve(_headSpanSize + PathParamKeysSize(_pathParams));
+  headBuffer.assign(oldBase, _headSpanSize);
 
-  const auto remapPtr = [newBase = asyncState.headBuffer.data(), oldBase,
+  const auto remapPtr = [newBase = headBuffer.data(), oldBase,
                          oldLimit = oldBase + _headSpanSize](const char* ptr) -> const char* {
     if (ptr < oldBase || ptr >= oldLimit) {
       return ptr;
@@ -553,10 +581,48 @@ void HttpRequestView::pinHeadStorage(ConnectionState& state, AsyncHandlerStatePo
   remapMap(_headers);
   remapMap(_trailers);
   remapMap(_pathParams);
+  remapMap(_queryParams);
+
+  // The path parameter names are owned by the router, that may be updated while the handler is suspended.
+  UncheckedPinPathParamKeys(_pathParams, headBuffer);
 
   _headPinned = true;
 }
+
+void HttpRequestView::pinPathParamKeys(RawChars& storage) {
+  storage.ensureAvailableCapacity(PathParamKeysSize(_pathParams));
+  UncheckedPinPathParamKeys(_pathParams, storage);
+}
 #endif
+
+void HttpRequestView::installAggregatedBodyBridge(AggregatedBodyContext& ctx) noexcept {
+  if (_pBodyAccessBridge != nullptr) {
+    return;
+  }
+  static constexpr BodyAccessBridge kAggregatedBodyBridge{
+      [](HttpRequestView&, void* context) -> std::string_view {
+        assert(context != nullptr);
+        return static_cast<const AggregatedBodyContext*>(context)->body;
+      },
+      [](HttpRequestView&, void* context, std::size_t maxBytes) -> std::string_view {
+        assert(context != nullptr);
+        auto* bodyCtx = static_cast<AggregatedBodyContext*>(context);
+        const std::size_t len = std::min(maxBytes, bodyCtx->body.size() - bodyCtx->offset);
+        const std::string_view chunk(bodyCtx->body.data() + bodyCtx->offset, len);
+        bodyCtx->offset += len;
+        return chunk;
+      },
+      [](const HttpRequestView&, void* context) -> bool {
+        assert(context != nullptr);
+        const auto* bodyCtx = static_cast<const AggregatedBodyContext*>(context);
+        return bodyCtx->offset < bodyCtx->body.size();
+      },
+  };
+  ctx.body = _body;
+  ctx.offset = 0;
+  _pBodyAccessBridge = &kAggregatedBodyBridge;
+  _pBodyAccessContext = &ctx;
+}
 
 void HttpRequestView::shrinkAndMaybeClear() {
   // we cannot simply rehash(0) for std::string_view maps because if the maps are not empty,
