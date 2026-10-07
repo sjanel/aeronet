@@ -1,9 +1,11 @@
 #pragma once
 
 #include <amc/type_traits.hpp>
+#include <cassert>
 #include <cstdint>
 #include <functional>
 #include <iosfwd>
+#include <memory>
 #include <span>
 #include <string_view>
 #include <utility>
@@ -19,6 +21,7 @@
 #include "aeronet/object-array-pool.hpp"
 #include "aeronet/object-pool.hpp"
 #include "aeronet/path-handler-entry.hpp"
+#include "aeronet/path-handlers.hpp"
 #include "aeronet/path-param-capture.hpp"
 #include "aeronet/route-constraint.hpp"
 #include "aeronet/route-group.hpp"
@@ -97,7 +100,9 @@ class Router {
   void setDefault(RequestHandler handler);
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  void setDefault(AsyncRequestHandler handler) { _asyncHandler = std::move(handler); }
+  void setDefault(AsyncRequestHandler handler) {
+    _asyncHandler = handler ? std::make_shared<AsyncRequestHandler>(std::move(handler)) : nullptr;
+  }
 #endif
 
   // Register a global streaming handler that can produce responses incrementally via
@@ -227,7 +232,14 @@ class Router {
     }
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
     [[nodiscard]] const AsyncRequestHandler* asyncRequestHandler() const noexcept {
-      return _handlerKind == HandlerKind::Async ? _handler.async : nullptr;
+      return _handlerKind == HandlerKind::Async ? _handler.async->get() : nullptr;
+    }
+
+    // Shared ownership of the async handler: holding it keeps the handler alive while a request runs in it, even if the
+    // router is updated meanwhile. PRECONDITION: asyncRequestHandler() != nullptr.
+    [[nodiscard]] const SharedAsyncRequestHandler& sharedAsyncRequestHandler() const noexcept {
+      assert(_handlerKind == HandlerKind::Async);
+      return *_handler.async;
     }
 #endif
     [[nodiscard]] bool hasHandler() const noexcept { return _handlerKind != HandlerKind::None; }
@@ -247,7 +259,7 @@ class Router {
       const RequestHandler* request;
       const StreamingHandler* streaming;
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-      const AsyncRequestHandler* async;
+      const SharedAsyncRequestHandler* async;
 #endif
     };
 
@@ -461,7 +473,7 @@ class Router {
 
   RequestHandler _handler;
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  AsyncRequestHandler _asyncHandler;
+  SharedAsyncRequestHandler _asyncHandler;
 #endif
   StreamingHandler _streamingHandler;
 

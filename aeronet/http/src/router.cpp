@@ -65,7 +65,7 @@ Router::Router(const Router& other)
     : _config(other._config),
       _handler(other._handler),
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-      _asyncHandler(other._asyncHandler),
+      _asyncHandler(CloneAsyncRequestHandler(other._asyncHandler)),
 #endif
       _streamingHandler(other._streamingHandler),
       _globalPreMiddleware(other._globalPreMiddleware),
@@ -78,7 +78,7 @@ Router& Router::operator=(const Router& other) {
     _config = other._config;
     _handler = other._handler;
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-    _asyncHandler = other._asyncHandler;
+    _asyncHandler = CloneAsyncRequestHandler(other._asyncHandler);
 #endif
     _streamingHandler = other._streamingHandler;
     _globalPreMiddleware = other._globalPreMiddleware;

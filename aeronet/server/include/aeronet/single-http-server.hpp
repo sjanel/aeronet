@@ -226,7 +226,9 @@ class SingleHttpServer {
   SingleHttpServer(SingleHttpServer&& other);             // NOLINT(performance-noexcept-move-constructor)
   SingleHttpServer& operator=(SingleHttpServer&& other);  // NOLINT(performance-noexcept-move-constructor)
 
-  ~SingleHttpServer() { stop(); }
+  // Stops the server. Waits for the deferred work (HttpRequestView::deferWork()) still running: it uses the coroutine
+  // frames and requests kept for it, and completes by posting to this server.
+  ~SingleHttpServer();
 
   // Obtain a proxy enabling fluent router updates without accessing the router directly while running.
   // Allows call chaining and implicit conversion to Router& for inspection during setup.
@@ -601,13 +603,31 @@ class SingleHttpServer {
   void postAsyncCallback(NativeHandle connectionFd, uint32_t connectionGeneration, std::coroutine_handle<> handle,
                          std::function<void()> work);
 
-  bool dispatchAsyncHandler(ConnectionIt cnxIt, const AsyncRequestHandler& handler, bool bodyReady, bool isChunked,
-                            bool expectContinue, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy,
+  // Processes the async callbacks posted by background threads: resumes their coroutines, or releases the ones kept for
+  // closed connections.
+  void processAsyncCallbacks();
+
+  // Waits until the deferred work run for closed connections completed (no-op while the event loop runs).
+  void waitForOrphanedAsyncWork();
+
+  // Tells whether the given HTTP/1 connection must stop reading because of its async handler (and records it).
+  static bool PauseReadingDuringAsyncHandler(ConnectionState& state) noexcept;
+
+  // Gives up the request of an async handler, its connection closing.
+  static void AbandonAsyncHandler(AsyncHandlerState& async) noexcept;
+
+  // Returns true if the handler was dispatched (it may have completed already), false if it returned an invalid task.
+  bool dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyncRequestHandler& handler, bool bodyReady,
+                            bool isChunked, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy,
                             std::span<const ResponseMiddleware> responseMiddleware, std::size_t perRouteMaxBodyBytes);
   void resumeAsyncHandler(ConnectionIt cnxIt);
   void handleAsyncBodyProgress(ConnectionIt cnxIt);
   void onAsyncHandlerCompleted(ConnectionIt cnxIt);
   void tryFlushPendingAsyncResponse(ConnectionIt cnxIt);
+
+  // Resumes the input of an HTTP/1 connection after the completion of its async handler: serves the requests already
+  // received, then reads the bytes left in the socket meanwhile.
+  void resumeInputAfterAsyncHandler(NativeHandle fd);
 #endif
 
   [[nodiscard]] bool isInMultiHttpServer() const noexcept { return _lifecycleTracker.use_count() != 0; }

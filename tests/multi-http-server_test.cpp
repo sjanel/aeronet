@@ -310,7 +310,7 @@ TEST(MultiHttpServer, EphemeralPortStaysReservedWhileStopped) {
   // The ephemeral port is rebound on restart: while stopped, it must not be obtainable by another process, which the
   // restart would otherwise silently share incoming connections with (SO_REUSEPORT).
   MultiHttpServer multi(MakeConfig(2U));
-  multi.router().setDefault([](const HttpRequestView& req) { return HttpResponse(std::string(req.path())); });
+  multi.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.path()); });
   const auto port = multi.port();
 
   // No request before the checks: the server closes 'Connection: close' connections first, and their TIME_WAIT state

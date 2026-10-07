@@ -1,10 +1,22 @@
 #include "aeronet/internal/connection-storage.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include <coroutine>
+#endif
+
+#include "aeronet/connection-state.hpp"
+
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-transport.hpp"
+#endif
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include "aeronet/async-handler-state.hpp"
+#include "aeronet/protocol-handler.hpp"
 #endif
 
 namespace aeronet::internal {
@@ -22,11 +34,17 @@ void ConnectionStorage::recycleOrRelease(ConnectionIt cnxIt, uint32_t maxCachedC
   auto* pConnectionState = _activeConnectionStates[connectionIdx];
 #endif
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  auto* asyncState = pConnectionState->asyncState.get();
-  if (asyncState != nullptr && (asyncState->active || asyncState->handle)) {
-    *asyncState = {};
+  // Deferred work still running may use the request and the coroutine frame: keep them until it completes.
+  const bool keepForAsyncWork = pConnectionState->hasAsyncWorkInFlight();
+  if (keepForAsyncWork) {
+    if (auto* asyncState = pConnectionState->asyncState.get(); asyncState != nullptr) {
+      asyncState->active = false;
+      asyncState->pendingResponse.reset();
+    }
+  } else if (auto* asyncState = pConnectionState->asyncState.get(); asyncState != nullptr) {
+    asyncState->clear();
+    pConnectionState->asyncState.reset();
   }
-  pConnectionState->asyncState.reset();
 #endif
 
   // Best-effort graceful TLS shutdown
@@ -44,12 +62,15 @@ void ConnectionStorage::recycleOrRelease(ConnectionIt cnxIt, uint32_t maxCachedC
   }
 #endif
 
-  // Move ConnectionState to cache for potential reuse
-  if (_cachedConnectionStates.size() < maxCachedConnections) {
-    _cachedConnectionStates.push_back(pConnectionState);
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  if (keepForAsyncWork) {
+    _orphanedConnectionStates.push_back(pConnectionState);
   } else {
-    _connectionStatePool.destroyAndRelease(pConnectionState);
+    cacheOrRelease(pConnectionState, maxCachedConnections);
   }
+#else
+  cacheOrRelease(pConnectionState, maxCachedConnections);
+#endif
 
 #ifdef AERONET_WINDOWS
   // Do NOT call cnxIt._it->first.close() here: Connection is the hash-map key,
@@ -65,6 +86,42 @@ void ConnectionStorage::recycleOrRelease(ConnectionIt cnxIt, uint32_t maxCachedC
   --_nbActiveConnections;
 #endif
 }
+
+void ConnectionStorage::cacheOrRelease(ConnectionState* pConnectionState, uint32_t maxCachedConnections) {
+  // Move ConnectionState to cache for potential reuse
+  if (_cachedConnectionStates.size() < maxCachedConnections) {
+    _cachedConnectionStates.push_back(pConnectionState);
+  } else {
+    _connectionStatePool.destroyAndRelease(pConnectionState);
+  }
+}
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+void ConnectionStorage::releaseOrphanedAsyncTask(uint32_t generation, std::coroutine_handle<> handle,
+                                                 uint32_t maxCachedConnections) {
+  const auto it = std::ranges::find_if(_orphanedConnectionStates, [generation](const ConnectionState* pState) {
+    return pState->generation == generation;
+  });
+  if (it == _orphanedConnectionStates.end()) {
+    return;
+  }
+  ConnectionState* pConnectionState = *it;
+  if (auto* asyncState = pConnectionState->asyncState.get(); asyncState != nullptr && asyncState->handle == handle) {
+    asyncState->clear();
+  }
+  if (pConnectionState->protocolHandler != nullptr) {
+    pConnectionState->protocolHandler->dropAsyncTask(handle);
+  }
+  if (pConnectionState->hasAsyncWorkInFlight()) {
+    return;
+  }
+  pConnectionState->asyncState.reset();
+  _orphanedConnectionStates.erase(it);
+  // Kept in the cache in last activity order (see sweepCachedConnections()).
+  pConnectionState->lastActivity = now;
+  cacheOrRelease(pConnectionState, maxCachedConnections);
+}
+#endif
 
 void ConnectionStorage::sweepCachedConnections(std::chrono::steady_clock::duration timeout) {
   const auto deadline = now - timeout;

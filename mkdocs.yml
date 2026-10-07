@@ -76,6 +76,7 @@ nav:
       - Installation and build: INSTALL.md
   - Guides:
       - Routing and requests: guides/routing.md
+      - Async handlers: guides/async-handlers.md
       - Middleware and responses: guides/middleware-and-responses.md
       - Bodies, streaming, and static files: guides/bodies-streaming-and-files.md
       - Production deployment patterns: guides/production-configuration.md

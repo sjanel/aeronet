@@ -17,6 +17,8 @@
 #endif
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include <coroutine>
+
 #include "aeronet/async-handler-state.hpp"
 #endif
 
@@ -193,6 +195,32 @@ class ConnectionStorage {
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   AsyncHandlerStatePool& asyncHandlerStatePool() noexcept { return _asyncHandlerStatePool; }
+
+  // Returns the iterator of the active connection with given fd and generation, or end() if it was closed since (its fd
+  // possibly reused by another connection).
+  ConnectionIt findConnection(NativeHandle fd, uint32_t generation) {
+#ifdef AERONET_WINDOWS
+    auto it = iterator(fd);
+#else
+    const auto idx = static_cast<ConnectionIdx>(fd - 1);
+    if (idx >= _activeConnections.size() || !_activeConnections[idx]) {
+      return end();
+    }
+    auto it = _activeConnections.begin() + idx;
+#endif
+    if (it == end() || connectionState(it).generation != generation) {
+      return end();
+    }
+    return it;
+  }
+
+  // Called when the deferred work of a coroutine of a closed connection (identified by its generation) completed:
+  // destroys the coroutine, kept until then, and releases the connection state once no work runs for it anymore.
+  void releaseOrphanedAsyncTask(uint32_t generation, std::coroutine_handle<> handle, uint32_t maxCachedConnections);
+
+  [[nodiscard]] bool hasOrphanedConnectionStates() const noexcept { return !_orphanedConnectionStates.empty(); }
+
+  [[nodiscard]] std::size_t nbOrphanedConnectionStates() const noexcept { return _orphanedConnectionStates.size(); }
 #endif
 
   std::chrono::steady_clock::time_point now;
@@ -216,9 +244,15 @@ class ConnectionStorage {
     return statePtr;
   }
 
+  // Moves a closed connection state to the cache for reuse, or releases it.
+  void cacheOrRelease(ConnectionState* pConnectionState, uint32_t maxCachedConnections);
+
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   uint32_t _nextConnectionGeneration{0};
   AsyncHandlerStatePool _asyncHandlerStatePool;
+  // States of closed connections for which deferred work still runs (see ConnectionState::hasAsyncWorkInFlight()): they
+  // are kept until it completes, the work possibly using the request or the coroutine frame until then.
+  vector<ConnectionState*> _orphanedConnectionStates;
 #endif
 
   ObjectPool<ConnectionState> _connectionStatePool;

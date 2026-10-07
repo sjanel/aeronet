@@ -10,6 +10,10 @@
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/vector.hpp"
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include <coroutine>
+#endif
+
 namespace aeronet {
 
 struct ConnectionState;
@@ -105,6 +109,16 @@ class IProtocolHandler {
   /// Called when the underlying transport is about to be closed.
   /// Allows cleanup of protocol-specific state.
   virtual void onTransportClosing() = 0;
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  /// Tells whether background work started by an async handler of this connection is still running: the handler (and
+  /// its connection state) must then be kept until it completes, even after the connection is closed.
+  [[nodiscard]] virtual bool hasAsyncWorkInFlight() const noexcept { return false; }
+
+  /// Destroys the async task identified by its coroutine handle without resuming it: its connection was closed while
+  /// its background work was running, which has now completed.
+  virtual void dropAsyncTask([[maybe_unused]] std::coroutine_handle<> handle) noexcept {}
+#endif
 
   /// Drains all pending output into dest, returning true if any data was transferred.
   ///

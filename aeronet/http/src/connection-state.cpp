@@ -229,53 +229,7 @@ ConnectionState::FileResult ConnectionState::transportFile(NativeHandle clientFd
   return res;
 }
 
-namespace {
-std::string_view AggregateBufferedBody([[maybe_unused]] HttpRequestView& request, void* context) {
-  if (context == nullptr) {
-    return {};
-  }
-  const auto* ctx = static_cast<const ConnectionState::AggregatedBodyStreamContext*>(context);
-  return ctx->body;
-}
-
-std::string_view ReadBufferedBody([[maybe_unused]] HttpRequestView& request, void* context, std::size_t maxBytes) {
-  if (maxBytes == 0 || context == nullptr) {
-    return {};
-  }
-  auto* ctx = static_cast<ConnectionState::AggregatedBodyStreamContext*>(context);
-  if (ctx->offset >= ctx->body.size()) {
-    return {};
-  }
-  const std::size_t remaining = ctx->body.size() - ctx->offset;
-  const std::size_t len = std::min(maxBytes, remaining);
-  const std::string_view chunk(ctx->body.data() + ctx->offset, len);
-  ctx->offset += len;
-  return chunk;
-}
-
-bool HasMoreBufferedBody([[maybe_unused]] const HttpRequestView& request, void* context) {
-  if (context == nullptr) {
-    return false;
-  }
-  const auto* ctx = static_cast<const ConnectionState::AggregatedBodyStreamContext*>(context);
-  return ctx->offset < ctx->body.size();
-}
-}  // namespace
-
-void ConnectionState::installAggregatedBodyBridge() {
-  if (request._pBodyAccessBridge != nullptr) {
-    return;
-  }
-  static constexpr HttpRequestView::BodyAccessBridge kAggregatedBodyBridge{
-      &AggregateBufferedBody,
-      &ReadBufferedBody,
-      &HasMoreBufferedBody,
-  };
-  bodyStreamContext.body = request._body;
-  bodyStreamContext.offset = 0;
-  request._pBodyAccessBridge = &kAggregatedBodyBridge;
-  request._pBodyAccessContext = &bodyStreamContext;
-}
+void ConnectionState::installAggregatedBodyBridge() { request.installAggregatedBodyBridge(bodyStreamContext); }
 
 #ifdef AERONET_ENABLE_OPENSSL
 bool ConnectionState::finalizeAndEmitTlsHandshakeIfNeeded(NativeHandle fd, const TlsHandshakeCallback& cb,
@@ -366,6 +320,8 @@ void ConnectionState::reset() {
   waitingWritable = false;
   tlsEstablished = false;
   waitingForBody = false;
+  readPaused = false;
+  expectationAnswered = false;
   connectPending = false;
   shutdownWritePending = false;
   eofReceived = false;
@@ -409,19 +365,21 @@ void ConnectionState::reclaimMemoryFromOversizedBuffers() {
 
   // bodyAndTrailersBuffer: grows to accommodate decompressed request bodies (up to maxBodyBytes).
   // Safe to clear - body data has been consumed by the handler.
+  // inBuffer: grows during transportRead to hold pipelined/accumulated request data.
+  // Cannot clear - may contain a partial next request. shrink_to_fit alone is safe.
+  // Both hold the request body (and the inBuffer the request head of a waiting body) of a running async handler, or of
+  // an abandoned one whose deferred work still runs: they must not move then.
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  if (!asyncState || !asyncState->active) {
+  if (!asyncState || (!asyncState->active && !asyncState->handle)) {
     bodyAndTrailersBuffer.shrink_to_fit();
     bodyAndTrailersBuffer.clear();
+    inBuffer.shrink_to_fit();
   }
 #else
   bodyAndTrailersBuffer.shrink_to_fit();
   bodyAndTrailersBuffer.clear();
-#endif
-
-  // inBuffer: grows during transportRead to hold pipelined/accumulated request data.
-  // Cannot clear - may contain a partial next request. shrink_to_fit alone is safe.
   inBuffer.shrink_to_fit();
+#endif
 
   // outBuffer: grows when TCP writes can't keep up and responses queue.
   outBuffer.shrink_to_fit();

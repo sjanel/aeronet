@@ -28,7 +28,7 @@ The [build configuration reference](../reference/configuration.md) explains ever
 
 1. Follow [Your first server](first-server.md) to run a route on port 8080.
 2. Read [Routing and requests](../guides/routing.md) to add paths, parameters, and request handling.
-3. Choose [Middleware and responses](../guides/middleware-and-responses.md) or [Bodies, streaming, and static files](../guides/bodies-streaming-and-files.md) according to the response model you need.
+3. Choose [Middleware and responses](../guides/middleware-and-responses.md) or [Bodies, streaming, and static files](../guides/bodies-streaming-and-files.md) according to the response model you need, and [Async handlers](../guides/async-handlers.md) when handlers make blocking calls.
 4. Add a protocol module when needed: [TLS and HTTP/2](../protocols/tls-and-http2.md), [WebSocket](../protocols/websocket.md), or the [HTTP client and JWT](../protocols/client-and-jwt.md) guide.
 
 !!! tip
