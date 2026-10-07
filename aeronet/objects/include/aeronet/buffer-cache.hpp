@@ -6,6 +6,8 @@ namespace aeronet::internal {
 
 // BufferCache is a simple utility for caching a single buffer allocation for reuse across multiple operations.
 // It tracks ownership of the buffer to allow efficient reuse when possible, while ensuring proper deallocation.
+// With AddressSanitizer, the cached buffer is poisoned while it is not given, so that accesses after deallocate()
+// are still reported (as 'use-after-poison').
 class BufferCache {
  public:
   BufferCache() noexcept = default;

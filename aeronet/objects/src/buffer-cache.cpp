@@ -4,6 +4,8 @@
 #include <cstdlib>
 #include <utility>
 
+#include "aeronet/asan-poison.hpp"
+
 namespace aeronet::internal {
 
 BufferCache::BufferCache(BufferCache&& rhs) noexcept
@@ -28,6 +30,8 @@ void* BufferCache::allocate(std::size_t size) noexcept {
     _ownedBuf = {newBuf, size};
   }
 
+  // Only expose the requested size: when reusing a larger cached buffer, its tail stays poisoned.
+  AsanUnpoison(_ownedBuf.pBuf, size);
   _givenBuf = std::exchange(_ownedBuf, {});
   return _givenBuf.pBuf;
 }
@@ -38,6 +42,7 @@ void BufferCache::deallocate(void* ptr) noexcept {
     // This is a pointer we allocated, we know its size
     _ownedBuf = {ptr, _givenBuf.size};
     _givenBuf = {};
+    AsanPoison(ptr, _ownedBuf.size);
   } else {
     // Either we already have a cached buffer, or we don't recognize this pointer - free it
     std::free(ptr);
