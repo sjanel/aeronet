@@ -11,6 +11,7 @@
 #include <string>
 #include <utility>
 
+#include "aeronet/asan-poison.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/vector.hpp"
 
@@ -521,6 +522,77 @@ TEST(ObjectPoolTest, ClearPreservesCapacityForString) {
     (void)pool.allocateAndConstruct("after-clear");
   }
   EXPECT_EQ(pool.capacity(), capBefore);
+}
+
+TEST(ObjectPoolTest, AsanPoisonsUnallocatedSlots) {
+  if (!AERONET_ASAN_ENABLED) {
+    GTEST_SKIP() << "AddressSanitizer is not enabled";
+  }
+  ObjectPool<std::string> pool(4);
+
+  std::string* str1 = pool.allocateAndConstruct("first");
+  EXPECT_FALSE(AsanIsPoisoned(str1));
+
+  // Slots that were never allocated are poisoned
+  const auto* pNextObj = reinterpret_cast<const std::byte*>(str1) + sizeof(internal::Slot<std::string>);
+  EXPECT_TRUE(AsanIsPoisoned(pNextObj));
+
+  std::string* str2 = pool.allocateAndConstruct("second");
+  ASSERT_EQ(static_cast<const void*>(str2), static_cast<const void*>(pNextObj));
+  EXPECT_FALSE(AsanIsPoisoned(str2));
+
+  // Released slots are poisoned until they are reused
+  pool.destroyAndRelease(str2);
+  EXPECT_TRUE(AsanIsPoisoned(str2));
+  EXPECT_FALSE(AsanIsPoisoned(str1));
+
+  std::string* str3 = pool.allocateAndConstruct("third");
+  ASSERT_EQ(str3, str2);
+  EXPECT_FALSE(AsanIsPoisoned(str3));
+
+  EXPECT_EQ(pool.release(str3), "third");
+  EXPECT_TRUE(AsanIsPoisoned(str3));
+
+  // clear() poisons all slots
+  pool.clear();
+  EXPECT_TRUE(AsanIsPoisoned(str1));
+  EXPECT_TRUE(AsanIsPoisoned(str2));
+
+  std::string* str4 = pool.allocateAndConstruct("fourth");
+  EXPECT_FALSE(AsanIsPoisoned(str4));
+  EXPECT_TRUE(AsanIsPoisoned(str4 == str1 ? str2 : str1));
+}
+
+TEST(ObjectPoolTest, AsanPoisonsSlotWhoseConstructionThrows) {
+  if (!AERONET_ASAN_ENABLED) {
+    GTEST_SKIP() << "AddressSanitizer is not enabled";
+  }
+  struct ThrowingCtor {
+    explicit ThrowingCtor(bool doThrow) {
+      if (doThrow) {
+        throw std::runtime_error("boom");
+      }
+    }
+  };
+
+  ObjectPool<ThrowingCtor> pool;
+  ThrowingCtor* obj = pool.allocateAndConstruct(false);
+  pool.destroyAndRelease(obj);
+
+  EXPECT_THROW((void)pool.allocateAndConstruct(true), std::runtime_error);
+  EXPECT_TRUE(AsanIsPoisoned(obj));
+}
+
+TEST(ObjectPoolDeathTest, AsanReportsUseAfterRelease) {
+  if (!AERONET_ASAN_ENABLED) {
+    GTEST_SKIP() << "AddressSanitizer is not enabled";
+  }
+  ObjectPool<std::string> pool;
+  std::string* str = pool.allocateAndConstruct("released");
+  pool.destroyAndRelease(str);
+
+  EXPECT_DEATH({ [[maybe_unused]] volatile auto sz = str->size(); }, "use-after-poison");
+  EXPECT_DEATH(pool.destroyAndRelease(str), "use-after-poison");
 }
 
 #if AERONET_WANT_MALLOC_OVERRIDES

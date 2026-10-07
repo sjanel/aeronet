@@ -242,6 +242,13 @@ if(AERONET_ENABLE_BROTLI)
 endif()
 
 AeronetAddUnitTest(
+    buffer-cache_test
+    test/buffer-cache_test.cpp
+    LIBRARIES
+    aeronet_objects
+)
+
+AeronetAddUnitTest(
     builtin-probes-config_test
     test/builtin-probes-config_test.cpp
     src/builtin-probes-config.cpp
