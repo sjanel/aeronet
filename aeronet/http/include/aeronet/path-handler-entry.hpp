@@ -135,8 +135,8 @@ class PathHandlerEntry {
 
     static_assert(std::alignment_of_v<RequestHandler> == std::alignment_of_v<StreamingHandler>);
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-    static_assert(sizeof(RequestHandler) == sizeof(AsyncRequestHandler));
-    static_assert(std::alignment_of_v<RequestHandler> == std::alignment_of_v<AsyncRequestHandler>);
+    static_assert(sizeof(SharedAsyncRequestHandler) <= sizeof(RequestHandler));
+    static_assert(std::alignment_of_v<SharedAsyncRequestHandler> <= std::alignment_of_v<RequestHandler>);
 #endif
 
     alignas(RequestHandler) std::byte normalHandlerStorage[sizeof(RequestHandler)];
@@ -173,8 +173,8 @@ class PathHandlerEntry {
   }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  [[nodiscard]] const AsyncRequestHandler* asyncHandlerPtr(http::MethodIdx methodIdx) const {
-    return &reinterpret_cast<const AsyncRequestHandler&>(_handlers[methodIdx]);
+  [[nodiscard]] const SharedAsyncRequestHandler* asyncHandlerPtr(http::MethodIdx methodIdx) const {
+    return &reinterpret_cast<const SharedAsyncRequestHandler&>(_handlers[methodIdx]);
   }
 #endif
 

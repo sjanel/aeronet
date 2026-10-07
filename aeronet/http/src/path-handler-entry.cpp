@@ -38,8 +38,8 @@ PathHandlerEntry::PathHandlerEntry(const PathHandlerEntry& rhs)
                         reinterpret_cast<const RequestHandler&>(rhsStorage));
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
     } else if (http::IsMethodIdxSet(_asyncMethodBmp, methodIdx)) {
-      std::construct_at(&reinterpret_cast<AsyncRequestHandler&>(lhsStorage),
-                        reinterpret_cast<const AsyncRequestHandler&>(rhsStorage));
+      std::construct_at(&reinterpret_cast<SharedAsyncRequestHandler&>(lhsStorage),
+                        CloneAsyncRequestHandler(reinterpret_cast<const SharedAsyncRequestHandler&>(rhsStorage)));
 #endif
     } else if (http::IsMethodIdxSet(_streamingMethodBmp, methodIdx)) {
       std::construct_at(&reinterpret_cast<StreamingHandler&>(lhsStorage),
@@ -66,8 +66,8 @@ PathHandlerEntry::PathHandlerEntry(PathHandlerEntry&& rhs) noexcept
                         std::move(reinterpret_cast<RequestHandler&>(rhsStorage)));
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
     } else if (http::IsMethodIdxSet(rhs._asyncMethodBmp, methodIdx)) {
-      std::construct_at(&reinterpret_cast<AsyncRequestHandler&>(lhsStorage),
-                        std::move(reinterpret_cast<AsyncRequestHandler&>(rhsStorage)));
+      std::construct_at(&reinterpret_cast<SharedAsyncRequestHandler&>(lhsStorage),
+                        std::move(reinterpret_cast<SharedAsyncRequestHandler&>(rhsStorage)));
 #endif
     } else if (http::IsMethodIdxSet(rhs._streamingMethodBmp, methodIdx)) {
       std::construct_at(&reinterpret_cast<StreamingHandler&>(lhsStorage),
@@ -101,22 +101,25 @@ PathHandlerEntry& PathHandlerEntry::operator=(const PathHandlerEntry& rhs) {
         if (http::IsMethodIdxSet(_normalMethodBmp, methodIdx)) {
           reinterpret_cast<RequestHandler&>(lhsStorage) = reinterpret_cast<const RequestHandler&>(rhsStorage);
         } else {
+          destroyIdx(methodIdx);
           std::construct_at(&reinterpret_cast<RequestHandler&>(lhsStorage),
                             reinterpret_cast<const RequestHandler&>(rhsStorage));
         }
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
       } else if (http::IsMethodIdxSet(rhs._asyncMethodBmp, methodIdx)) {
+        auto clone = CloneAsyncRequestHandler(reinterpret_cast<const SharedAsyncRequestHandler&>(rhsStorage));
         if (http::IsMethodIdxSet(_asyncMethodBmp, methodIdx)) {
-          reinterpret_cast<AsyncRequestHandler&>(lhsStorage) = reinterpret_cast<const AsyncRequestHandler&>(rhsStorage);
+          reinterpret_cast<SharedAsyncRequestHandler&>(lhsStorage) = std::move(clone);
         } else {
-          std::construct_at(&reinterpret_cast<AsyncRequestHandler&>(lhsStorage),
-                            reinterpret_cast<const AsyncRequestHandler&>(rhsStorage));
+          destroyIdx(methodIdx);
+          std::construct_at(&reinterpret_cast<SharedAsyncRequestHandler&>(lhsStorage), std::move(clone));
         }
 #endif
       } else if (http::IsMethodIdxSet(rhs._streamingMethodBmp, methodIdx)) {
         if (http::IsMethodIdxSet(_streamingMethodBmp, methodIdx)) {
           reinterpret_cast<StreamingHandler&>(lhsStorage) = reinterpret_cast<const StreamingHandler&>(rhsStorage);
         } else {
+          destroyIdx(methodIdx);
           std::construct_at(&reinterpret_cast<StreamingHandler&>(lhsStorage),
                             reinterpret_cast<const StreamingHandler&>(rhsStorage));
         }
@@ -152,23 +155,26 @@ PathHandlerEntry& PathHandlerEntry::operator=(PathHandlerEntry&& rhs) noexcept {
         if (http::IsMethodIdxSet(_normalMethodBmp, methodIdx)) {
           reinterpret_cast<RequestHandler&>(lhsStorage) = std::move(reinterpret_cast<RequestHandler&>(rhsStorage));
         } else {
+          destroyIdx(methodIdx);
           std::construct_at(&reinterpret_cast<RequestHandler&>(lhsStorage),
                             std::move(reinterpret_cast<RequestHandler&>(rhsStorage)));
         }
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
       } else if (http::IsMethodIdxSet(rhs._asyncMethodBmp, methodIdx)) {
         if (http::IsMethodIdxSet(_asyncMethodBmp, methodIdx)) {
-          reinterpret_cast<AsyncRequestHandler&>(lhsStorage) =
-              std::move(reinterpret_cast<AsyncRequestHandler&>(rhsStorage));
+          reinterpret_cast<SharedAsyncRequestHandler&>(lhsStorage) =
+              std::move(reinterpret_cast<SharedAsyncRequestHandler&>(rhsStorage));
         } else {
-          std::construct_at(&reinterpret_cast<AsyncRequestHandler&>(lhsStorage),
-                            std::move(reinterpret_cast<AsyncRequestHandler&>(rhsStorage)));
+          destroyIdx(methodIdx);
+          std::construct_at(&reinterpret_cast<SharedAsyncRequestHandler&>(lhsStorage),
+                            std::move(reinterpret_cast<SharedAsyncRequestHandler&>(rhsStorage)));
         }
 #endif
       } else if (http::IsMethodIdxSet(rhs._streamingMethodBmp, methodIdx)) {
         if (http::IsMethodIdxSet(_streamingMethodBmp, methodIdx)) {
           reinterpret_cast<StreamingHandler&>(lhsStorage) = std::move(reinterpret_cast<StreamingHandler&>(rhsStorage));
         } else {
+          destroyIdx(methodIdx);
           std::construct_at(&reinterpret_cast<StreamingHandler&>(lhsStorage),
                             std::move(reinterpret_cast<StreamingHandler&>(rhsStorage)));
         }
@@ -245,7 +251,7 @@ void PathHandlerEntry::assignNormalHandler(http::MethodBmp methodBmp, RequestHan
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 void PathHandlerEntry::assignAsyncHandler(http::MethodBmp methodBmp, AsyncRequestHandler handler) {
-  const AsyncRequestHandler* pLastAsyncHandler = nullptr;
+  const SharedAsyncRequestHandler* pLastAsyncHandler = nullptr;
   for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
     if (!http::IsMethodIdxSet(methodBmp, methodIdx)) {
       continue;
@@ -253,28 +259,22 @@ void PathHandlerEntry::assignAsyncHandler(http::MethodBmp methodBmp, AsyncReques
     HandlerStorage& storage = _handlers[methodIdx];
     http::MethodBmp localMethodBmp = http::MethodBmpFromIdx(methodIdx);
 
+    // Each method has its own copy of the handler, like for the other handler kinds.
+    // NOLINTNEXTLINE(bugprone-use-after-move)
+    auto newHandler = pLastAsyncHandler == nullptr ? std::make_shared<AsyncRequestHandler>(std::move(handler))
+                                                   : CloneAsyncRequestHandler(*pLastAsyncHandler);
     if ((localMethodBmp & _asyncMethodBmp) != 0) {
-      if (pLastAsyncHandler == nullptr) {
-        // NOLINTNEXTLINE(bugprone-use-after-move)
-        reinterpret_cast<AsyncRequestHandler&>(storage) = std::move(handler);
-        pLastAsyncHandler = &reinterpret_cast<AsyncRequestHandler&>(storage);
-      } else {
-        reinterpret_cast<AsyncRequestHandler&>(storage) = *pLastAsyncHandler;
-      }
+      // A request suspended in the replaced handler keeps it alive.
+      reinterpret_cast<SharedAsyncRequestHandler&>(storage) = std::move(newHandler);
     } else if ((localMethodBmp & _normalMethodBmp) != 0) {
       throw std::logic_error("Cannot register async handler: normal handler already present for path+method");
     } else if ((localMethodBmp & _streamingMethodBmp) != 0) {
       throw std::logic_error("Cannot register async handler: streaming handler already present for path+method");
     } else {
       _asyncMethodBmp |= localMethodBmp;
-      if (pLastAsyncHandler == nullptr) {
-        // NOLINTNEXTLINE(bugprone-use-after-move)
-        std::construct_at(&reinterpret_cast<AsyncRequestHandler&>(storage), std::move(handler));
-        pLastAsyncHandler = &reinterpret_cast<AsyncRequestHandler&>(storage);
-      } else {
-        std::construct_at(&reinterpret_cast<AsyncRequestHandler&>(storage), *pLastAsyncHandler);
-      }
+      std::construct_at(&reinterpret_cast<SharedAsyncRequestHandler&>(storage), std::move(newHandler));
     }
+    pLastAsyncHandler = &reinterpret_cast<const SharedAsyncRequestHandler&>(storage);
   }
 }
 #endif
@@ -322,7 +322,7 @@ void PathHandlerEntry::destroyIdx(http::MethodIdx methodIdx) {
     std::destroy_at(&reinterpret_cast<RequestHandler&>(storage));
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   } else if (http::IsMethodIdxSet(_asyncMethodBmp, methodIdx)) {
-    std::destroy_at(&reinterpret_cast<AsyncRequestHandler&>(storage));
+    std::destroy_at(&reinterpret_cast<SharedAsyncRequestHandler&>(storage));
 #endif
   } else if (http::IsMethodIdxSet(_streamingMethodBmp, methodIdx)) {
     std::destroy_at(&reinterpret_cast<StreamingHandler&>(storage));

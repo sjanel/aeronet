@@ -148,10 +148,7 @@ struct ConnectionState {
     }
   }
 
-  struct AggregatedBodyStreamContext {
-    std::string_view body;
-    std::size_t offset{0};
-  };
+  using AggregatedBodyStreamContext = HttpRequestView::AggregatedBodyContext;
 
   // accumulated input raw data
   RawChars inBuffer;
@@ -237,6 +234,14 @@ struct ConnectionState {
   // Determined at accept time based on server configuration and peer/local addresses.
   bool zerocopyRequested : 1 {false};
 
+  // True when socket bytes may have been left unread while an HTTP/1 async handler was running (see
+  // SingleHttpServer::handleReadableClient()): they must be read once it completes, no new event reporting them.
+  bool readPaused : 1 {false};
+
+  // True when the expectations (Expect header) of the request at the head of inBuffer were already answered: its head
+  // is parsed again each time a part of its body is received, but interim responses must be sent once.
+  bool expectationAnswered : 1 {false};
+
 #ifdef AERONET_ENABLE_OPENSSL
   // Ensures the TLS handshake event callback is emitted at most once per connection.
   bool tlsHandshakeEventEmitted : 1 {false};
@@ -271,6 +276,13 @@ struct ConnectionState {
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   [[nodiscard]] AsyncHandlerState* pAsyncState() const noexcept { return asyncState.get(); }
+
+  // Tells whether deferred work (deferWork()) is still running for a coroutine of this connection: its frame and its
+  // request must then be kept until the work completes, even if the connection is closed.
+  [[nodiscard]] bool hasAsyncWorkInFlight() const noexcept {
+    return (asyncState && asyncState->isAwaitingCallback()) ||
+           (protocolHandler != nullptr && protocolHandler->hasAsyncWorkInFlight());
+  }
 
   /// Allocate async state on first use from the bound pool and return it.
   AsyncHandlerState& ensureAsyncState(AsyncHandlerStatePool& asyncStatePool);

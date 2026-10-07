@@ -27,6 +27,7 @@
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/tunnel-bridge.hpp"
+#include "aeronet/vector.hpp"
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
@@ -114,6 +115,11 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
     }
     _tunnelUpstreams.clear();
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+    for (auto& [streamId, state] : _streams) {
+      orphanAsyncTask(state);
+    }
+#endif
     _streams.clear();
     _deferredOutputBytes = 0;
 
@@ -176,8 +182,16 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
 
   /// Resume a pending async task identified by its coroutine handle.
   /// Called by the server when an async callback fires for this connection.
+  /// The coroutine of a task whose stream was closed meanwhile is destroyed instead (it was kept for its work).
   /// @return true if a matching task was found and resumed, false otherwise.
   bool resumeAsyncTaskByHandle(std::coroutine_handle<> handle);
+
+  /// Destroy the async task identified by its coroutine handle without resuming it: its connection was closed while its
+  /// deferred work was running.
+  void dropAsyncTask(std::coroutine_handle<> handle) noexcept override;
+
+  /// Tells whether deferred work started by a coroutine of this connection is still running.
+  [[nodiscard]] bool hasAsyncWorkInFlight() const noexcept override;
 #endif
 
   /// Check per-stream request deadlines and send 408 + RST_STREAM for expired ones.
@@ -187,10 +201,23 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
  private:
   /// Per-stream request state during aggregation.
   struct StreamRequest {
+    StreamRequest() noexcept = default;
+
+    StreamRequest(const StreamRequest&) = delete;
+    StreamRequest& operator=(const StreamRequest&) = delete;
+
+    // The body bridge of the request points to bodyContext: moves make it point to the moved one.
+    StreamRequest(StreamRequest&& other) noexcept;
+    StreamRequest& operator=(StreamRequest&& other) noexcept;
+
+    ~StreamRequest() = default;
+
     HttpRequestView request;
     RawChars bodyBuffer;
     std::unique_ptr<char[]> headerStorage;   // Storage for header name/value strings. nullptr = inactive.
     std::unique_ptr<char[]> trailerStorage;  // Storage for trailer name/value strings. nullptr = no trailers.
+    // Read position of the body for readBody() / hasMoreBody().
+    HttpRequestView::AggregatedBodyContext bodyContext;
   };
 
   struct PendingFileSend {
@@ -207,8 +234,14 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   /// Per-stream async handler state for coroutines that suspend (e.g., co_await deferWork).
   struct PendingAsyncTask {
-    RequestTask<HttpResponse> task;
+    // Members destroyed in reverse order: the coroutine frame first, as it may use the request and the handler.
+
+    // Keeps the handler (whose captures the coroutine may use) alive even if the router replaces it meanwhile.
+    std::shared_ptr<const void> handlerKeepAlive;
+    // Path parameter names of the request, owned by the router until copied here (see startAsyncHandler()).
+    RawChars pathParamKeys;
     StreamRequest streamRequest;  // Owns the HttpRequestView and header storage
+    RequestTask<HttpResponse> task;
     const CorsPolicy* pCorsPolicy{};
     const ResponseMiddleware* pResponseMiddleware{};
     uint32_t responseMiddlewareCount{0};
@@ -309,14 +342,21 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   /// Start an async handler for a stream. Returns true if the handler was started
   /// asynchronously (response will be sent later), false if it completed synchronously
   /// (response already sent).
-  bool startAsyncHandler(StreamsMap::iterator it, const AsyncRequestHandler& handler, const CorsPolicy* pCorsPolicy,
-                         std::span<const ResponseMiddleware> responseMiddleware);
+  bool startAsyncHandler(StreamsMap::iterator it, const SharedAsyncRequestHandler& handler,
+                         const CorsPolicy* pCorsPolicy, std::span<const ResponseMiddleware> responseMiddleware);
 
   /// Resume a pending async task's coroutine after suspension.
   void resumeAsyncTask(uint32_t streamId);
 
   /// Called when an async task completes: finalize and send the response.
-  void onAsyncTaskCompleted(uint32_t streamId);
+  /// routeMayHaveChanged: the coroutine suspended, the router may have been updated since its dispatch.
+  void onAsyncTaskCompleted(uint32_t streamId, bool routeMayHaveChanged);
+
+  /// Keeps the async task of a stream about to be erased if its coroutine waits for deferred work (which may use it).
+  void orphanAsyncTask(StreamState& state);
+
+  /// Moves the request of the async task of a stream back to the stream, and destroys the task.
+  static void ReleaseAsyncTask(StreamState& state) noexcept;
 #endif
 
   bool applyRequestMiddleware(HttpRequestView& request, StreamsMap::iterator it, bool isHead, bool streaming,
@@ -336,6 +376,8 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   // Bytes owned by flow-control-deferred in-memory response bodies and trailers across all streams.
   std::size_t _deferredOutputBytes{0};
 
+  // Connection owning this handler (set by processInput()).
+  ::aeronet::ConnectionState* _pConnectionState{nullptr};
   HttpServerConfig* _pServerConfig;
   CompressionState* _pCompressionState;
   DecompressionState* _pDecompressionState;
@@ -353,6 +395,8 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   // Callback to post async work completion to the server's event loop.
   AsyncPostCallbackFn _asyncPostCallback;
+  // Async tasks of closed streams whose deferred work is still running: destroyed when it completes.
+  vector<PoolPtr<PendingWork>> _orphanedAsyncTasks;
 #endif
 };
 

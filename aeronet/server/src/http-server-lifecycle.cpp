@@ -1,3 +1,4 @@
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cstring>
@@ -5,6 +6,7 @@
 #include <fstream>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <stop_token>
 #include <thread>
@@ -210,6 +212,13 @@ SingleHttpServer::SingleHttpServer(const SingleHttpServer& other, NativeHandle s
   initListener(sharedListenFd);
 }
 
+SingleHttpServer::~SingleHttpServer() {
+  stop();
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  waitForOrphanedAsyncWork();
+#endif
+}
+
 SingleHttpServer& SingleHttpServer::operator=(const SingleHttpServer& other) {
   if (this != &other) {
     if (!other._lifecycle.isIdle()) {
@@ -236,6 +245,10 @@ SingleHttpServer::SingleHttpServer(SingleHttpServer&& other)
         if (!other._lifecycle.isIdle()) {
           throw std::logic_error("Cannot move-construct a running SingleHttpServer");
         }
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+        // Deferred work still running for its closed connections posts its completion to 'other'.
+        other.waitForOrphanedAsyncWork();
+#endif
         return std::exchange(other._stats, {});
       }()),
       _callbacks(std::move(other._callbacks)),
@@ -280,6 +293,11 @@ SingleHttpServer& SingleHttpServer::operator=(SingleHttpServer&& other) {
       other.stop();
       throw std::logic_error("Cannot move-assign from a running SingleHttpServer");
     }
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+    // Deferred work still running for closed connections posts its completion to the server that ran it.
+    waitForOrphanedAsyncWork();
+    other.waitForOrphanedAsyncWork();
+#endif
     _stats = std::exchange(other._stats, {});
     _callbacks = std::move(other._callbacks);
     _updates = std::move(other._updates);

@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <exception>
 #include <iostream>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -22,6 +23,9 @@ struct User {
   std::string email;
 };
 
+// Work functions of concurrent requests run in parallel on their own threads: the store is guarded by a mutex.
+std::mutex usersMutex;
+
 // NOLINTNEXTLINE(bugprone-throwing-static-initialization)
 std::unordered_map<int, User> users{
     {1, {1, "Alice", "alice@example.com"}},
@@ -35,6 +39,7 @@ std::optional<User> SimulateDatabaseLookup(int userId) {
   // Simulate network latency
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
+  std::scoped_lock lock(usersMutex);
   auto it = users.find(userId);
   if (it == users.end()) {
     return std::nullopt;
@@ -47,6 +52,7 @@ bool SimulateDatabaseUpdate(int userId, std::string_view newEmail) {
   // Simulate network latency
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
+  std::scoped_lock lock(usersMutex);
   auto it = users.find(userId);
   if (it == users.end()) {
     return false;
