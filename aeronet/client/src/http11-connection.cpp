@@ -13,13 +13,18 @@
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"
 #include "aeronet/http-client.hpp"
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-message.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/static-string-view-helpers.hpp"
+#include "aeronet/system-error-message.hpp"
+#include "aeronet/system-error.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
@@ -76,7 +81,11 @@ HttpClientErrc ClientConnection::writeFileBodyForHttp11(HttpClient& client, Tran
         continue;
       }
       if (transportRes.want == TransportHint::Error) {
-        log::error("HTTP/1.1 client: sendfile of request body failed (offset={}, remaining={})", fileOffset, remaining);
+        // Not meaningful when the file ended early (sendfile returning 0), which sets no error.
+        const int err = LastSystemError();
+        log::error(
+            "HTTP/1.1 client: sendfile of request body failed (fd # {}, offset={}, remaining={}, err={}, msg={})", fd,
+            fileOffset, remaining, err, SystemErrorMessage(err));
         return HttpClientErrc::writeError;
       }
       const EventBmp interest = (transportRes.want == TransportHint::ReadReady) ? EventIn : EventOut;
@@ -130,15 +139,31 @@ HttpClientErrc ClientConnection::writeFileBodyForHttp11(HttpClient& client, Tran
   return HttpClientErrc::noError;
 }
 
+HttpClientErrc ClientConnection::writeRequestForHttp11(HttpClient& client, Transport& transport, NativeHandle fd,
+                                                       const HttpRequest& req, std::string_view head,
+                                                       SteadyClock::time_point ioDeadline, bool& requestSent) {
+  if (req.hasBodyFile()) {
+    // A captured file body is streamed from disk after the head (never copied into the head buffer, nor
+    // fully loaded in memory). The head already carries the exact Content-Length of the file payload.
+    if (auto wr = writeAllForHttp11(client, transport, fd, head, std::string_view{}, ioDeadline, requestSent);
+        wr != HttpClientErrc::noError) {
+      return wr;
+    }
+    return writeFileBodyForHttp11(client, transport, fd, *req.filePayloadPtr(), ioDeadline, requestSent);
+  }
+  // A captured (not inlined) in-memory body is streamed separately so it is never copied into the head
+  // buffer; an inlined body already rides inside the head.
+  const std::string_view body = req.hasBodyCaptured() ? req.bodyInMemory() : std::string_view{};
+  return writeAllForHttp11(client, transport, fd, head, body, ioDeadline, requestSent);
+}
+
 HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transport& transport, NativeHandle fd,
                                                      HttpRequest& req, SteadyClock::time_point ioDeadline,
                                                      bool& requestSent) {
   const HttpClientConfig& config = client.config();
   // The request line, headers and any inline body all live contiguously in the HttpRequest's own buffer
   // (completeRequestForHttp11 is the whole thing minus the internal origin-key prefix). A captured (not
-  // inlined) body is streamed separately so it is never copied into the head buffer. Note: we must NOT
-  // reuse client.requestBuffer() here as the head -- for a tunnelled https proxy request it still holds the
-  // CONNECT line written by establishProxyTunnel.
+  // inlined) body is streamed separately so it is never copied into the head buffer.
   if (req.trailersSize() != 0) {
     // Trailers require Transfer-Encoding: chunked on the wire (RFC 7230 section 4.1.2). Serialize the whole
     // chunked request on a copy. The original stays protocol-neutral because a retry or redirect may later
@@ -150,27 +175,32 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
         wr != HttpClientErrc::noError) {
       return std::unexpected(wr);
     }
-  } else if (req.hasBodyFile()) {
-    // A captured file body is streamed from disk after the head (never copied into the head buffer, nor
-    // fully loaded in memory). The head already carries the exact Content-Length of the file payload.
-    if (auto wr = writeAllForHttp11(client, transport, fd, req.completeRequestForHttp11(), std::string_view{},
-                                    ioDeadline, requestSent);
+  } else if (!config.keepAlive && !req.hasHeader(http::Connection)) {
+    // RFC 9112 section 9.6: a client that does not keep its connections alive MUST send the "close" connection
+    // option. It also lets the server close first, so that the TIME_WAIT state lands on its side instead of piling up
+    // on the client ephemeral ports. The request itself stays protocol-neutral, because a retry or redirect may select
+    // HTTP/2, which forbids the Connection header: the header line is only spliced into the wire head (and inline
+    // body), built in the client's request scratch buffer, idle until the response phase. The captured body, if any,
+    // is still written straight from the request.
+    static constexpr std::string_view kConnectionCloseLine =
+        JoinStringView_v<http::CRLF, http::Connection, http::HeaderSep, http::close>;
+    const std::string_view wire = req.completeRequestForHttp11();
+    const std::size_t headEnd = req.headEndForHttp11();
+    assert(wire.substr(headEnd).starts_with(http::DoubleCRLF));
+    RawChars& head = client.bodyBuffer();
+    head.reserve(wire.size() + kConnectionCloseLine.size());
+    char* pData = Append(wire.substr(0, headEnd), head.data());
+    pData = AppendFixed<kConnectionCloseLine>(pData);
+    pData = Append(wire.substr(headEnd), pData);
+    head.setEnd(pData);
+    if (auto wr = writeRequestForHttp11(client, transport, fd, req, head, ioDeadline, requestSent);
         wr != HttpClientErrc::noError) {
       return std::unexpected(wr);
     }
-    if (auto wr = writeFileBodyForHttp11(client, transport, fd, *req.filePayloadPtr(), ioDeadline, requestSent);
-        wr != HttpClientErrc::noError) {
-      return std::unexpected(wr);
-    }
-  } else {
-    // A captured (not inlined) in-memory body is streamed separately so it is never copied into the head
-    // buffer; an inlined body already rides inside the head.
-    const std::string_view body = req.hasBodyCaptured() ? req.bodyInMemory() : std::string_view{};
-    if (auto wr =
-            writeAllForHttp11(client, transport, fd, req.completeRequestForHttp11(), body, ioDeadline, requestSent);
-        wr != HttpClientErrc::noError) {
-      return std::unexpected(wr);
-    }
+  } else if (auto wr = writeRequestForHttp11(client, transport, fd, req, req.completeRequestForHttp11(), ioDeadline,
+                                             requestSent);
+             wr != HttpClientErrc::noError) {
+    return std::unexpected(wr);
   }
 
   // The chunked-body reassembly and raw receive buffers are borrowed from the client. Suitably-sized allocations move

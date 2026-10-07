@@ -42,6 +42,10 @@
     th, td { padding:0.45rem 0.6rem; border-bottom: 1px solid #f4f4f4; text-align:right; }
     th:first-child, td:first-child { text-align:left; }
     td.best-cell { font-weight: 700; color: var(--success); background: #e8f5e9; }
+    td.unsaturated-cell { font-weight: 700; color: #b71c1c; background: #ffebee; }
+    .saturation-warning { margin-top: 1rem; border: 1px solid #ef9a9a; background: #fff3f3; border-radius: 8px; padding: 0.6rem 0.9rem; font-size: 0.9rem; }
+    .saturation-warning ul { margin: 0.4rem 0 0; padding-left: 1.2rem; }
+    .table-note { color: var(--muted); font-size: 0.85rem; margin: 0.25rem 0 0.5rem; }
     @media (min-width: 1500px) {
       .charts { grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); }
     }
@@ -145,6 +149,7 @@
       let unit = '';
       if (metric === 'latency') unit = units.latency || 'ms';
       if (metric === 'transfer') unit = units.transfer || 'MB';
+      if (metric === 'percent') return `${value.toFixed(0)}%`;
       const abs = Math.abs(value);
       let formatted;
       if (abs >= 1_000_000) {

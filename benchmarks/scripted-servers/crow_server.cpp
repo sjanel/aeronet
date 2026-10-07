@@ -5,8 +5,15 @@
 // Uses CrowCpp/Crow (the maintained fork): https://github.com/CrowCpp/Crow
 
 #include <crow.h>
+#ifdef __linux__
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
+#endif
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -17,9 +24,49 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 
 #include "scripted-servers-helpers.hpp"
+
+namespace {
+
+// Crow never enables TCP_NODELAY on its connections: a response sent in several writes (asio sends at most 64 buffers
+// at once, and Crow uses about 4 per header) then waits for the client's delayed ACK (40 ms) before its end goes out,
+// and the server idles. Connections accepted on Linux inherit TCP_NODELAY from the listening socket: set it there.
+void EnableTcpNoDelayOnListener(uint16_t port) {
+#ifdef __linux__
+  for (const auto& entry : std::filesystem::directory_iterator("/proc/self/fd")) {
+    int fd = -1;
+    const std::string name = entry.path().filename().string();
+    if (std::from_chars(name.data(), name.data() + name.size(), fd).ec != std::errc{}) {
+      continue;
+    }
+    int listening = 0;
+    socklen_t optLen = sizeof(listening);
+    sockaddr_storage addr{};
+    socklen_t addrLen = sizeof(addr);
+    if (::getsockopt(fd, SOL_SOCKET, SO_ACCEPTCONN, &listening, &optLen) != 0 || listening == 0 ||
+        ::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &addrLen) != 0) {
+      continue;
+    }
+    const uint16_t boundPort = addr.ss_family == AF_INET6 ? ntohs(reinterpret_cast<sockaddr_in6*>(&addr)->sin6_port)
+                                                          : ntohs(reinterpret_cast<sockaddr_in*>(&addr)->sin_port);
+    if (boundPort == port) {
+      const int one = 1;
+      if (::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)) != 0) {
+        std::cerr << "Failed to enable TCP_NODELAY on the listening socket\n";
+      }
+      return;
+    }
+  }
+  std::cerr << "Listening socket of port " << port << " not found: TCP_NODELAY not enabled\n";
+#else
+  (void)port;
+#endif
+}
+
+}  // namespace
 
 namespace {
 
@@ -288,7 +335,13 @@ int main(int argc, char* argv[]) {
   }
   std::cout << "Server running. Press Ctrl+C to stop.\n";
 
-  app.port(benchCfg.port).concurrency(static_cast<uint16_t>(benchCfg.numThreads)).run();
+  // Crow keeps one of its 'concurrency' threads for accepting connections: give it one more, so that it processes
+  // requests with as many threads as the other servers.
+  auto server = app.port(benchCfg.port).concurrency(static_cast<uint16_t>(benchCfg.numThreads + 1)).run_async();
+  if (app.wait_for_server_start() == std::cv_status::no_timeout) {
+    EnableTcpNoDelayOnListener(benchCfg.port);
+  }
+  server.wait();
 
   return 0;
 }

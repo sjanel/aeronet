@@ -1401,8 +1401,7 @@ void Http2ProtocolHandler::onAsyncTaskCompleted(uint32_t streamId) {
   try {
     HttpResponse resp = pAsync->task.runSynchronously();
 
-    auto middlewareSpan =
-        std::span<const ResponseMiddleware>(pAsync->pResponseMiddleware, pAsync->responseMiddlewareCount);
+    std::span<const ResponseMiddleware> middlewareSpan(pAsync->pResponseMiddleware, pAsync->responseMiddlewareCount);
     ApplyResponseMiddleware(req, resp, middlewareSpan, _pRouter->globalResponseMiddleware(), *_pTelemetryContext, false,
                             {});
     if (pAsync->pCorsPolicy != nullptr) {

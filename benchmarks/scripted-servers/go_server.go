@@ -50,19 +50,16 @@ func main() {
 	certFile = getFlagValue("--cert")
 	keyFile = getFlagValue("--key")
 
-	// Limit Go scheduler parallelism to the requested count.
+	// Run goroutines on as many OS threads in parallel as the other servers get worker threads.
 	// GOMAXPROCS only limits goroutine parallelism; Go's runtime creates
-	// additional OS threads for sysmon, GC workers, and goroutines blocked in
-	// syscalls (e.g. file I/O). These typically add 3-5 threads on top of
-	// GOMAXPROCS. We intentionally do not hard-cap runtime threads because too
-	// small limits can trigger fatal "thread exhaustion" under load.
+	// additional OS threads for sysmon and goroutines blocked in syscalls
+	// (e.g. file I/O), which are mostly idle, while the GC workers take their
+	// share of the GOMAXPROCS slots. Reserving slots for them (GOMAXPROCS =
+	// threads - 2) left half of the CPUs of a 4-thread run unused.
+	// We intentionally do not hard-cap runtime threads because too small limits
+	// can trigger fatal "thread exhaustion" under load.
 	if numThreads > 0 {
-		// reserve ~2 slot for sysmon + GC/netpoller
-		procs := numThreads - 2
-		if procs < 1 {
-			procs = 1
-		}
-		runtime.GOMAXPROCS(procs)
+		runtime.GOMAXPROCS(numThreads)
 	}
 
 	// Build a deterministic router: literal route map + top-level handler

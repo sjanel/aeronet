@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 """WebSocket benchmark orchestration script.
 
-Launches C++ benchmark servers, runs k6 and optionally websocket-bench against
-each, and produces a unified results summary (text + JSON).
+Launches C++ benchmark servers, drives them with the native ws-loadgen load
+generator (or k6, and optionally websocket-bench), and produces a unified
+results summary (text + JSON + HTML).
+
+The server and the load generator are pinned to disjoint CPUs and the CPU
+utilization of both is measured: a server below SATURATION_THRESHOLD_PCT of
+its CPUs was not the bottleneck (load generator, kernel or latency bound), so
+its number does not measure it, and it is flagged as such. ws-loadgen is the
+default because k6 spends several times more CPU per message than the servers.
 
 Usage:
     ./run_ws_benchmarks.py [options]
     ./run_ws_benchmarks.py --server aeronet,drogon --scenario echo-small,churn
-    ./run_ws_benchmarks.py --smoke   # Quick validation run (5s, 10 VUs)
+    ./run_ws_benchmarks.py --tool k6   # Use k6 instead of ws-loadgen
+    ./run_ws_benchmarks.py --smoke     # Quick validation run (5s, 10 connections)
 """
 from __future__ import annotations
 
@@ -26,6 +34,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from bench_utils import (
+    SATURATION_THRESHOLD_PCT,
+    CpuMeter,
+    CpuUsage,
+    available_cpus,
+    duration_to_seconds,
+    format_pct,
+    plan_server_benchmark_cpus,
+)
+
 # ----------------------------- Constants ----------------------------------- #
 
 K6_SCENARIOS: Dict[str, str] = {
@@ -37,6 +55,24 @@ K6_SCENARIOS: Dict[str, str] = {
     "churn": "k6/ws_churn.js",
     "compression": "k6/ws_compression.js",
 }
+
+# ws-loadgen arguments reproducing each k6 scenario (same payloads and message types).
+LOADGEN_SCENARIOS: Dict[str, List[str]] = {
+    "echo-small": ["--mode", "echo", "--payload-size", "128"],
+    "echo-medium": ["--mode", "echo", "--payload-size", "2048"],
+    "echo-large": ["--mode", "echo", "--payload-size", "65536", "--binary"],
+    "mix": ["--mode", "mix"],
+    "ping-pong": ["--mode", "ping"],
+    "churn": ["--mode", "churn"],
+    "compression": ["--mode", "echo", "--json-payload", "--compress"],
+}
+
+# Large (64 KB) messages are kept at one in flight per connection: deeper pipelines
+# only grow the socket buffers without adding load.
+SINGLE_MESSAGE_PIPELINE_SCENARIOS = {"echo-large"}
+
+LOADGEN_BINARY = "ws-loadgen"
+TOOLS = ("auto", LOADGEN_BINARY, "k6")
 
 # Scenarios that use the /ws-compressed endpoint (permessage-deflate).
 # All other scenarios use /ws-uncompressed.
@@ -60,10 +96,11 @@ SERVER_ORDER = ["aeronet", "uwebsockets", "drogon", "beast"]
 class RunResult:
     scenario: str
     server: str
-    tool: str  # "k6" or "websocket-bench"
+    tool: str  # "ws-loadgen", "k6" or "websocket-bench"
     metrics: Dict[str, Any] = field(default_factory=dict)
     raw_output: str = ""
     success: bool = True
+    cpu: Optional[CpuUsage] = None
 
 
 class WsBenchmarkError(RuntimeError):
@@ -85,6 +122,18 @@ class WsBenchmarkRunner:
         self.session_duration_ms = args.session_duration_ms
         self.k6_instances = args.k6_instances
         self.pipeline_depth = args.pipeline_depth
+        self.tool = self._resolve_tool(args.tool)
+
+        # Server worker threads. The load generator is sized and placed separately, on
+        # CPUs disjoint from the server's, so that it can always saturate the server.
+        self.server_threads = max(1, args.threads)
+        self._cpu_pin_enabled = (
+            not args.no_cpu_pin and sys.platform.startswith("linux") and shutil.which("taskset") is not None
+        )
+        self.cpu_plan = plan_server_benchmark_cpus(
+            self.server_threads, args.loadgen_threads, pin=self._cpu_pin_enabled
+        )
+        self.loadgen_threads = self.cpu_plan.loadgen_threads
 
         self.output_dir = Path(args.output).resolve()
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -110,6 +159,24 @@ class WsBenchmarkRunner:
         self._aeronet_errors_found: bool = False
 
     # ----------------------- Setup helpers --------------------------------- #
+
+    def _loadgen_binary(self) -> Path:
+        return self.build_dir / LOADGEN_BINARY
+
+    def _resolve_tool(self, tool_arg: str) -> str:
+        """Load generator to use: ws-loadgen when built ('auto'), k6 otherwise."""
+        if tool_arg not in TOOLS:
+            raise WsBenchmarkError(f"Unknown tool: {tool_arg}. Available: {', '.join(TOOLS)}")
+        if tool_arg == "k6":
+            return "k6"
+        if self._loadgen_binary().is_file():
+            return LOADGEN_BINARY
+        if tool_arg == LOADGEN_BINARY:
+            raise WsBenchmarkError(
+                f"{LOADGEN_BINARY} not found in {self.build_dir} (build the '{LOADGEN_BINARY}' target)"
+            )
+        print(f"WARNING: {LOADGEN_BINARY} not found in {self.build_dir}, falling back to k6")
+        return "k6"
 
     def _find_build_dir(self) -> Path:
         build_dir_env = os.environ.get("AERONET_BUILD_DIR")
@@ -201,7 +268,10 @@ class WsBenchmarkRunner:
             )
             return False
         binary = self._server_binary(name)
-        cmd = [str(binary), "--port", str(port), "--threads", str(int((self.args.threads + 3) / 4))]
+        cmd = [
+            *self.cpu_plan.server_prefix(),
+            str(binary), "--port", str(port), "--threads", str(self.server_threads),
+        ]
         log_path = self.logs_dir / f"{name}_server.log"
         log_fp = open(log_path, "w")
 
@@ -264,7 +334,7 @@ class WsBenchmarkRunner:
             return []
 
     @staticmethod
-    def _interesting_k6_lines(output: str, max_lines: int = 20) -> List[str]:
+    def _interesting_output_lines(output: str, max_lines: int = 20) -> List[str]:
         if not output.strip():
             return []
         interesting: List[str] = []
@@ -276,7 +346,7 @@ class WsBenchmarkRunner:
             return interesting[-max_lines:]
         return output.splitlines()[-max_lines:]
 
-    def _print_k6_error_context(self, server: str, scenario: str, result: RunResult) -> None:
+    def _print_error_context(self, server: str, scenario: str, result: RunResult) -> None:
         print("  --- diagnostics begin ---")
         checks = result.metrics.get("checks", {})
         if isinstance(checks, dict):
@@ -289,10 +359,10 @@ class WsBenchmarkRunner:
                     f"passes={int(passes)}, fails={int(fails)}, success={float(value):.2f}%"
                 )
 
-        k6_log_path = self.logs_dir / f"k6_{server}_{scenario}.log"
-        print(f"  k6 raw log: {k6_log_path}")
-        for line in self._interesting_k6_lines(result.raw_output):
-            print(f"    k6> {line}")
+        tool_log_path = self.logs_dir / f"{result.tool}_{server}_{scenario}.log"
+        print(f"  {result.tool} raw log: {tool_log_path}")
+        for line in self._interesting_output_lines(result.raw_output):
+            print(f"    {result.tool}> {line}")
 
         server_log = self._server_log_path(server)
         print(f"  server log tail: {server_log}")
@@ -340,10 +410,8 @@ class WsBenchmarkRunner:
         elif self.pipeline_depth > 0:
             base_env["PIPELINE_DEPTH"] = str(self.pipeline_depth)
 
-        # Limit Go threads per instance so k6 doesn't steal server CPU
-        cpu_count = os.cpu_count() or 1
-        client_cores = max(1, cpu_count - (self.args.threads if hasattr(self.args, "threads") else cpu_count // 2))
-        gomaxprocs = max(2, client_cores // n_instances)
+        # Spread the load generator CPUs over the k6 instances so k6 doesn't steal server CPU
+        gomaxprocs = max(2, self.loadgen_threads // n_instances)
         base_env["GOMAXPROCS"] = str(gomaxprocs)
 
         # Launch parallel k6 instances
@@ -355,6 +423,7 @@ class WsBenchmarkRunner:
             env = base_env.copy()
             env["VUS"] = str(vus_per)
             cmd = [
+                *self.cpu_plan.loadgen_prefix(),
                 "k6", "run",
                 "--address", "127.0.0.1:0",
                 "--summary-export", str(json_out),
@@ -602,6 +671,172 @@ class WsBenchmarkRunner:
                     return float(rate)
         return None
 
+    # ----------------------- ws-loadgen execution -------------------------- #
+
+    def _loadgen_command(self, server: str, scenario: str) -> List[str]:
+        connections = max(1, self.vus)
+        ws_path = "/ws-compressed" if scenario in COMPRESSED_SCENARIOS else "/ws-uncompressed"
+        pipeline = 1 if scenario in SINGLE_MESSAGE_PIPELINE_SCENARIOS else max(1, self.pipeline_depth)
+        return [
+            *self.cpu_plan.loadgen_prefix(),
+            str(self._loadgen_binary()),
+            "--port", str(SERVER_PORTS[server]),
+            "--path", ws_path,
+            "--connections", str(connections),
+            # Each thread needs at least one connection.
+            "--threads", str(max(1, min(self.loadgen_threads, connections))),
+            "--duration", self.duration,
+            "--warmup", self.warmup,
+            "--pipeline", str(pipeline),
+            *LOADGEN_SCENARIOS[scenario],
+        ]
+
+    def _run_loadgen(self, server: str, scenario: str) -> RunResult:
+        cmd = self._loadgen_command(server, scenario)
+        failure = RunResult(scenario=scenario, server=server, tool=LOADGEN_BINARY, success=False)
+        warmup_s = duration_to_seconds(self.warmup) or 0.0
+        timeout_s = warmup_s + (duration_to_seconds(self.duration) or 0.0) + 60.0
+        meter = self._cpu_meter(server)
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        except OSError as exc:
+            failure.raw_output = f"failed to launch {LOADGEN_BINARY}: {exc}"
+            return failure
+        # ws-loadgen connects and warms up before measuring: measure the server CPU over the same window.
+        time.sleep(warmup_s)
+        meter.start()
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            failure.raw_output = f"{LOADGEN_BINARY} timed out after {timeout_s:.0f}s\n{stdout}{stderr}"
+            return failure
+        usage = meter.stop()
+        output = f"$ {' '.join(cmd)}\n{stdout}{stderr}"
+        try:
+            with open(self.logs_dir / f"{LOADGEN_BINARY}_{server}_{scenario}.log", "w", encoding="utf-8") as fp:
+                fp.write(output)
+        except OSError:
+            pass
+
+        data = self._parse_loadgen_output(stdout)
+        if proc.returncode != 0 or data is None:
+            failure.raw_output = output
+            return failure
+        # The generator reports its own CPU time over the measurement window (warmup excluded).
+        cpu_s, duration_s = data.get("cpu_s"), data.get("duration_s")
+        if isinstance(cpu_s, (int, float)) and isinstance(duration_s, (int, float)) and duration_s > 0:
+            usage.loadgen_pct = 100.0 * cpu_s / (duration_s * self._loadgen_cpu_count())
+        with open(self.output_dir / f"{LOADGEN_BINARY}_{server}_{scenario}.json", "w", encoding="utf-8") as fp:
+            json.dump(data, fp, indent=2)
+        return RunResult(
+            scenario=scenario,
+            server=server,
+            tool=LOADGEN_BINARY,
+            metrics=self._loadgen_metrics(scenario, data),
+            raw_output=output,
+            cpu=usage,
+        )
+
+    @staticmethod
+    def _parse_loadgen_output(stdout: str) -> Optional[Dict[str, Any]]:
+        """The ws-loadgen result: the last JSON object line of its output."""
+        for line in reversed(stdout.splitlines()):
+            line = line.strip()
+            if line.startswith("{"):
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    return None
+                return data if isinstance(data, dict) else None
+        return None
+
+    @staticmethod
+    def _loadgen_metrics(scenario: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert a ws-loadgen result to the (k6) metric names used by the reports."""
+
+        def number(source: Dict[str, Any], key: str) -> float:
+            value = source.get(key)
+            return float(value) if isinstance(value, (int, float)) else 0.0
+
+        latency_us = data.get("latency_us")
+        latency_us = latency_us if isinstance(latency_us, dict) else {}
+        latency_ms = {
+            name: number(latency_us, key) / 1000.0
+            for name, key in (("avg", "avg"), ("med", "p50"), ("p90", "p90"), ("p95", "p95"),
+                              ("p99", "p99"), ("max", "max"))
+        }
+        if scenario == "churn":
+            counter_key, latency_key, count_key, rate_key = (
+                "ws_sessions", "ws_connection_lifetime_ms", "sessions", "sessions_rate")
+        elif scenario == "ping-pong":
+            counter_key, latency_key, count_key, rate_key = ("ws_pings_sent", "ws_ping_rtt_ms", "messages", "rate")
+        else:
+            counter_key, latency_key, count_key, rate_key = ("ws_messages_sent", "ws_echo_rtt_ms", "messages", "rate")
+        passes = number(data, count_key)
+        # A refused permessage-deflate offer means the run did not measure what it claims.
+        fails = number(data, "errors") + number(data, "compression_refused")
+        total = passes + fails
+        return {
+            counter_key: {"count": passes, "rate": number(data, rate_key)},
+            latency_key: latency_ms,
+            "checks": {"passes": passes, "fails": fails, "value": 100.0 * passes / total if total > 0 else 0.0},
+        }
+
+    # ----------------------- CPU utilization ------------------------------- #
+
+    def _server_cpu_count(self) -> int:
+        return len(self.cpu_plan.server_cpus) or self.server_threads
+
+    def _loadgen_cpu_count(self) -> int:
+        return len(self.cpu_plan.loadgen_cpus) or self.loadgen_threads
+
+    def _cpu_meter(self, server: str) -> CpuMeter:
+        proc = self.server_processes.get(server)
+        return CpuMeter(
+            server_pid=proc.pid if proc is not None else None,
+            server_cpus=self._server_cpu_count(),
+            loadgen_cpus=self._loadgen_cpu_count(),
+        )
+
+    def _print_cpu_usage(self, server: str, scenario: str, usage: CpuUsage) -> None:
+        print(
+            f"    CPU: server {format_pct(usage.server_pct)} of {self._server_cpu_count()} CPU(s), "
+            f"load generator {format_pct(usage.loadgen_pct)} of {self._loadgen_cpu_count()} CPU(s)"
+        )
+        if usage.server_saturated() is False:
+            print(
+                f"    WARNING: {server} is not saturated on '{scenario}' (below "
+                f"{SATURATION_THRESHOLD_PCT:.0f}% of its CPUs): the server was not the bottleneck, "
+                "this does not measure its throughput"
+            )
+
+    def _print_saturation_summary(self) -> None:
+        """List the server CPU utilization per scenario and flag the measurements where it was not the bottleneck."""
+        measured = [res for res in self.results if res.success and res.cpu is not None]
+        if not measured:
+            return
+        print(
+            f"\nSERVER CPU UTILIZATION (% of its {self._server_cpu_count()} CPU(s); below "
+            f"{SATURATION_THRESHOLD_PCT:.0f}% = not saturated: the load generator, the kernel or latency was the "
+            "bottleneck)"
+        )
+        unsaturated: List[str] = []
+        for scenario in self.scenarios_to_test:
+            cells = []
+            for res in measured:
+                if res.scenario != scenario:
+                    continue
+                not_saturated = res.cpu.server_saturated() is False
+                cells.append(f"{res.server}={format_pct(res.cpu.server_pct)}{'!' if not_saturated else ''}")
+                if not_saturated:
+                    unsaturated.append(f"{res.server}/{scenario}")
+            if cells:
+                print(f"  {scenario:<12} " + "  ".join(cells))
+        if unsaturated:
+            print(f"WARNING: not saturated server measurements: {', '.join(unsaturated)}")
+
     # ----------------------- websocket-bench execution --------------------- #
 
     def _run_ws_bench(self, server: str) -> RunResult:
@@ -670,7 +905,7 @@ class WsBenchmarkRunner:
         k6_available = shutil.which("k6") is not None
         ws_bench_available = shutil.which("websocket-bench") is not None
 
-        if not k6_available:
+        if self.tool == "k6" and not k6_available:
             print("WARNING: k6 not found. Install: https://k6.io/docs/get-started/installation/")
             print("         k6 scenarios will be skipped.\n")
 
@@ -680,8 +915,12 @@ class WsBenchmarkRunner:
         print(f"WebSocket Benchmarks")
         print(f"  Servers:   {', '.join(self.servers_to_test)}")
         print(f"  Scenarios: {', '.join(self.scenarios_to_test)}")
-        print(f"  VUs: {self.vus}, Duration: {self.duration}")
-        print(f"  k6 instances: {self.k6_instances}, Pipeline depth: {self.pipeline_depth}")
+        print(f"  Tool: {self.tool}, connections: {self.vus}, duration: {self.duration}, warmup: {self.warmup}")
+        if self.tool == "k6":
+            print(f"  k6 instances: {self.k6_instances}, Pipeline depth: {self.pipeline_depth}")
+        else:
+            print(f"  Pipeline depth: {max(1, self.pipeline_depth)}")
+        print(f"  Server threads: {self.server_threads}, {self.cpu_plan.describe()}")
         print(f"  Results:   {self.output_dir}\n")
 
         try:
@@ -691,6 +930,7 @@ class WsBenchmarkRunner:
             self._stop_all()
 
         self._print_results()
+        self._print_saturation_summary()
         self._write_json()
         self._write_badge()
         self._write_html()
@@ -704,6 +944,66 @@ class WsBenchmarkRunner:
             print("\nWebSocket benchmarks complete (aeronet reported errors)")
             sys.exit(1)
 
+    def _warmup_k6(self, server: str) -> None:
+        """Warm the server up before the k6 scenarios (ws-loadgen warms up within each scenario)."""
+        if self.warmup == "0s" or not self.scenarios_to_test:
+            return
+        print(f"  Warming up ({self.warmup})...")
+        script = self.script_dir / K6_SCENARIOS[self.scenarios_to_test[0]]
+        if not script.is_file():
+            return
+        env = os.environ.copy()
+        env.update({
+            "WS_URL": f"ws://127.0.0.1:{SERVER_PORTS[server]}/ws-uncompressed",
+            "VUS": str(max(1, self.vus // 4)),
+            "DURATION": self.warmup,
+            "SESSION_DURATION_MS": "3000",
+        })
+        subprocess.run(
+            [*self.cpu_plan.loadgen_prefix(), "k6", "run", "--quiet", str(script)],
+            env=env, capture_output=True, timeout=120,
+        )
+
+    def _run_scenario(self, server: str, scenario: str) -> RunResult:
+        if self.tool == LOADGEN_BINARY:
+            return self._run_loadgen(server, scenario)
+        # k6 instances are waited for before the meter stops: their CPU time counts as load generator usage.
+        meter = self._cpu_meter(server)
+        meter.start()
+        result = self._run_k6(server, scenario)
+        result.cpu = meter.stop()
+        return result
+
+    def _report_scenario_result(self, server: str, scenario: str, result: RunResult) -> None:
+        """Print a scenario outcome and record aeronet errors (which fail the CI run)."""
+        if not result.success:
+            print("FAILED")
+            self._print_error_context(server, scenario, result)
+            if server == "aeronet":
+                self._aeronet_errors_found = True
+                print(f"  ERROR: aeronet {result.tool} run failed for scenario '{scenario}'")
+            return
+        rtt = self._primary_latency(result.metrics)
+        rate = self._primary_throughput_rate(result.metrics)
+        checks = result.metrics.get("checks", {})
+        fails = checks.get("fails", 0) if isinstance(checks, dict) else 0
+        parts: List[str] = []
+        if rtt:
+            parts.append(f"p95={rtt.get('p95', 0):.3f}ms")
+        if isinstance(rate, (int, float)):
+            parts.append(f"rate={rate:,.0f}/s")
+        if isinstance(fails, (int, float)) and fails > 0:
+            parts.append(f"fails={int(fails)}")
+        print(", ".join(parts) if parts else "OK")
+        if result.cpu is not None:
+            self._print_cpu_usage(server, scenario, result.cpu)
+
+        if isinstance(fails, (int, float)) and fails > 0:
+            self._print_error_context(server, scenario, result)
+            if server == "aeronet":
+                self._aeronet_errors_found = True
+                print(f"  ERROR: aeronet reported {int(fails)} check failures for scenario '{scenario}'")
+
     def _run_server_suite(
         self, server: str, k6_ok: bool, ws_bench_ok: bool
     ) -> None:
@@ -715,31 +1015,15 @@ class WsBenchmarkRunner:
             print(f"  SKIP: {server} failed to start")
             return
 
-        # Warmup
-        if self.warmup != "0s" and k6_ok and self.scenarios_to_test:
-            print(f"  Warming up ({self.warmup})...")
-            first_scenario = self.scenarios_to_test[0]
-            script = self.script_dir / K6_SCENARIOS[first_scenario]
-            if script.is_file():
-                port = SERVER_PORTS[server]
-                env = os.environ.copy()
-                env.update({
-                    "WS_URL": f"ws://127.0.0.1:{port}/ws-uncompressed",
-                    "VUS": str(max(1, self.vus // 4)),
-                    "DURATION": self.warmup,
-                    "SESSION_DURATION_MS": "3000",
-                })
-                subprocess.run(
-                    ["k6", "run", "--quiet", str(script)],
-                    env=env, capture_output=True, timeout=120,
-                )
+        tool_ok = self.tool == LOADGEN_BINARY or k6_ok
+        if self.tool == "k6" and k6_ok:
+            self._warmup_k6(server)
 
-        # k6 scenarios
-        if k6_ok:
+        if tool_ok:
             for idx, scenario in enumerate(self.scenarios_to_test):
                 # Skip compressed scenarios for servers that don't support it
                 if scenario in COMPRESSED_SCENARIOS and server not in COMPRESSION_CAPABLE_SERVERS:
-                    print(f"  Skipping k6: {scenario} ({server} does not support WS compression)")
+                    print(f"  Skipping {scenario} ({server} does not support WS compression)")
                     continue
 
                 proc = self.server_processes.get(server)
@@ -748,10 +1032,10 @@ class WsBenchmarkRunner:
                         f"  ERROR: {server} process exited unexpectedly before scenario "
                         f"'{scenario}' (exit={proc.returncode})"
                     )
-                    self._print_k6_error_context(
+                    self._print_error_context(
                         server,
                         scenario,
-                        RunResult(scenario=scenario, server=server, tool="k6", success=False),
+                        RunResult(scenario=scenario, server=server, tool=self.tool, success=False),
                     )
                     if server == "aeronet":
                         self._aeronet_errors_found = True
@@ -759,41 +1043,10 @@ class WsBenchmarkRunner:
 
                 if idx > 0:
                     time.sleep(2)  # Cooldown between scenarios
-                print(f"  Running k6: {scenario} ...", end=" ", flush=True)
-                result = self._run_k6(server, scenario)
+                print(f"  Running {self.tool}: {scenario} ...", end=" ", flush=True)
+                result = self._run_scenario(server, scenario)
                 self.results.append(result)
-                if result.success:
-                    rtt = self._primary_latency(result.metrics)
-                    rate = self._primary_throughput_rate(result.metrics)
-                    checks = result.metrics.get("checks", {})
-                    fails = checks.get("fails", 0) if isinstance(checks, dict) else 0
-                    parts: List[str] = []
-                    if rtt:
-                        parts.append(f"p95={rtt.get('p95', 0):.3f}ms")
-                    if isinstance(rate, (int, float)):
-                        parts.append(f"rate={rate:,.0f}/s")
-                    if isinstance(fails, (int, float)) and fails > 0:
-                        parts.append(f"fails={int(fails)}")
-                    print(", ".join(parts) if parts else "OK")
-
-                    if isinstance(fails, (int, float)) and fails > 0:
-                        self._print_k6_error_context(server, scenario, result)
-
-                    # Check for aeronet errors
-                    if server == "aeronet" and isinstance(fails, (int, float)) and fails > 0:
-                        self._aeronet_errors_found = True
-                        print(
-                            f"  ERROR: aeronet reported {int(fails)} check failures "
-                            f"for scenario '{scenario}'"
-                        )
-                else:
-                    print("FAILED")
-                    self._print_k6_error_context(server, scenario, result)
-                    if server == "aeronet":
-                        self._aeronet_errors_found = True
-                        print(
-                            f"  ERROR: aeronet k6 run failed for scenario '{scenario}'"
-                        )
+                self._report_scenario_result(server, scenario, result)
 
         # websocket-bench raw throughput
         if self.enable_ws_bench and ws_bench_ok:
@@ -868,10 +1121,17 @@ class WsBenchmarkRunner:
             fp.write(f"WebSocket Benchmark Results\n")
             fp.write(f"Date: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
             fp.write(f"Servers: {', '.join(servers)}\n")
-            fp.write(f"VUs: {self.vus}, Duration: {self.duration}\n\n")
+            fp.write(f"Tool: {self.tool}, connections: {self.vus}, duration: {self.duration}\n")
+            fp.write(f"Server threads: {self.server_threads}, CPU plan: {self.cpu_plan.describe()}\n\n")
             for res in self.results:
                 fp.write(f"[{res.tool}] {res.server} / {res.scenario}: ")
-                fp.write(json.dumps(res.metrics) + "\n")
+                fp.write(json.dumps(res.metrics))
+                if res.cpu is not None:
+                    fp.write(
+                        f" (CPU: server {format_pct(res.cpu.server_pct)}, "
+                        f"load generator {format_pct(res.cpu.loadgen_pct)})"
+                    )
+                fp.write("\n")
 
     def _write_html(self) -> None:
         renderer = self.script_dir / "render_benchmarks_html.py"
@@ -904,6 +1164,8 @@ class WsBenchmarkRunner:
             entry = results_dict.setdefault(res.scenario, {
                 "rps": {},
                 "latency": {},
+                "server_cpu": {},
+                "loadgen_cpu": {},
             })
             if not res.success:
                 continue
@@ -915,6 +1177,10 @@ class WsBenchmarkRunner:
                 p95 = rtt.get("p95")
                 if isinstance(p95, (int, float)):
                     entry["latency"][res.server] = f"{p95:.3f}ms"
+            if res.cpu is not None and res.cpu.server_pct is not None:
+                entry["server_cpu"][res.server] = round(res.cpu.server_pct, 1)
+            if res.cpu is not None and res.cpu.loadgen_pct is not None:
+                entry["loadgen_cpu"][res.server] = round(res.cpu.loadgen_pct, 1)
 
         # Collect unique scenarios in order
         scenarios: List[str] = []
@@ -924,10 +1190,15 @@ class WsBenchmarkRunner:
 
         data = {
             "benchmark_type": "websocket",
-            "tool": "k6",
+            "tool": self.tool,
             "generated_at": self.run_datetime,
-            "threads": self.args.threads,
+            "threads": self.server_threads,
+            "server_threads": self.server_threads,
+            "loadgen_threads": self.loadgen_threads,
+            "cpu_plan": self.cpu_plan.to_json(),
+            "saturation_threshold_pct": SATURATION_THRESHOLD_PCT,
             "vus": self.vus,
+            "pipeline_depth": max(1, self.pipeline_depth) if self.tool == LOADGEN_BINARY else self.pipeline_depth,
             "duration": self.duration,
             "warmup": self.warmup,
             "servers": self.servers_to_test,
@@ -1001,8 +1272,10 @@ class WsBenchmarkRunner:
 
 
 def parse_args() -> argparse.Namespace:
-    cpu_count = os.cpu_count() or 1
-    default_threads = max(1, cpu_count // 2)
+    cpu_count = len(available_cpus())
+    # A quarter of the CPUs for the server leaves the rest to the load generator
+    # (up to DEFAULT_MAX_LOADGEN_RATIO load generator threads per server thread).
+    default_threads = max(1, cpu_count // 4)
     # WS workloads need substantial concurrency to saturate server threads.
     # Keep a floor above tiny runs while scaling with thread count.
     default_vus = max(100, default_threads * 64)
@@ -1010,7 +1283,7 @@ def parse_args() -> argparse.Namespace:
     default_k6_instances = max(1, min(cpu_count - default_threads, 4))
 
     parser = argparse.ArgumentParser(
-        description="Run WebSocket benchmarks across frameworks using k6 and websocket-bench"
+        description="Run WebSocket benchmarks across frameworks using ws-loadgen (or k6) and websocket-bench"
     )
     parser.add_argument(
         "--server", default="all",
@@ -1025,14 +1298,32 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=default_vus,
         help=(
-            "Virtual users (k6) / connections "
+            "Connections (ws-loadgen) / virtual users (k6) "
             f"(default: {default_vus}, derived from --threads={default_threads})"
         ),
     )
     parser.add_argument("--duration", default="30s", help="Test duration per scenario")
-    parser.add_argument("--warmup", default="5s", help="Warmup duration per server")
-    parser.add_argument("--session-duration-ms", type=int, default=10000, help="WS session lifetime in ms")
-    parser.add_argument("--threads", type=int, default=default_threads, help="Server worker threads")
+    parser.add_argument(
+        "--warmup", default="5s",
+        help="Warmup duration, before each scenario (ws-loadgen) or once per server (k6)",
+    )
+    parser.add_argument("--session-duration-ms", type=int, default=10000, help="WS session lifetime in ms (k6)")
+    parser.add_argument(
+        "--threads", type=int, default=default_threads,
+        help=f"Server worker threads (default: {default_threads}, a quarter of the CPUs)",
+    )
+    parser.add_argument(
+        "--tool", default="auto", choices=TOOLS,
+        help=f"Load generator: {LOADGEN_BINARY} (native, default when built) or k6",
+    )
+    parser.add_argument(
+        "--loadgen-threads", type=int, default=0,
+        help="Load generator threads (default: 0 = all CPUs left by the server, up to 3 per server thread)",
+    )
+    parser.add_argument(
+        "--no-cpu-pin", action="store_true", default=False,
+        help="Do not pin the server and the load generator to disjoint CPUs",
+    )
     parser.add_argument("--output", default="./ws-results", help="Output directory")
     parser.add_argument(
         "--websocket-bench", action="store_true", default=False,
@@ -1052,13 +1343,13 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=1,
         help=(
-            "In-flight messages per VU (0 = timer mode, >0 = send-on-receive). "
-            "Higher values better saturate server threads (default: 1)"
+            "In-flight messages per connection (k6: 0 = timer mode, >0 = send-on-receive; "
+            "ws-loadgen: at least 1). Higher values better saturate server threads (default: 1)"
         ),
     )
     parser.add_argument(
         "--smoke", action="store_true", default=False,
-        help="Quick smoke run (5s, 10 VUs) to validate setup",
+        help="Quick smoke run (5s, 10 connections) to validate setup",
     )
     return parser.parse_args()
 
