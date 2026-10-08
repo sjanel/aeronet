@@ -257,11 +257,9 @@ bool ConnectionState::finalizeAndEmitTlsHandshakeIfNeeded(NativeHandle fd, const
     }
 
     // When kTLS send is enabled, we can use MSG_ZEROCOPY for large payloads.
-    // This bypasses SSL_write and uses sendmsg() directly on the kTLS socket,
+    // Writes bypass SSL_write and use sendmsg() directly on the kTLS socket,
     // allowing the kernel to DMA from user pages directly to the NIC.
     if (zerocopyRequested && tlsTr->isKtlsSendEnabled()) {
-      // Store the fd for direct socket I/O when using zerocopy.
-      tlsTr->setUnderlyingFd(fd);
       tlsTr->enableZerocopy();
     }
   }
@@ -321,6 +319,8 @@ void ConnectionState::reset() {
   tlsEstablished = false;
   waitingForBody = false;
   readPaused = false;
+  inputDeferred = false;
+  inputBlockedByOutput = false;
   expectationAnswered = false;
   connectPending = false;
   shutdownWritePending = false;

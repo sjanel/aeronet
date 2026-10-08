@@ -69,12 +69,16 @@ if(amc_FOUND)
 else()
   # Fallback: attempt to fetch the dependency (unless disconnected prevents it)
   set(LINK_AMC TRUE)
+  set(AMC_ENABLE_ASAN ${AERONET_ENABLE_ASAN} CACHE BOOL "" FORCE)
+
   FetchContent_Declare(
     amadeusamc
     URL https://github.com/AmadeusITGroup/amc/archive/refs/tags/v2.6.1.tar.gz
     URL_HASH SHA256=a1cbb695f31c96b90699ef1d2db14dcd89984cf1135c29b48af70a007c44a02d
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   )
+
+
   list(APPEND AeronetFetchContentPackagesToMakeAvailable amadeusamc)
 endif()
 
@@ -181,6 +185,7 @@ if(AERONET_ENABLE_BROTLI)
   # Brotli-specific configuration (applies only when fetched)
   set(BROTLI_DISABLE_TESTS ON CACHE BOOL "Disable brotli tests" FORCE)
   set(BROTLI_BUNDLED_MODE OFF CACHE BOOL "" FORCE)
+  set(BROTLI_BUILD_TOOLS OFF CACHE BOOL "Disable brotli tools" FORCE)
 
   # Brotli does not reliably provide Debug libs on many systems,
   # so policy decides whether system packages are allowed.

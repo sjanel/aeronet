@@ -275,7 +275,7 @@ Behavior summary
 - [x] Plain (non-TLS) connections use `recv()` / `send()` / `sendmsg()` rather than `read()` / `write()` / `writev()`: they go straight to the socket layer, skipping the file layer checks (about 100 to 250 cycles per call on Linux), and a single remaining buffer is sent with `send()`.
 - [x] No `SIGPIPE` on connections reset by the peer *(Linux)*: writes on such a connection fail with `EPIPE` instead of raising `SIGPIPE`, whose default action terminates the process, without changing the process-wide `SIGPIPE` disposition. Plain socket writes pass `MSG_NOSIGNAL`. `sendfile()` and the socket writes of OpenSSL (TLS records, handshake, `close_notify`) cannot: the server event loop keeps `SIGPIPE` blocked in its thread while it runs (`SigpipeBlocker`, `sigpipe-blocker.hpp`), and `HttpClient` does the same during the exchanges that may need it (TLS requests, file bodies). A `SIGPIPE` raised by a write is directed to the writing thread: it stays pending and is discarded when the event loop or the exchange ends. Threads created from an event loop thread (from a handler, say) inherit the blocked `SIGPIPE`. macOS sockets carry `SO_NOSIGPIPE`, and Windows has no `SIGPIPE`.
 - [x] Keep-alive bookkeeping costs one deadline-heap update per `keepAliveTimeout` for an active connection instead of one per event: an armed deadline is left in place while the connection is active (it can only be early, never late), and the maintenance sweep re-arms it from the last activity when it fires. After a poll batch whose work outlived `keepAliveTimeout` (slow synchronous handler), the idle windows of its connections restart from the end of the work, with a single clock read per batch. Tests: `tests/http-core_test.cpp` (`HttpKeepAlive.ActiveConnectionOutlivesSeveralKeepAliveTimeouts`, `HttpKeepAlive.SlowSynchronousHandlerDoesNotExpireItsConnection`).
-- [x] Per-event fairness budget (`HttpServerConfig::maxPerEventReadBytes`, 128 KiB by default): the bytes read from a connection plus the bytes written while serving them in one readable event. Once reached, the rest of the input of the connection is read after the other ready connections have been served, so that neither a large upload nor many small requests answered with large responses (an HTTP/2 client keeping several streams busy, a pipelining HTTP/1.1 client) can keep the event loop on one connection. Tests: `tests/http-tls-io_test.cpp` (`HttpTlsFairness.PipelinedRequestsYieldToOtherConnectionsOnceResponsesReachTheBudget`).
+- [x] Per-event fairness budget (`HttpServerConfig::maxPerEventReadBytes`, 128 KiB by default): the bytes read from a connection plus the bytes written while serving them in one readable event. Once reached, the rest of the input of the connection is read after the other ready connections have been served, so that neither a large upload nor many small requests answered with large responses (an HTTP/2 client keeping several streams busy, a pipelining HTTP/1.1 client) can keep the event loop on one connection. Pipelined HTTP/1.1 requests read at once yield too: once the responses written by a processing pass reach the budget, the next requests are served after the other ready connections. Input left by a blocked output (pipelined requests, HTTP/2 frames above the output high-water mark, TLS records read ahead) is served once the output drained, whatever drained it. Tests: `tests/http-tls-io_test.cpp` (`HttpTlsFairness.PipelinedRequestsYieldToOtherConnectionsOnceResponsesReachTheBudget`, `HttpTlsBackpressure.PipelinedRequestsBufferedBehindBlockedOutputAreAllServed`), `tests/http-core_test.cpp` (`HttpServerConfigLimits.PipelinedRequests*`).
 - [x] One read syscall per request on plain connections: the edge-triggered read loop stops on a short read (the kernel receive queue is drained, later data raises a new event) instead of reading until `EAGAIN`, unless the event flagged a peer hang-up or error (a pending EOF is then still observed right away). TLS reads are not concerned: `SSL_read` returns at most one record even when more are buffered. Tests: `tests/http-core_test.cpp` (`HttpKeepAlive.RequestsFollowedByHalfCloseAreAnsweredThenClosed`).
 - [x] Header read timeout (Slowloris mitigation) (configurable, disabled by default)
 - [x] Benchmarks & profiling docs
@@ -291,7 +291,7 @@ Behavior summary
   - `Opportunistic` (default): attempt zerocopy on real network connections but automatically disable it for loopback-to-loopback connections (to keep localhost benchmarks stable).
   - `Enabled`: force attempts to enable zerocopy; failures are logged and the transport falls back to the regular send path.
 
-  Implementation details: the decision is made after `accept()` (per connection) so a single listener can accept both loopback and remote peers. The zerocopy path uses `sendmsg(..., MSG_ZEROCOPY)` for large payloads (threshold: 128KiB) and falls back to normal `write`/`SSL_write` when unsupported or on retryable errors.
+  Implementation details: the decision is made after `accept()` (per connection) so a single listener can accept both loopback and remote peers. The zerocopy path uses `sendmsg(..., MSG_ZEROCOPY)` for large payloads (threshold: 128KiB) and falls back to a regular `send` (kTLS included) when unsupported or on retryable errors.
 
   Buffers sent with zerocopy stay alive until the kernel reports the completion of their sends, including when the connection closes: a graceful close (`Connection: close`, peer EOF, maximum requests per connection, server drain) only happens once the zerocopy sends of the connection completed, and a forced close (timeouts, errors, server stop) with sends still in flight resets the connection, so that the kernel drops them before their buffers are released. Tests: `tests/http-core_test.cpp` (`ZerocopyMode.ConcurrentClosingConnectionsReceiveTheirOwnPayload`, `ZerocopyMode.HalfClosingClientReceivesWholeResponse`, `ZerocopyMode.ForcedCloseWithZerocopySendsInFlightResetsConnection`).
 - [x] Scripted benchmarks include a gzip round-trip body codec scenario (`/body-codec`) to measure automatic request decompression + response compression (no public API changes). See `benchmarks/scripted-servers/lua/body_codec.lua` and `benchmarks/scripted-servers/run_benchmarks.py`.
@@ -1995,7 +1995,7 @@ Optional (`AERONET_ENABLE_OPENSSL`). Provides termination, optional / required m
 | Negotiated cipher & version | ✅ | `HttpRequestView::{tlsCipher,tlsVersion}` |
 | Handshake logging | ✅ | `withTlsHandshakeLogging()` (cipher, version, ALPN, peer subject) |
 | Min / Max protocol version | ✅ | `withTlsMinVersion("TLS1.2")`, `withTlsMaxVersion("TLS1.3")` |
-| Kernel TLS (kTLS) sendfile | ✅ | *(Linux-only)* zero-copy sendfile for TLS sockets; enabled by default with graceful fallback. |
+| Kernel TLS (kTLS) sendfile | ✅ | *(Linux-only)* zero-copy sendfile and direct gather writes for TLS sockets; enabled by default with graceful fallback. |
 | Handshake timeout | ✅ | `withTlsHandshakeTimeout(ms)` closes stalled handshakes |
 | Graceful TLS shutdown | ✅ | Best‑effort `SSL_shutdown` before close |
 | ALPN strict mismatch counter | ✅ | Per‑server stats |
@@ -2197,6 +2197,30 @@ SingleHttpServer server(cfg);
   code fell back to the classic user-space TLS path.
 
 See `examples/tls-ktls.cpp` for a runnable end-to-end snippet combining all of the above.
+
+### TLS record I/O
+
+The server keeps the number of TLS records and syscalls per request close to what plain connections need:
+
+- **Reads**: server TLS contexts read ahead, so OpenSSL reads as much ciphertext as the socket has per syscall instead
+  of two syscalls per record (its 5-byte header, then its body). A read decrypts the records received until its buffer
+  is full or the socket would block, so a short TLS read proves the socket drained, like a plain one, and the event
+  loop does not issue an extra read returning `EAGAIN`. A peer `close_notify` or an error following the data is
+  reported by the next read. As the kernel does not report again the records read ahead, the input that a connection
+  stops reading while its output is blocked is read back once the output drained, without waiting for a read event.
+- **Writes (user-space TLS)**: OpenSSL encrypts the data of each `SSL_write` into its own records. The buffers of a
+  gather write (the frame headers and payloads of HTTP/2 DATA frames, the head and body of an HTTP/1.1 response) are
+  therefore not encrypted one by one: a buffer that fills whole records on its own is encrypted in place, a smaller one
+  is copied with the start of the following ones into a full 16 KiB record. Without it, the 9-byte header of each
+  HTTP/2 frame would be a record and a syscall of its own.
+- **Writes (kTLS send)**: once kTLS send is enabled, application data bypasses OpenSSL and is written in clear on the
+  socket with `send()` / `sendmsg()`, which the kernel encrypts: a gather write is a single syscall, the kernel building
+  full records across the buffers.
+
+Tests: `aeronet/tls/test/tls-components_test.cpp` (`TlsTransportTest.ServerRead*`, `TlsTransportTest.GatherWrite*`,
+`TlsTransportTest.KtlsSendWritesInClearOnTheSocket`), `tests/http2-core_test.cpp` (`TlsHttp2Client.*Echoed*`),
+`tests/http-tls-io_test.cpp` (`HttpTlsBasic.RequestFollowedByCloseNotifyIsAnswered`,
+`HttpTlsBackpressure.PipelinedRequestsBufferedBehindBlockedOutputAreAllServed`).
 
 ### TLS (HTTPS) Support Details
 

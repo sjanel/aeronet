@@ -35,6 +35,11 @@ struct FaultPolicy {
   /// If true, next write() returns Error immediately (one-shot, auto-clears).
   bool resetOnNextWrite{false};
 
+  /// If true, emulates the read-ahead of a TLS transport: a read drains the socket into the transport until it would
+  /// block, returns at most the requested bytes, and hasPendingReadData() reports the rest - that no read event
+  /// reports.
+  bool readAhead{false};
+
   /// Seed for deterministic PRNG (used when randomized partial sizes are desired).
   /// If maxBytesPerRead > 0, actual bytes returned per read is uniform in [1, maxBytesPerRead].
   /// If seed is 0 and maxBytesPerRead > 0, always returns exactly maxBytesPerRead (no randomization).
