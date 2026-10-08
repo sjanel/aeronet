@@ -8,6 +8,10 @@ if(NOT AERONET_ENABLE_HTTP2)
     list(REMOVE_ITEM AERONET_FULL_TEST_SUPPORT_SRC_LIST src/test_tls_http2_client.cpp)
 endif()
 
+if(NOT AERONET_ENABLE_HTTP_SERVER)
+    list(REMOVE_ITEM AERONET_FULL_TEST_SUPPORT_SRC_LIST src/test_server_fixture.cpp)
+endif()
+
 AeronetAddProjectLibrary(aeronet_test_support
     ${AERONET_FULL_TEST_SUPPORT_SRC_LIST}
 )
@@ -33,4 +37,9 @@ endif()
 
 if(AERONET_ENABLE_OPENSSL)
     target_link_libraries(aeronet_test_support PUBLIC aeronet_tls)
+endif()
+
+if(AERONET_ENABLE_HTTP_SERVER)
+    # Server test fixtures.
+    target_link_libraries(aeronet_test_support PUBLIC aeronet_server)
 endif()

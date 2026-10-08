@@ -159,9 +159,11 @@ function(AeronetSetProjectProperties name)
       endif()
     endif()
     # Only link brotli libs into objects library to reduce export surface; others see headers only.
+    # PUBLIC: its public header version.hpp calls brotli inline, and aeronet_http uses the encoder bound
+    # directly. A PRIVATE dependency only propagates from a static library, so shared builds missed it.
     if(${name} STREQUAL "aeronet_objects")
       if(TARGET brotlicommon AND TARGET brotlidec AND TARGET brotlienc)
-        target_link_libraries(${name} PRIVATE brotlicommon brotlidec brotlienc)
+        target_link_libraries(${name} PUBLIC brotlicommon brotlidec brotlienc)
       endif()
     endif()
   endif()
@@ -246,6 +248,11 @@ endfunction()
 function(AeronetAddProjectLibrary name)
   if(AERONET_BUILD_SHARED)
     add_library(${name} SHARED ${ARGN})
+    # Report a missing link dependency when linking the library itself, not later in some executable.
+    # Not with sanitizers: their runtime is only linked into executables.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT AERONET_ENABLE_ASAN AND NOT AERONET_ENABLE_TSAN)
+      target_link_options(${name} PRIVATE "LINKER:-z,defs")
+    endif()
   else()
     add_library(${name} STATIC ${ARGN})
   endif()

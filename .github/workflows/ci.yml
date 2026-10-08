@@ -31,7 +31,9 @@ jobs:
           # Release gets a single smoke leg here: Debug+ASAN is where bugs actually get
           # caught (Release's -DNDEBUG strips assert()-based invariants), and Release is
           # already exercised independently by the arm/macos/windows/packaging jobs.
-          - { compiler: gcc-13, features: ON, client: ON, server: ON, build: Release, asan: OFF, tsan: OFF }
+          # It builds shared libraries: being the only leg without sanitizer, it is the one where
+          # the shared libraries are linked with -z defs, which checks their link dependencies.
+          - { compiler: gcc-13, features: ON, client: ON, server: ON, build: Release, asan: OFF, tsan: OFF, shared: ON }
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -90,6 +92,7 @@ jobs:
             ${{ startsWith(matrix.compiler, 'clang') && '-DAERONET_ENABLE_CLANG_TIDY=OFF' || '' }} \
             -DAERONET_ENABLE_ASAN=${{ matrix.asan }} \
             -DAERONET_ENABLE_TSAN=${{ matrix.tsan }} \
+            -DAERONET_BUILD_SHARED=${{ matrix.shared || 'OFF' }} \
             -DAERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=ON \
             -DAERONET_ENABLE_ASYNC_HANDLERS=${{ matrix.features }} \
             -DAERONET_ENABLE_GLAZE=${{ matrix.features }} \

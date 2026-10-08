@@ -1,6 +1,6 @@
 # HTTP/2 module (RFC 9113)
 
-aux_source_directory(src/ AERONET_HTTP2_SRC_LIST)
+aux_source_directory(src AERONET_HTTP2_SRC_LIST)
 
 if(NOT AERONET_ENABLE_HTTP_SERVER)
     list(REMOVE_ITEM AERONET_HTTP2_SRC_LIST src/http2-protocol-handler.cpp)
