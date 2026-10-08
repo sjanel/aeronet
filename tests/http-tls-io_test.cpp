@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <openssl/bio.h>
 #include <openssl/evp.h>
+#include <openssl/ssl.h>
 #include <openssl/types.h>
 
 #include <algorithm>
@@ -26,6 +27,11 @@
 
 #ifdef AERONET_POSIX
 #include <optional>
+#endif
+
+#ifdef AERONET_LINUX
+#include <netinet/tcp.h>
+#include <sys/socket.h>
 #endif
 
 #include "aeronet/compression-config.hpp"
@@ -329,10 +335,9 @@ TEST(HttpTlsBasic, LargePayload) {
   EXPECT_TRUE(raw.ends_with(largeBody));
 }
 
-// The fairness budget of a readable event also counts the bytes written while serving its input. A TLS connection is
-// read one record at a time: a client pipelining small requests for large responses, one per record, must yield to the
-// other ready connections once its responses reach the budget, instead of being served until it has sent a whole budget
-// of requests.
+// The fairness budget of a readable event also counts the bytes written while serving its input: a client pipelining
+// small requests for large responses must yield to the other ready connections once its responses reach the budget,
+// even when all its requests are read at once (TLS reads decrypt all the records the socket holds).
 TEST(HttpTlsFairness, PipelinedRequestsYieldToOtherConnectionsOnceResponsesReachTheBudget) {
   static constexpr std::size_t kBudget = 8UL << 10U;
   static constexpr std::size_t kBodySize = kBudget / 2;  // the second response exhausts the budget
@@ -372,10 +377,11 @@ TEST(HttpTlsFairness, PipelinedRequestsYieldToOtherConnectionsOnceResponsesReach
   while (!inBlockingHandler.load()) {
     std::this_thread::sleep_for(1ms);
   }
+  std::string pipelinedRequests;
   for (int requestPos = 0; requestPos < kNbPipelinedRequests; ++requestPos) {
-    // One TLS record per request.
-    ASSERT_TRUE(pipelining.writeAll(std::format("GET /p{} HTTP/1.1\r\nHost: x\r\n\r\n", requestPos)));
+    pipelinedRequests += std::format("GET /p{} HTTP/1.1\r\nHost: x\r\n\r\n", requestPos);
   }
+  ASSERT_TRUE(pipelining.writeAll(pipelinedRequests));
   ASSERT_TRUE(other.writeAll("GET /other HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"));
   releaseBlockingHandler.store(true);
 
@@ -400,6 +406,67 @@ TEST(HttpTlsFairness, PipelinedRequestsYieldToOtherConnectionsOnceResponsesReach
   const auto otherPos = std::ranges::find(processingOrder, "/other") - processingOrder.begin();
   EXPECT_LT(otherPos, kNbPipelinedRequests / 2);
 }
+
+// Output backpressure stops serving the pipelined requests already read, the following ones staying in the records that
+// the transport read ahead: the kernel does not report them again. They must all be served once the output drained,
+// whatever drained it: a writable event, or the retry of the periodic maintenance (which also drops the writable
+// interest, so that no writable event follows).
+TEST(HttpTlsBackpressure, PipelinedRequestsBufferedBehindBlockedOutputAreAllServed) {
+  static constexpr int kNbRequests = 150;
+  static constexpr std::size_t kBodySize = 64UL << 10U;
+  test::TlsTestServer localTs({"http/1.1"}, [](HttpServerConfig& cfg) {
+    cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Disabled);
+    cfg.withMaxPerEventReadBytes(4096);  // less than the requests: the transport keeps the rest of them
+  });
+  localTs.setDefault([](const HttpRequestView&) { return HttpResponse(std::string(kBodySize, 'r')); });
+
+  test::TlsClient client(localTs.port());
+  ASSERT_TRUE(client.handshakeOk());
+  std::string requests;
+  for (int requestPos = 0; requestPos < kNbRequests; ++requestPos) {
+    requests += std::format("GET /p{} HTTP/1.1\r\nHost: x\r\n\r\n", requestPos);
+  }
+  ASSERT_TRUE(client.writeAll(requests));
+  std::this_thread::sleep_for(200ms);  // the responses fill the socket buffers: the output blocks
+
+  static constexpr std::string_view kStatusLinePrefix = "HTTP/1.1 ";
+  // The received bytes whose status lines are not counted yet: only a truncated status line at the end.
+  std::string pending = std::move(client.drainedDuringWrite());
+  int nbResponses = 0;
+  std::array<char, 65536> buf;
+  const auto deadline = std::chrono::steady_clock::now() + 10s;
+  while (nbResponses < kNbRequests && std::chrono::steady_clock::now() < deadline) {
+    nbResponses += test::countOccurrences(pending, kStatusLinePrefix);
+    pending.erase(0, pending.size() - std::min(pending.size(), kStatusLinePrefix.size() - 1));
+    const std::string_view data = client.readSome(buf);
+    if (data.empty()) {
+      std::this_thread::sleep_for(1ms);
+    }
+    pending.append(data);
+  }
+  EXPECT_EQ(nbResponses, kNbRequests);
+}
+
+#ifdef AERONET_LINUX
+// The close_notify of the client arrives with its request: the server reads both in one event, answers the request,
+// then sees the close_notify without waiting for the socket to be readable again.
+TEST(HttpTlsBasic, RequestFollowedByCloseNotifyIsAnswered) {
+  ts.setDefault([](const HttpRequestView& req) { return req.makeResponse("bye"); });
+  test::TlsClient client(port);
+  ASSERT_TRUE(client.handshakeOk());
+
+  static constexpr int kOn = 1;
+  static constexpr int kOff = 0;
+  ASSERT_EQ(::setsockopt(client.fd(), IPPROTO_TCP, TCP_CORK, &kOn, sizeof(kOn)), 0);
+  ASSERT_TRUE(client.writeAll("GET /bye HTTP/1.1\r\nHost: x\r\n\r\n"));
+  ::SSL_shutdown(client.sslHandle());  // close_notify, sent with the request once uncorked
+  ASSERT_EQ(::setsockopt(client.fd(), IPPROTO_TCP, TCP_CORK, &kOff, sizeof(kOff)), 0);
+
+  const std::string response = client.readAll();
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.ends_with("bye")) << response;
+}
+#endif
 
 #ifdef AERONET_POSIX
 // A client that leaves while its response is being sent: once its kernel answered the first TLS records with a reset,

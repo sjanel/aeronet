@@ -1,4 +1,6 @@
 #include <gtest/gtest.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <openssl/asn1.h>
 #include <openssl/bio.h>
 #include <openssl/crypto.h>
@@ -14,6 +16,7 @@
 #include <openssl/types.h>
 #include <openssl/x509.h>
 #include <openssl/x509_vfy.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 
@@ -30,6 +33,7 @@
 #include <limits>
 #include <memory>
 #include <new>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -1084,10 +1088,12 @@ TEST(TlsTransportTest, SyscallDuringWriteFatalSetsErrorHint) {
 }
 
 TEST(TlsTransportTest, SuccessfulReadReturnsData) {
-  // Covers the early-return success path in TlsTransport::read (line 45)
+  // Covers the success path in TlsTransport::read
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
   TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  // Server SSL objects read ahead: the read decrypts records until the socket would block.
+  SetNonBlocking(pair.serverFd.fd());
 
   // Client writes data that server will read
   const std::string payload = "Hello from client";
@@ -1592,6 +1598,416 @@ TEST(TlsTransportTest, HasPendingReadDataAfterPartialRead) {
 
   // OpenSSL decrypted the full record; remaining data is pending
   EXPECT_TRUE(transport.hasPendingReadData());
+}
+
+namespace {
+
+// Reads from a non-blocking client SSL until it would block.
+std::string DrainClient(SSL* clientSsl) {
+  std::string received;
+  char buf[16384];
+  std::size_t nbRead = 0;
+  while (::SSL_read_ex(clientSsl, buf, sizeof(buf), &nbRead) == 1) {
+    received.append(buf, nbRead);
+  }
+  EXPECT_EQ(::SSL_get_error(clientSsl, 0), SSL_ERROR_WANT_READ);
+  return received;
+}
+
+// Reads from a non-blocking client SSL until at least `size` bytes are received (or a timeout).
+std::string ReceiveAtLeast(SSL* clientSsl, int fd, std::size_t size) {
+  std::string received;
+  for (int attempt = 0; attempt < 50 && received.size() < size; ++attempt) {
+    pollfd pfd{fd, POLLIN, 0};  // NOLINT(misc-include-cleaner)
+    ::poll(&pfd, 1, 100);       // NOLINT(misc-include-cleaner)
+    received += DrainClient(clientSsl);
+  }
+  return received;
+}
+
+// Returns the length of each TLS record received raw (not decrypted) on fd, until it would block.
+std::vector<std::size_t> ReceiveRawRecordLengths(int fd) {
+  std::string raw;
+  char buf[65536];
+  for (ssize_t nb = ::recv(fd, buf, sizeof(buf), MSG_DONTWAIT); nb > 0;
+       nb = ::recv(fd, buf, sizeof(buf), MSG_DONTWAIT)) {
+    raw.append(buf, static_cast<std::size_t>(nb));
+  }
+  std::vector<std::size_t> lengths;
+  std::size_t pos = 0;
+  while (pos + 5 <= raw.size()) {
+    const std::size_t len = (static_cast<std::size_t>(static_cast<unsigned char>(raw[pos + 3])) << 8U) |
+                            static_cast<unsigned char>(raw[pos + 4]);
+    lengths.push_back(len);
+    pos += 5 + len;
+  }
+  EXPECT_EQ(pos, raw.size()) << "incomplete TLS record received";
+  return lengths;
+}
+
+// The fragments left to write once `consumed` bytes of `fragments` were written.
+std::vector<std::string_view> RemainingFragments(std::span<const std::string_view> fragments, std::size_t consumed) {
+  std::vector<std::string_view> remaining;
+  for (std::string_view fragment : fragments) {
+    if (consumed >= fragment.size()) {
+      consumed -= fragment.size();
+      continue;
+    }
+    remaining.push_back(fragment.substr(consumed));
+    consumed = 0;
+  }
+  return remaining;
+}
+
+// Writes all fragments through the transport, draining the client whenever the transport would block. Returns what the
+// client received.
+std::string WriteAllFragments(TlsTransport& transport, SSL* clientSsl, std::span<const std::string_view> fragments,
+                              std::size_t& nbWouldBlock) {
+  std::string received;
+  std::size_t total = 0;
+  for (std::string_view fragment : fragments) {
+    total += fragment.size();
+  }
+  std::size_t written = 0;
+  while (written < total) {
+    const auto remaining = RemainingFragments(fragments, written);
+    const auto [nbWritten, want] = transport.write(std::span<const std::string_view>(remaining));
+    EXPECT_NE(want, TransportHint::Error);
+    if (want == TransportHint::Error) {
+      break;
+    }
+    written += nbWritten;
+    if (want == TransportHint::WriteReady) {
+      ++nbWouldBlock;
+      received += DrainClient(clientSsl);
+    }
+  }
+  received += DrainClient(clientSsl);
+  return received;
+}
+
+std::string Concatenate(std::span<const std::string_view> fragments) {
+  std::string all;
+  for (std::string_view fragment : fragments) {
+    all.append(fragment);
+  }
+  return all;
+}
+
+// A connected TCP loopback pair (kTLS requires TCP sockets).
+struct TcpLoopbackPair {
+  TcpLoopbackPair() {
+    BaseFd listener(::socket(AF_INET, SOCK_STREAM, 0));
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    socklen_t addrLen = sizeof(addr);  // NOLINT(misc-include-cleaner)
+    if (::bind(listener.fd(), reinterpret_cast<sockaddr*>(&addr), addrLen) != 0 || ::listen(listener.fd(), 1) != 0 ||
+        ::getsockname(listener.fd(), reinterpret_cast<sockaddr*>(&addr), &addrLen) != 0) {
+      throw std::runtime_error("failed to set up the TCP listener");
+    }
+    clientFd = BaseFd(::socket(AF_INET, SOCK_STREAM, 0));
+    if (::connect(clientFd.fd(), reinterpret_cast<sockaddr*>(&addr), addrLen) != 0) {
+      throw std::runtime_error("failed to connect to the TCP listener");
+    }
+    serverFd = BaseFd(::accept(listener.fd(), nullptr, nullptr));
+    if (!serverFd) {
+      throw std::runtime_error("failed to accept the TCP connection");
+    }
+    // Like the server does for HTTP/2: small writes are not delayed.
+    static constexpr int kOne = 1;
+    ::setsockopt(serverFd.fd(), IPPROTO_TCP, TCP_NODELAY, &kOne, sizeof(kOne));
+  }
+
+  BaseFd serverFd;
+  BaseFd clientFd;
+};
+
+// Mixes 9-byte headers with record-sized payloads, like HTTP/2 DATA frames, plus empty and small trailing buffers.
+struct H2LikeFragments {
+  explicit H2LikeFragments(std::size_t nbFrames) {
+    for (std::size_t frameIdx = 0; frameIdx < nbFrames; ++frameIdx) {
+      headers.emplace_back(9, static_cast<char>('a' + (frameIdx % 26)));
+      payloads.emplace_back(16384, static_cast<char>('A' + (frameIdx % 26)));
+    }
+    views.emplace_back();  // empty buffers are skipped
+    for (std::size_t frameIdx = 0; frameIdx < nbFrames; ++frameIdx) {
+      views.emplace_back(headers[frameIdx]);
+      views.emplace_back(payloads[frameIdx]);
+    }
+    views.emplace_back();
+    views.emplace_back(kTail);
+  }
+
+  static constexpr std::string_view kTail = "trailing bytes";
+
+  std::vector<std::string> headers;
+  std::vector<std::string> payloads;
+  std::vector<std::string_view> views;
+};
+
+}  // namespace
+
+TEST(TlsTransportTest, ServerReadDecryptsRecordsUntilSocketWouldBlock) {
+  SslTestPair pair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(PerformHandshake(pair));
+  ASSERT_EQ(::SSL_get_read_ahead(pair.serverSsl.get()), 1) << "server contexts read ahead";
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  SetNonBlocking(pair.serverFd.fd());
+
+  // Three records.
+  const std::string payload(40000, 'R');
+  ASSERT_EQ(::SSL_write(pair.clientSsl.get(), payload.data(), static_cast<int>(payload.size())),
+            static_cast<int>(payload.size()));
+
+  std::string buf(65536, '\0');
+  const auto readRes = transport.read(buf.data(), buf.size());
+  EXPECT_EQ(readRes.want, TransportHint::None);
+  ASSERT_EQ(readRes.bytesProcessed, payload.size());
+  EXPECT_EQ(std::string_view(buf.data(), readRes.bytesProcessed), payload);
+  // The short read drained the socket: nothing to read before it becomes readable again.
+  EXPECT_FALSE(transport.hasPendingReadData());
+
+  const auto nextRes = transport.read(buf.data(), buf.size());
+  EXPECT_EQ(nextRes.bytesProcessed, 0U);
+  EXPECT_EQ(nextRes.want, TransportHint::ReadReady);
+  EXPECT_FALSE(transport.hasPendingReadData());
+}
+
+TEST(TlsTransportTest, ServerReadStopsWhenBufferIsFull) {
+  SslTestPair pair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(PerformHandshake(pair));
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  SetNonBlocking(pair.serverFd.fd());
+
+  const std::string payload(40000, 'F');
+  ASSERT_EQ(::SSL_write(pair.clientSsl.get(), payload.data(), static_cast<int>(payload.size())),
+            static_cast<int>(payload.size()));
+
+  std::string received;
+  char buf[20000];
+  auto readRes = transport.read(buf, sizeof(buf));
+  EXPECT_EQ(readRes.want, TransportHint::None);
+  ASSERT_EQ(readRes.bytesProcessed, sizeof(buf));
+  received.append(buf, readRes.bytesProcessed);
+  EXPECT_TRUE(transport.hasPendingReadData());
+
+  readRes = transport.read(buf, sizeof(buf));
+  EXPECT_EQ(readRes.want, TransportHint::None);
+  ASSERT_EQ(readRes.bytesProcessed, payload.size() - sizeof(buf));
+  received.append(buf, readRes.bytesProcessed);
+  EXPECT_EQ(received, payload);
+  EXPECT_FALSE(transport.hasPendingReadData());
+}
+
+TEST(TlsTransportTest, ServerReadReportsPeerCloseAfterTheData) {
+  SslTestPair pair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(PerformHandshake(pair));
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  SetNonBlocking(pair.serverFd.fd());
+
+  const std::string payload = "last request";
+  ASSERT_EQ(::SSL_write(pair.clientSsl.get(), payload.data(), static_cast<int>(payload.size())),
+            static_cast<int>(payload.size()));
+  ::SSL_shutdown(pair.clientSsl.get());  // close_notify right after the data
+
+  char buf[64];
+  auto readRes = transport.read(buf, sizeof(buf));
+  EXPECT_EQ(readRes.want, TransportHint::None);
+  ASSERT_EQ(readRes.bytesProcessed, payload.size());
+  EXPECT_EQ(std::string_view(buf, readRes.bytesProcessed), payload);
+  // The close_notify is reported by the next read: the caller must not wait for the socket to be readable again.
+  EXPECT_TRUE(transport.hasPendingReadData());
+
+  readRes = transport.read(buf, sizeof(buf));
+  EXPECT_EQ(readRes.bytesProcessed, 0U);
+  EXPECT_EQ(readRes.want, TransportHint::None);  // orderly close
+}
+
+TEST(TlsTransportTest, ServerReadReportsFatalErrorAfterTheData) {
+  SslTestPair pair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(PerformHandshake(pair));
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+
+  const std::string payload = "valid record";
+  ASSERT_EQ(::SSL_write(pair.clientSsl.get(), payload.data(), static_cast<int>(payload.size())),
+            static_cast<int>(payload.size()));
+  // Followed by a cryptographically-invalid application_data record (see FatalReadErrorDrainsSharedErrorQueue).
+  static constexpr unsigned char kBadRecord[]{
+      0x17, 0x03, 0x03, 0x00, 0x11, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+  };
+  ASSERT_EQ(::send(pair.clientFd.fd(), kBadRecord, sizeof(kBadRecord), 0), static_cast<ssize_t>(sizeof(kBadRecord)));
+  SetNonBlocking(pair.serverFd.fd());
+
+  ERR_clear_error();
+  char buf[64];
+  auto readRes = transport.read(buf, sizeof(buf));
+  EXPECT_EQ(readRes.want, TransportHint::None);
+  ASSERT_EQ(readRes.bytesProcessed, payload.size());
+  EXPECT_EQ(std::string_view(buf, readRes.bytesProcessed), payload);
+  EXPECT_EQ(ERR_peek_error(), 0UL) << "the error must be drained even though the data is returned first";
+  EXPECT_TRUE(transport.hasPendingReadData());
+
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    readRes = transport.read(buf, sizeof(buf));
+    EXPECT_EQ(readRes.bytesProcessed, 0U);
+    EXPECT_EQ(readRes.want, TransportHint::Error);
+  }
+}
+
+TEST(TlsTransportTest, ReadWithoutReadAheadReturnsOneRecord) {
+  // Client SSL objects do not read ahead: a read returns the data of a single record.
+  SslTestPair pair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(PerformHandshake(pair));
+  ::SSL_set_read_ahead(pair.serverSsl.get(), 0);
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  SetNonBlocking(pair.serverFd.fd());
+
+  const std::string payload(20000, 'O');
+  ASSERT_EQ(::SSL_write(pair.clientSsl.get(), payload.data(), static_cast<int>(payload.size())),
+            static_cast<int>(payload.size()));
+
+  std::string buf(65536, '\0');
+  const auto readRes = transport.read(buf.data(), buf.size());
+  EXPECT_EQ(readRes.want, TransportHint::None);
+  EXPECT_EQ(readRes.bytesProcessed, 16384U);
+  const auto nextRes = transport.read(buf.data(), buf.size());
+  EXPECT_EQ(nextRes.bytesProcessed, payload.size() - 16384U);
+}
+
+TEST(TlsTransportTest, GatherWriteFillsWholeRecords) {
+  SslTestPair pair({"h2"}, {"h2"});
+  ASSERT_TRUE(PerformHandshake(pair));
+  SetNonBlocking(pair.clientFd.fd());
+  // Consume what the handshake left for the client (session tickets), to only see the records written below.
+  EXPECT_TRUE(DrainClient(pair.clientSsl.get()).empty());
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+
+  const H2LikeFragments fragments(3);
+  const std::string expected = Concatenate(fragments.views);
+  const auto res = transport.write(std::span<const std::string_view>(fragments.views));
+  EXPECT_EQ(res.want, TransportHint::None);
+  ASSERT_EQ(res.bytesProcessed, expected.size());
+
+  // 3 * (9 + 16384) + 14 bytes fit in 4 records: 3 full ones and a short last one - not a record per buffer.
+  const auto lengths = ReceiveRawRecordLengths(pair.clientFd.fd());
+  ASSERT_EQ(lengths.size(), 4U);
+  EXPECT_EQ(lengths[0], lengths[1]);
+  EXPECT_EQ(lengths[1], lengths[2]);
+  EXPECT_GT(lengths[0], 16384U);
+  EXPECT_LT(lengths[3], lengths[0]);
+}
+
+TEST(TlsTransportTest, GatherWriteDeliversTheBytesInOrder) {
+  SslTestPair pair({"h2"}, {"h2"});
+  ASSERT_TRUE(PerformHandshake(pair));
+  SetNonBlocking(pair.clientFd.fd());
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+
+  const H2LikeFragments fragments(3);
+  const auto res = transport.write(std::span<const std::string_view>(fragments.views));
+  EXPECT_EQ(res.want, TransportHint::None);
+  EXPECT_EQ(DrainClient(pair.clientSsl.get()), Concatenate(fragments.views));
+}
+
+TEST(TlsTransportTest, GatherWriteRetriesTheSamePendingRecordAfterWouldBlock) {
+  SslTestPair pair({"h2"}, {"h2"});
+  ASSERT_TRUE(PerformHandshake(pair));
+  SetNonBlocking(pair.serverFd.fd());
+  SetNonBlocking(pair.clientFd.fd());
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+
+  // Much more than the socket buffers: writes block many times, in gathered records as well as in-place ones.
+  const H2LikeFragments fragments(200);
+  std::string largeBody(100000, 'L');
+  std::vector<std::string_view> views = fragments.views;
+  views.emplace_back(largeBody);
+  views.emplace_back("end");
+
+  std::size_t nbWouldBlock = 0;
+  const std::string received = WriteAllFragments(transport, pair.clientSsl.get(), views, nbWouldBlock);
+  EXPECT_GT(nbWouldBlock, 0U);
+  EXPECT_EQ(received, Concatenate(views));
+}
+
+TEST(TlsTransportTest, SetsTheWriteModesItReliesOn) {
+  SslTestPair pair({"h2"}, {"h2"});
+  SSL* ssl = pair.serverSsl.get();
+  const auto modes = [ssl] { return static_cast<uint64_t>(::SSL_get_mode(ssl)); };
+  ASSERT_EQ(modes() & SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER, 0U);
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  // A write that would block is retried with the same bytes from another buffer (gather writes rebuild their records
+  // on the stack), and returns once a record is written.
+  EXPECT_NE(modes() & SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER, 0U);
+  EXPECT_NE(modes() & SSL_MODE_ENABLE_PARTIAL_WRITE, 0U);
+}
+
+TEST(TlsTransportTest, GatherWriteDuringHandshakeReportsHandshakeHint) {
+  SslTestPair pair({"h2"}, {"h2"});
+  SetNonBlocking(pair.serverFd.fd());
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+
+  const std::string_view buffers[]{"head", "body"};
+  const auto res = transport.write(std::span<const std::string_view>(buffers));
+  EXPECT_EQ(res.bytesProcessed, 0U);
+  EXPECT_EQ(res.want, TransportHint::ReadReady);  // the server waits for the ClientHello
+  EXPECT_FALSE(transport.handshakeDone());
+}
+
+TEST(TlsTransportTest, TwoBufferWriteDeliversBothBuffers) {
+  SslTestPair pair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(PerformHandshake(pair));
+  SetNonBlocking(pair.clientFd.fd());
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+
+  const std::string head = "HTTP/1.1 200 OK\r\ncontent-length: 20000\r\n\r\n";
+  const std::string body(20000, 'b');
+  auto res = transport.write(head, body);
+  EXPECT_EQ(res.want, TransportHint::None);
+  EXPECT_EQ(res.bytesProcessed, head.size() + body.size());
+  res = transport.write(head, std::string_view{});
+  EXPECT_EQ(res.bytesProcessed, head.size());
+  EXPECT_EQ(DrainClient(pair.clientSsl.get()), head + body + head);
+}
+
+TEST(TlsTransportTest, KtlsSendWritesInClearOnTheSocket) {
+  TcpLoopbackPair tcp;
+  TLSConfig cfg = MakeTlsConfig({"h2"}, false);
+  cfg.withKtlsMode(TLSConfig::KtlsMode::Enabled);
+  TlsContext context(cfg);
+  TlsTransport::SslPtr serverSsl(::SSL_new(reinterpret_cast<SSL_CTX*>(context.raw())), &::SSL_free);
+  SslCtxPtr clientCtx(::SSL_CTX_new(TLS_client_method()), &::SSL_CTX_free);
+  ::SSL_CTX_set_verify(clientCtx.get(), SSL_VERIFY_NONE, nullptr);
+  SslPtr clientSsl(::SSL_new(clientCtx.get()), &::SSL_free);
+  ASSERT_EQ(::SSL_set_fd(serverSsl.get(), tcp.serverFd.fd()), 1);
+  ASSERT_EQ(::SSL_set_fd(clientSsl.get(), tcp.clientFd.fd()), 1);
+  int serverRc = 0;
+  std::thread serverThread([&] { serverRc = ::SSL_accept(serverSsl.get()); });
+  const int clientRc = ::SSL_connect(clientSsl.get());
+  serverThread.join();
+  ASSERT_EQ(serverRc, 1);
+  ASSERT_EQ(clientRc, 1);
+
+  TlsTransport transport(std::move(serverSsl), kMinBytesForZerocopy);
+  ASSERT_EQ(transport.write(std::string_view{}).want, TransportHint::None);  // marks the handshake done
+  if (transport.enableKtlsSend() != KtlsEnableResult::Enabled) {
+    GTEST_SKIP() << "kTLS send is not available on this host";
+  }
+  EXPECT_EQ(transport.underlyingFd(), tcp.serverFd.fd());
+  SetNonBlocking(tcp.serverFd.fd());
+  SetNonBlocking(tcp.clientFd.fd());
+
+  const H2LikeFragments fragments(20);
+  std::size_t nbWouldBlock = 0;
+  std::string received = WriteAllFragments(transport, clientSsl.get(), fragments.views, nbWouldBlock);
+  EXPECT_EQ(received, Concatenate(fragments.views));
+
+  auto res = transport.write("head", "body");
+  EXPECT_EQ(res.bytesProcessed, 8U);
+  res = transport.write("single");
+  EXPECT_EQ(res.bytesProcessed, 6U);
+  received += ReceiveAtLeast(clientSsl.get(), tcp.clientFd.fd(), 14);
+  EXPECT_EQ(received, Concatenate(fragments.views) + "headbodysingle");
 }
 
 #if AERONET_WANT_MALLOC_OVERRIDES

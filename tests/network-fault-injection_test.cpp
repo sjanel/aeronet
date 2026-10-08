@@ -12,6 +12,9 @@
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/router.hpp"
+#include "aeronet/single-http-server.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 #include "aeronet/transport-test-hook.hpp"
@@ -247,6 +250,34 @@ TEST_F(NetworkFaultTest, PipelinedRequestsWithPartialReads) {
   ASSERT_NE(firstPos, std::string::npos) << response;
   auto secondPos = response.find("Hello, World!", firstPos + 1);
   EXPECT_NE(secondPos, std::string::npos) << "Second pipelined response missing\n" << response;
+}
+
+// --- Read-ahead transport ---
+
+// A client can complete its TLS handshake and send its whole request before the server reads the connection for the
+// first time, right after its accept: the TLS transport then reads it all ahead. The part left by the fairness budget
+// is reported by no read event, so it must be resumed without one.
+TEST_F(NetworkFaultTest, ReadAheadInputLeftByFairnessBudgetAtAcceptIsServed) {
+  test::FaultPolicy policy;
+  policy.readAhead = true;
+  enableFaults(policy);
+
+  HttpServerConfig cfg;
+  cfg.withMinReadChunkBytes(1024).withMaxPerEventReadBytes(4096);
+  Router router;
+  router.setPath(http::Method::POST, "/echo", [](const HttpRequestView& req) { return HttpResponse(req.body()); });
+  // Not started yet: the server listens, but accepts the connection only once the whole request reached its socket.
+  SingleHttpServer server(std::move(cfg), std::move(router));
+
+  const std::string body(16UL * 1024UL, 'R');
+  test::ClientConnection cc(server.port());
+  test::sendAll(cc.fd(), "POST /echo HTTP/1.1\r\nHost: test\r\nContent-Length: " + std::to_string(body.size()) +
+                             "\r\nConnection: close\r\n\r\n" + body);
+  server.start();
+
+  const auto response = test::recvUntilClosed(cc.fd(), 5s);
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response.substr(0, 256);
+  EXPECT_TRUE(response.ends_with(body)) << "Echoed body truncated, response size " << response.size();
 }
 
 }  // namespace

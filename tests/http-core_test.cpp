@@ -22,6 +22,7 @@
 #include <functional>
 #include <iterator>
 #include <memory>
+#include <mutex>
 #include <ranges>
 #include <regex>
 #include <stdexcept>
@@ -31,6 +32,7 @@
 #include <thread>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/cors-policy.hpp"
@@ -331,6 +333,92 @@ TEST(HttpServerConfigLimits, DeferredReadHandlesDisconnectedFd) {
   std::string resp = test::sendAndCollect(port, raw);
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
   ASSERT_TRUE(resp.contains("ok")) << resp;
+}
+
+// The fairness budget of a readable event also counts the bytes written while serving its input: a client pipelining
+// small requests for large responses must yield to the other ready connections once its responses reach the budget,
+// even when all its requests are read at once.
+TEST(HttpServerConfigLimits, PipelinedRequestsYieldToOtherConnectionsOnceResponsesReachTheBudget) {
+  static constexpr std::size_t kBudget = 8UL << 10U;
+  static constexpr std::size_t kBodySize = kBudget / 2;  // the second response exhausts the budget
+  static constexpr int kNbPipelinedRequests = 16;
+  HttpServerConfig cfg;
+  cfg.withMaxPerEventReadBytes(kBudget);
+  test::TestServer localTs(std::move(cfg));
+
+  std::atomic<bool> inBlockingHandler{false};
+  std::atomic<bool> releaseBlockingHandler{false};
+  std::mutex orderMutex;
+  std::vector<std::string> processingOrder;
+  localTs.router().setPath(http::Method::GET, "/warmup", [](const HttpRequestView&) { return HttpResponse("ok"); });
+  localTs.router().setPath(http::Method::GET, "/block", [&](const HttpRequestView&) {
+    inBlockingHandler.store(true);
+    while (!releaseBlockingHandler.load()) {
+      std::this_thread::sleep_for(1ms);
+    }
+    return HttpResponse("blocked");
+  });
+  localTs.router().setDefault([&](const HttpRequestView& req) {
+    {
+      std::scoped_lock lock(orderMutex);
+      processingOrder.emplace_back(req.path());
+    }
+    return HttpResponse(std::string(kBodySize, 'r'));
+  });
+
+  test::ClientConnection blocker(localTs.port());
+  test::ClientConnection pipelining(localTs.port());
+  test::ClientConnection other(localTs.port());
+  // Make sure that the server accepted the connections before blocking its event loop.
+  for (const auto& cnx : {std::cref(pipelining), std::cref(other)}) {
+    test::sendAll(cnx.get().fd(), "GET /warmup HTTP/1.1\r\nHost: x\r\n\r\n");
+    ASSERT_TRUE(test::recvWithTimeout(cnx.get().fd(), 2s).starts_with("HTTP/1.1 200"));
+  }
+
+  // Block the event loop in a handler while the requests below are sent, so that its next poll reports them together,
+  // the pipelined ones first.
+  test::sendAll(blocker.fd(), "GET /block HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+  while (!inBlockingHandler.load()) {
+    std::this_thread::sleep_for(1ms);
+  }
+  std::string pipelinedRequests;
+  for (int requestPos = 0; requestPos < kNbPipelinedRequests; ++requestPos) {
+    pipelinedRequests += std::format("GET /p{} HTTP/1.1\r\nHost: x\r\n\r\n", requestPos);
+  }
+  test::sendAll(pipelining.fd(), pipelinedRequests);
+  test::sendAll(other.fd(), "GET /other HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+  releaseBlockingHandler.store(true);
+
+  EXPECT_TRUE(test::recvUntilClosed(blocker.fd()).contains("blocked"));
+  EXPECT_TRUE(test::recvUntilClosed(other.fd()).starts_with("HTTP/1.1 200"));
+  EXPECT_EQ(test::RecvPipelinedResponses(pipelining.fd(), kNbPipelinedRequests), kNbPipelinedRequests);
+
+  std::scoped_lock lock(orderMutex);
+  ASSERT_EQ(processingOrder.size(), static_cast<std::size_t>(kNbPipelinedRequests) + 1U);
+  // The pipelining connection yields after two requests, instead of having all of them served before the other one.
+  const auto otherPos = std::ranges::find(processingOrder, "/other") - processingOrder.begin();
+  EXPECT_LT(otherPos, kNbPipelinedRequests / 2);
+}
+
+// Output backpressure stops serving the pipelined requests already read. They must be served once the output drained,
+// whatever drained it: a writable event, or the retry of the periodic maintenance (which also drops the writable
+// interest, so that no writable event follows).
+TEST(HttpServerConfigLimits, PipelinedRequestsBufferedBehindBlockedOutputAreAllServed) {
+  static constexpr int kNbRequests = 100;
+  static constexpr std::size_t kBodySize = 64UL << 10U;
+  HttpServerConfig cfg;
+  cfg.withMaxPerEventReadBytes(8UL << 10U);  // more than all the requests: they are read at once
+  test::TestServer localTs(std::move(cfg));
+  localTs.router().setDefault([](const HttpRequestView&) { return HttpResponse(std::string(kBodySize, 'r')); });
+
+  test::ClientConnection cnx(localTs.port(), 500ms, 4096);
+  std::string requests;
+  for (int requestPos = 0; requestPos < kNbRequests; ++requestPos) {
+    requests += std::format("GET /p{} HTTP/1.1\r\nHost: x\r\n\r\n", requestPos);
+  }
+  test::sendAll(cnx.fd(), requests);
+  std::this_thread::sleep_for(200ms);  // the responses fill the socket buffers: the output blocks
+  EXPECT_EQ(test::RecvPipelinedResponses(cnx.fd(), kNbRequests), kNbRequests);
 }
 
 TEST(HttpServerConfig, TcpNoDelayEnablesSimpleGet) {

@@ -484,6 +484,27 @@ class SingleHttpServer {
   // Process WebSocket / HTTP/2 data through the protocol handler.
   // Returns true if the connection should be closed.
   bool processSpecialProtocolHandler(ConnectionIt cnxIt);
+  // Tells whether the protocol handler input processing must stop: close requested, or output blocked.
+  static bool StopReadingIfOutputBlocked(ConnectionState& state);
+
+  // Serves the input already in the input buffer of a connection whose output is not blocked: the complete requests
+  // (HTTP/2 frames) left by the output backpressure or the fairness budget, that no event reports.
+  void processBufferedInput(NativeHandle fd);
+
+  // Resumes the input processing stopped by the output backpressure (see ConnectionState::inputBlockedByOutput) once
+  // the output and file payload drained.
+  void resumeInputIfOutputDrained(NativeHandle fd, ConnectionState& state);
+
+  // Resumes the input of the connection at the end of the event loop iteration (see _pendingReadFds), once.
+  void deferInput(NativeHandle fd, ConnectionState& state);
+
+  // Resumes the input of a connection deferred by deferInput(): serves its buffered input, then reads.
+  CloseStatus resumeDeferredInput(ConnectionIt cnxIt);
+
+  // Bytes written to all the connections so far, counted toward the fairness budget of the events that wrote them.
+  [[nodiscard]] uint64_t totalBytesWritten() const noexcept {
+    return _stats.totalBytesWrittenImmediate.load() + _stats.totalBytesWrittenFlush.load();
+  }
   // Split helpers
   enum class BodyDecodeStatus : uint8_t { Ready, NeedMore, Error };
 
@@ -729,10 +750,9 @@ class SingleHttpServer {
   // Used by MultiHttpServer to track lifecycle without strong ownership.
   std::weak_ptr<ServerLifecycleTracker> _lifecycleTracker;
 
-  // Fds that hit the per-event fairness cap with data still in their TCP buffer.
-  // Edge-triggered polling (EPOLLET on Linux, EV_CLEAR on macOS) only fires on
-  // state transitions; if bytes remain after the cap, no new read event is generated.
-  // Deferring these fds to the next iteration ensures they are re-read.
+  // Fds whose input must be resumed without any event reporting it (see deferInput()): those that hit the per-event
+  // fairness cap with data still in their TCP buffer (edge-triggered polling - EPOLLET on Linux, EV_CLEAR on macOS -
+  // only fires on state transitions), or requests in their input buffer, or records read ahead by their TLS transport.
   vector<NativeHandle> _pendingReadFds;
 
   struct ConnectionSweepState {

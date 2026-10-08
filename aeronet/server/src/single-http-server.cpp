@@ -401,7 +401,7 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
           if (hasAccumulatedOutput) {
             flushOutbound(cnxIt);
           }
-          return pState->isAnyCloseRequested() || pState->hasPendingOutput();
+          return StopReadingIfOutputBlocked(*pState);
         }
         break;
 
@@ -434,9 +434,16 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
     flushOutbound(cnxIt);
   }
 
+  return StopReadingIfOutputBlocked(*pState);
+}
+
+bool SingleHttpServer::StopReadingIfOutputBlocked(ConnectionState& state) {
   // A blocked output transport is also a signal to stop this readable-event loop. This keeps additional
-  // HTTP/2 frames in the socket while the peer is not draining responses.
-  return pState->isAnyCloseRequested() || pState->hasPendingOutput();
+  // HTTP/2 frames in the socket while the peer is not draining responses. The kernel reports them again once the output
+  // drained, but not the frames already in the input buffer or in the records read ahead by the TLS transport.
+  const bool outputBlocked = state.hasPendingOutput();
+  state.inputBlockedByOutput = outputBlocked && (!state.inBuffer.empty() || state.transport.hasPendingReadData());
+  return state.isAnyCloseRequested() || outputBlocked;
 }
 
 bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
@@ -456,6 +463,10 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
   }
 #endif
   HttpRequestView& request = state.request;
+  // A small request can have a large response: once the responses written by this call reach the fairness budget, the
+  // next pipelined requests are served after the other ready connections. The read budget alone would let a client
+  // pipelining such requests keep the event loop on its connection until it sent a whole budget of requests.
+  const uint64_t bytesWrittenAtStart = totalBytesWritten();
   do {
     // Do not parse the next pipelined request while a file send is still in progress.
     // attachFilePayload would silently overwrite the in-flight file payload, corrupting
@@ -463,11 +474,16 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
     // Also skip when outBuffer is non-empty — the previous response hasn't been fully
     // flushed yet, and starting a new response would interleave data.
     if (state.isSendingFile() || !state.outBuffer.empty()) {
+      state.inputBlockedByOutput = !state.inBuffer.empty();
       break;
     }
     // If we don't have enough bytes for the minimum request line, wait for more data
     if (state.inBuffer.size() < http::kHttpReqLineMinLen) {
       break;
+    }
+    if (_config.fairnessBudgetExhausted(static_cast<std::size_t>(totalBytesWritten() - bytesWrittenAtStart))) {
+      deferInput(cnxFd, state);
+      return true;
     }
     const auto statusCode =
         request.initTrySetHead(state.inBuffer, _sharedBuffers.buf, _config.maxHeaderBytes,
@@ -1307,12 +1323,12 @@ void SingleHttpServer::eventLoop() {
     maintenanceTick = true;
   }
 
-  // Re-process connections deferred by the per-event fairness cap.
+  // Re-process connections deferred by the per-event fairness cap, or whose input was left by the output backpressure.
   // Edge-triggered polling (EPOLLET / EV_CLEAR) only fires on state transitions;
   // a connection that still had TCP data after hitting the cap won't generate a new
   // read event, so we must re-read it here before waiting for events again.
   //
-  // Swap into a local so that handleReadableClient can safely push new deferrals
+  // Swap into a local so that resumeDeferredInput can safely push new deferrals
   // into the (now-empty) member vector without invalidating our iteration and
   // without losing them to a blanket clear().
   if (!_pendingReadFds.empty()) {
@@ -1323,7 +1339,7 @@ void SingleHttpServer::eventLoop() {
       if (!IsValid(_connections, pendingIt)) {
         continue;
       }
-      const CloseStatus cs = handleReadableClient(pendingIt, false);
+      const CloseStatus cs = resumeDeferredInput(pendingIt);
       if (cs == CloseStatus::Close) {
         const auto finalIt = _connections.iterator(pendingFd);
         if (IsValid(_connections, finalIt)) {

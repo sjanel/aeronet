@@ -335,6 +335,33 @@ int countOccurrences(std::string_view haystack, std::string_view needle) {
   return count;
 }
 
+int RecvPipelinedResponses(NativeHandle fd, int nbResponses, std::chrono::milliseconds totalTimeout) {
+  static constexpr std::string_view kStatusLinePrefix = "HTTP/1.1 ";
+  setRecvTimeout(fd, 50ms);
+  // The received bytes whose status lines are not counted yet: only a truncated status line at the end.
+  std::string pending;
+  char buf[1 << 16];
+  int nbReceived = 0;
+  const auto deadline = std::chrono::steady_clock::now() + totalTimeout;
+  while (nbReceived < nbResponses && std::chrono::steady_clock::now() < deadline) {
+#ifdef AERONET_WINDOWS
+    const auto nb = ::recv(fd, buf, static_cast<int>(sizeof(buf)), 0);
+#else
+    const auto nb = ::recv(fd, buf, sizeof(buf), 0);
+#endif
+    if (nb == 0) {
+      break;
+    }
+    if (nb < 0) {
+      continue;  // receive timeout: retry until the deadline
+    }
+    pending.append(buf, static_cast<std::size_t>(nb));
+    nbReceived += countOccurrences(pending, kStatusLinePrefix);
+    pending.erase(0, pending.size() - std::min(pending.size(), kStatusLinePrefix.size() - 1));
+  }
+  return nbReceived;
+}
+
 bool noBodyAfterHeaders(std::string_view raw) {
   const auto pivot = raw.find(http::DoubleCRLF);
   if (pivot == std::string_view::npos) {

@@ -238,6 +238,14 @@ struct ConnectionState {
   // SingleHttpServer::handleReadableClient()): they must be read once it completes, no new event reporting them.
   bool readPaused : 1 {false};
 
+  // True while the connection waits in SingleHttpServer::_pendingReadFds for its input to be resumed.
+  bool inputDeferred : 1 {false};
+
+  // True when the input processing stopped on output backpressure, leaving input in inBuffer or in the transport: no
+  // read event reports it, so it is resumed once the output drained, whatever drained it (see
+  // SingleHttpServer::flushOutbound).
+  bool inputBlockedByOutput : 1 {false};
+
   // True when the expectations (Expect header) of the request at the head of inBuffer were already answered: its head
   // is parsed again each time a part of its body is received, but interim responses must be sent once.
   bool expectationAnswered : 1 {false};
