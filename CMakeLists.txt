@@ -179,6 +179,24 @@ option(AERONET_BUILD_SHARED "Build aeronet libraries as shared instead of static
 option(AERONET_BUILD_MODULES "Build aeronet libraries as C++ module (experimental)" OFF)
 option(AERONET_BUILD_BENCHMARKS "Build benchmark executables" ${AERONET_BUILD_BENCHMARKS_DEFAULT})
 
+# Split + compressed debug info (see cmake/CompactDebugInfo.cmake). Only on by default for Debug test builds:
+# installed artifacts would reference .dwo files left in the build tree.
+set(AERONET_COMPACT_DEBUG_INFO_DEFAULT OFF)
+if(AERONET_BUILD_TESTS AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+  set(AERONET_COMPACT_DEBUG_INFO_DEFAULT ON)
+endif()
+option(AERONET_COMPACT_DEBUG_INFO
+  "Split DWARF + compressed debug sections, to shrink the binaries (on by default for Debug test builds)"
+  ${AERONET_COMPACT_DEBUG_INFO_DEFAULT})
+
+if(AERONET_BUILD_SHARED)
+  # Static dependencies (zlib-ng, zstd, ...) are linked into the aeronet shared libraries.
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+  # Do not relink the executables (tests, examples) when only the implementation of a shared library changed:
+  # editing one library source then only relinks that library.
+  set(CMAKE_LINK_DEPENDS_NO_SHARED ON)
+endif()
+
 # Features
 # All features are optional, and independent of each other.
 # For example, you may activate WebSocket without zlib support, in which case the WebSocket implementation will simply not support permessage-deflate compression.
@@ -264,6 +282,9 @@ if(AERONET_ENABLE_TSAN)
   endif()
   message(STATUS "Activate tsan with options ${AERONET_TSAN_OPTIONS}")
 endif()
+
+# Before the dependencies, which are linked into the test executables as well.
+include(cmake/CompactDebugInfo.cmake)
 
 include(cmake/Dependencies.cmake)
 

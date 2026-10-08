@@ -28,7 +28,8 @@ This document centralizes how to build, install, and consume **aeronet**.
 | ------ | -------- | ------- |
 | `AERONET_BUILD_EXAMPLES` | ON* | Build example programs |
 | `AERONET_BUILD_TESTS` | ON* | Build unit tests (needs GTest) |
-| `AERONET_BUILD_SHARED` | OFF | Build shared instead of static libs |
+| `AERONET_BUILD_SHARED` | OFF | Build shared instead of static libs (recommended for development: a library edit relinks that library only) |
+| `AERONET_COMPACT_DEBUG_INFO` | ON for Debug with tests | Split DWARF + compressed debug sections (Linux, GCC / Clang): ~3.5x smaller Debug test binaries |
 | `AERONET_BUILD_MODULES` | OFF | Build as C++ modules (experimental) |
 | `AERONET_BUILD_BENCHMARKS` | ON top-level except Debug | Build benchmark executables and selected comparison backends |
 | `AERONET_INSTALL` | ON* | Enable install + package config export |
@@ -56,6 +57,7 @@ This document centralizes how to build, install, and consume **aeronet**.
 | `AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS` | OFF | Extra custom runtime memory checks |
 | `AERONET_ENABLE_TEST_HOOKS` | non-Release tests | Enable test-only transport hooks; keep OFF in production |
 | `AERONET_ENABLE_WARNINGS` | ON* | Enable the project warning set |
+| `AERONET_SPDLOG_USE_STD_FORMAT` | ON | Use `std::format` rather than fmt through spdlog |
 
 *Defaults apply when aeronet is the top-level project; they flip to OFF when used as a dependency.
 
