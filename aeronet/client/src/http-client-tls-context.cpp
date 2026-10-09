@@ -1,5 +1,13 @@
 #include "aeronet/http-client-tls-context.hpp"
 
+#ifdef AERONET_WINDOWS
+// wincrypt.h needs windows.h first, and both must precede the OpenSSL headers, which undefine the wincrypt.h macros
+// clashing with OpenSSL type names (X509_NAME, OCSP_REQUEST...).
+#include <windows.h>
+// (separate include block so that wincrypt.h is not sorted before windows.h)
+#include <wincrypt.h>
+#endif
+
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/prov_ssl.h>
@@ -26,6 +34,10 @@
 #include "aeronet/tls-raii.hpp"
 #include "aeronet/tls-transport.hpp"
 #include "aeronet/transport.hpp"
+
+#ifdef AERONET_WINDOWS
+#include "aeronet/log.hpp"
+#endif
 
 namespace aeronet::internal {
 
@@ -77,6 +89,7 @@ void LoadClientCertificate(SSL_CTX* ctx, const HttpClientConfig& cfg) {
   }
 }
 
+#ifndef AERONET_WINDOWS
 // Well-known Linux system CA bundle files probed (in priority order) when the caller configures no explicit trust
 // store and the environment does not already point OpenSSL at one. This is the same set curl / Go / Python
 // fall back to. OpenSSL's own SSL_CTX_set_default_verify_paths() only consults its compiled-in directory
@@ -97,6 +110,7 @@ constexpr const char* const kDefaultCaBundleDirs[]{
     "/etc/pki/tls/certs",            // Fedora, RHEL
     "/system/etc/security/cacerts",  // Android
 };
+#endif
 
 // True when the environment already points OpenSSL at a trust store through SSL_CERT_FILE / SSL_CERT_DIR
 // (the env var names are queried from OpenSSL itself). In that case SSL_CTX_set_default_verify_paths()
@@ -128,6 +142,36 @@ bool LoadExistingCaBundles(void* sslCtx, std::span<const char* const> caFiles, s
   }
   return loaded;
 }
+
+#ifdef AERONET_WINDOWS
+bool LoadWindowsSystemRootStore(void* sslCtx) {
+  HCERTSTORE systemStore = ::CertOpenSystemStoreW(0, L"ROOT");
+  if (systemStore == nullptr) {
+    log::error("Failed to open the Windows ROOT system certificate store (error {})", ::GetLastError());
+    return false;
+  }
+  X509_STORE* x509Store = ::SSL_CTX_get_cert_store(static_cast<SSL_CTX*>(sslCtx));
+  bool loaded = false;
+  // CertEnumCertificatesInStore frees the context it is given: enumerating up to the end frees all of them.
+  for (PCCERT_CONTEXT pCert = ::CertEnumCertificatesInStore(systemStore, nullptr); pCert != nullptr;
+       pCert = ::CertEnumCertificatesInStore(systemStore, pCert)) {
+    if ((pCert->dwCertEncodingType & X509_ASN_ENCODING) == 0) {
+      continue;
+    }
+    const unsigned char* pEncoded = pCert->pbCertEncoded;
+    X509Ptr x509(::d2i_X509(nullptr, &pEncoded, static_cast<long>(pCert->cbCertEncoded)), ::X509_free);
+    // X509_STORE_add_cert succeeds for a certificate already in the store.
+    if (x509 && ::X509_STORE_add_cert(x509Store, x509.get()) == 1) {
+      loaded = true;
+    }
+  }
+  ::CertCloseStore(systemStore, 0);
+  if (!loaded) {
+    log::error("No certificate could be loaded from the Windows ROOT system certificate store");
+  }
+  return loaded;
+}
+#endif
 
 HttpClientTlsContext::HttpClientTlsContext(const HttpClientConfig& cfg) {
   cfg.validate();
@@ -200,11 +244,16 @@ HttpClientTlsContext::HttpClientTlsContext(const HttpClientConfig& cfg) {
       // honours the SSL_CERT_FILE / SSL_CERT_DIR environment variables and its compiled-in default paths.
       trustLoaded = ::SSL_CTX_set_default_verify_paths(pSsl) == 1;
       // OpenSSL's compiled-in default directory (often /usr/lib/ssl) is frequently absent from minimal
-      // container images that ship only a bundle such as /etc/ssl/certs/ca-certificates.crt, which would
+      // container images that ship only a bundle such as /etc/ssl/certs/ca-certificates.crt, and Windows has
+      // no CA bundle file at all (its trusted roots live in the system certificate store), which would
       // otherwise leave the store empty and fail every verification. Unless the environment already points
-      // OpenSSL at a store, augment it with any well-known system CA location that exists (best effort).
+      // OpenSSL at a store, augment it with the system's trusted roots (best effort).
       if (!SystemTrustStoreConfiguredViaEnv()) {
+#ifdef AERONET_WINDOWS
+        trustLoaded = LoadWindowsSystemRootStore(pSsl) || trustLoaded;
+#else
         trustLoaded = LoadExistingCaBundles(pSsl, kDefaultCaBundleFiles, kDefaultCaBundleDirs) || trustLoaded;
+#endif
       }
       if (!trustLoaded) {
         throw HttpClientException("Failed to load default TLS trust store");
