@@ -336,6 +336,7 @@ void SingleHttpServer::sweepIdleConnections() {
     // Retry pending file sends to handle potential missed EPOLLOUT edges.
     if (state.isSendingFile() && state.waitingWritable && flushRetries < kMaxFlushRetriesPerSweep) {
       flushFilePayload(cnxIt);
+      resumeInputIfOutputDrained(fd, state);
       ++flushRetries;
     }
     // Retry pending outbound buffer flushes to handle potential missed EPOLLOUT edges.
@@ -556,9 +557,6 @@ void SingleHttpServer::acceptNewConnections() {
         closeConnection(cnxIt);
         continue;
       }
-      // Enable partial writes: SSL_write will return after writing some data rather than
-      // trying to write everything. This is crucial for non-blocking I/O performance.
-      SSL_set_mode(sslPtr.get(), SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
       ::SSL_set_accept_state(sslPtr.get());
       state.transport = std::make_unique<TlsTransport>(std::move(sslPtr), _config.zerocopyMinBytes);
       state.tlsInfo.handshakeStart = state.lastActivity;
@@ -579,6 +577,7 @@ void SingleHttpServer::acceptNewConnections() {
 
     ConnectionState* pCnx = &state;
     std::size_t bytesReadThisEvent = 0;
+    bool readBudgetExhausted = false;
     while (true) {
       const std::size_t chunkSize = _config.computeReadChunkSize(bytesReadThisEvent);
       assert(chunkSize > 0);
@@ -654,6 +653,7 @@ void SingleHttpServer::acceptNewConnections() {
         break;
       }
       if (_config.fairnessBudgetExhausted(bytesReadThisEvent)) {
+        readBudgetExhausted = true;
         break;
       }
     }
@@ -667,6 +667,11 @@ void SingleHttpServer::acceptNewConnections() {
     // returning to edge-triggered polling, where no further read edge would be guaranteed.
     cnxIt = _connections.iterator(cnxFd);
     pCnx = _connections.pConnectionState(cnxFd);
+    // The input left by the fairness budget is resumed after the other ready connections, as in handleReadableClient():
+    // a client that completed its handshake and sent its request before the accept may have had all of it read ahead
+    // by the TLS transport, which no read event reports. Unless the input processing stopped reading, or the tunnel
+    // forwarding below reads the rest.
+    const bool deferRemainingInput = readBudgetExhausted && !closeNow && !pCnx->isTunneling();
     if (!closeNow && pCnx->isTunneling()) {
       closeNow = handleInTunneling(cnxIt) == CloseStatus::Close;
     } else if (closeNow && !pCnx->isAnyCloseRequested()) {
@@ -684,6 +689,9 @@ void SingleHttpServer::acceptNewConnections() {
     if (closeNow) {
       closeConnection(cnxIt);
     } else {
+      if (deferRemainingInput) {
+        deferInput(cnxFd, *pCnx);
+      }
       // A client that pipelines its first request with the connection setup (h2c prior knowledge sends
       // preface + SETTINGS + HEADERS immediately) gets it dispatched right here, so the handler can outlive
       // keepAliveTimeout on this path too.
@@ -856,20 +864,52 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleWritableClient(ConnectionI
   }
   flushOutbound(cnxIt);
 
+  // Once EPOLLOUT drained the output, resume the input left by its backpressure directly: edge-triggered polling may
+  // not deliver another read event.
+  processBufferedInput(fd);
+  ConnectionState* pState = _connections.pConnectionState(fd);
+  assert(pState != nullptr);  // the input processing only requests closes
+  // The records that the TLS transport read ahead while the input processing was stopped are not reported by the
+  // kernel either.
+  if (!pState->hasPendingOutput() && !pState->isAnyCloseRequested() && pState->transport.hasPendingReadData()) {
+    deferInput(fd, *pState);
+  }
+  return pState->canCloseConnectionForDrain() ? CloseStatus::Close : CloseStatus::Keep;
+}
+
+void SingleHttpServer::processBufferedInput(NativeHandle fd) {
   // Output backpressure can leave complete input in the user-space input buffer: HTTP/2 frames above the output
   // high-water mark, or HTTP/1 requests pipelined behind a response that waited for the socket (not processed after a
-  // close request). Once EPOLLOUT drained the output, resume them directly: edge-triggered polling may not deliver
-  // another read event.
+  // close request). So can the fairness budget, once the responses to the pipelined HTTP/1 requests reached it.
   ConnectionState* pState = _connections.pConnectionState(fd);
-  if (pState != nullptr && !pState->hasPendingOutput() && !pState->inBuffer.empty()) {
-    if (pState->protocolHandler) {
-      (void)processSpecialProtocolHandler(_connections.iterator(fd));
-    } else if (!pState->isSendingFile() && !pState->isTunneling() && !pState->isAnyCloseRequested()) {
-      (void)processHttp1Requests(_connections.iterator(fd));
-    }
-    pState = _connections.pConnectionState(fd);
+  if (pState == nullptr || pState->hasPendingOutput() || pState->inBuffer.empty()) {
+    return;
   }
-  return pState == nullptr || pState->canCloseConnectionForDrain() ? CloseStatus::Close : CloseStatus::Keep;
+  if (pState->protocolHandler) {
+    (void)processSpecialProtocolHandler(_connections.iterator(fd));
+  } else if (!pState->isSendingFile() && !pState->isTunneling() && !pState->isAnyCloseRequested()) {
+    (void)processHttp1Requests(_connections.iterator(fd));
+  }
+}
+
+void SingleHttpServer::deferInput(NativeHandle fd, ConnectionState& state) {
+  if (!state.inputDeferred) {
+    state.inputDeferred = true;
+    _pendingReadFds.push_back(fd);
+    _lifecycle.wakeupFd.send();
+  }
+}
+
+SingleHttpServer::CloseStatus SingleHttpServer::resumeDeferredInput(ConnectionIt cnxIt) {
+  const auto fd = cnxIt->fd();
+  _connections.connectionState(cnxIt).inputDeferred = false;
+  processBufferedInput(fd);
+  ConnectionState& state = _connections.connectionState(_connections.iterator(fd));
+  if (state.inputDeferred || state.isAnyCloseRequested()) {
+    // Its responses used the fairness budget again, or it closes: nothing more to read now.
+    return state.canCloseConnectionForDrain() ? CloseStatus::Close : CloseStatus::Keep;
+  }
+  return handleReadableClient(_connections.iterator(fd), false);
 }
 
 SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionIt cnxIt, bool stopOnShortRead) {
@@ -910,10 +950,7 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
   // The bytes written while serving the input count toward the fairness budget too: a small request can have a large
   // response, so a client pipelining such requests (an HTTP/2 client keeping several streams busy, say) would otherwise
   // keep the event loop on its connection, while the other ones wait, until it has sent a whole budget of requests.
-  const auto bytesWrittenSoFar = [this] {
-    return _stats.totalBytesWrittenImmediate.load() + _stats.totalBytesWrittenFlush.load();
-  };
-  const uint64_t bytesWrittenAtEventStart = bytesWrittenSoFar();
+  const uint64_t bytesWrittenAtEventStart = totalBytesWritten();
   const auto fd = cnxIt->fd();
   while (true) {
     const std::size_t chunkSize = _config.computeReadChunkSize(bytesReadThisEvent);
@@ -961,8 +998,11 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
 
     // A plain socket read returning less than requested emptied the kernel receive queue. Edge-triggered polling
     // reports any byte arriving after it, so the next read would only return EAGAIN: skip that syscall.
-    // TLS reads do not qualify - SSL_read returns at most one record even when more are buffered.
-    const bool drained = stopOnShortRead && count < chunkSize && pCnx->transport.isPlain();
+    // Server TLS reads qualify too: they read ahead and decrypt records until the socket would block, unless the
+    // transport reports pending input (a peer close_notify or an error to report after the returned data).
+    const bool drained =
+        stopOnShortRead && count < chunkSize &&
+        (pCnx->transport.isPlain() || (pCnx->transport.isTls() && !pCnx->transport.hasPendingReadData()));
 
     if (processConnectionInput(cnxIt)) {
       break;
@@ -981,12 +1021,11 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
     // A drained read left nothing to read, and later data raises a new event: no need to defer the connection.
     if (!drained &&
         _config.fairnessBudgetExhausted(bytesReadThisEvent +
-                                        static_cast<std::size_t>(bytesWrittenSoFar() - bytesWrittenAtEventStart))) {
+                                        static_cast<std::size_t>(totalBytesWritten() - bytesWrittenAtEventStart))) {
       // Edge-triggered polling (EPOLLET / EV_CLEAR): data may remain in the TCP buffer
       // after the fairness cap. No new read event fires on a non-empty→non-empty transition,
       // so defer this fd to read it again after the other ready connections have been served.
-      _pendingReadFds.push_back(fd);
-      _lifecycle.wakeupFd.send();
+      deferInput(fd, *pCnx);
       break;
     }
 
@@ -1011,6 +1050,9 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
       break;
     }
   }
+  // The input processing may have inserted connections.
+  cnxIt = _connections.iterator(fd);
+  pCnx = _connections.pConnectionState(fd);
   // Try to flush again after reading new data, in case TLS needed the read to proceed with write
   if (pCnx->hasPendingOutput()) {
     flushOutbound(cnxIt);
@@ -1156,7 +1198,7 @@ SingleHttpServer::CloseStatus SingleHttpServer::readTunnelData(ConnectionIt cnxI
       break;
     }
     bytesReadThisEvent += bytesRead;
-    if (bytesRead < chunkSize) {
+    if (bytesRead < chunkSize && !state.transport.hasPendingReadData()) {
       hitEagain = true;
       break;
     }
@@ -1164,8 +1206,7 @@ SingleHttpServer::CloseStatus SingleHttpServer::readTunnelData(ConnectionIt cnxI
       // Edge-triggered polling (EPOLLET): data may remain in the TCP buffer after the fairness cap.
       // No new read event fires on a non-empty→non-empty transition, so defer this fd for
       // re-processing at the start of the next event-loop iteration (same as handleReadableClient).
-      _pendingReadFds.push_back(cnxIt->fd());
-      _lifecycle.wakeupFd.send();
+      deferInput(cnxIt->fd(), state);
       hitEagain = true;
       break;
     }

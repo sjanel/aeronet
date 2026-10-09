@@ -85,6 +85,11 @@ std::string sendAndCollect(uint16_t port, std::string_view raw);
 
 int countOccurrences(std::string_view haystack, std::string_view needle);
 
+// Receives the responses of requests pipelined on fd until nbResponses HTTP/1.1 status lines were received, the peer
+// closed the connection or totalTimeout elapsed. Returns the number of received status lines. The response bodies must
+// not contain "HTTP/1.1 ".
+int RecvPipelinedResponses(NativeHandle fd, int nbResponses, std::chrono::milliseconds totalTimeout = 10s);
+
 bool noBodyAfterHeaders(std::string_view raw);
 
 // Very small blocking GET helper (Connection: close) used by tests that just need

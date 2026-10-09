@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "aeronet/fault-policy.hpp"
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
 
@@ -44,9 +45,30 @@ TransportResult FaultInjectingTransport::read(char* buf, std::size_t len) {
     maxRead = _policy.resetAfterTotalBytesRead - _totalBytesRead;
   }
 
-  auto result = _inner.read(buf, maxRead);
+  auto result = _policy.readAhead ? readAhead(buf, maxRead) : _inner.read(buf, maxRead);
   _totalBytesRead += result.bytesProcessed;
   return result;
+}
+
+TransportResult FaultInjectingTransport::readAhead(char* buf, std::size_t len) {
+  static constexpr std::size_t kReadAheadChunk = 16UL * 1024UL;
+
+  // Like a TLS transport reading ahead, drain the socket until it would block (or reports EOF / an error).
+  TransportResult innerResult;
+  do {
+    _readAheadBuffer.ensureAvailableCapacityExponential(kReadAheadChunk);
+    innerResult = _inner.read(_readAheadBuffer.data() + _readAheadBuffer.size(), kReadAheadChunk);
+    _readAheadBuffer.addSize(innerResult.bytesProcessed);
+  } while (innerResult.bytesProcessed != 0);
+
+  if (_readAheadBuffer.empty()) {
+    // Nothing buffered: report what stopped the reads.
+    return innerResult;
+  }
+  const std::size_t nbRead = std::min<std::size_t>(len, _readAheadBuffer.size());
+  Copy(_readAheadBuffer.data(), nbRead, buf);
+  _readAheadBuffer.erase_front(nbRead);
+  return {nbRead, TransportHint::None};
 }
 
 TransportResult FaultInjectingTransport::write(std::string_view data) {

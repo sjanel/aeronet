@@ -6,6 +6,7 @@
 #include <string_view>
 
 #include "aeronet/fault-policy.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/transport.hpp"
 
 namespace aeronet::test {
@@ -22,7 +23,9 @@ class FaultInjectingTransport final : public TransportBackend<FaultInjectingTran
   TransportResult write(std::string_view firstBuf, std::string_view secondBuf);
 
   [[nodiscard]] bool handshakeDone() const noexcept { return _inner.handshakeDone(); }
-  [[nodiscard]] bool hasPendingReadData() const noexcept { return _inner.hasPendingReadData(); }
+  [[nodiscard]] bool hasPendingReadData() const noexcept {
+    return !_readAheadBuffer.empty() || _inner.hasPendingReadData();
+  }
 
   /// Mutable access to fault policy for mid-test reconfiguration.
   FaultPolicy& faultPolicy() { return _policy; }
@@ -38,10 +41,14 @@ class FaultInjectingTransport final : public TransportBackend<FaultInjectingTran
   [[nodiscard]] std::size_t totalBytesWritten() const { return _totalBytesWritten; }
 
  private:
+  // Read of FaultPolicy::readAhead: drains the inner transport into _readAheadBuffer, then serves at most len bytes.
+  TransportResult readAhead(char* buf, std::size_t len);
+
   FaultPolicy _policy;
   std::size_t _totalBytesRead{0};
   std::size_t _totalBytesWritten{0};
   Transport _inner;
+  RawChars _readAheadBuffer;
   uint32_t _readCallCount{0};
   uint32_t _writeCallCount{0};
 };

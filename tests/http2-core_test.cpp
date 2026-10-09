@@ -51,6 +51,7 @@
 #include "aeronet/test_tls_http2_client.hpp"
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timestring.hpp"
+#include "aeronet/tls-config.hpp"
 #endif
 
 #ifdef AERONET_ENABLE_ZLIB
@@ -2557,6 +2558,71 @@ TEST(TlsHttp2Client, PostRequestWithBody) {
   EXPECT_EQ(response.statusCode, 200);
   EXPECT_EQ(receivedBody, "Hello, HTTP/2 POST!");
   EXPECT_EQ(receivedContentType, "text/plain");
+}
+
+namespace {
+
+std::string MakeBody(std::size_t size) {
+  std::string body(size, '\0');
+  for (std::size_t pos = 0; pos < size; ++pos) {
+    body[pos] = static_cast<char>('a' + (((pos * 7U) + size) % 26U));
+  }
+  return body;
+}
+
+// Posts the bodies on concurrent streams of one TLS connection to a server echoing them back, with kTLS send disabled
+// then opportunistic. The server reads many TLS records per read call, and writes the DATA frames as full TLS records
+// (user-space TLS) or with gather writes on the socket (kTLS send, when the host supports it).
+void ExpectBodiesEchoedOverTls(std::span<const std::size_t> bodySizes, uint32_t windowSize) {
+  std::vector<std::string> bodies;
+  for (std::size_t size : bodySizes) {
+    bodies.push_back(MakeBody(size));
+  }
+  Http2Config clientConfig;
+  clientConfig.initialWindowSize = windowSize;
+  clientConfig.connectionWindowSize = 4U * windowSize;
+
+  for (const auto ktlsMode : {TLSConfig::KtlsMode::Disabled, TLSConfig::KtlsMode::Opportunistic}) {
+    test::TlsHttp2TestServer server;
+    server.server.postConfigUpdate([ktlsMode, windowSize](HttpServerConfig& cfg) {
+      cfg.withTlsKtlsMode(ktlsMode);
+      cfg.http2.initialWindowSize = windowSize;
+      cfg.http2.connectionWindowSize = 4U * windowSize;
+    });
+    server.setDefault([](const HttpRequestView& req) { return req.makeResponse(req.body()); });
+    test::TlsHttp2Client client(server.port(), clientConfig);
+    ASSERT_TRUE(client.isConnected());
+
+    std::vector<uint32_t> streamIds;
+    for (const std::string& body : bodies) {
+      streamIds.push_back(client.sendAsyncRequest("POST", "/echo", {}, body));
+      ASSERT_NE(streamIds.back(), 0U);
+    }
+    for (std::size_t idx = 0; idx < bodies.size(); ++idx) {
+      const auto response = client.waitAndGetResponse(streamIds[idx], std::chrono::seconds{10});
+      if (!response.has_value()) {
+        ADD_FAILURE() << "no response on stream " << streamIds[idx];
+        return;
+      }
+      EXPECT_EQ(response->statusCode, 200);
+      EXPECT_EQ(response->body.size(), bodies[idx].size());
+      EXPECT_EQ(response->body, bodies[idx]);
+    }
+  }
+}
+
+}  // namespace
+
+TEST(TlsHttp2Client, BodiesEchoedWithDefaultWindowsAndWindowUpdates) {
+  // Bodies fitting the default 64 KiB stream window: the server acknowledges them with WINDOW_UPDATE frames, written
+  // along with the DATA frames of the responses.
+  static constexpr std::size_t kSizes[]{65535, 40000, 16384, 16385, 9};
+  ExpectBodiesEchoedOverTls(kSizes, 65535);
+}
+
+TEST(TlsHttp2Client, LargeBodiesEchoed) {
+  static constexpr std::size_t kSizes[]{180293, (1U << 20U) + 3U, 16384, 9};
+  ExpectBodiesEchoedOverTls(kSizes, 4U << 20U);
 }
 
 #ifdef AERONET_ENABLE_ZLIB

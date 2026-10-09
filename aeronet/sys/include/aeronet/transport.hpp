@@ -57,6 +57,15 @@ class SocketTransportState {
 
   explicit SocketTransportState(NativeHandle fd) noexcept : _fd(fd) {}
 
+  /// Non-blocking write of the bytes as they are on the socket (MSG_ZEROCOPY for large payloads when enabled).
+  TransportResult socketWrite(std::string_view data);
+
+  /// Scatter write using writev - single syscall for two buffers.
+  TransportResult socketWrite(std::string_view firstBuf, std::string_view secondBuf);
+
+  /// Gather write using writev / WSASend.
+  TransportResult socketWrite(std::span<const std::string_view> buffers);
+
   ZeroCopyState _zerocopyState{};
   NativeHandle _fd{kInvalidHandle};
 };
@@ -71,13 +80,15 @@ class PlainTransport final : public SocketTransportState {
 
   TransportResult read(char* buf, std::size_t len);
 
-  TransportResult write(std::string_view data);
+  TransportResult write(std::string_view data) { return socketWrite(data); }
 
   /// Scatter write using writev - single syscall for two buffers.
-  TransportResult write(std::string_view firstBuf, std::string_view secondBuf);
+  TransportResult write(std::string_view firstBuf, std::string_view secondBuf) {
+    return socketWrite(firstBuf, secondBuf);
+  }
 
   /// Gather write using writev / WSASend.
-  TransportResult write(std::span<const std::string_view> buffers);
+  TransportResult write(std::span<const std::string_view> buffers) { return socketWrite(buffers); }
 
   /// Zero-copy sendfile(2) of a file region straight to the socket (no user-space copy).
   TransportResult sendFile(const File& file, std::size_t& offset, std::size_t count);
