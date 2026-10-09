@@ -2206,8 +2206,10 @@ The server keeps the number of TLS records and syscalls per request close to wha
   of two syscalls per record (its 5-byte header, then its body). A read decrypts the records received until its buffer
   is full or the socket would block, so a short TLS read proves the socket drained, like a plain one, and the event
   loop does not issue an extra read returning `EAGAIN`. A peer `close_notify` or an error following the data is
-  reported by the next read. As the kernel does not report again the records read ahead, the input that a connection
-  stops reading while its output is blocked is read back once the output drained, without waiting for a read event.
+  reported by the next read, once that data is served - also when the client sent them all before the first read of
+  its connection, right after the accept. As the kernel does not report again the records read ahead, the input that a
+  connection stops reading while its output is blocked is read back once the output drained, without waiting for a
+  read event.
 - **Writes (user-space TLS)**: OpenSSL encrypts the data of each `SSL_write` into its own records. The buffers of a
   gather write (the frame headers and payloads of HTTP/2 DATA frames, the head and body of an HTTP/1.1 response) are
   therefore not encrypted one by one: a buffer that fills whole records on its own is encrypted in place, a smaller one
@@ -2220,7 +2222,8 @@ The server keeps the number of TLS records and syscalls per request close to wha
 Tests: `aeronet/tls/test/tls-components_test.cpp` (`TlsTransportTest.ServerRead*`, `TlsTransportTest.GatherWrite*`,
 `TlsTransportTest.KtlsSendWritesInClearOnTheSocket`), `tests/http2-core_test.cpp` (`TlsHttp2Client.*Echoed*`),
 `tests/http-tls-io_test.cpp` (`HttpTlsBasic.RequestFollowedByCloseNotifyIsAnswered`,
-`HttpTlsBackpressure.PipelinedRequestsBufferedBehindBlockedOutputAreAllServed`).
+`HttpTlsBackpressure.PipelinedRequestsBufferedBehindBlockedOutputAreAllServed`), `tests/network-fault-injection_test.cpp`
+(`NetworkFaultTest.ReadAhead*`).
 
 ### TLS (HTTPS) Support Details
 

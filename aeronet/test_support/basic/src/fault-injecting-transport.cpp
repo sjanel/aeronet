@@ -61,8 +61,10 @@ TransportResult FaultInjectingTransport::readAhead(char* buf, std::size_t len) {
     _readAheadBuffer.addSize(innerResult.bytesProcessed);
   } while (innerResult.bytesProcessed != 0);
 
+  _readAheadStopPending = innerResult.want == TransportHint::None || innerResult.want == TransportHint::Error;
   if (_readAheadBuffer.empty()) {
     // Nothing buffered: report what stopped the reads.
+    _readAheadStopPending = false;
     return innerResult;
   }
   const std::size_t nbRead = std::min<std::size_t>(len, _readAheadBuffer.size());

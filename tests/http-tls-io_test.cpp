@@ -449,7 +449,9 @@ TEST(HttpTlsBackpressure, PipelinedRequestsBufferedBehindBlockedOutputAreAllServ
 
 #ifdef AERONET_LINUX
 // The close_notify of the client arrives with its request: the server reads both in one event, answers the request,
-// then sees the close_notify without waiting for the socket to be readable again.
+// then sees the close_notify without waiting for the socket to be readable again. That event can be the accept itself,
+// when the client completes its handshake while the server finishes its own (deterministic variant:
+// NetworkFaultTest.ReadAheadRequestFollowedByEofAtAcceptIsAnswered).
 TEST(HttpTlsBasic, RequestFollowedByCloseNotifyIsAnswered) {
   ts.setDefault([](const HttpRequestView& req) { return req.makeResponse("bye"); });
   test::TlsClient client(port);
