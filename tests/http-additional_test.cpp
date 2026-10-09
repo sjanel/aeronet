@@ -22,6 +22,7 @@
 #include <thread>
 #include <utility>
 
+#include "aeronet/access-log-config.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-helpers.hpp"
@@ -393,6 +394,73 @@ TEST(HttpServer, PostConfigUpdateExceptionDoesNotCrash) {
   ts.postRouterUpdate([](Router& /*cfg*/) { throw std::runtime_error("Intentional exception in router update"); });
   // NOLINTNEXTLINE(bugprone-std-exception-baseclass)
   ts.postRouterUpdate([](Router& /*cfg*/) { throw 42; });
+}
+
+TEST(HttpServer, FailedConfigUpdateRestoresPreviousConfig) {
+  const auto previousMaxBodyBytes = ts.server.config().maxBodyBytes;
+  const auto previousMaxHeaderBytes = ts.server.config().maxHeaderBytes;
+  const auto expectPreviousConfig = [&] {
+    EXPECT_EQ(ts.server.config().maxBodyBytes, previousMaxBodyBytes);
+    EXPECT_EQ(ts.server.config().maxHeaderBytes, previousMaxHeaderBytes);
+  };
+
+  // The changes made by an updater before it throws are discarded.
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.withMaxBodyBytes(12).withMaxHeaderBytes(4096);
+    throw std::runtime_error("Intentional exception in config update");
+  });
+  expectPreviousConfig();
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.withMaxBodyBytes(12).withMaxHeaderBytes(4096);
+    throw 42;  // NOLINT(hicpp-exception-baseclass)
+  });
+  expectPreviousConfig();
+
+  // A config failing validation is rejected as a whole.
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.withMaxHeaderBytes(4096);
+    cfg.maxBodyBytes = 0;
+  });
+  expectPreviousConfig();
+
+  // The server keeps serving with its previous config.
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("still-serving"); });
+  const auto resp = test::simpleGet(ts.port(), "/after-rejected-updates", {});
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  EXPECT_EQ(resp.body, "still-serving");
+}
+
+TEST(HttpServer, RejectedConfigUpdateDoesNotPreventTheNextOnes) {
+  const auto previousMaxBodyBytes = ts.server.config().maxBodyBytes;
+  const auto previousMaxHeaderBytes = ts.server.config().maxHeaderBytes;
+
+  // Posted together (applied by the same event loop iteration, unless it runs in between): each one stands alone.
+  ts.server.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.withMaxBodyBytes(13);
+    throw std::runtime_error("Intentional exception in config update");
+  });
+  ts.postConfigUpdate(
+      [previousMaxHeaderBytes](HttpServerConfig& cfg) { cfg.withMaxHeaderBytes(previousMaxHeaderBytes + 1); });
+
+  EXPECT_EQ(ts.server.config().maxBodyBytes, previousMaxBodyBytes);
+  EXPECT_EQ(ts.server.config().maxHeaderBytes, previousMaxHeaderBytes + 1);
+  ts.postConfigUpdate(
+      [previousMaxHeaderBytes](HttpServerConfig& cfg) { cfg.withMaxHeaderBytes(previousMaxHeaderBytes); });
+}
+
+TEST(HttpServer, ConfigUpdateWithUnopenableAccessLogFileIsRejected) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.withMaxBodyBytes(cfg.maxBodyBytes + 1);
+    cfg.accessLog.sink = AccessLogConfig::Sink::File;
+    cfg.accessLog.filePath = "/__aeronet_missing_dir__/access.log";
+  });
+  EXPECT_EQ(ts.server.config().accessLog.sink, AccessLogConfig::Sink::None);
+  EXPECT_TRUE(ts.server.config().accessLog.filePath.empty());
+
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("still-serving"); });
+  const auto resp = test::simpleGet(ts.port(), "/after-rejected-access-log", {});
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  EXPECT_EQ(resp.body, "still-serving");
 }
 
 TEST(HttpMaxRequests, CloseAfterLimit) {

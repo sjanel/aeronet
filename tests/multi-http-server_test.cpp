@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -23,6 +24,7 @@
 #include <system_error>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include "aeronet/access-log-config.hpp"
 #include "aeronet/builtin-probes-config.hpp"
@@ -157,6 +159,76 @@ TEST(MultiHttpServer, StatsAggregatesTlsAlpnDistribution) {
       std::ranges::find_if(stats.total.tlsAlpnDistribution, [](const auto& kv) { return kv.first == "http/1.1"; });
   ASSERT_NE(it, stats.total.tlsAlpnDistribution.end());
   EXPECT_GT(it->second, 0U);
+  handle.stop();
+  handle.rethrowIfError();
+}
+
+namespace {
+
+// Posts updater to every worker and waits until all of them applied it. Returns the certificate file path of the
+// config of each worker, read by the worker itself after the update.
+std::vector<std::string> PostConfigUpdateToAllWorkers(MultiHttpServer& multi,
+                                                      const std::function<void(HttpServerConfig&)>& updater) {
+  struct Observed {
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::vector<std::string> certFiles;
+  };
+  auto observed = std::make_shared<Observed>();
+  multi.postConfigUpdate(updater);
+  multi.postConfigUpdate([observed](HttpServerConfig& cfg) {
+    std::scoped_lock lock(observed->mutex);
+    observed->certFiles.emplace_back(cfg.tls.certFile());
+    observed->cv.notify_all();
+  });
+  std::unique_lock lock(observed->mutex);
+  EXPECT_TRUE(observed->cv.wait_for(lock, 10s, [&] { return observed->certFiles.size() == multi.nbThreads(); }));
+  return observed->certFiles;
+}
+
+}  // namespace
+
+TEST(MultiHttpServer, TlsUpdatesAreAppliedOrRejectedByEveryWorker) {
+  static constexpr uint32_t kNbThreads = 3;
+  // "localhost" has a longer common name than "server": the rewritten certificate file changes size.
+  const auto serverCertKey = test::MakeEphemeralCertKey("server");
+  const auto localhostCertKey = test::MakeEphemeralCertKey("localhost");
+  test::ScopedTempDir dir;
+  const auto certPath = dir.dirPath() / "fullchain.pem";
+  const auto keyPath = dir.dirPath() / "privkey.pem";
+  test::WriteFile(certPath, serverCertKey.first);
+  test::WriteFile(keyPath, serverCertKey.second);
+  test::ScopedTempFile invalidCertFile(dir, "not a certificate");
+
+  HttpServerConfig cfg = MakeConfig(kNbThreads);
+  cfg.withTlsCertKey(certPath.string(), keyPath.string());
+  MultiHttpServer multi(std::move(cfg));
+  multi.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("TLS"); });
+  auto handle = multi.startDetached();
+
+  // Enough connections to reach every worker (SO_REUSEPORT spreads them by a hash of their source port).
+  const auto expectCommonNameOfNewConnections = [&multi](std::string_view expected) {
+    for (int connection = 0; connection < 16; ++connection) {
+      test::TlsClient client(multi.port());
+      ASSERT_TRUE(client.handshakeOk());
+      EXPECT_EQ(client.peerCommonName(), expected);
+    }
+  };
+  expectCommonNameOfNewConnections("server");
+
+  // An invalid certificate is rejected by every worker: all keep their previous config and TLS context.
+  const auto certFiles = PostConfigUpdateToAllWorkers(multi, [&invalidCertFile](HttpServerConfig& serverCfg) {
+    serverCfg.tls.withCertFile(invalidCertFile.filePath().string());
+  });
+  EXPECT_EQ(certFiles, std::vector<std::string>(kNbThreads, certPath.string()));
+  expectCommonNameOfNewConnections("server");
+
+  // Files rewritten in place are reloaded by every worker.
+  test::WriteFile(certPath, localhostCertKey.first);
+  test::WriteFile(keyPath, localhostCertKey.second);
+  PostConfigUpdateToAllWorkers(multi, [](HttpServerConfig&) {});
+  expectCommonNameOfNewConnections("localhost");
+
   handle.stop();
   handle.rethrowIfError();
 }

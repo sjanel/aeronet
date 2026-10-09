@@ -423,11 +423,21 @@ class SingleHttpServer {
   //   Attempting to modify these fields will have no effect and will emit a warning log in
   //   debug builds.
   //
+  // Failure handling:
+  //   Each posted update is applied atomically. If the updater throws, if the resulting config fails validation, or if
+  //   an object built from it cannot be created (TLS context: unreadable or invalid certificate, key, OCSP response or
+  //   CRL; access log file), the error is logged and the previous config (and TLS context) is kept. The other updates
+  //   posted at the same time are applied independently.
+  //
   // TLS hot reload:
   //   TLS configuration (cfg.tls) IS mutable via postConfigUpdate. When you modify cfg.tls,
   //   the server will automatically rebuild the SSL context for new connections. Existing
-  //   connections continue using their current SSL/TLS state. If the new config is invalid
-  //   or context rebuild fails, the old TLS context remains active and the config is restored.
+  //   connections continue using their current SSL/TLS state.
+  //   Each applied update also reloads the TLS files (certificate, key, OCSP response, CRL, SNI ones included) that
+  //   changed on disk since the TLS context was built, even if their paths did not change: an empty update
+  //   (postConfigUpdate([](HttpServerConfig&) {})) is the way to reload TLS files rotated in place. A change is
+  //   detected with stat() (device, inode, size, modification and status change times, following symbolic links). If
+  //   the reload fails, the previous TLS context is kept and the reload is attempted again at the next update.
   //
   // All other fields (limits, timeouts, compression settings, etc.) are mutable and will
   // take effect as documented for each field.
@@ -463,6 +473,16 @@ class SingleHttpServer {
   void eventLoop();
   void sweepIdleConnections();
   void applyPendingUpdates();
+  // Applies the posted config updates, each one atomically (restoring the previous configuration if it fails).
+  void applyPendingConfigUpdates();
+#ifdef AERONET_ENABLE_OPENSSL
+  // Rebuilds the TLS context if one of the files it was built from changed on disk, keeping it if the rebuild fails.
+  void reloadChangedTlsFiles();
+  // Session ticket key store for a TLS context built from the current configuration, replacing the current context
+  // which was built from currentContextConfig. Null to let the new context create its own.
+  [[nodiscard]] std::shared_ptr<TlsTicketKeyStore> ticketKeyStoreForNewTlsContext(
+      const TLSConfig& currentContextConfig) const;
+#endif
   void acceptNewConnections();
 
   enum class CloseStatus : uint8_t { Keep, Close };
