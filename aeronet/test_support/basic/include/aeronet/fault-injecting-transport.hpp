@@ -24,7 +24,7 @@ class FaultInjectingTransport final : public TransportBackend<FaultInjectingTran
 
   [[nodiscard]] bool handshakeDone() const noexcept { return _inner.handshakeDone(); }
   [[nodiscard]] bool hasPendingReadData() const noexcept {
-    return !_readAheadBuffer.empty() || _inner.hasPendingReadData();
+    return !_readAheadBuffer.empty() || _readAheadStopPending || _inner.hasPendingReadData();
   }
 
   /// Mutable access to fault policy for mid-test reconfiguration.
@@ -51,6 +51,9 @@ class FaultInjectingTransport final : public TransportBackend<FaultInjectingTran
   RawChars _readAheadBuffer;
   uint32_t _readCallCount{0};
   uint32_t _writeCallCount{0};
+  // True when the read-ahead stopped on an EOF or an error, that the next read reports once the buffer is served (as
+  // a TLS transport reports a peer close_notify read ahead behind the data).
+  bool _readAheadStopPending{false};
 };
 
 }  // namespace aeronet::test
