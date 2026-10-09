@@ -577,7 +577,9 @@ void SingleHttpServer::acceptNewConnections() {
 
     ConnectionState* pCnx = &state;
     std::size_t bytesReadThisEvent = 0;
-    bool readBudgetExhausted = false;
+    // Input that the loop below left to the deferred read: the rest of the socket data beyond the fairness budget, or
+    // what the transport still reports after a short read.
+    bool inputLeft = false;
     while (true) {
       const std::size_t chunkSize = _config.computeReadChunkSize(bytesReadThisEvent);
       assert(chunkSize > 0);
@@ -645,15 +647,16 @@ void SingleHttpServer::acceptNewConnections() {
       }
       bytesReadThisEvent += static_cast<std::size_t>(bytesRead);
       _telemetry.counterAdd("aeronet.bytes.read", static_cast<uint64_t>(bytesRead));
-      if (bytesRead < chunkSize && !pCnx->transport.hasPendingReadData()) {
-        // For TLS transports: OpenSSL may hold already-decrypted data in its internal buffer that the kernel socket no
-        // longer signals via epoll (critical with EPOLLET).  Continue reading if the transport reports pending data —
-        // otherwise the server would stall until the peer sends more, causing severe throughput degradation with few
-        // connections.
+      if (bytesRead < chunkSize) {
+        // The socket is drained, but the transport can still report pending input, that the kernel does not signal
+        // again (edge-triggered polling): what the TLS read-ahead buffered behind the returned data, like a peer
+        // close_notify sent with its request. It is read once the input read so far is served: reading it now would
+        // close the connection on the close_notify before answering the request.
+        inputLeft = pCnx->transport.hasPendingReadData();
         break;
       }
       if (_config.fairnessBudgetExhausted(bytesReadThisEvent)) {
-        readBudgetExhausted = true;
+        inputLeft = true;
         break;
       }
     }
@@ -667,11 +670,11 @@ void SingleHttpServer::acceptNewConnections() {
     // returning to edge-triggered polling, where no further read edge would be guaranteed.
     cnxIt = _connections.iterator(cnxFd);
     pCnx = _connections.pConnectionState(cnxFd);
-    // The input left by the fairness budget is resumed after the other ready connections, as in handleReadableClient():
-    // a client that completed its handshake and sent its request before the accept may have had all of it read ahead
-    // by the TLS transport, which no read event reports. Unless the input processing stopped reading, or the tunnel
-    // forwarding below reads the rest.
-    const bool deferRemainingInput = readBudgetExhausted && !closeNow && !pCnx->isTunneling();
+    // The input left by the read loop is resumed after the other ready connections, as in handleReadableClient(): a
+    // client that completed its handshake and sent its request before the accept may have had all of it read ahead by
+    // the TLS transport, which no read event reports. Unless the input processing stopped reading (it is then resumed
+    // with it), or the tunnel forwarding below reads the rest.
+    const bool deferRemainingInput = inputLeft && !closeNow && !pCnx->isTunneling();
     if (!closeNow && pCnx->isTunneling()) {
       closeNow = handleInTunneling(cnxIt) == CloseStatus::Close;
     } else if (closeNow && !pCnx->isAnyCloseRequested()) {

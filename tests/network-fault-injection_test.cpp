@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -15,6 +16,7 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/single-http-server.hpp"
+#include "aeronet/socket-ops.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 #include "aeronet/transport-test-hook.hpp"
@@ -278,6 +280,32 @@ TEST_F(NetworkFaultTest, ReadAheadInputLeftByFairnessBudgetAtAcceptIsServed) {
   const auto response = test::recvUntilClosed(cc.fd(), 5s);
   EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response.substr(0, 256);
   EXPECT_TRUE(response.ends_with(body)) << "Echoed body truncated, response size " << response.size();
+}
+
+// The client can also close its side right after its request, before that first read: a TLS client sending its
+// close_notify with the request, both read ahead by the TLS transport. The transport then reports the EOF after the
+// request: it must be answered before the EOF closes the connection, however large its response.
+TEST_F(NetworkFaultTest, ReadAheadRequestFollowedByEofAtAcceptIsAnswered) {
+  test::FaultPolicy policy;
+  policy.readAhead = true;
+  enableFaults(policy);
+
+  for (const std::size_t bodySize : {std::size_t{3}, std::size_t{4} << 20U}) {
+    const std::string body(bodySize, 'b');
+    Router router;
+    router.setPath(http::Method::GET, "/bye", [&body](const HttpRequestView&) { return HttpResponse(body); });
+    // Not started yet: the server accepts the connection once the request and the EOF reached its socket.
+    SingleHttpServer server(HttpServerConfig{}, std::move(router));
+
+    test::ClientConnection cc(server.port());
+    test::sendAll(cc.fd(), "GET /bye HTTP/1.1\r\nHost: test\r\n\r\n");
+    ASSERT_TRUE(ShutdownWrite(cc.fd()));
+    server.start();
+
+    const auto response = test::recvUntilClosed(cc.fd(), 5s);
+    EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response.substr(0, 256);
+    EXPECT_TRUE(response.ends_with(body)) << "Response truncated, size " << response.size();
+  }
 }
 
 }  // namespace
