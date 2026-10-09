@@ -442,12 +442,15 @@ TEST(HttpClientTlsErrorTest, DefaultTrustStoreAugmentedWhenEnvNotConfigured) {
   test::ScopedEnvVar noCertFileEnv(::X509_get_default_cert_file_env(), "");
   test::ScopedEnvVar noCertDirEnv(::X509_get_default_cert_dir_env(), "");
 
+#ifndef AERONET_WINDOWS
   // Skip on a machine with no CA material anywhere aeronet knows to look — nothing to augment with,
   // and the assertion below would legitimately fail through no fault of the code under test.
+  // (Windows always has its system certificate store.)
   if (!std::filesystem::exists("/etc/ssl/certs/ca-certificates.crt") &&
       !std::filesystem::is_directory("/etc/ssl/certs")) {
     GTEST_SKIP() << "No well-known CA bundle location present on this platform.";
   }
+#endif
 
   HttpClientConfig cfg;
   cfg.tlsVerifyPeer = true;  // no explicit CA file/path/proxy CA -> system-trust-store branch
@@ -487,6 +490,23 @@ TEST(HttpClientTlsTrustStoreTest, LoadExistingCaBundlesSkipsFileThatExistsButHas
   const std::vector<const char*> garbageFile{garbagePathStr.c_str()};
   EXPECT_FALSE(internal::LoadExistingCaBundles(ctx.get(), garbageFile, {}));  // file exists, but nothing loads
 }
+
+#ifdef AERONET_WINDOWS
+TEST(HttpClientTlsTrustStoreTest, LoadWindowsSystemRootStoreLoadsSystemRoots) {
+  SslCtxPtr ctx(::SSL_CTX_new(TLS_method()), ::SSL_CTX_free);
+  ASSERT_NE(ctx.get(), nullptr);
+
+  // A fresh SSL_CTX has an empty store: certificates found afterwards come from the Windows ROOT store.
+  X509_STORE* store = ::SSL_CTX_get_cert_store(ctx.get());
+  ASSERT_EQ(sk_X509_OBJECT_num(::X509_STORE_get0_objects(store)), 0);
+
+  EXPECT_TRUE(internal::LoadWindowsSystemRootStore(ctx.get()));
+  EXPECT_GT(sk_X509_OBJECT_num(::X509_STORE_get0_objects(store)), 0);
+
+  // Loading again is harmless: certificates already in the store are accepted.
+  EXPECT_TRUE(internal::LoadWindowsSystemRootStore(ctx.get()));
+}
+#endif
 
 TEST(HttpClientTlsContextTest, MoveConstructionAssignmentAndSelfMovePreserveOwnership) {
   HttpClientConfig cfg;

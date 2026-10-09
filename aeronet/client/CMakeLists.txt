@@ -37,6 +37,10 @@ if(AERONET_ENABLE_OPENSSL)
     target_link_libraries(aeronet_client PRIVATE OpenSSL::SSL OpenSSL::Crypto aeronet_tls)
     target_include_directories(aeronet_client PRIVATE
         $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/aeronet/tls/include>)
+    if(WIN32)
+        # The default trust store is loaded from the Windows system certificate store (CertOpenSystemStoreW).
+        target_link_libraries(aeronet_client PRIVATE crypt32)
+    endif()
 endif()
 
 # --- Tests ---
