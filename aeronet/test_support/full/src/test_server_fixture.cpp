@@ -1,6 +1,5 @@
 #include "aeronet/test_server_fixture.hpp"
 
-#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <exception>
@@ -24,6 +23,10 @@
 namespace aeronet::test {
 
 namespace {
+
+// Posted updates wake the event loop up: they are applied at once whatever the poll interval. The config is not read
+// to scale this timeout: the event loop may be applying an update posted directly with server.postConfigUpdate.
+constexpr std::chrono::milliseconds kUpdateWarnTimeout{200};
 
 void WaitReady(SingleHttpServer& server, std::chrono::milliseconds timeout) noexcept {
   // If builtin probes are enabled, actively poll the readiness probe path until we receive 200 OK
@@ -122,16 +125,13 @@ void TestServer::postConfigUpdate(std::function<void(HttpServerConfig&)> updater
   auto completion = std::make_shared<std::promise<void>>();
   auto future = completion->get_future();
 
-  // Read before posting the update: the event loop may write the config while applying updates.
-  const auto waitTimeout = std::max(server.config().pollInterval * 10, std::chrono::milliseconds{200});
-
   server.postConfigUpdate(std::move(updater));
   // Completion is signaled by a second update: updates are applied in order, so the server is then done with the first
   // one (including the restoration of its immutable fields, which happens after the given updater).
   server.postConfigUpdate([completion](HttpServerConfig&) { completion->set_value(); });
 
-  if (future.wait_for(waitTimeout) == std::future_status::timeout) {
-    log::warn("Config update did not complete within {} ms", waitTimeout.count());
+  if (future.wait_for(kUpdateWarnTimeout) == std::future_status::timeout) {
+    log::warn("Config update did not complete within {} ms", kUpdateWarnTimeout.count());
     // Fallback with a hard deadline to avoid hanging the test suite on a stuck event loop.
     if (future.wait_for(std::chrono::seconds{10}) == std::future_status::timeout) {
       throw std::runtime_error("postConfigUpdate: server event loop appears stuck (10 s timeout)");
@@ -152,9 +152,6 @@ void TestServer::postRouterUpdate(std::function<void(Router&)> updater) {
   auto completion = std::make_shared<std::promise<void>>();
   auto future = completion->get_future();
 
-  // Read before posting the update: the event loop may write the config while applying updates.
-  const auto waitTimeout = std::max(server.config().pollInterval * 10, std::chrono::milliseconds{200});
-
   server.postRouterUpdate([completion, updater = std::move(updater)](Router& router) mutable {
     try {
       updater(router);
@@ -165,8 +162,8 @@ void TestServer::postRouterUpdate(std::function<void(Router&)> updater) {
     completion->set_value();
   });
 
-  if (future.wait_for(waitTimeout) == std::future_status::timeout) {
-    log::warn("Router update did not complete within {} ms", waitTimeout.count());
+  if (future.wait_for(kUpdateWarnTimeout) == std::future_status::timeout) {
+    log::warn("Router update did not complete within {} ms", kUpdateWarnTimeout.count());
     // Fallback with a hard deadline to avoid hanging the test suite on a stuck event loop.
     if (future.wait_for(std::chrono::seconds{10}) == std::future_status::timeout) {
       throw std::runtime_error("postRouterUpdate: server event loop appears stuck (10 s timeout)");

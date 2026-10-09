@@ -23,7 +23,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <functional>
+#include <ios>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -184,4 +186,26 @@ void ScopedTempFile::cleanup() noexcept {
     _path.clear();
   }
 }
+
+void WriteFile(const std::filesystem::path& path, std::string_view content) {
+  std::ofstream file(path, std::ios::binary | std::ios::trunc);
+  if (!file || !file.write(content.data(), static_cast<std::streamsize>(content.size())) || !file.flush()) {
+    throw std::runtime_error("WriteFile: failed to write " + path.string());
+  }
+}
+
+void ReplaceFileAtomically(const std::filesystem::path& path, std::string_view content) {
+  std::filesystem::path tmpPath = path;
+  tmpPath += ".tmp";
+  WriteFile(tmpPath, content);
+  std::filesystem::rename(tmpPath, path);
+}
+
+void ReplaceSymlinkAtomically(const std::filesystem::path& path, const std::filesystem::path& target) {
+  std::filesystem::path tmpPath = path;
+  tmpPath += ".tmp";
+  std::filesystem::create_symlink(target, tmpPath);
+  std::filesystem::rename(tmpPath, path);
+}
+
 }  // namespace aeronet::test

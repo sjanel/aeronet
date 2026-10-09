@@ -316,7 +316,11 @@ class MultiHttpServer {
   [[nodiscard]] AggregatedStats stats() const;
 
   // Post a configuration update to be applied safely to all underlying servers.
-  // See SingleHttpServer::postConfigUpdate for semantics.
+  // See SingleHttpServer::postConfigUpdate for semantics: each worker calls the updater on its own config and applies
+  // the update atomically. An update failing deterministically (updater throwing, invalid config, unreadable or
+  // invalid TLS file) is therefore rejected by every worker, which all keep their previous config and TLS context.
+  // Only an input changing while the workers apply the update (a non-deterministic updater, a TLS file rewritten in
+  // the meantime) can give them different outcomes: posting the update again then makes them converge.
   void postConfigUpdate(const std::function<void(HttpServerConfig&)>& updater);
 
   // Schedule a router update applied to every underlying SingleHttpServer on the event loop threads.
