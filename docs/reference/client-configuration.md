@@ -82,7 +82,7 @@ The client is synchronous, so backoff sleeps block the calling thread. Keep post
 
 Use `withProxy("http://proxy.example:8080")` to send all traffic through a cleartext HTTP proxy. Plain HTTP uses absolute-form requests; HTTPS uses CONNECT first, then runs the origin TLS handshake through the tunnel. A bare `host[:port]` is accepted as an HTTP proxy with default port 80. HTTPS proxy URLs and malformed URLs are rejected. Pass a second argument to `withProxy()` for the CA file of an intercepting/debugging proxy.
 
-With OpenSSL, the client verifies peer certificate chains and hostnames by default. Empty CA file/path settings use OpenSSL's system-default trust paths, including `SSL_CERT_FILE` and `SSL_CERT_DIR` where applicable.
+With OpenSSL, the client verifies peer certificate chains and hostnames by default. Empty CA file/path settings use OpenSSL's system-default trust paths, including `SSL_CERT_FILE` and `SSL_CERT_DIR` where applicable. When neither environment variable is set, the client also trusts the well-known system CA locations (such as `/etc/ssl/certs/ca-certificates.crt`) or, on Windows, the trusted root CAs of the system certificate store.
 
 | TLS setting | Default | Use |
 | --- | --- | --- |
