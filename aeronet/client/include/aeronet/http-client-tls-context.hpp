@@ -47,4 +47,12 @@ class HttpClientTlsContext {
 [[nodiscard]] bool LoadExistingCaBundles(void* sslCtx, std::span<const char* const> caFiles,
                                          std::span<const char* const> caDirs);
 
+#ifdef AERONET_WINDOWS
+// Windows counterpart of LoadExistingCaBundles: Windows has no system CA bundle file, and OpenSSL does not consult
+// the system certificate store by itself. Load into `sslCtx` (an `SSL_CTX*`) the trusted root CAs of the Windows
+// "ROOT" system store (maintained by Windows Update and group policies). Returns true iff at least one certificate
+// was loaded.
+[[nodiscard]] bool LoadWindowsSystemRootStore(void* sslCtx);
+#endif
+
 }  // namespace aeronet::internal
