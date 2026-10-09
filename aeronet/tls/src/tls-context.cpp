@@ -131,6 +131,9 @@ void LoadCertificateAndKey(SSL_CTX* ctx, std::string_view certPem, std::string_v
 }
 
 void ConfigureContextOptions(SSL_CTX* ctx, const TLSConfig& cfg) {
+  // Read as much ciphertext as the socket has per read syscall, instead of two syscalls per record (its 5-byte header,
+  // then its body). TlsTransport then decrypts all the buffered records of a read event in one read call.
+  ::SSL_CTX_set_read_ahead(ctx, 1);
   ::SSL_CTX_set_options(ctx, SSL_OP_CIPHER_SERVER_PREFERENCE);
   assert((::SSL_CTX_get_options(ctx) & SSL_OP_CIPHER_SERVER_PREFERENCE) != 0);
 #ifdef SSL_OP_NO_RENEGOTIATION

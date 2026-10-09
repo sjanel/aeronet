@@ -394,6 +394,7 @@ void SingleHttpServer::flushOutbound(ConnectionIt cnxIt) {
              state.isAnyCloseRequested()) {
     return;
   }
+  resumeInputIfOutputDrained(fd, state);
   // Clear writable interest if no buffered data and transport no longer needs write progress.
   // (We do not call handshakePending() here because ConnStateInternal does not expose it; transport has that.)
   if (!state.hasPendingOutput() && !state.isSendingFile() &&
@@ -405,6 +406,17 @@ void SingleHttpServer::flushOutbound(ConnectionIt cnxIt) {
       }
     } else if (state.waitingWritable) {
       disableWritableInterest(cnxIt);
+    }
+  }
+}
+
+void SingleHttpServer::resumeInputIfOutputDrained(NativeHandle fd, ConnectionState& state) {
+  // Whatever drained the output (a writable event, a flush before reading, the maintenance retry of a missed writable
+  // event), no read event reports the input left by its backpressure.
+  if (state.inputBlockedByOutput && !state.hasPendingOutput() && !state.isSendingFile()) {
+    state.inputBlockedByOutput = false;
+    if (!state.isAnyCloseRequested()) {
+      deferInput(fd, state);
     }
   }
 }

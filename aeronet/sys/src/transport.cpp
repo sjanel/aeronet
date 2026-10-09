@@ -101,7 +101,7 @@ TransportResult PlainTransport::read(char* buf, std::size_t len) {
   return ret;
 }
 
-TransportResult PlainTransport::write(std::string_view data) {
+TransportResult SocketTransportState::socketWrite(std::string_view data) {
 #ifdef AERONET_LINUX
   TransportResult ret = _zerocopyState.tryZerocopySend(_fd, data);
   if (ret.bytesProcessed != 0 || ret.want != TransportHint::None) {
@@ -115,7 +115,7 @@ TransportResult PlainTransport::write(std::string_view data) {
   return SendAll(_fd, data, ret);
 }
 
-TransportResult PlainTransport::write(std::string_view firstBuf, std::string_view secondBuf) {
+TransportResult SocketTransportState::socketWrite(std::string_view firstBuf, std::string_view secondBuf) {
 #ifdef AERONET_LINUX
   TransportResult ret = _zerocopyState.tryZerocopySend(_fd, firstBuf, secondBuf);
   if (ret.bytesProcessed != 0 || ret.want != TransportHint::None) {
@@ -129,10 +129,10 @@ TransportResult PlainTransport::write(std::string_view firstBuf, std::string_vie
     return SendAll(_fd, firstBuf, ret);
   }
   const std::string_view buffers[]{firstBuf, secondBuf};
-  return write(std::span<const std::string_view>(buffers));
+  return socketWrite(std::span<const std::string_view>(buffers));
 }
 
-TransportResult PlainTransport::write(std::span<const std::string_view> buffers) {
+TransportResult SocketTransportState::socketWrite(std::span<const std::string_view> buffers) {
   static constexpr uint8_t kMaxGatherBuffers = 64;
 
 #ifdef AERONET_POSIX
