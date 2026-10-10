@@ -30,6 +30,7 @@
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/url-parsed-result.hpp"
@@ -1020,8 +1021,22 @@ HttpClientResult HttpClient::requestUncached(HttpRequest&& req) {
       req.method(http::Method::GET);
     }
 
-    if (!req.resolveRedirect(location)) {
-      return std::unexpected(HttpClientErrc::invalidUrl);
+    HttpRequest::RedirectOutcome outcome = req.resolveRedirect(location);
+
+    switch (outcome) {
+      case HttpRequest::RedirectOutcome::Invalid:
+        return std::unexpected(HttpClientErrc::invalidUrl);
+      case HttpRequest::RedirectOutcome::Downgrade:
+        // Following it would send the request, and receive its response, in clear over the network.
+        log::warn("Not following the redirect of {} to the cleartext URL '{}'", req.originKey(), location);
+        return result;
+      case HttpRequest::RedirectOutcome::CrossOrigin:
+        // Credentials are meant for the origin the request was made for, not for an origin chosen by a redirect.
+        req.headerRemoveAllLines(http::Authorization).headerRemoveAllLines(http::Cookie);
+        break;
+      default:
+        assert(outcome == HttpRequest::RedirectOutcome::SameOrigin);
+        break;
     }
 
     --redirectsLeft;

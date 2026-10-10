@@ -44,7 +44,8 @@ For the best performance, fill a response in order: status and reason, then head
 | `headerAddLine(name, value)` | No scan | Add a header. Duplicates are allowed: the cheapest way to add headers you know are not present yet. |
 | `header(name, value)` | Scans existing headers | Set a header, replacing an existing one. |
 | `headerAppendValue(name, value, sep)` | Scans existing headers | Append to a list header (`vary`, `cache-control`). |
-| `headerRemoveLine(name)`, `headerRemoveValue(name, value)` | Scans existing headers | Remove a header, or one value of a list header. |
+| `headerRemoveLine(name)`, `headerRemoveValue(name, value)` | Scans existing headers | Remove a header (its last line), or one value of a list header. |
+| `headerRemoveAllLines(name)` | Scans existing headers once | Remove every line of a repeated header (`set-cookie`...). |
 | `headerValueOrEmpty(name)`, `headers()` | Scans existing headers | Read headers back. |
 | `location(url)` | Scans existing headers | Set `Location`, for redirects. |
 
@@ -121,9 +122,10 @@ Adding a trailer before the body throws `std::logic_error`. Over HTTP/1.1, trail
 
 ## Errors
 
-An exception escaping a handler is caught by the server, logged, and answered with `500 Internal Server Error`. The body of that response is the exception message (`what()`): never put secrets or internal details, such as connection strings or file paths, in the messages of exceptions that can escape a handler. Return explicit error responses for expected failures instead, with a body that helps the client, and keep exceptions for bugs.
+An exception escaping a handler is caught by the server, logged with its message (`what()`), and answered with `500 Internal Server Error`, without body: the message, which can reveal internal details such as file paths or connection strings, is never sent to the client. Return explicit error responses for expected failures instead, with a body that helps the client, and keep exceptions for bugs.
 
 ## Tests
 
 - Response building, headers, bodies, and trailers: [http-response_test.cpp](../../aeronet/http/test/http-response_test.cpp).
 - End-to-end responses, keep-alive, and empty bodies: [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
+- Handlers that throw: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp), [tests/http-routing_test.cpp](../../tests/http-routing_test.cpp) (async handlers), and [http2-protocol-handler_test.cpp](../../aeronet/http2/test/http2-protocol-handler_test.cpp) (HTTP/2).

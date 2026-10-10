@@ -90,7 +90,17 @@ class HttpRequestTest : public ::testing::Test {
 
   static bool IsAutomaticDirectCompression(const HttpRequest& req) { return req._opts.isAutomaticDirectCompression(); }
 
-  static bool ResolveRedirect(HttpRequest& req, std::string_view location) { return req.resolveRedirect(location); }
+  using RedirectOutcome = HttpRequest::RedirectOutcome;
+
+  static RedirectOutcome ResolveRedirectOutcome(HttpRequest& req, std::string_view location) {
+    return req.resolveRedirect(location);
+  }
+
+  // Tell whether the redirect to 'location' was followed (the request now points to it).
+  static bool ResolveRedirect(HttpRequest& req, std::string_view location) {
+    const auto outcome = req.resolveRedirect(location);
+    return outcome == RedirectOutcome::SameOrigin || outcome == RedirectOutcome::CrossOrigin;
+  }
 
   // Checks that 'req' is identical to 'expected' (a copy taken before a rejected update).
   static void ExpectSameRequest(const HttpRequest& req, const HttpRequest& expected) {
@@ -317,6 +327,25 @@ TEST_F(HttpRequestTest, Headers) {
 //     memmove'd a length computed from (_data.end() - insertPtr), which can go negative and wrap.
 // In a release build that was heap corruption and a SIGSEGV; under ASan it reports a heap-buffer-overflow. The
 // assertions here fail deterministically without the fix, before any out-of-bounds access is even reached.
+TEST_F(HttpRequestTest, HeaderRemoveAllLines) {
+  auto req = makeRequest(http::Method::POST, "http://example.com/path");
+  req.headerAddLine(http::Cookie, "a=1").headerAddLine("x-keep", "k").headerAddLine(http::Cookie, "b=2");
+  req.body("payload", "text/plain");
+
+  req.headerRemoveAllLines(http::Cookie);
+
+  EXPECT_FALSE(req.headerValue(http::Cookie).has_value());
+  EXPECT_EQ(req.headerValueOrEmpty("x-keep"), "k");
+  EXPECT_EQ(req.headerValueOrEmpty(http::Host), "example.com");
+  EXPECT_EQ(req.bodyInMemory(), "payload");
+  EXPECT_THROW(req.headerRemoveAllLines(http::Host), std::invalid_argument);
+
+  auto chained = makeRequest(http::Method::GET, "http://example.com/path")
+                     .headerAddLine(http::Authorization, "Bearer token")
+                     .headerRemoveAllLines(http::Authorization);
+  EXPECT_FALSE(chained.headerValue(http::Authorization).has_value());
+}
+
 TEST_F(HttpRequestTest, BodylessRequestWithAdditionalCapacityKeepsBodyStartAtHeadEnd) {
   static constexpr LowerAsciiKey kAuthorization = "authorization";
   // Realistically sized bearer token: big enough that the old overshoot was unmistakable.
@@ -925,6 +954,37 @@ TEST_F(HttpRequestTest, ResolveRedirectAbsoluteUrlTls) {
     EXPECT_EQ(req.port(), 443);
     EXPECT_EQ(req.target(), "/y");
   }
+}
+
+TEST_F(HttpRequestTest, ResolveRedirectReportsOriginChanges) {
+  using enum RedirectOutcome;
+  {
+    auto req = makeRequest(http::Method::GET, "https://example.com/x");
+    EXPECT_EQ(ResolveRedirectOutcome(req, "/y"), SameOrigin);
+    EXPECT_EQ(ResolveRedirectOutcome(req, "y?q=1"), SameOrigin);
+    EXPECT_EQ(ResolveRedirectOutcome(req, "https://example.com/z"), SameOrigin);
+    EXPECT_EQ(ResolveRedirectOutcome(req, "https://EXAMPLE.com:443/z"), SameOrigin);
+    EXPECT_EQ(ResolveRedirectOutcome(req, "//example.com/z"), SameOrigin);
+    EXPECT_EQ(ResolveRedirectOutcome(req, "https://example.com:8443/z"), CrossOrigin);
+    EXPECT_EQ(req.originKey(), "https://example.com:8443");
+    EXPECT_EQ(ResolveRedirectOutcome(req, "https://other.com/z"), CrossOrigin);
+    EXPECT_EQ(ResolveRedirectOutcome(req, "//sub.other.com/z"), CrossOrigin);
+    EXPECT_EQ(req.originKey(), "https://sub.other.com:443");
+  }
+  {
+    // An upgrade to https changes the origin too.
+    auto req = makeRequest(http::Method::GET, "http://example.com/x");
+    EXPECT_EQ(ResolveRedirectOutcome(req, "https://example.com/x"), CrossOrigin);
+    EXPECT_EQ(req.originKey(), "https://example.com:443");
+  }
+}
+
+TEST_F(HttpRequestTest, ResolveRedirectRefusesDowngradeToCleartext) {
+  auto req = makeRequest(http::Method::GET, "https://example.com/x");
+  const HttpRequest expected = req;
+  EXPECT_EQ(ResolveRedirectOutcome(req, "http://example.com/x"), RedirectOutcome::Downgrade);
+  EXPECT_EQ(ResolveRedirectOutcome(req, "http://other.com/y"), RedirectOutcome::Downgrade);
+  ExpectSameRequest(req, expected);
 }
 
 TEST_F(HttpRequestTest, ResolveRedirectNetworkRelativeNonTls) {

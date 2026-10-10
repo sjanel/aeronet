@@ -119,8 +119,13 @@ Version bounds, cipher lists, and in-memory client certificates are listed in th
 
 Redirects (`301`, `302`, `303`, `307`, `308`) are followed by default, up to `maxRedirects` (5) per request; the last response is returned when the limit is reached, or when a `3xx` response has no `Location`. Following RFC 9110, a `303` turns the request into a body-less `GET`, as does a `301` or `302` answering a method other than `GET` or `HEAD`. `307` and `308` keep the method and body. Set `followRedirects = false` to receive the `3xx` responses.
 
-!!! warning
-    A redirect to another origin keeps every request header, `Authorization` and `Cookie` included, and a redirect from HTTPS to cleartext HTTP is followed. When a request carries credentials for a server you do not fully control, disable `followRedirects` and handle the redirects yourself.
+A redirect never weakens the protection of the request:
+
+- **Credentials stay with their origin.** When the redirect leads to another origin (scheme, host, or port), the `Authorization` and `Cookie` headers are removed from the request, including those coming from `globalHeaders`. Other headers are kept. A redirect within the same origin keeps every header.
+- **No downgrade to cleartext.** A redirect from HTTPS to HTTP is not followed: the `3xx` response is returned, and a warning is logged. A redirect from HTTP to HTTPS is followed.
+
+!!! note
+    Only `Authorization` and `Cookie` are recognized as credentials. If an API key travels in another header (`X-Api-Key`...), disable `followRedirects` for requests that carry it and handle the redirects yourself.
 
 ## Retries
 
@@ -186,8 +191,8 @@ The client counts retries, redirects, and request compression outcomes (`aeronet
 
 ## Tests
 
-- HTTP/1.1 exchanges, pooling, redirects, retries, cache, and response buffers: [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp).
+- HTTP/1.1 exchanges, pooling, redirects (and the credentials they drop), retries, cache, and response buffers: [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp). Redirect URL resolution: [http-request_test.cpp](../../aeronet/client/test/http-request_test.cpp).
 - HTTP/2: [http-client-http2-e2e_test.cpp](../../aeronet/client/test/http-client-http2-e2e_test.cpp).
-- HTTPS, trust stores, and mutual TLS: [http-client-tls-e2e_test.cpp](../../aeronet/client/test/http-client-tls-e2e_test.cpp).
+- HTTPS, trust stores, mutual TLS, and redirects to cleartext: [http-client-tls-e2e_test.cpp](../../aeronet/client/test/http-client-tls-e2e_test.cpp).
 - Configuration and retry policy: [http-client-config_test.cpp](../../aeronet/client/test/http-client-config_test.cpp) and [retry-config_test.cpp](../../aeronet/client/test/retry-config_test.cpp).
 - Response decompression and `Accept-Encoding`: [client-accept-encoding_test.cpp](../../aeronet/client/test/client-accept-encoding_test.cpp).

@@ -1,7 +1,6 @@
 #include "aeronet/single-http-server.hpp"
 
 #include <algorithm>
-#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
@@ -9,12 +8,10 @@
 #include <cstring>
 #include <exception>
 #include <functional>
-#include <future>
 #include <memory>
 #include <mutex>
 #include <span>
 #include <string_view>
-#include <thread>
 #include <type_traits>
 #include <utility>
 
@@ -39,54 +36,35 @@
 #include "aeronet/internal/connection-storage.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
-#include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/path-handlers.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
-#include "aeronet/router-update-proxy.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
 #include "aeronet/signal-handler.hpp"
 #include "aeronet/simple-charconv.hpp"
-#include "aeronet/socket-ops.hpp"
 #include "aeronet/socket.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
-#include "aeronet/system-error.hpp"
-#include "aeronet/tcp-no-delay-mode.hpp"
-#include "aeronet/telemetry-config.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/vector.hpp"
 #include "http-error-build.hpp"
 #include "http1-writer-transport.hpp"
-
-#ifdef AERONET_ENABLE_OPENSSL
-#include "aeronet/tls-context.hpp"
-#include "aeronet/tls-handshake-callback.hpp"
-#endif
+#include "tunnel-manager.hpp"
 
 #ifdef AERONET_ENABLE_WEBSOCKET
 #include "aeronet/websocket-endpoint.hpp"
 #include "aeronet/websocket-handler.hpp"
-#include "aeronet/websocket-upgrade.hpp"
-#endif
-
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-#include <coroutine>
-
-#include "aeronet/request-task.hpp"
 #endif
 
 #if defined(AERONET_ENABLE_HTTP2) || defined(AERONET_ENABLE_WEBSOCKET)
 #include "upgrade-handler.hpp"
 
 #ifdef AERONET_ENABLE_HTTP2
-#include "aeronet/http2-error-code-name.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-protocol-handler.hpp"
-#include "aeronet/tunnel-bridge.hpp"
 #endif
 #endif
 
@@ -94,192 +72,23 @@ namespace aeronet {
 
 namespace {
 
-// Snapshot of immutable HttpServerConfig fields that require socket rebind or structural reinitialization.
-// These fields are captured before allowing config updates and silently restored afterward to prevent
-// runtime modification of settings that cannot be changed without recreating the server.
-class ImmutableConfigSnapshot {
- public:
-  explicit ImmutableConfigSnapshot(const HttpServerConfig& cfg)
-      : _nbThreads(cfg.nbThreads), _port(cfg.port), _reusePort(cfg.reusePort), _telemetry(cfg.telemetry) {}
+// Consumes the bytes of the request from the input buffer once it is served.
+struct RequestFinalizationRAII {
+  RequestFinalizationRAII(ConnectionState& state, std::size_t consumedBytes)
+      : state(state), consumedBytes(consumedBytes) {}
 
-  void restore(HttpServerConfig& cfg) {
-    if (cfg.nbThreads != _nbThreads) [[unlikely]] {
-      cfg.nbThreads = _nbThreads;
-      log::warn("Attempted to modify immutable HttpServerConfig.nbThreads at runtime; change ignored");
-    }
-    if (cfg.port != _port) [[unlikely]] {
-      cfg.port = _port;
-      log::warn("Attempted to modify immutable HttpServerConfig.port at runtime; change ignored");
-    }
-    if (cfg.reusePort != _reusePort) [[unlikely]] {
-      cfg.reusePort = _reusePort;
-      log::warn("Attempted to modify immutable HttpServerConfig.reusePort at runtime; change ignored");
-    }
-    if (cfg.telemetry != _telemetry) [[unlikely]] {
-      cfg.telemetry = std::move(_telemetry);
-      log::warn("Attempted to modify immutable HttpServerConfig.telemetry at runtime; change ignored");
-    }
-  }
+  RequestFinalizationRAII(const RequestFinalizationRAII&) = delete;
+  RequestFinalizationRAII(RequestFinalizationRAII&&) noexcept = delete;
+  RequestFinalizationRAII& operator=(const RequestFinalizationRAII&) = delete;
+  RequestFinalizationRAII& operator=(RequestFinalizationRAII&&) noexcept = delete;
 
- private:
-  uint16_t _nbThreads;
-  uint16_t _port;
-  bool _reusePort;
-  TelemetryConfig _telemetry;
+  ~RequestFinalizationRAII() { state.inBuffer.erase_front(consumedBytes); }
+
+  ConnectionState& state;
+  std::size_t consumedBytes;
 };
 
 }  // namespace
-
-RouterUpdateProxy SingleHttpServer::router() {
-  return {[this](std::function<void(Router&)> updater) {
-            auto completion = std::make_shared<std::promise<std::exception_ptr>>();
-            auto future = completion->get_future();
-            this->submitRouterUpdate(std::move(updater), std::move(completion));
-            if (auto ex = future.get()) {
-              std::rethrow_exception(ex);
-            }
-          },
-          [this] -> Router& { return _router; }};
-}
-
-void SingleHttpServer::setParserErrorCallback(ParserErrorCallback cb) {
-  submitCallbacksUpdate([cb = std::move(cb)](Callbacks& callbacks) { callbacks.parserErr = cb; });
-}
-
-void SingleHttpServer::setMetricsCallback(MetricsCallback cb) {
-  submitCallbacksUpdate([cb = std::move(cb)](Callbacks& callbacks) { callbacks.metrics = cb; });
-}
-
-#ifdef AERONET_ENABLE_OPENSSL
-void SingleHttpServer::setTlsHandshakeCallback(TlsHandshakeCallback cb) {
-  submitCallbacksUpdate([cb = std::move(cb)](Callbacks& callbacks) { callbacks.tlsHandshake = cb; });
-}
-#endif
-
-void SingleHttpServer::setExpectationHandler(ExpectationHandler handler) {
-  submitCallbacksUpdate([handler = std::move(handler)](Callbacks& callbacks) { callbacks.expectation = handler; });
-}
-
-void SingleHttpServer::setMiddlewareMetricsCallback(MiddlewareMetricsCallback cb) {
-  submitCallbacksUpdate([cb = std::move(cb)](Callbacks& callbacks) { callbacks.middlewareMetrics = cb; });
-}
-
-void SingleHttpServer::submitCallbacksUpdate(std::function<void(Callbacks&)> updater) {
-  if (_lifecycle.isEventLoopThread()) {
-    // From a handler or a callback: the event loop is the thread using the callbacks.
-    updater(_callbacks);
-    return;
-  }
-
-  // While running, the change is applied by the event loop, and this call waits for it: the new callback is then used
-  // for everything happening after this call (the event loop may otherwise still process, in its current iteration, a
-  // connection initiated after it).
-  auto applied = std::make_shared<std::atomic<bool>>(false);
-  {
-    std::scoped_lock lock(_updates.lock);
-    if (_lifecycle.isIdle()) {
-      applyQueuedCallbacksUpdates();
-      updater(_callbacks);
-      return;
-    }
-    _callbacksUpdates.emplace_back([updater = std::move(updater), applied](Callbacks& callbacks) {
-      // Released even if the updater throws, so that the waiting caller does not wait for the server to stop.
-      const auto release = [&applied] noexcept { applied->store(true, std::memory_order_release); };
-      try {
-        updater(callbacks);
-      } catch (...) {
-        release();
-        throw;
-      }
-      release();
-    });
-    _hasCallbacksUpdates.store(true, std::memory_order_release);
-  }
-  _lifecycle.wakeupFd.send();
-
-  while (!applied->load(std::memory_order_acquire)) {
-    {
-      std::scoped_lock lock(_updates.lock);
-      if (_lifecycle.isIdle()) {
-        // The event loop exited before applying it: no thread uses the callbacks anymore.
-        applyQueuedCallbacksUpdates();
-        return;
-      }
-    }
-    // Bounded wait, so that the exit of the event loop is noticed even if the update is never applied by it.
-    std::this_thread::sleep_for(std::chrono::microseconds{100});
-  }
-}
-
-void SingleHttpServer::applyQueuedCallbacksUpdates() {
-  // Changes still queued (posted just before the event loop exited) first, so that the latest one wins.
-  for (auto& pendingUpdater : _callbacksUpdates) {
-    pendingUpdater(_callbacks);
-  }
-  _callbacksUpdates.clear();
-  _hasCallbacksUpdates.store(false, std::memory_order_relaxed);
-}
-
-void SingleHttpServer::postConfigUpdate(std::function<void(HttpServerConfig&)> updater) {
-  {
-    std::scoped_lock lock(_updates.lock);
-    // Wrap user's updater with immutability enforcement: apply user changes then restore immutable fields.
-    // The snapshot is taken when applying the update, by the event loop: the config cannot be read from the calling
-    // thread, the event loop possibly applying a previous update at the same time.
-    struct WrappedUpdater {
-      void operator()(HttpServerConfig& cfg) const {
-        ImmutableConfigSnapshot snapshot(cfg);
-        userUpdater(cfg);
-        snapshot.restore(cfg);
-      }
-
-      std::function<void(HttpServerConfig&)> userUpdater;
-    };
-
-    _updates.config.emplace_back(WrappedUpdater{std::move(updater)});
-    _updates.hasConfig.store(true, std::memory_order_release);
-  }
-  _lifecycle.wakeupFd.send();
-}
-
-void SingleHttpServer::postRouterUpdate(std::function<void(Router&)> updater) {
-  submitRouterUpdate(std::move(updater), {});
-}
-
-void SingleHttpServer::submitRouterUpdate(std::function<void(Router&)> updater,
-                                          std::shared_ptr<std::promise<std::exception_ptr>> completion) {
-  auto wrappedUpdater = [fn = std::move(updater), completionPtr = std::move(completion)](Router& router) mutable {
-    try {
-      fn(router);
-      if (completionPtr) {
-        completionPtr->set_value(nullptr);
-      }
-    } catch (const std::exception& ex) {
-      if (completionPtr) {
-        completionPtr->set_value(std::current_exception());
-      } else {
-        log::error("Exception while applying posted router update: {}", ex.what());
-      }
-    } catch (...) {
-      assert(completionPtr == nullptr);
-      log::error("Unknown exception while applying posted router update");
-    }
-  };
-
-  {
-    std::scoped_lock lock(_updates.lock);
-    // beginStartup() takes this same lock before publishing Starting. A direct update
-    // therefore completes before startup begins; every later update is queued for the
-    // event-loop thread and clamped there.
-    if (_lifecycle.isIdle()) {
-      wrappedUpdater(_router);
-      return;
-    }
-    _updates.router.emplace_back(std::move(wrappedUpdater));
-    _updates.hasRouter.store(true, std::memory_order_release);
-  }
-  _lifecycle.wakeupFd.send();
-}
 
 bool SingleHttpServer::enableWritableInterest(ConnectionIt cnxIt) {
   ConnectionState& state = _connections.connectionState(cnxIt);
@@ -315,6 +124,15 @@ bool SingleHttpServer::processConnectionInput(ConnectionIt cnxIt) {
 
   // If we have a protocol handler installed (e.g., WebSocket, HTTP/2), use it
   if (state.protocolHandler) {
+#ifdef AERONET_ENABLE_WEBSOCKET
+    if (state.protocol == ProtocolType::WebSocket) {
+      const NativeHandle fd = cnxIt->fd();
+      const bool closeRequested = processSpecialProtocolHandler(cnxIt);
+      // A callback may have started the close handshake, whose timeout can come before the armed deadline.
+      refreshWebSocketDeadline(fd, *_connections.pConnectionState(fd));
+      return closeRequested;
+    }
+#endif
     return processSpecialProtocolHandler(cnxIt);
   }
 
@@ -354,7 +172,7 @@ bool SingleHttpServer::processConnectionInput(ConnectionIt cnxIt) {
 }
 
 bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
-  // Save the client fd before entering the loop. processInput() may call back into setupTunnelConnection()
+  // Save the client fd before entering the loop. processInput() may set up a tunnel through the tunnel bridge
   // (HTTP/2 CONNECT), whose insertion may invalidate cnxIt by growing the POSIX fd vector or rehashing the Windows
   // map. Re-find cnxIt by fd after each processInput() call, matching the HTTP/1.1 CONNECT path.
   const NativeHandle clientFd = cnxIt->fd();
@@ -448,8 +266,9 @@ bool SingleHttpServer::StopReadingIfOutputBlocked(ConnectionState& state) {
 
 bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
   ConnectionState& state = _connections.connectionState(cnxIt);
-  if (state.isAnyCloseRequested()) {
-    // The bytes still buffered (a request answered by an error, its unread body...) must not be served.
+  if (state.isAnyCloseRequested() || state.tunnelResolving) {
+    // The bytes still buffered (a request answered by an error, its unread body, the CONNECT request waiting for its
+    // target resolution and the tunnel bytes behind it...) must not be served.
     return true;
   }
   const auto cnxFd = cnxIt->fd();
@@ -522,23 +341,11 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
     }
 
     bool isChunked = false;
-    const auto optTransferEncoding = request.headerValue(http::TransferEncoding);
-    if (optTransferEncoding) {
-      if (request.version() == http::HTTP_1_0) {
-        emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Transfer-Encoding not allowed in HTTP/1.0");
+    if (const auto optTransferEncoding = request.headerValue(http::TransferEncoding)) {
+      if (!acceptChunkedTransferEncoding(cnxIt, *optTransferEncoding)) {
         break;
       }
-      if (CaseInsensitiveEqual(*optTransferEncoding, http::chunked)) {
-        isChunked = true;
-      } else {
-        emitSimpleError(cnxIt, http::StatusCodeNotImplemented, "Unsupported Transfer-Encoding");
-        break;
-      }
-      if (request.headerValue(http::ContentLength)) {
-        emitSimpleError(cnxIt, http::StatusCodeBadRequest,
-                        "Content-Length and Transfer-Encoding cannot be used together");
-        break;
-      }
+      isChunked = true;
     }
 
     const auto [encoding, reject] =
@@ -568,58 +375,6 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
     // `Upgrade: h2c` (HTTP/1.1 -> cleartext HTTP/2) is deliberately not honored: RFC 9113 §3.1 deprecated that
     // mechanism and RFC 9110 §7.8 lets a server ignore Upgrade, so such a request is answered over HTTP/1.1 like any
     // other. Cleartext HTTP/2 is only available with prior knowledge (Http2Config::enableH2c).
-
-#ifdef AERONET_ENABLE_WEBSOCKET
-    // Check for WebSocket upgrade request
-    if (routingResult.webSocketEndpoint() != nullptr && request.method() == http::Method::GET) {
-      const WebSocketEndpoint& endpoint = *routingResult.webSocketEndpoint();
-
-      // Build upgrade config from endpoint settings
-      WebSocketUpgradeConfig upgradeConfig{endpoint.supportedProtocols, endpoint.config.deflateConfig};
-
-      const auto upgradeValidation = upgrade::ValidateWebSocketUpgrade(request.headers(), upgradeConfig);
-      if (upgradeValidation.valid) {
-        // Generate and send 101 Switching Protocols response
-        const std::size_t consumedBytes = request.headSpanSize();
-        state.inBuffer.erase_front(consumedBytes);
-
-        // Create WebSocket handler using the endpoint's factory or default
-        std::unique_ptr<websocket::WebSocketHandler> wsHandler;
-        if (endpoint.factory) {
-          wsHandler = endpoint.factory(request);
-          if (!wsHandler->hasCompression() && upgradeValidation.deflateParams.has_value()) {
-            // Compression was negotiated but the factory did not configure it: enable it on the handler, keeping
-            // the callbacks the factory installed.
-            wsHandler->enableCompression(*upgradeValidation.deflateParams);
-          }
-        } else {
-          auto config = endpoint.config;
-          config.isServerSide = true;
-          wsHandler = std::make_unique<websocket::WebSocketHandler>(config, websocket::WebSocketCallbacks(),
-                                                                    upgradeValidation.deflateParams);
-        }
-
-        // Install the protocol handler
-        state.protocolHandler = std::move(wsHandler);
-        state.protocol = ProtocolType::WebSocket;
-
-        // Queue the upgrade response
-        char* pData = state.outBuffer.resizeUp(upgrade::ComputeWebSocketUpgradeResponseSize(upgradeValidation));
-
-        upgrade::BuildWebSocketUpgradeResponse(upgradeValidation, pData);
-        flushOutbound(cnxIt);
-
-        // Return - the connection is now a WebSocket and will be handled differently
-        return false;
-      }
-      // If upgrade validation failed but route has WebSocket endpoint, return 400
-      if (upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)) == ProtocolType::WebSocket) {
-        emitSimpleError(cnxIt, http::StatusCodeBadRequest, upgradeValidation.errorMessage);
-        break;
-      }
-      // Otherwise, fall through to normal request handling (if there's a regular handler)
-    }
-#endif
 
     // Per-route request head size limit (already clamped against global in prepareRun)
     if (request.headSpanSize() > routingResult.pathConfig().maxHeaderBytes) {
@@ -654,29 +409,14 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
         state.requestDrainAndClose();
       }
     };
+    trackBodyReception(state, bodyReady);
     if (bodyReady) {
-      if (_config.bodyReadTimeout.count() > 0) {
-        if (state.waitingForBody) {
-          assert(_connectionSweepState.pendingTimeoutConnections > 0U);
-          --_connectionSweepState.pendingTimeoutConnections;
-        }
-        state.waitingForBody = false;
-        state.bodyLastActivityMs = ConnectionState::kInactiveRelativeMs;
-      }
       const bool usePerConnectionBodyStorage = state.trailerLen != 0;
       if (!request._body.empty() && !maybeDecompressRequestBody(cnxIt, usePerConnectionBodyStorage)) {
         break;
       }
       state.installAggregatedBodyBridge();
     } else {
-      if (_config.bodyReadTimeout.count() > 0) {
-        if (!state.waitingForBody) {
-          ++_connectionSweepState.pendingTimeoutConnections;
-        }
-        state.waitingForBody = true;
-        state.bodyLastActivityMs = static_cast<uint32_t>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(state.lastActivity - state.headerStartTp).count());
-      }
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
       if (routingResult.asyncRequestHandler() == nullptr) {
         break;
@@ -686,21 +426,6 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
 #endif
     }
 
-    struct RequestFinalizationRAII {
-      RequestFinalizationRAII(ConnectionState& state, std::size_t consumedBytes)
-          : state(state), consumedBytes(consumedBytes) {}
-
-      RequestFinalizationRAII(const RequestFinalizationRAII&) = delete;
-      RequestFinalizationRAII(RequestFinalizationRAII&&) noexcept = delete;
-      RequestFinalizationRAII& operator=(const RequestFinalizationRAII&) = delete;
-      RequestFinalizationRAII& operator=(RequestFinalizationRAII&&) noexcept = delete;
-
-      ~RequestFinalizationRAII() { state.inBuffer.erase_front(consumedBytes); }
-
-      ConnectionState& state;
-      std::size_t consumedBytes;
-    };
-
     RequestFinalizationRAII requestFinalizationRAII(state, consumedBytes);
 
     // Handle OPTIONS and TRACE per RFC 7231 §4.3
@@ -708,6 +433,11 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
     // However, no need to update state because the pointer stays valid.
     const auto action = processSpecialMethods(cnxIt, consumedBytes, pCorsPolicy);
     if (action == LoopAction::SwitchProtocol) {
+      if (state.tunnelResolving) {
+        // The CONNECT request is answered once its target is resolved: its bytes stay in the input buffer until then.
+        requestFinalizationRAII.consumedBytes = 0;
+        return true;  // stop reading
+      }
       return state.isAnyCloseRequested();
     }
 
@@ -723,12 +453,8 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
 
     const bool isStreaming = routingResult.streamingHandler() != nullptr && request.version() == http::HTTP_1_1;
 
-    auto responseMiddlewareRange = routingResult.postMiddlewareRange();
-
-    auto sendResponse = [this, isStreaming, responseMiddlewareRange, cnxIt, &state, pCorsPolicy](HttpResponse&& resp) {
-      ApplyResponseMiddleware(state.request, resp, responseMiddlewareRange, _router.globalResponseMiddleware(),
-                              _telemetry, isStreaming, _callbacks.middlewareMetrics);
-      finalizeAndSendResponseForHttp1(cnxIt, std::move(resp), pCorsPolicy);
+    auto sendResponse = [this, cnxIt, &routingResult, isStreaming](HttpResponse&& resp) {
+      sendHttp1Response(cnxIt, std::move(resp), routingResult, isStreaming);
     };
 
     auto shortCircuitedResponse =
@@ -741,78 +467,39 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
       continue;
     }
 
-    auto corsRejected = [pCorsPolicy, &request, &sendResponse] {
-      if (pCorsPolicy != nullptr && pCorsPolicy->wouldApply(request) == CorsPolicy::ApplyStatus::OriginDenied) {
-        sendResponse(request.makeResponse(http::StatusCodeForbidden, "Forbidden by CORS policy"));
-        return true;
+#ifdef AERONET_ENABLE_WEBSOCKET
+    // A WebSocket upgrade goes through the request middleware (above) and the origin checks, like a request.
+    if (routingResult.webSocketEndpoint() != nullptr && request.method() == http::Method::GET &&
+        upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)) == ProtocolType::WebSocket) {
+      const LoopAction upgradeAction = processWebSocketUpgrade(cnxIt, routingResult);
+      if (upgradeAction == LoopAction::SwitchProtocol) {
+        // The connection is now a WebSocket and will be handled differently
+        return false;
       }
-      return false;
-    };
+      if (upgradeAction == LoopAction::Break) {
+        break;
+      }
+      continue;
+    }
+#endif
 
     if (isStreaming) {
-      // Invoke a registered streaming handler. Returns true if the connection should be closed after handling the
-      // request (either because the client requested it or keep-alive limits reached). The HttpRequestView is non-const
-      // because we may reuse shared response finalization paths (e.g. emitting a 406 early) that expect to mutate
-      // transient fields (target normalization already complete at this point).
-
-      if (corsRejected()) {
+      if (rejectDeniedCorsOrigin(cnxIt, routingResult, isStreaming)) {
         continue;
       }
-
-      bool wantClose = request.wantClose();
-
-      // Create the protocol-specific transport backend and the protocol-agnostic writer
-      Http1WriterTransport transport(*this, cnxFd, wantClose, pCorsPolicy, responseMiddlewareRange);
-      HttpMessage::Options opts;
-      if (_config.addTrailerHeader) {
-        opts.addTrailerHeader();
-      }
-      if (request.method() == http::Method::HEAD) {
-        opts.setHeadMethod();
-      }
-      opts.setPrepared();
-
-      HttpResponseWriter writer(transport, request, request.responsePossibleEncoding(), _config.compression,
-                                _compressionState, _config.globalHeaders.fullStringWithLastSep(), opts);
-
-      try {
-        (*routingResult.streamingHandler())(request, writer);
-      } catch (const std::exception& ex) {
-        log::error("Exception in streaming handler: {}", ex.what());
-        sendResponse(request.makeResponse(http::StatusCodeInternalServerError, ex.what()));
-        continue;
-      } catch (...) {
-        log::error("Unknown exception in streaming handler");
-        sendResponse(request.makeResponse(http::StatusCodeInternalServerError, "Unknown error"));
-        continue;
-      }
-      if (!writer.finished()) {
-        writer.end();
-      }
-
-      const auto httpWriterStatusCode = writer.status();
-
-      if (_callbacks.metrics || _accessLog) {
-        emitRequestMetrics(request, httpWriterStatusCode, request._body.size(), state.requestsServed > 1);
-      }
-
-      request.end(httpWriterStatusCode);
-
-      assert(request.version() == http::HTTP_1_1);
-      if (!_config.enableKeepAlive || wantClose || state.requestsServed + 1 >= _config.maxRequestsPerConnection ||
-          state.isAnyCloseRequested() || _lifecycle.isDraining() || _lifecycle.isStopping()) {
-        state.requestDrainAndClose();
+      if (serveStreamingRequest(cnxIt, routingResult) == LoopAction::Break) {
         break;
       }
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
     } else if (routingResult.asyncRequestHandler() != nullptr) {
-      if (corsRejected()) {
+      if (rejectDeniedCorsOrigin(cnxIt, routingResult, isStreaming)) {
         closeIfBodyPending();
         continue;
       }
 
       if (dispatchAsyncHandler(cnxIt, routingResult.sharedAsyncRequestHandler(), bodyReady, isChunked, consumedBytes,
-                               pCorsPolicy, responseMiddlewareRange, routingResult.pathConfig().maxBodyBytes)) {
+                               pCorsPolicy, routingResult.postMiddlewareRange(),
+                               routingResult.pathConfig().maxBodyBytes)) {
         // The request bytes are consumed by the async handler completion (already done if it completed right away).
         requestFinalizationRAII.consumedBytes = 0;
         if (state.pAsyncState()->active) {
@@ -823,7 +510,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
       }
 #endif
     } else if (routingResult.requestHandler() != nullptr) {
-      if (corsRejected()) {
+      if (rejectDeniedCorsOrigin(cnxIt, routingResult, isStreaming)) {
         continue;
       }
 
@@ -832,33 +519,13 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
         sendResponse((*routingResult.requestHandler())(request));
       } catch (const std::exception& ex) {
         log::error("Exception in path handler: {}", ex.what());
-        sendResponse(request.makeResponse(http::StatusCodeInternalServerError, ex.what()));
+        sendResponse(request.makeResponse(http::StatusCodeInternalServerError));
       } catch (...) {
         log::error("Unknown exception in path handler");
-        sendResponse(request.makeResponse(http::StatusCodeInternalServerError, "Unknown error"));
+        sendResponse(request.makeResponse(http::StatusCodeInternalServerError));
       }
     } else if (routingResult.redirectSlashMode() != Router::RoutingResult::RedirectSlashMode::None) {
-      // Emit 301 redirect to canonical form.
-      // The path is percent-decoded: re-encode it so that the Location is a valid URI reference. Decoded control
-      // characters (CR, LF...) would otherwise make the header value invalid and throw outside of any handler.
-      static constexpr std::string_view kRedirecting = "Redirecting";
-      const std::string_view reqPath = request.path();
-      RawChars& location = _sharedBuffers.buf;
-      location.clear();
-      if (routingResult.redirectSlashMode() == Router::RoutingResult::RedirectSlashMode::AddSlash) {
-        http::AppendUrlEncodedPath(location, reqPath);
-        location.push_back('/');
-      } else {
-        http::AppendUrlEncodedPath(location, reqPath.substr(0, reqPath.size() - 1));
-      }
-      const std::size_t additionalCapacity =
-          HttpResponse::BodySize(kRedirecting.size()) + http::HeaderSize(http::Location.size(), location.size());
-      auto resp = request.makeResponse(additionalCapacity, http::StatusCodeMovedPermanently);
-      resp.headerAddLine(http::Location, std::string_view(location));
-
-      resp.body(kRedirecting);
-
-      sendResponse(std::move(resp));
+      sendResponse(makeTrailingSlashRedirect(request, routingResult.redirectSlashMode()));
     } else if (routingResult.methodNotAllowed()) {
       sendResponse(request.makeResponse(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed));
     } else {
@@ -868,6 +535,144 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
   } while (!state.isAnyCloseRequested());
 
   return state.isAnyCloseRequested();
+}
+
+bool SingleHttpServer::acceptChunkedTransferEncoding(ConnectionIt cnxIt, std::string_view transferEncoding) {
+  const HttpRequestView& request = _connections.connectionState(cnxIt).request;
+  if (request.version() == http::HTTP_1_0) {
+    emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Transfer-Encoding not allowed in HTTP/1.0");
+    return false;
+  }
+  if (!CaseInsensitiveEqual(transferEncoding, http::chunked)) {
+    emitSimpleError(cnxIt, http::StatusCodeNotImplemented, "Unsupported Transfer-Encoding");
+    return false;
+  }
+  if (request.headerValue(http::ContentLength)) {
+    emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Content-Length and Transfer-Encoding cannot be used together");
+    return false;
+  }
+  return true;
+}
+
+void SingleHttpServer::trackBodyReception(ConnectionState& state, bool bodyReady) noexcept {
+  if (_config.bodyReadTimeout.count() == 0) {
+    return;
+  }
+  if (bodyReady) {
+    if (state.waitingForBody) {
+      assert(_connectionSweepState.pendingTimeoutConnections > 0U);
+      --_connectionSweepState.pendingTimeoutConnections;
+    }
+    state.waitingForBody = false;
+    state.bodyLastActivityMs = ConnectionState::kInactiveRelativeMs;
+  } else {
+    if (!state.waitingForBody) {
+      ++_connectionSweepState.pendingTimeoutConnections;
+    }
+    state.waitingForBody = true;
+    state.bodyLastActivityMs = static_cast<uint32_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(state.lastActivity - state.headerStartTp).count());
+  }
+}
+
+void SingleHttpServer::sendHttp1Response(ConnectionIt cnxIt, HttpResponse&& resp,
+                                         const Router::RoutingResult& routingResult, bool streaming) {
+  ApplyResponseMiddleware(_connections.connectionState(cnxIt).request, resp, routingResult.postMiddlewareRange(),
+                          _router.globalResponseMiddleware(), _telemetry, streaming, _callbacks.middlewareMetrics);
+  finalizeAndSendResponseForHttp1(cnxIt, std::move(resp), routingResult.corsPolicy());
+}
+
+bool SingleHttpServer::rejectDeniedCorsOrigin(ConnectionIt cnxIt, const Router::RoutingResult& routingResult,
+                                              bool streaming) {
+  const CorsPolicy* pCorsPolicy = routingResult.corsPolicy();
+  const HttpRequestView& request = _connections.connectionState(cnxIt).request;
+  if (pCorsPolicy == nullptr || pCorsPolicy->wouldApply(request) != CorsPolicy::ApplyStatus::OriginDenied) {
+    return false;
+  }
+  sendHttp1Response(cnxIt, request.makeResponse(http::StatusCodeForbidden, "Forbidden by CORS policy"), routingResult,
+                    streaming);
+  return true;
+}
+
+HttpResponse SingleHttpServer::makeTrailingSlashRedirect(const HttpRequestView& request,
+                                                         Router::RoutingResult::RedirectSlashMode redirectSlashMode) {
+  // The path is percent-decoded: re-encode it so that the Location is a valid URI reference. Decoded control
+  // characters (CR, LF...) would otherwise make the header value invalid and throw outside of any handler.
+  static constexpr std::string_view kRedirecting = "Redirecting";
+  const std::string_view reqPath = request.path();
+  RawChars& location = _sharedBuffers.buf;
+  location.clear();
+  if (redirectSlashMode == Router::RoutingResult::RedirectSlashMode::AddSlash) {
+    http::AppendUrlEncodedPath(location, reqPath);
+    location.push_back('/');
+  } else {
+    http::AppendUrlEncodedPath(location, reqPath.substr(0, reqPath.size() - 1));
+  }
+  const std::size_t additionalCapacity =
+      HttpResponse::BodySize(kRedirecting.size()) + http::HeaderSize(http::Location.size(), location.size());
+  auto resp = request.makeResponse(additionalCapacity, http::StatusCodeMovedPermanently);
+  resp.headerAddLine(http::Location, std::string_view(location));
+  resp.body(kRedirecting);
+  return resp;
+}
+
+SingleHttpServer::LoopAction SingleHttpServer::serveStreamingRequest(ConnectionIt cnxIt,
+                                                                     const Router::RoutingResult& routingResult) {
+  static constexpr bool kStreaming = true;
+  ConnectionState& state = _connections.connectionState(cnxIt);
+  HttpRequestView& request = state.request;
+  const bool wantClose = request.wantClose();
+
+  // Create the protocol-specific transport backend and the protocol-agnostic writer
+  Http1WriterTransport transport(*this, cnxIt->fd(), wantClose, routingResult.corsPolicy(),
+                                 routingResult.postMiddlewareRange());
+  HttpMessage::Options opts;
+  if (_config.addTrailerHeader) {
+    opts.addTrailerHeader();
+  }
+  if (request.method() == http::Method::HEAD) {
+    opts.setHeadMethod();
+  }
+  opts.setPrepared();
+
+  HttpResponseWriter writer(transport, request, request.responsePossibleEncoding(), _config.compression,
+                            _compressionState, _config.globalHeaders.fullStringWithLastSep(), opts);
+
+  bool handlerThrew = false;
+  try {
+    (*routingResult.streamingHandler())(request, writer);
+  } catch (const std::exception& ex) {
+    handlerThrew = true;
+    log::error("Exception in streaming handler: {}", ex.what());
+  } catch (...) {
+    handlerThrew = true;
+    log::error("Unknown exception in streaming handler");
+  }
+  if (handlerThrew) {
+    if (writer.headersPending()) {
+      // Nothing was sent: answer like for any handler throwing.
+      sendHttp1Response(cnxIt, request.makeResponse(http::StatusCodeInternalServerError), routingResult, kStreaming);
+      return LoopAction::Continue;
+    }
+    // Part of the response was sent: close the connection without completing the body (no final chunk, or a short
+    // Content-Length), so that the client knows that it is incomplete.
+    endRequest(request, http::StatusCodeInternalServerError, state.requestsServed > 1);
+    state.requestDrainAndClose();
+    return LoopAction::Break;
+  }
+  if (!writer.finished()) {
+    writer.end();
+  }
+
+  endRequest(request, writer.status(), state.requestsServed > 1);
+
+  assert(request.version() == http::HTTP_1_1);
+  if (!_config.enableKeepAlive || wantClose || state.requestsServed + 1 >= _config.maxRequestsPerConnection ||
+      state.isAnyCloseRequested() || _lifecycle.isDraining() || _lifecycle.isStopping()) {
+    state.requestDrainAndClose();
+    return LoopAction::Break;
+  }
+  return LoopAction::Continue;
 }
 
 bool SingleHttpServer::maybeDecompressRequestBody(ConnectionIt cnxIt, bool usePerConnectionBodyStorage) {
@@ -899,302 +704,7 @@ bool SingleHttpServer::maybeDecompressRequestBody(ConnectionIt cnxIt, bool usePe
   return true;
 }
 
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-bool SingleHttpServer::PauseReadingDuringAsyncHandler(ConnectionState& state) noexcept {
-  const auto* asyncState = state.pAsyncState();
-  if (asyncState == nullptr || !asyncState->holdsInput()) {
-    return false;
-  }
-  // The input buffer holds the body (and the bytes) of the request of the async handler: it must neither grow nor move
-  // until it completes. The next bytes are left in the socket (which also bounds them) and read once it completed,
-  // see resumeInputAfterAsyncHandler().
-  state.readPaused = true;
-  return true;
-}
-
-bool SingleHttpServer::dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyncRequestHandler& handler,
-                                            bool bodyReady, bool isChunked, std::size_t consumedBytes,
-                                            const CorsPolicy* pCorsPolicy,
-                                            std::span<const ResponseMiddleware> responseMiddleware,
-                                            std::size_t perRouteMaxBodyBytes) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
-  HttpRequestView& request = state.request;
-  RequestTask<HttpResponse> task = (*handler)(request);
-
-  if (!task.valid()) {
-    static constexpr std::string_view kMessage = "Async handler inactive";
-    log::error("Async path handler returned an invalid RequestTask for path {}", request.path());
-    if (bodyReady) {
-      HttpResponse resp(http::StatusCodeInternalServerError, kMessage);
-      ApplyResponseMiddleware(request, resp, responseMiddleware, _router.globalResponseMiddleware(), _telemetry, false,
-                              _callbacks.middlewareMetrics);
-      finalizeAndSendResponseForHttp1(cnxIt, std::move(resp), pCorsPolicy);
-    } else {
-      emitSimpleError(cnxIt, http::StatusCodeInternalServerError, kMessage);
-    }
-
-    return false;
-  }
-
-  auto handle = task.release();
-  assert(handle);
-
-  auto& asyncState = state.ensureAsyncState(_connections.asyncHandlerStatePool());
-  const std::string_view bodyView = state.request._body;
-  bool usesSharedDecompressedBody = false;
-  if (bodyReady && !bodyView.empty()) {
-    const char* sharedBeg = _sharedBuffers.decompressedBody.data();
-    const char* sharedEnd = sharedBeg + _sharedBuffers.decompressedBody.size();
-    const char* bodyBeg = bodyView.data();
-    const char* bodyEnd = bodyBeg + bodyView.size();
-
-    usesSharedDecompressedBody = sharedBeg <= bodyBeg && bodyEnd <= sharedEnd;
-  }
-
-  // The coroutine may use the captures of the handler: keep it alive even if the router replaces it meanwhile.
-  asyncState.handlerKeepAlive = handler;
-  asyncState.active = true;
-  asyncState.handle = std::move(handle);
-  asyncState.awaitReason = AsyncHandlerState::AwaitReason::None;
-  asyncState.needsBody = !bodyReady;
-  asyncState.usesSharedDecompressedBody = usesSharedDecompressedBody;
-  asyncState.isChunked = isChunked;
-  asyncState.routeMayHaveChanged = false;
-  asyncState.consumedBytes = bodyReady ? consumedBytes : 0;
-  asyncState.corsPolicy = pCorsPolicy;
-  asyncState.responseMiddleware = responseMiddleware.data();
-  asyncState.responseMiddlewareCount = static_cast<uint32_t>(responseMiddleware.size());
-  asyncState.maxBodyBytes = perRouteMaxBodyBytes;
-  asyncState.pendingResponse = {};
-
-  // The request is not parsed again from now on: the expectations of the next one must be answered.
-  state.expectationAnswered = false;
-
-  // Keep header storage stable while async work runs so header string_views stay valid
-  state.request.pinHeadStorage(state, _connections.asyncHandlerStatePool());
-
-  // Install the postCallback function for deferred work
-  asyncState.postCallback = [this, fd = cnxIt->fd(), generation = state.generation](std::coroutine_handle<> handle,
-                                                                                    std::function<void()> work) {
-    postAsyncCallback(fd, generation, handle, std::move(work));
-  };
-
-  refreshKeepAliveDeadline(cnxIt);
-  resumeAsyncHandler(cnxIt);
-  if (asyncState.active) {
-    // Completes later: the router may be updated meanwhile.
-    asyncState.routeMayHaveChanged = true;
-  }
-
-  return true;
-}
-
-void SingleHttpServer::resumeAsyncHandler(ConnectionIt cnxIt) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
-  auto* asyncState = state.pAsyncState();
-  assert(asyncState != nullptr);
-  auto& async = *asyncState;
-  if (!async.active || !async.handle) {
-    return;
-  }
-
-  while (async.handle && !async.handle.done()) {
-    async.awaitReason = AsyncHandlerState::AwaitReason::None;
-    async.handle.resume();
-    if (async.awaitReason != AsyncHandlerState::AwaitReason::None) {
-      if (async.usesSharedDecompressedBody && !pinAsyncSharedBodyToConnectionStorage(state)) {
-        state.requestDrainAndClose();
-      }
-      return;
-    }
-    // Suspended by an awaitable that does not need the event loop (std::suspend_always for instance): resume it.
-  }
-
-  if (async.handle && async.handle.done()) {
-    onAsyncHandlerCompleted(cnxIt);
-  }
-}
-
-void SingleHttpServer::AbandonAsyncHandler(AsyncHandlerState& async) noexcept {
-  if (async.isAwaitingCallback()) {
-    // The deferred work may still use the coroutine frame and the request: they are released when it completes.
-    async.active = false;
-    async.pendingResponse.reset();
-  } else {
-    async.clear();
-  }
-}
-
-void SingleHttpServer::handleAsyncBodyProgress(ConnectionIt cnxIt) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
-  auto* asyncState = state.pAsyncState();
-  assert(asyncState != nullptr);
-  auto& async = *asyncState;
-  assert(async.active);
-
-  if (async.needsBody) {
-    std::size_t consumedBytes = 0;
-    // 100 Continue (if expected) was sent when the request was dispatched.
-    const BodyDecodeStatus status = decodeBodyIfReady(cnxIt, async.isChunked, false, async.maxBodyBytes, consumedBytes);
-    if (status == BodyDecodeStatus::Error) {
-      AbandonAsyncHandler(async);
-      return;
-    }
-    if (status == BodyDecodeStatus::NeedMore) {
-      return;
-    }
-
-    async.needsBody = false;
-    async.consumedBytes = consumedBytes;
-    if (!state.request._body.empty() && !maybeDecompressRequestBody(cnxIt, true)) {
-      AbandonAsyncHandler(async);
-      return;
-    }
-    state.installAggregatedBodyBridge();
-
-    if (_config.bodyReadTimeout.count() > 0) {
-      if (state.waitingForBody) {
-        assert(_connectionSweepState.pendingTimeoutConnections > 0U);
-        --_connectionSweepState.pendingTimeoutConnections;
-      }
-      state.waitingForBody = false;
-      state.bodyLastActivityMs = ConnectionState::kInactiveRelativeMs;
-    }
-
-    if (async.awaitReason == AsyncHandlerState::AwaitReason::WaitingForBody) {
-      async.awaitReason = AsyncHandlerState::AwaitReason::None;
-      resumeAsyncHandler(cnxIt);
-      return;
-    }
-  }
-
-  if (async.pendingResponse.has_value()) {
-    tryFlushPendingAsyncResponse(cnxIt);
-  }
-}
-
-bool SingleHttpServer::pinAsyncSharedBodyToConnectionStorage(ConnectionState& state) const {
-  auto* asyncState = state.pAsyncState();
-  if (asyncState == nullptr) {
-    return true;
-  }
-  auto& async = *asyncState;
-  if (!async.usesSharedDecompressedBody) {
-    return true;
-  }
-
-  const std::string_view body = state.request._body;
-
-  // Async shared-body pinning expects request body to reference shared decompressed storage
-  assert(body.empty() || (_sharedBuffers.decompressedBody.data() <= body.data() &&
-                          body.data() + body.size() <=
-                              _sharedBuffers.decompressedBody.data() + _sharedBuffers.decompressedBody.size()));
-
-  state.bodyAndTrailersBuffer.assign(body.data(), body.size());
-  state.request._body = std::string_view(state.bodyAndTrailersBuffer.data(), body.size());
-
-  if (state.request._pBodyAccessBridge != nullptr) {
-    state.bodyStreamContext.body = state.request._body;
-  }
-
-  async.usesSharedDecompressedBody = false;
-  return true;
-}
-
-void SingleHttpServer::onAsyncHandlerCompleted(ConnectionIt cnxIt) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
-  auto* asyncState = state.pAsyncState();
-  if (asyncState == nullptr) {
-    return;
-  }
-  auto& async = *asyncState;
-  if (!async.handle) {
-    return;
-  }
-
-  auto rawHandle = async.handle.release();
-  auto typedHandle = std::coroutine_handle<RequestTask<HttpResponse>::promise_type>::from_address(rawHandle.address());
-  bool fromException = false;
-  HttpResponse resp(HttpMessage::Check::No);  // do not allocate memory yet
-  try {
-    resp = std::move(typedHandle.promise().consume_result());
-  } catch (const std::exception& ex) {
-    fromException = true;
-    log::error("Exception in async path handler: {}", ex.what());
-    resp = HttpResponse(http::StatusCodeInternalServerError);
-    resp.body(ex.what());
-  } catch (...) {
-    fromException = true;
-    log::error("Unknown exception in async path handler");
-    resp = HttpResponse(http::StatusCodeInternalServerError);
-    resp.body("Unknown error");
-  }
-  typedHandle.destroy();
-  async.handlerKeepAlive.reset();
-  async.pendingResponse = std::move(resp);
-
-  if (async.needsBody) {
-    if (fromException) {
-      // Body will still be drained before response is flushed; nothing else to do here.
-    }
-  } else {
-    tryFlushPendingAsyncResponse(cnxIt);
-  }
-}
-
-void SingleHttpServer::tryFlushPendingAsyncResponse(ConnectionIt cnxIt) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
-  auto* asyncState = state.pAsyncState();
-  if (asyncState == nullptr) {
-    return;
-  }
-  auto& async = *asyncState;
-
-  assert(!async.needsBody);
-  assert(async.pendingResponse.has_value());
-
-  auto middlewareSpan = std::span<const ResponseMiddleware>(
-      static_cast<const ResponseMiddleware*>(async.responseMiddleware), async.responseMiddlewareCount);
-  const CorsPolicy* pCorsPolicy = async.corsPolicy;
-  if (async.routeMayHaveChanged) {
-    // The router may have been updated since the handler was dispatched, possibly destroying the metadata of its route:
-    // look it up again.
-    const Router::RoutingResult routingResult = _router.match(state.request.method(), state.request.path());
-    middlewareSpan = routingResult.postMiddlewareRange();
-    pCorsPolicy = routingResult.corsPolicy();
-  }
-  ApplyResponseMiddleware(state.request, *async.pendingResponse, middlewareSpan, _router.globalResponseMiddleware(),
-                          _telemetry, false, _callbacks.middlewareMetrics);
-  finalizeAndSendResponseForHttp1(cnxIt, std::move(*async.pendingResponse), pCorsPolicy);
-  state.inBuffer.erase_front(async.consumedBytes);
-  async.clear();
-  state.lastActivity = std::chrono::steady_clock::now();
-  refreshKeepAliveDeadline(cnxIt);
-}
-
-void SingleHttpServer::resumeInputAfterAsyncHandler(NativeHandle fd) {
-  auto cnxIt = _connections.iterator(fd);
-  ConnectionState* pState = _connections.pConnectionState(cnxIt);
-  // Serve the requests pipelined behind the completed one: they were already read, no event will report them.
-  if (!pState->inBuffer.empty()) {
-    (void)processHttp1Requests(cnxIt);
-    cnxIt = _connections.iterator(fd);
-    pState = _connections.pConnectionState(cnxIt);
-  }
-  // Then read the bytes left in the socket while reading was paused: edge-triggered polling does not report them again.
-  if (pState->readPaused && !pState->isAnyCloseRequested()) {
-    pState->readPaused = false;
-    if (handleReadableClient(cnxIt, false) == CloseStatus::Close) {
-      const auto finalIt = _connections.iterator(fd);
-      if (IsValid(_connections, finalIt)) {
-        closeConnection(finalIt);
-      }
-    }
-  }
-}
-#endif
-
-void SingleHttpServer::emitRequestMetrics(const HttpRequestView& request, http::StatusCode status, std::size_t bytesIn,
+void SingleHttpServer::emitRequestMetrics(const HttpRequestView& request, http::StatusCode status,
                                           bool reusedConnection) {
   std::string_view clientIp = "-";
 
@@ -1222,7 +732,7 @@ void SingleHttpServer::emitRequestMetrics(const HttpRequestView& request, http::
       request.path(),
       clientIp,
       request.headerValueOrEmpty("user-agent"),
-      bytesIn,
+      request._body.size(),
       0,
       _connections.now - request.reqStart(),
   };
@@ -1239,6 +749,10 @@ void SingleHttpServer::emitRequestMetrics(const HttpRequestView& request, http::
 void SingleHttpServer::eventLoop() {
   // Apply any pending config updates posted from other threads.
   applyPendingUpdates();
+
+  if (_tunnels != nullptr && _tunnels->hasResolvedTargets()) {
+    _tunnels->completeResolvedTunnels();
+  }
 
   // Poll for events
   const auto events = _eventLoop.poll();
@@ -1304,7 +818,7 @@ void SingleHttpServer::eventLoop() {
               std::max(handleReadableClient(cnxIt, (bmp & (EventErr | EventHup | EventRdHup)) == 0), closeStatus);
         }
         if (closeStatus == CloseStatus::Close) {
-          // A handler (e.g. shutdownTunnelPeerWrite) may have already recycled
+          // A handler (e.g. the half-close of a tunnel peer) may have already recycled
           // this connection via a nested closeConnection call. Guard against that.
           const auto finalIt = _connections.iterator(fd);
           if (IsValid(_connections, finalIt)) {
@@ -1323,32 +837,8 @@ void SingleHttpServer::eventLoop() {
     maintenanceTick = true;
   }
 
-  // Re-process connections deferred by the per-event fairness cap, or whose input was left by the output backpressure.
-  // Edge-triggered polling (EPOLLET / EV_CLEAR) only fires on state transitions;
-  // a connection that still had TCP data after hitting the cap won't generate a new
-  // read event, so we must re-read it here before waiting for events again.
-  //
-  // Swap into a local so that resumeDeferredInput can safely push new deferrals
-  // into the (now-empty) member vector without invalidating our iteration and
-  // without losing them to a blanket clear().
   if (!_pendingReadFds.empty()) {
-    decltype(_pendingReadFds) batch;
-    batch.swap(_pendingReadFds);
-    for (const NativeHandle pendingFd : batch) {
-      const auto pendingIt = _connections.iterator(pendingFd);
-      if (!IsValid(_connections, pendingIt)) {
-        continue;
-      }
-      const CloseStatus cs = resumeDeferredInput(pendingIt);
-      if (cs == CloseStatus::Close) {
-        const auto finalIt = _connections.iterator(pendingFd);
-        if (IsValid(_connections, finalIt)) {
-          closeConnection(finalIt);
-        }
-      } else {
-        restartKeepAliveIdleWindow(pendingFd);
-      }
-    }
+    resumeDeferredInputs();
   }
 
   // Under high load epoll_wait may return immediately and never hit the timeout path.
@@ -1362,42 +852,74 @@ void SingleHttpServer::eventLoop() {
   }
 #endif
   if (maintenanceTick) {
-#ifndef AERONET_LINUX
-    _lastMaintenanceTp = now;
-#endif
-    const auto nbActiveConnections = _connections.size();
+    runMaintenance(now);
+  }
+}
 
-    _telemetry.gauge("aeronet.connections.active_count", static_cast<int64_t>(nbActiveConnections));
-    _telemetry.gauge("aeronet.events.capacity_current_count", static_cast<int64_t>(_eventLoop.capacity()));
-
-    sweepIdleConnections();
-
-    if (_accessLog) {
-      _accessLog.flush();
+void SingleHttpServer::resumeDeferredInputs() {
+  // Re-process connections deferred by the per-event fairness cap, or whose input was left by the output backpressure.
+  // Edge-triggered polling (EPOLLET / EV_CLEAR) only fires on state transitions;
+  // a connection that still had TCP data after hitting the cap won't generate a new
+  // read event, so we must re-read it here before waiting for events again.
+  //
+  // Swap into a local so that resumeDeferredInput can safely push new deferrals
+  // into the (now-empty) member vector without invalidating our iteration and
+  // without losing them to a blanket clear().
+  decltype(_pendingReadFds) batch;
+  batch.swap(_pendingReadFds);
+  for (const NativeHandle pendingFd : batch) {
+    const auto pendingIt = _connections.iterator(pendingFd);
+    if (!IsValid(_connections, pendingIt)) {
+      continue;
     }
+    const CloseStatus cs = resumeDeferredInput(pendingIt);
+    if (cs == CloseStatus::Close) {
+      const auto finalIt = _connections.iterator(pendingFd);
+      if (IsValid(_connections, finalIt)) {
+        closeConnection(finalIt);
+      }
+    } else {
+      restartKeepAliveIdleWindow(pendingFd);
+    }
+  }
+}
 
-    if (_lifecycle.isStopping() || (_lifecycle.isDraining() && nbActiveConnections == 0)) {
+void SingleHttpServer::runMaintenance(std::chrono::steady_clock::time_point now) {
+#ifndef AERONET_LINUX
+  _lastMaintenanceTp = now;
+#endif
+  const auto nbActiveConnections = _connections.size();
+
+  _telemetry.gauge("aeronet.connections.active_count", static_cast<int64_t>(nbActiveConnections));
+  _telemetry.gauge("aeronet.events.capacity_current_count", static_cast<int64_t>(_eventLoop.capacity()));
+
+  sweepIdleConnections();
+
+  if (_accessLog) {
+    _accessLog.flush();
+  }
+
+  if (_lifecycle.isStopping() || (_lifecycle.isDraining() && nbActiveConnections == 0)) {
+    closeListener();
+    closeAllConnections();
+    _lifecycle.reset();
+    if (!isInMultiHttpServer()) {
+      log::info("Server stopped");
+    }
+  } else if (_lifecycle.isDraining()) {
+    if (_lifecycle.drainDeadlineReached(now)) {
+      log::warn("Drain deadline reached with {} active connection(s); forcing close", nbActiveConnections);
       closeListener();
       closeAllConnections();
       _lifecycle.reset();
-      if (!isInMultiHttpServer()) {
-        log::info("Server stopped");
-      }
-    } else if (_lifecycle.isDraining()) {
-      if (_lifecycle.drainDeadlineReached(now)) {
-        log::warn("Drain deadline reached with {} active connection(s); forcing close", nbActiveConnections);
-        closeListener();
-        closeAllConnections();
-        _lifecycle.reset();
-        log::info("Server drained after deadline");
-      }
-    } else if (SignalHandler::IsStopRequested()) {
-      beginDrain(SignalHandler::GetMaxDrainPeriod());
+      log::info("Server drained after deadline");
     }
-
-    // Also shrink per-thread scratch buffers used during decompression / header parsing.
-    _sharedBuffers.shrink_to_fit();
+  } else if (SignalHandler::IsStopRequested()) {
+    beginDrain(SignalHandler::GetMaxDrainPeriod());
   }
+
+  // Also shrink per-thread scratch buffers used during decompression / header parsing.
+  _sharedBuffers.shrink_to_fit();
 }
 
 void SingleHttpServer::updateMaintenanceTimer() {
@@ -1459,6 +981,8 @@ void SingleHttpServer::closeAllConnections() {
     }
   }
 #endif
+  // Without connections, no tunnel is left: the resolver threads exit once their current resolution completes.
+  _tunnels.reset();
 }
 
 ServerStats SingleHttpServer::stats() const {
@@ -1570,11 +1094,7 @@ void SingleHttpServer::emitHttpsRedirect(ConnectionIt cnxIt) {
                                          _config.minCapturedBodySize));
 
   state.requestDrainAndClose();
-
-  if (_callbacks.metrics || _accessLog) {
-    emitRequestMetrics(request, statusCode, request._body.size(), state.requestsServed > 0);
-  }
-  request.end(statusCode);
+  endRequest(request, statusCode, state.requestsServed > 0);
 }
 
 bool SingleHttpServer::handleExpectHeader(ConnectionIt cnxIt, std::string_view expectHeader,
@@ -1664,483 +1184,5 @@ bool SingleHttpServer::handleExpectHeader(ConnectionIt cnxIt, std::string_view e
   }
   return false;
 }
-
-namespace {
-
-// The commit and the rollback of a config update rely on these swaps never throwing.
-static_assert(std::is_nothrow_swappable_v<HttpServerConfig>);
-static_assert(std::is_nothrow_swappable_v<AccessLogWriter>);
-
-auto TakePendingUpdates(std::mutex& mutex, auto& vec, std::atomic<bool>& flag) {
-  std::remove_reference_t<decltype(vec)> pendingUpdates;
-  std::scoped_lock lock(mutex);
-  pendingUpdates.swap(vec);
-  flag.store(false, std::memory_order_release);
-  return pendingUpdates;
-}
-
-void ApplyPendingUpdates(std::mutex& mutex, auto& vec, std::atomic<bool>& flag, auto& objToUpdate,
-                         std::string_view name) {
-  for (auto& updater : TakePendingUpdates(mutex, vec, flag)) {
-    try {
-      updater(objToUpdate);
-    } catch (const std::exception& ex) {
-      log::error("Exception while applying posted {} update: {}", name, ex.what());
-    } catch (...) {
-      log::error("Unknown exception while applying posted {} update", name);
-    }
-  }
-}
-
-}  // namespace
-
-void SingleHttpServer::applyPendingConfigUpdates() {
-#ifdef AERONET_ENABLE_OPENSSL
-  bool tlsContextRebuilt = false;
-#endif
-  for (auto& updater : TakePendingUpdates(_updates.lock, _updates.config, _updates.hasConfig)) {
-    try {
-      // Each update is applied atomically: if the updater, the validation or the construction of the objects built from
-      // the new configuration (TLS context, access log writer) throws, the previous configuration is restored.
-      HttpServerConfig previousConfig(_config);
-      try {
-        updater(_config);
-        _config.validate();
-
-#ifdef AERONET_ENABLE_OPENSSL
-        // Existing connections keep the context they were created from (ConnectionState::tlsContextKeepAlive).
-        std::shared_ptr<TlsContext> newTlsContext;
-        const bool tlsChanged = _config.tls != previousConfig.tls;
-        if (tlsChanged && _config.tls.enabled) {
-          newTlsContext = std::make_shared<TlsContext>(_config.tls, ticketKeyStoreForNewTlsContext(previousConfig.tls));
-        }
-#endif
-        AccessLogWriter newAccessLog;
-        const bool accessLogChanged = _config.accessLog != previousConfig.accessLog;
-        if (accessLogChanged) {
-          newAccessLog = AccessLogWriter(_config.accessLog);
-        }
-
-        // Commit - nothing can throw from here.
-#ifdef AERONET_ENABLE_OPENSSL
-        if (tlsChanged) {
-          _tls.ctxHolder = std::move(newTlsContext);
-          tlsContextRebuilt = true;
-        }
-#endif
-        if (accessLogChanged) {
-          // The previous writer, swapped into newAccessLog, flushes its buffered lines when destroyed.
-          std::swap(_accessLog, newAccessLog);
-        }
-      } catch (...) {
-        // Swap rather than assign: the rejected configuration is then destroyed with previousConfig, which scrubs its
-        // TLS secrets (a move assignment would free their buffers without scrubbing them).
-        std::swap(_config, previousConfig);
-        throw;
-      }
-    } catch (const std::exception& ex) {
-      log::error("Posted config update rejected, previous configuration kept: {}", ex.what());
-    } catch (...) {
-      log::error("Posted config update rejected (unknown exception), previous configuration kept");
-    }
-  }
-
-#ifdef AERONET_ENABLE_OPENSSL
-  // A context built by this batch has just read its files. Otherwise, reload the ones that changed on disk (in-place
-  // certificate rotation, OCSP response or CRL refresh, Kubernetes secret update) even if their paths did not change.
-  if (!tlsContextRebuilt && _tls.ctxHolder) {
-    reloadChangedTlsFiles();
-  }
-#endif
-}
-
-#ifdef AERONET_ENABLE_OPENSSL
-std::shared_ptr<TlsTicketKeyStore> SingleHttpServer::ticketKeyStoreForNewTlsContext(
-    const TLSConfig& currentContextConfig) const {
-  if (_tls.sharedTicketKeyStore) {
-    // MultiHttpServer worker: one store shared by all the workers.
-    return _tls.sharedTicketKeyStore;
-  }
-  // Keep the keys of the current context while the session ticket settings do not change, so that the tickets it issued
-  // still resume after a certificate rotation or another TLS change.
-  if (_tls.ctxHolder && currentContextConfig.sessionTickets == _config.tls.sessionTickets &&
-      std::ranges::equal(currentContextConfig.sessionTicketKeys(), _config.tls.sessionTicketKeys())) {
-    return _tls.ctxHolder->ticketKeyStore();
-  }
-  return {};
-}
-
-void SingleHttpServer::reloadChangedTlsFiles() {
-  // Points into the current context: used before it is replaced.
-  const std::string_view changedFile = _tls.ctxHolder->changedInputFile();
-  if (changedFile.empty()) {
-    return;
-  }
-  try {
-    auto newTlsContext = std::make_shared<TlsContext>(_config.tls, ticketKeyStoreForNewTlsContext(_config.tls));
-    log::info("TLS context reloaded, '{}' changed on disk", changedFile);
-    _tls.ctxHolder = std::move(newTlsContext);
-  } catch (const std::exception& ex) {
-    // Retried at the next config update (the file still differs from the one the current context was built from).
-    log::error("TLS context reload failed after '{}' changed on disk, previous TLS context kept: {}", changedFile,
-               ex.what());
-  }
-}
-#endif
-
-void SingleHttpServer::applyPendingUpdates() {
-  bool needsClamp = false;
-
-  if (_updates.hasConfig.load(std::memory_order_acquire)) {
-    applyPendingConfigUpdates();
-
-    // Reinitialize components dependent on config values.
-    _compressionState.selector = EncodingSelector(_config.compression);
-    _eventLoop.updatePollTimeoutPolicy(MakePollTimeoutPolicy(_config));
-    updateMaintenanceTimer();
-    rebuildKeepAliveDeadlines();
-    registerBuiltInProbes();
-    needsClamp = true;
-  }
-  if (_updates.hasRouter.load(std::memory_order_acquire)) {
-    ApplyPendingUpdates(_updates.lock, _updates.router, _updates.hasRouter, _router, "router");
-    needsClamp = true;
-  }
-  if (_hasCallbacksUpdates.load(std::memory_order_acquire)) {
-    ApplyPendingUpdates(_updates.lock, _callbacksUpdates, _hasCallbacksUpdates, _callbacks, "callbacks");
-  }
-
-  if (needsClamp) {
-    _router.clampConfigs(_config.maxHeaderBytes, _config.maxBodyBytes);
-  }
-
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  // Process async callbacks posted from background threads
-  if (_updates.hasAsyncCallbacks.load(std::memory_order_acquire)) {
-    processAsyncCallbacks();
-  }
-#endif
-}
-
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-void SingleHttpServer::processAsyncCallbacks() {
-  vector<internal::PendingUpdates::AsyncCallback> callbacks;
-  {
-    std::scoped_lock lock(_updates.lock);
-    callbacks.swap(_updates.asyncCallbacks);
-    _updates.hasAsyncCallbacks.store(false, std::memory_order_release);
-  }
-
-  for (auto& cb : callbacks) {
-    try {
-      auto it = _connections.findConnection(cb.connectionFd, cb.connectionGeneration);
-      if (it == _connections.end()) {
-        // The connection was closed while the work was running: its coroutine was kept for it, release it now.
-        _connections.releaseOrphanedAsyncTask(cb.connectionGeneration, cb.handle, _config.maxCachedConnections);
-        continue;
-      }
-
-      // Execute any pre-resume work
-      if (cb.work) {
-        try {
-          cb.work();
-        } catch (const std::exception& ex) {
-          log::error("Exception in async callback work: {}", ex.what());
-        } catch (...) {
-          log::error("Unknown exception in async callback work");
-        }
-        it = _connections.findConnection(cb.connectionFd, cb.connectionGeneration);
-        if (it == _connections.end()) {
-          _connections.releaseOrphanedAsyncTask(cb.connectionGeneration, cb.handle, _config.maxCachedConnections);
-          continue;
-        }
-      }
-
-      ConnectionState& state = _connections.connectionState(it);
-#ifdef AERONET_ENABLE_HTTP2
-      // For HTTP/2 connections, delegate to the protocol handler which tracks per-stream async state.
-      if (state.protocol == ProtocolType::Http2 && state.protocolHandler != nullptr) {
-        auto* pH2Handler = static_cast<http2::Http2ProtocolHandler*>(state.protocolHandler.get());
-        if (pH2Handler->resumeAsyncTaskByHandle(cb.handle)) {
-          // Flush any pending output generated by the completed async handler
-          if (pH2Handler->hasPendingOutput()) {
-            flushOutbound(it);
-          }
-          // Deferred work that outlived keepAliveTimeout leaves a stale idle deadline behind, exactly as
-          // a slow synchronous handler does (HTTP/1 goes through tryFlushPendingAsyncResponse instead).
-          restartKeepAliveIdleWindow(cb.connectionFd);
-        }
-        continue;
-      }
-#endif
-      // The coroutine frame is kept until its deferred work completes: a coroutine created meanwhile cannot have the
-      // same address, the handle identifies it.
-      auto* asyncState = state.pAsyncState();
-      if (asyncState != nullptr && asyncState->handle == cb.handle) {
-        if (asyncState->active) {
-          asyncState->awaitReason = AsyncHandlerState::AwaitReason::None;
-          resumeAsyncHandler(it);
-          if (!asyncState->active) {
-            resumeInputAfterAsyncHandler(cb.connectionFd);
-          }
-        } else {
-          // Abandoned (its connection is closing) while the work was running.
-          asyncState->clear();
-        }
-      }
-      // Close connection immediately if response was sent and drain-and-close is pending.
-      // On platforms without a real timer fd (Windows, macOS), sweep maintenance may not
-      // run often enough, causing Connection: close requests to linger.
-      it = _connections.findConnection(cb.connectionFd, cb.connectionGeneration);
-      if (it != _connections.end() && _connections.connectionState(it).canCloseConnectionForDrain()) {
-        closeConnection(it);
-      }
-    } catch (const std::exception& ex) {
-      log::error("Exception processing async callback for fd # {}: {}", static_cast<uintptr_t>(cb.connectionFd),
-                 ex.what());
-    } catch (...) {
-      log::error("Unknown exception processing async callback for fd # {}", static_cast<uintptr_t>(cb.connectionFd));
-    }
-  }
-}
-
-void SingleHttpServer::postAsyncCallback(NativeHandle connectionFd, uint32_t connectionGeneration,
-                                         std::coroutine_handle<> handle, std::function<void()> work) {
-  std::scoped_lock lock(_updates.lock);
-  _updates.asyncCallbacks.emplace_back(connectionFd, connectionGeneration, handle, std::move(work));
-  _updates.hasAsyncCallbacks.store(true, std::memory_order_release);
-  // Still under the lock: once it is released, the server may be destroyed (see waitForOrphanedAsyncWork()).
-  _lifecycle.wakeupFd.send();
-}
-
-void SingleHttpServer::waitForOrphanedAsyncWork() {
-  if (!_lifecycle.isIdle()) {
-    // Still run by another thread, which owns the connections.
-    return;
-  }
-  // Deferred work still running uses the coroutine frame and the request kept for it, and completes by posting to this
-  // server: wait for it.
-  static constexpr auto kLogPeriod = std::chrono::seconds{5};
-  auto nextLog = std::chrono::steady_clock::now() + kLogPeriod;
-  while (_connections.hasOrphanedConnectionStates()) {
-    if (_updates.hasAsyncCallbacks.load(std::memory_order_acquire)) {
-      processAsyncCallbacks();
-      continue;
-    }
-    const auto now = std::chrono::steady_clock::now();
-    if (now >= nextLog) {
-      log::warn("Waiting for the deferred work still running for {} closed connection(s)",
-                _connections.nbOrphanedConnectionStates());
-      nextLog = now + kLogPeriod;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds{1});
-  }
-}
-#endif
-
-#ifdef AERONET_ENABLE_HTTP2
-
-/// Concrete ITunnelBridge implementation that delegates tunnel operations
-/// to SingleHttpServer via shared helpers. Captures the server reference
-/// and the client fd that owns the HTTP/2 connection.
-class H2TunnelBridge final : public ITunnelBridge {
- public:
-  H2TunnelBridge(SingleHttpServer& server, NativeHandle clientFd) noexcept : _server(server), _clientFd(clientFd) {}
-
-  NativeHandle setupTunnel(uint32_t streamId, std::string_view host, uint16_t port) override {
-    return _server.setupH2Tunnel(_clientFd, streamId, host, port);
-  }
-
-  void writeTunnel(NativeHandle upstreamFd, std::span<const std::byte> data) override {
-    auto upIt = _server._connections.iterator(upstreamFd);
-    if (!IsValid(_server._connections, upIt)) {
-      return;
-    }
-    if (!_server.forwardTunnelData(upIt, std::string_view(reinterpret_cast<const char*>(data.data()), data.size())))
-        [[unlikely]] {
-      _server.closeConnection(upIt);
-    }
-  }
-
-  void shutdownTunnelWrite(NativeHandle upstreamFd) override {
-    auto upIt = _server._connections.iterator(upstreamFd);
-    if (IsValid(_server._connections, upIt)) {
-      _server.shutdownTunnelPeerWrite(upIt);
-    }
-  }
-
-  void closeTunnel(NativeHandle upstreamFd) override {
-    auto upIt = _server._connections.iterator(upstreamFd);
-    if (!IsValid(_server._connections, upIt)) {
-      return;
-    }
-    ConnectionState& state = _server._connections.connectionState(upIt);
-    // Clear peerFd so closeConnection won't try to tear down the client HTTP/2 connection.
-    state.peerFd = kInvalidHandle;
-    state.peerStreamId = 0;
-    _server.closeConnection(upIt);
-  }
-
-  void onTunnelWindowUpdate(NativeHandle upstreamFd) override {
-    auto upIt = _server._connections.iterator(upstreamFd);
-    if (IsValid(_server._connections, upIt)) {
-      // If we have buffered data from upstream, try to inject it now that the window opened.
-      ConnectionState& state = _server._connections.connectionState(upIt);
-      if (!state.inBuffer.empty() || state.eofReceived) {
-        auto closeStatus = _server.handleInH2Tunneling(upIt);
-        if (closeStatus == SingleHttpServer::CloseStatus::Close) {
-          _server.closeConnection(_server._connections.iterator(upstreamFd));
-        }
-      }
-    }
-  }
-
- private:
-  SingleHttpServer& _server;
-  NativeHandle _clientFd;
-};
-
-void SingleHttpServer::installH2TunnelBridge(NativeHandle clientFd, ConnectionState& state) {
-  auto* h2Handler = static_cast<http2::Http2ProtocolHandler*>(state.protocolHandler.get());
-  state.tunnelBridge = std::make_unique<H2TunnelBridge>(*this, clientFd);
-  h2Handler->setTunnelBridge(state.tunnelBridge.get());
-
-  // Install per-request completion callback for metrics, counters and tracing.
-  h2Handler->setRequestCompletionCallback(
-      [this, fd = clientFd](const HttpRequestView& request, http::StatusCode status) {
-        auto& state = *_connections.pConnectionState(fd);
-        ++state.requestsServed;
-        ++_stats.totalRequestsServed;
-        if (_callbacks.metrics || _accessLog) {
-          emitRequestMetrics(request, status, request._body.size(), state.requestsServed > 1);
-        }
-      });
-
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  // Install async callback so HTTP/2 coroutines can post deferred work to the event loop.
-  h2Handler->setAsyncPostCallback(
-      [this, fd = clientFd, generation = state.generation](std::coroutine_handle<> handle, std::function<void()> work) {
-        postAsyncCallback(fd, generation, handle, std::move(work));
-      });
-#endif
-}
-
-void SingleHttpServer::setupHttp2Connection(NativeHandle clientFd, TcpNoDelayMode tcpNoDelayMode,
-                                            ConnectionState& state) {
-  // Create HTTP/2 protocol handler with unified dispatcher
-  // Pass sendServerPrefaceForTls=true: server must send SETTINGS immediately for TLS ALPN "h2"
-  state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState,
-                                                            _decompressionState, _telemetry, _sharedBuffers.buf, true,
-                                                            _dateHeader.data(), state.clientAddress());
-  ++_connectionSweepState.http2Connections;
-  state.protocol = ProtocolType::Http2;
-
-  // Install CONNECT tunnel bridge so the HTTP/2 handler can request TCP tunnel setup.
-  installH2TunnelBridge(clientFd, state);
-
-  if (tcpNoDelayMode == TcpNoDelayMode::Auto) {
-    assert(state.tlsInfo.selectedAlpn() == http2::kAlpnH2);
-    // Disable Nagle's algorithm for HTTP/2 connections by default to reduce latency.
-    // The protocol handler may choose to re-enable it later if it determines it's beneficial.
-    if (SetTcpNoDelay(clientFd)) [[likely]] {
-      state.corkable = true;
-    } else {
-      const auto err = LastSystemError();
-      log::error("setsockopt(TCP_NODELAY) failed for fd # {} err={}", clientFd, err);
-      _telemetry.counterAdd("aeronet.connections.errors.tcp_nodelay_failed", 1UL);
-    }
-  }
-
-  // The queued server preface is flushed by the caller through the protocol gather path.
-}
-
-NativeHandle SingleHttpServer::setupH2Tunnel(NativeHandle clientFd, uint32_t streamId, std::string_view host,
-                                             uint16_t port) {
-  const auto upstreamFd = setupTunnelConnection(clientFd, host, port);
-  if (upstreamFd == kInvalidHandle) {
-    return kInvalidHandle;
-  }
-
-  // Additionally set the HTTP/2 stream id on the upstream state.
-  auto upIt = _connections.iterator(upstreamFd);
-  assert(upIt != _connections.end() && *upIt);
-  ConnectionState& state = _connections.connectionState(upIt);
-  state.peerStreamId = streamId;
-
-  return upstreamFd;
-}
-
-SingleHttpServer::CloseStatus SingleHttpServer::handleInH2Tunneling(ConnectionIt cnxIt) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
-
-  // Find the client HTTP/2 connection via peerFd.
-  auto peerIt = _connections.iterator(state.peerFd);
-  if (!IsValid(_connections, peerIt)) [[unlikely]] {
-    return CloseStatus::Close;
-  }
-
-  ConnectionState& peerState = _connections.connectionState(peerIt);
-  auto* pH2Handler = static_cast<http2::Http2ProtocolHandler*>(peerState.protocolHandler.get());
-  if (pH2Handler == nullptr) [[unlikely]] {
-    return CloseStatus::Close;
-  }
-
-  auto* stream = pH2Handler->connection().getStream(state.peerStreamId);
-  if (stream == nullptr) {
-    return CloseStatus::Close;
-  }
-
-  bool hitEagain = false;
-  std::size_t bytesReadThisEvent = 0;
-
-  while (true) {
-    // Read from upstream in a loop (edge-triggered, must drain), but respect flow control.
-    // If inBuffer is already large, don't read more until we can inject it.
-    if (readTunnelData(cnxIt, bytesReadThisEvent, hitEagain) == CloseStatus::Close) {
-      return CloseStatus::Close;
-    }
-
-    if (state.inBuffer.empty()) {
-      return state.eofReceived ? CloseStatus::Close : CloseStatus::Keep;
-    }
-
-    // Determine how much we can inject based on HTTP/2 flow control windows.
-    int32_t streamWin = stream->sendWindow();
-    int32_t connWin = pH2Handler->connection().connectionSendWindow();
-    int32_t win = std::min(streamWin, connWin);
-
-    if (win <= 0) {
-      // Wait for WINDOW_UPDATE. The windowUpdate callback will re-invoke this function.
-      return CloseStatus::Keep;
-    }
-
-    const auto injectSize = std::min(state.inBuffer.size(), static_cast<RawChars::size_type>(win));
-
-    // Inject data as HTTP/2 DATA frame(s) on the tunnel stream.
-    const auto data = std::as_bytes(std::span<const char>(state.inBuffer.data(), injectSize));
-    const auto err = pH2Handler->injectTunnelData(state.peerStreamId, data);
-
-    state.inBuffer.erase_front(injectSize);
-
-    if (err != http2::ErrorCode::NoError) [[unlikely]] {
-      log::warn("HTTP/2 CONNECT stream {} inject failed: {}", state.peerStreamId, http2::ErrorCodeName(err));
-      return CloseStatus::Close;
-    }
-
-    // Flush the HTTP/2 handler's output through the client connection.
-    if (pH2Handler->hasPendingOutput()) {
-      flushOutbound(peerIt);
-    }
-
-    // If we hit EAGAIN, we are done for now.
-    if (hitEagain) {
-      break;
-    }
-    // If we didn't hit EAGAIN, but we injected some data, we can loop and read more.
-    // If we didn't inject anything (win <= 0), we would have returned above.
-  }
-  return CloseStatus::Keep;
-}
-#endif
 
 }  // namespace aeronet

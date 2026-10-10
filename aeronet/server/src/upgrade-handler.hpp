@@ -83,6 +83,11 @@ namespace upgrade {
 
 #ifdef AERONET_ENABLE_WEBSOCKET
 
+/// Tell whether a WebSocket upgrade request comes from a page of the server itself, or from a client that is not a
+/// browser: either there is no Origin header, or its host and port (default port of its scheme omitted) are the ones
+/// of the Host header, compared case-insensitively. An opaque origin ("null") is never the same origin.
+[[nodiscard]] bool IsSameOriginRequest(std::string_view origin, std::string_view host);
+
 std::size_t ComputeWebSocketUpgradeResponseSize(const UpgradeValidationResult& validationResult);
 
 /// Generate a raw 101 Switching Protocols response for WebSocket upgrade.

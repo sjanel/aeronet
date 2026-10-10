@@ -91,6 +91,54 @@ TEST(Http2ConnectTest, WildcardAllowlistAllowsTarget) {
   EXPECT_EQ(std::string_view(received.data(), received.size()), payload);
 }
 
+TEST(Http2ConnectTest, HostNameTargetIsResolvedInBackground) {
+  test::TlsHttp2TestServer ts;
+  AllowConnectHost(ts, "localhost");
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  auto echoSrv = test::startLocalhostEchoServer();
+  const uint32_t streamId = client.connect("localhost:" + std::to_string(echoSrv.port));
+  ASSERT_GT(streamId, 0);
+
+  constexpr std::string_view payload = "resolved-http2-connect";
+  const std::span<const std::byte> data(reinterpret_cast<const std::byte*>(payload.data()), payload.size());
+  ASSERT_TRUE(client.sendTunnelData(streamId, data));
+
+  RawChars received;
+  client.receiveTunnelData(received, streamId);
+  EXPECT_EQ(std::string_view(received.data(), received.size()), payload);
+}
+
+TEST(Http2ConnectTest, UpstreamConnectFailureResetsTheStream) {
+  test::TlsHttp2TestServer ts;
+  AllowConnectHost(ts, "127.0.0.1");
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  // Nothing listens on the port of a stopped echo server anymore: the connection to the target is refused, which the
+  // server only learns once the stream got its 200 response.
+  uint16_t closedPort = 0;
+  {
+    auto echoSrv = test::startEchoServer();
+    closedPort = echoSrv.port;
+  }
+  const uint32_t streamId = client.connect("127.0.0.1:" + std::to_string(closedPort));
+  ASSERT_GT(streamId, 0);
+
+  constexpr std::string_view payload = "never-delivered";
+  const std::span<const std::byte> data(reinterpret_cast<const std::byte*>(payload.data()), payload.size());
+  client.sendTunnelData(streamId, data);
+
+  RawChars received;
+  client.receiveTunnelData(received, streamId, 500ms);
+  EXPECT_TRUE(received.empty());
+
+  // The connection survives the failed tunnel.
+  const uint32_t nextStreamId = client.connect("127.0.0.1:" + std::to_string(closedPort));
+  EXPECT_GT(nextStreamId, streamId);
+}
+
 TEST(Http2ConnectTest, AllowlistRejectsTarget) {
   test::TlsHttp2TestServer ts;
 

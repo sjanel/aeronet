@@ -184,6 +184,41 @@ bool IsConnectionStale(NativeHandle fd) noexcept {
 #endif
 }
 
+bool IsPeerClosed(NativeHandle fd) noexcept {
+  char probe = 0;
+#ifdef AERONET_WINDOWS
+  // Windows recv() has no MSG_DONTWAIT: poll readability with a zero-timeout select() first (see IsConnectionStale()).
+  fd_set readSet;
+  FD_ZERO(&readSet);
+  FD_SET(fd, &readSet);
+  timeval immediate{};
+  const int ready = ::select(0, &readSet, nullptr, nullptr, &immediate);
+  if (ready == 0) {
+    return false;
+  }
+  if (ready == SOCKET_ERROR) {
+    return true;
+  }
+  const int peeked = ::recv(fd, &probe, 1, MSG_PEEK);
+  if (peeked == SOCKET_ERROR) {
+    return ::WSAGetLastError() != WSAEWOULDBLOCK;
+  }
+  return peeked == 0;
+#else
+  for (;;) {
+    const ssize_t peeked = ::recv(fd, &probe, 1, MSG_PEEK | MSG_DONTWAIT);
+    if (peeked < 0) {
+      if (errno == error::kInterrupted) {
+        continue;
+      }
+      // EAGAIN/EWOULDBLOCK => nothing to read, the peer is still there; any other errno (ECONNRESET, ...) => closed.
+      return errno != error::kWouldBlock;
+    }
+    return peeked == 0;
+  }
+#endif
+}
+
 bool GetLocalAddress(NativeHandle fd, sockaddr_storage& addr) noexcept {
   socklen_t len = sizeof(addr);
   return ::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len) == 0;

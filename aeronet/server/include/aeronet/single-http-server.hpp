@@ -67,7 +67,12 @@ class ServerLifecycleTracker;
 
 class HttpResponseWriter;
 class CorsPolicy;
+struct WebSocketEndpoint;
 class Http1WriterTransport;
+
+namespace internal {
+class TunnelManager;
+}  // namespace internal
 
 // SingleHttpServer
 //  - Single-threaded event loop by design: one instance == one epoll/reactor running in the
@@ -156,7 +161,7 @@ class SingleHttpServer {
 
   // Construct an SingleHttpServer with a default configuration that does not immediately starts listening.
   // As a consequence, the ephemeral port is NOT allocated at this time and port() will return 0.
-  SingleHttpServer() noexcept = default;
+  SingleHttpServer() noexcept;
 
   // Construct a server bound and listening immediately according to given configuration.
   //  - Performs: ::socket, setsockopt (REUSEADDR always, REUSEPORT best-effort if enabled), ::bind, ::listen,
@@ -451,7 +456,7 @@ class SingleHttpServer {
   friend class HttpResponseWriter;    // allow streaming writer to access queueData and connection storage
   friend class Http1WriterTransport;  // HTTP/1.1 transport backend for streaming writer
   friend class MultiHttpServer;
-  friend class H2TunnelBridge;  // allow tunnel bridge to access connection management internals
+  friend class internal::TunnelManager;  // CONNECT tunnels, relayed through the connection management
 
   using ConnectionIt = internal::ConnectionStorage::ConnectionIt;
 
@@ -471,6 +476,10 @@ class SingleHttpServer {
   AsyncHandle launchDetached(std::function<bool()> extraPredicate = {});
 
   void eventLoop();
+  // Serves the input of the connections deferred by deferInput().
+  void resumeDeferredInputs();
+  // Periodic maintenance: timeouts sweep, access log flush, end of a stop or a drain.
+  void runMaintenance(std::chrono::steady_clock::time_point now);
   void sweepIdleConnections();
   void applyPendingUpdates();
   // Applies the posted config updates, each one atomically (restoring the previous configuration if it fails).
@@ -501,6 +510,20 @@ class SingleHttpServer {
   // Returns true if the connection should be closed.
   bool processConnectionInput(ConnectionIt cnxIt);
   bool processHttp1Requests(ConnectionIt cnxIt);
+  // Validate the Transfer-Encoding of the current HTTP/1.1 request. Returns true for chunked, the only coding
+  // supported. Otherwise, queues the error response (the connection then closes) and returns false.
+  bool acceptChunkedTransferEncoding(ConnectionIt cnxIt, std::string_view transferEncoding);
+  // Track the reception of the body of the current HTTP/1.1 request for the body read timeout.
+  void trackBodyReception(ConnectionState& state, bool bodyReady) noexcept;
+  // Apply the response middleware of the route, then send the response to the current HTTP/1.1 request.
+  void sendHttp1Response(ConnectionIt cnxIt, HttpResponse&& resp, const Router::RoutingResult& routingResult,
+                         bool streaming);
+  // Answer 403 to the current HTTP/1.1 request when the CORS policy of its route denies its Origin.
+  // Returns true in that case.
+  bool rejectDeniedCorsOrigin(ConnectionIt cnxIt, const Router::RoutingResult& routingResult, bool streaming);
+  // Build the 301 redirect of a request to the path with (or without) the trailing slash its route is registered with.
+  HttpResponse makeTrailingSlashRedirect(const HttpRequestView& request,
+                                         Router::RoutingResult::RedirectSlashMode redirectSlashMode);
   // Process WebSocket / HTTP/2 data through the protocol handler.
   // Returns true if the connection should be closed.
   bool processSpecialProtocolHandler(ConnectionIt cnxIt);
@@ -542,8 +565,15 @@ class SingleHttpServer {
   bool handleExpectHeader(ConnectionIt cnxIt, std::string_view expectHeader, const CorsPolicy* pCorsPolicy,
                           bool& found100Continue);
   // Helper to populate and invoke the metrics callback for a completed request.
-  void emitRequestMetrics(const HttpRequestView& request, http::StatusCode status, std::size_t bytesIn,
-                          bool reusedConnection);
+  void emitRequestMetrics(const HttpRequestView& request, http::StatusCode status, bool reusedConnection);
+
+  // End an HTTP/1.1 request answered with 'status': emit its metrics (if observed), then end its span.
+  void endRequest(HttpRequestView& request, http::StatusCode status, bool reusedConnection) {
+    if (_callbacks.metrics || _accessLog) {
+      emitRequestMetrics(request, status, reusedConnection);
+    }
+    request.end(status);
+  }
 
   // Helper to build & queue a simple error response, invoke parser error callback (if any).
   // The connection will be closed after draining buffered writes.
@@ -563,6 +593,9 @@ class SingleHttpServer {
   bool flushUserSpaceTlsBuffer(ConnectionIt cnxIt);
 
   void closeConnection(ConnectionIt cnxIt);
+  // Unregister the connection from the event loop and release its state (closing its socket). Unlike
+  // closeConnection(), neither its maintenance nor its tunnels are handled.
+  void releaseConnection(ConnectionIt cnxIt);
 
   // Registers (or unregisters) the keep-alive deadline of a connection according to its current state.
   void refreshKeepAliveDeadline(ConnectionIt cnxIt);
@@ -578,6 +611,19 @@ class SingleHttpServer {
   [[nodiscard]] bool isServerInternalFd(NativeHandle fd) const noexcept;
   bool closeExpiredKeepAliveConnections();
   void rebuildKeepAliveDeadlines();
+#ifdef AERONET_ENABLE_WEBSOCKET
+  enum class WebSocketUpgrade : uint8_t { Upgraded, Invalid, Refused, Failed };
+
+  // Switch the connection of the current request, a WebSocket upgrade that passed the request middleware and the
+  // origin checks, to the WebSocket protocol. Queues the 101 response on success, and the 400 response of an invalid
+  // upgrade. The caller answers a refused upgrade (factory returning no handler) and a failed one (factory throwing).
+  WebSocketUpgrade upgradeToWebSocket(ConnectionIt cnxIt, const WebSocketEndpoint& endpoint);
+  // Arms the deadline of a WebSocket connection when its next timeout check comes before the armed deadline (or
+  // removes it when no timeout applies).
+  void refreshWebSocketDeadline(NativeHandle fd, ConnectionState& state);
+  // Runs the idle and close timeouts of a WebSocket connection whose deadline elapsed. Returns true if it was closed.
+  bool checkWebSocketTimeouts(ConnectionIt cnxIt);
+#endif
   void forgetConnectionMaintenance(ConnectionState& state) noexcept;
   void clearRequestDeadline(ConnectionState& state) noexcept;
   void trackRequestDeadline(ConnectionState& state, uint32_t deadlineMs) noexcept;
@@ -589,31 +635,16 @@ class SingleHttpServer {
 
   LoopAction processSpecialMethods(ConnectionIt& cnxIt, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy);
 
-  // HTTP/1.1-specific CONNECT handling (TCP tunnel setup).
-  LoopAction processConnectMethod(ConnectionIt& cnxIt, const CorsPolicy* pCorsPolicy);
+  // Run the streaming handler of the current HTTP/1.1 request. Returns Break when the connection closes afterwards,
+  // Continue otherwise.
+  LoopAction serveStreamingRequest(ConnectionIt cnxIt, const Router::RoutingResult& routingResult);
 
-  // Shared CONNECT tunnel helpers used by both HTTP/1.1 and HTTP/2 paths.
-
-  /// Create a TCP connection to target host:port, register it in the event loop,
-  /// and insert an upstream ConnectionState linked to clientFd.
-  /// @return The upstream fd on success, kInvalidHandle on failure.
-  NativeHandle setupTunnelConnection(NativeHandle clientFd, std::string_view host, uint16_t port);
-
-  /// Forward data to a tunnel peer with write-buffering and EPOLLOUT arming.
-  /// @return false on fatal transport error (caller should close the connection).
-  bool forwardTunnelData(ConnectionIt targetIt, std::string_view data);
-
-  /// Overload that moves data from sourceBuffer with swap optimisation.
-  /// Clears sourceBuffer on success.
-  bool forwardTunnelData(ConnectionIt targetIt, RawChars& sourceBuffer);
-
-  /// Half-close the write side of a tunnel peer, deferring if data is still buffered.
-  /// Returns true if tunnel is fully closed after this call, false if the peer is still open (either because it was
-  /// already half-closed or because we deferred close until buffered data is flushed).
-  bool shutdownTunnelPeerWrite(ConnectionIt peerIt);
-
-  CloseStatus readTunnelData(ConnectionIt cnxIt, std::size_t& bytesReadThisEvent, bool& hitEagain);
-  CloseStatus handleInTunneling(ConnectionIt cnxIt);
+#ifdef AERONET_ENABLE_WEBSOCKET
+  // Answer the WebSocket upgrade request of the connection, once its request middleware ran: checks its origin, then
+  // switches the connection to WebSocket (SwitchProtocol), or answers it with an error (Continue, or Break when the
+  // connection closes).
+  LoopAction processWebSocketUpgrade(ConnectionIt cnxIt, const Router::RoutingResult& routingResult);
+#endif
 
   void closeListener() noexcept;
   void closeAllConnections();
@@ -681,14 +712,6 @@ class SingleHttpServer {
 
   // Install CONNECT tunnel bridge on an existing HTTP/2 protocol handler.
   void installH2TunnelBridge(NativeHandle clientFd, ConnectionState& state);
-
-  // Set up a CONNECT tunnel upstream TCP connection for an HTTP/2 stream.
-  // Delegates to setupTunnelConnection() and additionally sets peerStreamId.
-  NativeHandle setupH2Tunnel(NativeHandle clientFd, uint32_t streamId, std::string_view host, uint16_t port);
-
-  // Handle readable events from an HTTP/2 CONNECT tunnel upstream.
-  // Reads data and injects it as DATA frames into the HTTP/2 stream.
-  CloseStatus handleInH2Tunneling(ConnectionIt cnxIt);
 #endif
 
   // Updated by the event loop, read by stats() from any thread.
@@ -769,6 +792,10 @@ class SingleHttpServer {
 
   // Used by MultiHttpServer to track lifecycle without strong ownership.
   std::weak_ptr<ServerLifecycleTracker> _lifecycleTracker;
+
+  // CONNECT tunnels: created by the first CONNECT request of a run, and destroyed when the event loop stops (always
+  // null when the server does not run, so the special members of the server need not care).
+  std::unique_ptr<internal::TunnelManager> _tunnels;
 
   // Fds whose input must be resumed without any event reporting it (see deferInput()): those that hit the per-event
   // fairness cap with data still in their TCP buffer (edge-triggered polling - EPOLLET on Linux, EV_CLEAR on macOS -

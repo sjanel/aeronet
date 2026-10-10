@@ -232,6 +232,13 @@ AeronetAddUnitTest(
     aeronet_objects
 )
 
+AeronetAddUnitTest(
+    connect-target_test
+    test/connect-target_test.cpp
+    LIBRARIES
+    aeronet_objects
+)
+
 if(AERONET_ENABLE_BROTLI)
     AeronetAddUnitTest(
         brotli-encoder-decoder_test

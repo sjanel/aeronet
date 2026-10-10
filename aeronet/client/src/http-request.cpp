@@ -26,6 +26,7 @@
 #include "aeronet/safe-cast.hpp"
 #include "aeronet/search-crlf.hpp"
 #include "aeronet/static-string-view-helpers.hpp"
+#include "aeronet/string-equal-ignore-case.hpp"
 #include "url-parse.hpp"
 
 namespace aeronet {
@@ -398,20 +399,29 @@ const char* HttpRequest::setNewUrl(const internal::UrlParseResult& res) {
   return nullptr;
 }
 
-bool HttpRequest::resolveRedirect(std::string_view location) {
-  if (location.contains("://")) {
-    // absolute URL, parse it and set the new origin key
-    const auto res = internal::ParseUrl(location);
-    return !res.host.empty() && setNewUrl(res) == nullptr;
-  }
-
-  // Network-path reference: //host[:port][/path] -> inherit scheme. Parse the authority directly and
-  // build the canonical buffer once, instead of synthesizing a "scheme://..." string to re-parse and copy.
-  if (location.starts_with("//")) {
+HttpRequest::RedirectOutcome HttpRequest::resolveRedirect(std::string_view location) {
+  // Absolute URL, or network-path reference '//host[:port][/path]' that inherits the scheme. The latter's authority is
+  // parsed directly to build the canonical buffer once, instead of synthesizing a "scheme://..." string to re-parse.
+  const bool isAbsoluteUrl = location.contains("://");
+  if (isAbsoluteUrl || location.starts_with("//")) {
     internal::UrlParseResult res;
-    res.isTls = isTlsRequest();
-    internal::ParseAuthority(location.substr(2), res);
-    return !res.host.empty() && setNewUrl(res) == nullptr;
+    if (isAbsoluteUrl) {
+      res = internal::ParseUrl(location);
+    } else {
+      res.isTls = isTlsRequest();
+      internal::ParseAuthority(location.substr(2), res);
+    }
+    if (res.host.empty()) {
+      return RedirectOutcome::Invalid;
+    }
+    if (isTlsRequest() && !res.isTls) {
+      return RedirectOutcome::Downgrade;
+    }
+    const bool sameOrigin = res.isTls == isTlsRequest() && res.port == port() && CaseInsensitiveEqual(res.host, host());
+    if (setNewUrl(res) != nullptr) {
+      return RedirectOutcome::Invalid;
+    }
+    return sameOrigin ? RedirectOutcome::SameOrigin : RedirectOutcome::CrossOrigin;
   }
 
   // Strip fragment from the relative reference.
@@ -450,7 +460,7 @@ bool HttpRequest::resolveRedirect(std::string_view location) {
   const bool prefixEndsWithPercent = prefixLen != 0 && oldTarget[prefixLen - 1] == '%';
   if (!IsValidRequestTargetChars(location, prefixEndsWithPercent) ||
       newTargetLen > MaxTargetLen(HttpMessage::kHeaderPosNbBits, _originKeyLen)) {
-    return false;
+    return RedirectOutcome::Invalid;
   }
 
   const int32_t diffLen = static_cast<int32_t>(newTargetLen) - static_cast<int32_t>(oldTargetLen);
@@ -469,7 +479,7 @@ bool HttpRequest::resolveRedirect(std::string_view location) {
   adjustHeadersAndBodyStart(diffLen);
   _data.adjustSize(diffLen);
 
-  return true;
+  return RedirectOutcome::SameOrigin;
 }
 
 // Finalizes the HttpRequest and returns an HttpMessageData object that can be sent over the network.

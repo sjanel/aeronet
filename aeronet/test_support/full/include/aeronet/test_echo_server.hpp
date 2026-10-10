@@ -5,7 +5,7 @@
 #include <memory>
 #include <thread>
 
-#include "aeronet/socket.hpp"
+#include "aeronet/base-fd.hpp"
 
 namespace aeronet::test {
 
@@ -15,7 +15,7 @@ namespace aeronet::test {
 struct EchoServer {
   EchoServer() = default;
 
-  EchoServer(Socket sock, uint16_t pt, std::shared_ptr<std::atomic<bool>> sf, std::thread thr);
+  EchoServer(BaseFd sock, uint16_t pt, std::shared_ptr<std::atomic<bool>> sf, std::thread thr);
 
   EchoServer(EchoServer&&) noexcept = default;
   EchoServer(const EchoServer&) = delete;
@@ -24,7 +24,7 @@ struct EchoServer {
 
   ~EchoServer();
 
-  Socket listenSocket;
+  BaseFd listenSocket;
   uint16_t port{};
   std::shared_ptr<std::atomic<bool>> stopFlag;
   std::thread echoThread;
@@ -32,5 +32,9 @@ struct EchoServer {
 
 // Start a simple echo server bound to loopback on an ephemeral port. Throws std::system_error on error.
 EchoServer startEchoServer();
+
+// Same, on the loopback address where a connection to "localhost" lands: the first one localhost resolves to, which is
+// ::1 on some hosts.
+EchoServer startLocalhostEchoServer();
 
 }  // namespace aeronet::test
