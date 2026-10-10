@@ -1,6 +1,7 @@
 #include "aeronet/test_echo_server.hpp"
 
 #ifdef AERONET_POSIX
+#include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -18,6 +19,7 @@
 #include <cstring>
 #include <exception>
 #include <memory>
+#include <span>
 #include <string_view>
 #include <thread>
 #include <utility>
@@ -26,13 +28,17 @@
 #include "aeronet/errno-throw.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
-#include "aeronet/socket.hpp"
 #include "aeronet/system-error.hpp"
+#include "aeronet/tcp-connector.hpp"
 #include "aeronet/test_util.hpp"
+
+#ifdef AERONET_WINDOWS
+#include "aeronet/socket-ops.hpp"
+#endif
 
 namespace aeronet::test {
 
-EchoServer::EchoServer(Socket sock, uint16_t pt, std::shared_ptr<std::atomic<bool>> sf, std::thread thr)
+EchoServer::EchoServer(BaseFd sock, uint16_t pt, std::shared_ptr<std::atomic<bool>> sf, std::thread thr)
     : listenSocket(std::move(sock)), port(pt), stopFlag(std::move(sf)), echoThread(std::move(thr)) {}
 
 EchoServer::~EchoServer() {
@@ -41,32 +47,49 @@ EchoServer::~EchoServer() {
   }
   // Do NOT close listenSocket here — the raw fd captured by the echo thread could be
   // reused by the OS after close, causing accept() on a wrong socket.  The accept timeout
-  // (250 ms) + stop flag is sufficient to wake the thread.  The Socket member destructor
+  // (250 ms) + stop flag is sufficient to wake the thread.  The listenSocket destructor
   // runs after the thread is joined, so the fd stays valid until then.
   if (echoThread.joinable()) {
     echoThread.join();
   }
 }
 
-EchoServer startEchoServer() {
-  Socket listenSock(Socket::Type::Stream);
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  addr.sin_port = 0;  // ephemeral
-  if (::bind(listenSock.fd(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+namespace {
+
+EchoServer StartEchoServer(int family) {
+  // Bind to the loopback address of the family (127.0.0.1 or ::1), on an ephemeral port.
+#ifdef AERONET_WINDOWS
+  EnsureWinsockInitialized();
+#endif
+  BaseFd listenSock(::socket(family, SOCK_STREAM, 0));
+  if (!listenSock) {
+    ThrowSystemError("Error from ::socket");
+  }
+  sockaddr_storage addr{};
+  socklen_t alen;
+  if (family == AF_INET6) {
+    auto& addr6 = reinterpret_cast<sockaddr_in6&>(addr);
+    addr6.sin6_family = AF_INET6;
+    addr6.sin6_addr = in6addr_loopback;
+    alen = sizeof(sockaddr_in6);
+  } else {
+    auto& addr4 = reinterpret_cast<sockaddr_in&>(addr);
+    addr4.sin_family = AF_INET;
+    addr4.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    alen = sizeof(sockaddr_in);
+  }
+  if (::bind(listenSock.fd(), reinterpret_cast<sockaddr*>(&addr), alen) != 0) {
     ThrowSystemError("Error from ::bind");
   }
   if (::listen(listenSock.fd(), 1) == -1) {
     ThrowSystemError("Error from ::listen");
   }
-  sockaddr_in actual{};
-  socklen_t alen = sizeof(actual);
-  if (::getsockname(listenSock.fd(), reinterpret_cast<sockaddr*>(&actual), &alen) != 0) {
+  if (::getsockname(listenSock.fd(), reinterpret_cast<sockaddr*>(&addr), &alen) != 0) {
     ThrowSystemError("Error from ::getsockname");
   }
 
-  uint16_t port = ntohs(actual.sin_port);
+  const uint16_t port = ntohs(family == AF_INET6 ? reinterpret_cast<const sockaddr_in6&>(addr).sin6_port
+                                                 : reinterpret_cast<const sockaddr_in&>(addr).sin_port);
 
   // Set a timeout on the listening socket so accept() doesn't block indefinitely.
   // This allows the echo thread to check the stop flag periodically.
@@ -211,6 +234,16 @@ EchoServer startEchoServer() {
   });
 
   return EchoServer{std::move(listenSock), port, stopFlag, std::move(echoThread)};
+}
+
+}  // namespace
+
+EchoServer startEchoServer() { return StartEchoServer(AF_INET); }
+
+EchoServer startLocalhostEchoServer() {
+  char host[] = "localhost";
+  const AddrInfoPtr addresses = ResolveTCP(std::span<char>(host, sizeof(host) - 1U), 0);
+  return StartEchoServer(addresses ? addresses->ai_family : AF_INET);
 }
 
 }  // namespace aeronet::test

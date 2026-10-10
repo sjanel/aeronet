@@ -2208,4 +2208,118 @@ TEST(WebSocketClientMaskingTest, MovedHandlerRetainsMaskingState) {
   EXPECT_NE(frame1.header.maskingKey, frame2.header.maskingKey);
 }
 
+// ============================================================================
+// Idle and close timeouts
+// ============================================================================
+
+namespace {
+
+using Clock = std::chrono::steady_clock;
+using Timeout = WebSocketHandler::Timeout;
+
+// Opcode of the first frame queued in the output of 'handler'.
+Opcode FirstOutputOpcode(const WebSocketHandler& handler) {
+  const auto pending = handler.getPendingOutput();
+  return static_cast<Opcode>(std::to_integer<uint8_t>(pending[0]) & 0x0FU);
+}
+
+}  // namespace
+
+TEST(WebSocketHandlerTimeoutTest, IdleConnectionIsPingedThenClosed) {
+  WebSocketConfig config;
+  config.idleTimeout = std::chrono::seconds{60};
+  WebSocketHandler handler(config);
+  const auto lastActivity = Clock::now();
+
+  // After half of the idle timeout, the check sends a Ping.
+  EXPECT_EQ(handler.nextTimeoutCheck(lastActivity), lastActivity + std::chrono::seconds{30});
+  EXPECT_EQ(handler.checkTimeouts(lastActivity + std::chrono::seconds{29}, lastActivity), Timeout::None);
+  EXPECT_FALSE(handler.hasPendingOutput());
+  EXPECT_EQ(handler.checkTimeouts(lastActivity + std::chrono::seconds{30}, lastActivity), Timeout::None);
+  ASSERT_TRUE(handler.hasPendingOutput());
+  EXPECT_EQ(FirstOutputOpcode(handler), Opcode::Ping);
+  handler.onOutputWritten(handler.getPendingOutput().size());
+
+  // A single Ping per idle period: the next check is the idle timeout itself.
+  EXPECT_EQ(handler.nextTimeoutCheck(lastActivity), lastActivity + std::chrono::seconds{60});
+  EXPECT_EQ(handler.checkTimeouts(lastActivity + std::chrono::seconds{45}, lastActivity), Timeout::None);
+  EXPECT_FALSE(handler.hasPendingOutput());
+  EXPECT_EQ(handler.checkTimeouts(lastActivity + std::chrono::seconds{60}, lastActivity), Timeout::Idle);
+}
+
+TEST(WebSocketHandlerTimeoutTest, ActivityStartsANewIdlePeriod) {
+  WebSocketConfig config;
+  config.idleTimeout = std::chrono::seconds{60};
+  WebSocketHandler handler(config);
+  const auto start = Clock::now();
+
+  EXPECT_EQ(handler.checkTimeouts(start + std::chrono::seconds{30}, start), Timeout::None);
+  ASSERT_TRUE(handler.hasPendingOutput());
+  handler.onOutputWritten(handler.getPendingOutput().size());
+
+  // The Pong arrives: the connection is active again, and will be pinged again after its next idle half-period.
+  const auto pongTime = start + std::chrono::seconds{31};
+  EXPECT_EQ(handler.nextTimeoutCheck(pongTime), pongTime + std::chrono::seconds{30});
+  EXPECT_EQ(handler.checkTimeouts(start + std::chrono::seconds{60}, pongTime), Timeout::None);
+  EXPECT_FALSE(handler.hasPendingOutput());
+  EXPECT_EQ(handler.checkTimeouts(pongTime + std::chrono::seconds{30}, pongTime), Timeout::None);
+  ASSERT_TRUE(handler.hasPendingOutput());
+  EXPECT_EQ(FirstOutputOpcode(handler), Opcode::Ping);
+}
+
+TEST(WebSocketHandlerTimeoutTest, NoPingWithoutAutoPing) {
+  WebSocketConfig config;
+  config.idleTimeout = std::chrono::seconds{10};
+  config.autoPing = false;
+  WebSocketHandler handler(config);
+  const auto lastActivity = Clock::now();
+
+  EXPECT_EQ(handler.nextTimeoutCheck(lastActivity), lastActivity + std::chrono::seconds{10});
+  EXPECT_EQ(handler.checkTimeouts(lastActivity + std::chrono::seconds{9}, lastActivity), Timeout::None);
+  EXPECT_FALSE(handler.hasPendingOutput());
+  EXPECT_EQ(handler.checkTimeouts(lastActivity + std::chrono::seconds{10}, lastActivity), Timeout::Idle);
+}
+
+TEST(WebSocketHandlerTimeoutTest, IdleTimeoutDisabled) {
+  WebSocketConfig config;
+  config.idleTimeout = std::chrono::milliseconds{0};
+  WebSocketHandler handler(config);
+  const auto lastActivity = Clock::now();
+
+  EXPECT_EQ(handler.nextTimeoutCheck(lastActivity), Clock::time_point::max());
+  EXPECT_EQ(handler.checkTimeouts(lastActivity + std::chrono::hours{24}, lastActivity), Timeout::None);
+  EXPECT_FALSE(handler.hasPendingOutput());
+}
+
+TEST(WebSocketHandlerTimeoutTest, CloseTimeoutElapsesWithoutPeerClose) {
+  WebSocketConfig config;
+  config.idleTimeout = std::chrono::seconds{60};
+  config.closeTimeout = std::chrono::seconds{5};
+  WebSocketHandler handler(config);
+  const auto lastActivity = Clock::now();
+
+  ASSERT_TRUE(handler.sendClose(CloseCode::GoingAway, "bye"));
+  handler.onOutputWritten(handler.getPendingOutput().size());
+  const auto closeSent = handler.closeInitiatedAt();
+
+  // The close timeout comes first, and no Ping is sent during the close handshake.
+  EXPECT_EQ(handler.nextTimeoutCheck(lastActivity), closeSent + std::chrono::seconds{5});
+  EXPECT_EQ(handler.checkTimeouts(closeSent + std::chrono::seconds{4}, lastActivity), Timeout::None);
+  EXPECT_FALSE(handler.hasPendingOutput());
+  EXPECT_EQ(handler.checkTimeouts(closeSent + std::chrono::seconds{5}, lastActivity), Timeout::Close);
+}
+
+TEST(WebSocketHandlerTimeoutTest, CloseTimeoutAppliesWithoutIdleTimeout) {
+  WebSocketConfig config;
+  config.idleTimeout = std::chrono::milliseconds{0};
+  config.closeTimeout = std::chrono::milliseconds{200};
+  WebSocketHandler handler(config);
+  const auto lastActivity = Clock::now();
+
+  ASSERT_TRUE(handler.sendClose());
+  const auto closeSent = handler.closeInitiatedAt();
+  EXPECT_EQ(handler.nextTimeoutCheck(lastActivity), closeSent + std::chrono::milliseconds{200});
+  EXPECT_EQ(handler.checkTimeouts(closeSent + std::chrono::milliseconds{200}, lastActivity), Timeout::Close);
+}
+
 }  // namespace aeronet::websocket

@@ -22,9 +22,14 @@
 #define AERONET_WANT_SOCKET_OVERRIDES
 #define AERONET_WANT_READ_WRITE_OVERRIDES
 
+#include "aeronet/http-constants.hpp"
+#include "aeronet/http-method.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
+#include "aeronet/request-metrics.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/test_echo_server.hpp"
 #include "aeronet/test_server_fixture.hpp"
@@ -105,6 +110,21 @@ class PausingWriteTransport final : public TransportBackend<PausingWriteTranspor
   Transport _inner;
   NativeHandle _fd;
 };
+
+// Receives the head of the response to a CONNECT request, byte per byte so that no tunnel byte is consumed: a 2xx
+// response has no content, the tunnel bytes directly follow its head.
+std::string RecvConnectResponseHead(NativeHandle fd, std::chrono::milliseconds timeout) {
+  test::setRecvTimeout(fd, timeout);
+  std::string head;
+  while (!head.ends_with(http::DoubleCRLF)) {
+    char ch;
+    if (::recv(fd, &ch, 1, 0) != 1) {
+      break;
+    }
+    head.push_back(ch);
+  }
+  return head;
+}
 
 void AllowConnectHost(test::TestServer& server, std::string_view host) {
   server.postConfigUpdate([host](HttpServerConfig& cfg) {
@@ -198,7 +218,7 @@ TEST(HttpConnectTunnelScheduling, ForwardsDataArrivingAsConnectResponseCompletes
     return;
   }
 
-  const std::string response = test::recvWithTimeout(tunnelClient.fd(), 1s);
+  const std::string response = RecvConnectResponseHead(tunnelClient.fd(), 1s);
   EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
   test::sendAll(tunnelClient.fd(), payload, 1s);
   const NativeHandle acceptedFd = gAcceptedFd.load(std::memory_order_acquire);
@@ -222,7 +242,7 @@ TEST(HttpConnectTunnelCleanup, ClientTransportReadErrorClosesTunnel) {
   const std::string request =
       "CONNECT 127.0.0.1:" + std::to_string(echoSrv.port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
   test::sendAll(tunnelClient.fd(), request, 1s);
-  const std::string response = test::recvWithTimeout(tunnelClient.fd(), 1s);
+  const std::string response = RecvConnectResponseHead(tunnelClient.fd(), 1s);
   ASSERT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
 
   const NativeHandle serverClientFd = gAcceptedFd.load(std::memory_order_acquire);
@@ -244,7 +264,7 @@ TEST_F(HttpConnectDefaultConfig, ForwardsTunnelDataCoalescedWithConnectHead) {
                               " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n" + std::string(payload);
   test::sendAll(fd, request, 1s);
 
-  std::string received = test::recvWithTimeout(fd, 1s);
+  std::string received = RecvConnectResponseHead(fd, 1s);
   EXPECT_TRUE(received.starts_with("HTTP/1.1 200")) << received;
   if (!received.contains(payload)) {
     received += test::recvWithTimeout(fd, 1s, payload.size());
@@ -262,7 +282,7 @@ TEST_F(HttpConnectDefaultConfig, CoalescedDataWriteErrorClosesTunnel) {
   const std::string request = "CONNECT 127.0.0.1:9 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\ncoalesced-write-error";
   test::sendAll(fd, request, 1s);
 
-  const std::string response = test::recvWithTimeout(fd, 1s);
+  const std::string response = RecvConnectResponseHead(fd, 1s);
   EXPECT_TRUE(response.empty() || response.starts_with("HTTP/1.1 200")) << response;
   EXPECT_TRUE(test::WaitForPeerClose(fd, 2s));
 }
@@ -279,7 +299,7 @@ TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
   std::string req = "CONNECT 127.0.0.1:" + std::to_string(echoSrv.port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
   ASSERT_GT(fd, 0);
   test::sendAll(fd, req, std::chrono::milliseconds{10000});
-  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{20000}, 93UL);
+  auto resp = RecvConnectResponseHead(fd, std::chrono::milliseconds{20000});
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
 
   // Now send data through the tunnel and expect echo
@@ -321,18 +341,161 @@ TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
   }
 }
 
+TEST_F(HttpConnectDefaultConfig, ConnectResponseHasNoContent) {
+  auto echoSrv = test::startEchoServer();
+  AllowConnectHost(ts, "127.0.0.1");
+
+  test::sendAll(fd, "CONNECT 127.0.0.1:" + std::to_string(echoSrv.port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+  const std::string head = RecvConnectResponseHead(fd, 5000ms);
+  ASSERT_TRUE(head.starts_with("HTTP/1.1 200")) << head;
+  // RFC 9110 §9.3.6: no Content-Length (nor content) in a 2xx response to CONNECT.
+  EXPECT_FALSE(head.contains("content-length")) << head;
+  EXPECT_FALSE(head.contains("content-type")) << head;
+
+  // The first bytes received after the head are the tunneled ones.
+  constexpr std::string_view payload = "first-tunnel-bytes";
+  test::sendAll(fd, payload);
+  EXPECT_EQ(test::recvWithTimeout(fd, 2000ms, payload.size()), payload);
+}
+
+TEST_F(HttpConnectDefaultConfig, HostNameTargetIsResolvedInBackground) {
+  auto echoSrv = test::startLocalhostEchoServer();
+  AllowConnectHost(ts, "localhost");
+
+  // Tunnel bytes coalesced with the CONNECT head wait in the input buffer while the host name is resolved.
+  constexpr std::string_view payload = "sent-with-the-connect-head";
+  test::sendAll(fd, "CONNECT localhost:" + std::to_string(echoSrv.port) + " HTTP/1.1\r\nHost: localhost\r\n\r\n" +
+                        std::string(payload));
+  const std::string head = RecvConnectResponseHead(fd, 5000ms);
+  ASSERT_TRUE(head.starts_with("HTTP/1.1 200")) << head;
+  EXPECT_EQ(test::recvWithTimeout(fd, 2000ms, payload.size()), payload);
+
+  constexpr std::string_view secondPayload = "sent-after-the-response";
+  test::sendAll(fd, secondPayload);
+  EXPECT_EQ(test::recvWithTimeout(fd, 2000ms, secondPayload.size()), secondPayload);
+}
+
+TEST_F(HttpConnectDefaultConfig, Ipv6TargetInBrackets) {
+  AllowConnectHost(ts, "::1");
+  // Whether the connection succeeds depends on the IPv6 support of the host, but the target is valid and allowed.
+  test::sendAll(fd, "CONNECT [::1]:9 HTTP/1.1\r\nHost: [::1]:9\r\n\r\n");
+  const std::string head = RecvConnectResponseHead(fd, 5000ms);
+  EXPECT_TRUE(head.starts_with("HTTP/1.1 200") || head.starts_with("HTTP/1.1 502")) << head;
+}
+
+#if AERONET_WANT_SYS_OVERRIDES
+TEST_F(HttpConnectDefaultConfig, SlowResolutionDoesNotBlockTheEventLoop) {
+  auto echoSrv = test::startLocalhostEchoServer();
+  AllowConnectHost(ts, "localhost");
+  // The resolution takes longer than the keep-alive timeout, which does not apply while it runs.
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withKeepAliveTimeout(200ms); });
+  ts.router().setPath(http::Method::GET, "/hello",
+                      [](const HttpRequestView& req) { return req.makeResponse(http::StatusCodeOK, "world"); });
+
+  // A blocked event loop would answer the other connection after the resolution only, more than 1.2 s later.
+  test::GetAddrInfoDelayGuard getAddrInfoDelayGuard(1200);
+  const auto start = std::chrono::steady_clock::now();
+  test::sendAll(fd, "CONNECT localhost:" + std::to_string(echoSrv.port) + " HTTP/1.1\r\nHost: localhost\r\n\r\n");
+
+  // Another connection is served while the CONNECT target is being resolved.
+  const std::string hello = test::simpleGet(ts.port(), "/hello");
+  const auto helloElapsed = std::chrono::steady_clock::now() - start;
+  EXPECT_TRUE(hello.starts_with("HTTP/1.1 200 ")) << hello;
+  EXPECT_LT(helloElapsed, 900ms);
+
+  const std::string head = RecvConnectResponseHead(fd, 5000ms);
+  EXPECT_TRUE(head.starts_with("HTTP/1.1 200 ")) << head;
+  EXPECT_GE(std::chrono::steady_clock::now() - start, 1100ms);
+}
+
+TEST_F(HttpConnectDefaultConfig, ClientClosingDuringResolutionCancelsTheTunnel) {
+  auto echoSrv = test::startLocalhostEchoServer();
+  AllowConnectHost(ts, "localhost");
+  ts.router().setPath(http::Method::GET, "/hello",
+                      [](const HttpRequestView& req) { return req.makeResponse(http::StatusCodeOK, "world"); });
+
+  std::atomic<int> nbTunnels{0};
+  ts.server.setMetricsCallback([&nbTunnels](const RequestMetrics& metrics) {
+    if (metrics.method == http::Method::CONNECT) {
+      nbTunnels.fetch_add(1);
+    }
+  });
+
+  test::GetAddrInfoDelayGuard getAddrInfoDelayGuard(300);
+  {
+    test::ClientConnection leaving(ts.port());
+    test::sendAll(leaving.fd(),
+                  "CONNECT localhost:" + std::to_string(echoSrv.port) + " HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    std::this_thread::sleep_for(50ms);
+  }
+  std::this_thread::sleep_for(500ms);
+
+  // The server noticed the client leaving: the resolution completed for a closed connection, and was ignored.
+  EXPECT_TRUE(test::simpleGet(ts.port(), "/hello").starts_with("HTTP/1.1 200"));
+  ts.server.setMetricsCallback({});
+  EXPECT_EQ(nbTunnels.load(), 0);
+}
+
+TEST_F(HttpConnectDefaultConfig, ClientClosingWithItsRequestIsClosedRightAway) {
+  auto echoSrv = test::startLocalhostEchoServer();
+  AllowConnectHost(ts, "localhost");
+  std::atomic<int> nbTunnels{0};
+  ts.server.setMetricsCallback([&nbTunnels](const RequestMetrics& metrics) {
+    if (metrics.method == http::Method::CONNECT) {
+      nbTunnels.fetch_add(1);
+    }
+  });
+
+  test::GetAddrInfoDelayGuard getAddrInfoDelayGuard(300);
+  // The close (FIN) is likely read in the same event as the request.
+  test::sendAll(fd, "CONNECT localhost:" + std::to_string(echoSrv.port) + " HTTP/1.1\r\nHost: localhost\r\n\r\n");
+  ASSERT_EQ(::shutdown(fd, SHUT_WR), 0);
+  EXPECT_TRUE(test::WaitForPeerClose(fd, 200ms));
+  std::this_thread::sleep_for(400ms);
+  ts.server.setMetricsCallback({});
+  EXPECT_EQ(nbTunnels.load(), 0);
+}
+#endif
+
+TEST_F(HttpConnectDefaultConfig, NumericTargetConnectFailureReturns502) {
+  test::QueueResetGuard connectActionsGuard(test::g_connect_actions);
+  AllowConnectHost(ts, "127.0.0.1");
+  test::PushConnectAction({-1, ECONNREFUSED});
+  test::sendAll(fd, "CONNECT 127.0.0.1:9 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+  const std::string resp = RecvConnectResponseHead(fd, 1000ms);
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 502")) << resp;
+}
+
+TEST_F(HttpConnectDefaultConfig, EstablishedTunnelIsReportedToMetrics) {
+  auto echoSrv = test::startLocalhostEchoServer();
+  AllowConnectHost(ts, "localhost");
+  std::atomic<int> status{0};
+  std::atomic<http::Method> method{http::Method::GET};
+  ts.server.setMetricsCallback([&](const RequestMetrics& metrics) {
+    method.store(metrics.method);
+    status.store(metrics.status);
+  });
+
+  test::sendAll(fd, "CONNECT localhost:" + std::to_string(echoSrv.port) + " HTTP/1.1\r\nHost: localhost\r\n\r\n");
+  const std::string head = RecvConnectResponseHead(fd, 5000ms);
+  ts.server.setMetricsCallback({});
+  ASSERT_TRUE(head.starts_with("HTTP/1.1 200")) << head;
+  EXPECT_EQ(status.load(), http::StatusCodeOK);
+  EXPECT_EQ(method.load(), http::Method::CONNECT);
+}
+
 TEST_F(HttpConnectDefaultConfig, DnsFailureReturns502) {
   AllowConnectHost(ts, "no-such-host.example.invalid");
 
   test::sendAll(fd, "CONNECT no-such-host.example.invalid:80 HTTP/1.1\r\nHost: no-such-host.example.invalid\r\n\r\n");
-  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
+  auto resp = RecvConnectResponseHead(fd, std::chrono::milliseconds{500});
   // Expect 502 Bad Gateway or connection close
   ASSERT_TRUE(resp.contains("502") || resp.empty());
 }
 
 TEST_F(HttpConnectDefaultConfig, EmptyAllowlistRejectsTarget) {
   test::sendAll(fd, "CONNECT 127.0.0.1:80 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
-  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
+  auto resp = RecvConnectResponseHead(fd, std::chrono::milliseconds{500});
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 403") || resp.contains("CONNECT target not allowed"));
 }
 
@@ -342,7 +505,7 @@ TEST_F(HttpConnectDefaultConfig, WildcardAllowlistAllowsTarget) {
 
   const std::string req = "CONNECT 127.0.0.1:" + std::to_string(echoSrv.port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
   test::sendAll(fd, req, 5000ms);
-  const auto resp = test::recvWithTimeout(fd, 5000ms, 93UL);
+  const auto resp = RecvConnectResponseHead(fd, 5000ms);
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
 
   constexpr std::string_view payload = "wildcard-connect";
@@ -358,7 +521,7 @@ TEST_F(HttpConnectDefaultConfig, ExplicitAllowlistRejectsTarget) {
   });
 
   test::sendAll(fd, "CONNECT 127.0.0.1:80 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
-  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
+  auto resp = RecvConnectResponseHead(fd, std::chrono::milliseconds{500});
   ASSERT_TRUE(resp.contains("403") || resp.contains("CONNECT target not allowed"));
 }
 
@@ -367,7 +530,7 @@ TEST_F(HttpConnectDefaultConfig, MalformedConnectTargetReturns400) {
   std::string_view req = "CONNECT malformed-target HTTP/1.1\r\nHost: malformed-target\r\n\r\n";
   ASSERT_GT(fd, 0);
   test::sendAll(fd, req);
-  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
+  auto resp = RecvConnectResponseHead(fd, std::chrono::milliseconds{500});
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 400") || resp.contains("Malformed CONNECT target"));
 }
 
@@ -376,7 +539,7 @@ TEST_F(HttpConnectDefaultConfig, NonNumericConnectPortReturns400) {
   // the resolver, which would otherwise map it via /etc/services).
   ASSERT_GT(fd, 0);
   test::sendAll(fd, "CONNECT example.com:https HTTP/1.1\r\nHost: example.com\r\n\r\n");
-  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
+  auto resp = RecvConnectResponseHead(fd, std::chrono::milliseconds{500});
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 400") || resp.contains("Malformed CONNECT target"));
 }
 
@@ -385,7 +548,7 @@ TEST_F(HttpConnectDefaultConfig, PortZeroIsInvalid) {
   // the resolver, which would otherwise map it via /etc/services).
   ASSERT_GT(fd, 0);
   test::sendAll(fd, "CONNECT example.com:0 HTTP/1.1\r\nHost: example.com\r\n\r\n");
-  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
+  auto resp = RecvConnectResponseHead(fd, std::chrono::milliseconds{500});
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 400") || resp.contains("Malformed CONNECT target"));
 }
 
@@ -394,7 +557,7 @@ TEST_F(HttpConnectDefaultConfig, PartialNumericPortIsInvalid) {
   // the resolver, which would otherwise map it via /etc/services).
   ASSERT_GT(fd, 0);
   test::sendAll(fd, "CONNECT example.com:509a HTTP/1.1\r\nHost: example.com\r\n\r\n");
-  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
+  auto resp = RecvConnectResponseHead(fd, std::chrono::milliseconds{500});
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 400") || resp.contains("Malformed CONNECT target"));
 }
 
@@ -402,7 +565,7 @@ TEST_F(HttpConnectDefaultConfig, OutOfRangeConnectPortReturns400) {
   // Port > 65535 does not fit in a uint16_t -> 400 Bad Request.
   ASSERT_GT(fd, 0);
   test::sendAll(fd, "CONNECT example.com:99999 HTTP/1.1\r\nHost: example.com\r\n\r\n");
-  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
+  auto resp = RecvConnectResponseHead(fd, std::chrono::milliseconds{500});
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 400") || resp.contains("Malformed CONNECT target"));
 }
 
@@ -410,7 +573,7 @@ TEST_F(HttpConnectDefaultConfig, EmptyConnectPortReturns400) {
   // Trailing ':' with no digits -> 400 Bad Request.
   ASSERT_GT(fd, 0);
   test::sendAll(fd, "CONNECT example.com: HTTP/1.1\r\nHost: example.com\r\n\r\n");
-  auto resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
+  auto resp = RecvConnectResponseHead(fd, std::chrono::milliseconds{500});
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 400") || resp.contains("Malformed CONNECT target"));
 }
 
@@ -432,7 +595,7 @@ TEST(HttpConnectTunnelCleanup, TunnelPeerCleanupOnClientClose) {
     std::string req = "CONNECT 127.0.0.1:" + std::to_string(echoSrv.port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
     ASSERT_GT(fd, 0);
     test::sendAll(fd, req, 5000ms);
-    auto resp = test::recvWithTimeout(fd, 5000ms, 93UL);
+    auto resp = RecvConnectResponseHead(fd, 5000ms);
     EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
 
     // Verify tunnel works by sending and receiving data
@@ -453,14 +616,13 @@ TEST(HttpConnectTunnelCleanup, TunnelPeerCleanupOnClientClose) {
   test::ClientConnection client2(ts.port());
   std::string req2 = "GET / HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n";
   test::sendAll(client2.fd(), req2, 1000ms);
-  auto resp2 = test::recvWithTimeout(client2.fd(), 1000ms);
+  auto resp2 = RecvConnectResponseHead(client2.fd(), 1000ms);
   // 404 is fine - we just need to verify server is still responsive
   EXPECT_TRUE(resp2.starts_with("HTTP/1.1")) << resp2;
 }
 
 // Test tunnel data forwarding with write error on the tunnel peer.
-// Exercises the forwardTunnelData error path (connection-manager.cpp lines 738-739)
-// where transport write to the peer fails.
+// Exercises the TunnelManager::forward() error path, where the transport write to the peer fails.
 TEST(HttpConnectTunnelCleanup, TunnelForwardWriteErrorClosesConnection) {
   test::QueueResetGuard<decltype(test::g_write_actions)> guardWrite(test::g_write_actions);
   test::QueueResetGuard<decltype(test::g_writev_actions)> guardWritev(test::g_writev_actions);
@@ -478,7 +640,7 @@ TEST(HttpConnectTunnelCleanup, TunnelForwardWriteErrorClosesConnection) {
   std::string req = "CONNECT 127.0.0.1:" + std::to_string(echoSrv.port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
   ASSERT_GT(fd, 0);
   test::sendAll(fd, req, 5000ms);
-  auto resp = test::recvWithTimeout(fd, 5000ms, 93UL);
+  auto resp = RecvConnectResponseHead(fd, 5000ms);
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
 
   // Verify tunnel works first
@@ -493,6 +655,6 @@ TEST(HttpConnectTunnelCleanup, TunnelForwardWriteErrorClosesConnection) {
   test::ClientConnection client2(ts.port());
   std::string req2 = "GET / HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n";
   test::sendAll(client2.fd(), req2, 1000ms);
-  auto resp2 = test::recvWithTimeout(client2.fd(), 1000ms);
+  auto resp2 = RecvConnectResponseHead(client2.fd(), 1000ms);
   EXPECT_TRUE(resp2.starts_with("HTTP/1.1")) << resp2;
 }

@@ -65,4 +65,23 @@ RawChars BuildSimpleError(http::StatusCode status, const ConcatenatedHeaders& gl
   return out;
 }
 
+RawChars BuildTunnelEstablished(const ConcatenatedHeaders& globalHeaders, const char* cachedDateHeader) {
+  static constexpr std::string_view kStatusLine = "HTTP/1.1 200 OK";
+
+  RawChars out(kStatusLine.size() + http::HeaderSize(http::Date.size(), RFC7231DateStrLen) + http::CRLF.size() +
+               globalHeaders.fullSizeWithLastSep() + http::CRLF.size());
+
+  char* pData = AppendFixed<kStatusLine>(out.data());
+  pData = CopyCRLFDateHeader(cachedDateHeader, pData);
+  pData = AppendFixed<http::CRLF>(pData);
+  pData = Append(globalHeaders.fullStringWithLastSep(), pData);
+  pData = AppendFixed<http::CRLF>(pData);
+
+  assert(static_cast<std::size_t>(pData - out.data()) == out.capacity());
+
+  out.setEnd(pData);
+
+  return out;
+}
+
 }  // namespace aeronet

@@ -21,7 +21,7 @@ config.withPort(3128).withConnectAllowlist(kAllowedTargets.begin(), kAllowedTarg
 | Allowlist | Effect |
 | --- | --- |
 | Empty (default) | CONNECT is refused with `403 Forbidden`. |
-| Host names or IP addresses | The target host must match an entry exactly, case-insensitively. A listed host can be reached on any port. |
+| Host names or IP addresses | The target host must match an entry exactly, case-insensitively. A listed host can be reached on any port. List IPv6 addresses without brackets (`::1`). |
 | `"*"` | Every host and port is allowed. |
 
 The allowlist is also available in JSON and YAML configuration files as `connectAllowlist`.
@@ -31,7 +31,7 @@ The allowlist is also available in JSON and YAML configuration files as `connect
 
 ## HTTP/1.1 tunnels
 
-The request target of a CONNECT request is in authority form, `host:port`:
+The request target of a CONNECT request is in authority form, `host:port`, with an IPv6 address enclosed in brackets (`[2001:db8::7]:443`):
 
 ```http
 CONNECT api.internal.example:443 HTTP/1.1
@@ -42,16 +42,27 @@ The server then:
 
 1. validates the target: the port must be numeric, between 1 and 65535 (RFC 3986 `port = *DIGIT`). A missing port, a service name such as `host:https`, or an out-of-range value is answered `400 Bad Request`, before any name resolution;
 2. checks the allowlist, and answers `403 Forbidden` for a target that is not allowed;
-3. resolves the host and starts a non-blocking TCP connection. A resolution failure, or a connection that fails, is answered `502 Bad Gateway`;
-4. answers `200 Connection Established` and relays bytes between the client and the target until either side closes.
+3. resolves the host name, see [Name resolution](#name-resolution), and starts a non-blocking TCP connection. A resolution failure, or a connection that fails, is answered `502 Bad Gateway`;
+4. answers `200 OK` and relays bytes between the client and the target until either side closes. As required for a successful CONNECT response (RFC 9110 §9.3.6), the `200` has neither content nor `Content-Length`: the tunneled bytes directly follow its head.
 
 From that point, the connection no longer carries HTTP: the server forwards bytes without parsing them. Bytes the client sends right after the CONNECT head, even in the same packet, or while the `200` response is being written, are forwarded too. Each side keeps its own buffer for the bytes forwarded to it, separate from HTTP response buffering. When one side closes or fails, the server closes the other side. Tunnels are not subject to the keep-alive idle timeout.
+
+## Name resolution
+
+Resolving a host name with `getaddrinfo` can take seconds when the DNS server is slow or unreachable, and it cannot be interrupted. It thus never runs on the event-loop thread: each server thread resolves CONNECT targets on background threads, started on demand (at most 4 resolve concurrently, the next ones wait), while the event loop keeps serving its other connections.
+
+- An IP address (`10.0.0.12`, `[::1]`) needs no resolution: the server connects to it right away.
+- While the host name of an HTTP/1.1 CONNECT request is resolved, the server reads nothing more from its connection, and does not apply the keep-alive timeout to it: the request is answered (`200` or `502`) once `getaddrinfo` returns. The bytes the client sent meanwhile are forwarded once the tunnel is established.
+- Over HTTP/2, the stream waits for the resolution the same way, and the DATA frames received meanwhile are forwarded once the tunnel is established. The other streams of the connection are not delayed.
+- When the client closes its connection, or resets the stream, before the resolution completes, its result is discarded. Stopping the server does not wait for resolutions in progress either.
+
+The resolver of the operating system applies its own timeouts and retries (`options timeout` and `attempts` in `/etc/resolv.conf` on Linux), and its own cache, if any.
 
 ## CONNECT over HTTP/2
 
 Over HTTP/2 ([RFC 9113 §8.5](https://www.rfc-editor.org/rfc/rfc9113#section-8.5)), a tunnel occupies a single stream, so several tunnels and ordinary requests can share one connection.
 
-- The request carries `:method CONNECT` and `:authority host:port`, and neither `:scheme` nor `:path`. The port must be numeric and in range (`400` otherwise), and the allowlist applies (`403`).
+- The request carries `:method CONNECT` and `:authority host:port`, and neither `:scheme` nor `:path`. The port must be numeric and in range (`400` otherwise), and the allowlist applies (`403`). Host names are [resolved in the background](#name-resolution), and a target that cannot be resolved or reached is answered `502`.
 - On success, the server answers `200` without ending the stream. DATA frames on the stream then carry the tunneled bytes in both directions.
 - When the connection to the target fails after the request was accepted, the stream is reset with `CONNECT_ERROR`.
 - `END_STREAM` or `RST_STREAM` from either side tears the tunnel down, and closing the HTTP/2 connection closes all its tunnels.
@@ -60,11 +71,11 @@ Extended CONNECT (RFC 8441, the `:protocol` pseudo-header used for WebSocket ove
 
 ## Limitations
 
-- Name resolution uses `getaddrinfo` on the event-loop thread, which blocks the loop until the resolver answers. Prefer IP addresses or names the resolver answers locally (`/etc/hosts`, a local caching resolver) in the allowlist.
 - The allowlist matches hosts, not ports. Restrict ports with a firewall when needed.
 - The server does not authenticate CONNECT requests (no `Proxy-Authorization` support), and HTTP/1.1 CONNECT requests are handled before request middleware runs. Restrict who can reach a listener that allows CONNECT.
 
 ## Tests
 
-- HTTP/1.1 tunnels, target validation, allowlist, DNS failure, and cleanup: [tests/http-connect_test.cpp](../../tests/http-connect_test.cpp).
-- HTTP/2 tunnels: [tests/http2-connect_test.cpp](../../tests/http2-connect_test.cpp).
+- HTTP/1.1 tunnels, target validation, allowlist, background resolution, DNS failure, and cleanup: [tests/http-connect_test.cpp](../../tests/http-connect_test.cpp).
+- HTTP/2 tunnels: [tests/http2-connect_test.cpp](../../tests/http2-connect_test.cpp), and streams waiting for their resolution: [http2-protocol-handler_test.cpp](../../aeronet/http2/test/http2-protocol-handler_test.cpp).
+- Target parsing: [connect-target_test.cpp](../../aeronet/objects/test/connect-target_test.cpp). Background resolution: [tunnel-resolver_test.cpp](../../aeronet/server/test/tunnel-resolver_test.cpp).

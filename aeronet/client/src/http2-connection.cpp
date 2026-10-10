@@ -476,9 +476,11 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
   const std::string_view target = req.target();
   const std::string_view authority = req.hostHeaderValue();
 
-  const auto headersErr =
-      conn.sendRequestHeaders(streamId, method, isTlsRequest, target, authority, HeadersView(req.headersFlatView()),
-                              endStreamSent, &config.globalHeaders);
+  // The global headers of the configuration are already part of the request (see HttpClient::makeRequest()): they
+  // are not added again, so that a header removed from the request (Authorization on a redirect to another origin,
+  // for instance) is not sent.
+  const auto headersErr = conn.sendRequestHeaders(streamId, method, isTlsRequest, target, authority,
+                                                  HeadersView(req.headersFlatView()), endStreamSent);
   if (headersErr != http2::ErrorCode::NoError) {
     log::error("HTTP/2 client: cannot open stream {} to {} ({})", streamId, req.originKey(), ErrorCodeName(headersErr));
     engine.endExchange();

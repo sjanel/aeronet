@@ -253,6 +253,18 @@ class HttpRequest final : public HttpMessage {
   // RValue overload of headerRemoveLine.
   HttpRequest&& headerRemoveLine(LowerAsciiKey key) && { return std::move(headerRemoveLine(key)); }
 
+  // Remove all the occurrences of the header with the given lower-case key, in a single pass over the headers: a
+  // header repeated on several lines (Cookie, Set-Cookie...) is removed at once. If the header is not found, the
+  // HttpMessage is not modified.
+  // Same rules as headerRemoveLine() for 'Content-Type', 'Content-Length' and 'Content-Encoding'.
+  HttpRequest& headerRemoveAllLines(LowerAsciiKey key) & {
+    headerRemoveAllLinesImpl(key);
+    return *this;
+  }
+
+  // RValue overload of headerRemoveAllLines.
+  HttpRequest&& headerRemoveAllLines(LowerAsciiKey key) && { return std::move(headerRemoveAllLines(key)); }
+
   // Remove the first 'value' from the last header with the given lower-case key. If the value is the only one for the
   // header, the whole header line is removed. If there are
   // multiple values for the header, only the first specified value is removed (starting from the beginning) and the
@@ -689,7 +701,15 @@ class HttpRequest final : public HttpMessage {
 
   const char* setNewUrl(const internal::UrlParseResult& res);
 
-  bool resolveRedirect(std::string_view location);
+  enum class RedirectOutcome : uint8_t {
+    Invalid,      // malformed or too long location, the request is unchanged
+    Downgrade,    // redirect from https to cleartext http, refused: the request is unchanged
+    SameOrigin,   // target replaced, same scheme, host and port
+    CrossOrigin,  // URL replaced by one of another origin (scheme, host or port)
+  };
+
+  // Point this request to the 'location' of a redirect response (absolute URL, network-path or relative reference).
+  RedirectOutcome resolveRedirect(std::string_view location);
 
   // Get a null-terminated host C-string for the lifetime of the returned RAII object, without port.
   [[nodiscard]] TempCStr hostCStr() const noexcept { return {const_cast<char*>(host().data()), _hostLen}; }

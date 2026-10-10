@@ -59,7 +59,9 @@ Trailers need chunked encoding: they are ignored, with a warning, when `contentL
 
 ## Errors
 
-An exception escaping a streaming handler before the headers were sent is answered with `500 Internal Server Error`, like for other handlers (see [Errors](responses.md#errors)). Once body bytes are sent, the status cannot change anymore: end the body early and let the client detect the truncation (a chunked response without its final chunk, or a short `Content-Length`), or use a trailer to report the outcome.
+An exception escaping a streaming handler before anything was sent is answered with `500 Internal Server Error`, without body, like for other handlers (see [Errors](responses.md#errors)). The head is sent with the first body bytes, or with the first ones past the compression threshold.
+
+Once the head was sent, the status cannot change anymore: the server tells the client that the response is incomplete instead. Over HTTP/1.1, it closes the connection without completing the body (no final chunk, or fewer bytes than the `Content-Length`); over HTTP/2, it resets the stream with `INTERNAL_ERROR`. To report a failure that the client can tell apart, write a trailer before calling `end()`.
 
 ## Choosing a handler kind
 
@@ -77,4 +79,5 @@ A path can mix streaming and buffered handlers for different methods, see [Dispa
 
 - Chunked and fixed-length streaming, `HEAD`, trailers, and backpressure with slow readers (`HttpBackpressure` tests): [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
 - Streaming over HTTP/2: [tests/http2-core_test.cpp](../../tests/http2-core_test.cpp).
+- Handlers throwing before or after the head was sent: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp) and [http2-protocol-handler_test.cpp](../../aeronet/http2/test/http2-protocol-handler_test.cpp).
 - Streaming compression: [tests/http-compression_test.cpp](../../tests/http-compression_test.cpp).

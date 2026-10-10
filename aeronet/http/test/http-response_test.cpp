@@ -972,6 +972,143 @@ TEST_F(HttpResponseTest, HeaderRemoveLineRValue) {
   EXPECT_TRUE(resp.hasHeader("x-keep"));
 }
 
+TEST_F(HttpResponseTest, HeaderRemoveAllLinesNotFound) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerRemoveAllLines("x-none");  // no headers at all
+  EXPECT_TRUE(resp.headersFlatView().empty());
+
+  resp.headerAddLine("x-ab", "value1").headerAddLine("x-other", "value2");
+  const std::string before(resp.headersFlatView());
+  resp.headerRemoveAllLines("x-a");  // prefix of "x-ab", not a header
+  resp.headerRemoveAllLines("-ab");
+  resp.headerRemoveAllLines("x-none");
+  EXPECT_EQ(resp.headersFlatView(), before);
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveAllLinesRemovesEveryOccurrence) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("x-dup", "1")
+      .headerAddLine("x-keep", "a")
+      .headerAddLine("x-dup", "2")
+      .headerAddLine("x-dup", "3")
+      .headerAddLine("x-keep-2", "b")
+      .headerAddLine("x-dupx", "not-a-dup")
+      .headerAddLine("x-dup", "x-dup: in a value")
+      .headerAddLine("x-last", "c");
+
+  resp.headerRemoveAllLines("x-dup");
+
+  EXPECT_EQ(resp.headersFlatView(), "x-keep: a\r\nx-keep-2: b\r\nx-dupx: not-a-dup\r\nx-last: c\r\n");
+  EXPECT_FALSE(resp.hasHeader("x-dup"));
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveAllLinesFirstLastAndOnlyHeader) {
+  {
+    HttpResponse resp(http::StatusCodeOK);
+    resp.headerAddLine("x-dup", "1").headerAddLine("x-dup", "2").headerAddLine("x-keep", "a");
+    resp.headerRemoveAllLines("x-dup");
+    EXPECT_EQ(resp.headersFlatView(), "x-keep: a\r\n");
+  }
+  {
+    HttpResponse resp(http::StatusCodeOK);
+    resp.headerAddLine("x-keep", "a").headerAddLine("x-dup", "1").headerAddLine("x-dup", "2");
+    resp.headerRemoveAllLines("x-dup");
+    EXPECT_EQ(resp.headersFlatView(), "x-keep: a\r\n");
+  }
+  {
+    HttpResponse resp(http::StatusCodeOK);
+    resp.headerAddLine("x-dup", "1").headerAddLine("x-dup", "2");
+    resp.headerRemoveAllLines("x-dup");
+    EXPECT_TRUE(resp.headersFlatView().empty());
+    // The message is still well formed.
+    resp.headerAddLine("x-new", "v");
+    EXPECT_EQ(resp.headerValueOrEmpty("x-new"), "v");
+  }
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveAllLinesKeepsInlineBodyAndTrailers) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("set-cookie", "a=1").headerAddLine("x-keep", "k").headerAddLine("set-cookie", "b=2");
+  resp.body("Test body content");
+  resp.trailerAddLine("x-trailer", "t");
+
+  resp.headerRemoveAllLines("set-cookie");
+
+  EXPECT_FALSE(resp.hasHeader("set-cookie"));
+  EXPECT_EQ(resp.headerValueOrEmpty("x-keep"), "k");
+  EXPECT_EQ(resp.bodyInMemory(), "Test body content");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "17");
+  EXPECT_EQ(resp.trailerValueOrEmpty("x-trailer"), "t");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveAllLinesKeepsEmbeddedPayload) {
+  const std::string longBody(200, 'L');
+  for (const std::string& body : {std::string("short"), longBody}) {
+    HttpResponse resp(http::StatusCodeOK);
+    resp.headerAddLine("x-dup", "1").headerAddLine("x-keep", "k").headerAddLine("x-dup", "2");
+    resp.body(std::string(body));
+    ASSERT_TRUE(resp.hasBodyCaptured());
+
+    resp.headerRemoveAllLines("x-dup");
+
+    EXPECT_FALSE(resp.hasHeader("x-dup"));
+    EXPECT_EQ(resp.headerValueOrEmpty("x-keep"), "k");
+    EXPECT_TRUE(resp.hasBodyCaptured());
+    EXPECT_EQ(resp.bodyInMemory(), body);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), std::to_string(body.size()));
+  }
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveAllLinesManyHeaders) {
+  static constexpr LowerAsciiKey kDup = "x-dup";
+  static constexpr LowerAsciiKey kKeep = "x-keep";
+  HttpResponse resp(http::StatusCodeOK);
+  std::string expected;
+  for (int idx = 0; idx < 500; ++idx) {
+    const std::string value = std::to_string(idx);
+    resp.headerAddLine(idx % 3 == 0 ? kDup : kKeep, value);
+    if (idx % 3 != 0) {
+      expected.append("x-keep: ").append(value).append("\r\n");
+    }
+  }
+  resp.body("body");
+
+  resp.headerRemoveAllLines("x-dup");
+
+  EXPECT_EQ(resp.headersFlatView().substr(0, expected.size()), expected);
+  EXPECT_FALSE(resp.hasHeader("x-dup"));
+  EXPECT_EQ(resp.bodyInMemory(), "body");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveAllLinesBodyHeadersRules) {
+  HttpResponse resp(http::StatusCodeOK);
+  // Without body, Content-Encoding can be removed.
+  resp.headerAddLine(http::ContentEncoding, "identity");
+  resp.headerRemoveAllLines(http::ContentEncoding);
+  EXPECT_FALSE(resp.hasHeader(http::ContentEncoding));
+
+  resp.headerAddLine(http::ContentEncoding, "identity");
+  resp.body("body", "text/html");
+  EXPECT_THROW(resp.headerRemoveAllLines(http::ContentEncoding), std::logic_error);
+
+  // Managed with the body: not removable.
+  resp.headerRemoveAllLines(http::ContentType);
+  resp.headerRemoveAllLines(http::ContentLength);
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/html");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "4");
+}
+
+TEST_F(HttpResponseTest, HeaderRemoveAllLinesRValue) {
+  auto resp = HttpResponse(http::StatusCodeOK)
+                  .headerAddLine("x-remove", "1")
+                  .headerAddLine("x-keep", "keep")
+                  .headerAddLine("x-remove", "2")
+                  .headerRemoveAllLines("x-remove");
+
+  EXPECT_FALSE(resp.hasHeader("x-remove"));
+  EXPECT_TRUE(resp.hasHeader("x-keep"));
+}
+
 TEST_F(HttpResponseTest, HeaderRemoveValueNotFound) {
   HttpResponse resp(http::StatusCodeOK);
   resp.headerAddLine("x-test", "value1, value2");

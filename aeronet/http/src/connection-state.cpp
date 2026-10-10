@@ -323,6 +323,7 @@ void ConnectionState::reset() {
   inputBlockedByOutput = false;
   expectationAnswered = false;
   connectPending = false;
+  tunnelResolving = false;
   shutdownWritePending = false;
   eofReceived = false;
   corkable = false;

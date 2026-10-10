@@ -16,6 +16,7 @@
 #include <initializer_list>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <unordered_set>
@@ -461,6 +462,44 @@ TEST(TcpConnectorTest, ResolutionFailureMarksFailure) {
   EXPECT_TRUE(result.failure);
   EXPECT_FALSE(result.connectPending);
   EXPECT_FALSE(result.cnx);
+}
+
+TEST(TcpConnectorTest, ResolveTCPFailureReturnsNoAddress) {
+  HookGuard guard;
+  auto override = AddrinfoOverrideGuard::WithError(EAI_NONAME);
+  auto buffer = MakeHostPortBuffer("no-such-host", 8080);
+  EXPECT_EQ(ResolveTCP(buffer.host, buffer.port), nullptr);
+}
+
+TEST(TcpConnectorTest, ResolveThenConnectToResolvedAddresses) {
+  HookGuard guard;
+  AddrinfoOverrideGuard override({MakeLoopbackEntry(15001)});
+  SetConnectActionSequence({ConnectErr(error::kInProgress)});
+  auto buffer = MakeHostPortBuffer("loopback", 15001);
+  const AddrInfoPtr addresses = ResolveTCP(buffer.host, buffer.port, AF_UNSPEC);
+  ASSERT_NE(addresses, nullptr);
+  ConnectResult result = ConnectTCP(*addresses);
+  EXPECT_FALSE(result.failure);
+  EXPECT_TRUE(result.connectPending);
+  ASSERT_TRUE(result.cnx);
+  result.cnx.close();
+}
+
+TEST(TcpConnectorTest, IsNumericHost) {
+  EXPECT_TRUE(IsNumericHost("127.0.0.1"));
+  EXPECT_TRUE(IsNumericHost("10.0.0.12"));
+  EXPECT_TRUE(IsNumericHost("::1"));
+  EXPECT_TRUE(IsNumericHost("2001:db8::7"));
+  EXPECT_TRUE(IsNumericHost("::ffff:192.0.2.1"));
+
+  EXPECT_FALSE(IsNumericHost(""));
+  EXPECT_FALSE(IsNumericHost("localhost"));
+  EXPECT_FALSE(IsNumericHost("example.com"));
+  EXPECT_FALSE(IsNumericHost("[::1]"));
+  EXPECT_FALSE(IsNumericHost("127.0.0.1.example.com"));
+  EXPECT_FALSE(IsNumericHost("256.0.0.1"));
+  EXPECT_FALSE(IsNumericHost(std::string_view("127.0.0.1\0x", 11)));
+  EXPECT_FALSE(IsNumericHost(std::string(100, '1')));
 }
 
 TEST(TcpConnectorTest, SocketEmfileStopsIteration) {

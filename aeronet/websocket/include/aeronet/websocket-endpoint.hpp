@@ -12,8 +12,9 @@ namespace aeronet {
 class HttpRequestView;
 
 /// Factory function that creates a WebSocketHandler for a new connection.
-/// Receives the upgrade request to allow per-connection customization.
-/// The factory should configure callbacks before returning the handler.
+/// Receives the upgrade request (path parameters included) to allow per-connection customization.
+/// The factory should configure callbacks before returning the handler. Returning nullptr refuses the upgrade, which
+/// is answered with 403 Forbidden.
 using WebSocketHandlerFactory = std::function<std::unique_ptr<websocket::WebSocketHandler>(const HttpRequestView&)>;
 
 /// Simplified WebSocket endpoint that uses default configuration.

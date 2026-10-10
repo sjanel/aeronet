@@ -1,11 +1,19 @@
 aux_source_directory(src AERONET_SERVER_SRC_LIST)
 
-if(NOT AERONET_ENABLE_TEST_HOOKS)
-    list(REMOVE_ITEM AERONET_SERVER_SRC_LIST src/transport-test-hook.cpp)
+if(NOT AERONET_ENABLE_ASYNC_HANDLERS)
+    list(REMOVE_ITEM AERONET_SERVER_SRC_LIST src/async-handlers.cpp)
+endif()
+
+if(NOT AERONET_ENABLE_HTTP2)
+    list(REMOVE_ITEM AERONET_SERVER_SRC_LIST src/http2-connections.cpp)
 endif()
 
 if(NOT AERONET_ENABLE_GLAZE)
     list(REMOVE_ITEM AERONET_SERVER_SRC_LIST src/server-config-loader.cpp)
+endif()
+
+if(NOT AERONET_ENABLE_TEST_HOOKS)
+    list(REMOVE_ITEM AERONET_SERVER_SRC_LIST src/transport-test-hook.cpp)
 endif()
 
 # Remove upgrade-handler.cpp if neither HTTP/2 nor WebSocket is enabled
@@ -111,6 +119,15 @@ AeronetAddUnitTest(
     test/keep-alive-deadline-queue_test.cpp
     LIBRARIES
     aeronet_http
+)
+
+AeronetAddUnitTest(
+    tunnel-resolver_test
+    src/tunnel-resolver.cpp
+    test/tunnel-resolver_test.cpp
+    LIBRARIES
+    aeronet_sys
+    aeronet_basic_test_support
 )
 
 AeronetAddUnitTest(

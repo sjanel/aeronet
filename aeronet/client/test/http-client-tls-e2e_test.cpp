@@ -94,6 +94,11 @@ class HttpClientTlsE2ETest : public ::testing::Test {
     router.setPath(http::Method::POST, "/echo", [](const HttpRequestView& req) {
       return req.makeResponse(http::StatusCodeOK, req.body(), "application/test");
     });
+    router.setPath(http::Method::GET, "/to-cleartext", [](const HttpRequestView& req) {
+      auto resp = req.makeResponse(http::StatusCodeFound);
+      resp.location("http://localhost:1/secure");
+      return resp;
+    });
 
     HttpServerConfig cfg;
     // Keep-alive must stay comfortably longer than a TLS handshake can take on a loaded CI runner.
@@ -145,6 +150,16 @@ TEST_F(HttpClientTlsE2ETest, GetOverTlsWithoutVerification) {
   auto resp = client.get(url("/secure")).value();
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), "secret");
+}
+
+TEST_F(HttpClientTlsE2ETest, RedirectToCleartextIsNotFollowed) {
+  HttpClientConfig cfg;
+  cfg.tlsVerifyPeer = false;  // self-signed cert, not in any trust store
+  HttpClient client(cfg);
+  // The redirect response is returned as is: following it would send the request in clear.
+  auto resp = client.get(url("/to-cleartext")).value();
+  EXPECT_EQ(resp.status(), http::StatusCodeFound);
+  EXPECT_EQ(resp.headerValueOrEmpty(http::Location), "http://localhost:1/secure");
 }
 
 TEST_F(HttpClientTlsE2ETest, VerificationFailsForUntrustedCert) {

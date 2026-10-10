@@ -1181,7 +1181,7 @@ TEST(HttpRouting, AsyncHandlerThrowsStdExceptionDuringCreation) {
 
   const std::string response = test::simpleGet(ts.port(), "/async-throw-std");
   EXPECT_TRUE(response.starts_with("HTTP/1.1 500")) << response;
-  EXPECT_TRUE(response.contains("Task creation failed")) << response;
+  EXPECT_FALSE(response.contains("Task creation failed")) << response;
 }
 
 // Test async handler exception (non-std) during task creation (before coroutine starts)
@@ -1196,7 +1196,7 @@ TEST(HttpRouting, AsyncHandlerThrowsNonStdExceptionDuringCreation) {
 
   const std::string response = test::simpleGet(ts.port(), "/async-throw-nonstd");
   EXPECT_TRUE(response.starts_with("HTTP/1.1 500")) << response;
-  EXPECT_TRUE(response.contains("Unknown error")) << response;
+  EXPECT_TRUE(response.ends_with("\r\n\r\n")) << response;  // no body
 }
 
 #ifdef AERONET_WINDOWS
@@ -1342,7 +1342,7 @@ TEST(HttpRouting, AsyncHandlerNonStdExceptionWithBodyNotReady) {
         << "Server closed immediately without response (acceptable behavior for bodyReady=false + immediate error)";
   }
   EXPECT_TRUE(response.starts_with("HTTP/1.1 500")) << response;
-  EXPECT_TRUE(response.contains("Unknown error")) << response;
+  EXPECT_TRUE(response.ends_with("\r\n\r\n")) << response;  // no body
 }
 
 // Test deferWork(): basic async work execution returning a value
@@ -1566,7 +1566,7 @@ TEST(HttpRouting, DeferWorkUnhandledException) {
   const std::string response = test::simpleGet(ts.port(), "/defer-unhandled");
   // Server catches unhandled exception and returns 500
   EXPECT_TRUE(response.starts_with("HTTP/1.1 500")) << response;
-  EXPECT_TRUE(response.contains("unhandled in work")) << response;
+  EXPECT_FALSE(response.contains("unhandled in work")) << response;
 }
 
 #endif

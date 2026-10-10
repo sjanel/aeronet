@@ -2354,7 +2354,7 @@ TEST(Http2Streaming, QueryParamAccess) {
 // Error in handler (exception before any output)
 // ============================================================================
 
-TEST(Http2Streaming, HandlerExceptionBeforeHeadersSendsDefault200) {
+TEST(Http2Streaming, HandlerExceptionBeforeHeadersSends500) {
   ts.http().router().setPath(http::Method::GET, "/crash",
                              [](const HttpRequestView& /*req*/, HttpResponseWriter& /*writer*/) {
                                throw std::runtime_error("handler-exploded");
@@ -2364,9 +2364,8 @@ TEST(Http2Streaming, HandlerExceptionBeforeHeadersSendsDefault200) {
   ASSERT_TRUE(client.isConnected());
 
   auto response = client.get("/crash");
-  // Exception before headers sent: the streaming handler catches the exception,
-  // then calls writer.end() which sends default 200 OK with empty body.
-  EXPECT_EQ(response.statusCode, 200);
+  // Exception before anything was sent: answered like for any handler throwing, without the exception message.
+  EXPECT_EQ(response.statusCode, 500);
   EXPECT_TRUE(response.body.empty());
 }
 
