@@ -177,7 +177,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "files",
         nargs="*",
-        default=["README.md", "FEATURES.md"],
+        default=["README.md"],
         help="Markdown files to scan for code snippets and internal links",
     )
     return parser.parse_args()
@@ -572,7 +572,7 @@ def locate_libraries(build_dir: Path) -> List[str]:
 
     # The HTTP client lives in a standalone library (aeronet_client) that is NOT a dependency of the
     # main `aeronet` target, so building only `aeronet` (or an examples-only tree that never references
-    # the client) never produces libaeronet_client.a. README/FEATURES snippets use HttpClient, so make a
+    # the client) never produces libaeronet_client.a. README and documentation snippets use HttpClient, so make a
     # best-effort attempt to build the client library too. This is a no-op when the target is already
     # built, and is tolerated when the target is absent (e.g. AERONET_ENABLE_HTTP_CLIENT=OFF).
     try:
@@ -590,7 +590,7 @@ def locate_libraries(build_dir: Path) -> List[str]:
         )
 
     # The JWT module (aeronet_jwt) is likewise a standalone library that is not a dependency of the
-    # main `aeronet` target, so build it best-effort for the README/FEATURES JWT snippets. No-op when
+    # main `aeronet` target, so build it best-effort for the README and documentation JWT snippets. No-op when
     # already built, tolerated when absent (AERONET_ENABLE_JWT=OFF).
     try:
         subprocess.run(
@@ -1152,12 +1152,12 @@ def main() -> None:
         )
 
     include_dirs.extend(gather_user_include_dirs(args.include))
-    # The HTTP client lives in its own module whose public include tree is not pulled in by the
-    # main `aeronet` target metadata; add it explicitly so documentation snippets using
-    # <aeronet/http-client.hpp> compile (the matching libaeronet_client.a is linked via rglob).
-    client_include = Path("aeronet/client/include")
-    if client_include.is_dir():
-        include_dirs.append(str(client_include.resolve()))
+    # The HTTP client and JWT modules have public include trees that are not pulled in by the
+    # main `aeronet` target metadata; add them explicitly so documentation snippets using
+    # <aeronet/http-client.hpp> or <aeronet/jwt.hpp> compile (the matching libraries are linked via rglob).
+    for module_include in (Path("aeronet/client/include"), Path("aeronet/jwt/include")):
+        if module_include.is_dir():
+            include_dirs.append(str(module_include.resolve()))
     include_dirs = dedupe_preserve(include_dirs)
     compile_definitions = dedupe_preserve(compile_definitions)
 

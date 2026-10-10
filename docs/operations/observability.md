@@ -4,17 +4,60 @@
 
 ## Logging
 
-The logging module integrates with spdlog when enabled. Configure the sink, level, and format for the environment that runs your service. Include enough request context to diagnose failures without placing sensitive payloads or credentials in logs.
-
-See [Logging](../FEATURES.md#logging) for the supported configuration and structured access-log behavior.
+aeronet logs through `<aeronet/log.hpp>`. With `AERONET_ENABLE_SPDLOG`, `aeronet::log` is spdlog, with its sinks and formatting. Without it, a small built-in logger with the same calls writes to standard output, with ISO 8601 UTC timestamps at millisecond precision. Levels are `trace`, `debug`, `info`, `warn`, `error`, and `critical`:
 
 ```cpp
-using namespace std::chrono_literals;
+#include <aeronet/log.hpp>
 
+log::set_level(log::level::warn);  // runtime level, process-wide
+log::info("server listening on {}", 8080);
+```
+
+The library logs failures with their context (connection, file, OpenSSL reason) at `error` or `warn`, lifecycle events at `info`, and per-request details at `debug` and below, which are compiled in but filtered by the level. Keep `info` or `warn` in production.
+
+### Access log
+
+The access log writes one line per request, independently of the logger:
+
+```cpp
 HttpServerConfig config;
-config.accessLog.sink = AccessLogConfig::Sink::Stdout;
+config.accessLog.sink = AccessLogConfig::Sink::File;
+config.accessLog.filePath = "/var/log/orders/access.log";
 config.accessLog.format = AccessLogConfig::Format::JSON;
-config.accessLog.useForwardedFor = true;  // Only when the trusted proxy sanitizes it.
+```
+
+| `AccessLogConfig` | Default | Effect |
+| --- | --- | --- |
+| `sink` | `None` | `None` (disabled, no cost), `Stdout`, or `File` (appends to `filePath`). |
+| `format` | `CLF` | Combined Log Format, or `JSON` (requires Glaze). |
+| `useForwardedFor` | `false` | Log the first address of `X-Forwarded-For` instead of the peer address. |
+| `flushThresholdInBytes` | 8 KiB | Lines are buffered and written once this size is reached, at maintenance ticks, and at shutdown. |
+
+`useForwardedFor` is a trust-boundary setting, not a convenience: enable it only behind a proxy that replaces or sanitizes `X-Forwarded-For`, since clients can send any value. The access log can be changed at runtime with `postConfigUpdate()`; a file that cannot be opened rejects the update. Do not log request bodies, credentials, cookies, or tokens.
+
+### Request metrics callback
+
+For custom accounting, `setMetricsCallback()` receives a `RequestMetrics` record after each request, on the event-loop thread:
+
+```cpp
+SingleHttpServer server(HttpServerConfig{});
+server.setMetricsCallback([](const RequestMetrics& metrics) {
+  // metrics.method, path, status, bytesIn, bytesOut, duration, clientIp, userAgent, reusedConnection
+});
+```
+
+The views of the record are valid during the call only. Keep the callback short: it runs for every request.
+
+### Server statistics
+
+`server.stats()` returns a snapshot of per-server counters, serializable with `ServerStats::json_str()`: output backpressure (see [Performance](performance.md#measuring)), TLS handshakes and kTLS usage (see [TLS observability](../protocols/tls.md#observability)), and event loop errors. `MultiHttpServer::stats()` returns the counters of each worker and their sum.
+
+## OpenTelemetry and DogStatsD
+
+OpenTelemetry support is optional. Configure with `AERONET_ENABLE_OPENTELEMETRY=ON` when the application needs OTLP traces or metrics, then enable it per server:
+
+```cpp
+#include <utility>
 
 TelemetryConfig telemetry;
 telemetry.otelEnabled = true;
@@ -22,14 +65,12 @@ telemetry.withEndpoint("http://otel-collector:4318")
     .withServiceName("orders")
     .withSampleRate(0.25)
     .addHttpHeader("authorization", "Bearer <collector-token>");
+
+HttpServerConfig config;
 config.withTelemetryConfig(std::move(telemetry));
 ```
 
-`useForwardedFor` is a trust-boundary setting, not a general convenience switch. Enable it only when a trusted proxy replaces or sanitizes `X-Forwarded-For`. Do not log request bodies, authorization credentials, cookies, or collector tokens.
-
-## OpenTelemetry and DogStatsD
-
-OpenTelemetry support is optional. Configure with `AERONET_ENABLE_OPENTELEMETRY=ON` when the application needs OTLP traces or metrics. Each `SingleHttpServer` owns an independent telemetry context; aeronet does not install a process global provider. `TelemetryConfig::endpoint()` is used as the trace endpoint, and aeronet derives `/v1/metrics` for the metric exporter. Export intervals, timeouts, trace sampling, exporter HTTP headers, and histogram buckets are all instance-specific.
+The OTLP exporter sends over HTTP. Each `SingleHttpServer` owns an independent telemetry context; aeronet does not install a process global provider. `TelemetryConfig::endpoint()` is used as the trace endpoint, and aeronet derives `/v1/metrics` for the metric exporter. Export intervals, timeouts, trace sampling, exporter HTTP headers, and histogram buckets are all instance-specific.
 
 Ended spans are only queued by the event loop: a background thread exports them in batches, at the latest `exportInterval` after they end, so a slow or unreachable collector never delays request processing. A span ending while the queue is full (2048 spans by default) is dropped.
 
@@ -123,10 +164,61 @@ When telemetry is disabled, each detailed HTTP/2 instrumentation point is a pred
 
 The implementation adds no counters or timestamps to `Http2Stream` or to the protocol handler's per-stream request state. Per-stream duration reuses the request start timestamp that already exists. `TelemetryContext` remains one pointer and `Http2Stream` remains 32 bytes on the project's 64-bit build; `Http2Connection` gains one optional pointer (8 bytes) for the telemetry destination.
 
-The [OpenTelemetry reference](../FEATURES.md#opentelemetry-integration) describes the broader instrumentation surface, collector configuration, and dependency requirements.
+### Built-in instrumentation
+
+Without handler code, each server emits:
+
+| Signal | Name | Content |
+| --- | --- | --- |
+| Span | `http.request` | One per request, with `http.method`, `http.target`, `http.scheme`, `http.host`, `http.status_code`, and `http.duration_us`. |
+| Span | `aeronet.middleware` | One per middleware call, with its phase, scope, index, and whether it short-circuited, threw, or ran for a streaming route. |
+| Counters | `aeronet.connections.accepted`, `aeronet.events.processed`, `aeronet.events.errors`, `aeronet.bytes.read` | Connection and event loop activity. |
+| Counters | `aeronet.connections.closed_for_*` | Connections closed by a timeout (`keep_alive`, `header_read_timeout`, `body_read_timeout`, `request_timeout`, `handshake_timeout`) or a drain (`drain`). |
+| Counters | `aeronet.http_responses.compression.*` | Response compression attempts, results above `maxCompressRatio`, and errors. |
+| HTTP/2 instruments | `aeronet.http2.*` | See [Built-in HTTP/2 metrics](#built-in-http2-metrics). |
+
+The HTTP client emits `aeronet.http_requests.*` counters through its own `TelemetryConfig` (retries, redirects, request compression).
+
+### Collector setup
+
+The OTLP exporter speaks OTLP over HTTP (port 4318 by convention). A minimal OpenTelemetry Collector configuration that prints what it receives, for testing:
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+exporters:
+  debug:
+    verbosity: detailed
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [debug]
+    metrics:
+      receivers: [otlp]
+      exporters: [debug]
+```
+
+Building with `AERONET_ENABLE_OPENTELEMETRY` requires curl and protobuf development packages:
+
+| Distribution | Packages |
+| --- | --- |
+| Debian, Ubuntu | `libcurl4-openssl-dev libprotobuf-dev protobuf-compiler` |
+| Fedora, RHEL | `libcurl-devel protobuf-devel protobuf-compiler` |
+| Alpine | `curl-dev protobuf-dev protobuf-c-compiler` |
+| Arch | `curl protobuf` |
 
 ## Health probes and deployment
 
 The server includes Kubernetes-style probe support. Keep a probe endpoint lightweight, make readiness reflect dependencies that actually gate traffic, and consider a dedicated listener when probe availability must be isolated from application load.
 
-Read [Built-in Kubernetes-style probes](../FEATURES.md#built-in-kubernetes-style-probes), then use the [Kubernetes deployment guide](../kubernetes-examples.md) for ConfigMap and manifest examples.
+Read [Health probes](health-probes.md), then use the [Kubernetes deployment guide](../kubernetes-examples.md) for ConfigMap and manifest examples.
+
+## Tests
+
+- OpenTelemetry export end to end: [tests/opentelemetry-e2e_test.cpp](../../tests/opentelemetry-e2e_test.cpp).
+- DogStatsD: [dogstatsd_test.cpp](../../aeronet/objects/test/dogstatsd_test.cpp).
+- Access log: [access-log-writer_test.cpp](../../aeronet/server/test/access-log-writer_test.cpp).
