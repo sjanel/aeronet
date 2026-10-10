@@ -21,23 +21,25 @@
 #include "aeronet/event.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/connection-storage.hpp"
+#include "aeronet/internal/keep-alive-deadline-queue.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
+#include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/system-error.hpp"
-#include "aeronet/tcp-connector.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
 #include "aeronet/tls-info.hpp"
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
+#include "aeronet/vector.hpp"
 #include "aeronet/zerocopy-mode.hpp"
+#include "tunnel-manager.hpp"
 
 #ifdef AERONET_ENABLE_HTTP2
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-protocol-handler.hpp"
-#include "aeronet/protocol-handler.hpp"
 #endif
 
 #ifdef AERONET_ENABLE_OPENSSL
@@ -100,12 +102,20 @@ inline void CheckHandshake(bool isTlsEnabled, ConnectionState& state, TlsMetrics
 
 void SingleHttpServer::refreshKeepAliveDeadline(ConnectionIt cnxIt) {
   ConnectionState& state = _connections.connectionState(cnxIt);
+#ifdef AERONET_ENABLE_WEBSOCKET
+  // keepAliveTimeout bounds the idleness between HTTP requests: an upgraded connection has its own timeouts.
+  if (state.protocol == ProtocolType::WebSocket) {
+    refreshWebSocketDeadline(cnxIt->fd(), state);
+    return;
+  }
+#endif
+  // A CONNECT waiting for its target resolution is answered once getaddrinfo returns, whatever the time it takes.
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   const auto* asyncState = state.pAsyncState();
   bool asyncHandlerActive = asyncState != nullptr && asyncState->active;
-  if (!_config.enableKeepAlive || state.isTunneling() || asyncHandlerActive) {
+  if (!_config.enableKeepAlive || state.isTunneling() || state.tunnelResolving || asyncHandlerActive) {
 #else
-  if (!_config.enableKeepAlive || state.isTunneling()) {
+  if (!_config.enableKeepAlive || state.isTunneling() || state.tunnelResolving) {
 #endif
     _keepAliveDeadlines.remove(state);
     return;
@@ -176,7 +186,13 @@ bool SingleHttpServer::closeExpiredKeepAliveConnections() {
     }
 
     ConnectionState& state = _connections.connectionState(cnxIt);
-    if (!_config.enableKeepAlive || state.isTunneling()) {
+#ifdef AERONET_ENABLE_WEBSOCKET
+    if (state.protocol == ProtocolType::WebSocket) {
+      closedAny |= checkWebSocketTimeouts(cnxIt);
+      continue;
+    }
+#endif
+    if (!_config.enableKeepAlive || state.isTunneling() || state.tunnelResolving) {
       continue;
     }
 
@@ -216,10 +232,7 @@ bool SingleHttpServer::closeExpiredKeepAliveConnections() {
 
 void SingleHttpServer::rebuildKeepAliveDeadlines() {
   _keepAliveDeadlines.clear();
-  if (!_config.enableKeepAlive) {
-    return;
-  }
-
+  // Not skipped when keep-alive is disabled: WebSocket connections have their own timeouts.
   for (auto cnxIt = _connections.begin(); cnxIt != _connections.end(); ++cnxIt) {
     if (!IsValid(_connections, cnxIt)) {
       continue;
@@ -676,7 +689,7 @@ void SingleHttpServer::acceptNewConnections() {
     // with it), or the tunnel forwarding below reads the rest.
     const bool deferRemainingInput = inputLeft && !closeNow && !pCnx->isTunneling();
     if (!closeNow && pCnx->isTunneling()) {
-      closeNow = handleInTunneling(cnxIt) == CloseStatus::Close;
+      closeNow = _tunnels->relayInput(cnxIt) == CloseStatus::Close;
     } else if (closeNow && !pCnx->isAnyCloseRequested()) {
       // Input processing only stopped reading (an async handler holding the input, blocked output...).
       closeNow = false;
@@ -707,104 +720,36 @@ void SingleHttpServer::acceptNewConnections() {
 
 void SingleHttpServer::closeConnection(ConnectionIt cnxIt) {
   const auto cfd = cnxIt->fd();
-  ConnectionState& state = _connections.connectionState(cnxIt);
 
   log::debug("closeConnection called for fd # {}", cfd);
 
+  forgetConnectionMaintenance(_connections.connectionState(cnxIt));
+  if (_tunnels != nullptr) {
+    _tunnels->closeTunnelsOf(cnxIt);
+    // Releasing the other ends of its tunnels may have moved the entries of the connection storage (Windows).
+    cnxIt = _connections.iterator(cfd);
+  }
+  releaseConnection(cnxIt);
+}
+
+void SingleHttpServer::releaseConnection(ConnectionIt cnxIt) {
+  const auto fd = cnxIt->fd();
+  ConnectionState& state = _connections.connectionState(cnxIt);
+  _eventLoop.del(fd);
   // The buffers of zerocopy sends still in flight are released with the connection state, while the kernel would keep
   // sending from them after a graceful close: abort such a connection (reset) so that the kernel drops them first.
   // Drain closes wait for the completions instead (see ConnectionState::canCloseConnectionForDrain()).
-  const auto abortIfZerocopySendsInFlight = [this](ConnectionState& closingState, NativeHandle fd) {
-    if (closingState.hasZerocopySendsInFlight()) {
-      log::debug("Aborting fd # {} with zerocopy sends still in flight", fd);
-      if (!SetAbortiveClose(fd)) [[unlikely]] {
-        log::error("setsockopt(SO_LINGER) failed for fd # {} err={}", fd, LastSystemError());
-      }
-      _telemetry.counterAdd("aeronet.connections.aborted_with_zerocopy_in_flight");
+  if (state.hasZerocopySendsInFlight()) {
+    log::debug("Aborting fd # {} with zerocopy sends still in flight", fd);
+    if (!SetAbortiveClose(fd)) [[unlikely]] {
+      log::error("setsockopt(SO_LINGER) failed for fd # {} err={}", fd, LastSystemError());
     }
-  };
-
-  forgetConnectionMaintenance(state);
-
-  // If this is a tunnel endpoint (CONNECT), ensure we tear down the peer too.
-  // Otherwise, peerFd may dangle and later accidentally match a reused fd, causing spurious epoll_ctl failures and
-  // incorrect forwarding.
-  const auto peerFd = state.peerFd;
-  if (peerFd != kInvalidHandle) {
-    auto peerIt = _connections.iterator(peerFd);
-    if (IsValid(_connections, peerIt)) [[likely]] {
-      ConnectionState& peerConnectionState = _connections.connectionState(peerIt);
-#ifdef AERONET_ENABLE_HTTP2
-      if (state.peerStreamId != 0) {
-        // HTTP/2 tunnel upstream being closed: notify the peer's handler to send END_STREAM,
-        // but do NOT tear down the peer HTTP/2 connection (it may have other active streams).
-        if (peerConnectionState.protocolHandler) {
-          auto* h2Handler = static_cast<http2::Http2ProtocolHandler*>(peerConnectionState.protocolHandler.get());
-          h2Handler->closeTunnelByUpstreamFd(cfd);
-          flushOutbound(peerIt);
-        }
-      } else
-#endif
-          if (peerConnectionState.peerFd == cfd) [[likely]] {
-        _eventLoop.del(peerFd);
-        forgetConnectionMaintenance(peerConnectionState);
-        abortIfZerocopySendsInFlight(peerConnectionState, peerFd);
-#ifdef AERONET_ENABLE_OPENSSL
-        _connections.recycleOrRelease(peerIt, _config.maxCachedConnections, _config.tls.enabled,
-                                      _tls.handshakesInFlight);
-#else
-        _connections.recycleOrRelease(peerIt, _config.maxCachedConnections);
-#endif
-#ifdef AERONET_WINDOWS
-        // bytell_hash_map::erase() can relocate chain-tail elements into the
-        // erased slot, invalidating any iterator that pointed at the moved entry.
-        // Re-lookup our own iterator so we don't use a stale one below.
-        cnxIt = _connections.iterator(cfd);
-#endif
-      } else {
-        log::error("Tunnel peer mismatch while closing fd # {} (peerFd={}, peer.peerFd={})", cfd, peerFd,
-                   peerConnectionState.peerFd);
-      }
-    }
+    _telemetry.counterAdd("aeronet.connections.aborted_with_zerocopy_in_flight");
   }
-
-#ifdef AERONET_ENABLE_HTTP2
-  // If this connection carries an HTTP/2 handler with active tunnel upstreams, collect their fds
-  // before releasing the connection, then close each one (without recursive peer teardown).
-  http2::Http2ProtocolHandler::TunnelUpstreamsMap tunnelUpstreamFds;
-  if (state.protocolHandler && state.protocolHandler->type() == ProtocolType::Http2) {
-    auto* h2Handler = static_cast<http2::Http2ProtocolHandler*>(state.protocolHandler.get());
-    tunnelUpstreamFds = h2Handler->drainTunnelUpstreamFds();
-  }
-#endif
-
-  _eventLoop.del(cfd);
-  abortIfZerocopySendsInFlight(state, cfd);
 #ifdef AERONET_ENABLE_OPENSSL
   _connections.recycleOrRelease(cnxIt, _config.maxCachedConnections, _config.tls.enabled, _tls.handshakesInFlight);
 #else
   _connections.recycleOrRelease(cnxIt, _config.maxCachedConnections);
-#endif
-
-#ifdef AERONET_ENABLE_HTTP2
-  // Close tunnel upstream fds after the HTTP/2 connection has been released.
-  // Set peerFd = -1 on each to prevent them from trying to close the already-released peer.
-  for (const auto& [upFd, streamId] : tunnelUpstreamFds) {
-    auto upIt = _connections.iterator(upFd);
-    if (IsValid(_connections, upIt)) {
-      ConnectionState& upState = _connections.connectionState(upIt);
-      upState.peerFd = kInvalidHandle;
-      upState.peerStreamId = 0;
-      _eventLoop.del(upFd);
-      forgetConnectionMaintenance(upState);
-      abortIfZerocopySendsInFlight(upState, upFd);
-#ifdef AERONET_ENABLE_OPENSSL
-      _connections.recycleOrRelease(upIt, _config.maxCachedConnections, _config.tls.enabled, _tls.handshakesInFlight);
-#else
-      _connections.recycleOrRelease(upIt, _config.maxCachedConnections);
-#endif
-    }
-  }
 #endif
 }
 
@@ -831,38 +776,8 @@ bool SingleHttpServer::finalizeTlsHandshakeIfReady([[maybe_unused]] NativeHandle
 SingleHttpServer::CloseStatus SingleHttpServer::handleWritableClient(ConnectionIt cnxIt) {
   ConnectionState& state = _connections.connectionState(cnxIt);
 
-  // If this connection was created for an upstream non-blocking connect, and connect is pending,
-  // check SO_ERROR to determine whether connect completed successfully or failed.
   const auto fd = cnxIt->fd();
-  if (state.connectPending) {
-    const int err = GetSocketError(fd);
-    state.connectPending = false;
-    if (err != 0) {
-      // Upstream connect failed. Attempt to notify the client side (peerFd) and close this upstream.
-      const auto peerIt = _connections.iterator(state.peerFd);
-      if (IsValid(_connections, peerIt)) {
-#ifdef AERONET_ENABLE_HTTP2
-        if (state.peerStreamId != 0) {
-          // HTTP/2 tunnel upstream: RST_STREAM the tunnel stream
-          ConnectionState& peerState = _connections.connectionState(peerIt);
-          auto* h2Handler = static_cast<http2::Http2ProtocolHandler*>(peerState.protocolHandler.get());
-          h2Handler->tunnelConnectFailed(state.peerStreamId);
-          flushOutbound(peerIt);
-        } else
-#endif
-        {
-          emitSimpleError(peerIt, http::StatusCodeBadGateway, "Upstream connect failed");
-        }
-      } else {
-        log::error("Unable to notify client of upstream connect failure: peer fd # {} not found", state.peerFd);
-      }
-      return CloseStatus::Close;
-    }
-    // otherwise connect succeeded; continue to normal writable handling
-  }
-  // If tunneling, flush tunnelOutBuffer first
-  if (state.isTunneling() && !state.tunnelOrFileBuffer.empty() && !state.tunnelTransportWrite(fd)) {
-    // Fatal error writing tunnel data: close this connection
+  if (state.isTunneling() && _tunnels->handleWritable(cnxIt) == CloseStatus::Close) {
     return CloseStatus::Close;
   }
   flushOutbound(cnxIt);
@@ -933,14 +848,9 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
     }
   }
 
-  // If in tunneling mode, read raw bytes and forward to peer
-  if (pCnx->isTunneling()) {
-#ifdef AERONET_ENABLE_HTTP2
-    if (pCnx->peerStreamId != 0) {
-      return handleInH2Tunneling(cnxIt);
-    }
-#endif
-    return handleInTunneling(cnxIt);
+  // A tunnel endpoint relays raw bytes to its peer.
+  if (pCnx->isTunneling() || pCnx->tunnelResolving) {
+    return _tunnels->handleReadable(cnxIt);
   }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
@@ -1018,7 +928,7 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
     cnxIt = _connections.iterator(fd);
     pCnx = _connections.pConnectionState(fd);
     if (pCnx->isTunneling()) {
-      return handleInTunneling(cnxIt);
+      return _tunnels->relayInput(cnxIt);
     }
 
     // A drained read left nothing to read, and later data raises a new event: no need to defer the connection.
@@ -1061,204 +971,6 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
     flushOutbound(cnxIt);
   }
   return pCnx->canCloseConnectionForDrain() ? CloseStatus::Close : CloseStatus::Keep;
-}
-
-// ============================================================================
-// Shared CONNECT tunnel helpers (HTTP/1.1 + HTTP/2)
-// ============================================================================
-
-NativeHandle SingleHttpServer::setupTunnelConnection(NativeHandle clientFd, std::string_view host, uint16_t port) {
-  ConnectResult cres = ConnectTCP(std::span<char>(const_cast<char*>(host.data()), host.size()), port);
-  if (cres.failure) {
-    return kInvalidHandle;
-  }
-
-  const auto upstreamFd = cres.cnx.fd();
-
-  // Register upstream in event loop for edge-triggered reads and writes so we can detect
-  // completion of non-blocking connect (EPOLLOUT) as well as incoming data.
-  if (!_eventLoop.add(EventLoop::EventFd{upstreamFd, EventIn | EventOut | EventRdHup | EventEt})) [[unlikely]] {
-    return kInvalidHandle;
-  }
-
-  // Insert upstream connection state. Insertion may invalidate connection iterators by growing the POSIX fd-indexed
-  // vector or rehashing the Windows map, so callers must not hold them across this call. A duplicate fd for a newly
-  // connected socket indicates a library bug (the kernel assigns unique fds for each socket()).
-  const auto upIt = _connections.emplace(std::move(cres.cnx));
-  ConnectionState& state = _connections.connectionState(upIt);
-
-  // Set upstream transport to plain (no TLS). Zerocopy is unconditionally disabled for tunnel
-  // transports because buffer lifetimes are not stable — data is read into a reusable inBuffer
-  // and forwarded immediately; the kernel may still have pages pinned for DMA when the buffer is
-  // reused for the next read, causing data corruption.
-  state.transport = Transport(upstreamFd, ZerocopyMode::Disabled, 0);
-  state.peerFd = clientFd;
-  state.connectPending = cres.connectPending;
-
-  return upstreamFd;
-}
-
-bool SingleHttpServer::forwardTunnelData(ConnectionIt targetIt, std::string_view data) {
-  ConnectionState& target = _connections.connectionState(targetIt);
-
-  // If the target is still connecting, waiting for EPOLLOUT, or has buffered data, just buffer.
-  if (target.connectPending || target.waitingWritable || !target.tunnelOrFileBuffer.empty()) {
-    target.tunnelOrFileBuffer.append(data);
-    if (!target.waitingWritable && !enableWritableInterest(targetIt)) [[unlikely]] {
-      return false;
-    }
-    return true;
-  }
-
-  // Attempt direct write.
-  const auto [written, want] = target.transportWrite(data);
-  if (want == TransportHint::Error) [[unlikely]] {
-    return false;
-  }
-
-  // Buffer any unwritten remainder.
-  if (static_cast<std::size_t>(written) < data.size()) {
-    target.tunnelOrFileBuffer.append(data.data() + written, data.size() - written);
-    if (!target.waitingWritable && !enableWritableInterest(targetIt)) [[unlikely]] {
-      return false;
-    }
-  }
-  return true;
-}
-
-bool SingleHttpServer::forwardTunnelData(ConnectionIt targetIt, RawChars& sourceBuffer) {
-  ConnectionState& target = _connections.connectionState(targetIt);
-
-  // If the target is still connecting, waiting for EPOLLOUT, or has buffered data, just buffer.
-  // Use swap when the target buffer is empty to avoid a memcpy.
-  if (target.connectPending || target.waitingWritable || !target.tunnelOrFileBuffer.empty()) {
-    if (target.tunnelOrFileBuffer.empty()) {
-      sourceBuffer.swap(target.tunnelOrFileBuffer);
-    } else {
-      target.tunnelOrFileBuffer.append(sourceBuffer);
-      sourceBuffer.clear();
-    }
-    if (!target.waitingWritable && !enableWritableInterest(targetIt)) [[unlikely]] {
-      return false;
-    }
-    return true;
-  }
-
-  // Attempt direct write.
-  const auto [written, want] = target.transportWrite(std::string_view(sourceBuffer));
-  if (want == TransportHint::Error) [[unlikely]] {
-    return false;
-  }
-
-  // Buffer any unwritten remainder via swap when possible.
-  sourceBuffer.erase_front(written);
-  if (!sourceBuffer.empty()) {
-    if (target.tunnelOrFileBuffer.empty()) {
-      sourceBuffer.swap(target.tunnelOrFileBuffer);
-    } else {
-      target.tunnelOrFileBuffer.append(sourceBuffer);
-      sourceBuffer.clear();
-    }
-    if (!target.waitingWritable && !enableWritableInterest(targetIt)) [[unlikely]] {
-      return false;
-    }
-  }
-  return true;
-}
-
-bool SingleHttpServer::shutdownTunnelPeerWrite(ConnectionIt peerIt) {
-  ConnectionState& peer = _connections.connectionState(peerIt);
-  peer.shutdownWritePending = true;
-  if (peer.tunnelOrFileBuffer.empty()) {
-    if (!ShutdownWrite(peerIt->fd())) {
-      log::warn("Failed to shutdown write for peer fd # {}", peerIt->fd());
-      closeConnection(peerIt);
-      return true;  // peerIt and its peer are now recycled — do not touch state
-    }
-    peer.shutdownWritePending = false;
-  }
-  return false;
-}
-
-// ============================================================================
-
-SingleHttpServer::CloseStatus SingleHttpServer::readTunnelData(ConnectionIt cnxIt, std::size_t& bytesReadThisEvent,
-                                                               bool& hitEagain) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
-  while (!state.eofReceived && state.inBuffer.size() < _config.maxOutboundBufferBytes) {
-    const std::size_t chunkSize = _config.computeReadChunkSize(bytesReadThisEvent);
-    assert(chunkSize > 0);
-    const auto [bytesRead, want] = state.transportRead(chunkSize);
-    if (want == TransportHint::Error) {
-      return CloseStatus::Close;
-    }
-    if (bytesRead == 0 && want == TransportHint::None) {
-      state.eofReceived = true;
-      break;
-    }
-    if (want != TransportHint::None) {
-      hitEagain = true;
-      break;
-    }
-    bytesReadThisEvent += bytesRead;
-    if (bytesRead < chunkSize && !state.transport.hasPendingReadData()) {
-      hitEagain = true;
-      break;
-    }
-    if (_config.fairnessBudgetExhausted(bytesReadThisEvent)) {
-      // Edge-triggered polling (EPOLLET): data may remain in the TCP buffer after the fairness cap.
-      // No new read event fires on a non-empty→non-empty transition, so defer this fd for
-      // re-processing at the start of the next event-loop iteration (same as handleReadableClient).
-      deferInput(cnxIt->fd(), state);
-      hitEagain = true;
-      break;
-    }
-  }
-  return CloseStatus::Keep;
-}
-
-SingleHttpServer::CloseStatus SingleHttpServer::handleInTunneling(ConnectionIt cnxIt) {
-  const auto selfFd = cnxIt->fd();
-  ConnectionState& state = _connections.connectionState(cnxIt);
-  std::size_t bytesReadThisEvent = 0;
-  bool hitEagain = false;
-  if (readTunnelData(cnxIt, bytesReadThisEvent, hitEagain) == CloseStatus::Close) {
-    return CloseStatus::Close;
-  }
-
-  if (state.inBuffer.empty()) {
-    if (state.eofReceived) {
-      auto peerIt = _connections.iterator(state.peerFd);
-      if (IsValid(_connections, peerIt) && shutdownTunnelPeerWrite(peerIt)) {
-        return CloseStatus::Keep;  // peer closed and cleaned up
-      }
-      // Stop reading from this side — wait for the peer to close or drain.
-      if (!_eventLoop.mod(EventLoop::EventFd{selfFd, EventOut | EventRdHup | EventEt})) [[unlikely]] {
-        return CloseStatus::Close;
-      }
-    }
-    return CloseStatus::Keep;
-  }
-
-  auto peerIt = _connections.iterator(state.peerFd);
-  if (!IsValid(_connections, peerIt)) [[unlikely]] {
-    return CloseStatus::Close;
-  }
-
-  if (!forwardTunnelData(peerIt, state.inBuffer)) [[unlikely]] {
-    // Fatal transport error while forwarding to peer: close both sides.
-    return CloseStatus::Close;
-  }
-
-  if (state.eofReceived) {
-    if (shutdownTunnelPeerWrite(peerIt)) {
-      return CloseStatus::Keep;  // already cleaned up
-    }
-    if (!_eventLoop.mod(EventLoop::EventFd{selfFd, EventOut | EventRdHup | EventEt})) [[unlikely]] {
-      return CloseStatus::Close;
-    }
-  }
-  return CloseStatus::Keep;
 }
 
 }  // namespace aeronet

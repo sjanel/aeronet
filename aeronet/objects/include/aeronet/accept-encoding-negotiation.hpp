@@ -3,7 +3,6 @@
 #include <array>
 #include <cstdint>
 #include <string_view>
-#include <type_traits>
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/encoding.hpp"
@@ -45,14 +44,10 @@ class EncodingSelector {
   [[nodiscard]] NegotiatedResult negotiateAcceptEncoding(std::string_view acceptEncoding) const;
 
  private:
-  void initDefault() noexcept;
-
-  // final ordered list
+  // Server preference order of the supported encodings: the 'preferredFormats' sequence first (when provided),
+  // followed by the remaining supported encodings in the static enumeration order.
   std::array<Encoding, kNbContentEncodings> _preferenceOrdered;
-  std::underlying_type_t<Encoding> _nbPreferences;
-  // Build server preference ordering: if preferredFormats provided (non-empty) we use that
-  // sequence first (deduplicated, valid encodings only) followed by any remaining supported
-  // encodings not explicitly listed. Otherwise fall back to the static enumeration order.
+  // Position of each supported encoding in _preferenceOrdered (lower is preferred).
   std::array<int8_t, kNbContentEncodings> _serverPrefIndex;
 };
 

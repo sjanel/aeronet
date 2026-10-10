@@ -652,6 +652,8 @@ void TlsHttp2Client::receiveTunnelData(RawChars& out, uint32_t streamId, std::ch
         }
         continue;
       }
+    } else if (!firstIteration && std::chrono::steady_clock::now() >= deadline) {
+      return;  // buffered bytes that never complete a frame must not keep the loop spinning
     } else {
       firstIteration = false;
     }

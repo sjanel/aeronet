@@ -12,13 +12,19 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
 
+#include "aeronet/cors-policy.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
+#include "aeronet/http-request-view.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/http-status-code.hpp"
+#include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/test_server_fixture.hpp"
@@ -39,8 +45,9 @@ namespace {
 
 test::TestServer ts;
 
-// Helper to build a valid WebSocket upgrade request
-std::string BuildUpgradeRequest(std::string_view path, std::string_view key = "dGhlIHNhbXBsZSBub25jZQ==") {
+// Helper to build a valid WebSocket upgrade request. extraHeaders are complete header lines, CRLF included.
+std::string BuildUpgradeRequest(std::string_view path,
+                                std::string_view key = "dGhlIHNhbXBsZSBub25jZQ==", std::string_view extraHeaders = {}) {
   return std::string("GET ") + std::string(path) +
          " HTTP/1.1\r\n"
          "Host: localhost\r\n"
@@ -49,13 +56,18 @@ std::string BuildUpgradeRequest(std::string_view path, std::string_view key = "d
          "Sec-WebSocket-Key: " +
          std::string(key) +
          "\r\n"
-         "Sec-WebSocket-Version: 13\r\n\r\n";
+         "Sec-WebSocket-Version: 13\r\n" +
+         std::string(extraHeaders) + "\r\n";
+}
+
+std::string BuildUpgradeRequestWithHeaders(std::string_view path, std::string_view extraHeaders) {
+  return BuildUpgradeRequest(path, "dGhlIHNhbXBsZSBub25jZQ==", extraHeaders);
 }
 
 // Helper to create a masked client frame
-vector<std::byte> BuildClientTextFrame(std::string_view text, bool fin = true) {
+vector<std::byte> BuildClientFrame(Opcode opcode, std::string_view text, bool fin = true) {
   vector<std::byte> frame;
-  uint8_t firstByte = static_cast<uint8_t>(Opcode::Text);
+  uint8_t firstByte = static_cast<uint8_t>(opcode);
   if (fin) {
     firstByte |= 0x80U;
   }
@@ -87,6 +99,14 @@ vector<std::byte> BuildClientTextFrame(std::string_view text, bool fin = true) {
   }
 
   return frame;
+}
+
+vector<std::byte> BuildClientTextFrame(std::string_view text, bool fin = true) {
+  return BuildClientFrame(Opcode::Text, text, fin);
+}
+
+void SendFrame(NativeHandle fd, const vector<std::byte>& frame) {
+  test::sendAll(fd, std::string_view(reinterpret_cast<const char*>(frame.data()), frame.size()));
 }
 
 // Helper to create a close frame
@@ -593,6 +613,258 @@ TEST_F(WebSocketTest, WithConfigAndCallbacksCustomMaxMessageSize) {
   const auto receivedMessages = this->receivedMessages();
   ASSERT_EQ(receivedMessages.size(), 1);
   EXPECT_EQ(receivedMessages[0].first, "Small message");
+}
+
+// ============================================================================
+// Idle and close timeouts
+// ============================================================================
+
+// Server dedicated to the timeout tests, with a frequent maintenance sweep.
+HttpServerConfig TimeoutServerConfig(std::chrono::milliseconds keepAliveTimeout) {
+  HttpServerConfig cfg;
+  cfg.withKeepAliveTimeout(keepAliveTimeout).withPollInterval(10ms);
+  return cfg;
+}
+
+// Endpoint echoing text messages, closing the connection when it receives "close".
+WebSocketEndpoint EchoEndpoint(WebSocketConfig config) {
+  return WebSocketEndpoint::WithFactory([config](const HttpRequestView& /*req*/) {
+    auto handler = std::make_unique<WebSocketHandler>(config);
+    handler->setCallbacks(WebSocketCallbacks{
+        .onMessage =
+            [handler = handler.get()](std::span<const std::byte> payload, bool /*isBinary*/) {
+              const std::string text = PayloadToString(payload);
+              if (text == "close") {
+                handler->sendClose(CloseCode::Normal, "bye");
+              } else {
+                handler->sendText(text);
+              }
+            },
+        .onPing = {},
+        .onPong = {},
+        .onClose = {},
+        .onError = {},
+    });
+    return handler;
+  });
+}
+
+std::optional<ServerFrame> ReceiveServerFrame(NativeHandle fd, std::chrono::milliseconds timeout) {
+  const std::string raw = ReceiveServerFrameBytes(fd, timeout);
+  return ParseServerFrame(std::span<const std::byte>(reinterpret_cast<const std::byte*>(raw.data()), raw.size()));
+}
+
+void Upgrade(NativeHandle fd, std::string_view path) {
+  test::sendAll(fd, BuildUpgradeRequest(path));
+  const std::string upgradeResponse = test::recvWithTimeout(fd, 1000ms, 129UL);
+  ASSERT_TRUE(upgradeResponse.starts_with("HTTP/1.1 101")) << upgradeResponse;
+}
+
+TEST(WebSocketTimeouts, UpgradedConnectionOutlivesKeepAliveTimeout) {
+  test::TestServer server(TimeoutServerConfig(100ms));
+  server.postRouterUpdate([](Router& router) { router.setWebSocket("/echo", EchoEndpoint(WebSocketConfig{})); });
+
+  test::ClientConnection conn(server.port());
+  Upgrade(conn.fd(), "/echo");
+
+  // keepAliveTimeout bounds the idleness between HTTP requests, not WebSocket connections.
+  std::this_thread::sleep_for(400ms);
+  SendFrame(conn.fd(), BuildClientTextFrame("still there?"));
+  const auto echo = ReceiveServerFrame(conn.fd(), 1000ms);
+  ASSERT_TRUE(echo.has_value());
+  EXPECT_EQ(echo->opcode, Opcode::Text);
+  EXPECT_EQ(PayloadToString(echo->payload), "still there?");
+}
+
+TEST(WebSocketTimeouts, IdleConnectionIsPingedThenClosed) {
+  test::TestServer server(TimeoutServerConfig(10s));
+  WebSocketConfig config;
+  config.idleTimeout = 400ms;
+  server.postRouterUpdate([config](Router& router) { router.setWebSocket("/echo", EchoEndpoint(config)); });
+
+  test::ClientConnection conn(server.port());
+  Upgrade(conn.fd(), "/echo");
+
+  // A Ping after half of the idle timeout, then the connection is closed when the peer does not answer.
+  const auto ping = ReceiveServerFrame(conn.fd(), 1000ms);
+  ASSERT_TRUE(ping.has_value());
+  EXPECT_EQ(ping->opcode, Opcode::Ping);
+  EXPECT_TRUE(test::WaitForPeerClose(conn.fd(), 2000ms));
+}
+
+TEST(WebSocketTimeouts, PongsKeepIdleConnectionOpen) {
+  test::TestServer server(TimeoutServerConfig(10s));
+  WebSocketConfig config;
+  config.idleTimeout = 1000ms;  // a Ping after 500 ms of idleness, to answer within 500 ms
+  server.postRouterUpdate([config](Router& router) { router.setWebSocket("/echo", EchoEndpoint(config)); });
+
+  test::ClientConnection conn(server.port());
+  Upgrade(conn.fd(), "/echo");
+
+  // Answer the Pings for more than an idle timeout, like a browser does.
+  for (int pingIdx = 0; pingIdx < 3; ++pingIdx) {
+    const auto ping = ReceiveServerFrame(conn.fd(), 2000ms);
+    ASSERT_TRUE(ping.has_value());
+    ASSERT_EQ(ping->opcode, Opcode::Ping);
+    SendFrame(conn.fd(), BuildClientFrame(Opcode::Pong, PayloadToString(ping->payload)));
+  }
+  SendFrame(conn.fd(), BuildClientTextFrame("alive"));
+  auto frame = ReceiveServerFrame(conn.fd(), 1000ms);
+  // A Ping may be sent before the echo.
+  if (frame.has_value() && frame->opcode == Opcode::Ping) {
+    frame = ReceiveServerFrame(conn.fd(), 1000ms);
+  }
+  ASSERT_TRUE(frame.has_value());
+  EXPECT_EQ(frame->opcode, Opcode::Text);
+  EXPECT_EQ(PayloadToString(frame->payload), "alive");
+}
+
+TEST(WebSocketTimeouts, CloseTimeoutClosesConnectionWithoutPeerClose) {
+  test::TestServer server(TimeoutServerConfig(10s));
+  WebSocketConfig config;
+  config.idleTimeout = 0ms;
+  config.closeTimeout = 200ms;
+  server.postRouterUpdate([config](Router& router) { router.setWebSocket("/echo", EchoEndpoint(config)); });
+
+  test::ClientConnection conn(server.port());
+  Upgrade(conn.fd(), "/echo");
+
+  SendFrame(conn.fd(), BuildClientTextFrame("close"));
+  const auto close = ReceiveServerFrame(conn.fd(), 1000ms);
+  ASSERT_TRUE(close.has_value());
+  EXPECT_EQ(close->opcode, Opcode::Close);
+  // The client never answers the Close frame: the server gives up after closeTimeout.
+  EXPECT_TRUE(test::WaitForPeerClose(conn.fd(), 2000ms));
+}
+
+// ============================================================================
+// Upgrade: middleware, origin checks, CORS, factory
+// ============================================================================
+
+WebSocketEndpoint SilentEndpoint() {
+  return WebSocketEndpoint::WithCallbacks(WebSocketCallbacks{
+      .onMessage = {},
+      .onPing = {},
+      .onPong = {},
+      .onClose = {},
+      .onError = {},
+  });
+}
+
+// Head of the response to an upgrade request on the shared server.
+std::string UpgradeResponse(std::string_view path, std::string_view extraHeaders) {
+  test::ClientConnection conn(ts.port());
+  test::sendAll(conn.fd(), BuildUpgradeRequestWithHeaders(path, extraHeaders));
+  test::setRecvTimeout(conn.fd(), 1000ms);
+  std::string head;
+  std::array<char, 1024> buf{};
+  while (!head.contains(http::DoubleCRLF)) {
+    const auto nb = ::recv(conn.fd(), buf.data(), buf.size(), 0);
+    if (nb <= 0) {
+      break;
+    }
+    head.append(buf.data(), static_cast<std::size_t>(nb));
+  }
+  return head;
+}
+
+TEST_F(WebSocketTest, UpgradeRunsRequestMiddleware) {
+  ts.postRouterUpdate([](Router& router) {
+    router.setWebSocket("/ws-middleware", SilentEndpoint()).before([](HttpRequestView& req) {
+      if (req.headerValueOrEmpty(http::Authorization) != "Bearer token") {
+        return MiddlewareResult::ShortCircuit(req.makeResponse(http::StatusCodeUnauthorized));
+      }
+      return MiddlewareResult::Continue();
+    });
+  });
+
+  EXPECT_TRUE(UpgradeResponse("/ws-middleware", "").starts_with("HTTP/1.1 401"));
+  EXPECT_TRUE(UpgradeResponse("/ws-middleware", "Authorization: Bearer token\r\n").starts_with("HTTP/1.1 101"));
+}
+
+TEST_F(WebSocketTest, UpgradeChecksOriginWithoutCorsPolicy) {
+  ts.postRouterUpdate([](Router& router) { router.setWebSocket("/ws-origin", SilentEndpoint()); });
+
+  // No Origin: not a browser.
+  EXPECT_TRUE(UpgradeResponse("/ws-origin", "").starts_with("HTTP/1.1 101"));
+  // Same origin as the Host header (localhost), default port omitted or not.
+  EXPECT_TRUE(UpgradeResponse("/ws-origin", "Origin: http://localhost\r\n").starts_with("HTTP/1.1 101"));
+  EXPECT_TRUE(UpgradeResponse("/ws-origin", "Origin: http://LocalHost:80\r\n").starts_with("HTTP/1.1 101"));
+  EXPECT_TRUE(UpgradeResponse("/ws-origin", "Origin: https://localhost:443\r\n").starts_with("HTTP/1.1 101"));
+  // Cross-site WebSocket hijacking attempts.
+  EXPECT_TRUE(UpgradeResponse("/ws-origin", "Origin: https://evil.example\r\n").starts_with("HTTP/1.1 403"));
+  EXPECT_TRUE(UpgradeResponse("/ws-origin", "Origin: http://localhost:8080\r\n").starts_with("HTTP/1.1 403"));
+  EXPECT_TRUE(UpgradeResponse("/ws-origin", "Origin: null\r\n").starts_with("HTTP/1.1 403"));
+}
+
+TEST_F(WebSocketTest, UpgradeAppliesCorsPolicyToOrigin) {
+  ts.postRouterUpdate([](Router& router) {
+    CorsPolicy cors;
+    cors.allowOrigin("https://app.example.com");
+    router.setWebSocket("/ws-cors", SilentEndpoint()).cors(std::move(cors));
+  });
+
+  EXPECT_TRUE(UpgradeResponse("/ws-cors", "Origin: https://app.example.com\r\n").starts_with("HTTP/1.1 101"));
+  EXPECT_TRUE(UpgradeResponse("/ws-cors", "Origin: https://evil.example\r\n").starts_with("HTTP/1.1 403"));
+  // The policy replaces the same-origin rule.
+  EXPECT_TRUE(UpgradeResponse("/ws-cors", "Origin: http://localhost\r\n").starts_with("HTTP/1.1 403"));
+  EXPECT_TRUE(UpgradeResponse("/ws-cors", "").starts_with("HTTP/1.1 101"));
+}
+
+TEST_F(WebSocketTest, FactoryCanRefuseUpgrade) {
+  ts.postRouterUpdate([](Router& router) {
+    router.setWebSocket("/rooms/{room}", WebSocketEndpoint::WithFactory([](const HttpRequestView& req) {
+                          // Path parameters are available to the factory.
+                          if (req.pathParamValueOrEmpty("room") != "lobby") {
+                            return std::unique_ptr<WebSocketHandler>();
+                          }
+                          return std::make_unique<WebSocketHandler>();
+                        }));
+  });
+
+  EXPECT_TRUE(UpgradeResponse("/rooms/lobby", "").starts_with("HTTP/1.1 101"));
+  EXPECT_TRUE(UpgradeResponse("/rooms/private", "").starts_with("HTTP/1.1 403"));
+}
+
+TEST_F(WebSocketTest, EndpointWithoutFactoryUsesADefaultHandler) {
+  ts.postRouterUpdate([](Router& router) {
+    WebSocketEndpoint endpoint;
+    endpoint.config.maxMessageSize = 1024;
+    router.setWebSocket("/ws-default", std::move(endpoint));
+  });
+
+  EXPECT_TRUE(UpgradeResponse("/ws-default", "").starts_with("HTTP/1.1 101"));
+}
+
+TEST_F(WebSocketTest, ThrowingFactoryAnswers500) {
+  ts.postRouterUpdate([](Router& router) {
+    router.setWebSocket("/std",
+                        WebSocketEndpoint::WithFactory([](const HttpRequestView&) -> std::unique_ptr<WebSocketHandler> {
+                          throw std::runtime_error("factory failure");
+                        }));
+    router.setWebSocket("/other",
+                        WebSocketEndpoint::WithFactory([](const HttpRequestView&) -> std::unique_ptr<WebSocketHandler> {
+                          throw 42;  // NOLINT(hicpp-exception-baseclass)
+                        }));
+  });
+
+  const std::string stdResponse = UpgradeResponse("/std", "");
+  EXPECT_TRUE(stdResponse.starts_with("HTTP/1.1 500")) << stdResponse;
+  EXPECT_FALSE(stdResponse.contains("factory failure"));
+  EXPECT_TRUE(UpgradeResponse("/other", "").starts_with("HTTP/1.1 500"));
+}
+
+TEST_F(WebSocketTest, RequestTimeoutOfRouteDoesNotCloseWebSocket) {
+  ts.postRouterUpdate(
+      [](Router& router) { router.setWebSocket("/echo-timeout", EchoEndpoint(WebSocketConfig{})).timeout(100ms); });
+
+  test::ClientConnection conn(ts.port());
+  Upgrade(conn.fd(), "/echo-timeout");
+  std::this_thread::sleep_for(300ms);
+  SendFrame(conn.fd(), BuildClientTextFrame("ping"));
+  const auto echo = ReceiveServerFrame(conn.fd(), 1000ms);
+  ASSERT_TRUE(echo.has_value());
+  EXPECT_EQ(PayloadToString(echo->payload), "ping");
 }
 
 }  // namespace

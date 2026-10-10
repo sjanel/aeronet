@@ -73,6 +73,10 @@ int GetSocketError(NativeHandle fd) noexcept;
 // sole false positive (a TLS session ticket arriving while idle) merely costs one extra reconnect.
 [[nodiscard]] bool IsConnectionStale(NativeHandle fd) noexcept;
 
+// Tell whether the peer of a connected socket closed it (orderly close or reset), without consuming any data
+// (MSG_PEEK, non-blocking). Pending bytes are not a close: they hide an orderly close behind them.
+[[nodiscard]] bool IsPeerClosed(NativeHandle fd) noexcept;
+
 // Fill `addr` with the local address bound to `fd`.
 // Returns true on success.
 bool GetLocalAddress(NativeHandle fd, sockaddr_storage& addr) noexcept;

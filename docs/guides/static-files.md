@@ -29,11 +29,14 @@ curl -i -H "Range: bytes=0-3" http://localhost:8080/somefile.txt
 The handler resolves the **whole request path** under its root directory: with root `/var/www/site`, `GET /css/site.css` serves `/var/www/site/css/site.css`. The route prefix is not removed, so a handler registered on `/assets/*` with root `/var/www/site` serves `/assets/app.js` from `/var/www/site/assets/app.js`.
 
 - The path is percent-decoded before resolution, `.` segments are ignored, and any `..` segment is answered `404`, so a request cannot leave the root through its path.
+- Hidden files and directories, whose name starts with a dot, are answered `404` and left out of listings, so `/.env` or `/.git/config` are not served. `.well-known` is the exception: [RFC 8615](https://www.rfc-editor.org/rfc/rfc8615) reserves it for public metadata such as ACME challenges or `security.txt`, so it is served and listed, while the dotfiles it contains stay hidden. Set `showHiddenFiles` to serve and list every dotfile.
+- Symbolic links are followed as long as their target is inside the root directory: a file or directory reached through a link that leads outside of the root is answered `404`. The check resolves the links of the path once per file, then is remembered in the [header cache](#caching-and-conditional-requests) along with the identity of the file (device and inode), so it costs nothing on the following requests and runs again when the path leads to another file.
+- Only regular files and directories are served: a FIFO, a socket or a device file is answered `404`.
 - A directory is served through its index file (`index.html` by default, see `withDefaultIndex()`), when it has one. Otherwise, it is answered `404`, unless `enableDirectoryIndex` is set: the handler then redirects `/dir` to `/dir/`, and lists the directory as an HTML page.
 - Only `GET` and `HEAD` are served; other methods receive `405 Method Not Allowed`.
 
-!!! warning
-    The handler serves every regular file under the root that a request names, **dotfiles included**: `showHiddenFiles` only hides them from directory listings, so `/.env` or `/.git/config` are served if they exist. Symbolic links are followed, including links that point outside the root. Serve a directory that contains only public files, built for that purpose, never a source tree or a home directory.
+!!! tip
+    Serve a directory that contains only public files, built for that purpose, rather than a source tree or a home directory: every regular file inside it that is not hidden can be downloaded.
 
 ## Transfers
 
@@ -52,7 +55,7 @@ Each response carries a strong `ETag`, derived from the file size and modificati
 
 The handler does not set `Cache-Control`: add it, for instance in a [response middleware](middleware.md) that matches your asset naming (long lifetimes for fingerprinted files, `no-cache` for HTML).
 
-To save formatting work, each handler keeps the formatted headers (`ETag`, `Last-Modified`, `Content-Type`) of up to `headerCacheCapacity` files (1024 by default, least recently used evicted, 0 to disable). Every request still checks the file size and modification time, so a modified file is never served with stale headers.
+To save formatting work, each handler keeps the formatted headers (`ETag`, `Last-Modified`, `Content-Type`) of up to `headerCacheCapacity` files (1024 by default, least recently used evicted, 0 to disable). Every request still checks the file size and modification time, so a modified file is never served with stale headers. The cache also remembers that the file is inside the root directory: without cache, the symbolic links of the path are resolved on every request.
 
 ## Ranges
 
@@ -72,7 +75,7 @@ Multipart range responses are assembled in memory, so two limits protect the ser
 | `withDefaultIndex(name)` | `index.html` | File served for a directory; empty to disable. |
 | `enableDirectoryIndex` | `false` | List directories without index file as HTML. |
 | `maxEntriesToList` | 10,000 | Maximum entries in a listing; longer listings are truncated and carry `x-directory-listing-truncated: 1`. |
-| `showHiddenFiles` | `false` | Show dotfiles in listings (they are always served when requested). |
+| `showHiddenFiles` | `false` | Serve and list dotfiles. When `false`, they are answered `404` and left out of listings, except `.well-known`. |
 | `withDirectoryListingCss(css)`, `directoryIndexRenderer` | default style, built-in renderer | Customize listings. |
 | `enableRange`, `maxMultipartRanges`, `maxMultipartBodySize` | `true`, 16, 32 MiB | Range requests. |
 | `enableConditional`, `addEtag`, `addLastModified` | `true` | Validators and conditional requests. |
@@ -82,5 +85,5 @@ Multipart range responses are assembled in memory, so two limits protect the ser
 
 ## Tests
 
-- Path resolution, ranges, multipart assembly, conditionals, and header cache: [static-file-handler_test.cpp](../../aeronet/server/test/static-file-handler_test.cpp).
+- Path resolution, hidden files, symbolic links, ranges, multipart assembly, conditionals, and header cache: [static-file-handler_test.cpp](../../aeronet/server/test/static-file-handler_test.cpp).
 - End to end, including multi-range responses and `If-Range`: [tests/http-core_test.cpp](../../tests/http-core_test.cpp).

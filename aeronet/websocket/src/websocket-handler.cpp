@@ -1,5 +1,6 @@
 #include "aeronet/websocket-handler.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
@@ -569,6 +570,37 @@ bool WebSocketHandler::sendClose(CloseCode code, std::string_view reason) {
   _closeCode = code;
 
   return true;
+}
+
+std::chrono::steady_clock::time_point WebSocketHandler::nextTimeoutCheck(
+    std::chrono::steady_clock::time_point lastActivity) const noexcept {
+  auto next = std::chrono::steady_clock::time_point::max();
+  if (_closeState == CloseState::CloseSent) {
+    next = _closeInitiatedAt + _config.closeTimeout;
+  }
+  if (_config.idleTimeout.count() > 0) {
+    // Until a Ping is sent for the current idle period, the next check is the one that sends it.
+    const bool pingDue = _config.autoPing && _closeState == CloseState::Open && _idlePingSentAt < lastActivity;
+    next = std::min(next, lastActivity + (pingDue ? _config.idleTimeout / 2 : _config.idleTimeout));
+  }
+  return next;
+}
+
+WebSocketHandler::Timeout WebSocketHandler::checkTimeouts(std::chrono::steady_clock::time_point now,
+                                                          std::chrono::steady_clock::time_point lastActivity) {
+  if (_closeState == CloseState::CloseSent && now >= _closeInitiatedAt + _config.closeTimeout) {
+    return Timeout::Close;
+  }
+  if (_config.idleTimeout.count() > 0) {
+    if (now >= lastActivity + _config.idleTimeout) {
+      return Timeout::Idle;
+    }
+    if (_config.autoPing && _idlePingSentAt < lastActivity && now >= lastActivity + (_config.idleTimeout / 2) &&
+        sendPing()) {
+      _idlePingSentAt = now;
+    }
+  }
+  return Timeout::None;
 }
 
 std::unique_ptr<WebSocketHandler> CreateServerWebSocketHandler(WebSocketCallbacks callbacks,

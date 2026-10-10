@@ -49,8 +49,8 @@ class StaticFileHandler {
     const char* pContentType{};                    // stable storage (MIME table / resolver / config default)
     SysTimePoint lastModified{kInvalidTimePoint};  // also the mtime validator; drives conditional comparisons
     std::size_t fileSize{0};                       // size validator
-    std::uint64_t lruSeq{0};                  // recency stamp; the smallest one is evicted first when the cache is full
-    std::uint32_t contentTypeLen{0};          // length of the MIME type string
+    std::uint32_t contentTypeLen{0};               // length of the MIME type string
+    char identity[File::kIdentitySize];       // device and inode of the file, verified to be inside the root directory
     char etag[kMaxEtagSize];                  // formatted strong ETag (quotes included), etagLen bytes used
     char lastModifiedStr[RFC7231DateStrLen];  // formatted RFC 7231 date, valid iff lastModified is valid
     std::uint8_t etagLen{0};                  // 0 means no ETag
@@ -58,13 +58,18 @@ class StaticFileHandler {
 
   [[nodiscard]] ResolveResult resolveTarget(const HttpRequestView& request, std::filesystem::path& resolvedPath) const;
 
+  // Tell whether 'path', with its symbolic links resolved, is the root directory or lies below it.
+  [[nodiscard]] bool isWithinRoot(const std::filesystem::path& path) const;
+
   // Format the per-file header fragments (ETag, Last-Modified, Content-Type) for 'file' into 'out'.
   void buildHeaderMeta(std::string_view filePath, const File& file, CachedFileHeaders& out) const;
 
   // Return the per-file header fragments, reusing a cached entry when the file is unchanged, otherwise (re)building
   // them and inserting them into the cache (evicting the least-recently-used entry when it exceeds capacity).
+  // Returns nullptr when 'targetPath' resolves outside of the root directory (checked once per cached file).
   // When caching is disabled, 'scratch' is used as backing storage for the returned value.
-  [[nodiscard]] const CachedFileHeaders& resolveHeaderMeta(std::string_view filePath, const File& file,
+  [[nodiscard]] const CachedFileHeaders* resolveHeaderMeta(const std::filesystem::path& targetPath,
+                                                           std::string_view filePath, const File& file,
                                                            CachedFileHeaders& scratch) const;
 
   // One cached entry plus its LRU-list linkage. Allocated from a pool that provides pointer-stability across

@@ -226,6 +226,42 @@ TEST(TlsTicketKeyStoreTest, LoadStaticKeysMaxKeysLimit) {
   int issueRc = ticketStore.processTicket(keyName.data(), iv.data(), static_cast<int>(iv.size()), cipherCtx.get(),
                                           macCtx.get(), 1);
   EXPECT_EQ(issueRc, 1);
+
+  // Only the first maxKeys keys are kept: the third key's name is not recognized anymore.
+  std::ranges::copy(std::span(reinterpret_cast<const unsigned char*>(staticKeys[2].data()), keyName.size()),
+                    keyName.begin());
+  EXPECT_EQ(ticketStore.processTicket(keyName.data(), iv.data(), static_cast<int>(iv.size()), cipherCtx.get(),
+                                      macCtx.get(), 0),
+            0);
+}
+
+TEST(TlsTicketKeyStoreTest, LoadStaticKeysExactlyMaxKeysKeepsAll) {
+  TlsTicketKeyStore ticketStore(std::chrono::seconds(60), 2);
+
+  std::array<TLSConfig::SessionTicketKey, 2> staticKeys{};
+  for (std::size_t keyIdx = 0; keyIdx < staticKeys.size(); ++keyIdx) {
+    for (std::size_t byteIdx = 0; byteIdx < staticKeys[keyIdx].size(); ++byteIdx) {
+      staticKeys[keyIdx][byteIdx] = static_cast<std::byte>((keyIdx * 100) + byteIdx);
+    }
+  }
+  ticketStore.loadStaticKeys(staticKeys);
+
+  std::array<unsigned char, EVP_MAX_IV_LENGTH> iv{};
+  CipherPtr cipherCtx{::EVP_CIPHER_CTX_new(), &::EVP_CIPHER_CTX_free};
+  ASSERT_NE(cipherCtx.get(), nullptr);
+  MacPtr mac(::EVP_MAC_fetch(nullptr, "HMAC", nullptr), &::EVP_MAC_free);
+  ASSERT_NE(mac.get(), nullptr);
+  MacCtxPtr macCtx{::EVP_MAC_CTX_new(mac.get()), &::EVP_MAC_CTX_free};
+  ASSERT_NE(macCtx.get(), nullptr);
+
+  for (const auto& staticKey : staticKeys) {
+    std::array<unsigned char, 16> keyName{};
+    std::ranges::copy(std::span(reinterpret_cast<const unsigned char*>(staticKey.data()), keyName.size()),
+                      keyName.begin());
+    EXPECT_EQ(ticketStore.processTicket(keyName.data(), iv.data(), static_cast<int>(iv.size()), cipherCtx.get(),
+                                        macCtx.get(), 0),
+              1);
+  }
 }
 
 TEST(TlsTicketKeyStoreTest, ProcessTicketUnknownKeyReturns0) {

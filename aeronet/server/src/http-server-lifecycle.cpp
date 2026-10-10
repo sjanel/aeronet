@@ -35,6 +35,7 @@
 #include "aeronet/timer-fd.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
+#include "tunnel-manager.hpp"  // IWYU pragma: keep (destruction of SingleHttpServer::_tunnels)
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-context.hpp"
@@ -137,6 +138,10 @@ void SingleHttpServer::AsyncHandle::rethrowIfError() {
     std::rethrow_exception(*_error);
   }
 }
+
+// The default globalHeaders ("server: aeronet") never contain the separator that makes ConcatenatedHeaders throw.
+// NOLINTNEXTLINE(bugprone-exception-escape)
+SingleHttpServer::SingleHttpServer() noexcept = default;
 
 SingleHttpServer::SingleHttpServer(HttpServerConfig config, RouterConfig routerConfig)
     : _config(std::move(config)),

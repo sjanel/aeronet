@@ -158,6 +158,14 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   /// Sends an empty DATA frame with END_STREAM to gracefully close the tunnel stream.
   void closeTunnelByUpstreamFd(NativeHandle upstreamFd);
 
+  /// Tell whether the CONNECT request of the stream waits for the resolution of its target host name
+  /// (see ITunnelBridge::TunnelSetup::Status::Pending).
+  [[nodiscard]] bool isTunnelPending(uint32_t streamId) const noexcept;
+
+  /// Complete the CONNECT request of a stream for which isTunnelPending() is true, now that its target host name was
+  /// resolved: answers 200 and starts tunneling with upstreamFd, or answers 502 when it is kInvalidHandle.
+  void onTunnelResolved(uint32_t streamId, NativeHandle upstreamFd);
+
   /// Notify the handler that the async connect for a tunnel stream's upstream fd failed.
   /// Sends RST_STREAM with CONNECT_ERROR on the stream.
   void tunnelConnectFailed(uint32_t streamId);
@@ -278,6 +286,10 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
     StreamRequest request;
     PoolPtr<PendingWork> pending;
     NativeHandle tunnelUpstreamFd{kInvalidHandle};  ///< Valid if this is a CONNECT tunnel stream
+    /// True while the target host name of the CONNECT request is resolved. The DATA received meanwhile is kept in
+    /// request.bodyBuffer, and tunnelPendingEndStream tells whether the client already ended its side.
+    bool tunnelPending{false};
+    bool tunnelPendingEndStream{false};
     /// Per-route handler deadline. Epoch means no per-route deadline active.
     std::chrono::steady_clock::time_point requestDeadline;
   };
@@ -326,6 +338,9 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
 
   /// Handle a CONNECT request: validate target, set up tunnel, send 200 response.
   void handleConnectRequest(uint32_t streamId, HttpRequestView& request);
+
+  // Answer 200 to the CONNECT request of the stream, which tunnels with upstreamFd from now on.
+  void establishTunnel(uint32_t streamId, NativeHandle upstreamFd);
 
   // Creates an HTTP/2 request dispatcher that routes HTTP/2 requests through the unified Router.
   // The dispatcher receives an HttpRequestView (already populated with HTTP/2 fields) and dispatches

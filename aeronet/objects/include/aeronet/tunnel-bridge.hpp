@@ -12,8 +12,8 @@ namespace aeronet {
 /// Pure-virtual interface for CONNECT tunnel integration between the HTTP/2 protocol handler and the server's event
 /// loop / connection manager.
 ///
-/// The server implements a concrete bridge (e.g. H2TunnelBridge inside SingleHttpServer) and hands a non-owning pointer
-/// to the HTTP/2 handler. This breaks the circular dependency: aeronet_http2 depends only on this interface in
+/// The server implements a concrete bridge (TunnelManager::H2Bridge in the server module) and hands a non-owning
+/// pointer to the HTTP/2 handler. This breaks the circular dependency: aeronet_http2 depends only on this interface in
 /// aeronet_objects, while the main server module provides the implementation.
 ///
 /// Thread safety: NOT thread-safe - called on the single-threaded event loop.
@@ -21,9 +21,20 @@ class ITunnelBridge {
  public:
   virtual ~ITunnelBridge() = default;
 
+  /// Outcome of setupTunnel().
+  struct TunnelSetup {
+    enum class Status : uint8_t {
+      Established,  // upstreamFd is the connection to the target (possibly still connecting)
+      Pending,      // the target host name is resolved in the background, see Http2ProtocolHandler::onTunnelResolved()
+      Failed,       // the target could not be reached
+    };
+
+    NativeHandle upstreamFd{kInvalidHandle};
+    Status status{Status::Failed};
+  };
+
   /// Set up a TCP connection to the given target host:port.
-  /// @return The upstream fd on success, kInvalidHandle on failure.
-  [[nodiscard]] virtual NativeHandle setupTunnel(uint32_t streamId, std::string_view host, uint16_t port) = 0;
+  [[nodiscard]] virtual TunnelSetup setupTunnel(uint32_t streamId, std::string_view host, uint16_t port) = 0;
 
   /// Write data to an upstream tunnel fd. The server handles buffering and EPOLLOUT.
   virtual void writeTunnel(NativeHandle upstreamFd, std::span<const std::byte> data) = 0;

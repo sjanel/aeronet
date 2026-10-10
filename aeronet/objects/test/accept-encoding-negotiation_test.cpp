@@ -28,6 +28,11 @@ EncodingSelector MakeSelector(std::initializer_list<Encoding> prefs) {
 constexpr auto kDefaultEncodingDeflateEnabled =
     aeronet::zlibEnabled() ? aeronet::Encoding::deflate : aeronet::Encoding::none;
 
+// First supported encoding in default order once deflate is excluded.
+constexpr auto kPreferredEncodingsAfterDeflate = aeronet::zstdEnabled()     ? aeronet::Encoding::zstd
+                                                 : aeronet::brotliEnabled() ? aeronet::Encoding::br
+                                                                            : aeronet::Encoding::gzip;
+
 #endif
 
 constexpr auto kDefaultEncodingGzipEnabled = aeronet::zlibEnabled() ? aeronet::Encoding::gzip : aeronet::Encoding::none;
@@ -107,11 +112,28 @@ TEST(AcceptEncodingNegotiationTest, WildcardZeroPreventsUnlistedSelection) {
     cfg.preferredFormats.push_back(Encoding::deflate);
   }
   auto sel = EncodingSelector(cfg);
-  // Explicit gzip q=0 -> not acceptable; wildcard q=0 -> no others acceptable -> identity (none)
+  // Explicit gzip q=0 -> not acceptable; wildcard q=0 -> nothing else acceptable, identity included (RFC 9110 §12.5.3)
   {
     auto resultWildcardAllZero = sel.negotiateAcceptEncoding("gzip;q=0, *;q=0");
     EXPECT_EQ(resultWildcardAllZero.encoding, Encoding::none);
-    EXPECT_FALSE(resultWildcardAllZero.reject);
+    EXPECT_TRUE(resultWildcardAllZero.reject);
+  }
+  {
+    auto resultWildcardZero = sel.negotiateAcceptEncoding("*;q=0");
+    EXPECT_EQ(resultWildcardZero.encoding, Encoding::none);
+    EXPECT_TRUE(resultWildcardZero.reject);
+  }
+  // An explicit identity entry takes precedence over the wildcard.
+  {
+    auto resultIdentityAllowed = sel.negotiateAcceptEncoding("*;q=0, identity");
+    EXPECT_EQ(resultIdentityAllowed.encoding, Encoding::none);
+    EXPECT_FALSE(resultIdentityAllowed.reject);
+  }
+  // Codings that are not supported do not exclude identity.
+  {
+    auto resultUnknown = sel.negotiateAcceptEncoding("snappy;q=0");
+    EXPECT_EQ(resultUnknown.encoding, Encoding::none);
+    EXPECT_FALSE(resultUnknown.reject);
   }
 }
 
@@ -458,6 +480,27 @@ TEST(AcceptEncodingNegotiationTest, BrotliViaWildcard) {
   EXPECT_EQ(sel.negotiateAcceptEncoding("*;q=0.5, gzip;q=0.5").encoding, Encoding::br);
 }
 #endif
+
+TEST(AcceptEncodingNegotiationTest, PartialPreferredFormatsRanksUnlistedEncodingsAfterListedOnes) {
+  // Only deflate is configured: the other supported encodings follow it, in default order (gzip before identity).
+  auto sel = MakeSelector({Encoding::deflate});
+  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip, deflate").encoding, Encoding::deflate);
+  EXPECT_EQ(sel.negotiateAcceptEncoding("deflate, gzip").encoding, Encoding::deflate);
+  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip").encoding, Encoding::gzip);
+  EXPECT_EQ(sel.negotiateAcceptEncoding("identity, gzip").encoding, Encoding::gzip);
+  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip, identity").encoding, Encoding::gzip);
+  // The wildcard applies to the unlisted encodings too, ranked after the listed ones.
+  EXPECT_EQ(sel.negotiateAcceptEncoding("*").encoding, Encoding::deflate);
+  EXPECT_EQ(sel.negotiateAcceptEncoding("deflate;q=0, *").encoding, kPreferredEncodingsAfterDeflate);
+  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.5, *;q=0.4").encoding, Encoding::gzip);
+}
+
+TEST(AcceptEncodingNegotiationTest, PreferredIdentityOnlyRanksCompressionAfterIdentity) {
+  auto sel = MakeSelector({Encoding::none});
+  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip, identity").encoding, Encoding::none);
+  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip").encoding, Encoding::gzip);
+  EXPECT_EQ(sel.negotiateAcceptEncoding("deflate, gzip").encoding, Encoding::gzip);
+}
 
 TEST(AcceptEncodingNegotiationTest, QCharFollowedByNonEqualsIsIgnored) {
   auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});

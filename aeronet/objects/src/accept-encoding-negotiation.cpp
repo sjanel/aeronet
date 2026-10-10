@@ -28,7 +28,6 @@
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/encoding.hpp"
-#include "aeronet/fixedcapacityvector.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
@@ -145,34 +144,36 @@ constexpr auto kSupportedEncodings = [] {
 
 }  // namespace
 
-EncodingSelector::EncodingSelector() noexcept { initDefault(); }
-
-void EncodingSelector::initDefault() noexcept {
+EncodingSelector::EncodingSelector() noexcept : _preferenceOrdered(kPreferredEncodingsDefault) {
   std::ranges::iota(_serverPrefIndex, 0);
-  _preferenceOrdered = kPreferredEncodingsDefault;
-  _nbPreferences = kNbSupportedEncodings;
 }
 
-EncodingSelector::EncodingSelector(const CompressionConfig& compressionConfig) noexcept {
-  if (compressionConfig.preferredFormats.empty()) {
-    initDefault();
-  } else {
-    int8_t next = 0;
-    _nbPreferences = 0;
-    // preferredFormats should not contain duplicates
-    assert(std::ranges::all_of(compressionConfig.preferredFormats, [&compressionConfig](Encoding enc) {
-      return std::ranges::count(compressionConfig.preferredFormats, enc) == 1;
-    }));
+EncodingSelector::EncodingSelector(const CompressionConfig& compressionConfig) noexcept : EncodingSelector() {
+  const auto& preferredFormats = compressionConfig.preferredFormats;
+  if (preferredFormats.empty()) {
+    return;
+  }
+  // preferredFormats should not contain duplicates
+  assert(std::ranges::all_of(
+      preferredFormats, [&preferredFormats](Encoding enc) { return std::ranges::count(preferredFormats, enc) == 1; }));
 
-    for (Encoding enc : compressionConfig.preferredFormats) {
-      assert(IsEncodingEnabled(enc));  // config should have been validated
-      auto idx = static_cast<EncodingInt>(enc);
-      _serverPrefIndex[idx] = next;
-      ++next;
-      _preferenceOrdered[_nbPreferences++] = enc;
+  // The configured encodings come first, in their order, followed by the remaining supported encodings in default
+  // order, so that every supported encoding has a defined server preference index.
+  EncodingInt nbPreferences = 0;
+  for (Encoding enc : preferredFormats) {
+    assert(IsEncodingEnabled(enc));  // config should have been validated
+    _preferenceOrdered[nbPreferences++] = enc;
+  }
+  for (EncodingInt pos = 0; pos < kNbSupportedEncodings; ++pos) {
+    const Encoding enc = kPreferredEncodingsDefault[pos];
+    if (!std::ranges::contains(preferredFormats, enc)) {
+      _preferenceOrdered[nbPreferences++] = enc;
     }
   }
-  // Do NOT append remaining encodings: preferredFormats defines the full server-advertised order.
+  assert(nbPreferences == kNbSupportedEncodings);
+  for (EncodingInt pos = 0; pos < kNbSupportedEncodings; ++pos) {
+    _serverPrefIndex[static_cast<EncodingInt>(_preferenceOrdered[pos])] = static_cast<int8_t>(pos);
+  }
 }
 
 EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std::string_view acceptEncoding) const {
@@ -241,7 +242,7 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std
 
   // Apply wildcard to any supported encoding not explicitly mentioned, iterating in server preference order.
   if (sawWildcard) {
-    for (EncodingInt pos = 0; pos < _nbPreferences; ++pos) {
+    for (EncodingInt pos = 0; pos < kNbSupportedEncodings; ++pos) {
       const Encoding enc = _preferenceOrdered[pos];
 
       const auto encPos = std::ranges::find_if(kSupportedEncodings, [enc](const Sup& sup) { return sup.enc == enc; });
@@ -253,14 +254,9 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std
     }
   }
 
-  if (bestQ < 0.0) {
-    // No acceptable compression encodings selected.
-    ret.encoding = Encoding::none;
-    if (identityExplicit) {
-      // Client explicitly forbids identity and offered no acceptable alternative.
-      ret.reject = true;
-    }
-  }
+  // Nothing acceptable, identity included. Identity is acceptable by default, unless excluded by 'identity;q=0' or by
+  // '*;q=0' without 'identity' entry (RFC 9110 §12.5.3): a positive q for either would have selected it above.
+  ret.reject = bestQ < 0.0 && (identityExplicit || sawWildcard);
   ret.encoding = chosen;
   return ret;
 }

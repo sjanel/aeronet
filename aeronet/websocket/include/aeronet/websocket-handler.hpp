@@ -31,14 +31,22 @@ struct WebSocketConfig {
   /// Maximum size of a single frame payload.
   std::size_t maxFrameSize{kDefaultMaxFrameSize};
 
-  /// Close timeout to wait for close response.
+  /// Time to wait for the peer's Close frame after sending one. The connection is then closed.
   std::chrono::milliseconds closeTimeout{std::chrono::milliseconds{5000}};
+
+  /// A connection on which nothing was received for this long is closed. 0 disables the idle timeout.
+  /// It replaces HttpServerConfig::keepAliveTimeout, which does not apply to upgraded connections.
+  std::chrono::milliseconds idleTimeout{std::chrono::seconds{60}};
 
   /// Deflate configuration (optional, for permessage-deflate extension).
   DeflateConfig deflateConfig;
 
   /// Whether this is the server side (affects masking validation).
   bool isServerSide{true};
+
+  /// Send a Ping frame once the connection has been idle for half of idleTimeout, so that a live peer, which answers
+  /// with a Pong, never reaches the idle timeout. Without effect when idleTimeout is 0.
+  bool autoPing{true};
 };
 
 /// Callbacks for WebSocket events.
@@ -187,6 +195,22 @@ class WebSocketHandler final : public IProtocolHandler {
     }
   }
 
+  /// Timeout reported by checkTimeouts().
+  enum class Timeout : uint8_t {
+    None,   // no timeout elapsed
+    Idle,   // nothing was received for idleTimeout
+    Close,  // the peer did not answer our Close frame within closeTimeout
+  };
+
+  /// Earliest time at which checkTimeouts() must run, given the time of the last activity of the connection.
+  /// Returns time_point::max() when no timeout applies (no idle timeout and no close handshake in progress).
+  [[nodiscard]] std::chrono::steady_clock::time_point nextTimeoutCheck(
+      std::chrono::steady_clock::time_point lastActivity) const noexcept;
+
+  /// Check the idle and close timeouts at 'now'. When the connection has been idle for half of idleTimeout, queues a
+  /// Ping frame (autoPing, once per idle period). Returns the elapsed timeout: the connection must then be closed.
+  Timeout checkTimeouts(std::chrono::steady_clock::time_point now, std::chrono::steady_clock::time_point lastActivity);
+
  private:
   /// Close handshake state machine.
   enum class CloseState : uint8_t {
@@ -226,6 +250,7 @@ class WebSocketHandler final : public IProtocolHandler {
   WebSocketCallbacks _callbacks;
   std::unique_ptr<DeflateContext> _deflateContext;          // Compression context (null if not negotiated)
   std::chrono::steady_clock::time_point _closeInitiatedAt;  // Time when close was initiated
+  std::chrono::steady_clock::time_point _idlePingSentAt;    // Time of the last Ping sent by checkTimeouts()
   RawBytes _outputBuffer;                                   // Pending output data
   std::size_t _outputOffset{0};                             // Bytes already retrieved via getPendingOutput
   MessageState _message;                                    // Current message being assembled

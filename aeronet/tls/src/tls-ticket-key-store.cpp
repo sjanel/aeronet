@@ -51,6 +51,11 @@ void TlsTicketKeyStore::loadStaticKeys(std::span<const TLSConfig::SessionTicketK
   std::scoped_lock<std::mutex> lock(_mutex);
   _keys.clear();
   _autoRotate = keys.empty();
+  if (keys.size() > _maxKeys) {
+    log::warn("Ignoring excess {} TLS session ticket keys beyond configured maxKeys={}", keys.size() - _maxKeys,
+              _maxKeys);
+    keys = keys.first(_maxKeys);
+  }
   auto now = std::chrono::steady_clock::now();
   for (const auto& raw : keys) {
     KeyMaterial& mat = _keys.emplace_back();
@@ -58,12 +63,6 @@ void TlsTicketKeyStore::loadStaticKeys(std::span<const TLSConfig::SessionTicketK
     const auto* ptr = reinterpret_cast<const unsigned char*>(raw.data());
     Copy(ptr, matData.size(), matData.data());
     mat.created = now;
-
-    if (_keys.size() == _maxKeys) {
-      log::warn("Ignoring excess {} TLS session ticket keys beyond configured maxKeys={}", _keys.size() - _maxKeys,
-                _maxKeys);
-      break;
-    }
   }
   if (_autoRotate) {
     _keys.emplace_back(GenerateRandomKeyUnlocked());

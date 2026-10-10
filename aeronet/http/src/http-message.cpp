@@ -138,6 +138,11 @@ constexpr HeaderSearchResult HeadersLinearSearch(std::string_view flatHeaders, L
   return {};
 }
 
+// Tells whether 'line', starting at the beginning of a header line, is a line of the header 'key'.
+constexpr bool IsHeaderLineOf(std::string_view line, LowerAsciiKey key) noexcept {
+  return line.starts_with(key) && line.substr(key.size()).starts_with(http::HeaderSep);
+}
+
 // Performs a linear search in reverse for the header 'key' in the headers block defined by flatHeaders.
 // flatHeaders should start at the start of the first header, without any leading CRLF.
 // flatHeaders should end immediately after the last header CRLF.
@@ -703,6 +708,57 @@ void HttpMessage::headerRemoveLineImpl(LowerAsciiKey key) {
   }
 
   eraseHeaderLine(key, first, last);
+}
+
+void HttpMessage::headerRemoveAllLinesImpl(LowerAsciiKey key) {
+  // Same rules as headerRemoveLineImpl for the headers managed with the body.
+  if (key == http::ContentType || key == http::ContentLength) {
+    return;
+  }
+  const std::string_view flatHeaders = headersFlatView();
+  const auto [first, last] = HeadersLinearSearch(flatHeaders, key);
+  if (first == nullptr) {
+    return;
+  }
+
+  if (key == http::ContentEncoding) {
+    if (hasBodyHeaders()) {
+      throw std::logic_error("Cannot remove Content-Encoding header when message has body");
+    }
+    _opts.resetHasContentEncoding();
+  }
+
+  if (_opts.isHttpRequest() && key == http::Host) {
+    throw std::invalid_argument("Cannot remove Host header from HTTP request");
+  }
+
+  // Positions instead of pointers: the guard may relocate the buffer when an embedded payload is extracted.
+  const std::size_t headersEndPos = static_cast<std::size_t>(flatHeaders.data() + flatHeaders.size() - _data.data());
+  // The kept bytes are moved down to writePos. keepPos is the start of the kept bytes not moved yet.
+  std::size_t writePos = static_cast<std::size_t>(first - _data.data()) - key.size() - http::HeaderSep.size();
+  std::size_t keepPos = static_cast<std::size_t>(last - _data.data()) + http::CRLF.size();
+
+  HeadGrowthManager headGrowthManager(*this, 0);
+
+  char* pData = _data.data();
+  for (std::size_t linePos = keepPos; linePos != headersEndPos;) {
+    const char* pLineEnd = SearchCRLF(pData + linePos, pData + headersEndPos);
+    assert(pLineEnd != pData + headersEndPos && pLineEnd[1] == '\n');
+    const std::size_t nextLinePos = static_cast<std::size_t>(pLineEnd - pData) + http::CRLF.size();
+    if (IsHeaderLineOf(std::string_view(pData + linePos, nextLinePos - linePos), key)) {
+      // Move the lines kept since the previous removed line at once.
+      std::memmove(pData + writePos, pData + keepPos, linePos - keepPos);
+      writePos += linePos - keepPos;
+      keepPos = nextLinePos;
+    }
+    linePos = nextLinePos;
+  }
+
+  // The last kept header lines, the end of the head and the inline body (with its trailers), in a single move.
+  const std::size_t removedSize = keepPos - writePos;
+  std::memmove(pData + writePos, pData + keepPos, _data.size() - keepPos);
+  _data.setSize(_data.size() - removedSize);
+  adjustBodyStartNoCheck(static_cast<uint64_t>(-static_cast<int64_t>(removedSize)));
 }
 
 void HttpMessage::headerRemoveValueImpl(LowerAsciiKey key, std::string_view value, std::string_view sep) {

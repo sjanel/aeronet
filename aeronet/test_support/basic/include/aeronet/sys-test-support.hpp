@@ -2,6 +2,7 @@
 
 #ifdef AERONET_POSIX
 #include <dlfcn.h>
+#include <netdb.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/uio.h>
@@ -31,6 +32,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -43,6 +45,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 
@@ -928,12 +931,26 @@ inline ActionQueue<std::pair<int, int>> g_connect_actions;
 
 inline void PushConnectAction(std::pair<int, int> action) { g_connect_actions.push(action); }
 
+// Delay applied to each getaddrinfo call (in milliseconds), simulating a slow DNS resolver.
+inline std::atomic<int> g_getaddrinfo_delay_ms{0};
+
+struct GetAddrInfoDelayGuard {
+  explicit GetAddrInfoDelayGuard(int delayMs) { g_getaddrinfo_delay_ms.store(delayMs, std::memory_order_release); }
+
+  GetAddrInfoDelayGuard(const GetAddrInfoDelayGuard&) = delete;
+  GetAddrInfoDelayGuard(GetAddrInfoDelayGuard&&) noexcept = delete;
+  GetAddrInfoDelayGuard& operator=(const GetAddrInfoDelayGuard&) = delete;
+  GetAddrInfoDelayGuard& operator=(GetAddrInfoDelayGuard&&) noexcept = delete;
+
+  ~GetAddrInfoDelayGuard() { g_getaddrinfo_delay_ms.store(0, std::memory_order_release); }
+};
+
 #ifdef AERONET_POSIX
 using ConnectFn = int (*)(int, const struct sockaddr*, socklen_t);
 
 inline ConnectFn ResolveRealConnect() {
   // Thread-safe initialization: the hooks are called from the server event loops and the test threads.
-  static const ConnectFn fn = aeronet::test::ResolveNext<ConnectFn>("connect");
+  static const ConnectFn fn = ResolveNext<ConnectFn>("connect");
   return fn;
 }
 #endif  // AERONET_POSIX
@@ -1421,6 +1438,34 @@ extern "C" __attribute__((no_sanitize("address"))) int connect(int sockfd, const
   }
   auto real = aeronet::test::ResolveRealConnect();
   return real(sockfd, addr, addrlen);
+}
+
+#ifdef AERONET_LINUX
+// The getaddrinfo interceptor of a sanitizer runtime, if any (null otherwise). ThreadSanitizer's one ignores the memory
+// accesses inside getaddrinfo, that glibc synchronizes with internal locks it cannot see: the override below must call
+// it, as calling the next getaddrinfo (from libc) would bypass it.
+// NOLINTNEXTLINE
+extern "C" __attribute__((weak)) int __interceptor_getaddrinfo(const char* node, const char* service,
+                                                               const struct addrinfo* hints, struct addrinfo** res);
+#endif
+
+// NOLINTNEXTLINE
+extern "C" __attribute__((no_sanitize("address"))) int getaddrinfo(const char* node, const char* service,
+                                                                   const struct addrinfo* hints,
+                                                                   struct addrinfo** res) {
+  const int delayMs = aeronet::test::g_getaddrinfo_delay_ms.load(std::memory_order_acquire);
+  if (delayMs > 0) {
+    std::this_thread::sleep_for(std::chrono::milliseconds{delayMs});
+  }
+  using GetaddrinfoFn = int (*)(const char*, const char*, const struct addrinfo*, struct addrinfo**);
+#ifdef AERONET_LINUX
+  static const GetaddrinfoFn real = __interceptor_getaddrinfo != nullptr
+                                        ? &__interceptor_getaddrinfo
+                                        : aeronet::test::ResolveNext<GetaddrinfoFn>("getaddrinfo");
+#else
+  static const GetaddrinfoFn real = aeronet::test::ResolveNext<GetaddrinfoFn>("getaddrinfo");
+#endif
+  return real(node, service, hints, res);
 }
 
 // NOLINTNEXTLINE

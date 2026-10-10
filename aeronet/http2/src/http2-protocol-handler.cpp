@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
-#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -13,10 +12,10 @@
 #include <ratio>
 #include <span>
 #include <string_view>
-#include <system_error>
 #include <utility>
 
 #include "aeronet/concatenated-headers.hpp"
+#include "aeronet/connect-target.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/file-payload.hpp"
@@ -393,6 +392,13 @@ void Http2ProtocolHandler::onData(uint32_t streamId, std::span<const std::byte> 
   }
 
   StreamState& state = it->second;
+
+  // A CONNECT waiting for its target resolution: keep the data until the tunnel is established.
+  if (state.tunnelPending) {
+    state.request.bodyBuffer.append(reinterpret_cast<const char*>(data.data()), data.size());
+    state.tunnelPendingEndStream = state.tunnelPendingEndStream || endStream;
+    return;
+  }
 
   // Check if this is a CONNECT tunnel stream - forward data to upstream.
   if (state.tunnelUpstreamFd != kInvalidHandle) {
@@ -804,12 +810,29 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
   // For the normal streaming path, Http2WriterTransport does not run response middleware -
   // the handler drives the response directly through HttpResponseWriter.
 
+  bool handlerThrew = false;
   try {
     handler(request, writer);
   } catch (const std::exception& ex) {
+    handlerThrew = true;
     log::error("HTTP/2 streaming handler exception on stream {}: {}", streamId, ex.what());
   } catch (...) {
+    handlerThrew = true;
     log::error("HTTP/2 streaming handler unknown exception on stream {}", streamId);
+  }
+  if (handlerThrew) {
+    onRequestCompleted(request, http::StatusCodeInternalServerError);
+    if (writer.headersPending()) {
+      // Nothing was sent: answer like for any handler throwing.
+      [[maybe_unused]] const ErrorCode err =
+          sendResponse(streamId, request.makeResponse(http::StatusCodeInternalServerError), isHeadMethod);
+      releaseStreamAfterResponse(it);
+      return;
+    }
+    // Part of the response was sent: reset the stream, so that the client knows that it is incomplete.
+    _streams.erase(it);
+    _connection.sendRstStream(streamId, ErrorCode::InternalError);
+    return;
   }
   if (!writer.finished()) {
     writer.end();
@@ -881,12 +904,14 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
   // Handle separately from normal request/response dispatch.
   if (request.method() == http::Method::CONNECT) {
     handleConnectRequest(streamId, request);
+    it = _streams.find(streamId);
     if (it->second.tunnelUpstreamFd != kInvalidHandle) {
       // A successful CONNECT remains active until both sides of the tunnel close.
       it->second.request = {};
-    } else {
+    } else if (!it->second.tunnelPending) {
       releaseStreamAfterResponse(it);
     }
+    // A pending CONNECT keeps its request until onTunnelResolved().
     return;
   }
 
@@ -979,12 +1004,11 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
   } catch (const std::exception& ex) {
     log::error("HTTP/2 dispatcher exception on stream {}: {}", streamId, ex.what());
     respStatusCode = http::StatusCodeInternalServerError;
-    err = sendResponse(streamId, request.makeResponse(respStatusCode, ex.what(), http::ContentTypeTextPlain),
-                       isHeadMethod);
+    err = sendResponse(streamId, request.makeResponse(respStatusCode), isHeadMethod);
   } catch (...) {
     log::error("HTTP/2 unknown exception on stream {}", streamId);
     respStatusCode = http::StatusCodeInternalServerError;
-    err = sendResponse(streamId, request.makeResponse(respStatusCode, "Unknown error"), isHeadMethod);
+    err = sendResponse(streamId, request.makeResponse(respStatusCode), isHeadMethod);
   }
   if (err != ErrorCode::NoError) [[unlikely]] {
     log::error("HTTP/2 failed to send response on stream {}: {}", streamId, ErrorCodeName(err));
@@ -1060,47 +1084,46 @@ void Http2ProtocolHandler::handleConnectRequest(uint32_t streamId, HttpRequestVi
   }
 
   // Per RFC 7540 §8.3, CONNECT uses :authority as the target (host:port).
-  const std::string_view target = request.authority();
-  const auto colonPos = target.rfind(':');
-  if (colonPos == std::string_view::npos || colonPos == 0 || colonPos == target.size() - 1) {
-    log::warn("HTTP/2 CONNECT stream {} malformed target: {}", streamId, target);
-    (void)sendResponse(streamId, request.makeResponse(http::StatusCodeBadRequest, "Malformed CONNECT target"),
-                       isHeadMethod);
-    return;
-  }
-
-  const std::string_view host = target.substr(0, colonPos);
-  const std::string_view portStr = target.substr(colonPos + 1);
-
   // authority-form requires a numeric port (RFC 9110 §9.3.6 / RFC 3986 port = *DIGIT). Reject anything
   // else (non-numeric or > 65535) up front with 400 instead of handing it to the resolver.
-  uint16_t port{};
-  const auto [portEnd, portEc] = std::from_chars(portStr.data(), portStr.data() + portStr.size(), port);
-  if (portEc != std::errc{} || portEnd != portStr.data() + portStr.size() || port == 0) {
-    log::warn("HTTP/2 CONNECT stream {} malformed target: {}", streamId, target);
+  const ConnectTarget target(request.authority());
+  if (target.invalid()) {
+    log::warn("HTTP/2 CONNECT stream {} malformed target: {}", streamId, request.authority());
     (void)sendResponse(streamId, request.makeResponse(http::StatusCodeBadRequest, "Malformed CONNECT target"),
                        isHeadMethod);
     return;
   }
 
   // CONNECT is disabled unless the target is explicitly allowlisted or unrestricted access was requested with "*".
-  if (!_pServerConfig->connectTargetAllowed(host)) {
-    log::info("HTTP/2 CONNECT stream {} target {} not in allowlist", streamId, target);
+  if (!_pServerConfig->connectTargetAllowed(target.host)) {
+    log::info("HTTP/2 CONNECT stream {} target {} not in allowlist", streamId, request.authority());
     (void)sendResponse(streamId, request.makeResponse(http::StatusCodeForbidden, "CONNECT target not allowed"),
                        isHeadMethod);
     return;
   }
 
   // Delegate TCP connection setup to the server (which owns the event loop).
-  const auto upstreamFd = _tunnelBridge->setupTunnel(streamId, host, port);
-  if (upstreamFd == kInvalidHandle) {
-    log::warn("HTTP/2 CONNECT stream {} failed to connect to {}", streamId, target);
-    (void)sendResponse(streamId,
-                       request.makeResponse(http::StatusCodeBadGateway, "Unable to connect to CONNECT target"),
-                       isHeadMethod);
-    return;
+  const auto setup = _tunnelBridge->setupTunnel(streamId, target.host, target.port);
+  switch (setup.status) {
+    case ITunnelBridge::TunnelSetup::Status::Established:
+      establishTunnel(streamId, setup.upstreamFd);
+      log::debug("HTTP/2 CONNECT tunnel established on stream {} → {}", streamId, request.authority());
+      break;
+    case ITunnelBridge::TunnelSetup::Status::Pending:
+      // The server calls onTunnelResolved() once the target host name is resolved.
+      _streams[streamId].tunnelPending = true;
+      break;
+    default:
+      assert(setup.status == ITunnelBridge::TunnelSetup::Status::Failed);
+      log::warn("HTTP/2 CONNECT stream {} failed to connect to {}", streamId, request.authority());
+      (void)sendResponse(streamId,
+                         request.makeResponse(http::StatusCodeBadGateway, "Unable to connect to CONNECT target"),
+                         isHeadMethod);
+      break;
   }
+}
 
+void Http2ProtocolHandler::establishTunnel(uint32_t streamId, NativeHandle upstreamFd) {
   // Send 200 headers WITHOUT END_STREAM - the stream stays open for bidirectional DATA.
   [[maybe_unused]] ErrorCode err =
       _connection.sendHeaders(streamId, http::StatusCodeOK, HeadersView{}, /*endStream=*/false);
@@ -1109,8 +1132,41 @@ void Http2ProtocolHandler::handleConnectRequest(uint32_t streamId, HttpRequestVi
   // Track the tunnel mapping in the unified stream state.
   _streams[streamId].tunnelUpstreamFd = upstreamFd;
   _tunnelUpstreams[upstreamFd] = streamId;
+}
 
-  log::debug("HTTP/2 CONNECT tunnel established on stream {} → {}", streamId, target);
+bool Http2ProtocolHandler::isTunnelPending(uint32_t streamId) const noexcept {
+  const auto it = _streams.find(streamId);
+  return it != _streams.end() && it->second.tunnelPending;
+}
+
+void Http2ProtocolHandler::onTunnelResolved(uint32_t streamId, NativeHandle upstreamFd) {
+  auto it = _streams.find(streamId);
+  assert(it != _streams.end() && it->second.tunnelPending);
+  it->second.tunnelPending = false;
+  if (upstreamFd == kInvalidHandle) {
+    HttpRequestView& request = it->second.request.request;
+    (void)sendResponse(streamId,
+                       request.makeResponse(http::StatusCodeBadGateway, "Unable to connect to CONNECT target"),
+                       /*isHeadMethod=*/false);
+    releaseStreamAfterResponse(_streams.find(streamId));
+    return;
+  }
+
+  establishTunnel(streamId, upstreamFd);
+  log::debug("HTTP/2 CONNECT tunnel established on stream {} → {}", streamId, it->second.request.request.authority());
+
+  // Forward what the client sent while the target was resolved, then drop the request.
+  it = _streams.find(streamId);
+  StreamState& state = it->second;
+  const RawChars earlyData = std::move(state.request.bodyBuffer);
+  const bool clientEnded = state.tunnelPendingEndStream;
+  state.request = {};
+  if (!earlyData.empty()) {
+    _tunnelBridge->writeTunnel(upstreamFd, std::as_bytes(std::span<const char>(earlyData.data(), earlyData.size())));
+  }
+  if (clientEnded) {
+    _tunnelBridge->shutdownTunnelWrite(upstreamFd);
+  }
 }
 
 void Http2ProtocolHandler::closeTunnelByUpstreamFd(NativeHandle upstreamFd) {
@@ -1455,14 +1511,13 @@ void Http2ProtocolHandler::onAsyncTaskCompleted(uint32_t streamId, bool routeMay
     respStatusCode = http::StatusCodeInternalServerError;
     ReleaseAsyncTask(it->second);
     // req is dangling now that the pending task is released, use the restored request instead.
-    err = sendResponse(streamId, it->second.request.request.makeResponse(respStatusCode, ex.what()), isHeadMethod);
+    err = sendResponse(streamId, it->second.request.request.makeResponse(respStatusCode), isHeadMethod);
   } catch (...) {
     log::error("HTTP/2 async handler unknown exception on stream {}", streamId);
     respStatusCode = http::StatusCodeInternalServerError;
     ReleaseAsyncTask(it->second);
     // req is dangling now that the pending task is released, use the restored request instead.
-    err =
-        sendResponse(streamId, it->second.request.request.makeResponse(respStatusCode, "Unknown error"), isHeadMethod);
+    err = sendResponse(streamId, it->second.request.request.makeResponse(respStatusCode), isHeadMethod);
   }
 
   if (err != ErrorCode::NoError) [[unlikely]] {

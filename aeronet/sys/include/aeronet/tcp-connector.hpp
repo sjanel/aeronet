@@ -1,9 +1,13 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <span>
+#include <string_view>
 
 #include "aeronet/connection.hpp"
+
+struct addrinfo;
 
 namespace aeronet {
 
@@ -37,5 +41,23 @@ struct ConnectResult {
 // Note: the host buffer pointed by the given span SHOULD be 1 byte writable at its end,
 // as getaddrinfo expects a null-terminated string.
 ConnectResult ConnectTCP(std::span<char> host, uint16_t port, int family = 0, int connectTimeoutMs = 0);
+
+struct AddrInfoDeleter {
+  void operator()(addrinfo* addresses) const noexcept;
+};
+
+// Addresses returned by getaddrinfo, freed with freeaddrinfo.
+using AddrInfoPtr = std::unique_ptr<addrinfo, AddrInfoDeleter>;
+
+// Resolve host:port to its TCP addresses with getaddrinfo, which blocks until the resolver answers.
+// Returns nullptr on failure, after logging it. Same requirement on 'host' as ConnectTCP().
+[[nodiscard]] AddrInfoPtr ResolveTCP(std::span<char> host, uint16_t port, int family = 0);
+
+// Connect to one of the given resolved addresses, with the same address fallback and connectTimeoutMs semantics as
+// ConnectTCP(host, port, ...).
+[[nodiscard]] ConnectResult ConnectTCP(const addrinfo& addresses, int connectTimeoutMs = 0);
+
+// Tell whether 'host' is a numeric IPv4 or IPv6 address (without brackets), that getaddrinfo resolves without query.
+[[nodiscard]] bool IsNumericHost(std::string_view host) noexcept;
 
 }  // namespace aeronet

@@ -3,6 +3,7 @@
 #ifdef AERONET_WINDOWS
 #include <ws2tcpip.h>
 #else
+#include <arpa/inet.h>
 #include <netdb.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -16,13 +17,13 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
-#include <memory>
 #include <span>
 #include <string_view>
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/decimal-writer.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/ndigits.hpp"
 #include "aeronet/safe-cast.hpp"
@@ -75,7 +76,9 @@ ConnectWait WaitForConnectCompletion(NativeHandle fd, std::chrono::steady_clock:
 
 }  // namespace
 
-ConnectResult ConnectTCP(std::span<char> host, uint16_t port, int family, int connectTimeoutMs) {
+void AddrInfoDeleter::operator()(addrinfo* addresses) const noexcept { ::freeaddrinfo(addresses); }
+
+AddrInfoPtr ResolveTCP(std::span<char> host, uint16_t port, int family) {
 #ifdef AERONET_WINDOWS
   EnsureWinsockInitialized();
 #endif
@@ -90,15 +93,42 @@ ConnectResult ConnectTCP(std::span<char> host, uint16_t port, int family, int co
 
   // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
   const int gai = ::getaddrinfo(TempCStr(host.data(), SafeCast<uint32_t>(host.size())).c_str(), portStr, &hints, &res);
-
-  std::unique_ptr<addrinfo, void (*)(addrinfo*)> resRAII(res, &::freeaddrinfo);
-  ConnectResult connectResult;
-
+  AddrInfoPtr addresses(res);
   if (gai != 0) [[unlikely]] {
-    log::error("ConnectTCP: getaddrinfo('{}', '{}') failed: {}", std::string_view(host), portStr, ::gai_strerror(gai));
+    log::error("ResolveTCP: getaddrinfo('{}', '{}') failed: {}", std::string_view(host), portStr, ::gai_strerror(gai));
+    addresses.reset();
+  }
+  return addresses;
+}
+
+bool IsNumericHost(std::string_view host) noexcept {
+#ifdef AERONET_WINDOWS
+  EnsureWinsockInitialized();
+#endif
+  // Large enough for any textual IPv4 or IPv6 address (INET6_ADDRSTRLEN is 46), null terminator included.
+  char buf[64];
+  // An embedded null would make inet_pton() check only the part before it.
+  if (host.empty() || host.size() >= sizeof(buf) || host.contains('\0')) {
+    return false;
+  }
+  Copy(host, buf);
+  buf[host.size()] = '\0';
+  unsigned char addr[16];
+  return ::inet_pton(AF_INET, buf, addr) == 1 || ::inet_pton(AF_INET6, buf, addr) == 1;
+}
+
+ConnectResult ConnectTCP(std::span<char> host, uint16_t port, int family, int connectTimeoutMs) {
+  const AddrInfoPtr addresses = ResolveTCP(host, port, family);
+  if (!addresses) [[unlikely]] {
+    ConnectResult connectResult;
     connectResult.failure = true;
     return connectResult;
   }
+  return ConnectTCP(*addresses, connectTimeoutMs);
+}
+
+ConnectResult ConnectTCP(const addrinfo& addresses, int connectTimeoutMs) {
+  ConnectResult connectResult;
 
   // When connectTimeoutMs > 0 the caller wants a fully-established socket: each pending connect is driven
   // to completion here so a failed candidate (e.g. localhost's ::1 against an IPv4-only server) falls back
@@ -106,7 +136,7 @@ ConnectResult ConnectTCP(std::span<char> host, uint16_t port, int family, int co
   const bool blockingFallback = connectTimeoutMs > 0;
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(connectTimeoutMs);
 
-  for (addrinfo* rp = res; rp != nullptr; rp = rp->ai_next) {
+  for (const addrinfo* rp = &addresses; rp != nullptr; rp = rp->ai_next) {
 #ifdef AERONET_LINUX
     // NOLINTNEXTLINE(bugprone-signed-bitwise)
     const auto socktype = rp->ai_socktype | SOCK_NONBLOCK | SOCK_CLOEXEC;

@@ -28,7 +28,7 @@ config.withPort(8080)
 | `reusePort` / `withReusePort()` | false | Request `SO_REUSEPORT` for independent listeners. |
 | `tcpNoDelay` / `withTcpNoDelay[Mode]()` | Auto | Nagle policy. Auto is the normal low-latency choice. |
 | `enableKeepAlive` / `withKeepAliveMode()` | true | Allow HTTP/1.1 persistent connections. |
-| `keepAliveTimeout` / `withKeepAliveTimeout()` | 5 s | Idle time after a response before a persistent connection is closed. |
+| `keepAliveTimeout` / `withKeepAliveTimeout()` | 5 s | Idle time after a response before a persistent connection is closed. WebSocket connections have their own [idle timeout](../protocols/websocket.md#idle-connections). |
 | `maxRequestsPerConnection` | 100,000 | Bound requests served on a persistent connection. |
 | `maxCachedConnections` | 10 | Reusable closed `ConnectionState` objects retained to reduce allocations. |
 | `maxAcceptBatchSize` / `withMaxAcceptBatchSize()` | 64 | New accepts handled per event-loop iteration; `0` is unlimited. |
