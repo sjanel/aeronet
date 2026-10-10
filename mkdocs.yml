@@ -62,6 +62,13 @@ hooks:
 
 plugins:
   - search
+  - redirects:
+      redirect_maps:
+        protocols/tls-and-http2.md: protocols/tls.md
+        protocols/client-and-jwt.md: modules/http-client.md
+        guides/middleware-and-responses.md: guides/middleware.md
+        guides/bodies-streaming-and-files.md: guides/streaming-responses.md
+        FEATURES.md: index.md
 
 validation:
   links:
@@ -75,26 +82,40 @@ nav:
       - Your first server: getting-started/first-server.md
       - Installation and build: INSTALL.md
   - Guides:
-      - Routing and requests: guides/routing.md
+      - Routing: guides/routing.md
+      - Requests: guides/requests.md
+      - Responses: guides/responses.md
+      - Streaming responses: guides/streaming-responses.md
+      - Static files: guides/static-files.md
       - Async handlers: guides/async-handlers.md
-      - Middleware and responses: guides/middleware-and-responses.md
-      - Bodies, streaming, and static files: guides/bodies-streaming-and-files.md
+      - Middleware: guides/middleware.md
+      - CORS: guides/cors.md
+      - Compression: guides/compression.md
+      - Servers and lifecycle: guides/server-lifecycle.md
       - Production deployment patterns: guides/production-configuration.md
   - Protocols:
-      - TLS and HTTP/2: protocols/tls-and-http2.md
+      - TLS: protocols/tls.md
+      - HTTP/2: protocols/http2.md
       - WebSocket: protocols/websocket.md
-      - HTTP client and JWT: protocols/client-and-jwt.md
+      - CONNECT tunneling: protocols/connect.md
+  - Modules:
+      - HTTP client: modules/http-client.md
+      - JWT: modules/jwt.md
+      - JSON, YAML, and configuration files: modules/json-and-config-files.md
   - Reference:
       - Build configuration: reference/configuration.md
       - Server configuration: reference/server-configuration.md
       - Client configuration: reference/client-configuration.md
-      - Feature reference: FEATURES.md
+      - HTTP/1.1 conformance: reference/http-conformance.md
   - Operations:
       - Observability and logging: operations/observability.md
+      - Performance and tuning: operations/performance.md
+      - Health probes: operations/health-probes.md
       - Kubernetes: kubernetes-examples.md
       - Benchmarks: BENCHMARKS.md
   - Project:
       - Documentation development: development/documentation.md
+      - Testing: development/testing.md
       - Changelog: CHANGELOG.md
       - Roadmap: ROADMAP.md
 

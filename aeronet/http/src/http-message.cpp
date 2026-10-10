@@ -240,9 +240,9 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
   const bool hadDirectCompression = _opts.isAutomaticDirectCompression();
   // We do NOT use direct compression for captured bodies - they will be compressed at finalization if needed.
-  // We also do not activate direct compression for HEAD responses to avoid extra CPU work (see docs/FEATURES.md).
-  // Note that this behavior is not strictly respecting RFC 9110 in this aspect. This could be configurable in the
-  // future.
+  // We also do not activate direct compression for HEAD responses to avoid extra CPU work (see
+  // docs/guides/compression.md). Note that this behavior is not strictly respecting RFC 9110 in this aspect. This could
+  // be configurable in the future.
   const bool tryCompression = setInlineBody && (!hasContentEncoding() || hadDirectCompression) &&
                               _opts.directCompressionPossible(newBodySize, contentTypeValue);
   const bool addEncodingHeaders = tryCompression && !hasContentEncoding();

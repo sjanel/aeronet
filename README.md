@@ -55,7 +55,7 @@ You can browse the latest rendered benchmark tables directly on GitHub Pages:
 ## Minimal Examples
 
 Spin up a basic HTTP server that responds on `/hello` in just a few lines.
-**All code examples** in the `README` and the `FEATURES.md` files are guaranteed to compile as they are covered by a CI check.
+**All code examples** in the `README` and the documentation pages are guaranteed to compile as they are covered by a CI check.
 
 ### Immediate response
 
@@ -193,44 +193,45 @@ A bird's-eye view of what's implemented, what's still experimental, and where to
 
 For the exhaustive, continually-updated matrix (parsing, transport, bodies, status handling, headers, etc.) and architecture notes, see:
 
-- [HTTP/1.1 Feature Matrix](docs/FEATURES.md#http11-feature-matrix)
-- [Performance / architecture](docs/FEATURES.md#performance--architecture)
+- [HTTP/1.1 conformance](docs/reference/http-conformance.md)
+- [Performance and tuning](docs/operations/performance.md)
 
 ### Detailed Documentation
 
-The landing page above plus the minimal examples are usually enough to evaluate the library. For guided documentation with search and navigation, visit the [aeronet documentation site](https://sjanel.github.io/aeronet/). Everything below is expanded, with examples, in [docs/FEATURES.md](docs/FEATURES.md) - dive in only when you need the specifics.
+The landing page above plus the minimal examples are usually enough to evaluate the library. For guided documentation with search and navigation, visit the [aeronet documentation site](https://sjanel.github.io/aeronet/). Everything below is expanded, with examples, in the [documentation pages](docs/index.md) - dive in only when you need the specifics.
 
 #### Core HTTP semantics
 
-- [Routing patterns & path parameters](docs/FEATURES.md#routing-patterns--path-parameters)
-- [Query String & Parameter Decoding](docs/FEATURES.md#query-string--parameters)
-- [Trailing Slash Policy](docs/FEATURES.md#trailing-slash-policy)
-- [Construction Model (RAII & Ephemeral Ports)](docs/FEATURES.md#construction-model-raii--ephemeral-ports)
-- [HttpServer Lifecycle](docs/FEATURES.md#httpserver-lifecycle)
-- [Reserved & Managed Headers](docs/FEATURES.md#reserved--managed-response-headers)
-- [Request Header Duplicate Handling](docs/FEATURES.md#request-header-duplicate-handling-detailed)
-- [Connection Close Semantics](docs/FEATURES.md#connection-close-semantics)
-- [Streaming Responses (Chunked / Incremental)](docs/FEATURES.md#streaming-responses-chunked--incremental)
-- [Mixed Mode & Dispatch Precedence](docs/FEATURES.md#mixed-mode--dispatch-precedence)
+- [Routing patterns & path parameters](docs/guides/routing.md#path-patterns)
+- [Query String & Parameter Decoding](docs/guides/requests.md#query-parameters)
+- [Trailing Slash Policy](docs/guides/routing.md#trailing-slashes)
+- [Construction Model (RAII & Ephemeral Ports)](docs/guides/server-lifecycle.md#creating-a-server)
+- [HttpServer Lifecycle](docs/guides/server-lifecycle.md)
+- [Reserved & Managed Headers](docs/guides/responses.md#status-and-headers)
+- [Request Header Duplicate Handling](docs/guides/requests.md#header-names)
+- [Connection Close Semantics](docs/guides/server-lifecycle.md#connections-and-keep-alive)
+- [Streaming Responses (Chunked / Incremental)](docs/guides/streaming-responses.md)
+- [Mixed Mode & Dispatch Precedence](docs/guides/routing.md#dispatch-precedence)
 
 #### Middleware & content processing
 
-- [Rate Limiting Middleware](docs/FEATURES.md#rate-limiting-middleware)
-- [CORS Support](docs/FEATURES.md#cors-support)
-- [Compression & Negotiation](docs/FEATURES.md#compression--negotiation)
-- [Inbound Request Decompression](docs/FEATURES.md#inbound-request-decompression-config-details)
-- [Multipart/form-data utilities](docs/FEATURES.md#multipartform-data-utilities-rfc-7578)
-- [Static File Handler & Range Requests](docs/FEATURES.md#static-file-handler-rfc-9110-range-and-conditional-requests)
+- [Rate Limiting Middleware](docs/guides/middleware.md#rate-limiting)
+- [CORS Support](docs/guides/cors.md)
+- [Compression & Negotiation](docs/guides/compression.md)
+- [Inbound Request Decompression](docs/guides/compression.md#request-body-decompression)
+- [Multipart/form-data utilities](docs/guides/requests.md#forms-and-file-uploads)
+- [Static File Handler & Range Requests](docs/guides/static-files.md)
 
 #### Protocols & observability
 
-- [WebSocket](docs/FEATURES.md#websocket-rfc-6455)
-- [HTTP/2](docs/FEATURES.md#http2-rfc-9113)
-- [TLS Features](docs/FEATURES.md#tls-features)
-- [TLS deployment guide](docs/protocols/tls-and-http2.md#tls)
-- [Automatic HTTP → HTTPS redirect](docs/FEATURES.md#automatic-http--https-redirect)
-- [OpenTelemetry Integration](docs/FEATURES.md#opentelemetry-integration)
-- [Logging](docs/FEATURES.md#logging)
+- [WebSocket](docs/protocols/websocket.md)
+- [HTTP/2](docs/protocols/http2.md)
+- [TLS](docs/protocols/tls.md)
+- [Automatic HTTP → HTTPS redirect](docs/protocols/tls.md#http-to-https-redirect)
+- [CONNECT tunneling](docs/protocols/connect.md)
+- [Health probes](docs/operations/health-probes.md)
+- [OpenTelemetry Integration](docs/operations/observability.md#opentelemetry-and-dogstatsd)
+- [Logging](docs/operations/observability.md#logging)
 
 ## Public objects and usage
 
@@ -320,7 +321,7 @@ router.setPath(http::Method::GET, "/api/{{version}}/data", [](const HttpRequestV
 // Matches: /api/{version}/data (literal braces)
 ```
 
-See [docs/FEATURES.md](docs/FEATURES.md#routing-patterns--path-parameters) for complete routing syntax.
+See [Routing](docs/guides/routing.md#path-patterns) for the complete routing syntax.
 
 ### Server objects
 
@@ -348,7 +349,7 @@ Key characteristics:
 
 **aeronet**'s API extensively uses `std::string_view` for zero-copy performance. This is safe because each connection maintains its own buffer, and all `HttpRequestView` data (path, query params, headers, body) consists of `std::string_view` instances pointing into this per-connection buffer. The buffer remains valid for the entire duration of the handler execution, making all request data safe to access without copies.
 
-For detailed information about buffer lifetime guarantees and best practices (especially for coroutines), see [Memory Management & std::string_view Safety](docs/FEATURES.md#memory-management--stdstring_view-safety).
+For detailed information about buffer lifetime guarantees and best practices (especially for coroutines), see [Memory Management & std::string_view Safety](docs/guides/requests.md#lifetime-of-request-data).
 
 ##### Configuration
 
@@ -737,7 +738,7 @@ router.addRequestMiddleware(RateLimitRequestMiddlewareBuilder{
 }.build());
 ```
 
-See [Rate Limiting Middleware](docs/FEATURES.md#rate-limiting-middleware) for group-scoped limiters and the Redis adapter contract (eval callback, key schema, script shape).
+See [Rate Limiting Middleware](docs/guides/middleware.md#rate-limiting) for group-scoped limiters and the Redis adapter contract (eval callback, key schema, script shape).
 
 ### Compression (gzip, deflate, zstd, brotli)
 
@@ -749,9 +750,9 @@ Two compression layers for outbound responses:
 - **Finalization compression** applies at response finalization for bodies not already compressed.
 
 Detailed negotiation rules, thresholds, opt-outs, and tuning have moved:
-See: [Compression & Negotiation](docs/FEATURES.md#compression--negotiation)
+See: [Compression & Negotiation](docs/guides/compression.md)
 
-Per-response manual override: setting any `Content-Encoding` (even `identity`) disables automatic compression for that response. Details & examples: [Manual Content-Encoding Override](docs/FEATURES.md#per-response-manual-content-encoding-automatic-compression-suppression)
+Per-response manual override: setting any `Content-Encoding` (even `identity`) disables automatic compression for that response. Details & examples: [Manual Content-Encoding Override](docs/guides/compression.md#send-your-own-encoding)
 
 ## Protocols & Modules
 
@@ -774,7 +775,7 @@ config.tls.withTlsMinVersion("TLS1.2");
 OCSP stapling is passive: aeronet parses and caches the supplied DER response while building the TLS context, then serves it without network I/O during handshakes. Operators remain responsible for fetching, verifying, and refreshing the response before `nextUpdate`; `postConfigUpdate()` atomically loads a replacement for new connections.
 Inbound client-certificate revocation can use a PEM/DER CRL and/or an application callback. NSS-compatible key logs are restricted to debug builds because they allow captured traffic to be decrypted.
 
-The [complete TLS deployment guide](docs/protocols/tls-and-http2.md#tls) covers mTLS, SNI, OCSP refresh, CRLs, revocation callbacks, session tickets, debug key logging, hot reload, kTLS, and the exact zeroization boundaries.
+The [complete TLS deployment guide](docs/protocols/tls.md) covers mTLS, SNI, OCSP refresh, CRLs, revocation callbacks, session tickets, debug key logging, hot reload, kTLS, and the exact zeroization boundaries.
 
 ### HTTP/2 support
 
@@ -919,13 +920,13 @@ Highlights:
 - Claim validation: `exp` / `nbf` (with `leeway` and an injectable `clock`), `iss` / `aud` / `sub`; `aud` as a string or an array.
 - Keys from a shared secret, a PEM key, or a JWK; `aeronet::Jwks` parses a JWKS document and selects the verifying key by `kid` - pairs naturally with the HTTP client to fetch an issuer's keys.
 - **Security by construction**: the unsecured `alg:none` is always rejected, a key whose family doesn't match the token `alg` is refused (the RS256↔HS256 confusion is structurally impossible), the signature is verified before any claim is parsed, and HMAC comparison is constant-time.
-- Exception-free and opt-in (`-DAERONET_ENABLE_JWT`); see [docs/FEATURES.md](docs/FEATURES.md) for the full reference.
+- Exception-free and opt-in (`-DAERONET_ENABLE_JWT`); see the [JWT guide](docs/modules/jwt.md) for the full reference.
 
 ### OpenTelemetry Support (Experimental)
 
 Optional distributed tracing & metrics integration. Enable with the CMake flag `-DAERONET_ENABLE_OPENTELEMETRY=ON` (pulls in `protobuf` as an additional dependency). Each `SingleHttpServer` owns its own `TelemetryContext` instance - no global singletons or static state, so multiple servers can run independent telemetry configurations without interference, and every telemetry failure is logged via `log::error()` rather than silently swallowed. You may also create your own `TelemetryContext` for custom metrics/traces.
 
-See [OpenTelemetry Integration](docs/FEATURES.md#opentelemetry-integration) for the configuration API, built-in instrumentation, and testing/observability notes.
+See [OpenTelemetry Integration](docs/operations/observability.md#opentelemetry-and-dogstatsd) for the configuration API, built-in instrumentation, and testing/observability notes.
 
 ## Operational Features
 

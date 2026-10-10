@@ -4,6 +4,22 @@ The documentation site is generated with Material for MkDocs. Its source is the 
 
 Keep links to repository source files relative, so they work when the Markdown is read on GitHub or from a local checkout. During an MkDocs build, [scripts/mkdocs_source_links.py](../../scripts/mkdocs_source_links.py) rewrites existing links outside `docs/` to the matching GitHub source URL.
 
+## Where a feature is documented
+
+| Directory | Content |
+| --- | --- |
+| `getting-started/` | First steps: overview, first server. |
+| `guides/` | Server workflows: routing, handlers, middleware, bodies, deployment. |
+| `protocols/` | One page per protocol: TLS, HTTP/2, WebSocket, CONNECT. |
+| `modules/` | One page per optional module: HTTP client, JWT, JSON and configuration files. |
+| `reference/` | Exhaustive lists: build options, configuration fields, HTTP/1.1 conformance. |
+| `operations/` | Running in production: observability, health probes, Kubernetes, benchmarks. |
+| `development/` | Contributing: documentation, testing. |
+
+A feature page explains, in this order when it applies: what the feature is for and how to enable it (CMake option, configuration), a first working example, how it behaves (including limits and error cases), its configuration, performance considerations, limitations, and links to its tests. [Async handlers](../guides/async-handlers.md) is a complete example. Describe the behavior of the code as it is, and verify each claim against the sources and tests rather than against older documentation.
+
+When a page is renamed or moved, add an entry to `redirect_maps` in `mkdocs.yml`, so that published links keep working.
+
 ## Preview locally
 
 Create an isolated Python environment, install the documentation dependency, and start the live-reload server:
@@ -28,7 +44,7 @@ Open the local address reported by MkDocs. Use Ctrl+C to stop the server.
 
 The existing GitHub Pages workflow builds the site and overlays live benchmark dashboards at `/benchmarks/`. It also retains the source Markdown under `/docs/` to avoid breaking existing direct links. Do not add a second Pages deployment workflow: GitHub Pages has one active deployment target, so independent workflows would overwrite each other's published artifact.
 
-When adding C++ code fences, include the page in the Markdown example verifier in `.github/workflows/ci.yml`. The verifier compiles and links documentation snippets against the configured aeronet build.
+CI runs the Markdown example verifier, [scripts/verify-md-code.py](../../scripts/verify-md-code.py), on `README.md` and on every page under `docs/` except `ROADMAP.md`, whose snippets sketch APIs that do not exist yet. It checks internal links, and compiles and links every C and C++ code block against the configured aeronet build, so keep each block a complete, compilable unit: a block without `main()` becomes a function body, and the `aeronet` namespace is in scope.
 
 ## Periodic CMake option combinations
 
