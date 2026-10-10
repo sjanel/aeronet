@@ -71,4 +71,15 @@ class ScopedTempFile {
   std::string _content;
 };
 
+// Writes content to the file at path, creating it or rewriting it in place (same inode). Throws on failure.
+void WriteFile(const std::filesystem::path& path, std::string_view content);
+
+// Replaces the file at path atomically, like certificate rotation tools do: writes content to a sibling temporary file
+// then renames it over path (the file at path then has a new inode). Throws on failure.
+void ReplaceFileAtomically(const std::filesystem::path& path, std::string_view content);
+
+// Points the symbolic link at path to target atomically (creating it if needed), like the Kubernetes secret volume
+// updates (swap of the '..data' link): creates a sibling temporary link then renames it over path. Throws on failure.
+void ReplaceSymlinkAtomically(const std::filesystem::path& path, const std::filesystem::path& target);
+
 }  // namespace aeronet::test

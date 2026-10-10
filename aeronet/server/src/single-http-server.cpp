@@ -1667,21 +1667,23 @@ bool SingleHttpServer::handleExpectHeader(ConnectionIt cnxIt, std::string_view e
 
 namespace {
 
+// The commit and the rollback of a config update rely on these swaps never throwing.
+static_assert(std::is_nothrow_swappable_v<HttpServerConfig>);
+static_assert(std::is_nothrow_swappable_v<AccessLogWriter>);
+
+auto TakePendingUpdates(std::mutex& mutex, auto& vec, std::atomic<bool>& flag) {
+  std::remove_reference_t<decltype(vec)> pendingUpdates;
+  std::scoped_lock lock(mutex);
+  pendingUpdates.swap(vec);
+  flag.store(false, std::memory_order_release);
+  return pendingUpdates;
+}
+
 void ApplyPendingUpdates(std::mutex& mutex, auto& vec, std::atomic<bool>& flag, auto& objToUpdate,
                          std::string_view name) {
-  std::remove_reference_t<decltype(vec)> pendingUpdates;
-  {
-    std::scoped_lock lock(mutex);
-    pendingUpdates.swap(vec);
-    flag.store(false, std::memory_order_release);
-  }
-
-  for (auto& updater : pendingUpdates) {
+  for (auto& updater : TakePendingUpdates(mutex, vec, flag)) {
     try {
       updater(objToUpdate);
-      if constexpr (std::is_same_v<std::remove_reference_t<decltype(objToUpdate)>, HttpServerConfig>) {
-        objToUpdate.validate();
-      }
     } catch (const std::exception& ex) {
       log::error("Exception while applying posted {} update: {}", name, ex.what());
     } catch (...) {
@@ -1692,18 +1694,105 @@ void ApplyPendingUpdates(std::mutex& mutex, auto& vec, std::atomic<bool>& flag, 
 
 }  // namespace
 
+void SingleHttpServer::applyPendingConfigUpdates() {
+#ifdef AERONET_ENABLE_OPENSSL
+  bool tlsContextRebuilt = false;
+#endif
+  for (auto& updater : TakePendingUpdates(_updates.lock, _updates.config, _updates.hasConfig)) {
+    try {
+      // Each update is applied atomically: if the updater, the validation or the construction of the objects built from
+      // the new configuration (TLS context, access log writer) throws, the previous configuration is restored.
+      HttpServerConfig previousConfig(_config);
+      try {
+        updater(_config);
+        _config.validate();
+
+#ifdef AERONET_ENABLE_OPENSSL
+        // Existing connections keep the context they were created from (ConnectionState::tlsContextKeepAlive).
+        std::shared_ptr<TlsContext> newTlsContext;
+        const bool tlsChanged = _config.tls != previousConfig.tls;
+        if (tlsChanged && _config.tls.enabled) {
+          newTlsContext = std::make_shared<TlsContext>(_config.tls, ticketKeyStoreForNewTlsContext(previousConfig.tls));
+        }
+#endif
+        AccessLogWriter newAccessLog;
+        const bool accessLogChanged = _config.accessLog != previousConfig.accessLog;
+        if (accessLogChanged) {
+          newAccessLog = AccessLogWriter(_config.accessLog);
+        }
+
+        // Commit - nothing can throw from here.
+#ifdef AERONET_ENABLE_OPENSSL
+        if (tlsChanged) {
+          _tls.ctxHolder = std::move(newTlsContext);
+          tlsContextRebuilt = true;
+        }
+#endif
+        if (accessLogChanged) {
+          // The previous writer, swapped into newAccessLog, flushes its buffered lines when destroyed.
+          std::swap(_accessLog, newAccessLog);
+        }
+      } catch (...) {
+        // Swap rather than assign: the rejected configuration is then destroyed with previousConfig, which scrubs its
+        // TLS secrets (a move assignment would free their buffers without scrubbing them).
+        std::swap(_config, previousConfig);
+        throw;
+      }
+    } catch (const std::exception& ex) {
+      log::error("Posted config update rejected, previous configuration kept: {}", ex.what());
+    } catch (...) {
+      log::error("Posted config update rejected (unknown exception), previous configuration kept");
+    }
+  }
+
+#ifdef AERONET_ENABLE_OPENSSL
+  // A context built by this batch has just read its files. Otherwise, reload the ones that changed on disk (in-place
+  // certificate rotation, OCSP response or CRL refresh, Kubernetes secret update) even if their paths did not change.
+  if (!tlsContextRebuilt && _tls.ctxHolder) {
+    reloadChangedTlsFiles();
+  }
+#endif
+}
+
+#ifdef AERONET_ENABLE_OPENSSL
+std::shared_ptr<TlsTicketKeyStore> SingleHttpServer::ticketKeyStoreForNewTlsContext(
+    const TLSConfig& currentContextConfig) const {
+  if (_tls.sharedTicketKeyStore) {
+    // MultiHttpServer worker: one store shared by all the workers.
+    return _tls.sharedTicketKeyStore;
+  }
+  // Keep the keys of the current context while the session ticket settings do not change, so that the tickets it issued
+  // still resume after a certificate rotation or another TLS change.
+  if (_tls.ctxHolder && currentContextConfig.sessionTickets == _config.tls.sessionTickets &&
+      std::ranges::equal(currentContextConfig.sessionTicketKeys(), _config.tls.sessionTicketKeys())) {
+    return _tls.ctxHolder->ticketKeyStore();
+  }
+  return {};
+}
+
+void SingleHttpServer::reloadChangedTlsFiles() {
+  // Points into the current context: used before it is replaced.
+  const std::string_view changedFile = _tls.ctxHolder->changedInputFile();
+  if (changedFile.empty()) {
+    return;
+  }
+  try {
+    auto newTlsContext = std::make_shared<TlsContext>(_config.tls, ticketKeyStoreForNewTlsContext(_config.tls));
+    log::info("TLS context reloaded, '{}' changed on disk", changedFile);
+    _tls.ctxHolder = std::move(newTlsContext);
+  } catch (const std::exception& ex) {
+    // Retried at the next config update (the file still differs from the one the current context was built from).
+    log::error("TLS context reload failed after '{}' changed on disk, previous TLS context kept: {}", changedFile,
+               ex.what());
+  }
+}
+#endif
+
 void SingleHttpServer::applyPendingUpdates() {
   bool needsClamp = false;
 
   if (_updates.hasConfig.load(std::memory_order_acquire)) {
-#ifdef AERONET_ENABLE_OPENSSL
-    // Capture TLS config before updates to detect changes
-    const TLSConfig tlsBefore = _config.tls;
-#endif
-
-    AccessLogConfig accessLogConfigBefore = _config.accessLog;
-
-    ApplyPendingUpdates(_updates.lock, _updates.config, _updates.hasConfig, _config, "config");
+    applyPendingConfigUpdates();
 
     // Reinitialize components dependent on config values.
     _compressionState.selector = EncodingSelector(_config.compression);
@@ -1712,21 +1801,6 @@ void SingleHttpServer::applyPendingUpdates() {
     rebuildKeepAliveDeadlines();
     registerBuiltInProbes();
     needsClamp = true;
-
-#ifdef AERONET_ENABLE_OPENSSL
-    // If TLS config changed, rebuild the OpenSSL context.
-    // Note: keep old context alive for existing connections via ConnectionState::tlsContextKeepAlive.
-    if (_config.tls != tlsBefore) {
-      if (_config.tls.enabled) {
-        _tls.ctxHolder = std::make_shared<TlsContext>(_config.tls, _tls.sharedTicketKeyStore);
-      } else {
-        _tls.ctxHolder.reset();
-      }
-    }
-#endif
-    if (_config.accessLog != accessLogConfigBefore) {
-      _accessLog = AccessLogWriter(_config.accessLog);
-    }
   }
   if (_updates.hasRouter.load(std::memory_order_acquire)) {
     ApplyPendingUpdates(_updates.lock, _updates.router, _updates.hasRouter, _router, "router");

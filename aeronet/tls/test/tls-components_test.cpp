@@ -454,6 +454,26 @@ TEST(TlsContextTest, SniRouteCachesItsOwnOcspResponse) {
   EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(stapled), responseDer.size()), responseDer);
 }
 
+// The default OCSP response was allocated in a pool replaced (and freed) when the SNI routes were built.
+TEST(TlsContextTest, DefaultOcspResponseIsKeptWithSniCertificates) {
+  const std::string responseDer = MakeSuccessfulOcspResponseDer();
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile responseFile(tmpDir, responseDer);
+  auto sniCert = CertKeyCache::Get().serverA;
+  TLSConfig cfg = MakeTlsConfig({"http/1.1"}, false);
+  cfg.withTlsOcspStapleFile(responseFile.filePath().string());
+  cfg.withTlsSniCertificateMemory("api.example.com", sniCert.first, sniCert.second);
+  SslTestPair pair(std::move(cfg), {"http/1.1"});
+  ASSERT_EQ(::SSL_set_tlsext_status_type(pair.clientSsl.get(), TLSEXT_STATUSTYPE_ocsp), 1);
+
+  ASSERT_TRUE(PerformHandshake(pair));
+
+  const unsigned char* stapled = nullptr;
+  const long stapledSize = ::SSL_get_tlsext_status_ocsp_resp(pair.clientSsl.get(), static_cast<void*>(&stapled));
+  ASSERT_EQ(stapledSize, static_cast<long>(responseDer.size()));
+  EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(stapled), responseDer.size()), responseDer);
+}
+
 TEST(TlsContextTest, SniWildcardMatchesOneLabelAtADotBoundary) {
   auto makeConfig = [] {
     const auto& certificates = CertKeyCache::Get();
@@ -791,6 +811,193 @@ TEST(TlsContextTest, MissingCertificateFilesThrow) {
   cfg.withKeyFile("/__aeronet_missing_key__.pem");
 
   EXPECT_THROW(TlsContext{cfg}, std::runtime_error);
+}
+
+// A context may be built by a running event loop (configuration reload): its failure must name the faulty file and
+// leave no error in the OpenSSL error queue of the thread, which would corrupt SSL_get_error() for its connections.
+TEST(TlsContextTest, FileLoadFailureNamesTheFileAndLeavesNoOpenSslError) {
+  const auto& certKey = CertKeyCache::Get().serverA;
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile certFile(tmpDir, certKey.first);
+  test::ScopedTempFile keyFile(tmpDir, certKey.second);
+  test::ScopedTempFile otherKeyFile(tmpDir, CertKeyCache::Get().serverB.second);
+  test::ScopedTempFile garbageFile(tmpDir, "not a PEM file");
+
+  const auto expectFailure = [](const TLSConfig& cfg, const std::string& expectedMessagePart) {
+    try {
+      TlsContext ctx(cfg);
+      ADD_FAILURE() << "TlsContext construction should fail";
+    } catch (const std::runtime_error& ex) {
+      EXPECT_TRUE(std::string_view(ex.what()).contains(expectedMessagePart)) << ex.what();
+    }
+    EXPECT_EQ(::ERR_peek_error(), 0U);
+  };
+
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertFile(garbageFile.filePath().string()).withKeyFile(keyFile.filePath().string());
+  expectFailure(cfg, "Failed to load TLS certificate file '" + garbageFile.filePath().string() + "': ");
+
+  cfg.withCertFile(certFile.filePath().string()).withKeyFile(garbageFile.filePath().string());
+  expectFailure(cfg, "Failed to load TLS private key file '" + garbageFile.filePath().string() + "': ");
+
+  // The key of another certificate.
+  cfg.withKeyFile(otherKeyFile.filePath().string());
+  expectFailure(cfg, "Failed to load TLS private key file '" + otherKeyFile.filePath().string() + "': ");
+
+  cfg.withKeyFile("/__aeronet_missing_key__.pem");
+  expectFailure(cfg, "Failed to load TLS private key file '/__aeronet_missing_key__.pem': ");
+
+  // In-memory private key not matching its certificate.
+  TLSConfig memoryCfg;
+  memoryCfg.enabled = true;
+  memoryCfg.withCertPem(certKey.first).withKeyPem(CertKeyCache::Get().serverB.second);
+  expectFailure(memoryCfg, "Failed to use in-memory private key");
+}
+
+TEST(TlsContextTest, ChangedInputFileIsEmptyWithoutInputFile) {
+  TlsContext ctx(MakeTlsConfig({"http/1.1"}, false));
+  EXPECT_TRUE(ctx.changedInputFile().empty());
+}
+
+TEST(TlsContextTest, ChangedInputFileIgnoresFilesShadowedByInMemoryPems) {
+  const auto& certKey = CertKeyCache::Get().localhost;
+  const auto& sniCertKey = CertKeyCache::Get().serverA;
+  test::ScopedTempDir tmpDir;
+  const auto certPath = tmpDir.dirPath() / "cert.pem";
+  test::WriteFile(certPath, certKey.first);
+
+  // In-memory PEM pairs take precedence over the files, which are then not read.
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(certKey.first).withKeyPem(certKey.second);
+  cfg.withCertFile(certPath.string()).withKeyFile(certPath.string());
+  cfg.withTlsSniCertificateMemory("api.example.com", sniCertKey.first, sniCertKey.second);
+  TlsContext ctx(cfg);
+
+  test::WriteFile(certPath, sniCertKey.first);
+  EXPECT_TRUE(ctx.changedInputFile().empty());
+
+  // Only a pair takes precedence: with a PEM certificate but no PEM key, the files are read.
+  const auto keyPath = tmpDir.dirPath() / "key.pem";
+  test::WriteFile(keyPath, sniCertKey.second);
+  TLSConfig certPemOnlyCfg;
+  certPemOnlyCfg.enabled = true;
+  certPemOnlyCfg.withCertPem(certKey.first);
+  certPemOnlyCfg.withCertFile(certPath.string()).withKeyFile(keyPath.string());
+  TlsContext certPemOnlyCtx(certPemOnlyCfg);
+  std::filesystem::last_write_time(keyPath, std::filesystem::last_write_time(keyPath) - std::chrono::hours{1});
+  EXPECT_EQ(certPemOnlyCtx.changedInputFile(), keyPath.string());
+}
+
+TEST(TlsContextTest, ChangedInputFileDetectsFileRewrittenInPlace) {
+  const auto& certKey = CertKeyCache::Get().serverA;
+  // Another certificate of a different size: detected whatever the timestamp granularity of the file system.
+  const auto& otherCertKey = CertKeyCache::Get().localhost;
+  ASSERT_NE(certKey.first.size(), otherCertKey.first.size());
+
+  test::ScopedTempDir tmpDir;
+  const auto certPath = tmpDir.dirPath() / "cert.pem";
+  const auto keyPath = tmpDir.dirPath() / "key.pem";
+  test::WriteFile(certPath, certKey.first);
+  test::WriteFile(keyPath, certKey.second);
+
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertFile(certPath.string()).withKeyFile(keyPath.string());
+  TlsContext ctx(cfg);
+  EXPECT_TRUE(ctx.changedInputFile().empty());
+
+  test::WriteFile(certPath, otherCertKey.first);
+  EXPECT_EQ(ctx.changedInputFile(), certPath.string());
+}
+
+TEST(TlsContextTest, ChangedInputFileDetectsAtomicReplacementWithSameContent) {
+  const auto& certKey = CertKeyCache::Get().serverA;
+  test::ScopedTempDir tmpDir;
+  const auto certPath = tmpDir.dirPath() / "cert.pem";
+  const auto keyPath = tmpDir.dirPath() / "key.pem";
+  test::WriteFile(certPath, certKey.first);
+  test::WriteFile(keyPath, certKey.second);
+
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertFile(certPath.string()).withKeyFile(keyPath.string());
+  TlsContext ctx(cfg);
+
+  // Same content and size, but a new file (inode).
+  test::ReplaceFileAtomically(keyPath, certKey.second);
+  EXPECT_EQ(ctx.changedInputFile(), keyPath.string());
+}
+
+TEST(TlsContextTest, ChangedInputFileFollowsSymlinkSwap) {
+  const auto& certKey = CertKeyCache::Get().serverA;
+  test::ScopedTempDir tmpDir;
+  for (const char* version : {"v1", "v2"}) {
+    std::filesystem::create_directory(tmpDir.dirPath() / version);
+    test::WriteFile(tmpDir.dirPath() / version / "cert.pem", certKey.first);
+    test::WriteFile(tmpDir.dirPath() / version / "key.pem", certKey.second);
+  }
+  // Same layout as a Kubernetes secret volume: the files are read through a link to the current version.
+  const auto currentLink = tmpDir.dirPath() / "current";
+  test::ReplaceSymlinkAtomically(currentLink, "v1");
+
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertFile((currentLink / "cert.pem").string()).withKeyFile((currentLink / "key.pem").string());
+  TlsContext ctx(cfg);
+  EXPECT_TRUE(ctx.changedInputFile().empty());
+
+  test::ReplaceSymlinkAtomically(currentLink, "v2");
+  EXPECT_EQ(ctx.changedInputFile(), (currentLink / "cert.pem").string());
+}
+
+TEST(TlsContextTest, ChangedInputFileDetectsRemovedFile) {
+  test::ScopedTempDir tmpDir;
+  const auto ocspPath = tmpDir.dirPath() / "ocsp.der";
+  test::WriteFile(ocspPath, MakeSuccessfulOcspResponseDer());
+  TLSConfig cfg = MakeTlsConfig({}, false);
+  cfg.withTlsOcspStapleFile(ocspPath.string());
+  TlsContext ctx(cfg);
+  EXPECT_TRUE(ctx.changedInputFile().empty());
+
+  std::filesystem::remove(ocspPath);
+  EXPECT_EQ(ctx.changedInputFile(), ocspPath.string());
+}
+
+TEST(TlsContextTest, ChangedInputFileCoversEveryFileInput) {
+  const auto& certificates = CertKeyCache::Get();
+  test::ScopedTempDir tmpDir;
+  const auto filePath = [&tmpDir](std::string_view name, std::string_view content) {
+    auto path = tmpDir.dirPath() / name;
+    test::WriteFile(path, content);
+    return path;
+  };
+  const std::filesystem::path inputFiles[] = {
+      filePath("cert.pem", certificates.wildcard.first),
+      filePath("key.pem", certificates.wildcard.second),
+      filePath("ocsp.der", MakeSuccessfulOcspResponseDer()),
+      filePath("crl.pem", MakeCrlPem(certificates.client, false)),
+      filePath("sni-cert.pem", certificates.serverA.first),
+      filePath("sni-key.pem", certificates.serverA.second),
+      filePath("sni-ocsp.der", MakeSuccessfulOcspResponseDer()),
+  };
+
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.requestClientCert = true;
+  cfg.withCertFile(inputFiles[0].string()).withKeyFile(inputFiles[1].string());
+  cfg.withTlsOcspStapleFile(inputFiles[2].string());
+  cfg.withTlsTrustedClientCert(certificates.client.first).withTlsCrlFile(inputFiles[3].string());
+  cfg.withTlsSniCertificateFiles("api.example.com", inputFiles[4].string(), inputFiles[5].string())
+      .withTlsSniOcspStapleFile("api.example.com", inputFiles[6].string());
+
+  for (const auto& path : inputFiles) {
+    TlsContext ctx(cfg);
+    EXPECT_TRUE(ctx.changedInputFile().empty());
+    std::filesystem::last_write_time(path, std::filesystem::last_write_time(path) - std::chrono::hours{1});
+    EXPECT_EQ(ctx.changedInputFile(), path.string());
+  }
 }
 
 namespace {

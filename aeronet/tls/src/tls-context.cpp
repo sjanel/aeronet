@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <format>
 #include <fstream>
 #include <ios>
 #include <memory>
@@ -33,6 +34,9 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#else
+#include <filesystem>
+#include <system_error>
 #endif
 
 #include "aeronet/log-noexcept.hpp"
@@ -99,6 +103,14 @@ bool MatchesSniPattern(std::string_view pattern, bool wildcard, std::string_view
          CaseInsensitiveEqual(serverName.substr(prefixSize), pattern);
 }
 
+// Throws a std::runtime_error naming the TLS input file that OpenSSL failed to load and the reason it reported (the
+// first queued error, the root cause).
+[[noreturn]] void ThrowFileLoadError(std::string_view what, const char* path) {
+  char reason[256];
+  ::ERR_error_string_n(::ERR_peek_error(), reason, sizeof(reason));
+  throw std::runtime_error(std::format("Failed to load TLS {} file '{}': {}", what, path, reason));
+}
+
 void LoadCertificateAndKey(SSL_CTX* ctx, std::string_view certPem, std::string_view keyPem, const char* certFilePath,
                            const char* keyFilePath) {
   if (!certPem.empty() && !keyPem.empty()) {
@@ -118,10 +130,10 @@ void LoadCertificateAndKey(SSL_CTX* ctx, std::string_view certPem, std::string_v
       throw std::runtime_error("Certificate or key file path missing");
     }
     if (::SSL_CTX_use_certificate_file(ctx, certFilePath, SSL_FILETYPE_PEM) != 1) {
-      throw std::runtime_error("Failed to load certificate");
+      ThrowFileLoadError("certificate", certFilePath);
     }
     if (::SSL_CTX_use_PrivateKey_file(ctx, keyFilePath, SSL_FILETYPE_PEM) != 1) {
-      throw std::runtime_error("Failed to load private key");
+      ThrowFileLoadError("private key", keyFilePath);
     }
   }
 
@@ -395,13 +407,19 @@ TlsContext::~TlsContext() {
   _sniRoutes.nbRoutes = 0;
 }
 
-TlsContext::TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> ticketKeyStore)
+// The function try block clears the OpenSSL error queue of this thread on failure (the exception is rethrown at the end
+// of the handler): a context may be built by a running event loop (configuration reload), and an error left in the
+// queue would make SSL_get_error() misreport the next I/O operation of its connections.
+TlsContext::TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> ticketKeyStore) try
     : _revocationData{cfg.revocationCallback, cfg.revocationUserContext},
       _ticketKeyStore(std::move(ticketKeyStore)),
       _ctx(::SSL_CTX_new(TLS_server_method())) {
   if (!_ctx) {
     throw std::bad_alloc();
   }
+
+  // Before reading any of them, so that a file changed during the build is seen as changed by changedInputFile().
+  recordInputFiles(cfg);
 
   auto* ctx = reinterpret_cast<SSL_CTX*>(_ctx.get());
   ConfigureContextOptions(ctx, cfg);
@@ -451,7 +469,9 @@ TlsContext::TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> 
 
   const auto& sniCerts = cfg.sniCertificates();
   if (!sniCerts.empty()) {
-    _sniRoutes = SniRoutes{std::make_unique<SniRoute[]>(sniCerts.size()), sniCerts.size(), ObjectArrayPool<char>{}};
+    // Keep _sniRoutes.charStorage: it already holds the default OCSP response and the input file paths.
+    _sniRoutes.routes = std::make_unique<SniRoute[]>(sniCerts.size());
+    _sniRoutes.nbRoutes = sniCerts.size();
     SniRoute* pRoute = _sniRoutes.routes.get();
     for (const auto& entry : sniCerts) {
       CtxPtr routeCtx{reinterpret_cast<ssl_ctx_st*>(::SSL_CTX_new(::TLS_server_method()))};
@@ -505,6 +525,82 @@ TlsContext::TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> 
   log::debug("SSL_CTX options:");
   log::debug(" - kTLS:        {}", ktlsAllowed ? "enabled" : "disabled");
   log::debug(" - compression: {}", compressionAllowed ? "enabled" : "disabled");
+} catch (...) {
+  ::ERR_clear_error();
+}
+
+TlsContext::FileStamp TlsContext::StampFile(const char* path) noexcept {
+  FileStamp stamp;
+#ifdef AERONET_POSIX
+  struct stat st{};
+  if (::stat(path, &st) == 0) {
+    // POSIX names the timespecs `st_mtim` / `st_ctim`; Apple names them `st_mtimespec` / `st_ctimespec`.
+#ifdef AERONET_MACOS
+    const auto& mtimespec = st.st_mtimespec;
+    const auto& ctimespec = st.st_ctimespec;
+#else
+    const auto& mtimespec = st.st_mtim;
+    const auto& ctimespec = st.st_ctim;
+#endif
+    static constexpr int64_t kNanosPerSecond = 1000000000;
+    stamp.device = static_cast<uint64_t>(st.st_dev);
+    stamp.inode = static_cast<uint64_t>(st.st_ino);
+    stamp.size = static_cast<uint64_t>(st.st_size);
+    stamp.mtimeNs =
+        (static_cast<int64_t>(mtimespec.tv_sec) * kNanosPerSecond) + static_cast<int64_t>(mtimespec.tv_nsec);
+    stamp.ctimeNs =
+        (static_cast<int64_t>(ctimespec.tv_sec) * kNanosPerSecond) + static_cast<int64_t>(ctimespec.tv_nsec);
+  }
+#else
+  // No inode nor status change time here: a replaced or rewritten file is detected by its size or modification time.
+  std::error_code ec;
+  const std::filesystem::path fsPath(path);
+  const auto size = std::filesystem::file_size(fsPath, ec);
+  if (!ec) {
+    const auto mtime = std::filesystem::last_write_time(fsPath, ec);
+    if (!ec) {
+      stamp.size = static_cast<uint64_t>(size);
+      stamp.mtimeNs = static_cast<int64_t>(mtime.time_since_epoch().count());  // file clock ticks, compared only
+    }
+  }
+#endif
+  return stamp;
+}
+
+void TlsContext::recordInputFiles(const TLSConfig& cfg) {
+  // Same conditions as the loads of the constructor: an in-memory PEM pair takes precedence over files.
+  const auto forEachInputFile = [&cfg](auto&& callback) {
+    if (cfg.certPem().empty() || cfg.keyPem().empty()) {
+      callback(cfg.certFile());
+      callback(cfg.keyFile());
+    }
+    callback(cfg.ocspResponseFile());
+    callback(cfg.crlFile());
+    for (const auto& entry : cfg.sniCertificates()) {
+      if (entry.certPem().empty()) {
+        callback(entry.certFile());
+        callback(entry.keyFile());
+      }
+      callback(entry.ocspResponseFile());
+    }
+  };
+
+  uint32_t nbInputFiles = 0;
+  forEachInputFile([&nbInputFiles](std::string_view path) { nbInputFiles += static_cast<uint32_t>(!path.empty()); });
+  _inputFiles.reserve(nbInputFiles);
+  forEachInputFile([this](std::string_view path) {
+    if (!path.empty()) {
+      char* pPath = _sniRoutes.charStorage.allocateAndDefaultConstruct(path.size() + 1U);
+      *Append(path, pPath) = '\0';
+      _inputFiles.emplace_back(pPath, StampFile(pPath));
+    }
+  });
+}
+
+std::string_view TlsContext::changedInputFile() const {
+  const auto it = std::ranges::find_if(
+      _inputFiles, [](const InputFile& inputFile) { return StampFile(inputFile.path) != inputFile.stamp; });
+  return it == _inputFiles.end() ? std::string_view{} : std::string_view(it->path);
 }
 
 int TlsContext::StapleOcspResponse(SSL* ssl, void* arg) {
