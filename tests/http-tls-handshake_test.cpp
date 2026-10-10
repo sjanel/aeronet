@@ -1,9 +1,11 @@
 #include <gtest/gtest.h>
+#include <openssl/ssl.h>
 
 #include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -548,6 +550,198 @@ TEST(HttpTlsHandshakeTest, HotCertReloadSwapsCertificateForNewConnections) {
     EXPECT_TRUE(after.handshakeOk());
     EXPECT_EQ(after.peerCommonName(), "client");
   }
+}
+
+namespace {
+
+// Common name of the certificate presented to a new connection, empty if the handshake fails.
+std::string NewConnectionCommonName(uint16_t port) {
+  test::TlsClient client(port);
+  return client.handshakeOk() ? client.peerCommonName() : std::string{};
+}
+
+// Session of a new connection, after a request so that the client processed the TLS 1.3 NewSessionTicket messages.
+// Returns a copy: OpenSSL marks the session of a connection freed without a TLS shutdown as not resumable.
+test::TlsClient::SessionUniquePtr NewSession(uint16_t port) {
+  test::TlsClient client(port);
+  if (!client.handshakeOk() || !client.get("/", {}).starts_with("HTTP/1.1 200")) {
+    return {nullptr, ::SSL_SESSION_free};
+  }
+  return {::SSL_SESSION_dup(client.get1Session().get()), ::SSL_SESSION_free};
+}
+
+// Whether a new connection offering the given session is resumed by the server.
+bool NewConnectionResumes(uint16_t port, SSL_SESSION* session) {
+  test::TlsClient::Options opts;
+  opts.reuseSession = session;
+  test::TlsClient client(port, std::move(opts));
+  return client.handshakeOk() && ::SSL_session_reused(client.sslHandle()) == 1;
+}
+
+// Certificate and key files rotated at the same paths, as certbot or cert-manager do.
+struct RotatedTlsFiles {
+  explicit RotatedTlsFiles(const std::pair<std::string, std::string>& certKey) { rewriteInPlace(certKey); }
+
+  void rewriteInPlace(const std::pair<std::string, std::string>& certKey) const {
+    test::WriteFile(certPath, certKey.first);
+    test::WriteFile(keyPath, certKey.second);
+  }
+
+  void replaceAtomically(const std::pair<std::string, std::string>& certKey) const {
+    test::ReplaceFileAtomically(certPath, certKey.first);
+    test::ReplaceFileAtomically(keyPath, certKey.second);
+  }
+
+  [[nodiscard]] HttpServerConfig serverConfig() const {
+    HttpServerConfig cfg;
+    cfg.withTlsCertKey(certPath.string(), keyPath.string());
+    return cfg;
+  }
+
+  test::ScopedTempDir dir;
+  std::filesystem::path certPath{dir.dirPath() / "fullchain.pem"};
+  std::filesystem::path keyPath{dir.dirPath() / "privkey.pem"};
+};
+
+}  // namespace
+
+TEST(HttpTlsHotReload, FilesRewrittenInPlaceAreReloadedByAnEmptyUpdate) {
+  // "localhost" has a longer common name than "server": the rewritten certificate file changes size.
+  RotatedTlsFiles files(CertKeyCache::Get().server);
+  test::TestServer ts(files.serverConfig());
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
+
+  test::TlsClient existing(ts.port());
+  ASSERT_TRUE(existing.handshakeOk());
+  EXPECT_EQ(existing.peerCommonName(), "server");
+
+  files.rewriteInPlace(CertKeyCache::Get().localhost);
+  // Files are only checked when a config update is applied.
+  EXPECT_EQ(NewConnectionCommonName(ts.port()), "server");
+
+  ts.postConfigUpdate([](HttpServerConfig&) {});
+  EXPECT_EQ(NewConnectionCommonName(ts.port()), "localhost");
+  EXPECT_EQ(ts.server.config().tls.certFile(), files.certPath.string());
+
+  // Connections established before the reload keep their TLS session.
+  EXPECT_TRUE(existing.get("/existing", {}).starts_with("HTTP/1.1 200"));
+}
+
+TEST(HttpTlsHotReload, AtomicallyReplacedFilesAreReloadedByAnUnrelatedUpdate) {
+  RotatedTlsFiles files(CertKeyCache::Get().server);
+  test::TestServer ts(files.serverConfig());
+  EXPECT_EQ(NewConnectionCommonName(ts.port()), "server");
+
+  files.replaceAtomically(CertKeyCache::Get().client);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxBodyBytes(cfg.maxBodyBytes + 1); });
+  EXPECT_EQ(NewConnectionCommonName(ts.port()), "client");
+}
+
+#ifdef AERONET_POSIX
+TEST(HttpTlsHotReload, KubernetesSecretVolumeUpdateIsReloaded) {
+  // Layout of a Kubernetes secret volume: tls.crt -> ..data/tls.crt, ..data -> ..<timestamp>, the kubelet publishing
+  // a new version by swapping the ..data link.
+  test::ScopedTempDir dir;
+  const auto& root = dir.dirPath();
+  const auto writeVersion = [&root](const char* version, const std::pair<std::string, std::string>& certKey) {
+    std::filesystem::create_directory(root / version);
+    test::WriteFile(root / version / "tls.crt", certKey.first);
+    test::WriteFile(root / version / "tls.key", certKey.second);
+  };
+  writeVersion("..2026_v1", CertKeyCache::Get().server);
+  writeVersion("..2026_v2", CertKeyCache::Get().client);
+  test::ReplaceSymlinkAtomically(root / "..data", "..2026_v1");
+  std::filesystem::create_symlink("..data/tls.crt", root / "tls.crt");
+  std::filesystem::create_symlink("..data/tls.key", root / "tls.key");
+
+  HttpServerConfig cfg;
+  cfg.withTlsCertKey((root / "tls.crt").string(), (root / "tls.key").string());
+  test::TestServer ts(std::move(cfg));
+  EXPECT_EQ(NewConnectionCommonName(ts.port()), "server");
+
+  test::ReplaceSymlinkAtomically(root / "..data", "..2026_v2");
+  ts.postConfigUpdate([](HttpServerConfig&) {});
+  EXPECT_EQ(NewConnectionCommonName(ts.port()), "client");
+}
+#endif
+
+TEST(HttpTlsHotReload, InvalidCertificateUpdateKeepsPreviousCertificateAndConfig) {
+  RotatedTlsFiles files(CertKeyCache::Get().server);
+  test::ScopedTempFile invalidCertFile(files.dir, "not a certificate");
+  test::TestServer ts(files.serverConfig());
+  const auto previousMaxBodyBytes = ts.server.config().maxBodyBytes;
+
+  // New path to an invalid certificate: the whole update is rejected.
+  ts.postConfigUpdate([&invalidCertFile](HttpServerConfig& cfg) {
+    cfg.withMaxBodyBytes(cfg.maxBodyBytes + 1);
+    cfg.tls.withCertFile(invalidCertFile.filePath().string());
+  });
+  EXPECT_TRUE(ts.server.isRunning());
+  EXPECT_EQ(ts.server.config().tls.certFile(), files.certPath.string());
+  EXPECT_EQ(ts.server.config().maxBodyBytes, previousMaxBodyBytes);
+  EXPECT_EQ(NewConnectionCommonName(ts.port()), "server");
+
+  // Certificate file rewritten in place with an invalid content: the previous TLS context is kept.
+  test::WriteFile(files.certPath, "not a certificate either");
+  ts.postConfigUpdate([](HttpServerConfig&) {});
+  EXPECT_TRUE(ts.server.isRunning());
+  EXPECT_EQ(NewConnectionCommonName(ts.port()), "server");
+
+  // Certificate not matching the private key: rejected as well.
+  test::WriteFile(files.certPath, CertKeyCache::Get().localhost.first);
+  ts.postConfigUpdate([](HttpServerConfig&) {});
+  EXPECT_EQ(NewConnectionCommonName(ts.port()), "server");
+
+  // Once the files are fixed, the next update reloads them.
+  files.rewriteInPlace(CertKeyCache::Get().localhost);
+  ts.postConfigUpdate([](HttpServerConfig&) {});
+  EXPECT_EQ(NewConnectionCommonName(ts.port()), "localhost");
+}
+
+TEST(HttpTlsHotReload, SessionTicketsIssuedBeforeAReloadStillResume) {
+  RotatedTlsFiles files(CertKeyCache::Get().server);
+  HttpServerConfig cfg = files.serverConfig();
+  cfg.tls.withTlsSessionTickets(true);
+  test::TestServer ts(std::move(cfg));
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
+
+  // A TLS 1.3 session is resumed at most once: take a new one before each check.
+  auto session = NewSession(ts.port());
+  ASSERT_NE(session.get(), nullptr);
+  EXPECT_TRUE(NewConnectionResumes(ts.port(), session.get()));
+
+  // Certificate rotated in place: the new context keeps the ticket keys of the previous one.
+  session = NewSession(ts.port());
+  files.rewriteInPlace(CertKeyCache::Get().localhost);
+  ts.postConfigUpdate([](HttpServerConfig&) {});
+  EXPECT_EQ(NewConnectionCommonName(ts.port()), "localhost");
+  EXPECT_TRUE(NewConnectionResumes(ts.port(), session.get()));
+
+  // Another TLS setting changed: the ticket keys are kept too.
+  session = NewSession(ts.port());
+  ts.postConfigUpdate([](HttpServerConfig& config) { config.withTlsHandshakeTimeout(5s); });
+  EXPECT_TRUE(NewConnectionResumes(ts.port(), session.get()));
+
+  // Session ticket settings changed: new keys, the tickets issued before are no longer accepted.
+  session = NewSession(ts.port());
+  ts.postConfigUpdate([](HttpServerConfig& config) { config.tls.withTlsSessionTicketMaxKeys(3); });
+  EXPECT_FALSE(NewConnectionResumes(ts.port(), session.get()));
+}
+
+TEST(HttpTlsHotReload, InvalidTlsConfigUpdateIsRejected) {
+  auto [certPem, keyPem] = CertKeyCache::Get().server;
+  HttpServerConfig serverCfg;
+  serverCfg.withTlsCertKeyMemory(certPem, keyPem);
+  test::TestServer ts(std::move(serverCfg));
+
+  // Rejected by validation: requiring client certificates needs a trust store.
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withTlsRequireClientCert(true); });
+  EXPECT_FALSE(ts.server.config().tls.requireClientCert);
+  // Rejected by the TLS context: the private key does not match the certificate.
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.tls.withKeyPem(CertKeyCache::Get().client.second); });
+  EXPECT_EQ(ts.server.config().tls.keyPem(), keyPem);
+
+  EXPECT_EQ(NewConnectionCommonName(ts.port()), "server");
 }
 
 TEST(HttpTlsHandshakeTest, TrustStoreUpdateEnablesMutualTlsForNewConnections) {
