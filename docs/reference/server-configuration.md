@@ -57,7 +57,7 @@ config.withPort(8080)
 
 ## HTTPS redirects and CONNECT
 
-`withHttpsRedirect(port, status)` makes a plaintext listener redirect every request to the equivalent `https://` URL. `port = 0` disables it; 443 is omitted from the generated URL. Allowed statuses are 301, 302, 307, and 308. This is deliberately incompatible with TLS on the same listener.
+`withHttpsRedirect(port, status)` makes a plaintext listener redirect every request to the equivalent `https://` URL. `port = 0` disables it; 443 is omitted from the generated URL. Allowed statuses are 301, 302, 307, and 308. This is deliberately incompatible with TLS on the same listener. See [HTTP to HTTPS redirect](../protocols/tls.md#http-to-https-redirect).
 
 ```cpp
 aeronet::HttpServerConfig redirect;
@@ -67,7 +67,7 @@ aeronet::HttpServerConfig https;
 https.withPort(443).withTlsCertKey("/run/tls/tls.crt", "/run/tls/tls.key");
 ```
 
-HTTP CONNECT tunnelling is fail-closed: its allowlist is empty by default. Set exact hostnames/IP strings with `withConnectAllowlist(first, last)`. The special single entry `"*"` grants access to all hosts and ports and should be reserved for a deliberately access-controlled proxy.
+HTTP CONNECT tunnelling is fail-closed: its allowlist is empty by default. Set exact hostnames/IP strings with `withConnectAllowlist(first, last)`. The special single entry `"*"` grants access to all hosts and ports and should be reserved for a deliberately access-controlled proxy. See [CONNECT tunneling](../protocols/connect.md).
 
 ## TLS configuration
 
@@ -98,11 +98,11 @@ TLS requires `AERONET_ENABLE_OPENSSL=ON`. The convenience server methods enable 
 | `withTlsRevocationCallback()` | none | Apply an application revocation decision after normal verification for each inbound client certificate. |
 | `withTlsKeyLogFile()` | none | Append NSS-compatible traffic secrets in debug builds only. Release builds reject this setting. |
 
-CRL and callback settings require `requestClientCert` or `requireClientCert`. OCSP inputs are passive operator-managed caches: refresh them with `postConfigUpdate()` before expiry. See [TLS and HTTP/2](../protocols/tls-and-http2.md) for the full lifecycle and security model and [production patterns](../guides/production-configuration.md) for a hardened listener profile.
+CRL and callback settings require `requestClientCert` or `requireClientCert`. OCSP inputs are passive operator-managed caches: refresh them before expiry by replacing the file and posting a config update with `postConfigUpdate()`, which reloads the TLS files changed on disk even at an unchanged path. See [TLS](../protocols/tls.md) for the full lifecycle and security model and [production patterns](../guides/production-configuration.md) for a hardened listener profile.
 
 ## HTTP/2 configuration
 
-HTTP/2 requires `AERONET_ENABLE_HTTP2=ON`; `Http2Config::enable` defaults to true. TLS uses ALPN, while cleartext accepts prior-knowledge h2c when `enableH2c` is set. `Upgrade: h2c` requests are always answered over HTTP/1.1 (RFC 9113 §3.1 deprecated that mechanism).
+HTTP/2 requires `AERONET_ENABLE_HTTP2=ON`; `Http2Config::enable` defaults to true. TLS uses ALPN, while cleartext accepts prior-knowledge h2c when `enableH2c` is set. `Upgrade: h2c` requests are always answered over HTTP/1.1 (RFC 9113 §3.1 deprecated that mechanism). See [HTTP/2](../protocols/http2.md) for the protocol behavior and tuning guidance.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
@@ -121,23 +121,24 @@ HTTP/2 requires `AERONET_ENABLE_HTTP2=ON`; `Http2Config::enable` defaults to tru
 | `settingsTimeout` | 5 s | Deadline for the peer SETTINGS acknowledgement. |
 | `pingInterval`, `pingTimeout` | disabled, 10 s | Optional PING keepalive and response deadline. |
 | `maxStreamsPerConnection` | 1000000 | Lifetime stream count before graceful GOAWAY. |
+| `sendContentLengthHeader` | true | Add `content-length` to responses built with `HttpRequestView::makeResponse()`. Optional in HTTP/2; disabling it avoids moving the body when its length changes digit count. |
 | `maxStreamPendingBytes` | 4 MiB | Per-stream cap for in-memory response body and trailer bytes waiting on peer flow-control credit. Oversized fixed responses receive 503; overflowing streaming responses are reset with `ENHANCE_YOUR_CALM`. |
 
 ## Compression, decompression, and files
 
 | Configuration | Defaults and decisions |
 | --- | --- |
-| `CompressionConfig` | `minBytes = 1024`, `maxCompressRatio = 0.6`, 32 KiB initial buffer, `Vary: Accept-Encoding` enabled, and automatic direct-compression mode. Choose `preferredFormats`, per-codec levels, and a content-type allowlist when CPU use needs controlling. Only compiled codecs can be negotiated. |
-| `DecompressionConfig` | disabled for incoming requests by default. Once enabled, it accepts enabled/compiled codings and enforces the configured compressed-byte cap (`0` is unlimited), 4 GiB decoded cap, 32 KiB decoder chunks, 16 MiB streaming threshold, and optional expansion-ratio cap (`0` disables it). |
+| `CompressionConfig` | `minBytes = 1024`, `maxCompressRatio = 0.6`, 32 KiB initial buffer, `Vary: Accept-Encoding` enabled, and automatic direct-compression mode. Choose `preferredFormats`, per-codec levels, and a content-type allowlist when CPU use needs controlling. Only compiled codecs can be negotiated. See [Compression](../guides/compression.md). |
+| `DecompressionConfig` | Enabled by default when a codec is compiled in; `enable = false` passes encoded bodies to handlers unchanged. Decodes the compiled codings with a 128 MiB compressed cap, a 4 GiB decoded cap, a 1000x expansion-ratio cap (both caps must be positive), 32 KiB decoder chunks, and a 16 MiB streaming threshold. See [Compression](../guides/compression.md#request-body-decompression). |
 | `StaticFileConfig` | The file handler defaults to ranges and conditional requests enabled, 16 ranges, a 32 MiB assembled multipart-range cap, 1024 header-cache entries, strong ETags and Last-Modified, 128 KiB inline files, and no directory index/dotfiles. It also accepts custom MIME and directory-renderer callbacks. |
 
-The static-file settings are supplied when creating the static handler, not directly on `HttpServerConfig`. Read [Bodies, streaming, and static files](../guides/bodies-streaming-and-files.md) for behavior and examples.
+The static-file settings are supplied when creating the static handler, not directly on `HttpServerConfig`. Read [Static files](../guides/static-files.md#configuration) for behavior, examples, and every setting.
 
 ## Probes, logging, telemetry, and router policy
 
 | Configuration | Defaults and behavior |
 | --- | --- |
-| `BuiltinProbesConfig` | Disabled; paths `/livez`, `/readyz`, `/startupz`. `dedicatedPort = 0` serves probes on the app listener. A nonzero dedicated port starts an isolated probe loop for `MultiHttpServer`; `livenessStaleThreshold` defaults to 10 seconds and must be positive then. |
+| `BuiltinProbesConfig` ([guide](../operations/health-probes.md)) | Disabled; paths `/livez`, `/readyz`, `/startupz`. `dedicatedPort = 0` serves probes on the app listener. A nonzero dedicated port starts an isolated probe loop for `MultiHttpServer`; `livenessStaleThreshold` defaults to 10 seconds and must be positive then. |
 | `AccessLogConfig` | Sink `None`, CLF format, no forwarded-for trust. Select `Stdout` or `File`, set `filePath` for the file sink, and set `useForwardedFor` only behind a trusted proxy that sanitizes the header. |
 | `TelemetryConfig` | OTLP and DogStatsD both disabled; sample rate 1.0, export interval 10 seconds, timeout 5 seconds. Set endpoint/service name, optional exporter headers, DogStatsD Unix socket/tags/namespace, and explicit finite increasing histogram buckets. OTLP needs the build feature; DogStatsD Unix sockets are Linux-only. |
 | `RouterConfig` | Trailing slash policy is `Normalize`; set `Strict` or `Redirect` as required. A route-level CORS policy wins over `withDefaultCorsPolicy()`. |

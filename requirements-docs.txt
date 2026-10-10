@@ -2,3 +2,6 @@
 # Keep upgrades within the current major release; CI builds the documentation with
 # this same constraint.
 mkdocs-material==9.*
+# mkdocs-redirects keeps the URLs of renamed pages working. 1.2.3 pulls in properdocs, which prints a
+# deprecation banner on every build: stay on 1.2.2 until that settles.
+mkdocs-redirects==1.2.2
