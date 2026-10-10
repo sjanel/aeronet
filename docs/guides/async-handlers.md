@@ -24,7 +24,7 @@ An async handler splits the request in two:
 | Large or slow uploads, early validation of the request head | Async (`bodyAwaitable()`, `readBodyAsync()`) | The handler is dispatched as soon as the head arrives. |
 | Blocking I/O: database, other HTTP services, blocking SDKs, file system | Async + `deferWork()` | The event loop keeps serving other connections. |
 | CPU-heavy work (hashing, image processing, compression) | Async + `deferWork()` if the machine has spare cores, otherwise synchronous on more server threads | A background thread only helps when it can run in parallel. |
-| Large or long-lived generated responses | Streaming (`HttpResponseWriter`) | Sends the response incrementally; see [Bodies, streaming, and static files](bodies-streaming-and-files.md). |
+| Large generated responses | Streaming (`HttpResponseWriter`) | Sends the response piece by piece; see [Streaming responses](streaming-responses.md). |
 | Many clients waiting for server-side events | WebSocket | One `deferWork()` thread per waiting client does not scale to thousands; see [WebSocket](../protocols/websocket.md). |
 
 ## Your first async handler
@@ -669,7 +669,6 @@ Indicative measurements of a single event loop thread (one `SingleHttpServer`, r
 
 ## Reference
 
-- API details and examples: [Coroutine handlers (async)](../FEATURES.md#coroutine-handlers-async) in the feature reference.
-- Request views and their lifetime: [Memory management and string_view safety](../FEATURES.md#memory-management--stdstring_view-safety).
+- Request views and their lifetime: [Memory management and string_view safety](requests.md#lifetime-of-request-data).
 - Route options (timeouts, limits): [Routing and requests](routing.md) and the [server configuration reference](../reference/server-configuration.md).
 - Runnable example: [examples/async-handlers.cpp](../../examples/async-handlers.cpp).

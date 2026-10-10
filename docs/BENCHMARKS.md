@@ -27,6 +27,8 @@ It runs:
 - WebSocket benchmarks (`ws-loadgen`, a native load generator)
 - Client benchmarks (aeronet `HttpClient` vs libcurl, Drogon and Beast, `benchmarks/scripted-clients/`)
 
+The HTTP scenarios include a gzip round trip (`/body-codec`, `benchmarks/scripted-servers/lua/body_codec.lua`) measuring automatic request decompression and response compression together.
+
 The same workflow publishes rendered dashboards and badge endpoint JSON files to GitHub Pages:
 
 - HTTP/1.1: `https://sjanel.github.io/aeronet/benchmarks/`
@@ -221,6 +223,8 @@ cmake -S . -B build_bench -DCMAKE_BUILD_TYPE=Release -DAERONET_BUILD_BENCHMARKS=
 cmake --build build_bench --target aeronet-bench-frameworks
 ./build_bench/aeronet-bench-frameworks --iters=5000 --min=64 --max=8192
 ```
+
+The scripted benchmark framework (see [CI and GitHub Pages](#ci-and-github-pages)) also compares aeronet with a Boost.Beast server (`beast-bench-server`) for HTTP/1.1 and WebSocket. Beast is excluded from the HTTP/2 scenarios, because Boost.Beast has no HTTP/2 server transport.
 
 Planned enhancements:
 

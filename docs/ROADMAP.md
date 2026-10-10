@@ -97,7 +97,7 @@ The following features are inspired by capabilities that make frameworks like **
 
 #### HTTP Client (`AERONET_ENABLE_HTTP_CLIENT`)
 
-Status: **Delivered** (`aeronet/client`, enabled by default). The synchronous `aeronet::HttpClient` speaks **HTTP/1.1 and HTTP/2** natively over aeronet's own non-blocking transport + event loop, with HTTPS via the shared `TlsTransport`, per-origin keep-alive pooling, redirect following, a retry + exponential-backoff policy, transparent response decompression / request compression, cleartext forward-proxy (`CONNECT` tunneling), and an opt-in time-based response cache for idempotent requests. Every request returns an `HttpClientResult` (`std::expected<HttpResponse, HttpClientErrc>`) - value-based errors, no throwing on the request path. See the README HTTP client section and `docs/FEATURES.md` for the full surface.
+Status: **Delivered** (`aeronet/client`, enabled by default). The synchronous `aeronet::HttpClient` speaks **HTTP/1.1 and HTTP/2** natively over aeronet's own non-blocking transport + event loop, with HTTPS via the shared `TlsTransport`, per-origin keep-alive pooling, redirect following, a retry + exponential-backoff policy, transparent response decompression / request compression, cleartext forward-proxy (`CONNECT` tunneling), and an opt-in time-based response cache for idempotent requests. Every request returns an `HttpClientResult` (`std::expected<HttpResponse, HttpClientErrc>`) - value-based errors, no throwing on the request path. See the [HTTP client guide](modules/http-client.md) for the full surface.
 
 Example:
 
@@ -175,7 +175,7 @@ router.setPath(http::Method::GET, "/admin", adminHandler).accessPolicy(std::move
 with leeway + injectable clock), JWK/JWKS parsing with `kid` selection, and the mandatory security posture
 (reject `alg:none`, family-based anti-confusion, constant-time HMAC, signature-before-claims). No dedicated
 opt-in flag (`cmake_dependent_option`, ON whenever OpenSSL + Glaze are present); JWE out of scope. See
-`docs/FEATURES.md` (JWT section) and `aeronet/jwt/test/`.
+the [JWT guide](modules/jwt.md) and `aeronet/jwt/test/`.
 
 Still planned: a server-side **middleware** that parses the `Authorization` header (Basic credentials or
 Bearer tokens) and wires the JWT verifier into a pluggable validator interface; plus a client-side
@@ -187,11 +187,11 @@ Forward incoming requests to upstream backends, rewriting headers (`X-Forwarded-
 
 #### Inbound request body streaming to handler
 
-Deliver chunked request bodies to handlers as they arrive instead of buffering the full payload first. Enables processing uploads in bounded memory. Currently noted as a limitation in FEATURES.md. Express (streams), Go (`io.Reader`), Axum (`BodyStream`), Actix-web (`Payload`), and Rust Hyper all expose streaming request bodies.
+Deliver chunked request bodies to handlers as they arrive instead of buffering the full payload first. Enables processing uploads in bounded memory. Currently documented as a limitation in the [requests guide](guides/requests.md#limits-and-timeouts). Express (streams), Go (`io.Reader`), Axum (`BodyStream`), Actix-web (`Payload`), and Rust Hyper all expose streaming request bodies.
 
 #### Streaming multipart parsing
 
-Process multipart/form-data uploads part-by-part as data arrives, rather than buffering the entire payload. Critical for large file uploads where the full body does not fit in memory. Currently flagged as a future item in FEATURES.md. Popular in Multer (Node.js), Actix-multipart, Spring `StreamingMultipartResolver`, and Go `multipart.Reader`.
+Process multipart/form-data uploads part-by-part as data arrives, rather than buffering the entire payload. Critical for large file uploads where the full body does not fit in memory. Currently documented as a limitation in the [requests guide](guides/requests.md#forms-and-file-uploads). Popular in Multer (Node.js), Actix-multipart, Spring `StreamingMultipartResolver`, and Go `multipart.Reader`.
 
 #### Per-route body size limits
 

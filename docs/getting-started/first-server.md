@@ -38,7 +38,7 @@ Compile this program with your CMake target linked to `aeronet_server`, then run
 curl -i http://127.0.0.1:8080/hello
 ```
 
-The server object owns the listening socket and its event loop. `run()` blocks the current thread; use the lifecycle APIs described in the [feature reference](../FEATURES.md#httpserver-lifecycle) when an application needs a non-blocking or restartable server.
+The server object owns the listening socket and its event loop. `run()` blocks the current thread; use the APIs described in [Servers and lifecycle](../guides/server-lifecycle.md) when an application needs a non-blocking or restartable server.
 
 !!! note
     The complete [server-minimal.cpp](../../examples/server-minimal.cpp) example adds argument parsing, graceful signal handling, and a more informative response.
