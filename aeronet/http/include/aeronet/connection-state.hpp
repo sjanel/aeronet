@@ -223,6 +223,9 @@ struct ConnectionState {
   // Tunnel state: true when peerFd != -1. Use accessor isTunneling() to query.
   // True when a non-blocking connect() was issued and completion is pending (EPOLLOUT will signal).
   bool connectPending : 1 {false};
+  // True while the target host name of the HTTP/1.1 CONNECT request at the head of inBuffer is resolved in the
+  // background: the connection reads nothing until the tunnel is established (or refused).
+  bool tunnelResolving : 1 {false};
   bool shutdownWritePending : 1 {false};    // true when we should shutdown(SHUT_WR) after tunnelOrFileBuffer is drained
   bool eofReceived : 1 {false};             // true when transportRead returned 0 (EOF)
   bool corkable : 1 {false};                // true when TCP_NODELAY is active; enables TCP_CORK coalescing

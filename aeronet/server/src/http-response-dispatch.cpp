@@ -1,11 +1,9 @@
 ﻿#include <cassert>
-#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <string_view>
-#include <system_error>
 #include <utility>
 
 #include "aeronet/connection-state.hpp"
@@ -17,7 +15,6 @@
 #include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/http-status-code.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -26,6 +23,7 @@
 #include "aeronet/tcp-cork-guard.hpp"
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
+#include "tunnel-manager.hpp"
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-transport.hpp"
 #endif
@@ -89,71 +87,10 @@ SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionI
 
   // CONNECT requires protocol-specific handling (TCP tunnel setup)
   if (request.method() == http::Method::CONNECT) {
-    return processConnectMethod(cnxIt, pCorsPolicy);
+    return internal::TunnelManager::Of(*this).startHttp1Tunnel(cnxIt, consumedBytes);
   }
 
   return LoopAction::Nothing;
-}
-
-SingleHttpServer::LoopAction SingleHttpServer::processConnectMethod(ConnectionIt& cnxIt,
-                                                                    const CorsPolicy* pCorsPolicy) {
-  HttpRequestView& request = _connections.connectionState(cnxIt).request;
-
-  // CONNECT: establish a TCP tunnel to target (host:port). On success reply 200 and
-  // proxy bytes bidirectionally between client and upstream.
-  // Parse authority form in request.path() (host:port)
-  const std::string_view target = request.path();
-  const auto colonPos = target.find(':');
-  if (colonPos == std::string_view::npos) {
-    emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed CONNECT target");
-    return LoopAction::Break;
-  }
-
-  // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
-  const std::string_view host(target.data(), colonPos);
-  const std::string_view portStr(target.begin() + static_cast<ptrdiff_t>(colonPos + 1), target.end());
-
-  // authority-form requires a numeric port (RFC 9110 §9.3.6 / RFC 3986 port = *DIGIT). Reject anything
-  // else (empty, non-numeric, or > 65535) up front with 400 instead of handing it to the resolver.
-  uint16_t port{};
-  const auto [portEnd, portEc] = std::from_chars(portStr.data(), portStr.data() + portStr.size(), port);
-  if (portEc != std::errc{} || portEnd != portStr.data() + portStr.size() || port == 0) {
-    emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed CONNECT target");
-    return LoopAction::Break;
-  }
-
-  // CONNECT is disabled unless the target is explicitly allowlisted or unrestricted access was requested with "*".
-  if (!_config.connectTargetAllowed(host)) {
-    emitSimpleError(cnxIt, http::StatusCodeForbidden, "CONNECT target not allowed");
-    return LoopAction::Break;
-  }
-
-  // Save client fd - setupTunnelConnection may invalidate the platform-specific connection iterator.
-  const auto clientFd = cnxIt->fd();
-
-  const auto upstreamFd = setupTunnelConnection(clientFd, host, port);
-  if (upstreamFd == kInvalidHandle) {
-    emitSimpleError(cnxIt, http::StatusCodeBadGateway, "Unable to establish CONNECT tunnel");
-    return LoopAction::Break;
-  }
-
-  // Re-find client iterator after potential connections reallocation inside setupTunnelConnection.
-  cnxIt = _connections.iterator(clientFd);
-  ConnectionState& state = _connections.connectionState(cnxIt);
-  assert(cnxIt != _connections.end() && "Client connection cannot vanish during connection insertion");
-
-  finalizeAndSendResponseForHttp1(cnxIt, HttpResponse("Connection Established"), pCorsPolicy);
-
-  // Enter tunneling mode: link client -> upstream (upstream -> client is set by setupTunnelConnection).
-  state.peerFd = upstreamFd;
-  refreshKeepAliveDeadline(cnxIt);
-
-  // Disable zerocopy on the client-side transport for the same buffer lifetime reason.
-  state.transport.disableZerocopy();
-
-  // From now on, both connections bypass HTTP parsing. Keep any bytes following the CONNECT head so
-  // handleReadableClient can forward them as tunnel data.
-  return LoopAction::SwitchProtocol;
 }
 
 void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpResponse&& resp,
@@ -196,12 +133,8 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpR
     // (checked by canCloseConnectionForDrain), so it is safe to call this before a large response finishes flushing.
     state.requestDrainAndClose();
   }
-  if (_callbacks.metrics || _accessLog) {
-    emitRequestMetrics(request, respStatusCode, request._body.size(), state.requestsServed > 0);
-  }
-
   // End the span after response is finalized
-  request.end(respStatusCode);
+  endRequest(request, respStatusCode, state.requestsServed > 0);
 }
 
 void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpMessageData httpResponseData) {

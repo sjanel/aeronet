@@ -39,7 +39,7 @@ config.withCompression(std::move(compression));
 | `minBytes` | 1024 | Bodies smaller than this are sent uncompressed. `std::numeric_limits<std::size_t>::max()` disables compression. |
 | `maxCompressRatio` | 0.6 | The compressed body is kept only if its size is at most this fraction of the original (at least 40% smaller by default). |
 | `contentTypeAllowList` | empty: every type | Content types eligible for compression, compared case-insensitively. |
-| `preferredFormats` | empty | Server preference order, used to break ties (see below). |
+| `preferredFormats` | empty | Codings preferred by the server, used to break ties (see below). |
 | `addVaryAcceptEncodingHeader` | `true` | Add `Vary: Accept-Encoding` to compressed responses. |
 | `defaultDirectCompressionMode` | `Auto` | See [Direct compression](#direct-compression). |
 | `initialCompressionBufferLimit` | 32 KiB | Output buffer reserved upfront; larger bodies grow it while compressing. |
@@ -52,7 +52,7 @@ Already compressed content, such as images, video, or archives, gains nothing: r
 
 The `Accept-Encoding` header lists the codings a client accepts, with optional quality values (`q`, from 0 to 1, default 1). The server picks the compiled coding with the highest quality; `gzip;q=0.5, br;q=0.9` selects `br`. A quality of 0 excludes a coding, and `*` stands for every coding not listed.
 
-When several codings share the best quality, the server preference decides: the order of `preferredFormats`, or by default `zstd`, `br`, `gzip`, `deflate` (among the compiled ones). List every compiled coding in `preferredFormats` when you set it, so that the order is fully defined.
+When several codings share the best quality, the server preference decides: the codings of `preferredFormats` in their order, then the other compiled codings in the default order, `zstd`, `br`, `gzip`, `deflate`, and finally the uncompressed form (`identity`). With `preferredFormats` set to `gzip` only, `Accept-Encoding: br, gzip` selects `gzip`, while `Accept-Encoding: br` still selects `br`.
 
 Without `Accept-Encoding`, or when no compiled coding is acceptable, the response is sent uncompressed. If the client also excludes the uncompressed form (`identity;q=0`, or `*;q=0` without `identity`), the server answers `406 Not Acceptable`.
 

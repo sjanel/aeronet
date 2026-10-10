@@ -209,6 +209,9 @@ class HttpResponseWriter {
 
   void ensureHeadersSent();
 
+  // Tells whether nothing was sent yet (the head is sent with the first body bytes past the compression threshold).
+  [[nodiscard]] bool headersPending() const noexcept { return _state == State::Opened; }
+
   // Combine transient booleans into a single state machine to reduce memory and make transitions explicit.
   enum class State : std::uint8_t { Opened, HeadersSent, Ended, Failed };
 

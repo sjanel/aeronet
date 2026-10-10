@@ -189,6 +189,32 @@ constexpr std::string_view kSwitchingProtocolsHttp11HeaderLine = "HTTP/1.1 101 S
 
 }  // namespace
 
+bool IsSameOriginRequest(std::string_view origin, std::string_view host) {
+  if (origin.empty()) {
+    return true;
+  }
+  static constexpr std::string_view kSchemeSep = "://";
+  const auto schemeEnd = origin.find(kSchemeSep);
+  if (schemeEnd == std::string_view::npos) {
+    return false;  // "null" (opaque origin) or malformed
+  }
+  const std::string_view scheme = origin.substr(0, schemeEnd);
+  std::string_view defaultPort;
+  if (CaseInsensitiveEqual(scheme, "https")) {
+    defaultPort = ":443";
+  } else if (CaseInsensitiveEqual(scheme, "http")) {
+    defaultPort = ":80";
+  }
+  const auto withoutDefaultPort = [defaultPort](std::string_view authority) {
+    if (!defaultPort.empty() && authority.ends_with(defaultPort)) {
+      authority.remove_suffix(defaultPort.size());
+    }
+    return authority;
+  };
+  return CaseInsensitiveEqual(withoutDefaultPort(origin.substr(schemeEnd + kSchemeSep.size())),
+                              withoutDefaultPort(host));
+}
+
 std::size_t ComputeWebSocketUpgradeResponseSize(const UpgradeValidationResult& validationResult) {
   std::size_t responseSz =
       kSwitchingProtocolsHttp11HeaderLine.size() +

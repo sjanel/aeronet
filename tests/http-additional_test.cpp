@@ -1192,7 +1192,7 @@ TEST(SingleHttpServer, RequestHandlerStdException) {
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("500")) << resp;
-  ASSERT_TRUE(resp.contains("Handler error")) << resp;
+  EXPECT_FALSE(resp.contains("Handler error")) << resp;
 }
 
 // Test request handler non-std exception
@@ -1205,7 +1205,36 @@ TEST(SingleHttpServer, RequestHandlerNonStdException) {
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("500")) << resp;
-  ASSERT_TRUE(resp.contains("Unknown error")) << resp;
+  EXPECT_FALSE(resp.contains("Unknown error")) << resp;
+}
+
+TEST(SingleHttpServer, StreamingHandlerExceptionBeforeBodyAnswers500) {
+  ts.resetRouterAndGet().setDefault([](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+    throw std::runtime_error("streaming failure");
+  });
+  test::ClientConnection clientConnection(ts.port());
+  test::sendAll(clientConnection.fd(), "GET /test HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n");
+  const std::string resp = test::recvUntilClosed(clientConnection.fd());
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 500")) << resp;
+  EXPECT_FALSE(resp.contains("streaming failure")) << resp;
+}
+
+TEST(SingleHttpServer, StreamingHandlerExceptionAfterBodyClosesWithoutCompletingIt) {
+  ts.resetRouterAndGet().setDefault([](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+    writer.writeBody(std::string(64UL * 1024UL, 'x'));
+    throw std::runtime_error("streaming failure");
+  });
+  test::ClientConnection clientConnection(ts.port());
+  // Keep-alive request: the server closes the connection to signal the truncation.
+  test::sendAll(clientConnection.fd(), "GET /test HTTP/1.1\r\nhost: x\r\n\r\n");
+  const std::string resp = test::recvUntilClosed(clientConnection.fd());
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp.substr(0, 256);
+  EXPECT_TRUE(resp.contains("xxxx"));
+  // Neither the last chunk of a complete chunked body, nor a second response.
+  EXPECT_FALSE(resp.ends_with("0\r\n\r\n"));
+  EXPECT_FALSE(resp.contains("HTTP/1.1 500"));
 }
 
 // Test body read timeout is set when configured and body not ready

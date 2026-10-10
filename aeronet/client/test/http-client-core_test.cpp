@@ -606,6 +606,65 @@ TEST_F(HttpClientE2ETest, CrossOriginRedirectRetargetsRequestAndHost) {
   EXPECT_EQ(resp.bodyInMemory(), "127.0.0.1:" + std::to_string(destinationPort));
 }
 
+TEST_F(HttpClientE2ETest, CredentialsOnlyFollowSameOriginRedirects) {
+  // Echo the credentials and a custom header received by the server.
+  const auto echoHeaders = [](const HttpRequestView& req) {
+    std::string body(req.headerValueOrEmpty(http::Authorization));
+    body.append("|").append(req.headerValueOrEmpty(http::Cookie));
+    body.append("|").append(req.headerValueOrEmpty("x-custom"));
+    return req.makeResponse(http::StatusCodeOK, body, "text/plain");
+  };
+
+  Router destinationRouter;
+  destinationRouter.setPath(http::Method::GET, "/landed", echoHeaders);
+  SingleHttpServer destinationServer(HttpServerConfig{}.withPort(0).withPollInterval(std::chrono::milliseconds{20}),
+                                     std::move(destinationRouter));
+  const std::string destinationUrl = "http://127.0.0.1:" + std::to_string(destinationServer.port()) + "/landed";
+  destinationServer.start();
+
+  Router redirectRouter;
+  redirectRouter.setPath(http::Method::GET, "/cross", [destinationUrl](const HttpRequestView& req) {
+    auto resp = req.makeResponse(http::StatusCodeFound);
+    resp.location(destinationUrl);
+    return resp;
+  });
+  redirectRouter.setPath(http::Method::GET, "/same", [](const HttpRequestView& req) {
+    auto resp = req.makeResponse(http::StatusCodeFound);
+    resp.location("/landed");
+    return resp;
+  });
+  redirectRouter.setPath(http::Method::GET, "/landed", echoHeaders);
+  SingleHttpServer redirectServer(HttpServerConfig{}.withPort(0).withPollInterval(std::chrono::milliseconds{20}),
+                                  std::move(redirectRouter));
+  const std::string redirectOrigin = "http://127.0.0.1:" + std::to_string(redirectServer.port());
+  redirectServer.start();
+
+  std::vector<HttpVersionMode> versionModes{HttpVersionMode::Http1_1};
+#ifdef AERONET_ENABLE_HTTP2
+  versionModes.push_back(HttpVersionMode::Http2);
+#endif
+  for (const HttpVersionMode versionMode : versionModes) {
+    HttpClientConfig cfg;
+    cfg.withHttpVersion(versionMode);
+    // Global headers are part of every request, and are dropped as well.
+    cfg.addGlobalHeader(http::Header(http::Cookie, "session=global"));
+    HttpClient client(cfg);
+
+    auto crossReq = client.makeRequest(http::Method::GET, redirectOrigin + "/cross");
+    crossReq.header(http::Authorization, "Bearer secret").header(http::Cookie, "session=request");
+    crossReq.header("x-custom", "kept");
+    auto crossResp = client.request(crossReq).value();
+    EXPECT_EQ(crossResp.status(), 200);
+    EXPECT_EQ(crossResp.bodyInMemory(), "||kept");
+
+    auto sameReq = client.makeRequest(http::Method::GET, redirectOrigin + "/same");
+    sameReq.header(http::Authorization, "Bearer secret").header("x-custom", "kept");
+    auto sameResp = client.request(sameReq).value();
+    EXPECT_EQ(sameResp.status(), 200);
+    EXPECT_EQ(sameResp.bodyInMemory(), "Bearer secret|session=global|kept");
+  }
+}
+
 TEST_F(HttpClientE2ETest, RedirectDisabledReturns3xx) {
   HttpClientConfig cfg;
   cfg.followRedirects = false;

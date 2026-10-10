@@ -101,9 +101,18 @@ class MockTunnelBridge final : public ITunnelBridge {
   std::function<void(NativeHandle)> onShutdownWrite;
   std::function<void(NativeHandle)> onClose;
   std::function<void(NativeHandle)> onWindowUpdate;
+  // Answer Pending, as the server does for a host name resolved in the background.
+  bool resolveInBackground{false};
 
-  NativeHandle setupTunnel(uint32_t streamId, std::string_view host, uint16_t port) override {
-    return onSetup ? onSetup(streamId, host, port) : kInvalidHandle;
+  TunnelSetup setupTunnel(uint32_t streamId, std::string_view host, uint16_t port) override {
+    TunnelSetup setup;
+    if (resolveInBackground) {
+      setup.status = TunnelSetup::Status::Pending;
+      return setup;
+    }
+    setup.upstreamFd = onSetup ? onSetup(streamId, host, port) : kInvalidHandle;
+    setup.status = setup.upstreamFd != kInvalidHandle ? TunnelSetup::Status::Established : TunnelSetup::Status::Failed;
+    return setup;
   }
 
   void writeTunnel(NativeHandle upstreamFd, std::span<const std::byte> data) override {
@@ -1214,6 +1223,110 @@ TEST(Http2ProtocolHandler, ConnectTunnelStreamResetCleanupsTunnel) {
   EXPECT_TRUE(closeCalled);
 }
 
+TEST(Http2ProtocolHandler, ConnectPendingResolutionKeepsEarlyDataUntilEstablished) {
+  Router router;
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  constexpr NativeHandle kFakeUpstreamFd = 42;
+  std::string writtenData;
+  bool shutdownCalled = false;
+  MockTunnelBridge bridge;
+  bridge.resolveInBackground = true;
+  bridge.onWrite = [&](NativeHandle upstreamFd, std::span<const std::byte> data) {
+    EXPECT_EQ(upstreamFd, kFakeUpstreamFd);
+    writtenData.append(reinterpret_cast<const char*>(data.data()), data.size());
+  };
+  bridge.onShutdownWrite = [&](NativeHandle) { shutdownCalled = true; };
+  loop.handler.setTunnelBridge(&bridge);
+
+  RawChars conn;
+  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), false), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  // No answer while the target is resolved.
+  EXPECT_TRUE(loop.handler.isTunnelPending(1));
+  EXPECT_TRUE(loop.clientHeaders.empty());
+
+  // DATA sent before the 200 is kept, until the tunnel is established.
+  constexpr std::string_view earlyPayload = "early-";
+  ASSERT_EQ(
+      loop.client.sendData(1, std::as_bytes(std::span<const char>(earlyPayload.data(), earlyPayload.size())), false),
+      ErrorCode::NoError);
+  constexpr std::string_view lastPayload = "bytes";
+  ASSERT_EQ(loop.client.sendData(1, std::as_bytes(std::span<const char>(lastPayload.data(), lastPayload.size())), true),
+            ErrorCode::NoError);
+  loop.pumpClientToServer();
+  EXPECT_TRUE(writtenData.empty());
+
+  loop.handler.onTunnelResolved(1, kFakeUpstreamFd);
+  loop.pumpServerToClient();
+
+  EXPECT_FALSE(loop.handler.isTunnelPending(1));
+  EXPECT_TRUE(loop.handler.isTunnelStream(1));
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "200");
+  EXPECT_EQ(writtenData, "early-bytes");
+  // The client ended its side while the target was resolved.
+  EXPECT_TRUE(shutdownCalled);
+}
+
+TEST(Http2ProtocolHandler, ConnectPendingResolutionFailureReturns502) {
+  Router router;
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  MockTunnelBridge bridge;
+  bridge.resolveInBackground = true;
+  loop.handler.setTunnelBridge(&bridge);
+
+  RawChars conn;
+  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), false), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  ASSERT_TRUE(loop.handler.isTunnelPending(1));
+
+  loop.handler.onTunnelResolved(1, kInvalidHandle);
+  loop.pumpServerToClient();
+
+  EXPECT_FALSE(loop.handler.isTunnelPending(1));
+  EXPECT_FALSE(loop.handler.isTunnelStream(1));
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "502");
+}
+
+TEST(Http2ProtocolHandler, ConnectPendingResolutionAbandonedOnStreamReset) {
+  Router router;
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  MockTunnelBridge bridge;
+  bridge.resolveInBackground = true;
+  loop.handler.setTunnelBridge(&bridge);
+
+  RawChars conn;
+  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), false), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  ASSERT_TRUE(loop.handler.isTunnelPending(1));
+
+  // The server checks isTunnelPending() before completing a resolution.
+  loop.client.sendRstStream(1, ErrorCode::Cancel);
+  loop.pumpClientToServer();
+  EXPECT_FALSE(loop.handler.isTunnelPending(1));
+}
+
 TEST(Http2ProtocolHandler, ConnectTunnelBidirectionalDataFlow) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
@@ -1550,12 +1663,10 @@ TEST(Http2ProtocolHandler, ResponseWithTrailersButNoBodyEndsOnTrailerHeadersWith
   loop.pumpServerToClient();
 
   // HttpResponse enforces that trailers can only be emitted after a non-empty body;
-  // the handler catches that exception and returns 500.
+  // the handler catches that exception and returns 500, without exposing its message.
   ASSERT_FALSE(loop.clientHeaders.empty());
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], ":status"), "500");
-  ASSERT_FALSE(loop.clientData.empty());
-  EXPECT_TRUE(loop.clientData[0].data.contains("Trailers must be added after a non empty body is set"));
-  EXPECT_TRUE(loop.clientData.back().endStream);
+  EXPECT_TRUE(std::ranges::all_of(loop.clientData, [](const DataEvent& ev) { return ev.data.empty(); }));
 }
 
 TEST(Http2ProtocolHandler, ParsesSupportedMethodsAndReturns501ForUnknown) {
@@ -1854,7 +1965,7 @@ TEST(Http2ProtocolHandler, MethodNotAllowedReturns405) {
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], ":status"), "405");
 }
 
-TEST(Http2ProtocolHandler, HandlerExceptionReturns500WithMessage) {
+TEST(Http2ProtocolHandler, HandlerExceptionReturns500WithoutMessage) {
   Router router;
   router.setPath(http::Method::GET, "/boom",
                  [](const HttpRequestView&) -> HttpResponse { throw std::runtime_error("boom"); });
@@ -1875,11 +1986,11 @@ TEST(Http2ProtocolHandler, HandlerExceptionReturns500WithMessage) {
 
   ASSERT_FALSE(loop.clientHeaders.empty());
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], ":status"), "500");
-  ASSERT_FALSE(loop.clientData.empty());
-  EXPECT_EQ(loop.clientData[0].data, "boom");
+  // The exception message may contain internal details: it is logged, never sent to the client.
+  EXPECT_TRUE(std::ranges::all_of(loop.clientData, [](const DataEvent& ev) { return ev.data.empty(); }));
 }
 
-TEST(Http2ProtocolHandler, HandlerUnknownExceptionReturns500UnknownError) {
+TEST(Http2ProtocolHandler, HandlerUnknownExceptionReturns500WithoutBody) {
   Router router;
   // NOLINTNEXTLINE(bugprone-std-exception-baseclass)
   router.setPath(http::Method::GET, "/boom2", [](const HttpRequestView&) -> HttpResponse { throw 42; });
@@ -1900,8 +2011,7 @@ TEST(Http2ProtocolHandler, HandlerUnknownExceptionReturns500UnknownError) {
 
   ASSERT_FALSE(loop.clientHeaders.empty());
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], ":status"), "500");
-  ASSERT_FALSE(loop.clientData.empty());
-  EXPECT_EQ(loop.clientData[0].data, "Unknown error");
+  EXPECT_TRUE(std::ranges::all_of(loop.clientData, [](const DataEvent& ev) { return ev.data.empty(); }));
 }
 
 TEST(Http2ProtocolHandler, MissingPathSendsRstStream) {
@@ -2761,8 +2871,41 @@ TEST(Http2ProtocolHandler, StreamingHandlerExceptionStillSendsResponse) {
   loop.pumpClientToServer();
   loop.pumpServerToClient();
 
-  // Even though the handler threw, the writer should still have called end()
+  // Nothing was sent before the exception: the client receives a 500, without the exception message.
   ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], ":status"), "500");
+  EXPECT_TRUE(std::ranges::all_of(loop.clientData, [](const DataEvent& ev) { return ev.data.empty(); }));
+}
+
+TEST(Http2ProtocolHandler, StreamingHandlerExceptionAfterBodyResetsStream) {
+  Router router;
+  router.setPath(http::Method::GET, "/stream-partial",
+                 StreamingHandler{[](const HttpRequestView&, HttpResponseWriter& writer) {
+                   writer.status(http::StatusCodeOK);
+                   writer.writeBody(std::string(64UL * 1024UL, 'x'));
+                   throw std::runtime_error("failure in the middle of the body");
+                 }});
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/stream-partial"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  // The 200 was sent with part of the body: the stream is reset, so the client knows the response is incomplete.
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], ":status"), "200");
+  EXPECT_TRUE(std::ranges::none_of(loop.clientData, [](const DataEvent& ev) { return ev.endStream; }));
+  ASSERT_FALSE(loop.streamResets.empty());
+  EXPECT_EQ(loop.streamResets.back().first, 1U);
+  EXPECT_EQ(loop.streamResets.back().second, ErrorCode::InternalError);
 }
 
 TEST(Http2ProtocolHandler, StreamingHandlerUnknownExceptionStillEnds) {
@@ -2787,6 +2930,7 @@ TEST(Http2ProtocolHandler, StreamingHandlerUnknownExceptionStillEnds) {
   loop.pumpServerToClient();
 
   ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], ":status"), "500");
 }
 
 TEST(Http2ProtocolHandler, StreamingHandlerCorsRejectionReturns403) {

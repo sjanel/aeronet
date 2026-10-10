@@ -340,6 +340,18 @@ class HttpResponse final : public HttpMessage {
   // RValue overload of headerRemoveLine.
   HttpResponse&& headerRemoveLine(LowerAsciiKey key) && { return std::move(headerRemoveLine(key)); }
 
+  // Remove all the occurrences of the header with the given lower-case key, in a single pass over the headers: a
+  // header repeated on several lines (Cookie, Set-Cookie...) is removed at once. If the header is not found, the
+  // HttpMessage is not modified.
+  // Same rules as headerRemoveLine() for 'Content-Type', 'Content-Length' and 'Content-Encoding'.
+  HttpResponse& headerRemoveAllLines(LowerAsciiKey key) & {
+    headerRemoveAllLinesImpl(key);
+    return *this;
+  }
+
+  // RValue overload of headerRemoveAllLines.
+  HttpResponse&& headerRemoveAllLines(LowerAsciiKey key) && { return std::move(headerRemoveAllLines(key)); }
+
   // Remove the first 'value' from the last header with the given lower-case key. If the value is the only one for the
   // header, the whole header line is removed. If there are
   // multiple values for the header, only the first specified value is removed (starting from the beginning) and the

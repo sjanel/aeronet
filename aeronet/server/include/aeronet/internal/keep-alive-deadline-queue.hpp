@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <chrono>
 #include <cstdint>
 
@@ -41,6 +42,12 @@ class KeepAliveDeadlineQueue {
   /// Returns true if a deadline is registered for state.
   [[nodiscard]] static bool contains(const ConnectionState& state) noexcept {
     return state.keepAliveDeadlineIndex != ConnectionState::kNoKeepAliveDeadlineIndex;
+  }
+
+  /// Returns the deadline registered for state, which must be contained.
+  [[nodiscard]] std::chrono::steady_clock::time_point expiresAt(const ConnectionState& state) const noexcept {
+    assert(contains(state));
+    return _heap[state.keepAliveDeadlineIndex].expiresAt;
   }
 
  private:

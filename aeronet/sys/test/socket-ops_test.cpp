@@ -359,6 +359,31 @@ TEST_F(SocketOpsTest, IsConnectionStaleTrueWithPendingData) {
   EXPECT_TRUE(IsConnectionStale(endA.fd()));
 }
 
+TEST_F(SocketOpsTest, IsPeerClosedReportsBadFdAsClosed) { EXPECT_TRUE(IsPeerClosed(-1)); }
+
+TEST_F(SocketOpsTest, IsPeerClosedFalseWhileConnected) {
+  NativeHandle sockets[2];
+  ASSERT_EQ(0, ::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets));
+  BaseFd endA(sockets[0]);
+  BaseFd endB(sockets[1]);
+  EXPECT_FALSE(IsPeerClosed(endA.fd()));
+  // Pending data is not a close, and is not consumed.
+  const char byte = 'x';
+  ASSERT_EQ(1, ::send(endB.fd(), &byte, 1, 0));
+  EXPECT_FALSE(IsPeerClosed(endA.fd()));
+  char received = 0;
+  EXPECT_EQ(1, ::recv(endA.fd(), &received, 1, 0));
+  EXPECT_EQ(received, 'x');
+}
+
+TEST_F(SocketOpsTest, IsPeerClosedTrueAfterPeerClose) {
+  NativeHandle sockets[2];
+  ASSERT_EQ(0, ::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets));
+  BaseFd endA(sockets[0]);
+  CloseNativeHandle(sockets[1]);
+  EXPECT_TRUE(IsPeerClosed(endA.fd()));
+}
+
 TEST_F(SocketOpsTest, SetTcpCorkSucceedsOnValidSocket) {
   NativeHandle fd = CreateTestSocket();
   ASSERT_GE(fd, 0);

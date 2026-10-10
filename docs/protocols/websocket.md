@@ -65,7 +65,7 @@ The handler is destroyed with its connection, so the pointer captured by its own
 | `WithFullConfig(config, protocols, callbacks)` | Both of the above. |
 | `WithFactory(factory)` | Each connection needs its own state, or must send messages. |
 
-The factory must return a non-null handler. It runs on the event-loop thread, so keep it fast. `RouteGroup::setWebSocket()` registers an endpoint under a group prefix like `setPath()` does.
+The factory receives the upgrade request after the request middleware ran, with its path parameters. It can refuse the connection by returning `nullptr`: the server then answers `403 Forbidden`. An exception escaping the factory is logged and answered `500 Internal Server Error`. The factory runs on the event-loop thread, so keep it fast. `RouteGroup::setWebSocket()` registers an endpoint under a group prefix like `setPath()` does.
 
 A path may carry both a WebSocket endpoint and ordinary handlers: a `GET` request with `Upgrade: websocket` goes to the endpoint, and other requests are routed to the handlers registered for their method.
 
@@ -98,12 +98,33 @@ The server accepts an upgrade when the request:
 3. carries `Sec-WebSocket-Version: 13`,
 4. carries a valid `Sec-WebSocket-Key` (16 random bytes in base64, 24 characters).
 
-On success, it answers `101 Switching Protocols` with the computed `Sec-WebSocket-Accept`, and the connection switches to the WebSocket protocol. A `GET` request with an `Upgrade: websocket` header that fails these checks receives `400 Bad Request`. Any other request is routed like a normal HTTP request.
+A `GET` request on the endpoint's path with an `Upgrade: websocket` header goes through the same steps as other requests before it is upgraded:
+
+1. The global and route [request middleware](../guides/middleware.md) run: a middleware can authenticate the request, and refuse it by answering it (`401 Unauthorized`, for instance).
+2. The `Origin` header is checked, see below. A refused origin receives `403 Forbidden`.
+3. The handshake headers are validated: when they fail the checks above, the answer is `400 Bad Request`.
+4. The endpoint's factory creates the connection's handler, and may refuse the connection.
+
+On success, the server answers `101 Switching Protocols` with the computed `Sec-WebSocket-Accept`, and the connection switches to the WebSocket protocol. Response middleware does not apply to the `101` response. Any other request is routed like a normal HTTP request.
+
+**Origin checks.** Browsers do not apply CORS to WebSocket connections: a page of any site can open one to the server, and the browser attaches the server's cookies to the upgrade request. To prevent this cross-site WebSocket hijacking, the server checks the `Origin` header that browsers always send:
+
+- Without [CORS policy](../guides/cors.md) for the route, only the server's own pages may connect: the host and port of `Origin` must be those of the `Host` header (the default port of the scheme may be omitted on either side). An opaque origin (`null`) is refused.
+- With a CORS policy (the route's or the router's default), the policy decides: an origin it does not allow is refused, and an allowed origin is accepted even from another site.
+- A request without `Origin` comes from a client that is not a browser, and is accepted.
+
+```cpp
+CorsPolicy cors;
+cors.allowOrigin("https://app.example.com");  // the site hosting the pages that open the connection
+
+Router router;
+router.setWebSocket("/ws", WebSocketEndpoint::WithCallbacks(websocket::WebSocketCallbacks{})).cors(std::move(cors));
+```
+
+!!! note
+    Behind a reverse proxy that rewrites the `Host` header, the same-origin check fails for every browser: attach a CORS policy listing the allowed origins to the route.
 
 **Subprotocols.** When the client sends `Sec-WebSocket-Protocol`, the server selects the first of the endpoint's `supportedProtocols` (in the endpoint's preference order) that the client offered, compared case-insensitively. When none matches, the handshake succeeds without a subprotocol, and the client decides whether to continue.
-
-!!! warning
-    The upgrade bypasses the request middleware and CORS policies, and the factory cannot refuse it. The server does not check the `Origin` header either. Do not rely on cookies alone to authenticate a WebSocket connection opened by a browser (cross-site WebSocket hijacking): authenticate the first message, or put an authenticating proxy in front of the server.
 
 ## Configuration
 
@@ -113,7 +134,9 @@ On success, it answers `101 Switching Protocols` with the computed `Sec-WebSocke
 | --- | --- | --- |
 | `maxMessageSize` | 64 MiB | Maximum size of a reassembled message. `0` disables the limit. A larger message closes the connection with `MessageTooBig` (1009). |
 | `maxFrameSize` | 16 MiB | Maximum payload of a single frame. A larger frame closes the connection with `MessageTooBig`. |
-| `closeTimeout` | 5 s | Time to wait for the peer's Close frame after sending one. See [Closing connections](#closing-connections). |
+| `idleTimeout` | 60 s | A connection on which nothing was received for this long is closed. `0` disables it. See [Idle connections](#idle-connections). |
+| `autoPing` | `true` | Send a Ping after half of `idleTimeout` without received data, so that live peers are never closed. |
+| `closeTimeout` | 5 s | Time to wait for the peer's Close frame after sending one, before closing the connection. See [Closing connections](#closing-connections). |
 | `deflateConfig` | see below | `permessage-deflate` settings. |
 
 ```cpp
@@ -171,21 +194,38 @@ The server initiates the close itself when the peer violates the protocol:
 
 An application closes a connection with `sendClose(code, reason)`. `websocket::CloseCode` lists the standard codes, from `Normal` (1000) to `TLSHandshake` (1015). `NoStatusReceived` (1005), `AbnormalClosure` (1006) and `TLSHandshake` (1015) are reserved for reporting and are never sent in a frame.
 
-An upgraded connection stays subject to the server's idle timeout, `HttpServerConfig::keepAliveTimeout` (5 seconds by default): a WebSocket connection on which no byte flows for that long is closed. Browsers do not send pings on their own, so either raise `keepAliveTimeout` for servers with long-lived connections, or have the application exchange periodic messages. The same timeout bounds the wait for the peer's Close frame. The server does not enforce `closeTimeout` yet: `WebSocketHandler::hasCloseTimedOut()` only reports whether it elapsed.
+After sending a Close frame, from `sendClose()` or after a protocol error, the server waits `closeTimeout` (5 seconds by default) for the peer's Close frame, then closes the connection.
+
+## Idle connections
+
+`HttpServerConfig::keepAliveTimeout` bounds the idleness between HTTP requests: it does not apply to an upgraded connection, which has its own `idleTimeout` (60 seconds by default). A connection on which nothing was received for `idleTimeout` is closed, without Close frame: the peer is most likely gone (a closed laptop, a lost network).
+
+Browsers do not send pings on their own, and an application may legitimately exchange no message for minutes. With `autoPing` (the default), the server sends a Ping once the connection has been idle for half of `idleTimeout`. Browsers and WebSocket libraries answer it with a Pong, which restarts the idle period: live connections stay open, while dead ones are closed after `idleTimeout`. These Pings also keep the connection alive through proxies and NATs that drop idle connections (nginx closes a proxied connection idle for 60 seconds by default).
+
+```cpp
+#include <chrono>
+
+websocket::WebSocketConfig config;
+config.idleTimeout = std::chrono::minutes{5};  // close a connection that stays silent for 5 minutes
+config.autoPing = false;                       // the application sends its own heartbeats
+
+Router router;
+router.setWebSocket("/feed", WebSocketEndpoint::WithConfigAndCallbacks(config, websocket::WebSocketCallbacks{}));
+```
+
+The timeouts are checked by the server's maintenance timer, so they are accurate to `HttpServerConfig::pollInterval`. Each connection has a single entry in the deadline queue that also drives the keep-alive timeout, updated only when its next check comes closer: a busy connection costs nothing per message.
 
 ## Limitations
 
 - WebSocket runs over HTTP/1.1 only. WebSocket over HTTP/2 (RFC 8441, extended CONNECT) is not supported.
-- The upgrade bypasses request middleware and cannot be refused by the factory (see the warning in [Upgrade handshake](#upgrade-handshake)).
 - Messages can only be sent from the event-loop thread of their connection, from a callback.
-- The server does not send pings by itself, and does not enforce `closeTimeout`.
 - Messages are delivered whole: there is no streaming API for large messages, which are buffered up to `maxMessageSize`.
 - aeronet provides no WebSocket client.
 
 ## Tests
 
-- Handshake, messaging, compression interoperability, and close handshake against a real socket: [tests/websocket-integration_test.cpp](../../tests/websocket-integration_test.cpp).
+- Handshake, middleware, origin checks, factory refusal, messaging, compression interoperability, close handshake, and idle and close timeouts against a real socket: [tests/websocket-integration_test.cpp](../../tests/websocket-integration_test.cpp).
 - Frame parsing, masking, and SIMD unmasking: [websocket-frame_test.cpp](../../aeronet/websocket/test/websocket-frame_test.cpp).
-- Message reassembly, control frames, close handshake, and split frames: [websocket-handler_test.cpp](../../aeronet/websocket/test/websocket-handler_test.cpp).
+- Message reassembly, control frames, close handshake, split frames, and timeout computation: [websocket-handler_test.cpp](../../aeronet/websocket/test/websocket-handler_test.cpp).
 - Upgrade validation and subprotocol negotiation: [websocket-upgrade_test.cpp](../../aeronet/websocket/test/websocket-upgrade_test.cpp).
 - permessage-deflate negotiation and interoperability: [websocket-deflate_test.cpp](../../aeronet/websocket/test/websocket-deflate_test.cpp) and [websocket-compress_test.cpp](../../aeronet/websocket/test/websocket-compress_test.cpp).

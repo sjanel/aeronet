@@ -100,6 +100,9 @@ constexpr auto kUnreservedTable = [] constexpr {
   return table;
 }();
 
+// Dotfiles and dot-directories are hidden, except '.well-known' that RFC 8615 reserves for public metadata.
+constexpr bool IsHiddenName(std::string_view name) { return name.starts_with('.') && name != ".well-known"; }
+
 void AppendHtmlEscaped(std::string_view requestPath, RawChars& out) {
   for (char ch : requestPath) {
     switch (ch) {
@@ -267,7 +270,7 @@ struct DirectoryListingResult {
     }
 
     std::string name = current.path().filename().string();
-    if (!config.showHiddenFiles && name.starts_with('.')) {
+    if (!config.showHiddenFiles && IsHiddenName(name)) {
       continue;
     }
 
@@ -929,9 +932,15 @@ StaticFileHandler::ResolveResult StaticFileHandler::resolveTarget(const HttpRequ
     const auto slashPos = rawPath.find('/');
     const auto segment = rawPath.substr(0, slashPos);
     if (!segment.empty() && segment != ".") {
-      if (segment == "..") {
+      if (segment == ".." || (!_config.showHiddenFiles && IsHiddenName(segment))) {
         return ResolveResult::NotFound;
       }
+#ifdef AERONET_WINDOWS
+      // On Windows, a backslash separates path elements and a colon introduces a drive or an alternate data stream.
+      if (segment.find_first_of("\\:") != std::string_view::npos) {
+        return ResolveResult::NotFound;
+      }
+#endif
       relative /= segment;
     }
     if (slashPos == std::string_view::npos) {
@@ -941,8 +950,9 @@ StaticFileHandler::ResolveResult StaticFileHandler::resolveTarget(const HttpRequ
   }
 
   resolvedPath = _root / relative;
+  // Symbolic links are followed: operator() then checks that the target is inside the root directory.
   std::error_code ec;
-  const auto status = std::filesystem::symlink_status(resolvedPath, ec);
+  const auto status = std::filesystem::status(resolvedPath, ec);
   if (ec) {
     return ResolveResult::NotFound;
   }
@@ -950,7 +960,7 @@ StaticFileHandler::ResolveResult StaticFileHandler::resolveTarget(const HttpRequ
     if (!_config.defaultIndex().empty()) {
       std::filesystem::path indexPath = resolvedPath / _config.defaultIndex();
       std::error_code indexEc;
-      const auto indexStatus = std::filesystem::symlink_status(indexPath, indexEc);
+      const auto indexStatus = std::filesystem::status(indexPath, indexEc);
       if (!indexEc && std::filesystem::is_regular_file(indexStatus)) {
         resolvedPath = std::move(indexPath);
         return ResolveResult::RegularFile;
@@ -959,12 +969,37 @@ StaticFileHandler::ResolveResult StaticFileHandler::resolveTarget(const HttpRequ
     return _config.enableDirectoryIndex ? ResolveResult::Directory : ResolveResult::NotFound;
   }
 
-  return requestedTrailingSlash ? ResolveResult::NotFound : ResolveResult::RegularFile;
+  // Only regular files are served: opening a FIFO or a device could block the event loop.
+  return requestedTrailingSlash || !std::filesystem::is_regular_file(status) ? ResolveResult::NotFound
+                                                                             : ResolveResult::RegularFile;
+}
+
+bool StaticFileHandler::isWithinRoot(const std::filesystem::path& path) const {
+  std::error_code ec;
+  const auto canonicalPath = std::filesystem::canonical(path, ec);
+  if (ec) {
+    log::error("Unable to resolve '{}': {}", PathString(path).c_str(), ec.message());
+    return false;
+  }
+  const auto& rootStr = _root.native();
+  const auto& pathStr = canonicalPath.native();
+  if (!pathStr.starts_with(rootStr)) {
+    log::warn("Refusing to serve '{}': it resolves outside of the root directory", PathString(path).c_str());
+    return false;
+  }
+  // '/srv/www' contains '/srv/www/a' but not '/srv/www2'.
+  static constexpr auto kSep = std::filesystem::path::preferred_separator;
+  if (pathStr.size() != rootStr.size() && rootStr.back() != kSep && pathStr[rootStr.size()] != kSep) {
+    log::warn("Refusing to serve '{}': it resolves outside of the root directory", PathString(path).c_str());
+    return false;
+  }
+  return true;
 }
 
 void StaticFileHandler::buildHeaderMeta(std::string_view filePath, const File& file, CachedFileHeaders& out) const {
   out.fileSize = file.size();
   out.lastModified = file.lastModified();
+  file.appendIdentityData(out.identity);
   // A successfully opened File always carries a valid mtime from its fstat(); operator() returns 503 before
   // reaching this point otherwise. So the modification time (and the derived ETag/date) are always well-formed.
   assert(out.lastModified != kInvalidTimePoint);
@@ -997,28 +1032,42 @@ void StaticFileHandler::buildHeaderMeta(std::string_view filePath, const File& f
   out.contentTypeLen = SafeCast<uint32_t>(contentType.size());
 }
 
-const StaticFileHandler::CachedFileHeaders& StaticFileHandler::resolveHeaderMeta(std::string_view filePath,
-                                                                                 const File& file,
-                                                                                 CachedFileHeaders& scratch) const {
+const StaticFileHandler::CachedFileHeaders* StaticFileHandler::resolveHeaderMeta(
+    const std::filesystem::path& targetPath, std::string_view filePath, const File& file,
+    CachedFileHeaders& scratch) const {
   if (_config.headerCacheCapacity == 0) {
+    if (!isWithinRoot(targetPath)) {
+      return nullptr;
+    }
     buildHeaderMeta(filePath, file, scratch);
-    return scratch;
+    return &scratch;
   }
 
-  // Single hash probe, as before. Value is a raw CacheNode*, default-constructed to nullptr on insert so we can
-  // tell "just created the slot" apart from "found an existing node" without a second lookup.
-  auto [it, inserted] = _headerCache.try_emplace(filePath, nullptr);
-
-  if (!inserted) {
+  auto it = _headerCache.find(filePath);
+  if (it != _headerCache.end()) {
     CacheNode* pNode = it->second;
-    if (pNode->headers.fileSize != file.size() || pNode->headers.lastModified != file.lastModified()) {
-      buildHeaderMeta(filePath, file, pNode->headers);
+    CachedFileHeaders& headers = pNode->headers;
+
+    // The root containment of this file was verified when it was cached. It only needs to be checked again if the
+    // path now leads to another file (a symbolic link retargeted, a file replaced...).
+    char identity[File::kIdentitySize];
+    file.appendIdentityData(identity);
+    const bool sameFile = std::memcmp(headers.identity, identity, sizeof(identity)) == 0;
+    if (!sameFile && !isWithinRoot(targetPath)) {
+      return nullptr;
+    }
+    if (!sameFile || headers.fileSize != file.size() || headers.lastModified != file.lastModified()) {
+      buildHeaderMeta(filePath, file, headers);
     }
     // Pool-owned node: address is stable, so this pointer surgery is safe regardless of what the map does
     // internally (rehash, backward-shift on other keys, etc).
     lruUnlink(pNode);
     lruPushFront(pNode);
-    return pNode->headers;
+    return &headers;
+  }
+
+  if (!isWithinRoot(targetPath)) {
+    return nullptr;
   }
 
   // Miss: evict first if we're already at the configured budget, then allocate. destroyAndRelease() returns the
@@ -1029,16 +1078,14 @@ const StaticFileHandler::CachedFileHeaders& StaticFileHandler::resolveHeaderMeta
     lruUnlink(pVictim);
     _headerCache.erase(pVictim->key);
     _headerCachePool.destroyAndRelease(pVictim);
-    // 'it' may have been invalidated by the erase() above if the map relocated elements - re-probe.
-    it = _headerCache.find(filePath);
   }
 
   CacheNode* pNode = _headerCachePool.allocateAndConstruct();
   pNode->key = RawChars32(filePath);
   buildHeaderMeta(filePath, file, pNode->headers);
-  it->second = pNode;
+  _headerCache.try_emplace(filePath, pNode);
   lruPushFront(pNode);
-  return pNode->headers;
+  return &pNode->headers;
 }
 
 HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const {
@@ -1062,9 +1109,9 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
     return resp;
   }
 
-  // resolveTarget already validated the target via symlink_status; no need to stat again.
+  // resolveTarget already validated the target via status; no need to stat again.
   if (resolveResult == ResolveResult::Directory) {
-    if (!_config.enableDirectoryIndex) {
+    if (!_config.enableDirectoryIndex || !isWithinRoot(targetPath)) {
       resp = request.makeResponse(http::StatusCodeNotFound);
       return resp;
     }
@@ -1133,11 +1180,17 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
 
   const std::size_t fileSize = file.size();
 
-  // Resolve the per-file formatted headers, reusing the cache when the file is unchanged. The file size and
+  // Resolve the per-file formatted headers, reusing the cache when the file is unchanged. The file identity, size and
   // modification time captured by the File's fstat() double as the cache validation key, so the single stat()
   // performed at open time covers both serving and cache invalidation (no extra last_write_time() syscall).
   CachedFileHeaders scratchMeta;
-  const CachedFileHeaders& meta = resolveHeaderMeta(pathString.view, file, scratchMeta);
+  const CachedFileHeaders* pMeta = resolveHeaderMeta(targetPath, pathString.view, file, scratchMeta);
+  if (pMeta == nullptr) {
+    // Reached through a symbolic link that leads outside of the root directory.
+    resp = request.makeResponse(http::StatusCodeNotFound);
+    return resp;
+  }
+  const CachedFileHeaders& meta = *pMeta;
 
   const SysTimePoint lastModified = meta.lastModified;
   const std::string_view etagView{meta.etag, meta.etagLen};

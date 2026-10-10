@@ -756,6 +756,32 @@ TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_WithDeflateNoContextTakeo
   EXPECT_TRUE(responseView.contains("client_no_context_takeover"));
   EXPECT_TRUE(responseView.ends_with(http::DoubleCRLF));
 }
+
+TEST(UpgradeHandlerTest, IsSameOriginRequest) {
+  using upgrade::IsSameOriginRequest;
+  // No Origin: the client is not a browser.
+  EXPECT_TRUE(IsSameOriginRequest("", "example.com"));
+
+  EXPECT_TRUE(IsSameOriginRequest("https://example.com", "example.com"));
+  EXPECT_TRUE(IsSameOriginRequest("HTTPS://Example.COM", "example.com"));
+  EXPECT_TRUE(IsSameOriginRequest("http://example.com:8080", "example.com:8080"));
+  // Default port of the Origin scheme, on either side.
+  EXPECT_TRUE(IsSameOriginRequest("https://example.com:443", "example.com"));
+  EXPECT_TRUE(IsSameOriginRequest("https://example.com", "example.com:443"));
+  EXPECT_TRUE(IsSameOriginRequest("http://example.com", "example.com:80"));
+  EXPECT_TRUE(IsSameOriginRequest("https://[::1]", "[::1]:443"));
+
+  EXPECT_FALSE(IsSameOriginRequest("https://evil.example", "example.com"));
+  EXPECT_FALSE(IsSameOriginRequest("https://example.com.evil.example", "example.com"));
+  EXPECT_FALSE(IsSameOriginRequest("https://example.com:8443", "example.com"));
+  EXPECT_FALSE(IsSameOriginRequest("http://example.com", "example.com:443"));
+  EXPECT_FALSE(IsSameOriginRequest("https://example.com", "example.com:8443"));
+  // Opaque origin, malformed origin, and unknown scheme without default port.
+  EXPECT_FALSE(IsSameOriginRequest("null", "example.com"));
+  EXPECT_FALSE(IsSameOriginRequest("example.com", "example.com"));
+  EXPECT_TRUE(IsSameOriginRequest("chrome-extension://example.com", "example.com"));
+  EXPECT_FALSE(IsSameOriginRequest("chrome-extension://example.com:443", "example.com"));
+}
 #endif
 
 }  // namespace aeronet

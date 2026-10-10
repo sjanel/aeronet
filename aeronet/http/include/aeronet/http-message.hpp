@@ -341,6 +341,11 @@ class HttpMessage {
   // based on the body content. Removing 'Content-Encoding' while a body is set throws std::logic_error.
   void headerRemoveLineImpl(LowerAsciiKey key);
 
+  // Remove all the occurrences of the header with the given lower-case key, in a single pass over the headers. If the
+  // header is not found, the HttpMessage is not modified.
+  // Same rules as headerRemoveLineImpl() for 'Content-Type', 'Content-Length' and 'Content-Encoding'.
+  void headerRemoveAllLinesImpl(LowerAsciiKey key);
+
   // Remove the first 'value' from the last header with the given lower-case key. If the value is the only one for the
   // header, the whole header line is removed. If there are
   // multiple values for the header, only the first specified value is removed (starting from the beginning) and the
