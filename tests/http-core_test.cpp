@@ -564,22 +564,30 @@ TEST(HttpKeepAlive, RequestsFollowedByHalfCloseAreAnsweredThenClosed) {
 // The keep-alive deadline armed for a connection is not moved on each request: when it fires, the maintenance sweep
 // re-arms it from the last activity. A connection active for several keepAliveTimeout periods must stay open, and be
 // closed once it stays idle for longer than keepAliveTimeout.
-// The pause between two requests is kept well below keepAliveTimeout: loaded CI runners (macOS in particular) often
-// oversleep several times the requested duration.
+// The pause between two requests is kept far below keepAliveTimeout: on loaded CI runners (macOS in particular, where
+// all test binaries run in parallel on few cores), a thread can stay descheduled for several hundred milliseconds.
 TEST(HttpKeepAlive, ActiveConnectionOutlivesSeveralKeepAliveTimeouts) {
-  static constexpr std::chrono::milliseconds kKeepAliveTimeout{400};
-  static constexpr std::chrono::milliseconds kPauseBetweenRequests = kKeepAliveTimeout / 5;
+  static constexpr std::chrono::milliseconds kKeepAliveTimeout{1000};
+  static constexpr std::chrono::milliseconds kPauseBetweenRequests = kKeepAliveTimeout / 20;
   // Active for more than twice keepAliveTimeout: the deadline fires (and is re-armed) at least twice.
-  static constexpr int kNbRequests = 12;
+  static constexpr std::chrono::milliseconds kActiveDuration = kKeepAliveTimeout * 5 / 2;
   auto timeoutScope = makeKeepAliveTimeoutScope(kKeepAliveTimeout);
   ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(std::format("ECHO{}", req.path())); });
 
   test::ClientConnection cnx(port);
   NativeHandle fd = cnx.fd();
-  for (int requestPos = 0; requestPos < kNbRequests; ++requestPos) {
+  const auto start = std::chrono::steady_clock::now();
+  auto lastResponseTp = start;
+  for (int requestPos = 0; lastResponseTp - start < kActiveDuration; ++requestPos) {
+    // Reported on failure: a client idle for longer than keepAliveTimeout means the runner stalled the test thread,
+    // a short one that the server closed an active connection.
+    const auto clientIdle =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - lastResponseTp);
     test::sendAll(fd, std::format("GET /r{} HTTP/1.1\r\nhost: x\r\n\r\n", requestPos));
-    const std::string resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
-    ASSERT_TRUE(resp.contains(std::format("ECHO/r{}", requestPos))) << "request " << requestPos << ": " << resp;
+    const std::string resp = test::recvWithTimeout(fd, std::chrono::seconds{1});
+    ASSERT_TRUE(resp.contains(std::format("ECHO/r{}", requestPos)))
+        << "request " << requestPos << " (client idle for " << clientIdle.count() << " ms before sending it): " << resp;
+    lastResponseTp = std::chrono::steady_clock::now();
     std::this_thread::sleep_for(kPauseBetweenRequests);
   }
   EXPECT_TRUE(test::WaitForPeerClose(fd, kKeepAliveTimeout * 10));
