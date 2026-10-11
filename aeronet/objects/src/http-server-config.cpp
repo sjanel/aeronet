@@ -137,6 +137,8 @@ HttpServerConfig& HttpServerConfig::withBodyReadTimeout(std::chrono::millisecond
 
 HttpServerConfig& HttpServerConfig::withTlsCertKey(std::string_view certFile, std::string_view keyFile) {
   auto& tlsCfg = ensureTls();
+  tlsCfg.withCertPem({});
+  tlsCfg.withKeyPem({});
   tlsCfg.withCertFile(certFile);
   tlsCfg.withKeyFile(keyFile);
   return *this;
@@ -396,7 +398,15 @@ void HttpServerConfig::validate() {
 
 #ifdef AERONET_ENABLE_HTTP2
   http2.validate();
+  const bool http2Enabled = http2.enable;
+#else
+  static constexpr bool http2Enabled = false;
 #endif
+  // Selecting "h2" (http2::kAlpnH2) commits the client to HTTP/2: the server must be able to speak it.
+  if (tls.enabled && !http2Enabled &&
+      std::ranges::any_of(tls.alpnProtocols(), [](std::string_view proto) { return proto == "h2"; })) {
+    throw std::invalid_argument("TLS ALPN protocols offer \"h2\" but HTTP/2 is disabled");
+  }
 
   // Validate some header/body limits
   if (std::cmp_less(maxHeaderBytes, 128)) {

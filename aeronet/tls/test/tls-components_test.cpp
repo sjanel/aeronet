@@ -51,11 +51,13 @@
 #include "aeronet/test-tls-helper.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tls-context.hpp"
+#include "aeronet/tls-handshake-observer.hpp"
 #include "aeronet/tls-handshake.hpp"
 #include "aeronet/tls-info.hpp"
 #include "aeronet/tls-ktls.hpp"
 #include "aeronet/tls-metrics.hpp"
 #include "aeronet/tls-raii.hpp"
+#include "aeronet/tls-ticket-key-store.hpp"
 #include "aeronet/tls-transport.hpp"
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
@@ -709,7 +711,25 @@ TEST(TlsContextTest, InvalidInMemoryPemThrows) {
   cfg.withCertPem("not-a-real-pem");
   cfg.withKeyPem("still-not-a-pem");
 
-  EXPECT_THROW(TlsContext{cfg}, std::bad_alloc);
+  try {
+    TlsContext ctx(cfg);
+    ADD_FAILURE() << "TlsContext construction should fail";
+  } catch (const std::runtime_error& ex) {
+    EXPECT_TRUE(std::string_view(ex.what()).starts_with("Failed to parse the in-memory TLS certificate: "))
+        << ex.what();
+  }
+  EXPECT_EQ(::ERR_peek_error(), 0U);
+
+  // A valid certificate with a malformed private key.
+  cfg.withCertPem(CertKeyCache::Get().localhost.first);
+  try {
+    TlsContext ctx(cfg);
+    ADD_FAILURE() << "TlsContext construction should fail";
+  } catch (const std::runtime_error& ex) {
+    EXPECT_TRUE(std::string_view(ex.what()).starts_with("Failed to parse the in-memory TLS private key: "))
+        << ex.what();
+  }
+  EXPECT_EQ(::ERR_peek_error(), 0U);
 }
 
 TEST(TlsContextTest, MismatchedPrivateKeyFailsCheck) {
@@ -764,7 +784,20 @@ TEST(TlsContextTest, InvalidTrustedClientCertPemThrows) {
   cfg.requestClientCert = true;
   cfg.withCertPem(certKey.first).withKeyPem(certKey.second);
   cfg.withTlsTrustedClientCert("not-a-cert");
-  EXPECT_THROW(TlsContext{cfg}, std::bad_alloc);
+  try {
+    TlsContext ctx(cfg);
+    ADD_FAILURE() << "TlsContext construction should fail";
+  } catch (const std::runtime_error& ex) {
+    EXPECT_TRUE(std::string_view(ex.what()).starts_with("Failed to parse a trusted TLS certificate: ")) << ex.what();
+  }
+  EXPECT_EQ(::ERR_peek_error(), 0U);
+
+  // A valid certificate followed by a corrupted one.
+  std::string corrupted = certKey.first;
+  corrupted.insert(corrupted.find('\n') + 1, "!!");
+  cfg.withoutTlsTrustedClientCert().withTlsTrustedClientCert(certKey.first + corrupted);
+  EXPECT_THROW(TlsContext{cfg}, std::runtime_error);
+  EXPECT_EQ(::ERR_peek_error(), 0U);
 }
 
 // Defense in depth: even if a TlsContext is built from a config that bypassed TLSConfig::validate()
@@ -852,7 +885,7 @@ TEST(TlsContextTest, FileLoadFailureNamesTheFileAndLeavesNoOpenSslError) {
   TLSConfig memoryCfg;
   memoryCfg.enabled = true;
   memoryCfg.withCertPem(certKey.first).withKeyPem(CertKeyCache::Get().serverB.second);
-  expectFailure(memoryCfg, "Failed to use in-memory private key");
+  expectFailure(memoryCfg, "Failed to use the in-memory TLS private key: ");
 }
 
 TEST(TlsContextTest, ChangedInputFileIsEmptyWithoutInputFile) {
@@ -2215,6 +2248,520 @@ TEST(TlsTransportTest, KtlsSendWritesInClearOnTheSocket) {
   EXPECT_EQ(res.bytesProcessed, 6U);
   received += ReceiveAtLeast(clientSsl.get(), tcp.clientFd.fd(), 14);
   EXPECT_EQ(received, Concatenate(fragments.views) + "headbodysingle");
+}
+
+namespace {
+
+using SessionPtr = std::unique_ptr<SSL_SESSION, decltype(&::SSL_SESSION_free)>;
+
+struct HandshakeAttempt {
+  bool handshakeOk{false};
+  bool resumed{false};
+  bool serverHasPeerCertificate{false};
+  std::string serverPeerSubject;
+  SessionPtr session{nullptr, &::SSL_SESSION_free};
+};
+
+// Handshakes a new client connection with `context` (resuming `session` when not null, presenting `clientCert` when
+// not null), then receives a byte of application data, so that the client processed the tickets of the server.
+HandshakeAttempt HandshakeWithSession(TlsContext& context, SSL_SESSION* session,
+                                      const std::pair<std::string, std::string>* clientCert, int maxVersion = 0) {
+  SslCtxPtr clientCtx(::SSL_CTX_new(TLS_client_method()), &::SSL_CTX_free);
+  EXPECT_NE(clientCtx, nullptr);
+  ::SSL_CTX_set_verify(clientCtx.get(), SSL_VERIFY_NONE, nullptr);
+  if (maxVersion != 0) {
+    EXPECT_EQ(::SSL_CTX_set_max_proto_version(clientCtx.get(), maxVersion), 1);
+  }
+  SslPtr clientSsl(::SSL_new(clientCtx.get()), &::SSL_free);
+  SslPtr serverSsl(::SSL_new(reinterpret_cast<SSL_CTX*>(context.raw())), &::SSL_free);
+  if (clientCert != nullptr) {
+    auto certBio = MakeMemBio(clientCert->first.data(), static_cast<int>(clientCert->first.size()));
+    auto certificate = MakeX509(::PEM_read_bio_X509(certBio.get(), nullptr, nullptr, nullptr));
+    auto keyBio = MakeMemBio(clientCert->second.data(), static_cast<int>(clientCert->second.size()));
+    auto key = MakePKey(::PEM_read_bio_PrivateKey(keyBio.get(), nullptr, nullptr, nullptr));
+    EXPECT_EQ(::SSL_use_certificate(clientSsl.get(), certificate.get()), 1);
+    EXPECT_EQ(::SSL_use_PrivateKey(clientSsl.get(), key.get()), 1);
+  }
+  if (session != nullptr) {
+    EXPECT_EQ(::SSL_set_session(clientSsl.get(), session), 1);
+  }
+  int fds[2]{};
+  EXPECT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+  BaseFd serverFd(fds[0]);
+  BaseFd clientFd(fds[1]);
+  ::SSL_set_fd(serverSsl.get(), serverFd.fd());
+  ::SSL_set_fd(clientSsl.get(), clientFd.fd());
+  ::SSL_set_accept_state(serverSsl.get());
+  ::SSL_set_connect_state(clientSsl.get());
+
+  bool serverOk = false;
+  std::thread serverThread(
+      [&] { serverOk = ::SSL_accept(serverSsl.get()) == 1 && ::SSL_write(serverSsl.get(), "x", 1) == 1; });
+  char byte{};
+  const bool clientOk = ::SSL_connect(clientSsl.get()) == 1 && ::SSL_read(clientSsl.get(), &byte, 1) == 1;
+  if (clientOk) {
+    // OpenSSL marks the session of a connection freed without close_notify as not resumable.
+    (void)::SSL_shutdown(clientSsl.get());
+  }
+  // Unblocks the server if the client gave up.
+  ::shutdown(clientFd.fd(), SHUT_RDWR);
+  serverThread.join();
+  ::ERR_clear_error();
+
+  HandshakeAttempt attempt;
+  attempt.handshakeOk = clientOk && serverOk;
+  attempt.resumed = ::SSL_session_reused(serverSsl.get()) == 1;
+  if (X509* peer = ::SSL_get0_peer_certificate(serverSsl.get())) {
+    attempt.serverHasPeerCertificate = true;
+    char subject[256]{};
+    ::X509_NAME_oneline(::X509_get_subject_name(peer), subject, sizeof(subject));
+    attempt.serverPeerSubject = subject;
+  }
+  attempt.session.reset(::SSL_get1_session(clientSsl.get()));
+  return attempt;
+}
+
+TLSConfig MakeMtlsTicketsConfig(std::initializer_list<std::string_view> trustedCerts) {
+  TLSConfig cfg = MakeTlsConfig({}, false);
+  cfg.requestClientCert = true;
+  for (std::string_view trusted : trustedCerts) {
+    cfg.withTlsTrustedClientCert(trusted);
+  }
+  cfg.withTlsSessionTickets(true);
+  return cfg;
+}
+
+bool HandshakeWithServerName(const char* serverName, std::string& peerCommonName) {
+  const auto& certificates = CertKeyCache::Get();
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(certificates.localhost.first)
+      .withKeyPem(certificates.localhost.second)
+      .withTlsSniCertificateMemory("api.example.com", certificates.serverA.first, certificates.serverA.second);
+  SslTestPair pair(std::move(cfg), {});
+  if (::SSL_set_tlsext_host_name(pair.clientSsl.get(), serverName) != 1 || !PerformHandshake(pair)) {
+    return false;
+  }
+  peerCommonName = PeerCommonName(pair.clientSsl.get());
+  return true;
+}
+
+}  // namespace
+
+TEST(TlsContextTest, ServesTheIntermediateCertificatesOfAnInMemoryChain) {
+  const auto chain = test::MakeCertificateChain("localhost");
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(chain.fullChainPem()).withKeyPem(chain.leafKeyPem);
+  SslTestPair pair(std::move(cfg), {});
+
+  // The client only trusts the root: it needs the intermediate certificate sent by the server.
+  auto rootBio = MakeMemBio(chain.rootCertPem.data(), static_cast<int>(chain.rootCertPem.size()));
+  auto root = MakeX509(::PEM_read_bio_X509(rootBio.get(), nullptr, nullptr, nullptr));
+  ASSERT_EQ(::X509_STORE_add_cert(::SSL_CTX_get_cert_store(pair.clientCtx.get()), root.get()), 1);
+  ::SSL_set_verify(pair.clientSsl.get(), SSL_VERIFY_PEER, nullptr);
+
+  ASSERT_TRUE(PerformHandshake(pair));
+  EXPECT_EQ(::SSL_get_verify_result(pair.clientSsl.get()), X509_V_OK);
+  const STACK_OF(X509)* peerChain = ::SSL_get_peer_cert_chain(pair.clientSsl.get());
+  ASSERT_NE(peerChain, nullptr);
+  EXPECT_EQ(sk_X509_num(peerChain), 2);
+}
+
+TEST(TlsContextTest, ServesTheIntermediateCertificatesOfAChainFile) {
+  const auto chain = test::MakeCertificateChain("localhost");
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile certFile(tmpDir, chain.fullChainPem());
+  test::ScopedTempFile keyFile(tmpDir, chain.leafKeyPem);
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertFile(certFile.filePath().string()).withKeyFile(keyFile.filePath().string());
+  SslTestPair pair(std::move(cfg), {});
+
+  auto rootBio = MakeMemBio(chain.rootCertPem.data(), static_cast<int>(chain.rootCertPem.size()));
+  auto root = MakeX509(::PEM_read_bio_X509(rootBio.get(), nullptr, nullptr, nullptr));
+  ASSERT_EQ(::X509_STORE_add_cert(::SSL_CTX_get_cert_store(pair.clientCtx.get()), root.get()), 1);
+  ::SSL_set_verify(pair.clientSsl.get(), SSL_VERIFY_PEER, nullptr);
+
+  ASSERT_TRUE(PerformHandshake(pair));
+  EXPECT_EQ(::SSL_get_verify_result(pair.clientSsl.get()), X509_V_OK);
+  EXPECT_EQ(sk_X509_num(::SSL_get_peer_cert_chain(pair.clientSsl.get())), 2);
+}
+
+TEST(TlsContextTest, InMemoryChainWithMalformedIntermediateCertificateThrows) {
+  const auto chain = test::MakeCertificateChain("localhost");
+  std::string corrupted = chain.intermediateCertPem;
+  corrupted.insert(corrupted.find('\n') + 1, "!!");
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(chain.leafCertPem + corrupted).withKeyPem(chain.leafKeyPem);
+  EXPECT_THROW(TlsContext{cfg}, std::runtime_error);
+  EXPECT_EQ(::ERR_peek_error(), 0U);
+}
+
+TEST(TlsContextTest, KeyOfAnotherAlgorithmThanTheCertificateIsRejected) {
+  // An ECDSA key for an RSA certificate: SSL_CTX_use_PrivateKey() accepts it (another key slot).
+  const auto& rsaCertKey = CertKeyCache::Get().localhost;
+  const auto ecdsaKeyPem = test::MakeEphemeralCertKey("other", 3600, test::KeyAlgorithm::EcdsaP256).second;
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(rsaCertKey.first).withKeyPem(ecdsaKeyPem);
+  EXPECT_THROW(TlsContext{cfg}, std::runtime_error);
+  EXPECT_EQ(::ERR_peek_error(), 0U);
+
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile certFile(tmpDir, rsaCertKey.first);
+  test::ScopedTempFile keyFile(tmpDir, ecdsaKeyPem);
+  TLSConfig fileCfg;
+  fileCfg.enabled = true;
+  fileCfg.withCertFile(certFile.filePath().string()).withKeyFile(keyFile.filePath().string());
+  try {
+    TlsContext ctx(fileCfg);
+    ADD_FAILURE() << "TlsContext construction should fail";
+  } catch (const std::runtime_error& ex) {
+    EXPECT_TRUE(std::string_view(ex.what()).starts_with("Failed to load TLS private key file '")) << ex.what();
+  }
+  EXPECT_EQ(::ERR_peek_error(), 0U);
+}
+
+TEST(TlsContextTest, EncryptedPrivateKeyIsRejectedWithoutPrompting) {
+  const auto& certKey = CertKeyCache::Get().localhost;
+  const std::string encryptedKey = test::EncryptPrivateKeyPem(certKey.second, "passphrase");
+  ASSERT_TRUE(encryptedKey.contains("ENCRYPTED PRIVATE KEY"));
+
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(certKey.first).withKeyPem(encryptedKey);
+  EXPECT_THROW(TlsContext{cfg}, std::runtime_error);
+
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile certFile(tmpDir, certKey.first);
+  test::ScopedTempFile keyFile(tmpDir, encryptedKey);
+  TLSConfig fileCfg;
+  fileCfg.enabled = true;
+  fileCfg.withCertFile(certFile.filePath().string()).withKeyFile(keyFile.filePath().string());
+  EXPECT_THROW(TlsContext{fileCfg}, std::runtime_error);
+  EXPECT_EQ(::ERR_peek_error(), 0U);
+}
+
+TEST(TlsContextTest, TrustedCertificateBundleTrustsAndAdvertisesEveryCertificate) {
+  const auto& certificates = CertKeyCache::Get();
+  TLSConfig cfg = MakeTlsConfig({}, false);
+  cfg.requireClientCert = true;
+  // One entry holding two certificates.
+  cfg.withTlsTrustedClientCert(certificates.serverA.first + certificates.client.first);
+  TlsContext context(cfg);
+
+  const STACK_OF(X509_NAME)* caNames = ::SSL_CTX_get_client_CA_list(reinterpret_cast<SSL_CTX*>(context.raw()));
+  ASSERT_NE(caNames, nullptr);
+  EXPECT_EQ(sk_X509_NAME_num(caNames), 2);
+
+  // The second certificate of the bundle is trusted too.
+  const auto attempt = HandshakeWithSession(context, nullptr, &certificates.client);
+  EXPECT_TRUE(attempt.handshakeOk);
+  EXPECT_TRUE(attempt.serverHasPeerCertificate);
+}
+
+TEST(TlsContextTest, ResumesVerifiedClientCertificateSessions) {
+  const auto& certificates = CertKeyCache::Get();
+  for (int maxVersion : {TLS1_2_VERSION, TLS1_3_VERSION}) {
+    TlsContext context(MakeMtlsTicketsConfig({certificates.client.first}));
+
+    auto first = HandshakeWithSession(context, nullptr, &certificates.client, maxVersion);
+    ASSERT_TRUE(first.handshakeOk) << maxVersion;
+    EXPECT_FALSE(first.resumed);
+    ASSERT_NE(first.session, nullptr);
+
+    // Without a session id context, OpenSSL fails the resumption of a session with a verified client certificate.
+    auto second = HandshakeWithSession(context, first.session.get(), &certificates.client, maxVersion);
+    EXPECT_TRUE(second.handshakeOk) << maxVersion;
+    EXPECT_TRUE(second.resumed) << maxVersion;
+    // The client certificate is part of the resumed session.
+    EXPECT_TRUE(second.serverHasPeerCertificate) << maxVersion;
+    EXPECT_EQ(second.serverPeerSubject, first.serverPeerSubject) << maxVersion;
+  }
+}
+
+TEST(TlsContextTest, SessionsDoNotResumeUnderOtherClientVerificationSettings) {
+  const auto& certificates = CertKeyCache::Get();
+  // The same ticket keys for all the contexts: only the session id context can prevent the resumption.
+  auto ticketKeyStore = std::make_shared<TlsTicketKeyStore>(std::chrono::hours{1}, 2);
+
+  TlsContext initial(MakeMtlsTicketsConfig({certificates.client.first}), ticketKeyStore);
+  auto first = HandshakeWithSession(initial, nullptr, &certificates.client);
+  ASSERT_TRUE(first.handshakeOk);
+  ASSERT_NE(first.session, nullptr);
+
+  TlsContext sameSettings(MakeMtlsTicketsConfig({certificates.client.first}), ticketKeyStore);
+  EXPECT_TRUE(HandshakeWithSession(sameSettings, first.session.get(), &certificates.client).resumed);
+
+  // Another trust store (the client certificate would no longer be trusted, for instance): full handshake.
+  TlsContext otherTrust(MakeMtlsTicketsConfig({certificates.client.first, certificates.serverA.first}), ticketKeyStore);
+  auto otherTrustAttempt = HandshakeWithSession(otherTrust, first.session.get(), &certificates.client);
+  EXPECT_TRUE(otherTrustAttempt.handshakeOk);
+  EXPECT_FALSE(otherTrustAttempt.resumed);
+
+  // A required client certificate instead of a requested one.
+  TLSConfig requiredCfg = MakeMtlsTicketsConfig({certificates.client.first});
+  requiredCfg.requireClientCert = true;
+  TlsContext required(requiredCfg, ticketKeyStore);
+  EXPECT_FALSE(HandshakeWithSession(required, first.session.get(), &certificates.client).resumed);
+}
+
+TEST(TlsContextTest, SessionsDoNotResumeAfterTheCrlFileChanged) {
+  const auto& certificates = CertKeyCache::Get();
+  auto ticketKeyStore = std::make_shared<TlsTicketKeyStore>(std::chrono::hours{1}, 2);
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile crlFile(tmpDir, MakeCrlPem(certificates.client, false));
+
+  TLSConfig cfg = MakeMtlsTicketsConfig({certificates.client.first});
+  cfg.withTlsCrlFile(crlFile.filePath().string());
+  TlsContext initial(cfg, ticketKeyStore);
+  auto first = HandshakeWithSession(initial, nullptr, &certificates.client);
+  ASSERT_TRUE(first.handshakeOk);
+
+  TlsContext sameCrl(cfg, ticketKeyStore);
+  EXPECT_TRUE(HandshakeWithSession(sameCrl, first.session.get(), &certificates.client).resumed);
+
+  // A CRL rewritten at the same path: the sessions established before must verify the certificate again.
+  std::this_thread::sleep_for(std::chrono::milliseconds{10});
+  {
+    std::ofstream out(crlFile.filePath(), std::ios::binary | std::ios::trunc);
+    out << MakeCrlPem(certificates.client, false) << '\n';
+  }
+  TlsContext rotatedCrl(cfg, ticketKeyStore);
+  auto afterRotation = HandshakeWithSession(rotatedCrl, first.session.get(), &certificates.client);
+  EXPECT_TRUE(afterRotation.handshakeOk);
+  EXPECT_FALSE(afterRotation.resumed);
+}
+
+TEST(TlsContextTest, SessionsDoNotResumeWhenTicketsAreDisabled) {
+  for (int maxVersion : {TLS1_2_VERSION, TLS1_3_VERSION}) {
+    TlsContext context(MakeTlsConfig({}, false));
+    auto* rawCtx = reinterpret_cast<SSL_CTX*>(context.raw());
+    // No server-side session cache: the stateful tickets TLS 1.3 still sends never resume.
+    EXPECT_EQ(::SSL_CTX_get_session_cache_mode(rawCtx), SSL_SESS_CACHE_OFF);
+
+    auto first = HandshakeWithSession(context, nullptr, nullptr, maxVersion);
+    ASSERT_TRUE(first.handshakeOk) << maxVersion;
+    ASSERT_NE(first.session, nullptr);
+    auto second = HandshakeWithSession(context, first.session.get(), nullptr, maxVersion);
+    EXPECT_TRUE(second.handshakeOk) << maxVersion;
+    EXPECT_FALSE(second.resumed) << maxVersion;
+  }
+}
+
+TEST(TlsContextTest, SessionTimeoutIsTheTicketLifetime) {
+  TLSConfig cfg = MakeTlsConfig({}, false);
+  cfg.withTlsSessionTickets(true).withTlsSessionTicketLifetime(std::chrono::minutes{30});
+  TlsContext context(cfg);
+  EXPECT_EQ(::SSL_CTX_get_timeout(reinterpret_cast<SSL_CTX*>(context.raw())), 1800);
+  EXPECT_EQ(::SSL_CTX_get_session_cache_mode(reinterpret_cast<SSL_CTX*>(context.raw())), SSL_SESS_CACHE_OFF);
+
+  // A zero lifetime (keys never rotated) keeps the OpenSSL default.
+  cfg.withTlsSessionTicketLifetime(std::chrono::seconds{0});
+  TlsContext noRotation(cfg);
+  EXPECT_GT(::SSL_CTX_get_timeout(reinterpret_cast<SSL_CTX*>(noRotation.raw())), 0);
+}
+
+TEST(TlsContextTest, StrictAlpnRejectsAClientOfferingNoProtocol) {
+  SslTestPair pair({"h2", "http/1.1"}, {}, true);
+  TlsHandshakeObserver observer;
+  ASSERT_EQ(SetTlsHandshakeObserver(pair.serverSsl.get(), &observer), 1);
+  EXPECT_FALSE(PerformHandshake(pair));
+  ::ERR_clear_error();
+  EXPECT_EQ(pair.context.alpnStrictMismatches(), 1U);
+  EXPECT_TRUE(observer.alpnStrictMismatch);
+
+  // Without strict mode, a client offering no protocol is served.
+  SslTestPair lenient({"h2", "http/1.1"}, {}, false);
+  EXPECT_TRUE(PerformHandshake(lenient));
+  EXPECT_EQ(lenient.context.alpnStrictMismatches(), 0U);
+}
+
+TEST(TlsContextTest, SniNameWithTrailingDotSelectsItsRoute) {
+  std::string commonName;
+  ASSERT_TRUE(HandshakeWithServerName("api.example.com.", commonName));
+  EXPECT_EQ(commonName, "server-a");
+  ASSERT_TRUE(HandshakeWithServerName("API.example.com", commonName));
+  EXPECT_EQ(commonName, "server-a");
+  ASSERT_TRUE(HandshakeWithServerName("api.example.com..", commonName));
+  EXPECT_EQ(commonName, "localhost");
+}
+
+TEST(TlsContextTest, CipherPoliciesServeEcdsaCertificatesOverTls12) {
+  const auto ecdsaCertKey = test::MakeEphemeralCertKey("localhost", 3600, test::KeyAlgorithm::EcdsaP256);
+  for (auto policy :
+       {TLSConfig::CipherPolicy::Modern, TLSConfig::CipherPolicy::Compatibility, TLSConfig::CipherPolicy::Legacy}) {
+    TLSConfig cfg;
+    cfg.enabled = true;
+    cfg.withCertPem(ecdsaCertKey.first).withKeyPem(ecdsaCertKey.second).withTlsCipherPolicy(policy);
+    SslTestPair pair(std::move(cfg), {});
+    ASSERT_EQ(::SSL_set_max_proto_version(pair.clientSsl.get(), TLS1_2_VERSION), 1);
+    EXPECT_TRUE(PerformHandshake(pair)) << static_cast<int>(policy);
+    ::ERR_clear_error();
+  }
+}
+
+TEST(TlsContextTest, LegacyCipherPolicyAcceptsCbcSuitesForEcdsaAndRsaCertificates) {
+  const auto ecdsaCertKey = test::MakeEphemeralCertKey("localhost", 3600, test::KeyAlgorithm::EcdsaP256);
+  const auto& rsaCertKey = CertKeyCache::Get().localhost;
+  for (const auto& [certKey, cipher] :
+       {std::pair{&ecdsaCertKey, "ECDHE-ECDSA-AES128-SHA"}, std::pair{&rsaCertKey, "ECDHE-RSA-AES128-SHA"}}) {
+    TLSConfig cfg;
+    cfg.enabled = true;
+    cfg.withCertPem(certKey->first).withKeyPem(certKey->second).withTlsCipherPolicy(TLSConfig::CipherPolicy::Legacy);
+    SslTestPair pair(std::move(cfg), {});
+    ASSERT_EQ(::SSL_set_max_proto_version(pair.clientSsl.get(), TLS1_2_VERSION), 1);
+    ASSERT_EQ(::SSL_set_cipher_list(pair.clientSsl.get(), cipher), 1);
+    EXPECT_TRUE(PerformHandshake(pair)) << cipher;
+    ::ERR_clear_error();
+  }
+}
+
+TEST(TlsTransportTest, StaleErrorOfAnotherOpenSslUserDoesNotFailTheHandshake) {
+  SslTestPair pair({"http/1.1"}, {"http/1.1"});
+  SetNonBlocking(pair.serverFd.fd());
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+
+  // Left by unrelated code of the same thread (a JWT signature check, say).
+  ERR_raise(ERR_LIB_RSA, ERR_R_INTERNAL_ERROR);
+  char buf[16];
+  // No ClientHello yet: the handshake would block.
+  const auto res = transport.read(buf, sizeof(buf));
+  EXPECT_EQ(res.want, TransportHint::ReadReady);
+  EXPECT_EQ(::ERR_peek_error(), 0U);
+}
+
+TEST(TlsTransportTest, StaleErrorOfAnotherOpenSslUserDoesNotFailReadsAndWrites) {
+  SslTestPair pair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(PerformHandshake(pair));
+  SetNonBlocking(pair.serverFd.fd());
+  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+
+  ERR_raise(ERR_LIB_RSA, ERR_R_INTERNAL_ERROR);
+  char buf[16];
+  // No data: the read would block, which must not look like a failure.
+  auto res = transport.read(buf, sizeof(buf));
+  EXPECT_EQ(res.want, TransportHint::ReadReady);
+  EXPECT_EQ(res.bytesProcessed, 0U);
+
+  ERR_raise(ERR_LIB_RSA, ERR_R_INTERNAL_ERROR);
+  res = transport.write("hello");
+  EXPECT_EQ(res.want, TransportHint::None);
+  EXPECT_EQ(res.bytesProcessed, 5U);
+  EXPECT_EQ(::ERR_peek_error(), 0U);
+}
+
+namespace {
+
+// A self-signed certificate with a 512-bit RSA key: too weak for any OpenSSL security level above 0.
+std::pair<std::string, std::string> MakeWeakRsaCertKey() {
+  PKeyPtr key(::EVP_RSA_gen(512), &::EVP_PKEY_free);
+  EXPECT_NE(key, nullptr);
+  X509Ptr cert(::X509_new(), &::X509_free);
+  ::ASN1_INTEGER_set(::X509_get_serialNumber(cert.get()), 1);
+  ::X509_gmtime_adj(::X509_getm_notBefore(cert.get()), 0);
+  ::X509_gmtime_adj(::X509_getm_notAfter(cert.get()), 3600);
+  ::X509_set_pubkey(cert.get(), key.get());
+  X509_NAME* name = ::X509_get_subject_name(cert.get());
+  ::X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>("weak"), -1, -1, 0);
+  ::X509_set_issuer_name(cert.get(), name);
+  EXPECT_GT(::X509_sign(cert.get(), key.get(), ::EVP_sha256()), 0);
+  auto certBio = MakeMemoryBio();
+  auto keyBio = MakeMemoryBio();
+  EXPECT_EQ(::PEM_write_bio_X509(certBio.get(), cert.get()), 1);
+  EXPECT_EQ(::PEM_write_bio_PrivateKey(keyBio.get(), key.get(), nullptr, nullptr, 0, nullptr, nullptr), 1);
+  const auto content = [](BIO* bio) {
+    char* data = nullptr;
+    const long size = ::BIO_get_mem_data(bio, &data);
+    return std::string(data, static_cast<std::size_t>(size));
+  };
+  return {content(certBio.get()), content(keyBio.get())};
+}
+
+}  // namespace
+
+TEST(TlsContextTest, CertificatesRejectedByTheSecurityLevelThrow) {
+  const auto weak = MakeWeakRsaCertKey();
+  ASSERT_FALSE(weak.first.empty());
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(weak.first).withKeyPem(weak.second);
+  try {
+    TlsContext ctx(cfg);
+    ADD_FAILURE() << "TlsContext construction should fail";
+  } catch (const std::runtime_error& ex) {
+    EXPECT_TRUE(std::string_view(ex.what()).starts_with("Failed to use the in-memory TLS certificate: ")) << ex.what();
+  }
+  EXPECT_EQ(::ERR_peek_error(), 0U);
+
+  // A valid leaf certificate followed by a weak intermediate one.
+  const auto chain = test::MakeCertificateChain("localhost");
+  cfg.withCertPem(chain.leafCertPem + weak.first).withKeyPem(chain.leafKeyPem);
+  try {
+    TlsContext ctx(cfg);
+    ADD_FAILURE() << "TlsContext construction should fail";
+  } catch (const std::runtime_error& ex) {
+    EXPECT_TRUE(std::string_view(ex.what()).starts_with("Failed to add an intermediate certificate")) << ex.what();
+  }
+  EXPECT_EQ(::ERR_peek_error(), 0U);
+}
+
+#if AERONET_WANT_MALLOC_OVERRIDES
+TEST(TlsContextTest, EveryAllocationFailureDuringConstructionThrowsCleanly) {
+  // A certificate chain, a trusted certificate bundle and session tickets: the allocations of aeronet's own code.
+  // ECDSA certificates only: their parsing allocates much less than RSA ones.
+  const auto chain = test::MakeCertificateChain("localhost");
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(chain.fullChainPem()).withKeyPem(chain.leafKeyPem);
+  cfg.requestClientCert = true;
+  cfg.withTlsTrustedClientCert(chain.rootCertPem + chain.intermediateCertPem);
+  cfg.withTlsSessionTickets(true);
+  {
+    // Lazy global initialization of OpenSSL (it would stay failed for the whole process).
+    TlsContext warmUp(cfg);
+  }
+
+  // The construction starts with SSL_CTX_new(): skip its allocations (OpenSSL code, many of them).
+  static constexpr int kMaxAllocs = std::numeric_limits<int>::max();
+  test::FailNextMalloc(kMaxAllocs, 0);
+  SslCtxPtr rawCtx(::SSL_CTX_new(::TLS_server_method()), &::SSL_CTX_free);
+  const int nbCtxAllocs = kMaxAllocs - __atomic_load_n(&test::g_malloc_fail_after, __ATOMIC_RELAXED);
+  test::ResetToSysMalloc();
+  rawCtx.reset();
+
+  // Then fails the next allocation, then the following one, and so on until the construction completes without failure.
+  int nbFailedConstructions = 0;
+  int nbSuccessfulAllocs = nbCtxAllocs;
+  for (;; ++nbSuccessfulAllocs) {
+    test::FailNextMalloc(nbSuccessfulAllocs, 1);
+    bool constructed = false;
+    try {
+      TlsContext ctx(cfg);
+      constructed = true;
+    } catch (const std::exception&) {
+      ++nbFailedConstructions;
+    }
+    const bool failureInjected = __atomic_load_n(&test::g_malloc_failure_counter, __ATOMIC_RELAXED) == 0;
+    test::ResetToSysMalloc();
+    if (!constructed) {
+      // A failed construction leaves the OpenSSL error queue of the thread empty.
+      ASSERT_EQ(::ERR_peek_error(), 0U) << nbSuccessfulAllocs;
+    } else if (!failureInjected) {
+      break;
+    }
+    // OpenSSL may tolerate a failed allocation, leaving an error behind (that TLS I/O ignores).
+    ::ERR_clear_error();
+  }
+  EXPECT_GT(nbFailedConstructions, 0);
+}
+#endif
+
+TEST(TlsContextTest, ContextOptionsPrioritizeChachaForClientsPreferringIt) {
+  TlsContext context(MakeTlsConfig({}, false));
+  EXPECT_NE(::SSL_CTX_get_options(reinterpret_cast<SSL_CTX*>(context.raw())) & SSL_OP_PRIORITIZE_CHACHA, 0U);
 }
 
 #if AERONET_WANT_MALLOC_OVERRIDES

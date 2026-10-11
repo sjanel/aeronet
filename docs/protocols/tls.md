@@ -16,7 +16,7 @@ Each server owns its `SSL_CTX` and its TLS policy: there is no process-global mu
 
 ## Minimal HTTPS listener
 
-The file form expects a PEM certificate or full chain and its matching PEM private key:
+The file form expects a PEM certificate chain and its matching PEM private key. The chain holds the server certificate first, then its intermediate certificates (a `fullchain.pem`): aeronet sends all of them, so that clients trusting only the root can verify it.
 
 ```cpp
 #include <aeronet/aeronet-server.hpp>
@@ -36,7 +36,9 @@ aeronet::SingleHttpServer server(std::move(config));
 server.run();
 ```
 
-`withTlsCertKeyMemory(certPem, keyPem)` is available when a secret manager or another component already holds the PEM data. Avoid unnecessary `std::string` copies of private keys and keep caller-owned buffers alive only as long as needed.
+`withTlsCertKeyMemory(certPem, keyPem)` is available when a secret manager or another component already holds the PEM data, in the same format. Files and in-memory PEM data are exclusive: each builder clears the other form, and `validate()` rejects a configuration setting both. Avoid unnecessary `std::string` copies of private keys and keep caller-owned buffers alive only as long as needed.
+
+The private key must not be encrypted: aeronet rejects an encrypted key instead of letting OpenSSL prompt for its passphrase on the terminal, which would block the event loop. A key that does not match the certificate is rejected too, including a key of another algorithm (an ECDSA key for an RSA certificate). The error names the faulty file and gives the OpenSSL reason.
 
 When no minimum is configured, aeronet still enforces TLS 1.2 as the effective minimum. TLS 1.3 remains available. The context also prefers the server's cipher order, disables renegotiation where the OpenSSL build exposes that control, and disables TLS compression by default. Explicit protocol bounds accept `TLS1.2` and `TLS1.3`.
 
@@ -53,11 +55,11 @@ config.tls
         "*.edge.example.com", "/run/tls/edge.crt", "/run/tls/edge.key");
 ```
 
-Names are normalized to lowercase. A wildcard such as `*.edge.example.com` matches exactly one non-empty label, such as `api.edge.example.com`; it matches neither the bare `edge.example.com` nor `deep.api.edge.example.com`. Certificate files and in-memory PEM routes may be mixed.
+Names are normalized to lowercase, and a pattern can only be mapped once. A wildcard such as `*.edge.example.com` matches exactly one non-empty label, such as `api.edge.example.com`; it matches neither the bare `edge.example.com` nor `deep.api.edge.example.com`. A fully qualified name with a trailing dot (`api.example.com.`) selects the same route as without it. Certificate files and in-memory PEM routes may be mixed, and each route also sends its intermediate certificates.
 
 ## Versions, ciphers, and ALPN
 
-`withTlsCipherPolicy()` applies one of the predefined `Modern`, `Compatibility`, or `Legacy` policies to TLS 1.3 suites and TLS 1.2-and-earlier cipher lists. `Default` leaves OpenSSL's cipher selection in place. A raw `withTlsCipherList()` setting affects the OpenSSL pre-TLS-1.3 list; prefer a named policy unless exact compatibility requirements justify maintaining a custom expression.
+`withTlsCipherPolicy()` applies one of the predefined `Modern`, `Compatibility`, or `Legacy` policies. They share the TLS 1.3 suites (all AEAD) and differ by their TLS 1.2 ciphers, for ECDSA and RSA certificates alike: `Modern` only allows forward-secret AEAD ciphers (AES-GCM, ChaCha20-Poly1305), `Compatibility` adds the forward-secret CBC ciphers with SHA-2, and `Legacy` adds the SHA-1 CBC and static RSA key exchange ciphers of old clients. The AEAD ciphers always come first: HTTP/2 clients reject the others (RFC 9113 Appendix A). ChaCha20-Poly1305 is chosen for a client preferring it (typically a client without AES hardware acceleration). `Default` leaves OpenSSL's cipher selection in place. A raw `withTlsCipherList()` setting replaces the OpenSSL TLS 1.2 list and requires the `Default` policy (`validate()` rejects the combination); prefer a named policy unless exact compatibility requirements justify maintaining a custom expression. A maximum version below the minimum is rejected too, as no handshake could succeed.
 
 ALPN follows server preference order. For a TLS endpoint serving both HTTP versions, use:
 
@@ -66,9 +68,9 @@ aeronet::HttpServerConfig config;
 config.withTlsAlpnProtocols({"h2", "http/1.1"});
 ```
 
-The server selects the first protocol of its own list that the client also offered. With `withTlsAlpnMustMatch(true)`, the handshake fails when the client offers none of them, and the `tlsAlpnStrictMismatches` statistic is incremented. Without strict mode, the connection continues without ALPN and uses HTTP/1.1.
+The server selects the first protocol of its own list that the client also offered. With `withTlsAlpnMustMatch(true)`, the handshake fails (`no_application_protocol` alert) when the client offers none of them, or offers no protocol at all, and the `tlsAlpnStrictMismatches` statistic is incremented. Without strict mode, the connection continues without ALPN and uses HTTP/1.1. Offering `"h2"` commits the client to HTTP/2: `validate()` rejects it when HTTP/2 is disabled (`http2.enable = false`, or a build without `AERONET_ENABLE_HTTP2`).
 
-Handlers can read the negotiated parameters of their connection with `HttpRequestView::alpnProtocol()`, `tlsVersion()`, and `tlsCipher()`, which return empty views on a plaintext connection. The same values feed the [TLS statistics](#observability).
+Handlers can read the negotiated parameters of their connection with `HttpRequestView::alpnProtocol()`, `tlsVersion()`, and `tlsCipher()`, and the subject of the verified client certificate with `tlsPeerSubject()` (see [Mutual TLS](#mutual-tls)). They return empty views on a plaintext connection. The same values feed the [TLS statistics](#observability).
 
 ## Mutual TLS
 
@@ -87,7 +89,23 @@ config.withTlsTrustedClientCert(clientCaPem)
       .withTlsRequireClientCert();
 ```
 
+Each entry may also be a bundle of PEM certificates. The names of the trusted certificates are sent in the certificate request, so that a client holding several certificates can pick one the server accepts. A client sends its intermediate certificates with its own: trusting the root CA is enough.
+
 Strict mTLS validation rejects a configuration with no trust material. The configured trust store, CRLs, and revocation callback apply to inbound client certificates. They do not configure revocation checking for outbound connections made by `HttpClient`.
+
+Handlers identify the client with `HttpRequestView::tlsPeerSubject()`, the RFC 2253 subject of its verified certificate (for instance `CN=client,O=Example`), empty when the client presented none:
+
+```cpp
+aeronet::Router router;
+router.setDefault([](const aeronet::HttpRequestView& req) {
+  if (req.tlsPeerSubject() != "CN=billing,O=Example") {
+    return aeronet::HttpResponse(aeronet::http::StatusCodeForbidden);
+  }
+  return aeronet::HttpResponse("welcome");
+});
+```
+
+A resumed session (see [Session tickets](#session-tickets)) skips the verification of the client certificate, which is part of the session. A session therefore only resumes under the client verification settings that established it: changing the trust anchors, the request or require mode, the CRL file (even rewritten at the same path) or the revocation callback forces a full handshake, and a new verification, for the sessions established before. A revocation callback whose decisions change without a configuration change is not consulted for resumed sessions: disable session tickets if every connection must be checked.
 
 ## Revocation and certificate status
 
@@ -212,14 +230,14 @@ config.tls.withTlsSessionTickets(true)
           .withTlsSessionTicketMaxKeys(2);
 ```
 
-A session ticket is the encrypted state of a TLS session, kept by the client. Presenting it on a new connection resumes the session with an abbreviated handshake, without a server-side session cache. Tickets are encrypted with 48-byte keys: a 16-byte key name, a 16-byte AES key, and a 16-byte HMAC key.
+A session ticket is the encrypted state of a TLS session, kept by the client. Presenting it on a new connection resumes the session with an abbreviated handshake. Tickets are the only resumption mechanism: aeronet keeps no server-side session cache, whose memory would grow with the number of clients (per worker and per SNI certificate). With tickets disabled, sessions never resume (TLS 1.3 still sends the tickets that follow its handshake, so that clients without `TCP_NODELAY` do not wait for a delayed ACK before their first request, but they are never accepted). Tickets are encrypted with 48-byte keys: a 16-byte key name, a 16-byte AES key, and a 16-byte HMAC key.
 
-With automatic rotation, aeronet generates random keys (`RAND_bytes()`) and replaces the current key every `sessionTicketLifetime`. It keeps up to `sessionTicketMaxKeys` keys, so tickets issued before a rotation can still be decrypted, and drops older keys. A `MultiHttpServer` shares one key store between its workers, so a ticket issued by one worker resumes on any other. Session resumption is supported, but aeronet does not enable TLS 1.3 early data.
+With automatic rotation, aeronet generates random keys (`RAND_bytes()`) and replaces the current key every `sessionTicketLifetime`. It keeps up to `sessionTicketMaxKeys` keys, so tickets issued before a rotation can still be decrypted, and drops older keys. A ticket decrypted with an older key is renewed: the client receives a ticket encrypted with the current key. A ticket is accepted for `sessionTicketLifetime` after its session was established (the session timeout, capped to 7 days by TLS 1.3). A `MultiHttpServer` shares one key store between its workers, so a ticket issued by one worker resumes on any other. Session resumption is supported, but aeronet does not enable TLS 1.3 early data.
 
 | Method | Default | Purpose |
 | --- | --- | --- |
 | `withTlsSessionTickets(bool)` | disabled | Enable tickets with automatic key rotation. |
-| `withTlsSessionTicketLifetime(duration)` | 24 hours | Rotation interval of the automatic keys. |
+| `withTlsSessionTicketLifetime(duration)` | 24 hours | Rotation interval of the automatic keys, and validity of the tickets. |
 | `withTlsSessionTicketMaxKeys(n)` | 2 | Keys kept for decryption during rotation. |
 | `withTlsSessionTicketKey(key)` | none | Append a static key. Enables tickets and disables automatic generation. |
 | `clearTlsSessionTicketKeys()` | | Remove (and scrub) the static keys. |
@@ -312,8 +330,8 @@ The hardening audit distinguishes defaults, aeronet-owned memory, and memory out
 | --- | --- | --- |
 | Protocol | Effective minimum TLS 1.2; TLS 1.3 supported | Applications may set an explicit TLS 1.2/1.3 maximum |
 | Context options | Server cipher preference; no renegotiation where supported; compression disabled by default | OpenSSL and platform capabilities still determine negotiated primitives |
-| In-memory private keys | Main and per-SNI PEM key regions are overwritten before replacement and on `TLSConfig` destruction | Caller-owned PEM buffers and allocator/OS copies are not owned by aeronet |
-| Static ticket keys | Temporary by-value input and stored keys are overwritten on growth, clear, assignment, and destruction | Original caller key objects must be scrubbed by the caller when no longer needed |
+| In-memory private keys | The strings of a `TLSConfig` (main and per-SNI) and of an `HttpClientConfig` are overwritten before their memory is released or reused: replacement, growth, assignment, destruction. No byte of a replaced key stays in the unused part of a buffer | Caller-owned PEM buffers and allocator/OS copies are not owned by aeronet |
+| Static ticket keys | Temporary by-value input and stored keys are overwritten on growth, clear, copy and move assignment, and destruction | Original caller key objects must be scrubbed by the caller when no longer needed |
 | Runtime ticket keys | One contiguous 48-byte object is cleansed with `OPENSSL_cleanse` on rotation/removal/destruction | Serialized tickets held by clients remain valid within the active key window |
 | Ticket lookup | Key names use `CRYPTO_memcmp` | This protects the local comparison, not surrounding application logic |
 | OpenSSL session secrets | Owned by `SSL`/`SSL_CTX` and released through OpenSSL RAII lifecycles | OpenSSL controls their internal allocation and cleansing guarantees |
@@ -332,7 +350,7 @@ config.tls.withTlsHandshakeConcurrencyLimit(1024)  // handshakes in progress at 
     .withTlsHandshakeRateLimit(500, 1000);         // new handshakes per second, burst
 ```
 
-A handshake that exceeds the timeout is closed. A connection beyond the concurrency or rate limit is closed right after it is accepted, before any OpenSSL object is allocated, and counted in `tlsHandshakesRejectedConcurrency` or `tlsHandshakesRejectedRateLimit`. When the server closes an established TLS connection, it first sends a best-effort, non-blocking `close_notify`.
+The handshake timeout is 10 seconds by default (0 disables it): it bounds the time a client can keep a handshake, and its connection, busy, even by trickling bytes that would keep it from being idle. A handshake that exceeds the timeout is closed; the connections are only scanned for it while handshakes are in progress. A connection beyond the concurrency or rate limit is closed right after it is accepted, before any OpenSSL object is allocated, and counted in `tlsHandshakesRejectedConcurrency` or `tlsHandshakesRejectedRateLimit`. When the server closes an established TLS connection, it first sends a best-effort, non-blocking `close_notify`.
 
 ## Observability
 
@@ -405,6 +423,8 @@ The server keeps the number of TLS records and system calls per request close to
 - **Reads**: server contexts read ahead, so OpenSSL reads as much ciphertext as the socket holds in one system call, instead of two per record (the 5-byte header, then the body). A short read proves the socket is drained, as with a plaintext socket, so the event loop does not issue an extra read returning `EAGAIN`. A peer `close_notify` or an error that follows data is reported after that data is served.
 - **Writes with user-space TLS**: OpenSSL makes at least one record per `SSL_write`. Rather than encrypting each buffer of a gather write separately, which would make the 9-byte header of each HTTP/2 frame a record and a system call of its own, aeronet encrypts large buffers in place and coalesces small ones with the following buffers into full 16 KiB records.
 - **Writes with kTLS**: data is written in clear with `send()` / `sendmsg()`, and the kernel builds full records across buffers, so a gather write is a single system call.
+- **Handshakes larger than the socket buffers**: a server flight that does not fit in the socket send buffer (a long certificate chain) resumes when the socket becomes writable.
+- **OpenSSL error queue**: OpenSSL reports any error left on the per-thread error queue as the failure of the next I/O operation of the thread. Code running on the event loop, such as a handler checking a forged signature with OpenSSL, can leave one behind: the transport empties the queue before each TLS I/O operation (one thread-local check when it is empty), so that such an error never closes a healthy connection. aeronet's own OpenSSL code, JWT included, leaves the queue empty.
 
 ## HTTP to HTTPS redirect
 
@@ -444,7 +464,7 @@ In a configuration file:
 ## Deployment checklist
 
 - Build and test with the same OpenSSL major version used in production.
-- Serve the full certificate chain and verify the private key matches.
+- Serve the full certificate chain (the leaf certificate, then its intermediate certificates) and verify the private key matches.
 - Keep TLS 1.2 or newer and use an intentional cipher policy.
 - Configure ALPN explicitly when HTTP/2 is enabled.
 - Set handshake timeout and admission limits for exposed listeners.
@@ -464,7 +484,9 @@ The [production configuration guide](../guides/production-configuration.md) cove
 - Handshakes, mTLS, ALPN, SNI, and hot certificate reload (files rotated in place, symbolic link swap, rejected updates) against a live server: [tests/http-tls-handshake_test.cpp](../../tests/http-tls-handshake_test.cpp), and across `MultiHttpServer` workers: [tests/multi-http-server_test.cpp](../../tests/multi-http-server_test.cpp).
 - Rollback of rejected config updates: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp).
 - TLS reads and writes, read-ahead, and backpressure: [tests/http-tls-io_test.cpp](../../tests/http-tls-io_test.cpp).
-- OCSP stapling, CRLs, the revocation callback, key logging, detection of changed input files, record coalescing, and kTLS send: [tls-components_test.cpp](../../aeronet/tls/test/tls-components_test.cpp).
+- Certificate chains, rejected keys (encrypted, of another algorithm) and certificates (below the OpenSSL security level), every allocation failure of the context construction, trusted certificate bundles, session resumption with client certificates and its session id context, tickets disabled, strict ALPN without any offer, cipher policies, OCSP stapling, CRLs, the revocation callback, key logging, detection of changed input files, OpenSSL errors left by other code, record coalescing, and kTLS send: [tls-components_test.cpp](../../aeronet/tls/test/tls-components_test.cpp).
+- Resumed mTLS sessions and `tlsPeerSubject()`, handlers leaving OpenSSL errors, and a server handshake flight larger than the socket buffers: [tests/http-tls-handshake_test.cpp](../../tests/http-tls-handshake_test.cpp).
+- Client certificate chains and server name indication of the HTTP client: [http-client-tls-e2e_test.cpp](../../aeronet/client/test/http-client-tls-e2e_test.cpp).
 - Session ticket key store and rotation: [tls-ticket-key-store_test.cpp](../../aeronet/tls/test/tls-ticket-key-store_test.cpp).
 - Configuration validation and key scrubbing: [tls-config_test.cpp](../../aeronet/objects/test/tls-config_test.cpp).
 

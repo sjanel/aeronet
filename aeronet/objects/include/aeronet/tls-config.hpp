@@ -8,6 +8,7 @@
 #include <ranges>
 #include <span>
 #include <string_view>
+#include <utility>
 
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/major-minor-version.hpp"
@@ -56,13 +57,6 @@ class TLSConfig {
   struct SniCertificate {
     SniCertificate() = default;
 
-    SniCertificate(const SniCertificate& other) = default;
-    SniCertificate(SniCertificate&&) noexcept = default;
-    SniCertificate& operator=(const SniCertificate& other) = default;
-    SniCertificate& operator=(SniCertificate&& other) noexcept = default;
-
-    ~SniCertificate() { _strings.secureClearPart(kKeyPem); }
-
     [[nodiscard]] std::string_view pattern() const noexcept { return _strings[kPattern]; }
     void setPattern(std::string_view value) { _strings.set(kPattern, value); }
 
@@ -78,10 +72,7 @@ class TLSConfig {
     void setCertPem(std::string_view value) { _strings.set(kCertPem, value); }
 
     [[nodiscard]] std::string_view keyPem() const noexcept { return _strings[kKeyPem]; }
-    void setKeyPem(std::string_view value) {
-      _strings.secureClearPart(kKeyPem);
-      _strings.set(kKeyPem, value);
-    }
+    void setKeyPem(std::string_view value) { _strings.set(kKeyPem, value); }
 
     [[nodiscard]] std::string_view ocspResponseFile() const noexcept { return _strings[kOcspResponseFile]; }
     [[nodiscard]] const char* ocspResponseFileCstr() const noexcept { return _strings.c_str(kOcspResponseFile); }
@@ -105,21 +96,17 @@ class TLSConfig {
       kNbStrings,
     };
 
-    StaticConcatenatedStrings<kNbStrings, uint32_t> _strings;
+    // Secure: scrubs the private key when it is replaced, copied over or destroyed.
+    StaticConcatenatedStrings<kNbStrings, uint32_t, true> _strings;
   };
 
   TLSConfig() = default;
 
-  TLSConfig(const TLSConfig& other) = default;
-  TLSConfig(TLSConfig&&) noexcept = default;
-  TLSConfig& operator=(const TLSConfig& other) = default;
-  TLSConfig& operator=(TLSConfig&& other) noexcept = default;
-
-  ~TLSConfig() { scrubSensitiveData(); }
+  // The private keys and session ticket keys are scrubbed by their storage.
 
   void validate();
 
-  // PEM server certificate (may contain chain)
+  // PEM server certificate file: the leaf certificate, then its intermediate certificates (sent to the clients)
   [[nodiscard]] std::string_view certFile() const noexcept { return _tlsStrings[kCertFile]; }
   [[nodiscard]] const char* certFileCstr() const noexcept { return _tlsStrings.c_str(kCertFile); }
 
@@ -127,15 +114,15 @@ class TLSConfig {
   [[nodiscard]] std::string_view keyFile() const noexcept { return _tlsStrings[kKeyFile]; }
   [[nodiscard]] const char* keyFileCstr() const noexcept { return _tlsStrings.c_str(kKeyFile); }
 
-  // In-memory PEM certificate (used if certFile empty & this non-empty)
+  // In-memory PEM certificate, with its intermediate certificates (exclusive with certFile / keyFile)
   [[nodiscard]] std::string_view certPem() const noexcept { return _tlsStrings[kCertPem]; }
   [[nodiscard]] const char* certPemCstr() const noexcept { return _tlsStrings.c_str(kCertPem); }
 
-  // In-memory PEM private key (used if keyFile empty & this non-empty)
+  // In-memory PEM private key (exclusive with certFile / keyFile)
   [[nodiscard]] std::string_view keyPem() const noexcept { return _tlsStrings[kKeyPem]; }
   [[nodiscard]] const char* keyPemCstr() const noexcept { return _tlsStrings.c_str(kKeyPem); }
 
-  // Optional OpenSSL cipher list string (empty -> default)
+  // Optional OpenSSL cipher list string for TLS 1.2 (empty -> default). Exclusive with a non-default cipherPolicy.
   [[nodiscard]] std::string_view cipherList() const noexcept { return _tlsStrings[kCipherList]; }
   [[nodiscard]] const char* cipherListCstr() const noexcept { return _tlsStrings.c_str(kCipherList); }
 
@@ -173,7 +160,6 @@ class TLSConfig {
   }
 
   TLSConfig& withKeyPem(std::string_view keyPem) {
-    _tlsStrings.secureClearPart(kKeyPem);
     _tlsStrings.set(kKeyPem, keyPem);
     return *this;
   }
@@ -316,7 +302,8 @@ class TLSConfig {
   } sessionTickets;
 
   // Protective timeout for TLS handshakes (time from accept to handshake completion). 0 => disabled.
-  std::chrono::milliseconds handshakeTimeout{std::chrono::milliseconds{0}};
+  // Bounds the time a client can keep a handshake (and its connection) busy, even by trickling bytes.
+  std::chrono::milliseconds handshakeTimeout{std::chrono::seconds{10}};
 
   TlsRevocationCallback revocationCallback{nullptr};
   void* revocationUserContext{nullptr};
@@ -363,22 +350,54 @@ class TLSConfig {
   };
 
   // Certificate/key paths and PEM, cipher list, OCSP/CRL inputs, and debug key-log path.
-  StaticConcatenatedStrings<kNbStrings, uint32_t> _tlsStrings;
+  // Secure: scrubs the private key when it is replaced, copied over or destroyed.
+  StaticConcatenatedStrings<kNbStrings, uint32_t, true> _tlsStrings;
 
   ConcatenatedStrings32 _alpnProtocols;
 
   // Additional trusted client root / leaf certs (PEM, stored as NUL-separated entries)
   ConcatenatedStrings32 _trustedClientCertsPem;
 
-  vector<SniCertificate> _sniCertificates;
-  vector<SessionTicketKey> _staticTicketKeys;
+  // Static session ticket keys, scrubbed before their memory is released or reused (clear, assignment, destruction).
+  struct StaticTicketKeys {
+    StaticTicketKeys() noexcept = default;
 
-  void scrubSensitiveData() noexcept;
+    StaticTicketKeys(const StaticTicketKeys&) = default;
+    StaticTicketKeys(StaticTicketKeys&&) noexcept = default;
+
+    StaticTicketKeys& operator=(const StaticTicketKeys& other) {
+      if (this != &other) {
+        StaticTicketKeys copy(other);
+        scrub();
+        keys.swap(copy.keys);
+      }
+      return *this;
+    }
+
+    StaticTicketKeys& operator=(StaticTicketKeys&& other) noexcept {
+      if (this != &other) {
+        scrub();
+        keys = std::move(other.keys);
+      }
+      return *this;
+    }
+
+    ~StaticTicketKeys() { scrub(); }
+
+    void scrub() noexcept;
+
+    bool operator==(const StaticTicketKeys&) const noexcept = default;
+
+    vector<SessionTicketKey> keys;
+  };
+
+  vector<SniCertificate> _sniCertificates;
+  StaticTicketKeys _staticTicketKeys;
 
  public:
   [[nodiscard]] std::span<const SniCertificate> sniCertificates() const noexcept { return _sniCertificates; }
 
-  [[nodiscard]] std::span<const SessionTicketKey> sessionTicketKeys() const noexcept { return _staticTicketKeys; }
+  [[nodiscard]] std::span<const SessionTicketKey> sessionTicketKeys() const noexcept { return _staticTicketKeys.keys; }
 };
 
 }  // namespace aeronet
