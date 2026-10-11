@@ -13,8 +13,11 @@
 #include <string>
 
 #include "aeronet/char-hexadecimal-converter.hpp"
+#include "aeronet/decimal-writer.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/memory-utils-sv.hpp"
+#include "aeronet/nchars.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/system-error.hpp"
 #include "aeronet/test_util.hpp"
@@ -182,25 +185,32 @@ inline bool isChunkedEncoding(std::string_view headers) {
 // Issue HTTP request and return response body size. Optimized for benchmark hot path.
 inline std::optional<std::size_t> requestBodySize(std::string_view method, std::string_view path, int fd,
                                                   std::size_t requestedSize, bool keepAlive) {
-  // Build request with minimal allocations
-  std::string req;
-  req.reserve(method.size() + path.size() + 80);
-  req.append(method);
-  req += ' ';
-  req.append(path);
-  req += "?size=";
-  req += std::to_string(requestedSize);
-  req += " HTTP/1.1\r\nHost: h\r\nConnection: ";
-  req += keepAlive ? aeronet::http::keepalive : aeronet::http::close;
-  req += aeronet::http::DoubleCRLF;
+  static constexpr std::string_view kSizeParam = "?size=";
+  static constexpr std::string_view kHeaders = " HTTP/1.1\r\nHost: h\r\nConnection: ";
+  const std::string_view connectionHeaderValue = keepAlive ? aeronet::http::keepalive : aeronet::http::close;
+  const auto nCharsRequestedSize = nchars(requestedSize);
+  RawChars req(method.size() + 1U + path.size() + kSizeParam.size() + nCharsRequestedSize + kHeaders.size() +
+               connectionHeaderValue.size() + aeronet::http::DoubleCRLF.size());
 
-  aeronet::test::sendAll(fd, req);
+  char* pData = req.data();
+  pData = Append(method, pData);
+  *pData++ = ' ';
+  pData = Append(path, pData);
+  pData = Append(kSizeParam, pData);
+  pData = WriteInt(pData, requestedSize, nCharsRequestedSize);
+  pData = Append(kHeaders, pData);
+  pData = Append(connectionHeaderValue, pData);
+  pData = AppendFixed<http::DoubleCRLF>(pData);
+
+  req.setEnd(pData);
+
+  test::sendAll(fd, req);
 
   static constexpr auto kTimeout = std::chrono::seconds(30);
   const auto deadline = std::chrono::steady_clock::now() + kTimeout;
   static constexpr std::size_t kBufSize = 64ULL * 1024ULL;
 
-  aeronet::RawChars buf(kBufSize);
+  RawChars buf(kBufSize);
 
   // --- Phase 1: Read until we have complete headers ---
   const char* headerEnd = nullptr;
