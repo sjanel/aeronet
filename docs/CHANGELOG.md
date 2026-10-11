@@ -83,6 +83,7 @@ All notable changes to aeronet are documented in this file.
 - **HTTP/2 requests know their connection**: `clientAddress()`, `tlsCipher()`, `tlsVersion()` and `alpnProtocol()` dereferenced a null pointer for an HTTP/2 request, which crashed the server as soon as a metrics callback or an access log was configured.
 - **Request metrics no longer throw for a body read with `readBody()`**: they read its size with `body()`, which throws in that case.
 - **Shared library builds (`AERONET_BUILD_SHARED=ON`) link with every feature**: with brotli enabled, `libaeronet_http.so` and the callers of `fullVersionWithRuntime()` (inline in the public `version.hpp`) used brotli without linking it, as only the static `aeronet_objects` propagated this dependency. The static dependencies (zlib-ng, zstd) are now compiled position independent, the shared libraries are linked with `-z defs` on Linux so that a missing dependency fails the library build, and a client-only build (`AERONET_ENABLE_HTTP_SERVER=OFF`) no longer compiles the HTTP/2 server protocol handler.
+- Fixed response compression being wrongly aborted (body sent uncompressed) for gzip/deflate when the max compressed size exceeds `initialCompressionBufferLimit`: the streaming capacity check counted the already-reserved capacity instead of the bytes actually written.
 
 ### 1.7.0 Improvements
 

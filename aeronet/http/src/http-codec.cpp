@@ -44,6 +44,7 @@
 
 #ifdef AERONET_ENABLE_ZLIB
 #include "aeronet/zlib-decoder.hpp"
+#include "aeronet/zlib-gateway.hpp"
 #include "aeronet/zlib-stream-raii.hpp"
 #endif
 
@@ -359,7 +360,7 @@ std::size_t ComputeAdditionalVaryLength(bool needVaryAcceptEncoding, bool addVar
   return kVaryHeaderValueSep.size() + http::AcceptEncoding.size();
 }
 
-std::size_t MinEncodeChunkAllocSize(Encoding encoding) {
+inline std::size_t MinEncodeChunkAllocSize([[maybe_unused]] Encoding encoding) {
 #ifdef AERONET_ENABLE_BROTLI
   if (encoding == Encoding::br) {
     return BrotliEncoderMaxCompressedSize(1U);
@@ -372,9 +373,12 @@ std::size_t MinEncodeChunkAllocSize(Encoding encoding) {
     return ZSTD_CStreamOutSize();
   }
 #endif
+#ifdef AERONET_ENABLE_ZLIB
   assert(encoding == Encoding::deflate || encoding == Encoding::gzip);
-  static constexpr std::size_t kMinSize = 1U;
-  return kMinSize + (kMinSize >> 12U) + (kMinSize >> 14U) + (kMinSize >> 25U) + 13;
+  return ZCompressBound(1U);
+#else
+  return 0;
+#endif
 }
 
 }  // namespace
@@ -533,7 +537,7 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
                                        bodyCompStartPos, capturedTrailerGrowth, maxCapacity,
                                        maxCompressedBytes](std::size_t neededCompressedChunkCapacity) {
       if (totalCompCapa < totalCompSize + neededCompressedChunkCapacity) {
-        if (maxCapacity < bodyCompStartPos + totalCompCapa + neededCompressedChunkCapacity + capturedTrailerGrowth) {
+        if (maxCapacity < bodyCompStartPos + totalCompSize + neededCompressedChunkCapacity + capturedTrailerGrowth) {
           // We cannot compress within the max compressed size limit - abort compression and leave the response
           // unmodified.
           return false;
