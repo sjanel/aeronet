@@ -6,6 +6,7 @@
 #endif
 #include <openssl/bio.h>
 #include <openssl/ec.h>
+#include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
 #include <openssl/prov_ssl.h>
@@ -39,6 +40,7 @@
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/native-handle.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/scoped-env-var.hpp"
 #include "aeronet/sigpipe-test-helpers.hpp"
@@ -48,6 +50,7 @@
 #include "aeronet/test-tls-helper.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tls-raii.hpp"
+#include "aeronet/tls-transport.hpp"
 
 #ifdef AERONET_LINUX
 #include "aeronet/sigpipe-blocker.hpp"
@@ -103,7 +106,7 @@ class HttpClientTlsE2ETest : public ::testing::Test {
     HttpServerConfig cfg;
     // Keep-alive must stay comfortably longer than a TLS handshake can take on a loaded CI runner.
     // The keep-alive sweep reaps a connection whose deadline elapses, and a connection still completing
-    // its handshake is not exempt (handshakeTimeout, the dedicated bound, is disabled by default). An
+    // its handshake is not exempt (handshakeTimeout, the dedicated bound, is 10 s by default). An
     // aggressive value here let the server starve and reap the legitimate handshake, surfacing as a flaky
     // "TLS handshake failed" on the client. Use the library default (5s) — these tests never assert on
     // idle-reaping, so there is no reason to tighten it.
@@ -287,8 +290,7 @@ TEST_F(HttpClientTlsE2ETest, HonoursCipherListAndVersionBounds) {
 }
 
 TEST_F(HttpClientTlsE2ETest, UnsetMinVersionUsesLibraryDefault) {
-  // An unset (default-constructed) min version maps to OpenSSL constant 0, so the client leaves the
-  // library default floor in place instead of pinning a minimum (exercises ToOpenSslTlsVersion's 0 path).
+  // An unset (default-constructed) min version is TLS 1.2, like the server's.
   HttpClientConfig cfg;
   cfg.tlsVerifyPeer = false;
   cfg.tlsMinVersion = TLSConfig::Version{};
@@ -589,6 +591,101 @@ TEST(HttpClientMtlsTest, MutualTlsRoundTrip) {
     }
   }
 }
+
+TEST(HttpClientMtlsTest, IntermediateCertificatesAreSentInBothDirections) {
+  // Both sides only trust the root of the other's chain: each needs the intermediate certificate sent by its peer.
+  const auto serverChain = test::MakeCertificateChain("localhost");
+  const auto clientChain = test::MakeCertificateChain("chain-client");
+  uint16_t port{0};
+  auto server = MakeMtlsServer(serverChain.fullChainPem(), serverChain.leafKeyPem, clientChain.rootCertPem, port);
+  const std::string url = "https://localhost:" + std::to_string(port) + "/secure";
+  const TempPemWriter serverRootPath(serverChain.rootCertPem, "server-root");
+
+  HttpClientConfig cfg;
+  cfg.tlsVerifyPeer = true;
+  cfg.withTlsCaFile(serverRootPath.string());
+  cfg.withTlsClientCertKeyMemory(clientChain.fullChainPem(), clientChain.leafKeyPem);
+  {
+    HttpClient client(cfg);
+    auto resp = client.get(url).value();
+    EXPECT_EQ(resp.status(), 200);
+    EXPECT_EQ(resp.bodyInMemory(), "secret");
+  }
+
+  const TempPemWriter chainPath(clientChain.fullChainPem(), "client-chain");
+  const TempPemWriter keyPath(clientChain.leafKeyPem, "client-chain-key");
+  cfg.withTlsClientCertKeyMemory({}, {});
+  cfg.withTlsClientCertKeyFile(chainPath.string(), keyPath.string());
+  {
+    HttpClient client(cfg);
+    auto resp = client.get(url).value();
+    EXPECT_EQ(resp.status(), 200);
+  }
+
+  // Without its intermediate certificate, the client certificate does not verify.
+  cfg.withTlsClientCertKeyFile({}, {});
+  cfg.withTlsClientCertKeyMemory(clientChain.leafCertPem, clientChain.leafKeyPem);
+  HttpClient client(cfg);
+  EXPECT_FALSE(client.get(url));
+}
+
+// makeTransport() performs no I/O (the socket is not closed either): any socket handle will do.
+constexpr NativeHandle kUnusedSocket{};
+
+TEST(HttpClientTlsContextTest, ServerNameIndicationOnlyCarriesHostNames) {
+  HttpClientConfig cfg;
+  cfg.tlsVerifyPeer = false;
+  cfg.tlsMinVersion = TLSConfig::Version{};
+  const internal::HttpClientTlsContext context(cfg);
+
+  struct Expectation {
+    const char* host;
+    bool sendsServerName;
+  };
+  // RFC 6066 forbids IP addresses in the server name extension.
+  for (const auto [host, sendsServerName] : {Expectation{"localhost", true}, Expectation{"example.com", true},
+                                             Expectation{"127.0.0.1", false}, Expectation{"::1", false}}) {
+    auto transport = context.makeTransport(kUnusedSocket, host, true);
+    auto* tlsTransport = transport.get<TlsTransport>();
+    ASSERT_NE(tlsTransport, nullptr);
+    const char* serverName = ::SSL_get_servername(tlsTransport->rawSsl(), TLSEXT_NAMETYPE_host_name);
+    if (sendsServerName) {
+      EXPECT_STREQ(serverName, host);
+    } else {
+      EXPECT_EQ(serverName, nullptr) << host;
+    }
+    // An unset minimum version is TLS 1.2.
+    EXPECT_EQ(::SSL_get_min_proto_version(tlsTransport->rawSsl()), TLS1_2_VERSION);
+  }
+}
+
+#if AERONET_WANT_MALLOC_OVERRIDES
+TEST(HttpClientTlsContextTest, EveryAllocationFailureOfMakeTransportThrows) {
+  HttpClientConfig cfg;
+  cfg.tlsVerifyPeer = false;
+  const internal::HttpClientTlsContext context(cfg);
+
+  // Fails the first allocation, then the second one, and so on until a transport is made without failure.
+  int nbFailures = 0;
+  for (int nbSuccessfulAllocs = 0;; ++nbSuccessfulAllocs) {
+    test::FailNextMalloc(nbSuccessfulAllocs, 1);
+    bool made = false;
+    try {
+      auto transport = context.makeTransport(kUnusedSocket, "localhost", true);
+      made = true;
+    } catch (const std::exception&) {
+      ++nbFailures;
+    }
+    const bool failureInjected = __atomic_load_n(&test::g_malloc_failure_counter, __ATOMIC_RELAXED) == 0;
+    test::ResetToSysMalloc();
+    ::ERR_clear_error();
+    if (made && !failureInjected) {
+      break;
+    }
+  }
+  EXPECT_GT(nbFailures, 0);
+}
+#endif
 
 TEST(HttpClientMtlsTest, MutualTlsRoundTripFromFiles) {
   auto [serverCert, serverKey] = test::MakeEphemeralCertKey("localhost");

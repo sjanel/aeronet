@@ -22,6 +22,8 @@
 #include <filesystem>
 #include <memory>
 #include <span>
+#include <stdexcept>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
@@ -30,7 +32,9 @@
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-exception.hpp"
 #include "aeronet/native-handle.hpp"
+#include "aeronet/tcp-connector.hpp"
 #include "aeronet/tls-config.hpp"
+#include "aeronet/tls-pem.hpp"
 #include "aeronet/tls-raii.hpp"
 #include "aeronet/tls-transport.hpp"
 #include "aeronet/transport.hpp"
@@ -56,36 +60,20 @@ constexpr int ToOpenSslTlsVersion(TLSConfig::Version ver) {
   return 0;
 }
 
-// Load a client certificate + private key (mutual TLS) into the context, from in-memory PEM if
+// Load a client certificate chain + private key (mutual TLS) into the context, from in-memory PEM if
 // provided, otherwise from file paths. No-op when neither is configured.
 void LoadClientCertificate(SSL_CTX* ctx, const HttpClientConfig& cfg) {
   const std::string_view certPem = cfg.tlsClientCertPem();
   const std::string_view keyPem = cfg.tlsClientKeyPem();
-  if (!certPem.empty() && !keyPem.empty()) {
-    auto certBio = MakeMemBio(certPem.data(), static_cast<int>(certPem.size()));
-    auto keyBio = MakeMemBio(keyPem.data(), static_cast<int>(keyPem.size()));
-    // Wrap the parse results directly (rather than via MakeX509/MakePKey, which raise std::bad_alloc on
-    // null) so a malformed PEM surfaces as the documented HttpClientException, not a misleading bad_alloc.
-    X509Ptr certX509(::PEM_read_bio_X509(certBio.get(), nullptr, nullptr, nullptr), ::X509_free);
-    PKeyPtr pkey(::PEM_read_bio_PrivateKey(keyBio.get(), nullptr, nullptr, nullptr), ::EVP_PKEY_free);
-    if (!certX509 || !pkey) {
-      throw HttpClientException("Failed to parse in-memory client certificate or key");
+  try {
+    if (!certPem.empty() && !keyPem.empty()) {
+      UseCertificateChainPem(ctx, certPem, keyPem);
+    } else if (!cfg.tlsClientCertFile().empty() && !cfg.tlsClientKeyFile().empty()) {
+      UseCertificateChainFiles(ctx, cfg.tlsClientCertFileCStr(), cfg.tlsClientKeyFileCStr());
     }
-    if (::SSL_CTX_use_certificate(ctx, certX509.get()) != 1 || ::SSL_CTX_use_PrivateKey(ctx, pkey.get()) != 1) {
-      throw HttpClientException("Failed to install in-memory client certificate");
-    }
-  } else if (!cfg.tlsClientCertFile().empty() && !cfg.tlsClientKeyFile().empty()) {
-    if (::SSL_CTX_use_certificate_file(ctx, cfg.tlsClientCertFileCStr(), SSL_FILETYPE_PEM) != 1) {
-      throw HttpClientException("Failed to load client certificate file");
-    }
-    if (::SSL_CTX_use_PrivateKey_file(ctx, cfg.tlsClientKeyFileCStr(), SSL_FILETYPE_PEM) != 1) {
-      throw HttpClientException("Failed to load client private key file");
-    }
-  } else {
-    return;  // no client certificate configured
-  }
-  if (::SSL_CTX_check_private_key(ctx) != 1) {
-    throw HttpClientException("Client private key does not match the certificate");
+  } catch (const std::runtime_error& ex) {
+    // Surfaces as the documented exception type, with the OpenSSL reason.
+    throw HttpClientException(std::string("Failed to load the TLS client certificate: ") + ex.what());
   }
 }
 
@@ -183,8 +171,10 @@ HttpClientTlsContext::HttpClientTlsContext(const HttpClientConfig& cfg) {
     throw HttpClientException("SSL_CTX_new(TLS_client_method) failed");
   }
   SSL_CTX* pSsl = ctx.get();
-  const int minVersion = ToOpenSslTlsVersion(cfg.tlsMinVersion);
-  if (minVersion != 0 && ::SSL_CTX_set_min_proto_version(pSsl, minVersion) != 1) {
+  // An unset minimum is TLS 1.2, like the server's.
+  const int minVersion =
+      cfg.tlsMinVersion == TLSConfig::Version{} ? TLS1_2_VERSION : ToOpenSslTlsVersion(cfg.tlsMinVersion);
+  if (minVersion == 0 || ::SSL_CTX_set_min_proto_version(pSsl, minVersion) != 1) {
     throw HttpClientException("Failed to set minimum TLS version");
   }
   if (cfg.tlsMaxVersion != TLSConfig::Version{}) {
@@ -276,9 +266,12 @@ HttpClientTlsContext::HttpClientTlsContext(const HttpClientConfig& cfg) {
     throw HttpClientException("SSL_set_fd failed");
   }
   // OpenSSL SNI / verification APIs need a null-terminated host string.
-  // SNI (host must be a registered name, not an IP literal; OpenSSL ignores IPs here which is fine).
-  ::SSL_set_tlsext_host_name(ssl.get(), pHost);
+  // SNI only carries host names: RFC 6066 §3 forbids IP addresses (OpenSSL would send them as is).
+  if (!IsNumericHost(pHost) && ::SSL_set_tlsext_host_name(ssl.get(), pHost) != 1) {
+    throw HttpClientException("SSL_set_tlsext_host_name failed");
+  }
   if (verify) {
+    // SSL_set1_host() checks an IP address against the IP address entries of the certificate.
     ::SSL_set_hostflags(ssl.get(), X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
     if (::SSL_set1_host(ssl.get(), pHost) != 1) {
       throw HttpClientException("SSL_set1_host failed");

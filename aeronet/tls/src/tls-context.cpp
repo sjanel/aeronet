@@ -18,7 +18,6 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
-#include <format>
 #include <fstream>
 #include <ios>
 #include <memory>
@@ -28,6 +27,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 
 #ifdef AERONET_POSIX
@@ -47,7 +47,7 @@
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tls-handshake-observer.hpp"
-#include "aeronet/tls-raii.hpp"
+#include "aeronet/tls-pem.hpp"
 #include "aeronet/tls-ticket-key-store.hpp"
 
 namespace aeronet {
@@ -103,43 +103,16 @@ bool MatchesSniPattern(std::string_view pattern, bool wildcard, std::string_view
          CaseInsensitiveEqual(serverName.substr(prefixSize), pattern);
 }
 
-// Throws a std::runtime_error naming the TLS input file that OpenSSL failed to load and the reason it reported (the
-// first queued error, the root cause).
-[[noreturn]] void ThrowFileLoadError(std::string_view what, const char* path) {
-  char reason[256];
-  ::ERR_error_string_n(::ERR_peek_error(), reason, sizeof(reason));
-  throw std::runtime_error(std::format("Failed to load TLS {} file '{}': {}", what, path, reason));
-}
-
 void LoadCertificateAndKey(SSL_CTX* ctx, std::string_view certPem, std::string_view keyPem, const char* certFilePath,
                            const char* keyFilePath) {
   if (!certPem.empty() && !keyPem.empty()) {
-    auto certBio = MakeMemBio(certPem.data(), static_cast<int>(certPem.size()));
-    auto keyBio = MakeMemBio(keyPem.data(), static_cast<int>(keyPem.size()));
-    auto certX509 = MakeX509(::PEM_read_bio_X509(certBio.get(), nullptr, nullptr, nullptr));
-    auto pkey = MakePKey(::PEM_read_bio_PrivateKey(keyBio.get(), nullptr, nullptr, nullptr));
-
-    // PEM_read_bio_X509 already validated the certificate; use_certificate should always succeed.
-    [[maybe_unused]] int certRc = ::SSL_CTX_use_certificate(ctx, certX509.get());
-    assert(certRc == 1 && "SSL_CTX_use_certificate failed with valid X509");
-    if (::SSL_CTX_use_PrivateKey(ctx, pkey.get()) != 1) {
-      throw std::runtime_error("Failed to use in-memory private key");
-    }
+    UseCertificateChainPem(ctx, certPem, keyPem);
   } else {
     if (certFilePath == nullptr || keyFilePath == nullptr) {
       throw std::runtime_error("Certificate or key file path missing");
     }
-    if (::SSL_CTX_use_certificate_file(ctx, certFilePath, SSL_FILETYPE_PEM) != 1) {
-      ThrowFileLoadError("certificate", certFilePath);
-    }
-    if (::SSL_CTX_use_PrivateKey_file(ctx, keyFilePath, SSL_FILETYPE_PEM) != 1) {
-      ThrowFileLoadError("private key", keyFilePath);
-    }
+    UseCertificateChainFiles(ctx, certFilePath, keyFilePath);
   }
-
-  // SSL_CTX_use_PrivateKey already validates the key against the loaded certificate.
-  [[maybe_unused]] const int keyCheckRc = ::SSL_CTX_check_private_key(ctx);
-  assert(keyCheckRc == 1 && "private key check failed despite use_PrivateKey success");
 }
 
 void ConfigureContextOptions(SSL_CTX* ctx, const TLSConfig& cfg) {
@@ -148,6 +121,8 @@ void ConfigureContextOptions(SSL_CTX* ctx, const TLSConfig& cfg) {
   ::SSL_CTX_set_read_ahead(ctx, 1);
   ::SSL_CTX_set_options(ctx, SSL_OP_CIPHER_SERVER_PREFERENCE);
   assert((::SSL_CTX_get_options(ctx) & SSL_OP_CIPHER_SERVER_PREFERENCE) != 0);
+  // Despite the server preference, select ChaCha20-Poly1305 for a client preferring it (no AES hardware acceleration).
+  ::SSL_CTX_set_options(ctx, SSL_OP_PRIORITIZE_CHACHA);
 #ifdef SSL_OP_NO_RENEGOTIATION
   ::SSL_CTX_set_options(ctx, SSL_OP_NO_RENEGOTIATION);
   assert((::SSL_CTX_get_options(ctx) & SSL_OP_NO_RENEGOTIATION) != 0);
@@ -248,13 +223,9 @@ void ConfigureClientVerification(SSL_CTX* ctx, const TLSConfig& cfg, void* revoc
     if (pem.empty()) {
       throw std::runtime_error("Empty trusted client certificate PEM provided");
     }
-    auto cbio = MakeMemBio(pem.data(), static_cast<int>(pem.size()));
-    auto cx = MakeX509(::PEM_read_bio_X509(cbio.get(), nullptr, nullptr, nullptr));
-    // A freshly created SSL_CTX always has a cert store.
-    assert(::SSL_CTX_get_cert_store(ctx) != nullptr && "SSL_CTX missing cert store");
-    if (::X509_STORE_add_cert(::SSL_CTX_get_cert_store(ctx), cx.get()) != 1) {
-      throw std::runtime_error("Failed to add trusted client certificate to store");
-    }
+    // Each entry may be a bundle of certificates. Their names are also sent in the certificate request, so that a
+    // client holding several certificates can pick one these CAs accept.
+    AddTrustedCertificatesPem(ctx, pem);
   }
   LoadCrl(ctx, cfg);
 }
@@ -289,8 +260,9 @@ std::span<const std::byte> LoadOcspResponse(ObjectArrayPool<char>& charStorage, 
   return {reinterpret_cast<const std::byte*>(pBuf), size};
 }
 
+// Called by OpenSSL, which must never see an exception (processTicket() never throws).
 int SessionTicketCallback(SSL* ssl, unsigned char* keyName, unsigned char* iv, EVP_CIPHER_CTX* cctx, EVP_MAC_CTX* mctx,
-                          int enc) {
+                          int enc) noexcept {
   SSL_CTX* sslCtx = ::SSL_get_SSL_CTX(ssl);
   TlsTicketKeyStore* storePtr = static_cast<TlsTicketKeyStore*>(::SSL_CTX_get_ex_data(sslCtx, TicketStoreIndex()));
   // The callback is only registered when session tickets are enabled, which always sets the ex_data.
@@ -298,18 +270,37 @@ int SessionTicketCallback(SSL* ssl, unsigned char* keyName, unsigned char* iv, E
   return storePtr->processTicket(keyName, iv, EVP_MAX_IV_LENGTH, cctx, mctx, enc);
 }
 
-void ConfigureSessionTickets(SSL_CTX* ctx, const TLSConfig& cfg,
-                             const std::shared_ptr<TlsTicketKeyStore>& ticketStore) {
+void ConfigureSessionResumption(SSL_CTX* ctx, const TLSConfig& cfg,
+                                const std::shared_ptr<TlsTicketKeyStore>& ticketStore,
+                                std::span<const unsigned char> sessionIdContext) {
+  // Sessions only resume with tickets: no server-side session cache, whose memory (per SSL_CTX, so per worker and per
+  // SNI certificate) would grow with the number of clients.
+  ::SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_OFF);
+  // A session only resumes in the context that established it. Mandatory when client certificates are verified:
+  // OpenSSL aborts the resumption of a session without one (handshake failure).
+  // Only fails for a context longer than SSL_MAX_SID_CTX_LENGTH (see ComputeSessionIdContext()).
+  [[maybe_unused]] const int sidCtxRc = ::SSL_CTX_set_session_id_context(
+      ctx, sessionIdContext.data(), static_cast<unsigned int>(sessionIdContext.size()));
+  assert(sidCtxRc == 1);
   if (!cfg.sessionTickets.enabled) {
     [[maybe_unused]] const auto ticketOpts = ::SSL_CTX_set_options(ctx, SSL_OP_NO_TICKET);
     assert((ticketOpts & SSL_OP_NO_TICKET) != 0 && "SSL_CTX_set_options failed to set SSL_OP_NO_TICKET");
+    // TLS 1.3 still sends its (stateful) tickets after the handshake: without a session cache, they never resume. They
+    // are kept on purpose: this post-handshake data acknowledges the client Finished right away, while a client without
+    // TCP_NODELAY would otherwise hold its first request until the delayed ACK of the server (40 ms on Linux).
     return;
   }
   [[maybe_unused]] const auto clearOpts = ::SSL_CTX_clear_options(ctx, SSL_OP_NO_TICKET);
   assert((clearOpts & SSL_OP_NO_TICKET) == 0 && "SSL_CTX_clear_options failed to clear SSL_OP_NO_TICKET");
   assert(ticketStore != nullptr);
-  ::SSL_CTX_set_ex_data(ctx, TicketStoreIndex(), ticketStore.get());
+  if (::SSL_CTX_set_ex_data(ctx, TicketStoreIndex(), ticketStore.get()) != 1) {
+    throw std::runtime_error("Failed to attach the TLS session ticket key store");
+  }
   ::SSL_CTX_set_tlsext_ticket_key_evp_cb(ctx, &SessionTicketCallback);
+  if (cfg.sessionTickets.lifetime.count() > 0) {
+    // Tickets older than their lifetime are not resumed (OpenSSL defaults to 2 hours).
+    ::SSL_CTX_set_timeout(ctx, static_cast<long>(cfg.sessionTickets.lifetime.count()));
+  }
 }
 
 const char* CipherPolicyTls13(TLSConfig::CipherPolicy policy) {
@@ -317,9 +308,10 @@ const char* CipherPolicyTls13(TLSConfig::CipherPolicy policy) {
     case TLSConfig::CipherPolicy::Modern:
       [[fallthrough]];
     case TLSConfig::CipherPolicy::Compatibility:
-      return "TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256";
+      [[fallthrough]];
     case TLSConfig::CipherPolicy::Legacy:
-      return "TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256";
+      // Every TLS 1.3 suite is an AEAD: the policies only differ by their TLS 1.2 ciphers.
+      return "TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256";
     default:
       throw std::invalid_argument("Invalid cipher policy");
   }
@@ -331,13 +323,22 @@ const char* CipherPolicyTls12(TLSConfig::CipherPolicy policy) {
       return "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:"
              "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:"
              "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256";
+    // Each policy extends the previous one, for ECDSA and RSA certificates alike. The AEAD ciphers come first: HTTP/2
+    // clients reject the others (RFC 9113 Appendix A).
     case TLSConfig::CipherPolicy::Compatibility:
       return "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:"
              "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:"
              "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:"
-             "ECDHE-RSA-AES256-SHA384:ECDHE-RSA-AES128-SHA256";
+             "ECDHE-ECDSA-AES256-SHA384:ECDHE-RSA-AES256-SHA384:"
+             "ECDHE-ECDSA-AES128-SHA256:ECDHE-RSA-AES128-SHA256";
     case TLSConfig::CipherPolicy::Legacy:
-      return "ECDHE-RSA-AES256-SHA:ECDHE-RSA-AES128-SHA:AES256-SHA:AES128-SHA";
+      return "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:"
+             "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:"
+             "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:"
+             "ECDHE-ECDSA-AES256-SHA384:ECDHE-RSA-AES256-SHA384:"
+             "ECDHE-ECDSA-AES128-SHA256:ECDHE-RSA-AES128-SHA256:"
+             "ECDHE-ECDSA-AES256-SHA:ECDHE-RSA-AES256-SHA:ECDHE-ECDSA-AES128-SHA:ECDHE-RSA-AES128-SHA:"
+             "AES256-GCM-SHA384:AES128-GCM-SHA256:AES256-SHA256:AES128-SHA256:AES256-SHA:AES128-SHA";
     default:
       // CipherPolicyTls13 throws first for invalid policies, so this is unreachable.
       std::unreachable();
@@ -384,10 +385,11 @@ class TlsContext::KeyLogWriter {
     }
   }
 
-  void write(std::string_view line) {
+  // Called by OpenSSL (through LogSessionKeys), which must never see an exception.
+  void write(std::string_view line) noexcept {
     std::scoped_lock lock(_mutex);
     if (std::fwrite(line.data(), line.size(), 1, _file) != 1 || std::fputc('\n', _file) == EOF) {
-      log::error("Failed to append TLS key log line");
+      log_noexcept::error("Failed to append TLS key log line");
     }
   }
 
@@ -427,6 +429,8 @@ TlsContext::TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> 
   LoadCertificateAndKey(ctx, cfg.certPem(), cfg.keyPem(), cfg.certFileCstr(), cfg.keyFileCstr());
   ConfigureClientVerification(ctx, cfg, &_revocationData, &TlsContext::VerifyPeerCertificate);
 
+  const SessionIdContext sessionIdContext = ComputeSessionIdContext(cfg);
+
   _ocspResponse = LoadOcspResponse(_sniRoutes.charStorage, cfg.ocspResponseFile());
   if (!_ocspResponse.empty() && (::SSL_CTX_set_tlsext_status_arg(ctx, &_ocspResponse) != 1 ||
                                  ::SSL_CTX_set_tlsext_status_cb(ctx, &TlsContext::StapleOcspResponse) != 1)) {
@@ -455,6 +459,11 @@ TlsContext::TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> 
       _alpnData.wire.unchecked_append(reinterpret_cast<const std::byte*>(proto.data()), proto.size());
     }
     ::SSL_CTX_set_alpn_select_cb(ctx, &TlsContext::SelectAlpn, &_alpnData);
+    if (cfg.alpnMustMatch) {
+      // OpenSSL only calls SelectAlpn when the client offers protocols: reject a ClientHello without any.
+      // Called with the default context only, before the SNI routing.
+      ::SSL_CTX_set_client_hello_cb(ctx, &TlsContext::RequireAlpnOffer, &_alpnData);
+    }
   }
 
   if (cfg.sessionTickets.enabled) {
@@ -465,7 +474,7 @@ TlsContext::TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> 
       _ticketKeyStore->loadStaticKeys(cfg.sessionTicketKeys());
     }
   }
-  ConfigureSessionTickets(ctx, cfg, _ticketKeyStore);
+  ConfigureSessionResumption(ctx, cfg, _ticketKeyStore, sessionIdContext);
 
   const auto& sniCerts = cfg.sniCertificates();
   if (!sniCerts.empty()) {
@@ -491,7 +500,7 @@ TlsContext::TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> 
       if (wireLen != 0) {
         ::SSL_CTX_set_alpn_select_cb(routeRaw, &TlsContext::SelectAlpn, &_alpnData);
       }
-      ConfigureSessionTickets(routeRaw, cfg, _ticketKeyStore);
+      ConfigureSessionResumption(routeRaw, cfg, _ticketKeyStore, sessionIdContext);
 
       char* pPattern = _sniRoutes.charStorage.allocateAndDefaultConstruct(entry.pattern().size());
       Copy(entry.pattern(), pPattern);
@@ -565,6 +574,50 @@ TlsContext::FileStamp TlsContext::StampFile(const char* path) noexcept {
   }
 #endif
   return stamp;
+}
+
+TlsContext::SessionIdContext TlsContext::ComputeSessionIdContext(const TLSConfig& cfg) {
+  static_assert(std::tuple_size_v<SessionIdContext> == SSL_MAX_SID_CTX_LENGTH);
+  // A resumed session skips the client certificate verification: digest everything deciding whether a certificate is
+  // accepted (verify mode, trust anchors, CRL file and its version, revocation hook), so that a session established
+  // under other verification settings never resumes. The server certificates, ciphers and other settings do not matter.
+  const uint8_t verifyFlags = static_cast<uint8_t>((cfg.requestClientCert ? 1U : 0U) |
+                                                   (cfg.requireClientCert ? 2U : 0U) | (cfg.crlCheckAll ? 4U : 0U));
+  // A CRL rewritten in place has the same path.
+  const FileStamp crlStamp = cfg.crlFile().empty() ? FileStamp{} : StampFile(cfg.crlFileCstr());
+  const auto trustedCerts = cfg.trustedClientCertsPem();
+  std::size_t inputSize = sizeof(verifyFlags) + sizeof(uint64_t) + cfg.crlFile().size() + sizeof(crlStamp) +
+                          sizeof(cfg.revocationCallback) + sizeof(cfg.revocationUserContext);
+  for (std::string_view pem : trustedCerts) {
+    inputSize += sizeof(uint64_t) + pem.size();
+  }
+  RawBytes input(inputSize);
+  const auto append = [&input](const void* data, std::size_t size) {
+    input.unchecked_append(static_cast<const std::byte*>(data), size);
+  };
+  // Variable-size parts are prefixed with their size, so that different inputs never digest the same bytes.
+  const auto appendSized = [&append](std::string_view part) {
+    const uint64_t size = part.size();
+    append(&size, sizeof(size));
+    append(part.data(), part.size());
+  };
+  append(&verifyFlags, sizeof(verifyFlags));
+  for (std::string_view pem : trustedCerts) {
+    appendSized(pem);
+  }
+  appendSized(cfg.crlFile());
+  append(&crlStamp, sizeof(crlStamp));
+  append(&cfg.revocationCallback, sizeof(cfg.revocationCallback));
+  append(&cfg.revocationUserContext, sizeof(cfg.revocationUserContext));
+  assert(input.size() == inputSize);
+
+  SessionIdContext sessionIdContext;
+  unsigned int digestSize = 0;
+  if (::EVP_Digest(input.data(), input.size(), sessionIdContext.data(), &digestSize, ::EVP_sha256(), nullptr) != 1) {
+    ThrowOpenSslError("Failed to compute the TLS session id context");
+  }
+  assert(digestSize == sessionIdContext.size());
+  return sessionIdContext;
 }
 
 void TlsContext::recordInputFiles(const TLSConfig& cfg) {
@@ -649,7 +702,7 @@ int TlsContext::VerifyPeerCertificate(int preverifyOk, X509_STORE_CTX* storeCtx)
   }
 }
 
-void TlsContext::LogSessionKeys(const SSL* ssl, const char* line) {
+void TlsContext::LogSessionKeys(const SSL* ssl, const char* line) noexcept {
   SSL_CTX* sslCtx = ::SSL_get_SSL_CTX(ssl);
   auto* writer = static_cast<KeyLogWriter*>(::SSL_CTX_get_ex_data(sslCtx, KeyLogWriterIndex()));
   if (writer != nullptr && line != nullptr) {
@@ -679,22 +732,43 @@ int TlsContext::SelectAlpn([[maybe_unused]] SSL* ssl, const unsigned char** out,
     prefIndex += 1 + len;
   }
   if (data->mustMatch) {
-    ++data->nbStrictMismatches;
-    if (auto* obs = GetTlsHandshakeObserver(reinterpret_cast<ssl_st*>(ssl))) {
-      obs->alpnStrictMismatch = true;
-    }
+    RecordStrictAlpnMismatch(ssl, *data);
     return SSL_TLSEXT_ERR_ALERT_FATAL;
   }
   return SSL_TLSEXT_ERR_NOACK;
+}
+
+void TlsContext::RecordStrictAlpnMismatch(SSL* ssl, AlpnData& alpnData) noexcept {
+  ++alpnData.nbStrictMismatches;
+  if (auto* obs = GetTlsHandshakeObserver(ssl)) {
+    obs->alpnStrictMismatch = true;
+  }
+}
+
+int TlsContext::RequireAlpnOffer(SSL* ssl, int* alert, void* arg) {
+  const unsigned char* extension = nullptr;
+  std::size_t extensionSize = 0;
+  if (::SSL_client_hello_get0_ext(ssl, TLSEXT_TYPE_application_layer_protocol_negotiation, &extension,
+                                  &extensionSize) == 1) {
+    return SSL_CLIENT_HELLO_SUCCESS;  // SelectAlpn checks the offered protocols
+  }
+  RecordStrictAlpnMismatch(ssl, *static_cast<AlpnData*>(arg));
+  *alert = SSL_AD_NO_APPLICATION_PROTOCOL;
+  return SSL_CLIENT_HELLO_ERROR;
 }
 
 int TlsContext::SelectSniRoute(SSL* ssl, [[maybe_unused]] int* alert, void* arg) {
   auto& routes = *reinterpret_cast<SniRoutes*>(arg);
   std::span<SniRoute> routeSpan(routes.routes.get(), routes.nbRoutes);
   assert(arg != nullptr && !routeSpan.empty());
-  const char* serverName = ::SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
-  if (serverName == nullptr) {
+  const char* pServerName = ::SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
+  if (pServerName == nullptr) {
     return SSL_TLSEXT_ERR_NOACK;
+  }
+  std::string_view serverName(pServerName);
+  // A fully qualified name ("example.com.") designates the same host.
+  if (serverName.ends_with('.')) {
+    serverName.remove_suffix(1);
   }
   for (auto& route : routeSpan) {
     if (MatchesSniPattern(route.pattern, route.wildcard, serverName)) {

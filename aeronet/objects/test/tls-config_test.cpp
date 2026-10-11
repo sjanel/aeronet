@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstddef>
 #include <initializer_list>
 #include <iterator>
@@ -425,9 +426,16 @@ TEST(TLSConfigTest, MinMaxVersionValidation) {
   cfg.withTlsMaxVersion("TLS1.3");
   EXPECT_NO_THROW(cfg.validate());
 
-  // unsupported value already tested elsewhere; test mismatched ordering allowed (validate only checks tokens)
   cfg.withTlsMinVersion("TLS1.3");
+  cfg.withTlsMaxVersion("TLS1.3");
+  EXPECT_NO_THROW(cfg.validate());
+
+  // A maximum below the minimum would allow no protocol version: every handshake would fail.
   cfg.withTlsMaxVersion("TLS1.2");
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+
+  // An unset minimum is TLS 1.2.
+  cfg.minVersion = {};
   EXPECT_NO_THROW(cfg.validate());
 }
 
@@ -573,6 +581,120 @@ TEST(TlsConfigTest, ClearTlsSessionTicketKeys) {
 
   cfg.clearTlsSessionTicketKeys();
   EXPECT_TRUE(cfg.sessionTicketKeys().empty());
+}
+
+TEST(TlsConfigTest, SessionTicketKeysSurviveCopyAndMoveAssignment) {
+  TLSConfig cfg;
+  cfg.enabled = true;
+  TLSConfig::SessionTicketKey key{};
+  key.fill(std::byte{0x2});
+  cfg.withTlsSessionTicketKey(key).withTlsSessionTicketKey(key);
+
+  TLSConfig copy;
+  TLSConfig::SessionTicketKey otherKey{};
+  otherKey.fill(std::byte{0x3});
+  copy.withTlsSessionTicketKey(otherKey);
+  copy = cfg;
+  ASSERT_EQ(copy.sessionTicketKeys().size(), 2U);
+  EXPECT_EQ(copy.sessionTicketKeys()[1], key);
+  EXPECT_EQ(copy, cfg);
+
+  const auto& self = copy;
+  copy = self;
+  EXPECT_EQ(copy, cfg);
+
+  TLSConfig moved;
+  moved.withTlsSessionTicketKey(otherKey);
+  moved = std::move(copy);
+  ASSERT_EQ(moved.sessionTicketKeys().size(), 2U);
+  EXPECT_EQ(moved.sessionTicketKeys()[0], key);
+
+  auto& movedRef = moved;
+  moved = std::move(movedRef);
+  EXPECT_EQ(moved.sessionTicketKeys().size(), 2U);
+}
+
+TEST(TlsConfigTest, PrivateKeySurvivesReplacementOfTheOtherStrings) {
+  TLSConfig cfg;
+  cfg.withKeyPem(kDummyKeyPem).withCertPem(kDummyCertPem);
+  // Grows, then shrinks the strings around the key.
+  cfg.withCipherList(std::string(4096, 'c')).withCertFile(std::string(1024, 'f')).withCipherList("short");
+  cfg.withCertFile({});
+  EXPECT_EQ(cfg.keyPem(), kDummyKeyPem);
+  EXPECT_EQ(cfg.certPem(), kDummyCertPem);
+  EXPECT_EQ(cfg.cipherList(), "short");
+
+  // Replacing the key by a shorter one leaves no byte of the previous key behind the strings.
+  cfg.withKeyPem("k");
+  EXPECT_EQ(cfg.keyPem(), "k");
+  const char* end = cfg.keyLogFileCstr() + cfg.keyLogFile().size() + 1;
+  const std::string_view previousKeyTail = kDummyKeyPem.substr(kDummyKeyPem.size() - 8);
+  EXPECT_FALSE(std::string_view(end, kDummyKeyPem.size()).contains(previousKeyTail));
+}
+
+TEST(TlsConfigTest, CertificateAndKeyFilesAndPemAreExclusive) {
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(kDummyCertPem).withKeyPem(kDummyKeyPem).withCertFile("cert.pem");
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+
+  cfg.withCertFile({}).withKeyFile("key.pem");
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+
+  cfg.withKeyFile({});
+  EXPECT_NO_THROW(cfg.validate());
+
+  // The HttpServerConfig builders replace one form by the other.
+  HttpServerConfig serverCfg;
+  serverCfg.withTlsCertKeyMemory(kDummyCertPem, kDummyKeyPem).withTlsCertKey("cert.pem", "key.pem");
+  EXPECT_TRUE(serverCfg.tls.certPem().empty());
+  EXPECT_TRUE(serverCfg.tls.keyPem().empty());
+  EXPECT_NO_THROW(serverCfg.tls.validate());
+  serverCfg.withTlsCertKeyMemory(kDummyCertPem, kDummyKeyPem);
+  EXPECT_TRUE(serverCfg.tls.certFile().empty());
+  EXPECT_TRUE(serverCfg.tls.keyFile().empty());
+  EXPECT_NO_THROW(serverCfg.tls.validate());
+}
+
+TEST(TlsConfigTest, CipherListIsExclusiveWithACipherPolicy) {
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(kDummyCertPem).withKeyPem(kDummyKeyPem).withCipherList("ECDHE-RSA-AES128-GCM-SHA256");
+  EXPECT_NO_THROW(cfg.validate());
+  cfg.withTlsCipherPolicy(TLSConfig::CipherPolicy::Modern);
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+  cfg.withCipherList({});
+  EXPECT_NO_THROW(cfg.validate());
+}
+
+TEST(TlsConfigTest, DuplicateSniPatternsAreRejected) {
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(kDummyCertPem).withKeyPem(kDummyKeyPem);
+  cfg.withTlsSniCertificateMemory("api.example.com", kDummyCertPem, kDummyKeyPem)
+      .withTlsSniCertificateMemory("*.example.com", kDummyCertPem, kDummyKeyPem);
+  EXPECT_NO_THROW(cfg.validate());
+  // Patterns are compared once normalized.
+  cfg.withTlsSniCertificateFiles("API.Example.com", "cert.pem", "key.pem");
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+}
+
+TEST(TlsConfigTest, HandshakeTimeoutIsTenSecondsByDefault) {
+  EXPECT_EQ(TLSConfig{}.handshakeTimeout, std::chrono::seconds{10});
+}
+
+TEST(HttpServerConfigTest, AlpnH2RequiresHttp2) {
+  HttpServerConfig cfg;
+  cfg.withTlsCertKeyMemory(kDummyCertPem, kDummyKeyPem).withTlsAlpnProtocols({"h2", "http/1.1"});
+#ifdef AERONET_ENABLE_HTTP2
+  EXPECT_NO_THROW(cfg.validate());
+  cfg.http2.enable = false;
+#endif
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+
+  // Without "h2", HTTP/2 does not matter.
+  cfg.withTlsAlpnProtocols({"http/1.1"});
+  EXPECT_NO_THROW(cfg.validate());
 }
 
 TEST(TlsConfigTest, WithTlsHandshakeConcurrencyLimitSetsValue) {

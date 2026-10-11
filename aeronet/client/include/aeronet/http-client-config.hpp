@@ -406,7 +406,8 @@ class HttpClientConfig {
 
   // [acceptEncoding, caFile, caPath, cipherList, clientCertFile, clientKeyFile, clientCertPem,
   //  clientKeyPem, proxyUrl, proxyCaFile]
-  StaticConcatenatedStrings<kNbStrings, uint32_t> _strings;
+  // Secure: holds the private key of the client certificate, and the proxy URL may hold credentials.
+  StaticConcatenatedStrings<kNbStrings, uint32_t, true> _strings;
 };
 
 }  // namespace aeronet

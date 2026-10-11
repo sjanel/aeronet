@@ -142,12 +142,6 @@ struct ConnectionState {
 
   void clearBuffers();
 
-  void setTlsEstablished() {
-    if (!tlsEstablished && transport.handshakeDone()) {
-      tlsEstablished = true;
-    }
-  }
-
   using AggregatedBodyStreamContext = HttpRequestView::AggregatedBodyContext;
 
   // accumulated input raw data
@@ -217,7 +211,7 @@ struct ConnectionState {
   CloseMode closeMode : 1 {CloseMode::None};
   ProtocolType protocol : 2 {ProtocolType::Http11};  // Current protocol type.
   bool waitingWritable : 1 {false};                  // EPOLLOUT registered
-  bool tlsEstablished : 1 {false};                   // true once TLS handshake completed (if TLS enabled)
+  bool tlsEstablished : 1 {false};                   // true once the TLS handshake completed and was finalized
   bool waitingForBody : 1 {false};  // true when awaiting missing body bytes (bodyReadTimeout enforcement)
   bool parsingHeaders : 1 {false};  // true while request headers are being received (headerStartTp to head-parsed)
   // Tunnel state: true when peerFd != -1. Use accessor isTunneling() to query.

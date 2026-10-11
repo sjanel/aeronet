@@ -76,22 +76,22 @@ TLS requires `AERONET_ENABLE_OPENSSL=ON`. The convenience server methods enable 
 | `TLSConfig` setting | Default | Use |
 | --- | --- | --- |
 | `enabled` | false | Master switch, enabled by certificate/key convenience methods. |
-| `withCertFile()` / `withKeyFile()` | empty | PEM certificate chain and private-key paths. |
-| `withCertPem()` / `withKeyPem()` | empty | In-memory PEM credentials, used when the corresponding file setting is empty. |
-| `withTlsMinVersion()` / `withTlsMaxVersion()` | TLS 1.2 / unset | Protocol bounds; accepted server strings are `TLS1.2` and `TLS1.3`. TLS 1.2 is enforced when the minimum is not explicitly set. |
-| `withCipherList()` / `withTlsCipherPolicy()` | empty / Default | OpenSSL TLS 1.2-and-earlier ciphers or a `Default`, `Modern`, `Compatibility`, or `Legacy` policy. |
-| `withTlsAlpnProtocols()` | empty | Ordered ALPN preference list. Use `{ "h2", "http/1.1" }` for TLS HTTP/2. |
-| `alpnMustMatch` | false | Fail a handshake with no ALPN overlap. |
+| `withCertFile()` / `withKeyFile()` | empty | PEM certificate chain (the leaf certificate, then its intermediate certificates, all sent to clients) and private-key paths. |
+| `withCertPem()` / `withKeyPem()` | empty | In-memory PEM credentials, same format. Exclusive with the file settings: `validate()` rejects a configuration setting both. Encrypted private keys are rejected. |
+| `withTlsMinVersion()` / `withTlsMaxVersion()` | TLS 1.2 / unset | Protocol bounds; accepted server strings are `TLS1.2` and `TLS1.3`. TLS 1.2 is enforced when the minimum is not explicitly set. A maximum below the minimum is rejected. |
+| `withCipherList()` / `withTlsCipherPolicy()` | empty / Default | OpenSSL TLS 1.2 ciphers or a `Default`, `Modern`, `Compatibility`, or `Legacy` policy. A cipher list requires the `Default` policy. |
+| `withTlsAlpnProtocols()` | empty | Ordered ALPN preference list. Use `{ "h2", "http/1.1" }` for TLS HTTP/2; `"h2"` is rejected when HTTP/2 is disabled. |
+| `alpnMustMatch` | false | Fail a handshake with no ALPN overlap, including a client offering no protocol at all. |
 | `requestClientCert`, `requireClientCert` | false | Request a certificate, or require and verify one for strict mTLS. Requiring implies requesting. |
-| `withTlsTrustedClientCert()` | empty | Add a PEM trust anchor/leaf for client-certificate validation. |
-| `handshakeTimeout` | disabled | Deadline from accept to TLS handshake completion. |
+| `withTlsTrustedClientCert()` | empty | Add a PEM trust anchor/leaf (or a bundle of them) for client-certificate validation. Their names are sent in the certificate request. |
+| `handshakeTimeout` | 10 s | Deadline from accept to TLS handshake completion; 0 disables it. |
 | `maxConcurrentHandshakes` | 0 | Concurrent handshake cap; 0 is unlimited. |
 | `withTlsHandshakeRateLimit()` | 0, 0 | Per-second handshake limit and burst cap. |
 | `logHandshake` | false | Log negotiated ALPN, cipher, version, and peer subject. |
 | `disableCompression` | true | Keep TLS-level compression off to mitigate CRIME. |
 | `ktlsMode` | Opportunistic | `Disabled`, `Opportunistic`, `Enabled` (warn if inactive), or `Required`; Linux/OpenSSL capability dependent. |
-| `sessionTickets` | disabled, 2 keys, 24 h | Enable ticket rotation, choose lifetime/key slots, or supply static 48-byte keys. |
-| `withTlsSniCertificateFiles/Memory()` | none | Add exact or wildcard SNI certificate mappings. |
+| `sessionTickets` | disabled, 2 keys, 24 h | Enable ticket rotation, choose lifetime/key slots, or supply static 48-byte keys. Sessions only resume with tickets, accepted for their lifetime. |
+| `withTlsSniCertificateFiles/Memory()` | none | Add exact or wildcard SNI certificate mappings. A pattern can only be mapped once. |
 | `withTlsOcspStapleFile()` | none | Load one successful DER OCSP response into the context cache for the default certificate. No handshake-time fetch is performed. |
 | `TLSConfig::withTlsSniOcspStapleFile()` | none | Associate a DER OCSP response with an existing exact or wildcard SNI certificate mapping. |
 | `withTlsCrlFile(path, checkAll)` | none, false | Load a PEM/DER CRL for inbound client-certificate verification; `checkAll` checks the full verified chain. |

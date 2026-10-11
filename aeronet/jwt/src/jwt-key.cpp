@@ -5,6 +5,7 @@
 #include <openssl/core_names.h>
 #include <openssl/crypto.h>
 #include <openssl/ec.h>
+#include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/param_build.h>
@@ -326,6 +327,29 @@ namespace {
 
 }  // namespace
 
+namespace {
+
+// Empties the OpenSSL error queue of the thread when leaving an operation that failed: OpenSSL reports any error left
+// in this queue as the failure of the next OpenSSL operation of the thread, such as a TLS read of the server event
+// loop. A forged token (bad RSA padding, malformed key) must leave nothing behind.
+class OpenSslErrorQueueCleaner {
+ public:
+  OpenSslErrorQueueCleaner() noexcept = default;
+
+  OpenSslErrorQueueCleaner(const OpenSslErrorQueueCleaner&) = delete;
+  OpenSslErrorQueueCleaner(OpenSslErrorQueueCleaner&&) = delete;
+  OpenSslErrorQueueCleaner& operator=(const OpenSslErrorQueueCleaner&) = delete;
+  OpenSslErrorQueueCleaner& operator=(OpenSslErrorQueueCleaner&&) = delete;
+
+  ~OpenSslErrorQueueCleaner() {
+    if (::ERR_peek_error() != 0) {
+      ::ERR_clear_error();
+    }
+  }
+};
+
+}  // namespace
+
 JwtKey::JwtKey(JwtKey&& other) noexcept
     : family(std::exchange(other.family, KeyFamily::Empty)),
       secret(std::move(other.secret)),
@@ -356,6 +380,7 @@ JwtKey JwtKey::Hmac(std::string_view secret) {
 }
 
 JwtKey JwtKey::FromPem(std::string_view pem) {
+  const OpenSslErrorQueueCleaner errorQueueCleaner;
   BioPtr bio(::BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size())));
   EVP_PKEY* pKey = bio ? ::PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr) : nullptr;
   JwtKey ret;
@@ -387,6 +412,7 @@ JwtKey JwtKey::FromJwk(std::string_view jwkJson) {
 }
 
 JwtKey JwtKey::FromJwkDoc(const jwt_detail::JwkDocView& doc) {
+  const OpenSslErrorQueueCleaner errorQueueCleaner;
   JwtKey ret;
   if (doc.kty == "oct") {
     if (!DecodeB64Url(doc.k, ret.secret) || ret.secret.empty()) {
@@ -482,6 +508,7 @@ inline bool VerifyDigest(EVP_PKEY_CTX* pctx, JwtAlgorithm alg) {
 }  // namespace
 
 bool JwtKey::sign(JwtAlgorithm alg, std::string_view signingInput, RawChars& out) const {
+  const OpenSslErrorQueueCleaner errorQueueCleaner;
   assert(matchesFamily(alg));  // checked by Jwt::encode()
   const auto* pMsg = reinterpret_cast<const unsigned char*>(signingInput.data());
   if (IsHmac(alg)) {
@@ -527,6 +554,7 @@ bool JwtKey::sign(JwtAlgorithm alg, std::string_view signingInput, RawChars& out
 }
 
 bool JwtKey::verify(JwtAlgorithm alg, std::string_view signingInput, std::string_view signature) const {
+  const OpenSslErrorQueueCleaner errorQueueCleaner;
   assert(matchesFamily(alg));  // checked by Jwt::tryDecode()
   const auto* msg = reinterpret_cast<const unsigned char*>(signingInput.data());
   if (IsHmac(alg)) {

@@ -518,7 +518,9 @@ TEST(ConnectionStateAsyncStateTest, ClearDestroysNonNullHandle) {
 }
 #endif
 
-TEST(ConnectionStateTransportTest, TransportWriteHttpResponseSetsTlsEstablished) {
+// A write never marks the TLS handshake as established, even when the transport reports it done: only its finalization
+// by the server (negotiated parameters, ALPN protocol setup) does.
+TEST(ConnectionStateTransportTest, TransportWriteHttpResponseDoesNotMarkTlsEstablished) {
   int sv[2];
   ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
   BaseFd raii[]{BaseFd(sv[0]), BaseFd(sv[1])};
@@ -533,9 +535,8 @@ TEST(ConnectionStateTransportTest, TransportWriteHttpResponseSetsTlsEstablished)
   HttpMessageData resp(RawChars("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n"));
   const auto res = state.transportWrite(resp);
 
-  // write should succeed and set tlsEstablished when handshakeDone() is true
   EXPECT_GE(res.bytesProcessed, 0U);
-  EXPECT_TRUE(state.tlsEstablished);
+  EXPECT_FALSE(state.tlsEstablished);
 }
 
 namespace {
@@ -745,7 +746,7 @@ TEST(ConnectionStateZerocopyTest, DrainCloseWaitsForZerocopySendsInFlight) {
 }
 #endif
 
-TEST(ConnectionStateTransportTest, TransportWriteStringSetsTlsEstablished) {
+TEST(ConnectionStateTransportTest, TransportWriteStringDoesNotMarkTlsEstablished) {
   ConnectionState state;
   state.transport = std::make_unique<FakeTransport>(/*handshakeInitially=*/true);
   state.tlsEstablished = false;
@@ -753,10 +754,10 @@ TEST(ConnectionStateTransportTest, TransportWriteStringSetsTlsEstablished) {
   const auto res = state.transportWrite(std::string_view{"hello"});
   EXPECT_EQ(res.want, TransportHint::None);
   EXPECT_EQ(res.bytesProcessed, 5U);
-  EXPECT_TRUE(state.tlsEstablished);
+  EXPECT_FALSE(state.tlsEstablished);
 }
 
-TEST(ConnectionStateTransportTest, TransportWriteStringWaitsUntilHandshakeDone) {
+TEST(ConnectionStateTransportTest, TransportWriteStringCompletingHandshakeDoesNotMarkTlsEstablished) {
   ConnectionState state;
   auto fake = std::make_unique<FakeTransport>(/*handshakeInitially=*/false);
   FakeTransport* raw = fake.get();
@@ -769,12 +770,12 @@ TEST(ConnectionStateTransportTest, TransportWriteStringWaitsUntilHandshakeDone) 
   EXPECT_EQ(res1.bytesProcessed, 3U);
   EXPECT_FALSE(state.tlsEstablished);
 
-  // Now flip handshake to done and write again; tlsEstablished should become true
+  // The handshake is now done: still not marked established, as it was not finalized.
   raw->setHandshakeDone(true);
   const auto res2 = state.transportWrite(std::string_view{"def"});
   EXPECT_EQ(res2.want, TransportHint::None);
   EXPECT_EQ(res2.bytesProcessed, 3U);
-  EXPECT_TRUE(state.tlsEstablished);
+  EXPECT_FALSE(state.tlsEstablished);
 }
 
 TEST(ConnectionStateTransportTest, TransportReadSetsHeaderStartOnce) {
@@ -799,7 +800,7 @@ TEST(ConnectionStateTransportTest, TransportReadSetsHeaderStartOnce) {
   EXPECT_EQ(state.headerStartTp, firstTp);
 }
 
-TEST(ConnectionStateTransportTest, TransportWriteHttpResponseWaitsUntilHandshakeDone) {
+TEST(ConnectionStateTransportTest, TransportWriteHttpResponseCompletingHandshakeDoesNotMarkTlsEstablished) {
   ConnectionState state;
   auto fake = std::make_unique<FakeTransport>(/*handshakeInitially=*/false);
   FakeTransport* raw = fake.get();
@@ -814,12 +815,12 @@ TEST(ConnectionStateTransportTest, TransportWriteHttpResponseWaitsUntilHandshake
   EXPECT_GE(res1.bytesProcessed, 0U);
   EXPECT_FALSE(state.tlsEstablished);
 
-  // Now flip handshake to done and write again; tlsEstablished should become true
+  // The handshake is now done: still not marked established, as it was not finalized.
   raw->setHandshakeDone(true);
   const auto res2 = state.transportWrite(resp);
   EXPECT_EQ(res2.want, TransportHint::None);
   EXPECT_GE(res2.bytesProcessed, 0U);
-  EXPECT_TRUE(state.tlsEstablished);
+  EXPECT_FALSE(state.tlsEstablished);
 }
 
 TEST(ConnectionStateTransportTest, TransportWriteStringSkipsHandshakeWhenAlreadyEstablished) {
