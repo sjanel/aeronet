@@ -1,18 +1,36 @@
 #include <gtest/gtest.h>
+#include <openssl/asn1.h>
+#include <openssl/bio.h>
+#include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/objects.h>
+#include <openssl/pem.h>
 #include <openssl/ssl.h>
+#include <openssl/x509.h>
+#include <openssl/x509v3.h>
 
 #include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <utility>
 
+#ifdef AERONET_LINUX
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#endif
+
+#include "aeronet/base-fd.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
@@ -1301,3 +1319,168 @@ TEST(HttpTlsVersionBounds, MinMaxTls12Forces12) {
   }
   ASSERT_TRUE(found);
 }
+
+TEST(HttpTlsHandshakeTest, VerifiedClientCertificateSessionResumesWithItsSubject) {
+  const auto& [serverCert, serverKey] = CertKeyCache::Get().localhost;
+  const auto& [clientCert, clientKey] = CertKeyCache::Get().client;
+  HttpServerConfig cfg;
+  cfg.withTlsCertKeyMemory(serverCert, serverKey).withTlsRequireClientCert(true).withTlsTrustedClientCert(clientCert);
+  cfg.tls.withTlsSessionTickets(true);
+  test::TestServer ts(std::move(cfg));
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.tlsPeerSubject()); });
+
+  test::TlsClient::Options opts;
+  opts.clientCertPem = clientCert;
+  opts.clientKeyPem = clientKey;
+  test::TlsClient first(ts.port(), opts);
+  ASSERT_TRUE(first.handshakeOk());
+  const std::string firstResponse = first.get("/");
+  ASSERT_TRUE(firstResponse.starts_with("HTTP/1.1 200"));
+  EXPECT_TRUE(firstResponse.contains("CN=client")) << firstResponse;
+  auto session = first.get1Session();
+  ASSERT_NE(session.get(), nullptr);
+
+  // Without a session id context, OpenSSL aborted the resumption of a session with a verified client certificate.
+  opts.reuseSession = session.get();
+  test::TlsClient second(ts.port(), opts);
+  ASSERT_TRUE(second.handshakeOk());
+  EXPECT_EQ(::SSL_session_reused(second.sslHandle()), 1);
+  const std::string secondResponse = second.get("/");
+  ASSERT_TRUE(secondResponse.starts_with("HTTP/1.1 200"));
+  // The certificate of a resumed session is still known.
+  EXPECT_TRUE(secondResponse.contains("CN=client")) << secondResponse;
+}
+
+TEST(HttpTlsHandshakeTest, PeerSubjectIsEmptyWithoutClientCertificate) {
+  test::TlsTestServer ts;
+  ts.setDefault(
+      [](const HttpRequestView& req) { return HttpResponse(req.tlsPeerSubject().empty() ? "no-subject" : "subject"); });
+  test::TlsClient client(ts.port());
+  ASSERT_TRUE(client.handshakeOk());
+  EXPECT_TRUE(client.get("/").ends_with("no-subject"));
+}
+
+TEST(HttpTlsHandshakeTest, OpenSslErrorLeftByAHandlerDoesNotCloseTheConnection) {
+  test::TlsTestServer ts;
+  ts.setDefault([](const HttpRequestView&) {
+    // An error left on the error queue of the event loop thread, as a JWT check of a forged RSA signature would do.
+    ERR_raise(ERR_LIB_RSA, ERR_R_INTERNAL_ERROR);
+    return HttpResponse("handled");
+  });
+  test::TlsClient client(ts.port());
+  ASSERT_TRUE(client.handshakeOk());
+
+  // The read following the handler, that would block, must not be taken for a TLS failure (closing the connection).
+  for (int requestIdx = 0; requestIdx < 3; ++requestIdx) {
+    ASSERT_TRUE(client.writeAll("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")) << requestIdx;
+    std::string response;
+    char buf[1024];
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    while (!response.ends_with("handled") && std::chrono::steady_clock::now() < deadline) {
+      const auto chunk = client.readSome(buf);
+      if (chunk.empty()) {
+        std::this_thread::sleep_for(1ms);
+      }
+      response.append(chunk);
+    }
+    EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << requestIdx << ": " << response;
+    EXPECT_TRUE(response.ends_with("handled")) << requestIdx;
+  }
+}
+
+#ifdef AERONET_LINUX
+namespace {
+
+// A self-signed certificate carrying an unknown, non-critical extension of `extensionSize` bytes: a large certificate
+// that stays cheap to parse.
+std::string MakeLargeCertificatePem(std::size_t extensionSize) {
+  std::unique_ptr<EVP_PKEY, decltype(&::EVP_PKEY_free)> key(::EVP_EC_gen("P-256"), &::EVP_PKEY_free);
+  std::unique_ptr<X509, decltype(&::X509_free)> cert(::X509_new(), &::X509_free);
+  std::unique_ptr<ASN1_OBJECT, decltype(&::ASN1_OBJECT_free)> oid(::OBJ_txt2obj("1.3.6.1.4.1.99999.1", 1),
+                                                                  &::ASN1_OBJECT_free);
+  std::unique_ptr<ASN1_OCTET_STRING, decltype(&::ASN1_OCTET_STRING_free)> value(::ASN1_OCTET_STRING_new(),
+                                                                                &::ASN1_OCTET_STRING_free);
+  if (!key || !cert || !oid || !value) {
+    throw std::runtime_error("Failed to allocate the large certificate");
+  }
+  ::X509_set_version(cert.get(), 2);
+  ::ASN1_INTEGER_set(::X509_get_serialNumber(cert.get()), 1);
+  ::X509_gmtime_adj(::X509_getm_notBefore(cert.get()), 0);
+  ::X509_gmtime_adj(::X509_getm_notAfter(cert.get()), 3600);
+  ::X509_set_pubkey(cert.get(), key.get());
+  X509_NAME* name = ::X509_get_subject_name(cert.get());
+  ::X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>("large"), -1, -1, 0);
+  ::X509_set_issuer_name(cert.get(), name);
+  const std::string payload(extensionSize, 'x');
+  std::unique_ptr<X509_EXTENSION, decltype(&::X509_EXTENSION_free)> extension(nullptr, &::X509_EXTENSION_free);
+  if (::ASN1_OCTET_STRING_set(value.get(), reinterpret_cast<const unsigned char*>(payload.data()),
+                              static_cast<int>(payload.size())) != 1 ||
+      (extension.reset(::X509_EXTENSION_create_by_OBJ(nullptr, oid.get(), 0, value.get())), !extension) ||
+      ::X509_add_ext(cert.get(), extension.get(), -1) != 1 || ::X509_sign(cert.get(), key.get(), ::EVP_sha256()) <= 0) {
+    throw std::runtime_error("Failed to build the large certificate");
+  }
+  std::unique_ptr<BIO, decltype(&::BIO_free)> bio(::BIO_new(::BIO_s_mem()), &::BIO_free);
+  if (!bio || ::PEM_write_bio_X509(bio.get(), cert.get()) != 1) {
+    throw std::runtime_error("Failed to write the large certificate");
+  }
+  char* data = nullptr;
+  const long size = BIO_get_mem_data(bio.get(), &data);
+  return {data, static_cast<std::size_t>(size)};
+}
+
+}  // namespace
+
+TEST(HttpTlsHandshakeTest, HandshakeLargerThanTheSocketBuffersCompletes) {
+  // A server flight (here, a huge certificate chain) larger than the socket buffers makes the handshake wait for the
+  // socket to be writable. The writable event must resume the handshake: it used to only flush the (empty) output,
+  // leaving the client waiting for the rest of the flight.
+  const auto& [leafCert, leafKey] = CertKeyCache::Get().localhost;
+  // 7 MiB: more than the socket send buffer can grow to (tcp_wmem max, 4 MiB by default) plus the client window. A
+  // single large certificate rather than thousands of small ones: the client parses it quickly.
+  const std::string chain = leafCert + MakeLargeCertificatePem(7UL << 20U);
+  HttpServerConfig cfg;
+  cfg.withTlsCertKeyMemory(chain, leafKey);
+  // Once the server wrote its whole flight, the socket send buffer still holds megabytes that the kernel sends without
+  // any event: the default timeouts could close the connection on a slow (sanitized) build before the client finishes.
+  cfg.withKeepAliveTimeout(std::chrono::seconds{60}).withTlsHandshakeTimeout(std::chrono::seconds{60});
+  test::TestServer ts(std::move(cfg));
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("big-handshake"); });
+
+  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  ASSERT_GE(fd, 0);
+  BaseFd socketFd(fd);
+  // A receive buffer set before connecting: the advertised window stays bounded.
+  const int rcvBuf = 64 << 10;
+  ASSERT_EQ(::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvBuf, sizeof(rcvBuf)), 0);
+  // Fails the test instead of hanging if the handshake stalls.
+  const timeval timeout{.tv_sec = 30, .tv_usec = 0};
+  ASSERT_EQ(::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)), 0);
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(ts.port());
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  ASSERT_EQ(::connect(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)), 0);
+
+  std::unique_ptr<SSL_CTX, decltype(&::SSL_CTX_free)> clientCtx(::SSL_CTX_new(TLS_client_method()), &::SSL_CTX_free);
+  ASSERT_NE(clientCtx, nullptr);
+  ::SSL_CTX_set_verify(clientCtx.get(), SSL_VERIFY_NONE, nullptr);
+  ::SSL_CTX_set_max_cert_list(clientCtx.get(), 16L << 20);
+  std::unique_ptr<SSL, decltype(&::SSL_free)> ssl(::SSL_new(clientCtx.get()), &::SSL_free);
+  ASSERT_NE(ssl, nullptr);
+  ASSERT_EQ(::SSL_set_fd(ssl.get(), fd), 1);
+  ASSERT_EQ(::SSL_connect(ssl.get()), 1);
+
+  static constexpr std::string_view kRequest = "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+  ASSERT_EQ(::SSL_write(ssl.get(), kRequest.data(), static_cast<int>(kRequest.size())),
+            static_cast<int>(kRequest.size()));
+  std::string response;
+  char buf[4096];
+  for (int nbRead = ::SSL_read(ssl.get(), buf, sizeof(buf)); nbRead > 0;
+       nbRead = ::SSL_read(ssl.get(), buf, sizeof(buf))) {
+    response.append(buf, static_cast<std::size_t>(nbRead));
+  }
+  ::ERR_clear_error();
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;
+  EXPECT_TRUE(response.ends_with("big-handshake"));
+}
+#endif

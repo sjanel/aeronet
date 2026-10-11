@@ -2,6 +2,7 @@
 
 #include <openssl/core_names.h>
 #include <openssl/crypto.h>
+#include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/params.h>
 #include <openssl/rand.h>
@@ -13,10 +14,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <mutex>
 #include <span>
 #include <stdexcept>
 
+#include "aeronet/log-noexcept.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/tls-config.hpp"
@@ -84,8 +87,22 @@ bool InitMacContext(EVP_MAC_CTX* mctx, const unsigned char* hmacKey, std::size_t
 }  // namespace
 
 int TlsTicketKeyStore::processTicket(unsigned char keyName[16], unsigned char* iv, int ivLen, EVP_CIPHER_CTX* cctx,
-                                     EVP_MAC_CTX* mctx, int enc) {
-  std::scoped_lock<std::mutex> lock(_mutex);
+                                     EVP_MAC_CTX* mctx, int enc) noexcept {
+  // Called by OpenSSL, which must never see an exception.
+  try {
+    std::scoped_lock<std::mutex> lock(_mutex);
+    return processTicketUnlocked(keyName, iv, ivLen, cctx, mctx, enc);
+  } catch (const std::exception& ex) {
+    // Key generation failure: no ticket is issued, the handshake goes on. Leave no error behind for the I/O operation
+    // driving it.
+    log_noexcept::error("TLS session ticket {} failed: {}", enc == 1 ? "encryption" : "decryption", ex.what());
+    ::ERR_clear_error();
+    return 0;
+  }
+}
+
+int TlsTicketKeyStore::processTicketUnlocked(unsigned char keyName[16], unsigned char* iv, int ivLen,
+                                             EVP_CIPHER_CTX* cctx, EVP_MAC_CTX* mctx, int enc) {
   if (enc == 1) {
     rotateIfNeededUnlocked();
     if (_keys.empty()) {
@@ -120,7 +137,9 @@ int TlsTicketKeyStore::processTicket(unsigned char keyName[16], unsigned char* i
   if (!InitMacContext(mctx, hmacKey.data(), hmacKey.size())) {
     return -1;
   }
-  return 1;
+  // A ticket encrypted with an older key is renewed: the client then gets a ticket encrypted with the current key, and
+  // keeps resuming after the older key is dropped.
+  return key == &_keys.front() ? 1 : 2;
 }
 
 TlsTicketKeyStore::KeyMaterial TlsTicketKeyStore::GenerateRandomKeyUnlocked() {

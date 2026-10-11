@@ -9,6 +9,8 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
+#include <utility>
 
 namespace aeronet {
 
@@ -383,4 +385,80 @@ TEST(ConcatenatedStrings, TmpNullTerminated_Stress) {
     EXPECT_EQ(ptr[cs[idx].size()], before);
   }
 }
+using SecureType = StaticConcatenatedStrings<3, uint32_t, true>;
+
+static_assert(!std::is_trivially_destructible_v<SecureType>);
+static_assert(std::is_nothrow_move_constructible_v<SecureType>);
+static_assert(std::is_nothrow_move_assignable_v<SecureType>);
+
+TEST(SecureConcatenatedStrings, BehavesLikeTheRegularOne) {
+  SecureType secure;
+  TestType regular;
+  const std::string longPart(300, 's');
+  for (auto [idx, value] : {std::pair<uint32_t, std::string_view>{1, "secret"},
+                            {0, longPart},
+                            {2, "tail"},
+                            {1, "x"},
+                            {0, ""},
+                            {2, longPart},
+                            {1, longPart},
+                            {2, ""}}) {
+    secure.set(idx, value);
+    regular.set(idx, value);
+    for (uint32_t part = 0; part < 3; ++part) {
+      ASSERT_EQ(secure[part], regular[part]) << part;
+      ASSERT_EQ(secure.c_str(part)[secure[part].size()], '\0');
+    }
+  }
+}
+
+TEST(SecureConcatenatedStrings, ShorterPartLeavesNoStaleByteBeyondTheEnd) {
+  SecureType secure;
+  secure.set(0, "a");
+  secure.set(1, "SECRETSECRETSECRET");
+  secure.set(2, "b");
+  secure.set(1, "s");
+  // The bytes following the last terminator, in the capacity of the buffer, held the end of the previous content.
+  const char* end = secure.c_str(2) + secure[2].size() + 1;
+  for (std::size_t pos = 0; pos < 17; ++pos) {
+    EXPECT_EQ(end[pos], '\0') << pos;
+  }
+}
+
+TEST(SecureConcatenatedStrings, CopyMoveAndClear) {
+  SecureType secure;
+  secure.set(0, "key");
+  secure.set(2, std::string(100, 'k'));
+
+  SecureType copy;
+  copy.set(1, "previous");
+  copy = secure;
+  EXPECT_EQ(copy, secure);
+  const auto& self = copy;
+  copy = self;
+  EXPECT_EQ(copy, secure);
+
+  SecureType moved;
+  moved.set(1, "previous");
+  moved = std::move(copy);
+  EXPECT_EQ(moved, secure);
+  auto& movedRef = moved;
+  moved = std::move(movedRef);
+  EXPECT_EQ(moved, secure);
+
+  SecureType constructed(std::move(moved));
+  EXPECT_EQ(constructed, secure);
+
+  constructed.clear();
+  EXPECT_EQ(constructed[0], std::string_view());
+  EXPECT_EQ(constructed[2], std::string_view());
+  constructed.set(1, "again");
+  EXPECT_EQ(constructed[1], "again");
+
+  SecureType swapped;
+  swapped.swap(secure);
+  EXPECT_EQ(swapped[0], "key");
+  EXPECT_EQ(secure[0], std::string_view());
+}
+
 }  // namespace aeronet

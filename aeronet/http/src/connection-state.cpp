@@ -90,21 +90,17 @@ TransportResult ConnectionState::transportRead(std::size_t chunkSize) {
   return result;
 }
 
-TransportResult ConnectionState::transportWrite(std::string_view data) {
-  const auto res = transport.write(data);
-  setTlsEstablished();
-  return res;
-}
+// A write never marks the TLS handshake as established, even when it completes it: only
+// SingleHttpServer::finalizeTlsHandshakeIfReady() does, after recording the negotiated parameters and setting up the
+// protocol selected by ALPN.
+TransportResult ConnectionState::transportWrite(std::string_view data) { return transport.write(data); }
+
 TransportResult ConnectionState::transportWrite(std::span<const std::string_view> buffers) {
-  const auto res = transport.write(buffers);
-  setTlsEstablished();
-  return res;
+  return transport.write(buffers);
 }
 
 TransportResult ConnectionState::transportWrite(const HttpMessageData& httpResponseData) {
-  const auto res = transport.write(httpResponseData.firstBuffer(), httpResponseData.secondBuffer());
-  setTlsEstablished();
-  return res;
+  return transport.write(httpResponseData.firstBuffer(), httpResponseData.secondBuffer());
 }
 
 bool ConnectionState::tunnelTransportWrite(NativeHandle fd) {

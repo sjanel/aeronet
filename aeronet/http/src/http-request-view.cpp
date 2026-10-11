@@ -136,6 +136,11 @@ std::string_view HttpRequestView::readBody(std::size_t maxBytes) {
   return _pOwnerState->tlsInfo.negotiatedVersion();
 }
 
+[[nodiscard]] std::string_view HttpRequestView::tlsPeerSubject() const noexcept {
+  assert(_pOwnerState != nullptr);
+  return _pOwnerState->tlsInfo.peerSubject();
+}
+
 [[nodiscard]] std::string_view HttpRequestView::clientAddress() const noexcept {
   assert(_pOwnerState != nullptr);
   return _pOwnerState->clientAddress();

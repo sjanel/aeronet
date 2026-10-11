@@ -59,10 +59,9 @@ TlsHandshakeResult CollectAndLogTlsHandshake(const SSL* ssl, NativeHandle fd, bo
   assert(vers != nullptr);  // SSL_get_version should not return nullptr after handshake
   res.parts.set(2, vers);
 
-  if (X509* peerRaw = ::SSL_get_peer_certificate(ssl)) {
-    auto peer = MakeX509(peerRaw);
+  if (X509* peer = ::SSL_get0_peer_certificate(ssl)) {
     res.clientCertPresent = true;
-    if (X509_NAME* name = ::X509_get_subject_name(peer.get())) {
+    if (X509_NAME* name = ::X509_get_subject_name(peer)) {
       auto memBio = MakeMemoryBio();
       if (::X509_NAME_print_ex(memBio.get(), name, 0, XN_FLAG_RFC2253 & ~ASN1_STRFLGS_ESC_MSB) >= 0) {
         BUF_MEM* bptr = nullptr;

@@ -808,12 +808,18 @@ void SingleHttpServer::eventLoop() {
         refreshKeepAliveDeadline(cnxIt);
 
         CloseStatus closeStatus = CloseStatus::Keep;
-        if ((bmp & EventOut) != 0) {
-          closeStatus = handleWritableClient(cnxIt);
-        }
         // EPOLLERR/EPOLLHUP/EPOLLRDHUP can be delivered without EPOLLIN.
         // Treat them as a read trigger so we promptly observe EOF/errors and close.
-        if ((bmp & (EventIn | EventErr | EventHup | EventRdHup)) != 0) {
+        bool readTrigger = (bmp & (EventIn | EventErr | EventHup | EventRdHup)) != 0;
+        if ((bmp & EventOut) != 0) {
+#ifdef AERONET_ENABLE_OPENSSL
+          // A TLS handshake waiting for the socket to be writable (its flight did not fit in the socket send buffer)
+          // is driven by the read path: the writable event alone would only flush the (empty) output.
+          readTrigger = readTrigger || (eventState.transport.isTls() && !eventState.transport.handshakeDone());
+#endif
+          closeStatus = handleWritableClient(cnxIt);
+        }
+        if (readTrigger) {
           closeStatus =
               std::max(handleReadableClient(cnxIt, (bmp & (EventErr | EventHup | EventRdHup)) == 0), closeStatus);
         }

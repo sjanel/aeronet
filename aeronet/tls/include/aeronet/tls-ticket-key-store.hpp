@@ -27,9 +27,12 @@ class TlsTicketKeyStore {
 
   // Entry point used by the OpenSSL session ticket callback (EVP variant for OpenSSL 3.0+).
   // When enc==1 a new ticket is issued (populate keyName/iv and initialize cipher/MAC contexts).
-  // When enc==0 the ticket must be decrypted using the matching keyName.
+  // When enc==0 the ticket must be decrypted using the matching keyName: returns 0 if no key matches (full handshake),
+  // 2 if the matching key is not the current one (the ticket is renewed), 1 otherwise.
+  // Never throws (OpenSSL calls it): returns 0 (no ticket issued) if a new key cannot be generated, -1 if OpenSSL
+  // fails.
   int processTicket(unsigned char keyName[16], unsigned char* iv, int ivLen, EVP_CIPHER_CTX* cctx, EVP_MAC_CTX* mctx,
-                    int enc);
+                    int enc) noexcept;
 
  private:
   struct KeyMaterial {
@@ -67,6 +70,9 @@ class TlsTicketKeyStore {
     Bytes bytes;
     std::chrono::steady_clock::time_point created;
   };
+
+  int processTicketUnlocked(unsigned char keyName[16], unsigned char* iv, int ivLen, EVP_CIPHER_CTX* cctx,
+                            EVP_MAC_CTX* mctx, int enc);
 
   static KeyMaterial GenerateRandomKeyUnlocked();
   void rotateIfNeededUnlocked();
