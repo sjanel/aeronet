@@ -302,7 +302,8 @@ bool SingleHttpServer::needsFullConnectionMaintenanceSweep() const noexcept {
     return true;
   }
 #ifdef AERONET_ENABLE_OPENSSL
-  if (_config.tls.enabled && _config.tls.handshakeTimeout.count() > 0) {
+  // Only while handshakes are in progress: the established connections need no handshake timeout check.
+  if (_tls.handshakesInFlight != 0U && _config.tls.handshakeTimeout.count() > 0) {
     return true;
   }
 #endif
@@ -520,8 +521,10 @@ void SingleHttpServer::acceptNewConnections() {
         const auto elapsed = now - _tls.rateLimitLastRefill;
         const auto addIntervals = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
         if (addIntervals > 0) {
-          const uint32_t addTokens = static_cast<uint32_t>(addIntervals) * _config.tls.handshakeRateLimitPerSecond;
-          _tls.rateLimitTokens = std::min(burst, _tls.rateLimitTokens + addTokens);
+          // In 64 bits: after a long idle period, the 32-bit product would wrap around (to few or no tokens).
+          const uint64_t addTokens =
+              static_cast<uint64_t>(addIntervals) * uint64_t{_config.tls.handshakeRateLimitPerSecond};
+          _tls.rateLimitTokens = static_cast<uint32_t>(std::min<uint64_t>(burst, _tls.rateLimitTokens + addTokens));
           _tls.rateLimitLastRefill += std::chrono::seconds{addIntervals};
         }
         if (_tls.rateLimitTokens == 0) [[unlikely]] {

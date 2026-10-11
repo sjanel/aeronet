@@ -23,9 +23,10 @@ auto NormalizeHostname(std::string_view host) {
 
 }  // namespace
 
-void TLSConfig::scrubSensitiveData() noexcept {
-  _tlsStrings.secureClearPart(kKeyPem);
-  clearTlsSessionTicketKeys();
+void TLSConfig::StaticTicketKeys::scrub() noexcept {
+  if (!keys.empty()) {
+    SecureZero(keys.data(), keys.size() * sizeof(SessionTicketKey));
+  }
 }
 
 void TLSConfig::validate() {
@@ -47,6 +48,9 @@ void TLSConfig::validate() {
   }
 
   // If TLS config is present we require a cert and a key supplied (either file or in-memory PEM)
+  if ((!certFile().empty() || !keyFile().empty()) && (!certPem().empty() || !keyPem().empty())) {
+    throw std::invalid_argument("TLS certificate and key must be given either as files or as in-memory PEM, not both");
+  }
   if (certFile().empty() && certPem().empty()) {
     throw std::invalid_argument("TLS configured: certificate missing");
   }
@@ -82,6 +86,13 @@ void TLSConfig::validate() {
     log::critical("Unsupported tls maxVersion '{}', allowed: TLS1.2, TLS1.3", std::string_view(buf, sizeof(buf)));
     throw std::invalid_argument("Unsupported tls maxVersion");
   }
+  // An unset minimum is TLS 1.2.
+  if (maxVersion != Version{} && maxVersion < (minVersion == Version{} ? TLS_1_2 : minVersion)) {
+    throw std::invalid_argument("TLS maxVersion is lower than minVersion: no protocol version would be allowed");
+  }
+  if (cipherPolicy != CipherPolicy::Default && !cipherList().empty()) {
+    throw std::invalid_argument("TLS cipherList cannot be combined with a cipherPolicy other than Default");
+  }
 
   auto alpnProtocols = this->alpnProtocols();
   if (alpnMustMatch && alpnProtocols.empty()) {
@@ -99,7 +110,7 @@ void TLSConfig::validate() {
   if (sessionTickets.maxKeys == 0) {
     throw std::invalid_argument("Session ticket maxKeys must be greater than zero");
   }
-  if (!sessionTickets.enabled && !_staticTicketKeys.empty()) {
+  if (!sessionTickets.enabled && !_staticTicketKeys.keys.empty()) {
     throw std::invalid_argument("Session ticket keys configured but tickets disabled");
   }
   if (handshakeRateLimitPerSecond == 0 && handshakeRateLimitBurst != 0) {
@@ -110,6 +121,13 @@ void TLSConfig::validate() {
   }
   if (crlCheckAll && crlFile().empty()) {
     throw std::invalid_argument("crlCheckAll is true but no CRL file is configured");
+  }
+  for (auto it = _sniCertificates.begin(); it != _sniCertificates.end(); ++it) {
+    // Patterns are normalized (lowercase): the first match would always shadow a duplicate.
+    if (std::ranges::any_of(it + 1, _sniCertificates.end(),
+                            [it](const SniCertificate& other) { return other.pattern() == it->pattern(); })) {
+      throw std::invalid_argument("Duplicate SNI certificate pattern");
+    }
   }
 #ifdef NDEBUG
   if (!keyLogFile().empty()) {
@@ -134,26 +152,25 @@ TLSConfig& TLSConfig::withTlsSessionTicketKey(SessionTicketKey keyMaterial) {
 
   // Avoid leaving an abandoned key copy behind when the vector grows: relocate through a pre-reserved replacement,
   // scrub the old inline elements, then publish the replacement.
-  if (_staticTicketKeys.size() == _staticTicketKeys.capacity()) {
-    decltype(_staticTicketKeys) replacement;
-    replacement.reserve((_staticTicketKeys.size() * 2U) + 1U);
-    for (const auto& key : _staticTicketKeys) {
+  auto& keys = _staticTicketKeys.keys;
+  if (keys.size() == keys.capacity()) {
+    vector<SessionTicketKey> replacement;
+    replacement.reserve((keys.size() * 2U) + 1U);
+    for (const auto& key : keys) {
       replacement.push_back(key);
     }
     clearTlsSessionTicketKeys();
-    _staticTicketKeys.swap(replacement);
+    keys.swap(replacement);
   }
-  _staticTicketKeys.push_back(keyMaterial);
+  keys.push_back(keyMaterial);
 
   sessionTickets.enabled = true;
   return *this;
 }
 
 TLSConfig& TLSConfig::clearTlsSessionTicketKeys() noexcept {
-  if (!_staticTicketKeys.empty()) {
-    SecureZero(_staticTicketKeys[0].data(), _staticTicketKeys.size() * sizeof(SessionTicketKey));
-    _staticTicketKeys.clear();
-  }
+  _staticTicketKeys.scrub();
+  _staticTicketKeys.keys.clear();
   return *this;
 }
 

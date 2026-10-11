@@ -28,6 +28,17 @@ constexpr bool isRetry(int code) { return code == SSL_ERROR_WANT_READ || code ==
 
 // Largest plaintext of a TLS record: what a single SSL_write_ex call encrypts at most (with partial writes).
 constexpr std::size_t kMaxRecordPlainSize = SSL3_RT_MAX_PLAIN_LENGTH;
+
+// SSL_get_error() reports any error of the per-thread OpenSSL error queue as a failure of the last I/O operation, so
+// the queue must be empty before each of them. Other OpenSSL users of the thread may leave errors behind - a request
+// handler verifying a forged signature (JWT), application code - which would otherwise make the next read that would
+// block look fatal, closing a healthy connection. Checking the queue is a thread-local lookup: clear it only when
+// needed.
+inline void ClearStaleOpenSslErrors() noexcept {
+  if (::ERR_peek_error() != 0) [[unlikely]] {
+    ::ERR_clear_error();
+  }
+}
 }  // namespace
 
 TlsTransport::TlsTransport(SslPtr sslPtr, uint32_t minBytesForZerocopy)
@@ -63,6 +74,7 @@ TransportResult TlsTransport::read(char* buf, std::size_t len) {
     return ret;  // indicate would-block during handshake
   }
 
+  ClearStaleOpenSslErrors();
   if (::SSL_read_ex(_ssl.get(), buf, len, &ret.bytesProcessed) != 1) [[unlikely]] {
     ret.bytesProcessed = 0;
     ret.want = readFailureHint();
@@ -221,6 +233,7 @@ TransportResult TlsTransport::write(std::span<const std::string_view> buffers) {
 
 TransportResult TlsTransport::sslWrite(std::string_view data) {
   TransportResult ret{0, TransportHint::None};
+  ClearStaleOpenSslErrors();
   if (::SSL_write_ex(_ssl.get(), data.data(), data.size(), &ret.bytesProcessed) == 1) {
     return ret;
   }
@@ -285,6 +298,7 @@ void TlsTransport::logErrorIfAny() const {
 
 TransportHint TlsTransport::handshake(TransportHint want) {
   if (!_handshakeDone) {
+    ClearStaleOpenSslErrors();
     const int handshakeRet = ::SSL_do_handshake(_ssl.get());
     if (handshakeRet == 1) {
       _handshakeDone = true;

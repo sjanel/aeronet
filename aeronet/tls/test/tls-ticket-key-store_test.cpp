@@ -254,13 +254,14 @@ TEST(TlsTicketKeyStoreTest, LoadStaticKeysExactlyMaxKeysKeepsAll) {
   MacCtxPtr macCtx{::EVP_MAC_CTX_new(mac.get()), &::EVP_MAC_CTX_free};
   ASSERT_NE(macCtx.get(), nullptr);
 
-  for (const auto& staticKey : staticKeys) {
+  for (std::size_t keyIdx = 0; keyIdx < staticKeys.size(); ++keyIdx) {
     std::array<unsigned char, 16> keyName{};
-    std::ranges::copy(std::span(reinterpret_cast<const unsigned char*>(staticKey.data()), keyName.size()),
+    std::ranges::copy(std::span(reinterpret_cast<const unsigned char*>(staticKeys[keyIdx].data()), keyName.size()),
                       keyName.begin());
+    // A ticket of the first (current) key is used as is, a ticket of another key is renewed.
     EXPECT_EQ(ticketStore.processTicket(keyName.data(), iv.data(), static_cast<int>(iv.size()), cipherCtx.get(),
                                         macCtx.get(), 0),
-              1);
+              keyIdx == 0 ? 1 : 2);
   }
 }
 
@@ -526,6 +527,30 @@ TEST(TlsTicketKeyStoreTest, ProcessTicketFailsWhenInitMacContextFailsOnDecrypt) 
   int decryptRc = ticketStore.processTicket(keyName.data(), iv.data(), static_cast<int>(iv.size()), cipherCtx.get(),
                                             macCtx.get(), 0);
   EXPECT_EQ(decryptRc, -1);
+}
+
+TEST(TlsTicketKeyStoreTest, ProcessTicketIssuesNoTicketWhenKeyGenerationFails) {
+  // No key yet: issuing a ticket generates one, with RAND_bytes.
+  TlsTicketKeyStore ticketStore(std::chrono::seconds(60), 2);
+  std::array<unsigned char, 16> keyName{};
+  std::array<unsigned char, EVP_MAX_IV_LENGTH> iv{};
+  CipherPtr cipherCtx{::EVP_CIPHER_CTX_new(), &::EVP_CIPHER_CTX_free};
+  MacPtr mac(::EVP_MAC_fetch(nullptr, "HMAC", nullptr), &::EVP_MAC_free);
+  MacCtxPtr macCtx{::EVP_MAC_CTX_new(mac.get()), &::EVP_MAC_CTX_free};
+  ASSERT_NE(macCtx.get(), nullptr);
+
+  static_assert(noexcept(ticketStore.processTicket(nullptr, nullptr, 0, nullptr, nullptr, 1)));
+  {
+    ScopedFailNext randFail(gFailRandBytes);
+    // Called by OpenSSL: no exception, no ticket (the handshake goes on).
+    EXPECT_EQ(ticketStore.processTicket(keyName.data(), iv.data(), static_cast<int>(iv.size()), cipherCtx.get(),
+                                        macCtx.get(), 1),
+              0);
+  }
+  // The next ticket is issued.
+  EXPECT_EQ(ticketStore.processTicket(keyName.data(), iv.data(), static_cast<int>(iv.size()), cipherCtx.get(),
+                                      macCtx.get(), 1),
+            1);
 }
 
 TEST(TlsTicketKeyStoreTest, LoadStaticKeysEmptyThrowsWhenRandBytesFailsGeneratingKey) {

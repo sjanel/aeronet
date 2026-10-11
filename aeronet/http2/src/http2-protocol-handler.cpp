@@ -1028,7 +1028,8 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequestView& request, const Router:
   if (request.method() == http::Method::OPTIONS || request.method() == http::Method::TRACE) {
     const SpecialMethodConfig config{
         .tracePolicy = _pServerConfig->traceMethodPolicy,
-        .isTls = request.scheme() == "https",
+        // From the connection: the :scheme pseudo-header is chosen by the client.
+        .isTls = !request.tlsVersion().empty(),
     };
     // Note: For HTTP/2, TRACE cannot echo raw request data (no wire format available)
     // So we pass empty requestData, which will result in 405 Method Not Allowed

@@ -485,6 +485,10 @@ class HttpRequestView {
   // Negotiated TLS protocol version string (e.g. "TLSv1.3"); empty if not TLS.
   [[nodiscard]] std::string_view tlsVersion() const noexcept;
 
+  // RFC 2253 subject of the client certificate verified during the TLS handshake (e.g. "CN=client,O=Example"), also
+  // on a resumed session; empty if the client presented none or the connection is not TLS.
+  [[nodiscard]] std::string_view tlsPeerSubject() const noexcept;
+
   // Best-effort client address string captured from peer socket address.
   [[nodiscard]] std::string_view clientAddress() const noexcept;
 

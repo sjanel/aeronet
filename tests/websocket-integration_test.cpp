@@ -192,7 +192,12 @@ std::string ReceiveServerFrameBytes(NativeHandle fd, std::chrono::milliseconds t
   std::string raw;
   std::array<char, 16384> buf{};
   while (!ParseServerFrame(std::span<const std::byte>(reinterpret_cast<const std::byte*>(raw.data()), raw.size()))) {
+    // TODO: factorize a ::recv wrapper in socket-ops.cpp
+#ifdef AERONET_WINDOWS
+    const auto nb = ::recv(fd, buf.data(), static_cast<int>(buf.size()), 0);
+#else
     const auto nb = ::recv(fd, buf.data(), buf.size(), 0);
+#endif
     if (nb <= 0) {
       return {};
     }
@@ -759,7 +764,11 @@ std::string UpgradeResponse(std::string_view path, std::string_view extraHeaders
   std::string head;
   std::array<char, 1024> buf{};
   while (!head.contains(http::DoubleCRLF)) {
+#ifdef AERONET_WINDOWS
+    const auto nb = ::recv(conn.fd(), buf.data(), static_cast<int>(buf.size()), 0);
+#else
     const auto nb = ::recv(conn.fd(), buf.data(), buf.size(), 0);
+#endif
     if (nb <= 0) {
       break;
     }

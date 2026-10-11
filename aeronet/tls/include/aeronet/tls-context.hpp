@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -100,12 +101,20 @@ class TlsContext {
     ObjectArrayPool<char> charStorage;
   };
 
+  // SHA-256 digest of the client certificate verification settings (SSL_MAX_SID_CTX_LENGTH bytes).
+  using SessionIdContext = std::array<unsigned char, 32>;
+
+  static SessionIdContext ComputeSessionIdContext(const TLSConfig& cfg);
+
   static int SelectSniRoute(ssl_st* ssl, int* alert, void* arg);
   static int SelectAlpn(ssl_st* ssl, const unsigned char** out, unsigned char* outlen, const unsigned char* in,
                         unsigned int inlen, void* arg);
+  // ClientHello callback of a strict ALPN context: rejects a client offering no protocol at all.
+  static int RequireAlpnOffer(ssl_st* ssl, int* alert, void* arg);
+  static void RecordStrictAlpnMismatch(ssl_st* ssl, AlpnData& alpnData) noexcept;
   static int StapleOcspResponse(ssl_st* ssl, void* arg);
   static int VerifyPeerCertificate(int preverifyOk, x509_store_ctx_st* storeCtx);
-  static void LogSessionKeys(const ssl_st* ssl, const char* line);
+  static void LogSessionKeys(const ssl_st* ssl, const char* line) noexcept;
 
   struct RevocationData {
     TlsRevocationCallback callback{nullptr};

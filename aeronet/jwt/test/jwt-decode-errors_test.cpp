@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <openssl/bio.h>
+#include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/pem.h>
@@ -155,6 +156,21 @@ TEST(JwtKeyErrors, UnsupportedKeyTypeIsInvalid) {
   ::BIO_free(bio);
   ::EVP_PKEY_free(key);
   EXPECT_FALSE(JwtKey::FromPem(pem).valid());
+}
+
+TEST(JwtDecodeErrors, ForgedSignatureLeavesNoOpenSslError) {
+  // OpenSSL reports any queued error as the failure of the next operation of the thread (a TLS read, say).
+  ::ERR_clear_error();
+  const test::TestKey rsa = test::GenerateRsa();
+  const JwtKey key = JwtKey::FromPem(rsa.publicPem);
+  ASSERT_TRUE(key.valid());
+  const std::string signingInput = B64Url(R"({"alg":"RS256"})") + "." + B64Url("{}");
+  const std::string forgedSignature(256, 'A');  // the size of a 2048-bit RSA signature, with an invalid padding
+  EXPECT_EQ(DecodeErr(signingInput + "." + B64Url(forgedSignature), key, NoTemporal()), JwtError::InvalidSignature);
+  EXPECT_EQ(::ERR_peek_error(), 0U);
+
+  EXPECT_FALSE(JwtKey::FromPem("-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n").valid());
+  EXPECT_EQ(::ERR_peek_error(), 0U);
 }
 
 }  // namespace aeronet

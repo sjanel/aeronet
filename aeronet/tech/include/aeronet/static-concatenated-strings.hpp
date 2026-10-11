@@ -26,7 +26,10 @@ namespace aeronet {
 // which allows for O(1) access to a specific part. Setting a sub-string in the middle that is of different length
 // than the previous one requires shifting the tail of the buffer accordingly, which is O(M) with M being
 // the size of the tail.
-template <unsigned N, class SizeType = std::size_t>
+// With Secure = true (strings holding secrets, such as private keys), no copy of the content is ever left in freed or
+// unused memory: the buffer is overwritten before it is released (destruction, assignment, growth) and the bytes
+// left beyond its end by a shorter string are overwritten too.
+template <unsigned N, class SizeType = std::size_t, bool Secure = false>
 class StaticConcatenatedStrings {
   static_assert(N > 1U, "StaticConcatenatedStrings requires N > 1");
   static_assert(std::is_unsigned_v<SizeType>, "StaticConcatenatedStrings requires an unsigned SizeType");
@@ -42,6 +45,49 @@ class StaticConcatenatedStrings {
   StaticConcatenatedStrings() noexcept : _offsets(), _buf() {}
 
   explicit StaticConcatenatedStrings(size_type initialCapacity) : _offsets(), _buf(initialCapacity) {}
+
+  StaticConcatenatedStrings(const StaticConcatenatedStrings&) = default;
+  StaticConcatenatedStrings(StaticConcatenatedStrings&&) noexcept = default;
+
+  StaticConcatenatedStrings& operator=(const StaticConcatenatedStrings&)
+    requires(!Secure)
+  = default;
+  StaticConcatenatedStrings& operator=(StaticConcatenatedStrings&&) noexcept
+    requires(!Secure)
+  = default;
+
+  // The copy is made first, then the previous content is scrubbed with the buffer holding it.
+  StaticConcatenatedStrings& operator=(const StaticConcatenatedStrings& other)
+    requires(Secure)
+  {
+    if (this != &other) {
+      StaticConcatenatedStrings copy(other);
+      swap(copy);
+    }
+    return *this;
+  }
+
+  StaticConcatenatedStrings& operator=(StaticConcatenatedStrings&& other) noexcept
+    requires(Secure)
+  {
+    if (this != &other) {
+      scrub();
+      _offsets = other._offsets;
+      _nextInsertIdx = std::exchange(other._nextInsertIdx, size_type{0});
+      _buf = std::move(other._buf);
+    }
+    return *this;
+  }
+
+  ~StaticConcatenatedStrings()
+    requires(!Secure)
+  = default;
+
+  ~StaticConcatenatedStrings()
+    requires(Secure)
+  {
+    scrub();
+  }
 
   StaticConcatenatedStrings(std::initializer_list<std::string_view> parts) {
     if (parts.size() != kParts) {
@@ -80,7 +126,7 @@ class StaticConcatenatedStrings {
 
   void set(size_type idx, std::string_view str) {
     if (_buf.empty()) {
-      _buf.reserve(str.size() + kParts);
+      reserve(str.size() + kParts);
       std::memset(_buf.data(), 0, kParts);
       _buf.setSize(kParts);
       for (size_type i = 1U; i < kParts; ++i) {
@@ -98,8 +144,8 @@ class StaticConcatenatedStrings {
 
     if (oldSize < newSize) {
       const std::size_t delta = newSize - oldSize;
-      _buf.ensureAvailableCapacity(delta);
-      // pointers may have changed after ensureAvailableCapacity
+      reserve(_buf.size() + delta);
+      // pointers may have changed after reserve
       data = _buf.data();
       // move tail to the right
       std::memmove(data + oldEndPos + delta, data + oldEndPos, tailSize);
@@ -116,6 +162,10 @@ class StaticConcatenatedStrings {
       std::memmove(data + oldBegPos + newSize, data + oldEndPos, tailSize);
       Copy(str, data + oldBegPos);
       _buf.setSize(static_cast<size_type>(_buf.size() - delta));
+      if constexpr (Secure) {
+        // The end of the previous content, now beyond the size.
+        SecureZero(data + _buf.size(), delta);
+      }
       // update offsets for subsequent parts
       for (auto offsetIdx = static_cast<Offsets::size_type>(idx); offsetIdx + 1U < kParts; ++offsetIdx) {
         _offsets[offsetIdx] -= static_cast<size_type>(delta);
@@ -143,8 +193,15 @@ class StaticConcatenatedStrings {
 
   // Reset all parts to empty strings.
   void clear() noexcept {
+    scrub();
     _nextInsertIdx = 0;
     _buf.clear();
+  }
+
+  void swap(StaticConcatenatedStrings& other) noexcept {
+    std::swap(_offsets, other._offsets);
+    std::swap(_nextInsertIdx, other._nextInsertIdx);
+    _buf.swap(other._buf);
   }
 
   // JSON set-like path uses range value type (std::string_view) rather than value_type.
@@ -203,6 +260,30 @@ class StaticConcatenatedStrings {
   const char* begPtr(size_type idx) const noexcept {
     return _buf.data() +
            static_cast<std::ptrdiff_t>(idx == 0 ? 0 : _offsets[static_cast<Offsets::size_type>(idx - size_type{1})]);
+  }
+
+  // Ensures a capacity of at least newCapacity bytes. A Secure buffer is never reallocated in place (realloc would free
+  // the previous memory without scrubbing it): its content is copied to a new buffer, then scrubbed.
+  void reserve(std::size_t newCapacity) {
+    if constexpr (Secure) {
+      if (newCapacity > _buf.capacity() && !_buf.empty()) {
+        decltype(_buf) newBuf(newCapacity);
+        newBuf.unchecked_append(_buf.data(), _buf.size());
+        scrub();
+        _buf.swap(newBuf);
+        return;
+      }
+    }
+    _buf.reserve(newCapacity);
+  }
+
+  // Overwrites the content of a Secure buffer (the bytes beyond its size never hold any of it).
+  void scrub() noexcept {
+    if constexpr (Secure) {
+      if (!_buf.empty()) {
+        SecureZero(_buf.data(), _buf.size());
+      }
+    }
   }
 
   size_type sizeAt(size_type idx) const noexcept {
