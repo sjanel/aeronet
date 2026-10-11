@@ -127,4 +127,12 @@ inline auto ZDeflateEnd(zstream& stream) {
 #endif
 }
 
+inline std::size_t ZCompressBound(std::size_t sourceLen) {
+#ifdef AERONET_ENABLE_ZLIBNG
+  return static_cast<std::size_t>(zng_compressBound(static_cast<unsigned long>(sourceLen)));
+#else
+  return static_cast<std::size_t>(compressBound(static_cast<unsigned long>(sourceLen)));
+#endif
+}
+
 }  // namespace aeronet

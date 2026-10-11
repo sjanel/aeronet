@@ -1812,6 +1812,7 @@ class HttpClientCompressionE2E : public ::testing::Test {
 
     ts.postConfigUpdate([](HttpServerConfig& cfg) {
       cfg.compression.minBytes = 16;  // compress even small response bodies
+      cfg.compression.maxCompressRatio = 0.9F;
     });
   }
 
@@ -1857,11 +1858,11 @@ TEST_F(HttpClientCompressionE2E, DisabledDecompressionLeavesBodyEncoded) {
   cfg.withDecompression(false).withDefaultAcceptEncoding("gzip, br, zstd, deflate");
   HttpClient client(cfg);
   auto resp = client.get(Url("/blob")).value();
-  EXPECT_EQ(resp.status(), 200);
+  ASSERT_EQ(resp.status(), 200);
   // Pass-through: the server compressed it, the client did not decode it.
+  ASSERT_LT(resp.bodyInMemory().size(), _blob.size());
   EXPECT_NE(resp.bodyInMemory(), _blob);
   EXPECT_FALSE(resp.headerValueOrEmpty("content-encoding").empty());
-  EXPECT_LT(resp.bodyInMemory().size(), _blob.size());
 }
 
 // --- Accept-Encoding advertising -------------------------------------------
