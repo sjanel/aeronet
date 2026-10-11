@@ -263,7 +263,7 @@ struct Connection {
 
 class Worker {
  public:
-  Worker(const Options& opts, const sockaddr_in& addr, uint32_t nbConnections, uint64_t seed)
+  Worker(const Options& opts, const sockaddr_in& addr, uint32_t nbConnections, uint32_t seed)
       : _opts(opts), _addr(addr), _rng(seed | 1U), _conns(nbConnections) {
     _epollFd = ::epoll_create1(EPOLL_CLOEXEC);
     if (_epollFd < 0) {
@@ -301,7 +301,7 @@ class Worker {
     for (std::size_t idx = 0; idx < _conns.size(); ++idx) {
       connect(idx);
     }
-    std::array<epoll_event, 256> events{};
+    std::array<epoll_event, 256UL> events{};
     while (gPhase.load(std::memory_order_relaxed) != Phase::Stop) {
       const int nb = ::epoll_wait(_epollFd, events.data(), static_cast<int>(events.size()), 10);
       if (nb < 0) {
@@ -322,7 +322,9 @@ class Worker {
   [[nodiscard]] const ThreadStats& stats() const { return _stats; }
 
  private:
-  void connect(std::size_t idx) {
+  // Starts a non-blocking connect on a fresh socket. Returns false if it failed immediately
+  // (the socket is then closed and nothing is registered in epoll).
+  bool tryConnect(std::size_t idx) {
     Connection& conn = _conns[idx];
     conn = Connection{};
     conn.inflight.resize(std::max<uint32_t>(1, _opts.pipeline));
@@ -335,8 +337,9 @@ class Worker {
     ::setsockopt(conn.fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
     const int rc = ::connect(conn.fd, reinterpret_cast<const sockaddr*>(&_addr), sizeof(_addr));
     if (rc != 0 && errno != EINPROGRESS) {
-      fail(idx);
-      return;
+      ::close(conn.fd);
+      conn.fd = -1;
+      return false;
     }
     epoll_event ev{};
     ev.events = EPOLLOUT;
@@ -345,6 +348,17 @@ class Worker {
       Die("epoll_ctl ADD failed");
     }
     conn.waitingWritable = true;
+    return true;
+  }
+
+  // Opens the connection, counting and retrying immediate failures until the run stops.
+  // Iterative on purpose: fail() -> reconnect() -> connect() no longer loops back to fail().
+  void connect(std::size_t idx) {
+    while (gPhase.load(std::memory_order_relaxed) != Phase::Stop && !tryConnect(idx)) {
+      if (_measuring) {
+        ++_stats.errors;
+      }
+    }
   }
 
   void fail(std::size_t idx) {
@@ -360,9 +374,7 @@ class Worker {
       ::close(conn.fd);  // also removes it from the epoll set
       conn.fd = -1;
     }
-    if (gPhase.load(std::memory_order_relaxed) != Phase::Stop) {
-      connect(idx);
-    }
+    connect(idx);  // no-op once the phase is Stop
   }
 
   void setWritableInterest(std::size_t idx, bool enable) {
@@ -576,7 +588,7 @@ class Worker {
 
   void readAndProcess(std::size_t idx) {
     Connection& conn = _conns[idx];
-    std::array<char, 64 * 1024> buf;
+    std::array<char, 64UL * 1024> buf;
     for (;;) {
       const auto nb = ::recv(conn.fd, buf.data(), buf.size(), 0);
       if (nb > 0) {
@@ -714,7 +726,9 @@ double ParseDuration(std::string_view text) {
 double ProcessCpuSeconds() {
   rusage usage{};
   ::getrusage(RUSAGE_SELF, &usage);
-  const auto seconds = [](const timeval& tv) { return static_cast<double>(tv.tv_sec) + 1e-6 * tv.tv_usec; };
+  const auto seconds = [](const timeval& tv) {
+    return static_cast<double>(tv.tv_sec) + (1e-6 * static_cast<double>(tv.tv_usec));
+  };
   return seconds(usage.ru_utime) + seconds(usage.ru_stime);
 }
 
@@ -806,7 +820,8 @@ int main(int argc, char** argv) {
 
   std::vector<std::unique_ptr<Worker>> workers;
   for (uint32_t threadPos = 0; threadPos < opts.threads; ++threadPos) {
-    const uint32_t nbConnections = opts.connections / opts.threads + (threadPos < opts.connections % opts.threads);
+    const uint32_t nbConnections =
+        (opts.connections / opts.threads) + static_cast<uint32_t>(threadPos < opts.connections % opts.threads);
     workers.push_back(std::make_unique<Worker>(opts, addr, nbConnections, 0x9E3779B9U * (threadPos + 1)));
   }
   std::vector<std::thread> threads;
