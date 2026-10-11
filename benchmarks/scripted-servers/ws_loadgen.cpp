@@ -588,12 +588,12 @@ class Worker {
 
   void readAndProcess(std::size_t idx) {
     Connection& conn = _conns[idx];
-    std::array<char, 64UL * 1024> buf;
+    char buf[64UL * 1024];
     for (;;) {
-      const auto nb = ::recv(conn.fd, buf.data(), buf.size(), 0);
+      const auto nb = ::recv(conn.fd, buf, sizeof(buf), 0);
       if (nb > 0) {
-        conn.in.append(buf.data(), static_cast<std::size_t>(nb));
-        if (static_cast<std::size_t>(nb) < buf.size()) {
+        conn.in.append(buf, static_cast<std::size_t>(nb));
+        if (static_cast<std::size_t>(nb) < sizeof(buf)) {
           break;
         }
         continue;

@@ -4,7 +4,6 @@
 #include <sys/socket.h>
 #endif
 
-#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -88,7 +87,7 @@ vector<std::byte> BuildClientFrame(Opcode opcode, std::string_view text, bool fi
   }
 
   // Masking key (simple key for testing)
-  constexpr std::array maskKey{std::byte{0x37}, std::byte{0xfa}, std::byte{0x21}, std::byte{0x3d}};
+  constexpr std::byte maskKey[]{std::byte{0x37}, std::byte{0xfa}, std::byte{0x21}, std::byte{0x3d}};
   for (auto keyByte : maskKey) {
     frame.push_back(keyByte);
   }
@@ -123,7 +122,7 @@ vector<std::byte> BuildClientCloseFrame(CloseCode code = CloseCode::Normal, std:
   frame.push_back(static_cast<std::byte>(0x80U | payload.size()));
 
   // Masking key
-  constexpr std::array maskKey{std::byte{0x12}, std::byte{0x34}, std::byte{0x56}, std::byte{0x78}};
+  constexpr std::byte maskKey[]{std::byte{0x12}, std::byte{0x34}, std::byte{0x56}, std::byte{0x78}};
   for (auto keyByte : maskKey) {
     frame.push_back(keyByte);
   }
@@ -190,18 +189,13 @@ std::optional<ServerFrame> ParseServerFrame(std::span<const std::byte> data) {
 std::string ReceiveServerFrameBytes(NativeHandle fd, std::chrono::milliseconds timeout) {
   test::setRecvTimeout(fd, timeout);
   std::string raw;
-  std::array<char, 16384> buf{};
+  char buf[16384];
   while (!ParseServerFrame(std::span<const std::byte>(reinterpret_cast<const std::byte*>(raw.data()), raw.size()))) {
-    // TODO: factorize a ::recv wrapper in socket-ops.cpp
-#ifdef AERONET_WINDOWS
-    const auto nb = ::recv(fd, buf.data(), static_cast<int>(buf.size()), 0);
-#else
-    const auto nb = ::recv(fd, buf.data(), buf.size(), 0);
-#endif
+    const auto nb = ::recv(fd, buf, static_cast<int>(sizeof(buf)), 0);
     if (nb <= 0) {
       return {};
     }
-    raw.append(buf.data(), static_cast<std::size_t>(nb));
+    raw.append(buf, static_cast<std::size_t>(nb));
   }
   return raw;
 }
@@ -443,7 +437,7 @@ vector<std::byte> BuildClientFrame(std::string_view payload, Opcode opcode, bool
       frame.push_back(static_cast<std::byte>((payload.size() >> (static_cast<uint32_t>(idx) * 8U)) & 0xFFU));
     }
   }
-  constexpr std::array maskKey{std::byte{0x5a}, std::byte{0x1c}, std::byte{0xe3}, std::byte{0x07}};
+  constexpr std::byte maskKey[]{std::byte{0x5a}, std::byte{0x1c}, std::byte{0xe3}, std::byte{0x07}};
   for (auto keyByte : maskKey) {
     frame.push_back(keyByte);
   }
@@ -762,17 +756,13 @@ std::string UpgradeResponse(std::string_view path, std::string_view extraHeaders
   test::sendAll(conn.fd(), BuildUpgradeRequestWithHeaders(path, extraHeaders));
   test::setRecvTimeout(conn.fd(), 1000ms);
   std::string head;
-  std::array<char, 1024> buf{};
+  char buf[1024];
   while (!head.contains(http::DoubleCRLF)) {
-#ifdef AERONET_WINDOWS
-    const auto nb = ::recv(conn.fd(), buf.data(), static_cast<int>(buf.size()), 0);
-#else
-    const auto nb = ::recv(conn.fd(), buf.data(), buf.size(), 0);
-#endif
+    const auto nb = ::recv(conn.fd(), buf, static_cast<int>(sizeof(buf)), 0);
     if (nb <= 0) {
       break;
     }
-    head.append(buf.data(), static_cast<std::size_t>(nb));
+    head.append(buf, static_cast<std::size_t>(nb));
   }
   return head;
 }

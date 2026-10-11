@@ -14,7 +14,6 @@
 #include <ws2tcpip.h>
 #endif
 
-#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -83,16 +82,21 @@ std::string UnixDogstatsdSink::recvMessage(int timeoutMs) const {
   if (ready <= 0 || (pfd.revents & POLLIN) == 0) {  // NOLINT(bugprone-signed-bitwise)
     return {};
   }
-  std::array<char, 512> buf;
-#ifdef AERONET_WINDOWS
-  const auto bytes = ::recv(_fd.fd(), buf.data(), static_cast<int>(buf.size()), 0);
-#else
-  const auto bytes = ::recv(_fd.fd(), buf.data(), buf.size(), 0);
-#endif
-  if (bytes <= 0) {
-    return {};
-  }
-  return {buf.data(), static_cast<std::size_t>(bytes)};
+
+  std::string out;
+
+  static constexpr int kChunkSize = 512;
+
+  out.resize_and_overwrite(kChunkSize,
+                           [fd = _fd.fd()](char* pData, [[maybe_unused]] std::size_t newCap) -> std::size_t {
+                             const auto bytes = ::recv(fd, pData, kChunkSize, 0);
+                             if (bytes < 0) {
+                               throw std::runtime_error("UnixDogstatsdSink::recvMessage failed");
+                             }
+                             return static_cast<std::size_t>(bytes);
+                           });
+
+  return out;
 }
 
 void UnixDogstatsdSink::closeAndUnlink() {
