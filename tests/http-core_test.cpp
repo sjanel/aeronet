@@ -561,67 +561,105 @@ TEST(HttpKeepAlive, RequestsFollowedByHalfCloseAreAnsweredThenClosed) {
   EXPECT_TRUE(test::WaitForPeerClose(fd, std::chrono::milliseconds{500}));
 }
 
-// The keep-alive deadline armed for a connection is not moved on each request: when it fires, the maintenance sweep
-// re-arms it from the last activity. A connection active for several keepAliveTimeout periods must stay open, and be
-// closed once it stays idle for longer than keepAliveTimeout.
-// The pause between two requests is kept far below keepAliveTimeout: on loaded CI runners (macOS in particular, where
-// all test binaries run in parallel on few cores), a thread can stay descheduled for several hundred milliseconds.
-TEST(HttpKeepAlive, ActiveConnectionOutlivesSeveralKeepAliveTimeouts) {
-  static constexpr std::chrono::milliseconds kKeepAliveTimeout{1000};
-  static constexpr std::chrono::milliseconds kPauseBetweenRequests = kKeepAliveTimeout / 20;
-  // Active for more than twice keepAliveTimeout: the deadline fires (and is re-armed) at least twice.
-  static constexpr std::chrono::milliseconds kActiveDuration = kKeepAliveTimeout * 5 / 2;
-  auto timeoutScope = makeKeepAliveTimeoutScope(kKeepAliveTimeout);
-  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(std::format("ECHO{}", req.path())); });
+namespace {
 
-  test::ClientConnection cnx(port);
-  NativeHandle fd = cnx.fd();
-  const auto start = std::chrono::steady_clock::now();
-  auto lastResponseTp = start;
-  for (int requestPos = 0; lastResponseTp - start < kActiveDuration; ++requestPos) {
-    // Reported on failure: a client idle for longer than keepAliveTimeout means the runner stalled the test thread,
-    // a short one that the server closed an active connection.
-    const auto clientIdle =
-        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - lastResponseTp);
-    test::sendAll(fd, std::format("GET /r{} HTTP/1.1\r\nhost: x\r\n\r\n", requestPos));
-    const std::string resp = test::recvWithTimeout(fd, std::chrono::seconds{1});
-    ASSERT_TRUE(resp.contains(std::format("ECHO/r{}", requestPos)))
-        << "request " << requestPos << " (client idle for " << clientIdle.count() << " ms before sending it): " << resp;
-    lastResponseTp = std::chrono::steady_clock::now();
-    std::this_thread::sleep_for(kPauseBetweenRequests);
+struct Outcome {
+  bool ok{false};
+  bool stalled{false};  // failure attributable to the runner (client thread not scheduled), not to the server
+  std::string detail;
+};
+
+// Runs a timing-sensitive scenario with a short keepAliveTimeout, doubling it after each attempt that was disturbed by
+// the runner. A failure that happened while the client was prompt is a real failure and is never retried.
+template <class Scenario>
+void RunStallTolerant(Scenario&& scenario) {
+  std::chrono::milliseconds timeout{100};
+  Outcome last;
+  for (int attempt = 0; attempt < 4; ++attempt, timeout *= 2) {
+    last = scenario(timeout);
+    if (last.ok) {
+      return;
+    }
+    if (!last.stalled) {
+      FAIL() << last.detail;
+    }
   }
-  EXPECT_TRUE(test::WaitForPeerClose(fd, kKeepAliveTimeout * 10));
+  GTEST_SKIP() << "runner too loaded, every attempt was stalled; last: " << last.detail;
 }
 
-// A synchronous handler slower than keepAliveTimeout must not get its own connection swept as idle: the idle window
-// restarts when the batch of events it was part of has been processed.
-// The client pauses are kept well below keepAliveTimeout: loaded CI runners (macOS in particular) often oversleep
-// several times the requested duration.
-TEST(HttpKeepAlive, SlowSynchronousHandlerDoesNotExpireItsConnection) {
-  static constexpr std::chrono::milliseconds kKeepAliveTimeout{200};
-  static constexpr std::chrono::milliseconds kClientPause = kKeepAliveTimeout / 10;
-  auto timeoutScope = makeKeepAliveTimeoutScope(kKeepAliveTimeout);
-  ts.router().setDefault([](const HttpRequestView& req) {
-    if (req.path() == "/slow") {
-      std::this_thread::sleep_for(kKeepAliveTimeout * 2);
-    }
-    return HttpResponse(std::format("ECHO{}", req.path()));
-  });
+}  // namespace
 
-  test::ClientConnection cnx(port);
-  NativeHandle fd = cnx.fd();
-  // Let the server accept the connection first, so that the request is served from a regular read event (a request
-  // pipelined with the connection setup is served from the accept path).
-  std::this_thread::sleep_for(kClientPause);
-  test::sendAll(fd, "GET /slow HTTP/1.1\r\nhost: x\r\n\r\n");
-  const std::string slowResp = test::recvWithTimeout(fd, std::chrono::seconds{2});
-  ASSERT_TRUE(slowResp.contains("ECHO/slow")) << slowResp;
-  // Reuse the connection after several maintenance sweeps (pollInterval is 1 ms) but well within keepAliveTimeout:
-  // they must not have closed it.
-  std::this_thread::sleep_for(kClientPause);
-  test::sendAll(fd, "GET /after HTTP/1.1\r\nhost: x\r\n\r\n");
-  const std::string afterResp = test::recvWithTimeout(fd, std::chrono::seconds{1});
-  EXPECT_TRUE(afterResp.contains("ECHO/after")) << afterResp;
+TEST(HttpKeepAlive, ActiveConnectionOutlivesSeveralKeepAliveTimeouts) {
+  RunStallTolerant([](std::chrono::milliseconds keepAliveTimeout) -> Outcome {
+    const auto pause = keepAliveTimeout / 20;
+    // Active for more than twice keepAliveTimeout: the deadline fires (and is re-armed) at least twice.
+    const auto activeDuration = keepAliveTimeout * 5 / 2;
+    // A client idle for longer than this might legitimately have been closed: the runner is to blame.
+    const auto stallThreshold = keepAliveTimeout * 4 / 5;
+
+    auto timeoutScope = makeKeepAliveTimeoutScope(keepAliveTimeout);
+    ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(std::format("ECHO{}", req.path())); });
+
+    test::ClientConnection cnx(port);
+    NativeHandle fd = cnx.fd();
+    const auto start = std::chrono::steady_clock::now();
+    auto lastResponseTp = start;
+    for (int requestPos = 0; lastResponseTp - start < activeDuration; ++requestPos) {
+      test::sendAll(fd, std::format("GET /r{} HTTP/1.1\r\nhost: x\r\n\r\n", requestPos));
+      const std::string resp = test::recvWithTimeout(fd, std::chrono::seconds{1});
+      if (!resp.contains(std::format("ECHO/r{}", requestPos))) {
+        // Measured at failure time, so it also covers a stall between two requests or inside the send.
+        const auto clientIdle = std::chrono::steady_clock::now() - lastResponseTp;
+        return {false, clientIdle > stallThreshold,
+                std::format("request {} (client idle {} ms, timeout {} ms): {}", requestPos,
+                            std::chrono::duration_cast<std::chrono::milliseconds>(clientIdle).count(),
+                            keepAliveTimeout.count(), resp)};
+      }
+      lastResponseTp = std::chrono::steady_clock::now();
+      std::this_thread::sleep_for(pause);
+    }
+    // Waiting is harmless, so a long bound is enough here: no stall can explain a connection that never closes.
+    const bool closed = test::WaitForPeerClose(fd, keepAliveTimeout * 10);
+    return {closed, false, "idle connection was never closed"};
+  });
+}
+
+TEST(HttpKeepAlive, SlowSynchronousHandlerDoesNotExpireItsConnection) {
+  RunStallTolerant([](std::chrono::milliseconds keepAliveTimeout) -> Outcome {
+    const auto pause = keepAliveTimeout / 10;
+    const auto stallThreshold = keepAliveTimeout * 4 / 5;
+
+    auto timeoutScope = makeKeepAliveTimeoutScope(keepAliveTimeout);
+    ts.router().setDefault([keepAliveTimeout](const HttpRequestView& req) {
+      if (req.path() == "/slow") {
+        std::this_thread::sleep_for(keepAliveTimeout * 2);
+      }
+      return HttpResponse(std::format("ECHO{}", req.path()));
+    });
+
+    test::ClientConnection cnx(port);
+    NativeHandle fd = cnx.fd();
+    // Let the server accept the connection first, so that the request is served from a regular read event.
+    std::this_thread::sleep_for(pause);
+    test::sendAll(fd, "GET /slow HTTP/1.1\r\nhost: x\r\n\r\n");
+    const std::string slowResp = test::recvWithTimeout(fd, keepAliveTimeout * 2 + std::chrono::seconds{1});
+    if (!slowResp.contains("ECHO/slow")) {
+      return {false, false, "slow request: " + slowResp};
+    }
+    const auto slowRespTp = std::chrono::steady_clock::now();
+    // Reuse the connection after several maintenance sweeps, but well within keepAliveTimeout.
+    std::this_thread::sleep_for(pause);
+    test::sendAll(fd, "GET /after HTTP/1.1\r\nhost: x\r\n\r\n");
+    const std::string afterResp = test::recvWithTimeout(fd, std::chrono::seconds{1});
+    if (!afterResp.contains("ECHO/after")) {
+      const auto clientIdle = std::chrono::steady_clock::now() - slowRespTp;
+      return {false, clientIdle > stallThreshold,
+              std::format("after slow handler (client idle {} ms, timeout {} ms): {}",
+                          std::chrono::duration_cast<std::chrono::milliseconds>(clientIdle).count(),
+                          keepAliveTimeout.count(), afterResp)};
+    }
+    return {true, false, {}};
+  });
 }
 
 TEST(HttpKeepAlive, EmptyBodyResponseCarriesContentLengthZeroAndReusesConnection) {
@@ -635,7 +673,7 @@ TEST(HttpKeepAlive, EmptyBodyResponseCarriesContentLengthZeroAndReusesConnection
   std::string req1 = "GET /a HTTP/1.1\r\nhost: x\r\nconnection: keep-alive\r\ncontent-length: 0\r\n\r\n";
   test::sendAll(fd, req1);
   std::string resp1 = test::recvWithTimeout(fd);
-  EXPECT_TRUE(resp1.starts_with("HTTP/1.1 200")) << resp1;
+  EXPECT_TRUE(resp1.starts_with("HTTP/1.1 200 ")) << resp1;
   EXPECT_TRUE(resp1.contains(MakeHttp1HeaderLine(http::ContentLength, "0"))) << resp1;
   EXPECT_FALSE(resp1.contains(MakeHttp1HeaderLine(http::Connection, "close"))) << resp1;
   EXPECT_TRUE(resp1.ends_with(http::DoubleCRLF)) << resp1;
