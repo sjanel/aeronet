@@ -74,8 +74,8 @@ struct CertKeyCache {
 };
 
 // Upper bound to observe the server closing a rejected connection. WaitForPeerClose returns as soon as the peer closes,
-// so a generous bound costs nothing: it only absorbs event loop stalls of a loaded machine (sanitizers, parallel ctest),
-// which reached several hundreds of ms.
+// so a generous bound costs nothing: it only absorbs event loop stalls of a loaded machine (sanitizers, parallel
+// ctest), which reached several hundreds of ms.
 constexpr auto kRejectedCloseTimeout = 5s;
 }  // namespace
 
@@ -852,7 +852,7 @@ TEST(HttpTlsHandshakeTest, SessionResumptionIncrementsResumedCounter) {
 // This test would (non-deterministically) fail or ASan-crash under the old design
 // when compiled with sanitizers and run enough times, especially under load, but
 // here we simply assert successful handshake + ALPN negotiation after a move.
-
+#ifdef AERONET_ENABLE_HTTP2
 TEST(HttpTlsMoveAlpn, MoveConstructBeforeRunMaintainsAlpnHandshake) {
   auto pair = CertKeyCache::Get().localhost;
   ASSERT_FALSE(pair.first.empty());
@@ -891,6 +891,7 @@ TEST(HttpTlsMoveAlpn, MoveConstructBeforeRunMaintainsAlpnHandshake) {
   ASSERT_TRUE(raw.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(raw.contains("MOVEALPN:http/1.1")) << raw;
 }
+#endif
 
 // Test mutual TLS requirement and ALPN negotiation (server selects http/1.1)
 

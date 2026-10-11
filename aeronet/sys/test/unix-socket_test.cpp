@@ -72,7 +72,7 @@ TEST_F(UnixSocketTest, DatagramSocketIsNonBlocking) {
   EXPECT_GE(sock.fd(), 0);
   // Verify socket is non-blocking by attempting to recv (should return EAGAIN/EWOULDBLOCK)
   char buf[1];
-  const auto ret = ::recv(sock.fd(), buf, 1, MSG_DONTWAIT);
+  const auto ret = ::recv(sock.fd(), buf, sizeof(buf), MSG_DONTWAIT);
   // Non-blocking socket with no data should return -1 with EAGAIN or EWOULDBLOCK
   EXPECT_EQ(-1, ret);
   int err = errno;

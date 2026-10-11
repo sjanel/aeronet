@@ -372,7 +372,7 @@ TEST_F(SocketOpsTest, IsPeerClosedFalseWhileConnected) {
   ASSERT_EQ(1, ::send(endB.fd(), &byte, 1, 0));
   EXPECT_FALSE(IsPeerClosed(endA.fd()));
   char received = 0;
-  EXPECT_EQ(1, ::recv(endA.fd(), &received, 1, 0));
+  EXPECT_EQ(1, ::recv(endA.fd(), &received, sizeof(received), 0));
   EXPECT_EQ(received, 'x');
 }
 

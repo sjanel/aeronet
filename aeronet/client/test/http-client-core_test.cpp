@@ -16,7 +16,17 @@
 #include <string_view>
 #include <thread>
 #include <utility>
-#include <vector>
+
+#ifdef AERONET_POSIX
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#elifdef AERONET_WINDOWS
+#include <process.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#endif
 
 #include "aeronet/client-connection.hpp"
 #include "aeronet/client-protocol.hpp"
@@ -49,17 +59,7 @@
 #include "aeronet/timedef.hpp"
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
-
-#ifdef AERONET_POSIX
-#include <netinet/in.h>
-#include <poll.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#elifdef AERONET_WINDOWS
-#include <process.h>
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#endif
+#include "aeronet/vector.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include <fstream>
@@ -639,7 +639,7 @@ TEST_F(HttpClientE2ETest, CredentialsOnlyFollowSameOriginRedirects) {
   const std::string redirectOrigin = "http://127.0.0.1:" + std::to_string(redirectServer.port());
   redirectServer.start();
 
-  std::vector<HttpVersionMode> versionModes{HttpVersionMode::Http1_1};
+  vector<HttpVersionMode> versionModes{HttpVersionMode::Http1_1};
 #ifdef AERONET_ENABLE_HTTP2
   versionModes.push_back(HttpVersionMode::Http2);
 #endif
@@ -2363,7 +2363,7 @@ class TinyProxy {
   std::string _rejectResponse;
   bool _dropOnConnect;
   std::thread _acceptThread;
-  std::vector<std::thread> _workers;
+  vector<std::thread> _workers;
   std::mutex _mtx;
   std::string _capturedHead;
   std::atomic<bool> _stop{false};
@@ -2602,16 +2602,17 @@ namespace {
 
 // Read until the end of the request header block ("\r\n\r\n") and return what was read. The tests only issue
 // bodyless GETs, so this is enough to know the client finished writing its request before we script the response.
-std::string DrainRequest(NativeHandle fd) {
-  std::string buf;
+RawChars DrainRequest(NativeHandle fd) {
+  RawChars buf;
   char tmp[1024];
   for (;;) {
     const auto sz = ::recv(fd, tmp, static_cast<int>(sizeof(tmp)), 0);
     if (sz <= 0) {
       return buf;
     }
-    buf.append(tmp, static_cast<std::size_t>(sz));
-    if (buf.contains("\r\n\r\n")) {
+    std::string_view chunk(tmp, static_cast<std::size_t>(sz));
+    buf.append(chunk);
+    if (chunk.contains(http::DoubleCRLF)) {
       return buf;
     }
   }
@@ -2741,7 +2742,7 @@ class RequestHeadRecorder {
  public:
   RequestHeadRecorder()
       : _server([this](NativeHandle fd, int) {
-          std::string head = DrainRequest(fd);
+          RawChars head = DrainRequest(fd);
           {
             std::scoped_lock lock(_mutex);
             _heads.push_back(std::move(head));
@@ -2751,14 +2752,14 @@ class RequestHeadRecorder {
 
   [[nodiscard]] uint16_t port() const noexcept { return _server.port(); }
 
-  [[nodiscard]] std::vector<std::string> heads() {
+  [[nodiscard]] vector<RawChars> heads() {
     std::scoped_lock lock(_mutex);
     return _heads;
   }
 
  private:
   std::mutex _mutex;
-  std::vector<std::string> _heads;
+  vector<RawChars> _heads;
   RawServer _server;  // last: stopped (and joined) before the recorded heads are destroyed
 };
 
@@ -2843,7 +2844,7 @@ TEST(HttpClientRawServerTest, KeepAliveOffSendsConnectionClose) {
   EXPECT_FALSE(req.hasHeader(http::Connection));  // the header is added to a wire copy only
   const auto heads = server.heads();
   ASSERT_EQ(heads.size(), 2U);  // one fresh connection per request
-  for (const std::string& head : heads) {
+  for (std::string_view head : heads) {
     EXPECT_TRUE(head.starts_with("GET /a HTTP/1.1\r\n")) << head;
     EXPECT_EQ(CountOccurrences(head, "connection:"), 1U) << head;
     EXPECT_TRUE(head.contains("\r\nconnection: close\r\n")) << head;
@@ -2861,8 +2862,9 @@ TEST(HttpClientRawServerTest, KeepAliveOffKeepsUserConnectionHeader) {
   ASSERT_TRUE(client.request(req));
   const auto heads = server.heads();
   ASSERT_EQ(heads.size(), 1U);
-  EXPECT_EQ(CountOccurrences(heads[0], "connection:"), 1U) << heads[0];
-  EXPECT_TRUE(heads[0].contains("\r\nconnection: close, x-custom\r\n")) << heads[0];
+  std::string_view head = heads[0];
+  EXPECT_EQ(CountOccurrences(head, "connection:"), 1U) << head;
+  EXPECT_TRUE(head.contains("\r\nconnection: close, x-custom\r\n")) << head;
 }
 
 // With keep-alive enabled (default), HTTP/1.1 requests rely on the persistent default: no Connection header.
@@ -2872,7 +2874,8 @@ TEST(HttpClientRawServerTest, KeepAliveOnSendsNoConnectionHeader) {
   ASSERT_TRUE(client.get(MakeUrl(server.port())));
   const auto heads = server.heads();
   ASSERT_EQ(heads.size(), 1U);
-  EXPECT_FALSE(heads[0].contains("connection:")) << heads[0];
+  std::string_view head = heads[0];
+  EXPECT_FALSE(head.contains("connection:")) << head;
 }
 
 // The server reads the request but never answers, then closes after the deadline. The deadline must win even

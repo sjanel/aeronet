@@ -135,15 +135,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     )
 
     AeronetAddUnitTest(
-        zerocopy_test
-        test/zerocopy_test.cpp
+        test-transport_test
+        test/test-transport_test.cpp
         LIBRARIES
         aeronet_basic_test_support
     )
 
     AeronetAddUnitTest(
-        test-transport_test
-        test/test-transport_test.cpp
+        zerocopy_test
+        test/zerocopy_test.cpp
         LIBRARIES
         aeronet_basic_test_support
     )
