@@ -340,15 +340,11 @@ int RecvPipelinedResponses(NativeHandle fd, int nbResponses, std::chrono::millis
   setRecvTimeout(fd, 50ms);
   // The received bytes whose status lines are not counted yet: only a truncated status line at the end.
   std::string pending;
-  char buf[1 << 16];
+  char buf[1UL << 16U];
   int nbReceived = 0;
   const auto deadline = std::chrono::steady_clock::now() + totalTimeout;
   while (nbReceived < nbResponses && std::chrono::steady_clock::now() < deadline) {
-#ifdef AERONET_WINDOWS
     const auto nb = ::recv(fd, buf, static_cast<int>(sizeof(buf)), 0);
-#else
-    const auto nb = ::recv(fd, buf, sizeof(buf), 0);
-#endif
     if (nb == 0) {
       break;
     }
