@@ -50,7 +50,7 @@ The views of the record are valid during the call only. Keep the callback short:
 
 ### Server statistics
 
-`server.stats()` returns a snapshot of per-server counters, serializable with `ServerStats::json_str()`: output backpressure (see [Performance](performance.md#measuring)), TLS handshakes and kTLS usage (see [TLS observability](../protocols/tls.md#observability)), and event loop errors. `MultiHttpServer::stats()` returns the counters of each worker and their sum.
+`server.stats()` returns a snapshot of per-server counters, serializable with `ServerStats::json_str()`: output backpressure and `MSG_ZEROCOPY` (see [Performance](performance.md#measuring)), TLS handshakes and kTLS usage (see [TLS observability](../protocols/tls.md#observability)), and event loop errors. `MultiHttpServer::stats()` returns the counters of each worker and their sum.
 
 ## OpenTelemetry and DogStatsD
 
@@ -173,7 +173,8 @@ Without handler code, each server emits:
 | Span | `http.request` | One per request, with `http.method`, `http.target`, `http.scheme`, `http.host`, `http.status_code`, and `http.duration_us`. |
 | Span | `aeronet.middleware` | One per middleware call, with its phase, scope, index, and whether it short-circuited, threw, or ran for a streaming route. |
 | Counters | `aeronet.connections.accepted`, `aeronet.events.processed`, `aeronet.events.errors`, `aeronet.bytes.read` | Connection and event loop activity. |
-| Counters | `aeronet.connections.closed_for_*` | Connections closed by a timeout (`keep_alive`, `header_read_timeout`, `body_read_timeout`, `request_timeout`, `handshake_timeout`, `websocket_idle_timeout`, `websocket_close_timeout`) or a drain (`drain`). |
+| Counters | `aeronet.connections.closed_for_*` | Connections closed by a timeout (`keep_alive`, `header_read_timeout`, `body_read_timeout`, `request_timeout`, `handshake_timeout`, `websocket_idle_timeout`, `websocket_close_timeout`), a drain (`drain`), or [`MSG_ZEROCOPY`](performance.md#msg_zerocopy) sends without progress (`zerocopy_stall`). |
+| Counters | `aeronet.connections.aborted_with_zerocopy_in_flight` | Connections reset while some of their `MSG_ZEROCOPY` sends were in flight. |
 | Counters | `aeronet.http_responses.compression.*` | Response compression attempts, results above `maxCompressRatio`, and errors. |
 | HTTP/2 instruments | `aeronet.http2.*` | See [Built-in HTTP/2 metrics](#built-in-http2-metrics). |
 

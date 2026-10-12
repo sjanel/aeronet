@@ -4,33 +4,35 @@
 
 namespace aeronet {
 
-// MSG_ZEROCOPY mode for outbound writes on TCP sockets (Linux-only, with automatic fallback).
-// When enabled, large payloads (>= 16KB) are sent via the kernel's zerocopy path, avoiding a memcpy from
-// user-space to kernel buffers. The kernel DMA-maps the user pages directly to the NIC.
-// By default, zerocopy is used opportunistically on non-loopback connections only.
+// MSG_ZEROCOPY mode for the large response writes of plain (non-TLS) HTTP/1.1 connections (Linux-only, with automatic
+// fallback to regular copying writes).
+// With MSG_ZEROCOPY, the kernel sends the response bytes from their user-space pages instead of copying them into the
+// socket buffer. These bytes are kept alive (and unchanged) until the kernel reports the completion of the send, which
+// happens once the peer acknowledged them.
 //
 // Benefits:
-//   - Reduces CPU overhead for large sends (10-30% CPU savings on egress-heavy workloads)
+//   - Reduces CPU overhead for large sends (no copy into kernel buffers)
 //   - Better memory bandwidth utilization (less L3/memory controller pressure)
-//   - Higher sustained throughput for streaming responses and file transfers
 //
-// Requirements:
+// Requirements and limits:
 //   - Linux 4.14+ with SO_ZEROCOPY socket support
-//   - Payloads >= 16KB (smaller payloads use regular send to avoid page-pinning overhead)
-//   - TCP sockets (not UDP)
-//
-// For TLS: zerocopy is only used when kTLS (kernel TLS) is active because the kernel can encrypt and
-// DMA from pinned pages. With user-space TLS (OpenSSL), zerocopy has no benefit as data is already
-// copied during encryption.
+//   - Writes of at least HttpServerConfig::zerocopyMinBytes (smaller ones are copied: pinning pages costs more)
+//   - The kernel copies the data anyway for a local peer (loopback, another network namespace of the host) or a device
+//     without scatter-gather support
+//   - Each zerocopy send pins the pages it reads, accounted to the locked memory limit of the user (RLIMIT_MEMLOCK,
+//     unless CAP_IPC_LOCK) and to the socket option memory (net.core.optmem_max): beyond them, writes are copied
+//   - Not used with TLS (kTLS sockets reject MSG_ZEROCOPY; user-space TLS copies the data while encrypting it), nor for
+//     HTTP/2, WebSocket or CONNECT tunnels, whose output buffers are reused as soon as they are written
 enum class ZerocopyMode : std::uint8_t {
   // Never use MSG_ZEROCOPY
   Disabled,
 
-  // Use MSG_ZEROCOPY if available for plain TCP and kTLS connections, only on non-loopback connections (DEFAULT)
+  // Use MSG_ZEROCOPY when available, except for loopback peers, and stop using it on a connection once the kernel
+  // reports that it copied the data anyway (local peer, device without scatter-gather) (DEFAULT)
   Opportunistic,
 
-  // Enables zerocopy even if connection is on loopback - logs a warning if zerocopy cannot be activated.
-  // It will still not be used for payloads below the threshold.
+  // Use MSG_ZEROCOPY when available, even for loopback peers or when the kernel copies the data anyway - logs a warning
+  // if the kernel does not support it. It is still not used for payloads below the threshold.
   Enabled,
 };
 

@@ -13,7 +13,6 @@
 
 #include "aeronet/native-handle.hpp"
 #include "aeronet/transport-result.hpp"
-#include "aeronet/zerocopy-mode.hpp"
 #include "aeronet/zerocopy.hpp"
 
 namespace aeronet {
@@ -36,29 +35,13 @@ concept HasSupportsSendfile = requires(const Backend& backend) {
 
 /// Shared non-virtual state for socket-backed transports.
 class SocketTransportState {
- public:
-#ifdef AERONET_LINUX
-  /// Poll for zerocopy completion notifications from the kernel error queue.
-  std::size_t pollZerocopyCompletions() noexcept { return _zerocopyState.pollZeroCopyCompletions(_fd); }
-#endif
-
-  /// Check if zerocopy is enabled on this transport.
-  [[nodiscard]] bool isZerocopyEnabled() const noexcept { return _zerocopyState.enabled(); }
-
-  /// Check if any zerocopy sends are waiting for completion.
-  [[nodiscard]] bool hasZerocopyPending() const noexcept { return _zerocopyState.pendingCompletions(); }
-
-  /// Disable zerocopy for subsequent sends of this transport.
-  /// Sends already issued with zerocopy stay pending (see hasZerocopyPending()) until their completion is polled.
-  void disableZerocopy() noexcept { _zerocopyState.disable(); }
-
  protected:
   SocketTransportState() noexcept = default;
 
   explicit SocketTransportState(NativeHandle fd) noexcept : _fd(fd) {}
 
-  /// Non-blocking write of the bytes as they are on the socket (MSG_ZEROCOPY for large payloads when enabled).
-  TransportResult socketWrite(std::string_view data);
+  /// Non-blocking write of the bytes as they are on the socket.
+  [[nodiscard]] TransportResult socketWrite(std::string_view data) const;
 
   /// Scatter write using writev - single syscall for two buffers.
   TransportResult socketWrite(std::string_view firstBuf, std::string_view secondBuf);
@@ -66,17 +49,16 @@ class SocketTransportState {
   /// Gather write using writev / WSASend.
   TransportResult socketWrite(std::span<const std::string_view> buffers);
 
-  ZeroCopyState _zerocopyState{};
   NativeHandle _fd{kInvalidHandle};
 };
 
 // Plain transport directly operates on a non-blocking fd.
-// Supports optional MSG_ZEROCOPY for large payloads on Linux.
+// Supports MSG_ZEROCOPY writes on Linux (see writeZerocopy()).
 class PlainTransport final : public SocketTransportState {
  public:
   using TransportResult = aeronet::TransportResult;
 
-  PlainTransport(NativeHandle fd, ZerocopyMode zerocopyMode, uint32_t minBytesForZerocopy);
+  explicit PlainTransport(NativeHandle fd) noexcept : SocketTransportState(fd) {}
 
   TransportResult read(char* buf, std::size_t len);
 
@@ -92,6 +74,23 @@ class PlainTransport final : public SocketTransportState {
 
   /// Zero-copy sendfile(2) of a file region straight to the socket (no user-space copy).
   TransportResult sendFile(const File& file, std::size_t& offset, std::size_t count);
+
+#ifdef AERONET_LINUX
+  /// Write of the two buffers with MSG_ZEROCOPY: the socket must have SO_ZEROCOPY (EnableZeroCopy()), and the caller
+  /// keeps the written bytes alive and unchanged until the completion of the send (see zerocopy()).
+  ZerocopySendResult writeZerocopy(std::string_view firstBuf, std::string_view secondBuf) {
+    return _zerocopy.send(_fd, firstBuf, secondBuf);
+  }
+
+  /// Reads the completion notifications of the zerocopy sends available in the socket error queue.
+  ZerocopyCompletions pollZerocopyCompletions() noexcept { return _zerocopy.pollCompletions(_fd); }
+#endif
+
+  /// Sequence numbers of the zerocopy sends of this socket, and their completion.
+  [[nodiscard]] const ZeroCopyState& zerocopy() const noexcept { return _zerocopy; }
+
+ private:
+  ZeroCopyState _zerocopy;
 };
 
 class ErasedTransportBackend {
@@ -117,8 +116,7 @@ class Transport final {
   Transport() noexcept = default;
 
   /// Construct an inline plain socket transport without allocating a backend.
-  Transport(NativeHandle fd, ZerocopyMode zerocopyMode, uint32_t minBytesForZerocopy)
-      : _storage(std::in_place_type<PlainTransport>, fd, zerocopyMode, minBytesForZerocopy) {}
+  explicit Transport(NativeHandle fd) noexcept : _storage(std::in_place_type<PlainTransport>, fd) {}
 
   template <typename Backend>
     requires std::derived_from<Backend, ErasedTransportBackend>
@@ -236,44 +234,6 @@ class Transport final {
     return _storage.index() != kPlainIndex && operations().hasPendingReadData(erasedBackend());
   }
 
-#ifdef AERONET_LINUX
-  std::size_t pollZerocopyCompletions() noexcept {
-    assert(*this);
-    if (_storage.index() == kPlainIndex) [[likely]] {
-      return plainBackend()->pollZerocopyCompletions();
-    }
-    return operations().pollZerocopyCompletions(erasedBackend());
-  }
-#endif
-
-  [[nodiscard]] bool isZerocopyEnabled() const noexcept {
-    assert(*this);
-    if (_storage.index() == kPlainIndex) [[likely]] {
-      return plainBackend()->isZerocopyEnabled();
-    }
-    return operations().isZerocopyEnabled(erasedBackend());
-  }
-
-  // Check if there are any outstanding zerocopy sends waiting for completion.
-  [[nodiscard]] bool hasZerocopyPending() const noexcept {
-    assert(*this);
-    if (_storage.index() == kPlainIndex) [[likely]] {
-      return plainBackend()->hasZerocopyPending();
-    }
-    return operations().hasZerocopyPending(erasedBackend());
-  }
-
-  // Disable zerocopy for this transport (useful when buffer lifetimes are not stable,
-  // e.g. CONNECT tunneling that reuses read buffers).
-  void disableZerocopy() noexcept {
-    assert(*this);
-    if (_storage.index() == kPlainIndex) [[likely]] {
-      plainBackend()->disableZerocopy();
-    } else {
-      operations().disableZerocopy(erasedBackend());
-    }
-  }
-
   using trivially_relocatable = std::true_type;
 
  private:
@@ -283,13 +243,9 @@ class Transport final {
     TransportResult (*writeTwo)(ErasedTransportBackend*, std::string_view, std::string_view);
     TransportResult (*writeMany)(ErasedTransportBackend*, std::span<const std::string_view>);
     TransportResult (*sendFile)(ErasedTransportBackend*, const File&, std::size_t&, std::size_t);
-    std::size_t (*pollZerocopyCompletions)(ErasedTransportBackend*) noexcept;
     bool (*supportsSendfile)(const ErasedTransportBackend*) noexcept;
     bool (*handshakeDone)(const ErasedTransportBackend*) noexcept;
     bool (*hasPendingReadData)(const ErasedTransportBackend*) noexcept;
-    bool (*isZerocopyEnabled)(const ErasedTransportBackend*) noexcept;
-    bool (*hasZerocopyPending)(const ErasedTransportBackend*) noexcept;
-    void (*disableZerocopy)(ErasedTransportBackend*) noexcept;
     TransportKind kind;
   };
 
@@ -444,14 +400,6 @@ const Transport::Operations& Transport::OperationsFor() noexcept {
           return {0, TransportHint::Error};
         }
       },
-      .pollZerocopyCompletions = [](ErasedTransportBackend* erased) noexcept -> std::size_t {
-        Backend& backend = BackendBase::Get(erased);
-        if constexpr (requires { backend.pollZerocopyCompletions(); }) {
-          return backend.pollZerocopyCompletions();
-        } else {
-          return 0;
-        }
-      },
       .supportsSendfile =
           [](const ErasedTransportBackend* erased) noexcept {
             const Backend& backend = BackendBase::Get(erased);
@@ -477,31 +425,6 @@ const Transport::Operations& Transport::OperationsFor() noexcept {
               return backend.hasPendingReadData();
             } else {
               return false;
-            }
-          },
-      .isZerocopyEnabled =
-          [](const ErasedTransportBackend* erased) noexcept {
-            const Backend& backend = BackendBase::Get(erased);
-            if constexpr (requires { backend.isZerocopyEnabled(); }) {
-              return backend.isZerocopyEnabled();
-            } else {
-              return false;
-            }
-          },
-      .hasZerocopyPending =
-          [](const ErasedTransportBackend* erased) noexcept {
-            const Backend& backend = BackendBase::Get(erased);
-            if constexpr (requires { backend.hasZerocopyPending(); }) {
-              return backend.hasZerocopyPending();
-            } else {
-              return false;
-            }
-          },
-      .disableZerocopy =
-          [](ErasedTransportBackend* erased) noexcept {
-            Backend& backend = BackendBase::Get(erased);
-            if constexpr (requires { backend.disableZerocopy(); }) {
-              backend.disableZerocopy();
             }
           },
       .kind = Kind,

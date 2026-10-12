@@ -7,7 +7,6 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <cstdint>
 #include <span>
 #include <string_view>
 #include <utility>
@@ -19,7 +18,6 @@
 #include "aeronet/tls-ktls.hpp"
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
-#include "aeronet/zerocopy.hpp"
 
 namespace aeronet {
 
@@ -41,10 +39,8 @@ inline void ClearStaleOpenSslErrors() noexcept {
 }
 }  // namespace
 
-TlsTransport::TlsTransport(SslPtr sslPtr, uint32_t minBytesForZerocopy)
-    : _ssl(std::move(sslPtr)),
-      _minBytesForZerocopy(minBytesForZerocopy),
-      _readUntilDrained(_ssl && ::SSL_get_read_ahead(_ssl.get()) != 0) {
+TlsTransport::TlsTransport(SslPtr sslPtr)
+    : _ssl(std::move(sslPtr)), _readUntilDrained(_ssl && ::SSL_get_read_ahead(_ssl.get()) != 0) {
   if (_ssl) {
     ::SSL_set_mode(_ssl.get(), SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
   }
@@ -149,7 +145,7 @@ TransportHint TlsTransport::readFailureHint() const {
 
 TransportResult TlsTransport::write(std::string_view data) {
   if (isKtlsSendEnabled()) {
-    // The kernel encrypts: write the data in clear on the socket, with MSG_ZEROCOPY for large payloads when enabled.
+    // The kernel encrypts: write the data in clear on the socket. Never with MSG_ZEROCOPY, which kTLS sockets reject.
     return socketWrite(data);
   }
 
@@ -348,15 +344,6 @@ KtlsEnableResult TlsTransport::enableKtlsSend() {
   _ktlsResult = KtlsEnableResult::Unsupported;
 #endif
   return _ktlsResult;
-}
-
-bool TlsTransport::enableZerocopy() noexcept {
-  if (EnableZeroCopy(_fd) == ZeroCopyEnableResult::Enabled) {
-    _zerocopyState.enable(_minBytesForZerocopy);
-  } else {
-    _zerocopyState.disable();
-  }
-  return _zerocopyState.enabled();
 }
 
 }  // namespace aeronet

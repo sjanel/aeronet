@@ -19,6 +19,7 @@
 #include "aeronet/connection.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
+#include "aeronet/http-message-data.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/connection-storage.hpp"
 #include "aeronet/internal/keep-alive-deadline-queue.hpp"
@@ -34,7 +35,6 @@
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
 #include "aeronet/vector.hpp"
-#include "aeronet/zerocopy-mode.hpp"
 #include "tunnel-manager.hpp"
 
 #ifdef AERONET_ENABLE_HTTP2
@@ -117,6 +117,15 @@ void SingleHttpServer::refreshKeepAliveDeadline(ConnectionIt cnxIt) {
 #else
   if (!_config.enableKeepAlive || state.isTunneling() || state.tunnelResolving) {
 #endif
+#ifdef AERONET_LINUX
+    // Still watched while its zerocopy sends are in flight (see watchZerocopySends()).
+    if (state.hasZerocopySendsInFlight()) {
+      if (!internal::KeepAliveDeadlineQueue::contains(state)) {
+        _keepAliveDeadlines.upsert(state, cnxIt->fd(), state.lastActivity + _config.keepAliveTimeout);
+      }
+      return;
+    }
+#endif
     _keepAliveDeadlines.remove(state);
     return;
   }
@@ -192,6 +201,12 @@ bool SingleHttpServer::closeExpiredKeepAliveConnections() {
       continue;
     }
 #endif
+#ifdef AERONET_LINUX
+    if (state.hasZerocopySendsInFlight()) {
+      closedAny |= watchZerocopySends(cnxIt);
+      continue;
+    }
+#endif
     if (!_config.enableKeepAlive || state.isTunneling() || state.tunnelResolving) {
       continue;
     }
@@ -229,6 +244,55 @@ bool SingleHttpServer::closeExpiredKeepAliveConnections() {
 
   return closedAny;
 }
+
+#ifdef AERONET_LINUX
+bool SingleHttpServer::watchZerocopySends(ConnectionIt cnxIt) {
+  ConnectionState& state = _connections.connectionState(cnxIt);
+  const NativeHandle fd = cnxIt->fd();
+  const auto now = _connections.now;
+
+  // The completions are read on EPOLLERR: the sends were in flight at the last event of the connection.
+  const auto activityExpiry = state.lastActivity + _config.keepAliveTimeout;
+  if (activityExpiry > now) {
+    // Active meanwhile: a new observation period starts.
+    state.zerocopyStallCheckQueuedBytes = ConnectionState::kNoZerocopyStallCheck;
+    _keepAliveDeadlines.upsert(state, fd, activityExpiry);
+    return false;
+  }
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  const auto* asyncState = state.pAsyncState();
+  const bool asyncHandlerActive = asyncState != nullptr && asyncState->active;
+#else
+  static constexpr bool asyncHandlerActive = false;
+#endif
+  if (_config.enableKeepAlive && !state.isTunneling() && !state.tunnelResolving && !state.isSendingFile() &&
+      !asyncHandlerActive) {
+    // Idle for keepAliveTimeout: close it once its sends complete, as the kernel finishes sending copied data after a
+    // close.
+    state.requestDrainAndClose();
+  }
+
+  // The send queue only shrinks when the peer acknowledges data (or grows when the output progresses): no change during
+  // a whole period means that the peer does not read anymore. Its buffers cannot be retained forever: reset the
+  // connection (closed gracefully instead by releaseConnection() if its sends completed meanwhile).
+  const int64_t queuedBytes = SendQueueBytes(fd);
+  if (queuedBytes < 0) [[unlikely]] {
+    log::error("ioctl(SIOCOUTQ) failed for fd # {} err={}", fd, LastSystemError());
+  }
+  const auto queued =
+      static_cast<uint32_t>(std::clamp<int64_t>(queuedBytes, 0, int64_t{ConnectionState::kNoZerocopyStallCheck} - 1));
+  if (queuedBytes < 0 || queued == state.zerocopyStallCheckQueuedBytes) {
+    log::debug("fd # {}: zerocopy sends without progress during keepAliveTimeout, resetting the connection", fd);
+    closeConnection(cnxIt);
+    _telemetry.counterAdd("aeronet.connections.closed_for_zerocopy_stall");
+    return true;
+  }
+  state.zerocopyStallCheckQueuedBytes = queued;
+  _keepAliveDeadlines.upsert(state, fd, now + _config.keepAliveTimeout);
+  return false;
+}
+#endif
 
 void SingleHttpServer::rebuildKeepAliveDeadlines() {
   _keepAliveDeadlines.clear();
@@ -362,6 +426,10 @@ void SingleHttpServer::sweepIdleConnections() {
       ++flushRetries;
     }
 
+#ifdef AERONET_LINUX
+    // EPOLLERR reports the zerocopy completions: polled here as well, in case of a missed event.
+    pollZerocopyCompletions(state);
+#endif
     // For DrainThenClose mode, only close after buffers and file payload are fully drained
     if (state.canCloseConnectionForDrain()) {
       closeConnection(cnxIt);
@@ -492,11 +560,6 @@ void SingleHttpServer::acceptNewConnections() {
     // TCP_NODELAY disables Nagle — mark corkable so response writes use TCP_CORK to coalesce.
     state.corkable = tcpNoDelayActive;
 
-    ZerocopyMode zerocopyMode = _config.zerocopyMode;
-    if (!state.zerocopyRequested) {
-      zerocopyMode = ZerocopyMode::Disabled;
-    }
-
 #ifdef AERONET_ENABLE_OPENSSL
     if (_tls.ctxHolder) {
       // TLS handshake admission control (Phase 2): concurrency and basic token bucket rate limiting.
@@ -574,19 +637,26 @@ void SingleHttpServer::acceptNewConnections() {
         continue;
       }
       ::SSL_set_accept_state(sslPtr.get());
-      state.transport = std::make_unique<TlsTransport>(std::move(sslPtr), _config.zerocopyMinBytes);
+      state.transport = std::make_unique<TlsTransport>(std::move(sslPtr));
       state.tlsInfo.handshakeStart = state.lastActivity;
       ++_tls.handshakesInFlight;
     } else {
-      state.transport = Transport(cnxFd, zerocopyMode, _config.zerocopyMinBytes);
+      state.transport = Transport(cnxFd);
     }
 #else
-    state.transport = Transport(cnxFd, zerocopyMode, _config.zerocopyMinBytes);
+    state.transport = Transport(cnxFd);
 #endif
 
 #ifdef AERONET_ENABLE_TEST_HOOKS
     // Test hook: allow tests to wrap/decorate the transport for fault injection.
     state.transport = test::ApplyTransportDecorator(std::move(state.transport));
+#endif
+
+#ifdef AERONET_LINUX
+    // MSG_ZEROCOPY needs a plain socket: accepted ones inherit SO_ZEROCOPY from the listener (see initListener()).
+    state.zerocopyEnabled = state.zerocopyEnabled && _zerocopy.supported && state.transport.isPlain();
+#else
+    state.zerocopyEnabled = false;
 #endif
 
     refreshKeepAliveDeadline(cnxIt);
@@ -739,16 +809,30 @@ void SingleHttpServer::releaseConnection(ConnectionIt cnxIt) {
   const auto fd = cnxIt->fd();
   ConnectionState& state = _connections.connectionState(cnxIt);
   _eventLoop.del(fd);
-  // The buffers of zerocopy sends still in flight are released with the connection state, while the kernel would keep
-  // sending from them after a graceful close: abort such a connection (reset) so that the kernel drops them first.
-  // Drain closes wait for the completions instead (see ConnectionState::canCloseConnectionForDrain()).
+#ifdef AERONET_LINUX
+  // After a graceful close, the kernel would keep sending from the buffers of the zerocopy sends still in flight: abort
+  // such a connection (reset), so that the kernel drops its send queue. Drain closes wait for the completions instead
+  // (see ConnectionState::canCloseConnectionForDrain()).
+  pollZerocopyCompletions(state);
   if (state.hasZerocopySendsInFlight()) {
-    log::debug("Aborting fd # {} with zerocopy sends still in flight", fd);
+    log::debug("Resetting fd # {} with zerocopy sends still in flight", fd);
     if (!SetAbortiveClose(fd)) [[unlikely]] {
       log::error("setsockopt(SO_LINGER) failed for fd # {} err={}", fd, LastSystemError());
     }
+    // The packets already handed to the network device still reference the buffers for a short while. A fresh clock
+    // read: the connection may be closed out of the event loop (server stop), where the cached time is not updated.
+    const auto releaseTime = std::chrono::steady_clock::now() + kZerocopyResetGracePeriod;
+    state.zerocopyBuffers.extract([this, releaseTime](HttpMessageData data) {
+      _zerocopy.resetBuffers.push_back(ZerocopyRuntime::ResetBuffer{std::move(data), releaseTime});
+    });
+    if (state.outBufferZerocopySent) {
+      _zerocopy.resetBuffers.push_back(ZerocopyRuntime::ResetBuffer{std::move(state.outBuffer), releaseTime});
+      state.outBufferZerocopySent = false;
+    }
+    ++_stats.zerocopyResetConnections;
     _telemetry.counterAdd("aeronet.connections.aborted_with_zerocopy_in_flight");
   }
+#endif
 #ifdef AERONET_ENABLE_OPENSSL
   _connections.recycleOrRelease(cnxIt, _config.maxCachedConnections, _config.tls.enabled, _tls.handshakesInFlight);
 #else

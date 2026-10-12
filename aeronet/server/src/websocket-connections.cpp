@@ -1,4 +1,5 @@
 #include <chrono>
+#include <cstddef>
 #include <exception>
 #include <memory>
 #include <utility>
@@ -103,7 +104,9 @@ SingleHttpServer::WebSocketUpgrade SingleHttpServer::upgradeToWebSocket(Connecti
   state.protocol = ProtocolType::WebSocket;
 
   // Queue the 101 Switching Protocols response
-  char* pData = state.outBuffer.resizeUp(upgrade::ComputeWebSocketUpgradeResponseSize(upgradeValidation));
+  const std::size_t responseSize = upgrade::ComputeWebSocketUpgradeResponseSize(upgradeValidation);
+  state.prepareOutBufferAppend(responseSize);
+  char* pData = state.outBuffer.resizeUp(responseSize);
   upgrade::BuildWebSocketUpgradeResponse(upgradeValidation, pData);
   flushOutbound(cnxIt);
 

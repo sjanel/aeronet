@@ -19,6 +19,8 @@
 #include "aeronet/transport.hpp"
 #include "aeronet/tunnel-bridge.hpp"
 #include "aeronet/vector.hpp"
+#include "aeronet/zerocopy-buffers.hpp"
+#include "aeronet/zerocopy.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-config.hpp"
@@ -57,14 +59,17 @@ struct ConnectionState {
 
   // Tells whether a requested drain close can proceed. Besides buffered output, it waits for the completion of the
   // zerocopy sends: after close, the kernel would still send from their buffers, released with the connection.
-  [[nodiscard]] bool canCloseConnectionForDrain() noexcept {
+  [[nodiscard]] bool canCloseConnectionForDrain() const noexcept {
     return isDrainCloseRequested() && !hasPendingOutput() && tunnelOrFileBuffer.empty() && !isSendingFile() &&
            !hasZerocopySendsInFlight();
   }
 
-  // Tells whether some zerocopy sends were not completed yet, polling their completions first (and releasing the
-  // buffers held for them once all are completed). Always false when zerocopy is not used.
-  [[nodiscard]] bool hasZerocopySendsInFlight() noexcept;
+  // Tells whether some zerocopy sends were not completed yet, as of their last poll (pollZerocopyCompletions()).
+  // Always false when zerocopy is not used.
+  [[nodiscard]] bool hasZerocopySendsInFlight() const noexcept {
+    const PlainTransport* plain = transport.get<PlainTransport>();
+    return plain != nullptr && plain->zerocopy().pendingCompletions();
+  }
 
   // Request to close after draining currently buffered writes (graceful half-close semantics).
   void requestDrainAndClose() {
@@ -111,7 +116,6 @@ struct ConnectionState {
 #ifdef AERONET_ENABLE_OPENSSL
   // Finalize TLS handshake (if this transport is TLS) and emit the handshake event.
   // Returns true if a TLS transport was finalized (caller may perform transport-specific book-keeping).
-  // zerocopyEnabled: if true and kTLS is active, enables MSG_ZEROCOPY on the kTLS socket.
   bool finalizeAndEmitTlsHandshakeIfNeeded(NativeHandle fd, const TlsHandshakeCallback& cb, TlsMetricsInternal& metrics,
                                            const TLSConfig& cfg);
 #endif
@@ -124,21 +128,22 @@ struct ConnectionState {
   void reclaimMemoryFromOversizedBuffers();
 
 #ifdef AERONET_LINUX
-  /// Disable zerocopy before a write when retaining its payload would exceed `maxPendingBytes`.
-  /// Returns whether the write may submit bytes through MSG_ZEROCOPY and therefore needs lifetime tracking.
-  [[nodiscard]] bool prepareZerocopyWrite(std::size_t retainedSize, uint32_t maxPendingBytes);
+  /// Reads the completion notifications of the zerocopy sends, and releases the buffers no longer read by the kernel.
+  /// Once the kernel reports a copy, stops using MSG_ZEROCOPY if zerocopyStopOnCopy is set.
+  ZerocopyCompletions pollZerocopyCompletions() noexcept;
 
-  /// Hold the given buffer alive until all pending MSG_ZEROCOPY sends complete.
-  /// MSG_ZEROCOPY pins user-space pages and the kernel DMA's from them asynchronously;
-  /// freeing the buffer before the completion notification arrives causes data corruption.
-  /// If this write could not use zerocopy or no sends are pending, the buffer is released immediately.
-  void holdBufferIfZerocopyPending(HttpMessageData buf, bool mayNeedHold);
-
-  /// Poll the kernel error queue and release held zerocopy buffers whose sends have completed.
-  void releaseCompletedZerocopyBuffers();
+  /// Retains 'data', written (in part) with MSG_ZEROCOPY, until the completion of the zerocopy sends issued so far:
+  /// the kernel reads it until then. Freeing it earlier would let the kernel send whatever reuses its memory.
+  void retainZerocopyBuffer(HttpMessageData data);
 #endif
 
-  [[nodiscard]] uint32_t zerocopyRetainedBytes() const noexcept { return zerocopyPendingBytes; }
+  /// Empties outBuffer, written or dropped: retains its storage if zerocopy sends may still read it.
+  void discardOutBuffer();
+
+  /// Makes outBuffer safe to modify before appending up to 'extraCapacity' bytes to it: when zerocopy sends may still
+  /// read it, continues with a copy of its unsent bytes (with room for 'extraCapacity' more), the original being
+  /// retained until their completion.
+  void prepareOutBufferAppend(std::size_t extraCapacity);
 
   void clearBuffers();
 
@@ -156,10 +161,8 @@ struct ConnectionState {
   AggregatedBodyStreamContext bodyStreamContext;
   // pending outbound data not yet written
   HttpMessageData outBuffer;
-  // Buffers sent via MSG_ZEROCOPY that must remain alive until the kernel signals completion via the error queue.
-  // Without this, the allocator can reuse the freed pages while the kernel is still DMA-ing from them, causing data
-  // corruption.
-  vector<HttpMessageData> zerocopyPendingBuffers;
+  // Written buffers still read by the kernel for zerocopy sends in flight.
+  ZerocopyBuffers zerocopyBuffers;
   Transport transport;  // set after accept (plain or TLS)
   std::chrono::steady_clock::time_point lastActivity;
   // Timestamp of first byte of the current pending request headers.
@@ -183,6 +186,8 @@ struct ConnectionState {
   /// Sentinel value for bodyLastActivityMs / requestDeadlineMs indicating no active timestamp.
   static constexpr uint32_t kInactiveRelativeMs = static_cast<uint32_t>(-1);
   static constexpr uint32_t kNoKeepAliveDeadlineIndex = static_cast<uint32_t>(-1);
+  /// Sentinel value for zerocopyStallCheckQueuedBytes when no stall check was made.
+  static constexpr uint32_t kNoZerocopyStallCheck = static_cast<uint32_t>(-1);
 
   // Milliseconds since headerStartTp of last body read progress. kInactiveRelativeMs means inactive.
   uint32_t bodyLastActivityMs{kInactiveRelativeMs};
@@ -194,7 +199,9 @@ struct ConnectionState {
   uint32_t generation{0};
 #endif
 
-  uint32_t zerocopyPendingBytes{0};
+  // Bytes of the socket send queue at the previous check that the zerocopy sends in flight progress, while the
+  // connection waits for their completion (see SingleHttpServer::watchZerocopySends()). kNoZerocopyStallCheck if none.
+  uint32_t zerocopyStallCheckQueuedBytes{kNoZerocopyStallCheck};
 
   char clientAddressBuffer[kFormattedAddressCapacity];
 
@@ -225,11 +232,16 @@ struct ConnectionState {
   bool corkable : 1 {false};                // true when TCP_NODELAY is active; enables TCP_CORK coalescing
   bool fileSendActive : 1 {false};          // true while a file payload is attached and in progress
   bool fileSendHeadersPending : 1 {false};  // true until response headers are flushed before file payload
-  bool outBufferMayNeedZerocopyHold : 1 {false};
 
-  // Whether the connection should attempt to enable MSG_ZEROCOPY when possible.
-  // Determined at accept time based on server configuration and peer/local addresses.
-  bool zerocopyRequested : 1 {false};
+  // Whether the large writes of the responses use MSG_ZEROCOPY (plain sockets only, Linux).
+  // Decided at accept time from the server configuration and the peer address.
+  bool zerocopyEnabled : 1 {false};
+  // Whether zerocopyEnabled is cleared once the kernel reports that it copied the data of a zerocopy send anyway
+  // (local peer, device without scatter-gather): ZerocopyMode::Opportunistic.
+  bool zerocopyStopOnCopy : 1 {false};
+  // Whether some bytes of outBuffer were written with MSG_ZEROCOPY by sends not completed yet: outBuffer must then
+  // neither be modified nor freed (see discardOutBuffer()).
+  bool outBufferZerocopySent : 1 {false};
 
   // True when socket bytes may have been left unread while an HTTP/1 async handler was running (see
   // SingleHttpServer::handleReadableClient()): they must be read once it completes, no new event reporting them.

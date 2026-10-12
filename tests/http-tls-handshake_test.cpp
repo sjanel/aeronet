@@ -1,17 +1,19 @@
 #include <gtest/gtest.h>
 #include <openssl/asn1.h>
 #include <openssl/bio.h>
+#include <openssl/ec.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/objects.h>
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
+#include <openssl/types.h>
 #include <openssl/x509.h>
-#include <openssl/x509v3.h>
 
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -23,11 +25,11 @@
 #include <thread>
 #include <utility>
 
+#include "aeronet/tls-raii.hpp"
+
 #ifdef AERONET_LINUX
-#include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
-#include <sys/time.h>
 #endif
 
 #include "aeronet/base-fd.hpp"
@@ -79,6 +81,7 @@ struct CertKeyCache {
 constexpr auto kRejectedCloseTimeout = 5s;
 }  // namespace
 
+#ifdef AERONET_ENABLE_HTTP2
 TEST(HttpTlsAlpnMismatch, HandshakeFailsWhenNoCommonProtocolAndMustMatch) {
   test::TlsTestServer ts({"http/1.1", "h2"}, [](HttpServerConfig& cfg) {
     cfg.withTlsAlpnMustMatch(true);
@@ -129,6 +132,7 @@ TEST(HttpTlsAlpnNonStrict, MismatchAllowedAndNoMetricIncrement) {
     ASSERT_NE(kv.first, std::string("foo"));
   }
 }
+#endif
 
 TEST(HttpTlsAlpnMismatch, StrictMismatchMetricSurvivesServerMove) {
   auto defaultPair = CertKeyCache::Get().localhost;
@@ -234,6 +238,7 @@ TEST(HttpTlsHandshakeCallback, EmitsSuccessEventWithNegotiatedAlpn) {
   }
 }
 
+#ifdef AERONET_ENABLE_HTTP2
 TEST(HttpTlsHandshakeCallback, EmitsFailureEventAndBucketsReasonOnStrictAlpnMismatch) {
   test::TlsTestServer ts({"h2"}, [](HttpServerConfig& cfg) {
     cfg.withTlsAlpnMustMatch(true);
@@ -276,6 +281,7 @@ TEST(HttpTlsHandshakeCallback, EmitsFailureEventAndBucketsReasonOnStrictAlpnMism
   EXPECT_TRUE(callbackOK.load());
   EXPECT_TRUE(found);
 }
+#endif
 
 TEST(HttpTlsHandshakeCallback, EmitsRejectedEventAndBucketsReasonOnConcurrencyLimit) {
   test::TlsTestServer ts({}, [](HttpServerConfig& cfg) {
@@ -1395,8 +1401,8 @@ namespace {
 // A self-signed certificate carrying an unknown, non-critical extension of `extensionSize` bytes: a large certificate
 // that stays cheap to parse.
 std::string MakeLargeCertificatePem(std::size_t extensionSize) {
-  std::unique_ptr<EVP_PKEY, decltype(&::EVP_PKEY_free)> key(::EVP_EC_gen("P-256"), &::EVP_PKEY_free);
-  std::unique_ptr<X509, decltype(&::X509_free)> cert(::X509_new(), &::X509_free);
+  PKeyPtr key(::EVP_EC_gen("P-256"), &::EVP_PKEY_free);
+  X509Ptr cert(::X509_new(), &::X509_free);
   std::unique_ptr<ASN1_OBJECT, decltype(&::ASN1_OBJECT_free)> oid(::OBJ_txt2obj("1.3.6.1.4.1.99999.1", 1),
                                                                   &::ASN1_OBJECT_free);
   std::unique_ptr<ASN1_OCTET_STRING, decltype(&::ASN1_OCTET_STRING_free)> value(::ASN1_OCTET_STRING_new(),
@@ -1420,7 +1426,7 @@ std::string MakeLargeCertificatePem(std::size_t extensionSize) {
       ::X509_add_ext(cert.get(), extension.get(), -1) != 1 || ::X509_sign(cert.get(), key.get(), ::EVP_sha256()) <= 0) {
     throw std::runtime_error("Failed to build the large certificate");
   }
-  std::unique_ptr<BIO, decltype(&::BIO_free)> bio(::BIO_new(::BIO_s_mem()), &::BIO_free);
+  BioPtr bio(::BIO_new(::BIO_s_mem()), &::BIO_free);
   if (!bio || ::PEM_write_bio_X509(bio.get(), cert.get()) != 1) {
     throw std::runtime_error("Failed to write the large certificate");
   }
@@ -1451,10 +1457,12 @@ TEST(HttpTlsHandshakeTest, HandshakeLargerThanTheSocketBuffersCompletes) {
   ASSERT_GE(fd, 0);
   BaseFd socketFd(fd);
   // A receive buffer set before connecting: the advertised window stays bounded.
-  const int rcvBuf = 64 << 10;
+  const int rcvBuf = 64 << 10U;
+  // NOLINTNEXTLINE(misc-include-cleaner) sys/socket.h is the correct header for SOL_SOCKET
   ASSERT_EQ(::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvBuf, sizeof(rcvBuf)), 0);
   // Fails the test instead of hanging if the handshake stalls.
-  const timeval timeout{.tv_sec = 30, .tv_usec = 0};
+  const timeval timeout{.tv_sec = 30, .tv_usec = 0};  // NOLINT(misc-include-cleaner)
+  // NOLINTNEXTLINE(misc-include-cleaner) sys/socket.h is the correct header for SOL_SOCKET
   ASSERT_EQ(::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)), 0);
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
@@ -1462,11 +1470,11 @@ TEST(HttpTlsHandshakeTest, HandshakeLargerThanTheSocketBuffersCompletes) {
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   ASSERT_EQ(::connect(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)), 0);
 
-  std::unique_ptr<SSL_CTX, decltype(&::SSL_CTX_free)> clientCtx(::SSL_CTX_new(TLS_client_method()), &::SSL_CTX_free);
+  SslCtxPtr clientCtx(::SSL_CTX_new(TLS_client_method()), &::SSL_CTX_free);
   ASSERT_NE(clientCtx, nullptr);
   ::SSL_CTX_set_verify(clientCtx.get(), SSL_VERIFY_NONE, nullptr);
-  ::SSL_CTX_set_max_cert_list(clientCtx.get(), 16L << 20);
-  std::unique_ptr<SSL, decltype(&::SSL_free)> ssl(::SSL_new(clientCtx.get()), &::SSL_free);
+  ::SSL_CTX_set_max_cert_list(clientCtx.get(), 16L << 20U);
+  SslPtr ssl(::SSL_new(clientCtx.get()), &::SSL_free);
   ASSERT_NE(ssl, nullptr);
   ASSERT_EQ(::SSL_set_fd(ssl.get(), fd), 1);
   ASSERT_EQ(::SSL_connect(ssl.get()), 1);

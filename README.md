@@ -379,7 +379,7 @@ SingleHttpServer server(std::move(cfg)); // or SingleHttpServer(8080) then serve
 - **431** is returned if the header section exceeds `maxHeaderBytes`.
 - **413** is returned if the declared `content-length` exceeds `maxBodyBytes`.
 - `maxOutboundBufferBytes` (default 4 MiB) bounds retained output per connection. HTTP/1.1 closes after draining an overflow; HTTP/2 pauses input at the wire-queue high-water mark, refuses new work when the connection budget is exhausted, and applies `Http2Config::maxStreamPendingBytes` to each flow-control-deferred response.
-- `maxZerocopyPendingBytes` (default 4 MiB) bounds payloads retained for delayed Linux `MSG_ZEROCOPY` completions. Once reached, that connection falls back to copied writes.
+- `maxZerocopyPendingBytes` (default 4 MiB) bounds the response bytes a connection retains until the completion of their Linux `MSG_ZEROCOPY` sends. Beyond it, its writes are copied until completions release retained buffers.
 - Slowloris protection: configure `withHeaderReadTimeout(ms)` to bound how long a client may take to send an entire request head (request line + headers) (0 to disable). `aeronet` will return HTTP error **408 Request Timeout** if exceeded.
 
 ###### Performance / Metrics & Backpressure

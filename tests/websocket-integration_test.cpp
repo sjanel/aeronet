@@ -671,8 +671,9 @@ TEST(WebSocketTimeouts, UpgradedConnectionOutlivesKeepAliveTimeout) {
   SendFrame(conn.fd(), BuildClientTextFrame("still there?"));
   const auto echo = ReceiveServerFrame(conn.fd(), 1000ms);
   ASSERT_TRUE(echo.has_value());
-  EXPECT_EQ(echo->opcode, Opcode::Text);
-  EXPECT_EQ(PayloadToString(echo->payload), "still there?");
+  auto val = echo.value_or(ServerFrame{});
+  EXPECT_EQ(val.opcode, Opcode::Text);
+  EXPECT_EQ(PayloadToString(val.payload), "still there?");
 }
 
 TEST(WebSocketTimeouts, IdleConnectionIsPingedThenClosed) {
@@ -687,7 +688,8 @@ TEST(WebSocketTimeouts, IdleConnectionIsPingedThenClosed) {
   // A Ping after half of the idle timeout, then the connection is closed when the peer does not answer.
   const auto ping = ReceiveServerFrame(conn.fd(), 1000ms);
   ASSERT_TRUE(ping.has_value());
-  EXPECT_EQ(ping->opcode, Opcode::Ping);
+  auto val = ping.value_or(ServerFrame{});
+  EXPECT_EQ(val.opcode, Opcode::Ping);
   EXPECT_TRUE(test::WaitForPeerClose(conn.fd(), 2000ms));
 }
 
@@ -704,18 +706,20 @@ TEST(WebSocketTimeouts, PongsKeepIdleConnectionOpen) {
   for (int pingIdx = 0; pingIdx < 3; ++pingIdx) {
     const auto ping = ReceiveServerFrame(conn.fd(), 2000ms);
     ASSERT_TRUE(ping.has_value());
-    ASSERT_EQ(ping->opcode, Opcode::Ping);
-    SendFrame(conn.fd(), BuildClientFrame(Opcode::Pong, PayloadToString(ping->payload)));
+    auto val = ping.value_or(ServerFrame{});
+    ASSERT_EQ(val.opcode, Opcode::Ping);
+    SendFrame(conn.fd(), BuildClientFrame(Opcode::Pong, PayloadToString(val.payload)));
   }
   SendFrame(conn.fd(), BuildClientTextFrame("alive"));
   auto frame = ReceiveServerFrame(conn.fd(), 1000ms);
+  auto val = frame.value_or(ServerFrame{});
   // A Ping may be sent before the echo.
-  if (frame.has_value() && frame->opcode == Opcode::Ping) {
+  if (frame.has_value() && val.opcode == Opcode::Ping) {
     frame = ReceiveServerFrame(conn.fd(), 1000ms);
   }
   ASSERT_TRUE(frame.has_value());
-  EXPECT_EQ(frame->opcode, Opcode::Text);
-  EXPECT_EQ(PayloadToString(frame->payload), "alive");
+  EXPECT_EQ(val.opcode, Opcode::Text);
+  EXPECT_EQ(PayloadToString(val.payload), "alive");
 }
 
 TEST(WebSocketTimeouts, CloseTimeoutClosesConnectionWithoutPeerClose) {
@@ -731,7 +735,8 @@ TEST(WebSocketTimeouts, CloseTimeoutClosesConnectionWithoutPeerClose) {
   SendFrame(conn.fd(), BuildClientTextFrame("close"));
   const auto close = ReceiveServerFrame(conn.fd(), 1000ms);
   ASSERT_TRUE(close.has_value());
-  EXPECT_EQ(close->opcode, Opcode::Close);
+  auto val = close.value_or(ServerFrame{});
+  EXPECT_EQ(val.opcode, Opcode::Close);
   // The client never answers the Close frame: the server gives up after closeTimeout.
   EXPECT_TRUE(test::WaitForPeerClose(conn.fd(), 2000ms));
 }
@@ -843,7 +848,7 @@ TEST_F(WebSocketTest, ThrowingFactoryAnswers500) {
                         }));
     router.setWebSocket("/other",
                         WebSocketEndpoint::WithFactory([](const HttpRequestView&) -> std::unique_ptr<WebSocketHandler> {
-                          throw 42;  // NOLINT(hicpp-exception-baseclass)
+                          throw 42;  // NOLINT(bugprone-std-exception-baseclass)
                         }));
   });
 
@@ -862,8 +867,9 @@ TEST_F(WebSocketTest, RequestTimeoutOfRouteDoesNotCloseWebSocket) {
   std::this_thread::sleep_for(300ms);
   SendFrame(conn.fd(), BuildClientTextFrame("ping"));
   const auto echo = ReceiveServerFrame(conn.fd(), 1000ms);
+  auto val = echo.value_or(ServerFrame{});
   ASSERT_TRUE(echo.has_value());
-  EXPECT_EQ(PayloadToString(echo->payload), "ping");
+  EXPECT_EQ(PayloadToString(val.payload), "ping");
 }
 
 }  // namespace

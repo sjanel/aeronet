@@ -35,6 +35,8 @@
 #include "aeronet/timer-fd.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
+#include "aeronet/zerocopy-mode.hpp"
+#include "aeronet/zerocopy.hpp"
 #include "tunnel-manager.hpp"  // IWYU pragma: keep (destruction of SingleHttpServer::_tunnels)
 
 #ifdef AERONET_ENABLE_OPENSSL
@@ -222,6 +224,9 @@ SingleHttpServer::~SingleHttpServer() {
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   waitForOrphanedAsyncWork();
 #endif
+#ifdef AERONET_LINUX
+  waitForResetZerocopyBuffers();
+#endif
 }
 
 SingleHttpServer& SingleHttpServer::operator=(const SingleHttpServer& other) {
@@ -280,6 +285,10 @@ SingleHttpServer::SingleHttpServer(SingleHttpServer&& other)
       _lifecycleTracker(std::move(other._lifecycleTracker)),
       _pendingReadFds(std::move(other._pendingReadFds)),
       _connectionSweepState(std::exchange(other._connectionSweepState, {}))
+#ifdef AERONET_LINUX
+      ,
+      _zerocopy(std::move(other._zerocopy))
+#endif
 #ifdef AERONET_ENABLE_OPENSSL
       ,
       _tls(std::move(other._tls))
@@ -302,6 +311,9 @@ SingleHttpServer& SingleHttpServer::operator=(SingleHttpServer&& other) {
     // Deferred work still running for closed connections posts its completion to the server that ran it.
     waitForOrphanedAsyncWork();
     other.waitForOrphanedAsyncWork();
+#endif
+#ifdef AERONET_LINUX
+    waitForResetZerocopyBuffers();
 #endif
     _stats = std::exchange(other._stats, {});
     _callbacks = std::move(other._callbacks);
@@ -332,6 +344,9 @@ SingleHttpServer& SingleHttpServer::operator=(SingleHttpServer&& other) {
     _lifecycleTracker = std::move(other._lifecycleTracker);
     _pendingReadFds = std::move(other._pendingReadFds);
     _connectionSweepState = std::exchange(other._connectionSweepState, {});
+#ifdef AERONET_LINUX
+    _zerocopy = std::move(other._zerocopy);
+#endif
 #ifdef AERONET_ENABLE_OPENSSL
     _tls = std::move(other._tls);
 #endif
@@ -413,6 +428,13 @@ void SingleHttpServer::initListener(NativeHandle listenFd) {
 #endif
 #ifdef AERONET_LINUX
     const bool ephemeralPort = _config.port == 0;
+    // The accepted sockets inherit SO_ZEROCOPY: set it on the listener before it listens (a socket accepted without it
+    // would silently copy the MSG_ZEROCOPY sends, without completion notification), whatever the zerocopy mode, so that
+    // a configuration update can enable zerocopy for the next connections.
+    _zerocopy.supported = EnableZeroCopy(_listenSocket.fd()) == ZeroCopyEnableResult::Enabled;
+    if (!_zerocopy.supported && _config.zerocopyMode == ZerocopyMode::Enabled) {
+      log::warn("MSG_ZEROCOPY is not supported (SO_ZEROCOPY failed): the responses are copied");
+    }
 #endif
     _listenSocket.bindAndListen(_config.reusePort, _config.port);
     listenFd = _listenSocket.fd();
