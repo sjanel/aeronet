@@ -26,7 +26,6 @@
 #include "aeronet/temp-file.hpp"
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
-#include "aeronet/zerocopy-mode.hpp"
 
 #ifdef AERONET_POSIX
 #include <sys/socket.h>
@@ -58,7 +57,7 @@ std::string MakePayload(std::size_t size) {
 
 // Reads exactly `size` bytes from the non-blocking socket fd, or less on EOF / error / timeout.
 std::string ReceiveExactly(NativeHandle fd, std::size_t size) {
-  PlainTransport transport(fd, ZerocopyMode::Disabled, 0U);
+  PlainTransport transport(fd);
   std::string received(size, '\0');
   std::size_t receivedSize = 0;
   const auto deadline = std::chrono::steady_clock::now() + kIoTimeout;
@@ -130,7 +129,7 @@ std::string TransferOverLoopback(std::initializer_list<FileRegion> regions) {
   {
     std::jthread reader(
         [&received, fd = receiver.fd(), totalSize] { received.emplace(ReceiveExactly(fd, totalSize)); });
-    PlainTransport sender(connectResult.cnx.fd(), ZerocopyMode::Disabled, 0U);
+    PlainTransport sender(connectResult.cnx.fd());
     for (const FileRegion& region : regions) {
       EXPECT_TRUE(SendRegion(sender, region));
     }

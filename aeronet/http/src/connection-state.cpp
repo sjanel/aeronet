@@ -9,7 +9,6 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <span>
 #include <string_view>
 #include <utility>
@@ -21,6 +20,7 @@
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/protocol-handler.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/sendfile.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/system-error-message.hpp"
@@ -28,6 +28,7 @@
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
 #include "aeronet/zerocopy-mode.hpp"
+#include "aeronet/zerocopy.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-config.hpp"
@@ -59,21 +60,25 @@ void ConnectionState::initializeStateNewConnection(const HttpServerConfig& confi
     clientAddressLength = 0;
   }
 
-  // Decide per-connection zerocopy preference at accept time.
-
-  // Compute whether we should attempt to enable zerocopy for this connection.
+  // Decide per-connection zerocopy preference at accept time (the server also requires a plain socket accepted from a
+  // listener with SO_ZEROCOPY).
   switch (config.zerocopyMode) {
     case ZerocopyMode::Disabled:
-      zerocopyRequested = false;
+      zerocopyEnabled = false;
+      zerocopyStopOnCopy = false;
       break;
     case ZerocopyMode::Enabled:
-      zerocopyRequested = true;
+      zerocopyEnabled = true;
+      zerocopyStopOnCopy = false;
       break;
     default:
       assert(config.zerocopyMode == ZerocopyMode::Opportunistic);
-      // Disable zerocopy for loopback peers; we don't bother checking the local address since a server bound to a
-      // non-loopback IP while the peer is on loopback is not a realistic scenario worth optimizing for.
-      zerocopyRequested = isIpAddress && !IsLoopback(peerAddress);
+      // The kernel copies the data sent to a local peer anyway. Loopback peers are known in advance; we don't bother
+      // checking the local address since a server bound to a non-loopback IP while the peer is on loopback is not a
+      // realistic scenario worth optimizing for. Other local peers (another network namespace of the host: containers
+      // of the same node) are known once the kernel reports a copied send.
+      zerocopyEnabled = isIpAddress && !IsLoopback(peerAddress);
+      zerocopyStopOnCopy = true;
       break;
   }
 }
@@ -251,13 +256,6 @@ bool ConnectionState::finalizeAndEmitTlsHandshakeIfNeeded(NativeHandle fd, const
     if (application == KtlsApplication::CloseConnection) {
       requestDrainAndClose();
     }
-
-    // When kTLS send is enabled, we can use MSG_ZEROCOPY for large payloads.
-    // Writes bypass SSL_write and use sendmsg() directly on the kTLS socket,
-    // allowing the kernel to DMA from user pages directly to the NIC.
-    if (zerocopyRequested && tlsTr->isKtlsSendEnabled()) {
-      tlsTr->enableZerocopy();
-    }
   }
 
   return true;
@@ -290,12 +288,11 @@ void ConnectionState::reset() {
   request.shrinkAndMaybeClear();
 
   shrinkAndClear(outBuffer);
-  // Release any buffers held for zerocopy lifetime. The socket is closed at this point, and the kernel no longer reads
-  // them: SingleHttpServer only closes a connection gracefully once its zerocopy sends completed, and aborts it
-  // otherwise (see ConnectionState::canCloseConnectionForDrain() and SingleHttpServer::closeConnection()).
-  zerocopyPendingBuffers.shrink_to_fit();
-  zerocopyPendingBuffers.clear();
-  zerocopyPendingBytes = 0;
+  // The socket is closed at this point, and the kernel no longer reads the zerocopy buffers: SingleHttpServer only
+  // closes a connection gracefully once its zerocopy sends completed, and takes them over when resetting it (see
+  // SingleHttpServer::releaseConnection()).
+  shrinkAndClear(zerocopyBuffers);
+  zerocopyStallCheckQueuedBytes = kNoZerocopyStallCheck;
   // no need to clear request, it's built from scratch from initTrySetHead
   bodyStreamContext = {};
   transport.reset();
@@ -323,7 +320,9 @@ void ConnectionState::reset() {
   shutdownWritePending = false;
   eofReceived = false;
   corkable = false;
-  outBufferMayNeedZerocopyHold = false;
+  zerocopyEnabled = false;
+  zerocopyStopOnCopy = false;
+  outBufferZerocopySent = false;
   tlsInfo = {};
 #ifdef AERONET_ENABLE_OPENSSL
   tlsHandshakeObserver = {};
@@ -378,75 +377,68 @@ void ConnectionState::reclaimMemoryFromOversizedBuffers() {
   inBuffer.shrink_to_fit();
 #endif
 
-  // outBuffer: grows when TCP writes can't keep up and responses queue.
-  outBuffer.shrink_to_fit();
+  // outBuffer: grows when TCP writes can't keep up and responses queue. Not while zerocopy sends may read it.
+  if (!outBufferZerocopySent) {
+    outBuffer.shrink_to_fit();
+  }
 
-#ifdef AERONET_LINUX
-  // zerocopyPendingBuffers: release completed entries and reclaim capacity.
-  releaseCompletedZerocopyBuffers();
-  zerocopyPendingBuffers.shrink_to_fit();
-#endif
+  // zerocopyBuffers: holds one entry per written buffer still read by the kernel.
+  zerocopyBuffers.shrink_to_fit();
 }
 
 #ifdef AERONET_LINUX
-bool ConnectionState::prepareZerocopyWrite(std::size_t retainedSize, uint32_t maxPendingBytes) {
-  assert(transport);
-
-  releaseCompletedZerocopyBuffers();
-
-  if (!transport.isZerocopyEnabled()) {
-    return false;
+ZerocopyCompletions ConnectionState::pollZerocopyCompletions() noexcept {
+  PlainTransport* plain = transport.get<PlainTransport>();
+  if (plain == nullptr || !plain->zerocopy().pendingCompletions()) {
+    return {};
   }
-  if (retainedSize > maxPendingBytes || zerocopyPendingBytes > maxPendingBytes - retainedSize) {
-    log::debug("Disabling zerocopy at retained-payload high-water mark: retained={} next={} limit={}",
-               zerocopyPendingBytes, retainedSize, maxPendingBytes);
-    transport.disableZerocopy();
-    return false;
+  const ZerocopyCompletions completions = plain->pollZerocopyCompletions();
+  if (completions.nbCopiedSends != 0 && zerocopyStopOnCopy) {
+    // The kernel copies the data of this connection anyway (local peer, device without scatter-gather): MSG_ZEROCOPY
+    // would only add the cost of pinning the pages and of the notifications.
+    zerocopyEnabled = false;
   }
-  return true;
+  zerocopyBuffers.releaseCompleted(plain->zerocopy());
+  if (!plain->zerocopy().pendingCompletions()) {
+    outBufferZerocopySent = false;
+  }
+  return completions;
 }
 
-void ConnectionState::holdBufferIfZerocopyPending(HttpMessageData buf, bool mayNeedHold) {
-  assert(transport);
-  if (mayNeedHold && transport.hasZerocopyPending()) {
-    assert(std::cmp_less_equal(buf.retainedSize() + zerocopyPendingBytes,
-                               std::numeric_limits<decltype(zerocopyPendingBytes)>::max()));
-    zerocopyPendingBytes += static_cast<decltype(zerocopyPendingBytes)>(buf.retainedSize());
-    zerocopyPendingBuffers.push_back(std::move(buf));
-  }
+void ConnectionState::retainZerocopyBuffer(HttpMessageData data) {
+  const PlainTransport* plain = transport.get<PlainTransport>();
+  assert(plain != nullptr);
+  zerocopyBuffers.retain(std::move(data), plain->zerocopy().nextSeq());
 }
-
-bool ConnectionState::hasZerocopySendsInFlight() noexcept {
-  if (transport && transport.hasZerocopyPending()) {
-    transport.pollZerocopyCompletions();
-    if (transport.hasZerocopyPending()) {
-      return true;
-    }
-  }
-  // All sends completed (possibly polled earlier, e.g. before a new zerocopy send): their buffers can be released.
-  zerocopyPendingBuffers.clear();
-  zerocopyPendingBytes = 0;
-  return false;
-}
-
-void ConnectionState::releaseCompletedZerocopyBuffers() {
-  if (zerocopyPendingBuffers.empty()) {
-    return;
-  }
-  assert(transport);
-  transport.pollZerocopyCompletions();
-  if (!transport.hasZerocopyPending()) {
-    zerocopyPendingBuffers.clear();
-    zerocopyPendingBytes = 0;
-  }
-}
-#else
-bool ConnectionState::hasZerocopySendsInFlight() noexcept { return false; }
 #endif
+
+void ConnectionState::discardOutBuffer() {
+#ifdef AERONET_LINUX
+  if (outBufferZerocopySent) {
+    retainZerocopyBuffer(std::move(outBuffer));
+    outBufferZerocopySent = false;
+  }
+#endif
+  outBuffer.clear();
+}
+
+void ConnectionState::prepareOutBufferAppend([[maybe_unused]] std::size_t extraCapacity) {
+#ifdef AERONET_LINUX
+  if (outBufferZerocopySent) {
+    // Rather than growing outBuffer in place (which may reallocate it), continue with a copy of its unsent bytes.
+    const std::string_view first = outBuffer.firstBuffer();
+    const std::string_view second = outBuffer.secondBuffer();
+    RawChars unsent(first.size() + second.size() + extraCapacity);
+    unsent.unchecked_append(first);
+    unsent.unchecked_append(second);
+    discardOutBuffer();
+    outBuffer = HttpMessageData(std::move(unsent));
+  }
+#endif
+}
 
 void ConnectionState::clearBuffers() {
-  outBuffer.clear();
-  outBufferMayNeedZerocopyHold = false;
+  discardOutBuffer();
   if (protocolHandler != nullptr) {
     protocolHandler->discardPendingOutput();
   }

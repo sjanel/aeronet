@@ -15,12 +15,19 @@
 
 #include "aeronet/native-handle.hpp"
 #include "aeronet/system-error.hpp"
-#include "aeronet/transport-result.hpp"
 
 namespace aeronet {
 
-ZeroCopyEnableResult EnableZeroCopy(int fd) noexcept {
-  // Try to enable SO_ZEROCOPY
+namespace {
+
+[[nodiscard]] bool IsRecvErr(const cmsghdr& cmsg) noexcept {
+  return (cmsg.cmsg_level == SOL_IP && cmsg.cmsg_type == IP_RECVERR) ||
+         (cmsg.cmsg_level == SOL_IPV6 && cmsg.cmsg_type == IPV6_RECVERR);
+}
+
+}  // namespace
+
+ZeroCopyEnableResult EnableZeroCopy(NativeHandle fd) noexcept {
   int optVal = 1;
   // NOLINTNEXTLINE(misc-include-cleaner)
   if (::setsockopt(fd, SOL_SOCKET, SO_ZEROCOPY, &optVal, sizeof(optVal)) == -1) {
@@ -34,23 +41,8 @@ ZeroCopyEnableResult EnableZeroCopy(int fd) noexcept {
   return ZeroCopyEnableResult::Enabled;
 }
 
-TransportResult ZeroCopyState::tryZerocopySend(NativeHandle fd, std::string_view firstBuffer,
-                                               std::string_view secondBuffer) {
-  const std::size_t size = firstBuffer.size() + secondBuffer.size();
-  assert(size > 0);
-
-  TransportResult res{};
-
-  if (!enabled() || size < minBytes) {
-    return res;
-  }
-
-  // Drain pending completion notifications before issuing a new zerocopy send.
-  // Prevents the kernel error queue from growing unbounded, avoids kNoBufferSpace, and releases pinned pages promptly
-  // - critical for virtual devices (veth in K8s).
-  pollZeroCopyCompletions(fd);
-
-  assert(enabled());
+ZerocopySendResult ZeroCopyState::send(NativeHandle fd, std::string_view firstBuffer, std::string_view secondBuffer) {
+  assert(!firstBuffer.empty() || !secondBuffer.empty());
 
   iovec iov[2];  // NOLINT(misc-include-cleaner) it's in sys/uio.h (included)
 
@@ -66,83 +58,63 @@ TransportResult ZeroCopyState::tryZerocopySend(NativeHandle fd, std::string_view
     msg.msg_iovlen = 2;
   }
 
-  // Use sendmsg with MSG_ZEROCOPY for large payloads. MSG_ZEROCOPY tells the kernel to DMA from user pages directly
   const auto nbWritten = ::sendmsg(fd, &msg, MSG_ZEROCOPY | MSG_NOSIGNAL);
-
-  if (nbWritten <= 0) {
-    assert(nbWritten != 0);
-    // consider failure - normally, a decent system cannot return 0 for a successful call of a non-empty buffer send.
-    const int zcErr = LastSystemError();
-
-    if (error::IsNotSupported(zcErr)) {
-      // Disable zerocopy for this transport. Previous zerocopy sends, if any, remain tracked until their completion.
-      disable();
-    } else if (zcErr == error::kWouldBlock) {
-      res.want = TransportHint::WriteReady;
-    } else if (zcErr == error::kInterrupted || zcErr == error::kNoBufferSpace) {
-      // Interrupted, or kernel can't pin more pages (transient) - fall through to regular write path.
-    } else {
-      res.want = TransportHint::Error;
-    }
-  } else {
-    // Track the pending completion - kernel will notify via error queue.
-    // The kernel assigns monotonically increasing sequence numbers starting from 0; seqHi tracks the next expected
-    // sequence so pollZeroCopyCompletions can determine when all outstanding sends have completed.
+  if (nbWritten > 0) {
+    // The kernel numbered this send. A send that fails gives its sequence number back.
     ++seqHi;
-
-    res.bytesProcessed = static_cast<std::size_t>(nbWritten);
+    return {static_cast<std::size_t>(nbWritten), ZerocopySendStatus::Sent};
   }
+  // A send of a non-empty buffer never returns 0.
+  assert(nbWritten == -1);
 
-  return res;
+  const int err = LastSystemError();
+  if (err == error::kWouldBlock) {
+    return {0, ZerocopySendStatus::WouldBlock};
+  }
+  if (err == error::kInterrupted) {
+    return {0, ZerocopySendStatus::Interrupted};
+  }
+  if (err == error::kNoBufferSpace) {
+    return {0, ZerocopySendStatus::NoBufferSpace};
+  }
+  if (error::IsNotSupported(err)) {
+    return {0, ZerocopySendStatus::NotSupported};
+  }
+  return {0, ZerocopySendStatus::Error};
 }
 
-std::size_t ZeroCopyState::pollZeroCopyCompletions(int fd) noexcept {
-  std::size_t completions = 0;
+ZerocopyCompletions ZeroCopyState::pollCompletions(NativeHandle fd) noexcept {
+  ZerocopyCompletions completions;
 
-  if (!pendingCompletions()) {
-    return completions;
-  }
+  // The kernel appends the address of the offender to the notification (a sockaddr_in6 at most): without room for it,
+  // the control message would be truncated (MSG_CTRUNC).
+  alignas(cmsghdr) char controlBuf[CMSG_SPACE(sizeof(sock_extended_err) + sizeof(sockaddr_in6))];
 
-  // Buffer for recvmsg to read error queue entries
-  // We need space for the extended error structure plus its associated data
-  char controlBuf[CMSG_SPACE(sizeof(sock_extended_err) + sizeof(std::uint32_t))];
-
-  msghdr msg{};
-  for (;;) {
+  while (pendingCompletions()) {
+    msghdr msg{};
     msg.msg_control = controlBuf;
     msg.msg_controllen = sizeof(controlBuf);
 
-    // MSG_ERRQUEUE reads from the socket error queue (where zerocopy completions arrive)
-    // MSG_DONTWAIT ensures we don't block if no completions are ready
-    const auto ret = ::recvmsg(fd, &msg, MSG_ERRQUEUE | MSG_DONTWAIT);
-    if (ret == -1) {
-      // EAGAIN/EWOULDBLOCK means no more completions available
-      // Other errors: stop polling but don't treat as fatal
+    // MSG_ERRQUEUE reads never block: EAGAIN tells that no more notification is available. Stop on any error as well.
+    if (::recvmsg(fd, &msg, MSG_ERRQUEUE | MSG_DONTWAIT) == -1) {
       break;
     }
 
-    // Parse the control message to find zerocopy completion info
-    cmsghdr* cm = CMSG_FIRSTHDR(&msg);
-    while (cm != nullptr) {
-      if ((cm->cmsg_level == SOL_IP && cm->cmsg_type == IP_RECVERR) ||
-          (cm->cmsg_level == SOL_IPV6 && cm->cmsg_type == IPV6_RECVERR)) {
-        auto* serr = reinterpret_cast<sock_extended_err*>(CMSG_DATA(cm));
-
-        if (serr->ee_origin == SO_EE_ORIGIN_ZEROCOPY) {
-          // Update completion tracking
-          // serr->ee_info is the sequence number of the first completed send
-          // serr->ee_data is the sequence number of the last completed send
-          seqLo = serr->ee_data + 1;
-          ++completions;
-
-          // serr->ee_code indicates whether the kernel actually used zerocopy:
-          // SO_EE_CODE_ZEROCOPY_COPIED: kernel fell back to copying (still valid completion)
-          // 0: true zerocopy was used
-          // Either way, the buffer can now be reused.
-        }
+    for (cmsghdr* cmsg = CMSG_FIRSTHDR(&msg); cmsg != nullptr; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+      if (!IsRecvErr(*cmsg)) {
+        continue;
       }
-
-      cm = CMSG_NXTHDR(&msg, cm);
+      const auto* serr = reinterpret_cast<const sock_extended_err*>(CMSG_DATA(cmsg));
+      if (serr->ee_origin != SO_EE_ORIGIN_ZEROCOPY || serr->ee_errno != 0) {
+        continue;
+      }
+      // ee_info and ee_data are the sequence numbers of the first and last completed sends.
+      const std::uint32_t nbSends = serr->ee_data - serr->ee_info + 1U;
+      complete(serr->ee_info, serr->ee_data);
+      completions.nbSends += nbSends;
+      if ((serr->ee_code & SO_EE_CODE_ZEROCOPY_COPIED) != 0) {
+        completions.nbCopiedSends += nbSends;
+      }
     }
   }
 

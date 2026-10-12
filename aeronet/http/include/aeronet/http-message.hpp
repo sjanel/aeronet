@@ -432,6 +432,8 @@ class HttpMessage {
   // This can be useful for large static content like HTML pages, images, etc. that are known at compile time and have a
   // lifetime that exceeds the HttpMessage, until its data is conveyed to the transport layer.
   // Internally, this will capture the provided std::string_view.
+  // With Linux MSG_ZEROCOPY (see HttpServerConfig::zerocopyMode), the kernel reads the buffer of a response until the
+  // client acknowledged it, after the response was written: it must stay valid and unchanged (static data).
   // Note that if bodyAppendImpl() is called after bodyStaticImpl(), aeronet will automatically allocate a buffer.
   void bodyStaticImpl(std::string_view staticBody, std::string_view contentType = http::ContentTypeTextPlain) {
     setBodyHeaders(contentType, staticBody.size(), BodySetContext::Captured);

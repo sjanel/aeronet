@@ -2162,7 +2162,7 @@ std::string ReadRequestHead(NativeHandle fd) {
       return buf;
     }
     buf.append(tmp, static_cast<std::size_t>(sz));
-    if (buf.contains("\r\n\r\n")) {
+    if (buf.contains(http::DoubleCRLF)) {
       return buf;
     }
   }

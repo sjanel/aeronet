@@ -1,7 +1,9 @@
 #include "aeronet/tls-pem.hpp"
 
 #include <openssl/err.h>
+#include <openssl/evp.h>
 #include <openssl/pem.h>
+#include <openssl/pemerr.h>
 #include <openssl/ssl.h>
 #include <openssl/types.h>
 #include <openssl/x509.h>
@@ -64,7 +66,7 @@ void UseCertificateChainPem(SSL_CTX* ctx, std::string_view certPem, std::string_
       }
       isLeaf = false;
     } else if (::SSL_CTX_add0_chain_cert(ctx, cert.get()) == 1) {
-      (void)cert.release();  // owned by the SSL_CTX now
+      (void)cert.release();  // NOLINT(bugprone-unused-return-value) owned by the SSL_CTX now
     } else {
       ThrowOpenSslError("Failed to add an intermediate certificate of the in-memory TLS certificate chain");
     }

@@ -72,7 +72,7 @@ Choose the body setter by who owns the data:
 | --- | --- | --- |
 | `body(std::string_view, type)` | Any bytes, including request data | Copied into the response buffer. |
 | `body(std::string&&, type)`, `body(std::vector<char>&&, type)`, `body(std::unique_ptr<char[]>, size, type)` | A buffer the handler owns | Moved, never copied. Use it for large bodies. |
-| `bodyStatic(std::string_view, type)` | Data that outlives the response, such as a `static constexpr` buffer | Referenced, never copied. |
+| `bodyStatic(std::string_view, type)` | Data that outlives the response, such as a `static constexpr` buffer | Referenced, never copied. With [`MSG_ZEROCOPY`](../operations/performance.md#msg_zerocopy), the kernel reads it until the client acknowledged it: it must stay unchanged. |
 | `bodyAppend(data)` | Successive pieces | Appended, with exponential buffer growth. |
 | `bodyInlineSet(maxLen, writer)`, `bodyInlineAppend(maxLen, writer)` | Data written by a callback into the response buffer | Written in place: the callback receives a pointer to at least `maxLen` bytes and returns the number written. |
 | `bodyJson(obj)`, `bodyYaml(obj)` | A C++ object | Serialized in place, see [JSON and configuration files](../modules/json-and-config-files.md#json-and-yaml-bodies). |

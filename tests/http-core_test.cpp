@@ -1,6 +1,11 @@
 #include <gtest/gtest.h>
 
 #ifdef AERONET_POSIX
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>  // NOLINT(misc-include-cleaner) IFF_LOOPBACK, IFF_UP
+#include <netinet/in.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #elifdef AERONET_WINDOWS
@@ -23,6 +28,7 @@
 #include <iterator>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <ranges>
 #include <regex>
 #include <stdexcept>
@@ -34,6 +40,7 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/base-fd.hpp"
 #include "aeronet/compression-config.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/encoding.hpp"
@@ -610,10 +617,13 @@ TEST(HttpKeepAlive, ActiveConnectionOutlivesSeveralKeepAliveTimeouts) {
       if (!resp.contains(std::format("ECHO/r{}", requestPos))) {
         // Measured at failure time, so it also covers a stall between two requests or inside the send.
         const auto clientIdle = std::chrono::steady_clock::now() - lastResponseTp;
-        return {false, clientIdle > stallThreshold,
-                std::format("request {} (client idle {} ms, timeout {} ms): {}", requestPos,
-                            std::chrono::duration_cast<std::chrono::milliseconds>(clientIdle).count(),
-                            keepAliveTimeout.count(), resp)};
+        return {
+            false,
+            clientIdle > stallThreshold,
+            std::format("request {} (client idle {} ms, timeout {} ms): {}", requestPos,
+                        std::chrono::duration_cast<std::chrono::milliseconds>(clientIdle).count(),
+                        keepAliveTimeout.count(), resp),
+        };
       }
       lastResponseTp = std::chrono::steady_clock::now();
       std::this_thread::sleep_for(pause);
@@ -653,10 +663,13 @@ TEST(HttpKeepAlive, SlowSynchronousHandlerDoesNotExpireItsConnection) {
     const std::string afterResp = test::recvWithTimeout(fd, std::chrono::seconds{1});
     if (!afterResp.contains("ECHO/after")) {
       const auto clientIdle = std::chrono::steady_clock::now() - slowRespTp;
-      return {false, clientIdle > stallThreshold,
-              std::format("after slow handler (client idle {} ms, timeout {} ms): {}",
-                          std::chrono::duration_cast<std::chrono::milliseconds>(clientIdle).count(),
-                          keepAliveTimeout.count(), afterResp)};
+      return {
+          false,
+          clientIdle > stallThreshold,
+          std::format("after slow handler (client idle {} ms, timeout {} ms): {}",
+                      std::chrono::duration_cast<std::chrono::milliseconds>(clientIdle).count(),
+                      keepAliveTimeout.count(), afterResp),
+      };
     }
     return {true, false, {}};
   });
@@ -1086,9 +1099,12 @@ TEST(HttpUrlDecoding, MixedSegmentsDecoding) {
 // ============================
 
 TEST(ZerocopyMode, LargeResponseWithZerocopyOpportunistic) {
-  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) { cfg.withZerocopyMode(ZerocopyMode::Opportunistic); });
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
+    cfg.withZerocopyMode(ZerocopyMode::Opportunistic);
+    cfg.withZerocopyMinBytes(16U * 1024U);
+  });
 
-  // Create a payload larger than the zerocopy threshold (16KB)
+  // Create a payload larger than the zerocopy threshold
   constexpr std::size_t kLargePayloadSize = 32UL * 1024;  // 32 KB
   const std::string largePayload(kLargePayloadSize, 'Z');
 
@@ -1096,6 +1112,7 @@ TEST(ZerocopyMode, LargeResponseWithZerocopyOpportunistic) {
     return req.makeResponse(largePayload);
   });
 
+  const auto before = ts.server.stats();
   test::RequestOptions opt;
   opt.method = "GET";
   opt.target = "/large";
@@ -1103,10 +1120,15 @@ TEST(ZerocopyMode, LargeResponseWithZerocopyOpportunistic) {
 
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
   EXPECT_TRUE(resp.ends_with(largePayload));
+  // The kernel copies the data sent to a loopback peer anyway: no MSG_ZEROCOPY for it in Opportunistic mode.
+  EXPECT_EQ(ts.server.stats().zerocopySends, before.zerocopySends);
 }
 
 TEST(ZerocopyMode, LargeResponseWithZerocopyDisabled) {
-  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) { cfg.withZerocopyMode(ZerocopyMode::Disabled); });
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
+    cfg.withZerocopyMode(ZerocopyMode::Disabled);
+    cfg.withZerocopyMinBytes(16U * 1024U);
+  });
 
   constexpr std::size_t kLargePayloadSize = 32UL * 1024;  // 32 KB
   const std::string largePayload(kLargePayloadSize, 'D');
@@ -1115,6 +1137,7 @@ TEST(ZerocopyMode, LargeResponseWithZerocopyDisabled) {
     return req.makeResponse(largePayload);
   });
 
+  const auto before = ts.server.stats();
   test::RequestOptions opt;
   opt.method = "GET";
   opt.target = "/large-disabled";
@@ -1122,10 +1145,14 @@ TEST(ZerocopyMode, LargeResponseWithZerocopyDisabled) {
 
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
   EXPECT_TRUE(resp.ends_with(largePayload));
+  EXPECT_EQ(ts.server.stats().zerocopySends, before.zerocopySends);
 }
 
 TEST(ZerocopyMode, LargeResponseWithZerocopyEnabled) {
-  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) { cfg.withZerocopyMode(ZerocopyMode::Enabled); });
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
+    cfg.withZerocopyMode(ZerocopyMode::Enabled);
+    cfg.withZerocopyMinBytes(16U * 1024U);
+  });
 
   constexpr std::size_t kLargePayloadSize = 32UL * 1024;  // 32 KB
   const std::string largePayload(kLargePayloadSize, 'E');
@@ -1134,6 +1161,7 @@ TEST(ZerocopyMode, LargeResponseWithZerocopyEnabled) {
     return req.makeResponse(largePayload);
   });
 
+  const auto before = ts.server.stats();
   test::RequestOptions opt;
   opt.method = "GET";
   opt.target = "/large-enabled";
@@ -1141,18 +1169,28 @@ TEST(ZerocopyMode, LargeResponseWithZerocopyEnabled) {
 
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
   EXPECT_TRUE(resp.ends_with(largePayload));
+#ifdef AERONET_LINUX
+  const auto after = ts.server.stats();
+  if (after.zerocopySends == before.zerocopySends &&
+      after.zerocopyNoBufferSpaceFallbacks != before.zerocopyNoBufferSpaceFallbacks) {
+    GTEST_SKIP() << "MSG_ZEROCOPY sends fail with ENOBUFS here (RLIMIT_MEMLOCK)";
+  }
+  EXPECT_GT(after.zerocopySends, before.zerocopySends);
+  EXPECT_GE(after.zerocopyBytes - before.zerocopyBytes, kLargePayloadSize);
+#endif
 }
 
 TEST(ZerocopyMode, SmallResponseDoesNotUseZerocopy) {
-  // Small responses (< 16KB) should bypass zerocopy even when enabled
+  // Responses below zerocopyMinBytes (128 KiB by default) bypass zerocopy even when enabled
   ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) { cfg.withZerocopyMode(ZerocopyMode::Enabled); });
 
-  const std::string smallPayload = "Small response body";
+  const std::string smallPayload(64UL * 1024, 's');
 
   ts.resetRouterAndGet().setPath(http::Method::GET, "/small", [&smallPayload](const HttpRequestView& req) {
     return req.makeResponse(smallPayload);
   });
 
+  const auto before = ts.server.stats();
   test::RequestOptions opt;
   opt.method = "GET";
   opt.target = "/small";
@@ -1160,6 +1198,7 @@ TEST(ZerocopyMode, SmallResponseDoesNotUseZerocopy) {
 
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
   EXPECT_TRUE(resp.ends_with(smallPayload));
+  EXPECT_EQ(ts.server.stats().zerocopySends, before.zerocopySends);
 }
 
 // ============================
@@ -1279,6 +1318,29 @@ namespace {
 // server buffers. Switching to the large one afterwards quickly delivers the rest.
 constexpr int kMinimalReceiveBufferSize = 1;
 constexpr int kLargeReceiveBufferSize = 65536;
+
+// Expects the server to reset the connection of a client reading nothing from it (reading would make its zerocopy sends
+// progress): waits for the reset without reading, then checks that only a part of the payload was received before it.
+// The client only notices the reset when it sends something (the reset of its zero window is not acceptable): here the
+// window update of its first read, which the server answers with another reset.
+void ExpectResetBeforeReading(const SingleHttpServer& server, uint64_t resetsBefore, NativeHandle fd,
+                              std::size_t payloadSize) {
+  for (int attempt = 0; attempt < 500 && server.stats().zerocopyResetConnections == resetsBefore; ++attempt) {
+    std::this_thread::sleep_for(10ms);
+  }
+  ASSERT_GT(server.stats().zerocopyResetConnections, resetsBefore) << "no reset within 5 s";
+
+  test::setRecvTimeout(fd, std::chrono::seconds{5});
+  std::size_t received = 0;
+  char buf[1U << 16U];
+  ssize_t ret;
+  while ((ret = ::recv(fd, buf, sizeof(buf), 0)) > 0) {
+    received += static_cast<std::size_t>(ret);
+  }
+  EXPECT_EQ(ret, -1) << "connection closed gracefully after " << received << " bytes";
+  EXPECT_EQ(errno, ECONNRESET);
+  EXPECT_LT(received, payloadSize);
+}
 }  // namespace
 
 // Closing a connection (here Connection: close) while the kernel still sends its response with MSG_ZEROCOPY must not
@@ -1365,31 +1427,313 @@ TEST(ZerocopyMode, HalfClosingClientReceivesWholeResponse) {
 // A connection that the server has to close while some of its zerocopy sends are still in flight (here at keep-alive
 // timeout, the client reading nothing) is reset: the kernel must not keep sending from buffers released at close.
 TEST(ZerocopyMode, ForcedCloseWithZerocopySendsInFlightResetsConnection) {
+  const auto before = ts.server.stats();
   ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
     cfg.withZerocopyMode(ZerocopyMode::Enabled);
     cfg.withZerocopyMinBytes(1U);
     cfg.withKeepAliveTimeout(std::chrono::milliseconds{100});
   });
-  // Small enough for the server send buffer to take it all, but not for the client receive window.
-  const std::string payload(8UL << 10U, 'r');
+  // Small enough for the server send buffer to take it all (a single send, its buffer then retained), but far too large
+  // for the client receive buffer.
+  const std::string payload(256UL << 10U, 'r');
   ts.resetRouterAndGet().setPath(http::Method::GET, "/stalled-reader",
                                  [&payload](const HttpRequestView& req) { return req.makeResponse(payload); });
 
   test::ClientConnection sock(ts.port(), 500ms, kMinimalReceiveBufferSize);
-  const NativeHandle fd = sock.fd();
-  test::sendAll(fd, "GET /stalled-reader HTTP/1.1\r\nhost: h\r\n\r\n");
-  std::this_thread::sleep_for(std::chrono::milliseconds{400});  // well past the keep-alive timeout
+  test::sendAll(sock.fd(), "GET /stalled-reader HTTP/1.1\r\nhost: h\r\n\r\n");
+  ExpectResetBeforeReading(ts.server, before.zerocopyResetConnections, sock.fd(), payload.size());
+}
 
-  test::setRecvTimeout(fd, std::chrono::seconds{5});
+namespace {
+
+// Receives on fd, reading at most 64 KiB every 'pause'. Returns what was received until it ends with
+// 'expectedEnd', the peer closed the connection or 'timeout' elapsed. 'resetSeen' tells whether the connection was
+// reset.
+std::string SlowlyReceive(NativeHandle fd, std::chrono::milliseconds pause, std::string_view expectedEnd,
+                          bool& resetSeen, std::chrono::seconds timeout = 20s) {
+  resetSeen = false;
+  test::setRecvTimeout(fd, std::chrono::seconds{2});
   std::string received;
+  static constexpr std::size_t kChunkSize = 64UL << 10U;
+  std::string chunk(kChunkSize, '\0');
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (!received.ends_with(expectedEnd) && std::chrono::steady_clock::now() < deadline) {
+    const auto ret = ::recv(fd, chunk.data(), kChunkSize, 0);
+    if (ret > 0) {
+      received.append(chunk.data(), static_cast<std::size_t>(ret));
+    } else if (ret == 0 || errno != EAGAIN) {
+      resetSeen = ret == -1 && errno == ECONNRESET;
+      break;
+    }
+    std::this_thread::sleep_for(pause);
+  }
+  return received;
+}
+
+// First non-loopback IPv4 address of the host, empty if there is none.
+std::string NonLoopbackIPv4Address() {
+  ifaddrs* addrs = nullptr;
+  if (::getifaddrs(&addrs) != 0) {
+    return {};
+  }
+  std::string address;
+  for (const ifaddrs* ifa = addrs; ifa != nullptr && address.empty(); ifa = ifa->ifa_next) {
+    if (ifa->ifa_addr == nullptr || ifa->ifa_addr->sa_family != AF_INET || (ifa->ifa_flags & IFF_LOOPBACK) != 0 ||
+        (ifa->ifa_flags & IFF_UP) == 0) {
+      continue;
+    }
+    char buf[INET_ADDRSTRLEN];
+    if (::inet_ntop(AF_INET, &reinterpret_cast<const sockaddr_in*>(ifa->ifa_addr)->sin_addr, buf, sizeof(buf)) !=
+        nullptr) {
+      address = buf;
+    }
+  }
+  ::freeifaddrs(addrs);
+  return address;
+}
+
+// Restores the locked memory limit of the process on destruction.
+class LockedMemoryLimitGuard {
+ public:
+  explicit LockedMemoryLimitGuard(rlim_t softLimit) {
+    _ok = ::getrlimit(RLIMIT_MEMLOCK, &_previous) == 0;
+    rlimit lowered = _previous;
+    lowered.rlim_cur = softLimit;
+    _ok = _ok && ::setrlimit(RLIMIT_MEMLOCK, &lowered) == 0;
+  }
+
+  LockedMemoryLimitGuard(const LockedMemoryLimitGuard&) = delete;
+  LockedMemoryLimitGuard& operator=(const LockedMemoryLimitGuard&) = delete;
+
+  ~LockedMemoryLimitGuard() { ::setrlimit(RLIMIT_MEMLOCK, &_previous); }
+
+  [[nodiscard]] bool ok() const noexcept { return _ok; }
+
+ private:
+  rlimit _previous{};
+  bool _ok{false};
+};
+
+}  // namespace
+
+// A slow client still reading a zerocopy response beyond keepAliveTimeout receives it whole: the keep-alive timeout
+// closes the connection once its sends completed, as long as they progress, instead of resetting it.
+TEST(ZerocopyMode, SlowReaderBeyondKeepAliveTimeoutReceivesWholeResponse) {
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
+    cfg.withZerocopyMode(ZerocopyMode::Enabled);
+    cfg.withZerocopyMinBytes(1U);
+    cfg.withKeepAliveTimeout(std::chrono::milliseconds{150});
+  });
+  // Zerocopy sends that the server send buffer takes at once: no event reports their progress until they complete.
+  std::string payload(256UL << 10U, '\0');
+  for (std::size_t idx = 0; idx < payload.size(); ++idx) {
+    payload[idx] = static_cast<char>('a' + (idx % 26));
+  }
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/slow-reader",
+                                 [&payload](const HttpRequestView& req) { return req.makeResponse(payload); });
+
+  const auto before = ts.server.stats();
+  // The small receive buffer, emptied every 40 ms, takes about 4 times keepAliveTimeout to receive both responses: the
+  // completion of the first one is activity for the connection, while the second one is still in flight.
+  test::ClientConnection sock(ts.port(), 500ms, static_cast<int>(16U << 10U));
+  test::sendAll(sock.fd(), "GET /slow-reader HTTP/1.1\r\nhost: h\r\n\r\nGET /slow-reader HTTP/1.1\r\nhost: h\r\n\r\n");
+  bool resetSeen = false;
+  std::string received;
+  for (int attempt = 0; attempt < 10 && !resetSeen && test::countOccurrences(received, payload) < 2; ++attempt) {
+    received += SlowlyReceive(sock.fd(), 40ms, payload, resetSeen);
+  }
+  EXPECT_FALSE(resetSeen);
+  EXPECT_EQ(test::countOccurrences(received, payload), 2) << "received " << received.size() << " bytes";
+  // The idle connection is then closed gracefully.
+  EXPECT_TRUE(test::WaitForPeerClose(sock.fd(), 5000ms));
+  EXPECT_EQ(ts.server.stats().zerocopyResetConnections, before.zerocopyResetConnections);
+}
+
+// Without keep-alive, a connection waiting for the completion of zerocopy sends that make no progress (the client
+// reads nothing) is reset after keepAliveTimeout, instead of waiting forever.
+TEST(ZerocopyMode, StalledZerocopySendsResetConnectionWithoutKeepAlive) {
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
+    cfg.withZerocopyMode(ZerocopyMode::Enabled);
+    cfg.withZerocopyMinBytes(1U);
+    cfg.withKeepAliveMode(false);
+    cfg.withKeepAliveTimeout(std::chrono::milliseconds{100});
+    // Without keep-alive, the maintenance (checking the zerocopy sends) runs every pollInterval.
+    cfg.withPollInterval(std::chrono::milliseconds{50});
+  });
+  // Small enough for the server send buffer to take it all, but far too large for the client receive buffer.
+  const std::string payload(512UL << 10U, 's');
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/stalled-no-keep-alive",
+                                 [&payload](const HttpRequestView& req) { return req.makeResponse(payload); });
+
+  const auto before = ts.server.stats();
+  test::ClientConnection sock(ts.port(), 500ms, kMinimalReceiveBufferSize);
+  const NativeHandle fd = sock.fd();
+  test::sendAll(fd, "GET /stalled-no-keep-alive HTTP/1.1\r\nhost: h\r\n\r\n");
+  std::this_thread::sleep_for(std::chrono::milliseconds{50});
+  // A configuration update rebuilds the deadlines: the connection is still watched.
+  ts.postConfigUpdate([](HttpServerConfig&) {});
+  ExpectResetBeforeReading(ts.server, before.zerocopyResetConnections, fd, payload.size());
+}
+
+// The responses retained for zerocopy sends in flight are bounded by maxZerocopyPendingBytes: beyond it, they are
+// copied (and zerocopy resumes once completions release the retained ones).
+TEST(ZerocopyMode, RetainedBytesLimitFallsBackToCopy) {
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
+    cfg.withZerocopyMode(ZerocopyMode::Enabled);
+    cfg.withZerocopyMinBytes(1U);
+    cfg.withMaxZerocopyPendingBytes(1024U);
+  });
+  const std::string payload(4UL << 10U, 'p');
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/retain-limit",
+                                 [&payload](const HttpRequestView& req) { return req.makeResponse(payload); });
+
+  const auto before = ts.server.stats();
+  test::ClientConnection sock(ts.port());
+  // Pipelined: the responses are written in a row, before any completion is polled.
+  test::sendAll(sock.fd(),
+                "GET /retain-limit HTTP/1.1\r\nhost: h\r\n\r\n"
+                "GET /retain-limit HTTP/1.1\r\nhost: h\r\n\r\n"
+                "GET /retain-limit HTTP/1.1\r\nhost: h\r\nconnection: close\r\n\r\n");
+  const std::string received = test::recvUntilClosed(sock.fd());
+  EXPECT_EQ(test::countOccurrences(received, payload), 3);
+
+  const auto after = ts.server.stats();
+  if (after.zerocopySends == before.zerocopySends) {
+    GTEST_SKIP() << "MSG_ZEROCOPY not used here";
+  }
+  // The first response alone exceeds the limit, but nothing is retained yet: it uses zerocopy.
+  EXPECT_EQ(after.zerocopySends - before.zerocopySends, 1U);
+  EXPECT_EQ(after.zerocopyRetainLimitFallbacks - before.zerocopyRetainLimitFallbacks, 2U);
+}
+
+// A zerocopy send failing on a connection reset by the client (while its request was handled) closes it.
+TEST(ZerocopyMode, ZerocopySendToResetPeerClosesConnection) {
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
+    cfg.withZerocopyMode(ZerocopyMode::Enabled);
+    cfg.withZerocopyMinBytes(1U);
+  });
+  const std::string payload(64UL << 10U, 'x');
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/reset-peer", [&payload](const HttpRequestView& req) {
+    std::this_thread::sleep_for(100ms);  // the reset arrives meanwhile
+    return req.makeResponse(payload);
+  });
+
+  const auto before = ts.server.stats();
+  {
+    test::ClientConnection sock(ts.port());
+    test::sendAll(sock.fd(), "GET /reset-peer HTTP/1.1\r\nhost: h\r\n\r\n");
+    ASSERT_TRUE(SetAbortiveClose(sock.fd()));
+  }
+  // The server keeps serving.
+  std::this_thread::sleep_for(150ms);
+  const auto resp = test::simpleGet(ts.port(), "/reset-peer");
+  EXPECT_TRUE(resp.ends_with(payload));
+  // Only the second response was sent.
+  EXPECT_EQ(ts.server.stats().zerocopySends - before.zerocopySends, 1U);
+}
+
+// Stopping the server resets the connections whose zerocopy sends are in flight, and its destruction waits for the end
+// of the grace period of their buffers.
+TEST(ZerocopyMode, ServerStopResetsConnectionsWithZerocopySendsInFlight) {
+  HttpServerConfig cfg;
+  cfg.withZerocopyMode(ZerocopyMode::Enabled);
+  cfg.withZerocopyMinBytes(1U);
+  std::optional<test::TestServer> server(std::in_place, std::move(cfg));
+  const std::string payload(256UL << 10U, 'z');
+  server->resetRouterAndGet().setPath(http::Method::GET, "/stop",
+                                      [&payload](const HttpRequestView& req) { return req.makeResponse(payload); });
+
+  test::ClientConnection sock(server->port(), 500ms, kMinimalReceiveBufferSize);
+  test::sendAll(sock.fd(), "GET /stop HTTP/1.1\r\nhost: h\r\n\r\n");
+  std::this_thread::sleep_for(100ms);  // the response is in flight, the client reading nothing
+
+  const auto start = std::chrono::steady_clock::now();
+  server->stop();
+  EXPECT_EQ(server->server.stats().zerocopyResetConnections, 1U);
+  server.reset();
+  // The packets handed to the network device may still read the buffers for a short while.
+  EXPECT_GE(std::chrono::steady_clock::now() - start, 900ms);
+
+  test::setRecvTimeout(sock.fd(), std::chrono::seconds{5});
   char buf[1U << 16U];
   ssize_t ret;
-  while ((ret = ::recv(fd, buf, sizeof(buf), 0)) > 0) {
-    received.append(buf, static_cast<std::size_t>(ret));
+  while ((ret = ::recv(sock.fd(), buf, sizeof(buf), 0)) > 0) {
   }
-  EXPECT_EQ(ret, -1) << "connection closed gracefully after " << received.size() << " bytes";
+  EXPECT_EQ(ret, -1);
   EXPECT_EQ(errno, ECONNRESET);
-  EXPECT_LT(received.size(), payload.size());
+}
+
+// MSG_ZEROCOPY sends failing with ENOBUFS (locked memory limit reached) fall back to copies, and the server stops
+// trying for a while instead of failing each send.
+TEST(ZerocopyMode, LockedMemoryExhaustionFallsBackToCopy) {
+  HttpServerConfig cfg;
+  cfg.withZerocopyMode(ZerocopyMode::Enabled);
+  cfg.withZerocopyMinBytes(1U);
+  // Declared before the server, so that it outlives the server thread that reads it.
+  const std::string payload(64UL << 10U, 'm');
+  test::TestServer server(std::move(cfg));
+  server.resetRouterAndGet().setPath(http::Method::GET, "/memlock",
+                                     [&payload](const HttpRequestView& req) { return req.makeResponse(payload); });
+
+  // No page may be pinned anymore (unless CAP_IPC_LOCK).
+  LockedMemoryLimitGuard memlockGuard(0);
+  ASSERT_TRUE(memlockGuard.ok());
+
+  test::RequestOptions opt;
+  opt.target = "/memlock";
+  for (int requestIdx = 0; requestIdx < 3; ++requestIdx) {
+    const auto resp = test::requestOrThrow(server.port(), opt);
+    EXPECT_TRUE(resp.ends_with(payload));
+  }
+
+  const auto stats = server.server.stats();
+  if (stats.zerocopySends != 0) {
+    GTEST_SKIP() << "pages pinned beyond RLIMIT_MEMLOCK (CAP_IPC_LOCK)";
+  }
+  // The first attempt failed: the next responses were copied without trying again.
+  EXPECT_EQ(stats.zerocopyNoBufferSpaceFallbacks, 1U);
+}
+
+// Opportunistic mode: a peer of the same host reached through a non-loopback address (a container of the same node) is
+// known once the kernel reports a copied send. The connection then stops using MSG_ZEROCOPY.
+TEST(ZerocopyMode, OpportunisticModeStopsOnceTheKernelCopies) {
+  const std::string localAddress = NonLoopbackIPv4Address();
+  if (localAddress.empty()) {
+    GTEST_SKIP() << "no non-loopback IPv4 address";
+  }
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
+    cfg.withZerocopyMode(ZerocopyMode::Opportunistic);
+    cfg.withZerocopyMinBytes(1024U);
+  });
+  const std::string payload(64UL << 10U, 'o');
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/local-peer",
+                                 [&payload](const HttpRequestView& req) { return req.makeResponse(payload); });
+
+  BaseFd client(::socket(AF_INET, SOCK_STREAM, 0));
+  ASSERT_TRUE(client);
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(ts.port());
+  ASSERT_EQ(::inet_pton(AF_INET, localAddress.c_str(), &addr.sin_addr), 1);
+  ASSERT_EQ(::connect(client.fd(), reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)), 0);
+
+  const auto before = ts.server.stats();
+  test::sendAll(client.fd(), "GET /local-peer HTTP/1.1\r\nhost: h\r\n\r\n");
+  EXPECT_TRUE(test::recvWithTimeout(client.fd(), 5000ms).ends_with(payload));
+  if (ts.server.stats().zerocopySends == before.zerocopySends) {
+    GTEST_SKIP() << "MSG_ZEROCOPY not used here";
+  }
+  // Wait for the server to read the completion notification, reported copied.
+  for (int attempt = 0; attempt < 500 && ts.server.stats().zerocopyCopiedSends == before.zerocopyCopiedSends;
+       ++attempt) {
+    std::this_thread::sleep_for(2ms);
+  }
+  ASSERT_GT(ts.server.stats().zerocopyCopiedSends, before.zerocopyCopiedSends);
+
+  const auto afterFirst = ts.server.stats();
+  test::sendAll(client.fd(), "GET /local-peer HTTP/1.1\r\nhost: h\r\n\r\n");
+  EXPECT_TRUE(test::recvWithTimeout(client.fd(), 5000ms).ends_with(payload));
+  EXPECT_EQ(ts.server.stats().zerocopySends, afterFirst.zerocopySends);
 }
 
 TEST(ZerocopyMode, StressVaryingPayloadSizes) {
@@ -3779,7 +4123,7 @@ TEST(StreamingKeepAlive, HeadRequestReuse) {
 }
 
 namespace {
-void raw(auto port, std::string_view verb, std::string& out) {
+void raw(std::string_view verb, std::string& out) {
   test::ClientConnection sock(port);
   auto fd = sock.fd();
   std::string req(verb);
@@ -3789,7 +4133,7 @@ void raw(auto port, std::string_view verb, std::string& out) {
 }
 
 #ifdef AERONET_ENABLE_ZLIB
-void rawWith(auto port, std::string_view verb, std::string_view extraHeaders, std::string& out) {
+void rawWith(std::string_view verb, std::string_view extraHeaders, std::string& out) {
   test::ClientConnection sock(port);
   auto fd = sock.fd();
   std::string req(verb);
@@ -3818,8 +4162,8 @@ TEST(HttpStreamingHeadContentLength, HeadSuppressesBodyKeepsCL) {
   });
   std::string headResp;
   std::string getResp;
-  raw(port, "HEAD", headResp);
-  raw(port, "GET", getResp);
+  raw("HEAD", headResp);
+  raw("GET", getResp);
 
   ASSERT_TRUE(headResp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(headResp.contains(MakeHttp1HeaderLine(http::ContentLength, "6")));
@@ -3844,7 +4188,7 @@ TEST(HttpStreaming, ContentLengthAfterFirstWriteShouldBeIgnored) {
     writer.writeBody(" additional");  // should be no-op after end
   });
   std::string getResp;
-  raw(port, "GET", getResp);
+  raw("GET", getResp);
   ASSERT_TRUE(getResp.starts_with("HTTP/1.1 200"));
   // Should be chunked since we wrote body before setting length.
   ASSERT_TRUE(getResp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
@@ -3864,7 +4208,7 @@ TEST(HttpStreamingHeadContentLength, StreamingNoContentLengthUsesChunked) {
     writer.end();
   });
   std::string getResp;
-  raw(port, "GET", getResp);
+  raw("GET", getResp);
   ASSERT_TRUE(getResp.starts_with("HTTP/1.1 200"));
   // No explicit Content-Length, chunked framing present.
   ASSERT_TRUE(getResp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
@@ -3883,7 +4227,7 @@ TEST(HttpStreamingHeadContentLength, StreamingLateContentLengthIgnoredStaysChunk
     writer.end();
   });
   std::string getResp;
-  raw(port, "GET", getResp);
+  raw("GET", getResp);
   ASSERT_TRUE(getResp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(getResp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
   // Ensure our ignored length did not appear.
@@ -3911,7 +4255,7 @@ TEST(HttpStreamingHeadContentLength, StreamingContentLengthWithAutoCompressionDi
     writer.end();
   });
   std::string resp;
-  rawWith(port, "GET", "accept-encoding: gzip\r\n", resp);
+  rawWith("GET", "accept-encoding: gzip\r\n", resp);
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   // We expect a fixed-length header present.
   ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(originalSize))));
@@ -4324,6 +4668,7 @@ TEST(HttpResponseWriterFailures, WriteBodyFixedLengthFailure) {
 // Enable compression, close connection to fail final compressed output
 TEST(HttpResponseWriterFailures, EndCompressionFailure) {
 #ifdef AERONET_POSIX
+  // TODO: check if SIGPIPE handling is necessary
   ::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
 #endif
       // Enable compression in server config
@@ -4343,9 +4688,10 @@ TEST(HttpResponseWriterFailures, EndCompressionFailure) {
   auto fd = sock.fd();
   std::string req = "GET /compress-end-fail HTTP/1.1\r\nhost: test\r\naccept-encoding: gzip\r\n\r\n";
   test::sendAll(fd, req);
+
   // Read headers
   char buf[512];
-  ::recv(fd, buf, sizeof(buf), 0);
+  ::recv(fd, buf, static_cast<int>(sizeof(buf)), 0);
   sock.close();  // Close to trigger enqueue failure on compressed end
 }
 
@@ -4374,7 +4720,7 @@ TEST(HttpResponseWriterFailures, EndIdentityBufferedFailure) {
   test::sendAll(fd, req);
   // Read headers
   char buf[512];
-  ::recv(fd, buf, sizeof(buf), 0);
+  ::recv(fd, buf, static_cast<int>(sizeof(buf)), 0);
   sock.close();
 }
 

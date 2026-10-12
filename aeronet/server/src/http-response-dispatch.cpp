@@ -1,4 +1,5 @@
 ﻿#include <cassert>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -15,14 +16,15 @@
 #include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/internal/keep-alive-deadline-queue.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
-#include "aeronet/raw-chars.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/system-error.hpp"
 #include "aeronet/tcp-cork-guard.hpp"
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
+#include "aeronet/zerocopy.hpp"
 #include "tunnel-manager.hpp"
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-transport.hpp"
@@ -35,21 +37,8 @@ namespace {
 // Appends 'data' (only its head for a file response, whose body is sent separately) after the output still buffered in
 // 'state', waiting for the socket to become writable.
 void AppendToOutBuffer(ConnectionState& state, HttpMessageData data, bool headOnly) {
-#ifdef AERONET_LINUX
-  if (state.outBufferMayNeedZerocopyHold && state.transport.hasZerocopyPending()) {
-    // Zerocopy sends already submitted may still read the buffered output: rather than growing it in place (which may
-    // reallocate it), continue with a copy of its unsent bytes, the original being held until their completion.
-    // The copy also reserves room for the new head, so that appending it below does not reallocate it again.
-    const std::string_view first = state.outBuffer.firstBuffer();
-    const std::string_view second = state.outBuffer.secondBuffer();
-    RawChars unsent(first.size() + second.size() + data.firstBuffer().size());
-    unsent.unchecked_append(first);
-    unsent.unchecked_append(second);
-    state.holdBufferIfZerocopyPending(std::move(state.outBuffer), true);
-    state.outBuffer = HttpMessageData(std::move(unsent));
-    state.outBufferMayNeedZerocopyHold = false;
-  }
-#endif
+  // Room for the new head, so that appending it below does not reallocate a copy of outBuffer again.
+  state.prepareOutBufferAppend(data.firstBuffer().size());
   if (headOnly) {
     state.outBuffer.append(data.firstBuffer());
   } else {
@@ -58,6 +47,66 @@ void AppendToOutBuffer(ConnectionState& state, HttpMessageData data, bool headOn
 }
 
 }  // namespace
+
+TransportResult SingleHttpServer::writeMessage(ConnectionIt cnxIt, const HttpMessageData& data,
+                                               [[maybe_unused]] bool& zerocopySent) {
+  ConnectionState& state = _connections.connectionState(cnxIt);
+#ifdef AERONET_LINUX
+  if (state.zerocopyEnabled && data.remainingSize() >= _config.zerocopyMinBytes &&
+      _connections.now >= _zerocopy.retryTime) {
+    // A buffer written with MSG_ZEROCOPY is retained until the completion of its sends. The retained bytes of a
+    // connection are bounded by maxZerocopyPendingBytes, a single larger payload being allowed when nothing is
+    // retained.
+    const std::size_t retainedBytes = state.zerocopyBuffers.bytes();
+    if (retainedBytes != 0 && retainedBytes + data.retainedSize() > _config.maxZerocopyPendingBytes) {
+      ++_stats.zerocopyRetainLimitFallbacks;
+    } else {
+      PlainTransport* plain = state.transport.get<PlainTransport>();
+      assert(plain != nullptr);
+      const auto [bytesSent, status] = plain->writeZerocopy(data.firstBuffer(), data.secondBuffer());
+      if (status == ZerocopySendStatus::Sent) {
+        zerocopySent = true;
+        ++_stats.zerocopySends;
+        _stats.zerocopyBytes += bytesSent;
+        // Watched until their completion, even when keep-alive does not apply (see watchZerocopySends()).
+        if (!internal::KeepAliveDeadlineQueue::contains(state)) {
+          _keepAliveDeadlines.upsert(state, cnxIt->fd(), _connections.now + _config.keepAliveTimeout);
+        }
+        return {bytesSent, TransportHint::None};
+      }
+      if (status == ZerocopySendStatus::WouldBlock) {
+        return {0, TransportHint::WriteReady};
+      }
+      if (status == ZerocopySendStatus::Error) {
+        return {0, TransportHint::Error};
+      }
+      if (status == ZerocopySendStatus::NoBufferSpace) {
+        // Locked memory (RLIMIT_MEMLOCK, for the whole user) or socket option memory (net.core.optmem_max) exhausted:
+        // copy for a while instead of failing each zerocopy send.
+        ++_stats.zerocopyNoBufferSpaceFallbacks;
+        _zerocopy.retryTime = _connections.now + kZerocopyNoBufferSpaceBackoff;
+        if (!_zerocopy.noBufferSpaceLogged) {
+          _zerocopy.noBufferSpaceLogged = true;
+          log::warn(
+              "MSG_ZEROCOPY send failed with ENOBUFS (RLIMIT_MEMLOCK or net.core.optmem_max too low?): copying for {} "
+              "ms",
+              std::chrono::duration_cast<std::chrono::milliseconds>(kZerocopyNoBufferSpaceBackoff).count());
+        }
+      }
+      // Nothing was sent (out of buffer space, interrupted, not supported): copy instead.
+    }
+  }
+#endif
+  return state.transportWrite(data);
+}
+
+#ifdef AERONET_LINUX
+ZerocopyCompletions SingleHttpServer::pollZerocopyCompletions(ConnectionState& state) {
+  const ZerocopyCompletions completions = state.pollZerocopyCompletions();
+  _stats.zerocopyCopiedSends += completions.nbCopiedSends;
+  return completions;
+}
+#endif
 
 SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionIt& cnxIt, std::size_t consumedBytes,
                                                                      const CorsPolicy* pCorsPolicy) {
@@ -143,11 +192,6 @@ void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpMessageData httpRespons
     return;
   }
 
-#ifdef AERONET_LINUX
-  // Release zerocopy buffers whose kernel completions have arrived.
-  state.releaseCompletedZerocopyBuffers();
-#endif
-
   // Extract file payload early so we can move the File once and avoid double-moves
   // when the response writes immediately.
   auto* pFilePayload = httpResponseData.getIfFilePayload();
@@ -185,14 +229,10 @@ void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpMessageData httpRespons
   const TcpCorkGuard corkGuard(state.corkable ? cnxIt->fd() : kInvalidHandle);
 
   // Plain TCP path: try immediate write optimization
-  const bool mayNeedZerocopyHold =
-#ifdef AERONET_LINUX
-      state.prepareZerocopyWrite(httpResponseData.retainedSize(), _config.maxZerocopyPendingBytes);
-#else
-      false;
-#endif
-  const auto [written, want] = state.transportWrite(httpResponseData);
+  bool zerocopySent = false;
+  const auto [written, want] = writeMessage(cnxIt, httpResponseData, zerocopySent);
   if (want == TransportHint::Error) {
+    // A failed write sent nothing with MSG_ZEROCOPY: the data can be released.
     state.requestDrainAndClose();
     return;
   }
@@ -200,11 +240,9 @@ void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpMessageData httpRespons
     _stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz + extraQueuedBytes);
     _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
 #ifdef AERONET_LINUX
-    // MSG_ZEROCOPY: the kernel pins user-space pages and DMA's from them
-    // asynchronously. We must keep the buffer alive until the kernel signals
-    // completion via the error queue, otherwise the allocator can reuse the
-    // freed pages while the kernel is still transmitting causing data corruption.
-    state.holdBufferIfZerocopyPending(std::move(httpResponseData), mayNeedZerocopyHold);
+    if (zerocopySent) {
+      state.retainZerocopyBuffer(std::move(httpResponseData));
+    }
 #endif
     if (haveFilePayload && state.attachFilePayload(std::move(filePayload))) {
       flushFilePayload(cnxIt);
@@ -213,8 +251,9 @@ void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpMessageData httpRespons
   }
   // partial write, capture the buffer in the connection state
   httpResponseData.addOffset(static_cast<std::size_t>(written));
+  assert(!state.outBufferZerocopySent);
   state.outBuffer = std::move(httpResponseData);
-  state.outBufferMayNeedZerocopyHold = mayNeedZerocopyHold;
+  state.outBufferZerocopySent = zerocopySent;
   _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
 
   const std::size_t remainingSize = state.outBuffer.remainingSize();
@@ -242,40 +281,26 @@ void SingleHttpServer::flushOutbound(ConnectionIt cnxIt) {
   TransportHint want = TransportHint::None;
   ConnectionState& state = _connections.connectionState(cnxIt);
 
-#ifdef AERONET_LINUX
-  // Release zerocopy buffers whose kernel completions have arrived.
-  state.releaseCompletedZerocopyBuffers();
-#endif
-
   const NativeHandle fd = cnxIt->fd();
 
   // Cork the socket to coalesce buffered writes into fewer TCP segments.
   const TcpCorkGuard corkGuard(state.corkable ? fd : kInvalidHandle);
 
   while (!state.outBuffer.empty()) {
-#ifdef AERONET_LINUX
-    if (!state.outBufferMayNeedZerocopyHold) {
-      state.outBufferMayNeedZerocopyHold =
-          state.prepareZerocopyWrite(state.outBuffer.retainedSize(), _config.maxZerocopyPendingBytes);
-    }
-#endif
-    const auto [written, stepWant] = state.transportWrite(state.outBuffer);
+    bool zerocopySent = false;
+    const auto [written, stepWant] = writeMessage(cnxIt, state.outBuffer, zerocopySent);
+    state.outBufferZerocopySent = state.outBufferZerocopySent || zerocopySent;
     want = stepWant;
     _stats.totalBytesWrittenFlush += written;
     if (want == TransportHint::Error) {
       const auto savedErr = LastSystemError();
       log::error("send/transportWrite failed fd # {} err={}", fd, savedErr);
       state.requestDrainAndClose();
-      state.outBuffer.clear();
-      state.outBufferMayNeedZerocopyHold = false;
+      // Previous zerocopy sends may still read it, the socket staying open until they complete.
+      state.discardOutBuffer();
     } else if (written > 0) {
       if (written == state.outBuffer.remainingSize()) {
-#ifdef AERONET_LINUX
-        // Hold buffer for zerocopy lifetime before clearing (see queueData comment).
-        state.holdBufferIfZerocopyPending(std::move(state.outBuffer), state.outBufferMayNeedZerocopyHold);
-#endif
-        state.outBuffer.clear();
-        state.outBufferMayNeedZerocopyHold = false;
+        state.discardOutBuffer();
         break;
       }
       state.outBuffer.addOffset(written);

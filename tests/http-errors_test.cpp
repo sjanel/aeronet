@@ -40,6 +40,7 @@
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 #include "aeronet/vector.hpp"
+#include "aeronet/zerocopy-mode.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/test_server_tls_fixture.hpp"
@@ -290,7 +291,7 @@ TEST(ConnectionManagerErrors, TcpNoDelayFailure) {
   // so we need to let those succeed first. We'll use an approach where we start the server first,
   // then inject failures for subsequent setsockopt calls.
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withTcpNoDelay(); });
-  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
+  ts.router().setDefault([](const HttpRequestView& req) { return req.makeResponse(http::StatusCodeOK); });
 
   // Now inject setsockopt failures for the next connection's TCP_NODELAY call
   // We push multiple failures to ensure one catches the TCP_NODELAY call
@@ -301,6 +302,36 @@ TEST(ConnectionManagerErrors, TcpNoDelayFailure) {
   auto resp = test::simpleGet(ts.port(), "/nodelay-fail");
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
 }
+
+#ifdef AERONET_LINUX
+// Without SO_ZEROCOPY support (older kernel), the server warns once for the Enabled mode and copies its responses.
+TEST(ConnectionManagerErrors, ZerocopyUnsupportedByListenerCopiesResponses) {
+  const test::ScopedConfigUpdate<ZerocopyMode> modeGuard(
+      ts, [](const HttpServerConfig& cfg) { return cfg.zerocopyMode; },
+      [](HttpServerConfig& cfg, ZerocopyMode mode) { cfg.withZerocopyMode(mode); }, ZerocopyMode::Enabled);
+  const test::ScopedConfigUpdate<std::uint32_t> minBytesGuard(
+      ts, [](const HttpServerConfig& cfg) { return cfg.zerocopyMinBytes; },
+      [](HttpServerConfig& cfg, std::uint32_t minBytes) { cfg.withZerocopyMinBytes(minBytes); }, 1U);
+  {
+    test::QueueResetGuard<decltype(test::g_setsockopt_actions)> guard(test::g_setsockopt_actions);
+    // The restart creates the listening socket again: its first setsockopt enables SO_ZEROCOPY on it.
+    test::PushSetsockoptAction({-1, ENOPROTOOPT});
+    ts.restart();
+  }
+  // Captured by value: the handler stays in the shared server beyond this test. The socket overrides of this test also
+  // bypass the ThreadSanitizer interceptors, so the client receiving the response does not order the handler before it.
+  const std::string payload(64UL << 10U, 'c');
+  ts.router().setDefault([payload](const HttpRequestView& req) { return req.makeResponse(payload); });
+
+  const auto before = ts.server.stats();
+  const auto resp = test::simpleGet(ts.port(), "/copied");
+  EXPECT_TRUE(resp.ends_with(payload));
+  EXPECT_EQ(ts.server.stats().zerocopySends, before.zerocopySends);
+
+  // SO_ZEROCOPY on the listener again for the next tests.
+  ts.restart();
+}
+#endif
 
 // Test eventLoop.add failure path
 // This exercises the path where epoll_ctl ADD fails for a new connection

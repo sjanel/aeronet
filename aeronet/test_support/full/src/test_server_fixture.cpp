@@ -113,6 +113,12 @@ uint16_t TestServer::port() const noexcept {
   return 0;
 }
 
+void TestServer::restart() {
+  server.stop();
+  server.start();
+  WaitReady(server, std::chrono::milliseconds{500});
+}
+
 void TestServer::resetConfig() {
   postConfigUpdate([](HttpServerConfig& cfg) {
     const auto port = cfg.port;

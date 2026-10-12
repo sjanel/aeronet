@@ -12,6 +12,7 @@
 #include <span>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
 #endif
@@ -45,7 +46,9 @@
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/timer-fd.hpp"
 #include "aeronet/tracing/tracer.hpp"
+#include "aeronet/transport-result.hpp"
 #include "aeronet/vector.hpp"
+#include "aeronet/zerocopy.hpp"
 
 #ifdef AERONET_ENABLE_HTTP2
 #include "aeronet/http2-protocol-handler.hpp"
@@ -586,6 +589,23 @@ class SingleHttpServer {
   // Outbound write helpers. On transport failure, the connection is closed immediately.
   void queueData(ConnectionIt cnxIt, HttpMessageData httpResponseData);
   void flushOutbound(ConnectionIt cnxIt);
+  // Writes the unsent bytes of 'data' to the connection, with MSG_ZEROCOPY when eligible (Linux): sets 'zerocopySent'
+  // in that case, the kernel then reading the buffers of 'data' until the completion of the send (see
+  // ConnectionState::retainZerocopyBuffer()).
+  TransportResult writeMessage(ConnectionIt cnxIt, const HttpMessageData& data, bool& zerocopySent);
+#ifdef AERONET_LINUX
+  // Polls the zerocopy completion notifications of a connection (see ConnectionState::pollZerocopyCompletions()).
+  ZerocopyCompletions pollZerocopyCompletions(ConnectionState& state);
+  // Handles the expired deadline of a connection whose zerocopy sends are in flight: an idle keep-alive connection is
+  // closed once they complete (like copied data the kernel keeps sending after close), and a connection whose sends
+  // made no progress during a whole keepAliveTimeout is reset. Returns true if the connection was closed.
+  bool watchZerocopySends(ConnectionIt cnxIt);
+  // Releases the buffers of the zerocopy sends of reset connections whose grace period elapsed.
+  void releaseResetZerocopyBuffers(std::chrono::steady_clock::time_point now);
+  // Waits for the end of the grace period of the buffers of the zerocopy sends of reset connections, then releases
+  // them.
+  void waitForResetZerocopyBuffers();
+#endif
   void flushFilePayload(ConnectionIt cnxIt);
   // Helper: flush pending bytes in tunnelOrFileBuffer via user-space TLS (SSL_write).
   // Used when kTLS is not available and file data must be encrypted in user-space.
@@ -724,6 +744,12 @@ class SingleHttpServer {
     SingleWriterCounter<uint64_t> epollModFailures;
     SingleWriterCounter<std::size_t> maxConnectionOutboundBuffer;
     SingleWriterCounter<uint64_t> totalRequestsServed;
+    SingleWriterCounter<uint64_t> zerocopySends;
+    SingleWriterCounter<uint64_t> zerocopyBytes;
+    SingleWriterCounter<uint64_t> zerocopyCopiedSends;
+    SingleWriterCounter<uint64_t> zerocopyNoBufferSpaceFallbacks;
+    SingleWriterCounter<uint64_t> zerocopyRetainLimitFallbacks;
+    SingleWriterCounter<uint64_t> zerocopyResetConnections;
   } _stats;
 
   struct Callbacks {
@@ -811,6 +837,34 @@ class SingleHttpServer {
     uint32_t pendingTimeoutConnections{0};
   };
   ConnectionSweepState _connectionSweepState;
+
+#ifdef AERONET_LINUX
+  // A server stops using MSG_ZEROCOPY for this long after a send failed with ENOBUFS.
+  static constexpr std::chrono::seconds kZerocopyNoBufferSpaceBackoff{1};
+  // Buffers of the zerocopy sends of a reset connection are kept this long: the reset dropped the socket send queue,
+  // but the packets already handed to the network device (queuing discipline, NIC ring) may still reference them.
+  static constexpr std::chrono::seconds kZerocopyResetGracePeriod{1};
+
+  struct ZerocopyRuntime {
+    // A buffer of the zerocopy sends of a reset connection, released once releaseTime elapsed.
+    struct ResetBuffer {
+      using trivially_relocatable = std::true_type;
+
+      HttpMessageData data;
+      std::chrono::steady_clock::time_point releaseTime;
+    };
+
+    // In release time order.
+    vector<ResetBuffer> resetBuffers;
+    // No zerocopy send before this time (after ENOBUFS).
+    std::chrono::steady_clock::time_point retryTime;
+    // Whether the listening socket has SO_ZEROCOPY, inherited by the accepted sockets.
+    bool supported{false};
+    // Whether ENOBUFS was already logged (once per server).
+    bool noBufferSpaceLogged{false};
+  };
+  ZerocopyRuntime _zerocopy;
+#endif
 
 #ifdef AERONET_MACOS
   // When true (default), this instance owns the listen socket and will close it

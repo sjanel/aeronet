@@ -45,14 +45,14 @@ config.withPort(8080)
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `maxOutboundBufferBytes` / `withMaxOutboundBufferBytes()` | 4 MiB | Per-connection retained-output cap. HTTP/1.1 drains then closes on overflow; HTTP/2 pauses wire-input processing at the queue high-water mark and rejects work that cannot fit its queued plus flow-control-deferred budget. |
-| `maxZerocopyPendingBytes` / `withMaxZerocopyPendingBytes()` | 4 MiB | Per-connection payload cap for delayed Linux `MSG_ZEROCOPY` completions. New sends fall back to copied writes at the limit. |
+| `maxZerocopyPendingBytes` / `withMaxZerocopyPendingBytes()` | 4 MiB | Response bytes a connection may retain until the completion of their Linux `MSG_ZEROCOPY` sends. Writes beyond it are copied until completions release retained buffers; a single larger response may use zerocopy when nothing is retained. See [MSG_ZEROCOPY](../operations/performance.md#msg_zerocopy). |
 | `minCapturedBodySize` / `withMinCapturedBodySize()` | 1 KiB | Fixed response bodies below this size are kept with the response head for locality. |
 | `pollInterval` / `withPollInterval()` | 500 ms | Maximum idle event-loop wait. Lower values improve stop responsiveness but increase wakeups. |
 | `pollIntervalMinFactor`, `pollIntervalMaxFactor` / `withPollIntervalFactors()` | 1.0, 1.0 | Adaptive poll bounds relative to `pollInterval`; `0.0, 2.0` permits a saturated spin and idle backoff. |
 | `minReadChunkBytes` / `withMinReadChunkBytes()` | 4 KiB | Minimum follow-up inbound read size. |
 | `maxPerEventReadBytes` / `withMaxPerEventReadBytes()` | 128 KiB | Fairness budget per connection event: bytes read plus bytes written while serving them. Raise for few large uploads or downloads; lower for latency across many connections. |
-| `zerocopyMode` / `withZerocopyMode()` | Opportunistic | `MSG_ZEROCOPY` policy for eligible large writes; Linux-specific. |
-| `zerocopyMinBytes` / `withZerocopyMinBytes()` | 128 KiB | Minimum payload size for zero-copy attempts. |
+| `zerocopyMode` / `withZerocopyMode()` | Opportunistic | `MSG_ZEROCOPY` policy for the large response writes of plaintext HTTP/1.1 connections; Linux-specific. `Opportunistic` skips loopback peers and stops on a connection once the kernel reports copied sends; `Enabled` uses it for every connection. See [MSG_ZEROCOPY](../operations/performance.md#msg_zerocopy). |
+| `zerocopyMinBytes` / `withZerocopyMinBytes()` | 128 KiB | Minimum write size for `MSG_ZEROCOPY` (cannot be `0`). |
 | `globalHeaders` / `withGlobalHeaders()` / `addGlobalHeader()` | `server: aeronet` | Headers added unless the response already supplies that header. Maximum 256 entries. |
 
 ## HTTPS redirects and CONNECT

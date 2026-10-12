@@ -22,7 +22,7 @@ class TlsTransport final : public TransportBackend<TlsTransport, TransportKind::
   /// Sets the write modes of the SSL object that the transport relies on: SSL_write_ex returns once a record is
   /// written (partial writes), and a write that would block can be retried from another buffer with the same bytes
   /// (the gather write rebuilds its records in a stack buffer).
-  TlsTransport(SslPtr sslPtr, uint32_t minBytesForZerocopy);
+  explicit TlsTransport(SslPtr sslPtr);
 
   /// Non-blocking read of decrypted data.
   /// When the SSL object reads ahead (server contexts), records are decrypted until `len` bytes are read or the socket
@@ -64,12 +64,7 @@ class TlsTransport final : public TransportBackend<TlsTransport, TransportKind::
   /// Returns true if kTLS send was successfully enabled (kernel handles encryption for sendfile).
   [[nodiscard]] bool isKtlsSendEnabled() const noexcept { return _ktlsResult == KtlsEnableResult::Enabled; }
 
-  /// Attempt to enable zerocopy (MSG_ZEROCOPY) on the kTLS socket.
-  /// Only effective when kTLS send is enabled. Call after enableKtlsSend().
-  /// Returns true if zerocopy was enabled or already enabled.
-  bool enableZerocopy() noexcept;
-
-  /// Store the underlying socket fd for zerocopy operations.
+  /// Store the underlying socket fd, used by the writes once kTLS send is enabled.
   /// enableKtlsSend() also stores it, from the SSL object, once kTLS send is enabled.
   void setUnderlyingFd(NativeHandle fd) noexcept { _fd = fd; }
 
@@ -94,8 +89,6 @@ class TlsTransport final : public TransportBackend<TlsTransport, TransportKind::
   TransportResult sslWrite(std::string_view data);
 
   SslPtr _ssl;
-  // Applied to the zerocopy state by enableZerocopy(), once kTLS send is known to be enabled.
-  uint32_t _minBytesForZerocopy;
   bool _handshakeDone{false};
   bool _readUntilDrained;
   ReadStop _readStop{ReadStop::None};

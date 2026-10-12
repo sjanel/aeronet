@@ -395,14 +395,16 @@ TEST(SecureConcatenatedStrings, BehavesLikeTheRegularOne) {
   SecureType secure;
   TestType regular;
   const std::string longPart(300, 's');
-  for (auto [idx, value] : {std::pair<uint32_t, std::string_view>{1, "secret"},
-                            {0, longPart},
-                            {2, "tail"},
-                            {1, "x"},
-                            {0, ""},
-                            {2, longPart},
-                            {1, longPart},
-                            {2, ""}}) {
+  for (auto [idx, value] : {
+           std::pair<uint32_t, std::string_view>{1, "secret"},
+           {0, longPart},
+           {2, "tail"},
+           {1, "x"},
+           {0, ""},
+           {2, longPart},
+           {1, longPart},
+           {2, ""},
+       }) {
     secure.set(idx, value);
     regular.set(idx, value);
     for (uint32_t part = 0; part < 3; ++part) {

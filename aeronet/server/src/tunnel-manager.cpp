@@ -26,7 +26,6 @@
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
 #include "aeronet/vector.hpp"
-#include "aeronet/zerocopy-mode.hpp"
 #include "http-error-build.hpp"
 #include "tunnel-resolver.hpp"
 
@@ -120,9 +119,6 @@ void TunnelManager::establishHttp1Tunnel(ConnectionIt cnxIt, NativeHandle upstre
   // Enter tunneling mode: link client -> upstream (upstream -> client is set by registerUpstream).
   state.peerFd = upstreamFd;
   _server.refreshKeepAliveDeadline(cnxIt);
-
-  // Disable zerocopy on the client-side transport for the same buffer lifetime reason.
-  state.transport.disableZerocopy();
 }
 
 void TunnelManager::completeHttp1Tunnel(const PendingTunnel& pending) {
@@ -235,11 +231,9 @@ NativeHandle TunnelManager::registerUpstream(NativeHandle clientFd, ConnectResul
   const auto upIt = _server._connections.emplace(std::move(cres.cnx));
   ConnectionState& state = _server._connections.connectionState(upIt);
 
-  // Set upstream transport to plain (no TLS). Zerocopy is unconditionally disabled for tunnel
-  // transports because buffer lifetimes are not stable — data is read into a reusable inBuffer
-  // and forwarded immediately; the kernel may still have pages pinned for DMA when the buffer is
-  // reused for the next read, causing data corruption.
-  state.transport = Transport(upstreamFd, ZerocopyMode::Disabled, 0);
+  // Set upstream transport to plain (no TLS). Tunneled bytes are relayed from reused buffers, with copying writes only
+  // (never MSG_ZEROCOPY, whose kernel reads outlive the write).
+  state.transport = Transport(upstreamFd);
   state.peerFd = clientFd;
   state.connectPending = cres.connectPending;
 
