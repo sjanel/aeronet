@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
-#include <csignal>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -85,10 +84,6 @@ void RaiseFileDescriptorLimit() {
 }  // namespace
 
 int main(int argc, char* argv[]) {
-  // Ignore SIGPIPE to prevent process termination when writing to closed sockets
-  // (e.g. when h2load abruptly closes TLS connections during benchmarks)
-  std::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
-
   RaiseFileDescriptorLimit();
 
   bench::BenchConfig benchCfg(8080, argc, argv);

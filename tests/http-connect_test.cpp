@@ -10,7 +10,6 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
-#include <csignal>
 #include <cstddef>
 #include <exception>
 #include <memory>
@@ -135,16 +134,6 @@ void AllowConnectHost(test::TestServer& server, std::string_view host) {
 
 class HttpConnectDefaultConfig : public ::testing::Test {
  protected:
-  void SetUp() override {
-#ifdef AERONET_POSIX
-    // Ignore SIGPIPE to prevent the test from being killed when writing to closed sockets
-    // (which can happen during the epoll failure simulation). SIGPIPE is raised when trying
-    // to write to a socket whose read end has been closed. Without this, test crashes are
-    // intermittent and hard to reproduce.
-    ::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
-#endif
-  }
-
   test::TestServer ts;
   test::ClientConnection client{ts.port()};
   NativeHandle fd{client.fd()};

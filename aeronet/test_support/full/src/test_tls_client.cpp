@@ -26,7 +26,6 @@
 #include <cerrno>
 #include <charconv>
 #include <chrono>
-#include <csignal>
 #include <cstddef>
 #include <span>
 #include <stdexcept>
@@ -39,6 +38,7 @@
 #include "aeronet/http-header.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/sigpipe-blocker.hpp"
 #include "aeronet/test_util.hpp"
 #include "aeronet/tls-raii.hpp"
 #include "aeronet/vector.hpp"
@@ -54,11 +54,21 @@ RawBytes BuildAlpnWire(std::span<const std::string> protos) {
   }
   return wire;
 }
+
+// OpenSSL writes on the socket itself, without MSG_NOSIGNAL: once the server has left, such a write raises SIGPIPE,
+// which terminates the test process by default. Keep it pending in the calling thread meanwhile, the write still
+// failing with EPIPE (macOS sockets carry SO_NOSIGPIPE, and Windows has no SIGPIPE).
+#ifdef AERONET_LINUX
+using SigpipeGuard = SigpipeBlocker;
+#else
+struct SigpipeGuard {};
+#endif
 }  // namespace
 
 TlsClient::~TlsClient() {
   // Ensure orderly shutdown if possible
   if (_handshakeOk && _ssl) {
+    [[maybe_unused]] const SigpipeGuard sigpipeGuard;
     ::SSL_shutdown(_ssl.get());
   }
 }
@@ -67,6 +77,7 @@ bool TlsClient::writeAll(std::string_view data) {
   if (!_handshakeOk) {
     return false;
   }
+  [[maybe_unused]] const SigpipeGuard sigpipeGuard;
   const char* cursor = data.data();
   auto remaining = data.size();
 
@@ -218,6 +229,7 @@ std::string TlsClient::readAll() {
   if (!_handshakeOk) {
     return out;
   }
+  [[maybe_unused]] const SigpipeGuard sigpipeGuard;
   static constexpr std::size_t kChunkSize = 4096;
   // Maximum number of consecutive SSL_ERROR_SYSCALL+errno=0 retries before treating as EOF.
   // Keep this budget fairly large to tolerate slow CI workers while reading large TLS bodies.
@@ -391,6 +403,7 @@ std::string_view TlsClient::readSome(std::span<char> buffer) {
     return {};
   }
 
+  [[maybe_unused]] const SigpipeGuard sigpipeGuard;
   int readRet = ::SSL_read(_ssl.get(), buffer.data(), static_cast<int>(buffer.size()));
   if (readRet > 0) {
     return {buffer.data(), static_cast<std::size_t>(readRet)};
@@ -484,11 +497,7 @@ std::string TlsClient::get(std::string_view target, const vector<http::Header>& 
 }
 
 void TlsClient::init() {
-  // Avoid test process termination when writing to a closed TLS socket.
-  // OpenSSL ultimately writes to the underlying fd, which can raise SIGPIPE on Linux.
-#ifdef AERONET_POSIX
-  ::signal(SIGPIPE, SIG_IGN);  // NOLINT(misc-include-cleaner)
-#endif
+  [[maybe_unused]] const SigpipeGuard sigpipeGuard;
 
   ::SSL_library_init();
   ::SSL_load_error_strings();

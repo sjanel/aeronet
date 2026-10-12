@@ -11,7 +11,7 @@ function(AeronetSetProjectProperties name)
   # compile definitions). Define it as a C string literal.
   target_compile_definitions(${name} PUBLIC "AERONET_VERSION_STR=\"${AERONET_PROJECT_VERSION}\"")
 
-    # Warning levels
+  # Warning levels
   if(AERONET_ENABLE_WARNINGS)
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")
       # Basic warnings

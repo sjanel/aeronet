@@ -46,7 +46,6 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
-#include "aeronet/sigpipe-test-helpers.hpp"
 #include "aeronet/static-file-handler.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/temp-file.hpp"
@@ -487,7 +486,6 @@ TEST(HttpTlsBasic, ResponseToDepartedClientDoesNotRaiseSigpipe) {
   for (int attempt = 0; attempt < 10; ++attempt) {
     std::optional<test::TlsClient> client(std::in_place, tlsServer.port());
     ASSERT_TRUE(client->handshakeOk());
-    test::DefaultSigpipeScope sigpipeScope;  // after TlsClient, which ignores SIGPIPE process-wide
     ASSERT_TRUE(client->writeAll("GET /big HTTP/1.1\r\nHost: localhost\r\n\r\n"));
     client.reset();                     // leaves (close_notify, FIN) before reading anything
     std::this_thread::sleep_for(20ms);  // the server writes into the closed connection meanwhile
