@@ -134,6 +134,17 @@ TEST_F(SocketOpsTest, SetAbortiveCloseSetsZeroLinger) {
 
 TEST_F(SocketOpsTest, SetAbortiveCloseFailsOnBadFd) { EXPECT_FALSE(SetAbortiveClose(-1)); }
 
+#ifdef AERONET_LINUX
+TEST_F(SocketOpsTest, SendQueueBytesOfIdleSocketIsZero) {
+  NativeHandle fd = CreateTestSocket();
+  ASSERT_GE(fd, 0);
+  EXPECT_EQ(SendQueueBytes(fd), 0);
+  CloseSocket(fd);
+}
+
+TEST_F(SocketOpsTest, SendQueueBytesFailsOnBadFd) { EXPECT_EQ(SendQueueBytes(-1), -1); }
+#endif
+
 TEST_F(SocketOpsTest, GetSocketErrorReturnsZeroForGoodSocket) {
   NativeHandle fd = CreateTestSocket();
   ASSERT_GE(fd, 0);

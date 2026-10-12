@@ -35,7 +35,7 @@ class VirtualPlainCapabilities final : public VirtualCapabilities {
   TransportResult write(std::string_view data) override { return _backend.write(data); }
 
  private:
-  PlainTransport _backend{kInvalidHandle, ZerocopyMode::Disabled, 0};
+  PlainTransport _backend{kInvalidHandle};
 };
 
 #ifdef AERONET_ENABLE_OPENSSL
@@ -88,7 +88,7 @@ void BM_VirtualPlainCapabilities(benchmark::State& state) {
 BENCHMARK(BM_VirtualPlainCapabilities);
 
 void BM_InlinePlainCapabilities(benchmark::State& state) {
-  const Transport transport(kInvalidHandle, ZerocopyMode::Disabled, 0);
+  const Transport transport(kInvalidHandle);
   const Transport* dispatch = &transport;
   for ([[maybe_unused]] auto iteration : state) {
     benchmark::DoNotOptimize(dispatch);
@@ -112,7 +112,7 @@ void BM_VirtualPlainWrite(benchmark::State& state) {
 BENCHMARK(BM_VirtualPlainWrite);
 
 void BM_InlinePlainWrite(benchmark::State& state) {
-  Transport transport(kInvalidHandle, ZerocopyMode::Disabled, 0);
+  Transport transport(kInvalidHandle);
   Transport* dispatch = &transport;
   for ([[maybe_unused]] auto iteration : state) {
     benchmark::DoNotOptimize(dispatch);
@@ -135,7 +135,7 @@ BENCHMARK(BM_VirtualPlainLifetime);
 
 void BM_InlinePlainLifetime(benchmark::State& state) {
   for ([[maybe_unused]] auto iteration : state) {
-    Transport transport(kInvalidHandle, ZerocopyMode::Disabled, 0);
+    Transport transport(kInvalidHandle);
     benchmark::DoNotOptimize(transport);
   }
   state.SetItemsProcessed(state.iterations());
@@ -158,7 +158,7 @@ BENCHMARK(BM_VirtualTlsCapabilities);
 
 void BM_ErasedTlsCapabilities(benchmark::State& state) {
   TlsTransport::SslPtr ssl(nullptr, &::SSL_free);
-  const Transport transport(std::make_unique<TlsTransport>(std::move(ssl), 0));
+  const Transport transport(std::make_unique<TlsTransport>(std::move(ssl)));
   const Transport* dispatch = &transport;
   for ([[maybe_unused]] auto iteration : state) {
     benchmark::DoNotOptimize(dispatch);

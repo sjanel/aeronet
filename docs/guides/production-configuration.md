@@ -29,7 +29,7 @@ config.withPort(8080)
     .withTcpNoDelay(true);
 ```
 
-`maxOutboundBufferBytes` and `maxZerocopyPendingBytes` are per connection: budget them alongside connection count. For HTTP/2, also set `http2.maxStreamPendingBytes` no higher than the response memory one stream may retain while waiting for flow-control credit. Set `maxPerEventReadBytes` lower if many clients need fairness or higher only when a small number of large request bodies should maximize throughput.
+`maxOutboundBufferBytes` and `maxZerocopyPendingBytes` are per connection: budget them alongside connection count. On Linux, `MSG_ZEROCOPY` sends also pin pages against the locked memory limit of the user: in a container, raise it for servers sending many large plaintext responses at once (see [MSG_ZEROCOPY](../operations/performance.md#msg_zerocopy)). For HTTP/2, also set `http2.maxStreamPendingBytes` no higher than the response memory one stream may retain while waiting for flow-control credit. Set `maxPerEventReadBytes` lower if many clients need fairness or higher only when a small number of large request bodies should maximize throughput.
 
 ## TLS and HTTP/2 edge listener
 

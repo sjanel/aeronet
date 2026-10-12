@@ -10,6 +10,8 @@
 #include <openssl/ocsp.h>
 #include <openssl/pem.h>
 #include <openssl/prov_ssl.h>
+#include <openssl/rsa.h>
+#include <openssl/safestack.h>
 #include <openssl/ssl.h>
 #include <openssl/sslerr.h>
 #include <openssl/tls1.h>
@@ -26,9 +28,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
+#include <ios>
 #include <iterator>
 #include <limits>
 #include <memory>
@@ -1033,14 +1037,10 @@ TEST(TlsContextTest, ChangedInputFileCoversEveryFileInput) {
   }
 }
 
-namespace {
-constexpr uint32_t kMinBytesForZerocopy = 1024;
-}
-
 TEST(TlsTransportTest, ReadWriteAndRetryHints) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
 
   auto zeroWrite = transport.write(std::string_view{});
   EXPECT_EQ(zeroWrite.bytesProcessed, 0U);
@@ -1083,7 +1083,7 @@ TEST(TlsTransportTest, HandshakeSyscallWriteFatalSetsError) {
   writeState.errnoValue = EBADF;
   AttachControlledBios(pair.serverSsl.get(), readState, writeState);
   pair.serverFd.close();
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
   ERR_clear_error();
   errno = EBADF;
   auto res = transport.write("X");
@@ -1104,7 +1104,7 @@ TEST(TlsTransportTest, ReadReportsReadReadyOnSslSyscallEagain) {
   writeState.writeResult = 0;
 
   AttachControlledBios(pair.serverSsl.get(), readState, writeState);
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
 
   char buf[8];
   auto res = transport.read(buf, sizeof(buf));
@@ -1123,7 +1123,7 @@ TEST(TlsTransportTest, ReadReportsReadReadyOnSslSyscallEagain) {
   w2.errnoValue = 0;
   w2.retryWrite = true;
   AttachControlledBios(pair2.serverSsl.get(), r2, w2);
-  TlsTransport transport2(std::move(pair2.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport2(std::move(pair2.serverSsl));
   char buf2[8];
   ERR_clear_error();
   errno = 0;
@@ -1144,7 +1144,7 @@ TEST(TlsTransportLogTest, SslSyscallEagainShouldReturnReadReady) {
   ControlledBioState writeState{};
   writeState.writeResult = 0;
   AttachControlledBios(pair.serverSsl.get(), readState, writeState);
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
 
   ERR_clear_error();
   errno = 0;
@@ -1191,7 +1191,7 @@ TEST(TlsTransportWriteHintTest, ReadReportsWriteReadyWhenWantWrite) {
   writeState.retryWrite = true;
 
   AttachControlledBios(pair.serverSsl.get(), readState, writeState);
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
 
   char buf[8];
   ERR_clear_error();
@@ -1204,7 +1204,7 @@ TEST(TlsTransportTest, SyscallDuringReadWithErrnoZeroRetried) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
   SSL* rawSsl = pair.serverSsl.get();
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
   ControlledBioState readState{};
   readState.errnoValue = 0;
   ControlledBioState writeState{};
@@ -1223,7 +1223,7 @@ TEST(TlsTransportTest, SyscallDuringReadFatalSetsErrorHint) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
   SSL* rawSsl = pair.serverSsl.get();
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
   ControlledBioState readState{};
   readState.errnoValue = EBADF;
   ControlledBioState writeState{};
@@ -1242,7 +1242,7 @@ TEST(TlsTransportTest, SyscallDuringWriteWithErrnoZeroRetried) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
   SSL* rawSsl = pair.serverSsl.get();
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
   ControlledBioState readState{};
   readState.errnoValue = 0;
   ControlledBioState writeState{};
@@ -1278,7 +1278,7 @@ TEST(TlsTransportTest, FatalHandshakeErrorDrainsSharedErrorQueue) {
   ASSERT_EQ(::send(pair.clientFd.fd(), kHttpNoise.data(), kHttpNoise.size(), 0),
             static_cast<ssize_t>(kHttpNoise.size()));
   SetNonBlocking(pair.serverFd.fd());
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
 
   ERR_clear_error();  // clean baseline
   char buf[16];
@@ -1290,7 +1290,7 @@ TEST(TlsTransportTest, FatalHandshakeErrorDrainsSharedErrorQueue) {
 TEST(TlsTransportTest, FatalReadErrorDrainsSharedErrorQueue) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
 
   // Inject a complete but cryptographically-invalid application_data record straight onto the
   // server socket (bypassing the client SSL). The AEAD tag check fails, so SSL_read_ex returns
@@ -1313,7 +1313,7 @@ TEST(TlsTransportTest, SyscallDuringWriteFatalSetsErrorHint) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
   SSL* rawSsl = pair.serverSsl.get();
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
   ControlledBioState readState{};
   readState.errnoValue = EBADF;
   ControlledBioState writeState{};
@@ -1331,7 +1331,7 @@ TEST(TlsTransportTest, SuccessfulReadReturnsData) {
   // Covers the success path in TlsTransport::read
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
   // Server SSL objects read ahead: the read decrypts records until the socket would block.
   SetNonBlocking(pair.serverFd.fd());
 
@@ -1449,7 +1449,7 @@ TEST(TlsHandshakeTest, PeerSubjectNonEmptyAfterHandshake) {
 TEST(TlsTransportTest, KtlsSendAlreadyAttemptedReturnsFailed) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
 
   // First attempt
   const auto result1 = transport.enableKtlsSend();
@@ -1483,7 +1483,7 @@ TEST(TlsContextTest, SniCertificateWithWildcardPatternWorks) {
 TEST(TlsTransportTest, ShutdownWithNullSslDoesNotCrash) {
   // Covers the null check in TlsTransport::shutdown (line 147)
   TlsTransport::SslPtr nullSsl{nullptr, &::SSL_free};
-  TlsTransport transport(std::move(nullSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(nullSsl));
 
   // Should return early without crashing
   transport.shutdown();
@@ -1491,7 +1491,7 @@ TEST(TlsTransportTest, ShutdownWithNullSslDoesNotCrash) {
 
 TEST(TlsTransportTest, ErasedTransportCachesTlsKindAndBackend) {
   TlsTransport::SslPtr nullSsl{nullptr, &::SSL_free};
-  auto backend = std::make_unique<TlsTransport>(std::move(nullSsl), kMinBytesForZerocopy);
+  auto backend = std::make_unique<TlsTransport>(std::move(nullSsl));
   TlsTransport* rawBackend = backend.get();
   Transport transport(std::move(backend));
 
@@ -1501,18 +1501,12 @@ TEST(TlsTransportTest, ErasedTransportCachesTlsKindAndBackend) {
   EXPECT_EQ(transport.get<TlsTransport>(), rawBackend);
   EXPECT_FALSE(transport.handshakeDone());
   EXPECT_FALSE(transport.hasPendingReadData());
-  EXPECT_FALSE(transport.isZerocopyEnabled());
-  EXPECT_FALSE(transport.hasZerocopyPending());
-#ifdef AERONET_LINUX
-  EXPECT_EQ(transport.pollZerocopyCompletions(), 0U);
-#endif
-  transport.disableZerocopy();
 }
 
 TEST(TlsTransportTest, HandshakeDoneFalseInitially) {
   // Verify handshakeDone() returns false before handshake is complete
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
 
   EXPECT_FALSE(transport.handshakeDone());
 }
@@ -1521,7 +1515,7 @@ TEST(TlsTransportTest, WriteEmptyDataReturnsZero) {
   // Covers the empty data early return path in write (line 108)
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
 
   auto result = transport.write("");
   EXPECT_EQ(result.bytesProcessed, 0U);
@@ -1533,7 +1527,7 @@ TEST(TlsTransportTest, ReadAfterPeerCloseReturnsZero) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
 
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
 
   // Client initiates shutdown - send close_notify
   ::SSL_shutdown(pair.clientSsl.get());
@@ -1729,80 +1723,14 @@ TEST(TlsContextTest, SessionTicketsStoreCreatedWithoutStaticKeys) {
   TlsContext ctx(cfg);
 }
 
-TEST(TlsTransportTest, ZerocopyNotEnabledByDefault) {
-  SslTestPair pair({"http/1.1"}, {"http/1.1"});
-  ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
-
-  EXPECT_FALSE(transport.isZerocopyEnabled());
-  EXPECT_FALSE(transport.hasZerocopyPending());
-}
-
-TEST(TlsTransportTest, ZerocopyRequiresKtlsSend) {
-  SslTestPair pair({"http/1.1"}, {"http/1.1"});
-  ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
-
-  // Set fd (in real use, this is done after SSL_set_fd)
-  transport.setUnderlyingFd(pair.serverFd.fd());
-
-  // Zerocopy should NOT be enabled because kTLS send is not active
-  // (enableKtlsSend was not called, or kTLS is not supported)
-  EXPECT_FALSE(transport.enableZerocopy());
-  EXPECT_FALSE(transport.isZerocopyEnabled());
-}
-
-TEST(TlsTransportTest, ZerocopyWithoutFdReturnsFalse) {
-  SslTestPair pair({"http/1.1"}, {"http/1.1"});
-  ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
-
-  // Even if kTLS were enabled, without fd set, enableZerocopy should fail
-  EXPECT_FALSE(transport.enableZerocopy());
-  EXPECT_EQ(transport.underlyingFd(), -1);
-}
-
 TEST(TlsTransportTest, SetUnderlyingFdStoresFd) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
 
   transport.setUnderlyingFd(42);
   EXPECT_EQ(transport.underlyingFd(), 42);
 }
-
-TEST(TlsTransportTest, DisableZerocopyClearsState) {
-  SslTestPair pair({"http/1.1"}, {"http/1.1"});
-  ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
-
-  // disableZerocopy should work even if it was never enabled
-  transport.disableZerocopy();
-  EXPECT_FALSE(transport.isZerocopyEnabled());
-  EXPECT_FALSE(transport.hasZerocopyPending());
-}
-
-#ifdef AERONET_LINUX
-TEST(TlsTransportTest, PollZerocopyCompletionsNoFdReturnsZero) {
-  SslTestPair pair({"http/1.1"}, {"http/1.1"});
-  ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
-
-  // Without fd set, poll should return 0
-  EXPECT_EQ(transport.pollZerocopyCompletions(), 0U);
-}
-
-TEST(TlsTransportTest, PollZerocopyCompletionsWithFdNoCompletions) {
-  SslTestPair pair({"http/1.1"}, {"http/1.1"});
-  ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
-
-  transport.setUnderlyingFd(pair.serverFd.fd());
-
-  // With fd set but nothing pending, should return 0
-  EXPECT_EQ(transport.pollZerocopyCompletions(), 0U);
-}
-#endif
 
 TEST(TlsContextTest, NoCertOrKeyConfigThrows) {
   TLSConfig cfg;
@@ -1814,7 +1742,7 @@ TEST(TlsContextTest, NoCertOrKeyConfigThrows) {
 TEST(TlsTransportTest, HasPendingReadDataFalseInitially) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
 
   // No data written yet — nothing pending
   EXPECT_FALSE(transport.hasPendingReadData());
@@ -1823,7 +1751,7 @@ TEST(TlsTransportTest, HasPendingReadDataFalseInitially) {
 TEST(TlsTransportTest, HasPendingReadDataAfterPartialRead) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
 
   // Client writes a large payload that becomes a single TLS record
   const std::string payload(2000, 'X');
@@ -1992,7 +1920,7 @@ TEST(TlsTransportTest, ServerReadDecryptsRecordsUntilSocketWouldBlock) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
   ASSERT_EQ(::SSL_get_read_ahead(pair.serverSsl.get()), 1) << "server contexts read ahead";
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
   SetNonBlocking(pair.serverFd.fd());
 
   // Three records.
@@ -2017,7 +1945,7 @@ TEST(TlsTransportTest, ServerReadDecryptsRecordsUntilSocketWouldBlock) {
 TEST(TlsTransportTest, ServerReadStopsWhenBufferIsFull) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
   SetNonBlocking(pair.serverFd.fd());
 
   const std::string payload(40000, 'F');
@@ -2043,7 +1971,7 @@ TEST(TlsTransportTest, ServerReadStopsWhenBufferIsFull) {
 TEST(TlsTransportTest, ServerReadReportsPeerCloseAfterTheData) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
   SetNonBlocking(pair.serverFd.fd());
 
   const std::string payload = "last request";
@@ -2067,7 +1995,7 @@ TEST(TlsTransportTest, ServerReadReportsPeerCloseAfterTheData) {
 TEST(TlsTransportTest, ServerReadReportsFatalErrorAfterTheData) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
 
   const std::string payload = "valid record";
   ASSERT_EQ(::SSL_write(pair.clientSsl.get(), payload.data(), static_cast<int>(payload.size())),
@@ -2100,7 +2028,7 @@ TEST(TlsTransportTest, ReadWithoutReadAheadReturnsOneRecord) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
   ::SSL_set_read_ahead(pair.serverSsl.get(), 0);
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
   SetNonBlocking(pair.serverFd.fd());
 
   const std::string payload(20000, 'O');
@@ -2121,7 +2049,7 @@ TEST(TlsTransportTest, GatherWriteFillsWholeRecords) {
   SetNonBlocking(pair.clientFd.fd());
   // Consume what the handshake left for the client (session tickets), to only see the records written below.
   EXPECT_TRUE(DrainClient(pair.clientSsl.get()).empty());
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
 
   const H2LikeFragments fragments(3);
   const std::string expected = Concatenate(fragments.views);
@@ -2142,7 +2070,7 @@ TEST(TlsTransportTest, GatherWriteDeliversTheBytesInOrder) {
   SslTestPair pair({"h2"}, {"h2"});
   ASSERT_TRUE(PerformHandshake(pair));
   SetNonBlocking(pair.clientFd.fd());
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
 
   const H2LikeFragments fragments(3);
   const auto res = transport.write(std::span<const std::string_view>(fragments.views));
@@ -2155,7 +2083,7 @@ TEST(TlsTransportTest, GatherWriteRetriesTheSamePendingRecordAfterWouldBlock) {
   ASSERT_TRUE(PerformHandshake(pair));
   SetNonBlocking(pair.serverFd.fd());
   SetNonBlocking(pair.clientFd.fd());
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
 
   // Much more than the socket buffers: writes block many times, in gathered records as well as in-place ones.
   const H2LikeFragments fragments(200);
@@ -2175,7 +2103,7 @@ TEST(TlsTransportTest, SetsTheWriteModesItReliesOn) {
   SSL* ssl = pair.serverSsl.get();
   const auto modes = [ssl] { return static_cast<uint64_t>(::SSL_get_mode(ssl)); };
   ASSERT_EQ(modes() & SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER, 0U);
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
   // A write that would block is retried with the same bytes from another buffer (gather writes rebuild their records
   // on the stack), and returns once a record is written.
   EXPECT_NE(modes() & SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER, 0U);
@@ -2185,7 +2113,7 @@ TEST(TlsTransportTest, SetsTheWriteModesItReliesOn) {
 TEST(TlsTransportTest, GatherWriteDuringHandshakeReportsHandshakeHint) {
   SslTestPair pair({"h2"}, {"h2"});
   SetNonBlocking(pair.serverFd.fd());
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
 
   const std::string_view buffers[]{"head", "body"};
   const auto res = transport.write(std::span<const std::string_view>(buffers));
@@ -2198,7 +2126,7 @@ TEST(TlsTransportTest, TwoBufferWriteDeliversBothBuffers) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
   SetNonBlocking(pair.clientFd.fd());
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
 
   const std::string head = "HTTP/1.1 200 OK\r\ncontent-length: 20000\r\n\r\n";
   const std::string body(20000, 'b');
@@ -2228,7 +2156,7 @@ TEST(TlsTransportTest, KtlsSendWritesInClearOnTheSocket) {
   ASSERT_EQ(serverRc, 1);
   ASSERT_EQ(clientRc, 1);
 
-  TlsTransport transport(std::move(serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(serverSsl));
   ASSERT_EQ(transport.write(std::string_view{}).want, TransportHint::None);  // marks the handshake done
   if (transport.enableKtlsSend() != KtlsEnableResult::Enabled) {
     GTEST_SKIP() << "kTLS send is not available on this host";
@@ -2622,7 +2550,7 @@ TEST(TlsContextTest, LegacyCipherPolicyAcceptsCbcSuitesForEcdsaAndRsaCertificate
 TEST(TlsTransportTest, StaleErrorOfAnotherOpenSslUserDoesNotFailTheHandshake) {
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   SetNonBlocking(pair.serverFd.fd());
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
 
   // Left by unrelated code of the same thread (a JWT signature check, say).
   ERR_raise(ERR_LIB_RSA, ERR_R_INTERNAL_ERROR);
@@ -2637,7 +2565,7 @@ TEST(TlsTransportTest, StaleErrorOfAnotherOpenSslUserDoesNotFailReadsAndWrites) 
   SslTestPair pair({"http/1.1"}, {"http/1.1"});
   ASSERT_TRUE(PerformHandshake(pair));
   SetNonBlocking(pair.serverFd.fd());
-  TlsTransport transport(std::move(pair.serverSsl), kMinBytesForZerocopy);
+  TlsTransport transport(std::move(pair.serverSsl));
 
   ERR_raise(ERR_LIB_RSA, ERR_R_INTERNAL_ERROR);
   char buf[16];

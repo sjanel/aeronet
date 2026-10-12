@@ -12,12 +12,14 @@
 #include <openssl/prov_ssl.h>
 #include <openssl/rsa.h>
 #include <openssl/ssl.h>
+#include <openssl/tls1.h>
 #include <openssl/x509.h>
 
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -643,8 +645,12 @@ TEST(HttpClientTlsContextTest, ServerNameIndicationOnlyCarriesHostNames) {
     bool sendsServerName;
   };
   // RFC 6066 forbids IP addresses in the server name extension.
-  for (const auto [host, sendsServerName] : {Expectation{"localhost", true}, Expectation{"example.com", true},
-                                             Expectation{"127.0.0.1", false}, Expectation{"::1", false}}) {
+  for (const auto [host, sendsServerName] : {
+           Expectation{"localhost", true},
+           Expectation{"example.com", true},
+           Expectation{"127.0.0.1", false},
+           Expectation{"::1", false},
+       }) {
     auto transport = context.makeTransport(kUnusedSocket, host, true);
     auto* tlsTransport = transport.get<TlsTransport>();
     ASSERT_NE(tlsTransport, nullptr);

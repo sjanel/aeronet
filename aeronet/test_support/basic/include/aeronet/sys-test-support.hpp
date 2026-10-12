@@ -1558,53 +1558,58 @@ extern "C" __attribute__((no_sanitize("address"))) int epoll_wait(int epfd, stru
 
 namespace aeronet::test {
 inline KeyedActionQueue<int, IoAction> g_recvmsg_actions;
-}
 
-namespace aeronet::test {
-inline KeyedActionQueue<int, int> g_recvmsg_modes;
+// A notification read from the socket error queue by the recvmsg(MSG_ERRQUEUE) override (see
+// PushErrQueueNotification()). The defaults describe a zerocopy completion of the sends 'first' to 'last'.
+struct ErrQueueNotification {
+  uint32_t first{0};                      // ee_info
+  uint32_t last{0};                       // ee_data
+  uint8_t code{0};                        // ee_code (SO_EE_CODE_ZEROCOPY_COPIED)
+  uint8_t origin{SO_EE_ORIGIN_ZEROCOPY};  // ee_origin
+  uint32_t errnoValue{0};                 // ee_errno
+  int level{SOL_IP};                      // cmsg_level (SOL_IPV6 for IPv6 sockets)
+  int type{IP_RECVERR};                   // cmsg_type (IPV6_RECVERR for IPv6 sockets)
+  bool controlMessage{true};              // whether a control message is returned at all
+};
+
+inline KeyedActionQueue<int, ErrQueueNotification> g_errqueue_notifications;
+
+// Queue a notification returned by the next recvmsg(fd, MSG_ERRQUEUE) call (before the g_recvmsg_actions).
+inline void PushErrQueueNotification(int fd, ErrQueueNotification notification) {
+  g_errqueue_notifications.push(fd, notification);
 }
+}  // namespace aeronet::test
 
 extern "C" __attribute__((no_sanitize("address"))) ssize_t recvmsg(int fd, struct msghdr* msg, int flags) {
   using RecvmsgFn = ssize_t (*)(int, struct msghdr*, int);
+  if ((flags & MSG_ERRQUEUE) != 0) {
+    if (auto notification = ::aeronet::test::g_errqueue_notifications.pop(fd)) {
+      if (!notification->controlMessage ||
+          msg->msg_controllen < static_cast<socklen_t>(CMSG_LEN(sizeof(struct sock_extended_err)))) {
+        msg->msg_controllen = 0;
+        return 0;
+      }
+      auto* cmsg = reinterpret_cast<struct cmsghdr*>(msg->msg_control);
+      cmsg->cmsg_len = CMSG_LEN(sizeof(struct sock_extended_err));
+      cmsg->cmsg_level = notification->level;
+      cmsg->cmsg_type = notification->type;
+      auto* serr = reinterpret_cast<struct sock_extended_err*>(CMSG_DATA(cmsg));
+      std::memset(serr, 0, sizeof(*serr));
+      serr->ee_errno = notification->errnoValue;
+      serr->ee_origin = notification->origin;
+      serr->ee_code = notification->code;
+      serr->ee_info = notification->first;
+      serr->ee_data = notification->last;
+      msg->msg_controllen = cmsg->cmsg_len;
+      msg->msg_flags = 0;
+      return 0;
+    }
+  }
   if (auto act = ::aeronet::test::g_recvmsg_actions.pop(fd)) {
     auto [ret, err] = *act;
     if (ret >= 0) {
-      if (msg != nullptr && msg->msg_control != nullptr &&
-          msg->msg_controllen >= static_cast<socklen_t>(CMSG_LEN(sizeof(struct sock_extended_err)))) {
-        std::optional<int> modeOpt = ::aeronet::test::g_recvmsg_modes.pop(fd);
-        if (modeOpt && *modeOpt == 8) {
-          // Tests requested no control message: leave msg_controllen 0
-          if (msg) msg->msg_controllen = 0;
-        } else {
-          auto* c = reinterpret_cast<struct cmsghdr*>(msg->msg_control);
-          c->cmsg_len = CMSG_LEN(sizeof(struct sock_extended_err));
-          // default to IPv4 errqueue entry
-          c->cmsg_level = SOL_IP;
-          c->cmsg_type = IP_RECVERR;
-          if (modeOpt && *modeOpt == 6) {
-            c->cmsg_level = SOL_IPV6;
-            c->cmsg_type = IPV6_RECVERR;
-          } else if (modeOpt && *modeOpt == 7) {
-            // synthesize an unknown control message (not IP_RECVERR)
-            c->cmsg_level = SOL_IP;
-            c->cmsg_type = 0;
-          } else if (modeOpt && *modeOpt == 9) {
-            // synthesize an IPv6 control message with wrong type (not IPV6_RECVERR)
-            c->cmsg_level = SOL_IPV6;
-            c->cmsg_type = 0;
-          }
-
-          auto* serr = reinterpret_cast<struct sock_extended_err*>(CMSG_DATA(c));
-          std::memset(serr, 0, sizeof(*serr));
-          // allow tests to synthesize non-zerocopy origins
-          if (modeOpt && *modeOpt == 2) {
-            serr->ee_origin = 0;  // not SO_EE_ORIGIN_ZEROCOPY
-          } else {
-            serr->ee_origin = SO_EE_ORIGIN_ZEROCOPY;
-          }
-          serr->ee_data = 42;
-          msg->msg_controllen = c->cmsg_len;
-        }
+      if (msg != nullptr) {
+        msg->msg_controllen = 0;
       }
       return ret;
     }

@@ -98,8 +98,9 @@ struct HttpServerConfig {
   // Note that this setting only applies to HTTP/1.1 responses that use transfer encoding (ignored in HTTP/2).
   bool addTrailerHeader{true};
 
-  // Zero copy mode for outbound responses.
-  // Default: Opportunistic (enabled for non-loopback connections when supported by the kernel).
+  // Linux MSG_ZEROCOPY mode for the large writes of plain HTTP/1.1 responses (see ZerocopyMode).
+  // Default: Opportunistic (enabled for non-loopback connections when supported by the kernel, until the kernel reports
+  // that it copies the data anyway).
   ZerocopyMode zerocopyMode{ZerocopyMode::Opportunistic};
 
   // ===========================================
@@ -194,9 +195,9 @@ struct HttpServerConfig {
   // retained output has exhausted the connection budget. Default: 4 MiB per connection.
   uint32_t maxOutboundBufferBytes{4U << 20U};  // 4 MiB
 
-  // Upper bound (bytes) for response buffers retained until Linux MSG_ZEROCOPY completion notifications arrive.
-  // Once retaining the next payload would exceed this limit, zerocopy is disabled for that connection and later
-  // writes use the copied send path. Already-submitted buffers remain alive until their completions arrive.
+  // Upper bound (bytes) for the response buffers of a connection retained until the completion of their Linux
+  // MSG_ZEROCOPY sends (the peer acknowledged them). A write that would retain more is copied instead: zerocopy resumes
+  // once completions release retained buffers. A single larger payload still uses zerocopy when nothing is retained.
   // Default: 4 MiB per connection.
   uint32_t maxZerocopyPendingBytes{4U << 20U};  // 4 MiB
 

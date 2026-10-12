@@ -26,6 +26,12 @@ struct ServerStats {
     fun("epollModFailures", epollModFailures);
     fun("maxConnectionOutboundBuffer", static_cast<uint64_t>(maxConnectionOutboundBuffer));
     fun("totalRequestsServed", totalRequestsServed);
+    fun("zerocopySends", zerocopySends);
+    fun("zerocopyBytes", zerocopyBytes);
+    fun("zerocopyCopiedSends", zerocopyCopiedSends);
+    fun("zerocopyNoBufferSpaceFallbacks", zerocopyNoBufferSpaceFallbacks);
+    fun("zerocopyRetainLimitFallbacks", zerocopyRetainLimitFallbacks);
+    fun("zerocopyResetConnections", zerocopyResetConnections);
 #ifdef AERONET_ENABLE_OPENSSL
     fun("ktlsSendEnabledConnections", ktlsSendEnabledConnections);
     fun("ktlsSendEnableFallbacks", ktlsSendEnableFallbacks);
@@ -53,6 +59,17 @@ struct ServerStats {
   uint64_t epollModFailures{};
   std::size_t maxConnectionOutboundBuffer{};
   uint64_t totalRequestsServed{};
+  // Linux MSG_ZEROCOPY: sends and their bytes,
+  uint64_t zerocopySends{};
+  uint64_t zerocopyBytes{};
+  // zerocopy sends whose data the kernel copied anyway (local peer, device without scatter-gather),
+  uint64_t zerocopyCopiedSends{};
+  // writes copied because the locked or socket option memory was exhausted (ENOBUFS),
+  uint64_t zerocopyNoBufferSpaceFallbacks{};
+  // writes copied because the connection retained maxZerocopyPendingBytes already,
+  uint64_t zerocopyRetainLimitFallbacks{};
+  // and connections reset with zerocopy sends in flight.
+  uint64_t zerocopyResetConnections{};
 #ifdef AERONET_ENABLE_OPENSSL
   uint64_t ktlsSendEnabledConnections{};
   uint64_t ktlsSendEnableFallbacks{};

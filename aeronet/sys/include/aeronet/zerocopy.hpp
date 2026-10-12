@@ -1,12 +1,10 @@
 #pragma once
 
-#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
 
 #include "aeronet/native-handle.hpp"
-#include "aeronet/transport-result.hpp"
 
 namespace aeronet {
 
@@ -17,63 +15,81 @@ enum class ZeroCopyEnableResult : std::uint8_t {
   Error,         // setsockopt failed
 };
 
-// Result of a zerocopy send operation.
-enum class ZerocopySendResult : std::uint8_t {
-  Sent,          // Data sent with zerocopy
-  SentWithCopy,  // Data sent but zerocopy fell back to copy (small payload or unsupported)
-  WouldBlock,    // EAGAIN/EWOULDBLOCK - socket not ready
-  Error,         // Fatal error
+// Outcome of a send attempted with MSG_ZEROCOPY.
+enum class ZerocopySendStatus : std::uint8_t {
+  Sent,        // Bytes were sent: the kernel may read their buffers until the completion of the send
+  WouldBlock,  // Socket send buffer full
+  Error,       // Fatal socket error
+  // Nothing was sent: the bytes can be sent without MSG_ZEROCOPY instead.
+  Interrupted,    // Interrupted by a signal
+  NoBufferSpace,  // ENOBUFS: socket option memory (net.core.optmem_max) or locked memory (RLIMIT_MEMLOCK) exhausted
+  NotSupported,   // The socket does not support MSG_ZEROCOPY
 };
 
-// Tracks in-flight zerocopy buffers waiting for completion notification.
-// The kernel delivers completion via the socket error queue with SO_EE_ORIGIN_ZEROCOPY.
-// Whether new sends may use MSG_ZEROCOPY (enabled()) is independent from the tracking of the sends already issued
-// (pendingCompletions()): disabling zerocopy does not forget in-flight sends, whose buffers must stay alive until the
-// kernel reports their completion.
+struct ZerocopySendResult {
+  std::size_t bytesSent{0};
+  ZerocopySendStatus status{ZerocopySendStatus::Sent};
+};
+
+// Completion notifications of zerocopy sends, read from the error queue of a socket.
+struct ZerocopyCompletions {
+  // Number of zerocopy sends reported as completed.
+  std::uint32_t nbSends{0};
+  // Number of them whose data the kernel copied anyway (SO_EE_CODE_ZEROCOPY_COPIED): local peer (loopback, other
+  // network namespace of the host), device without scatter-gather...
+  std::uint32_t nbCopiedSends{0};
+};
+
+// MSG_ZEROCOPY sends of a TCP socket, and the tracking of their completion.
+// The kernel numbers the zerocopy sends of a socket from 0 (modulo 2^32), and reports their completion in the error
+// queue of the socket as ranges of sequence numbers, once it no longer reads their buffers. Ranges usually arrive in
+// order, but not always (retransmissions, socket teardown): completedBefore() is then a lower bound, exact again once
+// all the sends completed.
 struct ZeroCopyState {
-  [[nodiscard]] bool pendingCompletions() const noexcept { return seqLo < seqHi; }
+  // Whether some zerocopy sends were not completed yet.
+  [[nodiscard]] bool pendingCompletions() const noexcept { return nbCompleted != seqHi; }
 
-  [[nodiscard]] bool enabled() const noexcept { return minBytes != 0; }
+  // Sequence number of the next zerocopy send. The buffers of the sends issued so far may be read by the kernel until
+  // completedBefore(nextSeq()) returns true.
+  [[nodiscard]] std::uint32_t nextSeq() const noexcept { return seqHi; }
 
-  // Allow subsequent sends of at least 'minBytesForZerocopy' bytes to use MSG_ZEROCOPY.
-  void enable(std::uint32_t minBytesForZerocopy) noexcept {
-    assert(minBytesForZerocopy != 0);
-    minBytes = minBytesForZerocopy;
+  // Whether all the zerocopy sends numbered before 'seqEnd' completed.
+  [[nodiscard]] bool completedBefore(std::uint32_t seqEnd) const noexcept {
+    return static_cast<std::int32_t>(seqLo - seqEnd) >= 0;
   }
 
-  // Stop using MSG_ZEROCOPY for subsequent sends. Sends already issued stay tracked until their completion.
-  void disable() noexcept { minBytes = 0; }
+  // Records the completion of the sends numbered from 'first' to 'last' (included), as reported by the kernel.
+  void complete(std::uint32_t first, std::uint32_t last) noexcept {
+    nbCompleted += last - first + 1U;
+    if (first == seqLo) {
+      seqLo = last + 1U;
+    }
+    if (nbCompleted == seqHi) {
+      // Each send completes once: all of them did, including those reported before an earlier one.
+      seqLo = seqHi;
+    }
+  }
 
 #ifdef AERONET_LINUX
-  // Attempts a zerocopy send when eligible, for one or two buffers. Returns:
-  //  - a TransportResult with written bytes or a hint if the caller should return immediately (success, would-block,
-  //    or fatal error)
-  //  - an empty TransportResult (no bytes, no hint) if the caller should fall through to the regular (non-zerocopy)
-  //    write path (zerocopy disabled/too small, unsupported, interrupted, or transient kNoBufferSpace)
-  TransportResult tryZerocopySend(NativeHandle fd, std::string_view firstBuffer, std::string_view secondBuffer = {});
+  // Sends 'firstBuffer' then 'secondBuffer' with MSG_ZEROCOPY (non-blocking).
+  ZerocopySendResult send(NativeHandle fd, std::string_view firstBuffer, std::string_view secondBuffer);
 
-  /// Poll the socket error queue for zerocopy completion notifications.
-  /// Call this before reusing buffers that were sent with zerocopy.
-  /// This is non-blocking and drains all available completions.
-  ///
-  /// @param fd The socket file descriptor
-  /// @param state Zerocopy tracking state (updated with completed ranges)
-  /// @return Number of completions processed (may be 0 if none ready)
-  std::size_t pollZeroCopyCompletions(NativeHandle fd) noexcept;
+  // Reads the completion notifications available in the error queue of the socket (non-blocking), stopping once all
+  // the sends completed.
+  ZerocopyCompletions pollCompletions(NativeHandle fd) noexcept;
 #endif
 
-  // Sequence number range tracking completions from the kernel error queue.
-  // lo..hi defines the range of outstanding zerocopy sends.
+  // All the sends numbered before seqLo completed (a lower bound while completions arrive out of order).
   std::uint32_t seqLo{0};
+  // Number of zerocopy sends issued, modulo 2^32: sequence number of the next one.
   std::uint32_t seqHi{0};
-  // Minimum payload size for a send to use MSG_ZEROCOPY, 0 when zerocopy is disabled.
-  std::uint32_t minBytes{0};
+  // Number of zerocopy sends completed, modulo 2^32.
+  std::uint32_t nbCompleted{0};
 };
 
 #ifdef AERONET_LINUX
 
-/// Enable MSG_ZEROCOPY on a TCP socket. Call once after socket creation.
-/// Returns the result of the operation.
+/// Enable MSG_ZEROCOPY on a TCP socket: sets SO_ZEROCOPY, inherited by the sockets accepted from a listening socket.
 ZeroCopyEnableResult EnableZeroCopy(NativeHandle fd) noexcept;
 
 #else

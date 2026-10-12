@@ -19,6 +19,10 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#ifdef AERONET_LINUX
+#include <linux/sockios.h>
+#include <sys/ioctl.h>
+#endif
 
 #endif
 
@@ -303,6 +307,16 @@ bool SetAbortiveClose(NativeHandle fd) noexcept {
   return ::setsockopt(fd, SOL_SOCKET, SO_LINGER, &lingerOpt, sizeof(lingerOpt)) == 0;
 #endif
 }
+
+#ifdef AERONET_LINUX
+int64_t SendQueueBytes(NativeHandle fd) noexcept {
+  int queuedBytes = 0;
+  if (::ioctl(fd, SIOCOUTQ, &queuedBytes) == -1) {
+    return -1;
+  }
+  return queuedBytes;
+}
+#endif
 
 int64_t ReadOffset(NativeHandle fd, void* buffer, std::size_t len, std::size_t offset) noexcept {
 #ifdef AERONET_POSIX

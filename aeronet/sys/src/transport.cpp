@@ -14,13 +14,10 @@
 #include <string_view>
 
 #include "aeronet/file.hpp"
-#include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/sendfile.hpp"
 #include "aeronet/system-error.hpp"
 #include "aeronet/transport-result.hpp"
-#include "aeronet/zerocopy-mode.hpp"
-#include "aeronet/zerocopy.hpp"
 
 namespace aeronet {
 
@@ -35,8 +32,9 @@ constexpr int kSendFlags = MSG_NOSIGNAL;
 constexpr int kSendFlags = 0;
 #endif
 
-// Sends 'data' from offset 'ret.bytesProcessed' until it is fully written or the socket would block / fails.
-TransportResult SendAll(NativeHandle fd, std::string_view data, TransportResult ret) {
+// Sends 'data' until it is fully written or the socket would block / fails.
+TransportResult SendAll(NativeHandle fd, std::string_view data) {
+  TransportResult ret;
   while (ret.bytesProcessed < data.size()) {
 #ifdef AERONET_POSIX
     const auto nbWritten = ::send(fd, data.data() + ret.bytesProcessed, data.size() - ret.bytesProcessed, kSendFlags);
@@ -70,21 +68,12 @@ TransportResult SendAll(NativeHandle fd, std::string_view data, TransportResult 
 
 }  // namespace
 
-PlainTransport::PlainTransport(NativeHandle fd, ZerocopyMode zerocopyMode, uint32_t minBytesForZerocopy)
-    : SocketTransportState(fd) {
-  if (zerocopyMode != ZerocopyMode::Disabled) {
-    if (EnableZeroCopy(_fd) == ZeroCopyEnableResult::Enabled) {
-      _zerocopyState.enable(minBytesForZerocopy);
-    } else if (zerocopyMode == ZerocopyMode::Enabled) {
-      log::warn("Failed to enable MSG_ZEROCOPY on fd # {}", fd);
-    }
-  }
-}
-
 TransportResult PlainTransport::read(char* buf, std::size_t len) {
 #ifdef AERONET_POSIX
   const auto nbRead = ::recv(_fd, buf, len, 0);
 #elifdef AERONET_WINDOWS
+  // TODO: is this cast safe ? Cannot we directly check in config.validate() buffer sizes for Windows, so that they
+  // cannot be larger than 2^31 - 1 (INT_MAX) ?
   const auto nbRead = ::recv(_fd, buf, static_cast<int>(len), 0);
 #endif
   TransportResult ret{static_cast<std::size_t>(nbRead), TransportHint::None};
@@ -101,32 +90,12 @@ TransportResult PlainTransport::read(char* buf, std::size_t len) {
   return ret;
 }
 
-TransportResult SocketTransportState::socketWrite(std::string_view data) {
-#ifdef AERONET_LINUX
-  TransportResult ret = _zerocopyState.tryZerocopySend(_fd, data);
-  if (ret.bytesProcessed != 0 || ret.want != TransportHint::None) {
-    return ret;
-  }
-#else
-  TransportResult ret{};
-#endif
-
-  // Regular write path (fallback or small payloads)
-  return SendAll(_fd, data, ret);
-}
+TransportResult SocketTransportState::socketWrite(std::string_view data) const { return SendAll(_fd, data); }
 
 TransportResult SocketTransportState::socketWrite(std::string_view firstBuf, std::string_view secondBuf) {
-#ifdef AERONET_LINUX
-  TransportResult ret = _zerocopyState.tryZerocopySend(_fd, firstBuf, secondBuf);
-  if (ret.bytesProcessed != 0 || ret.want != TransportHint::None) {
-    return ret;
-  }
-#else
-  TransportResult ret{};
-#endif
   // A single buffer is the common case (head and small body stored contiguously): send() is cheaper than sendmsg().
   if (secondBuf.empty()) {
-    return SendAll(_fd, firstBuf, ret);
+    return SendAll(_fd, firstBuf);
   }
   const std::string_view buffers[]{firstBuf, secondBuf};
   return socketWrite(std::span<const std::string_view>(buffers));
@@ -144,8 +113,8 @@ TransportResult SocketTransportState::socketWrite(std::span<const std::string_vi
   TransportResult result{0, TransportHint::None};
   std::size_t bufIdx = 0;  // next buffer to consider
 
-  // This path intentionally uses kernel-copy scatter I/O. HTTP/2 releases accepted
-  // fragments immediately, which is earlier than a MSG_ZEROCOPY completion.
+  // Kernel-copy scatter I/O: HTTP/2 releases accepted fragments immediately, which is earlier than a MSG_ZEROCOPY
+  // completion.
   while (bufIdx < buffers.size()) {
     // Build a batch of at most kMaxGatherBuffers non empty iovecs.
     std::size_t ioVectorCount = 0;

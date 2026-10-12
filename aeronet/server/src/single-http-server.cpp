@@ -12,6 +12,7 @@
 #include <mutex>
 #include <span>
 #include <string_view>
+#include <thread>
 #include <type_traits>
 #include <utility>
 
@@ -810,7 +811,18 @@ void SingleHttpServer::eventLoop() {
         CloseStatus closeStatus = CloseStatus::Keep;
         // EPOLLERR/EPOLLHUP/EPOLLRDHUP can be delivered without EPOLLIN.
         // Treat them as a read trigger so we promptly observe EOF/errors and close.
-        bool readTrigger = (bmp & (EventIn | EventErr | EventHup | EventRdHup)) != 0;
+        EventBmp readEvents = bmp & (EventIn | EventErr | EventHup | EventRdHup);
+#ifdef AERONET_LINUX
+        // EPOLLERR also reports the zerocopy completion notifications queued in the socket error queue: read them,
+        // releasing the buffers of the completed sends. A socket error (reset, timeout) comes with EPOLLHUP: an
+        // EPOLLERR explained by notifications calls for no read.
+        bool zerocopyCompletions = false;
+        if ((bmp & EventErr) != 0 && pollZerocopyCompletions(eventState).nbSends != 0) {
+          readEvents &= ~EventErr;
+          zerocopyCompletions = true;
+        }
+#endif
+        bool readTrigger = readEvents != 0;
         if ((bmp & EventOut) != 0) {
 #ifdef AERONET_ENABLE_OPENSSL
           // A TLS handshake waiting for the socket to be writable (its flight did not fit in the socket send buffer)
@@ -820,9 +832,15 @@ void SingleHttpServer::eventLoop() {
           closeStatus = handleWritableClient(cnxIt);
         }
         if (readTrigger) {
-          closeStatus =
-              std::max(handleReadableClient(cnxIt, (bmp & (EventErr | EventHup | EventRdHup)) == 0), closeStatus);
+          closeStatus = std::max(handleReadableClient(cnxIt, (readEvents & (EventErr | EventHup | EventRdHup)) == 0),
+                                 closeStatus);
         }
+#ifdef AERONET_LINUX
+        else if (zerocopyCompletions && (bmp & EventOut) == 0 && eventState.canCloseConnectionForDrain()) {
+          // A drain close was waiting for these completions.
+          closeStatus = CloseStatus::Close;
+        }
+#endif
         if (closeStatus == CloseStatus::Close) {
           // A handler (e.g. the half-close of a tunnel peer) may have already recycled
           // this connection via a nested closeConnection call. Guard against that.
@@ -901,6 +919,10 @@ void SingleHttpServer::runMaintenance(std::chrono::steady_clock::time_point now)
 
   sweepIdleConnections();
 
+#ifdef AERONET_LINUX
+  releaseResetZerocopyBuffers(now);
+#endif
+
   if (_accessLog) {
     _accessLog.flush();
   }
@@ -975,6 +997,22 @@ void SingleHttpServer::closeListener() noexcept {
   }
 }
 
+#ifdef AERONET_LINUX
+void SingleHttpServer::releaseResetZerocopyBuffers(std::chrono::steady_clock::time_point now) {
+  auto& buffers = _zerocopy.resetBuffers;
+  const auto firstKept = std::ranges::find_if(
+      buffers, [now](const ZerocopyRuntime::ResetBuffer& buffer) { return now < buffer.releaseTime; });
+  buffers.erase(buffers.begin(), firstKept);
+}
+
+void SingleHttpServer::waitForResetZerocopyBuffers() {
+  if (!_zerocopy.resetBuffers.empty()) {
+    std::this_thread::sleep_until(_zerocopy.resetBuffers.back().releaseTime);
+    _zerocopy.resetBuffers.clear();
+  }
+}
+#endif
+
 void SingleHttpServer::closeAllConnections() {
 #ifdef AERONET_WINDOWS
   while (!_connections.empty()) {
@@ -1001,6 +1039,12 @@ ServerStats SingleHttpServer::stats() const {
   statsOut.epollModFailures = _stats.epollModFailures.load();
   statsOut.maxConnectionOutboundBuffer = _stats.maxConnectionOutboundBuffer.load();
   statsOut.totalRequestsServed = _stats.totalRequestsServed.load();
+  statsOut.zerocopySends = _stats.zerocopySends.load();
+  statsOut.zerocopyBytes = _stats.zerocopyBytes.load();
+  statsOut.zerocopyCopiedSends = _stats.zerocopyCopiedSends.load();
+  statsOut.zerocopyNoBufferSpaceFallbacks = _stats.zerocopyNoBufferSpaceFallbacks.load();
+  statsOut.zerocopyRetainLimitFallbacks = _stats.zerocopyRetainLimitFallbacks.load();
+  statsOut.zerocopyResetConnections = _stats.zerocopyResetConnections.load();
 #ifdef AERONET_ENABLE_OPENSSL
   statsOut.tlsHandshakesSucceeded = _tls.metrics.handshakesSucceeded.load();
   statsOut.tlsHandshakesFull = _tls.metrics.handshakesFull.load();

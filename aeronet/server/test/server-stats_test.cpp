@@ -3,9 +3,39 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <string>
+#include <string_view>
 
 namespace aeronet {
+
+TEST(ServerStatsTest, JsonAndFieldsIncludeZerocopyCounters) {
+  ServerStats stats;
+  stats.zerocopySends = 21;
+  stats.zerocopyBytes = 22;
+  stats.zerocopyCopiedSends = 23;
+  stats.zerocopyNoBufferSpaceFallbacks = 24;
+  stats.zerocopyRetainLimitFallbacks = 25;
+  stats.zerocopyResetConnections = 26;
+
+  const std::string json = stats.json_str();
+  EXPECT_TRUE(json.contains("\"zerocopySends\":21"));
+  EXPECT_TRUE(json.contains("\"zerocopyBytes\":22"));
+  EXPECT_TRUE(json.contains("\"zerocopyCopiedSends\":23"));
+  EXPECT_TRUE(json.contains("\"zerocopyNoBufferSpaceFallbacks\":24"));
+  EXPECT_TRUE(json.contains("\"zerocopyRetainLimitFallbacks\":25"));
+  EXPECT_TRUE(json.contains("\"zerocopyResetConnections\":26"));
+  EXPECT_TRUE(json.starts_with('{'));
+  EXPECT_TRUE(json.ends_with('}'));
+
+  uint64_t zerocopySum = 0;
+  stats.for_each_field([&zerocopySum](std::string_view name, uint64_t value) {
+    if (name.starts_with("zerocopy")) {
+      zerocopySum += value;
+    }
+  });
+  EXPECT_EQ(zerocopySum, 21U + 22U + 23U + 24U + 25U + 26U);
+}
 
 #ifdef AERONET_ENABLE_OPENSSL
 TEST(ServerStatsTest, JsonIncludesKtlsFieldsWhenOpenSslEnabled) {

@@ -8,8 +8,6 @@
 #include <wincrypt.h>
 #endif
 
-#include <openssl/evp.h>
-#include <openssl/pem.h>
 #include <openssl/prov_ssl.h>
 #include <openssl/ssl.h>
 #include <openssl/tls1.h>
@@ -278,7 +276,7 @@ HttpClientTlsContext::HttpClientTlsContext(const HttpClientConfig& cfg) {
     }
   }
   ::SSL_set_connect_state(ssl.get());
-  auto backend = std::make_unique<TlsTransport>(std::move(ssl), ~0U);
+  auto backend = std::make_unique<TlsTransport>(std::move(ssl));
   backend->setUnderlyingFd(fd);
   return Transport(std::move(backend));
 }

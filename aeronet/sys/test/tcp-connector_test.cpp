@@ -6,6 +6,7 @@
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <unistd.h>
 
 #include <cassert>
 #include <cerrno>

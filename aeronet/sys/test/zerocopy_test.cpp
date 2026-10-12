@@ -1,12 +1,19 @@
 #include "aeronet/zerocopy.hpp"
 
 #include <gtest/gtest.h>
+#include <linux/errqueue.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 #include <cerrno>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
+#include <string_view>
+#include <thread>
 
 #define AERONET_WANT_READ_WRITE_OVERRIDES
 #define AERONET_WANT_SOCKET_OVERRIDES
@@ -14,14 +21,7 @@
 #include "aeronet/base-fd.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/system-error.hpp"
-#include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
-#include "aeronet/zerocopy-mode.hpp"
-
-#ifdef AERONET_POSIX
-#include <sys/socket.h>
-#include <unistd.h>
-#endif
 
 namespace aeronet {
 
@@ -29,7 +29,7 @@ namespace {
 
 bool IsZeroCopyEnabled(int fd) noexcept {
   int optVal = 0;
-  socklen_t optLen = sizeof(optVal);
+  socklen_t optLen = sizeof(optVal);  // NOLINT(misc-include-cleaner)
   // NOLINTNEXTLINE(misc-include-cleaner)
   if (::getsockopt(fd, SOL_SOCKET, SO_ZEROCOPY, &optVal, &optLen) == -1) {
     return false;
@@ -37,22 +37,32 @@ bool IsZeroCopyEnabled(int fd) noexcept {
   return optVal != 0;
 }
 
-constexpr uint32_t kZeroCopyMinPayloadSize = 1024;  // Minimum size for zerocopy sends in tests
-
-#ifdef AERONET_LINUX
-[[nodiscard]] std::string RecvExactly(int fd, std::size_t size) {
-  std::string recvBuf(size, '\0');
-  for (std::size_t totalRecv = 0; totalRecv < size;) {
-    const auto rc = ::recv(fd, recvBuf.data() + totalRecv, recvBuf.size() - totalRecv, 0);
-    if (rc <= 0) {
-      ADD_FAILURE() << "recv failed with errno=" << errno;
-      break;
+// Both ends of a connected AF_UNIX socket pair. Its sends and error queue reads are driven by the syscall overrides.
+class SocketPair {
+ public:
+  SocketPair() {
+    int fds[2];
+    if (::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0) {
+      _ends[0] = BaseFd(fds[0]);
+      _ends[1] = BaseFd(fds[1]);
     }
-    totalRecv += static_cast<std::size_t>(rc);
   }
-  return recvBuf;
+
+  [[nodiscard]] int fd() const noexcept { return _ends[0].fd(); }
+
+ private:
+  BaseFd _ends[2];
+};
+
+using ErrQueueGuard = test::QueueResetGuard<test::KeyedActionQueue<int, test::ErrQueueNotification>>;
+using IoActionGuard = test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>>;
+
+// A state with 'nbSends' zerocopy sends issued, none completed.
+ZeroCopyState WithSendsInFlight(uint32_t nbSends) {
+  ZeroCopyState state;
+  state.seqHi = nbSends;
+  return state;
 }
-#endif
 
 }  // namespace
 
@@ -99,60 +109,6 @@ TEST(ZeroCopyTest, IsZerocopyEnabledReturnsFalseOnNewSocket) {
 
 TEST(ZeroCopyTest, IsZerocopyEnabledReturnsFalseOnInvalidFd) { EXPECT_FALSE(IsZeroCopyEnabled(-1)); }
 
-TEST(ZeroCopyTest, PollZerocopyCompletionsReturnsZeroWhenNoPending) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
-
-  ZeroCopyState state(0UL);
-
-  // Should return 0 when no completions pending
-  EXPECT_EQ(state.pollZeroCopyCompletions(sv[0]), 0U);
-}
-
-TEST(ZeroCopyTest, AllZerocopyCompletedLogic) {
-  ZeroCopyState state(0UL);
-
-  // Initially no pending completions
-  EXPECT_FALSE(state.pendingCompletions());
-
-  // With pending completions but same seqLo/seqHi
-  state.seqLo = 5;
-  state.seqHi = 5;
-  EXPECT_FALSE(state.pendingCompletions());
-
-  // With pending completions and different seq numbers
-  state.seqHi = 10;
-  EXPECT_TRUE(state.pendingCompletions());
-}
-
-TEST(ZeroCopyTest, DisableKeepsPendingCompletions) {
-  ZeroCopyState state;
-  EXPECT_FALSE(state.enabled());
-  EXPECT_FALSE(state.pendingCompletions());
-
-  state.enable(kZeroCopyMinPayloadSize);
-  EXPECT_TRUE(state.enabled());
-  EXPECT_EQ(state.minBytes, kZeroCopyMinPayloadSize);
-
-  // Three zerocopy sends issued, none completed yet.
-  state.seqHi = 3;
-  state.disable();
-  EXPECT_FALSE(state.enabled());
-  // The kernel may still read the buffers of these sends.
-  EXPECT_TRUE(state.pendingCompletions());
-
-  // Their completion is still tracked once zerocopy is disabled.
-  state.seqLo = 3;
-  EXPECT_FALSE(state.pendingCompletions());
-  EXPECT_FALSE(state.enabled());
-
-  state.enable(kZeroCopyMinPayloadSize);
-  EXPECT_TRUE(state.enabled());
-  EXPECT_FALSE(state.pendingCompletions());
-}
-
 #ifdef AERONET_LINUX
 TEST(ZeroCopyTest, EnableZerocopyReturnsNotSupportedOnEnoprotopt) {
   int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
@@ -189,727 +145,312 @@ TEST(ZeroCopyTest, EnableZerocopyReturnsErrorOnOtherErrno) {
   const auto result = EnableZeroCopy(fd);
   EXPECT_EQ(result, ZeroCopyEnableResult::Error);
 }
-
 #endif  // AERONET_LINUX
 
-// pollZeroCopyCompletions tests moved to zerocopy_completions_test.cpp
-
-// Tests for PlainTransport zerocopy integration
-TEST(PlainTransportZeroCopy, EnableZerocopyOnTransport) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
-
-  PlainTransport transport(sv[0], ZerocopyMode::Opportunistic, kZeroCopyMinPayloadSize);
-
-  // Initially zerocopy should not be enabled
-  EXPECT_FALSE(transport.isZerocopyEnabled());
-  EXPECT_FALSE(transport.hasZerocopyPending());
-
-#ifdef AERONET_LINUX
-  // No pending completions on new transport
-  EXPECT_FALSE(transport.hasZerocopyPending());
-  EXPECT_EQ(transport.pollZerocopyCompletions(), 0U);
-#endif
-}
-
-TEST(PlainTransportZeroCopy, WriteStillWorksWithZerocopyEnabled) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
-
-  test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, kZeroCopyMinPayloadSize);
-
-  // Write should still work regardless
-  const std::string testData = "Hello, zerocopy world!";
-  auto result = transport.write(testData);
-  EXPECT_EQ(result.bytesProcessed, testData.size());
-  EXPECT_EQ(result.want, TransportHint::None);
-
-  // Verify data was received
-  std::string recvBuf(testData.size(), '\0');
-  EXPECT_EQ(::recv(sv[1], recvBuf.data(), recvBuf.size(), 0), static_cast<int64_t>(testData.size()));
-  EXPECT_EQ(recvBuf, testData);
-}
-
-TEST(PlainTransportZeroCopy, LargeWriteWorksWithZerocopyEnabled) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
-
-  // Set socket buffer sizes to allow large writes
-  int sndbuf = 256 * 1024;
-  int rcvbuf = 256 * 1024;
-  // NOLINTNEXTLINE(misc-include-cleaner)
-  ::setsockopt(sv[0], SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
-  // NOLINTNEXTLINE(misc-include-cleaner)
-  ::setsockopt(sv[1], SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
-
-  // Ensure the constructor's setsockopt(SO_ZEROCOPY, ...) is treated as successful
-  test::PushSetsockoptAction({0, 0});
-  uint32_t minBytesForZerocopy = 1024;  // Set low threshold for testing
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, minBytesForZerocopy);
-
-  // Create a payload larger than the zerocopy threshold
-  const std::string largeData(minBytesForZerocopy + 1024, 'Z');
-  auto result = transport.write(largeData);
-  EXPECT_EQ(result.bytesProcessed, largeData.size());
-  EXPECT_EQ(result.want, TransportHint::None);
-
-  // Verify data was received
-  std::string recvBuf(largeData.size(), '\0');
-  std::size_t totalRecv = 0;
-  while (totalRecv < largeData.size()) {
-    const auto rc = ::recv(sv[1], recvBuf.data() + totalRecv, recvBuf.size() - totalRecv, 0);
-    ASSERT_GT(rc, 0) << "recv failed with errno=" << errno;
-    totalRecv += static_cast<std::size_t>(rc);
-  }
-  EXPECT_EQ(recvBuf, largeData);
-}
-
-TEST(PlainTransportZeroCopy, TwoBufWriteStillWorksWithZerocopyEnabled) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
-
-  test::PushSetsockoptAction({0, 0});
-  uint32_t minBytesForZerocopy = 1024;  // Set low threshold for testing
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, minBytesForZerocopy);
-
-  // Two-buffer write (scatter-gather) should still work
-  const std::string head = "HEAD:";
-  const std::string body = "BODY-DATA";
-  auto result = transport.write(head, body);
-  EXPECT_EQ(result.bytesProcessed, head.size() + body.size());
-  EXPECT_EQ(result.want, TransportHint::None);
-
-  // Verify data was received correctly
-  std::string recvBuf(head.size() + body.size(), '\0');
-  EXPECT_EQ(::recv(sv[1], recvBuf.data(), recvBuf.size(), 0), static_cast<int64_t>(recvBuf.size()));
-  EXPECT_EQ(recvBuf, head + body);
-}
-
-TEST(PlainTransportZeroCopy, DisableZerocopyWorks) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
-
-  test::PushSetsockoptAction({0, 0});
-  uint32_t minBytesForZerocopy = 1024;  // Set low threshold for testing
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, minBytesForZerocopy);
-
-  // then disable zerocopy
-  transport.disableZerocopy();
-
-  EXPECT_FALSE(transport.isZerocopyEnabled());
-}
-
-#ifdef AERONET_LINUX
-
-// Tests for transport zerocopy path using mocked sendmsg
-
-TEST(PlainTransportZeroCopy, ZerocopySendSuccessPathWithMockedSendmsg) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
-
-  // Set up large socket buffers
-  int sndbuf = 256 * 1024;
-  int rcvbuf = 256 * 1024;
-  ::setsockopt(sv[0], SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
-  ::setsockopt(sv[1], SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
-
-  test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, kZeroCopyMinPayloadSize);
-
-  // Create large payload to trigger zerocopy path
-  const std::size_t payloadSize = kZeroCopyMinPayloadSize + 1024;
-  const std::string largeData(payloadSize, 'X');
-
-  // Mock sendmsg to return full payload sent (simulating successful zerocopy)
-  test::SetSendmsgActions(sv[0], {IoAction{static_cast<int64_t>(payloadSize), 0}});
-  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
-
-  auto result = transport.write(largeData);
-  EXPECT_EQ(result.bytesProcessed, payloadSize);
-  EXPECT_EQ(result.want, TransportHint::None);
-
-  // Verify zerocopy was marked as pending (since send succeeded)
-  EXPECT_TRUE(transport.hasZerocopyPending());
-}
-
-TEST(PlainTransportZeroCopy, DisableKeepsInFlightSendPendingUntilCompletion) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
-
-  int sndbuf = 256 * 1024;
-  int rcvbuf = 256 * 1024;
-  ::setsockopt(sv[0], SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
-  ::setsockopt(sv[1], SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
-
-  test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, kZeroCopyMinPayloadSize);
-  ASSERT_TRUE(transport.isZerocopyEnabled());
-
-  const std::size_t payloadSize = kZeroCopyMinPayloadSize + 1024;
-  const std::string largeData(payloadSize, 'X');
-
-  // First sendmsg simulates a successful MSG_ZEROCOPY send. The second one would make the write fail if zerocopy were
-  // still attempted after being disabled.
-  test::SetSendmsgActions(sv[0], {IoAction{static_cast<int64_t>(payloadSize), 0}, IoAction{-1, EPIPE}});
-  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> sendmsgGuard(test::g_sendmsg_actions);
-
-  auto result = transport.write(largeData);
-  EXPECT_EQ(result.bytesProcessed, payloadSize);
-  EXPECT_EQ(result.want, TransportHint::None);
-  ASSERT_TRUE(transport.hasZerocopyPending());
-
-  transport.disableZerocopy();
-  EXPECT_FALSE(transport.isZerocopyEnabled());
-  // The kernel may still read the pages of the in-flight send: it must stay tracked.
-  EXPECT_TRUE(transport.hasZerocopyPending());
-
-  // Subsequent sends use the regular (copying) write path.
-  const std::string otherData(payloadSize, 'Y');
-  result = transport.write(otherData);
-  EXPECT_EQ(result.bytesProcessed, payloadSize);
-  EXPECT_EQ(result.want, TransportHint::None);
-  EXPECT_EQ(RecvExactly(sv[1], payloadSize), otherData);
-  EXPECT_TRUE(transport.hasZerocopyPending());
-
-  // The completion notification of the in-flight send releases it.
-  test::g_recvmsg_actions.setActions(sv[0], {IoAction{0, 0}, IoAction{-1, error::kWouldBlock}});
-  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> recvmsgGuard(test::g_recvmsg_actions);
-  EXPECT_EQ(transport.pollZerocopyCompletions(), 1U);
-  EXPECT_FALSE(transport.hasZerocopyPending());
-}
-
-TEST(PlainTransportZeroCopy, ZerocopySendNotSupportedDisablesZerocopyButKeepsInFlightSendPending) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
-
-  int sndbuf = 256 * 1024;
-  int rcvbuf = 256 * 1024;
-  ::setsockopt(sv[0], SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
-  ::setsockopt(sv[1], SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
-
-  test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, kZeroCopyMinPayloadSize);
-  ASSERT_TRUE(transport.isZerocopyEnabled());
-
-  const std::size_t payloadSize = kZeroCopyMinPayloadSize + 1024;
-  const std::string firstData(payloadSize, 'X');
-  const std::string secondData(payloadSize, 'Y');
-
-  // First send succeeds with MSG_ZEROCOPY, the second one reports that zerocopy is not supported.
-  test::SetSendmsgActions(sv[0], {IoAction{static_cast<int64_t>(payloadSize), 0}, IoAction{-1, EOPNOTSUPP}});
-  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> sendmsgGuard(test::g_sendmsg_actions);
-
-  auto result = transport.write(firstData);
-  EXPECT_EQ(result.bytesProcessed, payloadSize);
-  ASSERT_TRUE(transport.hasZerocopyPending());
-
-  // Falls back to the regular write path for this send, and disables zerocopy for the next ones.
-  result = transport.write(secondData);
-  EXPECT_EQ(result.bytesProcessed, payloadSize);
-  EXPECT_EQ(result.want, TransportHint::None);
-  EXPECT_EQ(RecvExactly(sv[1], payloadSize), secondData);
-  EXPECT_FALSE(transport.isZerocopyEnabled());
-  EXPECT_TRUE(transport.hasZerocopyPending());
-}
-
-TEST(PlainTransportZeroCopy, ZerocopySendEAGAINReturnsWriteReady) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
-
-  test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, kZeroCopyMinPayloadSize);
-
-  const std::size_t payloadSize = kZeroCopyMinPayloadSize + 1024;
-  const std::string largeData(payloadSize, 'Y');
-
-  // Mock sendmsg to return EAGAIN (kernel buffer full)
-  test::SetSendmsgActions(sv[0], {IoAction{-1, error::kWouldBlock}});
-  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
-
-  auto result = transport.write(largeData);
-  EXPECT_EQ(result.bytesProcessed, 0U);
-  EXPECT_EQ(result.want, TransportHint::WriteReady);
-}
-
-TEST(PlainTransportZeroCopy, ZerocopySendEINTRFallsBackToRegularWrite) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
-
-  // Set up large socket buffers
-  int sndbuf = 256 * 1024;
-  int rcvbuf = 256 * 1024;
-  ::setsockopt(sv[0], SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
-  ::setsockopt(sv[1], SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
-
-  test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, kZeroCopyMinPayloadSize);
-
-  const std::size_t payloadSize = kZeroCopyMinPayloadSize + 1024;
-  const std::string largeData(payloadSize, 'Z');
-
-  // Mock sendmsg to return error::kInterrupted (signal interrupted), which should fall through to regular write
-  test::SetSendmsgActions(sv[0], {IoAction{-1, error::kInterrupted}});
-  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
-
-  auto result = transport.write(largeData);
-  // Should succeed via regular write fallback
-  EXPECT_EQ(result.bytesProcessed, payloadSize);
-  EXPECT_EQ(result.want, TransportHint::None);
-
-  // Read back the data to verify it was sent via regular write
-  std::string recvBuf(payloadSize, '\0');
-  std::size_t totalRecv = 0;
-  while (totalRecv < payloadSize) {
-    const auto rc = ::recv(sv[1], recvBuf.data() + totalRecv, recvBuf.size() - totalRecv, 0);
-    ASSERT_GT(rc, 0) << "recv failed with errno=" << errno;
-    totalRecv += static_cast<std::size_t>(rc);
-  }
-  EXPECT_EQ(recvBuf, largeData);
-}
-
-TEST(PlainTransportZeroCopy, ZerocopySendOtherErrorReturnsError) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
-
-  test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, kZeroCopyMinPayloadSize);
-
-  const std::size_t payloadSize = kZeroCopyMinPayloadSize + 1024;
-  const std::string largeData(payloadSize, 'E');
-
-  // Mock sendmsg to return a fatal error (error::kBrokenPipe - broken pipe)
-  test::SetSendmsgActions(sv[0], {IoAction{-1, error::kBrokenPipe}});
-  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
-
-  auto result = transport.write(largeData);
-  EXPECT_EQ(result.bytesProcessed, 0U);
-  EXPECT_EQ(result.want, TransportHint::Error);
-}
-
-TEST(PlainTransportZeroCopy, ZerocopySendPartialWriteReturnsPartialBytes) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
-
-  test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, kZeroCopyMinPayloadSize);
-
-  const std::size_t payloadSize = kZeroCopyMinPayloadSize + 1024;
-  const std::string largeData(payloadSize, 'P');
-
-  // Mock sendmsg to return partial write (only half the data)
-  const auto partialBytes = static_cast<int64_t>(payloadSize / 2);
-  test::SetSendmsgActions(sv[0], {IoAction{partialBytes, 0}});
-  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
-
-  auto result = transport.write(largeData);
-  EXPECT_EQ(result.bytesProcessed, static_cast<std::size_t>(partialBytes));
-  EXPECT_EQ(result.want, TransportHint::None);
-  EXPECT_TRUE(transport.hasZerocopyPending());
-}
-
-TEST(PlainTransportZeroCopy, ZerocopySendTwoBufSuccessPathWithMockedSendmsg) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
-
-  test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, kZeroCopyMinPayloadSize);
-
-  const std::string head(4, 'H');
-  const std::string body(kZeroCopyMinPayloadSize + 64, 'B');
-  const std::size_t payloadSize = head.size() + body.size();
-
-  // Mock sendmsg to return full payload sent (simulating successful zerocopy)
-  test::SetSendmsgActions(sv[0], {IoAction{static_cast<int64_t>(payloadSize), 0}});
-  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
-
-  auto result = transport.write(head, body);
-  EXPECT_EQ(result.bytesProcessed, payloadSize);
-  EXPECT_EQ(result.want, TransportHint::None);
-  EXPECT_TRUE(transport.hasZerocopyPending());
-}
-
-TEST(PlainTransportZeroCopy, ZerocopySendTwoBufEAGAINReturnsWriteReady) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
-
-  test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, kZeroCopyMinPayloadSize);
-
-  const std::string head(4, 'H');
-  const std::string body(kZeroCopyMinPayloadSize + 64, 'B');
-
-  // Mock sendmsg to return EAGAIN (kernel buffer full)
-  test::SetSendmsgActions(sv[0], {IoAction{-1, error::kWouldBlock}});
-  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
-
-  auto result = transport.write(head, body);
-  EXPECT_EQ(result.bytesProcessed, 0U);
-  EXPECT_EQ(result.want, TransportHint::WriteReady);
-}
-
-TEST(PlainTransportZeroCopy, ZerocopySendTwoBufEINTRFallsBackToWritev) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
-
-  test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, kZeroCopyMinPayloadSize);
-
-  const std::string head(4, 'H');
-  const std::string body(kZeroCopyMinPayloadSize + 64, 'B');
-  const std::size_t payloadSize = head.size() + body.size();
-
-  // Mock sendmsg to return error::kInterrupted (signal interrupted), which should fall through to regular writev
-  test::SetSendmsgActions(sv[0], {IoAction{-1, error::kInterrupted}});
-  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
-
-  auto result = transport.write(head, body);
-  EXPECT_EQ(result.bytesProcessed, payloadSize);
-  EXPECT_EQ(result.want, TransportHint::None);
-
-  // Read back the data to verify it was sent via regular writev
-  std::string recvBuf(payloadSize, '\0');
-  std::size_t totalRecv = 0;
-  while (totalRecv < payloadSize) {
-    const auto rc = ::recv(sv[1], recvBuf.data() + totalRecv, recvBuf.size() - totalRecv, 0);
-    ASSERT_GT(rc, 0) << "recv failed with errno=" << errno;
-    totalRecv += static_cast<std::size_t>(rc);
-  }
-  EXPECT_EQ(recvBuf, head + body);
-}
-
-TEST(PlainTransportZeroCopy, ZerocopySendTwoBufOtherErrorReturnsError) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
-
-  test::PushSetsockoptAction({0, 0});
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, kZeroCopyMinPayloadSize);
-
-  const std::string head(4, 'H');
-  const std::string body(kZeroCopyMinPayloadSize + 64, 'B');
-
-  // Mock sendmsg to return a fatal error (error::kBrokenPipe - broken pipe)
-  test::SetSendmsgActions(sv[0], {IoAction{-1, error::kBrokenPipe}});
-  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
-
-  auto result = transport.write(head, body);
-  EXPECT_EQ(result.bytesProcessed, 0U);
-  EXPECT_EQ(result.want, TransportHint::Error);
-}
-
-TEST(PlainTransportZeroCopy, ZerocopySendTwoBufPartialWriteReturnsPartialBytes) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
-
-  test::PushSetsockoptAction({0, 0});
-  const uint32_t minBytesForZerocopy = 1024;
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, minBytesForZerocopy);
-
-  const std::string head(4, 'H');
-  const std::string body(minBytesForZerocopy + 64, 'B');
-  const std::size_t payloadSize = head.size() + body.size();
-
-  // Mock sendmsg to return partial write (only half the data)
-  const auto partialBytes = static_cast<int64_t>(payloadSize / 2);
-  test::SetSendmsgActions(sv[0], {IoAction{partialBytes, 0}});
-  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
-
-  auto result = transport.write(head, body);
-  EXPECT_EQ(result.bytesProcessed, static_cast<std::size_t>(partialBytes));
-  EXPECT_EQ(result.want, TransportHint::None);
-  EXPECT_TRUE(transport.hasZerocopyPending());
-}
-
-TEST(PlainTransportZeroCopy, ConstructorWarnsWhenEnableFails) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
-
-  for (auto zerocopyMode : {ZerocopyMode::Enabled, ZerocopyMode::Opportunistic}) {
-    // Simulate setsockopt(SO_ZEROCOPY) failing (NotSupported or Error)
-    test::PushSetsockoptAction({-1, ENOPROTOOPT});
-
-    // Construct transport requesting zerocopy enabled; constructor should attempt to enable
-    const uint32_t minBytesForZerocopy = 1024;
-    PlainTransport transport(sv[0], zerocopyMode, minBytesForZerocopy);
-
-    // Zerocopy should not be enabled due to the simulated failure
-    EXPECT_FALSE(transport.isZerocopyEnabled());
-  }
-}
-
-TEST(PollZeroCopyCompletionsTest, HandlesEagainAndKeepsPending) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
-
-  ZeroCopyState state(0U);
-  state.seqLo = 0;
-  state.seqHi = 10;
-
-  test::g_recvmsg_actions.setActions(sv[0], {IoAction{-1, error::kWouldBlock}});
-  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_recvmsg_actions);
-
-  const auto comps = state.pollZeroCopyCompletions(sv[0]);
-  EXPECT_EQ(comps, 0U);
-  EXPECT_TRUE(state.pendingCompletions());
-}
-
-TEST(PollZeroCopyCompletionsTest, HandlesOtherErrnoAndKeepsPending) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
-
-  ZeroCopyState state(0U);
-  state.seqLo = 1;
-  state.seqHi = 5;
-
-  test::g_recvmsg_actions.setActions(sv[0], {IoAction{-1, error::kWouldBlock}});
-  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_recvmsg_actions);
-
-  const auto comps = state.pollZeroCopyCompletions(sv[0]);
-  EXPECT_EQ(comps, 0U);
-  EXPECT_TRUE(state.pendingCompletions());
-}
-
-TEST(PollZeroCopyCompletionsTest, ParsesZerocopyCompletion) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
-
-  ZeroCopyState state(0U);
-  state.seqLo = 0;
-  state.seqHi = 43;
-
-  test::g_recvmsg_actions.setActions(sv[0], {IoAction{0, 0}, IoAction{-1, error::kWouldBlock}});
-  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_recvmsg_actions);
-
-  const auto comps = state.pollZeroCopyCompletions(sv[0]);
-  EXPECT_EQ(comps, 1U);
-  EXPECT_EQ(state.seqLo, 43U);
+// ---------------------------------------------------------------------------
+// Tracking of the completions
+// ---------------------------------------------------------------------------
+
+TEST(ZeroCopyStateTest, NothingPendingInitially) {
+  const ZeroCopyState state;
   EXPECT_FALSE(state.pendingCompletions());
+  EXPECT_EQ(state.nextSeq(), 0U);
+  EXPECT_TRUE(state.completedBefore(state.nextSeq()));
 }
 
-TEST(PollZeroCopyCompletionsTest, ParsesIpv6ZerocopyCompletion) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
+TEST(ZeroCopyStateTest, InOrderCompletionsAdvanceTheWatermark) {
+  ZeroCopyState state = WithSendsInFlight(3);
+  EXPECT_TRUE(state.pendingCompletions());
+  EXPECT_FALSE(state.completedBefore(1));
 
-  ZeroCopyState state(0U);
-  state.seqLo = 0;
-  state.seqHi = 43;
+  state.complete(0, 0);
+  EXPECT_TRUE(state.pendingCompletions());
+  EXPECT_TRUE(state.completedBefore(1));
+  EXPECT_FALSE(state.completedBefore(2));
 
-  // mode: first value = 6 -> IPv6; second value = 1 -> keep zerocopy origin
-  test::g_recvmsg_modes.setActions(sv[0], {6, 1});
-  test::g_recvmsg_actions.setActions(sv[0], {IoAction{0, 0}, IoAction{-1, error::kWouldBlock}});
-  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guardA(test::g_recvmsg_actions);
-  test::QueueResetGuard<test::KeyedActionQueue<int, int>> guardB(test::g_recvmsg_modes);
-
-  const auto comps = state.pollZeroCopyCompletions(sv[0]);
-  EXPECT_EQ(comps, 1U);
-  EXPECT_EQ(state.seqLo, 43U);
+  // The kernel coalesces the notifications of consecutive sends into one range.
+  state.complete(1, 2);
   EXPECT_FALSE(state.pendingCompletions());
+  EXPECT_TRUE(state.completedBefore(3));
+  EXPECT_EQ(state.nbCompleted, 3U);
 }
 
-TEST(PollZeroCopyCompletionsTest, IgnoresNonZerocopyOrigin) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
-
-  ZeroCopyState state(0U);
-  state.seqLo = 7;
-  state.seqHi = 10;
-
-  // mode: single value 2 -> non-zerocopy origin
-  test::g_recvmsg_modes.setActions(sv[0], {2});
-  test::g_recvmsg_actions.setActions(sv[0], {IoAction{0, 0}, IoAction{-1, error::kWouldBlock}});
-  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guardA(test::g_recvmsg_actions);
-  test::QueueResetGuard<test::KeyedActionQueue<int, int>> guardB(test::g_recvmsg_modes);
-
-  const auto comps = state.pollZeroCopyCompletions(sv[0]);
-  EXPECT_EQ(comps, 0U);
+TEST(ZeroCopyStateTest, OutOfOrderCompletionKeepsEarlierSendPending) {
+  // The completion of send 1 may arrive before the one of send 0 (retransmission of send 0): send 0 is still in flight.
+  ZeroCopyState state = WithSendsInFlight(2);
+  state.complete(1, 1);
   EXPECT_TRUE(state.pendingCompletions());
-  EXPECT_EQ(state.seqLo, 7U);
-}
+  EXPECT_FALSE(state.completedBefore(1));
+  EXPECT_FALSE(state.completedBefore(2));
 
-TEST(PollZeroCopyCompletionsTest, IgnoresUnknownControlMessage) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
-
-  ZeroCopyState state(0U);
-  state.seqLo = 2;
-  state.seqHi = 5;
-
-  // mode: 7 => set cmsg_type to non-IP_RECVERR (causes continue path)
-  test::g_recvmsg_modes.setActions(sv[0], {7, 1});
-  test::g_recvmsg_actions.setActions(sv[0], {IoAction{0, 0}, IoAction{-1, error::kWouldBlock}});
-  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guardA(test::g_recvmsg_actions);
-  test::QueueResetGuard<test::KeyedActionQueue<int, int>> guardB(test::g_recvmsg_modes);
-
-  const auto comps = state.pollZeroCopyCompletions(sv[0]);
-  EXPECT_EQ(comps, 0U);
-  EXPECT_TRUE(state.pendingCompletions());
+  state.complete(0, 0);
+  EXPECT_FALSE(state.pendingCompletions());
+  EXPECT_TRUE(state.completedBefore(2));
   EXPECT_EQ(state.seqLo, 2U);
 }
 
-TEST(PollZeroCopyCompletionsTest, SkipsWhenNoControlMessage) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
+TEST(ZeroCopyStateTest, WatermarkIsALowerBoundWhileCompletionsAreOutOfOrder) {
+  ZeroCopyState state = WithSendsInFlight(4);
+  state.complete(2, 3);
+  EXPECT_FALSE(state.completedBefore(1));
 
-  ZeroCopyState state(0U);
-  state.seqLo = 4;
-  state.seqHi = 10;
-
-  // mode: 8 => do not populate control message (CMSG_FIRSTHDR should be nullptr)
-  test::g_recvmsg_modes.setActions(sv[0], {8});
-  test::g_recvmsg_actions.setActions(sv[0], {IoAction{0, 0}, IoAction{-1, error::kWouldBlock}});
-  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guardA(test::g_recvmsg_actions);
-  test::QueueResetGuard<test::KeyedActionQueue<int, int>> guardB(test::g_recvmsg_modes);
-
-  const auto comps = state.pollZeroCopyCompletions(sv[0]);
-  EXPECT_EQ(comps, 0U);
+  state.complete(0, 0);
+  EXPECT_TRUE(state.completedBefore(1));
+  // Sends 2 and 3 completed, but only send 1 tells when the watermark can pass them.
+  EXPECT_FALSE(state.completedBefore(2));
   EXPECT_TRUE(state.pendingCompletions());
-  EXPECT_EQ(state.seqLo, 4U);
+
+  state.complete(1, 1);
+  EXPECT_FALSE(state.pendingCompletions());
+  EXPECT_TRUE(state.completedBefore(4));
 }
 
-TEST(PollZeroCopyCompletionsTest, IgnoresIpv6WithWrongType) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
-
-  ZeroCopyState state(0U);
-  state.seqLo = 9;
-  state.seqHi = 20;
-
-  // mode: 9 => SOL_IPV6 but cmsg_type != IPV6_RECVERR (should continue)
-  test::g_recvmsg_modes.setActions(sv[0], {9});
-  test::g_recvmsg_actions.setActions(sv[0], {IoAction{0, 0}, IoAction{-1, error::kWouldBlock}});
-  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guardA(test::g_recvmsg_actions);
-  test::QueueResetGuard<test::KeyedActionQueue<int, int>> guardB(test::g_recvmsg_modes);
-
-  const auto comps = state.pollZeroCopyCompletions(sv[0]);
-  EXPECT_EQ(comps, 0U);
+TEST(ZeroCopyStateTest, SequenceNumbersWrapAround) {
+  static constexpr uint32_t kMax = std::numeric_limits<uint32_t>::max();
+  ZeroCopyState state;
+  state.seqLo = kMax - 1U;
+  state.nbCompleted = kMax - 1U;
+  state.seqHi = 1U;  // sends kMax - 1, kMax and 0 in flight
   EXPECT_TRUE(state.pendingCompletions());
-  EXPECT_EQ(state.seqLo, 9U);
+  EXPECT_FALSE(state.completedBefore(kMax));
+
+  state.complete(kMax - 1U, kMax);
+  EXPECT_TRUE(state.completedBefore(kMax));
+  EXPECT_TRUE(state.completedBefore(0));
+  EXPECT_FALSE(state.completedBefore(1));
+  EXPECT_TRUE(state.pendingCompletions());
+
+  state.complete(0, 0);
+  EXPECT_FALSE(state.pendingCompletions());
+  EXPECT_TRUE(state.completedBefore(1));
 }
 
-TEST(PlainTransportZeroCopy, ZerocopySendENOBUFSFallsBackToRegularWrite) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
+#ifdef AERONET_LINUX
 
-  // Set up large socket buffers
-  int sndbuf = 256 * 1024;
-  int rcvbuf = 256 * 1024;
-  ::setsockopt(sv[0], SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
-  ::setsockopt(sv[1], SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+// ---------------------------------------------------------------------------
+// Sends
+// ---------------------------------------------------------------------------
 
-  test::PushSetsockoptAction({0, 0});
-  const uint32_t minBytesForZerocopy = 1024;
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, minBytesForZerocopy);
-
-  const std::size_t payloadSize = minBytesForZerocopy + 1024;
-  const std::string largeData(payloadSize, 'N');
-
-  // Mock sendmsg to return error::kNoBufferSpace (kernel cannot pin more pages for zerocopy).
-  // This is a transient condition — the transport must fall through to regular write.
-  test::SetSendmsgActions(sv[0], {IoAction{-1, error::kNoBufferSpace}});
-  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
-
-  auto result = transport.write(largeData);
-  // Should succeed via regular write fallback, NOT return Error.
-  EXPECT_EQ(result.bytesProcessed, payloadSize);
-  EXPECT_EQ(result.want, TransportHint::None);
-
-  // Read back the data to verify it was sent via regular write
-  std::string recvBuf(payloadSize, '\0');
-  std::size_t totalRecv = 0;
-  while (totalRecv < payloadSize) {
-    const auto rc = ::recv(sv[1], recvBuf.data() + totalRecv, recvBuf.size() - totalRecv, 0);
-    ASSERT_GT(rc, 0) << "recv failed with errno=" << errno;
-    totalRecv += static_cast<std::size_t>(rc);
-  }
-  EXPECT_EQ(recvBuf, largeData);
-}
-
-TEST(PlainTransportZeroCopy, ZerocopySendTwoBufENOBUFSFallsBackToWritev) {
-  int sv[2];
-  ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd guard0(sv[0]);
-  BaseFd guard1(sv[1]);
-
-  test::PushSetsockoptAction({0, 0});
-  const uint32_t minBytesForZerocopy = 1024;
-  PlainTransport transport(sv[0], ZerocopyMode::Enabled, minBytesForZerocopy);
-
+TEST(ZeroCopySendTest, SuccessfulSendIsNumbered) {
+  SocketPair pair;
   const std::string head(4, 'H');
-  const std::string body(minBytesForZerocopy + 64, 'B');
-  const std::size_t payloadSize = head.size() + body.size();
+  const std::string body(4096, 'B');
 
-  // Mock sendmsg to return error::kNoBufferSpace (kernel cannot pin more pages for zerocopy).
-  // This is a transient condition — the transport must fall through to regular writev.
-  test::SetSendmsgActions(sv[0], {IoAction{-1, error::kNoBufferSpace}});
-  test::QueueResetGuard<test::KeyedActionQueue<int, IoAction>> guard(test::g_sendmsg_actions);
+  test::SetSendmsgActions(pair.fd(), {
+                                         IoAction{static_cast<int64_t>(head.size() + body.size()), 0},
+                                         IoAction{static_cast<int64_t>(body.size() / 2), 0},
+                                     });
+  IoActionGuard guard(test::g_sendmsg_actions);
 
-  auto result = transport.write(head, body);
-  EXPECT_EQ(result.bytesProcessed, payloadSize);
-  EXPECT_EQ(result.want, TransportHint::None);
+  ZeroCopyState state;
+  auto res = state.send(pair.fd(), head, body);
+  EXPECT_EQ(res.status, ZerocopySendStatus::Sent);
+  EXPECT_EQ(res.bytesSent, head.size() + body.size());
+  EXPECT_EQ(state.nextSeq(), 1U);
+  EXPECT_TRUE(state.pendingCompletions());
 
-  // Read back the data to verify it was sent via regular writev
-  std::string recvBuf(payloadSize, '\0');
-  std::size_t totalRecv = 0;
-  while (totalRecv < payloadSize) {
-    const auto rc = ::recv(sv[1], recvBuf.data() + totalRecv, recvBuf.size() - totalRecv, 0);
-    ASSERT_GT(rc, 0) << "recv failed with errno=" << errno;
-    totalRecv += static_cast<std::size_t>(rc);
+  // A partial send of a single buffer is a send too.
+  res = state.send(pair.fd(), {}, body);
+  EXPECT_EQ(res.status, ZerocopySendStatus::Sent);
+  EXPECT_EQ(res.bytesSent, body.size() / 2);
+  EXPECT_EQ(state.nextSeq(), 2U);
+}
+
+TEST(ZeroCopySendTest, FailedSendsAreNotNumbered) {
+  struct Case {
+    int err;
+    ZerocopySendStatus status;
+  };
+  for (const Case testCase : {
+           Case{error::kWouldBlock, ZerocopySendStatus::WouldBlock},
+           Case{error::kInterrupted, ZerocopySendStatus::Interrupted},
+           Case{error::kNoBufferSpace, ZerocopySendStatus::NoBufferSpace},
+           Case{EOPNOTSUPP, ZerocopySendStatus::NotSupported},
+           Case{error::kBrokenPipe, ZerocopySendStatus::Error},
+       }) {
+    SocketPair pair;
+    test::SetSendmsgActions(pair.fd(), {IoAction{-1, testCase.err}});
+    IoActionGuard guard(test::g_sendmsg_actions);
+
+    ZeroCopyState state;
+    const auto res = state.send(pair.fd(), "data", {});
+    EXPECT_EQ(res.status, testCase.status) << "errno " << testCase.err;
+    EXPECT_EQ(res.bytesSent, 0U);
+    // The kernel gives the sequence number of a failed send back.
+    EXPECT_EQ(state.nextSeq(), 0U);
+    EXPECT_FALSE(state.pendingCompletions());
   }
-  EXPECT_EQ(recvBuf, head + body);
+}
+
+// ---------------------------------------------------------------------------
+// Completion notifications
+// ---------------------------------------------------------------------------
+
+TEST(ZeroCopyPollTest, NoErrorQueueReadWithoutSendsInFlight) {
+  SocketPair pair;
+  ErrQueueGuard guard(test::g_errqueue_notifications);
+  test::PushErrQueueNotification(pair.fd(), {.first = 0, .last = 0});
+
+  ZeroCopyState state;
+  const auto completions = state.pollCompletions(pair.fd());
+  EXPECT_EQ(completions.nbSends, 0U);
+  EXPECT_EQ(test::g_errqueue_notifications.size(pair.fd()), 1U);
+}
+
+TEST(ZeroCopyPollTest, ReadsNotificationsUntilAllSendsCompleted) {
+  SocketPair pair;
+  ErrQueueGuard guard(test::g_errqueue_notifications);
+  test::PushErrQueueNotification(pair.fd(), {.first = 0, .last = 0});
+  test::PushErrQueueNotification(pair.fd(), {.first = 1, .last = 2});
+  // Not read: all the sends completed before.
+  test::PushErrQueueNotification(pair.fd(), {.first = 3, .last = 3});
+
+  ZeroCopyState state = WithSendsInFlight(3);
+  const auto completions = state.pollCompletions(pair.fd());
+  EXPECT_EQ(completions.nbSends, 3U);
+  EXPECT_EQ(completions.nbCopiedSends, 0U);
+  EXPECT_FALSE(state.pendingCompletions());
+  EXPECT_EQ(test::g_errqueue_notifications.size(pair.fd()), 1U);
+}
+
+TEST(ZeroCopyPollTest, StopsOnEmptyErrorQueue) {
+  SocketPair pair;
+  ErrQueueGuard notificationsGuard(test::g_errqueue_notifications);
+  IoActionGuard actionsGuard(test::g_recvmsg_actions);
+  test::PushErrQueueNotification(pair.fd(), {.first = 0, .last = 0});
+  test::g_recvmsg_actions.setActions(pair.fd(), {IoAction{-1, error::kWouldBlock}});
+
+  ZeroCopyState state = WithSendsInFlight(3);
+  const auto completions = state.pollCompletions(pair.fd());
+  EXPECT_EQ(completions.nbSends, 1U);
+  EXPECT_TRUE(state.pendingCompletions());
+  EXPECT_TRUE(state.completedBefore(1));
+  EXPECT_FALSE(state.completedBefore(2));
+}
+
+TEST(ZeroCopyPollTest, OutOfOrderNotificationsKeepEarlierSendsPending) {
+  SocketPair pair;
+  ErrQueueGuard notificationsGuard(test::g_errqueue_notifications);
+  IoActionGuard actionsGuard(test::g_recvmsg_actions);
+  test::PushErrQueueNotification(pair.fd(), {.first = 1, .last = 1});
+  test::g_recvmsg_actions.setActions(pair.fd(), {IoAction{-1, error::kWouldBlock}});
+
+  ZeroCopyState state = WithSendsInFlight(2);
+  EXPECT_EQ(state.pollCompletions(pair.fd()).nbSends, 1U);
+  // Send 0 may still be read by the kernel (its retransmission): its buffers must be kept.
+  EXPECT_TRUE(state.pendingCompletions());
+  EXPECT_FALSE(state.completedBefore(1));
+
+  test::PushErrQueueNotification(pair.fd(), {.first = 0, .last = 0});
+  EXPECT_EQ(state.pollCompletions(pair.fd()).nbSends, 1U);
+  EXPECT_FALSE(state.pendingCompletions());
+  EXPECT_TRUE(state.completedBefore(2));
+}
+
+TEST(ZeroCopyPollTest, CountsSendsCopiedByTheKernel) {
+  SocketPair pair;
+  ErrQueueGuard guard(test::g_errqueue_notifications);
+  test::PushErrQueueNotification(pair.fd(), {.first = 0, .last = 1, .code = SO_EE_CODE_ZEROCOPY_COPIED});
+  test::PushErrQueueNotification(pair.fd(), {.first = 2, .last = 2});
+
+  ZeroCopyState state = WithSendsInFlight(3);
+  const auto completions = state.pollCompletions(pair.fd());
+  EXPECT_EQ(completions.nbSends, 3U);
+  EXPECT_EQ(completions.nbCopiedSends, 2U);
+  EXPECT_FALSE(state.pendingCompletions());
+}
+
+TEST(ZeroCopyPollTest, IgnoresOtherErrorQueueMessages) {
+  SocketPair pair;
+  ErrQueueGuard notificationsGuard(test::g_errqueue_notifications);
+  IoActionGuard actionsGuard(test::g_recvmsg_actions);
+  const int fd = pair.fd();
+  // Not a zerocopy notification
+  test::PushErrQueueNotification(fd, {.first = 0, .last = 0, .origin = SO_EE_ORIGIN_LOCAL});
+  // An error, not a completion
+  test::PushErrQueueNotification(fd, {.first = 0, .last = 0, .errnoValue = ECONNRESET});
+  // Unknown control message types
+  test::PushErrQueueNotification(fd, {.first = 0, .last = 0, .type = 0});
+  test::PushErrQueueNotification(fd, {.first = 0, .last = 0, .level = SOL_IPV6, .type = 0});
+  // No control message at all
+  test::PushErrQueueNotification(fd, {.controlMessage = false});
+  // The notification of an IPv6 socket
+  test::PushErrQueueNotification(fd, {.first = 0, .last = 0, .level = SOL_IPV6, .type = IPV6_RECVERR});
+  test::g_recvmsg_actions.setActions(fd, {IoAction{-1, error::kWouldBlock}});
+
+  ZeroCopyState state = WithSendsInFlight(2);
+  const auto completions = state.pollCompletions(fd);
+  EXPECT_EQ(completions.nbSends, 1U);
+  EXPECT_TRUE(state.pendingCompletions());
+  EXPECT_TRUE(state.completedBefore(1));
+  EXPECT_EQ(test::g_errqueue_notifications.size(fd), 0U);
+}
+
+TEST(ZeroCopyPollTest, StopsOnErrorQueueReadFailure) {
+  SocketPair pair;
+  IoActionGuard guard(test::g_recvmsg_actions);
+  test::g_recvmsg_actions.setActions(pair.fd(), {IoAction{-1, EBADF}});
+
+  ZeroCopyState state = WithSendsInFlight(1);
+  EXPECT_EQ(state.pollCompletions(pair.fd()).nbSends, 0U);
+  EXPECT_TRUE(state.pendingCompletions());
+}
+
+// ---------------------------------------------------------------------------
+// Real kernel
+// ---------------------------------------------------------------------------
+
+// The server sets SO_ZEROCOPY on its listening socket only: the accepted sockets inherit it. Their sends to a loopback
+// peer are reported copied, through notifications whose control message carries the address of the offender.
+TEST(ZeroCopyKernelTest, AcceptedSocketInheritsZerocopyAndReportsLoopbackCopies) {
+  BaseFd listener(::socket(AF_INET, SOCK_STREAM, 0));
+  ASSERT_TRUE(listener);
+  if (EnableZeroCopy(listener.fd()) != ZeroCopyEnableResult::Enabled) {
+    GTEST_SKIP() << "SO_ZEROCOPY not supported by this kernel";
+  }
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  ASSERT_EQ(::bind(listener.fd(), reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)), 0);
+  ASSERT_EQ(::listen(listener.fd(), 1), 0);
+  socklen_t addrLen = sizeof(addr);  // NOLINT(misc-include-cleaner)
+  ASSERT_EQ(::getsockname(listener.fd(), reinterpret_cast<sockaddr*>(&addr), &addrLen), 0);
+
+  BaseFd client(::socket(AF_INET, SOCK_STREAM, 0));
+  ASSERT_EQ(::connect(client.fd(), reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)), 0);
+  BaseFd accepted(::accept(listener.fd(), nullptr, nullptr));
+  ASSERT_TRUE(accepted);
+  EXPECT_TRUE(IsZeroCopyEnabled(accepted.fd()));
+
+  PlainTransport transport(accepted.fd());
+  const std::string head = "HEAD";
+  const std::string body(64UL * 1024, 'Z');
+  const auto [bytesSent, status] = transport.writeZerocopy(head, body);
+  ASSERT_EQ(status, ZerocopySendStatus::Sent);
+  ASSERT_EQ(bytesSent, head.size() + body.size());
+  EXPECT_EQ(transport.zerocopy().nextSeq(), 1U);
+
+  std::string received(bytesSent, '\0');
+  for (std::size_t pos = 0; pos < received.size();) {
+    const auto ret = ::recv(client.fd(), received.data() + pos, received.size() - pos, 0);
+    ASSERT_GT(ret, 0);
+    pos += static_cast<std::size_t>(ret);
+  }
+  EXPECT_EQ(received, head + body);
+
+  ZerocopyCompletions completions;
+  for (int attempt = 0; attempt < 200 && transport.zerocopy().pendingCompletions(); ++attempt) {
+    const auto polled = transport.pollZerocopyCompletions();
+    completions.nbSends += polled.nbSends;
+    completions.nbCopiedSends += polled.nbCopiedSends;
+    if (transport.zerocopy().pendingCompletions()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+  }
+  EXPECT_FALSE(transport.zerocopy().pendingCompletions());
+  EXPECT_EQ(completions.nbSends, 1U);
+  // Data looped to a local socket is always copied.
+  EXPECT_EQ(completions.nbCopiedSends, 1U);
 }
 
 #endif  // AERONET_LINUX

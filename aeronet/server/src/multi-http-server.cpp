@@ -745,6 +745,12 @@ MultiHttpServer::AggregatedStats MultiHttpServer::stats() const {
     agg.total.maxConnectionOutboundBuffer =
         std::max(agg.total.maxConnectionOutboundBuffer, st.maxConnectionOutboundBuffer);
     agg.total.totalRequestsServed += st.totalRequestsServed;
+    agg.total.zerocopySends += st.zerocopySends;
+    agg.total.zerocopyBytes += st.zerocopyBytes;
+    agg.total.zerocopyCopiedSends += st.zerocopyCopiedSends;
+    agg.total.zerocopyNoBufferSpaceFallbacks += st.zerocopyNoBufferSpaceFallbacks;
+    agg.total.zerocopyRetainLimitFallbacks += st.zerocopyRetainLimitFallbacks;
+    agg.total.zerocopyResetConnections += st.zerocopyResetConnections;
 #ifdef AERONET_ENABLE_OPENSSL
     agg.total.tlsHandshakesSucceeded += st.tlsHandshakesSucceeded;
     agg.total.tlsClientCertPresent += st.tlsClientCertPresent;
