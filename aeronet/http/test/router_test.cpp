@@ -1349,11 +1349,16 @@ TEST_F(RouterTest, AllowedMethodsGlobalAsyncFallback) {
       []([[maybe_unused]] HttpRequestView& req) -> RequestTask<HttpResponse> { co_return HttpResponse(204); }));
 
   // Path not registered -> all methods allowed because async global handler present
-  auto allAllowed = router.allowedMethods("/still-missing");
+  http::MethodBmp allAllowed = router.allowedMethods("/still-missing");
   // All-methods bitmap should be non-zero and contain at least GET and POST bits
   EXPECT_NE(allAllowed, 0U);
   EXPECT_TRUE(http::IsMethodIdxSet(allAllowed, MethodToIdx(http::Method::GET)));
   EXPECT_TRUE(http::IsMethodIdxSet(allAllowed, MethodToIdx(http::Method::POST)));
+
+  router.setDefault(AsyncRequestHandler{});  // should reset the async handler
+
+  allAllowed = router.allowedMethods("/still-missing");
+  EXPECT_EQ(allAllowed, 0U);
 }
 #endif
 
