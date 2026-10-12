@@ -149,7 +149,7 @@ router.setPath(http::Method::POST, "/login", [](const HttpRequestView&) { return
 
 | Option | Effect |
 | --- | --- |
-| `maxHeaderBytes(n)`, `maxBodyBytes(n)` | Lower limits for this route. A route can only tighten the server limits (`HttpServerConfig::maxHeaderBytes` and `maxBodyBytes`): a larger value throws `std::invalid_argument`. Set the server limit to the largest value any route needs. |
+| `maxHeaderBytes(n)`, `maxBodyBytes(n)` | Lower limits for this route. A route can only tighten the server limits (`HttpServerConfig::maxHeaderBytes` and `maxBodyBytes`): a larger value is capped to the server limit, with a warning, also after a config update lowering it. A route without its own limit follows the server limit. Set the server limit to the largest value any route needs. |
 | `timeout(duration)` | Deadline for the request, from the start of its head: when it expires, the server answers `408 Request Timeout` and closes the connection. Enforced for async and streaming handlers; a synchronous handler cannot be interrupted. |
 | `before(middleware)`, `after(middleware)` | Middleware of this route only, see [Middleware](middleware.md). |
 | `cors(policy)` | CORS policy of this route, see [CORS](cors.md). |
@@ -176,4 +176,5 @@ An update is applied by the event loop at its next iteration (immediately when t
 ## Tests
 
 - Patterns, constraints, wildcard, escapes, trailing slashes, and precedence: [router_test.cpp](../../aeronet/http/test/router_test.cpp).
+- Per-route limits capped by the server limits, and following their changes: `ClampConfigs*` in [router_test.cpp](../../aeronet/http/test/router_test.cpp), `GlobalLimitsUpdateAppliesToRoutes` and `RouteLimitAboveGlobalLimitIsCapped` in [tests/http-routing_test.cpp](../../tests/http-routing_test.cpp).
 - End-to-end routing, `404` / `405`, and trailing slash redirects: [tests/http-routing_test.cpp](../../tests/http-routing_test.cpp).

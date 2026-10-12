@@ -44,11 +44,11 @@ struct PathEntryConfig {
   Http2Enable http2Enable{Http2Enable::Default};
 #endif
 
-  /// Per-route maximum header size in bytes. Must not exceed HttpServerConfig::maxHeaderBytes.
+  /// Per-route maximum header size in bytes, capped by HttpServerConfig::maxHeaderBytes.
   /// Default (sentinel) means "use the global limit".
   uint32_t maxHeaderBytes = static_cast<uint32_t>(-1);
 
-  /// Per-route maximum body size in bytes. Must not exceed HttpServerConfig::maxBodyBytes.
+  /// Per-route maximum body size in bytes, capped by HttpServerConfig::maxBodyBytes.
   /// Default (sentinel) means "use the global limit".
   std::size_t maxBodyBytes = static_cast<std::size_t>(-1);
 
@@ -90,14 +90,18 @@ class PathHandlerEntry {
   }
 #endif
 
-  /// Set a per-route maximum header size in bytes. Overrides the global maxHeaderBytes for this route.
+  /// Set a per-route maximum header size in bytes. Lowers the global maxHeaderBytes for this route: a larger value is
+  /// capped by the global limit.
   PathHandlerEntry& maxHeaderBytes(uint32_t bytes) noexcept {
+    _configuredLimits.maxHeaderBytes = bytes;
     _pathConfig.maxHeaderBytes = bytes;
     return *this;
   }
 
-  /// Set a per-route maximum body size in bytes. Overrides the global maxBodyBytes for this route.
+  /// Set a per-route maximum body size in bytes. Lowers the global maxBodyBytes for this route: a larger value is
+  /// capped by the global limit.
   PathHandlerEntry& maxBodyBytes(std::size_t bytes) noexcept {
+    _configuredLimits.maxBodyBytes = bytes;
     _pathConfig.maxBodyBytes = bytes;
     return *this;
   }
@@ -140,6 +144,12 @@ class PathHandlerEntry {
 #endif
 
     alignas(RequestHandler) std::byte normalHandlerStorage[sizeof(RequestHandler)];
+  };
+
+  // The limits set on this route (sentinel: none), from which Router::clampConfigs() computes the applied ones.
+  struct ConfiguredLimits {
+    std::size_t maxBodyBytes{static_cast<std::size_t>(-1)};
+    uint32_t maxHeaderBytes{static_cast<uint32_t>(-1)};
   };
 
   PathHandlerEntry() noexcept = default;
@@ -219,8 +229,10 @@ class PathHandlerEntry {
   CorsPolicy _corsPolicy;
   vector<RequestMiddleware> _preMiddleware;
   vector<ResponseMiddleware> _postMiddleware;
-  // Per-path configuration for HTTP/2 and other options.
+  // Per-path configuration for HTTP/2 and other options. Its limits are the applied ones: the configured ones, capped
+  // by the global limits of the server using this route.
   PathEntryConfig _pathConfig;
+  ConfiguredLimits _configuredLimits;
 };
 
 }  // namespace aeronet
