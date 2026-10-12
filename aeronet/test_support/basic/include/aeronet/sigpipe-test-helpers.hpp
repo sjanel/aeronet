@@ -6,7 +6,7 @@
 namespace aeronet::test {
 
 // Default SIGPIPE disposition (terminate the process) for the scope: a SIGPIPE reaching the process then fails the
-// test, even if a helper ignored it beforehand (TlsClient ignores SIGPIPE process-wide).
+// test, even if something ignored it beforehand.
 class DefaultSigpipeScope {
  public:
   DefaultSigpipeScope() : _previous(::signal(SIGPIPE, SIG_DFL)) {}

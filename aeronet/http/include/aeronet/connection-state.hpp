@@ -18,7 +18,6 @@
 #include "aeronet/tls-info.hpp"
 #include "aeronet/transport.hpp"
 #include "aeronet/tunnel-bridge.hpp"
-#include "aeronet/vector.hpp"
 #include "aeronet/zerocopy-buffers.hpp"
 #include "aeronet/zerocopy.hpp"
 
