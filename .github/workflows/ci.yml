@@ -87,6 +87,7 @@ jobs:
             -DAERONET_ENABLE_TEST_HOOKS=ON \
             -DAERONET_BUILD_EXAMPLES=OFF \
             -DAERONET_BUILD_BENCHMARKS=OFF \
+            -DAERONET_WARNINGS_AS_ERRORS=${{ startsWith(matrix.compiler, 'clang') }} \
             -DAERONET_ENABLE_HTTP_CLIENT=${{ matrix.client }} \
             -DAERONET_ENABLE_HTTP_SERVER=${{ matrix.server }} \
             ${{ startsWith(matrix.compiler, 'clang') && '-DAERONET_ENABLE_CLANG_TIDY=OFF' || '' }} \
