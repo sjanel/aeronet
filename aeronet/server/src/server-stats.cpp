@@ -36,6 +36,12 @@ constexpr std::string_view kFlushCycles = R"(,"flushCycles":)";
 constexpr std::string_view kEpollModFailures = R"(,"epollModFailures":)";
 constexpr std::string_view kMaxConnectionOutboundBuffer = R"(,"maxConnectionOutboundBuffer":)";
 constexpr std::string_view kTotalRequestsServed = R"(,"totalRequestsServed":)";
+constexpr std::string_view kZerocopySends = R"(,"zerocopySends":)";
+constexpr std::string_view kZerocopyBytes = R"(,"zerocopyBytes":)";
+constexpr std::string_view kZerocopyCopiedSends = R"(,"zerocopyCopiedSends":)";
+constexpr std::string_view kZerocopyNoBufferSpaceFallbacks = R"(,"zerocopyNoBufferSpaceFallbacks":)";
+constexpr std::string_view kZerocopyRetainLimitFallbacks = R"(,"zerocopyRetainLimitFallbacks":)";
+constexpr std::string_view kZerocopyResetConnections = R"(,"zerocopyResetConnections":)";
 
 #ifdef AERONET_ENABLE_OPENSSL
 constexpr std::string_view kComma = ",";
@@ -123,6 +129,12 @@ std::string ServerStats::json_str() const {
   size += kEpollModFailures.size() + nchars(epollModFailures);
   size += kMaxConnectionOutboundBuffer.size() + nchars(maxConnectionOutboundBuffer);
   size += kTotalRequestsServed.size() + nchars(totalRequestsServed);
+  size += kZerocopySends.size() + nchars(zerocopySends);
+  size += kZerocopyBytes.size() + nchars(zerocopyBytes);
+  size += kZerocopyCopiedSends.size() + nchars(zerocopyCopiedSends);
+  size += kZerocopyNoBufferSpaceFallbacks.size() + nchars(zerocopyNoBufferSpaceFallbacks);
+  size += kZerocopyRetainLimitFallbacks.size() + nchars(zerocopyRetainLimitFallbacks);
+  size += kZerocopyResetConnections.size() + nchars(zerocopyResetConnections);
 
 #ifdef AERONET_ENABLE_OPENSSL
   size += kKtlsSendEnabledConnections.size() + nchars(ktlsSendEnabledConnections);
@@ -169,6 +181,18 @@ std::string ServerStats::json_str() const {
   Append(out, maxConnectionOutboundBuffer);
   out.append(kTotalRequestsServed);
   Append(out, totalRequestsServed);
+  out.append(kZerocopySends);
+  Append(out, zerocopySends);
+  out.append(kZerocopyBytes);
+  Append(out, zerocopyBytes);
+  out.append(kZerocopyCopiedSends);
+  Append(out, zerocopyCopiedSends);
+  out.append(kZerocopyNoBufferSpaceFallbacks);
+  Append(out, zerocopyNoBufferSpaceFallbacks);
+  out.append(kZerocopyRetainLimitFallbacks);
+  Append(out, zerocopyRetainLimitFallbacks);
+  out.append(kZerocopyResetConnections);
+  Append(out, zerocopyResetConnections);
 
 #ifdef AERONET_ENABLE_OPENSSL
   out.append(kKtlsSendEnabledConnections);

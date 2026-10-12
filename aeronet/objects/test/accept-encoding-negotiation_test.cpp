@@ -25,17 +25,16 @@ EncodingSelector MakeSelector(std::initializer_list<Encoding> prefs) {
   return EncodingSelector(cfg);
 }
 
-constexpr auto kDefaultEncodingDeflateEnabled =
-    aeronet::zlibEnabled() ? aeronet::Encoding::deflate : aeronet::Encoding::none;
+constexpr auto kDefaultEncodingDeflateEnabled = zlibEnabled() ? Encoding::deflate : Encoding::none;
+
+constexpr auto kPreferBrotliOverGzip = brotliEnabled() ? Encoding::br : Encoding::gzip;
 
 // First supported encoding in default order once deflate is excluded.
-constexpr auto kPreferredEncodingsAfterDeflate = aeronet::zstdEnabled()     ? aeronet::Encoding::zstd
-                                                 : aeronet::brotliEnabled() ? aeronet::Encoding::br
-                                                                            : aeronet::Encoding::gzip;
+constexpr auto kPreferredEncodingsAfterDeflate = zstdEnabled() ? Encoding::zstd : kPreferBrotliOverGzip;
 
 #endif
 
-constexpr auto kDefaultEncodingGzipEnabled = aeronet::zlibEnabled() ? aeronet::Encoding::gzip : aeronet::Encoding::none;
+constexpr auto kDefaultEncodingGzipEnabled = zlibEnabled() ? Encoding::gzip : Encoding::none;
 
 }  // namespace
 
@@ -56,16 +55,16 @@ TEST(AcceptEncodingNegotiationTest, EmptyOrWhitespace) {
 
 TEST(AcceptEncodingNegotiationTest, IgnoreUnsupportedWithWildcard) {
   CompressionConfig cfg;
-  if constexpr (aeronet::zlibEnabled()) {
+  if constexpr (zlibEnabled()) {
     cfg.preferredFormats.push_back(Encoding::gzip);
     cfg.preferredFormats.push_back(Encoding::deflate);
   }
   auto sel = EncodingSelector(cfg);
-  if constexpr (aeronet::zlibEnabled()) {
+  if constexpr (zlibEnabled()) {
     EXPECT_EQ(sel.negotiateAcceptEncoding("snappy;q=0.9, *;q=0.5").encoding, Encoding::gzip);
-  } else if constexpr (aeronet::zstdEnabled()) {
+  } else if constexpr (zstdEnabled()) {
     EXPECT_EQ(sel.negotiateAcceptEncoding("snappy;q=0.9, *;q=0.5").encoding, Encoding::zstd);
-  } else if constexpr (aeronet::brotliEnabled()) {
+  } else if constexpr (brotliEnabled()) {
     EXPECT_EQ(sel.negotiateAcceptEncoding("snappy;q=0.9, *;q=0.5").encoding, Encoding::br);
   }
 }
@@ -97,7 +96,7 @@ TEST(AcceptEncodingNegotiationTest, SpacesAndTabs) {
 TEST(AcceptEncodingNegotiationTest, TieBreakNoPreferencesUsesEnumOrder) {
   CompressionConfig cfg;  // no preferredFormats -> enum order among enabled encodings
   EncodingSelector sel(cfg);
-  if constexpr (aeronet::zlibEnabled()) {
+  if constexpr (zlibEnabled()) {
     EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.7, deflate;q=0.7").encoding, Encoding::gzip);
   } else {
     // With no compression codecs enabled, both tokens unsupported -> identity
@@ -107,7 +106,7 @@ TEST(AcceptEncodingNegotiationTest, TieBreakNoPreferencesUsesEnumOrder) {
 
 TEST(AcceptEncodingNegotiationTest, WildcardZeroPreventsUnlistedSelection) {
   CompressionConfig cfg;
-  if constexpr (aeronet::zlibEnabled()) {
+  if constexpr (zlibEnabled()) {
     cfg.preferredFormats.push_back(Encoding::gzip);
     cfg.preferredFormats.push_back(Encoding::deflate);
   }
@@ -142,19 +141,19 @@ TEST(AcceptEncodingNegotiationTest, SimpleExactMatches) {
   CompressionConfig cfg;
   cfg.preferredFormats.push_back(Encoding::gzip);
   cfg.preferredFormats.push_back(Encoding::deflate);
-  if constexpr (aeronet::zstdEnabled()) {
+  if constexpr (zstdEnabled()) {
     cfg.preferredFormats.push_back(Encoding::zstd);
   }
-  if constexpr (aeronet::brotliEnabled()) {
+  if constexpr (brotliEnabled()) {
     cfg.preferredFormats.push_back(Encoding::br);
   }
   auto sel = EncodingSelector(cfg);
   EXPECT_EQ(sel.negotiateAcceptEncoding("gzip").encoding, Encoding::gzip);
   EXPECT_EQ(sel.negotiateAcceptEncoding("deflate").encoding, Encoding::deflate);
-  if constexpr (aeronet::zstdEnabled()) {
+  if constexpr (zstdEnabled()) {
     EXPECT_EQ(sel.negotiateAcceptEncoding("zstd").encoding, Encoding::zstd);
   }
-  if constexpr (aeronet::brotliEnabled()) {
+  if constexpr (brotliEnabled()) {
     EXPECT_EQ(sel.negotiateAcceptEncoding("br").encoding, Encoding::br);
   }
 }
@@ -169,21 +168,21 @@ TEST(AcceptEncodingNegotiationTest, WithParametersOrderAndQ) {
   CompressionConfig cfg;
   cfg.preferredFormats.push_back(Encoding::gzip);
   cfg.preferredFormats.push_back(Encoding::deflate);
-  if constexpr (aeronet::zstdEnabled()) {
+  if constexpr (zstdEnabled()) {
     cfg.preferredFormats.push_back(Encoding::zstd);
   }
-  if constexpr (aeronet::brotliEnabled()) {
+  if constexpr (brotliEnabled()) {
     cfg.preferredFormats.push_back(Encoding::br);
   }
   auto sel = EncodingSelector(cfg);
   EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.5, deflate;q=0.9").encoding, Encoding::deflate);
   // Tie in q -> server preference order (gzip preferred over deflate when equal q with current prefs)
   EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.8, deflate;q=0.8").encoding, Encoding::gzip);
-  if constexpr (aeronet::zstdEnabled()) {
+  if constexpr (zstdEnabled()) {
     // Higher q for zstd should select it
     EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.8, deflate;q=0.8, zstd;q=0.95").encoding, Encoding::zstd);
   }
-  if constexpr (aeronet::brotliEnabled()) {
+  if constexpr (brotliEnabled()) {
     EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.8, deflate;q=0.8, br;q=0.96").encoding, Encoding::br);
   }
 }
@@ -191,7 +190,7 @@ TEST(AcceptEncodingNegotiationTest, WithParametersOrderAndQ) {
 TEST(AcceptEncodingNegotiationTest, IdentityFallback) {
   // All unsupported or q=0 -> identity. Use a definitely unsupported token sequence.
   auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
-  if constexpr (aeronet::brotliEnabled()) {
+  if constexpr (brotliEnabled()) {
     EXPECT_EQ(sel.negotiateAcceptEncoding("snappy, lz4").encoding, Encoding::none);
   } else {
     EXPECT_EQ(sel.negotiateAcceptEncoding("br, lz4").encoding, Encoding::none);
@@ -298,7 +297,7 @@ TEST(AcceptEncodingNegotiationTest, IdentityPreferredInConfigWins) {
   // selected when q values allow it even if other encodings are present.
   CompressionConfig cfg;
   cfg.preferredFormats.push_back(Encoding::none);
-  if constexpr (aeronet::zlibEnabled()) {
+  if constexpr (zlibEnabled()) {
     cfg.preferredFormats.push_back(Encoding::gzip);
   }
   cfg.validate();
@@ -312,7 +311,7 @@ TEST(AcceptEncodingNegotiationTest, IdentityPreferredInConfigWins) {
 TEST(AcceptEncodingNegotiationTest, IdentityPreferredButForbiddenSetsReject) {
   CompressionConfig cfg;
   cfg.preferredFormats.push_back(Encoding::none);
-  if constexpr (aeronet::zlibEnabled()) {
+  if constexpr (zlibEnabled()) {
     cfg.preferredFormats.push_back(Encoding::gzip);
   }
   cfg.validate();
@@ -326,7 +325,7 @@ TEST(AcceptEncodingNegotiationTest, IdentityPreferredButForbiddenSetsReject) {
 TEST(AcceptEncodingNegotiationTest, IdentityPreferredAndChosenWhenHigherQ) {
   CompressionConfig cfg;
   cfg.preferredFormats.push_back(Encoding::none);
-  if constexpr (aeronet::zlibEnabled()) {
+  if constexpr (zlibEnabled()) {
     cfg.preferredFormats.push_back(Encoding::gzip);
   }
   cfg.validate();
@@ -463,7 +462,7 @@ TEST(AcceptEncodingNegotiationTest, WildcardMultiTierZstdDeflateTieBreak) {
   // explicit).
   EXPECT_EQ(sel.negotiateAcceptEncoding("deflate;q=0.8, *;q=0.8").encoding, Encoding::zstd);
   // Now raise deflate q so it wins if zlib is enabled
-  if constexpr (aeronet::zlibEnabled()) {
+  if constexpr (zlibEnabled()) {
     EXPECT_EQ(sel.negotiateAcceptEncoding("deflate;q=0.9, *;q=0.8").encoding, Encoding::deflate);
   }
 }

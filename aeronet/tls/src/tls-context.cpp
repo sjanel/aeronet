@@ -4,7 +4,6 @@
 #include <openssl/err.h>
 #include <openssl/evp.h>  // EVP_PKEY_free
 #include <openssl/ocsp.h>
-#include <openssl/pem.h>       // PEM_read_bio_X509, PEM_read_bio_PrivateKey
 #include <openssl/prov_ssl.h>  // TLS1_2_VERSION
 #include <openssl/ssl.h>       // SSL_*, SSL_read/write, handshake, shutdown, SSL_CTX, SSL_get_error
 #include <openssl/tls1.h>      // TLS1_2_VERSION (for OpenSSL < 3.0, safe to include anyway)
@@ -16,6 +15,7 @@
 #include <cassert>
 #include <cctype>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -607,8 +607,8 @@ TlsContext::SessionIdContext TlsContext::ComputeSessionIdContext(const TLSConfig
   }
   appendSized(cfg.crlFile());
   append(&crlStamp, sizeof(crlStamp));
-  append(&cfg.revocationCallback, sizeof(cfg.revocationCallback));
-  append(&cfg.revocationUserContext, sizeof(cfg.revocationUserContext));
+  append(static_cast<const void*>(&cfg.revocationCallback), sizeof(cfg.revocationCallback));
+  append(static_cast<const void*>(&cfg.revocationUserContext), sizeof(cfg.revocationUserContext));
   assert(input.size() == inputSize);
 
   SessionIdContext sessionIdContext;

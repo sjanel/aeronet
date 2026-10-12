@@ -1,5 +1,7 @@
-// Benchmark to compare zerocopy vs regular send performance for large payloads.
-// This helps tune the kZeroCopyMinPayloadSize threshold.
+// Benchmark to compare MSG_ZEROCOPY vs regular sends of large responses.
+// Client and server run on the same host: the kernel copies the data looped to a local socket anyway (deferred copy),
+// so this measures the overhead of MSG_ZEROCOPY (page pinning, completion notifications, retained buffers), not its
+// gains. Measuring them, to tune HttpServerConfig::zerocopyMinBytes, needs the client on another host (real NIC).
 #include <benchmark/benchmark.h>
 
 #include <aeronet/aeronet-server.hpp>
@@ -34,7 +36,10 @@ class ZerocopyServerFixture : public benchmark::Fixture {
     const bool zerocopyEnabled = (state.range(1) == 1);
 
     server.postConfigUpdate([zerocopyEnabled](aeronet::HttpServerConfig& cfg) {
+      // Enabled: Opportunistic would never use MSG_ZEROCOPY for this loopback client. Every payload size is sent with
+      // it.
       cfg.withZerocopyMode(zerocopyEnabled ? aeronet::ZerocopyMode::Enabled : aeronet::ZerocopyMode::Disabled);
+      cfg.withZerocopyMinBytes(1U);
     });
 
     // Create the response payload once
@@ -75,18 +80,16 @@ BENCHMARK_DEFINE_F(ZerocopyServerFixture, LargeResponseRoundtrip)(benchmark::Sta
 
 // Register benchmarks with different payload sizes and zerocopy modes
 // Format: ->Args({payload_size, zerocopy_mode})
-// zerocopy_mode: 0 = Disabled, 1 = Opportunistic
+// zerocopy_mode: 0 = Disabled, 1 = Enabled (MSG_ZEROCOPY for every payload)
 BENCHMARK_REGISTER_F(ZerocopyServerFixture, LargeResponseRoundtrip)
     ->Unit(benchmark::kMicrosecond)
-    // Small payloads (below threshold - should behave the same)
+    // Small payloads: pinning pages costs more than copying them
     // ->Args({4096, 0})  // 4KB, regular
     // ->Args({4096, 1})  // 4KB, zerocopy
     // ->Args({8192, 0})  // 8KB, regular
     // ->Args({8192, 1})  // 8KB, zerocopy
-    // At threshold (16KB)
-    ->Args({16384, 0})  // 16KB, regular
-    ->Args({16384, 1})  // 16KB, zerocopy
-    // Above threshold - zerocopy should help
+    ->Args({16384, 0})    // 16KB, regular
+    ->Args({16384, 1})    // 16KB, zerocopy
     ->Args({32768, 0})    // 32KB, regular
     ->Args({32768, 1})    // 32KB, zerocopy
     ->Args({65536, 0})    // 64KB, regular

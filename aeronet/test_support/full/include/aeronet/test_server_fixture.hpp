@@ -53,6 +53,10 @@ class TestServer {
   // Cooperative stop; safe to call multiple times.
   void stop() noexcept { server.stop(); }
 
+  // Stops then starts again the server on the same port, its listening socket being created again, and waits for its
+  // event loop to run.
+  void restart();
+
   void resetRouter(std::function<void(Router&)> initializer = {});
 
   SingleHttpServer server;

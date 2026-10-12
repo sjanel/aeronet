@@ -52,7 +52,6 @@
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
 #include "aeronet/vector.hpp"
-#include "aeronet/zerocopy-mode.hpp"
 #include "client-accept-encoding.hpp"
 #include "url-parse.hpp"
 
@@ -476,7 +475,7 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectN
   // throwaway plain transport (no origin bytes can arrive until we speak TLS, so nothing beyond the CONNECT
   // response is consumed); the TLS transport then wraps the same fd and handshakes through the tunnel.
   if (proxied && isTls) {
-    Transport tunnelTransport(fd, ZerocopyMode::Disabled, ~0U);
+    Transport tunnelTransport(fd);
     if (auto err = establishProxyTunnel(tunnelTransport, fd, req); err != HttpClientErrc::noError) {
       unregisterIfCurrent(fd);  // establishProxyTunnel may have armed the loop on this fd before failing
       return std::unexpected(err);
@@ -489,7 +488,7 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectN
   } else
 #endif
   {
-    conn.transport = Transport(fd, ZerocopyMode::Disabled, ~0U);
+    conn.transport = Transport(fd);
   }
   return conn;
 }

@@ -412,7 +412,7 @@ TEST(HttpServer, FailedConfigUpdateRestoresPreviousConfig) {
   expectPreviousConfig();
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.withMaxBodyBytes(12).withMaxHeaderBytes(4096);
-    throw 42;  // NOLINT(hicpp-exception-baseclass)
+    throw 42;  // NOLINT(bugprone-std-exception-baseclass)
   });
   expectPreviousConfig();
 

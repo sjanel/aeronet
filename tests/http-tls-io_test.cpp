@@ -132,7 +132,7 @@ TEST(HttpTlsCompressionStreaming, CompressionActivatedOverThresholdTls) {
 
 namespace {
 // Large response GET using TlsClient (simplified replacement).
-std::string TlsGetLarge(auto port) {
+std::string TlsGetLarge() {
   test::TlsClient client(port);
   if (!client.handshakeOk()) {
     return {};
@@ -143,7 +143,7 @@ std::string TlsGetLarge(auto port) {
 
 TEST(HttpTlsNegative, LargeResponseFragmentation) {
   ts.setDefault([](const HttpRequestView& req) { return req.makeResponse().body(std::string(300000, 'A')); });
-  std::string resp = TlsGetLarge(port);
+  std::string resp = TlsGetLarge();
   // helper freed temporary key/cert
   ASSERT_FALSE(resp.empty());
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
@@ -802,27 +802,29 @@ TEST(HttpTlsKtlsUnsupported, AutoOrEnabledFallBackWithoutForcedClose) {
 }
 #endif
 #ifdef AERONET_LINUX
-// Integration test: request kTLS + zerocopy via server config and exercise large response path.
-TEST(HttpTlsKtlsZerocopy, EnabledZerocopyWithKtls) {
-  // Ask the server to enable both kTLS send and MSG_ZEROCOPY (may fall back depending on kernel).
+// TLS responses never use MSG_ZEROCOPY, even with kTLS send (whose sockets reject it) and zerocopy forced.
+TEST(HttpTlsKtlsZerocopy, TlsResponsesAreNeverSentWithZerocopy) {
   ts.server.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Enabled);
     cfg.withZerocopyMode(ZerocopyMode::Enabled);
+    cfg.withZerocopyMinBytes(1024U);
   });
 
-  // Response slightly above zerocopy threshold
-  std::string body(ts.server.server.config().zerocopyMinBytes + 1024, 'Z');
+  std::string body(256UL * 1024, 'Z');
   ts.setDefault([&body](const HttpRequestView& req) { return req.makeResponse(body); });
 
+  const auto before = ts.stats();
   test::TlsClient client(port);
   ASSERT_TRUE(client.handshakeOk());
   auto raw = client.get("/zerocopy", {});
   ASSERT_FALSE(raw.empty());
   ASSERT_TRUE(raw.starts_with("HTTP/1.1 200"));
+  EXPECT_TRUE(raw.ends_with(body));
 
   const auto stats = ts.stats();
   // kTLS should have been attempted; either enabled or fallback is acceptable.
   EXPECT_GE(stats.ktlsSendEnabledConnections + stats.ktlsSendEnableFallbacks, 1U);
+  EXPECT_EQ(stats.zerocopySends, before.zerocopySends);
 }
 #endif
 #endif

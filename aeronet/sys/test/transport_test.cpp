@@ -26,7 +26,7 @@
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/transport-result.hpp"
-#include "aeronet/zerocopy-mode.hpp"
+#include "aeronet/zerocopy.hpp"
 
 #ifdef AERONET_POSIX
 #include <sys/socket.h>
@@ -36,7 +36,7 @@
 namespace aeronet {
 
 TEST(TransportTest, ReadReturnsErrorWhenFdIsInvalid) {
-  PlainTransport plainTransport(-1, ZerocopyMode::Disabled, 0U);  // invalid fd -> read should fail with EBADF
+  PlainTransport plainTransport(-1);  // invalid fd -> read should fail with EBADF
   char buf[16];
   const auto res = plainTransport.read(buf, sizeof(buf));
   EXPECT_EQ(res.bytesProcessed, 0U);
@@ -44,7 +44,7 @@ TEST(TransportTest, ReadReturnsErrorWhenFdIsInvalid) {
 }
 
 TEST(TransportTest, WriteReturnsErrorWhenFdIsInvalid) {
-  PlainTransport plainTransport(-1, ZerocopyMode::Disabled, 0U);  // invalid fd -> write should fail with EBADF
+  PlainTransport plainTransport(-1);  // invalid fd -> write should fail with EBADF
   const auto res = plainTransport.write("hello");
   // When a fatal error occurs the implementation leaves bytesProcessed
   // at the amount written so far (0) and sets want to Error.
@@ -65,7 +65,7 @@ TEST(PlainTransport, ReadHandlesEINTRAndEAGAIN) {
   test::SetReadActions(
       readFd, {IoAction{-1, error::kInterrupted}, IoAction{-1, error::kWouldBlock}, IoAction{-1, error::kWouldBlock}});
 
-  PlainTransport transport(readFd, ZerocopyMode::Opportunistic, 0U);
+  PlainTransport transport(readFd);
   char buf[8]{};
 
   // First call: error::kInterrupted -> ReadReady
@@ -107,7 +107,7 @@ TEST(PlainTransport, WriteHandlesEAGAINAndSuccess) {
   test::SetWriteActions(
       writeFd, {IoAction{-1, error::kInterrupted}, IoAction{-1, error::kWouldBlock}, IoAction{-1, error::kWouldBlock}});
 
-  PlainTransport transport(writeFd, ZerocopyMode::Enabled, 0U);
+  PlainTransport transport(writeFd);
   std::string_view data("foobar");
 
   // First write: error::kInterrupted is retried internally, then hits error::kWouldBlock -> WriteReady with 0 bytes
@@ -145,7 +145,7 @@ TEST(PlainTransport, TwoBufWriteReturnsEarlyWhenSendmsgNeedsRetry) {
   // receive a result with want != None and no data written.
   test::SetSendmsgActions(writeFd, {IoAction{-1, error::kWouldBlock}});
 
-  PlainTransport transport(writeFd, ZerocopyMode::Disabled, 0U);
+  PlainTransport transport(writeFd);
   std::string_view head("HEAD");
   std::string_view body("BODY-BODY");
 
@@ -171,7 +171,7 @@ TEST(PlainTransport, TwoBufWriteReturnsEarlyWhenSendmsgReturnsZero) {
   // make this test fail loudly instead of hanging.
   test::SetSendmsgActions(writeFd, {IoAction{0, 0}});
 
-  PlainTransport transport(writeFd, ZerocopyMode::Disabled, 0U);
+  PlainTransport transport(writeFd);
   std::string_view head("HEAD");
   std::string_view body("BODY-BODY");
 
@@ -195,7 +195,7 @@ TEST(PlainTransport, GatherWriteReturnsEarlyOnZeroWriteAfterPartialBatch) {
   // and that the 0-return does not trigger another sendmsg call.
   test::SetSendmsgActions(writeFd, {IoAction{6, 0}, IoAction{0, 0}});
 
-  PlainTransport transport(writeFd, ZerocopyMode::Disabled, 0U);
+  PlainTransport transport(writeFd);
   const std::array<std::string_view, 3> fragments{"HEAD", "BODY", "TAIL"};
 
   const auto result = transport.write(std::span<const std::string_view>(fragments));
@@ -212,7 +212,7 @@ TEST(PlainTransport, TwoBufWriteUsesSendmsgSuccessfully) {
   BaseFd readFdGuard(readFd);
   BaseFd writeFdGuard(writeFd);
 
-  PlainTransport transport(writeFd, ZerocopyMode::Disabled, 0U);
+  PlainTransport transport(writeFd);
   std::string_view head("HEAD");
   std::string_view body("BODY");
 
@@ -236,7 +236,7 @@ TEST(PlainTransport, TwoBufWriteHandlesPartialWrite) {
   BaseFd readFdGuard(readFd);
   BaseFd writeFdGuard(writeFd);
 
-  PlainTransport transport(writeFd, ZerocopyMode::Disabled, 0U);
+  PlainTransport transport(writeFd);
   std::string_view head("HEAD");
   std::string_view body("BODY-DATA");
 
@@ -255,7 +255,7 @@ TEST(PlainTransport, GatherWriteUsesSendmsgForAllFragments) {
   BaseFd readFdGuard(fds[0]);
   BaseFd writeFdGuard(fds[1]);
 
-  PlainTransport transport(fds[1], ZerocopyMode::Disabled, 0U);
+  PlainTransport transport(fds[1]);
   const std::array<std::string_view, 4> fragments{"HEAD", "", "BODY", "TAIL"};
 
   const auto result = transport.write(std::span<const std::string_view>(fragments));
@@ -274,7 +274,7 @@ TEST(PlainTransport, GatherWriteProcessesMoreThanOneSystemBatch) {
   BaseFd readFdGuard(fds[0]);
   BaseFd writeFdGuard(fds[1]);
 
-  PlainTransport transport(fds[1], ZerocopyMode::Disabled, 0U);
+  PlainTransport transport(fds[1]);
   std::array<std::string_view, 70> fragments;
   fragments.fill("x");
 
@@ -296,7 +296,7 @@ TEST(PlainTransport, GatherWriteTracksPartialProgressAcrossFragments) {
 
   test::SetSendmsgActions(fds[1], {IoAction{6, 0}, IoAction{-1, error::kWouldBlock}});
 
-  PlainTransport transport(fds[1], ZerocopyMode::Disabled, 0U);
+  PlainTransport transport(fds[1]);
   const std::array<std::string_view, 3> fragments{"HEAD", "BODY", "TAIL"};
 
   const auto result = transport.write(std::span<const std::string_view>(fragments));
@@ -317,7 +317,7 @@ TEST(PlainTransport, WritesToClosedPeerFailWithoutSigpipe) {
     BaseFd writeFdGuard(fds[1]);
     ::close(fds[0]);
 
-    PlainTransport transport(fds[1], ZerocopyMode::Disabled, 0U);
+    PlainTransport transport(fds[1]);
     TransportResult result;
     if (writePath == 0) {
       result = transport.write("data");
@@ -400,18 +400,9 @@ class CapabilityTransportBackend final : public TransportBackend<CapabilityTrans
     return {count, TransportHint::None};
   }
 
-  static std::size_t pollZerocopyCompletions() noexcept { return 7; }
   static bool supportsSendfile() noexcept { return true; }
   static bool handshakeDone() noexcept { return false; }
   static bool hasPendingReadData() noexcept { return true; }
-  static bool isZerocopyEnabled() noexcept { return true; }
-  static bool hasZerocopyPending() noexcept { return true; }
-
-  void disableZerocopy() noexcept { _zerocopyDisabled = true; }
-  [[nodiscard]] bool zerocopyDisabled() const noexcept { return _zerocopyDisabled; }
-
- private:
-  bool _zerocopyDisabled{false};
 };
 }  // namespace
 
@@ -420,7 +411,8 @@ static_assert(!std::is_polymorphic_v<PlainTransport>);
 #if INTPTR_MAX == INT64_MAX
 static_assert(sizeof(Transport) == 3 * sizeof(void*));
 #endif
-static_assert(sizeof(PlainTransport) == sizeof(SocketTransportState));
+// The zerocopy send tracking lives inline in the plain transport, without growing Transport.
+static_assert(sizeof(PlainTransport) == sizeof(SocketTransportState) + sizeof(ZeroCopyState));
 
 TEST(TransportTest, DefaultTransportIsEmpty) {
   Transport transport;
@@ -441,7 +433,7 @@ TEST(TransportTest, SelfOperatorEqualDoesNothing) {
 }
 
 TEST(TransportTest, InlinePlainTransportMovesAndLeavesSourceEmpty) {
-  Transport transport(-1, ZerocopyMode::Disabled, 0U);
+  Transport transport(-1);
 
   EXPECT_EQ(transport.kind(), TransportKind::Plain);
   EXPECT_TRUE(transport.isPlain());
@@ -506,12 +498,6 @@ TEST(TransportTest, BaseTransportDoesNotSupportSendfile) {
   EXPECT_EQ(transport.read(&buf, 1).bytesProcessed, 0U);
   EXPECT_TRUE(transport.handshakeDone());
   EXPECT_FALSE(transport.hasPendingReadData());
-  EXPECT_FALSE(transport.isZerocopyEnabled());
-  EXPECT_FALSE(transport.hasZerocopyPending());
-#ifdef AERONET_LINUX
-  EXPECT_EQ(transport.pollZerocopyCompletions(), 0U);
-#endif
-  transport.disableZerocopy();
   EXPECT_FALSE(transport.supportsSendfile());
   File file;  // ignored by the default sendFile()
   std::size_t offset = 0;
@@ -537,19 +523,11 @@ TEST(TransportTest, CustomBackendDispatchesProvidedOperations) {
   EXPECT_TRUE(transport.supportsSendfile());
   EXPECT_FALSE(transport.handshakeDone());
   EXPECT_TRUE(transport.hasPendingReadData());
-  EXPECT_TRUE(transport.isZerocopyEnabled());
-  EXPECT_TRUE(transport.hasZerocopyPending());
-#ifdef AERONET_LINUX
-  EXPECT_EQ(transport.pollZerocopyCompletions(), 7U);
-#endif
 
   File file;
   std::size_t offset = 2;
   EXPECT_EQ(transport.sendFile(file, offset, 5).bytesProcessed, 5U);
   EXPECT_EQ(offset, 7U);
-
-  transport.disableZerocopy();
-  EXPECT_TRUE(backend.zerocopyDisabled());
 }
 
 TEST(TransportTest, GatherFallbackPreservesOrderingAndStopsOnShortWrite) {
@@ -589,16 +567,14 @@ TEST(TransportTest, GatherFallbackPreservesOrderingAndStopsOnShortWrite) {
 }
 
 TEST(PlainTransport, SupportsSendfile) {
-  Transport transport(-1, ZerocopyMode::Disabled, 0U);
+  Transport transport(-1);
   EXPECT_TRUE(transport.supportsSendfile());
   EXPECT_TRUE(transport.handshakeDone());
   EXPECT_FALSE(transport.hasPendingReadData());
-  EXPECT_FALSE(transport.isZerocopyEnabled());
-  EXPECT_FALSE(transport.hasZerocopyPending());
-#ifdef AERONET_LINUX
-  EXPECT_EQ(transport.pollZerocopyCompletions(), 0U);
-#endif
-  transport.disableZerocopy();
+  const PlainTransport* plain = transport.get<PlainTransport>();
+  ASSERT_NE(plain, nullptr);
+  EXPECT_FALSE(plain->zerocopy().pendingCompletions());
+  EXPECT_EQ(plain->zerocopy().nextSeq(), 0U);
 }
 
 TEST(PlainTransport, SendFileTransfersFileToSocketPeer) {
@@ -613,7 +589,7 @@ TEST(PlainTransport, SendFileTransfersFileToSocketPeer) {
   File file(tmp.filePath().string());
   ASSERT_TRUE(static_cast<bool>(file));
 
-  PlainTransport transport(sv[0], ZerocopyMode::Disabled, 0U);
+  PlainTransport transport(sv[0]);
   std::size_t offset = 0;
   std::size_t remaining = file.size();
   while (remaining != 0) {
@@ -640,7 +616,7 @@ TEST(PlainTransport, SendFileReportsWriteReadyOnWouldBlockAndRetriesOnEINTR) {
   File file(tmp.filePath().string());
   ASSERT_TRUE(static_cast<bool>(file));
 
-  PlainTransport transport(sv[0], ZerocopyMode::Disabled, 0U);
+  PlainTransport transport(sv[0]);
 
   // A full send buffer surfaces as EAGAIN -> WriteReady with no progress.
   test::SetSendfileActions(sv[0], {IoAction{-1, error::kWouldBlock}});
@@ -667,7 +643,7 @@ TEST(PlainTransport, SendFileReportsErrorOnFatalFailureAndOnUnexpectedEof) {
   File file(tmp.filePath().string());
   ASSERT_TRUE(static_cast<bool>(file));
 
-  PlainTransport transport(sv[0], ZerocopyMode::Disabled, 0U);
+  PlainTransport transport(sv[0]);
 
   // A fatal error (peer reset / broken pipe) surfaces as Error.
   test::SetSendfileActions(sv[0], {IoAction{-1, error::kBrokenPipe}});
@@ -699,7 +675,7 @@ TEST(PlainTransport, TwoBufWriteRetriesOnEINTR) {
   const int64_t total = static_cast<int64_t>(head.size() + body.size());
   test::SetSendmsgActions(writeFd, {IoAction{-1, error::kInterrupted}, IoAction{total, 0}});
 
-  PlainTransport transport(writeFd, ZerocopyMode::Disabled, 0U);
+  PlainTransport transport(writeFd);
   auto res = transport.write(head, body);
 
   // After error::kInterrupted the transport should retry internally and eventually report full write
@@ -716,7 +692,7 @@ TEST(PlainTransport, TwoBufWriteWithEmptySecondBufferUsesSingleSend) {
   BaseFd readFdGuard(fds[0]);
   BaseFd writeFdGuard(fds[1]);
 
-  PlainTransport transport(fds[1], ZerocopyMode::Disabled, 0U);
+  PlainTransport transport(fds[1]);
   // A queued sendmsg failure must not be consumed: a single buffer is written with send().
   test::SetSendmsgActions(fds[1], {IoAction{-1, error::kBrokenPipe}});
   const auto res = transport.write("HEAD-AND-BODY", std::string_view{});
@@ -744,7 +720,7 @@ TEST(PlainTransport, SingleBufferWriteStopsWhenSendReturnsZero) {
 
   // send() never returns 0 for a non-empty request on a stream socket, but the loop must not spin on it.
   test::SetWriteActions(fds[1], {IoAction{3, 0}, IoAction{0, 0}});
-  PlainTransport transport(fds[1], ZerocopyMode::Disabled, 0U);
+  PlainTransport transport(fds[1]);
   const auto res = transport.write(std::string_view("payload"));
   EXPECT_EQ(res.bytesProcessed, 3U);
   EXPECT_EQ(res.want, TransportHint::None);
@@ -756,7 +732,7 @@ TEST(PlainTransport, GatherWriteWithSingleFragmentUsesSend) {
   BaseFd readFdGuard(fds[0]);
   BaseFd writeFdGuard(fds[1]);
 
-  PlainTransport transport(fds[1], ZerocopyMode::Disabled, 0U);
+  PlainTransport transport(fds[1]);
   // Empty fragments are skipped: a single remaining buffer is written with send(), not sendmsg().
   test::SetSendmsgActions(fds[1], {IoAction{-1, error::kBrokenPipe}});
   const std::array<std::string_view, 3> fragments{"", "FRAME", ""};

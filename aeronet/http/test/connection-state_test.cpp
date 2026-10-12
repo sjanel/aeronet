@@ -1,6 +1,9 @@
-﻿// Enable syscall overrides for sendfile/pread used in ConnectionState::transportFile
+﻿// Enable syscall overrides for sendfile/pread used in ConnectionState::transportFile, and for the sendmsg /
+// recvmsg(MSG_ERRQUEUE) of the zerocopy sends
 #include "aeronet/system-error.hpp"
 #define AERONET_WANT_SENDFILE_PREAD_OVERRIDES
+#define AERONET_WANT_READ_WRITE_OVERRIDES
+#define AERONET_WANT_SOCKET_OVERRIDES
 
 #include "aeronet/connection-state.hpp"
 
@@ -8,7 +11,12 @@
 #include <fcntl.h>
 #endif
 #include <gtest/gtest.h>
+#ifdef AERONET_LINUX
+#include <linux/errqueue.h>
+#endif
 #ifdef AERONET_POSIX
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #endif
@@ -28,12 +36,17 @@
 #include "aeronet/base-fd.hpp"
 #include "aeronet/file-payload.hpp"
 #include "aeronet/file.hpp"
+#include "aeronet/http-codec.hpp"
+#include "aeronet/http-message-data.hpp"
+#include "aeronet/http-server-config.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
+#include "aeronet/zerocopy-buffers.hpp"
 #include "aeronet/zerocopy-mode.hpp"
+#include "aeronet/zerocopy.hpp"
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include "aeronet/async-handler-state.hpp"
@@ -261,7 +274,7 @@ TEST(ConnectionStateSendfileTest, TlsSendfileLargeChunks) {
   state.fileSendActive = true;
 
   // Attach a PlainTransport that writes to sv[0]. We'll read from sv[1].
-  state.transport = Transport(sv[0], ZerocopyMode::Disabled, 0U);
+  state.transport = Transport(sv[0]);
 
   // Loop until we've consumed the whole file; on each iteration read from file into
   // tunnelOrFileBuffer then write it to the transport and read on the peer socket.
@@ -527,7 +540,7 @@ TEST(ConnectionStateTransportTest, TransportWriteHttpResponseDoesNotMarkTlsEstab
 
   ConnectionState state;
   // attach a plain transport that writes to sv[0]
-  state.transport = Transport(sv[0], ZerocopyMode::Disabled, 0U);
+  state.transport = Transport(sv[0]);
 
   // ensure tlsEstablished is initially false
   state.tlsEstablished = false;
@@ -571,178 +584,289 @@ class FakeTransport final : public TransportBackend<FakeTransport> {
   std::string _lastWrite;
 };
 
-class DelayedZerocopyTransport final : public TransportBackend<DelayedZerocopyTransport> {
- public:
-  static TransportResult read([[maybe_unused]] char* ptr, [[maybe_unused]] std::size_t sz) {
-    return {0U, TransportHint::ReadReady};
-  }
-  static TransportResult write(std::string_view data) { return {data.size(), TransportHint::None}; }
-  [[nodiscard]] bool isZerocopyEnabled() const noexcept { return _enabled; }
-  [[nodiscard]] bool hasZerocopyPending() const noexcept { return !_completed; }
-  [[nodiscard]] std::size_t pollZerocopyCompletions() const noexcept { return _completed ? 1U : 0U; }
-  void disableZerocopy() noexcept { _enabled = false; }
-  void complete() noexcept { _completed = true; }
-
- private:
-  bool _enabled{true};
-  bool _completed{false};
-};
-
-// Unlike DelayedZerocopyTransport, relies on the production zerocopy bookkeeping (SocketTransportState): a write of at
-// least the zerocopy threshold is recorded as an in-flight MSG_ZEROCOPY send until completeAll() simulates the kernel
-// completion notifications.
-// Same layout as TlsTransport: a custom backend that also owns the socket zerocopy state.
-// NOLINTNEXTLINE(misc-multiple-inheritance)
-class InFlightZerocopyTransport final : public TransportBackend<InFlightZerocopyTransport>,
-                                        public SocketTransportState {
- public:
-  explicit InFlightZerocopyTransport(uint32_t minBytesForZerocopy) { _zerocopyState.enable(minBytesForZerocopy); }
-
-  static TransportResult read([[maybe_unused]] char* ptr, [[maybe_unused]] std::size_t sz) {
-    return {0U, TransportHint::ReadReady};
-  }
-
-  TransportResult write(std::string_view data) {
-    if (_zerocopyState.enabled() && data.size() >= _zerocopyState.minBytes) {
-      ++_zerocopyState.seqHi;
-    }
-    return {data.size(), TransportHint::None};
-  }
-
-  // No real socket: completions only arrive through completeAll().
-  static std::size_t pollZerocopyCompletions() noexcept { return 0; }
-
-  void completeAll() noexcept { _zerocopyState.seqLo = _zerocopyState.seqHi; }
-};
 }  // namespace
 
-TEST(ConnectionStateZerocopyTest, DelayedCompletionsPlateauAndLaterWritesFallBackToCopy) {
-  for (uint32_t maxPendingBytes : {100U, 1024U}) {
-    ConnectionState state;
-    auto delayed = std::make_unique<DelayedZerocopyTransport>();
-    DelayedZerocopyTransport* raw = delayed.get();
-    state.transport = std::move(delayed);
+TEST(ZerocopyBuffersTest, ReleasesBuffersAsTheirSendsComplete) {
+  ZerocopyBuffers buffers;
+  ZeroCopyState sends;
 
-    std::size_t retainedSize = 600U;
+  sends.seqHi = 1;
+  buffers.retain(HttpMessageData(RawChars(std::string(100, 'a'))), sends.nextSeq());
+  sends.seqHi = 3;
+  buffers.retain(HttpMessageData(RawChars(std::string(200, 'b'))), sends.nextSeq());
+  EXPECT_EQ(buffers.bytes(), 300U);
+  EXPECT_EQ(buffers.size(), 2U);
 
-    if (maxPendingBytes < retainedSize) {
+  buffers.releaseCompleted(sends);
+  EXPECT_EQ(buffers.size(), 2U);
+
+  sends.complete(0, 0);
+  buffers.releaseCompleted(sends);
+  EXPECT_EQ(buffers.bytes(), 200U);
+  EXPECT_EQ(buffers.size(), 1U);
+
+  // Send 1 may still read the second buffer.
+  sends.complete(2, 2);
+  buffers.releaseCompleted(sends);
+  EXPECT_EQ(buffers.bytes(), 200U);
+
+  sends.complete(1, 1);
+  buffers.releaseCompleted(sends);
+  EXPECT_EQ(buffers.bytes(), 0U);
+  EXPECT_TRUE(buffers.empty());
+}
+
+TEST(ZerocopyBuffersTest, ExtractMovesOutAllBuffers) {
+  ZerocopyBuffers buffers;
+  buffers.retain(HttpMessageData(RawChars(std::string(10, 'a'))), 1);
+  buffers.retain(HttpMessageData(RawChars(std::string(20, 'b'))), 2);
+
+  std::string extracted;
+  buffers.extract([&extracted](HttpMessageData data) { extracted.append(data.firstBuffer()); });
+  EXPECT_EQ(extracted, std::string(10, 'a') + std::string(20, 'b'));
+  EXPECT_TRUE(buffers.empty());
+  EXPECT_EQ(buffers.bytes(), 0U);
+}
+
 #ifdef AERONET_LINUX
-      EXPECT_FALSE(state.prepareZerocopyWrite(retainedSize, maxPendingBytes));
-#endif
-    } else {
-#ifdef AERONET_LINUX
-      ASSERT_TRUE(state.prepareZerocopyWrite(retainedSize, maxPendingBytes));
-      state.holdBufferIfZerocopyPending(HttpMessageData(RawChars(std::string(retainedSize, 'a'))), true);
-#endif
+namespace {
 
-      retainedSize = 400U;
-
-#ifdef AERONET_LINUX
-      ASSERT_TRUE(state.prepareZerocopyWrite(retainedSize, maxPendingBytes));
-      state.holdBufferIfZerocopyPending(HttpMessageData(RawChars(std::string(retainedSize, 'b'))), true);
-#endif
-      EXPECT_EQ(state.zerocopyRetainedBytes(), 1000U);
-      EXPECT_EQ(state.zerocopyPendingBuffers.size(), 2U);
-
-      retainedSize = 25U;
-
-#ifdef AERONET_LINUX
-      EXPECT_FALSE(state.prepareZerocopyWrite(retainedSize, maxPendingBytes));
-      EXPECT_FALSE(raw->isZerocopyEnabled());
-      state.holdBufferIfZerocopyPending(HttpMessageData(RawChars(std::string(retainedSize, 'c'))), false);
-#endif
-      EXPECT_EQ(state.zerocopyRetainedBytes(), 1000U);
-      EXPECT_EQ(state.zerocopyPendingBuffers.size(), 2U);
-
-      raw->complete();
-#ifdef AERONET_LINUX
-      state.releaseCompletedZerocopyBuffers();
-#endif
-      EXPECT_EQ(state.zerocopyRetainedBytes(), 0U);
-      EXPECT_TRUE(state.zerocopyPendingBuffers.empty());
+// A plain connection over one end of an AF_UNIX socket pair, whose MSG_ZEROCOPY sends and their completion
+// notifications are simulated by the sendmsg / recvmsg(MSG_ERRQUEUE) overrides.
+class ZerocopyConnection {
+ public:
+  ZerocopyConnection() {
+    int fds[2];
+    if (::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0) {
+      _fds[0] = BaseFd(fds[0]);
+      _fds[1] = BaseFd(fds[1]);
     }
+    state.transport = Transport(_fds[0].fd());
+    state.zerocopyEnabled = true;
+  }
+
+  ZerocopyConnection(const ZerocopyConnection&) = delete;
+  ZerocopyConnection& operator=(const ZerocopyConnection&) = delete;
+
+  ~ZerocopyConnection() {
+    test::g_sendmsg_actions.reset();
+    test::g_recvmsg_actions.reset();
+    test::g_errqueue_notifications.reset();
+  }
+
+  // Simulated MSG_ZEROCOPY send of the first 'size' unsent bytes of 'data'.
+  void sendZerocopy(const HttpMessageData& data, std::size_t size) {
+    test::PushSendmsgAction(fd(), IoAction{static_cast<int64_t>(size), 0});
+    const auto [bytesSent, status] =
+        state.transport.get<PlainTransport>()->writeZerocopy(data.firstBuffer(), data.secondBuffer());
+    EXPECT_EQ(status, ZerocopySendStatus::Sent);
+    EXPECT_EQ(bytesSent, size);
+  }
+
+  // Sends 'size' bytes of 'ch' with MSG_ZEROCOPY, then retains them, like SingleHttpServer::queueData().
+  void sendAndRetain(std::size_t size, char ch) {
+    HttpMessageData data(RawChars(std::string(size, ch)));
+    sendZerocopy(data, size);
+    state.retainZerocopyBuffer(std::move(data));
+  }
+
+  // Delivers the completion notification of the sends 'first' to 'last', and polls it.
+  ZerocopyCompletions complete(uint32_t first, uint32_t last, bool copied = false) {
+    test::PushErrQueueNotification(
+        fd(), {.first = first, .last = last, .code = static_cast<uint8_t>(copied ? SO_EE_CODE_ZEROCOPY_COPIED : 0)});
+    // Ends the poll when sends remain in flight.
+    test::g_recvmsg_actions.setActions(fd(), {IoAction{-1, error::kWouldBlock}});
+    const auto completions = state.pollZerocopyCompletions();
+    test::g_recvmsg_actions.reset();
+    return completions;
+  }
+
+  [[nodiscard]] int fd() const noexcept { return _fds[0].fd(); }
+
+  ConnectionState state;
+
+ private:
+  BaseFd _fds[2];
+};
+
+}  // namespace
+
+TEST(ConnectionStateZerocopyTest, NoZerocopySendWithoutPlainTransport) {
+  ConnectionState withoutTransport;
+  EXPECT_FALSE(withoutTransport.hasZerocopySendsInFlight());
+  EXPECT_EQ(withoutTransport.pollZerocopyCompletions().nbSends, 0U);
+
+  ConnectionState custom;
+  custom.transport = std::make_unique<FakeTransport>(/*handshakeInitially=*/true);
+  EXPECT_FALSE(custom.hasZerocopySendsInFlight());
+  EXPECT_EQ(custom.pollZerocopyCompletions().nbSends, 0U);
+}
+
+TEST(ConnectionStateZerocopyTest, CompletionsReleaseRetainedBuffersProgressively) {
+  ZerocopyConnection cnx;
+  cnx.sendAndRetain(600, 'a');
+  cnx.sendAndRetain(400, 'b');
+  EXPECT_TRUE(cnx.state.hasZerocopySendsInFlight());
+  EXPECT_EQ(cnx.state.zerocopyBuffers.bytes(), 1000U);
+
+  // Each buffer is released as soon as the sends that may read it completed, not once all of them did.
+  EXPECT_EQ(cnx.complete(0, 0).nbSends, 1U);
+  EXPECT_TRUE(cnx.state.hasZerocopySendsInFlight());
+  EXPECT_EQ(cnx.state.zerocopyBuffers.bytes(), 400U);
+
+  EXPECT_EQ(cnx.complete(1, 1).nbSends, 1U);
+  EXPECT_FALSE(cnx.state.hasZerocopySendsInFlight());
+  EXPECT_TRUE(cnx.state.zerocopyBuffers.empty());
+  EXPECT_EQ(cnx.state.zerocopyBuffers.bytes(), 0U);
+}
+
+TEST(ConnectionStateZerocopyTest, OutOfOrderCompletionKeepsTheBuffersOfEarlierSends) {
+  ZerocopyConnection cnx;
+  cnx.sendAndRetain(600, 'a');
+  cnx.sendAndRetain(400, 'b');
+
+  // The kernel may still read the first buffer (retransmission of send 0).
+  cnx.complete(1, 1);
+  EXPECT_TRUE(cnx.state.hasZerocopySendsInFlight());
+  EXPECT_EQ(cnx.state.zerocopyBuffers.bytes(), 1000U);
+
+  cnx.complete(0, 0);
+  EXPECT_FALSE(cnx.state.hasZerocopySendsInFlight());
+  EXPECT_TRUE(cnx.state.zerocopyBuffers.empty());
+}
+
+TEST(ConnectionStateZerocopyTest, CopiedSendStopsZerocopyWhenRequested) {
+  for (const bool stopOnCopy : {false, true}) {
+    ZerocopyConnection cnx;
+    cnx.state.zerocopyStopOnCopy = stopOnCopy;
+    cnx.sendAndRetain(100, 'a');
+    const auto completions = cnx.complete(0, 0, /*copied=*/true);
+    EXPECT_EQ(completions.nbCopiedSends, 1U);
+    EXPECT_EQ(cnx.state.zerocopyEnabled, !stopOnCopy);
   }
 }
 
-#ifdef AERONET_LINUX
-// Disabling zerocopy at the retained-payload high-water mark must not release the buffers of the zerocopy sends already
-// in flight: the kernel keeps transmitting (and possibly retransmitting) from their pages until it reports completion.
-TEST(ConnectionStateZerocopyTest, InFlightBuffersAreKeptWhenZerocopyIsDisabledAtHighWaterMark) {
-  static constexpr uint32_t kMinBytesForZerocopy = 100;
-  static constexpr uint32_t kMaxPendingBytes = 1024;
+TEST(ConnectionStateZerocopyTest, ZerocopySentOutBufferIsNeitherShrunkNorModifiedInPlace) {
+  ZerocopyConnection cnx;
+  ConnectionState& state = cnx.state;
+  state.outBuffer = HttpMessageData(RawChars(std::string(1000, 'o')));
+  // Partially written with MSG_ZEROCOPY: the kernel reads its first 300 bytes until the send completes.
+  cnx.sendZerocopy(state.outBuffer, 300);
+  state.outBuffer.addOffset(300);
+  state.outBufferZerocopySent = true;
+  const char* storage = state.outBuffer.firstBuffer().data();
 
-  ConnectionState state;
-  auto backend = std::make_unique<InFlightZerocopyTransport>(kMinBytesForZerocopy);
-  InFlightZerocopyTransport* raw = backend.get();
-  state.transport = std::move(backend);
-
-  // Same sequence as SingleHttpServer::queueData for a fully written response.
-  const auto sendResponse = [&state](std::size_t size, char ch) {
-    HttpMessageData data(RawChars(std::string(size, ch)));
-    const bool mayNeedHold = state.prepareZerocopyWrite(data.retainedSize(), kMaxPendingBytes);
-    const auto [written, want] = state.transportWrite(data);
-    EXPECT_EQ(written, data.remainingSize());
-    EXPECT_EQ(want, TransportHint::None);
-    state.holdBufferIfZerocopyPending(std::move(data), mayNeedHold);
-    return mayNeedHold;
-  };
-
-  EXPECT_TRUE(sendResponse(600, 'a'));
-  EXPECT_TRUE(sendResponse(400, 'b'));
-  EXPECT_EQ(state.zerocopyRetainedBytes(), 1000U);
-  ASSERT_EQ(state.zerocopyPendingBuffers.size(), 2U);
-
-  // The next response would cross the limit: zerocopy is disabled and the response is copied by the kernel instead.
-  EXPECT_FALSE(sendResponse(200, 'c'));
-  EXPECT_FALSE(state.transport.isZerocopyEnabled());
-
-  // Both previous sends are still in flight, so their buffers must survive any release attempt.
-  EXPECT_TRUE(state.transport.hasZerocopyPending());
-  state.releaseCompletedZerocopyBuffers();
   state.reclaimMemoryFromOversizedBuffers();
-  EXPECT_EQ(state.zerocopyRetainedBytes(), 1000U);
-  ASSERT_EQ(state.zerocopyPendingBuffers.size(), 2U);
-  EXPECT_EQ(state.zerocopyPendingBuffers[0].firstBuffer(), std::string(600, 'a'));
-  EXPECT_EQ(state.zerocopyPendingBuffers[1].firstBuffer(), std::string(400, 'b'));
+  EXPECT_EQ(state.outBuffer.firstBuffer().data(), storage);
 
-  // Zerocopy stays disabled for the connection: later responses are neither zerocopy-sent nor retained.
-  EXPECT_FALSE(sendResponse(300, 'd'));
-  EXPECT_EQ(state.zerocopyPendingBuffers.size(), 2U);
+  // Appending continues with a copy of the unsent bytes, the original being retained.
+  state.prepareOutBufferAppend(16);
+  EXPECT_FALSE(state.outBufferZerocopySent);
+  EXPECT_EQ(state.outBuffer.firstBuffer(), std::string(700, 'o'));
+  EXPECT_EQ(state.zerocopyBuffers.size(), 1U);
+  EXPECT_EQ(state.zerocopyBuffers.bytes(), 1000U);
 
-  raw->completeAll();
-  EXPECT_FALSE(state.transport.hasZerocopyPending());
-  state.releaseCompletedZerocopyBuffers();
-  EXPECT_EQ(state.zerocopyRetainedBytes(), 0U);
-  EXPECT_TRUE(state.zerocopyPendingBuffers.empty());
+  cnx.complete(0, 0);
+  EXPECT_TRUE(state.zerocopyBuffers.empty());
 }
 
-// A drain close waits for the zerocopy sends of the connection: after close, the kernel would still send from their
-// buffers, released with the connection state.
-TEST(ConnectionStateZerocopyTest, DrainCloseWaitsForZerocopySendsInFlight) {
-  ConnectionState withoutTransport;
-  EXPECT_FALSE(withoutTransport.hasZerocopySendsInFlight());
+TEST(ConnectionStateZerocopyTest, OutBufferIsModifiableOnceItsSendsCompleted) {
+  ZerocopyConnection cnx;
+  ConnectionState& state = cnx.state;
+  state.outBuffer = HttpMessageData(RawChars(std::string(1000, 'o')));
+  cnx.sendZerocopy(state.outBuffer, 300);
+  state.outBuffer.addOffset(300);
+  state.outBufferZerocopySent = true;
 
-  ConnectionState state;
-  auto backend = std::make_unique<InFlightZerocopyTransport>(100U);
-  InFlightZerocopyTransport* raw = backend.get();
-  state.transport = std::move(backend);
+  cnx.complete(0, 0);
+  EXPECT_FALSE(state.outBufferZerocopySent);
 
-  HttpMessageData data(RawChars(std::string(600, 'a')));
-  const bool mayNeedHold = state.prepareZerocopyWrite(data.retainedSize(), 1024U);
-  ASSERT_TRUE(mayNeedHold);
-  EXPECT_EQ(state.transportWrite(data).bytesProcessed, 600U);
-  state.holdBufferIfZerocopyPending(std::move(data), mayNeedHold);
+  const char* storage = state.outBuffer.firstBuffer().data();
+  state.prepareOutBufferAppend(16);
+  EXPECT_EQ(state.outBuffer.firstBuffer().data(), storage);
+  EXPECT_TRUE(state.zerocopyBuffers.empty());
+}
 
-  state.requestDrainAndClose();
-  EXPECT_TRUE(state.hasZerocopySendsInFlight());
+TEST(ConnectionStateZerocopyTest, DiscardedOutBufferIsRetainedWhileItsSendsAreInFlight) {
+  ZerocopyConnection cnx;
+  ConnectionState& state = cnx.state;
+  state.outBuffer = HttpMessageData(RawChars(std::string(1000, 'o')));
+  cnx.sendZerocopy(state.outBuffer, 300);
+  state.outBuffer.addOffset(300);
+  state.outBufferZerocopySent = true;
+
+  // Dropped (failed write, epoll failure): the kernel still reads it.
+  state.clearBuffers();
+  EXPECT_TRUE(state.outBuffer.empty());
+  EXPECT_FALSE(state.outBufferZerocopySent);
+  EXPECT_EQ(state.zerocopyBuffers.size(), 1U);
+  EXPECT_TRUE(state.isDrainCloseRequested());
+  // A drain close waits for the completion of the zerocopy sends: after close, the kernel would still send from their
+  // buffers, released with the connection state.
   EXPECT_FALSE(state.canCloseConnectionForDrain());
-  EXPECT_EQ(state.zerocopyRetainedBytes(), 600U);
 
-  raw->completeAll();
+  cnx.complete(0, 0);
+  EXPECT_TRUE(state.zerocopyBuffers.empty());
   EXPECT_TRUE(state.canCloseConnectionForDrain());
-  EXPECT_FALSE(state.hasZerocopySendsInFlight());
-  EXPECT_EQ(state.zerocopyRetainedBytes(), 0U);
-  EXPECT_TRUE(state.zerocopyPendingBuffers.empty());
+}
+
+TEST(ConnectionStateZerocopyTest, DiscardedOutBufferWithoutZerocopySendIsReleased) {
+  ZerocopyConnection cnx;
+  ConnectionState& state = cnx.state;
+  state.outBuffer = HttpMessageData(RawChars(std::string(1000, 'o')));
+  state.discardOutBuffer();
+  EXPECT_TRUE(state.outBuffer.empty());
+  EXPECT_TRUE(state.zerocopyBuffers.empty());
+}
+
+TEST(ConnectionStateZerocopyTest, ResetForgetsTheZerocopyState) {
+  ZerocopyConnection cnx;
+  ConnectionState& state = cnx.state;
+  state.zerocopyStopOnCopy = true;
+  state.outBufferZerocopySent = true;
+  state.zerocopyStallCheckQueuedBytes = 42;
+  state.zerocopyBuffers.retain(HttpMessageData(RawChars(std::string(10, 'a'))), 1);
+
+  state.reset();
+  EXPECT_FALSE(state.zerocopyEnabled);
+  EXPECT_FALSE(state.zerocopyStopOnCopy);
+  EXPECT_FALSE(state.outBufferZerocopySent);
+  EXPECT_EQ(state.zerocopyStallCheckQueuedBytes, ConnectionState::kNoZerocopyStallCheck);
+  EXPECT_TRUE(state.zerocopyBuffers.empty());
+}
+
+TEST(ConnectionStateZerocopyTest, PolicyFollowsModeAndPeerAddress) {
+  const auto ipv4 = [](const char* address) {
+    sockaddr_storage storage{};
+    auto* addr = reinterpret_cast<sockaddr_in*>(&storage);
+    addr->sin_family = AF_INET;
+    EXPECT_EQ(::inet_pton(AF_INET, address, &addr->sin_addr), 1);
+    return storage;
+  };
+  sockaddr_storage unixPeer{};
+  unixPeer.ss_family = AF_UNIX;
+
+  struct Case {
+    ZerocopyMode mode;
+    sockaddr_storage peer;
+    bool enabled;
+    bool stopOnCopy;
+  };
+  for (const Case& testCase : {
+           Case{ZerocopyMode::Disabled, ipv4("10.1.2.3"), false, false},
+           Case{ZerocopyMode::Enabled, ipv4("127.0.0.1"), true, false},
+           Case{ZerocopyMode::Opportunistic, ipv4("127.0.0.1"), false, true},
+           Case{ZerocopyMode::Opportunistic, ipv4("10.1.2.3"), true, true},
+           Case{ZerocopyMode::Opportunistic, unixPeer, false, true},
+       }) {
+    HttpServerConfig config;
+    config.withZerocopyMode(testCase.mode);
+    CompressionState compressionState(config.compression);
+    ConnectionState state;
+    state.initializeStateNewConnection(config, testCase.peer, compressionState);
+    EXPECT_EQ(state.zerocopyEnabled, testCase.enabled) << static_cast<int>(testCase.mode);
+    EXPECT_EQ(state.zerocopyStopOnCopy, testCase.stopOnCopy) << static_cast<int>(testCase.mode);
+  }
 }
 #endif
 
@@ -841,7 +965,7 @@ TEST(ConnectionStateTransportTest, TransportWriteHttpResponseSkipsHandshakeWhenA
   BaseFd raii[]{BaseFd(sv[0]), BaseFd(sv[1])};
 
   ConnectionState state;
-  state.transport = Transport(sv[0], ZerocopyMode::Disabled, 0U);
+  state.transport = Transport(sv[0]);
   state.tlsEstablished = true;  // simulate prior completion
 
   HttpMessageData resp(RawChars("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"));
