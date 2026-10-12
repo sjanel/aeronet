@@ -1533,49 +1533,46 @@ void Router::pushBackIndex(RadixNode& node, char indexChar) {
 }
 
 namespace {
-constexpr auto kSentinelHeaderBytes = static_cast<uint32_t>(-1);
-constexpr auto kSentinelBodyBytes = static_cast<std::size_t>(-1);
 
-void CheckRouteConfig(const PathEntryConfig& cfg, uint32_t globalMaxHeaderBytes, std::size_t globalMaxBodyBytes,
-                      std::string_view routePath) {
-  if (cfg.maxHeaderBytes != kSentinelHeaderBytes && cfg.maxHeaderBytes > globalMaxHeaderBytes) {
-    log::critical("Per-route maxHeaderBytes ({}) for '{}' exceeds global limit ({})", cfg.maxHeaderBytes, routePath,
-                  globalMaxHeaderBytes);
-    throw std::invalid_argument("Per-route maxHeaderBytes should not exceed global limit");
+// The limit applied to a route: its configured one (the sentinel, the largest value, standing for none), capped by the
+// global one. A configured limit newly capped (not already by this global limit) is logged.
+template <typename T>
+T AppliedLimit(T configured, T global, T previouslyApplied, std::string_view limitName, std::string_view routePath) {
+  if (configured != static_cast<T>(-1) && configured > global && previouslyApplied != global) {
+    log::warn("Per-route {} ({}) for '{}' exceeds the global limit ({}): capped to it", limitName, configured,
+              routePath, global);
   }
-  if (cfg.maxBodyBytes != kSentinelBodyBytes && cfg.maxBodyBytes > globalMaxBodyBytes) {
-    log::critical("Per-route maxBodyBytes ({}) for '{}' exceeds global limit ({})", cfg.maxBodyBytes, routePath,
-                  globalMaxBodyBytes);
-    throw std::invalid_argument("Per-route maxBodyBytes should not exceed global limit");
-  }
+  return std::min(configured, global);
 }
 
-void ClampConfig(PathEntryConfig& cfg, uint32_t globalMaxHeaderBytes, std::size_t globalMaxBodyBytes) noexcept {
-  cfg.maxHeaderBytes = std::min(cfg.maxHeaderBytes, globalMaxHeaderBytes);
-  cfg.maxBodyBytes = std::min(cfg.maxBodyBytes, globalMaxBodyBytes);
-}
 }  // namespace
 
 void Router::clampConfigs(uint32_t globalMaxHeaderBytes, std::size_t globalMaxBodyBytes) {
-  // Validate and clamp radix tree nodes iteratively.
+  // Computed from the configured limits, never from the applied ones: they follow every change of the global limits.
+  const auto clampEntry = [globalMaxHeaderBytes, globalMaxBodyBytes](PathHandlerEntry& entry,
+                                                                     std::string_view routePath) {
+    PathEntryConfig& applied = entry._pathConfig;
+    applied.maxHeaderBytes = AppliedLimit(entry._configuredLimits.maxHeaderBytes, globalMaxHeaderBytes,
+                                          applied.maxHeaderBytes, "maxHeaderBytes", routePath);
+    applied.maxBodyBytes = AppliedLimit(entry._configuredLimits.maxBodyBytes, globalMaxBodyBytes, applied.maxBodyBytes,
+                                        "maxBodyBytes", routePath);
+  };
+
+  // Radix tree nodes, iteratively.
   if (_pRootNode != nullptr) {
     for (vector<RadixNode*> stack(1U, _pRootNode); !stack.empty();) {
       auto* node = stack.back();
       stack.pop_back();
 
-      CheckRouteConfig(node->handlers._pathConfig, globalMaxHeaderBytes, globalMaxBodyBytes, node->path);
-
-      ClampConfig(node->handlers._pathConfig, globalMaxHeaderBytes, globalMaxBodyBytes);
+      clampEntry(node->handlers, node->path);
 
       std::ranges::copy(node->children, std::back_inserter(stack));
     }
   }
 
-  // Validate and clamp literal routes.
+  // Literal routes.
   for (const auto& [key, entryIdx] : _literalOnlyRoutes) {
-    auto& entry = _literalRouteEntries[entryIdx];
-    CheckRouteConfig(entry.handlers._pathConfig, globalMaxHeaderBytes, globalMaxBodyBytes, key);
-    ClampConfig(entry.handlers._pathConfig, globalMaxHeaderBytes, globalMaxBodyBytes);
+    clampEntry(_literalRouteEntries[entryIdx].handlers, key);
   }
 
   // _defaultPathConfig represents "no per-route override" so always equals the global values.

@@ -377,7 +377,7 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
     // mechanism and RFC 9110 §7.8 lets a server ignore Upgrade, so such a request is answered over HTTP/1.1 like any
     // other. Cleartext HTTP/2 is only available with prior knowledge (Http2Config::enableH2c).
 
-    // Per-route request head size limit (already clamped against global in prepareRun)
+    // Per-route request head size limit (already clamped against the global one, see Router::clampConfigs())
     if (request.headSpanSize() > routingResult.pathConfig().maxHeaderBytes) {
       emitSimpleError(cnxIt, http::StatusCodeRequestHeaderFieldsTooLarge, {});
       break;

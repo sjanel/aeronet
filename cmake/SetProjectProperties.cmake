@@ -11,17 +11,26 @@ function(AeronetSetProjectProperties name)
   # compile definitions). Define it as a C string literal.
   target_compile_definitions(${name} PUBLIC "AERONET_VERSION_STR=\"${AERONET_PROJECT_VERSION}\"")
 
-  # Warning levels
+    # Warning levels
   if(AERONET_ENABLE_WARNINGS)
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")
       # Basic warnings
       if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
         target_compile_options(${name} PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion)
+        if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+          # GCC's plain -Wshadow is very noisy and incorrect in most cases. We don't activate it.
+        else()
+          target_compile_options(${name} PRIVATE -Wshadow)
+        endif()
         if (AERONET_WARNINGS_AS_ERRORS AND NOT ARG_NO_WARNINGS_AS_ERRORS)
             target_compile_options(${name} PRIVATE -Werror)
         endif()
       elseif (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
         target_compile_options(${name} PRIVATE /W4 /permissive- /external:anglebrackets /external:W0)
+        # C4456 (local hides local) and C4457 (local hides parameter) are the equivalent of -Wshadow=local,
+        # they are already part of /W4. Disable the noisier ones for parity with GCC/Clang:
+        # C4458 (hides class member) and C4459 (hides global declaration)
+        target_compile_options(${name} PRIVATE /wd4458 /wd4459)
         if (AERONET_WARNINGS_AS_ERRORS AND NOT ARG_NO_WARNINGS_AS_ERRORS)
             target_compile_options(${name} PRIVATE /WX)
         endif()
@@ -34,7 +43,7 @@ function(AeronetSetProjectProperties name)
       endif()
     endif()
   endif()
-
+  
   # Use lld linker with Clang if available for faster linking
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     # Try to find lld (unversioned first, then versioned matching compiler version)
