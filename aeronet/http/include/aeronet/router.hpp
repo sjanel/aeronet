@@ -322,7 +322,9 @@ class Router {
   // Clamp all per-route PathEntryConfig limits (maxHeaderBytes, maxBodyBytes) against the
   // provided global server limits. After this call, every route's effective limits are
   // min(per-route, global) so the hot path only needs a single comparison.
-  // Throws std::invalid_argument if any non-sentinel per-route value exceeds the global limit.
+  // They are computed from the per-route limits as configured: calling it again with other global limits (a config
+  // update) gives the routes without their own limit the new global ones. A per-route limit larger than the global one
+  // is capped, with a warning.
   void clampConfigs(uint32_t globalMaxHeaderBytes, std::size_t globalMaxBodyBytes);
 
   // Create a RouteGroup with the given prefix for scoped route registration.

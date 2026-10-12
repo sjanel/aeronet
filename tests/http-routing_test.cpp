@@ -8,6 +8,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 
@@ -1145,6 +1146,59 @@ TEST(RouterUpdateProxy, PathEntryProxyMaxHeaderBytes) {
   opts.connection = "close";
   const std::string response = test::requestOrThrow(ts.port(), opts);
   EXPECT_TRUE(response.contains("431")) << response;
+}
+
+namespace {
+
+std::string PostBody(std::string_view target, std::size_t bodySize) {
+  test::RequestOptions opts;
+  opts.method = "POST";
+  opts.target = target;
+  opts.body = std::string(bodySize, 'b');
+  opts.connection = "close";
+  return test::requestOrThrow(ts.port(), opts);
+}
+
+auto LowerMaxBodyBytes(std::size_t bytes) {
+  return test::ScopedConfigUpdate<std::size_t>(
+      ts, [](const HttpServerConfig& cfg) { return cfg.maxBodyBytes; },
+      [](HttpServerConfig& cfg, std::size_t value) { cfg.withMaxBodyBytes(value); }, bytes);
+}
+
+}  // namespace
+
+// The routes follow the changes of the global limits: lowering them below the limit of a route caps it, and the routes
+// without their own limit apply the new global one. The server keeps serving.
+TEST(RouterUpdateProxy, GlobalLimitsUpdateAppliesToRoutes) {
+  RouterUpdateProxy router = ts.resetRouterAndGet();
+  const auto handler = [](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); };
+  router.setPath(http::Method::POST, "/no-own-limit", handler);
+  router.setPath(http::Method::POST, "/own-limit/{id}", handler).maxBodyBytes(64);
+
+  {
+    const auto guard = LowerMaxBodyBytes(16);
+    for (std::string_view target : {"/no-own-limit", "/own-limit/1"}) {
+      EXPECT_TRUE(PostBody(target, 8).starts_with("HTTP/1.1 200")) << target;
+      EXPECT_TRUE(PostBody(target, 32).contains("413")) << target;
+    }
+  }
+
+  // The previous global limit is back: the route has its own limit again.
+  EXPECT_TRUE(PostBody("/no-own-limit", 128).starts_with("HTTP/1.1 200"));
+  EXPECT_TRUE(PostBody("/own-limit/1", 32).starts_with("HTTP/1.1 200"));
+  EXPECT_TRUE(PostBody("/own-limit/1", 128).contains("413"));
+}
+
+// A route registered at runtime with a limit larger than the global one is capped by it.
+TEST(RouterUpdateProxy, RouteLimitAboveGlobalLimitIsCapped) {
+  const auto guard = LowerMaxBodyBytes(16);
+  ts.resetRouterAndGet()
+      .setPath(http::Method::POST, "/large-own-limit",
+               [](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); })
+      .maxBodyBytes(1024);
+
+  EXPECT_TRUE(PostBody("/large-own-limit", 8).starts_with("HTTP/1.1 200"));
+  EXPECT_TRUE(PostBody("/large-own-limit", 32).contains("413"));
 }
 
 TEST(RouterUpdateProxy, SetDefaultStreamingHandler) {

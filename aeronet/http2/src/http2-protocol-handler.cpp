@@ -932,7 +932,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
     return;
   }
 
-  // Per-route request head size limit (already clamped against global in prepareRun)
+  // Per-route request head size limit (already clamped against the global one, see Router::clampConfigs())
   if (request.headSpanSize() > routingResult.pathConfig().maxHeaderBytes) {
     [[maybe_unused]] ErrorCode err =
         sendResponse(streamId, request.makeResponse(http::StatusCodeRequestHeaderFieldsTooLarge), isHeadMethod);
@@ -942,7 +942,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
     return;
   }
 
-  // Per-route body size limit (already clamped against global in prepareRun)
+  // Per-route body size limit (already clamped against the global one, see Router::clampConfigs())
   if (request._body.size() > routingResult.pathConfig().maxBodyBytes) {
     [[maybe_unused]] ErrorCode err =
         sendResponse(streamId, request.makeResponse(http::StatusCodePayloadTooLarge), isHeadMethod);

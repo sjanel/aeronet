@@ -1132,7 +1132,7 @@ TEST(MultiHttpServerDedicatedProbes, ProbeStaysResponsiveWhileWorkerBlockedInHan
   test::WaitForServer(multi);
 
   // Occupy the single worker with a slow request in the background; it will block until we release it below.
-  std::thread slow([appPort = appPort] { (void)test::simpleGet(appPort, "/slow"); });
+  std::thread slow([appPort] { (void)test::simpleGet(appPort, "/slow"); });
 
   // Wait until the worker has actually entered the handler and is blocked — no more guessing with sleeps.
   {
@@ -1189,7 +1189,7 @@ TEST(MultiHttpServerDedicatedProbes, LivenessTripsWhenWorkerWedgedBeyondThreshol
 
   EXPECT_TRUE(test::simpleGet(probePort, "/livez").starts_with("HTTP/1.1 200"));
 
-  std::thread wedger([appPort = appPort] { (void)test::simpleGet(appPort, "/wedge"); });
+  std::thread wedger([appPort] { (void)test::simpleGet(appPort, "/wedge"); });
 
   bool saw503 = false;
   bool readyStayed200 = true;

@@ -9,6 +9,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "aeronet/http-method.hpp"
@@ -2141,34 +2142,71 @@ TEST_F(RouterTest, ParamRouteExtraSegmentsNoChildrenReturnsNull) {
 // --- clampConfigs validation tests ---
 
 TEST_F(RouterTest, ClampConfigsSentinelValuesAreClamped) {
-  // Sentinel values (default) should be clamped to the global limit without error.
+  // Sentinel values (default) are clamped to the global limit.
   router.setPath(http::Method::GET, "/test", OkHandler);
-  EXPECT_NO_THROW(router.clampConfigs(4096, 8192));
+  router.clampConfigs(4096, 8192);
+  const auto res = router.match(http::Method::GET, "/test");
+  EXPECT_EQ(res.pathConfig().maxHeaderBytes, 4096U);
+  EXPECT_EQ(res.pathConfig().maxBodyBytes, 8192U);
 }
 
-TEST_F(RouterTest, ClampConfigsPerRouteLowerThanGlobalIsOk) {
+TEST_F(RouterTest, ClampConfigsPerRouteLowerThanGlobalIsKept) {
   router.setPath(http::Method::GET, "/test", OkHandler).maxHeaderBytes(2048).maxBodyBytes(4096);
-  EXPECT_NO_THROW(router.clampConfigs(8192, 16384));
+  router.clampConfigs(8192, 16384);
+  const auto res = router.match(http::Method::GET, "/test");
+  EXPECT_EQ(res.pathConfig().maxHeaderBytes, 2048U);
+  EXPECT_EQ(res.pathConfig().maxBodyBytes, 4096U);
 }
 
-TEST_F(RouterTest, ClampConfigsPerRouteEqualToGlobalIsOk) {
+TEST_F(RouterTest, ClampConfigsPerRouteEqualToGlobalIsKept) {
   router.setPath(http::Method::GET, "/test", OkHandler).maxHeaderBytes(8192).maxBodyBytes(16384);
-  EXPECT_NO_THROW(router.clampConfigs(8192, 16384));
+  router.clampConfigs(8192, 16384);
+  const auto res = router.match(http::Method::GET, "/test");
+  EXPECT_EQ(res.pathConfig().maxHeaderBytes, 8192U);
+  EXPECT_EQ(res.pathConfig().maxBodyBytes, 16384U);
 }
 
-TEST_F(RouterTest, ClampConfigsPerRouteHeaderExceedsGlobalThrows) {
-  router.setPath(http::Method::GET, "/test", OkHandler).maxHeaderBytes(16384);
-  EXPECT_THROW(router.clampConfigs(8192, 1024UL * 1024), std::invalid_argument);
+TEST_F(RouterTest, ClampConfigsPerRouteExceedingGlobalIsCapped) {
+  router.setPath(http::Method::GET, "/exact", OkHandler).maxHeaderBytes(16384).maxBodyBytes(100);
+  router.setPath(http::Method::GET, "/items/{id}", OkHandler).maxHeaderBytes(16384).maxBodyBytes(100);
+  // Capped again by the same global limits: no new warning.
+  for (int clampIdx = 0; clampIdx < 2; ++clampIdx) {
+    router.clampConfigs(8192, 50);
+    for (std::string_view path : {"/exact", "/items/42"}) {
+      const auto res = router.match(http::Method::GET, path);
+      EXPECT_EQ(res.pathConfig().maxHeaderBytes, 8192U) << path;
+      EXPECT_EQ(res.pathConfig().maxBodyBytes, 50U) << path;
+    }
+  }
 }
 
-TEST_F(RouterTest, ClampConfigsPerRouteBodyExceedsGlobalThrows) {
-  router.setPath(http::Method::GET, "/test", OkHandler).maxBodyBytes(32768);
-  EXPECT_THROW(router.clampConfigs(8192, 16384), std::invalid_argument);
-}
+// The limits are computed again from the configured ones at each clamp: a route without its own limits follows the
+// global limits, and a capped route gets its own limits back once the global limits allow them.
+TEST_F(RouterTest, ClampConfigsFollowGlobalLimitChanges) {
+  router.setPath(http::Method::GET, "/default", OkHandler);
+  router.setPath(http::Method::GET, "/own/{id}", OkHandler).maxHeaderBytes(2048).maxBodyBytes(4096);
 
-TEST_F(RouterTest, ClampConfigsLiteralRouteExceedsGlobalThrows) {
-  router.setPath(http::Method::GET, "/exact", OkHandler).maxBodyBytes(100);
-  EXPECT_THROW(router.clampConfigs(8192, 50), std::invalid_argument);
+  struct Expected {
+    uint32_t defaultHeader;
+    std::size_t defaultBody;
+    uint32_t ownHeader;
+    std::size_t ownBody;
+  };
+  const auto expectLimits = [this](const Expected& expected) {
+    const auto defaultRes = router.match(http::Method::GET, "/default");
+    EXPECT_EQ(defaultRes.pathConfig().maxHeaderBytes, expected.defaultHeader);
+    EXPECT_EQ(defaultRes.pathConfig().maxBodyBytes, expected.defaultBody);
+    const auto ownRes = router.match(http::Method::GET, "/own/1");
+    EXPECT_EQ(ownRes.pathConfig().maxHeaderBytes, expected.ownHeader);
+    EXPECT_EQ(ownRes.pathConfig().maxBodyBytes, expected.ownBody);
+  };
+
+  router.clampConfigs(8192, 16384);
+  expectLimits({8192, 16384, 2048, 4096});
+  router.clampConfigs(512, 256);
+  expectLimits({512, 256, 512, 256});
+  router.clampConfigs(8192, 16384);
+  expectLimits({8192, 16384, 2048, 4096});
 }
 
 // --- Route Constraint Integration Tests ---
