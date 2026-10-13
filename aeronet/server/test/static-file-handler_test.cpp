@@ -13,6 +13,7 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
@@ -28,6 +29,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 
 #include "aeronet/compression-config.hpp"
@@ -107,8 +109,9 @@ class StaticFileHandlerTest : public ::testing::Test {
     return handler._headerCache.find(std::string_view(key)) != handler._headerCache.end();
   }
 
-  static bool isWithinRoot(const StaticFileHandler& handler, const std::filesystem::path& path) {
-    return handler.isWithinRoot(path);
+  static bool isRealPathServable(const StaticFileHandler& handler, const std::filesystem::path& path,
+                                 const File* pFile = nullptr) {
+    return handler.isRealPathServable(path, pFile);
   }
 
   static void writeFileWithSize(const std::filesystem::path& path, std::size_t size, char fill = 'x') {
@@ -778,18 +781,148 @@ TEST_F(StaticFileHandlerTest, SymlinksAreOnlyFollowedInsideRoot) {
   }
 }
 
-TEST_F(StaticFileHandlerTest, IsWithinRoot) {
-  std::filesystem::create_directories(tmpDir.dirPath() / "root" / "sub");
+TEST_F(StaticFileHandlerTest, IsRealPathServable) {
+  const auto root = tmpDir.dirPath() / "root";
+  std::filesystem::create_directories(root / "sub");
+  std::filesystem::create_directories(root / ".git");
+  std::filesystem::create_directories(root / ".well-known");
   std::filesystem::create_directories(tmpDir.dirPath() / "root-sibling");
-  StaticFileHandler handler(tmpDir.dirPath() / "root");
-  EXPECT_TRUE(isWithinRoot(handler, tmpDir.dirPath() / "root"));
-  EXPECT_TRUE(isWithinRoot(handler, tmpDir.dirPath() / "root" / "sub"));
-  EXPECT_TRUE(isWithinRoot(handler, tmpDir.dirPath() / "root" / "sub" / ".."));
-  EXPECT_FALSE(isWithinRoot(handler, tmpDir.dirPath()));
-  EXPECT_FALSE(isWithinRoot(handler, tmpDir.dirPath() / "root-sibling"));
-  EXPECT_FALSE(isWithinRoot(handler, tmpDir.dirPath() / "root" / ".."));
+  std::ofstream(root / "sub" / "a.txt") << "a";
+  std::ofstream(root / "sub" / "b.txt") << "b";
+  StaticFileHandler handler(root);
+  EXPECT_TRUE(isRealPathServable(handler, root));
+  EXPECT_TRUE(isRealPathServable(handler, root / "sub"));
+  EXPECT_TRUE(isRealPathServable(handler, root / "sub" / ".."));
+  EXPECT_TRUE(isRealPathServable(handler, root / ".well-known"));
+  EXPECT_FALSE(isRealPathServable(handler, tmpDir.dirPath()));
+  EXPECT_FALSE(isRealPathServable(handler, tmpDir.dirPath() / "root-sibling"));
+  EXPECT_FALSE(isRealPathServable(handler, root / ".."));
   // A path that cannot be resolved is never considered inside the root.
-  EXPECT_FALSE(isWithinRoot(handler, tmpDir.dirPath() / "root" / "missing"));
+  EXPECT_FALSE(isRealPathServable(handler, root / "missing"));
+  EXPECT_FALSE(isRealPathServable(handler, root / ".git"));
+  EXPECT_FALSE(isRealPathServable(handler, root / "sub" / ".." / ".git"));
+
+  StaticFileConfig cfg;
+  cfg.showHiddenFiles = true;
+  StaticFileHandler handlerShowHidden(root, cfg);
+  EXPECT_TRUE(isRealPathServable(handlerShowHidden, root / ".git"));
+
+  // The opened file must be the one designated by the real path.
+  const File fileA((root / "sub" / "a.txt").string());
+  ASSERT_TRUE(static_cast<bool>(fileA));
+  EXPECT_TRUE(isRealPathServable(handler, root / "sub" / "a.txt", &fileA));
+  EXPECT_FALSE(isRealPathServable(handler, root / "sub" / "b.txt", &fileA));
+}
+
+TEST_F(StaticFileHandlerTest, RootMayBeHidden) {
+  // Only the path below the root is checked for hidden segments.
+  const auto root = tmpDir.dirPath() / ".site";
+  std::filesystem::create_directories(root / "assets");
+  std::ofstream(root / "assets" / "app.js") << "app";
+
+  StaticFileConfig cfg;
+  cfg.enableDirectoryIndex = true;
+  cfg.withDefaultIndex("");
+  StaticFileHandler handler(root, cfg);
+  for (std::string_view path : {"assets/app.js", "assets/", ""}) {
+    buildReq(path);
+    ASSERT_EQ(setHead(), http::StatusCodeOK);
+    EXPECT_EQ(handler(req).status(), http::StatusCodeOK) << path;
+  }
+}
+
+TEST_F(StaticFileHandlerTest, LinksToHiddenFilesAreNotServed) {
+  // The request shows no hidden segment, but the real path does: the hidden rule applies to it as well (this is also
+  // how a Windows short name, such as GIT~1 for .git, is caught).
+  const auto root = tmpDir.dirPath() / "root";
+  std::filesystem::create_directories(root / ".git");
+  std::filesystem::create_directories(root / ".well-known");
+  std::ofstream(root / ".env") << "SECRET=1";
+  std::ofstream(root / ".git" / "config") << "[core]";
+  std::ofstream(root / ".well-known" / "security.txt") << "Contact: mailto:security@example.com";
+
+  std::error_code ec;
+  std::filesystem::create_symlink(root / ".env", root / "env.txt", ec);
+  if (ec) {
+    GTEST_SKIP() << "Symlink creation requires elevated privileges: " << ec.message();
+  }
+  std::filesystem::create_directory_symlink(root / ".git", root / "git");
+  std::filesystem::create_symlink(root / ".well-known" / "security.txt", root / "security.txt");
+
+  for (std::size_t headerCacheCapacity : {std::size_t{0}, std::size_t{16}}) {
+    StaticFileConfig cfg;
+    cfg.enableDirectoryIndex = true;
+    cfg.withDefaultIndex("");
+    cfg.withHeaderCacheCapacity(headerCacheCapacity);
+    StaticFileHandler handler(root, cfg);
+    for (std::string_view path : {"env.txt", "git/config", "git/"}) {
+      buildReq(path);
+      ASSERT_EQ(setHead(), http::StatusCodeOK);
+      EXPECT_EQ(handler(req).status(), http::StatusCodeNotFound) << path;
+    }
+    buildReq("security.txt");
+    ASSERT_EQ(setHead(), http::StatusCodeOK);
+    EXPECT_EQ(handler(req).status(), http::StatusCodeOK);
+
+    cfg.showHiddenFiles = true;
+    StaticFileHandler handlerShowHidden(root, cfg);
+    for (std::string_view path : {"env.txt", "git/config", "git/"}) {
+      buildReq(path);
+      ASSERT_EQ(setHead(), http::StatusCodeOK);
+      EXPECT_EQ(handlerShowHidden(req).status(), http::StatusCodeOK) << path;
+    }
+  }
+}
+
+TEST_F(StaticFileHandlerTest, LinkSwappedWhileServingNeverServesOutsideFile) {
+  // A link flipped between a file inside the root and a file outside of it: a request may open the outside file, then
+  // resolve the path of the inside one. The opened file must then be refused, as it is not the checked one.
+  const auto root = tmpDir.dirPath() / "root";
+  std::filesystem::create_directories(root);
+  const auto inside = root / "inside.txt";
+  const auto outside = tmpDir.dirPath() / "outside.txt";
+  std::ofstream(inside) << "inside";
+  std::ofstream(outside) << "secret";
+
+  const auto link = root / "link.txt";
+  std::error_code ec;
+  std::filesystem::create_symlink(inside, link, ec);
+  if (ec) {
+    GTEST_SKIP() << "Symlink creation requires elevated privileges: " << ec.message();
+  }
+
+  std::atomic<bool> stop{false};
+  std::thread flipper([&] {
+    // Replaced atomically (rename), so that the link always exists.
+    const auto tmpLink = tmpDir.dirPath() / "link.tmp";
+    bool toOutside = true;
+    while (!stop.load(std::memory_order_relaxed)) {
+      std::error_code flipEc;
+      std::filesystem::remove(tmpLink, flipEc);
+      std::filesystem::create_symlink(toOutside ? outside : inside, tmpLink, flipEc);
+      std::filesystem::rename(tmpLink, link, flipEc);
+      toOutside = !toOutside;
+    }
+  });
+
+  StaticFileConfig cfg;
+  cfg.withHeaderCacheCapacity(0);  // every request checks the real path
+  StaticFileHandler handler(root, cfg);
+  for (int iteration = 0; iteration < 2000; ++iteration) {
+    buildReq("link.txt");
+    ASSERT_EQ(setHead(), http::StatusCodeOK);
+    HttpResponse resp = handler(req);
+    if (resp.status() == http::StatusCodeOK) {
+      EXPECT_EQ(resp.bodyInMemory(), "inside");
+    } else {
+      // Refused: not found when the real path check rejects it, or unavailable when open() itself fails on the link
+      // being renamed over (macOS returns EINVAL in that race, Linux never fails it).
+      EXPECT_TRUE(resp.status() == http::StatusCodeNotFound || resp.status() == http::StatusCodeServiceUnavailable)
+          << resp.status();
+    }
+  }
+  stop.store(true, std::memory_order_relaxed);
+  flipper.join();
 }
 
 TEST_F(StaticFileHandlerTest, DanglingSymlinkIsNotFound) {

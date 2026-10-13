@@ -4,7 +4,6 @@
 
 #include <cctype>
 #include <cstring>
-#include <optional>
 #include <stdexcept>
 #include <string_view>
 
@@ -815,6 +814,7 @@ TEST(WebSocketDeflateTest, ContextTakeoverDecompressesSuccessiveMessages) {
   DeflateContext client(params, config, false);
   for (const std::size_t size : {std::size_t{100}, std::size_t{16384}, std::size_t{20000}, std::size_t{5}}) {
     const std::string message = test::MakePatternedPayload(size);
+    // NOLINTNEXTLINE(readability-suspicious-call-argument)
     EXPECT_EQ(RoundTrip(client, server, message), message) << size;
     EXPECT_EQ(RoundTrip(server, client, message), message) << size;
   }
@@ -868,6 +868,7 @@ TEST(WebSocketSharedDeflateStreamsTest, ContextTakeoverDirectionKeepsItsOwnStrea
   // Another connection compresses and decompresses with the shared streams in between.
   EXPECT_EQ(RoundTrip(other, otherClient, message), message);
   EXPECT_EQ(RoundTrip(otherClient, other, message), message);
+  // NOLINTNEXTLINE(readability-suspicious-call-argument)
   EXPECT_EQ(RoundTrip(client, server, message), message);
   // The server context still holds the first message: the second one refers to it.
   RawBytes second;
@@ -942,11 +943,13 @@ TEST(WebSocketSharedDeflateStreamsTest, StreamsStayValidWhenMoved) {
   const std::string message = test::MakePatternedPayload(1000);
   // Both shared streams hold a zlib state when they are moved.
   EXPECT_EQ(RoundTrip(server, client, message), message);
+  // NOLINTNEXTLINE(readability-suspicious-call-argument)
   EXPECT_EQ(RoundTrip(client, server, message), message);
 
   SharedDeflateStreams moved(std::move(*sharedStreams));
   sharedStreams.reset();
   EXPECT_EQ(RoundTrip(server, client, message), message);
+  // NOLINTNEXTLINE(readability-suspicious-call-argument)
   EXPECT_EQ(RoundTrip(client, server, message), message);
   DeflateContext movedServer(params, config, true, &moved);
   EXPECT_EQ(RoundTrip(movedServer, client, message), message);
@@ -955,6 +958,7 @@ TEST(WebSocketSharedDeflateStreamsTest, StreamsStayValidWhenMoved) {
   SharedDeflateStreams assigned;
   assigned = std::move(moved);
   EXPECT_EQ(RoundTrip(server, client, message), message);
+  // NOLINTNEXTLINE(readability-suspicious-call-argument)
   EXPECT_EQ(RoundTrip(client, server, message), message);
   DeflateContext assignedServer(params, config, true, &assigned);
   EXPECT_EQ(RoundTrip(assignedServer, client, message), message);

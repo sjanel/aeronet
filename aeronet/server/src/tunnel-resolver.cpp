@@ -1,6 +1,8 @@
 #include "tunnel-resolver.hpp"
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -22,9 +24,10 @@
 namespace aeronet::internal {
 
 PendingTunnel::PendingTunnel(std::string_view targetHost, uint16_t targetPort, NativeHandle client, uint32_t stream,
-                             std::size_t requestBytes)
+                             std::size_t requestBytes, std::chrono::steady_clock::time_point expiry)
     : hostBuffer(targetHost.size() + 1U),
       consumedBytes(requestBytes),
+      deadline(expiry),
       clientFd(client),
       streamId(stream),
       port(targetPort) {
@@ -85,6 +88,14 @@ void TunnelResolver::resolve(std::shared_ptr<PendingTunnel> pending) {
   }
   lock.unlock();
   _shared->condition.notify_one();
+}
+
+void TunnelResolver::cancel(const std::shared_ptr<PendingTunnel>& pending) {
+  std::scoped_lock lock(_shared->mutex);
+  const auto it = std::ranges::find(_shared->queue, pending);
+  if (it != _shared->queue.end()) {
+    _shared->queue.erase(it);
+  }
 }
 
 bool TunnelResolver::hasResolved() const noexcept { return _shared->hasResolved.load(std::memory_order_acquire); }

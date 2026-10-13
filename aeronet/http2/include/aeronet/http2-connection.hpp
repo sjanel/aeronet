@@ -235,6 +235,15 @@ class Http2Connection {
   /// @param increment Window size increment
   void sendWindowUpdate(uint32_t streamId, uint32_t increment);
 
+  /// Stop replenishing the receive window of a stream: the peer can then send at most the credit it has left, until
+  /// releaseStreamRecvWindow(). For a stream whose data cannot be consumed for now (a CONNECT tunnel whose upstream is
+  /// not writable). The connection-level window is still replenished. No-op when the stream does not exist.
+  void holdStreamRecvWindow(uint32_t streamId) noexcept;
+
+  /// Resume the replenishment of a receive window held by holdStreamRecvWindow(), sending the WINDOW_UPDATE that was
+  /// withheld, if any. No-op when the stream does not exist or cannot receive anymore.
+  void releaseStreamRecvWindow(uint32_t streamId);
+
   /// Finalize a stream whose Closed state was reached through the *send* path (END_STREAM sent while
   /// half-closed remote) outside frame processing -- a deferred / flow-controlled send completed from
   /// onOutputWritten, an async completion, or a client engine finishing an upload after the response.
@@ -355,6 +364,9 @@ class Http2Connection {
   // ============================
 
   void closeStream(StreamsMap::iterator it, ErrorCode errorCode = ErrorCode::NoError);
+
+  /// Give back the connection-level credit once half of it was consumed (see handleDataFrame()).
+  void replenishConnectionRecvWindow();
   void pruneClosedStreams();
 
   // ============================

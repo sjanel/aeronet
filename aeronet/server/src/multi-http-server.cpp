@@ -405,6 +405,14 @@ void MultiHttpServer::stop() noexcept {
       _probeServer->stop();
     }
 
+    // From a handler, the calling thread is one of the event loops to join: it can neither join itself nor wait for the
+    // group to be joined (run() joins it too). The stop is requested: its event loop exits once the handler returns,
+    // and the threads are joined by run(), or by a later stop() from another thread, or by the destructor.
+    if (std::ranges::any_of(_servers,
+                            [](const SingleHttpServer& server) { return server._lifecycle.isEventLoopThread(); })) {
+      return;
+    }
+
     internalHandle.swap(_internalHandle);
     lastHandleState = _lastHandleState.lock();
   }

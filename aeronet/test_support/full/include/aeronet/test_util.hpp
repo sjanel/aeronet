@@ -8,6 +8,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/base-fd.hpp"
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/native-handle.hpp"
@@ -132,6 +133,32 @@ std::string requestOrThrow(uint16_t port, const RequestOptions& opt = {});
 bool AttemptConnect(uint16_t port);
 
 bool WaitForPeerClose(NativeHandle fd, std::chrono::milliseconds timeout);
+
+// A TCP peer on 127.0.0.1 (ephemeral port) accepting a single connection: a tunnel upstream that a test drives itself,
+// to make it stop reading, or write faster than the tunnel client reads.
+class LoopbackPeer {
+ public:
+  // 'bufferSize', when positive, is the size of the receive and send buffers of the accepted connection.
+  explicit LoopbackPeer(int bufferSize = 0);
+
+  [[nodiscard]] uint16_t port() const noexcept { return _port; }
+
+  // Waits up to 'timeout' for the connection, and returns its (non-blocking) socket. Throws on timeout.
+  NativeHandle accept(std::chrono::milliseconds timeout = 5s);
+
+ private:
+  BaseFd _listenSocket;
+  BaseFd _connection;
+  uint16_t _port{0};
+};
+
+// Writes into the non-blocking socket 'fd' until it accepted nothing during 'stallTime' (its peer stopped reading, and
+// every buffer on the way is full), or until 'maxBytes' were written. Returns the number of written bytes.
+std::size_t WriteUntilStalled(NativeHandle fd, std::size_t maxBytes, std::chrono::milliseconds stallTime = 300ms);
+
+// Receives and discards up to 'nbBytes' from 'fd' (blocking or not), within 'timeout'. Returns the number of received
+// bytes, smaller than nbBytes on timeout or when the peer closed the connection.
+std::size_t ReceiveAndDiscard(NativeHandle fd, std::size_t nbBytes, std::chrono::milliseconds timeout);
 
 bool WaitForListenerClosed(uint16_t port, std::chrono::milliseconds timeout);
 

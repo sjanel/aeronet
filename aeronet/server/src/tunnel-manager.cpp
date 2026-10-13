@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -38,6 +39,13 @@
 #endif
 
 namespace aeronet::internal {
+
+namespace {
+
+constexpr std::string_view kTooManyPendingTunnels = "Too many CONNECT targets being resolved";
+constexpr std::string_view kResolutionTimedOut = "CONNECT target resolution timed out";
+
+}  // namespace
 
 TunnelManager::TunnelManager(SingleHttpServer& server)
     : _server(server), _resolver([&server] { server._lifecycle.wakeupFd.send(); }) {}
@@ -78,6 +86,10 @@ TunnelManager::LoopAction TunnelManager::startHttp1Tunnel(ConnectionIt& cnxIt, s
     // would not be reported by any event anymore (edge-triggered polling).
     if (IsPeerClosed(clientFd)) {
       state.requestDrainAndClose();
+      return LoopAction::Break;
+    }
+    if (_pendingTunnels.size() >= kMaxPendingTunnels) {
+      _server.emitSimpleError(cnxIt, http::StatusCodeServiceUnavailable, kTooManyPendingTunnels);
       return LoopAction::Break;
     }
     // Resolving a host name can block for seconds: it runs in the background. Until it completes, the connection reads
@@ -123,21 +135,21 @@ void TunnelManager::establishHttp1Tunnel(ConnectionIt cnxIt, NativeHandle upstre
 
 void TunnelManager::completeHttp1Tunnel(const PendingTunnel& pending) {
   const NativeHandle upstreamFd = connectUpstream(pending);
+  if (upstreamFd == kInvalidHandle) {
+    refuseHttp1Tunnel(pending, http::StatusCodeBadGateway, "Unable to establish CONNECT tunnel");
+    return;
+  }
 
   // The connection insertion may have moved the client connection state.
   auto cnxIt = _server._connections.iterator(pending.clientFd);
   ConnectionState& state = _server._connections.connectionState(cnxIt);
   state.tunnelResolving = false;
-  if (upstreamFd == kInvalidHandle) {
-    _server.emitSimpleError(cnxIt, http::StatusCodeBadGateway, "Unable to establish CONNECT tunnel");
-  } else {
-    establishHttp1Tunnel(cnxIt, upstreamFd);
-  }
+  establishHttp1Tunnel(cnxIt, upstreamFd);
   // The request was kept in the input buffer, where the request views point to, until answered.
   state.inBuffer.erase_front(pending.consumedBytes);
 
   // Forward the tunnel bytes received with the request, and read those left in the socket while resolving.
-  if (upstreamFd != kInvalidHandle && relayInput(cnxIt) == CloseStatus::Close) {
+  if (relayInput(cnxIt) == CloseStatus::Close) {
     _server.closeConnection(_server._connections.iterator(pending.clientFd));
     return;
   }
@@ -147,9 +159,32 @@ void TunnelManager::completeHttp1Tunnel(const PendingTunnel& pending) {
   }
 }
 
+void TunnelManager::refuseHttp1Tunnel(const PendingTunnel& pending, http::StatusCode statusCode,
+                                      std::string_view reason) {
+  const auto cnxIt = _server._connections.iterator(pending.clientFd);
+  assert(IsValid(_server._connections, cnxIt));  // its close forgets its pending tunnel
+  ConnectionState& state = _server._connections.connectionState(cnxIt);
+  state.tunnelResolving = false;
+  _server.emitSimpleError(cnxIt, statusCode, reason);
+  // The request was kept in the input buffer, where the request views point to, until answered.
+  state.inBuffer.erase_front(pending.consumedBytes);
+  if (state.canCloseConnectionForDrain()) {
+    _server.closeConnection(cnxIt);
+  }
+}
+
 TunnelManager::CloseStatus TunnelManager::relayInput(ConnectionIt cnxIt) {
   const auto selfFd = cnxIt->fd();
   ConnectionState& state = _server._connections.connectionState(cnxIt);
+  // Backpressure: while a whole output buffer waits for the peer, the bytes of this endpoint stay in its socket, which
+  // slows its sender down (TCP flow control). The relay resumes once the peer wrote them (see resumeRelaysTowards()).
+  if (const auto peerIt = _server._connections.iterator(state.peerFd); IsValid(_server._connections, peerIt)) {
+    ConnectionState& peerState = _server._connections.connectionState(peerIt);
+    if (peerState.tunnelOrFileBuffer.size() >= _server._config.maxOutboundBufferBytes) {
+      peerState.relayPausedByBacklog = true;
+      return CloseStatus::Keep;
+    }
+  }
   std::size_t bytesReadThisEvent = 0;
   bool hitEagain = false;
   if (readInput(cnxIt, bytesReadThisEvent, hitEagain) == CloseStatus::Close) {
@@ -242,9 +277,47 @@ NativeHandle TunnelManager::registerUpstream(NativeHandle clientFd, ConnectResul
 
 void TunnelManager::resolveTarget(NativeHandle clientFd, uint32_t streamId, std::size_t consumedBytes,
                                   std::string_view host, uint16_t port) {
-  auto pending = std::make_shared<PendingTunnel>(host, port, clientFd, streamId, consumedBytes);
+  auto pending = std::make_shared<PendingTunnel>(host, port, clientFd, streamId, consumedBytes,
+                                                 _server._connections.now + _server._config.keepAliveTimeout);
   _pendingTunnels.push_back(pending);
   _resolver.resolve(std::move(pending));
+}
+
+void TunnelManager::expirePendingTunnels(std::chrono::steady_clock::time_point now) {
+  if (_pendingTunnels.empty()) {
+    return;
+  }
+  vector<std::shared_ptr<PendingTunnel>> expired;
+  const auto [first, last] =
+      std::ranges::remove_if(_pendingTunnels, [now, &expired](const std::shared_ptr<PendingTunnel>& pending) {
+        if (pending->deadline > now) {
+          return false;
+        }
+        expired.push_back(pending);
+        return true;
+      });
+  _pendingTunnels.erase(first, last);
+
+  for (const auto& pending : expired) {
+    // Its resolution, if in progress, cannot be interrupted: its result will be ignored.
+    pending->cancelled = true;
+    _resolver.cancel(pending);
+    log::warn("CONNECT target {}:{} not resolved within the keep-alive timeout", pending->host(), pending->port);
+#ifdef AERONET_ENABLE_HTTP2
+    if (pending->streamId != 0) {
+      const auto cnxIt = _server._connections.iterator(pending->clientFd);
+      assert(IsValid(_server._connections, cnxIt));  // its close forgets its pending tunnels
+      auto* h2Handler =
+          static_cast<http2::Http2ProtocolHandler*>(_server._connections.connectionState(cnxIt).protocolHandler.get());
+      if (h2Handler->isTunnelPending(pending->streamId)) {  // not reset meanwhile
+        h2Handler->failPendingTunnel(pending->streamId, http::StatusCodeGatewayTimeout, kResolutionTimedOut);
+        _server.flushOutbound(cnxIt);
+      }
+      continue;
+    }
+#endif
+    refuseHttp1Tunnel(*pending, http::StatusCodeGatewayTimeout, kResolutionTimedOut);
+  }
 }
 
 void TunnelManager::completeResolvedTunnels() {
@@ -317,7 +390,44 @@ TunnelManager::CloseStatus TunnelManager::handleWritable(ConnectionIt cnxIt) {
   if (!state.tunnelOrFileBuffer.empty() && !state.tunnelTransportWrite(fd)) {
     return CloseStatus::Close;
   }
+  if (state.relayPausedByBacklog && state.tunnelOrFileBuffer.empty()) {
+    resumeRelaysTowards(cnxIt);
+  }
   return CloseStatus::Keep;
+}
+
+void TunnelManager::resumeRelaysTowards(ConnectionIt cnxIt) {
+  ConnectionState& state = _server._connections.connectionState(cnxIt);
+  state.relayPausedByBacklog = false;
+#ifdef AERONET_ENABLE_HTTP2
+  if (state.peerStreamId != 0) {
+    // The upstream of an HTTP/2 tunnel: its client stream gets flow-control credit again.
+    const auto peerIt = _server._connections.iterator(state.peerFd);
+    if (IsValid(_server._connections, peerIt)) {
+      ConnectionState& peerState = _server._connections.connectionState(peerIt);
+      static_cast<http2::Http2ProtocolHandler*>(peerState.protocolHandler.get())->onTunnelUpstreamDrained(cnxIt->fd());
+      _server.flushOutbound(peerIt);
+    }
+    return;
+  }
+  if (state.protocolHandler && state.protocolHandler->type() == ProtocolType::Http2) {
+    // The client connection of HTTP/2 tunnels wrote its output: their upstreams are read again.
+    const auto* h2Handler = static_cast<const http2::Http2ProtocolHandler*>(state.protocolHandler.get());
+    for (const auto& [upstreamFd, streamId] : h2Handler->tunnelUpstreams()) {
+      const auto upIt = _server._connections.iterator(upstreamFd);
+      if (IsValid(_server._connections, upIt)) {
+        _server.deferInput(upstreamFd, _server._connections.connectionState(upIt));
+      }
+    }
+    return;
+  }
+#endif
+  // An endpoint of an HTTP/1.1 tunnel: its peer is read again. Deferred to the next event-loop iteration: no event
+  // reports the bytes left in its socket.
+  const auto peerIt = _server._connections.iterator(state.peerFd);
+  if (IsValid(_server._connections, peerIt)) {
+    _server.deferInput(state.peerFd, _server._connections.connectionState(peerIt));
+  }
 }
 
 void TunnelManager::closeTunnelsOf(ConnectionIt cnxIt) {
@@ -326,11 +436,12 @@ void TunnelManager::closeTunnelsOf(ConnectionIt cnxIt) {
 
   if (!_pendingTunnels.empty()) {
     const auto [first, last] =
-        std::ranges::remove_if(_pendingTunnels, [fd](const std::shared_ptr<PendingTunnel>& pending) {
+        std::ranges::remove_if(_pendingTunnels, [this, fd](const std::shared_ptr<PendingTunnel>& pending) {
           if (pending->clientFd != fd) {
             return false;
           }
           pending->cancelled = true;
+          _resolver.cancel(pending);
           return true;
         });
     _pendingTunnels.erase(first, last);
@@ -498,8 +609,8 @@ class TunnelManager::H2Bridge final : public ITunnelBridge {
     return Of(_server).startH2Tunnel(_clientFd, streamId, host, port);
   }
 
-  void writeTunnel(NativeHandle upstreamFd, std::span<const std::byte> data) override {
-    Of(_server).writeToUpstream(upstreamFd, data);
+  bool writeTunnel(NativeHandle upstreamFd, std::span<const std::byte> data) override {
+    return Of(_server).writeToUpstream(upstreamFd, data);
   }
 
   void shutdownTunnelWrite(NativeHandle upstreamFd) override { Of(_server).shutdownUpstreamWrite(upstreamFd); }
@@ -521,6 +632,10 @@ ITunnelBridge::TunnelSetup TunnelManager::startH2Tunnel(NativeHandle clientFd, u
                                                         uint16_t port) {
   ITunnelBridge::TunnelSetup setup;
   if (!IsNumericHost(host)) {
+    if (_pendingTunnels.size() >= kMaxPendingTunnels) {
+      setup.status = ITunnelBridge::TunnelSetup::Status::Overloaded;
+      return setup;
+    }
     // Resolving a host name can block for seconds: it runs in the background, see completeH2Tunnel().
     resolveTarget(clientFd, streamId, 0, host, port);
     setup.status = ITunnelBridge::TunnelSetup::Status::Pending;
@@ -583,6 +698,14 @@ TunnelManager::CloseStatus TunnelManager::relayToStream(ConnectionIt cnxIt) {
   std::size_t bytesReadThisEvent = 0;
 
   while (true) {
+    // Backpressure: the flow-control windows are granted by the client, which may keep granting credit without
+    // reading. While its connection has a whole output buffer to write, the upstream bytes stay in the socket (see
+    // resumeRelaysTowards()).
+    if (pH2Handler->connection().pendingOutputSize() >= _server._config.maxOutboundBufferBytes) {
+      peerState.relayPausedByBacklog = true;
+      return CloseStatus::Keep;
+    }
+
     // Read from upstream in a loop (edge-triggered, must drain), but respect flow control.
     // If inBuffer is already large, don't read more until we can inject it.
     if (readInput(cnxIt, bytesReadThisEvent, hitEagain) == CloseStatus::Close) {
@@ -631,14 +754,19 @@ TunnelManager::CloseStatus TunnelManager::relayToStream(ConnectionIt cnxIt) {
   return CloseStatus::Keep;
 }
 
-void TunnelManager::writeToUpstream(NativeHandle upstreamFd, std::span<const std::byte> data) {
+bool TunnelManager::writeToUpstream(NativeHandle upstreamFd, std::span<const std::byte> data) {
   auto upIt = _server._connections.iterator(upstreamFd);
-  if (!IsValid(_server._connections, upIt)) {
-    return;
-  }
+  // The handler forgets the upstream of a stream when it closes (closeTunnelsOf() and drainTunnelUpstreamFds()).
+  assert(IsValid(_server._connections, upIt));
+  ConnectionState& upState = _server._connections.connectionState(upIt);
   if (!forward(upIt, std::string_view(reinterpret_cast<const char*>(data.data()), data.size()))) [[unlikely]] {
     _server.closeConnection(upIt);
+  } else if (!upState.tunnelOrFileBuffer.empty()) {
+    // The client stream gets no more flow-control credit until these bytes are written (see resumeRelaysTowards()).
+    upState.relayPausedByBacklog = true;
+    return false;
   }
+  return true;
 }
 
 void TunnelManager::shutdownUpstreamWrite(NativeHandle upstreamFd) {

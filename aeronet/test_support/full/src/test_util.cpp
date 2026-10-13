@@ -651,6 +651,105 @@ void setSendTimeout(NativeHandle fd, SysDuration timeout) {
   }
 }
 
+LoopbackPeer::LoopbackPeer(int bufferSize) {
+#ifdef AERONET_WINDOWS
+  EnsureWinsockInitialized();
+#endif
+  _listenSocket = BaseFd(::socket(AF_INET, SOCK_STREAM, 0));
+  if (!_listenSocket) {
+    ThrowSystemError("Error from ::socket");
+  }
+  // Set before listen(): the accepted connection inherits them, and its TCP window scale is negotiated at connection.
+  if (bufferSize > 0) {
+    SetReceiveBufferSize(_listenSocket.fd(), bufferSize);
+#ifdef AERONET_WINDOWS
+    if (::setsockopt(_listenSocket.fd(), SOL_SOCKET, SO_SNDBUF, reinterpret_cast<const char*>(&bufferSize),
+                     sizeof(bufferSize)) == SOCKET_ERROR) {
+#else
+    // NOLINTNEXTLINE(misc-include-cleaner) sys/socket.h is the correct header for SOL_SOCKET and SO_SNDBUF
+    if (::setsockopt(_listenSocket.fd(), SOL_SOCKET, SO_SNDBUF, &bufferSize, sizeof(bufferSize)) == -1) {
+#endif
+      ThrowSystemError("Error from setsockopt(SO_SNDBUF)");
+    }
+  }
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  socklen_t addrLen = sizeof(addr);  // NOLINT(misc-include-cleaner) sys/socket.h is the correct header
+  if (::bind(_listenSocket.fd(), reinterpret_cast<sockaddr*>(&addr), addrLen) != 0 ||
+      ::listen(_listenSocket.fd(), 1) != 0 ||
+      ::getsockname(_listenSocket.fd(), reinterpret_cast<sockaddr*>(&addr), &addrLen) != 0) {
+    ThrowSystemError("Error while setting up the loopback peer listener");
+  }
+  _port = ntohs(addr.sin_port);
+  if (!SetNonBlocking(_listenSocket.fd())) {
+    ThrowSystemError("Unable to set the loopback peer listener non-blocking");
+  }
+}
+
+NativeHandle LoopbackPeer::accept(std::chrono::milliseconds timeout) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (!_connection) {
+    _connection = BaseFd(::accept(_listenSocket.fd(), nullptr, nullptr));
+    if (!_connection) {
+      if (std::chrono::steady_clock::now() >= deadline) {
+        ThrowSystemError("No connection accepted by the loopback peer");
+      }
+      std::this_thread::sleep_for(1ms);
+    }
+  }
+  if (!SetNonBlocking(_connection.fd())) {
+    ThrowSystemError("Unable to set the loopback peer connection non-blocking");
+  }
+  return _connection.fd();
+}
+
+std::size_t WriteUntilStalled(NativeHandle fd, std::size_t maxBytes, std::chrono::milliseconds stallTime) {
+  static constexpr std::size_t kWriteChunkSize = 64UL << 10U;
+  const std::string chunk(kWriteChunkSize, 'w');
+  std::size_t written = 0;
+  auto lastProgress = std::chrono::steady_clock::now();
+  while (written < maxBytes) {
+    const auto nb = SafeSend(fd, chunk.data(), std::min(kWriteChunkSize, maxBytes - written));
+    if (nb > 0) {
+      written += static_cast<std::size_t>(nb);
+      lastProgress = std::chrono::steady_clock::now();
+      continue;
+    }
+    if (nb < 0 && LastSystemError() != error::kWouldBlock && LastSystemError() != error::kInterrupted) {
+      ThrowSystemError("Error from send in WriteUntilStalled");
+    }
+    if (std::chrono::steady_clock::now() - lastProgress >= stallTime) {
+      break;
+    }
+    std::this_thread::sleep_for(1ms);
+  }
+  return written;
+}
+
+std::size_t ReceiveAndDiscard(NativeHandle fd, std::size_t nbBytes, std::chrono::milliseconds timeout) {
+  char buf[1UL << 16U];
+  std::size_t received = 0;
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (received < nbBytes && std::chrono::steady_clock::now() < deadline) {
+    const std::size_t len = std::min(sizeof(buf), nbBytes - received);
+#ifdef AERONET_WINDOWS
+    const auto nb = ::recv(fd, buf, static_cast<int>(len), 0);
+#else
+    const auto nb = ::recv(fd, buf, len, 0);
+#endif
+    if (nb == 0) {
+      break;
+    }
+    if (nb > 0) {
+      received += static_cast<std::size_t>(nb);
+    } else {
+      std::this_thread::sleep_for(1ms);  // nothing yet (non-blocking socket, or receive timeout): retry
+    }
+  }
+  return received;
+}
+
 void SetReceiveBufferSize(NativeHandle fd, int receiveBufferSize) {
 #ifdef AERONET_WINDOWS
   if (::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&receiveBufferSize),

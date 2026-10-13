@@ -216,7 +216,7 @@ TEST(Http2Frame, ParseHeadersFrameWithPriority) {
   EXPECT_TRUE(frame.hasPriority);
   EXPECT_EQ(frame.streamDependency, 0U);
   // RFC 9113 §5.3.1: "Add one to the value to obtain a weight between 1 and 256."
-  EXPECT_EQ(frame.weight, 256U);
+  EXPECT_EQ(frame.weightMinusOne, 255U);
   EXPECT_FALSE(frame.exclusive);
   EXPECT_EQ(frame.headerBlockFragment.size(), 4U);
 }
@@ -340,7 +340,7 @@ TEST(Http2Frame, ParsePriorityFrame) {
   EXPECT_TRUE(frame.exclusive);
   EXPECT_EQ(frame.streamDependency, 3U);
   // RFC 9113 §5.3.1: "Add one to the value to obtain a weight between 1 and 256."
-  EXPECT_EQ(frame.weight, 16U);
+  EXPECT_EQ(frame.weightMinusOne, 15U);
 }
 
 TEST(Http2Frame, WritePriorityFrame) {
