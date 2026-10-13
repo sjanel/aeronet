@@ -22,6 +22,7 @@
 
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
+#include "aeronet/vector.hpp"
 #include "websocket-compress.hpp"
 #endif
 
@@ -212,35 +213,88 @@ char* BuildDeflateResponse(DeflateNegotiatedParams params, char* pData) {
   return pData;
 }
 
+struct SharedDeflateStreams::Impl {
+#ifdef AERONET_ENABLE_ZLIB
+  struct Compressor {
+    std::unique_ptr<WebSocketCompressor> compressor;
+    int8_t level;
+    uint8_t windowBits;
+  };
+
+  WebSocketCompressor& compressor(int8_t level, uint8_t windowBits) {
+    const auto it = std::ranges::find_if(compressors, [level, windowBits](const Compressor& entry) {
+      return entry.level == level && entry.windowBits == windowBits;
+    });
+    if (it != compressors.end()) {
+      return *it->compressor;
+    }
+    return *compressors.emplace_back(std::make_unique<WebSocketCompressor>(level, windowBits), level, windowBits)
+                .compressor;
+  }
+
+  // One compressor per distinct configuration of the WebSocket endpoints (in practice, one or a few), created on first
+  // use. Each is allocated on its own, so that its address does not change when another one is added.
+  vector<Compressor> compressors;
+  // Without context takeover, the window only holds the message being decompressed: the largest one decompresses the
+  // data of any peer, whatever its negotiated window.
+  WebSocketDecompressor decompressor{ZStreamRAII::kMaxWindowBits};
+#endif
+};
+
+SharedDeflateStreams::SharedDeflateStreams() noexcept = default;
+SharedDeflateStreams::SharedDeflateStreams(SharedDeflateStreams&&) noexcept = default;
+SharedDeflateStreams& SharedDeflateStreams::operator=(SharedDeflateStreams&&) noexcept = default;
+SharedDeflateStreams::~SharedDeflateStreams() = default;
+
 struct DeflateContext::Impl {
   // Window bits and context takeover: own parameters when compressing, the peer's when decompressing.
 #ifdef AERONET_ENABLE_ZLIB
   // An 8 bits window may be negotiated for either side: zlib cannot compress with it, 9 bits produce data valid for it.
+  // A direction without context takeover uses the shared stream if any, its own one staying without zlib state.
   Impl(int8_t compressionLevel, uint8_t deflateWindowBits, uint8_t inflateWindowBits, bool deflateNoContextTakeover,
-       bool inflateNoContextTakeover)
-      : compressor(compressionLevel, std::max(deflateWindowBits, kMinDeflateWindowBits)),
-        decompressor(inflateWindowBits),
+       bool inflateNoContextTakeover, SharedDeflateStreams* sharedStreams)
+      : ownCompressor(compressionLevel, std::max(deflateWindowBits, kMinDeflateWindowBits)),
+        ownDecompressor(inflateWindowBits),
+        compressor(&ownCompressor),
+        decompressor(&ownDecompressor),
         deflateNoContextTakeover(deflateNoContextTakeover),
-        inflateNoContextTakeover(inflateNoContextTakeover) {}
+        inflateNoContextTakeover(inflateNoContextTakeover) {
+    if (sharedStreams != nullptr && (deflateNoContextTakeover || inflateNoContextTakeover)) {
+      if (!sharedStreams->_impl) {
+        sharedStreams->_impl = std::make_unique<SharedDeflateStreams::Impl>();
+      }
+      if (deflateNoContextTakeover) {
+        compressor =
+            &sharedStreams->_impl->compressor(compressionLevel, std::max(deflateWindowBits, kMinDeflateWindowBits));
+      }
+      if (inflateNoContextTakeover) {
+        decompressor = &sharedStreams->_impl->decompressor;
+      }
+    }
+  }
 
-  WebSocketCompressor compressor;
-  WebSocketDecompressor decompressor;
+  WebSocketCompressor ownCompressor;
+  WebSocketDecompressor ownDecompressor;
+  WebSocketCompressor* compressor;
+  WebSocketDecompressor* decompressor;
 #else
   Impl([[maybe_unused]] int8_t compressionLevel, [[maybe_unused]] uint8_t deflateWindowBits,
-       [[maybe_unused]] uint8_t inflateWindowBits, bool deflateNoContextTakeover, bool inflateNoContextTakeover)
+       [[maybe_unused]] uint8_t inflateWindowBits, bool deflateNoContextTakeover, bool inflateNoContextTakeover,
+       [[maybe_unused]] SharedDeflateStreams* sharedStreams)
       : deflateNoContextTakeover(deflateNoContextTakeover), inflateNoContextTakeover(inflateNoContextTakeover) {}
 #endif
   bool deflateNoContextTakeover;
   bool inflateNoContextTakeover;
 };
 
-DeflateContext::DeflateContext(DeflateNegotiatedParams params, const DeflateConfig& config, bool isServerSide)
+DeflateContext::DeflateContext(DeflateNegotiatedParams params, const DeflateConfig& config, bool isServerSide,
+                               SharedDeflateStreams* sharedStreams)
     : _impl(
           isServerSide
               ? std::make_unique<Impl>(config.compressionLevel, params.serverMaxWindowBits, params.clientMaxWindowBits,
-                                       params.serverNoContextTakeover, params.clientNoContextTakeover)
+                                       params.serverNoContextTakeover, params.clientNoContextTakeover, sharedStreams)
               : std::make_unique<Impl>(config.compressionLevel, params.clientMaxWindowBits, params.serverMaxWindowBits,
-                                       params.clientNoContextTakeover, params.serverNoContextTakeover)),
+                                       params.clientNoContextTakeover, params.serverNoContextTakeover, sharedStreams)),
       _minCompressSize(config.minCompressSize) {}
 
 DeflateContext::~DeflateContext() = default;
@@ -249,7 +303,7 @@ DeflateContext::~DeflateContext() = default;
 const char* DeflateContext::compress([[maybe_unused]] std::span<const std::byte> input,
                                      [[maybe_unused]] RawBytes& output) {
 #ifdef AERONET_ENABLE_ZLIB
-  return _impl->compressor.compress(input, output, _impl->deflateNoContextTakeover);
+  return _impl->compressor->compress(input, output, _impl->deflateNoContextTakeover);
 #else
   return "zlib not enabled in build";
 #endif
@@ -260,7 +314,7 @@ const char* DeflateContext::decompress([[maybe_unused]] std::span<const std::byt
                                        [[maybe_unused]] RawBytes& output,
                                        [[maybe_unused]] std::size_t maxDecompressedSize) {
 #ifdef AERONET_ENABLE_ZLIB
-  return _impl->decompressor.decompress(input, output, maxDecompressedSize, _impl->inflateNoContextTakeover);
+  return _impl->decompressor->decompress(input, output, maxDecompressedSize, _impl->inflateNoContextTakeover);
 #else
   return "zlib not enabled in build";
 #endif

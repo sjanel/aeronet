@@ -201,13 +201,19 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
     cnxIt = _connections.iterator(clientFd);
     pState = _connections.pConnectionState(clientFd);
 
-    // Consume processed bytes from input buffer
-    pState->inBuffer.erase_front(result.bytesConsumed);
-
-    // Remember that the handler owns output to gather once this input batch finishes.
-    if (handler.hasPendingOutput()) {
+    if (result.outputRefersToInput) {
+      // The output sends data from the input buffer (the payload of a WebSocket echo, say): write it before the input
+      // is erased. The handler copies the part left unsent, which waits for the writable event.
+      flushOutbound(cnxIt);
+      handler.releaseInput();
+      hasAccumulatedOutput = false;
+    } else if (handler.hasPendingOutput()) {
+      // Remember that the handler owns output to gather once this input batch finishes.
       hasAccumulatedOutput = true;
     }
+
+    // Consume processed bytes from input buffer
+    pState->inBuffer.erase_front(result.bytesConsumed);
 
     // Handle result
     switch (result.action) {

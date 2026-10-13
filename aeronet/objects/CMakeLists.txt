@@ -332,6 +332,13 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    protocol-handler_test
+    test/protocol-handler_test.cpp
+    LIBRARIES
+    aeronet_objects
+)
+
+AeronetAddUnitTest(
     http-payload_test
     test/http-payload_test.cpp
     LIBRARIES

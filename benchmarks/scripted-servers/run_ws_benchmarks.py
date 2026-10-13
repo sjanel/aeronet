@@ -1273,9 +1273,11 @@ class WsBenchmarkRunner:
 
 def parse_args() -> argparse.Namespace:
     cpu_count = len(available_cpus())
-    # A quarter of the CPUs for the server leaves the rest to the load generator
-    # (up to DEFAULT_MAX_LOADGEN_RATIO load generator threads per server thread).
-    default_threads = max(1, cpu_count // 4)
+    # A fifth of the CPUs for the server, as for run_benchmarks.py, leaves the rest to the load generator (up to
+    # DEFAULT_MAX_LOADGEN_RATIO load generator threads per server thread) and to the kernel. The churn scenario is
+    # mostly kernel work (connection setups and teardowns, on both sides): with a quarter of the CPUs, no server
+    # reached 80% of its CPUs, its throughput being the connection rate of the host.
+    default_threads = max(1, cpu_count // 5)
     # WS workloads need substantial concurrency to saturate server threads.
     # Keep a floor above tiny runs while scaling with thread count.
     default_vus = max(100, default_threads * 64)
@@ -1310,7 +1312,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--session-duration-ms", type=int, default=10000, help="WS session lifetime in ms (k6)")
     parser.add_argument(
         "--threads", type=int, default=default_threads,
-        help=f"Server worker threads (default: {default_threads}, a quarter of the CPUs)",
+        help=f"Server worker threads (default: {default_threads}, a fifth of the CPUs)",
     )
     parser.add_argument(
         "--tool", default="auto", choices=TOOLS,

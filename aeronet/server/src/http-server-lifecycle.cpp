@@ -268,6 +268,9 @@ SingleHttpServer::SingleHttpServer(SingleHttpServer&& other)
       _config(std::move(other._config)),
       _compressionState(std::move(other._compressionState)),
       _decompressionState(std::move(other._decompressionState)),
+#ifdef AERONET_ENABLE_WEBSOCKET
+      _webSocketDeflateStreams(std::move(other._webSocketDeflateStreams)),
+#endif
       _listenSocket(std::move(other._listenSocket)),
       _portReservation(std::move(other._portReservation)),
       _maintenanceTimer(std::move(other._maintenanceTimer)),
@@ -327,6 +330,9 @@ SingleHttpServer& SingleHttpServer::operator=(SingleHttpServer&& other) {
     _compressionState.pCompressionConfig = &_config.compression;
 
     _decompressionState = std::move(other._decompressionState);
+#ifdef AERONET_ENABLE_WEBSOCKET
+    _webSocketDeflateStreams = std::move(other._webSocketDeflateStreams);
+#endif
     _listenSocket = std::move(other._listenSocket);
     _portReservation = std::move(other._portReservation);
     _maintenanceTimer = std::move(other._maintenanceTimer);

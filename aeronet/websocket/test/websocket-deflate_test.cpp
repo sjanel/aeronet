@@ -571,6 +571,27 @@ TEST(WebSocketDeflateTest, DecompressSizeLimit) {
 }
 
 // Additional coverage tests
+// The limit applies to the decompressed size, not to the 16 KB chunks it is decompressed by.
+TEST(WebSocketDeflateTest, DecompressSizeLimitBelowChunkSize) {
+  const DeflateNegotiatedParams params;
+  const DeflateConfig config;
+  DeflateContext server(params, config, true);
+  DeflateContext client(params, config, false);
+  for (const std::size_t size : {std::size_t{10}, std::size_t{999}, std::size_t{1000}, std::size_t{1001}}) {
+    const std::string message = test::MakePatternedPayload(size);
+    RawBytes compressed;
+    ASSERT_EQ(client.compress(sv_bytes(message), compressed), nullptr);
+    RawBytes decompressed;
+    const char* err = server.decompress(buf_bytes(compressed), decompressed, 1000);
+    if (size <= 1000) {
+      EXPECT_EQ(err, nullptr) << size;
+      EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(decompressed.data()), decompressed.size()), message);
+    } else {
+      EXPECT_STREQ(err, "Decompressed size exceeds maximum") << size;
+    }
+  }
+}
+
 TEST(WebSocketDeflateTest, CompressDecompress_ClientSide) {
   DeflateNegotiatedParams params;
   DeflateConfig config;
@@ -723,6 +744,160 @@ TEST(WebSocketDeflateTest, DecompressZeroSizeLimit) {
   auto compressedSpan = buf_bytes(compressed);
   EXPECT_EQ(ctx.decompress(compressedSpan, decompressed, 0), nullptr);
   EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(decompressed.data()), decompressed.size()), original);
+}
+
+// ============================================================================
+// Streams shared by the connections of an event loop (no context takeover)
+// ============================================================================
+
+namespace {
+
+DeflateNegotiatedParams NoContextTakeover(uint8_t windowBits = 15) {
+  return DeflateNegotiatedParams{
+      .serverMaxWindowBits = windowBits,
+      .clientMaxWindowBits = windowBits,
+      .serverNoContextTakeover = true,
+      .clientNoContextTakeover = true,
+  };
+}
+
+// Compresses 'message' with 'sender' and decompresses it with 'receiver'. Returns the decompressed message, or the
+// error of the decompression.
+std::string RoundTrip(DeflateContext& sender, DeflateContext& receiver, std::string_view message,
+                      RawBytes* pCompressed = nullptr) {
+  RawBytes compressed;
+  if (const char* err = sender.compress(sv_bytes(message), compressed); err != nullptr) {
+    return err;
+  }
+  RawBytes decompressed;
+  if (const char* err = receiver.decompress(buf_bytes(compressed), decompressed); err != nullptr) {
+    return err;
+  }
+  if (pCompressed != nullptr) {
+    *pCompressed = std::move(compressed);
+  }
+  return {reinterpret_cast<const char*>(decompressed.data()), decompressed.size()};
+}
+
+std::string_view AsStringView(const RawBytes& buf) { return {reinterpret_cast<const char*>(buf.data()), buf.size()}; }
+
+}  // namespace
+
+// With context takeover (the default), each message continues the stream of the previous ones: the decompressor must
+// consume the sync flush marker removed from the end of each message (RFC 7692 section 7.2.2), whatever its size.
+TEST(WebSocketDeflateTest, ContextTakeoverDecompressesSuccessiveMessages) {
+  const DeflateNegotiatedParams params;
+  const DeflateConfig config;
+  DeflateContext server(params, config, true);
+  DeflateContext client(params, config, false);
+  for (const std::size_t size : {std::size_t{100}, std::size_t{16384}, std::size_t{20000}, std::size_t{5}}) {
+    const std::string message = test::MakePatternedPayload(size);
+    EXPECT_EQ(RoundTrip(client, server, message), message) << size;
+    EXPECT_EQ(RoundTrip(server, client, message), message) << size;
+  }
+}
+
+TEST(WebSocketSharedDeflateStreamsTest, ConnectionsWithoutContextTakeoverShareStreams) {
+  SharedDeflateStreams sharedStreams;
+  const auto params = NoContextTakeover();
+  const DeflateConfig config;
+  DeflateContext server1(params, config, true, &sharedStreams);
+  DeflateContext server2(params, config, true, &sharedStreams);
+  DeflateContext client1(params, config, false);
+  DeflateContext client2(params, config, false);
+
+  const std::string message1 = test::MakePatternedPayload(5000);
+  const std::string message2(3000, 'z');
+  // Interleaved messages of both connections, each way: each one is compressed independently of the others.
+  RawBytes firstCompressed;
+  for (int round = 0; round < 3; ++round) {
+    RawBytes compressed;
+    EXPECT_EQ(RoundTrip(server1, client1, message1, &compressed), message1);
+    if (round == 0) {
+      firstCompressed = std::move(compressed);
+    } else {
+      EXPECT_EQ(AsStringView(compressed), AsStringView(firstCompressed));
+    }
+    EXPECT_EQ(RoundTrip(server2, client2, message2), message2);
+    EXPECT_EQ(RoundTrip(client1, server1, message1), message1);
+    EXPECT_EQ(RoundTrip(client2, server2, message2), message2);
+  }
+  // Same stream for the same message: same bytes, whatever the connection.
+  RawBytes compressed;
+  EXPECT_EQ(RoundTrip(server2, client2, message1, &compressed), message1);
+  EXPECT_EQ(AsStringView(compressed), AsStringView(firstCompressed));
+}
+
+TEST(WebSocketSharedDeflateStreamsTest, ContextTakeoverDirectionKeepsItsOwnStream) {
+  SharedDeflateStreams sharedStreams;
+  DeflateNegotiatedParams params;  // the server keeps its context, the client resets its own
+  params.clientNoContextTakeover = true;
+  const DeflateConfig config;
+  DeflateContext server(params, config, true, &sharedStreams);
+  DeflateContext client(params, config, false);
+  DeflateContext other(NoContextTakeover(), config, true, &sharedStreams);
+  DeflateContext otherClient(NoContextTakeover(), config, false);
+
+  const std::string message = test::MakePatternedPayload(4000);
+  RawBytes first;
+  EXPECT_EQ(RoundTrip(server, client, message, &first), message);
+  // Another connection compresses and decompresses with the shared streams in between.
+  EXPECT_EQ(RoundTrip(other, otherClient, message), message);
+  EXPECT_EQ(RoundTrip(otherClient, other, message), message);
+  EXPECT_EQ(RoundTrip(client, server, message), message);
+  // The server context still holds the first message: the second one refers to it.
+  RawBytes second;
+  EXPECT_EQ(RoundTrip(server, client, message, &second), message);
+  EXPECT_LT(second.size(), first.size());
+}
+
+TEST(WebSocketSharedDeflateStreamsTest, DistinctConfigurationsUseDistinctStreams) {
+  SharedDeflateStreams sharedStreams;
+  DeflateConfig config;
+  DeflateConfig fastConfig;
+  fastConfig.compressionLevel = 1;
+  DeflateContext large(NoContextTakeover(15), config, true, &sharedStreams);
+  DeflateContext small(NoContextTakeover(9), config, true, &sharedStreams);
+  DeflateContext fast(NoContextTakeover(15), fastConfig, true, &sharedStreams);
+  DeflateContext largeClient(NoContextTakeover(15), config, false);
+  DeflateContext smallClient(NoContextTakeover(9), config, false);
+
+  // Repeats 2 KB apart: a 32 KB window finds them, a 512 bytes one must not use them (its peer would fail to inflate).
+  const RawChars block = test::MakeRandomPayload(2048);
+  std::string message;
+  for (int idx = 0; idx < 4; ++idx) {
+    message.append(block.data(), block.size());
+  }
+  RawBytes largeCompressed;
+  EXPECT_EQ(RoundTrip(large, largeClient, message, &largeCompressed), message);
+  RawBytes smallCompressed;
+  EXPECT_EQ(RoundTrip(small, smallClient, message, &smallCompressed), message);
+  EXPECT_GT(smallCompressed.size(), 3 * largeCompressed.size());
+  EXPECT_EQ(RoundTrip(fast, largeClient, message), message);
+
+  // A single decompressor serves all of them, whatever the window of the peer.
+  EXPECT_EQ(RoundTrip(largeClient, large, message), message);
+  EXPECT_EQ(RoundTrip(smallClient, small, message), message);
+  EXPECT_EQ(RoundTrip(largeClient, fast, message), message);
+}
+
+TEST(WebSocketSharedDeflateStreamsTest, StreamsStayValidWhenMoved) {
+  SharedDeflateStreams sharedStreams;
+  const auto params = NoContextTakeover();
+  const DeflateConfig config;
+  DeflateContext server(params, config, true, &sharedStreams);
+  DeflateContext client(params, config, false);
+  const std::string message = test::MakePatternedPayload(1000);
+  EXPECT_EQ(RoundTrip(server, client, message), message);
+
+  SharedDeflateStreams moved(std::move(sharedStreams));
+  EXPECT_EQ(RoundTrip(server, client, message), message);
+  EXPECT_EQ(RoundTrip(client, server, message), message);
+
+  SharedDeflateStreams assigned;
+  assigned = std::move(moved);
+  EXPECT_EQ(RoundTrip(server, client, message), message);
+  EXPECT_EQ(RoundTrip(client, server, message), message);
 }
 
 #endif  // AERONET_ENABLE_ZLIB

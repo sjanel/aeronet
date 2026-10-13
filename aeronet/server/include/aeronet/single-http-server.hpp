@@ -60,6 +60,10 @@
 #include "aeronet/tls-handshake-callback.hpp"
 #endif
 
+#ifdef AERONET_ENABLE_WEBSOCKET
+#include "aeronet/websocket-deflate.hpp"
+#endif
+
 #ifdef AERONET_ENABLE_GLAZE
 #include "aeronet/server-config-loader.hpp"
 #endif
@@ -779,6 +783,12 @@ class SingleHttpServer {
 
   CompressionState _compressionState;
   DecompressionState _decompressionState;
+
+#ifdef AERONET_ENABLE_WEBSOCKET
+  // permessage-deflate streams of the WebSocket connections, for the directions negotiated without context takeover.
+  // Declared before the connections, whose handlers use them.
+  websocket::SharedDeflateStreams _webSocketDeflateStreams;
+#endif
 
   Socket _listenSocket;
   // Linux only: bound (never listening) socket keeping an ephemeral port reserved for the whole life of this server
