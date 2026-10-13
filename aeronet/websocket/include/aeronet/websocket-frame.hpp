@@ -80,6 +80,10 @@ void ApplyMask(std::span<std::byte> data, MaskingKey maskingKey);
 void BuildFrame(RawBytes& output, Opcode opcode, std::span<const std::byte> payload, bool fin = true,
                 bool shouldMask = false, MaskingKey maskingKey = {}, bool rsv1 = false);
 
+/// Append only the header of an unmasked frame of payloadSize bytes to an output buffer: the payload is sent from
+/// where it is, right after the header.
+void BuildUnmaskedFrameHeader(RawBytes& output, Opcode opcode, std::size_t payloadSize);
+
 /// Build a Close frame with an optional status code and reason.
 ///
 /// @param output     Output buffer to append the frame to
