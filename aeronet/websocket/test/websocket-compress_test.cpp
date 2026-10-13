@@ -269,12 +269,11 @@ TEST_F(WebSocketDecompressorTest, DecompressMaxSizeExceededSmall) {
   ASSERT_TRUE(compressOk);
 
   // Set max size smaller than the decompressed data
-  // With DecoderBufferManager, the limit is enforced strictly - we never exceed it
   const char* error = decompressor.decompress(StringToBytes(compressed), output, 5, true);
   EXPECT_NE(error, nullptr);
   EXPECT_STREQ(error, "Decompressed size exceeds maximum");
-  // Size should be within the limit or error before adding more
-  EXPECT_LE(output.size(), 5);
+  // Decompression stops one byte beyond the limit, which tells that the message exceeds it.
+  EXPECT_EQ(output.size(), 6);
 }
 TEST_F(WebSocketDecompressorTest, DecompressMaxSizeLargeEnough) {
   // For a size limit to work with chunks, the limit should be significantly larger than chunk size
@@ -298,9 +297,8 @@ TEST_F(WebSocketDecompressorTest, DecompressMaxSizeLimitedLargeData) {
   const char* error = decompressor.decompress(StringToBytes(compressed), output, 20000, true);
   EXPECT_NE(error, nullptr);
   EXPECT_STREQ(error, "Decompressed size exceeds maximum");
-  // Should have decompressed some data before hitting the limit
-  EXPECT_GT(output.size(), 0);
-  EXPECT_LE(output.size(), 20000);
+  // Decompression stops one byte beyond the limit, which tells that the message exceeds it.
+  EXPECT_EQ(output.size(), 20001);
 }
 TEST_F(WebSocketDecompressorTest, DecompressMaxSizeExceededLarge) {
   std::string large(10000, 'x');
@@ -318,12 +316,10 @@ TEST_F(WebSocketDecompressorTest, DecompressMaxSizeExactMatch) {
   auto [compressOk, compressed] = CompressData(data, true);
   ASSERT_TRUE(compressOk);
 
-  // Set max size exactly equal to decompressed data
-  // Note: DecoderBufferManager uses chunks, so requesting a 16KB chunk
-  // when max is 11 bytes will trigger the limit
+  // Set max size exactly equal to decompressed data: the limit is the largest accepted size.
   const char* error = decompressor.decompress(StringToBytes(compressed), output, 11, true);
-  EXPECT_NE(error, nullptr);
-  EXPECT_STREQ(error, "Decompressed size exceeds maximum");
+  EXPECT_EQ(error, nullptr);
+  EXPECT_EQ(BytesToString(output), data);
 }
 
 TEST_F(WebSocketDecompressorTest, DecompressMaxSizeJustLargeEnough) {
@@ -331,11 +327,10 @@ TEST_F(WebSocketDecompressorTest, DecompressMaxSizeJustLargeEnough) {
   auto [compressOk, compressed] = CompressData(data, true);
   ASSERT_TRUE(compressOk);
 
-  // Set max size one byte larger than decompressed data (12 bytes)
-  // This still won't work with 16KB chunks
+  // Set max size one byte larger than decompressed data (12 bytes), far below the 16 KB decompression chunks.
   const char* error = decompressor.decompress(StringToBytes(compressed), output, 12, true);
-  EXPECT_NE(error, nullptr);
-  EXPECT_STREQ(error, "Decompressed size exceeds maximum");
+  EXPECT_EQ(error, nullptr);
+  EXPECT_EQ(BytesToString(output), data);
 }
 
 TEST_F(WebSocketDecompressorTest, DecompressInvalidData) {

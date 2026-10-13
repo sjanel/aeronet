@@ -7,6 +7,8 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -25,11 +27,13 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
+#include "aeronet/raw-bytes.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 #include "aeronet/vector.hpp"
 #include "aeronet/websocket-constants.hpp"
+#include "aeronet/websocket-deflate.hpp"
 #include "aeronet/websocket-endpoint.hpp"
 #include "aeronet/websocket-handler.hpp"
 #ifdef AERONET_ENABLE_ZLIB
@@ -871,5 +875,215 @@ TEST_F(WebSocketTest, RequestTimeoutOfRouteDoesNotCloseWebSocket) {
   ASSERT_TRUE(echo.has_value());
   EXPECT_EQ(PayloadToString(val.payload), "ping");
 }
+
+
+// ============================================================================
+// Large echoes sent from the input buffer, and compressed connections sharing the streams of a server thread
+// ============================================================================
+
+// Endpoint echoing each message with the payload given to onMessage: the large ones are sent from the input buffer.
+WebSocketEndpoint EchoFromInputEndpoint(WebSocketConfig config = {}) {
+  return WebSocketEndpoint::WithFactory([config](const HttpRequestView& /*req*/) {
+    auto handler = std::make_unique<WebSocketHandler>(config);
+    handler->setCallbacks(WebSocketCallbacks{
+        .onMessage =
+            [handler = handler.get()](std::span<const std::byte> payload, bool isBinary) {
+              if (isBinary) {
+                handler->sendBinary(payload);
+              } else {
+                handler->sendText(std::string_view(reinterpret_cast<const char*>(payload.data()), payload.size()));
+              }
+            },
+        .onPing = {},
+        .onPong = {},
+        .onClose = {},
+        .onError = {},
+    });
+    return handler;
+  });
+}
+
+// Reads the frames sent by the server one after the other (a read may return several of them).
+class ServerFrameReader {
+ public:
+  struct Frame {
+    ServerFrame frame;
+    bool rsv1{false};
+  };
+
+  explicit ServerFrameReader(NativeHandle fd) : _fd(fd) {}
+
+  // Next frame, or nullopt on timeout or close.
+  std::optional<Frame> next(std::chrono::milliseconds timeout) {
+    test::setRecvTimeout(_fd, timeout);
+    for (;;) {
+      auto frame = ParseServerFrame(std::span<const std::byte>(reinterpret_cast<const std::byte*>(_buf.data()), _buf.size()));
+      if (frame) {
+        const std::size_t payloadSize = frame->payload.size();
+        const std::size_t headerSize = payloadSize < 126 ? 2 : (payloadSize < 65536 ? 4 : 10);
+        const bool rsv1 = (static_cast<uint8_t>(_buf[0]) & 0x40U) != 0;
+        _buf.erase(0, headerSize + payloadSize);
+        return Frame{std::move(*frame), rsv1};
+      }
+      char buf[16384];
+      const auto nb = ::recv(_fd, buf, static_cast<int>(sizeof(buf)), 0);
+      if (nb <= 0) {
+        return std::nullopt;
+      }
+      _buf.append(buf, static_cast<std::size_t>(nb));
+    }
+  }
+
+ private:
+  NativeHandle _fd;
+  std::string _buf;
+};
+
+std::string MakeBinaryPayload(std::size_t size, std::size_t seed) {
+  std::string payload(size, '\0');
+  for (std::size_t idx = 0; idx < size; ++idx) {
+    payload[idx] = static_cast<char>(((idx * 31U) + (seed * 7U) + (idx >> 9U)) & 0xFFU);
+  }
+  return payload;
+}
+
+std::string_view FrameView(const vector<std::byte>& frame) {
+  return {reinterpret_cast<const char*>(frame.data()), frame.size()};
+}
+
+TEST_F(WebSocketTest, LargeEchoesSentFromInputBufferAreIntact) {
+  ts.postRouterUpdate([](Router& router) { router.setWebSocket("/echo-input", EchoFromInputEndpoint()); });
+
+  test::ClientConnection conn(ts.port());
+  Upgrade(conn.fd(), "/echo-input");
+  ServerFrameReader reader(conn.fd());
+  std::size_t seed = 0;
+  for (const std::size_t size : {std::size_t{4095}, std::size_t{4096}, std::size_t{65536}, std::size_t{300000},
+                                 std::size_t{1} << 20U}) {
+    for (int round = 0; round < 2; ++round) {
+      const std::string payload = MakeBinaryPayload(size, ++seed);
+      test::sendAll(conn.fd(), FrameView(BuildClientFrame(Opcode::Binary, payload)), 5000ms);
+      const auto echo = reader.next(5000ms);
+      ASSERT_TRUE(echo.has_value()) << size;
+      EXPECT_EQ(echo->frame.opcode, Opcode::Binary);
+      EXPECT_TRUE(PayloadToString(echo->frame.payload) == payload) << size << " round " << round;
+    }
+  }
+}
+
+// The client sends large messages without reading the echoes: the output of the server blocks, so the unsent part of
+// each echo sent from the input buffer is copied before this input is consumed.
+TEST_F(WebSocketTest, LargeEchoesBlockedByThePeerAreIntact) {
+  ts.postRouterUpdate([](Router& router) { router.setWebSocket("/echo-input-blocked", EchoFromInputEndpoint()); });
+
+  test::ClientConnection conn(ts.port());
+  Upgrade(conn.fd(), "/echo-input-blocked");
+
+  constexpr uint32_t kNbMessages = 24;
+  constexpr std::size_t kSize = 512UL * 1024UL;
+  vector<std::string> payloads;
+  std::string frames;
+  for (uint32_t idx = 0; idx < kNbMessages; ++idx) {
+    payloads.push_back(MakeBinaryPayload(kSize, idx));
+    frames.append(FrameView(BuildClientFrame(Opcode::Binary, payloads.back())));
+  }
+
+  // The server stops reading once its output blocks: the sender waits until the echoes are read.
+  bool sendFailed = false;
+  std::thread sender([&] {
+    try {
+      test::sendAll(conn.fd(), frames, 20000ms);
+    } catch (const std::exception&) {
+      sendFailed = true;
+    }
+  });
+  std::this_thread::sleep_for(200ms);
+
+  ServerFrameReader reader(conn.fd());
+  for (uint32_t idx = 0; idx < kNbMessages; ++idx) {
+    const auto echo = reader.next(10000ms);
+    ASSERT_TRUE(echo.has_value()) << idx;
+    EXPECT_TRUE(PayloadToString(echo->frame.payload) == payloads[idx]) << idx;
+  }
+  sender.join();
+  EXPECT_FALSE(sendFailed);
+}
+
+#ifdef AERONET_ENABLE_ZLIB
+
+// Connections of a server thread negotiating permessage-deflate: those without context takeover share the streams of
+// the thread, the other one keeps its own, its messages referring to the previous ones. The interleaved messages of all
+// of them must decompress, each way.
+TEST_F(WebSocketTest, CompressedConnectionsOfAServerThread) {
+  ts.postRouterUpdate([](Router& router) {
+    WebSocketConfig config;
+    config.deflateConfig.minCompressSize = 16;
+    auto endpoint = EchoFromInputEndpoint(config);
+    endpoint.config = config;
+    router.setWebSocket("/echo-deflate-shared", std::move(endpoint));
+  });
+
+  const DeflateNegotiatedParams noContextTakeover{
+      .serverMaxWindowBits = 15,
+      .clientMaxWindowBits = 15,
+      .serverNoContextTakeover = true,
+      .clientNoContextTakeover = true,
+  };
+  struct Client {
+    std::string_view extension;
+    DeflateNegotiatedParams params;
+  };
+  const Client clients[]{
+      {"permessage-deflate; client_no_context_takeover; server_no_context_takeover", noContextTakeover},
+      {"permessage-deflate", DeflateNegotiatedParams{}},
+      {"permessage-deflate; server_no_context_takeover; client_no_context_takeover", noContextTakeover},
+  };
+  constexpr uint32_t kNbClients = std::size(clients);
+
+  test::ClientConnection conns[kNbClients]{test::ClientConnection(ts.port()), test::ClientConnection(ts.port()),
+                                           test::ClientConnection(ts.port())};
+  vector<std::unique_ptr<DeflateContext>> codecs;
+  vector<std::unique_ptr<ServerFrameReader>> readers;
+  for (uint32_t idx = 0; idx < kNbClients; ++idx) {
+    test::sendAll(conns[idx].fd(),
+                  BuildUpgradeRequest("/echo-deflate-shared", "dGhlIHNhbXBsZSBub25jZQ==",
+                                      "Sec-WebSocket-Extensions: " + std::string(clients[idx].extension) + "\r\n"));
+    const std::string head = ReceiveResponseHead(conns[idx].fd(), 1000ms);
+    ASSERT_TRUE(head.starts_with("HTTP/1.1 101")) << head;
+    ASSERT_TRUE(head.contains("permessage-deflate")) << head;
+    codecs.push_back(std::make_unique<DeflateContext>(clients[idx].params, DeflateConfig{}, /*isServerSide=*/false));
+    readers.push_back(std::make_unique<ServerFrameReader>(conns[idx].fd()));
+  }
+
+  for (uint32_t round = 0; round < 4; ++round) {
+    for (uint32_t idx = 0; idx < kNbClients; ++idx) {
+      std::string text;
+      const uint32_t nbItems = 3 + (((round * kNbClients) + idx) * 97U % 400U);
+      for (uint32_t item = 0; item < nbItems; ++item) {
+        text += R"({"client":)" + std::to_string(idx) + R"(,"round":)" + std::to_string(round) + R"(,"item":)" +
+                std::to_string(item) + "}";
+      }
+      RawBytes compressed;
+      ASSERT_EQ(codecs[idx]->compress(std::as_bytes(std::span<const char>(text.data(), text.size())), compressed),
+                nullptr);
+      const auto frame = BuildClientFrame(
+          std::string_view(reinterpret_cast<const char*>(compressed.data()), compressed.size()), Opcode::Text, true);
+      test::sendAll(conns[idx].fd(), FrameView(frame), 2000ms);
+
+      const auto echo = readers[idx]->next(2000ms);
+      ASSERT_TRUE(echo.has_value()) << "client " << idx << " round " << round;
+      EXPECT_TRUE(echo->rsv1);
+      RawBytes decompressed;
+      ASSERT_EQ(codecs[idx]->decompress(std::span<const std::byte>(echo->frame.payload.data(), echo->frame.payload.size()),
+                                        decompressed),
+                nullptr)
+          << "client " << idx << " round " << round;
+      EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(decompressed.data()), decompressed.size()), text)
+          << "client " << idx << " round " << round;
+    }
+  }
+}
+
+#endif
 
 }  // namespace

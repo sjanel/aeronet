@@ -36,8 +36,11 @@ struct ProtocolProcessResult {
     CloseImmediate,  // Connection should be closed immediately (protocol error)
   };
 
-  Action action{Action::Continue};
   std::size_t bytesConsumed{0};  // Bytes consumed from input buffer
+  Action action{Action::Continue};
+  // The pending output refers to the processed input: it must be written, then releaseInput() called, before the input
+  // is modified or freed.
+  bool outputRefersToInput{false};
 };
 
 /// Base interface for protocol handlers.
@@ -94,6 +97,10 @@ class IProtocolHandler {
   /// Notify the handler that output was successfully written.
   /// @param bytesWritten Number of bytes successfully written to transport
   virtual void onOutputWritten(std::size_t bytesWritten) = 0;
+
+  /// Called once the output that processInput() reported referring to its input (outputRefersToInput) was written as
+  /// far as the transport accepted, before that input is modified or freed: the handler copies the part still unsent.
+  virtual void releaseInput() {}
 
   /// Discard queued output when the transport can no longer make progress.
   virtual void discardPendingOutput() noexcept {

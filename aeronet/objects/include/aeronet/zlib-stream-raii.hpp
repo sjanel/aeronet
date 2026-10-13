@@ -45,6 +45,9 @@ struct ZStreamRAII {
 
   void end() noexcept;
 
+  /// Tells whether the z_stream is initialized (for compression or decompression).
+  [[nodiscard]] bool initialized() const noexcept { return _mode != Mode::uninitialized; }
+
   zstream stream;
 
  private:

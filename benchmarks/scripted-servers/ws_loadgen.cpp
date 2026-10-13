@@ -150,6 +150,7 @@ class Histogram {
 
 struct Payload {
   std::string bytes;  // message payload as sent on the wire (compressed when permessage-deflate is in use)
+  std::string frame;  // the whole masked frame carrying it, built once (see Worker::Worker())
   uint8_t opcode{kOpText};
   bool compressed{false};
 };
@@ -205,7 +206,7 @@ std::string Deflate(std::string_view input) {
 std::vector<Payload> MakePayloads(const Options& opts, bool compressionNegotiated) {
   std::vector<Payload> payloads;
   const auto add = [&](bool binary, uint32_t size) {
-    Payload payload{MakePayloadBytes(opts, binary, size), binary ? kOpBinary : kOpText, false};
+    Payload payload{MakePayloadBytes(opts, binary, size), {}, binary ? kOpBinary : kOpText, false};
 #ifdef WS_LOADGEN_HAVE_ZLIB
     if (compressionNegotiated) {
       payload.bytes = Deflate(payload.bytes);
@@ -218,14 +219,14 @@ std::vector<Payload> MakePayloads(const Options& opts, bool compressionNegotiate
   };
   switch (opts.mode) {
     case Mode::Ping:
-      payloads.push_back(Payload{std::string{}, kOpPing, false});
+      payloads.push_back(Payload{std::string{}, {}, kOpPing, false});
       break;
     case Mode::Mix:
       add(false, 256);
       add(true, 512);
       break;
     case Mode::Churn:
-      payloads.push_back(Payload{std::string("churn-test"), kOpText, false});
+      payloads.push_back(Payload{std::string("churn-test"), {}, kOpText, false});
       break;
     case Mode::Echo:
       add(opts.binary, opts.payloadSize);
@@ -255,6 +256,12 @@ struct Connection {
   std::size_t inOffset{0};
   std::string out;
   std::size_t outOffset{0};
+  // Received bytes of the frame being received that are still to come: the generator does not read payloads, so they
+  // are discarded as they arrive instead of being buffered. The frame is handled once its last byte arrived.
+  uint64_t skipBytes{0};
+  uint8_t skipOpcode{0};
+  bool skipFin{false};
+  bool skipping{false};
   // Send timestamps of the in-flight messages (replies come back in order).
   std::vector<Clock::time_point> inflight;
   std::size_t inflightHead{0};
@@ -271,6 +278,14 @@ class Worker {
     }
     _payloads[0] = MakePayloads(opts, false);
     _payloads[1] = MakePayloads(opts, true);
+    // Each message is sent with the same frame: the server unmasks it the same way whatever its masking key, whose
+    // unpredictability only protects intermediaries (RFC 6455 section 10.3). Masking and copying 64 KB per message
+    // would otherwise cost the generator more than the server.
+    for (auto& payloads : _payloads) {
+      for (Payload& payload : payloads) {
+        appendFrame(payload.frame, payload.opcode, payload.compressed, payload.bytes);
+      }
+    }
     // Fixed key: the generator does not validate Sec-WebSocket-Accept, only the 101 status.
     _handshake = "GET " + opts.path + " HTTP/1.1\r\nHost: " + opts.host + ":" + std::to_string(opts.port) +
                  "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" +
@@ -415,9 +430,28 @@ class Worker {
     }
   }
 
-  // Appends bytes to the connection output and writes as much as possible. Returns false if the connection failed.
+  // Writes bytes after the pending output: directly when there is none, keeping a copy of the part the socket did not
+  // take only. Returns false if the connection failed.
   bool queue(std::size_t idx, std::string_view bytes) {
     Connection& conn = _conns[idx];
+    if (conn.outOffset == conn.out.size()) {
+      while (!bytes.empty()) {
+        const auto nb = ::send(conn.fd, bytes.data(), bytes.size(), MSG_NOSIGNAL);
+        if (nb > 0) {
+          bytes.remove_prefix(static_cast<std::size_t>(nb));
+        } else if (nb < 0 && errno == EINTR) {
+          continue;
+        } else if (nb < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+          break;
+        } else {
+          fail(idx);
+          return false;
+        }
+      }
+      if (bytes.empty()) {
+        return true;
+      }
+    }
     conn.out.append(bytes);
     return flush(idx);
   }
@@ -505,8 +539,7 @@ class Worker {
       conn.inflight[(conn.inflightHead + conn.inflightCount) % conn.inflight.size()] = Clock::now();
       ++conn.inflightCount;
     }
-    appendFrame(conn.out, payload.opcode, payload.compressed, payload.bytes);
-    return flush(idx);
+    return queue(idx, payload.frame);
   }
 
   void onOpen(std::size_t idx) {
@@ -592,7 +625,11 @@ class Worker {
     for (;;) {
       const auto nb = ::recv(conn.fd, buf, sizeof(buf), 0);
       if (nb > 0) {
-        conn.in.append(buf, static_cast<std::size_t>(nb));
+        std::string_view received(buf, static_cast<std::size_t>(nb));
+        const auto skipped = static_cast<std::size_t>(std::min<uint64_t>(conn.skipBytes, received.size()));
+        conn.skipBytes -= skipped;
+        received.remove_prefix(skipped);
+        conn.in.append(received);
         if (static_cast<std::size_t>(nb) < sizeof(buf)) {
           break;
         }
@@ -622,8 +659,43 @@ class Worker {
     processFrames(idx);
   }
 
+  // Handles a received frame (its payload is not used). Returns false if the connection was recycled.
+  bool onFrame(std::size_t idx, uint8_t opcode, bool fin) {
+    Connection& conn = _conns[idx];
+    switch (opcode) {
+      case kOpText:
+      case kOpBinary:
+      case kOpContinuation:
+        return !fin || _opts.mode == Mode::Ping || onReply(idx);
+      case kOpPong:
+        return _opts.mode != Mode::Ping || onReply(idx);
+      case kOpPing:
+        appendFrame(conn.out, kOpPong, false, {});
+        return flush(idx);
+      case kOpClose:
+        if (conn.state == ConnState::Closing) {
+          endSession(idx);
+        } else {
+          fail(idx);
+        }
+        return false;
+      default:
+        fail(idx);
+        return false;
+    }
+  }
+
   void processFrames(std::size_t idx) {
     Connection& conn = _conns[idx];
+    if (conn.skipping) {
+      if (conn.skipBytes != 0) {
+        return;  // the rest of the frame is still to come
+      }
+      conn.skipping = false;
+      if (!onFrame(idx, conn.skipOpcode, conn.skipFin)) {
+        return;
+      }
+    }
     while (conn.fd >= 0 && conn.state != ConnState::Handshaking) {
       const std::size_t avail = conn.in.size() - conn.inOffset;
       if (avail < 2) {
@@ -655,39 +727,18 @@ class Worker {
         headerSize += 4;
       }
       if (avail < headerSize + len) {
+        if (avail >= headerSize) {
+          // Skip the rest of its payload as it arrives (see Connection::skipBytes).
+          conn.skipBytes = headerSize + len - avail;
+          conn.skipOpcode = opcode;
+          conn.skipFin = fin;
+          conn.skipping = true;
+          conn.inOffset = conn.in.size();
+        }
         break;
       }
       conn.inOffset += headerSize + static_cast<std::size_t>(len);
-      bool alive = true;
-      switch (opcode) {
-        case kOpText:
-        case kOpBinary:
-        case kOpContinuation:
-          if (fin && _opts.mode != Mode::Ping) {
-            alive = onReply(idx);
-          }
-          break;
-        case kOpPong:
-          if (_opts.mode == Mode::Ping) {
-            alive = onReply(idx);
-          }
-          break;
-        case kOpPing:
-          appendFrame(conn.out, kOpPong, false, {});
-          alive = flush(idx);
-          break;
-        case kOpClose:
-          if (conn.state == ConnState::Closing) {
-            endSession(idx);
-          } else {
-            fail(idx);
-          }
-          return;
-        default:
-          fail(idx);
-          return;
-      }
-      if (!alive) {
+      if (!onFrame(idx, opcode, fin)) {
         return;
       }
     }

@@ -87,6 +87,8 @@ The payload span is valid only during the callback: copy it to keep it.
 
 `WebSocketHandler` sends with `sendText()`, `sendBinary()`, `sendPing()`, `sendPong()`, and `sendClose(code, reason)`. Each call queues a frame on the connection and returns `false` once the close handshake has started. A message is sent as a single frame. When compression was negotiated, a message of at least `DeflateConfig::minCompressSize` bytes is sent compressed, unless compression does not make it smaller.
 
+Sending from `onMessage` a payload of at least 4 KiB that it received (an echo, or a part of the message) does not copy it: only the frame header is queued, and the server writes the payload from its receive buffer right after the callbacks of this input, copying only what the socket did not accept.
+
 These methods are not thread-safe: call them from a callback of the same connection. There is currently no way to push a message to a connection from another thread.
 
 ## Upgrade handshake
@@ -132,7 +134,7 @@ router.setWebSocket("/ws", WebSocketEndpoint::WithCallbacks(websocket::WebSocket
 
 | Field | Default | Effect |
 | --- | --- | --- |
-| `maxMessageSize` | 64 MiB | Maximum size of a reassembled message. `0` disables the limit. A larger message closes the connection with `MessageTooBig` (1009). |
+| `maxMessageSize` | 64 MiB | Maximum size of a reassembled message, decompressed. `0` disables the limit. A larger message closes the connection with `MessageTooBig` (1009), or `InvalidPayloadData` (1007) when it is compressed. |
 | `maxFrameSize` | 16 MiB | Maximum payload of a single frame. A larger frame closes the connection with `MessageTooBig`. |
 | `idleTimeout` | 60 s | A connection on which nothing was received for this long is closed. `0` disables it. See [Idle connections](#idle-connections). |
 | `autoPing` | `true` | Send a Ping after half of `idleTimeout` without received data, so that live peers are never closed. |
@@ -150,7 +152,7 @@ Router router;
 router.setWebSocket("/ws", WebSocketEndpoint::WithConfigAndCallbacks(config, websocket::WebSocketCallbacks{}));
 ```
 
-Frames may arrive split across any number of reads, or several in one read: the handler consumes complete frames only, and keeps the bytes of an incomplete trailing frame in the connection buffer without copying them. Client frames must be masked; an unmasked frame is a protocol error. Unmasking uses SIMD instructions (AVX2 or SSE2 on x86, NEON on ARM) with a scalar fallback.
+Frames may arrive split across any number of reads, or several in one read: the handler consumes complete frames only, and keeps the bytes of an incomplete trailing frame in the connection buffer without copying them. A connection without such pending bytes reads into the input buffer of the previous read of its server thread, still in the CPU caches, rather than into its own: with many connections exchanging large messages, they would otherwise be received into cold memory. Client frames must be masked; an unmasked frame is a protocol error. Unmasking uses SIMD instructions (AVX2 or SSE2 on x86, NEON on ARM) with a scalar fallback.
 
 ## Compression (permessage-deflate)
 
@@ -172,13 +174,15 @@ router.setWebSocket("/feed", WebSocketEndpoint::WithConfigAndCallbacks(config, w
 | `compressionLevel` | 6 | zlib level, 0 to 9. |
 | `serverMaxWindowBits` | 15 | LZ77 window of the server's compressor, 8 to 15 (2^N bytes). |
 | `clientMaxWindowBits` | 15 | LZ77 window of the client's compressor, 8 to 15. Only applied to clients offering `client_max_window_bits`. |
-| `serverNoContextTakeover` | `false` | Reset the server's compression context after each message: less memory, lower ratio. |
-| `clientNoContextTakeover` | `false` | Ask the client to reset its context after each message. |
+| `serverNoContextTakeover` | `false` | Reset the server's compression context after each message: lower ratio, but no compression stream per connection (see below). |
+| `clientNoContextTakeover` | `false` | Ask the client to reset its context after each message: no decompression stream per connection (see below). |
 | `minCompressSize` | 256 bytes | Smaller messages are sent uncompressed. |
 
 The server accepts the first acceptable offer of the client, and each side compresses with the window negotiated for it. zlib cannot produce raw DEFLATE data with a 256-byte window: when 8 is negotiated, aeronet compresses with 9 bits, whose matches never refer more than 250 bytes back, so the peer decodes them with its 256-byte window. A client that does not offer `client_max_window_bits` keeps a 32 KiB window: RFC 7692 forbids limiting it. Messages are raw DEFLATE data, with no zlib header nor checksum and with the trailing `00 00 ff ff` removed (RFC 7692 §7.2.1), and interoperate with browsers and standard WebSocket libraries.
 
-When a factory returns a handler without compression and the client negotiated it, the server enables it on that handler (`WebSocketHandler::enableCompression()`) and keeps its callbacks.
+A direction negotiated with context takeover (the default) continues the same DEFLATE stream from message to message, so that a message can refer to the previous ones: its connection keeps a zlib stream for it, allocated by its first message (about 300 KB to compress, 40 KB to decompress). A direction negotiated without context takeover (`server_no_context_takeover` and `client_no_context_takeover`, requested by either side) starts each message afresh: its connections share a single stream per server thread, which uses no memory per connection and stays in the CPU caches. This is much faster for many connections exchanging small messages, the compression stream being reset for each one.
+
+When a factory returns a handler without compression and the client negotiated it, the server enables it on that handler (`WebSocketHandler::enableCompression()`), keeps its callbacks, and gives it the streams shared by its server thread.
 
 ## Closing connections
 
@@ -224,8 +228,8 @@ The timeouts are checked by the server's maintenance timer, so they are accurate
 
 ## Tests
 
-- Handshake, middleware, origin checks, factory refusal, messaging, compression interoperability, close handshake, and idle and close timeouts against a real socket: [tests/websocket-integration_test.cpp](../../tests/websocket-integration_test.cpp).
+- Handshake, middleware, origin checks, factory refusal, messaging, large echoes (also when the client does not read), compression interoperability and connections sharing the streams of a server thread, close handshake, and idle and close timeouts against a real socket: [tests/websocket-integration_test.cpp](../../tests/websocket-integration_test.cpp).
 - Frame parsing, masking, and SIMD unmasking: [websocket-frame_test.cpp](../../aeronet/websocket/test/websocket-frame_test.cpp).
-- Message reassembly, control frames, close handshake, split frames, and timeout computation: [websocket-handler_test.cpp](../../aeronet/websocket/test/websocket-handler_test.cpp).
+- Message reassembly, control frames, close handshake, split frames, payloads sent from the input (`WebSocketInputPayloadTest`), and timeout computation: [websocket-handler_test.cpp](../../aeronet/websocket/test/websocket-handler_test.cpp).
 - Upgrade validation and subprotocol negotiation: [websocket-upgrade_test.cpp](../../aeronet/websocket/test/websocket-upgrade_test.cpp).
-- permessage-deflate negotiation and interoperability: [websocket-deflate_test.cpp](../../aeronet/websocket/test/websocket-deflate_test.cpp) and [websocket-compress_test.cpp](../../aeronet/websocket/test/websocket-compress_test.cpp).
+- permessage-deflate negotiation and interoperability, context takeover across messages, streams shared without context takeover (`WebSocketSharedDeflateStreamsTest`): [websocket-deflate_test.cpp](../../aeronet/websocket/test/websocket-deflate_test.cpp) and [websocket-compress_test.cpp](../../aeronet/websocket/test/websocket-compress_test.cpp).

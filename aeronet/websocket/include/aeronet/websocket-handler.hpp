@@ -10,6 +10,7 @@
 
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/vector.hpp"
 #include "aeronet/websocket-constants.hpp"
 #include "aeronet/websocket-deflate.hpp"
 #include "aeronet/websocket-frame.hpp"
@@ -116,10 +117,19 @@ class WebSocketHandler final : public IProtocolHandler {
   [[nodiscard]] ProtocolProcessResult processInput(std::span<const std::byte> data, ConnectionState& state) override;
 
   [[nodiscard]] std::span<const std::byte> getPendingOutput() const noexcept override {
-    return {_outputBuffer.begin() + _outputOffset, _outputBuffer.end()};
+    std::span<const std::byte> pending(_outputBuffer.begin() + _outputOffset, _outputBuffer.end());
+    return pending.empty() ? _inputPayload : pending;
+  }
+
+  void getPendingOutputFragments(vector<std::string_view>& fragments) const override;
+
+  [[nodiscard]] std::size_t pendingOutputSize() const noexcept override {
+    return _outputBuffer.size() - _outputOffset + _inputPayload.size();
   }
 
   void onOutputWritten(std::size_t bytesWritten) override;
+
+  void releaseInput() override { appendInputPayload(); }
 
   void onTransportClosing() override;
 
@@ -172,7 +182,9 @@ class WebSocketHandler final : public IProtocolHandler {
 
   /// Enable permessage-deflate with the negotiated parameters, keeping the callbacks and configuration.
   /// Used when compression is negotiated for a handler created without it (e.g. by an endpoint factory).
-  void enableCompression(DeflateNegotiatedParams deflateParams);
+  /// The directions negotiated without context takeover use sharedStreams if not null (the streams of the event loop
+  /// serving the connection, which must outlive this handler) instead of streams of their own.
+  void enableCompression(DeflateNegotiatedParams deflateParams, SharedDeflateStreams* sharedStreams = nullptr);
 
   /// Get the time when close was initiated (for timeout tracking).
   /// Returns a zero duration if not in closing state.
@@ -246,6 +258,9 @@ class WebSocketHandler final : public IProtocolHandler {
   /// Send a data message with optional compression.
   bool sendData(Opcode opcode, std::span<const std::byte> payload);
 
+  /// Copy the payload sent from the input (_inputPayload) at the end of the output buffer, before appending to it.
+  void appendInputPayload();
+
   WebSocketConfig _config;
   WebSocketCallbacks _callbacks;
   std::unique_ptr<DeflateContext> _deflateContext;          // Compression context (null if not negotiated)
@@ -253,9 +268,14 @@ class WebSocketHandler final : public IProtocolHandler {
   std::chrono::steady_clock::time_point _idlePingSentAt;    // Time of the last Ping sent by checkTimeouts()
   RawBytes _outputBuffer;                                   // Pending output data
   std::size_t _outputOffset{0};                             // Bytes already retrieved via getPendingOutput
-  MessageState _message;                                    // Current message being assembled
-  RawBytes _compressBuffer;                                 // Temporary buffer for compression/decompression
-  uint64_t _rngState{0};                                    // splitmix64 state for masking key generation
+  // Input being processed by processInput() (empty outside of it).
+  std::span<const std::byte> _input;
+  // Payload of the last queued frame, still in the processed input: sent from there, after _outputBuffer, which holds
+  // its header. Copied by releaseInput() if the transport did not take all of it.
+  std::span<const std::byte> _inputPayload;
+  MessageState _message;     // Current message being assembled
+  RawBytes _compressBuffer;  // Temporary buffer for compression/decompression
+  uint64_t _rngState{0};     // splitmix64 state for masking key generation
   CloseCode _closeCode{CloseCode::Normal};
   CloseState _closeState{CloseState::Open};
   bool _messageCompressed{false};  // True if current message was received with RSV1 set

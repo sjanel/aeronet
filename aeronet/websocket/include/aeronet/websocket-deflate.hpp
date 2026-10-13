@@ -78,6 +78,31 @@ std::size_t ComputeDeflateResponseSize(DeflateNegotiatedParams params, uint8_t n
 /// @param pData Output buffer to append the response string to
 char* BuildDeflateResponse(DeflateNegotiatedParams params, char* pData);
 
+/// zlib streams shared by the WebSocket connections of an event loop (a server thread), for the directions negotiated
+/// without context takeover (server_no_context_takeover, client_no_context_takeover): their state does not survive a
+/// message, so one stream serves all these connections. This saves the memory of a stream per connection (about 300 KB
+/// for compression) and keeps the shared one in the CPU caches. Not thread-safe: only used by its event loop.
+class SharedDeflateStreams {
+ public:
+  SharedDeflateStreams() noexcept;
+
+  SharedDeflateStreams(const SharedDeflateStreams&) = delete;
+  SharedDeflateStreams& operator=(const SharedDeflateStreams&) = delete;
+  SharedDeflateStreams(SharedDeflateStreams&&) noexcept;
+  SharedDeflateStreams& operator=(SharedDeflateStreams&&) noexcept;
+
+  ~SharedDeflateStreams();
+
+  using trivially_relocatable = std::true_type;
+
+ private:
+  friend class DeflateContext;
+
+  struct Impl;
+
+  std::unique_ptr<Impl> _impl;  // created on first use
+};
+
 /// RAII wrapper for zlib deflate/inflate context.
 /// This is an internal implementation detail.
 class DeflateContext {
@@ -86,7 +111,10 @@ class DeflateContext {
   /// @param params Negotiated parameters from upgrade
   /// @param config Server's configuration (for compression level, etc.)
   /// @param isServerSide True for server, false for client
-  DeflateContext(DeflateNegotiatedParams params, const DeflateConfig& config, bool isServerSide);
+  /// @param sharedStreams If not null, streams used for the directions without context takeover instead of own ones.
+  /// They must outlive this context.
+  DeflateContext(DeflateNegotiatedParams params, const DeflateConfig& config, bool isServerSide,
+                 SharedDeflateStreams* sharedStreams = nullptr);
 
   DeflateContext(const DeflateContext&) = delete;
   DeflateContext& operator=(const DeflateContext&) = delete;

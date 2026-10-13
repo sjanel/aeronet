@@ -4,6 +4,10 @@
   <img src="resources/logo-blue-violet.png" alt="aeronet" width="360" />
 </p>
 
+<p align="center">
+  <a href="https://sjanel.github.io/aeronet/"><strong>Documentation: sjanel.github.io/aeronet</strong></a>
+</p>
+
 [![CI](https://github.com/sjanel/aeronet/actions/workflows/ci.yml/badge.svg)](https://github.com/sjanel/aeronet/actions/workflows/ci.yml)
 [![Coverage](https://codecov.io/gh/sjanel/aeronet/branch/main/graph/badge.svg)](https://codecov.io/gh/sjanel/aeronet)
 [![Packaging](https://github.com/sjanel/aeronet/actions/workflows/packaging.yml/badge.svg)](https://github.com/sjanel/aeronet/actions/workflows/packaging.yml)
