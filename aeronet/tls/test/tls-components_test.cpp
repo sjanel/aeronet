@@ -638,10 +638,12 @@ TEST(TlsContextTest, DebugKeyLogWritesNssCompatibleSecretsToOwnerOnlyFile) {
 }
 #endif
 
-TEST(TlsContextTest, StrictAlpnMismatchIncrementsMetric) {
+TEST(TlsContextTest, StrictAlpnMismatchFlagsTheHandshakeObserver) {
   SslTestPair pair({"h2"}, {"http/1.1"}, true);
+  TlsHandshakeObserver observer;
+  ASSERT_EQ(SetTlsHandshakeObserver(pair.serverSsl.get(), &observer), 1);
   EXPECT_FALSE(PerformHandshake(pair));
-  EXPECT_EQ(pair.context.alpnStrictMismatches(), 1U);
+  EXPECT_TRUE(observer.alpnStrictMismatch);
   ::ERR_clear_error();
 }
 
@@ -2498,13 +2500,14 @@ TEST(TlsContextTest, StrictAlpnRejectsAClientOfferingNoProtocol) {
   ASSERT_EQ(SetTlsHandshakeObserver(pair.serverSsl.get(), &observer), 1);
   EXPECT_FALSE(PerformHandshake(pair));
   ::ERR_clear_error();
-  EXPECT_EQ(pair.context.alpnStrictMismatches(), 1U);
   EXPECT_TRUE(observer.alpnStrictMismatch);
 
   // Without strict mode, a client offering no protocol is served.
   SslTestPair lenient({"h2", "http/1.1"}, {}, false);
+  TlsHandshakeObserver lenientObserver;
+  ASSERT_EQ(SetTlsHandshakeObserver(lenient.serverSsl.get(), &lenientObserver), 1);
   EXPECT_TRUE(PerformHandshake(lenient));
-  EXPECT_EQ(lenient.context.alpnStrictMismatches(), 0U);
+  EXPECT_FALSE(lenientObserver.alpnStrictMismatch);
 }
 
 TEST(TlsContextTest, SniNameWithTrailingDotSelectsItsRoute) {

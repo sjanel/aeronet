@@ -13,7 +13,10 @@
 
 #ifdef AERONET_ENABLE_ZLIB
 #include <cstddef>
+#include <cstdint>
 #include <span>
+#include <string>
+#include <utility>
 
 #include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/raw-bytes.hpp"
@@ -21,6 +24,15 @@
 
 namespace aeronet::websocket {
 namespace {
+
+RawChars BuildDeflateResponse(const DeflateNegotiatedParams& params) {
+  RawChars response(
+      ComputeDeflateResponseSize(params, ndigits(params.serverMaxWindowBits), ndigits(params.clientMaxWindowBits)));
+
+  response.setEnd(BuildDeflateResponse(params, response.data()));
+
+  return response;
+}
 
 #ifdef AERONET_ENABLE_ZLIB
 std::span<const std::byte> sv_bytes(std::string_view sv) noexcept {
@@ -43,10 +55,7 @@ TEST(WebSocketDeflateTest, DeflateConfigValidation) {
   EXPECT_THROW(config.validate(), std::invalid_argument);
   config.serverMaxWindowBits = 19;
   EXPECT_THROW(config.validate(), std::invalid_argument);
-  // zlib cannot compress raw DEFLATE data with a 256 bytes window.
   config.serverMaxWindowBits = 8;
-  EXPECT_THROW(config.validate(), std::invalid_argument);
-  config.serverMaxWindowBits = 9;
   EXPECT_NO_THROW(config.validate());
   config.serverMaxWindowBits = 15;
   EXPECT_NO_THROW(config.validate());
@@ -55,6 +64,8 @@ TEST(WebSocketDeflateTest, DeflateConfigValidation) {
   EXPECT_THROW(config.validate(), std::invalid_argument);
   config.clientMaxWindowBits = 16;
   EXPECT_THROW(config.validate(), std::invalid_argument);
+  config.clientMaxWindowBits = 8;
+  EXPECT_NO_THROW(config.validate());
   config.clientMaxWindowBits = 15;
   EXPECT_NO_THROW(config.validate());
 
@@ -135,14 +146,23 @@ TEST(WebSocketDeflateTest, ParseDeflateOffer_ServerMaxWindowBits) {
 #endif
 }
 
-// The server cannot compress with a 256 bytes window: an offer requiring it is declined (RFC 7692 section 7.1.2.1).
-TEST(WebSocketDeflateTest, ParseDeflateOffer_ServerMaxWindowBits8IsDeclined) {
+// The server compresses with 9 bits when asked for 8, which zlib does not support (see CompressDecompress_WindowBits8).
+TEST(WebSocketDeflateTest, ParseDeflateOffer_WindowBits8IsAccepted) {
   DeflateConfig serverConfig;
-  EXPECT_FALSE(ParseDeflateOffer("permessage-deflate; server_max_window_bits=8", serverConfig).has_value());
+  auto result = ParseDeflateOffer("permessage-deflate; server_max_window_bits=8", serverConfig);
 #ifdef AERONET_ENABLE_ZLIB
-  EXPECT_TRUE(ParseDeflateOffer("permessage-deflate; server_max_window_bits=9", serverConfig).has_value());
-  // A client compressing with 8 bits is fine: the server inflates with a window at least as large.
-  EXPECT_TRUE(ParseDeflateOffer("permessage-deflate; client_max_window_bits=8", serverConfig).has_value());
+  ASSERT_TRUE(result.has_value());
+  const auto params = result.value_or(DeflateNegotiatedParams{});
+  EXPECT_EQ(params.serverMaxWindowBits, 8);
+  const RawChars response = BuildDeflateResponse(params);
+  EXPECT_TRUE(std::string_view(response.data(), response.size()).contains("server_max_window_bits=8"));
+
+  EXPECT_EQ(ParseDeflateOffer("permessage-deflate; client_max_window_bits=8", serverConfig)
+                .value_or(DeflateNegotiatedParams{})
+                .clientMaxWindowBits,
+            8);
+#else
+  EXPECT_FALSE(result.has_value());
 #endif
 }
 
@@ -344,19 +364,6 @@ TEST(WebSocketDeflateTest, ParseDeflateOffer_CaseInsensitiveParams) {
 // BuildDeflateResponse tests
 // ============================================================================
 
-namespace {
-
-RawChars BuildDeflateResponse(const DeflateNegotiatedParams& params) {
-  RawChars response(
-      ComputeDeflateResponseSize(params, ndigits(params.serverMaxWindowBits), ndigits(params.clientMaxWindowBits)));
-
-  response.setEnd(BuildDeflateResponse(params, response.data()));
-
-  return response;
-}
-
-}  // namespace
-
 TEST(WebSocketDeflateTest, BuildDeflateResponse_Defaults) {
   DeflateNegotiatedParams params;
   RawChars response = BuildDeflateResponse(params);
@@ -424,6 +431,41 @@ TEST(WebSocketDeflateTest, BuildDeflateResponse_DefaultWindowBitsNotIncluded) {
   // Default window bits should not be included
   EXPECT_TRUE(
       !std::string_view(reinterpret_cast<const char*>(response.data()), response.size()).contains("window_bits"));
+}
+
+TEST(WebSocketDeflateTest, ParseDeflateOffer_ClientWindowIsOnlyLimitedWhenOffered) {
+  DeflateConfig serverConfig;
+  serverConfig.clientMaxWindowBits = 10;
+  // A client not offering client_max_window_bits compresses with a 32 KiB window: the response must not limit it (RFC
+  // 7692 section 7.1.2.2).
+  for (std::string_view offer : {"permessage-deflate", "permessage-deflate; server_no_context_takeover"}) {
+    auto result = ParseDeflateOffer(offer, serverConfig);
+#ifdef AERONET_ENABLE_ZLIB
+    ASSERT_TRUE(result.has_value()) << offer;
+    const auto params = result.value_or(DeflateNegotiatedParams{});
+    EXPECT_EQ(params.clientMaxWindowBits, 15) << offer;
+    const RawChars response = BuildDeflateResponse(params);
+    EXPECT_FALSE(std::string_view(response.data(), response.size()).contains("client_max_window_bits")) << offer;
+#else
+    EXPECT_FALSE(result.has_value());
+#endif
+  }
+
+#ifdef AERONET_ENABLE_ZLIB
+  // Offered: limited to the configured window, or to the offered one if smaller.
+  EXPECT_EQ(ParseDeflateOffer("permessage-deflate; client_max_window_bits", serverConfig)
+                .value_or(DeflateNegotiatedParams{})
+                .clientMaxWindowBits,
+            10);
+  EXPECT_EQ(ParseDeflateOffer("permessage-deflate; client_max_window_bits=12", serverConfig)
+                .value_or(DeflateNegotiatedParams{})
+                .clientMaxWindowBits,
+            10);
+  EXPECT_EQ(ParseDeflateOffer("permessage-deflate; client_max_window_bits=9", serverConfig)
+                .value_or(DeflateNegotiatedParams{})
+                .clientMaxWindowBits,
+            9);
+#endif
 }
 
 // ============================================================================
@@ -594,6 +636,45 @@ TEST(WebSocketDeflateTest, CompressDecompress_ReducedWindowBits) {
   ASSERT_EQ(ctx.decompress(compressedSpan, decompressed), nullptr);
 
   EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(decompressed.data()), decompressed.size()), original);
+}
+
+// zlib cannot compress with the 256 bytes window that may be negotiated for either side: the sender compresses with 512
+// bytes, whose matches never reach further than 250 bytes, valid for the window of the receiver.
+TEST(WebSocketDeflateTest, CompressDecompress_WindowBits8) {
+  DeflateNegotiatedParams params;
+  params.serverMaxWindowBits = 8;
+  params.clientMaxWindowBits = 8;
+  DeflateConfig config;
+  DeflateContext client(params, config, false);
+  DeflateContext server(params, config, true);
+
+  // Pseudo-random bytes with repeats at distances from 240 to 511 bytes, which a 512 bytes window could reach.
+  std::string original(16UL * 1024UL, '\0');
+  uint32_t state = 12345;
+  const auto next = [&state] {
+    state = (state * 1103515245U) + 12345U;
+    return state >> 16U;
+  };
+  for (char& ch : original) {
+    ch = static_cast<char>(next());
+  }
+  for (std::size_t pos = 512; pos + 32 <= original.size(); pos += 64) {
+    const std::size_t distance = 240 + (next() % 272);
+    for (std::size_t idx = pos; idx < pos + 32; ++idx) {
+      original[idx] = original[idx - distance];
+    }
+  }
+
+  // Several messages each way: matches may also reach back into the previous ones (context takeover).
+  for (int msg = 0; msg < 3; ++msg) {
+    for (auto [sender, receiver] : {std::pair{&client, &server}, std::pair{&server, &client}}) {
+      RawBytes compressed;
+      ASSERT_EQ(sender->compress(sv_bytes(original), compressed), nullptr);
+      RawBytes decompressed;
+      ASSERT_EQ(receiver->decompress(buf_bytes(compressed), decompressed), nullptr);
+      EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(decompressed.data()), decompressed.size()), original);
+    }
+  }
 }
 
 TEST(WebSocketDeflateTest, CompressDecompress_DifferentCompressionLevel) {

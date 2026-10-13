@@ -10,7 +10,6 @@
 #include "aeronet/object-array-pool.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
-#include "aeronet/single-writer-counter.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/vector.hpp"
 
@@ -45,8 +44,6 @@ class TlsContext {
 
   [[nodiscard]] void* raw() const noexcept { return static_cast<void*>(_ctx.get()); }
 
-  [[nodiscard]] uint64_t alpnStrictMismatches() const noexcept { return _alpnData.nbStrictMismatches.load(); }
-
   // The session ticket key store of this context, null when session tickets are disabled.
   [[nodiscard]] const std::shared_ptr<TlsTicketKeyStore>& ticketKeyStore() const noexcept { return _ticketKeyStore; }
 
@@ -79,8 +76,6 @@ class TlsContext {
   struct AlpnData {
     // private implementation detail (binary length-prefixed ALPN protocol list per RFC 7301)
     RawBytes32 wire;  // [len][bytes]...[len][bytes]
-    // Incremented by the ALPN selection callback (server event loop), read by stats() from any thread.
-    SingleWriterCounter<uint64_t> nbStrictMismatches;
     bool mustMatch{false};
   };
   struct CtxDel {
@@ -111,7 +106,8 @@ class TlsContext {
                         unsigned int inlen, void* arg);
   // ClientHello callback of a strict ALPN context: rejects a client offering no protocol at all.
   static int RequireAlpnOffer(ssl_st* ssl, int* alert, void* arg);
-  static void RecordStrictAlpnMismatch(ssl_st* ssl, AlpnData& alpnData) noexcept;
+  // Flags the strict ALPN mismatch on the TLS handshake observer of 'ssl', for the server to count it.
+  static void RecordStrictAlpnMismatch(ssl_st* ssl) noexcept;
   static int StapleOcspResponse(ssl_st* ssl, void* arg);
   static int VerifyPeerCertificate(int preverifyOk, x509_store_ctx_st* storeCtx);
   static void LogSessionKeys(const ssl_st* ssl, const char* line) noexcept;

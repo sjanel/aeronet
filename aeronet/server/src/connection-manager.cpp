@@ -88,6 +88,7 @@ inline void CheckHandshake(bool isTlsEnabled, ConnectionState& state, TlsMetrics
   if (isTlsEnabled && !state.tlsEstablished && !state.tlsHandshakeEventEmitted && state.transport.isTls()) {
     std::string_view reason;
     if (state.tlsHandshakeObserver.alpnStrictMismatch) {
+      ++metrics.alpnStrictMismatches;
       reason = kTlsHandshakeFailureReasonAlpnStrictMismatch;
     } else {
       reason = (want == TransportHint::None) ? kTlsHandshakeFailureReasonEof : kTlsHandshakeFailureReasonError;

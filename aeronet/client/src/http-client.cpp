@@ -1009,16 +1009,13 @@ HttpClientResult HttpClient::requestUncached(HttpRequest&& req) {
       return result;  // 3xx without a Location: hand the response back rather than following.
     }
 
-    // Method/body rewriting per RFC 7231.
+    // Method/body rewriting per RFC 9110, applied once the redirect is accepted: a rejected one leaves the request
+    // unchanged.
     const http::StatusCode code = resp.status();
     const http::Method method = req.method();
-
-    if (code == http::StatusCodeSeeOther ||
-        ((code == http::StatusCodeMovedPermanently || code == http::StatusCodeFound) && method != http::Method::GET &&
-         method != http::Method::HEAD)) {
-      req.body(std::string_view{});
-      req.method(http::Method::GET);
-    }
+    const bool rewriteToGet = code == http::StatusCodeSeeOther ||
+                              ((code == http::StatusCodeMovedPermanently || code == http::StatusCodeFound) &&
+                               method != http::Method::GET && method != http::Method::HEAD);
 
     HttpRequest::RedirectOutcome outcome = req.resolveRedirect(location);
 
@@ -1036,6 +1033,11 @@ HttpClientResult HttpClient::requestUncached(HttpRequest&& req) {
       default:
         assert(outcome == HttpRequest::RedirectOutcome::SameOrigin);
         break;
+    }
+
+    if (rewriteToGet) {
+      req.body(std::string_view{});
+      req.method(http::Method::GET);
     }
 
     --redirectsLeft;

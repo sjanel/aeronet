@@ -1053,9 +1053,7 @@ ServerStats SingleHttpServer::stats() const {
   statsOut.tlsHandshakesRejectedConcurrency = _tls.metrics.handshakesRejectedConcurrency.load();
   statsOut.tlsHandshakesRejectedRateLimit = _tls.metrics.handshakesRejectedRateLimit.load();
   statsOut.tlsClientCertPresent = _tls.metrics.clientCertPresent.load();
-  if (_tls.ctxHolder) {
-    statsOut.tlsAlpnStrictMismatches = _tls.ctxHolder->alpnStrictMismatches();
-  }
+  statsOut.tlsAlpnStrictMismatches = _tls.metrics.alpnStrictMismatches.load();
   // The maps are updated by the event loop on TLS handshakes.
   std::scoped_lock lock(_tls.metrics.mapsMutex.mutex);
   statsOut.tlsAlpnDistribution.reserve(_tls.metrics.alpnDistribution.size());

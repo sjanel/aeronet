@@ -18,7 +18,8 @@ class WebSocketCompressor {
  public:
   /// Create a WebSocket compressor with the specified compression level.
   /// @param compressionLevel deflate compression level (0-9)
-  /// @param windowBits base two logarithm of the LZ77 window (9-15): the negotiated *_max_window_bits of the sender
+  /// @param windowBits base two logarithm of the LZ77 window (9-15): the negotiated *_max_window_bits of the sender,
+  /// raised to 9 when it is 8
   explicit WebSocketCompressor(int8_t compressionLevel, uint8_t windowBits = ZStreamRAII::kMaxWindowBits);
 
   /// Compress a WebSocket message payload.
