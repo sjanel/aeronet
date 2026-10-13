@@ -7,7 +7,6 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <optional>
 #include <span>
 #include <string_view>
 #include <utility>
@@ -154,11 +153,11 @@ bool ValidateUtf8(std::span<const std::byte> data) {
 }  // namespace
 
 WebSocketHandler::WebSocketHandler(WebSocketConfig config, WebSocketCallbacks callbacks,
-                                   std::optional<DeflateNegotiatedParams> deflateParams)
+                                   DeflateNegotiatedParams deflateParams)
     : _config(std::move(config)), _callbacks(std::move(callbacks)) {
   _config.validate();
-  if (deflateParams.has_value()) {
-    _deflateContext = std::make_unique<DeflateContext>(*deflateParams, _config.deflateConfig, _config.isServerSide);
+  if (deflateParams.hasValue()) {
+    enableCompression(deflateParams);
   }
   if (!_config.isServerSide) {
     // Seed splitmix64 from time + object address: no syscall, adequate per-connection uniqueness.
@@ -209,9 +208,9 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
     if (frameResult.status == FrameParseResult::Status::ProtocolError) {
       // Protocol violation - close with error
       if (_callbacks.onError) {
-        _callbacks.onError(CloseCode::ProtocolError, frameResult.errorMessage);
+        _callbacks.onError(CloseCode::ProtocolError, frameResult.pErrorMessage);
       }
-      sendClose(CloseCode::ProtocolError, frameResult.errorMessage);
+      sendClose(CloseCode::ProtocolError, frameResult.pErrorMessage);
       result.action = ProtocolProcessResult::Action::Close;
       break;
     }

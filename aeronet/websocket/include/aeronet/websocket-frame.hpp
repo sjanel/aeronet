@@ -32,17 +32,17 @@ struct FrameHeader {
 /// Result of parsing a WebSocket frame from raw bytes.
 struct FrameParseResult {
   enum class Status : uint8_t {
-    Complete,        // Frame fully parsed, header and payload available
-    Incomplete,      // Need more data to parse the frame
-    ProtocolError,   // Invalid frame format (connection should be closed with 1002)
-    PayloadTooLarge  // Payload exceeds configured maximum (close with 1009)
+    Complete,         // Frame fully parsed, header and payload available
+    Incomplete,       // Need more data to parse the frame
+    ProtocolError,    // Invalid frame format (connection should be closed with 1002)
+    PayloadTooLarge,  // Payload exceeds configured maximum (close with 1009)
   };
 
   Status status{Status::Incomplete};
   FrameHeader header;
   std::span<const std::byte> payload;  // View into input buffer (empty if incomplete)
   std::size_t bytesConsumed{0};        // Total bytes consumed (header + payload)
-  const char* errorMessage{nullptr};   // Populated on ProtocolError
+  const char* pErrorMessage{nullptr};  // Populated on ProtocolError
 };
 
 /// Parse a WebSocket frame from raw bytes.

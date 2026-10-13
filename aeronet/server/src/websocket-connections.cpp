@@ -64,8 +64,8 @@ SingleHttpServer::WebSocketUpgrade SingleHttpServer::upgradeToWebSocket(Connecti
 
   const WebSocketUpgradeConfig upgradeConfig{endpoint.supportedProtocols, endpoint.config.deflateConfig};
   const auto upgradeValidation = upgrade::ValidateWebSocketUpgrade(request.headers(), upgradeConfig);
-  if (!upgradeValidation.valid) {
-    emitSimpleError(cnxIt, http::StatusCodeBadRequest, upgradeValidation.errorMessage);
+  if (!upgradeValidation.valid()) {
+    emitSimpleError(cnxIt, http::StatusCodeBadRequest, upgradeValidation.pErrorMessage);
     return WebSocketUpgrade::Invalid;
   }
 
@@ -89,10 +89,10 @@ SingleHttpServer::WebSocketUpgrade SingleHttpServer::upgradeToWebSocket(Connecti
     config.isServerSide = true;
     wsHandler = std::make_unique<websocket::WebSocketHandler>(std::move(config));
   }
-  if (!wsHandler->hasCompression() && upgradeValidation.deflateParams.has_value()) {
+  if (!wsHandler->hasCompression() && upgradeValidation.deflateParams.hasValue()) {
     // Compression was negotiated but the handler (from the factory, which keeps its callbacks) was created without it.
     // The directions without context takeover use the streams shared by the connections of this server thread.
-    wsHandler->enableCompression(*upgradeValidation.deflateParams, &_webSocketDeflateStreams);
+    wsHandler->enableCompression(upgradeValidation.deflateParams, &_webSocketDeflateStreams);
   }
 
   // The per-route request timeout bounds the upgrade request, not the WebSocket connection that follows.

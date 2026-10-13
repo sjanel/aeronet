@@ -67,7 +67,7 @@ FrameParseResult ParseFrame(std::span<const std::byte> data, std::size_t maxPayl
   // RSV2 and RSV3 must always be 0 unless other extensions are negotiated
   if (result.header.rsv2 || result.header.rsv3) {
     result.status = FrameParseResult::Status::ProtocolError;
-    result.errorMessage = "Reserved bits RSV2/RSV3 must be 0";
+    result.pErrorMessage = "Reserved bits RSV2/RSV3 must be 0";
     return result;
   }
 
@@ -75,14 +75,14 @@ FrameParseResult ParseFrame(std::span<const std::byte> data, std::size_t maxPayl
   if (result.header.rsv1) {
     if (!allowRsv1) {
       result.status = FrameParseResult::Status::ProtocolError;
-      result.errorMessage = "RSV1 bit set without permessage-deflate extension";
+      result.pErrorMessage = "RSV1 bit set without permessage-deflate extension";
       return result;
     }
     // RSV1 must not be set on control frames per RFC 7692
     const auto opcodeVal = rawOpcode;
     if (opcodeVal >= std::byte{0x08}) {  // Control frames
       result.status = FrameParseResult::Status::ProtocolError;
-      result.errorMessage = "RSV1 bit must not be set on control frames";
+      result.pErrorMessage = "RSV1 bit must not be set on control frames";
       return result;
     }
   }
@@ -90,7 +90,7 @@ FrameParseResult ParseFrame(std::span<const std::byte> data, std::size_t maxPayl
   // Validate opcode
   if (IsReservedOpcode(rawOpcode)) {
     result.status = FrameParseResult::Status::ProtocolError;
-    result.errorMessage = "Reserved opcode";
+    result.pErrorMessage = "Reserved opcode";
     return result;
   }
   result.header.opcode = static_cast<Opcode>(rawOpcode);
@@ -98,7 +98,7 @@ FrameParseResult ParseFrame(std::span<const std::byte> data, std::size_t maxPayl
   // Control frames must have FIN set
   if (IsControlFrame(result.header.opcode) && !result.header.fin) {
     result.status = FrameParseResult::Status::ProtocolError;
-    result.errorMessage = "Control frames must not be fragmented";
+    result.pErrorMessage = "Control frames must not be fragmented";
     return result;
   }
 
@@ -112,14 +112,14 @@ FrameParseResult ParseFrame(std::span<const std::byte> data, std::size_t maxPayl
     // Server receiving from client: MUST be masked
     if (!result.header.masked) {
       result.status = FrameParseResult::Status::ProtocolError;
-      result.errorMessage = "Client frames must be masked";
+      result.pErrorMessage = "Client frames must be masked";
       return result;
     }
   } else {
     // Client receiving from server: MUST NOT be masked
     if (result.header.masked) {
       result.status = FrameParseResult::Status::ProtocolError;
-      result.errorMessage = "Server frames must not be masked";
+      result.pErrorMessage = "Server frames must not be masked";
       return result;
     }
   }
@@ -142,7 +142,7 @@ FrameParseResult ParseFrame(std::span<const std::byte> data, std::size_t maxPayl
     // RFC 6455 §5.2: the minimal number of bytes MUST be used to encode the length
     if (result.header.payloadLength < static_cast<uint64_t>(kPayloadLen16)) {
       result.status = FrameParseResult::Status::ProtocolError;
-      result.errorMessage = "Non-minimal extended length encoding";
+      result.pErrorMessage = "Non-minimal extended length encoding";
       return result;
     }
   } else if (payloadLen7 == kPayloadLen64) {
@@ -162,14 +162,14 @@ FrameParseResult ParseFrame(std::span<const std::byte> data, std::size_t maxPayl
     // RFC 6455 §5.2: MSB must be 0 (payload length is unsigned)
     if ((result.header.payloadLength >> 63U) != 0) {
       result.status = FrameParseResult::Status::ProtocolError;
-      result.errorMessage = "Invalid payload length (MSB set)";
+      result.pErrorMessage = "Invalid payload length (MSB set)";
       return result;
     }
 
     // RFC 6455 §5.2: the minimal number of bytes MUST be used
     if (result.header.payloadLength <= 0xFFFF) {
       result.status = FrameParseResult::Status::ProtocolError;
-      result.errorMessage = "Non-minimal extended length encoding";
+      result.pErrorMessage = "Non-minimal extended length encoding";
       return result;
     }
   } else {
@@ -179,14 +179,14 @@ FrameParseResult ParseFrame(std::span<const std::byte> data, std::size_t maxPayl
   // Control frames have a max payload size of 125
   if (IsControlFrame(result.header.opcode) && result.header.payloadLength > kMaxControlFramePayload) {
     result.status = FrameParseResult::Status::ProtocolError;
-    result.errorMessage = "Control frame payload too large";
+    result.pErrorMessage = "Control frame payload too large";
     return result;
   }
 
   // Check against configured maximum
   if (maxPayloadSize > 0 && result.header.payloadLength > maxPayloadSize) {
     result.status = FrameParseResult::Status::PayloadTooLarge;
-    result.errorMessage = "Payload exceeds maximum size";
+    result.pErrorMessage = "Payload exceeds maximum size";
     return result;
   }
 

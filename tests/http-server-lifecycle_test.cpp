@@ -20,6 +20,7 @@
 #include "aeronet/builtin-probes-config.hpp"
 #include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/features.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
@@ -111,6 +112,46 @@ TEST(HttpServerMove, MoveConstructAndServe) {
   stop.store(true);
 
   ASSERT_TRUE(resp.contains("ORIG:/mv"));
+}
+
+// The zlib streams of a server stay initialized after a response, to be reused by the next ones: they cannot follow the
+// server when it moves, and must initialize again.
+TEST(HttpServerMove, MoveAfterCompressingKeepsCompressing) {
+  if constexpr (!zlibEnabled()) {
+    GTEST_SKIP();
+  }
+  HttpServerConfig config;
+  config.compression.minBytes = 1;
+  config.compression.preferredFormats = {Encoding::gzip};
+  SingleHttpServer original(std::move(config));
+  const std::string payload = test::MakePatternedPayload(8192);
+  original.router().setDefault([&payload](const HttpRequestView&) { return HttpResponse(payload, "text/plain"); });
+
+  const auto getCompressed = [](SingleHttpServer& server) {
+    std::jthread thread(
+        [&server](const std::stop_token& token) { server.runUntil([&token] { return token.stop_requested(); }); });
+    EXPECT_TRUE(test::WaitForServer(server));
+    auto response = test::simpleGet(server.port(), "/z", {{"Accept-Encoding", "gzip"}});
+    thread.request_stop();
+    return response;
+  };
+  const auto expectGzipPayload = [&payload](const test::ParsedResponse& response) {
+    EXPECT_EQ(response.statusCode, http::StatusCodeOK);
+    const auto it = response.headers.find(http::ContentEncoding.get());
+    ASSERT_NE(it, response.headers.end());
+    EXPECT_EQ(it->second, "gzip");
+    const auto decompressed = test::Decompress(Encoding::gzip, response.body);
+    EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), payload);
+  };
+
+  expectGzipPayload(getCompressed(original));
+
+  SingleHttpServer moved(std::move(original));
+  expectGzipPayload(getCompressed(moved));
+
+  SingleHttpServer assigned;
+  assigned = std::move(moved);
+  expectGzipPayload(getCompressed(assigned));
 }
 
 TEST(HttpServerMove, MoveAssignWhileStopped) {
