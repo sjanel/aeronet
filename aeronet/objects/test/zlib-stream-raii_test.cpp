@@ -8,6 +8,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 
@@ -326,6 +327,87 @@ TEST(ZStreamRAII, VariantSwitchingReusesBuffer) {
   ASSERT_TRUE(ret == Z_STREAM_END || ret == Z_OK);
 
   // If we got here without crashes or ASAN errors, buffer reuse is working correctly
+}
+
+namespace {
+
+// Compresses 'data' as a whole stream with 'compressor', initialized for compression.
+std::string CompressAll(ZStreamRAII& compressor, std::string_view data) {
+  std::string compressed(ZDeflateBound(&compressor.stream, data.size()), '\0');
+  ZSetInput(compressor.stream, data);
+  ZSetOutput(compressor.stream, compressed.data(), compressed.size());
+  EXPECT_EQ(ZDeflate(compressor.stream, Z_FINISH), Z_STREAM_END);
+  compressed.resize(compressed.size() - compressor.stream.avail_out);
+  return compressed;
+}
+
+// Decompresses the whole stream 'compressed' with 'decompressor', initialized for decompression.
+std::string DecompressAll(ZStreamRAII& decompressor, std::string_view compressed, std::size_t decompressedSize) {
+  std::string decompressed(decompressedSize, '\0');
+  ZSetInput(decompressor.stream, compressed);
+  ZSetOutput(decompressor.stream, decompressed.data(), decompressed.size());
+  EXPECT_EQ(ZInflate(decompressor.stream, Z_FINISH), Z_STREAM_END);
+  decompressed.resize(decompressed.size() - decompressor.stream.avail_out);
+  return decompressed;
+}
+
+}  // namespace
+
+// zlib binds its state to the address of the z_stream it was initialized with: the state points back to its stream, and
+// zlib refuses a stream whose state points to another one. An initialized z_stream cannot be moved.
+TEST(ZStreamRAII, InitializedStreamCannotBeRelocated) {
+  ZStreamRAII compressor(ZStreamRAII::Variant::raw, 6);
+  zstream relocated = compressor.stream;
+  EXPECT_EQ(ZDeflateReset(relocated), Z_STREAM_ERROR);
+  EXPECT_EQ(ZDeflate(relocated, Z_FINISH), Z_STREAM_ERROR);
+  EXPECT_EQ(ZDeflateReset(compressor.stream), Z_OK);
+
+  ZStreamRAII decompressor(ZStreamRAII::Variant::raw);
+  relocated = decompressor.stream;
+  EXPECT_EQ(ZInflateReset(relocated), Z_STREAM_ERROR);
+  EXPECT_EQ(ZInflate(relocated, Z_NO_FLUSH), Z_STREAM_ERROR);
+  EXPECT_EQ(ZInflateReset(decompressor.stream), Z_OK);
+}
+
+// Hence a move only hands over the memory cached by the stream: both streams are left uninitialized, and initialize
+// again on their next use.
+TEST(ZStreamRAII, MoveConstructionOfInitializedStreams) {
+  const std::string payload = test::MakePatternedPayload(4096);
+  ZStreamRAII compressor(ZStreamRAII::Variant::gzip, 6);
+  const std::string compressed = CompressAll(compressor, payload);
+
+  ZStreamRAII movedCompressor(std::move(compressor));
+  EXPECT_FALSE(movedCompressor.initialized());
+  EXPECT_FALSE(compressor.initialized());  // NOLINT(bugprone-use-after-move)
+  movedCompressor.initCompress(ZStreamRAII::Variant::gzip, 6);
+  EXPECT_EQ(CompressAll(movedCompressor, payload), compressed);
+  compressor.initCompress(ZStreamRAII::Variant::gzip, 6);  // NOLINT(bugprone-use-after-move)
+  EXPECT_EQ(CompressAll(compressor, payload), compressed);
+
+  ZStreamRAII decompressor(ZStreamRAII::Variant::gzip);
+  EXPECT_EQ(DecompressAll(decompressor, compressed, payload.size()), payload);
+
+  ZStreamRAII movedDecompressor(std::move(decompressor));
+  EXPECT_FALSE(movedDecompressor.initialized());
+  EXPECT_FALSE(decompressor.initialized());  // NOLINT(bugprone-use-after-move)
+  movedDecompressor.initDecompress(ZStreamRAII::Variant::gzip);
+  EXPECT_EQ(DecompressAll(movedDecompressor, compressed, payload.size()), payload);
+}
+
+TEST(ZStreamRAII, MoveAssignmentOfInitializedStreams) {
+  const std::string payload = test::MakePatternedPayload(4096);
+  ZStreamRAII compressor(ZStreamRAII::Variant::deflate, 6);
+  const std::string compressed = CompressAll(compressor, payload);
+  ZStreamRAII decompressor(ZStreamRAII::Variant::deflate);
+  EXPECT_EQ(DecompressAll(decompressor, compressed, payload.size()), payload);
+
+  decompressor = std::move(compressor);
+  EXPECT_FALSE(decompressor.initialized());
+  EXPECT_FALSE(compressor.initialized());  // NOLINT(bugprone-use-after-move)
+  decompressor.initCompress(ZStreamRAII::Variant::deflate, 6);
+  EXPECT_EQ(CompressAll(decompressor, payload), compressed);
+  compressor.initDecompress(ZStreamRAII::Variant::deflate);  // NOLINT(bugprone-use-after-move)
+  EXPECT_EQ(DecompressAll(compressor, compressed, payload.size()), payload);
 }
 
 }  // namespace aeronet

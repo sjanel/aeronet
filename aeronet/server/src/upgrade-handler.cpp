@@ -88,44 +88,44 @@ UpgradeValidationResult ValidateWebSocketUpgrade(const SvToSvMap& headers, const
   // Check Upgrade header
   auto it = headers.find(http::Upgrade);
   if (it == headers.end()) {
-    result.errorMessage = "Missing Upgrade header";
+    result.pErrorMessage = "Missing Upgrade header";
     return result;
   }
 
   if (!CaseInsensitiveEqual(it->second, websocket::UpgradeValue)) {
-    result.errorMessage = "Upgrade header is not 'websocket'";
+    result.pErrorMessage = "Upgrade header is not 'websocket'";
     return result;
   }
 
   // Check Connection header contains "upgrade"
   it = headers.find(http::Connection);
   if (it == headers.end() || !ConnectionContainsUpgrade(it->second)) {
-    result.errorMessage = "Connection header does not contain 'upgrade'";
+    result.pErrorMessage = "Connection header does not contain 'upgrade'";
     return result;
   }
 
   // Check Sec-WebSocket-Version
   it = headers.find(websocket::SecWebSocketVersion);
   if (it == headers.end()) {
-    result.errorMessage = "Missing Sec-WebSocket-Version header";
+    result.pErrorMessage = "Missing Sec-WebSocket-Version header";
     return result;
   }
 
   if (it->second != websocket::kWebSocketVersion) {
-    result.errorMessage = "Unsupported Sec-WebSocket-Version (expected 13)";
+    result.pErrorMessage = "Unsupported Sec-WebSocket-Version (expected 13)";
     return result;
   }
 
   // Check Sec-WebSocket-Key
   it = headers.find(websocket::SecWebSocketKey);
   if (it == headers.end()) {
-    result.errorMessage = "Missing Sec-WebSocket-Key header";
+    result.pErrorMessage = "Missing Sec-WebSocket-Key header";
     return result;
   }
 
   const auto key = it->second;
   if (!IsValidWebSocketKey(key)) {
-    result.errorMessage = "Invalid Sec-WebSocket-Key format";
+    result.pErrorMessage = "Invalid Sec-WebSocket-Key format";
     return result;
   }
 
@@ -135,36 +135,30 @@ UpgradeValidationResult ValidateWebSocketUpgrade(const SvToSvMap& headers, const
   // Parse and negotiate Sec-WebSocket-Protocol
   it = headers.find(websocket::SecWebSocketProtocol);
   if (it != headers.end() && !it->second.empty()) {
-    result.offeredProtocols = ParseTokenList(it->second);
-
     // Negotiate subprotocol if server supports any
-    result.selectedProtocol = NegotiateSubprotocol(result.offeredProtocols, config.supportedProtocols);
+    result.selectedProtocol = NegotiateSubprotocol(ParseTokenList(it->second), config.supportedProtocols);
   }
 
   // Parse Sec-WebSocket-Extensions and negotiate permessage-deflate
   it = headers.find(websocket::SecWebSocketExtensions);
   if (it != headers.end() && !it->second.empty()) {
-    result.offeredExtensions = ParseTokenList(it->second);
-
     // Negotiate permessage-deflate if compression is enabled
     if (config.deflateConfig.enabled) {
 #ifdef AERONET_ENABLE_ZLIB
-      for (std::string_view ext : result.offeredExtensions) {
-        auto params = websocket::ParseDeflateOffer(ext, config.deflateConfig);
-        if (params.has_value()) {
-          result.deflateParams = std::move(*params);
+      for (std::string_view ext : ParseTokenList(it->second)) {
+        result.deflateParams = websocket::ParseDeflateOffer(ext, config.deflateConfig);
+        if (result.deflateParams.hasValue()) {
           break;  // Take the first acceptable offer
         }
       }
 #else
       // Zlib support not compiled in; cannot negotiate compression
-      result.errorMessage = "permessage-deflate requested but zlib support is not enabled";
+      result.pErrorMessage = "permessage-deflate requested but zlib support is not enabled";
       return result;
 #endif
     }
   }
 
-  result.valid = true;
   result.targetProtocol = ProtocolType::WebSocket;
   return result;
 }
@@ -225,8 +219,8 @@ std::size_t ComputeWebSocketUpgradeResponseSize(const UpgradeValidationResult& v
   if (!validationResult.selectedProtocol.empty()) {
     responseSz += http::HeaderSize(websocket::SecWebSocketProtocol.size(), validationResult.selectedProtocol.size());
   }
-  if (validationResult.deflateParams.has_value()) {
-    const auto& params = validationResult.deflateParams.value();
+  if (validationResult.deflateParams.hasValue()) {
+    const auto& params = validationResult.deflateParams;
     const auto valueSize =
         ComputeDeflateResponseSize(params, ndigits(params.serverMaxWindowBits), ndigits(params.clientMaxWindowBits));
 
@@ -255,8 +249,8 @@ void BuildWebSocketUpgradeResponse(const UpgradeValidationResult& validationResu
   }
 
   // Include negotiated extensions
-  if (validationResult.deflateParams.has_value()) {
-    const auto& params = validationResult.deflateParams.value();
+  if (validationResult.deflateParams.hasValue()) {
+    const auto& params = validationResult.deflateParams;
 
     pData = AppendFixed<websocket::SecWebSocketExtensions>(pData);
     pData = AppendFixed<http::HeaderSep>(pData);

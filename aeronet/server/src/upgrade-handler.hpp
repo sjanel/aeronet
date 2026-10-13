@@ -2,13 +2,10 @@
 
 #include <string_view>
 
-#include "aeronet/concatenated-strings.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 
 #ifdef AERONET_ENABLE_WEBSOCKET
-#include <optional>
-
 #include "aeronet/websocket-deflate.hpp"
 #include "aeronet/websocket-upgrade.hpp"
 #endif
@@ -17,26 +14,21 @@ namespace aeronet {
 
 /// Result of validating an HTTP Upgrade request.
 struct UpgradeValidationResult {
-  bool valid{false};
+  [[nodiscard]] bool valid() const noexcept { return pErrorMessage == nullptr; }
+
   ProtocolType targetProtocol{ProtocolType::Http11};
 
 #ifdef AERONET_ENABLE_WEBSOCKET
   B64EncodedSha1 secWebSocketAccept;  // Computed Sec-WebSocket-Accept value
 
   // Negotiated WebSocket permessage-deflate parameters (if compression was negotiated)
-  std::optional<websocket::DeflateNegotiatedParams> deflateParams;
+  websocket::DeflateNegotiatedParams deflateParams;
 #endif
 
-  std::string_view errorMessage;  // Populated if !valid
+  const char* pErrorMessage = nullptr;  // Populated if !valid
 
   // WebSocket-specific fields (populated when targetProtocol == WebSocket)
   std::string_view selectedProtocol;  // Selected subprotocol (if any)
-
-  // Offered protocols by the client (empty if none offered)
-  ConcatenatedStrings offeredProtocols;
-
-  // Offered extensions by the client (empty if none offered)
-  ConcatenatedStrings offeredExtensions;
 };
 
 /// Utility functions for protocol upgrade handling.
