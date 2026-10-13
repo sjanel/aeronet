@@ -93,6 +93,7 @@ All notable changes to aeronet are documented in this file.
 - **WebSocket `permessage-deflate` with context takeover decompresses every message**: the sync flush marker removed from the end of each message (`00 00 ff ff`, RFC 7692 §7.2.2) was only inflated when the message decompressed to a multiple of 16 KiB, so the next message, which continues the same stream, failed to decompress and closed the connection (`1007`). Context takeover is negotiated by default, and by browsers. See [Compression](protocols/websocket.md#compression-permessage-deflate).
 - **WebSocket: `maxMessageSize` applies to the decompressed size of a compressed message**: below 16 KiB (the decompression chunk), every compressed message was rejected, whatever its size. A message of exactly `maxMessageSize` bytes is now accepted, compressed or not.
 - **WebSocket: echoing a compressed message no longer reads freed memory**: the decompressed message given to `onMessage` was in the buffer that its compression, when sent back, wrote into: the compression could read data it had overwritten, or freed by a reallocation.
+- **A moved server keeps compressing with gzip and deflate**: zlib binds its streams to their address, but moving a stopped server (move constructor or assignment) handed over the streams it keeps between bodies as if they still worked: its next gzip or deflate response was answered `500`, a gzip or deflate request body could no longer be decompressed, and its destruction could crash. A moved stream is now initialized again by its next use.
 
 ### 1.7.0 Improvements
 

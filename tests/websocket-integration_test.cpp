@@ -876,7 +876,6 @@ TEST_F(WebSocketTest, RequestTimeoutOfRouteDoesNotCloseWebSocket) {
   EXPECT_EQ(PayloadToString(val.payload), "ping");
 }
 
-
 // ============================================================================
 // Large echoes sent from the input buffer, and compressed connections sharing the streams of a server thread
 // ============================================================================
@@ -917,9 +916,11 @@ class ServerFrameReader {
   std::optional<Frame> next(std::chrono::milliseconds timeout) {
     test::setRecvTimeout(_fd, timeout);
     for (;;) {
-      auto frame = ParseServerFrame(std::span<const std::byte>(reinterpret_cast<const std::byte*>(_buf.data()), _buf.size()));
+      auto frame =
+          ParseServerFrame(std::span<const std::byte>(reinterpret_cast<const std::byte*>(_buf.data()), _buf.size()));
       if (frame) {
         const std::size_t payloadSize = frame->payload.size();
+        // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator)
         const std::size_t headerSize = payloadSize < 126 ? 2 : (payloadSize < 65536 ? 4 : 10);
         const bool rsv1 = (static_cast<uint8_t>(_buf[0]) & 0x40U) != 0;
         _buf.erase(0, headerSize + payloadSize);
@@ -958,8 +959,8 @@ TEST_F(WebSocketTest, LargeEchoesSentFromInputBufferAreIntact) {
   Upgrade(conn.fd(), "/echo-input");
   ServerFrameReader reader(conn.fd());
   std::size_t seed = 0;
-  for (const std::size_t size : {std::size_t{4095}, std::size_t{4096}, std::size_t{65536}, std::size_t{300000},
-                                 std::size_t{1} << 20U}) {
+  for (const std::size_t size :
+       {std::size_t{4095}, std::size_t{4096}, std::size_t{65536}, std::size_t{300000}, std::size_t{1} << 20U}) {
     for (int round = 0; round < 2; ++round) {
       const std::string payload = MakeBinaryPayload(size, ++seed);
       test::sendAll(conn.fd(), FrameView(BuildClientFrame(Opcode::Binary, payload)), 5000ms);
@@ -1031,17 +1032,20 @@ TEST_F(WebSocketTest, CompressedConnectionsOfAServerThread) {
   };
   struct Client {
     std::string_view extension;
-    DeflateNegotiatedParams params;
+    DeflateNegotiatedParams params{.serverMaxWindowBits = 15};
   };
   const Client clients[]{
       {"permessage-deflate; client_no_context_takeover; server_no_context_takeover", noContextTakeover},
-      {"permessage-deflate", DeflateNegotiatedParams{}},
+      {"permessage-deflate", DeflateNegotiatedParams{.serverMaxWindowBits = 15}},
       {"permessage-deflate; server_no_context_takeover; client_no_context_takeover", noContextTakeover},
   };
   constexpr uint32_t kNbClients = std::size(clients);
 
-  test::ClientConnection conns[kNbClients]{test::ClientConnection(ts.port()), test::ClientConnection(ts.port()),
-                                           test::ClientConnection(ts.port())};
+  test::ClientConnection conns[kNbClients]{
+      test::ClientConnection(ts.port()),
+      test::ClientConnection(ts.port()),
+      test::ClientConnection(ts.port()),
+  };
   vector<std::unique_ptr<DeflateContext>> codecs;
   vector<std::unique_ptr<ServerFrameReader>> readers;
   for (uint32_t idx = 0; idx < kNbClients; ++idx) {
@@ -1051,7 +1055,7 @@ TEST_F(WebSocketTest, CompressedConnectionsOfAServerThread) {
     const std::string head = ReceiveResponseHead(conns[idx].fd(), 1000ms);
     ASSERT_TRUE(head.starts_with("HTTP/1.1 101")) << head;
     ASSERT_TRUE(head.contains("permessage-deflate")) << head;
-    codecs.push_back(std::make_unique<DeflateContext>(clients[idx].params, DeflateConfig{}, /*isServerSide=*/false));
+    codecs.push_back(std::make_unique<DeflateContext>(clients[idx].params, DeflateConfig(), /*isServerSide=*/false));
     readers.push_back(std::make_unique<ServerFrameReader>(conns[idx].fd()));
   }
 
@@ -1074,8 +1078,8 @@ TEST_F(WebSocketTest, CompressedConnectionsOfAServerThread) {
       ASSERT_TRUE(echo.has_value()) << "client " << idx << " round " << round;
       EXPECT_TRUE(echo->rsv1);
       RawBytes decompressed;
-      ASSERT_EQ(codecs[idx]->decompress(std::span<const std::byte>(echo->frame.payload.data(), echo->frame.payload.size()),
-                                        decompressed),
+      ASSERT_EQ(codecs[idx]->decompress(
+                    std::span<const std::byte>(echo->frame.payload.data(), echo->frame.payload.size()), decompressed),
                 nullptr)
           << "client " << idx << " round " << round;
       EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(decompressed.data()), decompressed.size()), text)

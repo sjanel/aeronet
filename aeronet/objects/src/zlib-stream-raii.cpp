@@ -49,31 +49,17 @@ void ZStreamRAII::initZcache() {
   stream.opaque = &_cache;
 }
 
-ZStreamRAII::ZStreamRAII(ZStreamRAII&& rhs) noexcept
-    : _cache(std::move(rhs._cache)),
-      _variant(rhs._variant),
-      _mode(rhs._mode),
-      _level(rhs._level),
-      _windowBits(rhs._windowBits) {
+// The zlib states end before their cache moves: their memory returns to the cache it was allocated from.
+ZStreamRAII::ZStreamRAII(ZStreamRAII&& rhs) noexcept {
   rhs.end();
+  _cache = std::move(rhs._cache);
 }
 
 ZStreamRAII& ZStreamRAII::operator=(ZStreamRAII&& rhs) noexcept {
   if (this != &rhs) [[likely]] {
-    const auto variant = rhs._variant;
-    const auto mode = rhs._mode;
-    const auto level = rhs._level;
-    const auto windowBits = rhs._windowBits;
-
-    _cache = std::move(rhs._cache);
-
     end();
     rhs.end();
-
-    _variant = variant;
-    _mode = mode;
-    _level = level;
-    _windowBits = windowBits;
+    _cache = std::move(rhs._cache);
   }
   return *this;
 }

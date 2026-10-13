@@ -27,7 +27,9 @@ struct ZStreamRAII {
   // Throws std::runtime_error on failure.
   ZStreamRAII(Variant variant, int8_t level) { initCompress(variant, level); }
 
-  // z_stream is not moveable or copyable if allocated - but we authorize all these only if stream is not initialized.
+  // The zlib state is bound to the address of its z_stream (zlib refuses a moved one) and of the cache allocating it:
+  // it cannot move. A move only hands over the cached memory, leaving both streams uninitialized (initialized again by
+  // their next init*() call).
   ZStreamRAII(const ZStreamRAII& rhs) = delete;
   ZStreamRAII(ZStreamRAII&& rhs) noexcept;
   ZStreamRAII& operator=(const ZStreamRAII& rhs) = delete;
