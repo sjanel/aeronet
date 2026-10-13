@@ -47,13 +47,19 @@ The server then:
 
 From that point, the connection no longer carries HTTP: the server forwards bytes without parsing them. Bytes the client sends right after the CONNECT head, even in the same packet, or while the `200` response is being written, are forwarded too. Each side keeps its own buffer for the bytes forwarded to it, separate from HTTP response buffering. When one side closes or fails, the server closes the other side. Tunnels are not subject to the keep-alive idle timeout.
 
+### Backpressure
+
+A tunnel never buffers more than it can write. When one side reads more slowly than the other sends (a client that stops reading a download, or a target slower than an upload), the bytes waiting for that side are bounded by `maxOutboundBufferBytes` (4 MiB by default): once they reach it, the server stops reading the sending side, until the slow side has received them. The bytes then wait in the kernel socket buffers, and TCP flow control slows the sender down. Over HTTP/2, the same applies in both directions, see [CONNECT over HTTP/2](#connect-over-http2).
+
 ## Name resolution
 
 Resolving a host name with `getaddrinfo` can take seconds when the DNS server is slow or unreachable, and it cannot be interrupted. It thus never runs on the event-loop thread: each server thread resolves CONNECT targets on background threads, started on demand (at most 4 resolve concurrently, the next ones wait), while the event loop keeps serving its other connections.
 
 - An IP address (`10.0.0.12`, `[::1]`) needs no resolution: the server connects to it right away.
-- While the host name of an HTTP/1.1 CONNECT request is resolved, the server reads nothing more from its connection, and does not apply the keep-alive timeout to it: the request is answered (`200` or `502`) once `getaddrinfo` returns. The bytes the client sent meanwhile are forwarded once the tunnel is established.
-- Over HTTP/2, the stream waits for the resolution the same way, and the DATA frames received meanwhile are forwarded once the tunnel is established. The other streams of the connection are not delayed.
+- While the host name of an HTTP/1.1 CONNECT request is resolved, the server reads nothing more from its connection: the request is answered (`200` or `502`) once `getaddrinfo` returns. The bytes the client sent meanwhile are forwarded once the tunnel is established.
+- Over HTTP/2, the stream waits for the resolution the same way, and the DATA frames received meanwhile are forwarded once the tunnel is established. The server grants no flow-control credit to the stream until then, so they are bounded by its initial window (`http2.initialWindowSize`, 64 KiB by default). The other streams of the connection are not delayed.
+- The wait is bounded by `keepAliveTimeout` (5 s by default): a request whose target is not resolved by then is answered `504 Gateway Timeout`, and its resolution is dropped (a resolution already running completes on its thread, and its result is ignored).
+- At most 256 CONNECT requests per server thread wait for their resolution. The next ones are answered `503 Service Unavailable` right away, until some resolutions complete or time out, so that a slow or unreachable DNS server cannot make clients hold connections indefinitely.
 - When the client closes its connection, or resets the stream, before the resolution completes, its result is discarded. Stopping the server does not wait for resolutions in progress either.
 
 The resolver of the operating system applies its own timeouts and retries (`options timeout` and `attempts` in `/etc/resolv.conf` on Linux), and its own cache, if any.
@@ -65,6 +71,7 @@ Over HTTP/2 ([RFC 9113 §8.5](https://www.rfc-editor.org/rfc/rfc9113#section-8.5
 - The request carries `:method CONNECT` and `:authority host:port`, and neither `:scheme` nor `:path`. The port must be numeric and in range (`400` otherwise), and the allowlist applies (`403`). Host names are [resolved in the background](#name-resolution), and a target that cannot be resolved or reached is answered `502`.
 - On success, the server answers `200` without ending the stream. DATA frames on the stream then carry the tunneled bytes in both directions.
 - When the connection to the target fails after the request was accepted, the stream is reset with `CONNECT_ERROR`.
+- Flow control applies to the tunneled bytes. Toward the target, the server stops granting credit to the stream (`WINDOW_UPDATE`) while bytes wait for the target to be writable: what it holds for a slow target is bounded by the stream window. Toward the client, it sends within the windows granted by the client, and stops reading the target while the output of the connection reaches `maxOutboundBufferBytes`, in case the client grants credit without reading.
 - `END_STREAM` or `RST_STREAM` from either side tears the tunnel down, and closing the HTTP/2 connection closes all its tunnels.
 
 Extended CONNECT (RFC 8441, the `:protocol` pseudo-header used for WebSocket over HTTP/2) is not supported.
@@ -76,6 +83,6 @@ Extended CONNECT (RFC 8441, the `:protocol` pseudo-header used for WebSocket ove
 
 ## Tests
 
-- HTTP/1.1 tunnels, target validation, allowlist, background resolution, DNS failure, and cleanup: [tests/http-connect_test.cpp](../../tests/http-connect_test.cpp).
-- HTTP/2 tunnels: [tests/http2-connect_test.cpp](../../tests/http2-connect_test.cpp), and streams waiting for their resolution: [http2-protocol-handler_test.cpp](../../aeronet/http2/test/http2-protocol-handler_test.cpp).
+- HTTP/1.1 tunnels, target validation, allowlist, background resolution and its limits (`504`, `503`), DNS failure, backpressure in both directions, and cleanup: [tests/http-connect_test.cpp](../../tests/http-connect_test.cpp).
+- HTTP/2 tunnels, flow control and backpressure, resolution limits: [tests/http2-connect_test.cpp](../../tests/http2-connect_test.cpp), and streams waiting for their resolution or for a slow target: [http2-protocol-handler_test.cpp](../../aeronet/http2/test/http2-protocol-handler_test.cpp). Stream window hold: [http2-connection_test.cpp](../../aeronet/http2/test/http2-connection_test.cpp).
 - Target parsing: [connect-target_test.cpp](../../aeronet/objects/test/connect-target_test.cpp). Background resolution: [tunnel-resolver_test.cpp](../../aeronet/server/test/tunnel-resolver_test.cpp).

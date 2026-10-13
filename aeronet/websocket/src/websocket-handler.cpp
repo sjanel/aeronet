@@ -21,6 +21,7 @@
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/vector.hpp"
 #include "aeronet/websocket-constants.hpp"
 #include "aeronet/websocket-deflate.hpp"
 #include "aeronet/websocket-frame.hpp"
@@ -35,7 +36,7 @@ constexpr std::size_t kMinInputPayloadSize = 4096;
 
 // Tells whether 'part' lies within 'whole' (std::less_equal is a total order, even for unrelated pointers).
 bool IsWithin(std::span<const std::byte> part, std::span<const std::byte> whole) {
-  constexpr std::less_equal<const std::byte*> kLessEqual;
+  constexpr std::less_equal<> kLessEqual;
   return kLessEqual(whole.data(), part.data()) && kLessEqual(part.data() + part.size(), whole.data() + whole.size());
 }
 

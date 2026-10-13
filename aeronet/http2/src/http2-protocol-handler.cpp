@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -12,6 +13,7 @@
 #include <ratio>
 #include <span>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 #include "aeronet/concatenated-headers.hpp"
@@ -381,6 +383,19 @@ void Http2ProtocolHandler::onHeadersDecoded(uint32_t streamId, const SvToSvMap& 
   // because CONNECT has no request body - subsequent DATA frames carry tunnel payload.
   if (endStream || req.method() == http::Method::CONNECT) {
     dispatchRequest(it);
+    return;
+  }
+
+  // A declared body above the server limit is refused before it is received.
+  if (const auto contentLength = req.headerValue(http::ContentLength)) {
+    std::size_t declaredLength = 0;
+    const auto [ptr, errc] =
+        std::from_chars(contentLength->data(), contentLength->data() + contentLength->size(), declaredLength);
+    if (errc == std::errc::result_out_of_range ||
+        (errc == std::errc{} && ptr == contentLength->data() + contentLength->size() &&
+         declaredLength > _pServerConfig->maxBodyBytes)) {
+      rejectTooLargeBody(it);
+    }
   }
 }
 
@@ -393,7 +408,8 @@ void Http2ProtocolHandler::onData(uint32_t streamId, std::span<const std::byte> 
 
   StreamState& state = it->second;
 
-  // A CONNECT waiting for its target resolution: keep the data until the tunnel is established.
+  // A CONNECT waiting for its target resolution: keep the data until the tunnel is established. Its receive window is
+  // held meanwhile (see handleConnectRequest()), which bounds this buffer by the initial stream window.
   if (state.tunnelPending) {
     state.request.bodyBuffer.append(reinterpret_cast<const char*>(data.data()), data.size());
     state.tunnelPendingEndStream = state.tunnelPendingEndStream || endStream;
@@ -402,12 +418,15 @@ void Http2ProtocolHandler::onData(uint32_t streamId, std::span<const std::byte> 
 
   // Check if this is a CONNECT tunnel stream - forward data to upstream.
   if (state.tunnelUpstreamFd != kInvalidHandle) {
-    if (!data.empty()) {
-      _tunnelBridge->writeTunnel(state.tunnelUpstreamFd, data);
+    // A failed write closes the upstream, and the stream with it: 'state' must not be used after the write.
+    const NativeHandle upstreamFd = state.tunnelUpstreamFd;
+    if (!data.empty() && !_tunnelBridge->writeTunnel(upstreamFd, data)) {
+      // The upstream does not keep up: no more credit for the client until it wrote these bytes.
+      _connection.holdStreamRecvWindow(streamId);
     }
     if (endStream) {
       // Client closed their end of the tunnel - half-close the upstream side.
-      _tunnelBridge->shutdownTunnelWrite(state.tunnelUpstreamFd);
+      _tunnelBridge->shutdownTunnelWrite(upstreamFd);
     }
     return;
   }
@@ -419,6 +438,13 @@ void Http2ProtocolHandler::onData(uint32_t streamId, std::span<const std::byte> 
 
   StreamRequest& streamReq = state.request;
 
+  // The body is bounded while it is received, by the server limit: the route limit, which cannot exceed it, is
+  // checked once the request is routed.
+  if (streamReq.bodyBuffer.size() + data.size() > _pServerConfig->maxBodyBytes) {
+    rejectTooLargeBody(it);
+    return;
+  }
+
   // Accumulate body data
   streamReq.bodyBuffer.append(reinterpret_cast<const char*>(data.data()), data.size());
 
@@ -427,6 +453,19 @@ void Http2ProtocolHandler::onData(uint32_t streamId, std::span<const std::byte> 
   if (endStream) {
     finalizeRequestBodyAndDispatch(it);
   }
+}
+
+void Http2ProtocolHandler::rejectTooLargeBody(StreamsMap::iterator it) {
+  const uint32_t streamId = it->first;
+  HttpRequestView& request = it->second.request.request;
+  (void)sendResponse(streamId, request.makeResponse(http::StatusCodePayloadTooLarge),
+                     request.method() == http::Method::HEAD);
+  onRequestCompleted(request, http::StatusCodePayloadTooLarge);
+  // A response without body is never deferred: the stream entry is released.
+  assert(!it->second.pending);
+  releaseStreamAfterResponse(it);
+  // The response is complete while the client still sends the request: ask it to stop, without error (RFC 9113 §8.1).
+  _connection.sendRstStream(streamId, ErrorCode::NoError);
 }
 
 void Http2ProtocolHandler::finalizeRequestBodyAndDispatch(StreamsMap::iterator it) {
@@ -1111,8 +1150,16 @@ void Http2ProtocolHandler::handleConnectRequest(uint32_t streamId, HttpRequestVi
       log::debug("HTTP/2 CONNECT tunnel established on stream {} → {}", streamId, request.authority());
       break;
     case ITunnelBridge::TunnelSetup::Status::Pending:
-      // The server calls onTunnelResolved() once the target host name is resolved.
+      // The server calls onTunnelResolved() once the target host name is resolved. Until then, the client may only
+      // send the credit it has left.
       _streams[streamId].tunnelPending = true;
+      _connection.holdStreamRecvWindow(streamId);
+      break;
+    case ITunnelBridge::TunnelSetup::Status::Overloaded:
+      log::warn("HTTP/2 CONNECT stream {} refused: too many targets being resolved", streamId);
+      (void)sendResponse(
+          streamId, request.makeResponse(http::StatusCodeServiceUnavailable, "Too many CONNECT targets being resolved"),
+          isHeadMethod);
       break;
     default:
       assert(setup.status == ITunnelBridge::TunnelSetup::Status::Failed);
@@ -1141,17 +1188,13 @@ bool Http2ProtocolHandler::isTunnelPending(uint32_t streamId) const noexcept {
 }
 
 void Http2ProtocolHandler::onTunnelResolved(uint32_t streamId, NativeHandle upstreamFd) {
+  if (upstreamFd == kInvalidHandle) {
+    failPendingTunnel(streamId, http::StatusCodeBadGateway, "Unable to connect to CONNECT target");
+    return;
+  }
   auto it = _streams.find(streamId);
   assert(it != _streams.end() && it->second.tunnelPending);
   it->second.tunnelPending = false;
-  if (upstreamFd == kInvalidHandle) {
-    HttpRequestView& request = it->second.request.request;
-    (void)sendResponse(streamId,
-                       request.makeResponse(http::StatusCodeBadGateway, "Unable to connect to CONNECT target"),
-                       /*isHeadMethod=*/false);
-    releaseStreamAfterResponse(_streams.find(streamId));
-    return;
-  }
 
   establishTunnel(streamId, upstreamFd);
   log::debug("HTTP/2 CONNECT tunnel established on stream {} → {}", streamId, it->second.request.request.authority());
@@ -1162,11 +1205,29 @@ void Http2ProtocolHandler::onTunnelResolved(uint32_t streamId, NativeHandle upst
   const RawChars earlyData = std::move(state.request.bodyBuffer);
   const bool clientEnded = state.tunnelPendingEndStream;
   state.request = {};
-  if (!earlyData.empty()) {
-    _tunnelBridge->writeTunnel(upstreamFd, std::as_bytes(std::span<const char>(earlyData.data(), earlyData.size())));
+  // The receive window, held while resolving, stays held while the upstream has not written these bytes (see
+  // onTunnelUpstreamDrained()).
+  if (earlyData.empty() || _tunnelBridge->writeTunnel(
+                               upstreamFd, std::as_bytes(std::span<const char>(earlyData.data(), earlyData.size())))) {
+    _connection.releaseStreamRecvWindow(streamId);
   }
   if (clientEnded) {
     _tunnelBridge->shutdownTunnelWrite(upstreamFd);
+  }
+}
+
+void Http2ProtocolHandler::failPendingTunnel(uint32_t streamId, http::StatusCode statusCode, std::string_view reason) {
+  const auto it = _streams.find(streamId);
+  assert(it != _streams.end() && it->second.tunnelPending);
+  it->second.tunnelPending = false;
+  (void)sendResponse(streamId, it->second.request.request.makeResponse(statusCode, reason), /*isHeadMethod=*/false);
+  releaseStreamAfterResponse(_streams.find(streamId));
+}
+
+void Http2ProtocolHandler::onTunnelUpstreamDrained(NativeHandle upstreamFd) {
+  const auto it = _tunnelUpstreams.find(upstreamFd);
+  if (it != _tunnelUpstreams.end()) {
+    _connection.releaseStreamRecvWindow(it->second);
   }
 }
 

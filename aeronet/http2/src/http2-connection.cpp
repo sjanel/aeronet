@@ -716,6 +716,26 @@ void Http2Connection::sendRstStream(uint32_t streamId, ErrorCode errorCode) {
   }
 }
 
+void Http2Connection::holdStreamRecvWindow(uint32_t streamId) noexcept {
+  Http2Stream* pStream = getStream(streamId);
+  if (pStream != nullptr) {
+    pStream->holdRecvWindow(true);
+  }
+}
+
+void Http2Connection::releaseStreamRecvWindow(uint32_t streamId) {
+  Http2Stream* pStream = getStream(streamId);
+  if (pStream == nullptr || !pStream->recvWindowHeld()) {
+    return;
+  }
+  pStream->holdRecvWindow(false);
+  // Same threshold as the replenishment on reception (handleDataFrame()): above it, the next DATA frame replenishes it.
+  const int32_t initialStreamWindow = static_cast<int32_t>(_localSettings.initialWindowSize);
+  if (pStream->canReceive() && pStream->recvWindow() <= initialStreamWindow / 2) {
+    sendWindowUpdate(streamId, static_cast<uint32_t>(initialStreamWindow - pStream->recvWindow()));
+  }
+}
+
 void Http2Connection::finalizeSendClosedStream(uint32_t streamId) {
   const auto it = _streams.find(streamId);
   if (it != _streams.end() && it->second.isClosed()) {
@@ -882,11 +902,13 @@ Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader head
 
   auto it = _streams.find(header.streamId);
   if (it == _streams.end()) {
-    // Stream may have been reset
+    // Stream may have been reset. The discarded frame still consumed connection-level credit.
+    replenishConnectionRecvWindow();
     return ProcessResult{ProcessResult::Action::Continue};
   }
 
   if (!it->second.canReceive()) {
+    replenishConnectionRecvWindow();
     return streamError(header.streamId, ErrorCode::StreamClosed, ErrorMsg::DATAOnClosedStream);
   }
 
@@ -903,20 +925,24 @@ Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader head
   if (_sink != nullptr) {
     _sink->onData(header.streamId, frame.data, frame.endStream);
 
+    // The callback may have reset streams, whose pruning can move the map entries. This stream, closed or not, is not
+    // pruned yet: the closed streams are retained a while for late frames.
+    it = _streams.find(header.streamId);
+    assert(it != _streams.end());
+
     // Replenish a receive window only after half its configured credit has been consumed. Restoring the
     // full credit at once keeps large transfers moving while avoiding two tiny WINDOW_UPDATE frames for
-    // every DATA frame. A stream-level update is useless after END_STREAM, but connection-level credit is
-    // retained for later streams on the same connection.
+    // every DATA frame. A stream-level update is useless after END_STREAM, or for a stream whose window is held or
+    // that the callback reset, but connection-level credit is retained for later streams on the same connection.
     if (payloadSize > 0) {
+      Http2Stream& stream = it->second;
       const int32_t initialStreamWindow = static_cast<int32_t>(_localSettings.initialWindowSize);
-      if (!frame.endStream && it->second.recvWindow() <= initialStreamWindow / 2) {
-        sendWindowUpdate(header.streamId, static_cast<uint32_t>(initialStreamWindow - it->second.recvWindow()));
+      if (!frame.endStream && !stream.recvWindowHeld() && stream.canReceive() &&
+          stream.recvWindow() <= initialStreamWindow / 2) {
+        sendWindowUpdate(header.streamId, static_cast<uint32_t>(initialStreamWindow - stream.recvWindow()));
       }
 
-      const int32_t initialConnectionWindow = static_cast<int32_t>(_localSettings.connectionWindowSize);
-      if (_connectionRecvWindow <= initialConnectionWindow / 2) {
-        sendWindowUpdate(0, static_cast<uint32_t>(initialConnectionWindow - _connectionRecvWindow));
-      }
+      replenishConnectionRecvWindow();
     }
   }
 
@@ -925,6 +951,13 @@ Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader head
   }
 
   return ProcessResult{ProcessResult::Action::Continue};
+}
+
+void Http2Connection::replenishConnectionRecvWindow() {
+  const int32_t initialConnectionWindow = static_cast<int32_t>(_localSettings.connectionWindowSize);
+  if (_connectionRecvWindow <= initialConnectionWindow / 2) {
+    sendWindowUpdate(0, static_cast<uint32_t>(initialConnectionWindow - _connectionRecvWindow));
+  }
 }
 
 Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader header,
@@ -985,7 +1018,7 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
       return streamError(header.streamId, ErrorCode::ProtocolError, ErrorMsg::StreamDependsOnItself);
     }
     const uint32_t effectiveDependency = priorityDepthExceeded(frame.streamDependency) ? 0U : frame.streamDependency;
-    pStream->setPriority(effectiveDependency, frame.weight, frame.exclusive);
+    pStream->setPriority(effectiveDependency, frame.weightMinusOne, frame.exclusive);
   }
 
   // Accumulate header block
@@ -1049,7 +1082,7 @@ Http2Connection::ProcessResult Http2Connection::handlePriorityFrame(FrameHeader 
   Http2Stream* pStream = getStream(header.streamId);
   if (pStream != nullptr) {
     const uint32_t effectiveDependency = priorityDepthExceeded(frame.streamDependency) ? 0U : frame.streamDependency;
-    pStream->setPriority(effectiveDependency, frame.weight, frame.exclusive);
+    pStream->setPriority(effectiveDependency, frame.weightMinusOne, frame.exclusive);
   } else {
     // Security hardening: rate-limit PRIORITY frames on non-existent streams to
     // prevent a flood of cheap PRIORITY frames from starving real request processing.

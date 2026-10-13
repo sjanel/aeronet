@@ -195,6 +195,30 @@ char* File::appendIdentityData(char* pData) const noexcept {
   return pData + sizeof(_identity);
 }
 
+bool File::isAtPath(const char* path) const noexcept {
+  if (!_fd) {
+    return false;
+  }
+#ifdef AERONET_POSIX
+  struct stat st{};
+  return ::stat(path, &st) == 0 && static_cast<uint64_t>(st.st_dev) == _identity.device &&
+         static_cast<uint64_t>(st.st_ino) == _identity.inode;
+#elifdef AERONET_WINDOWS
+  // No access right is requested: only the file information is read (FILE_FLAG_BACKUP_SEMANTICS opens directories too).
+  const HANDLE handle = ::CreateFileA(path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                      OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+  BY_HANDLE_FILE_INFORMATION info{};
+  const bool sameFile = ::GetFileInformationByHandle(handle, &info) &&
+                        static_cast<uint64_t>(info.dwVolumeSerialNumber) == _identity.device &&
+                        ((static_cast<uint64_t>(info.nFileIndexHigh) << 32) | info.nFileIndexLow) == _identity.inode;
+  ::CloseHandle(handle);
+  return sameFile;
+#endif
+}
+
 std::size_t File::readAt(std::span<std::byte> dst, std::size_t offset) const {
   std::size_t totalRead = 0;
   while (totalRead < dst.size()) {

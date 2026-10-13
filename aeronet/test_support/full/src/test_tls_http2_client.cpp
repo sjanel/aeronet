@@ -484,6 +484,28 @@ uint32_t TlsHttp2Client::sendRequest(std::string_view method, std::string_view p
 
 uint32_t TlsHttp2Client::connect(std::string_view authority,
                                  const std::vector<std::pair<std::string, std::string>>& headers) {
+  const uint32_t streamId = sendConnect(authority, headers);
+  if (streamId == 0) {
+    return 0;
+  }
+
+  // Wait for 200 OK response
+  if (!waitForResponse(streamId, std::chrono::milliseconds{5000}, false)) {
+    log::error("Timeout waiting for CONNECT response on stream {}", streamId);
+    return 0;
+  }
+
+  auto iter = _streamResponses.find(streamId);
+  if (iter == _streamResponses.end() || iter->second.response.statusCode != 200) {
+    log::error("CONNECT failed with status {}", iter != _streamResponses.end() ? iter->second.response.statusCode : 0);
+    return 0;
+  }
+
+  return streamId;
+}
+
+uint32_t TlsHttp2Client::sendConnect(std::string_view authority,
+                                     const std::vector<std::pair<std::string, std::string>>& headers) {
   if (!_connected) {
     log::warn("HTTP/2 client not connected");
     return 0;
@@ -513,19 +535,6 @@ uint32_t TlsHttp2Client::connect(std::string_view authority,
   }
 
   _streamResponses[streamId] = StreamResponse{};
-
-  // Wait for 200 OK response
-  if (!waitForResponse(streamId, std::chrono::milliseconds{5000}, false)) {
-    log::error("Timeout waiting for CONNECT response on stream {}", streamId);
-    return 0;
-  }
-
-  auto iter = _streamResponses.find(streamId);
-  if (iter == _streamResponses.end() || iter->second.response.statusCode != 200) {
-    log::error("CONNECT failed with status {}", iter != _streamResponses.end() ? iter->second.response.statusCode : 0);
-    return 0;
-  }
-
   return streamId;
 }
 

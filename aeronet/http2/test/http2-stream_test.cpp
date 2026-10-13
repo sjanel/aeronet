@@ -381,7 +381,7 @@ TEST(Http2Stream, UpdateInitialWindowSizeDecreaseCanUnderflowCurrentSendWindow) 
 TEST(Http2Stream, SetPriority) {
   Http2Stream stream(1, kDefaultInitialWindowSize);
 
-  stream.setPriority(3, 128, true);
+  stream.setPriority(3, 127, true);
 
   EXPECT_EQ(stream.streamDependency(), 3U);
   EXPECT_EQ(stream.weight(), 128U);

@@ -112,6 +112,13 @@ class Http2Stream {
   /// @return ErrorCode if overflow would occur (FlowControlError), NoError otherwise
   [[nodiscard]] ErrorCode increaseRecvWindow(uint32_t increment) noexcept;
 
+  /// Tell whether the receive window is no longer replenished, until releaseRecvWindow() (see
+  /// Http2Connection::holdStreamRecvWindow()).
+  [[nodiscard]] bool recvWindowHeld() const noexcept { return _recvWindowHeld; }
+
+  /// Stop or resume the replenishment of the receive window.
+  void holdRecvWindow(bool held) noexcept { _recvWindowHeld = held; }
+
   /// Update the initial window size from SETTINGS.
   /// Adjusts the current send window by the delta.
   /// @param newInitialWindowSize New initial window size from SETTINGS
@@ -126,15 +133,15 @@ class Http2Stream {
   [[nodiscard]] uint32_t streamDependency() const noexcept { return _streamDependency; }
 
   /// Get the weight of this stream (1-256).
-  [[nodiscard]] uint16_t weight() const noexcept { return _weight; }
+  [[nodiscard]] uint16_t weight() const noexcept { return 1U + _weightMinusOne; }
 
   /// Check if this stream has exclusive dependency.
   [[nodiscard]] bool isExclusive() const noexcept { return _exclusive; }
 
   /// Update priority information.
-  void setPriority(uint32_t streamDependency, uint16_t weight, bool exclusive) noexcept {
+  void setPriority(uint32_t streamDependency, uint8_t weightMinusOne, bool exclusive) noexcept {
     _streamDependency = streamDependency;
-    _weight = weight;
+    _weightMinusOne = weightMinusOne;
     _exclusive = exclusive;
   }
 
@@ -159,10 +166,11 @@ class Http2Stream {
   // Priority
   uint32_t _streamDependency{0};
   ErrorCode _errorCode{ErrorCode::NoError};
-  uint16_t _weight{16};  // 1-256 (default is 16)
+  uint8_t _weightMinusOne{15};  // 0-255 (default is 15)
   StreamState _state{StreamState::Idle};
   bool _exclusive{false};
   bool _closedNotified{false};
+  bool _recvWindowHeld{false};
 };
 
 }  // namespace aeronet::http2

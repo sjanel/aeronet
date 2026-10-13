@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -17,7 +18,7 @@ namespace aeronet::internal {
 /// Owned jointly by the event loop and by the resolver thread while it resolves it.
 struct PendingTunnel {
   PendingTunnel(std::string_view targetHost, uint16_t targetPort, NativeHandle client, uint32_t stream,
-                std::size_t requestBytes);
+                std::size_t requestBytes, std::chrono::steady_clock::time_point expiry);
 
   /// Target host, null terminated for getaddrinfo.
   [[nodiscard]] std::string_view host() const noexcept { return {hostBuffer.data(), hostBuffer.size() - 1U}; }
@@ -28,6 +29,8 @@ struct PendingTunnel {
   AddrInfoPtr addresses;
   /// Size of the HTTP/1.1 CONNECT request in the input buffer of the client connection, consumed once answered.
   std::size_t consumedBytes;
+  /// The CONNECT request is answered 504 if its target is not resolved by then.
+  std::chrono::steady_clock::time_point deadline;
   NativeHandle clientFd;
   /// HTTP/2 stream of the CONNECT request, 0 for an HTTP/1.1 tunnel.
   uint32_t streamId;
@@ -60,6 +63,10 @@ class TunnelResolver {
 
   /// Queue the resolution of the host of 'pending'.
   void resolve(std::shared_ptr<PendingTunnel> pending);
+
+  /// Drop the resolution of 'pending' if it is still queued. A resolution in progress cannot be interrupted: its thread
+  /// completes it, and the caller ignores its result (PendingTunnel::cancelled).
+  void cancel(const std::shared_ptr<PendingTunnel>& pending);
 
   /// Tell whether resolved tunnels are waiting to be collected.
   [[nodiscard]] bool hasResolved() const noexcept;

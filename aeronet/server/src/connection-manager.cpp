@@ -110,7 +110,7 @@ void SingleHttpServer::refreshKeepAliveDeadline(ConnectionIt cnxIt) {
     return;
   }
 #endif
-  // A CONNECT waiting for its target resolution is answered once getaddrinfo returns, whatever the time it takes.
+  // A CONNECT waiting for its target resolution has a deadline of its own (TunnelManager::expirePendingTunnels()).
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   const auto* asyncState = state.pAsyncState();
   bool asyncHandlerActive = asyncState != nullptr && asyncState->active;

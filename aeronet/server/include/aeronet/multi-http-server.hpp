@@ -87,6 +87,7 @@ class MultiHttpServer {
 
     // Stop all background event loops and join threads (blocking).
     // Safe to call multiple times; subsequent calls are no-ops.
+    // Not from a handler, whose thread would join itself: call MultiHttpServer::stop() there instead.
     void stop() noexcept;
 
     // Rethrow the first exception that occurred in any background event loop.
@@ -214,6 +215,9 @@ class MultiHttpServer {
   //   on scope exit of internal moves). Safe to call multiple times; subsequent calls are no-ops.
   //   Blocks until all servers have exited their event loops. Ensures SingleHttpServer objects outlive
   //   the joining of their threads (ordering guaranteed by move+scope pattern in implementation).
+  //   From a handler (one of the event-loop threads), it only requests the termination and returns: the event loops
+  //   exit once their current callbacks return, and the threads are joined by run(), by a later stop() from another
+  //   thread, or by the destructor (isRunning() stays true until then).
   void stop() noexcept;
 
   // start():

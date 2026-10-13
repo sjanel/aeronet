@@ -1,11 +1,13 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <span>
 #include <string_view>
 
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/single-http-server.hpp"
@@ -28,6 +30,9 @@ class TunnelManager {
   using CloseStatus = SingleHttpServer::CloseStatus;
   using LoopAction = SingleHttpServer::LoopAction;
 
+  // Maximum number of CONNECT requests waiting for the resolution of their target: the next ones are answered 503.
+  static constexpr std::size_t kMaxPendingTunnels = 256;
+
   explicit TunnelManager(SingleHttpServer& server);
 
   // The tunnel manager of 'server', created on first use.
@@ -47,6 +52,10 @@ class TunnelManager {
   // Connect to the resolved targets, then answer their CONNECT requests.
   void completeResolvedTunnels();
 
+  // Answer 504 to the CONNECT requests whose target is still not resolved at their deadline (keepAliveTimeout after
+  // the request), forgetting their resolution.
+  void expirePendingTunnels(std::chrono::steady_clock::time_point now);
+
   // Readable event on a tunnel endpoint (isTunneling()), or on an HTTP/1.1 client connection whose CONNECT target is
   // being resolved (tunnelResolving).
   CloseStatus handleReadable(ConnectionIt cnxIt);
@@ -57,6 +66,11 @@ class TunnelManager {
   // Writable event on a tunnel endpoint: completes the connection to an upstream, and writes the bytes buffered for
   // the endpoint.
   CloseStatus handleWritable(ConnectionIt cnxIt);
+
+  // The bytes that 'cnxIt' had to write toward the other end of its tunnels (relayPausedByBacklog) are written: resume
+  // the relays that stopped because of them. The HTTP/1.1 peer, or the upstreams of an HTTP/2 client connection, are
+  // read again from the next event-loop iteration, and an HTTP/2 tunnel stream gets flow-control credit again.
+  void resumeRelaysTowards(ConnectionIt cnxIt);
 
   // Close the other end of the tunnels of a closing connection (its peer endpoint, or the upstreams of its HTTP/2
   // streams), and forget the resolution of its CONNECT target.
@@ -69,6 +83,8 @@ class TunnelManager {
 
   void establishHttp1Tunnel(ConnectionIt cnxIt, NativeHandle upstreamFd);
   void completeHttp1Tunnel(const PendingTunnel& pending);
+  // Answer the HTTP/1.1 CONNECT request of a pending tunnel with an error, closing its connection.
+  void refuseHttp1Tunnel(const PendingTunnel& pending, http::StatusCode statusCode, std::string_view reason);
 
   // Connect to a numeric host: getaddrinfo answers without any query (host names are resolved by resolveTarget()).
   NativeHandle connectUpstream(NativeHandle clientFd, std::string_view host, uint16_t port);
@@ -104,7 +120,8 @@ class TunnelManager {
   CloseStatus relayToStream(ConnectionIt cnxIt);
 
   // Operations of the HTTP/2 handler on the upstream of one of its tunnels.
-  void writeToUpstream(NativeHandle upstreamFd, std::span<const std::byte> data);
+  // Returns false when bytes wait for the upstream to be writable (see ITunnelBridge::writeTunnel()).
+  bool writeToUpstream(NativeHandle upstreamFd, std::span<const std::byte> data);
   void shutdownUpstreamWrite(NativeHandle upstreamFd);
   void closeUpstream(NativeHandle upstreamFd);
   void resumeRelayToStream(NativeHandle upstreamFd);

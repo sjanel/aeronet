@@ -925,6 +925,10 @@ void SingleHttpServer::runMaintenance(std::chrono::steady_clock::time_point now)
 
   sweepIdleConnections();
 
+  if (_tunnels != nullptr) {
+    _tunnels->expirePendingTunnels(now);
+  }
+
 #ifdef AERONET_LINUX
   releaseResetZerocopyBuffers(now);
 #endif

@@ -69,6 +69,8 @@ handle.rethrowIfError();  // rethrows an exception that ended the event loop, if
 
 Both return immediately: the server stops asynchronously. `isDraining()` reports a drain in progress, and `isRunning()` stays `true` until the event loop has returned. Calling `beginDrain()` again with a shorter `maxWait` brings the deadline forward. While a server drains, its [readiness probe](../operations/health-probes.md) fails, so that load balancers stop sending it traffic.
 
+A handler may call `stop()` on its own server: the event loops exit once the handler returns. A thread cannot join itself, so a `MultiHttpServer` started with `start()` joins its threads at the next `stop()` called from another thread, or in its destructor, and `isRunning()` stays `true` until then. `run()` returns as usual.
+
 ### Signals
 
 `SignalHandler::Enable(maxDrain)` installs `SIGINT` and `SIGTERM` handlers for the whole process: on a signal, every running server starts `beginDrain(maxDrain)` at its next loop iteration. This is what container orchestrators expect: Kubernetes sends `SIGTERM` and waits `terminationGracePeriodSeconds` before killing the process, so set `maxDrain` below that period.

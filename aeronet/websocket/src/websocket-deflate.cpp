@@ -6,7 +6,6 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
-#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string_view>
@@ -24,6 +23,7 @@
 #include "aeronet/string-trim.hpp"
 #include "aeronet/vector.hpp"
 #include "aeronet/websocket-compress.hpp"
+#include "aeronet/zlib-stream-raii.hpp"
 #endif
 
 namespace aeronet::websocket {

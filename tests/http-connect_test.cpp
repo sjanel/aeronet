@@ -17,6 +17,7 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #define AERONET_WANT_SOCKET_OVERRIDES
 #define AERONET_WANT_READ_WRITE_OVERRIDES
@@ -29,6 +30,7 @@
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/request-metrics.hpp"
+#include "aeronet/socket-ops.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/test_echo_server.hpp"
 #include "aeronet/test_server_fixture.hpp"
@@ -330,6 +332,55 @@ TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
   }
 }
 
+namespace {
+
+// A tunnel endpoint that does not read makes the server stop reading the other endpoint, which then waits in the
+// kernel socket buffers (slowing its sender down) instead of being buffered by the server, here up to the whole flow.
+constexpr std::size_t kTunnelFloodBytes = 256UL << 20U;
+// The bytes a stalled tunnel holds: the server ends of the connections have socket buffers up to the tcp_rmem /
+// tcp_wmem maxima, whatever the size of the test ends.
+constexpr std::size_t kTunnelBufferedBound = 96UL << 20U;
+constexpr int kTestEndBufferSize = 256 * 1024;
+
+}  // namespace
+
+TEST_F(HttpConnectDefaultConfig, ClientNotReadingStopsReadingTheUpstream) {
+  test::LoopbackPeer upstream(kTestEndBufferSize);
+  AllowConnectHost(ts, "127.0.0.1");
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.maxOutboundBufferBytes = 256UL << 10U; });
+
+  test::ClientConnection slowClient(ts.port(), 500ms, kTestEndBufferSize);
+  test::sendAll(slowClient.fd(),
+                "CONNECT 127.0.0.1:" + std::to_string(upstream.port()) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+  ASSERT_TRUE(RecvConnectResponseHead(slowClient.fd(), 5000ms).starts_with("HTTP/1.1 200"));
+
+  const NativeHandle upstreamFd = upstream.accept();
+  const std::size_t written = test::WriteUntilStalled(upstreamFd, kTunnelFloodBytes);
+  log::info("Upstream wrote {} bytes before stalling", written);
+  EXPECT_LT(written, kTunnelBufferedBound);
+
+  // Once the client reads, the relay resumes until every byte reached it.
+  EXPECT_EQ(test::ReceiveAndDiscard(slowClient.fd(), written, 30s), written);
+}
+
+TEST_F(HttpConnectDefaultConfig, UpstreamNotReadingStopsReadingTheClient) {
+  test::LoopbackPeer upstream(kTestEndBufferSize);
+  AllowConnectHost(ts, "127.0.0.1");
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.maxOutboundBufferBytes = 256UL << 10U; });
+
+  test::sendAll(fd, "CONNECT 127.0.0.1:" + std::to_string(upstream.port()) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+  ASSERT_TRUE(RecvConnectResponseHead(fd, 5000ms).starts_with("HTTP/1.1 200"));
+
+  const NativeHandle upstreamFd = upstream.accept();
+  ASSERT_TRUE(SetNonBlocking(fd));
+  const std::size_t written = test::WriteUntilStalled(fd, kTunnelFloodBytes);
+  log::info("Client wrote {} bytes before stalling", written);
+  EXPECT_LT(written, kTunnelBufferedBound);
+
+  // Once the upstream reads, the relay resumes until every byte reached it.
+  EXPECT_EQ(test::ReceiveAndDiscard(upstreamFd, written, 30s), written);
+}
+
 TEST_F(HttpConnectDefaultConfig, ConnectResponseHasNoContent) {
   auto echoSrv = test::startEchoServer();
   AllowConnectHost(ts, "127.0.0.1");
@@ -376,8 +427,8 @@ TEST_F(HttpConnectDefaultConfig, Ipv6TargetInBrackets) {
 TEST_F(HttpConnectDefaultConfig, SlowResolutionDoesNotBlockTheEventLoop) {
   auto echoSrv = test::startLocalhostEchoServer();
   AllowConnectHost(ts, "localhost");
-  // The resolution takes longer than the keep-alive timeout, which does not apply while it runs.
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withKeepAliveTimeout(200ms); });
+  // The keep-alive timeout bounds the resolution.
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withKeepAliveTimeout(3s); });
   ts.router().setPath(http::Method::GET, "/hello",
                       [](const HttpRequestView& req) { return req.makeResponse(http::StatusCodeOK, "world"); });
 
@@ -396,6 +447,43 @@ TEST_F(HttpConnectDefaultConfig, SlowResolutionDoesNotBlockTheEventLoop) {
   EXPECT_TRUE(head.starts_with("HTTP/1.1 200 ")) << head;
   EXPECT_GE(std::chrono::steady_clock::now() - start, 1100ms);
 }
+
+TEST_F(HttpConnectDefaultConfig, UnresolvedTargetIsAnswered504AfterKeepAliveTimeout) {
+  AllowConnectHost(ts, "localhost");
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withKeepAliveTimeout(300ms); });
+
+  test::GetAddrInfoDelayGuard getAddrInfoDelayGuard(3000);
+  const auto start = std::chrono::steady_clock::now();
+  test::sendAll(fd, "CONNECT localhost:9 HTTP/1.1\r\nHost: localhost\r\n\r\n");
+  const std::string head = RecvConnectResponseHead(fd, 5000ms);
+  EXPECT_TRUE(head.starts_with("HTTP/1.1 504 ")) << head;
+  EXPECT_LT(std::chrono::steady_clock::now() - start, 2500ms);
+  EXPECT_TRUE(test::WaitForPeerClose(fd, 2s));
+}
+
+#ifdef AERONET_LINUX
+TEST_F(HttpConnectDefaultConfig, TooManyUnresolvedTargetsAreAnswered503) {
+  // A server thread lets at most 256 CONNECT requests wait for the resolution of their target (see
+  // TunnelManager::kMaxPendingTunnels): the next ones are refused right away.
+  static constexpr std::size_t kMaxPendingTunnels = 256;
+  AllowConnectHost(ts, "localhost");
+  const std::string request = "CONNECT localhost:9 HTTP/1.1\r\nHost: localhost\r\n\r\n";
+
+  test::GetAddrInfoDelayGuard getAddrInfoDelayGuard(2000);
+  std::vector<test::ClientConnection> waitingClients;
+  waitingClients.reserve(kMaxPendingTunnels);
+  for (std::size_t idx = 0; idx < kMaxPendingTunnels; ++idx) {
+    test::sendAll(waitingClients.emplace_back(ts.port()).fd(), request);
+  }
+  std::this_thread::sleep_for(200ms);  // the server reads them all
+
+  const auto start = std::chrono::steady_clock::now();
+  test::sendAll(fd, request);
+  const std::string head = RecvConnectResponseHead(fd, 1500ms);
+  EXPECT_TRUE(head.starts_with("HTTP/1.1 503 ")) << head;
+  EXPECT_LT(std::chrono::steady_clock::now() - start, 1000ms);
+}
+#endif
 
 TEST_F(HttpConnectDefaultConfig, ClientClosingDuringResolutionCancelsTheTunnel) {
   auto echoSrv = test::startLocalhostEchoServer();

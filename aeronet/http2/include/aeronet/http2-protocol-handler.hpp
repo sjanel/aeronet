@@ -13,6 +13,7 @@
 #include "aeronet/file.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-connection.hpp"
 #include "aeronet/http2-event-sink.hpp"
@@ -166,6 +167,14 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   /// resolved: answers 200 and starts tunneling with upstreamFd, or answers 502 when it is kInvalidHandle.
   void onTunnelResolved(uint32_t streamId, NativeHandle upstreamFd);
 
+  /// Answer the CONNECT request of a stream for which isTunnelPending() is true with an error (its target could not be
+  /// reached, or was not resolved in time).
+  void failPendingTunnel(uint32_t streamId, http::StatusCode statusCode, std::string_view reason);
+
+  /// The upstream of a tunnel wrote all the bytes buffered for it, after ITunnelBridge::writeTunnel() returned false:
+  /// the client stream gets flow-control credit again.
+  void onTunnelUpstreamDrained(NativeHandle upstreamFd);
+
   /// Notify the handler that the async connect for a tunnel stream's upstream fd failed.
   /// Sends RST_STREAM with CONNECT_ERROR on the stream.
   void tunnelConnectFailed(uint32_t streamId);
@@ -174,6 +183,9 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   [[nodiscard]] bool isTunnelStream(uint32_t streamId) const noexcept;
 
   using TunnelUpstreamsMap = flat_hash_map<NativeHandle, uint32_t>;
+
+  /// The upstream fds of the tunnels of this connection, with their stream.
+  [[nodiscard]] const TunnelUpstreamsMap& tunnelUpstreams() const noexcept { return _tunnelUpstreams; }
 
   /// Drain all tunnel upstream fds and clear internal tunnel maps.
   /// Returns the list of upstream fds that must be closed by the caller.
@@ -316,6 +328,10 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
 
   /// Handle a trailing HEADERS block on an already-open request stream: request trailers (RFC 9113 §8.1).
   void onTrailersReceived(StreamsMap::iterator it, const SvToSvMap& trailers, bool endStream);
+
+  /// Answer 413 to a request whose body exceeds the server limit, while the client is still sending it, then reset the
+  /// stream (NO_ERROR) so that the client stops sending it.
+  void rejectTooLargeBody(StreamsMap::iterator it);
 
   /// Install the aggregated request body (applying request-body decompression) and dispatch the request.
   /// Shared by the DATA-END_STREAM path and the trailing-HEADERS (trailers) path.
