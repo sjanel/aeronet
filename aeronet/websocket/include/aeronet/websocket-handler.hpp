@@ -101,7 +101,7 @@ class WebSocketHandler final : public IProtocolHandler {
   /// @param deflateParams Optional negotiated deflate parameters for compression
   explicit WebSocketHandler(WebSocketConfig config = WebSocketConfig(),
                             WebSocketCallbacks callbacks = WebSocketCallbacks(),
-                            std::optional<DeflateNegotiatedParams> deflateParams = std::nullopt);
+                            DeflateNegotiatedParams deflateParams = DeflateNegotiatedParams{});
 
   // Non-copyable, movable
   WebSocketHandler(const WebSocketHandler&) = delete;

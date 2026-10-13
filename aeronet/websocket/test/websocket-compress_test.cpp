@@ -1,4 +1,4 @@
-#include "../src/websocket-compress.hpp"
+#include "aeronet/websocket-compress.hpp"
 
 #include <gtest/gtest.h>
 

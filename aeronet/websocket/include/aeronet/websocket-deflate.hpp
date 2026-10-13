@@ -3,12 +3,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <optional>
 #include <span>
 #include <string_view>
 #include <type_traits>
 
 #include "aeronet/raw-bytes.hpp"
+
+#ifdef AERONET_ENABLE_ZLIB
+#include "aeronet/websocket-compress.hpp"
+#endif
 
 namespace aeronet::websocket {
 
@@ -54,7 +57,11 @@ struct DeflateConfig {
 
 /// Negotiated permessage-deflate parameters (after upgrade handshake).
 struct DeflateNegotiatedParams {
-  uint8_t serverMaxWindowBits{15};
+  [[nodiscard]] bool hasValue() const noexcept { return serverMaxWindowBits != 0; }
+
+  void setEmpty() { serverMaxWindowBits = 0; }
+
+  uint8_t serverMaxWindowBits{0};
   uint8_t clientMaxWindowBits{15};
   bool serverNoContextTakeover{false};
   bool clientNoContextTakeover{false};
@@ -65,8 +72,8 @@ struct DeflateNegotiatedParams {
 /// @param extensionOffer The extension offer string (e.g., "permessage-deflate; client_max_window_bits")
 /// @param serverConfig Server's deflate configuration
 /// @return Negotiated parameters or nullopt if cannot negotiate
-[[nodiscard]] std::optional<DeflateNegotiatedParams> ParseDeflateOffer(std::string_view extensionOffer,
-                                                                       const DeflateConfig& serverConfig);
+[[nodiscard]] DeflateNegotiatedParams ParseDeflateOffer(std::string_view extensionOffer,
+                                                        const DeflateConfig& serverConfig);
 
 /// Compute the size of the Sec-WebSocket-Extensions response header value for permessage-deflate.
 std::size_t ComputeDeflateResponseSize(DeflateNegotiatedParams params, uint8_t nDigitsServerMaxWindowBits,
@@ -100,7 +107,9 @@ class SharedDeflateStreams {
 
   struct Impl;
 
-  std::unique_ptr<Impl> _impl;  // created on first use
+  // On the heap, created on first use: the connections keep pointers to the streams, and a zlib stream cannot move.
+  // Only followed when a connection sets up its DeflateContext, which then points to the streams themselves.
+  std::unique_ptr<Impl> _impl;
 };
 
 /// RAII wrapper for zlib deflate/inflate context.
@@ -116,12 +125,13 @@ class DeflateContext {
   DeflateContext(DeflateNegotiatedParams params, const DeflateConfig& config, bool isServerSide,
                  SharedDeflateStreams* sharedStreams = nullptr);
 
+  // Neither copyable nor movable: it may point to its own streams, which cannot move anyway.
   DeflateContext(const DeflateContext&) = delete;
+  DeflateContext(DeflateContext&&) = delete;
   DeflateContext& operator=(const DeflateContext&) = delete;
-  DeflateContext(DeflateContext&&) noexcept = default;
-  DeflateContext& operator=(DeflateContext&&) noexcept = default;
+  DeflateContext& operator=(DeflateContext&&) = delete;
 
-  ~DeflateContext();
+  ~DeflateContext() = default;
 
   /// Compress a message payload.
   /// @param input Uncompressed message data
@@ -142,12 +152,16 @@ class DeflateContext {
     return payloadSize < _minCompressSize;
   }
 
-  using trivially_relocatable = std::true_type;
-
  private:
-  struct Impl;
-
-  std::unique_ptr<Impl> _impl;
+#ifdef AERONET_ENABLE_ZLIB
+  // Window bits and context takeover: own parameters when compressing, the peer's when decompressing.
+  WebSocketCompressor _ownCompressor;
+  WebSocketDecompressor _ownDecompressor;
+  WebSocketCompressor* _compressor;
+  WebSocketDecompressor* _decompressor;
+  bool _deflateNoContextTakeover;
+  bool _inflateNoContextTakeover;
+#endif
   uint32_t _minCompressSize{0};
 };
 

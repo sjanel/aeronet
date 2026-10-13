@@ -693,7 +693,7 @@ TEST_F(WebSocketFrameTest, ParseFrame64BitLengthNonMinimal) {
 
   auto result = ParseFrame(frame, 0, false);
   EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
-  EXPECT_STREQ(result.errorMessage, "Non-minimal extended length encoding");
+  EXPECT_STREQ(result.pErrorMessage, "Non-minimal extended length encoding");
 }
 
 TEST_F(WebSocketFrameTest, ParseFrame64BitLengthMSBSet) {
@@ -708,7 +708,7 @@ TEST_F(WebSocketFrameTest, ParseFrame64BitLengthMSBSet) {
 
   auto result = ParseFrame(frame, 0, false);
   EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
-  EXPECT_STREQ(result.errorMessage, "Invalid payload length (MSB set)");
+  EXPECT_STREQ(result.pErrorMessage, "Invalid payload length (MSB set)");
 }
 
 TEST_F(WebSocketFrameTest, BuildFrameNonFinFragment) {
@@ -806,7 +806,7 @@ TEST_F(WebSocketFrameTest, ParseRSV1BitSet) {
 
   auto result = ParseFrame(frame, 0, false);
   EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
-  EXPECT_STREQ(result.errorMessage, "Reserved bits RSV2/RSV3 must be 0");
+  EXPECT_STREQ(result.pErrorMessage, "Reserved bits RSV2/RSV3 must be 0");
 }
 
 TEST_F(WebSocketFrameTest, ParseRSV1WithoutPerMessageDeflate) {
@@ -825,7 +825,7 @@ TEST_F(WebSocketFrameTest, ParseRSV1WithoutPerMessageDeflate) {
   // allowRsv1 == false (no permessage-deflate negotiated)
   auto result = ParseFrame(frame, 0, false, false);
   EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
-  EXPECT_STREQ(result.errorMessage, "RSV1 bit set without permessage-deflate extension");
+  EXPECT_STREQ(result.pErrorMessage, "RSV1 bit set without permessage-deflate extension");
 }
 
 TEST_F(WebSocketFrameTest, ParseRSV1OnControlFrame) {
@@ -839,7 +839,7 @@ TEST_F(WebSocketFrameTest, ParseRSV1OnControlFrame) {
   // allowRsv1 == true but RSV1 must not be set on control frames
   auto result = ParseFrame(frame, 0, false, true);
   EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
-  EXPECT_STREQ(result.errorMessage, "RSV1 bit must not be set on control frames");
+  EXPECT_STREQ(result.pErrorMessage, "RSV1 bit must not be set on control frames");
 }
 
 TEST_F(WebSocketFrameTest, ParseRSV2BitSet) {
@@ -873,7 +873,7 @@ TEST_F(WebSocketFrameTest, ParseReservedDataOpcode3) {
 
   auto result = ParseFrame(frame, 0, false);
   EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
-  EXPECT_STREQ(result.errorMessage, "Reserved opcode");
+  EXPECT_STREQ(result.pErrorMessage, "Reserved opcode");
 }
 
 TEST_F(WebSocketFrameTest, ParseReservedControlOpcode11) {
@@ -896,7 +896,7 @@ TEST_F(WebSocketFrameTest, ParseFragmentedPingFrame) {
 
   auto result = ParseFrame(frame, 0, false);
   EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
-  EXPECT_STREQ(result.errorMessage, "Control frames must not be fragmented");
+  EXPECT_STREQ(result.pErrorMessage, "Control frames must not be fragmented");
 }
 
 TEST_F(WebSocketFrameTest, ParseFragmentedCloseFrame) {
@@ -925,7 +925,7 @@ TEST_F(WebSocketFrameTest, ParsePingPayloadTooLarge) {
 
   auto result = ParseFrame(frame, 0, false);
   EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
-  EXPECT_STREQ(result.errorMessage, "Control frame payload too large");
+  EXPECT_STREQ(result.pErrorMessage, "Control frame payload too large");
 }
 
 // ============================================================================
@@ -942,7 +942,7 @@ TEST_F(WebSocketFrameTest, ParseClientRejectsServerMaskedFrame) {
   auto result = ParseFrame(data, 0, false);  // Client-side
 
   EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
-  EXPECT_STREQ(result.errorMessage, "Server frames must not be masked");
+  EXPECT_STREQ(result.pErrorMessage, "Server frames must not be masked");
 }
 
 // ============================================================================
@@ -964,7 +964,7 @@ TEST_F(WebSocketFrameTest, ParseFrame16BitLengthNonMinimal) {
 
   auto result = ParseFrame(frame, 0, false);
   EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
-  EXPECT_STREQ(result.errorMessage, "Non-minimal extended length encoding");
+  EXPECT_STREQ(result.pErrorMessage, "Non-minimal extended length encoding");
 }
 
 // ============================================================================
