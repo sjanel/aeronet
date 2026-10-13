@@ -365,16 +365,22 @@ void ConnectionState::reclaimMemoryFromOversizedBuffers() {
   // Cannot clear - may contain a partial next request. shrink_to_fit alone is safe.
   // Both hold the request body (and the inBuffer the request head of a waiting body) of a running async handler, or of
   // an abandoned one whose deferred work still runs: they must not move then.
+  // The inBuffer also holds the CONNECT request whose target is being resolved, answered (and logged) from its views
+  // once the resolution completes: it must not move either.
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   if (!asyncState || (!asyncState->active && !asyncState->handle)) {
     bodyAndTrailersBuffer.shrink_to_fit();
     bodyAndTrailersBuffer.clear();
-    inBuffer.shrink_to_fit();
+    if (!tunnelResolving) {
+      inBuffer.shrink_to_fit();
+    }
   }
 #else
   bodyAndTrailersBuffer.shrink_to_fit();
   bodyAndTrailersBuffer.clear();
-  inBuffer.shrink_to_fit();
+  if (!tunnelResolving) {
+    inBuffer.shrink_to_fit();
+  }
 #endif
 
   // outBuffer: grows when TCP writes can't keep up and responses queue. Not while zerocopy sends may read it.

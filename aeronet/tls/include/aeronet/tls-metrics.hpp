@@ -51,7 +51,7 @@ struct TlsMetricsInternal {
   Counter handshakesRejectedConcurrency;
   Counter handshakesRejectedRateLimit;
   Counter clientCertPresent;
-  Counter alpnStrictMismatches;  // updated externally when strict ALPN mismatch occurs
+  Counter alpnStrictMismatches;
 
   mutable MapsMutex mapsMutex;
   // Best-effort bucketing of fatal handshake failures / rejections.

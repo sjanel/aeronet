@@ -170,13 +170,13 @@ router.setWebSocket("/feed", WebSocketEndpoint::WithConfigAndCallbacks(config, w
 | --- | --- | --- |
 | `enabled` | `true` with zlib | Negotiate the extension when the client offers it. |
 | `compressionLevel` | 6 | zlib level, 0 to 9. |
-| `serverMaxWindowBits` | 15 | LZ77 window of the server's compressor, 9 to 15 (2^N bytes). |
-| `clientMaxWindowBits` | 15 | LZ77 window of the client's compressor, 8 to 15. |
+| `serverMaxWindowBits` | 15 | LZ77 window of the server's compressor, 8 to 15 (2^N bytes). |
+| `clientMaxWindowBits` | 15 | LZ77 window of the client's compressor, 8 to 15. Only applied to clients offering `client_max_window_bits`. |
 | `serverNoContextTakeover` | `false` | Reset the server's compression context after each message: less memory, lower ratio. |
 | `clientNoContextTakeover` | `false` | Ask the client to reset its context after each message. |
 | `minCompressSize` | 256 bytes | Smaller messages are sent uncompressed. |
 
-The server accepts the first acceptable offer of the client, and each side compresses with the window negotiated for it. zlib cannot produce raw DEFLATE data with a 256-byte window, so an offer requiring `server_max_window_bits=8` is declined and the connection proceeds without compression. Messages are raw DEFLATE data, with no zlib header nor checksum and with the trailing `00 00 ff ff` removed (RFC 7692 §7.2.1), and interoperate with browsers and standard WebSocket libraries.
+The server accepts the first acceptable offer of the client, and each side compresses with the window negotiated for it. zlib cannot produce raw DEFLATE data with a 256-byte window: when 8 is negotiated, aeronet compresses with 9 bits, whose matches never refer more than 250 bytes back, so the peer decodes them with its 256-byte window. A client that does not offer `client_max_window_bits` keeps a 32 KiB window: RFC 7692 forbids limiting it. Messages are raw DEFLATE data, with no zlib header nor checksum and with the trailing `00 00 ff ff` removed (RFC 7692 §7.2.1), and interoperate with browsers and standard WebSocket libraries.
 
 When a factory returns a handler without compression and the client negotiated it, the server enables it on that handler (`WebSocketHandler::enableCompression()`) and keeps its callbacks.
 

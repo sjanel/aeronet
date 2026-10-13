@@ -29,13 +29,14 @@ struct DeflateConfig {
   int8_t compressionLevel{6};
 
   /// LZ77 sliding window size for compression (server's context).
-  /// Valid values: 9-15 (representing 2^N bytes): zlib cannot compress raw DEFLATE data with a 256 bytes window, so
-  /// a client offer requesting server_max_window_bits=8 is declined (the connection is not compressed).
+  /// Valid values: 8-15 (representing 2^N bytes). zlib cannot compress raw DEFLATE data with a 256 bytes window: with
+  /// 8, the server compresses with 9 bits, whose matches never refer more than 250 bytes back.
   /// Default 15 = 32KB window.
   uint8_t serverMaxWindowBits{15};
 
   /// LZ77 sliding window size for decompression (client's context).
-  /// Valid values: 8-15 (representing 2^N bytes).
+  /// Valid values: 8-15 (representing 2^N bytes). Only applied to the clients offering client_max_window_bits: the
+  /// others keep a 32KB window (RFC 7692 section 7.1.2.2).
   /// Default 15 = 32KB window.
   uint8_t clientMaxWindowBits{15};
 

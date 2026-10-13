@@ -244,6 +244,12 @@ test::TestServer CreateTestServer() {
     resp.location("/bad%zz-escape");
     return resp;
   });
+  // A 303 that would turn the POST into a GET, but whose Location cannot be followed.
+  routerProxy.setPath(http::Method::POST, "/see-other-invalid-path", [](const HttpRequestView& req) {
+    auto resp = req.makeResponse(http::StatusCodeSeeOther);
+    resp.location("/bad%zz-escape");
+    return resp;
+  });
   routerProxy.setPath(http::Method::PUT, "/put", [](const HttpRequestView& req) {
     return req.makeResponse(http::StatusCodeOK, req.body(), "text/plain");
   });
@@ -806,6 +812,26 @@ TEST_F(HttpClientE2ETest, RedirectWithInvalidAbsolutePathReturnsError) {
   auto result = client.get(Url("/redirect-invalid-path"));
   ASSERT_FALSE(result);
   EXPECT_EQ(result.error(), HttpClientErrc::invalidUrl);
+}
+
+TEST_F(HttpClientE2ETest, RejectedSeeOtherLeavesTheRequestUnchanged) {
+  HttpClient client;
+  auto req = client.makeRequest(http::Method::POST, Url("/see-other-invalid-path"));
+  req.body("kept-payload", "text/plain");
+  auto result = client.request(std::move(req));
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::invalidUrl);
+
+  // The request given to request(HttpRequest&&) is not rewritten to a body-less GET for a redirect it does not follow.
+  EXPECT_EQ(req.method(), http::Method::POST);  // NOLINT(bugprone-use-after-move)
+  EXPECT_EQ(req.target(), "/see-other-invalid-path");
+  EXPECT_EQ(req.bodyInMemory(), "kept-payload");
+
+  // It can be sent again.
+  req.target("/echo");
+  auto resp = client.request(std::move(req)).value();
+  EXPECT_EQ(resp.status(), http::StatusCodeOK);
+  EXPECT_EQ(resp.bodyInMemory(), "kept-payload");
 }
 
 TEST_F(HttpClientE2ETest, PutEchoes) {

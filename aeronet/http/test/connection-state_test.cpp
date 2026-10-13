@@ -93,6 +93,27 @@ TEST(ConnectionStateTest, CannotCloseIfOutBufferNotEmpty) {
   EXPECT_TRUE(state.canCloseConnectionForDrain());
 }
 
+TEST(ConnectionStateTest, InBufferIsNotShrunkWhileTheConnectTargetIsResolved) {
+  static constexpr std::string_view kConnectRequest = "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com\r\n\r\n";
+  ConnectionState state;
+  // The first read reserves a large buffer for a short request.
+  state.inBuffer.reserve(128UL * 1024UL);
+  state.inBuffer.append(kConnectRequest);
+  const char* storage = state.inBuffer.data();
+  const auto capacity = state.inBuffer.capacity();
+
+  // The request views point into the inBuffer until the CONNECT is answered.
+  state.tunnelResolving = true;
+  state.reclaimMemoryFromOversizedBuffers();
+  EXPECT_EQ(state.inBuffer.data(), storage);
+  EXPECT_EQ(state.inBuffer.capacity(), capacity);
+
+  state.tunnelResolving = false;
+  state.reclaimMemoryFromOversizedBuffers();
+  EXPECT_LT(state.inBuffer.capacity(), capacity);
+  EXPECT_EQ(std::string_view(state.inBuffer.data(), state.inBuffer.size()), kConnectRequest);
+}
+
 TEST(ConnectionState, RequestDrainAndCloseIsIdempotent) {
   ConnectionState state;
 
