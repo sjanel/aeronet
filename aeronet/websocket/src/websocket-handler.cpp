@@ -30,6 +30,16 @@ namespace aeronet::websocket {
 
 namespace {
 
+// Smallest payload sent from the received input instead of being copied to the output buffer: below, the copy is
+// cheaper than the separate buffer to write.
+constexpr std::size_t kMinInputPayloadSize = 4096;
+
+// Tells whether 'part' lies within 'whole' (std::less_equal is a total order, even for unrelated pointers).
+bool IsWithin(std::span<const std::byte> part, std::span<const std::byte> whole) {
+  constexpr std::less_equal<const std::byte*> kLessEqual;
+  return kLessEqual(whole.data(), part.data()) && kLessEqual(part.data() + part.size(), whole.data() + whole.size());
+}
+
 /// Validate a single multibyte UTF-8 sequence starting at *ptr.
 /// @param ptr  Points to 1 byte past the lead byte on entry; advanced past the full sequence on success.
 /// @param end  One-past-end of the buffer.
@@ -165,8 +175,9 @@ WebSocketHandler& WebSocketHandler::operator=(WebSocketHandler&&) noexcept = def
 
 void WebSocketHandler::setCallbacks(WebSocketCallbacks callbacks) { _callbacks = std::move(callbacks); }
 
-void WebSocketHandler::enableCompression(DeflateNegotiatedParams deflateParams) {
-  _deflateContext = std::make_unique<DeflateContext>(deflateParams, _config.deflateConfig, _config.isServerSide);
+void WebSocketHandler::enableCompression(DeflateNegotiatedParams deflateParams, SharedDeflateStreams* sharedStreams) {
+  _deflateContext =
+      std::make_unique<DeflateContext>(deflateParams, _config.deflateConfig, _config.isServerSide, sharedStreams);
 }
 
 ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> data,
@@ -175,6 +186,18 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
   // them again, followed by the next received bytes, at the next call (they are not copied here).
   ProtocolProcessResult result;
   const bool allowRsv1 = (_deflateContext != nullptr);
+
+  // While the frames are processed, sendData() sends the large payloads found in the input from there.
+  struct InputScope {
+    explicit InputScope(WebSocketHandler& handler, std::span<const std::byte> input) : _handler(handler) {
+      _handler._input = input;
+    }
+    InputScope(const InputScope&) = delete;
+    InputScope& operator=(const InputScope&) = delete;
+    ~InputScope() { _handler._input = {}; }
+
+    WebSocketHandler& _handler;
+  } inputScope(*this, data);
 
   while (!data.empty()) {
     const auto frameResult = ParseFrame(data, _config.maxFrameSize, _config.isServerSide, allowRsv1);
@@ -190,7 +213,7 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
       }
       sendClose(CloseCode::ProtocolError, frameResult.errorMessage);
       result.action = ProtocolProcessResult::Action::Close;
-      return result;
+      break;
     }
 
     if (frameResult.status == FrameParseResult::Status::PayloadTooLarge) {
@@ -199,7 +222,7 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
       }
       sendClose(CloseCode::MessageTooBig, "Frame payload too large");
       result.action = ProtocolProcessResult::Action::Close;
-      return result;
+      break;
     }
 
     // Frame complete - process it
@@ -213,7 +236,7 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
     assert(frameProcessResult.action != ProtocolProcessResult::Action::CloseImmediate);
     if (frameProcessResult.action == ProtocolProcessResult::Action::Close) {
       result.action = frameProcessResult.action;
-      return result;
+      break;
     }
 
     if (frameProcessResult.action == ProtocolProcessResult::Action::ResponseReady) {
@@ -221,6 +244,7 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
     }
   }
 
+  result.outputRefersToInput = !_inputPayload.empty();
   return result;
 }
 
@@ -271,7 +295,8 @@ ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& heade
     // Safety: 'payload' is a view into the caller's TCP receive buffer (pState->inBuffer),
     // which is mutable memory cast to const at the call site. Modifying it here is safe
     // because the buffer will be consumed (erased) immediately after processInput returns.
-    if (header.fin && _deflateContext == nullptr) {
+    // With permessage-deflate, RSV1 tells whether the message is compressed (only allowed when negotiated).
+    if (header.fin && !header.rsv1) {
       if (_config.maxMessageSize > 0 && payload.size() > _config.maxMessageSize) {
         if (_callbacks.onError) {
           _callbacks.onError(CloseCode::MessageTooBig, "Message too large");
@@ -402,7 +427,6 @@ ProtocolProcessResult WebSocketHandler::completeMessage() {
   ProtocolProcessResult result;
 
   // Decompress if message was compressed
-  std::span<const std::byte> messageData;
   if (_messageCompressed && _deflateContext) {
     _compressBuffer.clear();
     const char* errMsg = _deflateContext->decompress(_message.buffer, _compressBuffer, _config.maxMessageSize);
@@ -417,10 +441,11 @@ ProtocolProcessResult WebSocketHandler::completeMessage() {
       _messageCompressed = false;
       return result;
     }
-    messageData = _compressBuffer;
-  } else {
-    messageData = _message.buffer;
+    // The message buffer holds the decompressed message: the compression buffer must stay free for the messages that
+    // onMessage sends (an echo of this one would otherwise be compressed into its own memory).
+    _message.buffer.swap(_compressBuffer);
   }
+  const std::span<const std::byte> messageData = _message.buffer;
 
   // For text messages, validate UTF-8
   if (_message.opcode == Opcode::Text && !ValidateUtf8(messageData)) {
@@ -450,22 +475,45 @@ ProtocolProcessResult WebSocketHandler::completeMessage() {
 }
 
 void WebSocketHandler::onOutputWritten(std::size_t bytesWritten) {
-  _outputOffset += bytesWritten;
+  const std::size_t bufferedSize = _outputBuffer.size() - _outputOffset;
+  if (bytesWritten < bufferedSize) {
+    _outputOffset += bytesWritten;
+    return;
+  }
+  // All the buffered output has been written, then the start of the payload sent from the input.
+  assert(bytesWritten - bufferedSize <= _inputPayload.size());
+  _outputBuffer.clear();
+  _outputOffset = 0;
+  _inputPayload = _inputPayload.subspan(bytesWritten - bufferedSize);
+}
 
-  // If all output has been written, clear the buffer
-  if (_outputOffset >= _outputBuffer.size()) {
-    _outputBuffer.clear();
-    _outputOffset = 0;
+void WebSocketHandler::getPendingOutputFragments(vector<std::string_view>& fragments) const {
+  fragments.clear();
+  if (_outputOffset != _outputBuffer.size()) {
+    fragments.emplace_back(reinterpret_cast<const char*>(_outputBuffer.data() + _outputOffset),
+                           _outputBuffer.size() - _outputOffset);
+  }
+  if (!_inputPayload.empty()) {
+    fragments.emplace_back(reinterpret_cast<const char*>(_inputPayload.data()), _inputPayload.size());
+  }
+}
+
+void WebSocketHandler::appendInputPayload() {
+  if (!_inputPayload.empty()) {
+    _outputBuffer.append(_inputPayload);
+    _inputPayload = {};
   }
 }
 
 void WebSocketHandler::onTransportClosing() {
   _closeState = CloseState::Closed;
+  _inputPayload = {};
   _message.inProgress = false;
   _message.buffer.clear();
 }
 
 bool WebSocketHandler::drainOutputBuffer(HttpMessageData& dest) {
+  appendInputPayload();
   if (_outputOffset >= _outputBuffer.size()) {
     return false;
   }
@@ -499,6 +547,7 @@ constexpr MaskingKey GenerateMaskingKey(uint64_t& rngState) noexcept {
 }  // namespace
 
 void WebSocketHandler::queueFrame(Opcode opcode, std::span<const std::byte> payload, bool fin) {
+  appendInputPayload();
   const bool shouldMask = !_config.isServerSide;
   const MaskingKey mask = shouldMask ? GenerateMaskingKey(_rngState) : MaskingKey{};
   BuildFrame(_outputBuffer, opcode, payload, fin, shouldMask, mask, false);
@@ -514,12 +563,22 @@ bool WebSocketHandler::sendData(Opcode opcode, std::span<const std::byte> payloa
     _compressBuffer.clear();
     const char* errMsg = _deflateContext->compress(payload, _compressBuffer);
     if (errMsg == nullptr && _compressBuffer.size() < payload.size()) {
+      appendInputPayload();
       const bool shouldMask = !_config.isServerSide;
       const MaskingKey mask = shouldMask ? GenerateMaskingKey(_rngState) : MaskingKey{};
       BuildFrame(_outputBuffer, opcode, std::span<const std::byte>(_compressBuffer.data(), _compressBuffer.size()),
                  true, shouldMask, mask, true);
       return true;
     }
+  }
+
+  // A large payload received in the processed input (an echo) is sent from there, without copying it: only its frame
+  // header is buffered. Masked frames (client side) need their own copy of the payload.
+  if (_config.isServerSide && payload.size() >= kMinInputPayloadSize && IsWithin(payload, _input)) {
+    appendInputPayload();
+    BuildUnmaskedFrameHeader(_outputBuffer, opcode, payload.size());
+    _inputPayload = payload;
+    return true;
   }
 
   queueFrame(opcode, payload);
@@ -559,6 +618,7 @@ bool WebSocketHandler::sendClose(CloseCode code, std::string_view reason) {
     return false;
   }
 
+  appendInputPayload();
   const bool shouldMask = !_config.isServerSide;
   const MaskingKey mask = shouldMask ? GenerateMaskingKey(_rngState) : MaskingKey{};
   BuildCloseFrame(_outputBuffer, code, reason, shouldMask, mask);

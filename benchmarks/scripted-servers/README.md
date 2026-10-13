@@ -542,9 +542,10 @@ Notes:
 A separate orchestrator (`run_ws_benchmarks.py`) drives the WebSocket scenarios with `ws-loadgen`, a native
 epoll load generator built from [`ws_loadgen.cpp`](ws_loadgen.cpp) (Linux, target `ws-loadgen`; zlib enables
 its permessage-deflate support). Each connection performs the handshake, then keeps `--pipeline-depth`
-messages in flight, answering every echo / pong with the next message. Doing the minimum per message (one
-masked frame write, one frame parse), it costs about as much CPU per message as an efficient server (around
-4 us per 128-byte echo, system calls included), so its 3 threads per server thread leave ample headroom.
+messages in flight, answering every echo / pong with the next message. Doing the minimum per message (one write
+of a frame masked once at startup, one frame header parse: reply payloads are skipped as they arrive, not
+buffered), it costs about as much CPU per message as an efficient server (around 4 us per 128-byte echo, system
+calls included), so its 3 threads per server thread leave ample headroom, 64 KiB echoes included.
 [k6](https://k6.io/) (about 27 us of CPU per message: it cannot saturate the servers on small machines) remains
 available with `--tool k6`, and [websocket-bench](https://github.com/matttomasetti/websocket-bench) optionally
 adds a raw throughput run.
@@ -565,7 +566,10 @@ its own CPU time over the measurement window (warmup excluded).
 | churn | `--mode churn` | `k6/ws_churn.js` | Connect, send one message, close handshake, reconnect (sessions/s) |
 | compression | `--mode echo --json-payload --compress` | `k6/ws_compression.js` | Compressible JSON over permessage-deflate (`/ws-compressed`, aeronet and uWebSockets only) |
 
-Latencies are message round trips, or session durations (connect to close) for `churn`.
+Latencies are message round trips, or session durations (connect to close) for `churn`. `churn` is mostly kernel
+work (TCP connection setups and teardowns on both sides, about 90% of the server CPU time): it measures the
+connection rate the host sustains as much as the server, and needs the server to have few CPUs compared to the
+rest of the machine to saturate it.
 
 ### Running WebSocket Benchmarks
 
@@ -579,7 +583,8 @@ Latencies are message round trips, or session durations (connect to close) for `
 # Specific servers/scenarios
 ./run_ws_benchmarks.py --server aeronet,uwebsockets --scenario echo-small,churn
 
-# Server threads, load generator threads (default: automatic), connections, in-flight messages
+# Server threads (default: a fifth of the CPUs, as for run_benchmarks.py), load generator threads (default:
+# automatic), connections (default: 64 per server thread), in-flight messages
 ./run_ws_benchmarks.py --threads 1 --loadgen-threads 3 --vus 50 --pipeline-depth 1 --duration 30s
 
 # k6 instead of ws-loadgen, plus a websocket-bench raw throughput run

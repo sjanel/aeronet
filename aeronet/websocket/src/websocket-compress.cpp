@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <span>
 
 #include "aeronet/decoder-buffer-manager.hpp"
@@ -34,15 +35,13 @@ constexpr std::size_t kSyncFlushMargin = 8;
 // WebSocketCompressor
 // ============================================================================
 
-WebSocketCompressor::WebSocketCompressor(int8_t compressionLevel, uint8_t windowBits) {
-  // permessage-deflate payloads are raw DEFLATE data (RFC 7692 section 7.2.1), without zlib header nor checksum.
-  _zs.initCompress(ZStreamRAII::Variant::raw, compressionLevel, windowBits);
-}
-
 const char* WebSocketCompressor::compress(std::span<const std::byte> input, RawBytes& output, bool resetContext) {
   auto& stream = _zs.stream;
 
-  if (resetContext) {
+  if (!_zs.initialized()) {
+    // permessage-deflate payloads are raw DEFLATE data (RFC 7692 section 7.2.1), without zlib header nor checksum.
+    _zs.initCompress(ZStreamRAII::Variant::raw, _level, _windowBits);
+  } else if (resetContext) {
     ZDeflateReset(stream);
   }
 
@@ -82,48 +81,53 @@ const char* WebSocketCompressor::compress(std::span<const std::byte> input, RawB
 // WebSocketDecompressor
 // ============================================================================
 
-WebSocketDecompressor::WebSocketDecompressor(uint8_t windowBits) {
-  _zs.initDecompress(ZStreamRAII::Variant::raw, windowBits);
-}
-
 const char* WebSocketDecompressor::decompress(std::span<const std::byte> input, RawBytes& output,
                                               std::size_t maxDecompressedSize, bool resetContext) {
   auto& stream = _zs.stream;
 
-  if (resetContext) {
+  if (!_zs.initialized()) {
+    _zs.initDecompress(ZStreamRAII::Variant::raw, _windowBits);
+  } else if (resetContext) {
     ZInflateReset(stream);
   }
 
   ZSetInput(stream, std::string_view{reinterpret_cast<const char*>(input.data()), input.size()});
 
-  // Use DecoderBufferManager to properly control max decompressed size
-  DecoderBufferManager bufferManager(output, kDecompressChunkSize, maxDecompressedSize);
+  // One byte decompressed beyond the limit tells whether the message exceeds it (0: unlimited).
+  const std::size_t initialSize = output.size();
+  const bool limited = maxDecompressedSize != 0 && maxDecompressedSize != std::numeric_limits<std::size_t>::max();
+  DecoderBufferManager bufferManager(output, kDecompressChunkSize, limited ? maxDecompressedSize + 1 : 0);
 
-  auto flush = Z_NO_FLUSH;
-  do {
-    bool forceEnd = bufferManager.nextReserve();
+  // The message is followed by the sync flush marker removed by the sender (0x00 0x00 0xff 0xff, RFC 7692 section
+  // 7.2.2), inflated once the message data is: it leaves the stream at a block boundary, where the next message
+  // continues it with context takeover.
+  bool trailerSet = false;
+  for (;;) {
+    // Reserves the next chunk, up to one byte beyond the limit: the decompressed size is checked below.
+    bufferManager.nextReserve();
 
     ZSetOutput(stream, reinterpret_cast<char*>(output.data() + output.size()), output.availableCapacity());
 
-    const auto ret = ZInflate(stream, flush);
+    const auto ret = ZInflate(stream, Z_NO_FLUSH);
     if (ret == Z_STREAM_ERROR || ret == Z_DATA_ERROR || ret == Z_MEM_ERROR) {
       return "inflate() failed";
     }
 
     output.addSize(output.availableCapacity() - stream.avail_out);
 
-    if (forceEnd) {
+    if (limited && output.size() - initialSize > maxDecompressedSize) {
       return "Decompressed size exceeds maximum";
     }
-
-    // We also need to append the trailing 0x00 0x00 0xff 0xff that was stripped per RFC 7692 §7.2.1
-    if (stream.avail_in == 0 && flush == Z_NO_FLUSH) {
-      ZSetInput(stream,
-                std::string_view{reinterpret_cast<const char*>(kDeflateTrailer.data()), kDeflateTrailer.size()});
-
-      flush = Z_FINISH;
+    if (stream.avail_out == 0) {
+      continue;  // the output is full: inflate may have more of it
     }
-  } while (stream.avail_out == 0);
+    // All the input was inflated (or the sender ended the stream with a final block).
+    if (trailerSet || ret == Z_STREAM_END) {
+      break;
+    }
+    ZSetInput(stream, std::string_view{reinterpret_cast<const char*>(kDeflateTrailer.data()), kDeflateTrailer.size()});
+    trailerSet = true;
+  }
 
   return nullptr;
 }

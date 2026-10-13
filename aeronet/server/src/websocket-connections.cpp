@@ -84,16 +84,15 @@ SingleHttpServer::WebSocketUpgrade SingleHttpServer::upgradeToWebSocket(Connecti
     if (!wsHandler) {
       return WebSocketUpgrade::Refused;
     }
-    if (!wsHandler->hasCompression() && upgradeValidation.deflateParams.has_value()) {
-      // Compression was negotiated but the factory did not configure it: enable it on the handler, keeping
-      // the callbacks the factory installed.
-      wsHandler->enableCompression(*upgradeValidation.deflateParams);
-    }
   } else {
     auto config = endpoint.config;
     config.isServerSide = true;
-    wsHandler = std::make_unique<websocket::WebSocketHandler>(config, websocket::WebSocketCallbacks(),
-                                                              upgradeValidation.deflateParams);
+    wsHandler = std::make_unique<websocket::WebSocketHandler>(std::move(config));
+  }
+  if (!wsHandler->hasCompression() && upgradeValidation.deflateParams.has_value()) {
+    // Compression was negotiated but the handler (from the factory, which keeps its callbacks) was created without it.
+    // The directions without context takeover use the streams shared by the connections of this server thread.
+    wsHandler->enableCompression(*upgradeValidation.deflateParams, &_webSocketDeflateStreams);
   }
 
   // The per-route request timeout bounds the upgrade request, not the WebSocket connection that follows.

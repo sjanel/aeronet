@@ -304,8 +304,9 @@ void ApplyMask(std::span<std::byte> data, MaskingKey maskingKey) {
 
 namespace {
 
+// Appends the frame header, reserving the capacity for the reservedPayloadSize bytes of payload appended next.
 inline void BuildFrameHeader(RawBytes& output, Opcode opcode, std::size_t payloadSize, bool fin, bool shouldMask,
-                             MaskingKey maskingKey, bool rsv1) {
+                             MaskingKey maskingKey, bool rsv1, std::size_t reservedPayloadSize) {
   // Calculate exact header size:
   //   2 bytes minimum (byte0 + byte1)
   //   +2 bytes if payload requires 16-bit extended length (126–65535)
@@ -323,7 +324,7 @@ inline void BuildFrameHeader(RawBytes& output, Opcode opcode, std::size_t payloa
     headerSize += kMaskingKeySize;
   }
 
-  output.ensureAvailableCapacity(headerSize + payloadSize);
+  output.ensureAvailableCapacity(headerSize + reservedPayloadSize);
 
   // First byte: FIN | RSV1-3 | Opcode
   std::byte byte0 = static_cast<std::byte>(opcode);
@@ -383,8 +384,12 @@ void BuildFrame(RawBytes& output, Opcode opcode, std::span<const std::byte> payl
                 MaskingKey maskingKey, bool rsv1) {
   const std::size_t payloadSize = payload.size();
 
-  BuildFrameHeader(output, opcode, payloadSize, fin, shouldMask, maskingKey, rsv1);
+  BuildFrameHeader(output, opcode, payloadSize, fin, shouldMask, maskingKey, rsv1, payloadSize);
   AppendFramePayload(output, payload, shouldMask, maskingKey);
+}
+
+void BuildUnmaskedFrameHeader(RawBytes& output, Opcode opcode, std::size_t payloadSize) {
+  BuildFrameHeader(output, opcode, payloadSize, true, false, MaskingKey{}, false, 0);
 }
 
 void BuildCloseFrame(RawBytes& output, CloseCode code, std::string_view reason, bool shouldMask,
@@ -403,7 +408,7 @@ void BuildCloseFrame(RawBytes& output, CloseCode code, std::string_view reason, 
     }
   }
 
-  BuildFrameHeader(output, Opcode::Close, payloadSize, true, shouldMask, maskingKey, false);
+  BuildFrameHeader(output, Opcode::Close, payloadSize, true, shouldMask, maskingKey, false, payloadSize);
 
   if (payloadSize != 0) {
     const auto codeVal = static_cast<uint16_t>(code);

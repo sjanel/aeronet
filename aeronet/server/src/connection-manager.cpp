@@ -953,6 +953,16 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
   // keep the event loop on its connection, while the other ones wait, until it has sent a whole budget of requests.
   const uint64_t bytesWrittenAtEventStart = totalBytesWritten();
   const auto fd = cnxIt->fd();
+
+  // A connection served by a protocol handler (WebSocket, HTTP/2) consumes all the complete frames it reads: without
+  // pending input, it reads into the input buffer of the previous such read, still in the CPU caches, rather than into
+  // its own. Messages of tens of kilobytes on many connections would otherwise be received in cold memory. The buffer
+  // is given back below if the input was entirely consumed, the connection keeping it otherwise.
+  const bool lendInBuffer = pCnx->protocolHandler != nullptr && pCnx->inBuffer.empty();
+  if (lendInBuffer) {
+    pCnx->inBuffer.swap(_sharedBuffers.inBuffer);
+  }
+
   while (true) {
     const std::size_t chunkSize = _config.computeReadChunkSize(bytesReadThisEvent);
     assert(chunkSize > 0);
@@ -1054,6 +1064,9 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
   // The input processing may have inserted connections.
   cnxIt = _connections.iterator(fd);
   pCnx = _connections.pConnectionState(fd);
+  if (lendInBuffer && pCnx->inBuffer.empty()) {
+    pCnx->inBuffer.swap(_sharedBuffers.inBuffer);
+  }
   // Try to flush again after reading new data, in case TLS needed the read to proceed with write
   if (pCnx->hasPendingOutput()) {
     flushOutbound(cnxIt);

@@ -20,6 +20,8 @@ A feature page explains, in this order when it applies: what the feature is for 
 
 When a page is renamed or moved, add an entry to `redirect_maps` in `mkdocs.yml`, so that published links keep working.
 
+The header logo, `docs/assets/logo.png`, is derived from [resources/logo-blue-violet.png](../../resources/logo-blue-violet.png): the symbol alone (without the wordmark, which the header already prints), cropped, downscaled to 72 px high and recolored white so that it stays legible on the purple header in both color schemes. Regenerate it from the source logo when that changes.
+
 ## Preview locally
 
 Create an isolated Python environment, install the documentation dependency, and start the live-reload server:
