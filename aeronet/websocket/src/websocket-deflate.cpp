@@ -35,6 +35,9 @@ constexpr std::string_view kClientNoContextTakeover = "client_no_context_takeove
 constexpr std::string_view kServerMaxWindowBits = "server_max_window_bits";
 constexpr std::string_view kClientMaxWindowBits = "client_max_window_bits";
 
+// LZ77 window sizes allowed by RFC 7692: 2^8 to 2^15 bytes.
+constexpr bool IsValidWindowBits(uint8_t bits) noexcept { return 8 <= bits && bits <= 15; }
+
 #ifdef AERONET_ENABLE_ZLIB
 // Parse a single extension parameter (name=value or just name)
 struct ExtensionParam {
@@ -56,14 +59,15 @@ struct ExtensionParam {
   return {name, value};
 }
 
-// Smallest LZ77 window zlib can compress raw DEFLATE data with: a 256 bytes window (8 bits) is not supported.
+// Smallest LZ77 window zlib can compress raw DEFLATE data with: a 256 bytes window (8 bits) is not supported. With 9
+// bits, zlib limits the match distances to 512 - 262 = 250 bytes: its output is valid for a 256 bytes window.
 constexpr uint8_t kMinDeflateWindowBits = 9;
 
-// Parse window bits value (8-15)
+// Parse window bits value (8-15), 0 if invalid
 [[nodiscard]] uint8_t ParseWindowBits(std::string_view value) {
   uint8_t bits = 0;
   auto [ptr, ec] = std::from_chars(value.data(), value.data() + value.size(), bits);
-  if (ec != std::errc{} || ptr != value.data() + value.size() || bits < 8 || bits > 15) {
+  if (ec != std::errc{} || ptr != value.data() + value.size() || !IsValidWindowBits(bits)) {
     bits = 0;  // Invalid value
   }
   return bits;
@@ -83,11 +87,10 @@ void DeflateConfig::validate() const {
   if (compressionLevel < 0 || compressionLevel > 9) {
     throw std::invalid_argument("DeflateConfig: compressionLevel must be between 0 and 9");
   }
-  if (serverMaxWindowBits < 9 || serverMaxWindowBits > 15) {
-    // zlib cannot compress raw DEFLATE data with a 256 bytes (8 bits) window.
-    throw std::invalid_argument("DeflateConfig: serverMaxWindowBits must be between 9 and 15");
+  if (!IsValidWindowBits(serverMaxWindowBits)) {
+    throw std::invalid_argument("DeflateConfig: serverMaxWindowBits must be between 8 and 15");
   }
-  if (clientMaxWindowBits < 8 || clientMaxWindowBits > 15) {
+  if (!IsValidWindowBits(clientMaxWindowBits)) {
     throw std::invalid_argument("DeflateConfig: clientMaxWindowBits must be between 8 and 15");
   }
   if (minCompressSize < 16U) {
@@ -100,9 +103,10 @@ std::optional<DeflateNegotiatedParams> ParseDeflateOffer([[maybe_unused]] std::s
 #ifndef AERONET_ENABLE_ZLIB
   return std::nullopt;
 #else
+  // The client window stays the default one (15) unless the client offers client_max_window_bits: the response must
+  // not include it otherwise (RFC 7692 section 7.1.2.2).
   DeflateNegotiatedParams params;
   params.serverMaxWindowBits = serverConfig.serverMaxWindowBits;
-  params.clientMaxWindowBits = serverConfig.clientMaxWindowBits;
   params.serverNoContextTakeover = serverConfig.serverNoContextTakeover;
   params.clientNoContextTakeover = serverConfig.clientNoContextTakeover;
 
@@ -143,19 +147,18 @@ std::optional<DeflateNegotiatedParams> ParseDeflateOffer([[maybe_unused]] std::s
         }
         // Server can accept client's request if it's <= our configured value
         params.serverMaxWindowBits = std::min(bits, serverConfig.serverMaxWindowBits);
-        if (params.serverMaxWindowBits < kMinDeflateWindowBits) {
-          // We cannot compress with a window that small: decline the offer (RFC 7692 section 7.1.2.1).
-          return std::nullopt;
+      }
+    } else if (CaseInsensitiveEqual(name, kClientMaxWindowBits)) {
+      // The client accepts a limit on its window. A value tells the largest window it will use.
+      params.clientMaxWindowBits = serverConfig.clientMaxWindowBits;
+      if (value.has_value()) {
+        const auto bits = ParseWindowBits(*value);
+        if (bits == 0) {
+          return std::nullopt;  // Invalid parameter value
         }
+        params.clientMaxWindowBits = std::min(bits, serverConfig.clientMaxWindowBits);
       }
-    } else if (CaseInsensitiveEqual(name, kClientMaxWindowBits) && value.has_value()) {
-      const auto bits = ParseWindowBits(*value);
-      if (bits == 0) {
-        return std::nullopt;  // Invalid parameter value
-      }
-      params.clientMaxWindowBits = std::min(bits, serverConfig.clientMaxWindowBits);
     }
-    // If no value, client is advertising capability; server can set the value
     // Unknown parameters are ignored per RFC 7692
 
     pos = (nextSemi == std::string_view::npos) ? extensionOffer.size() : nextSemi + 1;
@@ -212,9 +215,10 @@ char* BuildDeflateResponse(DeflateNegotiatedParams params, char* pData) {
 struct DeflateContext::Impl {
   // Window bits and context takeover: own parameters when compressing, the peer's when decompressing.
 #ifdef AERONET_ENABLE_ZLIB
+  // An 8 bits window may be negotiated for either side: zlib cannot compress with it, 9 bits produce data valid for it.
   Impl(int8_t compressionLevel, uint8_t deflateWindowBits, uint8_t inflateWindowBits, bool deflateNoContextTakeover,
        bool inflateNoContextTakeover)
-      : compressor(compressionLevel, deflateWindowBits),
+      : compressor(compressionLevel, std::max(deflateWindowBits, kMinDeflateWindowBits)),
         decompressor(inflateWindowBits),
         deflateNoContextTakeover(deflateNoContextTakeover),
         inflateNoContextTakeover(inflateNoContextTakeover) {}

@@ -453,7 +453,7 @@ TlsContext::TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> 
   const std::size_t wireLen = std::ranges::fold_left(
       alpnProtocols, std::size_t{0}, [](std::size_t sum, const auto& proto) { return sum + 1UL + proto.size(); });
   if (wireLen != 0) {
-    _alpnData = AlpnData{RawBytes32{wireLen}, {}, cfg.alpnMustMatch};
+    _alpnData = AlpnData{RawBytes32{wireLen}, cfg.alpnMustMatch};
     for (const auto& proto : alpnProtocols) {
       _alpnData.wire.unchecked_push_back(static_cast<std::byte>(proto.size()));
       _alpnData.wire.unchecked_append(reinterpret_cast<const std::byte*>(proto.data()), proto.size());
@@ -462,7 +462,7 @@ TlsContext::TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> 
     if (cfg.alpnMustMatch) {
       // OpenSSL only calls SelectAlpn when the client offers protocols: reject a ClientHello without any.
       // Called with the default context only, before the SNI routing.
-      ::SSL_CTX_set_client_hello_cb(ctx, &TlsContext::RequireAlpnOffer, &_alpnData);
+      ::SSL_CTX_set_client_hello_cb(ctx, &TlsContext::RequireAlpnOffer, nullptr);
     }
   }
 
@@ -732,27 +732,26 @@ int TlsContext::SelectAlpn([[maybe_unused]] SSL* ssl, const unsigned char** out,
     prefIndex += 1 + len;
   }
   if (data->mustMatch) {
-    RecordStrictAlpnMismatch(ssl, *data);
+    RecordStrictAlpnMismatch(ssl);
     return SSL_TLSEXT_ERR_ALERT_FATAL;
   }
   return SSL_TLSEXT_ERR_NOACK;
 }
 
-void TlsContext::RecordStrictAlpnMismatch(SSL* ssl, AlpnData& alpnData) noexcept {
-  ++alpnData.nbStrictMismatches;
+void TlsContext::RecordStrictAlpnMismatch(SSL* ssl) noexcept {
   if (auto* obs = GetTlsHandshakeObserver(ssl)) {
     obs->alpnStrictMismatch = true;
   }
 }
 
-int TlsContext::RequireAlpnOffer(SSL* ssl, int* alert, void* arg) {
+int TlsContext::RequireAlpnOffer(SSL* ssl, int* alert, [[maybe_unused]] void* arg) {
   const unsigned char* extension = nullptr;
   std::size_t extensionSize = 0;
   if (::SSL_client_hello_get0_ext(ssl, TLSEXT_TYPE_application_layer_protocol_negotiation, &extension,
                                   &extensionSize) == 1) {
     return SSL_CLIENT_HELLO_SUCCESS;  // SelectAlpn checks the offered protocols
   }
-  RecordStrictAlpnMismatch(ssl, *static_cast<AlpnData*>(arg));
+  RecordStrictAlpnMismatch(ssl);
   *alert = SSL_AD_NO_APPLICATION_PROTOCOL;
   return SSL_CLIENT_HELLO_ERROR;
 }

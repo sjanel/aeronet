@@ -79,6 +79,18 @@ struct CertKeyCache {
 // so a generous bound costs nothing: it only absorbs event loop stalls of a loaded machine (sanitizers, parallel
 // ctest), which reached several hundreds of ms.
 constexpr auto kRejectedCloseTimeout = 5s;
+
+// The server counts a strict ALPN mismatch once the handshake failed on its side, possibly after the client saw it
+// fail: waits for its statistics to report 'expected' of them.
+ServerStats WaitForStrictAlpnMismatches(const auto& server, uint64_t expected) {
+  const auto deadline = std::chrono::steady_clock::now() + kRejectedCloseTimeout;
+  ServerStats stats = server.stats();
+  while (stats.tlsAlpnStrictMismatches < expected && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(1ms);
+    stats = server.stats();
+  }
+  return stats;
+}
 }  // namespace
 
 #ifdef AERONET_ENABLE_HTTP2
@@ -94,10 +106,9 @@ TEST(HttpTlsAlpnMismatch, HandshakeFailsWhenNoCommonProtocolAndMustMatch) {
   test::TlsClient::Options opts;
   opts.alpn = {"protoX"};
   test::TlsClient client(port, opts);
-  ServerStats statsAfter = ts.stats();
 
   ASSERT_FALSE(client.handshakeOk());
-  ASSERT_GE(statsAfter.tlsAlpnStrictMismatches, 1U);
+  EXPECT_EQ(WaitForStrictAlpnMismatches(ts, 1).tlsAlpnStrictMismatches, 1U);
 }
 
 TEST(HttpTlsAlpnNonStrict, MismatchAllowedAndNoMetricIncrement) {
@@ -157,10 +168,28 @@ TEST(HttpTlsAlpnMismatch, StrictMismatchMetricSurvivesServerMove) {
   test::TlsClient client(moved.port(), opts);
   ASSERT_FALSE(client.handshakeOk());
 
-  ServerStats statsAfter = moved.stats();
-  ASSERT_GE(statsAfter.tlsAlpnStrictMismatches, 1U);
+  EXPECT_EQ(WaitForStrictAlpnMismatches(moved, 1).tlsAlpnStrictMismatches, 1U);
 
   handle.stop();
+}
+
+TEST(HttpTlsAlpnMismatch, StrictMismatchCountSurvivesTlsContextRebuild) {
+  test::TlsTestServer ts({"http/1.1"}, [](HttpServerConfig& cfg) { cfg.withTlsAlpnMustMatch(true); });
+  test::TlsClient::Options opts;
+  opts.alpn = {"protoX"};
+  {
+    test::TlsClient client(ts.port(), opts);
+    ASSERT_FALSE(client.handshakeOk());
+  }
+  ASSERT_EQ(WaitForStrictAlpnMismatches(ts, 1).tlsAlpnStrictMismatches, 1U);
+
+  // Any TLS change rebuilds the TLS context of the server, as does a certificate rotation.
+  ts.server.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withTlsHandshakeLogging(true); });
+  {
+    test::TlsClient client(ts.port(), opts);
+    ASSERT_FALSE(client.handshakeOk());
+  }
+  EXPECT_EQ(WaitForStrictAlpnMismatches(ts, 2).tlsAlpnStrictMismatches, 2U);
 }
 
 extern std::atomic<int> g_aeronetTestFailNextSslNew;
