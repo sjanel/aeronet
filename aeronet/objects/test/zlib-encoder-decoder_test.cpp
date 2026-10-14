@@ -139,7 +139,8 @@ TEST_P(ZlibEncoderDecoderTest, MaxDecompressedBytes) {
     decoder.setVariant(variant);
     const bool isOK = decoder.decompressFull(compressed, limit, kDecoderChunkSize, decompressed);
     EXPECT_EQ(isOK, payload.empty());
-    EXPECT_EQ(decompressed, std::string_view(payload).substr(0, limit));
+    // Exceeding the limit is detected by decoding one more byte.
+    EXPECT_EQ(decompressed, std::string_view(payload).substr(0, limit + 1));
   }
 }
 
@@ -558,6 +559,60 @@ TEST(ZlibEncoderDecoderTest, EncodeChunkWithInsufficientOutputCapacity) {
     // can't be finalized with pending input.
     const auto endResult = ctx->end(sizeof(tiny) - result.writtenIfNoError(), tiny);
     EXPECT_TRUE(endResult.hasError());
+  }
+}
+
+// A stream fed in pieces whose decoded size comes within one decoder chunk of maxDecompressedBytes is accepted: the
+// limit only stops an output that would exceed it.
+TEST_P(ZlibEncoderDecoderTest, StreamingDecodeCloseToTheLimitIsAccepted) {
+  const RawChars payload = test::MakeRandomPayload(9000);  // incompressible: the coded stream spans many pieces
+  CompressionConfig cfg;
+  ZlibEncoder encoder(cfg.zlib.level);
+  RawChars compressed;
+  EncodeFull(encoder, GetParam(), std::string_view{payload}, compressed);
+  const std::string_view view{compressed};
+  for (const std::size_t limit : {payload.size(), payload.size() + 1, payload.size() + kDecoderChunkSize}) {
+    ZlibDecoder decoder(GetParam());
+    auto* ctx = decoder.makeContext();
+    RawChars decompressed;
+    bool ok = true;
+    for (std::size_t off = 0; ok && off < view.size(); off += 100) {
+      const std::string_view piece = view.substr(off, 100);
+      ok = ctx->decompressChunk(piece, off + piece.size() == view.size(), limit - decompressed.size(),
+                                kDecoderChunkSize, decompressed);
+    }
+    EXPECT_TRUE(ok) << VariantName(GetParam()) << " limit " << limit;
+    EXPECT_TRUE(std::string_view(decompressed) == std::string_view{payload}) << VariantName(GetParam());
+  }
+
+  ZlibDecoder decoder(GetParam());
+  RawChars decompressed;
+  EXPECT_FALSE(decoder.decompressFull(view, payload.size() - 1, kDecoderChunkSize, decompressed));
+}
+
+// maxDecompressedBytes holds when the output buffer already has room beyond it, as a reused buffer has: a stream
+// decoding to exactly the limit is accepted, one byte more is rejected, in one shot or fed piece by piece.
+TEST_P(ZlibEncoderDecoderTest, MaxDecompressedBytesWithSpareOutputCapacity) {
+  const std::string payload = test::MakePatternedPayload(100000);
+  CompressionConfig cfg;
+  ZlibEncoder encoder(cfg.zlib.level);
+  RawChars compressed;
+  EncodeFull(encoder, GetParam(), payload, compressed);
+  const std::string_view view(compressed);
+  for (const std::size_t pieceSize : {view.size(), std::size_t{100}}) {
+    for (const std::size_t limit : {payload.size() - 1, payload.size()}) {
+      ZlibDecoder decoder(GetParam());
+      auto* ctx = decoder.makeContext();
+      RawChars decompressed(4 * payload.size());
+      bool ok = true;
+      for (std::size_t off = 0; ok && off < view.size(); off += pieceSize) {
+        const std::string_view piece = view.substr(off, pieceSize);
+        ok = ctx->decompressChunk(piece, off + piece.size() == view.size(), limit - decompressed.size(),
+                                  kDecoderChunkSize, decompressed);
+      }
+      EXPECT_EQ(ok, limit == payload.size()) << VariantName(GetParam()) << " piece " << pieceSize << " limit " << limit;
+      EXPECT_LE(decompressed.size(), limit + 1);
+    }
   }
 }
 

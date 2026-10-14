@@ -1,5 +1,6 @@
 #include "aeronet/websocket-compress.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -93,29 +94,31 @@ const char* WebSocketDecompressor::decompress(std::span<const std::byte> input, 
 
   ZSetInput(stream, std::string_view{reinterpret_cast<const char*>(input.data()), input.size()});
 
-  // One byte decompressed beyond the limit tells whether the message exceeds it (0: unlimited).
-  const std::size_t initialSize = output.size();
-  const bool limited = maxDecompressedSize != 0 && maxDecompressedSize != std::numeric_limits<std::size_t>::max();
-  DecoderBufferManager bufferManager(output, kDecompressChunkSize, limited ? maxDecompressedSize + 1 : 0);
+  // 0: unlimited.
+  DecoderBufferManager bufferManager(
+      output, kDecompressChunkSize,
+      maxDecompressedSize == 0 ? std::numeric_limits<std::size_t>::max() : maxDecompressedSize);
 
   // The message is followed by the sync flush marker removed by the sender (0x00 0x00 0xff 0xff, RFC 7692 section
   // 7.2.2), inflated once the message data is: it leaves the stream at a block boundary, where the next message
   // continues it with context takeover.
   bool trailerSet = false;
   for (;;) {
-    // Reserves the next chunk, up to one byte beyond the limit: the decompressed size is checked below.
-    bufferManager.nextReserve();
+    // Reserves the next chunk, up to one byte beyond the limit: the decompressed size is checked below. zlib counts the
+    // output room in 32 bits.
+    const auto room =
+        static_cast<uint32_t>(std::min<std::size_t>(bufferManager.nextReserve(), std::numeric_limits<uint32_t>::max()));
 
-    ZSetOutput(stream, reinterpret_cast<char*>(output.data() + output.size()), output.availableCapacity());
+    ZSetOutput(stream, reinterpret_cast<char*>(output.data() + output.size()), room);
 
     const auto ret = ZInflate(stream, Z_NO_FLUSH);
     if (ret == Z_STREAM_ERROR || ret == Z_DATA_ERROR || ret == Z_MEM_ERROR) {
       return "inflate() failed";
     }
 
-    output.addSize(output.availableCapacity() - stream.avail_out);
+    output.addSize(room - stream.avail_out);
 
-    if (limited && output.size() - initialSize > maxDecompressedSize) {
+    if (bufferManager.limitExceeded()) {
       return "Decompressed size exceeds maximum";
     }
     if (stream.avail_out == 0) {

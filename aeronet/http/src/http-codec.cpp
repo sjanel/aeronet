@@ -50,6 +50,8 @@
 
 #ifdef AERONET_ENABLE_ZSTD
 #include <zstd.h>
+
+#include "aeronet/zstd-decoder.hpp"
 #endif
 
 namespace aeronet {
@@ -133,10 +135,17 @@ inline std::string_view FinalizeDecompressedBody(SvToSvMap& headersMap, SvToSvMa
   return body;
 }
 
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+constexpr RequestDecompressionResult kDecompressedSizeTooLarge{
+    .status = http::StatusCodePayloadTooLarge,
+    .message = "Decompressed size too large",
+};
+#endif
+
 inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] DecompressionState& decompressionState,
                                                        [[maybe_unused]] auto&& runDecoder,
-                                                       [[maybe_unused]] double maxExpansionRatio, std::string_view& src,
-                                                       std::string_view contentEncoding,
+                                                       [[maybe_unused]] const DecompressionConfig& decompressionConfig,
+                                                       std::string_view& src, std::string_view contentEncoding,
                                                        [[maybe_unused]] std::size_t compressedSize,
                                                        RawChars& bodyAndTrailersBuffer, RawChars& tmpBuffer) {
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
@@ -170,6 +179,10 @@ inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] Decompre
 #ifdef AERONET_ENABLE_ZSTD
     } else if (CaseInsensitiveEqual(encoding, http::zstd)) {
       stageOk = runDecoder(decompressionState.zstdDecoder, *dst);
+      // decompressFull() rejects a frame declaring a too large size without decoding it.
+      if (!stageOk && ZstdDecoder::DeclaresMoreThan(src, decompressionConfig.maxDecompressedBytes)) {
+        return kDecompressedSizeTooLarge;
+      }
 #endif
 #ifdef AERONET_ENABLE_BROTLI
     } else if (CaseInsensitiveEqual(encoding, http::br)) {
@@ -180,12 +193,16 @@ inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] Decompre
     }
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
     if (!stageOk) {
+      // A decoder exceeding maxDecompressedBytes fails with more bytes decoded.
+      if (dst->size() > decompressionConfig.maxDecompressedBytes) {
+        return kDecompressedSizeTooLarge;
+      }
       return {.status = http::StatusCodeBadRequest, .message = "Decompression failed"};
     }
 
     assert(compressedSize > 0);
     const double ratio = static_cast<double>(dst->size()) / static_cast<double>(compressedSize);
-    if (ratio > maxExpansionRatio) {
+    if (ratio > decompressionConfig.maxExpansionRatio) {
       return {.status = http::StatusCodePayloadTooLarge, .message = "Decompression expansion too large"};
     }
 
@@ -239,7 +256,9 @@ bool DecodeContiguous(auto& decoder, std::string_view src, bool useStreaming, co
     const std::size_t chunkLen = std::min<std::size_t>(cfg.decoderChunkSize, remaining);
     const std::string_view chunk(src.data() + processed, chunkLen);
     processed += chunkLen;
-    if (!ctx->decompressChunk(chunk, processed == src.size(), cfg.maxDecompressedBytes, cfg.decoderChunkSize, dst)) {
+    // maxDecompressedBytes bounds the whole decoded body: each chunk gets what the previous ones left.
+    if (!ctx->decompressChunk(chunk, processed == src.size(), cfg.maxDecompressedBytes - dst.size(),
+                              cfg.decoderChunkSize, dst)) {
       return false;
     }
   }
@@ -768,8 +787,7 @@ RequestDecompressionResult HttpCodec::MaybeDecompressRequestBody(DecompressionSt
        &src, &decompressionConfig](auto& decoder, RawChars& dst) {
         return DecodeContiguous(decoder, src, useStreamingDecode, decompressionConfig, dst);
       },
-      decompressionConfig.maxExpansionRatio, src, encodingHeaderIt->second, compressedSize, bodyAndTrailersBuffer,
-      tmpBuffer);
+      decompressionConfig, src, encodingHeaderIt->second, compressedSize, bodyAndTrailersBuffer, tmpBuffer);
 
   if (res.status != http::StatusCodeOK) {
     if (res.status == http::StatusCodeNotModified) {
@@ -848,7 +866,9 @@ RequestDecompressionResult HttpCodec::DecompressChunkedBody(DecompressionState& 
           auto* ctx = decoder.makeContext();
           for (std::size_t idx = 0; idx < compressedChunks.size(); ++idx) {
             const bool lastChunk = (idx == compressedChunks.size() - 1);
-            if (!ctx->decompressChunk(compressedChunks[idx], lastChunk, maxPlainBytes, decoderChunkSize, dst)) {
+            // maxPlainBytes bounds the whole decoded body: each chunk gets what the previous ones left.
+            if (!ctx->decompressChunk(compressedChunks[idx], lastChunk, maxPlainBytes - dst.size(), decoderChunkSize,
+                                      dst)) {
               return false;
             }
           }
@@ -856,8 +876,7 @@ RequestDecompressionResult HttpCodec::DecompressChunkedBody(DecompressionState& 
         }
         return decoder.decompressFull(src, maxPlainBytes, decoderChunkSize, dst);
       },
-      decompressionConfig.maxExpansionRatio, src, encodingHeaderIt->second, compressedSize, bodyAndTrailersBuffer,
-      tmpBuffer);
+      decompressionConfig, src, encodingHeaderIt->second, compressedSize, bodyAndTrailersBuffer, tmpBuffer);
   if (res.status != http::StatusCodeOK) {
     return res;
   }
@@ -892,7 +911,7 @@ RequestDecompressionResult HttpCodec::DecompressFullBody(DecompressionState& dec
       [useStreaming, &src, &decompressionConfig](auto& decoder, RawChars& dst) {
         return DecodeContiguous(decoder, src, useStreaming, decompressionConfig, dst);
       },
-      decompressionConfig.maxExpansionRatio, src, contentEncoding, compressedBody.size(), outBuffer, tmpBuffer);
+      decompressionConfig, src, contentEncoding, compressedBody.size(), outBuffer, tmpBuffer);
 
   if (res.status == http::StatusCodeNotModified) {
     // Only identity codings were present: nothing was decoded, deliver the body verbatim.

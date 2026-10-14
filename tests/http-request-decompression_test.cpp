@@ -611,4 +611,72 @@ TEST(HttpRequestDecompression, CorruptedCompressedData) {
   }
 }
 
+// A body whose compressed stream was cut short is rejected, never handed truncated to the handler.
+TEST(HttpRequestDecompression, TruncatedCompressedData) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
+  const std::string plain = test::MakePatternedPayload(20000);
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
+
+  for (std::size_t threshold : kStreamingThresholds) {
+    ts.postConfigUpdate(
+        [threshold](HttpServerConfig& cfg) { cfg.decompression.streamingDecompressionThresholdBytes = threshold; });
+    for (const Encoding enc : test::SupportedEncodings()) {
+      const RawChars comp = test::Compress(enc, plain);
+      const std::string_view truncated = std::string_view(comp).substr(0, comp.size() - 1);
+      auto resp = RawPost(ts.port(), "/truncated", {{"Content-Encoding", GetEncodingStr(enc)}}, truncated);
+      EXPECT_EQ(resp.status, http::StatusCodeBadRequest)
+          << "Expected 400 for truncated encoding: " << GetEncodingStr(enc) << " threshold " << threshold;
+    }
+  }
+}
+
+// maxDecompressedBytes bounds the whole decoded body (413): with a Content-Length, decoded in one shot or in streaming,
+// or chunked, decoded chunk by chunk.
+TEST(HttpRequestDecompression, MaxDecompressedBytesBoundsTheWholeBody) {
+  const RawChars plain = test::MakeRandomPayload(20000);  // incompressible: decoded in many pieces
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
+
+  for (const std::size_t limit : {plain.size(), plain.size() - 1}) {
+    const http::StatusCode expected = limit == plain.size() ? http::StatusCodeOK : http::StatusCodePayloadTooLarge;
+    for (const std::size_t threshold : {std::size_t{1}, std::numeric_limits<std::size_t>::max()}) {
+      ts.postConfigUpdate([limit, threshold](HttpServerConfig& cfg) {
+        cfg.maxBodyBytes = 1UL << 20U;  // the compressed body is never the limit here
+        cfg.decompression = {};
+        cfg.decompression.decoderChunkSize = 1024;
+        cfg.decompression.maxDecompressedBytes = limit;
+        cfg.decompression.streamingDecompressionThresholdBytes = threshold;
+      });
+      for (const Encoding enc : test::SupportedEncodings()) {
+        const RawChars comp = test::Compress(enc, std::string_view(plain));
+        const auto resp = RawPost(ts.port(), "/limit", {{"Content-Encoding", GetEncodingStr(enc)}}, comp);
+        EXPECT_EQ(resp.status, expected) << GetEncodingStr(enc) << " limit " << limit << " threshold " << threshold;
+        if (expected == http::StatusCodeOK) {
+          EXPECT_TRUE(resp.body == std::string_view(plain)) << GetEncodingStr(enc);
+        }
+      }
+    }
+
+    for (const Encoding enc : test::SupportedEncodings()) {
+      const RawChars comp = test::Compress(enc, std::string_view(plain));
+      std::string req("POST /limit HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n");
+      req += MakeHttp1HeaderLine(http::ContentEncoding, GetEncodingStr(enc));
+      req += http::CRLF;
+      for (std::size_t off = 0; off < comp.size(); off += 1000) {
+        const std::string_view chunk = std::string_view(comp).substr(off, 1000);
+        char hex[16];
+        const auto [ptr, errc] = std::to_chars(hex, hex + sizeof(hex), chunk.size(), 16);
+        ASSERT_EQ(errc, std::errc());
+        req.append(hex, ptr);
+        req += http::CRLF;
+        req += chunk;
+        req += http::CRLF;
+      }
+      req += "0\r\n\r\n";
+      const std::string resp = test::sendAndCollect(ts.port(), req);
+      EXPECT_TRUE(resp.starts_with(expected == http::StatusCodeOK ? "HTTP/1.1 200" : "HTTP/1.1 413"))
+          << "chunked " << GetEncodingStr(enc) << " limit " << limit << ": " << resp.substr(0, 40);
+    }
+  }
+}
+
 }  // namespace aeronet

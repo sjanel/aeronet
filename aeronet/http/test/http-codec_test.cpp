@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
@@ -31,6 +32,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
+#include "aeronet/vector.hpp"
 
 #ifdef AERONET_ENABLE_ZLIB
 #include <utility>
@@ -1246,6 +1248,93 @@ TEST(HttpCodecFullBody, DecompressExpansionRatioGuard) {
   const auto res =
       HttpCodec::DecompressFullBody(state, cfg, GetEncodingStr(enc), std::string_view(compressed), out, tmp, decoded);
   EXPECT_EQ(res.status, http::StatusCodePayloadTooLarge);
+}
+
+// maxDecompressedBytes bounds the whole decoded body (413), decoded in one shot or in streaming by pieces of input, and
+// whatever room the output buffers already have. Corrupt data stays a 400.
+TEST(HttpCodecFullBody, DecompressedSizeLimit) {
+  const RawChars payload = test::MakeRandomPayload(20000);  // incompressible: the streaming decode takes many pieces
+  for (const Encoding enc : test::SupportedEncodings()) {
+    const RawChars compressed = test::Compress(enc, std::string_view(payload));
+    RawChars corrupted = compressed;
+    test::CorruptData(enc, corrupted);
+    for (const std::size_t threshold : {std::size_t{1}, std::numeric_limits<std::size_t>::max()}) {
+      DecompressionState state;
+      DecompressionConfig cfg;
+      cfg.decoderChunkSize = 1024;
+      cfg.streamingDecompressionThresholdBytes = threshold;
+      RawChars out;
+      RawChars tmp;
+      std::string_view decoded;
+      for (const bool spareCapacity : {false, true}) {
+        if (spareCapacity) {
+          out.reserve(4 * payload.size());
+          tmp.reserve(4 * payload.size());
+        }
+        cfg.maxDecompressedBytes = payload.size();
+        auto res = HttpCodec::DecompressFullBody(state, cfg, GetEncodingStr(enc), std::string_view(compressed), out,
+                                                 tmp, decoded);
+        EXPECT_EQ(res.status, http::StatusCodeOK) << GetEncodingStr(enc) << " threshold " << threshold;
+        EXPECT_TRUE(decoded == std::string_view(payload)) << GetEncodingStr(enc) << " threshold " << threshold;
+
+        res = HttpCodec::DecompressFullBody(state, cfg, GetEncodingStr(enc), std::string_view(corrupted), out, tmp,
+                                            decoded);
+        EXPECT_EQ(res.status, http::StatusCodeBadRequest) << GetEncodingStr(enc) << " threshold " << threshold;
+
+        cfg.maxDecompressedBytes = payload.size() - 1;
+        res = HttpCodec::DecompressFullBody(state, cfg, GetEncodingStr(enc), std::string_view(compressed), out, tmp,
+                                            decoded);
+        EXPECT_EQ(res.status, http::StatusCodePayloadTooLarge)
+            << GetEncodingStr(enc) << " threshold " << threshold << " spare capacity " << spareCapacity;
+      }
+    }
+  }
+}
+
+// maxDecompressedBytes bounds the whole decoded body of a chunked request, not the output of each chunk, in every stage
+// of stacked codings.
+TEST(HttpCodecDecompression, DecompressChunkedBody_DecompressedSizeLimit) {
+  const auto expectLimit = [](std::span<const std::string_view> chunks, std::size_t compressedSize,
+                              const std::string& contentEncoding, std::string_view payload) {
+    for (const std::size_t limit : {payload.size(), payload.size() - 1}) {
+      DecompressionConfig cfg;
+      cfg.decoderChunkSize = 1024;
+      cfg.maxDecompressedBytes = limit;
+      cfg.maxExpansionRatio = 1e6;
+      ConnectionState cs;
+      HttpRequestView& req = cs.request;
+      const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, contentEncoding);
+      RawChars bodyBuf;
+      RawChars tmpBuf;
+      DecompressionState decompressionState;
+      const auto res =
+          HttpCodec::DecompressChunkedBody(decompressionState, cfg, req, chunks, compressedSize, bodyBuf, tmpBuf);
+      if (limit == payload.size()) {
+        EXPECT_EQ(res.status, http::StatusCodeOK) << contentEncoding;
+        EXPECT_TRUE(req.body() == payload) << contentEncoding;
+      } else {
+        EXPECT_EQ(res.status, http::StatusCodePayloadTooLarge) << contentEncoding;
+      }
+    }
+  };
+
+  const RawChars random = test::MakeRandomPayload(20000);  // incompressible: each chunk decodes to a part of it
+  const std::string patterned = test::MakePatternedPayload(20000);
+  for (const Encoding enc : test::SupportedEncodings()) {
+    const std::string encStr(GetEncodingStr(enc));
+    const RawChars compressed = test::Compress(enc, std::string_view(random));
+    vector<std::string_view> chunks;
+    for (std::size_t off = 0; off < compressed.size(); off += 1000) {
+      chunks.push_back(std::string_view(compressed).substr(off, 1000));
+    }
+    expectLimit(chunks, compressed.size(), encStr, std::string_view(random));
+
+    // Stacked: the inner coding is decoded in one shot from the output of the first stage.
+    const RawChars inner = test::Compress(enc, patterned);
+    const RawChars outer = test::Compress(enc, std::string_view(inner));
+    const std::string_view outerView(outer);
+    expectLimit(std::span<const std::string_view>(&outerView, 1), outer.size(), encStr + ", " + encStr, patterned);
+  }
 }
 
 #endif
