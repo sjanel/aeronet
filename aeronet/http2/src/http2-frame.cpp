@@ -15,20 +15,6 @@
 
 namespace aeronet::http2 {
 
-namespace {
-
-constexpr FrameHeader CreateFrameHeader(FrameType type, uint8_t flags, uint32_t streamId,
-                                        uint32_t payloadLength) noexcept {
-  FrameHeader header;
-  header.type = type;
-  header.flags = flags;
-  header.streamId = streamId;
-  header.length = payloadLength;
-  return header;
-}
-
-}  // namespace
-
 // ============================
 // Frame header parsing/writing
 // ============================
@@ -36,16 +22,12 @@ constexpr FrameHeader CreateFrameHeader(FrameType type, uint8_t flags, uint32_t 
 FrameHeader ParseFrameHeader(std::span<const std::byte> data) noexcept {
   assert(data.size() >= FrameHeader::kSize);
 
-  return CreateFrameHeader(static_cast<FrameType>(static_cast<uint8_t>(data[3])), static_cast<uint8_t>(data[4]),
-                           Read32BE(data.data() + 5) & kMaxWindowSize, Read24BE(data.data()));
+  return {Read64BE(data.data()) & ~FrameHeader::kReservedBit, static_cast<uint8_t>(data[8])};
 }
 
 void WriteFrameHeader(std::byte* buffer, FrameHeader header) noexcept {
-  assert(header.length <= 0xFFFFFFU && "frame length exceeds 24-bit protocol limit");
-  Write24BE(buffer, header.length);
-  buffer[3] = static_cast<std::byte>(header.type);
-  buffer[4] = static_cast<std::byte>(header.flags);
-  Write32BE(buffer + 5, header.streamId & kMaxWindowSize);  // Clear reserved bit
+  Write64BE(buffer, header._bytes0To7);
+  buffer[8] = static_cast<std::byte>(header._byte8);
 }
 
 std::size_t WriteFrame(RawBytes& buffer, FrameType type, uint8_t flags, uint32_t streamId, uint32_t payloadSize) {
@@ -53,7 +35,7 @@ std::size_t WriteFrame(RawBytes& buffer, FrameType type, uint8_t flags, uint32_t
 
   buffer.ensureAvailableCapacityExponential(totalSize);
 
-  WriteFrameHeader(buffer.data() + buffer.size(), CreateFrameHeader(type, flags, streamId, payloadSize));
+  WriteFrameHeader(buffer.data() + buffer.size(), FrameHeader(payloadSize, type, flags, streamId));
   buffer.addSize(FrameHeader::kSize);
 
   return totalSize;
@@ -64,18 +46,15 @@ std::size_t WriteFrame(RawBytes& buffer, FrameType type, uint8_t flags, uint32_t
 // ============================
 
 FrameParseResult ParseDataFrame(FrameHeader header, std::span<const std::byte> payload, DataFrame& out) noexcept {
-  out.endStream = header.hasFlag(FrameFlags::DataEndStream);
-  out.padLength = 0;
-
   if (header.hasFlag(FrameFlags::DataPadded)) {
     if (payload.empty()) {
       return FrameParseResult::FrameSizeError;
     }
-    out.padLength = static_cast<uint8_t>(payload[0]);
-    if (out.padLength >= payload.size()) {
+    const uint8_t padLength = static_cast<uint8_t>(payload[0]);
+    if (padLength >= payload.size()) {
       return FrameParseResult::InvalidPadding;
     }
-    out.data = payload.subspan(1, payload.size() - 1 - out.padLength);
+    out.data = payload.subspan(1, payload.size() - 1 - padLength);
   } else {
     out.data = payload;
   }
@@ -83,60 +62,55 @@ FrameParseResult ParseDataFrame(FrameHeader header, std::span<const std::byte> p
   return FrameParseResult::Ok;
 }
 
-FrameParseResult ParseHeadersFrame(FrameHeader header, std::span<const std::byte> payload, HeadersFrame& out) noexcept {
-  out.endStream = header.hasFlag(FrameFlags::HeadersEndStream);
-  out.endHeaders = header.hasFlag(FrameFlags::HeadersEndHeaders);
-  out.hasPriority = header.hasFlag(FrameFlags::HeadersPriority);
-  out.padLength = 0;
-  out.exclusive = false;
-  out.streamDependency = 0;
-  out.weightMinusOne = 15;
-
-  std::size_t offset = 0;
+FrameParseResult ParseHeadersFrame(FrameHeader header, std::span<const std::byte> payload, HeadersFrame& out,
+                                   uint32_t& streamDependency) noexcept {
+  uint8_t offset = 0;
+  uint8_t padLength = 0;
 
   // Handle padding
   if (header.hasFlag(FrameFlags::HeadersPadded)) {
     if (payload.empty()) {
       return FrameParseResult::FrameSizeError;
     }
-    out.padLength = static_cast<uint8_t>(payload[0]);
+    padLength = static_cast<uint8_t>(payload[0]);
     offset = 1;
   }
 
   // Handle priority
-  if (out.hasPriority) {
-    if (payload.size() < offset + 5) {
+  if (header.hasFlag(FrameFlags::HeadersPriority)) {
+    if (payload.size() < offset + 5U) {
       return FrameParseResult::FrameSizeError;
     }
-    uint32_t depAndExcl = Read32BE(payload.data() + offset);
-    out.exclusive = (depAndExcl & 0x80000000U) != 0;
-    out.streamDependency = depAndExcl & kMaxWindowSize;
-    // RFC 9113 §5.3.1: "Add one to the value to obtain a weight between 1 and 256."
-    out.weightMinusOne = static_cast<uint8_t>(payload[offset + 4]);
-    offset += 5;
+
+    PriorityFrame frame = ParsePriorityFrame(payload.subspan(offset, 5U));
+    if (header.streamId() == frame.streamDependency) {
+      return FrameParseResult::InvalidDependency;
+    }
+    out.exclusive = frame.exclusive;
+    streamDependency = frame.streamDependency;
+    out.weightMinusOne = frame.weightMinusOne;
+    offset += 5U;
   }
 
   // Validate padding
-  if (out.padLength > 0 && offset + out.padLength > payload.size()) {
+  if (offset + padLength > payload.size()) {
     return FrameParseResult::InvalidPadding;
   }
 
-  out.headerBlockFragment = payload.subspan(offset, payload.size() - offset - out.padLength);
+  out.pHeaderBlockFragment = payload.data() + offset;
+  out.headerBlockFragmentSize = static_cast<uint32_t>(payload.size() - offset - padLength);
   return FrameParseResult::Ok;
 }
 
-FrameParseResult ParsePriorityFrame(std::span<const std::byte> payload, PriorityFrame& out) noexcept {
-  if (payload.size() != 5) {
-    return FrameParseResult::FrameSizeError;
-  }
-
+PriorityFrame ParsePriorityFrame(std::span<const std::byte> payload) noexcept {
+  PriorityFrame frame;
   uint32_t depAndExcl = Read32BE(payload.data());
-  out.exclusive = (depAndExcl & 0x80000000U) != 0;
-  out.streamDependency = depAndExcl & kMaxWindowSize;
+  frame.exclusive = (depAndExcl & 0x80000000U) != 0;
+  frame.streamDependency = depAndExcl & kMaxWindowSize;
   // RFC 9113 §5.3.1: "Add one to the value to obtain a weight between 1 and 256."
-  out.weightMinusOne = static_cast<uint8_t>(payload[sizeof(uint32_t)]);
+  frame.weightMinusOne = static_cast<uint8_t>(payload[sizeof(uint32_t)]);
 
-  return FrameParseResult::Ok;
+  return frame;
 }
 
 FrameParseResult ParseRstStreamFrame(std::span<const std::byte> payload, RstStreamFrame& out) noexcept {
@@ -214,9 +188,9 @@ std::size_t WriteHeadersFrameWithPriority(RawBytes& buffer, uint32_t streamId, s
 
   std::byte* pData = buffer.end();
 
-  WriteFrameHeader(pData, CreateFrameHeader(FrameType::Headers,
-                                            ComputeHeaderFrameFlags(endStream, endHeaders, FrameFlags::HeadersPriority),
-                                            streamId, static_cast<uint32_t>(payloadSize)));
+  WriteFrameHeader(pData,
+                   FrameHeader(static_cast<uint32_t>(payloadSize), FrameType::Headers,
+                               ComputeHeaderFrameFlags(endStream, endHeaders, FrameFlags::HeadersPriority), streamId));
   pData += FrameHeader::kSize;
 
   // Write priority
@@ -266,8 +240,7 @@ std::size_t WriteSettingsFrame(RawBytes& buffer, std::span<const SettingsEntry> 
 
   std::byte* pData = buffer.end();
 
-  WriteFrameHeader(pData,
-                   CreateFrameHeader(FrameType::Settings, FrameFlags::None, 0, static_cast<uint32_t>(payloadSize)));
+  WriteFrameHeader(pData, FrameHeader(static_cast<uint32_t>(payloadSize), FrameType::Settings, FrameFlags::None, 0));
   pData += FrameHeader::kSize;
 
   // Write settings entries
@@ -301,8 +274,7 @@ std::size_t WriteGoAwayFrame(RawBytes& buffer, uint32_t lastStreamId, ErrorCode 
 
   std::byte* pData = buffer.end();
 
-  WriteFrameHeader(pData,
-                   CreateFrameHeader(FrameType::GoAway, FrameFlags::None, 0, static_cast<uint32_t>(payloadSize)));
+  WriteFrameHeader(pData, FrameHeader(static_cast<uint32_t>(payloadSize), FrameType::GoAway, FrameFlags::None, 0));
   pData += FrameHeader::kSize;
 
   // Write last stream ID and error code

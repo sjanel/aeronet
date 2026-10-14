@@ -123,12 +123,12 @@ struct ParsedFrame {
     auto remaining = data.subspan(offset);
     FrameHeader header = ParseFrameHeader(remaining);
 
-    const std::size_t frameSize = FrameHeader::kSize + header.length;
+    const std::size_t frameSize = FrameHeader::kSize + header.length();
     if (offset + frameSize > data.size()) {
       break;
     }
 
-    frames.push_back(ParsedFrame{header, remaining.subspan(FrameHeader::kSize, header.length)});
+    frames.push_back(ParsedFrame{header, remaining.subspan(FrameHeader::kSize, header.length())});
     offset += frameSize;
   }
 
@@ -443,8 +443,8 @@ TEST(Http2Core, H2cPriorKnowledgeValidPrefaceSwitchesToHttp2) {
   std::span<const std::byte> responseBytes(reinterpret_cast<const std::byte*>(response.data()), response.size());
   const auto frames = ParseFrames(responseBytes);
   ASSERT_FALSE(frames.empty());
-  EXPECT_EQ(frames[0].header.type, FrameType::Settings);
-  EXPECT_EQ(frames[0].header.streamId, 0U);
+  EXPECT_EQ(frames[0].header.type(), FrameType::Settings);
+  EXPECT_EQ(frames[0].header.streamId(), 0U);
 }
 
 TEST(Http2Core, SlowHandlerDoesNotGetItsOwnResponseSweptAsIdle) {
@@ -648,8 +648,8 @@ TEST(Http2Core, ClientSendHeadersIsDecodedOnServer) {
 
   const auto frames = ParseFrames(out);
   ASSERT_FALSE(frames.empty());
-  EXPECT_EQ(frames[0].header.type, FrameType::Headers);
-  EXPECT_EQ(frames[0].header.streamId, streamId);
+  EXPECT_EQ(frames[0].header.type(), FrameType::Headers);
+  EXPECT_EQ(frames[0].header.streamId(), streamId);
 
   // Deliver to server.
   Http2Loopback::pump(h2.client, h2.server);
@@ -685,8 +685,8 @@ TEST(Http2Core, ServerSendHeadersIsDecodedOnClient) {
   ASSERT_FALSE(out.empty());
   const auto frames = ParseFrames(out);
   ASSERT_FALSE(frames.empty());
-  EXPECT_EQ(frames[0].header.type, FrameType::Headers);
-  EXPECT_EQ(frames[0].header.streamId, streamId);
+  EXPECT_EQ(frames[0].header.type(), FrameType::Headers);
+  EXPECT_EQ(frames[0].header.streamId(), streamId);
 
   Http2Loopback::pump(h2.server, h2.client);
 
@@ -766,12 +766,12 @@ TEST(Http2Core, ClientSplitsLargeHeaderBlockIntoContinuationFrames) {
   const auto frames = ParseFrames(out);
   ASSERT_GE(frames.size(), 2U) << "Expected HEADERS + at least one CONTINUATION";
 
-  EXPECT_EQ(frames[0].header.type, FrameType::Headers);
-  EXPECT_EQ(frames[0].header.streamId, streamId);
+  EXPECT_EQ(frames[0].header.type(), FrameType::Headers);
+  EXPECT_EQ(frames[0].header.streamId(), streamId);
 
   for (decltype(frames)::size_type ii = 1; ii < frames.size(); ++ii) {
-    EXPECT_EQ(frames[ii].header.type, FrameType::Continuation);
-    EXPECT_EQ(frames[ii].header.streamId, streamId);
+    EXPECT_EQ(frames[ii].header.type(), FrameType::Continuation);
+    EXPECT_EQ(frames[ii].header.streamId(), streamId);
   }
 
   // Only the last should have END_HEADERS.
@@ -1119,9 +1119,9 @@ TEST(Http2Core, PingRequestProducesPingAck) {
   ASSERT_FALSE(out.empty());
 
   FrameHeader header = ParseFrameHeader(out);
-  EXPECT_EQ(header.type, FrameType::Ping);
+  EXPECT_EQ(header.type(), FrameType::Ping);
   EXPECT_TRUE(header.hasFlag(FrameFlags::PingAck));
-  EXPECT_EQ(header.streamId, 0U);
+  EXPECT_EQ(header.streamId(), 0U);
 }
 
 TEST(Http2Core, PingOnNonZeroStreamIsProtocolError) {
@@ -1188,8 +1188,8 @@ TEST(Http2Core, InitiateGoAwayQueuesFrameAndUpdatesState) {
   ASSERT_FALSE(out.empty());
 
   FrameHeader header = ParseFrameHeader(out);
-  EXPECT_EQ(header.type, FrameType::GoAway);
-  EXPECT_EQ(header.streamId, 0U);
+  EXPECT_EQ(header.type(), FrameType::GoAway);
+  EXPECT_EQ(header.streamId(), 0U);
 }
 
 // ============================
