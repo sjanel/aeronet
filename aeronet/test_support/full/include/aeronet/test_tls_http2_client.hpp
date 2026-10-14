@@ -93,6 +93,11 @@ class TlsHttp2Client {
   /// @return Stream ID of the established tunnel, or 0 on failure
   uint32_t connect(std::string_view authority, const std::vector<std::pair<std::string, std::string>>& headers = {});
 
+  /// Send a CONNECT request without waiting for its response (see waitAndGetResponse()).
+  /// @return Stream ID, or 0 on failure
+  uint32_t sendConnect(std::string_view authority,
+                       const std::vector<std::pair<std::string, std::string>>& headers = {});
+
   /// Send data on an established tunnel stream.
   /// @param streamId Stream ID returned by connect()
   /// @param data Data to send

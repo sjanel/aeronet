@@ -58,15 +58,19 @@ class StaticFileHandler {
 
   [[nodiscard]] ResolveResult resolveTarget(const HttpRequestView& request, std::filesystem::path& resolvedPath) const;
 
-  // Tell whether 'path', with its symbolic links resolved, is the root directory or lies below it.
-  [[nodiscard]] bool isWithinRoot(const std::filesystem::path& path) const;
+  // Tell whether the real path of 'path' (symbolic links and Windows short names resolved) may be served: the root
+  // directory or below it, without hidden segment below the root unless showHiddenFiles. 'pFile', when not null, is
+  // the file opened from 'path': the real path must still designate it, so that a symbolic link retargeted after the
+  // opening cannot make the check validate another file.
+  [[nodiscard]] bool isRealPathServable(const std::filesystem::path& path, const File* pFile) const;
 
   // Format the per-file header fragments (ETag, Last-Modified, Content-Type) for 'file' into 'out'.
   void buildHeaderMeta(std::string_view filePath, const File& file, CachedFileHeaders& out) const;
 
   // Return the per-file header fragments, reusing a cached entry when the file is unchanged, otherwise (re)building
   // them and inserting them into the cache (evicting the least-recently-used entry when it exceeds capacity).
-  // Returns nullptr when 'targetPath' resolves outside of the root directory (checked once per cached file).
+  // Returns nullptr when the real path of 'targetPath' may not be served (checked once per cached file, see
+  // isRealPathServable()).
   // When caching is disabled, 'scratch' is used as backing storage for the returned value.
   [[nodiscard]] const CachedFileHeaders* resolveHeaderMeta(const std::filesystem::path& targetPath,
                                                            std::string_view filePath, const File& file,

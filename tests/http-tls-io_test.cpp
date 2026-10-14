@@ -370,6 +370,27 @@ TEST(HttpTlsFairness, PipelinedRequestsYieldToOtherConnectionsOnceResponsesReach
   test::TlsClient other(localTs.port());
   ASSERT_TRUE(blocker.handshakeOk() && pipelining.handshakeOk() && other.handshakeOk());
 
+  // Warm up the connections that will send while the event loop is blocked, with a first keep-alive exchange outside
+  // the order checked below. Their TLS handshakes are then fully acknowledged by the server: otherwise (Nagle's
+  // algorithm, the test client not setting TCP_NODELAY) the kernel may hold back the small request of a connection
+  // whose last handshake packet is still unacknowledged, and the server then serves the pipelined connection for
+  // several rounds before the request of the other one reaches it (seen on macOS CI).
+  localTs.router().setPath(http::Method::GET, "/warmup", [](const HttpRequestView&) { return HttpResponse("warm"); });
+  for (test::TlsClient* client : {&pipelining, &other}) {
+    ASSERT_TRUE(client->writeAll("GET /warmup HTTP/1.1\r\nHost: x\r\n\r\n"));
+    std::string warmupResponse;
+    std::array<char, 1024> warmupBuf;
+    const auto warmupDeadline = std::chrono::steady_clock::now() + 10s;
+    while (!warmupResponse.contains("warm") && std::chrono::steady_clock::now() < warmupDeadline) {
+      const std::string_view data = client->readSome(warmupBuf);
+      if (data.empty()) {
+        std::this_thread::sleep_for(1ms);
+      }
+      warmupResponse.append(data);
+    }
+    ASSERT_TRUE(warmupResponse.starts_with("HTTP/1.1 200")) << warmupResponse;
+  }
+
   // Block the event loop in a handler while the requests below are sent, so that its next poll reports them together,
   // the pipelined ones first.
   ASSERT_TRUE(blocker.writeAll("GET /block HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"));
@@ -382,6 +403,9 @@ TEST(HttpTlsFairness, PipelinedRequestsYieldToOtherConnectionsOnceResponsesReach
   }
   ASSERT_TRUE(pipelining.writeAll(pipelinedRequests));
   ASSERT_TRUE(other.writeAll("GET /other HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"));
+  // Let the kernel deliver both writes (loopback delivery may be asynchronous) before the blocked event loop polls
+  // again, so that its next poll reports the two connections together.
+  std::this_thread::sleep_for(20ms);
   releaseBlockingHandler.store(true);
 
   EXPECT_TRUE(blocker.readAll().contains("blocked"));

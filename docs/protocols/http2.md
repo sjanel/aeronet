@@ -84,7 +84,8 @@ A malformed header section resets only its stream, with `PROTOCOL_ERROR`. An inv
 ## Flow control and memory
 
 - Each stream's send window starts from the peer's `SETTINGS_INITIAL_WINDOW_SIZE`, and its receive window from the local `initialWindowSize`. The connection receive window is set separately by `connectionWindowSize` (1 MiB by default).
-- The server sends as much as the connection and stream windows allow, and resumes when `WINDOW_UPDATE` frames arrive. Receive credit is returned in batches, once half of a window is consumed, and closed streams receive no stream-level updates.
+- The server sends as much as the connection and stream windows allow, and resumes when `WINDOW_UPDATE` frames arrive. Receive credit is returned in batches, once half of a window is consumed, and closed streams receive no stream-level updates. The DATA frames still in flight on a stream the server reset are discarded, but their connection-level credit is returned.
+- A request body is kept in memory until the stream ends, bounded by `HttpServerConfig::maxBodyBytes` while it is received: a body exceeding it, or a `content-length` declaring more, is answered `413` right away, then the stream is reset with `NO_ERROR` so that the client stops sending it (RFC 9113 §8.1). A smaller [route limit](../guides/routing.md#per-route-options) is checked once the whole body is received.
 - `maxStreamPendingBytes` (4 MiB by default) bounds the response body and trailer bytes one stream may keep in memory while the peer withholds credit. A larger fixed response is answered `503`; a streaming response that overflows it is reset with `ENHANCE_YOUR_CALM`. The connection-wide `HttpServerConfig::maxOutboundBufferBytes` remains the ceiling across all streams of a connection.
 - Files (`HttpResponse::file()`, used by the static file handler) are read in bounded chunks into DATA frames, as the windows allow, and never loaded entirely in memory.
 - HEADERS frames and DATA payloads of up to 256 bytes share the connection output buffer, so that a single TLS write encrypts a batch of small responses. Larger DATA and HEADERS blocks keep their own buffers in an ordered fragment queue, across flow-control stalls and partial writes, and cleartext connections gather them with a single `writev` (`WSASend` on Windows).
@@ -130,6 +131,6 @@ curl --http2 http://localhost:8080/hello
 ## Tests
 
 - Connection-level behavior, flow control, and malformed field sections: [http2-connection_test.cpp](../../aeronet/http2/test/http2-connection_test.cpp).
-- Request processing, pseudo-header validation, and trailers: [http2-protocol-handler_test.cpp](../../aeronet/http2/test/http2-protocol-handler_test.cpp).
+- Request processing, pseudo-header validation, trailers, and request body limits: [http2-protocol-handler_test.cpp](../../aeronet/http2/test/http2-protocol-handler_test.cpp).
 - HPACK: [hpack_test.cpp](../../aeronet/http2/test/hpack_test.cpp).
 - End-to-end over TLS and h2c: [tests/http2-core_test.cpp](../../tests/http2-core_test.cpp), and CONNECT: [tests/http2-connect_test.cpp](../../tests/http2-connect_test.cpp).

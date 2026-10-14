@@ -254,6 +254,11 @@ struct ConnectionState {
   // SingleHttpServer::flushOutbound).
   bool inputBlockedByOutput : 1 {false};
 
+  // Tunnel backpressure: true when a relay toward this connection stopped reading its source because of the bytes this
+  // connection has not written yet (its tunnel buffer, or its HTTP/2 output): it is resumed once they are written (see
+  // internal::TunnelManager::resumeRelaysTowards()).
+  bool relayPausedByBacklog : 1 {false};
+
   // True when the expectations (Expect header) of the request at the head of inBuffer were already answered: its head
   // is parsed again each time a part of its body is received, but interim responses must be sent once.
   bool expectationAnswered : 1 {false};

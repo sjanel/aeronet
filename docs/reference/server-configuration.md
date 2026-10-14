@@ -28,7 +28,7 @@ config.withPort(8080)
 | `reusePort` / `withReusePort()` | false | Request `SO_REUSEPORT` for independent listeners. |
 | `tcpNoDelay` / `withTcpNoDelay[Mode]()` | Auto | Nagle policy. Auto is the normal low-latency choice. |
 | `enableKeepAlive` / `withKeepAliveMode()` | true | Allow HTTP/1.1 persistent connections. |
-| `keepAliveTimeout` / `withKeepAliveTimeout()` | 5 s | Idle time after a response before a persistent connection is closed. WebSocket connections have their own [idle timeout](../protocols/websocket.md#idle-connections). |
+| `keepAliveTimeout` / `withKeepAliveTimeout()` | 5 s | Idle time after a response before a persistent connection is closed. WebSocket connections have their own [idle timeout](../protocols/websocket.md#idle-connections). Also bounds the [resolution of a CONNECT target](../protocols/connect.md#name-resolution) (`504` beyond). |
 | `maxRequestsPerConnection` | 100,000 | Bound requests served on a persistent connection. |
 | `maxCachedConnections` | 10 | Reusable closed `ConnectionState` objects retained to reduce allocations. |
 | `maxAcceptBatchSize` / `withMaxAcceptBatchSize()` | 64 | New accepts handled per event-loop iteration; `0` is unlimited. |
@@ -44,7 +44,7 @@ config.withPort(8080)
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `maxOutboundBufferBytes` / `withMaxOutboundBufferBytes()` | 4 MiB | Per-connection retained-output cap. HTTP/1.1 drains then closes on overflow; HTTP/2 pauses wire-input processing at the queue high-water mark and rejects work that cannot fit its queued plus flow-control-deferred budget. |
+| `maxOutboundBufferBytes` / `withMaxOutboundBufferBytes()` | 4 MiB | Per-connection retained-output cap. HTTP/1.1 drains then closes on overflow; HTTP/2 pauses wire-input processing at the queue high-water mark and rejects work that cannot fit its queued plus flow-control-deferred budget. A [CONNECT tunnel](../protocols/connect.md#backpressure) stops reading one side while this many bytes wait for the other. |
 | `maxZerocopyPendingBytes` / `withMaxZerocopyPendingBytes()` | 4 MiB | Response bytes a connection may retain until the completion of their Linux `MSG_ZEROCOPY` sends. Writes beyond it are copied until completions release retained buffers; a single larger response may use zerocopy when nothing is retained. See [MSG_ZEROCOPY](../operations/performance.md#msg_zerocopy). |
 | `minCapturedBodySize` / `withMinCapturedBodySize()` | 1 KiB | Fixed response bodies below this size are kept with the response head for locality. |
 | `pollInterval` / `withPollInterval()` | 500 ms | Maximum idle event-loop wait. Lower values improve stop responsiveness but increase wakeups. |

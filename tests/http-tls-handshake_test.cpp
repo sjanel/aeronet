@@ -1486,7 +1486,7 @@ TEST(HttpTlsHandshakeTest, HandshakeLargerThanTheSocketBuffersCompletes) {
   ASSERT_GE(fd, 0);
   BaseFd socketFd(fd);
   // A receive buffer set before connecting: the advertised window stays bounded.
-  const int rcvBuf = 64 << 10U;
+  const int rcvBuf = static_cast<int>(64U << 10U);
   // NOLINTNEXTLINE(misc-include-cleaner) sys/socket.h is the correct header for SOL_SOCKET
   ASSERT_EQ(::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvBuf, sizeof(rcvBuf)), 0);
   // Fails the test instead of hanging if the handshake stalls.
@@ -1502,7 +1502,7 @@ TEST(HttpTlsHandshakeTest, HandshakeLargerThanTheSocketBuffersCompletes) {
   SslCtxPtr clientCtx(::SSL_CTX_new(TLS_client_method()), &::SSL_CTX_free);
   ASSERT_NE(clientCtx, nullptr);
   ::SSL_CTX_set_verify(clientCtx.get(), SSL_VERIFY_NONE, nullptr);
-  ::SSL_CTX_set_max_cert_list(clientCtx.get(), 16L << 20U);
+  ::SSL_CTX_set_max_cert_list(clientCtx.get(), static_cast<long>(16UL << 20U));
   SslPtr ssl(::SSL_new(clientCtx.get()), &::SSL_free);
   ASSERT_NE(ssl, nullptr);
   ASSERT_EQ(::SSL_set_fd(ssl.get(), fd), 1);

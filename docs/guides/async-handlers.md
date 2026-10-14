@@ -217,6 +217,7 @@ Key properties:
 - **Return value**: `co_await` returns the value returned by the work function (a returned reference is copied, the work being over when the coroutine resumes).
 - **Exceptions**: thrown by the work function, they are rethrown by `co_await`. If no thread can be started (thread limit reached), the `std::system_error` is rethrown by `co_await` as well.
 - **One thread per call**: each call creates (and detaches) an OS thread. Group consecutive blocking calls in one `deferWork()` when they do not need the event loop in between.
+- **Signals**: on Linux, the thread inherits the signal mask of the event loop, which blocks `SIGPIPE` (see [Performance](../operations/performance.md#settings)): a write to a closed pipe or socket from the work function fails with `EPIPE` instead of raising `SIGPIPE`.
 - **Resumption**: the coroutine always resumes on the event loop thread of its connection. Everything between two `co_await` runs there, like a synchronous handler.
 - **No cancellation**: a running work function cannot be interrupted. Bound its duration in the blocking call itself (database statement timeouts, client timeouts...).
 

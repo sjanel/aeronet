@@ -192,6 +192,30 @@ TEST(FileTest, AppendIdentityShouldBeDifferentBetweenTwoFiles) {
   EXPECT_NE(buf1, buf2);
 }
 
+TEST(FileTest, IsAtPathComparesTheFileIdentity) {
+  ScopedTempDir dir("aeronet-file-is-at-path");
+  ScopedTempFile tmp1(dir, "file1");
+  ScopedTempFile tmp2(dir, "file2");
+  File fileObj(tmp1.filePath().string(), File::OpenMode::ReadOnly);
+  ASSERT_TRUE(static_cast<bool>(fileObj));
+
+  EXPECT_TRUE(fileObj.isAtPath(tmp1.filePath().string().c_str()));
+  EXPECT_FALSE(fileObj.isAtPath(tmp2.filePath().string().c_str()));
+  EXPECT_FALSE(fileObj.isAtPath((dir.dirPath() / "missing").string().c_str()));
+
+#ifdef AERONET_POSIX
+  // The path now designates another file than the opened one (Windows does not rename a file opened without
+  // FILE_SHARE_DELETE).
+  const auto renamed = dir.dirPath() / "renamed";
+  std::filesystem::rename(tmp1.filePath(), renamed);
+  std::filesystem::copy_file(tmp2.filePath(), tmp1.filePath());
+  EXPECT_FALSE(fileObj.isAtPath(tmp1.filePath().string().c_str()));
+  EXPECT_TRUE(fileObj.isAtPath(renamed.string().c_str()));
+#endif
+
+  EXPECT_FALSE(File().isAtPath(tmp2.filePath().string().c_str()));
+}
+
 TEST(FileTest, ReadAtReturnsErrorOnFatalPread) {
   test::FileSyscallHookGuard guard;
   ScopedTempDir dir("aeronet-file-readat-fatal");
