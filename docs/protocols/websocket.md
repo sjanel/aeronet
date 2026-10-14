@@ -123,8 +123,8 @@ Router router;
 router.setWebSocket("/ws", WebSocketEndpoint::WithCallbacks(websocket::WebSocketCallbacks{})).cors(std::move(cors));
 ```
 
-!!! note
-    Behind a reverse proxy that rewrites the `Host` header, the same-origin check fails for every browser: attach a CORS policy listing the allowed origins to the route.
+!!! warning "Behind a reverse proxy"
+    A proxy that sets the `Host` header of the requests it forwards to the address of the upstream, as nginx does by default (`proxy_set_header Host $proxy_host`), makes the same-origin check fail for every browser: `Origin` names the public site, while `Host` names the upstream. Every browser upgrade is then answered `403`. Either attach a CORS policy listing the allowed origins to the route, or have the proxy forward the `Host` header sent by the browser (`proxy_set_header Host $http_host;` with nginx, which keeps its port).
 
 **Subprotocols.** When the client sends `Sec-WebSocket-Protocol`, the server selects the first of the endpoint's `supportedProtocols` (in the endpoint's preference order) that the client offered, compared case-insensitively. When none matches, the handshake succeeds without a subprotocol, and the client decides whether to continue.
 

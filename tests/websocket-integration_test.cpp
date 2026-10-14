@@ -964,10 +964,13 @@ TEST_F(WebSocketTest, LargeEchoesSentFromInputBufferAreIntact) {
     for (int round = 0; round < 2; ++round) {
       const std::string payload = MakeBinaryPayload(size, ++seed);
       test::sendAll(conn.fd(), FrameView(BuildClientFrame(Opcode::Binary, payload)), 5000ms);
-      const auto echo = reader.next(5000ms);
-      ASSERT_TRUE(echo.has_value()) << size;
-      EXPECT_EQ(echo->frame.opcode, Opcode::Binary);
-      EXPECT_TRUE(PayloadToString(echo->frame.payload) == payload) << size << " round " << round;
+      const auto optEcho = reader.next(5000ms);
+      ASSERT_TRUE(optEcho.has_value()) << size;
+
+      auto echo = optEcho.value_or(ServerFrameReader::Frame{});
+
+      EXPECT_EQ(echo.frame.opcode, Opcode::Binary);
+      EXPECT_TRUE(PayloadToString(echo.frame.payload) == payload) << size << " round " << round;
     }
   }
 }
@@ -1002,9 +1005,10 @@ TEST_F(WebSocketTest, LargeEchoesBlockedByThePeerAreIntact) {
 
   ServerFrameReader reader(conn.fd());
   for (uint32_t idx = 0; idx < kNbMessages; ++idx) {
-    const auto echo = reader.next(10000ms);
-    ASSERT_TRUE(echo.has_value()) << idx;
-    EXPECT_TRUE(PayloadToString(echo->frame.payload) == payloads[idx]) << idx;
+    const auto optEcho = reader.next(10000ms);
+    ASSERT_TRUE(optEcho.has_value()) << idx;
+    auto echo = optEcho.value_or(ServerFrameReader::Frame{});
+    EXPECT_TRUE(PayloadToString(echo.frame.payload) == payloads[idx]) << idx;
   }
   sender.join();
   EXPECT_FALSE(sendFailed);
@@ -1074,12 +1078,15 @@ TEST_F(WebSocketTest, CompressedConnectionsOfAServerThread) {
           std::string_view(reinterpret_cast<const char*>(compressed.data()), compressed.size()), Opcode::Text, true);
       test::sendAll(conns[idx].fd(), FrameView(frame), 2000ms);
 
-      const auto echo = readers[idx]->next(2000ms);
-      ASSERT_TRUE(echo.has_value()) << "client " << idx << " round " << round;
-      EXPECT_TRUE(echo->rsv1);
+      const auto optEcho = readers[idx]->next(2000ms);
+      ASSERT_TRUE(optEcho.has_value()) << "client " << idx << " round " << round;
+
+      auto echo = optEcho.value_or(ServerFrameReader::Frame{});
+
+      EXPECT_TRUE(echo.rsv1);
       RawBytes decompressed;
       ASSERT_EQ(codecs[idx]->decompress(
-                    std::span<const std::byte>(echo->frame.payload.data(), echo->frame.payload.size()), decompressed),
+                    std::span<const std::byte>(echo.frame.payload.data(), echo.frame.payload.size()), decompressed),
                 nullptr)
           << "client " << idx << " round " << round;
       EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(decompressed.data()), decompressed.size()), text)

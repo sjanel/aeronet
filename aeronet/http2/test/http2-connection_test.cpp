@@ -2187,6 +2187,99 @@ TEST(Http2Connection, DataWindowUpdatesAreBatchedAndSkipClosedStream) {
   EXPECT_EQ(conn.connectionRecvWindow(), 100000);
 }
 
+namespace {
+
+void FeedDataFrame(Http2Connection& conn, uint32_t streamId, std::size_t size) {
+  vector<std::byte> payload(static_cast<vector<std::byte>::size_type>(size), std::byte{0x42});
+  const FrameHeader header{static_cast<uint32_t>(size), FrameType::Data, FrameFlags::None, streamId};
+  FeedConnection(conn, SerializeFrame(header, payload));
+}
+
+// The increments of the WINDOW_UPDATE frames of 'output' for 'streamId', other frames being skipped.
+vector<uint32_t> WindowUpdateIncrements(std::span<const std::byte> output, uint32_t streamId) {
+  vector<uint32_t> increments;
+  while (output.size() >= FrameHeader::kSize) {
+    const auto header = ParseFrameHeader(output);
+    const auto payload = output.subspan(FrameHeader::kSize, header.length);
+    if (header.type == FrameType::WindowUpdate && header.streamId == streamId) {
+      WindowUpdateFrame update{};
+      EXPECT_EQ(ParseWindowUpdateFrame(payload, update), FrameParseResult::Ok);
+      increments.push_back(update.windowSizeIncrement);
+    }
+    output = output.subspan(FrameHeader::kSize + header.length);
+  }
+  return increments;
+}
+
+}  // namespace
+
+TEST(Http2Connection, DataOnClosedOrUnknownStreamsStillReplenishesConnectionWindow) {
+  Http2Config config;
+  config.connectionWindowSize = 100000;
+  config.maxFrameSize = 40000;
+  Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  connSink.onDataFn = ([](uint32_t, std::span<const std::byte>, bool) {});
+
+  ASSERT_EQ(conn.sendHeaders(1, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
+  conn.sendRstStream(1, ErrorCode::Cancel);
+  (void)DrainPendingOutput(conn);
+
+  // Frames in flight when the stream was reset: discarded, but they consumed connection-level credit, which must be
+  // given back, or the peer would run out of it.
+  FeedDataFrame(conn, 1, 30000);
+  EXPECT_EQ(conn.connectionRecvWindow(), 70000);
+  EXPECT_TRUE(WindowUpdateIncrements(DrainPendingOutput(conn), 0).empty());
+
+  FeedDataFrame(conn, 99, 30000);
+  EXPECT_EQ(conn.connectionRecvWindow(), 100000);
+  EXPECT_EQ(WindowUpdateIncrements(DrainPendingOutput(conn), 0), vector<uint32_t>{60000U});
+}
+
+TEST(Http2Connection, HeldStreamRecvWindowIsReplenishedOnRelease) {
+  Http2Config config;
+  config.maxFrameSize = 40000;
+  Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  connSink.onDataFn = ([](uint32_t, std::span<const std::byte>, bool) {});
+
+  ASSERT_EQ(conn.sendHeaders(1, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
+  (void)DrainPendingOutput(conn);
+
+  // Unknown streams are ignored.
+  conn.holdStreamRecvWindow(99);
+  conn.releaseStreamRecvWindow(99);
+  EXPECT_FALSE(conn.hasPendingOutput());
+
+  conn.holdStreamRecvWindow(1);
+  ASSERT_TRUE(conn.getStream(1)->recvWindowHeld());
+  FeedDataFrame(conn, 1, 40000);
+  EXPECT_TRUE(WindowUpdateIncrements(DrainPendingOutput(conn), 1).empty());
+  EXPECT_EQ(conn.getStream(1)->recvWindow(), 25535);
+
+  conn.releaseStreamRecvWindow(1);
+  EXPECT_FALSE(conn.getStream(1)->recvWindowHeld());
+  EXPECT_EQ(WindowUpdateIncrements(DrainPendingOutput(conn), 1), vector<uint32_t>{40000U});
+  EXPECT_EQ(conn.getStream(1)->recvWindow(), 65535);
+
+  // Released again, or with more than half of its credit left: nothing to send.
+  conn.releaseStreamRecvWindow(1);
+  conn.holdStreamRecvWindow(1);
+  FeedDataFrame(conn, 1, 1000);
+  conn.releaseStreamRecvWindow(1);
+  EXPECT_TRUE(WindowUpdateIncrements(DrainPendingOutput(conn), 1).empty());
+
+  // A stream that cannot receive anymore gets no credit.
+  conn.holdStreamRecvWindow(1);
+  FeedDataFrame(conn, 1, 40000);
+  conn.sendRstStream(1, ErrorCode::Cancel);
+  (void)DrainPendingOutput(conn);
+  conn.releaseStreamRecvWindow(1);
+  EXPECT_TRUE(WindowUpdateIncrements(DrainPendingOutput(conn), 1).empty());
+}
+
 TEST(Http2Connection, PeerInitialWindowOnlyControlsNewStreamSendWindow) {
   Http2Config config;
   config.connectionWindowSize = 1U << 20U;

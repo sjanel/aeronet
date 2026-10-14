@@ -377,6 +377,14 @@ void SingleHttpServer::resumeInputIfOutputDrained(NativeHandle fd, ConnectionSta
       deferInput(fd, state);
     }
   }
+  // Same for the tunnel relays toward an HTTP/2 connection, stopped by its output (those toward an HTTP/1.1 tunnel
+  // endpoint resume once its tunnel buffer is written, see TunnelManager::handleWritable()). They resume below half of
+  // the limit that stopped them: the other streams of the connection could keep its output from ever being empty.
+  if (state.relayPausedByBacklog && state.protocolHandler != nullptr &&
+      state.protocolHandler->pendingOutputSize() < _config.maxOutboundBufferBytes / 2) {
+    assert(_tunnels != nullptr);
+    _tunnels->resumeRelaysTowards(_connections.iterator(fd));
+  }
 }
 
 bool SingleHttpServer::flushUserSpaceTlsBuffer(ConnectionIt cnxIt) {

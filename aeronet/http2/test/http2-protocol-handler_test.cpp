@@ -103,6 +103,8 @@ class MockTunnelBridge final : public ITunnelBridge {
   std::function<void(NativeHandle)> onWindowUpdate;
   // Answer Pending, as the server does for a host name resolved in the background.
   bool resolveInBackground{false};
+  // Returned by writeTunnel(): false when the upstream does not keep up.
+  bool upstreamWritable{true};
 
   TunnelSetup setupTunnel(uint32_t streamId, std::string_view host, uint16_t port) override {
     TunnelSetup setup;
@@ -115,10 +117,11 @@ class MockTunnelBridge final : public ITunnelBridge {
     return setup;
   }
 
-  void writeTunnel(NativeHandle upstreamFd, std::span<const std::byte> data) override {
+  bool writeTunnel(NativeHandle upstreamFd, std::span<const std::byte> data) override {
     if (onWrite) {
       onWrite(upstreamFd, data);
     }
+    return upstreamWritable;
   }
 
   void shutdownTunnelWrite(NativeHandle upstreamFd) override {
@@ -1419,6 +1422,206 @@ TEST(Http2ProtocolHandler, ConnectTunnelLargeDataTransfer) {
   }
 
   EXPECT_EQ(writtenData.size(), 65536U);
+}
+
+namespace {
+
+void OpenConnectStream(Http2ProtocolLoopback& loop, uint32_t streamId) {
+  RawChars conn;
+  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
+  ASSERT_EQ(loop.client.sendHeaders(streamId, http::StatusCode{}, HeadersView(conn), false), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+}
+
+// Send 'nbChunks' DATA frames of 16 KiB on the stream, letting the server answer (WINDOW_UPDATE) after each.
+void SendTunnelChunks(Http2ProtocolLoopback& loop, uint32_t streamId, int nbChunks) {
+  const std::string chunk(16384, 'X');
+  for (int idx = 0; idx < nbChunks; ++idx) {
+    ASSERT_EQ(loop.client.sendData(streamId, std::as_bytes(std::span<const char>(chunk.data(), chunk.size())), false),
+              ErrorCode::NoError);
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
+  }
+}
+
+int32_t ClientStreamSendWindow(Http2ProtocolLoopback& loop, uint32_t streamId) {
+  const Http2Stream* pStream = loop.client.getStream(streamId);
+  return pStream == nullptr ? -1 : pStream->sendWindow();
+}
+
+}  // namespace
+
+TEST(Http2ProtocolHandler, ConnectTunnelSlowUpstreamHoldsClientCredit) {
+  Router router;
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  constexpr NativeHandle kFakeUpstreamFd = 42;
+  std::size_t writtenBytes = 0;
+  MockTunnelBridge bridge;
+  bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kFakeUpstreamFd; };
+  bridge.onWrite = [&](NativeHandle, std::span<const std::byte> data) { writtenBytes += data.size(); };
+  bridge.upstreamWritable = false;
+  loop.handler.setTunnelBridge(&bridge);
+
+  OpenConnectStream(loop, 1);
+  ASSERT_TRUE(loop.handler.isTunnelStream(1));
+  const int32_t initialWindow = ClientStreamSendWindow(loop, 1);
+
+  // The upstream does not keep up: the client only gets the credit it already had, the stream window is not replenished
+  // past half of it as usual.
+  SendTunnelChunks(loop, 1, 3);
+  EXPECT_EQ(writtenBytes, 3U * 16384U);
+  EXPECT_EQ(ClientStreamSendWindow(loop, 1), initialWindow - (3 * 16384));
+
+  // Once the upstream wrote its backlog, the credit is given back.
+  bridge.upstreamWritable = true;
+  loop.handler.onTunnelUpstreamDrained(kFakeUpstreamFd);
+  loop.pumpServerToClient();
+  EXPECT_EQ(ClientStreamSendWindow(loop, 1), initialWindow);
+
+  // And the usual replenishment applies again, once half of the window is consumed.
+  SendTunnelChunks(loop, 1, 2);
+  EXPECT_EQ(ClientStreamSendWindow(loop, 1), initialWindow);
+  EXPECT_EQ(writtenBytes, 5U * 16384U);
+
+  // An unknown upstream is ignored.
+  loop.handler.onTunnelUpstreamDrained(kFakeUpstreamFd + 1);
+  EXPECT_FALSE(loop.handler.hasPendingOutput());
+}
+
+TEST(Http2ProtocolHandler, ConnectPendingResolutionHoldsClientCredit) {
+  Router router;
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  constexpr NativeHandle kFakeUpstreamFd = 42;
+  std::size_t writtenBytes = 0;
+  MockTunnelBridge bridge;
+  bridge.resolveInBackground = true;
+  bridge.onWrite = [&](NativeHandle, std::span<const std::byte> data) { writtenBytes += data.size(); };
+  loop.handler.setTunnelBridge(&bridge);
+
+  for (const bool upstreamWritable : {true, false}) {
+    const uint32_t streamId = upstreamWritable ? 1U : 3U;
+    OpenConnectStream(loop, streamId);
+    ASSERT_TRUE(loop.handler.isTunnelPending(streamId));
+    const int32_t initialWindow = ClientStreamSendWindow(loop, streamId);
+
+    // What the client sends before the tunnel is established is buffered: bounded by the credit it had.
+    SendTunnelChunks(loop, streamId, 3);
+    EXPECT_EQ(ClientStreamSendWindow(loop, streamId), initialWindow - (3 * 16384));
+
+    // Established: the early data is written to the upstream, and the credit is given back once it is written.
+    writtenBytes = 0;
+    bridge.upstreamWritable = upstreamWritable;
+    loop.handler.onTunnelResolved(streamId, kFakeUpstreamFd + static_cast<NativeHandle>(streamId));
+    loop.pumpServerToClient();
+    EXPECT_EQ(writtenBytes, 3U * 16384U);
+    if (!upstreamWritable) {
+      EXPECT_EQ(ClientStreamSendWindow(loop, streamId), initialWindow - (3 * 16384));
+      loop.handler.onTunnelUpstreamDrained(kFakeUpstreamFd + static_cast<NativeHandle>(streamId));
+      loop.pumpServerToClient();
+    }
+    EXPECT_EQ(ClientStreamSendWindow(loop, streamId), initialWindow);
+  }
+}
+
+TEST(Http2ProtocolHandler, RequestBodyAboveMaxBodyBytesIsRefusedWhileReceived) {
+  Router router;
+  bool handlerCalled = false;
+  router.setDefault([&handlerCalled](const HttpRequestView&) {
+    handlerCalled = true;
+    return HttpResponse(200);
+  });
+
+  Http2ProtocolLoopback loop(router);
+  loop.serverConfig.maxBodyBytes = 20000;
+  loop.connect();
+
+  RawChars headers;
+  headers.append(MakeHttp1HeaderLine(":method", "POST"));
+  headers.append(MakeHttp1HeaderLine(":scheme", "https"));
+  headers.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  headers.append(MakeHttp1HeaderLine(":path", "/upload"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(headers), false), ErrorCode::NoError);
+  loop.pumpClientToServer();
+
+  // Within the limit: kept.
+  SendTunnelChunks(loop, 1, 1);
+  EXPECT_TRUE(loop.clientHeaders.empty());
+
+  // Above it: answered 413 right away, then the stream is reset without error so that the client stops sending.
+  SendTunnelChunks(loop, 1, 1);
+  ASSERT_EQ(loop.clientHeaders.size(), 1U);
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "413");
+  EXPECT_TRUE(loop.clientHeaders.back().endStream);
+  ASSERT_EQ(loop.streamResets.size(), 1U);
+  EXPECT_EQ(loop.streamResets.back(), std::make_pair(1U, ErrorCode::NoError));
+  EXPECT_FALSE(handlerCalled);
+
+  // The connection still serves requests.
+  headers = MakeGetHeaders("/after");
+  ASSERT_EQ(loop.client.sendHeaders(3, http::StatusCode{}, HeadersView(headers), true), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+  EXPECT_TRUE(handlerCalled);
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "200");
+}
+
+TEST(Http2ProtocolHandler, DeclaredContentLengthAboveMaxBodyBytesIsRefusedBeforeTheBody) {
+  Router router;
+  int nbHandlerCalls = 0;
+  router.setDefault([&nbHandlerCalls](const HttpRequestView&) {
+    ++nbHandlerCalls;
+    return HttpResponse(200);
+  });
+
+  Http2ProtocolLoopback loop(router);
+  loop.serverConfig.maxBodyBytes = 1000;
+  loop.connect();
+
+  uint32_t streamId = 1;
+  for (std::string_view contentLength : {"1001", "99999999999999999999999999"}) {
+    RawChars headers;
+    headers.append(MakeHttp1HeaderLine(":method", "POST"));
+    headers.append(MakeHttp1HeaderLine(":scheme", "https"));
+    headers.append(MakeHttp1HeaderLine(":authority", "example.com"));
+    headers.append(MakeHttp1HeaderLine(":path", "/upload"));
+    headers.append(MakeHttp1HeaderLine("content-length", contentLength));
+    ASSERT_EQ(loop.client.sendHeaders(streamId, http::StatusCode{}, HeadersView(headers), false), ErrorCode::NoError);
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
+
+    ASSERT_FALSE(loop.clientHeaders.empty()) << contentLength;
+    EXPECT_EQ(loop.clientHeaders.back().streamId, streamId);
+    EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "413") << contentLength;
+    ASSERT_FALSE(loop.streamResets.empty());
+    EXPECT_EQ(loop.streamResets.back(), std::make_pair(streamId, ErrorCode::NoError));
+    streamId += 2;
+  }
+  EXPECT_EQ(nbHandlerCalls, 0);
+
+  // Within the limit, or not a number (left to the body checks): the body is received.
+  for (std::string_view contentLength : {"1000", "abc"}) {
+    RawChars headers;
+    headers.append(MakeHttp1HeaderLine(":method", "POST"));
+    headers.append(MakeHttp1HeaderLine(":scheme", "https"));
+    headers.append(MakeHttp1HeaderLine(":authority", "example.com"));
+    headers.append(MakeHttp1HeaderLine(":path", "/upload"));
+    headers.append(MakeHttp1HeaderLine("content-length", contentLength));
+    ASSERT_EQ(loop.client.sendHeaders(streamId, http::StatusCode{}, HeadersView(headers), false), ErrorCode::NoError);
+    const std::string body(1000, 'b');
+    ASSERT_EQ(loop.client.sendData(streamId, std::as_bytes(std::span<const char>(body.data(), body.size())), true),
+              ErrorCode::NoError);
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
+    EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "200") << contentLength;
+    streamId += 2;
+  }
+  EXPECT_EQ(nbHandlerCalls, 2);
 }
 
 TEST(Http2ProtocolHandler, ConnectTunnelOnTransportClosingCleansUp) {

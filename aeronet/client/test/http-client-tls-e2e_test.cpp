@@ -23,6 +23,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <stdexcept>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -31,6 +32,7 @@
 #include <vector>
 
 #include "aeronet/base-fd.hpp"
+#include "aeronet/client-connection.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"
@@ -40,6 +42,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"
+#include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/native-handle.hpp"
@@ -82,6 +85,15 @@ struct TempPemWriter {
   std::filesystem::path path;
 };
 
+// Returns the response of a successful request. A failed one throws an exception naming the HttpClientErrc, which
+// gtest reports as the test failure: a bare std::expected::value() would only say "Bad expected access".
+HttpResponse Unwrap(HttpClientResult result) {
+  if (!result) {
+    throw std::runtime_error("HttpClient request failed: " + std::string(ErrcToStr(result.error())));
+  }
+  return std::move(*result);
+}
+
 // HTTPS end-to-end: an aeronet TLS server with an ephemeral self-signed cert, hit by HttpClient.
 class HttpClientTlsE2ETest : public ::testing::Test {
  protected:
@@ -106,13 +118,13 @@ class HttpClientTlsE2ETest : public ::testing::Test {
     });
 
     HttpServerConfig cfg;
-    // Keep-alive must stay comfortably longer than a TLS handshake can take on a loaded CI runner.
-    // The keep-alive sweep reaps a connection whose deadline elapses, and a connection still completing
-    // its handshake is not exempt (handshakeTimeout, the dedicated bound, is 10 s by default). An
-    // aggressive value here let the server starve and reap the legitimate handshake, surfacing as a flaky
-    // "TLS handshake failed" on the client. Use the library default (5s) — these tests never assert on
+    // Keep-alive must stay comfortably longer than a TLS handshake can take on a loaded CI runner: above the 10 s
+    // default handshakeTimeout, the dedicated bound for a handshake. The keep-alive sweep reaps a connection whose
+    // deadline elapses, and a connection still completing its handshake is not exempt. A shorter value made the
+    // server reap a legitimate handshake of a starved test process (Windows Debug CI: ~6 s fixture setup, then
+    // the 5 s keep-alive elapsed), surfacing as a flaky failed request on the client. These tests never assert on
     // idle-reaping, so there is no reason to tighten it.
-    cfg.withPort(0).withKeepAliveTimeout(std::chrono::seconds{5}).withPollInterval(std::chrono::milliseconds{20});
+    cfg.withPort(0).withKeepAliveTimeout(std::chrono::seconds{15}).withPollInterval(std::chrono::milliseconds{20});
     cfg.tls = std::move(tls);
 
     _server = std::make_unique<SingleHttpServer>(std::move(cfg), std::move(router));
@@ -152,7 +164,7 @@ TEST_F(HttpClientTlsE2ETest, GetOverTlsWithoutVerification) {
   HttpClientConfig cfg;
   cfg.tlsVerifyPeer = false;  // self-signed cert, not in any trust store
   HttpClient client(cfg);
-  auto resp = client.get(url("/secure")).value();
+  auto resp = Unwrap(client.get(url("/secure")));
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), "secret");
 }
@@ -162,7 +174,7 @@ TEST_F(HttpClientTlsE2ETest, RedirectToCleartextIsNotFollowed) {
   cfg.tlsVerifyPeer = false;  // self-signed cert, not in any trust store
   HttpClient client(cfg);
   // The redirect response is returned as is: following it would send the request in clear.
-  auto resp = client.get(url("/to-cleartext")).value();
+  auto resp = Unwrap(client.get(url("/to-cleartext")));
   EXPECT_EQ(resp.status(), http::StatusCodeFound);
   EXPECT_EQ(resp.headerValueOrEmpty(http::Location), "http://localhost:1/secure");
 }
@@ -185,7 +197,7 @@ TEST_F(HttpClientTlsE2ETest, TrustsServerViaCaFile) {
   cfg.tlsVerifyPeer = true;
   cfg.withTlsCaFile(caPath.string());
   HttpClient client(cfg);
-  auto resp = client.get(url("/secure")).value();
+  auto resp = Unwrap(client.get(url("/secure")));
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), "secret");
 }
@@ -203,7 +215,7 @@ TEST_F(HttpClientTlsE2ETest, TrustsServerViaSslCertFileEnvWithoutExplicitCa) {
   HttpClientConfig cfg;
   cfg.tlsVerifyPeer = true;  // no explicit CA file/path -> system store, which includes SSL_CERT_FILE
   HttpClient client(cfg);
-  auto resp = client.get(url("/secure")).value();
+  auto resp = Unwrap(client.get(url("/secure")));
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), "secret");
 }
@@ -236,7 +248,7 @@ TEST_F(HttpClientTlsE2ETest, PostFileBodyOverTlsUsesReadWriteFallback) {
   cfg.decompression.maxExpansionRatio = 10000;
   HttpClient client(cfg);
   auto req = client.makeRequest(http::Method::POST, url("/echo")).file(std::move(file), "application/octet-stream");
-  auto resp = client.request(std::move(req)).value();
+  auto resp = Unwrap(client.request(std::move(req)));
   EXPECT_EQ(resp.status(), 200);
   ASSERT_EQ(resp.bodyInMemory().size(), payload.size());
   EXPECT_EQ(resp.bodyInMemory(), payload);
@@ -261,7 +273,7 @@ TEST_F(HttpClientTlsE2ETest, PostFileBodyOverTlsWithKeepAliveOff) {
   HttpClient client(cfg);
   auto req = client.makeRequest(http::Method::POST, url("/echo")).file(std::move(file), "application/octet-stream");
   for (int attempt = 0; attempt < 2; ++attempt) {
-    auto resp = client.request(req).value();
+    auto resp = Unwrap(client.request(req));
     EXPECT_EQ(resp.status(), 200);
     EXPECT_EQ(resp.headerValueOrEmpty(http::Connection), http::close);
     ASSERT_EQ(resp.bodyInMemory().size(), payload.size());
@@ -274,7 +286,7 @@ TEST_F(HttpClientTlsE2ETest, KeepAliveOverTls) {
   cfg.tlsVerifyPeer = false;
   HttpClient client(cfg);
   for (int i = 0; i < 3; ++i) {
-    auto resp = client.get(url("/secure")).value();
+    auto resp = Unwrap(client.get(url("/secure")));
     EXPECT_EQ(resp.status(), 200);
     EXPECT_EQ(resp.bodyInMemory(), "secret");
   }
@@ -286,7 +298,7 @@ TEST_F(HttpClientTlsE2ETest, HonoursCipherListAndVersionBounds) {
   // Exercises the cipher-list + min/max protocol-version branches of the client TLS context setup.
   cfg.withTlsCipherList("HIGH").withTlsMinVersion(TLSConfig::TLS_1_2).withTlsMaxVersion(TLSConfig::TLS_1_3);
   HttpClient client(cfg);
-  auto resp = client.get(url("/secure")).value();
+  auto resp = Unwrap(client.get(url("/secure")));
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), "secret");
 }
@@ -297,7 +309,7 @@ TEST_F(HttpClientTlsE2ETest, UnsetMinVersionUsesLibraryDefault) {
   cfg.tlsVerifyPeer = false;
   cfg.tlsMinVersion = TLSConfig::Version{};
   HttpClient client(cfg);
-  auto resp = client.get(url("/secure")).value();
+  auto resp = Unwrap(client.get(url("/secure")));
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), "secret");
 }
@@ -586,7 +598,7 @@ TEST(HttpClientMtlsTest, MutualTlsRoundTrip) {
       if (clientCertSv.empty() || clientKeySv.empty()) {
         EXPECT_FALSE(httpClientResult);
       } else {
-        const auto& resp = httpClientResult.value();
+        const auto resp = Unwrap(std::move(httpClientResult));
         EXPECT_EQ(resp.status(), 200);
         EXPECT_EQ(resp.bodyInMemory(), "secret");
       }
@@ -609,7 +621,7 @@ TEST(HttpClientMtlsTest, IntermediateCertificatesAreSentInBothDirections) {
   cfg.withTlsClientCertKeyMemory(clientChain.fullChainPem(), clientChain.leafKeyPem);
   {
     HttpClient client(cfg);
-    auto resp = client.get(url).value();
+    auto resp = Unwrap(client.get(url));
     EXPECT_EQ(resp.status(), 200);
     EXPECT_EQ(resp.bodyInMemory(), "secret");
   }
@@ -620,7 +632,7 @@ TEST(HttpClientMtlsTest, IntermediateCertificatesAreSentInBothDirections) {
   cfg.withTlsClientCertKeyFile(chainPath.string(), keyPath.string());
   {
     HttpClient client(cfg);
-    auto resp = client.get(url).value();
+    auto resp = Unwrap(client.get(url));
     EXPECT_EQ(resp.status(), 200);
   }
 
@@ -708,7 +720,7 @@ TEST(HttpClientMtlsTest, MutualTlsRoundTripFromFiles) {
   cfg.tlsVerifyPeer = false;
   cfg.withTlsClientCertKeyFile(certPath.string(), keyPath.string());
   HttpClient client(cfg);
-  auto resp = client.get(url).value();
+  auto resp = Unwrap(client.get(url));
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), "secret");
 }

@@ -11,10 +11,20 @@
 
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http2-config.hpp"
+#include "aeronet/http2-frame-types.hpp"
+#include "aeronet/log.hpp"
+#include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/test_echo_server.hpp"
 #include "aeronet/test_server_http2_tls_fixture.hpp"
 #include "aeronet/test_tls_http2_client.hpp"
+#include "aeronet/test_util.hpp"
+
+#ifdef AERONET_POSIX
+// Its getaddrinfo override delays the resolutions.
+#define AERONET_WANT_SOCKET_OVERRIDES
+#include "aeronet/sys-test-support.hpp"
+#endif
 
 using namespace std::chrono_literals;
 using namespace aeronet;
@@ -27,6 +37,14 @@ void AllowConnectHost(test::TlsHttp2TestServer& testServer, std::string_view hos
     cfg.withConnectAllowlist(allowlist.begin(), allowlist.end());
   });
 }
+
+// A tunnel endpoint that does not read makes the server stop taking the bytes of the other endpoint, which then wait in
+// the kernel socket buffers (or in the client, without flow-control credit), instead of being buffered by the server.
+constexpr std::size_t kTunnelFloodBytes = 64UL << 20U;
+// The bytes a stalled tunnel holds: the server ends of the connections have socket buffers up to the tcp_rmem /
+// tcp_wmem maxima.
+constexpr std::size_t kTunnelBufferedBound = 48UL << 20U;
+constexpr int kTestEndBufferSize = 256 * 1024;
 
 }  // namespace
 
@@ -266,3 +284,142 @@ TEST(Http2ConnectTest, LargePayloadTunneling) {
     EXPECT_TRUE(receivedSv.ends_with("aaaaaaaaaaaaaaaaaa"));
   }
 }
+
+namespace {
+
+// Allows CONNECT to 127.0.0.1, with a small output limit, and a stream window of 1 MiB (fewer round trips).
+void SetupTunnelBackpressureServer(test::TlsHttp2TestServer& testServer) {
+  testServer.server.postConfigUpdate([](HttpServerConfig& cfg) {
+    static constexpr std::array<std::string_view, 1> kAllowlist{"127.0.0.1"};
+    cfg.withConnectAllowlist(kAllowlist.begin(), kAllowlist.end());
+    cfg.maxOutboundBufferBytes = 256UL << 10U;
+    cfg.http2.initialWindowSize = 1U << 20U;
+    cfg.http2.connectionWindowSize = 4U << 20U;
+  });
+}
+
+}  // namespace
+
+TEST(Http2ConnectTest, UpstreamNotReadingStopsGrantingCreditToTheStream) {
+  test::TlsHttp2TestServer ts;
+  SetupTunnelBackpressureServer(ts);
+  test::LoopbackPeer upstream(kTestEndBufferSize);
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  const uint32_t streamId = client.connect("127.0.0.1:" + std::to_string(upstream.port()));
+  ASSERT_GT(streamId, 0);
+  const NativeHandle upstreamFd = upstream.accept();
+
+  // Send whatever credit the server grants, until it grants no more.
+  const std::string chunk(16UL << 10U, 'c');
+  std::size_t sent = 0;
+  auto lastProgress = std::chrono::steady_clock::now();
+  while (sent < kTunnelFloodBytes && std::chrono::steady_clock::now() - lastProgress < 300ms) {
+    const auto* stream = client.connection().getStream(streamId);
+    ASSERT_NE(stream, nullptr);
+    const int32_t window = std::min(stream->sendWindow(), client.connection().connectionSendWindow());
+    if (window <= 0) {
+      client.processFrames(1ms);  // WINDOW_UPDATE frames
+      continue;
+    }
+    const auto size = std::min(chunk.size(), static_cast<std::size_t>(window));
+    ASSERT_TRUE(client.sendTunnelData(streamId, std::as_bytes(std::span<const char>(chunk.data(), size))));
+    sent += size;
+    lastProgress = std::chrono::steady_clock::now();
+  }
+  log::info("Client sent {} bytes before running out of credit", sent);
+  EXPECT_LT(sent, kTunnelBufferedBound);
+
+  // Once the upstream reads, the stream gets credit again.
+  EXPECT_EQ(test::ReceiveAndDiscard(upstreamFd, sent, 30s), sent);
+  for (const auto deadline = std::chrono::steady_clock::now() + 5s;
+       client.connection().getStream(streamId)->sendWindow() <= 0 && std::chrono::steady_clock::now() < deadline;) {
+    client.processFrames(10ms);
+  }
+  EXPECT_GT(client.connection().getStream(streamId)->sendWindow(), 0);
+}
+
+TEST(Http2ConnectTest, ClientGrantingCreditWithoutReadingStopsReadingTheUpstream) {
+  test::TlsHttp2TestServer ts;
+  SetupTunnelBackpressureServer(ts);
+  test::LoopbackPeer upstream(kTestEndBufferSize);
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  const uint32_t streamId = client.connect("127.0.0.1:" + std::to_string(upstream.port()));
+  ASSERT_GT(streamId, 0);
+  const NativeHandle upstreamFd = upstream.accept();
+
+  // Flow control does not bound what the server holds for a client granting credit without reading its socket: the
+  // server must stop reading the upstream once its output for the client is full.
+  static constexpr uint32_t kHugeCredit = 1U << 30U;
+  client.connection().sendWindowUpdate(0, kHugeCredit);
+  client.connection().sendWindowUpdate(streamId, kHugeCredit);
+  ASSERT_TRUE(client.sendTunnelData(streamId, {}));  // flushes the WINDOW_UPDATE frames
+
+  const std::size_t written = test::WriteUntilStalled(upstreamFd, kTunnelFloodBytes);
+  log::info("Upstream wrote {} bytes before stalling", written);
+  EXPECT_LT(written, kTunnelBufferedBound);
+
+  // Once the client reads, the relay resumes until every byte reached it.
+  RawChars received;
+  for (const auto deadline = std::chrono::steady_clock::now() + 30s;
+       received.size() < written && std::chrono::steady_clock::now() < deadline;) {
+    client.receiveTunnelData(received, streamId, 1s);
+  }
+  EXPECT_EQ(received.size(), written);
+}
+
+#ifdef AERONET_POSIX
+TEST(Http2ConnectTest, UnresolvedTargetIsAnswered504AfterKeepAliveTimeout) {
+  test::TlsHttp2TestServer ts;
+  ts.server.postConfigUpdate([](HttpServerConfig& cfg) {
+    static constexpr std::array<std::string_view, 1> kAllowlist{"localhost"};
+    cfg.withConnectAllowlist(kAllowlist.begin(), kAllowlist.end());
+    cfg.withKeepAliveTimeout(300ms);
+  });
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  test::GetAddrInfoDelayGuard getAddrInfoDelayGuard(3000);
+  const auto start = std::chrono::steady_clock::now();
+  // A stream reset while its target is resolved is not answered (its RST_STREAM is sent with the next request).
+  const uint32_t resetStreamId = client.sendConnect("localhost:9");
+  ASSERT_GT(resetStreamId, 0U);
+  client.connection().sendRstStream(resetStreamId, http2::ErrorCode::Cancel);
+  const uint32_t streamId = client.sendConnect("localhost:9");
+  ASSERT_GT(streamId, 0U);
+  const auto response = client.waitAndGetResponse(streamId, 5s).value_or(test::TlsHttp2Client::Response{});
+  EXPECT_EQ(response.statusCode, 504);
+  EXPECT_LT(std::chrono::steady_clock::now() - start, 2500ms);
+
+  // The connection still serves the other streams.
+  EXPECT_EQ(client.get("/").statusCode, 404);
+}
+
+TEST(Http2ConnectTest, TooManyUnresolvedTargetsAreAnswered503) {
+  // A server thread lets at most 256 CONNECT requests wait for the resolution of their target (see
+  // TunnelManager::kMaxPendingTunnels): the next ones are refused right away.
+  static constexpr uint32_t kMaxPendingTunnels = 256;
+  test::TlsHttp2TestServer ts;
+  ts.server.postConfigUpdate([](HttpServerConfig& cfg) {
+    static constexpr std::array<std::string_view, 1> kAllowlist{"localhost"};
+    cfg.withConnectAllowlist(kAllowlist.begin(), kAllowlist.end());
+    cfg.http2.maxConcurrentStreams = 2 * kMaxPendingTunnels;
+  });
+  test::TlsHttp2Client client(ts.port());
+  ASSERT_TRUE(client.isConnected());
+
+  test::GetAddrInfoDelayGuard getAddrInfoDelayGuard(2000);
+  for (uint32_t idx = 0; idx < kMaxPendingTunnels; ++idx) {
+    ASSERT_GT(client.sendConnect("localhost:9"), 0U);
+  }
+  const auto start = std::chrono::steady_clock::now();
+  const uint32_t streamId = client.sendConnect("localhost:9");
+  ASSERT_GT(streamId, 0U);
+  const auto response = client.waitAndGetResponse(streamId, 1500ms).value_or(test::TlsHttp2Client::Response{});
+  EXPECT_EQ(response.statusCode, 503);
+  EXPECT_LT(std::chrono::steady_clock::now() - start, 1000ms);
+}
+#endif

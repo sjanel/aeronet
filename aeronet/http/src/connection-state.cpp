@@ -314,6 +314,7 @@ void ConnectionState::reset() {
   readPaused = false;
   inputDeferred = false;
   inputBlockedByOutput = false;
+  relayPausedByBacklog = false;
   expectationAnswered = false;
   connectPending = false;
   tunnelResolving = false;

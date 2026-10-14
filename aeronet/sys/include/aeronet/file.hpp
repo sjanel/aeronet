@@ -77,6 +77,10 @@ class File {
   // An invalid result means fstat failed.
   char* appendIdentityData(char* pData) const noexcept;
 
+  // Tell whether the null-terminated 'path' (symbolic links followed) currently designates this opened file: same
+  // device and inode (volume and file index on Windows). False when the path cannot be queried.
+  [[nodiscard]] bool isAtPath(const char* path) const noexcept;
+
   // Read up to dst.size() bytes starting at the given absolute offset.
   // Uses pread() so it does not modify the file's current offset.
   // Returns the number of bytes read (0 on EOF). Returns kError on error.

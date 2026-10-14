@@ -21,7 +21,7 @@ struct FrameHeader {
   /// Check if this is a valid frame header (basic sanity checks).
   [[nodiscard]] constexpr bool isValid() const noexcept {
     // Length must fit in 24 bits
-    return length <= 0x00FFFFFF;
+    return length <= 0x00FFFFFFU;
   }
 
   uint32_t length;  ///< Payload length (24 bits, max 16777215)
@@ -65,7 +65,7 @@ struct DataFrame {
 struct HeadersFrame {
   std::span<const std::byte> headerBlockFragment;
   uint32_t streamDependency;
-  uint16_t weight;  // 1-256 (wire value + 1)
+  uint8_t weightMinusOne;  // 0-255 (wire value)
   uint8_t padLength;
   bool endStream;
   bool endHeaders;
@@ -76,7 +76,7 @@ struct HeadersFrame {
 /// Parsed PRIORITY frame.
 struct PriorityFrame {
   uint32_t streamDependency;
-  uint16_t weight;  // 1-256 (wire value + 1)
+  uint8_t weightMinusOne;  // 0-255 (wire value)
   bool exclusive;
 };
 

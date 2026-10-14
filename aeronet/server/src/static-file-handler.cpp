@@ -101,7 +101,29 @@ constexpr auto kUnreservedTable = [] constexpr {
 }();
 
 // Dotfiles and dot-directories are hidden, except '.well-known' that RFC 8615 reserves for public metadata.
-constexpr bool IsHiddenName(std::string_view name) { return name.starts_with('.') && name != ".well-known"; }
+// Templated on the character type of native paths (wchar_t on Windows).
+template <class CharT>
+constexpr bool IsHiddenName(std::basic_string_view<CharT> name) {
+  static constexpr std::string_view kWellKnown = ".well-known";
+  return name.starts_with(CharT{'.'}) && !std::ranges::equal(name, kWellKnown);
+}
+
+// Tell whether a segment of 'relativePath' (native separators) is a hidden name.
+template <class CharT>
+bool HasHiddenSegment(std::basic_string_view<CharT> relativePath) {
+  static constexpr auto kSep = std::filesystem::path::preferred_separator;
+  while (!relativePath.empty()) {
+    const auto sepPos = relativePath.find(kSep);
+    if (IsHiddenName(relativePath.substr(0, sepPos))) {
+      return true;
+    }
+    if (sepPos == std::basic_string_view<CharT>::npos) {
+      break;
+    }
+    relativePath.remove_prefix(sepPos + 1);
+  }
+  return false;
+}
 
 void AppendHtmlEscaped(std::string_view requestPath, RawChars& out) {
   for (char ch : requestPath) {
@@ -270,7 +292,7 @@ struct DirectoryListingResult {
     }
 
     std::string name = current.path().filename().string();
-    if (!config.showHiddenFiles && IsHiddenName(name)) {
+    if (!config.showHiddenFiles && IsHiddenName(std::string_view(name))) {
       continue;
     }
 
@@ -950,7 +972,7 @@ StaticFileHandler::ResolveResult StaticFileHandler::resolveTarget(const HttpRequ
   }
 
   resolvedPath = _root / relative;
-  // Symbolic links are followed: operator() then checks that the target is inside the root directory.
+  // Symbolic links are followed: operator() then checks the real path of the target (isRealPathServable()).
   std::error_code ec;
   const auto status = std::filesystem::status(resolvedPath, ec);
   if (ec) {
@@ -974,7 +996,7 @@ StaticFileHandler::ResolveResult StaticFileHandler::resolveTarget(const HttpRequ
                                                                              : ResolveResult::RegularFile;
 }
 
-bool StaticFileHandler::isWithinRoot(const std::filesystem::path& path) const {
+bool StaticFileHandler::isRealPathServable(const std::filesystem::path& path, const File* pFile) const {
   std::error_code ec;
   const auto canonicalPath = std::filesystem::canonical(path, ec);
   if (ec) {
@@ -991,6 +1013,18 @@ bool StaticFileHandler::isWithinRoot(const std::filesystem::path& path) const {
   static constexpr auto kSep = std::filesystem::path::preferred_separator;
   if (pathStr.size() != rootStr.size() && rootStr.back() != kSep && pathStr[rootStr.size()] != kSep) {
     log::warn("Refusing to serve '{}': it resolves outside of the root directory", PathString(path).c_str());
+    return false;
+  }
+  // The requested segments were checked, but the real path can reveal a hidden name that they did not show: a link to
+  // a dotfile, or a Windows short name (GIT~1 for .git). The root directory itself may be hidden.
+  if (!_config.showHiddenFiles && HasHiddenSegment(std::basic_string_view(pathStr).substr(rootStr.size()))) {
+    log::debug("Refusing to serve '{}': it resolves to a hidden file", PathString(path).c_str());
+    return false;
+  }
+  // The file was opened before its path was resolved here: a link retargeted meanwhile would make this check validate
+  // another file than the one served.
+  if (pFile != nullptr && !pFile->isAtPath(PathString(canonicalPath).c_str())) {
+    log::warn("Refusing to serve '{}': it changed while being opened", PathString(path).c_str());
     return false;
   }
   return true;
@@ -1036,7 +1070,7 @@ const StaticFileHandler::CachedFileHeaders* StaticFileHandler::resolveHeaderMeta
     const std::filesystem::path& targetPath, std::string_view filePath, const File& file,
     CachedFileHeaders& scratch) const {
   if (_config.headerCacheCapacity == 0) {
-    if (!isWithinRoot(targetPath)) {
+    if (!isRealPathServable(targetPath, &file)) {
       return nullptr;
     }
     buildHeaderMeta(filePath, file, scratch);
@@ -1053,7 +1087,7 @@ const StaticFileHandler::CachedFileHeaders* StaticFileHandler::resolveHeaderMeta
     char identity[File::kIdentitySize];
     file.appendIdentityData(identity);
     const bool sameFile = std::memcmp(headers.identity, identity, sizeof(identity)) == 0;
-    if (!sameFile && !isWithinRoot(targetPath)) {
+    if (!sameFile && !isRealPathServable(targetPath, &file)) {
       return nullptr;
     }
     if (!sameFile || headers.fileSize != file.size() || headers.lastModified != file.lastModified()) {
@@ -1066,7 +1100,7 @@ const StaticFileHandler::CachedFileHeaders* StaticFileHandler::resolveHeaderMeta
     return &headers;
   }
 
-  if (!isWithinRoot(targetPath)) {
+  if (!isRealPathServable(targetPath, &file)) {
     return nullptr;
   }
 
@@ -1111,7 +1145,7 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
 
   // resolveTarget already validated the target via status; no need to stat again.
   if (resolveResult == ResolveResult::Directory) {
-    if (!_config.enableDirectoryIndex || !isWithinRoot(targetPath)) {
+    if (!_config.enableDirectoryIndex || !isRealPathServable(targetPath, nullptr)) {
       resp = request.makeResponse(http::StatusCodeNotFound);
       return resp;
     }
@@ -1186,7 +1220,7 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
   CachedFileHeaders scratchMeta;
   const CachedFileHeaders* pMeta = resolveHeaderMeta(targetPath, pathString.view, file, scratchMeta);
   if (pMeta == nullptr) {
-    // Reached through a symbolic link that leads outside of the root directory.
+    // Reached through a symbolic link leading outside of the root directory or to a hidden file, or replaced meanwhile.
     resp = request.makeResponse(http::StatusCodeNotFound);
     return resp;
   }

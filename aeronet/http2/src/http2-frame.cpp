@@ -90,7 +90,7 @@ FrameParseResult ParseHeadersFrame(FrameHeader header, std::span<const std::byte
   out.padLength = 0;
   out.exclusive = false;
   out.streamDependency = 0;
-  out.weight = 16;
+  out.weightMinusOne = 15;
 
   std::size_t offset = 0;
 
@@ -112,7 +112,7 @@ FrameParseResult ParseHeadersFrame(FrameHeader header, std::span<const std::byte
     out.exclusive = (depAndExcl & 0x80000000U) != 0;
     out.streamDependency = depAndExcl & kMaxWindowSize;
     // RFC 9113 §5.3.1: "Add one to the value to obtain a weight between 1 and 256."
-    out.weight = static_cast<uint8_t>(payload[offset + 4]) + 1;
+    out.weightMinusOne = static_cast<uint8_t>(payload[offset + 4]);
     offset += 5;
   }
 
@@ -134,7 +134,7 @@ FrameParseResult ParsePriorityFrame(std::span<const std::byte> payload, Priority
   out.exclusive = (depAndExcl & 0x80000000U) != 0;
   out.streamDependency = depAndExcl & kMaxWindowSize;
   // RFC 9113 §5.3.1: "Add one to the value to obtain a weight between 1 and 256."
-  out.weight = static_cast<uint8_t>(payload[sizeof(uint32_t)]) + 1;
+  out.weightMinusOne = static_cast<uint8_t>(payload[sizeof(uint32_t)]);
 
   return FrameParseResult::Ok;
 }

@@ -27,6 +27,7 @@ class ITunnelBridge {
       Established,  // upstreamFd is the connection to the target (possibly still connecting)
       Pending,      // the target host name is resolved in the background, see Http2ProtocolHandler::onTunnelResolved()
       Failed,       // the target could not be reached
+      Overloaded,   // too many target host names are being resolved
     };
 
     NativeHandle upstreamFd{kInvalidHandle};
@@ -37,7 +38,10 @@ class ITunnelBridge {
   [[nodiscard]] virtual TunnelSetup setupTunnel(uint32_t streamId, std::string_view host, uint16_t port) = 0;
 
   /// Write data to an upstream tunnel fd. The server handles buffering and EPOLLOUT.
-  virtual void writeTunnel(NativeHandle upstreamFd, std::span<const std::byte> data) = 0;
+  /// Returns false when bytes wait for the upstream to be writable: the handler then stops granting flow-control credit
+  /// to the client stream until onTunnelUpstreamDrained() is called on it, so that a slow upstream bounds what is
+  /// buffered for it.
+  [[nodiscard]] virtual bool writeTunnel(NativeHandle upstreamFd, std::span<const std::byte> data) = 0;
 
   /// Half-close the upstream tunnel fd (shutdown write side).
   virtual void shutdownTunnelWrite(NativeHandle upstreamFd) = 0;

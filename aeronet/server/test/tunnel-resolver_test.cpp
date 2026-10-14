@@ -25,6 +25,9 @@ namespace {
 
 using namespace std::chrono_literals;
 
+// The resolver ignores the deadline, which the TunnelManager checks.
+constexpr std::chrono::steady_clock::time_point kNoDeadline{};
+
 // Collects the resolved tunnels until 'expected' were received, or the timeout elapsed.
 vector<std::shared_ptr<PendingTunnel>> WaitForResolved(TunnelResolver& resolver, std::size_t expected,
                                                        std::chrono::milliseconds timeout = 10s) {
@@ -47,13 +50,15 @@ vector<std::shared_ptr<PendingTunnel>> WaitForResolved(TunnelResolver& resolver,
 }  // namespace
 
 TEST(TunnelResolverTest, PendingTunnelKeepsANullTerminatedHost) {
-  const PendingTunnel pending("example.com", 443, NativeHandle{3}, 5U, 42U);
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  const PendingTunnel pending("example.com", 443, NativeHandle{3}, 5U, 42U, deadline);
   EXPECT_EQ(pending.host(), "example.com");
   EXPECT_EQ(pending.hostBuffer.data()[pending.host().size()], '\0');
   EXPECT_EQ(pending.port, 443);
   EXPECT_EQ(pending.clientFd, NativeHandle{3});
   EXPECT_EQ(pending.streamId, 5U);
   EXPECT_EQ(pending.consumedBytes, 42U);
+  EXPECT_EQ(pending.deadline, deadline);
   EXPECT_FALSE(pending.cancelled);
 }
 
@@ -62,8 +67,9 @@ TEST(TunnelResolverTest, ResolvesHostNamesAndNotifies) {
   TunnelResolver resolver([&notifications] { notifications.fetch_add(1, std::memory_order_relaxed); });
   EXPECT_FALSE(resolver.hasResolved());
 
-  resolver.resolve(std::make_shared<PendingTunnel>("localhost", 80, NativeHandle{1}, 0U, 0U));
-  resolver.resolve(std::make_shared<PendingTunnel>("no-such-host.example.invalid", 80, NativeHandle{2}, 0U, 0U));
+  resolver.resolve(std::make_shared<PendingTunnel>("localhost", 80, NativeHandle{1}, 0U, 0U, kNoDeadline));
+  resolver.resolve(
+      std::make_shared<PendingTunnel>("no-such-host.example.invalid", 80, NativeHandle{2}, 0U, 0U, kNoDeadline));
 
   const auto resolved = WaitForResolved(resolver, 2);
   ASSERT_EQ(resolved.size(), 2U);
@@ -85,10 +91,33 @@ TEST(TunnelResolverTest, MoreResolutionsThanThreads) {
   static constexpr uint32_t kNbResolutions = (3U * TunnelResolver::kMaxThreads) + 1U;
   test::GetAddrInfoDelayGuard getAddrInfoDelayGuard(20);
   for (uint32_t idx = 0; idx < kNbResolutions; ++idx) {
-    resolver.resolve(std::make_shared<PendingTunnel>("localhost", 80, static_cast<NativeHandle>(idx), 0U, 0U));
+    resolver.resolve(
+        std::make_shared<PendingTunnel>("localhost", 80, static_cast<NativeHandle>(idx), 0U, 0U, kNoDeadline));
   }
   const auto resolved = WaitForResolved(resolver, kNbResolutions);
   EXPECT_EQ(resolved.size(), kNbResolutions);
+}
+
+TEST(TunnelResolverTest, CancelDropsQueuedResolutions) {
+  TunnelResolver resolver([] {});
+  test::GetAddrInfoDelayGuard getAddrInfoDelayGuard(200);
+  vector<std::shared_ptr<PendingTunnel>> pendings;
+  for (uint32_t idx = 0; idx < TunnelResolver::kMaxThreads + 2U; ++idx) {
+    pendings.push_back(
+        std::make_shared<PendingTunnel>("localhost", 80, static_cast<NativeHandle>(idx), 0U, 0U, kNoDeadline));
+    resolver.resolve(pendings.back());
+  }
+  std::this_thread::sleep_for(50ms);  // the first ones are being resolved: the last two wait in the queue
+  resolver.cancel(pendings[TunnelResolver::kMaxThreads]);
+  resolver.cancel(pendings[TunnelResolver::kMaxThreads + 1U]);
+  // A resolution in progress is not interrupted.
+  resolver.cancel(pendings.front());
+
+  const auto resolved = WaitForResolved(resolver, pendings.size(), 1500ms);
+  EXPECT_EQ(resolved.size(), static_cast<std::size_t>(TunnelResolver::kMaxThreads));
+  for (const auto& pending : resolved) {
+    EXPECT_LT(pending->clientFd, static_cast<NativeHandle>(TunnelResolver::kMaxThreads));
+  }
 }
 
 TEST(TunnelResolverTest, DestructionDoesNotWaitForResolutionsInProgress) {
@@ -97,9 +126,9 @@ TEST(TunnelResolverTest, DestructionDoesNotWaitForResolutionsInProgress) {
   const auto start = std::chrono::steady_clock::now();
   {
     TunnelResolver resolver([&notifications] { notifications.fetch_add(1, std::memory_order_relaxed); });
-    resolver.resolve(std::make_shared<PendingTunnel>("localhost", 80, NativeHandle{1}, 0U, 0U));
+    resolver.resolve(std::make_shared<PendingTunnel>("localhost", 80, NativeHandle{1}, 0U, 0U, kNoDeadline));
     // Queued behind the first one if a single thread was started, or resolving too: dropped either way.
-    resolver.resolve(std::make_shared<PendingTunnel>("localhost", 80, NativeHandle{2}, 0U, 0U));
+    resolver.resolve(std::make_shared<PendingTunnel>("localhost", 80, NativeHandle{2}, 0U, 0U, kNoDeadline));
     std::this_thread::sleep_for(50ms);
   }
   EXPECT_LT(std::chrono::steady_clock::now() - start, 700ms);

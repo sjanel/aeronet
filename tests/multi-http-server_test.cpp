@@ -12,6 +12,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <functional>
 #include <future>
@@ -35,6 +36,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/log.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/router.hpp"
@@ -958,6 +960,57 @@ TEST(MultiHttpServer, RunUntilStopsWhenPredicateFires) {
   done.store(true, std::memory_order_relaxed);
   runner.join();
 
+  EXPECT_FALSE(multi.isRunning());
+}
+
+namespace {
+
+void RequestStopFromHandler(MultiHttpServer& multi) {
+  try {
+    static_cast<void>(test::simpleGet(multi.port(), "/stop"));
+  } catch (const std::exception& ex) {
+    // The response may be cut by the stop.
+    log::info("Exception caught while performing simpleGet to /stop: {}", ex.what());
+  }
+}
+
+}  // namespace
+
+TEST(MultiHttpServer, StopFromHandlerOfStartedServer) {
+  // From an event-loop thread, stop() must neither join it (std::terminate) nor wait for the threads to be joined.
+  MultiHttpServer multi(MakeConfig(2U));
+  multi.router().setPath(http::Method::GET, "/stop", [&multi](const HttpRequestView& req) {
+    multi.stop();
+    return req.makeResponse("stopping");
+  });
+
+  multi.start();
+  const auto port = multi.port();
+  RequestStopFromHandler(multi);
+  EXPECT_TRUE(test::WaitForListenerClosed(port, 2s));
+  EXPECT_TRUE(multi.isRunning());  // its threads are not joined yet
+
+  multi.stop();  // joins the event-loop threads, which already stopped by themselves
+  EXPECT_FALSE(multi.isRunning());
+
+  multi.start();  // restartable
+  EXPECT_TRUE(test::simpleGet(port, "/").contains("404"));
+  multi.stop();
+}
+
+TEST(MultiHttpServer, StopFromHandlerOfBlockingRun) {
+  // run() joins every worker, including the one calling stop(): stop() must not wait for run() to complete.
+  MultiHttpServer multi(MakeConfig(2U));
+  multi.router().setPath(http::Method::GET, "/stop", [&multi](const HttpRequestView& req) {
+    multi.stop();
+    return req.makeResponse("stopping");
+  });
+
+  auto runResult = std::async(std::launch::async, [&multi] { multi.run(); });
+  ASSERT_TRUE(test::WaitForServer(multi));
+  RequestStopFromHandler(multi);
+  EXPECT_EQ(runResult.wait_for(5s), std::future_status::ready);
+  runResult.get();
   EXPECT_FALSE(multi.isRunning());
 }
 
