@@ -397,4 +397,134 @@ TEST(ZstdEncoderDecoderTest, EncodeChunkWithInsufficientOutputCapacity) {
   }
 }
 
+// A frame cut short is rejected, whether its decompressed size is declared (one-shot encoding) or not (streaming).
+TEST(ZstdEncoderDecoderTest, TruncatedFrameIsRejected) {
+  const std::string payload = test::MakePatternedPayload(100000);
+  CompressionConfig cfg;
+  ZstdEncoder encoder(cfg.zstd);
+  RawChars oneShot;
+  EncodeFull(encoder, payload, oneShot, kExtraCapacity);
+  const auto streamed = test::BuildStreamingCompressed(*encoder.makeContext(), payload, 4096U);
+  for (const std::string_view frame : {std::string_view(oneShot), std::string_view(streamed)}) {
+    for (const std::size_t cut : {std::size_t{1}, frame.size() / 2}) {
+      ZstdDecoder decoder;
+      RawChars decompressed;
+      EXPECT_FALSE(
+          decoder.decompressFull(frame.substr(0, frame.size() - cut), kMaxPlainBytes, kDecoderChunkSize, decompressed))
+          << "cut " << cut;
+
+      // Fed piece by piece, the frame only fails at the final chunk.
+      auto* ctx = decoder.makeContext();
+      decompressed.clear();
+      const std::string_view truncated = frame.substr(0, frame.size() - cut);
+      EXPECT_TRUE(ctx->decompressChunk(truncated.substr(0, truncated.size() - 1), false, kMaxPlainBytes,
+                                       kDecoderChunkSize, decompressed));
+      EXPECT_FALSE(ctx->decompressChunk(truncated.substr(truncated.size() - 1), true, kMaxPlainBytes, kDecoderChunkSize,
+                                        decompressed));
+    }
+  }
+}
+
+// Decoding into an output buffer far smaller than the decoded blocks still yields the whole output, whether the frame
+// comes in several chunks or as a single final one.
+TEST(ZstdEncoderDecoderTest, FinalChunkFlushesTheWholeOutput) {
+  const std::string payload(1UL << 20U, 'z');  // a few compressed bytes decode to whole 128 KiB blocks
+  CompressionConfig cfg;
+  ZstdEncoder encoder(cfg.zstd);
+  const auto streamed = test::BuildStreamingCompressed(*encoder.makeContext(), payload, payload.size());
+  for (const uint32_t decoderChunkSize : {512U, 4096U}) {
+    ZstdDecoder decoder;
+    auto* ctx = decoder.makeContext();
+    RawChars decompressed;
+    const std::string_view view(streamed);
+    ASSERT_TRUE(
+        ctx->decompressChunk(view.substr(0, view.size() - 1), false, kMaxPlainBytes, decoderChunkSize, decompressed));
+    ASSERT_TRUE(
+        ctx->decompressChunk(view.substr(view.size() - 1), true, kMaxPlainBytes, decoderChunkSize, decompressed));
+    EXPECT_EQ(decompressed.size(), payload.size()) << decoderChunkSize;
+    EXPECT_TRUE(std::string_view(decompressed) == payload) << decoderChunkSize;
+
+    // The whole frame as a single final chunk.
+    ctx = decoder.makeContext();
+    decompressed.clear();
+    ASSERT_TRUE(ctx->decompressChunk(view, true, kMaxPlainBytes, decoderChunkSize, decompressed));
+    EXPECT_EQ(decompressed.size(), payload.size()) << decoderChunkSize;
+  }
+}
+
+// Content made of several frames (RFC 8878 §3.1) is decoded whole, wherever the input pieces start and end.
+TEST(ZstdEncoderDecoderTest, ConcatenatedFramesAreDecoded) {
+  const std::string first = test::MakePatternedPayload(70000);
+  const std::string second(50000, 's');
+  CompressionConfig cfg;
+  ZstdEncoder encoder(cfg.zstd);
+  RawChars oneShot;  // declares its decompressed size
+  EncodeFull(encoder, first, oneShot, kExtraCapacity);
+  const auto streamed = test::BuildStreamingCompressed(*encoder.makeContext(), second, 4096U);
+  std::string frames(std::string_view{oneShot});
+  frames.append(std::string_view{streamed});
+  const std::string expected = first + second;
+
+  ZstdDecoder decoder;
+  RawChars decompressed;
+  ASSERT_TRUE(decoder.decompressFull(frames, kMaxPlainBytes, kDecoderChunkSize, decompressed));
+  EXPECT_TRUE(std::string_view(decompressed) == expected);
+
+  for (const std::size_t split :
+       {std::size_t{1}, std::size_t{7}, static_cast<std::size_t>(oneShot.size()), std::size_t{4096}}) {
+    auto* ctx = decoder.makeContext();
+    decompressed.clear();
+    for (std::size_t off = 0; off < frames.size(); off += split) {
+      const std::string_view piece = std::string_view(frames).substr(off, split);
+      ASSERT_TRUE(ctx->decompressChunk(piece, off + piece.size() == frames.size(), kMaxPlainBytes, kDecoderChunkSize,
+                                       decompressed))
+          << "split " << split << " offset " << off;
+    }
+    EXPECT_TRUE(std::string_view(decompressed) == expected) << "split " << split;
+  }
+
+  // A truncated second frame is still rejected.
+  EXPECT_FALSE(decoder.decompressFull(std::string_view(frames).substr(0, frames.size() - 1), kMaxPlainBytes,
+                                      kDecoderChunkSize, decompressed));
+}
+
+TEST(ZstdEncoderDecoderTest, DeclaresMoreThan) {
+  CompressionConfig cfg;
+  ZstdEncoder encoder(cfg.zstd);
+  RawChars oneShot;
+  EncodeFull(encoder, std::string(1000UL, 'd'), oneShot, kExtraCapacity);
+  EXPECT_TRUE(ZstdDecoder::DeclaresMoreThan(oneShot, 999));
+  EXPECT_FALSE(ZstdDecoder::DeclaresMoreThan(oneShot, 1000));
+  // Unknown declared size (streaming encoder) or invalid frame: nothing is declared.
+  const auto streamed = test::BuildStreamingCompressed(*encoder.makeContext(), std::string(1000, 'd'), 64U);
+  EXPECT_FALSE(ZstdDecoder::DeclaresMoreThan(streamed, 1));
+  EXPECT_FALSE(ZstdDecoder::DeclaresMoreThan("not zstd at all", 1));
+}
+
+// maxDecompressedBytes holds when the output buffer already has room beyond it, as a reused buffer has: a frame
+// decoding to exactly the limit is accepted, one byte more is rejected, in one shot or fed piece by piece.
+TEST(ZstdEncoderDecoderTest, MaxDecompressedBytesWithSpareOutputCapacity) {
+  const std::string payload = test::MakePatternedPayload(100000);
+  CompressionConfig cfg;
+  ZstdEncoder encoder(cfg.zstd);
+  // Streaming encoding: the frame does not declare its decompressed size, so the decoder has to stop the output.
+  const auto streamed = test::BuildStreamingCompressed(*encoder.makeContext(), payload, 4096U);
+  const std::string_view view(streamed);
+  for (const std::size_t pieceSize : {view.size(), std::size_t{100}}) {
+    for (const std::size_t limit : {payload.size() - 1, payload.size()}) {
+      ZstdDecoder decoder;
+      auto* ctx = decoder.makeContext();
+      RawChars decompressed(4 * payload.size());
+      bool ok = true;
+      for (std::size_t off = 0; ok && off < view.size(); off += pieceSize) {
+        const std::string_view piece = view.substr(off, pieceSize);
+        ok = ctx->decompressChunk(piece, off + piece.size() == view.size(), limit - decompressed.size(),
+                                  kDecoderChunkSize, decompressed);
+      }
+      EXPECT_EQ(ok, limit == payload.size()) << "piece " << pieceSize << " limit " << limit;
+      EXPECT_LE(decompressed.size(), limit + 1);
+    }
+  }
+}
+
 }  // namespace aeronet

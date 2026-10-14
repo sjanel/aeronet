@@ -808,9 +808,9 @@ void SingleHttpServer::closeConnection(ConnectionIt cnxIt) {
 
 void SingleHttpServer::releaseConnection(ConnectionIt cnxIt) {
   const auto fd = cnxIt->fd();
-  ConnectionState& state = _connections.connectionState(cnxIt);
   _eventLoop.del(fd);
 #ifdef AERONET_LINUX
+  ConnectionState& state = _connections.connectionState(cnxIt);
   // After a graceful close, the kernel would keep sending from the buffers of the zerocopy sends still in flight: abort
   // such a connection (reset), so that the kernel drops its send queue. Drain closes wait for the completions instead
   // (see ConnectionState::canCloseConnectionForDrain()).

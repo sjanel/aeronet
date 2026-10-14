@@ -266,7 +266,8 @@ TEST(BrotliEncoderDecoderTest, MaxDecompressedBytes) {
     const std::size_t limit = payload.empty() ? 0 : payload.size() - 1;
     const bool isOK = decoder.decompressFull(compressed, limit, kDecoderChunkSize, decompressed);
     EXPECT_EQ(isOK, payload.empty());
-    EXPECT_EQ(decompressed, std::string_view(payload).substr(0, limit));
+    // Exceeding the limit is detected by decoding one more byte.
+    EXPECT_EQ(decompressed, std::string_view(payload).substr(0, limit + 1));
   }
 }
 
@@ -447,6 +448,140 @@ TEST(BrotliEncoderDecoderTest, EncodeChunkWithInsufficientOutputCapacity) {
     if (!endResult1.hasError()) {
       const auto endResult2 = ctx->end(sizeof(tiny) - result.writtenIfNoError() - endResult1.writtenIfNoError(), tiny);
       EXPECT_TRUE(endResult2.hasError());
+    }
+  }
+}
+
+// A stream cut short is rejected, whether it was encoded in one shot or in streaming.
+TEST(BrotliEncoderDecoderTest, TruncatedStreamIsRejected) {
+  const std::string payload = test::MakePatternedPayload(100000);
+  CompressionConfig cfg;
+  BrotliEncoder encoder(cfg.brotli);
+  RawChars oneShot;
+  EncodeFull(encoder, payload, oneShot, kExtraCapacity);
+  const auto streamed = test::BuildStreamingCompressed(*encoder.makeContext(), payload, 4096U);
+  for (const std::string_view stream : {std::string_view(oneShot), std::string_view(streamed)}) {
+    for (const std::size_t cut : {std::size_t{1}, stream.size() / 2}) {
+      BrotliDecoder decoder;
+      RawChars decompressed;
+      const std::string_view truncated = stream.substr(0, stream.size() - cut);
+      EXPECT_FALSE(decoder.decompressFull(truncated, kMaxPlainBytes, kDecoderChunkSize, decompressed)) << "cut " << cut;
+
+      // Fed piece by piece, the stream only fails at the final chunk.
+      auto* ctx = decoder.makeContext();
+      decompressed.clear();
+      EXPECT_TRUE(ctx->decompressChunk(truncated.substr(0, truncated.size() - 1), false, kMaxPlainBytes,
+                                       kDecoderChunkSize, decompressed));
+      EXPECT_FALSE(ctx->decompressChunk(truncated.substr(truncated.size() - 1), true, kMaxPlainBytes, kDecoderChunkSize,
+                                        decompressed));
+    }
+  }
+}
+
+// Decoding into an output buffer far smaller than the decoded data still yields the whole output, whether the stream
+// comes in several chunks or as a single final one.
+TEST(BrotliEncoderDecoderTest, FinalChunkFlushesTheWholeOutput) {
+  const std::string payload(1UL << 20U, 'b');  // a few compressed bytes decode to the whole payload
+  CompressionConfig cfg;
+  BrotliEncoder encoder(cfg.brotli);
+  const auto streamed = test::BuildStreamingCompressed(*encoder.makeContext(), payload, payload.size());
+  const std::string_view view(streamed);
+  for (const uint32_t decoderChunkSize : {512U, 4096U}) {
+    BrotliDecoder decoder;
+    auto* ctx = decoder.makeContext();
+    RawChars decompressed;
+    ASSERT_TRUE(
+        ctx->decompressChunk(view.substr(0, view.size() - 1), false, kMaxPlainBytes, decoderChunkSize, decompressed));
+    ASSERT_TRUE(
+        ctx->decompressChunk(view.substr(view.size() - 1), true, kMaxPlainBytes, decoderChunkSize, decompressed));
+    EXPECT_TRUE(std::string_view(decompressed) == payload) << decoderChunkSize;
+
+    // The whole stream as a single final chunk.
+    ctx = decoder.makeContext();
+    decompressed.clear();
+    ASSERT_TRUE(ctx->decompressChunk(view, true, kMaxPlainBytes, decoderChunkSize, decompressed));
+    EXPECT_TRUE(std::string_view(decompressed) == payload) << decoderChunkSize;
+  }
+}
+
+// A stream fed in pieces whose decoded size comes within one decoder chunk of maxDecompressedBytes is accepted: the
+// limit only stops an output that would exceed it.
+TEST(BrotliEncoderDecoderTest, StreamingDecodeCloseToTheLimitIsAccepted) {
+  CompressionConfig cfg;
+  BrotliEncoder encoder(cfg.brotli);
+  for (const RawChars& payload : {test::MakeRandomPayload(9000), RawChars(test::MakePatternedPayload(300000))}) {
+    RawChars compressed;
+    EncodeFull(encoder, std::string_view{payload}, compressed, kExtraCapacity);
+    const std::string_view view{compressed};
+    for (const std::size_t limit : {payload.size(), payload.size() + 1, payload.size() + kDecoderChunkSize}) {
+      for (const std::size_t pieceSize : {std::size_t{1}, std::size_t{100}, std::size_t{4096}}) {
+        BrotliDecoder decoder;
+        auto* ctx = decoder.makeContext();
+        RawChars decompressed;
+        bool ok = true;
+        for (std::size_t off = 0; ok && off < view.size(); off += pieceSize) {
+          const std::string_view piece = view.substr(off, pieceSize);
+          ok = ctx->decompressChunk(piece, off + piece.size() == view.size(), limit - decompressed.size(),
+                                    kDecoderChunkSize, decompressed);
+        }
+        EXPECT_TRUE(ok) << "size " << payload.size() << " limit " << limit << " piece " << pieceSize;
+        EXPECT_TRUE(std::string_view(decompressed) == std::string_view{payload});
+      }
+    }
+  }
+}
+
+// Brotli streams cannot be concatenated (RFC 7932): bytes after the last meta-block are rejected.
+TEST(BrotliEncoderDecoderTest, TrailingDataIsRejected) {
+  CompressionConfig cfg;
+  BrotliEncoder encoder(cfg.brotli);
+  RawChars first;
+  EncodeFull(encoder, test::MakePatternedPayload(70000), first, kExtraCapacity);
+  RawChars second;
+  EncodeFull(encoder, std::string(50000, 's'), second, kExtraCapacity);
+  std::string streams(std::string_view{first});
+  streams.append(std::string_view{second});
+
+  BrotliDecoder decoder;
+  RawChars decompressed;
+  EXPECT_FALSE(decoder.decompressFull(streams, kMaxPlainBytes, kDecoderChunkSize, decompressed));
+
+  // Fed piece by piece, the end of the first stream is found in a piece followed by more input.
+  for (const std::size_t split : {static_cast<std::size_t>(7), static_cast<std::size_t>(first.size())}) {
+    auto* ctx = decoder.makeContext();
+    decompressed.clear();
+    bool ok = true;
+    for (std::size_t off = 0; ok && off < streams.size(); off += split) {
+      const std::string_view piece = std::string_view(streams).substr(off, split);
+      ok = ctx->decompressChunk(piece, off + piece.size() == streams.size(), kMaxPlainBytes, kDecoderChunkSize,
+                                decompressed);
+    }
+    EXPECT_FALSE(ok) << "split " << split;
+  }
+}
+
+// maxDecompressedBytes holds when the output buffer already has room beyond it, as a reused buffer has: a stream
+// decoding to exactly the limit is accepted, one byte more is rejected, in one shot or fed piece by piece.
+TEST(BrotliEncoderDecoderTest, MaxDecompressedBytesWithSpareOutputCapacity) {
+  const std::string payload = test::MakePatternedPayload(100000);
+  CompressionConfig cfg;
+  BrotliEncoder encoder(cfg.brotli);
+  RawChars compressed;
+  EncodeFull(encoder, payload, compressed, kExtraCapacity);
+  const std::string_view view(compressed);
+  for (const std::size_t pieceSize : {view.size(), std::size_t{100}}) {
+    for (const std::size_t limit : {payload.size() - 1, payload.size()}) {
+      BrotliDecoder decoder;
+      auto* ctx = decoder.makeContext();
+      RawChars decompressed(4 * payload.size());
+      bool ok = true;
+      for (std::size_t off = 0; ok && off < view.size(); off += pieceSize) {
+        const std::string_view piece = view.substr(off, pieceSize);
+        ok = ctx->decompressChunk(piece, off + piece.size() == view.size(), limit - decompressed.size(),
+                                  kDecoderChunkSize, decompressed);
+      }
+      EXPECT_EQ(ok, limit == payload.size()) << "piece " << pieceSize << " limit " << limit;
+      EXPECT_LE(decompressed.size(), limit + 1);
     }
   }
 }
