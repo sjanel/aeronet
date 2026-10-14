@@ -76,7 +76,7 @@ const HttpClientResult stored = client.request(std::move(upload));
 
 ## Responses
 
-The response is an `HttpResponse`, the same type the server builds. `status()`, `headers()`, `headerValueOrEmpty()`, and `bodyInMemory()` read it. Header names are lower-case. The body is complete when the request returns: chunked transfer coding is removed, a compressed body is decoded (and its `Content-Encoding` header dropped), and `Content-Type` and `Content-Length` describe the decoded body. Other headers keep their received values.
+The response is an `HttpResponse`, the same type the server builds. `status()`, `headers()`, `headerValueOrEmpty()`, and `bodyInMemory()` read it. Header names are lower-case. The body is complete when the request returns: chunked transfer coding is removed, a compressed body is decoded (and its `Content-Encoding` header dropped; an empty body, having nothing to decode, keeps it), and `Content-Type` and `Content-Length` describe the decoded body. Other headers keep their received values.
 
 The whole response is buffered, up to `maxResponseBytes` (64 MiB by default). The body takes over the client's receive buffer instead of being copied: chunked responses hand over their de-framing buffer, decompressed responses the decoder output, and HTTP/2 responses their DATA buffer. The client keeps an empty buffer of the same capacity for the next exchange.
 

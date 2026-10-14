@@ -2854,6 +2854,31 @@ TEST(HttpClientErrorE2ETest, ShortContentTypeFromServerIsAccepted) {
   EXPECT_EQ(result->bodyInMemory(), "hello");
 }
 
+// An empty body with a Content-Encoding has nothing to decode: it is returned empty, with its Content-Encoding (as over
+// HTTP/2), whatever its framing.
+TEST(HttpClientErrorE2ETest, EmptyBodyWithContentEncodingIsNotDecoded) {
+  static constexpr std::string_view kFramings[]{"content-length: 0\r\n\r\n",
+                                                "transfer-encoding: chunked\r\n\r\n0\r\n\r\n", "\r\n"};
+  for (const Encoding enc : test::SupportedEncodings()) {
+    for (const std::string_view framing : kFramings) {
+      RawServer server([enc, framing](NativeHandle fd, int) {
+        DrainRequest(fd);
+        std::string resp("HTTP/1.1 200 OK\r\nconnection: close\r\ncontent-encoding: ");
+        resp += GetEncodingStr(enc);
+        resp += http::CRLF;
+        resp += framing;
+        SendAll(fd, resp);
+      });
+      HttpClient client;
+      auto result = client.get(MakeUrl(server.port()));
+      ASSERT_TRUE(result) << GetEncodingStr(enc) << " " << framing;
+      EXPECT_EQ(result->status(), 200);
+      EXPECT_TRUE(result->bodyInMemory().empty());
+      EXPECT_EQ(result->headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+    }
+  }
+}
+
 // RFC 9112 section 9.6: with keep-alive disabled, every HTTP/1.1 request carries 'Connection: close' (so that the
 // server closes first and keeps the TIME_WAIT state), without modifying the user's request object.
 TEST(HttpClientRawServerTest, KeepAliveOffSendsConnectionClose) {
