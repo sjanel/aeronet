@@ -117,11 +117,13 @@ class Http2Connection {
   /// Process incoming data from the transport.
   /// @param data Incoming bytes from the socket
   /// @return ProcessResult indicating next action and bytes consumed
-  [[nodiscard]] ProcessResult processInput(std::span<const std::byte> data);
+  [[nodiscard]] ProcessResult processInput(std::span<const std::byte> data) {
+    return processInput(data, ~static_cast<uint32_t>(0));
+  }
 
   /// Process input until `outputHighWaterMark` queued wire bytes are reached.
   /// The caller should drain output before passing the unconsumed input again.
-  [[nodiscard]] ProcessResult processInput(std::span<const std::byte> data, std::size_t outputHighWaterMark);
+  [[nodiscard]] ProcessResult processInput(std::span<const std::byte> data, uint32_t outputHighWaterMark);
 
   /// Check if there's pending output to write.
   [[nodiscard]] bool hasPendingOutput() const noexcept {
@@ -326,7 +328,11 @@ class Http2Connection {
 
     [[nodiscard]] std::size_t framePayloadSize(uint32_t frameIndex) const noexcept;
 
-    [[nodiscard]] const std::byte* frameHeader(uint32_t frameIndex) const noexcept;
+    [[nodiscard]] const std::byte* frameHeader(uint32_t frameIndex) const noexcept {
+      return frameIndex == 0 ? _firstHeader.data()
+                             : _continuationHeaders.data() + (static_cast<std::ptrdiff_t>(frameIndex - 1U) *
+                                                              static_cast<std::ptrdiff_t>(FrameHeader::kSize));
+    }
 
     RawBytes _payload;
     RawBytes _continuationHeaders;
@@ -346,7 +352,7 @@ class Http2Connection {
   // ============================
 
   ProcessResult processPreface(std::span<const std::byte> data);
-  ProcessResult processFrames(std::span<const std::byte> data, std::size_t outputHighWaterMark);
+  ProcessResult processFrames(std::span<const std::byte> data, uint32_t outputHighWaterMark);
   ProcessResult processFrame(FrameHeader header, std::span<const std::byte> payload);
 
   ProcessResult handleDataFrame(FrameHeader header, std::span<const std::byte> payload);
