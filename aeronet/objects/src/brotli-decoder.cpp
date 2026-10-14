@@ -67,9 +67,9 @@ bool BrotliDecoderContext::decompressChunk(std::string_view chunk, bool finalChu
   auto* pState = reinterpret_cast<BrotliDecoderState*>(_pState);
 
   while (true) {
-    const bool forceEnd = decoderBufferManager.nextReserve();
+    const std::size_t room = decoderBufferManager.nextReserve();
     auto* nextOut = reinterpret_cast<uint8_t*>(out.data() + out.size());
-    std::size_t availOut = out.availableCapacity();
+    std::size_t availOut = room;
 
     const auto res = BrotliDecoderDecompressStream(pState, &availIn, &nextIn, &availOut, &nextOut, nullptr);
     if (res == BROTLI_DECODER_RESULT_ERROR) [[unlikely]] {
@@ -77,7 +77,11 @@ bool BrotliDecoderContext::decompressChunk(std::string_view chunk, bool finalChu
                  static_cast<int>(BrotliDecoderGetErrorCode(pState)));
       return false;
     }
-    out.setSize(out.capacity() - availOut);
+    out.addSize(room - availOut);
+    if (decoderBufferManager.limitExceeded()) {
+      log::debug("BrotliDecoderContext::decompressChunk - exceeded max decompressed size of {}", maxDecompressedBytes);
+      return false;
+    }
     if (res == BROTLI_DECODER_RESULT_SUCCESS) {
       return availIn == 0;
     }
@@ -85,9 +89,6 @@ bool BrotliDecoderContext::decompressChunk(std::string_view chunk, bool finalChu
       return !finalChunk;
     }
     assert(res == BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT);
-    if (forceEnd) {
-      return false;
-    }
   }
 }
 

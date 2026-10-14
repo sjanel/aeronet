@@ -62,8 +62,8 @@ void ZstdDecoderContext::init() {
   }
 }
 
-bool ZstdDecoderContext::decompressChunk(std::string_view chunk, [[maybe_unused]] bool finalChunk,
-                                         std::size_t maxDecompressedBytes, uint32_t decoderChunkSize, RawChars& out) {
+bool ZstdDecoderContext::decompressChunk(std::string_view chunk, bool finalChunk, std::size_t maxDecompressedBytes,
+                                         uint32_t decoderChunkSize, RawChars& out) {
   if (chunk.empty()) {
     return true;
   }
@@ -72,25 +72,37 @@ bool ZstdDecoderContext::decompressChunk(std::string_view chunk, [[maybe_unused]
   auto* pState = reinterpret_cast<ZSTD_DStream*>(_pState);
 
   ZSTD_inBuffer in{chunk.data(), chunk.size(), 0};
-  while (in.pos < in.size) {
-    const bool forceEnd = decoderBufferManager.nextReserve();
-    ZSTD_outBuffer output{out.data() + out.size(), out.availableCapacity(), 0};
+  for (;;) {
+    const std::size_t room = decoderBufferManager.nextReserve();  // before out.data(), which it may reallocate
+    ZSTD_outBuffer output{out.data() + out.size(), room, 0};
     const std::size_t ret = ZSTD_decompressStream(pState, &output, &in);
     if (ZSTD_isError(ret) != 0U) [[unlikely]] {
       log::debug("ZSTD_decompressStream failed with error {}", ZSTD_getErrorName(ret));
       return false;
     }
     out.addSize(output.pos);
-    if (ret != 0) {
-      if (forceEnd) {
-        return false;
-      }
-      continue;
+    if (decoderBufferManager.limitExceeded()) {
+      log::debug("ZstdDecoderContext::decompressChunk - exceeded max decompressed size of {}", maxDecompressedBytes);
+      return false;
     }
-
-    return in.pos == in.size;
+    if (ret == 0 && in.pos == in.size) {
+      return true;  // the input ends with a fully decoded and flushed frame
+    }
+    // Otherwise a frame is in progress, or another one follows (content may have several frames, RFC 8878 §3.1): the
+    // next call to ZSTD_decompressStream() starts it.
+    if (in.pos == in.size && output.pos < output.size) {
+      // All the input is consumed and nothing is left to flush: the frame continues in the next chunk, so it is
+      // truncated when this one is the last. A full output buffer may instead leave decoded bytes in the decoder (see
+      // ZSTD_decompressStream()), flushed by the next iteration.
+      return !finalChunk;
+    }
   }
-  return true;
+}
+
+bool ZstdDecoder::DeclaresMoreThan(std::string_view input, std::size_t maxDecompressedBytes) noexcept {
+  const auto declaredSize = ZSTD_getFrameContentSize(input.data(), input.size());
+  return declaredSize != ZSTD_CONTENTSIZE_ERROR && declaredSize != ZSTD_CONTENTSIZE_UNKNOWN &&
+         maxDecompressedBytes < declaredSize;
 }
 
 bool ZstdDecoder::decompressFull(std::string_view input, std::size_t maxDecompressedBytes, uint32_t decoderChunkSize,
@@ -108,10 +120,11 @@ bool ZstdDecoder::decompressFull(std::string_view input, std::size_t maxDecompre
         return false;
       }
 
+      // The size declared by the first frame only sizes the output: later frames may follow.
       out.ensureAvailableCapacityExponential(static_cast<uint64_t>(decompressedSize));
 
       _ctx.init();
-      return _ctx.decompressChunk(input, true, decompressedSize, decoderChunkSize, out);
+      return _ctx.decompressChunk(input, true, maxDecompressedBytes, decoderChunkSize, out);
     }
   }
 }

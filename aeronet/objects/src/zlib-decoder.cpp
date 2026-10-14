@@ -1,7 +1,10 @@
 #include "aeronet/zlib-decoder.hpp"
 
+#include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string_view>
 
 #include "aeronet/decoder-buffer-manager.hpp"
@@ -25,25 +28,34 @@ bool ZlibDecoderContext::decompressChunk(std::string_view chunk, bool finalChunk
   DecoderBufferManager decoderBufferManager(out, decoderChunkSize, maxDecompressedBytes);
 
   while (true) {
-    const bool forceEnd = decoderBufferManager.nextReserve();
+    // zlib counts the output room in 32 bits.
+    const auto room = static_cast<uint32_t>(
+        std::min<std::size_t>(decoderBufferManager.nextReserve(), std::numeric_limits<uint32_t>::max()));
 
-    ZSetOutput(stream, out.data() + out.size(), out.availableCapacity());
+    ZSetOutput(stream, out.data() + out.size(), room);
 
     const auto ret = ZInflate(stream, Z_NO_FLUSH);
-    out.setSize(out.capacity() - stream.avail_out);
+    out.addSize(room - stream.avail_out);
+    if (decoderBufferManager.limitExceeded()) {
+      log::debug("ZlibDecoderContext::decompressChunk - exceeded max decompressed size of {}", maxDecompressedBytes);
+      return false;
+    }
     if (ret == Z_STREAM_END) {
       return stream.avail_in == 0;
+    }
+    if (ret == Z_BUF_ERROR) {
+      // No progress possible with output room: nothing left to decode or flush without more input. The stream continues
+      // in the next chunk, so it is truncated when this one is the last.
+      assert(stream.avail_in == 0);
+      return !finalChunk;
     }
     if (ret != Z_OK) [[unlikely]] {
       log::debug("ZlibDecoderContext::decompressChunk - inflate failed with error {}", ret);
       return false;
     }
-    if (forceEnd) {
-      log::debug("ZlibDecoderContext::decompressChunk - reached max decompressed size of {}", maxDecompressedBytes);
-      return false;
-    }
-
-    if (stream.avail_in == 0) {
+    if (stream.avail_in == 0 && stream.avail_out != 0) {
+      // All the input is consumed with output room left (so nothing pending): same as above. A full output may hold
+      // back decoded bytes, flushed by the next iteration.
       return !finalChunk;
     }
   }

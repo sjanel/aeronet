@@ -119,7 +119,9 @@ class HttpCodec {
   /// is set to a view of the result (a view into one of the two buffers, or `compressedBody` itself when
   /// only identity codings were present so nothing was decoded). No header mutation is performed: callers
   /// own the message and adjust headers themselves. Reuses the exact same decoders/codepath as the
-  /// server's inbound request decompression. Returns http::StatusCodeOK on success.
+  /// server's inbound request decompression. Returns http::StatusCodeOK on success, and
+  /// http::StatusCodePayloadTooLarge when a size limit (maxCompressedBytes, maxDecompressedBytes,
+  /// maxExpansionRatio) is exceeded.
   static RequestDecompressionResult DecompressFullBody(DecompressionState& decompressionState,
                                                        const DecompressionConfig& decompressionConfig,
                                                        std::string_view contentEncoding,
