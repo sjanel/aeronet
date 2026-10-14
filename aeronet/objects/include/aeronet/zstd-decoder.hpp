@@ -21,9 +21,11 @@ class ZstdDecoderContext {
   ~ZstdDecoderContext();
 
   // Feed a compressed chunk into the context.
-  // When finalChunk is true, the caller does not provide any additional input.
+  // When finalChunk is true, the caller does not provide any additional input: a frame left incomplete is an error.
   // Returns true on success, false on failure (e.g. decompression error or exceeding maxDecompressedBytes).
-  bool decompressChunk(std::string_view chunk, [[maybe_unused]] bool finalChunk, std::size_t maxDecompressedBytes,
+  // maxDecompressedBytes bounds the bytes this call appends to out (the caller passes what is left of its budget):
+  // exceeding it fails with more than maxDecompressedBytes bytes appended.
+  bool decompressChunk(std::string_view chunk, bool finalChunk, std::size_t maxDecompressedBytes,
                        uint32_t decoderChunkSize, RawChars& out);
 
   void init();
@@ -40,6 +42,10 @@ class ZstdDecoder {
   // since the uncompressed size may be unknown (no content size header present in frame).
   bool decompressFull(std::string_view input, std::size_t maxDecompressedBytes, uint32_t decoderChunkSize,
                       RawChars& out);
+
+  // Whether the zstd frame starting `input` declares a decompressed size above maxDecompressedBytes, which
+  // decompressFull() rejects without decoding.
+  static bool DeclaresMoreThan(std::string_view input, std::size_t maxDecompressedBytes) noexcept;
 
   ZstdDecoderContext* makeContext() {
     _ctx.init();

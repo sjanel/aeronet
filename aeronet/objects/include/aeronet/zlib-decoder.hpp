@@ -16,6 +16,8 @@ class ZlibDecoderContext {
   // Feed a compressed chunk into the context.
   // When finalChunk is true, the caller does not provide any additional input.
   // Returns true on success, false on failure (e.g. decompression error or exceeding maxDecompressedBytes).
+  // maxDecompressedBytes bounds the bytes this call appends to out (the caller passes what is left of its budget):
+  // exceeding it fails with more than maxDecompressedBytes bytes appended.
   bool decompressChunk(std::string_view chunk, bool finalChunk, std::size_t maxDecompressedBytes,
                        uint32_t decoderChunkSize, RawChars& out);
 
