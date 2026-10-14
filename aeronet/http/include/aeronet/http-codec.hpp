@@ -121,7 +121,8 @@ class HttpCodec {
   /// own the message and adjust headers themselves. Reuses the exact same decoders/codepath as the
   /// server's inbound request decompression. Returns http::StatusCodeOK on success, and
   /// http::StatusCodePayloadTooLarge when a size limit (maxCompressedBytes, maxDecompressedBytes,
-  /// maxExpansionRatio) is exceeded.
+  /// maxExpansionRatio) is exceeded. compressedBody must not be empty: callers skip empty bodies, which have nothing to
+  /// decode.
   static RequestDecompressionResult DecompressFullBody(DecompressionState& decompressionState,
                                                        const DecompressionConfig& decompressionConfig,
                                                        std::string_view contentEncoding,

@@ -222,7 +222,8 @@ Http1ResponseParser::Status Http1ResponseParser::installBody(HttpResponse& resp,
   // Automatic decompression: decode straight from `body` (receive buffer / de-framed chunks) into the
   // borrowed scratch buffer, drop the now-stale Content-Encoding header (the body is not installed yet, so
   // removal is cheap and legal), then install the decoded bytes. No intermediate copy of the compressed body.
-  if (_decode.state != nullptr) {
+  // An empty body has nothing to decode, and keeps its Content-Encoding (as over HTTP/2).
+  if (_decode.state != nullptr && !body.empty()) {
     const std::string_view contentEncoding = resp.headerValueOrEmpty(http::ContentEncoding);
     if (!contentEncoding.empty()) {
       std::string_view decoded;
