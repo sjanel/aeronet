@@ -38,10 +38,9 @@ enum class FrameType : uint8_t {
 
 // HTTP/2 Error Codes (RFC 9113 §7)
 // ================================
-// Note: these codes are 32-bit values on the wire (RFC 9113). Keep the
-// underlying type as `uint32_t` intentionally to match the protocol's
-// on-the-wire representation and to avoid accidental truncation when
-// serializing/deserializing frames.
+// Note: these codes are 32-bit values on the wire (RFC 9113). Keep the underlying type as `uint32_t` intentionally to
+// match the protocol's on-the-wire representation and to avoid accidental truncation when serializing/deserializing
+// frames.
 enum class ErrorCode : uint32_t {  // NOLINT(performance-enum-size)
   NoError = 0x00,                  // Graceful shutdown
   ProtocolError = 0x01,            // Protocol error detected
@@ -62,9 +61,8 @@ enum class ErrorCode : uint32_t {  // NOLINT(performance-enum-size)
 // HTTP/2 Settings Parameters (RFC 9113 §6.5.2)
 // =============================================
 // Note: SETTINGS parameters are 16-bit identifiers on the wire (RFC 9113 §6.5.2).
-// Keep the underlying type as `uint16_t` intentionally to match the protocol's
-// on-the-wire representation and to avoid accidental truncation when
-// serializing/deserializing frames.
+// Keep the underlying type as `uint16_t` intentionally to match the protocol's on-the-wire representation and to avoid
+// accidental truncation when serializing/deserializing frames.
 enum class SettingsParameter : uint16_t {  // NOLINT(performance-enum-size)
   HeaderTableSize = 0x01,                  // HPACK dynamic table size (default: 4096)
   EnablePush = 0x02,                       // Whether server push is permitted (default: 1)

@@ -58,11 +58,7 @@ void BM_ParseDataFrame(benchmark::State& state) {
   Copy(payloadBytes.data(), payloadBytes.size(), pData);
 
   // Parse just the payload portion (after 9-byte header)
-  FrameHeader fh{};
-  fh.length = static_cast<uint32_t>(payloadSize);
-  fh.type = FrameType::Data;
-  fh.flags = FrameFlags::DataEndStream;
-  fh.streamId = 1;
+  const FrameHeader fh(static_cast<uint32_t>(payloadSize), FrameType::Data, FrameFlags::DataEndStream, 1);
 
   auto payloadSpan = std::span<const std::byte>(buf.begin() + FrameHeader::kSize, payloadSize);
 
@@ -103,15 +99,17 @@ void BM_ParseHeadersFrame(benchmark::State& state) {
                                 /*endStream=*/true, /*endHeaders=*/true);
 
   FrameHeader fh = ParseFrameHeader(std::span<const std::byte>(frameBuf.begin(), FrameHeader::kSize));
-  auto payload = std::span<const std::byte>(frameBuf.begin() + FrameHeader::kSize, fh.length);
+  auto payload = std::span<const std::byte>(frameBuf.begin() + FrameHeader::kSize, fh.length());
 
   for ([[maybe_unused]] auto iter : state) {
     HeadersFrame hf{};
-    auto result = ParseHeadersFrame(fh, payload, hf);
+    uint32_t streamDependency{};
+    auto result = ParseHeadersFrame(fh, payload, hf, streamDependency);
     benchmark::DoNotOptimize(result);
     benchmark::DoNotOptimize(hf);
+    benchmark::DoNotOptimize(streamDependency);
   }
-  state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(fh.length));
+  state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(fh.length()));
 }
 BENCHMARK(BM_ParseHeadersFrame);
 
@@ -248,13 +246,13 @@ void BM_BulkParseDataFrames(benchmark::State& state) {
     while (pos + FrameHeader::kSize <= bufSpan.size()) {
       auto fh = ParseFrameHeader(bufSpan.subspan(pos, FrameHeader::kSize));
       pos += FrameHeader::kSize;
-      if (pos + fh.length > bufSpan.size()) {
+      if (pos + fh.length() > bufSpan.size()) {
         break;
       }
       DataFrame df{};
-      (void)ParseDataFrame(fh, bufSpan.subspan(pos, fh.length), df);
+      (void)ParseDataFrame(fh, bufSpan.subspan(pos, fh.length()), df);
       benchmark::DoNotOptimize(df);
-      pos += fh.length;
+      pos += fh.length();
       ++parsed;
     }
     benchmark::DoNotOptimize(parsed);

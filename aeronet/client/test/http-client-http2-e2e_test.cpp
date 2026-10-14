@@ -393,14 +393,14 @@ std::string ClientDataPayload(std::string_view written, uint32_t streamId) {
     }
     const auto header = http2::ParseFrameHeader(std::as_bytes(std::span<const char>(written)));
     written.remove_prefix(http2::FrameHeader::kSize);
-    if (written.size() < header.length) {
+    if (written.size() < header.length()) {
       ADD_FAILURE() << "truncated frame payload in client output";
       break;
     }
-    if (header.type == http2::FrameType::Data && header.streamId == streamId) {
-      payload.append(written.substr(0, header.length));
+    if (header.type() == http2::FrameType::Data && header.streamId() == streamId) {
+      payload.append(written.substr(0, header.length()));
     }
-    written.remove_prefix(header.length);
+    written.remove_prefix(header.length());
   }
   return payload;
 }

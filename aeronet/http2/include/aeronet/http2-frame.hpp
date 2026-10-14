@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -12,22 +13,53 @@ namespace aeronet::http2 {
 
 /// HTTP/2 frame header (9 bytes) as defined in RFC 9113 §4.1.
 /// Layout: Length (3 bytes) | Type (1 byte) | Flags (1 byte) | Reserved (1 bit) | Stream ID (31 bits)
-struct FrameHeader {
-  static constexpr std::size_t kSize = 9;
+/// The 9 bytes are stored in wire order in two integers and decoded on access: parsing and writing a header are then a
+/// single 8-byte + 1-byte load / store, and as each half of the object is a single integer, compilers pass and return
+/// it in two registers without assembling it in memory (GCC stores the fields of a struct one by one and reloads them
+/// as a whole, a store forwarding stall).
+class FrameHeader {
+ public:
+  static constexpr uint32_t kSize = 9;
+  static constexpr uint32_t kMaxLength = (1U << 24U) - 1U;
 
-  /// Check if a specific flag is set.
-  [[nodiscard]] constexpr bool hasFlag(uint8_t flag) const noexcept { return (flags & flag) != 0; }
-
-  /// Check if this is a valid frame header (basic sanity checks).
-  [[nodiscard]] constexpr bool isValid() const noexcept {
-    // Length must fit in 24 bits
-    return length <= 0x00FFFFFFU;
+  /// Build a frame header from its fields. length must fit in 24 bits, the reserved bit of streamId is ignored.
+  constexpr FrameHeader(uint32_t length, FrameType type, uint8_t flags, uint32_t streamId) noexcept
+      : _bytes0To7((static_cast<uint64_t>(length) << 40U) | (static_cast<uint64_t>(type) << 32U) |
+                   (static_cast<uint64_t>(flags) << 24U) | ((streamId & kMaxWindowSize) >> 8U)),
+        _byte8(static_cast<uint8_t>(streamId)) {
+    assert(length <= kMaxLength && "frame length exceeds 24-bit protocol limit");
   }
 
-  uint32_t length;  ///< Payload length (24 bits, max 16777215)
-  FrameType type;
-  uint8_t flags;
-  uint32_t streamId;  ///< 31-bit stream identifier
+  /// Payload length (24 bits).
+  [[nodiscard]] constexpr uint32_t length() const noexcept { return static_cast<uint32_t>(_bytes0To7 >> 40U); }
+
+  /// Frame type.
+  [[nodiscard]] constexpr FrameType type() const noexcept { return static_cast<FrameType>(_bytes0To7 >> 32U); }
+
+  /// Frame flags.
+  [[nodiscard]] constexpr uint8_t flags() const noexcept { return static_cast<uint8_t>(_bytes0To7 >> 24U); }
+
+  /// Stream identifier (31 bits, the reserved bit is never set).
+  [[nodiscard]] constexpr uint32_t streamId() const noexcept {
+    return (static_cast<uint32_t>(_bytes0To7) << 8U) | _byte8;
+  }
+
+  /// Check if a specific flag is set.
+  [[nodiscard]] constexpr bool hasFlag(uint8_t flag) const noexcept { return (flags() & flag) != 0; }
+
+  bool operator==(const FrameHeader&) const noexcept = default;
+
+ private:
+  friend FrameHeader ParseFrameHeader(std::span<const std::byte> data) noexcept;
+  friend void WriteFrameHeader(std::byte* buffer, FrameHeader header) noexcept;
+
+  // Reserved bit of the stream ID in _bytes0To7 (most significant bit of byte 5).
+  static constexpr uint64_t kReservedBit = 1U << 23U;
+
+  constexpr FrameHeader(uint64_t bytes0To7, uint8_t byte8) noexcept : _bytes0To7(bytes0To7), _byte8(byte8) {}
+
+  uint64_t _bytes0To7{};  // bytes 0 to 7, as a big-endian integer, with the reserved bit cleared
+  uint8_t _byte8{};       // byte 8 (low byte of the stream ID)
 };
 
 /// Parse a 9-byte frame header from raw bytes.
@@ -57,20 +89,21 @@ struct SettingsEntry {
 /// Parsed DATA frame.
 struct DataFrame {
   std::span<const std::byte> data;
-  uint8_t padLength;
-  bool endStream;
 };
 
 /// Parsed HEADERS frame (excluding the header block fragment which needs HPACK decoding).
+/// The END_STREAM, END_HEADERS and PRIORITY flags are read from the frame header, the stream dependency is returned
+/// apart by ParseHeadersFrame(). The priority fields are only set when the PRIORITY flag is.
 struct HeadersFrame {
-  std::span<const std::byte> headerBlockFragment;
-  uint32_t streamDependency;
-  uint8_t weightMinusOne;  // 0-255 (wire value)
-  uint8_t padLength;
-  bool endStream;
-  bool endHeaders;
+  /// The header block fragment, to be HPACK decoded.
+  [[nodiscard]] std::span<const std::byte> headerBlockFragment() const noexcept {
+    return {pHeaderBlockFragment, headerBlockFragmentSize};
+  }
+
+  const std::byte* pHeaderBlockFragment;
+  uint32_t headerBlockFragmentSize;  // at most the 24-bit frame payload length
+  uint8_t weightMinusOne;            // 0-255 (wire value)
   bool exclusive;
-  bool hasPriority;
 };
 
 /// Parsed PRIORITY frame.
@@ -114,18 +147,25 @@ struct ContinuationFrame {
 // ============================
 
 /// Parse result for frame parsing operations.
-enum class FrameParseResult : uint8_t { Ok, NeedMoreData, FrameSizeError, ProtocolError, InvalidPadding };
+enum class FrameParseResult : uint8_t {
+  Ok,
+  NeedMoreData,
+  FrameSizeError,
+  ProtocolError,
+  InvalidPadding,
+  InvalidDependency,
+};
 
 /// Parse a DATA frame payload.
 [[nodiscard]] FrameParseResult ParseDataFrame(FrameHeader header, std::span<const std::byte> payload,
                                               DataFrame& out) noexcept;
 
-/// Parse a HEADERS frame payload.
+/// Parse a HEADERS frame payload. streamDependency is only set when the PRIORITY flag is.
 [[nodiscard]] FrameParseResult ParseHeadersFrame(FrameHeader header, std::span<const std::byte> payload,
-                                                 HeadersFrame& out) noexcept;
+                                                 HeadersFrame& out, uint32_t& streamDependency) noexcept;
 
 /// Parse a PRIORITY frame payload.
-[[nodiscard]] FrameParseResult ParsePriorityFrame(std::span<const std::byte> payload, PriorityFrame& out) noexcept;
+[[nodiscard]] PriorityFrame ParsePriorityFrame(std::span<const std::byte> payload) noexcept;
 
 /// Parse a RST_STREAM frame payload.
 [[nodiscard]] FrameParseResult ParseRstStreamFrame(std::span<const std::byte> payload, RstStreamFrame& out) noexcept;

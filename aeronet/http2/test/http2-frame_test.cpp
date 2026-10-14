@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -54,10 +55,10 @@ TEST(Http2Frame, ParseFrameHeaderBasic) {
   };
 
   FrameHeader header = ParseFrameHeader(raw);
-  EXPECT_EQ(header.length, 0);
-  EXPECT_EQ(header.type, FrameType::Data);
-  EXPECT_EQ(header.flags, 0);
-  EXPECT_EQ(header.streamId, 1U);
+  EXPECT_EQ(header.length(), 0);
+  EXPECT_EQ(header.type(), FrameType::Data);
+  EXPECT_EQ(header.flags(), 0);
+  EXPECT_EQ(header.streamId(), 1U);
 }
 
 TEST(Http2Frame, ParseFrameHeaderWithLength) {
@@ -70,20 +71,16 @@ TEST(Http2Frame, ParseFrameHeaderWithLength) {
   };
 
   FrameHeader header = ParseFrameHeader(raw);
-  EXPECT_EQ(header.length, 256U);
-  EXPECT_EQ(header.type, FrameType::Headers);
-  EXPECT_EQ(header.flags, FrameFlags::HeadersEndHeaders);
-  EXPECT_EQ(header.streamId, 3U);
+  EXPECT_EQ(header.length(), 256U);
+  EXPECT_EQ(header.type(), FrameType::Headers);
+  EXPECT_EQ(header.flags(), FrameFlags::HeadersEndHeaders);
+  EXPECT_EQ(header.streamId(), 3U);
 }
 
 TEST(Http2Frame, WriteFrameHeader) {
   std::array<std::byte, 9> buffer;
 
-  FrameHeader header{};
-  header.length = 100;
-  header.type = FrameType::Data;
-  header.flags = FrameFlags::DataEndStream;
-  header.streamId = 5;
+  const FrameHeader header(100, FrameType::Data, FrameFlags::DataEndStream, 5);
 
   WriteFrameHeader(buffer.data(), header);
 
@@ -103,40 +100,30 @@ TEST(Http2Frame, WriteFrameHeader) {
 TEST(Http2Frame, ParseDataFrameSimple) {
   std::array<std::byte, 5> payload = {std::byte{'h'}, std::byte{'e'}, std::byte{'l'}, std::byte{'l'}, std::byte{'o'}};
 
-  FrameHeader header{};
-  header.length = 5;
-  header.type = FrameType::Data;
-  header.flags = FrameFlags::DataEndStream;
-  header.streamId = 1;
+  const FrameHeader header(5, FrameType::Data, FrameFlags::DataEndStream, 1);
 
   DataFrame frame;
   FrameParseResult result = ParseDataFrame(header, payload, frame);
 
   EXPECT_EQ(result, FrameParseResult::Ok);
-  EXPECT_TRUE(frame.endStream);
   EXPECT_EQ(frame.data.size(), 5U);
   EXPECT_EQ(static_cast<char>(frame.data[0]), 'h');
 }
 
 TEST(Http2Frame, ParseDataFrameWithPadding) {
   // Padded data frame: pad_length=2, data="AB", padding=00 00
-  std::array<std::byte, 5> payload = {
+  constexpr std::byte payload[]{
       std::byte{0x02},                   // pad length
       std::byte{'A'},  std::byte{'B'},   // data
       std::byte{0x00}, std::byte{0x00},  // padding
   };
 
-  FrameHeader header{};
-  header.length = 5;
-  header.type = FrameType::Data;
-  header.flags = FrameFlags::DataPadded;
-  header.streamId = 1;
+  const FrameHeader header(5, FrameType::Data, FrameFlags::DataPadded, 1);
 
   DataFrame frame;
   FrameParseResult result = ParseDataFrame(header, payload, frame);
 
   EXPECT_EQ(result, FrameParseResult::Ok);
-  EXPECT_EQ(frame.padLength, 2U);
   EXPECT_EQ(frame.data.size(), 2U);
   EXPECT_EQ(static_cast<char>(frame.data[0]), 'A');
   EXPECT_EQ(static_cast<char>(frame.data[1]), 'B');
@@ -154,18 +141,67 @@ TEST(Http2Frame, PrepareDataFrameGetStartPtr) {
   // Parse it back
   auto span = std::span<const std::byte>(buffer);
   FrameHeader header = ParseFrameHeader(span);
-  EXPECT_EQ(header.type, FrameType::Data);
-  EXPECT_EQ(header.length, 5U);
+  EXPECT_EQ(header.type(), FrameType::Data);
+  EXPECT_EQ(header.length(), 5U);
   EXPECT_TRUE(header.hasFlag(FrameFlags::DataEndStream));
-  EXPECT_TRUE(header.isValid());
-  EXPECT_EQ(header.streamId, 1U);
+  EXPECT_EQ(header.streamId(), 1U);
 }
 
-TEST(Http2Frame, InvalidLength) {
-  FrameHeader header{};
-  header.length = 1U << 26U;
+TEST(Http2Frame, FrameHeaderMaxFieldValues) {
+  const FrameHeader header(FrameHeader::kMaxLength, static_cast<FrameType>(0xFF), 0xFF, kMaxWindowSize);
+  EXPECT_EQ(header.length(), FrameHeader::kMaxLength);
+  EXPECT_EQ(header.type(), static_cast<FrameType>(0xFF));
+  EXPECT_EQ(header.flags(), 0xFF);
+  EXPECT_EQ(header.streamId(), kMaxWindowSize);
 
-  EXPECT_FALSE(header.isValid());
+  std::array<std::byte, FrameHeader::kSize> buffer;
+  WriteFrameHeader(buffer.data(), header);
+  for (std::size_t pos = 0; pos < buffer.size(); ++pos) {
+    EXPECT_EQ(buffer[pos], pos == 5 ? std::byte{0x7F} : std::byte{0xFF}) << "byte " << pos;
+  }
+  EXPECT_EQ(ParseFrameHeader(buffer), header);
+}
+
+TEST(Http2Frame, FrameHeaderFieldsDoNotOverlap) {
+  // Each field set alone, the others being 0.
+  static_assert(FrameHeader(0x123456, FrameType::Data, 0, 0) == FrameHeader(0x123456, FrameType::Data, 0, 0));
+  static_assert(FrameHeader(0x123456, FrameType::Data, 0, 0).length() == 0x123456);
+  static_assert(FrameHeader(0, FrameType::Continuation, 0, 0).type() == FrameType::Continuation);
+  static_assert(FrameHeader(0, FrameType::Data, 0xA5, 0).flags() == 0xA5);
+  static_assert(FrameHeader(0, FrameType::Data, 0, 0x12345678).streamId() == 0x12345678);
+
+  const FrameHeader header(0x0A0B0C, FrameType::Settings, 0x5A, 0x01020304);
+  EXPECT_EQ(header.length(), 0x0A0B0CU);
+  EXPECT_EQ(header.type(), FrameType::Settings);
+  EXPECT_EQ(header.flags(), 0x5A);
+  EXPECT_EQ(header.streamId(), 0x01020304U);
+
+  std::array<std::byte, FrameHeader::kSize> buffer;
+  WriteFrameHeader(buffer.data(), header);
+  const std::byte expected[]{
+      std::byte{0x0A}, std::byte{0x0B}, std::byte{0x0C},                   // length
+      std::byte{0x04},                                                     // type: SETTINGS
+      std::byte{0x5A},                                                     // flags
+      std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04},  // stream ID
+  };
+  EXPECT_TRUE(std::ranges::equal(buffer, expected));
+  EXPECT_EQ(ParseFrameHeader(buffer), header);
+}
+
+TEST(Http2Frame, FrameHeaderReservedBitIsIgnored) {
+  // RFC 9113 §4.1: the reserved bit MUST remain unset when sending and MUST be ignored when receiving.
+  const FrameHeader built(0, FrameType::Ping, FrameFlags::None, 0x80000007U);
+  EXPECT_EQ(built.streamId(), 7U);
+
+  std::array<std::byte, FrameHeader::kSize> buffer;
+  WriteFrameHeader(buffer.data(), built);
+  EXPECT_EQ(buffer[5], std::byte{0x00});
+  EXPECT_EQ(buffer[8], std::byte{0x07});
+
+  buffer[5] = std::byte{0x80};  // reserved bit set by the peer
+  const FrameHeader parsed = ParseFrameHeader(buffer);
+  EXPECT_EQ(parsed.streamId(), 7U);
+  EXPECT_EQ(parsed, built);
 }
 
 // ============================
@@ -180,20 +216,15 @@ TEST(Http2Frame, ParseHeadersFrameSimple) {
       std::byte{0x01},  // Indexed header field: :authority (index 1)
   };
 
-  FrameHeader header{};
-  header.length = 4;
-  header.type = FrameType::Headers;
-  header.flags = FrameFlags::HeadersEndHeaders | FrameFlags::HeadersEndStream;
-  header.streamId = 1;
+  const FrameHeader header(4, FrameType::Headers, FrameFlags::HeadersEndHeaders | FrameFlags::HeadersEndStream, 1);
 
   HeadersFrame frame;
-  FrameParseResult result = ParseHeadersFrame(header, payload, frame);
+  uint32_t streamDependency{};
+  FrameParseResult result = ParseHeadersFrame(header, payload, frame, streamDependency);
 
   EXPECT_EQ(result, FrameParseResult::Ok);
-  EXPECT_TRUE(frame.endHeaders);
-  EXPECT_TRUE(frame.endStream);
-  EXPECT_FALSE(frame.hasPriority);
-  EXPECT_EQ(frame.headerBlockFragment.size(), 4U);
+  EXPECT_EQ(frame.pHeaderBlockFragment, payload);
+  EXPECT_EQ(frame.headerBlockFragmentSize, 4U);
 }
 
 TEST(Http2Frame, ParseHeadersFrameWithPriority) {
@@ -203,36 +234,52 @@ TEST(Http2Frame, ParseHeadersFrameWithPriority) {
       std::byte{0x82}, std::byte{0x86}, std::byte{0x84}, std::byte{0x01},  // header block
   };
 
-  FrameHeader header{};
-  header.length = 9;
-  header.type = FrameType::Headers;
-  header.flags = FrameFlags::HeadersEndHeaders | FrameFlags::HeadersPriority;
-  header.streamId = 1;
+  const FrameHeader header(9, FrameType::Headers, FrameFlags::HeadersEndHeaders | FrameFlags::HeadersPriority, 1);
 
   HeadersFrame frame;
-  FrameParseResult result = ParseHeadersFrame(header, payload, frame);
+  uint32_t streamDependency{};
+  FrameParseResult result = ParseHeadersFrame(header, payload, frame, streamDependency);
 
   EXPECT_EQ(result, FrameParseResult::Ok);
-  EXPECT_TRUE(frame.hasPriority);
-  EXPECT_EQ(frame.streamDependency, 0U);
+  EXPECT_EQ(streamDependency, 0U);
   // RFC 9113 §5.3.1: "Add one to the value to obtain a weight between 1 and 256."
   EXPECT_EQ(frame.weightMinusOne, 255U);
   EXPECT_FALSE(frame.exclusive);
-  EXPECT_EQ(frame.headerBlockFragment.size(), 4U);
+  EXPECT_EQ(frame.headerBlockFragment().data(), payload + 5);
+  EXPECT_EQ(frame.headerBlockFragment().size(), 4U);
+}
+
+TEST(Http2Frame, ParseHeadersFrameWithPaddingAndExclusivePriority) {
+  const std::byte payload[]{
+      std::byte{0x01},                                                     // pad length
+      std::byte{0x80}, std::byte{0x00}, std::byte{0x01}, std::byte{0x05},  // exclusive, stream dependency 261
+      std::byte{0x0F},                                                     // weight 15 on wire => 16 actual
+      std::byte{0x82}, std::byte{0x86},                                    // header block
+      std::byte{0x00},                                                     // padding
+  };
+
+  const FrameHeader header(sizeof(payload), FrameType::Headers,
+                           static_cast<uint8_t>(FrameFlags::HeadersPadded | FrameFlags::HeadersPriority), 7);
+
+  HeadersFrame frame;
+  uint32_t streamDependency{};
+  ASSERT_EQ(ParseHeadersFrame(header, payload, frame, streamDependency), FrameParseResult::Ok);
+  EXPECT_EQ(streamDependency, 261U);
+  EXPECT_TRUE(frame.exclusive);
+  EXPECT_EQ(frame.weightMinusOne, 15U);
+  EXPECT_EQ(frame.pHeaderBlockFragment, payload + 6);
+  EXPECT_EQ(frame.headerBlockFragmentSize, 2U);
 }
 
 TEST(Http2Frame, ParseHeadersFrameEmptyPayloadWithPaddedFlag) {
   // Empty payload but HeadersPadded flag set -> FrameSizeError
   std::span<const std::byte> payload = std::span<const std::byte>{};
 
-  FrameHeader header{};
-  header.length = 0;
-  header.type = FrameType::Headers;
-  header.flags = FrameFlags::HeadersPadded;
-  header.streamId = 1;
+  const FrameHeader header(0, FrameType::Headers, FrameFlags::HeadersPadded, 1);
 
   HeadersFrame frame;
-  FrameParseResult result = ParseHeadersFrame(header, payload, frame);
+  uint32_t streamDependency{};
+  FrameParseResult result = ParseHeadersFrame(header, payload, frame, streamDependency);
 
   EXPECT_EQ(result, FrameParseResult::FrameSizeError);
 }
@@ -246,18 +293,15 @@ TEST(Http2Frame, ParseHeadersFrameWithPadding) {
       std::byte{0x00},
   };
 
-  FrameHeader header{};
-  header.length = 4;
-  header.type = FrameType::Headers;
-  header.flags = FrameFlags::HeadersPadded | FrameFlags::HeadersEndHeaders;
-  header.streamId = 1;
+  const FrameHeader header(4, FrameType::Headers, FrameFlags::HeadersPadded | FrameFlags::HeadersEndHeaders, 1);
 
   HeadersFrame frame;
-  FrameParseResult result = ParseHeadersFrame(header, payload, frame);
+  uint32_t streamDependency{};
+  FrameParseResult result = ParseHeadersFrame(header, payload, frame, streamDependency);
 
   EXPECT_EQ(result, FrameParseResult::Ok);
-  EXPECT_EQ(frame.padLength, 2U);
-  EXPECT_EQ(frame.headerBlockFragment.size(), 1U);  // 4 - 1(padlen) - 2(pad)
+  ASSERT_EQ(frame.headerBlockFragmentSize, 1U);  // 4 - 1(padlen) - 2(pad)
+  EXPECT_EQ(frame.pHeaderBlockFragment[0], std::byte{'A'});
 }
 
 TEST(Http2Frame, WriteHeadersFrame) {
@@ -275,8 +319,8 @@ TEST(Http2Frame, WriteHeadersFrame) {
   auto span = std::span<const std::byte>(reinterpret_cast<const std::byte*>(buffer.data()), buffer.size());
   FrameHeader header = ParseFrameHeader(span);
 
-  EXPECT_EQ(header.type, FrameType::Headers);
-  EXPECT_EQ(header.length, 3U);
+  EXPECT_EQ(header.type(), FrameType::Headers);
+  EXPECT_EQ(header.length(), 3U);
   EXPECT_TRUE(header.hasFlag(FrameFlags::HeadersEndStream));
   EXPECT_TRUE(header.hasFlag(FrameFlags::HeadersEndHeaders));
 }
@@ -290,14 +334,12 @@ TEST(Http2Frame, ParseHeadersFrameWithPriorityTooShort) {
       std::byte{0x00},
   };
 
-  FrameHeader header{};
-  header.length = static_cast<uint32_t>(sizeof(payload));
-  header.type = FrameType::Headers;
-  header.flags = FrameFlags::HeadersPriority | FrameFlags::HeadersEndHeaders;
-  header.streamId = 1;
+  const FrameHeader header(static_cast<uint32_t>(sizeof(payload)), FrameType::Headers,
+                           FrameFlags::HeadersPriority | FrameFlags::HeadersEndHeaders, 1);
 
   HeadersFrame frame;
-  FrameParseResult result = ParseHeadersFrame(header, payload, frame);
+  uint32_t streamDependency{};
+  FrameParseResult result = ParseHeadersFrame(header, payload, frame, streamDependency);
 
   EXPECT_EQ(result, FrameParseResult::FrameSizeError);
 }
@@ -310,15 +352,13 @@ TEST(Http2Frame, ParseHeadersFrameWithPaddingAndPriorityTooShort) {
       std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},  // 4 bytes, missing weight byte
   };
 
-  FrameHeader header{};
-  header.length = static_cast<uint32_t>(sizeof(payload));
-  header.type = FrameType::Headers;
-  header.flags =
-      static_cast<uint8_t>(FrameFlags::HeadersPadded | FrameFlags::HeadersPriority) | FrameFlags::HeadersEndHeaders;
-  header.streamId = 1;
+  const FrameHeader header(
+      static_cast<uint32_t>(sizeof(payload)), FrameType::Headers,
+      static_cast<uint8_t>(FrameFlags::HeadersPadded | FrameFlags::HeadersPriority) | FrameFlags::HeadersEndHeaders, 1);
 
   HeadersFrame frame;
-  FrameParseResult result = ParseHeadersFrame(header, payload, frame);
+  uint32_t streamDependency{};
+  FrameParseResult result = ParseHeadersFrame(header, payload, frame, streamDependency);
 
   EXPECT_EQ(result, FrameParseResult::FrameSizeError);
 }
@@ -333,10 +373,8 @@ TEST(Http2Frame, ParsePriorityFrame) {
       std::byte{0x0F},                                                     // weight 15 on wire => 16 actual
   };
 
-  PriorityFrame frame;
-  FrameParseResult result = ParsePriorityFrame(payload, frame);
+  PriorityFrame frame = ParsePriorityFrame(payload);
 
-  EXPECT_EQ(result, FrameParseResult::Ok);
   EXPECT_TRUE(frame.exclusive);
   EXPECT_EQ(frame.streamDependency, 3U);
   // RFC 9113 §5.3.1: "Add one to the value to obtain a weight between 1 and 256."
@@ -350,9 +388,9 @@ TEST(Http2Frame, WritePriorityFrame) {
   auto span = std::span<const std::byte>(reinterpret_cast<const std::byte*>(buffer.data()), buffer.size());
   FrameHeader header = ParseFrameHeader(span);
 
-  EXPECT_EQ(header.type, FrameType::Priority);
-  EXPECT_EQ(header.length, 5U);
-  EXPECT_EQ(header.streamId, 5U);
+  EXPECT_EQ(header.type(), FrameType::Priority);
+  EXPECT_EQ(header.length(), 5U);
+  EXPECT_EQ(header.streamId(), 5U);
 }
 
 // ============================
@@ -381,9 +419,9 @@ TEST(Http2Frame, WriteRstStreamFrame) {
   auto span = std::span<const std::byte>(reinterpret_cast<const std::byte*>(buffer.data()), buffer.size());
   FrameHeader header = ParseFrameHeader(span);
 
-  EXPECT_EQ(header.type, FrameType::RstStream);
-  EXPECT_EQ(header.length, 4U);
-  EXPECT_EQ(header.streamId, 1U);
+  EXPECT_EQ(header.type(), FrameType::RstStream);
+  EXPECT_EQ(header.length(), 4U);
+  EXPECT_EQ(header.streamId(), 1U);
 }
 
 // ============================
@@ -402,9 +440,9 @@ TEST(Http2Frame, WriteSettingsFrame) {
   auto span = std::span<const std::byte>(reinterpret_cast<const std::byte*>(buffer.data()), buffer.size());
   FrameHeader header = ParseFrameHeader(span);
 
-  EXPECT_EQ(header.type, FrameType::Settings);
-  EXPECT_EQ(header.length, 12U);
-  EXPECT_EQ(header.streamId, 0U);
+  EXPECT_EQ(header.type(), FrameType::Settings);
+  EXPECT_EQ(header.length(), 12U);
+  EXPECT_EQ(header.streamId(), 0U);
 }
 
 TEST(Http2Frame, WriteSettingsAckFrame) {
@@ -414,8 +452,8 @@ TEST(Http2Frame, WriteSettingsAckFrame) {
   auto span = std::span<const std::byte>(reinterpret_cast<const std::byte*>(buffer.data()), buffer.size());
   FrameHeader header = ParseFrameHeader(span);
 
-  EXPECT_EQ(header.type, FrameType::Settings);
-  EXPECT_EQ(header.length, 0U);
+  EXPECT_EQ(header.type(), FrameType::Settings);
+  EXPECT_EQ(header.length(), 0U);
   EXPECT_TRUE(header.hasFlag(FrameFlags::SettingsAck));
 }
 
@@ -429,11 +467,7 @@ TEST(Http2Frame, ParsePingFrame) {
       std::byte{0x05}, std::byte{0x06}, std::byte{0x07}, std::byte{0x08},
   };
 
-  FrameHeader header{};
-  header.length = 8;
-  header.type = FrameType::Ping;
-  header.flags = FrameFlags::PingAck;
-  header.streamId = 0;
+  const FrameHeader header(8, FrameType::Ping, FrameFlags::PingAck, 0);
 
   PingFrame frame;
   FrameParseResult result = ParsePingFrame(header, payload, frame);
@@ -460,8 +494,8 @@ TEST(Http2Frame, WritePingFrame) {
   auto span = std::span<const std::byte>(reinterpret_cast<const std::byte*>(buffer.data()), buffer.size());
   FrameHeader header = ParseFrameHeader(span);
 
-  EXPECT_EQ(header.type, FrameType::Ping);
-  EXPECT_EQ(header.length, 8U);
+  EXPECT_EQ(header.type(), FrameType::Ping);
+  EXPECT_EQ(header.length(), 8U);
   EXPECT_TRUE(header.hasFlag(FrameFlags::PingAck));
 }
 
@@ -492,8 +526,8 @@ TEST(Http2Frame, WriteGoAwayFrame) {
   auto span = std::span<const std::byte>(reinterpret_cast<const std::byte*>(buffer.data()), buffer.size());
   FrameHeader header = ParseFrameHeader(span);
 
-  EXPECT_EQ(header.type, FrameType::GoAway);
-  EXPECT_EQ(header.length, 16U);  // 8 + 8 bytes debug data
+  EXPECT_EQ(header.type(), FrameType::GoAway);
+  EXPECT_EQ(header.length(), 16U);  // 8 + 8 bytes debug data
 }
 
 // ============================
@@ -522,9 +556,9 @@ TEST(Http2Frame, WriteWindowUpdateFrame) {
   auto span = std::span<const std::byte>(reinterpret_cast<const std::byte*>(buffer.data()), buffer.size());
   FrameHeader header = ParseFrameHeader(span);
 
-  EXPECT_EQ(header.type, FrameType::WindowUpdate);
-  EXPECT_EQ(header.length, 4U);
-  EXPECT_EQ(header.streamId, 0U);
+  EXPECT_EQ(header.type(), FrameType::WindowUpdate);
+  EXPECT_EQ(header.length(), 4U);
+  EXPECT_EQ(header.streamId(), 0U);
 }
 
 // ============================
@@ -534,11 +568,7 @@ TEST(Http2Frame, WriteWindowUpdateFrame) {
 TEST(Http2Frame, ParseContinuationFrame) {
   const std::byte payload[]{std::byte{0x82}, std::byte{0x86}, std::byte{0x84}};
 
-  FrameHeader header{};
-  header.length = 3;
-  header.type = FrameType::Continuation;
-  header.flags = FrameFlags::ContinuationEndHeaders;
-  header.streamId = 1;
+  const FrameHeader header(3, FrameType::Continuation, FrameFlags::ContinuationEndHeaders, 1);
 
   ContinuationFrame frame;
   ParseContinuationFrame(header, payload, frame);
@@ -557,11 +587,7 @@ TEST(Http2Frame, ParseDataFrameInvalidPadding) {
       std::byte{'A'},
   };
 
-  FrameHeader header{};
-  header.length = 2;
-  header.type = FrameType::Data;
-  header.flags = FrameFlags::DataPadded;
-  header.streamId = 1;
+  const FrameHeader header(2, FrameType::Data, FrameFlags::DataPadded, 1);
 
   DataFrame frame;
   FrameParseResult result = ParseDataFrame(header, payload, frame);
@@ -573,11 +599,7 @@ TEST(Http2Frame, ParseDataFrameEmptyPayloadWithPaddedFlag) {
   // payload empty but DataPadded flag set -> FrameSizeError
   std::span<const std::byte> payload = std::span<const std::byte>{};
 
-  FrameHeader header{};
-  header.length = 0;
-  header.type = FrameType::Data;
-  header.flags = FrameFlags::DataPadded;
-  header.streamId = 1;
+  const FrameHeader header(0, FrameType::Data, FrameFlags::DataPadded, 1);
 
   DataFrame frame;
   FrameParseResult result = ParseDataFrame(header, payload, frame);
@@ -588,11 +610,7 @@ TEST(Http2Frame, ParseDataFrameEmptyPayloadWithPaddedFlag) {
 TEST(Http2Frame, ParsePingFrameInvalidLength) {
   const std::byte payload[]{std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
 
-  FrameHeader header{};
-  header.length = 4;
-  header.type = FrameType::Ping;
-  header.flags = 0;
-  header.streamId = 0;
+  const FrameHeader header(4, FrameType::Ping, 0, 0);
 
   PingFrame frame;
   FrameParseResult result = ParsePingFrame(header, payload, frame);
@@ -605,15 +623,6 @@ TEST(Http2Frame, ParseRstStreamFrameInvalidLength) {
 
   RstStreamFrame frame;
   FrameParseResult result = ParseRstStreamFrame(payload, frame);
-
-  EXPECT_EQ(result, FrameParseResult::FrameSizeError);
-}
-
-TEST(Http2Frame, ParsePriorityFrameInvalidLength) {
-  const std::byte payload[]{std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}};
-
-  PriorityFrame frame;
-  FrameParseResult result = ParsePriorityFrame(payload, frame);
 
   EXPECT_EQ(result, FrameParseResult::FrameSizeError);
 }
@@ -648,7 +657,6 @@ TEST(Http2Frame, RoundTripDataFrame) {
   FrameParseResult result = ParseDataFrame(header, span.subspan(FrameHeader::kSize), frame);
 
   EXPECT_EQ(result, FrameParseResult::Ok);
-  EXPECT_TRUE(frame.endStream);
   EXPECT_EQ(frame.data.size(), 10U);
   for (int idx = 0; idx < 10; ++idx) {
     EXPECT_EQ(frame.data[static_cast<std::size_t>(idx)], static_cast<std::byte>(idx));

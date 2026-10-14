@@ -89,7 +89,7 @@ Http2Connection::OutputBlock::OutputBlock(RawBytes&& owner, std::size_t dataOffs
   assert(dataSize != 0 && dataSize <= _payload.size() - dataOffset);
   assert(maxFrameSize != 0);
 
-  const auto frameCount = static_cast<uint32_t>((dataSize + maxFrameSize - 1U) / maxFrameSize);
+  const uint32_t frameCount = static_cast<uint32_t>((dataSize + maxFrameSize - 1U) / maxFrameSize);
   _remainingSize = dataSize + (static_cast<std::size_t>(frameCount) * FrameHeader::kSize);
   if (frameCount > 1U) {
     const std::size_t continuationHeadersSize = (static_cast<std::size_t>(frameCount) - 1U) * FrameHeader::kSize;
@@ -114,8 +114,9 @@ Http2Connection::OutputBlock::OutputBlock(RawBytes&& owner, std::size_t dataOffs
       flags = FrameFlags::DataEndStream;
     }
 
-    std::byte* pHeaderData =
-        first ? _firstHeader.data() : _continuationHeaders.data() + ((frameIndex - 1U) * FrameHeader::kSize);
+    std::byte* pHeaderData = first ? _firstHeader.data()
+                                   : _continuationHeaders.data() + (static_cast<std::ptrdiff_t>(frameIndex - 1U) *
+                                                                    static_cast<std::ptrdiff_t>(FrameHeader::kSize));
     WriteFrameHeader(pHeaderData, {static_cast<uint32_t>(framePayloadSize(frameIndex)), frameType, flags, streamId});
   }
 }
@@ -123,10 +124,6 @@ Http2Connection::OutputBlock::OutputBlock(RawBytes&& owner, std::size_t dataOffs
 std::size_t Http2Connection::OutputBlock::framePayloadSize(uint32_t frameIndex) const noexcept {
   const std::size_t frameOffset = static_cast<std::size_t>(frameIndex) * _maxFrameSize;
   return std::min(_payloadSize - frameOffset, static_cast<std::size_t>(_maxFrameSize));
-}
-
-const std::byte* Http2Connection::OutputBlock::frameHeader(uint32_t frameIndex) const noexcept {
-  return frameIndex == 0 ? _firstHeader.data() : _continuationHeaders.data() + ((frameIndex - 1U) * FrameHeader::kSize);
 }
 
 std::string_view Http2Connection::OutputBlock::firstFragment() const noexcept {
@@ -208,7 +205,7 @@ void Http2Connection::OutputBlock::consume(std::size_t bytesWritten) noexcept {
       static_cast<uint32_t>(_payloadSize == 0 ? 1 : ((_payloadSize + _maxFrameSize - 1U) / _maxFrameSize));
   while (bytesWritten != 0 && _frameIndex < frameCount) {
     if (_headerOffset < FrameHeader::kSize) {
-      const std::size_t consumed = std::min(bytesWritten, FrameHeader::kSize - _headerOffset);
+      const std::size_t consumed = std::min<std::size_t>(bytesWritten, FrameHeader::kSize - _headerOffset);
       _headerOffset += static_cast<uint8_t>(consumed);
       bytesWritten -= consumed;
       if (bytesWritten == 0) {
@@ -322,12 +319,8 @@ bool Http2Connection::priorityDepthExceeded(uint32_t id) const noexcept {
 // Connection lifecycle
 // ============================
 
-Http2Connection::ProcessResult Http2Connection::processInput(std::span<const std::byte> data) {
-  return processInput(data, std::numeric_limits<std::size_t>::max());
-}
-
 Http2Connection::ProcessResult Http2Connection::processInput(std::span<const std::byte> data,
-                                                             std::size_t outputHighWaterMark) {
+                                                             uint32_t outputHighWaterMark) {
   if (data.empty()) {
     return ProcessResult{ProcessResult::Action::Continue};
   }
@@ -797,7 +790,7 @@ Http2Connection::ProcessResult Http2Connection::processPreface(std::span<const s
 }
 
 Http2Connection::ProcessResult Http2Connection::processFrames(std::span<const std::byte> data,
-                                                              std::size_t outputHighWaterMark) {
+                                                              uint32_t outputHighWaterMark) {
   std::size_t totalConsumed = 0;
 
   while (data.size() >= FrameHeader::kSize) {
@@ -805,21 +798,22 @@ Http2Connection::ProcessResult Http2Connection::processFrames(std::span<const st
       break;
     }
     const FrameHeader header = ParseFrameHeader(data);
+    const uint32_t headerLength = header.length();
 
     // Check frame size limits
-    if (header.length > _localSettings.maxFrameSize) {
+    if (headerLength > _localSettings.maxFrameSize) {
       return connectionError(ErrorCode::FrameSizeError, ErrorMsg::FrameExceedsMaximumSize);
     }
 
-    const std::size_t totalFrameSize = FrameHeader::kSize + header.length;
+    const uint32_t totalFrameSize = FrameHeader::kSize + headerLength;
     if (data.size() < totalFrameSize) {
       // Need more data
       break;
     }
 
-    const auto payload = data.subspan(FrameHeader::kSize, header.length);
+    const auto payload = data.subspan(FrameHeader::kSize, headerLength);
 
-    recordFrame(false, header.type, header.length);
+    recordFrame(false, header.type(), headerLength);
 
     ProcessResult result = processFrame(header, payload);
 
@@ -834,17 +828,16 @@ Http2Connection::ProcessResult Http2Connection::processFrames(std::span<const st
     data = data.subspan(totalFrameSize);
   }
 
-  return ProcessResult{hasPendingOutput() ? ProcessResult::Action::OutputReady : ProcessResult::Action::Continue,
-                       totalConsumed};
+  return {hasPendingOutput() ? ProcessResult::Action::OutputReady : ProcessResult::Action::Continue, totalConsumed};
 }
 
 Http2Connection::ProcessResult Http2Connection::processFrame(FrameHeader header, std::span<const std::byte> payload) {
   // CONTINUATION frames must follow HEADERS/PUSH_PROMISE
-  if (_expectingContinuation && header.type != FrameType::Continuation) {
+  if (_expectingContinuation && header.type() != FrameType::Continuation) {
     return connectionError(ErrorCode::ProtocolError, ErrorMsg::ExpectedCONTINUATIONFrame);
   }
 
-  switch (header.type) {
+  switch (header.type()) {
     case FrameType::Data:
       return handleDataFrame(header, payload);
     case FrameType::Headers:
@@ -862,7 +855,7 @@ Http2Connection::ProcessResult Http2Connection::processFrame(FrameHeader header,
     case FrameType::Ping:
       return handlePingFrame(header, payload);
     case FrameType::GoAway:
-      if (header.streamId != 0) {
+      if (header.streamId() != 0) {
         return connectionError(ErrorCode::ProtocolError, ErrorMsg::GOAWAYFrameOnNonZeroStream);
       }
       return handleGoAwayFrame(payload);
@@ -872,14 +865,15 @@ Http2Connection::ProcessResult Http2Connection::processFrame(FrameHeader header,
       return handleContinuationFrame(header, payload);
     default:
       // Unknown frame types are ignored (RFC 9113 §4.1)
-      log::warn("Ignoring unknown frame type {}", static_cast<uint32_t>(header.type));
+      log::warn("Ignoring unknown frame type {}", static_cast<uint32_t>(header.type()));
       return ProcessResult{ProcessResult::Action::Continue};
   }
 }
 
 Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader header,
                                                                 std::span<const std::byte> payload) {
-  if (header.streamId == 0) {
+  const uint32_t streamId = header.streamId();
+  if (streamId == 0) {
     return connectionError(ErrorCode::ProtocolError, ErrorMsg::DATAFrameOnStreamZero);
   }
 
@@ -893,14 +887,14 @@ Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader head
   }
 
   // Flow control: count full payload including padding
-  auto payloadSize = static_cast<int32_t>(payload.size());
+  int32_t payloadSize = static_cast<int32_t>(payload.size());
 
   if (payloadSize > _connectionRecvWindow) {
     return connectionError(ErrorCode::FlowControlError, ErrorMsg::ConnectionFlowControlExceeded);
   }
   _connectionRecvWindow -= payloadSize;
 
-  auto it = _streams.find(header.streamId);
+  auto it = _streams.find(streamId);
   if (it == _streams.end()) {
     // Stream may have been reset. The discarded frame still consumed connection-level credit.
     replenishConnectionRecvWindow();
@@ -909,25 +903,27 @@ Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader head
 
   if (!it->second.canReceive()) {
     replenishConnectionRecvWindow();
-    return streamError(header.streamId, ErrorCode::StreamClosed, ErrorMsg::DATAOnClosedStream);
+    return streamError(streamId, ErrorCode::StreamClosed, ErrorMsg::DATAOnClosedStream);
   }
 
   if (!it->second.consumeRecvWindow(static_cast<uint32_t>(payloadSize))) {
-    return streamError(header.streamId, ErrorCode::FlowControlError, ErrorMsg::StreamFlowControlExceeded);
+    return streamError(streamId, ErrorCode::FlowControlError, ErrorMsg::StreamFlowControlExceeded);
   }
+
+  const bool endStream = header.hasFlag(FrameFlags::DataEndStream);
 
   // canReceive() above already ensures the stream is Open or HalfClosedLocal,
   // which are exactly the states onRecvData() handles — so this cannot fail.
-  [[maybe_unused]] ErrorCode err = it->second.onRecvData(frame.endStream);
+  [[maybe_unused]] ErrorCode err = it->second.onRecvData(endStream);
   assert(err == ErrorCode::NoError);
 
   // Invoke callback
   if (_sink != nullptr) {
-    _sink->onData(header.streamId, frame.data, frame.endStream);
+    _sink->onData(streamId, frame.data, endStream);
 
     // The callback may have reset streams, whose pruning can move the map entries. This stream, closed or not, is not
     // pruned yet: the closed streams are retained a while for late frames.
-    it = _streams.find(header.streamId);
+    it = _streams.find(streamId);
     assert(it != _streams.end());
 
     // Replenish a receive window only after half its configured credit has been consumed. Restoring the
@@ -937,16 +933,16 @@ Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader head
     if (payloadSize > 0) {
       Http2Stream& stream = it->second;
       const int32_t initialStreamWindow = static_cast<int32_t>(_localSettings.initialWindowSize);
-      if (!frame.endStream && !stream.recvWindowHeld() && stream.canReceive() &&
+      if (!endStream && !stream.recvWindowHeld() && stream.canReceive() &&
           stream.recvWindow() <= initialStreamWindow / 2) {
-        sendWindowUpdate(header.streamId, static_cast<uint32_t>(initialStreamWindow - stream.recvWindow()));
+        sendWindowUpdate(streamId, static_cast<uint32_t>(initialStreamWindow - stream.recvWindow()));
       }
 
       replenishConnectionRecvWindow();
     }
   }
 
-  if (frame.endStream && it->second.isClosed()) {
+  if (endStream && it->second.isClosed()) {
     closeStream(it);
   }
 
@@ -962,38 +958,42 @@ void Http2Connection::replenishConnectionRecvWindow() {
 
 Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader header,
                                                                    std::span<const std::byte> payload) {
-  if (header.streamId == 0) [[unlikely]] {
+  const uint32_t streamId = header.streamId();
+  if (streamId == 0) {
     return connectionError(ErrorCode::ProtocolError, ErrorMsg::HEADERSFrameOnStreamZero);
   }
 
   // Check for GOAWAY - don't accept new streams
   if ((_state == ConnectionState::GoAwaySent || _state == ConnectionState::GoAwayReceived) &&
-      header.streamId > _goAwayLastStreamId) {
+      streamId > _goAwayLastStreamId) {
     return ProcessResult{ProcessResult::Action::Continue};  // Ignore
   }
 
   HeadersFrame frame;
-  FrameParseResult parseResult = ParseHeadersFrame(header, payload, frame);
-  if (parseResult != FrameParseResult::Ok) [[unlikely]] {
+  uint32_t streamDependency;
+  FrameParseResult parseResult = ParseHeadersFrame(header, payload, frame, streamDependency);
+  if (parseResult != FrameParseResult::Ok) {
     if (parseResult == FrameParseResult::InvalidPadding) {
       return connectionError(ErrorCode::ProtocolError, ErrorMsg::InvalidPaddingInHEADERSFrame);
+    }
+    if (parseResult == FrameParseResult::InvalidDependency) {
+      return streamError(streamId, ErrorCode::ProtocolError, ErrorMsg::StreamDependsOnItself);
     }
     return connectionError(ErrorCode::FrameSizeError, ErrorMsg::InvalidHEADERSFrame);
   }
 
   // Get or create stream
-
-  auto [it, inserted] = _streams.try_emplace(header.streamId, header.streamId, _peerSettings.initialWindowSize,
-                                             _localSettings.initialWindowSize);
+  auto [it, inserted] =
+      _streams.try_emplace(streamId, streamId, _peerSettings.initialWindowSize, _localSettings.initialWindowSize);
   if (inserted) {
     // Validate stream ID
     if (_isServer) {
       // Client-initiated streams must be odd and increasing
-      if ((header.streamId & 1U) == 0) [[unlikely]] {
+      if ((streamId & 1U) == 0) {
         _streams.erase(it);
         return connectionError(ErrorCode::ProtocolError, ErrorMsg::ServerInitiatedStreamIdFromClient);
       }
-      if (header.streamId <= _lastPeerStreamId) [[unlikely]] {
+      if (streamId <= _lastPeerStreamId) {
         _streams.erase(it);
         return connectionError(ErrorCode::ProtocolError, ErrorMsg::StreamIdNotIncreasing);
       }
@@ -1008,55 +1008,52 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
 
     ++_activeStreamCount;
     recordStreamOpened(false);
-    _lastPeerStreamId = header.streamId;
+    _lastPeerStreamId = streamId;
   }
   Http2Stream* pStream = &it->second;
 
   // Handle priority if present
-  if (frame.hasPriority) {
-    if (frame.streamDependency == header.streamId) [[unlikely]] {
-      return streamError(header.streamId, ErrorCode::ProtocolError, ErrorMsg::StreamDependsOnItself);
-    }
-    const uint32_t effectiveDependency = priorityDepthExceeded(frame.streamDependency) ? 0U : frame.streamDependency;
+  if (header.hasFlag(FrameFlags::HeadersPriority)) {
+    const uint32_t effectiveDependency = priorityDepthExceeded(streamDependency) ? 0U : streamDependency;
     pStream->setPriority(effectiveDependency, frame.weightMinusOne, frame.exclusive);
   }
 
+  const std::span<const std::byte> headerBlockFragment = frame.headerBlockFragment();
+  const bool endStream = header.hasFlag(FrameFlags::HeadersEndStream);
+
   // Accumulate header block
-  if (!frame.endHeaders) {
+  if (!header.hasFlag(FrameFlags::HeadersEndHeaders)) {
     // Security hardening (CVE-2024-27316): reject oversized initial header block fragment
     // to prevent unbounded memory growth via CONTINUATION flood.
-    if (frame.headerBlockFragment.size() > kMaxHeaderBlockAccumulationSize) [[unlikely]] {
+    if (headerBlockFragment.size() > kMaxHeaderBlockAccumulationSize) [[unlikely]] {
       return connectionError(ErrorCode::EnhanceYourCalm, ErrorMsg::HeaderBlockTooLarge);
     }
     _expectingContinuation = true;
-    _headerBlockStreamId = header.streamId;
-    _headerBlockEndStream = frame.endStream;
-    _headerBlockBuffer.assign(frame.headerBlockFragment);
+    _headerBlockStreamId = streamId;
+    _headerBlockEndStream = endStream;
+    _headerBlockBuffer.assign(headerBlockFragment);
     return ProcessResult{ProcessResult::Action::Continue};
   }
 
   // Complete header block - decode and deliver
-  ErrorCode err = pStream->onRecvHeaders(frame.endStream);
+  ErrorCode err = pStream->onRecvHeaders(endStream);
   if (err != ErrorCode::NoError) [[unlikely]] {
-    return streamError(header.streamId, err, ErrorMsg::InvalidStreamStateForHEADERS);
+    return streamError(streamId, err, ErrorMsg::InvalidStreamStateForHEADERS);
   }
 
-  // Decode headers
-  auto headerSpan = std::span<const std::byte>(frame.headerBlockFragment);
-
   // Decode and emit headers via helper
-  ErrorCode decodeErr = decodeAndEmitHeaders(header.streamId, headerSpan, frame.endStream);
+  ErrorCode decodeErr = decodeAndEmitHeaders(streamId, headerBlockFragment, endStream);
   if (decodeErr != ErrorCode::NoError) [[unlikely]] {
     if (decodeErr == ErrorCode::EnhanceYourCalm) {
-      return streamError(header.streamId, decodeErr, ErrorMsg::HeaderListTooLarge);
+      return streamError(streamId, decodeErr, ErrorMsg::HeaderListTooLarge);
     }
     if (decodeErr == ErrorCode::ProtocolError) {
-      return streamError(header.streamId, decodeErr, ErrorMsg::MalformedFieldSection);
+      return streamError(streamId, decodeErr, ErrorMsg::MalformedFieldSection);
     }
     return connectionError(decodeErr, ErrorMsg::HPACKDecodingFailed);
   }
 
-  if (frame.endStream && pStream->isClosed()) {
+  if (endStream && pStream->isClosed()) {
     closeStream(it);
   }
 
@@ -1065,21 +1062,21 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
 
 Http2Connection::ProcessResult Http2Connection::handlePriorityFrame(FrameHeader header,
                                                                     std::span<const std::byte> payload) {
-  if (header.streamId == 0) [[unlikely]] {
+  const uint32_t streamId = header.streamId();
+  if (streamId == 0) {
     return connectionError(ErrorCode::ProtocolError, ErrorMsg::PRIORITYFrameOnStreamZero);
   }
-
-  PriorityFrame frame;
-  FrameParseResult parseResult = ParsePriorityFrame(payload, frame);
-  if (parseResult != FrameParseResult::Ok) [[unlikely]] {
+  if (payload.size() != sizeof(uint32_t) + 1U) {
     return connectionError(ErrorCode::FrameSizeError, ErrorMsg::InvalidPRIORITYFrame);
   }
 
-  if (frame.streamDependency == header.streamId) [[unlikely]] {
-    return streamError(header.streamId, ErrorCode::ProtocolError, ErrorMsg::StreamDependsOnItself);
+  PriorityFrame frame = ParsePriorityFrame(payload);
+
+  if (frame.streamDependency == streamId) {
+    return streamError(streamId, ErrorCode::ProtocolError, ErrorMsg::StreamDependsOnItself);
   }
 
-  Http2Stream* pStream = getStream(header.streamId);
+  Http2Stream* pStream = getStream(streamId);
   if (pStream != nullptr) {
     const uint32_t effectiveDependency = priorityDepthExceeded(frame.streamDependency) ? 0U : frame.streamDependency;
     pStream->setPriority(effectiveDependency, frame.weightMinusOne, frame.exclusive);
@@ -1098,7 +1095,8 @@ Http2Connection::ProcessResult Http2Connection::handlePriorityFrame(FrameHeader 
 
 Http2Connection::ProcessResult Http2Connection::handleRstStreamFrame(FrameHeader header,
                                                                      std::span<const std::byte> payload) {
-  if (header.streamId == 0) {
+  const uint32_t streamId = header.streamId();
+  if (streamId == 0) {
     return connectionError(ErrorCode::ProtocolError, ErrorMsg::RST_STREAMFrameOnStreamZero);
   }
 
@@ -1108,13 +1106,13 @@ Http2Connection::ProcessResult Http2Connection::handleRstStreamFrame(FrameHeader
     return connectionError(ErrorCode::FrameSizeError, ErrorMsg::InvalidRST_STREAMFrame);
   }
 
-  auto it = _streams.find(header.streamId);
+  auto it = _streams.find(streamId);
   if (it != _streams.end()) {
     it->second.onRecvRstStream();
     it->second.setErrorCode(frame.errorCode);
     closeStream(it, frame.errorCode);
     if (_sink != nullptr) {
-      _sink->onStreamReset(header.streamId, frame.errorCode);
+      _sink->onStreamReset(streamId, frame.errorCode);
     }
   }
 
@@ -1123,7 +1121,7 @@ Http2Connection::ProcessResult Http2Connection::handleRstStreamFrame(FrameHeader
 
 Http2Connection::ProcessResult Http2Connection::handleSettingsFrame(FrameHeader header,
                                                                     std::span<const std::byte> payload) {
-  if (header.streamId != 0) {
+  if (header.streamId() != 0) {
     return connectionError(ErrorCode::ProtocolError, ErrorMsg::SETTINGSFrameOnNonZeroStream);
   }
 
@@ -1217,7 +1215,7 @@ Http2Connection::ProcessResult Http2Connection::handleSettingsFrame(FrameHeader 
 
 Http2Connection::ProcessResult Http2Connection::handlePingFrame(FrameHeader header,
                                                                 std::span<const std::byte> payload) {
-  if (header.streamId != 0) [[unlikely]] {
+  if (header.streamId() != 0) [[unlikely]] {
     return connectionError(ErrorCode::ProtocolError, ErrorMsg::PINGFrameOnNonZeroStream);
   }
 
@@ -1265,14 +1263,15 @@ Http2Connection::ProcessResult Http2Connection::handleWindowUpdateFrame(FrameHea
     return connectionError(ErrorCode::FrameSizeError, ErrorMsg::InvalidWINDOW_UPDATEFrame);
   }
 
+  const uint32_t streamId = header.streamId();
   if (frame.windowSizeIncrement == 0) {
-    if (header.streamId == 0) {
+    if (streamId == 0) {
       return connectionError(ErrorCode::ProtocolError, ErrorMsg::ZeroWINDOW_UPDATEIncrementOnConnection);
     }
-    return streamError(header.streamId, ErrorCode::ProtocolError, ErrorMsg::ZeroWINDOW_UPDATEIncrement);
+    return streamError(streamId, ErrorCode::ProtocolError, ErrorMsg::ZeroWINDOW_UPDATEIncrement);
   }
 
-  if (header.streamId == 0) {
+  if (streamId == 0) {
     // Connection-level
     const int64_t newWindow = static_cast<int64_t>(_connectionSendWindow) + frame.windowSizeIncrement;
     if (std::cmp_greater(newWindow, kMaxWindowSize)) {
@@ -1281,17 +1280,17 @@ Http2Connection::ProcessResult Http2Connection::handleWindowUpdateFrame(FrameHea
     _connectionSendWindow = static_cast<int32_t>(newWindow);
   } else {
     // Stream-level
-    Http2Stream* pStream = getStream(header.streamId);
+    Http2Stream* pStream = getStream(streamId);
     if (pStream != nullptr) {
       ErrorCode err = pStream->increaseSendWindow(frame.windowSizeIncrement);
       if (err != ErrorCode::NoError) {
-        return streamError(header.streamId, err, ErrorMsg::StreamWindowOverflow);
+        return streamError(streamId, err, ErrorMsg::StreamWindowOverflow);
       }
     }
   }
 
   if (_sink != nullptr) {
-    _sink->onWindowUpdate(header.streamId, frame.windowSizeIncrement);
+    _sink->onWindowUpdate(streamId, frame.windowSizeIncrement);
   }
 
   return ProcessResult{ProcessResult::Action::Continue};
@@ -1303,7 +1302,7 @@ Http2Connection::ProcessResult Http2Connection::handleContinuationFrame(FrameHea
     return connectionError(ErrorCode::ProtocolError, ErrorMsg::UnexpectedCONTINUATIONFrame);
   }
 
-  if (header.streamId != _headerBlockStreamId) [[unlikely]] {
+  if (header.streamId() != _headerBlockStreamId) [[unlikely]] {
     return connectionError(ErrorCode::ProtocolError, ErrorMsg::CONTINUATIONOnWrongStream);
   }
 

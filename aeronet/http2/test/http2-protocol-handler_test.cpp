@@ -561,7 +561,7 @@ TEST(CreateHttp2ProtocolHandler, SendServerPrefaceForTlsQueuesSettingsImmediatel
   ASSERT_TRUE(pHandler->hasPendingOutput());
   const auto out = pHandler->getPendingOutput();
   ASSERT_GE(out.size(), FrameHeader::kSize);
-  EXPECT_EQ(ParseFrameHeader(out).type, FrameType::Settings);
+  EXPECT_EQ(ParseFrameHeader(out).type(), FrameType::Settings);
 
   pHandler->discardPendingOutput();
 }
