@@ -25,6 +25,7 @@
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -34,6 +35,7 @@
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-process-result-error-msg-strings.hpp"
 #include "aeronet/http2-stream.hpp"
+#include "aeronet/internal/response-streamer.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -72,10 +74,11 @@ class Http2ClientEngine : private EventSink {
   // First failure observed on the current exchange (first error wins; None when the exchange is healthy).
   enum class Failure : uint8_t {
     None,
-    TooBig,         // response body exceeded HttpClientConfig::maxResponseBytes
+    TooBig,         // response exceeded HttpClientConfig::maxResponseBytes
     Malformed,      // missing/invalid :status pseudo-header
     StreamReset,    // peer sent RST_STREAM for our stream
     StreamRefused,  // peer sent GOAWAY with lastStreamId below our stream (request not processed)
+    Sink,           // delivery to the ResponseBodySink failed (see ResponseStreamer::error())
   };
 
   Http2ClientEngine(const Http2Config& config, uint32_t minReadChunkBytes)
@@ -85,10 +88,13 @@ class Http2ClientEngine : private EventSink {
 
   [[nodiscard]] Http2Connection& conn() noexcept { return _conn; }
 
-  // Prepare the per-exchange state and allocate the next (odd) stream id.
-  uint32_t beginExchange(HttpResponse& resp, RawChars& bodyBuf, std::size_t maxResponseBytes) noexcept {
+  // Prepare the per-exchange state and allocate the next (odd) stream id. `streamer` is the client's when it is active
+  // (sink request), null otherwise.
+  uint32_t beginExchange(HttpResponse& resp, RawChars& bodyBuf, std::size_t maxResponseBytes,
+                         aeronet::internal::ResponseStreamer* streamer) noexcept {
     _resp = &resp;
     _bodyBuf = &bodyBuf;
+    _streamer = streamer;
     _maxResponseBytes = maxResponseBytes;
     _receivedBytes = 0;
     _contentType.clear();
@@ -98,6 +104,7 @@ class Http2ClientEngine : private EventSink {
     _streamClosed = false;
     _finalHeadersSeen = false;
     _responseComplete = false;
+    _streamingBody = false;
     return _streamId;
   }
 
@@ -105,10 +112,13 @@ class Http2ClientEngine : private EventSink {
   void endExchange() noexcept {
     _resp = nullptr;
     _bodyBuf = nullptr;
+    _streamingBody = false;
   }
 
   [[nodiscard]] Failure failure() const noexcept { return _failure; }
   [[nodiscard]] bool streamClosed() const noexcept { return _streamClosed; }
+  // Whether the body of the current response is delivered to the streamer as it arrives.
+  [[nodiscard]] bool streamingBody() const noexcept { return _streamingBody; }
   // Whether the response is fully received (END_STREAM seen). The stream itself may still be open on
   // our side when the server responded before the request body was fully uploaded (RFC 9113 §8.1).
   [[nodiscard]] bool responseComplete() const noexcept { return _responseComplete || _streamClosed; }
@@ -117,9 +127,11 @@ class Http2ClientEngine : private EventSink {
   [[nodiscard]] HttpClientErrc failureErrc() const noexcept {
     switch (_failure) {
       case Failure::TooBig:
-        [[fallthrough]];
+        return HttpClientErrc::responseTooLarge;
       case Failure::Malformed:
         return HttpClientErrc::malformedResponse;
+      case Failure::Sink:
+        return _streamer->error();
       default:
         return HttpClientErrc::connectionClosed;  // StreamReset / StreamRefused: peer aborted the exchange
     }
@@ -216,7 +228,7 @@ class Http2ClientEngine : private EventSink {
         continue;
       }
       const EventBmp interest = res.want == TransportHint::ReadReady ? EventIn : EventOut;
-      if (!client.waitIo(fd, interest, deadline)) {
+      if (!client.waitExchangeIo(fd, interest, deadline)) {
         return HttpClientErrc::timeout;
       }
     }
@@ -256,13 +268,13 @@ class Http2ClientEngine : private EventSink {
         continue;  // process what we just buffered
       }
       if (res.want == TransportHint::ReadReady) {
-        if (!client.waitIo(fd, EventIn, deadline)) {
+        if (!client.waitExchangeIo(fd, EventIn, deadline)) {
           return HttpClientErrc::timeout;
         }
         continue;
       }
       if (res.want == TransportHint::WriteReady) {
-        if (!client.waitIo(fd, EventOut, deadline)) {
+        if (!client.waitExchangeIo(fd, EventOut, deadline)) {
           return HttpClientErrc::timeout;
         }
         continue;
@@ -283,6 +295,7 @@ class Http2ClientEngine : private EventSink {
     if (streamId != _streamId || _resp == nullptr) {
       return;  // foreign stream (push is disabled) or an exchange already detached: ignore
     }
+    bool finalHead = false;  // this block is the head of the final response (not an interim one, nor trailers)
     if (!_finalHeadersSeen) {
       const auto statusIt = headers.find(http::PseudoHeaderStatus);
       if (statusIt == headers.end()) {
@@ -293,7 +306,7 @@ class Http2ClientEngine : private EventSink {
 
       const auto pBeg = statusIt->second.data();
       const auto pEnd = pBeg + statusIt->second.size();
-      if (pEnd - pBeg != 3) {
+      if (pEnd - pBeg != http::StatusCodeLen) {
         log::error("HTTP/2 client: response HEADERS on stream {} without a valid :status", streamId);
         setFailure(Failure::Malformed);
         return;
@@ -316,6 +329,7 @@ class Http2ClientEngine : private EventSink {
       }
       _resp->status(statusCode);
       _finalHeadersSeen = true;
+      finalHead = true;
     }
 
     // Regular header and trailer values are preserved, except Content-Type and Content-Length which HttpResponse
@@ -344,10 +358,16 @@ class Http2ClientEngine : private EventSink {
       if (name == http::ContentLength) {
         continue;
       }
+
       _resp->headerAddLineUnchecked(LowerAsciiKey{name}, value);
     }
     if (endStream) {
       _responseComplete = true;  // response (or its trailers block) carried END_STREAM
+    } else if (finalHead && _streamer != nullptr) {
+      // Final response head of a sink request, with a body to come: deliver it as it arrives, unless it is buffered.
+      if (_streamer->startResponse(*_resp, _contentType, _streamingBody) != HttpClientErrc::noError) {
+        setFailure(Failure::Sink);
+      }
     }
   }
 
@@ -359,6 +379,13 @@ class Http2ClientEngine : private EventSink {
       _responseComplete = true;
     }
     if (data.empty() || _failure != Failure::None) {
+      return;
+    }
+    if (_streamingBody) {
+      // A streamed body is not bounded by maxResponseBytes: it is consumed as it arrives.
+      if (!_streamer->feed(std::string_view(reinterpret_cast<const char*>(data.data()), data.size()))) {
+        setFailure(Failure::Sink);
+      }
       return;
     }
     if (_receivedBytes + data.size() > _maxResponseBytes) {
@@ -397,8 +424,9 @@ class Http2ClientEngine : private EventSink {
   Http2Connection _conn;
   HttpResponse* _resp{nullptr};  // response of the in-flight exchange (null between exchanges)
   RawChars* _bodyBuf{nullptr};   // borrowed body accumulator (HttpClient::responseBuffer())
-  RawChars _inBuf;               // frame input accumulator; persists so a partial frame survives exchanges
-  RawChars32 _contentType;       // owned copy of the response Content-Type value (views die with decode)
+  aeronet::internal::ResponseStreamer* _streamer{nullptr};  // sink delivery of the in-flight exchange, if any
+  RawChars _inBuf;          // frame input accumulator; persists so a partial frame survives exchanges
+  RawChars32 _contentType;  // owned copy of the response Content-Type value (views die with decode)
   std::size_t _receivedBytes{0};
   std::size_t _maxResponseBytes{0};
   uint32_t _streamId{0};      // stream id of the in-flight exchange
@@ -408,6 +436,7 @@ class Http2ClientEngine : private EventSink {
   bool _streamClosed{false};
   bool _finalHeadersSeen{false};  // a non-interim (>= 200) response HEADERS block was received
   bool _responseComplete{false};  // END_STREAM received for the response (see responseComplete())
+  bool _streamingBody{false};     // the body of the response goes to _streamer (see streamingBody())
   bool _goAwayReceived{false};
 };
 
@@ -455,7 +484,11 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
   bodyBuf.clear();  // reuse the buffer's allocation across requests
 
   HttpResponse resp;
-  const uint32_t streamId = engine.beginExchange(resp, bodyBuf, config.maxResponseBytes);
+  ResponseStreamer& streamer = client._streamer;
+  const bool isHead = req.method() == http::Method::HEAD;
+  // A response to HEAD has no body, even when its HEADERS frame does not end the stream: it is never streamed.
+  const uint32_t streamId =
+      engine.beginExchange(resp, bodyBuf, config.maxResponseBytes, streamer.active() && !isHead ? &streamer : nullptr);
 
   // The request body is either held in memory (inlined or captured) or a captured file payload streamed
   // from disk. Both expose their total length through bodyLength(); a file body is read into the client's
@@ -576,6 +609,11 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
     }
   }
 
+  // Signal the end of a streamed body before detaching the exchange (a truncated content coding fails here).
+  const bool streamedBody = engine.streamingBody();
+  if (ioRes == HttpClientErrc::noError && streamedBody && !streamer.finish()) {
+    ioRes = streamer.error();
+  }
   engine.endExchange();
   if (ioRes != HttpClientErrc::noError) {
     return std::unexpected(ioRes);
@@ -607,7 +645,12 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
   // decompression allocations move into the response and receive an equal-capacity empty replacement;
   // oversized scratch remains reusable and only the smaller body is copied.
   const std::string_view bodyView{bodyBuf};
-  if (!bodyView.empty() || !engine.contentType().empty()) {
+  if (!streamedBody && bodyView.empty() && config.decompression.enable && !isHead &&
+      resp.status() != http::StatusCodeNoContent && resp.status() != http::StatusCodeNotModified) {
+    // Nothing to decode: the (empty) body is delivered like a decoded one, without its coding (as over HTTP/1.1).
+    resp.headerRemoveLine(http::ContentEncoding);
+  }
+  if (!streamedBody && (!bodyView.empty() || !engine.contentType().empty())) {
     const std::string_view contentType =
         engine.contentType().empty() ? http::ContentTypeApplicationOctetStream : engine.contentType();
     if (config.decompression.enable && !bodyView.empty()) {
@@ -618,7 +661,9 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
             HttpCodec::DecompressFullBody(client._codec.decompressionState, config.decompression, respEncoding,
                                           bodyView, client._codec.decompressOut, client._codec.decompressTmp, decoded);
         if (decodeRes.status != http::StatusCodeOK) {
-          return std::unexpected(HttpClientErrc::malformedResponse);
+          return std::unexpected(decodeRes.status == http::StatusCodePayloadTooLarge
+                                     ? HttpClientErrc::responseTooLarge
+                                     : HttpClientErrc::malformedResponse);
         }
         resp.headerRemoveLine(http::ContentEncoding);  // body not installed yet => legal & cheap
         RawChars* decodedOwner = Http1ResponseParser::WholeBufferOwner(decoded, client._codec.decompressOut);

@@ -754,25 +754,14 @@ TEST(HttpCodecDecompression, WillDecompress_MalformedDoubleCommaReturnsBadReques
   EXPECT_EQ(code, http::StatusCodeBadRequest);
 }
 
-TEST(HttpCodecDecompression, WillDecompress_IdentityCaseInsensitive) {
-  DecompressionConfig cfg;
-  cfg.enable = true;
-
-  ConnectionState cs;
-  HttpRequestView& req = cs.request;
-  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "IDENTITY");
-
-  const auto code = HttpCodec::WillDecompress(cfg, req.headers());
-  EXPECT_EQ(code, http::StatusCodeNotModified);
-}
-
 TEST(HttpCodecDecompression, WillDecompress_SeveralIdentityValuesReturnsNotModified) {
   DecompressionConfig cfg;
   cfg.enable = true;
 
   ConnectionState cs;
   HttpRequestView& req = cs.request;
-  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "identity, identity,IDENTITY");
+  // Content-Encoding values are lower-cased by the request parsers (see the HttpRequestView and HPACK tests).
+  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "identity, identity,identity");
 
   const auto code = HttpCodec::WillDecompress(cfg, req.headers());
   EXPECT_EQ(code, http::StatusCodeNotModified);

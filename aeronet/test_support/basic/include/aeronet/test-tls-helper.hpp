@@ -4,6 +4,8 @@
 #include <string>
 #include <utility>
 
+struct x509_st;  // X509
+
 namespace aeronet::test {
 
 // Shared test utility for generating ephemeral self-signed certificates entirely in memory.
@@ -30,5 +32,8 @@ CertificateChain MakeCertificateChain(const char* leafCommonName = "localhost");
 
 // The PEM private key `keyPem`, encrypted (AES-256-CBC) with `passphrase`.
 std::string EncryptPrivateKeyPem(const std::string& keyPem, const char* passphrase);
+
+// Names `cert` "CN=<commonName>" and makes it self-issued (its issuer name is its subject name).
+void SetSelfIssuedName(x509_st* cert, const char* commonName);
 
 }  // namespace aeronet::test

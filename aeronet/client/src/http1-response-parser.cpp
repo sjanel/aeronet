@@ -145,6 +145,10 @@ constexpr void ScanConnectionTokens(std::string_view value, bool& closeSeen, boo
 
 }  // namespace
 
+Http1ResponseParser::Status Http1ResponseParser::EofInLine(std::string_view partialLine) noexcept {
+  return partialLine.contains('\n') ? Status::Error : Status::Truncated;
+}
+
 RawChars* Http1ResponseParser::WholeBufferOwner(std::string_view body, RawChars& candidate) noexcept {
   return body.size() == candidate.size() && body.data() == candidate.data() ? &candidate : nullptr;
 }
@@ -177,7 +181,7 @@ void Http1ResponseParser::InstallBodyStorage(HttpResponse& resp, std::string_vie
   *owner = std::move(replacement);
 }
 
-void Http1ResponseParser::reset(bool headRequest) noexcept {
+void Http1ResponseParser::reset(bool headRequest, bool streamHead) noexcept {
   _bodyBuf->clear();
   _pos = 0;
   _bodyStart = 0;
@@ -189,6 +193,8 @@ void Http1ResponseParser::reset(bool headRequest) noexcept {
   _state = State::StatusLine;
   _statusCode = 0;
   _headRequest = headRequest;
+  _streamHead = streamHead;
+  _streaming = false;
   _keepAlive = false;
   _http11 = false;
   _connectionCloseSeen = false;
@@ -222,15 +228,17 @@ Http1ResponseParser::Status Http1ResponseParser::installBody(HttpResponse& resp,
   // Automatic decompression: decode straight from `body` (receive buffer / de-framed chunks) into the
   // borrowed scratch buffer, drop the now-stale Content-Encoding header (the body is not installed yet, so
   // removal is cheap and legal), then install the decoded bytes. No intermediate copy of the compressed body.
-  // An empty body has nothing to decode, and keeps its Content-Encoding (as over HTTP/2).
-  if (_decode.state != nullptr && !body.empty()) {
+  if (_decode.state != nullptr) {
     const std::string_view contentEncoding = resp.headerValueOrEmpty(http::ContentEncoding);
-    if (!contentEncoding.empty()) {
+    if (!contentEncoding.empty() && body.empty()) {
+      // Nothing to decode: the (empty) body is delivered like a decoded one, without its coding.
+      resp.headerRemoveLine(http::ContentEncoding);
+    } else if (!contentEncoding.empty()) {
       std::string_view decoded;
       const auto res = HttpCodec::DecompressFullBody(*_decode.state, *_decode.config, contentEncoding, body,
                                                      *_decode.out, *_decode.tmp, decoded);
       if (res.status != http::StatusCodeOK) {
-        return Status::Error;
+        return res.status == http::StatusCodePayloadTooLarge ? Status::TooLarge : Status::Error;
       }
       resp.headerRemoveLine(http::ContentEncoding);  // body not installed yet => legal & cheap
       RawChars* decodedOwner;
@@ -305,13 +313,22 @@ Http1ResponseParser::Status Http1ResponseParser::decideFraming() {
 
 Http1ResponseParser::Status Http1ResponseParser::parseBody(std::string_view buffer, bool eof,
                                                            std::size_t maxResponseBytes) {
+  // A streamed body is consumed as it arrives: only the buffered one is bounded by maxResponseBytes.
+  const std::size_t maxBodyBytes = _streaming ? std::numeric_limits<std::size_t>::max() : maxResponseBytes;
+  // Chunk-size and trailer lines are never part of the body: an endless one must not grow the receive buffer forever.
+  const auto incompleteLine = [&buffer, this, eof, maxResponseBytes] {
+    if (buffer.size() - _pos > maxResponseBytes) {
+      return Status::TooLarge;
+    }
+    return eof ? EofInLine(buffer.substr(_pos)) : Status::NeedMore;
+  };
   switch (_framing) {
     case Framing::Length: {
       const std::size_t available = buffer.size() - _pos;
       const std::size_t take = available < _bodyRemaining ? available : _bodyRemaining;
       // The body stays in place in the receive buffer; only the cursor advances (zero-copy until install).
-      if ((_pos - _bodyStart) + take > maxResponseBytes) {
-        return Status::Error;
+      if ((_pos - _bodyStart) + take > maxBodyBytes) {
+        return Status::TooLarge;
       }
       _pos += take;
       _bodyRemaining -= take;
@@ -319,13 +336,13 @@ Http1ResponseParser::Status Http1ResponseParser::parseBody(std::string_view buff
         _state = State::Done;
         return Status::Complete;
       }
-      return eof ? Status::Error : Status::NeedMore;
+      return eof ? Status::Truncated : Status::NeedMore;
     }
 
     case Framing::UntilClose: {
       const std::size_t available = buffer.size() - _pos;
-      if ((_pos - _bodyStart) + available > maxResponseBytes) {
-        return Status::Error;
+      if ((_pos - _bodyStart) + available > maxBodyBytes) {
+        return Status::TooLarge;
       }
       _pos += available;
       if (eof) {
@@ -342,8 +359,11 @@ Http1ResponseParser::Status Http1ResponseParser::parseBody(std::string_view buff
       for (;;) {
         if (_state == State::BodyChunkSize) {
           const ChunkLineResult chunkLine = ParseChunkSizeLine(buffer, _pos);
-          if (chunkLine.status != ChunkLineStatus::Complete) {
-            return chunkLine.status == ChunkLineStatus::Error || eof ? Status::Error : Status::NeedMore;
+          if (chunkLine.status == ChunkLineStatus::Error) {
+            return Status::Error;
+          }
+          if (chunkLine.status == ChunkLineStatus::NeedMore) {
+            return incompleteLine();
           }
           _pos = chunkLine.nextPos;
           if (chunkLine.chunkSize == 0) {
@@ -359,14 +379,14 @@ Http1ResponseParser::Status Http1ResponseParser::parseBody(std::string_view buff
           const std::size_t available = buffer.size() - _pos;
           const std::size_t take = available < _bodyRemaining ? available : _bodyRemaining;
           const std::size_t bodySize = static_cast<std::size_t>(_bodyBuf->size());
-          if (bodySize > maxResponseBytes || take > maxResponseBytes - bodySize) {
-            return Status::Error;
+          if (bodySize > maxBodyBytes || take > maxBodyBytes - bodySize) {
+            return Status::TooLarge;
           }
           _bodyBuf->append(buffer.data() + _pos, take);
           _pos += take;
           _bodyRemaining -= take;
           if (_bodyRemaining != 0) {
-            return eof ? Status::Error : Status::NeedMore;
+            return eof ? Status::Truncated : Status::NeedMore;
           }
           _state = State::BodyChunkCrlf;
           continue;
@@ -375,13 +395,13 @@ Http1ResponseParser::Status Http1ResponseParser::parseBody(std::string_view buff
         if (_state == State::BodyChunkCrlf) {
           const std::size_t available = buffer.size() - _pos;
           if (available == 0) {
-            return eof ? Status::Error : Status::NeedMore;
+            return eof ? Status::Truncated : Status::NeedMore;
           }
           if (buffer[_pos] != '\r') {
             return Status::Error;
           }
           if (available == 1) {
-            return eof ? Status::Error : Status::NeedMore;
+            return eof ? Status::Truncated : Status::NeedMore;
           }
           if (buffer[_pos + 1] != '\n') {
             return Status::Error;
@@ -398,7 +418,7 @@ Http1ResponseParser::Status Http1ResponseParser::parseBody(std::string_view buff
           const char* const first = base + _pos;
           const char* const lineEnd = SearchCRLF(first, end);
           if (lineEnd == end) {
-            return eof ? Status::Error : Status::NeedMore;
+            return incompleteLine();
           }
           if (lineEnd[1] != '\n') {
             return Status::Error;
@@ -427,9 +447,9 @@ Http1ResponseParser::Status Http1ResponseParser::parse(std::span<char> buffer, b
       // empty line we have not seen), so bound the buffer itself: otherwise a peer streaming an endless
       // header line keeps `_pos` pinned at the line start and grows the receive buffer without limit.
       if (buffer.size() > maxResponseBytes) {
-        return Status::Error;
+        return Status::TooLarge;
       }
-      return eof ? Status::Error : Status::NeedMore;
+      return eof ? EofInLine(std::string_view(lineBegin, bufferEnd)) : Status::NeedMore;
     }
     if (lineEnd[1] != '\n') {
       return Status::Error;
@@ -441,7 +461,7 @@ Http1ResponseParser::Status Http1ResponseParser::parse(std::span<char> buffer, b
     // rejects a single oversized (but newline-terminated) header, which the per-header check below missed
     // because the empty-line / status-line branches return or `continue` before reaching it.
     if (_pos > maxResponseBytes) {
-      return Status::Error;
+      return Status::TooLarge;
     }
 
     if (_state == State::StatusLine) {
@@ -491,6 +511,9 @@ Http1ResponseParser::Status Http1ResponseParser::parse(std::span<char> buffer, b
       if (decideFraming() == Status::Complete) {
         return installBody(resp, std::string_view(buffer.data(), buffer.size()));
       }
+      if (_streamHead) {
+        return Status::HeadComplete;  // the next parse() call goes straight to the body
+      }
       break;  // proceed to body parsing below
     }
 
@@ -498,7 +521,8 @@ Http1ResponseParser::Status Http1ResponseParser::parse(std::span<char> buffer, b
     if (colon == std::string_view::npos || colon == 0) {
       return Status::Error;
     }
-    tolower(buffer.data() + static_cast<std::size_t>(line.data() - buffer.data()), colon);
+    char* const lineFirst = buffer.data() + static_cast<std::size_t>(line.data() - bufferBegin);
+    tolower(lineFirst, colon);
     const std::string_view name = line.substr(0, colon);
     const std::string_view value = TrimOws(line.substr(colon + 1));
 
@@ -527,6 +551,9 @@ Http1ResponseParser::Status Http1ResponseParser::parse(std::span<char> buffer, b
     } else {
       if (name == http::Connection) {
         ScanConnectionTokens(value, _connectionCloseSeen, _connectionKeepAliveSeen);
+      } else if (name == http::ContentEncoding) {
+        // Content codings are case-insensitive (RFC 9110 §8.4.1): lower-case them in place before storing.
+        tolower(lineFirst + (value.data() - line.data()), value.size());
       } else if (!http::IsValidHeaderName(name)) {
         return Status::Error;
       }
@@ -540,10 +567,18 @@ Http1ResponseParser::Status Http1ResponseParser::parse(std::span<char> buffer, b
   }
 
   const Status bodyStatus = parseBody(std::string_view(buffer.data(), buffer.size()), eof, maxResponseBytes);
-  if (bodyStatus == Status::Complete) {
+  if (bodyStatus == Status::Complete && !_streaming) {
     return installBody(resp, std::string_view(buffer.data(), buffer.size()));
   }
   return bodyStatus;
+}
+
+void Http1ResponseParser::discardStreamed(RawChars& buffer) noexcept {
+  assert(_streaming);
+  buffer.erase_front(_pos);
+  _pos = 0;
+  _bodyStart = 0;
+  _bodyBuf->clear();
 }
 
 }  // namespace aeronet

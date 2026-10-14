@@ -21,11 +21,13 @@ enum class HttpClientErrc : uint8_t {
   tlsError,             // TLS handshake failed
   timeout,              // I/O deadline exceeded (TLS handshake, request write or response read)
   writeError,           // transport write failure
-  connectionClosed,     // peer closed the connection before a complete response was received
-  malformedResponse,    // response could not be parsed, or exceeded maxResponseBytes
+  connectionClosed,     // peer closed (or reset) the connection / stream before a complete response was received
+  malformedResponse,    // response could not be parsed or decoded
   protocolUnsupported,  // peer negotiated an application protocol we have no engine for (e.g. ALPN h2)
   proxyError,           // the forward proxy refused or failed to establish the CONNECT tunnel
   ioError,              // event-loop registration or other internal I/O failure
+  responseTooLarge,     // response exceeded maxResponseBytes, or its decoding exceeded the decompression limits
+  aborted,              // the ResponseBodySink of the request stopped the transfer
 };
 
 // Stable, human-readable description of an error code (static storage, no allocation). Intended for logs
@@ -45,13 +47,17 @@ enum class HttpClientErrc : uint8_t {
     case HttpClientErrc::connectionClosed:
       return "connection closed before a complete response was received";
     case HttpClientErrc::malformedResponse:
-      return "malformed or oversized response";
+      return "malformed response";
     case HttpClientErrc::protocolUnsupported:
       return "negotiated application protocol is not supported";
     case HttpClientErrc::proxyError:
       return "forward proxy failed to establish the CONNECT tunnel";
     case HttpClientErrc::ioError:
       return "internal I/O error";
+    case HttpClientErrc::responseTooLarge:
+      return "response too large";
+    case HttpClientErrc::aborted:
+      return "transfer aborted by the response body sink";
     default:
       return "unknown error";
   }

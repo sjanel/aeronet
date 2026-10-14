@@ -18,6 +18,7 @@
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/internal/response-streamer.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/native-handle.hpp"
@@ -56,7 +57,7 @@ HttpClientErrc ClientConnection::writeAllForHttp11(HttpClient& client, Transport
       return HttpClientErrc::writeError;
     }
     const EventBmp interest = (transportRes.want == TransportHint::ReadReady) ? EventIn : EventOut;
-    if (!client.waitIo(fd, interest, deadline)) {
+    if (!client.waitExchangeIo(fd, interest, deadline)) {
       return HttpClientErrc::timeout;
     }
   }
@@ -89,7 +90,7 @@ HttpClientErrc ClientConnection::writeFileBodyForHttp11(HttpClient& client, Tran
         return HttpClientErrc::writeError;
       }
       const EventBmp interest = (transportRes.want == TransportHint::ReadReady) ? EventIn : EventOut;
-      if (!client.waitIo(fd, interest, deadline)) {
+      if (!client.waitExchangeIo(fd, interest, deadline)) {
         return HttpClientErrc::timeout;
       }
     }
@@ -129,7 +130,7 @@ HttpClientErrc ClientConnection::writeFileBodyForHttp11(HttpClient& client, Tran
         return HttpClientErrc::writeError;
       }
       const EventBmp interest = (transportRes.want == TransportHint::ReadReady) ? EventIn : EventOut;
-      if (!client.waitIo(fd, interest, deadline)) {
+      if (!client.waitExchangeIo(fd, interest, deadline)) {
         return HttpClientErrc::timeout;
       }
     }
@@ -206,8 +207,9 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
   // The chunked-body reassembly and raw receive buffers are borrowed from the client. Suitably-sized allocations move
   // into the response and get an equal-capacity replacement; oversized scratch stays with the client while its small
   // body is copied. Both paths preserve reuse without making a later request invalidate the returned response.
+  ResponseStreamer& streamer = client._streamer;
   Http1ResponseParser parser(client.bodyBuffer());
-  parser.reset(req.method() == http::Method::HEAD);
+  parser.reset(req.method() == http::Method::HEAD, streamer.active());
   if (config.decompression.enable) {
     // Decode Content-Encoding'd response bodies in place at install time (straight from the receive
     // buffer / de-framed chunk buffer, no intermediate copy of the compressed bytes).
@@ -231,12 +233,12 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
     if (transportRes.bytesProcessed > 0) {
       responseBuffer.addSize(transportRes.bytesProcessed);
     } else if (transportRes.want == TransportHint::ReadReady) {
-      if (!client.waitIo(fd, EventIn, ioDeadline)) {
+      if (!client.waitExchangeIo(fd, EventIn, ioDeadline)) {
         return std::unexpected(HttpClientErrc::timeout);
       }
       continue;
     } else if (transportRes.want == TransportHint::WriteReady) {
-      if (!client.waitIo(fd, EventOut, ioDeadline)) {
+      if (!client.waitExchangeIo(fd, EventOut, ioDeadline)) {
         return std::unexpected(HttpClientErrc::timeout);
       }
       continue;
@@ -245,16 +247,52 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
       eof = true;
     }
 
-    const Http1ResponseParser::Status st = parser.parse(responseBuffer, eof, resp, config.maxResponseBytes);
-    if (st == Http1ResponseParser::Status::Complete) {
-      break;
+    Http1ResponseParser::Status st = parser.parse(responseBuffer, eof, resp, config.maxResponseBytes);
+    if (st == Http1ResponseParser::Status::HeadComplete) {
+      // Final response head of a sink request: deliver its body as it arrives, unless it is buffered (a redirect to
+      // follow, a status to retry, stacked content codings).
+      bool stream;
+      if (const HttpClientErrc err = streamer.startResponse(resp, parser.contentType(responseBuffer), stream);
+          err != HttpClientErrc::noError) {
+        return std::unexpected(err);
+      }
+      if (stream) {
+        parser.startStreaming();
+      }
+      st = parser.parse(responseBuffer, eof, resp, config.maxResponseBytes);
     }
-    if (st == Http1ResponseParser::Status::Error) {
-      return std::unexpected(HttpClientErrc::malformedResponse);
+    if (parser.streaming()) {
+      // Deliver what was de-framed so far (also before a failure), and drop it from the receive buffer so that it
+      // never grows beyond a read.
+      if (const std::string_view body = parser.streamedBody(responseBuffer); !body.empty() && !streamer.feed(body)) {
+        return std::unexpected(streamer.error());
+      }
+      parser.discardStreamed(responseBuffer);
     }
-    // Guaranteed by the parser: once eof is set, it always resolves to Complete/Error here,
-    // never NeedMore, so this assert still holds under the new ordering.
-    assert(st == Http1ResponseParser::Status::NeedMore && !eof);
+    switch (st) {
+      case Http1ResponseParser::Status::NeedMore:
+        // Guaranteed by the parser: once eof is set, it always resolves to a final status.
+        assert(!eof);
+        continue;
+      case Http1ResponseParser::Status::Complete:
+        break;
+      case Http1ResponseParser::Status::Truncated:
+        log::error("HTTP/1.1 client: {} closed the connection before the end of the response", req.originKey());
+        return std::unexpected(HttpClientErrc::connectionClosed);
+      case Http1ResponseParser::Status::TooLarge:
+        log::error("HTTP/1.1 client: response of {} exceeds maxResponseBytes ({}) or the decompression limits",
+                   req.originKey(), config.maxResponseBytes);
+        return std::unexpected(HttpClientErrc::responseTooLarge);
+      default:
+        // HeadComplete is only returned once per response, and handled above.
+        assert(st == Http1ResponseParser::Status::Error);
+        log::error("HTTP/1.1 client: malformed response from {}", req.originKey());
+        return std::unexpected(HttpClientErrc::malformedResponse);
+    }
+    if (parser.streaming() && !streamer.finish()) {
+      return std::unexpected(streamer.error());
+    }
+    break;
   }
 
   _keepAlive = parser.keepAlive();

@@ -116,7 +116,7 @@ is tracked in the [performance optimization backlog](#performance-optimization-b
 
 - **Coroutine-friendly API** (`co_await client.get(...)`) integrated with a *running* server event loop, so handlers can issue upstream calls without blocking. This is also what unlocks **true HTTP/2 multiplexing** in the client: the native HTTP/2 engine has landed, but the synchronous model runs one stream at a time per connection.
 - **Unify the request buffer with the wire bytes**: teach `HttpMessage` a request-line first-line mode so the client builds the request directly in the buffer it writes, with zero reassembly (today request fields are copied once into the send buffer).
-- **Pluggable timeouts / cancellation** for in-flight client exchanges.
+- **Cancellation from another thread** of an in-flight client exchange (a `ResponseBodySink` can already stop a transfer, and `inactivityTimeout` bounds a stalled one).
 - **Client-side telemetry**: surface pool hit/miss, retry counts, cache hits/misses, redirect hops and decompression stats through the same `TelemetryContext` infrastructure the server already uses (the client currently emits none).
 - **Reverse-proxy / forwarding** building on the client (see the reverse-proxy item below).
 

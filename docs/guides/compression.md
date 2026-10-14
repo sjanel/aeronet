@@ -112,6 +112,8 @@ router.setPath(http::Method::GET, "/data", [&gzippedPayload](const HttpRequestVi
 
 When a codec is compiled in, request bodies with a `Content-Encoding` header are decoded before the handler runs: the handler sees the decoded body, and the `Content-Encoding` header is removed. Stacked codings (`Content-Encoding: gzip, zstd`) are decoded in reverse order, the last coding first, and `identity` is skipped.
 
+Codings are case-insensitive: the server lower-cases the received `Content-Encoding` value when it parses the request (over HTTP/1.1 and HTTP/2), so a handler reads `gzip` for `GZip`, also when decompression is disabled.
+
 Decompression is the classic vector of "compression bombs": a few kilobytes that expand to gigabytes. `DecompressionConfig`, passed to `HttpServerConfig::withRequestDecompression()`, bounds it:
 
 ```cpp
@@ -146,5 +148,6 @@ The decoded body is limited by `maxDecompressedBytes`, not by `maxBodyBytes`, wh
 
 - Response compression, negotiation, thresholds, streaming, and direct compression end to end: [tests/http-compression_test.cpp](../../tests/http-compression_test.cpp).
 - Request decompression, stacked codings, limits, and errors: [tests/http-request-decompression_test.cpp](../../tests/http-request-decompression_test.cpp).
+- Lower-casing of the received codings: [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp) (HTTP/1.1) and [hpack_test.cpp](../../aeronet/http2/test/hpack_test.cpp) (HTTP/2).
 - `Accept-Encoding` parsing and selection: [accept-encoding-negotiation_test.cpp](../../aeronet/objects/test/accept-encoding-negotiation_test.cpp).
 - Codecs: [zlib-encoder-decoder_test.cpp](../../aeronet/objects/test/zlib-encoder-decoder_test.cpp), [zstd-encoder-decoder_test.cpp](../../aeronet/objects/test/zstd-encoder-decoder_test.cpp), [brotli-encoder-decoder_test.cpp](../../aeronet/objects/test/brotli-encoder-decoder_test.cpp).

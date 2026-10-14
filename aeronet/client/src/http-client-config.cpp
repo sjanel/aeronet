@@ -33,6 +33,9 @@ void HttpClientConfig::validate() const {
   if (requestTimeout <= std::chrono::milliseconds{0}) {
     throw std::invalid_argument("requestTimeout must be greater than 0");
   }
+  if (inactivityTimeout < std::chrono::milliseconds{0}) {
+    throw std::invalid_argument("inactivityTimeout must be greater than or equal to 0");
+  }
   if (keepAliveTimeout < std::chrono::milliseconds{0}) {
     throw std::invalid_argument("keepAliveTimeout must be greater than or equal to 0");
   }

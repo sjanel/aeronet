@@ -58,6 +58,11 @@ class HttpClientConfig {
   // Maximum time for a single request/response exchange once connected (excludes connect time).
   Duration requestTimeout{std::chrono::seconds{30}};
 
+  // Maximum time an exchange may wait for the connection to send or receive any byte. 0 disables it (the default):
+  // only requestTimeout then bounds a stalled exchange. Typically combined with a large requestTimeout for long
+  // downloads, so that a stalled transfer fails fast while a slow but steady one completes.
+  Duration inactivityTimeout{Duration::zero()};
+
   // Max idle age of a pooled keep-alive connection: when older, it is dropped instead of reused (the
   // origin server may have closed it after its own keep-alive timeout, saving a doomed reuse attempt).
   // 0 disables expiry. Mirrors HttpServerConfig::keepAliveTimeout. Default: 30s.
@@ -66,6 +71,7 @@ class HttpClientConfig {
   // Hard cap on the total response size (headers + decoded body) accepted before aborting.
   // For HTTP/1.1, all the bytes of the response (including headers and body) count towards this limit.
   // For HTTP/2, all header bytes (including pseudo-headers) and the decoded body count towards this limit.
+  // A body delivered to a ResponseBodySink as it arrives is not counted: the limit then only bounds the head.
   // Must be > 0.
   std::size_t maxResponseBytes{64UL * 1024UL * 1024UL};
 

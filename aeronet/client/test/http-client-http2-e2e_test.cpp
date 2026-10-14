@@ -25,6 +25,8 @@
 #include "aeronet/base-fd.hpp"
 #include "aeronet/client-connection.hpp"
 #include "aeronet/client-protocol.hpp"
+#include "aeronet/compression-test-helpers.hpp"
+#include "aeronet/encoding.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"
@@ -51,8 +53,10 @@
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/timedef.hpp"
+#include "aeronet/toupperlower.hpp"
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
+#include "collecting-body-sink.hpp"
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include "aeronet/http-response.hpp"
@@ -124,9 +128,23 @@ test::TestServer CreateTestServer() {
     Observe(req);
     return req.makeResponse(http::StatusCodeOK, MakeLargeBody(), "application/octet-stream");
   });
+  // The large body compressed by the handler itself, with an upper-case coding (codings are case-insensitive).
+  routerProxy.setPath(http::Method::GET, "/upper-case-coding", [](const HttpRequestView& req) {
+    Observe(req);
+    const Encoding enc = test::SupportedEncodings().front();
+    std::string coding(GetEncodingStr(enc));
+    std::ranges::transform(coding, coding.begin(), [](char ch) { return toupper(ch); });
+    return req.makeResponse().contentEncoding(coding).body(std::string_view(test::Compress(enc, MakeLargeBody())),
+                                                           "application/octet-stream");
+  });
   routerProxy.setPath(http::Method::GET, "/redirect", [](const HttpRequestView& req) {
     Observe(req);
     return req.makeResponse(http::StatusCodeFound, "", "text/plain").location("/hello");
+  });
+  // A redirect carrying a body, which a sink must never receive when the redirect is followed.
+  routerProxy.setPath(http::Method::GET, "/redirect-with-body", [](const HttpRequestView& req) {
+    Observe(req);
+    return req.makeResponse(http::StatusCodeFound, "moved to /hello", "text/plain").location("/hello");
   });
   routerProxy.setPath(http::Method::POST, "/see-other", [](const HttpRequestView& req) {
     Observe(req);
@@ -876,6 +894,31 @@ TEST(HttpClientHttp2E2ETest, TransparentResponseDecompression) {
   EXPECT_TRUE(resp.headerValueOrEmpty("content-encoding").empty());
 }
 
+TEST(HttpClientHttp2E2ETest, UpperCaseCodingIsDecoded) {
+  if (test::SupportedEncodings().empty()) {
+    GTEST_SKIP() << "no codec compiled in";
+  }
+  HttpClient client = MakeHttp2Client();
+  auto resp = client.get(Url("/upper-case-coding")).value();
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemory(), MakeLargeBody());
+  EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
+
+  // Streamed to a sink, the body is decoded as it arrives.
+  test::CollectingBodySink sink;
+  auto result = client.get(Url("/upper-case-coding"), sink);
+  ASSERT_TRUE(result) << ErrcToStr(result.error());
+  EXPECT_TRUE(sink.contentEncoding.empty());
+  EXPECT_TRUE(sink.body == MakeLargeBody());
+
+  // Without decompression, the coding is kept, lower-cased.
+  HttpClientConfig cfg;
+  cfg.withHttpVersion(HttpVersionMode::Http2).withDecompression(false);
+  HttpClient rawClient(cfg);
+  auto raw = rawClient.get(Url("/upper-case-coding")).value();
+  EXPECT_EQ(raw.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(test::SupportedEncodings().front()));
+}
+
 TEST(HttpClientHttp2E2ETest, KeepAliveDisabledReconnectsPerRequest) {
   // Without keep-alive every exchange runs on a fresh connection: preface + SETTINGS each time, and the
   // engine (with its HPACK state) is dropped rather than pooled.
@@ -923,6 +966,90 @@ TEST(HttpClientHttp2E2ETest, HeadHasNoBody) {
   auto resp = client.head(Url("/hello")).value();
   EXPECT_EQ(resp.status(), 200);
   EXPECT_TRUE(resp.bodyInMemory().empty());
+}
+
+// --- Response body sinks (HTTP/2) ---
+
+TEST(HttpClientHttp2E2ETest, SinkStreamsLargeBodyBeyondMaxResponseBytes) {
+  HttpClientConfig cfg;
+  cfg.withHttpVersion(HttpVersionMode::Http2).withDecompression(false);  // the server sends the 1 MiB uncompressed
+  cfg.maxResponseBytes = 4096;
+  HttpClient client(cfg);
+  test::CollectingBodySink sink;
+  auto result = client.get(Url("/big"), sink);
+  ASSERT_TRUE(result) << ErrcToStr(result.error());
+  EXPECT_TRUE(result->bodyInMemory().empty());
+  EXPECT_EQ(sink.headCalls, 1U);
+  EXPECT_EQ(sink.contentType, "application/octet-stream");
+  EXPECT_TRUE(sink.body == MakeLargeBody());
+  EXPECT_GT(sink.bodyCalls, 1U);
+
+  // The connection stays usable for buffered requests.
+  auto buffered = client.get(Url("/hello"));
+  ASSERT_TRUE(buffered);
+  EXPECT_EQ(buffered->bodyInMemory(), "world");
+}
+
+TEST(HttpClientHttp2E2ETest, SinkReceivesDecodedBody) {
+  HttpClient client = MakeHttp2Client();  // the server compresses /big
+  test::CollectingBodySink sink;
+  auto result = client.get(Url("/big"), sink);
+  ASSERT_TRUE(result) << ErrcToStr(result.error());
+  EXPECT_TRUE(sink.contentEncoding.empty());
+  EXPECT_TRUE(result->headerValueOrEmpty(http::ContentEncoding).empty());
+  EXPECT_TRUE(sink.body == MakeLargeBody());
+}
+
+TEST(HttpClientHttp2E2ETest, SinkOnlySeesTheFinalResponseOfRedirects) {
+  HttpClient client = MakeHttp2Client();
+  test::CollectingBodySink sink;
+  auto result = client.get(Url("/redirect-with-body"), sink);
+  ASSERT_TRUE(result) << ErrcToStr(result.error());
+  EXPECT_EQ(sink.headCalls, 1U);
+  EXPECT_EQ(sink.status, 200);
+  EXPECT_EQ(sink.body, "world");
+
+  HttpClientConfig cfg;
+  cfg.withHttpVersion(HttpVersionMode::Http2);
+  cfg.followRedirects = false;
+  HttpClient noFollow(cfg);
+  test::CollectingBodySink redirectSink;
+  result = noFollow.get(Url("/redirect-with-body"), redirectSink);
+  ASSERT_TRUE(result);
+  EXPECT_EQ(redirectSink.status, http::StatusCodeFound);
+  EXPECT_EQ(redirectSink.body, "moved to /hello");
+}
+
+TEST(HttpClientHttp2E2ETest, SinkCanAbortTheTransfer) {
+  HttpClientConfig cfg;
+  cfg.withHttpVersion(HttpVersionMode::Http2).withDecompression(false);
+  HttpClient client(cfg);
+  test::CollectingBodySink refuseHead;
+  refuseHead.acceptHead = false;
+  auto result = client.get(Url("/big"), refuseHead);
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::aborted);
+  EXPECT_EQ(refuseHead.bodyCalls, 0U);
+
+  test::CollectingBodySink stopEarly;
+  stopEarly.stopAfterBytes = 50000;
+  result = client.get(Url("/big"), stopEarly);
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::aborted);
+  EXPECT_LT(stopEarly.body.size(), MakeLargeBody().size());
+
+  auto after = client.get(Url("/hello"));
+  ASSERT_TRUE(after);
+  EXPECT_EQ(after->bodyInMemory(), "world");
+}
+
+TEST(HttpClientHttp2E2ETest, SinkGetsHeadResponses) {
+  HttpClient client = MakeHttp2Client();
+  test::CollectingBodySink sink;
+  auto result = client.request(client.makeRequest(http::Method::HEAD, Url("/hello")), sink);
+  ASSERT_TRUE(result);
+  EXPECT_EQ(sink.headCalls, 1U);
+  EXPECT_EQ(sink.bodyCalls, 0U);
 }
 
 TEST(HttpClientHttp2E2ETest, RequestBodyCompression) {
@@ -1004,7 +1131,7 @@ TEST(HttpClientHttp2E2ETest, MaxResponseBytesEnforced) {
   HttpClient client(cfg);
   auto res = client.get(Url("/big"));
   ASSERT_FALSE(res.has_value());
-  EXPECT_EQ(res.error(), HttpClientErrc::malformedResponse);
+  EXPECT_EQ(res.error(), HttpClientErrc::responseTooLarge);
 }
 
 TEST(HttpClientHttp2E2ETest, InvalidHttp2ConfigRejectedAtConstruction) {
