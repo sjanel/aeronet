@@ -1,10 +1,12 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <ios>
+#include <iterator>
 #include <limits>
 #include <numeric>
 #include <optional>
@@ -563,7 +565,6 @@ TEST(HttpRequestDecompression, TripleCompressLargeBodyWithTrailers) {
 TEST(HttpRequestDecompression, MixedCaseTokens) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   std::string plain = "CaseCheck";
-  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
   std::uniform_int_distribution<int> toUpper(0, 1);
 
   for (const Encoding enc : test::SupportedEncodings()) {
@@ -573,10 +574,52 @@ TEST(HttpRequestDecompression, MixedCaseTokens) {
         ch = toupper(ch);
       }
     }
+    mixedCaseEnc.front() = toupper(mixedCaseEnc.front());
+    // Codings are lower-cased when parsed: the handler sees them normalized.
+    ts.resetRouterAndGet().setDefault([enc](const HttpRequestView& req) {
+      EXPECT_EQ(req.headerValueOrEmpty(http::OriginalEncodingHeaderName), GetEncodingStr(enc));
+      return HttpResponse(req.body());
+    });
     auto comp = test::Compress(enc, plain);
     auto resp = RawPost(ts.port(), "/case", {{"Content-Encoding", mixedCaseEnc}}, comp);
-    EXPECT_EQ(resp.status, http::StatusCodeOK);
-    EXPECT_EQ(resp.body, plain);
+    EXPECT_EQ(resp.status, http::StatusCodeOK) << mixedCaseEnc;
+    EXPECT_EQ(resp.body, plain) << mixedCaseEnc;
+  }
+}
+
+TEST(HttpRequestDecompression, MixedCaseTokensChunked) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
+  const std::string plain(4096, 'C');
+
+  for (const Encoding enc : test::SupportedEncodings()) {
+    std::string upperCaseEnc(GetEncodingStr(enc));
+    std::ranges::transform(upperCaseEnc, upperCaseEnc.begin(), [](char ch) { return toupper(ch); });
+    const std::string contentEncoding = "IDENTITY, " + upperCaseEnc;
+    ts.resetRouterAndGet().setDefault([&plain, enc](const HttpRequestView& req) {
+      EXPECT_EQ(req.body(), plain);
+      EXPECT_EQ(req.headerValueOrEmpty(http::OriginalEncodingHeaderName),
+                std::string("identity, ").append(GetEncodingStr(enc)));
+      return HttpResponse("chunked case OK");
+    });
+
+    const auto comp = test::Compress(enc, plain);
+    char sizeHex[16];
+    const auto [sizeHexEnd, errc] = std::to_chars(sizeHex, std::end(sizeHex), comp.size(), 16);
+    ASSERT_EQ(errc, std::errc{});
+
+    std::string req = "POST /case HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n";
+    req += MakeHttp1HeaderLine("Content-Encoding", contentEncoding);
+    req += http::CRLF;
+    req.append(sizeHex, sizeHexEnd);
+    req += http::CRLF;
+    req.append(std::string_view(comp));
+    req += "\r\n0\r\n\r\n";
+
+    test::ClientConnection sock(ts.port());
+    test::sendAll(sock.fd(), req);
+    const std::string resp = test::recvUntilClosed(sock.fd());
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << contentEncoding << ": " << resp;
+    EXPECT_TRUE(resp.ends_with("\r\n\r\nchunked case OK")) << contentEncoding << ": " << resp;
   }
 }
 

@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <expected>
 #include <span>
 #include <string_view>
@@ -70,24 +71,20 @@ namespace aeronet {
 
 namespace {
 
-// Fixed, short poll interval so the synchronous driver re-checks its deadline promptly, unless the request timeout is
+// Fixed, short poll interval so the synchronous driver re-checks its deadlines promptly, unless a timeout is
 // really small, in which case it will be based on it clamped to a minimum of 1ms.
-PollTimeoutPolicy CreatePollTimeoutPolicy(HttpClientConfig::Duration connectTimeout,
-                                          HttpClientConfig::Duration requestTimeout) {
+PollTimeoutPolicy CreatePollTimeoutPolicy(const HttpClientConfig& config) {
   PollTimeoutPolicy policy;
-  const auto smallestDeadline = std::min(connectTimeout, requestTimeout);
+  auto smallestDeadline = std::min(config.connectTimeout, config.requestTimeout);
+  if (config.inactivityTimeout > HttpClientConfig::Duration::zero()) {
+    smallestDeadline = std::min(smallestDeadline, config.inactivityTimeout);
+  }
   // A few checks against the deadline before it expires, capped so typical (multi-second) timeouts still
   // get the old 25ms granularity, floored so a pathologically tight timeout can't cause a busy-spin at 0ms.
   policy.baseTimeout = std::clamp(smallestDeadline / 4, std::chrono::milliseconds{1}, std::chrono::milliseconds{25});
   policy.minFactor = 1.0F;
   policy.maxFactor = 1.0F;
   return policy;
-}
-
-constexpr bool IsRedirect(http::StatusCode code) noexcept {
-  return code == http::StatusCodeMovedPermanently || code == http::StatusCodeFound ||
-         code == http::StatusCodeSeeOther || code == http::StatusCodeTemporaryRedirect ||
-         code == http::StatusCodePermanentRedirect;
 }
 
 // Parse a delta-seconds `Retry-After` header value into a non-negative duration capped at `cap`. Returns a
@@ -169,9 +166,7 @@ internal::UrlParseResult FinalizeProxyUrl(HttpClientConfig& config) {
 }  // namespace
 
 HttpClient::HttpClient()
-    : _loop(CreatePollTimeoutPolicy(_config.connectTimeout, _config.requestTimeout)),
-      _codec(_config.requestCompression.codec),
-      _telemetry(_config.telemetry) {
+    : _loop(CreatePollTimeoutPolicy(_config)), _codec(_config.requestCompression.codec), _telemetry(_config.telemetry) {
 #ifndef NDEBUG
   _config.validate();  // default constructed HttpClientConfig should never throw on validate.
 #endif
@@ -184,7 +179,7 @@ HttpClient::HttpClient()
 
 HttpClient::HttpClient(HttpClientConfig config)
     : _config(std::move(config)),
-      _loop(CreatePollTimeoutPolicy(_config.connectTimeout, _config.requestTimeout)),
+      _loop(CreatePollTimeoutPolicy(_config)),
       _codec(_config.requestCompression.codec),
       _telemetry(_config.telemetry) {
   // Fail fast on inconsistent configuration (mirrors the server's validate-on-construct policy): timeouts,
@@ -213,6 +208,7 @@ HttpClient::HttpClient(HttpClient&& rhs) noexcept
       _cacheKeyScratch(std::move(rhs._cacheKeyScratch)),
       _reqBodyScratch(std::move(rhs._reqBodyScratch)),
       _responseBuffer(std::move(rhs._responseBuffer)),
+// _streamer only holds state during a request: default-constructed.
 #ifdef AERONET_ENABLE_HTTP2
       _outputFragmentsScratch(std::move(rhs._outputFragmentsScratch)),
 #endif
@@ -243,6 +239,7 @@ HttpClient& HttpClient::operator=(HttpClient&& rhs) noexcept {
     _cacheKeyScratch = std::move(rhs._cacheKeyScratch);
     _reqBodyScratch = std::move(rhs._reqBodyScratch);
     _responseBuffer = std::move(rhs._responseBuffer);
+    _streamer = internal::ResponseStreamer{};  // only holds state during a request
 #ifdef AERONET_ENABLE_HTTP2
     _outputFragmentsScratch = std::move(rhs._outputFragmentsScratch);
 #endif
@@ -266,8 +263,21 @@ HttpClient& HttpClient::operator=(const HttpClient& rhs) {
 
 HttpClient::~HttpClient() = default;
 
-HttpClientResult HttpClient::requestProcess(HttpRequest&& req) {
+HttpClientResult HttpClient::requestProcess(HttpRequest&& req, ResponseBodySink* sink) {
   maybeCompressBody(req);
+
+  // Reset at every request, so that a request interrupted by an exception leaves no sink behind.
+  _streamer.beginRequest(sink, _config, _codec);
+  if (sink != nullptr) {
+    HttpClientResult result = requestUncached(std::move(req));
+    // A final response received whole (bodyless, or not streamed) is given to the sink now.
+    if (result && !_streamer.headDelivered()) {
+      if (const HttpClientErrc err = _streamer.deliverBuffered(*result); err != HttpClientErrc::noError) {
+        return std::unexpected(err);
+      }
+    }
+    return result;
+  }
 
   const bool isCacheEligible = cacheEligible(req);
 
@@ -424,6 +434,13 @@ bool HttpClient::waitIo(NativeHandle fd, EventBmp interest, SteadyClock::time_po
     }
     // Empty span => poll timeout; loop and re-check the deadline.
   }
+}
+
+bool HttpClient::waitExchangeIo(NativeHandle fd, EventBmp interest, SteadyClock::time_point deadline) {
+  if (_config.inactivityTimeout > HttpClientConfig::Duration::zero()) {
+    deadline = std::min(deadline, SteadyClock::now() + _config.inactivityTimeout);
+  }
+  return waitIo(fd, interest, deadline);
 }
 
 std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectNew(const HttpRequest& req) {
@@ -768,7 +785,31 @@ namespace {
 
 }  // namespace
 
-HttpClientResult HttpClient::performExchange(HttpRequest& req) {
+// Unregisters `fd` from the client event loop when destroyed by stack unwinding only (a normal exit keeps the
+// registration of a pooled keep-alive connection, reused by the next request).
+class HttpClient::UnregisterOnUnwind {
+ public:
+  UnregisterOnUnwind(HttpClient& client, NativeHandle fd) noexcept
+      : _client(client), _fd(fd), _uncaughtExceptions(std::uncaught_exceptions()) {}
+
+  UnregisterOnUnwind(const UnregisterOnUnwind&) = delete;
+  UnregisterOnUnwind(UnregisterOnUnwind&&) = delete;
+  UnregisterOnUnwind& operator=(const UnregisterOnUnwind&) = delete;
+  UnregisterOnUnwind& operator=(UnregisterOnUnwind&&) = delete;
+
+  ~UnregisterOnUnwind() {
+    if (std::uncaught_exceptions() > _uncaughtExceptions) {
+      _client.unregisterIfCurrent(_fd);
+    }
+  }
+
+ private:
+  HttpClient& _client;
+  NativeHandle _fd;
+  int _uncaughtExceptions;
+};
+
+HttpClientResult HttpClient::performExchange(HttpRequest& req, bool redirectFollowed) {
 #ifdef AERONET_LINUX
   // TLS (OpenSSL writes on the socket itself) and file bodies (sendfile()) may raise SIGPIPE if the server resets the
   // connection, terminating the process by default: keep it pending in this thread during the exchange, then discard
@@ -805,6 +846,10 @@ HttpClientResult HttpClient::performExchange(HttpRequest& req) {
     ActiveConnection conn = std::move(*acquired);
     const bool reused = conn.reused;
     const NativeHandle fd = conn.cnx.fd();
+    // An exception escaping the exchange (thrown by a ResponseBodySink, or std::bad_alloc) closes the connection: its
+    // fd must not stay registered in the event loop, where the next connection, likely given the same fd number, would
+    // otherwise be considered already registered.
+    const UnregisterOnUnwind unregisterOnUnwind(*this, fd);
     // The fd is registered with the event loop lazily, on the first would-block wait (armLoop). A reused
     // keep-alive connection is already the loop's registered fd, so it costs no syscall; a request whose
     // I/O never blocks touches the loop not at all.
@@ -812,6 +857,10 @@ HttpClientResult HttpClient::performExchange(HttpRequest& req) {
     const auto connectDeadline = now + _config.connectTimeout;
     const auto ioDeadline = now + _config.requestTimeout;
     bool requestSent = false;
+    if (_streamer.active()) {
+      // A response this loop would retry for its status is never given to a sink.
+      _streamer.beginExchange(redirectFollowed, canBackoff());
+    }
 
     // Drive the connection to a full exchange: finish the (TLS) connect, ensure a protocol engine, then hand
     // it the connection. `requestSent` flips to true as soon as any request byte is written, even when the
@@ -825,6 +874,8 @@ HttpClientResult HttpClient::performExchange(HttpRequest& req) {
       // A retryable status (e.g. 429 / 503) is a *successful* exchange we choose to retry: back off (honoring
       // a delta-seconds Retry-After when present) and try again, discarding this response.
       if (canBackoff() && retry.retryStatuses.contains(result->status())) {
+        // Such a response is buffered by the streamer, never delivered to a sink (see beginExchange above).
+        assert(!_streamer.headDelivered());
         RetryConfig::Duration delay = computedBackoff();
         if (retry.honorRetryAfter) {
           const RetryConfig::Duration ra =
@@ -851,6 +902,9 @@ HttpClientResult HttpClient::performExchange(HttpRequest& req) {
     }
 
     dropConnection(conn);  // close the socket / transport (and unregister its fd from the loop)
+    if (_streamer.headDelivered()) {
+      return result;  // the sink already received part of this response: retrying would deliver it twice
+    }
     if (reused && !requestSent) {
       continue;  // stale keep-alive race, nothing sent yet: free retry on a fresh connection (no backoff)
     }
@@ -995,13 +1049,13 @@ HttpClientResult HttpClient::requestUncached(HttpRequest&& req) {
   while (true) {
     // performExchange owns the (idempotent-safe) transparent retry of a stale pooled connection; any
     // failure it surfaces here is terminal.
-    HttpClientResult result = performExchange(req);
+    HttpClientResult result = performExchange(req, _config.followRedirects && redirectsLeft != 0);
     if (!result) {
       return result;
     }
     const HttpResponse& resp = *result;
 
-    if (!_config.followRedirects || !IsRedirect(resp.status()) || redirectsLeft == 0) {
+    if (!_config.followRedirects || !internal::IsRedirectStatus(resp.status()) || redirectsLeft == 0) {
       return result;
     }
     const std::string_view location = resp.headerValueOrEmpty(http::Location);

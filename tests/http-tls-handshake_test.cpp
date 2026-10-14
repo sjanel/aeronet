@@ -1444,9 +1444,7 @@ std::string MakeLargeCertificatePem(std::size_t extensionSize) {
   ::X509_gmtime_adj(::X509_getm_notBefore(cert.get()), 0);
   ::X509_gmtime_adj(::X509_getm_notAfter(cert.get()), 3600);
   ::X509_set_pubkey(cert.get(), key.get());
-  X509_NAME* name = ::X509_get_subject_name(cert.get());
-  ::X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>("large"), -1, -1, 0);
-  ::X509_set_issuer_name(cert.get(), name);
+  test::SetSelfIssuedName(cert.get(), "large");
   const std::string payload(extensionSize, 'x');
   std::unique_ptr<X509_EXTENSION, decltype(&::X509_EXTENSION_free)> extension(nullptr, &::X509_EXTENSION_free);
   if (::ASN1_OCTET_STRING_set(value.get(), reinterpret_cast<const unsigned char*>(payload.data()),

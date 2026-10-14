@@ -2678,9 +2678,10 @@ TEST(TlsHttp2Client, AutomaticRequestDecompressionDeliversCanonicalBody) {
   test::TlsHttp2Client client(ts.port());
   ASSERT_TRUE(client.isConnected());
 
+  // Codings are case-insensitive: they are lower-cased when decoded, so the handler sees them normalized.
   auto response =
       client.post("/submit", compressedBody, "application/octet-stream",
-                  {{"content-encoding", "gzip"}, {"content-length", std::to_string(compressedBody.size())}});
+                  {{"content-encoding", "GZip"}, {"content-length", std::to_string(compressedBody.size())}});
   EXPECT_EQ(response.statusCode, 200);
 
   EXPECT_EQ(receivedBody, plain);

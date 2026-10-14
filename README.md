@@ -169,7 +169,7 @@ A bird's-eye view of what's implemented, what's still experimental, and where to
 | Middleware helpers | ✔ | Global + per-route request/response hooks (streaming-aware) |
 | Streaming inbound decompression | ✔ | Auto-switches to streaming inflaters once Content-Length exceeds configured threshold |
 | sendfile / static file helper | ✔ | 0.4.x – zero-copy plain sockets plus RFC 9110 range and conditional requests |
-| HTTP client | ✔ (flag) | Sync HTTP/1.1, keep‑alive pool, redirects, auto (de)compression, HTTPS |
+| HTTP client | ✔ (flag) | Sync HTTP/1.1, keep‑alive pool, redirects, auto (de)compression, HTTPS, streamed response bodies |
 | JWT (JWS) | ✔ (flag) | RFC 7519 sign/verify; HS/RS/ES/PS/EdDSA; JWK/JWKS by `kid`; rejects `alg:none` |
 
 ### Developer / Operational Features
@@ -858,6 +858,7 @@ Highlights:
 - **Forward proxy** support (`HttpClientConfig::withProxy`): route every request through a cleartext HTTP proxy - an https origin is reached by opening an HTTP `CONNECT` tunnel and handshaking TLS through it, a plain http origin is sent to the proxy in absolute-form. An optional CA bundle verifies an intercepting proxy that re-signs origin certificates (e.g. mitmproxy).
 - `Content-Length`, chunked transfer-encoding and connection-close framing; automatic redirect following with method rewriting.
 - **Request bodies from an open file** (`HttpRequest::file(...)`, optional `offset` / `length` sub-range): the file is streamed straight from disk without ever loading it fully into memory - over cleartext HTTP/1.1 with a zero-copy `sendfile(2)` (no user-space copy, mirroring the server's response path), over TLS by reading bounded chunks and encrypting them, and over HTTP/2 by framing bounded reads into DATA frames under flow control.
+- **Streamed response bodies** (`request(req, sink)` / `get(url, sink)` with a `ResponseBodySink`): the body of a download of any size is delivered piece by piece as it arrives, de-chunked and decoded, keeping only one read in memory; `HttpClientConfig::inactivityTimeout` fails a stalled transfer fast while a long `requestTimeout` lets a slow but steady one complete.
 - **Automatic response decompression** (`gzip` / `deflate` / `br` / `zstd`, gated on compiled-in codecs) and optional **request body compression** for large payloads - both reuse the very same codec bricks as the server and decode without an extra copy of the compressed bytes. Configured via `HttpClientConfig::decompression` / `requestCompression` (mirroring the server's `DecompressionConfig` / `CompressionConfig`). When decompression is on, the client also auto-advertises the codecs it can decode in `Accept-Encoding`.
 - Convenience verbs (`get` / `head` / `post` / `put` / `del`) plus the `HttpRequest` builder.
 - Reuses `aeronet::HttpResponse` as the response/request field container (no bespoke header/body types).

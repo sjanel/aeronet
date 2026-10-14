@@ -20,7 +20,9 @@
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
+#include "aeronet/internal/response-streamer.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/response-body-sink.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/transport.hpp"
 #include "aeronet/vector.hpp"
@@ -136,17 +138,35 @@ class HttpClient {
 
   // Execute an arbitrary request (method + url + headers + body), following redirects per config.
   HttpClientResult request(const HttpRequest& req) {
-    return requestProcess(req.finalizeHeadersAndBody(_codec, _config.decompression));
+    return requestProcess(req.finalizeHeadersAndBody(_codec, _config.decompression), nullptr);
   }
 
   // Rvalue overload: execute an arbitrary request (method + url + headers + body), following redirects per config.
   HttpClientResult request(HttpRequest&& req) {
     req.HttpMessage::finalizeHeadersAndBody();
-    return requestProcess(std::move(req));
+    return requestProcess(std::move(req), nullptr);
+  }
+
+  // Execute a request, delivering the body of its final response to `sink` as it arrives instead of buffering it (see
+  // ResponseBodySink). The returned response then holds the status and headers only. The response cache is not used.
+  // An exception thrown by the sink propagates out of this call.
+  HttpClientResult request(const HttpRequest& req, ResponseBodySink& sink) {
+    return requestProcess(req.finalizeHeadersAndBody(_codec, _config.decompression), &sink);
+  }
+
+  // Rvalue overload of request(const HttpRequest&, ResponseBodySink&).
+  HttpClientResult request(HttpRequest&& req, ResponseBodySink& sink) {
+    req.HttpMessage::finalizeHeadersAndBody();
+    return requestProcess(std::move(req), &sink);
   }
 
   // Convenience verbs.
   HttpClientResult get(std::string_view url) { return request(makeRequest(http::Method::GET, url)); }
+
+  // GET whose response body is delivered to `sink` as it arrives (see request(HttpRequest&&, ResponseBodySink&)).
+  HttpClientResult get(std::string_view url, ResponseBodySink& sink) {
+    return request(makeRequest(http::Method::GET, url), sink);
+  }
 
   HttpClientResult head(std::string_view url) { return request(makeRequest(http::Method::HEAD, url)); }
 
@@ -201,7 +221,8 @@ class HttpClient {
     bool reused{false};                                // taken from the idle pool
   };
 
-  HttpClientResult requestProcess(HttpRequest&& req);
+  // Run a request, with its final response delivered to `sink` when not null (the cache is then bypassed).
+  HttpClientResult requestProcess(HttpRequest&& req, ResponseBodySink* sink);
 
   // Run a request end to end (URL parse + redirect following), bypassing the response cache. request() wraps
   // this with the cache lookup/store when caching is enabled and the request is eligible.
@@ -209,7 +230,8 @@ class HttpClient {
 
   // Perform a single (non-redirect) exchange against an absolute URL, returning the HttpResponse or an
   // HttpClientErrc on transport failure. Redirect rewrites are already applied to `req` by requestUncached.
-  HttpClientResult performExchange(HttpRequest& req);
+  // `redirectFollowed` tells whether a redirect response would be followed (so is never given to a sink).
+  HttpClientResult performExchange(HttpRequest& req, bool redirectFollowed);
 
   // --- Built-in response cache (see HttpClientConfig::cache) ---
   // Whether `req` is eligible for caching (cache enabled and its method is in cache.methods).
@@ -282,6 +304,9 @@ class HttpClient {
   // Block (up to the deadline) until fd signals one of the interest events. Returns true if ready.
   bool waitIo(NativeHandle fd, EventBmp interest, SteadyClock::time_point deadline);
 
+  // waitIo() for the request / response exchange: also gives up after HttpClientConfig::inactivityTimeout.
+  bool waitExchangeIo(NativeHandle fd, EventBmp interest, SteadyClock::time_point deadline);
+
   // Ensure the event loop is watching `fd` for exactly `interest`, reusing the existing registration when
   // possible. The client keeps a single fd registered at a time (the one it is currently driving): a
   // request that keeps hitting the same keep-alive connection reuses the registration untouched (no
@@ -292,6 +317,9 @@ class HttpClient {
   // Drop `fd` from the event loop if it is the currently-registered one. Called right before a socket is
   // closed so the registration never outlives the fd (and the cache never matches a recycled fd number).
   void unregisterIfCurrent(NativeHandle fd) noexcept;
+
+  // Calls unregisterIfCurrent() for the connection of an exchange left by an exception (defined in http-client.cpp).
+  class UnregisterOnUnwind;
 
   // Close a connection we are done with: unregister its fd from the loop (if current), then reset it.
   void dropConnection(ActiveConnection& conn) noexcept;
@@ -357,6 +385,8 @@ class HttpClient {
   // assembled HTTP/2 body rotates into the response with an equal-capacity replacement; oversized scratch stays
   // reusable.
   RawChars _responseBuffer;
+  // Delivery of the final response to the ResponseBodySink of the current request (inactive for regular requests).
+  internal::ResponseStreamer _streamer;
 #ifdef AERONET_ENABLE_HTTP2
   vector<std::string_view> _outputFragmentsScratch;  // reused by HTTP/2 gather writes across flushes
 #endif

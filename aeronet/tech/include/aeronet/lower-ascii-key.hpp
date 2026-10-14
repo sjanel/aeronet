@@ -74,7 +74,8 @@ class LowerAsciiKey {
   // (heterogeneous map lookups, comparisons, formatting, etc.) without an explicit .get() at every use.
   constexpr operator std::string_view() const noexcept { return _sv; }  // NOLINT(*-explicit-constructor)
 
- private:
+  // Tells whether `sv` contains an ASCII upper-case letter ('A'-'Z'). Also usable to assert that a value other than a
+  // key (such as a header value lower-cased by the parsers) is lower-case.
   static constexpr bool ContainsUpperAscii(std::string_view sv) noexcept {
     // Use raw loop to avoid <algorithm> include
     // NOLINTNEXTLINE(readability-use-anyofallof)
@@ -86,6 +87,7 @@ class LowerAsciiKey {
     return false;
   }
 
+ private:
   std::string_view _sv;
 };
 

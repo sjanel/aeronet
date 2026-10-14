@@ -19,8 +19,9 @@ config.withKeepAliveTimeout(25s)
 | Setting | Default | Behavior |
 | --- | --- | --- |
 | `connectTimeout` | 10 s | TCP connection deadline, including TLS handshake for HTTPS. |
-| `requestTimeout` | 30 s | Deadline for one connected request/response exchange. |
-| `maxResponseBytes` | 64 MiB | Maximum headers plus decoded body accepted before the client aborts. |
+| `requestTimeout` | 30 s | Deadline for one connected request/response exchange, whatever its progress. |
+| `inactivityTimeout` | 0 (disabled) | Maximum wait for the connection to send or receive any byte during an exchange. Combined with a large `requestTimeout`, a long download completes as long as data flows, while a stalled one fails fast. See [Timeouts](../modules/http-client.md#timeouts). |
+| `maxResponseBytes` | 64 MiB | Maximum headers plus decoded body accepted before the client aborts (`responseTooLarge`). Only bounds the head of a response streamed to a [`ResponseBodySink`](../modules/http-client.md#streaming-response-bodies). |
 | `followRedirects`, `maxRedirects` | true, 5 | Follow redirects and bound the chain. |
 | `keepAlive` | true | Reuse compatible HTTP connections. When false, each request uses a fresh connection and HTTP/1.1 requests carry `Connection: close` (RFC 9112 §9.6) unless they set their own `Connection` header, so that the server closes first and keeps the `TIME_WAIT` state. |
 | `keepAliveTimeout` / `withKeepAliveTimeout()` | 30 s | Maximum age of an idle pooled connection; 0 disables expiry. Also the period of the automatic sweep of expired idle connections over all origins. |
