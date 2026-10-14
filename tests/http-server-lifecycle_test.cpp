@@ -1020,6 +1020,31 @@ TEST(SingleHttpServer, StopFromHandler) {
   server.stop();  // joins the event-loop thread, which already stopped by itself
 }
 
+TEST(SingleHttpServer, StopWithConnectionPendingOnListener) {
+  // The wakeup of stop() closes the listener: an event polled for it in the same batch must not be taken for the event
+  // of a connection (with none accepted yet, looking it up as one read the unallocated connection storage).
+  SingleHttpServer server(HttpServerConfig{});
+  const auto port = server.port();
+  std::promise<void> updateEntered;
+  std::promise<void> updateRelease;
+  auto release = updateRelease.get_future();
+  auto handle = server.startDetached();
+  // Holds the event loop, so that the wakeup of stop() and the listener event are polled together, in this order.
+  server.postRouterUpdate([&updateEntered, &release](Router&) {
+    updateEntered.set_value();
+    release.wait();
+  });
+  updateEntered.get_future().wait();
+
+  server.stop();
+  test::ClientConnection cnx(port);
+  updateRelease.set_value();
+
+  handle.stop();
+  EXPECT_NO_THROW(handle.rethrowIfError());
+  EXPECT_FALSE(server.isRunning());
+}
+
 TEST(SingleHttpServer, DoubleStopIsNoOp) {
   HttpServerConfig cfg;
   cfg.withPollInterval(1ms);

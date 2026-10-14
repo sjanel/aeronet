@@ -780,13 +780,18 @@ void SingleHttpServer::eventLoop() {
     _telemetry.counterAdd("aeronet.events.errors", 1);
     _lifecycle.exchangeStopping();
   } else if (!events.empty()) {
+    // Read before the batch: the wakeup below may close the listener, whose event already polled in this batch must
+    // then not be taken for the event of a connection.
+    const NativeHandle listenFd = _listenSocket.fd();
     for (auto event : events) {
       const auto fd = event.fd;
-      if (fd == _listenSocket.fd()) {
-        // Always attempt to accept new connections when the listener is signaled.
+      if (fd == listenFd) {
+        // Always attempt to accept new connections when the listener is signaled (unless closed since).
         // The lifecycle controls higher-level acceptance semantics; accepting
         // here is safe and allows probes to connect during drain.
-        acceptNewConnections();
+        if (_listenSocket) {
+          acceptNewConnections();
+        }
       } else if (fd == _lifecycle.wakeupFd.fd()) {
         _lifecycle.wakeupFd.read();
         // When stop() is called from another thread it sets the state to Stopping
