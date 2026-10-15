@@ -385,7 +385,7 @@ std::string TlsClient::peerCommonName() const {
   if (cert == nullptr) {
     return {};
   }
-  X509_NAME* subj = ::X509_get_subject_name(const_cast<X509*>(cert));
+  const X509_NAME* subj = ::X509_get_subject_name(cert);
   if (subj == nullptr) {
     return {};
   }

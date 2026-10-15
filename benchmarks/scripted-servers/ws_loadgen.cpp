@@ -20,7 +20,6 @@
 #include <unistd.h>
 
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <bit>
 #include <cctype>
@@ -142,7 +141,7 @@ class Histogram {
     return ((uint64_t{1} << kSubBits) + sub + 1) << (msb - kSubBits);
   }
 
-  std::array<uint64_t, kNbBuckets> _buckets{};
+  uint64_t _buckets[kNbBuckets]{};
   uint64_t _count{0};
   uint64_t _sum{0};
   uint64_t _max{0};
@@ -316,9 +315,12 @@ class Worker {
     for (std::size_t idx = 0; idx < _conns.size(); ++idx) {
       connect(idx);
     }
-    std::array<epoll_event, 256UL> events{};
+
+    static constexpr int kNbEpollEvents = 256;
+
+    epoll_event events[kNbEpollEvents]{};
     while (gPhase.load(std::memory_order_relaxed) != Phase::Stop) {
-      const int nb = ::epoll_wait(_epollFd, events.data(), static_cast<int>(events.size()), 10);
+      const int nb = ::epoll_wait(_epollFd, events, kNbEpollEvents, 10);
       if (nb < 0) {
         if (errno == EINTR) {
           continue;
@@ -489,7 +491,7 @@ class Worker {
   }
 
   void appendFrame(std::string& out, uint8_t opcode, bool rsv1, std::string_view payload) {
-    std::array<uint8_t, 14> header{};
+    uint8_t header[14]{};
     std::size_t headerSize = 2;
     header[0] = static_cast<uint8_t>(0x80U | (rsv1 ? 0x40U : 0U) | opcode);
     const std::size_t len = payload.size();
@@ -508,12 +510,12 @@ class Worker {
       headerSize = 10;
     }
     const uint32_t maskKey = nextMask();
-    std::memcpy(header.data() + headerSize, &maskKey, 4);
+    std::memcpy(header + headerSize, &maskKey, 4);
     headerSize += 4;
     const std::size_t start = out.size();
     out.resize(start + headerSize + len);
     char* dst = out.data() + start;
-    std::memcpy(dst, header.data(), headerSize);
+    std::memcpy(dst, header, headerSize);
     dst += headerSize;
     // Mask 8 bytes at a time, then the tail.
     const uint64_t mask64 = (static_cast<uint64_t>(maskKey) << 32U) | maskKey;
@@ -569,8 +571,8 @@ class Worker {
     if (_opts.mode == Mode::Churn) {
       // Close the session (status 1000) and wait for the server close frame before reconnecting.
       conn.state = ConnState::Closing;
-      static constexpr std::array<char, 2> kNormalClosure{static_cast<char>(0x03), static_cast<char>(0xE8)};
-      appendFrame(conn.out, kOpClose, false, std::string_view(kNormalClosure.data(), kNormalClosure.size()));
+      static constexpr char kNormalClosure[]{static_cast<char>(0x03), static_cast<char>(0xE8)};
+      appendFrame(conn.out, kOpClose, false, std::string_view(kNormalClosure, std::size(kNormalClosure)));
       return flush(idx);
     }
     return sendMessage(idx);
@@ -754,7 +756,7 @@ class Worker {
   int _epollFd{-1};
   bool _measuring{false};
   std::string _handshake;
-  std::array<std::vector<Payload>, 2> _payloads;  // [0] uncompressed, [1] permessage-deflate
+  std::vector<Payload> _payloads[2];  // [0] uncompressed, [1] permessage-deflate
   std::vector<Connection> _conns;
   ThreadStats _stats;
 };

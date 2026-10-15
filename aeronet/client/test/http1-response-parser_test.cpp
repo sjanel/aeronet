@@ -2,7 +2,9 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstddef>
+#include <cstdio>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -15,6 +17,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/toupperlower.hpp"
 
 namespace aeronet {
 namespace {
@@ -120,6 +123,20 @@ TEST(ResponseParserTest, StoresNonReservedHeader) {
   EXPECT_EQ(resp.headerValueOrEmpty("x-mixed"), "value");
   ASSERT_NE(resp.headers().begin(), resp.headers().end());
   EXPECT_EQ((*resp.headers().begin()).name, "x-mixed");
+}
+
+TEST(ResponseParserTest, ContentEncodingValueIsLowerCased) {
+  // Content codings are case-insensitive: they are lower-cased when parsed (here without decoding, so the header is
+  // kept, with a value long enough for the vectorized path), whereas other header values keep their case.
+  HttpResponse resp;
+  auto st = parseAll(
+      "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nX-Case: MiXeD\r\n"
+      "Content-Encoding:  GZip, IDENTITY, Deflate, ZSTD, Br \r\n\r\nhi",
+      resp);
+  EXPECT_EQ(st, Http1ResponseParser::Status::Complete);
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), "gzip, identity, deflate, zstd, br");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-case"), "MiXeD");
+  EXPECT_EQ(resp.bodyInMemory(), "hi");
 }
 
 TEST(ResponseParserTest, NoBodyOn204) {
@@ -289,10 +306,10 @@ TEST(ResponseParserTest, ConsumedTracksHeadPlusBody) {
   EXPECT_EQ(parser.consumed(), raw.size() - std::string_view("LEFTOVER").size());
 }
 
-TEST(ResponseParserTest, ContentLengthTruncatedAtEofIsError) {
+TEST(ResponseParserTest, ContentLengthTruncatedAtEofIsTruncated) {
   HttpResponse resp;
   auto st = parseAll("HTTP/1.1 200 OK\r\ncontent-length: 10\r\n\r\nabc", resp, /*head=*/false, /*eof=*/true);
-  EXPECT_EQ(st, Http1ResponseParser::Status::Error);
+  EXPECT_EQ(st, Http1ResponseParser::Status::Truncated);
 }
 
 TEST(ResponseParserTest, ChunkedIncompleteNeedsMore) {
@@ -309,11 +326,11 @@ TEST(ResponseParserTest, ChunkedIncompleteNeedsMore) {
   EXPECT_EQ(resp.bodyInMemory(), "hello");
 }
 
-TEST(ResponseParserTest, MaxResponseBytesExceededIsError) {
+TEST(ResponseParserTest, MaxResponseBytesExceededIsTooLarge) {
   HttpResponse resp;
   auto st = parseAll("HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\n0123456789", resp, /*head=*/false, /*eof=*/false,
                      /*maxBytes=*/5);
-  EXPECT_EQ(st, Http1ResponseParser::Status::Error);
+  EXPECT_EQ(st, Http1ResponseParser::Status::TooLarge);
 }
 
 TEST(ResponseParserTest, InvalidContentLengthIsError) {
@@ -380,19 +397,19 @@ TEST(ResponseParserTest, Http10ConnectionTokenListEnablesReuse) {
   EXPECT_TRUE(parser.keepAlive());
 }
 
-TEST(ResponseParserTest, LengthBodyExceedsMaxIsError) {
+TEST(ResponseParserTest, LengthBodyExceedsMaxIsTooLarge) {
   HttpResponse resp;
   // Headers fit under maxBytes, but the declared (and delivered) body overflows it.
   std::string raw = "HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\n" + std::string(100, 'a');
   auto st = parseAll(raw, resp, /*head=*/false, /*eof=*/false, /*maxBytes=*/50);
-  EXPECT_EQ(st, Http1ResponseParser::Status::Error);
+  EXPECT_EQ(st, Http1ResponseParser::Status::TooLarge);
 }
 
-TEST(ResponseParserTest, UntilCloseBodyExceedsMaxIsError) {
+TEST(ResponseParserTest, UntilCloseBodyExceedsMaxIsTooLarge) {
   HttpResponse resp;
   std::string raw = "HTTP/1.1 200 OK\r\n\r\n" + std::string(100, 'b');
   auto st = parseAll(raw, resp, /*head=*/false, /*eof=*/false, /*maxBytes=*/50);
-  EXPECT_EQ(st, Http1ResponseParser::Status::Error);
+  EXPECT_EQ(st, Http1ResponseParser::Status::TooLarge);
 }
 
 TEST(ResponseParserTest, ChunkedBadSizeIsError) {
@@ -401,12 +418,12 @@ TEST(ResponseParserTest, ChunkedBadSizeIsError) {
   EXPECT_EQ(st, Http1ResponseParser::Status::Error);
 }
 
-TEST(ResponseParserTest, ChunkedBodyExceedsMaxIsError) {
+TEST(ResponseParserTest, ChunkedBodyExceedsMaxIsTooLarge) {
   HttpResponse resp;
   std::string raw =
       "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n64\r\n" + std::string(100, 'c') + "\r\n0\r\n\r\n";
   auto st = parseAll(raw, resp, /*head=*/false, /*eof=*/false, /*maxBytes=*/50);
-  EXPECT_EQ(st, Http1ResponseParser::Status::Error);
+  EXPECT_EQ(st, Http1ResponseParser::Status::TooLarge);
 }
 
 TEST(ResponseParserTest, ChunkedLoweredLimitRejectsAlreadyBufferedBody) {
@@ -418,29 +435,29 @@ TEST(ResponseParserTest, ChunkedLoweredLimitRejectsAlreadyBufferedBody) {
 
   EXPECT_EQ(parser.parse(raw, false, resp, kMax), Http1ResponseParser::Status::NeedMore);
   ASSERT_EQ(bodyBuf.size(), 1);
-  EXPECT_EQ(parser.parse(raw, false, resp, 0), Http1ResponseParser::Status::Error);
+  EXPECT_EQ(parser.parse(raw, false, resp, 0), Http1ResponseParser::Status::TooLarge);
 }
 
-TEST(ResponseParserTest, ChunkedMissingCrlfAtEofIsError) {
+TEST(ResponseParserTest, ChunkedMissingCrlfAtEofIsTruncated) {
   HttpResponse resp;
   auto st =
       parseAll("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello", resp, /*head=*/false, /*eof=*/true);
-  EXPECT_EQ(st, Http1ResponseParser::Status::Error);
+  EXPECT_EQ(st, Http1ResponseParser::Status::Truncated);
 }
 
-TEST(ResponseParserTest, ChunkedTrailersTruncatedAtEofIsError) {
+TEST(ResponseParserTest, ChunkedTrailersTruncatedAtEofIsTruncated) {
   HttpResponse resp;
   auto st = parseAll("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n0\r\n", resp, /*head=*/false, /*eof=*/true);
-  EXPECT_EQ(st, Http1ResponseParser::Status::Error);
+  EXPECT_EQ(st, Http1ResponseParser::Status::Truncated);
 }
 
-TEST(ResponseParserTest, HeaderLineWithoutNewlineExceedingMaxIsError) {
+TEST(ResponseParserTest, HeaderLineWithoutNewlineExceedingMaxIsTooLarge) {
   HttpResponse resp;
   RawChars bodyBuf;
   Http1ResponseParser parser(bodyBuf);
   parser.reset(false);
   auto st = ParseCopy(parser, "HTTP/1.1 200 OK\r\nincomplete-no-newline", /*eof=*/false, resp, 10);
-  EXPECT_EQ(st, Http1ResponseParser::Status::Error);
+  EXPECT_EQ(st, Http1ResponseParser::Status::TooLarge);
 }
 
 // A still-incomplete header line whose START is within the limit must still be bounded by the *buffered*
@@ -454,16 +471,16 @@ TEST(ResponseParserTest, IncompleteHeaderBoundedByBufferedSize) {
   // Status line (17 bytes) fits under maxBytes=50, but the unterminated header pushes the buffer past it.
   std::string raw = "HTTP/1.1 200 OK\r\nx: " + std::string(100, 'a');  // no trailing CRLF
   auto st = parser.parse(raw, /*eof=*/false, resp, /*maxResponseBytes=*/50);
-  EXPECT_EQ(st, Http1ResponseParser::Status::Error);
+  EXPECT_EQ(st, Http1ResponseParser::Status::TooLarge);
 }
 
 // A single oversized but newline-terminated header is rejected (the status-line / empty-line branches used
 // to bypass the per-header size check, so such a head could be accepted whole).
-TEST(ResponseParserTest, OversizedTerminatedHeaderIsError) {
+TEST(ResponseParserTest, OversizedTerminatedHeaderIsTooLarge) {
   HttpResponse resp;
   const std::string raw = "HTTP/1.1 200 OK\r\nx: " + std::string(100, 'a') + "\r\n\r\n";
   auto st = parseAll(raw, resp, /*head=*/false, /*eof=*/false, /*maxBytes=*/50);
-  EXPECT_EQ(st, Http1ResponseParser::Status::Error);
+  EXPECT_EQ(st, Http1ResponseParser::Status::TooLarge);
 }
 
 TEST(ResponseParserTest, RejectsBadVersionToken) {
@@ -490,10 +507,10 @@ TEST(ResponseParserTest, RejectsHeaderWithoutColon) {
   EXPECT_EQ(st, Http1ResponseParser::Status::Error);
 }
 
-TEST(ResponseParserTest, HeaderLineBeyondMaxBytesIsError) {
+TEST(ResponseParserTest, HeaderLineBeyondMaxBytesIsTooLarge) {
   HttpResponse resp;
   auto st = parseAll("HTTP/1.1 200 OK\r\na: 1\r\nb: 2\r\n\r\n", resp, /*head=*/false, /*eof=*/false, /*maxBytes=*/20);
-  EXPECT_EQ(st, Http1ResponseParser::Status::Error);
+  EXPECT_EQ(st, Http1ResponseParser::Status::TooLarge);
 }
 
 TEST(ResponseParserTest, ReparseAfterCompleteStaysComplete) {
@@ -527,11 +544,11 @@ TEST(ResponseParserTest, ChunkedSizeWithTrailingJunkIsError) {
   EXPECT_EQ(st, Http1ResponseParser::Status::Error);
 }
 
-// A truncated chunk-size line (no terminating LF) that reaches EOF is an error, not an endless wait.
-TEST(ResponseParserTest, ChunkedSizeTruncatedAtEofIsError) {
+// A truncated chunk-size line (no terminating LF) that reaches EOF is reported, not an endless wait.
+TEST(ResponseParserTest, ChunkedSizeTruncatedAtEofIsTruncated) {
   HttpResponse resp;
   auto st = parseAll("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n3", resp, /*head=*/false, /*eof=*/true);
-  EXPECT_EQ(st, Http1ResponseParser::Status::Error);
+  EXPECT_EQ(st, Http1ResponseParser::Status::Truncated);
 }
 
 // Content-Length with a valid digit prefix then trailing junk ("5x") is rejected.
@@ -645,12 +662,12 @@ TEST(ResponseParserTest, ChunkedEmptySizeLineIsError) {
   EXPECT_EQ(st, Http1ResponseParser::Status::Error);
 }
 
-// Chunk data cut short (fewer bytes than the announced chunk size) at EOF is an error, not a silent wait.
-TEST(ResponseParserTest, ChunkedDataTruncatedAtEofIsError) {
+// Chunk data cut short (fewer bytes than the announced chunk size) at EOF is reported, not a silent wait.
+TEST(ResponseParserTest, ChunkedDataTruncatedAtEofIsTruncated) {
   HttpResponse resp;
   auto st =
       parseAll("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhel", resp, /*head=*/false, /*eof=*/true);
-  EXPECT_EQ(st, Http1ResponseParser::Status::Error);
+  EXPECT_EQ(st, Http1ResponseParser::Status::Truncated);
 }
 
 // Chunk data fully delivered but the trailing CRLF not yet arrived (and no EOF): the parser waits for more.
@@ -716,7 +733,7 @@ TEST(ResponseParserTest, ChunkDataDelimiterIsValidated) {
 
   HttpResponse truncated;
   const std::string trailingCr = std::string(kHead) + "1\r\nx\r";
-  EXPECT_EQ(parseAll(trailingCr, truncated, false, true), Http1ResponseParser::Status::Error);
+  EXPECT_EQ(parseAll(trailingCr, truncated, false, true), Http1ResponseParser::Status::Truncated);
 }
 
 TEST(ResponseParserTest, OversizedScratchStaysReusableForSmallChunkedBody) {
@@ -843,6 +860,25 @@ TEST(ResponseParserDecompress, DecodesChunkedCompressed) {
   EXPECT_TRUE(resp.headerValueOrEmpty("content-encoding").empty());
 }
 
+TEST(ResponseParserDecompress, MixedCaseCodingsAreDecoded) {
+  const std::string payload = test::MakePatternedPayload(4096);
+  for (const Encoding enc : test::SupportedEncodings()) {
+    const RawChars compressed = test::Compress(enc, payload);
+    std::string coding(GetEncodingStr(enc));
+    std::ranges::transform(coding, coding.begin(), [](char ch) { return toupper(ch); });
+    coding.insert(0, "Identity, ");
+    Decode decode;
+    Http1ResponseParser parser(decode.bodyBuf);
+    parser.reset(false);
+    parser.setDecodeContext(decode.ctx());
+    HttpResponse resp;
+    std::string raw = LengthFramed(coding, std::string_view(compressed));
+    EXPECT_EQ(parser.parse(raw, false, resp, kMaxResponseBytes), Http1ResponseParser::Status::Complete) << coding;
+    EXPECT_EQ(resp.bodyInMemory(), payload) << coding;
+    EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentEncoding).empty()) << coding;
+  }
+}
+
 TEST(ResponseParserDecompress, NoContentEncodingPassesThrough) {
   Decode decode;
   Http1ResponseParser parser(decode.bodyBuf);
@@ -961,6 +997,190 @@ TEST(ResponseParserTest, RejectsInvalidConnectionHeaderValue) {
   raw.push_back('\x01');
   raw.append("\r\ncontent-length: 0\r\n\r\n");
   EXPECT_EQ(parseAll(raw, resp, /*head=*/false, /*eof=*/true), Http1ResponseParser::Status::Error);
+}
+
+// --- Streaming (reset with streamHead) ---
+
+namespace {
+
+// Drives a streaming parse of `raw` delivered `step` bytes at a time (eof after the last piece), like the HTTP/1.1
+// engine does: collects the streamed body and returns the final status.
+struct StreamedParse {
+  Http1ResponseParser::Status status{Http1ResponseParser::Status::NeedMore};
+  std::string body;
+  std::size_t maxReceiveBufferSize{0};
+  int headCompleteCount{0};
+  std::string contentType;
+};
+
+StreamedParse StreamParse(std::string_view raw, std::size_t step, std::size_t maxBytes = kMax, bool stream = true) {
+  StreamedParse out;
+  RawChars bodyBuf;
+  RawChars receive;
+  Http1ResponseParser parser(bodyBuf);
+  parser.reset(false, /*streamHead=*/true);
+  HttpResponse resp;
+  for (std::size_t off = 0;;) {
+    const std::size_t take = std::min(step, raw.size() - off);
+    receive.append(raw.substr(off, take));
+    off += take;
+    const bool eof = off == raw.size();
+    out.status = parser.parse(receive, eof, resp, maxBytes);
+    if (out.status == Http1ResponseParser::Status::HeadComplete) {
+      ++out.headCompleteCount;
+      out.contentType = parser.contentType(receive);
+      if (stream) {
+        parser.startStreaming();
+      }
+      out.status = parser.parse(receive, eof, resp, maxBytes);
+    }
+    if (parser.streaming()) {
+      out.body.append(parser.streamedBody(receive));
+      parser.discardStreamed(receive);
+    }
+    out.maxReceiveBufferSize = std::max<std::size_t>(out.maxReceiveBufferSize, receive.size());
+    if (out.status != Http1ResponseParser::Status::NeedMore || eof) {
+      if (!stream && out.status == Http1ResponseParser::Status::Complete) {
+        out.body.assign(resp.bodyInMemory());
+      }
+      return out;
+    }
+  }
+}
+
+}  // namespace
+
+TEST(ResponseParserStreamingTest, ContentLengthBodyIsStreamedAndNotBounded) {
+  const std::string payload = test::MakePatternedPayload(100000);
+  const std::string raw =
+      "HTTP/1.1 200 OK\r\ncontent-type: text/csv\r\ncontent-length: " + std::to_string(payload.size()) + "\r\n\r\n" +
+      payload;
+  // maxBytes only bounds the head: the 100 kB body goes through.
+  const StreamedParse res = StreamParse(raw, 4096, /*maxBytes=*/256);
+  EXPECT_EQ(res.status, Http1ResponseParser::Status::Complete);
+  EXPECT_EQ(res.headCompleteCount, 1);
+  EXPECT_EQ(res.contentType, "text/csv");
+  EXPECT_EQ(res.body, payload);
+  EXPECT_LE(res.maxReceiveBufferSize, 4096U);  // consumed bytes are discarded at each step
+}
+
+TEST(ResponseParserStreamingTest, ChunkedBodyIsStreamedWithTrailers) {
+  std::string payload;
+  std::string raw = "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n";
+  for (std::size_t idx = 0; idx < 50U; ++idx) {
+    const std::string chunk = test::MakePatternedPayload(997U + idx);
+    payload += chunk;
+    char sizeBuf[32];
+    const int len = std::snprintf(sizeBuf, sizeof(sizeBuf), "%zx;ext=1\r\n", chunk.size());
+    raw.append(sizeBuf, static_cast<std::size_t>(len)).append(chunk).append("\r\n");
+  }
+  raw += "0\r\nx-checksum: abc\r\n\r\n";
+  for (const std::size_t step : {std::size_t{1}, std::size_t{7}, std::size_t{1500}, raw.size()}) {
+    const StreamedParse res = StreamParse(raw, step, /*maxBytes=*/512);
+    EXPECT_EQ(res.status, Http1ResponseParser::Status::Complete) << step;
+    EXPECT_EQ(res.body, payload) << step;
+    EXPECT_TRUE(res.contentType.empty());
+    EXPECT_LE(res.maxReceiveBufferSize, std::max<std::size_t>(step, 1100U)) << step;
+  }
+}
+
+TEST(ResponseParserStreamingTest, UntilCloseBodyIsStreamed) {
+  const std::string payload = test::MakePatternedPayload(20000);
+  const StreamedParse res = StreamParse("HTTP/1.1 200 OK\r\n\r\n" + payload, 1000, /*maxBytes=*/128);
+  EXPECT_EQ(res.status, Http1ResponseParser::Status::Complete);
+  EXPECT_EQ(res.body, payload);
+}
+
+TEST(ResponseParserStreamingTest, TruncatedStreamedBodies) {
+  EXPECT_EQ(StreamParse("HTTP/1.1 200 OK\r\ncontent-length: 10\r\n\r\nabc", 2).status,
+            Http1ResponseParser::Status::Truncated);
+  EXPECT_EQ(StreamParse("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhel", 2).status,
+            Http1ResponseParser::Status::Truncated);
+  const StreamedParse partial = StreamParse("HTTP/1.1 200 OK\r\ncontent-length: 10\r\n\r\nabc", 100);
+  EXPECT_EQ(partial.status, Http1ResponseParser::Status::Truncated);
+}
+
+// A body following a head that is not streamed is buffered and bounded as usual.
+TEST(ResponseParserStreamingTest, HeadCompleteThenBufferedBody) {
+  const StreamedParse res =
+      StreamParse("HTTP/1.1 302 Found\r\nlocation: /x\r\ncontent-length: 5\r\n\r\nmoved", 3, kMax, /*stream=*/false);
+  EXPECT_EQ(res.status, Http1ResponseParser::Status::Complete);
+  EXPECT_EQ(res.headCompleteCount, 1);
+  EXPECT_EQ(res.body, "moved");
+
+  EXPECT_EQ(StreamParse("HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\n" + std::string(100, 'a'), 30, /*maxBytes=*/80,
+                        /*stream=*/false)
+                .status,
+            Http1ResponseParser::Status::TooLarge);
+}
+
+// Bodyless responses complete without HeadComplete, even in streaming mode.
+TEST(ResponseParserStreamingTest, BodylessResponsesCompleteDirectly) {
+  for (const std::string_view raw : {
+           std::string_view("HTTP/1.1 204 No Content\r\n\r\n"),
+           std::string_view("HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n"),
+       }) {
+    const StreamedParse res = StreamParse(raw, raw.size());
+    EXPECT_EQ(res.status, Http1ResponseParser::Status::Complete) << raw;
+    EXPECT_EQ(res.headCompleteCount, 0) << raw;
+  }
+}
+
+// Chunk metadata never belongs to the body: an endless chunk-size line or trailer line is bounded by maxResponseBytes
+// even when the body itself is streamed.
+TEST(ResponseParserStreamingTest, EndlessChunkMetadataIsTooLarge) {
+  const std::string endlessExtension =
+      "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5;" + std::string(2000, 'e');
+  EXPECT_EQ(StreamParse(endlessExtension, 100, /*maxBytes=*/512).status, Http1ResponseParser::Status::TooLarge);
+  const std::string endlessTrailer =
+      "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n0\r\nx-t: " + std::string(2000, 't');
+  EXPECT_EQ(StreamParse(endlessTrailer, 100, /*maxBytes=*/512).status, Http1ResponseParser::Status::TooLarge);
+}
+
+// A Content-Encoding'd empty body is installed empty (nothing to decode).
+TEST(ResponseParserTest, EmptyBodyWithContentEncodingIsNotDecoded) {
+  RawChars bodyBuf;
+  RawChars out;
+  RawChars tmp;
+  DecompressionState state;
+  const DecompressionConfig config;
+  Http1ResponseParser parser(bodyBuf);
+  parser.reset(false);
+  parser.setDecodeContext({.state = &state, .config = &config, .out = &out, .tmp = &tmp});
+  HttpResponse resp;
+  EXPECT_EQ(
+      ParseCopy(parser, "HTTP/1.1 200 OK\r\ncontent-encoding: gzip\r\ncontent-length: 0\r\n\r\n", false, resp, kMax),
+      Http1ResponseParser::Status::Complete);
+  EXPECT_TRUE(resp.bodyInMemory().empty());
+}
+
+// Exceeding a decompression limit is told apart from a corrupt body: it is reported as too large.
+TEST(ResponseParserDecompress, DecodingBeyondTheLimitsIsTooLarge) {
+  const std::string payload = test::MakePatternedPayload(256UL * 1024UL);
+  for (const Encoding enc : test::SupportedEncodings()) {
+    const RawChars compressed = test::Compress(enc, payload);
+    const auto parseWith = [&](auto setLimit) {
+      Decode decode;
+      decode.config.maxExpansionRatio = 1e9;
+      setLimit(decode.config);
+      Http1ResponseParser parser(decode.bodyBuf);
+      parser.reset(false);
+      parser.setDecodeContext(decode.ctx());
+      HttpResponse resp;
+      return ParseCopy(parser, LengthFramed(GetEncodingStr(enc), std::string_view(compressed)), false, resp,
+                       kMaxResponseBytes);
+    };
+    EXPECT_EQ(parseWith([](DecompressionConfig& cfg) { cfg.maxDecompressedBytes = 64UL * 1024UL; }),
+              Http1ResponseParser::Status::TooLarge)
+        << GetEncodingStr(enc);
+    EXPECT_EQ(parseWith([](DecompressionConfig& cfg) { cfg.maxExpansionRatio = 1.5; }),
+              Http1ResponseParser::Status::TooLarge)
+        << GetEncodingStr(enc);
+    EXPECT_EQ(parseWith([](DecompressionConfig& cfg) { cfg.maxCompressedBytes = 16; }),
+              Http1ResponseParser::Status::TooLarge)
+        << GetEncodingStr(enc);
+    EXPECT_EQ(parseWith([](DecompressionConfig&) {}), Http1ResponseParser::Status::Complete) << GetEncodingStr(enc);
+  }
 }
 
 }  // namespace aeronet

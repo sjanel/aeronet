@@ -72,7 +72,10 @@ extern "C" X509* SSL_get_peer_certificate(const SSL* /*s*/) {
   return nullptr;
 }
 
-extern "C" X509_NAME* X509_get_subject_name(const X509* /*x") */) {
+// X509_NAME* before OpenSSL 4, const X509_NAME* since.
+using SubjectNamePtr = decltype(::X509_get_subject_name(nullptr));
+
+extern "C" SubjectNamePtr X509_get_subject_name(const X509* /*x") */) {
   if (g_tls_handshake_test_mode == 1) {
     return nullptr;
   }

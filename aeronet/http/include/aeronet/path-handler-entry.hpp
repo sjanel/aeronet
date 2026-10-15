@@ -1,6 +1,5 @@
 #pragma once
 
-#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -220,7 +219,7 @@ class PathHandlerEntry {
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   http::MethodBmp _asyncMethodBmp{};
 #endif
-  std::array<HandlerStorage, http::kNbMethods> _handlers;
+  HandlerStorage _handlers[http::kNbMethods];
 #ifdef AERONET_ENABLE_WEBSOCKET
   // Optional WebSocket endpoint for this route. If set, upgrade requests are handled here.
   std::unique_ptr<WebSocketEndpoint> _websocketEndpoint;

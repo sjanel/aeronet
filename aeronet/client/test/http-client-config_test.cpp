@@ -51,6 +51,15 @@ TEST(HttpClientConfigTest, KeepAliveTimeout) {
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
+TEST(HttpClientConfigTest, InactivityTimeout) {
+  HttpClientConfig config;
+  config.inactivityTimeout = std::chrono::seconds{30};
+  EXPECT_NO_THROW(config.validate());
+
+  config.inactivityTimeout = std::chrono::milliseconds{-1};
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
 TEST(HttpClientConfigTest, InvalidMaxResponseBytes) {
   HttpClientConfig config;
   config.maxResponseBytes = 0;

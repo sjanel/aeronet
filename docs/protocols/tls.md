@@ -1,6 +1,6 @@
 # TLS
 
-aeronet terminates TLS with OpenSSL 3. The `AERONET_ENABLE_OPENSSL` CMake option builds the TLS transport; it defaults to `ON` when aeronet is the top-level project, and must be enabled explicitly when aeronet is consumed as a dependency. When it is `OFF`, the core stays free of OpenSSL headers and libraries.
+aeronet terminates TLS with OpenSSL 3 or 4. The `AERONET_ENABLE_OPENSSL` CMake option builds the TLS transport; it defaults to `ON` when aeronet is the top-level project, and must be enabled explicitly when aeronet is consumed as a dependency. When it is `OFF`, the core stays free of OpenSSL headers and libraries.
 
 Each server owns its `SSL_CTX` and its TLS policy: there is no process-global mutable TLS state, so two servers in one process can use different certificates, versions, and client-certificate rules. Handshakes run on the non-blocking event loop, so certificate processing, callbacks, and application-provided revocation checks run on the handshake path and must not block.
 

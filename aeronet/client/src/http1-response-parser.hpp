@@ -33,9 +33,12 @@ class ClientConnection;
 class Http1ResponseParser {
  public:
   enum class Status : uint8_t {
-    NeedMore,  // not enough bytes yet (read more, unless eof)
-    Complete,  // a full response was parsed into the HttpResponse
-    Error,     // malformed response / limit exceeded
+    NeedMore,      // not enough bytes yet (read more, unless eof)
+    Complete,      // a full response was parsed into the HttpResponse
+    HeadComplete,  // (reset with streamHead only) the head of the final response is parsed and a body follows
+    Error,         // malformed response, or body that cannot be decoded
+    Truncated,     // eof before the response was complete
+    TooLarge,      // maxResponseBytes exceeded, or decoding exceeded the decompression limits
   };
 
   // `bodyBuf` is the reassembly buffer for chunked bodies (Length / UntilClose bodies stay contiguous in
@@ -59,11 +62,13 @@ class Http1ResponseParser {
   // Install (or clear) the decompression context used by subsequent parse() calls.
   void setDecodeContext(const DecodeContext& decodeContext) noexcept { _decode = decodeContext; }
 
-  // Prepare for a new response. headRequest suppresses body parsing (HEAD has no body).
-  void reset(bool headRequest) noexcept;
+  // Prepare for a new response. headRequest suppresses body parsing (HEAD has no body). With streamHead, parse()
+  // returns HeadComplete once the head of a final response announcing a body is parsed, so that the caller can
+  // choose to stream the body (startStreaming()) or keep parsing it in the buffer as usual.
+  void reset(bool headRequest, bool streamHead = false) noexcept;
 
   // Parse as much as possible. Header names are normalized in-place in `buffer`. On Complete, `resp` is fully
-  // populated.
+  // populated (without body when streaming).
   Status parse(std::span<char> buffer, bool eof, HttpResponse& resp, std::size_t maxResponseBytes);
 
   // RawChars overload that permits a completed identity body occupying the initialized suffix of `buffer` to
@@ -75,6 +80,27 @@ class Http1ResponseParser {
 
   // Bytes consumed from the front of the buffer once Complete.
   [[nodiscard]] std::size_t consumed() const noexcept { return _pos; }
+
+  // Raw Content-Type value of the response head held in `buffer` (empty when absent). Only valid until the first
+  // discardStreamed() call.
+  [[nodiscard]] std::string_view contentType(std::string_view buffer) const noexcept {
+    return buffer.substr(_contentTypeOff, _contentTypeLen);
+  }
+
+  // After HeadComplete: deliver the body through streamedBody() / discardStreamed() instead of installing it in the
+  // response. Streamed bytes are not counted against maxResponseBytes, and are delivered as received (no decoding).
+  void startStreaming() noexcept { _streaming = true; }
+
+  [[nodiscard]] bool streaming() const noexcept { return _streaming; }
+
+  // Body bytes de-framed since the last discardStreamed() call (streaming only).
+  [[nodiscard]] std::string_view streamedBody(std::string_view buffer) const noexcept {
+    return _framing == Framing::Chunked ? std::string_view(*_bodyBuf) : buffer.substr(_bodyStart, _pos - _bodyStart);
+  }
+
+  // Erase the bytes consumed so far from `buffer` (head and streamed body), so that the receive buffer only keeps the
+  // unparsed tail (streaming only).
+  void discardStreamed(RawChars& buffer) noexcept;
 
  private:
   friend class internal::ClientConnection;
@@ -94,6 +120,8 @@ class Http1ResponseParser {
 
   Status decideFraming();
   Status parseBody(std::string_view buffer, bool eof, std::size_t maxResponseBytes);
+  // Status of a line left without CRLF at eof: Error when it holds a bare LF, Truncated otherwise.
+  static Status EofInLine(std::string_view partialLine) noexcept;
   // Return candidate when body covers exactly its initialized bytes, otherwise nullptr.
   static RawChars* WholeBufferOwner(std::string_view body, RawChars& candidate) noexcept;
   // Install body by rotating a suitably-sized owner allocation into the response. A missing or oversized
@@ -116,10 +144,12 @@ class Http1ResponseParser {
   std::size_t _contentTypeLen{0};  // ... and its length (0 => header absent). Avoids copying the value.
   std::size_t _bodyRemaining{0};   // bytes remaining for Length framing / current chunk
   DecodeContext _decode{};
+  http::StatusCode _statusCode{0};
   Framing _framing{Framing::None};
   State _state{State::StatusLine};
-  http::StatusCode _statusCode{0};
   bool _headRequest{false};
+  bool _streamHead{false};
+  bool _streaming{false};
   bool _keepAlive{false};
   bool _http11{false};
   bool _connectionCloseSeen{false};
