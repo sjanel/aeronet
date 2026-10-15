@@ -20,6 +20,7 @@
 #include "aeronet/client-protocol.hpp"
 #include "aeronet/connection.hpp"
 #include "aeronet/decimal-writer.hpp"
+#include "aeronet/encoding.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
 #include "aeronet/file-payload.hpp"
@@ -34,6 +35,7 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/internal/response-streamer.hpp"
 #include "aeronet/internal/url-parsed-result.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
@@ -41,10 +43,8 @@
 #include "aeronet/native-handle.hpp"
 #include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/response-body-sink.hpp"
 #include "aeronet/retry-config.hpp"
-#ifdef AERONET_LINUX
-#include "aeronet/sigpipe-blocker.hpp"
-#endif
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/tcp-connector.hpp"
@@ -56,15 +56,15 @@
 #include "client-accept-encoding.hpp"
 #include "url-parse.hpp"
 
+#ifdef AERONET_LINUX
+#include "aeronet/sigpipe-blocker.hpp"
+#endif
+
 #ifdef AERONET_ENABLE_OPENSSL
 #include <openssl/ssl.h>
 
 #include "aeronet/http-client-tls-context.hpp"
 #include "aeronet/tls-transport.hpp"
-#endif
-
-#if !defined(AERONET_ENABLE_ZLIB) || !defined(AERONET_ENABLE_ZSTD) || !defined(AERONET_ENABLE_BROTLI)
-#include "aeronet/encoding.hpp"
 #endif
 
 namespace aeronet {
@@ -75,10 +75,8 @@ namespace {
 // really small, in which case it will be based on it clamped to a minimum of 1ms.
 PollTimeoutPolicy CreatePollTimeoutPolicy(const HttpClientConfig& config) {
   PollTimeoutPolicy policy;
-  auto smallestDeadline = std::min(config.connectTimeout, config.requestTimeout);
-  if (config.inactivityTimeout > HttpClientConfig::Duration::zero()) {
-    smallestDeadline = std::min(smallestDeadline, config.inactivityTimeout);
-  }
+  auto smallestDeadline = std::min({config.connectTimeout, config.requestTimeout, config.inactivityTimeout});
+
   // A few checks against the deadline before it expires, capped so typical (multi-second) timeouts still
   // get the old 25ms granularity, floored so a pathologically tight timeout can't cause a busy-spin at 0ms.
   policy.baseTimeout = std::clamp(smallestDeadline / 4, std::chrono::milliseconds{1}, std::chrono::milliseconds{25});
@@ -437,9 +435,7 @@ bool HttpClient::waitIo(NativeHandle fd, EventBmp interest, SteadyClock::time_po
 }
 
 bool HttpClient::waitExchangeIo(NativeHandle fd, EventBmp interest, SteadyClock::time_point deadline) {
-  if (_config.inactivityTimeout > HttpClientConfig::Duration::zero()) {
-    deadline = std::min(deadline, SteadyClock::now() + _config.inactivityTimeout);
-  }
+  deadline = std::min(deadline, SteadyClock::now() + _config.inactivityTimeout);
   return waitIo(fd, interest, deadline);
 }
 

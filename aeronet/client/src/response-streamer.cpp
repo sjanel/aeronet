@@ -13,6 +13,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/memory-utils-sv.hpp"
@@ -161,7 +162,7 @@ bool ResponseStreamer::decode(std::string_view chunk, bool finalChunk) {
   // A zero limit means none for the decoders: always leave them at least one byte of budget.
   const std::size_t budget = std::max<std::size_t>(cfg.maxDecompressedBytes - _decodedBytes, 1);
   const std::size_t sizeBefore = out.size();
-  bool decoded;
+  bool decoded = false;
   switch (_encoding) {
 #ifdef AERONET_ENABLE_ZLIB
     case Encoding::gzip:
@@ -178,16 +179,13 @@ bool ResponseStreamer::decode(std::string_view chunk, bool finalChunk) {
       break;
 #endif
 #ifdef AERONET_ENABLE_BROTLI
-    case Encoding::br:
+    default:
+      // selectDecoder() only selects the compiled-in codings, and none is never decoded.
+      assert(_encoding == Encoding::br);
       decoded = static_cast<BrotliDecoderContext*>(_decoder)->decompressChunk(chunk, finalChunk, budget,
                                                                               cfg.decoderChunkSize, out);
       break;
 #endif
-    default:
-      // selectDecoder() only selects the compiled-in codings, and none is never decoded.
-      assert(false);
-      decoded = false;
-      break;
   }
   _compressedBytes += chunk.size();
   _decodedBytes += out.size() - sizeBefore;
@@ -257,11 +255,12 @@ HttpClientErrc ResponseStreamer::deliverBuffered(HttpResponse& resp) {
   // bodyless responses, redirects that are not followed and bodies with stacked codings are delivered this way.
   const std::string_view contentType = resp.headerValueOrEmpty(http::ContentType);
   RawChars& saved = _codec->decompressOut;
-  saved.clear();
-  saved.ensureAvailableCapacity(contentType.size() + body.size());
+  saved.reserve(contentType.size() + body.size());
+
   char* pData = Append(contentType, saved.data());
   pData = Append(body, pData);
   saved.setEnd(pData);
+
   resp.body(std::string_view{});
   const std::string_view savedContentType(saved.data(), contentType.size());
   const std::string_view savedBody(saved.data() + contentType.size(), body.size());

@@ -11,6 +11,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <semaphore>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -50,6 +51,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/response-body-sink.hpp"
 #include "aeronet/retry-config.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/sigpipe-test-helpers.hpp"
@@ -2027,7 +2029,7 @@ TEST_F(HttpClientCompressionE2E, EachSupportedEncodingForRequestBody) {
 }
 
 TEST(HttpClientErrcTest, EveryCodeHasNonEmptyDescription) {
-  constexpr std::array kAll{
+  constexpr HttpClientErrc kAll[]{
       HttpClientErrc::invalidUrl,        HttpClientErrc::connectFailed,       HttpClientErrc::tlsError,
       HttpClientErrc::timeout,           HttpClientErrc::writeError,          HttpClientErrc::connectionClosed,
       HttpClientErrc::malformedResponse, HttpClientErrc::protocolUnsupported, HttpClientErrc::proxyError,
@@ -2182,6 +2184,36 @@ bool WaitReadable(NativeHandle fd, int timeoutMs) {
 #endif
 }
 
+// Connects to the loopback listening socket `listenFd`, waking up a thread waiting for it to be readable, so that it
+// notices its stop request right away instead of at its next poll timeout. Returns the connected socket, to close once
+// that thread stopped (kInvalidHandle on failure: the thread then only stops at its next poll timeout).
+NativeHandle ConnectToListener(NativeHandle listenFd) {
+  sockaddr_storage addr{};
+  socklen_t len = sizeof(addr);
+  if (::getsockname(listenFd, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
+    return kInvalidHandle;
+  }
+  const NativeHandle fd = ::socket(addr.ss_family, SOCK_STREAM, 0);
+  if (fd != kInvalidHandle && ::connect(fd, reinterpret_cast<const sockaddr*>(&addr), len) != 0) {
+    CloseNativeHandle(fd);
+    return kInvalidHandle;
+  }
+  return fd;
+}
+
+// Stops `thread`, which accepts the connections of `listenFd` until `stop` is set and checks it after each accept.
+void StopAcceptThread(std::thread& thread, NativeHandle listenFd, std::atomic<bool>& stop) {
+  stop.store(true, std::memory_order_relaxed);
+  if (!thread.joinable()) {
+    return;
+  }
+  const NativeHandle wakeFd = ConnectToListener(listenFd);
+  thread.join();
+  if (wakeFd != kInvalidHandle) {
+    CloseNativeHandle(wakeFd);
+  }
+}
+
 // Read and discard what the client sends until it closes the connection (or `timeoutMs` without data). Closing a socket
 // with unread received bytes would reset the connection, discarding the response the client did not read yet.
 void DrainUntilClosed(NativeHandle fd, int timeoutMs) {
@@ -2313,10 +2345,7 @@ class TinyProxy {
   TinyProxy& operator=(TinyProxy&&) = delete;
 
   ~TinyProxy() {
-    _stop.store(true, std::memory_order_relaxed);
-    if (_acceptThread.joinable()) {
-      _acceptThread.join();  // no more workers are spawned after this returns
-    }
+    StopAcceptThread(_acceptThread, _listenFd, _stop);  // no more workers are spawned after this returns
     for (std::thread& worker : _workers) {
       if (worker.joinable()) {
         worker.join();
@@ -2343,6 +2372,10 @@ class TinyProxy {
       const NativeHandle fd = ::accept(_listenFd, nullptr, nullptr);
       if (fd == kInvalidHandle) {
         continue;
+      }
+      if (_stop.load(std::memory_order_relaxed)) {  // the wake-up connection of StopAcceptThread
+        CloseNativeHandle(fd);
+        break;
       }
       EXPECT_TRUE(SetNoSigPipe(fd));  // macOS: a write to a closed client must fail with EPIPE, not raise SIGPIPE
       _workers.emplace_back([this, fd] { handleConnection(fd); });
@@ -2463,7 +2496,9 @@ namespace {
 class HttpClientProxyTlsE2ETest : public ::testing::Test {
  protected:
   void SetUp() override {
-    auto [certPem, keyPem] = test::MakeEphemeralCertKey("localhost");
+    // Generated once for the whole suite: an RSA key generation is slow.
+    static const auto kCertKey = test::MakeEphemeralCertKey("localhost");
+    const auto& [certPem, keyPem] = kCertKey;
     _certPem = certPem;
 
     TLSConfig tls;
@@ -2686,10 +2721,7 @@ class RawServer {
   RawServer& operator=(RawServer&&) = delete;
 
   ~RawServer() {
-    _stop.store(true, std::memory_order_relaxed);
-    if (_thread.joinable()) {
-      _thread.join();
-    }
+    StopAcceptThread(_thread, _listenFd, _stop);
     if (_listenFd != kInvalidHandle) {
       CloseNativeHandle(_listenFd);
     }
@@ -2753,6 +2785,10 @@ class RawServer {
       if (fd == kInvalidHandle) {
         continue;
       }
+      if (_stop.load(std::memory_order_relaxed)) {  // the wake-up connection of StopAcceptThread
+        CloseNativeHandle(fd);
+        break;
+      }
       // macOS: a write to a client that gave up (timeout, abort) must fail with EPIPE, not kill the test with SIGPIPE.
       EXPECT_TRUE(SetNoSigPipe(fd));
       _handler(fd, idx++);
@@ -2809,10 +2845,11 @@ class RequestHeadRecorder {
 
 // A hard DNS resolution failure: .invalid is reserved (RFC 6761) and never resolves, so ConnectTCP
 // reports an immediate failure. Exercises connectNew()'s failure branch and the subsequent
-// event-loop registration failure on the resulting empty connection.
+// event-loop registration failure on the resulting empty connection. The name is fully qualified (trailing dot), so
+// that the resolver does not also look it up in each search domain of the host.
 TEST(HttpClientErrorE2ETest, DnsResolutionFailureReturnsError) {
   HttpClient client;
-  auto result = client.get("http://aeronet-nonexistent-host.invalid/");
+  auto result = client.get("http://aeronet-nonexistent-host.invalid./");
   ASSERT_FALSE(result);
   EXPECT_EQ(result.error(), HttpClientErrc::connectFailed);
 }
@@ -2924,7 +2961,7 @@ TEST(HttpClientRawServerTest, KeepAliveOnSendsNoConnectionHeader) {
 TEST(HttpClientErrorE2ETest, ReadTimeoutReturnsError) {
   RawServer server([](NativeHandle fd, int) {
     DrainRequest(fd);
-    std::this_thread::sleep_for(std::chrono::milliseconds{200});  // outlive the client's deadline
+    DrainUntilClosed(fd, 5000);  // stall until the client gives up: the server outlives the client's deadline
   });
   HttpClientConfig cfg;
   cfg.requestTimeout = std::chrono::milliseconds{150};
@@ -2936,13 +2973,15 @@ TEST(HttpClientErrorE2ETest, ReadTimeoutReturnsError) {
 
 namespace {
 
-// Sends a 200 response whose 10-byte body trickles in one byte every `gap`.
+// Sends a 200 response whose 10-byte body trickles in one byte every `gap`, until the client stops reading it.
 void TrickleResponse(NativeHandle fd, std::chrono::milliseconds gap) {
   DrainRequest(fd);
   SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 10\r\n\r\n");
   for (char ch = '0'; ch <= '9'; ++ch) {
     std::this_thread::sleep_for(gap);
-    SendAll(fd, std::string_view(&ch, 1));
+    if (SafeSend(fd, &ch, 1) <= 0) {
+      return;  // the client gave up and closed the connection
+    }
   }
 }
 
@@ -2965,7 +3004,7 @@ TEST(HttpClientErrorE2ETest, InactivityTimeoutFailsAStalledResponse) {
   RawServer server([](NativeHandle fd, int) {
     DrainRequest(fd);
     SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 10\r\n\r\n0123");
-    std::this_thread::sleep_for(std::chrono::milliseconds{400});  // outlive the inactivity timeout
+    DrainUntilClosed(fd, 5000);  // stall until the client gives up: the server outlives the inactivity timeout
   });
   HttpClientConfig cfg;
   cfg.requestTimeout = std::chrono::seconds{20};
@@ -3759,7 +3798,8 @@ TEST(HttpClientSinkE2ETest, ThrowingSinkLeavesTheClientUsable) {
   });
   HttpClient client;
   ThrowingBodySink throwing;
-  EXPECT_THROW((void)client.get(MakeUrl(server.port()), throwing), std::runtime_error);
+  // NOLINTNEXTLINE(bugprone-unused-return-value)
+  EXPECT_THROW(client.get(MakeUrl(server.port()), throwing), std::runtime_error);
   for (int idx = 0; idx < 3; ++idx) {
     auto result = client.get(MakeUrl(server.port()));
     ASSERT_TRUE(result) << idx << ' ' << ErrcToStr(result.error());
@@ -3816,9 +3856,10 @@ TEST(HttpClientSinkE2ETest, UnsupportedContentCodingFailsBeforeTheBody) {
 
 // The inactivity timeout also bounds a request upload stalled by a server that stops reading.
 TEST(HttpClientErrorE2ETest, InactivityTimeoutFailsAStalledUpload) {
-  RawServer server([](NativeHandle fd, int) {
+  std::binary_semaphore clientDone{0};
+  RawServer server([&clientDone](NativeHandle fd, int) {
     ReadRequestHead(fd);
-    std::this_thread::sleep_for(std::chrono::milliseconds{600});  // never read the body
+    EXPECT_TRUE(clientDone.try_acquire_for(std::chrono::seconds{5}));  // never read the body, until the client gave up
   });
   HttpClientConfig cfg;
   cfg.requestTimeout = std::chrono::seconds{20};
@@ -3827,6 +3868,7 @@ TEST(HttpClientErrorE2ETest, InactivityTimeoutFailsAStalledUpload) {
   const std::string body(64UL << 20U, 'u');  // far beyond the socket buffers
   const auto start = std::chrono::steady_clock::now();
   auto result = client.post(MakeUrl(server.port()), body);
+  clientDone.release();
   ASSERT_FALSE(result);
   EXPECT_EQ(result.error(), HttpClientErrc::timeout);
   EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds{5});
@@ -3873,7 +3915,7 @@ TEST(HttpClientErrorE2ETest, Http2NonHttp2PeerReturnsMalformedResponse) {
 TEST(HttpClientErrorE2ETest, Http2ReadTimeoutReturnsError) {
   RawServer server([](NativeHandle fd, int) {
     DrainRequest(fd);
-    std::this_thread::sleep_for(std::chrono::milliseconds{200});  // outlive the client's deadline
+    DrainUntilClosed(fd, 5000);  // stall until the client gives up: the server outlives the client's deadline
   });
   HttpClientConfig cfg = Http2RawConfig();
   cfg.requestTimeout = std::chrono::milliseconds{150};
@@ -3887,7 +3929,7 @@ TEST(HttpClientErrorE2ETest, Http2ReadTimeoutReturnsError) {
 TEST(HttpClientErrorE2ETest, Http2InactivityTimeoutFailsAStalledExchange) {
   RawServer server([](NativeHandle fd, int) {
     DrainRequest(fd);
-    std::this_thread::sleep_for(std::chrono::milliseconds{400});  // outlive the inactivity timeout
+    DrainUntilClosed(fd, 5000);  // stall until the client gives up: the server outlives the inactivity timeout
   });
   HttpClientConfig cfg = Http2RawConfig();
   cfg.requestTimeout = std::chrono::seconds{20};
@@ -4006,29 +4048,34 @@ TEST(HttpClientSinkE2ETest, Http2ContentCodedBodiesAreDecodedOrRejected) {
   for (const Encoding enc : test::SupportedEncodings()) {
     const RawChars encoded = test::Compress(enc, payload);
     std::string corrupt(std::string_view{encoded});
-    corrupt[corrupt.size() / 2] = static_cast<char>(~corrupt[corrupt.size() / 2]);
-    corrupt[0] = static_cast<char>(~corrupt[0]);
+    corrupt[corrupt.size() / 2] = static_cast<char>(~static_cast<unsigned char>(corrupt[corrupt.size() / 2]));
+    corrupt[0] = static_cast<char>(~static_cast<unsigned char>(corrupt[0]));
     const std::string_view whole{encoded};
     for (const std::string_view data : {whole, whole.substr(0, whole.size() - 4), std::string_view(corrupt)}) {
       const bool valid = data.data() == whole.data() && data.size() == whole.size();
       // Invalid bodies also come in one-byte DATA frames: each piece then only reaches the decoder with the next one.
-      for (const std::size_t frameSize : {std::size_t{16384}, valid ? std::size_t{16384} : std::size_t{1}}) {
+      for (const std::size_t frameSize : {std::size_t{16384}, std::size_t{1}}) {
+        if (valid && frameSize == 1) {
+          continue;
+        }
         RawServer server([&](NativeHandle fd, int) {
           DrainRequest(fd);
           SendAll(fd, Http2EncodedResponse(GetEncodingStr(enc), data, frameSize));
           DrainUntilClosed(fd, 500);  // keep the connection open until the client is done
         });
-        HttpClient client(Http2RawConfig());
-        test::CollectingBodySink sink;
-        auto result = client.get(MakeUrl(server.port()), sink);
-        ASSERT_EQ(result.has_value(), valid) << GetEncodingStr(enc) << ' ' << data.size() << ' ' << frameSize;
-        EXPECT_EQ(sink.headCalls, 1U) << GetEncodingStr(enc);
-        EXPECT_EQ(sink.contentType, "text/csv");
-        EXPECT_TRUE(sink.contentEncoding.empty());
-        if (valid) {
-          EXPECT_TRUE(sink.body == payload) << GetEncodingStr(enc);
-        } else {
-          EXPECT_EQ(result.error(), HttpClientErrc::malformedResponse) << GetEncodingStr(enc) << ' ' << data.size();
+        {
+          HttpClient client(Http2RawConfig());  // closes its connection at the end of the scope, releasing the server
+          test::CollectingBodySink sink;
+          auto result = client.get(MakeUrl(server.port()), sink);
+          ASSERT_EQ(result.has_value(), valid) << GetEncodingStr(enc) << ' ' << data.size() << ' ' << frameSize;
+          EXPECT_EQ(sink.headCalls, 1U) << GetEncodingStr(enc);
+          EXPECT_EQ(sink.contentType, "text/csv");
+          EXPECT_TRUE(sink.contentEncoding.empty());
+          if (valid) {
+            EXPECT_TRUE(sink.body == payload) << GetEncodingStr(enc);
+          } else {
+            EXPECT_EQ(result.error(), HttpClientErrc::malformedResponse) << GetEncodingStr(enc) << ' ' << data.size();
+          }
         }
 
         // The same body, buffered.

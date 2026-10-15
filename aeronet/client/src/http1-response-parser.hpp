@@ -144,9 +144,9 @@ class Http1ResponseParser {
   std::size_t _contentTypeLen{0};  // ... and its length (0 => header absent). Avoids copying the value.
   std::size_t _bodyRemaining{0};   // bytes remaining for Length framing / current chunk
   DecodeContext _decode{};
+  http::StatusCode _statusCode{0};
   Framing _framing{Framing::None};
   State _state{State::StatusLine};
-  http::StatusCode _statusCode{0};
   bool _headRequest{false};
   bool _streamHead{false};
   bool _streaming{false};
