@@ -30,6 +30,7 @@
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/ndigits.hpp"
@@ -148,6 +149,8 @@ inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] Decompre
                                                        std::string_view& src, std::string_view contentEncoding,
                                                        [[maybe_unused]] std::size_t compressedSize,
                                                        RawChars& bodyAndTrailersBuffer, RawChars& tmpBuffer) {
+  // Codings are compared exactly: the parsers lower-case received Content-Encoding values.
+  assert(!LowerAsciiKey::ContainsUpperAscii(contentEncoding));
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
   RawChars* dst = &tmpBuffer;
   bool stageOk{};
@@ -163,21 +166,21 @@ inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] Decompre
       return {.status = http::StatusCodeBadRequest, .message = "Malformed Content-Encoding"};
     }
 
-    if (CaseInsensitiveEqual(encoding, http::identity)) {
+    if (encoding == http::identity) {
       continue;
 #ifdef AERONET_ENABLE_ZLIB
       // NOLINTNEXTLINE(readability-else-after-return)
-    } else if (CaseInsensitiveEqual(encoding, http::gzip)) {
+    } else if (encoding == http::gzip) {
       ZlibDecoder& decoder = decompressionState.zlibDecoder;
       decoder.setVariant(ZStreamRAII::Variant::gzip);
       stageOk = runDecoder(decoder, *dst);
-    } else if (CaseInsensitiveEqual(encoding, http::deflate)) {
+    } else if (encoding == http::deflate) {
       ZlibDecoder& decoder = decompressionState.zlibDecoder;
       decoder.setVariant(ZStreamRAII::Variant::deflate);
       stageOk = runDecoder(decoder, *dst);
 #endif
 #ifdef AERONET_ENABLE_ZSTD
-    } else if (CaseInsensitiveEqual(encoding, http::zstd)) {
+    } else if (encoding == http::zstd) {
       stageOk = runDecoder(decompressionState.zstdDecoder, *dst);
       // decompressFull() rejects a frame declaring a too large size without decoding it.
       if (!stageOk && ZstdDecoder::DeclaresMoreThan(src, decompressionConfig.maxDecompressedBytes)) {
@@ -185,7 +188,7 @@ inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] Decompre
       }
 #endif
 #ifdef AERONET_ENABLE_BROTLI
-    } else if (CaseInsensitiveEqual(encoding, http::br)) {
+    } else if (encoding == http::br) {
       stageOk = runDecoder(decompressionState.brotliDecoder, *dst);
 #endif
     } else {
@@ -816,6 +819,8 @@ http::StatusCode HttpCodec::WillDecompress(const DecompressionConfig& decompress
   if (encodingStr.empty()) {
     return http::StatusCodeBadRequest;
   }
+  // Codings are compared exactly: the parsers lower-case received Content-Encoding values.
+  assert(!LowerAsciiKey::ContainsUpperAscii(encodingStr));
 
   bool foundNonIdentity = false;
 
@@ -827,7 +832,7 @@ http::StatusCode HttpCodec::WillDecompress(const DecompressionConfig& decompress
     if (encoding.empty()) {
       return http::StatusCodeBadRequest;
     }
-    if (!foundNonIdentity && !CaseInsensitiveEqual(encoding, http::identity)) {
+    if (!foundNonIdentity && encoding != http::identity) {
       foundNonIdentity = true;
     }
   } while (encIt.hasNext());

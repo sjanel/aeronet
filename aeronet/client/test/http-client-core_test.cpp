@@ -11,6 +11,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <semaphore>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -28,6 +29,7 @@
 #include <ws2tcpip.h>
 #endif
 
+#include "aeronet/char-hexadecimal-converter.hpp"
 #include "aeronet/client-connection.hpp"
 #include "aeronet/client-protocol.hpp"
 #include "aeronet/close-native-handle.hpp"
@@ -49,6 +51,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/response-body-sink.hpp"
 #include "aeronet/retry-config.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/sigpipe-test-helpers.hpp"
@@ -57,9 +60,11 @@
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 #include "aeronet/timedef.hpp"
+#include "aeronet/toupperlower.hpp"
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
 #include "aeronet/vector.hpp"
+#include "collecting-body-sink.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include <fstream>
@@ -727,7 +732,7 @@ TEST_F(HttpClientE2ETest, MaxResponseBytesExceededReturnsErrorInHeaders) {
   HttpClient client(cfg);
   auto result = client.get(Url("/headers"));
   ASSERT_FALSE(result);
-  EXPECT_EQ(result.error(), HttpClientErrc::malformedResponse);
+  EXPECT_EQ(result.error(), HttpClientErrc::responseTooLarge);
 }
 
 #ifdef AERONET_ENABLE_HTTP2
@@ -739,7 +744,7 @@ TEST_F(HttpClientE2ETest, MaxResponseBytesExceededReturnsErrorInHeadersHttp2) {
   HttpClient client(cfg);
   auto result = client.get(Url("/headers"));
   ASSERT_FALSE(result);
-  EXPECT_EQ(result.error(), HttpClientErrc::malformedResponse);
+  EXPECT_EQ(result.error(), HttpClientErrc::responseTooLarge);
 }
 #endif
 
@@ -749,7 +754,7 @@ TEST_F(HttpClientE2ETest, MaxResponseBytesExceededReturnsErrorInBody) {
   HttpClient client(cfg);
   auto result = client.get(Url("/hello"));
   ASSERT_FALSE(result);
-  EXPECT_EQ(result.error(), HttpClientErrc::malformedResponse);
+  EXPECT_EQ(result.error(), HttpClientErrc::responseTooLarge);
 }
 
 TEST_F(HttpClientE2ETest, CustomRequestHeaderIsSent) {
@@ -2024,11 +2029,11 @@ TEST_F(HttpClientCompressionE2E, EachSupportedEncodingForRequestBody) {
 }
 
 TEST(HttpClientErrcTest, EveryCodeHasNonEmptyDescription) {
-  constexpr std::array kAll{
+  constexpr HttpClientErrc kAll[]{
       HttpClientErrc::invalidUrl,        HttpClientErrc::connectFailed,       HttpClientErrc::tlsError,
       HttpClientErrc::timeout,           HttpClientErrc::writeError,          HttpClientErrc::connectionClosed,
       HttpClientErrc::malformedResponse, HttpClientErrc::protocolUnsupported, HttpClientErrc::proxyError,
-      HttpClientErrc::ioError,
+      HttpClientErrc::ioError,           HttpClientErrc::responseTooLarge,    HttpClientErrc::aborted,
   };
   for (const HttpClientErrc errc : kAll) {
     EXPECT_FALSE(ErrcToStr(errc).empty()) << static_cast<int>(errc);
@@ -2042,10 +2047,12 @@ TEST(HttpClientErrcTest, DescriptionsAreStable) {
   EXPECT_EQ(ErrcToStr(HttpClientErrc::timeout), "operation timed out");
   EXPECT_EQ(ErrcToStr(HttpClientErrc::writeError), "transport write failed");
   EXPECT_EQ(ErrcToStr(HttpClientErrc::connectionClosed), "connection closed before a complete response was received");
-  EXPECT_EQ(ErrcToStr(HttpClientErrc::malformedResponse), "malformed or oversized response");
+  EXPECT_EQ(ErrcToStr(HttpClientErrc::malformedResponse), "malformed response");
   EXPECT_EQ(ErrcToStr(HttpClientErrc::protocolUnsupported), "negotiated application protocol is not supported");
   EXPECT_EQ(ErrcToStr(HttpClientErrc::proxyError), "forward proxy failed to establish the CONNECT tunnel");
   EXPECT_EQ(ErrcToStr(HttpClientErrc::ioError), "internal I/O error");
+  EXPECT_EQ(ErrcToStr(HttpClientErrc::responseTooLarge), "response too large");
+  EXPECT_EQ(ErrcToStr(HttpClientErrc::aborted), "transfer aborted by the response body sink");
 }
 
 // The "unknown" fallback guards against an out-of-range value (e.g. from a future enum extension or a
@@ -2177,6 +2184,44 @@ bool WaitReadable(NativeHandle fd, int timeoutMs) {
 #endif
 }
 
+// Connects to the loopback listening socket `listenFd`, waking up a thread waiting for it to be readable, so that it
+// notices its stop request right away instead of at its next poll timeout. Returns the connected socket, to close once
+// that thread stopped (kInvalidHandle on failure: the thread then only stops at its next poll timeout).
+NativeHandle ConnectToListener(NativeHandle listenFd) {
+  sockaddr_storage addr{};
+  socklen_t len = sizeof(addr);
+  if (::getsockname(listenFd, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
+    return kInvalidHandle;
+  }
+  const NativeHandle fd = ::socket(addr.ss_family, SOCK_STREAM, 0);
+  if (fd != kInvalidHandle && ::connect(fd, reinterpret_cast<const sockaddr*>(&addr), len) != 0) {
+    CloseNativeHandle(fd);
+    return kInvalidHandle;
+  }
+  return fd;
+}
+
+// Stops `thread`, which accepts the connections of `listenFd` until `stop` is set and checks it after each accept.
+void StopAcceptThread(std::thread& thread, NativeHandle listenFd, std::atomic<bool>& stop) {
+  stop.store(true, std::memory_order_relaxed);
+  if (!thread.joinable()) {
+    return;
+  }
+  const NativeHandle wakeFd = ConnectToListener(listenFd);
+  thread.join();
+  if (wakeFd != kInvalidHandle) {
+    CloseNativeHandle(wakeFd);
+  }
+}
+
+// Read and discard what the client sends until it closes the connection (or `timeoutMs` without data). Closing a socket
+// with unread received bytes would reset the connection, discarding the response the client did not read yet.
+void DrainUntilClosed(NativeHandle fd, int timeoutMs) {
+  char tmp[4096];
+  while (WaitReadable(fd, timeoutMs) && ::recv(fd, tmp, static_cast<int>(sizeof(tmp)), 0) > 0) {
+  }
+}
+
 // Read the request header block up to (and including) the terminating "\r\n\r\n". Returns what was read so
 // far on EOF (empty when the peer closed without sending anything). Good enough for bodyless GET / CONNECT.
 std::string ReadRequestHead(NativeHandle fd) {
@@ -2215,7 +2260,7 @@ NativeHandle ConnectLoopbackV4(uint16_t loopbackPort) {
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   addr.sin_port = htons(loopbackPort);
-  if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+  if (!SetNoSigPipe(fd) || ::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
     CloseNativeHandle(fd);
     return kInvalidHandle;
   }
@@ -2300,10 +2345,7 @@ class TinyProxy {
   TinyProxy& operator=(TinyProxy&&) = delete;
 
   ~TinyProxy() {
-    _stop.store(true, std::memory_order_relaxed);
-    if (_acceptThread.joinable()) {
-      _acceptThread.join();  // no more workers are spawned after this returns
-    }
+    StopAcceptThread(_acceptThread, _listenFd, _stop);  // no more workers are spawned after this returns
     for (std::thread& worker : _workers) {
       if (worker.joinable()) {
         worker.join();
@@ -2331,6 +2373,11 @@ class TinyProxy {
       if (fd == kInvalidHandle) {
         continue;
       }
+      if (_stop.load(std::memory_order_relaxed)) {  // the wake-up connection of StopAcceptThread
+        CloseNativeHandle(fd);
+        break;
+      }
+      EXPECT_TRUE(SetNoSigPipe(fd));  // macOS: a write to a closed client must fail with EPIPE, not raise SIGPIPE
       _workers.emplace_back([this, fd] { handleConnection(fd); });
     }
   }
@@ -2449,7 +2496,9 @@ namespace {
 class HttpClientProxyTlsE2ETest : public ::testing::Test {
  protected:
   void SetUp() override {
-    auto [certPem, keyPem] = test::MakeEphemeralCertKey("localhost");
+    // Generated once for the whole suite: an RSA key generation is slow.
+    static const auto kCertKey = test::MakeEphemeralCertKey("localhost");
+    const auto& [certPem, keyPem] = kCertKey;
     _certPem = certPem;
 
     TLSConfig tls;
@@ -2672,10 +2721,7 @@ class RawServer {
   RawServer& operator=(RawServer&&) = delete;
 
   ~RawServer() {
-    _stop.store(true, std::memory_order_relaxed);
-    if (_thread.joinable()) {
-      _thread.join();
-    }
+    StopAcceptThread(_thread, _listenFd, _stop);
     if (_listenFd != kInvalidHandle) {
       CloseNativeHandle(_listenFd);
     }
@@ -2739,6 +2785,12 @@ class RawServer {
       if (fd == kInvalidHandle) {
         continue;
       }
+      if (_stop.load(std::memory_order_relaxed)) {  // the wake-up connection of StopAcceptThread
+        CloseNativeHandle(fd);
+        break;
+      }
+      // macOS: a write to a client that gave up (timeout, abort) must fail with EPIPE, not kill the test with SIGPIPE.
+      EXPECT_TRUE(SetNoSigPipe(fd));
       _handler(fd, idx++);
       CloseNativeHandle(fd);
     }
@@ -2793,18 +2845,18 @@ class RequestHeadRecorder {
 
 // A hard DNS resolution failure: .invalid is reserved (RFC 6761) and never resolves, so ConnectTCP
 // reports an immediate failure. Exercises connectNew()'s failure branch and the subsequent
-// event-loop registration failure on the resulting empty connection.
+// event-loop registration failure on the resulting empty connection. The name is fully qualified (trailing dot), so
+// that the resolver does not also look it up in each search domain of the host.
 TEST(HttpClientErrorE2ETest, DnsResolutionFailureReturnsError) {
   HttpClient client;
-  auto result = client.get("http://aeronet-nonexistent-host.invalid/");
+  auto result = client.get("http://aeronet-nonexistent-host.invalid./");
   ASSERT_FALSE(result);
   EXPECT_EQ(result.error(), HttpClientErrc::connectFailed);
 }
 
 // The server promises a 100-byte body but sends 5 bytes then closes: the client hits EOF before the
-// body is complete. The parser cannot tell a truncated body from a malformed one (both are an
-// unparseable response once no more bytes will arrive), so the truncation surfaces as malformedResponse.
-// With retries disabled it is not retried away.
+// body is complete, reported as connectionClosed (not as a malformed response). With retries disabled it is not
+// retried away.
 TEST(HttpClientErrorE2ETest, ClosedBeforeCompleteResponseReturnsError) {
   RawServer server([](NativeHandle fd, int) {
     DrainRequest(fd);
@@ -2814,7 +2866,7 @@ TEST(HttpClientErrorE2ETest, ClosedBeforeCompleteResponseReturnsError) {
   HttpClient client(cfg);
   auto result = client.get(MakeUrl(server.port()));
   ASSERT_FALSE(result);
-  EXPECT_EQ(result.error(), HttpClientErrc::malformedResponse);
+  EXPECT_EQ(result.error(), HttpClientErrc::connectionClosed);
 }
 
 // RFC 9110 media types can be very short: any non-empty Content-Type sent by a server is kept. A value shorter than 7
@@ -2852,31 +2904,6 @@ TEST(HttpClientErrorE2ETest, ShortContentTypeFromServerIsAccepted) {
   EXPECT_EQ(result->status(), 200);
   EXPECT_EQ(result->headerValueOrEmpty(http::ContentType), "a/b");
   EXPECT_EQ(result->bodyInMemory(), "hello");
-}
-
-// An empty body with a Content-Encoding has nothing to decode: it is returned empty, with its Content-Encoding (as over
-// HTTP/2), whatever its framing.
-TEST(HttpClientErrorE2ETest, EmptyBodyWithContentEncodingIsNotDecoded) {
-  static constexpr std::string_view kFramings[]{"content-length: 0\r\n\r\n",
-                                                "transfer-encoding: chunked\r\n\r\n0\r\n\r\n", "\r\n"};
-  for (const Encoding enc : test::SupportedEncodings()) {
-    for (const std::string_view framing : kFramings) {
-      RawServer server([enc, framing](NativeHandle fd, int) {
-        DrainRequest(fd);
-        std::string resp("HTTP/1.1 200 OK\r\nconnection: close\r\ncontent-encoding: ");
-        resp += GetEncodingStr(enc);
-        resp += http::CRLF;
-        resp += framing;
-        SendAll(fd, resp);
-      });
-      HttpClient client;
-      auto result = client.get(MakeUrl(server.port()));
-      ASSERT_TRUE(result) << GetEncodingStr(enc) << " " << framing;
-      EXPECT_EQ(result->status(), 200);
-      EXPECT_TRUE(result->bodyInMemory().empty());
-      EXPECT_EQ(result->headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
-    }
-  }
 }
 
 // RFC 9112 section 9.6: with keep-alive disabled, every HTTP/1.1 request carries 'Connection: close' (so that the
@@ -2934,10 +2961,69 @@ TEST(HttpClientRawServerTest, KeepAliveOnSendsNoConnectionHeader) {
 TEST(HttpClientErrorE2ETest, ReadTimeoutReturnsError) {
   RawServer server([](NativeHandle fd, int) {
     DrainRequest(fd);
-    std::this_thread::sleep_for(std::chrono::milliseconds{200});  // outlive the client's deadline
+    DrainUntilClosed(fd, 5000);  // stall until the client gives up: the server outlives the client's deadline
   });
   HttpClientConfig cfg;
   cfg.requestTimeout = std::chrono::milliseconds{150};
+  HttpClient client(cfg);
+  auto result = client.get(MakeUrl(server.port()));
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::timeout);
+}
+
+namespace {
+
+// Sends a 200 response whose 10-byte body trickles in one byte every `gap`, until the client stops reading it.
+void TrickleResponse(NativeHandle fd, std::chrono::milliseconds gap) {
+  DrainRequest(fd);
+  SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 10\r\n\r\n");
+  for (char ch = '0'; ch <= '9'; ++ch) {
+    std::this_thread::sleep_for(gap);
+    if (SafeSend(fd, &ch, 1) <= 0) {
+      return;  // the client gave up and closed the connection
+    }
+  }
+}
+
+}  // namespace
+
+// A slow but steady response outlasting the inactivity timeout completes: each received byte restarts it.
+TEST(HttpClientErrorE2ETest, InactivityTimeoutLetsASteadySlowResponseComplete) {
+  RawServer server([](NativeHandle fd, int) { TrickleResponse(fd, std::chrono::milliseconds{30}); });
+  HttpClientConfig cfg;
+  cfg.requestTimeout = std::chrono::seconds{10};
+  cfg.inactivityTimeout = std::chrono::milliseconds{250};
+  HttpClient client(cfg);
+  auto result = client.get(MakeUrl(server.port()));
+  ASSERT_TRUE(result) << ErrcToStr(result.error());
+  EXPECT_EQ(result->bodyInMemory(), "0123456789");
+}
+
+// A stalled exchange fails after the inactivity timeout, long before the request timeout.
+TEST(HttpClientErrorE2ETest, InactivityTimeoutFailsAStalledResponse) {
+  RawServer server([](NativeHandle fd, int) {
+    DrainRequest(fd);
+    SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 10\r\n\r\n0123");
+    DrainUntilClosed(fd, 5000);  // stall until the client gives up: the server outlives the inactivity timeout
+  });
+  HttpClientConfig cfg;
+  cfg.requestTimeout = std::chrono::seconds{20};
+  cfg.inactivityTimeout = std::chrono::milliseconds{100};
+  HttpClient client(cfg);
+  const auto start = std::chrono::steady_clock::now();
+  auto result = client.get(MakeUrl(server.port()));
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::timeout);
+  EXPECT_LT(elapsed, std::chrono::seconds{5});
+}
+
+// The request timeout still bounds the whole exchange, however steady it is.
+TEST(HttpClientErrorE2ETest, RequestTimeoutStillBoundsASteadyResponse) {
+  RawServer server([](NativeHandle fd, int) { TrickleResponse(fd, std::chrono::milliseconds{40}); });
+  HttpClientConfig cfg;
+  cfg.requestTimeout = std::chrono::milliseconds{150};
+  cfg.inactivityTimeout = std::chrono::seconds{5};
   HttpClient client(cfg);
   auto result = client.get(MakeUrl(server.port()));
   ASSERT_FALSE(result);
@@ -3009,7 +3095,7 @@ TEST(HttpClientErrorE2ETest, RequestNotReSentAfterBytesWritten) {
   HttpClient client;  // default retry policy: a sent request is never re-submitted
   auto result = client.post(MakeUrl(server.port()), "payload");
   ASSERT_FALSE(result);
-  EXPECT_EQ(result.error(), HttpClientErrc::malformedResponse);
+  EXPECT_EQ(result.error(), HttpClientErrc::connectionClosed);
   // Leave time for a (wrongful) retry connection to be accepted before asserting.
   std::this_thread::sleep_for(std::chrono::milliseconds{80});
   EXPECT_EQ(connections.load(std::memory_order_relaxed), 1);
@@ -3202,7 +3288,7 @@ TEST(HttpClientErrorE2ETest, NonIdempotentPostSendFailureNotRetried) {
 
   const auto result = client.post(MakeUrl(server.port()), "payload");
   ASSERT_FALSE(result);
-  EXPECT_EQ(result.error(), HttpClientErrc::malformedResponse);
+  EXPECT_EQ(result.error(), HttpClientErrc::connectionClosed);
   std::this_thread::sleep_for(std::chrono::milliseconds{80});
   EXPECT_EQ(connections.load(std::memory_order_relaxed), 1);
 }
@@ -3254,6 +3340,540 @@ TEST(HttpClientErrorE2ETest, Ipv6LiteralHostHeaderIsBracketed) {
   EXPECT_NE(capturedHead.find(expected), std::string::npos) << "request head was:\n" << capturedHead;
 }
 
+// --- Response body sinks (HTTP/1.1) ---------------------------------------------------------------------------------
+
+namespace {
+
+// Serializes `body` with chunked framing, in chunks of `chunkSize` bytes.
+std::string Chunked(std::string_view body, std::size_t chunkSize) {
+  std::string out;
+  for (std::size_t off = 0; off < body.size(); off += chunkSize) {
+    const std::string_view chunk = body.substr(off, chunkSize);
+    char hex[32];
+    out.append(hex, to_lower_hex(chunk.size(), hex)).append(http::CRLF).append(chunk).append(http::CRLF);
+  }
+  return out + "0\r\n\r\n";
+}
+
+// Response with a content-coded body (`encodingName` may be stacked) framed by Content-Length. It announces the close
+// RawServer does after each response, so that a client never reuses the connection while the server closes it.
+std::string EncodedResponse(std::string_view encodingName, std::string_view encodedBody) {
+  std::string raw = "HTTP/1.1 200 OK\r\ncontent-type: text/csv\r\nconnection: close\r\ncontent-encoding: ";
+  raw.append(encodingName).append("\r\ncontent-length: ").append(std::to_string(encodedBody.size()));
+  return raw.append("\r\n\r\n").append(encodedBody);
+}
+
+}  // namespace
+
+// A body far larger than maxResponseBytes is delivered piece by piece, without being buffered: the client scratch
+// buffers stay small, and the returned response only holds the head.
+TEST_F(HttpClientE2ETest, SinkStreamsLargeBodyBeyondMaxResponseBytes) {
+  HttpClientConfig cfg;
+  cfg.maxResponseBytes = 4096;
+  cfg.withDecompression(false);  // no Accept-Encoding: the server sends the body uncompressed
+  HttpClient client(cfg);
+  test::CollectingBodySink sink;
+  auto result = client.get(Url("/large-identity"), sink);
+  ASSERT_TRUE(result) << ErrcToStr(result.error());
+  EXPECT_EQ(result->status(), 200);
+  EXPECT_TRUE(result->bodyInMemory().empty());
+  EXPECT_EQ(sink.headCalls, 1U);
+  EXPECT_EQ(sink.status, 200);
+  EXPECT_FALSE(sink.headHasBody);
+  EXPECT_EQ(sink.contentType, "application/octet-stream");
+  EXPECT_EQ(sink.body, LargeIdentityResponseBody());
+  EXPECT_GT(sink.bodyCalls, 1U);
+  EXPECT_LT(HttpClientTest::ScratchCapacity(client), 256UL * 1024UL);
+
+  // The same client keeps buffering the bodies of regular requests, and the connection was reused.
+  auto buffered = client.get(Url("/hello"));
+  ASSERT_TRUE(buffered);
+  EXPECT_EQ(buffered->bodyInMemory(), "world");
+  EXPECT_EQ(HttpClientTest::IdleConnections(client), 1U);
+}
+
+TEST(HttpClientSinkE2ETest, ChunkedAndUntilCloseBodiesAreStreamed) {
+  const std::string payload = test::MakePatternedPayload(300000);
+  RawServer server([&payload](NativeHandle fd, int idx) {
+    DrainRequest(fd);
+    if (idx == 0) {
+      SendAll(fd,
+              "HTTP/1.1 200 OK\r\ncontent-type: text/csv\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n" +
+                  Chunked(payload, 7001));
+    } else {
+      SendAll(fd, "HTTP/1.1 200 OK\r\nconnection: close\r\n\r\n" + payload);  // delimited by the close
+    }
+  });
+  HttpClientConfig cfg;
+  cfg.maxResponseBytes = 1024;
+  HttpClient client(cfg);
+  for (int idx = 0; idx < 2; ++idx) {
+    test::CollectingBodySink sink;
+    auto result = client.get(MakeUrl(server.port()), sink);
+    ASSERT_TRUE(result) << idx << ' ' << ErrcToStr(result.error());
+    EXPECT_EQ(sink.body, payload) << idx;
+    EXPECT_EQ(sink.contentType, idx == 0 ? "text/csv" : "application/octet-stream") << idx;
+    EXPECT_LT(HttpClientTest::ScratchCapacity(client), 128UL * 1024UL) << idx;
+  }
+}
+
+// A content-coded body is decoded as it arrives, whatever its framing, and the head given to the sink no longer has
+// a Content-Encoding. Without decompression, the coded bytes are delivered as received.
+TEST(HttpClientSinkE2ETest, ContentCodedBodiesAreDecodedAsTheyArrive) {
+  // Partly random so that the encoded body spans many reads.
+  const RawChars mixed = test::MakeMixedPayload(200000, 800000);
+  const std::string payload(std::string_view{mixed});
+  for (const Encoding enc : test::SupportedEncodings()) {
+    const RawChars encoded = test::Compress(enc, payload);
+    // Codings are case-insensitive: the chunked response sends it upper-cased, the sink sees it lower-cased.
+    std::string upperCaseEnc(GetEncodingStr(enc));
+    std::ranges::transform(upperCaseEnc, upperCaseEnc.begin(), [](char ch) { return toupper(ch); });
+    for (const bool chunked : {false, true}) {
+      RawServer server([&](NativeHandle fd, int) {
+        DrainRequest(fd);
+        if (chunked) {
+          SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-encoding: " + upperCaseEnc +
+                          "\r\ntransfer-encoding: chunked\r\n\r\n" + Chunked(std::string_view(encoded), 4093));
+        } else {
+          SendAll(fd, EncodedResponse(GetEncodingStr(enc), std::string_view(encoded)));
+        }
+      });
+      for (const bool decode : {true, false}) {
+        HttpClientConfig cfg;
+        cfg.maxResponseBytes = 8192;
+        cfg.decompression.enable = decode;
+        HttpClient client(cfg);
+        test::CollectingBodySink sink;
+        auto result = client.get(MakeUrl(server.port()), sink);
+        const std::string ctx =
+            std::string(GetEncodingStr(enc)) + (chunked ? " chunked" : " length") + (decode ? " decoded" : " raw");
+        ASSERT_TRUE(result) << ctx << ' ' << ErrcToStr(result.error());
+        if (decode) {
+          EXPECT_EQ(sink.body.size(), payload.size()) << ctx;
+          EXPECT_TRUE(sink.body == payload) << ctx;
+          EXPECT_TRUE(sink.contentEncoding.empty()) << ctx;
+          EXPECT_TRUE(result->headerValueOrEmpty(http::ContentEncoding).empty()) << ctx;
+        } else {
+          EXPECT_TRUE(sink.body == std::string_view(encoded)) << ctx;
+          EXPECT_EQ(sink.contentEncoding, GetEncodingStr(enc)) << ctx;
+        }
+      }
+    }
+  }
+}
+
+// A content coding cut short is reported as malformed (the framing itself is complete), after the sink received the
+// head and the decodable part of the body.
+TEST(HttpClientSinkE2ETest, TruncatedContentCodingIsMalformed) {
+  const RawChars mixed = test::MakeMixedPayload(300000, 200000);
+  const std::string_view payload{mixed};
+  for (const Encoding enc : test::SupportedEncodings()) {
+    const RawChars encoded = test::Compress(enc, payload);
+    for (const std::size_t cut : {std::size_t{1}, std::size_t{4}, static_cast<std::size_t>(encoded.size() / 2)}) {
+      const std::string_view truncated = std::string_view(encoded).substr(0, encoded.size() - cut);
+      RawServer server([&](NativeHandle fd, int) {
+        DrainRequest(fd);
+        SendAll(fd, EncodedResponse(GetEncodingStr(enc), truncated));
+      });
+      HttpClient client;
+      test::CollectingBodySink sink;
+      auto result = client.get(MakeUrl(server.port()), sink);
+      ASSERT_FALSE(result) << GetEncodingStr(enc) << " cut " << cut;
+      EXPECT_EQ(result.error(), HttpClientErrc::malformedResponse) << GetEncodingStr(enc) << " cut " << cut;
+      EXPECT_EQ(sink.headCalls, 1U) << GetEncodingStr(enc);
+      EXPECT_TRUE(payload.starts_with(sink.body)) << GetEncodingStr(enc) << " cut " << cut;
+
+      // A buffered body is rejected the same way.
+      auto buffered = client.get(MakeUrl(server.port()));
+      ASSERT_FALSE(buffered) << GetEncodingStr(enc) << " cut " << cut;
+      EXPECT_EQ(buffered.error(), HttpClientErrc::malformedResponse) << GetEncodingStr(enc) << " cut " << cut;
+    }
+  }
+}
+
+// The decompression limits still apply to a streamed body.
+TEST(HttpClientSinkE2ETest, DecompressionLimitsApplyToStreamedBodies) {
+  const std::string payload = test::MakePatternedPayload(1UL << 20U);
+  for (const Encoding enc : test::SupportedEncodings()) {
+    const RawChars encoded = test::Compress(enc, payload);
+    RawServer server([&](NativeHandle fd, int) {
+      DrainRequest(fd);
+      SendAll(fd, EncodedResponse(GetEncodingStr(enc), std::string_view(encoded)));
+    });
+    for (const bool ratio : {false, true}) {
+      HttpClientConfig cfg;
+      if (ratio) {
+        cfg.decompression.maxExpansionRatio = 2.0;
+      } else {
+        cfg.decompression.maxExpansionRatio = 1e9;
+        cfg.decompression.maxDecompressedBytes = 100000;
+      }
+      HttpClient client(cfg);
+      test::CollectingBodySink sink;
+      auto result = client.get(MakeUrl(server.port()), sink);
+      ASSERT_FALSE(result) << GetEncodingStr(enc) << ' ' << ratio;
+      EXPECT_EQ(result.error(), HttpClientErrc::responseTooLarge) << GetEncodingStr(enc) << ' ' << ratio;
+      if (!ratio) {
+        EXPECT_LE(sink.body.size(), 100000U) << GetEncodingStr(enc);
+      }
+    }
+  }
+}
+
+// Stacked content codings are buffered and decoded whole, then delivered in one piece.
+TEST(HttpClientSinkE2ETest, StackedContentCodingsAreBufferedThenDelivered) {
+  if (test::SupportedEncodings().empty()) {
+    GTEST_SKIP() << "no codec compiled in";
+  }
+  const Encoding enc = test::SupportedEncodings().front();
+  const std::string payload = test::MakePatternedPayload(50000);
+  const RawChars encoded = test::Compress(enc, payload);
+  RawServer server([&](NativeHandle fd, int) {
+    DrainRequest(fd);
+    SendAll(fd,
+            EncodedResponse(std::string("identity, ") + std::string(GetEncodingStr(enc)), std::string_view(encoded)));
+  });
+  HttpClient client;
+  test::CollectingBodySink sink;
+  auto result = client.get(MakeUrl(server.port()), sink);
+  ASSERT_TRUE(result) << ErrcToStr(result.error());
+  EXPECT_EQ(sink.body, payload);
+  EXPECT_EQ(sink.bodyCalls, 1U);
+  EXPECT_EQ(sink.contentType, "text/csv");
+  EXPECT_TRUE(sink.contentEncoding.empty());
+  EXPECT_FALSE(sink.headHasBody);
+  EXPECT_TRUE(result->bodyInMemory().empty());
+
+  // A sink refusing the buffered response, at its head or at its body, stops the request.
+  for (const bool atHead : {true, false}) {
+    test::CollectingBodySink refusing;
+    refusing.acceptHead = !atHead;
+    refusing.stopAfterBytes = 1;
+    result = client.get(MakeUrl(server.port()), refusing);
+    ASSERT_FALSE(result) << atHead;
+    EXPECT_EQ(result.error(), HttpClientErrc::aborted) << atHead;
+  }
+}
+
+// An identity content coding is streamed as received, and dropped from the head like a decoded coding.
+TEST(HttpClientSinkE2ETest, IdentityContentCodingIsStreamed) {
+  const std::string payload = test::MakePatternedPayload(100000);
+  RawServer server([&](NativeHandle fd, int) {
+    DrainRequest(fd);
+    SendAll(fd, EncodedResponse("identity", payload));
+  });
+  HttpClient client(HttpClientConfig{}.withDecompression(true));
+  test::CollectingBodySink sink;
+  auto result = client.get(MakeUrl(server.port()), sink);
+  ASSERT_TRUE(result) << ErrcToStr(result.error());
+  EXPECT_EQ(sink.body, payload);
+  EXPECT_TRUE(sink.contentEncoding.empty());
+}
+
+// A followed redirect is never delivered to the sink: only the final response is. A redirect that is not followed is.
+TEST_F(HttpClientE2ETest, SinkOnlySeesTheFinalResponseOfRedirects) {
+  {
+    HttpClient client;
+    test::CollectingBodySink sink;
+    auto result = client.get(Url("/redirect"), sink);
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->status(), 200);
+    EXPECT_EQ(sink.headCalls, 1U);
+    EXPECT_EQ(sink.status, 200);
+    EXPECT_EQ(sink.body, "world");
+    EXPECT_EQ(sink.contentType, "text/plain");
+  }
+  {
+    HttpClientConfig cfg;
+    cfg.followRedirects = false;
+    HttpClient client(cfg);
+    test::CollectingBodySink sink;
+    auto result = client.get(Url("/redirect"), sink);
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->status(), http::StatusCodeFound);
+    EXPECT_EQ(sink.headCalls, 1U);
+    EXPECT_EQ(sink.status, http::StatusCodeFound);
+    EXPECT_TRUE(sink.body.empty());
+    EXPECT_TRUE(sink.contentType.empty());  // bodyless
+  }
+  {
+    // Redirect limit reached: the last redirect is the final response.
+    HttpClientConfig cfg;
+    cfg.maxRedirects = 1;
+    HttpClient client(cfg);
+    test::CollectingBodySink sink;
+    auto result = client.get(Url("/loop"), sink);
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->status(), http::StatusCodeFound);
+    EXPECT_EQ(sink.headCalls, 1U);
+  }
+}
+
+// A redirect with a body, to follow, is buffered and discarded; one that cannot be followed is delivered with its body.
+TEST(HttpClientSinkE2ETest, RedirectBodiesAreNotStreamed) {
+  RawServer server([](NativeHandle fd, int idx) {
+    DrainRequest(fd);
+    if (idx == 0) {
+      SendAll(fd, "HTTP/1.1 302 Found\r\nlocation: /next\r\ncontent-length: 5\r\nconnection: close\r\n\r\nmoved");
+    } else if (idx == 1) {
+      SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 4\r\nconnection: close\r\n\r\nnext");
+    } else {
+      // No Location: returned as the final response.
+      SendAll(fd, "HTTP/1.1 302 Found\r\ncontent-length: 7\r\nconnection: close\r\n\r\nnowhere");
+    }
+  });
+  HttpClient client;
+  test::CollectingBodySink sink;
+  auto result = client.get(MakeUrl(server.port()), sink);
+  ASSERT_TRUE(result) << ErrcToStr(result.error());
+  EXPECT_EQ(sink.headCalls, 1U);
+  EXPECT_EQ(sink.body, "next");
+
+  test::CollectingBodySink noLocation;
+  result = client.get(MakeUrl(server.port()), noLocation);
+  ASSERT_TRUE(result) << ErrcToStr(result.error());
+  EXPECT_EQ(noLocation.status, http::StatusCodeFound);
+  EXPECT_EQ(noLocation.body, "nowhere");
+}
+
+// A response retried for its status is never delivered to the sink.
+TEST(HttpClientSinkE2ETest, StatusRetriedResponsesAreNotDelivered) {
+  RawServer server([](NativeHandle fd, int idx) {
+    DrainRequest(fd);
+    SendAll(fd, idx == 0 ? "HTTP/1.1 503 Busy\r\nretry-after: 0\r\ncontent-length: 4\r\nconnection: close\r\n\r\nbusy"
+                         : "HTTP/1.1 200 OK\r\ncontent-length: 4\r\nconnection: close\r\n\r\ndone");
+  });
+  HttpClientConfig cfg;
+  cfg.withRetry(FastRetry(2));
+  HttpClient client(cfg);
+  test::CollectingBodySink sink;
+  auto result = client.get(MakeUrl(server.port()), sink);
+  ASSERT_TRUE(result) << ErrcToStr(result.error());
+  EXPECT_EQ(sink.headCalls, 1U);
+  EXPECT_EQ(sink.status, 200);
+  EXPECT_EQ(sink.body, "done");
+
+  // Once the retry budget is exhausted, the retryable status is the final response, and is delivered.
+  RawServer busy([](NativeHandle fd, int) {
+    DrainRequest(fd);
+    SendAll(fd, "HTTP/1.1 503 Busy\r\ncontent-length: 4\r\nconnection: close\r\n\r\nbusy");
+  });
+  HttpClient noRetry;
+  test::CollectingBodySink busySink;
+  result = noRetry.get(MakeUrl(busy.port()), busySink);
+  ASSERT_TRUE(result);
+  EXPECT_EQ(busySink.status, http::StatusCodeServiceUnavailable);
+  EXPECT_EQ(busySink.body, "busy");
+}
+
+// Once the sink received the head, a failure is final: the request is not retried, even when idempotent and allowed
+// to be retried after being sent, since the sink would otherwise see the body twice.
+TEST(HttpClientSinkE2ETest, NoRetryOnceTheHeadWasDelivered) {
+  std::atomic<int> connections{0};
+  RawServer server([&connections](NativeHandle fd, int) {
+    connections.fetch_add(1, std::memory_order_relaxed);
+    DrainRequest(fd);
+    SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\nshort");
+  });
+  RetryConfig retry = FastRetry(3);
+  retry.retryIdempotentAfterSend = true;
+  HttpClientConfig cfg;
+  cfg.withRetry(retry);
+  HttpClient client(cfg);
+  test::CollectingBodySink sink;
+  auto result = client.get(MakeUrl(server.port()), sink);
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::connectionClosed);
+  EXPECT_EQ(sink.body, "short");
+  std::this_thread::sleep_for(std::chrono::milliseconds{80});
+  EXPECT_EQ(connections.load(std::memory_order_relaxed), 1);
+
+  // Without a sink, the same request is retried.
+  auto buffered = client.get(MakeUrl(server.port()));
+  ASSERT_FALSE(buffered);
+  std::this_thread::sleep_for(std::chrono::milliseconds{80});
+  EXPECT_EQ(connections.load(std::memory_order_relaxed), 4);
+}
+
+// The sink can stop the transfer from either callback: the request fails with aborted.
+TEST_F(HttpClientE2ETest, SinkCanAbortTheTransfer) {
+  HttpClient client(HttpClientConfig{}.withDecompression(false));
+  test::CollectingBodySink refuseHead;
+  refuseHead.acceptHead = false;
+  auto result = client.get(Url("/large-identity"), refuseHead);
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::aborted);
+  EXPECT_EQ(refuseHead.headCalls, 1U);
+  EXPECT_EQ(refuseHead.bodyCalls, 0U);
+
+  test::CollectingBodySink stopEarly;
+  stopEarly.stopAfterBytes = 100000;
+  result = client.get(Url("/large-identity"), stopEarly);
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::aborted);
+  EXPECT_GE(stopEarly.body.size(), 100000U);
+  EXPECT_LT(stopEarly.body.size(), LargeIdentityResponseBody().size());
+
+  // A bodyless final response refused by the sink also fails.
+  test::CollectingBodySink refuseBodyless;
+  refuseBodyless.acceptHead = false;
+  auto headReq = client.makeRequest(http::Method::HEAD, Url("/hello"));
+  result = client.request(std::move(headReq), refuseBodyless);
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::aborted);
+
+  // The client stays usable after an aborted transfer.
+  auto after = client.get(Url("/hello"));
+  ASSERT_TRUE(after);
+  EXPECT_EQ(after->bodyInMemory(), "world");
+}
+
+// HEAD and bodyless responses only get onHead(), with an empty media type.
+TEST_F(HttpClientE2ETest, SinkGetsBodylessResponses) {
+  HttpClient client;
+  test::CollectingBodySink sink;
+  const auto headReq = client.makeRequest(http::Method::HEAD, Url("/hello"));
+  auto result = client.request(headReq, sink);
+  ASSERT_TRUE(result);
+  EXPECT_EQ(sink.headCalls, 1U);
+  EXPECT_EQ(sink.bodyCalls, 0U);
+  EXPECT_TRUE(sink.contentType.empty());
+
+  RawServer server([](NativeHandle fd, int) {
+    DrainRequest(fd);
+    SendAll(fd, "HTTP/1.1 204 No Content\r\nconnection: close\r\n\r\n");
+  });
+  test::CollectingBodySink noContent;
+  result = client.get(MakeUrl(server.port()), noContent);
+  ASSERT_TRUE(result);
+  EXPECT_EQ(noContent.status, http::StatusCodeNoContent);
+  EXPECT_EQ(noContent.headCalls, 1U);
+  EXPECT_EQ(noContent.bodyCalls, 0U);
+}
+
+// Requests with a sink bypass the response cache: they always reach the server and are never stored.
+TEST(HttpClientSinkE2ETest, SinkRequestsBypassTheCache) {
+  std::atomic<int> requests{0};
+  RawServer server([&requests](NativeHandle fd, int) {
+    requests.fetch_add(1, std::memory_order_relaxed);
+    DrainRequest(fd);
+    SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 5\r\nconnection: close\r\n\r\nfresh");
+  });
+  HttpClientConfig cfg;
+  cfg.withCache(std::chrono::seconds{30});
+  HttpClient client(cfg);
+  for (int idx = 0; idx < 2; ++idx) {
+    test::CollectingBodySink sink;
+    ASSERT_TRUE(client.get(MakeUrl(server.port()), sink));
+    EXPECT_EQ(sink.body, "fresh");
+  }
+  EXPECT_EQ(requests.load(std::memory_order_relaxed), 2);
+  EXPECT_EQ(HttpClientTest::CacheEntries(client), 0U);
+}
+
+namespace {
+
+// Throws from onBody() once some body was received.
+class ThrowingBodySink final : public ResponseBodySink {
+ public:
+  bool onHead([[maybe_unused]] const HttpResponse& head, [[maybe_unused]] std::string_view contentType) override {
+    return true;
+  }
+  bool onBody([[maybe_unused]] std::string_view chunk) override { throw std::runtime_error("sink failure"); }
+};
+
+}  // namespace
+
+// An exception thrown by a sink propagates out of the request, and leaves the client usable: the connection it was
+// reading from is closed and unregistered, so the next request (likely given the same fd number) is not affected.
+TEST(HttpClientSinkE2ETest, ThrowingSinkLeavesTheClientUsable) {
+  RawServer server([](NativeHandle fd, int) {
+    DrainRequest(fd);
+    // Head then body in two writes, so that the client waits on the connection before the body arrives. Each response
+    // closes its connection: every request uses a new one, likely given the fd number of the previous one.
+    SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 10\r\nconnection: close\r\n\r\n");
+    std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    SendAll(fd, "0123456789");
+    DrainUntilClosed(fd, 500);
+  });
+  HttpClient client;
+  ThrowingBodySink throwing;
+  // NOLINTNEXTLINE(bugprone-unused-return-value)
+  EXPECT_THROW(client.get(MakeUrl(server.port()), throwing), std::runtime_error);
+  for (int idx = 0; idx < 3; ++idx) {
+    auto result = client.get(MakeUrl(server.port()));
+    ASSERT_TRUE(result) << idx << ' ' << ErrcToStr(result.error());
+    EXPECT_EQ(result->bodyInMemory(), "0123456789");
+  }
+}
+
+// A streamed body decoding close to maxDecompressedBytes, over many reads, is accepted for every coding.
+TEST(HttpClientSinkE2ETest, StreamedBodyCloseToTheDecompressionLimitIsAccepted) {
+  const RawChars payload = test::MakeRandomPayload(200000);  // incompressible: the coded body spans many reads
+  for (const Encoding enc : test::SupportedEncodings()) {
+    const RawChars encoded = test::Compress(enc, std::string_view{payload});
+    RawServer server([&](NativeHandle fd, int) {
+      DrainRequest(fd);
+      SendAll(fd, EncodedResponse(GetEncodingStr(enc), std::string_view{encoded}));
+    });
+    HttpClientConfig cfg;
+    cfg.decompression.maxDecompressedBytes = payload.size() + 100;
+    cfg.minReadChunkBytes = 4096;
+    HttpClient client(cfg);
+    test::CollectingBodySink sink;
+    auto result = client.get(MakeUrl(server.port()), sink);
+    ASSERT_TRUE(result) << GetEncodingStr(enc) << ' ' << ErrcToStr(result.error());
+    EXPECT_TRUE(sink.body == std::string_view{payload}) << GetEncodingStr(enc);
+  }
+}
+
+// A content coding the client cannot decode fails right away, without buffering the body (which can be large).
+TEST(HttpClientSinkE2ETest, UnsupportedContentCodingFailsBeforeTheBody) {
+  for (const std::string_view coding : {std::string_view("compress"), std::string_view("gzip, made-up")}) {
+    const std::string response = EncodedResponse(coding, std::string(1UL << 20U, 'c'));
+    RawServer server([&response](NativeHandle fd, int) {
+      DrainRequest(fd);
+      SendAll(fd, response);
+    });
+    HttpClientConfig cfg;
+    cfg.maxResponseBytes = 4096;  // a buffered body would fail with responseTooLarge
+    HttpClient client(cfg);
+    test::CollectingBodySink sink;
+    auto result = client.get(MakeUrl(server.port()), sink);
+    ASSERT_FALSE(result) << coding;
+    EXPECT_EQ(result.error(), HttpClientErrc::malformedResponse) << coding;
+    EXPECT_EQ(sink.headCalls, 0U) << coding;
+
+    // Without decompression, the coded body is delivered as received.
+    HttpClient raw(HttpClientConfig{}.withDecompression(false));
+    test::CollectingBodySink rawSink;
+    result = raw.get(MakeUrl(server.port()), rawSink);
+    ASSERT_TRUE(result) << coding << ' ' << ErrcToStr(result.error());
+    EXPECT_EQ(rawSink.contentEncoding, coding);
+    EXPECT_EQ(rawSink.body.size(), 1UL << 20U);
+  }
+}
+
+// The inactivity timeout also bounds a request upload stalled by a server that stops reading.
+TEST(HttpClientErrorE2ETest, InactivityTimeoutFailsAStalledUpload) {
+  std::binary_semaphore clientDone{0};
+  RawServer server([&clientDone](NativeHandle fd, int) {
+    ReadRequestHead(fd);
+    EXPECT_TRUE(clientDone.try_acquire_for(std::chrono::seconds{5}));  // never read the body, until the client gave up
+  });
+  HttpClientConfig cfg;
+  cfg.requestTimeout = std::chrono::seconds{20};
+  cfg.inactivityTimeout = std::chrono::milliseconds{150};
+  HttpClient client(cfg);
+  const std::string body(64UL << 20U, 'u');  // far beyond the socket buffers
+  const auto start = std::chrono::steady_clock::now();
+  auto result = client.post(MakeUrl(server.port()), body);
+  clientDone.release();
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::timeout);
+  EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds{5});
+}
+
 #ifdef AERONET_ENABLE_HTTP2
 
 // HTTP/2 (prior-knowledge h2c) error paths against the scriptable raw server. The client sends its
@@ -3295,7 +3915,7 @@ TEST(HttpClientErrorE2ETest, Http2NonHttp2PeerReturnsMalformedResponse) {
 TEST(HttpClientErrorE2ETest, Http2ReadTimeoutReturnsError) {
   RawServer server([](NativeHandle fd, int) {
     DrainRequest(fd);
-    std::this_thread::sleep_for(std::chrono::milliseconds{200});  // outlive the client's deadline
+    DrainUntilClosed(fd, 5000);  // stall until the client gives up: the server outlives the client's deadline
   });
   HttpClientConfig cfg = Http2RawConfig();
   cfg.requestTimeout = std::chrono::milliseconds{150};
@@ -3303,6 +3923,23 @@ TEST(HttpClientErrorE2ETest, Http2ReadTimeoutReturnsError) {
   auto result = client.get(MakeUrl(server.port()));
   ASSERT_FALSE(result);
   EXPECT_EQ(result.error(), HttpClientErrc::timeout);
+}
+
+// Over HTTP/2 too, a stalled exchange fails after the inactivity timeout, long before the request timeout.
+TEST(HttpClientErrorE2ETest, Http2InactivityTimeoutFailsAStalledExchange) {
+  RawServer server([](NativeHandle fd, int) {
+    DrainRequest(fd);
+    DrainUntilClosed(fd, 5000);  // stall until the client gives up: the server outlives the inactivity timeout
+  });
+  HttpClientConfig cfg = Http2RawConfig();
+  cfg.requestTimeout = std::chrono::seconds{20};
+  cfg.inactivityTimeout = std::chrono::milliseconds{100};
+  HttpClient client(cfg);
+  const auto start = std::chrono::steady_clock::now();
+  auto result = client.get(MakeUrl(server.port()));
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::timeout);
+  EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds{5});
 }
 
 namespace {
@@ -3341,6 +3978,32 @@ std::string HpackStatusLiteral(std::string_view status) {
   return out;
 }
 
+// HPACK "Literal Header Field without Indexing, new name" (name and value shorter than 127 bytes).
+std::string HpackLiteral(std::string_view name, std::string_view value) {
+  std::string out;
+  out.push_back('\0');
+  out.push_back(static_cast<char>(name.size()));
+  out.append(name);
+  out.push_back(static_cast<char>(value.size()));
+  out.append(value);
+  return out;
+}
+
+// Server preface plus a 200 response on stream 1 with the given content coding and DATA (sent with END_STREAM in
+// frames of at most `frameSize` bytes, 16 KiB by default, the default maximum frame size).
+std::string Http2EncodedResponse(std::string_view encodingName, std::string_view data, std::size_t frameSize = 16384) {
+  std::string out;
+  AppendH2Frame(out, kFrameSettings, 0, 0, {});
+  AppendH2Frame(out, kFrameSettings, kFlagAck, 0, {});
+  AppendH2Frame(out, kFrameHeaders, kFlagEndHeaders, 1,
+                "\x88" + HpackLiteral("content-encoding", encodingName) + HpackLiteral("content-type", "text/csv"));
+  for (std::size_t off = 0; off < data.size(); off += frameSize) {
+    const std::string_view piece = data.substr(off, frameSize);
+    AppendH2Frame(out, kFrameData, off + piece.size() == data.size() ? kFlagEndStream : 0, 1, piece);
+  }
+  return out;
+}
+
 }  // namespace
 
 // A genuine 103 Early Hints interim response precedes the real 200 on the same stream. The client must
@@ -3375,6 +4038,112 @@ TEST(HttpClientErrorE2ETest, Http2InformationalResponseNotCached) {
   ASSERT_TRUE(second);
   EXPECT_EQ(second->bodyInMemory(), "1");  // cache hit: server never sees a second request
   EXPECT_EQ(hits.load(), 1);
+}
+
+// Over HTTP/2, a content-coded body streamed to a sink is decoded as it arrives; a coding cut short or corrupt fails
+// as malformed, after the sink received the head.
+TEST(HttpClientSinkE2ETest, Http2ContentCodedBodiesAreDecodedOrRejected) {
+  const RawChars mixed = test::MakeMixedPayload(20000, 30000);  // stays within the default flow-control window
+  const std::string_view payload{mixed};
+  for (const Encoding enc : test::SupportedEncodings()) {
+    const RawChars encoded = test::Compress(enc, payload);
+    std::string corrupt(std::string_view{encoded});
+    corrupt[corrupt.size() / 2] = static_cast<char>(~static_cast<unsigned char>(corrupt[corrupt.size() / 2]));
+    corrupt[0] = static_cast<char>(~static_cast<unsigned char>(corrupt[0]));
+    const std::string_view whole{encoded};
+    for (const std::string_view data : {whole, whole.substr(0, whole.size() - 4), std::string_view(corrupt)}) {
+      const bool valid = data.data() == whole.data() && data.size() == whole.size();
+      // Invalid bodies also come in one-byte DATA frames: each piece then only reaches the decoder with the next one.
+      for (const std::size_t frameSize : {std::size_t{16384}, std::size_t{1}}) {
+        if (valid && frameSize == 1) {
+          continue;
+        }
+        RawServer server([&](NativeHandle fd, int) {
+          DrainRequest(fd);
+          SendAll(fd, Http2EncodedResponse(GetEncodingStr(enc), data, frameSize));
+          DrainUntilClosed(fd, 500);  // keep the connection open until the client is done
+        });
+        {
+          HttpClient client(Http2RawConfig());  // closes its connection at the end of the scope, releasing the server
+          test::CollectingBodySink sink;
+          auto result = client.get(MakeUrl(server.port()), sink);
+          ASSERT_EQ(result.has_value(), valid) << GetEncodingStr(enc) << ' ' << data.size() << ' ' << frameSize;
+          EXPECT_EQ(sink.headCalls, 1U) << GetEncodingStr(enc);
+          EXPECT_EQ(sink.contentType, "text/csv");
+          EXPECT_TRUE(sink.contentEncoding.empty());
+          if (valid) {
+            EXPECT_TRUE(sink.body == payload) << GetEncodingStr(enc);
+          } else {
+            EXPECT_EQ(result.error(), HttpClientErrc::malformedResponse) << GetEncodingStr(enc) << ' ' << data.size();
+          }
+        }
+
+        // The same body, buffered.
+        HttpClient bufferingClient(Http2RawConfig());
+        auto buffered = bufferingClient.get(MakeUrl(server.port()));
+        ASSERT_EQ(buffered.has_value(), valid) << GetEncodingStr(enc) << ' ' << data.size();
+        if (valid) {
+          EXPECT_TRUE(buffered->bodyInMemory() == payload) << GetEncodingStr(enc);
+        } else {
+          EXPECT_EQ(buffered.error(), HttpClientErrc::malformedResponse) << GetEncodingStr(enc) << ' ' << data.size();
+        }
+      }
+    }
+  }
+}
+
+// Over HTTP/2, a stream reset after part of the body reached the sink fails with connectionClosed, and is not retried
+// even when allowed for idempotent requests.
+TEST(HttpClientSinkE2ETest, Http2ResetAfterTheHeadIsNotRetried) {
+  std::atomic<int> connections{0};
+  RawServer server([&connections](NativeHandle fd, int) {
+    connections.fetch_add(1, std::memory_order_relaxed);
+    DrainRequest(fd);
+    std::string out;
+    AppendH2Frame(out, kFrameSettings, 0, 0, {});
+    AppendH2Frame(out, kFrameSettings, kFlagAck, 0, {});
+    AppendH2Frame(out, kFrameHeaders, kFlagEndHeaders, 1, "\x88");  // :status 200
+    AppendH2Frame(out, kFrameData, 0, 1, "partial");
+    AppendH2Frame(out, 0x3 /* RST_STREAM */, 0, 1, std::string_view("\0\0\0\x02", 4));  // INTERNAL_ERROR
+    SendAll(fd, out);
+    DrainUntilClosed(fd, 500);
+  });
+  RetryConfig retry = FastRetry(3);
+  retry.retryIdempotentAfterSend = true;
+  HttpClientConfig cfg = Http2RawConfig();
+  cfg.withRetry(retry);
+  HttpClient client(cfg);
+  test::CollectingBodySink sink;
+  auto result = client.get(MakeUrl(server.port()), sink);
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::connectionClosed);
+  EXPECT_EQ(sink.headCalls, 1U);
+  EXPECT_EQ(sink.body, "partial");
+  std::this_thread::sleep_for(std::chrono::milliseconds{80});
+  EXPECT_EQ(connections.load(std::memory_order_relaxed), 1);
+}
+
+// Over HTTP/2, stacked content codings are buffered, decoded whole, then delivered.
+TEST(HttpClientSinkE2ETest, Http2StackedContentCodingsAreBufferedThenDelivered) {
+  if (test::SupportedEncodings().empty()) {
+    GTEST_SKIP() << "no codec compiled in";
+  }
+  const Encoding enc = test::SupportedEncodings().front();
+  const std::string payload = test::MakePatternedPayload(30000);
+  const RawChars encoded = test::Compress(enc, payload);
+  RawServer server([&](NativeHandle fd, int) {
+    DrainRequest(fd);
+    SendAll(fd, Http2EncodedResponse(std::string("identity, ") + std::string(GetEncodingStr(enc)),
+                                     std::string_view{encoded}));
+    DrainUntilClosed(fd, 500);
+  });
+  HttpClient client(Http2RawConfig());
+  test::CollectingBodySink sink;
+  auto result = client.get(MakeUrl(server.port()), sink);
+  ASSERT_TRUE(result) << ErrcToStr(result.error());
+  EXPECT_EQ(sink.body, payload);
+  EXPECT_EQ(sink.bodyCalls, 1U);
+  EXPECT_EQ(sink.contentType, "text/csv");
 }
 
 #endif  // AERONET_ENABLE_HTTP2

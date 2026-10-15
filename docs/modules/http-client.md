@@ -34,10 +34,12 @@ Every request returns an `HttpClientResult`, a `std::expected<HttpResponse, Http
 | `invalidUrl` | Malformed or unsupported URL, or redirect `Location`. |
 | `connectFailed` | DNS resolution or TCP connection failure, connection timeout included. |
 | `tlsError` | TLS handshake failure, certificate verification included. |
-| `timeout` | TLS handshake, request write, or response read not completed in time. |
+| `timeout` | TLS handshake, request write, or response read not completed in time (see [Timeouts](#timeouts)). |
 | `writeError`, `ioError` | Transport write failure, internal I/O failure. |
-| `connectionClosed` | Connection closed by the peer before a complete response. |
-| `malformedResponse` | Response that cannot be parsed, or larger than `maxResponseBytes`. |
+| `connectionClosed` | Connection closed (or HTTP/2 stream reset) by the peer before a complete response, such as a body shorter than its `Content-Length`. |
+| `malformedResponse` | Response that cannot be parsed, or body that cannot be decoded: corrupt or truncated content coding, unsupported `Content-Encoding`. |
+| `responseTooLarge` | Response larger than `maxResponseBytes`, or whose decoding exceeds the [decompression limits](../guides/compression.md#request-body-decompression) (`maxCompressedBytes`, `maxDecompressedBytes`, `maxExpansionRatio` of `HttpClientConfig::decompression`). |
+| `aborted` | Transfer stopped by the [`ResponseBodySink`](#streaming-response-bodies) of the request. |
 | `protocolUnsupported` | The server selected a protocol this build cannot speak, such as `h2` without HTTP/2 support. |
 | `proxyError` | The forward proxy refused or failed to open the tunnel. |
 
@@ -76,9 +78,70 @@ const HttpClientResult stored = client.request(std::move(upload));
 
 ## Responses
 
-The response is an `HttpResponse`, the same type the server builds. `status()`, `headers()`, `headerValueOrEmpty()`, and `bodyInMemory()` read it. Header names are lower-case. The body is complete when the request returns: chunked transfer coding is removed, a compressed body is decoded (and its `Content-Encoding` header dropped; an empty body, having nothing to decode, keeps it), and `Content-Type` and `Content-Length` describe the decoded body. Other headers keep their received values.
+The response is an `HttpResponse`, the same type the server builds. `status()`, `headers()`, `headerValueOrEmpty()`, and `bodyInMemory()` read it. Header names are lower-case. The body is complete when the request returns: chunked transfer coding is removed, a compressed body is decoded (and its `Content-Encoding` header dropped, also for an empty body), and `Content-Type` and `Content-Length` describe the decoded body. Other headers keep their received values, except the codings of a `Content-Encoding` kept (decompression disabled), which are lower-cased as they are case-insensitive.
 
-The whole response is buffered, up to `maxResponseBytes` (64 MiB by default). The body takes over the client's receive buffer instead of being copied: chunked responses hand over their de-framing buffer, decompressed responses the decoder output, and HTTP/2 responses their DATA buffer. The client keeps an empty buffer of the same capacity for the next exchange.
+The whole response is buffered, up to `maxResponseBytes` (64 MiB by default), unless its body is [streamed to a sink](#streaming-response-bodies). The body takes over the client's receive buffer instead of being copied: chunked responses hand over their de-framing buffer, decompressed responses the decoder output, and HTTP/2 responses their DATA buffer. The client keeps an empty buffer of the same capacity for the next exchange.
+
+## Streaming response bodies
+
+To download a body too large to hold in memory, or to process it while it arrives, give the request a `ResponseBodySink` (`<aeronet/response-body-sink.hpp>`, included by `<aeronet/http-client.hpp>`). The client then delivers the body piece by piece, de-chunked and decoded like a buffered body, and only keeps one read of it in memory whatever its size. The returned `HttpResponse` holds the status and headers only.
+
+```cpp
+#include <aeronet/http-client.hpp>
+
+#include <chrono>
+#include <cstdio>
+#include <string_view>
+
+// Writes the body of a 200 response to a file as it arrives.
+class FileSink final : public ResponseBodySink {
+ public:
+  explicit FileSink(std::FILE* file) noexcept : _file(file) {}
+
+  bool onHead(const HttpResponse& head, [[maybe_unused]] std::string_view contentType) override {
+    return head.status() == http::StatusCodeOK;  // otherwise stop: the request fails with aborted
+  }
+
+  bool onBody(std::string_view chunk) override {
+    return std::fwrite(chunk.data(), 1, chunk.size(), _file) == chunk.size();  // stop on a write error
+  }
+
+ private:
+  std::FILE* _file;
+};
+
+int main() {
+  HttpClientConfig config;
+  config.requestTimeout = std::chrono::hours{1};        // the whole download
+  config.inactivityTimeout = std::chrono::seconds{30};  // but fail fast when it stalls
+  HttpClient client(config);
+
+  std::FILE* file = std::fopen("export.csv", "wb");
+  if (file == nullptr) {
+    return 1;
+  }
+  FileSink sink(file);
+  const HttpClientResult result = client.get("https://exports.example.com/2026-10.csv", sink);
+  std::fclose(file);
+  return result ? 0 : 1;  // ErrcToStr(result.error()) tells why it failed
+}
+```
+
+`request(request, sink)` does the same for any request. The sink sees one response per request, the final one:
+
+- `onHead()` is called once, before any body byte, with the status and headers, and the media type of the body (empty when the head announces no body: `HEAD` request, `204`, `304`). A decoded body has no `Content-Encoding` header anymore.
+- `onBody()` receives the consecutive pieces of the body, never empty. A piece is only valid during the call.
+- Either callback returns `false` to stop the transfer: the request then fails with `aborted`. A connection stopped while receiving the body is closed.
+- The responses of followed redirects and of statuses retried by the [retry policy](#retries) are buffered and discarded as usual, never given to the sink. A body with stacked content codings (`Content-Encoding: gzip, br`) is buffered, decoded whole, then delivered in one piece. These buffered bodies are bounded by `maxResponseBytes` and the decompression limits as usual. A content coding the client cannot decode fails with `malformedResponse` before the body is received.
+- Once `onHead()` was called, the request is never retried: a failure leaves the sink with a partial body. A body cut short fails with `connectionClosed`, a truncated or corrupt content coding with `malformedResponse`.
+- For a streamed body, `maxResponseBytes` only bounds the head, and `maxCompressedBytes` does not apply. The decoded size is still bounded by `maxDecompressedBytes`, and its ratio to the coded size by `maxExpansionRatio` (`responseTooLarge`): while the body arrives, the ratio is checked against at least one `decoderChunkSize` of coded bytes, so that a very compressible start does not stop a body whose overall ratio is fine.
+- The [response cache](#response-cache) is not used.
+
+The callbacks run on the thread of the request, and must not use the `HttpClient` making it. An exception thrown by a callback propagates out of `request()`, and the connection is closed.
+
+## Timeouts
+
+`connectTimeout` (10 s) bounds the TCP connection, which then fails with `connectFailed`, and the TLS handshake. `requestTimeout` (30 s) bounds the whole exchange once connected, whatever its progress. `inactivityTimeout`, disabled by default, bounds each wait for the connection to send or receive a byte: combined with a large `requestTimeout`, a long download completes as long as data keeps flowing, while a stalled one fails fast. An expired TLS handshake, request or inactivity timeout ends the request with `timeout`.
 
 ## Connections
 
@@ -184,15 +247,16 @@ The client counts retries, redirects, and request compression outcomes (`aeronet
 ## Limitations
 
 - The client is synchronous: one exchange at a time per client, and one stream at a time per HTTP/2 connection. A coroutine API integrated with a server event loop is on the [roadmap](../ROADMAP.md).
-- A running request cannot be cancelled; it ends with its timeouts.
-- Responses are buffered entirely, up to `maxResponseBytes`: there is no streaming of response bodies.
+- A running request cannot be cancelled from another thread; it ends with its timeouts, or when its `ResponseBodySink` stops it.
+- Request bodies are sent from memory or from a file: there is no callback to produce them while they are sent.
 - There is no cookie storage.
 - Only cleartext HTTP proxies are supported, without proxy authentication.
 
 ## Tests
 
-- HTTP/1.1 exchanges, pooling, redirects (and the credentials they drop), retries, cache, and response buffers: [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp). Redirect URL resolution: [http-request_test.cpp](../../aeronet/client/test/http-request_test.cpp).
-- HTTP/2: [http-client-http2-e2e_test.cpp](../../aeronet/client/test/http-client-http2-e2e_test.cpp).
+- HTTP/1.1 exchanges, pooling, redirects (and the credentials they drop), retries, cache, timeouts, response buffers, and response body sinks (also over HTTP/2 for content-coded bodies): [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp). Redirect URL resolution: [http-request_test.cpp](../../aeronet/client/test/http-request_test.cpp).
+- HTTP/1.1 response parsing, including body streaming and the failure statuses: [http1-response-parser_test.cpp](../../aeronet/client/test/http1-response-parser_test.cpp).
+- HTTP/2, including response body sinks: [http-client-http2-e2e_test.cpp](../../aeronet/client/test/http-client-http2-e2e_test.cpp).
 - HTTPS, trust stores, mutual TLS, and redirects to cleartext: [http-client-tls-e2e_test.cpp](../../aeronet/client/test/http-client-tls-e2e_test.cpp).
 - Configuration and retry policy: [http-client-config_test.cpp](../../aeronet/client/test/http-client-config_test.cpp) and [retry-config_test.cpp](../../aeronet/client/test/retry-config_test.cpp).
 - Response decompression and `Accept-Encoding`: [client-accept-encoding_test.cpp](../../aeronet/client/test/client-accept-encoding_test.cpp).

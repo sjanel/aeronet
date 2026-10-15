@@ -917,6 +917,24 @@ TEST_F(HttpRequestViewTest, MergeConsecutiveHeaders) {
   checkHeaders({{"x-test", "Value"}, {"h", "v1,v2"}, {"x-spaces", "abc"}, {http::ContentLength, "0"}});
 }
 
+TEST_F(HttpRequestViewTest, ContentEncodingValueIsLowerCased) {
+  // Content codings are case-insensitive: they are lower-cased when parsed (including merged repeated lines, and
+  // values long enough for the vectorized path), whereas other header values keep their case.
+  auto st = reqSet(BuildRaw("POST", "/p", "HTTP/1.1",
+                            "X-Test: MiXeD\r\n"
+                            "Content-Encoding:  GZip, IDENTITY, Deflate, ZSTD, Br, identity \r\n"
+                            "X-Other: VaLuE\r\n"
+                            "CONTENT-ENCODING: BR\r\n"
+                            "content-length: 0\r\n"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  checkHeaders({
+      {"x-test", "MiXeD"},
+      {http::ContentEncoding, "gzip, identity, deflate, zstd, br, identity,br"},
+      {"x-other", "VaLuE"},
+  });
+}
+
 TEST_F(HttpRequestViewTest, ShrinkToFit) {
   auto raw = BuildRaw("GET", "/p", "HTTP/1.1",
                       "X-Test: Value\r\n"

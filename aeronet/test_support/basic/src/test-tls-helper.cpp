@@ -12,6 +12,7 @@
 #include <openssl/x509v3.h>
 
 #include <cstddef>
+#include <initializer_list>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -81,6 +82,31 @@ std::string KeyPem(EVP_PKEY* pkey) {
   return BioContent(bio.get());
 }
 
+// A name entry, such as {"CN", "localhost"}.
+struct NameEntry {
+  const char* field;
+  const char* value;
+};
+
+// Sets the subject name of `cert` to `entries`, and its issuer name to the subject name of `issuer` (`cert` itself when
+// null). The name is built apart then copied: since OpenSSL 4, X509_get_subject_name() returns a const name.
+void SetNames(X509* cert, std::initializer_list<NameEntry> entries, const X509* issuer) {
+  std::unique_ptr<X509_NAME, decltype(&::X509_NAME_free)> name(::X509_NAME_new(), ::X509_NAME_free);
+  if (!name) {
+    throw std::runtime_error("X509_NAME_new failed");
+  }
+  for (const NameEntry& entry : entries) {
+    if (::X509_NAME_add_entry_by_txt(name.get(), entry.field, MBSTRING_ASC,
+                                     reinterpret_cast<const unsigned char*>(entry.value), -1, -1, 0) != 1) {
+      throw std::runtime_error("X509_NAME_add_entry_by_txt failed");
+    }
+  }
+  if (::X509_set_subject_name(cert, name.get()) != 1 ||
+      ::X509_set_issuer_name(cert, issuer == nullptr ? name.get() : ::X509_get_subject_name(issuer)) != 1) {
+    throw std::runtime_error("Failed to set the certificate names");
+  }
+}
+
 void AddExtension(X509* cert, X509* issuer, int nid, const char* value) {
   X509V3_CTX v3ctx;
   X509V3_set_ctx_nodb(&v3ctx);
@@ -105,11 +131,7 @@ X509Ptr MakeCertificate(const char* commonName, EVP_PKEY* pkey, X509* issuer, EV
   ::X509_gmtime_adj(::X509_getm_notBefore(cert.get()), -60);
   ::X509_gmtime_adj(::X509_getm_notAfter(cert.get()), 3600);
   ::X509_set_pubkey(cert.get(), pkey);
-  X509_NAME* name = ::X509_get_subject_name(cert.get());
-  ::X509_NAME_add_entry_by_txt(name, "O", MBSTRING_ASC, reinterpret_cast<const unsigned char*>("AeronetTest"), -1, -1,
-                               0);
-  ::X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>(commonName), -1, -1, 0);
-  ::X509_set_issuer_name(cert.get(), issuer == nullptr ? name : ::X509_get_subject_name(issuer));
+  SetNames(cert.get(), {{"O", "AeronetTest"}, {"CN", commonName}}, issuer);
   X509* issuerCert = issuer == nullptr ? cert.get() : issuer;
   if (isCa) {
     AddExtension(cert.get(), issuerCert, NID_basic_constraints, "critical,CA:TRUE");
@@ -177,11 +199,7 @@ std::pair<std::string, std::string> MakeEphemeralCertKey(const char* commonName,
   X509_gmtime_adj(X509_get_notBefore(x509), 0);
   X509_gmtime_adj(X509_get_notAfter(x509), validSeconds);
   X509_set_pubkey(x509, pkey.get());
-  X509_NAME* name = X509_get_subject_name(x509);
-  X509_NAME_add_entry_by_txt(name, "C", MBSTRING_ASC, reinterpret_cast<const unsigned char*>("XX"), -1, -1, 0);
-  X509_NAME_add_entry_by_txt(name, "O", MBSTRING_ASC, reinterpret_cast<const unsigned char*>("AeronetTest"), -1, -1, 0);
-  X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>(commonName), -1, -1, 0);
-  X509_set_issuer_name(x509, name);
+  SetNames(x509, {{"C", "XX"}, {"O", "AeronetTest"}, {"CN", commonName}}, nullptr);
   if (X509_sign(x509, pkey.get(), EVP_sha256()) <= 0) {
     return {"", ""};
   }
@@ -212,5 +230,7 @@ std::pair<std::string, std::string> MakeEphemeralCertKey(const char* commonName,
   }
   return {certPem, keyPem};
 }
+
+void SetSelfIssuedName(X509* cert, const char* commonName) { SetNames(cert, {{"CN", commonName}}, nullptr); }
 
 }  // namespace aeronet::test

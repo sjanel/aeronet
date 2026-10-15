@@ -2595,9 +2595,7 @@ std::pair<std::string, std::string> MakeWeakRsaCertKey() {
   ::X509_gmtime_adj(::X509_getm_notBefore(cert.get()), 0);
   ::X509_gmtime_adj(::X509_getm_notAfter(cert.get()), 3600);
   ::X509_set_pubkey(cert.get(), key.get());
-  X509_NAME* name = ::X509_get_subject_name(cert.get());
-  ::X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>("weak"), -1, -1, 0);
-  ::X509_set_issuer_name(cert.get(), name);
+  test::SetSelfIssuedName(cert.get(), "weak");
   EXPECT_GT(::X509_sign(cert.get(), key.get(), ::EVP_sha256()), 0);
   auto certBio = MakeMemoryBio();
   auto keyBio = MakeMemoryBio();

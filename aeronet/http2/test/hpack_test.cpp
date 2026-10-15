@@ -733,6 +733,39 @@ TEST(HpackDecoder, DuplicateCookieMergesWithSemicolon) {
   EXPECT_EQ(it->second, "one;two");
 }
 
+TEST(HpackDecoder, ContentEncodingValueIsLowerCased) {
+  auto decoder = CreateHpackDecoder();
+
+  // content-encoding is static table index 26. Its codings are case-insensitive: they are lower-cased when decoded
+  // (including merged repeated fields), whereas other values keep their case.
+  static constexpr uint8_t encoded[]{
+      0x5A, 0x04, 'G',  'Z', 'I', 'P',                                           // content-encoding: GZIP (indexed)
+      0x0F, 0x0B, 0x02, 'B', 'r',                                                // content-encoding: Br (not indexed)
+      0x40, 0x06, 'x',  '-', 'c', 'a', 's', 'e', 0x05, 'M', 'i', 'X', 'e', 'D',  // x-case: MiXeD (indexed)
+  };
+
+  auto result = decoder.decode(AsBytes(encoded));
+  ASSERT_TRUE(result.isSuccess());
+  ASSERT_EQ(result.decodedHeaders.size(), 2U);
+  const auto encodingIt = result.decodedHeaders.find("content-encoding");
+  ASSERT_NE(encodingIt, result.decodedHeaders.end());
+  EXPECT_EQ(encodingIt->second, "gzip,br");
+  const auto caseIt = result.decodedHeaders.find("x-case");
+  ASSERT_NE(caseIt, result.decodedHeaders.end());
+  EXPECT_EQ(caseIt->second, "MiXeD");
+
+  // The dynamic table keeps the field as received, and each decoded reference to it is lower-cased.
+  ASSERT_EQ(decoder.dynamicTable().entryCount(), 2U);
+  EXPECT_EQ(decoder.dynamicTable()[1].value(), "GZIP");
+  static constexpr uint8_t indexed[]{0xBF};  // dynamic index 63 (oldest entry): content-encoding: GZIP
+
+  const auto indexedResult = decoder.decode(AsBytes(indexed));
+  ASSERT_TRUE(indexedResult.isSuccess());
+  ASSERT_EQ(indexedResult.decodedHeaders.size(), 1U);
+  EXPECT_EQ(indexedResult.decodedHeaders.begin()->first, "content-encoding");
+  EXPECT_EQ(indexedResult.decodedHeaders.begin()->second, "gzip");
+}
+
 TEST(HpackDecoder, DuplicateContentLengthIsForbidden) {
   auto decoder = CreateHpackDecoder();
 

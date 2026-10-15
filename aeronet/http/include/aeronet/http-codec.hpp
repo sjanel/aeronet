@@ -97,6 +97,8 @@ class HttpCodec {
 
   /// Check if decompression will be applied for the given request based on config and headers.
   /// This can be called before body decoding to determine the optimal path.
+  /// As for the other decompression functions, the Content-Encoding value must be lower-case (as normalized by the
+  /// request parsers).
   /// Returns http::StatusCodeOK if decompression will be applied,
   /// http::StatusCodeNotModified if no decompression is needed,
   /// or http::StatusCodeBadRequest if the request contains invalid encoding.
@@ -114,7 +116,8 @@ class HttpCodec {
                                                           RawChars& tmpBuffer);
 
   /// Decompress a fully-contiguous compressed body according to the given Content-Encoding header
-  /// value. Supports stacked encodings (e.g. "gzip, br") and identity codings. The decompressed bytes
+  /// value, which must be lower-case (as normalized by the parsers). Supports stacked encodings (e.g.
+  /// "gzip, br") and identity codings. The decompressed bytes
   /// are written into outBuffer (tmpBuffer is scratch for the multi-stage ping-pong) and `outDecompressed`
   /// is set to a view of the result (a view into one of the two buffers, or `compressedBody` itself when
   /// only identity codings were present so nothing was decoded). No header mutation is performed: callers

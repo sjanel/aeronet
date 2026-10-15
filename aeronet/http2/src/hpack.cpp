@@ -21,6 +21,7 @@
 #include "aeronet/mergeable-headers.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/safe-cast.hpp"
+#include "aeronet/toupperlower.hpp"
 #include "http2-header-is-valid.hpp"
 
 namespace aeronet::http2 {
@@ -1034,13 +1035,21 @@ HpackDecoder::DecodeResult::Error HpackDecoder::storeHeader(std::string_view nam
 
     const std::size_t newValueLen = existingValue.size() + 1U + value.size();
 
-    char* pData = _decodedStrings.allocateAndDefaultConstruct(SafeCast<CharStorageSizeType>(newValueLen));
+    pValue = _decodedStrings.allocateAndDefaultConstruct(SafeCast<CharStorageSizeType>(newValueLen));
 
-    pData = Append(existingValue, pData);
+    char* pData = Append(existingValue, pValue);
     *pData++ = mergeSep;
-    pData = Append(value, pData);
+    Copy(value, pData);
 
-    it->second = std::string_view(pData - newValueLen, newValueLen);
+    it->second = std::string_view(pValue, newValueLen);
+  }
+
+  if (name == http::ContentEncoding) {
+    // Content codings are case-insensitive (RFC 9110 §8.4.1): lower-case them once stored. A plain loop is enough for
+    // these few bytes (the vectorized tolower() of tolower-str.hpp would bring <immintrin.h> into this file).
+    for (char* pEndValue = pValue + it->second.size(); pValue != pEndValue; ++pValue) {
+      *pValue = tolower(*pValue);
+    }
   }
 
   return DecodeResult::Error::None;

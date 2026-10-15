@@ -61,8 +61,8 @@ class Header {
 
 // Helper to iterate Content-Encoding header values in reverse order.
 // Given header value should be trimmed on the extremities before use.
-// The iterator will also yield empty tokens if there are consecutive separators or
-// a leading separator.
+// The tokens returned by the iterator are trimmed as well.
+// The iterator will also yield empty tokens if there are consecutive separators or a leading separator.
 // Usage:
 //  http::HeaderValueReverseTokensIterator<','> it(headerValue);
 //  while (it.hasNext()) {
