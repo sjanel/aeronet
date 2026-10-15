@@ -16,6 +16,7 @@
 #include <exception>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "aeronet/errno-throw.hpp"
 #include "aeronet/http-request-view.hpp"
@@ -30,7 +31,6 @@
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 #include "aeronet/tracing/tracer.hpp"
-#include "aeronet/vector.hpp"
 
 using namespace std::chrono_literals;
 
@@ -184,44 +184,40 @@ TEST(OpenTelemetryEndToEnd, EmitsTracesAndMetrics) {
 
   // Collect requests until we have both trace and metrics exports or timeout. Both are exported periodically by
   // background threads, in any order: several metrics exports may come before the trace one.
-  vector<test::CapturedOtlpRequest> captured;
+  // The metric reader exports once as soon as it starts, then every exportInterval. When its thread starts late, this
+  // first export may hold the metrics the server recorded before accepting the connection (maintenance gauges, events
+  // processed) but not yet the accepted connection: wait for an export that contains it.
+  test::CapturedOtlpRequest traceReq;
   bool traceCaptured = false;
   bool metricsCaptured = false;
   const auto deadline = std::chrono::steady_clock::now() + 3s;  // NOLINT(misc-include-cleaner)
   while ((!traceCaptured || !metricsCaptured) && std::chrono::steady_clock::now() < deadline) {
     try {
-      captured.emplace_back(collector.waitForRequest(500ms));  // NOLINT(misc-include-cleaner)
-      traceCaptured |= captured.back().path == "/v1/traces";
-      metricsCaptured |= captured.back().path == "/v1/metrics";
+      auto req = collector.waitForRequest(500ms);  // NOLINT(misc-include-cleaner)
+      if (req.path == "/v1/traces") {
+        EXPECT_FALSE(traceCaptured) << "The single span should be exported once";
+        traceReq = std::move(req);
+        traceCaptured = true;
+      } else if (req.path == "/v1/metrics" && !metricsCaptured) {
+        ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest metricsProto;
+        EXPECT_TRUE(metricsProto.ParseFromString(req.body));
+        metricsCaptured = MetricsContainCounter(metricsProto, "aeronet.connections.accepted");
+      }
     } catch (const std::exception&) {
       log::error("timed out waiting for a single request; loop and check overall deadline");
     }
   }
 
-  const test::CapturedOtlpRequest* traceReq = nullptr;
-  const test::CapturedOtlpRequest* metricsReq = nullptr;
-  for (const auto& req : captured) {
-    if (req.path == "/v1/traces" && traceReq == nullptr) {
-      traceReq = &req;
-    } else if (req.path == "/v1/metrics" && metricsReq == nullptr) {
-      metricsReq = &req;
-    }
-  }
+  ASSERT_TRUE(traceCaptured) << "Trace export not captured";
+  EXPECT_TRUE(metricsCaptured) << "No metrics export with aeronet.connections.accepted captured";
 
-  ASSERT_NE(traceReq, nullptr) << "Trace export not captured";
-  ASSERT_NE(metricsReq, nullptr) << "Metrics export not captured";
-
-  EXPECT_EQ(traceReq->method, "POST");
-  EXPECT_EQ(traceReq->headerValue("x-test-auth"), "otel-secret");
+  EXPECT_EQ(traceReq.method, "POST");
+  EXPECT_EQ(traceReq.headerValue("x-test-auth"), "otel-secret");
 
   ::opentelemetry::proto::collector::trace::v1::ExportTraceServiceRequest traceProto;
-  ASSERT_TRUE(traceProto.ParseFromString(traceReq->body));
+  ASSERT_TRUE(traceProto.ParseFromString(traceReq.body));
   EXPECT_TRUE(SpansContainHttpRequest(traceProto));
   EXPECT_TRUE(ResourceContainsService(traceProto, "aeronet-e2e"));
-
-  ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest metricsProto;
-  ASSERT_TRUE(metricsProto.ParseFromString(metricsReq->body));
-  EXPECT_TRUE(MetricsContainCounter(metricsProto, "aeronet.connections.accepted"));
 
   // The single span is exported once. Metrics are exported periodically, so later metrics exports may be pending.
   for (const auto& req : collector.drain()) {

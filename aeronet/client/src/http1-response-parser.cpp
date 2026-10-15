@@ -189,9 +189,9 @@ void Http1ResponseParser::reset(bool headRequest, bool streamHead) noexcept {
   _contentTypeLen = 0;
   _bodyRemaining = 0;
   _receiveBuf = nullptr;
+  _statusCode = 0;
   _framing = Framing::None;
   _state = State::StatusLine;
-  _statusCode = 0;
   _headRequest = headRequest;
   _streamHead = streamHead;
   _streaming = false;

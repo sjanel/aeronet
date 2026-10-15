@@ -53,7 +53,6 @@ TEST(HttpClientConfigTest, KeepAliveTimeout) {
 
 TEST(HttpClientConfigTest, InactivityTimeout) {
   HttpClientConfig config;
-  EXPECT_EQ(config.inactivityTimeout, HttpClientConfig::Duration::zero());  // disabled by default
   config.inactivityTimeout = std::chrono::seconds{30};
   EXPECT_NO_THROW(config.validate());
 

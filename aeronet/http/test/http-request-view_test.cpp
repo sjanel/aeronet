@@ -928,9 +928,11 @@ TEST_F(HttpRequestViewTest, ContentEncodingValueIsLowerCased) {
                             "content-length: 0\r\n"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
-  checkHeaders({{"x-test", "MiXeD"},
-                {http::ContentEncoding, "gzip, identity, deflate, zstd, br, identity,br"},
-                {"x-other", "VaLuE"}});
+  checkHeaders({
+      {"x-test", "MiXeD"},
+      {http::ContentEncoding, "gzip, identity, deflate, zstd, br, identity,br"},
+      {"x-other", "VaLuE"},
+  });
 }
 
 TEST_F(HttpRequestViewTest, ShrinkToFit) {

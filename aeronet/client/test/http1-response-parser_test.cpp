@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdio>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -1066,8 +1067,8 @@ TEST(ResponseParserStreamingTest, ContentLengthBodyIsStreamedAndNotBounded) {
 TEST(ResponseParserStreamingTest, ChunkedBodyIsStreamedWithTrailers) {
   std::string payload;
   std::string raw = "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n";
-  for (int idx = 0; idx < 50; ++idx) {
-    const std::string chunk = test::MakePatternedPayload(static_cast<std::size_t>(997 + idx));
+  for (std::size_t idx = 0; idx < 50U; ++idx) {
+    const std::string chunk = test::MakePatternedPayload(997U + idx);
     payload += chunk;
     char sizeBuf[32];
     const int len = std::snprintf(sizeBuf, sizeof(sizeBuf), "%zx;ext=1\r\n", chunk.size());
@@ -1115,8 +1116,10 @@ TEST(ResponseParserStreamingTest, HeadCompleteThenBufferedBody) {
 
 // Bodyless responses complete without HeadComplete, even in streaming mode.
 TEST(ResponseParserStreamingTest, BodylessResponsesCompleteDirectly) {
-  for (const std::string_view raw : {std::string_view("HTTP/1.1 204 No Content\r\n\r\n"),
-                                     std::string_view("HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")}) {
+  for (const std::string_view raw : {
+           std::string_view("HTTP/1.1 204 No Content\r\n\r\n"),
+           std::string_view("HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n"),
+       }) {
     const StreamedParse res = StreamParse(raw, raw.size());
     EXPECT_EQ(res.status, Http1ResponseParser::Status::Complete) << raw;
     EXPECT_EQ(res.headCompleteCount, 0) << raw;

@@ -58,10 +58,11 @@ class HttpClientConfig {
   // Maximum time for a single request/response exchange once connected (excludes connect time).
   Duration requestTimeout{std::chrono::seconds{30}};
 
-  // Maximum time an exchange may wait for the connection to send or receive any byte. 0 disables it (the default):
-  // only requestTimeout then bounds a stalled exchange. Typically combined with a large requestTimeout for long
-  // downloads, so that a stalled transfer fails fast while a slow but steady one completes.
-  Duration inactivityTimeout{Duration::zero()};
+  // Maximum time an exchange may wait for the connection to send or receive any byte.
+  // Typically combined with a large requestTimeout for long downloads, so that a stalled transfer fails fast while a
+  // slow but steady one completes. Must be positive. Default: 60s (matches common LB / proxy idle timeouts). With the
+  // default requestTimeout (30s) it is only effective once requestTimeout is raised.
+  Duration inactivityTimeout{std::chrono::seconds{60}};
 
   // Max idle age of a pooled keep-alive connection: when older, it is dropped instead of reused (the
   // origin server may have closed it after its own keep-alive timeout, saving a doomed reuse attempt).

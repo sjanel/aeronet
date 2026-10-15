@@ -264,7 +264,8 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
     if (parser.streaming()) {
       // Deliver what was de-framed so far (also before a failure), and drop it from the receive buffer so that it
       // never grows beyond a read.
-      if (const std::string_view body = parser.streamedBody(responseBuffer); !body.empty() && !streamer.feed(body)) {
+      const std::string_view body = parser.streamedBody(responseBuffer);
+      if (!body.empty() && !streamer.feed(body)) {
         return std::unexpected(streamer.error());
       }
       parser.discardStreamed(responseBuffer);

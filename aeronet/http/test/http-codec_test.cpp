@@ -1310,7 +1310,7 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_DecompressedSizeLimit) {
   const RawChars random = test::MakeRandomPayload(20000);  // incompressible: each chunk decodes to a part of it
   const std::string patterned = test::MakePatternedPayload(20000);
   for (const Encoding enc : test::SupportedEncodings()) {
-    const std::string encStr(GetEncodingStr(enc));
+    std::string encStr(GetEncodingStr(enc));
     const RawChars compressed = test::Compress(enc, std::string_view(random));
     vector<std::string_view> chunks;
     for (std::size_t off = 0; off < compressed.size(); off += 1000) {
@@ -1322,7 +1322,8 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_DecompressedSizeLimit) {
     const RawChars inner = test::Compress(enc, patterned);
     const RawChars outer = test::Compress(enc, std::string_view(inner));
     const std::string_view outerView(outer);
-    expectLimit(std::span<const std::string_view>(&outerView, 1), outer.size(), encStr + ", " + encStr, patterned);
+    encStr += ", " + encStr;
+    expectLimit(std::span<const std::string_view>(&outerView, 1), outer.size(), encStr, patterned);
   }
 }
 
