@@ -7,12 +7,12 @@
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-client-error.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/response-body-sink.hpp"
 
 namespace aeronet {
 
 class HttpClientConfig;
 class HttpResponse;
-class ResponseBodySink;
 
 namespace internal {
 
@@ -47,12 +47,13 @@ class ResponseStreamer {
   // `redirectFollowed`) or retried (a status of retryStatuses when `statusRetried`) is buffered instead of delivered.
   void beginExchange(bool redirectFollowed, bool statusRetried) noexcept;
 
-  // Called once the head of a final response announcing a body is received (`contentType` being its raw Content-Type
-  // value). Sets `stream` when the body must go through feed() / finish(): onHead() was then called, and the
+  // Called once the head of a final response announcing a body is received, `body` holding its raw Content-Type value
+  // (empty when absent) and its Content-Length (ResponseBodyInfo::kUnknownSize when absent, or for chunked framing).
+  // Sets `stream` when the body must go through feed() / finish(): onHead() was then called, and the
   // Content-Encoding header removed when the body is decoded. Clears it when the body must be buffered. Returns an
   // error (also reported by error()) when the sink refused the head (aborted), or when the content coding is not
   // supported (malformedResponse, without receiving the body).
-  [[nodiscard]] HttpClientErrc startResponse(HttpResponse& head, std::string_view contentType, bool& stream);
+  [[nodiscard]] HttpClientErrc startResponse(HttpResponse& head, ResponseBodyInfo body, bool& stream);
 
   // Deliver the next received bytes of the body (as received, so still content-coded). Returns false on failure, whose
   // cause is then given by error().

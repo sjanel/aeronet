@@ -115,7 +115,7 @@ ResponseStreamer::Coding ResponseStreamer::selectDecoder(std::string_view conten
   return Coding::Unsupported;
 }
 
-HttpClientErrc ResponseStreamer::startResponse(HttpResponse& head, std::string_view contentType, bool& stream) {
+HttpClientErrc ResponseStreamer::startResponse(HttpResponse& head, ResponseBodyInfo body, bool& stream) {
   assert(active());
   stream = false;
   const http::StatusCode status = head.status();
@@ -136,11 +136,17 @@ HttpClientErrc ResponseStreamer::startResponse(HttpResponse& head, std::string_v
       default:
         break;
     }
+    if (_encoding != Encoding::none) {
+      body.size = ResponseBodyInfo::kUnknownSize;  // the Content-Length counts the coded bytes
+    }
     head.headerRemoveLine(http::ContentEncoding);  // the sink receives the decoded body
+  }
+  if (body.contentType.empty()) {
+    body.contentType = http::ContentTypeApplicationOctetStream;
   }
   stream = true;
   _headDelivered = true;
-  if (!_sink->onHead(head, contentType.empty() ? http::ContentTypeApplicationOctetStream : contentType)) {
+  if (!_sink->onHead(head, body)) {
     log::debug("HTTP client: transfer aborted by the response body sink at the head");
     _error = HttpClientErrc::aborted;
   }
@@ -249,7 +255,8 @@ HttpClientErrc ResponseStreamer::deliverBuffered(HttpResponse& resp) {
   _headDelivered = true;
   const std::string_view body = resp.bodyInMemory();
   if (body.empty()) {
-    return _sink->onHead(resp, {}) ? HttpClientErrc::noError : HttpClientErrc::aborted;
+    return _sink->onHead(resp, ResponseBodyInfo{.contentType = {}, .size = 0}) ? HttpClientErrc::noError
+                                                                               : HttpClientErrc::aborted;
   }
   // The head given to the sink has no body: keep the body and its media type in the scratch buffer meanwhile. Only
   // bodyless responses, redirects that are not followed and bodies with stacked codings are delivered this way.
@@ -264,7 +271,8 @@ HttpClientErrc ResponseStreamer::deliverBuffered(HttpResponse& resp) {
   resp.body(std::string_view{});
   const std::string_view savedContentType(saved.data(), contentType.size());
   const std::string_view savedBody(saved.data() + contentType.size(), body.size());
-  if (!_sink->onHead(resp, savedContentType) || !_sink->onBody(savedBody)) {
+  if (!_sink->onHead(resp, ResponseBodyInfo{.contentType = savedContentType, .size = savedBody.size()}) ||
+      !_sink->onBody(savedBody)) {
     return HttpClientErrc::aborted;
   }
   return HttpClientErrc::noError;
