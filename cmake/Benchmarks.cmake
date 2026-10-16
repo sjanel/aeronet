@@ -250,6 +250,11 @@ if(AERONET_ENABLE_HTTP_CLIENT)
   AeronetAddProjectBenchmark(aeronet-bench-internal-http1-response-parse ${AERONET_BENCH_INTERNAL_HTTP1_RESPONSE_PARSE} LIBRARIES aeronet_client)
   target_include_directories(aeronet-bench-internal-http1-response-parse PRIVATE ${CMAKE_SOURCE_DIR}/aeronet/client/src)
   set_target_properties(aeronet-bench-internal-http1-response-parse PROPERTIES FOLDER "benchmarks/internal")
+
+  set(AERONET_BENCH_INTERNAL_RESPONSE_STREAMER ${AERONET_BENCH_ROOT}/internal/response-streamer_bench.cpp)
+  AeronetAddProjectBenchmark(aeronet-bench-internal-response-streamer ${AERONET_BENCH_INTERNAL_RESPONSE_STREAMER}
+                             LIBRARIES aeronet_client aeronet_test_support)
+  set_target_properties(aeronet-bench-internal-response-streamer PROPERTIES FOLDER "benchmarks/internal")
 endif()
 
 # HTTP/2 micro-benchmarks (guarded by HTTP/2 feature flag)

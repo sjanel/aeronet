@@ -48,6 +48,7 @@ ZstdDecoderContext& ZstdDecoderContext::operator=(ZstdDecoderContext&& rhs) noex
 ZstdDecoderContext::~ZstdDecoderContext() { ZSTD_freeDStream(reinterpret_cast<ZSTD_DStream*>(_pState)); }
 
 void ZstdDecoderContext::init() {
+  _frameComplete = false;
   if (_pState == nullptr) {
     _pState = ZSTD_createDCtx_advanced(ZSTD_customMem{ZstdAlloc, ZstdFree, &_cache});
     if (_pState == nullptr) [[unlikely]] {
@@ -65,7 +66,7 @@ void ZstdDecoderContext::init() {
 bool ZstdDecoderContext::decompressChunk(std::string_view chunk, bool finalChunk, std::size_t maxDecompressedBytes,
                                          uint32_t decoderChunkSize, RawChars& out) {
   if (chunk.empty()) {
-    return true;
+    return !finalChunk || _frameComplete;
   }
   DecoderBufferManager decoderBufferManager(out, decoderChunkSize, maxDecompressedBytes);
 
@@ -86,6 +87,7 @@ bool ZstdDecoderContext::decompressChunk(std::string_view chunk, bool finalChunk
       return false;
     }
     if (ret == 0 && in.pos == in.size) {
+      _frameComplete = true;
       return true;  // the input ends with a fully decoded and flushed frame
     }
     // Otherwise a frame is in progress, or another one follows (content may have several frames, RFC 8878 §3.1): the
@@ -94,6 +96,7 @@ bool ZstdDecoderContext::decompressChunk(std::string_view chunk, bool finalChunk
       // All the input is consumed and nothing is left to flush: the frame continues in the next chunk, so it is
       // truncated when this one is the last. A full output buffer may instead leave decoded bytes in the decoder (see
       // ZSTD_decompressStream()), flushed by the next iteration.
+      _frameComplete = false;
       return !finalChunk;
     }
   }
