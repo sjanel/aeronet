@@ -37,7 +37,7 @@ Every request returns an `HttpClientResult`, a `std::expected<HttpResponse, Http
 | `timeout` | TLS handshake, request write, or response read not completed in time (see [Timeouts](#timeouts)). |
 | `writeError`, `ioError` | Transport write failure, internal I/O failure. |
 | `connectionClosed` | Connection closed (or HTTP/2 stream reset) by the peer before a complete response, such as a body shorter than its `Content-Length`. |
-| `malformedResponse` | Response that cannot be parsed, or body that cannot be decoded: corrupt or truncated content coding, unsupported `Content-Encoding`. |
+| `malformedResponse` | Response that cannot be parsed, or body that cannot be decoded: corrupt or truncated content coding, unsupported `Content-Encoding`. Over HTTP/2, also a body longer or shorter than its `content-length`. |
 | `responseTooLarge` | Response larger than `maxResponseBytes`, or whose decoding exceeds the [decompression limits](../guides/compression.md#request-body-decompression) (`maxCompressedBytes`, `maxDecompressedBytes`, `maxExpansionRatio` of `HttpClientConfig::decompression`). |
 | `aborted` | Transfer stopped by the [`ResponseBodySink`](#streaming-response-bodies) of the request. |
 | `protocolUnsupported` | The server selected a protocol this build cannot speak, such as `h2` without HTTP/2 support. |
@@ -98,7 +98,11 @@ class FileSink final : public ResponseBodySink {
  public:
   explicit FileSink(std::FILE* file) noexcept : _file(file) {}
 
-  bool onHead(const HttpResponse& head, [[maybe_unused]] std::string_view contentType) override {
+  bool onHead(const HttpResponse& head, const ResponseBodyInfo& body) override {
+    if (body.sizeKnown()) {
+      std::printf("downloading %zu bytes of %.*s\n", body.size, static_cast<int>(body.contentType.size()),
+                  body.contentType.data());
+    }
     return head.status() == http::StatusCodeOK;  // otherwise stop: the request fails with aborted
   }
 
@@ -129,7 +133,9 @@ int main() {
 
 `request(request, sink)` does the same for any request. The sink sees one response per request, the final one:
 
-- `onHead()` is called once, before any body byte, with the status and headers, and the media type of the body (empty when the head announces no body: `HEAD` request, `204`, `304`). A decoded body has no `Content-Encoding` header anymore.
+- `onHead()` is called once, before any body byte, with the status and headers, and a `ResponseBodyInfo` describing the body. A decoded body has no `Content-Encoding` header anymore.
+    - `contentType` is the media type of the body: its `Content-Type`, `application/octet-stream` when absent, empty when the head announces no body (`HEAD` request, `204`, `304`) or an empty one.
+    - `size` is the exact number of bytes `onBody()` will deliver, when known in advance (`sizeKnown()`): the `Content-Length` of a body delivered as received, the size of a buffered body (see below), `0` for an empty body. It is `ResponseBodyInfo::kUnknownSize` for a chunked body, a body delimited by the closing of the connection, or one decoded as it arrives, whose `Content-Length` counts the coded bytes. A body shorter than announced fails (`connectionClosed` over HTTP/1.1, `malformedResponse` over HTTP/2), and a sink never receives more.
 - `onBody()` receives the consecutive pieces of the body, never empty. A piece is only valid during the call.
 - Either callback returns `false` to stop the transfer: the request then fails with `aborted`. A connection stopped while receiving the body is closed.
 - The responses of followed redirects and of statuses retried by the [retry policy](#retries) are buffered and discarded as usual, never given to the sink. A body with stacked content codings (`Content-Encoding: gzip, br`) is buffered, decoded whole, then delivered in one piece. These buffered bodies are bounded by `maxResponseBytes` and the decompression limits as usual. A content coding the client cannot decode fails with `malformedResponse` before the body is received.
@@ -254,7 +260,7 @@ The client counts retries, redirects, and request compression outcomes (`aeronet
 
 ## Tests
 
-- HTTP/1.1 exchanges, pooling, redirects (and the credentials they drop), retries, cache, timeouts, response buffers, and response body sinks (also over HTTP/2 for content-coded bodies): [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp). Redirect URL resolution: [http-request_test.cpp](../../aeronet/client/test/http-request_test.cpp).
+- HTTP/1.1 exchanges, pooling, redirects (and the credentials they drop), retries, cache, timeouts, response buffers, and response body sinks (also over HTTP/2 for content-coded bodies and the `content-length` check): [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp). Redirect URL resolution: [http-request_test.cpp](../../aeronet/client/test/http-request_test.cpp).
 - HTTP/1.1 response parsing, including body streaming and the failure statuses: [http1-response-parser_test.cpp](../../aeronet/client/test/http1-response-parser_test.cpp).
 - HTTP/2, including response body sinks: [http-client-http2-e2e_test.cpp](../../aeronet/client/test/http-client-http2-e2e_test.cpp).
 - HTTPS, trust stores, mutual TLS, and redirects to cleartext: [http-client-tls-e2e_test.cpp](../../aeronet/client/test/http-client-tls-e2e_test.cpp).

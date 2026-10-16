@@ -252,7 +252,8 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
       // Final response head of a sink request: deliver its body as it arrives, unless it is buffered (a redirect to
       // follow, a status to retry, stacked content codings).
       bool stream;
-      if (const HttpClientErrc err = streamer.startResponse(resp, parser.contentType(responseBuffer), stream);
+      if (const HttpClientErrc err = streamer.startResponse(
+              resp, {.contentType = parser.contentType(responseBuffer), .size = parser.announcedBodySize()}, stream);
           err != HttpClientErrc::noError) {
         return std::unexpected(err);
       }

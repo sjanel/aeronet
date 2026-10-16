@@ -17,11 +17,12 @@ namespace aeronet::test {
 // ResponseBodySink recording what it receives, optionally stopping the transfer.
 class CollectingBodySink final : public ResponseBodySink {
  public:
-  bool onHead(const HttpResponse& head, std::string_view mediaType) override {
+  bool onHead(const HttpResponse& head, const ResponseBodyInfo& info) override {
     EXPECT_EQ(bodyCalls, 0U) << "onHead() after onBody()";
     ++headCalls;
     status = head.status();
-    contentType.assign(mediaType);
+    contentType.assign(info.contentType);
+    bodySize = info.size;
     contentEncoding.assign(head.headerValueOrEmpty(http::ContentEncoding));
     headHasBody = !head.bodyInMemory().empty();
     return acceptHead;
@@ -33,6 +34,7 @@ class CollectingBodySink final : public ResponseBodySink {
     ++bodyCalls;
     largestChunk = std::max(largestChunk, chunk.size());
     body.append(chunk);
+    EXPECT_LE(body.size(), bodySize) << "body larger than announced";
     return stopAfterBytes == 0 || body.size() < stopAfterBytes;
   }
 
@@ -47,6 +49,7 @@ class CollectingBodySink final : public ResponseBodySink {
   std::size_t headCalls{0};
   std::size_t bodyCalls{0};
   std::size_t largestChunk{0};
+  std::size_t bodySize{0};  // ResponseBodyInfo::size given to onHead()
   http::StatusCode status{0};
   bool headHasBody{false};
 };
