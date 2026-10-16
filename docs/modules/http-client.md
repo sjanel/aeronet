@@ -147,7 +147,7 @@ The callbacks run on the thread of the request, and must not use the `HttpClient
 
 ## Timeouts
 
-`connectTimeout` (10 s) bounds the TCP connection, which then fails with `connectFailed`, and the TLS handshake. `requestTimeout` (30 s) bounds the whole exchange once connected, whatever its progress. `inactivityTimeout`, disabled by default, bounds each wait for the connection to send or receive a byte: combined with a large `requestTimeout`, a long download completes as long as data keeps flowing, while a stalled one fails fast. An expired TLS handshake, request or inactivity timeout ends the request with `timeout`.
+`connectTimeout` (10 s) bounds the TCP connection, which then fails with `connectFailed`, and the TLS handshake. `requestTimeout` (30 s) bounds the whole exchange once connected, whatever its progress. `inactivityTimeout` (60 s, like the idle timeout of common load balancers and proxies) bounds each wait for the connection to send or receive a byte: combined with a large `requestTimeout`, a long download completes as long as data keeps flowing, while a stalled one fails fast. As the default `requestTimeout` is shorter, it only takes effect once `requestTimeout` is raised above it. It must be positive: to rely on `requestTimeout` alone, give both the same value. An expired TLS handshake, request or inactivity timeout ends the request with `timeout`.
 
 ## Connections
 
