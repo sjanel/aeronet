@@ -16,7 +16,7 @@ namespace aeronet {
 // Output buffers of a connection written with MSG_ZEROCOPY. The kernel reads them after the writes returned, until the
 // completion of their sends: each one is retained until then, in the order of the sends.
 // Only a vector, to keep ConnectionState small: the retained size is summed when needed (by the writes eligible to
-// MSG_ZEROCOPY, while buffers are retained), over few entries (bounded by maxZerocopyPendingBytes / zerocopyMinBytes).
+// MSG_ZEROCOPY, while buffers are retained), over few entries (see canRetain()).
 class ZerocopyBuffers {
  public:
   // Retains 'data' until the completion of the zerocopy sends numbered before 'seqEnd' (those issued so far).
@@ -56,6 +56,22 @@ class ZerocopyBuffers {
       total += entry.size;
     }
     return total;
+  }
+
+  // Tells whether 'nbBuffers' more buffers, of 'size' bytes in total, can be retained within 'maxBytes'. Anything can
+  // when nothing is retained. Otherwise each buffer counts for at least 'minBytes' (the size of the smallest zerocopy
+  // write): this bounds the number of retained buffers (by maxBytes / minBytes, plus those of a single write) whatever
+  // their sizes, the small messages of a gathered write being retained as well.
+  [[nodiscard]] bool canRetain(std::size_t nbBuffers, std::size_t size, std::size_t minBytes,
+                               std::size_t maxBytes) const noexcept {
+    if (_buffers.empty()) {
+      return true;
+    }
+    std::size_t total = std::max(size, nbBuffers * minBytes);
+    for (const Entry& entry : _buffers) {
+      total += std::max<std::size_t>(entry.size, minBytes);
+    }
+    return total <= maxBytes;
   }
 
   [[nodiscard]] std::size_t size() const noexcept { return _buffers.size(); }

@@ -470,6 +470,82 @@ TEST(HttpTlsBackpressure, PipelinedRequestsBufferedBehindBlockedOutputAreAllServ
   EXPECT_EQ(nbResponses, kNbRequests);
 }
 
+// Small chunks streamed to a slow reader wait for the socket, merged into entries smaller than a TLS record. A write of
+// several of them that would block leaves OpenSSL with a pending record: the retried write must start with the same
+// bytes, at least as many, or OpenSSL fails it ('bad length') and the connection is dropped.
+TEST(HttpTlsBackpressure, SmallChunksStreamedToSlowReaderAreIntact) {
+  static constexpr std::size_t kChunkSize = 1024;
+  static constexpr std::size_t kBodySize = 5UL << 20U;
+  test::TlsTestServer localTs({"http/1.1"}, [](HttpServerConfig& cfg) {
+    cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Disabled);
+    // The response mostly waits for the socket: it must not be refused as an overflow.
+    cfg.withMaxOutboundBufferBytes(static_cast<uint32_t>(4 * kBodySize));
+  });
+  localTs.setDefault([](const HttpRequestView&, HttpResponseWriter& writer) {
+    const std::string chunk(kChunkSize, 'Y');
+    for (std::size_t written = 0; written < kBodySize; written += kChunkSize) {
+      if (!writer.writeBody(chunk)) {
+        return;
+      }
+    }
+    writer.end();
+  });
+
+  test::TlsClient client(localTs.port());
+  ASSERT_TRUE(client.handshakeOk());
+  // Above the loopback MSS: a smaller window would make the transfer crawl.
+  test::SetReceiveBufferSize(client.fd(), 256 * 1024);
+  ASSERT_TRUE(client.writeAll("GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"));
+  std::this_thread::sleep_for(200ms);  // the response fills the socket buffers: the output blocks
+
+  std::string resp = std::move(client.drainedDuringWrite());
+  std::array<char, 16384> buf;
+  const auto deadline = std::chrono::steady_clock::now() + 10s;
+  while (!resp.ends_with(http::EndChunk) && std::chrono::steady_clock::now() < deadline) {
+    const std::string_view data = client.readSome(buf);
+    if (data.empty()) {
+      std::this_thread::sleep_for(1ms);
+      continue;
+    }
+    resp.append(data);
+    std::this_thread::sleep_for(100us);  // a slow reader: the server writes are blocked again and again
+  }
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp.substr(0, 64);
+  EXPECT_EQ(static_cast<std::size_t>(std::ranges::count(resp, 'Y')), kBodySize);
+  EXPECT_TRUE(resp.ends_with(http::EndChunk));
+}
+
+// A client resetting its connection while the server sends it a file over user-space TLS: the failed write drops the
+// rest of the response, and the server goes on serving the other clients.
+TEST(HttpTlsBackpressure, FileResponseToResetClientIsDropped) {
+  const std::string content(8UL << 20U, 'f');  // more than the socket buffers: the server waits for the client
+  test::ScopedTempDir tmpDir;
+  const test::ScopedTempFile tmp(tmpDir, content);
+  test::TlsTestServer localTs({"http/1.1"},
+                              [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Disabled); });
+  localTs.setDefault([path = tmp.filePath().string()](const HttpRequestView&) {
+    return HttpResponse(http::StatusCodeOK).file(File(path));
+  });
+
+  {
+    test::TlsClient client(localTs.port());
+    ASSERT_TRUE(client.handshakeOk());
+    // Above the loopback MSS: a smaller window would make the transfer crawl.
+    test::SetReceiveBufferSize(client.fd(), 256 * 1024);
+    ASSERT_TRUE(client.writeAll("GET /file HTTP/1.1\r\nHost: x\r\n\r\n"));
+    std::this_thread::sleep_for(100ms);  // the socket buffers fill: the server waits in the middle of the file
+    // Closed without close_notify (whose EOF the server would read first, closing without writing again) and with
+    // unread data: the connection is reset, failing the next write of the server.
+    ::SSL_set_quiet_shutdown(client.sslHandle(), 1);
+  }
+  std::this_thread::sleep_for(50ms);
+
+  test::TlsClient client(localTs.port());
+  const std::string resp = client.get("/file");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp.substr(0, 64);
+  EXPECT_TRUE(resp.ends_with(content));
+}
+
 #ifdef AERONET_LINUX
 // The close_notify of the client arrives with its request: the server reads both in one event, answers the request,
 // then sees the close_notify without waiting for the socket to be readable again. That event can be the accept itself,

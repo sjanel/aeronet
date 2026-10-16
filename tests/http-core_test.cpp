@@ -1929,6 +1929,164 @@ TEST(HttpBackpressure, ZerocopyBufferedStreamingResponseIsIntact) {
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp.substr(0, 64);
   EXPECT_EQ(ExtractBody(resp), expectedBody);
 }
+
+namespace {
+// 'size' bytes whose value depends on their position and on 'seed': a misplaced byte is noticed.
+std::string PatternBytes(std::size_t size, std::size_t seed) {
+  std::string bytes(size, '\0');
+  for (std::size_t pos = 0; pos < size; ++pos) {
+    bytes[pos] = static_cast<char>('a' + (((pos * 7) + seed) % 26));
+  }
+  return bytes;
+}
+}  // namespace
+
+// Responses to requests pipelined behind a response that waits for the socket, file responses among them, are received
+// intact and in order: each file goes out after the head of its response, before the responses that follow.
+TEST(HttpBackpressure, PipelinedFileResponsesBehindBufferedResponseAreIntact) {
+  const std::string inMemoryBody = PatternBytes(1UL << 20U, 0);
+  test::ScopedTempDir tmpDir;
+  const std::string fileBodies[]{PatternBytes(300UL << 10U, 1), PatternBytes(10, 2), PatternBytes(1UL << 20U, 3)};
+  const test::ScopedTempFile files[]{test::ScopedTempFile(tmpDir, fileBodies[0]),
+                                     test::ScopedTempFile(tmpDir, fileBodies[1]),
+                                     test::ScopedTempFile(tmpDir, fileBodies[2])};
+  auto router = ts.resetRouterAndGet();
+  router.setPath(http::Method::GET, "/in-memory",
+                 [&inMemoryBody](const HttpRequestView& req) { return req.makeResponse(inMemoryBody); });
+  for (std::size_t filePos = 0; filePos < std::size(files); ++filePos) {
+    router.setPath(http::Method::GET, std::format("/file/{}", filePos),
+                   [path = files[filePos].filePath().string()](const HttpRequestView&) {
+                     return HttpResponse(http::StatusCodeOK).file(File(path));
+                   });
+  }
+  const std::string_view expectedBodies[]{inMemoryBody, fileBodies[0], fileBodies[1], inMemoryBody, fileBodies[2]};
+
+  for (const ZerocopyMode mode : {ZerocopyMode::Disabled, ZerocopyMode::Enabled}) {
+    ts.resetConfigAndPostUpdate([mode](HttpServerConfig& cfg) {
+      cfg.withZerocopyMode(mode);
+      cfg.withZerocopyMinBytes(1U);
+    });
+    test::ClientConnection sock(ts.port(), 500ms, kMinimalReceiveBufferSize);
+    const NativeHandle fd = sock.fd();
+    test::sendAll(fd,
+                  "GET /in-memory HTTP/1.1\r\nhost: h\r\n\r\n"
+                  "GET /file/0 HTTP/1.1\r\nhost: h\r\n\r\n"
+                  "GET /file/1 HTTP/1.1\r\nhost: h\r\n\r\n"
+                  "GET /in-memory HTTP/1.1\r\nhost: h\r\n\r\n"
+                  "GET /file/2 HTTP/1.1\r\nhost: h\r\nconnection: close\r\n\r\n");
+    std::this_thread::sleep_for(std::chrono::milliseconds{100});  // the first response now waits for the socket
+    test::SetReceiveBufferSize(fd, kLargeReceiveBufferSize);
+
+    const std::string resp = test::recvUntilClosed(fd, std::chrono::seconds{5});
+    std::string_view rest = resp;
+    for (const std::string_view expectedBody : expectedBodies) {
+      ASSERT_TRUE(rest.starts_with("HTTP/1.1 200")) << rest.substr(0, 64);
+      const auto headEnd = rest.find(http::DoubleCRLF);
+      ASSERT_NE(headEnd, std::string_view::npos);
+      rest.remove_prefix(headEnd + http::DoubleCRLF.size());
+      ASSERT_GE(rest.size(), expectedBody.size());
+      // Not EXPECT_EQ: a difference would print megabytes.
+      ASSERT_TRUE(rest.substr(0, expectedBody.size()) == expectedBody)
+          << "response body differs, zerocopy mode " << static_cast<int>(mode);
+      rest.remove_prefix(expectedBody.size());
+    }
+    EXPECT_TRUE(rest.empty()) << rest.size() << " unexpected bytes";
+  }
+}
+
+// A large response streamed to a slow reader in chunks of various sizes, waiting in the connection output (the small
+// ones merged, the others queued on their own and written several at once, with MSG_ZEROCOPY when enabled), is received
+// intact.
+TEST(HttpBackpressure, StreamedResponseToSlowReaderIsIntact) {
+  static constexpr std::size_t kChunkSizes[]{1, 100, 4000, 5000, 70000, 3, 4096, 200000, 17, 65536};
+  static constexpr int kNbRounds = 8;
+  std::string expectedBody;
+  for (int round = 0; round < kNbRounds; ++round) {
+    for (const std::size_t chunkSize : kChunkSizes) {
+      expectedBody += PatternBytes(chunkSize, expectedBody.size());
+    }
+  }
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/stream-slow-reader",
+                                 [&expectedBody](const HttpRequestView&, HttpResponseWriter& writer) {
+                                   std::string_view rest = expectedBody;
+                                   for (std::size_t chunkPos = 0; !rest.empty(); ++chunkPos) {
+                                     const std::size_t chunkSize = kChunkSizes[chunkPos % std::size(kChunkSizes)];
+                                     if (!writer.writeBody(rest.substr(0, chunkSize))) {
+                                       break;
+                                     }
+                                     rest.remove_prefix(chunkSize);
+                                   }
+                                   writer.end();
+                                 });
+
+  for (const ZerocopyMode mode : {ZerocopyMode::Disabled, ZerocopyMode::Enabled}) {
+    ts.resetConfigAndPostUpdate([mode](HttpServerConfig& cfg) {
+      cfg.withZerocopyMode(mode);
+      cfg.withZerocopyMinBytes(16U << 10U);
+    });
+    test::ClientConnection sock(ts.port(), 500ms, kLargeReceiveBufferSize);
+    const NativeHandle fd = sock.fd();
+    test::setRecvTimeout(fd, std::chrono::milliseconds{2000});
+    test::sendAll(fd, "GET /stream-slow-reader HTTP/1.1\r\nhost: h\r\nconnection: close\r\n\r\n");
+
+    // Reads at a limited rate, until the server closes the connection.
+    std::string resp;
+    char buf[16UL << 10U];
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+    while (std::chrono::steady_clock::now() < deadline) {
+      const auto nb = ::recv(fd, buf, sizeof(buf), 0);
+      if (nb <= 0) {
+        break;
+      }
+      resp.append(buf, static_cast<std::size_t>(nb));
+      std::this_thread::sleep_for(std::chrono::microseconds{200});
+    }
+    ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp.substr(0, 64);
+    const std::string body = ExtractBody(resp);
+    ASSERT_EQ(body.size(), expectedBody.size()) << "zerocopy mode " << static_cast<int>(mode);
+    // Not EXPECT_EQ: a difference would print megabytes.
+    EXPECT_TRUE(body == expectedBody) << "response body differs, zerocopy mode " << static_cast<int>(mode);
+  }
+}
+
+// A handler streaming a long response in small chunks without returning to the event loop keeps writing it once the
+// socket was full: its output, waiting for the writable event that the event loop cannot process meanwhile, is written
+// as the peer reads instead of piling up until the outbound limit closes the connection.
+TEST(HttpBackpressure, LongStreamingHandlerKeepsWritingOnceTheSocketWasFull) {
+  static constexpr std::size_t kChunkSize = 1024;
+  static constexpr std::size_t kBodySize = 32UL << 20U;
+  // At most 128 MiB/s: the client keeps up once it reads.
+  static constexpr std::size_t kBytesPerMillisecond = 128UL << 10U;
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
+    // Far below the body, but above what the handler writes before the client reads.
+    cfg.withMaxOutboundBufferBytes(12U << 20U);
+  });
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/long-stream",
+                                 [](const HttpRequestView&, HttpResponseWriter& writer) {
+                                   const std::string chunk(kChunkSize, 'L');
+                                   for (std::size_t written = 0; written < kBodySize; written += kChunkSize) {
+                                     if (!writer.writeBody(chunk)) {
+                                       return;
+                                     }
+                                     if (written % kBytesPerMillisecond == 0) {
+                                       std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                                     }
+                                   }
+                                   writer.end();
+                                 });
+
+  // Above the loopback MSS: a smaller window would make the transfer crawl.
+  test::ClientConnection sock(ts.port(), 500ms, 256 * 1024);
+  const NativeHandle fd = sock.fd();
+  test::sendAll(fd, "GET /long-stream HTTP/1.1\r\nhost: h\r\nconnection: close\r\n\r\n");
+  // The handler fills the socket before the client reads.
+  std::this_thread::sleep_for(std::chrono::milliseconds{50});
+
+  const std::string resp = test::recvUntilClosed(fd, std::chrono::seconds{10});
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp.substr(0, 64);
+  EXPECT_EQ(static_cast<std::size_t>(std::ranges::count(resp, 'L')), kBodySize);
+  EXPECT_TRUE(resp.ends_with(http::EndChunk));
+}
 #endif
 
 // Basic trailer parsing test

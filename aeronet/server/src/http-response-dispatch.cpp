@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <utility>
 
@@ -34,36 +35,32 @@ namespace aeronet {
 
 namespace {
 
-// Appends 'data' (only its head for a file response, whose body is sent separately) after the output still buffered in
-// 'state', waiting for the socket to become writable.
-void AppendToOutBuffer(ConnectionState& state, HttpMessageData data, bool headOnly) {
-  // Room for the new head, so that appending it below does not reallocate a copy of outBuffer again.
-  state.prepareOutBufferAppend(data.firstBuffer().size());
-  if (headOnly) {
-    state.outBuffer.append(data.firstBuffer());
-  } else {
-    state.outBuffer.append(std::move(data));
-  }
-}
+// Maximum number of buffers gathered in a write of the HTTP/1 output (up to 2 per message: its head and its payload).
+constexpr std::size_t kMaxGatheredBuffers = ZeroCopyState::kMaxBuffers;
 
 }  // namespace
 
-TransportResult SingleHttpServer::writeMessage(ConnectionIt cnxIt, const HttpMessageData& data,
-                                               [[maybe_unused]] bool& zerocopySent) {
+TransportResult SingleHttpServer::writeMessage(ConnectionIt cnxIt, const HttpMessageData& data, bool& zerocopySent) {
+  const std::string_view buffers[]{data.firstBuffer(), data.secondBuffer()};
+  return writeMessages(cnxIt, buffers, {data.remainingSize(), data.retainedSize(), 1}, zerocopySent);
+}
+
+TransportResult SingleHttpServer::writeMessages(ConnectionIt cnxIt, std::span<const std::string_view> buffers,
+                                                [[maybe_unused]] const ConnectionState::GatheredOutput& output,
+                                                [[maybe_unused]] bool& zerocopySent) {
   ConnectionState& state = _connections.connectionState(cnxIt);
 #ifdef AERONET_LINUX
-  if (state.zerocopyEnabled && data.remainingSize() >= _config.zerocopyMinBytes &&
-      _connections.now >= _zerocopy.retryTime) {
-    // A buffer written with MSG_ZEROCOPY is retained until the completion of its sends. The retained bytes of a
-    // connection are bounded by maxZerocopyPendingBytes, a single larger payload being allowed when nothing is
-    // retained.
-    const std::size_t retainedBytes = state.zerocopyBuffers.bytes();
-    if (retainedBytes != 0 && retainedBytes + data.retainedSize() > _config.maxZerocopyPendingBytes) {
+  if (state.zerocopyEnabled && output.size >= _config.zerocopyMinBytes && _connections.now >= _zerocopy.retryTime) {
+    // A buffer written with MSG_ZEROCOPY is retained until the completion of its sends. The retained buffers of a
+    // connection are bounded by maxZerocopyPendingBytes, each counting for at least zerocopyMinBytes, a single larger
+    // write being allowed when nothing is retained.
+    if (!state.zerocopyBuffers.canRetain(output.nbMessages, output.retainedSize, _config.zerocopyMinBytes,
+                                         _config.maxZerocopyPendingBytes)) {
       ++_stats.zerocopyRetainLimitFallbacks;
     } else {
       PlainTransport* plain = state.transport.get<PlainTransport>();
       assert(plain != nullptr);
-      const auto [bytesSent, status] = plain->writeZerocopy(data.firstBuffer(), data.secondBuffer());
+      const auto [bytesSent, status] = plain->writeZerocopy(buffers);
       if (status == ZerocopySendStatus::Sent) {
         zerocopySent = true;
         ++_stats.zerocopySends;
@@ -97,7 +94,7 @@ TransportResult SingleHttpServer::writeMessage(ConnectionIt cnxIt, const HttpMes
     }
   }
 #endif
-  return state.transportWrite(data);
+  return state.transportWrite(buffers);
 }
 
 #ifdef AERONET_LINUX
@@ -192,36 +189,37 @@ void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpMessageData httpRespons
     return;
   }
 
-  // Extract file payload early so we can move the File once and avoid double-moves
-  // when the response writes immediately.
   auto* pFilePayload = httpResponseData.getIfFilePayload();
-  FilePayload filePayload;
-  bool haveFilePayload = false;
-  if (pFilePayload != nullptr) {
-    filePayload = std::move(*pFilePayload);
-    haveFilePayload = true;
-  }
-
-  const std::uint64_t extraQueuedBytes = haveFilePayload ? filePayload.length : 0;
+  const std::uint64_t extraQueuedBytes = pFilePayload != nullptr ? pFilePayload->length : 0;
 
   const auto bufferedSz = httpResponseData.remainingSize();
 
-  if (!state.outBuffer.empty()) {
-    // Previous output still waits for the socket to become writable: queue this data after it.
-    AppendToOutBuffer(state, std::move(httpResponseData), haveFilePayload);
+  if (state.hasPendingOutput() || state.isSendingFile()) {
+    // Previous output still waits for the socket to become writable: queue this data (its file payload included)
+    // after it.
+    const bool merged = state.queueOutput(std::move(httpResponseData));
     _stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz + extraQueuedBytes);
-    const std::size_t remainingSize = state.outBuffer.remainingSize();
-    _stats.maxConnectionOutboundBuffer.updateMax(remainingSize);
-    if (remainingSize > _config.maxOutboundBufferBytes) {
+    const std::size_t bufferedBytes = state.bufferedOutputBytes();
+    _stats.maxConnectionOutboundBuffer.updateMax(bufferedBytes);
+    if (bufferedBytes > _config.maxOutboundBufferBytes) {
       state.requestDrainAndClose();
     }
-    if (haveFilePayload) {
-      // Sent by flushFilePayload() once the buffered output, ending with this response head, is written.
-      [[maybe_unused]] const bool sendNow = state.attachFilePayload(std::move(filePayload));
-      assert(!sendNow);
+    // While the socket is full (its writable event awaited), small data merged into the waiting output leaves the write
+    // to that event: retrying it would most often fail, for each event of a stream. A new queued entry (at most every
+    // OutputQueue::kMaxMergedSize bytes) retries it, so that a handler writing a long response without returning to
+    // the event loop keeps it flowing out as the peer reads.
+    if (!merged || !state.waitingWritable) {
+      flushOutbound(cnxIt);
     }
-    flushOutbound(cnxIt);
     return;
+  }
+
+  // Extract file payload early so we can move the File once and avoid double-moves
+  // when the response writes immediately.
+  FilePayload filePayload;
+  const bool haveFilePayload = pFilePayload != nullptr;
+  if (haveFilePayload) {
+    filePayload = std::move(*pFilePayload);
   }
 
   // Cork the socket to coalesce header + body into fewer TCP segments.
@@ -276,6 +274,30 @@ void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpMessageData httpRespons
   }
 }
 
+std::size_t SingleHttpServer::writeOutBuffer(ConnectionIt cnxIt, TransportHint& want) {
+  ConnectionState& state = _connections.connectionState(cnxIt);
+  bool zerocopySent = false;
+  TransportResult result;
+  if (state.outQueue.empty() || state.isSendingFile()) {
+    result = writeMessage(cnxIt, state.outBuffer, zerocopySent);
+  } else {
+    auto& buffers = _sharedBuffers.sv;
+    const ConnectionState::GatheredOutput output = state.gatherOutput(buffers, kMaxGatheredBuffers);
+    result = writeMessages(cnxIt, buffers, output, zerocopySent);
+  }
+  want = result.want;
+  _stats.totalBytesWrittenFlush += result.bytesProcessed;
+  if (want == TransportHint::Error) {
+    log::error("send/transportWrite failed fd # {} err={}", cnxIt->fd(), LastSystemError());
+    // Drops the output (outBuffer being retained if previous zerocopy sends may still read it, the socket staying open
+    // until they complete) and closes.
+    state.clearBuffers();
+  } else if (result.bytesProcessed != 0) {
+    state.outputWritten(result.bytesProcessed, zerocopySent);
+  }
+  return result.bytesProcessed;
+}
+
 void SingleHttpServer::flushOutbound(ConnectionIt cnxIt) {
   ++_stats.flushCycles;
   TransportHint want = TransportHint::None;
@@ -286,31 +308,35 @@ void SingleHttpServer::flushOutbound(ConnectionIt cnxIt) {
   // Cork the socket to coalesce buffered writes into fewer TCP segments.
   const TcpCorkGuard corkGuard(state.corkable ? fd : kInvalidHandle);
 
-  while (!state.outBuffer.empty()) {
-    bool zerocopySent = false;
-    const auto [written, stepWant] = writeMessage(cnxIt, state.outBuffer, zerocopySent);
-    state.outBufferZerocopySent = state.outBufferZerocopySent || zerocopySent;
-    want = stepWant;
-    _stats.totalBytesWrittenFlush += written;
-    if (want == TransportHint::Error) {
-      const auto savedErr = LastSystemError();
-      log::error("send/transportWrite failed fd # {} err={}", fd, savedErr);
-      state.requestDrainAndClose();
-      // Previous zerocopy sends may still read it, the socket staying open until they complete.
-      state.discardOutBuffer();
-    } else if (written > 0) {
-      if (written == state.outBuffer.remainingSize()) {
-        state.discardOutBuffer();
+  // The HTTP/1 output, in order: outBuffer, the file sent after it (if any), then the queued entries.
+  for (;;) {
+    if (!state.outBuffer.empty()) {
+      const std::size_t written = writeOutBuffer(cnxIt, want);
+      if (want == TransportHint::Error) {
         break;
       }
-      state.outBuffer.addOffset(written);
-      continue;
+      if (!state.outBuffer.empty()) {
+        if (written == 0 || want != TransportHint::None) {
+          // The socket is not writable (anymore). Wait for the writable event (enabled below) instead of retrying,
+          // which would block the whole event loop for as long as the peer does not read.
+          break;
+        }
+        continue;
+      }
     }
-    // Nothing written: the socket is not writable. Wait for the writable event (enabled below) instead of retrying,
-    // which would block the whole event loop for as long as the peer does not read.
-    break;
+    if (state.isSendingFile()) {
+      flushFilePayload(cnxIt);
+      if (state.isSendingFile()) {
+        break;
+      }
+    }
+    if (state.outQueue.empty()) {
+      break;
+    }
+    state.dequeueOutput();
   }
-  if (state.protocolHandler != nullptr) {
+  if (state.protocolHandler != nullptr && state.outBuffer.empty() && state.outQueue.empty()) {
+    // The output of the protocol handler follows the HTTP/1 one (its 101 Switching Protocols response).
     auto& fragments = _sharedBuffers.sv;
     while (state.protocolHandler->hasPendingOutput()) {
       state.protocolHandler->getPendingOutputFragments(fragments);
@@ -344,12 +370,10 @@ void SingleHttpServer::flushOutbound(ConnectionIt cnxIt) {
   }
 
   // Determine if we can drop EPOLLOUT: only when no buffered data AND no handshake wantWrite pending.
-  if (state.isSendingFile()) {
-    flushFilePayload(cnxIt);
-  } else if (!state.hasPendingOutput() && state.waitingWritable &&
-             (state.tlsEstablished || state.transport.handshakeDone()) &&
-             (!state.isTunneling() || state.tunnelOrFileBuffer.empty()) && disableWritableInterest(cnxIt) &&
-             state.isAnyCloseRequested()) {
+  if (!state.isSendingFile() && !state.hasPendingOutput() && state.waitingWritable &&
+      (state.tlsEstablished || state.transport.handshakeDone()) &&
+      (!state.isTunneling() || state.tunnelOrFileBuffer.empty()) && disableWritableInterest(cnxIt) &&
+      state.isAnyCloseRequested()) {
     return;
   }
   resumeInputIfOutputDrained(fd, state);
@@ -398,10 +422,9 @@ bool SingleHttpServer::flushUserSpaceTlsBuffer(ConnectionIt cnxIt) {
     const auto [written, want] = state.transportWrite(state.tunnelOrFileBuffer);
 
     if (want == TransportHint::Error) [[unlikely]] {
-      state.requestDrainAndClose();
-      state.fileSendActive = false;
-      state.tunnelOrFileBuffer.clear();
-      return false;
+      // Drops the rest of the file (not read anymore) and the output queued behind it, and closes.
+      state.clearBuffers();
+      return true;
     }
 
     state.tunnelOrFileBuffer.erase_front(written);

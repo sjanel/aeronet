@@ -109,6 +109,13 @@ AeronetAddUnitTest(
     aeronet_tech
 )
 
+AeronetAddUnitTest(
+    output-queue_test
+    test/output-queue_test.cpp
+    LIBRARIES
+    aeronet_http
+)
+
 if(AERONET_ENABLE_HTTP_SERVER)
     AeronetAddUnitTest(
         path-handler-entry_test
