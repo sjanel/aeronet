@@ -17,6 +17,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/response-body-sink.hpp"
 #include "aeronet/toupperlower.hpp"
 
 namespace aeronet {
@@ -1011,6 +1012,7 @@ struct StreamedParse {
   std::size_t maxReceiveBufferSize{0};
   int headCompleteCount{0};
   std::string contentType;
+  std::size_t announcedBodySize{0};
 };
 
 StreamedParse StreamParse(std::string_view raw, std::size_t step, std::size_t maxBytes = kMax, bool stream = true) {
@@ -1029,6 +1031,7 @@ StreamedParse StreamParse(std::string_view raw, std::size_t step, std::size_t ma
     if (out.status == Http1ResponseParser::Status::HeadComplete) {
       ++out.headCompleteCount;
       out.contentType = parser.contentType(receive);
+      out.announcedBodySize = parser.announcedBodySize();
       if (stream) {
         parser.startStreaming();
       }
@@ -1060,6 +1063,7 @@ TEST(ResponseParserStreamingTest, ContentLengthBodyIsStreamedAndNotBounded) {
   EXPECT_EQ(res.status, Http1ResponseParser::Status::Complete);
   EXPECT_EQ(res.headCompleteCount, 1);
   EXPECT_EQ(res.contentType, "text/csv");
+  EXPECT_EQ(res.announcedBodySize, payload.size());
   EXPECT_EQ(res.body, payload);
   EXPECT_LE(res.maxReceiveBufferSize, 4096U);  // consumed bytes are discarded at each step
 }
@@ -1080,6 +1084,7 @@ TEST(ResponseParserStreamingTest, ChunkedBodyIsStreamedWithTrailers) {
     EXPECT_EQ(res.status, Http1ResponseParser::Status::Complete) << step;
     EXPECT_EQ(res.body, payload) << step;
     EXPECT_TRUE(res.contentType.empty());
+    EXPECT_EQ(res.announcedBodySize, ResponseBodyInfo::kUnknownSize) << step;
     EXPECT_LE(res.maxReceiveBufferSize, std::max<std::size_t>(step, 1100U)) << step;
   }
 }
@@ -1088,7 +1093,17 @@ TEST(ResponseParserStreamingTest, UntilCloseBodyIsStreamed) {
   const std::string payload = test::MakePatternedPayload(20000);
   const StreamedParse res = StreamParse("HTTP/1.1 200 OK\r\n\r\n" + payload, 1000, /*maxBytes=*/128);
   EXPECT_EQ(res.status, Http1ResponseParser::Status::Complete);
+  EXPECT_EQ(res.announcedBodySize, ResponseBodyInfo::kUnknownSize);
   EXPECT_EQ(res.body, payload);
+}
+
+// Chunked framing wins over a Content-Length (RFC 9112 §6.3): the size of the body is then unknown.
+TEST(ResponseParserStreamingTest, ChunkedBodyWithContentLengthHasNoAnnouncedSize) {
+  const StreamedParse res = StreamParse(
+      "HTTP/1.1 200 OK\r\ncontent-length: 3\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n", 8);
+  EXPECT_EQ(res.status, Http1ResponseParser::Status::Complete);
+  EXPECT_EQ(res.announcedBodySize, ResponseBodyInfo::kUnknownSize);
+  EXPECT_EQ(res.body, "hello");
 }
 
 TEST(ResponseParserStreamingTest, TruncatedStreamedBodies) {

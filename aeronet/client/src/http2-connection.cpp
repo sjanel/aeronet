@@ -39,6 +39,7 @@
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/response-body-sink.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/timedef.hpp"
@@ -75,7 +76,7 @@ class Http2ClientEngine : private EventSink {
   enum class Failure : uint8_t {
     None,
     TooBig,         // response exceeded HttpClientConfig::maxResponseBytes
-    Malformed,      // missing/invalid :status pseudo-header
+    Malformed,      // missing/invalid :status pseudo-header, invalid content-length or body not matching it
     StreamReset,    // peer sent RST_STREAM for our stream
     StreamRefused,  // peer sent GOAWAY with lastStreamId below our stream (request not processed)
     Sink,           // delivery to the ResponseBodySink failed (see ResponseStreamer::error())
@@ -90,13 +91,15 @@ class Http2ClientEngine : private EventSink {
 
   // Prepare the per-exchange state and allocate the next (odd) stream id. `streamer` is the client's when it is active
   // (sink request), null otherwise.
-  uint32_t beginExchange(HttpResponse& resp, RawChars& bodyBuf, std::size_t maxResponseBytes,
+  uint32_t beginExchange(HttpResponse& resp, RawChars& bodyBuf, std::size_t maxResponseBytes, bool headRequest,
                          aeronet::internal::ResponseStreamer* streamer) noexcept {
     _resp = &resp;
     _bodyBuf = &bodyBuf;
     _streamer = streamer;
     _maxResponseBytes = maxResponseBytes;
     _receivedBytes = 0;
+    _contentLength = ResponseBodyInfo::kUnknownSize;
+    _bodyBytes = 0;
     _contentType.clear();
     _streamId = _nextStreamId;
     _nextStreamId += 2;
@@ -105,6 +108,7 @@ class Http2ClientEngine : private EventSink {
     _finalHeadersSeen = false;
     _responseComplete = false;
     _streamingBody = false;
+    _headRequest = headRequest;
     return _streamId;
   }
 
@@ -330,6 +334,9 @@ class Http2ClientEngine : private EventSink {
       _resp->status(statusCode);
       _finalHeadersSeen = true;
       finalHead = true;
+      // The content-length of a response that has no content (RFC 9110 §6.4.1) describes another one: it is not
+      // checked against the received DATA (RFC 9113 §8.1.1).
+      _bodyless = _headRequest || statusCode == http::StatusCodeNoContent || statusCode == http::StatusCodeNotModified;
     }
 
     // Regular header and trailer values are preserved, except Content-Type and Content-Length which HttpResponse
@@ -356,18 +363,46 @@ class Http2ClientEngine : private EventSink {
         continue;
       }
       if (name == http::ContentLength) {
+        if (finalHead && !_bodyless && !parseContentLength(streamId, value)) {
+          return;
+        }
         continue;
       }
 
       _resp->headerAddLineUnchecked(LowerAsciiKey{name}, value);
     }
     if (endStream) {
-      _responseComplete = true;  // response (or its trailers block) carried END_STREAM
+      endResponse(streamId);  // response (or its trailers block) carried END_STREAM
     } else if (finalHead && _streamer != nullptr) {
       // Final response head of a sink request, with a body to come: deliver it as it arrives, unless it is buffered.
-      if (_streamer->startResponse(*_resp, _contentType, _streamingBody) != HttpClientErrc::noError) {
+      if (_streamer->startResponse(*_resp, {.contentType = _contentType, .size = _contentLength}, _streamingBody) !=
+          HttpClientErrc::noError) {
         setFailure(Failure::Sink);
       }
+    }
+  }
+
+  // Record the content-length of the final response, failing the exchange when it is invalid.
+  bool parseContentLength(uint32_t streamId, std::string_view value) {
+    const char* const pBeg = value.data();
+    const char* const pEnd = pBeg + value.size();
+    const auto [ptr, err] = std::from_chars(pBeg, pEnd, _contentLength);
+    if (err != std::errc{} || ptr != pEnd || _contentLength == ResponseBodyInfo::kUnknownSize) {
+      log::error("HTTP/2 client: response HEADERS on stream {} with an invalid content-length '{}'", streamId, value);
+      _contentLength = ResponseBodyInfo::kUnknownSize;
+      setFailure(Failure::Malformed);
+      return false;
+    }
+    return true;
+  }
+
+  // END_STREAM received: the response is complete, with a body of the announced content-length (RFC 9113 §8.1.1).
+  void endResponse(uint32_t streamId) {
+    _responseComplete = true;
+    if (_contentLength != ResponseBodyInfo::kUnknownSize && _bodyBytes != _contentLength) {
+      log::error("HTTP/2 client: response body on stream {} has {} bytes instead of its content-length {}", streamId,
+                 _bodyBytes, _contentLength);
+      setFailure(Failure::Malformed);
     }
   }
 
@@ -375,15 +410,24 @@ class Http2ClientEngine : private EventSink {
     if (streamId != _streamId || _bodyBuf == nullptr) {
       return;
     }
-    if (endStream) {
-      _responseComplete = true;
+    if (!data.empty() && _failure == Failure::None) {
+      receiveBody(streamId, std::string_view(reinterpret_cast<const char*>(data.data()), data.size()));
     }
-    if (data.empty() || _failure != Failure::None) {
+    if (endStream) {
+      endResponse(streamId);
+    }
+  }
+
+  void receiveBody(uint32_t streamId, std::string_view data) {
+    _bodyBytes += data.size();
+    if (_bodyBytes > _contentLength) {
+      log::error("HTTP/2 client: response body on stream {} exceeds its content-length {}", streamId, _contentLength);
+      setFailure(Failure::Malformed);  // before delivering the excess to a sink
       return;
     }
     if (_streamingBody) {
       // A streamed body is not bounded by maxResponseBytes: it is consumed as it arrives.
-      if (!_streamer->feed(std::string_view(reinterpret_cast<const char*>(data.data()), data.size()))) {
+      if (!_streamer->feed(data)) {
         setFailure(Failure::Sink);
       }
       return;
@@ -394,7 +438,7 @@ class Http2ClientEngine : private EventSink {
       return;
     }
     _receivedBytes += data.size();
-    _bodyBuf->append(reinterpret_cast<const char*>(data.data()), data.size());
+    _bodyBuf->append(data);
   }
 
   void onStreamReset(uint32_t streamId, ErrorCode errorCode) override {
@@ -429,14 +473,18 @@ class Http2ClientEngine : private EventSink {
   RawChars32 _contentType;  // owned copy of the response Content-Type value (views die with decode)
   std::size_t _receivedBytes{0};
   std::size_t _maxResponseBytes{0};
-  uint32_t _streamId{0};      // stream id of the in-flight exchange
-  uint32_t _nextStreamId{1};  // next client-initiated (odd) stream id
+  std::size_t _contentLength{ResponseBodyInfo::kUnknownSize};  // of the final response, when checked against its body
+  std::size_t _bodyBytes{0};                                   // DATA bytes received for the final response
+  uint32_t _streamId{0};                                       // stream id of the in-flight exchange
+  uint32_t _nextStreamId{1};                                   // next client-initiated (odd) stream id
   uint32_t _minReadChunkBytes;
   Failure _failure{Failure::None};
   bool _streamClosed{false};
   bool _finalHeadersSeen{false};  // a non-interim (>= 200) response HEADERS block was received
   bool _responseComplete{false};  // END_STREAM received for the response (see responseComplete())
   bool _streamingBody{false};     // the body of the response goes to _streamer (see streamingBody())
+  bool _headRequest{false};       // the in-flight request is a HEAD
+  bool _bodyless{false};          // the final response has no content, whatever its content-length
   bool _goAwayReceived{false};
 };
 
@@ -487,8 +535,8 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
   ResponseStreamer& streamer = client._streamer;
   const bool isHead = req.method() == http::Method::HEAD;
   // A response to HEAD has no body, even when its HEADERS frame does not end the stream: it is never streamed.
-  const uint32_t streamId =
-      engine.beginExchange(resp, bodyBuf, config.maxResponseBytes, streamer.active() && !isHead ? &streamer : nullptr);
+  const uint32_t streamId = engine.beginExchange(resp, bodyBuf, config.maxResponseBytes, isHead,
+                                                 streamer.active() && !isHead ? &streamer : nullptr);
 
   // The request body is either held in memory (inlined or captured) or a captured file payload streamed
   // from disk. Both expose their total length through bodyLength(); a file body is read into the client's

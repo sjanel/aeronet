@@ -48,6 +48,7 @@
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/response-body-sink.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/temp-file.hpp"
@@ -981,6 +982,7 @@ TEST(HttpClientHttp2E2ETest, SinkStreamsLargeBodyBeyondMaxResponseBytes) {
   EXPECT_TRUE(result->bodyInMemory().empty());
   EXPECT_EQ(sink.headCalls, 1U);
   EXPECT_EQ(sink.contentType, "application/octet-stream");
+  EXPECT_EQ(sink.bodySize, MakeLargeBody().size());  // its content-length
   EXPECT_TRUE(sink.body == MakeLargeBody());
   EXPECT_GT(sink.bodyCalls, 1U);
 
@@ -997,6 +999,7 @@ TEST(HttpClientHttp2E2ETest, SinkReceivesDecodedBody) {
   ASSERT_TRUE(result) << ErrcToStr(result.error());
   EXPECT_TRUE(sink.contentEncoding.empty());
   EXPECT_TRUE(result->headerValueOrEmpty(http::ContentEncoding).empty());
+  EXPECT_EQ(sink.bodySize, ResponseBodyInfo::kUnknownSize);  // the content-length counts the coded bytes
   EXPECT_TRUE(sink.body == MakeLargeBody());
 }
 
@@ -1018,6 +1021,7 @@ TEST(HttpClientHttp2E2ETest, SinkOnlySeesTheFinalResponseOfRedirects) {
   ASSERT_TRUE(result);
   EXPECT_EQ(redirectSink.status, http::StatusCodeFound);
   EXPECT_EQ(redirectSink.body, "moved to /hello");
+  EXPECT_EQ(redirectSink.bodySize, redirectSink.body.size());
 }
 
 TEST(HttpClientHttp2E2ETest, SinkCanAbortTheTransfer) {
@@ -1050,6 +1054,7 @@ TEST(HttpClientHttp2E2ETest, SinkGetsHeadResponses) {
   ASSERT_TRUE(result);
   EXPECT_EQ(sink.headCalls, 1U);
   EXPECT_EQ(sink.bodyCalls, 0U);
+  EXPECT_EQ(sink.bodySize, 0U);
 }
 
 TEST(HttpClientHttp2E2ETest, RequestBodyCompression) {

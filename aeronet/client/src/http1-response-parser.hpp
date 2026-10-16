@@ -8,6 +8,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/response-body-sink.hpp"
 
 namespace aeronet {
 
@@ -85,6 +86,12 @@ class Http1ResponseParser {
   // discardStreamed() call.
   [[nodiscard]] std::string_view contentType(std::string_view buffer) const noexcept {
     return buffer.substr(_contentTypeOff, _contentTypeLen);
+  }
+
+  // After HeadComplete, before the next parse() call: size of the body given by Content-Length, or
+  // ResponseBodyInfo::kUnknownSize for a chunked body or one delimited by the closing of the connection.
+  [[nodiscard]] std::size_t announcedBodySize() const noexcept {
+    return _framing == Framing::Length ? _bodyRemaining : ResponseBodyInfo::kUnknownSize;
   }
 
   // After HeadComplete: deliver the body through streamedBody() / discardStreamed() instead of installing it in the
