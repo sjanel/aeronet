@@ -1,8 +1,11 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "aeronet/encoder-result.hpp"
 #include "aeronet/encoding.hpp"
@@ -47,6 +50,34 @@ EncoderResult EncodeChunk(EncoderContext& ctx, std::string_view data, RawChars& 
 void EndStream(EncoderContext& ctx, RawChars& out);
 
 RawChars BuildStreamingCompressed(EncoderContext& ctx, std::string_view payload, std::size_t split);
+
+// What FeedNonFinal() observed.
+struct FedStream {
+  RawChars decoded;
+  std::vector<std::size_t> completeAt;  // input sizes after which an empty final chunk reported a complete stream
+  bool ok{true};                        // every piece was decoded
+};
+
+// Feed `stream` in pieces of `split` bytes, none of them final, to the freshly initialized decoder context `ctx`,
+// asking after each piece, with an empty final chunk, whether the input fed so far completes the stream.
+template <class DecoderContext>
+FedStream FeedNonFinal(DecoderContext& ctx, std::string_view stream, std::size_t split,
+                       uint32_t decoderChunkSize = 4096U) {
+  static constexpr std::size_t kNoLimit = std::numeric_limits<std::size_t>::max();
+  FedStream res;
+  for (std::size_t off = 0; off < stream.size();) {
+    const std::string_view piece = stream.substr(off, split);
+    off += piece.size();
+    if (!ctx.decompressChunk(piece, false, kNoLimit, decoderChunkSize, res.decoded)) {
+      res.ok = false;
+      break;
+    }
+    if (ctx.decompressChunk({}, true, kNoLimit, decoderChunkSize, res.decoded)) {
+      res.completeAt.push_back(off);
+    }
+  }
+  return res;
+}
 
 inline auto SupportedEncodings() {
   FixedCapacityVector<Encoding, kNbContentEncodings> encs;

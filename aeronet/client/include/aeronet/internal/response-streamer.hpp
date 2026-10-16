@@ -29,9 +29,8 @@ constexpr bool IsRedirectStatus(http::StatusCode code) noexcept {
 // the received body bytes and finish() at its end; HttpClient delivers the responses received whole with
 // deliverBuffered(). Inactive (no sink) for regular requests, whose bodies are buffered.
 //
-// A body is decoded incrementally when it has a single content coding. The last received byte is always held back, so
-// that the decoder sees the end of the body with a non-empty input and can report a truncated stream. Stacked codings
-// are buffered and decoded whole.
+// A body is decoded incrementally when it has a single content coding, each received piece in one decoder call: at its
+// end, the decoder tells whether the coded stream is complete. Stacked codings are buffered and decoded whole.
 class ResponseStreamer {
  public:
   // Start a request whose final response goes to `sink`, or a regular one (nullptr). The configuration and the codec
@@ -75,7 +74,8 @@ class ResponseStreamer {
   // (Buffered) or not (Unsupported).
   Coding selectDecoder(std::string_view contentEncoding);
 
-  // Decode `chunk`, appending the result to the decompressOut buffer and enforcing the decompression limits.
+  // Decode `chunk`, appending the result to the decompressOut buffer and enforcing the decompression limits. An empty
+  // final chunk checks that the coded stream is complete.
   bool decode(std::string_view chunk, bool finalChunk);
 
   bool deliver(std::string_view data);
@@ -88,8 +88,6 @@ class ResponseStreamer {
   std::size_t _decodedBytes{0};
   HttpClientErrc _error{HttpClientErrc::noError};
   Encoding _encoding{Encoding::none};  // none: the body is delivered as received
-  char _heldByte{};
-  bool _hasHeldByte{false};
   bool _bufferRedirects{false};
   bool _bufferRetries{false};
   bool _headDelivered{false};

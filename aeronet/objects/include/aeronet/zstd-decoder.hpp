@@ -22,6 +22,8 @@ class ZstdDecoderContext {
 
   // Feed a compressed chunk into the context.
   // When finalChunk is true, the caller does not provide any additional input: a frame left incomplete is an error.
+  // An empty chunk decodes nothing: with finalChunk, it only tells whether the input given since init() ends with a
+  // complete frame (so a caller not knowing which chunk is the last one can signal the end of its input afterwards).
   // Returns true on success, false on failure (e.g. decompression error or exceeding maxDecompressedBytes).
   // maxDecompressedBytes bounds the bytes this call appends to out (the caller passes what is left of its budget):
   // exceeding it fails with more than maxDecompressedBytes bytes appended.
@@ -33,6 +35,7 @@ class ZstdDecoderContext {
  private:
   internal::BufferCache _cache;
   void* _pState{};
+  bool _frameComplete{false};  // the input decoded so far ends with a complete frame
 };
 
 class ZstdDecoder {

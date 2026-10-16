@@ -68,7 +68,6 @@ void ResponseStreamer::beginExchange(bool redirectFollowed, bool statusRetried) 
   _decodedBytes = 0;
   _error = HttpClientErrc::noError;
   _encoding = Encoding::none;
-  _hasHeldByte = false;
   _bufferRedirects = redirectFollowed;
   _bufferRetries = statusRetried;
 }
@@ -201,10 +200,11 @@ bool ResponseStreamer::decode(std::string_view chunk, bool finalChunk) {
   const std::size_t ratioBase =
       finalChunk ? _compressedBytes : std::max<std::size_t>(_compressedBytes, cfg.decoderChunkSize);
   // The decoders fail on corrupt input as when reaching their budget: being within one decoder chunk of the limit
-  // tells the latter (like for a buffered body).
+  // tells the latter (like for a buffered body). An empty chunk decodes nothing, so it can only fail on a truncated
+  // stream.
   if (_decodedBytes > cfg.maxDecompressedBytes ||
       static_cast<double>(_decodedBytes) > static_cast<double>(ratioBase) * cfg.maxExpansionRatio ||
-      (!decoded && _decodedBytes + cfg.decoderChunkSize > cfg.maxDecompressedBytes)) {
+      (!decoded && !chunk.empty() && _decodedBytes + cfg.decoderChunkSize > cfg.maxDecompressedBytes)) {
     log::error("HTTP client: streamed {} response body exceeds the decompression limits ({} bytes decoded from {})",
                GetEncodingStr(_encoding), _decodedBytes, _compressedBytes);
     _error = HttpClientErrc::responseTooLarge;
@@ -226,28 +226,14 @@ bool ResponseStreamer::feed(std::string_view data) {
   }
   RawChars& out = _codec->decompressOut;
   out.clear();
-  if (_hasHeldByte && !decode(std::string_view(&_heldByte, 1), false)) {
-    return false;
-  }
-  if (data.size() > 1 && !decode(data.substr(0, data.size() - 1), false)) {
-    return false;
-  }
-  _heldByte = data.back();
-  _hasHeldByte = true;
-  return out.empty() || deliver(out);
+  return decode(data, false) && (out.empty() || deliver(out));
 }
 
 bool ResponseStreamer::finish() {
-  if (!_hasHeldByte) {
-    return true;  // identity body, or empty content-coded one
-  }
-  _hasHeldByte = false;
-  RawChars& out = _codec->decompressOut;
-  out.clear();
-  if (!decode(std::string_view(&_heldByte, 1), true)) {
-    return false;
-  }
-  return out.empty() || deliver(out);
+  // Nothing to check for an identity body, or an empty content-coded one. Otherwise, all the received bytes are
+  // decoded already: an empty final chunk checks that they complete the coded stream, and the expansion ratio of the
+  // whole body.
+  return _encoding == Encoding::none || _compressedBytes == 0 || decode({}, true);
 }
 
 HttpClientErrc ResponseStreamer::deliverBuffered(HttpResponse& resp) {
