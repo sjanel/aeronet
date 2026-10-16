@@ -65,10 +65,12 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   /// Create an HTTP/2 protocol handler with a request dispatcher.
   /// @param config HTTP/2 configuration
   /// @param dispatcher Callback that dispatches an HttpRequestView to handlers and returns a response
+  /// @param tunnelBridge Bridge to the server for the CONNECT tunnels of the streams, owned by the handler.
+  ///        Without one, CONNECT requests are answered 405.
   Http2ProtocolHandler(const Http2Config& config, Router& router, HttpServerConfig& serverConfig,
                        CompressionState& compressionState, DecompressionState& decompressionState,
                        tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer, const char* cachedDateHeader,
-                       std::string_view clientAddress = {});
+                       std::string_view clientAddress = {}, std::unique_ptr<ITunnelBridge> tunnelBridge = {});
 
   Http2ProtocolHandler(const Http2ProtocolHandler&) = delete;
   Http2ProtocolHandler& operator=(const Http2ProtocolHandler&) = delete;
@@ -143,10 +145,6 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   void setRequestCompletionCallback(RequestCompletionCallback cb) noexcept {
     _requestCompletionCallback = std::move(cb);
   }
-
-  /// Install a tunnel bridge for CONNECT tunnel management.
-  /// The bridge must outlive this handler (typically owned by ConnectionState).
-  void setTunnelBridge(ITunnelBridge* bridge) noexcept { _tunnelBridge = bridge; }
 
   /// Inject data received from an upstream tunnel fd into the corresponding HTTP/2 stream.
   /// Called by the server when an upstream fd becomes readable.
@@ -420,7 +418,7 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   // Reverse tunnel map: upstream fd → stream ID (needed for closeTunnelByUpstreamFd).
   TunnelUpstreamsMap _tunnelUpstreams;  // upstreamFd → streamId
 
-  ITunnelBridge* _tunnelBridge{nullptr};
+  std::unique_ptr<ITunnelBridge> _tunnelBridge;
   RequestCompletionCallback _requestCompletionCallback;
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
@@ -436,11 +434,13 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
 /// @param dispatcher Callback that dispatches HttpRequestView to handlers
 /// @param sendServerPrefaceForTls If true, sends SETTINGS immediately (for TLS ALPN "h2").
 ///        For h2c (cleartext), this should be false as server waits for client preface first.
+/// @param tunnelBridge Bridge to the server for the CONNECT tunnels, owned by the handler (may be null).
 /// @return Unique pointer to the created handler
 std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(
     const Http2Config& config, Router& router, HttpServerConfig& serverConfig, CompressionState& compressionState,
     DecompressionState& decompressionState, tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer,
-    bool sendServerPrefaceForTls, const char* cachedDateHeader, std::string_view clientAddress);
+    bool sendServerPrefaceForTls, const char* cachedDateHeader, std::string_view clientAddress,
+    std::unique_ptr<ITunnelBridge> tunnelBridge);
 
 }  // namespace http2
 }  // namespace aeronet

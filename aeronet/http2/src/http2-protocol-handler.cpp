@@ -81,7 +81,8 @@ namespace aeronet::http2 {
 Http2ProtocolHandler::Http2ProtocolHandler(const Http2Config& config, Router& router, HttpServerConfig& serverConfig,
                                            CompressionState& compressionState, DecompressionState& decompressionState,
                                            tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer,
-                                           const char* cachedDateHeader, std::string_view clientAddress)
+                                           const char* cachedDateHeader, std::string_view clientAddress,
+                                           std::unique_ptr<ITunnelBridge> tunnelBridge)
     : _connection(config, true, &telemetryContext),
       _pRouter(&router),
       _pServerConfig(&serverConfig),
@@ -90,7 +91,8 @@ Http2ProtocolHandler::Http2ProtocolHandler(const Http2Config& config, Router& ro
       _pTmpBuffer(&tmpBuffer),
       _pTelemetryContext(&telemetryContext),
       _pCachedDateHeader(cachedDateHeader),
-      _clientAddress(clientAddress) {
+      _clientAddress(clientAddress),
+      _tunnelBridge(std::move(tunnelBridge)) {
   setupCallbacks();
 }
 
@@ -1713,10 +1715,11 @@ void Http2ProtocolHandler::sweepStreams(std::chrono::steady_clock::time_point no
 std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(
     const Http2Config& config, Router& router, HttpServerConfig& serverConfig, CompressionState& compressionState,
     DecompressionState& decompressionState, tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer,
-    bool sendServerPrefaceForTls, const char* cachedDateHeader, std::string_view clientAddress) {
-  auto protocolHandler =
-      std::make_unique<Http2ProtocolHandler>(config, router, serverConfig, compressionState, decompressionState,
-                                             telemetryContext, tmpBuffer, cachedDateHeader, clientAddress);
+    bool sendServerPrefaceForTls, const char* cachedDateHeader, std::string_view clientAddress,
+    std::unique_ptr<ITunnelBridge> tunnelBridge) {
+  auto protocolHandler = std::make_unique<Http2ProtocolHandler>(
+      config, router, serverConfig, compressionState, decompressionState, telemetryContext, tmpBuffer, cachedDateHeader,
+      clientAddress, std::move(tunnelBridge));
   if (sendServerPrefaceForTls) {
     // For TLS ALPN "h2", the server must send SETTINGS immediately after TLS handshake
     protocolHandler->connection().sendServerPreface();

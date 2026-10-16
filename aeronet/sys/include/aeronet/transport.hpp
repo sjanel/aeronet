@@ -76,11 +76,10 @@ class PlainTransport final : public SocketTransportState {
   TransportResult sendFile(const File& file, std::size_t& offset, std::size_t count);
 
 #ifdef AERONET_LINUX
-  /// Write of the two buffers with MSG_ZEROCOPY: the socket must have SO_ZEROCOPY (EnableZeroCopy()), and the caller
-  /// keeps the written bytes alive and unchanged until the completion of the send (see zerocopy()).
-  ZerocopySendResult writeZerocopy(std::string_view firstBuf, std::string_view secondBuf) {
-    return _zerocopy.send(_fd, firstBuf, secondBuf);
-  }
+  /// Gather write of 'buffers' (at most ZeroCopyState::kMaxBuffers) with MSG_ZEROCOPY: the socket must have SO_ZEROCOPY
+  /// (EnableZeroCopy()), and the caller keeps the written bytes alive and unchanged until the completion of the send
+  /// (see zerocopy()).
+  ZerocopySendResult writeZerocopy(std::span<const std::string_view> buffers) { return _zerocopy.send(_fd, buffers); }
 
   /// Reads the completion notifications of the zerocopy sends available in the socket error queue.
   ZerocopyCompletions pollZerocopyCompletions() noexcept { return _zerocopy.pollCompletions(_fd); }

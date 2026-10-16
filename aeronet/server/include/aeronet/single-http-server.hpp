@@ -597,6 +597,14 @@ class SingleHttpServer {
   // in that case, the kernel then reading the buffers of 'data' until the completion of the send (see
   // ConnectionState::retainZerocopyBuffer()).
   TransportResult writeMessage(ConnectionIt cnxIt, const HttpMessageData& data, bool& zerocopySent);
+  // Same for the unsent bytes of messages, as 'buffers' (at most ZeroCopyState::kMaxBuffers), of the sizes in 'output'.
+  TransportResult writeMessages(ConnectionIt cnxIt, std::span<const std::string_view> buffers,
+                                const ConnectionState::GatheredOutput& output, bool& zerocopySent);
+  // Writes outBuffer, gathered with the queued entries that follow it (up to the next file payload, sent before what
+  // follows it). Always gathered, so that a write retried after it would block starts with the same bytes, at least as
+  // many, as user-space TLS requires (OpenSSL keeps the record it could not write, and fails a retry with fewer bytes).
+  // Returns the number of bytes written, 'want' being set to the hint of the transport.
+  std::size_t writeOutBuffer(ConnectionIt cnxIt, TransportHint& want);
 #ifdef AERONET_LINUX
   // Polls the zerocopy completion notifications of a connection (see ConnectionState::pollZerocopyCompletions()).
   ZerocopyCompletions pollZerocopyCompletions(ConnectionState& state);
@@ -613,7 +621,8 @@ class SingleHttpServer {
   void flushFilePayload(ConnectionIt cnxIt);
   // Helper: flush pending bytes in tunnelOrFileBuffer via user-space TLS (SSL_write).
   // Used when kTLS is not available and file data must be encrypted in user-space.
-  // Returns true if the caller should return early because the buffer is still non-empty.
+  // Returns true if the caller should return early: the buffer is still non-empty (the write would block), or its write
+  // failed (the file send is then dropped).
   bool flushUserSpaceTlsBuffer(ConnectionIt cnxIt);
 
   void closeConnection(ConnectionIt cnxIt);
@@ -734,8 +743,9 @@ class SingleHttpServer {
   // installs CONNECT tunnel bridge, and flushes output.
   void setupHttp2Connection(NativeHandle clientFd, TcpNoDelayMode tcpNoDelayMode, ConnectionState& state);
 
-  // Install CONNECT tunnel bridge on an existing HTTP/2 protocol handler.
-  void installH2TunnelBridge(NativeHandle clientFd, ConnectionState& state);
+  // Installs the HTTP/2 protocol handler of a connection (ALPN "h2" or h2c prior knowledge), with its CONNECT tunnel
+  // bridge and its callbacks.
+  void installHttp2Handler(NativeHandle clientFd, ConnectionState& state, bool sendServerPrefaceForTls);
 #endif
 
   // Updated by the event loop, read by stats() from any thread.

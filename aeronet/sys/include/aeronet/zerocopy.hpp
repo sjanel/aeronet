@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string_view>
 
 #include "aeronet/native-handle.hpp"
@@ -70,9 +71,13 @@ struct ZeroCopyState {
     }
   }
 
+  // Maximum number of buffers of a send.
+  static constexpr std::size_t kMaxBuffers = 64;
+
 #ifdef AERONET_LINUX
-  // Sends 'firstBuffer' then 'secondBuffer' with MSG_ZEROCOPY (non-blocking).
-  ZerocopySendResult send(NativeHandle fd, std::string_view firstBuffer, std::string_view secondBuffer);
+  // Sends 'buffers' in order with MSG_ZEROCOPY (non-blocking). At most kMaxBuffers buffers, not all empty (the empty
+  // ones are skipped).
+  ZerocopySendResult send(NativeHandle fd, std::span<const std::string_view> buffers);
 
   // Reads the completion notifications available in the error queue of the socket (non-blocking), stopping once all
   // the sends completed.
