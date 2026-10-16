@@ -17,6 +17,22 @@
 
 namespace aeronet {
 
+namespace {
+
+// Buffers growing up to this capacity are copied into a new block instead of being reallocated: realloc can seldom
+// extend a small block in place, and it bypasses the fast paths of malloc and free for small blocks (like the thread
+// cache of glibc, which holds blocks up to 1032 bytes and takes no lock), which outweigh the copy of the used bytes.
+constexpr std::uint64_t kMaxCopiedGrowthCapacity = 1024;
+
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+// Growing always into a new buffer catches accesses to the previous one more easily.
+constexpr bool kAlwaysGrowIntoNewBuffer = true;
+#else
+constexpr bool kAlwaysGrowIntoNewBuffer = false;
+#endif
+
+}  // namespace
+
 template <class T, class ViewType, class SizeType>
 RawBytesBase<T, ViewType, SizeType>::RawBytesBase(uint64_t capacity)
     : _buf(static_cast<value_type*>(std::malloc(SafeCast<size_type>(capacity)))),
@@ -151,20 +167,25 @@ bool RawBytesBase<T, ViewType, SizeType>::operator==(const RawBytesBase& rhs) co
 
 template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::reallocUp(size_type newCapacity) {
+  pointer newBuf;
+  if (kAlwaysGrowIntoNewBuffer || _buf == nullptr || newCapacity <= kMaxCopiedGrowthCapacity) {
+    newBuf = static_cast<pointer>(std::malloc(newCapacity));
+    if (newBuf == nullptr) [[unlikely]] {
+      throw std::bad_alloc();
+    }
+    // A default constructed buffer has nothing to copy nor free.
+    if (_buf != nullptr) {
+      Copy(_buf, _size, newBuf);
+      std::free(_buf);
+    }
+  } else {
+    newBuf = static_cast<pointer>(std::realloc(_buf, newCapacity));
+    if (newBuf == nullptr) [[unlikely]] {
+      throw std::bad_alloc();
+    }
+  }
 #ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
-  // force allocation of a new buffer to catch invalid accesses more easily
-  pointer newBuf = static_cast<pointer>(std::malloc(newCapacity));
-  if (newBuf == nullptr) [[unlikely]] {
-    throw std::bad_alloc();
-  }
   std::memset(newBuf + _size, 255, newCapacity - _size);
-  Copy(_buf, _size, newBuf);
-  std::free(_buf);
-#else
-  pointer newBuf = static_cast<pointer>(std::realloc(_buf, newCapacity));
-  if (newBuf == nullptr) [[unlikely]] {
-    throw std::bad_alloc();
-  }
 #endif
   _buf = newBuf;
   _capacity = newCapacity;
