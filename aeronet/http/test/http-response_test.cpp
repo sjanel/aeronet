@@ -3218,14 +3218,10 @@ TEST_F(HttpResponseTest, HeadEditAllocationFailureKeepsEmbeddedPayload) {
     } else {
       resp.body(std::string(longBody));
     }
-    // Larger than the current capacity, so that the head buffer must be reallocated.
+    // Larger than the current capacity, so that the head buffer must grow (into a new block, being small).
     const std::string bigValue(resp.capacityInlined() * 2U, 'v');
 
-#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
     test::FailNextMalloc();
-#else
-    test::FailNextRealloc();
-#endif
     EXPECT_THROW(resp.headerAddLine("x-big", bigValue), std::bad_alloc);
 
     // The response is left unmodified, with its payload reinstalled.
