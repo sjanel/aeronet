@@ -3856,7 +3856,7 @@ TEST(HttpClientSinkE2ETest, ThrowingSinkLeavesTheClientUsable) {
   HttpClient client;
   ThrowingBodySink throwing;
   // NOLINTNEXTLINE(bugprone-unused-return-value)
-  EXPECT_THROW(client.get(MakeUrl(server.port()), throwing), std::runtime_error);
+  EXPECT_THROW((void)client.get(MakeUrl(server.port()), throwing), std::runtime_error);
   for (int idx = 0; idx < 3; ++idx) {
     auto result = client.get(MakeUrl(server.port()));
     ASSERT_TRUE(result) << idx << ' ' << ErrcToStr(result.error());
