@@ -98,7 +98,7 @@ TEST(DogStatsDTest, SendMetricFailsToAllocateMemory) {
   test::UnixDogstatsdSink sink;
   DogStatsD client(sink.path(), "svc");
 
-  test::FailNextRealloc(1);  // cause next realloc to fail
+  test::FailNextMalloc(1);  // the small metric buffer grows into a new block: make its allocation fail
 
   // Should not throw despite allocation failure
   EXPECT_NO_THROW(

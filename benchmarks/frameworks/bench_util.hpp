@@ -32,34 +32,17 @@ inline constexpr std::string kHeaderPath = "/headers";
 
 // Pre-generated string pools to avoid per-request RNG or allocation noise during benchmarks.
 struct PregenPool {
-  vector<std::string> items;
-  std::atomic<uint32_t> idx{0};
-  // Each pool owns its RNG so we can deterministically re-seed it when
-  // pre-filling. This ensures the same sequence of strings across runs.
-  std::mt19937_64 rng{42};
-  std::string pregen;
-  std::size_t minSz;
-  std::size_t maxSz;
-  std::uniform_int_distribution<std::size_t> dist;
-
-  PregenPool() = default;
-
-  // Construct and fill using the pool's own RNG (deterministic seed).
-  PregenPool(size_t nbStr, size_t minStrSz, size_t maxStrSz, uint64_t seed = 0)
-      : minSz(minStrSz), maxSz(maxStrSz), dist(minStrSz, maxStrSz) {
-    reset(nbStr, minStrSz, maxStrSz, seed);
-  }
+  PregenPool() noexcept = default;
 
   std::string randomStr(std::size_t n) {
     std::string out(n, 'x');  // make it start with x to avoid conflicts with HTTP known headers
     static constexpr char charset[] =
         "0123456789"
         "abcdefghijklmnopqrstuvwxyz";
-    std::uniform_int_distribution<std::size_t> dist(0, std::size(charset) - 2);
+    std::uniform_int_distribution<std::size_t> charDist(0, std::size(charset) - 2);
     for (std::size_t charPos = 1; charPos < out.size(); ++charPos) {
-      out[charPos] = charset[dist(rng)];
+      out[charPos] = charset[charDist(rng)];
     }
-
     return out;
   }
 
@@ -100,6 +83,16 @@ struct PregenPool {
     }
     return std::move(items[idx.fetch_add(1, std::memory_order_relaxed)]);
   }
+
+  vector<std::string> items;
+  std::atomic<uint32_t> idx{0};
+  // Each pool owns its RNG so we can deterministically re-seed it when
+  // pre-filling. This ensures the same sequence of strings across runs.
+  std::mt19937_64 rng{42};
+  std::string pregen;
+  std::size_t minSz;
+  std::size_t maxSz;
+  std::uniform_int_distribution<std::size_t> dist;
 };
 
 // Iterate over a header block produced by the pools. The block format is a sequence of

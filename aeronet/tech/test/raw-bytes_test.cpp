@@ -495,23 +495,87 @@ TYPED_TEST(RawBaseTest, ContPointersConstructor) {
   EXPECT_EQ(buf.size(), 0U);
 }
 
+// Growth from no storage, from a zero capacity buffer, into new blocks while small, then by reallocation: the content
+// is kept at each step, whatever the size of the appended chunks.
+TYPED_TEST(RawBaseTest, GrowthKeepsContent) {
+  using RawT = TypeParam;
+  using Type = RawT::value_type;
+
+  std::string expected(64UL * 1024UL, '\0');
+  for (std::size_t pos = 0; pos < expected.size(); ++pos) {
+    expected[pos] = static_cast<char>('a' + (pos % 26U));
+  }
+  const auto* pExpected = reinterpret_cast<const Type*>(expected.data());
+
+  for (std::size_t chunkSize : {1UL, 7UL, 100UL, 1000UL, 5000UL}) {
+    for (bool zeroCapacity : {false, true}) {
+      RawT buf = zeroCapacity ? RawT(0UL) : RawT();
+      std::size_t capacity = buf.capacity();
+      for (std::size_t pos = 0; pos < expected.size(); pos += chunkSize) {
+        buf.append(pExpected + pos, std::min(chunkSize, expected.size() - pos));
+        if (buf.capacity() != capacity) {
+          capacity = buf.capacity();
+          ASSERT_EQ(std::memcmp(buf.data(), expected.data(), buf.size()), 0)
+              << "chunk size " << chunkSize << ", grown to " << capacity;
+        }
+      }
+      ASSERT_EQ(buf.size(), expected.size());
+      EXPECT_EQ(std::memcmp(buf.data(), expected.data(), expected.size()), 0);
+    }
+  }
+}
+
+// Exact growths around the largest capacity grown into a new block keep the used bytes.
+TYPED_TEST(RawBaseTest, ReserveAroundCopiedGrowthCapacityKeepsContent) {
+  using RawT = TypeParam;
+  using Type = RawT::value_type;
+
+  static constexpr std::string_view kData = "0123456789";
+  RawT buf(reinterpret_cast<const Type*>(kData.data()), kData.size());
+  for (std::size_t capacity : {1023UL, 1024UL, 1025UL, 4096UL, 1UL << 20U}) {
+    buf.reserve(capacity);
+    EXPECT_EQ(buf.capacity(), capacity);
+    ASSERT_EQ(buf.size(), kData.size());
+    EXPECT_EQ(std::memcmp(buf.data(), kData.data(), kData.size()), 0);
+  }
+}
+
 TYPED_TEST(RawBaseTest, MallocFails) {
   if (!AERONET_WANT_MALLOC_OVERRIDES) {
     GTEST_SKIP() << "malloc overrides disabled on this toolchain; skipping";
   }
   using RawT = TypeParam;
+  using Type = RawT::value_type;
 
   test::FailNextMalloc();
   EXPECT_THROW(RawT(16UL), std::bad_alloc);
   test::FailNextMalloc();
   EXPECT_NO_THROW(RawT(0UL));  // zero-size allocation should not fail
-  RawT buf1(10);
+
+  // A buffer without storage gets a new block.
+  RawT emptyBuf;
+  test::FailNextMalloc();
+  EXPECT_THROW(emptyBuf.reserve(4096UL), std::bad_alloc);
+  EXPECT_EQ(emptyBuf.data(), nullptr);
+  EXPECT_EQ(emptyBuf.capacity(), 0U);
+
+  // Up to 1 KiB, a buffer grows into a new block, and keeps its content when the allocation fails.
+  RawT buf1(reinterpret_cast<const Type*>("abc"), 3);
+  test::FailNextMalloc();
+  EXPECT_THROW(buf1.reserve(1024UL), std::bad_alloc);
+  EXPECT_EQ(buf1.capacity(), 3U);
+  ASSERT_EQ(buf1.size(), 3U);
+  EXPECT_EQ(std::memcmp(buf1.data(), "abc", 3), 0);
+
+  // Beyond, it is reallocated (always grown into a new block with the additional memory checks).
 #ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
   test::FailNextMalloc();
 #else
   test::FailNextRealloc();
 #endif
-  EXPECT_THROW(buf1.reserve(32UL), std::bad_alloc);
+  EXPECT_THROW(buf1.reserve(1025UL), std::bad_alloc);
+  EXPECT_EQ(buf1.capacity(), 3U);
+  EXPECT_EQ(std::memcmp(buf1.data(), "abc", 3), 0);
 }
 
 TYPED_TEST(RawBaseTest, ShrinkToFit) {
