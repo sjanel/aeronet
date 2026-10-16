@@ -262,14 +262,15 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
       }
       st = parser.parse(responseBuffer, eof, resp, config.maxResponseBytes);
     }
-    if (parser.streaming()) {
-      // Deliver what was de-framed so far (also before a failure), and drop it from the receive buffer so that it
-      // never grows beyond a read.
-      const std::string_view body = parser.streamedBody(responseBuffer);
-      if (!body.empty() && !streamer.feed(body)) {
+    // A streamed body comes in pieces, each delivered as soon as it is parsed (also before a failure that follows it).
+    while (st == Http1ResponseParser::Status::BodyPiece) {
+      if (!streamer.feed(parser.streamedBody(responseBuffer))) {
         return std::unexpected(streamer.error());
       }
-      parser.discardStreamed(responseBuffer);
+      st = parser.parse(responseBuffer, eof, resp, config.maxResponseBytes);
+    }
+    if (parser.streaming()) {
+      parser.discardStreamed(responseBuffer);  // so that the receive buffer never grows beyond a read
     }
     switch (st) {
       case Http1ResponseParser::Status::NeedMore:
@@ -286,7 +287,7 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
                    req.originKey(), config.maxResponseBytes);
         return std::unexpected(HttpClientErrc::responseTooLarge);
       default:
-        // HeadComplete is only returned once per response, and handled above.
+        // HeadComplete is only returned once per response, and BodyPiece until the pieces are consumed: both above.
         assert(st == Http1ResponseParser::Status::Error);
         log::error("HTTP/1.1 client: malformed response from {}", req.originKey());
         return std::unexpected(HttpClientErrc::malformedResponse);
