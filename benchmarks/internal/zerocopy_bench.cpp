@@ -10,6 +10,16 @@
 #include <string>
 #include <string_view>
 
+#ifdef AERONET_LINUX
+#include <sys/resource.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+
+#include <algorithm>
+#include <cassert>
+#include <cstdint>
+#endif
+
 #include "bench_util.hpp"
 
 using namespace std::chrono_literals;
@@ -103,6 +113,134 @@ BENCHMARK_REGISTER_F(ZerocopyServerFixture, LargeResponseRoundtrip)
     ->Args({1048576, 0})  // 1MB, regular
     ->Args({1048576, 1})  // 1MB, zerocopy
     ;
+
+#ifdef AERONET_LINUX
+namespace {
+
+constexpr std::size_t kStreamedBodySize = 8UL << 20U;
+
+// Small enough for the server writes to quickly fill the socket, as for a slow reader, but at least the loopback MSS
+// (64 KiB): below it, the sender would wait for window probes (silly window syndrome avoidance).
+constexpr int kSlowReaderReceiveBufferSize = 256 * 1024;
+
+// Pause of the slow reader after each read (of at most 64 KiB): it reads at most 64 KiB every 200 us, ~300 MiB/s.
+constexpr auto kSlowReaderPause = std::chrono::microseconds{200};
+
+// User + system CPU time consumed so far, in microseconds, by this process (RUSAGE_SELF) or thread (RUSAGE_THREAD).
+std::uint64_t CpuTimeUs(int who) {
+  rusage usage{};
+  // Only fails for an invalid 'who' or address.
+  [[maybe_unused]] const int ret = ::getrusage(who, &usage);
+  assert(ret == 0);
+  const auto micros = [](const timeval& tv) {
+    return (static_cast<std::uint64_t>(tv.tv_sec) * 1000000ULL) + static_cast<std::uint64_t>(tv.tv_usec);
+  };
+  return micros(usage.ru_utime) + micros(usage.ru_stime);
+}
+
+// A streaming handler writing a large chunked response to a slow reader (small receive buffer, limited read rate): the
+// handler writes all its chunks at once, much faster than the client reads them, so they wait in the connection output
+// behind the bytes the socket did not take. Reports the server CPU time per response (process CPU time minus the one
+// of this client thread), which includes the copies of this waiting output.
+class StreamingSlowReaderFixture : public benchmark::Fixture {
+ protected:
+  void SetUp(const benchmark::State& state) override {
+    (void)kInitOnce;  // ensure server is started
+    const auto chunkSize = static_cast<std::size_t>(state.range(0));
+    const bool zerocopyEnabled = state.range(1) == 1;
+
+    server.postConfigUpdate([zerocopyEnabled](aeronet::HttpServerConfig& cfg) {
+      // Enabled: Opportunistic would never use MSG_ZEROCOPY for this loopback client.
+      cfg.withZerocopyMode(zerocopyEnabled ? aeronet::ZerocopyMode::Enabled : aeronet::ZerocopyMode::Disabled);
+      cfg.withZerocopyMinBytes(aeronet::HttpServerConfig{}.zerocopyMinBytes);
+      // The whole response may wait in the connection output: it must not be refused as an overflow.
+      cfg.withMaxOutboundBufferBytes(static_cast<uint32_t>(2 * kStreamedBodySize));
+    });
+
+    server.router().setDefault(
+        [chunk = std::string(chunkSize, 'X')](const aeronet::HttpRequestView&, aeronet::HttpResponseWriter& writer) {
+          for (std::size_t written = 0; written < kStreamedBodySize; written += chunk.size()) {
+            if (!writer.writeBody(chunk)) {
+              break;
+            }
+          }
+          writer.end();
+        });
+    std::this_thread::sleep_for(2 * kPollInterval);  // allow config to propagate
+    client = bench_util::ClientConnection(server.port(), 500ms, kSlowReaderReceiveBufferSize);
+    aeronet::test::setRecvTimeout(client.fd(), 2000ms);
+  }
+
+  // Sends a request and receives its whole response, until its last chunk (the body is made of 'X' only: the last
+  // chunk is the only "0\r\n\r\n" of the response).
+  [[nodiscard]] bool streamResponse() {
+    static constexpr std::string_view kReq = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    bench_util::sendAll(client.fd(), kReq);
+    std::size_t received = 0;
+    tail.clear();
+    while (received <= kStreamedBodySize || !tail.ends_with(http::EndChunk)) {
+      const auto nb = ::recv(client.fd(), recvBuffer, sizeof(recvBuffer), 0);
+      if (nb <= 0) {
+        return false;
+      }
+      received += static_cast<std::size_t>(nb);
+      tail.append(recvBuffer, static_cast<std::size_t>(nb));
+      tail.erase(0, tail.size() - std::min(tail.size(), http::EndChunk.size()));
+      std::this_thread::sleep_for(kSlowReaderPause);
+    }
+    return true;
+  }
+
+  char recvBuffer[1UL << 16U];
+  std::string tail;
+  bench_util::ClientConnection client;
+};
+
+}  // namespace
+
+BENCHMARK_DEFINE_F(StreamingSlowReaderFixture, ChunkedStreamToSlowReader)(benchmark::State& state) {
+  std::uint64_t serverCpuUs = 0;
+  const auto statsBefore = server.stats();
+  for ([[maybe_unused]] auto iteration : state) {
+    const auto processStart = CpuTimeUs(RUSAGE_SELF);
+    const auto clientStart = CpuTimeUs(RUSAGE_THREAD);
+    if (!streamResponse()) {
+      state.SkipWithError("streamed response not received");
+      return;
+    }
+    const auto clientCpu = CpuTimeUs(RUSAGE_THREAD) - clientStart;
+    serverCpuUs += CpuTimeUs(RUSAGE_SELF) - processStart - clientCpu;
+  }
+  state.counters["server_cpu_us"] =
+      benchmark::Counter(static_cast<double>(serverCpuUs), benchmark::Counter::kAvgIterations);
+  // Per response: the flushes of the waiting output, its zerocopy sends, and those refused by the retention limit.
+  const auto statsAfter = server.stats();
+  const auto perResponse = [](uint64_t before, uint64_t after) {
+    return benchmark::Counter(static_cast<double>(after - before), benchmark::Counter::kAvgIterations);
+  };
+  state.counters["flushes"] = perResponse(statsBefore.flushCycles, statsAfter.flushCycles);
+  state.counters["zc_sends"] = perResponse(statsBefore.zerocopySends, statsAfter.zerocopySends);
+  state.counters["zc_bytes"] = perResponse(statsBefore.zerocopyBytes, statsAfter.zerocopyBytes);
+  state.counters["zc_retain_fallbacks"] =
+      perResponse(statsBefore.zerocopyRetainLimitFallbacks, statsAfter.zerocopyRetainLimitFallbacks);
+  state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(kStreamedBodySize));
+  state.SetLabel(state.range(1) == 1 ? "zerocopy" : "regular");
+}
+
+// Format: ->Args({chunk_size, zerocopy_mode}), for a response of kStreamedBodySize bytes.
+// zerocopy_mode: 0 = Disabled, 1 = Enabled (Opportunistic is Disabled for a loopback client).
+BENCHMARK_REGISTER_F(StreamingSlowReaderFixture, ChunkedStreamToSlowReader)
+    ->Unit(benchmark::kMillisecond)
+    ->UseRealTime()
+    ->Args({256, 0})      // small chunks (events), regular
+    ->Args({256, 1})      // small chunks (events), zerocopy
+    ->Args({4096, 0})     // 4KB chunks, regular
+    ->Args({4096, 1})     // 4KB chunks, zerocopy
+    ->Args({65536, 0})    // 64KB chunks, regular
+    ->Args({65536, 1})    // 64KB chunks, zerocopy
+    ->Args({262144, 0})   // 256KB chunks, regular
+    ->Args({262144, 1});  // 256KB chunks, zerocopy
+#endif
 
 }  // namespace aeronet
 

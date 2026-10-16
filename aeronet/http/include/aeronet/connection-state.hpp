@@ -12,12 +12,13 @@
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/native-handle.hpp"
+#include "aeronet/output-queue.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/tls-info.hpp"
 #include "aeronet/transport.hpp"
-#include "aeronet/tunnel-bridge.hpp"
+#include "aeronet/vector.hpp"
 #include "aeronet/zerocopy-buffers.hpp"
 #include "aeronet/zerocopy.hpp"
 
@@ -53,7 +54,13 @@ struct ConnectionState {
   [[nodiscard]] bool isSendingFile() const noexcept { return fileSendActive; }
 
   [[nodiscard]] bool hasPendingOutput() const noexcept {
-    return !outBuffer.empty() || (protocolHandler != nullptr && protocolHandler->hasPendingOutput());
+    return !outBuffer.empty() || !outQueue.empty() ||
+           (protocolHandler != nullptr && protocolHandler->hasPendingOutput());
+  }
+
+  // Size of the HTTP/1 output not written yet (the files to send excluded).
+  [[nodiscard]] std::size_t bufferedOutputBytes() const noexcept {
+    return outBuffer.remainingSize() + outQueue.bytes();
   }
 
   // Tells whether a requested drain close can proceed. Besides buffered output, it waits for the completion of the
@@ -80,7 +87,6 @@ struct ConnectionState {
   TransportResult transportRead(std::size_t chunkSize);
 
   TransportResult transportWrite(std::string_view data);
-  TransportResult transportWrite(const HttpMessageData& httpResponseData);
 
   TransportResult transportWrite(std::span<const std::string_view> buffers);
   // Return true if success, false if fatal error.
@@ -139,11 +145,34 @@ struct ConnectionState {
   /// Empties outBuffer, written or dropped: retains its storage if zerocopy sends may still read it.
   void discardOutBuffer();
 
-  /// Makes outBuffer safe to modify before appending up to 'extraCapacity' bytes to it: when zerocopy sends may still
-  /// read it, continues with a copy of its unsent bytes (with room for 'extraCapacity' more), the original being
-  /// retained until their completion.
-  void prepareOutBufferAppend(std::size_t extraCapacity);
+  /// Queues 'data' (its file payload included) behind the HTTP/1 output not written yet. Neither 'data' nor that output
+  /// is copied, except small ones (see OutputQueue::CanMerge()): 'data' is then appended to the last of them, unless
+  /// zerocopy sends may read it. Returns true if 'data' was appended to the output ahead of it, false if queued on its
+  /// own.
+  bool queueOutput(HttpMessageData data);
 
+  /// Continues the HTTP/1 output, outBuffer and its file payload being written, with the first queued entry: moved to
+  /// outBuffer, its file payload being attached to be sent after it.
+  void dequeueOutput();
+
+  struct GatheredOutput {
+    std::size_t size;          // bytes of the gathered buffers
+    std::size_t retainedSize;  // bytes of their messages (see HttpMessageData::retainedSize())
+    std::size_t nbMessages;    // number of their messages
+  };
+
+  /// Gathers in 'buffers' (cleared first) the non-empty unsent buffers of outBuffer, then of the queued entries written
+  /// with it in a single write: up to the first one with a file payload (sent before what follows it), and within
+  /// 'maxBuffers' buffers. outBuffer must have no file payload attached.
+  GatheredOutput gatherOutput(vector<std::string_view>& buffers, std::size_t maxBuffers) const;
+
+  /// Records that the first 'written' bytes of outBuffer, followed by the first queued entries (gathered in the same
+  /// write), were written, with MSG_ZEROCOPY if 'zerocopySent'. The written buffers are released, or retained while
+  /// zerocopy sends may read them, and the entry written in part becomes outBuffer.
+  void outputWritten(std::size_t written, bool zerocopySent);
+
+  /// Drops the output not written yet (outBuffer being retained if zerocopy sends may read it, the queued entries, the
+  /// file being sent and the output of the protocol handler), then requests a drain close.
   void clearBuffers();
 
   using AggregatedBodyStreamContext = HttpRequestView::AggregatedBodyContext;
@@ -160,6 +189,8 @@ struct ConnectionState {
   AggregatedBodyStreamContext bodyStreamContext;
   // pending outbound data not yet written
   HttpMessageData outBuffer;
+  // HTTP/1 output queued behind outBuffer (and the file sent after it), produced while it waits for the socket.
+  OutputQueue outQueue;
   // Written buffers still read by the kernel for zerocopy sends in flight.
   ZerocopyBuffers zerocopyBuffers;
   Transport transport;  // set after accept (plain or TLS)
@@ -290,10 +321,6 @@ struct ConnectionState {
   // nullptr when using default HTTP/1.1 processing (most connections).
   // When set, the server routes data through this handler instead of HTTP parsing.
   std::unique_ptr<IProtocolHandler> protocolHandler;
-
-  // CONNECT tunnel bridge for HTTP/2 connections.
-  // Owned here so the bridge outlives the protocol handler.
-  std::unique_ptr<ITunnelBridge> tunnelBridge;
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   [[nodiscard]] AsyncHandlerState* pAsyncState() const noexcept { return asyncState.get(); }

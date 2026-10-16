@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <span>
 #include <string_view>
 #include <utility>
@@ -27,6 +28,7 @@
 #include "aeronet/system-error.hpp"
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
+#include "aeronet/vector.hpp"
 #include "aeronet/zerocopy-mode.hpp"
 #include "aeronet/zerocopy.hpp"
 
@@ -104,10 +106,6 @@ TransportResult ConnectionState::transportWrite(std::span<const std::string_view
   return transport.write(buffers);
 }
 
-TransportResult ConnectionState::transportWrite(const HttpMessageData& httpResponseData) {
-  return transport.write(httpResponseData.firstBuffer(), httpResponseData.secondBuffer());
-}
-
 bool ConnectionState::tunnelTransportWrite(NativeHandle fd) {
   const auto [written, want] = transportWrite(tunnelOrFileBuffer);
   if (want == TransportHint::Error) [[unlikely]] {
@@ -183,8 +181,8 @@ ConnectionState::FileResult ConnectionState::transportFile(NativeHandle clientFd
           log::error("{} failed during {} sendfile fd # {} err={} msg={}", tlsFlow ? "pread" : "sendfile",
                      tlsFlow ? "TLS" : "plain", clientFd, errnoVal, SystemErrorMessage(errnoVal));
         }
-        requestDrainAndClose();
-        fileSendActive = false;
+        // The output queued behind the file must not follow its truncated body, read as the rest of it.
+        clearBuffers();
         return res;
     }
 #elifdef AERONET_WINDOWS
@@ -197,8 +195,8 @@ ConnectionState::FileResult ConnectionState::transportFile(NativeHandle clientFd
     res.code = FileResult::Code::Error;
     log::error("{} failed during {} sendfile fd # {} err={}", tlsFlow ? "ReadFile" : "TransmitFile",
                tlsFlow ? "TLS" : "plain", clientFd, errVal);
-    requestDrainAndClose();
-    fileSendActive = false;
+    // The output queued behind the file must not follow its truncated body, read as the rest of it.
+    clearBuffers();
     return res;
 #endif
   }
@@ -288,6 +286,9 @@ void ConnectionState::reset() {
   request.shrinkAndMaybeClear();
 
   shrinkAndClear(outBuffer);
+  // Never written, so not read by the kernel.
+  outQueue.clear();
+  outQueue.shrink_to_fit();
   // The socket is closed at this point, and the kernel no longer reads the zerocopy buffers: SingleHttpServer only
   // closes a connection gracefully once its zerocopy sends completed, and takes them over when resetting it (see
   // SingleHttpServer::releaseConnection()).
@@ -338,7 +339,6 @@ void ConnectionState::reset() {
 
   // Reset protocol handler (e.g., WebSocket, HTTP/2)
   protocolHandler.reset();
-  tunnelBridge.reset();
   protocol = ProtocolType::Http11;
 }
 
@@ -389,6 +389,9 @@ void ConnectionState::reclaimMemoryFromOversizedBuffers() {
     outBuffer.shrink_to_fit();
   }
 
+  // outQueue: released once empty, as the common case does not use it.
+  outQueue.shrink_to_fit();
+
   // zerocopyBuffers: holds one entry per written buffer still read by the kernel.
   zerocopyBuffers.shrink_to_fit();
 }
@@ -429,23 +432,85 @@ void ConnectionState::discardOutBuffer() {
   outBuffer.clear();
 }
 
-void ConnectionState::prepareOutBufferAppend([[maybe_unused]] std::size_t extraCapacity) {
-#ifdef AERONET_LINUX
-  if (outBufferZerocopySent) {
-    // Rather than growing outBuffer in place (which may reallocate it), continue with a copy of its unsent bytes.
-    const std::string_view first = outBuffer.firstBuffer();
-    const std::string_view second = outBuffer.secondBuffer();
-    RawChars unsent(first.size() + second.size() + extraCapacity);
-    unsent.unchecked_append(first);
-    unsent.unchecked_append(second);
-    discardOutBuffer();
-    outBuffer = HttpMessageData(std::move(unsent));
+bool ConnectionState::queueOutput(HttpMessageData data) {
+  // outBuffer can only be appended to when it is the last output: no queued entry nor file payload after it.
+  if (outQueue.empty() && !isSendingFile() && !outBufferZerocopySent && OutputQueue::CanMerge(outBuffer, data)) {
+    outBuffer.append(std::move(data));
+    return true;
   }
+  return outQueue.push(std::move(data));
+}
+
+void ConnectionState::dequeueOutput() {
+  assert(outBuffer.empty() && !outBufferZerocopySent && !isSendingFile());
+  outBuffer = outQueue.pop();
+  if (FilePayload* pFilePayload = outBuffer.getIfFilePayload()) {
+    // Sent once outBuffer, the head of its response, is written.
+    [[maybe_unused]] const bool sendNow = attachFilePayload(std::move(*pFilePayload));
+    assert(!sendNow);
+  }
+}
+
+ConnectionState::GatheredOutput ConnectionState::gatherOutput(vector<std::string_view>& buffers,
+                                                              std::size_t maxBuffers) const {
+  assert(!isSendingFile());
+  buffers.clear();
+  const auto gather = [&buffers](const HttpMessageData& data) {
+    for (const std::string_view buffer : {data.firstBuffer(), data.secondBuffer()}) {
+      if (!buffer.empty()) {
+        buffers.push_back(buffer);
+      }
+    }
+  };
+  gather(outBuffer);
+  GatheredOutput gathered{outBuffer.remainingSize(), outBuffer.retainedSize(), 1};
+  for (const HttpMessageData& entry : outQueue.entries()) {
+    if (buffers.size() + 2 > maxBuffers || entry.hasFilePayload()) {
+      break;
+    }
+    gather(entry);
+    gathered.size += entry.remainingSize();
+    gathered.retainedSize += entry.retainedSize();
+    ++gathered.nbMessages;
+  }
+  return gathered;
+}
+
+void ConnectionState::outputWritten(std::size_t written, bool zerocopySent) {
+  outBufferZerocopySent = outBufferZerocopySent || zerocopySent;
+  std::size_t entrySize = outBuffer.remainingSize();
+  if (written < entrySize) {
+    outBuffer.addOffset(written);
+    return;
+  }
+  written -= entrySize;
+  discardOutBuffer();
+  while (written != 0) {
+    // The next entries, gathered after outBuffer: none of them has a file payload, sent apart.
+    HttpMessageData entry = outQueue.pop();
+    assert(!entry.hasFilePayload());
+    entrySize = entry.remainingSize();
+    if (written < entrySize) {
+      entry.addOffset(written);
+      outBuffer = std::move(entry);
+      outBufferZerocopySent = zerocopySent;
+      return;
+    }
+    written -= entrySize;
+#ifdef AERONET_LINUX
+    if (zerocopySent) {
+      retainZerocopyBuffer(std::move(entry));
+    }
 #endif
+  }
 }
 
 void ConnectionState::clearBuffers() {
   discardOutBuffer();
+  outQueue.clear();
+  // The file to send after outBuffer as well: a drain close would wait for it otherwise.
+  fileSendActive = false;
+  fileSendHeadersPending = false;
   if (protocolHandler != nullptr) {
     protocolHandler->discardPendingOutput();
   }

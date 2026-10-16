@@ -6,6 +6,7 @@
 
 #include "aeronet/connection-state.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-message-data.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/connection-storage.hpp"
@@ -13,6 +14,7 @@
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/protocol-handler.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/single-http-server.hpp"
 
@@ -104,10 +106,10 @@ SingleHttpServer::WebSocketUpgrade SingleHttpServer::upgradeToWebSocket(Connecti
 
   // Queue the 101 Switching Protocols response
   const std::size_t responseSize = upgrade::ComputeWebSocketUpgradeResponseSize(upgradeValidation);
-  state.prepareOutBufferAppend(responseSize);
-  char* pData = state.outBuffer.resizeUp(responseSize);
-  upgrade::BuildWebSocketUpgradeResponse(upgradeValidation, pData);
-  flushOutbound(cnxIt);
+  RawChars response(responseSize);
+  upgrade::BuildWebSocketUpgradeResponse(upgradeValidation, response.data());
+  response.setSize(responseSize);
+  queueData(cnxIt, HttpMessageData(std::move(response)));
 
   // From now on, the WebSocket idle and close timeouts apply instead of keepAliveTimeout.
   refreshWebSocketDeadline(cnxIt->fd(), state);

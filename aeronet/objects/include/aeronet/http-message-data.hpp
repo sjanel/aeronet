@@ -80,12 +80,15 @@ class HttpMessageData {
 
   FilePayload* getIfFilePayload() noexcept { return hasPayload() ? payload()->getIfFilePayload() : nullptr; }
 
+  [[nodiscard]] bool hasFilePayload() const noexcept { return hasPayload() && payload()->isFilePayload(); }
+
   void addOffset(std::size_t sz) noexcept {
     assert(offset() + sz <= kOffsetMask);
     _offsetBitmap += sz;
   }
 
-  // Appends the message bytes and the payload of 'other' (whose offset is ignored).
+  // Appends the message bytes and the payload of 'other' (whose offset is ignored). The storage grows exponentially:
+  // a connection output can receive many small appends (see OutputQueue).
   void append(HttpMessageData other) {
     const std::string_view otherMsg(other._buf.data(), other.messageSize());
     if (hasPayload()) {
@@ -98,7 +101,8 @@ class HttpMessageData {
       return;
     }
     // Single allocation for other's message bytes and the storage of its payload, relocated (not copied) after them.
-    _buf.ensureAvailableCapacity(otherMsg.size() + (other.hasPayload() ? EmbeddedPayload::kMaxFootprint : 0UL));
+    _buf.ensureAvailableCapacityExponential(otherMsg.size() +
+                                            (other.hasPayload() ? EmbeddedPayload::kMaxFootprint : 0UL));
     _buf.unchecked_append(otherMsg);
     if (other.hasPayload()) {
       const std::size_t msgSize = _buf.size();
@@ -107,21 +111,6 @@ class HttpMessageData {
       other.setPayloadFootprint(0);
       setPayloadFootprint(_buf.size() - msgSize);
     }
-  }
-
-  /// Grows the writable buffer by `sz` bytes and returns the start of the new uninitialized region.
-  char* resizeUp(std::size_t sz) {
-    if (!hasPayload()) {
-      _buf.ensureAvailableCapacity(sz);
-      char* pData = _buf.end();
-      _buf.addSize(sz);
-      return pData;
-    }
-    HttpPayload* pPayload = payload();
-    const std::size_t oldSize = pPayload->size();
-    pPayload->ensureAvailableCapacity(sz);
-    pPayload->addSize(sz);
-    return pPayload->data() + oldSize;
   }
 
   void append(std::string_view sv) {
