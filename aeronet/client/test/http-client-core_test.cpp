@@ -3381,6 +3381,7 @@ TEST_F(HttpClientE2ETest, SinkStreamsLargeBodyBeyondMaxResponseBytes) {
   EXPECT_EQ(sink.status, 200);
   EXPECT_FALSE(sink.headHasBody);
   EXPECT_EQ(sink.contentType, "application/octet-stream");
+  EXPECT_EQ(sink.bodySize, LargeIdentityResponseBody().size());  // its Content-Length
   EXPECT_EQ(sink.body, LargeIdentityResponseBody());
   EXPECT_GT(sink.bodyCalls, 1U);
   EXPECT_LT(HttpClientTest::ScratchCapacity(client), 256UL * 1024UL);
@@ -3413,6 +3414,7 @@ TEST(HttpClientSinkE2ETest, ChunkedAndUntilCloseBodiesAreStreamed) {
     ASSERT_TRUE(result) << idx << ' ' << ErrcToStr(result.error());
     EXPECT_EQ(sink.body, payload) << idx;
     EXPECT_EQ(sink.contentType, idx == 0 ? "text/csv" : "application/octet-stream") << idx;
+    EXPECT_EQ(sink.bodySize, ResponseBodyInfo::kUnknownSize) << idx;
     EXPECT_LT(HttpClientTest::ScratchCapacity(client), 128UL * 1024UL) << idx;
   }
 }
@@ -3453,9 +3455,13 @@ TEST(HttpClientSinkE2ETest, ContentCodedBodiesAreDecodedAsTheyArrive) {
           EXPECT_TRUE(sink.body == payload) << ctx;
           EXPECT_TRUE(sink.contentEncoding.empty()) << ctx;
           EXPECT_TRUE(result->headerValueOrEmpty(http::ContentEncoding).empty()) << ctx;
+          // The Content-Length counts the coded bytes: the size of the decoded body is not known in advance.
+          EXPECT_EQ(sink.bodySize, ResponseBodyInfo::kUnknownSize) << ctx;
         } else {
           EXPECT_TRUE(sink.body == std::string_view(encoded)) << ctx;
           EXPECT_EQ(sink.contentEncoding, GetEncodingStr(enc)) << ctx;
+          EXPECT_EQ(sink.bodySize, chunked ? ResponseBodyInfo::kUnknownSize : static_cast<std::size_t>(encoded.size()))
+              << ctx;
         }
       }
     }
@@ -3540,6 +3546,7 @@ TEST(HttpClientSinkE2ETest, StackedContentCodingsAreBufferedThenDelivered) {
   EXPECT_EQ(sink.body, payload);
   EXPECT_EQ(sink.bodyCalls, 1U);
   EXPECT_EQ(sink.contentType, "text/csv");
+  EXPECT_EQ(sink.bodySize, payload.size());  // decoded whole before its delivery
   EXPECT_TRUE(sink.contentEncoding.empty());
   EXPECT_FALSE(sink.headHasBody);
   EXPECT_TRUE(result->bodyInMemory().empty());
@@ -3567,6 +3574,7 @@ TEST(HttpClientSinkE2ETest, IdentityContentCodingIsStreamed) {
   auto result = client.get(MakeUrl(server.port()), sink);
   ASSERT_TRUE(result) << ErrcToStr(result.error());
   EXPECT_EQ(sink.body, payload);
+  EXPECT_EQ(sink.bodySize, payload.size());  // the identity coding leaves the body as received
   EXPECT_TRUE(sink.contentEncoding.empty());
 }
 
@@ -3582,6 +3590,7 @@ TEST_F(HttpClientE2ETest, SinkOnlySeesTheFinalResponseOfRedirects) {
     EXPECT_EQ(sink.status, 200);
     EXPECT_EQ(sink.body, "world");
     EXPECT_EQ(sink.contentType, "text/plain");
+    EXPECT_EQ(sink.bodySize, 5U);
   }
   {
     HttpClientConfig cfg;
@@ -3595,6 +3604,7 @@ TEST_F(HttpClientE2ETest, SinkOnlySeesTheFinalResponseOfRedirects) {
     EXPECT_EQ(sink.status, http::StatusCodeFound);
     EXPECT_TRUE(sink.body.empty());
     EXPECT_TRUE(sink.contentType.empty());  // bodyless
+    EXPECT_EQ(sink.bodySize, 0U);
   }
   {
     // Redirect limit reached: the last redirect is the final response.
@@ -3634,6 +3644,7 @@ TEST(HttpClientSinkE2ETest, RedirectBodiesAreNotStreamed) {
   ASSERT_TRUE(result) << ErrcToStr(result.error());
   EXPECT_EQ(noLocation.status, http::StatusCodeFound);
   EXPECT_EQ(noLocation.body, "nowhere");
+  EXPECT_EQ(noLocation.bodySize, 7U);
 }
 
 // A response retried for its status is never delivered to the sink.
@@ -3664,6 +3675,7 @@ TEST(HttpClientSinkE2ETest, StatusRetriedResponsesAreNotDelivered) {
   ASSERT_TRUE(result);
   EXPECT_EQ(busySink.status, http::StatusCodeServiceUnavailable);
   EXPECT_EQ(busySink.body, "busy");
+  EXPECT_EQ(busySink.bodySize, 4U);
 }
 
 // Once the sink received the head, a failure is final: the request is not retried, even when idempotent and allowed
@@ -3738,6 +3750,7 @@ TEST_F(HttpClientE2ETest, SinkGetsBodylessResponses) {
   EXPECT_EQ(sink.headCalls, 1U);
   EXPECT_EQ(sink.bodyCalls, 0U);
   EXPECT_TRUE(sink.contentType.empty());
+  EXPECT_EQ(sink.bodySize, 0U);  // the Content-Length of a HEAD response describes the body of a GET
 
   RawServer server([](NativeHandle fd, int) {
     DrainRequest(fd);
@@ -3749,6 +3762,7 @@ TEST_F(HttpClientE2ETest, SinkGetsBodylessResponses) {
   EXPECT_EQ(noContent.status, http::StatusCodeNoContent);
   EXPECT_EQ(noContent.headCalls, 1U);
   EXPECT_EQ(noContent.bodyCalls, 0U);
+  EXPECT_EQ(noContent.bodySize, 0U);
 }
 
 // Requests with a sink bypass the response cache: they always reach the server and are never stored.
@@ -3776,7 +3790,7 @@ namespace {
 // Throws from onBody() once some body was received.
 class ThrowingBodySink final : public ResponseBodySink {
  public:
-  bool onHead([[maybe_unused]] const HttpResponse& head, [[maybe_unused]] std::string_view contentType) override {
+  bool onHead([[maybe_unused]] const HttpResponse& head, [[maybe_unused]] const ResponseBodyInfo& body) override {
     return true;
   }
   bool onBody([[maybe_unused]] std::string_view chunk) override { throw std::runtime_error("sink failure"); }
@@ -3989,19 +4003,26 @@ std::string HpackLiteral(std::string_view name, std::string_view value) {
   return out;
 }
 
-// Server preface plus a 200 response on stream 1 with the given content coding and DATA (sent with END_STREAM in
-// frames of at most `frameSize` bytes, 16 KiB by default, the default maximum frame size).
-std::string Http2EncodedResponse(std::string_view encodingName, std::string_view data, std::size_t frameSize = 16384) {
+// Server preface plus a response on stream 1 with the given HPACK header block and DATA, sent with END_STREAM in frames
+// of at most `frameSize` bytes (16 KiB by default, the default maximum frame size). Without DATA, the HEADERS frame
+// ends the stream.
+std::string Http2Response(std::string_view headerBlock, std::string_view data, std::size_t frameSize = 16384) {
   std::string out;
   AppendH2Frame(out, kFrameSettings, 0, 0, {});
   AppendH2Frame(out, kFrameSettings, kFlagAck, 0, {});
-  AppendH2Frame(out, kFrameHeaders, kFlagEndHeaders, 1,
-                "\x88" + HpackLiteral("content-encoding", encodingName) + HpackLiteral("content-type", "text/csv"));
+  AppendH2Frame(out, kFrameHeaders, data.empty() ? kFlagEndHeaders | kFlagEndStream : kFlagEndHeaders, 1, headerBlock);
   for (std::size_t off = 0; off < data.size(); off += frameSize) {
     const std::string_view piece = data.substr(off, frameSize);
     AppendH2Frame(out, kFrameData, off + piece.size() == data.size() ? kFlagEndStream : 0, 1, piece);
   }
   return out;
+}
+
+// Server preface plus a 200 response on stream 1 with the given content coding and DATA (see Http2Response()).
+std::string Http2EncodedResponse(std::string_view encodingName, std::string_view data, std::size_t frameSize = 16384) {
+  return Http2Response(
+      "\x88" + HpackLiteral("content-encoding", encodingName) + HpackLiteral("content-type", "text/csv"), data,
+      frameSize);
 }
 
 }  // namespace
@@ -4071,6 +4092,7 @@ TEST(HttpClientSinkE2ETest, Http2ContentCodedBodiesAreDecodedOrRejected) {
           EXPECT_EQ(sink.headCalls, 1U) << GetEncodingStr(enc);
           EXPECT_EQ(sink.contentType, "text/csv");
           EXPECT_TRUE(sink.contentEncoding.empty());
+          EXPECT_EQ(sink.bodySize, ResponseBodyInfo::kUnknownSize);  // decoded as it arrives
           if (valid) {
             EXPECT_TRUE(sink.body == payload) << GetEncodingStr(enc);
           } else {
@@ -4144,6 +4166,119 @@ TEST(HttpClientSinkE2ETest, Http2StackedContentCodingsAreBufferedThenDelivered) 
   EXPECT_EQ(sink.body, payload);
   EXPECT_EQ(sink.bodyCalls, 1U);
   EXPECT_EQ(sink.contentType, "text/csv");
+  EXPECT_EQ(sink.bodySize, payload.size());
+}
+
+// Over HTTP/2, the content-length of the final response is given to the sink, and the received DATA must match it
+// (RFC 9113 §8.1.1): an invalid content-length, or a body longer or shorter than it, fails as malformed, whether the
+// body is buffered or streamed, and a sink never receives more than announced.
+TEST(HttpClientSinkE2ETest, Http2ContentLengthIsAnnouncedAndChecked) {
+  const std::string payload = test::MakePatternedPayload(40000);  // three DATA frames, within the default window
+  struct Case {
+    std::string_view contentLength;  // empty: no content-length
+    std::string_view data;
+    bool valid;
+  };
+  const std::string_view whole(payload);
+  for (const Case& testCase : {
+           Case{"40000", whole, true},
+           Case{"", whole, true},
+           Case{"0", "", true},
+           Case{"39999", whole, false},
+           Case{"40001", whole, false},
+           Case{"5", "", false},
+           Case{"4x", whole, false},
+           Case{"-1", whole, false},
+           Case{"18446744073709551615", whole, false},
+       }) {
+    std::string headerBlock = "\x88" + HpackLiteral("content-type", "text/csv");
+    if (!testCase.contentLength.empty()) {
+      headerBlock += HpackLiteral("content-length", testCase.contentLength);
+    }
+    const std::string response = Http2Response(headerBlock, testCase.data);
+    RawServer server([&response](NativeHandle fd, int) {
+      DrainRequest(fd);
+      SendAll(fd, response);
+      DrainUntilClosed(fd, 500);  // keep the connection open until the client is done
+    });
+    const std::string ctx = "content-length '" + std::string(testCase.contentLength) + "' with " +
+                            std::to_string(testCase.data.size()) + " bytes";
+    {
+      HttpClient client(Http2RawConfig());  // closes its connection at the end of the scope, releasing the server
+      test::CollectingBodySink sink;
+      auto result = client.get(MakeUrl(server.port()), sink);
+      ASSERT_EQ(result.has_value(), testCase.valid) << ctx;
+      if (testCase.valid) {
+        EXPECT_EQ(sink.body, testCase.data) << ctx;
+        if (testCase.contentLength.empty()) {
+          EXPECT_EQ(sink.bodySize, ResponseBodyInfo::kUnknownSize) << ctx;
+        } else {
+          EXPECT_EQ(sink.bodySize, testCase.data.size()) << ctx;
+        }
+      } else {
+        EXPECT_EQ(result.error(), HttpClientErrc::malformedResponse) << ctx;
+        EXPECT_TRUE(whole.starts_with(sink.body)) << ctx;
+      }
+    }
+
+    // The same response, buffered.
+    HttpClient bufferingClient(Http2RawConfig());
+    auto buffered = bufferingClient.get(MakeUrl(server.port()));
+    ASSERT_EQ(buffered.has_value(), testCase.valid) << ctx;
+    if (testCase.valid) {
+      EXPECT_EQ(buffered->bodyInMemory(), testCase.data) << ctx;
+    } else {
+      EXPECT_EQ(buffered.error(), HttpClientErrc::malformedResponse) << ctx;
+    }
+  }
+}
+
+// Over HTTP/2, the content-length of a response without content (to HEAD, 204, 304) describes another representation:
+// it is not checked against the (absent) DATA, and the sink is told the body is empty.
+TEST(HttpClientSinkE2ETest, Http2BodylessResponsesKeepTheirContentLength) {
+  struct Case {
+    http::Method method;
+    std::string_view status;
+  };
+  for (const Case& testCase :
+       {Case{http::Method::HEAD, "200"}, Case{http::Method::GET, "204"}, Case{http::Method::GET, "304"}}) {
+    const std::string response =
+        Http2Response(HpackStatusLiteral(testCase.status) + HpackLiteral("content-length", "100"), {});
+    RawServer server([&response](NativeHandle fd, int) {
+      DrainRequest(fd);
+      SendAll(fd, response);
+      DrainUntilClosed(fd, 500);
+    });
+    HttpClient client(Http2RawConfig());
+    test::CollectingBodySink sink;
+    auto result = client.request(client.makeRequest(testCase.method, MakeUrl(server.port())), sink);
+    ASSERT_TRUE(result) << testCase.status << ' ' << ErrcToStr(result.error());
+    EXPECT_EQ(std::to_string(result->status()), testCase.status);
+    EXPECT_EQ(sink.headCalls, 1U) << testCase.status;
+    EXPECT_EQ(sink.bodyCalls, 0U) << testCase.status;
+    EXPECT_EQ(sink.bodySize, 0U) << testCase.status;
+  }
+}
+
+// Over HTTP/2, only the content-length of the response head counts: one in its trailers is ignored.
+TEST(HttpClientSinkE2ETest, Http2ContentLengthOfTrailersIsIgnored) {
+  std::string response;
+  AppendH2Frame(response, kFrameSettings, 0, 0, {});
+  AppendH2Frame(response, kFrameSettings, kFlagAck, 0, {});
+  AppendH2Frame(response, kFrameHeaders, kFlagEndHeaders, 1, "\x88" + HpackLiteral("content-length", "4"));
+  AppendH2Frame(response, kFrameData, 0, 1, "body");
+  AppendH2Frame(response, kFrameHeaders, kFlagEndHeaders | kFlagEndStream, 1, HpackLiteral("content-length", "x"));
+  RawServer server([&response](NativeHandle fd, int) {
+    DrainRequest(fd);
+    SendAll(fd, response);
+    DrainUntilClosed(fd, 500);
+  });
+  HttpClient client(Http2RawConfig());
+  test::CollectingBodySink sink;
+  auto result = client.get(MakeUrl(server.port()), sink);
+  ASSERT_TRUE(result) << ErrcToStr(result.error());
+  EXPECT_EQ(sink.body, "body");
+  EXPECT_EQ(sink.bodySize, 4U);
 }
 
 #endif  // AERONET_ENABLE_HTTP2
