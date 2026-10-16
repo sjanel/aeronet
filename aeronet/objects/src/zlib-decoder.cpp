@@ -18,7 +18,7 @@ namespace aeronet {
 bool ZlibDecoderContext::decompressChunk(std::string_view chunk, bool finalChunk, std::size_t maxDecompressedBytes,
                                          uint32_t decoderChunkSize, RawChars& out) {
   if (chunk.empty()) {
-    return true;
+    return !finalChunk || _streamEnded;
   }
 
   auto& stream = _zs.stream;
@@ -41,6 +41,7 @@ bool ZlibDecoderContext::decompressChunk(std::string_view chunk, bool finalChunk
       return false;
     }
     if (ret == Z_STREAM_END) {
+      _streamEnded = true;
       return stream.avail_in == 0;
     }
     if (ret == Z_BUF_ERROR) {

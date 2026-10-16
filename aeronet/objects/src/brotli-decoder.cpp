@@ -56,7 +56,7 @@ void BrotliDecoderContext::init() {
 bool BrotliDecoderContext::decompressChunk(std::string_view chunk, bool finalChunk, std::size_t maxDecompressedBytes,
                                            uint32_t decoderChunkSize, RawChars& out) {
   if (chunk.empty()) {
-    return true;
+    return !finalChunk || BrotliDecoderIsFinished(reinterpret_cast<const BrotliDecoderState*>(_pState)) != BROTLI_FALSE;
   }
 
   const auto* nextIn = reinterpret_cast<const uint8_t*>(chunk.data());
