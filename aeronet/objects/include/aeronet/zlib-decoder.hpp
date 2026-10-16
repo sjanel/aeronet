@@ -14,7 +14,9 @@ class ZlibDecoderContext {
   ZlibDecoderContext() noexcept = default;
 
   // Feed a compressed chunk into the context.
-  // When finalChunk is true, the caller does not provide any additional input.
+  // When finalChunk is true, the caller does not provide any additional input: a stream left incomplete is an error.
+  // An empty chunk decodes nothing: with finalChunk, it only tells whether the input given since init() completed the
+  // stream (so a caller not knowing which chunk is the last one can signal the end of its input afterwards).
   // Returns true on success, false on failure (e.g. decompression error or exceeding maxDecompressedBytes).
   // maxDecompressedBytes bounds the bytes this call appends to out (the caller passes what is left of its budget):
   // exceeding it fails with more than maxDecompressedBytes bytes appended.
@@ -23,10 +25,14 @@ class ZlibDecoderContext {
 
   /// Initialize (or reinitialize) the decompression context with given parameters.
   /// Reuses internal zlib state if already initialized.
-  void init(ZStreamRAII::Variant variant) { _zs.initDecompress(variant); }
+  void init(ZStreamRAII::Variant variant) {
+    _zs.initDecompress(variant);
+    _streamEnded = false;
+  }
 
  private:
   ZStreamRAII _zs;
+  bool _streamEnded{false};  // the end of the compressed stream was decoded
 };
 
 // Minimal full-buffer zlib/gzip inflate helper used for inbound request decompression.

@@ -3497,6 +3497,49 @@ TEST(HttpClientSinkE2ETest, TruncatedContentCodingIsMalformed) {
   }
 }
 
+// A streamed content-coded body that turns out to be empty is delivered as such, like a buffered one: there is no coded
+// stream to check.
+TEST(HttpClientSinkE2ETest, EmptyStreamedContentCodedBodyIsAccepted) {
+  for (const Encoding enc : test::SupportedEncodings()) {
+    RawServer server([enc](NativeHandle fd, int) {
+      DrainRequest(fd);
+      SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-encoding: " + std::string(GetEncodingStr(enc)) +
+                      "\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n0\r\n\r\n");
+    });
+    HttpClient client;
+    test::CollectingBodySink sink;
+    auto result = client.get(MakeUrl(server.port()), sink);
+    ASSERT_TRUE(result) << GetEncodingStr(enc) << ' ' << ErrcToStr(result.error());
+    EXPECT_EQ(sink.headCalls, 1U) << GetEncodingStr(enc);
+    EXPECT_EQ(sink.bodyCalls, 0U) << GetEncodingStr(enc);
+    EXPECT_TRUE(sink.contentEncoding.empty()) << GetEncodingStr(enc);
+  }
+}
+
+// The sink can stop a decoded body: the request fails with aborted.
+TEST(HttpClientSinkE2ETest, SinkCanStopADecodedBody) {
+  const RawChars mixed = test::MakeMixedPayload(60000, 60000);  // the coded body spans many reads
+  const std::string_view payload{mixed};
+  for (const Encoding enc : test::SupportedEncodings()) {
+    const RawChars encoded = test::Compress(enc, payload);
+    RawServer server([&](NativeHandle fd, int) {
+      DrainRequest(fd);
+      SendAll(fd, EncodedResponse(GetEncodingStr(enc), std::string_view(encoded)));
+    });
+    HttpClientConfig cfg;
+    cfg.minReadChunkBytes = 4096;
+    HttpClient client(cfg);
+    test::CollectingBodySink sink;
+    sink.stopAfterBytes = 20000;
+    auto result = client.get(MakeUrl(server.port()), sink);
+    ASSERT_FALSE(result) << GetEncodingStr(enc);
+    EXPECT_EQ(result.error(), HttpClientErrc::aborted) << GetEncodingStr(enc);
+    // A decoder may output a whole block at once (up to 128 KiB for zstd): the sink stops after at least its limit.
+    EXPECT_GE(sink.body.size(), 20000U) << GetEncodingStr(enc);
+    EXPECT_TRUE(payload.starts_with(sink.body)) << GetEncodingStr(enc);
+  }
+}
+
 // The decompression limits still apply to a streamed body.
 TEST(HttpClientSinkE2ETest, DecompressionLimitsApplyToStreamedBodies) {
   const std::string payload = test::MakePatternedPayload(1UL << 20U);
@@ -4074,7 +4117,7 @@ TEST(HttpClientSinkE2ETest, Http2ContentCodedBodiesAreDecodedOrRejected) {
     const std::string_view whole{encoded};
     for (const std::string_view data : {whole, whole.substr(0, whole.size() - 4), std::string_view(corrupt)}) {
       const bool valid = data.data() == whole.data() && data.size() == whole.size();
-      // Invalid bodies also come in one-byte DATA frames: each piece then only reaches the decoder with the next one.
+      // Invalid bodies also come in one-byte DATA frames, each decoded in its own call.
       for (const std::size_t frameSize : {std::size_t{16384}, std::size_t{1}}) {
         if (valid && frameSize == 1) {
           continue;

@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/compression-test-helpers.hpp"
@@ -144,14 +145,32 @@ TEST_P(ZlibEncoderDecoderTest, MaxDecompressedBytes) {
   }
 }
 
-TEST_P(ZlibEncoderDecoderTest, EmptyChunksShouldAlwaysSucceed) {
+// An empty chunk decodes nothing. When final, it tells whether the input fed so far completes the stream: a caller
+// can feed pieces without knowing which one is the last, then check the end of the stream.
+TEST_P(ZlibEncoderDecoderTest, EmptyFinalChunkTellsWhetherTheStreamIsComplete) {
   const auto variant = GetParam();
+  const std::string payload = test::MakePatternedPayload(20000);
+  CompressionConfig cfg;
+  ZlibEncoder encoder(cfg.zlib.level);
+  const auto compressed = test::BuildStreamingCompressed(*encoder.makeContext(variant), payload, 4096U);
+  const std::string_view stream(compressed);
   ZlibDecoder decoder(variant);
   auto* ctx = decoder.makeContext();
   RawChars decompressed;
   EXPECT_TRUE(ctx->decompressChunk({}, false, kMaxPlainBytes, kDecoderChunkSize, decompressed));
-  EXPECT_TRUE(ctx->decompressChunk({}, true, kMaxPlainBytes, kDecoderChunkSize, decompressed));
+  EXPECT_FALSE(ctx->decompressChunk({}, true, kMaxPlainBytes, kDecoderChunkSize, decompressed));  // nothing fed yet
   EXPECT_TRUE(decompressed.empty());
+  // A context initialized again (by makeContext()) starts a new stream, so it is first reported incomplete.
+  for (const std::size_t split : {std::size_t{1}, std::size_t{7}, std::size_t{4096}}) {
+    const test::FedStream fed = test::FeedNonFinal(*decoder.makeContext(), stream, split, kDecoderChunkSize);
+    EXPECT_TRUE(fed.ok) << split;
+    EXPECT_EQ(fed.completeAt, std::vector<std::size_t>{stream.size()}) << split;
+    EXPECT_TRUE(std::string_view(fed.decoded) == payload) << split;
+  }
+  const test::FedStream truncated =
+      test::FeedNonFinal(*decoder.makeContext(), stream.substr(0, stream.size() - 1), 4096U, kDecoderChunkSize);
+  EXPECT_TRUE(truncated.ok);
+  EXPECT_TRUE(truncated.completeAt.empty());
 }
 
 TEST_P(ZlibEncoderDecoderTest, MoveConstructor) {

@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/compression-test-helpers.hpp"
@@ -425,6 +426,33 @@ TEST(ZstdEncoderDecoderTest, TruncatedFrameIsRejected) {
   }
 }
 
+// An empty chunk decodes nothing. When final, it tells whether the input fed so far ends with a complete frame: a
+// caller can feed pieces without knowing which one is the last, then check the end of the content.
+TEST(ZstdEncoderDecoderTest, EmptyFinalChunkTellsWhetherTheFrameIsComplete) {
+  const std::string payload = test::MakePatternedPayload(20000);
+  CompressionConfig cfg;
+  ZstdEncoder encoder(cfg.zstd);
+  const auto compressed = test::BuildStreamingCompressed(*encoder.makeContext(), payload, 4096U);
+  const std::string_view stream(compressed);
+  ZstdDecoder decoder;
+  auto* ctx = decoder.makeContext();
+  RawChars decompressed;
+  EXPECT_TRUE(ctx->decompressChunk({}, false, kMaxPlainBytes, kDecoderChunkSize, decompressed));
+  EXPECT_FALSE(ctx->decompressChunk({}, true, kMaxPlainBytes, kDecoderChunkSize, decompressed));  // nothing fed yet
+  EXPECT_TRUE(decompressed.empty());
+  // A context initialized again (by makeContext()) starts new content, so it is first reported incomplete.
+  for (const std::size_t split : {std::size_t{1}, std::size_t{7}, std::size_t{4096}}) {
+    const test::FedStream fed = test::FeedNonFinal(*decoder.makeContext(), stream, split, kDecoderChunkSize);
+    EXPECT_TRUE(fed.ok) << split;
+    EXPECT_EQ(fed.completeAt, std::vector<std::size_t>{stream.size()}) << split;
+    EXPECT_TRUE(std::string_view(fed.decoded) == payload) << split;
+  }
+  const test::FedStream truncated =
+      test::FeedNonFinal(*decoder.makeContext(), stream.substr(0, stream.size() - 1), 4096U, kDecoderChunkSize);
+  EXPECT_TRUE(truncated.ok);
+  EXPECT_TRUE(truncated.completeAt.empty());
+}
+
 // Decoding into an output buffer far smaller than the decoded blocks still yields the whole output, whether the frame
 // comes in several chunks or as a single final one.
 TEST(ZstdEncoderDecoderTest, FinalChunkFlushesTheWholeOutput) {
@@ -486,6 +514,15 @@ TEST(ZstdEncoderDecoderTest, ConcatenatedFramesAreDecoded) {
   // A truncated second frame is still rejected.
   EXPECT_FALSE(decoder.decompressFull(std::string_view(frames).substr(0, frames.size() - 1), kMaxPlainBytes,
                                       kDecoderChunkSize, decompressed));
+
+  // Fed in pieces none of which is final, the content is complete at the end of each frame, and only there.
+  const auto firstFrameSize = static_cast<std::size_t>(oneShot.size());
+  for (const std::size_t split : {std::size_t{1}, firstFrameSize}) {
+    const test::FedStream fed = test::FeedNonFinal(*decoder.makeContext(), frames, split, kDecoderChunkSize);
+    EXPECT_TRUE(fed.ok) << split;
+    EXPECT_EQ(fed.completeAt, (std::vector<std::size_t>{firstFrameSize, frames.size()})) << split;
+    EXPECT_TRUE(std::string_view(fed.decoded) == expected) << split;
+  }
 }
 
 TEST(ZstdEncoderDecoderTest, DeclaresMoreThan) {
