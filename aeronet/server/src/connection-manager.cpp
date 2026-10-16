@@ -412,17 +412,13 @@ void SingleHttpServer::sweepIdleConnections() {
     const NativeHandle fd = cnxIt->fd();
     ConnectionState& state = _connections.connectionState(cnxIt);
 
-    // Retry pending file sends to handle potential missed EPOLLOUT edges.
-    if (state.isSendingFile() && state.waitingWritable && flushRetries < kMaxFlushRetriesPerSweep) {
-      flushFilePayload(cnxIt);
-      resumeInputIfOutputDrained(fd, state);
-      ++flushRetries;
-    }
-    // Retry pending outbound buffer flushes to handle potential missed EPOLLOUT edges.
+    // Retry pending outbound flushes (buffered output, file sends, and the output queued behind them) to handle
+    // potential missed EPOLLOUT edges.
     // On Windows, WSAPoll can fail to report writability on loopback sockets, leaving
     // buffered response data (including HTTP/2 DATA frames) stuck in outBuffer indefinitely.
     // Periodic retry here ensures forward progress regardless of missed poll events.
-    if (state.hasPendingOutput() && state.waitingWritable && flushRetries < kMaxFlushRetriesPerSweep) {
+    if ((state.isSendingFile() || state.hasPendingOutput()) && state.waitingWritable &&
+        flushRetries < kMaxFlushRetriesPerSweep) {
       flushOutbound(cnxIt);
       ++flushRetries;
     }

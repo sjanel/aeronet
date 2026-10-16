@@ -243,14 +243,16 @@ TEST(ZeroCopySendTest, SuccessfulSendIsNumbered) {
   IoActionGuard guard(test::g_sendmsg_actions);
 
   ZeroCopyState state;
-  auto res = state.send(pair.fd(), head, body);
+  const std::string_view headAndBody[]{head, body};
+  auto res = state.send(pair.fd(), headAndBody);
   EXPECT_EQ(res.status, ZerocopySendStatus::Sent);
   EXPECT_EQ(res.bytesSent, head.size() + body.size());
   EXPECT_EQ(state.nextSeq(), 1U);
   EXPECT_TRUE(state.pendingCompletions());
 
   // A partial send of a single buffer is a send too.
-  res = state.send(pair.fd(), {}, body);
+  const std::string_view bodyOnly[]{{}, body};
+  res = state.send(pair.fd(), bodyOnly);
   EXPECT_EQ(res.status, ZerocopySendStatus::Sent);
   EXPECT_EQ(res.bytesSent, body.size() / 2);
   EXPECT_EQ(state.nextSeq(), 2U);
@@ -273,7 +275,8 @@ TEST(ZeroCopySendTest, FailedSendsAreNotNumbered) {
     IoActionGuard guard(test::g_sendmsg_actions);
 
     ZeroCopyState state;
-    const auto res = state.send(pair.fd(), "data", {});
+    const std::string_view data[]{"data"};
+    const auto res = state.send(pair.fd(), data);
     EXPECT_EQ(res.status, testCase.status) << "errno " << testCase.err;
     EXPECT_EQ(res.bytesSent, 0U);
     // The kernel gives the sequence number of a failed send back.
@@ -425,9 +428,12 @@ TEST(ZeroCopyKernelTest, AcceptedSocketInheritsZerocopyAndReportsLoopbackCopies)
   PlainTransport transport(accepted.fd());
   const std::string head = "HEAD";
   const std::string body(64UL * 1024, 'Z');
-  const auto [bytesSent, status] = transport.writeZerocopy(head, body);
+  const std::string tail = "TAIL";
+  // A gather send: the empty buffer is skipped.
+  const std::string_view buffers[]{head, {}, body, tail};
+  const auto [bytesSent, status] = transport.writeZerocopy(buffers);
   ASSERT_EQ(status, ZerocopySendStatus::Sent);
-  ASSERT_EQ(bytesSent, head.size() + body.size());
+  ASSERT_EQ(bytesSent, head.size() + body.size() + tail.size());
   EXPECT_EQ(transport.zerocopy().nextSeq(), 1U);
 
   std::string received(bytesSent, '\0');
@@ -436,7 +442,7 @@ TEST(ZeroCopyKernelTest, AcceptedSocketInheritsZerocopyAndReportsLoopbackCopies)
     ASSERT_GT(ret, 0);
     pos += static_cast<std::size_t>(ret);
   }
-  EXPECT_EQ(received, head + body);
+  EXPECT_EQ(received, head + body + tail);
 
   ZerocopyCompletions completions;
   for (int attempt = 0; attempt < 200 && transport.zerocopy().pendingCompletions(); ++attempt) {

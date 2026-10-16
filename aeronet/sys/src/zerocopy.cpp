@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
+#include <span>
 #include <string_view>
 
 // Ensure timespec is defined before including linux/errqueue.h
@@ -41,22 +42,20 @@ ZeroCopyEnableResult EnableZeroCopy(NativeHandle fd) noexcept {
   return ZeroCopyEnableResult::Enabled;
 }
 
-ZerocopySendResult ZeroCopyState::send(NativeHandle fd, std::string_view firstBuffer, std::string_view secondBuffer) {
-  assert(!firstBuffer.empty() || !secondBuffer.empty());
+ZerocopySendResult ZeroCopyState::send(NativeHandle fd, std::span<const std::string_view> buffers) {
+  assert(buffers.size() <= kMaxBuffers);
 
-  iovec iov[2];  // NOLINT(misc-include-cleaner) it's in sys/uio.h (included)
+  iovec iov[kMaxBuffers];  // NOLINT(misc-include-cleaner) it's in sys/uio.h (included)
 
   msghdr msg{};
   msg.msg_iov = iov;
 
-  iov[0] = {const_cast<char*>(firstBuffer.data()), firstBuffer.size()};
-
-  if (secondBuffer.empty()) {
-    msg.msg_iovlen = 1;
-  } else {
-    iov[1] = {const_cast<char*>(secondBuffer.data()), secondBuffer.size()};
-    msg.msg_iovlen = 2;
+  for (const std::string_view buffer : buffers) {
+    if (!buffer.empty()) {
+      iov[msg.msg_iovlen++] = {const_cast<char*>(buffer.data()), buffer.size()};
+    }
   }
+  assert(msg.msg_iovlen != 0);
 
   const auto nbWritten = ::sendmsg(fd, &msg, MSG_ZEROCOPY | MSG_NOSIGNAL);
   if (nbWritten > 0) {

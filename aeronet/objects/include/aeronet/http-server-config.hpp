@@ -196,8 +196,9 @@ struct HttpServerConfig {
   uint32_t maxOutboundBufferBytes{4U << 20U};  // 4 MiB
 
   // Upper bound (bytes) for the response buffers of a connection retained until the completion of their Linux
-  // MSG_ZEROCOPY sends (the peer acknowledged them). A write that would retain more is copied instead: zerocopy resumes
-  // once completions release retained buffers. A single larger payload still uses zerocopy when nothing is retained.
+  // MSG_ZEROCOPY sends (the peer acknowledged them), each retained buffer counting for at least 'zerocopyMinBytes'. A
+  // write that would retain more is copied instead: zerocopy resumes once completions release retained buffers. A
+  // single larger payload still uses zerocopy when nothing is retained.
   // Default: 4 MiB per connection.
   uint32_t maxZerocopyPendingBytes{4U << 20U};  // 4 MiB
 

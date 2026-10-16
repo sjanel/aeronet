@@ -32,10 +32,17 @@
 
 namespace aeronet {
 
-void SingleHttpServer::installH2TunnelBridge(NativeHandle clientFd, ConnectionState& state) {
+void SingleHttpServer::installHttp2Handler(NativeHandle clientFd, ConnectionState& state,
+                                           bool sendServerPrefaceForTls) {
+  state.protocolHandler =
+      http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState, _decompressionState,
+                                        _telemetry, _sharedBuffers.buf, sendServerPrefaceForTls, _dateHeader.data(),
+                                        state.clientAddress(), internal::TunnelManager::MakeH2Bridge(*this, clientFd));
+  // Async resumption, stream deadline sweeps and the HTTP/2 connection count all key off the protocol.
+  ++_connectionSweepState.http2Connections;
+  state.protocol = ProtocolType::Http2;
+
   auto* h2Handler = static_cast<http2::Http2ProtocolHandler*>(state.protocolHandler.get());
-  state.tunnelBridge = internal::TunnelManager::MakeH2Bridge(*this, clientFd);
-  h2Handler->setTunnelBridge(state.tunnelBridge.get());
 
   // Install per-request completion callback for metrics, counters and tracing.
   h2Handler->setRequestCompletionCallback(
@@ -59,16 +66,8 @@ void SingleHttpServer::installH2TunnelBridge(NativeHandle clientFd, ConnectionSt
 
 void SingleHttpServer::setupHttp2Connection(NativeHandle clientFd, TcpNoDelayMode tcpNoDelayMode,
                                             ConnectionState& state) {
-  // Create HTTP/2 protocol handler with unified dispatcher
-  // Pass sendServerPrefaceForTls=true: server must send SETTINGS immediately for TLS ALPN "h2"
-  state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState,
-                                                            _decompressionState, _telemetry, _sharedBuffers.buf, true,
-                                                            _dateHeader.data(), state.clientAddress());
-  ++_connectionSweepState.http2Connections;
-  state.protocol = ProtocolType::Http2;
-
-  // Install CONNECT tunnel bridge so the HTTP/2 handler can request TCP tunnel setup.
-  installH2TunnelBridge(clientFd, state);
+  // The server must send SETTINGS immediately for TLS ALPN "h2".
+  installHttp2Handler(clientFd, state, true);
 
   if (tcpNoDelayMode == TcpNoDelayMode::Auto) {
     assert(state.tlsInfo.selectedAlpn() == http2::kAlpnH2);

@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <functional>
 #include <iterator>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -198,17 +199,25 @@ RawChars MakeGetHeaders(std::string_view path) {
   return headers;
 }
 
+// Tag of the Http2ProtocolLoopback constructor whose handler owns a MockTunnelBridge, for the CONNECT tunnel tests.
+struct WithTunnelBridge {};
+
 class Http2ProtocolLoopback {
  public:
-  explicit Http2ProtocolLoopback(Router& router, uint32_t maxOutboundBufferBytes = 4U << 20U,
-                                 uint32_t maxStreamPendingBytes = 4U << 20U, uint32_t clientInitialWindowSize = 65535U,
-                                 uint32_t serverMaxConcurrentStreams = 0)
+  static constexpr uint32_t kDefaultBufferBytes = 4U << 20U;
+
+  explicit Http2ProtocolLoopback(Router& router, uint32_t maxOutboundBufferBytes = kDefaultBufferBytes,
+                                 uint32_t maxStreamPendingBytes = kDefaultBufferBytes,
+                                 uint32_t clientInitialWindowSize = kDefaultInitialWindowSize,
+                                 uint32_t serverMaxConcurrentStreams = 0,
+                                 std::unique_ptr<MockTunnelBridge> mockTunnelBridge = {})
       : serverCfg(MakeLoopHttp2Config(maxStreamPendingBytes, 65535U, serverMaxConcurrentStreams)),
         clientCfg(MakeLoopHttp2Config(1U << 20U, clientInitialWindowSize)),
         serverConfig(MakeLoopServerConfig(maxOutboundBufferBytes)),
         compressionState(serverConfig.compression),
+        tunnelBridge(mockTunnelBridge.get()),
         handler(serverCfg, router, serverConfig, compressionState, decompressionState, telemetry, tmpBuffer,
-                kCachedDate, {}),
+                kCachedDate, {}, std::move(mockTunnelBridge)),
         client(clientCfg, false) {
     // Most tests exercise tunnel lifecycle, so explicitly authorize their common target.
     static constexpr std::array<std::string_view, 1> kConnectAllowlist{"example.com"};
@@ -235,6 +244,11 @@ class Http2ProtocolLoopback {
     clientSink.onStreamResetFn =
         ([this](uint32_t streamId, ErrorCode errorCode) { streamResets.emplace_back(streamId, errorCode); });
   }
+
+  // The handler owns a MockTunnelBridge, configured through tunnelBridge.
+  Http2ProtocolLoopback(Router& router, WithTunnelBridge, uint32_t maxOutboundBufferBytes = kDefaultBufferBytes)
+      : Http2ProtocolLoopback(router, maxOutboundBufferBytes, kDefaultBufferBytes, kDefaultInitialWindowSize, 0,
+                              std::make_unique<MockTunnelBridge>()) {}
 
   void connect() {
     client.sendClientPreface();
@@ -321,6 +335,8 @@ class Http2ProtocolLoopback {
   CompressionState compressionState;
   DecompressionState decompressionState;
 
+  // Owned by handler, null unless constructed WithTunnelBridge.
+  MockTunnelBridge* tunnelBridge;
   Http2ProtocolHandler handler;
   Http2Connection client;
   RecordingEventSink clientSink{client};
@@ -348,7 +364,7 @@ TEST(Http2ProtocolHandler, Creation) {
   });
 
   auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, decompressionState,
-                                            telemetry, tmpBuffer, false, kCachedDate, {});
+                                            telemetry, tmpBuffer, false, kCachedDate, {}, nullptr);
 
   ASSERT_NE(handler, nullptr);
   EXPECT_EQ(handler->type(), ProtocolType::Http2);
@@ -362,7 +378,7 @@ TEST(Http2ProtocolHandler, HasNoPendingOutputInitially) {
   CompressionState compressionState(serverConfig.compression);
   DecompressionState decompressionState;
   auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, decompressionState,
-                                            telemetry, tmpBuffer, false, kCachedDate, {});
+                                            telemetry, tmpBuffer, false, kCachedDate, {}, nullptr);
 
   EXPECT_FALSE(handler->hasPendingOutput());
 }
@@ -520,7 +536,7 @@ TEST(Http2ProtocolHandler, ConnectionPreface) {
   CompressionState compressionState(serverConfig.compression);
   DecompressionState decompressionState;
   auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, decompressionState,
-                                            telemetry, tmpBuffer, false, kCachedDate, {});
+                                            telemetry, tmpBuffer, false, kCachedDate, {}, nullptr);
 
   EXPECT_FALSE(handler->hasPendingOutput());
 }
@@ -538,7 +554,7 @@ TEST(CreateHttp2ProtocolHandler, ReturnsValidHandler) {
 
   DecompressionState decompressionState;
   auto handler = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, decompressionState,
-                                            telemetry, tmpBuffer, false, kCachedDate, {});
+                                            telemetry, tmpBuffer, false, kCachedDate, {}, nullptr);
 
   ASSERT_NE(handler, nullptr);
   EXPECT_EQ(handler->type(), ProtocolType::Http2);
@@ -554,7 +570,7 @@ TEST(CreateHttp2ProtocolHandler, SendServerPrefaceForTlsQueuesSettingsImmediatel
 
   DecompressionState decompressionState;
   auto handlerBase = CreateHttp2ProtocolHandler(config, router, serverConfig, compressionState, decompressionState,
-                                                telemetry, tmpBuffer, true, kCachedDate, {});
+                                                telemetry, tmpBuffer, true, kCachedDate, {}, nullptr);
   auto* pHandler = dynamic_cast<Http2ProtocolHandler*>(handlerBase.get());
   ASSERT_NE(pHandler, nullptr);
 
@@ -688,17 +704,16 @@ TEST(Http2ProtocolHandler, ConnectMalformedTargetReturns400) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   loop.connect();
 
-  // Install a tunnel bridge that should never be called.
+  // A tunnel bridge that should never be called.
   bool setupCalled = false;
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.onSetup = [&](uint32_t, std::string_view, uint16_t) -> NativeHandle {
     setupCalled = true;
     return kInvalidHandle;
   };
-  loop.handler.setTunnelBridge(&bridge);
 
   // Target without port separator → 400.
   RawChars conn;
@@ -719,12 +734,11 @@ TEST(Http2ProtocolHandler, ConnectMalformedTargetEmptyPort) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   loop.connect();
 
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kInvalidHandle; };
-  loop.handler.setTunnelBridge(&bridge);
 
   // Target with empty port → 400.
   RawChars conn;
@@ -744,12 +758,11 @@ TEST(Http2ProtocolHandler, ConnectMalformedTargetEmptyHost) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   loop.connect();
 
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kInvalidHandle; };
-  loop.handler.setTunnelBridge(&bridge);
 
   // Target with empty host → 400.
   RawChars conn;
@@ -769,17 +782,16 @@ TEST(Http2ProtocolHandler, ConnectNonNumericPortReturns400) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   loop.connect();
 
   // The tunnel bridge must never be reached: a non-numeric port is rejected before resolution.
   bool setupCalled = false;
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.onSetup = [&](uint32_t, std::string_view, uint16_t) -> NativeHandle {
     setupCalled = true;
     return kInvalidHandle;
   };
-  loop.handler.setTunnelBridge(&bridge);
 
   // authority-form requires a numeric port; a service name → 400 (not handed to the resolver).
   RawChars conn;
@@ -801,16 +813,15 @@ TEST(Http2ProtocolHandler, ConnectInvalidAuthority) {
   router.setDefault([](const HttpRequestView& req) { return req.makeResponse(200); });
 
   for (std::string_view authority : {"example.com:99999", "example.com:0", "example.com:36y"}) {
-    Http2ProtocolLoopback loop(router);
+    Http2ProtocolLoopback loop(router, WithTunnelBridge{});
     loop.connect();
 
     bool setupCalled = false;
-    MockTunnelBridge bridge;
+    MockTunnelBridge& bridge = *loop.tunnelBridge;
     bridge.onSetup = [&](uint32_t, std::string_view, uint16_t) -> NativeHandle {
       setupCalled = true;
       return kInvalidHandle;
     };
-    loop.handler.setTunnelBridge(&bridge);
 
     RawChars conn;
     conn.assign(MakeHttp1HeaderLine(":method", "CONNECT"));
@@ -831,18 +842,17 @@ TEST(Http2ProtocolHandler, ConnectEmptyAllowlistBlocksTarget) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   const std::array<std::string_view, 0> noAllowedHosts{};
   loop.serverConfig.withConnectAllowlist(noAllowedHosts.begin(), noAllowedHosts.end());
   loop.connect();
 
   bool setupCalled = false;
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.onSetup = [&](uint32_t, std::string_view, uint16_t) -> NativeHandle {
     setupCalled = true;
     return 42;
   };
-  loop.handler.setTunnelBridge(&bridge);
 
   RawChars conn;
   conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
@@ -862,20 +872,19 @@ TEST(Http2ProtocolHandler, ConnectWildcardAllowlistAllowsTarget) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   static constexpr std::array<std::string_view, 1> kAllowedHosts = {"*"};
   loop.serverConfig.withConnectAllowlist(kAllowedHosts.begin(), kAllowedHosts.end());
   loop.connect();
 
   std::string capturedHost;
   uint16_t capturedPort{};
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.onSetup = [&](uint32_t, std::string_view host, uint16_t port) -> NativeHandle {
     capturedHost = host;
     capturedPort = port;
     return 42;
   };
-  loop.handler.setTunnelBridge(&bridge);
 
   RawChars conn;
   conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
@@ -896,18 +905,17 @@ TEST(Http2ProtocolHandler, ConnectAllowlistBlocksUnlistedTarget) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   std::array<std::string_view, 1> allowedHosts = {"allowed.example.com"};
   loop.serverConfig.withConnectAllowlist(allowedHosts.begin(), allowedHosts.end());
   loop.connect();
 
   bool setupCalled = false;
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.onSetup = [&](uint32_t, std::string_view, uint16_t) -> NativeHandle {
     setupCalled = true;
     return 42;
   };
-  loop.handler.setTunnelBridge(&bridge);
 
   // Target not in allowlist → 403.
   RawChars conn;
@@ -928,13 +936,12 @@ TEST(Http2ProtocolHandler, ConnectSetupFailureReturns502) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   loop.connect();
 
   // Setup returns -1 → upstream connect failed → 502.
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kInvalidHandle; };
-  loop.handler.setTunnelBridge(&bridge);
 
   RawChars conn;
   conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
@@ -953,7 +960,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelEstablished) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   loop.connect();
 
   int capturedStreamId = -1;
@@ -961,14 +968,13 @@ TEST(Http2ProtocolHandler, ConnectTunnelEstablished) {
   uint16_t capturedPort{};
   constexpr NativeHandle kFakeUpstreamFd = 42;
 
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.onSetup = [&](uint32_t streamId, std::string_view host, uint16_t port) -> NativeHandle {
     capturedStreamId = static_cast<int>(streamId);
     capturedHost = host;
     capturedPort = port;
     return kFakeUpstreamFd;
   };
-  loop.handler.setTunnelBridge(&bridge);
 
   // Send CONNECT without END_STREAM — the client wants to keep sending data.
   RawChars conn;
@@ -999,19 +1005,18 @@ TEST(Http2ProtocolHandler, ConnectTunnelForwardsDataClientToUpstream) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   loop.connect();
 
   constexpr NativeHandle kFakeUpstreamFd = 42;
   std::string writtenData;
 
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kFakeUpstreamFd; };
   bridge.onWrite = [&](NativeHandle upstreamFd, std::span<const std::byte> data) {
     EXPECT_EQ(upstreamFd, kFakeUpstreamFd);
     writtenData.append(reinterpret_cast<const char*>(data.data()), data.size());
   };
-  loop.handler.setTunnelBridge(&bridge);
 
   // Establish the tunnel.
   RawChars conn;
@@ -1040,14 +1045,13 @@ TEST(Http2ProtocolHandler, ConnectTunnelInjectsDataUpstreamToClient) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   loop.connect();
 
   constexpr NativeHandle kFakeUpstreamFd = 42;
 
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kFakeUpstreamFd; };
-  loop.handler.setTunnelBridge(&bridge);
 
   // Establish the tunnel on stream 1.
   RawChars conn;
@@ -1079,7 +1083,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelClientEndStreamHalfClosesTunnel) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   loop.connect();
 
   constexpr NativeHandle kFakeUpstreamFd = 42;
@@ -1087,13 +1091,12 @@ TEST(Http2ProtocolHandler, ConnectTunnelClientEndStreamHalfClosesTunnel) {
   bool shutdownWriteCalled = false;
   NativeHandle shutdownWriteFd = kInvalidHandle;
 
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kFakeUpstreamFd; };
   bridge.onShutdownWrite = [&](NativeHandle upstreamFd) {
     shutdownWriteCalled = true;
     shutdownWriteFd = upstreamFd;
   };
-  loop.handler.setTunnelBridge(&bridge);
 
   // Establish tunnel.
   RawChars conn;
@@ -1124,14 +1127,13 @@ TEST(Http2ProtocolHandler, ConnectTunnelClosedByUpstreamSendsEndStream) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   loop.connect();
 
   constexpr NativeHandle kFakeUpstreamFd = 42;
 
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kFakeUpstreamFd; };
-  loop.handler.setTunnelBridge(&bridge);
 
   // Establish tunnel.
   RawChars conn;
@@ -1159,14 +1161,13 @@ TEST(Http2ProtocolHandler, ConnectTunnelConnectFailedSendsRstStream) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   loop.connect();
 
   constexpr NativeHandle kFakeUpstreamFd = 42;
 
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kFakeUpstreamFd; };
-  loop.handler.setTunnelBridge(&bridge);
 
   // Establish tunnel.
   RawChars conn;
@@ -1195,16 +1196,15 @@ TEST(Http2ProtocolHandler, ConnectTunnelStreamResetCleanupsTunnel) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   loop.connect();
 
   constexpr NativeHandle kFakeUpstreamFd = 42;
   bool closeCalled = false;
 
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kFakeUpstreamFd; };
   bridge.onClose = [&](NativeHandle) { closeCalled = true; };
-  loop.handler.setTunnelBridge(&bridge);
 
   // Establish tunnel.
   RawChars conn;
@@ -1230,20 +1230,19 @@ TEST(Http2ProtocolHandler, ConnectPendingResolutionKeepsEarlyDataUntilEstablishe
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   loop.connect();
 
   constexpr NativeHandle kFakeUpstreamFd = 42;
   std::string writtenData;
   bool shutdownCalled = false;
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.resolveInBackground = true;
   bridge.onWrite = [&](NativeHandle upstreamFd, std::span<const std::byte> data) {
     EXPECT_EQ(upstreamFd, kFakeUpstreamFd);
     writtenData.append(reinterpret_cast<const char*>(data.data()), data.size());
   };
   bridge.onShutdownWrite = [&](NativeHandle) { shutdownCalled = true; };
-  loop.handler.setTunnelBridge(&bridge);
 
   RawChars conn;
   conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
@@ -1283,12 +1282,11 @@ TEST(Http2ProtocolHandler, ConnectPendingResolutionFailureReturns502) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   loop.connect();
 
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.resolveInBackground = true;
-  loop.handler.setTunnelBridge(&bridge);
 
   RawChars conn;
   conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
@@ -1310,12 +1308,11 @@ TEST(Http2ProtocolHandler, ConnectPendingResolutionAbandonedOnStreamReset) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   loop.connect();
 
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.resolveInBackground = true;
-  loop.handler.setTunnelBridge(&bridge);
 
   RawChars conn;
   conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
@@ -1334,18 +1331,17 @@ TEST(Http2ProtocolHandler, ConnectTunnelBidirectionalDataFlow) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   loop.connect();
 
   constexpr NativeHandle kFakeUpstreamFd = 42;
   std::string allWrittenData;
 
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kFakeUpstreamFd; };
   bridge.onWrite = [&](NativeHandle, std::span<const std::byte> data) {
     allWrittenData.append(reinterpret_cast<const char*>(data.data()), data.size());
   };
-  loop.handler.setTunnelBridge(&bridge);
 
   // Establish tunnel.
   RawChars conn;
@@ -1387,18 +1383,17 @@ TEST(Http2ProtocolHandler, ConnectTunnelLargeDataTransfer) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   loop.connect();
 
   constexpr NativeHandle kFakeUpstreamFd = 42;
   std::string writtenData;
 
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kFakeUpstreamFd; };
   bridge.onWrite = [&](NativeHandle, std::span<const std::byte> data) {
     writtenData.append(reinterpret_cast<const char*>(data.data()), data.size());
   };
-  loop.handler.setTunnelBridge(&bridge);
 
   // Establish tunnel.
   RawChars conn;
@@ -1455,16 +1450,15 @@ int32_t ClientStreamSendWindow(Http2ProtocolLoopback& loop, uint32_t streamId) {
 
 TEST(Http2ProtocolHandler, ConnectTunnelSlowUpstreamHoldsClientCredit) {
   Router router;
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   loop.connect();
 
   constexpr NativeHandle kFakeUpstreamFd = 42;
   std::size_t writtenBytes = 0;
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kFakeUpstreamFd; };
   bridge.onWrite = [&](NativeHandle, std::span<const std::byte> data) { writtenBytes += data.size(); };
   bridge.upstreamWritable = false;
-  loop.handler.setTunnelBridge(&bridge);
 
   OpenConnectStream(loop, 1);
   ASSERT_TRUE(loop.handler.isTunnelStream(1));
@@ -1494,15 +1488,14 @@ TEST(Http2ProtocolHandler, ConnectTunnelSlowUpstreamHoldsClientCredit) {
 
 TEST(Http2ProtocolHandler, ConnectPendingResolutionHoldsClientCredit) {
   Router router;
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   loop.connect();
 
   constexpr NativeHandle kFakeUpstreamFd = 42;
   std::size_t writtenBytes = 0;
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.resolveInBackground = true;
   bridge.onWrite = [&](NativeHandle, std::span<const std::byte> data) { writtenBytes += data.size(); };
-  loop.handler.setTunnelBridge(&bridge);
 
   for (const bool upstreamWritable : {true, false}) {
     const uint32_t streamId = upstreamWritable ? 1U : 3U;
@@ -1628,7 +1621,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelOnTransportClosingCleansUp) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   static constexpr std::array<std::string_view, 2> kAllowedHosts = {"example.com", "other.com"};
   loop.serverConfig.withConnectAllowlist(kAllowedHosts.begin(), kAllowedHosts.end());
   loop.connect();
@@ -1638,13 +1631,12 @@ TEST(Http2ProtocolHandler, ConnectTunnelOnTransportClosingCleansUp) {
   constexpr NativeHandle kFakeUpstreamFd2 = 43;
   NativeHandle nextFd = kFakeUpstreamFd1;
 
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.onSetup = [&](uint32_t, std::string_view, uint16_t) -> NativeHandle {
     NativeHandle fd = nextFd++;
     return fd;
   };
   bridge.onClose = [&](NativeHandle fd) { closedFds.push_back(fd); };
-  loop.handler.setTunnelBridge(&bridge);
 
   // Establish two tunnels on different streams.
   RawChars conn1;
@@ -1679,7 +1671,7 @@ TEST(Http2ProtocolHandler, ConnectTunnelDrainUpstreamFds) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   static constexpr std::array<std::string_view, 2> kAllowedHosts = {"a.com", "b.com"};
   loop.serverConfig.withConnectAllowlist(kAllowedHosts.begin(), kAllowedHosts.end());
   loop.connect();
@@ -1688,9 +1680,8 @@ TEST(Http2ProtocolHandler, ConnectTunnelDrainUpstreamFds) {
   constexpr NativeHandle kFakeUpstreamFd2 = 43;
   NativeHandle nextFd = kFakeUpstreamFd1;
 
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.onSetup = [&](uint32_t, std::string_view, uint16_t) -> NativeHandle { return nextFd++; };
-  loop.handler.setTunnelBridge(&bridge);
 
   // Establish two tunnels.
   RawChars conn1;
@@ -1726,14 +1717,13 @@ TEST(Http2ProtocolHandler, ConnectTunnelCoexistsWithNormalRequests) {
   Router router;
   router.setPath(http::Method::GET, "/hello", [](const HttpRequestView&) { return HttpResponse(200, "world"); });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   loop.connect();
 
   constexpr NativeHandle kFakeUpstreamFd = 42;
 
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kFakeUpstreamFd; };
-  loop.handler.setTunnelBridge(&bridge);
 
   // Establish a tunnel on stream 1.
   RawChars conn;
@@ -3282,19 +3272,18 @@ TEST(Http2ProtocolHandler, ConnectTunnelWindowUpdateConnectionLevel) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   loop.connect();
 
   constexpr NativeHandle kFakeUpstreamFd = 42;
   int windowUpdateCount = 0;
 
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kFakeUpstreamFd; };
   bridge.onWindowUpdate = [&](NativeHandle fd) {
     EXPECT_EQ(fd, kFakeUpstreamFd);
     ++windowUpdateCount;
   };
-  loop.handler.setTunnelBridge(&bridge);
 
   // Establish tunnel
   RawChars conn;
@@ -3534,15 +3523,14 @@ TEST(Http2ProtocolHandler, TunnelConnectFailedOnExistingStreamSendsRst) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   loop.connect();
 
   constexpr NativeHandle kFakeUpstreamFd = 42;
 
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kFakeUpstreamFd; };
   bridge.onClose = [](NativeHandle) {};
-  loop.handler.setTunnelBridge(&bridge);
 
   // Establish a tunnel
   RawChars conn;
@@ -3567,11 +3555,8 @@ TEST(Http2ProtocolHandler, CloseTunnelByUpstreamFdWithUnknownFdIsNoOp) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
   loop.connect();
-
-  MockTunnelBridge bridge;
-  loop.handler.setTunnelBridge(&bridge);
 
   // Call with an unknown upstream fd — should be a no-op
   loop.handler.closeTunnelByUpstreamFd(999);
@@ -5935,7 +5920,7 @@ TEST(Http2ProtocolHandler, AsyncCompletionRejectedWhenTunnelBacklogAlreadyOverLi
   });
 
   static constexpr uint32_t kMaxOutboundBufferBytes = 200;  // tiny cap; default 65535 flow-control windows untouched
-  Http2ProtocolLoopback loop(router, kMaxOutboundBufferBytes);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{}, kMaxOutboundBufferBytes);
 
   loop.handler.setAsyncPostCallback(
       [&capturedHandle, &callbackFired](std::coroutine_handle<> handle, const std::function<void()>&) {
@@ -5947,9 +5932,8 @@ TEST(Http2ProtocolHandler, AsyncCompletionRejectedWhenTunnelBacklogAlreadyOverLi
 
   // Establish a CONNECT tunnel on stream 1 so injectTunnelData() is usable.
   constexpr NativeHandle kFakeUpstreamFd = 42;
-  MockTunnelBridge bridge;
+  MockTunnelBridge& bridge = *loop.tunnelBridge;
   bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kFakeUpstreamFd; };
-  loop.handler.setTunnelBridge(&bridge);
 
   RawChars conn;
   conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));

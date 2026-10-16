@@ -65,7 +65,6 @@
 
 #ifdef AERONET_ENABLE_HTTP2
 #include "aeronet/http2-frame-types.hpp"
-#include "aeronet/http2-protocol-handler.hpp"
 #endif
 #endif
 
@@ -151,15 +150,8 @@ bool SingleHttpServer::processConnectionInput(ConnectionIt cnxIt) {
       }
       // Verify full preface
       if (bufView.starts_with(http2::kConnectionPreface)) {
-        // Switch to HTTP/2 protocol handler using unified dispatch
-        state.protocolHandler = http2::CreateHttp2ProtocolHandler(_config.http2, _router, _config, _compressionState,
-                                                                  _decompressionState, _telemetry, _sharedBuffers.buf,
-                                                                  false, _dateHeader.data(), state.clientAddress());
-        // Flag the connection as HTTP/2 like the ALPN path does: async resumption, stream deadline sweeps and
-        // the HTTP/2 connection count all key off it.
-        ++_connectionSweepState.http2Connections;
-        state.protocol = ProtocolType::Http2;
-        installH2TunnelBridge(cnxIt->fd(), state);
+        // Switch to the HTTP/2 protocol handler, which waits for the client preface before sending SETTINGS.
+        installHttp2Handler(cnxIt->fd(), state, false);
         return processSpecialProtocolHandler(cnxIt);
       }
       log::error("Invalid HTTP/2 preface, falling back to HTTP/1.1");
@@ -297,9 +289,9 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
     // Do not parse the next pipelined request while a file send is still in progress.
     // attachFilePayload would silently overwrite the in-flight file payload, corrupting
     // the response stream (partial data from file1 mixed with file2 headers+data).
-    // Also skip when outBuffer is non-empty — the previous response hasn't been fully
-    // flushed yet, and starting a new response would interleave data.
-    if (state.isSendingFile() || !state.outBuffer.empty()) {
+    // Also skip while output is pending: the previous response hasn't been fully written yet, and the responses
+    // to the requests pipelined behind it would only accumulate in the connection.
+    if (state.isSendingFile() || state.hasPendingOutput()) {
       state.inputBlockedByOutput = !state.inBuffer.empty();
       break;
     }
