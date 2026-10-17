@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -27,6 +28,8 @@
 #include "aeronet/client-protocol.hpp"
 #include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/fault-injecting-transport.hpp"
+#include "aeronet/fault-policy.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"
@@ -50,6 +53,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/response-body-sink.hpp"
 #include "aeronet/router.hpp"
+#include "aeronet/socket-ops.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
@@ -124,6 +128,11 @@ test::TestServer CreateTestServer() {
   routerProxy.setPath(http::Method::POST, "/echo", [](const HttpRequestView& req) {
     Observe(req);
     return req.makeResponse(http::StatusCodeOK, req.body(), "application/test");
+  });
+  // The HTTP/2 stream id of the request: consecutive requests on a connection get increasing odd ids.
+  routerProxy.setPath(http::Method::GET, "/stream-id", [](const HttpRequestView& req) {
+    Observe(req);
+    return req.makeResponse(http::StatusCodeOK, std::to_string(req.streamId()), "text/plain");
   });
   routerProxy.setPath(http::Method::GET, "/big", [](const HttpRequestView& req) {
     Observe(req);
@@ -269,6 +278,8 @@ class LoopbackHttp2Transport final : public TransportBackend<LoopbackHttp2Transp
     EmptyData,
     NoContentType,
     EarlyResponse,
+    LongerThanContentLength,
+    LargeBody,
   };
 
   LoopbackHttp2Transport(const Http2Config& config, ResponseMode responseMode)
@@ -279,7 +290,10 @@ class LoopbackHttp2Transport final : public TransportBackend<LoopbackHttp2Transp
         respond(streamId);
       }
     });
-    _serverSink.onStreamResetFn = ([this](uint32_t, http2::ErrorCode) { _sawReset = true; });
+    _serverSink.onStreamResetFn = ([this](uint32_t, http2::ErrorCode errorCode) {
+      _sawReset = true;
+      _resetCode = errorCode;
+    });
   }
 
   TransportResult read(char* buf, std::size_t len) {
@@ -309,6 +323,7 @@ class LoopbackHttp2Transport final : public TransportBackend<LoopbackHttp2Transp
   }
 
   [[nodiscard]] bool sawReset() const noexcept { return _sawReset; }
+  [[nodiscard]] http2::ErrorCode resetCode() const noexcept { return _resetCode; }
   [[nodiscard]] std::size_t bytesWritten() const noexcept { return _bytesWritten; }
   [[nodiscard]] bool hasPendingReadData() const noexcept { return _server.hasPendingOutput(); }
 
@@ -378,6 +393,23 @@ class LoopbackHttp2Transport final : public TransportBackend<LoopbackHttp2Transp
       case ResponseMode::EarlyResponse:
         EXPECT_EQ(_server.sendHeaders(streamId, http::StatusCodeOK, HeadersView{}, true), http2::ErrorCode::NoError);
         break;
+      case ResponseMode::LongerThanContentLength: {
+        static constexpr std::byte kBody[]{std::byte{'a'}, std::byte{'b'}, std::byte{'c'}};
+        RawChars headers;
+        headers.append("content-length: 2\r\n");
+        EXPECT_EQ(_server.sendHeaders(streamId, http::StatusCodeOK, HeadersView(headers), false),
+                  http2::ErrorCode::NoError);
+        EXPECT_EQ(_server.sendData(streamId, kBody, false), http2::ErrorCode::NoError);
+        break;
+      }
+      case ResponseMode::LargeBody: {
+        static constexpr std::array<std::byte, 4096> kBody{};
+        EXPECT_EQ(_server.sendHeaders(streamId, http::StatusCodeOK, HeadersView{}, false), http2::ErrorCode::NoError);
+        for (int idx = 0; idx < 4; ++idx) {
+          EXPECT_EQ(_server.sendData(streamId, kBody, false), http2::ErrorCode::NoError);
+        }
+        break;
+      }
     }
   }
 
@@ -386,6 +418,7 @@ class LoopbackHttp2Transport final : public TransportBackend<LoopbackHttp2Transp
   ResponseMode _responseMode;
   RawChars _clientInput;
   std::size_t _bytesWritten{0};
+  http2::ErrorCode _resetCode{http2::ErrorCode::NoError};
   bool _responded{false};
   bool _sawReset{false};
   bool _idleWouldBlock{false};
@@ -444,6 +477,8 @@ TEST(HttpClientHttp2TransportTest, PeerResetAndGoAwayAbortCurrentExchange) {
     EXPECT_EQ(result.error(), HttpClientErrc::connectionClosed);
     EXPECT_TRUE(requestSent);
     EXPECT_GT(transport.bytesWritten(), 0U);
+    // A stream reset by the server leaves the connection usable, unlike a GOAWAY.
+    EXPECT_EQ(connection.keepAlive(), action == ScriptedHttp2Transport::Action::RstStream);
   }
 }
 
@@ -515,6 +550,40 @@ TEST(HttpClientHttp2TransportTest, MissingAndInvalidStatusAreMalformedResponses)
     ASSERT_FALSE(result);
     EXPECT_EQ(result.error(), HttpClientErrc::malformedResponse);
     EXPECT_TRUE(requestSent);
+    EXPECT_TRUE(connection.keepAlive());  // the malformed response only concerns its stream
+  }
+}
+
+// A failure confined to its stream (a body longer than its content-length, or larger than maxResponseBytes) resets the
+// stream while the response is still arriving, which stops it (RST_STREAM with PROTOCOL_ERROR for a malformed one,
+// CANCEL otherwise), and leaves the connection usable.
+TEST(HttpClientHttp2TransportTest, StreamFailuresResetOnlyTheStream) {
+  using Mode = LoopbackHttp2Transport::ResponseMode;
+  struct Case {
+    Mode mode;
+    HttpClientErrc error;
+    http2::ErrorCode resetCode;
+  };
+  for (const Case& testCase : {
+           Case{Mode::LongerThanContentLength, HttpClientErrc::malformedResponse, http2::ErrorCode::ProtocolError},
+           Case{Mode::LargeBody, HttpClientErrc::responseTooLarge, http2::ErrorCode::Cancel},
+       }) {
+    HttpClientConfig config;
+    config.withHttpVersion(HttpVersionMode::Http2);
+    config.maxResponseBytes = 10000;
+    HttpClient client(config);
+    HttpRequest req = MakeFinalizedHttp2Request(client);
+    LoopbackHttp2Transport transport(config.http2, testCase.mode);
+    internal::ClientConnection connection(config);
+    bool requestSent = false;
+
+    auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
+
+    ASSERT_FALSE(result);
+    EXPECT_EQ(result.error(), testCase.error);
+    EXPECT_TRUE(transport.sawReset());
+    EXPECT_EQ(transport.resetCode(), testCase.resetCode);
+    EXPECT_TRUE(connection.keepAlive());
   }
 }
 
@@ -614,6 +683,91 @@ TEST(HttpClientHttp2TransportTest, PooledReuseDrainsPingAndRejectsGoAway) {
     EXPECT_FALSE(backend.hasPendingReadData());
   }
 }
+
+#ifdef AERONET_POSIX
+
+namespace {
+
+// Connection whose exchange on stream 1 failed with a response larger than maxResponseBytes, which resets the stream.
+// The rest of the response, sent by the server before it received the RST_STREAM, is drained by a first reuse check.
+internal::ClientConnection MakeConnectionWithResetStream(HttpClient& client, const HttpClientConfig& config,
+                                                         NativeHandle fd) {
+  HttpRequest req = MakeFinalizedHttp2Request(client);
+  LoopbackHttp2Transport backend(config.http2, LoopbackHttp2Transport::ResponseMode::LargeBody);
+  internal::ClientConnection connection(config);
+  bool requestSent = false;
+  const auto result = connection.exchange(client, backend, kInvalidHandle, req, SteadyClock::now(), requestSent);
+  EXPECT_EQ(result ? HttpClientErrc::noError : result.error(), HttpClientErrc::responseTooLarge);
+  EXPECT_TRUE(backend.sawReset());
+  EXPECT_TRUE(connection.keepAlive());
+  backend.queuePing();  // the server is idle once its output is read
+  Transport transport = Transport::Borrow(backend);
+  EXPECT_TRUE(connection.prepareForReuse(transport, fd));
+  return connection;
+}
+
+}  // namespace
+
+// The DATA the server sent on the stream reset by the last exchange, before it received the RST_STREAM, may still be
+// arriving when the connection is reused. A partial frame leaves the connection usable, its end being processed later,
+// unless it may be the beginning of a GOAWAY. The bytes arriving while the input is drained are drained too, and the
+// close of the connection after them refuses the reuse. (A socketpair delivers the sent bytes at once.)
+TEST(HttpClientHttp2TransportTest, PooledReuseDrainsFramesStillArrivingOnResetStream) {
+  HttpClientConfig config;
+  config.withHttpVersion(HttpVersionMode::Http2);
+  config.maxResponseBytes = 10000;  // below the size of the LargeBody response
+  HttpClient client(config);
+
+  static constexpr std::array<std::byte, 4096> kPayload{};
+  RawBytes dataFrame;
+  http2::WriteFrame(dataFrame, http2::FrameType::Data, 0, 1, kPayload.size());
+  dataFrame.append(std::span<const std::byte>(kPayload));
+  RawBytes goAwayFrame;
+  http2::WriteGoAwayFrame(goAwayFrame, 1, http2::ErrorCode::NoError, http2::ErrorMsg::NoError);
+  const std::span<const std::byte> data(dataFrame.data(), dataFrame.size());
+  const std::span<const std::byte> goAway(goAwayFrame.data(), goAwayFrame.size());
+
+  // One read in two finds nothing yet, the next one finds the following bytes.
+  const test::FaultPolicy trickle{.maxBytesPerRead = 1000, .eagainAfterEveryNReads = 2};
+  struct Case {
+    std::span<const std::byte> sent;  // what the server sent since the last exchange
+    test::FaultPolicy readPolicy;
+    bool peerClosed;
+    bool reusable;
+  };
+  for (const Case& testCase : {
+           Case{data.first(100), {}, false, true},
+           Case{data.first(http2::FrameHeader::kSize - 1), {}, false, false},  // may be the beginning of a GOAWAY
+           Case{goAway.first(http2::FrameHeader::kSize + 2), {}, false, false},
+           Case{data, trickle, false, true},
+           Case{data, trickle, true, false},
+       }) {
+    NativeHandle socketFds[2]{kInvalidHandle, kInvalidHandle};
+    ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, socketFds), 0);
+    BaseFd local(socketFds[0]);
+    BaseFd peer(socketFds[1]);
+    ASSERT_TRUE(SetNonBlocking(local.fd()));
+    internal::ClientConnection connection = MakeConnectionWithResetStream(client, config, local.fd());
+
+    ASSERT_EQ(SafeSend(peer.fd(), testCase.sent.data(), testCase.sent.size()),
+              static_cast<int64_t>(testCase.sent.size()));
+    if (testCase.peerClosed) {
+      peer.close();
+    }
+    test::FaultInjectingTransport backend(Transport(local.fd()), testCase.readPolicy);
+    Transport transport = Transport::Borrow(backend);
+    EXPECT_EQ(connection.prepareForReuse(transport, local.fd()), testCase.reusable);
+
+    if (testCase.reusable && testCase.sent.size() < data.size()) {
+      // The end of the DATA frame arrives: the completed frame is ignored, like any frame of the reset stream.
+      const auto rest = data.subspan(testCase.sent.size());
+      ASSERT_EQ(SafeSend(peer.fd(), rest.data(), rest.size()), static_cast<int64_t>(rest.size()));
+      EXPECT_TRUE(connection.prepareForReuse(transport, local.fd()));
+    }
+  }
+}
+
+#endif  // AERONET_POSIX
 
 TEST(HttpClientHttp2E2ETest, PriorKnowledgeSimpleGet) {
   HttpClient client = MakeHttp2Client();
@@ -1045,6 +1199,53 @@ TEST(HttpClientHttp2E2ETest, SinkCanAbortTheTransfer) {
   auto after = client.get(Url("/hello"));
   ASSERT_TRUE(after);
   EXPECT_EQ(after->bodyInMemory(), "world");
+}
+
+namespace {
+
+// HTTP/2 stream id of a GET /stream-id made by `client`.
+std::string StreamIdOfNextRequest(HttpClient& client) {
+  auto result = client.get(Url("/stream-id"));
+  return result ? std::string(result->bodyInMemory()) : std::string(ErrcToStr(result.error()));
+}
+
+}  // namespace
+
+// A transfer stopped by the sink only resets its stream: the next requests go on the same connection, whose stream
+// ids keep increasing, and the DATA the server sent on the reset stream meanwhile is discarded without disturbing
+// them (its connection-level flow-control credit is given back: large responses still flow).
+TEST(HttpClientHttp2E2ETest, SinkAbortKeepsTheConnection) {
+  HttpClientConfig cfg;
+  cfg.withHttpVersion(HttpVersionMode::Http2).withDecompression(false);
+  HttpClient client(cfg);
+  EXPECT_EQ(StreamIdOfNextRequest(client), "1");
+
+  test::CollectingBodySink stopEarly;
+  stopEarly.stopAfterBytes = 50000;
+  auto result = client.get(Url("/big"), stopEarly);  // stream 3
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::aborted);
+  EXPECT_EQ(StreamIdOfNextRequest(client), "5");
+
+  for (int idx = 0; idx < 3; ++idx) {  // streams 7, 9, 11
+    auto big = client.get(Url("/big"));
+    ASSERT_TRUE(big) << idx << ' ' << ErrcToStr(big.error());
+    EXPECT_TRUE(big->bodyInMemory() == MakeLargeBody()) << idx;
+  }
+  EXPECT_EQ(StreamIdOfNextRequest(client), "13");
+}
+
+// A response larger than maxResponseBytes only fails its stream too.
+TEST(HttpClientHttp2E2ETest, ResponseTooLargeKeepsTheConnection) {
+  HttpClientConfig cfg;
+  cfg.withHttpVersion(HttpVersionMode::Http2).withDecompression(false);
+  cfg.maxResponseBytes = 100000;
+  HttpClient client(cfg);
+  EXPECT_EQ(StreamIdOfNextRequest(client), "1");
+  auto result = client.get(Url("/big"));
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::responseTooLarge);
+  EXPECT_EQ(StreamIdOfNextRequest(client), "5");
 }
 
 TEST(HttpClientHttp2E2ETest, SinkGetsHeadResponses) {

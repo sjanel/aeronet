@@ -614,9 +614,10 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::acquireC
         // timeout) would otherwise accept the request bytes locally and fail only on the subsequent read, where a
         // transparent retry could re-submit a non-idempotent request. Discard a  stale connection here (and its
         // likely-stale siblings) so the request is always issued on a socket we have just confirmed is still open.
-        // HTTP/2 first consumes already-arrived control frames so harmless flow-control traffic does not force a
-        // reconnect, while GOAWAY, close, malformed, and partial frames are rejected before any new request byte is
-        // sent. The final raw probe catches EOF, errors, and data that raced in after the protocol drain.
+        // HTTP/2 first consumes already-arrived frames so harmless traffic (flow control, late DATA of a reset stream)
+        // does not force a reconnect, while GOAWAY (even partial), close, and malformed frames are rejected before any
+        // new request byte is sent. The final raw probe catches EOF and errors, and data that raced in after the
+        // protocol drain is drained too.
         const bool reusable = conn.proto.isHttp2() ? conn.proto.prepareForReuse(conn.transport, conn.cnx.fd())
                                                    : !IsConnectionStale(conn.cnx.fd());
         if (reusable && conn.proto.canTakeAnotherStream()) {
@@ -897,7 +898,12 @@ HttpClientResult HttpClient::performExchange(HttpRequest& req, bool redirectFoll
       return result;
     }
 
-    dropConnection(conn);  // close the socket / transport (and unregister its fd from the loop)
+    if (_config.keepAlive && conn.proto.keepAlive()) {
+      // A failure confined to its HTTP/2 stream, which was reset: the connection stays usable.
+      releaseConnection(req, std::move(conn));
+    } else {
+      dropConnection(conn);  // close the socket / transport (and unregister its fd from the loop)
+    }
     if (_streamer.headDelivered()) {
       return result;  // the sink already received part of this response: retrying would deliver it twice
     }

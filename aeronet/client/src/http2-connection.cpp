@@ -33,6 +33,7 @@
 #include "aeronet/http2-error-code-name.hpp"
 #include "aeronet/http2-event-sink.hpp"
 #include "aeronet/http2-frame-types.hpp"
+#include "aeronet/http2-frame.hpp"
 #include "aeronet/http2-process-result-error-msg-strings.hpp"
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/internal/response-streamer.hpp"
@@ -161,9 +162,11 @@ class Http2ClientEngine : private EventSink {
   }
 
   // Drain protocol input that arrived while this connection was idle. This is deliberately non-blocking:
-  // a ReadReady result means all currently available TLS/application data was consumed. Refuse reuse when
-  // a frame remains partial because it could be the prefix of GOAWAY; reconnecting before sending is the
-  // conservative choice for non-idempotent requests.
+  // a ReadReady result means all currently available TLS/application data was consumed. A frame can still be
+  // arriving, like the DATA the peer sent on a stream reset by the last exchange before it received the RST_STREAM:
+  // the next exchange processes its end. Refuse reuse when such a partial frame could be the prefix of a GOAWAY (its
+  // header is incomplete or announces one); reconnecting before sending is the conservative choice for non-idempotent
+  // requests.
   [[nodiscard]] bool prepareForReuse(Transport& transport, NativeHandle fd) {
     if (!reusable()) {
       return false;
@@ -204,9 +207,18 @@ class Http2ClientEngine : private EventSink {
       }
       if (res.want == TransportHint::ReadReady) {
         // TlsTransport conservatively maps an unclean EOF with an empty OpenSSL error queue to
-        // ReadReady. The final raw probe distinguishes that EOF and rejects bytes that raced in after
-        // the drain.
-        return _inBuf.empty() && reusable() && !IsConnectionStale(fd);
+        // ReadReady. The final raw probe distinguishes that EOF from bytes that raced in after the
+        // read, which are drained too.
+        if (IsConnectionStale(fd)) {
+          if (IsPeerClosed(fd)) {
+            return false;
+          }
+          continue;
+        }
+        // Complete frames are all processed: the buffer holds at most the beginning of one.
+        const auto partialFrame = std::as_bytes(std::span<const char>(_inBuf.data(), _inBuf.size()));
+        return reusable() && (partialFrame.empty() || (partialFrame.size() >= FrameHeader::kSize &&
+                                                       ParseFrameHeader(partialFrame).type() != FrameType::GoAway));
       }
       return false;
     }
@@ -641,14 +653,8 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
   }
 
   // Await the response: pump frames until it is fully received (or the exchange fails).
-  while (ioRes == HttpClientErrc::noError) {
-    if (engine.failure() != http2::internal::Http2ClientEngine::Failure::None) {
-      engine.endExchange();
-      return std::unexpected(engine.failureErrc());
-    }
-    if (engine.responseComplete()) {
-      break;
-    }
+  while (ioRes == HttpClientErrc::noError && engine.failure() == http2::internal::Http2ClientEngine::Failure::None &&
+         !engine.responseComplete()) {
     // Flush housekeeping frames first (WINDOW_UPDATE for received DATA, SETTINGS ack) so a server
     // streaming a large response is never stalled on flow control.
     ioRes = engine.flushOutput(client, transport, fd, ioDeadline, requestSent);
@@ -657,24 +663,37 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
     }
   }
 
-  // Signal the end of a streamed body before detaching the exchange (a truncated content coding fails here).
+  // A failure confined to the stream (stopped by the sink, malformed or too large response, stream reset by the server,
+  // truncated content coding) leaves the connection usable. The end of a streamed body is signaled before detaching
+  // the exchange (a truncated content coding fails here).
   const bool streamedBody = engine.streamingBody();
-  if (ioRes == HttpClientErrc::noError && streamedBody && !streamer.finish()) {
-    ioRes = streamer.error();
+  HttpClientErrc streamErr = HttpClientErrc::noError;
+  if (ioRes == HttpClientErrc::noError) {
+    if (engine.failure() != http2::internal::Http2ClientEngine::Failure::None) {
+      streamErr = engine.failureErrc();
+    } else if (streamedBody && !streamer.finish()) {
+      streamErr = streamer.error();
+    }
   }
+  const http2::ErrorCode resetCode = engine.failure() == http2::internal::Http2ClientEngine::Failure::Malformed
+                                         ? http2::ErrorCode::ProtocolError
+                                         : http2::ErrorCode::Cancel;
   engine.endExchange();
   if (ioRes != HttpClientErrc::noError) {
-    return std::unexpected(ioRes);
+    return std::unexpected(ioRes);  // the connection is in an unknown state: never reused
   }
 
-  // A stream that did not close through the frame-receive path needs explicit closure: finalize a stream
-  // whose final END_STREAM went out through the send path (via HEADERS, the last DATA frame, or the
-  // trailing HEADERS block), otherwise abort the still-open half with RST_STREAM(NO_ERROR) -- an early
-  // response left the upload unfinished (RFC 9113 §8.1). Both keep the pooled connection's active-stream
-  // accounting exact. The per-exchange state is already detached, so the callbacks these fire have nothing
-  // to touch.
+  // A stream that did not close through the frame-receive path needs explicit closure. A failed one is reset, which
+  // stops the response (RST_STREAM with PROTOCOL_ERROR for a malformed one, CANCEL otherwise): the DATA the server sent
+  // meanwhile is ignored when it arrives. Otherwise, finalize a stream whose final END_STREAM went out through the
+  // send path (via HEADERS, the last DATA frame, or the trailing HEADERS block), or abort the still-open half with
+  // RST_STREAM(NO_ERROR) -- an early response left the upload unfinished (RFC 9113 §8.1). All keep the pooled
+  // connection's active-stream accounting exact. The per-exchange state is already detached, so the callbacks these
+  // fire have nothing to touch.
   if (!engine.streamClosed()) {
-    if (endStreamSent) {
+    if (streamErr != HttpClientErrc::noError) {
+      conn.sendRstStream(streamId, resetCode);
+    } else if (endStreamSent) {
       conn.finalizeSendClosedStream(streamId);
     } else {
       conn.sendRstStream(streamId, http2::ErrorCode::NoError);
@@ -688,41 +707,48 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
     flushedClean = engine.flushOutput(client, transport, fd, ioDeadline, requestSent) == HttpClientErrc::noError;
   }
   _keepAlive = flushedClean && engine.reusable();
+  if (streamErr != HttpClientErrc::noError) {
+    return std::unexpected(streamErr);
+  }
+  if (streamedBody) {
+    return resp;
+  }
 
-  // Install the assembled body using the HTTP/1.1 ownership-rotation path: suitably-sized accumulator or
-  // decompression allocations move into the response and receive an equal-capacity empty replacement;
-  // oversized scratch remains reusable and only the smaller body is copied.
   const std::string_view bodyView{bodyBuf};
-  if (!streamedBody && bodyView.empty() && config.decompression.enable && !isHead &&
-      resp.status() != http::StatusCodeNoContent && resp.status() != http::StatusCodeNotModified) {
+  if (bodyView.empty() && config.decompression.enable && !isHead && resp.status() != http::StatusCodeNoContent &&
+      resp.status() != http::StatusCodeNotModified) {
     // Nothing to decode: the (empty) body is delivered like a decoded one, without its coding (as over HTTP/1.1).
     resp.headerRemoveLine(http::ContentEncoding);
   }
-  if (!streamedBody && (!bodyView.empty() || !engine.contentType().empty())) {
-    const std::string_view contentType =
-        engine.contentType().empty() ? http::ContentTypeApplicationOctetStream : engine.contentType();
-    if (config.decompression.enable && !bodyView.empty()) {
-      const std::string_view respEncoding = resp.headerValueOrEmpty(http::ContentEncoding);
-      if (!respEncoding.empty()) {
-        std::string_view decoded;
-        const auto decodeRes =
-            HttpCodec::DecompressFullBody(client._codec.decompressionState, config.decompression, respEncoding,
-                                          bodyView, client._codec.decompressOut, client._codec.decompressTmp, decoded);
-        if (decodeRes.status != http::StatusCodeOK) {
-          return std::unexpected(decodeRes.status == http::StatusCodePayloadTooLarge
-                                     ? HttpClientErrc::responseTooLarge
-                                     : HttpClientErrc::malformedResponse);
-        }
-        resp.headerRemoveLine(http::ContentEncoding);  // body not installed yet => legal & cheap
-        RawChars* decodedOwner = Http1ResponseParser::WholeBufferOwner(decoded, client._codec.decompressOut);
-        if (decodedOwner == nullptr) {
-          decodedOwner = Http1ResponseParser::WholeBufferOwner(decoded, bodyBuf);
-        }
-        Http1ResponseParser::InstallBodyStorage(resp, decoded, contentType, decodedOwner);
-        return resp;
+  std::string_view respBody = bodyView;
+  RawChars* owner = &bodyBuf;
+  if (config.decompression.enable && !bodyView.empty()) {
+    const std::string_view respEncoding = resp.headerValueOrEmpty(http::ContentEncoding);
+    if (!respEncoding.empty()) {
+      const auto decodeRes =
+          HttpCodec::DecompressFullBody(client._codec.decompressionState, config.decompression, respEncoding, bodyView,
+                                        client._codec.decompressOut, client._codec.decompressTmp, respBody);
+      if (decodeRes.status != http::StatusCodeOK) {
+        return std::unexpected(decodeRes.status == http::StatusCodePayloadTooLarge ? HttpClientErrc::responseTooLarge
+                                                                                   : HttpClientErrc::malformedResponse);
+      }
+      resp.headerRemoveLine(http::ContentEncoding);  // body not installed yet => legal & cheap
+      owner = Http1ResponseParser::WholeBufferOwner(respBody, client._codec.decompressOut);
+      if (owner == nullptr) {
+        owner = Http1ResponseParser::WholeBufferOwner(respBody, bodyBuf);
       }
     }
-    Http1ResponseParser::InstallBodyStorage(resp, bodyView, contentType, &bodyBuf);
+  }
+  if (streamer.active()) {
+    // Received whole: the body stays in the scratch buffers, delivered by HttpClient if it is the final response.
+    streamer.setBufferedBody(respBody, engine.contentType());
+  } else if (!bodyView.empty() || !engine.contentType().empty()) {
+    // Install the assembled body using the HTTP/1.1 ownership-rotation path: suitably-sized accumulator or
+    // decompression allocations move into the response and receive an equal-capacity empty replacement;
+    // oversized scratch remains reusable and only the smaller body is copied.
+    Http1ResponseParser::InstallBodyStorage(
+        resp, respBody, engine.contentType().empty() ? http::ContentTypeApplicationOctetStream : engine.contentType(),
+        owner);
   }
   return resp;
 }

@@ -7,10 +7,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
 #include <iterator>
 #include <limits>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "aeronet/hpack.hpp"
@@ -2244,6 +2246,119 @@ TEST(Http2Connection, DataFrameOnResetStreamIsIgnored) {
   auto bytes = SerializeFrame(header, payload);
   auto res = conn.processInput(bytes);
   EXPECT_NE(res.action, Http2Connection::ProcessResult::Action::Error);
+}
+
+namespace {
+
+// A complete header block of `fields`, encoded with `encoder` (fields are added to its dynamic table).
+RawBytes EncodeFieldBlock(HpackEncoder& encoder,
+                          std::initializer_list<std::pair<std::string_view, std::string_view>> fields) {
+  RawBytes block;
+  for (const auto& [name, value] : fields) {
+    encoder.encode(block, name, value);
+  }
+  return block;
+}
+
+vector<std::byte> HeadersFrame(uint32_t streamId, std::span<const std::byte> block, uint8_t flags) {
+  return SerializeFrame(FrameHeader(static_cast<uint32_t>(block.size()), FrameType::Headers, flags, streamId), block);
+}
+
+}  // namespace
+
+// The frames the peer sent before receiving our RST_STREAM are ignored (RFC 9113 §5.1): none is answered with a
+// RST_STREAM, nor reaches the sink. DATA still gives back its connection-level credit, and a field block (in a HEADERS
+// frame, or split into CONTINUATION frames) still updates the HPACK decoding state shared by the connection.
+TEST(Http2Connection, FramesOnAStreamThisEndpointResetAreIgnored) {
+  Http2Config config;
+  config.connectionWindowSize = kDefaultInitialWindowSize;  // the discarded DATA consumes more than half of it
+  Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  vector<uint32_t> headerStreams;
+  std::string lateValue;
+  int dataFrames = 0;
+  int resets = 0;
+  connSink.onHeadersDecodedFn = [&](uint32_t streamId, const SvToSvMap& headers, bool) {
+    headerStreams.push_back(streamId);
+    if (const auto it = headers.find("x-late"); it != headers.end()) {
+      lateValue.assign(it->second);
+    }
+  };
+  connSink.onDataFn = [&](uint32_t, std::span<const std::byte>, bool) { ++dataFrames; };
+  connSink.onStreamResetFn = [&](uint32_t, ErrorCode) { ++resets; };
+
+  // A request with a body to come, reset by this endpoint.
+  HpackEncoder encoder(config.headerTableSize);
+  const RawBytes request = EncodeFieldBlock(
+      encoder, {{":method", "POST"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/upload"}});
+  FeedConnection(conn, HeadersFrame(1, request, FrameFlags::HeadersEndHeaders));
+  ASSERT_EQ(headerStreams, vector<uint32_t>{1});
+  conn.sendRstStream(1, ErrorCode::Cancel);
+  (void)DrainPendingOutput(conn);
+  EXPECT_EQ(resets, 1);
+
+  // Sent by the peer before it received the RST_STREAM: the body, informational headers, trailers split into a HEADERS
+  // and a CONTINUATION frame, and its own RST_STREAM. Their fields go into the HPACK dynamic table.
+  const std::array<std::byte, 16384> data{};
+  const FrameHeader dataHeader(static_cast<uint32_t>(data.size()), FrameType::Data, FrameFlags::None, 1);
+  for (int idx = 0; idx < 3; ++idx) {
+    FeedConnection(conn, SerializeFrame(dataHeader, data));
+  }
+  const RawBytes interim = EncodeFieldBlock(encoder, {{":status", "103"}, {"x-early", "e"}});
+  FeedConnection(conn, HeadersFrame(1, interim, FrameFlags::HeadersEndHeaders));
+  const RawBytes trailers = EncodeFieldBlock(encoder, {{"x-late", "late-value"}, {"x-other", "o"}});
+  const std::span<const std::byte> trailersSpan(trailers.data(), trailers.size());
+  FeedConnection(conn, HeadersFrame(1, trailersSpan.first(3), FrameFlags::HeadersEndStream));
+  FeedConnection(conn, SerializeFrame(FrameHeader(static_cast<uint32_t>(trailersSpan.size() - 3),
+                                                  FrameType::Continuation, FrameFlags::ContinuationEndHeaders, 1),
+                                      trailersSpan.subspan(3)));
+  RawBytes peerReset;
+  WriteRstStreamFrame(peerReset, 1, ErrorCode::Cancel);
+  FeedConnection(conn, std::span<const std::byte>(peerReset.data(), peerReset.size()));
+  EXPECT_EQ(headerStreams, vector<uint32_t>{1});
+  EXPECT_EQ(dataFrames, 0);
+  EXPECT_EQ(resets, 1);
+
+  // Only the connection-level credit of the discarded DATA is given back.
+  const auto output = DrainPendingOutput(conn);
+  ASSERT_EQ(output.size(), FrameHeader::kSize + sizeof(uint32_t));
+  const auto outputHeader = ParseFrameHeader(output);
+  EXPECT_EQ(outputHeader.type(), FrameType::WindowUpdate);
+  EXPECT_EQ(outputHeader.streamId(), 0U);
+
+  // The next request refers to the ignored fields by their dynamic table index: decoded only if they were.
+  const RawBytes next = EncodeFieldBlock(encoder, {
+                                                      {":method", "GET"},
+                                                      {":scheme", "https"},
+                                                      {":authority", "example.com"},
+                                                      {":path", "/"},
+                                                      {"x-late", "late-value"},
+                                                  });
+  FeedConnection(conn, HeadersFrame(3, next, FrameFlags::HeadersEndHeaders | FrameFlags::HeadersEndStream));
+  EXPECT_EQ(headerStreams, (vector<uint32_t>{1, 3}));
+  EXPECT_EQ(lateValue, "late-value");
+}
+
+// A field block that cannot be decompressed fails the connection, even on a stream this endpoint reset: the HPACK
+// decoding state would be lost.
+TEST(Http2Connection, UndecodableFieldBlockOnAResetStreamIsAConnectionError) {
+  Http2Config config;
+  Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  HpackEncoder encoder(config.headerTableSize);
+  const RawBytes request = EncodeFieldBlock(
+      encoder, {{":method", "GET"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/"}});
+  FeedConnection(conn, HeadersFrame(1, request, FrameFlags::HeadersEndHeaders));
+  conn.sendRstStream(1, ErrorCode::Cancel);
+  (void)DrainPendingOutput(conn);
+
+  const std::array invalidIndex{std::byte{0x80}};  // indexed field of index 0
+  const auto frame = HeadersFrame(1, invalidIndex, FrameFlags::HeadersEndHeaders | FrameFlags::HeadersEndStream);
+  const auto res = conn.processInput(frame);
+  EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
+  EXPECT_EQ(res.errorCode, ErrorCode::CompressionError);
 }
 
 TEST(Http2Connection, DataFrameExceedsStreamRecvWindow) {

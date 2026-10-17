@@ -196,6 +196,7 @@ void Http1ResponseParser::reset(bool headRequest, bool streamHead) noexcept {
   _streamHead = streamHead;
   _streaming = false;
   _gatheredPiece = false;
+  _bufferedBody = {};
   _keepAlive = false;
   _http11 = false;
   _connectionCloseSeen = false;
@@ -204,57 +205,60 @@ void Http1ResponseParser::reset(bool headRequest, bool streamHead) noexcept {
   _chunked = false;
 }
 
-Http1ResponseParser::Status Http1ResponseParser::installBody(HttpResponse& resp, std::string_view buffer) const {
+Http1ResponseParser::Status Http1ResponseParser::installBody(HttpResponse& resp, std::string_view buffer) {
   if (_framing == Framing::None) {
     return Status::Complete;  // bodyless response (HEAD / 204 / 304 / 1xx)
   }
-  const std::string_view contentType =
-      _contentTypeLen == 0 ? http::ContentTypeApplicationOctetStream : buffer.substr(_contentTypeOff, _contentTypeLen);
   // Chunked bodies are reassembled in _bodyBuf; Length / UntilClose bodies are contiguous suffixes of the
   // receive buffer. Either allocation can become the response's owner when it is suitably sized.
   const std::string_view body =
       _framing == Framing::Chunked ? std::string_view(*_bodyBuf) : buffer.substr(_bodyStart, _pos - _bodyStart);
-  RawChars* bodyOwner = nullptr;
-  if (_framing == Framing::Chunked) {
-    bodyOwner = _bodyBuf;
-  } else if (_receiveBuf != nullptr && buffer.data() == _receiveBuf->data() && buffer.size() == _receiveBuf->size() &&
-             _pos == buffer.size()) {
-    bodyOwner = _receiveBuf;
+
+  // Automatic decompression: decode straight from `body` (receive buffer / de-framed chunks) into the
+  // borrowed scratch buffer and drop the now-stale Content-Encoding header (the body is not installed yet, so
+  // removal is cheap and legal). No intermediate copy of the compressed body.
+  std::string_view decoded = body;
+  if (_decode.state != nullptr) {
+    const std::string_view contentEncoding = resp.headerValueOrEmpty(http::ContentEncoding);
+    if (!contentEncoding.empty()) {
+      // An empty body has nothing to decode: it is delivered like a decoded one, without its coding.
+      if (!body.empty()) {
+        const auto res = HttpCodec::DecompressFullBody(*_decode.state, *_decode.config, contentEncoding, body,
+                                                       *_decode.out, *_decode.tmp, decoded);
+        if (res.status != http::StatusCodeOK) {
+          return res.status == http::StatusCodePayloadTooLarge ? Status::TooLarge : Status::Error;
+        }
+      }
+      resp.headerRemoveLine(http::ContentEncoding);
+    }
+  }
+
+  if (_streamHead) {
+    // Response to a sink request received whole: it stays in the scratch buffers, from where HttpClient delivers it to
+    // the sink once known to be the final response, without copy.
+    _bufferedBody = decoded;
+    return Status::Complete;
   }
 
   // Transfer a suitably-sized scratch allocation into the response and preserve an equal-capacity empty replacement.
   // If the scratch is over twice the body size, retain it and copy the small body instead of making both the response
   // and client pin that high-water allocation. The common stable-size path keeps the same allocation count and retained
   // capacity as before, but removes the large final memcpy.
-  // Automatic decompression: decode straight from `body` (receive buffer / de-framed chunks) into the
-  // borrowed scratch buffer, drop the now-stale Content-Encoding header (the body is not installed yet, so
-  // removal is cheap and legal), then install the decoded bytes. No intermediate copy of the compressed body.
-  if (_decode.state != nullptr) {
-    const std::string_view contentEncoding = resp.headerValueOrEmpty(http::ContentEncoding);
-    if (!contentEncoding.empty() && body.empty()) {
-      // Nothing to decode: the (empty) body is delivered like a decoded one, without its coding.
-      resp.headerRemoveLine(http::ContentEncoding);
-    } else if (!contentEncoding.empty()) {
-      std::string_view decoded;
-      const auto res = HttpCodec::DecompressFullBody(*_decode.state, *_decode.config, contentEncoding, body,
-                                                     *_decode.out, *_decode.tmp, decoded);
-      if (res.status != http::StatusCodeOK) {
-        return res.status == http::StatusCodePayloadTooLarge ? Status::TooLarge : Status::Error;
-      }
-      resp.headerRemoveLine(http::ContentEncoding);  // body not installed yet => legal & cheap
-      RawChars* decodedOwner;
-      decodedOwner = WholeBufferOwner(decoded, *_decode.out);
-      if (decodedOwner == nullptr) {
-        decodedOwner = WholeBufferOwner(decoded, *_bodyBuf);
-      }
-      if (decodedOwner == nullptr && decoded.data() == body.data() && decoded.size() == body.size()) {
-        decodedOwner = bodyOwner;
-      }
-      InstallBodyStorage(resp, decoded, contentType, decodedOwner);
-      return Status::Complete;
+  RawChars* owner = nullptr;
+  if (decoded.data() != body.data()) {  // decoded into a scratch buffer (an identity coding returns the body itself)
+    owner = WholeBufferOwner(decoded, *_decode.out);
+    if (owner == nullptr) {
+      owner = WholeBufferOwner(decoded, *_bodyBuf);
     }
+  } else if (_framing == Framing::Chunked) {
+    owner = _bodyBuf;
+  } else if (_receiveBuf != nullptr && buffer.data() == _receiveBuf->data() && buffer.size() == _receiveBuf->size() &&
+             _pos == buffer.size()) {
+    owner = _receiveBuf;
   }
-  InstallBodyStorage(resp, body, contentType, bodyOwner);
+  const std::string_view contentType =
+      _contentTypeLen == 0 ? http::ContentTypeApplicationOctetStream : buffer.substr(_contentTypeOff, _contentTypeLen);
+  InstallBodyStorage(resp, decoded, contentType, owner);
   return Status::Complete;
 }
 

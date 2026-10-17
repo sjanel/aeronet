@@ -7,6 +7,7 @@
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-client-error.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/response-body-sink.hpp"
 
 namespace aeronet {
@@ -26,8 +27,9 @@ constexpr bool IsRedirectStatus(http::StatusCode code) noexcept {
 
 // Delivers the final response of a request to its ResponseBodySink, decoding a content-coded body as it arrives. The
 // protocol engines call startResponse() once the head of a response announcing a body is received, then feed() with
-// the received body bytes and finish() at its end; HttpClient delivers the responses received whole with
-// deliverBuffered(). Inactive (no sink) for regular requests, whose bodies are buffered.
+// the received body bytes and finish() at its end. A response received whole is never installed in its HttpResponse:
+// the protocol engines give its body with setBufferedBody(), and HttpClient delivers it with deliverBuffered() once it
+// is known to be the final response. Inactive (no sink) for regular requests, whose bodies are buffered.
 //
 // A body is decoded incrementally when it has a single content coding, each received piece in one decoder call: at its
 // end, the decoder tells whether the coded stream is complete. Stacked codings are buffered and decoded whole.
@@ -63,9 +65,14 @@ class ResponseStreamer {
 
   [[nodiscard]] HttpClientErrc error() const noexcept { return _error; }
 
-  // Deliver a final response received whole (bodyless, or buffered by startResponse()) to the sink, after removing its
-  // body from it. Returns HttpClientErrc::aborted when the sink refused it.
-  [[nodiscard]] HttpClientErrc deliverBuffered(HttpResponse& resp);
+  // Keep the body of a response received whole (bodyless, or buffered by startResponse()) for deliverBuffered(). The
+  // body stays where it is, in the client scratch buffers, which are not reused before; its raw Content-Type value is
+  // copied (it may belong to a connection closed meanwhile).
+  void setBufferedBody(std::string_view body, std::string_view contentType);
+
+  // Deliver the final response received whole to the sink: `head` (without body), then the body given to
+  // setBufferedBody(), without copy. Returns HttpClientErrc::aborted when the sink refused it.
+  [[nodiscard]] HttpClientErrc deliverBuffered(const HttpResponse& head);
 
  private:
   enum class Coding : uint8_t { Streamed, Buffered, Unsupported };
@@ -83,6 +90,8 @@ class ResponseStreamer {
   ResponseBodySink* _sink{nullptr};
   const HttpClientConfig* _config{nullptr};
   HttpClientCodec* _codec{nullptr};
+  std::string_view _bufferedBody;   // see setBufferedBody()
+  RawChars32 _bufferedContentType;  // raw Content-Type value of the response received whole
   void* _decoder{nullptr};          // context of the decoder of _coding
   std::size_t _compressedBytes{0};  // content-coded bytes decoded so far
   std::size_t _decodedBytes{0};
