@@ -105,7 +105,9 @@ class TelemetryConfig {
   // Timeout for metric exports (default: 5000ms)
   std::chrono::milliseconds exportTimeout{std::chrono::milliseconds{5000}};
 
- private:
+  // Internal storage, read and written through the methods above. Public only so that TelemetryConfig stays an
+  // aggregate, whose members glaze reflects (see glaze-internal-members.hpp).
+
   // endpoint, serviceName, dogstatsdSocketPath, dogstatsdNamespace
   StaticConcatenatedStrings<4, uint32_t> _staticStrings;
 
@@ -125,58 +127,51 @@ class TelemetryConfig {
 #include <string>
 
 #include "aeronet/glaze-chrono-durations-adapters.hpp"  // IWYU pragma: export
+#include "aeronet/glaze-internal-members.hpp"
 #include "aeronet/glaze-vector-sv-adapter.hpp"
 
+// TelemetryConfig is reflected by glaze: only its internal members (see glaze-internal-members.hpp) need an entry.
 template <>
-struct glz::meta<aeronet::TelemetryConfig> {
+struct glz::meta<aeronet::TelemetryConfig> : aeronet::glz_detail::SkipInternalMembers {
   using T = aeronet::TelemetryConfig;
-  static constexpr auto value =
-      object("otelEnabled", &T::otelEnabled, "dogStatsDEnabled", &T::dogStatsDEnabled, "sampleRate", &T::sampleRate,
-             "exportInterval", &T::exportInterval, "exportTimeout", &T::exportTimeout, "endpoint",
-             custom<[](T& self, const std::string& sv) { self.withEndpoint(sv); },
-                    [](const T& self) { return self.endpoint(); }>,
-             "serviceName",
-             custom<[](T& self, const std::string& sv) { self.withServiceName(sv); },
-                    [](const T& self) { return self.serviceName(); }>,
-             "dogstatsdSocketPath",
-             custom<[](T& self, const std::string& sv) { self.withDogStatsdSocketPath(sv); },
-                    [](const T& self) { return self.dogstatsdSocketPath(); }>,
-             "dogstatsdNamespace",
-             custom<[](T& self, const std::string& sv) { self.withDogStatsdNamespace(sv); },
-                    [](const T& self) { return self.dogstatsdNamespace(); }>,
-             // Tags as array of "key:value" strings
-             "dogstatsdTags",
-             custom<[](T& self, const ::aeronet::vector<std::string>& tags) {
-               for (const auto& tag : tags) {
-                 self.addDogStatsdTag(tag);
+  static constexpr auto modify = object(
+      "endpoint", custom<[](T& self, const std::string& str) { self.withEndpoint(str); }, &T::endpoint>, "serviceName",
+      custom<[](T& self, const std::string& str) { self.withServiceName(str); }, &T::serviceName>,
+      "dogstatsdSocketPath",
+      custom<[](T& self, const std::string& str) { self.withDogStatsdSocketPath(str); }, &T::dogstatsdSocketPath>,
+      "dogstatsdNamespace",
+      custom<[](T& self, const std::string& str) { self.withDogStatsdNamespace(str); }, &T::dogstatsdNamespace>,
+      // Tags as array of "key:value" strings
+      "dogstatsdTags", &T::_dogstatsdTags,
+      // HTTP headers as array of "name:value" strings
+      "httpHeaders",
+      custom<[](T& self, const ::aeronet::vector<std::string>& headers) {
+        for (const auto& hdr : headers) {
+          if (auto sep = hdr.find(':'); sep != std::string::npos) {
+            self.addHttpHeader(std::string_view(hdr).substr(0, sep), std::string_view(hdr).substr(sep + 1));
+          }
+        }
+      },
+             aeronet::glz_detail::ToStringViewVector<&T::httpHeadersRange>>,
+      // Histogram buckets as JSON object {"metric_name": [1.0, 5.0, 10.0]}
+      "histogramBuckets",
+      custom<[](T& self, std::map<std::string, ::aeronet::vector<double>> buckets) {
+        for (auto& [name, boundaries] : buckets) {
+          self.addHistogramBuckets(name, boundaries);
+        }
+      },
+             [](const T& self) {
+               std::map<std::string, ::aeronet::vector<double>> result;
+               for (const auto& [key, boundaries] : self.histogramBuckets()) {
+                 result[std::string(std::string_view(key))] =
+                     ::aeronet::vector<double>(boundaries.begin(), boundaries.end());
                }
-             },
-                    aeronet::glz_detail::ToStringViewVector<&T::dogstatsdTags>>,
-             // HTTP headers as array of "name:value" strings
-             "httpHeaders",
-             custom<[](T& self, const ::aeronet::vector<std::string>& headers) {
-               for (const auto& hdr : headers) {
-                 if (auto sep = hdr.find(':'); sep != std::string::npos) {
-                   self.addHttpHeader(hdr.substr(0, sep), hdr.substr(sep + 1));
-                 }
-               }
-             },
-                    aeronet::glz_detail::ToStringViewVector<&T::httpHeadersRange>>,
-             // Histogram buckets as JSON object {"metric_name": [1.0, 5.0, 10.0]}
-             "histogramBuckets",
-             custom<[](T& self, std::map<std::string, ::aeronet::vector<double>> buckets) {
-               for (auto& [name, boundaries] : buckets) {
-                 self.addHistogramBuckets(name, boundaries);
-               }
-             },
-                    [](const T& self) {
-                      std::map<std::string, ::aeronet::vector<double>> result;
-                      for (const auto& [key, boundaries] : self.histogramBuckets()) {
-                        result[std::string(std::string_view(key))] =
-                            ::aeronet::vector<double>(boundaries.begin(), boundaries.end());
-                      }
-                      return result;
-                    }>);
+               return result;
+             }>);
+
+  // One entry per packed string, plus the dogstatsdTags, httpHeaders and histogramBuckets lists.
+  static_assert(aeronet::glz_detail::NbObjectEntries<decltype(modify)> == decltype(T::_staticStrings)::size() + 3U,
+                "each internal member of TelemetryConfig needs an entry in modify");
 };
 
 #endif

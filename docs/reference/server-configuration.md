@@ -67,7 +67,7 @@ aeronet::HttpServerConfig https;
 https.withPort(443).withTlsCertKey("/run/tls/tls.crt", "/run/tls/tls.key");
 ```
 
-HTTP CONNECT tunnelling is fail-closed: its allowlist is empty by default. Set exact hostnames/IP strings with `withConnectAllowlist(first, last)`. The special single entry `"*"` grants access to all hosts and ports and should be reserved for a deliberately access-controlled proxy. See [CONNECT tunneling](../protocols/connect.md).
+HTTP CONNECT tunnelling is fail-closed: its allowlist is empty by default. Set exact hostnames/IP strings in the `connectAllowlist` field, or with `withConnectAllowlist(first, last)`. The special single entry `"*"` grants access to all hosts and ports and should be reserved for a deliberately access-controlled proxy. See [CONNECT tunneling](../protocols/connect.md).
 
 ## TLS configuration
 

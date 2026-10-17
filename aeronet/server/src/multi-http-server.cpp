@@ -38,10 +38,9 @@
 
 #ifdef AERONET_ENABLE_GLAZE
 #include <filesystem>
-#include <fstream>
-#include <ios>
 
 #include "aeronet/aeronet-config.hpp"
+#include "aeronet/config-file.hpp"
 #include "aeronet/server-config-loader.hpp"
 #endif
 
@@ -257,13 +256,7 @@ void MultiHttpServer::saveConfig(const std::filesystem::path& filePath) const {
   if (empty()) {
     throw std::logic_error("Cannot save config from an empty MultiHttpServer");
   }
-  const auto format = detail::DetectFormat(filePath);
-  const auto content = dumpConfig(format);
-  std::ofstream ofs(filePath, std::ios::binary);
-  if (!ofs) {
-    throw std::runtime_error("Failed to open file for writing: " + filePath.string());
-  }
-  ofs << content;
+  detail::WriteConfigFile(filePath, dumpConfig(detail::DetectFormat(filePath)));
 }
 #endif
 

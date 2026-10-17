@@ -2,6 +2,10 @@
 
 aux_source_directory(src TECH_SOURCES)
 
+if(NOT AERONET_ENABLE_GLAZE)
+    list(REMOVE_ITEM TECH_SOURCES src/config-file.cpp)
+endif()
+
 AeronetAddProjectLibrary(aeronet_tech ${TECH_SOURCES})
 target_include_directories(aeronet_tech
     PUBLIC

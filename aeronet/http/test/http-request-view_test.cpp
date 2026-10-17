@@ -52,7 +52,7 @@
 #include "aeronet/vector.hpp"
 
 #ifdef AERONET_ENABLE_GLAZE
-#include "aeronet/http-json.hpp"  // bodyAs / bodyAsYaml definitions
+#include "aeronet/http-json.hpp"  // IWYU pragma: keep (bodyAs / bodyAsYaml definitions)
 #endif
 
 namespace aeronet {

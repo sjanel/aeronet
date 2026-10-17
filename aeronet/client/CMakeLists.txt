@@ -8,6 +8,10 @@ if(NOT AERONET_ENABLE_OPENSSL)
     list(REMOVE_ITEM AERONET_CLIENT_SRC_LIST src/http-client-tls-context.cpp)
 endif()
 
+if(NOT AERONET_ENABLE_GLAZE)
+    list(REMOVE_ITEM AERONET_CLIENT_SRC_LIST src/client-config-loader.cpp)
+endif()
+
 AeronetAddProjectLibrary(aeronet_client
     ${AERONET_CLIENT_SRC_LIST}
 )
@@ -51,6 +55,16 @@ AeronetAddUnitTest(
     LIBRARIES
     aeronet_objects
 )
+
+if(AERONET_ENABLE_GLAZE)
+    AeronetAddUnitTest(
+        client-config-loader_test
+        test/client-config-loader_test.cpp
+        LIBRARIES
+        aeronet_client
+        aeronet_basic_test_support
+    )
+endif()
 
 AeronetAddUnitTest(
     client-protocol_test

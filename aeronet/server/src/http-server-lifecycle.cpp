@@ -3,7 +3,6 @@
 #include <chrono>
 #include <cstring>
 #include <exception>
-#include <fstream>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -45,10 +44,10 @@
 
 #ifdef AERONET_ENABLE_GLAZE
 #include <filesystem>
-#include <ios>
 #include <string>
 
 #include "aeronet/aeronet-config.hpp"
+#include "aeronet/config-file.hpp"
 #include "aeronet/server-config-loader.hpp"
 #endif
 
@@ -182,13 +181,7 @@ std::string SingleHttpServer::dumpConfig(ConfigFormat format) const {
 }
 
 void SingleHttpServer::saveConfig(const std::filesystem::path& filePath) const {
-  auto format = detail::DetectFormat(filePath);
-  auto content = dumpConfig(format);
-  std::ofstream ofs(filePath, std::ios::binary);
-  if (!ofs) {
-    throw std::runtime_error("Failed to open file for writing: " + filePath.string());
-  }
-  ofs << content;
+  detail::WriteConfigFile(filePath, dumpConfig(detail::DetectFormat(filePath)));
 }
 #endif
 

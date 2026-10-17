@@ -59,6 +59,7 @@
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/tchars.hpp"
 #include "aeronet/tracing/tracer.hpp"
+#include "aeronet/tunnel-bridge.hpp"
 #include "http2-writer-transport.hpp"
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS

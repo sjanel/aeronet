@@ -1,4 +1,7 @@
 #include <aeronet/aeronet-server.hpp>
+#ifdef AERONET_ENABLE_HTTP_CLIENT
+#include <aeronet/aeronet-client.hpp>
+#endif
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
@@ -13,11 +16,12 @@ using namespace aeronet;
 namespace {
 
 void PrintUsage(std::string_view programName) {
-  std::cerr << "Usage: " << programName << " [--format json|yaml] [--output <path>]\n"
+  std::cerr << "Usage: " << programName << " [--client] [--format json|yaml] [--output <path>]\n"
             << "\n"
             << "Dumps the default aeronet top-level configuration (server + router).\n"
             << "\n"
             << "Options:\n"
+            << "  -c, --client   Dump the default HttpClient configuration instead\n"
             << "  -f, --format   Output format (json or yaml). Default: yaml\n"
             << "  -o, --output   Output file path. If omitted, writes to stdout\n"
             << "  -h, --help     Show this help message\n";
@@ -38,6 +42,7 @@ std::optional<ConfigFormat> ParseFormat(std::string_view rawFormat) {
 int main(int argc, char** argv) {
   ConfigFormat format = ConfigFormat::yaml;
   std::optional<std::filesystem::path> outputPath;
+  bool dumpClient = false;
 
   try {
     for (int argIndex = 1; argIndex < argc; ++argIndex) {
@@ -46,6 +51,11 @@ int main(int argc, char** argv) {
       if (currentArg == "-h" || currentArg == "--help") {
         PrintUsage(argv[0]);
         return EXIT_SUCCESS;
+      }
+
+      if (currentArg == "-c" || currentArg == "--client") {
+        dumpClient = true;
+        continue;
       }
 
       if (currentArg == "-f" || currentArg == "--format") {
@@ -79,8 +89,17 @@ int main(int argc, char** argv) {
       return EXIT_FAILURE;
     }
 
-    TopLevelConfig defaultConfig;
-    const std::string serialized = detail::SerializeConfig(defaultConfig, format);
+    std::string serialized;
+    if (dumpClient) {
+#ifdef AERONET_ENABLE_HTTP_CLIENT
+      serialized = detail::SerializeClientConfig(HttpClientConfig{}, format);
+#else
+      std::cerr << "This build has no HTTP client (AERONET_ENABLE_HTTP_CLIENT=OFF)\n";
+      return EXIT_FAILURE;
+#endif
+    } else {
+      serialized = detail::SerializeConfig(TopLevelConfig{}, format);
+    }
     if (serialized.empty()) {
       std::cerr << "Failed to serialize default configuration\n";
       return EXIT_FAILURE;

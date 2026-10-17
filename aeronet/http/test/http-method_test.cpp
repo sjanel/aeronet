@@ -7,7 +7,6 @@
 #include <string>
 #include <string_view>
 
-#include "../src/http-method-parse.hpp"
 #include "aeronet/toupperlower.hpp"
 
 namespace {
