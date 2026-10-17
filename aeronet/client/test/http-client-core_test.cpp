@@ -1,7 +1,6 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -65,6 +64,7 @@
 #include "aeronet/transport.hpp"
 #include "aeronet/vector.hpp"
 #include "collecting-body-sink.hpp"
+#include "http-client-test-access.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include <fstream>
@@ -78,34 +78,6 @@ namespace aeronet {
 class HttpRequestTest {
  public:
   static void Finalize(HttpRequest& req) { req.HttpMessage::finalizeHeadersAndBody(); }
-};
-
-class HttpClientTest {
- public:
-  // Number of origins with an entry in the idle pool (possibly empty).
-  static std::size_t IdleOrigins(const HttpClient& client) { return client._idle.size(); }
-
-  // Total number of pooled idle connections, all origins together.
-  static std::size_t IdleConnections(const HttpClient& client) {
-    std::size_t nb = 0;
-    for (const auto& [origin, bucket] : client._idle) {
-      nb += bucket.size();
-    }
-    return nb;
-  }
-
-  static std::size_t CacheEntries(const HttpClient& client) { return client._cache.size(); }
-
-  // Summed capacity of the reusable request / response / decompression scratch buffers.
-  static std::size_t ScratchCapacity(const HttpClient& client) {
-    std::size_t capacity = client._cacheKeyScratch.capacity() + client._reqBodyScratch.capacity() +
-                           client._responseBuffer.capacity() + client._codec.decompressOut.capacity() +
-                           client._codec.decompressTmp.capacity();
-#ifdef AERONET_ENABLE_HTTP2
-    capacity += client._outputFragmentsScratch.capacity();
-#endif
-    return capacity;
-  }
 };
 
 namespace {
@@ -3589,7 +3561,8 @@ TEST(HttpClientSinkE2ETest, StackedContentCodingsAreBufferedThenDelivered) {
   EXPECT_EQ(sink.body, payload);
   EXPECT_EQ(sink.bodyCalls, 1U);
   EXPECT_EQ(sink.contentType, "text/csv");
-  EXPECT_EQ(sink.bodySize, payload.size());  // decoded whole before its delivery
+  EXPECT_EQ(sink.bodySize, payload.size());                             // decoded whole before its delivery
+  EXPECT_TRUE(HttpClientTest::InScratch(client, sink.firstChunkData));  // delivered from the decoding buffer
   EXPECT_TRUE(sink.contentEncoding.empty());
   EXPECT_FALSE(sink.headHasBody);
   EXPECT_TRUE(result->bodyInMemory().empty());
@@ -3603,6 +3576,29 @@ TEST(HttpClientSinkE2ETest, StackedContentCodingsAreBufferedThenDelivered) {
     ASSERT_FALSE(result) << atHead;
     EXPECT_EQ(result.error(), HttpClientErrc::aborted) << atHead;
   }
+}
+
+// A body buffered for a sink without Content-Type is delivered as application/octet-stream, like a streamed one.
+TEST(HttpClientSinkE2ETest, BufferedBodyWithoutContentTypeIsOctetStream) {
+  if (test::SupportedEncodings().empty()) {
+    GTEST_SKIP() << "no codec compiled in";
+  }
+  const Encoding enc = test::SupportedEncodings().front();
+  const std::string payload = test::MakePatternedPayload(10000);
+  const RawChars encoded = test::Compress(enc, payload);
+  RawServer server([&](NativeHandle fd, int) {
+    DrainRequest(fd);
+    SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-encoding: identity, " + std::string(GetEncodingStr(enc)) +
+                    "\r\ncontent-length: " + std::to_string(encoded.size()) + "\r\nconnection: close\r\n\r\n" +
+                    std::string(std::string_view(encoded)));
+  });
+  HttpClient client;
+  test::CollectingBodySink sink;
+  auto result = client.get(MakeUrl(server.port()), sink);
+  ASSERT_TRUE(result) << ErrcToStr(result.error());
+  EXPECT_EQ(sink.body, payload);
+  EXPECT_EQ(sink.contentType, http::ContentTypeApplicationOctetStream);
+  EXPECT_EQ(sink.bodySize, payload.size());
 }
 
 // An identity content coding is streamed as received, and dropped from the head like a decoded coding.
@@ -4210,6 +4206,7 @@ TEST(HttpClientSinkE2ETest, Http2StackedContentCodingsAreBufferedThenDelivered) 
   EXPECT_EQ(sink.bodyCalls, 1U);
   EXPECT_EQ(sink.contentType, "text/csv");
   EXPECT_EQ(sink.bodySize, payload.size());
+  EXPECT_TRUE(HttpClientTest::InScratch(client, sink.firstChunkData));  // delivered from the decoding buffer
 }
 
 // Over HTTP/2, the content-length of the final response is given to the sink, and the received DATA must match it

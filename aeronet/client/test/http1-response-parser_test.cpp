@@ -9,7 +9,6 @@
 #include <limits>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include "aeronet/char-hexadecimal-converter.hpp"
 #include "aeronet/compression-test-helpers.hpp"
@@ -21,6 +20,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/response-body-sink.hpp"
 #include "aeronet/toupperlower.hpp"
+#include "aeronet/vector.hpp"
 
 namespace aeronet {
 namespace {
@@ -1024,7 +1024,7 @@ struct StreamedParse {
   int headCompleteCount{0};
   std::string contentType;
   std::size_t announcedBodySize{0};
-  std::vector<StreamedPiece> pieces;
+  vector<StreamedPiece> pieces;
 };
 
 StreamedParse StreamParse(std::string_view raw, std::size_t step, std::size_t maxBytes = kMax, bool stream = true) {
@@ -1067,7 +1067,9 @@ StreamedParse StreamParse(std::string_view raw, std::size_t step, std::size_t ma
     out.maxReceiveBufferSize = std::max<std::size_t>(out.maxReceiveBufferSize, receive.size());
     if (out.status != Http1ResponseParser::Status::NeedMore || eof) {
       if (!stream && out.status == Http1ResponseParser::Status::Complete) {
-        out.body.assign(resp.bodyInMemory());
+        // A body received whole is left in the scratch buffers, not installed in the response.
+        EXPECT_TRUE(resp.bodyInMemory().empty());
+        out.body.assign(parser.bufferedBody());
       }
       return out;
     }
@@ -1173,7 +1175,7 @@ TEST(ResponseParserStreamingTest, SmallChunksAreGatheredLargeOnesAreNot) {
   const StreamedParse res = StreamParse(raw, raw.size());
   EXPECT_EQ(res.status, Http1ResponseParser::Status::Complete);
   EXPECT_EQ(res.body, payload);
-  const std::vector<StreamedPiece> expected{
+  const vector<StreamedPiece> expected{
       {.size = 17, .gathered = true},          {.size = kDirect, .gathered = false},
       {.size = kDirect - 1, .gathered = true}, {.size = 3 * kDirect, .gathered = false},
       {.size = 12, .gathered = true},
@@ -1194,7 +1196,7 @@ TEST(ResponseParserStreamingTest, SmallChunksAreGatheredLargeOnesAreNot) {
   const StreamedParse smallStreamParse = StreamParse(smallRaw, smallRaw.size());
   EXPECT_EQ(smallStreamParse.status, Http1ResponseParser::Status::Complete);
   EXPECT_EQ(smallStreamParse.body, smallPayload);
-  EXPECT_EQ(smallStreamParse.pieces, (std::vector<StreamedPiece>{{.size = smallPayload.size(), .gathered = true}}));
+  EXPECT_EQ(smallStreamParse.pieces, (vector<StreamedPiece>{{.size = smallPayload.size(), .gathered = true}}));
 }
 
 // The part of a large chunk received in a read is a piece of its own when large enough, gathered otherwise: gathered
@@ -1216,7 +1218,7 @@ TEST(ResponseParserStreamingTest, LargeChunkSplitAcrossReads) {
   // Received whole, the large chunk is a single piece.
   const StreamedParse whole = StreamParse(raw, raw.size());
   EXPECT_EQ(whole.pieces,
-            (std::vector<StreamedPiece>{{.size = 10 * kDirect, .gathered = false}, {.size = 2, .gathered = true}}));
+            (vector<StreamedPiece>{{.size = 10 * kDirect, .gathered = false}, {.size = 2, .gathered = true}}));
 }
 
 // Gathered chunks are delivered before a failure that follows them.
@@ -1225,7 +1227,7 @@ TEST(ResponseParserStreamingTest, GatheredChunksAreDeliveredBeforeAFailure) {
       StreamParse("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n3\r\nabc\r\n2\r\nde\r\nzz\r\n", 200);
   EXPECT_EQ(malformed.status, Http1ResponseParser::Status::Error);
   EXPECT_EQ(malformed.body, "abcde");
-  EXPECT_EQ(malformed.pieces, (std::vector<StreamedPiece>{{.size = 5, .gathered = true}}));
+  EXPECT_EQ(malformed.pieces, (vector<StreamedPiece>{{.size = 5, .gathered = true}}));
 
   const StreamedParse tooLarge = StreamParse(
       "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n3\r\nabc\r\n5;" + std::string(600, 'e'), 1000, 512);

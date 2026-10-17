@@ -903,6 +903,10 @@ Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader head
 
   if (!it->second.canReceive()) {
     replenishConnectionRecvWindow();
+    if (it->second.resetSent()) {
+      // Sent before the peer received our RST_STREAM: ignored (RFC 9113 §5.1).
+      return ProcessResult{ProcessResult::Action::Continue};
+    }
     return streamError(streamId, ErrorCode::StreamClosed, ErrorMsg::DATAOnClosedStream);
   }
 
@@ -1035,6 +1039,10 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
     return ProcessResult{ProcessResult::Action::Continue};
   }
 
+  if (pStream->resetSent()) {
+    return discardFieldBlock(headerBlockFragment);
+  }
+
   // Complete header block - decode and deliver
   ErrorCode err = pStream->onRecvHeaders(endStream);
   if (err != ErrorCode::NoError) [[unlikely]] {
@@ -1107,7 +1115,8 @@ Http2Connection::ProcessResult Http2Connection::handleRstStreamFrame(FrameHeader
   }
 
   auto it = _streams.find(streamId);
-  if (it != _streams.end()) {
+  // A stream this endpoint reset is already closed: the peer's own RST_STREAM is ignored (RFC 9113 §5.1).
+  if (it != _streams.end() && !it->second.resetSent()) {
     it->second.onRecvRstStream();
     it->second.setErrorCode(frame.errorCode);
     closeStream(it, frame.errorCode);
@@ -1330,6 +1339,13 @@ Http2Connection::ProcessResult Http2Connection::handleContinuationFrame(FrameHea
     return connectionError(ErrorCode::InternalError, ErrorMsg::StreamNotFoundForCONTINUATION);
   }
 
+  if (it->second.resetSent()) {
+    const ProcessResult res = discardFieldBlock(std::span<const std::byte>(_headerBlockBuffer));
+    _headerBlockBuffer.clear();
+    _headerBlockStreamId = 0;
+    return res;
+  }
+
   const ErrorCode err = it->second.onRecvHeaders(_headerBlockEndStream);
   if (err != ErrorCode::NoError) [[unlikely]] {
     return streamError(_headerBlockStreamId, err, ErrorMsg::InvalidStreamStateForHEADERS);
@@ -1455,6 +1471,15 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
   recordFrame(true, FrameType::Headers, _peerSettings.maxFrameSize);
   recordFrame(true, FrameType::Continuation, continuationBytes,
               (continuationBytes + _peerSettings.maxFrameSize - 1U) / _peerSettings.maxFrameSize);
+}
+
+Http2Connection::ProcessResult Http2Connection::discardFieldBlock(std::span<const std::byte> headerBlock) {
+  const auto decodeResult = _hpackDecoder.decode(headerBlock);
+  if (decodeResult.isCompressionError()) {
+    return connectionError(ErrorCode::CompressionError, ErrorMsg::HPACKDecodingFailed);
+  }
+  recordHpack(false, headerBlock.size(), decodeResult.headerListSize);
+  return ProcessResult{ProcessResult::Action::Continue};
 }
 
 ErrorCode Http2Connection::decodeAndEmitHeaders(uint32_t streamId, std::span<const std::byte> headerBlock,

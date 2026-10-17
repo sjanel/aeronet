@@ -162,6 +162,7 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
                                                      HttpRequest& req, SteadyClock::time_point ioDeadline,
                                                      bool& requestSent) {
   const HttpClientConfig& config = client.config();
+  _keepAlive = false;  // until the response is complete: a failed exchange never leaves the connection reusable
   // The request line, headers and any inline body all live contiguously in the HttpRequest's own buffer
   // (completeRequestForHttp11 is the whole thing minus the internal origin-key prefix). A captured (not
   // inlined) body is streamed separately so it is never copied into the head buffer.
@@ -292,8 +293,13 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
         log::error("HTTP/1.1 client: malformed response from {}", req.originKey());
         return std::unexpected(HttpClientErrc::malformedResponse);
     }
-    if (parser.streaming() && !streamer.finish()) {
-      return std::unexpected(streamer.error());
+    if (parser.streaming()) {
+      if (!streamer.finish()) {
+        return std::unexpected(streamer.error());
+      }
+    } else if (streamer.active()) {
+      // Received whole: the body stays in the scratch buffers, delivered by HttpClient if it is the final response.
+      streamer.setBufferedBody(parser.bufferedBody(), parser.contentType(responseBuffer));
     }
     break;
   }
