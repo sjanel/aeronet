@@ -11,3 +11,7 @@
 #include "aeronet/response-body-sink.hpp"     // IWYU pragma: export
 #include "aeronet/retry-config.hpp"           // IWYU pragma: export
 #include "aeronet/version.hpp"                // IWYU pragma: export
+
+#ifdef AERONET_ENABLE_GLAZE
+#include "aeronet/client-config-loader.hpp"  // IWYU pragma: export
+#endif

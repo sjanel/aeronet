@@ -178,12 +178,7 @@ inline void ApplyCorsPolicyData(CorsPolicyData&& data, CorsPolicy& policy) {
 
   http::MethodBmp methods{};
   for (const auto& methodStr : data.allowedMethods) {
-    for (http::MethodIdx idx = 0; idx < http::kNbMethods; ++idx) {
-      if (http::kMethodStrings[idx] == methodStr) {
-        methods |= static_cast<http::MethodBmp>(1U << idx);
-        break;
-      }
-    }
+    methods |= static_cast<http::MethodBmp>(http::ParseMethodStr(methodStr));
   }
   if (methods != 0) {
     policy._allowedMethods = methods;

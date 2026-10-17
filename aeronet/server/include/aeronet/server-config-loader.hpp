@@ -1,15 +1,12 @@
 #pragma once
 
-#include <cstdint>
 #include <filesystem>
 #include <string_view>
 
+#include "aeronet/config-file.hpp"  // IWYU pragma: export
 #include "aeronet/http-server-config.hpp"
 
 namespace aeronet {
-
-/// Config file format.
-enum class ConfigFormat : uint8_t { json, yaml };
 
 /// Load only HttpServerConfig from a JSON or YAML file (ignores router section).
 /// Format is auto-detected from file extension (.json, .yaml, .yml).

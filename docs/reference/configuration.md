@@ -94,7 +94,7 @@ Use `aeronet/aeronet.hpp` for the umbrella library API and `aeronet/aeronet-serv
 - [`HttpClientConfig`](../../aeronet/client/include/aeronet/http-client-config.hpp) and [`RetryConfig`](../../aeronet/client/include/aeronet/retry-config.hpp).
 - [`RouterConfig`](../../aeronet/http/include/aeronet/router-config.hpp) for trailing slash and default CORS policy.
 
-When Glaze is enabled, `aeronet-config-dump` can emit the complete serializable server/router schema as JSON or YAML. Callback fields in `StaticFileConfig` are intentionally code-only and are not serializable.
+When Glaze is enabled, `aeronet-config-dump` can emit the complete serializable server/router schema as JSON or YAML, and the client one with `--client`. Callback fields in `StaticFileConfig` are intentionally code-only and are not serializable (see [Field names](../modules/json-and-config-files.md#field-names)).
 
 Two configuration headers are intentionally not application configuration objects:
 

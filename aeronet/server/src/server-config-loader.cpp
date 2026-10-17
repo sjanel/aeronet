@@ -1,82 +1,31 @@
 #include "aeronet/server-config-loader.hpp"
 
-#include <cassert>
 #include <filesystem>
-#include <fstream>
-#include <glaze/glaze.hpp>
-#include <glaze/yaml.hpp>
-#include <ios>
-#include <sstream>
-#include <stdexcept>
 #include <string>
 #include <string_view>
-#include <utility>
 
 #include "aeronet/aeronet-config.hpp"
+#include "aeronet/config-file.hpp"
+#include "aeronet/glaze-config.hpp"
 
 namespace aeronet {
 
-namespace {
-
-std::string ReadFileContents(const std::filesystem::path& filePath) {
-  std::ifstream ifs(filePath, std::ios::binary);
-  if (!ifs) {
-    throw std::runtime_error("Failed to open config file: " + filePath.string());
-  }
-  std::ostringstream oss;
-  oss << ifs.rdbuf();
-  return oss.str();
-}
-
-}  // namespace
-
 namespace detail {
 
-ConfigFormat DetectFormat(const std::filesystem::path& filePath) {
-  auto ext = filePath.extension().string();
-  if (ext == ".yaml" || ext == ".yml") {
-    return ConfigFormat::yaml;
-  }
-  if (ext == ".json") {
-    return ConfigFormat::json;
-  }
-  throw std::runtime_error("Cannot detect config format from extension '" + ext +
-                           "'. Expected .json, .yaml, or .yml for file: " + filePath.string());
-}
-
 TopLevelConfig ParseConfigFile(const std::filesystem::path& filePath) {
-  auto format = DetectFormat(filePath);
-  auto content = ReadFileContents(filePath);
-  return ParseConfigString(content, format);
+  const auto format = DetectFormat(filePath);
+  return ParseConfigString(ReadConfigFile(filePath), format);
 }
 
 TopLevelConfig ParseConfigString(std::string_view content, ConfigFormat format) {
   TopLevelConfig config;
-  glz::error_ctx ec;
-  // `content` is a string_view (the public overload accepts any view, not just a terminated
-  // std::string), so tell glaze to honour the end pointer strictly rather than assume a '\0'.
-  if (format == ConfigFormat::json) {
-    ec = glz::read<glz::opts{.null_terminated = false}>(config, content);
-  } else {
-    assert(format == ConfigFormat::yaml);
-    ec = glz::read<glz::opts{.format = glz::YAML, .null_terminated = false}>(config, content);
-  }
-  if (ec) {
-    throw std::runtime_error(std::string("Config parse error: ") + glz::format_error(ec, content));
-  }
+  ReadConfig(config, content, format);
   config.server.validate();
   config.router.validate();
   return config;
 }
 
-std::string SerializeConfig(const TopLevelConfig& config, ConfigFormat format) {
-  auto result =
-      (format == ConfigFormat::json) ? glz::write_json(config) : glz::write<glz::opts{.format = glz::YAML}>(config);
-  if (!result) {
-    throw std::invalid_argument("Config serialization failed: " + glz::format_error(result.error()));
-  }
-  return std::move(result.value());
-}
+std::string SerializeConfig(const TopLevelConfig& config, ConfigFormat format) { return WriteConfig(config, format); }
 
 }  // namespace detail
 

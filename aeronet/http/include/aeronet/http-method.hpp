@@ -79,6 +79,20 @@ constexpr std::string_view MethodIdxToStr(MethodIdx methodIdx) { return kMethodS
 
 constexpr std::string_view MethodToStr(Method method) { return MethodIdxToStr(MethodToIdx(method)); }
 
+// Attempt to parse a HTTP method.
+// RFC 9110 §9.1: The method token is case-sensitive, so "get" is not "GET".
+// Returns kMethodInvalid if the method is not recognized.
+constexpr Method ParseMethodStr(std::string_view str) noexcept {
+  // Compilers fully unroll this loop over the constexpr table into a dispatch on the length followed by one or two
+  // inlined integer comparisons - measured as fast as (or faster than) a hand-written switch with clang and gcc.
+  for (MethodIdx methodIdx = 0; methodIdx < kNbMethods; ++methodIdx) {
+    if (str == kMethodStrings[methodIdx]) {
+      return MethodFromIdx(methodIdx);
+    }
+  }
+  return kMethodInvalid;
+}
+
 inline constexpr std::size_t kAllMethodsStrLen = [] {
   std::size_t len = 0;
   for (MethodIdx methodIdx = 0; methodIdx < kNbMethods; ++methodIdx) {

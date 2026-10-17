@@ -28,9 +28,6 @@ TopLevelConfig ParseConfigString(std::string_view content, ConfigFormat format);
 /// Internal: serialize full config to a string.
 std::string SerializeConfig(const TopLevelConfig& config, ConfigFormat format);
 
-/// Internal: detect config format from file extension. Throws std::runtime_error on unknown extension.
-ConfigFormat DetectFormat(const std::filesystem::path& filePath);
-
 }  // namespace detail
 
 }  // namespace aeronet

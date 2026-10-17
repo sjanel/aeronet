@@ -14,6 +14,8 @@ config.withKeepAliveTimeout(25s)
     .withCacheMaxEntries(256);
 ```
 
+With Glaze, the configuration can also be loaded from the `client` section of a JSON or YAML file, whose keys are the field names below (and `defaultAcceptEncoding`, `proxyUrl`, `proxyCaFile`, `tlsCaFile`, `tlsCaPath`, `tlsCipherList`, `tlsClientCertFile`, `tlsClientKeyFile`, `tlsClientCertPem`, `tlsClientKeyPem` for the settings set through methods): see [Client configuration files](../modules/json-and-config-files.md#client-configuration-files).
+
 ## Exchange, pool, and protocol controls
 
 | Setting | Default | Behavior |

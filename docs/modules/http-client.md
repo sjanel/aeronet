@@ -2,7 +2,7 @@
 
 `HttpClient` is a synchronous HTTP/1.1 and HTTP/2 client built on the same transport, TLS, compression, and HPACK layers as the server. It is meant for service-to-service calls, health checks, fetching key sets or configuration, and tests that exercise a live server.
 
-The client is built when the `AERONET_ENABLE_HTTP_CLIENT` CMake option is `ON` (the default). HTTPS requires `AERONET_ENABLE_OPENSSL`, and HTTP/2 requires `AERONET_ENABLE_HTTP2`. Include `<aeronet/http-client.hpp>`, or the `<aeronet/aeronet-client.hpp>` umbrella header.
+The client is built when the `AERONET_ENABLE_HTTP_CLIENT` CMake option is `ON` (the default). HTTPS requires `AERONET_ENABLE_OPENSSL`, and HTTP/2 requires `AERONET_ENABLE_HTTP2`. Include `<aeronet/http-client.hpp>`, or the `<aeronet/aeronet-client.hpp>` umbrella header. Its `HttpClientConfig` is described in the [client configuration reference](../reference/client-configuration.md); with Glaze, it can be loaded from a [JSON or YAML file](json-and-config-files.md#client-configuration-files).
 
 ## A first request
 
@@ -265,4 +265,5 @@ The client counts retries, redirects, and request compression outcomes (`aeronet
 - HTTP/2, including response body sinks and the connection kept after a stream failure: [http-client-http2-e2e_test.cpp](../../aeronet/client/test/http-client-http2-e2e_test.cpp).
 - HTTPS, trust stores, mutual TLS, and redirects to cleartext: [http-client-tls-e2e_test.cpp](../../aeronet/client/test/http-client-tls-e2e_test.cpp).
 - Configuration and retry policy: [http-client-config_test.cpp](../../aeronet/client/test/http-client-config_test.cpp) and [retry-config_test.cpp](../../aeronet/client/test/retry-config_test.cpp).
+- Configuration files: [client-config-loader_test.cpp](../../aeronet/client/test/client-config-loader_test.cpp).
 - Response decompression and `Accept-Encoding`: [client-accept-encoding_test.cpp](../../aeronet/client/test/client-accept-encoding_test.cpp).
