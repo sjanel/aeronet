@@ -126,7 +126,9 @@ class StaticFileConfig {
   /// guard against pathological directories (configurable)
   std::size_t maxEntriesToList = 10000;
 
- private:
+  // Internal storage of the default index, default content type and directory listing CSS, read and written through
+  // the methods above. Public only so that StaticFileConfig stays an aggregate, whose members glaze reflects (see
+  // glaze-internal-members.hpp).
   StaticConcatenatedStrings<3, uint32_t> _staticFileStrings{
       "index.html",
       http::ContentTypeApplicationOctetStream,
@@ -140,26 +142,28 @@ class StaticFileConfig {
 
 #include <glaze/glaze.hpp>
 
-// ============================================================================
-// StaticFileConfig - private StaticConcatenatedStrings, skip non-serializable std::function fields
-// ============================================================================
+#include "aeronet/glaze-internal-members.hpp"
+
+// StaticFileConfig is reflected by glaze: only its internal members (see glaze-internal-members.hpp) need an entry.
 template <>
 struct glz::meta<aeronet::StaticFileConfig> {
   using T = aeronet::StaticFileConfig;
-  static constexpr auto value = object(
-      "enableRange", &T::enableRange, "maxMultipartRanges", &T::maxMultipartRanges, "maxMultipartBodySize",
-      &T::maxMultipartBodySize, "headerCacheCapacity", &T::headerCacheCapacity, "enableConditional",
-      &T::enableConditional, "addLastModified", &T::addLastModified, "addEtag", &T::addEtag, "enableDirectoryIndex",
-      &T::enableDirectoryIndex, "showHiddenFiles", &T::showHiddenFiles, "inlineFileThresholdBytes",
-      &T::inlineFileThresholdBytes, "maxEntriesToList", &T::maxEntriesToList, "defaultIndex",
-      custom<[](T& self, const std::string& sv) { self.withDefaultIndex(sv); },
-             [](const T& self) { return self.defaultIndex(); }>,
+
+  // The callbacks are code, not configuration.
+  static constexpr bool skip(std::string_view key, const meta_context& /*context*/) noexcept {
+    return aeronet::glz_detail::IsInternalMember(key) || key == "contentTypeResolver" ||
+           key == "directoryIndexRenderer";
+  }
+
+  static constexpr auto modify = object(
+      "defaultIndex", custom<[](T& self, const std::string& str) { self.withDefaultIndex(str); }, &T::defaultIndex>,
       "defaultContentType",
-      custom<[](T& self, const std::string& sv) { self.withDefaultContentType(sv); },
-             [](const T& self) { return self.defaultContentType(); }>,
+      custom<[](T& self, const std::string& str) { self.withDefaultContentType(str); }, &T::defaultContentType>,
       "directoryListingCss",
-      custom<[](T& self, const std::string& sv) { self.withDirectoryListingCss(sv); },
-             [](const T& self) { return self.directoryListingCss(); }>);
+      custom<[](T& self, const std::string& str) { self.withDirectoryListingCss(str); }, &T::directoryListingCss>);
+
+  static_assert(aeronet::glz_detail::NbObjectEntries<decltype(modify)> == decltype(T::_staticFileStrings)::size(),
+                "each packed string of StaticFileConfig needs an entry in modify");
 };
 
 #endif

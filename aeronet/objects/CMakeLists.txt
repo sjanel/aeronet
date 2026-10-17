@@ -365,6 +365,7 @@ AeronetAddUnitTest(
     test/static-file-config_test.cpp
     LIBRARIES
     aeronet_tech
+    aeronet_basic_test_support
 )
 
 AeronetAddUnitTest(

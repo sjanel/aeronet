@@ -320,6 +320,11 @@ struct HttpServerConfig {
   // The maximum number of server global headers is kMaxGlobalHeaders.
   ConcatenatedHeaders globalHeaders{{"server: aeronet"}};
 
+  // Allowlist for CONNECT targets (hostnames or IP strings). When empty (default), CONNECT is disabled. {"*"} allows
+  // every target; otherwise, the target host must exactly match one of these entries. Matching is case-insensitive for
+  // hostnames. "*" cannot be combined with other entries.
+  ConcatenatedStrings32 connectAllowlist;
+
   // ===========================================
   // Builtin Kubernetes-style probes configuration
   // ===========================================
@@ -333,14 +338,6 @@ struct HttpServerConfig {
   // Validates and (possibly) finalize config. Throws std::invalid_argument if it is not valid.
   void validate();
 
- private:
-  TLSConfig& ensureTls();
-
-  // Allowlist for CONNECT targets (hostnames or IP string). When empty, CONNECT is disabled. {"*"} allows every target;
-  // otherwise, the target host must exactly match one of these entries. Matching is case-insensitive for hostnames.
-  ConcatenatedStrings32 _connectAllowlist;
-
- public:
   // Check whether the per-event fairness budget has been reached, given the bytes read during the event (plus the bytes
   // written while serving them, when the event serves its input between reads).
   [[nodiscard]] bool fairnessBudgetExhausted(std::size_t bytesThisEvent) const {
@@ -359,12 +356,9 @@ struct HttpServerConfig {
     return remainingBudget;
   }
 
-  // Allowlist for CONNECT targets. Empty disables CONNECT; "*" allows every target; other entries match exact hosts.
-  [[nodiscard]] const ConcatenatedStrings32& connectAllowlist() const { return _connectAllowlist; }
-
   // Check whether a CONNECT target host is allowed by the configured allowlist.
   [[nodiscard]] bool connectTargetAllowed(std::string_view host) const {
-    return _connectAllowlist.fullString() == "*" || _connectAllowlist.containsCI(host);
+    return connectAllowlist.fullString() == "*" || connectAllowlist.containsCI(host);
   }
 
   // Set number of threads to use for the server event loops.
@@ -441,9 +435,9 @@ struct HttpServerConfig {
   // "*" allows every host and port; otherwise, the target host must exactly match an entry (case-insensitive).
   template <class InputIt>
   HttpServerConfig& withConnectAllowlist(InputIt first, InputIt last) {
-    _connectAllowlist.clear();
+    connectAllowlist.clear();
     for (auto it = first; it != last; ++it) {
-      _connectAllowlist.append(*it);
+      connectAllowlist.append(*it);
     }
     return *this;
   }
@@ -563,6 +557,9 @@ struct HttpServerConfig {
   // Enable or disable HTTP/2 globally (shorthand for http2.enable = on)
   HttpServerConfig& enableHttp2(bool on = true);
 #endif
+
+ private:
+  TLSConfig& ensureTls();
 };
 
 }  // namespace aeronet
@@ -570,46 +567,19 @@ struct HttpServerConfig {
 #ifdef AERONET_ENABLE_GLAZE
 
 #include <glaze/glaze.hpp>
-#include <string>
+#include <type_traits>
 
 #include "aeronet/glaze-chrono-durations-adapters.hpp"  // IWYU pragma: export
-#include "aeronet/glaze-vector-sv-adapter.hpp"
+
+// No glz::meta<HttpServerConfig>: glaze reflects all its members, so that a new field is serialized automatically.
+static_assert(std::is_aggregate_v<aeronet::HttpServerConfig>,
+              "HttpServerConfig must stay an aggregate (no private fields, no constructors) to be reflected by glaze");
 
 template <>
 struct glz::meta<aeronet::HttpServerConfig::TraceMethodPolicy> {
   using enum aeronet::HttpServerConfig::TraceMethodPolicy;
   static constexpr auto value =
       enumerate("disabled", Disabled, "enabledPlainAndTLS", EnabledPlainAndTLS, "enabledPlainOnly", EnabledPlainOnly);
-};
-
-// ============================================================================
-// HttpServerConfig - private _connectAllowlist needs custom lambda
-// ============================================================================
-template <>
-struct glz::meta<aeronet::HttpServerConfig> {
-  using T = aeronet::HttpServerConfig;
-  static constexpr auto value = object(
-      "nbThreads", &T::nbThreads, "port", &T::port, "reusePort", &T::reusePort, "tcpNoDelay", &T::tcpNoDelay,
-      "enableKeepAlive", &T::enableKeepAlive, "mergeUnknownRequestHeaders", &T::mergeUnknownRequestHeaders,
-      "traceMethodPolicy", &T::traceMethodPolicy, "addTrailerHeader", &T::addTrailerHeader, "zerocopyMode",
-      &T::zerocopyMode, "zerocopyMinBytes", &T::zerocopyMinBytes, "maxRequestsPerConnection",
-      &T::maxRequestsPerConnection, "maxCachedConnections", &T::maxCachedConnections, "maxAcceptBatchSize",
-      &T::maxAcceptBatchSize, "keepAliveTimeout", &T::keepAliveTimeout, "maxHeaderBytes", &T::maxHeaderBytes,
-      "maxBodyBytes", &T::maxBodyBytes, "minCapturedBodySize", &T::minCapturedBodySize, "maxOutboundBufferBytes",
-      &T::maxOutboundBufferBytes, "maxZerocopyPendingBytes", &T::maxZerocopyPendingBytes, "pollInterval",
-      &T::pollInterval, "pollIntervalMinFactor", &T::pollIntervalMinFactor, "pollIntervalMaxFactor",
-      &T::pollIntervalMaxFactor, "headerReadTimeout", &T::headerReadTimeout, "bodyReadTimeout", &T::bodyReadTimeout,
-      "tls", &T::tls, "httpsRedirect", &T::httpsRedirect,
-#ifdef AERONET_ENABLE_HTTP2
-      "http2", &T::http2,
-#endif
-      "telemetry", &T::telemetry, "compression", &T::compression, "decompression", &T::decompression,
-      "minReadChunkBytes", &T::minReadChunkBytes, "maxPerEventReadBytes", &T::maxPerEventReadBytes, "globalHeaders",
-      &T::globalHeaders, "builtinProbes", &T::builtinProbes, "accessLog", &T::accessLog, "connectAllowlist",
-      custom<[](T& self, const aeronet::vector<std::string>& hosts) {
-        self.withConnectAllowlist(hosts.begin(), hosts.end());
-      },
-             aeronet::glz_detail::ToStringViewVector<&T::connectAllowlist>>);
 };
 
 #endif

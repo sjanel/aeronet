@@ -31,6 +31,13 @@
 #include "aeronet/http-client-tls-context.hpp"
 #endif
 
+#ifdef AERONET_ENABLE_GLAZE
+#include <filesystem>
+#include <string>
+
+#include "aeronet/config-file.hpp"
+#endif
+
 namespace aeronet {
 
 #ifdef AERONET_ENABLE_HTTP2
@@ -83,6 +90,13 @@ class HttpClient {
   // affecting the client. The config is used to pre-configure every request (global headers, decompression, redirect
   // following, retry, ...).
   explicit HttpClient(HttpClientConfig config);
+
+#ifdef AERONET_ENABLE_GLAZE
+  // Create a HttpClient from the 'client' section of a JSON or YAML configuration file (see LoadClientConfig).
+  // Format is auto-detected from file extension (.json, .yaml, .yml).
+  // Throws std::runtime_error on parse or file I/O errors, std::invalid_argument on invalid values.
+  explicit HttpClient(const std::filesystem::path& configPath);
+#endif
 
   // Moves the client with its pooled connections and response cache. The moved-from client can only be destroyed or
   // assigned to. HttpRequest objects made by 'rhs' (makeRequest()) keep referring to it: make new requests from this
@@ -183,6 +197,16 @@ class HttpClient {
   HttpClientResult del(std::string_view url) { return request(makeRequest(http::Method::DELETE, url)); }
 
   [[nodiscard]] const HttpClientConfig& config() const noexcept { return _config; }
+
+#ifdef AERONET_ENABLE_GLAZE
+  // Serialize the configuration of this client as a JSON or YAML string, as the 'client' section of a configuration
+  // file.
+  [[nodiscard]] std::string dumpConfig(ConfigFormat format = ConfigFormat::json) const;
+
+  // Write the configuration of this client to a file.
+  // Format is auto-detected from the file extension (.json, .yaml, .yml).
+  void saveConfig(const std::filesystem::path& filePath) const;
+#endif
 
   // Drop all idle pooled connections (e.g. after a server restart). In-flight requests unaffected.
   void clearIdleConnections();

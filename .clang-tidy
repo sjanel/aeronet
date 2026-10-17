@@ -20,6 +20,10 @@ Checks: "-*,\
   "
 HeaderFilterRegex: 'Source/cm[^/]*\.(h|hxx|cxx)$'
 CheckOptions:
+  # Glaze ships no IWYU pragmas: its symbols live in internal headers (glaze/core/read.hpp, ...)
+  # that are only meant to be reached through the public umbrellas (glaze/glaze.hpp, glaze/yaml.hpp).
+  - key: misc-include-cleaner.IgnoreHeaders
+    value: "glaze/.*"
   - key: modernize-use-equals-default.IgnoreMacros
     value: "0"
   - key: modernize-use-auto.MinTypeNameLength

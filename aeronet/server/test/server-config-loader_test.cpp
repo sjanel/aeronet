@@ -2,10 +2,12 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <glaze/glaze.hpp>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <stdexcept>
@@ -15,11 +17,15 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/access-log-config.hpp"
 #include "aeronet/aeronet-config.hpp"
+#include "aeronet/cors-policy.hpp"
 #include "aeronet/direct-compression-mode.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/glaze-config.hpp"
+#include "aeronet/glaze-round-trip.hpp"
 #include "aeronet/http-constants.hpp"
-#include "aeronet/http-json.hpp"
+#include "aeronet/http-json.hpp"  // IWYU pragma: keep (bodyJson / bodyYaml definitions)
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
@@ -28,6 +34,7 @@
 #include "aeronet/router.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
+#include "aeronet/tls-config.hpp"
 #include "aeronet/zerocopy-mode.hpp"
 
 namespace aeronet {
@@ -552,7 +559,7 @@ TEST(ConfigLoaderTest, ConnectAllowlist) {
   })",
                                           ConfigFormat::json);
   std::vector<std::string_view> allowlist;
-  for (auto sv : config.server.connectAllowlist()) {
+  for (auto sv : config.server.connectAllowlist) {
     allowlist.push_back(sv);
   }
   ASSERT_EQ(allowlist.size(), 2U);
@@ -1633,6 +1640,137 @@ TEST(ConfigLoaderTest, TlsVersionYamlSerializesValidVersionDirect) {
   ASSERT_TRUE(yaml);
 
   EXPECT_TRUE(yaml.value().contains("1.3"));
+}
+
+// ============================================================================
+// Field coverage
+// ============================================================================
+
+// Every boolean and number of the server and router configuration, including the ones of a field added later, is read
+// back into itself.
+TEST(ConfigLoaderTest, EveryScalarFieldRoundTrips) {
+  const auto roundTrip = test::MutateScalarsRoundTrip<TopLevelConfig>();
+  EXPECT_FALSE(roundTrip.expected.empty());
+  EXPECT_EQ(roundTrip.actual, roundTrip.expected);
+}
+
+namespace {
+
+// A configuration whose strings, lists, enumerations and durations differ from their default value. It is not valid
+// (certificate files and in-memory PEM are exclusive, for instance): it is only serialized.
+TopLevelConfig MakeNonDefaultTopLevelConfig() {
+  using namespace std::chrono_literals;
+  TopLevelConfig config;
+  auto& server = config.server;
+  server.tcpNoDelay = TcpNoDelayMode::Disabled;
+  server.traceMethodPolicy = HttpServerConfig::TraceMethodPolicy::EnabledPlainOnly;
+  server.zerocopyMode = ZerocopyMode::Enabled;
+  server.withHttpsRedirect(8443, http::StatusCodePermanentRedirect);
+  server.pollInterval = 50ms;
+  server.keepAliveTimeout = 1min;
+  server.headerReadTimeout = 2s;
+  server.bodyReadTimeout = 3s;
+
+  auto& tls = server.tls;
+  tls.withCertFile("/tls/cert.pem")
+      .withKeyFile("/tls/key.pem")
+      .withCertPem("CERT PEM")
+      .withKeyPem("KEY PEM")
+      .withCipherList("HIGH:!aNULL")
+      .withTlsOcspStapleFile("/tls/ocsp.der")
+      .withTlsCrlFile("/tls/crl.pem", true)
+      .withTlsKeyLogFile("/tmp/keys.log")
+      .withTlsAlpnProtocols(std::array<std::string_view, 2>{"h2", "http/1.1"})
+      .withTlsTrustedClientCert("TRUSTED CERT 1")
+      .withTlsTrustedClientCert("TRUSTED CERT 2")
+      .withTlsSniCertificateFiles("example.com", "/tls/example.crt", "/tls/example.key")
+      .withTlsSniCertificateMemory("*.example.org", "SNI CERT PEM", "SNI KEY PEM")
+      .withTlsSniOcspStapleFile("example.com", "/tls/example.ocsp");
+  tls.cipherPolicy = TLSConfig::CipherPolicy::Modern;
+  tls.ktlsMode = TLSConfig::KtlsMode::Required;
+  tls.minVersion = TLSConfig::TLS_1_2;
+  tls.maxVersion = TLSConfig::TLS_1_3;
+  tls.handshakeTimeout = 3s;
+  tls.sessionTickets.lifetime = 2h;
+
+  auto& telemetry = server.telemetry;
+  telemetry.withEndpoint("http://collector:4318")
+      .withServiceName("service")
+      .withDogStatsdSocketPath("/run/dsd.socket")
+      .withDogStatsdNamespace("namespace")
+      .addDogStatsdTag("env:test")
+      .addHttpHeader("x-api-key", "secret");
+  const double buckets[]{1.0, 5.0, 10.0};
+  telemetry.addHistogramBuckets("latency", buckets);
+  telemetry.exportInterval = 20s;
+  telemetry.exportTimeout = 2s;
+
+  server.compression.preferredFormats.push_back(Encoding::gzip);
+  server.compression.contentTypeAllowList.append("text/html");
+  server.compression.defaultDirectCompressionMode = DirectCompressionMode::Off;
+  server.globalHeaders.clear();
+  server.globalHeaders.append("server: test");
+  server.globalHeaders.append("x-frame-options: DENY");
+  const std::string_view connectTargets[]{"example.com", "10.0.0.1"};
+  server.withConnectAllowlist(std::begin(connectTargets), std::end(connectTargets));
+  server.builtinProbes.withLivenessPath("/live")
+      .withReadinessPath("/ready")
+      .withStartupPath("/startup")
+      .withLivenessStaleThreshold(5s);
+  server.accessLog.sink = AccessLogConfig::Sink::File;
+  server.accessLog.format = AccessLogConfig::Format::JSON;
+  server.accessLog.filePath = "/var/log/access.log";
+#ifdef AERONET_ENABLE_HTTP2
+  server.http2.settingsTimeout = 1s;
+  server.http2.pingInterval = 15s;
+  server.http2.pingTimeout = 4s;
+#endif
+
+  config.router.trailingSlashPolicy = RouterConfig::TrailingSlashPolicy::Redirect;
+  config.router.defaultCorsPolicy = CorsPolicy(CorsPolicy::Active::On)
+                                        .allowOrigin("https://app.example")
+                                        .allowMethods(http::Method::GET | http::Method::PUT)
+                                        .allowRequestHeader("x-token")
+                                        .exposeHeader("x-request-id")
+                                        .maxAge(600s)
+                                        .allowCredentials(true)
+                                        .allowPrivateNetwork(true);
+  return config;
+}
+
+}  // namespace
+
+TEST(ConfigLoaderTest, NonDefaultConfigRoundTrips) {
+  const auto original = MakeNonDefaultTopLevelConfig();
+  const auto json = detail::SerializeConfig(original, ConfigFormat::json);
+  ASSERT_NE(json, detail::SerializeConfig(TopLevelConfig{}, ConfigFormat::json));
+
+  for (const auto format : {ConfigFormat::json, ConfigFormat::yaml}) {
+    TopLevelConfig loaded;
+    // Read without validation, as the configuration is not valid.
+    detail::ReadConfig(loaded, detail::SerializeConfig(original, format), format);
+    EXPECT_EQ(detail::SerializeConfig(loaded, ConfigFormat::json), json);
+    // Compared field by field, private members included.
+    EXPECT_EQ(loaded.server.tls, original.server.tls);
+    EXPECT_EQ(loaded.server.telemetry, original.server.telemetry);
+    EXPECT_EQ(loaded.server.connectAllowlist, original.server.connectAllowlist);
+    EXPECT_EQ(loaded.server.globalHeaders, original.server.globalHeaders);
+    EXPECT_EQ(loaded.server.builtinProbes.startupPath(), "/startup");
+    EXPECT_EQ(loaded.server.accessLog, original.server.accessLog);
+  }
+}
+
+// The code-only and internal members are not configuration keys.
+TEST(ConfigLoaderTest, InternalMembersAreNotSerialized) {
+  TopLevelConfig config;
+  config.server.tls.withTlsRevocationCallback(
+      [](TlsPeerCertificateView, void*) noexcept { return TlsRevocationStatus::NoOpinion; });
+  const auto json = detail::SerializeConfig(config, ConfigFormat::json);
+  EXPECT_FALSE(json.contains(R"("_)")) << json;
+  EXPECT_FALSE(json.contains("revocationCallback")) << json;
+  EXPECT_FALSE(json.contains("revocationUserContext")) << json;
+  EXPECT_TRUE(json.contains(R"("connectAllowlist":[])")) << json;
+  EXPECT_TRUE(json.contains(R"("alpnProtocols":[])")) << json;
 }
 
 }  // namespace aeronet
