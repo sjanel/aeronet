@@ -79,7 +79,7 @@ Request trailers (a trailing `HEADERS` block after the body, RFC 9113 §8.1) are
 
 Request header sections follow the pseudo-header rules of RFC 9113 §8.3. Pseudo-headers must precede regular fields and cannot be repeated; undefined or out-of-context pseudo-headers are rejected. An ordinary request needs exactly one `:method`, `:scheme`, and `:path`, while CONNECT requires `:authority` and forbids `:scheme` and `:path`. An extended CONNECT `:protocol` is recognized and rejected.
 
-A malformed header section resets only its stream, with `PROTOCOL_ERROR`. An invalid HPACK encoding corrupts the shared compression state, so it remains a connection error (`COMPRESSION_ERROR`). Pseudo-headers in a trailer block, or a trailer block that does not end the stream, also reset the stream with `PROTOCOL_ERROR`, and trailer bytes count toward the request header size budget.
+A malformed header section resets only its stream, with `PROTOCOL_ERROR`. An invalid HPACK encoding corrupts the shared compression state, so it remains a connection error (`COMPRESSION_ERROR`). The frames a peer sent on a stream before receiving its reset are ignored (RFC 9113 §5.1): they are not answered with another `RST_STREAM`, and their header blocks are still decoded to keep the compression state in sync. Pseudo-headers in a trailer block, or a trailer block that does not end the stream, also reset the stream with `PROTOCOL_ERROR`, and trailer bytes count toward the request header size budget.
 
 ## Flow control and memory
 
@@ -130,7 +130,7 @@ curl --http2 http://localhost:8080/hello
 
 ## Tests
 
-- Connection-level behavior, flow control, and malformed field sections: [http2-connection_test.cpp](../../aeronet/http2/test/http2-connection_test.cpp).
+- Connection-level behavior, flow control, malformed field sections, and frames on reset streams: [http2-connection_test.cpp](../../aeronet/http2/test/http2-connection_test.cpp).
 - Request processing, pseudo-header validation, trailers, and request body limits: [http2-protocol-handler_test.cpp](../../aeronet/http2/test/http2-protocol-handler_test.cpp).
 - HPACK: [hpack_test.cpp](../../aeronet/http2/test/hpack_test.cpp).
 - End-to-end over TLS and h2c: [tests/http2-core_test.cpp](../../tests/http2-core_test.cpp), and CONNECT: [tests/http2-connect_test.cpp](../../tests/http2-connect_test.cpp).

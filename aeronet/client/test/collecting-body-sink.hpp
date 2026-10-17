@@ -31,6 +31,9 @@ class CollectingBodySink final : public ResponseBodySink {
   bool onBody(std::string_view chunk) override {
     EXPECT_EQ(headCalls, 1U) << "onBody() without onHead()";
     EXPECT_FALSE(chunk.empty());
+    if (bodyCalls == 0) {
+      firstChunkData = chunk.data();
+    }
     ++bodyCalls;
     largestChunk = std::max(largestChunk, chunk.size());
     body.append(chunk);
@@ -49,7 +52,8 @@ class CollectingBodySink final : public ResponseBodySink {
   std::size_t headCalls{0};
   std::size_t bodyCalls{0};
   std::size_t largestChunk{0};
-  std::size_t bodySize{0};  // ResponseBodyInfo::size given to onHead()
+  std::size_t bodySize{0};              // ResponseBodyInfo::size given to onHead()
+  const char* firstChunkData{nullptr};  // where the first piece of body was (compared, never dereferenced)
   http::StatusCode status{0};
   bool headHasBody{false};
 };

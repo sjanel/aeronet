@@ -16,7 +16,6 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/lower-ascii-key.hpp"
-#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/response-body-sink.hpp"
 
@@ -68,6 +67,7 @@ void ResponseStreamer::beginExchange(bool redirectFollowed, bool statusRetried) 
   _decodedBytes = 0;
   _error = HttpClientErrc::noError;
   _encoding = Encoding::none;
+  _bufferedBody = {};
   _bufferRedirects = redirectFollowed;
   _bufferRetries = statusRetried;
 }
@@ -236,29 +236,23 @@ bool ResponseStreamer::finish() {
   return _encoding == Encoding::none || _compressedBytes == 0 || decode({}, true);
 }
 
-HttpClientErrc ResponseStreamer::deliverBuffered(HttpResponse& resp) {
+void ResponseStreamer::setBufferedBody(std::string_view body, std::string_view contentType) {
+  _bufferedBody = body;
+  _bufferedContentType.assign(contentType);
+}
+
+HttpClientErrc ResponseStreamer::deliverBuffered(const HttpResponse& head) {
   assert(active() && !_headDelivered);
   _headDelivered = true;
-  const std::string_view body = resp.bodyInMemory();
-  if (body.empty()) {
-    return _sink->onHead(resp, ResponseBodyInfo{.contentType = {}, .size = 0}) ? HttpClientErrc::noError
+  if (_bufferedBody.empty()) {
+    return _sink->onHead(head, ResponseBodyInfo{.contentType = {}, .size = 0}) ? HttpClientErrc::noError
                                                                                : HttpClientErrc::aborted;
   }
-  // The head given to the sink has no body: keep the body and its media type in the scratch buffer meanwhile. Only
-  // bodyless responses, redirects that are not followed and bodies with stacked codings are delivered this way.
-  const std::string_view contentType = resp.headerValueOrEmpty(http::ContentType);
-  RawChars& saved = _codec->decompressOut;
-  saved.reserve(contentType.size() + body.size());
-
-  char* pData = Append(contentType, saved.data());
-  pData = Append(body, pData);
-  saved.setEnd(pData);
-
-  resp.body(std::string_view{});
-  const std::string_view savedContentType(saved.data(), contentType.size());
-  const std::string_view savedBody(saved.data() + contentType.size(), body.size());
-  if (!_sink->onHead(resp, ResponseBodyInfo{.contentType = savedContentType, .size = savedBody.size()}) ||
-      !_sink->onBody(savedBody)) {
+  // Only bodyless responses, redirects that are not followed and bodies with stacked codings are delivered this way.
+  const std::string_view contentType =
+      _bufferedContentType.empty() ? http::ContentTypeApplicationOctetStream : std::string_view(_bufferedContentType);
+  if (!_sink->onHead(head, ResponseBodyInfo{.contentType = contentType, .size = _bufferedBody.size()}) ||
+      !_sink->onBody(_bufferedBody)) {
     return HttpClientErrc::aborted;
   }
   return HttpClientErrc::noError;
