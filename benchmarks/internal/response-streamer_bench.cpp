@@ -47,7 +47,7 @@ void BM_StreamDecodedBody(benchmark::State& state) {
     state.SkipWithMessage("encoding not compiled in");
     return;
   }
-  const Encoding encoding = encodings[static_cast<std::size_t>(state.range(0))];
+  const Encoding encoding = encodings[static_cast<decltype(encodings)::size_type>(state.range(0))];
   const auto pieceSize = static_cast<std::size_t>(state.range(1));
   const RawChars payload = test::MakeMixedPayload(2UL << 20U, 2UL << 20U);
   const RawChars encoded = test::Compress(encoding, std::string_view(payload));
