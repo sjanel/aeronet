@@ -183,14 +183,14 @@ bool ResponseStreamer::decode(std::string_view chunk, bool finalChunk) {
                                                                             cfg.decoderChunkSize, out);
       break;
 #endif
-#ifdef AERONET_ENABLE_BROTLI
     default:
+#ifdef AERONET_ENABLE_BROTLI
       // selectDecoder() only selects the compiled-in codings, and none is never decoded.
       assert(_encoding == Encoding::br);
       decoded = static_cast<BrotliDecoderContext*>(_decoder)->decompressChunk(chunk, finalChunk, budget,
                                                                               cfg.decoderChunkSize, out);
-      break;
 #endif
+      break;
   }
   _compressedBytes += chunk.size();
   _decodedBytes += out.size() - sizeBefore;
