@@ -3,6 +3,7 @@
 // On completion, the parser transfers a suitably-sized identity receive or chunked reassembly allocation into
 // HttpResponse and installs an equal-capacity empty replacement. These benchmarks cover that steady-state rotation:
 // the next keep-alive exchange does not re-grow its scratch buffer, while the completed body avoids a second copy.
+// BM_StreamChunkedBody covers a chunked body streamed to a ResponseBodySink instead, read after read.
 #include <benchmark/benchmark.h>
 
 #include <algorithm>
@@ -10,10 +11,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/response-body-sink.hpp"
 #include "http1-response-parser.hpp"
 
 namespace aeronet {
@@ -107,6 +110,71 @@ void BM_ResponseHeadScan(benchmark::State& state) {
   state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(response.size()));
 }
 BENCHMARK(BM_ResponseHeadScan)->Args({32UL, 64UL});
+
+// Counts the delivered body bytes.
+class CountingSink final : public ResponseBodySink {
+ public:
+  bool onHead([[maybe_unused]] const HttpResponse& head, [[maybe_unused]] const ResponseBodyInfo& body) override {
+    return true;
+  }
+
+  bool onBody(std::string_view chunk) override {
+    benchmark::DoNotOptimize(chunk.data());
+    bytes += chunk.size();
+    return true;
+  }
+
+  std::size_t bytes{0};
+};
+
+// Streams a chunked body of state.range(0) bytes in chunks of state.range(1) bytes like the HTTP/1.1 engine does for a
+// response delivered to a ResponseBodySink: each 16 KiB read is appended to the receive buffer and parsed, the body it
+// carries is delivered to the sink (a virtual call), then the consumed bytes are dropped from the buffer.
+void BM_StreamChunkedBody(benchmark::State& state) {
+  static constexpr std::size_t kReadBytes = 16384;
+  const std::string response =
+      MakeChunkedResponse(static_cast<std::size_t>(state.range(0)), static_cast<std::size_t>(state.range(1)));
+  const std::string_view raw(response);
+  RawChars bodyBuf;
+  RawChars receive(2 * kReadBytes);
+  CountingSink sink;
+  ResponseBodySink* pSink = &sink;
+  benchmark::DoNotOptimize(pSink);  // a sink of unknown type, as for the engine
+  for ([[maybe_unused]] auto _ : state) {
+    HttpResponse resp;
+    Http1ResponseParser parser(bodyBuf);
+    parser.reset(false, /*streamHead=*/true);
+    receive.clear();
+    for (std::size_t off = 0;;) {
+      const std::string_view read = raw.substr(off, kReadBytes);
+      off += read.size();
+      receive.append(read);
+      auto st = parser.parse(receive, false, resp, kMaxResponseBytes);
+      if (st == Http1ResponseParser::Status::HeadComplete) {
+        parser.startStreaming();
+        st = parser.parse(receive, false, resp, kMaxResponseBytes);
+      }
+      while (st == Http1ResponseParser::Status::BodyPiece) {
+        pSink->onBody(parser.streamedBody(receive));
+        st = parser.parse(receive, false, resp, kMaxResponseBytes);
+      }
+      if (parser.streaming()) {
+        parser.discardStreamed(receive);
+      }
+      if (st != Http1ResponseParser::Status::NeedMore) {
+        break;
+      }
+    }
+  }
+  if (sink.bytes != static_cast<std::size_t>(state.iterations()) * static_cast<std::size_t>(state.range(0))) {
+    state.SkipWithError("streamed body size mismatch");
+  }
+  state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(response.size()));
+}
+BENCHMARK(BM_StreamChunkedBody)
+    ->ArgsProduct({{1L << 20}, {16, 256, 1024, 16384}})
+    ->ArgNames({"body", "chunk"})
+    ->Unit(benchmark::kMicrosecond);
 
 }  // namespace
 }  // namespace aeronet

@@ -195,6 +195,7 @@ void Http1ResponseParser::reset(bool headRequest, bool streamHead) noexcept {
   _headRequest = headRequest;
   _streamHead = streamHead;
   _streaming = false;
+  _gatheredPiece = false;
   _keepAlive = false;
   _http11 = false;
   _connectionCloseSeen = false;
@@ -313,21 +314,23 @@ Http1ResponseParser::Status Http1ResponseParser::decideFraming() {
 
 Http1ResponseParser::Status Http1ResponseParser::parseBody(std::string_view buffer, bool eof,
                                                            std::size_t maxResponseBytes) {
-  // A streamed body is consumed as it arrives: only the buffered one is bounded by maxResponseBytes.
-  const std::size_t maxBodyBytes = _streaming ? std::numeric_limits<std::size_t>::max() : maxResponseBytes;
-  // Chunk-size and trailer lines are never part of the body: an endless one must not grow the receive buffer forever.
-  const auto incompleteLine = [&buffer, this, eof, maxResponseBytes] {
-    if (buffer.size() - _pos > maxResponseBytes) {
-      return Status::TooLarge;
-    }
-    return eof ? EofInLine(buffer.substr(_pos)) : Status::NeedMore;
-  };
+  // A streamed body is delivered piece by piece as it arrives: only the buffered one is bounded by maxResponseBytes.
   switch (_framing) {
     case Framing::Length: {
       const std::size_t available = buffer.size() - _pos;
       const std::size_t take = available < _bodyRemaining ? available : _bodyRemaining;
+      if (_streaming) {
+        if (take == 0) {
+          return eof ? Status::Truncated : Status::NeedMore;
+        }
+        _bodyRemaining -= take;
+        if (_bodyRemaining == 0) {
+          _state = State::Done;  // the next parse() call completes
+        }
+        return bodyPiece(take);
+      }
       // The body stays in place in the receive buffer; only the cursor advances (zero-copy until install).
-      if ((_pos - _bodyStart) + take > maxBodyBytes) {
+      if ((_pos - _bodyStart) + take > maxResponseBytes) {
         return Status::TooLarge;
       }
       _pos += take;
@@ -341,10 +344,16 @@ Http1ResponseParser::Status Http1ResponseParser::parseBody(std::string_view buff
 
     case Framing::UntilClose: {
       const std::size_t available = buffer.size() - _pos;
-      if ((_pos - _bodyStart) + available > maxBodyBytes) {
-        return Status::TooLarge;
+      if (_streaming) {
+        if (available != 0) {
+          return bodyPiece(available);
+        }
+      } else {
+        if ((_pos - _bodyStart) + available > maxResponseBytes) {
+          return Status::TooLarge;
+        }
+        _pos += available;
       }
-      _pos += available;
       if (eof) {
         _state = State::Done;
         return Status::Complete;
@@ -356,79 +365,121 @@ Http1ResponseParser::Status Http1ResponseParser::parseBody(std::string_view buff
       // parse() resolves bodyless / zero-length framings (None) to Complete before any body parsing, so
       // parseBody() is only ever entered for Length / UntilClose / Chunked. None / default is unreachable.
       assert(_framing == Framing::Chunked);
-      for (;;) {
-        if (_state == State::BodyChunkSize) {
-          const ChunkLineResult chunkLine = ParseChunkSizeLine(buffer, _pos);
-          if (chunkLine.status == ChunkLineStatus::Error) {
-            return Status::Error;
-          }
-          if (chunkLine.status == ChunkLineStatus::NeedMore) {
-            return incompleteLine();
-          }
-          _pos = chunkLine.nextPos;
-          if (chunkLine.chunkSize == 0) {
-            _state = State::BodyChunkTrailers;
-          } else {
-            _bodyRemaining = chunkLine.chunkSize;
-            _state = State::BodyChunkData;
-          }
-          continue;
-        }
+      const Status status = parseChunkedBody(buffer, eof, maxResponseBytes);
+      if (_streaming && status != Status::BodyPiece && !_bodyBuf->empty()) {
+        // Deliver the small chunks gathered so far before the status ending them, which the next call finds again
+        // (it only depends on the received bytes from the current position).
+        _gatheredPiece = true;
+        return Status::BodyPiece;
+      }
+      return status;
+    }
+  }
+}
 
-        if (_state == State::BodyChunkData) {
-          const std::size_t available = buffer.size() - _pos;
-          const std::size_t take = available < _bodyRemaining ? available : _bodyRemaining;
-          const std::size_t bodySize = static_cast<std::size_t>(_bodyBuf->size());
-          if (bodySize > maxBodyBytes || take > maxBodyBytes - bodySize) {
-            return Status::TooLarge;
-          }
-          _bodyBuf->append(buffer.data() + _pos, take);
-          _pos += take;
-          _bodyRemaining -= take;
-          if (_bodyRemaining != 0) {
-            return eof ? Status::Truncated : Status::NeedMore;
-          }
+Http1ResponseParser::Status Http1ResponseParser::parseChunkedBody(std::string_view buffer, bool eof,
+                                                                  std::size_t maxResponseBytes) {
+  // Chunk-size and trailer lines are never part of the body: an endless one must not grow the receive buffer forever.
+  const auto incompleteLine = [&buffer, this, eof, maxResponseBytes] {
+    if (buffer.size() - _pos > maxResponseBytes) {
+      return Status::TooLarge;
+    }
+    return eof ? EofInLine(buffer.substr(_pos)) : Status::NeedMore;
+  };
+  for (;;) {
+    if (_state == State::BodyChunkSize) {
+      const ChunkLineResult chunkLine = ParseChunkSizeLine(buffer, _pos);
+      if (chunkLine.status == ChunkLineStatus::Error) {
+        return Status::Error;
+      }
+      if (chunkLine.status == ChunkLineStatus::NeedMore) {
+        return incompleteLine();
+      }
+      _pos = chunkLine.nextPos;
+      if (chunkLine.chunkSize == 0) {
+        _state = State::BodyChunkTrailers;
+      } else {
+        _bodyRemaining = chunkLine.chunkSize;
+        _state = State::BodyChunkData;
+      }
+      continue;
+    }
+
+    if (_state == State::BodyChunkData) {
+      // A chunk being received always has data left (a zero-size chunk is the last-chunk marker).
+      assert(_bodyRemaining != 0);
+      const std::size_t available = buffer.size() - _pos;
+      const std::size_t take = available < _bodyRemaining ? available : _bodyRemaining;
+      if (_streaming) {
+        if (take == 0) {
+          return eof ? Status::Truncated : Status::NeedMore;
+        }
+        if (take >= kMinDirectPieceBytes && !_bodyBuf->empty()) {
+          // The small chunks gathered before this one are delivered first: the next call comes back here.
+          _gatheredPiece = true;
+          return Status::BodyPiece;
+        }
+        _bodyRemaining -= take;
+        if (_bodyRemaining == 0) {
           _state = State::BodyChunkCrlf;
-          continue;
         }
+        if (take >= kMinDirectPieceBytes) {
+          return bodyPiece(take);  // delivered from the receive buffer, without copy
+        }
+        // A small piece is gathered with the next ones, to be delivered with them (see kMinDirectPieceBytes).
+        _bodyBuf->append(buffer.data() + _pos, take);
+        _pos += take;
+        continue;
+      }
+      const std::size_t bodySize = static_cast<std::size_t>(_bodyBuf->size());
+      if (bodySize > maxResponseBytes || take > maxResponseBytes - bodySize) {
+        return Status::TooLarge;
+      }
+      _bodyBuf->append(buffer.data() + _pos, take);
+      _pos += take;
+      _bodyRemaining -= take;
+      if (_bodyRemaining != 0) {
+        return eof ? Status::Truncated : Status::NeedMore;
+      }
+      _state = State::BodyChunkCrlf;
+      continue;
+    }
 
-        if (_state == State::BodyChunkCrlf) {
-          const std::size_t available = buffer.size() - _pos;
-          if (available == 0) {
-            return eof ? Status::Truncated : Status::NeedMore;
-          }
-          if (buffer[_pos] != '\r') {
-            return Status::Error;
-          }
-          if (available == 1) {
-            return eof ? Status::Truncated : Status::NeedMore;
-          }
-          if (buffer[_pos + 1] != '\n') {
-            return Status::Error;
-          }
-          _pos += http::CRLF.size();
-          _state = State::BodyChunkSize;
-          continue;
-        }
+    if (_state == State::BodyChunkCrlf) {
+      const std::size_t available = buffer.size() - _pos;
+      if (available == 0) {
+        return eof ? Status::Truncated : Status::NeedMore;
+      }
+      if (buffer[_pos] != '\r') {
+        return Status::Error;
+      }
+      if (available == 1) {
+        return eof ? Status::Truncated : Status::NeedMore;
+      }
+      if (buffer[_pos + 1] != '\n') {
+        return Status::Error;
+      }
+      _pos += http::CRLF.size();
+      _state = State::BodyChunkSize;
+      continue;
+    }
 
-        // The three sub-states above each return or `continue`, so the only state left here is the trailer
-        // block. Consume trailer lines until an empty line. Trailers are not surfaced.
-        assert(_state == State::BodyChunkTrailers);
-        for (const char *const base = buffer.data(), *end = base + buffer.size();;) {
-          const char* const first = base + _pos;
-          const char* const lineEnd = SearchCRLF(first, end);
-          if (lineEnd == end) {
-            return incompleteLine();
-          }
-          if (lineEnd[1] != '\n') {
-            return Status::Error;
-          }
-          _pos = static_cast<std::size_t>(lineEnd - base) + http::CRLF.size();
-          if (lineEnd == first) {
-            _state = State::Done;
-            return Status::Complete;
-          }
-        }
+    // The three sub-states above each return or `continue`, so the only state left here is the trailer
+    // block. Consume trailer lines until an empty line. Trailers are not surfaced.
+    assert(_state == State::BodyChunkTrailers);
+    for (const char *const base = buffer.data(), *end = base + buffer.size();;) {
+      const char* const first = base + _pos;
+      const char* const lineEnd = SearchCRLF(first, end);
+      if (lineEnd == end) {
+        return incompleteLine();
+      }
+      if (lineEnd[1] != '\n') {
+        return Status::Error;
+      }
+      _pos = static_cast<std::size_t>(lineEnd - base) + http::CRLF.size();
+      if (lineEnd == first) {
+        _state = State::Done;
+        return Status::Complete;
       }
     }
   }
@@ -436,6 +487,11 @@ Http1ResponseParser::Status Http1ResponseParser::parseBody(std::string_view buff
 
 Http1ResponseParser::Status Http1ResponseParser::parse(std::span<char> buffer, bool eof, HttpResponse& resp,
                                                        std::size_t maxResponseBytes) {
+  if (_gatheredPiece) {
+    // Delivered by the previous call.
+    _bodyBuf->clear();
+    _gatheredPiece = false;
+  }
   // --- Status line + headers ---
   const char* const bufferBegin = buffer.data();
   const char* const bufferEnd = bufferBegin + buffer.size();
@@ -574,11 +630,11 @@ Http1ResponseParser::Status Http1ResponseParser::parse(std::span<char> buffer, b
 }
 
 void Http1ResponseParser::discardStreamed(RawChars& buffer) noexcept {
-  assert(_streaming);
+  // Gathered chunks are always delivered before the status following them.
+  assert(_streaming && !_gatheredPiece && _bodyBuf->empty());
   buffer.erase_front(_pos);
   _pos = 0;
   _bodyStart = 0;
-  _bodyBuf->clear();
 }
 
 }  // namespace aeronet

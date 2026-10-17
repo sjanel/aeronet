@@ -5,9 +5,11 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdio>
+#include <initializer_list>
 #include <limits>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "aeronet/char-hexadecimal-converter.hpp"
 #include "aeronet/compression-test-helpers.hpp"
@@ -1004,15 +1006,25 @@ TEST(ResponseParserTest, RejectsInvalidConnectionHeaderValue) {
 
 namespace {
 
+// A piece of streamed body.
+struct StreamedPiece {
+  std::size_t size;
+  bool gathered;  // small chunks gathered in the reassembly buffer, instead of a view into the receive buffer
+
+  bool operator==(const StreamedPiece&) const = default;
+};
+
 // Drives a streaming parse of `raw` delivered `step` bytes at a time (eof after the last piece), like the HTTP/1.1
 // engine does: collects the streamed body and returns the final status.
 struct StreamedParse {
   Http1ResponseParser::Status status{Http1ResponseParser::Status::NeedMore};
   std::string body;
-  std::size_t maxReceiveBufferSize{0};
+  std::size_t maxReceiveBufferSize{0};  // after discarding the streamed bytes
+  std::size_t maxParsedBufferSize{0};   // when parsed, so with the received bytes
   int headCompleteCount{0};
   std::string contentType;
   std::size_t announcedBodySize{0};
+  std::vector<StreamedPiece> pieces;
 };
 
 StreamedParse StreamParse(std::string_view raw, std::size_t step, std::size_t maxBytes = kMax, bool stream = true) {
@@ -1027,6 +1039,7 @@ StreamedParse StreamParse(std::string_view raw, std::size_t step, std::size_t ma
     receive.append(raw.substr(off, take));
     off += take;
     const bool eof = off == raw.size();
+    out.maxParsedBufferSize = std::max<std::size_t>(out.maxParsedBufferSize, receive.size());
     out.status = parser.parse(receive, eof, resp, maxBytes);
     if (out.status == Http1ResponseParser::Status::HeadComplete) {
       ++out.headCompleteCount;
@@ -1037,8 +1050,18 @@ StreamedParse StreamParse(std::string_view raw, std::size_t step, std::size_t ma
       }
       out.status = parser.parse(receive, eof, resp, maxBytes);
     }
+    while (out.status == Http1ResponseParser::Status::BodyPiece) {
+      // Each piece is either a view into the receive buffer, or the whole reassembly buffer holding gathered chunks.
+      const std::string_view piece = parser.streamedBody(receive);
+      EXPECT_FALSE(piece.empty());
+      const bool gathered = piece.data() == bodyBuf.data() && piece.size() == bodyBuf.size();
+      EXPECT_TRUE(gathered ||
+                  (piece.data() >= receive.data() && piece.data() + piece.size() <= receive.data() + receive.size()));
+      out.pieces.push_back({.size = piece.size(), .gathered = gathered});
+      out.body.append(piece);
+      out.status = parser.parse(receive, eof, resp, maxBytes);
+    }
     if (parser.streaming()) {
-      out.body.append(parser.streamedBody(receive));
       parser.discardStreamed(receive);
     }
     out.maxReceiveBufferSize = std::max<std::size_t>(out.maxReceiveBufferSize, receive.size());
@@ -1085,6 +1108,10 @@ TEST(ResponseParserStreamingTest, ChunkedBodyIsStreamedWithTrailers) {
     EXPECT_EQ(res.body, payload) << step;
     EXPECT_TRUE(res.contentType.empty());
     EXPECT_EQ(res.announcedBodySize, ResponseBodyInfo::kUnknownSize) << step;
+    // Small pieces are gathered, but never beyond what the receive buffer holds.
+    for (const StreamedPiece& piece : res.pieces) {
+      EXPECT_LE(piece.size, res.maxParsedBufferSize) << step;
+    }
     EXPECT_LE(res.maxReceiveBufferSize, std::max<std::size_t>(step, 1100U)) << step;
   }
 }
@@ -1106,13 +1133,104 @@ TEST(ResponseParserStreamingTest, ChunkedBodyWithContentLengthHasNoAnnouncedSize
   EXPECT_EQ(res.body, "hello");
 }
 
+// A body cut short is delivered up to its end, then reported as truncated.
 TEST(ResponseParserStreamingTest, TruncatedStreamedBodies) {
-  EXPECT_EQ(StreamParse("HTTP/1.1 200 OK\r\ncontent-length: 10\r\n\r\nabc", 2).status,
-            Http1ResponseParser::Status::Truncated);
-  EXPECT_EQ(StreamParse("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhel", 2).status,
-            Http1ResponseParser::Status::Truncated);
-  const StreamedParse partial = StreamParse("HTTP/1.1 200 OK\r\ncontent-length: 10\r\n\r\nabc", 100);
-  EXPECT_EQ(partial.status, Http1ResponseParser::Status::Truncated);
+  for (const std::size_t step : {std::size_t{2}, std::size_t{100}}) {
+    const StreamedParse length = StreamParse("HTTP/1.1 200 OK\r\ncontent-length: 10\r\n\r\nabc", step);
+    EXPECT_EQ(length.status, Http1ResponseParser::Status::Truncated) << step;
+    EXPECT_EQ(length.body, "abc") << step;
+    const StreamedParse chunked =
+        StreamParse("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n2\r\nab\r\n5\r\nhel", step);
+    EXPECT_EQ(chunked.status, Http1ResponseParser::Status::Truncated) << step;
+    EXPECT_EQ(chunked.body, "abhel") << step;
+  }
+}
+
+namespace {
+
+// Chunked response whose chunks have the given sizes, followed by a trailer. Fills `payload` with its body.
+std::string ChunkedWithSizes(std::initializer_list<std::size_t> sizes, std::string& payload) {
+  std::string raw = "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n";
+  for (const std::size_t size : sizes) {
+    const std::string chunk = test::MakePatternedPayload(size);
+    payload += chunk;
+    char sizeBuf[32];
+    const int len = std::snprintf(sizeBuf, sizeof(sizeBuf), "%zx\r\n", size);
+    raw.append(sizeBuf, static_cast<std::size_t>(len)).append(chunk).append("\r\n");
+  }
+  return raw + "0\r\nx-t: 1\r\n\r\n";
+}
+
+constexpr std::size_t kDirect = Http1ResponseParser::kMinDirectPieceBytes;
+
+}  // namespace
+
+// Chunks of at least kMinDirectPieceBytes are delivered straight from the receive buffer, one piece each. The smaller
+// ones received in a row are gathered and delivered together, before the next large one: the order is kept.
+TEST(ResponseParserStreamingTest, SmallChunksAreGatheredLargeOnesAreNot) {
+  std::string payload;
+  const std::string raw = ChunkedWithSizes({1, 16, kDirect, kDirect - 1, 3 * kDirect, 5, 7}, payload);
+  const StreamedParse res = StreamParse(raw, raw.size());
+  EXPECT_EQ(res.status, Http1ResponseParser::Status::Complete);
+  EXPECT_EQ(res.body, payload);
+  const std::vector<StreamedPiece> expected{
+      {.size = 17, .gathered = true},          {.size = kDirect, .gathered = false},
+      {.size = kDirect - 1, .gathered = true}, {.size = 3 * kDirect, .gathered = false},
+      {.size = 12, .gathered = true},
+  };
+  EXPECT_EQ(res.pieces, expected);
+
+  // Many small chunks received at once make a single piece.
+  std::string smallPayload;
+  std::string smallRaw = "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n";
+  for (std::size_t idx = 0; idx < 1000U; ++idx) {
+    const std::string chunk(1U + (idx % 16U), static_cast<char>('a' + (idx % 26U)));
+    smallPayload += chunk;
+    char sizeBuf[32];
+    const int len = std::snprintf(sizeBuf, sizeof(sizeBuf), "%zx\r\n", chunk.size());
+    smallRaw.append(sizeBuf, static_cast<std::size_t>(len)).append(chunk).append("\r\n");
+  }
+  smallRaw += "0\r\n\r\n";
+  const StreamedParse smallStreamParse = StreamParse(smallRaw, smallRaw.size());
+  EXPECT_EQ(smallStreamParse.status, Http1ResponseParser::Status::Complete);
+  EXPECT_EQ(smallStreamParse.body, smallPayload);
+  EXPECT_EQ(smallStreamParse.pieces, (std::vector<StreamedPiece>{{.size = smallPayload.size(), .gathered = true}}));
+}
+
+// The part of a large chunk received in a read is a piece of its own when large enough, gathered otherwise: gathered
+// bytes never outlive their read, so a piece never holds more than what the receive buffer held.
+TEST(ResponseParserStreamingTest, LargeChunkSplitAcrossReads) {
+  std::string payload;
+  const std::string raw = ChunkedWithSizes({10 * kDirect, 2}, payload);
+  for (const std::size_t step : {std::size_t{100}, kDirect, 4 * kDirect}) {
+    const StreamedParse res = StreamParse(raw, step);
+    EXPECT_EQ(res.status, Http1ResponseParser::Status::Complete) << step;
+    EXPECT_EQ(res.body, payload) << step;
+    for (const StreamedPiece& piece : res.pieces) {
+      EXPECT_LE(piece.size, res.maxParsedBufferSize) << step;
+      if (!piece.gathered) {
+        EXPECT_GE(piece.size, kDirect) << step;
+      }
+    }
+  }
+  // Received whole, the large chunk is a single piece.
+  const StreamedParse whole = StreamParse(raw, raw.size());
+  EXPECT_EQ(whole.pieces,
+            (std::vector<StreamedPiece>{{.size = 10 * kDirect, .gathered = false}, {.size = 2, .gathered = true}}));
+}
+
+// Gathered chunks are delivered before a failure that follows them.
+TEST(ResponseParserStreamingTest, GatheredChunksAreDeliveredBeforeAFailure) {
+  const StreamedParse malformed =
+      StreamParse("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n3\r\nabc\r\n2\r\nde\r\nzz\r\n", 200);
+  EXPECT_EQ(malformed.status, Http1ResponseParser::Status::Error);
+  EXPECT_EQ(malformed.body, "abcde");
+  EXPECT_EQ(malformed.pieces, (std::vector<StreamedPiece>{{.size = 5, .gathered = true}}));
+
+  const StreamedParse tooLarge = StreamParse(
+      "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n3\r\nabc\r\n5;" + std::string(600, 'e'), 1000, 512);
+  EXPECT_EQ(tooLarge.status, Http1ResponseParser::Status::TooLarge);
+  EXPECT_EQ(tooLarge.body, "abc");
 }
 
 // A body following a head that is not streamed is buffered and bounded as usual.
