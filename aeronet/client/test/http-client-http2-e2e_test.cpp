@@ -1046,7 +1046,7 @@ TEST(HttpClientHttp2E2ETest, TransparentResponseDecompression) {
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), MakeLargeBody());
   EXPECT_TRUE(resp.hasBodyCaptured());
-  EXPECT_TRUE(resp.headerValueOrEmpty("content-encoding").empty());
+  EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
 }
 
 TEST(HttpClientHttp2E2ETest, UpperCaseCodingIsDecoded) {
