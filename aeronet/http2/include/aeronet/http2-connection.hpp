@@ -386,6 +386,11 @@ class Http2Connection {
   /// Returns `CompressionError` for invalid HPACK and `ProtocolError` for malformed fields.
   ErrorCode decodeAndEmitHeaders(uint32_t streamId, std::span<const std::byte> headerBlock, bool endStream);
 
+  // Ignore the field block of a stream this endpoint reset, like any frame on it (RFC 9113 §5.1), after decoding it:
+  // the HPACK decoding state is shared by the whole connection (RFC 9113 §4.3). Only a compression error fails the
+  // connection.
+  ProcessResult discardFieldBlock(std::span<const std::byte> headerBlock);
+
   // ============================
   // Output helpers
   // ============================

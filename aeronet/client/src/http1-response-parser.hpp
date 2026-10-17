@@ -65,13 +65,14 @@ class Http1ResponseParser {
   // Install (or clear) the decompression context used by subsequent parse() calls.
   void setDecodeContext(const DecodeContext& decodeContext) noexcept { _decode = decodeContext; }
 
-  // Prepare for a new response. headRequest suppresses body parsing (HEAD has no body). With streamHead, parse()
-  // returns HeadComplete once the head of a final response announcing a body is parsed, so that the caller can
-  // choose to stream the body (startStreaming()) or keep parsing it in the buffer as usual.
+  // Prepare for a new response. headRequest suppresses body parsing (HEAD has no body). streamHead is for a response
+  // going to a sink: parse() then returns HeadComplete once the head of a final response announcing a body is parsed,
+  // so that the caller can choose to stream the body (startStreaming()) or keep parsing it in the buffer as usual, and
+  // a body received whole is not installed in the response (see bufferedBody()).
   void reset(bool headRequest, bool streamHead = false) noexcept;
 
   // Parse as much as possible. Header names are normalized in-place in `buffer`. On Complete, `resp` is fully
-  // populated (without body when streaming).
+  // populated (without body with streamHead).
   Status parse(std::span<char> buffer, bool eof, HttpResponse& resp, std::size_t maxResponseBytes);
 
   // RawChars overload that permits a completed identity body occupying the initialized suffix of `buffer` to
@@ -108,6 +109,11 @@ class Http1ResponseParser {
   void startStreaming() noexcept { _streaming = true; }
 
   [[nodiscard]] bool streaming() const noexcept { return _streaming; }
+
+  // (reset with streamHead only) After Complete for a body that was not streamed: the body, decoded, left in the
+  // scratch buffers (receive, reassembly or decoding buffer) instead of being installed in the response. Valid until
+  // they are reused.
+  [[nodiscard]] std::string_view bufferedBody() const noexcept { return _bufferedBody; }
 
   // After BodyPiece: the piece of body. It is a view into `buffer` (the one given to parse()): all the body received
   // for Length / UntilClose framing, a chunk (or the part of it received) of at least kMinDirectPieceBytes for chunked
@@ -154,9 +160,10 @@ class Http1ResponseParser {
   // initialized owner or a suffix ending at owner->end().
   static void InstallBodyStorage(HttpResponse& resp, std::string_view body, std::string_view contentType,
                                  RawChars* owner);
-  // Install the (de-framed) body into `resp`, applying automatic decompression when configured.
-  // Returns Status::Complete on success, or Status::Error if decompression failed.
-  Status installBody(HttpResponse& resp, std::string_view buffer) const;
+  // Install the (de-framed) body into `resp` (or keep it for a sink, see bufferedBody()), applying automatic
+  // decompression when configured. Returns Status::Complete on success, Status::Error if decompression failed, or
+  // Status::TooLarge when it exceeded the decompression limits.
+  Status installBody(HttpResponse& resp, std::string_view buffer);
 
   // Borrowed decoded-body accumulator (see the constructor). Only used for chunked framing, where the body is
   // interleaved with chunk metadata and must be reassembled (when streaming, only the small chunks are gathered). For
@@ -164,6 +171,7 @@ class Http1ResponseParser {
   // overload can transfer that allocation.
   RawChars* _bodyBuf;
   RawChars* _receiveBuf{nullptr};
+  std::string_view _bufferedBody;  // see bufferedBody()
   std::size_t _pos{0};             // absolute cursor into the accumulated buffer
   std::size_t _bodyStart{0};       // offset of the first body byte (Length / UntilClose), or of the streamed piece
   std::size_t _contentTypeOff{0};  // Content-Type value position within the accumulated buffer ...

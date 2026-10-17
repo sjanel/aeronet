@@ -56,6 +56,8 @@
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tls-raii.hpp"
 #include "aeronet/tls-transport.hpp"
+#include "collecting-body-sink.hpp"
+#include "http-client-test-access.hpp"
 
 #ifdef AERONET_LINUX
 #include "aeronet/sigpipe-blocker.hpp"
@@ -113,6 +115,11 @@ class HttpClientTlsE2ETest : public ::testing::Test {
     });
     router.setPath(http::Method::GET, "/to-cleartext", [](const HttpRequestView& req) {
       auto resp = req.makeResponse(http::StatusCodeFound);
+      resp.location("http://localhost:1/secure");
+      return resp;
+    });
+    router.setPath(http::Method::GET, "/to-cleartext-with-body", [](const HttpRequestView& req) {
+      auto resp = req.makeResponse(http::StatusCodeFound, "moved to cleartext", "text/plain");
       resp.location("http://localhost:1/secure");
       return resp;
     });
@@ -177,6 +184,26 @@ TEST_F(HttpClientTlsE2ETest, RedirectToCleartextIsNotFollowed) {
   auto resp = Unwrap(client.get(url("/to-cleartext")));
   EXPECT_EQ(resp.status(), http::StatusCodeFound);
   EXPECT_EQ(resp.headerValueOrEmpty(http::Location), "http://localhost:1/secure");
+}
+
+// A redirect to follow is received whole for a sink request: when it turns out not to be followed, it is the final
+// response, delivered to the sink from the receive buffer, without copy.
+TEST_F(HttpClientTlsE2ETest, RedirectToCleartextIsDeliveredToTheSinkWithoutCopy) {
+  HttpClientConfig cfg;
+  cfg.tlsVerifyPeer = false;  // self-signed cert, not in any trust store
+  HttpClient client(cfg);
+  test::CollectingBodySink sink;
+  auto result = client.get(url("/to-cleartext-with-body"), sink);
+  ASSERT_TRUE(result) << ErrcToStr(result.error());
+  EXPECT_EQ(result->status(), http::StatusCodeFound);
+  EXPECT_TRUE(result->bodyInMemory().empty());
+  EXPECT_EQ(sink.headCalls, 1U);
+  EXPECT_EQ(sink.status, http::StatusCodeFound);
+  EXPECT_EQ(sink.contentType, "text/plain");
+  EXPECT_EQ(sink.bodySize, sink.body.size());
+  EXPECT_EQ(sink.body, "moved to cleartext");
+  EXPECT_EQ(sink.bodyCalls, 1U);
+  EXPECT_TRUE(HttpClientTest::InScratch(client, sink.firstChunkData));
 }
 
 TEST_F(HttpClientTlsE2ETest, VerificationFailsForUntrustedCert) {
