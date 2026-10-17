@@ -13,7 +13,6 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
-#include "http-method-parse.hpp"
 
 namespace aeronet {
 namespace {

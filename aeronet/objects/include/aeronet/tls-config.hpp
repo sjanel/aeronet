@@ -100,8 +100,6 @@ class TLSConfig {
     StaticConcatenatedStrings<kNbStrings, uint32_t, true> _strings;
   };
 
-  TLSConfig() = default;
-
   // The private keys and session ticket keys are scrubbed by their storage.
 
   void validate();
@@ -349,15 +347,6 @@ class TLSConfig {
     kNbStrings,
   };
 
-  // Certificate/key paths and PEM, cipher list, OCSP/CRL inputs, and debug key-log path.
-  // Secure: scrubs the private key when it is replaced, copied over or destroyed.
-  StaticConcatenatedStrings<kNbStrings, uint32_t, true> _tlsStrings;
-
-  ConcatenatedStrings32 _alpnProtocols;
-
-  // Additional trusted client root / leaf certs (PEM, stored as NUL-separated entries)
-  ConcatenatedStrings32 _trustedClientCertsPem;
-
   // Static session ticket keys, scrubbed before their memory is released or reused (clear, assignment, destruction).
   struct StaticTicketKeys {
     StaticTicketKeys() noexcept = default;
@@ -391,13 +380,25 @@ class TLSConfig {
     vector<SessionTicketKey> keys;
   };
 
-  vector<SniCertificate> _sniCertificates;
-  StaticTicketKeys _staticTicketKeys;
-
  public:
   [[nodiscard]] std::span<const SniCertificate> sniCertificates() const noexcept { return _sniCertificates; }
 
   [[nodiscard]] std::span<const SessionTicketKey> sessionTicketKeys() const noexcept { return _staticTicketKeys.keys; }
+
+  // Internal storage, read and written through the methods above. Public only so that TLSConfig stays an aggregate,
+  // whose members glaze reflects (see glaze-internal-members.hpp).
+
+  // Certificate/key paths and PEM, cipher list, OCSP/CRL inputs, and debug key-log path.
+  // Secure: scrubs the private key when it is replaced, copied over or destroyed.
+  StaticConcatenatedStrings<kNbStrings, uint32_t, true> _tlsStrings;
+
+  ConcatenatedStrings32 _alpnProtocols;
+
+  // Additional trusted client root / leaf certs (PEM, stored as NUL-separated entries)
+  ConcatenatedStrings32 _trustedClientCertsPem;
+
+  vector<SniCertificate> _sniCertificates;
+  StaticTicketKeys _staticTicketKeys;
 };
 
 }  // namespace aeronet
@@ -406,9 +407,10 @@ class TLSConfig {
 
 #include <glaze/glaze.hpp>
 #include <string>
+#include <string_view>
 
 #include "aeronet/glaze-chrono-durations-adapters.hpp"  // IWYU pragma: export
-#include "aeronet/glaze-vector-sv-adapter.hpp"
+#include "aeronet/glaze-internal-members.hpp"
 
 template <>
 struct glz::meta<aeronet::TLSConfig::KtlsMode> {
@@ -445,65 +447,44 @@ struct glz::meta<aeronet::TLSConfig::SniCertificate> {
       "isWildcard", &T::isWildcard);
 };
 
+// TLSConfig is reflected by glaze: only its internal members (see glaze-internal-members.hpp) need an entry.
 template <>
 struct glz::meta<aeronet::TLSConfig> {
   using T = aeronet::TLSConfig;
-  static constexpr auto value =
-      object("enabled", &T::enabled, "requestClientCert", &T::requestClientCert, "requireClientCert",
-             &T::requireClientCert, "alpnMustMatch", &T::alpnMustMatch, "logHandshake", &T::logHandshake,
-             "disableCompression", &T::disableCompression, "crlCheckAll", &T::crlCheckAll, "cipherPolicy",
-             &T::cipherPolicy, "ktlsMode", &T::ktlsMode, "minVersion", &T::minVersion, "maxVersion", &T::maxVersion,
-             "maxConcurrentHandshakes", &T::maxConcurrentHandshakes, "handshakeRateLimitPerSecond",
-             &T::handshakeRateLimitPerSecond, "handshakeRateLimitBurst", &T::handshakeRateLimitBurst,
-             "handshakeTimeout", &T::handshakeTimeout, "sessionTickets", &T::sessionTickets, "certFile",
-             custom<[](T& self, const std::string& str) { self.withCertFile(str); },
-                    [](const T& self) { return self.certFile(); }>,
-             "keyFile",
-             custom<[](T& self, const std::string& str) { self.withKeyFile(str); },
-                    [](const T& self) { return self.keyFile(); }>,
-             "certPem",
-             custom<[](T& self, const std::string& str) { self.withCertPem(str); },
-                    [](const T& self) { return self.certPem(); }>,
-             "keyPem",
-             custom<[](T& self, const std::string& str) { self.withKeyPem(str); },
-                    [](const T& self) { return self.keyPem(); }>,
-             "cipherList",
-             custom<[](T& self, const std::string& str) { self.withCipherList(str); },
-                    [](const T& self) { return self.cipherList(); }>,
-             "ocspResponseFile",
-             custom<[](T& self, const std::string& str) { self.withTlsOcspStapleFile(str); },
-                    [](const T& self) { return self.ocspResponseFile(); }>,
-             "crlFile",
-             custom<[](T& self, const std::string& str) { self.withTlsCrlFile(str, self.crlCheckAll); },
-                    [](const T& self) { return self.crlFile(); }>,
-             "keyLogFile",
-             custom<[](T& self, const std::string& str) { self.withTlsKeyLogFile(str); },
-                    [](const T& self) { return self.keyLogFile(); }>,
-             "alpnProtocols",
-             custom<[](T& self, const ::aeronet::vector<std::string>& protos) { self.withTlsAlpnProtocols(protos); },
-                    aeronet::glz_detail::ToStringViewVector<&T::alpnProtocols>>,
-             "trustedClientCertsPem",
-             custom<[](T& self, const ::aeronet::vector<std::string>& certs) {
-               self.withoutTlsTrustedClientCert();
-               for (const auto& cert : certs) {
-                 self.withTlsTrustedClientCert(cert);
-               }
-             },
-                    aeronet::glz_detail::ToStringViewVector<&T::trustedClientCertsPem>>,
-             "sniCertificates",
-             custom<[](T& self, const ::aeronet::vector<aeronet::TLSConfig::SniCertificate>& certs) {
-               self.clearTlsSniCertificates();
-               for (const auto& cert : certs) {
-                 if (cert.hasFiles()) {
-                   self.withTlsSniCertificateFiles(cert.pattern(), cert.certFile(), cert.keyFile());
-                 } else if (cert.hasPem()) {
-                   self.withTlsSniCertificateMemory(cert.pattern(), cert.certPem(), cert.keyPem());
-                 }
-                 if (!cert.ocspResponseFile().empty()) {
-                   self.withTlsSniOcspStapleFile(cert.pattern(), cert.ocspResponseFile());
-                 }
-               }
-             },
-                    [](const T& self) { return self.sniCertificates(); }>);
+
+  // The revocation callback and its context are code, not configuration.
+  static constexpr bool skip(std::string_view key, const meta_context& /*context*/) noexcept {
+    return aeronet::glz_detail::IsInternalMember(key) || key == "revocationCallback" || key == "revocationUserContext";
+  }
+
+  static constexpr auto modify = object(
+      "certFile", custom<[](T& self, const std::string& str) { self.withCertFile(str); }, &T::certFile>, "keyFile",
+      custom<[](T& self, const std::string& str) { self.withKeyFile(str); }, &T::keyFile>, "certPem",
+      custom<[](T& self, const std::string& str) { self.withCertPem(str); }, &T::certPem>, "keyPem",
+      custom<[](T& self, const std::string& str) { self.withKeyPem(str); }, &T::keyPem>, "cipherList",
+      custom<[](T& self, const std::string& str) { self.withCipherList(str); }, &T::cipherList>, "ocspResponseFile",
+      custom<[](T& self, const std::string& str) { self.withTlsOcspStapleFile(str); }, &T::ocspResponseFile>, "crlFile",
+      custom<[](T& self, const std::string& str) { self.withTlsCrlFile(str, self.crlCheckAll); }, &T::crlFile>,
+      "keyLogFile", custom<[](T& self, const std::string& str) { self.withTlsKeyLogFile(str); }, &T::keyLogFile>,
+      "alpnProtocols", &T::_alpnProtocols, "trustedClientCertsPem", &T::_trustedClientCertsPem, "sniCertificates",
+      custom<[](T& self, const ::aeronet::vector<aeronet::TLSConfig::SniCertificate>& certs) {
+        self.clearTlsSniCertificates();
+        for (const auto& cert : certs) {
+          if (cert.hasFiles()) {
+            self.withTlsSniCertificateFiles(cert.pattern(), cert.certFile(), cert.keyFile());
+          } else if (cert.hasPem()) {
+            self.withTlsSniCertificateMemory(cert.pattern(), cert.certPem(), cert.keyPem());
+          }
+          if (!cert.ocspResponseFile().empty()) {
+            self.withTlsSniOcspStapleFile(cert.pattern(), cert.ocspResponseFile());
+          }
+        }
+      },
+             &T::sniCertificates>);
+
+  // One entry per packed string, plus the alpnProtocols, trustedClientCertsPem and sniCertificates lists.
+  static_assert(aeronet::glz_detail::NbObjectEntries<decltype(modify)> == decltype(T::_tlsStrings)::size() + 3U,
+                "each internal member of TLSConfig needs an entry in modify (or to be explicitly skipped)");
 };
+
 #endif

@@ -175,6 +175,7 @@ if(AERONET_ENABLE_GLAZE)
         test/server-config-loader_test.cpp
         LIBRARIES
         aeronet
+        aeronet_basic_test_support
     )
 endif()
 

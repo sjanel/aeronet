@@ -106,6 +106,12 @@ function(AeronetAddUnitTest name)
 
     target_include_directories(${name} PRIVATE include)
 
+    if(MSVC)
+      # Tests serializing whole configurations instantiate so many Glaze templates that their object file exceeds the
+      # default MSVC limit of sections (error C1128), as for Glaze's own tests.
+      target_compile_options(${name} PRIVATE /bigobj)
+    endif()
+
     add_test(NAME ${name} COMMAND ${name})
     set_tests_properties(${name} PROPERTIES
       ENVIRONMENT "UBSAN_OPTIONS=halt_on_error=1 abort_on_error=1 print_stacktrace=1;\

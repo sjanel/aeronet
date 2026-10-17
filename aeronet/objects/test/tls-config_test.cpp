@@ -18,6 +18,8 @@
 #ifdef AERONET_ENABLE_GLAZE
 #include <glaze/glaze.hpp>
 
+#include "aeronet/major-minor-version.hpp"
+
 using TlsVersion = aeronet::TLSConfig::Version;
 
 static_assert(glz::meta<TlsVersion>::custom_write);

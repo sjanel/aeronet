@@ -165,7 +165,8 @@ bool ResponseStreamer::decode(std::string_view chunk, bool finalChunk) {
   const DecompressionConfig& cfg = _config->decompression;
   RawChars& out = _codec->decompressOut;
   // A zero limit means none for the decoders: always leave them at least one byte of budget.
-  const std::size_t budget = std::max<std::size_t>(cfg.maxDecompressedBytes - _decodedBytes, 1);
+  // Unused when no decoder is compiled in.
+  [[maybe_unused]] const std::size_t budget = std::max<std::size_t>(cfg.maxDecompressedBytes - _decodedBytes, 1);
   const std::size_t sizeBefore = out.size();
   bool decoded = false;
   switch (_encoding) {

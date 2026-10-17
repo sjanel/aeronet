@@ -67,10 +67,9 @@ class BuiltinProbesConfig {
   // Unused for now.
   ContentType contentType{ContentType::TextPlainUtf8};
 
- private:
-  using Paths = StaticConcatenatedStrings<3, uint32_t>;
-
-  Paths _paths{"/livez", "/readyz", "/startupz"};
+  // Internal storage of the liveness, readiness and startup paths, read and written through the methods above. Public
+  // only so that BuiltinProbesConfig stays an aggregate, whose members glaze reflects (see glaze-internal-members.hpp).
+  StaticConcatenatedStrings<3, uint32_t> _paths{"/livez", "/readyz", "/startupz"};
 };
 
 }  // namespace aeronet
@@ -81,6 +80,7 @@ class BuiltinProbesConfig {
 #include <string>
 
 #include "aeronet/glaze-chrono-durations-adapters.hpp"  // IWYU pragma: export
+#include "aeronet/glaze-internal-members.hpp"
 
 template <>
 struct glz::meta<aeronet::BuiltinProbesConfig::ContentType> {
@@ -88,23 +88,18 @@ struct glz::meta<aeronet::BuiltinProbesConfig::ContentType> {
   static constexpr auto value = enumerate("text/plain; charset=utf-8", TextPlainUtf8);
 };
 
-// ============================================================================
-// BuiltinProbesConfig - private StaticConcatenatedStrings, exposed as named fields
-// ============================================================================
+// BuiltinProbesConfig is reflected by glaze: only its internal members (see glaze-internal-members.hpp) need an entry.
 template <>
-struct glz::meta<aeronet::BuiltinProbesConfig> {
+struct glz::meta<aeronet::BuiltinProbesConfig> : aeronet::glz_detail::SkipInternalMembers {
   using T = aeronet::BuiltinProbesConfig;
-  static constexpr auto value =
-      object("enabled", &T::enabled, "contentType", &T::contentType, "dedicatedPort", &T::dedicatedPort,
-             "livenessStaleThreshold", &T::livenessStaleThreshold, "livenessPath",
-             custom<[](T& self, const std::string& path) { self.withLivenessPath(path); },
-                    [](const T& self) { return self.livenessPath(); }>,
-             "readinessPath",
-             custom<[](T& self, const std::string& path) { self.withReadinessPath(path); },
-                    [](const T& self) { return self.readinessPath(); }>,
-             "startupPath",
-             custom<[](T& self, const std::string& path) { self.withStartupPath(path); },
-                    [](const T& self) { return self.startupPath(); }>);
+  static constexpr auto modify = object(
+      "livenessPath", custom<[](T& self, const std::string& path) { self.withLivenessPath(path); }, &T::livenessPath>,
+      "readinessPath",
+      custom<[](T& self, const std::string& path) { self.withReadinessPath(path); }, &T::readinessPath>, "startupPath",
+      custom<[](T& self, const std::string& path) { self.withStartupPath(path); }, &T::startupPath>);
+
+  static_assert(aeronet::glz_detail::NbObjectEntries<decltype(modify)> == decltype(T::_paths)::size(),
+                "each probe path needs an entry in modify");
 };
 
 #endif

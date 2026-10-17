@@ -976,6 +976,8 @@ You can use `aeronet-config-dump` example to generate a baseline config file wit
 ```bash
 # Generate a baseline full config file (server + router)
 ./aeronet-config-dump --format yaml --output server.yaml
+# Same for HttpClient (client section)
+./aeronet-config-dump --client --format yaml --output client.yaml
 ```
 
 ### Zero copy / Sendfile
