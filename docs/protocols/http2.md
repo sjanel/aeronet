@@ -81,11 +81,13 @@ Request header sections follow the pseudo-header rules of RFC 9113 §8.3. Pseudo
 
 A malformed header section resets only its stream, with `PROTOCOL_ERROR`. An invalid HPACK encoding corrupts the shared compression state, so it remains a connection error (`COMPRESSION_ERROR`). The frames a peer sent on a stream before receiving its reset are ignored (RFC 9113 §5.1): they are not answered with another `RST_STREAM`, and their header blocks are still decoded to keep the compression state in sync. Pseudo-headers in a trailer block, or a trailer block that does not end the stream, also reset the stream with `PROTOCOL_ERROR`, and trailer bytes count toward the request header size budget.
 
+A request whose `content-length` is not a number, or differs from the total length of its DATA frames, is malformed as well (RFC 9113 §8.1.1): its stream is reset with `PROTOCOL_ERROR`, without response. A body longer than its `content-length` is reset as soon as the excess arrives, a shorter one when the stream ends (after its DATA frames or its trailers), and a request ending its stream with its HEADERS frame may only declare `content-length: 0`. A `content-length` declaring more than `maxBodyBytes` is answered `413` instead (see below). The DATA frames of a CONNECT tunnel are not checked: a CONNECT request has no content.
+
 ## Flow control and memory
 
 - Each stream's send window starts from the peer's `SETTINGS_INITIAL_WINDOW_SIZE`, and its receive window from the local `initialWindowSize`. The connection receive window is set separately by `connectionWindowSize` (1 MiB by default).
 - The server sends as much as the connection and stream windows allow, and resumes when `WINDOW_UPDATE` frames arrive. Receive credit is returned in batches, once half of a window is consumed, and closed streams receive no stream-level updates. The DATA frames still in flight on a stream the server reset are discarded, but their connection-level credit is returned.
-- A request body is kept in memory until the stream ends, bounded by `HttpServerConfig::maxBodyBytes` while it is received: a body exceeding it, or a `content-length` declaring more, is answered `413` right away, then the stream is reset with `NO_ERROR` so that the client stops sending it (RFC 9113 §8.1). A smaller [route limit](../guides/routing.md#per-route-options) is checked once the whole body is received.
+- A request body is kept in memory until the stream ends, bounded by `HttpServerConfig::maxBodyBytes` while it is received: a body exceeding it, or a `content-length` declaring more, is answered `413` right away, then the stream is reset with `NO_ERROR` so that the client stops sending it (RFC 9113 §8.1). A smaller [route limit](../guides/routing.md#per-route-options) is checked once the whole body is received. The body buffer of a request declaring its `content-length` is allocated at once, so that its DATA frames are appended without reallocating it. The allocation is capped by `connectionWindowSize`, beyond which the buffer grows as the frames arrive, so that a client declaring a large body without sending it makes the server allocate no more.
 - `maxStreamPendingBytes` (4 MiB by default) bounds the response body and trailer bytes one stream may keep in memory while the peer withholds credit. A larger fixed response is answered `503`; a streaming response that overflows it is reset with `ENHANCE_YOUR_CALM`. The connection-wide `HttpServerConfig::maxOutboundBufferBytes` remains the ceiling across all streams of a connection.
 - Files (`HttpResponse::file()`, used by the static file handler) are read in bounded chunks into DATA frames, as the windows allow, and never loaded entirely in memory.
 - HEADERS frames and DATA payloads of up to 256 bytes share the connection output buffer, so that a single TLS write encrypts a batch of small responses. Larger DATA and HEADERS blocks keep their own buffers in an ordered fragment queue, across flow-control stalls and partial writes, and cleartext connections gather them with a single `writev` (`WSASend` on Windows).
@@ -98,7 +100,7 @@ A malformed header section resets only its stream, with `PROTOCOL_ERROR`. An inv
 | Setting | Default | Guidance |
 | --- | --- | --- |
 | `maxConcurrentStreams` | 100 | Bounds the parallelism, and the memory, of one client. |
-| `initialWindowSize`, `connectionWindowSize` | 64 KiB, 1 MiB | Larger windows speed up large uploads on high-latency links, at the cost of memory per connection. |
+| `initialWindowSize`, `connectionWindowSize` | 1 MiB, 1 MiB | What the peer may send on a stream, and on the whole connection, before receiving credit: about the bytes one upload can transfer per round trip. Request bodies are kept whole in memory whatever the windows, but a [CONNECT tunnel](connect.md#connect-over-http2) to a slow target may hold up to its stream window. |
 | `maxStreamPendingBytes` | 4 MiB | Response memory one stream may retain while waiting for credit. |
 | `pingInterval`, `pingTimeout` | disabled, 10 s | Detect dead peers on long-lived connections. |
 | `maxStreamsPerConnection` | 1,000,000 | Streams served before a graceful `GOAWAY`, to rebalance long-lived connections. |
@@ -131,6 +133,6 @@ curl --http2 http://localhost:8080/hello
 ## Tests
 
 - Connection-level behavior, flow control, malformed field sections, and frames on reset streams: [http2-connection_test.cpp](../../aeronet/http2/test/http2-connection_test.cpp).
-- Request processing, pseudo-header validation, trailers, and request body limits: [http2-protocol-handler_test.cpp](../../aeronet/http2/test/http2-protocol-handler_test.cpp).
+- Request processing, pseudo-header validation, trailers, request bodies and their limits: [http2-protocol-handler_test.cpp](../../aeronet/http2/test/http2-protocol-handler_test.cpp).
 - HPACK: [hpack_test.cpp](../../aeronet/http2/test/hpack_test.cpp).
 - End-to-end over TLS and h2c: [tests/http2-core_test.cpp](../../tests/http2-core_test.cpp), and CONNECT: [tests/http2-connect_test.cpp](../../tests/http2-connect_test.cpp).

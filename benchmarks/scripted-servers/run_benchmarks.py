@@ -104,6 +104,11 @@ class BenchmarkRunner:
     # Servers that only support H2 over TLS (not h2c cleartext)
     H2_TLS_ONLY_SERVERS: set = set()
 
+    # The only TLS 1.3 cipher suite h2load offers, so that every h2-tls server encrypts with the same cipher. By
+    # default, rustls and Go select AES-128-GCM while OpenSSL and Java servers select AES-256-GCM, which would compare
+    # the ciphers as much as the servers. Go and Python cannot restrict their TLS 1.3 suites: the client does.
+    H2_TLS13_CIPHER = "TLS_AES_256_GCM_SHA384"
+
     SCENARIOS: Dict[str, Scenario] = {
         "headers": Scenario("headers", "lua/headers_stress.lua", "/headers"),
         "body": Scenario("body", "lua/large_body.lua", "/uppercase"),
@@ -1213,9 +1218,8 @@ class BenchmarkRunner:
         for hdr in h2_scenario.extra_headers:
             cmd += ["-H", hdr]
 
-        # TLS: negotiate h2 via ALPN
         if use_tls:
-            cmd += ["--alpn-list=h2"]
+            cmd += self._h2load_tls_args()
 
         cmd += urls
 
@@ -1261,6 +1265,11 @@ class BenchmarkRunner:
 
         metrics = self._parse_h2load_output(output)
         succeeded = int(metrics.get("succeeded", 0))
+        if use_tls and succeeded > 0 and metrics["cipher"] != self.H2_TLS13_CIPHER:
+            print(
+                f"WARNING: {server} / {scenario_name} negotiated cipher {metrics['cipher']} "
+                f"instead of {self.H2_TLS13_CIPHER}"
+            )
 
         if h2load_crashed and succeeded == 0:
             print(
@@ -1310,6 +1319,11 @@ class BenchmarkRunner:
             server, scenario_name, output, error=(server == "aeronet" and total_errors > 0)
         )
         self._record_memory_usage(server, scenario_name)
+
+    @classmethod
+    def _h2load_tls_args(cls) -> List[str]:
+        """h2load options of the h2-tls runs: h2 negotiated by ALPN, with the cipher suite shared by all servers."""
+        return ["--alpn-list=h2", f"--tls13-ciphers={cls.H2_TLS13_CIPHER}"]
 
     def _acquire_h2load_output(self, cmd: List[str], conns: int) -> Tuple[str, bool]:
         """Run one h2load sample, with the crash-retry fallback, returning (output, crashed).
@@ -1397,6 +1411,7 @@ class BenchmarkRunner:
         """Parse h2load output into a metrics dictionary.
 
         h2load output format:
+          Cipher: TLS_AES_256_GCM_SHA384    (TLS runs only)
           finished in 10.01s, 12345.67 req/s, 56.78MB/s
           requests: 123456 total, ... succeeded, N failed, N errored, N timeout
           status codes: 123456 2xx, 0 3xx, 0 4xx, 0 5xx
@@ -1415,10 +1430,16 @@ class BenchmarkRunner:
             "timeout": 0,
             "non2xx": 0,
             "total_requests": 0,
+            "cipher": "-",
         }
 
         for line in output.splitlines():
             line = line.strip()
+
+            # "Cipher: TLS_AES_256_GCM_SHA384" (TLS runs only)
+            if line.startswith("Cipher:"):
+                values["cipher"] = line.removeprefix("Cipher:").strip()
+                continue
 
             # "finished in 10.01s, 12345.67 req/s, 56.78MB/s"
             match = re.match(

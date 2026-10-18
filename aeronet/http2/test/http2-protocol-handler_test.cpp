@@ -1597,8 +1597,8 @@ TEST(Http2ProtocolHandler, DeclaredContentLengthAboveMaxBodyBytesIsRefusedBefore
   }
   EXPECT_EQ(nbHandlerCalls, 0);
 
-  // Within the limit, or not a number (left to the body checks): the body is received.
-  for (std::string_view contentLength : {"1000", "abc"}) {
+  // Within the limit: the body is received.
+  for (std::string_view contentLength : {"1000"}) {
     RawChars headers;
     headers.append(MakeHttp1HeaderLine(":method", "POST"));
     headers.append(MakeHttp1HeaderLine(":scheme", "https"));
@@ -1614,7 +1614,141 @@ TEST(Http2ProtocolHandler, DeclaredContentLengthAboveMaxBodyBytesIsRefusedBefore
     EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "200") << contentLength;
     streamId += 2;
   }
-  EXPECT_EQ(nbHandlerCalls, 2);
+  EXPECT_EQ(nbHandlerCalls, 1);
+}
+
+TEST(Http2ProtocolHandler, DeclaredContentLengthBodiesAreReceivedWhole) {
+  Router router;
+  vector<std::string> receivedBodies;
+  router.setDefault([&receivedBodies](const HttpRequestView& req) {
+    receivedBodies.emplace_back(req.body());
+    return HttpResponse(200);
+  });
+
+  Http2ProtocolLoopback loop(router);
+  loop.serverConfig.maxBodyBytes = 8UL << 20U;
+  loop.connect();
+
+  // The declared body is allocated at once up to the connection receive window: bodies below, at and above it.
+  const std::size_t connectionWindow = loop.handler.connection().localSettings().connectionWindowSize;
+  uint32_t streamId = 1;
+  for (const std::size_t bodySize : {
+           std::size_t{1},
+           std::size_t{180293},
+           connectionWindow,
+           connectionWindow + 1U,
+           ((3U * connectionWindow) + 12345U),
+       }) {
+    std::string body(bodySize, '\0');
+    for (std::size_t pos = 0; pos < bodySize; ++pos) {
+      body[pos] = static_cast<char>('a' + (pos % 26));
+    }
+
+    RawChars headers;
+    headers.append(MakeHttp1HeaderLine(":method", "POST"));
+    headers.append(MakeHttp1HeaderLine(":scheme", "https"));
+    headers.append(MakeHttp1HeaderLine(":authority", "example.com"));
+    headers.append(MakeHttp1HeaderLine(":path", "/upload"));
+    headers.append(MakeHttp1HeaderLine("content-length", std::to_string(bodySize)));
+    ASSERT_EQ(loop.client.sendHeaders(streamId, http::StatusCode{}, HeadersView(headers), false), ErrorCode::NoError);
+    loop.pumpClientToServer();
+
+    // In DATA frames of 16 KiB, letting the server return the credit after each.
+    static constexpr std::size_t kFrameSize = 16384;
+    for (std::size_t pos = 0; pos < bodySize; pos += kFrameSize) {
+      const std::string_view frame = std::string_view(body).substr(pos, kFrameSize);
+      ASSERT_EQ(loop.client.sendData(streamId, std::as_bytes(std::span<const char>(frame.data(), frame.size())),
+                                     pos + frame.size() == bodySize),
+                ErrorCode::NoError);
+      loop.pumpClientToServer();
+      loop.pumpServerToClient();
+    }
+
+    ASSERT_FALSE(loop.clientHeaders.empty()) << bodySize;
+    EXPECT_EQ(loop.clientHeaders.back().streamId, streamId);
+    EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "200") << bodySize;
+    ASSERT_FALSE(receivedBodies.empty());
+    EXPECT_EQ(receivedBodies.back(), body) << bodySize;
+    streamId += 2;
+  }
+  EXPECT_EQ(receivedBodies.size(), 5U);
+}
+
+// RFC 9113 §8.1.1: a content-length that is not a number, or that differs from the sum of the DATA frame lengths
+// (checked as they arrive, then when the stream ends, after DATA or trailers), makes the request malformed: its stream
+// is reset with PROTOCOL_ERROR, without response, and the connection keeps serving the other streams.
+TEST(Http2ProtocolHandler, ContentLengthNotMatchingTheBodyIsMalformed) {
+  Router router;
+  vector<std::string> receivedBodies;
+  router.setDefault([&receivedBodies](const HttpRequestView& req) {
+    receivedBodies.emplace_back(req.body());
+    return HttpResponse(200);
+  });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  struct Case {
+    std::string_view contentLength;
+    std::size_t bodySize;  // sent in DATA frames of 16 KiB at most, none with END_STREAM on the HEADERS frame when 0
+    bool endWithTrailers;
+    bool malformed;
+  };
+  static constexpr Case kCases[] = {
+      {"abc", 10, false, true},      {"", 10, false, true},        {"-1", 10, false, true},
+      {"1,1", 1, false, true},       {"5", 0, false, true},        {"0", 0, false, false},
+      {"20000", 32768, false, true}, {"1000", 999, false, true},   {"1000", 999, true, true},
+      {"1000", 1000, true, false},   {"1000", 1000, false, false}, {"40000", 40000, false, false},
+  };
+
+  uint32_t streamId = 1;
+  for (const Case& testCase : kCases) {
+    const std::string body(testCase.bodySize, 'c');
+    const bool endStreamOnHeaders = testCase.bodySize == 0 && !testCase.endWithTrailers;
+
+    RawChars headers;
+    headers.append(MakeHttp1HeaderLine(":method", "POST"));
+    headers.append(MakeHttp1HeaderLine(":scheme", "https"));
+    headers.append(MakeHttp1HeaderLine(":authority", "example.com"));
+    headers.append(MakeHttp1HeaderLine(":path", "/upload"));
+    headers.append(MakeHttp1HeaderLine("content-length", testCase.contentLength));
+    ASSERT_EQ(loop.client.sendHeaders(streamId, http::StatusCode{}, HeadersView(headers), endStreamOnHeaders),
+              ErrorCode::NoError);
+    static constexpr std::size_t kFrameSize = 16384;
+    for (std::size_t pos = 0; pos < body.size(); pos += kFrameSize) {
+      const std::string_view frame = std::string_view(body).substr(pos, kFrameSize);
+      const bool lastFrame = pos + frame.size() == body.size();
+      ASSERT_EQ(loop.client.sendData(streamId, std::as_bytes(std::span<const char>(frame.data(), frame.size())),
+                                     lastFrame && !testCase.endWithTrailers),
+                ErrorCode::NoError);
+    }
+    if (testCase.endWithTrailers) {
+      RawChars trailers;
+      trailers.append(MakeHttp1HeaderLine("x-checksum", "abc123"));
+      ASSERT_EQ(loop.client.sendHeaders(streamId, http::StatusCode{}, HeadersView(trailers), true), ErrorCode::NoError);
+    }
+
+    const std::size_t nbResponses = loop.clientHeaders.size();
+    const std::size_t nbResets = loop.streamResets.size();
+    const std::size_t nbRequests = receivedBodies.size();
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
+
+    if (testCase.malformed) {
+      EXPECT_EQ(loop.clientHeaders.size(), nbResponses) << testCase.contentLength;
+      ASSERT_EQ(loop.streamResets.size(), nbResets + 1) << testCase.contentLength;
+      EXPECT_EQ(loop.streamResets.back(), std::make_pair(streamId, ErrorCode::ProtocolError));
+      EXPECT_EQ(receivedBodies.size(), nbRequests) << testCase.contentLength;
+    } else {
+      ASSERT_EQ(loop.clientHeaders.size(), nbResponses + 1) << testCase.contentLength;
+      EXPECT_EQ(loop.clientHeaders.back().streamId, streamId);
+      EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "200") << testCase.contentLength;
+      EXPECT_EQ(loop.streamResets.size(), nbResets) << testCase.contentLength;
+      ASSERT_EQ(receivedBodies.size(), nbRequests + 1) << testCase.contentLength;
+      EXPECT_EQ(receivedBodies.back(), body);
+    }
+    streamId += 2;
+  }
 }
 
 TEST(Http2ProtocolHandler, ConnectTunnelOnTransportClosingCleansUp) {

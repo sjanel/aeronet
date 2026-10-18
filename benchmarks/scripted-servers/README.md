@@ -255,6 +255,10 @@ run_benchmarks.py --protocol h2c --server aeronet,go --scenario headers,mixed
 | go | Yes | Yes | golang.org/x/net/http2/h2c |
 | python | Yes | Yes | Hypercorn replaces uvicorn |
 
+In h2-tls mode, h2load offers a single TLS 1.3 cipher suite, `TLS_AES_256_GCM_SHA384` (`--tls13-ciphers`), so that
+every server encrypts with the same cipher: by default, the rust (rustls) and Go servers select AES-128-GCM while the
+others select AES-256-GCM. The runner warns when a server negotiates another cipher.
+
 Pistache, Drogon and Crow are excluded from HTTP/2 benchmarks (no H2 support).
 Boost.Beast is also excluded from HTTP/2 benchmarks (Beast has no HTTP/2 server transport).
 
