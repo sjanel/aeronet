@@ -7,6 +7,7 @@
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
+#include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/reserved-headers.hpp"
 #include "aeronet/string-trim.hpp"
 #include "aeronet/tolower-str.hpp"
@@ -24,10 +25,10 @@ void Validate(const ConcatenatedHeaders& headers, HeaderType type) {
     // headers, etc.)
     tolower(const_cast<char*>(headerNameValue.data()), colonPos);
 
-    std::string_view headerName = headerNameValue.substr(0, colonPos);
+    LowerAsciiKey headerName(headerNameValue.substr(0, colonPos));
 
     if (!http::IsValidHeaderName(headerName)) {
-      throw std::invalid_argument(std::format("header has invalid name: '{}'", headerName));
+      throw std::invalid_argument(std::format("header has invalid name: '{}'", std::string_view(headerName)));
     }
 
     std::string_view headerValue = headerNameValue.substr(colonPos + http::HeaderSep.size());
@@ -40,12 +41,13 @@ void Validate(const ConcatenatedHeaders& headers, HeaderType type) {
 
     if (type == HeaderType::Response) {
       if (http::IsReservedResponseHeader(headerName)) {
-        throw std::invalid_argument(std::format("attempt to set reserved header: '{}'", headerName));
+        throw std::invalid_argument(std::format("attempt to set reserved header: '{}'", std::string_view(headerName)));
       }
     } else {
       assert(type == HeaderType::Request);
       if (http::IsReservedOrForbiddenRequestHeader(headerName)) {
-        throw std::invalid_argument(std::format("attempt to set reserved request header: '{}'", headerName));
+        throw std::invalid_argument(
+            std::format("attempt to set reserved request header: '{}'", std::string_view(headerName)));
       }
     }
   }

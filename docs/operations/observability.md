@@ -216,7 +216,7 @@ Building with `AERONET_ENABLE_OPENTELEMETRY` requires curl and protobuf developm
 
 The server includes Kubernetes-style probe support. Keep a probe endpoint lightweight, make readiness reflect dependencies that actually gate traffic, and consider a dedicated listener when probe availability must be isolated from application load.
 
-Read [Health probes](health-probes.md), then use the [Kubernetes deployment guide](../kubernetes-examples.md) for ConfigMap and manifest examples.
+Read [Health probes](health-probes.md), then use the [Kubernetes deployment guide](kubernetes.md) for ConfigMap and manifest examples.
 
 ## Tests
 

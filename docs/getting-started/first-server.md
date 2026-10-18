@@ -11,7 +11,7 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DAERONET_BUILD_TESTS=OF
 cmake --build build --parallel
 ```
 
-For package-manager and FetchContent integration, see [Installation and build](../INSTALL.md).
+For package-manager and FetchContent integration, see [Installation and build](install.md).
 
 ## Create a route
 

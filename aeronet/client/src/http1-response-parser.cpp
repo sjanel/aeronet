@@ -17,6 +17,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/search-crlf.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
@@ -583,7 +584,7 @@ Http1ResponseParser::Status Http1ResponseParser::parse(std::span<char> buffer, b
     }
     char* const lineFirst = buffer.data() + static_cast<std::size_t>(line.data() - bufferBegin);
     tolower(lineFirst, colon);
-    const std::string_view name = line.substr(0, colon);
+    const LowerAsciiKey name(line.substr(0, colon));
     const std::string_view value = TrimOws(line.substr(colon + 1));
 
     if (!http::IsValidHeaderValue(value)) {
@@ -618,7 +619,7 @@ Http1ResponseParser::Status Http1ResponseParser::parse(std::span<char> buffer, b
         return Status::Error;
       }
 
-      resp.headerAddLineUnchecked(LowerAsciiKey{name}, value);
+      resp.headerAddLineUnchecked(name, value);
     }
   }
 
