@@ -173,8 +173,10 @@ struct Http2Config {
   uint32_t maxConcurrentStreams{100};
 
   /// SETTINGS_INITIAL_WINDOW_SIZE (0x4): Initial flow control window size for streams.
-  /// Default: 65535 bytes (RFC 9113 default, ~64KB).
-  uint32_t initialWindowSize{65535};
+  /// The peer sends at most this many bytes on a stream before receiving credit: with the RFC 9113 default (65535
+  /// bytes), a single upload (server) or download (client) would be capped to about 64 KiB per round trip.
+  /// Default: 1 MiB, like hyper and Go.
+  uint32_t initialWindowSize{1U << 20U};
 
   /// SETTINGS_MAX_FRAME_SIZE (0x5): Maximum frame payload size.
   /// Range: 16384 (2^14) to 16777215 (2^24 - 1).

@@ -105,6 +105,7 @@ Http2ProtocolHandler::StreamRequest& Http2ProtocolHandler::StreamRequest::operat
   if (this != &other) [[likely]] {
     request = std::move(other.request);
     bodyBuffer = std::move(other.bodyBuffer);
+    declaredBodyLength = other.declaredBodyLength;
     headerStorage = std::move(other.headerStorage);
     trailerStorage = std::move(other.trailerStorage);
     bodyContext = other.bodyContext;
@@ -238,33 +239,34 @@ void Http2ProtocolHandler::onHeadersDecoded(uint32_t streamId, const SvToSvMap& 
   req._pOwnerState = _pConnectionState;
   req._addTrailerHeader = false;  // no trailer header in HTTP/2
 
-  const auto rejectMalformedRequest = [this, streamId](std::string_view reason) {
-    log::warn("Malformed HTTP/2 request on stream {}: {}", streamId, reason);
-    _connection.sendRstStream(streamId, ErrorCode::ProtocolError);
-  };
-
   // Pass 1 : compute total headers storage
   std::size_t headersTotalLen = 0U;
   std::string_view methodValue;
   std::string_view schemeValue;
   std::string_view authorityValue;
   std::string_view pathValue;
+  std::string_view contentLengthValue;
+  bool hasContentLength = false;
   for (const auto& [name, value] : headers) {
     headersTotalLen += name.size() + value.size();
     assert(!name.empty());
     if (name.front() != ':') {
+      if (name == http::ContentLength.get()) {
+        contentLengthValue = value;
+        hasContentLength = true;
+      }
       continue;
     }
     if (value.empty()) {
       // There is no possible valid HTTP/2 request with an empty pseudo-header field value, so this is a protocol error.
-      rejectMalformedRequest("empty pseudo-header field value");
+      rejectMalformedRequest(streamId, "empty pseudo-header field value");
       return;
     }
     if (name == http::PseudoHeaderAuthority) {
       authorityValue = value;
     } else if (name == http::PseudoHeaderMethod) {
       if (!std::ranges::all_of(value, [](char ch) { return is_tchar(ch); })) {
-        rejectMalformedRequest("invalid :method pseudo-header field");
+        rejectMalformedRequest(streamId, "invalid :method pseudo-header field");
         return;
       }
       methodValue = value;
@@ -277,13 +279,13 @@ void Http2ProtocolHandler::onHeadersDecoded(uint32_t streamId, const SvToSvMap& 
       // mandatory according to the request form. :authority is optional for ordinary requests because a target URI
       // can legitimately have no authority component; CONNECT is the exception and requires it instead of
       // :scheme/:path.
-      rejectMalformedRequest("unexpected or unsupported pseudo-header field");
+      rejectMalformedRequest(streamId, "unexpected or unsupported pseudo-header field");
       return;
     }
   }
 
   if (methodValue.empty()) {
-    rejectMalformedRequest("missing :method pseudo-header field");
+    rejectMalformedRequest(streamId, "missing :method pseudo-header field");
     return;
   }
 
@@ -301,11 +303,11 @@ void Http2ProtocolHandler::onHeadersDecoded(uint32_t streamId, const SvToSvMap& 
   const bool isConnect = parsedMethod == http::Method::CONNECT;
   if (isConnect) {
     if (authorityValue.empty() || !schemeValue.empty() || !pathValue.empty()) {
-      rejectMalformedRequest("CONNECT requires :authority and forbids :scheme and :path");
+      rejectMalformedRequest(streamId, "CONNECT requires :authority and forbids :scheme and :path");
       return;
     }
   } else if (schemeValue.empty() || pathValue.empty()) {
-    rejectMalformedRequest("missing or invalid :scheme or :path pseudo-header field");
+    rejectMalformedRequest(streamId, "missing or invalid :scheme or :path pseudo-header field");
     return;
   }
 
@@ -356,6 +358,29 @@ void Http2ProtocolHandler::onHeadersDecoded(uint32_t streamId, const SvToSvMap& 
     }
   }
 
+  // RFC 9113 §8.1.1: a request is malformed when its content-length is not a number, or differs from the sum of the
+  // lengths of its DATA frames, checked as they arrive (none follow END_STREAM). CONNECT has no content: its DATA
+  // frames carry the tunneled bytes.
+  std::size_t declaredBodyLength = StreamRequest::kUnknownBodyLength;
+  bool declaredBodyTooLarge = false;
+  if (hasContentLength && parsedMethod != http::Method::CONNECT) {
+    const char* const pContentLengthBeg = contentLengthValue.data();
+    const char* const pContentLengthEnd = pContentLengthBeg + contentLengthValue.size();
+    const auto [ptr, errc] = std::from_chars(pContentLengthBeg, pContentLengthEnd, declaredBodyLength);
+    if (errc == std::errc::result_out_of_range) {
+      declaredBodyTooLarge = true;
+    } else if (errc != std::errc{} || ptr != pContentLengthEnd) {
+      rejectMalformedRequest(streamId, "invalid content-length");
+      return;
+    } else {
+      declaredBodyTooLarge = declaredBodyLength > _pServerConfig->maxBodyBytes;
+    }
+    if (endStream && (declaredBodyTooLarge || declaredBodyLength != 0)) {
+      rejectMalformedRequest(streamId, "non-zero content-length on a request without content");
+      return;
+    }
+  }
+
   const auto [encoding, reject] =
       _pCompressionState->selector.negotiateAcceptEncoding(req.headerValueOrEmpty(http::AcceptEncoding));
   // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
@@ -389,16 +414,15 @@ void Http2ProtocolHandler::onHeadersDecoded(uint32_t streamId, const SvToSvMap& 
     return;
   }
 
-  // A declared body above the server limit is refused before it is received.
-  if (const auto contentLength = req.headerValue(http::ContentLength)) {
-    std::size_t declaredLength = 0;
-    const auto [ptr, errc] =
-        std::from_chars(contentLength->data(), contentLength->data() + contentLength->size(), declaredLength);
-    if (errc == std::errc::result_out_of_range ||
-        (errc == std::errc{} && ptr == contentLength->data() + contentLength->size() &&
-         declaredLength > _pServerConfig->maxBodyBytes)) {
-      rejectTooLargeBody(it);
-    }
+  // A declared body above the server limit is refused before it is received. A smaller one is allocated at once, so
+  // that its DATA frames are appended without reallocating (and copying) the body as it grows. The allocation is capped
+  // by the connection receive window: a client declaring a large body without sending it allocates no more.
+  if (declaredBodyTooLarge) {
+    rejectTooLargeBody(it);
+  } else if (declaredBodyLength != StreamRequest::kUnknownBodyLength) {
+    streamReq.declaredBodyLength = declaredBodyLength;
+    streamReq.bodyBuffer.reserve(
+        std::min(declaredBodyLength, static_cast<std::size_t>(_connection.localSettings().connectionWindowSize)));
   }
 }
 
@@ -447,6 +471,10 @@ void Http2ProtocolHandler::onData(uint32_t streamId, std::span<const std::byte> 
     rejectTooLargeBody(it);
     return;
   }
+  if (streamReq.bodyBuffer.size() + data.size() > streamReq.declaredBodyLength) {
+    rejectMalformedRequest(streamId, "request body longer than its content-length");
+    return;
+  }
 
   // Accumulate body data
   streamReq.bodyBuffer.append(reinterpret_cast<const char*>(data.data()), data.size());
@@ -471,10 +499,23 @@ void Http2ProtocolHandler::rejectTooLargeBody(StreamsMap::iterator it) {
   _connection.sendRstStream(streamId, ErrorCode::NoError);
 }
 
+void Http2ProtocolHandler::rejectMalformedRequest(uint32_t streamId, std::string_view reason) {
+  log::warn("Malformed HTTP/2 request on stream {}: {}", streamId, reason);
+  _connection.sendRstStream(streamId, ErrorCode::ProtocolError);
+}
+
 void Http2ProtocolHandler::finalizeRequestBodyAndDispatch(StreamsMap::iterator it) {
   const uint32_t streamId = it->first;
   StreamRequest& streamReq = it->second.request;
   HttpRequestView& req = streamReq.request;
+
+  // A longer body was already rejected while received.
+  assert(streamReq.bodyBuffer.size() <= streamReq.declaredBodyLength);
+  if (streamReq.declaredBodyLength != StreamRequest::kUnknownBodyLength &&
+      streamReq.bodyBuffer.size() != streamReq.declaredBodyLength) {
+    rejectMalformedRequest(streamId, "request body shorter than its content-length");
+    return;
+  }
 
   // Set body on HttpRequestView, applying any request-body decompression.
   req._body = streamReq.bodyBuffer;
