@@ -22,6 +22,7 @@
 #include "aeronet/async-handler-state.hpp"
 #endif
 
+#include "aeronet/compiler-config.hpp"
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-constants.hpp"
@@ -600,9 +601,21 @@ class HttpRequestView {
 
   // Attempts to set this HttpRequestView (except body) from given ConnectionState.
   // Returns StatusCode OK if the request is good (it will be fully set) or an HTTP error status to forward.
-  // If 0 is returned, it means the connection state buffer is not filled up to the first newline.
+  // If 0 is returned, the head is not complete yet: the next call, with more bytes appended to the same head (the
+  // buffer may have moved meanwhile), resumes the parsing where this one stopped.
   http::StatusCode initTrySetHead(std::span<char> inBuffer, RawChars& tmpBuffer, uint32_t maxHeadersBytes,
                                   bool mergeAllowedForUnknownRequestHeaders, tracing::SpanPtr traceSpan);
+
+  // Tells whether the head of this request was parsed while its body is not received yet (see keepHeadForBody()).
+  [[nodiscard]] bool isHeadWaitingForBody() const noexcept { return _headParseState == HeadParseState::WaitingForBody; }
+
+  // Keeps the head parsed by initTrySetHead() for the next attempt to serve this request, once more of its body is
+  // received: it must not be parsed again, initTrySetHead() having modified it in place.
+  void keepHeadForBody() noexcept { _headParseState = HeadParseState::WaitingForBody; }
+
+  // Resumes the request whose head waited for its body, at the start of inBuffer (that may have moved meanwhile): same
+  // state as after initTrySetHead() returned OK for it.
+  void resumeHeadWaitingForBody(std::span<char> inBuffer) noexcept;
 
   void prefinalizeHttpResponse(HttpResponse& response, tracing::TelemetryContext& telemetryContext);
 
@@ -673,6 +686,32 @@ class HttpRequestView {
   // percent-encoding).
   bool decodePath(char* pathStart, char* pathEnd);
 
+  // Makes the views set by the parsing of the head point into the head at newBase, from where it was parsed.
+  void rebaseHeadViews(const char* newBase) noexcept;
+
+  // Resets the state derived from the body and the routing of the request, set again for each attempt to serve it.
+  // Inlined: it is part of the parsing of every request head.
+  AERONET_ALWAYS_INLINE void resetBodyState() noexcept {
+    _body = {};
+    _activeStreamingChunk = {};
+    _bodyAccessMode = BodyAccessMode::Undecided;
+    _pBodyAccessBridge = nullptr;
+    _pBodyAccessContext = nullptr;
+    _trailers.clear();
+    _pathParams.clear();
+    _queryParams.clear();
+
+    _headPinned = false;
+  }
+
+  // Progress of the parsing of the head of an HTTP/1 request received in several reads. The parsing modifies the head
+  // in place (decoded request-target, lower-cased header names, merged header values): it must never parse it twice.
+  enum class HeadParseState : uint8_t {
+    None,            // initTrySetHead() parses the head from the start of the buffer
+    Partial,         // the request line and the header lines of the first _headSpanSize bytes are parsed
+    WaitingForBody,  // the whole head is parsed, the request waits for the rest of its body
+  };
+
   enum class BodyAccessMode : uint8_t { Undecided, Streaming, Aggregated };
 
   struct BodyAccessBridge {
@@ -729,6 +768,7 @@ class HttpRequestView {
   BodyAccessMode _bodyAccessMode{BodyAccessMode::Undecided};
   Encoding _responsePossibleEncoding{Encoding::none};
   bool _headPinned{false};
+  HeadParseState _headParseState{HeadParseState::None};
   bool _addTrailerHeader{false};
   bool _addVaryAcceptEncoding{false};
 #ifdef AERONET_ENABLE_HTTP2

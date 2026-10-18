@@ -303,15 +303,21 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
       deferInput(cnxFd, state);
       return true;
     }
-    const auto statusCode =
-        request.initTrySetHead(state.inBuffer, _sharedBuffers.buf, _config.maxHeaderBytes,
-                               _config.mergeUnknownRequestHeaders, _telemetry.createSpan("http.request"));
-    if (statusCode == HttpRequestView::kStatusNeedMoreData) {
-      break;
-    }
+    // The head of a request whose body is received in several reads is parsed once, and the request counted once.
+    const bool headWaitingForBody = request.isHeadWaitingForBody();
+    http::StatusCode statusCode = http::StatusCodeOK;
+    if (headWaitingForBody) {
+      request.resumeHeadWaitingForBody(state.inBuffer);
+    } else {
+      statusCode = request.initTrySetHead(state.inBuffer, _sharedBuffers.buf, _config.maxHeaderBytes,
+                                          _config.mergeUnknownRequestHeaders, _telemetry.createSpan("http.request"));
+      if (statusCode == HttpRequestView::kStatusNeedMoreData) {
+        break;
+      }
 
-    ++state.requestsServed;
-    ++_stats.totalRequestsServed;
+      ++state.requestsServed;
+      ++_stats.totalRequestsServed;
+    }
 
     if (statusCode != http::StatusCodeOK) {
       emitSimpleError(cnxIt, statusCode, {});
@@ -321,7 +327,9 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
       break;
     }
 
-    request._reqStart = state.lastActivity;
+    if (!headWaitingForBody) {
+      request._reqStart = state.lastActivity;
+    }
 
     // A full request head (and body, if present) will now be processed; mark header parsing as done.
     // headerStartTp is kept alive as the reference for relative body/deadline timestamps.
@@ -417,12 +425,15 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
       state.installAggregatedBodyBridge();
     } else {
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-      if (routingResult.asyncRequestHandler() == nullptr) {
+      const bool waitForBody = routingResult.asyncRequestHandler() == nullptr;
+#else
+      static constexpr bool waitForBody = true;
+#endif
+      if (waitForBody) {
+        // Served again once more of its body is received, without parsing its head again.
+        request.keepHeadForBody();
         break;
       }
-#else
-      break;
-#endif
     }
 
     RequestFinalizationRAII requestFinalizationRAII(state, consumedBytes);
