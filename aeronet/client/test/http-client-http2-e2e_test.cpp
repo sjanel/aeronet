@@ -1147,6 +1147,9 @@ TEST(HttpClientHttp2E2ETest, SinkStreamsLargeBodyBeyondMaxResponseBytes) {
 }
 
 TEST(HttpClientHttp2E2ETest, SinkReceivesDecodedBody) {
+  if (test::SupportedEncodings().empty()) {
+    GTEST_SKIP() << "no codec compiled in";  // /big is then sent as is, see SinkStreamsLargeBodyBeyondMaxResponseBytes
+  }
   HttpClient client = MakeHttp2Client();  // the server compresses /big
   test::CollectingBodySink sink;
   auto result = client.get(Url("/big"), sink);

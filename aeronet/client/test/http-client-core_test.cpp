@@ -2945,11 +2945,13 @@ TEST(HttpClientErrorE2ETest, ReadTimeoutReturnsError) {
 
 namespace {
 
-// Sends a 200 response whose 10-byte body trickles in one byte every `gap`, until the client stops reading it.
+constexpr std::string_view kTrickleBody = "01234567890123456789012345678901234567890123456789";
+
+// Sends a 200 response whose body trickles in one byte every `gap`, until the client stops reading it.
 void TrickleResponse(NativeHandle fd, std::chrono::milliseconds gap) {
   DrainRequest(fd);
-  SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 10\r\n\r\n");
-  for (char ch = '0'; ch <= '9'; ++ch) {
+  SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: " + std::to_string(kTrickleBody.size()) + "\r\n\r\n");
+  for (const char& ch : kTrickleBody) {
     std::this_thread::sleep_for(gap);
     if (SafeSend(fd, &ch, 1) <= 0) {
       return;  // the client gave up and closed the connection
@@ -2961,14 +2963,16 @@ void TrickleResponse(NativeHandle fd, std::chrono::milliseconds gap) {
 
 // A slow but steady response outlasting the inactivity timeout completes: each received byte restarts it.
 TEST(HttpClientErrorE2ETest, InactivityTimeoutLetsASteadySlowResponseComplete) {
-  RawServer server([](NativeHandle fd, int) { TrickleResponse(fd, std::chrono::milliseconds{30}); });
+  // The body takes at least 50 x 20 ms = 1 s, longer than the inactivity timeout, while each byte leaves 780 ms
+  // to a thread descheduled on a loaded CI runner.
+  RawServer server([](NativeHandle fd, int) { TrickleResponse(fd, std::chrono::milliseconds{20}); });
   HttpClientConfig cfg;
-  cfg.requestTimeout = std::chrono::seconds{10};
-  cfg.inactivityTimeout = std::chrono::milliseconds{250};
+  cfg.requestTimeout = std::chrono::seconds{30};
+  cfg.inactivityTimeout = std::chrono::milliseconds{800};
   HttpClient client(cfg);
   auto result = client.get(MakeUrl(server.port()));
   ASSERT_TRUE(result) << ErrcToStr(result.error());
-  EXPECT_EQ(result->bodyInMemory(), "0123456789");
+  EXPECT_EQ(result->bodyInMemory(), kTrickleBody);
 }
 
 // A stalled exchange fails after the inactivity timeout, long before the request timeout.
@@ -3608,13 +3612,18 @@ TEST(HttpClientSinkE2ETest, IdentityContentCodingIsStreamed) {
     DrainRequest(fd);
     SendAll(fd, EncodedResponse("identity", payload));
   });
-  HttpClient client(HttpClientConfig{}.withDecompression(true));
+  // Decompression is enabled by default when a decoder is compiled in, and cannot be enabled otherwise.
+  HttpClient client;
   test::CollectingBodySink sink;
   auto result = client.get(MakeUrl(server.port()), sink);
   ASSERT_TRUE(result) << ErrcToStr(result.error());
   EXPECT_EQ(sink.body, payload);
   EXPECT_EQ(sink.bodySize, payload.size());  // the identity coding leaves the body as received
-  EXPECT_TRUE(sink.contentEncoding.empty());
+  if (test::SupportedEncodings().empty()) {
+    EXPECT_EQ(sink.contentEncoding, "identity");  // without decompression, the head is delivered as received
+  } else {
+    EXPECT_TRUE(sink.contentEncoding.empty());
+  }
 }
 
 // A followed redirect is never delivered to the sink: only the final response is. A redirect that is not followed is.
@@ -3888,19 +3897,22 @@ TEST(HttpClientSinkE2ETest, UnsupportedContentCodingFailsBeforeTheBody) {
       DrainRequest(fd);
       SendAll(fd, response);
     });
-    HttpClientConfig cfg;
-    cfg.maxResponseBytes = 4096;  // a buffered body would fail with responseTooLarge
-    HttpClient client(cfg);
-    test::CollectingBodySink sink;
-    auto result = client.get(MakeUrl(server.port()), sink);
-    ASSERT_FALSE(result) << coding;
-    EXPECT_EQ(result.error(), HttpClientErrc::malformedResponse) << coding;
-    EXPECT_EQ(sink.headCalls, 0U) << coding;
+    // Decompression is enabled by default only when a decoder is compiled in.
+    if (!test::SupportedEncodings().empty()) {
+      HttpClientConfig cfg;
+      cfg.maxResponseBytes = 4096;  // a buffered body would fail with responseTooLarge
+      HttpClient client(cfg);
+      test::CollectingBodySink sink;
+      auto result = client.get(MakeUrl(server.port()), sink);
+      ASSERT_FALSE(result) << coding;
+      EXPECT_EQ(result.error(), HttpClientErrc::malformedResponse) << coding;
+      EXPECT_EQ(sink.headCalls, 0U) << coding;
+    }
 
     // Without decompression, the coded body is delivered as received.
     HttpClient raw(HttpClientConfig{}.withDecompression(false));
     test::CollectingBodySink rawSink;
-    result = raw.get(MakeUrl(server.port()), rawSink);
+    auto result = raw.get(MakeUrl(server.port()), rawSink);
     ASSERT_TRUE(result) << coding << ' ' << ErrcToStr(result.error());
     EXPECT_EQ(rawSink.contentEncoding, coding);
     EXPECT_EQ(rawSink.body.size(), 1UL << 20U);
