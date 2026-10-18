@@ -84,7 +84,9 @@ struct ConnectionState {
     }
   }
 
-  TransportResult transportRead(std::size_t chunkSize);
+  // Reads up to chunkSize bytes (see HttpServerConfig::computeReadChunkSize()) into inBuffer, then adapts the read size
+  // of the connection to the bytes read.
+  TransportResult transportRead(const HttpServerConfig& config, std::size_t chunkSize);
 
   TransportResult transportWrite(std::string_view data);
 
@@ -293,6 +295,12 @@ struct ConnectionState {
   // True when the expectations (Expect header) of the request at the head of inBuffer were already answered: its head
   // is parsed again each time a part of its body is received, but interim responses must be sent once.
   bool expectationAnswered : 1 {false};
+
+  static constexpr uint8_t kReadSizeShiftNbBits = 5;
+
+  // Number of times the read size of the connection was doubled from HttpServerConfig::minReadChunkBytes (see
+  // HttpServerConfig::adaptReadSizeShift()).
+  uint8_t readSizeShift : kReadSizeShiftNbBits{0};
 
 #ifdef AERONET_ENABLE_OPENSSL
   // Ensures the TLS handshake event callback is emitted at most once per connection.

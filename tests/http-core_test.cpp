@@ -25,6 +25,7 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -290,6 +291,29 @@ TEST(HttpServerConfigLimits, MaxPerEventReadBytesAppliesAtRuntime) {
   ASSERT_FALSE(resp.empty()) << "expected a response";
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
   ASSERT_TRUE(resp.contains("payload ok")) << resp;
+}
+
+// An unlimited fairness budget is read in reads of at most kMaxReadChunkBytes, chained within the same event.
+TEST(HttpServerConfigLimits, UnlimitedBudgetReadsLargeBodyInCappedReads) {
+  auto scope = makeMaxPerEventReadBytesScope(std::numeric_limits<std::uint32_t>::max());
+
+  static constexpr std::size_t kPayloadSize = (8UL * HttpServerConfig::kMaxReadChunkBytes) + 17U;
+  std::string payload(kPayloadSize, 'u');
+  ts.router().setDefault([](const HttpRequestView& req) {
+    HttpResponse resp;
+    if (req.body().size() != kPayloadSize || req.body().find_first_not_of('u') != std::string_view::npos) {
+      resp.status(http::StatusCodeBadRequest).body("payload mismatch");
+    } else {
+      resp.body("unlimited ok");
+    }
+    return resp;
+  });
+
+  std::string raw = "POST /unlimited HTTP/1.1\r\nhost: x\r\ncontent-length: " + std::to_string(kPayloadSize) +
+                    "\r\nconnection: close\r\n\r\n" + payload;
+  std::string resp = test::sendAndCollect(port, raw);
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  ASSERT_TRUE(resp.contains("unlimited ok")) << resp;
 }
 
 TEST(HttpServerConfigLimits, DeferredReadDrainsBufferAfterFairnessCap) {

@@ -6,6 +6,8 @@
 #include <sys/uio.h>  // NOLINT(misc-include-cleaner) used by iovec
 #elifdef AERONET_WINDOWS
 #include <ws2tcpip.h>
+
+#include <limits>
 #endif
 
 #include <cstddef>
@@ -15,6 +17,9 @@
 
 #include "aeronet/file.hpp"
 #include "aeronet/native-handle.hpp"
+#ifdef AERONET_WINDOWS
+#include "aeronet/safe-cast.hpp"
+#endif
 #include "aeronet/sendfile.hpp"
 #include "aeronet/system-error.hpp"
 #include "aeronet/transport-result.hpp"
@@ -40,7 +45,7 @@ TransportResult SendAll(NativeHandle fd, std::string_view data) {
     const auto nbWritten = ::send(fd, data.data() + ret.bytesProcessed, data.size() - ret.bytesProcessed, kSendFlags);
 #elifdef AERONET_WINDOWS
     const auto nbWritten =
-        ::send(fd, data.data() + ret.bytesProcessed, static_cast<int>(data.size() - ret.bytesProcessed), kSendFlags);
+        ::send(fd, data.data() + ret.bytesProcessed, SaturateCast<int>(data.size() - ret.bytesProcessed), kSendFlags);
 #endif
     if (nbWritten == -1) {
       const int err = LastSystemError();
@@ -72,9 +77,9 @@ TransportResult PlainTransport::read(char* buf, std::size_t len) {
 #ifdef AERONET_POSIX
   const auto nbRead = ::recv(_fd, buf, len, 0);
 #elifdef AERONET_WINDOWS
-  // TODO: is this cast safe ? Cannot we directly check in config.validate() buffer sizes for Windows, so that they
-  // cannot be larger than 2^31 - 1 (INT_MAX) ?
-  const auto nbRead = ::recv(_fd, buf, static_cast<int>(len), 0);
+  // recv() takes an int length: a longer one (for instance a maxPerEventReadBytes above 2 GiB) is clamped, making a
+  // partial read, instead of turning negative and failing the read.
+  const auto nbRead = ::recv(_fd, buf, SaturateCast<int>(len), 0);
 #endif
   TransportResult ret{static_cast<std::size_t>(nbRead), TransportHint::None};
   if (nbRead == -1) {
@@ -127,6 +132,19 @@ TransportResult SocketTransportState::socketWrite(std::span<const std::string_vi
       // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
       ioVectors[ioVectorCount] = {const_cast<char*>(buffer.data()), buffer.size()};
 #elifdef AERONET_WINDOWS
+      if (buffer.size() > std::numeric_limits<ULONG>::max()) [[unlikely]] {
+        // Too long for a WSABUF: this buffer is sent on its own, after the buffers of the batch built so far.
+        if (ioVectorCount != 0) {
+          break;  // keeps bufIdx on this buffer, for the next batch
+        }
+        const TransportResult bufferResult = SendAll(_fd, buffer);
+        result.bytesProcessed += bufferResult.bytesProcessed;
+        if (bufferResult.bytesProcessed != buffer.size()) {
+          result.want = bufferResult.want;
+          return result;
+        }
+        continue;
+      }
       ioVectors[ioVectorCount] = {static_cast<ULONG>(buffer.size()), const_cast<char*>(buffer.data())};
 #endif
       ++ioVectorCount;
