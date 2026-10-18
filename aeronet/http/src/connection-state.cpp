@@ -11,7 +11,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
-#include <span>
 #include <string_view>
 #include <utility>
 
@@ -92,7 +91,7 @@ TransportResult ConnectionState::transportRead(const HttpServerConfig& config, s
   const auto result = transport.read(inBuffer.data() + inBuffer.size(), chunkSize);
   inBuffer.addSize(result.bytesProcessed);
   if (result.bytesProcessed != 0) {
-    static_assert(std::bit_width(HttpServerConfig::kMaxReadChunkBytes) < (1 << kReadSizeShiftNbBits));
+    static_assert(std::bit_width(HttpServerConfig::kMaxReadChunkBytes) < (1U << kReadSizeShiftNbBits));
     static constexpr uint8_t kReadSizeShiftMask = (1U << kReadSizeShiftNbBits) - 1U;
     readSizeShift = static_cast<uint8_t>(config.adaptReadSizeShift(readSizeShift, chunkSize, result.bytesProcessed) &
                                          kReadSizeShiftMask);

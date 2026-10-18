@@ -2,7 +2,7 @@
 
 This document centralizes how to build, install, and consume **aeronet**.
 
-> Cross-platform C++23 HTTP/1.1 server library (optional TLS). Tested on Linux, macOS, and Windows.
+> Cross-platform C++23 HTTP/1.1, HTTP/2 and WebSocket server and client library. Tested on Linux, macOS, and Windows.
 
 ## Toolchain & Platform
 
@@ -24,42 +24,7 @@ This document centralizes how to build, install, and consume **aeronet**.
 
 ## CMake Options
 
-| Option | Default* | Purpose |
-| ------ | -------- | ------- |
-| `AERONET_BUILD_EXAMPLES` | ON* | Build example programs |
-| `AERONET_BUILD_TESTS` | ON* | Build unit tests (needs GTest) |
-| `AERONET_BUILD_SHARED` | OFF | Build shared instead of static libs (recommended for development: a library edit relinks that library only) |
-| `AERONET_COMPACT_DEBUG_INFO` | ON for Debug with tests | Split DWARF + compressed debug sections (Linux, GCC / Clang): ~3.5x smaller Debug test binaries |
-| `AERONET_BUILD_MODULES` | OFF | Build as C++ modules (experimental) |
-| `AERONET_BUILD_BENCHMARKS` | ON top-level except Debug | Build benchmark executables and selected comparison backends |
-| `AERONET_INSTALL` | ON* | Enable install + package config export |
-| `AERONET_ENABLE_CCACHE` | ON* | Use ccache when it is installed |
-| `AERONET_ENABLE_SPDLOG` | ON* | Enable spdlog logging integration |
-| `AERONET_ENABLE_OPENSSL` | ON* | Enable TLS module (`aeronet_tls`) |
-| `AERONET_ENABLE_GLAZE` | ON* | Enable glaze-based JSON serialization helpers |
-| `AERONET_ENABLE_OPENTELEMETRY` | ON* | Enable OpenTelemetry instrumentation (build-time flag; opt-in) |
-| `AERONET_ENABLE_WEBSOCKET` | ON | Enable WebSocket protocol support |
-| `AERONET_ENABLE_ASYNC_HANDLERS` | ON | Enable asynchronous routing handlers |
-| `AERONET_ENABLE_HTTP2` | ON | Enable HTTP/2 protocol support |
-| `AERONET_ENABLE_HTTP_CLIENT` | ON | Enable the synchronous `HttpClient` module |
-| `AERONET_ENABLE_HTTP_SERVER` | ON | Enable the `HttpServer` module |
-| `AERONET_ENABLE_JWT` | ON when OpenSSL + Glaze are ON | Enable JWS-profile JWT/JWKS support; forced OFF without both prerequisites |
-| `AERONET_ENABLE_ZLIB` | ON* | Enable gzip/deflate (zlib / zlib-ng) compression + decompression |
-| `AERONET_ENABLE_ZLIBNG` | ON | Use `zlib-ng` implementation instead of classic `zlib` |
-| `AERONET_ENABLE_ZSTD` | ON* | Enable zstd compression + decompression |
-| `AERONET_ENABLE_BROTLI` | ON* | Enable brotli compression + decompression |
-| `AERONET_ENABLE_ASAN` | OFF | Address/UB sanitizers in debug builds |
-| `AERONET_ENABLE_TSAN` | OFF | Thread sanitizer (cannot be combined with `AERONET_ENABLE_ASAN`) |
-| `AERONET_ENABLE_CLANG_TIDY` | OFF | Run clang-tidy on targets |
-| `AERONET_WARNINGS_AS_ERRORS` | OFF | Treat warnings as errors (Debug builds, aeronet targets only) |
-| `AERONET_ASAN_OPTIONS` | (preset) | Override sanitizer flags |
-| `AERONET_TSAN_OPTIONS` | (preset) | Override thread sanitizer flags |
-| `AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS` | OFF | Extra custom runtime memory checks |
-| `AERONET_ENABLE_TEST_HOOKS` | non-Release tests | Enable test-only transport hooks; keep OFF in production |
-| `AERONET_ENABLE_WARNINGS` | ON* | Enable the project warning set |
-| `AERONET_SPDLOG_USE_STD_FORMAT` | ON | Use `std::format` rather than fmt through spdlog |
-
-*Defaults apply when aeronet is the top-level project; they flip to OFF when used as a dependency.
+Every CMake option - build products, developer tools, protocol and integration features, with their defaults and dependencies - is listed in the [build configuration reference](../reference/configuration.md). Options default to `ON` when aeronet is the top-level project, and to `OFF` when it is consumed as a dependency (FetchContent, Conan, vcpkg), so enable the features you need explicitly in that case.
 
 ## Quick Builds
 
@@ -127,7 +92,7 @@ cmake --build build-shared --parallel
 
 The CI workflow is the tested compatibility matrix, rather than a promise that every possible toolchain is interchangeable. It exercises GCC 13 and Clang 21 on Ubuntu x86_64 with optional features both OFF and ON, plus a GCC Release smoke build. Feature-enabled Debug and Release builds also run on Ubuntu ARM. macOS and Windows builds cover Debug and Release, and an Alpine/musl Debug job covers the minimal libc environment. The Examples and Docs job builds every example with all optional features enabled, runs the executable smoke tests, compiles the established Markdown C++ examples, and builds this MkDocs site with `--strict`.
 
-Use the exact CI versions for a supported baseline. The [build configuration reference](reference/configuration.md) maps each feature to its dependency and default.
+Use the exact CI versions for a supported baseline. The [build configuration reference](../reference/configuration.md) maps each feature to its dependency and default.
 
 ### macOS
 
@@ -146,6 +111,44 @@ cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
   -DAERONET_BUILD_TESTS=ON
 cmake --build build --config Release --parallel
 ctest --test-dir build --build-config Release --output-on-failure
+```
+
+## C++ modules (experimental)
+
+When `AERONET_BUILD_MODULES=ON` is set in CMake, the library builds an optional C++20 module interface (`aeronet`).
+The module re-exports the public API surface of `<aeronet/aeronet.hpp>` - only user-facing types, configuration structs, handler callbacks, and protocol enums are exported; internal implementation details are omitted.
+
+Requirements:
+
+- CMake 3.28+
+- A build system with C++20 module support (e.g. Ninja 1.11+)
+- Compiler minimum versions: GCC 15, Clang 18, or MSVC 17.6
+
+```bash
+cmake -B build -G Ninja -DAERONET_BUILD_MODULES=ON
+cmake --build build
+```
+
+```cpp
+#include <utility> // std::move - standard library is not exported by the module
+
+import aeronet;
+
+using aeronet::HttpRequestView;
+using aeronet::HttpResponse;
+using aeronet::HttpServer;
+using aeronet::HttpServerConfig;
+using aeronet::Router;
+using aeronet::http::Method;
+
+int main() {
+    Router router;
+    router.setPath(Method::GET, "/hello", [](const HttpRequestView& req) {
+        return HttpResponse(200).header("x-req-body", req.body()).body("hello from aeronet\n");
+    });
+    HttpServer server(HttpServerConfig{}, std::move(router));
+    server.run();
+}
 ```
 
 ## Install

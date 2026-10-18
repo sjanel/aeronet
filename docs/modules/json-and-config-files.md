@@ -60,7 +60,7 @@ const std::string json = server.dumpConfig(ConfigFormat::json);
 server.saveConfig("/tmp/aeronet-config.yaml");
 ```
 
-The [`aeronet-config-dump`](../../examples/config-dump.cpp) example program prints the complete default configuration, every field included, as JSON or YAML: a good starting point for a configuration file or a Kubernetes ConfigMap (see the [Kubernetes guide](../kubernetes-examples.md)). With `--client`, it prints the default client configuration instead.
+The [`aeronet-config-dump`](../../examples/config-dump.cpp) example program prints the complete default configuration, every field included, as JSON or YAML: a good starting point for a configuration file or a Kubernetes ConfigMap (see the [Kubernetes guide](../operations/kubernetes.md)). With `--client`, it prints the default client configuration instead.
 
 ### Client configuration files
 

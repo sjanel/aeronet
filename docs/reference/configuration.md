@@ -84,7 +84,7 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
-The [installation guide](../INSTALL.md) covers compilers, packages, installation, Conan, and vcpkg. Runtime controls are split into the [server](server-configuration.md) and [client](client-configuration.md) references.
+The [installation guide](../getting-started/install.md) covers compilers, packages, installation, Conan, and vcpkg. Runtime controls are split into the [server](server-configuration.md) and [client](client-configuration.md) references.
 
 ## Public headers and configuration files
 

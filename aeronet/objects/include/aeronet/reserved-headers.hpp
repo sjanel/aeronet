@@ -1,40 +1,38 @@
 #pragma once
 
 #include <algorithm>
-#include <string_view>
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/lower-ascii-key.hpp"
-#include "aeronet/string-equal-ignore-case.hpp"
 
 namespace aeronet::http {
 
 // Centralized rule for HTTP response headers the user may not set directly (normal or streaming path).
-// These are either automatically emitted (Date, Content-Type, Content-Length, Connection, Transfer-Encoding) or
-// would create ambiguous / unsupported semantics if user-supplied before dedicated feature support
-// (Trailer, Upgrade, TE). Keeping this here allows future optimization of storage layout without
-// scattering the logic.
+// These are managed by aeronet itself: automatically emitted (Date, Content-Type, Content-Length, Connection,
+// Transfer-Encoding, Trailer when the response has trailers, Upgrade when a protocol switch such as WebSocket is
+// accepted) or meaningless in a response (TE), so a user-supplied value would be ambiguous or contradict what is sent.
+// Keeping this here allows future optimization of storage layout without scattering the logic.
 // You can use 'static_assert' to make sure at compilation time that the header you are about to insert is not
 // reserved. The list of reserved headers is unlikely to change in the future, but they are mostly technical /
 // framework headers that aeronet manages internally and probably not very interesting for the client.
 // Example:
-//     static_assert(!aeronet::http::IsReservedResponseHeader("X-My-Header")); // OK
-//     static_assert(!aeronet::http::IsReservedResponseHeader("Content-Length")); // Not OK
-constexpr bool IsReservedResponseHeader(std::string_view name) noexcept {
-  static constexpr std::string_view kHeaders[]{
-      "connection", http::ContentLength, http::ContentType, "date", "te", "trailer", "transfer-encoding", "upgrade",
+//     static_assert(!aeronet::http::IsReservedResponseHeader("x-my-header")); // OK
+//     static_assert(!aeronet::http::IsReservedResponseHeader("content-length")); // Not OK
+constexpr bool IsReservedResponseHeader(LowerAsciiKey name) noexcept {
+  static constexpr LowerAsciiKey kHeaders[]{
+      http::Connection, http::ContentLength, http::ContentType,      http::Date,
+      http::TE,         http::Trailer,       http::TransferEncoding, http::Upgrade,
   };
-  return std::ranges::any_of(kHeaders,
-                             [name](std::string_view candidate) { return CaseInsensitiveEqual(name, candidate); });
+  return std::ranges::any_of(kHeaders, [name](LowerAsciiKey candidate) { return name == candidate; });
 }
 
 // Same as IsReservedResponseHeader but for request headers.
-constexpr bool IsReservedOrForbiddenRequestHeader(std::string_view name) noexcept {
-  static constexpr std::string_view kHeaders[]{
-      http::ContentLength, http::ContentType, "expect", "host", "te", "trailer", "transfer-encoding", "upgrade",
+constexpr bool IsReservedOrForbiddenRequestHeader(LowerAsciiKey name) noexcept {
+  static constexpr LowerAsciiKey kHeaders[]{
+      http::ContentLength, http::ContentType,      http::Expect,  http::Host, http::TE,
+      http::Trailer,       http::TransferEncoding, http::Upgrade,
   };
-  return std::ranges::any_of(kHeaders,
-                             [name](std::string_view candidate) { return CaseInsensitiveEqual(name, candidate); });
+  return std::ranges::any_of(kHeaders, [name](LowerAsciiKey candidate) { return name == candidate; });
 }
 
 // RFC 7230 §4.1.2: Certain headers MUST NOT appear in trailers (chunked transfer encoding).

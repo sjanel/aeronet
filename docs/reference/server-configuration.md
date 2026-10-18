@@ -143,4 +143,4 @@ The static-file settings are supplied when creating the static handler, not dire
 | `TelemetryConfig` | OTLP and DogStatsD both disabled; sample rate 1.0, export interval 10 seconds, timeout 5 seconds. Set endpoint/service name, optional exporter headers, DogStatsD Unix socket/tags/namespace, and explicit finite increasing histogram buckets. OTLP needs the build feature; DogStatsD Unix sockets are Linux-only. |
 | `RouterConfig` | Trailing slash policy is `Normalize`; set `Strict` or `Redirect` as required. A route-level CORS policy wins over `withDefaultCorsPolicy()`. |
 
-For serializable properties and their JSON/YAML names, build `aeronet-config-dump` with Glaze and use its emitted output as the baseline. See [Kubernetes](../kubernetes-examples.md) for a ConfigMap example.
+For serializable properties and their JSON/YAML names, build `aeronet-config-dump` with Glaze and use its emitted output as the baseline. See [Kubernetes](../operations/kubernetes.md) for a ConfigMap example.

@@ -481,12 +481,12 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
     }
 
     const auto [nameView, valueView] = http::ParseHeaderLineTrimValue(first, lineLast);
+    // tolower in place for header name (to avoid having to compare strings case-insensitively later)
+    tolower(first, nameView.size());
     if (!http::IsValidHeaderName(nameView) || !http::IsValidHeaderValue(valueView)) {
       return http::StatusCodeBadRequest;
     }
 
-    // tolower in place for header name (to avoid having to compare strings case-insensitively later)
-    tolower(first, nameView.size());
     if (nameView == http::ContentEncoding) {
       // Content codings are case-insensitive (RFC 9110 §8.4.1): lower-case them in place too.
       tolower(first + (valueView.data() - first), valueView.size());

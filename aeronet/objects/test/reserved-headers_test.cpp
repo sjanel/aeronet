@@ -19,23 +19,16 @@ TEST(ReservedHeadersTest, ReservedResponseHeaderBasic) {
   EXPECT_TRUE(IsReservedResponseHeader("upgrade"));
 }
 
-TEST(ReservedHeadersTest, ReservedResponseHeaderCaseInsensitive) {
-  EXPECT_TRUE(IsReservedResponseHeader("Content-Length"));
-  EXPECT_TRUE(IsReservedResponseHeader("DaTe"));
-  EXPECT_TRUE(IsReservedResponseHeader("TrAnSfEr-EnCoDiNg"));
-}
-
 TEST(ReservedHeadersTest, ReservedResponseHeaderRejectsUnknowns) {
   EXPECT_FALSE(IsReservedResponseHeader("x-custom-header"));
   EXPECT_FALSE(IsReservedResponseHeader("content-length-extra"));
   EXPECT_FALSE(IsReservedResponseHeader("datex"));
 }
 
-TEST(ReservedHeadersTest, ReservedResponseHeaderHandlesEmptyAndLong) {
-  EXPECT_FALSE(IsReservedResponseHeader(""));
+TEST(ReservedHeadersTest, ReservedResponseHeaderHandlesLongValues) {
   // Very long names must be rejected (longer than internal max)
   std::string longName(256, 'a');
-  EXPECT_FALSE(IsReservedResponseHeader(longName));
+  EXPECT_FALSE(IsReservedResponseHeader(LowerAsciiKey{longName}));
 }
 
 TEST(ForbiddenTrailersTest, ForbiddenTrailerBasic) {

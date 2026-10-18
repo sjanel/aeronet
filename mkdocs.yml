@@ -69,6 +69,8 @@ plugins:
         guides/middleware-and-responses.md: guides/middleware.md
         guides/bodies-streaming-and-files.md: guides/streaming-responses.md
         FEATURES.md: index.md
+        INSTALL.md: getting-started/install.md
+        kubernetes-examples.md: operations/kubernetes.md
 
 validation:
   links:
@@ -80,7 +82,7 @@ nav:
   - Getting Started:
       - Overview: getting-started/overview.md
       - Your first server: getting-started/first-server.md
-      - Installation and build: INSTALL.md
+      - Installation and build: getting-started/install.md
   - Guides:
       - Routing: guides/routing.md
       - Requests: guides/requests.md
@@ -111,7 +113,7 @@ nav:
       - Observability and logging: operations/observability.md
       - Performance and tuning: operations/performance.md
       - Health probes: operations/health-probes.md
-      - Kubernetes: kubernetes-examples.md
+      - Kubernetes: operations/kubernetes.md
       - Benchmarks: BENCHMARKS.md
   - Project:
       - Documentation development: development/documentation.md
