@@ -16,7 +16,7 @@ router.setPath(http::Method::POST, "/items", [](const HttpRequestView& req) {
 });
 ```
 
-An `HttpResponse` can also be constructed directly, without request: `HttpResponse(404)`, `HttpResponse("body")`, `HttpResponse(201, "body", "application/json")`. Setters return the response, so calls chain, also on temporaries:
+An `HttpResponse` can also be constructed directly, without request: `HttpResponse(404)`, `HttpResponse("body")`, `HttpResponse(201, "body", "application/json")`. `makeResponse()` and the constructors take the same bodies as the [body setters](#bodies): a string view, a C string or a byte span is copied, while an owned body (`std::string&&`, `std::vector<char>&&`, `std::vector<std::byte>&&`, or a `std::unique_ptr` buffer with its size) is moved without copy, so `HttpResponse(std::format(...))` does not copy the formatted string. Setters return the response, so calls chain, also on temporaries:
 
 ```cpp
 #include <string>
@@ -88,7 +88,7 @@ Choose the body setter by who owns the data:
 Router router;
 router.setPath(http::Method::GET, "/large", [](const HttpRequestView& req) {
   std::string payload(4U << 20U, 'a');  // built by the handler
-  return req.makeResponse().body(std::move(payload), "application/octet-stream");  // moved, not copied
+  return req.makeResponse(std::move(payload), "application/octet-stream");  // moved, not copied
 });
 router.setPath(http::Method::GET, "/inline", [](const HttpRequestView& req) {
   HttpResponse response = req.makeResponse();
@@ -129,5 +129,6 @@ An exception escaping a handler is caught by the server, logged with its message
 ## Tests
 
 - Response building, headers, bodies, and trailers: [http-response_test.cpp](../../aeronet/http/test/http-response_test.cpp).
+- `makeResponse()`, including moved bodies and `HEAD` requests: [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp).
 - End-to-end responses, keep-alive, and empty bodies: [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
 - Handlers that throw: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp), [tests/http-routing_test.cpp](../../tests/http-routing_test.cpp) (async handlers), and [http2-protocol-handler_test.cpp](../../aeronet/http2/test/http2-protocol-handler_test.cpp) (HTTP/2).

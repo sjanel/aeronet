@@ -7,9 +7,11 @@
 #include <cstring>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
 
 #include "aeronet/decimal-writer.hpp"
 #include "aeronet/decompression-config.hpp"
+#include "aeronet/embedded-payload.hpp"
 #include "aeronet/header-write.hpp"
 #include "aeronet/http-client-codec.hpp"
 #include "aeronet/http-codec.hpp"
@@ -198,64 +200,15 @@ std::size_t ComputeHostHeaderSize(std::string_view host, bool hostIsIpv6, bool h
 
 }  // namespace
 
-HttpRequest::HttpRequest(std::size_t additionalCapacity, http::Method method, std::string_view url,
-                         std::string_view concatenatedHeaders, Options opts)
-    : HttpMessage(opts) {
+void HttpRequest::initHead(std::size_t extraCapacity, http::Method method, std::string_view url,
+                           std::string_view concatenatedHeaders, std::size_t bodySize, std::string_view contentType) {
   const auto res = internal::ParseUrl(url);
   if (res.host.empty()) {
     throw std::invalid_argument("Invalid URL");
   }
 
   const auto portNbDigits = ndigits(res.port);
-  const bool hasNonTlsProxy = opts.hasProxy() && !res.isTls;
-  const auto schemeLen = static_cast<uint8_t>((res.isTls ? internal::kHttps : internal::kHttp).size());
-
-  _hostLen = SafeCast<decltype(_hostLen)>(res.host.size());
-  _port = res.port;
-  _originKeyLen = SafeCast<decltype(_originKeyLen)>(schemeLen + kSchemeSep.size() + _hostLen + 1U + portNbDigits);
-
-  const bool hostIsIpv6 = res.host.contains(':');
-  auto hostHeaderSize = ComputeHostHeaderSize(res.host, hostIsIpv6, res.hasNonDefaultPort(), portNbDigits);
-
-  const auto neededCapacity =
-      HttpRequestInitialSize(method, hasNonTlsProxy, HttpMessage::kHeaderPosNbBits, _originKeyLen, res.target) +
-      hostHeaderSize + concatenatedHeaders.size() + additionalCapacity + _originKeyLen;
-
-  _data.reserve(neededCapacity);
-
-  char* pData = InitData(method, hasNonTlsProxy, hostIsIpv6, res, _data.data());
-  setHeadersStartPosNoCheck(static_cast<uint64_t>(pData - _data.data()) - hostHeaderSize);
-  if (concatenatedHeaders.empty()) {
-    pData = AppendFixed<http::DoubleCRLF>(pData);
-  } else {
-    pData = AppendFixed<http::CRLF>(pData);
-    pData = Append(concatenatedHeaders, pData);
-    pData = AppendFixed<http::CRLF>(pData);
-  }
-
-  _data.setEnd(pData);
-
-  // Derive the body start from the head actually written, not from neededCapacity: the latter also covers
-  // additionalCapacity, which is reserved but deliberately left unwritten for the caller's own headers. Setting it from
-  // the capacity would leave bodyStartPos additionalCapacity bytes past the data, and every later header mutation
-  // derives its insertion pointer from it (see HttpMessage::headerAddLineUnchecked).
-  setBodyStartPos(_data.size());
-
-  assert(_data.size() + additionalCapacity == _data.capacity());
-}
-
-HttpRequest::HttpRequest(std::size_t additionalCapacity, http::Method method, std::string_view url,
-                         std::string_view concatenatedHeaders, Options opts, std::string_view body,
-                         std::string_view contentType)
-    : HttpMessage(opts) {
-  const auto res = internal::ParseUrl(url);
-
-  if (res.host.empty()) {
-    throw std::invalid_argument("Invalid URL");
-  }
-
-  const auto portNbDigits = ndigits(res.port);
-  const bool hasNonTlsProxy = opts.hasProxy() && !res.isTls;
+  const bool hasNonTlsProxy = _opts.hasProxy() && !res.isTls;
   const auto schemeLen = static_cast<uint8_t>((res.isTls ? internal::kHttps : internal::kHttp).size());
 
   _hostLen = SafeCast<decltype(_hostLen)>(res.host.size());
@@ -268,30 +221,44 @@ HttpRequest::HttpRequest(std::size_t additionalCapacity, http::Method method, st
   const auto neededCapacity =
       HttpRequestInitialSize(method, hasNonTlsProxy, HttpMessage::kHeaderPosNbBits, _originKeyLen, res.target) +
       hostHeaderSize + concatenatedHeaders.size() +
-      NeededBodyHeadersSize(body.size(), CheckContentType(body.empty(), contentType).size()) + body.size() +
-      additionalCapacity + _originKeyLen;
+      (bodySize == 0 ? 0 : NeededBodyHeadersSize(bodySize, CheckContentType(false, contentType).size())) +
+      extraCapacity + _originKeyLen;
 
   _data.reserve(neededCapacity);
 
-  char* pData = InitData(method, hasNonTlsProxy, hostIsIpv6, res, _data.data());
-  setHeadersStartPosNoCheck(static_cast<uint64_t>(pData - _data.data()) - hostHeaderSize);
+  char* const pFirst = _data.data();
+  char* pData = InitData(method, hasNonTlsProxy, hostIsIpv6, res, pFirst);
+  const auto headersStartPos = static_cast<uint64_t>(pData - pFirst) - hostHeaderSize;
   if (!concatenatedHeaders.empty()) {
     pData = AppendFixed<http::CRLF>(pData);
     pData = Append(concatenatedHeaders, pData);
-    pData -= http::CRLF.size();  // remove the last CRLF
+    pData -= http::CRLF.size();  // the last header CRLF is written below with the end of the head
   }
-  if (!body.empty()) {
-    pData = AppendFixed<http::CRLF>(pData);
-
-    pData = WriteContentTypeContentLengthDoubleCRLF(contentType, body.size(), pData);
-
-    pData = Append(body, pData);
-  } else {
+  if (bodySize == 0) {
     pData = AppendFixed<http::DoubleCRLF>(pData);
+  } else {
+    pData = AppendFixed<http::CRLF>(pData);
+    pData = WriteContentTypeContentLengthDoubleCRLF(contentType, bodySize, pData);
   }
-  _data.setEnd(pData);
-  assert(_data.size() + additionalCapacity == _data.capacity());
-  setBodyStartPos(_data.size() - body.size());
+
+  // The body start is derived from the head actually written, not from neededCapacity: the latter also covers
+  // extraCapacity, which is reserved but left unwritten (body, caller's own headers). Setting it from the capacity
+  // would leave bodyStartPos past the data, and every later header mutation derives its insertion pointer from it (see
+  // HttpMessage::headerAddLineUnchecked).
+  setHeadPositions(headersStartPos, static_cast<uint64_t>(pData - pFirst));
+}
+
+HttpRequest::HttpRequest(std::size_t additionalCapacity, http::Method method, std::string_view url,
+                         std::string_view concatenatedHeaders, Options opts, HttpPayload body,
+                         std::string_view contentType)
+    : HttpMessage(opts) {
+  const std::size_t bodySize = body.size();
+  initHead(EmbeddedPayload::kMaxFootprint + additionalCapacity, method, url, concatenatedHeaders, bodySize,
+           contentType);
+  if (bodySize != 0) {
+    setCapturedPayload(std::move(body));
+  }
+  assert(_data.size() + additionalCapacity <= _data.capacity());
 }
 
 HttpRequest& HttpRequest::method(http::Method method) & {

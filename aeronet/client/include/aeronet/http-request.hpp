@@ -11,8 +11,10 @@
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-message.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/http-payload.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/lower-ascii-key.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/temp-const-char-string.hpp"
 
 namespace aeronet {
@@ -377,7 +379,7 @@ class HttpRequest final : public HttpMessage {
     return *this;
   }
 
-  // Rvalue overload of body(std::vector<char>&&, ...).
+  // Rvalue overload of body(std::vector<std::byte>&&, ...).
   HttpRequest&& body(std::vector<std::byte>&& body,
                      std::string_view contentType = http::ContentTypeApplicationOctetStream) && {
     return std::move(this->body(std::move(body), contentType));
@@ -666,10 +668,31 @@ class HttpRequest final : public HttpMessage {
   explicit constexpr HttpRequest([[maybe_unused]] HttpMessage::Check check) noexcept : HttpMessage(check) {}
 
   HttpRequest(std::size_t additionalCapacity, http::Method method, std::string_view url,
-              std::string_view concatenatedHeaders, Options opts);
+              std::string_view concatenatedHeaders, Options opts)
+      : HttpMessage(opts) {
+    initHead(additionalCapacity, method, url, concatenatedHeaders, 0, {});
+    // additionalCapacity is reserved but deliberately left unwritten for the caller's own headers.
+    assert(_data.size() + additionalCapacity == _data.capacity());
+  }
 
   HttpRequest(std::size_t additionalCapacity, http::Method method, std::string_view url,
-              std::string_view concatenatedHeaders, Options opts, std::string_view body, std::string_view contentType);
+              std::string_view concatenatedHeaders, Options opts, std::string_view body, std::string_view contentType)
+      : HttpMessage(opts) {
+    initHead(body.size() + additionalCapacity, method, url, concatenatedHeaders, body.size(), contentType);
+    _data.setEnd(Append(body, _data.end()));
+    assert(_data.size() + additionalCapacity == _data.capacity());
+  }
+
+  // Same as above, but capturing 'body' without copy, like body(std::string&&, ...).
+  HttpRequest(std::size_t additionalCapacity, http::Method method, std::string_view url,
+              std::string_view concatenatedHeaders, Options opts, HttpPayload body, std::string_view contentType);
+
+  // Parses 'url', then writes the request line and the headers: Host, 'concatenatedHeaders' and, for a non-empty body
+  // of 'bodySize' bytes, its body headers, in a buffer reserving 'extraCapacity' more bytes. The data ends at the body
+  // start, the body itself is left to the caller. Throws std::invalid_argument for an invalid url or content type.
+  // Called by the constructors inlined in this header, where constant arguments (content type, body size) fold.
+  void initHead(std::size_t extraCapacity, http::Method method, std::string_view url,
+                std::string_view concatenatedHeaders, std::size_t bodySize, std::string_view contentType);
 
   // Get the current method length stored in this HttpRequest.
   [[nodiscard]] uint8_t methodLen() const noexcept {

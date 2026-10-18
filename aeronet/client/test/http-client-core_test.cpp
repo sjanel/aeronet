@@ -16,6 +16,7 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #ifdef AERONET_POSIX
 #include <netinet/in.h>
@@ -364,6 +365,89 @@ TEST_F(HttpClientE2ETest, SimpleGet) {
   EXPECT_GE(resp.status(), 200);
   EXPECT_LT(resp.status(), 300);
   EXPECT_EQ(resp.bodyInMemory(), "world");
+}
+
+TEST_F(HttpClientE2ETest, MakeRequestCapturesOwnedBodiesWithoutCopy) {
+  static constexpr std::size_t kSize = 1024;
+  HttpClient client;
+  const std::string url = Url("/echo");
+
+  // Checks that 'req' captured the 'kSize' bytes at 'pData' and has the global headers of the client.
+  const auto check = [](const HttpRequest& req, std::string_view contentType, const void* pData) {
+    EXPECT_EQ(req.method(), http::Method::POST);
+    EXPECT_TRUE(req.hasBodyCaptured());
+    EXPECT_EQ(static_cast<const void*>(req.bodyInMemory().data()), pData);
+    EXPECT_EQ(req.bodyLength(), kSize);
+    EXPECT_EQ(req.headerValueOrEmpty(http::ContentType), contentType);
+    EXPECT_EQ(req.headerValueOrEmpty(http::ContentLength), "1024");
+    EXPECT_EQ(req.headerValueOrEmpty("user-agent"), "aeronet");
+  };
+
+  std::string str(kSize, 's');
+  const void* pData = str.data();
+  check(client.makeRequest(http::Method::POST, url, std::move(str)), http::ContentTypeTextPlain, pData);
+
+  std::vector<char> vecChar(kSize, 'v');
+  pData = vecChar.data();
+  check(client.makeRequest(http::Method::POST, url, std::move(vecChar), "text/x-chars"), "text/x-chars", pData);
+
+  std::vector<std::byte> vecByte(kSize, std::byte{'b'});
+  pData = vecByte.data();
+  check(client.makeRequest(http::Method::POST, url, std::move(vecByte)), http::ContentTypeApplicationOctetStream,
+        pData);
+
+  auto charBuf = std::make_unique<char[]>(kSize);
+  pData = charBuf.get();
+  check(client.makeRequest(http::Method::POST, url, std::move(charBuf), kSize), http::ContentTypeApplicationOctetStream,
+        pData);
+
+  auto bytesBuf = std::make_unique<std::byte[]>(kSize);
+  pData = bytesBuf.get();
+  check(client.makeRequest(http::Method::POST, url, std::move(bytesBuf), kSize, "image/png"), "image/png", pData);
+
+  // Additional capacity lets a header be added without reallocating the request buffer.
+  static constexpr std::size_t kAdditionalCapacity = http::HeaderSize(std::string_view("x-trace").size(), 6U);
+  std::string withCapacity(kSize, 'c');
+  pData = withCapacity.data();
+  auto req = client.makeRequest(kAdditionalCapacity, http::Method::POST, url, std::move(withCapacity));
+  check(req, http::ContentTypeTextPlain, pData);
+  const std::size_t capacity = req.capacityInlined();
+  req.headerAddLine("x-trace", "abc123");
+  EXPECT_EQ(req.capacityInlined(), capacity);
+  EXPECT_EQ(req.headerValueOrEmpty("x-trace"), "abc123");
+}
+
+TEST_F(HttpClientE2ETest, MakeRequestFromCStringCopiesTheBody) {
+  HttpClient client;
+  const char* body = "copied";
+  auto req = client.makeRequest(http::Method::POST, Url("/echo"), body);
+  EXPECT_TRUE(req.hasBodyInlined());
+  EXPECT_EQ(req.bodyInMemory(), "copied");
+  EXPECT_EQ(req.headerValueOrEmpty(http::ContentType), http::ContentTypeTextPlain);
+
+  const char* nullBody = nullptr;
+  auto empty = client.makeRequest(16, http::Method::POST, Url("/echo"), nullBody, "text/html");
+  EXPECT_FALSE(empty.hasBody());
+  EXPECT_FALSE(empty.hasHeader(http::ContentType));
+}
+
+TEST_F(HttpClientE2ETest, CapturedRequestBodiesAreSent) {
+  HttpClient client(HttpClientConfig{}.withMinCapturedBodySize(64));
+  // Random: the echoed response may be compressed, and a too compressible one would exceed the decompression limits.
+  const RawChars largeBody = test::MakeRandomPayload(256UL * 1024UL);
+  // Below and above the minimum captured body size, as a std::string and as a char buffer.
+  for (std::string_view body : {std::string_view("small"), std::string_view(largeBody)}) {
+    SCOPED_TRACE(body.size());
+    auto resp = client.request(client.makeRequest(http::Method::POST, Url("/echo"), std::string(body))).value();
+    EXPECT_EQ(resp.status(), http::StatusCodeOK);
+    EXPECT_EQ(resp.bodyInMemory(), body);
+
+    auto buf = std::make_unique<char[]>(body.size());
+    std::ranges::copy(body, buf.get());
+    resp = client.request(client.makeRequest(http::Method::POST, Url("/echo"), std::move(buf), body.size())).value();
+    EXPECT_EQ(resp.status(), http::StatusCodeOK);
+    EXPECT_EQ(resp.bodyInMemory(), body);
+  }
 }
 
 TEST_F(HttpClientE2ETest, LargeIdentityResponsesTransferReceiveOwnershipAndSurviveReuse) {

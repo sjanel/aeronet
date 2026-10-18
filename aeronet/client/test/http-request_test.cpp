@@ -27,6 +27,8 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-message.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/http-payload.hpp"
+#include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/temp-file.hpp"
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
@@ -65,6 +67,13 @@ class HttpRequestTest : public ::testing::Test {
                                                 std::string_view contentType) {
     return {additionalCapacity,   method, url,        globalHeaders.fullStringWithLastSep(),
             makeRequestOptions(), body,   contentType};
+  }
+
+  // Same as makeRequestWithAdditionalCapacity(), but capturing 'body' without copy.
+  HttpRequest makeCapturedRequest(std::size_t additionalCapacity, http::Method method, std::string_view url,
+                                  HttpPayload body, std::string_view contentType) {
+    return {additionalCapacity,   method,          url,        globalHeaders.fullStringWithLastSep(),
+            makeRequestOptions(), std::move(body), contentType};
   }
 
   static CompressionState CreateResponseCompressionState(CompressionConfig* config) {
@@ -416,6 +425,101 @@ TEST_F(HttpRequestTest, BodyRequestWithAdditionalCapacityKeepsBodyStartBeforeBod
   EXPECT_EQ(req.headSize(), req.sizeInlined() - kBody.size());
   // Content-Type and Content-Length must stay adjacent to the body, after the freshly inserted header.
   EXPECT_EQ(req.headerValueOrEmpty(http::ContentType), http::ContentTypeApplicationJson);
+}
+
+TEST_F(HttpRequestTest, ConstructorCapturingBodyMatchesBodySetter) {
+  const std::string largeBody(1UL << 20U, 'L');
+  for (std::string_view body : {std::string_view("payload"), std::string_view(largeBody)}) {
+    SCOPED_TRACE(body.size());
+    std::string str(body);
+    const char* pStr = str.data();
+    auto req = makeCapturedRequest(0, http::Method::POST, "http://example.com/path", HttpPayload(std::move(str)),
+                                   " application/json ");
+    auto expected = makeRequest(http::Method::POST, "http://example.com/path");
+    expected.body(std::string(body), http::ContentTypeApplicationJson);
+
+    EXPECT_TRUE(req.hasBodyCaptured());
+    EXPECT_FALSE(req.hasBodyInlined());
+    if (body.size() == largeBody.size()) {  // a small string has its data in the std::string object (SSO)
+      EXPECT_EQ(req.bodyInMemory().data(), pStr);
+    }
+    EXPECT_EQ(req.bodyInMemory(), body);
+    EXPECT_EQ(req.headerValueOrEmpty(http::ContentType), http::ContentTypeApplicationJson);
+    EXPECT_EQ(req.headerValueOrEmpty(http::ContentLength), std::to_string(body.size()));
+    EXPECT_EQ(CompleteRequestForHttp11(req), CompleteRequestForHttp11(expected));
+    EXPECT_EQ(CapturedPayloadForHttp11(req), CapturedPayloadForHttp11(expected));
+    EXPECT_EQ(req.originKey(), expected.originKey());
+    EXPECT_EQ(req.target(), "/path");
+  }
+}
+
+TEST_F(HttpRequestTest, ConstructorCapturingBodyOfEachOwnedType) {
+  static constexpr std::string_view kBody = "owned";
+  std::vector<std::byte> bytes(kBody.size());
+  std::ranges::copy(kBody, reinterpret_cast<char*>(bytes.data()));
+  auto charBuf = std::make_unique<char[]>(kBody.size());
+  std::ranges::copy(kBody, charBuf.get());
+  auto bytesBuf = std::make_unique<std::byte[]>(kBody.size());
+  std::ranges::copy(kBody, reinterpret_cast<char*>(bytesBuf.get()));
+
+  HttpPayload payloads[]{
+      HttpPayload(std::vector<char>(kBody.begin(), kBody.end())),
+      HttpPayload(std::move(bytes)),
+      HttpPayload(std::move(charBuf), kBody.size()),
+      HttpPayload(std::move(bytesBuf), kBody.size()),
+  };
+  for (HttpPayload& payload : payloads) {
+    auto req = makeCapturedRequest(0, http::Method::PUT, "https://example.com/upload", std::move(payload),
+                                   http::ContentTypeApplicationOctetStream);
+    EXPECT_TRUE(req.hasBodyCaptured());
+    EXPECT_EQ(req.bodyInMemory(), kBody);
+    EXPECT_EQ(req.headerValueOrEmpty(http::ContentLength), "5");
+    EXPECT_EQ(req.headerValueOrEmpty(http::ContentType), http::ContentTypeApplicationOctetStream);
+  }
+}
+
+TEST_F(HttpRequestTest, ConstructorCapturingEmptyBodyHasNoBody) {
+  // The content type of an empty body is not checked, as with the body setters.
+  auto req = makeCapturedRequest(0, http::Method::POST, "http://example.com/path", HttpPayload(std::string()), "");
+  auto expected = makeRequest(http::Method::POST, "http://example.com/path");
+
+  EXPECT_FALSE(req.hasBody());
+  EXPECT_FALSE(req.hasHeader(http::ContentType));
+  EXPECT_FALSE(req.hasHeader(http::ContentLength));
+  EXPECT_EQ(CompleteRequestForHttp11(req), CompleteRequestForHttp11(expected));
+}
+
+TEST_F(HttpRequestTest, ConstructorCapturingBodyRejectsInvalidUrlAndContentType) {
+  EXPECT_THROW(makeCapturedRequest(0, http::Method::POST, "invalid-url", HttpPayload(std::string("x")), "text/plain"),
+               std::invalid_argument);
+  EXPECT_THROW(makeCapturedRequest(0, http::Method::POST, "http://host/path", HttpPayload(std::string("x")), ""),
+               std::invalid_argument);
+  EXPECT_THROW(
+      makeCapturedRequest(0, http::Method::POST, "http://host/path", HttpPayload(std::string("x")), "a/b\r\nx: y"),
+      std::invalid_argument);
+}
+
+TEST_F(HttpRequestTest, ConstructorCapturingBodyWithAdditionalCapacityAddsHeaderWithoutRealloc) {
+  static constexpr LowerAsciiKey kAuthorization = "authorization";
+  static constexpr std::string_view kBody = "payload";
+  const std::string tokenValue = "Bearer " + std::string(512, 'y');
+  const std::size_t additionalCapacity = http::HeaderSize(kAuthorization.size(), tokenValue.size());
+
+  auto req = makeCapturedRequest(additionalCapacity, http::Method::POST, "http://example.com/path",
+                                 HttpPayload(std::string(kBody)), http::ContentTypeApplicationJson);
+  const std::size_t capacity = req.capacityInlined();
+  EXPECT_EQ(req.headSize(), req.sizeInlined());
+
+  // The embedded payload is moved out and back around the head growth, without reallocating the buffer.
+  req.headerAddLine(kAuthorization, tokenValue);
+
+  EXPECT_EQ(req.capacityInlined(), capacity);
+  EXPECT_EQ(req.headerValueOrEmpty(kAuthorization), tokenValue);
+  EXPECT_TRUE(req.hasBodyCaptured());
+  EXPECT_EQ(req.bodyInMemory(), kBody);
+  EXPECT_EQ(req.headSize(), req.sizeInlined());
+  // Content-Type and Content-Length stay last, after the freshly inserted header.
+  EXPECT_TRUE(req.headersFlatView().ends_with("content-type: application/json\r\ncontent-length: 7\r\n"));
 }
 
 TEST_F(HttpRequestTest, HostHeaderShouldBeReserved) {
