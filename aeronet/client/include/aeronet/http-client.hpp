@@ -1,11 +1,16 @@
 #pragma once
 
 #include <amc/type_traits.hpp>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <functional>
+#include <memory>
+#include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
+#include <vector>
 
 #include "aeronet/city-hash.hpp"
 #include "aeronet/client-connection.hpp"
@@ -19,6 +24,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/http-payload.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/internal/response-streamer.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -33,7 +39,6 @@
 
 #ifdef AERONET_ENABLE_GLAZE
 #include <filesystem>
-#include <string>
 
 #include "aeronet/config-file.hpp"
 #endif
@@ -148,6 +153,91 @@ class HttpClient {
                                         std::string_view contentType = http::ContentTypeTextPlain) {
     return {additionalCapacity,   method, url,        _config.globalHeaders.fullStringWithLastSep(),
             makeRequestOptions(), body,   contentType};
+  }
+
+  // Same as makeRequest(method, url, std::string_view, ...), but with a C-string for the body (nullptr is an empty
+  // body).
+  [[nodiscard]] HttpRequest makeRequest(http::Method method, std::string_view url, const char* body,
+                                        std::string_view contentType = http::ContentTypeTextPlain) {
+    return makeRequest(0, method, url, body, contentType);
+  }
+
+  // Same as makeRequest(additionalCapacity, method, url, std::string_view, ...), but with a C-string for the body
+  // (nullptr is an empty body).
+  [[nodiscard]] HttpRequest makeRequest(std::size_t additionalCapacity, http::Method method, std::string_view url,
+                                        const char* body, std::string_view contentType = http::ContentTypeTextPlain) {
+    return makeRequest(additionalCapacity, method, url, body == nullptr ? std::string_view() : std::string_view(body),
+                       contentType);
+  }
+
+  // Build a request with the given method, url and body, captured without copy like HttpRequest::body(std::string&&,
+  // ...). Same as makeRequest(method, url, std::string_view, ...) otherwise.
+  [[nodiscard]] HttpRequest makeRequest(http::Method method, std::string_view url, std::string&& body,
+                                        std::string_view contentType = http::ContentTypeTextPlain) {
+    return makeRequest(0, method, url, std::move(body), contentType);
+  }
+
+  // Same as above, with additional capacity for the request buffer.
+  [[nodiscard]] HttpRequest makeRequest(std::size_t additionalCapacity, http::Method method, std::string_view url,
+                                        std::string&& body, std::string_view contentType = http::ContentTypeTextPlain) {
+    return makeCapturedRequest(additionalCapacity, method, url, HttpPayload(std::move(body)), contentType);
+  }
+
+  // Same as makeRequest(method, url, std::string&&, ...), but with a vector of char for the body, and
+  // 'application/octet-stream' as the default content type.
+  [[nodiscard]] HttpRequest makeRequest(http::Method method, std::string_view url, std::vector<char>&& body,
+                                        std::string_view contentType = http::ContentTypeApplicationOctetStream) {
+    return makeRequest(0, method, url, std::move(body), contentType);
+  }
+
+  // Same as above, with additional capacity for the request buffer.
+  [[nodiscard]] HttpRequest makeRequest(std::size_t additionalCapacity, http::Method method, std::string_view url,
+                                        std::vector<char>&& body,
+                                        std::string_view contentType = http::ContentTypeApplicationOctetStream) {
+    return makeCapturedRequest(additionalCapacity, method, url, HttpPayload(std::move(body)), contentType);
+  }
+
+  // Same as makeRequest(method, url, std::string&&, ...), but with a vector of byte for the body, and
+  // 'application/octet-stream' as the default content type.
+  [[nodiscard]] HttpRequest makeRequest(http::Method method, std::string_view url, std::vector<std::byte>&& body,
+                                        std::string_view contentType = http::ContentTypeApplicationOctetStream) {
+    return makeRequest(0, method, url, std::move(body), contentType);
+  }
+
+  // Same as above, with additional capacity for the request buffer.
+  [[nodiscard]] HttpRequest makeRequest(std::size_t additionalCapacity, http::Method method, std::string_view url,
+                                        std::vector<std::byte>&& body,
+                                        std::string_view contentType = http::ContentTypeApplicationOctetStream) {
+    return makeCapturedRequest(additionalCapacity, method, url, HttpPayload(std::move(body)), contentType);
+  }
+
+  // Same as makeRequest(method, url, std::string&&, ...), but with a unique_ptr to a char array of 'size' bytes, like
+  // HttpRequest::body(std::unique_ptr<char[]>, ...), and 'application/octet-stream' as the default content type.
+  [[nodiscard]] HttpRequest makeRequest(http::Method method, std::string_view url, std::unique_ptr<char[]> body,
+                                        std::size_t size,
+                                        std::string_view contentType = http::ContentTypeApplicationOctetStream) {
+    return makeRequest(0, method, url, std::move(body), size, contentType);
+  }
+
+  // Same as above, with additional capacity for the request buffer.
+  [[nodiscard]] HttpRequest makeRequest(std::size_t additionalCapacity, http::Method method, std::string_view url,
+                                        std::unique_ptr<char[]> body, std::size_t size,
+                                        std::string_view contentType = http::ContentTypeApplicationOctetStream) {
+    return makeCapturedRequest(additionalCapacity, method, url, HttpPayload(std::move(body), size), contentType);
+  }
+
+  // Same as makeRequest(method, url, std::unique_ptr<char[]>, ...), but with a unique_ptr to a byte array.
+  [[nodiscard]] HttpRequest makeRequest(http::Method method, std::string_view url, std::unique_ptr<std::byte[]> body,
+                                        std::size_t size,
+                                        std::string_view contentType = http::ContentTypeApplicationOctetStream) {
+    return makeRequest(0, method, url, std::move(body), size, contentType);
+  }
+
+  // Same as above, with additional capacity for the request buffer.
+  [[nodiscard]] HttpRequest makeRequest(std::size_t additionalCapacity, http::Method method, std::string_view url,
+                                        std::unique_ptr<std::byte[]> body, std::size_t size,
+                                        std::string_view contentType = http::ContentTypeApplicationOctetStream) {
+    return makeCapturedRequest(additionalCapacity, method, url, HttpPayload(std::move(body), size), contentType);
   }
 
   // Execute an arbitrary request (method + url + headers + body), following redirects per config.
@@ -361,6 +451,12 @@ class HttpClient {
   double nextJitterUnit() noexcept;
 
   [[nodiscard]] HttpRequest::Options makeRequestOptions() noexcept;
+
+  [[nodiscard]] HttpRequest makeCapturedRequest(std::size_t additionalCapacity, http::Method method,
+                                                std::string_view url, HttpPayload body, std::string_view contentType) {
+    return {additionalCapacity,   method,          url,        _config.globalHeaders.fullStringWithLastSep(),
+            makeRequestOptions(), std::move(body), contentType};
+  }
 
   void maybeCompressBody(HttpRequest& req);
 

@@ -2,16 +2,23 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
+#include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
+#include "aeronet/compiler-config.hpp"
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-message-common.hpp"
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-message.hpp"
+#include "aeronet/http-payload.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/time-constants.hpp"
 
 namespace aeronet {
@@ -127,7 +134,48 @@ class HttpResponse final : public HttpMessage {
   explicit HttpResponse(http::StatusCode code) : HttpResponse(kHttpResponseMinInitialCapacity, code) {}
 
   // Constructs an HttpMessage with the given status code and body, that will be copied into the internal buffer.
-  HttpResponse(http::StatusCode code, std::string_view body, std::string_view contentType = http::ContentTypeTextPlain);
+  // If the body is large, prefer the constructors capturing an owned body to avoid a copy (and possibly an allocation).
+  HttpResponse(http::StatusCode code, std::string_view body, std::string_view contentType = http::ContentTypeTextPlain)
+      : HttpMessage(HeadCapacity({}, body.size(), contentType, true) + body.size(), Options()) {
+    initHead(code, {}, body.size(), contentType);
+    _data.setEnd(Append(body, _data.end()));
+  }
+
+  // Same as HttpResponse(code, std::string_view, ...), but with a C-string for the body (nullptr is an empty body).
+  HttpResponse(http::StatusCode code, const char* body, std::string_view contentType = http::ContentTypeTextPlain)
+      : HttpResponse(code, body == nullptr ? std::string_view() : std::string_view(body), contentType) {}
+
+  // Same as HttpResponse(code, std::string_view, ...), but with a byte span for the body, and
+  // 'application/octet-stream' as the default content type.
+  HttpResponse(http::StatusCode code, std::span<const std::byte> body,
+               std::string_view contentType = http::ContentTypeApplicationOctetStream)
+      : HttpResponse(code, std::string_view(reinterpret_cast<const char*>(body.data()), body.size()), contentType) {}
+
+  // Constructs an HttpResponse with the given status code, capturing the body without copy, like
+  // body(std::string&&, ...). An empty body is allowed (no body).
+  HttpResponse(http::StatusCode code, std::string&& body, std::string_view contentType = http::ContentTypeTextPlain)
+      : HttpResponse(0, code, {}, HttpPayload(std::move(body)), contentType, Options()) {}
+
+  // Same as above, but with a vector of char for the body, and 'application/octet-stream' as the default content type.
+  HttpResponse(http::StatusCode code, std::vector<char>&& body,
+               std::string_view contentType = http::ContentTypeApplicationOctetStream)
+      : HttpResponse(0, code, {}, HttpPayload(std::move(body)), contentType, Options()) {}
+
+  // Same as above, but with a vector of byte for the body, and 'application/octet-stream' as the default content type.
+  HttpResponse(http::StatusCode code, std::vector<std::byte>&& body,
+               std::string_view contentType = http::ContentTypeApplicationOctetStream)
+      : HttpResponse(0, code, {}, HttpPayload(std::move(body)), contentType, Options()) {}
+
+  // Same as above, but with a unique_ptr to a char array of 'size' bytes, like body(std::unique_ptr<char[]>, ...).
+  // The behavior is undefined if the char buffer actual size is different from the provided size.
+  HttpResponse(http::StatusCode code, std::unique_ptr<char[]> body, std::size_t size,
+               std::string_view contentType = http::ContentTypeApplicationOctetStream)
+      : HttpResponse(0, code, {}, HttpPayload(std::move(body), size), contentType, Options()) {}
+
+  // Same as above, but with a unique_ptr to a byte array for the body.
+  HttpResponse(http::StatusCode code, std::unique_ptr<std::byte[]> body, std::size_t size,
+               std::string_view contentType = http::ContentTypeApplicationOctetStream)
+      : HttpResponse(0, code, {}, HttpPayload(std::move(body), size), contentType, Options()) {}
 
   // Constructs an HttpMessage with an additional initial capacity for the internal buffer.
   // The provided capacity will be added to the minimal required size to hold the status line and reserved headers.
@@ -136,15 +184,45 @@ class HttpResponse final : public HttpMessage {
 
   // Constructs an HttpResponse with a 200 status code, no reason phrase and given body.
   // The body is copied into the internal buffer, and the content type header is set if the body is not empty.
-  // If the body is large, prefer the capture by value of body() overloads to avoid a copy (and possibly an allocation).
+  // If the body is large, prefer the constructors capturing an owned body to avoid a copy (and possibly an allocation).
   // The content type must be valid. Defaults to "text/plain"
   explicit HttpResponse(std::string_view body, std::string_view contentType = http::ContentTypeTextPlain)
+      : HttpResponse(http::StatusCodeOK, body, contentType) {}
+
+  // Same as above, but with a C-string for the body (nullptr is an empty body).
+  explicit HttpResponse(const char* body, std::string_view contentType = http::ContentTypeTextPlain)
       : HttpResponse(http::StatusCodeOK, body, contentType) {}
 
   // Same as above, but with a byte span for the body.
   explicit HttpResponse(std::span<const std::byte> body,
                         std::string_view contentType = http::ContentTypeApplicationOctetStream)
-      : HttpResponse(std::string_view(reinterpret_cast<const char*>(body.data()), body.size()), contentType) {}
+      : HttpResponse(http::StatusCodeOK, body, contentType) {}
+
+  // Constructs an HttpResponse with a 200 status code, capturing the body without copy, like
+  // body(std::string&&, ...). An empty body is allowed (no body).
+  explicit HttpResponse(std::string&& body, std::string_view contentType = http::ContentTypeTextPlain)
+      : HttpResponse(http::StatusCodeOK, std::move(body), contentType) {}
+
+  // Same as above, but with a vector of char for the body, and 'application/octet-stream' as the default content type.
+  explicit HttpResponse(std::vector<char>&& body,
+                        std::string_view contentType = http::ContentTypeApplicationOctetStream)
+      : HttpResponse(http::StatusCodeOK, std::move(body), contentType) {}
+
+  // Same as above, but with a vector of byte for the body, and 'application/octet-stream' as the default content type.
+  explicit HttpResponse(std::vector<std::byte>&& body,
+                        std::string_view contentType = http::ContentTypeApplicationOctetStream)
+      : HttpResponse(http::StatusCodeOK, std::move(body), contentType) {}
+
+  // Same as above, but with a unique_ptr to a char array of 'size' bytes, like body(std::unique_ptr<char[]>, ...).
+  // The behavior is undefined if the char buffer actual size is different from the provided size.
+  HttpResponse(std::unique_ptr<char[]> body, std::size_t size,
+               std::string_view contentType = http::ContentTypeApplicationOctetStream)
+      : HttpResponse(http::StatusCodeOK, std::move(body), size, contentType) {}
+
+  // Same as above, but with a unique_ptr to a byte array for the body.
+  HttpResponse(std::unique_ptr<std::byte[]> body, std::size_t size,
+               std::string_view contentType = http::ContentTypeApplicationOctetStream)
+      : HttpResponse(http::StatusCodeOK, std::move(body), size, contentType) {}
 
   // Constructs an HttpResponse with the given additional capacity, status code, concatenated headers,
   // body and content type. The body is copied into the internal buffer.
@@ -454,7 +532,7 @@ class HttpResponse final : public HttpMessage {
   }
 
   // Rvalue overload of body(std::vector<char>&&, ...).
-  HttpResponse&& body(std::vector<std::byte>&& body,
+  HttpResponse&& body(std::vector<char>&& body,
                       std::string_view contentType = http::ContentTypeApplicationOctetStream) && {
     return std::move(this->body(std::move(body), contentType));
   }
@@ -466,8 +544,8 @@ class HttpResponse final : public HttpMessage {
     return *this;
   }
 
-  // Rvalue overload of body(std::vector<char>&&, ...).
-  HttpResponse&& body(std::vector<char>&& body,
+  // Rvalue overload of body(std::vector<std::byte>&&, ...).
+  HttpResponse&& body(std::vector<std::byte>&& body,
                       std::string_view contentType = http::ContentTypeApplicationOctetStream) && {
     return std::move(this->body(std::move(body), contentType));
   }
@@ -769,7 +847,44 @@ class HttpResponse final : public HttpMessage {
 
   // Private constructor bypassing checks for internal use only.
   HttpResponse(std::size_t additionalCapacity, http::StatusCode code, std::string_view concatenatedHeaders,
-               std::string_view body, std::string_view contentType, Options opts);
+               std::string_view body, std::string_view contentType, Options opts)
+      : HttpMessage(HeadCapacity(concatenatedHeaders, body.size(), contentType, opts.sendContentLengthHeader()) +
+                        body.size() + additionalCapacity,
+                    opts) {
+    initHead(code, concatenatedHeaders, body.size(), contentType);
+    _data.setEnd(Append(body, _data.end()));
+  }
+
+  // Same as above, but capturing 'body' without copy, like body(std::string&&, ...).
+  HttpResponse(std::size_t additionalCapacity, http::StatusCode code, std::string_view concatenatedHeaders,
+               HttpPayload body, std::string_view contentType, Options opts);
+
+  // Size of the head of a response without headers nor body: status line, Date header and final CRLF.
+  static constexpr std::size_t kInitialSize =
+      kReasonBeg + http::HeaderSize(http::Date.size(), RFC7231DateStrLen) + http::DoubleCRLF.size();
+  static_assert(kInitialSize <= kHttpResponseMinInitialCapacity);
+
+  // Capacity of a response head with 'concatenatedHeaders' and, for a non-empty body of 'bodySize' bytes, its body
+  // headers. For a non-empty body, 'contentType' is trimmed and checked (it is ignored otherwise).
+  static constexpr std::size_t HeadCapacity(std::string_view concatenatedHeaders, std::size_t bodySize,
+                                            std::string_view& contentType, bool sendContentLengthHeader) {
+    return kInitialSize + concatenatedHeaders.size() +
+           (bodySize == 0 ? 0
+                          : NeededBodyHeadersSize(bodySize, CheckContentType(false, contentType).size(),
+                                                  sendContentLengthHeader));
+  }
+
+  // Writes the status line, the concatenated headers and, for a non-empty body of 'bodySize' bytes, its body headers.
+  // The data ends at the body start, the body itself is left to the caller. The capacity must be large enough, and
+  // 'contentType' checked if the body is not empty.
+  // Called by the constructors inlined in this header, where constant arguments (content type, body size) fold.
+  void initHead(http::StatusCode code, std::string_view concatenatedHeaders, std::size_t bodySize,
+                std::string_view contentType);
+
+  // Implementation of initHead(), also inlined in the constructors of http-response.cpp: each gets a copy specialized
+  // for its constant arguments (HttpResponse(code) has neither headers nor body to write).
+  AERONET_ALWAYS_INLINE void initHeadInline(http::StatusCode code, std::string_view concatenatedHeaders,
+                                            std::size_t bodySize, std::string_view contentType);
 
   [[nodiscard]] std::string_view headersFlatViewWithDate() const noexcept {
     return {_data.data() + dateHeaderStartPos() + http::CRLF.size(), _data.data() + bodyStartPos() - http::CRLF.size()};

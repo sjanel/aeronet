@@ -30,6 +30,7 @@
 #include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/http-payload.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -157,7 +158,8 @@ bool HttpRequestView::wantClose() const {
 }
 
 HttpResponse HttpRequestView::makeResponse(std::size_t additionalCapacity, http::StatusCode statusCode) const {
-  return {additionalCapacity, statusCode, _pGlobalHeaders->fullStringWithLastSep(), {}, {}, makeResponseOptions()};
+  return {additionalCapacity, statusCode, _pGlobalHeaders->fullStringWithLastSep(),
+          std::string_view{}, {},         makeResponseOptions()};
 }
 
 HttpResponse HttpRequestView::makeResponse(std::string_view body, std::string_view contentType) const {
@@ -179,6 +181,12 @@ HttpResponse HttpRequestView::makeResponse(http::StatusCode statusCode, std::spa
                                            std::string_view contentType) const {
   std::string_view asBody(reinterpret_cast<const char*>(body.data()), body.size());
   return {0UL, statusCode, _pGlobalHeaders->fullStringWithLastSep(), asBody, contentType, makeResponseOptions()};
+}
+
+HttpResponse HttpRequestView::makeCapturedResponse(http::StatusCode statusCode, HttpPayload body,
+                                                   std::string_view contentType) const {
+  return {0UL,         statusCode,           _pGlobalHeaders->fullStringWithLastSep(), std::move(body),
+          contentType, makeResponseOptions()};
 }
 
 bool HttpRequestView::hasExpectContinue() const noexcept {
