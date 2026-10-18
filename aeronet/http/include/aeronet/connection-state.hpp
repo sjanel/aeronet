@@ -88,9 +88,13 @@ struct ConnectionState {
   // of the connection to the bytes read.
   TransportResult transportRead(const HttpServerConfig& config, std::size_t chunkSize);
 
-  TransportResult transportWrite(std::string_view data);
+  // A write never marks the TLS handshake as established, even when it completes it: only
+  // SingleHttpServer::finalizeTlsHandshakeIfReady() does, after recording the negotiated parameters and setting up the
+  // protocol selected by ALPN.
+  TransportResult transportWrite(std::string_view data) { return transport.write(data); }
 
-  TransportResult transportWrite(std::span<const std::string_view> buffers);
+  TransportResult transportWrite(std::span<const std::string_view> buffers) { return transport.write(buffers); }
+
   // Return true if success, false if fatal error.
   bool tunnelTransportWrite(NativeHandle fd);
 
