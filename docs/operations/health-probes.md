@@ -55,7 +55,7 @@ server:
 
 Inline probes share the event loops of the application. A handler that keeps a worker busy for a long time, with heavy computation or a slow blocking call, delays the probes that the same worker must answer. Under Kubernetes, a busy pod can then miss its liveness probe and be restarted. Adding worker threads does not reliably reserve one for probes: with `SO_REUSEPORT`, the kernel picks which worker accepts each connection.
 
-With `withDedicatedPort(port)`, a `MultiHttpServer` starts an extra event loop, on its own thread, bound to `port`, that only answers the probes. Application handlers never run there, so probe latency no longer depends on application load. Point the Kubernetes probes at that port; the [Kubernetes guide](../kubernetes-examples.md#isolating-probes-on-a-dedicated-port) shows the manifest. A `SingleHttpServer` ignores `dedicatedPort`: it has no worker pool to isolate the probes from.
+With `withDedicatedPort(port)`, a `MultiHttpServer` starts an extra event loop, on its own thread, bound to `port`, that only answers the probes. Application handlers never run there, so probe latency no longer depends on application load. Point the Kubernetes probes at that port; the [Kubernetes guide](../operations/kubernetes.md#isolating-probes-on-a-dedicated-port) shows the manifest. A `SingleHttpServer` ignores `dedicatedPort`: it has no worker pool to isolate the probes from.
 
 ```cpp
 #include <chrono>

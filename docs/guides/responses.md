@@ -51,6 +51,22 @@ For the best performance, fill a response in order: status and reason, then head
 
 Some headers belong to the server and must not be set by handlers: `content-type` (set by the body setters), `content-length` (computed), `transfer-encoding`, `connection`, `date`, `te`, `trailer`, and `upgrade`. Setting `content-type` or `content-length` with a header method throws `std::invalid_argument`; setting the others is undefined behavior. `content-encoding` cannot be changed once a body is set (`std::logic_error`): set it before the body, see [Send your own encoding](compression.md#send-your-own-encoding).
 
+### Reserved headers
+
+The library reserves a small set of response headers that handlers cannot set directly on an `HttpResponse` (fixed responses) or on an `HttpResponseWriter` (streaming), because aeronet manages them itself, or a user-supplied value would be ambiguous or contradict what is actually sent. Attempting to set one asserts in debug builds, and is ignored in release builds for streaming responses:
+
+- `date` - generated once per second and injected automatically.
+- `content-length` - computed from the body (fixed responses) or set through `contentLength()` (streaming). This prevents inconsistencies between the declared and the actual size.
+- `connection` - determined by the keep-alive policy (HTTP version, server configuration, request count, errors). Conflicting values supplied by user code could desynchronize the connection reuse logic.
+- `transfer-encoding` - controlled by the streaming writer (`chunked`), or omitted when `content-length` is known. Arbitrary values risk illegal `content-length` + `transfer-encoding` combinations or unsupported encodings.
+- `trailer` - emitted by the server when a response has trailers, to announce their names (unless `HttpServerConfig::addTrailerHeader` is `false`), see [Trailers](#trailers). A user-supplied value could contradict the trailers actually sent.
+- `upgrade` - emitted by the server when it accepts a protocol switch, such as the `101 Switching Protocols` response of a [WebSocket](../protocols/websocket.md) handshake. A handler cannot ask for a switch by setting it.
+- `te` - a request header (hop-by-hop transfer coding negotiation), meaningless in a response.
+
+Convenience helpers remain allowed: `contentType()` on the streaming writer, and `location()` for redirects.
+
+All other headers (custom application, caching, CORS, ...) may be set freely. Values are forwarded unchanged, while field names are normalized to lower case. Lower-case field names are valid in HTTP/1.x and mandatory in HTTP/2; the API intentionally does not preserve cosmetic HTTP/1.x capitalization. This rule lives in a single helper, `http::IsReservedResponseHeader`.
+
 ### Global headers
 
 `HttpServerConfig::globalHeaders` are added to every response of the server, including the error responses the server generates itself (`400`, `404`, `413`, ...). A global header never overrides a header of the same name set by the handler. It contains `server: aeronet` by default:
@@ -106,6 +122,36 @@ An owned body smaller than `HttpServerConfig::minCapturedBodySize` (1 KiB by def
 `bodyAppend()` and `bodyInlineAppend()` also extend a moved or static body, at the end of its own buffer. A moved `std::string` or vector keeps its buffer, so its data is not copied unless it reallocates (`bodyInlineAppend()` zero-fills the `maxLen` new bytes of a vector before calling the writer, as a vector cannot hold uninitialized bytes). A static body or a `std::unique_ptr` buffer cannot grow: it is copied once into a buffer of the response, which further appends extend. Appending to a `file()` body throws `std::logic_error`.
 
 The response body is buffered: its size is known, and it is sent with `Content-Length`. For bodies too large to build in memory, use a [streaming handler](streaming-responses.md).
+
+## Operation costs
+
+The methods that build an `HttpResponse` edit a single contiguous buffer holding the status line, the headers, and the inline body, so their cost depends on how much has to move:
+
+| Operation | Complexity | Notes |
+| --- | --- | --- |
+| `status()` | O(1) | Overwrites 3 digits. |
+| `reason()` | O(trailing) | One tail `memmove` if the size changes. |
+| `header()` | O(headers + bodyLen) | Linear scan, and maybe one shift. |
+| `headerAddLine()` | O(bodyLen) | Shifts the tail once; no scan. |
+| `headerRemoveLine()` | O(headers + bodyLen) | Linear scan (in reverse), and maybe one shift. |
+| `headerRemoveValue()` | O(headers + bodyLen) | Linear scan (in reverse), and maybe one shift. |
+| `headerRemoveAllLines()` | O(headers + bodyLen) | Single scan, one shift per removed line, plus the tail. |
+| `body()` (inline) | O(delta) + realloc | Exponential growth strategy. |
+| `body()` (capture) | O(1) | Zero-copy capture of the client buffer. |
+| `bodyStatic()` (capture) | O(1) | Zero-copy capture of the client buffer. |
+| `bodyAppend()` (inline) | O(delta) + realloc | Exponential growth strategy, zero-copy support. |
+| `bodyInlineAppend()` | O(delta) + realloc | Exponential growth strategy. |
+| `bodyInlineSet()` | O(1) + realloc | Exact growth strategy. |
+| `file()` | O(1) | Zero-copy `sendfile` helper. |
+| `trailerAddLine()` | O(1) | Append-only; no scan (only after the body). |
+
+Usage guidelines:
+
+- Use `headerAddLine()` when duplicates are acceptable, or impossible from the client code: it is the cheapest path.
+- Use `header()` only when you must guarantee uniqueness. Its key, like all header lookup and removal keys, must be lower case; lower-case string literals are checked at compile time through `LowerAsciiKey`.
+- `headerAddLine()` and `trailerAddLine()` also require lower-case names through `LowerAsciiKey`, so header and trailer iteration and flat views always expose lower-case names.
+- Chain calls on temporaries for concise construction: the rvalue-qualified overloads keep the object movable.
+- For maximum performance, fill the response in order, starting with status and reason, then headers, then body and trailers, to minimize memory shifts and reallocations.
 
 ## Trailers
 

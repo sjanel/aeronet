@@ -21,7 +21,7 @@ description: Documentation for the high-performance, modular C++23 HTTP, HTTP/2,
 
 | I want to... | Start here |
 | --- | --- |
-| Build and consume the library | [Installation and build](INSTALL.md) |
+| Build and consume the library | [Installation and build](getting-started/install.md) |
 | Select CMake features or tune runtime settings | [Build configuration](reference/configuration.md), [server configuration](reference/server-configuration.md), or [client configuration](reference/client-configuration.md) |
 | Run a minimal HTTP server | [Your first server](getting-started/first-server.md) |
 | Define routes and process requests | [Routing and requests](guides/routing.md) |

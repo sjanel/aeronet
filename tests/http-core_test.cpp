@@ -1971,9 +1971,11 @@ TEST(HttpBackpressure, PipelinedFileResponsesBehindBufferedResponseAreIntact) {
   const std::string inMemoryBody = PatternBytes(1UL << 20U, 0);
   test::ScopedTempDir tmpDir;
   const std::string fileBodies[]{PatternBytes(300UL << 10U, 1), PatternBytes(10, 2), PatternBytes(1UL << 20U, 3)};
-  const test::ScopedTempFile files[]{test::ScopedTempFile(tmpDir, fileBodies[0]),
-                                     test::ScopedTempFile(tmpDir, fileBodies[1]),
-                                     test::ScopedTempFile(tmpDir, fileBodies[2])};
+  const test::ScopedTempFile files[]{
+      test::ScopedTempFile(tmpDir, fileBodies[0]),
+      test::ScopedTempFile(tmpDir, fileBodies[1]),
+      test::ScopedTempFile(tmpDir, fileBodies[2]),
+  };
   auto router = ts.resetRouterAndGet();
   router.setPath(http::Method::GET, "/in-memory",
                  [&inMemoryBody](const HttpRequestView& req) { return req.makeResponse(inMemoryBody); });

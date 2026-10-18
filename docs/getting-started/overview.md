@@ -4,7 +4,7 @@ This section takes you from a checkout to a running server, then points to the n
 
 ## Prerequisites
 
-aeronet requires a C++23 compiler and CMake 3.28 or newer. Linux is the primary platform; macOS and Windows are also supported through the same public API. The complete toolchain matrix and package-manager instructions are in [Installation and build](../INSTALL.md).
+aeronet requires a C++23 compiler and CMake 3.28 or newer. Linux is the primary platform; macOS and Windows are also supported through the same public API. The complete toolchain matrix and package-manager instructions are in [Installation and build](install.md).
 
 ## Choose the features you need
 
@@ -23,6 +23,35 @@ Set `AERONET_ENABLE_HTTP_CLIENT`to `OFF` if you need only the server, or `AERONE
 Note that it is not possible to exclude both.
 
 The [build configuration reference](../reference/configuration.md) explains every feature gate and dependency. The [server](../reference/server-configuration.md) and [client](../reference/client-configuration.md) references cover runtime controls.
+
+## Feature overview
+
+What is implemented, what is optional (*flag*: enabled by a CMake option), and where each feature is documented.
+
+| Area | What you get | Read more |
+| --- | --- | --- |
+| HTTP/1.1 parsing | Request line, headers, chunked bodies, pipelining, deterministic and security-minded duplicate header policy, incoming request trailers | [Requests](../guides/requests.md), [HTTP/1.1 conformance](../reference/http-conformance.md) |
+| Routing | Exact paths, path parameters and wildcards, method allow-lists, streaming and fixed handlers coexisting on one path (for instance streaming `GET`, fixed `POST`), heterogeneous path lookups (`std::string`, `std::string_view`, `const char*`) | [Routing](../guides/routing.md) |
+| Connections and limits | Keep-alive, maximum header and body sizes, maximum requests per connection, idle timeout | [Servers and lifecycle](../guides/server-lifecycle.md#connections-and-keep-alive), [Server configuration](../reference/server-configuration.md) |
+| Middleware | Global and per-route request / response hooks (streaming-aware), rate limiting, CORS | [Middleware](../guides/middleware.md), [CORS](../guides/cors.md) |
+| Compression | gzip, deflate, zstd and brotli; `q`-value negotiation, size threshold, per-response opt-out, direct compression | [Compression](../guides/compression.md) |
+| Inbound decompression | Multi-layer codings, safety guards, header removal, streaming inflaters once `Content-Length` exceeds a configured threshold | [Compression](../guides/compression.md#request-body-decompression) |
+| Streaming and files | Chunked responses, outgoing trailers, `sendfile` for plain sockets, range and conditional requests | [Streaming responses](../guides/streaming-responses.md), [Static files](../guides/static-files.md) |
+| Async handlers | Coroutine handlers and background work off the event loop | [Async handlers](../guides/async-handlers.md) |
+| TLS (*flag*) | ALPN, mTLS, SNI, session tickets, cached OCSP stapling, CRL and revocation hooks, debug key logs, kTLS, metrics | [TLS](../protocols/tls.md) |
+| HTTP/2 (*flag*) | RFC 9113, HPACK, ALPN `h2`, h2c prior knowledge, stream multiplexing, incoming trailers | [HTTP/2](../protocols/http2.md) |
+| WebSocket (*flag*) | RFC 6455, text / binary frames, ping / pong, close handshake | [WebSocket](../protocols/websocket.md) |
+| HTTP client (*flag*) | Synchronous HTTP/1.1 and HTTP/2, keep-alive pool, redirects, automatic (de)compression, HTTPS, streamed response bodies | [HTTP client](../modules/http-client.md) |
+| JWT (*flag*) | RFC 7519 sign / verify, HS / RS / ES / PS / EdDSA, JWK / JWKS by `kid`, rejects `alg: none` | [JWT](../modules/jwt.md) |
+| Observability | Logging (spdlog optional, ISO 8601 UTC timestamps), per-request metrics callback (alpha), OpenTelemetry traces and metrics (experimental, *flag*), outbound statistics (bytes queued, immediate vs flush writes, high-water marks) | [Observability](../operations/observability.md), [Performance](../operations/performance.md) |
+| Event loop | Edge-triggered epoll loop, one thread per `SingleHttpServer`, `writev` scatter-gather for header and body | [Performance and tuning](../operations/performance.md) |
+| Scaling | `SO_REUSEPORT` multi-reactor scaling, `MultiHttpServer` orchestrating N reactors on N threads | [Servers and lifecycle](../guides/server-lifecycle.md#threading-model) |
+| Lifecycle | RAII construction (listening after the constructor, ephemeral port resolved immediately), blocking `run()`, non-blocking `start()` and `startDetached()` (returns an `AsyncHandle`), restarts, move semantics, runtime configuration and router updates | [Servers and lifecycle](../guides/server-lifecycle.md) |
+| Graceful shutdown | `beginDrain(maxWait)` stops accepting, closes keep-alive connections after the current responses, and can force-close stragglers; optional built-in `SIGINT` / `SIGTERM` handler | [Servers and lifecycle](../guides/server-lifecycle.md#stopping) |
+| Configuration | Fluent `HttpServerConfig` setters (`withPort()`, ...), JSON / YAML files | [Server configuration](../reference/server-configuration.md), [JSON and config files](../modules/json-and-config-files.md) |
+| Kubernetes | Built-in liveness, readiness and startup probes | [Health probes](../operations/health-probes.md), [Kubernetes](../operations/kubernetes.md) |
+
+The tests behind these features are summarized in the [test coverage matrix](../development/testing.md#test-coverage-matrix). The exhaustive matrix of HTTP/1.1 behavior is the [HTTP/1.1 conformance](../reference/http-conformance.md) reference.
 
 ## Recommended learning path
 

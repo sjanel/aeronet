@@ -90,7 +90,31 @@ The handler only sets a flag, read by the event loops. Applications that manage 
 
 A server can be started again after `stop()` or a completed drain: `run()` rebuilds the listening sockets and event loops. An ephemeral port is kept across restarts; on Linux with `reusePort`, it stays reserved while the server is stopped, so that no other process can take it. Statistics restart from zero.
 
-Servers can be copied and moved only while they are not running: moving or copying a running server throws `std::logic_error`. A copy shares nothing with its source, and must bind its own port, so stop or destroy the source first, or use `reusePort`.
+Servers can be copied and moved only while they are not running: moving or copying a running server throws `std::logic_error`. The move operations are therefore not `noexcept`, unlike most C++ objects: this makes sure that a running server cannot be moved by mistake. Moving a non-running server is safe and `noexcept` in practice. A copy shares nothing with its source, and must bind its own port, so stop or destroy the source first, or use `reusePort`.
+
+## Multi-threaded example and statistics
+
+`MultiHttpServer::stats()` returns the counters of each worker (`per`) and their sum (`total`, where `maxConnectionOutboundBuffer` is a maximum):
+
+```cpp
+#include <aeronet/log.hpp>
+
+HttpServer multi(HttpServerConfig{}.withNbThreads(4), Router{});
+auto st = multi.stats();
+for (size_t i = 0; i < st.per.size(); ++i) {
+  const auto& s = st.per[i];
+  log::info("[srv{}] queued={} imm={} flush={}\n", i, s.totalBytesQueued, s.totalBytesWrittenImmediate,
+            s.totalBytesWrittenFlush);
+}
+```
+
+The [multi-threaded example](../../examples/multi.cpp) starts a `HttpServer` with a given port and thread count:
+
+```bash
+./build/examples/aeronet-multi 8080 4   # port 8080, 4 threads
+```
+
+Each thread owns its own listening socket (`SO_REUSEPORT`) and epoll instance, with no shared lock in the accept path. This is the simplest horizontal scaling strategy before introducing a worker pool. Handlers registered on a `MultiHttpServer` (a global handler or path handlers) are replicated to every worker, including after in-flight router updates, and re-applied to the fresh workers on each restart.
 
 ## Updating a running server
 

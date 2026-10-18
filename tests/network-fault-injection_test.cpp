@@ -295,7 +295,7 @@ TEST_F(NetworkFaultTest, ReadAheadRequestFollowedByEofAtAcceptIsAnswered) {
     Router router;
     router.setPath(http::Method::GET, "/bye", [&body](const HttpRequestView&) { return HttpResponse(body); });
     // Not started yet: the server accepts the connection once the request and the EOF reached its socket.
-    SingleHttpServer server(HttpServerConfig{}, std::move(router));
+    SingleHttpServer server(HttpServerConfig(), std::move(router));
 
     test::ClientConnection cc(server.port());
     test::sendAll(cc.fd(), "GET /bye HTTP/1.1\r\nHost: test\r\n\r\n");

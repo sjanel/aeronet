@@ -246,7 +246,8 @@ class Http2ProtocolLoopback {
   }
 
   // The handler owns a MockTunnelBridge, configured through tunnelBridge.
-  Http2ProtocolLoopback(Router& router, WithTunnelBridge, uint32_t maxOutboundBufferBytes = kDefaultBufferBytes)
+  Http2ProtocolLoopback(Router& router, [[maybe_unused]] WithTunnelBridge withTunnelBridge,
+                        uint32_t maxOutboundBufferBytes = kDefaultBufferBytes)
       : Http2ProtocolLoopback(router, maxOutboundBufferBytes, kDefaultBufferBytes, kDefaultInitialWindowSize, 0,
                               std::make_unique<MockTunnelBridge>()) {}
 

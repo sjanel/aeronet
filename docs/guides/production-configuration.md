@@ -102,7 +102,7 @@ aeronet::HttpServerConfig config;
 config.withPort(8080).withNbThreads(4).withBuiltinProbes(std::move(probes));
 ```
 
-Dedicated probes apply to `MultiHttpServer`; a `SingleHttpServer` serves probes inline. The complete manifest and serializable config example are in [Kubernetes](../kubernetes-examples.md).
+Dedicated probes apply to `MultiHttpServer`; a `SingleHttpServer` serves probes inline. The complete manifest and serializable config example are in [Kubernetes](../operations/kubernetes.md).
 
 ## Compression and upload decompression
 
