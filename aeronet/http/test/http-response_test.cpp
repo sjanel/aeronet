@@ -1977,11 +1977,237 @@ TEST_F(HttpResponseTest, AllowsDuplicatesAfterResettingBody) {
   EXPECT_LT(first, second);
 }
 
-TEST_F(HttpResponseTest, AppendBodyAfterCapturedPayloadShouldThrow) {
+namespace {
+
+enum class CapturedKind : std::uint8_t { String, VectorChar, VectorByte, CharBuffer, BytesBuffer, Static };
+
+constexpr CapturedKind kCapturedKinds[]{
+    CapturedKind::String,     CapturedKind::VectorChar,  CapturedKind::VectorByte,
+    CapturedKind::CharBuffer, CapturedKind::BytesBuffer, CapturedKind::Static,
+};
+
+// Sets 'content' as a captured body of the given kind (referenced for Static: it must outlive 'resp').
+void SetCapturedBody(HttpResponse& resp, CapturedKind kind, std::string_view content, std::string_view contentType) {
+  switch (kind) {
+    case CapturedKind::String:
+      resp.body(std::string(content), contentType);
+      break;
+    case CapturedKind::VectorChar:
+      resp.body(std::vector<char>(content.begin(), content.end()), contentType);
+      break;
+    case CapturedKind::VectorByte: {
+      std::vector<std::byte> vec(content.size());
+      std::ranges::copy(content, reinterpret_cast<char*>(vec.data()));
+      resp.body(std::move(vec), contentType);
+      break;
+    }
+    case CapturedKind::CharBuffer: {
+      auto buf = std::make_unique<char[]>(content.size());
+      std::ranges::copy(content, buf.get());
+      resp.body(std::move(buf), content.size(), contentType);
+      break;
+    }
+    case CapturedKind::BytesBuffer: {
+      auto buf = std::make_unique<std::byte[]>(content.size());
+      std::ranges::copy(content, reinterpret_cast<char*>(buf.get()));
+      resp.body(std::move(buf), content.size(), contentType);
+      break;
+    }
+    case CapturedKind::Static:
+      resp.bodyStatic(content, contentType);
+      break;
+  }
+}
+
+// The first append of one byte makes the Content-Length value one digit longer.
+constexpr std::string_view kCapturedContent = "123456789";
+
+}  // namespace
+
+TEST_F(HttpResponseTest, BodyInlineAppendToCapturedBody) {
+  static constexpr std::size_t kChunkSize = 64UL * 1024UL;
+  for (CapturedKind kind : kCapturedKinds) {
+    SCOPED_TRACE(static_cast<int>(kind));
+    HttpResponse resp(http::StatusCodeOK);
+    SetCapturedBody(resp, kind, kCapturedContent, "text/captured");
+    std::string expected(kCapturedContent);
+
+    resp.bodyInlineAppend(16U, [](char* out) {
+      *out = '0';
+      return std::size_t{1};
+    });
+    expected += '0';
+    EXPECT_TRUE(resp.hasBodyCaptured());
+    EXPECT_EQ(resp.bodyInMemory(), expected);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "10");
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/captured");
+
+    // Nothing written, but the given content type replaces the current one
+    resp.bodyInlineAppend(16U, [](std::byte*) { return std::size_t{0}; }, " text/appended ");
+    EXPECT_EQ(resp.bodyInMemory(), expected);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "10");
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/appended");
+
+    // Room for many more bytes than written: the Content-Length value shrinks back
+    resp.bodyInlineAppend(1000U, [](std::byte* out) {
+      std::ranges::fill_n(out, 5, std::byte{'B'});
+      return std::size_t{5};
+    });
+    expected += "BBBBB";
+    EXPECT_EQ(resp.bodyInMemory(), expected);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "15");
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/appended");
+
+    // Large data, in several calls
+    for (char ch = 'a'; ch <= 'p'; ++ch) {
+      resp.bodyInlineAppend(kChunkSize, [ch](char* out) {
+        std::ranges::fill_n(out, kChunkSize - 1U, ch);
+        return kChunkSize - 1U;
+      });
+      expected.append(kChunkSize - 1U, ch);
+    }
+    EXPECT_EQ(resp.bodyInMemory(), expected);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), std::to_string(expected.size()));
+
+    const std::string full = concatenated(std::move(resp));
+    EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, "text/appended")));
+    EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(expected.size()))));
+    EXPECT_TRUE(full.ends_with(std::string(http::DoubleCRLF) + expected));
+  }
+}
+
+TEST_F(HttpResponseTest, BodyInlineAppendToCapturedBodyRvalue) {
+  auto resp = HttpResponse(http::StatusCodeOK)
+                  .body(std::string("captured"), "text/captured")
+                  .bodyInlineAppend(4U, [](char* out) {
+                    std::ranges::copy(std::string_view("-abc"), out);
+                    return std::size_t{4};
+                  });
+  EXPECT_EQ(resp.bodyInMemory(), "captured-abc");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "12");
+}
+
+TEST_F(HttpResponseTest, BodyInlineAppendToCapturedStringOrVectorKeepsItsBuffer) {
+  for (bool vector : {false, true}) {
+    HttpResponse resp(http::StatusCodeOK);
+    [[maybe_unused]] const char* data;
+    if (vector) {
+      std::vector<char> body(64, 'x');
+      body.reserve(1024);
+      data = body.data();
+      resp.body(std::move(body), "text/plain");
+    } else {
+      std::string body(64, 'x');
+      body.reserve(1024);
+      data = body.data();
+      resp.body(std::move(body), "text/plain");
+    }
+
+    resp.bodyInlineAppend(128U, [](char* out) {
+      std::ranges::fill_n(out, 100, 'y');
+      return std::size_t{100};
+    });
+
+#ifndef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+    // Written in place in the captured buffer: no copy of the captured data (the additional memory checks move a
+    // growing std::string or vector to a new buffer on purpose, to expose dangling pointers)
+    EXPECT_EQ(resp.bodyInMemory().data(), data);
+#endif
+    EXPECT_EQ(resp.bodyInMemory(), std::string(64, 'x') + std::string(100, 'y'));
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "164");
+  }
+}
+
+TEST_F(HttpResponseTest, BodyInlineAppendToCapturedBodyThrowingWriterLeavesItUnchanged) {
+  for (CapturedKind kind : kCapturedKinds) {
+    SCOPED_TRACE(static_cast<int>(kind));
+    HttpResponse resp(http::StatusCodeOK);
+    SetCapturedBody(resp, kind, kCapturedContent, "text/captured");
+
+    EXPECT_THROW(resp.bodyInlineAppend(
+                     8U,
+                     [](char* out) -> std::size_t {
+                       std::ranges::fill_n(out, 8, 'X');
+                       throw std::runtime_error("writer failure");
+                     },
+                     "text/other"),
+                 std::runtime_error);
+    EXPECT_EQ(resp.bodyInMemory(), kCapturedContent);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "9");
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/captured");
+
+    resp.bodyInlineAppend(1U, [](char* out) {
+      *out = '0';
+      return std::size_t{1};
+    });
+    EXPECT_EQ(resp.bodyInMemory(), "1234567890");
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "10");
+  }
+}
+
+TEST_F(HttpResponseTest, BodyInlineAppendToCapturedBodyAfterTrailersShouldThrow) {
   HttpResponse resp(http::StatusCodeOK);
   resp.body(std::string{"some body"}, "text/captured");
+  resp.trailerAddLine("x-trailer", "value");
   EXPECT_THROW(resp.bodyInlineAppend(16U, kAppendZeroOrOneA), std::logic_error);
   EXPECT_THROW(resp.bodyInlineAppend(1U, kAppendZeroOrOneABytes), std::logic_error);
+  EXPECT_EQ(resp.bodyInMemory(), "some body");
+}
+
+TEST_F(HttpResponseTest, BodyInlineAppendToCapturedBodyInvalidContentTypeShouldThrow) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.body(std::string{"some body"}, "text/captured");
+  EXPECT_THROW(resp.bodyInlineAppend(16U, kAppendZeroOrOneA, "\x7F"), std::invalid_argument);
+  EXPECT_EQ(resp.bodyInMemory(), "some body");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/captured");
+}
+
+TEST_F(HttpResponseTest, BodyInlineAppendToFileShouldThrow) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, "data");
+  HttpResponse resp(http::StatusCodeOK);
+  resp.file(File(tmp.filePath().string()));
+
+  EXPECT_THROW(resp.bodyInlineAppend(16U, kAppendZeroOrOneA), std::logic_error);
+  EXPECT_THROW(resp.bodyInlineAppend(1U, kAppendZeroOrOneABytes), std::logic_error);
+  EXPECT_TRUE(resp.hasBodyFile());
+}
+
+#ifdef AERONET_ENABLE_HTTP2
+TEST_F(HttpResponseTest, BodyInlineAppendToCapturedBodyWithoutContentLengthHeader) {
+  HttpResponse resp = makePrepared(PreparedOptions{.sendContentLengthHeader = false});
+  resp.body(std::string("captured"), "text/captured");
+  resp.bodyInlineAppend(
+      16U,
+      [](char* out) {
+        std::ranges::copy(std::string_view("-abc"), out);
+        return std::size_t{4};
+      },
+      "text/appended");
+  EXPECT_EQ(resp.bodyInMemory(), "captured-abc");
+  EXPECT_FALSE(resp.headerValue(http::ContentLength));
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/appended");
+}
+#endif
+
+TEST_F(HttpResponseTest, BodyInlineAppendToCapturedBodyReplacingDirectlyCompressedBody) {
+  for (Encoding enc : test::SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+    resp.bodyAppend(std::string(1024, 'C'), http::ContentTypeTextPlain);
+    EXPECT_TRUE(IsAutomaticDirectCompression(resp));
+
+    resp.body(std::string(4096, 'D'));
+    resp.bodyInlineAppend(16U, [](char* out) {
+      std::ranges::fill_n(out, 16, 'E');
+      return std::size_t{16};
+    });
+
+    // Captured bodies are compressed at finalization, not directly
+    EXPECT_FALSE(IsAutomaticDirectCompression(resp));
+    EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
+    EXPECT_EQ(resp.bodyInMemory(), std::string(4096, 'D') + std::string(16, 'E'));
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "4112");
+  }
 }
 
 TEST_F(HttpResponseTest, AppendBodyInvalidContentTypeShouldThrow) {

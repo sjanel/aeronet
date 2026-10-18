@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -55,6 +56,23 @@ class HttpPayload {
   static_assert(sizeof(RawCharsSuffix) <= sizeof(RawChars));
 
  public:
+  // Non-owning reference to a callable writing data at the given position and returning the number of bytes it wrote.
+  // Type-erased so that the per-representation logic of append(std::size_t, WriterRef) is compiled once.
+  class WriterRef {
+   public:
+    template <class Writer>
+      requires std::is_invocable_r_v<std::size_t, Writer&, char*>
+    explicit WriterRef(Writer& writer) noexcept
+        : _pWriter(std::addressof(writer)),
+          _call([](void* pWriter, char* out) -> std::size_t { return (*static_cast<Writer*>(pWriter))(out); }) {}
+
+    std::size_t operator()(char* out) const { return _call(_pWriter, out); }
+
+   private:
+    void* _pWriter;
+    std::size_t (*_call)(void*, char*);
+  };
+
   constexpr HttpPayload() noexcept = default;
 
   // Constructs a HttpPayload by taking ownership of the given std::string.
@@ -121,6 +139,15 @@ class HttpPayload {
   void append(std::string_view data) { append(data.data(), data.size()); }
 
   void append(const HttpPayload& other);
+
+  // Appends the bytes that 'writer' writes in place, at the end of the payload, and returns their number.
+  // 'writer' receives room for 'maxLen' bytes and must not write more. Growth is exponential.
+  // A std::string or a vector keeps its buffer: no copy of the existing data unless it reallocates (the 'maxLen' new
+  // bytes of a vector are zero-filled before the writer runs, as a vector cannot expose uninitialized elements). The
+  // other representations, which cannot grow, are first copied into a RawChars.
+  // If 'writer' throws, the payload keeps its previous content.
+  // Does not work for file payloads.
+  std::size_t append(std::size_t maxLen, WriterRef writer);
 
   void ensureAvailableCapacity(std::size_t capa);
 
