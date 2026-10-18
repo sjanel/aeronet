@@ -345,8 +345,8 @@ class HttpRequest final : public HttpMessage {
   // The body is simply moved into this HttpMessage without any copy until the transport layer (if no compression
   // happens). Empty body is allowed - this will remove any existing body. The content type must be valid. Defaults to
   // "text/plain".
-  // It is possible to call 'bodyAppend()' on the moved std::string - this will call std::string::append() on the
-  // captured std::string.
+  // 'bodyAppend()' and 'bodyInlineAppend()' append in place to the captured std::string, without copying the
+  // captured data (unless the string reallocates).
   HttpRequest& body(std::string&& body, std::string_view contentType = http::ContentTypeTextPlain) & {
     bodyImpl(std::move(body), contentType);
     return *this;
@@ -389,8 +389,8 @@ class HttpRequest final : public HttpMessage {
   // The body is moved into this HttpMessage without any copy until the transport layer (if no compression happens).
   // Empty body is allowed (size=0) - this will remove any existing body. The content type must be valid. Defaults to
   // 'application/octet-stream'.
-  // If 'bodyAppend()' is called after this, aeronet will automatically allocate a buffer and copy the captured body
-  // into it before appending the new data.
+  // If 'bodyAppend()' or 'bodyInlineAppend()' is called after this, aeronet will automatically allocate a buffer and
+  // copy the captured body into it before appending the new data.
   HttpRequest& body(std::unique_ptr<char[]> body, std::size_t size,
                     std::string_view contentType = http::ContentTypeApplicationOctetStream) & {
     bodyImpl(std::move(body), size, contentType);
@@ -455,7 +455,8 @@ class HttpRequest final : public HttpMessage {
   // This can be useful for large static content like HTML pages, images, etc. that are known at compile time and have a
   // lifetime that exceeds the HttpRequest, until its data is conveyed to the transport layer.
   // Internally, this will capture the provided std::string_view.
-  // Note that if bodyAppend() is called after bodyStatic(), aeronet will automatically allocate a buffer.
+  // Note that if bodyAppend() or bodyInlineAppend() is called after bodyStatic(), aeronet will automatically
+  // allocate a buffer.
   HttpRequest& bodyStatic(std::string_view staticBody, std::string_view contentType = http::ContentTypeTextPlain) & {
     bodyStaticImpl(staticBody, contentType);
     return *this;
@@ -553,12 +554,16 @@ class HttpRequest final : public HttpMessage {
   // Appends directly inside the body up to 'maxLen' bytes of data.
   // 'writer' provides as a single argument the start of the buffer where to append body data and
   // should return the actual number of bytes written (should be <= 'maxLen').
-  // If body was previously captured (including files), this will throw std::logic_error.
   // It is undefined behavior to write more than 'maxLen' bytes of data into the writer (for one call).
   // This is an efficient way to set the inline body as it avoids copies and limits allocations.
   // Growing of the internal buffer is exponential.
   // You can call this method several times (it will append data to existing inline body).
-  // However, it is not compatible with direct automatic compression because the zero-copy would not be guaranteed.
+  // If the body was captured (e.g. via body(std::string&&)), the data is written in place at the end of the captured
+  // buffer: a std::string or a vector keeps its buffer (the 'maxLen' new bytes of a vector are zero-filled first), a
+  // static body or a unique_ptr buffer is first copied once into an internal buffer, as it cannot grow.
+  // If the body is a file, this will throw std::logic_error.
+  // It also works when direct automatic compression is active, but loses its zero-copy property in that case:
+  // the writer's raw bytes are first staged in a scratch area, then compressed into their final position.
   // To erase the body, call 'body' with an empty buffer.
   // ContentType is optional - if non-empty, it replaces current body content type.
   // Otherwise, initializes content type to 'application/octet-stream' if content type is not already set.

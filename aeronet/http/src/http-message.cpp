@@ -416,10 +416,7 @@ void HttpMessage::bodyAppendImpl(std::string_view body, std::string_view content
   const auto newBodyLen = oldBodyLen + body.size();
   const bool capturedBody = hasBodyCaptured();
 
-  int64_t neededCapacity = 0;
-  if (_opts.sendContentLengthHeader()) {
-    neededCapacity = static_cast<int64_t>(nchars(newBodyLen)) - static_cast<int64_t>(nchars(oldBodyLen));
-  }
+  int64_t neededCapacity = bodyHeadersGrowth(oldBodyLen, newBodyLen, contentType);
   if (!capturedBody) {
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
     if (_opts.isAutomaticDirectCompression()) {
@@ -434,13 +431,6 @@ void HttpMessage::bodyAppendImpl(std::string_view body, std::string_view content
 #else
     neededCapacity += static_cast<int64_t>(body.size());
 #endif
-  }
-
-  if (!contentType.empty()) {
-    const std::size_t oldContentTypeValueSize =
-        static_cast<std::size_t>(getContentTypeEndValuePtr() - getContentTypeValuePtr());
-
-    neededCapacity += static_cast<int64_t>(contentType.size()) - static_cast<int64_t>(oldContentTypeValueSize);
   }
 
   HeadGrowthManager headGrowthManager(*this, neededCapacity);
@@ -464,6 +454,43 @@ void HttpMessage::bodyAppendImpl(std::string_view body, std::string_view content
   } else {
     _data.unchecked_append(body);
   }
+}
+
+int64_t HttpMessage::bodyHeadersGrowth(std::size_t oldBodyLen, std::size_t newBodyLen,
+                                       std::string_view newContentType) {
+  int64_t growth = 0;
+  if (_opts.sendContentLengthHeader()) {
+    growth = static_cast<int64_t>(nchars(newBodyLen)) - static_cast<int64_t>(nchars(oldBodyLen));
+  }
+  if (!newContentType.empty()) {
+    const std::size_t oldContentTypeValueSize =
+        static_cast<std::size_t>(getContentTypeEndValuePtr() - getContentTypeValuePtr());
+
+    growth += static_cast<int64_t>(newContentType.size()) - static_cast<int64_t>(oldContentTypeValueSize);
+  }
+  return growth;
+}
+
+void HttpMessage::bodyCapturedAppend(std::size_t maxLen, HttpPayload::WriterRef writer, std::string_view contentType) {
+  if (hasBodyFile()) [[unlikely]] {
+    throw std::logic_error("Cannot append to a captured file body");
+  }
+  bodyPrecheckContentType(contentType);
+
+  // A captured payload is never empty, so its body headers are present. It is never directly compressed (only at
+  // finalization), and a HEAD body is a size-only payload instead.
+  assert(hasBodyCaptured() && !isHead() && !_opts.isAutomaticDirectCompression());
+
+  const std::size_t oldBodyLen = bodyLength();
+  HeadGrowthManager headGrowthManager(*this, bodyHeadersGrowth(oldBodyLen, oldBodyLen + maxLen, contentType));
+
+  const std::size_t written = headGrowthManager.extractedPayload()->append(maxLen, writer);
+
+  // Headers are only updated once the writer returned: if it throws, the message is left unchanged.
+  if (!contentType.empty()) {
+    replaceHeaderValueNoRealloc(getContentTypeValuePtr(), contentType);
+  }
+  replaceContentLengthValueNoRealloc(oldBodyLen + written);
 }
 
 void HttpMessage::fileImpl(File fileObj, std::size_t offset, std::size_t length, std::string_view contentType) {

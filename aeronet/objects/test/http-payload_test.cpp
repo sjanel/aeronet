@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -501,5 +502,158 @@ TEST(HttpPayload, EnsureAvailableCapacity_BytesBufferReserveAllowsAddSize) {
 
     EXPECT_EQ(body.size(), 6U);
     EXPECT_EQ(body.view().substr(0, 2), "XY");
+  }
+}
+namespace {
+
+enum class PayloadKind : std::uint8_t {
+  Empty,
+  String,
+  StaticView,
+  VectorChar,
+  VectorByte,
+  CharBuffer,
+  BytesBuffer,
+  RawChars,
+};
+
+constexpr PayloadKind kPayloadKinds[]{
+    PayloadKind::Empty,      PayloadKind::String,     PayloadKind::StaticView,  PayloadKind::VectorChar,
+    PayloadKind::VectorByte, PayloadKind::CharBuffer, PayloadKind::BytesBuffer, PayloadKind::RawChars,
+};
+
+constexpr std::string_view kInitialContent = "initial";
+
+std::string_view InitialContent(PayloadKind kind) {
+  return kind == PayloadKind::Empty ? std::string_view{} : kInitialContent;
+}
+
+// Builds a payload of the given representation holding 'content' (referenced for StaticView: it must outlive it).
+HttpPayload MakePayload(PayloadKind kind, std::string_view content) {
+  switch (kind) {
+    case PayloadKind::Empty:
+      return {};
+    case PayloadKind::String:
+      return HttpPayload(std::string(content));
+    case PayloadKind::StaticView:
+      return HttpPayload(content);
+    case PayloadKind::VectorChar:
+      return HttpPayload(std::vector<char>(content.begin(), content.end()));
+    case PayloadKind::VectorByte: {
+      std::vector<std::byte> vec(content.size());
+      std::ranges::copy(content, reinterpret_cast<char*>(vec.data()));
+      return HttpPayload(std::move(vec));
+    }
+    case PayloadKind::CharBuffer: {
+      auto buf = std::make_unique<char[]>(content.size());
+      std::ranges::copy(content, buf.get());
+      return {std::move(buf), content.size()};
+    }
+    case PayloadKind::BytesBuffer: {
+      auto buf = std::make_unique<std::byte[]>(content.size());
+      std::ranges::copy(content, reinterpret_cast<char*>(buf.get()));
+      return {std::move(buf), content.size()};
+    }
+    case PayloadKind::RawChars:
+      break;
+  }
+  return HttpPayload(RawChars(content));
+}
+
+// Appends 'data' through a writer given room for 'maxLen' bytes, and returns what append() returned.
+std::size_t AppendWritten(HttpPayload& body, std::size_t maxLen, std::string_view data) {
+  auto writer = [data](char* out) -> std::size_t {
+    std::ranges::copy(data, out);
+    return data.size();
+  };
+  return body.append(maxLen, HttpPayload::WriterRef(writer));
+}
+
+}  // namespace
+
+TEST(HttpPayload, AppendFromWriterEveryRepresentation) {
+  for (PayloadKind kind : kPayloadKinds) {
+    SCOPED_TRACE(static_cast<int>(kind));
+    HttpPayload body = MakePayload(kind, InitialContent(kind));
+    std::string expected(InitialContent(kind));
+
+    // writes less than maxLen
+    EXPECT_EQ(AppendWritten(body, 8, "-abc"), 4U);
+    expected += "-abc";
+    EXPECT_EQ(body.view(), expected);
+
+    // writes nothing
+    EXPECT_EQ(AppendWritten(body, 4, {}), 0U);
+    EXPECT_EQ(body.view(), expected);
+
+    // writes exactly maxLen
+    EXPECT_EQ(AppendWritten(body, 3, "xyz"), 3U);
+    expected += "xyz";
+    EXPECT_EQ(body.view(), expected);
+    EXPECT_EQ(body.size(), expected.size());
+  }
+}
+
+TEST(HttpPayload, AppendFromWriterLargeData) {
+  static constexpr std::size_t kChunkSize = 16UL * 1024UL;
+  for (PayloadKind kind : kPayloadKinds) {
+    SCOPED_TRACE(static_cast<int>(kind));
+    HttpPayload body = MakePayload(kind, InitialContent(kind));
+    std::string expected(InitialContent(kind));
+
+    for (std::size_t chunkPos = 0; chunkPos < 64U; ++chunkPos) {
+      const std::string data(kChunkSize - (chunkPos % 3U), static_cast<char>('a' + (chunkPos % 26U)));
+      ASSERT_EQ(AppendWritten(body, kChunkSize, data), data.size());
+      expected += data;
+    }
+    EXPECT_EQ(body.size(), expected.size());
+    EXPECT_EQ(body.view(), expected);
+  }
+}
+
+TEST(HttpPayload, AppendFromWriterKeepsGrowableBuffersInPlace) {
+  std::string str("abc");
+  str.reserve(64);
+  std::vector<char> vecChar{'a', 'b', 'c'};
+  vecChar.reserve(64);
+  std::vector<std::byte> vecByte{std::byte{'a'}, std::byte{'b'}, std::byte{'c'}};
+  vecByte.reserve(64);
+  RawChars rawChars(64);
+  rawChars.append(std::string_view("abc"));
+
+  HttpPayload bodies[]{
+      HttpPayload(std::move(str)),
+      HttpPayload(std::move(vecChar)),
+      HttpPayload(std::move(vecByte)),
+      HttpPayload(std::move(rawChars)),
+  };
+  for (HttpPayload& body : bodies) {
+    [[maybe_unused]] const char* data = body.data();
+    EXPECT_EQ(AppendWritten(body, 32, "defg"), 4U);
+    EXPECT_EQ(AppendWritten(body, 16, "hij"), 3U);
+#ifndef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+    // Enough room: neither a reallocation nor a switch to another representation (the additional memory checks move
+    // a growing std::string or vector to a new buffer on purpose, to expose dangling pointers)
+    EXPECT_EQ(body.data(), data);
+#endif
+    EXPECT_EQ(body.view(), "abcdefghij");
+  }
+}
+
+TEST(HttpPayload, AppendFromThrowingWriterKeepsContent) {
+  for (PayloadKind kind : kPayloadKinds) {
+    SCOPED_TRACE(static_cast<int>(kind));
+    HttpPayload body = MakePayload(kind, InitialContent(kind));
+
+    auto throwingWriter = [](char* out) -> std::size_t {
+      std::ranges::fill_n(out, 4, 'X');
+      throw std::runtime_error("writer failure");
+    };
+    EXPECT_THROW(body.append(4, HttpPayload::WriterRef(throwingWriter)), std::runtime_error);
+    EXPECT_EQ(body.view(), InitialContent(kind));
+
+    // still usable afterwards
+    EXPECT_EQ(AppendWritten(body, 3, "abc"), 3U);
+    EXPECT_EQ(body.view(), std::string(InitialContent(kind)) + "abc");
   }
 }

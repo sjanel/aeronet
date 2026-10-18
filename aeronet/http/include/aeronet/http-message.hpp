@@ -383,8 +383,8 @@ class HttpMessage {
   // The body is simply moved into this HttpMessage without any copy until the transport layer (if no compression
   // happens). Empty body is allowed - this will remove any existing body. The content type must be valid. Defaults to
   // "text/plain".
-  // It is possible to call 'bodyAppendImpl()' on the moved std::string - this will call std::string::append() on the
-  // captured std::string.
+  // 'bodyAppendImpl()' and 'bodyInlineAppend()' append in place to the captured std::string, without copying the
+  // captured data (unless the string reallocates).
   void bodyImpl(std::string&& body, std::string_view contentType = http::ContentTypeTextPlain) {
     setBodyHeaders(contentType, body.size(), BodySetContext::Captured);
     setBodyInternal(std::string_view{});
@@ -411,8 +411,8 @@ class HttpMessage {
   // The body is moved into this HttpMessage without any copy until the transport layer (if no compression happens).
   // Empty body is allowed (size=0) - this will remove any existing body. The content type must be valid. Defaults to
   // 'application/octet-stream'.
-  // If 'bodyAppendImpl()' is called after this, aeronet will automatically allocate a buffer and copy the captured body
-  // into it before appending the new data.
+  // If 'bodyAppendImpl()' or 'bodyInlineAppend()' is called after this, aeronet will automatically allocate a buffer
+  // and copy the captured body into it before appending the new data.
   void bodyImpl(std::unique_ptr<char[]> body, std::size_t size,
                 std::string_view contentType = http::ContentTypeApplicationOctetStream) {
     setBodyHeaders(contentType, size, BodySetContext::Captured);
@@ -434,7 +434,8 @@ class HttpMessage {
   // Internally, this will capture the provided std::string_view.
   // With Linux MSG_ZEROCOPY (see HttpServerConfig::zerocopyMode), the kernel reads the buffer of a response until the
   // client acknowledged it, after the response was written: it must stay valid and unchanged (static data).
-  // Note that if bodyAppendImpl() is called after bodyStaticImpl(), aeronet will automatically allocate a buffer.
+  // Note that if bodyAppendImpl() or bodyInlineAppend() is called after bodyStaticImpl(), aeronet will automatically
+  // allocate a buffer.
   void bodyStaticImpl(std::string_view staticBody, std::string_view contentType = http::ContentTypeTextPlain) {
     setBodyHeaders(contentType, staticBody.size(), BodySetContext::Captured);
     setBodyInternal(std::string_view{});
@@ -549,11 +550,14 @@ class HttpMessage {
   // Appends directly inside the body up to 'maxLen' bytes of data.
   // 'writer' provides as a single argument the start of the buffer where to append body data and
   // should return the actual number of bytes written (should be <= 'maxLen').
-  // If body was previously captured (including files), this will throw std::logic_error.
   // It is undefined behavior to write more than 'maxLen' bytes of data into the writer (for one call).
   // This is an efficient way to set the inline body as it avoids copies and limits allocations.
   // Growing of the internal buffer is exponential.
   // You can call this method several times (it will append data to existing inline body).
+  // If the body was captured (e.g. via body(std::string&&)), the data is written in place at the end of the captured
+  // buffer: a std::string or a vector keeps its buffer (the 'maxLen' new bytes of a vector are zero-filled first), a
+  // static body or a unique_ptr buffer is first copied once into an internal buffer, as it cannot grow.
+  // If the body is a file, this will throw std::logic_error.
   // It also works when direct automatic compression is active, but loses its zero-copy property in that case:
   // the writer's raw bytes are first staged in a scratch area, then compressed into their final position.
   // To erase the body, call 'body' with an empty buffer.
@@ -561,14 +565,22 @@ class HttpMessage {
   // Otherwise, initializes content type to 'application/octet-stream' if content type is not already set.
   template <class Writer>
   void bodyInlineAppend(std::size_t maxLen, Writer&& writer, std::string_view contentType = {}) {
+    using W = std::remove_reference_t<Writer>;
+
     HttpPayload* pPayload = _opts.hasEmbeddedPayload() ? getHttpPayload() : nullptr;
-    if (_opts.hasEmbeddedPayload() && !pPayload->isSizeOnly()) [[unlikely]] {
-      // TODO: cannot we append to captured bodies?
-      throw std::logic_error("bodyInlineAppend can only be used with inline body responses");
+    if (pPayload != nullptr && !pPayload->isSizeOnly()) [[unlikely]] {
+      auto charWriter = [&writer](char* out) -> std::size_t {
+        if constexpr (std::is_invocable_r_v<std::size_t, W, std::byte*>) {
+          return std::invoke(std::forward<Writer>(writer), reinterpret_cast<std::byte*>(out));
+        } else {
+          return std::invoke(std::forward<Writer>(writer), out);
+        }
+      };
+      bodyCapturedAppend(maxLen, HttpPayload::WriterRef(charWriter), contentType);
+      return;
     }
     bodyPrecheckContentType(contentType);
 
-    using W = std::remove_reference_t<Writer>;
     // Accept writers callable as either: std::size_t(char*) or std::size_t(std::byte*)
     // and select a sensible default Content-Type based on the pointer type.
     std::string_view defaultContentType;
@@ -936,6 +948,13 @@ class HttpMessage {
 
   void bodyAppendUpdateHeaders(std::string_view givenContentType, std::string_view defaultContentType,
                                std::size_t totalBodyLen, bool hadBody);
+
+  // Growth of the body headers when the body length goes from 'oldBodyLen' to 'newBodyLen' (Content-Length value) and
+  // the Content-Type value is replaced by 'newContentType' (if non-empty). Precondition: the body headers are present.
+  int64_t bodyHeadersGrowth(std::size_t oldBodyLen, std::size_t newBodyLen, std::string_view newContentType);
+
+  // bodyInlineAppend for a captured body (or a file, rejected): written in place at the end of the payload.
+  void bodyCapturedAppend(std::size_t maxLen, HttpPayload::WriterRef writer, std::string_view contentType);
 
   // The headers position is stored in lower 24 bits, body pos in upper 40 bits.
   // So this means that the status line can support up to 16 MiB (which is insane and should cover all use cases), and

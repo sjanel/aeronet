@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -221,6 +222,67 @@ void HttpPayload::append(const HttpPayload& other) {
       _data);
 }
 
+namespace {
+
+template <class Vec>
+std::size_t AppendToVector(Vec& vec, std::size_t maxLen, HttpPayload::WriterRef writer) {
+  const std::size_t oldSize = vec.size();
+  // A vector cannot expose uninitialized elements: zero-fill the writer area (within the reserved capacity).
+  vec.resize(oldSize + maxLen);
+  std::size_t written;
+  try {
+    written = writer(reinterpret_cast<char*>(vec.data()) + oldSize);
+  } catch (...) {
+    vec.resize(oldSize);
+    throw;
+  }
+  assert(written <= maxLen);
+  vec.resize(oldSize + written);  // shrinking never reallocates
+  return written;
+}
+
+}  // namespace
+
+std::size_t HttpPayload::append(std::size_t maxLen, WriterRef writer) {
+  assert(!isFilePayload());
+  // Exponential growth - switches the representations that cannot grow (and an empty payload) to RawChars.
+  ensureAvailableCapacityExponential(maxLen);
+
+  if (auto* pStr = std::get_if<std::string>(&_data)) {
+    const std::size_t oldSize = pStr->size();
+    std::size_t written = 0;
+    std::exception_ptr writerException;
+    // Unlike resize(), does not zero-fill the writer area. The operation must not throw (precondition of
+    // resize_and_overwrite, libstdc++ would empty the string): a writer exception is rethrown after it.
+    pStr->resize_and_overwrite(oldSize + maxLen, [&](char* data, std::size_t) noexcept {
+      try {
+        written = writer(data + oldSize);
+      } catch (...) {
+        writerException = std::current_exception();
+      }
+      return oldSize + written;
+    });
+    if (writerException) {
+      std::rethrow_exception(writerException);
+    }
+    assert(written <= maxLen);
+    return written;
+  }
+  if (auto* pVec = std::get_if<std::vector<char>>(&_data)) {
+    return AppendToVector(*pVec, maxLen, writer);
+  }
+  if (auto* pVec = std::get_if<std::vector<std::byte>>(&_data)) {
+    return AppendToVector(*pVec, maxLen, writer);
+  }
+
+  auto* pRawChars = std::get_if<RawChars>(&_data);
+  assert(pRawChars != nullptr);
+  const std::size_t written = writer(pRawChars->end());
+  assert(written <= maxLen);
+  pRawChars->addSize(written);
+  return written;
+}
+
 void HttpPayload::ensureAvailableCapacity(std::size_t capa) {
   assert(!isFilePayload());
   std::visit(
@@ -270,7 +332,9 @@ void HttpPayload::ensureAvailableCapacityExponential(std::size_t capa) {
           newVal.insert(newVal.end(), val.begin(), val.end());
           val.swap(newVal);
 #else
-          val.reserve(std::max(val.size() + capa, val.capacity() * 2U));
+          if (val.capacity() - val.size() < capa) {
+            val.reserve(std::max(val.size() + capa, val.capacity() * 2U));
+          }
 #endif
         } else if constexpr (std::is_same_v<T, RawChars>) {
           val.ensureAvailableCapacityExponential(capa);
