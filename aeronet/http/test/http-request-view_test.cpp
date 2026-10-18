@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -16,6 +17,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
@@ -95,6 +97,7 @@ class HttpRequestViewTest : public ::testing::Test {
 
   http::StatusCode reqSet(RawChars raw, bool mergeAllowedForUnknownRequestHeaders = true) {
     cs.inBuffer = std::move(raw);
+    req._headParseState = HttpRequestView::HeadParseState::None;  // a new request
     RawChars tmpBuffer;
     auto ret = req.initTrySetHead(cs.inBuffer, tmpBuffer, 4096U, mergeAllowedForUnknownRequestHeaders, nullptr);
     if (ret == http::StatusCodeOK) {
@@ -106,6 +109,7 @@ class HttpRequestViewTest : public ::testing::Test {
   http::StatusCode reqSetWithSpan(RawChars raw, tracing::SpanPtr span,
                                   bool mergeAllowedForUnknownRequestHeaders = true) {
     cs.inBuffer = std::move(raw);
+    req._headParseState = HttpRequestView::HeadParseState::None;  // a new request
     RawChars tmpBuffer;
     auto ret = req.initTrySetHead(cs.inBuffer, tmpBuffer, 4096U, mergeAllowedForUnknownRequestHeaders, std::move(span));
     if (ret == http::StatusCodeOK) {
@@ -123,6 +127,61 @@ class HttpRequestViewTest : public ::testing::Test {
   void rehash(std::size_t capacity) { req._headers.rehash(capacity); }
 
   void shrinkAndMaybeClear() { req.shrinkAndMaybeClear(); }
+
+  // Appends 'bytes' to the bytes received so far (modified by their parsing) in a new buffer, as when the connection
+  // buffer grows. The previous buffer is kept until the next call, overwritten: views not moved to the new buffer read
+  // garbage instead of the head.
+  void receive(std::string_view bytes) {
+    RawChars grown(cs.inBuffer.size() + bytes.size());
+    grown.unchecked_append(std::string_view(cs.inBuffer));
+    grown.unchecked_append(bytes);
+    if (!cs.inBuffer.empty()) {  // data() is null before the first allocation
+      std::memset(cs.inBuffer.data(), 'X', cs.inBuffer.size());
+    }
+    previousInBuffer.swap(cs.inBuffer);
+    cs.inBuffer.swap(grown);
+  }
+
+  // Receives 'bytes' then attempts to parse the head received so far, as the server does after each read.
+  http::StatusCode receiveAndParse(std::string_view bytes) {
+    receive(bytes);
+    auto ret = req.initTrySetHead(cs.inBuffer, headTmpBuffer, 4096U, true, nullptr);
+    if (ret == http::StatusCodeOK) {
+      req.finalizeBeforeHandlerCall({});
+    }
+    return ret;
+  }
+
+  void keepHeadForBody() { req.keepHeadForBody(); }
+  [[nodiscard]] bool isHeadWaitingForBody() const { return req.isHeadWaitingForBody(); }
+  void resumeHeadWaitingForBody() {
+    req.resumeHeadWaitingForBody(cs.inBuffer);
+    req.finalizeBeforeHandlerCall({});
+  }
+
+  // What the parsing of a head produced, to compare the parsing of the same head received in several parts.
+  struct HeadSnapshot {
+    bool operator==(const HeadSnapshot&) const = default;
+
+    http::Method method{http::Method::GET};
+    http::Version version;
+    std::string path;
+    std::vector<std::pair<std::string, std::string>> queryParams;
+    std::vector<std::pair<std::string, std::string>> headers;
+    std::size_t headSpanSize{};
+  };
+
+  [[nodiscard]] HeadSnapshot snapshot() const {
+    HeadSnapshot ret{req.method(), req.version(), std::string(req.path()), {}, {}, req.headSpanSize()};
+    for (const auto& [key, value] : req.queryParamsRange()) {
+      ret.queryParams.emplace_back(key, value);
+    }
+    for (const auto& [name, value] : req.headers()) {
+      ret.headers.emplace_back(name, value);
+    }
+    std::ranges::sort(ret.headers);
+    return ret;
+  }
 
   // Helpers that exercise private internals via friendship with HttpRequestView.
   void setBodyAccessAggregated() { req._bodyAccessMode = HttpRequestView::BodyAccessMode::Aggregated; }
@@ -259,6 +318,8 @@ class HttpRequestViewTest : public ::testing::Test {
 #endif
   HttpRequestView req;
   ConnectionState cs;
+  RawChars previousInBuffer;
+  RawChars headTmpBuffer;
 };
 
 TEST_F(HttpRequestViewTest, ReadBodyWithZeroMaxBytesReturnsEmpty) {
@@ -696,6 +757,101 @@ TEST_F(HttpRequestViewTest, DecodedNulInPathIsRejected) {
   // other decoded control characters stay the business of the application
   EXPECT_EQ(reqSet(BuildRaw("GET", "/a%0Ab")), http::StatusCodeOK);
   EXPECT_EQ(req.path(), "/a\nb");
+}
+
+namespace {
+
+constexpr auto kNeedMoreData = static_cast<http::StatusCode>(0);  // HttpRequestView::kStatusNeedMoreData
+
+// Parsing modifies the head in place: decoded request-target ('&' and '=' of the query become separators, "%25" a '%'),
+// lower-cased header names and Content-Encoding value, merged duplicate header values.
+constexpr std::string_view kHeadModifiedByItsParsing =
+    "GET /p%2561th/x?a=1&b=%20x+y&flag HTTP/1.1\r\n"
+    "Host: h\r\n"
+    "X-Dup: v1\r\n"
+    "Accept: text/html\r\n"
+    "X-Dup: v2\r\n"
+    "Content-Encoding: GZIP\r\n"
+    "\r\n";
+
+}  // namespace
+
+TEST_F(HttpRequestViewTest, HeadReceivedInTwoPartsIsParsedOnce) {
+  ASSERT_EQ(reqSet(RawChars(kHeadModifiedByItsParsing)), http::StatusCodeOK);
+  const HeadSnapshot expected = snapshot();
+  EXPECT_EQ(expected.path, "/p%61th/x");  // decoded once
+  EXPECT_EQ(req.queryParamValueOrEmpty("b"), " x y");
+  EXPECT_EQ(req.headerValueOrEmpty("x-dup"), "v1,v2");
+  EXPECT_EQ(req.headerValueOrEmpty("content-encoding"), "gzip");
+
+  for (std::size_t cut = 1; cut < kHeadModifiedByItsParsing.size(); ++cut) {
+    SCOPED_TRACE(cut);
+    cs.inBuffer.clear();
+    ASSERT_EQ(receiveAndParse(kHeadModifiedByItsParsing.substr(0, cut)), kNeedMoreData);
+    ASSERT_EQ(receiveAndParse(kHeadModifiedByItsParsing.substr(cut)), http::StatusCodeOK);
+    EXPECT_EQ(snapshot(), expected);
+  }
+}
+
+TEST_F(HttpRequestViewTest, HeadReceivedByteByByteIsParsedOnce) {
+  ASSERT_EQ(reqSet(RawChars(kHeadModifiedByItsParsing)), http::StatusCodeOK);
+  const HeadSnapshot expected = snapshot();
+
+  cs.inBuffer.clear();
+  for (std::size_t pos = 0; pos + 1 < kHeadModifiedByItsParsing.size(); ++pos) {
+    ASSERT_EQ(receiveAndParse(kHeadModifiedByItsParsing.substr(pos, 1)), kNeedMoreData) << pos;
+  }
+  ASSERT_EQ(receiveAndParse(kHeadModifiedByItsParsing.substr(kHeadModifiedByItsParsing.size() - 1)),
+            http::StatusCodeOK);
+  EXPECT_EQ(snapshot(), expected);
+
+  // The next request on the connection is parsed from its start.
+  cs.inBuffer.clear();
+  ASSERT_EQ(receiveAndParse("GET /next?k=v HTTP/1.1\r\nHost: h\r\n\r\n"), http::StatusCodeOK);
+  EXPECT_EQ(req.path(), "/next");
+  EXPECT_EQ(req.queryParamValueOrEmpty("k"), "v");
+  EXPECT_EQ(req.headerValueOrEmpty("x-dup"), "");
+}
+
+TEST_F(HttpRequestViewTest, ErrorInTheRestOfAPartialHead) {
+  cs.inBuffer.clear();
+  ASSERT_EQ(receiveAndParse("GET /?a=1 HTTP/1.1\r\nHost: h\r\n"), kNeedMoreData);
+  EXPECT_EQ(receiveAndParse("Bad Header\r\n\r\n"), http::StatusCodeBadRequest);
+
+  cs.inBuffer.clear();
+  ASSERT_EQ(receiveAndParse("GET /?a=1 HTTP/1.1\r\nHost: h\r\nX-Long: "), kNeedMoreData);
+  EXPECT_EQ(receiveAndParse(std::string(4096, 'v') + "\r\n\r\n"), http::StatusCodeRequestHeaderFieldsTooLarge);
+
+  // A new request after an error is parsed from its start.
+  EXPECT_EQ(reqSet(BuildRaw("GET", "/fresh?x=y")), http::StatusCodeOK);
+  EXPECT_EQ(req.path(), "/fresh");
+  EXPECT_EQ(req.queryParamValueOrEmpty("x"), "y");
+}
+
+TEST_F(HttpRequestViewTest, HeadWaitingForBodyIsNotParsedAgain) {
+  static constexpr std::string_view kPostHead =
+      "POST /upload?id=7&name=a+b HTTP/1.1\r\nHost: h\r\nX-Dup: v1\r\nX-Dup: v2\r\nContent-Length: 12\r\n\r\n";
+  cs.inBuffer.clear();
+  ASSERT_EQ(receiveAndParse(std::string(kPostHead) + "partial"), http::StatusCodeOK);
+  const HeadSnapshot expected = snapshot();
+  EXPECT_FALSE(isHeadWaitingForBody());
+  keepHeadForBody();
+  EXPECT_TRUE(isHeadWaitingForBody());
+
+  // The rest of the body moves the buffer: the request is resumed without parsing its head again.
+  receive(" body");
+  resumeHeadWaitingForBody();
+  EXPECT_FALSE(isHeadWaitingForBody());
+  EXPECT_EQ(snapshot(), expected);
+  EXPECT_EQ(req.path(), "/upload");
+  EXPECT_EQ(req.queryParamValueOrEmpty("name"), "a b");
+  EXPECT_EQ(req.headerValueOrEmpty("x-dup"), "v1,v2");
+  EXPECT_EQ(std::string_view(cs.inBuffer).substr(req.headSpanSize()), "partial body");
+
+  // Resuming without a buffer move keeps the views.
+  keepHeadForBody();
+  resumeHeadWaitingForBody();
+  EXPECT_EQ(snapshot(), expected);
 }
 
 TEST_F(HttpRequestViewTest, Http11WithoutHostShouldBeRejected) {
