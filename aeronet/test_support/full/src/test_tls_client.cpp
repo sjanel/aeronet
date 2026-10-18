@@ -3,7 +3,6 @@
 #include <openssl/bio.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
-#include <openssl/obj_mac.h>
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
 #include <openssl/tls1.h>
@@ -39,6 +38,7 @@
 #include "aeronet/log.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/sigpipe-blocker.hpp"
+#include "aeronet/test-tls-helper.hpp"
 #include "aeronet/test_util.hpp"
 #include "aeronet/tls-raii.hpp"
 #include "aeronet/vector.hpp"
@@ -385,17 +385,7 @@ std::string TlsClient::peerCommonName() const {
   if (cert == nullptr) {
     return {};
   }
-  const X509_NAME* subj = ::X509_get_subject_name(cert);
-  if (subj == nullptr) {
-    return {};
-  }
-
-  char buf[256];
-  const int len = ::X509_NAME_get_text_by_NID(subj, NID_commonName, buf, static_cast<int>(sizeof(buf)));
-  if (len <= 0) {
-    return {};
-  }
-  return {buf, static_cast<std::size_t>(len)};
+  return SubjectCommonName(cert);
 }
 
 std::string_view TlsClient::readSome(std::span<char> buffer) {

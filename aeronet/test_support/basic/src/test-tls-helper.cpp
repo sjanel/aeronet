@@ -171,19 +171,19 @@ CertificateChain MakeCertificateChain(const char* leafCommonName) {
   return chain;
 }
 
-std::string EncryptPrivateKeyPem(const std::string& keyPem, const char* passphrase) {
+std::string EncryptPrivateKeyPem(const std::string& keyPem, const char* pPassphrase) {
   BioPtr in(::BIO_new_mem_buf(keyPem.data(), static_cast<int>(keyPem.size())), ::BIO_free);
   PkeyPtr pkey(in ? ::PEM_read_bio_PrivateKey(in.get(), nullptr, nullptr, nullptr) : nullptr, ::EVP_PKEY_free);
   BioPtr out(::BIO_new(::BIO_s_mem()), ::BIO_free);
   if (!pkey || !out ||
       ::PEM_write_bio_PKCS8PrivateKey(out.get(), pkey.get(), ::EVP_aes_256_cbc(), nullptr, 0, nullptr,
-                                      const_cast<char*>(passphrase)) != 1) {
+                                      const_cast<char*>(pPassphrase)) != 1) {
     throw std::runtime_error("Failed to encrypt the private key");
   }
   return BioContent(out.get());
 }
 
-std::pair<std::string, std::string> MakeEphemeralCertKey(const char* commonName, int validSeconds, KeyAlgorithm alg) {
+std::pair<std::string, std::string> MakeEphemeralCertKey(const char* pCommonName, int validSeconds, KeyAlgorithm alg) {
   auto pkey = GenerateKey(alg);
   if (!pkey) {
     return {"", ""};
@@ -191,46 +191,58 @@ std::pair<std::string, std::string> MakeEphemeralCertKey(const char* commonName,
 
   std::unique_ptr<X509, decltype(&X509_free)> x509Ptr(X509_new(), &X509_free);
 
-  X509* x509 = x509Ptr.get();
-  if (x509 == nullptr) {
+  X509* pX509 = x509Ptr.get();
+  if (pX509 == nullptr) {
     return {"", ""};
   }
-  ASN1_INTEGER_set(X509_get_serialNumber(x509), 1);
-  X509_gmtime_adj(X509_get_notBefore(x509), 0);
-  X509_gmtime_adj(X509_get_notAfter(x509), validSeconds);
-  X509_set_pubkey(x509, pkey.get());
-  SetNames(x509, {{"C", "XX"}, {"O", "AeronetTest"}, {"CN", commonName}}, nullptr);
-  if (X509_sign(x509, pkey.get(), EVP_sha256()) <= 0) {
+  ASN1_INTEGER_set(X509_get_serialNumber(pX509), 1);
+  X509_gmtime_adj(X509_get_notBefore(pX509), 0);
+  X509_gmtime_adj(X509_get_notAfter(pX509), validSeconds);
+  X509_set_pubkey(pX509, pkey.get());
+  SetNames(pX509, {{"C", "XX"}, {"O", "AeronetTest"}, {"CN", pCommonName}}, nullptr);
+  if (X509_sign(pX509, pkey.get(), EVP_sha256()) <= 0) {
     return {"", ""};
   }
 
   std::string certPem;
   std::string keyPem;
   {
-    BIO* bio = BIO_new(BIO_s_mem());
-    if (bio != nullptr) {
-      if (PEM_write_bio_X509(bio, x509) == 1) {
+    BIO* pBIO = BIO_new(BIO_s_mem());
+    if (pBIO != nullptr) {
+      if (PEM_write_bio_X509(pBIO, pX509) == 1) {
         char* data = nullptr;
-        long len = BIO_get_mem_data(bio, &data);
+        long len = BIO_get_mem_data(pBIO, &data);
         certPem.assign(data, static_cast<std::size_t>(len));
       }
-      BIO_free(bio);
+      BIO_free(pBIO);
     }
   }
   {
-    BIO* bio = BIO_new(BIO_s_mem());
-    if (bio != nullptr) {
-      if (PEM_write_bio_PrivateKey(bio, pkey.get(), nullptr, nullptr, 0, nullptr, nullptr) == 1) {
-        char* data = nullptr;
-        long len = BIO_get_mem_data(bio, &data);
-        keyPem.assign(data, static_cast<std::size_t>(len));
+    BIO* pBIO = BIO_new(BIO_s_mem());
+    if (pBIO != nullptr) {
+      if (PEM_write_bio_PrivateKey(pBIO, pkey.get(), nullptr, nullptr, 0, nullptr, nullptr) == 1) {
+        char* pData = nullptr;
+        long len = BIO_get_mem_data(pBIO, &pData);
+        keyPem.assign(pData, static_cast<std::size_t>(len));
       }
-      BIO_free(bio);
+      BIO_free(pBIO);
     }
   }
   return {certPem, keyPem};
 }
 
-void SetSelfIssuedName(X509* cert, const char* commonName) { SetNames(cert, {{"CN", commonName}}, nullptr); }
+void SetSelfIssuedName(X509* cert, const char* pCommonName) { SetNames(cert, {{"CN", pCommonName}}, nullptr); }
+
+std::string SubjectCommonName(const X509* pCert) {
+  // X509_NAME_get_text_by_NID() is deprecated since OpenSSL 4.0: read the entry itself.
+  const X509_NAME* subject = ::X509_get_subject_name(pCert);
+  const int pos = ::X509_NAME_get_index_by_NID(subject, NID_commonName, -1);
+  if (pos < 0) {
+    return {};
+  }
+  const ASN1_STRING* data = ::X509_NAME_ENTRY_get_data(::X509_NAME_get_entry(subject, pos));
+  return {reinterpret_cast<const char*>(::ASN1_STRING_get0_data(data)),
+          static_cast<std::size_t>(::ASN1_STRING_length(data))};
+}
 
 }  // namespace aeronet::test
