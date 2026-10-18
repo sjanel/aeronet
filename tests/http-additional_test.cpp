@@ -19,6 +19,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 
@@ -342,6 +343,74 @@ TEST(HttpPipeline, TwoRequestsBackToBack) {
   std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("E:/a"));
   ASSERT_TRUE(resp.contains("E:/b"));
+}
+
+// The head of a request is parsed once, even when it is received in several reads: its parsing modifies it in place
+// (decoded request-target, merged duplicate headers), and parsing it again would read something else.
+TEST(HttpSplitRequest, HeadReceivedInTwoReadsIsParsedOnce) {
+  ts.router().setDefault([](const HttpRequestView& req) {
+    return HttpResponse(std::format("{}|{}|{}|{}", req.path(), req.queryParamValueOrEmpty("a"),
+                                    req.queryParamValueOrEmpty("b"), req.headerValueOrEmpty("x-dup")));
+  });
+  static constexpr std::string_view kHead =
+      "GET /p%2561th?a=1&b=x+y HTTP/1.1\r\nhost: x\r\nx-dup: v1\r\nuser-agent: t\r\nx-dup: v2\r\n\r\n";
+  test::ClientConnection clientConnection(ts.port());
+  const NativeHandle fd = clientConnection.fd();
+  ASSERT_TRUE(SetTcpNoDelay(fd));  // the second part is not delayed until the first one is acknowledged
+  for (std::size_t cut = 1; cut < kHead.size(); ++cut) {
+    SCOPED_TRACE(cut);
+    test::sendAll(fd, kHead.substr(0, cut));
+    std::this_thread::sleep_for(1ms);  // lets the server read the first part on its own
+    test::sendAll(fd, kHead.substr(cut));
+    const std::string resp = test::recvWithTimeout(fd, 2s);
+    ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+    ASSERT_TRUE(resp.ends_with("/p%61th|1|x y|v1,v2")) << resp;
+  }
+}
+
+// A request whose body is received after its head is served once its body is complete, without parsing its head
+// again, and counted once.
+TEST(HttpSplitRequest, BodyReceivedInSeveralReadsIsServedAndCountedOnce) {
+  ts.router().setDefault([](const HttpRequestView& req) {
+    return HttpResponse(std::format("{}|{}|{}|{}", req.path(), req.queryParamValueOrEmpty("name"),
+                                    req.headerValueOrEmpty("x-dup"), req.body().size()));
+  });
+  static constexpr std::size_t kBodyPartSize = 1000;
+  const std::string head = std::format(
+      "POST /upload?id=7&name=a+b HTTP/1.1\r\nhost: x\r\nx-dup: v1\r\nx-dup: v2\r\ncontent-length: {}\r\n\r\n",
+      3 * kBodyPartSize);
+  const std::string bodyPart(kBodyPartSize, 'b');
+  test::ClientConnection clientConnection(ts.port());
+  const NativeHandle fd = clientConnection.fd();
+  for (int requestPos = 0; requestPos < 2; ++requestPos) {
+    SCOPED_TRACE(requestPos);
+    const auto requestsServedBefore = ts.server.stats().totalRequestsServed;
+    test::sendAll(fd, head);
+    for (int partPos = 0; partPos < 3; ++partPos) {
+      std::this_thread::sleep_for(2ms);
+      test::sendAll(fd, bodyPart);
+    }
+    const std::string resp = test::recvWithTimeout(fd, 2s);
+    ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+    EXPECT_TRUE(resp.ends_with("/upload|a b|v1,v2|3000")) << resp;
+    EXPECT_EQ(ts.server.stats().totalRequestsServed, requestsServedBefore + 1);
+  }
+}
+
+TEST(HttpSplitRequest, ChunkedBodyReceivedInSeveralReads) {
+  ts.router().setDefault([](const HttpRequestView& req) {
+    return HttpResponse(std::format("{}|{}|{}", req.path(), req.queryParamValueOrEmpty("k"), req.body()));
+  });
+  test::ClientConnection clientConnection(ts.port());
+  const NativeHandle fd = clientConnection.fd();
+  test::sendAll(fd, "POST /chunks?k=v+w&z HTTP/1.1\r\nhost: x\r\ntransfer-encoding: chunked\r\n\r\n");
+  for (const std::string_view part : {"5\r\nhello\r\n", "1\r\n", "-\r\n6\r\nchunks\r\n", "0\r\n\r\n"}) {
+    std::this_thread::sleep_for(2ms);
+    test::sendAll(fd, part);
+  }
+  const std::string resp = test::recvWithTimeout(fd, 2s);
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.ends_with("/chunks|v w|hello-chunks")) << resp;
 }
 
 TEST(HttpExpect, ZeroLengthNo100) {
