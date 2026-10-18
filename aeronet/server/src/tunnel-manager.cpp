@@ -562,9 +562,9 @@ TunnelManager::CloseStatus TunnelManager::readInput(ConnectionIt cnxIt, std::siz
   ConnectionState& state = _server._connections.connectionState(cnxIt);
   const HttpServerConfig& config = _server._config;
   while (!state.eofReceived && state.inBuffer.size() < config.maxOutboundBufferBytes) {
-    const std::size_t chunkSize = config.computeReadChunkSize(bytesReadThisEvent);
+    const std::size_t chunkSize = config.computeReadChunkSize(bytesReadThisEvent, state.readSizeShift);
     assert(chunkSize > 0);
-    const auto [bytesRead, want] = state.transportRead(chunkSize);
+    const auto [bytesRead, want] = state.transportRead(config, chunkSize);
     if (want == TransportHint::Error) {
       return CloseStatus::Close;
     }

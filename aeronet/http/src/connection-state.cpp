@@ -5,6 +5,7 @@
 #endif
 
 #include <algorithm>
+#include <bit>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
@@ -85,11 +86,17 @@ void ConnectionState::initializeStateNewConnection(const HttpServerConfig& confi
   }
 }
 
-TransportResult ConnectionState::transportRead(std::size_t chunkSize) {
+TransportResult ConnectionState::transportRead(const HttpServerConfig& config, std::size_t chunkSize) {
   inBuffer.ensureAvailableCapacityExponential(chunkSize);
 
   const auto result = transport.read(inBuffer.data() + inBuffer.size(), chunkSize);
   inBuffer.addSize(result.bytesProcessed);
+  if (result.bytesProcessed != 0) {
+    static_assert(std::bit_width(HttpServerConfig::kMaxReadChunkBytes) < (1U << kReadSizeShiftNbBits));
+    static constexpr uint8_t kReadSizeShiftMask = (1U << kReadSizeShiftNbBits) - 1U;
+    readSizeShift = static_cast<uint8_t>(config.adaptReadSizeShift(readSizeShift, chunkSize, result.bytesProcessed) &
+                                         kReadSizeShiftMask);
+  }
   if (headerStartTp.time_since_epoch().count() == 0) {
     headerStartTp = lastActivity;
     parsingHeaders = true;
@@ -308,6 +315,7 @@ void ConnectionState::reset() {
   requestsServed = 0;
   trailerLen = 0;
   clientAddressLength = 0;
+  readSizeShift = 0;
   closeMode = CloseMode::None;
   waitingWritable = false;
   tlsEstablished = false;
