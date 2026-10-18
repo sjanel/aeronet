@@ -13,6 +13,7 @@
 #include <openssl/tls1.h>
 #include <openssl/types.h>
 #include <openssl/x509.h>
+#include <openssl/x509_vfy.h>
 #include <openssl/x509v3.h>
 
 #include <algorithm>
@@ -60,14 +61,14 @@ constexpr int ToOpenSslTlsVersion(TLSConfig::Version ver) {
 
 // Load a client certificate chain + private key (mutual TLS) into the context, from in-memory PEM if
 // provided, otherwise from file paths. No-op when neither is configured.
-void LoadClientCertificate(SSL_CTX* ctx, const HttpClientConfig& cfg) {
+void LoadClientCertificate(SSL_CTX* pCTX, const HttpClientConfig& cfg) {
   const std::string_view certPem = cfg.tlsClientCertPem();
   const std::string_view keyPem = cfg.tlsClientKeyPem();
   try {
     if (!certPem.empty() && !keyPem.empty()) {
-      UseCertificateChainPem(ctx, certPem, keyPem);
+      UseCertificateChainPem(pCTX, certPem, keyPem);
     } else if (!cfg.tlsClientCertFile().empty() && !cfg.tlsClientKeyFile().empty()) {
-      UseCertificateChainFiles(ctx, cfg.tlsClientCertFileCStr(), cfg.tlsClientKeyFileCStr());
+      UseCertificateChainFiles(pCTX, cfg.tlsClientCertFileCStr(), cfg.tlsClientKeyFileCStr());
     }
   } catch (const std::runtime_error& ex) {
     // Surfaces as the documented exception type, with the OpenSSL reason.
@@ -103,9 +104,9 @@ constexpr const char* const kDefaultCaBundleDirs[]{
 // honours it, so aeronet must not widen that (possibly deliberately restricted) trust set by loading the
 // well-known system bundles on top of it.
 bool SystemTrustStoreConfiguredViaEnv() {
-  const char* envNames[]{::X509_get_default_cert_file_env(), ::X509_get_default_cert_dir_env()};
-  return std::ranges::any_of(envNames, [](const char* envName) {
-    const char* pEnv = std::getenv(envName);
+  const char* pEnvNames[]{::X509_get_default_cert_file_env(), ::X509_get_default_cert_dir_env()};
+  return std::ranges::any_of(pEnvNames, [](const char* pEnvName) {
+    const char* pEnv = std::getenv(pEnvName);
     return pEnv != nullptr && *pEnv != '\0';
   });
 }
@@ -113,16 +114,16 @@ bool SystemTrustStoreConfiguredViaEnv() {
 }  // namespace
 
 bool LoadExistingCaBundles(void* sslCtx, std::span<const char* const> caFiles, std::span<const char* const> caDirs) {
-  auto* ctx = static_cast<SSL_CTX*>(sslCtx);
+  SSL_CTX* pCTX = static_cast<SSL_CTX*>(sslCtx);
   std::error_code ec;
   bool loaded = false;
   for (const char* caFile : caFiles) {
-    if (std::filesystem::is_regular_file(caFile, ec) && ::SSL_CTX_load_verify_locations(ctx, caFile, nullptr) == 1) {
+    if (std::filesystem::is_regular_file(caFile, ec) && ::SSL_CTX_load_verify_locations(pCTX, caFile, nullptr) == 1) {
       loaded = true;
     }
   }
   for (const char* caDir : caDirs) {
-    if (std::filesystem::is_directory(caDir, ec) && ::SSL_CTX_load_verify_locations(ctx, nullptr, caDir) == 1) {
+    if (std::filesystem::is_directory(caDir, ec) && ::SSL_CTX_load_verify_locations(pCTX, nullptr, caDir) == 1) {
       loaded = true;
     }
   }
@@ -168,24 +169,24 @@ HttpClientTlsContext::HttpClientTlsContext(const HttpClientConfig& cfg) {
   if (!ctx) {
     throw HttpClientException("SSL_CTX_new(TLS_client_method) failed");
   }
-  SSL_CTX* pSsl = ctx.get();
+  SSL_CTX* pSSL = ctx.get();
   // An unset minimum is TLS 1.2, like the server's.
   const int minVersion =
       cfg.tlsMinVersion == TLSConfig::Version{} ? TLS1_2_VERSION : ToOpenSslTlsVersion(cfg.tlsMinVersion);
-  if (minVersion == 0 || ::SSL_CTX_set_min_proto_version(pSsl, minVersion) != 1) {
+  if (minVersion == 0 || ::SSL_CTX_set_min_proto_version(pSSL, minVersion) != 1) {
     throw HttpClientException("Failed to set minimum TLS version");
   }
   if (cfg.tlsMaxVersion != TLSConfig::Version{}) {
     const int maxVersion = ToOpenSslTlsVersion(cfg.tlsMaxVersion);
-    if (maxVersion == 0 || ::SSL_CTX_set_max_proto_version(pSsl, maxVersion) != 1) {
+    if (maxVersion == 0 || ::SSL_CTX_set_max_proto_version(pSSL, maxVersion) != 1) {
       throw HttpClientException("Failed to set maximum TLS version");
     }
   }
-  if (!cfg.tlsCipherList().empty() && ::SSL_CTX_set_cipher_list(pSsl, cfg.tlsCipherListCStr()) != 1) {
+  if (!cfg.tlsCipherList().empty() && ::SSL_CTX_set_cipher_list(pSSL, cfg.tlsCipherListCStr()) != 1) {
     throw HttpClientException("Failed to set TLS cipher list");
   }
-  LoadClientCertificate(pSsl, cfg);
-  ::SSL_CTX_set_mode(pSsl, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
+  LoadClientCertificate(pSSL, cfg);
+  ::SSL_CTX_set_mode(pSSL, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
   // Advertise the application protocols we can actually speak via ALPN (OpenSSL's length-prefixed wire
   // format), driven by cfg.httpVersion: "h2" is offered first (preferred) in Auto, alone in Http2, and
   // not at all in Http1_1 or a build without HTTP/2 support. The negotiated protocol is read back from
@@ -203,11 +204,11 @@ HttpClientTlsContext::HttpClientTlsContext(const HttpClientConfig& cfg) {
 #else
   const std::span<const unsigned char> alpnWire(kAlpnHttp11);
 #endif
-  if (::SSL_CTX_set_alpn_protos(pSsl, alpnWire.data(), static_cast<unsigned int>(alpnWire.size())) != 0) {
+  if (::SSL_CTX_set_alpn_protos(pSSL, alpnWire.data(), static_cast<unsigned int>(alpnWire.size())) != 0) {
     throw HttpClientException("Failed to set TLS ALPN protocols");
   }
   if (cfg.tlsVerifyPeer) {
-    ::SSL_CTX_set_verify(pSsl, SSL_VERIFY_PEER, nullptr);
+    ::SSL_CTX_set_verify(pSSL, SSL_VERIFY_PEER, nullptr);
     bool trustLoaded = false;
     // A forward proxy that intercepts TLS re-signs origin certificates with its own CA: verify against
     // that CA (proxyCaFile) in preference to the general tlsCaFile / default trust store.
@@ -223,14 +224,14 @@ HttpClientTlsContext::HttpClientTlsContext(const HttpClientConfig& cfg) {
       throw HttpClientException("TLS CA path does not exist or is not a directory");
     }
     if (caFile != nullptr || caPath != nullptr) {
-      trustLoaded = ::SSL_CTX_load_verify_locations(pSsl, caFile, caPath) == 1;
+      trustLoaded = ::SSL_CTX_load_verify_locations(pSSL, caFile, caPath) == 1;
       if (!trustLoaded) {
         throw HttpClientException("Failed to load TLS CA trust store");
       }
     } else {
       // No explicit trust store configured: fall back to the system's. OpenSSL's default resolution
       // honours the SSL_CERT_FILE / SSL_CERT_DIR environment variables and its compiled-in default paths.
-      trustLoaded = ::SSL_CTX_set_default_verify_paths(pSsl) == 1;
+      trustLoaded = ::SSL_CTX_set_default_verify_paths(pSSL) == 1;
       // OpenSSL's compiled-in default directory (often /usr/lib/ssl) is frequently absent from minimal
       // container images that ship only a bundle such as /etc/ssl/certs/ca-certificates.crt, and Windows has
       // no CA bundle file at all (its trusted roots live in the system certificate store), which would
@@ -238,9 +239,9 @@ HttpClientTlsContext::HttpClientTlsContext(const HttpClientConfig& cfg) {
       // OpenSSL at a store, augment it with the system's trusted roots (best effort).
       if (!SystemTrustStoreConfiguredViaEnv()) {
 #ifdef AERONET_WINDOWS
-        trustLoaded = LoadWindowsSystemRootStore(pSsl) || trustLoaded;
+        trustLoaded = LoadWindowsSystemRootStore(pSSL) || trustLoaded;
 #else
-        trustLoaded = LoadExistingCaBundles(pSsl, kDefaultCaBundleFiles, kDefaultCaBundleDirs) || trustLoaded;
+        trustLoaded = LoadExistingCaBundles(pSSL, kDefaultCaBundleFiles, kDefaultCaBundleDirs) || trustLoaded;
 #endif
       }
       if (!trustLoaded) {
@@ -248,7 +249,7 @@ HttpClientTlsContext::HttpClientTlsContext(const HttpClientConfig& cfg) {
       }
     }
   } else {
-    ::SSL_CTX_set_verify(pSsl, SSL_VERIFY_NONE, nullptr);
+    ::SSL_CTX_set_verify(pSSL, SSL_VERIFY_NONE, nullptr);
   }
   // All setup succeeded: take ownership of the fully-built context.
   pCtx = ctx.release();
@@ -265,14 +266,20 @@ HttpClientTlsContext::HttpClientTlsContext(const HttpClientConfig& cfg) {
   }
   // OpenSSL SNI / verification APIs need a null-terminated host string.
   // SNI only carries host names: RFC 6066 §3 forbids IP addresses (OpenSSL would send them as is).
-  if (!IsNumericHost(pHost) && ::SSL_set_tlsext_host_name(ssl.get(), pHost) != 1) {
+  const bool isNumericHost = IsNumericHost(pHost);
+  if (!isNumericHost && ::SSL_set_tlsext_host_name(ssl.get(), pHost) != 1) {
     throw HttpClientException("SSL_set_tlsext_host_name failed");
   }
   if (verify) {
-    // SSL_set1_host() checks an IP address against the IP address entries of the certificate.
-    ::SSL_set_hostflags(ssl.get(), X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
-    if (::SSL_set1_host(ssl.get(), pHost) != 1) {
-      throw HttpClientException("SSL_set1_host failed");
+    // An IP address is checked against the IP address entries of the certificate, a host name against its DNS names.
+    // The X509_VERIFY_PARAM setters work with OpenSSL 3 and 4 alike (SSL_set1_host() is deprecated since 4.0, and its
+    // replacements SSL_set1_ipaddr() / SSL_set1_dnsname() do not exist in 3.x).
+    X509_VERIFY_PARAM* pParam = ::SSL_get0_param(ssl.get());
+    ::X509_VERIFY_PARAM_set_hostflags(pParam, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+    const int ret = isNumericHost ? ::X509_VERIFY_PARAM_set1_ip_asc(pParam, pHost)
+                                  : ::X509_VERIFY_PARAM_set1_host(pParam, pHost, 0);
+    if (ret != 1) {
+      throw HttpClientException("Failed to set the expected peer host for TLS verification");
     }
   }
   ::SSL_set_connect_state(ssl.get());

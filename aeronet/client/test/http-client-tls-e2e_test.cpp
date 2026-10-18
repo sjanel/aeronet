@@ -5,6 +5,7 @@
 #include <sys/socket.h>
 #endif
 #include <openssl/bio.h>
+#include <openssl/crypto.h>
 #include <openssl/ec.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
@@ -14,6 +15,8 @@
 #include <openssl/ssl.h>
 #include <openssl/tls1.h>
 #include <openssl/x509.h>
+#include <openssl/x509_vfy.h>
+#include <openssl/x509v3.h>
 
 #include <chrono>
 #include <cstdint>
@@ -681,23 +684,33 @@ TEST(HttpClientTlsContextTest, ServerNameIndicationOnlyCarriesHostNames) {
 
   struct Expectation {
     const char* host;
-    bool sendsServerName;
+    const char* expectedIpAddress;  // as printed by OpenSSL, nullptr for a host name
   };
-  // RFC 6066 forbids IP addresses in the server name extension.
-  for (const auto [host, sendsServerName] : {
-           Expectation{"localhost", true},
-           Expectation{"example.com", true},
-           Expectation{"127.0.0.1", false},
-           Expectation{"::1", false},
+  // RFC 6066 forbids IP addresses in the server name extension. The peer certificate is expected to match a host name
+  // with one of its DNS names, an IP address with one of its IP addresses.
+  for (const auto [host, expectedIpAddress] : {
+           Expectation{"localhost", nullptr},
+           Expectation{"example.com", nullptr},
+           Expectation{"127.0.0.1", "127.0.0.1"},
+           Expectation{"::1", "0:0:0:0:0:0:0:1"},
        }) {
     auto transport = context.makeTransport(kUnusedSocket, host, true);
     auto* tlsTransport = transport.get<TlsTransport>();
     ASSERT_NE(tlsTransport, nullptr);
     const char* serverName = ::SSL_get_servername(tlsTransport->rawSsl(), TLSEXT_NAMETYPE_host_name);
-    if (sendsServerName) {
+    X509_VERIFY_PARAM* param = ::SSL_get0_param(tlsTransport->rawSsl());
+    EXPECT_EQ(::X509_VERIFY_PARAM_get_hostflags(param),
+              static_cast<unsigned int>(X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS));
+    auto freeString = [](char* ptr) { ::OPENSSL_free(ptr); };
+    const std::unique_ptr<char, decltype(freeString)> ipAddress(::X509_VERIFY_PARAM_get1_ip_asc(param), freeString);
+    if (expectedIpAddress == nullptr) {
       EXPECT_STREQ(serverName, host);
+      EXPECT_STREQ(::X509_VERIFY_PARAM_get0_host(param, 0), host);
+      EXPECT_EQ(ipAddress, nullptr) << host;
     } else {
       EXPECT_EQ(serverName, nullptr) << host;
+      EXPECT_EQ(::X509_VERIFY_PARAM_get0_host(param, 0), nullptr) << host;
+      EXPECT_STREQ(ipAddress.get(), expectedIpAddress);
     }
     // An unset minimum version is TLS 1.2.
     EXPECT_EQ(::SSL_get_min_proto_version(tlsTransport->rawSsl()), TLS1_2_VERSION);
