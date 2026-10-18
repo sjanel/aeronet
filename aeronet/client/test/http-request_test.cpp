@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -618,6 +619,29 @@ TEST_F(HttpRequestTest, BodyAppendFromConstCharStar) {
   // nullptr is treated as an empty chunk to append (no-op).
   req = std::move(req).bodyAppend(nullptr, "text/plain");
   EXPECT_EQ(req.bodyInMemory(), "data1data2");
+}
+
+TEST_F(HttpRequestTest, BodyInlineAppendToCapturedBody) {
+  auto req = makeRequest(http::Method::POST, "http://h/p");
+  req.body(std::string("captured"), "text/plain");
+  req.bodyInlineAppend(16U, [](char* out) {
+    std::ranges::copy(std::string_view("-abc"), out);
+    return std::size_t{4};
+  });
+  EXPECT_TRUE(req.hasBodyCaptured());
+  EXPECT_EQ(req.bodyInMemory(), "captured-abc");
+  EXPECT_EQ(req.headerValueOrEmpty(http::ContentLength), "12");
+
+  req = std::move(req).bodyInlineAppend(
+      2U,
+      [](std::byte* out) {
+        std::ranges::fill_n(out, 2, std::byte{'d'});
+        return std::size_t{2};
+      },
+      "application/octet-stream");
+  EXPECT_EQ(req.bodyInMemory(), "captured-abcdd");
+  EXPECT_EQ(req.headerValueOrEmpty(http::ContentLength), "14");
+  EXPECT_EQ(req.headerValueOrEmpty(http::ContentType), "application/octet-stream");
 }
 
 TEST_F(HttpRequestTest, FileLValue) {

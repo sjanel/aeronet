@@ -328,8 +328,8 @@ int64_t ReadOffset(NativeHandle fd, void* buffer, std::size_t len, std::size_t o
 #elifdef AERONET_WINDOWS
   // Windows: use _pread equivalent via ReadFile with OVERLAPPED
   OVERLAPPED ov{};
-  ov.Offset = static_cast<DWORD>(static_cast<int64_t>(offset) & 0xFFFFFFFF);
-  ov.OffsetHigh = static_cast<DWORD>((static_cast<int64_t>(offset) >> 32) & 0xFFFFFFFF);
+  ov.Offset = static_cast<DWORD>(static_cast<int64_t>(offset) & 0xFFFFFFFFU);
+  ov.OffsetHigh = static_cast<DWORD>((static_cast<int64_t>(offset) >> 32U) & 0xFFFFFFFFU);
   DWORD bytesRead = 0;
   // A length beyond the DWORD range is clamped, making a partial read.
   if (::ReadFile(reinterpret_cast<HANDLE>(_get_osfhandle(static_cast<int>(fd))), buffer, SaturateCast<DWORD>(len),
