@@ -213,9 +213,35 @@ void HttpRequestView::init(const HttpServerConfig& config, CompressionState& com
   _doNotSendContentLengthHeader = !config.http2.sendContentLengthHeader;
 #endif
   _pCompressionState = &compressionState;
+  _headParseState = HeadParseState::None;
 }
 
 namespace {
+
+// Remaps the views of a request head whose bytes [oldBase, oldBase + size) moved to newBase, leaving the views that
+// point elsewhere unchanged. The previous storage may be freed already: only the addresses of the views are compared.
+class HeadViewsRemapper {
+ public:
+  HeadViewsRemapper(std::uintptr_t oldBase, std::size_t size, const char* newBase) noexcept
+      : _oldBase(oldBase), _size(size), _newBase(newBase) {}
+
+  [[nodiscard]] const char* operator()(const char* ptr) const noexcept {
+    const std::uintptr_t offset = reinterpret_cast<std::uintptr_t>(ptr) - _oldBase;
+    return offset < _size ? _newBase + offset : ptr;
+  }
+
+  void operator()(SvToSvMap& map) const noexcept {
+    for (auto& [key, val] : map) {
+      key = {(*this)(key.data()), key.size()};
+      val = {(*this)(val.data()), val.size()};
+    }
+  }
+
+ private:
+  std::uintptr_t _oldBase;
+  std::size_t _size;
+  const char* _newBase;
+};
 
 constexpr bool kLE = std::endian::native == std::endian::little;
 
@@ -342,80 +368,97 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
   char* first = inBuffer.data();
   char* last = first + inBuffer.size();
 
-  char* lineLast = SearchCRLF(first, last);
-  if (lineLast == last) {
+  // The bytes parsed so far, modified in place, must not be parsed again: an incomplete head is resumed at its first
+  // header line not parsed yet. The state is saved again below if the head is still incomplete.
+  assert(_headParseState != HeadParseState::WaitingForBody);  // see resumeHeadWaitingForBody()
+  const bool resume = _headParseState == HeadParseState::Partial;
+  _headParseState = HeadParseState::None;
+  const auto needMoreData = [this, base = inBuffer.data()](const char* resumePos) {
+    _headSpanSize = static_cast<std::size_t>(resumePos - base);
+    _headParseState = HeadParseState::Partial;
     return kStatusNeedMoreData;
-  }
-  if (lineLast[1] != '\n' || std::cmp_less(lineLast - first, http::kHttpReqLineMinLen - http::CRLF.size())) {
-    return http::StatusCodeBadRequest;
-  }
+  };
 
-  static_assert(http::kHttpReqLineMinLen - http::CRLF.size() >= 8);
-
-  uint64_t start;
-  std::memcpy(&start, first, sizeof(start));
-
-  const uint64_t spaceMask = SwarFindByte(start, ' ');
-  if (spaceMask == 0) {
-    char* realSep = std::find(first + 8, lineLast, ' ');
-    return realSep == lineLast ? http::StatusCodeBadRequest : http::StatusCodeNotImplemented;
-  }
-
-  const auto methodLen = LeadingMatchIndex(spaceMask);
-  if (methodLen == 0) {
-    // request line starting with a space: empty method token
-    return http::StatusCodeBadRequest;
-  }
-  // RFC 9110 §9.1: the method token is case-sensitive ("get" is not "GET"). Matching it case-insensitively would let
-  // a request bypass an intermediary rule written for the exact method name.
-  const uint64_t candidate = start & FirstNBytesMask(methodLen);
-
-  const auto methodIt = std::ranges::find(kMethodCodes.codes, candidate);
-  if (methodIt == std::end(kMethodCodes.codes)) {
-    return http::StatusCodeNotImplemented;
-  }
-  _method = http::MethodFromIdx(static_cast<http::MethodIdx>(methodIt - std::begin(kMethodCodes.codes)));
-
-  char* nextSep = first + methodLen;
-
-  // Path
-  first = nextSep + 1;
-  nextSep = FindChar(first, lineLast, ' ');
-
-  if (!IsValidRequestTargetForm(std::string_view(first, nextSep), _method) || !decodePath(first, nextSep)) {
-    return http::StatusCodeBadRequest;
-  }
-
-  // Version
-  first = nextSep + 1;
-  _version = http::Version{first, static_cast<std::size_t>(lineLast - first)};
-  if (!_version.isValid()) {
-    // malformed version token
-    return http::StatusCodeBadRequest;
-  }
-  if (_version.major() != 1) {
-    // RFC 9110 §2.5 - "The first digit (major version) indicates the messaging syntax, whereas the second digit (minor
-    // version) indicates the highest minor version within that major version to which the sender is conformant (able to
-    // understand for future communication)."
-    // In other words, we accept something like HTTP/1.9
-    return http::StatusCodeHTTPVersionNotSupported;
-  }
-  // RFC 9110 §6.2 - a higher minor version is processed, and answered, as the highest version we conform to: HTTP/1.1.
-  _version = std::min(_version, http::HTTP_1_1);
-
-  // Headers
-  first = lineLast + http::CRLF.size();
-  if (first == last) {
-    // need more data - the headers are not complete yet
-    return kStatusNeedMoreData;
-  }
-
-  _headers.clear();
-  bool foundEmptyLine = false;
-  for (; first < last; first = lineLast + http::CRLF.size()) {
-    lineLast = SearchCRLF(first, last);
+  if (resume) {
+    rebaseHeadViews(first);
+    first += _headSpanSize;
+  } else {
+    char* lineLast = SearchCRLF(first, last);
     if (lineLast == last) {
       return kStatusNeedMoreData;
+    }
+    if (lineLast[1] != '\n' || std::cmp_less(lineLast - first, http::kHttpReqLineMinLen - http::CRLF.size())) {
+      return http::StatusCodeBadRequest;
+    }
+
+    static_assert(http::kHttpReqLineMinLen - http::CRLF.size() >= 8);
+
+    uint64_t start;
+    std::memcpy(&start, first, sizeof(start));
+
+    const uint64_t spaceMask = SwarFindByte(start, ' ');
+    if (spaceMask == 0) {
+      char* realSep = std::find(first + 8, lineLast, ' ');
+      return realSep == lineLast ? http::StatusCodeBadRequest : http::StatusCodeNotImplemented;
+    }
+
+    const auto methodLen = LeadingMatchIndex(spaceMask);
+    if (methodLen == 0) {
+      // request line starting with a space: empty method token
+      return http::StatusCodeBadRequest;
+    }
+    // RFC 9110 §9.1: the method token is case-sensitive ("get" is not "GET"). Matching it case-insensitively would let
+    // a request bypass an intermediary rule written for the exact method name.
+    const uint64_t candidate = start & FirstNBytesMask(methodLen);
+
+    const auto methodIt = std::ranges::find(kMethodCodes.codes, candidate);
+    if (methodIt == std::end(kMethodCodes.codes)) {
+      return http::StatusCodeNotImplemented;
+    }
+    _method = http::MethodFromIdx(static_cast<http::MethodIdx>(methodIt - std::begin(kMethodCodes.codes)));
+
+    char* nextSep = first + methodLen;
+
+    // Path
+    first = nextSep + 1;
+    nextSep = FindChar(first, lineLast, ' ');
+
+    if (!IsValidRequestTargetForm(std::string_view(first, nextSep), _method) || !decodePath(first, nextSep)) {
+      return http::StatusCodeBadRequest;
+    }
+    // rebaseHeadViews() locates the head from the path, decoded in place where the request-target starts.
+    assert(_pPath == inBuffer.data() + methodLen + 1);
+
+    // Version
+    first = nextSep + 1;
+    _version = http::Version{first, static_cast<std::size_t>(lineLast - first)};
+    if (!_version.isValid()) {
+      // malformed version token
+      return http::StatusCodeBadRequest;
+    }
+    if (_version.major() != 1) {
+      // RFC 9110 §2.5 - "The first digit (major version) indicates the messaging syntax, whereas the second digit
+      // (minor version) indicates the highest minor version within that major version to which the sender is conformant
+      // (able to understand for future communication)."
+      // In other words, we accept something like HTTP/1.9
+      return http::StatusCodeHTTPVersionNotSupported;
+    }
+    // RFC 9110 §6.2 - a higher minor version is processed, and answered, as the highest version we conform to.
+    _version = std::min(_version, http::HTTP_1_1);
+
+    // Headers
+    _headers.clear();
+    first = lineLast + http::CRLF.size();
+    if (first == last) {
+      // need more data - the headers are not complete yet
+      return needMoreData(first);
+    }
+  }
+  bool foundEmptyLine = false;
+  while (first < last) {
+    char* lineLast = SearchCRLF(first, last);
+    if (lineLast == last) {
+      return needMoreData(first);
     }
     if (lineLast[1] != '\n') {
       return http::StatusCodeBadRequest;
@@ -447,12 +490,13 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
                                                mergeAllowedForUnknownRequestHeaders)) {
       return http::StatusCodeBadRequest;
     }
+    first = lineLast + http::CRLF.size();
   }
 
   if (!foundEmptyLine) {
-    // The for-loop exited because first >= last after advancing past the last header's CRLF,
+    // The loop exited because first >= last after advancing past the last header's CRLF,
     // without finding the empty line that terminates the header section.
-    return kStatusNeedMoreData;
+    return needMoreData(first);
   }
 
   const auto hostIt = _headers.find(http::Host);
@@ -478,18 +522,29 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
   _traceSpan = std::move(traceSpan);
   _headSpanSize = static_cast<std::size_t>(first + http::CRLF.size() - inBuffer.data());
 
-  _body = {};
-  _activeStreamingChunk = {};
-  _bodyAccessMode = BodyAccessMode::Undecided;
-  _pBodyAccessBridge = nullptr;
-  _pBodyAccessContext = nullptr;
-  _trailers.clear();
-  _pathParams.clear();
-  _queryParams.clear();
-
-  _headPinned = false;
+  resetBodyState();
 
   return http::StatusCodeOK;
+}
+
+void HttpRequestView::resumeHeadWaitingForBody(std::span<char> inBuffer) noexcept {
+  assert(_headParseState == HeadParseState::WaitingForBody);
+  assert(_headSpanSize <= inBuffer.size());
+  _headParseState = HeadParseState::None;
+  rebaseHeadViews(inBuffer.data());
+  resetBodyState();
+}
+
+void HttpRequestView::rebaseHeadViews(const char* newBase) noexcept {
+  // The request-target, where the path is decoded in place, starts after the method and a space.
+  const std::uintptr_t oldBase = reinterpret_cast<std::uintptr_t>(_pPath) - (http::MethodToStr(_method).size() + 1U);
+  if (oldBase == reinterpret_cast<std::uintptr_t>(newBase)) {
+    return;
+  }
+  const HeadViewsRemapper remap(oldBase, _headSpanSize, newBase);
+  _pPath = remap(_pPath);
+  _pDecodedQueryParams = remap(_pDecodedQueryParams);
+  remap(_headers);
 }
 
 void HttpRequestView::prefinalizeHttpResponse(HttpResponse& response, tracing::TelemetryContext& telemetryContext) {
@@ -569,28 +624,13 @@ void HttpRequestView::pinHeadStorage(ConnectionState& state, AsyncHandlerStatePo
   headBuffer.reserve(_headSpanSize + PathParamKeysSize(_pathParams));
   headBuffer.assign(oldBase, _headSpanSize);
 
-  const auto remapPtr = [newBase = headBuffer.data(), oldBase,
-                         oldLimit = oldBase + _headSpanSize](const char* ptr) -> const char* {
-    if (ptr < oldBase || ptr >= oldLimit) {
-      return ptr;
-    }
-    return newBase + static_cast<std::size_t>(ptr - oldBase);
-  };
-
-  _pPath = remapPtr(_pPath);
-  _pDecodedQueryParams = remapPtr(_pDecodedQueryParams);
-
-  auto remapMap = [&remapPtr](auto& map) {
-    for (auto& [key, val] : map) {
-      key = {remapPtr(key.data()), key.size()};
-      val = {remapPtr(val.data()), val.size()};
-    }
-  };
-
-  remapMap(_headers);
-  remapMap(_trailers);
-  remapMap(_pathParams);
-  remapMap(_queryParams);
+  const HeadViewsRemapper remap(reinterpret_cast<std::uintptr_t>(oldBase), _headSpanSize, headBuffer.data());
+  _pPath = remap(_pPath);
+  _pDecodedQueryParams = remap(_pDecodedQueryParams);
+  remap(_headers);
+  remap(_trailers);
+  remap(_pathParams);
+  remap(_queryParams);
 
   // The path parameter names are owned by the router, that may be updated while the handler is suspended.
   UncheckedPinPathParamKeys(_pathParams, headBuffer);
