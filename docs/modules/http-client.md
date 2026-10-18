@@ -60,7 +60,7 @@ request.headerAddLine("x-request-id", "4f1c2a").body(R"({"item":"book","quantity
 const HttpClientResult created = client.request(std::move(request));
 ```
 
-Header names are lower-case, which literals are checked for at compile time. The body can be set from a string view (copied), an owned `std::string` or `std::vector` (moved, without copy), a static buffer with `bodyStatic()` (referenced, without copy), JSON or YAML serialization with `bodyJson()` / `bodyYaml()` (see [JSON and configuration files](json-and-config-files.md)), or written in place with `bodyInlineSet()`. Trailers are added with `trailerAddLine()`.
+Header names are lower-case, which literals are checked for at compile time. The body can be set from a string view (copied), an owned `std::string`, `std::vector` or `std::unique_ptr` buffer (moved, without copy), a static buffer with `bodyStatic()` (referenced, without copy), JSON or YAML serialization with `bodyJson()` / `bodyYaml()` (see [JSON and configuration files](json-and-config-files.md)), or written in place with `bodyInlineSet()`. `makeRequest(method, url, body, type)` sets the body directly, copied or moved the same way: `client.makeRequest(http::Method::POST, url, std::move(json), "application/json")` does not copy `json`. Trailers are added with `trailerAddLine()`.
 
 A body can also come from an open file, which is streamed without being loaded in memory: with `sendfile()` on cleartext HTTP/1.1, by bounded reads encrypted on the fly over TLS, and as DATA frames under flow control over HTTP/2.
 
@@ -260,7 +260,7 @@ The client counts retries, redirects, and request compression outcomes (`aeronet
 
 ## Tests
 
-- HTTP/1.1 exchanges, pooling, redirects (and the credentials they drop), retries, cache, timeouts, response buffers, and response body sinks (also over HTTP/2 for content-coded bodies and the `content-length` check): [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp). Redirect URL resolution: [http-request_test.cpp](../../aeronet/client/test/http-request_test.cpp).
+- HTTP/1.1 exchanges, pooling, redirects (and the credentials they drop), retries, cache, timeouts, response buffers, and response body sinks (also over HTTP/2 for content-coded bodies and the `content-length` check): [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp). Request building and redirect URL resolution: [http-request_test.cpp](../../aeronet/client/test/http-request_test.cpp).
 - HTTP/1.1 response parsing, including body streaming and the failure statuses: [http1-response-parser_test.cpp](../../aeronet/client/test/http1-response-parser_test.cpp).
 - HTTP/2, including response body sinks and the connection kept after a stream failure: [http-client-http2-e2e_test.cpp](../../aeronet/client/test/http-client-http2-e2e_test.cpp).
 - HTTPS, trust stores, mutual TLS, and redirects to cleartext: [http-client-tls-e2e_test.cpp](../../aeronet/client/test/http-client-tls-e2e_test.cpp).

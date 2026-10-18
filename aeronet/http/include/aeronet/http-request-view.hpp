@@ -7,16 +7,18 @@
 #include <exception>
 #include <expected>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
 #include <functional>
-#include <memory>
 #include <thread>
 
 #include "aeronet/async-handler-state.hpp"
@@ -27,6 +29,7 @@
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/http-payload.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
@@ -548,6 +551,19 @@ class HttpRequestView {
   [[nodiscard]] HttpResponse makeResponse(http::StatusCode statusCode, std::string_view body,
                                           std::string_view contentType = http::ContentTypeTextPlain) const;
 
+  // Same as makeResponse(200) but also sets the body from a C-string (nullptr is an empty body) and content type.
+  [[nodiscard]] HttpResponse makeResponse(const char* body,
+                                          std::string_view contentType = http::ContentTypeTextPlain) const {
+    return makeResponse(http::StatusCodeOK, body, contentType);
+  }
+
+  // Same as makeResponse(statusCode) but also sets the body from a C-string (nullptr is an empty body) and content
+  // type.
+  [[nodiscard]] HttpResponse makeResponse(http::StatusCode statusCode, const char* body,
+                                          std::string_view contentType = http::ContentTypeTextPlain) const {
+    return makeResponse(statusCode, body == nullptr ? std::string_view() : std::string_view(body), contentType);
+  }
+
   // Same as makeResponse(200) but also sets the body from given bytes span and content type.
   [[nodiscard]] HttpResponse makeResponse(std::span<const std::byte> body,
                                           std::string_view contentType = http::ContentTypeApplicationOctetStream) const;
@@ -555,6 +571,74 @@ class HttpRequestView {
   // Same as makeResponse(statusCode) but also sets the body from given bytes span and content type.
   [[nodiscard]] HttpResponse makeResponse(http::StatusCode statusCode, std::span<const std::byte> body,
                                           std::string_view contentType = http::ContentTypeApplicationOctetStream) const;
+
+  // Same as makeResponse(200) but also captures the body without copy, like HttpResponse::body(std::string&&, ...).
+  [[nodiscard]] HttpResponse makeResponse(std::string&& body,
+                                          std::string_view contentType = http::ContentTypeTextPlain) const {
+    return makeResponse(http::StatusCodeOK, std::move(body), contentType);
+  }
+
+  // Same as makeResponse(statusCode) but also captures the body without copy, like
+  // HttpResponse::body(std::string&&, ...).
+  [[nodiscard]] HttpResponse makeResponse(http::StatusCode statusCode, std::string&& body,
+                                          std::string_view contentType = http::ContentTypeTextPlain) const {
+    return makeCapturedResponse(statusCode, HttpPayload(std::move(body)), contentType);
+  }
+
+  // Same as makeResponse(200) but also captures a vector of char body without copy.
+  [[nodiscard]] HttpResponse makeResponse(
+      std::vector<char>&& body, std::string_view contentType = http::ContentTypeApplicationOctetStream) const {
+    return makeResponse(http::StatusCodeOK, std::move(body), contentType);
+  }
+
+  // Same as makeResponse(statusCode) but also captures a vector of char body without copy.
+  [[nodiscard]] HttpResponse makeResponse(
+      http::StatusCode statusCode, std::vector<char>&& body,
+      std::string_view contentType = http::ContentTypeApplicationOctetStream) const {
+    return makeCapturedResponse(statusCode, HttpPayload(std::move(body)), contentType);
+  }
+
+  // Same as makeResponse(200) but also captures a vector of byte body without copy.
+  [[nodiscard]] HttpResponse makeResponse(
+      std::vector<std::byte>&& body, std::string_view contentType = http::ContentTypeApplicationOctetStream) const {
+    return makeResponse(http::StatusCodeOK, std::move(body), contentType);
+  }
+
+  // Same as makeResponse(statusCode) but also captures a vector of byte body without copy.
+  [[nodiscard]] HttpResponse makeResponse(
+      http::StatusCode statusCode, std::vector<std::byte>&& body,
+      std::string_view contentType = http::ContentTypeApplicationOctetStream) const {
+    return makeCapturedResponse(statusCode, HttpPayload(std::move(body)), contentType);
+  }
+
+  // Same as makeResponse(200) but also captures a char buffer of 'size' bytes without copy, like
+  // HttpResponse::body(std::unique_ptr<char[]>, ...).
+  [[nodiscard]] HttpResponse makeResponse(
+      std::unique_ptr<char[]> body, std::size_t size,
+      std::string_view contentType = http::ContentTypeApplicationOctetStream) const {
+    return makeResponse(http::StatusCodeOK, std::move(body), size, contentType);
+  }
+
+  // Same as makeResponse(statusCode) but also captures a char buffer of 'size' bytes without copy.
+  [[nodiscard]] HttpResponse makeResponse(
+      http::StatusCode statusCode, std::unique_ptr<char[]> body, std::size_t size,
+      std::string_view contentType = http::ContentTypeApplicationOctetStream) const {
+    return makeCapturedResponse(statusCode, HttpPayload(std::move(body), size), contentType);
+  }
+
+  // Same as makeResponse(200) but also captures a byte buffer of 'size' bytes without copy.
+  [[nodiscard]] HttpResponse makeResponse(
+      std::unique_ptr<std::byte[]> body, std::size_t size,
+      std::string_view contentType = http::ContentTypeApplicationOctetStream) const {
+    return makeResponse(http::StatusCodeOK, std::move(body), size, contentType);
+  }
+
+  // Same as makeResponse(statusCode) but also captures a byte buffer of 'size' bytes without copy.
+  [[nodiscard]] HttpResponse makeResponse(
+      http::StatusCode statusCode, std::unique_ptr<std::byte[]> body, std::size_t size,
+      std::string_view contentType = http::ContentTypeApplicationOctetStream) const {
+    return makeCapturedResponse(statusCode, HttpPayload(std::move(body), size), contentType);
+  }
 
 #ifdef AERONET_ENABLE_GLAZE
   /// Parse the request body as JSON into type T.
@@ -681,6 +765,9 @@ class HttpRequestView {
 #endif
 
   [[nodiscard]] HttpResponse::Options makeResponseOptions() const noexcept;
+
+  [[nodiscard]] HttpResponse makeCapturedResponse(http::StatusCode statusCode, HttpPayload body,
+                                                  std::string_view contentType) const;
 
   // Decodes the path in-place and sets _pPath and _pathLength. Returns false if the path is malformed (e.g. invalid
   // percent-encoding).

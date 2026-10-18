@@ -7,14 +7,17 @@
 #include <cstring>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
 
 #include "aeronet/concatenated-headers.hpp"
+#include "aeronet/embedded-payload.hpp"
 #include "aeronet/header-write.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/http-message-common.hpp"
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-message.hpp"
+#include "aeronet/http-payload.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/log.hpp"
@@ -35,15 +38,6 @@ namespace {
 
 // Date header will always be present at headersStartPos.
 constexpr std::size_t kDateHeaderLenWithCRLF = http::HeaderSize(http::Date.size(), RFC7231DateStrLen);
-
-// Initial size of the HttpMessage internal buffer, including the status line, Date header and DoubleCRLF.
-constexpr std::size_t kHttpResponseInitialSize =
-    HttpResponse::kReasonBeg + kDateHeaderLenWithCRLF + http::DoubleCRLF.size();
-
-static_assert(kHttpResponseInitialSize <= HttpResponse::kHttpResponseMinInitialCapacity,
-              "Initial size should be less than or equal to min initial capacity");
-
-constexpr auto kInitialBodyStart = kHttpResponseInitialSize;
 
 constexpr void InitData(char* data) {
   data[http::HTTP10Sv.size()] = ' ';          // SP after the HTTP version
@@ -101,84 +95,56 @@ constexpr void CheckConcatenatedHeaders(std::string_view concatenatedHeaders) {
 
 }  // namespace
 
-HttpResponse::HttpResponse(http::StatusCode code, std::string_view body, std::string_view contentType)
-    : HttpMessage(kHttpResponseInitialSize +
-                      NeededBodyHeadersSize(body.size(), CheckContentType(body.empty(), contentType).size()) +
-                      body.size(),
-                  Options()) {
-  InitData(_data.data());
-  status(code);
-  setHeadersStartPosNoCheck(kReasonBeg + kDateHeaderLenWithCRLF);
-  if (body.empty()) {
-    setBodyStartPosNoCheck(kInitialBodyStart);
-    CopyFixed<http::DoubleCRLF>(_data.data() + kInitialBodyStart - http::DoubleCRLF.size());
-    _data.setSize(kInitialBodyStart);
-  } else {
-    char* pData = _data.data() + kReasonBeg + kDateHeaderLenWithCRLF;
-
-    pData = AppendFixed<http::CRLF>(pData);
-
-    pData = WriteContentTypeContentLengthDoubleCRLF(contentType, body.size(), pData);
-
-    const auto bodyStartPos = static_cast<std::uint64_t>(pData - _data.data());
-    setBodyStartPos(bodyStartPos);
-    Copy(body, pData);
-    _data.setSize(bodyStartPos + body.size());
-  }
-}
-
-HttpResponse::HttpResponse(std::size_t additionalCapacity, http::StatusCode code)
-    : HttpMessage(kHttpResponseInitialSize + additionalCapacity, Options()) {
-  InitData(_data.data());
-  status(code);
-  setHeadersStartPosNoCheck(kReasonBeg + kDateHeaderLenWithCRLF);
-  setBodyStartPosNoCheck(kInitialBodyStart);
-  CopyFixed<http::DoubleCRLF>(_data.data() + kInitialBodyStart - http::DoubleCRLF.size());
-  _data.setSize(kInitialBodyStart);
-}
-
-HttpResponse::HttpResponse(std::size_t additionalCapacity, http::StatusCode code, std::string_view concatenatedHeaders,
-                           std::string_view body, std::string_view contentType, Options opts)
-    : HttpMessage(kHttpResponseInitialSize + concatenatedHeaders.size() +
-                      NeededBodyHeadersSize(body.size(), CheckContentType(body.empty(), contentType).size(),
-                                            opts.sendContentLengthHeader()) +
-                      body.size() + additionalCapacity,
-                  opts) {
-  if (!_opts.isPrepared()) {
+void HttpResponse::initHeadInline(http::StatusCode code, std::string_view concatenatedHeaders, std::size_t bodySize,
+                                  std::string_view contentType) {
+  if (!concatenatedHeaders.empty() && !_opts.isPrepared()) {
     CheckConcatenatedHeaders(concatenatedHeaders);
   }
-  InitData(_data.data());
+  char* const pFirst = _data.data();
+  InitData(pFirst);
   status(code);
-  setHeadersStartPosNoCheck(kReasonBeg + kDateHeaderLenWithCRLF);
-  std::size_t bodyStartPos = kInitialBodyStart - http::CRLF.size();
+
+  char* pData = pFirst + kInitialSize - http::DoubleCRLF.size();
   if (!concatenatedHeaders.empty()) {
-    char* pData = _data.data() + kHttpResponseInitialSize - http::DoubleCRLF.size();
-
     pData = AppendFixed<http::CRLF>(pData);
-
-    Copy(concatenatedHeaders, pData);
-    bodyStartPos += concatenatedHeaders.size();
+    pData = Append(concatenatedHeaders, pData);
+    pData -= http::CRLF.size();  // the last header CRLF is written below with the end of the head
   }
-  if (body.empty()) {
-    bodyStartPos += http::CRLF.size();
-    CopyFixed<http::DoubleCRLF>(_data.data() + bodyStartPos - http::DoubleCRLF.size());
+  if (bodySize == 0) {
+    pData = AppendFixed<http::DoubleCRLF>(pData);
   } else {
-    char* pData = _data.data() + bodyStartPos - http::CRLF.size();
     pData = AppendFixed<http::CRLF>(pData);
-
     if (_opts.sendContentLengthHeader()) {
-      pData = WriteContentTypeContentLengthDoubleCRLF(contentType, body.size(), pData);
+      pData = WriteContentTypeContentLengthDoubleCRLF(contentType, bodySize, pData);
     } else {
       pData = AppendFixed<http::ContentTypeHeaderSep>(pData);
       pData = Append(contentType, pData);
       pData = AppendFixed<http::DoubleCRLF>(pData);
     }
-
-    bodyStartPos = static_cast<std::uint64_t>(pData - _data.data());
-    Copy(body, pData);
   }
-  setBodyStartPos(bodyStartPos);
-  _data.setSize(bodyStartPos + body.size());
+  setHeadPositions(kReasonBeg + kDateHeaderLenWithCRLF, static_cast<std::uint64_t>(pData - pFirst));
+}
+
+void HttpResponse::initHead(http::StatusCode code, std::string_view concatenatedHeaders, std::size_t bodySize,
+                            std::string_view contentType) {
+  initHeadInline(code, concatenatedHeaders, bodySize, contentType);
+}
+
+HttpResponse::HttpResponse(std::size_t additionalCapacity, http::StatusCode code)
+    : HttpMessage(kInitialSize + additionalCapacity, Options()) {
+  initHeadInline(code, {}, 0, {});
+}
+
+HttpResponse::HttpResponse(std::size_t additionalCapacity, http::StatusCode code, std::string_view concatenatedHeaders,
+                           HttpPayload body, std::string_view contentType, Options opts)
+    : HttpMessage(HeadCapacity(concatenatedHeaders, body.size(), contentType, opts.sendContentLengthHeader()) +
+                      EmbeddedPayload::kMaxFootprint + additionalCapacity,
+                  opts) {
+  const std::size_t bodySize = body.size();
+  initHead(code, concatenatedHeaders, bodySize, contentType);
+  if (bodySize != 0) {
+    setCapturedPayload(std::move(body));
+  }
 }
 
 http::StatusCode HttpResponse::status() const noexcept {

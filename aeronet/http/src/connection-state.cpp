@@ -104,15 +104,6 @@ TransportResult ConnectionState::transportRead(const HttpServerConfig& config, s
   return result;
 }
 
-// A write never marks the TLS handshake as established, even when it completes it: only
-// SingleHttpServer::finalizeTlsHandshakeIfReady() does, after recording the negotiated parameters and setting up the
-// protocol selected by ALPN.
-TransportResult ConnectionState::transportWrite(std::string_view data) { return transport.write(data); }
-
-TransportResult ConnectionState::transportWrite(std::span<const std::string_view> buffers) {
-  return transport.write(buffers);
-}
-
 bool ConnectionState::tunnelTransportWrite(NativeHandle fd) {
   const auto [written, want] = transportWrite(tunnelOrFileBuffer);
   if (want == TransportHint::Error) [[unlikely]] {

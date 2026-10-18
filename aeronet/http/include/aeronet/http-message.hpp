@@ -1136,6 +1136,16 @@ class HttpMessage {
   void finalizeForHttp1(http::Version version, Options opts, const ConcatenatedHeaders* pGlobalHeaders,
                         std::size_t minCapturedBodySize);
 
+  // Sets the positions of the head that a constructor has just written at the start of _data, which ends at the body
+  // start. Both positions are given relative to a local copy of _data.data() (char writes may alias any member, so
+  // reading them back would prevent the compiler from folding constant positions), and set in a single store.
+  void setHeadPositions(std::uint64_t headersStartPos, std::uint64_t bodyStartPos) noexcept {
+    assert(!_opts.hasEmbeddedPayload());
+    assert(headersStartPos <= kHeadersStartMask && bodyStartPos <= kBodyStartMask);
+    _posBitmap = headersStartPos | (bodyStartPos << kHeaderPosNbBits);
+    _data.setSize(bodyStartPos);
+  }
+
   void setBodyStartPosAndDataEnd(const char* pDataEnd) {
     // Writing the head up to pDataEnd would overwrite the embedded payload object, if any.
     assert(!_opts.hasEmbeddedPayload());

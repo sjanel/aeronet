@@ -683,12 +683,12 @@ TEST(HttpClientTlsContextTest, ServerNameIndicationOnlyCarriesHostNames) {
   const internal::HttpClientTlsContext context(cfg);
 
   struct Expectation {
-    const char* host;
-    const char* expectedIpAddress;  // as printed by OpenSSL, nullptr for a host name
+    const char* pHost;
+    const char* pExpectedIpAddress;  // as printed by OpenSSL, nullptr for a host name
   };
   // RFC 6066 forbids IP addresses in the server name extension. The peer certificate is expected to match a host name
   // with one of its DNS names, an IP address with one of its IP addresses.
-  for (const auto [host, expectedIpAddress] : {
+  for (const auto [host, pExpectedIpAddress] : {
            Expectation{"localhost", nullptr},
            Expectation{"example.com", nullptr},
            Expectation{"127.0.0.1", "127.0.0.1"},
@@ -703,14 +703,14 @@ TEST(HttpClientTlsContextTest, ServerNameIndicationOnlyCarriesHostNames) {
               static_cast<unsigned int>(X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS));
     auto freeString = [](char* ptr) { ::OPENSSL_free(ptr); };
     const std::unique_ptr<char, decltype(freeString)> ipAddress(::X509_VERIFY_PARAM_get1_ip_asc(param), freeString);
-    if (expectedIpAddress == nullptr) {
+    if (pExpectedIpAddress == nullptr) {
       EXPECT_STREQ(serverName, host);
       EXPECT_STREQ(::X509_VERIFY_PARAM_get0_host(param, 0), host);
       EXPECT_EQ(ipAddress, nullptr) << host;
     } else {
       EXPECT_EQ(serverName, nullptr) << host;
       EXPECT_EQ(::X509_VERIFY_PARAM_get0_host(param, 0), nullptr) << host;
-      EXPECT_STREQ(ipAddress.get(), expectedIpAddress);
+      EXPECT_STREQ(ipAddress.get(), pExpectedIpAddress);
     }
     // An unset minimum version is TLS 1.2.
     EXPECT_EQ(::SSL_get_min_proto_version(tlsTransport->rawSsl()), TLS1_2_VERSION);

@@ -2169,6 +2169,98 @@ TEST_F(HttpRequestViewTest, MakeResponseWithMultipleGlobalHeaders) {
   EXPECT_EQ(resp.bodyInMemory(), "test");
 }
 
+TEST_F(HttpRequestViewTest, MakeResponseFromNullCStringHasNoBody) {
+  auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  const char* nullBody = nullptr;
+  auto resp = req.makeResponse(http::StatusCodeAccepted, nullBody);
+
+  EXPECT_EQ(resp.status(), http::StatusCodeAccepted);
+  EXPECT_FALSE(resp.hasBody());
+  EXPECT_FALSE(resp.hasHeader(http::ContentType));
+  EXPECT_EQ(resp.headerValueOrEmpty("server"), "aeronet");
+}
+
+TEST_F(HttpRequestViewTest, MakeResponseCapturesOwnedBodiesWithoutCopy) {
+  auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  static constexpr std::size_t kSize = 1024;
+
+  // Checks that 'resp' captured the 'kSize' bytes at 'pData' and has the global headers.
+  const auto check = [](const HttpResponse& resp, http::StatusCode status, std::string_view contentType,
+                        const void* pData) {
+    EXPECT_EQ(resp.status(), status);
+    EXPECT_TRUE(resp.hasBodyCaptured());
+    EXPECT_EQ(static_cast<const void*>(resp.bodyInMemory().data()), pData);
+    EXPECT_EQ(resp.bodyLength(), kSize);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), contentType);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "1024");
+    EXPECT_EQ(resp.headerValueOrEmpty("server"), "aeronet");
+  };
+
+  for (http::StatusCode status : {http::StatusCodeOK, http::StatusCodeCreated}) {
+    SCOPED_TRACE(status);
+    const bool withStatus = status != http::StatusCodeOK;
+
+    std::string str(kSize, 's');
+    const void* pData = str.data();
+    check(withStatus ? req.makeResponse(status, std::move(str)) : req.makeResponse(std::move(str)), status,
+          http::ContentTypeTextPlain, pData);
+
+    std::vector<char> vecChar(kSize, 'v');
+    pData = vecChar.data();
+    check(withStatus ? req.makeResponse(status, std::move(vecChar), "text/x-chars")
+                     : req.makeResponse(std::move(vecChar), "text/x-chars"),
+          status, "text/x-chars", pData);
+
+    std::vector<std::byte> vecByte(kSize, std::byte{'b'});
+    pData = vecByte.data();
+    check(withStatus ? req.makeResponse(status, std::move(vecByte)) : req.makeResponse(std::move(vecByte)), status,
+          http::ContentTypeApplicationOctetStream, pData);
+
+    auto charBuf = std::make_unique<char[]>(kSize);
+    pData = charBuf.get();
+    check(
+        withStatus ? req.makeResponse(status, std::move(charBuf), kSize) : req.makeResponse(std::move(charBuf), kSize),
+        status, http::ContentTypeApplicationOctetStream, pData);
+
+    auto bytesBuf = std::make_unique<std::byte[]>(kSize);
+    pData = bytesBuf.get();
+    check(withStatus ? req.makeResponse(status, std::move(bytesBuf), kSize, "image/png")
+                     : req.makeResponse(std::move(bytesBuf), kSize, "image/png"),
+          status, "image/png", pData);
+  }
+}
+
+TEST_F(HttpRequestViewTest, MakeResponseCapturingEmptyBodyHasNoBody) {
+  auto st = reqSet(BuildRaw("GET", "/test", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  auto resp = req.makeResponse(http::StatusCodeNoContent, std::string());
+
+  EXPECT_EQ(resp.status(), http::StatusCodeNoContent);
+  EXPECT_FALSE(resp.hasBody());
+  EXPECT_FALSE(resp.hasHeader(http::ContentType));
+  EXPECT_EQ(resp.headersFlatView(), req.makeResponse(http::StatusCodeNoContent).headersFlatView());
+}
+
+TEST_F(HttpRequestViewTest, MakeResponseCapturedBodyForHeadRequestKeepsOnlyItsSize) {
+  auto st = reqSet(BuildRaw("HEAD", "/test", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  auto resp = req.makeResponse(std::string(100, 'h'), "text/html");
+  auto expected = req.makeResponse();
+  expected.body(std::string(100, 'h'), "text/html");
+
+  EXPECT_EQ(resp.headersFlatView(), expected.headersFlatView());
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "100");
+  EXPECT_EQ(resp.bodyLength(), 100U);
+  EXPECT_EQ(resp.bodyLength(), expected.bodyLength());
+  EXPECT_EQ(resp.bodyInMemory(), expected.bodyInMemory());
+}
+
 #ifdef AERONET_ENABLE_GLAZE
 // Must have external linkage for Glaze's compile-time reflection (no anonymous namespace).
 // NOLINTNEXTLINE(misc-use-internal-linkage)

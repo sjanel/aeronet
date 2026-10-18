@@ -42,10 +42,12 @@
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-message.hpp"
+#include "aeronet/http-payload.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/nchars.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
@@ -82,6 +84,30 @@ class HttpResponseTest : public ::testing::Test {
 
   HttpResponse makePrepared(const PreparedOptions& opts, http::StatusCode statusCode = http::StatusCodeOK,
                             std::string_view body = "", std::size_t additionalCapacity = 0) {
+    return {
+        additionalCapacity,
+        statusCode,
+        opts.gh.fullStringWithLastSep(),
+        body,
+        http::ContentTypeTextPlain,
+        makePreparedMessageOpts(opts),
+    };
+  }
+
+  // Same as makePrepared(), but capturing 'body' without copy.
+  HttpResponse makePreparedCaptured(const PreparedOptions& opts, http::StatusCode statusCode, std::string body,
+                                    std::size_t additionalCapacity = 0) {
+    return {
+        additionalCapacity,
+        statusCode,
+        opts.gh.fullStringWithLastSep(),
+        HttpPayload(std::move(body)),
+        http::ContentTypeTextPlain,
+        makePreparedMessageOpts(opts),
+    };
+  }
+
+  HttpMessage::Options makePreparedMessageOpts(const PreparedOptions& opts) {
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
     HttpMessage::Options httpMessageOpts(compressionState, opts.expectedEncoding);
 #else
@@ -111,10 +137,7 @@ class HttpResponseTest : public ::testing::Test {
       httpMessageOpts.setDoNotSendContentLengthHeader();
     }
 #endif
-    return {
-        additionalCapacity,         statusCode,      opts.gh.fullStringWithLastSep(), body,
-        http::ContentTypeTextPlain, httpMessageOpts,
-    };
+    return httpMessageOpts;
   }
 
   static void FinalizeCompressedBody([[maybe_unused]] HttpResponse& resp) {
@@ -2022,7 +2045,244 @@ void SetCapturedBody(HttpResponse& resp, CapturedKind kind, std::string_view con
 // The first append of one byte makes the Content-Length value one digit longer.
 constexpr std::string_view kCapturedContent = "123456789";
 
+// The kinds of owned bodies that the constructors capture (all but Static).
+constexpr CapturedKind kOwnedCapturedKinds[]{
+    CapturedKind::String,     CapturedKind::VectorChar,  CapturedKind::VectorByte,
+    CapturedKind::CharBuffer, CapturedKind::BytesBuffer,
+};
+
+// Constructs a response capturing 'content' as an owned body of the given kind (not Static).
+HttpResponse MakeCapturedResponse(CapturedKind kind, http::StatusCode code, std::string_view content,
+                                  std::string_view contentType) {
+  if (kind == CapturedKind::String) {
+    return {code, std::string(content), contentType};
+  }
+  if (kind == CapturedKind::VectorChar) {
+    return {code, std::vector<char>(content.begin(), content.end()), contentType};
+  }
+  if (kind == CapturedKind::VectorByte) {
+    std::vector<std::byte> vec(content.size());
+    std::ranges::copy(content, reinterpret_cast<char*>(vec.data()));
+    return {code, std::move(vec), contentType};
+  }
+  if (kind == CapturedKind::CharBuffer) {
+    auto buf = std::make_unique<char[]>(content.size());
+    std::ranges::copy(content, buf.get());
+    return {code, std::move(buf), content.size(), contentType};
+  }
+  EXPECT_EQ(kind, CapturedKind::BytesBuffer);
+  auto buf = std::make_unique<std::byte[]>(content.size());
+  std::ranges::copy(content, reinterpret_cast<char*>(buf.get()));
+  return {code, std::move(buf), content.size(), contentType};
+}
+
 }  // namespace
+
+TEST_F(HttpResponseTest, ConstructorsCaptureOwnedBodiesLikeBodySetters) {
+  std::string largeContent(1UL << 20U, '\0');
+  for (std::size_t pos = 0; pos < largeContent.size(); ++pos) {
+    largeContent[pos] = static_cast<char>('a' + (pos % 26U));
+  }
+  for (std::string_view content : {kCapturedContent, std::string_view(largeContent)}) {
+    for (CapturedKind kind : kOwnedCapturedKinds) {
+      SCOPED_TRACE(static_cast<int>(kind));
+      HttpResponse resp = MakeCapturedResponse(kind, http::StatusCodeCreated, content, " text/captured ");
+      HttpResponse expected(http::StatusCodeCreated);
+      SetCapturedBody(expected, kind, content, "text/captured");
+
+      EXPECT_EQ(resp.status(), http::StatusCodeCreated);
+      EXPECT_TRUE(resp.hasBodyCaptured());
+      EXPECT_FALSE(resp.hasBodyInlined());
+      EXPECT_EQ(resp.bodyInMemory(), content);
+      EXPECT_EQ(resp.bodyLength(), content.size());
+      EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), "text/captured");
+      EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), std::to_string(content.size()));
+      EXPECT_EQ(resp.headersFlatView(), expected.headersFlatView());
+      EXPECT_EQ(resp.headSize(), expected.headSize());
+
+      EXPECT_EQ(concatenated(std::move(resp)), concatenated(std::move(expected)));
+    }
+  }
+}
+
+TEST_F(HttpResponseTest, ConstructorsCaptureOwnedBodiesWithoutCopy) {
+  static constexpr std::size_t kSize = 1024;
+
+  std::string str(kSize, 's');
+  const char* pStr = str.data();
+  HttpResponse fromString{std::move(str)};
+  EXPECT_EQ(fromString.status(), http::StatusCodeOK);
+  EXPECT_EQ(fromString.bodyInMemory().data(), pStr);
+
+  std::vector<char> vecChar(kSize, 'v');
+  const char* pVecChar = vecChar.data();
+  HttpResponse fromVectorChar(http::StatusCodeAccepted, std::move(vecChar));
+  EXPECT_EQ(fromVectorChar.status(), http::StatusCodeAccepted);
+  EXPECT_EQ(fromVectorChar.bodyInMemory().data(), pVecChar);
+
+  std::vector<std::byte> vecByte(kSize, std::byte{'b'});
+  const auto* pVecByte = reinterpret_cast<const char*>(vecByte.data());
+  HttpResponse fromVectorByte{std::move(vecByte)};
+  EXPECT_EQ(fromVectorByte.bodyInMemory().data(), pVecByte);
+
+  auto charBuf = std::make_unique<char[]>(kSize);
+  const char* pCharBuf = charBuf.get();
+  HttpResponse fromCharBuf(http::StatusCodeAccepted, std::move(charBuf), kSize);
+  EXPECT_EQ(fromCharBuf.bodyInMemory().data(), pCharBuf);
+
+  auto bytesBuf = std::make_unique<std::byte[]>(kSize);
+  const auto* pBytesBuf = reinterpret_cast<const char*>(bytesBuf.get());
+  HttpResponse fromBytesBuf(std::move(bytesBuf), kSize);
+  EXPECT_EQ(fromBytesBuf.bodyInMemory().data(), pBytesBuf);
+
+  // An lvalue std::string is not captured: it is copied (as a std::string_view) and left untouched.
+  const std::string lvalue(kSize, 'l');
+  HttpResponse fromLvalue(http::StatusCodeOK, lvalue);
+  EXPECT_TRUE(fromLvalue.hasBodyInlined());
+  EXPECT_NE(fromLvalue.bodyInMemory().data(), lvalue.data());
+  EXPECT_EQ(fromLvalue.bodyInMemory(), lvalue);
+}
+
+TEST_F(HttpResponseTest, ConstructorsCapturingOwnedBodiesDefaultContentTypes) {
+  EXPECT_EQ(HttpResponse(std::string("text")).headerValueOrEmpty(http::ContentType), http::ContentTypeTextPlain);
+  EXPECT_EQ(HttpResponse(std::vector<char>{'a'}).headerValueOrEmpty(http::ContentType),
+            http::ContentTypeApplicationOctetStream);
+  EXPECT_EQ(HttpResponse(std::vector<std::byte>{std::byte{'a'}}).headerValueOrEmpty(http::ContentType),
+            http::ContentTypeApplicationOctetStream);
+  EXPECT_EQ(HttpResponse(std::make_unique<char[]>(1), 1).headerValueOrEmpty(http::ContentType),
+            http::ContentTypeApplicationOctetStream);
+  EXPECT_EQ(HttpResponse(std::make_unique<std::byte[]>(1), 1).headerValueOrEmpty(http::ContentType),
+            http::ContentTypeApplicationOctetStream);
+
+  EXPECT_EQ(HttpResponse(http::StatusCodeAccepted, std::string("text")).headerValueOrEmpty(http::ContentType),
+            http::ContentTypeTextPlain);
+  EXPECT_EQ(HttpResponse(http::StatusCodeAccepted, std::vector<char>{'a'}).headerValueOrEmpty(http::ContentType),
+            http::ContentTypeApplicationOctetStream);
+  EXPECT_EQ(HttpResponse(http::StatusCodeAccepted, std::vector<std::byte>{std::byte{'a'}})
+                .headerValueOrEmpty(http::ContentType),
+            http::ContentTypeApplicationOctetStream);
+  EXPECT_EQ(
+      HttpResponse(http::StatusCodeAccepted, std::make_unique<char[]>(1), 1).headerValueOrEmpty(http::ContentType),
+      http::ContentTypeApplicationOctetStream);
+  EXPECT_EQ(
+      HttpResponse(http::StatusCodeAccepted, std::make_unique<std::byte[]>(1), 1).headerValueOrEmpty(http::ContentType),
+      http::ContentTypeApplicationOctetStream);
+}
+
+TEST_F(HttpResponseTest, ConstructorsCapturingEmptyOwnedBodiesHaveNoBody) {
+  for (CapturedKind kind : kOwnedCapturedKinds) {
+    SCOPED_TRACE(static_cast<int>(kind));
+    // The content type of an empty body is not checked, as with the body setters.
+    HttpResponse resp = MakeCapturedResponse(kind, http::StatusCodeNoContent, "", "");
+    EXPECT_EQ(resp.status(), http::StatusCodeNoContent);
+    EXPECT_FALSE(resp.hasBody());
+    EXPECT_FALSE(resp.hasHeader(http::ContentType));
+    EXPECT_FALSE(resp.hasHeader(http::ContentLength));
+    EXPECT_EQ(resp.sizeInMemory(), resp.headSize());
+
+    EXPECT_EQ(concatenated(std::move(resp)), concatenated(HttpResponse(http::StatusCodeNoContent)));
+  }
+}
+
+TEST_F(HttpResponseTest, ConstructorsCapturingOwnedBodiesRejectInvalidContentType) {
+  for (CapturedKind kind : kOwnedCapturedKinds) {
+    SCOPED_TRACE(static_cast<int>(kind));
+    EXPECT_THROW(MakeCapturedResponse(kind, http::StatusCodeOK, kCapturedContent, ""), std::invalid_argument);
+    EXPECT_THROW(MakeCapturedResponse(kind, http::StatusCodeOK, kCapturedContent, "text/plain\r\nx-injected: 1"),
+                 std::invalid_argument);
+  }
+  EXPECT_THROW(HttpResponse(42, std::string(kCapturedContent)), std::invalid_argument);
+}
+
+TEST_F(HttpResponseTest, ConstructorsFromCStringAndBytesSpanCopyTheBody) {
+  const char* body = "Hello";
+  HttpResponse fromCString(body);
+  EXPECT_TRUE(fromCString.hasBodyInlined());
+  EXPECT_EQ(fromCString.bodyInMemory(), "Hello");
+  EXPECT_EQ(fromCString.headerValueOrEmpty(http::ContentType), http::ContentTypeTextPlain);
+
+  const char* nullBody = nullptr;
+  HttpResponse fromNullCString(http::StatusCodeAccepted, nullBody);
+  EXPECT_EQ(fromNullCString.status(), http::StatusCodeAccepted);
+  EXPECT_FALSE(fromNullCString.hasBody());
+
+  static constexpr std::byte kBytes[]{std::byte{'H'}, std::byte{'i'}};
+  HttpResponse fromBytes(http::StatusCodePartialContent, std::span<const std::byte>(kBytes), "application/x-bytes");
+  EXPECT_EQ(fromBytes.status(), http::StatusCodePartialContent);
+  EXPECT_TRUE(fromBytes.hasBodyInlined());
+  EXPECT_EQ(fromBytes.bodyInMemory(), "Hi");
+  EXPECT_EQ(fromBytes.headerValueOrEmpty(http::ContentType), "application/x-bytes");
+}
+
+TEST_F(HttpResponseTest, PreparedConstructorCapturingBodyMatchesBodySetter) {
+  const std::string largeBody(256UL * 1024UL, 'L');
+  const std::string_view bodies[]{"", kCapturedContent, largeBody};
+
+  PreparedOptions withGlobalHeaders;
+  withGlobalHeaders.gh.append("server: aeronet");
+  withGlobalHeaders.gh.append("x-global: 1");
+  PreparedOptions head;
+  head.head = true;
+  PreparedOptions noContentLength;
+  noContentLength.sendContentLengthHeader = false;
+  const PreparedOptions* allOpts[]{&withGlobalHeaders, &head, &noContentLength};
+
+  for (const PreparedOptions* pOpts : allOpts) {
+    for (std::string_view body : bodies) {
+      SCOPED_TRACE(body.size());
+      HttpResponse resp = makePreparedCaptured(*pOpts, http::StatusCodeOK, std::string(body));
+      HttpResponse expected = makePrepared(*pOpts, http::StatusCodeOK);
+      expected.body(std::string(body));
+
+      EXPECT_EQ(resp.headersFlatView(), expected.headersFlatView());
+      EXPECT_EQ(resp.hasBody(), expected.hasBody());
+      EXPECT_EQ(resp.hasBodyCaptured(), expected.hasBodyCaptured());
+      EXPECT_EQ(resp.bodyLength(), expected.bodyLength());
+      EXPECT_EQ(resp.bodyInMemory(), expected.bodyInMemory());
+
+      if (pOpts->sendContentLengthHeader) {  // otherwise an HTTP/2 response, not finalized for HTTP/1
+        EXPECT_EQ(concatenated(std::move(resp), pOpts->gh, pOpts->head),
+                  concatenated(std::move(expected), pOpts->gh, pOpts->head));
+      }
+    }
+  }
+}
+
+TEST_F(HttpResponseTest, PreparedConstructorCapturingBodyReservesAdditionalCapacityForHeaders) {
+  static constexpr LowerAsciiKey kHeader = "x-after-body";
+  const std::string headerValue(200, 'v');
+  PreparedOptions opts;
+  opts.gh.append("server: aeronet");
+  HttpResponse resp = makePreparedCaptured(opts, http::StatusCodeOK, std::string(kCapturedContent),
+                                           http::HeaderSize(kHeader.size(), headerValue.size()));
+  const std::size_t capacity = resp.capacityInlined();
+
+  // The embedded payload is moved out and back around the head growth, without reallocating the buffer.
+  resp.headerAddLine(kHeader, headerValue);
+  EXPECT_EQ(resp.capacityInlined(), capacity);
+  EXPECT_EQ(resp.headerValueOrEmpty(kHeader), headerValue);
+  EXPECT_TRUE(resp.hasBodyCaptured());
+  EXPECT_EQ(resp.bodyInMemory(), kCapturedContent);
+  EXPECT_TRUE(resp.headersFlatView().ends_with("content-length: 9\r\n"));
+}
+
+TEST_F(HttpResponseTest, ConstructorCapturingBodyCanBeModifiedAfterwards) {
+  HttpResponse resp(http::StatusCodeOK, std::string(kCapturedContent), "text/captured");
+  resp.reason("Fine").headerAddLine("x-after", "body");
+  resp.bodyAppend("0");
+  resp.trailerAddLine("x-checksum", "abc");
+
+  EXPECT_EQ(resp.reason(), "Fine");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-after"), "body");
+  EXPECT_TRUE(resp.hasBodyCaptured());
+  EXPECT_EQ(resp.bodyInMemory(), "1234567890");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "10");
+  EXPECT_EQ(resp.trailerValueOrEmpty("x-checksum"), "abc");
+
+  const HttpResponse copy = resp;
+  EXPECT_EQ(copy.bodyInMemory(), resp.bodyInMemory());
+  EXPECT_EQ(copy.headersFlatView(), resp.headersFlatView());
+}
 
 TEST_F(HttpResponseTest, BodyInlineAppendToCapturedBody) {
   static constexpr std::size_t kChunkSize = 64UL * 1024UL;
