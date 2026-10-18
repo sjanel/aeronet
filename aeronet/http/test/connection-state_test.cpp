@@ -21,12 +21,15 @@
 #include <unistd.h>
 #endif
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <coroutine>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -614,6 +617,25 @@ class FakeTransport final : public TransportBackend<FakeTransport> {
   std::string _lastWrite;
 };
 
+// Transport whose reads return up to 'available' bytes, as a socket with that many bytes in its receive queue.
+class QueueTransport final : public TransportBackend<QueueTransport> {
+ public:
+  explicit QueueTransport(std::size_t* available) : _available(available) {}
+
+  TransportResult read(char* buf, std::size_t len) {
+    const std::size_t nbRead = std::min(len, *_available);
+    std::memset(buf, 'q', nbRead);
+    return {nbRead, nbRead == 0 ? TransportHint::ReadReady : TransportHint::None};
+  }
+
+  static TransportResult write(std::string_view data) { return {data.size(), TransportHint::None}; }
+
+  [[nodiscard]] static bool handshakeDone() noexcept { return true; }
+
+ private:
+  std::size_t* _available;
+};
+
 }  // namespace
 
 TEST(ZerocopyBuffersTest, ReleasesBuffersAsTheirSendsComplete) {
@@ -993,6 +1015,77 @@ TEST(ConnectionStateTransportTest, TransportWriteStringCompletingHandshakeDoesNo
   EXPECT_FALSE(state.tlsEstablished);
 }
 
+TEST(ConnectionStateTransportTest, ReadSizeAdaptsToTheBytesRead) {
+  HttpServerConfig config;
+  config.withMinReadChunkBytes(4096).withMaxPerEventReadBytes(std::numeric_limits<std::uint32_t>::max());
+  std::size_t available = 1UL << 30U;
+  ConnectionState state;
+  state.transport = std::make_unique<QueueTransport>(&available);
+
+  const auto read = [&config, &state] {
+    const std::size_t chunkSize = config.computeReadChunkSize(0, state.readSizeShift);
+    EXPECT_NE(state.transportRead(config, chunkSize).want, TransportHint::Error);
+    state.inBuffer.clear();  // consumed
+    return chunkSize;
+  };
+
+  // Reads filling the read size double it, up to kMaxReadChunkBytes.
+  for (std::size_t expected = 4096; expected < HttpServerConfig::kMaxReadChunkBytes; expected *= 2U) {
+    EXPECT_EQ(read(), expected);
+  }
+  EXPECT_EQ(read(), HttpServerConfig::kMaxReadChunkBytes);
+  EXPECT_EQ(read(), HttpServerConfig::kMaxReadChunkBytes);
+  EXPECT_EQ(state.readSizeShift, 6U);
+
+  // Reads filling at least a quarter of it keep it.
+  available = HttpServerConfig::kMaxReadChunkBytes / 4U;
+  EXPECT_EQ(read(), HttpServerConfig::kMaxReadChunkBytes);
+  EXPECT_EQ(read(), HttpServerConfig::kMaxReadChunkBytes);
+
+  // A read returning nothing (would block) keeps it.
+  available = 0;
+  EXPECT_EQ(read(), HttpServerConfig::kMaxReadChunkBytes);
+
+  // Smaller reads halve it, down to minReadChunkBytes.
+  available = 100;
+  for (std::size_t expected = HttpServerConfig::kMaxReadChunkBytes; expected > 4096; expected /= 2U) {
+    EXPECT_EQ(read(), expected);
+  }
+  EXPECT_EQ(read(), 4096U);
+  EXPECT_EQ(read(), 4096U);
+  EXPECT_EQ(state.readSizeShift, 0U);
+
+  // A connection state reused for a new connection starts again from minReadChunkBytes.
+  available = 1UL << 30U;
+  EXPECT_EQ(read(), 4096U);
+  EXPECT_EQ(read(), 8192U);
+  state.reset();
+  EXPECT_EQ(state.readSizeShift, 0U);
+}
+
+TEST(ConnectionStateTransportTest, ReadsCutByTheBudgetKeepTheReadSize) {
+  HttpServerConfig config;
+  config.withMinReadChunkBytes(4096).withMaxPerEventReadBytes(48UL << 10U);
+  std::size_t available = 1UL << 30U;
+  ConnectionState state;
+  state.transport = std::make_unique<QueueTransport>(&available);
+  state.readSizeShift = 3;  // 32 KiB
+
+  std::size_t bytesReadThisEvent = 0;
+  std::size_t chunkSize = config.computeReadChunkSize(bytesReadThisEvent, state.readSizeShift);
+  EXPECT_EQ(chunkSize, 32UL << 10U);
+  bytesReadThisEvent += state.transportRead(config, chunkSize).bytesProcessed;
+  EXPECT_EQ(state.readSizeShift, 4U);
+
+  // The rest of the budget: 16 KiB of the 64 KiB read size.
+  chunkSize = config.computeReadChunkSize(bytesReadThisEvent, state.readSizeShift);
+  EXPECT_EQ(chunkSize, 16UL << 10U);
+  bytesReadThisEvent += state.transportRead(config, chunkSize).bytesProcessed;
+  EXPECT_EQ(bytesReadThisEvent, 48UL << 10U);
+  EXPECT_EQ(state.readSizeShift, 4U);
+  EXPECT_EQ(state.inBuffer.size(), 48UL << 10U);
+}
+
 TEST(ConnectionStateTransportTest, TransportReadSetsHeaderStartOnce) {
   ConnectionState state;
   state.transport = std::make_unique<FakeTransport>(/*handshakeInitially=*/true);
@@ -1002,14 +1095,15 @@ TEST(ConnectionStateTransportTest, TransportReadSetsHeaderStartOnce) {
 
   // First read sets headerStartTp
   state.lastActivity = std::chrono::steady_clock::now();  // simulate activity to update timestamp
-  auto r1 = state.transportRead(16U);
+  const HttpServerConfig config;
+  auto r1 = state.transportRead(config, 16U);
   EXPECT_EQ(r1.want, TransportHint::None);
   EXPECT_EQ(r1.bytesProcessed, 1U);
   const auto firstTp = state.headerStartTp;
   EXPECT_NE(firstTp.time_since_epoch().count(), 0);
 
   // Second read should not overwrite the timestamp
-  auto r2 = state.transportRead(8U);
+  auto r2 = state.transportRead(config, 8U);
   EXPECT_EQ(r2.want, TransportHint::None);
   EXPECT_EQ(r2.bytesProcessed, 1U);
   EXPECT_EQ(state.headerStartTp, firstTp);

@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <iterator>
 #include <limits>
 #include <stdexcept>
@@ -191,6 +192,70 @@ TEST(HttpServerConfig, MinReadChunkBytesGreaterThanMaxPerEventReadBytes) {
   cfg.withMinReadChunkBytes(2048);
   cfg.withMaxPerEventReadBytes(1024);
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
+}
+
+TEST(HttpServerConfig, ComputeReadChunkSizeReadsRemainingBudgetWithinReadSize) {
+  HttpServerConfig cfg;
+  cfg.withMinReadChunkBytes(4096).withMaxPerEventReadBytes(128UL << 10U);
+  // A new connection reads minReadChunkBytes.
+  EXPECT_EQ(cfg.computeReadChunkSize(0, 0), 4096U);
+  EXPECT_EQ(cfg.computeReadChunkSize(0, 3), 32UL << 10U);
+  EXPECT_EQ(cfg.computeReadChunkSize(0, 5), 128UL << 10U);
+  // A read size beyond the remaining budget reads the remaining budget.
+  EXPECT_EQ(cfg.computeReadChunkSize(0, 6), 128UL << 10U);
+  EXPECT_EQ(cfg.computeReadChunkSize(100UL << 10U, 5), 28UL << 10U);
+  EXPECT_EQ(cfg.computeReadChunkSize((128UL << 10U) - 4096U, 5), 4096U);
+  // An almost exhausted budget still reads minReadChunkBytes.
+  EXPECT_EQ(cfg.computeReadChunkSize((128UL << 10U) - 4095U, 5), 4096U);
+  EXPECT_EQ(cfg.computeReadChunkSize((128UL << 10U) - 1U, 0), 4096U);
+}
+
+TEST(HttpServerConfig, ReadSizeIsCappedForLargeBudgets) {
+  static constexpr std::size_t kMaxChunk = HttpServerConfig::kMaxReadChunkBytes;
+  HttpServerConfig cfg;
+  cfg.withMinReadChunkBytes(4096).withMaxPerEventReadBytes(std::numeric_limits<std::uint32_t>::max());
+  EXPECT_EQ(cfg.readSize(0), 4096U);
+  EXPECT_EQ(cfg.readSize(6), kMaxChunk);
+  EXPECT_EQ(cfg.readSize(7), kMaxChunk);
+  EXPECT_EQ(cfg.computeReadChunkSize(0, 6), kMaxChunk);
+  EXPECT_EQ(cfg.computeReadChunkSize(1UL << 30U, 6), kMaxChunk);
+  EXPECT_EQ(cfg.computeReadChunkSize(std::numeric_limits<std::uint32_t>::max() - kMaxChunk + 1U, 6), kMaxChunk - 1U);
+  EXPECT_EQ(cfg.computeReadChunkSize(std::numeric_limits<std::uint32_t>::max() - 10U, 6), 4096U);
+
+  // A minReadChunkBytes that is not a power of 2 is doubled up to kMaxReadChunkBytes exactly.
+  cfg.withMinReadChunkBytes(5000);
+  EXPECT_EQ(cfg.readSize(5), 5000UL << 5U);
+  EXPECT_EQ(cfg.readSize(6), kMaxChunk);
+
+  // A minReadChunkBytes above the cap is honored.
+  cfg.withMinReadChunkBytes(2 * kMaxChunk).withMaxPerEventReadBytes(4 * kMaxChunk);
+  EXPECT_NO_THROW(cfg.validate());
+  EXPECT_EQ(cfg.readSize(0), 2 * kMaxChunk);
+  EXPECT_EQ(cfg.computeReadChunkSize(0, 0), 2 * kMaxChunk);
+  EXPECT_EQ(cfg.computeReadChunkSize(3 * kMaxChunk, 0), 2 * kMaxChunk);
+}
+
+TEST(HttpServerConfig, AdaptReadSizeShift) {
+  HttpServerConfig cfg;
+  cfg.withMinReadChunkBytes(4096).withMaxPerEventReadBytes(1UL << 20U);
+  // A read filling the read size doubles it, up to kMaxReadChunkBytes.
+  EXPECT_EQ(cfg.adaptReadSizeShift(0, 4096, 4096), 1U);
+  EXPECT_EQ(cfg.adaptReadSizeShift(5, 128UL << 10U, 128UL << 10U), 6U);
+  EXPECT_EQ(cfg.adaptReadSizeShift(6, HttpServerConfig::kMaxReadChunkBytes, HttpServerConfig::kMaxReadChunkBytes), 6U);
+  // A full read cut by the budget, or raised to minReadChunkBytes at its end, keeps it.
+  EXPECT_EQ(cfg.adaptReadSizeShift(5, 64UL << 10U, 64UL << 10U), 5U);
+  EXPECT_EQ(cfg.adaptReadSizeShift(5, 4096, 4096), 5U);
+  // A read filling at least a quarter of the requested size keeps it.
+  EXPECT_EQ(cfg.adaptReadSizeShift(3, 32UL << 10U, (32UL << 10U) - 1U), 3U);
+  EXPECT_EQ(cfg.adaptReadSizeShift(3, 32UL << 10U, 8UL << 10U), 3U);
+  // A read filling less than a quarter of it halves it, down to minReadChunkBytes.
+  EXPECT_EQ(cfg.adaptReadSizeShift(3, 32UL << 10U, (8UL << 10U) - 1U), 2U);
+  EXPECT_EQ(cfg.adaptReadSizeShift(3, 4096, 1), 2U);
+  EXPECT_EQ(cfg.adaptReadSizeShift(0, 4096, 1), 0U);
+
+  // A minReadChunkBytes at the cap never grows.
+  cfg.withMinReadChunkBytes(HttpServerConfig::kMaxReadChunkBytes);
+  EXPECT_EQ(cfg.adaptReadSizeShift(0, HttpServerConfig::kMaxReadChunkBytes, HttpServerConfig::kMaxReadChunkBytes), 0U);
 }
 
 TEST(HttpServerConfigTest, WithTlsKtlsModeEnablesTls) {

@@ -232,7 +232,7 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
     StreamRequest(StreamRequest&& other) noexcept;
     StreamRequest& operator=(StreamRequest&& other) noexcept;
 
-    ~StreamRequest() = default;
+    ~StreamRequest();
 
     HttpRequestView request;
     RawChars bodyBuffer;

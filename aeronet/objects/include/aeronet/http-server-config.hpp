@@ -292,23 +292,27 @@ struct HttpServerConfig {
   // Adaptive inbound read chunk sizing
   // ===========================================
 
-  // Controls how much data the server reads from each connection per syscall and per event:
-  //   * minReadChunkBytes     : minimum chunk used for follow-up reads once an event already consumed bytes.
-  //                             This keeps progress steady while avoiding tiny reads in multi-iteration paths
-  //                             (for example TLS buffered data handling).
-  // Defaults balance fairness and throughput while keeping nominal one-read behavior.
+  // Initial and smallest read size of a connection (must be > 0). The read size of a connection adapts to its input: it
+  // doubles after a read filling it, up to kMaxReadChunkBytes, and halves after a read filling less than a quarter of
+  // the requested size. Connections receiving small requests thus keep small input buffers, while large uploads are
+  // read in large reads. A read close to the end of the fairness budget still reads this much, to avoid tiny reads.
   std::uint32_t minReadChunkBytes{4096};
 
   // Fairness budget of one readable event of a connection (must be > 0): the bytes read from the connection plus the
   // bytes written while serving them. Once it is reached, the rest of the input of the connection is read after the
   // other ready connections have been served, so that neither large uploads nor many small requests answered with large
   // responses can keep the event loop on one connection.
-  // The first read of an event attempts to consume up to this budget in one syscall; follow-up reads are clamped to
-  // remaining budget and minReadChunkBytes. If you expect large request bodies or responses and low number of
-  // connections, you can favor high values to improve throughput. For workloads with many concurrent connections, lower
-  // values can improve fairness and latency at the cost of throughput. To approximate unlimited behavior, set this to
-  // std::numeric_limits<uint32_t>::max().
+  // Each read of an event attempts to consume the remaining budget, within the read size of the connection (see
+  // minReadChunkBytes): a large budget is read in several reads, so it does not enlarge the input buffers.
+  // If you expect large request bodies or responses and low number of connections, you can favor high values to improve
+  // throughput. For workloads with many concurrent connections, lower values can improve fairness and latency at the
+  // cost of throughput. To approximate unlimited behavior, set this to std::numeric_limits<uint32_t>::max().
   std::uint32_t maxPerEventReadBytes{128U << 10U};
+
+  // Largest read size of a connection, unless minReadChunkBytes is larger. A read never returns more than the receive
+  // queue of the socket, while its whole size is reserved in the input buffer of the connection beforehand. Larger
+  // reads are also slower: the data lands beyond the CPU caches.
+  static constexpr std::uint32_t kMaxReadChunkBytes = 256U << 10U;
 
   // Hard limit to avoid pathological cases with excessive global headers, which would bloat response size
   // and waste CPU serializing them.
@@ -344,16 +348,38 @@ struct HttpServerConfig {
     return bytesThisEvent >= maxPerEventReadBytes;
   }
 
-  // Compute the read chunk size for a connection, accounting for the per-event fairness cap.
-  // Returns 0 when the fairness budget is exhausted (caller should break).
-  [[nodiscard]] std::size_t computeReadChunkSize(std::size_t bytesReadThisEvent) const {
+  // Read size of a connection whose read size was doubled readSizeShift times (see minReadChunkBytes).
+  [[nodiscard]] std::size_t readSize(std::uint8_t readSizeShift) const {
+    const std::size_t size = static_cast<std::size_t>(minReadChunkBytes) << readSizeShift;
+    // A minReadChunkBytes that is not a power of 2 does not double exactly into kMaxReadChunkBytes.
+    return size <= kMaxReadChunkBytes || readSizeShift == 0 ? size : kMaxReadChunkBytes;
+  }
+
+  // Compute the size of the next read of a connection: the remaining fairness budget of the event, within the read size
+  // of the connection, but at least minReadChunkBytes. The budget must not be exhausted yet.
+  [[nodiscard]] std::size_t computeReadChunkSize(std::size_t bytesReadThisEvent, std::uint8_t readSizeShift) const {
     assert(bytesReadThisEvent < maxPerEventReadBytes);
     const std::size_t remainingBudget = maxPerEventReadBytes - bytesReadThisEvent;
-    if (remainingBudget < minReadChunkBytes) {
-      // Fairness budget is almost exhausted; cap to remaining budget to avoid over-reading.
-      return minReadChunkBytes;
+    const std::size_t connectionReadSize = readSize(readSizeShift);
+    const std::size_t chunkSize = remainingBudget < connectionReadSize ? remainingBudget : connectionReadSize;
+    // An almost exhausted budget still reads minReadChunkBytes, to avoid tiny reads.
+    return chunkSize < minReadChunkBytes ? minReadChunkBytes : chunkSize;
+  }
+
+  // Adapts the read size of a connection (see minReadChunkBytes) to a read of bytesRead > 0 bytes out of chunkSize.
+  // Returns the new readSizeShift.
+  [[nodiscard]] std::uint8_t adaptReadSizeShift(std::uint8_t readSizeShift, std::size_t chunkSize,
+                                                std::size_t bytesRead) const {
+    assert(bytesRead > 0 && bytesRead <= chunkSize);
+    if (bytesRead == chunkSize) {
+      // Doubled when the read filled the whole read size: a read cut by the budget tells nothing about it.
+      const std::size_t connectionReadSize = readSize(readSizeShift);
+      return chunkSize == connectionReadSize && connectionReadSize < kMaxReadChunkBytes
+                 ? static_cast<std::uint8_t>(readSizeShift + 1U)
+                 : readSizeShift;
     }
-    return remainingBudget;
+    return bytesRead < chunkSize / 4U && readSizeShift != 0 ? static_cast<std::uint8_t>(readSizeShift - 1U)
+                                                            : readSizeShift;
   }
 
   // Check whether a CONNECT target host is allowed by the configured allowlist.
