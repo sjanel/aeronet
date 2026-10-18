@@ -27,6 +27,9 @@
 #endif
 
 #include "aeronet/native-handle.hpp"
+#ifdef AERONET_WINDOWS
+#include "aeronet/safe-cast.hpp"
+#endif
 #include "aeronet/system-error.hpp"
 
 namespace aeronet {
@@ -274,7 +277,8 @@ int64_t SafeSend(NativeHandle fd, const void* data, std::size_t len) noexcept {
   // macOS uses SO_NOSIGPIPE socket option (set at socket creation) instead of MSG_NOSIGNAL.
   return static_cast<int64_t>(::send(fd, data, len, 0));
 #elifdef AERONET_WINDOWS
-  return static_cast<int64_t>(::send(fd, static_cast<const char*>(data), static_cast<int>(len), 0));
+  // send() takes an int length: a longer one is clamped, making a partial send.
+  return static_cast<int64_t>(::send(fd, static_cast<const char*>(data), SaturateCast<int>(len), 0));
 #else
   return static_cast<int64_t>(::send(fd, data, len, 0));
 #endif
@@ -327,7 +331,8 @@ int64_t ReadOffset(NativeHandle fd, void* buffer, std::size_t len, std::size_t o
   ov.Offset = static_cast<DWORD>(static_cast<int64_t>(offset) & 0xFFFFFFFF);
   ov.OffsetHigh = static_cast<DWORD>((static_cast<int64_t>(offset) >> 32) & 0xFFFFFFFF);
   DWORD bytesRead = 0;
-  if (::ReadFile(reinterpret_cast<HANDLE>(_get_osfhandle(static_cast<int>(fd))), buffer, static_cast<DWORD>(len),
+  // A length beyond the DWORD range is clamped, making a partial read.
+  if (::ReadFile(reinterpret_cast<HANDLE>(_get_osfhandle(static_cast<int>(fd))), buffer, SaturateCast<DWORD>(len),
                  &bytesRead, &ov)) {
     return static_cast<int64_t>(bytesRead);
   }

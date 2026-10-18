@@ -105,16 +105,18 @@ Http2ProtocolHandler::StreamRequest& Http2ProtocolHandler::StreamRequest::operat
   if (this != &other) [[likely]] {
     request = std::move(other.request);
     bodyBuffer = std::move(other.bodyBuffer);
-    declaredBodyLength = other.declaredBodyLength;
+    declaredBodyLength = std::exchange(other.declaredBodyLength, kUnknownBodyLength);
     headerStorage = std::move(other.headerStorage);
     trailerStorage = std::move(other.trailerStorage);
-    bodyContext = other.bodyContext;
+    bodyContext = std::move(other.bodyContext);
     if (request._pBodyAccessContext == &other.bodyContext) {
       request._pBodyAccessContext = &bodyContext;
     }
   }
   return *this;
 }
+
+Http2ProtocolHandler::StreamRequest::~StreamRequest() = default;
 
 Http2ProtocolHandler::Http2ProtocolHandler(Http2ProtocolHandler&&) noexcept = default;
 Http2ProtocolHandler& Http2ProtocolHandler::operator=(Http2ProtocolHandler&&) noexcept = default;

@@ -21,8 +21,8 @@ Large payloads avoid user-space copies: files are sent with `sendfile()` (`Trans
 | Setting | Default | Trade-off |
 | --- | --- | --- |
 | `nbThreads` | hardware threads | Event loops of a `MultiHttpServer`. More threads than cores rarely helps; fewer leave room for other processes or `deferWork()` threads. |
-| `maxPerEventReadBytes` | 128 KiB | Fairness budget of a connection per readable event, reads and writes included. Beyond it, other ready connections are served first. Raise it for few connections with large bodies, lower it for many concurrent clients. |
-| `minReadChunkBytes` | 4 KiB | Smallest follow-up read within one event. |
+| `maxPerEventReadBytes` | 128 KiB | Fairness budget of a connection per readable event, reads and writes included. Beyond it, other ready connections are served first. Raise it for few connections with large bodies, lower it for many concurrent clients. A large budget takes several reads, so it does not enlarge the input buffers. |
+| `minReadChunkBytes` | 4 KiB | Initial and smallest read size of a connection. The read size doubles after each read filling it, up to 256 KiB (`HttpServerConfig::kMaxReadChunkBytes`), and halves after a read filling less than a quarter of it: connections receiving small requests keep small input buffers, while uploads are read in large reads. |
 | `maxAcceptBatchSize` | 64 | Connections accepted per loop iteration, so that bursts do not starve open connections. `0` is unlimited. |
 | `pollInterval`, `pollIntervalMinFactor`, `pollIntervalMaxFactor` | 500 ms, 1.0, 1.0 | Longest sleep of an idle loop: bounds how fast `stop()` and predicates are noticed. Timeouts do not depend on it. Factors let saturated loops poll faster and idle loops back off. |
 | `tcpNoDelay` | `Auto` | `TCP_NODELAY` on TLS and HTTP/2 connections, where small records would otherwise stall on Nagle's algorithm combined with delayed acknowledgments. `Enabled` or `Disabled` force it. |

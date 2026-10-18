@@ -49,8 +49,8 @@ config.withPort(8080)
 | `minCapturedBodySize` / `withMinCapturedBodySize()` | 1 KiB | Fixed response bodies below this size are kept with the response head for locality. |
 | `pollInterval` / `withPollInterval()` | 500 ms | Maximum idle event-loop wait. Lower values improve stop responsiveness but increase wakeups. |
 | `pollIntervalMinFactor`, `pollIntervalMaxFactor` / `withPollIntervalFactors()` | 1.0, 1.0 | Adaptive poll bounds relative to `pollInterval`; `0.0, 2.0` permits a saturated spin and idle backoff. |
-| `minReadChunkBytes` / `withMinReadChunkBytes()` | 4 KiB | Minimum follow-up inbound read size. |
-| `maxPerEventReadBytes` / `withMaxPerEventReadBytes()` | 128 KiB | Fairness budget per connection event: bytes read plus bytes written while serving them. Raise for few large uploads or downloads; lower for latency across many connections. |
+| `minReadChunkBytes` / `withMinReadChunkBytes()` | 4 KiB | Initial and smallest read size of a connection: doubled after each read filling it (up to 256 KiB, `kMaxReadChunkBytes`), halved after one filling less than a quarter of it. |
+| `maxPerEventReadBytes` / `withMaxPerEventReadBytes()` | 128 KiB | Fairness budget per connection event: bytes read plus bytes written while serving them. Raise for few large uploads or downloads; lower for latency across many connections. Each read is at most the read size of the connection (see `minReadChunkBytes`); `std::numeric_limits<uint32_t>::max()` approximates no limit. |
 | `zerocopyMode` / `withZerocopyMode()` | Opportunistic | `MSG_ZEROCOPY` policy for the large response writes of plaintext HTTP/1.1 connections; Linux-specific. `Opportunistic` skips loopback peers and stops on a connection once the kernel reports copied sends; `Enabled` uses it for every connection. See [MSG_ZEROCOPY](../operations/performance.md#msg_zerocopy). |
 | `zerocopyMinBytes` / `withZerocopyMinBytes()` | 128 KiB | Minimum write size for `MSG_ZEROCOPY` (cannot be `0`). |
 | `globalHeaders` / `withGlobalHeaders()` / `addGlobalHeader()` | `server: aeronet` | Headers added unless the response already supplies that header. Maximum 256 entries. |

@@ -664,10 +664,10 @@ void SingleHttpServer::acceptNewConnections() {
     // what the transport still reports after a short read.
     bool inputLeft = false;
     while (true) {
-      const std::size_t chunkSize = _config.computeReadChunkSize(bytesReadThisEvent);
+      const std::size_t chunkSize = _config.computeReadChunkSize(bytesReadThisEvent, pCnx->readSizeShift);
       assert(chunkSize > 0);
       const bool wasParsing = pCnx->parsingHeaders;
-      const auto [bytesRead, want] = pCnx->transportRead(chunkSize);
+      const auto [bytesRead, want] = pCnx->transportRead(_config, chunkSize);
       if (!wasParsing && pCnx->parsingHeaders && _config.headerReadTimeout.count() > 0) {
         ++_connectionSweepState.pendingTimeoutConnections;
       }
@@ -960,14 +960,13 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
   }
 
   while (true) {
-    const std::size_t chunkSize = _config.computeReadChunkSize(bytesReadThisEvent);
-    assert(chunkSize > 0);
-
     // Re-set the pointer on each loop iteration in case of connection state reallocations.
     cnxIt = _connections.iterator(fd);
     pCnx = _connections.pConnectionState(fd);
 
-    const auto [count, want] = pCnx->transportRead(chunkSize);
+    const std::size_t chunkSize = _config.computeReadChunkSize(bytesReadThisEvent, pCnx->readSizeShift);
+    assert(chunkSize > 0);
+    const auto [count, want] = pCnx->transportRead(_config, chunkSize);
     if (finalizeTlsHandshakeIfReady(fd, *pCnx)) {
       return CloseStatus::Close;
     }
