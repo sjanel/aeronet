@@ -18,6 +18,10 @@ on:
       seed:
         description: 'Seed of the random combinations (empty = run number)'
         default: ''
+      report_issues:
+        description: 'Open / comment GitHub issues for the failures (scheduled runs always do)'
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -26,9 +30,32 @@ concurrency:
 env:
   # Per-attempt limit (seconds) of scripts/retry.sh: a stalled FetchContent download is retried instead of freezing the job.
   RETRY_TIMEOUT: 900
+  # CMake options common to every leg; the failure report repeats them in its reproduction commands.
+  CMAKE_FIXED_ARGS: >-
+    -DCMAKE_BUILD_TYPE=Debug
+    -DCMAKE_C_COMPILER=clang-21
+    -DCMAKE_CXX_COMPILER=clang++-21
+    -DAERONET_WARNINGS_AS_ERRORS=ON
+    -DAERONET_BUILD_TESTS=ON
+    -DAERONET_ENABLE_TEST_HOOKS=ON
+    -DAERONET_BUILD_EXAMPLES=ON
+    -DAERONET_ENABLE_ASAN=OFF
+    -DAERONET_ENABLE_CLANG_TIDY=OFF
+    -DAERONET_BENCH_ENABLE_OATPP=OFF
+    -DAERONET_BENCH_ENABLE_DROGON=OFF
+    -DAERONET_BENCH_ENABLE_HTTPLIB=OFF
+    -DAERONET_BENCH_ENABLE_PISTACHE=OFF
+    -DAERONET_BENCH_ENABLE_CROW=OFF
+    -DAERONET_BENCH_ENABLE_BEAST=OFF
+    -DAERONET_BENCH_ENABLE_UWEBSOCKETS=OFF
 
 permissions:
   contents: read
+
+defaults:
+  run:
+    # Explicit bash enables pipefail: piping a step to tee keeps its exit status.
+    shell: bash
 
 jobs:
   generate:
@@ -63,7 +90,8 @@ jobs:
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   build-test:
-    name: clang-21 ${{ matrix.kind }} #${{ matrix.id }}
+    # Quoted: an unquoted ' #' starts a YAML comment. The report links legs to their jobs by this '#id' suffix.
+    name: 'clang-21 ${{ matrix.kind }} #${{ matrix.id }}'
     needs: generate
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -71,13 +99,12 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.generate.outputs.matrix) }}
     env:
-      CC: clang-21
-      CXX: clang++-21
+      LEG_CMAKE_ARGS: ${{ matrix.cmake_args }}
     steps:
       - uses: actions/checkout@v7
 
       - name: Show flags
-        run: echo "${{ matrix.cmake_args }}" | tr ' ' '\n'
+        run: echo "$LEG_CMAKE_ARGS" | tr ' ' '\n'
 
       # Optional system libs are always installed: the flags decide whether the code uses them.
       - name: Install dependencies
@@ -88,43 +115,73 @@ jobs:
       - name: Install Clang/LLVM toolchain
         run: ./scripts/ci-apt-install.sh --llvm 21
 
+      # The logs of the configure / build / test steps are kept for the error extraction of the last steps.
       - name: Configure (CMake)
+        id: configure
         run: |
-          ./scripts/retry.sh cmake -S . -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DAERONET_WARNINGS_AS_ERRORS=ON \
-            -DAERONET_BUILD_TESTS=ON \
-            -DAERONET_ENABLE_TEST_HOOKS=ON \
-            -DAERONET_BUILD_EXAMPLES=ON \
-            -DAERONET_ENABLE_ASAN=OFF \
-            -DAERONET_ENABLE_CLANG_TIDY=OFF \
-            -DAERONET_BENCH_ENABLE_OATPP=OFF \
-            -DAERONET_BENCH_ENABLE_DROGON=OFF \
-            -DAERONET_BENCH_ENABLE_HTTPLIB=OFF \
-            -DAERONET_BENCH_ENABLE_PISTACHE=OFF \
-            -DAERONET_BENCH_ENABLE_CROW=OFF \
-            -DAERONET_BENCH_ENABLE_BEAST=OFF \
-            -DAERONET_BENCH_ENABLE_UWEBSOCKETS=OFF \
-            ${{ matrix.cmake_args }}
+          mkdir -p logs
+          # shellcheck disable=SC2086 # the options are word-split on purpose
+          ./scripts/retry.sh cmake -S . -B build -G Ninja $CMAKE_FIXED_ARGS $LEG_CMAKE_ARGS 2>&1 | tee logs/configure.log
 
+      # -k 0: keep going after a failure to report all the errors of the combination, not only the first one.
       - name: Build
-        run: cmake --build build --parallel
+        id: build
+        run: cmake --build build --parallel -- -k 0 2>&1 | tee logs/build.log
 
       - name: Run unit tests
-        run: ctest --test-dir build --output-on-failure --timeout 60 -j --repeat until-pass:3
+        id: test
+        run: ctest --test-dir build --output-on-failure --timeout 60 -j --repeat until-pass:3 2>&1 | tee logs/test.log
+
+      # continue-on-error: the reporting tooling never changes the verdict of a leg.
+      - name: Extract errors
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: |
+          python3 scripts/report-flag-matrix.py leg --id '${{ matrix.id }}' --kind '${{ matrix.kind }}' \
+            --cmake-args="$LEG_CMAKE_ARGS" --outcome 'configure=${{ steps.configure.outcome }}' \
+            --outcome 'build=${{ steps.build.outcome }}' --outcome 'test=${{ steps.test.outcome }}' \
+            --logs-dir logs --out 'leg-result/leg-${{ matrix.id }}.json'
+
+      - name: Upload leg result
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: flag-leg-${{ matrix.id }}
+          path: leg-result/
+          retention-days: 7
 
   report:
     name: Report failures
-    needs: build-test
-    if: ${{ failure() && github.event_name == 'schedule' }}
+    needs: [generate, build-test]
+    if: ${{ failure() }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
+      actions: read    # links from the legs to their job logs
+      contents: read
       issues: write
     steps:
-      - name: Open issue
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts
+
+      - name: Download leg results
+        uses: actions/download-artifact@v8
+        with:
+          pattern: flag-leg-*
+          path: leg-results
+          merge-multiple: true
+
+      # Groups the failing legs by shared errors into the run summary, with reproduction commands. Scheduled runs
+      # (or report_issues) also open one issue per new category, or comment on the open issue of a known one.
+      - name: Group and report failures
         env:
           GH_TOKEN: ${{ github.token }}
+          MATRIX: ${{ needs.generate.outputs.matrix }}
+          FILE_ISSUES: ${{ github.event_name == 'schedule' || inputs.report_issues }}
         run: |
-          gh issue create --repo "$GITHUB_REPOSITORY" \
-            --title "Periodic flag-combination build failed ($(date -u +%F))" \
-            --body "See ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID} . Failing legs show their exact CMake flags; the run summary shows the wave and the seed."
+          args=()
+          if [[ "$FILE_ISSUES" == true ]]; then args+=(--file-issues); fi
+          python3 scripts/report-flag-matrix.py report --matrix="$MATRIX" --results-dir leg-results \
+            --summary "$GITHUB_STEP_SUMMARY" "${args[@]}"
