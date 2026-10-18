@@ -21,7 +21,7 @@ TEST(Http2Config, DefaultValues) {
   EXPECT_EQ(config.headerTableSize, 4096U);
   EXPECT_FALSE(config.enablePush);
   EXPECT_EQ(config.maxConcurrentStreams, 100U);
-  EXPECT_EQ(config.initialWindowSize, 65535U);
+  EXPECT_EQ(config.initialWindowSize, 1U << 20U);
   EXPECT_EQ(config.maxFrameSize, 16384U);
   EXPECT_EQ(config.maxHeaderListSize, 8192U);
 

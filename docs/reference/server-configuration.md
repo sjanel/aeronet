@@ -114,7 +114,7 @@ HTTP/2 requires `AERONET_ENABLE_HTTP2=ON`; `Http2Config::enable` defaults to tru
 | `mergeUnknownRequestHeaders` | true | Comma-merge unknown duplicate headers for HTTP/2. |
 | `headerTableSize` | 4096 | `SETTINGS_HEADER_TABLE_SIZE`. |
 | `maxConcurrentStreams` | 100 | `SETTINGS_MAX_CONCURRENT_STREAMS`. |
-| `initialWindowSize` | 65,535 | Per-stream receive window. |
+| `initialWindowSize` | 1 MiB | Per-stream receive window (`SETTINGS_INITIAL_WINDOW_SIZE`). The RFC 9113 default of 65,535 bytes caps a transfer on one stream to about 64 KiB per round trip. |
 | `connectionWindowSize` | 1 MiB | Connection-level receive window. |
 | `maxFrameSize` | 16,384 | Frame payload limit; valid range 16,384 through 16,777,215. |
 | `maxHeaderListSize` | 8192 | Advertised decoded header-list ceiling. |

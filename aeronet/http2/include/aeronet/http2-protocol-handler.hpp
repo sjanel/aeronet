@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string_view>
@@ -219,6 +220,9 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
  private:
   /// Per-stream request state during aggregation.
   struct StreamRequest {
+    /// declaredBodyLength of a request without content-length.
+    static constexpr std::size_t kUnknownBodyLength = std::numeric_limits<std::size_t>::max();
+
     StreamRequest() noexcept = default;
 
     StreamRequest(const StreamRequest&) = delete;
@@ -232,6 +236,8 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
 
     HttpRequestView request;
     RawChars bodyBuffer;
+    // The content-length of the request, which its DATA frames must match (RFC 9113 §8.1.1).
+    std::size_t declaredBodyLength{kUnknownBodyLength};
     std::unique_ptr<char[]> headerStorage;   // Storage for header name/value strings. nullptr = inactive.
     std::unique_ptr<char[]> trailerStorage;  // Storage for trailer name/value strings. nullptr = no trailers.
     // Read position of the body for readBody() / hasMoreBody().
@@ -330,6 +336,9 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   /// Answer 413 to a request whose body exceeds the server limit, while the client is still sending it, then reset the
   /// stream (NO_ERROR) so that the client stops sending it.
   void rejectTooLargeBody(StreamsMap::iterator it);
+
+  /// Reset the stream of a malformed request with PROTOCOL_ERROR (RFC 9113 §8.1.1), which releases its state.
+  void rejectMalformedRequest(uint32_t streamId, std::string_view reason);
 
   /// Install the aggregated request body (applying request-body decompression) and dispatch the request.
   /// Shared by the DATA-END_STREAM path and the trailing-HEADERS (trailers) path.

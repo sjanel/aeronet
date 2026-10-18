@@ -2022,6 +2022,7 @@ TEST(Http2Connection, DataFrameExceedsConnectionRecvWindow) {
 
 TEST(Http2Connection, DataWindowUpdatesAreBatchedAndSkipClosedStream) {
   Http2Config config;
+  config.initialWindowSize = 65535;
   config.connectionWindowSize = 100000;
   config.maxFrameSize = 40000;
   Http2Connection conn(config, true);
@@ -2126,6 +2127,7 @@ TEST(Http2Connection, DataOnClosedOrUnknownStreamsStillReplenishesConnectionWind
 
 TEST(Http2Connection, HeldStreamRecvWindowIsReplenishedOnRelease) {
   Http2Config config;
+  config.initialWindowSize = 65535;
   config.maxFrameSize = 40000;
   Http2Connection conn(config, true);
   RecordingEventSink connSink(conn);
@@ -2169,6 +2171,7 @@ TEST(Http2Connection, HeldStreamRecvWindowIsReplenishedOnRelease) {
 
 TEST(Http2Connection, PeerInitialWindowOnlyControlsNewStreamSendWindow) {
   Http2Config config;
+  config.initialWindowSize = 65535;
   config.connectionWindowSize = 1U << 20U;
   Http2Connection conn(config, true);
   RecordingEventSink connSink(conn);
@@ -2363,13 +2366,14 @@ TEST(Http2Connection, UndecodableFieldBlockOnAResetStreamIsAConnectionError) {
 
 TEST(Http2Connection, DataFrameExceedsStreamRecvWindow) {
   Http2Config config;
+  config.initialWindowSize = 65535;
   config.connectionWindowSize = 1U << 20U;  // Large connection window (1MB)
   config.maxFrameSize = 100000;             // Allow frames up to 100KB
   Http2Connection conn(config, true);
   RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
 
-  // Create a stream (default stream recv window = _peerSettings.initialWindowSize = 65535)
+  // Create a stream (stream recv window = local initialWindowSize = 65535)
   ASSERT_EQ(conn.sendHeaders(1, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
   if (conn.hasPendingOutput()) {
     conn.onOutputWritten(conn.getPendingOutput().size());

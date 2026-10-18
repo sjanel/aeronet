@@ -130,6 +130,27 @@ class CpuPlanTest(unittest.TestCase):
         self.assertIn("disabled", disabled.describe())
 
 
+class H2loadTlsTest(unittest.TestCase):
+    def test_tls_runs_offer_a_single_cipher_suite(self) -> None:
+        self.assertEqual(
+            runner.BenchmarkRunner._h2load_tls_args(),
+            ["--alpn-list=h2", "--tls13-ciphers=TLS_AES_256_GCM_SHA384"],
+        )
+
+    def test_parses_the_negotiated_cipher(self) -> None:
+        instance = object.__new__(runner.BenchmarkRunner)
+        output = (
+            "TLS Protocol: TLSv1.3\n"
+            "Cipher: TLS_AES_256_GCM_SHA384\n"
+            "finished in 8.00s, 6125.62 req/s, 1.03GB/s\n"
+            "requests: 49005 total, 49105 started, 49005 done, 49005 succeeded, 0 failed, 0 errored, 0 timeout\n"
+        )
+        metrics = instance._parse_h2load_output(output)
+        self.assertEqual(metrics["cipher"], "TLS_AES_256_GCM_SHA384")
+        self.assertEqual(metrics["succeeded"], 49005)
+        self.assertEqual(instance._parse_h2load_output("finished in 1.00s, 10.00 req/s, 1.00MB/s\n")["cipher"], "-")
+
+
 class DurationTest(unittest.TestCase):
     def test_parses_load_generator_durations(self) -> None:
         self.assertEqual(bench_utils.duration_to_seconds("30s"), 30.0)

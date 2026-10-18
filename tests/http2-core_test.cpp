@@ -905,6 +905,8 @@ TEST(Http2Core, SendDataOnUnknownStreamIsProtocolError) {
 TEST(Http2Core, SendingMoreThanConnectionSendWindowFails) {
   Http2Config clientCfg;
   Http2Config serverCfg;
+  // The server keeps the initial connection window (no WINDOW_UPDATE), smaller than its stream window.
+  serverCfg.connectionWindowSize = 65535;
 
   Http2Loopback h2(clientCfg, serverCfg);
   h2.connect(true);
