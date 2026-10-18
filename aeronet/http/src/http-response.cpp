@@ -14,7 +14,6 @@
 #include "aeronet/header-write.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
-#include "aeronet/http-message-common.hpp"
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-message.hpp"
 #include "aeronet/http-payload.hpp"
@@ -73,15 +72,15 @@ constexpr void CheckConcatenatedHeaders(std::string_view concatenatedHeaders) {
     }
     first += headerName.size() + http::HeaderSep.size();
 
-    const char* endLine = SearchCRLF(first, last);
-    if (endLine == last) {
+    const char* pEndLine = SearchCRLF(first, last);
+    if (pEndLine == last) {
       throw std::invalid_argument("header missing CRLF terminator in concatenated headers");
     }
-    if (endLine[1] != '\n') {
+    if (pEndLine[1] != '\n') {
       throw std::invalid_argument("malformed CRLF (bare CR) in header value in concatenated headers");
     }
 
-    std::string_view headerValue(first, endLine);
+    std::string_view headerValue(first, pEndLine);
     if (!IsOwsTrimmed(headerValue)) {
       throw std::invalid_argument("Header value in concatenated headers should be trimmed");
     }
@@ -89,7 +88,7 @@ constexpr void CheckConcatenatedHeaders(std::string_view concatenatedHeaders) {
       throw std::invalid_argument("Invalid header value in concatenated headers");
     }
 
-    first = endLine + http::CRLF.size();
+    first = pEndLine + http::CRLF.size();
   }
 }
 

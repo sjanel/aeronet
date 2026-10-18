@@ -20,7 +20,7 @@ These examples are templates. Replace image names, command/args, ports, and reso
 2. Your server process reads config from a file path (examples use `/etc/aeronet/server.yaml` or `/etc/aeronet/server.json`).
 3. Built-in probes enabled in the config.
 
-For probe behavior and options, see [Health probes](operations/health-probes.md).
+For probe behavior and options, see [Health probes](health-probes.md).
 
 ## Generate a Baseline Config File
 
@@ -326,7 +326,7 @@ startupProbe:
 ```
 
 `dedicatedPort: 0` (the default, or omitting it) keeps the probes inline on the application port, matching the earlier
-examples. See [Health probes](operations/health-probes.md#isolate-probes-on-a-dedicated-port) for the
+examples. See [Health probes](health-probes.md#isolate-probes-on-a-dedicated-port) for the
 readiness/startup/liveness semantics of the dedicated listener.
 
 ## Probe Tuning Guidance
@@ -348,5 +348,5 @@ kubectl get endpoints aeronet-example-yaml
 
 ## Related Docs
 
-- [README.md](../README.md)
-- [Health probes](operations/health-probes.md)
+- [README.md](../../README.md)
+- [Health probes](health-probes.md)

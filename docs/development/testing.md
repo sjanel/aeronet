@@ -8,6 +8,36 @@ cmake --build build
 ctest --test-dir build --output-on-failure --timeout 300
 ```
 
+## Test coverage matrix
+
+Summary of the automated test coverage; the files named are in [tests/](../../tests/) unless a module path is given. Legend: ✅ covered by explicit tests, ⚠ partial or indirect.
+
+| Area | Feature | Status | Representative test files |
+| --- | --- | --- | --- |
+| Parsing | Request line (method, target, version), header parsing and lookup | ✅ | `http-core_test.cpp`, `aeronet/server/test/http-parser_test.cpp` |
+| Parsing | Percent-decoding of the path | ✅ | `http-core_test.cpp`, `aeronet/tech/test/url-encode-decode_test.cpp` |
+| Parsing | Unsupported HTTP version (505), unsupported method (501), malformed request line (400) | ✅ | `http-errors_test.cpp`, `http-core_test.cpp` |
+| Limits | Maximum header size (431) | ✅ | `http-core_test.cpp`, `http-additional_test.cpp` |
+| Limits | Maximum body size (413), `Content-Length` and chunked growth | ✅ | `http-additional_test.cpp`, `http-request-decompression_test.cpp` |
+| Bodies | `Content-Length` bodies, chunked decoding | ✅ | `http-core_test.cpp`, `http-errors_test.cpp`, `aeronet/server/test/http-parser_test.cpp` |
+| Bodies | Trailers (incoming and outgoing) | ✅ | `http-core_test.cpp`, `aeronet/http/test/http-response_test.cpp` |
+| Expect | `100-continue` for a non-empty body, none for an empty one | ✅ | `http-errors_test.cpp`, `http-additional_test.cpp` |
+| Keep-alive | Persistence, maximum requests per connection | ✅ | `http-core_test.cpp`, `http-server-lifecycle_test.cpp` |
+| Keep-alive | Idle timeout close, active connections outliving the timeout | ✅ | `http-core_test.cpp` |
+| Pipelining | Sequential pipelines, malformed second request | ✅ | `http-core_test.cpp`, `http-errors_test.cpp` |
+| Methods | `HEAD` semantics (no body) | ✅ | `http-core_test.cpp`, `aeronet/http/test/router_test.cpp` |
+| Date | RFC 9110 format, same-second caching, second-boundary refresh | ✅ | `aeronet/server/test/date-header-cache_test.cpp`, `http-core_test.cpp` |
+| Diagnostics | Parser error callback (version, bad line, limits) | ✅ | `http-errors_test.cpp` |
+| Concurrency | `SO_REUSEPORT` distribution | ✅ | `multi-http-server_test.cpp`, `http-server-lifecycle_test.cpp` |
+| Lifecycle | Move and copy semantics, restart, graceful stop and drain, `start()` | ✅ | `http-server-lifecycle_test.cpp` |
+| Performance | `writev` header and body path | ⚠ | Exercised indirectly (`http-errors_test.cpp`), no direct assertion |
+| TLS | Handshake, rejection behavior, I/O, OCSP stapling | ✅ | `http-tls-handshake_test.cpp`, `http-tls-io_test.cpp`, `aeronet/tls/test/tls-components_test.cpp` |
+| Streaming | Streaming responses and incremental flush | ✅ | `http-core_test.cpp` |
+| Routing | Path and method matching | ✅ | `http-routing_test.cpp`, `aeronet/http/test/router_test.cpp` |
+| Compression | Negotiation, outbound insertion, inbound decompression | ✅ | `http-compression_test.cpp`, `http-request-decompression_test.cpp` |
+| OpenTelemetry | Integration and end-to-end export | ✅ | `opentelemetry-e2e_test.cpp`, `aeronet/objects/test/opentelemetry-integration_test.cpp` |
+| Probes and statistics | Built-in probes, server statistics | ✅ | `http-server-lifecycle_test.cpp`, `http-core_test.cpp` |
+
 ## Network fault injection
 
 Real networks deliver partial reads and writes, return `EAGAIN` at arbitrary points, and reset connections. Loopback tests rarely exercise these paths, so aeronet provides deterministic fault injection at the transport layer.

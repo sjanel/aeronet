@@ -46,7 +46,33 @@ Files larger than `inlineFileThresholdBytes` (128 KiB by default) are sent from 
 
 The content type comes from, in order: the `contentTypeResolver` callback when it returns a non-empty value, the file extension (a table of common types), and `defaultContentType` (`application/octet-stream` by default).
 
+`File::detectedContentType()` exposes the same extension-based detection to your own code (for instance when sending a file with `HttpResponse::file()` or `HttpResponseWriter::file()`). Its built-in mapping includes common C and C++ extensions such as `c`, `h`, `cpp`, `hpp`, and `cc`.
+
 Files are not compressed: store pre-compressed copies of large text assets if needed, see [Compression](compression.md#what-is-not-compressed).
+
+## Sending a single file
+
+To send one file from a handler instead of serving a directory, use `HttpResponse::file()` (fixed response) or `HttpResponseWriter::file()` (streaming response). The [sendfile example](../../examples/sendfile.cpp) exposes two endpoints:
+
+- `GET /static` - returns the contents of a file using `HttpResponse::file` (fixed response).
+- `GET /stream` - returns the contents of a file using `HttpResponseWriter::file` (streaming writer API).
+
+Build the examples and run it:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+./build/examples/aeronet-sendfile 8080 /path/to/file
+```
+
+If the file path argument is omitted, the example creates a small temporary file in `/tmp` and serves it. Fetch the file with curl:
+
+```bash
+curl -i http://localhost:8080/static
+curl -i http://localhost:8080/stream
+```
+
+The example demonstrates both the fixed-response path (the server synthesizes a `content-length` header) and the streaming writer path. For plaintext sockets, the server uses the kernel `sendfile(2)` system call for zero-copy transmission. When TLS is enabled, the example exercises the TLS fallback that `pread()`s into the connection buffer and writes through the TLS transport.
 
 ## Caching and conditional requests
 

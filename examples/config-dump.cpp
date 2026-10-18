@@ -92,13 +92,13 @@ int main(int argc, char** argv) {
     std::string serialized;
     if (dumpClient) {
 #ifdef AERONET_ENABLE_HTTP_CLIENT
-      serialized = detail::SerializeClientConfig(HttpClientConfig{}, format);
+      serialized = detail::SerializeClientConfig(HttpClientConfig(), format);
 #else
       std::cerr << "This build has no HTTP client (AERONET_ENABLE_HTTP_CLIENT=OFF)\n";
       return EXIT_FAILURE;
 #endif
     } else {
-      serialized = detail::SerializeConfig(TopLevelConfig{}, format);
+      serialized = detail::SerializeConfig(TopLevelConfig(), format);
     }
     if (serialized.empty()) {
       std::cerr << "Failed to serialize default configuration\n";

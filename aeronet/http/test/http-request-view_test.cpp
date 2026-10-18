@@ -2189,8 +2189,9 @@ TEST_F(HttpRequestViewTest, MakeResponseCapturesOwnedBodiesWithoutCopy) {
   static constexpr std::size_t kSize = 1024;
 
   // Checks that 'resp' captured the 'kSize' bytes at 'pData' and has the global headers.
-  const auto check = [](const HttpResponse& resp, http::StatusCode status, std::string_view contentType,
-                        const void* pData) {
+  // 'resp' is taken by value (the callers' temporaries are elided into it): with a const reference, clang-tidy
+  // wrongly reports performance-move-const-arg on the std::move() of the body inside the ternary arguments.
+  const auto check = [](HttpResponse&& resp, http::StatusCode status, std::string_view contentType, const void* pData) {
     EXPECT_EQ(resp.status(), status);
     EXPECT_TRUE(resp.hasBodyCaptured());
     EXPECT_EQ(static_cast<const void*>(resp.bodyInMemory().data()), pData);
