@@ -111,7 +111,7 @@ All notable changes to aeronet are documented in this file.
 - **`maxDecompressedBytes` bounds the whole decoded body, and exceeding it is answered `413`**: a body decoded in streaming mode (`streamingDecompressionThresholdBytes`) or sent chunked was only bounded piece by piece, so a larger decoded body reached the handler, or was returned by the `HttpClient`. Decoding into a reused buffer could also exceed the limit by the room this buffer already had. A request exceeding it is now answered `413`, as documented, instead of `400`.
 - **HTTP client: an empty HTTP/1.1 response body with a `Content-Encoding` is returned empty**: the client tried to decode it, so a `zstd` one failed with `malformedResponse`, and the others failed an assertion in debug builds. As over HTTP/2, the empty body is returned with its `Content-Encoding`.
 - **A file sent over user-space TLS stops at the first failed write**: when a client went away in the middle of a file response over TLS without kTLS, the server went on reading the rest of the file, chunk by chunk, trying to write it to the closed connection.
-- **Builds against OpenSSL 4**: the TLS module did not compile with OpenSSL 4, whose `X509_get_subject_name()` returns a const name.
+- **Builds against OpenSSL 4**: the TLS module did not compile with OpenSSL 4, whose `X509_get_subject_name()` returns a const name. The HTTP client no longer calls `SSL_set1_host()`, deprecated since OpenSSL 4.0: it sets the expected host name or IP address in the verification parameters of the connection, which works with OpenSSL 3 as well.
 
 ### 1.7.0 Improvements
 

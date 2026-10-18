@@ -28,12 +28,15 @@ struct CertificateChain {
   std::string leafKeyPem;
 };
 
-CertificateChain MakeCertificateChain(const char* leafCommonName = "localhost");
+CertificateChain MakeCertificateChain(const char* pLeafCommonName = "localhost");
 
 // The PEM private key `keyPem`, encrypted (AES-256-CBC) with `passphrase`.
-std::string EncryptPrivateKeyPem(const std::string& keyPem, const char* passphrase);
+std::string EncryptPrivateKeyPem(const std::string& keyPem, const char* pPassphrase);
 
 // Names `cert` "CN=<commonName>" and makes it self-issued (its issuer name is its subject name).
-void SetSelfIssuedName(x509_st* cert, const char* commonName);
+void SetSelfIssuedName(x509_st* cert, const char* pCommonName);
+
+// The first common name (CN) of the subject of `cert`, or an empty string if it has none.
+std::string SubjectCommonName(const x509_st* pCert);
 
 }  // namespace aeronet::test

@@ -6,7 +6,6 @@
 #include <openssl/crypto.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
-#include <openssl/obj_mac.h>
 #include <openssl/ocsp.h>
 #include <openssl/pem.h>
 #include <openssl/prov_ssl.h>
@@ -261,14 +260,11 @@ void InstallClientCertificate(SslTestPair& pair, const std::pair<std::string, st
 }
 
 std::string PeerCommonName(SSL* ssl) {
-  auto certificate = MakeX509(::SSL_get1_peer_certificate(ssl));
-  char commonName[256]{};
-  const int size = ::X509_NAME_get_text_by_NID(::X509_get_subject_name(certificate.get()), NID_commonName, commonName,
-                                               static_cast<int>(sizeof(commonName)));
-  if (size < 0) {
-    throw std::runtime_error("Failed to read test peer common name");
+  const X509* certificate = ::SSL_get0_peer_certificate(ssl);
+  if (certificate == nullptr) {
+    throw std::runtime_error("No test peer certificate");
   }
-  return {commonName, static_cast<std::size_t>(size)};
+  return test::SubjectCommonName(certificate);
 }
 
 struct RevocationDecision {
