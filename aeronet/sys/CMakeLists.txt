@@ -46,6 +46,14 @@ AeronetAddUnitTest(
     aeronet_basic_test_support
 )
 
+# Interest set semantics of EventLoop::add / mod over a real TCP connection, on every backend
+AeronetAddUnitTest(
+    event-loop-interest_test
+    test/event-loop-interest_test.cpp
+    LIBRARIES
+    aeronet_sys
+)
+
 # The remaining sys tests use Linux-specific APIs (epoll, eventfd, timerfd,
 # accept4, zerocopy, AF_UNIX socketpair) or dlsym/RTLD_NEXT overrides.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
