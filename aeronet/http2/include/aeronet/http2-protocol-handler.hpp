@@ -102,9 +102,8 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
 
   void onOutputWritten(std::size_t bytesWritten) override {
     _connection.onOutputWritten(bytesWritten);
-    if (!_connection.hasPendingOutput()) {
-      flushPendingFileSends();
-      flushPendingStreamingSends();
+    if (_nbPendingSends != 0 && !_connection.hasPendingOutput()) {
+      flushPendingSends();
     }
   }
 
@@ -126,6 +125,7 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
 #endif
     _streams.clear();
     _deferredOutputBytes = 0;
+    _nbPendingSends = 0;
 
     // Detach callbacks to avoid generating new outbound frames while the transport is closing.
     _connection.setEventSink(nullptr);
@@ -293,6 +293,9 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
       return pending ? std::get_if<PendingStreamingSend>(pending.get()) : nullptr;
     }
 
+    /// Whether the response body waits for flow-control credit (a PendingFileSend or a PendingStreamingSend).
+    [[nodiscard]] bool hasPendingSend() const noexcept { return fileSend() != nullptr || streamingSend() != nullptr; }
+
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
     [[nodiscard]] PendingAsyncTask* asyncTask() const noexcept {
       return pending ? std::get_if<PendingAsyncTask>(pending.get()) : nullptr;
@@ -326,7 +329,12 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
     return _connection.pendingOutputSize() + _deferredOutputBytes;
   }
 
-  void releasePendingBytes(const StreamState& state) noexcept;
+  /// Keeps the rest of the response body of a stream, sent as flow-control credit is granted (see flushPendingSends()).
+  template <class PendingSend>
+  void deferSend(StreamState& state, PendingSend&& pendingSend);
+
+  /// Forgets the pending send of a stream about to be erased, if any.
+  void releasePendingSend(const StreamState& state) noexcept;
 
   [[nodiscard]] bool responseExceedsPendingLimits(uint32_t streamId, const HttpResponse& response, bool isHeadMethod);
 
@@ -344,10 +352,19 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   /// Shared by the DATA-END_STREAM path and the trailing-HEADERS (trailers) path.
   void finalizeRequestBodyAndDispatch(StreamsMap::iterator it);
 
-  void flushPendingFileSends();
-  [[nodiscard]] ErrorCode sendPendingFileBody(uint32_t streamId, FilePayload& pending, bool endStreamAfterBody);
+  /// Continue the pending sends of the streams, as far as the flow-control windows allow.
+  void flushPendingSends();
 
-  void flushPendingStreamingSends();
+  /// The most bytes of their file that each of 'nbFileSends' file sends may read now (see the definition).
+  [[nodiscard]] std::size_t fileReadBudget(std::size_t nbFileSends) const noexcept;
+
+  /// Read and send up to 'maxBytes' of the file of a response, as far as the flow-control windows allow.
+  [[nodiscard]] ErrorCode sendPendingFileBody(uint32_t streamId, FilePayload& pending, bool endStreamAfterBody,
+                                              std::size_t maxBytes);
+
+  /// Send the buffered body (then the trailers) of a pending streaming send as far as the flow-control windows allow.
+  /// Returns true once all of it is sent.
+  bool sendPendingStreamingBody(uint32_t streamId, PendingStreamingSend& pending);
 
   /// Release request state after a response, retaining it only while deferred output remains.
   void releaseStreamAfterResponse(StreamsMap::iterator it);
@@ -413,6 +430,9 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
 
   // Bytes owned by flow-control-deferred in-memory response bodies and trailers across all streams.
   std::size_t _deferredOutputBytes{0};
+
+  // Number of streams with a pending send (see StreamState::hasPendingSend()): the flushes look for them only if any.
+  std::size_t _nbPendingSends{0};
 
   // Connection owning this handler (set by processInput()).
   ::aeronet::ConnectionState* _pConnectionState{nullptr};

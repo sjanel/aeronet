@@ -64,7 +64,7 @@ Request trailers (a trailing `HEADERS` block after the body, RFC 9113 §8.1) are
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| HPACK | Supported | Static and dynamic tables, Huffman coding. |
+| HPACK | Supported | Static and dynamic tables, Huffman coding. The fields whose value differs in most messages (`content-length`, `etag`, `last-modified`, `location`, `set-cookie`, `age`, `if-modified-since`, `if-none-match`) are sent without indexing, like nghttp2 does: each would otherwise be a dynamic table insertion evicting the fields that repeat. Credentials (`authorization`, `proxy-authorization`, and `cookie` values shorter than 20 bytes) are sent as never-indexed literals (RFC 7541 §7.1.3), so that an attacker able to add its own guesses to the requests of a client cannot recognize the right one by its compressed size, and so that intermediaries do not index them either. |
 | Stream multiplexing | Supported | Up to `maxConcurrentStreams` concurrent streams per connection. |
 | Flow control | Supported | Connection and stream windows, see below. |
 | PRIORITY frames | Supported | Optional (`enablePriority`), with a bounded dependency tree (`maxPriorityTreeDepth`). |
@@ -89,7 +89,7 @@ A request whose `content-length` is not a number, or differs from the total leng
 - The server sends as much as the connection and stream windows allow, and resumes when `WINDOW_UPDATE` frames arrive. Receive credit is returned in batches, once half of a window is consumed, and closed streams receive no stream-level updates. The DATA frames still in flight on a stream the server reset are discarded, but their connection-level credit is returned.
 - A request body is kept in memory until the stream ends, bounded by `HttpServerConfig::maxBodyBytes` while it is received: a body exceeding it, or a `content-length` declaring more, is answered `413` right away, then the stream is reset with `NO_ERROR` so that the client stops sending it (RFC 9113 §8.1). A smaller [route limit](../guides/routing.md#per-route-options) is checked once the whole body is received. The body buffer of a request declaring its `content-length` is allocated at once, so that its DATA frames are appended without reallocating it. The allocation is capped by `connectionWindowSize`, beyond which the buffer grows as the frames arrive, so that a client declaring a large body without sending it makes the server allocate no more.
 - `maxStreamPendingBytes` (4 MiB by default) bounds the response body and trailer bytes one stream may keep in memory while the peer withholds credit. A larger fixed response is answered `503`; a streaming response that overflows it is reset with `ENHANCE_YOUR_CALM`. The connection-wide `HttpServerConfig::maxOutboundBufferBytes` remains the ceiling across all streams of a connection.
-- Files (`HttpResponse::file()`, used by the static file handler) are read in bounded chunks into DATA frames, as the windows allow, and never loaded entirely in memory.
+- Files (`HttpResponse::file()`, used by the static file handler) are read as far as the windows allow, in reads of up to 256 KiB each sent as several DATA frames sharing its buffer, but only while the output retained by the connection is under half of `HttpServerConfig::maxOutboundBufferBytes` (2 MiB by default), whatever the credit granted by the client: the other streams keep room for their responses. The file transfers of a connection share this room, each reading at least 16 KiB, and the next reads wait for the output of the connection to be written.
 - HEADERS frames and DATA payloads of up to 256 bytes share the connection output buffer, so that a single TLS write encrypts a batch of small responses. Larger DATA and HEADERS blocks keep their own buffers in an ordered fragment queue, across flow-control stalls and partial writes, and cleartext connections gather them with a single `writev` (`WSASend` on Windows).
 - An idle connection is closed after `HttpServerConfig::keepAliveTimeout`, but a connection with active streams is kept, even when a stream waits for flow-control credit.
 
@@ -133,6 +133,6 @@ curl --http2 http://localhost:8080/hello
 ## Tests
 
 - Connection-level behavior, flow control, malformed field sections, and frames on reset streams: [http2-connection_test.cpp](../../aeronet/http2/test/http2-connection_test.cpp).
-- Request processing, pseudo-header validation, trailers, request bodies and their limits: [http2-protocol-handler_test.cpp](../../aeronet/http2/test/http2-protocol-handler_test.cpp).
-- HPACK: [hpack_test.cpp](../../aeronet/http2/test/hpack_test.cpp).
+- Request processing, pseudo-header validation, trailers, request bodies and their limits, response bodies and files waiting for flow-control credit, file read-ahead (`FileReadAheadIsBoundedWhateverTheFlowControlCredit`, `FileSendsShareTheReadAheadRoom`), tunnel window updates, per-route request timeouts: [http2-protocol-handler_test.cpp](../../aeronet/http2/test/http2-protocol-handler_test.cpp).
+- HPACK, including the indexing mode of each field (`HpackEncoder.CredentialsAreNeverIndexed`): [hpack_test.cpp](../../aeronet/http2/test/hpack_test.cpp).
 - End-to-end over TLS and h2c: [tests/http2-core_test.cpp](../../tests/http2-core_test.cpp), and CONNECT: [tests/http2-connect_test.cpp](../../tests/http2-connect_test.cpp).

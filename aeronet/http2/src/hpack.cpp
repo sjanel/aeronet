@@ -1255,6 +1255,43 @@ void EncodeNameValue(RawBytes& output, std::string_view name, std::string_view v
 
 }  // namespace
 
+HpackEncoder::IndexingMode HpackEncoder::IndexingModeOf(std::string_view name, std::string_view value) noexcept {
+  // Credentials are never indexed: a field in the dynamic table is encoded in one byte, so an attacker making a client
+  // send guesses of a credential along with it (CRIME) would recognize the right guess by its compressed size. Like
+  // nghttp2 and Firefox, long cookie values, hard to guess and sent with each request, are indexed.
+  // The other fields are those nghttp2 does not index (but :path, which the client encodes itself), plus
+  // last-modified: one value per served file, like etag. All these names are in the static table, so they are encoded
+  // as literals with an indexed name. Most names do not have the length of any of them.
+  static constexpr std::size_t kMinIndexedCookieSize = 20;
+  switch (name.size()) {
+    case http::Age.size():
+      return name == http::Age ? IndexingMode::WithoutIndexing : IndexingMode::Indexed;
+    case http::ETag.size():
+      return name == http::ETag ? IndexingMode::WithoutIndexing : IndexingMode::Indexed;
+    case http::Cookie.size():
+      return name == http::Cookie && value.size() < kMinIndexedCookieSize ? IndexingMode::NeverIndexed
+                                                                          : IndexingMode::Indexed;
+    case http::Location.size():
+      return name == http::Location ? IndexingMode::WithoutIndexing : IndexingMode::Indexed;
+    case http::SetCookie.size():
+      return name == http::SetCookie ? IndexingMode::WithoutIndexing : IndexingMode::Indexed;
+    case http::Authorization.size():  // also the size of last-modified and if-none-match
+      if (name == http::Authorization) {
+        return IndexingMode::NeverIndexed;
+      }
+      return name == http::LastModified || name == http::IfNoneMatch ? IndexingMode::WithoutIndexing
+                                                                     : IndexingMode::Indexed;
+    case http::ContentLength.size():
+      return name == http::ContentLength ? IndexingMode::WithoutIndexing : IndexingMode::Indexed;
+    case http::IfModifiedSince.size():
+      return name == http::IfModifiedSince ? IndexingMode::WithoutIndexing : IndexingMode::Indexed;
+    case http::ProxyAuthorization.size():
+      return name == http::ProxyAuthorization ? IndexingMode::NeverIndexed : IndexingMode::Indexed;
+    default:
+      return IndexingMode::Indexed;
+  }
+}
+
 uint64_t HpackEncoder::encode(RawBytes& output, std::string_view name, std::string_view value, IndexingMode mode) {
   // Check for pending table size update
   if (_hasPendingTableSizeUpdate) {

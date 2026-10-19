@@ -197,6 +197,15 @@ class HpackEncoder {
     NeverIndexed,     ///< Never index (sensitive values)
   };
 
+  /// The indexing mode of a field of a message (request, response or trailers):
+  ///  - never indexed for the credentials (authorization, proxy-authorization, and cookie values shorter than 20
+  ///    bytes), which a guessing attack on the compressed size could recover (RFC 7541 §7.1.3).
+  ///  - without indexing for the fields whose value most likely differs from one message to the next (content-length,
+  ///    etag, last-modified, location, set-cookie...), like nghttp2 does. Each of them would otherwise be a dynamic
+  ///    table insertion, evicting the fields that do repeat (content-type, the global headers...).
+  ///  - indexed for the others.
+  [[nodiscard]] static IndexingMode IndexingModeOf(std::string_view name, std::string_view value) noexcept;
+
   /// Encode a header field and append to the output buffer.
   /// @param output The buffer to append the encoded header field to.
   /// @param name The header field name.

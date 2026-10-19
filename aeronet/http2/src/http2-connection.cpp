@@ -1410,7 +1410,7 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
     // tolerated). HttpMessage / HttpResponse guarantees that values are always trimmed.
     assert(value == TrimOws(value));
 
-    headerListSize += _hpackEncoder.encode(_outputBuffer, name, value);
+    headerListSize += _hpackEncoder.encode(_outputBuffer, name, value, HpackEncoder::IndexingModeOf(name, value));
   }
 
   if (pGlobalHeaders != nullptr) {
@@ -1426,6 +1426,7 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
         continue;
       }
 
+      // The same in each response: always indexed.
       assert(headerValue == TrimOws(headerValue));
       headerListSize += _hpackEncoder.encode(_outputBuffer, headerName, headerValue);
     }

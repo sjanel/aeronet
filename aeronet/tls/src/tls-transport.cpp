@@ -3,7 +3,6 @@
 #include <openssl/bio.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
-#include <openssl/ssl3.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -23,9 +22,6 @@ namespace aeronet {
 
 namespace {
 constexpr bool isRetry(int code) { return code == SSL_ERROR_WANT_READ || code == SSL_ERROR_WANT_WRITE; }
-
-// Largest plaintext of a TLS record: what a single SSL_write_ex call encrypts at most (with partial writes).
-constexpr std::size_t kMaxRecordPlainSize = SSL3_RT_MAX_PLAIN_LENGTH;
 
 // SSL_get_error() reports any error of the per-thread OpenSSL error queue as a failure of the last I/O operation, so
 // the queue must be empty before each of them. Other OpenSSL users of the thread may leave errors behind - a request

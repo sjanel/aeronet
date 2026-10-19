@@ -27,9 +27,6 @@
 #include "aeronet/transport.hpp"
 #include "aeronet/zerocopy.hpp"
 #include "tunnel-manager.hpp"
-#ifdef AERONET_ENABLE_OPENSSL
-#include "aeronet/tls-transport.hpp"
-#endif
 
 namespace aeronet {
 
@@ -222,9 +219,9 @@ void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpMessageData httpRespons
     filePayload = std::move(*pFilePayload);
   }
 
-  // Cork the socket to coalesce header + body into fewer TCP segments.
-  // The guard uncorks on scope exit, flushing any accumulated data.
-  const TcpCorkGuard corkGuard(state.corkable ? cnxIt->fd() : kInvalidHandle);
+  // Cork the socket to coalesce the writes of the response (its head then its file, or several TLS records) into fewer
+  // TCP segments. The guard uncorks on scope exit, flushing any accumulated data.
+  const TcpCorkGuard corkGuard(state.needsCork(bufferedSz, haveFilePayload) ? cnxIt->fd() : kInvalidHandle);
 
   // Plain TCP path: try immediate write optimization
   bool zerocopySent = false;
@@ -305,8 +302,8 @@ void SingleHttpServer::flushOutbound(ConnectionIt cnxIt) {
 
   const NativeHandle fd = cnxIt->fd();
 
-  // Cork the socket to coalesce buffered writes into fewer TCP segments.
-  const TcpCorkGuard corkGuard(state.corkable ? fd : kInvalidHandle);
+  // Cork the socket to coalesce the writes of the flush into fewer TCP segments.
+  const TcpCorkGuard corkGuard(state.flushNeedsCork() ? fd : kInvalidHandle);
 
   // The HTTP/1 output, in order: outBuffer, the file sent after it (if any), then the queued entries.
   for (;;) {
@@ -478,17 +475,9 @@ void SingleHttpServer::flushFilePayload(ConnectionIt cnxIt) {
     return;
   }
 
-  // Determine if this is a TLS connection and whether kTLS is active.
   // With kTLS enabled, the kernel handles encryption for sendfile() directly.
   // Without kTLS, we must pread() into a buffer and SSL_write() (user-space TLS).
-  bool userSpaceTls = false;
-#ifdef AERONET_ENABLE_OPENSSL
-  if (auto* tlsTr = state.transport.get<TlsTransport>()) {
-    // kTLS enabled: kernel handles encryption, use sendfile() directly
-    // kTLS not enabled: must use pread() + SSL_write() (user-space TLS fallback)
-    userSpaceTls = !tlsTr->isKtlsSendEnabled();
-  }
-#endif
+  const bool userSpaceTls = state.encryptsOutputInUserSpace();
 
   // Loop to drain file payload while we can make progress (edge-triggered epoll requires this)
   for (;;) {
