@@ -340,6 +340,49 @@ void ConnectionState::reset() {
   protocol = ProtocolType::Http11;
 }
 
+bool ConnectionState::encryptsOutputInUserSpace() const noexcept {
+#ifdef AERONET_ENABLE_OPENSSL
+  const auto* tlsTr = transport.get<TlsTransport>();
+  return tlsTr != nullptr && !tlsTr->isKtlsSendEnabled();
+#else
+  return false;
+#endif
+}
+
+bool ConnectionState::needsCork([[maybe_unused]] std::size_t nbBytes, bool severalParts) const noexcept {
+  if (!corkable) {
+    return false;
+  }
+  if (severalParts) {
+    return true;
+  }
+  // Otherwise a single write (plain socket or kTLS: one gather write, the kernel building the TLS records), unless
+  // OpenSSL encrypts more than one record.
+#ifdef AERONET_ENABLE_OPENSSL
+  return nbBytes > TlsTransport::kMaxRecordPlainSize && encryptsOutputInUserSpace();
+#else
+  return false;
+#endif
+}
+
+bool ConnectionState::flushNeedsCork() const noexcept {
+  if (!corkable) {
+    return false;
+  }
+  const bool hasHttp1Output = !outBuffer.empty() || !outQueue.empty();
+  const std::size_t handlerBytes = protocolHandler != nullptr ? protocolHandler->pendingOutputSize() : 0;
+  // Written apart: the file being sent from the output around it (the head of its response, the queued output), the
+  // queued output from the files of its responses (it is gathered up to the first one), and the protocol handler output
+  // from the HTTP/1 output ahead of it (its 101 Switching Protocols response).
+  const bool severalParts = (hasHttp1Output && (isSendingFile() || handlerBytes != 0)) ||
+                            std::ranges::any_of(outQueue.entries(), &HttpMessageData::hasFilePayload);
+  std::size_t nbBytes = bufferedOutputBytes() + handlerBytes;
+  if (isSendingFile()) {
+    nbBytes += fileSend.filePayload.length + tunnelOrFileBuffer.size();
+  }
+  return needsCork(nbBytes, severalParts);
+}
+
 bool ConnectionState::attachFilePayload(FilePayload filePayload) {
   assert(!fileSendActive && "Cannot attach file payload while a previous file send is still active");
   fileSend.filePayload = std::move(filePayload);

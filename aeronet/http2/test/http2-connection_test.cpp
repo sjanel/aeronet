@@ -15,6 +15,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/concatenated-headers.hpp"
 #include "aeronet/hpack.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
@@ -40,6 +41,10 @@ class Http2ConnectionTest {
  public:
   [[nodiscard]] static std::size_t NbOutputBlocks(const Http2Connection& connection) noexcept {
     return connection._outputBlocks.size();
+  }
+
+  [[nodiscard]] static const HpackDynamicTable& EncoderDynamicTable(const Http2Connection& connection) noexcept {
+    return connection._hpackEncoder.dynamicTable();
   }
 };
 
@@ -465,6 +470,33 @@ TEST(Http2Connection, SmallResponsesShareOneOutputFragment) {
   EXPECT_EQ(pos, wire.size());
 }
 
+// The response fields whose value varies (content-length, etag...) are not added to the dynamic table, which keeps the
+// fields that repeat: the others, and the global headers.
+TEST(Http2Connection, ResponseFieldsWithVaryingValuesAreNotIndexed) {
+  Http2Config config;
+  Http2Connection connection(config, true);
+  AdvanceToOpenAndDrainSettingsAck(connection);
+
+  const ConcatenatedHeaders globalHeaders{{"x-global: gvalue"}};
+  for (const uint32_t streamId : {1U, 3U, 5U}) {
+    const std::string id = std::to_string(streamId);
+    RawChars headers;
+    headers.append(MakeHttp1HeaderLine(http::ContentType, "text/plain"));
+    headers.append(MakeHttp1HeaderLine(http::ContentLength, id));
+    headers.append(MakeHttp1HeaderLine(http::ETag, id));
+    headers.append(MakeHttp1HeaderLine(http::LastModified, id));
+    headers.append(MakeHttp1HeaderLine(http::Location, "/" + id));
+    headers.append(MakeHttp1HeaderLine(http::SetCookie, "session=" + id));
+    ASSERT_EQ(connection.sendHeaders(streamId, http::StatusCodeOK, HeadersView(headers), true, &globalHeaders),
+              ErrorCode::NoError);
+
+    const HpackDynamicTable& table = Http2ConnectionTest::EncoderDynamicTable(connection);
+    ASSERT_EQ(table.entryCount(), 2U);
+    EXPECT_EQ(table[0].name(), "x-global");
+    EXPECT_EQ(table[1].name(), http::ContentType);
+  }
+}
+
 // A peer that never lets the output drain completely (each write leaves one byte pending) must not make the queue of
 // output blocks grow forever: written blocks are erased as it goes, without changing the bytes sent.
 TEST(Http2Connection, OutputBlocksQueueStaysBoundedWhenNeverFullyDrained) {
@@ -758,7 +790,8 @@ TEST(Http2Connection, ResponseHeadersIncludeDateWhenBodyFollows) {
     expectedEncoder.encode(expectedBlock, "x-another", "anothervalue");
     expectedEncoder.encode(expectedBlock, "x-global", "gvalue");
     expectedEncoder.encode(expectedBlock, http::Date, std::string_view{dateBuf.data(), RFC7231DateStrLen});
-    expectedEncoder.encode(expectedBlock, http::ContentLength, "1");
+    // Its value differs in most responses: not added to the dynamic table.
+    expectedEncoder.encode(expectedBlock, http::ContentLength, "1", HpackEncoder::IndexingMode::WithoutIndexing);
 
     ASSERT_EQ(wire.headerBlockBytes.size(), expectedBlock.size()) << "Server HPACK block size differs from expected";
     ASSERT_TRUE(std::equal(wire.headerBlockBytes.begin(), wire.headerBlockBytes.end(), expectedBlock.begin()))
