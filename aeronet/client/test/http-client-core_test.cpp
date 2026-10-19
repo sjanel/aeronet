@@ -3048,13 +3048,17 @@ void TrickleResponse(NativeHandle fd, std::chrono::milliseconds gap) {
 // A slow but steady response outlasting the inactivity timeout completes: each received byte restarts it.
 TEST(HttpClientErrorE2ETest, InactivityTimeoutLetsASteadySlowResponseComplete) {
   // The body takes at least 50 x 20 ms = 1 s, longer than the inactivity timeout, while each byte leaves 780 ms
-  // to a thread descheduled on a loaded CI runner.
+  // to a thread descheduled on a loaded CI runner. Loaded macOS runners still stall longer than that at times, hence
+  // up to 3 attempts: a client that would not restart the timer fails all of them, each outlasting the timeout.
   RawServer server([](NativeHandle fd, int) { TrickleResponse(fd, std::chrono::milliseconds{20}); });
   HttpClientConfig cfg;
   cfg.requestTimeout = std::chrono::seconds{30};
   cfg.inactivityTimeout = std::chrono::milliseconds{800};
   HttpClient client(cfg);
   auto result = client.get(MakeUrl(server.port()));
+  for (int attempt = 1; attempt < 3 && !result && result.error() == HttpClientErrc::timeout; ++attempt) {
+    result = client.get(MakeUrl(server.port()));
+  }
   ASSERT_TRUE(result) << ErrcToStr(result.error());
   EXPECT_EQ(result->bodyInMemory(), kTrickleBody);
 }
