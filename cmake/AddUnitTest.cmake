@@ -112,6 +112,14 @@ function(AeronetAddUnitTest name)
       target_compile_options(${name} PRIVATE /bigobj)
     endif()
 
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+      # gtest registers all the tests of a file from one static initialization function, too large for some GCC
+      # optimization passes in big test files (ext-dce of GCC 15 skips the one of http-response_test.cpp).
+      # -Wdisabled-optimization (non-Debug builds) is meant for the library code: placed after it, this keeps it quiet
+      # for test files, whose test registration speed does not matter.
+      target_compile_options(${name} PRIVATE -Wno-disabled-optimization)
+    endif()
+
     add_test(NAME ${name} COMMAND ${name})
     set_tests_properties(${name} PROPERTIES
       ENVIRONMENT "UBSAN_OPTIONS=halt_on_error=1 abort_on_error=1 print_stacktrace=1;\

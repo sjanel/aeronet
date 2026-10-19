@@ -18,6 +18,7 @@
 #include <new>
 #include <span>
 #include <stdexcept>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 
@@ -75,6 +76,68 @@ EventBmp KqueueFilterToEventBmp(const struct kevent& kev) {
     bmp |= EventErr;
   }
   return bmp;
+}
+
+// Registers the kqueue filters of 'event': EVFILT_READ for EventIn (or when neither EventIn nor EventOut is set),
+// EVFILT_WRITE for EventOut, edge-triggered (EV_CLEAR is the kqueue equivalent of EPOLLET) with EventEt.
+// With 'replace' (mod), the filter outside the mask is deleted in the same call: like EPOLL_CTL_MOD, the new mask
+// replaces the previous one instead of adding to it.
+// EV_RECEIPT returns one result per change, so an invalid target descriptor is not confused with a closed kqueue
+// descriptor.
+bool RegisterKqueueFilters(int kqueueFd, EventLoop::EventFd event, bool replace) {
+  unsigned short addFlags = EV_ADD | EV_ENABLE | EV_RECEIPT;
+  if (event.eventBmp & EventEt) {
+    addFlags |= EV_CLEAR;
+  }
+  const bool wantWrite = (event.eventBmp & EventOut) != 0;
+  const bool wantRead = (event.eventBmp & EventIn) != 0 || !wantWrite;
+  const auto ident = static_cast<uintptr_t>(event.fd);
+  void* pUdata = reinterpret_cast<void*>(static_cast<intptr_t>(event.fd));
+
+  struct kevent changes[2];
+  struct kevent receipts[2];
+  int nchanges = 0;
+  int16_t deletedFilter = 0;  // no kqueue filter is 0
+  if (wantRead) {
+    EV_SET(&changes[nchanges++], ident, EVFILT_READ, addFlags, 0, 0, pUdata);
+  } else if (replace) {
+    EV_SET(&changes[nchanges++], ident, EVFILT_READ, EV_DELETE | EV_RECEIPT, 0, 0, pUdata);
+    deletedFilter = EVFILT_READ;
+  }
+  if (wantWrite) {
+    EV_SET(&changes[nchanges++], ident, EVFILT_WRITE, addFlags, 0, 0, pUdata);
+  } else if (replace) {
+    EV_SET(&changes[nchanges++], ident, EVFILT_WRITE, EV_DELETE | EV_RECEIPT, 0, 0, pUdata);
+    deletedFilter = EVFILT_WRITE;
+  }
+
+  const std::string_view opName = replace ? "MOD" : "ADD";
+  const int nbReceipts = ::kevent(kqueueFd, changes, nchanges, receipts, nchanges, nullptr);
+  if (nbReceipts == -1) [[unlikely]] {
+    const auto err = LastSystemError();
+    log::error("kevent {} syscall failed (kqueue fd # {}, fd # {}, events=0x{:x}, err={}, msg={})", opName, kqueueFd,
+               event.fd, event.eventBmp, err, SystemErrorMessage(err));
+    return false;
+  }
+  if (nbReceipts != nchanges) [[unlikely]] {
+    log::error("kevent {} returned {} receipts for {} filters (kqueue fd # {}, fd # {}, events=0x{:x})", opName,
+               nbReceipts, nchanges, kqueueFd, event.fd, event.eventBmp);
+    return false;
+  }
+  for (int receiptIdx = 0; receiptIdx < nbReceipts; ++receiptIdx) {
+    const auto& receipt = receipts[receiptIdx];
+    if ((receipt.flags & EV_ERROR) == 0 || receipt.data == 0) {
+      continue;
+    }
+    if (receipt.filter == deletedFilter && receipt.data == ENOENT) {
+      continue;  // the dropped filter was not registered: nothing to delete
+    }
+    const auto err = static_cast<int>(receipt.data);
+    log::error("kevent {} failed (kqueue fd # {}, fd # {}, filter={}, events=0x{:x}, err={}, msg={})", opName, kqueueFd,
+               event.fd, receipt.filter, event.eventBmp, err, SystemErrorMessage(err));
+    return false;
+  }
+  return true;
 }
 #endif  // AERONET_MACOS
 
@@ -226,50 +289,8 @@ bool EventLoop::add(EventFd event) {
     return false;
   }
 #elifdef AERONET_MACOS
-  // On kqueue, register separate EVFILT_READ and/or EVFILT_WRITE filters.
-  // EV_CLEAR is the kqueue equivalent of edge-triggered mode. EV_RECEIPT
-  // returns one result per filter, so an invalid target descriptor is not
-  // confused with a closed kqueue descriptor.
-  struct kevent changes[2];
-  struct kevent receipts[2];
-  int nchanges = 0;
-  unsigned short flags = EV_ADD | EV_ENABLE | EV_RECEIPT;
-  if (event.eventBmp & EventEt) {
-    flags |= EV_CLEAR;
-  }
-  if (event.eventBmp & EventIn) {
-    EV_SET(&changes[nchanges++], static_cast<uintptr_t>(event.fd), EVFILT_READ, flags, 0, 0,
-           reinterpret_cast<void*>(static_cast<intptr_t>(event.fd)));
-  }
-  if (event.eventBmp & EventOut) {
-    EV_SET(&changes[nchanges++], static_cast<uintptr_t>(event.fd), EVFILT_WRITE, flags, 0, 0,
-           reinterpret_cast<void*>(static_cast<intptr_t>(event.fd)));
-  }
-  if (nchanges == 0) {
-    // At least register for read by default
-    EV_SET(&changes[nchanges++], static_cast<uintptr_t>(event.fd), EVFILT_READ, flags, 0, 0,
-           reinterpret_cast<void*>(static_cast<intptr_t>(event.fd)));
-  }
-  const int nbReceipts = ::kevent(_baseFd.fd(), changes, nchanges, receipts, nchanges, nullptr);
-  if (nbReceipts == -1) [[unlikely]] {
-    const auto err = LastSystemError();
-    log::error("kevent ADD syscall failed (kqueue fd # {}, fd # {}, events=0x{:x}, err={}, msg={})", _baseFd.fd(),
-               event.fd, event.eventBmp, err, SystemErrorMessage(err));
+  if (!RegisterKqueueFilters(_baseFd.fd(), event, false)) {
     return false;
-  }
-  if (nbReceipts != nchanges) [[unlikely]] {
-    log::error("kevent ADD returned {} receipts for {} filters (kqueue fd # {}, fd # {}, events=0x{:x})", nbReceipts,
-               nchanges, _baseFd.fd(), event.fd, event.eventBmp);
-    return false;
-  }
-  for (int receiptIdx = 0; receiptIdx < nbReceipts; ++receiptIdx) {
-    const auto& receipt = receipts[receiptIdx];
-    if ((receipt.flags & EV_ERROR) != 0 && receipt.data != 0) [[unlikely]] {
-      const auto err = static_cast<int>(receipt.data);
-      log::error("kevent ADD failed (kqueue fd # {}, fd # {}, filter={}, events=0x{:x}, err={}, msg={})", _baseFd.fd(),
-                 event.fd, receipt.filter, event.eventBmp, err, SystemErrorMessage(err));
-      return false;
-    }
   }
 #elifdef AERONET_WINDOWS
   // Grow both buffers if the registration array is full.
@@ -315,8 +336,7 @@ bool EventLoop::mod(EventFd event) {
   }
   return true;
 #elifdef AERONET_MACOS
-  // kqueue: EV_ADD on an existing filter replaces it (acts like MOD).
-  return add(event);
+  return RegisterKqueueFilters(_baseFd.fd(), event, true);
 #elifdef AERONET_WINDOWS
   auto* pollFds = static_cast<WSAPOLLFD*>(_pPollFds);
   for (uint32_t idx = 0; idx < _nbRegistered; ++idx) {
