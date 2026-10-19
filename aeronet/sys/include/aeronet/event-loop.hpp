@@ -92,7 +92,7 @@ class EventLoop {
   // Returns true on success, false on failure (logged).
   [[nodiscard]] bool add(EventFd event);
 
-  // Modify fd with given events.
+  // Modify fd with given events: they replace the previous ones (an interest absent from them is no longer reported).
   // Returns true on success, false on failure (logged).
   [[nodiscard]] bool mod(EventFd event);
 
