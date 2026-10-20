@@ -40,6 +40,7 @@ TEST(Http2Config, DefaultValues) {
   EXPECT_FALSE(config.enableH2cUpgrade);  // deprecated, ignored
   EXPECT_TRUE(config.enablePriority);
   EXPECT_EQ(config.maxPriorityTreeDepth, 256U);
+  EXPECT_EQ(config.maxRecycledRequests, 8U);
 }
 
 // ============================
@@ -85,14 +86,18 @@ TEST(Http2Config, BuilderPatternConnection) {
 }
 
 TEST(Http2Config, BuilderPatternFeatures) {
-  Http2Config config =
-      Http2Config{}.withEnableH2c(false).withEnableH2cUpgrade(false).withEnablePriority(false).withMaxPriorityTreeDepth(
-          128);
+  Http2Config config = Http2Config{}
+                           .withEnableH2c(false)
+                           .withEnableH2cUpgrade(false)
+                           .withEnablePriority(false)
+                           .withMaxPriorityTreeDepth(128)
+                           .withMaxRecycledRequests(32);
 
   EXPECT_FALSE(config.enableH2c);
   EXPECT_FALSE(config.enableH2cUpgrade);
   EXPECT_FALSE(config.enablePriority);
   EXPECT_EQ(config.maxPriorityTreeDepth, 128U);
+  EXPECT_EQ(config.maxRecycledRequests, 32U);
 }
 
 TEST(Http2Config, BuilderChaining) {

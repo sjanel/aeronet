@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -10,7 +12,6 @@
 
 #if AERONET_WANT_MALLOC_OVERRIDES
 #include <new>
-#include <string>
 #endif
 
 namespace aeronet {
@@ -33,6 +34,20 @@ TEST(HttpHeader, MoveConstructor) {
 
   EXPECT_EQ(moved.name(), "X-Move-Test");
   EXPECT_EQ(moved.value(), "MoveValue");
+}
+
+TEST(HttpHeader, BufferStealingConstructorKeepsTheNameOfTheStolenHeader) {
+  // The name of the stolen header is kept in place, whether its buffer is large enough or reallocated.
+  for (const std::size_t valueSize : {1U, 200U}) {
+    http::Header stolen("x-name", "old-value");
+    const std::string_view name = stolen.name();
+    const std::string value(valueSize, 'v');
+
+    const http::Header header(std::move(stolen), name, value);
+
+    EXPECT_EQ(header.name(), "x-name");
+    EXPECT_EQ(header.value(), value);
+  }
 }
 
 TEST(HttpHeader, MoveAssignment) {

@@ -282,6 +282,14 @@ if(AERONET_ENABLE_HTTP2)
   AeronetAddProjectBenchmark(aeronet-bench-internal-http2-flow-control ${AERONET_BENCH_INTERNAL_H2_FLOW}
                             LIBRARIES aeronet_http2)
   set_target_properties(aeronet-bench-internal-http2-flow-control PROPERTIES FOLDER "benchmarks/internal")
+
+  # The server side of the streams (Http2ProtocolHandler), built with the HTTP server only.
+  if(AERONET_ENABLE_HTTP_SERVER)
+    set(AERONET_BENCH_INTERNAL_H2_REQUEST ${AERONET_BENCH_ROOT}/internal/http2-request_bench.cpp)
+    AeronetAddProjectBenchmark(aeronet-bench-internal-http2-request ${AERONET_BENCH_INTERNAL_H2_REQUEST}
+                               LIBRARIES aeronet_http2)
+    set_target_properties(aeronet-bench-internal-http2-request PROPERTIES FOLDER "benchmarks/internal")
+  endif()
 endif()
 
 # WebSocket micro-benchmarks (guarded by WebSocket feature flag)
@@ -371,6 +379,14 @@ if(AERONET_ENABLE_HTTP2)
     COMMAND aeronet-bench-internal-hpack --benchmark_report_aggregates_only=true
     COMMAND aeronet-bench-internal-http2-frame --benchmark_report_aggregates_only=true
     COMMAND aeronet-bench-internal-http2-flow-control --benchmark_report_aggregates_only=true
+  )
+endif()
+if(TARGET aeronet-bench-internal-http2-request)
+  list(APPEND _AERONET_BENCH_DEPS
+    aeronet-bench-internal-http2-request
+  )
+  list(APPEND _AERONET_BENCH_CMDS
+    COMMAND aeronet-bench-internal-http2-request --benchmark_report_aggregates_only=true
   )
 endif()
 add_custom_target(run-aeronet-bench

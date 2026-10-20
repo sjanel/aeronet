@@ -6,6 +6,7 @@
 #include <string_view>
 
 #include "aeronet/flat-hash-map.hpp"
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/object-array-pool.hpp"
 #include "aeronet/raw-bytes.hpp"
@@ -87,6 +88,55 @@ struct HpackLookupResult {
   uint32_t index{0};  ///< Combined index (1-61 = static, 62+ = dynamic)
 };
 
+/// The pseudo-header fields (RFC 9113 §8.3) accepted by HpackDecoder.
+enum class PseudoHeader : uint8_t { Method, Scheme, Authority, Path, Status, Protocol };
+
+/// The names of the pseudo-header fields, indexed by PseudoHeader.
+inline constexpr std::string_view kPseudoHeaderNames[]{
+    http::PseudoHeaderMethod, http::PseudoHeaderScheme, http::PseudoHeaderAuthority,
+    http::PseudoHeaderPath,   http::PseudoHeaderStatus, http::PseudoHeaderProtocol,
+};
+
+/// A header block (headers or trailers of a message) decoded by HpackDecoder.
+///
+/// Its pseudo-header fields are kept apart from its regular fields, in a slot each. The names and values point either
+/// to the HPACK static table or into 'storage', whose bytes never move: the owner of a message takes them over by
+/// swapping 'headers' and 'storage' with its own (empty) ones, so that each decoded byte is written only once. The
+/// values are writable, except the ones of the static table, which are never values of :path or of content-encoding.
+struct DecodedHeaders {
+  using Storage = ObjectArrayPool<char>;
+
+  /// First block of a storage: enough for the decoded headers of most requests.
+  static constexpr Storage::size_type kStorageInitialCapacity = 512U;
+
+  /// Tell whether the block has the given pseudo-header field.
+  [[nodiscard]] bool hasPseudoHeader(PseudoHeader pseudoHeader) const noexcept {
+    return (pseudoHeadersMask & PseudoHeaderBit(pseudoHeader)) != 0;
+  }
+
+  /// Tell whether the block has any pseudo-header field.
+  [[nodiscard]] bool hasPseudoHeaders() const noexcept { return pseudoHeadersMask != 0; }
+
+  /// The value of the given pseudo-header field, empty if absent (see hasPseudoHeader()).
+  [[nodiscard]] std::string_view pseudoHeader(PseudoHeader pseudoHeader) const noexcept {
+    return pseudoHeaders[static_cast<std::size_t>(pseudoHeader)];
+  }
+
+  /// Forget the decoded fields, keeping the capacity of the map and of the storage.
+  void clear() noexcept;
+
+  [[nodiscard]] static constexpr uint8_t PseudoHeaderBit(PseudoHeader pseudoHeader) noexcept {
+    return static_cast<uint8_t>(1U << static_cast<uint8_t>(pseudoHeader));
+  }
+
+  SvToSvMap headers;  // Regular fields, the duplicates merged
+  Storage storage{kStorageInitialCapacity};
+  std::string_view pseudoHeaders[std::size(kPseudoHeaderNames)];
+  // Total size of the names and values of the fields as received (duplicates not merged), pseudo-headers included.
+  std::size_t namesAndValuesSize{0};
+  uint8_t pseudoHeadersMask{0};
+};
+
 /// HPACK decoder for decompressing HTTP/2 header blocks (RFC 7541).
 ///
 /// Thread safety: NOT thread-safe. Each HTTP/2 connection should have its own decoder.
@@ -94,7 +144,11 @@ struct HpackLookupResult {
 class HpackDecoder {
  public:
   /// Create a decoder with the specified maximum dynamic table size.
-  HpackDecoder(uint32_t maxDynamicTableSize, bool mergeAllowedForUnknownRequestHeaders) noexcept;
+  /// The fields of a header list larger than maxHeaderListSize (sum of the sizes of the names and values of its fields,
+  /// plus 32 bytes per field, RFC 7541 §4.1) are not stored: its decoding fails with HeaderListTooLarge, without taking
+  /// more memory than this limit, whatever the number of references to the dynamic table in its block.
+  HpackDecoder(uint32_t maxDynamicTableSize, uint32_t maxHeaderListSize,
+               bool mergeAllowedForUnknownRequestHeaders) noexcept;
 
   /// Decode result for a single header block.
   struct DecodeResult {
@@ -108,6 +162,7 @@ class HpackDecoder {
       MalformedFieldName,
       MalformedFieldValue,
       DuplicateHeaderForbiddenToMerge,
+      HeaderListTooLarge,
 
       // Compression errors (RFC 7541 §6.1, §6.2, §6.3)
       FailedToDecodeIndexedHeaderFieldIndex,
@@ -126,17 +181,16 @@ class HpackDecoder {
       return error >= Error::FailedToDecodeIndexedHeaderFieldIndex;
     }
 
-    const SvToSvMap& decodedHeaders;
+    DecodedHeaders& decodedHeaders;
     uint64_t headerListSize;
     Error error{Error::None};
   };
 
-  /// Decode a complete header block fragment.
-  /// Calls the callback for each decoded header field.
-  /// The string_views in HeaderField are valid until the next decode() call or clear().
+  /// Decode a complete header block.
+  /// The decoded headers are valid until the next decode() call, unless they were taken over (see DecodedHeaders).
   ///
-  /// @param data The compressed header block fragment
-  /// @return DecodeResult indicating success or failure with headers and error message
+  /// @param data The compressed header block
+  /// @return DecodeResult indicating success or failure with the decoded headers
   DecodeResult decode(std::span<const std::byte> data);
 
   /// Update the maximum dynamic table size (from SETTINGS frame).
@@ -146,38 +200,61 @@ class HpackDecoder {
   [[nodiscard]] const HpackDynamicTable& dynamicTable() const noexcept { return _dynamicTable; }
 
  private:
+  /// Where the bytes of a decoded name or value are.
+  enum class Source : uint8_t {
+    StaticTable,  // The static table: valid, and never freed
+    Storage,      // The storage of the decoded headers (a decoded Huffman string)
+    Transient,    // The input or the dynamic table: copied to the storage when stored
+  };
+
   struct DecodedString {
     static constexpr std::size_t kInvalidConsumed = static_cast<std::size_t>(~0ULL);
 
     std::string_view str;
     std::size_t consumed{kInvalidConsumed};
+    Source source{Source::Transient};
   };
 
-  using CharStorage = ObjectArrayPool<char>;
-  using CharStorageSizeType = CharStorage::size_type;
+  struct IndexedField {
+    http::HeaderView header;  // Empty name if the index is out of bounds
+    Source source{Source::Transient};
+  };
 
   /// Decode a string literal (RFC 7541 §5.2).
-  /// Returns the decoded string and number of bytes consumed, or nullopt on error.
+  /// Returns the decoded string and number of bytes consumed, or kInvalidConsumed on error.
   [[nodiscard]] DecodedString decodeString(std::span<const std::byte> data);
 
-  /// Decode Huffman-encoded string.
-  /// Returns the start pos of the decoded string in the internal buffer (end is _decodedStrings.size()),
-  /// or std::numeric_limits<std::size_t>::max() on error.
+  /// Decode a Huffman-encoded string into the storage of the decoded headers.
+  /// Returns a null string_view on error.
   [[nodiscard]] std::string_view decodeHuffman(std::span<const std::byte> data);
 
   /// Look up a header by combined index (1-61 = static, 62+ = dynamic).
-  /// Returns an empty header name if index is out of bounds.
-  [[nodiscard]] http::HeaderView lookupIndex(uint32_t index) const;
+  [[nodiscard]] IndexedField lookupIndex(uint32_t index) const;
 
-  // Store a decoded header into internal storage.
-  // Returns an error message on failure, or nullptr on success.
-  DecodeResult::Error storeHeader(std::string_view name, std::string_view value, bool& seenRegularHeader);
+  /// The decoded string, copied to the storage of the decoded headers unless it is already there or in the static
+  /// table.
+  [[nodiscard]] std::string_view stableString(std::string_view str, Source source);
+
+  // Store a decoded header field into the decoded headers.
+  DecodeResult::Error storeHeader(std::string_view name, Source nameSource, std::string_view value, Source valueSource,
+                                  bool& seenRegularHeader);
+
+  // Join the values of the repeated fields recorded in _deferredJoins to their first one, once the block is decoded.
+  void joinRepeatedFields();
+
+  /// A value to append to a repeated field, after its separator.
+  struct DeferredJoin {
+    std::string_view name;  // The name of the field in the decoded headers (the same view for all its values)
+    std::string_view value;
+    uint32_t order;  // Position among the deferred joins: the order of the values of a field
+    char separator;
+  };
 
   HpackDynamicTable _dynamicTable;
 
-  // Buffer for storing decoded strings that outlive the input data (Huffman decoded or dynamic table copies)
-  SvToSvMap _decodedHeadersMap;
-  CharStorage _decodedStrings;
+  DecodedHeaders _decodedHeaders;
+  vector<DeferredJoin> _deferredJoins;
+  uint32_t _maxHeaderListSize;
   bool _mergeAllowedForUnknownRequestHeaders{true};
 };
 

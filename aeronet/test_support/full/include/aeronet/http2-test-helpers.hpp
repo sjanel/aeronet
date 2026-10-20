@@ -6,6 +6,7 @@
 #include <span>
 #include <string_view>
 
+#include "aeronet/hpack.hpp"
 #include "aeronet/http2-connection.hpp"
 #include "aeronet/http2-event-sink.hpp"
 #include "aeronet/http2-frame-types.hpp"
@@ -15,7 +16,7 @@ namespace aeronet::http2 {
 
 /// Test-only EventSink: each event forwards to an optional std::function, defaulting to no-op. Binds itself to the
 /// connection on construction and detaches on destruction, so lifetime bugs (sink outliving/outlived-by the connection)
-/// fail loudly instead of  dangling. Field names use the "Fn" suffix to avoid clashing with the virtual methods they
+/// fail loudly instead of dangling. Field names use the "Fn" suffix to avoid clashing with the virtual methods they
 /// implement (onStreamClosed the method vs. onStreamClosedFn the assignable hook).
 class RecordingEventSink final : public EventSink {
  public:
@@ -28,9 +29,16 @@ class RecordingEventSink final : public EventSink {
 
   ~RecordingEventSink() override { _conn.setEventSink(nullptr); }
 
-  void onHeadersDecoded(uint32_t sid, const SvToSvMap& hm, bool es) override {
+  void onHeadersDecoded(uint32_t sid, DecodedHeaders& decodedHeaders, bool es) override {
     if (onHeadersDecodedFn) {
-      onHeadersDecodedFn(sid, hm, es);
+      // The hooks see the pseudo-header fields among the regular ones, as in the header block.
+      SvToSvMap headers = decodedHeaders.headers;
+      for (std::size_t idx = 0; idx < std::size(kPseudoHeaderNames); ++idx) {
+        if (decodedHeaders.hasPseudoHeader(static_cast<PseudoHeader>(idx))) {
+          headers.emplace(kPseudoHeaderNames[idx], decodedHeaders.pseudoHeaders[idx]);
+        }
+      }
+      onHeadersDecodedFn(sid, headers, es);
     }
   }
   void onData(uint32_t sid, std::span<const std::byte> data, bool es) override {

@@ -12,6 +12,7 @@
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/file-payload.hpp"
 #include "aeronet/file.hpp"
+#include "aeronet/hpack.hpp"
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
@@ -27,7 +28,6 @@
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router.hpp"
-#include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/tunnel-bridge.hpp"
 #include "aeronet/vector.hpp"
@@ -220,6 +220,9 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
 
  private:
   /// Per-stream request state during aggregation.
+  /// Allocated on the heap, so that it never moves while handled (the body bridge of the request points to
+  /// bodyContext), and recycled for the next streams (see acquireRequest()), which reuse the capacity of its maps and
+  /// buffers.
   struct StreamRequest {
     /// declaredBodyLength of a request without content-length.
     static constexpr std::size_t kUnknownBodyLength = std::numeric_limits<std::size_t>::max();
@@ -227,23 +230,26 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
     StreamRequest() noexcept = default;
 
     StreamRequest(const StreamRequest&) = delete;
+    StreamRequest(StreamRequest&&) noexcept = delete;
     StreamRequest& operator=(const StreamRequest&) = delete;
-
-    // The body bridge of the request points to bodyContext: moves make it point to the moved one.
-    StreamRequest(StreamRequest&& other) noexcept;
-    StreamRequest& operator=(StreamRequest&& other) noexcept;
+    StreamRequest& operator=(StreamRequest&&) noexcept = delete;
 
     ~StreamRequest();
+
+    /// Make it a new request for the next stream, keeping the memory of its maps and buffers unless it grew large.
+    void clear() noexcept;
 
     HttpRequestView request;
     RawChars bodyBuffer;
     // The content-length of the request, which its DATA frames must match (RFC 9113 §8.1.1).
     std::size_t declaredBodyLength{kUnknownBodyLength};
-    std::unique_ptr<char[]> headerStorage;   // Storage for header name/value strings. nullptr = inactive.
-    std::unique_ptr<char[]> trailerStorage;  // Storage for trailer name/value strings. nullptr = no trailers.
+    // The decoded bytes of the headers and of the trailers of the request, taken over from the HPACK decoder.
+    DecodedHeaders::Storage storage{DecodedHeaders::kStorageInitialCapacity};
     // Read position of the body for readBody() / hasMoreBody().
     HttpRequestView::AggregatedBodyContext bodyContext;
   };
+
+  using StreamRequestPtr = std::unique_ptr<StreamRequest>;
 
   struct PendingFileSend {
     FilePayload filePayload;
@@ -266,7 +272,8 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
     std::shared_ptr<const void> handlerKeepAlive;
     // Path parameter names of the request, owned by the router until copied here (see startAsyncHandler()).
     RawChars pathParamKeys;
-    StreamRequest streamRequest;  // Owns the HttpRequestView and header storage
+    // The request, owned by the task while the coroutine runs: an orphaned task keeps it for its deferred work.
+    StreamRequestPtr streamRequest;
     RequestTask<HttpResponse> task;
     const CorsPolicy* pCorsPolicy{};
     const ResponseMiddleware* pResponseMiddleware{};
@@ -285,7 +292,7 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   /// Cold pending work uses a single heap-allocated variant to keep inline size small.
   struct StreamState {
     /// Whether there is an active request being aggregated (headers received).
-    [[nodiscard]] bool hasRequest() const noexcept { return request.headerStorage != nullptr; }
+    [[nodiscard]] bool hasRequest() const noexcept { return request != nullptr; }
 
     [[nodiscard]] PendingFileSend* fileSend() const noexcept {
       return pending ? std::get_if<PendingFileSend>(pending.get()) : nullptr;
@@ -304,7 +311,7 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
     }
 #endif
 
-    StreamRequest request;
+    StreamRequestPtr request;
     PoolPtr<PendingWork> pending;
     NativeHandle tunnelUpstreamFd{kInvalidHandle};  ///< Valid if this is a CONNECT tunnel stream
     /// True while the target host name of the CONNECT request is resolved. The DATA received meanwhile is kept in
@@ -319,7 +326,7 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
 
   void setupCallbacks() { _connection.setEventSink(this); }
 
-  void onHeadersDecoded(uint32_t streamId, const SvToSvMap& headers, bool endStream) override;
+  void onHeadersDecoded(uint32_t streamId, DecodedHeaders& decodedHeaders, bool endStream) override;
   void onData(uint32_t streamId, std::span<const std::byte> data, bool endStream) override;
   void onStreamReset([[maybe_unused]] uint32_t streamId, [[maybe_unused]] ErrorCode errorCode) override {}
   void onStreamClosed(uint32_t streamId) override;
@@ -341,7 +348,13 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   [[nodiscard]] bool responseExceedsPendingLimits(uint32_t streamId, const HttpResponse& response, bool isHeadMethod);
 
   /// Handle a trailing HEADERS block on an already-open request stream: request trailers (RFC 9113 §8.1).
-  void onTrailersReceived(StreamsMap::iterator it, const SvToSvMap& trailers, bool endStream);
+  void onTrailersReceived(StreamsMap::iterator it, DecodedHeaders& trailers, bool endStream);
+
+  /// A request for a new stream: a recycled one if any.
+  [[nodiscard]] StreamRequestPtr acquireRequest();
+
+  /// Release the request of a stream (if any), kept for the next streams up to Http2Config::maxRecycledRequests.
+  void recycleRequest(StreamRequestPtr& pRequest);
 
   /// Answer 413 to a request whose body exceeds the server limit, while the client is still sending it, then reset the
   /// stream (NO_ERROR) so that the client stops sending it.
@@ -422,6 +435,9 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   Http2Connection _connection;
 
   Router* _pRouter;
+
+  /// Requests of closed streams, reused by the next ones (see recycleRequest()).
+  vector<StreamRequestPtr> _recycledRequests;
 
   /// Pool for PendingWork allocations (avoids repeated heap alloc/free cycles).
   ObjectPool<PendingWork> _pendingWorkPool;
