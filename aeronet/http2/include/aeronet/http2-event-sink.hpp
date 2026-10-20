@@ -6,9 +6,10 @@
 #include <string_view>
 
 #include "aeronet/http2-frame-types.hpp"
-#include "aeronet/sv-to-sv-map.hpp"
 
 namespace aeronet::http2 {
+
+struct DecodedHeaders;
 
 /// Observer for connection-level events. At most one sink is attached per connection
 /// (1:1 with the owning protocol handler or client engine).
@@ -16,7 +17,9 @@ class EventSink {
  public:
   virtual ~EventSink() = default;
 
-  virtual void onHeadersDecoded([[maybe_unused]] uint32_t streamId, [[maybe_unused]] const SvToSvMap& headers,
+  /// A header block was decoded on a stream. The sink may take its headers over (see DecodedHeaders): they are only
+  /// valid until the next header block is decoded otherwise.
+  virtual void onHeadersDecoded([[maybe_unused]] uint32_t streamId, [[maybe_unused]] DecodedHeaders& decodedHeaders,
                                 bool /*endStream*/) = 0;
   virtual void onData([[maybe_unused]] uint32_t streamId, [[maybe_unused]] std::span<const std::byte> data,
                       [[maybe_unused]] bool endStream) = 0;

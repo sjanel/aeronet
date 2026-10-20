@@ -6,6 +6,7 @@
 #include <span>
 #include <string_view>
 
+#include "aeronet/hpack.hpp"
 #include "aeronet/http2-connection.hpp"
 #include "aeronet/http2-event-sink.hpp"
 #include "aeronet/http2-frame-types.hpp"
@@ -28,9 +29,16 @@ class RecordingEventSink final : public EventSink {
 
   ~RecordingEventSink() override { _conn.setEventSink(nullptr); }
 
-  void onHeadersDecoded(uint32_t sid, const SvToSvMap& hm, bool es) override {
+  void onHeadersDecoded(uint32_t sid, DecodedHeaders& decodedHeaders, bool es) override {
     if (onHeadersDecodedFn) {
-      onHeadersDecodedFn(sid, hm, es);
+      // The hooks see the pseudo-header fields among the regular ones, as in the header block.
+      SvToSvMap headers = decodedHeaders.headers;
+      for (std::size_t idx = 0; idx < kPseudoHeaderNames.size(); ++idx) {
+        if (decodedHeaders.hasPseudoHeader(static_cast<PseudoHeader>(idx))) {
+          headers.emplace(kPseudoHeaderNames[idx], decodedHeaders.pseudoHeaders[idx]);
+        }
+      }
+      onHeadersDecodedFn(sid, headers, es);
     }
   }
   void onData(uint32_t sid, std::span<const std::byte> data, bool es) override {

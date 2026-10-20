@@ -20,7 +20,6 @@
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/mergeable-headers.hpp"
 #include "aeronet/raw-bytes.hpp"
-#include "aeronet/safe-cast.hpp"
 #include "aeronet/toupperlower.hpp"
 #include "http2-header-is-valid.hpp"
 
@@ -741,20 +740,30 @@ DecodedIndex DecodeInteger(std::span<const std::byte> data, uint8_t prefixBits) 
   return ret;
 }
 
+// The PseudoHeader of a pseudo-header field name, or kPseudoHeaderNames.size() for an undefined one.
+[[nodiscard]] std::size_t PseudoHeaderIndex(std::string_view name) noexcept {
+  return static_cast<std::size_t>(std::ranges::find(kPseudoHeaderNames, name) - kPseudoHeaderNames.begin());
+}
+
 }  // namespace
 
+void DecodedHeaders::clear() noexcept {
+  headers.clear();
+  storage.clear();
+  pseudoHeaders = {};
+  namesAndValuesSize = 0;
+  pseudoHeadersMask = 0;
+}
+
 HpackDecoder::HpackDecoder(uint32_t maxDynamicTableSize, bool mergeAllowedForUnknownRequestHeaders) noexcept
-    : _dynamicTable(maxDynamicTableSize),
-      _decodedStrings(128U),
-      _mergeAllowedForUnknownRequestHeaders(mergeAllowedForUnknownRequestHeaders) {}
+    : _dynamicTable(maxDynamicTableSize), _mergeAllowedForUnknownRequestHeaders(mergeAllowedForUnknownRequestHeaders) {}
 
 HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data) {
-  _decodedStrings.clear();
-  _decodedHeadersMap.clear();
+  _decodedHeaders.clear();
 
   std::size_t pos = 0;
 
-  DecodeResult res{_decodedHeadersMap, 0UL};
+  DecodeResult res{_decodedHeaders, 0UL};
 
   auto recordFieldError = [&res](DecodeResult::Error err) {
     if (res.error == DecodeResult::Error::None) {
@@ -781,14 +790,14 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
         return res;
       }
 
-      http::HeaderView header = lookupIndex(indexResult.index);
+      const auto [header, source] = lookupIndex(indexResult.index);
       if (header.name.empty()) {
         res.error = DecodeResult::Error::IndexOutOfBoundsInIndexedHeaderField;
         return res;
       }
 
       res.headerListSize += header.name.size() + header.value.size() + kHpackOverhead;
-      recordFieldError(storeHeader(header.name, header.value, seenRegularHeader));
+      recordFieldError(storeHeader(header.name, source, header.value, source, seenRegularHeader));
 
     } else if ((firstByte & 0xE0U) == 0x20U) {
       // Dynamic Table Size Update (RFC 7541 §6.3) - Format: 001xxxxx
@@ -814,6 +823,7 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
       pos += indexResult.consumed;
 
       std::string_view name;
+      Source nameSource;
       if (indexResult.index == 0) {
         // New literal name
         const auto nameResult = decodeString(data.subspan(pos));
@@ -823,14 +833,16 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
         }
         pos += nameResult.consumed;
         name = nameResult.str;
+        nameSource = nameResult.source;
       } else {
         // Indexed name
-        const auto header = lookupIndex(indexResult.index);
+        const auto [header, source] = lookupIndex(indexResult.index);
         if (header.name.empty()) {
           res.error = DecodeResult::Error::IndexOutOfBoundsForHeaderName;
           return res;
         }
         name = header.name;
+        nameSource = source;
       }
 
       const auto valueResult = decodeString(data.subspan(pos));
@@ -841,7 +853,7 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
       pos += valueResult.consumed;
 
       res.headerListSize += name.size() + valueResult.str.size() + kHpackOverhead;
-      recordFieldError(storeHeader(name, valueResult.str, seenRegularHeader));
+      recordFieldError(storeHeader(name, nameSource, valueResult.str, valueResult.source, seenRegularHeader));
 
       if (withIndexing) {
         // Note: add() copies name/value before evicting, so this is safe even if name/value point to data owned by
@@ -878,6 +890,7 @@ HpackDecoder::DecodedString HpackDecoder::decodeString(std::span<const std::byte
       ret.consumed = DecodedString::kInvalidConsumed;
       return ret;
     }
+    ret.source = Source::Storage;
     return ret;
   }
   // Raw string - return view directly into buffer
@@ -887,8 +900,9 @@ HpackDecoder::DecodedString HpackDecoder::decodeString(std::span<const std::byte
 
 std::string_view HpackDecoder::decodeHuffman(std::span<const std::byte> data) {
   // Max decoded length for N input bytes: at most floor(8*N/5) symbols.
-  const auto maxLen = SafeCast<CharStorageSizeType>((data.size() * 8U) / 5);
-  char* buf = _decodedStrings.allocateAndDefaultConstruct(maxLen);
+  const auto maxLen = (data.size() * 8U) / 5;
+  DecodedHeaders::Storage& storage = _decodedHeaders.storage;
+  char* buf = storage.allocateAndDefaultConstruct(maxLen);
   std::size_t sz = 0;
 
   // Bit buffer: accumulates bits for decoding (MSB-aligned)
@@ -934,7 +948,7 @@ std::string_view HpackDecoder::decodeHuffman(std::span<const std::byte> data) {
     }
 
     if (symbol == 256) [[unlikely]] {
-      _decodedStrings.shrinkLastAllocated(buf, 0);
+      storage.shrinkLastAllocated(buf, 0);
       return {};  // EOS must not appear in the data (RFC 7541 §5.2)
     }
 
@@ -949,109 +963,127 @@ std::string_view HpackDecoder::decodeHuffman(std::span<const std::byte> data) {
   // Validate remaining bits are EOS padding (all 1s, less than 8 bits)
   if (bitsInBuffer != 0) {
     if (bitsInBuffer > 7) {
-      _decodedStrings.shrinkLastAllocated(buf, 0);
+      storage.shrinkLastAllocated(buf, 0);
       return {};  // Too many leftover bits
     }
     // Check that remaining bits are all 1s (EOS prefix)
     const auto remainingBits = static_cast<uint8_t>(bitBuffer >> (64U - bitsInBuffer));
     const uint8_t expectedPadding = static_cast<uint8_t>((1U << bitsInBuffer) - 1);
     if (remainingBits != expectedPadding) {
-      _decodedStrings.shrinkLastAllocated(buf, 0);
+      storage.shrinkLastAllocated(buf, 0);
       return {};  // Invalid padding
     }
   }
 
+  // The decoded string stays in the storage, the decoded headers pointing to it: give back the unused part.
+  storage.shrinkLastAllocated(buf, sz);
   return {buf, sz};
 }
 
-http::HeaderView HpackDecoder::lookupIndex(uint32_t index) const {
+HpackDecoder::IndexedField HpackDecoder::lookupIndex(uint32_t index) const {
   assert(index != 0);
 
   // Static table: indices 1-61
-  http::HeaderView ret;
-
   if (index <= std::size(kStaticTable)) {
-    const auto& entry = kStaticTable[index - 1U];
-    ret.name = entry.name;
-    ret.value = entry.value;
-    return ret;
+    return {kStaticTable[index - 1U], Source::StaticTable};
   }
 
-  // Dynamic table: indices 62+
+  // Dynamic table: indices 62+. Its entries may be evicted while the decoded headers are still in use.
   const uint32_t dynamicIndex = static_cast<uint32_t>(index - std::size(kStaticTable) - 1U);
   if (dynamicIndex >= _dynamicTable.entryCount()) {
-    return ret;
+    return {};
   }
   const auto& entry = _dynamicTable[dynamicIndex];
-  ret.name = entry.name();
-  ret.value = entry.value();
-  return ret;
+  return {{entry.name(), entry.value()}, Source::Transient};
 }
 
-HpackDecoder::DecodeResult::Error HpackDecoder::storeHeader(std::string_view name, std::string_view value,
+std::string_view HpackDecoder::stableString(std::string_view str, Source source) {
+  if (source != Source::Transient) {
+    return str;
+  }
+  char* pStr = _decodedHeaders.storage.allocateAndDefaultConstruct(str.size());
+  Copy(str, pStr);
+  return {pStr, str.size()};
+}
+
+HpackDecoder::DecodeResult::Error HpackDecoder::storeHeader(std::string_view name, Source nameSource,
+                                                            std::string_view value, Source valueSource,
                                                             bool& seenRegularHeader) {
-  if (!IsValidHTTP2HeaderName(name)) {
+  // The fields of the static table are valid.
+  if (nameSource != Source::StaticTable && !IsValidHTTP2HeaderName(name)) {
     return DecodeResult::Error::MalformedFieldName;
   }
+  assert(IsValidHTTP2HeaderName(name));
 
   if (name.front() == ':') {  // pseudo header
     if (seenRegularHeader) {
       return DecodeResult::Error::PseudoHeaderFieldAfterRegularField;
     }
-    if (name != http::PseudoHeaderMethod && name != http::PseudoHeaderScheme && name != http::PseudoHeaderAuthority &&
-        name != http::PseudoHeaderPath && name != http::PseudoHeaderStatus && name != http::PseudoHeaderProtocol) {
+    const std::size_t pseudoHeaderIdx = PseudoHeaderIndex(name);
+    if (pseudoHeaderIdx == kPseudoHeaderNames.size()) {
       return DecodeResult::Error::UndefinedPseudoHeaderField;
     }
-    if (_decodedHeadersMap.contains(name)) {
+    const auto pseudoHeader = static_cast<PseudoHeader>(pseudoHeaderIdx);
+    if (_decodedHeaders.hasPseudoHeader(pseudoHeader)) {
       return DecodeResult::Error::DuplicatePseudoHeaderField;
     }
-  } else {
-    seenRegularHeader = true;
+    if (valueSource != Source::StaticTable && !IsValidHTTP2HeaderValue(value)) {
+      return DecodeResult::Error::MalformedFieldValue;
+    }
+    // The server decodes the :path value in place: it must not stay in the static table ('/' or '/index.html').
+    if (pseudoHeader == PseudoHeader::Path) {
+      valueSource = Source::Transient;
+    }
+    _decodedHeaders.pseudoHeaders[pseudoHeaderIdx] = stableString(value, valueSource);
+    _decodedHeaders.pseudoHeadersMask |= DecodedHeaders::PseudoHeaderBit(pseudoHeader);
+    _decodedHeaders.namesAndValuesSize += name.size() + value.size();
+    return DecodeResult::Error::None;
   }
 
-  if (!IsValidHTTP2HeaderValue(value)) {
+  seenRegularHeader = true;
+
+  if (valueSource != Source::StaticTable && !IsValidHTTP2HeaderValue(value)) {
     return DecodeResult::Error::MalformedFieldValue;
   }
 
-  char* pName = _decodedStrings.allocateAndDefaultConstruct(SafeCast<CharStorageSizeType>(name.size() + value.size()));
-  Copy(name, pName);
-
-  char* pValue = pName + name.size();
-  Copy(value, pValue);
-
-  auto [it, inserted] = _decodedHeadersMap.try_emplace(std::string_view(pName, name.size()), pValue, value.size());
+  const std::string_view storedValue = stableString(value, valueSource);
+  const auto [it, inserted] = _decodedHeaders.headers.try_emplace(stableString(name, nameSource), storedValue);
 
   if (!inserted) {
-    // Header already exists
-    std::string_view existingValue = it->second;
-
-    // value not needed anymore
-    _decodedStrings.shrinkLastAllocated(pName, name.size());
-
+    // Header already exists: same rules as for HTTP/1.1 (see http::MergeHeaderInPlace()).
     const char mergeSep = http::ReqHeaderValueSeparator(it->first, _mergeAllowedForUnknownRequestHeaders);
     if (mergeSep == '\0') {
       return DecodeResult::Error::DuplicateHeaderForbiddenToMerge;
     }
 
-    const std::size_t newValueLen = existingValue.size() + 1U + value.size();
+    const std::string_view existingValue = it->second;
+    if (existingValue.empty() || mergeSep == 'O') {
+      // Keep the last value (the first one is empty, or 'O' tells to override it)
+      it->second = storedValue;
+    } else if (!value.empty()) {
+      const std::size_t newValueLen = existingValue.size() + 1U + value.size();
 
-    pValue = _decodedStrings.allocateAndDefaultConstruct(SafeCast<CharStorageSizeType>(newValueLen));
+      char* pValue = _decodedHeaders.storage.allocateAndDefaultConstruct(newValueLen);
 
-    char* pData = Append(existingValue, pValue);
-    *pData++ = mergeSep;
-    Copy(value, pData);
+      char* pData = Append(existingValue, pValue);
+      *pData++ = mergeSep;
+      Copy(value, pData);
 
-    it->second = std::string_view(pValue, newValueLen);
+      it->second = std::string_view(pValue, newValueLen);
+    }
   }
 
-  if (name == http::ContentEncoding) {
+  if (it->first == http::ContentEncoding) {
     // Content codings are case-insensitive (RFC 9110 §8.4.1): lower-case them once stored. A plain loop is enough for
     // these few bytes (the vectorized tolower() of tolower-str.hpp would bring <immintrin.h> into this file).
+    // The only content-encoding value of the static table is empty: a non-empty value is in the storage.
+    char* pValue = const_cast<char*>(it->second.data());
     for (char* pEndValue = pValue + it->second.size(); pValue != pEndValue; ++pValue) {
       *pValue = tolower(*pValue);
     }
   }
 
+  _decodedHeaders.namesAndValuesSize += name.size() + value.size();
   return DecodeResult::Error::None;
 }
 

@@ -1493,11 +1493,8 @@ Http2Connection::ProcessResult Http2Connection::discardFieldBlock(std::span<cons
 
 ErrorCode Http2Connection::decodeAndEmitHeaders(uint32_t streamId, std::span<const std::byte> headerBlock,
                                                 bool endStream) {
-  // Collect decoded headers into an intermediate storage. We always build decodedHeaders
-  // because we will invoke the new decoded-headers callback if set. Note: We must copy
-  // strings here because the HPACK dynamic table may evict entries during decode,
-  // invalidating string_views that point to evicted entries.
-
+  // The decoder writes the fields in a storage independent of the dynamic table (whose entries may be evicted), that
+  // the sink may take over.
   const auto decodeResult = _hpackDecoder.decode(headerBlock);
 
   if (!decodeResult.isSuccess()) {
@@ -1510,7 +1507,6 @@ ErrorCode Http2Connection::decodeAndEmitHeaders(uint32_t streamId, std::span<con
     return ErrorCode::EnhanceYourCalm;
   }
 
-  // Call the decoded-headers callback if set (owned strings)
   if (_sink != nullptr) {
     _sink->onHeadersDecoded(streamId, decodeResult.decodedHeaders, endStream);
   }

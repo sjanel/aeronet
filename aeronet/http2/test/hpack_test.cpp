@@ -16,6 +16,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/is-header-whitespace.hpp"
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
@@ -210,9 +211,9 @@ TEST(HpackDecoder, DecodeIndexedHeader) {
   auto result = decoder.decode(AsBytes(encoded));
 
   EXPECT_TRUE(result.isSuccess());
-  EXPECT_EQ(result.decodedHeaders.size(), 1U);
-  EXPECT_EQ(result.decodedHeaders.begin()->first, ":method");
-  EXPECT_EQ(result.decodedHeaders.begin()->second, "GET");
+  EXPECT_TRUE(result.decodedHeaders.headers.empty());
+  EXPECT_TRUE(result.decodedHeaders.hasPseudoHeader(PseudoHeader::Method));
+  EXPECT_EQ(result.decodedHeaders.pseudoHeader(PseudoHeader::Method), "GET");
 }
 
 TEST(HpackDecoder, DuplicateIndexedHeaderForbidden) {
@@ -245,9 +246,9 @@ TEST(HpackDecoder, DecodeLiteralWithIndexing) {
 
   auto result = decoder.decode(AsBytes(encoded));
   EXPECT_TRUE(result.isSuccess());
-  EXPECT_EQ(result.decodedHeaders.size(), 1U);
-  EXPECT_EQ(result.decodedHeaders.begin()->first, "custom-key");
-  EXPECT_EQ(result.decodedHeaders.begin()->second, "custom-value");
+  EXPECT_EQ(result.decodedHeaders.headers.size(), 1U);
+  EXPECT_EQ(result.decodedHeaders.headers.begin()->first, "custom-key");
+  EXPECT_EQ(result.decodedHeaders.headers.begin()->second, "custom-value");
 
   // Should be added to dynamic table
   EXPECT_EQ(decoder.dynamicTable().entryCount(), 1U);
@@ -314,8 +315,8 @@ TEST(HpackDecoder, AcceptsPunctuationTcharInName) {
   auto result = decoder.decode(AsBytes(encoded));
 
   EXPECT_TRUE(result.isSuccess());
-  ASSERT_EQ(result.decodedHeaders.size(), 1U);
-  EXPECT_EQ(result.decodedHeaders.begin()->first, "x-my_header!");
+  ASSERT_EQ(result.decodedHeaders.headers.size(), 1U);
+  EXPECT_EQ(result.decodedHeaders.headers.begin()->first, "x-my_header!");
 }
 
 TEST(HpackDecoder, RejectsCrLfInValue) {
@@ -378,7 +379,7 @@ TEST(HpackDecoder, RejectsLeadingOrTrailingWhitespaceInValue) {
     const auto result = decoder.decode(encoded);
 
     ASSERT_TRUE(result.isSuccess()) << '[' << value << ']';
-    EXPECT_EQ(result.decodedHeaders.find("test1")->second, value);
+    EXPECT_EQ(result.decodedHeaders.headers.find("test1")->second, value);
   }
 }
 
@@ -391,9 +392,10 @@ TEST(HpackDecoder, AcceptsPseudoHeaderViaFullIndex) {
   auto result = decoder.decode(AsBytes(encoded));
 
   EXPECT_TRUE(result.isSuccess());
-  ASSERT_EQ(result.decodedHeaders.size(), 1U);
-  EXPECT_EQ(result.decodedHeaders.begin()->first, ":method");
-  EXPECT_EQ(result.decodedHeaders.begin()->second, "GET");
+  EXPECT_TRUE(result.decodedHeaders.headers.empty());
+  EXPECT_EQ(result.decodedHeaders.pseudoHeadersMask, DecodedHeaders::PseudoHeaderBit(PseudoHeader::Method));
+  EXPECT_EQ(result.decodedHeaders.pseudoHeader(PseudoHeader::Method), "GET");
+  EXPECT_EQ(result.decodedHeaders.namesAndValuesSize, std::string_view(":methodGET").size());
 }
 
 TEST(HpackDecoder, RejectsDuplicatePseudoHeader) {
@@ -450,8 +452,8 @@ TEST(HpackDecoder, AcceptsDefinedProtocolPseudoHeaderForContextValidation) {
   const auto result = decoder.decode(encoded);
 
   ASSERT_TRUE(result.isSuccess());
-  ASSERT_TRUE(result.decodedHeaders.contains(":protocol"));
-  EXPECT_EQ(result.decodedHeaders.at(":protocol"), "websocket");
+  ASSERT_TRUE(result.decodedHeaders.hasPseudoHeader(PseudoHeader::Protocol));
+  EXPECT_EQ(result.decodedHeaders.pseudoHeader(PseudoHeader::Protocol), "websocket");
 }
 
 TEST(HpackDecoder, WithoutIndexingStillValidatesButDoesNotPollutTable) {
@@ -662,9 +664,9 @@ TEST(HpackDecoder, DecodeLiteralWithoutIndexing) {
   auto result = decoder.decode(AsBytes(encoded));
 
   EXPECT_TRUE(result.isSuccess());
-  EXPECT_EQ(result.decodedHeaders.size(), 1U);
-  EXPECT_EQ(result.decodedHeaders.begin()->first, "custom-key");
-  EXPECT_EQ(result.decodedHeaders.begin()->second, "custom-value");
+  EXPECT_EQ(result.decodedHeaders.headers.size(), 1U);
+  EXPECT_EQ(result.decodedHeaders.headers.begin()->first, "custom-key");
+  EXPECT_EQ(result.decodedHeaders.headers.begin()->second, "custom-value");
 
   // Should NOT be added to dynamic table
   EXPECT_EQ(decoder.dynamicTable().entryCount(), 0);
@@ -678,22 +680,15 @@ TEST(HpackDecoder, DecodeMultipleHeaders) {
 
   auto result = decoder.decode(AsBytes(encoded));
 
-  const auto& headers = result.decodedHeaders;
+  const auto& decodedHeaders = result.decodedHeaders;
 
   EXPECT_TRUE(result.isSuccess());
-  ASSERT_EQ(headers.size(), 3U);
-
-  const auto methodIt = headers.find(":method");
-  ASSERT_NE(methodIt, headers.end());
-  EXPECT_EQ(methodIt->second, "GET");
-
-  const auto pathIt = headers.find(":path");
-  ASSERT_NE(pathIt, headers.end());
-  EXPECT_EQ(pathIt->second, "/");
-
-  const auto schemeIt = headers.find(":scheme");
-  ASSERT_NE(schemeIt, headers.end());
-  EXPECT_EQ(schemeIt->second, "https");
+  EXPECT_TRUE(decodedHeaders.headers.empty());
+  EXPECT_EQ(decodedHeaders.pseudoHeader(PseudoHeader::Method), "GET");
+  EXPECT_EQ(decodedHeaders.pseudoHeader(PseudoHeader::Path), "/");
+  EXPECT_EQ(decodedHeaders.pseudoHeader(PseudoHeader::Scheme), "https");
+  EXPECT_FALSE(decodedHeaders.hasPseudoHeader(PseudoHeader::Authority));
+  EXPECT_TRUE(decodedHeaders.pseudoHeader(PseudoHeader::Authority).empty());
 }
 
 TEST(HpackDecoder, DuplicateHeaderMergesWithComma) {
@@ -709,9 +704,9 @@ TEST(HpackDecoder, DuplicateHeaderMergesWithComma) {
   auto result = decoder.decode(AsBytes(encoded));
 
   EXPECT_TRUE(result.isSuccess());
-  ASSERT_EQ(result.decodedHeaders.size(), 1U);
-  const auto it = result.decodedHeaders.find("accept");
-  ASSERT_NE(it, result.decodedHeaders.end());
+  ASSERT_EQ(result.decodedHeaders.headers.size(), 1U);
+  const auto it = result.decodedHeaders.headers.find("accept");
+  ASSERT_NE(it, result.decodedHeaders.headers.end());
   EXPECT_EQ(it->second, "a,b");
 }
 
@@ -727,9 +722,9 @@ TEST(HpackDecoder, DuplicateCookieMergesWithSemicolon) {
   auto result = decoder.decode(AsBytes(encoded));
 
   EXPECT_TRUE(result.isSuccess());
-  ASSERT_EQ(result.decodedHeaders.size(), 1U);
-  const auto it = result.decodedHeaders.find("cookie");
-  ASSERT_NE(it, result.decodedHeaders.end());
+  ASSERT_EQ(result.decodedHeaders.headers.size(), 1U);
+  const auto it = result.decodedHeaders.headers.find("cookie");
+  ASSERT_NE(it, result.decodedHeaders.headers.end());
   EXPECT_EQ(it->second, "one;two");
 }
 
@@ -746,12 +741,12 @@ TEST(HpackDecoder, ContentEncodingValueIsLowerCased) {
 
   auto result = decoder.decode(AsBytes(encoded));
   ASSERT_TRUE(result.isSuccess());
-  ASSERT_EQ(result.decodedHeaders.size(), 2U);
-  const auto encodingIt = result.decodedHeaders.find("content-encoding");
-  ASSERT_NE(encodingIt, result.decodedHeaders.end());
+  ASSERT_EQ(result.decodedHeaders.headers.size(), 2U);
+  const auto encodingIt = result.decodedHeaders.headers.find("content-encoding");
+  ASSERT_NE(encodingIt, result.decodedHeaders.headers.end());
   EXPECT_EQ(encodingIt->second, "gzip,br");
-  const auto caseIt = result.decodedHeaders.find("x-case");
-  ASSERT_NE(caseIt, result.decodedHeaders.end());
+  const auto caseIt = result.decodedHeaders.headers.find("x-case");
+  ASSERT_NE(caseIt, result.decodedHeaders.headers.end());
   EXPECT_EQ(caseIt->second, "MiXeD");
 
   // The dynamic table keeps the field as received, and each decoded reference to it is lower-cased.
@@ -761,9 +756,9 @@ TEST(HpackDecoder, ContentEncodingValueIsLowerCased) {
 
   const auto indexedResult = decoder.decode(AsBytes(indexed));
   ASSERT_TRUE(indexedResult.isSuccess());
-  ASSERT_EQ(indexedResult.decodedHeaders.size(), 1U);
-  EXPECT_EQ(indexedResult.decodedHeaders.begin()->first, "content-encoding");
-  EXPECT_EQ(indexedResult.decodedHeaders.begin()->second, "gzip");
+  ASSERT_EQ(indexedResult.decodedHeaders.headers.size(), 1U);
+  EXPECT_EQ(indexedResult.decodedHeaders.headers.begin()->first, "content-encoding");
+  EXPECT_EQ(indexedResult.decodedHeaders.headers.begin()->second, "gzip");
 }
 
 TEST(HpackDecoder, DuplicateContentLengthIsForbidden) {
@@ -779,6 +774,123 @@ TEST(HpackDecoder, DuplicateContentLengthIsForbidden) {
 
   EXPECT_FALSE(result.isSuccess());
   EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::DuplicateHeaderForbiddenToMerge);
+}
+
+TEST(HpackDecoder, OverrideHeaderKeepsLastValue) {
+  auto decoder = CreateHpackDecoder();
+
+  // authorization (static name index 23) is an override header: only its last value is kept, like for HTTP/1.1.
+  static constexpr uint8_t encoded[]{
+      0x57, 0x01, 'a',  // authorization: a
+      0x57, 0x01, 'b',  // authorization: b
+  };
+
+  const auto result = decoder.decode(AsBytes(encoded));
+
+  ASSERT_TRUE(result.isSuccess());
+  ASSERT_EQ(result.decodedHeaders.headers.size(), 1U);
+  EXPECT_EQ(result.decodedHeaders.headers.at("authorization"), "b");
+  // The size counts the fields as received.
+  EXPECT_EQ(result.decodedHeaders.namesAndValuesSize, 2U * std::string_view("authorizationa").size());
+}
+
+TEST(HpackDecoder, DuplicateWithEmptyValueAddsNoSeparator) {
+  auto decoder = CreateHpackDecoder();
+
+  // accept (static name index 19), repeated with empty values around a non-empty one.
+  static constexpr uint8_t encoded[]{
+      0x53, 0x00,       // accept: (empty)
+      0x53, 0x01, 'x',  // accept: x
+      0x53, 0x00,       // accept: (empty)
+      0x53, 0x01, 'y',  // accept: y
+  };
+
+  const auto result = decoder.decode(AsBytes(encoded));
+
+  ASSERT_TRUE(result.isSuccess());
+  ASSERT_EQ(result.decodedHeaders.headers.size(), 1U);
+  EXPECT_EQ(result.decodedHeaders.headers.at("accept"), "x,y");
+  EXPECT_EQ(result.decodedHeaders.namesAndValuesSize, (4U * std::string_view("accept").size()) + 2U);
+}
+
+TEST(HpackDecoder, StaticTableFieldsAreNotCopied) {
+  auto decoder = CreateHpackDecoder();
+
+  // :method: GET, :scheme: https, :authority (empty), accept-encoding: gzip, deflate - all from the static table.
+  static constexpr uint8_t staticOnly[]{0x82, 0x87, 0x81, 0x90};
+
+  const auto result = decoder.decode(AsBytes(staticOnly));
+
+  ASSERT_TRUE(result.isSuccess());
+  EXPECT_EQ(result.decodedHeaders.storage.capacity(), 0U);  // nothing was written to the storage
+  EXPECT_EQ(result.decodedHeaders.pseudoHeader(PseudoHeader::Method), "GET");
+  EXPECT_EQ(result.decodedHeaders.pseudoHeader(PseudoHeader::Scheme), "https");
+  // Present, with an empty value.
+  EXPECT_TRUE(result.decodedHeaders.hasPseudoHeader(PseudoHeader::Authority));
+  EXPECT_TRUE(result.decodedHeaders.pseudoHeader(PseudoHeader::Authority).empty());
+  EXPECT_EQ(result.decodedHeaders.headers.at("accept-encoding"), "gzip, deflate");
+
+  // :path: / from the static table is copied: the server decodes it in place.
+  static constexpr uint8_t path[]{0x84};
+  const auto pathResult = decoder.decode(AsBytes(path));
+  ASSERT_TRUE(pathResult.isSuccess());
+  EXPECT_NE(pathResult.decodedHeaders.storage.capacity(), 0U);
+  const std::string_view pathValue = pathResult.decodedHeaders.pseudoHeader(PseudoHeader::Path);
+  ASSERT_EQ(pathValue, "/");
+  const_cast<char*>(pathValue.data())[0] = '/';  // writable
+}
+
+TEST(HpackDecoder, TakenOverHeadersOutliveTheNextDecodes) {
+  HpackEncoder encoder(4096);
+  auto decoder = CreateHpackDecoder();
+
+  const std::string token(200, 't');  // Huffman-encoded by the encoder, then referenced from the dynamic table
+
+  // The second block references the dynamic table entries added by the first one.
+  RawBytes blocks[2];
+  for (RawBytes& block : blocks) {
+    encoder.encode(block, ":method", "GET");
+    encoder.encode(block, ":path", "/api/items?id=42");
+    encoder.encode(block, "x-token", token);
+    encoder.encode(block, "x-trace", "abc");
+  }
+  EXPECT_LT(blocks[1].size(), blocks[0].size());
+
+  // Owners of the decoded headers, like the requests of a server.
+  struct Owner {
+    SvToSvMap headers;
+    DecodedHeaders::Storage storage{DecodedHeaders::kStorageInitialCapacity};
+    std::string_view path;
+  };
+  Owner owners[2];
+  for (std::size_t idx = 0; idx < std::size(blocks); ++idx) {
+    const auto result = decoder.decode(blocks[idx]);
+    ASSERT_TRUE(result.isSuccess());
+    owners[idx].path = result.decodedHeaders.pseudoHeader(PseudoHeader::Path);
+    owners[idx].headers.swap(result.decodedHeaders.headers);
+    owners[idx].storage.swap(result.decodedHeaders.storage);
+    // The decoder got the empty map and storage of the owner instead.
+    EXPECT_TRUE(result.decodedHeaders.headers.empty());
+    EXPECT_EQ(result.decodedHeaders.storage.capacity(), 0U);
+  }
+
+  // Evict the entries of the dynamic table, then decode a block with other values in the storage of the decoder.
+  decoder.setMaxDynamicTableSize(0);
+  EXPECT_EQ(decoder.dynamicTable().entryCount(), 0U);
+  HpackEncoder otherEncoder(0);
+  RawBytes other;
+  otherEncoder.encode(other, ":path", "/zzzzzzzzzzzzzzzz");
+  otherEncoder.encode(other, "x-token", std::string(200, 'z'));
+  const auto otherResult = decoder.decode(other);
+  ASSERT_TRUE(otherResult.isSuccess());
+  EXPECT_EQ(otherResult.decodedHeaders.headers.at("x-token"), std::string(200, 'z'));
+
+  for (const Owner& owner : owners) {
+    EXPECT_EQ(owner.path, "/api/items?id=42");
+    ASSERT_EQ(owner.headers.size(), 2U);
+    EXPECT_EQ(owner.headers.at("x-token"), token);
+    EXPECT_EQ(owner.headers.at("x-trace"), "abc");
+  }
 }
 
 TEST(HpackDecoder, DecodeDynamicTableSizeUpdate) {
@@ -959,13 +1071,13 @@ TEST(HpackDecoder, ClearDecodedStrings) {
 
   auto res1 = decoder.decode(AsBytes(encoded));
   EXPECT_TRUE(res1.isSuccess());
-  EXPECT_EQ(res1.decodedHeaders.size(), 1U);
-  EXPECT_EQ(res1.decodedHeaders.begin()->first, "custom-key");
+  EXPECT_EQ(res1.decodedHeaders.headers.size(), 1U);
+  EXPECT_EQ(res1.decodedHeaders.headers.begin()->first, "custom-key");
 
   auto res2 = decoder.decode(AsBytes(encoded));
   EXPECT_TRUE(res2.isSuccess());
-  EXPECT_EQ(res2.decodedHeaders.size(), 1U);
-  EXPECT_EQ(res2.decodedHeaders.begin()->first, "custom-key");
+  EXPECT_EQ(res2.decodedHeaders.headers.size(), 1U);
+  EXPECT_EQ(res2.decodedHeaders.headers.begin()->first, "custom-key");
 }
 
 TEST(HpackDecoder, IndexedNameSelfEviction) {
@@ -988,9 +1100,9 @@ TEST(HpackDecoder, IndexedNameSelfEviction) {
   auto secondResult = decoder.decode(AsBytes(secondBlock));
 
   EXPECT_TRUE(secondResult.isSuccess());
-  ASSERT_EQ(secondResult.decodedHeaders.size(), 1U);
-  EXPECT_EQ(secondResult.decodedHeaders.begin()->first, "ck");
-  EXPECT_EQ(secondResult.decodedHeaders.begin()->second, "v2");
+  ASSERT_EQ(secondResult.decodedHeaders.headers.size(), 1U);
+  EXPECT_EQ(secondResult.decodedHeaders.headers.begin()->first, "ck");
+  EXPECT_EQ(secondResult.decodedHeaders.headers.begin()->second, "v2");
   EXPECT_EQ(decoder.dynamicTable().entryCount(), 1U);
 }
 
@@ -1387,9 +1499,9 @@ TEST(HpackEncoder, CredentialsAreSentAsNeverIndexedLiterals) {
       }
       const auto result = decoder.decode(encoded);
       ASSERT_TRUE(result.isSuccess());
-      ASSERT_EQ(result.decodedHeaders.size(), 1U);
-      EXPECT_EQ(result.decodedHeaders.begin()->first, name);
-      EXPECT_EQ(result.decodedHeaders.begin()->second, value);
+      ASSERT_EQ(result.decodedHeaders.headers.size(), 1U);
+      EXPECT_EQ(result.decodedHeaders.headers.begin()->first, name);
+      EXPECT_EQ(result.decodedHeaders.headers.begin()->second, value);
     }
     // Only the long cookie is in the dynamic tables.
     ASSERT_EQ(encoder.dynamicTable().entryCount(), 1U);
@@ -1414,9 +1526,9 @@ TEST(HpackEncoder, FieldsWithoutIndexingLeaveTheDynamicTableToRepeatedOnes) {
     }
     const auto result = decoder.decode(encoded);
     ASSERT_TRUE(result.isSuccess());
-    EXPECT_EQ(result.decodedHeaders.find("content-length")->second, length);
-    EXPECT_EQ(result.decodedHeaders.find("etag")->second, length);
-    EXPECT_EQ(result.decodedHeaders.find("content-type")->second, "text/plain");
+    EXPECT_EQ(result.decodedHeaders.headers.find("content-length")->second, length);
+    EXPECT_EQ(result.decodedHeaders.headers.find("etag")->second, length);
+    EXPECT_EQ(result.decodedHeaders.headers.find("content-type")->second, "text/plain");
 
     // Only content-type is added, by the first response: the next ones reference it.
     ASSERT_EQ(encoder.dynamicTable().entryCount(), 1U);
@@ -1441,22 +1553,14 @@ TEST(HpackRoundTrip, SimpleHeaders) {
 
   auto result = decoder.decode(encoded);
 
-  const auto& headers = result.decodedHeaders;
+  const auto& headers = result.decodedHeaders.headers;
 
   EXPECT_TRUE(result.isSuccess());
-  ASSERT_EQ(headers.size(), 4U);
+  ASSERT_EQ(headers.size(), 1U);
 
-  const auto methodIt = headers.find(":method");
-  ASSERT_NE(methodIt, headers.end());
-  EXPECT_EQ(methodIt->second, "GET");
-
-  const auto pathIt = headers.find(":path");
-  ASSERT_NE(pathIt, headers.end());
-  EXPECT_EQ(pathIt->second, "/index.html");
-
-  const auto schemeIt = headers.find(":scheme");
-  ASSERT_NE(schemeIt, headers.end());
-  EXPECT_EQ(schemeIt->second, "https");
+  EXPECT_EQ(result.decodedHeaders.pseudoHeader(PseudoHeader::Method), "GET");
+  EXPECT_EQ(result.decodedHeaders.pseudoHeader(PseudoHeader::Path), "/index.html");
+  EXPECT_EQ(result.decodedHeaders.pseudoHeader(PseudoHeader::Scheme), "https");
 
   const auto customIt = headers.find("custom-header");
   ASSERT_NE(customIt, headers.end());
@@ -1481,9 +1585,9 @@ TEST(HpackRoundTrip, RepeatedHeaders) {
   {
     auto result = decoder.decode(encoded1);
     EXPECT_TRUE(result.isSuccess());
-    ASSERT_EQ(result.decodedHeaders.size(), 1U);
+    ASSERT_EQ(result.decodedHeaders.headers.size(), 1U);
 
-    auto [name, value] = *result.decodedHeaders.begin();
+    auto [name, value] = *result.decodedHeaders.headers.begin();
     EXPECT_EQ(name, "x-custom");
     EXPECT_EQ(value, "value1");
   }
@@ -1491,9 +1595,9 @@ TEST(HpackRoundTrip, RepeatedHeaders) {
   {
     auto result = decoder.decode(encoded2);
     EXPECT_TRUE(result.isSuccess());
-    ASSERT_EQ(result.decodedHeaders.size(), 1U);
+    ASSERT_EQ(result.decodedHeaders.headers.size(), 1U);
 
-    auto [name, value] = *result.decodedHeaders.begin();
+    auto [name, value] = *result.decodedHeaders.headers.begin();
     EXPECT_EQ(name, "x-custom");
     EXPECT_EQ(value, "value1");
   }
@@ -1514,8 +1618,8 @@ TEST(HpackRoundTrip, DateHeaderValue) {
   auto result = decoder.decode(encoded);
   ASSERT_TRUE(result.isSuccess());
 
-  const auto dateIt = result.decodedHeaders.find("date");
-  ASSERT_NE(dateIt, result.decodedHeaders.end());
+  const auto dateIt = result.decodedHeaders.headers.find("date");
+  ASSERT_NE(dateIt, result.decodedHeaders.headers.end());
   EXPECT_EQ(dateIt->second, kDate);
 }
 
@@ -1540,13 +1644,13 @@ TEST(HpackRoundTrip, CurrentDateHeaderValue) {
   auto result = decoder.decode(encoded);
   ASSERT_TRUE(result.isSuccess());
 
-  const auto dateIt = result.decodedHeaders.find("date");
-  if (dateIt == result.decodedHeaders.end()) {
-    for (const auto& [name, value] : result.decodedHeaders) {
+  const auto dateIt = result.decodedHeaders.headers.find("date");
+  if (dateIt == result.decodedHeaders.headers.end()) {
+    for (const auto& [name, value] : result.decodedHeaders.headers) {
       ADD_FAILURE() << "Decoded header: '" << name << "'='" << value << "'";
     }
     // Also check if the date value got associated with a different name.
-    for (const auto& [name, value] : result.decodedHeaders) {
+    for (const auto& [name, value] : result.decodedHeaders.headers) {
       if (value.size() == dateSv.size() && std::memcmp(value.data(), dateSv.data(), value.size()) == 0) {
         ADD_FAILURE() << "Date value decoded under name: '" << name << "'";
       }
@@ -1581,8 +1685,8 @@ TEST(HpackRoundTrip, ResponseHeaderSetIncludesDate) {
   auto result = decoder.decode(encoded);
   ASSERT_TRUE(result.isSuccess());
 
-  const auto dateIt = result.decodedHeaders.find("date");
-  ASSERT_NE(dateIt, result.decodedHeaders.end());
+  const auto dateIt = result.decodedHeaders.headers.find("date");
+  ASSERT_NE(dateIt, result.decodedHeaders.headers.end());
   EXPECT_EQ(dateIt->second.size(), RFC7231DateStrLen);
   EXPECT_TRUE(dateIt->second.ends_with("GMT"));
 }
@@ -1637,8 +1741,8 @@ std::string HuffmanRoundTrip(std::string_view value) {
   if (!result.isSuccess()) {
     return "<decode-failed>";
   }
-  const auto it = result.decodedHeaders.find("x-rt");
-  if (it == result.decodedHeaders.end()) {
+  const auto it = result.decodedHeaders.headers.find("x-rt");
+  if (it == result.decodedHeaders.headers.end()) {
     return "<missing>";
   }
   return std::string(it->second);

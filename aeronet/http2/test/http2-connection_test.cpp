@@ -120,9 +120,15 @@ struct WireDecodedHeadersDebug {
         return dbg;
       }
 
-      dbg.hasDate = decodeResult.decodedHeaders.contains(http::Date);
-      dbg.headers.reserve(static_cast<uint32_t>(decodeResult.decodedHeaders.size()));
-      for (const auto& [name, value] : decodeResult.decodedHeaders) {
+      const DecodedHeaders& decodedHeaders = decodeResult.decodedHeaders;
+      dbg.hasDate = decodedHeaders.headers.contains(http::Date);
+      for (std::size_t idx = 0; idx < kPseudoHeaderNames.size(); ++idx) {
+        if (decodedHeaders.hasPseudoHeader(static_cast<PseudoHeader>(idx))) {
+          dbg.headers.emplace_back(std::string{kPseudoHeaderNames[idx]},
+                                   std::string{decodedHeaders.pseudoHeaders[idx]});
+        }
+      }
+      for (const auto& [name, value] : decodedHeaders.headers) {
         dbg.headers.emplace_back(std::string{name}, std::string{value});
       }
       return dbg;
