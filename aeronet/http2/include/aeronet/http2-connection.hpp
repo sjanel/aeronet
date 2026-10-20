@@ -7,12 +7,14 @@
 #include <deque>
 #include <span>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/hpack.hpp"
 #include "aeronet/http-headers-view.hpp"
+#include "aeronet/http-message-data.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-config.hpp"
@@ -217,6 +219,11 @@ class Http2Connection {
   /// @return ErrorCode if the operation failed, NoError otherwise
   [[nodiscard]] ErrorCode sendData(uint32_t streamId, std::span<const std::byte> data, bool endStream);
 
+  /// Send `data` without copying it: `owner` holds its memory (its message bytes or its embedded payload) and is kept
+  /// until the data is written. A small `data` is copied beside its frame header instead, leaving `owner` untouched.
+  [[nodiscard]] ErrorCode sendData(uint32_t streamId, HttpMessageData&& owner, std::span<const std::byte> data,
+                                   bool endStream);
+
   /// Send a subrange of an owned allocation without copying it.
   [[nodiscard]] ErrorCode sendData(uint32_t streamId, RawBytes&& owner, std::size_t dataOffset, std::size_t dataSize,
                                    bool endStream);
@@ -294,16 +301,20 @@ class Http2Connection {
 
   class OutputBlock {
    public:
-    OutputBlock(RawBytes&& data, std::size_t offset) noexcept;
+    // Unframed 'bytes' (a sealed output buffer), whose memory is owned by 'owner'.
+    OutputBlock(HttpMessageData&& owner, std::span<const std::byte> bytes) noexcept;
 
-    [[nodiscard]] static OutputBlock Data(RawBytes&& owner, std::size_t dataOffset, std::size_t dataSize,
+    // 'payload' sent as DATA frames, its memory being owned by 'owner'.
+    [[nodiscard]] static OutputBlock Data(HttpMessageData&& owner, std::span<const std::byte> payload,
                                           uint32_t maxFrameSize, uint32_t streamId, bool endStream) {
-      return {std::move(owner), dataOffset, dataSize, maxFrameSize, streamId, endStream, false};
+      return {std::move(owner), payload, maxFrameSize, streamId, endStream, false};
     }
 
-    [[nodiscard]] static OutputBlock Headers(RawBytes&& owner, std::size_t dataOffset, std::size_t dataSize,
+    // 'payload' (a header block) sent as a HEADERS frame and its CONTINUATION frames, its memory being owned by
+    // 'owner'.
+    [[nodiscard]] static OutputBlock Headers(HttpMessageData&& owner, std::span<const std::byte> payload,
                                              uint32_t maxFrameSize, uint32_t streamId, bool endStream) {
-      return {std::move(owner), dataOffset, dataSize, maxFrameSize, streamId, endStream, true};
+      return {std::move(owner), payload, maxFrameSize, streamId, endStream, true};
     }
 
     [[nodiscard]] bool empty() const noexcept { return _remainingSize == 0; }
@@ -320,11 +331,12 @@ class Http2Connection {
 
     void release() noexcept;
 
-    using trivially_relocatable = amc::is_trivially_relocatable<RawBytes>::type;
+    using trivially_relocatable = std::bool_constant<amc::is_trivially_relocatable_v<HttpMessageData> &&
+                                                     amc::is_trivially_relocatable_v<RawBytes32>>;
 
    private:
-    OutputBlock(RawBytes&& owner, std::size_t dataOffset, std::size_t dataSize, uint32_t maxFrameSize,
-                uint32_t streamId, bool endStream, bool headers);
+    OutputBlock(HttpMessageData&& owner, std::span<const std::byte> payload, uint32_t maxFrameSize, uint32_t streamId,
+                bool endStream, bool headers);
 
     [[nodiscard]] std::size_t framePayloadSize(uint32_t frameIndex) const noexcept;
 
@@ -334,9 +346,10 @@ class Http2Connection {
                                                               static_cast<std::ptrdiff_t>(FrameHeader::kSize));
     }
 
-    RawBytes _payload;
-    RawBytes _continuationHeaders;
-    std::size_t _payloadOffset{0};
+    // Owns the memory of the payload, which may be a captured body embedded in it: moving it does not move the payload.
+    HttpMessageData _owner;
+    RawBytes32 _continuationHeaders;
+    const std::byte* _pPayload{nullptr};
     std::size_t _payloadSize{0};
     std::size_t _remainingSize{0};
     uint32_t _maxFrameSize{0};
@@ -401,10 +414,8 @@ class Http2Connection {
 
   [[nodiscard]] ErrorCode prepareSendData(uint32_t streamId, std::size_t dataSize, bool endStream);
 
-  void queueDataBlock(RawBytes&& owner, std::size_t dataOffset, std::size_t dataSize, uint32_t streamId,
-                      bool endStream) {
-    queueOutputBlock(
-        OutputBlock::Data(std::move(owner), dataOffset, dataSize, _peerSettings.maxFrameSize, streamId, endStream));
+  void queueDataBlock(HttpMessageData&& owner, std::span<const std::byte> data, uint32_t streamId, bool endStream) {
+    queueOutputBlock(OutputBlock::Data(std::move(owner), data, _peerSettings.maxFrameSize, streamId, endStream));
   }
 
   void queueOutputBlock(OutputBlock block);

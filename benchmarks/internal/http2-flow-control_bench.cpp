@@ -7,11 +7,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string>
 #include <string_view>
 #include <utility>
 
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/http-headers-view.hpp"
+#include "aeronet/http-message-data.hpp"
+#include "aeronet/http-payload.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-connection.hpp"
@@ -20,6 +23,7 @@
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 
 namespace aeronet::http2 {
@@ -197,6 +201,71 @@ void BM_ConnectionQueueOwnedDataFragments(benchmark::State& state) {
   state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(payloadSize));
 }
 BENCHMARK(BM_ConnectionQueueOwnedDataFragments)->Arg(1024)->Arg(16384)->Arg(65535);
+
+// ---------------------------------------------------------------------------
+// Connection: send a captured response body, copied or from its storage
+// ---------------------------------------------------------------------------
+
+// fromStorage=0 copies the body (what HTTP/2 did for captured bodies), fromStorage=1 hands over its storage.
+void BM_ConnectionSendCapturedBody(benchmark::State& state) {
+  const auto bodySize = static_cast<std::size_t>(state.range(0));
+  const bool fromStorage = state.range(1) != 0;
+
+  RawBytes clientInput;
+  clientInput.append(reinterpret_cast<const std::byte*>(kConnectionPreface.data()), kConnectionPreface.size());
+  WriteSettingsFrame(clientInput, {});
+  WriteSettingsAckFrame(clientInput);
+
+  HpackEncoder encoder;
+  RawBytes hpackBlock;
+  encoder.encode(hpackBlock, ":method", "GET");
+  encoder.encode(hpackBlock, ":path", "/benchmark");
+  encoder.encode(hpackBlock, ":scheme", "http");
+  encoder.encode(hpackBlock, ":authority", "localhost");
+  WriteHeadersFrameWithPriority(clientInput, /*streamId=*/1,
+                                std::span<const std::byte>(hpackBlock.begin(), hpackBlock.size()),
+                                /*streamDependency=*/0, /*weight=*/16, /*exclusive=*/false,
+                                /*endStream=*/true, /*endHeaders=*/true);
+
+  vector<std::string_view> fragments;
+  for ([[maybe_unused]] auto iter : state) {
+    state.PauseTiming();
+    {
+      Http2Connection connection(Http2Config{}, /*isServer=*/true);
+      auto input = std::span<const std::byte>(clientInput.begin(), clientInput.size());
+      while (!input.empty()) {
+        const auto result = connection.processInput(input);
+        input = input.subspan(result.bytesConsumed);
+      }
+      connection.onOutputWritten(connection.pendingOutputSize());
+
+      auto headerError = connection.sendHeaders(/*streamId=*/1, http::StatusCodeOK, HeadersView{}, /*endStream=*/false);
+      benchmark::DoNotOptimize(headerError);
+      connection.onOutputWritten(connection.pendingOutputSize());
+
+      // The storage of a response with a captured body: its head, followed by the embedded payload.
+      HttpMessageData storage(RawChars("HTTP/1.1 200 OK\r\n"), HttpPayload(std::string(bodySize, 'x')));
+      const auto body = std::as_bytes(std::span<const char>(storage.secondBuffer()));
+      state.ResumeTiming();
+
+      auto dataError = fromStorage ? connection.sendData(/*streamId=*/1, std::move(storage), body, /*endStream=*/true)
+                                   : connection.sendData(/*streamId=*/1, body, /*endStream=*/true);
+      connection.getPendingOutputFragments(fragments);
+      benchmark::DoNotOptimize(dataError);
+      benchmark::DoNotOptimize(fragments.size());
+      benchmark::DoNotOptimize(fragments.data());
+      benchmark::ClobberMemory();
+
+      // The connection and the storage are released untimed, whichever owns the storage.
+      state.PauseTiming();
+    }
+    state.ResumeTiming();
+  }
+  state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(bodySize));
+}
+BENCHMARK(BM_ConnectionSendCapturedBody)
+    ->ArgsProduct({{1024, 16384, 65535}, {0, 1}})
+    ->ArgNames({"size", "fromStorage"});
 
 // ---------------------------------------------------------------------------
 // Connection: batch small response HEADERS and DATA into one output fragment

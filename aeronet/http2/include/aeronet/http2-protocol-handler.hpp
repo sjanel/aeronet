@@ -12,6 +12,7 @@
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/file-payload.hpp"
 #include "aeronet/file.hpp"
+#include "aeronet/http-message-data.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -248,10 +249,11 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
     FilePayload filePayload;
   };
 
-  /// Buffered streaming body data when flow-control windows are exhausted.
+  /// In-memory body data (and trailers) waiting for flow-control credit.
   struct PendingStreamingSend {
-    RawChars buffer;        // Remaining body data
-    std::size_t offset{0};  // How much of buffer has been sent
+    // Owns the memory of body: the storage of a response (possibly with its captured body), or a streaming buffer.
+    HttpMessageData storage;
+    std::string_view body;  // Body bytes not sent yet, in storage
     RawChars trailersData;  // Trailer lines (may be empty)
   };
 
