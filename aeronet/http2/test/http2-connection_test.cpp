@@ -20,6 +20,8 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-helpers.hpp"
+#include "aeronet/http-message-data.hpp"
+#include "aeronet/http-payload.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-frame-types.hpp"
@@ -607,6 +609,86 @@ TEST(Http2Connection, OwnedDataUsesGatherFragmentsAcrossPartialWrites) {
 
   connection.onOutputWritten(connection.pendingOutputSize());
   EXPECT_FALSE(connection.hasPendingOutput());
+}
+
+// An HttpMessageData owner can hold the data in its embedded payload (a captured body): the DATA frames gather their
+// payload from there, the owner (and its payload) being kept until written.
+TEST(Http2Connection, OwnedMessageDataSendsItsEmbeddedPayloadWithoutCopy) {
+  Http2Config config;
+  Http2Connection connection(config, true);
+  AdvanceToOpenAndDrainSettingsAck(connection);
+
+  ASSERT_EQ(connection.sendHeaders(1, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
+  (void)DrainPendingOutput(connection);
+
+  constexpr std::size_t kPayloadSize = 20000;
+  HttpMessageData owner(RawChars("head"), HttpPayload(std::string(kPayloadSize, 'P')));
+  const std::string_view payload = owner.secondBuffer();
+  ASSERT_EQ(payload.size(), kPayloadSize);
+  const std::size_t maxFrameSize = connection.peerSettings().maxFrameSize;
+
+  ASSERT_EQ(connection.sendData(1, std::move(owner), std::as_bytes(std::span<const char>(payload)), true),
+            ErrorCode::NoError);
+  EXPECT_EQ(connection.pendingOutputSize(), kPayloadSize + (2UL * FrameHeader::kSize));
+
+  vector<std::string_view> fragments;
+  connection.getPendingOutputFragments(fragments);
+  ASSERT_EQ(fragments.size(), 4U);
+  EXPECT_EQ(fragments[1].data(), payload.data());
+  EXPECT_EQ(fragments[1].size(), maxFrameSize);
+  EXPECT_EQ(fragments[3].data(), payload.data() + maxFrameSize);
+  EXPECT_EQ(fragments[3].size(), kPayloadSize - maxFrameSize);
+  EXPECT_EQ(ParseFrameHeader(std::as_bytes(std::span(fragments[2]))).flags(), FrameFlags::DataEndStream);
+
+  std::string wirePayload;
+  wirePayload.append(fragments[1]);
+  wirePayload.append(fragments[3]);
+  EXPECT_EQ(wirePayload, std::string(kPayloadSize, 'P'));
+
+  connection.onOutputWritten(connection.pendingOutputSize());
+  EXPECT_FALSE(connection.hasPendingOutput());
+}
+
+// Small data is copied beside its frame header, leaving its owner untouched (the caller may still use its memory).
+TEST(Http2Connection, SmallOwnedMessageDataIsCopiedAndLeftToItsOwner) {
+  Http2Config config;
+  Http2Connection connection(config, true);
+  AdvanceToOpenAndDrainSettingsAck(connection);
+
+  ASSERT_EQ(connection.sendHeaders(1, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
+  (void)DrainPendingOutput(connection);
+
+  HttpMessageData owner(RawChars("head"), HttpPayload(std::string(100, 'S')));
+  const std::string_view payload = owner.secondBuffer();
+  ASSERT_EQ(connection.sendData(1, std::move(owner), std::as_bytes(std::span<const char>(payload)), true),
+            ErrorCode::NoError);
+  EXPECT_EQ(owner.secondBuffer().data(), payload.data());  // NOLINT(bugprone-use-after-move)
+  EXPECT_EQ(Http2ConnectionTest::NbOutputBlocks(connection), 0U);
+
+  vector<std::string_view> fragments;
+  connection.getPendingOutputFragments(fragments);
+  ASSERT_EQ(fragments.size(), 1U);
+  ASSERT_EQ(fragments[0].size(), FrameHeader::kSize + payload.size());
+  EXPECT_EQ(fragments[0].substr(FrameHeader::kSize), payload);
+  EXPECT_NE(fragments[0].data() + FrameHeader::kSize, payload.data());
+}
+
+// Data refused on a stream that does not exist (or is closed) leaves its owner untouched.
+TEST(Http2Connection, OwnedMessageDataRefusedOnUnknownOrClosedStream) {
+  Http2Config config;
+  Http2Connection connection(config, true);
+  AdvanceToOpenAndDrainSettingsAck(connection);
+
+  HttpMessageData owner(RawChars("head"), HttpPayload(std::string(1000, 'R')));
+  const std::string_view payload = owner.secondBuffer();
+  const auto data = std::as_bytes(std::span<const char>(payload));
+  EXPECT_EQ(connection.sendData(1, std::move(owner), data, true), ErrorCode::ProtocolError);
+
+  ASSERT_EQ(connection.sendHeaders(1, http::StatusCodeOK, HeadersView{}, true), ErrorCode::NoError);
+  // NOLINTNEXTLINE(bugprone-use-after-move)
+  EXPECT_EQ(connection.sendData(1, std::move(owner), data, true), ErrorCode::StreamClosed);
+  EXPECT_EQ(owner.secondBuffer().data(), payload.data());  // NOLINT(bugprone-use-after-move)
+  EXPECT_EQ(Http2ConnectionTest::NbOutputBlocks(connection), 0U);
 }
 
 TEST(Http2Connection, GatherFragmentsExposeEntireOutputQueue) {

@@ -12,6 +12,7 @@
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
+#include "aeronet/http-message-data.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-config.hpp"
@@ -25,6 +26,7 @@
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/metric-label.hpp"
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/vector.hpp"
@@ -65,35 +67,33 @@ constexpr std::size_t kMinWrittenOutputBlocksToCompact = 16;
 
 static_assert(kMaxInlineDataFrameCopySize <= kMinMaxFrameSize);
 
+// Hands over the allocation of 'buf' (not its bytes) to an output block.
+HttpMessageData OwnerOf(RawBytes&& buf) noexcept { return HttpMessageData(RawChars(std::move(buf))); }
+
 }  // namespace
 
 // ============================
 // Queued output
 // ============================
 
-Http2Connection::OutputBlock::OutputBlock(RawBytes&& data, std::size_t offset) noexcept
-    : _payload(std::move(data)), _payloadOffset(offset) {
-  assert(offset <= _payload.size());
-  _payloadSize = _payload.size() - offset;
-  _remainingSize = _payloadSize;
-}
+Http2Connection::OutputBlock::OutputBlock(HttpMessageData&& owner, std::span<const std::byte> bytes) noexcept
+    : _owner(std::move(owner)), _pPayload(bytes.data()), _payloadSize(bytes.size()), _remainingSize(bytes.size()) {}
 
-Http2Connection::OutputBlock::OutputBlock(RawBytes&& owner, std::size_t dataOffset, std::size_t dataSize,
+Http2Connection::OutputBlock::OutputBlock(HttpMessageData&& owner, std::span<const std::byte> payload,
                                           uint32_t maxFrameSize, uint32_t streamId, bool endStream, bool headers)
-    : _payload(std::move(owner)),
-      _payloadOffset(dataOffset),
-      _payloadSize(dataSize),
+    : _owner(std::move(owner)),
+      _pPayload(payload.data()),
+      _payloadSize(payload.size()),
       _maxFrameSize(maxFrameSize),
       _framed(true) {
-  assert(dataOffset <= _payload.size());
-  assert(dataSize != 0 && dataSize <= _payload.size() - dataOffset);
+  assert(!payload.empty());
   assert(maxFrameSize != 0);
 
-  const uint32_t frameCount = static_cast<uint32_t>((dataSize + maxFrameSize - 1U) / maxFrameSize);
-  _remainingSize = dataSize + (static_cast<std::size_t>(frameCount) * FrameHeader::kSize);
+  const uint32_t frameCount = static_cast<uint32_t>((payload.size() + maxFrameSize - 1U) / maxFrameSize);
+  _remainingSize = payload.size() + (static_cast<std::size_t>(frameCount) * FrameHeader::kSize);
   if (frameCount > 1U) {
-    const std::size_t continuationHeadersSize = (static_cast<std::size_t>(frameCount) - 1U) * FrameHeader::kSize;
-    _continuationHeaders = RawBytes(continuationHeadersSize);
+    const auto continuationHeadersSize = static_cast<uint32_t>((frameCount - 1U) * FrameHeader::kSize);
+    _continuationHeaders = RawBytes32(continuationHeadersSize);
     _continuationHeaders.setSize(continuationHeadersSize);
   }
 
@@ -129,8 +129,7 @@ std::size_t Http2Connection::OutputBlock::framePayloadSize(uint32_t frameIndex) 
 std::string_view Http2Connection::OutputBlock::firstFragment() const noexcept {
   assert(!empty());
   if (!_framed) {
-    return {reinterpret_cast<const char*>(_payload.data() + _payloadOffset + _framePayloadOffset),
-            _payloadSize - _framePayloadOffset};
+    return {reinterpret_cast<const char*>(_pPayload + _framePayloadOffset), _payloadSize - _framePayloadOffset};
   }
   if (_headerOffset < FrameHeader::kSize) {
     return {reinterpret_cast<const char*>(frameHeader(_frameIndex) + _headerOffset),
@@ -140,7 +139,7 @@ std::string_view Http2Connection::OutputBlock::firstFragment() const noexcept {
   const std::size_t payloadSize = framePayloadSize(_frameIndex);
   assert(_framePayloadOffset < payloadSize);
   const std::size_t frameOffset = static_cast<std::size_t>(_frameIndex) * _maxFrameSize;
-  return {reinterpret_cast<const char*>(_payload.data() + _payloadOffset + frameOffset + _framePayloadOffset),
+  return {reinterpret_cast<const char*>(_pPayload + frameOffset + _framePayloadOffset),
           payloadSize - _framePayloadOffset};
 }
 
@@ -161,7 +160,7 @@ vector<std::string_view>::size_type Http2Connection::OutputBlock::pendingFragmen
 void Http2Connection::OutputBlock::appendFragments(vector<std::string_view>& fragments) const {
   assert(!empty());
   if (!_framed) {
-    fragments.emplace_back(reinterpret_cast<const char*>(_payload.data() + _payloadOffset + _framePayloadOffset),
+    fragments.emplace_back(reinterpret_cast<const char*>(_pPayload + _framePayloadOffset),
                            _payloadSize - _framePayloadOffset);
     return;
   }
@@ -182,9 +181,8 @@ void Http2Connection::OutputBlock::appendFragments(vector<std::string_view>& fra
     const std::size_t payloadSize = framePayloadSize(frameIndex);
     if (framePayloadOffset < payloadSize) {
       const std::size_t frameOffset = static_cast<std::size_t>(frameIndex) * _maxFrameSize;
-      fragments.emplace_back(
-          reinterpret_cast<const char*>(_payload.data() + _payloadOffset + frameOffset + framePayloadOffset),
-          payloadSize - framePayloadOffset);
+      fragments.emplace_back(reinterpret_cast<const char*>(_pPayload + frameOffset + framePayloadOffset),
+                             payloadSize - framePayloadOffset);
     }
     ++frameIndex;
     framePayloadOffset = 0;
@@ -226,7 +224,7 @@ void Http2Connection::OutputBlock::consume(std::size_t bytesWritten) noexcept {
 }
 
 void Http2Connection::OutputBlock::release() noexcept {
-  _payload = {};
+  _owner = {};
   _continuationHeaders = {};
 }
 
@@ -424,8 +422,10 @@ void Http2Connection::sealOutputBuffer() {
     return;
   }
   if (!_outputBuffer.empty()) {
-    _outputBlocksSize += _outputBuffer.size() - _outputWritePos;
-    _outputBlocks.emplace_back(std::move(_outputBuffer), _outputWritePos);
+    const std::span<const std::byte> pendingBytes(_outputBuffer.data() + _outputWritePos,
+                                                  _outputBuffer.size() - _outputWritePos);
+    _outputBlocksSize += pendingBytes.size();
+    _outputBlocks.emplace_back(OwnerOf(std::move(_outputBuffer)), pendingBytes);
     _outputBuffer = {};
     _outputWritePos = 0;
   }
@@ -657,7 +657,27 @@ ErrorCode Http2Connection::sendData(uint32_t streamId, std::span<const std::byte
         PrepareDataFrameGetStartPtr(_outputBuffer, streamId, static_cast<uint32_t>(data.size()), endStream);
     Copy(data.data(), data.size(), pData);
   } else {
-    queueDataBlock(RawBytes(data), 0, data.size(), streamId, endStream);
+    RawBytes copy(data);
+    const std::span<const std::byte> copiedData(copy.data(), copy.size());
+    queueDataBlock(OwnerOf(std::move(copy)), copiedData, streamId, endStream);
+  }
+  return ErrorCode::NoError;
+}
+
+ErrorCode Http2Connection::sendData(uint32_t streamId, HttpMessageData&& owner, std::span<const std::byte> data,
+                                    bool endStream) {
+  const ErrorCode err = prepareSendData(streamId, data.size(), endStream);
+  if (err != ErrorCode::NoError) {
+    return err;
+  }
+
+  assert(!data.empty());
+  if (data.size() <= kMaxInlineDataFrameCopySize) {
+    std::byte* pData =
+        PrepareDataFrameGetStartPtr(_outputBuffer, streamId, static_cast<uint32_t>(data.size()), endStream);
+    Copy(data.data(), data.size(), pData);
+  } else {
+    queueDataBlock(std::move(owner), data, streamId, endStream);
   }
   return ErrorCode::NoError;
 }
@@ -665,21 +685,9 @@ ErrorCode Http2Connection::sendData(uint32_t streamId, std::span<const std::byte
 ErrorCode Http2Connection::sendData(uint32_t streamId, RawBytes&& owner, std::size_t dataOffset, std::size_t dataSize,
                                     bool endStream) {
   assert(dataOffset <= owner.size());
-  assert(dataSize + dataOffset <= owner.size());
-
-  const ErrorCode err = prepareSendData(streamId, dataSize, endStream);
-  if (err != ErrorCode::NoError) {
-    return err;
-  }
-
-  assert(dataSize != 0);
-  if (dataSize <= kMaxInlineDataFrameCopySize) {
-    std::byte* pData = PrepareDataFrameGetStartPtr(_outputBuffer, streamId, static_cast<uint32_t>(dataSize), endStream);
-    Copy(owner.data() + dataOffset, dataSize, pData);
-  } else {
-    queueDataBlock(std::move(owner), dataOffset, dataSize, streamId, endStream);
-  }
-  return ErrorCode::NoError;
+  assert(dataSize <= owner.size() - dataOffset);
+  const std::span<const std::byte> data(owner.data() + dataOffset, dataSize);
+  return sendData(streamId, OwnerOf(std::move(owner)), data, endStream);
 }
 
 [[nodiscard]] std::pair<std::byte*, ErrorCode> Http2Connection::sendDataInline(uint32_t streamId, std::size_t dataSize,
@@ -1453,21 +1461,21 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
   if (outputSizeBeforeHeaders == 0) {
     // Transfer the allocation intact and interleave frame headers with views over the
     // original HPACK bytes.
-    RawBytes owner(std::move(_outputBuffer));
+    const std::span<const std::byte> headerBlock(_outputBuffer.data() + oldSize, headerBlockSize);
+    HttpMessageData owner = OwnerOf(std::move(_outputBuffer));
     _outputBuffer = {};
     _outputWritePos = 0;
-    queueOutputBlock(OutputBlock::Headers(std::move(owner), oldSize, headerBlockSize, _peerSettings.maxFrameSize,
-                                          streamId, endStream));
+    queueOutputBlock(
+        OutputBlock::Headers(std::move(owner), headerBlock, _peerSettings.maxFrameSize, streamId, endStream));
   } else {
     // Preserve older batched frames ahead of this oversized header block. Oversized
     // fields are rare, so copying only this block is preferable to sealing every normal
     // response into a separate transport fragment.
-    RawBytes owner(headerBlockSize);
-    owner.unchecked_append(
-        std::span<const std::byte>(_outputBuffer.data() + oldSize, static_cast<std::size_t>(headerBlockSize)));
+    RawBytes owner(std::span<const std::byte>(_outputBuffer.data() + oldSize, headerBlockSize));
     _outputBuffer.setSize(outputSizeBeforeHeaders);
+    const std::span<const std::byte> headerBlock(owner.data(), owner.size());
     queueOutputBlock(
-        OutputBlock::Headers(std::move(owner), 0, headerBlockSize, _peerSettings.maxFrameSize, streamId, endStream));
+        OutputBlock::Headers(OwnerOf(std::move(owner)), headerBlock, _peerSettings.maxFrameSize, streamId, endStream));
   }
   recordFrame(true, FrameType::Headers, _peerSettings.maxFrameSize);
   recordFrame(true, FrameType::Continuation, continuationBytes,
