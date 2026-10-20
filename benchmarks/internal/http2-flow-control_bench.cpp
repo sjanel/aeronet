@@ -321,6 +321,83 @@ void BM_ConnectionBatchSmallResponses(benchmark::State& state) {
 BENCHMARK(BM_ConnectionBatchSmallResponses)->Arg(10)->Arg(100);
 
 // ---------------------------------------------------------------------------
+// Connection: responses with owned bodies, written per batch or after each response
+// ---------------------------------------------------------------------------
+
+// Each response is its HEADERS frame (in the output buffer) and an owned body above the inline copy size (an output
+// block). drainEach=1 writes the output after each response, drainEach=0 once for the whole batch.
+void BM_ConnectionResponsesWithOwnedBodies(benchmark::State& state) {
+  const auto responseCount = static_cast<uint32_t>(state.range(0));
+  const bool drainEach = state.range(1) != 0;
+  constexpr std::size_t kBodySize = 1024;
+
+  RawBytes clientInput;
+  clientInput.append(reinterpret_cast<const std::byte*>(kConnectionPreface.data()), kConnectionPreface.size());
+  WriteSettingsFrame(clientInput, {});
+  WriteSettingsAckFrame(clientInput);
+  // Enough connection-level credit for all the bodies.
+  WriteWindowUpdateFrame(clientInput, 0, 1U << 20);
+
+  HpackEncoder encoder;
+  for (uint32_t streamIndex = 0; streamIndex < responseCount; ++streamIndex) {
+    RawBytes hpackBlock;
+    encoder.encode(hpackBlock, ":method", "GET");
+    encoder.encode(hpackBlock, ":path", "/body");
+    encoder.encode(hpackBlock, ":scheme", "https");
+    encoder.encode(hpackBlock, ":authority", "localhost");
+    WriteHeadersFrameWithPriority(clientInput, (streamIndex * 2U) + 1U,
+                                  std::span<const std::byte>(hpackBlock.begin(), hpackBlock.size()), 0, 16, false, true,
+                                  true);
+  }
+
+  vector<RawBytes> bodies;
+  vector<std::string_view> fragments;
+  const auto writeOutput = [&fragments](Http2Connection& connection) {
+    connection.getPendingOutputFragments(fragments);
+    benchmark::DoNotOptimize(fragments.data());
+    connection.onOutputWritten(connection.pendingOutputSize());
+  };
+  for ([[maybe_unused]] auto iteration : state) {
+    state.PauseTiming();
+    {
+      Http2Connection connection(Http2Config(), true);
+      auto input = std::span<const std::byte>(clientInput.begin(), clientInput.size());
+      while (!input.empty()) {
+        const auto result = connection.processInput(input);
+        input = input.subspan(result.bytesConsumed);
+      }
+      connection.onOutputWritten(connection.pendingOutputSize());
+      bodies.clear();
+      for (uint32_t streamIndex = 0; streamIndex < responseCount; ++streamIndex) {
+        RawBytes& body = bodies.emplace_back(kBodySize);
+        body.setSize(kBodySize);
+      }
+      state.ResumeTiming();
+
+      for (uint32_t streamIndex = 0; streamIndex < responseCount; ++streamIndex) {
+        const uint32_t streamId = (streamIndex * 2U) + 1U;
+        benchmark::DoNotOptimize(connection.sendHeaders(streamId, http::StatusCodeOK, HeadersView{}, false));
+        benchmark::DoNotOptimize(connection.sendData(streamId, std::move(bodies[streamIndex]), 0, kBodySize, true));
+        if (drainEach) {
+          writeOutput(connection);
+        }
+      }
+      if (!drainEach) {
+        writeOutput(connection);
+      }
+      benchmark::ClobberMemory();
+
+      state.PauseTiming();
+    }
+    state.ResumeTiming();
+  }
+  state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * responseCount);
+}
+BENCHMARK(BM_ConnectionResponsesWithOwnedBodies)
+    ->ArgsProduct({{10, 100}, {0, 1}})
+    ->ArgNames({"responses", "drainEach"});
+
+// ---------------------------------------------------------------------------
 // Connection: process N DATA frames (simulated fast path)
 // ---------------------------------------------------------------------------
 
