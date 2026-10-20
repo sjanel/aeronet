@@ -379,7 +379,8 @@ void Http2ProtocolHandler::onHeadersDecoded(uint32_t streamId, DecodedHeaders& d
 
   req._streamId = streamId;
   req._version = http::HTTP_2_0;
-  req._reqStart = std::chrono::steady_clock::now();
+  // Event loop time of the read that delivered these headers (as for HTTP/1): no clock read per stream.
+  req._reqStart = _pConnectionState->lastActivity;
   req._responsePossibleEncoding = encoding;
 
   // Create trace span for HTTP/2 request (mirrors HTTP/1 span from initTrySetHead)
