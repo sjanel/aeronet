@@ -117,7 +117,7 @@ router.setPath(http::Method::GET, "/inline", [](const HttpRequestView& req) {
 });
 ```
 
-An owned body smaller than `HttpServerConfig::minCapturedBodySize` (1 KiB by default) is copied next to the response head, which costs less than handling a separate buffer. Larger owned and static bodies are sent from their own buffer, without copy.
+An owned body smaller than `HttpServerConfig::minCapturedBodySize` (1 KiB by default) is copied next to the response head, which costs less than handling a separate buffer. Larger owned and static bodies are sent from their own buffer, without copy, over HTTP/1.1 and HTTP/2.
 
 `bodyAppend()` and `bodyInlineAppend()` also extend a moved or static body, at the end of its own buffer. A moved `std::string` or vector keeps its buffer, so its data is not copied unless it reallocates (`bodyInlineAppend()` zero-fills the `maxLen` new bytes of a vector before calling the writer, as a vector cannot hold uninitialized bytes). A static body or a `std::unique_ptr` buffer cannot grow: it is copied once into a buffer of the response, which further appends extend. Appending to a `file()` body throws `std::logic_error`.
 
