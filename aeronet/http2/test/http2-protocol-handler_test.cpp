@@ -278,6 +278,8 @@ class Http2ProtocolLoopback {
   }
 
   void feedHandler(std::span<const std::byte> bytes) {
+    // As the event loop does before handing a read to the handler (the request start time of its streams).
+    state.lastActivity = std::chrono::steady_clock::now();
     std::size_t safetyIters = 0;
     while (!bytes.empty()) {
       ++safetyIters;
