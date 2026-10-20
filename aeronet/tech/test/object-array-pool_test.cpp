@@ -190,6 +190,38 @@ TEST(ObjectArrayPoolMoveTest, MoveAssignmentOverExistingPool) {
   EXPECT_EQ(s0[1], 'b');
 }
 
+TEST(ObjectArrayPoolSwapTest, SwapExchangesBlocksWithoutMovingObjects) {
+  ObjectArrayPool<std::string> lhs(4);
+  std::string* pLhs = lhs.allocateAndDefaultConstruct(6);  // two blocks (4, then 6)
+  pLhs[5] = "lhs";
+
+  ObjectArrayPool<std::string> rhs(16);  // no block allocated yet
+  const auto lhsCapa = lhs.capacity();
+
+  lhs.swap(rhs);
+
+  EXPECT_EQ(lhs.capacity(), 0U);
+  EXPECT_EQ(rhs.capacity(), lhsCapa);
+  EXPECT_EQ(pLhs[5], "lhs");  // owned by rhs now, at the same address
+
+  // lhs got the initial capacity of rhs for its first block.
+  std::string* pFirst = lhs.allocateAndDefaultConstruct(1);
+  pFirst[0] = "first";
+  EXPECT_EQ(lhs.capacity(), 16U);
+
+  // Allocations after the swap go to the new owner, and clearing one pool leaves the objects of the other alive.
+  std::string* pRhs = rhs.allocateAndDefaultConstruct(2);
+  pRhs[1] = "rhs";
+  lhs.clear();
+  EXPECT_EQ(pLhs[5], "lhs");
+  EXPECT_EQ(pRhs[1], "rhs");
+
+  lhs.swap(rhs);
+  EXPECT_EQ(lhs.capacity(), lhsCapa + 12U);  // the 6-object block was followed by a 12-object one
+  EXPECT_EQ(rhs.capacity(), 16U);
+  EXPECT_EQ(pLhs[5], "lhs");
+}
+
 TEST(ObjectArrayPoolStressTest, BulkAllocateAndReset) {
   ObjectArrayPool<char> pool;
 

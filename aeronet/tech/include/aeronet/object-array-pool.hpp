@@ -42,6 +42,14 @@ class ObjectArrayPool {
 
   ~ObjectArrayPool() { reset(); }
 
+  // Exchanges the contents of two pools.
+  // No object pointers are invalidated: they belong to the other pool afterwards.
+  void swap(ObjectArrayPool& other) noexcept {
+    std::swap(_pFirstBlock, other._pFirstBlock);
+    std::swap(_pCurrentBlock, other._pCurrentBlock);
+    std::swap(_totalCapacity, other._totalCapacity);
+  }
+
   // Allocates and default constructs an array of nbElems objects in the pool with the provided arguments.
   // Returned pointer remains valid until the pool is destroyed.
   // Note: calling allocate with 0 elements is possible, and returns a non-null pointer
