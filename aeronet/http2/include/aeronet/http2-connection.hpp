@@ -2,6 +2,7 @@
 
 #include <amc/type_traits.hpp>
 #include <array>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -299,27 +300,27 @@ class Http2Connection {
 
   using StreamsMap = flat_hash_map<uint32_t, Http2Stream>;
 
+  // A payload sent as frames without copy, its memory being owned by the block. It is sent after the bytes of the
+  // output buffer before its buffer offset: the output buffer keeps accumulating the next frames after it.
   class OutputBlock {
    public:
-    // Unframed 'bytes' (a sealed output buffer), whose memory is owned by 'owner'.
-    OutputBlock(HttpMessageData&& owner, std::span<const std::byte> bytes) noexcept;
-
-    // 'payload' sent as DATA frames, its memory being owned by 'owner'.
-    [[nodiscard]] static OutputBlock Data(HttpMessageData&& owner, std::span<const std::byte> payload,
-                                          uint32_t maxFrameSize, uint32_t streamId, bool endStream) {
-      return {std::move(owner), payload, maxFrameSize, streamId, endStream, false};
-    }
-
-    // 'payload' (a header block) sent as a HEADERS frame and its CONTINUATION frames, its memory being owned by
-    // 'owner'.
-    [[nodiscard]] static OutputBlock Headers(HttpMessageData&& owner, std::span<const std::byte> payload,
-                                             uint32_t maxFrameSize, uint32_t streamId, bool endStream) {
-      return {std::move(owner), payload, maxFrameSize, streamId, endStream, true};
-    }
+    // 'payload' sent after the first 'bufferOffset' bytes of the output buffer, as DATA frames, or as a HEADERS frame
+    // and its CONTINUATION frames for a header block ('headers'). Its memory is owned by 'owner'.
+    OutputBlock(HttpMessageData&& owner, std::span<const std::byte> payload, std::size_t bufferOffset,
+                uint32_t maxFrameSize, uint32_t streamId, bool endStream, bool headers);
 
     [[nodiscard]] bool empty() const noexcept { return _remainingSize == 0; }
 
     [[nodiscard]] std::size_t remainingSize() const noexcept { return _remainingSize; }
+
+    // Number of output buffer bytes sent before this block.
+    [[nodiscard]] std::size_t bufferOffset() const noexcept { return _bufferOffset; }
+
+    // Account for the erasure of the first 'nbBytes' bytes of the output buffer, all sent before this block.
+    void onBufferFrontErased(std::size_t nbBytes) noexcept {
+      assert(nbBytes <= _bufferOffset);
+      _bufferOffset -= nbBytes;
+    }
 
     [[nodiscard]] std::string_view firstFragment() const noexcept;
 
@@ -335,8 +336,9 @@ class Http2Connection {
                                                      amc::is_trivially_relocatable_v<RawBytes32>>;
 
    private:
-    OutputBlock(HttpMessageData&& owner, std::span<const std::byte> payload, uint32_t maxFrameSize, uint32_t streamId,
-                bool endStream, bool headers);
+    [[nodiscard]] uint32_t frameCount() const noexcept {
+      return static_cast<uint32_t>((_payloadSize + _maxFrameSize - 1U) / _maxFrameSize);
+    }
 
     [[nodiscard]] std::size_t framePayloadSize(uint32_t frameIndex) const noexcept;
 
@@ -352,12 +354,12 @@ class Http2Connection {
     const std::byte* _pPayload{nullptr};
     std::size_t _payloadSize{0};
     std::size_t _remainingSize{0};
+    std::size_t _bufferOffset{0};
     uint32_t _maxFrameSize{0};
     uint32_t _frameIndex{0};
     uint32_t _framePayloadOffset{0};
     std::array<std::byte, FrameHeader::kSize> _firstHeader{};
     uint8_t _headerOffset{0};
-    bool _framed{false};
   };
 
   // ============================
@@ -415,12 +417,12 @@ class Http2Connection {
   [[nodiscard]] ErrorCode prepareSendData(uint32_t streamId, std::size_t dataSize, bool endStream);
 
   void queueDataBlock(HttpMessageData&& owner, std::span<const std::byte> data, uint32_t streamId, bool endStream) {
-    queueOutputBlock(OutputBlock::Data(std::move(owner), data, _peerSettings.maxFrameSize, streamId, endStream));
+    queueOutputBlock(std::move(owner), data, streamId, endStream, false);
   }
 
-  void queueOutputBlock(OutputBlock block);
-
-  void sealOutputBuffer();
+  // Queue 'payload' (a header block if 'headers', DATA otherwise), owned by 'owner', after the output buffer bytes.
+  void queueOutputBlock(HttpMessageData&& owner, std::span<const std::byte> payload, uint32_t streamId, bool endStream,
+                        bool headers);
 
   void recordFrame(bool sent, FrameType type, uint64_t payloadBytes, uint64_t count = 1UL) const noexcept;
 
@@ -469,7 +471,8 @@ class Http2Connection {
   // Header block accumulation (for CONTINUATION frames)
   RawBytes _headerBlockBuffer;
 
-  // Output buffer
+  // Output: the frames written in '_outputBuffer', with the queued blocks inserted at their buffer offset. The buffer
+  // is kept across the blocks (and its capacity across responses), only its written bytes being erased.
   vector<OutputBlock> _outputBlocks;
   RawBytes _outputBuffer;
   std::size_t _outputBlocksSize{0};
