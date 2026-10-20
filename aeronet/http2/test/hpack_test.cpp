@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <random>
 #include <span>
 #include <string>
@@ -140,6 +141,25 @@ TEST(HpackDynamicTable, Eviction) {
   EXPECT_EQ(entry.value(), "value3");
 }
 
+TEST(HpackDynamicTable, AddWithTheNameOfTheEvictedEntry) {
+  // A literal field with incremental indexing may take its name from the oldest entry, evicted by its own insertion,
+  // whose buffer is reused for the new entry: large enough, or reallocated.
+  for (const std::size_t valueSize : {1U, 20U}) {
+    HpackDynamicTable table(200);
+    ASSERT_TRUE(table.add("x-oldest", "abcdef"));              // 46 bytes
+    ASSERT_TRUE(table.add("x-newer", std::string(100, 'n')));  // 139 bytes
+    const std::string value(valueSize, 'v');
+
+    ASSERT_TRUE(table.add(table[1].name(), value));
+
+    ASSERT_EQ(table.entryCount(), 2U);
+    EXPECT_EQ(table[0].name(), "x-oldest");
+    EXPECT_EQ(table[0].value(), value);
+    EXPECT_EQ(table[1].name(), "x-newer");
+    EXPECT_EQ(table.currentSizeBytes(), 139U + 8U + valueSize + 32U);
+  }
+}
+
 TEST(HpackDynamicTable, SetMaxSize) {
   HpackDynamicTable table(4096);
   table.add("header1", "value1");  // 45 bytes
@@ -198,7 +218,7 @@ TEST(HpackDynamicTable, AddEntryTooLarge) {
 
 namespace {
 
-HpackDecoder CreateHpackDecoder() { return {4096, true}; }
+HpackDecoder CreateHpackDecoder() { return {4096, std::numeric_limits<uint32_t>::max(), true}; }
 
 }  // namespace
 
@@ -893,6 +913,135 @@ TEST(HpackDecoder, TakenOverHeadersOutliveTheNextDecodes) {
   }
 }
 
+TEST(HpackDecoder, HeaderListBeyondTheLimitIsNotStored) {
+  static constexpr uint32_t kMaxHeaderListSize = 8192;
+  HpackDecoder decoder(4096, kMaxHeaderListSize, true);
+  HpackEncoder encoder(4096);
+
+  // A 4000-byte field added to the dynamic table, then referenced by each of the next 1000 bytes of the block: a 4 KB
+  // block for a 4 MB header list, whose repeated values, joined as they came, took gigabytes to store.
+  const std::string value(4000, 'v');
+  RawBytes block;
+  encoder.encode(block, "x-a", value);
+  ASSERT_EQ(encoder.dynamicTable().entryCount(), 1U);
+  for (int idx = 0; idx < 1000; ++idx) {
+    block.push_back(std::byte{0xBE});  // indexed field 62: x-a
+  }
+
+  const auto result = decoder.decode(block);
+
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::HeaderListTooLarge);
+  EXPECT_FALSE(result.isCompressionError());
+  EXPECT_EQ(result.headerListSize, 1001U * (std::string_view("x-a").size() + value.size() + 32U));
+  // Only the fields within the limit were stored.
+  EXPECT_LE(result.decodedHeaders.storage.capacity(), 8U * kMaxHeaderListSize);
+
+  // The dynamic table stays in sync with the encoder: the next block can reference the field.
+  static constexpr uint8_t reference[]{0xBE};
+  const auto next = decoder.decode(AsBytes(reference));
+  ASSERT_TRUE(next.isSuccess());
+  EXPECT_EQ(next.decodedHeaders.headers.at("x-a"), value);
+}
+
+TEST(HpackDecoder, HeaderListAtTheLimitIsAccepted) {
+  static constexpr uint32_t kMaxHeaderListSize = 100;
+  HpackDecoder decoder(4096, kMaxHeaderListSize, true);
+  HpackEncoder encoder(4096);
+  static constexpr auto kWithoutIndexing = HpackEncoder::IndexingMode::WithoutIndexing;
+
+  // name + value + 32 bytes: exactly the limit, then one byte more.
+  RawBytes atLimit;
+  encoder.encode(atLimit, "x", std::string(kMaxHeaderListSize - 1U - 32U, 'a'), kWithoutIndexing);
+  const auto atLimitResult = decoder.decode(atLimit);
+  ASSERT_TRUE(atLimitResult.isSuccess());
+  EXPECT_EQ(atLimitResult.headerListSize, kMaxHeaderListSize);
+  EXPECT_EQ(atLimitResult.decodedHeaders.headers.at("x").size(), kMaxHeaderListSize - 1U - 32U);
+
+  RawBytes overLimit;
+  encoder.encode(overLimit, "x", std::string(kMaxHeaderListSize - 32U, 'a'), kWithoutIndexing);
+  const auto overLimitResult = decoder.decode(overLimit);
+  EXPECT_EQ(overLimitResult.error, HpackDecoder::DecodeResult::Error::HeaderListTooLarge);
+  EXPECT_TRUE(overLimitResult.decodedHeaders.headers.empty());
+
+  // A malformed field within the limit is reported rather than the size of the list.
+  RawBytes malformedFirst;
+  encoder.encode(malformedFirst, "x", " a", kWithoutIndexing);  // no leading whitespace (RFC 9113 §8.2.1)
+  encoder.encode(malformedFirst, "y", std::string(kMaxHeaderListSize, 'b'), kWithoutIndexing);
+  EXPECT_EQ(decoder.decode(malformedFirst).error, HpackDecoder::DecodeResult::Error::MalformedFieldValue);
+}
+
+TEST(HpackDecoder, RepeatedFieldsAreJoinedInOrder) {
+  HpackEncoder encoder(4096);
+  auto decoder = CreateHpackDecoder();
+
+  RawBytes block;
+  encoder.encode(block, "x-list", "1");
+  encoder.encode(block, "cookie", "a=1");
+  encoder.encode(block, "x-list", "2");
+  encoder.encode(block, "accept", "");
+  encoder.encode(block, "cookie", "b=2");
+  encoder.encode(block, "accept", "text/html");
+  encoder.encode(block, "x-list", "3");
+  encoder.encode(block, "accept", "");
+  encoder.encode(block, "accept", "*/*");
+
+  const auto result = decoder.decode(block);
+
+  ASSERT_TRUE(result.isSuccess());
+  ASSERT_EQ(result.decodedHeaders.headers.size(), 3U);
+  EXPECT_EQ(result.decodedHeaders.headers.at("x-list"), "1,2,3");
+  EXPECT_EQ(result.decodedHeaders.headers.at("cookie"), "a=1;b=2");
+  EXPECT_EQ(result.decodedHeaders.headers.at("accept"), "text/html,*/*");
+}
+
+TEST(HpackDecoder, ManyRepeatedFieldsAreJoinedOnceInOrder) {
+  HpackEncoder encoder(4096);
+  auto decoder = CreateHpackDecoder();
+
+  // Two fields repeated in turn, 1000 times each: joining each value as it comes would copy the previous ones each
+  // time, about 4 MB of copies. The values of each field are joined in their order.
+  static constexpr int kNbValues = 1000;
+  RawBytes block;
+  std::string expected;
+  for (int idx = 0; idx < kNbValues; ++idx) {
+    const std::string value = std::to_string(idx);
+    encoder.encode(block, "x-a", value);
+    encoder.encode(block, "x-b", value);
+    if (idx != 0) {
+      expected.push_back(',');
+    }
+    expected.append(value);
+  }
+
+  const auto result = decoder.decode(block);
+
+  ASSERT_TRUE(result.isSuccess());
+  ASSERT_EQ(result.decodedHeaders.headers.size(), 2U);
+  EXPECT_EQ(result.decodedHeaders.headers.at("x-a"), expected);
+  EXPECT_EQ(result.decodedHeaders.headers.at("x-b"), expected);
+  EXPECT_LT(result.decodedHeaders.storage.capacity(), 64U << 10U);
+}
+
+TEST(HpackDecoder, HuffmanContentEncodingKeepsItsCaseInTheDynamicTable) {
+  HpackEncoder encoder(4096);
+  auto decoder = CreateHpackDecoder();
+
+  static constexpr std::string_view kValue = "GZIP-AND-SOME-MORE-UPPERCASE";
+  RawBytes block;
+  encoder.encode(block, "content-encoding", kValue);
+  // Literal with incremental indexing of static name 26, then its value, Huffman-encoded.
+  ASSERT_EQ(static_cast<uint8_t>(block[0]), 0x5AU);
+  ASSERT_NE(static_cast<uint8_t>(block[1]) & 0x80U, 0U);
+
+  const auto result = decoder.decode(block);
+
+  ASSERT_TRUE(result.isSuccess());
+  EXPECT_EQ(result.decodedHeaders.headers.at("content-encoding"), "gzip-and-some-more-uppercase");
+  // The dynamic table keeps the field as received, in sync with the encoder.
+  ASSERT_EQ(decoder.dynamicTable().entryCount(), 1U);
+  EXPECT_EQ(decoder.dynamicTable()[0].value(), kValue);
+}
+
 TEST(HpackDecoder, DecodeDynamicTableSizeUpdate) {
   auto decoder = CreateHpackDecoder();
 
@@ -1083,7 +1232,8 @@ TEST(HpackDecoder, ClearDecodedStrings) {
 TEST(HpackDecoder, IndexedNameSelfEviction) {
   // Table just large enough for a single small entry: the slightest addition
   // will force its eviction.
-  HpackDecoder decoder(40, true);  // kHpackOverhead(32) + "ck"(2) + "v1"(2) = 36 <= 40
+  HpackDecoder decoder(40, std::numeric_limits<uint32_t>::max(),
+                       true);  // kHpackOverhead(32) + "ck"(2) + "v1"(2) = 36 <= 40
 
   // 1) New literal-with-indexing entry: "ck" -> "v1"
   static constexpr uint8_t firstBlock[]{0x40, 0x02, 'c', 'k', 0x02, 'v', '1'};

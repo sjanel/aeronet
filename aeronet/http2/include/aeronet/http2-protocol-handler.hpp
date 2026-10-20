@@ -1,6 +1,5 @@
 #pragma once
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -231,7 +230,9 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
     StreamRequest() noexcept = default;
 
     StreamRequest(const StreamRequest&) = delete;
+    StreamRequest(StreamRequest&&) noexcept = delete;
     StreamRequest& operator=(const StreamRequest&) = delete;
+    StreamRequest& operator=(StreamRequest&&) noexcept = delete;
 
     ~StreamRequest();
 
@@ -243,17 +244,12 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
     // The content-length of the request, which its DATA frames must match (RFC 9113 §8.1.1).
     std::size_t declaredBodyLength{kUnknownBodyLength};
     // The decoded bytes of the headers and of the trailers of the request, taken over from the HPACK decoder.
-    DecodedHeaders::Storage headerStorage{DecodedHeaders::kStorageInitialCapacity};
-    DecodedHeaders::Storage trailerStorage{DecodedHeaders::kStorageInitialCapacity};
+    DecodedHeaders::Storage storage{DecodedHeaders::kStorageInitialCapacity};
     // Read position of the body for readBody() / hasMoreBody().
     HttpRequestView::AggregatedBodyContext bodyContext;
   };
 
   using StreamRequestPtr = std::unique_ptr<StreamRequest>;
-
-  /// Most recycled requests kept by a connection. Requests are released as soon as answered, so that this many is only
-  /// reached by streams receiving their bodies (or waiting for async handlers) at the same time.
-  static constexpr std::size_t kMaxRecycledRequests = 8;
 
   struct PendingFileSend {
     FilePayload filePayload;
@@ -357,8 +353,8 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   /// A request for a new stream: a recycled one if any.
   [[nodiscard]] StreamRequestPtr acquireRequest();
 
-  /// Release the request of a stream (if any), kept for the next streams up to kMaxRecycledRequests.
-  void recycleRequest(StreamRequestPtr& pRequest) noexcept;
+  /// Release the request of a stream (if any), kept for the next streams up to Http2Config::maxRecycledRequests.
+  void recycleRequest(StreamRequestPtr& pRequest);
 
   /// Answer 413 to a request whose body exceeds the server limit, while the client is still sending it, then reset the
   /// stream (NO_ERROR) so that the client stops sending it.
@@ -440,9 +436,8 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
 
   Router* _pRouter;
 
-  /// Requests of closed streams, reused by the next ones (see recycleRequest()): the first _nbRecycledRequests.
-  std::array<StreamRequestPtr, kMaxRecycledRequests> _recycledRequests;
-  uint8_t _nbRecycledRequests{0};
+  /// Requests of closed streams, reused by the next ones (see recycleRequest()).
+  vector<StreamRequestPtr> _recycledRequests;
 
   /// Pool for PendingWork allocations (avoids repeated heap alloc/free cycles).
   ObjectPool<PendingWork> _pendingWorkPool;

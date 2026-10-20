@@ -237,7 +237,7 @@ Http2Connection::Http2Connection(const Http2Config& config, bool isServer, traci
       _connectionSendWindow(static_cast<int32_t>(kDefaultInitialWindowSize)),
       _connectionRecvWindow(static_cast<int32_t>(config.connectionWindowSize)),
       _hpackEncoder(config.headerTableSize),
-      _hpackDecoder(config.headerTableSize, config.mergeUnknownRequestHeaders),
+      _hpackDecoder(config.headerTableSize, config.maxHeaderListSize, config.mergeUnknownRequestHeaders),
       _pTelemetryContext(telemetryContext != nullptr && telemetryContext->enabled() ? telemetryContext : nullptr),
       _isServer(isServer) {}
 
@@ -1498,14 +1498,15 @@ ErrorCode Http2Connection::decodeAndEmitHeaders(uint32_t streamId, std::span<con
   const auto decodeResult = _hpackDecoder.decode(headerBlock);
 
   if (!decodeResult.isSuccess()) {
-    return decodeResult.isCompressionError() ? ErrorCode::CompressionError : ErrorCode::ProtocolError;
+    if (decodeResult.isCompressionError()) {
+      return ErrorCode::CompressionError;
+    }
+    // A header list above the local limit (decoded only to keep the dynamic table in sync).
+    return decodeResult.error == HpackDecoder::DecodeResult::Error::HeaderListTooLarge ? ErrorCode::EnhanceYourCalm
+                                                                                       : ErrorCode::ProtocolError;
   }
 
   recordHpack(false, headerBlock.size(), decodeResult.headerListSize);
-
-  if (decodeResult.headerListSize > _localSettings.maxHeaderListSize) {
-    return ErrorCode::EnhanceYourCalm;
-  }
 
   if (_sink != nullptr) {
     _sink->onHeadersDecoded(streamId, decodeResult.decodedHeaders, endStream);

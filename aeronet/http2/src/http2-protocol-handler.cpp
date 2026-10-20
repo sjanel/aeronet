@@ -104,14 +104,6 @@ namespace {
 constexpr std::size_t kMaxRecycledBufferBytes = 16UL << 10U;  // 16 KiB
 constexpr std::size_t kMaxRecycledMapBuckets = 64;
 
-void ClearOrRelease(DecodedHeaders::Storage& storage) noexcept {
-  if (storage.capacity() <= kMaxRecycledBufferBytes) {
-    storage.clear();
-  } else {
-    storage.reset();
-  }
-}
-
 }  // namespace
 
 Http2ProtocolHandler::StreamRequest::~StreamRequest() = default;
@@ -139,8 +131,11 @@ void Http2ProtocolHandler::StreamRequest::clear() noexcept {
     bodyBuffer = {};
   }
   declaredBodyLength = kUnknownBodyLength;
-  ClearOrRelease(headerStorage);
-  ClearOrRelease(trailerStorage);
+  if (storage.capacity() <= kMaxRecycledBufferBytes) {
+    storage.clear();
+  } else {
+    storage.reset();
+  }
   bodyContext = {};
 }
 
@@ -270,7 +265,7 @@ void Http2ProtocolHandler::onHeadersDecoded(uint32_t streamId, DecodedHeaders& d
   // RFC 9113 §8.3: request pseudo-headers are context-specific, unique (enforced while decoding), and mandatory
   // according to the request form. :authority is optional for ordinary requests because a target URI can legitimately
   // have no authority component; CONNECT is the exception and requires it instead of :scheme/:path.
-  for (std::size_t pseudoHeaderIdx = 0; pseudoHeaderIdx < kPseudoHeaderNames.size(); ++pseudoHeaderIdx) {
+  for (std::size_t pseudoHeaderIdx = 0; pseudoHeaderIdx < std::size(kPseudoHeaderNames); ++pseudoHeaderIdx) {
     const auto pseudoHeader = static_cast<PseudoHeader>(pseudoHeaderIdx);
     if (decodedHeaders.hasPseudoHeader(pseudoHeader) && decodedHeaders.pseudoHeader(pseudoHeader).empty()) {
       // There is no possible valid HTTP/2 request with an empty pseudo-header field value, so this is a protocol error.
@@ -321,7 +316,7 @@ void Http2ProtocolHandler::onHeadersDecoded(uint32_t streamId, DecodedHeaders& d
   // The request takes the decoded headers and their bytes over, without copying them: the decoder is given the
   // (empty) map and storage of the request instead, which keep the capacity of the previous requests.
   req._headers.swap(decodedHeaders.headers);
-  streamReq.headerStorage.swap(decodedHeaders.storage);
+  streamReq.storage.swap(decodedHeaders.storage);
 
   req._method = parsedMethod;
   req._headSpanSize = decodedHeaders.namesAndValuesSize;
@@ -551,11 +546,12 @@ void Http2ProtocolHandler::onTrailersReceived(StreamsMap::iterator it, DecodedHe
     return;
   }
 
-  // The request takes the decoded trailers and their bytes over, like its headers (see onHeadersDecoded()).
+  // The request takes the decoded trailers over without copying them, like its headers (see onHeadersDecoded()): their
+  // map is swapped, and the blocks of their storage join the storage of the request, after the bytes of its headers.
   StreamRequest& streamReq = *state.request;
   HttpRequestView& req = streamReq.request;
   req._trailers.swap(trailers.headers);
-  streamReq.trailerStorage.swap(trailers.storage);
+  streamReq.storage.splice(trailers.storage);
 
   // Trailers count toward the request head-size budget, combined with the initial headers.
   req._headSpanSize += trailers.namesAndValuesSize;
@@ -629,22 +625,23 @@ void Http2ProtocolHandler::releasePendingSend(const StreamState& state) noexcept
 }
 
 Http2ProtocolHandler::StreamRequestPtr Http2ProtocolHandler::acquireRequest() {
-  if (_nbRecycledRequests == 0) {
+  if (_recycledRequests.empty()) {
     return std::make_unique<StreamRequest>();
   }
-  return std::move(_recycledRequests[--_nbRecycledRequests]);
+  return _recycledRequests.pop_back_val();
 }
 
-void Http2ProtocolHandler::recycleRequest(StreamRequestPtr& pRequest) noexcept {
+void Http2ProtocolHandler::recycleRequest(StreamRequestPtr& pRequest) {
   if (!pRequest) {
     return;
   }
-  if (_nbRecycledRequests == kMaxRecycledRequests) {
+  // The limit may have been lowered by a configuration update: the requests kept beyond it are reused first.
+  if (_recycledRequests.size() >= _pServerConfig->http2.maxRecycledRequests) {
     pRequest.reset();
     return;
   }
   pRequest->clear();
-  _recycledRequests[_nbRecycledRequests++] = std::move(pRequest);
+  _recycledRequests.push_back(std::move(pRequest));
 }
 
 void Http2ProtocolHandler::releaseStreamAfterResponse(StreamsMap::iterator it) {

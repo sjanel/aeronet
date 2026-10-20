@@ -50,6 +50,10 @@ class ObjectArrayPool {
     std::swap(_totalCapacity, other._totalCapacity);
   }
 
+  // Moves the objects of other to this pool, along with their blocks: nothing is copied, their pointers stay valid and
+  // belong to this pool. The next allocations continue in the current block of other. other is left without blocks.
+  void splice(ObjectArrayPool& other) noexcept;
+
   // Allocates and default constructs an array of nbElems objects in the pool with the provided arguments.
   // Returned pointer remains valid until the pool is destroyed.
   // Note: calling allocate with 0 elements is possible, and returns a non-null pointer
@@ -186,6 +190,33 @@ ObjectArrayPool<T, SizeType>& ObjectArrayPool<T, SizeType>::operator=(ObjectArra
     _totalCapacity = std::exchange(other._totalCapacity, kDefaultInitialCapacity);
   }
   return *this;
+}
+
+template <class T, class SizeType>
+void ObjectArrayPool<T, SizeType>::splice(ObjectArrayPool& other) noexcept {
+  if (other._pFirstBlock == nullptr) {
+    return;
+  }
+  if (_pFirstBlock == nullptr) {
+    swap(other);
+    return;
+  }
+
+  // The blocks of other follow all the blocks of this pool: the empty ones after its current block are skipped until
+  // the next clear(), like the blocks skipped by getOrCreateNewBlock().
+  Block* pLastBlock = _pCurrentBlock;
+  while (pLastBlock->pNextBlock != nullptr) {
+    pLastBlock = pLastBlock->pNextBlock;
+  }
+  pLastBlock->pNextBlock = other._pFirstBlock;
+  other._pFirstBlock->pPrevBlock = pLastBlock;
+  _pCurrentBlock = other._pCurrentBlock;
+  _totalCapacity += other._totalCapacity;
+
+  // As after reset(): the initial capacity of other is the one of its first block.
+  other._totalCapacity = other._pFirstBlock->capacity;
+  other._pFirstBlock = nullptr;
+  other._pCurrentBlock = nullptr;
 }
 
 template <class T, class SizeType>

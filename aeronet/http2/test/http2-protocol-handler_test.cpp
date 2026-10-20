@@ -6798,38 +6798,46 @@ TEST(Http2ProtocolHandler, MoreConcurrentRequestsThanRecycledOnes) {
   router.setPath(http::Method::POST, "/echo",
                  [](const HttpRequestView& req) { return HttpResponse(http::StatusCodeOK, req.body()); });
 
-  Http2ProtocolLoopback loop(router);
-  loop.connect();
+  // Without recycling, with fewer recycled requests than requests at the same time, and with more.
+  for (const uint8_t maxRecycledRequests : {uint8_t{0}, uint8_t{8}, uint8_t{255}}) {
+    Http2ProtocolLoopback loop(router);
+    loop.serverConfig.http2.maxRecycledRequests = maxRecycledRequests;
+    loop.connect();
 
-  // More requests receiving their bodies at the same time than the recycled ones kept: some are released, the other
-  // ones reused by the next round. Each request must see its own headers and body.
-  static constexpr uint32_t kNbStreams = 12;
-  uint32_t streamId = 1;
-  for (int round = 0; round < 2; ++round) {
-    const uint32_t firstStreamId = streamId;
-    for (uint32_t idx = 0; idx < kNbStreams; ++idx, streamId += 2) {
-      RawChars hdrs;
-      hdrs.append(MakeHttp1HeaderLine(":method", "POST"));
-      hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
-      hdrs.append(MakeHttp1HeaderLine(":path", "/echo"));
-      hdrs.append(MakeHttp1HeaderLine("x-stream", std::to_string(streamId)));
-      ASSERT_EQ(loop.client.sendHeaders(streamId, http::StatusCode{}, HeadersView(hdrs), false), ErrorCode::NoError);
-      ASSERT_EQ(loop.client.sendData(streamId, AsBytes("body-"), false), ErrorCode::NoError);
-    }
-    loop.pumpClientToServer();
-    for (uint32_t id = firstStreamId; id != streamId; id += 2) {
-      const std::string end = std::to_string(id) + std::string(id, 'x');
-      ASSERT_EQ(loop.client.sendData(id, AsBytes(end), true), ErrorCode::NoError);
-    }
-    loop.pumpClientToServer();
-    loop.pumpServerToClient();
+    // Requests receiving their bodies at the same time: some are released, the other ones reused by the next round.
+    // Each request must see its own headers and body.
+    static constexpr uint32_t kNbStreams = 12;
+    uint32_t streamId = 1;
+    for (int round = 0; round < 3; ++round) {
+      if (round == 2) {
+        // The limit is read on each release: lowered below the requests kept, these are reused first.
+        loop.serverConfig.http2.maxRecycledRequests = std::min<uint8_t>(maxRecycledRequests, 2);
+      }
+      const uint32_t firstStreamId = streamId;
+      for (uint32_t idx = 0; idx < kNbStreams; ++idx, streamId += 2) {
+        RawChars hdrs;
+        hdrs.append(MakeHttp1HeaderLine(":method", "POST"));
+        hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+        hdrs.append(MakeHttp1HeaderLine(":path", "/echo"));
+        hdrs.append(MakeHttp1HeaderLine("x-stream", std::to_string(streamId)));
+        ASSERT_EQ(loop.client.sendHeaders(streamId, http::StatusCode{}, HeadersView(hdrs), false), ErrorCode::NoError);
+        ASSERT_EQ(loop.client.sendData(streamId, AsBytes("body-"), false), ErrorCode::NoError);
+      }
+      loop.pumpClientToServer();
+      for (uint32_t id = firstStreamId; id != streamId; id += 2) {
+        const std::string end = std::to_string(id) + std::string(id, 'x');
+        ASSERT_EQ(loop.client.sendData(id, AsBytes(end), true), ErrorCode::NoError);
+      }
+      loop.pumpClientToServer();
+      loop.pumpServerToClient();
 
-    for (uint32_t id = firstStreamId; id != streamId; id += 2) {
-      EXPECT_EQ(ResponseStatus(loop, id), "200");
-      EXPECT_EQ(loop.receivedData(id), "body-" + std::to_string(id) + std::string(id, 'x'));
+      for (uint32_t id = firstStreamId; id != streamId; id += 2) {
+        EXPECT_EQ(ResponseStatus(loop, id), "200");
+        EXPECT_EQ(loop.receivedData(id), "body-" + std::to_string(id) + std::string(id, 'x'));
+      }
     }
+    EXPECT_TRUE(loop.streamResets.empty());
   }
-  EXPECT_TRUE(loop.streamResets.empty());
 }
 
 TEST(Http2ProtocolHandler, RecycledRequestReleasesItsLargeBuffers) {
@@ -6870,8 +6878,9 @@ TEST(Http2ProtocolHandler, RecycledRequestReleasesItsLargeBuffers) {
   post(1, 20000);  // a body buffer too large to be kept
   get(3, 100);     // a header map too large to be kept
 
-  // A header list above the limit grows the storage of the decoder before being refused: the next request takes this
-  // storage over, too large to be kept once recycled.
+  // A header list above the limit is refused without being stored, but the Huffman decoding of its value (which the
+  // dynamic table may need) grows the storage of the decoder: the next request takes this storage over, too large to be
+  // kept once recycled.
   RawChars hugeHdrs = MakeGetHeaders("/count");
   hugeHdrs.append(MakeHttp1HeaderLine("x-huge", std::string(20000, 'h')));
   ASSERT_EQ(loop.client.sendHeaders(5, http::StatusCode{}, HeadersView(hugeHdrs), true), ErrorCode::NoError);
