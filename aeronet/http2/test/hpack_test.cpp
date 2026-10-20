@@ -1301,6 +1301,130 @@ TEST(HpackEncoder, EncodeWithoutIndexing_NewName) {
   EXPECT_EQ(static_cast<uint8_t>(output[0]) & 0xF0U, 0x00);
 }
 
+TEST(HpackEncoder, FieldsWhoseValueVariesPerMessageAreNotIndexed) {
+  for (const std::string_view name : {
+           "age",
+           "content-length",
+           "etag",
+           "if-modified-since",
+           "if-none-match",
+           "last-modified",
+           "location",
+           "set-cookie",
+       }) {
+    EXPECT_EQ(HpackEncoder::IndexingModeOf(name, "v"), HpackEncoder::IndexingMode::WithoutIndexing) << name;
+  }
+  // Including names of the same length as those (and as the credentials).
+  for (const std::string_view name : {
+           ":status",
+           "content-type",
+           "date",
+           "cache-control",
+           "server",
+           "vary",
+           "host",
+           "via",
+           "x-etag",
+           "content-range",
+           "last-modifiex",
+           "if-none-matcx",
+           "content-lengtx",
+           "x-custom-header",
+           "if-modified-sincx",
+           "locatiox",
+           "set-cookix",
+           "cookix",
+           "authorizatiox",
+           "proxy-authorizatiox",
+           "content-disposition",
+           "x",
+       }) {
+    EXPECT_EQ(HpackEncoder::IndexingModeOf(name, "v"), HpackEncoder::IndexingMode::Indexed) << name;
+  }
+}
+
+TEST(HpackEncoder, CredentialsAreNeverIndexed) {
+  const std::string longValue(100, 'a');
+  for (const std::string_view name : {"authorization", "proxy-authorization"}) {
+    for (const std::string_view value :
+         {std::string_view{}, std::string_view{"Basic dXNlcjpwYXNz"}, std::string_view{longValue}}) {
+      EXPECT_EQ(HpackEncoder::IndexingModeOf(name, value), HpackEncoder::IndexingMode::NeverIndexed) << name;
+    }
+  }
+  // Short cookie values may be guessed, long ones are indexed.
+  for (std::size_t valueSize = 0; valueSize < 20U; ++valueSize) {
+    EXPECT_EQ(HpackEncoder::IndexingModeOf("cookie", std::string_view(longValue).substr(0, valueSize)),
+              HpackEncoder::IndexingMode::NeverIndexed)
+        << valueSize;
+  }
+  EXPECT_EQ(HpackEncoder::IndexingModeOf("cookie", std::string_view(longValue).substr(0, 20)),
+            HpackEncoder::IndexingMode::Indexed);
+  EXPECT_EQ(HpackEncoder::IndexingModeOf("cookie", longValue), HpackEncoder::IndexingMode::Indexed);
+}
+
+TEST(HpackEncoder, CredentialsAreSentAsNeverIndexedLiterals) {
+  HpackEncoder encoder(4096);
+  auto decoder = CreateHpackDecoder();
+  const std::string longCookie = "session=" + std::string(32, 'c');
+  const std::pair<std::string_view, std::string_view> fields[]{
+      {"authorization", "Bearer abc"},
+      {"proxy-authorization", "Basic dXNlcjpwYXNz"},
+      {"cookie", "id=42"},
+      {"cookie", longCookie},
+  };
+  for (int requestIdx = 0; requestIdx < 2; ++requestIdx) {
+    for (const auto& [name, value] : fields) {
+      RawBytes encoded;
+      encoder.encode(encoded, name, value, HpackEncoder::IndexingModeOf(name, value));
+      const bool isLongCookie = value.size() == longCookie.size();
+      if (isLongCookie && requestIdx == 1) {
+        // Indexed by the first request: a single byte referencing the dynamic table entry.
+        EXPECT_EQ(encoded.size(), 1U);
+        EXPECT_EQ(static_cast<uint8_t>(encoded[0]) & 0x80U, 0x80U);
+      } else if (!isLongCookie) {
+        // Literal never indexed (0001xxxx), on each request.
+        EXPECT_EQ(static_cast<uint8_t>(encoded[0]) & 0xF0U, 0x10U) << name;
+      }
+      const auto result = decoder.decode(encoded);
+      ASSERT_TRUE(result.isSuccess());
+      ASSERT_EQ(result.decodedHeaders.size(), 1U);
+      EXPECT_EQ(result.decodedHeaders.begin()->first, name);
+      EXPECT_EQ(result.decodedHeaders.begin()->second, value);
+    }
+    // Only the long cookie is in the dynamic tables.
+    ASSERT_EQ(encoder.dynamicTable().entryCount(), 1U);
+    EXPECT_EQ(encoder.dynamicTable()[0].value(), longCookie);
+    EXPECT_EQ(decoder.dynamicTable().entryCount(), 1U);
+  }
+}
+
+TEST(HpackEncoder, FieldsWithoutIndexingLeaveTheDynamicTableToRepeatedOnes) {
+  HpackEncoder encoder(4096);
+  auto decoder = CreateHpackDecoder();
+  for (int responseIdx = 0; responseIdx < 3; ++responseIdx) {
+    const std::string length = std::to_string(1000 + responseIdx);
+    const std::pair<std::string_view, std::string_view> fields[]{
+        {"content-type", "text/plain"},
+        {"content-length", length},
+        {"etag", length},
+    };
+    RawBytes encoded;
+    for (const auto& [name, value] : fields) {
+      encoder.encode(encoded, name, value, HpackEncoder::IndexingModeOf(name, value));
+    }
+    const auto result = decoder.decode(encoded);
+    ASSERT_TRUE(result.isSuccess());
+    EXPECT_EQ(result.decodedHeaders.find("content-length")->second, length);
+    EXPECT_EQ(result.decodedHeaders.find("etag")->second, length);
+    EXPECT_EQ(result.decodedHeaders.find("content-type")->second, "text/plain");
+
+    // Only content-type is added, by the first response: the next ones reference it.
+    ASSERT_EQ(encoder.dynamicTable().entryCount(), 1U);
+    EXPECT_EQ(encoder.dynamicTable()[0].name(), "content-type");
+    EXPECT_EQ(decoder.dynamicTable().entryCount(), 1U);
+  }
+}
+
 // ============================
 // Round-trip Tests
 // ============================

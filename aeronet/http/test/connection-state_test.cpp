@@ -31,6 +31,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -44,6 +45,7 @@
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/output-queue.hpp"
+#include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/temp-file.hpp"
@@ -57,6 +59,12 @@
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include "aeronet/async-handler-state.hpp"
+#endif
+
+#ifdef AERONET_ENABLE_OPENSSL
+#include <openssl/ssl.h>
+
+#include "aeronet/tls-transport.hpp"
 #endif
 
 using namespace aeronet;
@@ -1384,3 +1392,152 @@ TEST(ConnectionStateOutputTest, QueueIsKeptByReclaimAndDroppedByReset) {
   EXPECT_TRUE(state.outQueue.empty());
   EXPECT_FALSE(state.hasPendingOutput());
 }
+
+namespace {
+// Protocol handler with a given number of output bytes pending.
+class PendingOutputProtocolHandler final : public IProtocolHandler {
+ public:
+  explicit PendingOutputProtocolHandler(std::size_t pendingBytes) : _pendingBytes(pendingBytes) {}
+
+  [[nodiscard]] ProtocolType type() const noexcept override { return ProtocolType::WebSocket; }
+
+  [[nodiscard]] ProtocolProcessResult processInput(std::span<const std::byte> /*data*/,
+                                                   ConnectionState& /*state*/) override {
+    return {};
+  }
+
+  [[nodiscard]] std::span<const std::byte> getPendingOutput() const noexcept override { return {}; }
+
+  [[nodiscard]] std::size_t pendingOutputSize() const noexcept override { return _pendingBytes; }
+
+  void onOutputWritten(std::size_t /*bytesWritten*/) override {}
+
+  void onTransportClosing() override {}
+
+ private:
+  std::size_t _pendingBytes;
+};
+}  // namespace
+
+TEST(ConnectionStateCorkTest, NeverCorksWhenNotCorkable) {
+  ConnectionState state;
+  state.outBuffer = test::MakeMessageData(100, 'a');
+  EXPECT_FALSE(state.attachFilePayload(FilePayload{File{}, 0, 4}));
+  state.queueOutput(HttpMessageData(RawChars(kFileResponseHead), HttpPayload(FilePayload{File{}, 3, 4})));
+
+  EXPECT_FALSE(state.needsCork(1UL << 20U, true));
+  EXPECT_FALSE(state.flushNeedsCork());
+}
+
+TEST(ConnectionStateCorkTest, SingleWritesAreNotCorked) {
+  ConnectionState state;
+  state.corkable = true;
+  EXPECT_FALSE(state.encryptsOutputInUserSpace());
+
+  // Without user-space TLS, the output is written in a single gather write, whatever its size.
+  EXPECT_FALSE(state.needsCork(100, false));
+  EXPECT_FALSE(state.needsCork(1UL << 20U, false));
+  EXPECT_FALSE(state.flushNeedsCork());
+
+  state.outBuffer = test::MakeMessageData(1UL << 16U, 'a');
+  EXPECT_FALSE(state.flushNeedsCork());
+  // Gathered with outBuffer.
+  state.queueOutput(test::MakeMessageData(OutputQueue::kMaxMergedSize, 'b'));
+  ASSERT_FALSE(state.outQueue.empty());
+  EXPECT_FALSE(state.flushNeedsCork());
+
+  // A file alone.
+  ConnectionState fileState;
+  fileState.corkable = true;
+  EXPECT_TRUE(fileState.attachFilePayload(FilePayload{File{}, 0, 1UL << 20U}));
+  EXPECT_FALSE(fileState.flushNeedsCork());
+
+  // The protocol handler output alone.
+  ConnectionState handlerState;
+  handlerState.corkable = true;
+  handlerState.protocolHandler = std::make_unique<PendingOutputProtocolHandler>(1UL << 20U);
+  EXPECT_FALSE(handlerState.flushNeedsCork());
+}
+
+TEST(ConnectionStateCorkTest, OutputWrittenInSeveralPartsIsCorked) {
+  ConnectionState state;
+  state.corkable = true;
+  EXPECT_TRUE(state.needsCork(10, true));
+
+  // A response head, then its file.
+  ConnectionState headThenFile;
+  headThenFile.corkable = true;
+  headThenFile.outBuffer = HttpMessageData{RawChars(kFileResponseHead)};
+  EXPECT_FALSE(headThenFile.attachFilePayload(FilePayload{File{}, 0, 4}));
+  EXPECT_TRUE(headThenFile.flushNeedsCork());
+
+  // A file, then the queued output.
+  ConnectionState fileThenQueue;
+  fileThenQueue.corkable = true;
+  EXPECT_TRUE(fileThenQueue.attachFilePayload(FilePayload{File{}, 0, 4}));
+  fileThenQueue.queueOutput(test::MakeMessageData(10, 'b'));
+  EXPECT_TRUE(fileThenQueue.flushNeedsCork());
+
+  // Queued output with a file response: gathered up to it.
+  ConnectionState queuedFile;
+  queuedFile.corkable = true;
+  queuedFile.outBuffer = test::MakeMessageData(10, 'a');
+  queuedFile.queueOutput(HttpMessageData(RawChars(kFileResponseHead), HttpPayload(FilePayload{File{}, 3, 4})));
+  EXPECT_TRUE(queuedFile.flushNeedsCork());
+
+  // The HTTP/1 output (a 101 Switching Protocols response), then the protocol handler output.
+  ConnectionState upgraded;
+  upgraded.corkable = true;
+  upgraded.outBuffer = test::MakeMessageData(10, 'a');
+  upgraded.protocolHandler = std::make_unique<PendingOutputProtocolHandler>(10);
+  EXPECT_TRUE(upgraded.flushNeedsCork());
+  // Unless the protocol handler has nothing to write.
+  upgraded.protocolHandler = std::make_unique<PendingOutputProtocolHandler>(0);
+  EXPECT_FALSE(upgraded.flushNeedsCork());
+}
+
+#ifdef AERONET_ENABLE_OPENSSL
+namespace {
+// TLS without kTLS send: OpenSSL encrypts the output.
+void SetUserSpaceTlsTransport(ConnectionState& state) {
+  state.corkable = true;
+  state.transport = std::make_unique<TlsTransport>(TlsTransport::SslPtr{nullptr, &::SSL_free});
+}
+}  // namespace
+
+TEST(ConnectionStateCorkTest, UserSpaceTlsOutputLongerThanOneRecordIsCorked) {
+  static constexpr std::size_t kRecordSize = TlsTransport::kMaxRecordPlainSize;
+
+  ConnectionState state;
+  SetUserSpaceTlsTransport(state);
+  EXPECT_TRUE(state.encryptsOutputInUserSpace());
+  EXPECT_FALSE(state.needsCork(kRecordSize, false));
+  EXPECT_TRUE(state.needsCork(kRecordSize + 1U, false));
+
+  // HTTP/1 output.
+  state.outBuffer = test::MakeMessageData(kRecordSize, 'a');
+  EXPECT_FALSE(state.flushNeedsCork());
+  state.queueOutput(test::MakeMessageData(1, 'b'));
+  EXPECT_TRUE(state.flushNeedsCork());
+
+  // A file alone, read then encrypted by chunks.
+  ConnectionState fileState;
+  SetUserSpaceTlsTransport(fileState);
+  EXPECT_TRUE(fileState.attachFilePayload(FilePayload{File{}, 0, kRecordSize}));
+  EXPECT_FALSE(fileState.flushNeedsCork());
+  fileState.tunnelOrFileBuffer.append(std::string_view("x"));
+  EXPECT_TRUE(fileState.flushNeedsCork());
+
+  // Protocol handler output.
+  ConnectionState handlerState;
+  SetUserSpaceTlsTransport(handlerState);
+  handlerState.protocolHandler = std::make_unique<PendingOutputProtocolHandler>(kRecordSize);
+  EXPECT_FALSE(handlerState.flushNeedsCork());
+  handlerState.protocolHandler = std::make_unique<PendingOutputProtocolHandler>(kRecordSize + 1U);
+  EXPECT_TRUE(handlerState.flushNeedsCork());
+
+  // Not corkable.
+  handlerState.corkable = false;
+  EXPECT_FALSE(handlerState.flushNeedsCork());
+}
+#endif

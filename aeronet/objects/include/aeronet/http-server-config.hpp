@@ -192,7 +192,8 @@ struct HttpServerConfig {
   // Includes HTTP/1 headers + body and HTTP/2 queued + flow-control-deferred payloads. When exceeded further
   // writes are rejected and HTTP/1 connections are marked for closure after flushing what is already queued.
   // HTTP/2 pauses frame processing while its wire-output queue is at the limit and rejects new response work when
-  // retained output has exhausted the connection budget. Default: 4 MiB per connection.
+  // retained output has exhausted the connection budget, and reads files ahead of the socket up to half of it.
+  // Default: 4 MiB per connection.
   uint32_t maxOutboundBufferBytes{4U << 20U};  // 4 MiB
 
   // Upper bound (bytes) for the response buffers of a connection retained until the completion of their Linux

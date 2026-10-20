@@ -1,6 +1,7 @@
 #pragma once
 
 #include <openssl/ssl.h>
+#include <openssl/ssl3.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -18,6 +19,10 @@ namespace aeronet {
 class TlsTransport final : public TransportBackend<TlsTransport, TransportKind::Tls>, public SocketTransportState {
  public:
   using SslPtr = std::unique_ptr<SSL, void (*)(SSL*)>;
+
+  /// Largest plaintext of a TLS record: what a single SSL_write_ex call encrypts at most (with partial writes). Without
+  /// kTLS send, each record of the output is written on its own.
+  static constexpr std::size_t kMaxRecordPlainSize = SSL3_RT_MAX_PLAIN_LENGTH;
 
   /// Sets the write modes of the SSL object that the transport relies on: SSL_write_ex returns once a record is
   /// written (partial writes), and a write that would block can be retried from another buffer with the same bytes

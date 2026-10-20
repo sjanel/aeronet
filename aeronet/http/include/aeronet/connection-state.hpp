@@ -63,6 +63,18 @@ struct ConnectionState {
     return outBuffer.remainingSize() + outQueue.bytes();
   }
 
+  // Tells whether the output of this connection is encrypted by OpenSSL (TLS without kTLS send), which writes each of
+  // its TLS records on its own.
+  [[nodiscard]] bool encryptsOutputInUserSpace() const noexcept;
+
+  // Tells whether a flush of 'nbBytes' of output, written in several parts if 'severalParts' (like a response head then
+  // its file), should be wrapped in TCP_CORK (see corkable): only when it most likely takes several writes, that it
+  // coalesces into full TCP segments. A single write gains nothing from it, at the cost of two setsockopt syscalls.
+  [[nodiscard]] bool needsCork(std::size_t nbBytes, bool severalParts) const noexcept;
+
+  // needsCork() for a flush of all the pending output: the HTTP/1 output with its files, then the protocol handler one.
+  [[nodiscard]] bool flushNeedsCork() const noexcept;
+
   // Tells whether a requested drain close can proceed. Besides buffered output, it waits for the completion of the
   // zerocopy sends: after close, the kernel would still send from their buffers, released with the connection.
   [[nodiscard]] bool canCloseConnectionForDrain() const noexcept {
