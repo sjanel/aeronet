@@ -26,6 +26,7 @@
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
+#include "aeronet/http-message-data.hpp"
 #include "aeronet/http-message.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-dispatch.hpp"
@@ -652,7 +653,7 @@ void Http2ProtocolHandler::releasePendingSend(const StreamState& state) noexcept
     --_nbPendingSends;
   } else if (const PendingStreamingSend* pending = state.streamingSend(); pending != nullptr) {
     --_nbPendingSends;
-    const std::size_t retained = pending->buffer.size() - pending->offset + pending->trailersData.size();
+    const std::size_t retained = pending->body.size() + pending->trailersData.size();
     assert(retained <= _deferredOutputBytes);
     _deferredOutputBytes -= retained;
   }
@@ -799,7 +800,7 @@ void Http2ProtocolHandler::flushPendingSends() {
 
 bool Http2ProtocolHandler::sendPendingStreamingBody(uint32_t streamId, PendingStreamingSend& pending) {
   // Try to send buffered body data.
-  while (pending.offset < pending.buffer.size()) {
+  while (!pending.body.empty()) {
     // Stream cannot vanish during synchronous output buffer writes.
     Http2Stream* pStream = _connection.getStream(streamId);
     assert(pStream != nullptr && "stream disappeared during synchronous streaming send loop");
@@ -811,7 +812,7 @@ bool Http2ProtocolHandler::sendPendingStreamingBody(uint32_t streamId, PendingSt
       return false;
     }
 
-    const std::size_t remaining = pending.buffer.size() - pending.offset;
+    const std::size_t remaining = pending.body.size();
     const auto chunkSize =
         std::min({remaining, static_cast<std::size_t>(streamWin), static_cast<std::size_t>(connWin)});
 
@@ -821,18 +822,17 @@ bool Http2ProtocolHandler::sendPendingStreamingBody(uint32_t streamId, PendingSt
     const bool lastBodyChunk = chunkSize == remaining;
     const bool endStream = lastBodyChunk && pending.trailersData.empty();
 
+    // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
+    const auto chunk = std::as_bytes(std::span<const char>(pending.body.data(), chunkSize));
     [[maybe_unused]] ErrorCode err;
     if (lastBodyChunk) {
-      const std::size_t bufferSize = pending.buffer.size();
-      RawBytes owner(std::move(pending.buffer));
-      err = _connection.sendData(streamId, std::move(owner), pending.offset, chunkSize, endStream);
-      pending.offset = bufferSize;
+      // The DATA frames of the last chunk take over the storage (the body bytes do not move), the previous ones copy
+      // their chunk, the storage having to outlive them.
+      err = _connection.sendData(streamId, std::move(pending.storage), chunk, endStream);
     } else {
-      const auto bytes = std::span<const std::byte>(
-          reinterpret_cast<const std::byte*>(pending.buffer.data() + pending.offset), chunkSize);
-      err = _connection.sendData(streamId, bytes, endStream);
-      pending.offset += chunkSize;
+      err = _connection.sendData(streamId, chunk, endStream);
     }
+    pending.body.remove_prefix(chunkSize);
     assert(chunkSize <= _deferredOutputBytes);
     _deferredOutputBytes -= chunkSize;
     // sendData cannot fail: stream is valid and chunkSize is bounded by both flow-control windows.
@@ -945,11 +945,13 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
     deferSend(state, std::move(pendingFile));
   } else if (transport.hasPendingData()) {
     RawChars pendingBuffer = transport.extractPendingBuffer();
+    // Moving the buffer below does not move its bytes.
+    const std::string_view pendingBody = pendingBuffer;
     RawChars pendingTrailers = transport.extractPendingTrailers();
-    _deferredOutputBytes += pendingBuffer.size() + pendingTrailers.size();
+    _deferredOutputBytes += pendingBody.size() + pendingTrailers.size();
     deferSend(state, PendingStreamingSend{
-                         .buffer = std::move(pendingBuffer),
-                         .offset = 0,
+                         .storage = HttpMessageData(std::move(pendingBuffer)),
+                         .body = pendingBody,
                          .trailersData = std::move(pendingTrailers),
                      });
   }
@@ -1397,7 +1399,10 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
 
   const ConcatenatedHeaders* pGlobalHeaders = response._opts.isPrepared() ? nullptr : &_pServerConfig->globalHeaders;
 
-  const auto trailersView = response.trailers();
+  // The trailers and body views stay valid once the response storage is released (see releaseMessageData()), as long
+  // as the released storage lives.
+  const std::string_view trailersFlatView = response.trailersFlatView();
+  const HeadersView trailersView(trailersFlatView);
   const bool hasTrailers = !isHeadMethod && (trailersView.begin() != trailersView.end());
   const bool hasFile = !isHeadMethod && pFilePayload != nullptr;
   const std::string_view bodyView = response.bodyInMemory();
@@ -1439,48 +1444,36 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
         assert(!hasTrailers && "file + trailers is not supported by the current HttpResponse API");
       }
     } else {
-      // Send what the flow-control windows allow now and buffer the remainder (plus any trailers) as a
-      // pending streaming send, flushed as WINDOW_UPDATEs arrive. A single sendData() call with the whole
-      // body would be rejected outright with FlowControlError whenever the body exceeds the current
-      // windows (e.g. any response larger than the peer's SETTINGS_INITIAL_WINDOW_SIZE, 65535 by default).
-      // Note: sendData() already handles splitting into multiple frames based on peer's maxFrameSize.
+      // The body is sent from the storage of the response (its buffer, or its captured body), handed over to the
+      // connection output or to a pending send without copying it: moving the storage does not move the body bytes.
+      HttpMessageData storage = response.releaseMessageData();
       Http2Stream* pStream = _connection.getStream(streamId);
       assert(pStream != nullptr && "stream vanished between sendHeaders and the body send");
       const auto windowLimit =
           static_cast<std::size_t>(std::max(std::min(pStream->sendWindow(), _connection.connectionSendWindow()), 0));
-      const std::size_t immediateSize = std::min(bodyView.size(), windowLimit);
-      if (immediateSize != 0) {
-        const bool entireBody = immediateSize == bodyView.size();
-        // Do not compare bodyView.data() with the buffer address: a captured short std::string (SSO) lives inside the
-        // embedded payload object, which may start exactly at bodyStartPos().
-        if (entireBody && response.hasBodyInlined()) {
-          const std::size_t bodyOffset = response.bodyStartPos();
-          RawBytes owner(std::move(response._data));
-          err = _connection.sendData(streamId, std::move(owner), bodyOffset, immediateSize, endStreamOnData);
-          if (err == ErrorCode::NoError && hasTrailers) {
-            // For small DATA frames sendData() copies from owner into the batched output buffer instead of
-            // retaining the allocation. Encode the trailer HEADERS while owner still keeps trailersView alive.
-            return _connection.sendHeaders(streamId, http::StatusCode{}, trailersView, true);
-          }
-        } else {
-          const std::string_view immediateView = bodyView.substr(0, immediateSize);
-          const auto bytes = std::as_bytes(std::span<const char>(immediateView.data(), immediateView.size()));
-          err = _connection.sendData(streamId, bytes, entireBody && endStreamOnData);
+      if (bodyView.size() <= windowLimit) {
+        // Note: sendData() already handles splitting into multiple frames based on peer's maxFrameSize.
+        err = _connection.sendData(streamId, std::move(storage), std::as_bytes(std::span<const char>(bodyView)),
+                                   endStreamOnData);
+        if (err == ErrorCode::NoError && hasTrailers) {
+          // sendData() copies a small body into the batched output buffer, leaving the storage here, and otherwise
+          // hands it over to the output: either way, the trailers stay alive while encoded.
+          err = _connection.sendHeaders(streamId, http::StatusCode{}, trailersView, true);
         }
-        if (err != ErrorCode::NoError) {
-          return err;
-        }
+        return err;
       }
-      if (immediateSize != bodyView.size()) {
-        PendingStreamingSend pendingSend;
-        pendingSend.buffer.assign(bodyView.substr(immediateSize));
-        if (hasTrailers) {
-          pendingSend.trailersData.assign(response.trailersFlatView());
-        }
-        _deferredOutputBytes += pendingSend.buffer.size() + pendingSend.trailersData.size();
-        deferSend(_streams[streamId], std::move(pendingSend));
-        return ErrorCode::NoError;  // trailers (if any) ride with the pending send
+      // A body exceeding the flow-control windows (e.g. any response larger than the peer's
+      // SETTINGS_INITIAL_WINDOW_SIZE, 65535 by default) cannot be sent in one go: send what they allow now and keep the
+      // remainder (plus any trailers) as a pending streaming send, flushed as WINDOW_UPDATEs arrive.
+      PendingStreamingSend pendingSend{.storage = std::move(storage), .body = bodyView, .trailersData = {}};
+      if (hasTrailers) {
+        pendingSend.trailersData.assign(trailersFlatView);
       }
+      _deferredOutputBytes += bodyView.size() + pendingSend.trailersData.size();
+      [[maybe_unused]] const bool sent = sendPendingStreamingBody(streamId, pendingSend);
+      assert(!sent && "a body exceeding the flow-control windows cannot be sent at once");
+      deferSend(_streams[streamId], std::move(pendingSend));
+      return ErrorCode::NoError;  // trailers (if any) ride with the pending send
     }
   }
 

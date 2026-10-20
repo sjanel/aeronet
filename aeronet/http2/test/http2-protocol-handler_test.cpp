@@ -18,6 +18,7 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
@@ -724,6 +725,173 @@ TEST(Http2ProtocolHandler, BodyLargerThanFlowControlWindowResumesOnWindowUpdate)
   EXPECT_EQ(loop.handler.connection().activeStreamCount(), 0U);
   ASSERT_FALSE(loop.clientData.empty());
   EXPECT_TRUE(loop.clientData.back().endStream);
+}
+
+namespace {
+
+[[nodiscard]] std::string MakePatternedBody(std::size_t size) {
+  std::string body(size, '\0');
+  for (std::size_t idx = 0; idx < size; ++idx) {
+    body[idx] = static_cast<char>('a' + (idx % 26U));
+  }
+  return body;
+}
+
+// Number of pending output bytes of the handler read from 'storage' itself (not from a copy of it).
+[[nodiscard]] std::size_t PendingBytesReadFrom(const Http2ProtocolHandler& handler, std::string_view storage) {
+  vector<std::string_view> fragments;
+  handler.getPendingOutputFragments(fragments);
+  const auto storageBeg = reinterpret_cast<std::uintptr_t>(storage.data());
+  const auto storageEnd = storageBeg + storage.size();
+  std::size_t nbBytes = 0;
+  for (const std::string_view fragment : fragments) {
+    const auto fragmentBeg = reinterpret_cast<std::uintptr_t>(fragment.data());
+    if (storageBeg <= fragmentBeg && fragmentBeg + fragment.size() <= storageEnd) {
+      nbBytes += fragment.size();
+    }
+  }
+  return nbBytes;
+}
+
+}  // namespace
+
+// A captured body is sent from its own storage, like HTTP/1 does: its DATA frames gather their payload from it.
+TEST(Http2ProtocolHandler, CapturedBodyIsSentWithoutCopy) {
+  const std::string body = MakePatternedBody(40000);  // several frames, within the flow-control windows
+
+  Router router;
+  router.setPath(http::Method::GET, "/static",
+                 [&body](const HttpRequestView&) { return HttpResponse(200).bodyStatic(body); });
+  router.setPath(http::Method::GET, "/string",
+                 [&body](const HttpRequestView&) { return HttpResponse(200, std::string(body)); });
+  router.setPath(http::Method::GET, "/vector", [&body](const HttpRequestView&) {
+    return HttpResponse(200).body(std::vector<char>(body.begin(), body.end()));
+  });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+  loop.client.sendWindowUpdate(0, 1U << 20U);  // room for all the bodies
+  loop.pumpClientToServer();
+
+  const std::pair<uint32_t, std::string_view> requests[]{{1U, "/static"}, {3U, "/string"}, {5U, "/vector"}};
+  for (const auto& [streamId, path] : requests) {
+    RawChars headers = MakeGetHeaders(path);
+    ASSERT_EQ(loop.client.sendHeaders(streamId, http::StatusCode{}, HeadersView(headers), true), ErrorCode::NoError);
+    loop.pumpClientToServer();
+    if (path == "/static") {
+      EXPECT_EQ(PendingBytesReadFrom(loop.handler, body), body.size());
+    }
+    loop.pumpServerToClient();
+
+    EXPECT_EQ(loop.receivedData(streamId), body) << path;
+    ASSERT_FALSE(loop.clientData.empty());
+    EXPECT_TRUE(loop.clientData.back().endStream) << path;
+  }
+  EXPECT_EQ(loop.handler.connection().activeStreamCount(), 0U);
+}
+
+// The rest of a captured body exceeding the flow-control windows waits for credit in the storage of the response, not
+// in a copy of it, and its last DATA frames are sent from there.
+TEST(Http2ProtocolHandler, CapturedBodyLargerThanWindowIsSentFromItsStorage) {
+  const std::string body = MakePatternedBody(100000);
+
+  Router router;
+  router.setPath(http::Method::GET, "/static",
+                 [&body](const HttpRequestView&) { return HttpResponse(200).bodyStatic(body); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars headers = MakeGetHeaders("/static");
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(headers), true), ErrorCode::NoError);
+  loop.pumpClientToServer();
+
+  // The DATA frames of the start of the body, up to the windows, copy their payload: the storage, kept for the rest,
+  // must outlive them.
+  EXPECT_EQ(PendingBytesReadFrom(loop.handler, body), 0U);
+  loop.pumpServerToClient();
+  EXPECT_EQ(loop.receivedData(1).size(), kDefaultInitialWindowSize);
+
+  loop.client.sendWindowUpdate(0, static_cast<uint32_t>(body.size()));
+  loop.client.sendWindowUpdate(1, static_cast<uint32_t>(body.size()));
+  loop.pumpClientToServer();
+  EXPECT_EQ(PendingBytesReadFrom(loop.handler, body), body.size() - kDefaultInitialWindowSize);
+  loop.pumpServerToClient();
+
+  EXPECT_EQ(loop.receivedData(1), body);
+  ASSERT_FALSE(loop.clientData.empty());
+  EXPECT_TRUE(loop.clientData.back().endStream);
+  EXPECT_EQ(loop.handler.connection().activeStreamCount(), 0U);
+}
+
+// The trailers of a captured body live in its storage: they are still encoded correctly once it is handed over to the
+// output, or kept for later with the rest of a body exceeding the flow-control windows.
+TEST(Http2ProtocolHandler, CapturedBodyWithTrailersSentNowOrLater) {
+  const std::string smallBody = MakePatternedBody(20000);
+  const std::string largeBody = MakePatternedBody(150000);
+
+  Router router;
+  router.setPath(http::Method::GET, "/small", [&smallBody](const HttpRequestView&) {
+    return HttpResponse(200, std::string(smallBody)).trailerAddLine("x-checksum", "small");
+  });
+  router.setPath(http::Method::GET, "/large", [&largeBody](const HttpRequestView&) {
+    return HttpResponse(200)
+        .body(std::vector<char>(largeBody.begin(), largeBody.end()))
+        .trailerAddLine("x-checksum", "large");
+  });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  const auto trailerValue = [&loop](uint32_t streamId) {
+    for (const HeaderEvent& ev : loop.clientHeaders) {
+      if (ev.streamId == streamId && ev.endStream) {
+        return GetHeaderValue(ev, "x-checksum");
+      }
+    }
+    return std::string{};
+  };
+
+  RawChars headers = MakeGetHeaders("/small");
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(headers), true), ErrorCode::NoError);
+  headers = MakeGetHeaders("/large");
+  ASSERT_EQ(loop.client.sendHeaders(3, http::StatusCode{}, HeadersView(headers), true), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  for (int round = 0; round < 64 && trailerValue(3).empty(); ++round) {
+    loop.pumpServerToClient();
+    loop.pumpClientToServer();
+  }
+
+  EXPECT_EQ(loop.receivedData(1), smallBody);
+  EXPECT_EQ(trailerValue(1), "small");
+  EXPECT_EQ(loop.receivedData(3), largeBody);
+  EXPECT_EQ(trailerValue(3), "large");
+  EXPECT_EQ(loop.handler.connection().activeStreamCount(), 0U);
+}
+
+// A stream reset while the rest of its captured body waits for credit releases the storage of the response.
+TEST(Http2ProtocolHandler, CapturedBodyWaitingForCreditReleasedOnStreamReset) {
+  const std::string body = MakePatternedBody(100000);
+
+  Router router;
+  router.setPath(http::Method::GET, "/string",
+                 [&body](const HttpRequestView&) { return HttpResponse(200, std::string(body)); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars headers = MakeGetHeaders("/string");
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(headers), true), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+  EXPECT_EQ(loop.handler.connection().activeStreamCount(), 1U);
+
+  loop.client.sendRstStream(1, ErrorCode::Cancel);
+  loop.client.sendWindowUpdate(0, static_cast<uint32_t>(body.size()));
+  loop.pumpClientToServer();
+  EXPECT_EQ(loop.handler.connection().activeStreamCount(), 0U);
+  EXPECT_FALSE(loop.handler.hasPendingOutput());
+  EXPECT_EQ(loop.receivedData(1).size(), kDefaultInitialWindowSize);
 }
 
 TEST(Http2ProtocolHandler, ConnectMalformedTargetReturns400) {
