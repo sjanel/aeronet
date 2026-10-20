@@ -1002,6 +1002,26 @@ TEST(Http2ProtocolHandler, ConnectNonNumericPortReturns400) {
   EXPECT_FALSE(setupCalled);
 }
 
+TEST(Http2ProtocolHandler, ConnectContentLengthIsNotChecked) {
+  Router router;
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  // A CONNECT request has no content (its DATA frames carry the tunneled bytes): a content-length does not make it
+  // malformed, even on a request ending its stream with its HEADERS frame.
+  RawChars conn;
+  conn.assign(MakeHttp1HeaderLine(":method", "CONNECT"));
+  conn.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
+  conn.append(MakeHttp1HeaderLine("content-length", "5"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), true), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "405");  // no tunnel bridge
+  EXPECT_TRUE(loop.streamResets.empty());
+}
+
 TEST(Http2ProtocolHandler, ConnectInvalidAuthority) {
   Router router;
   router.setDefault([](const HttpRequestView& req) { return req.makeResponse(200); });
@@ -6689,5 +6709,191 @@ TEST(Http2ProtocolHandler, AsyncCompletionRejectedWhenTunnelBacklogAlreadyOverLi
   EXPECT_EQ(GetHeaderValue(*resp, ":status"), "503");
 }
 #endif
+
+// --- Request recycling -------------------------------------------------------
+// The requests of closed streams are reused by the next streams (with the capacity of their maps and buffers), which
+// must start from a fresh state.
+
+namespace {
+
+std::span<const std::byte> AsBytes(std::string_view str) { return std::as_bytes(std::span<const char>(str)); }
+
+[[nodiscard]] std::string ResponseStatus(const Http2ProtocolLoopback& loop, uint32_t streamId) {
+  const auto it = std::ranges::find(loop.clientHeaders, streamId, &HeaderEvent::streamId);
+  return it == loop.clientHeaders.end() ? std::string{} : GetHeaderValue(*it, ":status");
+}
+
+}  // namespace
+
+TEST(Http2ProtocolHandler, RecycledRequestStartsFromAFreshState) {
+  Router router;
+  const HttpRequestView* pFirstRequest = nullptr;
+  router.setPath(http::Method::POST, "/items/{id}", [&pFirstRequest](const HttpRequestView& req) {
+    pFirstRequest = &req;
+    EXPECT_EQ(req.authority(), "example.com");
+    EXPECT_EQ(req.headerValueOrEmpty("x-first"), "1");
+    EXPECT_EQ(req.queryParamValueOrEmpty("q"), "v");
+    EXPECT_EQ(req.pathParamValueOrEmpty("id"), "42");
+    EXPECT_EQ(req.trailerValueOrEmpty("x-sum"), "abc");
+    EXPECT_EQ(req.body(), "payload");
+    return HttpResponse(http::StatusCodeOK);
+  });
+  const HttpRequestView* pSecondRequest = nullptr;
+  router
+      .setPath(http::Method::GET, "/second",
+               [&pSecondRequest](const HttpRequestView& req) {
+                 pSecondRequest = &req;
+                 // Nothing is left from the previous request handled by the same object.
+                 EXPECT_TRUE(req.authority().empty());
+                 EXPECT_EQ(req.scheme(), "http");
+                 EXPECT_EQ(req.headers().size(), 1U);
+                 EXPECT_EQ(req.headerValueOrEmpty("x-second"), "2");
+                 EXPECT_TRUE(req.queryParams().empty());
+                 EXPECT_EQ(req.queryParamsRange().begin(), req.queryParamsRange().end());
+                 EXPECT_TRUE(req.pathParams().empty());
+                 EXPECT_TRUE(req.trailers().empty());
+                 EXPECT_TRUE(req.body().empty());
+                 EXPECT_FALSE(req.hasMoreBody());
+                 // :method GET, :scheme http, :path /second, x-second 2
+                 EXPECT_EQ(req.headSpanSize(), std::string_view(":methodGET:schemehttp:path/secondx-second2").size());
+                 return HttpResponse(http::StatusCodeOK);
+               })
+      .maxBodyBytes(1);  // a body left from the previous request would be answered 413
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars first;
+  first.append(MakeHttp1HeaderLine(":method", "POST"));
+  first.append(MakeHttp1HeaderLine(":scheme", "https"));
+  first.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  first.append(MakeHttp1HeaderLine(":path", "/items/42?q=v"));
+  first.append(MakeHttp1HeaderLine("x-first", "1"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(first), false), ErrorCode::NoError);
+  ASSERT_EQ(loop.client.sendData(1, AsBytes("payload"), false), ErrorCode::NoError);
+  RawChars trailers;
+  trailers.append(MakeHttp1HeaderLine("x-sum", "abc"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(trailers), true), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+  EXPECT_EQ(ResponseStatus(loop, 1), "200");
+
+  RawChars second;
+  second.append(MakeHttp1HeaderLine(":method", "GET"));
+  second.append(MakeHttp1HeaderLine(":scheme", "http"));
+  second.append(MakeHttp1HeaderLine(":path", "/second"));
+  second.append(MakeHttp1HeaderLine("x-second", "2"));
+  ASSERT_EQ(loop.client.sendHeaders(3, http::StatusCode{}, HeadersView(second), true), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+  EXPECT_EQ(ResponseStatus(loop, 3), "200");
+
+  ASSERT_NE(pFirstRequest, nullptr);
+  EXPECT_EQ(pFirstRequest, pSecondRequest);  // the same (recycled) object
+  EXPECT_TRUE(loop.streamResets.empty());
+}
+
+TEST(Http2ProtocolHandler, MoreConcurrentRequestsThanRecycledOnes) {
+  Router router;
+  router.setPath(http::Method::POST, "/echo",
+                 [](const HttpRequestView& req) { return HttpResponse(http::StatusCodeOK, req.body()); });
+
+  // Without recycling, with fewer recycled requests than requests at the same time, and with more.
+  for (const uint8_t maxRecycledRequests : {uint8_t{0}, uint8_t{8}, uint8_t{255}}) {
+    Http2ProtocolLoopback loop(router);
+    loop.serverConfig.http2.maxRecycledRequests = maxRecycledRequests;
+    loop.connect();
+
+    // Requests receiving their bodies at the same time: some are released, the other ones reused by the next round.
+    // Each request must see its own headers and body.
+    static constexpr uint32_t kNbStreams = 12;
+    uint32_t streamId = 1;
+    for (int round = 0; round < 3; ++round) {
+      if (round == 2) {
+        // The limit is read on each release: lowered below the requests kept, these are reused first.
+        loop.serverConfig.http2.maxRecycledRequests = std::min<uint8_t>(maxRecycledRequests, 2);
+      }
+      const uint32_t firstStreamId = streamId;
+      for (uint32_t idx = 0; idx < kNbStreams; ++idx, streamId += 2) {
+        RawChars hdrs;
+        hdrs.append(MakeHttp1HeaderLine(":method", "POST"));
+        hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+        hdrs.append(MakeHttp1HeaderLine(":path", "/echo"));
+        hdrs.append(MakeHttp1HeaderLine("x-stream", std::to_string(streamId)));
+        ASSERT_EQ(loop.client.sendHeaders(streamId, http::StatusCode{}, HeadersView(hdrs), false), ErrorCode::NoError);
+        ASSERT_EQ(loop.client.sendData(streamId, AsBytes("body-"), false), ErrorCode::NoError);
+      }
+      loop.pumpClientToServer();
+      for (uint32_t id = firstStreamId; id != streamId; id += 2) {
+        const std::string end = std::to_string(id) + std::string(id, 'x');
+        ASSERT_EQ(loop.client.sendData(id, AsBytes(end), true), ErrorCode::NoError);
+      }
+      loop.pumpClientToServer();
+      loop.pumpServerToClient();
+
+      for (uint32_t id = firstStreamId; id != streamId; id += 2) {
+        EXPECT_EQ(ResponseStatus(loop, id), "200");
+        EXPECT_EQ(loop.receivedData(id), "body-" + std::to_string(id) + std::string(id, 'x'));
+      }
+    }
+    EXPECT_TRUE(loop.streamResets.empty());
+  }
+}
+
+TEST(Http2ProtocolHandler, RecycledRequestReleasesItsLargeBuffers) {
+  Router router;
+  router.setPath(http::Method::POST, "/size", [](const HttpRequestView& req) {
+    return HttpResponse(http::StatusCodeOK, std::to_string(req.body().size()));
+  });
+  router.setPath(http::Method::GET, "/count", [](const HttpRequestView& req) {
+    return HttpResponse(http::StatusCodeOK, std::to_string(req.headers().size()));
+  });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  const auto post = [&loop](uint32_t streamId, std::size_t bodySize) {
+    RawChars hdrs;
+    hdrs.append(MakeHttp1HeaderLine(":method", "POST"));
+    hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+    hdrs.append(MakeHttp1HeaderLine(":path", "/size"));
+    ASSERT_EQ(loop.client.sendHeaders(streamId, http::StatusCode{}, HeadersView(hdrs), false), ErrorCode::NoError);
+    const std::string body(bodySize, 'b');
+    ASSERT_EQ(loop.client.sendData(streamId, AsBytes(body), true), ErrorCode::NoError);
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
+    EXPECT_EQ(loop.receivedData(streamId), std::to_string(bodySize));
+  };
+  const auto get = [&loop](uint32_t streamId, int nbHeaders) {
+    RawChars hdrs = MakeGetHeaders("/count");
+    for (int idx = 0; idx < nbHeaders; ++idx) {
+      hdrs.append(MakeHttp1HeaderLine("x-h" + std::to_string(idx), "v"));
+    }
+    ASSERT_EQ(loop.client.sendHeaders(streamId, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
+    EXPECT_EQ(loop.receivedData(streamId), std::to_string(nbHeaders));
+  };
+
+  post(1, 20000);  // a body buffer too large to be kept
+  get(3, 100);     // a header map too large to be kept
+
+  // A header list above the limit is refused without being stored, but the Huffman decoding of its value (which the
+  // dynamic table may need) grows the storage of the decoder: the next request takes this storage over, too large to be
+  // kept once recycled.
+  RawChars hugeHdrs = MakeGetHeaders("/count");
+  hugeHdrs.append(MakeHttp1HeaderLine("x-huge", std::string(20000, 'h')));
+  ASSERT_EQ(loop.client.sendHeaders(5, http::StatusCode{}, HeadersView(hugeHdrs), true), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+  ASSERT_FALSE(loop.streamResets.empty());
+  EXPECT_EQ(loop.streamResets.back(), std::make_pair(5U, ErrorCode::EnhanceYourCalm));
+  get(7, 1);
+
+  // The next requests reuse the recycled ones.
+  post(9, 10);
+  get(11, 2);
+  EXPECT_EQ(ResponseStatus(loop, 11), "200");
+}
 
 }  // namespace aeronet::http2

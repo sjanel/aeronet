@@ -1,5 +1,7 @@
 #include "aeronet/http-header.hpp"
 
+#include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -12,6 +14,15 @@
 #include "aeronet/safe-cast.hpp"
 
 namespace aeronet::http {
+
+namespace {
+
+// Tells whether str starts in the size bytes at pBuffer.
+[[maybe_unused]] bool StartsIn(std::string_view str, const char* pBuffer, std::size_t size) noexcept {
+  return reinterpret_cast<std::uintptr_t>(str.data()) - reinterpret_cast<std::uintptr_t>(pBuffer) < size;
+}
+
+}  // namespace
 
 Header::Header(std::string_view name, std::string_view value)
     : _pData(static_cast<char*>(std::malloc(name.size() + value.size()))),
@@ -28,6 +39,12 @@ Header::Header(Header&& rhs, std::string_view name, std::string_view value)
     : _pData(std::exchange(rhs._pData, nullptr)),
       _nameLength(SafeCast<uint32_t>(name.size())),
       _valueLength(SafeCast<uint32_t>(value.size())) {
+  // The name may be the one of rhs (an HPACK dynamic table entry added with the name of the entry it evicts): its bytes
+  // are already in place, and kept by realloc. Otherwise, name and value must not point into the buffer of rhs, which
+  // realloc may free and which is overwritten.
+  const bool nameInPlace = name.data() == _pData;
+  assert(nameInPlace || name.empty() || !StartsIn(name, _pData, rhs.size()));
+  assert(value.empty() || !StartsIn(value, _pData, rhs.size()));
   if (rhs.size() < size()) {
     char* pNewData = static_cast<char*>(std::realloc(_pData, name.size() + value.size()));
     if (pNewData == nullptr) {
@@ -37,7 +54,9 @@ Header::Header(Header&& rhs, std::string_view name, std::string_view value)
     }
     _pData = pNewData;
   }
-  Copy(name, _pData);
+  if (!nameInPlace) {
+    Copy(name, _pData);
+  }
   Copy(value, _pData + name.size());
 }
 

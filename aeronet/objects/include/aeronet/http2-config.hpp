@@ -113,6 +113,11 @@ struct Http2Config {
     return *this;
   }
 
+  Http2Config& withMaxRecycledRequests(uint8_t maxRecycled) {
+    maxRecycledRequests = maxRecycled;
+    return *this;
+  }
+
   // ============================
   // RFC 9113 SETTINGS parameters
   // ============================
@@ -162,6 +167,14 @@ struct Http2Config {
   ///
   /// Default: true.
   bool sendContentLengthHeader{true};
+
+  /// Server only: number of request objects a connection keeps from its finished streams for its next ones, which reuse
+  /// them along with the capacity of their header maps and buffers (up to 16 KiB each) instead of allocating them. A
+  /// request is released as soon as it is answered, so more are only needed by connections receiving the bodies of
+  /// that many requests (or running that many suspended async handlers) at the same time; each one kept costs some
+  /// memory to the connection while idle. 0 disables the recycling.
+  /// Default: 8.
+  uint8_t maxRecycledRequests{8};
 
   /// SETTINGS_HEADER_TABLE_SIZE (0x1): Maximum size of the HPACK dynamic table.
   /// Default: 4096 bytes (RFC 9113 default).

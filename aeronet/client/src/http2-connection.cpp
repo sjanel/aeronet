@@ -18,6 +18,7 @@
 #include "aeronet/event.hpp"
 #include "aeronet/file-payload.hpp"
 #include "aeronet/file.hpp"
+#include "aeronet/hpack.hpp"
 #include "aeronet/http-client-codec.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"
@@ -42,7 +43,6 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/response-body-sink.hpp"
 #include "aeronet/socket-ops.hpp"
-#include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
@@ -307,21 +307,21 @@ class Http2ClientEngine : private EventSink {
     }
   }
 
-  void onHeadersDecoded(uint32_t streamId, const SvToSvMap& headers, bool endStream) override {
+  void onHeadersDecoded(uint32_t streamId, DecodedHeaders& decodedHeaders, bool endStream) override {
     if (streamId != _streamId || _resp == nullptr) {
       return;  // foreign stream (push is disabled) or an exchange already detached: ignore
     }
     bool finalHead = false;  // this block is the head of the final response (not an interim one, nor trailers)
     if (!_finalHeadersSeen) {
-      const auto statusIt = headers.find(http::PseudoHeaderStatus);
-      if (statusIt == headers.end()) {
+      if (!decodedHeaders.hasPseudoHeader(PseudoHeader::Status)) {
         log::error("HTTP/2 client: response HEADERS on stream {} without a :status", streamId);
         setFailure(Failure::Malformed);
         return;
       }
 
-      const auto pBeg = statusIt->second.data();
-      const auto pEnd = pBeg + statusIt->second.size();
+      const std::string_view statusValue = decodedHeaders.pseudoHeader(PseudoHeader::Status);
+      const auto pBeg = statusValue.data();
+      const auto pEnd = pBeg + statusValue.size();
       if (pEnd - pBeg != http::StatusCodeLen) {
         log::error("HTTP/2 client: response HEADERS on stream {} without a valid :status", streamId);
         setFailure(Failure::Malformed);
@@ -351,24 +351,19 @@ class Http2ClientEngine : private EventSink {
       _bodyless = _headRequest || statusCode == http::StatusCodeNoContent || statusCode == http::StatusCodeNotModified;
     }
 
+    // Count the received bytes of this header block (pseudo-header fields included)
+    if (_receivedBytes + decodedHeaders.namesAndValuesSize > _maxResponseBytes) {
+      log::error("HTTP/2 client: response headers on stream {} exceed maxResponseBytes", streamId);
+      setFailure(Failure::TooBig);
+      return;
+    }
+    _receivedBytes += decodedHeaders.namesAndValuesSize;
+
     // Regular header and trailer values are preserved, except Content-Type and Content-Length which HttpResponse
     // reconstructs via body(), mirroring the HTTP/1.1 response parser. Names are normalized to lower-case. The
     // decoded views only live for this callback, so values are copied.
-    for (const auto& [name, value] : headers) {
+    for (const auto& [name, value] : decodedHeaders.headers) {
       assert(!name.empty());
-
-      // Count the received bytes for this header line
-      const std::size_t incoming = name.size() + value.size();
-      if (_receivedBytes + incoming > _maxResponseBytes) {
-        log::error("HTTP/2 client: response headers on stream {} exceed maxResponseBytes", streamId);
-        setFailure(Failure::TooBig);
-        return;  // stop copying the rest of this header block
-      }
-      _receivedBytes += incoming;
-
-      if (name.front() == ':') {
-        continue;
-      }
 
       if (name == http::ContentType) {
         _contentType.assign(value);

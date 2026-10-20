@@ -237,7 +237,7 @@ Http2Connection::Http2Connection(const Http2Config& config, bool isServer, traci
       _connectionSendWindow(static_cast<int32_t>(kDefaultInitialWindowSize)),
       _connectionRecvWindow(static_cast<int32_t>(config.connectionWindowSize)),
       _hpackEncoder(config.headerTableSize),
-      _hpackDecoder(config.headerTableSize, config.mergeUnknownRequestHeaders),
+      _hpackDecoder(config.headerTableSize, config.maxHeaderListSize, config.mergeUnknownRequestHeaders),
       _pTelemetryContext(telemetryContext != nullptr && telemetryContext->enabled() ? telemetryContext : nullptr),
       _isServer(isServer) {}
 
@@ -1493,24 +1493,21 @@ Http2Connection::ProcessResult Http2Connection::discardFieldBlock(std::span<cons
 
 ErrorCode Http2Connection::decodeAndEmitHeaders(uint32_t streamId, std::span<const std::byte> headerBlock,
                                                 bool endStream) {
-  // Collect decoded headers into an intermediate storage. We always build decodedHeaders
-  // because we will invoke the new decoded-headers callback if set. Note: We must copy
-  // strings here because the HPACK dynamic table may evict entries during decode,
-  // invalidating string_views that point to evicted entries.
-
+  // The decoder writes the fields in a storage independent of the dynamic table (whose entries may be evicted), that
+  // the sink may take over.
   const auto decodeResult = _hpackDecoder.decode(headerBlock);
 
   if (!decodeResult.isSuccess()) {
-    return decodeResult.isCompressionError() ? ErrorCode::CompressionError : ErrorCode::ProtocolError;
+    if (decodeResult.isCompressionError()) {
+      return ErrorCode::CompressionError;
+    }
+    // A header list above the local limit (decoded only to keep the dynamic table in sync).
+    return decodeResult.error == HpackDecoder::DecodeResult::Error::HeaderListTooLarge ? ErrorCode::EnhanceYourCalm
+                                                                                       : ErrorCode::ProtocolError;
   }
 
   recordHpack(false, headerBlock.size(), decodeResult.headerListSize);
 
-  if (decodeResult.headerListSize > _localSettings.maxHeaderListSize) {
-    return ErrorCode::EnhanceYourCalm;
-  }
-
-  // Call the decoded-headers callback if set (owned strings)
   if (_sink != nullptr) {
     _sink->onHeadersDecoded(streamId, decodeResult.decodedHeaders, endStream);
   }

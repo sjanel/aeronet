@@ -61,7 +61,7 @@ struct WireDecodedHeadersDebug {
 };
 
 [[nodiscard]] WireDecodedHeadersDebug DecodeFirstHeadersFromOutput(std::span<const std::byte> output) {
-  HpackDecoder decoder(4096, true);
+  HpackDecoder decoder(4096, std::numeric_limits<uint32_t>::max(), true);
 
   RawBytes headerBlock;
   std::size_t pos = 0;
@@ -120,9 +120,15 @@ struct WireDecodedHeadersDebug {
         return dbg;
       }
 
-      dbg.hasDate = decodeResult.decodedHeaders.contains(http::Date);
-      dbg.headers.reserve(static_cast<uint32_t>(decodeResult.decodedHeaders.size()));
-      for (const auto& [name, value] : decodeResult.decodedHeaders) {
+      const DecodedHeaders& decodedHeaders = decodeResult.decodedHeaders;
+      dbg.hasDate = decodedHeaders.headers.contains(http::Date);
+      for (std::size_t idx = 0; idx < std::size(kPseudoHeaderNames); ++idx) {
+        if (decodedHeaders.hasPseudoHeader(static_cast<PseudoHeader>(idx))) {
+          dbg.headers.emplace_back(std::string{kPseudoHeaderNames[idx]},
+                                   std::string{decodedHeaders.pseudoHeaders[idx]});
+        }
+      }
+      for (const auto& [name, value] : decodedHeaders.headers) {
         dbg.headers.emplace_back(std::string{name}, std::string{value});
       }
       return dbg;
@@ -1611,8 +1617,10 @@ TEST(Http2Connection, SettingsFrameInitialWindowSizeTooLargeIsFlowControlError) 
   RecordingEventSink connSink(conn);
   AdvanceToAwaitingSettingsAndDrainSettings(conn);
 
-  std::array payload{std::byte{0x00}, std::byte{0x04}, std::byte{0x80},
-                     std::byte{0x00}, std::byte{0x00}, std::byte{0x00}};  // 0x80000000 > 0x7FFFFFFF
+  // 0x80000000 > 0x7FFFFFFF
+  std::array payload{
+      std::byte{0x00}, std::byte{0x04}, std::byte{0x80}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
+  };
 
   const FrameHeader header(static_cast<uint32_t>(payload.size()), FrameType::Settings, FrameFlags::None, 0);
 
@@ -3316,9 +3324,10 @@ TEST(Http2Connection, ProcessInputInGoAwaySentState) {
   }
 
   // Send a valid frame while in GoAwaySent state — should still process frames
-  std::array pingPayload{std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4},
-                         std::byte{5}, std::byte{6}, std::byte{7}, std::byte{8}};
-  const FrameHeader header(static_cast<uint32_t>(pingPayload.size()), FrameType::Ping, FrameFlags::None, 0);
+  constexpr std::byte pingPayload[]{
+      std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4}, std::byte{5}, std::byte{6}, std::byte{7}, std::byte{8},
+  };
+  const FrameHeader header(static_cast<uint32_t>(std::size(pingPayload)), FrameType::Ping, FrameFlags::None, 0);
 
   auto bytes = SerializeFrame(header, pingPayload);
   auto res = conn.processInput(bytes);

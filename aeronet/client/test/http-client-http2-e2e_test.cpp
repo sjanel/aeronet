@@ -736,9 +736,10 @@ TEST(HttpClientHttp2TransportTest, PooledReuseDrainsFramesStillArrivingOnResetSt
     bool reusable;
   };
   for (const Case& testCase : {
-           Case{data.first(100), {}, false, true},
-           Case{data.first(http2::FrameHeader::kSize - 1), {}, false, false},  // may be the beginning of a GOAWAY
-           Case{goAway.first(http2::FrameHeader::kSize + 2), {}, false, false},
+           Case{data.first(100), test::FaultPolicy(), false, true},
+           Case{data.first(http2::FrameHeader::kSize - 1), test::FaultPolicy(), false,
+                false},  // may be the beginning of a GOAWAY
+           Case{goAway.first(http2::FrameHeader::kSize + 2), test::FaultPolicy(), false, false},
            Case{data, trickle, false, true},
            Case{data, trickle, true, false},
        }) {

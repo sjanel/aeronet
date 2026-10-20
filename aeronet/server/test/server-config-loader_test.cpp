@@ -363,6 +363,7 @@ TEST(ConfigLoaderTest, Http2Config) {
         "maxStreamsPerConnection": 1000,
         "maxStreamPendingBytes": 1048576,
         "maxPriorityTreeDepth": 128,
+        "maxRecycledRequests": 32,
         "headerTableSize": 8192,
         "enablePriority": false,
         "mergeUnknownRequestHeaders": false
@@ -385,6 +386,7 @@ TEST(ConfigLoaderTest, Http2Config) {
   EXPECT_EQ(config.server.http2.maxStreamsPerConnection, 1000U);
   EXPECT_EQ(config.server.http2.maxStreamPendingBytes, 1048576U);
   EXPECT_EQ(config.server.http2.maxPriorityTreeDepth, 128U);
+  EXPECT_EQ(config.server.http2.maxRecycledRequests, 32U);
   EXPECT_EQ(config.server.http2.headerTableSize, 8192U);
   EXPECT_FALSE(config.server.http2.enablePriority);
   EXPECT_FALSE(config.server.http2.mergeUnknownRequestHeaders);
