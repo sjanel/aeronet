@@ -497,6 +497,54 @@ void BM_HpackEncodeLargeStateful(benchmark::State& state) {
 }
 BENCHMARK(BM_HpackEncodeLargeStateful);
 
+// Stateful encode of successive responses: fields that repeat (content-type, server, the global headers...) and fields
+// whose value differs in each of them (content-length, etag, last-modified).
+// Arg 0: all fields indexed, each new value being inserted in the dynamic table (and evicting the oldest entries).
+// Arg 1: indexing mode of each field from HpackEncoder::IndexingModeOf().
+void BM_HpackEncodeResponsesWithVaryingFields(benchmark::State& state) {
+  const bool perFieldIndexingMode = state.range(0) != 0;
+  static constexpr std::size_t kNbResponses = 1024;
+  std::deque<std::string> values;  // stable addresses
+  std::array<std::array<http::HeaderView, 9>, kNbResponses> responses;
+  for (std::size_t responseIdx = 0; responseIdx < kNbResponses; ++responseIdx) {
+    const std::string_view length = values.emplace_back(std::to_string(1000 + (responseIdx * 37U)));
+    const std::string_view etag = values.emplace_back("\"" + std::to_string(responseIdx * 7919U) + "-5f3c9a2b\"");
+    const std::string_view lastModified =
+        values.emplace_back("Mon, 1" + std::to_string(responseIdx % 10U) + " Oct 2026 08:4" +
+                            std::to_string(responseIdx % 6U) + ":" + std::to_string(10 + (responseIdx % 50U)) + " GMT");
+    responses[responseIdx] = {{
+        {":status", "200"},
+        {"content-type", "application/json"},
+        {"content-length", length},
+        {"etag", etag},
+        {"last-modified", lastModified},
+        {"cache-control", "public, max-age=3600"},
+        {"server", "aeronet"},
+        {"x-frame-options", "DENY"},
+        {"strict-transport-security", "max-age=31536000; includeSubDomains"},
+    }};
+  }
+
+  HpackEncoder encoder;
+  RawBytes out;
+  std::size_t responseIdx = 0;
+  std::size_t totalBytes = 0;
+  for ([[maybe_unused]] auto iter : state) {
+    out.clear();
+    for (const auto& [name, value] : responses[responseIdx++ % kNbResponses]) {
+      encoder.encode(
+          out, name, value,
+          perFieldIndexingMode ? HpackEncoder::IndexingModeOf(name, value) : HpackEncoder::IndexingMode::Indexed);
+    }
+    totalBytes += out.size();
+    benchmark::DoNotOptimize(out.data());
+  }
+  state.counters["bytes_per_response"] =
+      benchmark::Counter(static_cast<double>(totalBytes), benchmark::Counter::kAvgIterations);
+  state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_HpackEncodeResponsesWithVaryingFields)->Arg(0)->Arg(1);
+
 // ---------------------------------------------------------------------------
 // findHeader benchmark (the identified bottleneck)
 // ---------------------------------------------------------------------------
