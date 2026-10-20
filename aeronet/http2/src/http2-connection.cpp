@@ -65,6 +65,10 @@ constexpr std::size_t kMaxInlineDataFrameCopySize = 256;
 // Minimum number of written blocks at the front of the output queue before they are erased (see onOutputWritten()).
 constexpr std::size_t kMinWrittenOutputBlocksToCompact = 16;
 
+// Minimum number of written bytes at the front of the output buffer before they are erased while some output is still
+// pending (see onOutputWritten()).
+constexpr std::size_t kMinWrittenOutputBufferBytesToCompact = 16UL * 1024;
+
 static_assert(kMaxInlineDataFrameCopySize <= kMinMaxFrameSize);
 
 // Hands over the allocation of 'buf' (not its bytes) to an output block.
@@ -76,20 +80,18 @@ HttpMessageData OwnerOf(RawBytes&& buf) noexcept { return HttpMessageData(RawCha
 // Queued output
 // ============================
 
-Http2Connection::OutputBlock::OutputBlock(HttpMessageData&& owner, std::span<const std::byte> bytes) noexcept
-    : _owner(std::move(owner)), _pPayload(bytes.data()), _payloadSize(bytes.size()), _remainingSize(bytes.size()) {}
-
 Http2Connection::OutputBlock::OutputBlock(HttpMessageData&& owner, std::span<const std::byte> payload,
-                                          uint32_t maxFrameSize, uint32_t streamId, bool endStream, bool headers)
+                                          std::size_t bufferOffset, uint32_t maxFrameSize, uint32_t streamId,
+                                          bool endStream, bool headers)
     : _owner(std::move(owner)),
       _pPayload(payload.data()),
       _payloadSize(payload.size()),
-      _maxFrameSize(maxFrameSize),
-      _framed(true) {
+      _bufferOffset(bufferOffset),
+      _maxFrameSize(maxFrameSize) {
   assert(!payload.empty());
   assert(maxFrameSize != 0);
 
-  const uint32_t frameCount = static_cast<uint32_t>((payload.size() + maxFrameSize - 1U) / maxFrameSize);
+  const uint32_t frameCount = this->frameCount();
   _remainingSize = payload.size() + (static_cast<std::size_t>(frameCount) * FrameHeader::kSize);
   if (frameCount > 1U) {
     const auto continuationHeadersSize = static_cast<uint32_t>((frameCount - 1U) * FrameHeader::kSize);
@@ -128,9 +130,6 @@ std::size_t Http2Connection::OutputBlock::framePayloadSize(uint32_t frameIndex) 
 
 std::string_view Http2Connection::OutputBlock::firstFragment() const noexcept {
   assert(!empty());
-  if (!_framed) {
-    return {reinterpret_cast<const char*>(_pPayload + _framePayloadOffset), _payloadSize - _framePayloadOffset};
-  }
   if (_headerOffset < FrameHeader::kSize) {
     return {reinterpret_cast<const char*>(frameHeader(_frameIndex) + _headerOffset),
             FrameHeader::kSize - _headerOffset};
@@ -145,28 +144,15 @@ std::string_view Http2Connection::OutputBlock::firstFragment() const noexcept {
 
 vector<std::string_view>::size_type Http2Connection::OutputBlock::pendingFragmentCount() const noexcept {
   assert(!empty());
-  if (!_framed) {
-    return 1;
-  }
-
-  const uint32_t frameCount =
-      static_cast<uint32_t>(_payloadSize == 0 ? 1 : ((_payloadSize + _maxFrameSize - 1U) / _maxFrameSize));
-  auto fragmentCount = static_cast<vector<std::string_view>::size_type>((frameCount - _frameIndex) * 2U);
+  // A frame header and a payload fragment per pending frame, minus the header of the current frame once written.
+  auto fragmentCount = static_cast<vector<std::string_view>::size_type>((frameCount() - _frameIndex) * 2U);
   fragmentCount -= static_cast<vector<std::string_view>::size_type>(_headerOffset == FrameHeader::kSize);
-  fragmentCount -= static_cast<vector<std::string_view>::size_type>(_payloadSize == 0);
   return fragmentCount;
 }
 
 void Http2Connection::OutputBlock::appendFragments(vector<std::string_view>& fragments) const {
   assert(!empty());
-  if (!_framed) {
-    fragments.emplace_back(reinterpret_cast<const char*>(_pPayload + _framePayloadOffset),
-                           _payloadSize - _framePayloadOffset);
-    return;
-  }
-
-  const uint32_t frameCount =
-      static_cast<uint32_t>(_payloadSize == 0 ? 1 : ((_payloadSize + _maxFrameSize - 1U) / _maxFrameSize));
+  const uint32_t frameCount = this->frameCount();
   uint32_t frameIndex = _frameIndex;
   uint32_t framePayloadOffset = _framePayloadOffset;
   uint8_t headerOffset = _headerOffset;
@@ -178,12 +164,12 @@ void Http2Connection::OutputBlock::appendFragments(vector<std::string_view>& fra
       headerOffset = FrameHeader::kSize;
     }
 
+    // The payload of a pending frame is never fully written (the frame would be done).
     const std::size_t payloadSize = framePayloadSize(frameIndex);
-    if (framePayloadOffset < payloadSize) {
-      const std::size_t frameOffset = static_cast<std::size_t>(frameIndex) * _maxFrameSize;
-      fragments.emplace_back(reinterpret_cast<const char*>(_pPayload + frameOffset + framePayloadOffset),
-                             payloadSize - framePayloadOffset);
-    }
+    assert(framePayloadOffset < payloadSize);
+    const std::size_t frameOffset = static_cast<std::size_t>(frameIndex) * _maxFrameSize;
+    fragments.emplace_back(reinterpret_cast<const char*>(_pPayload + frameOffset + framePayloadOffset),
+                           payloadSize - framePayloadOffset);
     ++frameIndex;
     framePayloadOffset = 0;
     headerOffset = 0;
@@ -194,14 +180,8 @@ void Http2Connection::OutputBlock::consume(std::size_t bytesWritten) noexcept {
   assert(bytesWritten <= _remainingSize);
   _remainingSize -= bytesWritten;
 
-  if (!_framed) {
-    _framePayloadOffset += static_cast<uint32_t>(bytesWritten);
-    return;
-  }
-
-  const uint32_t frameCount =
-      static_cast<uint32_t>(_payloadSize == 0 ? 1 : ((_payloadSize + _maxFrameSize - 1U) / _maxFrameSize));
-  while (bytesWritten != 0 && _frameIndex < frameCount) {
+  // The written bytes never exceed the remaining frames.
+  while (bytesWritten != 0) {
     if (_headerOffset < FrameHeader::kSize) {
       const std::size_t consumed = std::min<std::size_t>(bytesWritten, FrameHeader::kSize - _headerOffset);
       _headerOffset += static_cast<uint8_t>(consumed);
@@ -343,30 +323,44 @@ Http2Connection::ProcessResult Http2Connection::processInput(std::span<const std
 }
 
 std::span<const std::byte> Http2Connection::getPendingOutput() const noexcept {
+  std::size_t bufferEnd = _outputBuffer.size();
   if (_outputBlockReadPos < _outputBlocks.size()) {
-    const std::string_view fragment = _outputBlocks[_outputBlockReadPos].firstFragment();
-    return {reinterpret_cast<const std::byte*>(fragment.data()), fragment.size()};
+    const OutputBlock& block = _outputBlocks[_outputBlockReadPos];
+    if (_outputWritePos == block.bufferOffset()) {
+      const std::string_view fragment = block.firstFragment();
+      return {reinterpret_cast<const std::byte*>(fragment.data()), fragment.size()};
+    }
+    bufferEnd = block.bufferOffset();
   }
-  if (_outputWritePos < _outputBuffer.size()) {
-    return {_outputBuffer.data() + _outputWritePos, _outputBuffer.size() - _outputWritePos};
-  }
-  return {};
+  return {_outputBuffer.data() + _outputWritePos, bufferEnd - _outputWritePos};
 }
 
 void Http2Connection::getPendingOutputFragments(vector<std::string_view>& fragments) const {
   fragments.clear();
-  auto fragmentCount = static_cast<vector<std::string_view>::size_type>(_outputWritePos < _outputBuffer.size());
+  std::size_t bufferPos = _outputWritePos;
+  vector<std::string_view>::size_type fragmentCount = 0;
   for (auto blockIndex = _outputBlockReadPos; blockIndex < _outputBlocks.size(); ++blockIndex) {
-    fragmentCount += _outputBlocks[blockIndex].pendingFragmentCount();
+    const OutputBlock& block = _outputBlocks[blockIndex];
+    fragmentCount += static_cast<vector<std::string_view>::size_type>(bufferPos < block.bufferOffset()) +
+                     block.pendingFragmentCount();
+    bufferPos = block.bufferOffset();
   }
+  fragmentCount += static_cast<vector<std::string_view>::size_type>(bufferPos < _outputBuffer.size());
   fragments.reserve(fragmentCount);
 
+  // The output buffer bytes before each block, the block, and the buffer bytes after the last one.
+  const char* pBuffer = reinterpret_cast<const char*>(_outputBuffer.data());
+  bufferPos = _outputWritePos;
   for (auto blockIndex = _outputBlockReadPos; blockIndex < _outputBlocks.size(); ++blockIndex) {
-    _outputBlocks[blockIndex].appendFragments(fragments);
+    const OutputBlock& block = _outputBlocks[blockIndex];
+    if (bufferPos < block.bufferOffset()) {
+      fragments.emplace_back(pBuffer + bufferPos, block.bufferOffset() - bufferPos);
+      bufferPos = block.bufferOffset();
+    }
+    block.appendFragments(fragments);
   }
-  if (_outputWritePos < _outputBuffer.size()) {
-    fragments.emplace_back(reinterpret_cast<const char*>(_outputBuffer.data() + _outputWritePos),
-                           _outputBuffer.size() - _outputWritePos);
+  if (bufferPos < _outputBuffer.size()) {
+    fragments.emplace_back(pBuffer + bufferPos, _outputBuffer.size() - bufferPos);
   }
   assert(fragments.size() == fragmentCount);
 }
@@ -376,6 +370,14 @@ void Http2Connection::onOutputWritten(std::size_t bytesWritten) {
 
   while (bytesWritten != 0 && _outputBlockReadPos < _outputBlocks.size()) {
     OutputBlock& block = _outputBlocks[_outputBlockReadPos];
+    // The output buffer bytes before the block are sent first.
+    const std::size_t bufferBytes = std::min(bytesWritten, block.bufferOffset() - _outputWritePos);
+    _outputWritePos += bufferBytes;
+    bytesWritten -= bufferBytes;
+    if (bytesWritten == 0) {
+      break;
+    }
+
     const std::size_t consumed = std::min(bytesWritten, block.remainingSize());
     block.consume(consumed);
     _outputBlocksSize -= consumed;
@@ -385,6 +387,10 @@ void Http2Connection::onOutputWritten(std::size_t bytesWritten) {
       ++_outputBlockReadPos;
     }
   }
+  // The remaining bytes follow the last block.
+  _outputWritePos += bytesWritten;
+  assert(_outputWritePos <= _outputBuffer.size());
+
   if (_outputBlockReadPos == _outputBlocks.size()) {
     _outputBlocks.clear();
     _outputBlockReadPos = 0;
@@ -397,13 +403,17 @@ void Http2Connection::onOutputWritten(std::size_t bytesWritten) {
     _outputBlockReadPos = 0;
   }
 
-  if (bytesWritten != 0) {
-    _outputWritePos += bytesWritten;
-    assert(_outputWritePos <= _outputBuffer.size());
-    if (_outputWritePos == _outputBuffer.size()) {
-      _outputBuffer.clear();
-      _outputWritePos = 0;
+  // The output buffer is kept, with its capacity: erase its written bytes once all are written (without any move), or
+  // once they are at least half of it (moving at most as many bytes as written), so that it does not grow forever
+  // either. The pending blocks are all sent after them.
+  if (_outputWritePos != 0 &&
+      (_outputWritePos == _outputBuffer.size() ||
+       (_outputWritePos >= kMinWrittenOutputBufferBytesToCompact && 2U * _outputWritePos >= _outputBuffer.size()))) {
+    for (auto blockIndex = _outputBlockReadPos; blockIndex < _outputBlocks.size(); ++blockIndex) {
+      _outputBlocks[blockIndex].onBufferFrontErased(_outputWritePos);
     }
+    _outputBuffer.erase_front(_outputWritePos);
+    _outputWritePos = 0;
   }
 }
 
@@ -415,26 +425,11 @@ void Http2Connection::discardPendingOutput() noexcept {
   _outputWritePos = 0;
 }
 
-void Http2Connection::sealOutputBuffer() {
-  if (_outputWritePos == _outputBuffer.size()) {
-    _outputBuffer.clear();
-    _outputWritePos = 0;
-    return;
-  }
-  if (!_outputBuffer.empty()) {
-    const std::span<const std::byte> pendingBytes(_outputBuffer.data() + _outputWritePos,
-                                                  _outputBuffer.size() - _outputWritePos);
-    _outputBlocksSize += pendingBytes.size();
-    _outputBlocks.emplace_back(OwnerOf(std::move(_outputBuffer)), pendingBytes);
-    _outputBuffer = {};
-    _outputWritePos = 0;
-  }
-}
-
-void Http2Connection::queueOutputBlock(OutputBlock block) {
-  sealOutputBuffer();
+void Http2Connection::queueOutputBlock(HttpMessageData&& owner, std::span<const std::byte> payload, uint32_t streamId,
+                                       bool endStream, bool headers) {
+  const OutputBlock& block = _outputBlocks.emplace_back(std::move(owner), payload, _outputBuffer.size(),
+                                                        _peerSettings.maxFrameSize, streamId, endStream, headers);
   _outputBlocksSize += block.remainingSize();
-  _outputBlocks.push_back(std::move(block));
 }
 
 void Http2Connection::initiateGoAway(ErrorCode errorCode, ErrorMsg msg) {
@@ -1465,17 +1460,14 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
     HttpMessageData owner = OwnerOf(std::move(_outputBuffer));
     _outputBuffer = {};
     _outputWritePos = 0;
-    queueOutputBlock(
-        OutputBlock::Headers(std::move(owner), headerBlock, _peerSettings.maxFrameSize, streamId, endStream));
+    queueOutputBlock(std::move(owner), headerBlock, streamId, endStream, true);
   } else {
-    // Preserve older batched frames ahead of this oversized header block. Oversized
-    // fields are rare, so copying only this block is preferable to sealing every normal
-    // response into a separate transport fragment.
+    // Keep the earlier frames of the output buffer ahead of this oversized header block, which is copied out of it (the
+    // buffer may move as it grows). Oversized fields are rare.
     RawBytes owner(std::span<const std::byte>(_outputBuffer.data() + oldSize, headerBlockSize));
     _outputBuffer.setSize(outputSizeBeforeHeaders);
     const std::span<const std::byte> headerBlock(owner.data(), owner.size());
-    queueOutputBlock(
-        OutputBlock::Headers(OwnerOf(std::move(owner)), headerBlock, _peerSettings.maxFrameSize, streamId, endStream));
+    queueOutputBlock(OwnerOf(std::move(owner)), headerBlock, streamId, endStream, true);
   }
   recordFrame(true, FrameType::Headers, _peerSettings.maxFrameSize);
   recordFrame(true, FrameType::Continuation, continuationBytes,
