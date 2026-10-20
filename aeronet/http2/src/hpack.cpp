@@ -621,7 +621,8 @@ bool HpackDynamicTable::add(std::string_view name, std::string_view value) {
     do {
       http::Header evicted = evict();
       if (newEntry.empty()) {
-        // reuse memory from the evicted entry to avoid a new malloc/free pair
+        // reuse memory from the evicted entry to avoid a new malloc/free pair (name may be its name: a literal field
+        // whose name refers to the oldest entry)
         newEntry = http::Header(std::move(evicted), name, value);
       }
     } while (_maxSizeBytes < _currentSizeBytes + entrySize);
@@ -740,9 +741,9 @@ DecodedIndex DecodeInteger(std::span<const std::byte> data, uint8_t prefixBits) 
   return ret;
 }
 
-// The PseudoHeader of a pseudo-header field name, or kPseudoHeaderNames.size() for an undefined one.
+// The PseudoHeader of a pseudo-header field name, or std::size(kPseudoHeaderNames) for an undefined one.
 [[nodiscard]] std::size_t PseudoHeaderIndex(std::string_view name) noexcept {
-  return static_cast<std::size_t>(std::ranges::find(kPseudoHeaderNames, name) - kPseudoHeaderNames.begin());
+  return static_cast<std::size_t>(std::ranges::find(kPseudoHeaderNames, name) - kPseudoHeaderNames);
 }
 
 }  // namespace
@@ -750,16 +751,20 @@ DecodedIndex DecodeInteger(std::span<const std::byte> data, uint8_t prefixBits) 
 void DecodedHeaders::clear() noexcept {
   headers.clear();
   storage.clear();
-  pseudoHeaders = {};
+  std::ranges::fill(pseudoHeaders, std::string_view());
   namesAndValuesSize = 0;
   pseudoHeadersMask = 0;
 }
 
-HpackDecoder::HpackDecoder(uint32_t maxDynamicTableSize, bool mergeAllowedForUnknownRequestHeaders) noexcept
-    : _dynamicTable(maxDynamicTableSize), _mergeAllowedForUnknownRequestHeaders(mergeAllowedForUnknownRequestHeaders) {}
+HpackDecoder::HpackDecoder(uint32_t maxDynamicTableSize, uint32_t maxHeaderListSize,
+                           bool mergeAllowedForUnknownRequestHeaders) noexcept
+    : _dynamicTable(maxDynamicTableSize),
+      _maxHeaderListSize(maxHeaderListSize),
+      _mergeAllowedForUnknownRequestHeaders(mergeAllowedForUnknownRequestHeaders) {}
 
 HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data) {
   _decodedHeaders.clear();
+  _deferredJoins.clear();
 
   std::size_t pos = 0;
 
@@ -772,6 +777,15 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
   };
 
   bool seenRegularHeader = false;
+
+  // The fields beyond the header list size limit are not stored, the block being refused: storing them could take far
+  // more memory than the block itself, each of its bytes possibly referencing a large field of the dynamic table.
+  const auto storeField = [&](std::string_view name, Source nameSource, std::string_view value, Source valueSource) {
+    res.headerListSize += name.size() + value.size() + kHpackOverhead;
+    if (res.headerListSize <= _maxHeaderListSize) {
+      recordFieldError(storeHeader(name, nameSource, value, valueSource, seenRegularHeader));
+    }
+  };
 
   while (pos < data.size()) {
     const uint8_t firstByte = static_cast<uint8_t>(data[pos]);
@@ -796,8 +810,7 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
         return res;
       }
 
-      res.headerListSize += header.name.size() + header.value.size() + kHpackOverhead;
-      recordFieldError(storeHeader(header.name, source, header.value, source, seenRegularHeader));
+      storeField(header.name, source, header.value, source);
 
     } else if ((firstByte & 0xE0U) == 0x20U) {
       // Dynamic Table Size Update (RFC 7541 §6.3) - Format: 001xxxxx
@@ -852,16 +865,21 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
       }
       pos += valueResult.consumed;
 
-      res.headerListSize += name.size() + valueResult.str.size() + kHpackOverhead;
-      recordFieldError(storeHeader(name, nameSource, valueResult.str, valueResult.source, seenRegularHeader));
+      storeField(name, nameSource, valueResult.str, valueResult.source);
 
       if (withIndexing) {
-        // Note: add() copies name/value before evicting, so this is safe even if name/value point to data owned by
-        // entries that will be evicted. Dynamic table must be updated even in case of header validation issue - cf. RFC
+        // The name may point into an entry that add() evicts, even into the oldest one whose buffer it reuses for the
+        // new entry: add() supports it. Dynamic table must be updated even in case of header validation issue - cf. RFC
         // 9113 §4.3.
         _dynamicTable.add(name, valueResult.str);
       }
     }
+  }
+
+  if (res.headerListSize > _maxHeaderListSize) {
+    recordFieldError(DecodeResult::Error::HeaderListTooLarge);
+  } else if (res.isSuccess() && !_deferredJoins.empty()) {
+    joinRepeatedFields();
   }
 
   return res;
@@ -1020,7 +1038,7 @@ HpackDecoder::DecodeResult::Error HpackDecoder::storeHeader(std::string_view nam
       return DecodeResult::Error::PseudoHeaderFieldAfterRegularField;
     }
     const std::size_t pseudoHeaderIdx = PseudoHeaderIndex(name);
-    if (pseudoHeaderIdx == kPseudoHeaderNames.size()) {
+    if (pseudoHeaderIdx == std::size(kPseudoHeaderNames)) {
       return DecodeResult::Error::UndefinedPseudoHeaderField;
     }
     const auto pseudoHeader = static_cast<PseudoHeader>(pseudoHeaderIdx);
@@ -1046,7 +1064,23 @@ HpackDecoder::DecodeResult::Error HpackDecoder::storeHeader(std::string_view nam
     return DecodeResult::Error::MalformedFieldValue;
   }
 
+  const bool isContentEncoding = name == http::ContentEncoding;
+  if (isContentEncoding) {
+    // Content codings are case-insensitive (RFC 9110 §8.4.1): their value is lower-cased once stored. It is always
+    // copied for this, as a decoded Huffman string may also be added to the dynamic table, which keeps the received
+    // value.
+    valueSource = Source::Transient;
+  }
   const std::string_view storedValue = stableString(value, valueSource);
+  if (isContentEncoding) {
+    // A plain loop is enough for these few bytes (the vectorized tolower() of tolower-str.hpp would bring
+    // <immintrin.h> into this file).
+    char* pValue = const_cast<char*>(storedValue.data());
+    for (char* pEndValue = pValue + storedValue.size(); pValue != pEndValue; ++pValue) {
+      *pValue = tolower(*pValue);
+    }
+  }
+
   const auto [it, inserted] = _decodedHeaders.headers.try_emplace(stableString(name, nameSource), storedValue);
 
   if (!inserted) {
@@ -1056,35 +1090,51 @@ HpackDecoder::DecodeResult::Error HpackDecoder::storeHeader(std::string_view nam
       return DecodeResult::Error::DuplicateHeaderForbiddenToMerge;
     }
 
-    const std::string_view existingValue = it->second;
-    if (existingValue.empty() || mergeSep == 'O') {
+    if (it->second.empty() || mergeSep == 'O') {
       // Keep the last value (the first one is empty, or 'O' tells to override it)
       it->second = storedValue;
-    } else if (!value.empty()) {
-      const std::size_t newValueLen = existingValue.size() + 1U + value.size();
-
-      char* pValue = _decodedHeaders.storage.allocateAndDefaultConstruct(newValueLen);
-
-      char* pData = Append(existingValue, pValue);
-      *pData++ = mergeSep;
-      Copy(value, pData);
-
-      it->second = std::string_view(pValue, newValueLen);
-    }
-  }
-
-  if (it->first == http::ContentEncoding) {
-    // Content codings are case-insensitive (RFC 9110 §8.4.1): lower-case them once stored. A plain loop is enough for
-    // these few bytes (the vectorized tolower() of tolower-str.hpp would bring <immintrin.h> into this file).
-    // The only content-encoding value of the static table is empty: a non-empty value is in the storage.
-    char* pValue = const_cast<char*>(it->second.data());
-    for (char* pEndValue = pValue + it->second.size(); pValue != pEndValue; ++pValue) {
-      *pValue = tolower(*pValue);
+    } else if (!storedValue.empty()) {
+      // Joined once the whole block is decoded: joining each value as it comes would copy the previous ones again each
+      // time, a quadratic cost for a block repeating a field.
+      _deferredJoins.push_back(
+          DeferredJoin{it->first, storedValue, static_cast<uint32_t>(_deferredJoins.size()), mergeSep});
     }
   }
 
   _decodedHeaders.namesAndValuesSize += name.size() + value.size();
   return DecodeResult::Error::None;
+}
+
+void HpackDecoder::joinRepeatedFields() {
+  // Group the values to append by field (all the values of a field refer to its single name view, distinct from the
+  // other fields), in their order. An in-place sort with an explicit order: a stable sort would allocate.
+  std::ranges::sort(_deferredJoins, [](const DeferredJoin& lhs, const DeferredJoin& rhs) {
+    if (lhs.name.data() != rhs.name.data()) {
+      return lhs.name.data() < rhs.name.data();
+    }
+    return lhs.order < rhs.order;
+  });
+  for (auto first = _deferredJoins.begin(); first != _deferredJoins.end();) {
+    const char* pName = first->name.data();
+    const auto last = std::find_if(first, _deferredJoins.end(), [pName](const DeferredJoin& deferredJoin) {
+      return deferredJoin.name.data() != pName;
+    });
+
+    std::string_view& value = _decodedHeaders.headers.find(first->name)->second;
+    std::size_t joinedSize = value.size();
+    for (auto it = first; it != last; ++it) {
+      joinedSize += 1U + it->value.size();
+    }
+
+    char* pJoined = _decodedHeaders.storage.allocateAndDefaultConstruct(joinedSize);
+    char* pData = Append(value, pJoined);
+    for (auto it = first; it != last; ++it) {
+      *pData++ = it->separator;
+      pData = Append(it->value, pData);
+    }
+    value = std::string_view(pJoined, joinedSize);
+    first = last;
+  }
 }
 
 // ============================

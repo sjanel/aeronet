@@ -1,6 +1,5 @@
 #pragma once
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -93,7 +92,7 @@ struct HpackLookupResult {
 enum class PseudoHeader : uint8_t { Method, Scheme, Authority, Path, Status, Protocol };
 
 /// The names of the pseudo-header fields, indexed by PseudoHeader.
-inline constexpr std::array<std::string_view, 6> kPseudoHeaderNames{
+inline constexpr std::string_view kPseudoHeaderNames[]{
     http::PseudoHeaderMethod, http::PseudoHeaderScheme, http::PseudoHeaderAuthority,
     http::PseudoHeaderPath,   http::PseudoHeaderStatus, http::PseudoHeaderProtocol,
 };
@@ -132,7 +131,7 @@ struct DecodedHeaders {
 
   SvToSvMap headers;  // Regular fields, the duplicates merged
   Storage storage{kStorageInitialCapacity};
-  std::array<std::string_view, kPseudoHeaderNames.size()> pseudoHeaders;
+  std::string_view pseudoHeaders[std::size(kPseudoHeaderNames)];
   // Total size of the names and values of the fields as received (duplicates not merged), pseudo-headers included.
   std::size_t namesAndValuesSize{0};
   uint8_t pseudoHeadersMask{0};
@@ -145,7 +144,11 @@ struct DecodedHeaders {
 class HpackDecoder {
  public:
   /// Create a decoder with the specified maximum dynamic table size.
-  HpackDecoder(uint32_t maxDynamicTableSize, bool mergeAllowedForUnknownRequestHeaders) noexcept;
+  /// The fields of a header list larger than maxHeaderListSize (sum of the sizes of the names and values of its fields,
+  /// plus 32 bytes per field, RFC 7541 §4.1) are not stored: its decoding fails with HeaderListTooLarge, without taking
+  /// more memory than this limit, whatever the number of references to the dynamic table in its block.
+  HpackDecoder(uint32_t maxDynamicTableSize, uint32_t maxHeaderListSize,
+               bool mergeAllowedForUnknownRequestHeaders) noexcept;
 
   /// Decode result for a single header block.
   struct DecodeResult {
@@ -159,6 +162,7 @@ class HpackDecoder {
       MalformedFieldName,
       MalformedFieldValue,
       DuplicateHeaderForbiddenToMerge,
+      HeaderListTooLarge,
 
       // Compression errors (RFC 7541 §6.1, §6.2, §6.3)
       FailedToDecodeIndexedHeaderFieldIndex,
@@ -235,9 +239,22 @@ class HpackDecoder {
   DecodeResult::Error storeHeader(std::string_view name, Source nameSource, std::string_view value, Source valueSource,
                                   bool& seenRegularHeader);
 
+  // Join the values of the repeated fields recorded in _deferredJoins to their first one, once the block is decoded.
+  void joinRepeatedFields();
+
+  /// A value to append to a repeated field, after its separator.
+  struct DeferredJoin {
+    std::string_view name;  // The name of the field in the decoded headers (the same view for all its values)
+    std::string_view value;
+    uint32_t order;  // Position among the deferred joins: the order of the values of a field
+    char separator;
+  };
+
   HpackDynamicTable _dynamicTable;
 
   DecodedHeaders _decodedHeaders;
+  vector<DeferredJoin> _deferredJoins;
+  uint32_t _maxHeaderListSize;
   bool _mergeAllowedForUnknownRequestHeaders{true};
 };
 

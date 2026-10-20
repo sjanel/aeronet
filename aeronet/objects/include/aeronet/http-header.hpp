@@ -29,6 +29,8 @@ class Header {
 
   // Same as above, but by stealing the buffer of 'rhs'.
   // If it is smaller than the new name/value, the buffer will be reallocated.
+  // name may be the name of rhs (its bytes are then kept in place); otherwise, name and value must not point into the
+  // buffer of rhs.
   Header(Header&& rhs, std::string_view name, std::string_view value);
 
   // Header supports both move and copy semantics.

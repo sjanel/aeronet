@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <deque>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
@@ -355,7 +356,7 @@ std::span<const std::byte> AsBytes(const RawBytes& rb) { return {rb.begin(), rb.
 
 namespace {
 
-HpackDecoder CreateHpackDecoder() { return {4096, true}; }
+HpackDecoder CreateHpackDecoder() { return {4096, std::numeric_limits<uint32_t>::max(), true}; }
 
 }  // namespace
 

@@ -222,6 +222,66 @@ TEST(ObjectArrayPoolSwapTest, SwapExchangesBlocksWithoutMovingObjects) {
   EXPECT_EQ(pLhs[5], "lhs");
 }
 
+TEST(ObjectArrayPoolSpliceTest, SpliceWithEmptyPools) {
+  ObjectArrayPool<char> empty;
+  ObjectArrayPool<char> pool(8);
+  char* pData = pool.allocateAndDefaultConstruct(3);
+  pData[0] = 'x';
+
+  pool.splice(empty);  // nothing to move
+  EXPECT_EQ(pool.capacity(), 8U);
+  EXPECT_EQ(empty.capacity(), 0U);
+
+  empty.splice(pool);  // takes all the blocks
+  EXPECT_EQ(empty.capacity(), 8U);
+  EXPECT_EQ(pool.capacity(), 0U);
+  EXPECT_EQ(pData[0], 'x');
+  EXPECT_EQ(empty.allocateAndDefaultConstruct(5), pData + 3);  // continues in the same block
+}
+
+TEST(ObjectArrayPoolSpliceTest, SpliceMovesBlocksWithoutMovingObjects) {
+  ObjectArrayPool<std::string> pool(4);
+  (void)pool.allocateAndDefaultConstruct(3);
+  (void)pool.allocateAndDefaultConstruct(5);  // second block, of 8 objects
+  pool.clear();                               // both blocks kept, allocations restart in the first one
+  std::string* pKept = pool.allocateAndDefaultConstruct(2);
+  pKept[1] = "kept";
+  const auto poolCapa = pool.capacity();
+  ASSERT_EQ(poolCapa, 12U);
+
+  ObjectArrayPool<std::string> other(16);
+  std::string* pOther = other.allocateAndDefaultConstruct(10);
+  pOther[9] = "other";
+
+  pool.splice(other);
+
+  EXPECT_EQ(pool.capacity(), poolCapa + 16U);
+  EXPECT_EQ(other.capacity(), 0U);
+  EXPECT_EQ(pKept[1], "kept");
+  EXPECT_EQ(pOther[9], "other");
+
+  // The next allocations continue in the current block of other (the empty block of 8 objects is skipped).
+  EXPECT_EQ(pool.allocateAndDefaultConstruct(6), pOther + 10);
+  EXPECT_EQ(pool.capacity(), poolCapa + 16U);
+
+  // other starts over with a block of its initial capacity, independent of the spliced objects.
+  std::string* pNew = other.allocateAndDefaultConstruct(1);
+  pNew[0] = "new";
+  EXPECT_EQ(other.capacity(), 16U);
+  other.clear();
+  EXPECT_EQ(pOther[9], "other");
+
+  // A clear makes all the blocks available again, the skipped one included: no new block is allocated.
+  pool.clear();
+  EXPECT_EQ(pool.capacity(), poolCapa + 16U);
+  (void)pool.allocateAndDefaultConstruct(4);
+  std::string* pSecond = pool.allocateAndDefaultConstruct(8);
+  pSecond[7] = "second block";
+  std::string* pSpliced = pool.allocateAndDefaultConstruct(16);
+  EXPECT_EQ(pSpliced, pOther);  // the block of other
+  EXPECT_EQ(pool.capacity(), poolCapa + 16U);
+}
+
 TEST(ObjectArrayPoolStressTest, BulkAllocateAndReset) {
   ObjectArrayPool<char> pool;
 

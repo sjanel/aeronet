@@ -16,7 +16,7 @@ namespace aeronet::http2 {
 
 /// Test-only EventSink: each event forwards to an optional std::function, defaulting to no-op. Binds itself to the
 /// connection on construction and detaches on destruction, so lifetime bugs (sink outliving/outlived-by the connection)
-/// fail loudly instead of  dangling. Field names use the "Fn" suffix to avoid clashing with the virtual methods they
+/// fail loudly instead of dangling. Field names use the "Fn" suffix to avoid clashing with the virtual methods they
 /// implement (onStreamClosed the method vs. onStreamClosedFn the assignable hook).
 class RecordingEventSink final : public EventSink {
  public:
@@ -33,7 +33,7 @@ class RecordingEventSink final : public EventSink {
     if (onHeadersDecodedFn) {
       // The hooks see the pseudo-header fields among the regular ones, as in the header block.
       SvToSvMap headers = decodedHeaders.headers;
-      for (std::size_t idx = 0; idx < kPseudoHeaderNames.size(); ++idx) {
+      for (std::size_t idx = 0; idx < std::size(kPseudoHeaderNames); ++idx) {
         if (decodedHeaders.hasPseudoHeader(static_cast<PseudoHeader>(idx))) {
           headers.emplace(kPseudoHeaderNames[idx], decodedHeaders.pseudoHeaders[idx]);
         }
