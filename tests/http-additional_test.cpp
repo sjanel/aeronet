@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <format>
+#include <initializer_list>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -24,6 +25,7 @@
 #include <utility>
 
 #include "aeronet/access-log-config.hpp"
+#include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-helpers.hpp"
@@ -41,6 +43,7 @@
 #include "aeronet/router.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/socket-ops.hpp"
+#include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 
@@ -343,6 +346,180 @@ TEST(HttpPipeline, TwoRequestsBackToBack) {
   std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.contains("E:/a"));
   ASSERT_TRUE(resp.contains("E:/b"));
+}
+
+namespace {
+
+// Concatenation of the "[...]" fragments of 'raw', in order: the bodies of the responses of the tests below.
+std::string BracketedFragments(std::string_view raw) {
+  std::string fragments;
+  for (auto pos = raw.find('['); pos != std::string_view::npos; pos = raw.find('[', pos + 1)) {
+    const auto end = raw.find(']', pos);
+    if (end == std::string_view::npos) {
+      break;
+    }
+    fragments.append(raw.substr(pos, end + 1 - pos));
+  }
+  return fragments;
+}
+
+}  // namespace
+
+// Pipelined requests start anywhere in the input buffer, the served ones being erased once per read: fixed-length and
+// chunked bodies of requests far from its start, and requests split by the reads, are served in order.
+TEST(HttpPipeline, ManyRequestsWithBodiesInOneWrite) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg = TestServerConfig(); });
+  ts.router().setDefault(
+      [](const HttpRequestView& req) { return HttpResponse(std::format("[{}={}]", req.path(), req.body())); });
+  static constexpr int kNbRequests = 2000;
+  std::string requests;
+  std::string expected;
+  for (int requestPos = 0; requestPos < kNbRequests; ++requestPos) {
+    const std::string body = std::format("body-{}", requestPos);
+    if (requestPos % 2 == 0) {
+      requests +=
+          std::format("POST /p{} HTTP/1.1\r\nhost: x\r\ncontent-length: {}\r\n\r\n{}", requestPos, body.size(), body);
+    } else {
+      requests +=
+          std::format("POST /p{} HTTP/1.1\r\nhost: x\r\ntransfer-encoding: chunked\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+                      requestPos, body.size(), body);
+    }
+    expected += std::format("[/p{}={}]", requestPos, body);
+  }
+  requests += "GET /last HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n";
+  expected += "[/last=]";
+
+  test::ClientConnection clientConnection(ts.port());
+  // The responses are received while sending: both directions could otherwise fill their socket buffers.
+  std::jthread sender([fd = clientConnection.fd(), &requests] { test::sendAll(fd, requests, 10s); });
+  const std::string resp = test::recvUntilClosed(clientConnection.fd());
+  sender.join();
+  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 200"), kNbRequests + 1);
+  EXPECT_EQ(BracketedFragments(resp), expected);
+}
+
+// A request completed by a later read, behind requests served from the same read, is served once complete: its head,
+// and its body.
+TEST(HttpPipeline, IncompleteRequestBehindServedOnesIsCompletedLater) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg = TestServerConfig(); });
+  ts.router().setDefault([](const HttpRequestView& req) {
+    return HttpResponse(std::format("[{}|{}|{}]", req.path(), req.headerValueOrEmpty("x-dup"), req.body()));
+  });
+  const auto serve = [](std::initializer_list<std::string_view> parts) {
+    test::ClientConnection clientConnection(ts.port());
+    const NativeHandle fd = clientConnection.fd();
+    EXPECT_TRUE(SetTcpNoDelay(fd));  // a part is not delayed until the previous one is acknowledged
+    for (const std::string_view part : parts) {
+      test::sendAll(fd, part);
+      std::this_thread::sleep_for(5ms);  // lets the server read each part on its own
+    }
+    return BracketedFragments(test::recvUntilClosed(fd));
+  };
+  static constexpr std::string_view kServed = "GET /a HTTP/1.1\r\nhost: x\r\n\r\nGET /b HTTP/1.1\r\nhost: x\r\n\r\n";
+
+  // A head split in the middle of a header line, after duplicate headers merged in place.
+  const std::string splitHead =
+      std::string(kServed) + "GET /c%2561 HTTP/1.1\r\nhost: x\r\nx-dup: v1\r\nx-dup: v2\r\nconnection: cl";
+  EXPECT_EQ(serve({splitHead, "ose\r\n\r\n"}), "[/a||][/b||][/c%61|v1,v2|]");
+
+  // A fixed-length body split, then a chunked one.
+  const std::string splitBody =
+      std::string(kServed) + "POST /d HTTP/1.1\r\nhost: x\r\nx-dup: v1\r\nx-dup: v2\r\ncontent-length: 10\r\n\r\n01234";
+  const std::string splitChunkedBody =
+      "56789" + std::string(kServed) +
+      "POST /e HTTP/1.1\r\nhost: x\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n3\r\nabc\r\n2\r\nd";
+  EXPECT_EQ(serve({splitBody, splitChunkedBody, "e\r\n0\r\n\r\n"}),
+            "[/a||][/b||][/d|v1,v2|0123456789][/a||][/b||][/e||abcde]");
+}
+
+// The responses to pipelined requests received together are written together, by a single flush: neither a syscall per
+// response nor, with Nagle's algorithm, a wait for the acknowledgment of the first one.
+TEST(HttpPipeline, ResponsesToRequestsReceivedTogetherAreWrittenTogether) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg = TestServerConfig(); });
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(std::format("[{}]", req.path())); });
+  static constexpr int kNbRequests = 16;
+  std::string requests;
+  std::string expected;
+  for (int requestPos = 0; requestPos < kNbRequests; ++requestPos) {
+    requests += std::format("GET /r{} HTTP/1.1\r\nhost: x\r\n\r\n", requestPos);
+    expected += std::format("[/r{}]", requestPos);
+  }
+
+  test::ClientConnection clientConnection(ts.port());
+  const auto before = ts.server.stats();
+  test::sendAll(clientConnection.fd(), requests);  // a single segment on loopback: a single read
+  std::string resp;
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (BracketedFragments(resp).size() < expected.size() && std::chrono::steady_clock::now() < deadline) {
+    resp += test::recvWithTimeout(clientConnection.fd(), 10ms);
+  }
+  EXPECT_EQ(BracketedFragments(resp), expected);
+  // The server counts the written bytes once its write returns, possibly after the client received them.
+  auto after = ts.server.stats();
+  while (after.totalBytesWrittenFlush - before.totalBytesWrittenFlush < resp.size() &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(1ms);
+    after = ts.server.stats();
+  }
+  EXPECT_EQ(after.totalBytesWrittenImmediate, before.totalBytesWrittenImmediate);
+  EXPECT_EQ(after.totalBytesWrittenFlush - before.totalBytesWrittenFlush, resp.size());
+  EXPECT_EQ(after.flushCycles - before.flushCycles, 1U);
+}
+
+// Batched responses to pipelined requests are written in order with the responses that are not batched: large ones
+// (the batch is written along with them), files, streamed ones, and the responses after a request waiting for its body.
+TEST(HttpPipeline, BatchedResponsesAreWrittenInOrderWithTheOthers) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg = TestServerConfig(); });
+  test::ScopedTempDir tmpDir;
+  const std::string fileBodies[]{"[small-file]", "[" + std::string(300UL << 10U, 'f') + "]"};
+  const test::ScopedTempFile files[]{test::ScopedTempFile(tmpDir, fileBodies[0]),
+                                     test::ScopedTempFile(tmpDir, fileBodies[1])};
+  auto router = ts.resetRouterAndGet();
+  router.setPath(http::Method::GET, "/size/{n}", [](const HttpRequestView& req) {
+    std::size_t size = 0;
+    const std::string_view sizeStr = req.pathParamValueOrEmpty("n");
+    std::from_chars(sizeStr.data(), sizeStr.data() + sizeStr.size(), size);
+    return HttpResponse("[" + std::string(size, 's') + "]");
+  });
+  router.setPath(http::Method::POST, "/echo", [](const HttpRequestView& req) { return HttpResponse(req.body()); });
+  for (std::size_t filePos = 0; filePos < std::size(files); ++filePos) {
+    router.setPath(http::Method::GET, std::format("/file/{}", filePos),
+                   [path = files[filePos].filePath().string()](const HttpRequestView&) {
+                     return HttpResponse(http::StatusCodeOK).file(File(path));
+                   });
+  }
+  router.setPath(http::Method::GET, "/stream", [](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+    writer.writeBody("[chunk-1]");
+    writer.writeBody("[" + std::string(40UL << 10U, 'c') + "]");
+    writer.end();
+  });
+
+  const std::string_view targets[]{"/size/1",      "/size/30000", "/size/30000", "/size/30000", "/size/2",
+                                   "/size/100000", "/size/3",     "/file/0",     "/size/4",     "/file/1",
+                                   "/size/5",      "/stream",     "/size/6"};
+  std::string requests;
+  std::string expected;
+  for (const std::string_view target : targets) {
+    requests += std::format("GET {} HTTP/1.1\r\nhost: x\r\n\r\n", target);
+  }
+  for (const std::size_t size : {1UL, 30000UL, 30000UL, 30000UL, 2UL, 100000UL, 3UL}) {
+    expected += "[" + std::string(size, 's') + "]";
+  }
+  expected +=
+      fileBodies[0] + "[ssss]" + fileBodies[1] + "[sssss][chunk-1][" + std::string(40UL << 10U, 'c') + "][ssssss]";
+  // Then a request whose body is received later, and one behind it.
+  requests += "POST /echo HTTP/1.1\r\nhost: x\r\ncontent-length: 8\r\n\r\n[po";
+  expected += "[posted][sssssss]";
+
+  test::ClientConnection clientConnection(ts.port());
+  const NativeHandle fd = clientConnection.fd();
+  test::sendAll(fd, requests, 5s);
+  std::this_thread::sleep_for(20ms);
+  test::sendAll(fd, "sted]GET /size/7 HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n");
+  const std::string resp = test::recvUntilClosed(fd);
+  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 200"), static_cast<int>(std::size(targets)) + 2);
+  EXPECT_TRUE(BracketedFragments(resp) == expected) << "received " << resp.size() << " bytes";
 }
 
 // The head of a request is parsed once, even when it is received in several reads: its parsing modifies it in place
@@ -1063,6 +1240,53 @@ TEST(HttpExpectation, HandlerFinalResponseSkipsBody) {
   ASSERT_TRUE(resp.contains("403")) << resp;
   ASSERT_TRUE(resp.contains("nope")) << resp;
   ASSERT_FALSE(resp.contains("SHOULD NOT SEE")) << resp;
+}
+
+namespace {
+
+void InstallAuthCheckExpectationHandler() {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg = TestServerConfig(); });
+  ts.server.setExpectationHandler([](const HttpRequestView& /*req*/, std::string_view token) {
+    SingleHttpServer::ExpectationResult res;
+    res.kind = SingleHttpServer::ExpectationResultKind::Continue;
+    if (token == "auth-check") {
+      res.kind = SingleHttpServer::ExpectationResultKind::FinalResponse;
+      res.finalResponse = HttpResponse(http::StatusCodeForbidden, "[denied]");
+    }
+    return res;
+  });
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(std::format("[{}]", req.path())); });
+}
+
+}  // namespace
+
+// A final response to the expectations of a request without body, pipelined between other requests, consumes its head:
+// the requests behind it are served right away.
+TEST(HttpExpectation, HandlerFinalResponseToPipelinedRequestWithoutBody) {
+  InstallAuthCheckExpectationHandler();
+  const std::string resp = test::sendAndCollect(ts.port(),
+                                                "GET /a HTTP/1.1\r\nhost: x\r\n\r\n"
+                                                "GET /x HTTP/1.1\r\nhost: x\r\nexpect: auth-check\r\n\r\n"
+                                                "GET /b HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n");
+  EXPECT_EQ(BracketedFragments(resp), "[/a][denied][/b]");
+  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 403"), 1) << resp;
+}
+
+// A final response to the expectations of a request announcing a body closes the connection: the client may send the
+// body anyway, which could not be told apart from the next request.
+TEST(HttpExpectation, HandlerFinalResponseToRequestAnnouncingBodyClosesConnection) {
+  InstallAuthCheckExpectationHandler();
+  for (const std::string_view framing : {"content-length: 5", "transfer-encoding: chunked"}) {
+    SCOPED_TRACE(framing);
+    const std::string resp =
+        test::sendAndCollect(ts.port(), std::format("GET /a HTTP/1.1\r\nhost: x\r\n\r\n"
+                                                    "POST /x HTTP/1.1\r\nhost: x\r\n{}\r\nexpect: auth-check\r\n\r\n"
+                                                    "GET /b HTTP/1.1\r\nhost: x\r\n\r\n",
+                                                    framing));
+    EXPECT_EQ(BracketedFragments(resp), "[/a][denied]");
+    EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 2) << resp;
+    EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << resp;
+  }
 }
 
 TEST(HttpExpectation, Mixed100AndCustomWithHandlerContinue) {

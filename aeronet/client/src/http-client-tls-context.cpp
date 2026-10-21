@@ -283,6 +283,11 @@ HttpClientTlsContext::HttpClientTlsContext(const HttpClientConfig& cfg) {
     }
   }
   ::SSL_set_connect_state(ssl.get());
+  // Since OpenSSL 3.2, it re-creates the record layers of the connection and ignores an allocation failure there, which
+  // leaves the connection in error (out of the 'before' state) without record layer: SSL_set_mode() would crash.
+  if (::SSL_in_before(ssl.get()) != 1) {
+    throw HttpClientException("SSL_set_connect_state failed");
+  }
   auto backend = std::make_unique<TlsTransport>(std::move(ssl));
   backend->setUnderlyingFd(fd);
   return Transport(std::move(backend));

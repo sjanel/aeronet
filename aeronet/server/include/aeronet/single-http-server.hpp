@@ -516,7 +516,13 @@ class SingleHttpServer {
   // For WebSocket, routes through the protocol handler.
   // Returns true if the connection should be closed.
   bool processConnectionInput(ConnectionIt cnxIt);
+  // Serves the HTTP/1.1 requests in the input buffer of the connection (see serveHttp1Requests()), then writes their
+  // responses not written yet, and gives the bytes following an upgrade request to the new protocol.
+  // Returns true if the connection should stop reading (or close).
   bool processHttp1Requests(ConnectionIt cnxIt);
+  // Serves the HTTP/1.1 requests in the input buffer of the connection. The responses to the requests followed by
+  // others are batched (see _pHttp1OutputBatch).
+  bool serveHttp1Requests(ConnectionIt cnxIt);
   // Validate the Transfer-Encoding of the current HTTP/1.1 request. Returns true for chunked, the only coding
   // supported. Otherwise, queues the error response (the connection then closes) and returns false.
   bool acceptChunkedTransferEncoding(ConnectionIt cnxIt, std::string_view transferEncoding);
@@ -558,17 +564,22 @@ class SingleHttpServer {
   // Split helpers
   enum class BodyDecodeStatus : uint8_t { Ready, NeedMore, Error };
 
-  BodyDecodeStatus decodeBodyIfReady(ConnectionIt cnxIt, bool isChunked, bool expectContinue, std::size_t maxBodyBytes,
-                                     std::size_t& consumedBytes);
-  BodyDecodeStatus decodeFixedLengthBody(ConnectionIt cnxIt, bool expectContinue, std::size_t maxBodyBytes,
-                                         std::size_t& consumedBytes);
-  BodyDecodeStatus decodeChunkedBody(ConnectionIt cnxIt, bool expectContinue, std::size_t maxBodyBytes,
-                                     std::size_t& consumedBytes);
+  // Decodes the body of the current HTTP/1.1 request, whose head starts 'input' (the input buffer from the request on).
+  // Sets consumedBytes to the bytes of the request (head, body and trailers) once Ready.
+  BodyDecodeStatus decodeBodyIfReady(ConnectionIt cnxIt, std::span<char> input, bool isChunked, bool expectContinue,
+                                     std::size_t maxBodyBytes, std::size_t& consumedBytes);
+  BodyDecodeStatus decodeFixedLengthBody(ConnectionIt cnxIt, std::span<const char> input, bool expectContinue,
+                                         std::size_t maxBodyBytes, std::size_t& consumedBytes);
+  BodyDecodeStatus decodeChunkedBody(ConnectionIt cnxIt, std::span<char> input, bool expectContinue,
+                                     std::size_t maxBodyBytes, std::size_t& consumedBytes);
   bool parseHeadersUnchecked(SvToSvMap& headersMap, char* bufferBeg, char* first, char* last);
   bool maybeDecompressRequestBody(ConnectionIt cnxIt, bool usePerConnectionBodyStorage);
-  void finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpResponse&& resp, const CorsPolicy* pCorsPolicy);
+  // Sends the response to the current HTTP/1.1 request. With 'close', the connection closes after it, as when the
+  // request does not keep it alive.
+  void finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpResponse&& resp, const CorsPolicy* pCorsPolicy,
+                                       bool close = false);
   // Handle Expect header tokens other than the built-in 100-continue.
-  // Returns true if processing should stop for this request (response already queued/sent).
+  // Returns true if processing should stop for this request (response already queued/sent): only its head is consumed.
   bool handleExpectHeader(ConnectionIt cnxIt, std::string_view expectHeader, const CorsPolicy* pCorsPolicy,
                           bool& found100Continue);
   // Helper to populate and invoke the metrics callback for a completed request.
@@ -666,7 +677,10 @@ class SingleHttpServer {
 
   enum class LoopAction : uint8_t { Nothing, Continue, Break, SwitchProtocol };
 
-  LoopAction processSpecialMethods(ConnectionIt& cnxIt, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy);
+  // Answers the OPTIONS, TRACE and CONNECT requests that are not routed like the other ones. The current request starts
+  // at requestOffset in the input buffer, and takes consumedBytes there.
+  LoopAction processSpecialMethods(ConnectionIt& cnxIt, std::size_t requestOffset, std::size_t consumedBytes,
+                                   const CorsPolicy* pCorsPolicy);
 
   // Run the streaming handler of the current HTTP/1.1 request. Returns Break when the connection closes afterwards,
   // Continue otherwise.
@@ -722,6 +736,8 @@ class SingleHttpServer {
   static void AbandonAsyncHandler(AsyncHandlerState& async) noexcept;
 
   // Returns true if the handler was dispatched (it may have completed already), false if it returned an invalid task.
+  // With bodyReady, consumedBytes is the size of the input buffer up to the end of the request (the requests served
+  // before it included): erased once the handler completed, the input buffer not moving meanwhile.
   bool dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyncRequestHandler& handler, bool bodyReady,
                             bool isChunked, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy,
                             std::span<const ResponseMiddleware> responseMiddleware, std::size_t perRouteMaxBodyBytes);
@@ -842,6 +858,17 @@ class SingleHttpServer {
   // CONNECT tunnels: created by the first CONNECT request of a run, and destroyed when the event loop stops (always
   // null when the server does not run, so the special members of the server need not care).
   std::unique_ptr<internal::TunnelManager> _tunnels;
+
+  // Largest output batched for a connection by queueData() (see _pHttp1OutputBatch): a response that would exceed it is
+  // written right away, along with the batched ones.
+  static constexpr std::size_t kMaxBatchedOutputBytes = std::size_t{64} << 10U;
+
+  // The HTTP/1.1 connection whose current request is followed by other requests in its input buffer, while
+  // serveHttp1Requests() serves them (nullptr otherwise): queueData() does not write their responses right away, but
+  // keeps them to write them together, in a single write, once they are served. Responding to each pipelined request
+  // with its own write would cost a syscall per request and, with Nagle's algorithm, delay the responses after the
+  // first one until the client acknowledges it.
+  ConnectionState* _pHttp1OutputBatch{nullptr};
 
   // Fds whose input must be resumed without any event reporting it (see deferInput()): those that hit the per-event
   // fairness cap with data still in their TCP buffer (edge-triggered polling - EPOLLET on Linux, EV_CLEAR on macOS -

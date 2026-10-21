@@ -543,9 +543,14 @@ void HttpRequestView::resumeHeadWaitingForBody(std::span<char> inBuffer) noexcep
   resetBodyState();
 }
 
-void HttpRequestView::rebaseHeadViews(const char* newBase) noexcept {
+std::size_t HttpRequestView::pathOffsetInHead() const noexcept {
   // The request-target, where the path is decoded in place, starts after the method and a space.
-  const std::uintptr_t oldBase = reinterpret_cast<std::uintptr_t>(_pPath) - (http::MethodToStr(_method).size() + 1U);
+  return http::MethodToStr(_method).size() + 1U;
+}
+
+void HttpRequestView::rebaseHeadViews(const char* newBase) noexcept {
+  // The previous storage may be freed already: only addresses are computed.
+  const std::uintptr_t oldBase = reinterpret_cast<std::uintptr_t>(_pPath) - pathOffsetInHead();
   if (oldBase == reinterpret_cast<std::uintptr_t>(newBase)) {
     return;
   }
@@ -626,7 +631,8 @@ void HttpRequestView::pinHeadStorage(ConnectionState& state, AsyncHandlerStatePo
   if (_headPinned || _headSpanSize == 0) {
     return;
   }
-  const char* oldBase = state.inBuffer.data();
+  // The head is in the input buffer, not necessarily at its start (the requests pipelined before it may precede it).
+  const char* oldBase = _pPath - pathOffsetInHead();
   RawChars& headBuffer = state.ensureAsyncState(asyncStatePool).headBuffer;
   // A single allocation: the views remapped below must not be invalidated by a later reallocation.
   headBuffer.reserve(_headSpanSize + PathParamKeysSize(_pathParams));

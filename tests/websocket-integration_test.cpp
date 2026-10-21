@@ -22,7 +22,9 @@
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"
+#include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/middleware.hpp"
@@ -380,6 +382,43 @@ TEST_F(WebSocketTest, SendAndReceiveTextMessage) {
   ASSERT_EQ(receivedMessages.size(), 1);
   EXPECT_EQ(receivedMessages[0].first, "Hello, WebSocket!");
   EXPECT_FALSE(receivedMessages[0].second);  // Text, not binary
+}
+
+// An upgrade request pipelined behind a served request, from the same input, followed by a frame sent without waiting
+// for the 101 response: the frame is the first input of the WebSocket connection, delivered without waiting for more.
+TEST_F(WebSocketTest, PipelinedUpgradeWithCoalescedFrame) {
+  ts.postRouterUpdate([this](Router& router) {
+    router.setPath(http::Method::GET, "/plain",
+                   [](const HttpRequestView&) { return HttpResponse(http::StatusCodeNoContent); });
+    router.setWebSocket("/ws", WebSocketEndpoint::WithCallbacks(WebSocketCallbacks{
+                                   .onMessage = [this](std::span<const std::byte> payload,
+                                                       bool isBinary) { recordMessage(payload, isBinary); },
+                                   .onPing = {},
+                                   .onPong = {},
+                                   .onClose = {},
+                                   .onError = {},
+                               }));
+  });
+
+  test::ClientConnection conn(ts.port());
+  const auto textFrame = BuildClientTextFrame("coalesced");
+  test::sendAll(conn.fd(), "GET /plain HTTP/1.1\r\nHost: localhost\r\n\r\n" + BuildUpgradeRequest("/ws") +
+                               std::string(reinterpret_cast<const char*>(textFrame.data()), textFrame.size()));
+
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (receivedMessages().empty() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(1ms);
+  }
+  const auto messages = receivedMessages();
+  ASSERT_EQ(messages.size(), 1U);
+  EXPECT_EQ(messages[0].first, "coalesced");
+  std::string responses;
+  while (!(responses.contains("HTTP/1.1 101") && responses.ends_with(http::DoubleCRLF)) &&
+         std::chrono::steady_clock::now() < deadline) {
+    responses += test::recvWithTimeout(conn.fd(), 10ms);
+  }
+  EXPECT_TRUE(responses.starts_with("HTTP/1.1 204")) << responses;
+  EXPECT_TRUE(responses.contains("HTTP/1.1 101")) << responses;
 }
 
 // A frame bigger than the loopback MSS is always received in several reads: the message must be delivered once and

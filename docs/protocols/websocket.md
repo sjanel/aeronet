@@ -107,7 +107,7 @@ A `GET` request on the endpoint's path with an `Upgrade: websocket` header goes 
 3. The handshake headers are validated: when they fail the checks above, the answer is `400 Bad Request`.
 4. The endpoint's factory creates the connection's handler, and may refuse the connection.
 
-On success, the server answers `101 Switching Protocols` with the computed `Sec-WebSocket-Accept`, and the connection switches to the WebSocket protocol. Response middleware does not apply to the `101` response. Any other request is routed like a normal HTTP request.
+On success, the server answers `101 Switching Protocols` with the computed `Sec-WebSocket-Accept`, and the connection switches to the WebSocket protocol. Frames received along with the upgrade request (from a client that did not wait for the `101` response) are processed right away. Response middleware does not apply to the `101` response. Any other request is routed like a normal HTTP request.
 
 **Origin checks.** Browsers do not apply CORS to WebSocket connections: a page of any site can open one to the server, and the browser attaches the server's cookies to the upgrade request. To prevent this cross-site WebSocket hijacking, the server checks the `Origin` header that browsers always send:
 
