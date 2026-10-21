@@ -34,7 +34,8 @@ jobs:
           # It builds shared libraries: being the only leg without sanitizer, it is the one where
           # the shared libraries are linked with -z defs, which checks their link dependencies.
           - { compiler: gcc-13, features: ON, client: ON, server: ON, build: Release, asan: OFF, tsan: OFF, shared: ON }
-    runs-on: ubuntu-latest
+    # GCC 13 does not link with the system libraries of Ubuntu 26.04, built by later GCC versions (libprotobuf).
+    runs-on: ${{ matrix.compiler == 'gcc-13' && 'ubuntu-24.04' || 'ubuntu-latest' }}
     timeout-minutes: 60
 
     env:
@@ -207,7 +208,8 @@ jobs:
 
   coverage:
     name: Coverage
-    runs-on: ubuntu-latest
+    # Ubuntu 24.04, like the development machine, until the move to 26.04 (OpenSSL 3.5).
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       contents: read

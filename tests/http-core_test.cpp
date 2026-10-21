@@ -1606,7 +1606,8 @@ TEST(ZerocopyMode, RetainedBytesLimitFallsBackToCopy) {
     cfg.withZerocopyMinBytes(1U);
     cfg.withMaxZerocopyPendingBytes(1024U);
   });
-  const std::string payload(4UL << 10U, 'p');
+  // Larger than the batch of the responses to pipelined requests (64 KiB): each is written right away.
+  const std::string payload(96UL << 10U, 'p');
   ts.resetRouterAndGet().setPath(http::Method::GET, "/retain-limit",
                                  [&payload](const HttpRequestView& req) { return req.makeResponse(payload); });
 
@@ -2848,6 +2849,26 @@ TEST(HttpOptionsTrace, TraceEchoWhenEnabled) {
 
   // Should echo headers
   ASSERT_TRUE(resp.contains("x-test-header: value"));
+}
+
+// TRACE echoes its own request, not the requests served before it from the same input.
+TEST(HttpOptionsTrace, TraceEchoesItsOwnPipelinedRequest) {
+  ts.postConfigUpdate(
+      [](HttpServerConfig& cfg) { cfg.withTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainAndTLS); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("served"); });
+
+  test::ClientConnection cnx(port);
+  test::sendAll(cnx.fd(),
+                "GET /first HTTP/1.1\r\nHost: h\r\n\r\n"
+                "TRACE /traced HTTP/1.1\r\nHost: h\r\nX-Traced: yes\r\n\r\n"
+                "GET /last HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n");
+  const std::string resp = test::recvUntilClosed(cnx.fd());
+  ASSERT_EQ(test::countOccurrences(resp, "HTTP/1.1 200"), 3) << resp;
+  const auto traceBodyPos = resp.find("\r\n\r\nTRACE /traced HTTP/1.1\r\n");
+  ASSERT_NE(traceBodyPos, std::string::npos) << resp;
+  EXPECT_TRUE(resp.find("x-traced: yes\r\n\r\nHTTP/1.1 200", traceBodyPos) != std::string::npos) << resp;
+  EXPECT_FALSE(resp.contains("GET /first")) << resp;
+  EXPECT_TRUE(resp.ends_with("served")) << resp;
 }
 
 TEST(HttpOptionsTrace, TraceDisabledReturns405) {

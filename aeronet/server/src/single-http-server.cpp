@@ -72,19 +72,41 @@ namespace aeronet {
 
 namespace {
 
-// Consumes the bytes of the request from the input buffer once it is served.
+// The input consumed by the requests served by SingleHttpServer::processHttp1Requests(), erased from the input buffer
+// at once when it returns: erasing each request once served would move the requests pipelined behind it each time, in
+// a time quadratic in their number.
+struct ConsumedInputRAII {
+  explicit ConsumedInputRAII(RawChars& inBuffer) noexcept : inBuffer(inBuffer) {}
+
+  ConsumedInputRAII(const ConsumedInputRAII&) = delete;
+  ConsumedInputRAII(ConsumedInputRAII&&) noexcept = delete;
+  ConsumedInputRAII& operator=(const ConsumedInputRAII&) = delete;
+  ConsumedInputRAII& operator=(ConsumedInputRAII&&) noexcept = delete;
+
+  ~ConsumedInputRAII() { inBuffer.erase_front(nbBytes); }
+
+  // The input not consumed yet, starting with the current request.
+  [[nodiscard]] std::span<char> remaining() const noexcept {
+    return {inBuffer.data() + nbBytes, inBuffer.size() - nbBytes};
+  }
+
+  RawChars& inBuffer;
+  std::size_t nbBytes{0};
+};
+
+// Consumes the bytes of the request once it is served.
 struct RequestFinalizationRAII {
-  RequestFinalizationRAII(ConnectionState& state, std::size_t consumedBytes)
-      : state(state), consumedBytes(consumedBytes) {}
+  RequestFinalizationRAII(ConsumedInputRAII& consumedInput, std::size_t consumedBytes) noexcept
+      : consumedInput(consumedInput), consumedBytes(consumedBytes) {}
 
   RequestFinalizationRAII(const RequestFinalizationRAII&) = delete;
   RequestFinalizationRAII(RequestFinalizationRAII&&) noexcept = delete;
   RequestFinalizationRAII& operator=(const RequestFinalizationRAII&) = delete;
   RequestFinalizationRAII& operator=(RequestFinalizationRAII&&) noexcept = delete;
 
-  ~RequestFinalizationRAII() { state.inBuffer.erase_front(consumedBytes); }
+  ~RequestFinalizationRAII() { consumedInput.nbBytes += consumedBytes; }
 
-  ConnectionState& state;
+  ConsumedInputRAII& consumedInput;
   std::size_t consumedBytes;
 };
 
@@ -264,6 +286,25 @@ bool SingleHttpServer::StopReadingIfOutputBlocked(ConnectionState& state) {
 }
 
 bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
+  const NativeHandle fd = cnxIt->fd();
+  const bool stopReading = serveHttp1Requests(cnxIt);
+  _pHttp1OutputBatch = nullptr;
+
+  // Serving the requests may have inserted connections (CONNECT).
+  cnxIt = _connections.iterator(fd);
+  ConnectionState& state = _connections.connectionState(cnxIt);
+  // Write the responses batched while serving the requests (the HTTP/1 output that does not wait for the socket).
+  if (state.hasPendingOutput() && !state.waitingWritable) {
+    flushOutbound(cnxIt);
+  }
+  // The bytes following an upgrade request belong to the new protocol: no read event would report them.
+  if (!stopReading && state.protocolHandler != nullptr && !state.inBuffer.empty() && !state.isAnyCloseRequested()) {
+    return processConnectionInput(cnxIt);
+  }
+  return stopReading;
+}
+
+bool SingleHttpServer::serveHttp1Requests(ConnectionIt cnxIt) {
   ConnectionState& state = _connections.connectionState(cnxIt);
   if (state.isAnyCloseRequested() || state.tunnelResolving) {
     // The bytes still buffered (a request answered by an error, its unread body, the CONNECT request waiting for its
@@ -285,21 +326,30 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
   // next pipelined requests are served after the other ready connections. The read budget alone would let a client
   // pipelining such requests keep the event loop on its connection until it sent a whole budget of requests.
   const uint64_t bytesWrittenAtStart = totalBytesWritten();
+  // The current request starts at consumedInput.nbBytes in the input buffer: the requests served before it are erased
+  // when this call returns (a request waiting for more of its bytes then starts the input buffer again).
+  ConsumedInputRAII consumedInput(state.inBuffer);
+  // The responses are batched until the last request of the input (see _pHttp1OutputBatch).
+  _pHttp1OutputBatch = &state;
   do {
+    const std::span<char> input = consumedInput.remaining();
     // Do not parse the next pipelined request while a file send is still in progress.
     // attachFilePayload would silently overwrite the in-flight file payload, corrupting
     // the response stream (partial data from file1 mixed with file2 headers+data).
-    // Also skip while output is pending: the previous response hasn't been fully written yet, and the responses
-    // to the requests pipelined behind it would only accumulate in the connection.
-    if (state.isSendingFile() || state.hasPendingOutput()) {
-      state.inputBlockedByOutput = !state.inBuffer.empty();
+    // Also skip while output waits for the socket: the previous response hasn't been fully written yet, and the
+    // responses to the requests pipelined behind it would only accumulate in the connection. The output batched by this
+    // call does not wait for the socket: it is not written yet.
+    if (state.isSendingFile() || (state.waitingWritable && state.hasPendingOutput())) {
+      state.inputBlockedByOutput = !input.empty();
       break;
     }
     // If we don't have enough bytes for the minimum request line, wait for more data
-    if (state.inBuffer.size() < http::kHttpReqLineMinLen) {
+    if (input.size() < http::kHttpReqLineMinLen) {
       break;
     }
-    if (_config.fairnessBudgetExhausted(static_cast<std::size_t>(totalBytesWritten() - bytesWrittenAtStart))) {
+    // The batched responses count as written: they will be.
+    if (_config.fairnessBudgetExhausted(static_cast<std::size_t>(totalBytesWritten() - bytesWrittenAtStart) +
+                                        state.bufferedOutputBytes())) {
       deferInput(cnxFd, state);
       return true;
     }
@@ -307,9 +357,9 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
     const bool headWaitingForBody = request.isHeadWaitingForBody();
     http::StatusCode statusCode = http::StatusCodeOK;
     if (headWaitingForBody) {
-      request.resumeHeadWaitingForBody(state.inBuffer);
+      request.resumeHeadWaitingForBody(input);
     } else {
-      statusCode = request.initTrySetHead(state.inBuffer, _sharedBuffers.buf, _config.maxHeaderBytes,
+      statusCode = request.initTrySetHead(input, _sharedBuffers.buf, _config.maxHeaderBytes,
                                           _config.mergeUnknownRequestHeaders, _telemetry.createSpan("http.request"));
       if (statusCode == HttpRequestView::kStatusNeedMoreData) {
         break;
@@ -397,12 +447,15 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
     if (!state.expectationAnswered) {
       auto optExpect = request.headerValue(http::Expect);
       if (optExpect && handleExpectHeader(cnxIt, *optExpect, pCorsPolicy, found100Continue)) {
-        break;  // stop processing this request (response queued)
+        // Answered without its body (an error or a final response closes the connection if it announces one): its head
+        // is consumed, and the requests behind it are served.
+        consumedInput.nbBytes += request.headSpanSize();
+        continue;
       }
     }
     std::size_t consumedBytes = 0;
-    const BodyDecodeStatus decodeStatus =
-        decodeBodyIfReady(cnxIt, isChunked, found100Continue, routingResult.pathConfig().maxBodyBytes, consumedBytes);
+    const BodyDecodeStatus decodeStatus = decodeBodyIfReady(cnxIt, input, isChunked, found100Continue,
+                                                            routingResult.pathConfig().maxBodyBytes, consumedBytes);
     if (decodeStatus == BodyDecodeStatus::Error) {
       break;
     }
@@ -436,16 +489,20 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
       }
     }
 
-    RequestFinalizationRAII requestFinalizationRAII(state, consumedBytes);
+    RequestFinalizationRAII requestFinalizationRAII(consumedInput, consumedBytes);
+    // The response to the last request of the input is written right away, with the batched ones.
+    _pHttp1OutputBatch = input.size() > consumedBytes ? &state : nullptr;
 
     // Handle OPTIONS and TRACE per RFC 7231 §4.3
     // processSpecialMethods may insert an upstream connection and updates cnxIt if insertion invalidates it.
     // However, no need to update state because the pointer stays valid.
-    const auto action = processSpecialMethods(cnxIt, consumedBytes, pCorsPolicy);
+    const auto action = processSpecialMethods(cnxIt, consumedInput.nbBytes, consumedBytes, pCorsPolicy);
     if (action == LoopAction::SwitchProtocol) {
       if (state.tunnelResolving) {
-        // The CONNECT request is answered once its target is resolved: its bytes stay in the input buffer until then.
+        // The CONNECT request is answered once its target is resolved: the input buffer, where the request views point
+        // to, stays as is until then. The tunnel then consumes it up to the end of the request.
         requestFinalizationRAII.consumedBytes = 0;
+        consumedInput.nbBytes = 0;
         return true;  // stop reading
       }
       return state.isAnyCloseRequested();
@@ -507,11 +564,17 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
         continue;
       }
 
-      if (dispatchAsyncHandler(cnxIt, routingResult.sharedAsyncRequestHandler(), bodyReady, isChunked, consumedBytes,
-                               pCorsPolicy, routingResult.postMiddlewareRange(),
+      if (dispatchAsyncHandler(cnxIt, routingResult.sharedAsyncRequestHandler(), bodyReady, isChunked,
+                               consumedInput.nbBytes + consumedBytes, pCorsPolicy, routingResult.postMiddlewareRange(),
                                routingResult.pathConfig().maxBodyBytes)) {
         // The request bytes are consumed by the async handler completion (already done if it completed right away).
+        // With its body, along with the requests served before it: the input buffer, where its body is, must not move
+        // until then. Without, it starts the input buffer once this call returns (its head was copied), its body being
+        // received behind it.
         requestFinalizationRAII.consumedBytes = 0;
+        if (bodyReady) {
+          consumedInput.nbBytes = 0;
+        }
         if (state.pAsyncState()->active) {
           return state.isAnyCloseRequested() || PauseReadingDuringAsyncHandler(state);
         }
@@ -1166,9 +1229,7 @@ void SingleHttpServer::emitHttpsRedirect(ConnectionIt cnxIt) {
 bool SingleHttpServer::handleExpectHeader(ConnectionIt cnxIt, std::string_view expectHeader,
                                           const CorsPolicy* pCorsPolicy, bool& found100Continue) {
   HttpRequestView& request = _connections.connectionState(cnxIt).request;
-  const std::size_t headerEnd = request.headSpanSize();
   // Parse comma-separated tokens (trim OWS). Case-insensitive comparison for 100-continue.
-  // headerEnd = offset from connection buffer start to end of headers
   for (std::size_t pos = 0; pos < expectHeader.size();) {
     const auto commaPos = expectHeader.find(',', pos);
     const auto tokenEnd = (commaPos == std::string_view::npos) ? expectHeader.size() : commaPos;
@@ -1229,11 +1290,17 @@ bool SingleHttpServer::handleExpectHeader(ConnectionIt cnxIt, std::string_view e
 
           break;
         }
-        case ExpectationResultKind::FinalResponse:
-          // Send the provided final response immediately and skip body processing.
-          finalizeAndSendResponseForHttp1(cnxIt, std::move(expectationResult.finalResponse), pCorsPolicy);
-          _connections.connectionState(cnxIt).inBuffer.erase_front(headerEnd);
+        case ExpectationResultKind::FinalResponse: {
+          // Send the provided final response immediately and skip body processing. The client may send the body that
+          // the request announces anyway (it is not required to wait for the response), which could not be told apart
+          // from the next request: the connection then closes after the response.
+          const bool announcesBody =
+              request.headerValue(http::TransferEncoding).has_value() ||
+              request.headerValueOrEmpty(http::ContentLength).find_first_not_of('0') != std::string_view::npos;
+          finalizeAndSendResponseForHttp1(cnxIt, std::move(expectationResult.finalResponse), pCorsPolicy,
+                                          announcesBody);
           return true;
+        }
         default:
           assert(expectationResult.kind == ExpectationResultKind::Continue);
           break;

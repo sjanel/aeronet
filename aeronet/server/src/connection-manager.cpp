@@ -633,7 +633,13 @@ void SingleHttpServer::acceptNewConnections() {
         closeConnection(cnxIt);
         continue;
       }
-      ::SSL_set_accept_state(sslPtr.get());
+      if (AeronetSslSetAcceptState(sslPtr.get()) != 1) [[unlikely]] {
+        log::error("SSL_set_accept_state failed for fd # {}", cnxFd);
+        FailTlsHandshakeOnce(state, _tls.metrics, _callbacks.tlsHandshake, cnxFd,
+                             kTlsHandshakeFailureReasonSslSetAcceptStateFailed);
+        closeConnection(cnxIt);
+        continue;
+      }
       state.transport = std::make_unique<TlsTransport>(std::move(sslPtr));
       state.tlsInfo.handshakeStart = state.lastActivity;
       ++_tls.handshakesInFlight;

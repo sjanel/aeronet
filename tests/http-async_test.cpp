@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -180,6 +181,74 @@ TEST(HttpAsyncHandlers, ContentLengthBodySurvivesBytesReceivedWhileSuspended) {
   sender.join();
   EXPECT_TRUE(resp.contains("\r\n\r\nhello")) << resp.substr(0, 512);
   EXPECT_TRUE(resp.ends_with("other:1048576")) << resp.substr(0, 512);
+}
+
+// An async handler request pipelined behind a served one, from the same input: its views (here into its body, taken
+// before suspending) survive the bytes received while it is suspended, and the requests around it are served once.
+TEST(HttpAsyncHandlers, PipelinedBodyViewsSurviveBytesReceivedWhileSuspended) {
+  std::atomic_bool started{false};
+  std::atomic_bool allow{false};
+  ts.resetRouterAndGet().setPath(
+      http::Method::POST, "/async/{id}", [&](HttpRequestView& req) -> RequestTask<HttpResponse> {
+        const std::string_view body = req.body();
+        co_await req.deferWork([&] {
+          started.store(true, std::memory_order_release);
+          WaitFor(allow);
+        });
+        co_return HttpResponse(std::format("[{}|{}|{}|{}]", req.pathParamValueOrEmpty("id"),
+                                           req.queryParamValueOrEmpty("q"), req.headerValueOrEmpty("x-h"), body));
+      });
+  ts.router().setPath(http::Method::POST, "/sync", [](const HttpRequestView& req) {
+    return HttpResponse(std::format("[sync:{}]", req.body().size()));
+  });
+
+  static constexpr std::size_t kPipelinedBody = std::size_t{1} << 20U;
+  test::ClientConnection client(ts.port());
+  test::sendAll(client.fd(), PostHead("/sync", 3) + "abc" + PostHead("/async/7?q=v", 5, "X-H: hv\r\n") + "hello");
+  ASSERT_TRUE(WaitFor(started));
+  // The server may not read these bytes before the handler completes: send them from another thread.
+  std::jthread sender([fd = client.fd()] {
+    test::sendAll(fd, PostHead("/sync", kPipelinedBody, "Connection: close\r\n") + std::string(kPipelinedBody, 'y'),
+                  10000ms);
+  });
+  std::this_thread::sleep_for(100ms);
+  allow.store(true, std::memory_order_release);
+  const std::string resp = test::recvUntilClosed(client.fd());
+  sender.join();
+  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 200"), 3) << resp.substr(0, 1024);
+  EXPECT_TRUE(resp.contains("[sync:3]")) << resp.substr(0, 1024);
+  EXPECT_TRUE(resp.contains("[7|v|hv|hello]")) << resp.substr(0, 1024);
+  EXPECT_TRUE(resp.ends_with("[sync:1048576]")) << resp.substr(0, 1024);
+}
+
+// An async handler request pipelined behind a served one waits for its body, received after its head.
+TEST(HttpAsyncHandlers, PipelinedRequestWaitingForItsBody) {
+  ts.resetRouterAndGet().setPath(
+      http::Method::POST, "/async/{id}", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
+        const std::string_view body = co_await req.bodyAwaitable();
+        co_return HttpResponse(std::format("[{}|{}|{}|{}]", req.pathParamValueOrEmpty("id"),
+                                           req.queryParamValueOrEmpty("q"), req.headerValueOrEmpty("x-h"), body));
+      });
+  ts.router().setPath(http::Method::GET, "/sync", [](const HttpRequestView&) { return HttpResponse("[sync]"); });
+
+  for (const bool chunked : {false, true}) {
+    SCOPED_TRACE(chunked);
+    test::ClientConnection client(ts.port());
+    ASSERT_TRUE(SetTcpNoDelay(client.fd()));  // a part is not delayed until the previous one is acknowledged
+    const std::string asyncHead =
+        chunked ? "POST /async/7?q=v HTTP/1.1\r\nHost: x\r\nX-H: hv\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhel"
+                : PostHead("/async/7?q=v", 5, "X-H: hv\r\n") + "hel";
+    test::sendAll(client.fd(), "GET /sync HTTP/1.1\r\nHost: x\r\n\r\n" + asyncHead);
+    std::this_thread::sleep_for(20ms);
+    test::sendAll(client.fd(), std::string(chunked ? "lo\r\n0\r\n\r\n" : "lo") +
+                                   "GET /sync HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    const std::string resp = test::recvUntilClosed(client.fd(), std::chrono::seconds{3});
+    EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 200"), 3) << resp;
+    const auto asyncPos = resp.find("[7|v|hv|hello]");
+    ASSERT_NE(asyncPos, std::string::npos) << resp;
+    EXPECT_LT(resp.find("[sync]"), asyncPos) << resp;
+    EXPECT_TRUE(resp.ends_with("[sync]")) << resp;
+  }
 }
 
 // Requests pipelined behind an async handler were only served when new bytes arrived.

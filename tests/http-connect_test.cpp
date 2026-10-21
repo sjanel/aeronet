@@ -25,6 +25,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"
+#include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/log.hpp"
@@ -413,6 +414,42 @@ TEST_F(HttpConnectDefaultConfig, HostNameTargetIsResolvedInBackground) {
   constexpr std::string_view secondPayload = "sent-after-the-response";
   test::sendAll(fd, secondPayload);
   EXPECT_EQ(test::recvWithTimeout(fd, 2000ms, secondPayload.size()), secondPayload);
+}
+
+// A CONNECT request pipelined behind a served request, from the same input: the tunnel bytes coalesced with it are
+// forwarded once its target is resolved, the served request not being forwarded nor answered again.
+TEST_F(HttpConnectDefaultConfig, PipelinedHostNameTargetIsResolvedInBackground) {
+  auto echoSrv = test::startLocalhostEchoServer();
+  AllowConnectHost(ts, "localhost");
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeNoContent); });
+
+  constexpr std::string_view payload = "sent-with-the-connect-head";
+  test::sendAll(fd, "GET /served HTTP/1.1\r\nHost: localhost\r\n\r\nCONNECT localhost:" + std::to_string(echoSrv.port) +
+                        " HTTP/1.1\r\nHost: localhost\r\n\r\n" + std::string(payload));
+  const std::string servedHead = RecvConnectResponseHead(fd, 5000ms);
+  ASSERT_TRUE(servedHead.starts_with("HTTP/1.1 204")) << servedHead;
+  const std::string head = RecvConnectResponseHead(fd, 5000ms);
+  ASSERT_TRUE(head.starts_with("HTTP/1.1 200")) << head;
+  EXPECT_EQ(test::recvWithTimeout(fd, 2000ms, payload.size()), payload);
+
+  constexpr std::string_view secondPayload = "sent-after-the-response";
+  test::sendAll(fd, secondPayload);
+  EXPECT_EQ(test::recvWithTimeout(fd, 2000ms, secondPayload.size()), secondPayload);
+}
+
+TEST_F(HttpConnectDefaultConfig, PipelinedUnresolvedTargetIsRefused) {
+  AllowConnectHost(ts, "no-such-host.example.invalid");
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeNoContent); });
+
+  test::sendAll(fd,
+                "GET /served HTTP/1.1\r\nHost: localhost\r\n\r\n"
+                "CONNECT no-such-host.example.invalid:80 HTTP/1.1\r\nHost: no-such-host.example.invalid\r\n\r\n");
+  const std::string servedHead = RecvConnectResponseHead(fd, 5000ms);
+  ASSERT_TRUE(servedHead.starts_with("HTTP/1.1 204")) << servedHead;
+  // 502 once the resolution failed (504 if it did not complete in the keep-alive timeout).
+  const std::string resp = test::recvUntilClosed(fd);
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 50")) << resp;
+  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp;
 }
 
 TEST_F(HttpConnectDefaultConfig, Ipv6TargetInBrackets) {

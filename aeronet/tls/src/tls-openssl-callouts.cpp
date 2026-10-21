@@ -14,4 +14,10 @@ extern "C" AERONET_TLS_WEAK SSL* AeronetSslNew(SSL_CTX* ctx) { return ::SSL_new(
 
 extern "C" AERONET_TLS_WEAK int AeronetSslSetFd(SSL* ssl, int fd) { return ::SSL_set_fd(ssl, fd); }
 
+extern "C" AERONET_TLS_WEAK int AeronetSslSetAcceptState(SSL* ssl) {
+  ::SSL_set_accept_state(ssl);
+  // A failure puts the connection in error, out of the 'before' state it is otherwise left in.
+  return ::SSL_in_before(ssl);
+}
+
 #endif
