@@ -827,8 +827,9 @@ void SingleHttpServer::eventLoop() {
     _tunnels->completeResolvedTunnels();
   }
 
-  // Poll for events
-  const auto events = _eventLoop.poll();
+  // Poll for events. The connections deferred by deferInput() are served at the end of this iteration: the poll then
+  // only collects the events already ready, without waiting.
+  const auto events = _eventLoop.poll(_pendingReadFds.empty());
 
   // Update cached now time
   const auto now = std::chrono::steady_clock::now();

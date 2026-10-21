@@ -2,7 +2,9 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
 #include <string_view>
+#include <type_traits>
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/encoding.hpp"
@@ -507,6 +509,93 @@ TEST(AcceptEncodingNegotiationTest, QCharFollowedByNonEqualsIsIgnored) {
   // This should NOT be treated as a q-value; gzip remains at default q=1.0.
   EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q1=0.5, deflate;q=0.9").encoding, Encoding::gzip);
 }
+
+// The result of the last value is remembered: values received in turn - the same one, one of its prefixes, another one
+// of the same size - are each answered from their own options.
+TEST(AcceptEncodingNegotiationTest, LastValueCacheDistinguishesValues) {
+  auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
+  static_assert(std::string_view("gzip;q=0.1, deflate;q=0.5").size() ==
+                std::string_view("gzip;q=0.9, deflate;q=0.5").size());
+  for (int round = 0; round < 2; ++round) {
+    EXPECT_EQ(sel.negotiateAcceptEncoding("gzip, deflate").encoding, Encoding::gzip);
+    EXPECT_EQ(sel.negotiateAcceptEncoding("gzip, deflate").encoding, Encoding::gzip);
+    EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0, deflate").encoding, Encoding::deflate);
+    EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.1, deflate;q=0.5").encoding, Encoding::deflate);
+    EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.9, deflate;q=0.5").encoding, Encoding::gzip);
+    EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.1, deflate;q=0.5").encoding, Encoding::deflate);
+    EXPECT_EQ(sel.negotiateAcceptEncoding("deflate").encoding, Encoding::deflate);
+    EXPECT_EQ(sel.negotiateAcceptEncoding("deflat").encoding, Encoding::none);
+  }
+}
+
+// Values longer than kMaxCachedAcceptEncodingSize are negotiated each time, and do not replace the remembered one.
+TEST(AcceptEncodingNegotiationTest, ValuesLongerThanTheCacheAreNegotiatedEachTime) {
+  auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
+  // "deflate, xxx...": an unknown coding after deflate, of exactly the longest cached size, then one byte longer.
+  std::string longest("deflate, ");
+  longest.append(EncodingSelector::kMaxCachedAcceptEncodingSize - longest.size(), 'x');
+  ASSERT_EQ(longest.size(), EncodingSelector::kMaxCachedAcceptEncodingSize);
+  const std::string tooLong = longest + 'x';
+  std::string tooLongGzip = tooLong;
+  tooLongGzip.replace(0, 7, "gzip   ");  // same size, another coding
+  for (int round = 0; round < 2; ++round) {
+    EXPECT_EQ(sel.negotiateAcceptEncoding(longest).encoding, Encoding::deflate);
+    EXPECT_EQ(sel.negotiateAcceptEncoding(tooLong).encoding, Encoding::deflate);
+    EXPECT_EQ(sel.negotiateAcceptEncoding(tooLongGzip).encoding, Encoding::gzip);
+    EXPECT_EQ(sel.negotiateAcceptEncoding(longest).encoding, Encoding::deflate);
+    EXPECT_EQ(sel.negotiateAcceptEncoding("gzip").encoding, Encoding::gzip);
+    EXPECT_EQ(sel.negotiateAcceptEncoding(tooLong).encoding, Encoding::deflate);
+    EXPECT_EQ(sel.negotiateAcceptEncoding("gzip").encoding, Encoding::gzip);
+  }
+}
+
+// The server builds a new selector when its compression configuration changes: the result remembered for the previous
+// preferences is not used.
+TEST(AcceptEncodingNegotiationTest, NewSelectorForgetsTheLastValue) {
+  auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
+  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip, deflate").encoding, Encoding::gzip);
+  sel = MakeSelector({Encoding::deflate, Encoding::gzip});
+  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip, deflate").encoding, Encoding::deflate);
+}
 #endif
+
+// A rejection (no acceptable coding, identity included) is remembered like any result.
+TEST(AcceptEncodingNegotiationTest, LastValueCacheKeepsRejection) {
+  EncodingSelector sel{CompressionConfig{}};
+  for (int round = 0; round < 3; ++round) {
+    const auto result = sel.negotiateAcceptEncoding("identity;q=0");
+    EXPECT_TRUE(result.reject);
+    EXPECT_EQ(result.encoding, Encoding::none);
+  }
+  const auto accepted = sel.negotiateAcceptEncoding("identity");
+  EXPECT_FALSE(accepted.reject);
+  EXPECT_EQ(accepted.encoding, Encoding::none);
+  EXPECT_TRUE(sel.negotiateAcceptEncoding("identity;q=0").reject);
+}
+
+// Walks the default server preference order through the wildcard. Each round excludes (q=0) the encodings already
+// picked, so the wildcard must select the next enabled encoding in enum order, identity (Encoding::none) last. Builds
+// that disable a codec (no zlib, no brotli, no zstd) have a shorter order: it must not lose identity nor repeat an
+// entry. With all codecs enabled it simply checks the documented default order.
+TEST(AcceptEncodingNegotiationTest, DefaultPreferenceOrderCoversExactlyTheEnabledEncodings) {
+  EncodingSelector sel{CompressionConfig{}};
+
+  std::string excluded;  // "zstd;q=0, gzip;q=0, ..."
+  for (std::underlying_type_t<Encoding> pos = 0; pos < kNbContentEncodings; ++pos) {
+    const auto expected = static_cast<Encoding>(pos);
+    if (!IsEncodingEnabled(expected)) {
+      continue;
+    }
+    const auto result = sel.negotiateAcceptEncoding(excluded + "*");
+    EXPECT_EQ(result.encoding, expected) << "after excluding: " << excluded;
+    EXPECT_FALSE(result.reject) << "after excluding: " << excluded;
+    excluded += std::string(GetEncodingStr(expected)) + ";q=0, ";
+  }
+
+  // Every enabled encoding, identity included, is now excluded: nothing is left to pick.
+  const auto exhausted = sel.negotiateAcceptEncoding(excluded + "*");
+  EXPECT_EQ(exhausted.encoding, Encoding::none);
+  EXPECT_TRUE(exhausted.reject);
+}
 
 }  // namespace aeronet

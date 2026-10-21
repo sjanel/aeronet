@@ -343,6 +343,30 @@ TEST(HttpServerConfigLimits, DeferredReadDrainsBufferAfterFairnessCap) {
   ASSERT_TRUE(resp.contains("deferred ok")) << resp;
 }
 
+// The connections deferred by the fairness budget are served at the end of the event loop iteration, and the next poll
+// does not wait while some are left: a request read over many budgets is served at once, even with a long poll interval
+// (and no timer firing meanwhile).
+TEST(HttpServerConfigLimits, DeferredReadDoesNotWaitForThePollTimeout) {
+  static constexpr auto kLongPollInterval = std::chrono::seconds{10};
+  HttpServerConfig cfg;
+  cfg.withKeepAliveTimeout(std::chrono::minutes{1});
+  cfg.withMaxPerEventReadBytes(cfg.minReadChunkBytes);
+  test::TestServer localTs(std::move(cfg), RouterConfig{}, kLongPollInterval);
+  const std::size_t payloadSize = 16UL * localTs.server.config().minReadChunkBytes;
+  localTs.router().setDefault([payloadSize](const HttpRequestView& req) {
+    return HttpResponse(req.body().size() == payloadSize ? "deferred ok" : "size mismatch");
+  });
+
+  std::string raw =
+      std::format("POST /deferred HTTP/1.1\r\nhost: x\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", payloadSize);
+  raw.append(payloadSize, 'd');
+  const auto start = std::chrono::steady_clock::now();
+  const std::string resp = test::sendAndCollect(localTs.port(), raw);
+  EXPECT_LT(std::chrono::steady_clock::now() - start, kLongPollInterval / 2);
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.contains("deferred ok")) << resp;
+}
+
 TEST(HttpServerConfigLimits, DeferredReadHandlesDisconnectedFd) {
   // Verify that a fd closed between being deferred and being re-read
   // is silently skipped (the IsValid check in the deferred loop).
@@ -589,6 +613,55 @@ TEST(HttpKeepAlive, RequestsFollowedByHalfCloseAreAnsweredThenClosed) {
   EXPECT_TRUE(resp.contains("ECHO/first")) << resp;
   EXPECT_TRUE(resp.contains("ECHO/second")) << resp;
   EXPECT_TRUE(test::WaitForPeerClose(fd, std::chrono::milliseconds{500}));
+}
+
+// A connection without pending input reads into the input buffer of the event loop, and gives it back once its input
+// is served. The connections keeping a partial request (its head, or part of its body) keep their input while the
+// other connections are served meanwhile, then complete their requests over several keep-alive rounds.
+TEST(HttpKeepAlive, PartialRequestsKeepTheirInputWhileOtherConnectionsAreServed) {
+  static constexpr auto kPattern = [](std::size_t size) {
+    std::string body(size, '\0');
+    for (std::size_t pos = 0; pos < size; ++pos) {
+      body[pos] = static_cast<char>('a' + (pos % 26U));
+    }
+    return body;
+  };
+  ts.router().setDefault([](const HttpRequestView& req) {
+    const bool intact = req.body() == kPattern(req.body().size());
+    return HttpResponse(std::format("ECHO{} {} {}", req.path(), req.body().size(), intact ? "intact" : "corrupt"));
+  });
+
+  test::ClientConnection partialHead(port);
+  test::ClientConnection partialBody(port);
+  test::ClientConnection other(port);
+  const auto roundTrip = [&other](std::string_view path) {
+    test::sendAll(other.fd(), std::format("GET {} HTTP/1.1\r\nhost: x\r\n\r\n", path));
+    return test::recvWithTimeout(other.fd(), std::chrono::seconds{2});
+  };
+  // Larger than the first reads: received in several reads, the input buffer of its connection grows.
+  const std::string body = kPattern((3UL * ts.server.config().minReadChunkBytes) + 7U);
+  const std::size_t firstPartSize = body.size() / 2;
+
+  for (int round = 0; round < 3; ++round) {
+    SCOPED_TRACE(round);
+    test::sendAll(partialHead.fd(), "GET /head HTTP/1.1\r\nho");
+    test::sendAll(partialBody.fd(), std::format("POST /body HTTP/1.1\r\nhost: x\r\ncontent-length: {}\r\n\r\n{}",
+                                                body.size(), std::string_view(body).substr(0, firstPartSize)));
+    // The partial requests were sent first: they are read at the latest along with the first request of the other
+    // connection, and the second one is served after them.
+    for (int requestPos = 0; requestPos < 2; ++requestPos) {
+      const std::string path = std::format("/other{}-{}", round, requestPos);
+      EXPECT_TRUE(roundTrip(path).contains(std::format("ECHO{} 0 intact", path)));
+    }
+    test::sendAll(partialBody.fd(), std::string_view(body).substr(firstPartSize));
+    test::sendAll(partialHead.fd(), "st: x\r\n\r\n");
+    EXPECT_TRUE(roundTrip("/after").contains("ECHO/after 0 intact"));
+
+    const std::string headResp = test::recvWithTimeout(partialHead.fd(), std::chrono::seconds{2});
+    EXPECT_TRUE(headResp.contains("ECHO/head 0 intact")) << headResp;
+    const std::string bodyResp = test::recvWithTimeout(partialBody.fd(), std::chrono::seconds{2});
+    EXPECT_TRUE(bodyResp.contains(std::format("ECHO/body {} intact", body.size()))) << bodyResp;
+  }
 }
 
 namespace {

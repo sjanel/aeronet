@@ -557,6 +557,15 @@ class SingleHttpServer {
   // Resumes the input of a connection deferred by deferInput(): serves its buffered input, then reads.
   CloseStatus resumeDeferredInput(ConnectionIt cnxIt);
 
+  // A connection without pending input reads into the input buffer of the event loop (SharedBuffers::inBuffer) instead
+  // of its own: the memory of the previous such read, still in the CPU caches. Does nothing if it has pending input.
+  void lendInBuffer(ConnectionState& state) noexcept;
+
+  // Once the input of a connection is entirely served, its input buffer is not needed until its next read: the larger
+  // of it and the input buffer of the event loop becomes the latter, the other is freed. An idle connection holds no
+  // input buffer. A connection with pending input keeps its buffer.
+  void releaseServedInBuffer(ConnectionState& state) noexcept;
+
   // Bytes written to all the connections so far, counted toward the fairness budget of the events that wrote them.
   [[nodiscard]] uint64_t totalBytesWritten() const noexcept {
     return _stats.totalBytesWrittenImmediate.load() + _stats.totalBytesWrittenFlush.load();
