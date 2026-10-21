@@ -293,8 +293,6 @@ class HttpRequestViewTest : public ::testing::Test {
     req._pathParams.try_emplace(key, dataPtr, len);
   }
 
-  [[nodiscard]] bool callWantClose() const { return req.wantClose(); }
-
   // Keep-alive decision with keep-alive enabled, a running server and no request count limit reached.
   [[nodiscard]] bool callIsKeepAliveForHttp1() const { return req.isKeepAliveForHttp1(true, 100U, true); }
 
@@ -869,7 +867,6 @@ TEST_F(HttpRequestViewTest, HigherHttp1MinorVersionIsProcessedAsHttp11) {
               http::StatusCodeOK);
     EXPECT_EQ(req.version(), http::HTTP_1_1);
     EXPECT_TRUE(req.hasExpectContinue());
-    EXPECT_FALSE(callWantClose());
     EXPECT_TRUE(callIsKeepAliveForHttp1());
 
     RawChars noHost("GET /p ");
@@ -1542,17 +1539,17 @@ TEST_F(HttpRequestViewTest, PinHead_RemapsEntriesInsideOldSpan) {
 
 #endif
 
-TEST_F(HttpRequestViewTest, WantCloseAndHasExpectContinue) {
+TEST_F(HttpRequestViewTest, ConnectionCloseAndHasExpectContinue) {
   {  // Connection: close
     auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1", MakeHttp1HeaderLine(http::Connection, "close")));
     ASSERT_EQ(st, http::StatusCodeOK);
-    EXPECT_TRUE(callWantClose());
+    EXPECT_FALSE(callIsKeepAliveForHttp1());
     EXPECT_FALSE(req.hasExpectContinue());
   }
   {  // Expect: 100-continue on HTTP/1.1
     auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1", MakeHttp1HeaderLine(http::Expect, "100-continue")));
     ASSERT_EQ(st, http::StatusCodeOK);
-    EXPECT_FALSE(callWantClose());
+    EXPECT_TRUE(callIsKeepAliveForHttp1());
     EXPECT_TRUE(req.hasExpectContinue());
   }
   {  // Expect header on HTTP/1.0 should be ignored
@@ -1574,7 +1571,6 @@ TEST_F(HttpRequestViewTest, ConnectionCloseOptionAnywhereInList) {
        }) {
     SCOPED_TRACE(headers);
     ASSERT_EQ(reqSet(BuildRaw("GET", "/p", "HTTP/1.1", headers)), http::StatusCodeOK);
-    EXPECT_TRUE(callWantClose());
     EXPECT_FALSE(callIsKeepAliveForHttp1());
   }
   // Options merely containing "close" are distinct options
@@ -1582,7 +1578,6 @@ TEST_F(HttpRequestViewTest, ConnectionCloseOptionAnywhereInList) {
        {"Connection: closed\r\n", "Connection: not-close\r\n", "Connection: Upgrade\r\n", "Connection: ,\r\n"}) {
     SCOPED_TRACE(headers);
     ASSERT_EQ(reqSet(BuildRaw("GET", "/p", "HTTP/1.1", headers)), http::StatusCodeOK);
-    EXPECT_FALSE(callWantClose());
     EXPECT_TRUE(callIsKeepAliveForHttp1());
   }
 }

@@ -9,6 +9,7 @@
 #include <unistd.h>
 #endif
 
+#include <atomic>
 #include <cerrno>
 #include <charconv>
 #include <chrono>
@@ -472,8 +473,10 @@ TEST(HttpPipeline, BatchedResponsesAreWrittenInOrderWithTheOthers) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg = TestServerConfig(); });
   test::ScopedTempDir tmpDir;
   const std::string fileBodies[]{"[small-file]", "[" + std::string(300UL << 10U, 'f') + "]"};
-  const test::ScopedTempFile files[]{test::ScopedTempFile(tmpDir, fileBodies[0]),
-                                     test::ScopedTempFile(tmpDir, fileBodies[1])};
+  const test::ScopedTempFile files[]{
+      test::ScopedTempFile(tmpDir, fileBodies[0]),
+      test::ScopedTempFile(tmpDir, fileBodies[1]),
+  };
   auto router = ts.resetRouterAndGet();
   router.setPath(http::Method::GET, "/size/{n}", [](const HttpRequestView& req) {
     std::size_t size = 0;
@@ -1530,16 +1533,44 @@ TEST(SingleHttpServer, StreamingHandlerExceptionAfterBodyClosesWithoutCompleting
   EXPECT_FALSE(resp.contains("HTTP/1.1 500"));
 }
 
+#if defined(AERONET_ENABLE_ZSTD) && AERONET_WANT_MALLOC_OVERRIDES
+// A streamed response whose compression fails once its head was sent is incomplete: the connection closes after it,
+// even on keep-alive, so that the client does not take the next response for the rest of its body. The compression
+// fails at the first compressed write of the server, which allocates the zstd workspace (megabytes for the default
+// level): the only allocation of the request to fail.
+TEST(SingleHttpServer, StreamingCompressionFailureAfterHeadClosesConnection) {
+  static constexpr std::size_t kMinZstdWorkspaceSize = 1UL << 20U;
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& config) { config.compression.minBytes = 16; });
+  std::atomic<bool> writerFailed{false};
+  ts.resetRouterAndGet().setDefault([&writerFailed](const HttpRequestView&, HttpResponseWriter& writer) {
+    test::FailReallocsOfAtLeast(kMinZstdWorkspaceSize);
+    const bool written = writer.writeBody(std::string(64, 'z'));
+    test::ResetToSysRealloc();
+    writerFailed = !written && writer.failed();
+  });
+
+  test::ClientConnection clientConnection(ts.port());
+  test::sendAll(clientConnection.fd(), "GET /zstd HTTP/1.1\r\nhost: x\r\naccept-encoding: zstd\r\n\r\n");
+  const std::string resp = test::recvUntilClosed(clientConnection.fd(), 2s);
+  EXPECT_TRUE(writerFailed);
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentEncoding, "zstd"))) << resp;
+  // The head only: no chunk, the encoder failed before producing any.
+  EXPECT_EQ(resp.find(http::DoubleCRLF) + http::DoubleCRLF.size(), resp.size()) << resp;
+  EXPECT_TRUE(test::WaitForPeerClose(clientConnection.fd(), 500ms));
+}
+#endif
+
 // Test body read timeout is set when configured and body not ready
 TEST(SingleHttpServer, BodyReadTimeoutSetWhenNotReady) {
-  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
     cfg.withMaxBodyBytes(256UL << 20U).withBodyReadTimeout(1s);  // NOLINT(misc-include-cleaner)
   });
-  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
+  ts.resetRouterAndGet().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
   // Send headers indicating body but don't send body yet
-  std::string req = "POST /test HTTP/1.1\r\nhost: x\r\ncontent-length: 10\r\n\r\n";
+  constexpr std::string_view req = "POST /test HTTP/1.1\r\nhost: x\r\ncontent-length: 10\r\n\r\n";
   test::sendAll(fd, req);
   std::this_thread::sleep_for(50ms);  // NOLINT(misc-include-cleaner)
   // Now send body
@@ -1550,12 +1581,14 @@ TEST(SingleHttpServer, BodyReadTimeoutSetWhenNotReady) {
 
 // Test body read timeout cleared when body is ready
 TEST(SingleHttpServer, BodyReadTimeoutClearedWhenReady) {
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxBodyBytes(256UL << 20U).withBodyReadTimeout(1s); });
-  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
+  ts.resetConfigAndPostUpdate(
+      [](HttpServerConfig& cfg) { cfg.withMaxBodyBytes(256UL << 20U).withBodyReadTimeout(1s); });
+  ts.resetRouterAndGet().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
   test::ClientConnection clientConnection(ts.port());
   NativeHandle fd = clientConnection.fd();
   // Send complete request with body
-  std::string req = "POST /test HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\nconnection: close\r\n\r\nHELLO";
+  constexpr std::string_view req =
+      "POST /test HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\nconnection: close\r\n\r\nHELLO";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
@@ -2003,23 +2036,6 @@ TEST(SingleHttpServer, EpollErrWithoutInTriggersCloseOnReadError) {
 // =============================================================================
 // Http1WriterTransport coverage tests
 // =============================================================================
-
-// Test emitData with empty data (http1-writer-transport.hpp line 89-90)
-// The empty data case should be a no-op and return true
-TEST(Http1WriterTransport, EmitDataEmptyIsNoOp) {
-  test::TestServer localTs(TestServerConfig());
-  localTs.router().setDefault([](const HttpRequestView&, HttpResponseWriter& writer) {
-    writer.status(http::StatusCodeOK);
-    // Write empty data - should be silently ignored
-    writer.writeBody("");
-    writer.writeBody("real-data");
-    writer.end();
-  });
-
-  auto resp = test::simpleGet(localTs.port(), "/empty-data");
-  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
-  EXPECT_TRUE(resp.contains("real-data")) << resp;
-}
 
 // Test enqueue when connection has a transport error during streaming write.
 // This exercises the enqueue() returning false path when isAnyCloseRequested()

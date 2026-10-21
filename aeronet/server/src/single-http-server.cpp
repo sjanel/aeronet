@@ -146,16 +146,7 @@ bool SingleHttpServer::processConnectionInput(ConnectionIt cnxIt) {
 
   // If we have a protocol handler installed (e.g., WebSocket, HTTP/2), use it
   if (state.protocolHandler) {
-#ifdef AERONET_ENABLE_WEBSOCKET
-    if (state.protocol == ProtocolType::WebSocket) {
-      const NativeHandle fd = cnxIt->fd();
-      const bool closeRequested = processSpecialProtocolHandler(cnxIt);
-      // A callback may have started the close handshake, whose timeout can come before the armed deadline.
-      refreshWebSocketDeadline(fd, *_connections.pConnectionState(fd));
-      return closeRequested;
-    }
-#endif
-    return processSpecialProtocolHandler(cnxIt);
+    return processProtocolHandlerInput(cnxIt);
   }
 
   // Check for h2c prior knowledge: client sending HTTP/2 connection preface directly
@@ -184,6 +175,19 @@ bool SingleHttpServer::processConnectionInput(ConnectionIt cnxIt) {
 
   // Default to HTTP/1.1 request processing
   return processHttp1Requests(cnxIt);
+}
+
+bool SingleHttpServer::processProtocolHandlerInput(ConnectionIt cnxIt) {
+#ifdef AERONET_ENABLE_WEBSOCKET
+  if (_connections.connectionState(cnxIt).protocol == ProtocolType::WebSocket) {
+    const NativeHandle fd = cnxIt->fd();
+    const bool closeRequested = processSpecialProtocolHandler(cnxIt);
+    // A callback may have started the close handshake, whose timeout can come before the armed deadline.
+    refreshWebSocketDeadline(fd, *_connections.pConnectionState(fd));
+    return closeRequested;
+  }
+#endif
+  return processSpecialProtocolHandler(cnxIt);
 }
 
 bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
@@ -297,9 +301,10 @@ bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
   if (state.hasPendingOutput() && !state.waitingWritable) {
     flushOutbound(cnxIt);
   }
-  // The bytes following an upgrade request belong to the new protocol: no read event would report them.
+  // The bytes following an upgrade request belong to the new protocol: no read event would report them. An upgraded
+  // connection never goes back to HTTP/1.
   if (!stopReading && state.protocolHandler != nullptr && !state.inBuffer.empty() && !state.isAnyCloseRequested()) {
-    return processConnectionInput(cnxIt);
+    return processProtocolHandlerInput(cnxIt);
   }
   return stopReading;
 }
@@ -694,11 +699,9 @@ SingleHttpServer::LoopAction SingleHttpServer::serveStreamingRequest(ConnectionI
   static constexpr bool kStreaming = true;
   ConnectionState& state = _connections.connectionState(cnxIt);
   HttpRequestView& request = state.request;
-  const bool wantClose = request.wantClose();
 
   // Create the protocol-specific transport backend and the protocol-agnostic writer
-  Http1WriterTransport transport(*this, cnxIt->fd(), wantClose, routingResult.corsPolicy(),
-                                 routingResult.postMiddlewareRange());
+  Http1WriterTransport transport(*this, cnxIt->fd(), routingResult.corsPolicy(), routingResult.postMiddlewareRange());
   HttpMessage::Options opts;
   if (_config.addTrailerHeader) {
     opts.addTrailerHeader();
@@ -729,7 +732,7 @@ SingleHttpServer::LoopAction SingleHttpServer::serveStreamingRequest(ConnectionI
     }
     // Part of the response was sent: close the connection without completing the body (no final chunk, or a short
     // Content-Length), so that the client knows that it is incomplete.
-    endRequest(request, http::StatusCodeInternalServerError, state.requestsServed > 1);
+    endRequest(request, http::StatusCodeInternalServerError);
     state.requestDrainAndClose();
     return LoopAction::Break;
   }
@@ -737,11 +740,14 @@ SingleHttpServer::LoopAction SingleHttpServer::serveStreamingRequest(ConnectionI
     writer.end();
   }
 
-  endRequest(request, writer.status(), state.requestsServed > 1);
+  endRequest(request, writer.status());
 
   assert(request.version() == http::HTTP_1_1);
-  if (!_config.enableKeepAlive || wantClose || state.requestsServed + 1 >= _config.maxRequestsPerConnection ||
-      state.isAnyCloseRequested() || _lifecycle.isDraining() || _lifecycle.isStopping()) {
+  // A drain or a stop that began after the head was sent, announcing a persistent connection, closes it too. So does a
+  // failed writer (a compression error): the client must not take the next response for the rest of this one.
+  // A close requested meanwhile (a write error, the output limit...) made the transport fail the writer.
+  assert(!state.isAnyCloseRequested() || writer.failed());
+  if (transport.closeAnnounced() || writer.failed() || !_lifecycle.isRunning()) {
     state.requestDrainAndClose();
     return LoopAction::Break;
   }
@@ -777,8 +783,7 @@ bool SingleHttpServer::maybeDecompressRequestBody(ConnectionIt cnxIt, bool usePe
   return true;
 }
 
-void SingleHttpServer::emitRequestMetrics(const HttpRequestView& request, http::StatusCode status,
-                                          bool reusedConnection) {
+void SingleHttpServer::emitRequestMetrics(const HttpRequestView& request, http::StatusCode status) {
   std::string_view clientIp = "-";
 
   if (_config.accessLog.useForwardedFor) {
@@ -801,7 +806,8 @@ void SingleHttpServer::emitRequestMetrics(const HttpRequestView& request, http::
       status,
       request.method(),
       request.version(),
-      reusedConnection,
+      // The request is counted already: when its head is parsed over HTTP/1.x, when it completes over HTTP/2.
+      request._pOwnerState->requestsServed > 1,
       request.path(),
       clientIp,
       request.headerValueOrEmpty("user-agent"),
@@ -1224,7 +1230,7 @@ void SingleHttpServer::emitHttpsRedirect(ConnectionIt cnxIt) {
                                          _config.minCapturedBodySize));
 
   state.requestDrainAndClose();
-  endRequest(request, statusCode, state.requestsServed > 0);
+  endRequest(request, statusCode);
 }
 
 bool SingleHttpServer::handleExpectHeader(ConnectionIt cnxIt, std::string_view expectHeader,

@@ -32,23 +32,19 @@ namespace aeronet {
 /// Emits chunked transfer-encoding or fixed-length framed data over a TCP connection.
 class Http1WriterTransport final : public IWriterTransport {
  public:
-  Http1WriterTransport(SingleHttpServer& server, NativeHandle fd, bool requestConnClose, const CorsPolicy* pCorsPolicy,
+  Http1WriterTransport(SingleHttpServer& server, NativeHandle fd, const CorsPolicy* pCorsPolicy,
                        std::span<const ResponseMiddleware> routeResponseMiddleware)
-      : _server(server),
-        _fd(fd),
-        _requestConnClose(requestConnClose),
-        _pCorsPolicy(pCorsPolicy),
-        _routeResponseMiddleware(routeResponseMiddleware) {}
+      : _server(server), _fd(fd), _pCorsPolicy(pCorsPolicy), _routeResponseMiddleware(routeResponseMiddleware) {}
 
   bool emitHeaders(HttpResponse& response, const HttpRequestView& request, std::size_t declaredLength,
                    bool isHead) override {
     const bool chunked = !isHead && (declaredLength == 0) && !response.hasBodyFile();
 
-    // Add Connection: close if requested
-    if (_requestConnClose && !_connCloseEmitted) {
-      response.headerAddLineUnchecked(http::Connection, http::close);
-      response._opts.resetClose();
-      _connCloseEmitted = true;
+    // The head announces the close of the connection after this response, whatever its reason (RFC 9112 §9.6). It is
+    // decided when the head is sent, so that it also announces a drain that began while the handler ran.
+    if (!_server.isKeepAliveForHttp1(request)) {
+      response._opts.setClose();
+      _closeAnnounced = true;
     }
 
     // Transfer-Encoding or Content-Length header
@@ -150,6 +146,9 @@ class Http1WriterTransport final : public IWriterTransport {
 
   [[nodiscard]] uint32_t logId() const override { return static_cast<uint32_t>(_fd); }
 
+  // Whether the head of the response announced the close of the connection after it.
+  [[nodiscard]] bool closeAnnounced() const noexcept { return _closeAnnounced; }
+
  private:
   bool enqueue(HttpMessageData responseData) {
     auto cnxIt = _server._connections.iterator(_fd);
@@ -167,8 +166,7 @@ class Http1WriterTransport final : public IWriterTransport {
 
   SingleHttpServer& _server;
   NativeHandle _fd;
-  bool _requestConnClose;
-  bool _connCloseEmitted{false};
+  bool _closeAnnounced{false};
   bool _chunked{true};
   const CorsPolicy* _pCorsPolicy;
   std::span<const ResponseMiddleware> _routeResponseMiddleware;
