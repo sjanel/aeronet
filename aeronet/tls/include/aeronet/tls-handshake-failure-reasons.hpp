@@ -12,6 +12,7 @@ inline constexpr std::string_view kTlsHandshakeFailureReasonRejectedConcurrency 
 inline constexpr std::string_view kTlsHandshakeFailureReasonRejectedRateLimit = "rejected_rate_limit";
 inline constexpr std::string_view kTlsHandshakeFailureReasonSslNewFailed = "ssl_new_failed";
 inline constexpr std::string_view kTlsHandshakeFailureReasonSslSetFdFailed = "ssl_set_fd_failed";
+inline constexpr std::string_view kTlsHandshakeFailureReasonSslSetAcceptStateFailed = "ssl_set_accept_state_failed";
 inline constexpr std::string_view kTlsHandshakeFailureReasonSetExDataFailed = "ssl_set_ex_data_failed";
 
 }  // namespace aeronet

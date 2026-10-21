@@ -47,7 +47,9 @@ jobs:
   # ------------------------------------------------------------------ #
   build:
     name: Build scripted benchmarks
-    runs-on: ubuntu-latest
+    # Ubuntu 24.04 until the move to 26.04 (CMake 4, later compilers and load generators). The bench jobs run the
+    # binaries built here, so they use the same release: shared libraries change soname (libjsoncpp 25 -> 26).
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - name: Checkout current main
@@ -119,7 +121,7 @@ jobs:
   bench:
     name: Bench (${{ matrix.conn_label }})
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # the release of the build job, whose binaries this job runs
     strategy:
       fail-fast: false
       matrix:
@@ -224,7 +226,7 @@ jobs:
   bench-h2:
     name: H2 Bench (${{ matrix.protocol }}, ${{ matrix.conn_label }})
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # the release of the build job, whose binaries this job runs
     strategy:
       fail-fast: false
       matrix:
@@ -356,7 +358,7 @@ jobs:
   bench-ws:
     name: WS Bench
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # the release of the build job, whose binaries this job runs
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -448,7 +450,7 @@ jobs:
   bench-client:
     name: Client Bench (${{ matrix.protocol }})
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # the release of the build job, whose binaries this job runs
     strategy:
       fail-fast: false
       matrix:

@@ -773,6 +773,9 @@ class HttpRequestView {
   // percent-encoding).
   bool decodePath(char* pathStart, char* pathEnd);
 
+  // Offset in the head of the request-target, where the path is decoded in place: locates the head from the path.
+  [[nodiscard]] std::size_t pathOffsetInHead() const noexcept;
+
   // Makes the views set by the parsing of the head point into the head at newBase, from where it was parsed.
   void rebaseHeadViews(const char* newBase) noexcept;
 

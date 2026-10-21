@@ -102,7 +102,8 @@ ZerocopyCompletions SingleHttpServer::pollZerocopyCompletions(ConnectionState& s
 }
 #endif
 
-SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionIt& cnxIt, std::size_t consumedBytes,
+SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionIt& cnxIt, std::size_t requestOffset,
+                                                                     std::size_t consumedBytes,
                                                                      const CorsPolicy* pCorsPolicy) {
   ConnectionState& state = _connections.connectionState(cnxIt);
   HttpRequestView& request = state.request;
@@ -116,7 +117,7 @@ SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionI
 
     // For TRACE, we need to pass the raw request data
     const std::string_view requestData = (request.method() == http::Method::TRACE)
-                                             ? std::string_view(state.inBuffer.data(), consumedBytes)
+                                             ? std::string_view(state.inBuffer.data() + requestOffset, consumedBytes)
                                              : std::string_view{};
 
     std::optional<HttpResponse> result = ProcessSpecialMethods(request, _router, config, pCorsPolicy, requestData);
@@ -130,14 +131,14 @@ SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionI
 
   // CONNECT requires protocol-specific handling (TCP tunnel setup)
   if (request.method() == http::Method::CONNECT) {
-    return internal::TunnelManager::Of(*this).startHttp1Tunnel(cnxIt, consumedBytes);
+    return internal::TunnelManager::Of(*this).startHttp1Tunnel(cnxIt, requestOffset + consumedBytes);
   }
 
   return LoopAction::Nothing;
 }
 
 void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpResponse&& resp,
-                                                       const CorsPolicy* pCorsPolicy) {
+                                                       const CorsPolicy* pCorsPolicy, bool close) {
   ConnectionState& state = _connections.connectionState(cnxIt);
   HttpRequestView& request = state.request;
   if (pCorsPolicy != nullptr) {
@@ -152,6 +153,7 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpR
   request.prefinalizeHttpResponse(resp, _telemetry);
 
   const bool keepAlive =
+      !close &&
       request.isKeepAliveForHttp1(_config.enableKeepAlive, _config.maxRequestsPerConnection, _lifecycle.isRunning());
 
   const auto respStatusCode = resp.status();
@@ -190,6 +192,20 @@ void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpMessageData httpRespons
   const std::uint64_t extraQueuedBytes = pFilePayload != nullptr ? pFilePayload->length : 0;
 
   const auto bufferedSz = httpResponseData.remainingSize();
+
+  // The response to a request followed by others in the input is written with theirs (see _pHttp1OutputBatch), unless
+  // it has a file or would make the batch too large: the batch is then written along with it.
+  if (&state == _pHttp1OutputBatch && pFilePayload == nullptr && !state.waitingWritable && !state.isSendingFile() &&
+      state.bufferedOutputBytes() + bufferedSz <= kMaxBatchedOutputBytes) {
+    if (state.outBuffer.empty() && state.outQueue.empty()) {
+      assert(!state.outBufferZerocopySent);
+      state.outBuffer = std::move(httpResponseData);
+    } else {
+      (void)state.queueOutput(std::move(httpResponseData));
+    }
+    _stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz);
+    return;
+  }
 
   if (state.hasPendingOutput() || state.isSendingFile()) {
     // Previous output still waits for the socket to become writable: queue this data (its file payload included)

@@ -27,7 +27,8 @@ struct PendingTunnel {
   /// Resolved addresses, nullptr when the resolution failed. Written by the resolver thread before it publishes the
   /// tunnel as resolved.
   AddrInfoPtr addresses;
-  /// Size of the HTTP/1.1 CONNECT request in the input buffer of the client connection, consumed once answered.
+  /// Size of the input buffer of the client connection up to the end of the HTTP/1.1 CONNECT request (the requests
+  /// served before it included), consumed once answered.
   std::size_t consumedBytes;
   /// The CONNECT request is answered 504 if its target is not resolved by then.
   std::chrono::steady_clock::time_point deadline;

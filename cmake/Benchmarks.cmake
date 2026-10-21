@@ -39,7 +39,10 @@ if(AERONET_BENCH_ENABLE_OATPP)
   set(OATPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
   set(OATPP_LINK_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
   set(OATPP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  # oatpp 1.3.1 requires a CMake version older than 3.5, whose compatibility CMake 4 removed.
+  set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
   FetchContent_MakeAvailable(oatpp)
+  unset(CMAKE_POLICY_VERSION_MINIMUM)
 endif()
 
 if(AERONET_BENCH_ENABLE_DROGON)
@@ -116,6 +119,7 @@ set(AERONET_BENCH_INTERNAL_HTTP_MESSAGE_CONSTRUCT ${AERONET_BENCH_ROOT}/internal
 set(AERONET_BENCH_INTERNAL_KEEP_ALIVE_DEADLINE_QUEUE ${AERONET_BENCH_ROOT}/internal/keep-alive-deadline-queue_bench.cpp)
 if(AERONET_ENABLE_HTTP_SERVER)
   set(AERONET_BENCH_INTERNAL_REQUEST_PARSE ${AERONET_BENCH_ROOT}/internal/request-parse_bench.cpp)
+  set(AERONET_BENCH_INTERNAL_HTTP1_PIPELINE ${AERONET_BENCH_ROOT}/internal/http1-pipeline_bench.cpp)
   set(AERONET_BENCH_INTERNAL_RATE_LIMIT ${AERONET_BENCH_ROOT}/internal/rate-limit_bench.cpp)
 endif()
 set(AERONET_BENCH_INTERNAL_ROUTER ${AERONET_BENCH_ROOT}/internal/router_bench.cpp)
@@ -202,6 +206,9 @@ if(AERONET_ENABLE_HTTP_SERVER)
 
   AeronetAddProjectBenchmark(aeronet-bench-internal-request-parse ${AERONET_BENCH_INTERNAL_REQUEST_PARSE})
   set_target_properties(aeronet-bench-internal-request-parse PROPERTIES FOLDER "benchmarks/internal")
+
+  AeronetAddProjectBenchmark(aeronet-bench-internal-http1-pipeline ${AERONET_BENCH_INTERNAL_HTTP1_PIPELINE})
+  set_target_properties(aeronet-bench-internal-http1-pipeline PROPERTIES FOLDER "benchmarks/internal")
 
   AeronetAddProjectBenchmark(aeronet-bench-internal-rate-limit ${AERONET_BENCH_INTERNAL_RATE_LIMIT} LIBRARIES aeronet_server)
   set_target_properties(aeronet-bench-internal-rate-limit PROPERTIES FOLDER "benchmarks/internal")
