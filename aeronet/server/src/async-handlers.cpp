@@ -334,6 +334,9 @@ void SingleHttpServer::resumeInputAfterAsyncHandler(NativeHandle fd) {
         closeConnection(finalIt);
       }
     }
+  } else {
+    // The input buffer held the request of the handler, read into the input buffer of the event loop.
+    releaseServedInBuffer(*pState);
   }
 }
 

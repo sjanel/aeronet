@@ -1,6 +1,6 @@
 #pragma once
 
-#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 
@@ -40,15 +40,29 @@ class EncodingSelector {
   //    returning Encoding::invalid (value outside supported range) which callers must check.
   //    (Current implementation: Encoding enum has only valid encodings; we piggy-back by returning none when allowed
   //    and triggering a separate flag for 406 in the parsing logic.)
+  // The result for the last value of at most kMaxCachedAcceptEncodingSize bytes is remembered: the clients of a server
+  // mostly send the same value (that of their browser or HTTP library), whose negotiation is then a comparison.
   // Returns a NegotiatedResult object
-  [[nodiscard]] NegotiatedResult negotiateAcceptEncoding(std::string_view acceptEncoding) const;
+  [[nodiscard]] NegotiatedResult negotiateAcceptEncoding(std::string_view acceptEncoding);
+
+  // Longest Accept-Encoding value whose result is remembered: that of the current browsers, the longest common one
+  // (HTTP libraries send shorter ones, or the same codings in another order).
+  static constexpr std::size_t kMaxCachedAcceptEncodingSize = std::string_view("gzip, deflate, br, zstd").size();
 
  private:
+  // Negotiates a non-empty Accept-Encoding value, without the cache.
+  [[nodiscard]] NegotiatedResult negotiate(std::string_view acceptEncoding) const;
+
   // Server preference order of the supported encodings: the 'preferredFormats' sequence first (when provided),
   // followed by the remaining supported encodings in the static enumeration order.
-  std::array<Encoding, kNbContentEncodings> _preferenceOrdered;
+  Encoding _preferenceOrdered[kNbContentEncodings];
   // Position of each supported encoding in _preferenceOrdered (lower is preferred).
-  std::array<int8_t, kNbContentEncodings> _serverPrefIndex;
+  int8_t _serverPrefIndex[kNbContentEncodings];
+  // The last negotiated value (if not longer than kMaxCachedAcceptEncodingSize) and its result. A size of 0 means no
+  // value, an empty one being negotiated without the cache.
+  NegotiatedResult _cachedResult;
+  uint8_t _cachedAcceptEncodingSize{0};
+  char _cachedAcceptEncoding[kMaxCachedAcceptEncodingSize];
 };
 
 }  // namespace aeronet

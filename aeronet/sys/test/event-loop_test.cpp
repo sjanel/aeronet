@@ -306,6 +306,67 @@ TEST(EventLoopTest, AdaptivePollTimeoutSpinsAfterSaturation) {
   EXPECT_EQ(loop.currentPollTimeoutMs(), 0);
 }
 
+// A poll without waiting returns at once, with the events already ready, whatever the poll timeout.
+TEST(EventLoopTest, PollWithoutWaitingReturnsAtOnce) {
+  EventLoop loop(FixedPolicy(std::chrono::seconds(10)));
+  int fds[2];
+  ASSERT_EQ(pipe(fds), 0);
+  BaseFd readEnd(fds[0]);
+  BaseFd writeEnd(fds[1]);
+  loop.addOrThrow(EventLoop::EventFd{readEnd.fd(), EventIn});
+
+  const auto start = std::chrono::steady_clock::now();
+  const auto noEvents = loop.poll(false);
+  EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(5));
+  EXPECT_NE(noEvents.data(), nullptr);
+  EXPECT_TRUE(noEvents.empty());
+
+  const char ch = 'x';
+  ASSERT_EQ(::write(writeEnd.fd(), &ch, 1), 1);
+  const auto events = loop.poll(false);
+  ASSERT_EQ(events.size(), 1U);
+  EXPECT_EQ(events[0].fd, readEnd.fd());
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 10000);
+}
+
+// An empty poll without waiting is no idle poll (its caller has work pending): the adaptive timeout does not back off.
+TEST(EventLoopTest, AdaptivePollTimeoutIgnoresEmptyPollsWithoutWaiting) {
+  test::EventLoopHookGuard guard;
+  // minTimeout=0.0f → 0ms, maxTimeout=8.0f → 8*5=40ms. Every poll returns 0 (last action as default).
+  EventLoop loop(PollTimeoutPolicy{.baseTimeout = std::chrono::milliseconds{5}, .minFactor = 0.0F, .maxFactor = 8.0F});
+  test::SetEpollWaitActions({test::WaitReturn(0, {})});
+
+  for (int pollNb = 0; pollNb < 8; ++pollNb) {
+    EXPECT_TRUE(loop.poll(false).empty());
+    EXPECT_EQ(loop.currentPollTimeoutMs(), 5);
+  }
+  // The 4th idle poll that waits backs off: 5 * 2 = 10 ms.
+  for (int pollNb = 0; pollNb < 3; ++pollNb) {
+    EXPECT_TRUE(loop.poll().empty());
+    EXPECT_EQ(loop.currentPollTimeoutMs(), 5);
+  }
+  EXPECT_TRUE(loop.poll().empty());
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 10);
+}
+
+// The events of a poll without waiting adapt the timeout like those of any poll.
+TEST(EventLoopTest, AdaptivePollTimeoutSpinsAfterSaturatedPollWithoutWaiting) {
+  test::EventLoopHookGuard guard;
+  EventLoop loop(PollTimeoutPolicy{.baseTimeout = std::chrono::milliseconds{5}, .minFactor = 0.0F, .maxFactor = 16.0F},
+                 2);
+  vector<epoll_event> events;
+  events.reserve(loop.capacity());
+  events.push_back(test::MakeEvent(10, EventIn));
+  events.push_back(test::MakeEvent(11, EventIn));
+  test::SetEpollWaitActions({test::WaitReturn(2, std::move(events))});
+
+  const auto span = loop.poll(false);
+
+  ASSERT_NE(span.data(), nullptr);
+  EXPECT_EQ(span.size(), 2U);
+  EXPECT_EQ(loop.currentPollTimeoutMs(), 0);
+}
+
 TEST(EventLoopTest, AdaptivePollTimeoutBacksOffWhenIdle) {
   test::EventLoopHookGuard guard;
   // Backoff threshold is 4 consecutive idle polls; growth factor is 2.

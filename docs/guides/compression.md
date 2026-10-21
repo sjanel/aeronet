@@ -56,6 +56,8 @@ When several codings share the best quality, the server preference decides: the 
 
 Without `Accept-Encoding`, or when no compiled coding is acceptable, the response is sent uncompressed. If the client also excludes the uncompressed form (`identity;q=0`, or `*;q=0` without `identity`), the server answers `406 Not Acceptable`.
 
+Each event loop remembers the result for the last `Accept-Encoding` value it negotiated, if it is not longer than that of the current browsers (`gzip, deflate, br, zstd`, 23 bytes): clients mostly send the value of their browser or HTTP library, so that the negotiation of most requests is a comparison with the previous one.
+
 ### What is not compressed
 
 - Bodies smaller than `minBytes`, of a content type outside `contentTypeAllowList`, or that do not shrink enough.
