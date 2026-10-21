@@ -106,6 +106,7 @@ Each internal micro-benchmark is its own executable named `aeronet-bench-interna
 | Target | Needs | Description |
 | ------ | ----- | ----------- |
 | `aeronet-bench-internal-request-parse` | HTTP server | HTTP/1.1 request parsing. |
+| `aeronet-bench-internal-http1-pipeline` | HTTP server | HTTP/1.1 requests pipelined on one connection, in batches of GET (with and without `TCP_NODELAY`) and of POST with a small body. |
 | `aeronet-bench-internal-router` | HTTP server | Route matching. |
 | `aeronet-bench-internal-rate-limit` | HTTP server | Rate limiting stores. |
 | `aeronet-bench-internal-date-header-cache` | HTTP server | `Date` header cache. |

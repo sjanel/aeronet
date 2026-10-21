@@ -178,8 +178,10 @@ void SingleHttpServer::handleAsyncBodyProgress(ConnectionIt cnxIt) {
 
   if (async.needsBody) {
     std::size_t consumedBytes = 0;
-    // 100 Continue (if expected) was sent when the request was dispatched.
-    const BodyDecodeStatus status = decodeBodyIfReady(cnxIt, async.isChunked, false, async.maxBodyBytes, consumedBytes);
+    // 100 Continue (if expected) was sent when the request was dispatched. The request starts the input buffer, where
+    // its body is received.
+    const BodyDecodeStatus status =
+        decodeBodyIfReady(cnxIt, state.inBuffer, async.isChunked, false, async.maxBodyBytes, consumedBytes);
     if (status == BodyDecodeStatus::Error) {
       AbandonAsyncHandler(async);
       return;

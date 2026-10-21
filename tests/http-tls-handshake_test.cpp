@@ -194,6 +194,52 @@ TEST(HttpTlsAlpnMismatch, StrictMismatchCountSurvivesTlsContextRebuild) {
 
 extern std::atomic<int> g_aeronetTestFailNextSslNew;
 extern std::atomic<int> g_aeronetTestFailNextSslSetFd;
+extern std::atomic<int> g_aeronetTestFailNextSslSetAcceptState;
+
+namespace {
+
+// Makes a step of the TLS setup of the next accepted connection fail through failNext, and checks that the failure is
+// reported with the given reason, to the handshake callback and in the stats.
+void ExpectTlsSetupFailureReported(std::atomic<int>& failNext, std::string_view reason) {
+  test::TlsTestServer ts;
+
+  std::atomic_bool callbackOK{false};
+
+  ts.server.server.setTlsHandshakeCallback([&](const TlsHandshakeEvent& ev) {
+    if (ev.result == TlsHandshakeEvent::Result::Failed && ev.reason == reason) {
+      callbackOK.store(true);
+    }
+  });
+
+  ts.setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
+
+  failNext.store(1, std::memory_order_relaxed);
+  {
+    test::ClientConnection cnx(ts.port());
+    // failure triggered; callback will be observed via active wait
+  }
+
+  // Active wait for callback to be invoked (deadline-style)
+  const auto deadline = std::chrono::steady_clock::now() + 1s;
+  while (std::chrono::steady_clock::now() < deadline && !callbackOK.load()) {
+    std::this_thread::sleep_for(1ms);
+  }
+  const auto st = ts.stats();
+  ts.stop();
+
+  EXPECT_TRUE(callbackOK.load());
+
+  bool found = false;
+  for (const auto& kv : st.tlsHandshakeFailureReasons) {
+    if (kv.first == reason) {
+      found = true;
+      EXPECT_GE(kv.second, 1UL);
+    }
+  }
+  EXPECT_TRUE(found);
+}
+
+}  // namespace
 
 TEST(HttpTlsHandshakeCallback, ExceptionRaisedInCallbackIsLoggedAndIgnored) {
   test::TlsTestServer ts({"http/1.1"}, [](HttpServerConfig& cfg) {
@@ -449,43 +495,7 @@ TEST(HttpTlsHandshakeCallback, EmitsFailureEventAndBucketsReasonOnHandshakeTimeo
 }
 
 TEST(HttpTlsHandshakeCallback, BucketsReasonWhenSslNewFails) {
-  test::TlsTestServer ts;
-
-  std::atomic_bool callbackOK{false};
-
-  ts.server.server.setTlsHandshakeCallback([&](const TlsHandshakeEvent& ev) {
-    if (ev.result == TlsHandshakeEvent::Result::Failed && ev.reason == kTlsHandshakeFailureReasonSslNewFailed) {
-      callbackOK.store(true);
-    }
-  });
-
-  ts.setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
-
-  g_aeronetTestFailNextSslNew.store(1, std::memory_order_relaxed);
-  {
-    test::ClientConnection cnx(ts.port());
-    // failure triggered; callback will be observed via active wait
-  }
-
-  // Active wait for callback to be invoked (deadline-style)
-  const auto now = std::chrono::steady_clock::now();
-  const auto deadline = now + 1s;
-  while (std::chrono::steady_clock::now() < deadline && !callbackOK.load()) {
-    std::this_thread::sleep_for(1ms);
-  }
-  const auto st = ts.stats();
-  ts.stop();
-
-  EXPECT_TRUE(callbackOK.load());
-
-  bool found = false;
-  for (const auto& kv : st.tlsHandshakeFailureReasons) {
-    if (kv.first == kTlsHandshakeFailureReasonSslNewFailed) {
-      found = true;
-      EXPECT_GE(kv.second, 1UL);
-    }
-  }
-  EXPECT_TRUE(found);
+  ExpectTlsSetupFailureReported(g_aeronetTestFailNextSslNew, kTlsHandshakeFailureReasonSslNewFailed);
 }
 
 TEST(HttpTlsHandshakeCallback, RefillsRateLimitAfterInterval) {
@@ -528,43 +538,13 @@ TEST(HttpTlsHandshakeCallback, RefillsRateLimitAfterInterval) {
 }
 
 TEST(HttpTlsHandshakeCallback, BucketsReasonWhenSslSetFdFails) {
-  test::TlsTestServer ts;
+  ExpectTlsSetupFailureReported(g_aeronetTestFailNextSslSetFd, kTlsHandshakeFailureReasonSslSetFdFailed);
+}
 
-  std::atomic_bool callbackOK{false};
-
-  ts.server.server.setTlsHandshakeCallback([&](const TlsHandshakeEvent& ev) {
-    if (ev.result == TlsHandshakeEvent::Result::Failed && ev.reason == kTlsHandshakeFailureReasonSslSetFdFailed) {
-      callbackOK.store(true);
-    }
-  });
-
-  ts.setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
-
-  g_aeronetTestFailNextSslSetFd.store(1, std::memory_order_relaxed);
-  {
-    test::ClientConnection cnx(ts.port());
-    // failure triggered; callback will be observed via active wait
-  }
-
-  // Active wait for callback to be invoked (deadline-style)
-  const auto now = std::chrono::steady_clock::now();
-  const auto deadline = now + 1s;
-  while (std::chrono::steady_clock::now() < deadline && !callbackOK.load()) {
-    std::this_thread::sleep_for(1ms);
-  }
-  const auto st = ts.stats();
-  ts.stop();
-
-  EXPECT_TRUE(callbackOK.load());
-
-  bool found = false;
-  for (const auto& kv : st.tlsHandshakeFailureReasons) {
-    if (kv.first == kTlsHandshakeFailureReasonSslSetFdFailed) {
-      found = true;
-      EXPECT_GE(kv.second, 1UL);
-    }
-  }
-  EXPECT_TRUE(found);
+// Since OpenSSL 3.2, SSL_set_accept_state() fails on an allocation failure (silently: the connection is then in error).
+TEST(HttpTlsHandshakeCallback, BucketsReasonWhenSslSetAcceptStateFails) {
+  ExpectTlsSetupFailureReported(g_aeronetTestFailNextSslSetAcceptState,
+                                kTlsHandshakeFailureReasonSslSetAcceptStateFailed);
 }
 
 TEST(HttpTlsHandshakeTest, EcdsaCertificateHandshakeWorks) {

@@ -43,7 +43,9 @@ class TunnelManager {
   static std::unique_ptr<ITunnelBridge> MakeH2Bridge(SingleHttpServer& server, NativeHandle clientFd);
 #endif
 
-  // Answer the HTTP/1.1 CONNECT request of the connection, which takes consumedBytes in its input buffer.
+  // Answer the HTTP/1.1 CONNECT request of the connection, ending at consumedBytes in its input buffer (the requests
+  // served before it may precede it): the bytes erased from the input buffer once it is answered, when it waits for the
+  // resolution of its target.
   LoopAction startHttp1Tunnel(ConnectionIt& cnxIt, std::size_t consumedBytes);
 
   // Tells whether target host names were resolved: completeResolvedTunnels() then completes their tunnels.

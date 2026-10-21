@@ -107,7 +107,7 @@ Other expectation tokens go to the expectation handler, when one is installed. W
 | --- | --- |
 | `Continue` | Process the request normally. |
 | `Interim` | Send the informational response `interimStatus` (a `1xx` status, such as `102`), then continue. |
-| `FinalResponse` | Send `finalResponse` and skip the body and the handler. |
+| `FinalResponse` | Send `finalResponse` and skip the body and the handler. When the request announces a body (`Content-Length` other than 0, or `Transfer-Encoding`), the response carries `Connection: close` and the connection closes: the client may send the body anyway, which could not be told apart from the next request. Otherwise the requests pipelined behind it are served. |
 | `Reject` | Answer `417 Expectation Failed`. |
 
 ```cpp
