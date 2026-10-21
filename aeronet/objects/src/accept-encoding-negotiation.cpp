@@ -30,6 +30,7 @@
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
 
@@ -102,11 +103,21 @@ double ParseQ(std::string_view token) {
   return 1.0;
 }
 
-constexpr std::array<Encoding, kNbContentEncodings> kPreferredEncodingsDefault = [] {
-  std::array<Encoding, kNbContentEncodings> arr{};
-  EncodingInt sz = 0;
+constexpr EncodingInt kNbSupportedEncodings = [] {
+  EncodingInt count = 0;
   for (EncodingInt pos = 0; pos < kNbContentEncodings; ++pos) {
-    auto enc = static_cast<Encoding>(pos);
+    const Encoding enc = static_cast<Encoding>(pos);
+    if (IsEncodingEnabled(enc)) {
+      ++count;
+    }
+  }
+  return count;
+}();
+
+constexpr std::array<Encoding, kNbSupportedEncodings> kPreferredEncodingsDefault = [] {
+  std::array<Encoding, kNbSupportedEncodings> arr;
+  for (EncodingInt pos = 0, sz = 0; pos < kNbContentEncodings; ++pos) {
+    const Encoding enc = static_cast<Encoding>(pos);
     if (IsEncodingEnabled(enc)) {
       arr[sz++] = enc;
     }
@@ -114,15 +125,7 @@ constexpr std::array<Encoding, kNbContentEncodings> kPreferredEncodingsDefault =
   return arr;
 }();
 
-constexpr EncodingInt kNbSupportedEncodings = [] {
-  EncodingInt count = 0;
-  for (EncodingInt pos = 0; pos < kNbContentEncodings; ++pos) {
-    if (IsEncodingEnabled(static_cast<Encoding>(pos))) {
-      ++count;
-    }
-  }
-  return count;
-}();
+static_assert(kPreferredEncodingsDefault.back() == Encoding::none);
 
 // Compile-time construction of supported encodings array from reflected keys
 struct Sup {
@@ -144,7 +147,8 @@ constexpr auto kSupportedEncodings = [] {
 
 }  // namespace
 
-EncodingSelector::EncodingSelector() noexcept : _preferenceOrdered(kPreferredEncodingsDefault) {
+EncodingSelector::EncodingSelector() noexcept {
+  std::ranges::copy(kPreferredEncodingsDefault, _preferenceOrdered);
   std::ranges::iota(_serverPrefIndex, 0);
 }
 
@@ -176,12 +180,26 @@ EncodingSelector::EncodingSelector(const CompressionConfig& compressionConfig) n
   }
 }
 
-EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std::string_view acceptEncoding) const {
-  NegotiatedResult ret;
-  // Fast path: empty or all whitespace -> identity (Encoding::none maps to identity header)
+EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std::string_view acceptEncoding) {
+  // Fast path: empty -> identity (Encoding::none maps to identity header)
   if (acceptEncoding.empty()) {
-    return ret;
+    return {};
   }
+  if (acceptEncoding == std::string_view(_cachedAcceptEncoding, _cachedAcceptEncodingSize)) {
+    return _cachedResult;
+  }
+  const NegotiatedResult result = negotiate(acceptEncoding);
+  if (acceptEncoding.size() <= kMaxCachedAcceptEncodingSize) {
+    Copy(acceptEncoding, _cachedAcceptEncoding);
+    _cachedAcceptEncodingSize = static_cast<uint8_t>(acceptEncoding.size());
+    _cachedResult = result;
+  }
+  return result;
+}
+
+EncodingSelector::NegotiatedResult EncodingSelector::negotiate(std::string_view acceptEncoding) const {
+  assert(!acceptEncoding.empty());
+  NegotiatedResult ret;
 
   double knownEncodingsQuality[kNbSupportedEncodings];  // per supported encoding, highest q
   std::ranges::fill(knownEncodingsQuality, -1.0);
