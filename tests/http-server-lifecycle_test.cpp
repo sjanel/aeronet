@@ -25,6 +25,7 @@
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"
+#include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -504,6 +505,34 @@ TEST(HttpDrain, KeepAliveConnectionsCloseAfterDrain) {
   EXPECT_TRUE(test::WaitForPeerClose(fd, 500ms));
 
   ts.stop();
+}
+
+// RFC 9112 §9.6: the head of a streaming response announces the close of the connection by a drain that began before
+// it was sent. A drain beginning once it was sent, while the body is streamed, closes the connection after the complete
+// response, without announcing it.
+TEST(HttpDrain, StreamingResponseAnnouncesCloseOfDrainBeganBeforeItsHead) {
+  for (const bool drainBeforeHead : {true, false}) {
+    SCOPED_TRACE(drainBeforeHead);
+    test::TestServer ts(HttpServerConfig{});
+    ts.router().setDefault([&ts, drainBeforeHead](const HttpRequestView&, HttpResponseWriter& writer) {
+      if (drainBeforeHead) {
+        ts.server.beginDrain();
+      }
+      writer.writeBody("head-");
+      if (!drainBeforeHead) {
+        ts.server.beginDrain();
+      }
+      writer.writeBody("body");
+    });
+
+    test::ClientConnection cnx(ts.port());
+    test::sendAll(cnx.fd(), SimpleGetRequest("/stream", http::keepalive));
+    const std::string resp = test::recvWithTimeout(cnx.fd(), 2s);
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+    EXPECT_EQ(resp.contains(MakeHttp1HeaderLine(http::Connection, http::close)), drainBeforeHead) << resp;
+    EXPECT_TRUE(resp.ends_with("5\r\nhead-\r\n4\r\nbody\r\n0\r\n\r\n")) << resp;
+    EXPECT_TRUE(test::WaitForPeerClose(cnx.fd(), 500ms));
+  }
 }
 
 TEST(HttpDrain, DeadlineForcesIdleConnectionsToClose) {

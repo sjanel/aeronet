@@ -126,7 +126,7 @@ void TunnelManager::establishHttp1Tunnel(ConnectionIt cnxIt, NativeHandle upstre
   // A 2xx response to CONNECT has no content: the tunneled bytes directly follow its head (RFC 9110 §9.3.6).
   _server.queueData(cnxIt,
                     HttpMessageData(BuildTunnelEstablished(_server._config.globalHeaders, _server._dateHeader.data())));
-  _server.endRequest(state.request, http::StatusCodeOK, state.requestsServed > 0);
+  _server.endRequest(state.request, http::StatusCodeOK);
 
   // Enter tunneling mode: link client -> upstream (upstream -> client is set by registerUpstream).
   state.peerFd = upstreamFd;

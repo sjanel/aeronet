@@ -63,7 +63,7 @@ handle.rethrowIfError();  // rethrows an exception that ended the event loop, if
 | | `stop()` | `beginDrain(maxWait)` |
 | --- | --- | --- |
 | New connections | Refused: the listening socket is closed. | Refused: the listening socket is closed. |
-| Open connections | Closed right away. | Finish their current request; their response carries `Connection: close`. |
+| Open connections | Closed right away. | Finish their current request; their response carries `Connection: close`, unless it is [streamed](streaming-responses.md#how-it-works) and its head was sent before the drain. |
 | End | Immediate. | When the last connection closed, or at `maxWait` (when not zero), where the remaining connections are closed. |
 | Use it for | Fatal errors, tests. | Graceful shutdown and rolling updates. |
 

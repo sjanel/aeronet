@@ -676,8 +676,6 @@ class HttpRequestView {
 
   HttpRequestView() noexcept = default;
 
-  [[nodiscard]] bool wantClose() const;
-
   [[nodiscard]] bool isKeepAliveForHttp1(bool enableKeepAlive, uint32_t maxRequestsPerConnection,
                                          bool isServerRunning) const;
 

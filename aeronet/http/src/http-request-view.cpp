@@ -147,16 +147,6 @@ std::string_view HttpRequestView::readBody(std::size_t maxBytes) {
   return _pOwnerState->clientAddress();
 }
 
-bool HttpRequestView::wantClose() const {
-  // Connection is a list of connection options (RFC 9110 §7.6.1), repeated header lines being merged into one list.
-  for (http::HeaderValueReverseTokensIterator<','> it(headerValueOrEmpty(http::Connection)); it.hasNext();) {
-    if (CaseInsensitiveEqual(it.next(), http::close)) {
-      return true;
-    }
-  }
-  return false;
-}
-
 HttpResponse HttpRequestView::makeResponse(std::size_t additionalCapacity, http::StatusCode statusCode) const {
   return {additionalCapacity, statusCode, _pGlobalHeaders->fullStringWithLastSep(),
           std::string_view{}, {},         makeResponseOptions()};
