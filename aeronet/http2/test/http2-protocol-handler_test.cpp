@@ -3451,6 +3451,47 @@ TEST(Http2ProtocolHandler, StreamingHandlerExceptionAfterBodyResetsStream) {
   EXPECT_EQ(loop.streamResets.back().second, ErrorCode::InternalError);
 }
 
+#if defined(AERONET_ENABLE_ZSTD) && AERONET_WANT_MALLOC_OVERRIDES
+// A streamed response whose compression fails once its head was sent is incomplete: the stream is reset, as when the
+// handler throws after the head. The compression fails at the first compressed write, which allocates the zstd
+// workspace (megabytes for the default level): the only allocation of the request to fail.
+TEST(Http2ProtocolHandler, StreamingCompressionFailureAfterHeadResetsStream) {
+  static constexpr std::size_t kMinZstdWorkspaceSize = 1UL << 20U;
+  bool writerFailed = false;
+  Router router;
+  router.setPath(http::Method::GET, "/stream-zstd",
+                 StreamingHandler{[&writerFailed](const HttpRequestView&, HttpResponseWriter& writer) {
+                   test::FailReallocsOfAtLeast(kMinZstdWorkspaceSize);
+                   const bool written = writer.writeBody(std::string(2048, 'z'));
+                   test::ResetToSysRealloc();
+                   writerFailed = !written && writer.failed();
+                 }});
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/stream-zstd"));
+  hdrs.append(MakeHttp1HeaderLine("accept-encoding", "zstd"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  EXPECT_TRUE(writerFailed);
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], ":status"), "200");
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], "content-encoding"), "zstd");
+  EXPECT_TRUE(std::ranges::none_of(loop.clientData, [](const DataEvent& ev) { return ev.endStream; }));
+  ASSERT_FALSE(loop.streamResets.empty());
+  EXPECT_EQ(loop.streamResets.back().first, 1U);
+  EXPECT_EQ(loop.streamResets.back().second, ErrorCode::InternalError);
+}
+#endif
+
 TEST(Http2ProtocolHandler, StreamingHandlerUnknownExceptionStillEnds) {
   Router router;
   router.setPath(http::Method::GET, "/stream-boom2",

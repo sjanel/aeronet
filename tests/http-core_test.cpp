@@ -24,6 +24,7 @@
 #include <format>
 #include <fstream>
 #include <functional>
+#include <initializer_list>
 #include <iterator>
 #include <limits>
 #include <memory>
@@ -187,6 +188,21 @@ auto makeKeepAliveTimeoutScope(std::chrono::milliseconds timeout) {
       ts, [](const HttpServerConfig& config) { return config.keepAliveTimeout; },
       [](HttpServerConfig& config, std::chrono::milliseconds timeout) { config.withKeepAliveTimeout(timeout); },
       timeout);
+}
+
+using KeepAliveModeScope = test::ScopedConfigUpdate<bool>;
+auto makeKeepAliveModeScope(bool enable) {
+  return KeepAliveModeScope(
+      ts, [](const HttpServerConfig& config) { return config.enableKeepAlive; },
+      [](HttpServerConfig& config, bool enable) { config.withKeepAliveMode(enable); }, enable);
+}
+
+using MaxRequestsPerConnectionScope = test::ScopedConfigUpdate<uint32_t>;
+auto makeMaxRequestsPerConnectionScope(uint32_t maxRequests) {
+  return MaxRequestsPerConnectionScope(
+      ts, [](const HttpServerConfig& config) { return config.maxRequestsPerConnection; },
+      [](HttpServerConfig& config, uint32_t maxRequests) { config.withMaxRequestsPerConnection(maxRequests); },
+      maxRequests);
 }
 
 std::string httpGet(std::string_view target) {
@@ -597,6 +613,38 @@ TEST(HttpKeepAlive, MultipleSequentialRequests) {
   std::string resp2 = test::recvWithTimeout(fd);
   EXPECT_TRUE(resp2.contains("ECHO/two"));
   EXPECT_FALSE(resp2.contains(MakeHttp1HeaderLine(http::Connection, "close")));
+}
+
+// RequestMetrics::reusedConnection tells whether the connection served another request before this one, for buffered
+// and streamed responses alike.
+TEST(HttpKeepAlive, MetricsReportReusedConnection) {
+  std::mutex mutex;
+  std::string reusedFlags;
+  ts.server.setMetricsCallback([&mutex, &reusedFlags](const RequestMetrics& metrics) {
+    const std::scoped_lock lock(mutex);
+    reusedFlags.push_back(metrics.reusedConnection ? '1' : '0');
+  });
+  ts.router().setPath(http::Method::GET, "/metrics-buffered", [](const HttpRequestView&) { return HttpResponse("b"); });
+  ts.router().setPath(http::Method::GET, "/metrics-streamed",
+                      [](const HttpRequestView&, HttpResponseWriter& writer) { writer.writeBody("s"); });
+
+  // The server closes the connection once the metrics of its last request were emitted.
+  const auto serve = [&mutex, &reusedFlags](std::initializer_list<std::string_view> paths) {
+    std::string requests;
+    for (std::string_view path : paths) {
+      requests += std::format("GET {} HTTP/1.1\r\nhost: x\r\n\r\n", path);
+    }
+    requests += "GET /metrics-buffered HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n";
+    test::ClientConnection cnx(port);
+    test::sendAll(cnx.fd(), requests);
+    const std::string resp = test::recvUntilClosed(cnx.fd());
+    EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 200"), static_cast<int>(paths.size()) + 1) << resp;
+    const std::scoped_lock lock(mutex);
+    return std::exchange(reusedFlags, {});
+  };
+  EXPECT_EQ(serve({"/metrics-buffered", "/metrics-streamed"}), "011");
+  EXPECT_EQ(serve({"/metrics-streamed"}), "01");
+  ts.server.setMetricsCallback({});
 }
 
 // Requests immediately followed by the client half-close are reported in a single readable event that also flags the
@@ -4397,6 +4445,68 @@ TEST(StreamingKeepAlive, HeadRequestReuse) {
   test::sendAll(fd, g2);
   auto gr2 = test::recvWithTimeout(fd);
   ASSERT_TRUE(gr2.contains("ignored-body"));  // ensure body from second request present
+}
+
+// RFC 9112 §9.6: the head of a streaming response announces the close of the connection, also when the server closes it
+// for its own reasons. Here keep-alive is disabled.
+TEST(StreamingKeepAlive, KeepAliveDisabledAnnouncesClose) {
+  const auto keepAliveScope = makeKeepAliveModeScope(false);
+  ts.router().setDefault([](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.writeBody("hello");
+    writer.writeBody(",world");
+  });
+
+  test::ClientConnection cnx(port);
+  test::sendAll(cnx.fd(), "GET /keep-alive-disabled HTTP/1.1\r\nhost: x\r\n\r\n");
+  const std::string resp = test::recvWithTimeout(cnx.fd(), 2s);
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_EQ(test::countOccurrences(resp, MakeHttp1HeaderLine(http::Connection, http::close)), 1) << resp;
+  EXPECT_EQ(ExtractBody(resp), "hello,world");
+  EXPECT_TRUE(test::WaitForPeerClose(cnx.fd(), 500ms));
+}
+
+// The streamed responses count toward maxRequestsPerConnection like the others: the last allowed one announces the
+// close of the connection, the previous ones do not.
+TEST(StreamingKeepAlive, LastAllowedRequestAnnouncesClose) {
+  const auto keepAliveScope = makeKeepAliveModeScope(true);
+  const auto maxRequestsScope = makeMaxRequestsPerConnectionScope(3);
+  ts.router().setDefault([](const HttpRequestView& req, HttpResponseWriter& writer) {
+    writer.writeBody("[");
+    writer.writeBody(req.path());
+    writer.writeBody("]");
+  });
+
+  test::ClientConnection cnx(port);
+  std::string requests;
+  for (int requestPos = 1; requestPos <= 4; ++requestPos) {
+    requests += std::format("GET /{} HTTP/1.1\r\nhost: x\r\n\r\n", requestPos);
+  }
+  test::sendAll(cnx.fd(), requests);
+  const std::string resp = test::recvUntilClosed(cnx.fd());
+  ASSERT_EQ(test::countOccurrences(resp, "HTTP/1.1 200"), 3) << resp;
+  const std::size_t lastResponsePos = resp.rfind("HTTP/1.1 200");
+  const auto closeLine = MakeHttp1HeaderLine(http::Connection, http::close);
+  EXPECT_FALSE(std::string_view(resp).substr(0, lastResponsePos).contains(closeLine)) << resp;
+  EXPECT_EQ(test::countOccurrences(std::string_view(resp).substr(lastResponsePos), closeLine), 1) << resp;
+  EXPECT_EQ(ExtractBody(std::string_view(resp).substr(lastResponsePos)), "[/3]");
+  EXPECT_FALSE(resp.contains("[/4]")) << resp;
+}
+
+// The close requested by the client is announced once.
+TEST(StreamingKeepAlive, ClientCloseAnnouncedOnce) {
+  const auto keepAliveScope = makeKeepAliveModeScope(true);
+  ts.router().setDefault([](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.contentLength(4);
+    writer.writeBody("ab");
+    writer.writeBody("cd");
+  });
+
+  test::ClientConnection cnx(port);
+  test::sendAll(cnx.fd(), "GET /client-close HTTP/1.1\r\nhost: x\r\nconnection: keep-alive, close\r\n\r\n");
+  const std::string resp = test::recvUntilClosed(cnx.fd());
+  EXPECT_EQ(test::countOccurrences(resp, MakeHttp1HeaderLine(http::Connection, http::close)), 1) << resp;
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, "4"))) << resp;
+  EXPECT_TRUE(resp.ends_with("abcd")) << resp;
 }
 
 namespace {

@@ -51,7 +51,7 @@ void SingleHttpServer::installHttp2Handler(NativeHandle clientFd, ConnectionStat
         ++state.requestsServed;
         ++_stats.totalRequestsServed;
         if (_callbacks.metrics || _accessLog) {
-          emitRequestMetrics(request, status, state.requestsServed > 1);
+          emitRequestMetrics(request, status);
         }
       });
 

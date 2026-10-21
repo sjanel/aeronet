@@ -923,6 +923,13 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
     _connection.sendRstStream(streamId, ErrorCode::EnhanceYourCalm);
     return;
   }
+  if (writer.failed()) {
+    // The response is incomplete (a compression or send error): reset the stream, as when the handler throws after the
+    // head.
+    _streams.erase(it);
+    _connection.sendRstStream(streamId, ErrorCode::InternalError);
+    return;
+  }
 
   // Transfer any pending data from the transport to the stream's deferred-send state.
   if (transport.hasPendingFile()) {

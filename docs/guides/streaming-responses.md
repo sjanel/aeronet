@@ -24,6 +24,7 @@ router.setPath(http::Method::GET, "/export", [](const HttpRequestView&, HttpResp
 - Without length, the body is sent with chunked transfer encoding over HTTP/1.1, and as DATA frames over HTTP/2. Call `contentLength(n)` before the first write when the exact size is known: the response is then sent with `Content-Length` and without chunk framing, and you must write exactly `n` bytes.
 - `writeBody()` sends the data, or queues it when the socket cannot take it yet. It returns `false` when the connection is closing: an error occurred, or the queued data exceeded `HttpServerConfig::maxOutboundBufferBytes` (over HTTP/2, the stream exceeded `Http2Config::maxStreamPendingBytes` and was reset). Stop writing then.
 - `end()` completes the response. The server calls it when the handler returns without calling it, and further calls are ignored.
+- Over HTTP/1.1, the head carries `Connection: close` when the connection closes after the response, as for buffered responses: the client asked for it, keep-alive is disabled, the request is the last one allowed by `maxRequestsPerConnection`, or the server drains. A drain that begins once the head was sent closes the connection after the complete response, without announcing it.
 - For a `HEAD` request, the headers are sent and the body is discarded, so the same handler serves both methods.
 - The body is compressed automatically, like buffered responses: the server buffers the first `minBytes`, then compresses each piece written. See [Compression](compression.md#streaming-responses).
 
@@ -61,7 +62,7 @@ Trailers need chunked encoding: they are ignored, with a warning, when `contentL
 
 An exception escaping a streaming handler before anything was sent is answered with `500 Internal Server Error`, without body, like for other handlers (see [Errors](responses.md#errors)). The head is sent with the first body bytes, or with the first ones past the compression threshold.
 
-Once the head was sent, the status cannot change anymore: the server tells the client that the response is incomplete instead. Over HTTP/1.1, it closes the connection without completing the body (no final chunk, or fewer bytes than the `Content-Length`); over HTTP/2, it resets the stream with `INTERNAL_ERROR`. To report a failure that the client can tell apart, write a trailer before calling `end()`.
+Once the head was sent, the status cannot change anymore: when the handler throws, or the compression of the body fails, the server tells the client that the response is incomplete instead. Over HTTP/1.1, it closes the connection without completing the body (no final chunk, or fewer bytes than the `Content-Length`); over HTTP/2, it resets the stream with `INTERNAL_ERROR`. To report a failure that the client can tell apart, write a trailer before calling `end()`.
 
 ## Choosing a handler kind
 
@@ -78,6 +79,7 @@ A path can mix streaming and buffered handlers for different methods, see [Dispa
 ## Tests
 
 - Chunked and fixed-length streaming, `HEAD`, trailers, and backpressure with slow readers (`HttpBackpressure` tests): [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
+- `Connection: close` announced for keep-alive disabled, the request limit and the client's close (`StreamingKeepAlive` tests): [tests/http-core_test.cpp](../../tests/http-core_test.cpp); for a drain beginning before or after the head: [tests/http-server-lifecycle_test.cpp](../../tests/http-server-lifecycle_test.cpp).
 - Streaming over HTTP/2: [tests/http2-core_test.cpp](../../tests/http2-core_test.cpp).
-- Handlers throwing before or after the head was sent: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp) and [http2-protocol-handler_test.cpp](../../aeronet/http2/test/http2-protocol-handler_test.cpp).
+- Handlers throwing before or after the head was sent, and compression failing after it: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp) and [http2-protocol-handler_test.cpp](../../aeronet/http2/test/http2-protocol-handler_test.cpp).
 - Streaming compression: [tests/http-compression_test.cpp](../../tests/http-compression_test.cpp).

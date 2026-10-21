@@ -114,6 +114,8 @@ inline int g_realloc_failure_counter = 0;
 // allocation should fail while previous ones succeed.
 inline int g_malloc_fail_after = 0;
 inline int g_realloc_fail_after = 0;
+// Optional: every realloc of at least this size fails until reset (0 disables it), the smaller ones succeeding.
+inline size_t g_realloc_fail_min_size = 0;
 
 __attribute__((no_sanitize("address"))) inline void FailNextMalloc(int count = 1) {
   // Backwards compatible: request `count` immediate failing allocations.
@@ -160,10 +162,17 @@ __attribute__((no_sanitize("address"))) inline void FailAllReallocs() {
   __atomic_store_n(&g_realloc_failure_counter, std::numeric_limits<int>::max(), __ATOMIC_RELAXED);
 }
 
+// Fail every realloc of at least `minSize` bytes until reset, the smaller ones succeeding: targets a large allocation
+// (a compression workspace, for instance) among the small ones of the same code path.
+__attribute__((no_sanitize("address"))) inline void FailReallocsOfAtLeast(size_t minSize) {
+  __atomic_store_n(&g_realloc_fail_min_size, minSize, __ATOMIC_RELAXED);
+}
+
 // Reset realloc behavior to normal (no injected failures).
 __attribute__((no_sanitize("address"))) inline void ResetToSysRealloc() {
   __atomic_store_n(&g_realloc_fail_after, 0, __ATOMIC_RELAXED);
   __atomic_store_n(&g_realloc_failure_counter, 0, __ATOMIC_RELAXED);
+  __atomic_store_n(&g_realloc_fail_min_size, 0, __ATOMIC_RELAXED);
 }
 
 [[nodiscard]] inline __attribute__((no_sanitize("address"))) bool ShouldFailMalloc() {
@@ -212,6 +221,11 @@ __attribute__((no_sanitize("address"))) inline void ResetToSysRealloc() {
   return false;
 }
 
+[[nodiscard]] inline __attribute__((no_sanitize("address"))) bool ShouldFailReallocOfSize(size_t size) {
+  const size_t minSize = __atomic_load_n(&g_realloc_fail_min_size, __ATOMIC_RELAXED);
+  return minSize != 0 && size >= minSize;
+}
+
 // Portable resolver for RTLD_NEXT symbols. This is inline to allow inclusion
 // in test translation units. It aborts if symbol resolution fails.
 template <typename Fn>
@@ -246,9 +260,11 @@ inline void FailNextRealloc([[maybe_unused]] int count = 1) {}
 inline void FailNextRealloc([[maybe_unused]] int expectedSuccessfulAllocs,
                             [[maybe_unused]] int expectedUnsuccessfulAllocs) {}
 inline void FailAllReallocs() {}
+inline void FailReallocsOfAtLeast([[maybe_unused]] std::size_t minSize) {}
 inline void ResetToSysRealloc() {}
 [[nodiscard]] inline bool ShouldFailMalloc() { return false; }
 [[nodiscard]] inline bool ShouldFailRealloc() { return false; }
+[[nodiscard]] inline bool ShouldFailReallocOfSize([[maybe_unused]] std::size_t size) { return false; }
 
 template <typename Fn>
 Fn ResolveNext(const char* /*name*/) {
@@ -386,7 +402,7 @@ extern "C" void* calloc(size_t nmemb, size_t size) {
 }
 
 extern "C" void* realloc(void* ptr, size_t size) {
-  if (aeronet::test::ShouldFailRealloc()) {
+  if (aeronet::test::ShouldFailRealloc() || aeronet::test::ShouldFailReallocOfSize(size)) {
     errno = ENOMEM;
     return nullptr;
   }

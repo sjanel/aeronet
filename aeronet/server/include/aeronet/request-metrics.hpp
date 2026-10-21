@@ -14,7 +14,7 @@ struct RequestMetrics {
   http::StatusCode status{0};
   http::Method method;
   http::Version version;
-  bool reusedConnection{false};
+  bool reusedConnection{false};  // the connection served another request before this one
   std::string_view path;
   std::string_view clientIp;
   std::string_view userAgent;
