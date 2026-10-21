@@ -107,8 +107,8 @@ class PipelineFixture : public benchmark::Fixture {
         break;
       }
     }
-    state.SetItemsProcessed(static_cast<int64_t>(state.iterations() * nbRequests));
-    state.SetBytesProcessed(static_cast<int64_t>(state.iterations() * batch.size()));
+    state.SetItemsProcessed(state.iterations() * static_cast<int64_t>(nbRequests));
+    state.SetBytesProcessed(state.iterations() * static_cast<int64_t>(batch.size()));
   }
 
   std::unique_ptr<SingleHttpServer> server;
