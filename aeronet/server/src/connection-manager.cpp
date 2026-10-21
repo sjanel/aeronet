@@ -664,6 +664,9 @@ void SingleHttpServer::acceptNewConnections() {
 
     refreshKeepAliveDeadline(cnxIt);
 
+    // Its first read goes to the input buffer of the event loop, as in handleReadableClient().
+    lendInBuffer(state);
+
     ConnectionState* pCnx = &state;
     std::size_t bytesReadThisEvent = 0;
     // Input that the loop below left to the deferred read: the rest of the socket data beyond the fairness budget, or
@@ -784,6 +787,7 @@ void SingleHttpServer::acceptNewConnections() {
       if (deferRemainingInput) {
         deferInput(cnxFd, *pCnx);
       }
+      releaseServedInBuffer(*pCnx);
       // A client that pipelines its first request with the connection setup (h2c prior knowledge sends
       // preface + SETTINGS + HEADERS immediately) gets it dispatched right here, so the handler can outlive
       // keepAliveTimeout on this path too.
@@ -811,8 +815,10 @@ void SingleHttpServer::closeConnection(ConnectionIt cnxIt) {
 void SingleHttpServer::releaseConnection(ConnectionIt cnxIt) {
   const auto fd = cnxIt->fd();
   _eventLoop.del(fd);
-#ifdef AERONET_LINUX
   ConnectionState& state = _connections.connectionState(cnxIt);
+  // The input buffer of the event loop may be lent to it: a close does not always come at the end of a read.
+  releaseServedInBuffer(state);
+#ifdef AERONET_LINUX
   // After a graceful close, the kernel would keep sending from the buffers of the zerocopy sends still in flight: abort
   // such a connection (reset), so that the kernel drops its send queue. Drain closes wait for the completions instead
   // (see ConnectionState::canCloseConnectionForDrain()).
@@ -901,10 +907,10 @@ void SingleHttpServer::processBufferedInput(NativeHandle fd) {
 }
 
 void SingleHttpServer::deferInput(NativeHandle fd, ConnectionState& state) {
+  // No wakeup needed: the next poll does not wait while _pendingReadFds is not empty (see eventLoop()).
   if (!state.inputDeferred) {
     state.inputDeferred = true;
     _pendingReadFds.push_back(fd);
-    _lifecycle.wakeupFd.send();
   }
 }
 
@@ -918,6 +924,28 @@ SingleHttpServer::CloseStatus SingleHttpServer::resumeDeferredInput(ConnectionIt
     return state.canCloseConnectionForDrain() ? CloseStatus::Close : CloseStatus::Keep;
   }
   return handleReadableClient(_connections.iterator(fd), false);
+}
+
+void SingleHttpServer::lendInBuffer(ConnectionState& state) noexcept {
+  if (state.inBuffer.empty()) {
+    // The empty buffer of the connection (without capacity, unless it once kept pending input) waits in its place.
+    state.inBuffer.swap(_sharedBuffers.inBuffer);
+  }
+}
+
+void SingleHttpServer::releaseServedInBuffer(ConnectionState& state) noexcept {
+  // Pending input (a partial request or frame, a request held by an async handler or waiting for its CONNECT target...)
+  // is kept where it is, along with the views pointing to it. Nothing points to an empty buffer.
+  if (!state.inBuffer.empty()) {
+    return;
+  }
+  // On a tie, the buffer just used, still in the CPU caches, is kept.
+  if (_sharedBuffers.inBuffer.capacity() <= state.inBuffer.capacity()) {
+    state.inBuffer.swap(_sharedBuffers.inBuffer);
+  }
+  if (state.inBuffer.capacity() != 0) {
+    state.inBuffer = RawChars{};
+  }
 }
 
 SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionIt cnxIt, bool stopOnShortRead) {
@@ -956,14 +984,11 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
   const uint64_t bytesWrittenAtEventStart = totalBytesWritten();
   const auto fd = cnxIt->fd();
 
-  // A connection served by a protocol handler (WebSocket, HTTP/2) consumes all the complete frames it reads: without
-  // pending input, it reads into the input buffer of the previous such read, still in the CPU caches, rather than into
-  // its own. Messages of tens of kilobytes on many connections would otherwise be received in cold memory. The buffer
-  // is given back below if the input was entirely consumed, the connection keeping it otherwise.
-  const bool lendInBuffer = pCnx->protocolHandler != nullptr && pCnx->inBuffer.empty();
-  if (lendInBuffer) {
-    pCnx->inBuffer.swap(_sharedBuffers.inBuffer);
-  }
+  // Without pending input, the connection reads into the input buffer of the event loop rather than into its own:
+  // HTTP/2 or WebSocket messages of tens of kilobytes on many connections would otherwise be received in cold memory,
+  // and each idle keep-alive connection would hold an input buffer. It is released below if the input was entirely
+  // served, the connection keeping it otherwise.
+  lendInBuffer(*pCnx);
 
   while (true) {
     // Re-set the pointer on each loop iteration in case of connection state reallocations.
@@ -1065,9 +1090,7 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
   // The input processing may have inserted connections.
   cnxIt = _connections.iterator(fd);
   pCnx = _connections.pConnectionState(fd);
-  if (lendInBuffer && pCnx->inBuffer.empty()) {
-    pCnx->inBuffer.swap(_sharedBuffers.inBuffer);
-  }
+  releaseServedInBuffer(*pCnx);
   // Try to flush again after reading new data, in case TLS needed the read to proceed with write
   if (pCnx->hasPendingOutput()) {
     flushOutbound(cnxIt);

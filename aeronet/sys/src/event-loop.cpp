@@ -382,21 +382,20 @@ void EventLoop::del(NativeHandle fd) {
 
 // ---- poll ----
 
-std::span<const EventLoop::EventFd> EventLoop::poll() {
+std::span<const EventLoop::EventFd> EventLoop::poll(bool wait) {
   const uint32_t capacityBeforePoll = _nbAllocatedEvents;
+  const int timeoutMs = wait ? _timeout.pollTimeoutMs() : 0;
 
 #ifdef AERONET_LINUX
   auto* epollEvents = static_cast<epoll_event*>(_pEvents);
-  const int nbReadyFds =
-      ::epoll_wait(_baseFd.fd(), epollEvents, static_cast<int>(capacityBeforePoll), _timeout.pollTimeoutMs());
+  const int nbReadyFds = ::epoll_wait(_baseFd.fd(), epollEvents, static_cast<int>(capacityBeforePoll), timeoutMs);
 
   if (nbReadyFds == -1) {
     if (LastSystemError() == error::kInterrupted) {
       return {std::launder(reinterpret_cast<EventFd*>(_pEvents)), 0U};
     }
     const auto err = LastSystemError();
-    log::error("epoll_wait failed (timeout_ms={}, err={}, msg={})", _timeout.pollTimeoutMs(), err,
-               SystemErrorMessage(err));
+    log::error("epoll_wait failed (timeout_ms={}, err={}, msg={})", timeoutMs, err, SystemErrorMessage(err));
     return {};
   }
 
@@ -405,8 +404,8 @@ std::span<const EventLoop::EventFd> EventLoop::poll() {
 #elifdef AERONET_MACOS
   auto* kevents = static_cast<struct kevent*>(_pEvents);
   struct timespec ts;
-  ts.tv_sec = _timeout.pollTimeoutMs() / 1000;
-  ts.tv_nsec = (_timeout.pollTimeoutMs() % 1000) * 1000000L;
+  ts.tv_sec = timeoutMs / 1000;
+  ts.tv_nsec = (timeoutMs % 1000) * 1000000L;
 
   const int nbReadyFds = ::kevent(_baseFd.fd(), nullptr, 0, kevents, static_cast<int>(capacityBeforePoll), &ts);
 
@@ -415,7 +414,7 @@ std::span<const EventLoop::EventFd> EventLoop::poll() {
       return {std::launder(reinterpret_cast<EventFd*>(_pEvents)), 0U};
     }
     const auto err = LastSystemError();
-    log::error("kevent failed (timeout_ms={}, err={}, msg={})", _timeout.pollTimeoutMs(), err, SystemErrorMessage(err));
+    log::error("kevent failed (timeout_ms={}, err={}, msg={})", timeoutMs, err, SystemErrorMessage(err));
     return {};
   }
 
@@ -423,7 +422,7 @@ std::span<const EventLoop::EventFd> EventLoop::poll() {
 
 #elifdef AERONET_WINDOWS
   auto* pollFdsBuf = static_cast<WSAPOLLFD*>(_pPollFds);
-  const int nbReadyFds = ::WSAPoll(pollFdsBuf, _nbRegistered, _timeout.pollTimeoutMs());
+  const int nbReadyFds = ::WSAPoll(pollFdsBuf, _nbRegistered, timeoutMs);
 
   if (nbReadyFds == SOCKET_ERROR) {
     auto err = LastSystemError();
@@ -438,7 +437,10 @@ std::span<const EventLoop::EventFd> EventLoop::poll() {
 
 #endif
 
-  _timeout.update(nbReadyEvents, capacityBeforePoll);
+  // An empty poll without waiting tells nothing about the load: its caller has work pending.
+  if (wait || nbReadyEvents != 0) {
+    _timeout.update(nbReadyEvents, capacityBeforePoll);
+  }
 
   // If saturated, grow buffer for subsequent polls.
   // On Windows, buffer growth is handled in add() when registration count reaches capacity.

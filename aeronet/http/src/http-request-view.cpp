@@ -764,9 +764,6 @@ HttpResponse::Options HttpRequestView::makeResponseOptions() const noexcept {
 #else
   HttpResponse::Options opts;
 #endif
-  if (wantClose()) {
-    opts.setClose();
-  }
   if (_addTrailerHeader) {
     opts.addTrailerHeader();
   }

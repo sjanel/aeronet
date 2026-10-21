@@ -125,6 +125,7 @@ endif()
 set(AERONET_BENCH_INTERNAL_ROUTER ${AERONET_BENCH_ROOT}/internal/router_bench.cpp)
 set(AERONET_BENCH_INTERNAL_SEARCH_CRLF ${AERONET_BENCH_ROOT}/internal/search-crlf_bench.cpp)
 set(AERONET_BENCH_INTERNAL_STRING_EQUAL ${AERONET_BENCH_ROOT}/internal/string-equal-ignore-case_bench.cpp)
+set(AERONET_BENCH_INTERNAL_ACCEPT_ENCODING ${AERONET_BENCH_ROOT}/internal/accept-encoding-negotiation_bench.cpp)
 set(AERONET_BENCH_INTERNAL_MEMORY_UTILS ${AERONET_BENCH_ROOT}/internal/memory-utils_bench.cpp)
 set(AERONET_BENCH_INTERNAL_RAW_BYTES_GROWTH ${AERONET_BENCH_ROOT}/internal/raw-bytes-growth_bench.cpp)
 set(AERONET_BENCH_INTERNAL_DATE_HEADER_CACHE ${AERONET_BENCH_ROOT}/internal/date-header-cache_bench.cpp)
@@ -222,6 +223,10 @@ set_target_properties(aeronet-bench-internal-search-crlf PROPERTIES FOLDER "benc
 
 AeronetAddProjectBenchmark(aeronet-bench-internal-string-equal-ignore-case ${AERONET_BENCH_INTERNAL_STRING_EQUAL} LIBRARIES aeronet_objects)
 set_target_properties(aeronet-bench-internal-string-equal-ignore-case PROPERTIES FOLDER "benchmarks/internal")
+
+AeronetAddProjectBenchmark(aeronet-bench-internal-accept-encoding-negotiation ${AERONET_BENCH_INTERNAL_ACCEPT_ENCODING}
+                           LIBRARIES aeronet_objects)
+set_target_properties(aeronet-bench-internal-accept-encoding-negotiation PROPERTIES FOLDER "benchmarks/internal")
 
 AeronetAddProjectBenchmark(aeronet-bench-internal-memory-utils ${AERONET_BENCH_INTERNAL_MEMORY_UTILS} LIBRARIES aeronet_tech)
 set_target_properties(aeronet-bench-internal-memory-utils PROPERTIES FOLDER "benchmarks/internal")

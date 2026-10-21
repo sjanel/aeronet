@@ -100,7 +100,9 @@ class EventLoop {
   // Log on error.
   void del(NativeHandle fd);
 
-  // Polls for ready events up to the poll timeout.
+  // Polls for ready events up to the poll timeout, or without waiting if wait is false: for a caller with work pending,
+  // that only collects the events already ready. An empty poll without waiting does not count as an idle poll for the
+  // adaptive timeout.
   //
   // Returns a span over an internal, reusable buffer (no allocations on the hot path).
   //
@@ -110,7 +112,7 @@ class EventLoop {
   //    with non-null data() pointer.
   //  - On unrecoverable poll failure (already logged): returns an empty span
   //    with nullptr data() pointer.
-  [[nodiscard]] std::span<const EventFd> poll();
+  [[nodiscard]] std::span<const EventFd> poll(bool wait = true);
 
   // Current allocated capacity (number of event slots available without reallocation).
   [[nodiscard]] uint32_t capacity() const noexcept { return _nbAllocatedEvents; }
