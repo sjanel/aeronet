@@ -850,8 +850,6 @@ class HttpMessage {
 
     constexpr void setClose() noexcept { _optionsBitmap |= Close; }
 
-    constexpr void resetClose() noexcept { _optionsBitmap &= static_cast<BmpType>(~Close); }
-
     constexpr void addTrailerHeader() noexcept { _optionsBitmap |= AddTrailerHeader; }
 
     constexpr void setHeadMethod() noexcept { _optionsBitmap |= IsHeadMethod; }

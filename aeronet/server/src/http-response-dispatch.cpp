@@ -152,9 +152,7 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpR
 
   request.prefinalizeHttpResponse(resp, _telemetry);
 
-  const bool keepAlive =
-      !close &&
-      request.isKeepAliveForHttp1(_config.enableKeepAlive, _config.maxRequestsPerConnection, _lifecycle.isRunning());
+  const bool keepAlive = !close && isKeepAliveForHttp1(request);
 
   const auto respStatusCode = resp.status();
 
@@ -179,7 +177,7 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpR
     state.requestDrainAndClose();
   }
   // End the span after response is finalized
-  endRequest(request, respStatusCode, state.requestsServed > 0);
+  endRequest(request, respStatusCode);
 }
 
 void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpMessageData httpResponseData) {

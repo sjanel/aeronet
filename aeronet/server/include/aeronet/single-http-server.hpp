@@ -516,6 +516,9 @@ class SingleHttpServer {
   // For WebSocket, routes through the protocol handler.
   // Returns true if the connection should be closed.
   bool processConnectionInput(ConnectionIt cnxIt);
+  // Processes the input of a connection served by a protocol handler (see processSpecialProtocolHandler()), then
+  // re-arms the deadline of a WebSocket connection. Returns true if the connection should be closed.
+  bool processProtocolHandlerInput(ConnectionIt cnxIt);
   // Serves the HTTP/1.1 requests in the input buffer of the connection (see serveHttp1Requests()), then writes their
   // responses not written yet, and gives the bytes following an upgrade request to the new protocol.
   // Returns true if the connection should stop reading (or close).
@@ -583,6 +586,13 @@ class SingleHttpServer {
                                      std::size_t maxBodyBytes, std::size_t& consumedBytes);
   bool parseHeadersUnchecked(SvToSvMap& headersMap, char* bufferBeg, char* first, char* last);
   bool maybeDecompressRequestBody(ConnectionIt cnxIt, bool usePerConnectionBodyStorage);
+  // Whether the connection of this HTTP/1.x request stays open after its response: false when the client asked to close
+  // it, keep-alive is disabled, the request is the last one allowed on the connection, or the server drains or stops.
+  // The response then announces the close (RFC 9112 §9.6).
+  [[nodiscard]] bool isKeepAliveForHttp1(const HttpRequestView& request) const {
+    return request.isKeepAliveForHttp1(_config.enableKeepAlive, _config.maxRequestsPerConnection,
+                                       _lifecycle.isRunning());
+  }
   // Sends the response to the current HTTP/1.1 request. With 'close', the connection closes after it, as when the
   // request does not keep it alive.
   void finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpResponse&& resp, const CorsPolicy* pCorsPolicy,
@@ -592,12 +602,12 @@ class SingleHttpServer {
   bool handleExpectHeader(ConnectionIt cnxIt, std::string_view expectHeader, const CorsPolicy* pCorsPolicy,
                           bool& found100Continue);
   // Helper to populate and invoke the metrics callback for a completed request.
-  void emitRequestMetrics(const HttpRequestView& request, http::StatusCode status, bool reusedConnection);
+  void emitRequestMetrics(const HttpRequestView& request, http::StatusCode status);
 
   // End an HTTP/1.1 request answered with 'status': emit its metrics (if observed), then end its span.
-  void endRequest(HttpRequestView& request, http::StatusCode status, bool reusedConnection) {
+  void endRequest(HttpRequestView& request, http::StatusCode status) {
     if (_callbacks.metrics || _accessLog) {
-      emitRequestMetrics(request, status, reusedConnection);
+      emitRequestMetrics(request, status);
     }
     request.end(status);
   }

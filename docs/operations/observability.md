@@ -46,7 +46,7 @@ server.setMetricsCallback([](const RequestMetrics& metrics) {
 });
 ```
 
-The views of the record are valid during the call only. Keep the callback short: it runs for every request.
+`reusedConnection` tells whether the connection served another request before this one. The views of the record are valid during the call only. Keep the callback short: it runs for every request.
 
 ### Server statistics
 
@@ -223,3 +223,4 @@ Read [Health probes](health-probes.md), then use the [Kubernetes deployment guid
 - OpenTelemetry export end to end: [tests/opentelemetry-e2e_test.cpp](../../tests/opentelemetry-e2e_test.cpp).
 - DogStatsD: [dogstatsd_test.cpp](../../aeronet/objects/test/dogstatsd_test.cpp).
 - Access log: [access-log-writer_test.cpp](../../aeronet/server/test/access-log-writer_test.cpp).
+- `reusedConnection` of the request metrics (`HttpKeepAlive.MetricsReportReusedConnection`): [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
