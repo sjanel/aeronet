@@ -3,18 +3,25 @@
 // Measures `aeronet::websocket::IsValidUtf8()` and each of its kernels (scalar, SSSE3 / AVX2 or NEON lookup
 // algorithm) on valid text of various scripts and sizes, against a frozen copy of the previous implementation (SIMD
 // skip of ASCII blocks, scalar decoding of each multibyte character).
+// Also measures the unmasking of a masked text message (as received from a client) in the same pass as its validation
+// (`UnmaskAndValidateUtf8()`), against `ApplyMask()` followed by `IsValidUtf8()`.
 
 #include <benchmark/benchmark.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "aeronet/avx2.hpp"
 #include "aeronet/compiler-config.hpp"
+#include "aeronet/websocket-constants.hpp"
+#include "aeronet/websocket-frame.hpp"
 #include "aeronet/websocket-utf8.hpp"
 
 #ifdef __SSE2__
@@ -180,6 +187,59 @@ void Args(benchmark::Benchmark* bench) {
   bench->ArgNames({"text", "size"})->ArgsProduct({{0, 1, 2, 3, 4}, {16, 40, 100, 256, 4096, 65536}});
 }
 
+enum class Unmasking : std::uint8_t {
+  RestoreOnly,  // only restores the masked payload, the cost included in the others
+  TwoPasses,    // ApplyMask(), then IsValidUtf8()
+  SinglePass,   // UnmaskAndValidateUtf8()
+};
+
+// Unmasks and validates masked text, restoring it after each iteration. The iterations cycle over copies of the masked
+// text spanning 256 KiB, so that a copy was restored long before being used again (as received bytes): the restoring
+// stores do not interfere with the measured loads.
+template <Unmasking kUnmasking>
+void BM_Unmask(benchmark::State& state) {
+  static constexpr MaskingKey kMaskingKey = 0x8E17A5C3U;
+  static constexpr std::size_t kCopiesBytes = 256UL * 1024UL;
+
+  const auto sampleIdx = static_cast<std::size_t>(state.range(0));
+  const auto size = static_cast<std::size_t>(state.range(1));
+  const std::string text = MakeText(kSamples[sampleIdx], size);
+  std::vector<std::byte> masked(size);
+  aeronet::websocket::AppendMasked(std::as_bytes(std::span(text)), masked.data(), kMaskingKey);
+  const std::size_t nbCopies = std::max<std::size_t>(1, kCopiesBytes / size);
+  std::vector<std::byte> copies(nbCopies * size);
+  for (std::size_t copyIdx = 0; copyIdx < nbCopies; ++copyIdx) {
+    std::ranges::copy(masked, copies.begin() + static_cast<std::ptrdiff_t>(copyIdx * size));
+  }
+  if (!UnmaskAndValidateUtf8(std::span(masked), kMaskingKey) ||
+      !std::ranges::equal(masked, std::as_bytes(std::span(text)))) {
+    state.SkipWithError("benchmark text is not valid UTF-8 once unmasked");
+    return;
+  }
+  ApplyMask(std::span(masked), kMaskingKey);
+
+  std::size_t copyIdx = 0;
+  for ([[maybe_unused]] auto iter : state) {
+    const std::span<std::byte> payload(copies.data() + (copyIdx * size), size);
+    if constexpr (kUnmasking == Unmasking::TwoPasses) {
+      ApplyMask(payload, kMaskingKey);
+      benchmark::DoNotOptimize(IsValidUtf8(payload));
+    } else if constexpr (kUnmasking == Unmasking::SinglePass) {
+      benchmark::DoNotOptimize(UnmaskAndValidateUtf8(payload, kMaskingKey));
+    }
+    std::memcpy(payload.data(), masked.data(), size);
+    benchmark::ClobberMemory();
+    copyIdx = copyIdx + 1 == nbCopies ? 0 : copyIdx + 1;
+  }
+
+  state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(size));
+  state.SetLabel(std::string(kSampleNames[sampleIdx]));
+}
+
+void UnmaskArgs(benchmark::Benchmark* bench) {
+  bench->ArgNames({"text", "size"})->ArgsProduct({{0, 2, 4}, {16, 40, 100, 256, 4096, 65536}});
+}
+
 }  // namespace
 
 BENCHMARK(BM_Utf8<PreviousValidateUtf8>)->Name("Previous")->Apply(Args);
@@ -191,5 +251,8 @@ BENCHMARK(BM_Utf8<detail::IsValidUtf8Avx2, Isa::Avx2>)->Name("Avx2")->Apply(Args
 #elif defined(__ARM_NEON) || defined(__ARM_NEON__)
 BENCHMARK(BM_Utf8<detail::IsValidUtf8Neon>)->Name("Neon")->Apply(Args);
 #endif
+BENCHMARK(BM_Unmask<Unmasking::RestoreOnly>)->Name("UnmaskRestoreOnly")->Apply(UnmaskArgs);
+BENCHMARK(BM_Unmask<Unmasking::TwoPasses>)->Name("ApplyMaskThenIsValidUtf8")->Apply(UnmaskArgs);
+BENCHMARK(BM_Unmask<Unmasking::SinglePass>)->Name("UnmaskAndValidateUtf8")->Apply(UnmaskArgs);
 
 BENCHMARK_MAIN();
