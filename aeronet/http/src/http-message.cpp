@@ -93,7 +93,7 @@ std::size_t HttpMessage::bodyLength() const noexcept {
 namespace {
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
-constexpr std::string_view kVaryHeaderValueSep = ", ";
+constexpr std::string_view kVaryValueSep = ", ";
 
 bool VaryContainsAcceptEncodingToken(std::string_view value) {
   for (http::HeaderValueReverseTokensIterator<','> it(value); it.hasNext();) {
@@ -269,7 +269,7 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
         neededNewSize += http::HeaderSize(http::Vary.size(), http::AcceptEncoding.size());
       } else if (!VaryContainsAcceptEncodingToken(std::string_view(varyFirst, varyLast))) {
         appendVaryValue = true;
-        neededNewSize += http::AcceptEncoding.size() + kVaryHeaderValueSep.size();
+        neededNewSize += http::AcceptEncoding.size() + kVaryValueSep.size();
       }
     }
   }
@@ -309,7 +309,7 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
       if (addVaryHeader) {
         headerAddLineUnchecked(http::Vary, http::AcceptEncoding);
       } else if (appendVaryValue) {
-        headerAppendValueImpl(http::Vary, http::AcceptEncoding, kVaryHeaderValueSep);
+        headerAppendValueImpl(http::Vary, http::AcceptEncoding, kVaryValueSep);
       }
       headerAddLineUnchecked(http::ContentEncoding, GetEncodingStr(_opts._pickedEncoding));
     }
@@ -332,7 +332,7 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
     if (removeEncodingHeaders) {
       removeContentEncodingHeaders();
     } else if (appendVaryValue) {
-      headerAppendValueImpl(http::Vary, http::AcceptEncoding, kVaryHeaderValueSep);
+      headerAppendValueImpl(http::Vary, http::AcceptEncoding, kVaryValueSep);
     }
 #endif
     // Rewrite the body headers from the start of the old Content-Type line, preceded by the new encoding headers (body

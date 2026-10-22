@@ -177,6 +177,7 @@ option(AERONET_ENABLE_TEST_HOOKS
   ${AERONET_ENABLE_TEST_HOOKS_DEFAULT})
 option(AERONET_BUILD_SHARED "Build aeronet libraries as shared instead of static" OFF)
 option(AERONET_BUILD_MODULES "Build aeronet libraries as C++ module (experimental)" OFF)
+option(AERONET_UNITY_BUILD "Build the aeronet libraries as unity builds (several sources per compilation)" OFF)
 option(AERONET_BUILD_BENCHMARKS "Build benchmark executables" ${AERONET_BUILD_BENCHMARKS_DEFAULT})
 
 # Split + compressed debug info (see cmake/CompactDebugInfo.cmake). Only on by default for Debug test builds:

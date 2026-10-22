@@ -76,6 +76,7 @@ else()
     URL https://github.com/AmadeusITGroup/amc/archive/refs/tags/v2.7.0.tar.gz
     URL_HASH SHA256=a1a261fb8ac5b8c21b57ac080874a0103a84e75fa9f59969c8366ec9b43bd8bd
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    EXCLUDE_FROM_ALL
   )
 
 
@@ -322,14 +323,22 @@ if(AERONET_ENABLE_OPENTELEMETRY)
 endif()
 
 if(AERONET_ENABLE_GLAZE)
+  set(_aeronet_glaze_declare
+    URL https://github.com/stephenberry/glaze/archive/refs/tags/v9.0.0.tar.gz
+    URL_HASH SHA256=dd7b033c5bf6e4308615bb7834c541291d5b20f64121d9a68222a39414635517
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  )
+  # glaze is header-only, but its CMakeLists requires CMake 3.31 since glaze 8.1, and aeronet needs glaze >= 8.4.
+  # With an older CMake, glaze is populated without running its CMakeLists (SOURCE_SUBDIR names a directory that
+  # does not exist), and its glaze::glaze target is defined below instead.
+  if(CMAKE_VERSION VERSION_LESS 3.31)
+    list(APPEND _aeronet_glaze_declare SOURCE_SUBDIR aeronet-headers-only)
+  endif()
   aeronet_find_or_declare(
     NAME glaze
     CONFIG
     TARGETS glaze::glaze
-    DECLARE
-      URL https://github.com/stephenberry/glaze/archive/refs/tags/v9.0.0.tar.gz
-      URL_HASH SHA256=dd7b033c5bf6e4308615bb7834c541291d5b20f64121d9a68222a39414635517
-      DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    DECLARE ${_aeronet_glaze_declare}
   )
 endif()
 
@@ -359,6 +368,22 @@ if(AeronetFetchContentPackagesToMakeAvailable)
   # its atomics are invisible, and TSan reports races on everything the export thread reads through these spans.
   if(AERONET_ENABLE_TSAN AND opentelemetry_cpp_SOURCE_DIR)
     aeronet_add_options_to_dir_targets("${opentelemetry_cpp_SOURCE_DIR}" ${AERONET_TSAN_OPTIONS})
+  endif()
+
+  # glaze populated without its CMakeLists (CMake < 3.31, see above): the same target as glaze's own CMakeLists.
+  if(AERONET_ENABLE_GLAZE AND NOT TARGET glaze::glaze AND DEFINED glaze_SOURCE_DIR)
+    add_library(glaze_glaze INTERFACE)
+    add_library(glaze::glaze ALIAS glaze_glaze)
+    target_include_directories(glaze_glaze SYSTEM INTERFACE "$<BUILD_INTERFACE:${glaze_SOURCE_DIR}/include>")
+    target_compile_features(glaze_glaze INTERFACE cxx_std_23)
+    if(MSVC)
+      target_compile_options(glaze_glaze INTERFACE
+        $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/Zc:preprocessor>
+        $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/permissive->
+        $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/Zc:lambda>)
+    else()
+      target_compile_options(glaze_glaze INTERFACE $<$<COMPILE_LANGUAGE:CXX>:-Wno-missing-braces>)
+    endif()
   endif()
 
   # Create ZLIBNG::ZLIBNG interface library for zlib-ng (native mode).

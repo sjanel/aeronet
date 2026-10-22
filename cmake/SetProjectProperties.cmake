@@ -266,6 +266,18 @@ function(AeronetAddProjectLibrary name)
     add_library(${name} STATIC ${ARGN})
   endif()
 
+  # Only the libraries: the tests and benchmarks keep one compilation per source, for incremental rebuilds.
+  # Batches of 16 rather than CMake's default 8: each source then parses the shared headers (std, glaze, spdlog...)
+  # half as often, for about the same longest compilation. CMAKE_UNITY_BUILD_BATCH_SIZE overrides it.
+  if(AERONET_UNITY_BUILD)
+    if(DEFINED CMAKE_UNITY_BUILD_BATCH_SIZE)
+      set(_aeronet_unity_batch_size ${CMAKE_UNITY_BUILD_BATCH_SIZE})
+    else()
+      set(_aeronet_unity_batch_size 16)
+    endif()
+    set_target_properties(${name} PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE ${_aeronet_unity_batch_size})
+  endif()
+
   AeronetSetProjectProperties(${name})
 endfunction()
 
