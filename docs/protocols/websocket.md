@@ -83,6 +83,8 @@ All callbacks run on the event-loop thread of the connection.
 
 The payload span is valid only during the callback: copy it to keep it.
 
+Text messages are validated before `onMessage` with SIMD instructions, AVX2 or SSSE3 on x86 (detected at runtime) and NEON on ARM, at the same speed whatever their script: about 25 GB/s with AVX2. A message that is not valid UTF-8 (RFC 3629: no overlong encoding, surrogate, code point above U+10FFFF or truncated sequence) closes the connection with `InvalidPayloadData` (1007).
+
 ## Sending messages
 
 `WebSocketHandler` sends with `sendText()`, `sendBinary()`, `sendPing()`, `sendPong()`, and `sendClose(code, reason)`. Each call queues a frame on the connection and returns `false` once the close handshake has started. A message is sent as a single frame. When compression was negotiated, a message of at least `DeflateConfig::minCompressSize` bytes is sent compressed, unless compression does not make it smaller.
@@ -231,5 +233,6 @@ The timeouts are checked by the server's maintenance timer, so they are accurate
 - Handshake, middleware, origin checks, factory refusal, messaging, large echoes (also when the client does not read), compression interoperability and connections sharing the streams of a server thread, close handshake, and idle and close timeouts against a real socket: [tests/websocket-integration_test.cpp](../../tests/websocket-integration_test.cpp).
 - Frame parsing, masking, and SIMD unmasking: [websocket-frame_test.cpp](../../aeronet/websocket/test/websocket-frame_test.cpp).
 - Message reassembly, control frames, close handshake, split frames, payloads sent from the input (`WebSocketInputPayloadTest`), and timeout computation: [websocket-handler_test.cpp](../../aeronet/websocket/test/websocket-handler_test.cpp).
+- UTF-8 validation by each kernel (scalar, SSSE3, AVX2, NEON) against a reference validator, for every byte pair and every sample at every block offset: [websocket-utf8_test.cpp](../../aeronet/websocket/test/websocket-utf8_test.cpp).
 - Upgrade validation and subprotocol negotiation: [websocket-upgrade_test.cpp](../../aeronet/websocket/test/websocket-upgrade_test.cpp).
 - permessage-deflate negotiation and interoperability, context takeover across messages, streams shared without context takeover (`WebSocketSharedDeflateStreamsTest`): [websocket-deflate_test.cpp](../../aeronet/websocket/test/websocket-deflate_test.cpp) and [websocket-compress_test.cpp](../../aeronet/websocket/test/websocket-compress_test.cpp).

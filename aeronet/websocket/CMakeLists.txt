@@ -81,6 +81,13 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    websocket-utf8_test
+    test/websocket-utf8_test.cpp
+    LIBRARIES
+    aeronet_websocket
+)
+
+AeronetAddUnitTest(
     websocket-upgrade_test
     test/websocket-upgrade_test.cpp
     LIBRARIES
