@@ -10,9 +10,6 @@
 
 namespace aeronet::websocket {
 
-/// 4-byte masking key type.
-using MaskingKey = uint32_t;
-
 /// Parsed WebSocket frame header.
 /// Does not own the payload data - the payload is a view into the input buffer.
 struct FrameHeader {
@@ -62,9 +59,14 @@ struct FrameParseResult {
 /// The same function is used for both masking and unmasking (XOR is symmetric).
 /// Modifies the data in place.
 ///
-/// @param data       Payload data to mask/unmask (modified in place)
+/// @param data       Payload data to mask/unmask (modified in place), from the start of the frame payload
 /// @param maskingKey 4-byte masking key from frame header
 void ApplyMask(std::span<std::byte> data, MaskingKey maskingKey);
+
+/// Copy src to dst, masked (or unmasked) with maskingKey, in a single pass: same result as a copy followed by
+/// ApplyMask() on dst. src starts at the start of a frame payload, dst must not overlap it.
+/// @return dst + src.size()
+std::byte* AppendMasked(std::span<const std::byte> src, std::byte* dst, MaskingKey maskingKey);
 
 /// Build a WebSocket frame and append it to an output buffer.
 ///
@@ -80,9 +82,10 @@ void ApplyMask(std::span<std::byte> data, MaskingKey maskingKey);
 void BuildFrame(RawBytes& output, Opcode opcode, std::span<const std::byte> payload, bool fin = true,
                 bool shouldMask = false, MaskingKey maskingKey = {}, bool rsv1 = false);
 
-/// Append only the header of an unmasked frame of payloadSize bytes to an output buffer: the payload is sent from
-/// where it is, right after the header.
-void BuildUnmaskedFrameHeader(RawBytes& output, Opcode opcode, std::size_t payloadSize);
+/// Append only the header of a frame of payloadSize bytes (FIN set) to an output buffer: the payload is sent from
+/// where it is, right after the header, already masked with maskingKey if shouldMask.
+void BuildFrameHeader(RawBytes& output, Opcode opcode, std::size_t payloadSize, bool shouldMask = false,
+                      MaskingKey maskingKey = {}, bool rsv1 = false);
 
 /// Build a Close frame with an optional status code and reason.
 ///

@@ -83,13 +83,13 @@ All callbacks run on the event-loop thread of the connection.
 
 The payload span is valid only during the callback: copy it to keep it.
 
-Text messages are validated before `onMessage` with SIMD instructions, AVX2 or SSSE3 on x86 (detected at runtime) and NEON on ARM, at the same speed whatever their script: about 25 GB/s with AVX2. A message that is not valid UTF-8 (RFC 3629: no overlong encoding, surrogate, code point above U+10FFFF or truncated sequence) closes the connection with `InvalidPayloadData` (1007).
+Text messages are validated before `onMessage` with SIMD instructions, AVX2 or SSSE3 on x86 (detected at runtime) and NEON on ARM, at the same speed whatever their script: about 25 GB/s with AVX2. The text messages of a client are unmasked in the same pass. A message that is not valid UTF-8 (RFC 3629: no overlong encoding, surrogate, code point above U+10FFFF or truncated sequence) closes the connection with `InvalidPayloadData` (1007).
 
 ## Sending messages
 
 `WebSocketHandler` sends with `sendText()`, `sendBinary()`, `sendPing()`, `sendPong()`, and `sendClose(code, reason)`. Each call queues a frame on the connection and returns `false` once the close handshake has started. A message is sent as a single frame. When compression was negotiated, a message of at least `DeflateConfig::minCompressSize` bytes is sent compressed, unless compression does not make it smaller.
 
-Sending from `onMessage` a payload of at least 4 KiB that it received (an echo, or a part of the message) does not copy it: only the frame header is queued, and the server writes the payload from its receive buffer right after the callbacks of this input, copying only what the socket did not accept.
+Sending from `onMessage` a payload of at least 4 KiB that it received (an echo, or a part of the message) does not copy it: only the frame header is queued, and the server writes the payload from its receive buffer right after the callbacks of this input, copying only what the socket did not accept. Likewise, a message compressed to at least 4 KiB is written from the buffer it was compressed into, and only copied if another message is queued (or a compressed message received) before the socket accepted all of it.
 
 These methods are not thread-safe: call them from a callback of the same connection. There is currently no way to push a message to a connection from another thread.
 
@@ -154,7 +154,7 @@ Router router;
 router.setWebSocket("/ws", WebSocketEndpoint::WithConfigAndCallbacks(config, websocket::WebSocketCallbacks{}));
 ```
 
-Frames may arrive split across any number of reads, or several in one read: the handler consumes complete frames only, and keeps the bytes of an incomplete trailing frame in the connection buffer without copying them. A connection without such pending bytes reads into the input buffer of the previous read of its server thread, still in the CPU caches, rather than into its own: with many connections exchanging large messages, they would otherwise be received into cold memory. Client frames must be masked; an unmasked frame is a protocol error. Unmasking uses SIMD instructions (AVX2 or SSE2 on x86, NEON on ARM) with a scalar fallback.
+Frames may arrive split across any number of reads, or several in one read: the handler consumes complete frames only, and keeps the bytes of an incomplete trailing frame in the connection buffer without copying them. A connection without such pending bytes reads into the input buffer of the previous read of its server thread, still in the CPU caches, rather than into its own: with many connections exchanging large messages, they would otherwise be received into cold memory. Client frames must be masked; an unmasked frame is a protocol error. Unmasking uses SIMD instructions (AVX2 or SSE2 on x86, NEON on ARM) with a scalar fallback, in the same pass as the UTF-8 validation of a text message, or as the copy of a fragment to the reassembly buffer.
 
 ## Compression (permessage-deflate)
 
@@ -231,8 +231,8 @@ The timeouts are checked by the server's maintenance timer, so they are accurate
 ## Tests
 
 - Handshake, middleware, origin checks, factory refusal, messaging, large echoes (also when the client does not read), compression interoperability and connections sharing the streams of a server thread, close handshake, and idle and close timeouts against a real socket: [tests/websocket-integration_test.cpp](../../tests/websocket-integration_test.cpp).
-- Frame parsing, masking, and SIMD unmasking: [websocket-frame_test.cpp](../../aeronet/websocket/test/websocket-frame_test.cpp).
-- Message reassembly, control frames, close handshake, split frames, payloads sent from the input (`WebSocketInputPayloadTest`), and timeout computation: [websocket-handler_test.cpp](../../aeronet/websocket/test/websocket-handler_test.cpp).
-- UTF-8 validation by each kernel (scalar, SSSE3, AVX2, NEON) against a reference validator, for every byte pair and every sample at every block offset: [websocket-utf8_test.cpp](../../aeronet/websocket/test/websocket-utf8_test.cpp).
+- Frame parsing, masking, SIMD unmasking and masked copies of every size: [websocket-frame_test.cpp](../../aeronet/websocket/test/websocket-frame_test.cpp).
+- Message reassembly, control frames, close handshake, split frames, payloads sent from the input or the compression buffer (`WebSocketInputPayloadTest`), masked messages and fragments of every size (`WebSocketMaskedPayloadTest`), and timeout computation: [websocket-handler_test.cpp](../../aeronet/websocket/test/websocket-handler_test.cpp).
+- UTF-8 validation by each kernel (scalar, SSSE3, AVX2, NEON) and its variant unmasking the data in the same pass, against a reference validator, for every byte pair and every sample at every block offset: [websocket-utf8_test.cpp](../../aeronet/websocket/test/websocket-utf8_test.cpp).
 - Upgrade validation and subprotocol negotiation: [websocket-upgrade_test.cpp](../../aeronet/websocket/test/websocket-upgrade_test.cpp).
 - permessage-deflate negotiation and interoperability, context takeover across messages, streams shared without context takeover (`WebSocketSharedDeflateStreamsTest`): [websocket-deflate_test.cpp](../../aeronet/websocket/test/websocket-deflate_test.cpp) and [websocket-compress_test.cpp](../../aeronet/websocket/test/websocket-compress_test.cpp).

@@ -7,10 +7,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <numeric>
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/vector.hpp"
@@ -446,6 +448,101 @@ TEST_F(WebSocketFrameTest, ApplyMaskEmpty) {
 
   // Should not crash
   ApplyMask(empty, mask);
+}
+
+namespace {
+
+// Masks data byte per byte, as RFC 6455 section 5.3 defines it: byte i is XORed with byte i % 4 of the masking key.
+std::vector<std::byte> ReferenceMask(std::span<const std::byte> data, MaskingKey maskingKey) {
+  std::array<std::byte, kMaskingKeySize> keyBytes;
+  std::memcpy(keyBytes.data(), &maskingKey, kMaskingKeySize);
+  std::vector<std::byte> masked(data.begin(), data.end());
+  for (std::size_t idx = 0; idx < masked.size(); ++idx) {
+    masked[idx] ^= keyBytes[idx % kMaskingKeySize];
+  }
+  return masked;
+}
+
+std::vector<std::byte> PseudoRandomBytes(std::size_t size, uint32_t seed) {
+  std::vector<std::byte> bytes(size);
+  for (std::byte& byte : bytes) {
+    seed = (seed * 1103515245U) + 12345U;
+    byte = static_cast<std::byte>(seed >> 16U);
+  }
+  return bytes;
+}
+
+}  // namespace
+
+// Every size up to several SIMD blocks, so that each length of the tail (two words of 8 or 4 bytes, or single bytes)
+// follows each number of iterations of the SIMD loops.
+TEST_F(WebSocketFrameTest, ApplyMaskEverySizeMatchesReference) {
+  const MaskingKey mask = MakeMask(0xC3, 0x5A, 0x01, 0xF0);
+  for (std::size_t size = 0; size <= 140; ++size) {
+    const auto original = PseudoRandomBytes(size, static_cast<uint32_t>(size));
+    // Allocated with its exact size, for ASAN to report any access past its end.
+    const auto data = std::make_unique_for_overwrite<std::byte[]>(size);
+    std::ranges::copy(original, data.get());
+    ApplyMask(std::span<std::byte>(data.get(), size), mask);
+    EXPECT_TRUE(std::ranges::equal(std::span<const std::byte>(data.get(), size), ReferenceMask(original, mask)))
+        << "size " << size;
+  }
+}
+
+TEST_F(WebSocketFrameTest, AppendMaskedEverySizeMatchesReference) {
+  const MaskingKey mask = MakeMask(0x9E, 0x37, 0x79, 0xB9);
+  for (std::size_t size = 0; size <= 140; ++size) {
+    const auto src = PseudoRandomBytes(size, static_cast<uint32_t>(size) + 1000U);
+    // Unaligned destination, ending at the end of its allocation.
+    const auto dst = std::make_unique_for_overwrite<std::byte[]>(size + 1);
+    EXPECT_EQ(AppendMasked(src, dst.get() + 1, mask), dst.get() + 1 + size);
+    EXPECT_TRUE(std::ranges::equal(std::span<const std::byte>(dst.get() + 1, size), ReferenceMask(src, mask)))
+        << "size " << size;
+    EXPECT_TRUE(std::ranges::equal(src, PseudoRandomBytes(size, static_cast<uint32_t>(size) + 1000U)));
+  }
+}
+
+TEST_F(WebSocketFrameTest, AppendMaskedLargeData) {
+  const MaskingKey mask = MakeMask(0x12, 0x34, 0x56, 0x78);
+  const auto src = PseudoRandomBytes((1UL << 20U) + 13U, 7);
+  std::vector<std::byte> dst(src.size());
+  EXPECT_EQ(AppendMasked(src, dst.data(), mask), dst.data() + dst.size());
+  EXPECT_TRUE(std::ranges::equal(dst, ReferenceMask(src, mask)));
+}
+
+// The header of a payload sent apart: once followed by the payload, masked separately, it parses as a whole frame.
+TEST_F(WebSocketFrameTest, BuildFrameHeaderOfPayloadSentApart) {
+  const MaskingKey mask = MakeMask(0xAB, 0xCD, 0xEF, 0x01);
+  for (const std::size_t size : {0UL, 125UL, 126UL, 65535UL, 65536UL, 70001UL}) {
+    const auto payload = PseudoRandomBytes(size, 3);
+    RawBytes frame;
+    BuildFrameHeader(frame, Opcode::Binary, size, /*shouldMask=*/true, mask, /*rsv1=*/true);
+    const std::size_t headerSize = frame.size();
+    frame.ensureAvailableCapacity(size);
+    frame.setEnd(AppendMasked(payload, frame.data() + frame.size(), mask));
+
+    const auto result = ParseFrame(buf_bytes(frame), 0, /*isServerSide=*/true, /*allowRsv1=*/true);
+    ASSERT_EQ(result.status, FrameParseResult::Status::Complete) << size;
+    EXPECT_EQ(result.header.headerSize(), headerSize);
+    EXPECT_EQ(result.header.opcode, Opcode::Binary);
+    EXPECT_TRUE(result.header.fin);
+    EXPECT_TRUE(result.header.rsv1);
+    EXPECT_TRUE(result.header.masked);
+    EXPECT_EQ(result.header.maskingKey, mask);
+    EXPECT_EQ(result.bytesConsumed, frame.size());
+    std::vector<std::byte> unmasked(result.payload.begin(), result.payload.end());
+    ApplyMask(unmasked, mask);
+    EXPECT_TRUE(std::ranges::equal(unmasked, payload)) << size;
+  }
+
+  // Unmasked, without RSV1 by default.
+  RawBytes header;
+  BuildFrameHeader(header, Opcode::Text, 300);
+  ASSERT_EQ(header.size(), 4U);
+  EXPECT_EQ(header[0], std::byte{0x81});
+  EXPECT_EQ(header[1], std::byte{126});
+  EXPECT_EQ(header[2], std::byte{0x01});
+  EXPECT_EQ(header[3], std::byte{0x2C});
 }
 
 // ============================================================================

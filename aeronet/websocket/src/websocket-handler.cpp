@@ -12,7 +12,6 @@
 #include <utility>
 
 #include "aeronet/http-message-data.hpp"
-#include "aeronet/memory-utils.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/vector.hpp"
@@ -25,9 +24,9 @@ namespace aeronet::websocket {
 
 namespace {
 
-// Smallest payload sent from the received input instead of being copied to the output buffer: below, the copy is
-// cheaper than the separate buffer to write.
-constexpr std::size_t kMinInputPayloadSize = 4096;
+// Smallest payload sent from where it is (the received input, the compression buffer) instead of being copied to the
+// output buffer: below, the copy is cheaper than the separate buffer to write.
+constexpr std::size_t kMinUnbufferedPayloadSize = 4096;
 
 // Tells whether 'part' lies within 'whole' (std::less_equal is a total order, even for unrelated pointers).
 bool IsWithin(std::span<const std::byte> part, std::span<const std::byte> whole) {
@@ -128,24 +127,22 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
     }
   }
 
-  result.outputRefersToInput = !_inputPayload.empty();
+  result.outputRefersToInput = unbufferedPayloadInInput();
   return result;
 }
 
 ProtocolProcessResult WebSocketHandler::processFrame(const FrameParseResult& frame) {
   if (IsControlFrame(frame.header.opcode)) {
-    // Control frames max 125 bytes - unmask on stack
+    // Control frames max 125 bytes - unmasked in the same pass as copied on the stack
     std::span<const std::byte> payload = frame.payload;
     // Declared here because its memory may be pointed by payload
     std::byte controlBuf[kMaxControlFramePayload];
     if (frame.header.masked && !payload.empty()) {
-      Copy(payload.data(), payload.size(), controlBuf);
-      ApplyMask(std::span<std::byte>(controlBuf, payload.size()), frame.header.maskingKey);
-      payload = {controlBuf, payload.size()};
+      payload = {controlBuf, AppendMasked(payload, controlBuf, frame.header.maskingKey)};
     }
     return handleControlFrame(frame.header, payload);
   }
-  // Data frames: pass raw payload, unmasking happens in-place in message buffer
+  // Data frames: pass raw payload, unmasked in place (single frame) or when copied to the message buffer (fragments)
   return handleDataFrame(frame.header, frame.payload);
 }
 
@@ -189,23 +186,25 @@ ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& heade
         result.action = ProtocolProcessResult::Action::Close;
         return result;
       }
-      if (header.masked && !payload.empty()) {
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-        ApplyMask(std::span<std::byte>(const_cast<std::byte*>(payload.data()), payload.size()), header.maskingKey);
-      }
-
-      /// Deliver a single complete non-fragmented non-compressed frame directly to the callback
-      /// without copying the payload through the message buffer (zero-copy fast path).
-      /// The payload must already be unmasked when this is called.
-      if (header.opcode == Opcode::Text && !IsValidUtf8(payload)) {
-        if (_callbacks.onError) {
-          _callbacks.onError(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+      const std::span<std::byte> mutablePayload(const_cast<std::byte*>(payload.data()), payload.size());
+      if (header.opcode == Opcode::Text) {
+        // A masked text message is unmasked in the same pass as its UTF-8 is validated.
+        const bool isValidUtf8 =
+            header.masked ? UnmaskAndValidateUtf8(mutablePayload, header.maskingKey) : IsValidUtf8(payload);
+        if (!isValidUtf8) {
+          if (_callbacks.onError) {
+            _callbacks.onError(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
+          }
+          sendClose(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
+          result.action = ProtocolProcessResult::Action::Close;
+          return result;
         }
-        sendClose(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
-        result.action = ProtocolProcessResult::Action::Close;
-        return result;
+      } else if (header.masked) {
+        ApplyMask(mutablePayload, header.maskingKey);
       }
 
+      // Deliver the payload directly to the callback, without copying it through the message buffer.
       if (_callbacks.onMessage) {
         _callbacks.onMessage(payload, header.opcode == Opcode::Binary);
       }
@@ -236,11 +235,12 @@ ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& heade
     return result;
   }
 
-  // Append payload to message buffer and unmask in-place (avoids extra copy)
-  const auto prevSize = _message.buffer.size();
-  _message.buffer.append(payload);
-  if (header.masked && !payload.empty()) {
-    ApplyMask(std::span<std::byte>(_message.buffer.data() + prevSize, payload.size()), header.maskingKey);
+  // Append payload to message buffer, unmasked in the same pass as copied
+  if (header.masked) {
+    _message.buffer.ensureAvailableCapacityExponential(payload.size());
+    _message.buffer.setEnd(AppendMasked(payload, _message.buffer.data() + _message.buffer.size(), header.maskingKey));
+  } else {
+    _message.buffer.append(payload);
   }
 
   // If FIN bit is set, message is complete
@@ -312,6 +312,10 @@ ProtocolProcessResult WebSocketHandler::completeMessage() {
 
   // Decompress if message was compressed
   if (_messageCompressed && _deflateContext) {
+    // The compressed payload of a message sent earlier may still wait in the compression buffer, written to below.
+    if (!unbufferedPayloadInInput()) {
+      appendUnbufferedPayload();
+    }
     _compressBuffer.clear();
     const char* errMsg = _deflateContext->decompress(_message.buffer, _compressBuffer, _config.maxMessageSize);
     if (errMsg != nullptr) {
@@ -364,11 +368,11 @@ void WebSocketHandler::onOutputWritten(std::size_t bytesWritten) {
     _outputOffset += bytesWritten;
     return;
   }
-  // All the buffered output has been written, then the start of the payload sent from the input.
-  assert(bytesWritten - bufferedSize <= _inputPayload.size());
+  // All the buffered output has been written, then the start of the payload sent from where it is.
+  assert(bytesWritten - bufferedSize <= _unbufferedPayload.size());
   _outputBuffer.clear();
   _outputOffset = 0;
-  _inputPayload = _inputPayload.subspan(bytesWritten - bufferedSize);
+  _unbufferedPayload = _unbufferedPayload.subspan(bytesWritten - bufferedSize);
 }
 
 void WebSocketHandler::getPendingOutputFragments(vector<std::string_view>& fragments) const {
@@ -377,27 +381,38 @@ void WebSocketHandler::getPendingOutputFragments(vector<std::string_view>& fragm
     fragments.emplace_back(reinterpret_cast<const char*>(_outputBuffer.data() + _outputOffset),
                            _outputBuffer.size() - _outputOffset);
   }
-  if (!_inputPayload.empty()) {
-    fragments.emplace_back(reinterpret_cast<const char*>(_inputPayload.data()), _inputPayload.size());
+  if (!_unbufferedPayload.empty()) {
+    fragments.emplace_back(reinterpret_cast<const char*>(_unbufferedPayload.data()), _unbufferedPayload.size());
   }
 }
 
-void WebSocketHandler::appendInputPayload() {
-  if (!_inputPayload.empty()) {
-    _outputBuffer.append(_inputPayload);
-    _inputPayload = {};
+void WebSocketHandler::appendUnbufferedPayload() {
+  if (!_unbufferedPayload.empty()) {
+    _outputBuffer.append(_unbufferedPayload);
+    _unbufferedPayload = {};
+  }
+}
+
+bool WebSocketHandler::unbufferedPayloadInInput() const noexcept {
+  return !_unbufferedPayload.empty() && !IsWithin(_unbufferedPayload, _compressBuffer);
+}
+
+void WebSocketHandler::releaseInput() {
+  // A payload in the compression buffer stays there: only the next write to this buffer needs to copy it.
+  if (unbufferedPayloadInInput()) {
+    appendUnbufferedPayload();
   }
 }
 
 void WebSocketHandler::onTransportClosing() {
   _closeState = CloseState::Closed;
-  _inputPayload = {};
+  _unbufferedPayload = {};
   _message.inProgress = false;
   _message.buffer.clear();
 }
 
 bool WebSocketHandler::drainOutputBuffer(HttpMessageData& dest) {
-  appendInputPayload();
+  appendUnbufferedPayload();
   if (_outputOffset >= _outputBuffer.size()) {
     return false;
   }
@@ -431,7 +446,7 @@ constexpr MaskingKey GenerateMaskingKey(uint64_t& rngState) noexcept {
 }  // namespace
 
 void WebSocketHandler::queueFrame(Opcode opcode, std::span<const std::byte> payload, bool fin) {
-  appendInputPayload();
+  appendUnbufferedPayload();
   const bool shouldMask = !_config.isServerSide;
   const MaskingKey mask = shouldMask ? GenerateMaskingKey(_rngState) : MaskingKey{};
   BuildFrame(_outputBuffer, opcode, payload, fin, shouldMask, mask, false);
@@ -444,24 +459,33 @@ bool WebSocketHandler::sendData(Opcode opcode, std::span<const std::byte> payloa
 
   // Try to compress if compression is enabled and payload is large enough
   if (_deflateContext && !_deflateContext->shouldSkipCompression(payload.size())) {
+    // The previous payload sent from where it is may be in the compression buffer (and is queued first anyway).
+    appendUnbufferedPayload();
     _compressBuffer.clear();
     const char* errMsg = _deflateContext->compress(payload, _compressBuffer);
     if (errMsg == nullptr && _compressBuffer.size() < payload.size()) {
-      appendInputPayload();
       const bool shouldMask = !_config.isServerSide;
       const MaskingKey mask = shouldMask ? GenerateMaskingKey(_rngState) : MaskingKey{};
-      BuildFrame(_outputBuffer, opcode, std::span<const std::byte>(_compressBuffer.data(), _compressBuffer.size()),
-                 true, shouldMask, mask, true);
+      if (_compressBuffer.size() < kMinUnbufferedPayloadSize) {
+        BuildFrame(_outputBuffer, opcode, _compressBuffer, true, shouldMask, mask, true);
+      } else {
+        // Sent from the compression buffer (masked in place on the client side): only its frame header is buffered.
+        if (shouldMask) {
+          ApplyMask(std::span<std::byte>(_compressBuffer.data(), _compressBuffer.size()), mask);
+        }
+        BuildFrameHeader(_outputBuffer, opcode, _compressBuffer.size(), shouldMask, mask, true);
+        _unbufferedPayload = _compressBuffer;
+      }
       return true;
     }
   }
 
   // A large payload received in the processed input (an echo) is sent from there, without copying it: only its frame
   // header is buffered. Masked frames (client side) need their own copy of the payload.
-  if (_config.isServerSide && payload.size() >= kMinInputPayloadSize && IsWithin(payload, _input)) {
-    appendInputPayload();
-    BuildUnmaskedFrameHeader(_outputBuffer, opcode, payload.size());
-    _inputPayload = payload;
+  if (_config.isServerSide && payload.size() >= kMinUnbufferedPayloadSize && IsWithin(payload, _input)) {
+    appendUnbufferedPayload();
+    BuildFrameHeader(_outputBuffer, opcode, payload.size());
+    _unbufferedPayload = payload;
     return true;
   }
 
@@ -502,7 +526,7 @@ bool WebSocketHandler::sendClose(CloseCode code, std::string_view reason) {
     return false;
   }
 
-  appendInputPayload();
+  appendUnbufferedPayload();
   const bool shouldMask = !_config.isServerSide;
   const MaskingKey mask = shouldMask ? GenerateMaskingKey(_rngState) : MaskingKey{};
   BuildCloseFrame(_outputBuffer, code, reason, shouldMask, mask);
