@@ -14,7 +14,7 @@ namespace aeronet {
 
 namespace {
 
-void Append(std::string& out, std::integral auto value) {
+void AppendInt(std::string& out, std::integral auto value) {
   const std::size_t oldSize = out.size();
   const auto width = ndigits(value);
   out.resize_and_overwrite(oldSize + width, [oldSize, width, value](char* data, [[maybe_unused]] std::size_t sz) {
@@ -109,7 +109,7 @@ void AppendMap(std::string& out, std::string_view arrayOpen, std::string_view en
     out.append(entryPrefix);
     out.append(kv.first);
     out.append(kCountInfix);
-    Append(out, kv.second);
+    AppendInt(out, kv.second);
     out.append(kEntryClose);
   }
   out.append(kArrayClose);
@@ -166,59 +166,59 @@ std::string ServerStats::json_str() const {
 
   out.append(kOpen);
   out.append(kTotalBytesQueued);
-  Append(out, totalBytesQueued);
+  AppendInt(out, totalBytesQueued);
   out.append(kTotalBytesWrittenImmediate);
-  Append(out, totalBytesWrittenImmediate);
+  AppendInt(out, totalBytesWrittenImmediate);
   out.append(kTotalBytesWrittenFlush);
-  Append(out, totalBytesWrittenFlush);
+  AppendInt(out, totalBytesWrittenFlush);
   out.append(kDeferredWriteEvents);
-  Append(out, deferredWriteEvents);
+  AppendInt(out, deferredWriteEvents);
   out.append(kFlushCycles);
-  Append(out, flushCycles);
+  AppendInt(out, flushCycles);
   out.append(kEpollModFailures);
-  Append(out, epollModFailures);
+  AppendInt(out, epollModFailures);
   out.append(kMaxConnectionOutboundBuffer);
-  Append(out, maxConnectionOutboundBuffer);
+  AppendInt(out, maxConnectionOutboundBuffer);
   out.append(kTotalRequestsServed);
-  Append(out, totalRequestsServed);
+  AppendInt(out, totalRequestsServed);
   out.append(kZerocopySends);
-  Append(out, zerocopySends);
+  AppendInt(out, zerocopySends);
   out.append(kZerocopyBytes);
-  Append(out, zerocopyBytes);
+  AppendInt(out, zerocopyBytes);
   out.append(kZerocopyCopiedSends);
-  Append(out, zerocopyCopiedSends);
+  AppendInt(out, zerocopyCopiedSends);
   out.append(kZerocopyNoBufferSpaceFallbacks);
-  Append(out, zerocopyNoBufferSpaceFallbacks);
+  AppendInt(out, zerocopyNoBufferSpaceFallbacks);
   out.append(kZerocopyRetainLimitFallbacks);
-  Append(out, zerocopyRetainLimitFallbacks);
+  AppendInt(out, zerocopyRetainLimitFallbacks);
   out.append(kZerocopyResetConnections);
-  Append(out, zerocopyResetConnections);
+  AppendInt(out, zerocopyResetConnections);
 
 #ifdef AERONET_ENABLE_OPENSSL
   out.append(kKtlsSendEnabledConnections);
-  Append(out, ktlsSendEnabledConnections);
+  AppendInt(out, ktlsSendEnabledConnections);
   out.append(kKtlsSendEnableFallbacks);
-  Append(out, ktlsSendEnableFallbacks);
+  AppendInt(out, ktlsSendEnableFallbacks);
   out.append(kKtlsSendForcedShutdowns);
-  Append(out, ktlsSendForcedShutdowns);
+  AppendInt(out, ktlsSendForcedShutdowns);
   out.append(kKtlsSendBytes);
-  Append(out, ktlsSendBytes);
+  AppendInt(out, ktlsSendBytes);
   out.append(kTlsHandshakesSucceeded);
-  Append(out, tlsHandshakesSucceeded);
+  AppendInt(out, tlsHandshakesSucceeded);
   out.append(kTlsHandshakesFull);
-  Append(out, tlsHandshakesFull);
+  AppendInt(out, tlsHandshakesFull);
   out.append(kTlsHandshakesResumed);
-  Append(out, tlsHandshakesResumed);
+  AppendInt(out, tlsHandshakesResumed);
   out.append(kTlsHandshakesFailed);
-  Append(out, tlsHandshakesFailed);
+  AppendInt(out, tlsHandshakesFailed);
   out.append(kTlsHandshakesRejectedConcurrency);
-  Append(out, tlsHandshakesRejectedConcurrency);
+  AppendInt(out, tlsHandshakesRejectedConcurrency);
   out.append(kTlsHandshakesRejectedRateLimit);
-  Append(out, tlsHandshakesRejectedRateLimit);
+  AppendInt(out, tlsHandshakesRejectedRateLimit);
   out.append(kTlsClientCertPresent);
-  Append(out, tlsClientCertPresent);
+  AppendInt(out, tlsClientCertPresent);
   out.append(kTlsAlpnStrictMismatches);
-  Append(out, tlsAlpnStrictMismatches);
+  AppendInt(out, tlsAlpnStrictMismatches);
 
   AppendMap(out, kTlsAlpnDistribution, kProtocolPrefix, tlsAlpnDistribution);
   AppendMap(out, kTlsHandshakeFailureReasons, kReasonPrefix, tlsHandshakeFailureReasons);
@@ -226,11 +226,11 @@ std::string ServerStats::json_str() const {
   AppendMap(out, kTlsCipherCounts, kCipherPrefix, tlsCipherCounts);
 
   out.append(kTlsHandshakeDurationCount);
-  Append(out, tlsHandshakeDurationCount);
+  AppendInt(out, tlsHandshakeDurationCount);
   out.append(kTlsHandshakeDurationTotalNs);
-  Append(out, tlsHandshakeDurationTotalNs);
+  AppendInt(out, tlsHandshakeDurationTotalNs);
   out.append(kTlsHandshakeDurationMaxNs);
-  Append(out, tlsHandshakeDurationMaxNs);
+  AppendInt(out, tlsHandshakeDurationMaxNs);
 #endif
 
   out.append(kClose);

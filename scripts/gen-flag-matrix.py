@@ -53,6 +53,7 @@ FLAGS = [
     "AERONET_ENABLE_HTTP_CLIENT",
     "AERONET_ENABLE_HTTP_SERVER",
     "AERONET_BUILD_BENCHMARKS",
+    "AERONET_UNITY_BUILD",
 ]
 
 STRENGTH = 5           # size of the option subsets whose ON/OFF assignments are covered

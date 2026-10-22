@@ -25,7 +25,9 @@ jobs:
           - { compiler: gcc-13, features: OFF, client: OFF, server: ON, build: Debug, asan: ON, tsan: OFF}
           - { compiler: gcc-13, features: ON, client: ON, server: ON, build: Debug, asan: ON, tsan: OFF }
           - { compiler: clang-21, features: OFF, client: OFF, server: ON, build: Debug, asan: ON, tsan: OFF }
-          - { compiler: clang-21, features: ON, client: ON, server: ON, build: Debug, asan: ON, tsan: OFF }
+          # Also the unity build leg: a static helper or constant defined twice in the sources of a library
+          # breaks AERONET_UNITY_BUILD, which is only built here.
+          - { compiler: clang-21, features: ON, client: ON, server: ON, build: Debug, asan: ON, tsan: OFF, unity: ON }
           - { compiler: clang-21, features: ON, client: ON, server: ON, build: Debug, asan: OFF, tsan: ON }
           - { compiler: clang-21, features: ON, client: ON, server: OFF, build: Debug, asan: ON, tsan: OFF }
           # Release gets a single smoke leg here: Debug+ASAN is where bugs actually get
@@ -95,6 +97,7 @@ jobs:
             -D AERONET_ENABLE_ASAN=${{ matrix.asan }} \
             -D AERONET_ENABLE_TSAN=${{ matrix.tsan }} \
             -D AERONET_BUILD_SHARED=${{ matrix.shared || 'OFF' }} \
+            -D AERONET_UNITY_BUILD=${{ matrix.unity || 'OFF' }} \
             -D AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=ON \
             -D AERONET_ENABLE_ASYNC_HANDLERS=${{ matrix.features }} \
             -D AERONET_ENABLE_GLAZE=${{ matrix.features }} \

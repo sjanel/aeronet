@@ -13,6 +13,7 @@ aeronet is deliberately modular. CMake options select code and dependencies at c
 | `AERONET_BUILD_SHARED` | OFF | Build shared libraries instead of static libraries. Recommended for development: editing a library source then relinks only that library, not the test executables. |
 | `AERONET_COMPACT_DEBUG_INFO` | ON for Debug with tests | Split DWARF (`-gsplit-dwarf`) + zstd-compressed debug sections (zlib fallback), on Linux with GCC or Clang. Divides the size of the Debug test executables by ~3.5. The `.dwo` files stay in the build tree, so keep it OFF for builds that are installed elsewhere. |
 | `AERONET_BUILD_MODULES` | OFF | Experimental C++ module build. |
+| `AERONET_UNITY_BUILD` | OFF | Build the aeronet libraries (not the tests) as CMake unity builds, in batches of 16 sources (`CMAKE_UNITY_BUILD_BATCH_SIZE` overrides it). Divides their compilation CPU time by 4 to 6 in Release, at the cost of slower incremental rebuilds: see the [unity build recipe](#unity-build). |
 | `AERONET_ENABLE_CCACHE` | top-level | Use `ccache` when it is available. |
 | `AERONET_ENABLE_TEST_HOOKS` | non-Release tests | Enable transport hooks used by tests. Do not enable in production builds. |
 | `AERONET_ENABLE_ASAN` | OFF | Enable AddressSanitizer, UndefinedBehaviorSanitizer, and float-divide checks. |
@@ -67,6 +68,16 @@ ctest --test-dir build -R http-core --output-on-failure
 ```
 
 With shared libraries, editing a library source relinks that library only, instead of every test executable linking it statically. A Debug build with tests also enables `AERONET_COMPACT_DEBUG_INFO`, which keeps the debug info in `.dwo` files next to the objects instead of copying it into each binary. A test executable then weighs a few MB instead of up to ~90 MB, and an edit rewrites a few MB instead of gigabytes. Keep a static tree for source-based coverage: `llvm-cov` only reads the binaries passed on its command line, so the library code must be linked into the test executables.
+
+Unity build, for a tree that is built once and not edited - aeronet as a dependency, in a package or a CI image:
+{ #unity-build }
+
+```bash
+cmake -S . -B build -G Ninja -D CMAKE_BUILD_TYPE=Release -D AERONET_BUILD_TESTS=OFF -D AERONET_UNITY_BUILD=ON
+cmake --build build --parallel
+```
+
+The aeronet libraries are then compiled in batches of 16 sources, which parse the shared headers (standard library, glaze, spdlog...) once per batch instead of once per source: their compilation CPU time is divided by 4 to 6 in Release. Not for development: editing a source recompiles its whole batch, and `compile_commands.json` lists the batches instead of the sources. The tests and examples are never built as unity builds.
 
 Full development profile, matching the enabled-feature CI leg:
 
