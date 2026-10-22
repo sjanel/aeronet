@@ -118,18 +118,18 @@ class WebSocketHandler final : public IProtocolHandler {
 
   [[nodiscard]] std::span<const std::byte> getPendingOutput() const noexcept override {
     std::span<const std::byte> pending(_outputBuffer.begin() + _outputOffset, _outputBuffer.end());
-    return pending.empty() ? _inputPayload : pending;
+    return pending.empty() ? _unbufferedPayload : pending;
   }
 
   void getPendingOutputFragments(vector<std::string_view>& fragments) const override;
 
   [[nodiscard]] std::size_t pendingOutputSize() const noexcept override {
-    return _outputBuffer.size() - _outputOffset + _inputPayload.size();
+    return _outputBuffer.size() - _outputOffset + _unbufferedPayload.size();
   }
 
   void onOutputWritten(std::size_t bytesWritten) override;
 
-  void releaseInput() override { appendInputPayload(); }
+  void releaseInput() override;
 
   void onTransportClosing() override;
 
@@ -258,8 +258,11 @@ class WebSocketHandler final : public IProtocolHandler {
   /// Send a data message with optional compression.
   bool sendData(Opcode opcode, std::span<const std::byte> payload);
 
-  /// Copy the payload sent from the input (_inputPayload) at the end of the output buffer, before appending to it.
-  void appendInputPayload();
+  /// Copy _unbufferedPayload at the end of the output buffer, before appending anything else to it.
+  void appendUnbufferedPayload();
+
+  /// Tells whether _unbufferedPayload is a part of the processed input (not of _compressBuffer).
+  [[nodiscard]] bool unbufferedPayloadInInput() const noexcept;
 
   WebSocketConfig _config;
   WebSocketCallbacks _callbacks;
@@ -270,11 +273,13 @@ class WebSocketHandler final : public IProtocolHandler {
   std::size_t _outputOffset{0};                             // Bytes already retrieved via getPendingOutput
   // Input being processed by processInput() (empty outside of it).
   std::span<const std::byte> _input;
-  // Payload of the last queued frame, still in the processed input: sent from there, after _outputBuffer, which holds
-  // its header. Copied by releaseInput() if the transport did not take all of it.
-  std::span<const std::byte> _inputPayload;
+  // Payload of the last queued frame, sent from where it is, after _outputBuffer, which holds its header: in the
+  // processed input (a large echo), copied by releaseInput() if the transport did not take all of it, or in
+  // _compressBuffer (a large compressed message), copied before this buffer is written again. Copied to _outputBuffer
+  // before anything else is queued.
+  std::span<const std::byte> _unbufferedPayload;
   MessageState _message;     // Current message being assembled
-  RawBytes _compressBuffer;  // Temporary buffer for compression/decompression
+  RawBytes _compressBuffer;  // Output of the compression / decompression (may hold _unbufferedPayload)
   uint64_t _rngState{0};     // splitmix64 state for masking key generation
   CloseCode _closeCode{CloseCode::Normal};
   CloseState _closeState{CloseState::Open};

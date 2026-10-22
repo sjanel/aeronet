@@ -115,6 +115,9 @@ inline constexpr std::size_t kMaxControlFramePayload = 125;
 // Masking key size in bytes
 inline constexpr std::size_t kMaskingKeySize = 4;
 
+/// 4-byte masking key type, holding the key bytes in their order in the frame (its value depends on the endianness).
+using MaskingKey = uint32_t;
+
 // Minimum and maximum frame header sizes
 inline constexpr std::size_t kMinFrameHeaderSize = 2;                              // No mask, 7-bit len
 inline constexpr std::size_t kMaxFrameHeaderSize = 2 + 8 + kMaskingKeySize;        // 64-bit len + mask

@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <numeric>
 #include <span>
 #include <string>
 #include <string_view>
@@ -2602,6 +2603,123 @@ TEST(WebSocketInputPayloadTest, SendOutsideOfProcessInputIsCopied) {
   EXPECT_EQ(fragments.size(), 1U);
 }
 
+// ============================================================================
+// Masked payloads, unmasked in the same pass as validated or copied
+// ============================================================================
+
+namespace {
+
+// Server handler recording the messages it receives.
+struct RecordingServer {
+  RecordingServer() {
+    WebSocketConfig config;
+    config.isServerSide = true;
+    WebSocketCallbacks callbacks;
+    callbacks.onMessage = [this](std::span<const std::byte> payload, bool isBinary) {
+      messages.emplace_back(reinterpret_cast<const char*>(payload.data()), payload.size());
+      lastIsBinary = isBinary;
+    };
+    callbacks.onError = [this](CloseCode code, std::string_view /*message*/) { lastError = code; };
+    handler = std::make_unique<WebSocketHandler>(std::move(config), std::move(callbacks));
+  }
+
+  std::unique_ptr<WebSocketHandler> handler;
+  vector<std::string> messages;
+  CloseCode lastError{CloseCode::Normal};
+  bool lastIsBinary{false};
+};
+
+// Valid UTF-8 of exactly 'size' bytes, mixing 1, 2, 3 and 4-byte characters.
+std::string MakeMultibyteText(std::size_t size) {
+  static constexpr std::array<std::string_view, 4> kChars = {"a", "\xC3\xA9", "\xE4\xB8\xAD", "\xF0\x9F\x8C\x8D"};
+  std::string text;
+  for (std::size_t charPos = 0; text.size() < size; ++charPos) {
+    const std::string_view ch = kChars[charPos % kChars.size()];
+    text += ch.size() <= size - text.size() ? ch : "b";
+  }
+  return text;
+}
+
+}  // namespace
+
+TEST(WebSocketMaskedPayloadTest, MaskedTextOfEverySize) {
+  RecordingServer server;
+  ConnectionState state;
+  for (std::size_t size = 0; size <= 160; ++size) {
+    const std::string text = MakeMultibyteText(size);
+    const RawBytes input = ClientFrame(Opcode::Text, text);
+    ASSERT_EQ(server.handler->processInput(buf_bytes(input), state).action, ProtocolProcessResult::Action::Continue);
+    ASSERT_EQ(server.messages.size(), size + 1);
+    EXPECT_EQ(server.messages.back(), text) << size;
+    EXPECT_FALSE(server.lastIsBinary);
+  }
+}
+
+TEST(WebSocketMaskedPayloadTest, MaskedLargeText) {
+  RecordingServer server;
+  ConnectionState state;
+  const std::string text = MakeMultibyteText((1UL << 20U) + 7U);
+  const RawBytes input = ClientFrame(Opcode::Text, text);
+  EXPECT_EQ(server.handler->processInput(buf_bytes(input), state).bytesConsumed, input.size());
+  ASSERT_EQ(server.messages.size(), 1U);
+  EXPECT_EQ(server.messages.front(), text);
+}
+
+TEST(WebSocketMaskedPayloadTest, MaskedInvalidTextIsRejected) {
+  // Invalid only once unmasked: a truncated character at the end, after a few SIMD blocks.
+  for (const std::size_t size : {std::size_t{1}, std::size_t{17}, std::size_t{100}}) {
+    RecordingServer server;
+    ConnectionState state;
+    std::string text = MakeMultibyteText(size - 1);
+    text += '\xE4';
+    const RawBytes input = ClientFrame(Opcode::Text, text);
+    EXPECT_EQ(server.handler->processInput(buf_bytes(input), state).action, ProtocolProcessResult::Action::Close);
+    EXPECT_TRUE(server.messages.empty());
+    EXPECT_EQ(server.lastError, CloseCode::InvalidPayloadData) << size;
+  }
+}
+
+TEST(WebSocketMaskedPayloadTest, MaskedFragmentsOfVariousSizes) {
+  // Each fragment has its own masking key, starting over at its first byte.
+  static constexpr std::array<std::size_t, 9> kFragmentSizes = {1, 0, 3, 7, 16, 31, 33, 4099, 5};
+  for (const Opcode opcode : {Opcode::Binary, Opcode::Text}) {
+    RecordingServer server;
+    ConnectionState state;
+    const std::string message =
+        MakeMultibyteText(std::accumulate(kFragmentSizes.begin(), kFragmentSizes.end(), std::size_t{0}));
+    RawBytes input;
+    std::size_t pos = 0;
+    for (std::size_t idx = 0; idx < kFragmentSizes.size(); ++idx) {
+      const bool fin = idx + 1 == kFragmentSizes.size();
+      BuildFrame(input, idx == 0 ? opcode : Opcode::Continuation, sv_bytes(message.substr(pos, kFragmentSizes[idx])),
+                 fin, true, kClientMask + static_cast<MaskingKey>(idx * 0x01010101U));
+      pos += kFragmentSizes[idx];
+    }
+    EXPECT_EQ(server.handler->processInput(buf_bytes(input), state).bytesConsumed, input.size());
+    ASSERT_EQ(server.messages.size(), 1U);
+    EXPECT_EQ(server.messages.front(), message);
+    EXPECT_EQ(server.lastIsBinary, opcode == Opcode::Binary);
+  }
+}
+
+TEST(WebSocketMaskedPayloadTest, MaskedControlFramePayload) {
+  WebSocketConfig config;
+  config.isServerSide = true;
+  WebSocketCallbacks callbacks;
+  std::string pingPayload;
+  callbacks.onPing = [&pingPayload](std::span<const std::byte> payload) {
+    pingPayload.assign(reinterpret_cast<const char*>(payload.data()), payload.size());
+  };
+  WebSocketHandler handler(config, std::move(callbacks));
+  ConnectionState state;
+  const std::string payload = MakeEchoPayload(kMaxControlFramePayload);
+  const RawBytes input = ClientFrame(Opcode::Ping, payload);
+
+  EXPECT_EQ(handler.processInput(buf_bytes(input), state).action, ProtocolProcessResult::Action::ResponseReady);
+  EXPECT_EQ(pingPayload, payload);
+  EXPECT_EQ(WriteAllOutput(handler), ServerFrameBytes(Opcode::Pong, payload));
+}
+
 #ifdef AERONET_ENABLE_ZLIB
 
 namespace {
@@ -2717,6 +2835,161 @@ TEST(WebSocketInputPayloadTest, HandlersSharingDeflateStreams) {
       EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(echo.data()), echo.size()), text);
     }
   }
+}
+
+namespace {
+
+// Compressed text frame of a client, compressed by 'client'.
+RawBytes CompressedClientFrame(DeflateContext& client, std::string_view text) {
+  RawBytes compressed;
+  EXPECT_EQ(client.compress(sv_bytes(text), compressed), nullptr);
+  RawBytes frame;
+  BuildFrame(frame, Opcode::Text, buf_bytes(compressed), true, true, kClientMask, /*rsv1=*/true);
+  return frame;
+}
+
+struct ServerMessage {
+  bool operator==(const ServerMessage&) const = default;
+
+  Opcode opcode;
+  std::string payload;
+};
+
+// The messages of the server frames making 'output', decompressed by 'client'.
+vector<ServerMessage> ParseServerFrames(DeflateContext& client, std::string_view output) {
+  vector<ServerMessage> messages;
+  while (!output.empty()) {
+    const auto frame = ParseFrame(sv_bytes(output), 0, /*isServerSide=*/false, /*allowRsv1=*/true);
+    if (frame.status != FrameParseResult::Status::Complete) {
+      ADD_FAILURE() << "incomplete frame";
+      break;
+    }
+    RawBytes payload;
+    if (frame.header.rsv1) {
+      EXPECT_EQ(client.decompress(frame.payload, payload), nullptr);
+    } else {
+      payload.append(frame.payload);
+    }
+    messages.push_back(
+        {frame.header.opcode, std::string(reinterpret_cast<const char*>(payload.data()), payload.size())});
+    output.remove_prefix(frame.bytesConsumed);
+  }
+  return messages;
+}
+
+// Server echoing the messages it receives, compressed without context takeover, and the client of its connection.
+struct CompressedEchoServer {
+  static WebSocketConfig Config() {
+    WebSocketConfig config;
+    config.deflateConfig.minCompressSize = 16;
+    return config;
+  }
+
+  CompressedEchoServer() { server.handler->enableCompression(NoContextTakeoverParams()); }
+
+  EchoServer server{false, Config()};
+  DeflateContext client{NoContextTakeoverParams(), DeflateConfig(), /*isServerSide=*/false};
+};
+
+}  // namespace
+
+// A large compressed message is sent from the compression buffer, without being copied to the output buffer, and
+// stays there once the input is released: it does not refer to the input.
+TEST(WebSocketInputPayloadTest, LargeCompressedEchoIsSentFromTheCompressionBuffer) {
+  CompressedEchoServer echo;
+  ConnectionState state;
+  const std::string text = MakeMixedText(100000);
+  const RawBytes input = CompressedClientFrame(echo.client, text);
+
+  const auto result = echo.server.handler->processInput(buf_bytes(input), state);
+  EXPECT_EQ(result.bytesConsumed, input.size());
+  EXPECT_FALSE(result.outputRefersToInput);
+  echo.server.handler->releaseInput();
+
+  vector<std::string_view> fragments;
+  echo.server.handler->getPendingOutputFragments(fragments);
+  ASSERT_EQ(fragments.size(), 2U);
+  EXPECT_GE(fragments[1].size(), 4096U);
+  EXPECT_EQ(fragments[0].size(), fragments[1].size() > 0xFFFFU ? 10U : 4U);  // the frame header
+  EXPECT_EQ(echo.server.handler->pendingOutputSize(), fragments[0].size() + fragments[1].size());
+
+  EXPECT_EQ(ParseServerFrames(echo.client, WriteAllOutput(*echo.server.handler)),
+            (vector<ServerMessage>{{Opcode::Text, text}}));
+}
+
+// The compressed payload still waiting for the socket when the next compressed message arrives is copied to the
+// output buffer before the compression buffer receives the decompressed message.
+TEST(WebSocketInputPayloadTest, PendingCompressedPayloadIsCopiedBeforeDecompression) {
+  CompressedEchoServer echo;
+  ConnectionState state;
+  const std::string first = MakeMixedText(60000);
+  const std::string second = MakeMixedText(50000) + "!";
+
+  const RawBytes input1 = CompressedClientFrame(echo.client, first);
+  ASSERT_FALSE(echo.server.handler->processInput(buf_bytes(input1), state).outputRefersToInput);
+  // The socket only takes the header and the start of the payload.
+  vector<std::string_view> fragments;
+  echo.server.handler->getPendingOutputFragments(fragments);
+  ASSERT_EQ(fragments.size(), 2U);
+  std::string written(fragments[0]);
+  written.append(fragments[1].substr(0, 1000));
+  echo.server.handler->onOutputWritten(written.size());
+  echo.server.handler->releaseInput();
+
+  const RawBytes input2 = CompressedClientFrame(echo.client, second);
+  EXPECT_EQ(echo.server.handler->processInput(buf_bytes(input2), state).bytesConsumed, input2.size());
+  written += WriteAllOutput(*echo.server.handler);
+  EXPECT_EQ(ParseServerFrames(echo.client, written),
+            (vector<ServerMessage>{{Opcode::Text, first}, {Opcode::Text, second}}));
+}
+
+TEST(WebSocketInputPayloadTest, FramesQueuedAfterACompressedPayloadKeepTheirOrder) {
+  CompressedEchoServer echo;
+  ConnectionState state;
+  const std::string first = MakeMixedText(70000);
+  const std::string second = MakeMixedText(30000);
+  RawBytes input = CompressedClientFrame(echo.client, first);
+  const RawBytes ping = ClientFrame(Opcode::Ping, "ping");
+  const RawBytes last = CompressedClientFrame(echo.client, second);
+  input.append(ping.data(), ping.size());
+  input.append(last.data(), last.size());
+
+  // The first echo is copied once the Pong is queued, the last one stays in the compression buffer.
+  const auto result = echo.server.handler->processInput(buf_bytes(input), state);
+  EXPECT_EQ(result.bytesConsumed, input.size());
+  EXPECT_FALSE(result.outputRefersToInput);
+  EXPECT_EQ(echo.server.nbMessages, 2);
+  vector<std::string_view> fragments;
+  echo.server.handler->getPendingOutputFragments(fragments);
+  EXPECT_EQ(fragments.size(), 2U);
+  EXPECT_EQ(ParseServerFrames(echo.client, WriteAllOutput(*echo.server.handler)),
+            (vector<ServerMessage>{{Opcode::Text, first}, {Opcode::Pong, "ping"}, {Opcode::Text, second}}));
+}
+
+// On the client side, a large compressed message is masked in place in the compression buffer, and sent from there.
+TEST(WebSocketInputPayloadTest, ClientSideLargeCompressedMessageIsMaskedInPlace) {
+  WebSocketConfig config;
+  config.isServerSide = false;
+  config.deflateConfig.minCompressSize = 16;
+  WebSocketHandler client(config, WebSocketCallbacks(), NoContextTakeoverParams());
+  const std::string text = MakeMixedText(80000);
+  ASSERT_TRUE(client.sendText(text));
+  vector<std::string_view> fragments;
+  client.getPendingOutputFragments(fragments);
+  ASSERT_EQ(fragments.size(), 2U);
+
+  const std::string output = WriteAllOutput(client);
+  const auto frame = ParseFrame(sv_bytes(output), 0, /*isServerSide=*/true, /*allowRsv1=*/true);
+  ASSERT_EQ(frame.status, FrameParseResult::Status::Complete);
+  EXPECT_EQ(frame.bytesConsumed, output.size());
+  EXPECT_TRUE(frame.header.masked);
+  EXPECT_TRUE(frame.header.rsv1);
+  RawBytes payload(frame.payload.data(), frame.payload.size());
+  ApplyMask(std::span<std::byte>(payload.data(), payload.size()), frame.header.maskingKey);
+  DeflateContext server(NoContextTakeoverParams(), DeflateConfig(), /*isServerSide=*/true);
+  RawBytes message;
+  ASSERT_EQ(server.decompress(buf_bytes(payload), message), nullptr);
+  EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(message.data()), message.size()), text);
 }
 
 #endif  // AERONET_ENABLE_ZLIB
