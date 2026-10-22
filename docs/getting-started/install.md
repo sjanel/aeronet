@@ -9,7 +9,7 @@ This document centralizes how to build, install, and consume **aeronet**.
 | Component | Minimum / Tested | Notes |
 | --------- | ---------------- | ----- |
 | OS | Linux (x86_64, aarch64), macOS (arm64, x86_64), Windows (x64) | Linux is primary (epoll); macOS uses kqueue; Windows uses WSAPoll |
-| CMake | 3.28+ | Enforced at configure time |
+| CMake | 3.28+ | Enforced at configure time; see [Glaze with CMake older than 3.31](#glaze-with-cmake-older-than-331) |
 | C++ | C++23 | `CMAKE_CXX_STANDARD 23` required |
 | Clang | 21.x | Earlier might work, not guaranteed |
 | GCC | 13.x | GCC 12 may lack some C++23 pieces |
@@ -17,14 +17,20 @@ This document centralizes how to build, install, and consume **aeronet**.
 | Apple Clang | Xcode 15+ | macOS builds |
 | OpenSSL (opt) | 1.1.1 / 3.x | For TLS (HTTPS) support |
 | spdlog (opt) | 1.11+ | Logging; header-only usage |
-| glaze (opt) | 7.0.2+ | JSON serialization support (`AERONET_ENABLE_GLAZE`) |
+| glaze (opt) | 8.4+ | JSON / YAML support (`AERONET_ENABLE_GLAZE`); 9.0.0 when fetched |
 | GoogleTest (tests) | 1.13+ | Auto-fetched if missing |
 
 > **Note:** Some features are Linux-specific and auto-disabled on other platforms: kTLS, `MSG_ZEROCOPY`, `sendfile`, `eventfd`/`timerfd`, DogStatsD via Unix sockets. The core HTTP server works on all supported platforms.
 
+### Glaze with CMake older than 3.31
+
+Glaze is header-only, but its `CMakeLists.txt` requires CMake 3.31 since glaze 8.1. When aeronet fetches glaze with an older CMake, it uses the glaze headers without running the glaze `CMakeLists.txt`, and defines the `glaze::glaze` target itself, with the same compile options. The glaze CMake options (`glaze_DISABLE_SIMD_WHEN_SUPPORTED`, `glaze_DISABLE_ALWAYS_INLINE`...) then have no effect: define the matching `GLZ_*` macros (`GLZ_DISABLE_SIMD`, `GLZ_DISABLE_ALWAYS_INLINE`...) instead. A glaze found by `find_package` is used as is, whatever the CMake version.
+
 ## CMake Options
 
 Every CMake option - build products, developer tools, protocol and integration features, with their defaults and dependencies - is listed in the [build configuration reference](../reference/configuration.md). Options default to `ON` when aeronet is the top-level project, and to `OFF` when it is consumed as a dependency (FetchContent, Conan, vcpkg), so enable the features you need explicitly in that case.
+
+When aeronet is built once and not edited (as a dependency, in a package or a CI image), `AERONET_UNITY_BUILD=ON` builds its libraries several times faster: see the [unity build recipe](../reference/configuration.md#unity-build).
 
 ## Quick Builds
 
@@ -90,7 +96,7 @@ cmake --build build-shared --parallel
 
 ## Continuous-integration coverage
 
-The CI workflow is the tested compatibility matrix, rather than a promise that every possible toolchain is interchangeable. It exercises GCC 13 and Clang 21 on Ubuntu x86_64 with optional features both OFF and ON, plus a GCC Release smoke build. Feature-enabled Debug and Release builds also run on Ubuntu ARM. macOS and Windows builds cover Debug and Release, and an Alpine/musl Debug job covers the minimal libc environment. The Examples and Docs job builds every example with all optional features enabled, runs the executable smoke tests, compiles the established Markdown C++ examples, and builds this MkDocs site with `--strict`.
+The CI workflow is the tested compatibility matrix, rather than a promise that every possible toolchain is interchangeable. It exercises GCC 13 and Clang 21 on Ubuntu x86_64 with optional features both OFF and ON, plus a GCC Release smoke build; one of the Clang legs builds the libraries as unity builds (`AERONET_UNITY_BUILD`). Feature-enabled Debug and Release builds also run on Ubuntu ARM. macOS and Windows builds cover Debug and Release, and an Alpine/musl Debug job covers the minimal libc environment. The Examples and Docs job builds every example with all optional features enabled, runs the executable smoke tests, compiles the established Markdown C++ examples, and builds this MkDocs site with `--strict`.
 
 Use the exact CI versions for a supported baseline. The [build configuration reference](../reference/configuration.md) maps each feature to its dependency and default.
 
@@ -188,6 +194,8 @@ FetchContent_Declare(
   aeronet
   GIT_REPOSITORY https://github.com/sjanel/aeronet.git
   GIT_TAG main # Or specify a release tag, e.g., v1.0.0
+  # Only build the aeronet libraries your targets link (aeronet_server alone does not build the client)
+  EXCLUDE_FROM_ALL
 )
 
 # Enable the features you want before FetchContent_MakeAvailable
@@ -196,6 +204,7 @@ set(AERONET_ENABLE_ZSTD ON CACHE BOOL "" FORCE)
 set(AERONET_ENABLE_BROTLI OFF CACHE BOOL "" FORCE) # toggle as needed
 set(AERONET_ENABLE_SPDLOG OFF CACHE BOOL "" FORCE)
 set(AERONET_ENABLE_WEBSOCKET OFF CACHE BOOL "" FORCE) # toggle as needed
+set(AERONET_UNITY_BUILD ON CACHE BOOL "" FORCE) # several times faster to build, see the unity build recipe
 
 FetchContent_MakeAvailable(aeronet)
 

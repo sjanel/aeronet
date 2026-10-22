@@ -78,7 +78,7 @@ jobs:
           RUN_NUMBER: ${{ github.run_number }}
           # Run number of the first run of the current campaign. Set it to the next run number
           # whenever FLAGS or the constraints of gen-flag-matrix.py change, to restart from wave 0.
-          FIRST_RUN_NUMBER: 1
+          FIRST_RUN_NUMBER: 19
           SEED: ${{ inputs.seed || github.run_number }}
         run: |
           # Every run (scheduled or manual) advances one wave; the first run of the campaign is wave 0.
