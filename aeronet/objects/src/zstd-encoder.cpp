@@ -17,9 +17,11 @@ namespace aeronet {
 
 namespace {
 
-void* ZstdAlloc(void* opaque, std::size_t size) { return static_cast<internal::BufferCache*>(opaque)->allocate(size); }
+void* ZstdEncoderAlloc(void* opaque, std::size_t size) {
+  return static_cast<internal::BufferCache*>(opaque)->allocate(size);
+}
 
-void ZstdFree(void* opaque, void* address) noexcept {
+void ZstdEncoderFree(void* opaque, void* address) noexcept {
   static_cast<internal::BufferCache*>(opaque)->deallocate(address);
 }
 
@@ -46,7 +48,7 @@ void ZstdEncoderContext::init(int level, int windowLog) {
   if (_ctx) {
     ZSTD_CCtx_reset(_ctx.get(), ZSTD_reset_session_and_parameters);
   } else {
-    _ctx.reset(ZSTD_createCCtx_advanced(ZSTD_customMem{ZstdAlloc, ZstdFree, &_cache}));
+    _ctx.reset(ZSTD_createCCtx_advanced(ZSTD_customMem{ZstdEncoderAlloc, ZstdEncoderFree, &_cache}));
     if (!_ctx) [[unlikely]] {
       throw std::bad_alloc();
     }

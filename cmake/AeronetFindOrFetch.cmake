@@ -78,7 +78,9 @@ function(aeronet_find_or_declare)
         "Package ${AFOF_NAME} not found or unusable and no FetchContent declaration provided")
     endif()
 
-    FetchContent_Declare(${AFOF_NAME} ${AFOF_DECLARE})
+    # EXCLUDE_FROM_ALL: build only the libraries of the dependency that aeronet links, not its other libraries,
+    # tools or tests.
+    FetchContent_Declare(${AFOF_NAME} ${AFOF_DECLARE} EXCLUDE_FROM_ALL)
 
     # Append only once
     list(FIND AeronetFetchContentPackagesToMakeAvailable ${AFOF_NAME} _idx)
