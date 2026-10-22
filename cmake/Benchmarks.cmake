@@ -14,14 +14,9 @@ include(FetchContent)
 if(NOT TARGET benchmark)
   FetchContent_Declare(
     google_benchmark
-    URL https://github.com/google/benchmark/archive/refs/tags/v1.9.5.tar.gz
-    URL_HASH SHA256=9631341c82bac4a288bef951f8b26b41f69021794184ece969f8473977eaa340
+    URL https://github.com/google/benchmark/archive/refs/tags/v1.10.0.tar.gz
+    URL_HASH SHA256=acc5c7c0fbed855c4aaa2d7c3c36fb82b0c15c28f4e151e3f679c2fc0aa404af
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-    # google-benchmark v1.9.5 MaybeReenterWithoutASLR() calls execv() in a loop
-    # when personality(ADDR_NO_RANDOMIZE) appears to succeed but the kernel/AppArmor
-    # prevents it from taking effect. This neutralizes the execv call.
-    # Tracked in this issue: https://github.com/google/benchmark/issues/2184
-    PATCH_COMMAND sh ${CMAKE_CURRENT_LIST_DIR}/patches/disable-benchmark-aslr-reexec.sh
   )
   set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(google_benchmark)
@@ -49,7 +44,7 @@ if(AERONET_BENCH_ENABLE_DROGON)
   FetchContent_Declare(
     drogon
     GIT_REPOSITORY https://github.com/drogonframework/drogon.git
-    GIT_TAG v1.9.13
+    GIT_TAG v1.9.14
     GIT_SHALLOW TRUE
     GIT_PROGRESS TRUE
     # Ensure the 'trantor' submodule is fetched so add_subdirectory(trantor) succeeds
@@ -63,17 +58,17 @@ if(AERONET_BENCH_ENABLE_DROGON)
   # Drogon defaults to a shared lib, which can't link the non-PIC static zlib.
   set(_aeronet_saved_bsl "${BUILD_SHARED_LIBS}")
   set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+  set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
   FetchContent_MakeAvailable(drogon)
+  unset(CMAKE_POLICY_VERSION_MINIMUM)
   set(BUILD_SHARED_LIBS "${_aeronet_saved_bsl}" CACHE BOOL "" FORCE)
-
-  FetchContent_MakeAvailable(drogon)
 endif()
 
 if(AERONET_BENCH_ENABLE_HTTPLIB)
   FetchContent_Declare(
     cpp_httplib
-    URL https://github.com/yhirose/cpp-httplib/archive/refs/tags/v0.48.0.tar.gz
-    URL_HASH SHA256=d9ed142d319c6e19a961f477257e67f846909ce15288502188df2281941be84e
+    URL https://github.com/yhirose/cpp-httplib/archive/refs/tags/v0.63.0.tar.gz
+    URL_HASH SHA256=44ab42e16926e95f7641d286bc90d739ab1c16886114d7cc5bc7a9f905c5edf8
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   )
   FetchContent_MakeAvailable(cpp_httplib)
@@ -83,7 +78,7 @@ if(AERONET_BENCH_ENABLE_UWEBSOCKETS)
   FetchContent_Declare(
     uwebsockets
     GIT_REPOSITORY https://github.com/uNetworking/uWebSockets.git
-    GIT_TAG        v20.78.0
+    GIT_TAG        v20.80.0
     GIT_SHALLOW    TRUE
   )
   FetchContent_Declare(
@@ -324,7 +319,7 @@ if(AERONET_ENABLE_HTTP_SERVER)
 
   # Comparative framework benchmark (aeronet vs optional drogon/oatpp)
   set(AERONET_BENCH_FRAMEWORKS_SOURCES ${AERONET_BENCH_ROOT}/frameworks/bench_frameworks_basic.cpp)
-  # The competitor frameworks' headers and macros (e.g. oatpp code generation) emit warnings we cannot fix.
+  # The competitor frameworks' headers emit warnings we cannot fix.
   set(_AERONET_BENCH_FRAMEWORKS_OPTIONS "")
   if(AERONET_BENCH_ENABLE_HTTPLIB OR AERONET_BENCH_ENABLE_DROGON OR AERONET_BENCH_ENABLE_OATPP)
     set(_AERONET_BENCH_FRAMEWORKS_OPTIONS NO_WARNINGS_AS_ERRORS)

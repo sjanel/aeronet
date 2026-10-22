@@ -65,21 +65,21 @@ jobs:
       - name: Configure benchmark build
         run: |
           ./scripts/retry.sh cmake -S . -B build-pages -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DAERONET_BUILD_TESTS=OFF \
-            -DAERONET_BUILD_EXAMPLES=OFF \
-            -DAERONET_BUILD_BENCHMARKS=ON \
-            -DAERONET_ENABLE_ASAN=OFF \
-            -DAERONET_ENABLE_CLANG_TIDY=OFF \
-            -DAERONET_ENABLE_SPDLOG=ON \
-            -DAERONET_ENABLE_OPENSSL=ON \
-            -DAERONET_ENABLE_HTTP2=ON \
-            -DAERONET_ENABLE_BROTLI=ON \
-            -DAERONET_ENABLE_ZLIB=ON \
-            -DAERONET_ENABLE_ZSTD=ON \
-            -DAERONET_ENABLE_OPENTELEMETRY=OFF \
-            -DAERONET_ENABLE_WEBSOCKET=ON \
-            -DAERONET_ENABLE_ASYNC_HANDLERS=ON
+            -D CMAKE_BUILD_TYPE=Release \
+            -D AERONET_BUILD_TESTS=OFF \
+            -D AERONET_BUILD_EXAMPLES=OFF \
+            -D AERONET_BUILD_BENCHMARKS=ON \
+            -D AERONET_ENABLE_ASAN=OFF \
+            -D AERONET_ENABLE_CLANG_TIDY=OFF \
+            -D AERONET_ENABLE_SPDLOG=ON \
+            -D AERONET_ENABLE_OPENSSL=ON \
+            -D AERONET_ENABLE_HTTP2=ON \
+            -D AERONET_ENABLE_BROTLI=ON \
+            -D AERONET_ENABLE_ZLIB=ON \
+            -D AERONET_ENABLE_ZSTD=ON \
+            -D AERONET_ENABLE_OPENTELEMETRY=OFF \
+            -D AERONET_ENABLE_WEBSOCKET=ON \
+            -D AERONET_ENABLE_ASYNC_HANDLERS=ON
 
       - name: Build
         run: |

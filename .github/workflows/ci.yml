@@ -83,29 +83,29 @@ jobs:
       - name: Configure (CMake)
         run: |
           ./scripts/retry.sh cmake -S . -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
-            -DAERONET_BUILD_TESTS=ON \
-            -DAERONET_ENABLE_TEST_HOOKS=ON \
-            -DAERONET_BUILD_EXAMPLES=OFF \
-            -DAERONET_BUILD_BENCHMARKS=OFF \
-            -DAERONET_WARNINGS_AS_ERRORS=${{ startsWith(matrix.compiler, 'clang') }} \
-            -DAERONET_ENABLE_HTTP_CLIENT=${{ matrix.client }} \
-            -DAERONET_ENABLE_HTTP_SERVER=${{ matrix.server }} \
-            ${{ startsWith(matrix.compiler, 'clang') && '-DAERONET_ENABLE_CLANG_TIDY=OFF' || '' }} \
-            -DAERONET_ENABLE_ASAN=${{ matrix.asan }} \
-            -DAERONET_ENABLE_TSAN=${{ matrix.tsan }} \
-            -DAERONET_BUILD_SHARED=${{ matrix.shared || 'OFF' }} \
-            -DAERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=ON \
-            -DAERONET_ENABLE_ASYNC_HANDLERS=${{ matrix.features }} \
-            -DAERONET_ENABLE_GLAZE=${{ matrix.features }} \
-            -DAERONET_ENABLE_HTTP2=${{ matrix.features }} \
-            -DAERONET_ENABLE_BROTLI=${{ matrix.features }} \
-            -DAERONET_ENABLE_ZLIB=${{ matrix.features }} \
-            -DAERONET_ENABLE_ZSTD=${{ matrix.features }} \
-            -DAERONET_ENABLE_OPENSSL=${{ matrix.features }} \
-            -DAERONET_ENABLE_OPENTELEMETRY=${{ matrix.features }} \
-            -DAERONET_ENABLE_SPDLOG=${{ matrix.features }} \
-            -DAERONET_ENABLE_WEBSOCKET=${{ matrix.features }}
+            -D CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
+            -D AERONET_BUILD_TESTS=ON \
+            -D AERONET_ENABLE_TEST_HOOKS=ON \
+            -D AERONET_BUILD_EXAMPLES=OFF \
+            -D AERONET_BUILD_BENCHMARKS=OFF \
+            -D AERONET_WARNINGS_AS_ERRORS=${{ startsWith(matrix.compiler, 'clang') }} \
+            -D AERONET_ENABLE_HTTP_CLIENT=${{ matrix.client }} \
+            -D AERONET_ENABLE_HTTP_SERVER=${{ matrix.server }} \
+            ${{ startsWith(matrix.compiler, 'clang') && '-D AERONET_ENABLE_CLANG_TIDY=OFF' || '' }} \
+            -D AERONET_ENABLE_ASAN=${{ matrix.asan }} \
+            -D AERONET_ENABLE_TSAN=${{ matrix.tsan }} \
+            -D AERONET_BUILD_SHARED=${{ matrix.shared || 'OFF' }} \
+            -D AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=ON \
+            -D AERONET_ENABLE_ASYNC_HANDLERS=${{ matrix.features }} \
+            -D AERONET_ENABLE_GLAZE=${{ matrix.features }} \
+            -D AERONET_ENABLE_HTTP2=${{ matrix.features }} \
+            -D AERONET_ENABLE_BROTLI=${{ matrix.features }} \
+            -D AERONET_ENABLE_ZLIB=${{ matrix.features }} \
+            -D AERONET_ENABLE_ZSTD=${{ matrix.features }} \
+            -D AERONET_ENABLE_OPENSSL=${{ matrix.features }} \
+            -D AERONET_ENABLE_OPENTELEMETRY=${{ matrix.features }} \
+            -D AERONET_ENABLE_SPDLOG=${{ matrix.features }} \
+            -D AERONET_ENABLE_WEBSOCKET=${{ matrix.features }}
 
       - name: Build
         run: |
@@ -171,24 +171,24 @@ jobs:
       - name: Configure (CMake)
         run: |
           ./scripts/retry.sh cmake -S . -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
-            -DAERONET_BUILD_TESTS=ON \
-            -DAERONET_ENABLE_TEST_HOOKS=ON \
-            -DAERONET_BUILD_EXAMPLES=OFF \
-            -DAERONET_BUILD_BENCHMARKS=OFF \
-            -DAERONET_ENABLE_ASAN=OFF \
-            -DAERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=OFF \
-            -DAERONET_ENABLE_ASYNC_HANDLERS=${{ matrix.features }} \
-            -DAERONET_ENABLE_GLAZE=${{ matrix.features }} \
-            -DAERONET_ENABLE_HTTP2=${{ matrix.features }} \
-            -DAERONET_ENABLE_BROTLI=${{ matrix.features }} \
-            -DAERONET_ENABLE_ZLIB=${{ matrix.features }} \
-            -DAERONET_ENABLE_ZSTD=${{ matrix.features }} \
-            -DAERONET_ENABLE_OPENTELEMETRY=${{ matrix.features }} \
-            -DAERONET_ENABLE_OPENSSL=${{ matrix.features }} \
-            -DAERONET_ENABLE_SPDLOG=${{ matrix.features }} \
-            -DAERONET_ENABLE_WEBSOCKET=${{ matrix.features }} \
-            -DAERONET_ENABLE_HTTP_CLIENT=${{ matrix.features }}
+            -D CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
+            -D AERONET_BUILD_TESTS=ON \
+            -D AERONET_ENABLE_TEST_HOOKS=ON \
+            -D AERONET_BUILD_EXAMPLES=OFF \
+            -D AERONET_BUILD_BENCHMARKS=OFF \
+            -D AERONET_ENABLE_ASAN=OFF \
+            -D AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=OFF \
+            -D AERONET_ENABLE_ASYNC_HANDLERS=${{ matrix.features }} \
+            -D AERONET_ENABLE_GLAZE=${{ matrix.features }} \
+            -D AERONET_ENABLE_HTTP2=${{ matrix.features }} \
+            -D AERONET_ENABLE_BROTLI=${{ matrix.features }} \
+            -D AERONET_ENABLE_ZLIB=${{ matrix.features }} \
+            -D AERONET_ENABLE_ZSTD=${{ matrix.features }} \
+            -D AERONET_ENABLE_OPENTELEMETRY=${{ matrix.features }} \
+            -D AERONET_ENABLE_OPENSSL=${{ matrix.features }} \
+            -D AERONET_ENABLE_SPDLOG=${{ matrix.features }} \
+            -D AERONET_ENABLE_WEBSOCKET=${{ matrix.features }} \
+            -D AERONET_ENABLE_HTTP_CLIENT=${{ matrix.features }}
 
       - name: Build
         run: |
@@ -231,30 +231,30 @@ jobs:
       - name: Configure with Clang source-based coverage flags
         run: |
           ./scripts/retry.sh cmake -S . -B ${BUILD_DIR} -G Ninja \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DAERONET_BUILD_TESTS=ON \
-            -DAERONET_ENABLE_TEST_HOOKS=ON \
-            -DAERONET_BUILD_EXAMPLES=OFF \
-            -DAERONET_BUILD_BENCHMARKS=OFF \
-            -DAERONET_ENABLE_ASAN=OFF \
-            -DAERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=OFF \
-            -DAERONET_ENABLE_CLANG_TIDY=OFF \
-            -DAERONET_ENABLE_GLAZE=ON \
-            -DAERONET_ENABLE_HTTP2=ON \
-            -DAERONET_ENABLE_BROTLI=ON \
-            -DAERONET_ENABLE_ZLIB=ON \
-            -DAERONET_ENABLE_ZSTD=ON \
-            -DAERONET_ENABLE_OPENTELEMETRY=ON \
-            -DAERONET_ENABLE_OPENSSL=ON \
-            -DAERONET_ENABLE_SPDLOG=ON \
-            -DAERONET_ENABLE_WEBSOCKET=ON \
-            -DAERONET_ENABLE_HTTP_CLIENT=ON \
-            -DAERONET_ENABLE_ASYNC_HANDLERS=ON \
-            -DCMAKE_C_COMPILER=clang-21 \
-            -DCMAKE_CXX_COMPILER=clang++-21 \
-            -DCMAKE_C_FLAGS="-DNDEBUG -fprofile-instr-generate -fcoverage-mapping -O0 -fno-omit-frame-pointer" \
-            -DCMAKE_CXX_FLAGS="-DNDEBUG -fprofile-instr-generate -fcoverage-mapping -O0 -fno-omit-frame-pointer" \
-            -DCMAKE_EXE_LINKER_FLAGS="-fprofile-instr-generate"
+            -D CMAKE_BUILD_TYPE=Debug \
+            -D AERONET_BUILD_TESTS=ON \
+            -D AERONET_ENABLE_TEST_HOOKS=ON \
+            -D AERONET_BUILD_EXAMPLES=OFF \
+            -D AERONET_BUILD_BENCHMARKS=OFF \
+            -D AERONET_ENABLE_ASAN=OFF \
+            -D AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=OFF \
+            -D AERONET_ENABLE_CLANG_TIDY=OFF \
+            -D AERONET_ENABLE_GLAZE=ON \
+            -D AERONET_ENABLE_HTTP2=ON \
+            -D AERONET_ENABLE_BROTLI=ON \
+            -D AERONET_ENABLE_ZLIB=ON \
+            -D AERONET_ENABLE_ZSTD=ON \
+            -D AERONET_ENABLE_OPENTELEMETRY=ON \
+            -D AERONET_ENABLE_OPENSSL=ON \
+            -D AERONET_ENABLE_SPDLOG=ON \
+            -D AERONET_ENABLE_WEBSOCKET=ON \
+            -D AERONET_ENABLE_HTTP_CLIENT=ON \
+            -D AERONET_ENABLE_ASYNC_HANDLERS=ON \
+            -D CMAKE_C_COMPILER=clang-21 \
+            -D CMAKE_CXX_COMPILER=clang++-21 \
+            -D CMAKE_C_FLAGS="-DNDEBUG -fprofile-instr-generate -fcoverage-mapping -O0 -fno-omit-frame-pointer" \
+            -D CMAKE_CXX_FLAGS="-DNDEBUG -fprofile-instr-generate -fcoverage-mapping -O0 -fno-omit-frame-pointer" \
+            -D CMAKE_EXE_LINKER_FLAGS="-fprofile-instr-generate"
 
       - name: Build (coverage)
         run: cmake --build ${BUILD_DIR} --parallel
@@ -379,24 +379,24 @@ jobs:
       - name: Configure examples build
         run: |
           ./scripts/retry.sh cmake -S . -B ${BUILD_DIR} -G Ninja \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DAERONET_BUILD_EXAMPLES=ON \
-            -DAERONET_BUILD_TESTS=OFF \
-            -DAERONET_BUILD_BENCHMARKS=OFF \
-            -DAERONET_BUILD_MODULES=ON \
-            -DAERONET_ENABLE_ASAN=OFF \
-            -DAERONET_ENABLE_ASYNC_HANDLERS=ON \
-            -DAERONET_ENABLE_HTTP2=ON \
-            -DAERONET_ENABLE_BROTLI=ON \
-            -DAERONET_ENABLE_GLAZE=ON \
-            -DAERONET_ENABLE_ZLIB=ON \
-            -DAERONET_ENABLE_ZSTD=ON \
-            -DAERONET_ENABLE_OPENTELEMETRY=ON \
-            -DAERONET_ENABLE_OPENSSL=ON \
-            -DAERONET_ENABLE_SPDLOG=ON \
-            -DAERONET_ENABLE_WEBSOCKET=ON \
-            -DAERONET_ENABLE_HTTP_CLIENT=ON \
-            ${{ startsWith(matrix.compiler, 'clang') && '-DAERONET_ENABLE_CLANG_TIDY=OFF' || '' }}
+            -D CMAKE_BUILD_TYPE=Debug \
+            -D AERONET_BUILD_EXAMPLES=ON \
+            -D AERONET_BUILD_TESTS=OFF \
+            -D AERONET_BUILD_BENCHMARKS=OFF \
+            -D AERONET_BUILD_MODULES=ON \
+            -D AERONET_ENABLE_ASAN=OFF \
+            -D AERONET_ENABLE_ASYNC_HANDLERS=ON \
+            -D AERONET_ENABLE_HTTP2=ON \
+            -D AERONET_ENABLE_BROTLI=ON \
+            -D AERONET_ENABLE_GLAZE=ON \
+            -D AERONET_ENABLE_ZLIB=ON \
+            -D AERONET_ENABLE_ZSTD=ON \
+            -D AERONET_ENABLE_OPENTELEMETRY=ON \
+            -D AERONET_ENABLE_OPENSSL=ON \
+            -D AERONET_ENABLE_SPDLOG=ON \
+            -D AERONET_ENABLE_WEBSOCKET=ON \
+            -D AERONET_ENABLE_HTTP_CLIENT=ON \
+            ${{ startsWith(matrix.compiler, 'clang') && '-D AERONET_ENABLE_CLANG_TIDY=OFF' || '' }}
 
 
       - name: Build examples
@@ -561,28 +561,28 @@ jobs:
       - name: Configure (CMake)
         run: |
           ./scripts/retry.sh cmake -S . -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
-            -DCMAKE_C_COMPILER=${CC} \
-            -DCMAKE_CXX_COMPILER=${CXX} \
-            -DCMAKE_OSX_SYSROOT=${SDKROOT} \
-            -DAERONET_BUILD_TESTS=ON \
-            -DAERONET_ENABLE_TEST_HOOKS=ON \
-            -DAERONET_BUILD_EXAMPLES=ON \
-            -DAERONET_BUILD_BENCHMARKS=OFF \
-            -DAERONET_ENABLE_ASAN=OFF \
-            -DAERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=OFF \
-            -DAERONET_ENABLE_CLANG_TIDY=OFF \
-            -DAERONET_ENABLE_ASYNC_HANDLERS=ON \
-            -DAERONET_ENABLE_GLAZE=ON \
-            -DAERONET_ENABLE_HTTP2=ON \
-            -DAERONET_ENABLE_BROTLI=ON \
-            -DAERONET_ENABLE_ZLIB=ON \
-            -DAERONET_ENABLE_ZSTD=ON \
-            -DAERONET_ENABLE_OPENSSL=ON \
-            -DAERONET_ENABLE_OPENTELEMETRY=OFF \
-            -DAERONET_ENABLE_SPDLOG=ON \
-            -DAERONET_ENABLE_WEBSOCKET=ON \
-            -DAERONET_ENABLE_HTTP_CLIENT=ON
+            -D CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} \
+            -D CMAKE_C_COMPILER=${CC} \
+            -D CMAKE_CXX_COMPILER=${CXX} \
+            -D CMAKE_OSX_SYSROOT=${SDKROOT} \
+            -D AERONET_BUILD_TESTS=ON \
+            -D AERONET_ENABLE_TEST_HOOKS=ON \
+            -D AERONET_BUILD_EXAMPLES=ON \
+            -D AERONET_BUILD_BENCHMARKS=OFF \
+            -D AERONET_ENABLE_ASAN=OFF \
+            -D AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=OFF \
+            -D AERONET_ENABLE_CLANG_TIDY=OFF \
+            -D AERONET_ENABLE_ASYNC_HANDLERS=ON \
+            -D AERONET_ENABLE_GLAZE=ON \
+            -D AERONET_ENABLE_HTTP2=ON \
+            -D AERONET_ENABLE_BROTLI=ON \
+            -D AERONET_ENABLE_ZLIB=ON \
+            -D AERONET_ENABLE_ZSTD=ON \
+            -D AERONET_ENABLE_OPENSSL=ON \
+            -D AERONET_ENABLE_OPENTELEMETRY=OFF \
+            -D AERONET_ENABLE_SPDLOG=ON \
+            -D AERONET_ENABLE_WEBSOCKET=ON \
+            -D AERONET_ENABLE_HTTP_CLIENT=ON
 
       - name: Build
         run: |
@@ -615,26 +615,26 @@ jobs:
       - name: Configure (CMake)
         run: |
           cmake -S . -B build -A x64 `
-            -DCMAKE_BUILD_TYPE=${{ matrix.build }} `
-            -DAERONET_BUILD_TESTS=ON `
-            -DAERONET_ENABLE_TEST_HOOKS=ON `
-            -DAERONET_BUILD_EXAMPLES=ON `
-            -DAERONET_BUILD_BENCHMARKS=OFF `
-            -DAERONET_ENABLE_ASAN=OFF `
-            -DAERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=ON `
-            -DAERONET_ENABLE_CLANG_TIDY=OFF `
-            -DAERONET_ENABLE_ASYNC_HANDLERS=ON `
-            -DAERONET_ENABLE_GLAZE=ON `
-            -DAERONET_ENABLE_HTTP2=ON `
-            -DAERONET_ENABLE_BROTLI=ON `
-            -DAERONET_ENABLE_ZLIB=ON `
-            -DAERONET_ENABLE_ZSTD=ON `
-            -DAERONET_ENABLE_OPENSSL=ON `
-            -DOPENSSL_ROOT_DIR="$env:OPENSSL_ROOT_DIR" `
-            -DAERONET_ENABLE_OPENTELEMETRY=OFF `
-            -DAERONET_ENABLE_SPDLOG=ON `
-            -DAERONET_ENABLE_WEBSOCKET=ON `
-            -DAERONET_ENABLE_HTTP_CLIENT=ON
+            -D CMAKE_BUILD_TYPE=${{ matrix.build }} `
+            -D AERONET_BUILD_TESTS=ON `
+            -D AERONET_ENABLE_TEST_HOOKS=ON `
+            -D AERONET_BUILD_EXAMPLES=ON `
+            -D AERONET_BUILD_BENCHMARKS=OFF `
+            -D AERONET_ENABLE_ASAN=OFF `
+            -D AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=ON `
+            -D AERONET_ENABLE_CLANG_TIDY=OFF `
+            -D AERONET_ENABLE_ASYNC_HANDLERS=ON `
+            -D AERONET_ENABLE_GLAZE=ON `
+            -D AERONET_ENABLE_HTTP2=ON `
+            -D AERONET_ENABLE_BROTLI=ON `
+            -D AERONET_ENABLE_ZLIB=ON `
+            -D AERONET_ENABLE_ZSTD=ON `
+            -D AERONET_ENABLE_OPENSSL=ON `
+            -D OPENSSL_ROOT_DIR="$env:OPENSSL_ROOT_DIR" `
+            -D AERONET_ENABLE_OPENTELEMETRY=OFF `
+            -D AERONET_ENABLE_SPDLOG=ON `
+            -D AERONET_ENABLE_WEBSOCKET=ON `
+            -D AERONET_ENABLE_HTTP_CLIENT=ON
         shell: pwsh
 
       - name: Build
@@ -677,25 +677,25 @@ jobs:
       - name: Configure with cmake
         run: |
           ./scripts/retry.sh cmake -S . -B build-alpine -G Ninja \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DAERONET_BUILD_TESTS=ON \
-            -DAERONET_ENABLE_TEST_HOOKS=ON \
-            -DAERONET_BUILD_EXAMPLES=OFF \
-            -DAERONET_BUILD_BENCHMARKS=OFF \
-            -DAERONET_ENABLE_ASAN=OFF \
-            -DAERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=ON \
-            -DAERONET_ENABLE_ASYNC_HANDLERS=ON \
-            -DAERONET_ENABLE_GLAZE=ON \
-            -DAERONET_ENABLE_HTTP2=ON \
-            -DAERONET_ENABLE_BROTLI=ON \
-            -DAERONET_ENABLE_ZLIB=ON \
-            -DAERONET_ENABLE_ZSTD=ON \
-            -DAERONET_ENABLE_ZLIBNG=OFF \
-            -DAERONET_ENABLE_OPENTELEMETRY=ON \
-            -DAERONET_ENABLE_OPENSSL=ON \
-            -DAERONET_ENABLE_SPDLOG=ON \
-            -DAERONET_ENABLE_WEBSOCKET=ON \
-            -DAERONET_ENABLE_HTTP_CLIENT=ON
+            -D CMAKE_BUILD_TYPE=Debug \
+            -D AERONET_BUILD_TESTS=ON \
+            -D AERONET_ENABLE_TEST_HOOKS=ON \
+            -D AERONET_BUILD_EXAMPLES=OFF \
+            -D AERONET_BUILD_BENCHMARKS=OFF \
+            -D AERONET_ENABLE_ASAN=OFF \
+            -D AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=ON \
+            -D AERONET_ENABLE_ASYNC_HANDLERS=ON \
+            -D AERONET_ENABLE_GLAZE=ON \
+            -D AERONET_ENABLE_HTTP2=ON \
+            -D AERONET_ENABLE_BROTLI=ON \
+            -D AERONET_ENABLE_ZLIB=ON \
+            -D AERONET_ENABLE_ZSTD=ON \
+            -D AERONET_ENABLE_ZLIBNG=OFF \
+            -D AERONET_ENABLE_OPENTELEMETRY=ON \
+            -D AERONET_ENABLE_OPENSSL=ON \
+            -D AERONET_ENABLE_SPDLOG=ON \
+            -D AERONET_ENABLE_WEBSOCKET=ON \
+            -D AERONET_ENABLE_HTTP_CLIENT=ON
 
       - name: Build
         run: |

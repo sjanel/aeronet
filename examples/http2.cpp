@@ -2,7 +2,7 @@
 /// @brief Minimal HTTP/2 server example demonstrating ALPN (h2) and cleartext h2c (prior knowledge).
 ///
 /// Build with HTTP/2 support:
-///   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAERONET_ENABLE_HTTP2=ON
+///   cmake -S . -B build -D CMAKE_BUILD_TYPE=Release -D AERONET_ENABLE_HTTP2=ON
 ///   cmake --build build -j
 ///
 /// Run:

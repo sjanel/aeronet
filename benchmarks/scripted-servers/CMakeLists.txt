@@ -59,8 +59,11 @@ if(AERONET_BENCH_ENABLE_PISTACHE)
   set(PISTACHE_BUILD_DOCS OFF CACHE BOOL "" FORCE)
   set(PISTACHE_USE_SSL OFF CACHE BOOL "" FORCE)
   
+  # pistache fetches RapidJSON, whose CMakeLists requires a CMake version older than 3.5 (removed by CMake 4).
+  set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
   FetchContent_MakeAvailable(pistache)
-  
+  unset(CMAKE_POLICY_VERSION_MINIMUM)
+
   AeronetAddExternalExecutable(pistache-bench-server pistache_server.cpp)
   target_link_libraries(pistache-bench-server PRIVATE pistache Threads::Threads aeronet_objects)
   set_target_properties(pistache-bench-server PROPERTIES FOLDER "benchmarks/servers")

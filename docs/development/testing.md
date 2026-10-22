@@ -3,7 +3,7 @@
 aeronet's tests use GoogleTest and run with CTest. Unit tests live next to their module, in `aeronet/<module>/test/`, and cross-module integration tests, which start real servers on loopback sockets, live in `tests/`. Shared helpers (test clients, temporary files, TLS certificates, fault injection) are in `aeronet/test_support/`.
 
 ```bash
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DAERONET_BUILD_TESTS=ON
+cmake -S . -B build -G Ninja -D CMAKE_BUILD_TYPE=Debug -D AERONET_BUILD_TESTS=ON
 cmake --build build
 ctest --test-dir build --output-on-failure --timeout 300
 ```

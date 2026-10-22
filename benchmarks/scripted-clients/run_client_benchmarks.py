@@ -180,7 +180,7 @@ def find_build_dir(script_dir: Path) -> Path:
             return cand.resolve()
     raise BenchError(
         "Could not find a build dir with aeronet-bench-client. Build first, e.g.:\n"
-        "  cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release && ninja -C build-release"
+        "  cmake -S . -B build-release -D CMAKE_BUILD_TYPE=Release && ninja -C build-release"
     )
 
 
