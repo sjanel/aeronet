@@ -117,7 +117,7 @@ Each internal micro-benchmark is its own executable named `aeronet-bench-interna
 | `aeronet-bench-internal-http1-response-parse`, `-response-streamer` | HTTP client | Client response parser, response streaming. |
 | `aeronet-bench-internal-hpack`, `-http2-frame`, `-http2-flow-control` | HTTP/2 | HPACK, frame codec, flow control. |
 | `aeronet-bench-internal-http2-request` | HTTP/2, HTTP server | Server side of a stream, from its HEADERS frame to its response: request head decoding, routing, response encoding. |
-| `aeronet-bench-internal-websocket-mask` | WebSocket | WebSocket frame masking. |
+| `aeronet-bench-internal-websocket-mask`, `-websocket-utf8` | WebSocket | WebSocket frame masking, UTF-8 validation of text messages. |
 | `aeronet-bench-internal-decimal-writer`, `-memory-utils`, `-raw-bytes-growth`, `-search-crlf`, `-string-equal-ignore-case` | none | Low-level helpers: number formatting, copies, buffer growth, CRLF search, case-insensitive comparison. |
 | `aeronet-bench-internal-transport-dispatch` | none | Isolated virtual-versus-inline/erased transport benchmark for plain and TLS paths. |
 | `aeronet-bench-throughput` | HTTP server | Google Benchmark skeleton for a trivial loopback workload. |
