@@ -244,6 +244,7 @@ TEST(OpenTelemetryEndToEnd, EmitsPerMeasurementLabels) {
   telemetry.gauge("aeronet.test.labeled_gauge", 2, labels);
   telemetry.histogram("aeronet.test.labeled_histogram", 3.0, labels);
   telemetry.timing("aeronet.test.labeled_timing", 4ms, labels);
+  telemetry.flush();
 
   bool counterProtocolFound = false;
   bool counterFrameTypeFound = false;

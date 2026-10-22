@@ -791,14 +791,24 @@ TEST(HttpKeepAlive, SlowSynchronousHandlerDoesNotExpireItsConnection) {
       return HttpResponse(std::format("ECHO{}", req.path()));
     });
 
+    const auto connectTp = std::chrono::steady_clock::now();
     test::ClientConnection cnx(port);
     NativeHandle fd = cnx.fd();
     // Let the server accept the connection first, so that the request is served from a regular read event.
     std::this_thread::sleep_for(pause);
     test::sendAll(fd, "GET /slow HTTP/1.1\r\nhost: x\r\n\r\n");
+    // Measured from before the connection, so it also covers a stall inside the connect or the send.
+    const auto sendDelay = std::chrono::steady_clock::now() - connectTp;
     const std::string slowResp = test::recvWithTimeout(fd, keepAliveTimeout * 2 + std::chrono::seconds{1});
     if (!slowResp.contains("ECHO/slow")) {
-      return {false, false, "slow request: " + slowResp};
+      // A connection idle for that long before its first request might legitimately have been closed.
+      return {
+          false,
+          sendDelay > stallThreshold,
+          std::format("slow request (sent after {} ms, timeout {} ms): {}",
+                      std::chrono::duration_cast<std::chrono::milliseconds>(sendDelay).count(),
+                      keepAliveTimeout.count(), slowResp),
+      };
     }
     const auto slowRespTp = std::chrono::steady_clock::now();
     // Reuse the connection after several maintenance sweeps, but well within keepAliveTimeout.
@@ -1137,13 +1147,13 @@ TEST(HttpServerTelemetry, DogStatsDClientSendsMetricsWithServiceName) {
 
   dogStatsDClient.increment("metric1", 2);
   telemetryContext.counterAdd("metric2", 1);
-  EXPECT_EQ(sink.recvMessage(), "svc.metric1:2|c");
-  EXPECT_EQ(sink.recvMessage(), "svc.metric2:1|c");
+  telemetryContext.flush();
+  EXPECT_EQ(sink.recvMessage(), "svc.metric1:2|c\nsvc.metric2:1|c");
 
   dogStatsDClient.gauge("gauge1", 2);
   telemetryContext.gauge("gauge2", 3);
-  EXPECT_EQ(sink.recvMessage(), "svc.gauge1:2|g");
-  EXPECT_EQ(sink.recvMessage(), "svc.gauge2:3|g");
+  telemetryContext.flush();
+  EXPECT_EQ(sink.recvMessage(), "svc.gauge1:2|g\nsvc.gauge2:3|g");
 }
 
 TEST(HttpServerTelemetry, DogStatsDClientSendsMetricsWithoutServiceName) {
@@ -1165,7 +1175,47 @@ TEST(HttpServerTelemetry, DogStatsDClientSendsMetricsWithoutServiceName) {
   auto& dogStatsDClient = *pDogStatsDClient;
 
   dogStatsDClient.increment("metric1", 2);
+  telemetryContext.flush();
   EXPECT_EQ(sink.recvMessage(), "tel.metric1:2|c");
+}
+
+// The server sums its counters in memory, and sends them with its other metrics at each maintenance tick, in a single
+// datagram.
+TEST(HttpServerTelemetry, DogStatsDMetricsSentAtMaintenanceTick) {
+  static constexpr int kNbRequests = 5;
+  static constexpr std::string_view kAcceptedPrefix = "svc.aeronet.connections.accepted:";
+  test::UnixDogstatsdSink sink;
+
+  TelemetryConfig tcfg;
+  tcfg.withDogStatsdSocketPath(sink.path()).withDogStatsdNamespace("svc").enableDogStatsDMetrics(true);
+
+  HttpServerConfig cfg;
+  cfg.withTelemetryConfig(std::move(tcfg));
+  test::TestServer server(std::move(cfg), RouterConfig{}, std::chrono::milliseconds{10});
+  server.router().setDefault([](const HttpRequestView&) { return HttpResponse("ok"); });
+
+  for (int requestIdx = 0; requestIdx < kNbRequests; ++requestIdx) {
+    EXPECT_TRUE(test::simpleGet(server.port(), "/").starts_with("HTTP/1.1 200"));
+  }
+
+  // The requests may span several ticks: sum the accepted connections of the datagrams.
+  int nbAccepted = 0;
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  while (nbAccepted < kNbRequests && std::chrono::steady_clock::now() < deadline) {
+    const std::string datagram = sink.recvMessage(100);
+    if (datagram.empty()) {
+      continue;
+    }
+    EXPECT_TRUE(datagram.contains("svc.aeronet.connections.active_count:")) << datagram;
+    EXPECT_LE(test::countOccurrences(datagram, kAcceptedPrefix), 1) << datagram;
+    EXPECT_LE(test::countOccurrences(datagram, "svc.aeronet.bytes.read:"), 1) << datagram;
+    const auto acceptedPos = datagram.find(kAcceptedPrefix);
+    if (acceptedPos != std::string::npos) {
+      const auto valuePos = acceptedPos + kAcceptedPrefix.size();
+      nbAccepted += std::stoi(datagram.substr(valuePos, datagram.find('|', valuePos) - valuePos));
+    }
+  }
+  EXPECT_EQ(nbAccepted, kNbRequests);
 }
 #endif
 

@@ -24,12 +24,6 @@ class DogStatsdMetrics {
     }
   }
 
-  void increment(std::string_view metric, uint64_t delta = 1UL) noexcept {
-    if (_client.enabled()) {
-      _client.increment(metric, delta, _tags);
-    }
-  }
-
   void increment(std::string_view metric, uint64_t delta, MetricLabels labels) noexcept {
     if (_client.enabled()) {
       _client.increment(metric, delta, _tags, labels);
@@ -71,6 +65,8 @@ class DogStatsdMetrics {
       _client.timing(metric, ms, _tags, labels);
     }
   }
+
+  void flush() noexcept { _client.flush(); }
 
   [[nodiscard]] DogStatsD& dogstatsdClient() noexcept { return _client; }
 

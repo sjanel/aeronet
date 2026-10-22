@@ -63,6 +63,7 @@
 #include "aeronet/toupperlower.hpp"
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
+#include "aeronet/unix-dogstatsd-sink.hpp"
 #include "aeronet/vector.hpp"
 #include "collecting-body-sink.hpp"
 #include "http-client-test-access.hpp"
@@ -644,6 +645,26 @@ TEST_F(HttpClientE2ETest, FollowsRedirect) {
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), "world");
 }
+
+#ifdef AERONET_POSIX
+// The client has no maintenance tick: the counters of a request are sent when it ends.
+TEST_F(HttpClientE2ETest, TelemetryCountersSentAfterEachRequest) {
+  test::UnixDogstatsdSink sink;
+  HttpClientConfig config;
+  config.telemetry.withDogStatsdSocketPath(sink.path()).withDogStatsdNamespace("cli").enableDogStatsDMetrics(true);
+  HttpClient client(std::move(config));
+
+  ASSERT_EQ(client.get(Url("/redirect")).value().status(), 200);
+  EXPECT_EQ(sink.recvMessage(), "cli.aeronet.http_requests.redirects:1|c");
+
+  // Nothing to send for a request without counters
+  ASSERT_EQ(client.get(Url("/hello")).value().status(), 200);
+  EXPECT_TRUE(sink.recvMessage(50).empty());
+
+  ASSERT_EQ(client.get(Url("/redirect")).value().status(), 200);
+  EXPECT_EQ(sink.recvMessage(), "cli.aeronet.http_requests.redirects:1|c");
+}
+#endif
 
 TEST_F(HttpClientE2ETest, CrossOriginRedirectRetargetsRequestAndHost) {
   Router destinationRouter;

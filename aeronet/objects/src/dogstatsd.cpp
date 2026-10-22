@@ -11,6 +11,7 @@
 #include <new>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
 
 #include "aeronet/decimal-writer.hpp"
 #include "aeronet/log-noexcept.hpp"
@@ -57,7 +58,8 @@ DogStatsD::DogStatsD(std::string_view socketPath, std::string_view ns) {
   if (socketPath.size() >= kUnixSocketMaxPath) {
     throw std::invalid_argument("DogStatsD: socket path too long");
   }
-  if (ns.size() >= 256UL) {
+  const uint32_t dotAppendSz = !ns.empty() && ns.back() != '.' ? 1U : 0U;
+  if (ns.size() + dotAppendSz > std::numeric_limits<decltype(_nsLength)>::max()) {
     throw std::invalid_argument("DogStatsD: namespace too long");
   }
   if (socketPath.empty()) {
@@ -70,10 +72,10 @@ DogStatsD::DogStatsD(std::string_view socketPath, std::string_view ns) {
                 "uint16_t is not large enough to hold unix socket max path");
 
   _socketPathLength = static_cast<uint16_t>(socketPath.size());
+  _nsLength = static_cast<uint8_t>(ns.size() + dotAppendSz);
 
-  uint32_t dotAppendSz = !ns.empty() && ns.back() != '.' ? 1U : 0U;
-
-  _buf.reserve(socketPath.size() + ns.size() + dotAppendSz + 64UL);  // additional buffer for metric messages
+  // Room for a full datagram: buffering metrics then never reallocates.
+  _buf.reserve(headerSize() + kMaxDatagramSize);
   _buf.unchecked_append(socketPath);
   _buf.unchecked_append(ns);
   if (dotAppendSz != 0) {
@@ -97,8 +99,27 @@ DogStatsD::DogStatsD(std::string_view socketPath, std::string_view ns) {
   }
 }
 
-void DogStatsD::sendMetricMessage(std::string_view metric, std::string_view value, std::string_view typeSuffix,
-                                  const DogStatsDTags& tags, MetricLabels labels) noexcept {
+DogStatsD::DogStatsD(DogStatsD&& rhs) noexcept
+    : _buf(std::move(rhs._buf)),
+      _fd(std::move(rhs._fd)),
+      _socketPathLength(std::exchange(rhs._socketPathLength, 0)),
+      _nsLength(std::exchange(rhs._nsLength, 0)),
+      _retryConnectionCounter(rhs._retryConnectionCounter) {}
+
+DogStatsD& DogStatsD::operator=(DogStatsD&& rhs) noexcept {
+  if (this != &rhs) {
+    flush();
+    _buf = std::move(rhs._buf);
+    _fd = std::move(rhs._fd);
+    _socketPathLength = std::exchange(rhs._socketPathLength, 0);
+    _nsLength = std::exchange(rhs._nsLength, 0);
+    _retryConnectionCounter = rhs._retryConnectionCounter;
+  }
+  return *this;
+}
+
+void DogStatsD::appendMetric(std::string_view metric, std::string_view value, std::string_view typeSuffix,
+                             const DogStatsDTags& tags, MetricLabels labels) noexcept {
   std::size_t labelsSize = 0;
   for (const auto& [key, labelValue] : labels) {
     labelsSize += key.size() + 1U + labelValue.size();
@@ -111,11 +132,16 @@ void DogStatsD::sendMetricMessage(std::string_view metric, std::string_view valu
   const auto tagsSize = hasTags ? kTagsPrefix.size() + tags.fullSize() + labelsSize +
                                       static_cast<std::size_t>(!tags.empty() && !labels.empty())
                                 : 0UL;
-  const auto nsSize = _buf.size() - _socketPathLength;
-  const auto dataSize = nsSize + metric.size() + 1U + value.size() + typeSuffix.size() + tagsSize;
+  const auto lineSize = std::size_t{_nsLength} + metric.size() + 1U + value.size() + typeSuffix.size() + tagsSize;
+
+  const std::size_t bufferedSize = _buf.size() - headerSize();
+  if (bufferedSize != 0 && bufferedSize + 1U + lineSize > kMaxDatagramSize) {
+    flush();
+  }
+  const bool newLine = _buf.size() != headerSize();
 
   try {
-    _buf.ensureAvailableCapacity(dataSize);
+    _buf.ensureAvailableCapacity(static_cast<std::size_t>(newLine) + lineSize);
   } catch (const std::bad_alloc&) {
     log_noexcept::error("DogStatsD: unable to allocate memory for metric message");
     return;
@@ -123,6 +149,9 @@ void DogStatsD::sendMetricMessage(std::string_view metric, std::string_view valu
 
   char* pData = _buf.data() + _buf.size();
 
+  if (newLine) {
+    *pData++ = '\n';
+  }
   pData = Append(ns(), pData);
   pData = Append(metric, pData);
   *pData++ = ':';
@@ -147,25 +176,34 @@ void DogStatsD::sendMetricMessage(std::string_view metric, std::string_view valu
     }
   }
 
-  if (_fd.send(_buf.data() + _buf.size(), dataSize) == -1) {
+  _buf.setEnd(pData);
+}
+
+void DogStatsD::flush() noexcept {
+  const std::size_t datagramSize = _buf.size() - headerSize();
+  if (datagramSize == 0) {
+    return;
+  }
+  if (_fd.send(_buf.data() + headerSize(), datagramSize) == -1) {
     const int serr = LastSystemError();
-    // If the socket would block (EAGAIN / EWOULDBLOCK), treat the metric as dropped
+    // If the socket would block (EAGAIN / EWOULDBLOCK), treat the metrics as dropped
     // and do not mark the connection for immediate reconnect. Other errors indicate
     // a more serious problem with the socket and should trigger a reconnect attempt.
     if (serr == error::kWouldBlock) {
-      log_noexcept::debug("DogStatsD: dropping metric of size {} due to EAGAIN/EWOULDBLOCK", dataSize);
+      log_noexcept::debug("DogStatsD: dropping metrics of size {} due to EAGAIN/EWOULDBLOCK", datagramSize);
     } else {
-      log_noexcept::error("DogStatsD: unable to send message of size {} with error: {}", dataSize,
+      log_noexcept::error("DogStatsD: unable to send metrics of size {} with error: {}", datagramSize,
                           SystemErrorMessage(serr));
       _retryConnectionCounter = kReconnectionThreshold;  // mark as disconnected but retry immediately on next send
     }
   }
+  _buf.setSize(static_cast<RawChars32::size_type>(headerSize()));
 }
 
 void DogStatsD::increment(std::string_view metric, uint64_t value, const DogStatsDTags& tags) noexcept {
   if (ensureConnected()) {
     char buffer[kMaxIntegerStrBufferSize];
-    sendMetricMessage(metric, FormatInteger(value, buffer), kCounterSuffix, tags, {});
+    appendMetric(metric, FormatInteger(value, buffer), kCounterSuffix, tags, {});
   }
 }
 
@@ -173,28 +211,28 @@ void DogStatsD::increment(std::string_view metric, uint64_t value, const DogStat
                           MetricLabels labels) noexcept {
   if (ensureConnected()) {
     char buffer[kMaxIntegerStrBufferSize];
-    sendMetricMessage(metric, FormatInteger(value, buffer), kCounterSuffix, tags, labels);
+    appendMetric(metric, FormatInteger(value, buffer), kCounterSuffix, tags, labels);
   }
 }
 
 void DogStatsD::gauge(std::string_view metric, int64_t value, const DogStatsDTags& tags) noexcept {
   if (ensureConnected()) {
     char buffer[kMaxIntegerStrBufferSize];
-    sendMetricMessage(metric, FormatInteger(value, buffer), kGaugeSuffix, tags, {});
+    appendMetric(metric, FormatInteger(value, buffer), kGaugeSuffix, tags, {});
   }
 }
 
 void DogStatsD::gauge(std::string_view metric, int64_t value, const DogStatsDTags& tags, MetricLabels labels) noexcept {
   if (ensureConnected()) {
     char buffer[kMaxIntegerStrBufferSize];
-    sendMetricMessage(metric, FormatInteger(value, buffer), kGaugeSuffix, tags, labels);
+    appendMetric(metric, FormatInteger(value, buffer), kGaugeSuffix, tags, labels);
   }
 }
 
 void DogStatsD::histogram(std::string_view metric, double value, const DogStatsDTags& tags) noexcept {
   if (ensureConnected()) {
     char buffer[kFloatingBufferSize];
-    sendMetricMessage(metric, FormatFloating(value, buffer), kHistogramSuffix, tags, {});
+    appendMetric(metric, FormatFloating(value, buffer), kHistogramSuffix, tags, {});
   }
 }
 
@@ -202,14 +240,14 @@ void DogStatsD::histogram(std::string_view metric, double value, const DogStatsD
                           MetricLabels labels) noexcept {
   if (ensureConnected()) {
     char buffer[kFloatingBufferSize];
-    sendMetricMessage(metric, FormatFloating(value, buffer), kHistogramSuffix, tags, labels);
+    appendMetric(metric, FormatFloating(value, buffer), kHistogramSuffix, tags, labels);
   }
 }
 
 void DogStatsD::timing(std::string_view metric, std::chrono::milliseconds ms, const DogStatsDTags& tags) noexcept {
   if (ensureConnected()) {
     char buffer[kMaxIntegerStrBufferSize];
-    sendMetricMessage(metric, FormatInteger(ms.count(), buffer), kTimingSuffix, tags, {});
+    appendMetric(metric, FormatInteger(ms.count(), buffer), kTimingSuffix, tags, {});
   }
 }
 
@@ -217,20 +255,20 @@ void DogStatsD::timing(std::string_view metric, std::chrono::milliseconds ms, co
                        MetricLabels labels) noexcept {
   if (ensureConnected()) {
     char buffer[kMaxIntegerStrBufferSize];
-    sendMetricMessage(metric, FormatInteger(ms.count(), buffer), kTimingSuffix, tags, labels);
+    appendMetric(metric, FormatInteger(ms.count(), buffer), kTimingSuffix, tags, labels);
   }
 }
 
 void DogStatsD::set(std::string_view metric, std::string_view value, const DogStatsDTags& tags) noexcept {
   if (ensureConnected()) {
-    sendMetricMessage(metric, value, kSetSuffix, tags, {});
+    appendMetric(metric, value, kSetSuffix, tags, {});
   }
 }
 
 void DogStatsD::set(std::string_view metric, std::string_view value, const DogStatsDTags& tags,
                     MetricLabels labels) noexcept {
   if (ensureConnected()) {
-    sendMetricMessage(metric, value, kSetSuffix, tags, labels);
+    appendMetric(metric, value, kSetSuffix, tags, labels);
   }
 }
 

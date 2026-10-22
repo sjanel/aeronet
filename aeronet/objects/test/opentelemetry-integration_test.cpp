@@ -138,6 +138,8 @@ TEST(OpenTelemetryIntegration, MetricsOperations) {
       telemetry.gauge("gauge.with-empty-labels", 4, {});
       telemetry.histogram("histogram.with-empty-labels", 2.5, {});
       telemetry.timing("timing.with-empty-labels", std::chrono::milliseconds(25), {});
+      telemetry.counterAdd("events.labeled", 2U, labels);
+      telemetry.flush();
       cfg.withEndpoint("http://localhost:4318/v1/metrics/");
     }
   }
@@ -284,6 +286,7 @@ TEST(OpenTelemetryIntegration, DogStatsDMetricsEmission) {
   telemetry.gauge("test.gauge", 3);
   telemetry.histogram("test.histogram", 4.25);
   telemetry.timing("test.timing", std::chrono::milliseconds(15));
+  telemetry.flush();
 
   // Use test util's recvWithTimeout which handles non-blocking reads and timeouts.
   auto payload = test::recvWithTimeout(serverFd.fd(), std::chrono::milliseconds{100});
@@ -322,8 +325,9 @@ TEST(OpenTelemetryIntegration, DogStatsDTagsDoNotReferToTheConfig) {
   telemetry.histogram("test.histogram", 4.25, labels);
   telemetry.timing("test.timing", std::chrono::milliseconds(15));
   telemetry.timing("test.timing", std::chrono::milliseconds(15), labels);
+  telemetry.flush();
 
-  // One datagram per metric, all of them with the tags of the original configuration.
+  // One line per metric, all of them with the tags of the original configuration.
   auto payload = test::recvWithTimeout(serverFd.fd(), std::chrono::milliseconds{100});
   EXPECT_TRUE(payload.contains("aeronet.test.metric:7|c")) << payload;
   EXPECT_TRUE(payload.contains("aeronet.test.timing:15|ms")) << payload;
@@ -334,11 +338,83 @@ TEST(OpenTelemetryIntegration, DogStatsDTagsDoNotReferToTheConfig) {
   EXPECT_EQ(nbTaggedMetrics, 8U) << payload;
   EXPECT_FALSE(payload.contains("other:tag")) << payload;
 }
+
+// Counters are summed in memory per name and labels until the flush, which sends them with the other buffered metrics
+// in a single datagram.
+TEST(OpenTelemetryIntegration, DogStatsDCountersSummedUntilFlush) {
+  test::ScopedTempDir tmpDir("aeronet-dsd-dir-");
+  const auto socketPath = tmpDir.dirPath() / "aeronet-dsd.sock";
+  BaseFd serverFd = BindDogStatsDSocket(socketPath.c_str());
+  ASSERT_TRUE(serverFd);
+
+  TelemetryConfig cfg;
+  cfg.otelEnabled = kDefaultEnabled;
+  cfg.dogStatsDEnabled = true;
+  cfg.withDogStatsdSocketPath(socketPath.string());
+  cfg.withDogStatsdNamespace("svc");
+  cfg.validate();
+
+  tracing::TelemetryContext telemetry(cfg);
+  const MetricLabel received[]{{"direction", "received"}};
+  const MetricLabel sent[]{{"direction", "sent"}};
+  for (int requestIdx = 0; requestIdx < 100; ++requestIdx) {
+    telemetry.counterAdd("bytes.read", 10);
+    telemetry.counterAdd("frames", 1, received);
+    telemetry.counterAdd("frames", 2, sent);
+  }
+  telemetry.histogram("ratio", 0.5, sent);
+  EXPECT_TRUE(test::recvWithTimeout(serverFd.fd(), std::chrono::milliseconds{50}).empty());
+
+  telemetry.flush();
+  const std::string payload = test::recvWithTimeout(serverFd.fd(), std::chrono::milliseconds{100});
+  EXPECT_EQ(test::countOccurrences(payload, "\n"), 3) << payload;
+  EXPECT_TRUE(payload.starts_with("svc.ratio:0.5|h|#")) << payload;
+  EXPECT_TRUE(payload.contains("\nsvc.bytes.read:1000|c")) << payload;
+  EXPECT_TRUE(payload.contains("\nsvc.frames:100|c|#")) << payload;
+  EXPECT_TRUE(payload.contains("direction:received")) << payload;
+  EXPECT_TRUE(payload.contains("\nsvc.frames:200|c|#")) << payload;
+
+  // Only the counters incremented since the last flush are sent.
+  telemetry.counterAdd("frames", 3, sent);
+  telemetry.flush();
+  const std::string secondPayload = test::recvWithTimeout(serverFd.fd(), std::chrono::milliseconds{100});
+  EXPECT_TRUE(secondPayload.starts_with("svc.frames:3|c|#")) << secondPayload;
+  EXPECT_TRUE(secondPayload.ends_with("direction:sent")) << secondPayload;
+  EXPECT_FALSE(secondPayload.contains('\n')) << secondPayload;
+
+  telemetry.flush();
+  EXPECT_TRUE(test::recvWithTimeout(serverFd.fd(), std::chrono::milliseconds{50}).empty());
+}
+
+TEST(OpenTelemetryIntegration, DogStatsDCountersFlushedAtDestruction) {
+  test::ScopedTempDir tmpDir("aeronet-dsd-dir-");
+  const auto socketPath = tmpDir.dirPath() / "aeronet-dsd.sock";
+  BaseFd serverFd = BindDogStatsDSocket(socketPath.c_str());
+  ASSERT_TRUE(serverFd);
+
+  TelemetryConfig cfg;
+  cfg.otelEnabled = kDefaultEnabled;
+  cfg.dogStatsDEnabled = true;
+  cfg.withDogStatsdSocketPath(socketPath.string());
+  cfg.withDogStatsdNamespace("svc");
+
+  tracing::TelemetryContext telemetry(cfg);
+  telemetry.counterAdd("first", 2);
+  // The assignment destroys the previous context
+  telemetry = tracing::TelemetryContext(cfg);
+  EXPECT_EQ(test::recvWithTimeout(serverFd.fd(), std::chrono::milliseconds{100}), "svc.first:2|c");
+
+  telemetry.counterAdd("second", 3);
+  telemetry = tracing::TelemetryContext{};
+  EXPECT_EQ(test::recvWithTimeout(serverFd.fd(), std::chrono::milliseconds{100}), "svc.second:3|c");
+}
 #endif  // AERONET_POSIX
 
 TEST(OpenTelemetryIntegration, DogStatsDClientRetrieveNull) {
   tracing::TelemetryContext telemetry;
   EXPECT_EQ(telemetry.dogstatsdClient(), nullptr);
+  telemetry.counterAdd("ignored");
+  EXPECT_NO_THROW(telemetry.flush());
 }
 
 #ifdef AERONET_ENABLE_OPENTELEMETRY
@@ -396,6 +472,11 @@ TEST(OpenTelemetryIntegration, MallocFailureHandling) {
   EXPECT_NO_THROW(telemetry.histogram("test.should-fail-labeled-histogram", 1.0, labels));
   test::FailNextMalloc(1);
   EXPECT_NO_THROW(telemetry.timing("test.should-fail-labeled-timing", std::chrono::milliseconds(100), labels));
+
+  // The counters are exported at the flush: make the creation of the OpenTelemetry counter fail
+  telemetry.counterAdd("test.should-fail-at-flush", 1);
+  test::FailNextMalloc(1);
+  EXPECT_NO_THROW(telemetry.flush());
 }
 
 #endif

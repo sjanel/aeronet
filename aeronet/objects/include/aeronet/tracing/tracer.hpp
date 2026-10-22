@@ -74,11 +74,9 @@ class TelemetryContext {
   // Whether tracing or metrics are enabled for this context.
   [[nodiscard]] bool enabled() const noexcept { return _impl != nullptr; }
 
-  // Increment a counter by delta. No-op if metrics disabled/failed.
-  void counterAdd(std::string_view name, uint64_t delta = 1UL) const noexcept;
-
-  // Increment a counter by delta with per-measurement labels. No-op if metrics disabled/failed.
-  void counterAdd(std::string_view name, uint64_t delta, MetricLabels labels) const noexcept;
+  // Increment a counter by delta, with optional per-measurement labels. No-op if metrics disabled/failed.
+  // The increments are summed in memory, per name and labels, until the next flush().
+  void counterAdd(std::string_view name, uint64_t delta = 1UL, MetricLabels labels = {}) const noexcept;
 
   // Record a gauge value. No-op if metrics disabled/failed.
   void gauge(std::string_view name, int64_t value) const noexcept;
@@ -98,8 +96,13 @@ class TelemetryContext {
   // Record a timing value with per-measurement labels. No-op if metrics disabled/failed.
   void timing(std::string_view name, std::chrono::milliseconds ms, MetricLabels labels) const noexcept;
 
+  // Exports the counters summed since the last flush, and sends the buffered DogStatsD metrics.
+  // SingleHttpServer flushes its context at each maintenance tick, and HttpClient after each request: flush a context
+  // of your own periodically. The destructor flushes too.
+  void flush() const noexcept;
+
   // Access underlying DogStatsD client, or nullptr if not enabled.
-  // You can use it to emit custom DogStatsD metrics.
+  // You can use it to emit custom DogStatsD metrics, buffered until the next flush().
   [[nodiscard]] DogStatsD* dogstatsdClient() const noexcept;
 
  private:
