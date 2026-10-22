@@ -11,12 +11,6 @@
 #include <string_view>
 #include <utility>
 
-#ifdef __SSE2__
-#include <emmintrin.h>
-#elif defined(__ARM_NEON) || defined(__ARM_NEON__)
-#include <arm_neon.h>
-#endif
-
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/protocol-handler.hpp"
@@ -25,6 +19,7 @@
 #include "aeronet/websocket-constants.hpp"
 #include "aeronet/websocket-deflate.hpp"
 #include "aeronet/websocket-frame.hpp"
+#include "aeronet/websocket-utf8.hpp"
 
 namespace aeronet::websocket {
 
@@ -38,117 +33,6 @@ constexpr std::size_t kMinInputPayloadSize = 4096;
 bool IsWithin(std::span<const std::byte> part, std::span<const std::byte> whole) {
   constexpr std::less_equal<> kLessEqual;
   return kLessEqual(whole.data(), part.data()) && kLessEqual(part.data() + part.size(), whole.data() + whole.size());
-}
-
-/// Validate a single multibyte UTF-8 sequence starting at *ptr.
-/// @param ptr  Points to 1 byte past the lead byte on entry; advanced past the full sequence on success.
-/// @param end  One-past-end of the buffer.
-/// @param lead The leading byte of the sequence (already consumed).
-/// @return true if the sequence is valid.
-constexpr bool ValidateMultibyteSequence(const uint8_t*& ptr, const uint8_t* end, uint8_t lead) {
-  uint32_t remaining;
-  uint32_t codepoint;
-  uint32_t minCodepoint;
-
-  if ((lead & 0xE0U) == 0xC0) {
-    remaining = 1;
-    codepoint = lead & 0x1FU;
-    minCodepoint = 0x80;
-  } else if ((lead & 0xF0U) == 0xE0) {
-    remaining = 2;
-    codepoint = lead & 0x0FU;
-    minCodepoint = 0x800;
-  } else if ((lead & 0xF8U) == 0xF0) {
-    remaining = 3;
-    codepoint = lead & 0x07U;
-    minCodepoint = 0x10000;
-  } else {
-    return false;
-  }
-
-  if (end < ptr + remaining) {
-    return false;
-  }
-
-  for (decltype(remaining) idx = 0; idx < remaining; ++idx) {
-    const uint8_t byte = *ptr++;
-    if ((byte & 0xC0U) != 0x80) {
-      return false;
-    }
-    codepoint = (codepoint << 6U) | (byte & 0x3FU);
-  }
-
-  if (codepoint < minCodepoint) {
-    return false;
-  }
-  if (codepoint >= 0xD800 && codepoint <= 0xDFFF) {
-    return false;
-  }
-  return codepoint <= 0x10FFFF;
-}
-
-/// Validate UTF-8 encoding for text messages.
-/// Uses SIMD to fast-skip all-ASCII chunks (16 bytes at a time).
-/// @return true if valid UTF-8, false otherwise
-bool ValidateUtf8(std::span<const std::byte> data) {
-  if (data.empty()) {
-    return true;
-  }
-  const auto* ptr = reinterpret_cast<const uint8_t*>(data.data());
-  const auto* end = ptr + data.size();
-
-#ifdef __SSE2__
-  // Fast-scan 16 bytes at a time: if all bytes are ASCII (high bit=0), skip the whole chunk.
-  while (ptr + 16 <= end) {
-    const __m128i chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(ptr));
-    const int mask = _mm_movemask_epi8(chunk);
-    if (mask == 0) {
-      // All 16 bytes are ASCII
-      ptr += 16;
-      continue;
-    }
-    // At least one non-ASCII byte — find it and validate the multibyte sequence
-    const auto offset = static_cast<std::size_t>(__builtin_ctz(static_cast<unsigned>(mask)));
-    ptr += offset;
-    uint8_t lead = *ptr++;
-    if (!ValidateMultibyteSequence(ptr, end, lead)) {
-      return false;
-    }
-  }
-#elif defined(__ARM_NEON) || defined(__ARM_NEON__)
-  while (ptr + 16 <= end) {
-    const uint8x16_t chunk = vld1q_u8(ptr);
-    // Check if any byte has the high bit set (>= 0x80)
-    if (vmaxvq_u8(chunk) < 0x80) {
-      ptr += 16;
-      continue;
-    }
-    // Find first non-ASCII byte via scalar scan within this 16-byte window
-    while (ptr < end && *ptr <= 0x7F) {
-      ++ptr;
-    }
-    if (ptr >= end) {
-      break;
-    }
-    const uint8_t lead = *ptr++;
-    if (!ValidateMultibyteSequence(ptr, end, lead)) {
-      return false;
-    }
-  }
-#endif
-
-  // Scalar tail (< 16 bytes remaining, or no SIMD)
-  while (ptr < end) {
-    const uint8_t byte = *ptr++;
-    if (byte <= 0x7F) {
-      continue;
-    }
-    if (!ValidateMultibyteSequence(ptr, end, byte)) {
-      return false;
-    }
-  }
-
-  return true;
 }
 
 }  // namespace
@@ -313,7 +197,7 @@ ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& heade
       /// Deliver a single complete non-fragmented non-compressed frame directly to the callback
       /// without copying the payload through the message buffer (zero-copy fast path).
       /// The payload must already be unmasked when this is called.
-      if (header.opcode == Opcode::Text && !ValidateUtf8(payload)) {
+      if (header.opcode == Opcode::Text && !IsValidUtf8(payload)) {
         if (_callbacks.onError) {
           _callbacks.onError(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
         }
@@ -448,7 +332,7 @@ ProtocolProcessResult WebSocketHandler::completeMessage() {
   const std::span<const std::byte> messageData = _message.buffer;
 
   // For text messages, validate UTF-8
-  if (_message.opcode == Opcode::Text && !ValidateUtf8(messageData)) {
+  if (_message.opcode == Opcode::Text && !IsValidUtf8(messageData)) {
     if (_callbacks.onError) {
       _callbacks.onError(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
     }

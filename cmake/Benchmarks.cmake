@@ -307,10 +307,15 @@ endif()
 # WebSocket micro-benchmarks (guarded by WebSocket feature flag)
 if(AERONET_ENABLE_WEBSOCKET)
   set(AERONET_BENCH_INTERNAL_WS_MASK ${AERONET_BENCH_ROOT}/internal/websocket-mask_bench.cpp)
+  set(AERONET_BENCH_INTERNAL_WS_UTF8 ${AERONET_BENCH_ROOT}/internal/websocket-utf8_bench.cpp)
 
   AeronetAddProjectBenchmark(aeronet-bench-internal-websocket-mask ${AERONET_BENCH_INTERNAL_WS_MASK}
                              LIBRARIES aeronet_websocket aeronet_tech)
   set_target_properties(aeronet-bench-internal-websocket-mask PROPERTIES FOLDER "benchmarks/internal")
+
+  AeronetAddProjectBenchmark(aeronet-bench-internal-websocket-utf8 ${AERONET_BENCH_INTERNAL_WS_UTF8}
+                             LIBRARIES aeronet_websocket aeronet_tech)
+  set_target_properties(aeronet-bench-internal-websocket-utf8 PROPERTIES FOLDER "benchmarks/internal")
 endif()
 
 if(AERONET_ENABLE_HTTP_SERVER)
