@@ -90,6 +90,15 @@ config.withTelemetryConfig(std::move(telemetry));
 
 When both exporters are enabled, every metric is sent to both. `addDogStatsdTag()` configures DogStatsD-only tags that are included on every measurement. If `dogstatsdNamespace` is empty, `serviceName` is used as its namespace. Built-in metric names already start with `aeronet.`, so do not set the namespace itself to `aeronet` unless the resulting `aeronet.aeronet.*` prefix is intentional.
 
+### Batching and flush
+
+Some metrics are recorded on the hot path: `aeronet.bytes.read` on every socket read, `aeronet.events.processed` on every poll, and the HTTP/2 instruments about 20 times per request. They are batched before being exported:
+
+- Counters are summed in memory, per name and labels, and exported at the next flush: one OTLP data point update and one DogStatsD line per counter, however often it was incremented.
+- DogStatsD lines (counters at the flush, gauges, histograms, timings and sets when recorded) are buffered and sent several per datagram, one per line. A datagram is sent when the next line would make it exceed 8 KiB (`DogStatsD::kMaxDatagramSize`, the default `dogstatsd_buffer_size` of the Datadog Agent), and at the flush.
+
+`SingleHttpServer` flushes its telemetry at each maintenance tick (at least every `pollInterval`), so a counter reaches the exporters at most one tick after it was incremented. The `HttpClient` flushes after each request. The custom metrics sent through `TelemetryContext::dogstatsdClient()` are buffered the same way. A `TelemetryContext` or a `DogStatsD` client of your own must call `flush()` periodically; their destructors flush too.
+
 ### Metric labels
 
 All metric operations accept an optional `MetricLabels` span. Both OTLP and DogStatsD receive the same per-measurement labels:
@@ -113,6 +122,7 @@ telemetry.counterAdd("orders.requests", 1, labels);
 telemetry.gauge("orders.queue.depth", 12, labels);
 telemetry.histogram("orders.payload.bytes", 1536.0, labels);
 telemetry.timing("orders.latency", std::chrono::milliseconds{8}, labels);
+telemetry.flush();  // exports the summed counters, see Batching and flush
 ```
 
 `MetricLabel` stores two `std::string_view` values. The array and referenced strings only need to remain valid until the metric call returns. The API does not allocate or copy a label container. DogStatsD appends the labels after configured global tags in `key:value` form; OpenTelemetry records them as data-point attributes.
@@ -160,7 +170,7 @@ Useful starting points for dashboards and alerts include:
 
 ### Runtime cost and object layout
 
-When telemetry is disabled, each detailed HTTP/2 instrumentation point is a predictable null check and does not allocate. Instrument recording, span recording and DogStatsD datagram emission occur on the event-loop thread; OTLP metric and span exports run periodically on background threads. Keep DogStatsD sockets local and non-blocking and configure OTLP export intervals appropriately. Existing unlabeled metric overloads keep their original call shape; only calls that supply labels construct and visit a `MetricLabels` span.
+When telemetry is disabled, each detailed HTTP/2 instrumentation point is a predictable null check and does not allocate. Instrument recording, span recording and DogStatsD datagram emission occur on the event-loop thread; OTLP metric and span exports run periodically on background threads. Counter increments only update an in-memory sum, and DogStatsD packs its lines into datagrams of up to 8 KiB (see [Batching and flush](#batching-and-flush)). Keep DogStatsD sockets local and non-blocking and configure OTLP export intervals appropriately. Existing unlabeled metric overloads keep their original call shape; only calls that supply labels construct and visit a `MetricLabels` span.
 
 The implementation adds no counters or timestamps to `Http2Stream` or to the protocol handler's per-stream request state. Per-stream duration reuses the request start timestamp that already exists. `TelemetryContext` remains one pointer and `Http2Stream` remains 32 bytes on the project's 64-bit build; `Http2Connection` gains one optional pointer (8 bytes) for the telemetry destination.
 
@@ -222,5 +232,6 @@ Read [Health probes](health-probes.md), then use the [Kubernetes deployment guid
 
 - OpenTelemetry export end to end: [tests/opentelemetry-e2e_test.cpp](../../tests/opentelemetry-e2e_test.cpp).
 - DogStatsD: [dogstatsd_test.cpp](../../aeronet/objects/test/dogstatsd_test.cpp).
+- Counter batching: [counter-accumulator_test.cpp](../../aeronet/objects/test/counter-accumulator_test.cpp), the `DogStatsDCounters*` tests of [opentelemetry-integration_test.cpp](../../aeronet/objects/test/opentelemetry-integration_test.cpp), `HttpServerTelemetry.DogStatsDMetricsSentAtMaintenanceTick` in [tests/http-core_test.cpp](../../tests/http-core_test.cpp) and `HttpClientE2ETest.TelemetryCountersSentAfterEachRequest` in [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp).
 - Access log: [access-log-writer_test.cpp](../../aeronet/server/test/access-log-writer_test.cpp).
 - `reusedConnection` of the request metrics (`HttpKeepAlive.MetricsReportReusedConnection`): [tests/http-core_test.cpp](../../tests/http-core_test.cpp).

@@ -1,11 +1,14 @@
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <string_view>
 
 #include "aeronet/dogstatsd.hpp"
+#include "aeronet/metric-label.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
+#include "counter-accumulator.hpp"
 #include "dogstatsd-metrics.hpp"
 
 namespace aeronet::tracing {
@@ -15,6 +18,21 @@ class TelemetryContextImpl {
  public:
   explicit TelemetryContextImpl(const TelemetryConfig& cfg) : dogstatsd(cfg) {}
 
+  TelemetryContextImpl(const TelemetryContextImpl&) = delete;
+  TelemetryContextImpl(TelemetryContextImpl&&) = delete;
+  TelemetryContextImpl& operator=(const TelemetryContextImpl&) = delete;
+  TelemetryContextImpl& operator=(TelemetryContextImpl&&) = delete;
+
+  ~TelemetryContextImpl() { flush(); }
+
+  void flush() noexcept {
+    pendingCounters.flush([this](std::string_view name, uint64_t delta, MetricLabels labels) {
+      dogstatsd.increment(name, delta, labels);
+    });
+    dogstatsd.flush();
+  }
+
+  detail::CounterAccumulator pendingCounters;
   detail::DogStatsdMetrics dogstatsd;
 };
 
@@ -36,15 +54,15 @@ TelemetryContext& TelemetryContext::operator=(TelemetryContext&&) noexcept = def
 // NOLINTNEXTLINE(readability-convert-member-functions-to-static)
 SpanPtr TelemetryContext::createSpan([[maybe_unused]] std::string_view name) const noexcept { return nullptr; }
 
-void TelemetryContext::counterAdd(std::string_view name, uint64_t delta) const noexcept {
+void TelemetryContext::counterAdd(std::string_view name, uint64_t delta, MetricLabels labels) const noexcept {
   if (_impl) {
-    _impl->dogstatsd.increment(name, delta);
+    _impl->pendingCounters.add(name, delta, labels);
   }
 }
 
-void TelemetryContext::counterAdd(std::string_view name, uint64_t delta, MetricLabels labels) const noexcept {
+void TelemetryContext::flush() const noexcept {
   if (_impl) {
-    _impl->dogstatsd.increment(name, delta, labels);
+    _impl->flush();
   }
 }
 

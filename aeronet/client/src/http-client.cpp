@@ -50,6 +50,7 @@
 #include "aeronet/tcp-connector.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
 #include "aeronet/timedef.hpp"
+#include "aeronet/tracing/tracer.hpp"
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
 #include "aeronet/vector.hpp"
@@ -161,6 +162,22 @@ internal::UrlParseResult FinalizeProxyUrl(HttpClientConfig& config) {
   return res;
 }
 
+// Flushes a telemetry context when destroyed.
+class FlushTelemetryOnExit {
+ public:
+  explicit FlushTelemetryOnExit(const tracing::TelemetryContext& telemetry) noexcept : _telemetry(telemetry) {}
+
+  FlushTelemetryOnExit(const FlushTelemetryOnExit&) = delete;
+  FlushTelemetryOnExit(FlushTelemetryOnExit&&) = delete;
+  FlushTelemetryOnExit& operator=(const FlushTelemetryOnExit&) = delete;
+  FlushTelemetryOnExit& operator=(FlushTelemetryOnExit&&) = delete;
+
+  ~FlushTelemetryOnExit() { _telemetry.flush(); }
+
+ private:
+  const tracing::TelemetryContext& _telemetry;
+};
+
 }  // namespace
 
 HttpClient::HttpClient()
@@ -262,6 +279,9 @@ HttpClient& HttpClient::operator=(const HttpClient& rhs) {
 HttpClient::~HttpClient() = default;
 
 HttpClientResult HttpClient::requestProcess(HttpRequest&& req, ResponseBodySink* sink) {
+  // The client has no periodic tick: the counters of a request are exported when it ends.
+  const FlushTelemetryOnExit flushTelemetryOnExit(_telemetry);
+
   maybeCompressBody(req);
 
   // Reset at every request, so that a request interrupted by an exception leaves no sink behind.

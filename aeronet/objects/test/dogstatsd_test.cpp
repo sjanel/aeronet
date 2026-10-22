@@ -2,12 +2,16 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cstddef>
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <system_error>
+#include <utility>
 
 #define AERONET_WANT_SOCKET_OVERRIDES
 
@@ -42,6 +46,7 @@ TEST(DogStatsDTest, EmptyNamespace) {
   DogStatsD client(sink.path(), "");
 
   client.increment("requests");
+  client.flush();
   EXPECT_EQ(sink.recvMessage(), "requests:1|c");
 }
 
@@ -95,15 +100,26 @@ TEST(DogStatsDTest, SocketInvalid_EPERM) {
 }
 
 TEST(DogStatsDTest, SendMetricFailsToAllocateMemory) {
+  if (!AERONET_WANT_MALLOC_OVERRIDES) {
+    GTEST_SKIP() << "malloc overrides disabled on this toolchain; skipping";
+  }
   test::UnixDogstatsdSink sink;
   DogStatsD client(sink.path(), "svc");
+  const std::string largerThanDatagram(DogStatsD::kMaxDatagramSize, 'm');
 
-  test::FailNextMalloc(1);  // the small metric buffer grows into a new block: make its allocation fail
+  // Only a metric larger than a datagram grows the buffer: make its allocation fail (by malloc or realloc, depending on
+  // the build).
+  test::FailNextMalloc(1);
+  test::FailNextRealloc(1);
 
   // Should not throw despite allocation failure
-  EXPECT_NO_THROW(
-      client.increment("a-very-long-metric-name-to-trigger-allocation-because-it-will-allocate-already-a-buffer-of-"
-                       "some-dozens-of-additional-chars-at-constructor-time"));
+  EXPECT_NO_THROW(client.increment(largerThanDatagram));
+  test::ResetToSysMalloc();
+  test::ResetToSysRealloc();
+
+  client.increment("ok");
+  client.flush();
+  EXPECT_EQ(sink.recvMessage(), "svc.ok:1|c");
 }
 
 TEST(DogStatsDTest, SendSystemError) {
@@ -115,6 +131,7 @@ TEST(DogStatsDTest, SendSystemError) {
 
   // Should not throw despite send() failure
   EXPECT_NO_THROW(client.increment("requests"));
+  EXPECT_NO_THROW(client.flush());
 }
 
 TEST(DogStatsDTest, SendsAllMetricTypesWithTags) {
@@ -125,18 +142,23 @@ TEST(DogStatsDTest, SendsAllMetricTypesWithTags) {
   tags.append("role:web");
 
   client.increment("hits", 3, tags);
+  client.flush();
   EXPECT_EQ(sink.recvMessage(), "svc.hits:3|c|#env:dev,role:web");
 
   client.gauge("temp", 12, tags);
+  client.flush();
   EXPECT_EQ(sink.recvMessage(), "svc.temp:12|g|#env:dev,role:web");
 
   client.histogram("payload", 4.25, {});
+  client.flush();
   EXPECT_EQ(sink.recvMessage(), "svc.payload:4.25|h");
 
   client.timing("latency", std::chrono::milliseconds{42}, {});
+  client.flush();
   EXPECT_EQ(sink.recvMessage(), "svc.latency:42|ms");
 
   client.set("users", "abc", tags);
+  client.flush();
   EXPECT_EQ(sink.recvMessage(), "svc.users:abc|s|#env:dev,role:web");
 }
 
@@ -151,19 +173,17 @@ TEST(DogStatsDTest, AppendsPerMeasurementLabels) {
   };
 
   client.increment("frames", 2, tags, labels);
-  EXPECT_EQ(sink.recvMessage(), "svc.frames:2|c|#env:dev,protocol:h2,frame.type:headers");
-
   client.histogram("ratio", 0.5, {}, labels);
-  EXPECT_EQ(sink.recvMessage(), "svc.ratio:0.5|h|#protocol:h2,frame.type:headers");
-
   client.gauge("active", 3, {}, labels);
-  EXPECT_EQ(sink.recvMessage(), "svc.active:3|g|#protocol:h2,frame.type:headers");
-
   client.timing("latency", std::chrono::milliseconds{8}, {}, labels);
-  EXPECT_EQ(sink.recvMessage(), "svc.latency:8|ms|#protocol:h2,frame.type:headers");
-
   client.set("peers", "client-a", {}, labels);
-  EXPECT_EQ(sink.recvMessage(), "svc.peers:client-a|s|#protocol:h2,frame.type:headers");
+  client.flush();
+  EXPECT_EQ(sink.recvMessage(),
+            "svc.frames:2|c|#env:dev,protocol:h2,frame.type:headers\n"
+            "svc.ratio:0.5|h|#protocol:h2,frame.type:headers\n"
+            "svc.active:3|g|#protocol:h2,frame.type:headers\n"
+            "svc.latency:8|ms|#protocol:h2,frame.type:headers\n"
+            "svc.peers:client-a|s|#protocol:h2,frame.type:headers");
 }
 
 TEST(DogStatsDTest, RespectsExistingNamespaceDotAndEmptyTags) {
@@ -171,6 +191,7 @@ TEST(DogStatsDTest, RespectsExistingNamespaceDotAndEmptyTags) {
   DogStatsD client(sink.path(), "svc.");
 
   client.increment("requests");
+  client.flush();
   EXPECT_EQ(sink.recvMessage(), "svc.requests:1|c");
 }
 
@@ -181,6 +202,7 @@ TEST(DogStatsDTest, EmptySocketPathDisablesClient) {
   EXPECT_NO_THROW(client.histogram("noop", 2.0));
   EXPECT_NO_THROW(client.timing("noop", std::chrono::milliseconds{1}));
   EXPECT_NO_THROW(client.set("noop", "value"));
+  EXPECT_NO_THROW(client.flush());
 }
 
 TEST(DogStatsDTest, RejectsTooLongSocketPath) {
@@ -194,11 +216,31 @@ TEST(DogStatsDTest, RejectsTooLongNamespace) {
   EXPECT_THROW(DogStatsD(sink.path(), ns), std::invalid_argument);
 }
 
+TEST(DogStatsDTest, NamespaceOfAtMost255CharsWithItsDot) {
+  test::UnixDogstatsdSink sink;
+  std::string ns(255, 'n');
+  EXPECT_THROW(DogStatsD(sink.path(), ns), std::invalid_argument);  // 256 chars with its dot
+
+  ns.back() = '.';
+  DogStatsD client(sink.path(), ns);
+  EXPECT_EQ(client.ns(), ns);
+
+  ns.pop_back();
+  ns.back() = 'm';
+  client = DogStatsD(sink.path(), ns);
+  EXPECT_EQ(client.ns().size(), 255U);
+  EXPECT_EQ(client.ns().back(), '.');
+  client.increment("x");
+  client.flush();
+  EXPECT_EQ(sink.recvMessage(), ns + ".x:1|c");
+}
+
 TEST(DogStatsDTest, SendFailureLogsAndContinues) {
   test::UnixDogstatsdSink sink;
   DogStatsD client(sink.path(), "svc");
   sink.closeAndUnlink();
   EXPECT_NO_THROW(client.increment("lost", 1));
+  EXPECT_NO_THROW(client.flush());
 }
 
 TEST(DogStatsDTest, SendEagainIsDropped) {
@@ -209,9 +251,11 @@ TEST(DogStatsDTest, SendEagainIsDropped) {
   // and not mark the connection for immediate reconnect. No exception should be thrown.
   test::PushSendAction({-1, error::kWouldBlock});
   EXPECT_NO_THROW(client.increment("lost", 1));
+  EXPECT_NO_THROW(client.flush());
 
-  // Subsequent sends should still work (no socket teardown on EAGAIN)
+  // Subsequent sends should still work (no socket teardown on EAGAIN), without the dropped metrics
   client.increment("ok", 1);
+  client.flush();
   EXPECT_EQ(sink.recvMessage(), "svc.ok:1|c");
 }
 
@@ -239,6 +283,7 @@ TEST(DogStatsDTest, IfFirstConnectFailsReconnectShouldBeAttemptedOnNextSend) {
   // Send many messages to trigger reconnect attempts. We don't want this test to
   // take too long, so pick a number greater than kReconnectionThreshold (80).
   client.increment("requests");
+  client.flush();
 
   // At least one of the sends after connect success should be received by the sink.
   // Allow small timeout for delivery.
@@ -265,6 +310,7 @@ TEST(DogStatsDTest, RetryShouldBePeriodic) {
   for (int messagePos = 0; messagePos < 49; ++messagePos) {
     client.increment("requests");
   }
+  client.flush();
 
   // None of the sends should be received by the sink yet.
   std::string msg = sink.recvMessage(100);
@@ -272,11 +318,125 @@ TEST(DogStatsDTest, RetryShouldBePeriodic) {
 
   // next one should trigger a reconnect attempt that will succeed.
   client.increment("requests");
+  client.flush();
 
-  // At least one of the sends after connect success should be received by the sink.
-  // Allow small timeout for delivery.
+  // Only the metric recorded once connected is sent.
   msg = sink.recvMessage(500);
-  EXPECT_FALSE(msg.empty());
+  EXPECT_EQ(msg, "svc.requests:1|c");
+}
+
+TEST(DogStatsDTest, BuffersMetricsUntilFlush) {
+  test::UnixDogstatsdSink sink;
+  DogStatsD client(sink.path(), "svc");
+
+  client.increment("hits");
+  client.gauge("temp", -4);
+  client.histogram("payload", 0.5);
+  EXPECT_TRUE(sink.recvMessage(50).empty());
+
+  client.flush();
+  EXPECT_EQ(sink.recvMessage(), "svc.hits:1|c\nsvc.temp:-4|g\nsvc.payload:0.5|h");
+
+  // Nothing left to send
+  client.flush();
+  EXPECT_TRUE(sink.recvMessage(50).empty());
+}
+
+TEST(DogStatsDTest, SendsDatagramBeforeItExceedsMaxSize) {
+  test::UnixDogstatsdSink sink;
+  DogStatsD client(sink.path(), "svc");
+
+  static constexpr std::string_view kLine = "svc.metric:1|c";
+  // Number of newline separated lines fitting in a datagram
+  static constexpr std::size_t kNbLinesPerDatagram = (DogStatsD::kMaxDatagramSize + 1U) / (kLine.size() + 1U);
+  for (std::size_t lineIdx = 0; lineIdx < kNbLinesPerDatagram; ++lineIdx) {
+    client.increment("metric");
+  }
+  EXPECT_TRUE(sink.recvMessage(50).empty());
+
+  // This one does not fit: the full datagram is sent first
+  client.increment("metric");
+  const std::string datagram = sink.recvMessage();
+  EXPECT_EQ(datagram.size(), (kNbLinesPerDatagram * (kLine.size() + 1U)) - 1U);
+  EXPECT_LE(datagram.size(), DogStatsD::kMaxDatagramSize);
+  EXPECT_EQ(static_cast<std::size_t>(std::ranges::count(datagram, '\n')) + 1U, kNbLinesPerDatagram);
+  EXPECT_TRUE(datagram.starts_with(kLine));
+  EXPECT_TRUE(datagram.ends_with(kLine));
+
+  client.flush();
+  EXPECT_EQ(sink.recvMessage(), kLine);
+}
+
+TEST(DogStatsDTest, SendsMetricLargerThanDatagramAlone) {
+  test::UnixDogstatsdSink sink;
+  DogStatsD client(sink.path(), "svc");
+  const std::string largeName(DogStatsD::kMaxDatagramSize, 'm');
+
+  client.increment("small");
+  client.increment(largeName);
+  EXPECT_EQ(sink.recvMessage(), "svc.small:1|c");
+
+  client.increment("next");
+  EXPECT_EQ(sink.recvMessage(), "svc." + largeName + ":1|c");
+
+  client.flush();
+  EXPECT_EQ(sink.recvMessage(), "svc.next:1|c");
+}
+
+TEST(DogStatsDTest, DestructorFlushes) {
+  test::UnixDogstatsdSink sink;
+  {
+    DogStatsD client(sink.path(), "svc");
+    client.increment("hits", 2);
+  }
+  EXPECT_EQ(sink.recvMessage(), "svc.hits:2|c");
+}
+
+TEST(DogStatsDTest, MoveConstructionKeepsBufferedMetrics) {
+  test::UnixDogstatsdSink sink;
+  DogStatsD client(sink.path(), "svc");
+  client.increment("hits");
+
+  DogStatsD moved(std::move(client));
+  EXPECT_TRUE(moved.enabled());
+  EXPECT_EQ(moved.socketPath(), sink.path());
+  EXPECT_EQ(moved.ns(), "svc.");
+  EXPECT_TRUE(sink.recvMessage(50).empty());
+
+  moved.flush();
+  EXPECT_EQ(sink.recvMessage(), "svc.hits:1|c");
+}
+
+TEST(DogStatsDTest, MoveAssignmentFlushesTheAssignedClient) {
+  test::UnixDogstatsdSink sink;
+  test::UnixDogstatsdSink otherSink;
+  DogStatsD client(sink.path(), "svc");
+  DogStatsD other(otherSink.path(), "other");
+  client.increment("hits");
+  other.increment("misses");
+
+  client = std::move(other);
+  EXPECT_EQ(sink.recvMessage(), "svc.hits:1|c");
+  EXPECT_EQ(client.ns(), "other.");
+
+  client.flush();
+  EXPECT_EQ(otherSink.recvMessage(), "other.misses:1|c");
+  EXPECT_TRUE(sink.recvMessage(50).empty());
+}
+
+TEST(DogStatsDTest, SelfMoveAssignmentKeepsTheClient) {
+  test::UnixDogstatsdSink sink;
+  DogStatsD client(sink.path(), "svc");
+  client.increment("hits");
+
+  DogStatsD& alias = client;
+  client = std::move(alias);
+  EXPECT_TRUE(client.enabled());
+  EXPECT_EQ(client.ns(), "svc.");
+  EXPECT_TRUE(sink.recvMessage(50).empty());
+
+  client.flush();
+  EXPECT_EQ(sink.recvMessage(), "svc.hits:1|c");
 }
 
 }  // namespace aeronet

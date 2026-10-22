@@ -252,6 +252,14 @@ if(AERONET_ENABLE_OPENSSL)
 endif()
 set_target_properties(aeronet-bench-internal-transport-dispatch PROPERTIES FOLDER "benchmarks/internal")
 
+# DogStatsD exports over a Unix datagram socket, Linux only.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(AERONET_BENCH_INTERNAL_TELEMETRY ${AERONET_BENCH_ROOT}/internal/telemetry_bench.cpp)
+  AeronetAddProjectBenchmark(aeronet-bench-internal-telemetry ${AERONET_BENCH_INTERNAL_TELEMETRY}
+                             LIBRARIES aeronet_objects)
+  set_target_properties(aeronet-bench-internal-telemetry PROPERTIES FOLDER "benchmarks/internal")
+endif()
+
 if(AERONET_ENABLE_HTTP_SERVER AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set(AERONET_BENCH_INTERNAL_EVENT_LOOP_POLL_TIMEOUT ${AERONET_BENCH_ROOT}/internal/event-loop-poll-timeout_bench.cpp)
   AeronetAddProjectBenchmark(aeronet-bench-internal-event-loop-poll-timeout ${AERONET_BENCH_INTERNAL_EVENT_LOOP_POLL_TIMEOUT})
