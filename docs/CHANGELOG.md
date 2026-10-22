@@ -269,7 +269,7 @@ All notable changes to aeronet are documented in this file.
 - **Clean-up glaze adapters**: instead of centralizing all glaze adapters in one file far from the objects definitions, move each object glaze adapter code into its own object header file.
 - **Fix test expectations in aeronet client when no compression library is available**.
 - **Removed zstd.h and brotli/encode.h includes from .hpp internal header files**
-- **The `HttpServer` can now be optionally compiled (if you only need the client)**: use `-DAERONET_ENABLE_HTTP_SERVER=OFF` to disable compilation of server specific code. The code may not be optimally excluded yet.
+- **The `HttpServer` can now be optionally compiled (if you only need the client)**: use `-D AERONET_ENABLE_HTTP_SERVER=OFF` to disable compilation of server specific code. The code may not be optimally excluded yet.
 - **Fixed compilation in Release when `AERONET_ENABLE_TEST_HOOKS` is not set**
 - **Fix compilation when AERONET_ENABLE_HTTP2 is ON but AERONET_ENABLE_HTTP_CLIENT is OFF**: `http2-connection.hpp` only included `http-method.hpp` in client builds while always declaring `sendRequestHeaders(..., http::Method, ...)`.
 - **Lowered severity of HTTP/2 unknown SETTINGS id log from warn to debug**: spec wise, there is nothing wrong to ignore it, so it's part of nominal behavior, no need to emit a warning for that. Also emit the associated value.
@@ -782,7 +782,7 @@ Full build and installation instructions: [docs/getting-started/install.md](gett
 Quick start:
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -D CMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ./build/examples/minimal 8080
 ```

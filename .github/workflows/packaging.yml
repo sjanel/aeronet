@@ -101,8 +101,8 @@ jobs:
       - name: Build simple consumer
         run: |
           ./scripts/retry.sh cmake -S examples/consumer-cmake -B consumer-test/build -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE=${GITHUB_WORKSPACE}/vcpkg/scripts/buildsystems/vcpkg.cmake \
-            -DCMAKE_BUILD_TYPE=Release
+            -D CMAKE_TOOLCHAIN_FILE=${GITHUB_WORKSPACE}/vcpkg/scripts/buildsystems/vcpkg.cmake \
+            -D CMAKE_BUILD_TYPE=Release
           cmake --build consumer-test/build -j
           ls -l consumer-test/build || true
 

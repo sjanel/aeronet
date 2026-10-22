@@ -54,7 +54,7 @@ The drivers build automatically whenever the HTTP client and benchmarks are enab
 **Release** build for meaningful numbers (LTO is enabled there):
 
 ```bash
-cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build-release -D CMAKE_BUILD_TYPE=Release
 ninja -C build-release aeronet-bench-client curl-bench-client drogon-bench-client beast-bench-client aeronet-bench-server
 ```
 

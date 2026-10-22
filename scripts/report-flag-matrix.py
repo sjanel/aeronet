@@ -46,7 +46,7 @@ MAX_ISSUE_BODY = 60000       # GitHub rejects bodies longer than 65536 character
 MARKER_RE = re.compile(r"<!-- flag-combinations-fingerprints: ([0-9a-z ]*) -->")
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 TIMESTAMP_RE = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ")  # downloaded job logs
-FLAG_RE = re.compile(r"-D(\w+)=(ON|OFF)\b")
+FLAG_RE = re.compile(r"-D\s*(\w+)=(ON|OFF)\b")
 
 CMAKE_ERROR_RE = re.compile(
     r"^CMake Error(?: \(dev\))?(?: (?:at|in) (?P<loc>.+?)(?::\d+)?(?: \(\w+\))?)?:\s*(?P<rest>.*)$")

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Print a GitHub Actions matrix of AERONET CMake option combinations.
 
-Output (stdout): {"include": [{"id": N, "kind": "wave|random", "cmake_args": "-DAERONET_...=ON ..."}, ...]}
+Output (stdout): {"include": [{"id": N, "kind": "wave|random", "cmake_args": "-D AERONET_...=ON ..."}, ...]}
 
 Two kinds of combinations are generated:
 
@@ -77,7 +77,7 @@ def is_valid(cfg):
 
 
 def to_args(bits):
-    return " ".join(f"-D{flag}={'ON' if on else 'OFF'}" for flag, on in zip(FLAGS, bits))
+    return " ".join(f"-D {flag}={'ON' if on else 'OFF'}" for flag, on in zip(FLAGS, bits))
 
 
 def candidates(epoch, step):

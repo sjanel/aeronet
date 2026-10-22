@@ -189,15 +189,15 @@ fi
 if [[ $DO_BUILD -eq 1 ]]; then
   echo "Configuring profile build in ${BUILD_DIR}..." >&2
   cmake -S "$REPO_ROOT" -B "$BUILD_DIR" -G Ninja \
-    -DAERONET_BUILD_TESTS=OFF \
-    -DAERONET_BUILD_EXAMPLES=OFF \
-    -DAERONET_BUILD_BENCHMARKS=ON \
-    -DAERONET_BENCH_ENABLE_DROGON=OFF \
-    -DAERONET_BENCH_ENABLE_OATPP=OFF \
-    -DAERONET_BENCH_ENABLE_HTTPLIB=OFF \
-    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-    -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="-O2 -g -DNDEBUG -fno-omit-frame-pointer" \
-    -DCMAKE_C_FLAGS_RELWITHDEBINFO="-O2 -g -DNDEBUG -fno-omit-frame-pointer"
+    -D AERONET_BUILD_TESTS=OFF \
+    -D AERONET_BUILD_EXAMPLES=OFF \
+    -D AERONET_BUILD_BENCHMARKS=ON \
+    -D AERONET_BENCH_ENABLE_DROGON=OFF \
+    -D AERONET_BENCH_ENABLE_OATPP=OFF \
+    -D AERONET_BENCH_ENABLE_HTTPLIB=OFF \
+    -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+    -D CMAKE_CXX_FLAGS_RELWITHDEBINFO="-O2 -g -DNDEBUG -fno-omit-frame-pointer" \
+    -D CMAKE_C_FLAGS_RELWITHDEBINFO="-O2 -g -DNDEBUG -fno-omit-frame-pointer"
   cmake --build "$BUILD_DIR"
   echo "Profile build complete: ${BUILD_DIR}" >&2
 fi
