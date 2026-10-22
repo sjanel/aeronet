@@ -60,7 +60,7 @@ To send one file from a handler instead of serving a directory, use `HttpRespons
 Build the examples and run it:
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -D CMAKE_BUILD_TYPE=Release
 cmake --build build
 ./build/examples/aeronet-sendfile 8080 /path/to/file
 ```

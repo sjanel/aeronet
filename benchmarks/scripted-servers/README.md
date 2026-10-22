@@ -93,7 +93,7 @@ no additional packages are required.
 ```bash
 cd /path/to/aeronet
 mkdir -p build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release -DAERONET_BUILD_BENCHMARKS=ON
+cmake .. -D CMAKE_BUILD_TYPE=Release -D AERONET_BUILD_BENCHMARKS=ON
 ninja aeronet-bench-server drogon-bench-server
 ```
 
@@ -103,7 +103,7 @@ Pistache is automatically fetched and built from source via CMake FetchContent w
 
 ```bash
 # In your build directory
-cmake .. -DAERONET_BENCH_ENABLE_PISTACHE=ON
+cmake .. -D AERONET_BENCH_ENABLE_PISTACHE=ON
 ninja pistache-bench-server
 ```
 
@@ -115,7 +115,7 @@ Crow (CrowCpp/Crow - the maintained fork) is automatically fetched and built fro
 
 ```bash
 # In your build directory
-cmake .. -DAERONET_BENCH_ENABLE_CROW=ON
+cmake .. -D AERONET_BENCH_ENABLE_CROW=ON
 ninja crow-bench-server
 ```
 
@@ -126,7 +126,7 @@ the `beast-bench-server` scripted benchmark target.
 
 ```bash
 # In your build directory
-cmake .. -DAERONET_BENCH_ENABLE_BEAST=ON
+cmake .. -D AERONET_BENCH_ENABLE_BEAST=ON
 ninja beast-bench-server
 ```
 

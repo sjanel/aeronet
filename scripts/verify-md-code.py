@@ -1057,9 +1057,9 @@ def configure_cmake_project(
     if generator:
         cmd.extend(["-G", generator])
     if build_type:
-        cmd.append(f"-DCMAKE_BUILD_TYPE={build_type}")
+        cmd.extend(["-D", f"CMAKE_BUILD_TYPE={build_type}"])
     if cxx_compiler:
-        cmd.append(f"-DCMAKE_CXX_COMPILER={cxx_compiler}")
+        cmd.extend(["-D", f"CMAKE_CXX_COMPILER={cxx_compiler}"])
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode == 0:
         return True

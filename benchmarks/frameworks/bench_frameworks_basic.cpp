@@ -33,17 +33,16 @@
 #endif
 #ifdef AERONET_BENCH_ENABLE_OATPP
 #include <oatpp/core/Types.hpp>
-#include <oatpp/core/macro/codegen.hpp>
-#include <oatpp/core/macro/component.hpp>
-#include <oatpp/network/ConnectionHandler.hpp>
+#include <oatpp/core/async/Coroutine.hpp>
+#include <oatpp/core/async/Executor.hpp>
+#include <oatpp/core/base/Environment.hpp>
+#include <oatpp/network/Address.hpp>
 #include <oatpp/network/Server.hpp>
 #include <oatpp/network/tcp/server/ConnectionProvider.hpp>
+#include <oatpp/web/protocol/http/outgoing/ResponseFactory.hpp>
 #include <oatpp/web/server/AsyncHttpConnectionHandler.hpp>
-#include <oatpp/web/server/HttpConnectionHandler.hpp>
 #include <oatpp/web/server/HttpRequestHandler.hpp>
 #include <oatpp/web/server/HttpRouter.hpp>
-#include <oatpp/web/server/api/ApiController.hpp>
-
 #endif
 #ifdef AERONET_BENCH_ENABLE_HTTPLIB
 #include <httplib.h>
@@ -176,48 +175,28 @@ DrogonServerWrapper* drogonServer = nullptr;
 
 #ifdef AERONET_BENCH_ENABLE_OATPP
 
-#include OATPP_CODEGEN_BEGIN(ApiController)  /// <-- Begin Code-Gen
+using OatppResponsePtr = std::shared_ptr<oatpp::web::protocol::http::outgoing::Response>;
 
-class AsyncController : public oatpp::web::server::api::ApiController {
- private:
-  using __ControllerType = AsyncController;
-
+// Hands a response built synchronously to the async connection handler.
+class OatppReadyResponse : public oatpp::async::CoroutineWithResult<OatppReadyResponse, const OatppResponsePtr&> {
  public:
-  AsyncController(OATPP_COMPONENT(std::shared_ptr<ObjectMapper>, objectMapper))
-      : oatpp::web::server::api::ApiController(objectMapper) {}
+  explicit OatppReadyResponse(OatppResponsePtr resp) : _resp(std::move(resp)) {}
 
-  ENDPOINT_ASYNC("GET", benchutil::kBodyPath, GetBody){ENDPOINT_ASYNC_INIT(GetBody)
+  oatpp::async::Action act() override { return _return(_resp); }
 
-                                                           Action act() override{auto body = g_stringPool.next();
-  auto bodySz = body.size();
-  auto resp = oatpp::web::protocol::http::outgoing::ResponseFactory::createResponse(
-      oatpp::web::protocol::http::Status::CODE_200, std::move(body));
-  resp->putOrReplaceHeader("Content-Length", std::to_string(bodySz));
-  return _return(resp);
-}
+ private:
+  OatppResponsePtr _resp;
 };
 
-ENDPOINT_ASYNC("GET", benchutil::kHeaderPath,
-               GetHeader){ENDPOINT_ASYNC_INIT(GetHeader)
+// The handlers never wait for anything, so their async version just wraps the synchronous one.
+struct OatppHandlerBase : public oatpp::web::server::HttpRequestHandler {
+  oatpp::async::CoroutineStarterForResult<const OatppResponsePtr&> handleAsync(
+      const std::shared_ptr<IncomingRequest>& req) override {
+    return OatppReadyResponse::startForResult(handle(req));
+  }
+};
 
-                              Action act() override{auto szParam = request->getQueryParameter("size");
-auto resp = oatpp::web::protocol::http::outgoing::ResponseFactory::createResponse(
-    oatpp::web::protocol::http::Status::CODE_200, szParam);
-int nbHeaders{};
-std::from_chars(szParam->data(), szParam->data() + szParam->size(), nbHeaders);
-for (int headerPos = 0; headerPos < nbHeaders; ++headerPos) {
-  resp->putOrReplaceHeader(oatpp::String(g_stringPool.next()), oatpp::String(g_stringPool.next()));
-}
-return _return(resp);
-}
-}
-;
-}
-;
-
-#include OATPP_CODEGEN_END(ApiController)  /// <-- End Code-Gen
-
-struct OatppBodyHandler : public oatpp::web::server::HttpRequestHandler {
+struct OatppBodyHandler : public OatppHandlerBase {
   // no local RNG; pool-owned RNG is used for pregenerated strings
   OatppBodyHandler() = default;
 
@@ -231,7 +210,7 @@ struct OatppBodyHandler : public oatpp::web::server::HttpRequestHandler {
   }
 };
 
-struct OatppHeadersHandler : public oatpp::web::server::HttpRequestHandler {
+struct OatppHeadersHandler : public OatppHandlerBase {
   // no local RNG; pool-owned RNG is used for pregenerated strings
   OatppHeadersHandler() = default;
 
@@ -251,7 +230,8 @@ struct OatppHeadersHandler : public oatpp::web::server::HttpRequestHandler {
 struct OatppServerWrapper {
   std::shared_ptr<oatpp::network::Server> server;
   std::shared_ptr<oatpp::network::tcp::server::ConnectionProvider> provider;
-  std::shared_ptr<oatpp::network::ConnectionHandler> handler;
+  std::shared_ptr<oatpp::async::Executor> executor;
+  std::shared_ptr<oatpp::web::server::AsyncHttpConnectionHandler> handler;
   std::thread th;
   uint16_t _port = 18082;
 
@@ -264,15 +244,13 @@ struct OatppServerWrapper {
     auto bodyHandler = std::make_shared<OatppBodyHandler>();
     auto headersHandler = std::make_shared<OatppHeadersHandler>();
 
-    // router->addController(std::make_shared<AsyncController>());
-
     router->route("GET", benchutil::kBodyPath, bodyHandler);
     router->route("GET", benchutil::kHeaderPath, headersHandler);
 
-    // actually this spawns a new thread for each connection. We need to migrate to AsyncHttpConnectionHandler,
-    // but I could not make it work. TODO: make it fully async with 1 thread, otherwise it's not fair for the bench
-    handler = oatpp::web::server::HttpConnectionHandler::createShared(router);
-    // handler = oatpp::web::server::AsyncHttpConnectionHandler::createShared(router, 1);
+    // Fully async with a single processor thread, like aeronet and drogon (the synchronous
+    // HttpConnectionHandler spawns a thread per connection). oatpp also needs one I/O and one timer worker.
+    executor = std::make_shared<oatpp::async::Executor>(1, 1, 1);
+    handler = oatpp::web::server::AsyncHttpConnectionHandler::createShared(router, executor);
 
     server = std::make_shared<oatpp::network::Server>(provider, handler);
 
@@ -299,6 +277,10 @@ struct OatppServerWrapper {
     if (th.joinable()) {
       th.join();
     }
+
+    executor->waitTasksFinished();
+    executor->stop();
+    executor->join();
 
     oatpp::base::Environment::destroy();
   }

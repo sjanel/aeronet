@@ -7,7 +7,7 @@ This minimal program listens on port 8080 and returns a plain-text response from
 From a repository checkout, configure and build a Release build:
 
 ```bash
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DAERONET_BUILD_TESTS=OFF
+cmake -S . -B build -G Ninja -D CMAKE_BUILD_TYPE=Release -D AERONET_BUILD_TESTS=OFF
 cmake --build build --parallel
 ```
 

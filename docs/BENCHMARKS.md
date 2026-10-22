@@ -93,7 +93,7 @@ Artifacts produced:
 Benchmarks are built by default only when aeronet is the top-level project, and not in Debug builds. Enable them explicitly with:
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAERONET_BUILD_BENCHMARKS=ON
+cmake -S . -B build -D CMAKE_BUILD_TYPE=Release -D AERONET_BUILD_BENCHMARKS=ON
 cmake --build build --target run-aeronet-bench
 ```
 
@@ -178,7 +178,7 @@ included in that result.
 Build and run stable timing samples in Release mode:
 
 ```bash
-cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DAERONET_BUILD_BENCHMARKS=ON
+cmake -S . -B build-release -G Ninja -D CMAKE_BUILD_TYPE=Release -D AERONET_BUILD_BENCHMARKS=ON
 cmake --build build-release --target aeronet-bench-internal-transport-dispatch
 ./build-release/aeronet-bench-internal-transport-dispatch \
   --benchmark_repetitions=7 --benchmark_min_time=1s --benchmark_report_aggregates_only=true
@@ -228,7 +228,7 @@ cat build/aeronet-benchmarks.json
 - `*BodyMinMaxNoReuse`: the body benchmark with a fresh TCP connection per request, which highlights accept and kernel scheduling overhead compared with keep-alive.
 
 ```bash
-cmake -S . -B build_bench -DCMAKE_BUILD_TYPE=Release -DAERONET_BUILD_BENCHMARKS=ON
+cmake -S . -B build_bench -D CMAKE_BUILD_TYPE=Release -D AERONET_BUILD_BENCHMARKS=ON
 cmake --build build_bench --target aeronet-bench-frameworks
 ./build_bench/aeronet-bench-frameworks --benchmark_filter='^(Aeronet|Drogon)BodyMinMax/'
 ```

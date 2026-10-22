@@ -14,7 +14,7 @@ namespace aeronet::tracing {
 
 // Minimal, header-only tracing facade.
 // By default this is a no-op implementation. When building with
-// -DAERONET_ENABLE_OPENTELEMETRY=ON and linking opentelemetry-cpp, an
+// -D AERONET_ENABLE_OPENTELEMETRY=ON and linking opentelemetry-cpp, an
 // implementation can be provided that forwards to the SDK.
 
 struct Span {
