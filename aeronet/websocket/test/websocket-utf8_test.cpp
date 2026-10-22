@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iterator>
 #include <memory>
 #include <random>
@@ -15,6 +16,7 @@
 #include <vector>
 
 #include "aeronet/avx2.hpp"
+#include "aeronet/websocket-constants.hpp"
 
 namespace aeronet::websocket {
 
@@ -23,25 +25,38 @@ namespace {
 struct Kernel {
   std::string_view name;
   bool (*isValid)(std::span<const std::byte>) noexcept;
+  // Its variant unmasking the data in the same pass (none for the scalar kernel).
+  bool (*unmaskAndValidate)(std::span<std::byte>, MaskingKey) noexcept;
 };
 
-// The dispatcher and every kernel the CPU supports.
+// The dispatchers and every kernel the CPU supports.
 const std::vector<Kernel>& Kernels() {
   static const std::vector<Kernel> kKernels = [] {
-    std::vector<Kernel> kernels{{"dispatch", &IsValidUtf8}, {"scalar", &detail::IsValidUtf8Scalar}};
+    std::vector<Kernel> kernels{{"dispatch", &IsValidUtf8, &UnmaskAndValidateUtf8},
+                                {"scalar", &detail::IsValidUtf8Scalar, nullptr}};
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
     if (HasSsse3()) {
-      kernels.push_back({"ssse3", &detail::IsValidUtf8Ssse3});
+      kernels.push_back({"ssse3", &detail::IsValidUtf8Ssse3, &detail::UnmaskAndValidateUtf8Ssse3});
     }
     if (HasAvx2()) {
-      kernels.push_back({"avx2", &detail::IsValidUtf8Avx2});
+      kernels.push_back({"avx2", &detail::IsValidUtf8Avx2, &detail::UnmaskAndValidateUtf8Avx2});
     }
 #elif defined(__ARM_NEON) || defined(__ARM_NEON__)
-    kernels.push_back({"neon", &detail::IsValidUtf8Neon});
+    kernels.push_back({"neon", &detail::IsValidUtf8Neon, &detail::UnmaskAndValidateUtf8Neon});
 #endif
     return kernels;
   }();
   return kKernels;
+}
+
+// Masking key of the data given to the unmasking kernels: distinct bytes, with and without their high bit.
+constexpr std::array<std::byte, kMaskingKeySize> kKeyBytes{std::byte{0xC3}, std::byte{0x5A}, std::byte{0x01},
+                                                           std::byte{0xF0}};
+
+MaskingKey TestMaskingKey() {
+  MaskingKey maskingKey;
+  std::memcpy(&maskingKey, kKeyBytes.data(), kMaskingKeySize);
+  return maskingKey;
 }
 
 // Independent reference: the well-formed byte sequences of the Unicode Standard (table 3-7).
@@ -94,15 +109,29 @@ bool ReferenceIsValidUtf8(std::string_view data) {
   return true;
 }
 
-// Name of the first kernel whose verdict on data differs from expected, empty if they all agree.
-// The data is copied to an allocation of its exact size, for ASAN to report any read past its end.
-std::string_view FirstMismatch(std::string_view data, bool expected) {
+// Name of the first kernel whose verdict on data differs from expected, empty if they all agree. The unmasking
+// variants get the data masked, and must also leave it entirely unmasked, whatever their verdict.
+// The data is copied to allocations of its exact size, for ASAN to report any access past their end.
+std::string FirstMismatch(std::string_view data, bool expected) {
   const auto copy = std::make_unique_for_overwrite<char[]>(data.size());
   std::ranges::copy(data, copy.get());
   const auto bytes = std::as_bytes(std::span<const char>(copy.get(), data.size()));
+  const auto maskedCopy = std::make_unique_for_overwrite<std::byte[]>(data.size());
+  const std::span<std::byte> masked(maskedCopy.get(), data.size());
   for (const Kernel& kernel : Kernels()) {
     if (kernel.isValid(bytes) != expected) {
-      return kernel.name;
+      return std::string(kernel.name);
+    }
+    if (kernel.unmaskAndValidate != nullptr) {
+      for (std::size_t idx = 0; idx < data.size(); ++idx) {
+        masked[idx] = bytes[idx] ^ kKeyBytes[idx % kMaskingKeySize];
+      }
+      if (kernel.unmaskAndValidate(masked, TestMaskingKey()) != expected) {
+        return std::string(kernel.name) + " (unmask)";
+      }
+      if (!std::ranges::equal(masked, bytes)) {
+        return std::string(kernel.name) + " (unmasked data)";
+      }
     }
   }
   return {};
@@ -215,6 +244,9 @@ TEST(WebSocketUtf8, Empty) {
   // A null pointer with zero size is valid too.
   for (const Kernel& kernel : Kernels()) {
     EXPECT_TRUE(kernel.isValid(std::span<const std::byte>{})) << kernel.name;
+    if (kernel.unmaskAndValidate != nullptr) {
+      EXPECT_TRUE(kernel.unmaskAndValidate(std::span<std::byte>{}, TestMaskingKey())) << kernel.name;
+    }
   }
 }
 
