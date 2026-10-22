@@ -85,7 +85,7 @@ Streaming responses, coroutine (async) handlers, routing, middleware and the res
 Minimal server examples for typical use cases (multi-threaded server, TLS, HTTP/2, WebSocket, static files, sendfile, HTTP client, ...) are provided in the [examples](examples) directory.
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -D CMAKE_BUILD_TYPE=Release
 cmake --build build
 
 ./build/examples/aeronet-server-minimal 8080   # or omit 8080 for ephemeral

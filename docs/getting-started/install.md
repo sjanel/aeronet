@@ -31,17 +31,17 @@ Every CMake option - build products, developer tools, protocol and integration f
 Release (static, TLS + zlib + zstd + brotli ON, tests OFF):
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-  -DAERONET_ENABLE_OPENSSL=ON -DAERONET_ENABLE_ZLIB=ON -DAERONET_ENABLE_ZSTD=ON -DAERONET_ENABLE_BROTLI=ON \
-  -DAERONET_BUILD_TESTS=OFF
+cmake -S . -B build -D CMAKE_BUILD_TYPE=Release \
+  -D AERONET_ENABLE_OPENSSL=ON -D AERONET_ENABLE_ZLIB=ON -D AERONET_ENABLE_ZSTD=ON -D AERONET_ENABLE_BROTLI=ON \
+  -D AERONET_BUILD_TESTS=OFF
 cmake --build build --parallel
 ```
 
 Debug with sanitizers + tests:
 
 ```bash
-cmake -S . -B build-debug -DCMAKE_BUILD_TYPE=Debug \
-  -DAERONET_ENABLE_ASAN=ON -DAERONET_BUILD_TESTS=ON
+cmake -S . -B build-debug -D CMAKE_BUILD_TYPE=Debug \
+  -D AERONET_ENABLE_ASAN=ON -D AERONET_BUILD_TESTS=ON
 cmake --build build-debug --parallel
 ctest --test-dir build-debug --output-on-failure
 ```
@@ -49,8 +49,8 @@ ctest --test-dir build-debug --output-on-failure
 Debug with thread sanitizer + tests (a data race fails the test, TSan exiting with code 66):
 
 ```bash
-cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=Debug \
-  -DAERONET_ENABLE_TSAN=ON -DAERONET_BUILD_TESTS=ON
+cmake -S . -B build-tsan -D CMAKE_BUILD_TYPE=Debug \
+  -D AERONET_ENABLE_TSAN=ON -D AERONET_BUILD_TESTS=ON
 cmake --build build-tsan --parallel
 ctest --test-dir build-tsan --output-on-failure
 ```
@@ -58,33 +58,33 @@ ctest --test-dir build-tsan --output-on-failure
 Plain HTTP only (no TLS / extra codecs):
 
 ```bash
-cmake -S . -B build-plain -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  -DAERONET_BUILD_TESTS=OFF \
-  -DAERONET_ENABLE_OPENSSL=OFF -DAERONET_ENABLE_HTTP2=OFF \
-  -DAERONET_ENABLE_WEBSOCKET=OFF -DAERONET_ENABLE_HTTP_CLIENT=OFF \
-  -DAERONET_ENABLE_ZLIB=OFF -DAERONET_ENABLE_ZSTD=OFF \
-  -DAERONET_ENABLE_BROTLI=OFF -DAERONET_ENABLE_SPDLOG=OFF \
-  -DAERONET_ENABLE_GLAZE=OFF -DAERONET_ENABLE_OPENTELEMETRY=OFF
+cmake -S . -B build-plain -G Ninja -D CMAKE_BUILD_TYPE=Release \
+  -D AERONET_BUILD_TESTS=OFF \
+  -D AERONET_ENABLE_OPENSSL=OFF -D AERONET_ENABLE_HTTP2=OFF \
+  -D AERONET_ENABLE_WEBSOCKET=OFF -D AERONET_ENABLE_HTTP_CLIENT=OFF \
+  -D AERONET_ENABLE_ZLIB=OFF -D AERONET_ENABLE_ZSTD=OFF \
+  -D AERONET_ENABLE_BROTLI=OFF -D AERONET_ENABLE_SPDLOG=OFF \
+  -D AERONET_ENABLE_GLAZE=OFF -D AERONET_ENABLE_OPENTELEMETRY=OFF
 cmake --build build-plain --parallel
 ```
 
 Enable glaze JSON support explicitly:
 
 ```bash
-cmake -S . -B build-glaze -DCMAKE_BUILD_TYPE=Release -DAERONET_ENABLE_GLAZE=ON
+cmake -S . -B build-glaze -D CMAKE_BUILD_TYPE=Release -D AERONET_ENABLE_GLAZE=ON
 cmake --build build-glaze --parallel
 ```
 
 Shared libraries (minimal HTTP-only profile):
 
 ```bash
-cmake -S . -B build-shared -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  -DAERONET_BUILD_SHARED=ON -DAERONET_BUILD_TESTS=OFF \
-  -DAERONET_ENABLE_OPENSSL=OFF -DAERONET_ENABLE_HTTP2=OFF \
-  -DAERONET_ENABLE_WEBSOCKET=OFF -DAERONET_ENABLE_HTTP_CLIENT=OFF \
-  -DAERONET_ENABLE_ZLIB=OFF -DAERONET_ENABLE_ZSTD=OFF \
-  -DAERONET_ENABLE_BROTLI=OFF -DAERONET_ENABLE_SPDLOG=OFF \
-  -DAERONET_ENABLE_GLAZE=OFF -DAERONET_ENABLE_OPENTELEMETRY=OFF
+cmake -S . -B build-shared -G Ninja -D CMAKE_BUILD_TYPE=Release \
+  -D AERONET_BUILD_SHARED=ON -D AERONET_BUILD_TESTS=OFF \
+  -D AERONET_ENABLE_OPENSSL=OFF -D AERONET_ENABLE_HTTP2=OFF \
+  -D AERONET_ENABLE_WEBSOCKET=OFF -D AERONET_ENABLE_HTTP_CLIENT=OFF \
+  -D AERONET_ENABLE_ZLIB=OFF -D AERONET_ENABLE_ZSTD=OFF \
+  -D AERONET_ENABLE_BROTLI=OFF -D AERONET_ENABLE_SPDLOG=OFF \
+  -D AERONET_ENABLE_GLAZE=OFF -D AERONET_ENABLE_OPENTELEMETRY=OFF
 cmake --build build-shared --parallel
 ```
 
@@ -97,8 +97,8 @@ Use the exact CI versions for a supported baseline. The [build configuration ref
 ### macOS
 
 ```bash
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  -DAERONET_BUILD_TESTS=ON
+cmake -S . -B build -G Ninja -D CMAKE_BUILD_TYPE=Release \
+  -D AERONET_BUILD_TESTS=ON
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
@@ -107,8 +107,8 @@ ctest --test-dir build --output-on-failure
 
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
-  -DCMAKE_BUILD_TYPE=Release `
-  -DAERONET_BUILD_TESTS=ON
+  -D CMAKE_BUILD_TYPE=Release `
+  -D AERONET_BUILD_TESTS=ON
 cmake --build build --config Release --parallel
 ctest --test-dir build --build-config Release --output-on-failure
 ```
@@ -125,7 +125,7 @@ Requirements:
 - Compiler minimum versions: GCC 15, Clang 18, or MSVC 17.6
 
 ```bash
-cmake -B build -G Ninja -DAERONET_BUILD_MODULES=ON
+cmake -B build -G Ninja -D AERONET_BUILD_MODULES=ON
 cmake --build build
 ```
 
@@ -154,7 +154,7 @@ int main() {
 ## Install
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAERONET_INSTALL=ON
+cmake -S . -B build -D CMAKE_BUILD_TYPE=Release -D AERONET_INSTALL=ON
 cmake --build build --parallel
 cmake --install build --prefix "$(pwd)/dist"
 ```
@@ -223,8 +223,8 @@ Install & build (Release static):
 ```bash
 conan install . --output-folder=build/conan -s build_type=Release \
   -o aeronet:with_openssl=True -o aeronet:with_spdlog=False
-cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=build/conan/conan_toolchain.cmake \
-  -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -D CMAKE_TOOLCHAIN_FILE=build/conan/conan_toolchain.cmake \
+  -D CMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ```
 
@@ -308,4 +308,4 @@ echo "set(VCPKG_LIBRARY_LINKAGE dynamic)" >> x64-linux-dynamic.cmake
 vcpkg install aeronet --overlay-ports=./ports --triplet x64-linux-dynamic
 ```
 
-The port maps `VCPKG_LIBRARY_LINKAGE=dynamic` to `-DAERONET_BUILD_SHARED=ON` automatically.
+The port maps `VCPKG_LIBRARY_LINKAGE=dynamic` to `-D AERONET_BUILD_SHARED=ON` automatically.

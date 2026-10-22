@@ -31,7 +31,7 @@ the content into a Kubernetes ConfigMap.
 Build and run:
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAERONET_ENABLE_GLAZE=ON
+cmake -S . -B build -D CMAKE_BUILD_TYPE=Release -D AERONET_ENABLE_GLAZE=ON
 cmake --build build --target aeronet-config-dump
 
 # Print YAML to stdout
