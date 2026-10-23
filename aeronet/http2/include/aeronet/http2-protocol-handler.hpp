@@ -14,6 +14,7 @@
 #include "aeronet/file.hpp"
 #include "aeronet/hpack.hpp"
 #include "aeronet/http-message-data.hpp"
+#include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -24,11 +25,9 @@
 #include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/object-pool.hpp"
-#include "aeronet/path-handlers.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router.hpp"
-#include "aeronet/tracing/tracer.hpp"
 #include "aeronet/tunnel-bridge.hpp"
 #include "aeronet/vector.hpp"
 
@@ -64,15 +63,15 @@ namespace http2 {
 /// Thread safety: NOT thread-safe. Executes on the single-threaded event loop.
 class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
  public:
-  /// Create an HTTP/2 protocol handler with a request dispatcher.
+  /// Create an HTTP/2 protocol handler.
   /// @param config HTTP/2 configuration
-  /// @param dispatcher Callback that dispatches an HttpRequestView to handlers and returns a response
+  /// @param pipeline The request pipeline shared with HTTP/1.1, through which the requests are routed and answered
   /// @param tunnelBridge Bridge to the server for the CONNECT tunnels of the streams, owned by the handler.
   ///        Without one, CONNECT requests are answered 405.
-  Http2ProtocolHandler(const Http2Config& config, Router& router, HttpServerConfig& serverConfig,
+  Http2ProtocolHandler(const Http2Config& config, RequestPipeline pipeline, HttpServerConfig& serverConfig,
                        CompressionState& compressionState, DecompressionState& decompressionState,
-                       tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer, const char* cachedDateHeader,
-                       std::string_view clientAddress = {}, std::unique_ptr<ITunnelBridge> tunnelBridge = {});
+                       const char* cachedDateHeader, std::string_view clientAddress = {},
+                       std::unique_ptr<ITunnelBridge> tunnelBridge = {});
 
   Http2ProtocolHandler(const Http2ProtocolHandler&) = delete;
   Http2ProtocolHandler& operator=(const Http2ProtocolHandler&) = delete;
@@ -278,7 +277,6 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
     const CorsPolicy* pCorsPolicy{};
     const ResponseMiddleware* pResponseMiddleware{};
     uint32_t responseMiddlewareCount{0};
-    bool isHead{false};
     bool suspended{false};  // Set to true when the coroutine suspends
   };
 
@@ -384,23 +382,25 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   /// Release request state after a response, retaining it only while deferred output remains.
   void releaseStreamAfterResponse(StreamsMap::iterator it);
 
-  /// Dispatch a streaming handler request on an HTTP/2 stream.
-  void handleStreamingRequest(StreamsMap::iterator it, const StreamingHandler& handler, const CorsPolicy* pCorsPolicy,
-                              std::span<const ResponseMiddleware> responseMiddleware);
+  /// Call the streaming handler of the route of the request of a stream.
+  void handleStreamingRequest(StreamsMap::iterator it, const Router::RoutingResult& routingResult);
 
-  /// Dispatch a completed request to the dispatcher and send response.
+  /// Route a completed request and answer it through the request pipeline (see RequestPipeline).
   void dispatchRequest(StreamsMap::iterator it);
+
+  /// Answer the request of a stream with its redirect to https (see HttpServerConfig::httpsRedirect), before its body
+  /// is received: the stream is then reset (NO_ERROR) if the client did not end it.
+  void answerHttpsRedirect(StreamsMap::iterator it, bool endStream);
+
+  /// Apply the CORS policy of the route to the response to the request of a stream, finalize and send it, then release
+  /// the stream.
+  void finalizeAndSendResponse(StreamsMap::iterator it, HttpResponse&& response, const CorsPolicy* pCorsPolicy);
 
   /// Handle a CONNECT request: validate target, set up tunnel, send 200 response.
   void handleConnectRequest(uint32_t streamId, HttpRequestView& request);
 
   // Answer 200 to the CONNECT request of the stream, which tunnels with upstreamFd from now on.
   void establishTunnel(uint32_t streamId, NativeHandle upstreamFd);
-
-  // Creates an HTTP/2 request dispatcher that routes HTTP/2 requests through the unified Router.
-  // The dispatcher receives an HttpRequestView (already populated with HTTP/2 fields) and dispatches
-  // to the appropriate handler (sync, async, or streaming).
-  HttpResponse reply(HttpRequestView& request, const Router::RoutingResult& routingResult);
 
   /// Emit metrics and end trace span for a completed request.
   void onRequestCompleted(HttpRequestView& request, http::StatusCode status);
@@ -412,8 +412,7 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   /// Start an async handler for a stream. Returns true if the handler was started
   /// asynchronously (response will be sent later), false if it completed synchronously
   /// (response already sent).
-  bool startAsyncHandler(StreamsMap::iterator it, const SharedAsyncRequestHandler& handler,
-                         const CorsPolicy* pCorsPolicy, std::span<const ResponseMiddleware> responseMiddleware);
+  bool startAsyncHandler(StreamsMap::iterator it, const Router::RoutingResult& routingResult);
 
   /// Resume a pending async task's coroutine after suspension.
   void resumeAsyncTask(uint32_t streamId);
@@ -429,12 +428,9 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   static void ReleaseAsyncTask(StreamState& state) noexcept;
 #endif
 
-  bool applyRequestMiddleware(HttpRequestView& request, StreamsMap::iterator it, bool isHead, bool streaming,
-                              const Router::RoutingResult& routingResult);
-
   Http2Connection _connection;
 
-  Router* _pRouter;
+  RequestPipeline _pipeline;
 
   /// Requests of closed streams, reused by the next ones (see recycleRequest()).
   vector<StreamRequestPtr> _recycledRequests;
@@ -457,8 +453,6 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   HttpServerConfig* _pServerConfig;
   CompressionState* _pCompressionState;
   DecompressionState* _pDecompressionState;
-  RawChars* _pTmpBuffer;
-  tracing::TelemetryContext* _pTelemetryContext;
   const char* _pCachedDateHeader;
   std::string_view _clientAddress;
 
@@ -478,16 +472,15 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
 
 /// Factory function for creating HTTP/2 protocol handlers.
 /// @param config HTTP/2 configuration
-/// @param dispatcher Callback that dispatches HttpRequestView to handlers
+/// @param pipeline The request pipeline shared with HTTP/1.1
 /// @param sendServerPrefaceForTls If true, sends SETTINGS immediately (for TLS ALPN "h2").
 ///        For h2c (cleartext), this should be false as server waits for client preface first.
 /// @param tunnelBridge Bridge to the server for the CONNECT tunnels, owned by the handler (may be null).
 /// @return Unique pointer to the created handler
 std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(
-    const Http2Config& config, Router& router, HttpServerConfig& serverConfig, CompressionState& compressionState,
-    DecompressionState& decompressionState, tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer,
-    bool sendServerPrefaceForTls, const char* cachedDateHeader, std::string_view clientAddress,
-    std::unique_ptr<ITunnelBridge> tunnelBridge);
+    const Http2Config& config, RequestPipeline pipeline, HttpServerConfig& serverConfig,
+    CompressionState& compressionState, DecompressionState& decompressionState, bool sendServerPrefaceForTls,
+    const char* cachedDateHeader, std::string_view clientAddress, std::unique_ptr<ITunnelBridge> tunnelBridge);
 
 }  // namespace http2
 }  // namespace aeronet

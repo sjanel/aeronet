@@ -445,9 +445,9 @@ SingleHttpServer app(tlsConfig);
 | `httpsRedirect.targetPort` | `0` (disabled) | Any non-zero port enables the redirect. Port 443 is omitted from the URL, other ports are appended (`https://host:8443/path`). |
 | `httpsRedirect.statusCode` | `301` | One of `301`, `302`, `307`, `308`. Use `308` (`http::StatusCodePermanentRedirect`) to make clients keep the method and body of non-`GET` requests. |
 
-- The host is taken from the `Host` header, with its port replaced by the target port. A request without `Host` receives `400 Bad Request`.
+- The host is taken from the `Host` header (the `:authority` of a cleartext HTTP/2 request, if any), with its port replaced by the target port. A request without host receives `400 Bad Request`.
 - The path and query are preserved and re-encoded, so the `Location` value is always a valid URL, safe from header injection.
-- The redirect bypasses routing, protocol upgrades, and request bodies, and closes the connection.
+- The redirect bypasses routing, protocol upgrades, and request bodies. Over HTTP/1.1, it closes the connection. A cleartext HTTP/2 client ([h2c](http2.md#how-a-connection-becomes-http2)) gets the redirect on each of its streams, and the stream of a request whose body is still coming is reset with `NO_ERROR`, so that the client stops sending it.
 - Redirecting is a plaintext feature: it does not require OpenSSL, and enabling it together with TLS on the same listener fails validation.
 
 In a configuration file:
@@ -483,6 +483,7 @@ The [production configuration guide](../guides/production-configuration.md) cove
 
 - Handshakes, mTLS, ALPN, SNI, and hot certificate reload (files rotated in place, symbolic link swap, rejected updates) against a live server: [tests/http-tls-handshake_test.cpp](../../tests/http-tls-handshake_test.cpp), and across `MultiHttpServer` workers: [tests/multi-http-server_test.cpp](../../tests/multi-http-server_test.cpp).
 - Rollback of rejected config updates: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp).
+- HTTP to HTTPS redirect over HTTP/1.1 and h2c: [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp), and over HTTP/2 without `:authority` or host: `HttpsRedirectAnswersBeforeRouting` in [http2-protocol-handler_test.cpp](../../aeronet/http2/test/http2-protocol-handler_test.cpp).
 - TLS reads and writes, read-ahead, and backpressure: [tests/http-tls-io_test.cpp](../../tests/http-tls-io_test.cpp).
 - Certificate chains, rejected keys (encrypted, of another algorithm) and certificates (below the OpenSSL security level), every allocation failure of the context construction, trusted certificate bundles, session resumption with client certificates and its session id context, tickets disabled, strict ALPN without any offer, cipher policies, OCSP stapling, CRLs, the revocation callback, key logging, detection of changed input files, OpenSSL errors left by other code, record coalescing, and kTLS send: [tls-components_test.cpp](../../aeronet/tls/test/tls-components_test.cpp).
 - Resumed mTLS sessions and `tlsPeerSubject()`, handlers leaving OpenSSL errors, and a server handshake flight larger than the socket buffers: [tests/http-tls-handshake_test.cpp](../../tests/http-tls-handshake_test.cpp).

@@ -10,6 +10,8 @@
 #include "aeronet/file-payload.hpp"
 #include "aeronet/header-write.hpp"
 #include "aeronet/http-headers-view.hpp"
+#include "aeronet/http-request-dispatch.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-connection.hpp"
@@ -17,6 +19,7 @@
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/router.hpp"
 #include "aeronet/writer-transport.hpp"
 
 namespace aeronet::http2 {
@@ -29,19 +32,26 @@ namespace aeronet::http2 {
 /// pending-send maps for deferred flushing.
 class Http2WriterTransport final : public IWriterTransport {
  public:
-  Http2WriterTransport(Http2Connection& connection, uint32_t streamId, const char* cachedDateHeader,
+  /// The pipeline and the routing result of the request must outlive the transport.
+  Http2WriterTransport(Http2Connection& connection, uint32_t streamId, const RequestPipeline& pipeline,
+                       const Router::RoutingResult& routingResult, const char* cachedDateHeader,
                        std::size_t existingDeferredBytes, uint32_t maxConnectionPendingBytes,
                        uint32_t maxStreamPendingBytes)
       : _pConnection(&connection),
+        _pPipeline(&pipeline),
+        _pRoutingResult(&routingResult),
         _pCachedDateHeader(cachedDateHeader),
         _existingDeferredBytes(existingDeferredBytes),
         _maxConnectionPendingBytes(maxConnectionPendingBytes),
         _maxStreamPendingBytes(maxStreamPendingBytes),
         _streamId(streamId) {}
 
-  bool emitHeaders(HttpResponse& response, [[maybe_unused]] const HttpRequestView& req,
-                   [[maybe_unused]] std::size_t declaredLength, bool isHead) override {
+  bool emitHeaders(HttpResponse& response, const HttpRequestView& req, [[maybe_unused]] std::size_t declaredLength,
+                   bool isHead) override {
     _isHead = isHead;
+
+    _pPipeline->prepareStreamingHead(req, response, _pRoutingResult->postMiddlewareRange(),
+                                     _pRoutingResult->corsPolicy());
 
     response.finalizeHeadersAndBody();
 
@@ -228,6 +238,8 @@ class Http2WriterTransport final : public IWriterTransport {
   }
 
   Http2Connection* _pConnection;
+  const RequestPipeline* _pPipeline;
+  const Router::RoutingResult* _pRoutingResult;
   const char* _pCachedDateHeader;
   std::size_t _existingDeferredBytes;
   uint32_t _maxConnectionPendingBytes;

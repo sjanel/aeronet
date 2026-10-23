@@ -44,6 +44,7 @@
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/http2-process-result-error-msg-strings.hpp"
 #include "aeronet/http2-stream.hpp"
+#include "aeronet/https-redirect.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/metric-label.hpp"
 #include "aeronet/middleware.hpp"
@@ -77,18 +78,15 @@ namespace aeronet::http2 {
 // Http2ProtocolHandler
 // ============================
 
-Http2ProtocolHandler::Http2ProtocolHandler(const Http2Config& config, Router& router, HttpServerConfig& serverConfig,
-                                           CompressionState& compressionState, DecompressionState& decompressionState,
-                                           tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer,
-                                           const char* cachedDateHeader, std::string_view clientAddress,
-                                           std::unique_ptr<ITunnelBridge> tunnelBridge)
-    : _connection(config, true, &telemetryContext),
-      _pRouter(&router),
+Http2ProtocolHandler::Http2ProtocolHandler(const Http2Config& config, RequestPipeline pipeline,
+                                           HttpServerConfig& serverConfig, CompressionState& compressionState,
+                                           DecompressionState& decompressionState, const char* cachedDateHeader,
+                                           std::string_view clientAddress, std::unique_ptr<ITunnelBridge> tunnelBridge)
+    : _connection(config, true, &pipeline.telemetry()),
+      _pipeline(pipeline),
       _pServerConfig(&serverConfig),
       _pCompressionState(&compressionState),
       _pDecompressionState(&decompressionState),
-      _pTmpBuffer(&tmpBuffer),
-      _pTelemetryContext(&telemetryContext),
       _pCachedDateHeader(cachedDateHeader),
       _clientAddress(clientAddress),
       _tunnelBridge(std::move(tunnelBridge)) {
@@ -249,7 +247,7 @@ void Http2ProtocolHandler::onHeadersDecoded(uint32_t streamId, DecodedHeaders& d
                retainedOutboundBytes(), _pServerConfig->maxOutboundBufferBytes);
     _streams.erase(it);
     _connection.sendRstStream(streamId, ErrorCode::RefusedStream);
-    _pTelemetryContext->counterAdd("aeronet.http2.responses.rejected_outbound_limit");
+    _pipeline.telemetry().counterAdd("aeronet.http2.responses.rejected_outbound_limit");
     return;
   }
   StreamState& state = it->second;
@@ -365,6 +363,26 @@ void Http2ProtocolHandler::onHeadersDecoded(uint32_t streamId, DecodedHeaders& d
     }
   }
 
+  req._streamId = streamId;
+  req._version = http::HTTP_2_0;
+  // Event loop time of the read that delivered these headers (as for HTTP/1): no clock read per stream.
+  req._reqStart = _pConnectionState->lastActivity;
+
+  // Create trace span for HTTP/2 request (mirrors HTTP/1 span from initTrySetHead)
+  req._traceSpan = _pipeline.telemetry().createSpan("http.request");
+  if (req._traceSpan) {
+    req._traceSpan->setAttribute("http.method", http::MethodToStr(req._method));
+    req._traceSpan->setAttribute("http.target", req.path());
+    req._traceSpan->setAttribute("http.scheme", req.scheme());
+    req._traceSpan->setAttribute("http.host", req.authority());
+  }
+
+  // Automatic HTTP -> HTTPS redirect of the requests of a plaintext listener (h2c), as for HTTP/1.1.
+  if (_pServerConfig->httpsRedirect.enabled()) {
+    answerHttpsRedirect(it, endStream);
+    return;
+  }
+
   const auto [encoding, reject] =
       _pCompressionState->selector.negotiateAcceptEncoding(req.headerValueOrEmpty(http::AcceptEncoding));
   // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
@@ -373,24 +391,11 @@ void Http2ProtocolHandler::onHeadersDecoded(uint32_t streamId, DecodedHeaders& d
     (void)sendResponse(streamId,
                        req.makeResponse(http::StatusCodeNotAcceptable, "No acceptable content-coding available"),
                        isHeadMethod);
+    req.end(http::StatusCodeNotAcceptable);
     releaseStreamAfterResponse(it);
     return;
   }
-
-  req._streamId = streamId;
-  req._version = http::HTTP_2_0;
-  // Event loop time of the read that delivered these headers (as for HTTP/1): no clock read per stream.
-  req._reqStart = _pConnectionState->lastActivity;
   req._responsePossibleEncoding = encoding;
-
-  // Create trace span for HTTP/2 request (mirrors HTTP/1 span from initTrySetHead)
-  req._traceSpan = _pTelemetryContext->createSpan("http.request");
-  if (req._traceSpan) {
-    req._traceSpan->setAttribute("http.method", http::MethodToStr(req._method));
-    req._traceSpan->setAttribute("http.target", req.path());
-    req._traceSpan->setAttribute("http.scheme", req.scheme());
-    req._traceSpan->setAttribute("http.host", req.authority());
-  }
 
   // CONNECT requests must be dispatched immediately after headers regardless of endStream,
   // because CONNECT has no request body - subsequent DATA frames carry tunnel payload.
@@ -507,7 +512,7 @@ void Http2ProtocolHandler::finalizeRequestBodyAndDispatch(StreamsMap::iterator i
 
   if (!req._body.empty()) {
     const auto res = HttpCodec::MaybeDecompressRequestBody(*_pDecompressionState, _pServerConfig->decompression, req,
-                                                           streamReq.bodyBuffer, *_pTmpBuffer);
+                                                           streamReq.bodyBuffer, _pipeline.scratch());
     if (res.message != nullptr) {
       const bool isHeadMethod = req.method() == http::Method::HEAD;
       (void)sendResponse(streamId, req.makeResponse(res.status, res.message), isHeadMethod);
@@ -839,30 +844,16 @@ bool Http2ProtocolHandler::sendPendingStreamingBody(uint32_t streamId, PendingSt
   return true;
 }
 
-void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const StreamingHandler& handler,
-                                                  const CorsPolicy* pCorsPolicy,
-                                                  std::span<const ResponseMiddleware> responseMiddleware) {
+void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const Router::RoutingResult& routingResult) {
+  static constexpr bool kStreaming = true;
   const uint32_t streamId = it->first;
   StreamState& state = it->second;
   HttpRequestView& request = state.request->request;
   const bool isHeadMethod = request.method() == http::Method::HEAD;
-  // CORS preflight rejection
-  if (pCorsPolicy != nullptr && pCorsPolicy->wouldApply(request) == CorsPolicy::ApplyStatus::OriginDenied) {
-    HttpResponse corsResp = request.makeResponse(http::StatusCodeForbidden, "Forbidden by CORS policy");
-    ApplyResponseMiddleware(request, corsResp, responseMiddleware, _pRouter->globalResponseMiddleware(),
-                            *_pTelemetryContext, true, {});
-    request.prefinalizeHttpResponse(corsResp, *_pTelemetryContext);
-    corsResp.finalizeHeadersAndBody();
-    [[maybe_unused]] const ErrorCode err = sendResponse(streamId, std::move(corsResp), isHeadMethod);
-    assert(err == ErrorCode::NoError && "sendResponse cannot fail for small CORS rejection body");
-    onRequestCompleted(request, http::StatusCodeForbidden);
-    releaseStreamAfterResponse(it);
-    return;
-  }
 
   // Create H2 transport and writer
-  Http2WriterTransport transport(_connection, streamId, _pCachedDateHeader, _deferredOutputBytes,
-                                 _pServerConfig->maxOutboundBufferBytes,
+  Http2WriterTransport transport(_connection, streamId, _pipeline, routingResult, _pCachedDateHeader,
+                                 _deferredOutputBytes, _pServerConfig->maxOutboundBufferBytes,
                                  _connection.localSettings().maxStreamPendingBytes);
 
   HttpMessage::Options opts;
@@ -881,13 +872,9 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
   HttpResponseWriter writer(transport, request, request.responsePossibleEncoding(), _pServerConfig->compression,
                             *_pCompressionState, _pServerConfig->globalHeaders.fullStringWithLastSep(), opts);
 
-  // Note: response middleware and CORS are applied above only for the preflight-rejection path.
-  // For the normal streaming path, Http2WriterTransport does not run response middleware -
-  // the handler drives the response directly through HttpResponseWriter.
-
   bool handlerThrew = false;
   try {
-    handler(request, writer);
+    (*routingResult.streamingHandler())(request, writer);
   } catch (const std::exception& ex) {
     handlerThrew = true;
     log::error("HTTP/2 streaming handler exception on stream {}: {}", streamId, ex.what());
@@ -896,14 +883,14 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
     log::error("HTTP/2 streaming handler unknown exception on stream {}", streamId);
   }
   if (handlerThrew) {
-    onRequestCompleted(request, http::StatusCodeInternalServerError);
     if (writer.headersPending()) {
       // Nothing was sent: answer like for any handler throwing.
-      [[maybe_unused]] const ErrorCode err =
-          sendResponse(streamId, request.makeResponse(http::StatusCodeInternalServerError), isHeadMethod);
-      releaseStreamAfterResponse(it);
+      HttpResponse response = request.makeResponse(http::StatusCodeInternalServerError);
+      _pipeline.applyResponseMiddleware(request, response, routingResult.postMiddlewareRange(), kStreaming);
+      finalizeAndSendResponse(it, std::move(response), routingResult.corsPolicy());
       return;
     }
+    onRequestCompleted(request, http::StatusCodeInternalServerError);
     // Part of the response was sent: reset the stream, so that the client knows that it is incomplete.
     _streams.erase(it);
     _connection.sendRstStream(streamId, ErrorCode::InternalError);
@@ -918,7 +905,7 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
 
   if (transport.overflowed()) {
     log::warn("HTTP/2 streaming response exceeded pending-output limit on stream {}", streamId);
-    _pTelemetryContext->counterAdd("aeronet.http2.responses.rejected_outbound_limit");
+    _pipeline.telemetry().counterAdd("aeronet.http2.responses.rejected_outbound_limit");
     _streams.erase(it);
     _connection.sendRstStream(streamId, ErrorCode::EnhanceYourCalm);
     return;
@@ -952,34 +939,6 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
   releaseStreamAfterResponse(it);
 }
 
-bool Http2ProtocolHandler::applyRequestMiddleware(HttpRequestView& request, StreamsMap::iterator it, bool isHead,
-                                                  bool streaming, const Router::RoutingResult& routingResult) {
-  std::optional<HttpResponse> globalResult =
-      RunRequestMiddleware(request, _pRouter->globalRequestMiddleware(), routingResult.preMiddlewareRange(),
-                           *_pTelemetryContext, streaming, {});
-  if (globalResult.has_value()) {
-    const CorsPolicy* pCorsPolicy = routingResult.corsPolicy();
-    if (pCorsPolicy != nullptr) {
-      (void)pCorsPolicy->applyToResponse(request, *globalResult);
-    }
-    request.prefinalizeHttpResponse(*globalResult, *_pTelemetryContext);
-    globalResult->finalizeHeadersAndBody();
-    const auto middlewareStatus = globalResult->status();
-    const auto streamId = it->first;
-    const ErrorCode err = sendResponse(streamId, std::move(*globalResult), isHead);
-    onRequestCompleted(request, middlewareStatus);
-    if (err != ErrorCode::NoError) [[unlikely]] {
-      log::error("HTTP/2 failed to send response on stream {}: {}", streamId, ErrorCodeName(err));
-    }
-    releaseStreamAfterResponse(it);
-    return true;
-  }
-
-  request.finalizeBeforeHandlerCall(routingResult.pathParams());
-
-  return false;
-}
-
 void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
   const uint32_t streamId = it->first;
   HttpRequestView& request = it->second.request->request;
@@ -1004,7 +963,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
   // Validate required pseudo-headers
   assert(!request.path().empty() && "path should have been validated in onHeadersDecoded");
 
-  const Router::RoutingResult routingResult = _pRouter->match(request.method(), request.path());
+  const Router::RoutingResult routingResult = _pipeline.router().match(request.method(), request.path());
 
   // Check path-specific HTTP/2 config
   if (routingResult.pathConfig().http2Enable == PathEntryConfig::Http2Enable::Disable) {
@@ -1041,74 +1000,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
     it->second.requestDeadline = request.reqStart() + routingResult.pathConfig().requestTimeout;
   }
 
-  ErrorCode err = ErrorCode::NoError;
-  http::StatusCode respStatusCode;
-
-  // Dispatch to the callback provided by SingleHttpServer
-  try {
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-    // Check routing for async handlers before calling reply().
-    // If an async handler is found and suspends, we defer the response.
-    if (const auto* asyncHandler = routingResult.asyncRequestHandler(); asyncHandler != nullptr) {
-      // Run request middleware before the async handler
-      if (applyRequestMiddleware(request, it, isHeadMethod, false, routingResult)) {
-        return;
-      }
-
-      if (startAsyncHandler(it, routingResult.sharedAsyncRequestHandler(), routingResult.corsPolicy(),
-                            routingResult.postMiddlewareRange())) {
-        // Async handler is running; response will be sent later when it completes.
-        return;
-      }
-      // startAsyncHandler returned false: handler completed synchronously, response already sent.
-      return;
-    }
-#endif
-
-    // Check routing for streaming handlers before calling reply().
-    // Streaming handlers run synchronously via HttpResponseWriter + Http2WriterTransport.
-    if (const auto* streamingHandler = routingResult.streamingHandler(); streamingHandler != nullptr) {
-      // Run request middleware
-      if (applyRequestMiddleware(request, it, isHeadMethod, true, routingResult)) {
-        return;
-      }
-
-      handleStreamingRequest(it, *streamingHandler, routingResult.corsPolicy(), routingResult.postMiddlewareRange());
-      return;
-    }
-
-    HttpResponse resp = reply(request, routingResult);
-
-    request.prefinalizeHttpResponse(resp, *_pTelemetryContext);
-
-    resp.finalizeHeadersAndBody();
-
-    respStatusCode = resp.status();
-    err = sendResponse(streamId, std::move(resp), isHeadMethod);
-  } catch (const std::exception& ex) {
-    log::error("HTTP/2 dispatcher exception on stream {}: {}", streamId, ex.what());
-    respStatusCode = http::StatusCodeInternalServerError;
-    err = sendResponse(streamId, request.makeResponse(respStatusCode), isHeadMethod);
-  } catch (...) {
-    log::error("HTTP/2 unknown exception on stream {}", streamId);
-    respStatusCode = http::StatusCodeInternalServerError;
-    err = sendResponse(streamId, request.makeResponse(respStatusCode), isHeadMethod);
-  }
-  if (err != ErrorCode::NoError) [[unlikely]] {
-    log::error("HTTP/2 failed to send response on stream {}: {}", streamId, ErrorCodeName(err));
-  }
-
-  onRequestCompleted(request, respStatusCode);
-
-  releaseStreamAfterResponse(it);
-}
-
-HttpResponse Http2ProtocolHandler::reply(HttpRequestView& request, const Router::RoutingResult& routingResult) {
-  // Determine active CORS policy for this route (if any)
-  const CorsPolicy* pCorsPolicy = routingResult.corsPolicy();
-
   // Handle OPTIONS and TRACE via shared protocol-agnostic code
-  // CONNECT is handled in dispatchRequest() before reply() is called
   if (request.method() == http::Method::OPTIONS || request.method() == http::Method::TRACE) {
     const SpecialMethodConfig config{
         .tracePolicy = _pServerConfig->traceMethodPolicy,
@@ -1117,43 +1009,83 @@ HttpResponse Http2ProtocolHandler::reply(HttpRequestView& request, const Router:
     };
     // Note: For HTTP/2, TRACE cannot echo raw request data (no wire format available)
     // So we pass empty requestData, which will result in 405 Method Not Allowed
-    auto result = ProcessSpecialMethods(request, *_pRouter, config, pCorsPolicy, {});
+    auto result = ProcessSpecialMethods(request, _pipeline.router(), config, routingResult.corsPolicy(), {});
     if (result) {
-      if (pCorsPolicy != nullptr) {
-        (void)pCorsPolicy->applyToResponse(request, *result);
-      }
-      return std::move(*result);
+      finalizeAndSendResponse(it, std::move(*result), routingResult.corsPolicy());
+      return;
     }
     // Not handled (e.g., not a preflight), fall through to normal processing
   }
 
-  // Streaming handlers are always intercepted in dispatchRequest() before reply() is called.
-  assert(routingResult.streamingHandler() == nullptr);
-
-  // Run global request middleware first
-  auto globalResult = RunRequestMiddleware(request, _pRouter->globalRequestMiddleware(),
-                                           routingResult.preMiddlewareRange(), *_pTelemetryContext, false, {});
-  if (globalResult.has_value()) {
-    if (pCorsPolicy != nullptr) {
-      (void)pCorsPolicy->applyToResponse(request, *globalResult);
-    }
-    return std::move(*globalResult);
+  const bool streaming = routingResult.streamingHandler() != nullptr;
+  const auto sendPipelineResponse = [&](HttpResponse& response) {
+    _pipeline.applyResponseMiddleware(request, response, routingResult.postMiddlewareRange(), streaming);
+    finalizeAndSendResponse(it, std::move(response), routingResult.corsPolicy());
+  };
+  if (std::optional<HttpResponse> shortCircuit = _pipeline.runRequestMiddleware(request, routingResult, streaming)) {
+    sendPipelineResponse(*shortCircuit);
+    return;
+  }
+  if (std::optional<HttpResponse> response = _pipeline.callRequestHandler(request, routingResult, streaming)) {
+    sendPipelineResponse(*response);
+    return;
   }
 
-  request.finalizeBeforeHandlerCall(routingResult.pathParams());
+  if (streaming) {
+    handleStreamingRequest(it, routingResult);
+    return;
+  }
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  // Returns false when the handler completed synchronously, its response being already sent.
+  (void)startAsyncHandler(it, routingResult);
+#endif
+}
 
-  // Handle the request based on handler type
-  const RequestHandler* reqHandler = routingResult.requestHandler();
-  HttpResponse resp = reqHandler != nullptr
-                          ? (*reqHandler)(request)
-                          : request.makeResponse(routingResult.methodNotAllowed() ? http::StatusCodeMethodNotAllowed
-                                                                                  : http::StatusCodeNotFound);
-  ApplyResponseMiddleware(request, resp, routingResult.postMiddlewareRange(), _pRouter->globalResponseMiddleware(),
-                          *_pTelemetryContext, false, {});
+void Http2ProtocolHandler::finalizeAndSendResponse(StreamsMap::iterator it, HttpResponse&& response,
+                                                   const CorsPolicy* pCorsPolicy) {
+  const uint32_t streamId = it->first;
+  HttpRequestView& request = it->second.request->request;
   if (pCorsPolicy != nullptr) {
-    (void)pCorsPolicy->applyToResponse(request, resp);
+    (void)pCorsPolicy->applyToResponse(request, response);
   }
-  return resp;
+  request.prefinalizeHttpResponse(response, _pipeline.telemetry());
+  response.finalizeHeadersAndBody();
+
+  const http::StatusCode status = response.status();
+  const ErrorCode err = sendResponse(streamId, std::move(response), request.method() == http::Method::HEAD);
+  if (err != ErrorCode::NoError) [[unlikely]] {
+    log::error("HTTP/2 failed to send response on stream {}: {}", streamId, ErrorCodeName(err));
+  }
+
+  onRequestCompleted(request, status);
+
+  releaseStreamAfterResponse(it);
+}
+
+void Http2ProtocolHandler::answerHttpsRedirect(StreamsMap::iterator it, bool endStream) {
+  const uint32_t streamId = it->first;
+  HttpRequestView& request = it->second.request->request;
+  const bool isHeadMethod = request.method() == http::Method::HEAD;
+
+  // Like for HTTP/1.1: bypasses routing, the request middleware and the body.
+  RawChars& urlBuf = _pipeline.scratch();
+  HttpResponse response(HttpMessage::Check::No);
+  if (http::BuildHttpsRedirectUrl(urlBuf, request, _pServerConfig->httpsRedirect.targetPort)) {
+    response = HttpResponse(_pServerConfig->httpsRedirect.statusCode);
+    response.location(std::string_view(urlBuf));
+  } else {
+    // No (or empty) :authority and Host header: an absolute https URL cannot be constructed.
+    response = request.makeResponse(http::StatusCodeBadRequest, "Missing Host header for HTTPS redirect");
+  }
+  const http::StatusCode status = response.status();
+  [[maybe_unused]] const ErrorCode err = sendResponse(streamId, std::move(response), isHeadMethod);
+  assert(err == ErrorCode::NoError && "sendResponse cannot fail for a small redirect response");
+  onRequestCompleted(request, status);
+  releaseStreamAfterResponse(it);
+  if (!endStream) {
+    // The response is complete while the client may still send the body: ask it to stop, without error (RFC 9113 §8.1).
+    _connection.sendRstStream(streamId, ErrorCode::NoError);
+  }
 }
 
 // ============================
@@ -1376,7 +1308,7 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
         "connection-limit={} stream-limit={}",
         streamId, response.bodyInMemory().size(), retainedOutboundBytes(), _pServerConfig->maxOutboundBufferBytes,
         _connection.localSettings().maxStreamPendingBytes);
-    _pTelemetryContext->counterAdd("aeronet.http2.responses.rejected_outbound_limit");
+    _pipeline.telemetry().counterAdd("aeronet.http2.responses.rejected_outbound_limit");
 
     const auto it = _streams.find(streamId);
     assert(it != _streams.end() && "Stream must exist when rejecting response due to pending-output limit");
@@ -1481,12 +1413,11 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 
-bool Http2ProtocolHandler::startAsyncHandler(StreamsMap::iterator it, const SharedAsyncRequestHandler& handler,
-                                             const CorsPolicy* pCorsPolicy,
-                                             std::span<const ResponseMiddleware> responseMiddleware) {
+bool Http2ProtocolHandler::startAsyncHandler(StreamsMap::iterator it, const Router::RoutingResult& routingResult) {
   const uint32_t streamId = it->first;
   StreamState& state = it->second;
-  const bool isHeadMethod = (state.request->request.method() == http::Method::HEAD);
+  const SharedAsyncRequestHandler& handler = routingResult.sharedAsyncRequestHandler();
+  const std::span<const ResponseMiddleware> responseMiddleware = routingResult.postMiddlewareRange();
 
   // Prepare the pending task entry, which owns the request while the coroutine runs (its address does not change).
   auto pendingPtr = _pendingWorkPool.allocateAndConstructPoolPtr(PendingAsyncTask{});
@@ -1494,10 +1425,9 @@ bool Http2ProtocolHandler::startAsyncHandler(StreamsMap::iterator it, const Shar
   // The coroutine may use the captures of the handler: keep it alive even if the router replaces it meanwhile.
   pendingRef.handlerKeepAlive = handler;
   pendingRef.streamRequest = std::move(state.request);
-  pendingRef.pCorsPolicy = pCorsPolicy;
+  pendingRef.pCorsPolicy = routingResult.corsPolicy();
   pendingRef.pResponseMiddleware = responseMiddleware.data();
   pendingRef.responseMiddlewareCount = static_cast<uint32_t>(responseMiddleware.size());
-  pendingRef.isHead = isHeadMethod;
   pendingRef.suspended = false;
 
   HttpRequestView& req = pendingRef.streamRequest->request;
@@ -1512,17 +1442,14 @@ bool Http2ProtocolHandler::startAsyncHandler(StreamsMap::iterator it, const Shar
   // Store in the variant
   state.pending = std::move(pendingPtr);
 
-  auto task = (*handler)(pendingRef.streamRequest->request);
+  auto task = RequestPipeline::CallAsyncHandler(*handler, req);
   if (!task.valid()) {
-    log::error("HTTP/2 async handler returned invalid task on stream {} for path {}", streamId, req.path());
     ReleaseAsyncTask(state);
     // req and pendingRef are dangling now that the pending task is released, use the restored request instead.
     HttpRequestView& restoredReq = state.request->request;
-    (void)sendResponse(streamId,
-                       restoredReq.makeResponse(http::StatusCodeInternalServerError, "Async handler inactive"),
-                       isHeadMethod);
-    onRequestCompleted(restoredReq, http::StatusCodeInternalServerError);
-    releaseStreamAfterResponse(it);
+    HttpResponse response = restoredReq.makeResponse(http::StatusCodeInternalServerError, "Async handler inactive");
+    _pipeline.applyResponseMiddleware(restoredReq, response, responseMiddleware, false);
+    finalizeAndSendResponse(it, std::move(response), routingResult.corsPolicy());
     return false;
   }
 
@@ -1573,57 +1500,31 @@ void Http2ProtocolHandler::onAsyncTaskCompleted(uint32_t streamId, bool routeMay
   assert(pAsync != nullptr);
 
   HttpRequestView& req = pAsync->streamRequest->request;
-  const bool isHeadMethod = pAsync->isHead;
-  ErrorCode err = ErrorCode::NoError;
-  http::StatusCode respStatusCode{};
-
+  HttpResponse resp(HttpMessage::Check::No);  // do not allocate memory yet
   try {
-    HttpResponse resp = pAsync->task.runSynchronously();
-
-    std::span<const ResponseMiddleware> middlewareSpan(pAsync->pResponseMiddleware, pAsync->responseMiddlewareCount);
-    const CorsPolicy* pCorsPolicy = pAsync->pCorsPolicy;
-    if (routeMayHaveChanged) {
-      // The router may have been updated while the coroutine was suspended, possibly destroying the metadata of its
-      // route: look it up again.
-      const Router::RoutingResult routingResult = _pRouter->match(req.method(), req.path());
-      middlewareSpan = routingResult.postMiddlewareRange();
-      pCorsPolicy = routingResult.corsPolicy();
-    }
-    ApplyResponseMiddleware(req, resp, middlewareSpan, _pRouter->globalResponseMiddleware(), *_pTelemetryContext, false,
-                            {});
-    if (pCorsPolicy != nullptr) {
-      (void)pCorsPolicy->applyToResponse(req, resp);
-    }
-
-    req.prefinalizeHttpResponse(resp, *_pTelemetryContext);
-    resp.finalizeHeadersAndBody();
-
-    respStatusCode = resp.status();
-    // Move request back to stream slot and free the pending variant so sendResponse
-    // can store a deferred file send if needed.
-    ReleaseAsyncTask(it->second);
-    err = sendResponse(streamId, std::move(resp), isHeadMethod);
+    resp = pAsync->task.runSynchronously();
   } catch (const std::exception& ex) {
     log::error("HTTP/2 async handler exception on stream {}: {}", streamId, ex.what());
-    respStatusCode = http::StatusCodeInternalServerError;
-    ReleaseAsyncTask(it->second);
-    // req is dangling now that the pending task is released, use the restored request instead.
-    err = sendResponse(streamId, it->second.request->request.makeResponse(respStatusCode), isHeadMethod);
+    resp = req.makeResponse(http::StatusCodeInternalServerError);
   } catch (...) {
     log::error("HTTP/2 async handler unknown exception on stream {}", streamId);
-    respStatusCode = http::StatusCodeInternalServerError;
-    ReleaseAsyncTask(it->second);
-    // req is dangling now that the pending task is released, use the restored request instead.
-    err = sendResponse(streamId, it->second.request->request.makeResponse(respStatusCode), isHeadMethod);
+    resp = req.makeResponse(http::StatusCodeInternalServerError);
   }
 
-  if (err != ErrorCode::NoError) [[unlikely]] {
-    log::error("HTTP/2 failed to send async response on stream {}: {}", streamId, ErrorCodeName(err));
+  std::span<const ResponseMiddleware> middlewareSpan(pAsync->pResponseMiddleware, pAsync->responseMiddlewareCount);
+  const CorsPolicy* pCorsPolicy = pAsync->pCorsPolicy;
+  if (routeMayHaveChanged) {
+    // The router may have been updated while the coroutine was suspended, possibly destroying the metadata of its
+    // route: look it up again.
+    const Router::RoutingResult routingResult = _pipeline.router().match(req.method(), req.path());
+    middlewareSpan = routingResult.postMiddlewareRange();
+    pCorsPolicy = routingResult.corsPolicy();
   }
+  _pipeline.applyResponseMiddleware(req, resp, middlewareSpan, false);
 
-  onRequestCompleted(it->second.request->request, respStatusCode);
-
-  releaseStreamAfterResponse(it);
+  // Move the request back to the stream and free the pending variant, so that the response can store a deferred send.
+  ReleaseAsyncTask(it->second);
+  finalizeAndSendResponse(it, std::move(resp), pCorsPolicy);
 }
 
 void Http2ProtocolHandler::ReleaseAsyncTask(StreamState& state) noexcept {
@@ -1690,7 +1591,7 @@ bool Http2ProtocolHandler::hasAsyncWorkInFlight() const noexcept {
 #endif  // AERONET_ENABLE_ASYNC_HANDLERS
 
 void Http2ProtocolHandler::onRequestCompleted(HttpRequestView& request, http::StatusCode status) {
-  if (_pTelemetryContext->enabled()) {
+  if (_pipeline.telemetry().enabled()) {
     char statusBuffer[3];
     writeStatusCode(statusBuffer, status);
 
@@ -1700,10 +1601,10 @@ void Http2ProtocolHandler::onRequestCompleted(HttpRequestView& request, http::St
     };
     const auto duration =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - request.reqStart());
-    _pTelemetryContext->counterAdd("aeronet.http2.stream.requests", 1UL, labels);
-    _pTelemetryContext->histogram("aeronet.http2.stream.duration", duration.count(), labels);
-    _pTelemetryContext->histogram("aeronet.http2.stream.request.body.bytes", static_cast<double>(request._body.size()),
-                                  labels);
+    _pipeline.telemetry().counterAdd("aeronet.http2.stream.requests", 1UL, labels);
+    _pipeline.telemetry().histogram("aeronet.http2.stream.duration", duration.count(), labels);
+    _pipeline.telemetry().histogram("aeronet.http2.stream.request.body.bytes",
+                                    static_cast<double>(request._body.size()), labels);
   }
 
   request.end(status);
@@ -1751,13 +1652,12 @@ void Http2ProtocolHandler::sweepStreams(std::chrono::steady_clock::time_point no
 }
 
 std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(
-    const Http2Config& config, Router& router, HttpServerConfig& serverConfig, CompressionState& compressionState,
-    DecompressionState& decompressionState, tracing::TelemetryContext& telemetryContext, RawChars& tmpBuffer,
-    bool sendServerPrefaceForTls, const char* cachedDateHeader, std::string_view clientAddress,
-    std::unique_ptr<ITunnelBridge> tunnelBridge) {
-  auto protocolHandler = std::make_unique<Http2ProtocolHandler>(
-      config, router, serverConfig, compressionState, decompressionState, telemetryContext, tmpBuffer, cachedDateHeader,
-      clientAddress, std::move(tunnelBridge));
+    const Http2Config& config, RequestPipeline pipeline, HttpServerConfig& serverConfig,
+    CompressionState& compressionState, DecompressionState& decompressionState, bool sendServerPrefaceForTls,
+    const char* cachedDateHeader, std::string_view clientAddress, std::unique_ptr<ITunnelBridge> tunnelBridge) {
+  auto protocolHandler =
+      std::make_unique<Http2ProtocolHandler>(config, pipeline, serverConfig, compressionState, decompressionState,
+                                             cachedDateHeader, clientAddress, std::move(tunnelBridge));
   if (sendServerPrefaceForTls) {
     // For TLS ALPN "h2", the server must send SETTINGS immediately after TLS handshake
     protocolHandler->connection().sendServerPreface();

@@ -34,9 +34,14 @@ Summary of the automated test coverage; the files named are in [tests/](../../te
 | TLS | Handshake, rejection behavior, I/O, OCSP stapling | ✅ | `http-tls-handshake_test.cpp`, `http-tls-io_test.cpp`, `aeronet/tls/test/tls-components_test.cpp` |
 | Streaming | Streaming responses and incremental flush | ✅ | `http-core_test.cpp` |
 | Routing | Path and method matching | ✅ | `http-routing_test.cpp`, `aeronet/http/test/router_test.cpp` |
+| Protocol parity | Request pipeline over HTTP/1.1 and h2c: middleware and its metrics, CORS, trailing slash and HTTPS redirects, handler errors, streaming and async handlers | ✅ | `http-protocol-parity_test.cpp` |
 | Compression | Negotiation, outbound insertion, inbound decompression | ✅ | `http-compression_test.cpp`, `http-request-decompression_test.cpp` |
 | OpenTelemetry | Integration and end-to-end export | ✅ | `opentelemetry-e2e_test.cpp`, `aeronet/objects/test/opentelemetry-integration_test.cpp` |
 | Probes and statistics | Built-in probes, server statistics | ✅ | `http-server-lifecycle_test.cpp`, `http-core_test.cpp` |
+
+## Protocol parity
+
+HTTP/1.1 and HTTP/2 share the steps of the request pipeline that follow the parsing of a request (`RequestPipeline`, in `aeronet/http-request-dispatch.hpp`): the request middleware, the CORS origin check, the handler call, the fallback responses, and the response middleware. Each protocol still drives them from its own code, around its protocol-specific parts (HTTP/1.1 `Expect`, body framing, WebSocket upgrades; HTTP/2 streams and flow control). A behavior of the pipeline is tested once for both protocols in [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp), whose tests run with an `HttpClient` speaking HTTP/1.1, then cleartext HTTP/2 with prior knowledge: add the scenario there when changing the pipeline.
 
 ## Network fault injection
 

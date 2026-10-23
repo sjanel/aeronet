@@ -2,6 +2,7 @@ aux_source_directory(src AERONET_HTTP_SRC_LIST)
 
 if(NOT AERONET_ENABLE_HTTP_SERVER)
     list(REMOVE_ITEM AERONET_HTTP_SRC_LIST src/http-request-dispatch.cpp)
+    list(REMOVE_ITEM AERONET_HTTP_SRC_LIST src/https-redirect.cpp)
     list(REMOVE_ITEM AERONET_HTTP_SRC_LIST src/path-handler-entry.cpp)
     list(REMOVE_ITEM AERONET_HTTP_SRC_LIST src/route-constraint.cpp)
     list(REMOVE_ITEM AERONET_HTTP_SRC_LIST src/route-group.cpp)
@@ -117,6 +118,13 @@ AeronetAddUnitTest(
 )
 
 if(AERONET_ENABLE_HTTP_SERVER)
+    AeronetAddUnitTest(
+        https-redirect_test
+        test/https-redirect_test.cpp
+        LIBRARIES
+        aeronet_http
+    )
+
     AeronetAddUnitTest(
         path-handler-entry_test
         test/path-handler-entry_test.cpp

@@ -43,7 +43,7 @@ Disable h2c (`withEnableH2c(false)`) on public TLS-only listeners where cleartex
 
 ## Handlers
 
-HTTP/2 requests reach the same handlers as HTTP/1.1 requests, through the same `HttpRequestView`. Route patterns, the trailing-slash policy, the `HEAD` to `GET` fallback, middleware, and CORS apply identically. A handler that needs protocol-specific information can query:
+HTTP/2 requests reach the same handlers as HTTP/1.1 requests, through the same `HttpRequestView` and the same request pipeline: route patterns, the trailing-slash policy and its redirects, the `HEAD` to `GET` fallback, middleware and its metrics, CORS, the error responses (`404`, `405`, `500`), and the [HTTP to HTTPS redirect](tls.md#http-to-https-redirect) of a plaintext listener apply identically. A handler that needs protocol-specific information can query:
 
 | `HttpRequestView` accessor | HTTP/2 value | HTTP/1.x value |
 | --- | --- | --- |
@@ -139,3 +139,4 @@ curl --http2 http://localhost:8080/hello
 - Request processing, pseudo-header validation, trailers, request bodies and their limits, recycled requests (`RecycledRequestStartsFromAFreshState`, `MoreConcurrentRequestsThanRecycledOnes`, `RecycledRequestReleasesItsLargeBuffers`), response bodies sent from their storage (`CapturedBodyIsSentWithoutCopy`, `CapturedBodyLargerThanWindowIsSentFromItsStorage`), response bodies and files waiting for flow-control credit, file read-ahead (`FileReadAheadIsBoundedWhateverTheFlowControlCredit`, `FileSendsShareTheReadAheadRoom`), tunnel window updates, per-route request timeouts: [http2-protocol-handler_test.cpp](../../aeronet/http2/test/http2-protocol-handler_test.cpp).
 - HPACK, including the indexing mode of each field (`HpackEncoder.CredentialsAreNeverIndexed`), the decoded headers taken over by their owner (`HpackDecoder.TakenOverHeadersOutliveTheNextDecodes`, `HpackDecoder.StaticTableFieldsAreNotCopied`), repeated fields (`HpackDecoder.OverrideHeaderKeepsLastValue`, `HpackDecoder.DuplicateWithEmptyValueAddsNoSeparator`, `HpackDecoder.ManyRepeatedFieldsAreJoinedOnceInOrder`), and the header list size limit (`HpackDecoder.HeaderListBeyondTheLimitIsNotStored`, `HpackDecoder.HeaderListAtTheLimitIsAccepted`): [hpack_test.cpp](../../aeronet/http2/test/hpack_test.cpp).
 - End-to-end over TLS and h2c: [tests/http2-core_test.cpp](../../tests/http2-core_test.cpp), and CONNECT: [tests/http2-connect_test.cpp](../../tests/http2-connect_test.cpp).
+- The same request pipeline scenarios over HTTP/1.1 and h2c (middleware, metrics, CORS, redirects, handler errors, streaming and async handlers): [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp).

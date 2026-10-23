@@ -15,6 +15,7 @@
 #include "aeronet/hpack.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-header.hpp"
+#include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -23,6 +24,7 @@
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/http2-protocol-handler.hpp"
+#include "aeronet/middleware.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -75,8 +77,8 @@ class Http2RequestBench {
  public:
   explicit Http2RequestBench(std::size_t nbRegularFields)
       : _compressionState(_serverConfig.compression),
-        _handler(_http2Config, _router, _serverConfig, _compressionState, _decompressionState, _telemetry, _tmpBuffer,
-                 kCachedDate) {
+        _handler(_http2Config, RequestPipeline(_router, _telemetry, _middlewareMetrics, _tmpBuffer), _serverConfig,
+                 _compressionState, _decompressionState, kCachedDate) {
     _router.setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK, "ok"); });
 
     // Connection preface and SETTINGS exchange.
@@ -153,6 +155,7 @@ class Http2RequestBench {
   CompressionState _compressionState;
   DecompressionState _decompressionState;
   tracing::TelemetryContext _telemetry;
+  MiddlewareMetricsCallback _middlewareMetrics;
   RawChars _tmpBuffer;
   ::aeronet::ConnectionState _connectionState;
   Http2ProtocolHandler _handler;

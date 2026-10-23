@@ -46,6 +46,7 @@ class ConnectionStorage;
 }  // namespace internal
 
 class HttpCodec;
+class RequestPipeline;
 struct CompressionState;
 struct ConnectionState;
 struct HttpServerConfig;
@@ -671,6 +672,7 @@ class HttpRequestView {
   friend class http2::Http2ProtocolHandler;
 #endif
   friend class HttpCodec;
+  friend class RequestPipeline;
 
   static constexpr http::StatusCode kStatusNeedMoreData = static_cast<http::StatusCode>(0);
 
