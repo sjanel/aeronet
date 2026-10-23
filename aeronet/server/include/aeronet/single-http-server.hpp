@@ -23,6 +23,7 @@
 #include "aeronet/event-loop.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-message-data.hpp"
+#include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -531,15 +532,13 @@ class SingleHttpServer {
   bool acceptChunkedTransferEncoding(ConnectionIt cnxIt, std::string_view transferEncoding);
   // Track the reception of the body of the current HTTP/1.1 request for the body read timeout.
   void trackBodyReception(ConnectionState& state, bool bodyReady) noexcept;
+  // The steps of the request pipeline shared with HTTP/2.
+  [[nodiscard]] RequestPipeline requestPipeline() noexcept {
+    return {_router, _telemetry, _callbacks.middlewareMetrics, _sharedBuffers.buf};
+  }
   // Apply the response middleware of the route, then send the response to the current HTTP/1.1 request.
   void sendHttp1Response(ConnectionIt cnxIt, HttpResponse&& resp, const Router::RoutingResult& routingResult,
                          bool streaming);
-  // Answer 403 to the current HTTP/1.1 request when the CORS policy of its route denies its Origin.
-  // Returns true in that case.
-  bool rejectDeniedCorsOrigin(ConnectionIt cnxIt, const Router::RoutingResult& routingResult, bool streaming);
-  // Build the 301 redirect of a request to the path with (or without) the trailing slash its route is registered with.
-  HttpResponse makeTrailingSlashRedirect(const HttpRequestView& request,
-                                         Router::RoutingResult::RedirectSlashMode redirectSlashMode);
   // Process WebSocket / HTTP/2 data through the protocol handler.
   // Returns true if the connection should be closed.
   bool processSpecialProtocolHandler(ConnectionIt cnxIt);
@@ -618,7 +617,6 @@ class SingleHttpServer {
 
   // Build & queue an automatic HTTP -> HTTPS redirect response (used when config.httpsRedirect.enabled()).
   // Derives the target from the request Host header + config.httpsRedirect, then closes the connection.
-  // consumedBytes is the number of bytes of the current request to consume from the inbound buffer.
   void emitHttpsRedirect(ConnectionIt cnxIt);
   // Outbound write helpers. On transport failure, the connection is closed immediately.
   void queueData(ConnectionIt cnxIt, HttpMessageData httpResponseData);

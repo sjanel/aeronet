@@ -66,13 +66,7 @@ class Http1WriterTransport final : public IWriterTransport {
       _chunked = false;
     }
 
-    ApplyResponseMiddleware(request, response, _routeResponseMiddleware, _server._router.globalResponseMiddleware(),
-                            _server._telemetry, true, _server._callbacks.middlewareMetrics);
-
-    if (_pCorsPolicy != nullptr) {
-      (void)_pCorsPolicy->applyToResponse(request, response);
-      _pCorsPolicy = nullptr;
-    }
+    _server.requestPipeline().prepareStreamingHead(request, response, _routeResponseMiddleware, _pCorsPolicy);
 
     // The body is streamed separately (chunked framing or a fixed Content-Length was declared above), so the
     // buffer finalized here is header-only: tell finalizeForHttp1 not to synthesize a Content-Length: 0.

@@ -177,4 +177,4 @@ An update is applied by the event loop at its next iteration (immediately when t
 
 - Patterns, constraints, wildcard, escapes, trailing slashes, and precedence: [router_test.cpp](../../aeronet/http/test/router_test.cpp).
 - Per-route limits capped by the server limits, and following their changes: `ClampConfigs*` in [router_test.cpp](../../aeronet/http/test/router_test.cpp), `GlobalLimitsUpdateAppliesToRoutes` and `RouteLimitAboveGlobalLimitIsCapped` in [tests/http-routing_test.cpp](../../tests/http-routing_test.cpp).
-- End-to-end routing, `404` / `405`, and trailing slash redirects: [tests/http-routing_test.cpp](../../tests/http-routing_test.cpp).
+- End-to-end routing, `404` / `405`, and trailing slash redirects: [tests/http-routing_test.cpp](../../tests/http-routing_test.cpp), and over HTTP/1.1 and HTTP/2: [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp).

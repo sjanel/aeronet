@@ -10,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <thread>
@@ -521,20 +522,11 @@ bool SingleHttpServer::serveHttp1Requests(ConnectionIt cnxIt) {
       break;
     }
 
-    request.finalizeBeforeHandlerCall(routingResult.pathParams());
-
     const bool isStreaming = routingResult.streamingHandler() != nullptr && request.version() == http::HTTP_1_1;
-
-    auto sendResponse = [this, cnxIt, &routingResult, isStreaming](HttpResponse&& resp) {
-      sendHttp1Response(cnxIt, std::move(resp), routingResult, isStreaming);
-    };
-
-    auto shortCircuitedResponse =
-        RunRequestMiddleware(request, _router.globalRequestMiddleware(), routingResult.preMiddlewareRange(), _telemetry,
-                             isStreaming, _callbacks.middlewareMetrics);
-
-    if (shortCircuitedResponse.has_value()) {
-      sendResponse(std::move(*shortCircuitedResponse));
+    const RequestPipeline pipeline = requestPipeline();
+    std::optional<HttpResponse> shortCircuit = pipeline.runRequestMiddleware(request, routingResult, isStreaming);
+    if (shortCircuit) {
+      sendHttp1Response(cnxIt, std::move(*shortCircuit), routingResult, isStreaming);
       closeIfBodyPending();
       continue;
     }
@@ -555,61 +547,37 @@ bool SingleHttpServer::serveHttp1Requests(ConnectionIt cnxIt) {
     }
 #endif
 
+    std::optional<HttpResponse> response = pipeline.callRequestHandler(request, routingResult, isStreaming);
+    if (response) {
+      sendHttp1Response(cnxIt, std::move(*response), routingResult, isStreaming);
+      closeIfBodyPending();
+      continue;
+    }
+
     if (isStreaming) {
-      if (rejectDeniedCorsOrigin(cnxIt, routingResult, isStreaming)) {
-        continue;
-      }
       if (serveStreamingRequest(cnxIt, routingResult) == LoopAction::Break) {
         break;
       }
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-    } else if (routingResult.asyncRequestHandler() != nullptr) {
-      if (rejectDeniedCorsOrigin(cnxIt, routingResult, isStreaming)) {
-        closeIfBodyPending();
-        continue;
-      }
-
-      if (dispatchAsyncHandler(cnxIt, routingResult.sharedAsyncRequestHandler(), bodyReady, isChunked,
-                               consumedInput.nbBytes + consumedBytes, pCorsPolicy, routingResult.postMiddlewareRange(),
-                               routingResult.pathConfig().maxBodyBytes)) {
-        // The request bytes are consumed by the async handler completion (already done if it completed right away).
-        // With its body, along with the requests served before it: the input buffer, where its body is, must not move
-        // until then. Without, it starts the input buffer once this call returns (its head was copied), its body being
-        // received behind it.
-        requestFinalizationRAII.consumedBytes = 0;
-        if (bodyReady) {
-          consumedInput.nbBytes = 0;
-        }
-        if (state.pAsyncState()->active) {
-          return state.isAnyCloseRequested() || PauseReadingDuringAsyncHandler(state);
-        }
-        // Completed synchronously: serve the next pipelined request.
-        continue;
-      }
-#endif
-    } else if (routingResult.requestHandler() != nullptr) {
-      if (rejectDeniedCorsOrigin(cnxIt, routingResult, isStreaming)) {
-        continue;
-      }
-
-      // normal handler
-      try {
-        sendResponse((*routingResult.requestHandler())(request));
-      } catch (const std::exception& ex) {
-        log::error("Exception in path handler: {}", ex.what());
-        sendResponse(request.makeResponse(http::StatusCodeInternalServerError));
-      } catch (...) {
-        log::error("Unknown exception in path handler");
-        sendResponse(request.makeResponse(http::StatusCodeInternalServerError));
-      }
-    } else if (routingResult.redirectSlashMode() != Router::RoutingResult::RedirectSlashMode::None) {
-      sendResponse(makeTrailingSlashRedirect(request, routingResult.redirectSlashMode()));
-    } else if (routingResult.methodNotAllowed()) {
-      sendResponse(request.makeResponse(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed));
-    } else {
-      sendResponse(request.makeResponse(http::StatusCodeNotFound));
+      continue;
     }
-
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+    if (dispatchAsyncHandler(cnxIt, routingResult.sharedAsyncRequestHandler(), bodyReady, isChunked,
+                             consumedInput.nbBytes + consumedBytes, pCorsPolicy, routingResult.postMiddlewareRange(),
+                             routingResult.pathConfig().maxBodyBytes)) {
+      // The request bytes are consumed by the async handler completion (already done if it completed right away).
+      // With its body, along with the requests served before it: the input buffer, where its body is, must not move
+      // until then. Without, it starts the input buffer once this call returns (its head was copied), its body being
+      // received behind it.
+      requestFinalizationRAII.consumedBytes = 0;
+      if (bodyReady) {
+        consumedInput.nbBytes = 0;
+      }
+      if (state.pAsyncState()->active) {
+        return state.isAnyCloseRequested() || PauseReadingDuringAsyncHandler(state);
+      }
+      // Completed synchronously: serve the next pipelined request.
+    }
+#endif
   } while (!state.isAnyCloseRequested());
 
   return state.isAnyCloseRequested();
@@ -655,43 +623,9 @@ void SingleHttpServer::trackBodyReception(ConnectionState& state, bool bodyReady
 
 void SingleHttpServer::sendHttp1Response(ConnectionIt cnxIt, HttpResponse&& resp,
                                          const Router::RoutingResult& routingResult, bool streaming) {
-  ApplyResponseMiddleware(_connections.connectionState(cnxIt).request, resp, routingResult.postMiddlewareRange(),
-                          _router.globalResponseMiddleware(), _telemetry, streaming, _callbacks.middlewareMetrics);
+  requestPipeline().applyResponseMiddleware(_connections.connectionState(cnxIt).request, resp,
+                                            routingResult.postMiddlewareRange(), streaming);
   finalizeAndSendResponseForHttp1(cnxIt, std::move(resp), routingResult.corsPolicy());
-}
-
-bool SingleHttpServer::rejectDeniedCorsOrigin(ConnectionIt cnxIt, const Router::RoutingResult& routingResult,
-                                              bool streaming) {
-  const CorsPolicy* pCorsPolicy = routingResult.corsPolicy();
-  const HttpRequestView& request = _connections.connectionState(cnxIt).request;
-  if (pCorsPolicy == nullptr || pCorsPolicy->wouldApply(request) != CorsPolicy::ApplyStatus::OriginDenied) {
-    return false;
-  }
-  sendHttp1Response(cnxIt, request.makeResponse(http::StatusCodeForbidden, "Forbidden by CORS policy"), routingResult,
-                    streaming);
-  return true;
-}
-
-HttpResponse SingleHttpServer::makeTrailingSlashRedirect(const HttpRequestView& request,
-                                                         Router::RoutingResult::RedirectSlashMode redirectSlashMode) {
-  // The path is percent-decoded: re-encode it so that the Location is a valid URI reference. Decoded control
-  // characters (CR, LF...) would otherwise make the header value invalid and throw outside of any handler.
-  static constexpr std::string_view kRedirecting = "Redirecting";
-  const std::string_view reqPath = request.path();
-  RawChars& location = _sharedBuffers.buf;
-  location.clear();
-  if (redirectSlashMode == Router::RoutingResult::RedirectSlashMode::AddSlash) {
-    http::AppendUrlEncodedPath(location, reqPath);
-    location.push_back('/');
-  } else {
-    http::AppendUrlEncodedPath(location, reqPath.substr(0, reqPath.size() - 1));
-  }
-  const std::size_t additionalCapacity =
-      HttpResponse::BodySize(kRedirecting.size()) + http::HeaderSize(http::Location.size(), location.size());
-  auto resp = request.makeResponse(additionalCapacity, http::StatusCodeMovedPermanently);
-  resp.headerAddLine(http::Location, std::string_view(location));
-  resp.body(kRedirecting);
-  return resp;
 }
 
 SingleHttpServer::LoopAction SingleHttpServer::serveStreamingRequest(ConnectionIt cnxIt,
@@ -1202,21 +1136,15 @@ void SingleHttpServer::emitHttpsRedirect(ConnectionIt cnxIt) {
   // result is always a valid URL / header value. HttpResponse::location() copies it out, so the scratch buffer
   // can be reused freely afterwards.
   RawChars& urlBuf = _sharedBuffers.buf;
-  if (!http::AppendHttpsAuthority(urlBuf, request.headerValueOrEmpty(http::Host), _config.httpsRedirect.targetPort)) {
+  if (!http::BuildHttpsRedirectUrl(urlBuf, request, _config.httpsRedirect.targetPort)) {
     // No (or empty) Host header: an absolute https URL cannot be constructed.
     emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Missing Host header for HTTPS redirect");
     return;
   }
-  http::AppendUrlEncodedPath(urlBuf, request.path());
-  char querySep = '?';
-  for (const auto& [key, value] : request.queryParamsRange()) {
-    http::AppendUrlEncodedQueryParam(urlBuf, querySep, key, value);
-    querySep = '&';
-  }
 
   const http::StatusCode statusCode = _config.httpsRedirect.statusCode;
   HttpResponse resp(statusCode);
-  resp.location(std::string_view(urlBuf));
+  resp.location(urlBuf);
 
   clearRequestDeadline(state);
   state.headerStartTp = {};

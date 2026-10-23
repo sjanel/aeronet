@@ -449,7 +449,9 @@ class Http2ClientEngine : private EventSink {
   }
 
   void onStreamReset(uint32_t streamId, ErrorCode errorCode) override {
-    if (streamId == _streamId && _resp != nullptr) {
+    // A server answering before the whole request was sent may stop its upload without error once the response is
+    // complete: the response must not be discarded (RFC 9113 §8.1).
+    if (streamId == _streamId && _resp != nullptr && (errorCode != ErrorCode::NoError || !_responseComplete)) {
       log::error("HTTP/2 client: stream {} reset by peer ({})", streamId, ErrorCodeName(errorCode));
       setFailure(Failure::StreamReset);
     }
