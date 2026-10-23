@@ -39,7 +39,6 @@
 #ifdef AERONET_ENABLE_GLAZE
 #include <filesystem>
 
-#include "aeronet/aeronet-config.hpp"
 #include "aeronet/config-file.hpp"
 #include "aeronet/server-config-loader.hpp"
 #endif

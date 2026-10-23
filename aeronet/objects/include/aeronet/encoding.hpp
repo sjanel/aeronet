@@ -40,14 +40,3 @@ constexpr bool IsEncodingEnabled(Encoding enc) {
 }
 
 }  // namespace aeronet
-
-#ifdef AERONET_ENABLE_GLAZE
-#include <glaze/glaze.hpp>
-
-template <>
-struct glz::meta<aeronet::Encoding> {
-  using enum aeronet::Encoding;
-  static constexpr auto value = enumerate(zstd, br, gzip, deflate, none);
-};
-
-#endif
