@@ -14,6 +14,7 @@
 #include "aeronet/client-protocol.hpp"
 #include "aeronet/config-file.hpp"
 #include "aeronet/glaze-round-trip.hpp"
+#include "aeronet/http-client-config-glaze.hpp"  // IWYU pragma: keep (glz::meta of HttpClientConfig)
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client.hpp"
 #include "aeronet/http-header.hpp"

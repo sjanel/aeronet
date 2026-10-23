@@ -4,7 +4,7 @@
 #include <string>
 #include <string_view>
 
-#include "aeronet/aeronet-config.hpp"
+#include "aeronet/aeronet-config.hpp"  // IWYU pragma: keep (glz::meta of the configuration objects)
 #include "aeronet/config-file.hpp"
 #include "aeronet/glaze-config.hpp"
 

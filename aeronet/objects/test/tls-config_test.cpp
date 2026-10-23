@@ -18,7 +18,7 @@
 #ifdef AERONET_ENABLE_GLAZE
 #include <glaze/glaze.hpp>
 
-#include "aeronet/major-minor-version.hpp"
+#include "aeronet/tls-config-glaze.hpp"  // IWYU pragma: keep (glz::meta of TLSConfig and its members)
 
 using TlsVersion = aeronet::TLSConfig::Version;
 
