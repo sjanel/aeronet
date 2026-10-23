@@ -23,6 +23,7 @@ This page lists the HTTP/1.1 behaviors aeronet implements ([RFC 9110](https://ww
 | HTTP/1.0 requests answered with HTTP/1.0 responses (no silent upgrade) | Supported |
 | `Connection: close` from either side | Supported |
 | Requests per connection limit (`maxRequestsPerConnection`) and idle timeout (`keepAliveTimeout`) | Supported |
+| Closing in stages a connection whose client may still be sending (RFC 9112 §9.6) | Supported, see [Lingering close](../guides/server-lifecycle.md#lingering-close) |
 | Header read timeout against slow clients (Slowloris), disabled by default | Supported |
 | Partial writes and backpressure, bounded by `maxOutboundBufferBytes` | Supported |
 | `CONNECT` tunneling | Supported, see [CONNECT tunneling](../protocols/connect.md) |

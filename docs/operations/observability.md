@@ -183,7 +183,8 @@ Without handler code, each server emits:
 | Span | `http.request` | One per request, with `http.method`, `http.target`, `http.scheme`, `http.host`, `http.status_code`, and `http.duration_us`. |
 | Span | `aeronet.middleware` | One per middleware call, with its phase, scope, index, and whether it short-circuited, threw, or ran for a streaming route. |
 | Counters | `aeronet.connections.accepted`, `aeronet.events.processed`, `aeronet.events.errors`, `aeronet.bytes.read` | Connection and event loop activity. |
-| Counters | `aeronet.connections.closed_for_*` | Connections closed by a timeout (`keep_alive`, `header_read_timeout`, `body_read_timeout`, `request_timeout`, `handshake_timeout`, `websocket_idle_timeout`, `websocket_close_timeout`), a drain (`drain`), or [`MSG_ZEROCOPY`](performance.md#msg_zerocopy) sends without progress (`zerocopy_stall`). |
+| Counters | `aeronet.connections.closed_for_*` | Connections closed by a timeout (`keep_alive`, `header_read_timeout`, `body_read_timeout`, `request_timeout`, `handshake_timeout`, `lingering_close_timeout`, `websocket_idle_timeout`, `websocket_close_timeout`), a drain (`drain`), or [`MSG_ZEROCOPY`](performance.md#msg_zerocopy) sends without progress (`zerocopy_stall`). |
+| Counters | `aeronet.connections.lingering_closes` | HTTP/1.1 connections closed in stages, their client being possibly still sending (see [Lingering close](../guides/server-lifecycle.md#lingering-close)). |
 | Counters | `aeronet.connections.aborted_with_zerocopy_in_flight` | Connections reset while some of their `MSG_ZEROCOPY` sends were in flight. |
 | Counters | `aeronet.http_responses.compression.*` | Response compression attempts, results above `maxCompressRatio`, and errors. |
 | HTTP/2 instruments | `aeronet.http2.*` | See [Built-in HTTP/2 metrics](#built-in-http2-metrics). |

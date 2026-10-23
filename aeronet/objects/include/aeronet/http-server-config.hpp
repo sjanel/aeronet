@@ -254,6 +254,13 @@ struct HttpServerConfig {
   // The timer resets whenever progress is made (bytes consumed). A value of 0 disables the timeout.
   std::chrono::milliseconds bodyReadTimeout{std::chrono::milliseconds{0}};
 
+  // Maximum duration of the lingering close of an HTTP/1.1 connection closed while its client may still be sending (a
+  // response answering a request before its body was read, or with requests pipelined behind it): the server shuts its
+  // side down and discards the input until the client closes the connection, at most for this duration. Closing it
+  // right away would reset it, the client losing the response if it had not read it yet (RFC 9112 §9.6). A value of 0
+  // disables the lingering close. Default: 5000 ms.
+  std::chrono::milliseconds lingeringCloseTimeout{std::chrono::milliseconds{5000}};
+
   // =================
   // TLS configuration
   // =================
@@ -458,6 +465,9 @@ struct HttpServerConfig {
 
   // Set blocking body read timeout (0=off)
   HttpServerConfig& withBodyReadTimeout(std::chrono::milliseconds timeout);
+
+  // Set the maximum duration of the lingering close of an HTTP/1.1 connection (0=off)
+  HttpServerConfig& withLingeringCloseTimeout(std::chrono::milliseconds timeout);
 
   // Set the CONNECT target allowlist (hostnames or IP strings), replacing existing entries. Empty disables CONNECT;
   // "*" allows every host and port; otherwise, the target host must exactly match an entry (case-insensitive).

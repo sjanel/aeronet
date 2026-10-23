@@ -240,15 +240,20 @@ std::string recvWithTimeout(NativeHandle fd, std::chrono::milliseconds totalTime
 }
 
 std::string recvUntilClosed(NativeHandle fd, SysDuration recvTimeout) {
+  return std::move(RecvUntilEnd(fd, recvTimeout).data);
+}
+
+ReceivedUntilEnd RecvUntilEnd(NativeHandle fd, SysDuration recvTimeout) {
   // Ensure a receive timeout is set so that a stuck server causes a test failure
   // rather than blocking the whole test suite indefinitely.
   try {
     setRecvTimeout(fd, recvTimeout);
   } catch (const std::exception& ex) {
     // Best-effort: some callers use mock sockets that do not support SO_RCVTIMEO.
-    log::debug("recvUntilClosed: setRecvTimeout failed ({})", ex.what());
+    log::debug("RecvUntilEnd: setRecvTimeout failed ({})", ex.what());
   }
-  std::string out;
+  ReceivedUntilEnd received;
+  std::string& out = received.data;
   for (;;) {
     const std::size_t oldSize = out.size();
 
@@ -256,33 +261,37 @@ std::string recvUntilClosed(NativeHandle fd, SysDuration recvTimeout) {
       out.reserve((out.capacity() * 2UL) + kChunkSize);
     }
 
-    out.resize_and_overwrite(oldSize + kChunkSize, [fd, oldSize](char* data, [[maybe_unused]] std::size_t newCap) {
-      const auto recvBytes = BlockingRecv(fd, data + oldSize);
-      if (recvBytes == -1) {
-        const auto recvErr = LastSystemError();
-        if (recvErr == error::kWouldBlock) {
-          std::this_thread::sleep_for(1ms);
-          return oldSize;
-        }
-        if (recvErr == error::kConnectionReset || recvErr == error::kConnectionAborted) {
-          return oldSize;
-        }
-        if (recvErr == error::kTimedOut) {
-          // SO_RCVTIMEO expired (WSAETIMEDOUT on Windows, EAGAIN on Linux handled above).
-          // Return what we have - caller will detect no progress and break.
-          return oldSize;
-        }
-        ThrowSystemError("Error from blocking recv");
-      }
+    out.resize_and_overwrite(oldSize + kChunkSize,
+                             [fd, oldSize, &received](char* data, [[maybe_unused]] std::size_t newCap) {
+                               const auto recvBytes = BlockingRecv(fd, data + oldSize);
+                               if (recvBytes == -1) {
+                                 const auto recvErr = LastSystemError();
+                                 if (recvErr == error::kWouldBlock) {
+                                   std::this_thread::sleep_for(1ms);
+                                   received.end = ReceivedUntilEnd::End::TimedOut;
+                                   return oldSize;
+                                 }
+                                 if (recvErr == error::kConnectionReset || recvErr == error::kConnectionAborted) {
+                                   received.end = ReceivedUntilEnd::End::Reset;
+                                   return oldSize;
+                                 }
+                                 if (recvErr == error::kTimedOut) {
+                                   // SO_RCVTIMEO expired (WSAETIMEDOUT on Windows, EAGAIN on Linux handled above).
+                                   // Return what we have - caller will detect no progress and break.
+                                   received.end = ReceivedUntilEnd::End::TimedOut;
+                                   return oldSize;
+                                 }
+                                 ThrowSystemError("Error from blocking recv");
+                               }
 
-      return oldSize + static_cast<std::size_t>(recvBytes);
-    });
+                               return oldSize + static_cast<std::size_t>(recvBytes);
+                             });
 
     if (out.size() == oldSize) {
       break;
     }
   }
-  return out;
+  return received;
 }
 
 std::string sendAndCollect(uint16_t port, std::string_view raw) {
