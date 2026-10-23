@@ -279,6 +279,14 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    counter-accumulator_test
+    test/counter-accumulator_test.cpp
+    LIBRARIES
+    aeronet_tech
+    aeronet_basic_test_support
+)
+
+AeronetAddUnitTest(
     decompression-config_test
     src/decompression-config.cpp
     test/decompression-config_test.cpp

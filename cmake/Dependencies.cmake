@@ -313,8 +313,8 @@ if(AERONET_ENABLE_OPENTELEMETRY)
       TARGETS
         opentelemetry-cpp::otlp_http_exporter
       DECLARE
-        URL https://github.com/open-telemetry/opentelemetry-cpp/archive/refs/tags/v1.29.0.tar.gz
-        URL_HASH SHA256=63effc2b0aaef32c9543bd95c8c227f1c80da8248392a6d97e8a2c3ffbcf7ea1
+        URL https://github.com/open-telemetry/opentelemetry-cpp/archive/refs/tags/v1.30.0.tar.gz
+        URL_HASH SHA256=85aae7a42d7b71d17e510ddebc85db622d9078cc6d29cf9fb7373014b063859f
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     )
 
