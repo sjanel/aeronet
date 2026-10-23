@@ -40,6 +40,9 @@ void SingleHttpServer::installHttp2Handler(NativeHandle clientFd, ConnectionStat
   // Async resumption, stream deadline sweeps and the HTTP/2 connection count all key off the protocol.
   ++_connectionSweepState.http2Connections;
   state.protocol = ProtocolType::Http2;
+  // The header read timer bounds the reception of an HTTP/1.1 request head: the one started for the request expected
+  // since the accept (or since the first bytes of the preface) does not apply to the HTTP/2 connection.
+  stopHeaderReadTimer(state);
 
   auto* h2Handler = static_cast<http2::Http2ProtocolHandler*>(state.protocolHandler.get());
 

@@ -146,7 +146,7 @@ void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpR
   }
 
   // Clear per-route request deadline and headerStartTp now that a response is being sent.
-  // Resetting headerStartTp to epoch allows transportRead to re-arm it for the next keep-alive request.
+  // Resetting headerStartTp to epoch lets the first bytes of the next keep-alive request start its header read timer.
   clearRequestDeadline(state);
   state.headerStartTp = {};
 

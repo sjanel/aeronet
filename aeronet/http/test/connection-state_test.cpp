@@ -1094,27 +1094,19 @@ TEST(ConnectionStateTransportTest, ReadsCutByTheBudgetKeepTheReadSize) {
   EXPECT_EQ(state.inBuffer.size(), 48UL << 10U);
 }
 
-TEST(ConnectionStateTransportTest, TransportReadSetsHeaderStartOnce) {
+TEST(ConnectionStateTransportTest, TransportReadDoesNotStartHeaderReadTimer) {
+  // The header read timer is the one of the HTTP/1.1 read loop of the server: the tunnel relays read with transportRead
+  // too.
   ConnectionState state;
   state.transport = std::make_unique<FakeTransport>(/*handshakeInitially=*/true);
-
-  // Before any read, headerStartTp is epoch
-  EXPECT_EQ(state.headerStartTp.time_since_epoch().count(), 0);
-
-  // First read sets headerStartTp
-  state.lastActivity = std::chrono::steady_clock::now();  // simulate activity to update timestamp
+  state.lastActivity = std::chrono::steady_clock::now();
   const HttpServerConfig config;
-  auto r1 = state.transportRead(config, 16U);
-  EXPECT_EQ(r1.want, TransportHint::None);
-  EXPECT_EQ(r1.bytesProcessed, 1U);
-  const auto firstTp = state.headerStartTp;
-  EXPECT_NE(firstTp.time_since_epoch().count(), 0);
 
-  // Second read should not overwrite the timestamp
-  auto r2 = state.transportRead(config, 8U);
-  EXPECT_EQ(r2.want, TransportHint::None);
-  EXPECT_EQ(r2.bytesProcessed, 1U);
-  EXPECT_EQ(state.headerStartTp, firstTp);
+  const auto result = state.transportRead(config, 16U);
+  EXPECT_EQ(result.want, TransportHint::None);
+  EXPECT_EQ(result.bytesProcessed, 1U);
+  EXPECT_EQ(state.headerStartTp.time_since_epoch().count(), 0);
+  EXPECT_FALSE(state.parsingHeaders);
 }
 
 TEST(ConnectionStateTransportTest, TransportWriteBuffersCompletingHandshakeDoesNotMarkTlsEstablished) {

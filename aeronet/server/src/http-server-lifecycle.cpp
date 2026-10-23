@@ -265,7 +265,9 @@ SingleHttpServer::SingleHttpServer(SingleHttpServer&& other)
       _webSocketDeflateStreams(std::move(other._webSocketDeflateStreams)),
 #endif
       _listenSocket(std::move(other._listenSocket)),
+#ifdef AERONET_LINUX
       _portReservation(std::move(other._portReservation)),
+#endif
       _maintenanceTimer(std::move(other._maintenanceTimer)),
       _eventLoop(std::move(other._eventLoop)),
       _lifecycle(std::move(other._lifecycle)),
@@ -327,7 +329,9 @@ SingleHttpServer& SingleHttpServer::operator=(SingleHttpServer&& other) {
     _webSocketDeflateStreams = std::move(other._webSocketDeflateStreams);
 #endif
     _listenSocket = std::move(other._listenSocket);
+#ifdef AERONET_LINUX
     _portReservation = std::move(other._portReservation);
+#endif
     _maintenanceTimer = std::move(other._maintenanceTimer);
     _eventLoop = std::move(other._eventLoop);
     _lifecycle = std::move(other._lifecycle);

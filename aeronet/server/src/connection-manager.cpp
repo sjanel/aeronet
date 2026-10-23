@@ -306,6 +306,21 @@ void SingleHttpServer::rebuildKeepAliveDeadlines() {
   }
 }
 
+void SingleHttpServer::startHeaderReadTimer(ConnectionState& state) noexcept {
+  assert(!state.parsingHeaders && state.protocolHandler == nullptr);
+  state.headerStartTp = state.lastActivity;
+  state.parsingHeaders = true;
+  ++_connectionSweepState.headerReadConnections;
+}
+
+void SingleHttpServer::stopHeaderReadTimer(ConnectionState& state) noexcept {
+  if (state.parsingHeaders) {
+    assert(_connectionSweepState.headerReadConnections > 0U);
+    --_connectionSweepState.headerReadConnections;
+    state.parsingHeaders = false;
+  }
+}
+
 void SingleHttpServer::clearRequestDeadline(ConnectionState& state) noexcept {
   if (state.requestDeadlineMs == ConnectionState::kInactiveRelativeMs) {
     return;
@@ -335,16 +350,8 @@ void SingleHttpServer::forgetConnectionMaintenance(ConnectionState& state) noexc
   _keepAliveDeadlines.remove(state);
   clearRequestDeadline(state);
   forgetWritableInterest(state);
-  if (state.parsingHeaders && _config.headerReadTimeout.count() > 0) {
-    assert(_connectionSweepState.pendingTimeoutConnections > 0U);
-    --_connectionSweepState.pendingTimeoutConnections;
-  }
-  state.parsingHeaders = false;
-  if (state.waitingForBody) {
-    assert(_connectionSweepState.pendingTimeoutConnections > 0U);
-    --_connectionSweepState.pendingTimeoutConnections;
-    state.waitingForBody = false;
-  }
+  stopHeaderReadTimer(state);
+  trackBodyReception(state, true);
 #ifdef AERONET_ENABLE_HTTP2
   if (state.protocol == ProtocolType::Http2) {
     assert(_connectionSweepState.http2Connections > 0U);
@@ -363,7 +370,8 @@ bool SingleHttpServer::needsFullConnectionMaintenanceSweep() const noexcept {
   if (_connectionSweepState.writableConnections != 0U || _connectionSweepState.requestDeadlineConnections != 0U) {
     return true;
   }
-  if (_connectionSweepState.pendingTimeoutConnections != 0U) {
+  if ((_connectionSweepState.headerReadConnections != 0U && _config.headerReadTimeout.count() > 0) ||
+      (_connectionSweepState.bodyReadConnections != 0U && _config.bodyReadTimeout.count() > 0)) {
     return true;
   }
 #ifdef AERONET_ENABLE_OPENSSL
@@ -664,135 +672,13 @@ void SingleHttpServer::acceptNewConnections() {
 
     refreshKeepAliveDeadline(cnxIt);
 
-    // Its first read goes to the input buffer of the event loop, as in handleReadableClient().
-    lendInBuffer(state);
+    // The header read timer of its first request starts now: a client that does not send it is answered 408 once
+    // headerReadTimeout elapsed. The timers of the next ones start with their first bytes (see handleReadableClient()).
+    startHeaderReadTimer(state);
 
-    ConnectionState* pCnx = &state;
-    std::size_t bytesReadThisEvent = 0;
-    // Input that the loop below left to the deferred read: the rest of the socket data beyond the fairness budget, or
-    // what the transport still reports after a short read.
-    bool inputLeft = false;
-    while (true) {
-      const std::size_t chunkSize = _config.computeReadChunkSize(bytesReadThisEvent, pCnx->readSizeShift);
-      assert(chunkSize > 0);
-      const bool wasParsing = pCnx->parsingHeaders;
-      const auto [bytesRead, want] = pCnx->transportRead(_config, chunkSize);
-      if (!wasParsing && pCnx->parsingHeaders && _config.headerReadTimeout.count() > 0) {
-        ++_connectionSweepState.pendingTimeoutConnections;
-      }
-      // Check for handshake completion
-      // If the TLS handshake completed during the preceding transportRead, finalize it
-      // immediately so we capture negotiated ALPN/cipher/version/client-cert and update
-      // metrics/state. This must be done even if the same read later returns an error or
-      // EOF - the handshake result is valuable and should be recorded before any
-      // connection teardown logic runs.
-      // Note: this is a transition action (handshakePending -> done) rather than a
-      // normal successful-read action, so it intentionally runs prior to evaluating
-      // transport error/EOF handling below.
-      if (finalizeTlsHandshakeIfReady(cnxFd, *pCnx)) {
-        closeConnection(cnxIt);
-        pCnx = nullptr;
-        break;
-      }
-      if (pCnx->waitingForBody && bytesRead > 0) {
-        pCnx->bodyLastActivityMs = static_cast<uint32_t>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(state.lastActivity - pCnx->headerStartTp).count());
-      }
-      // Close only on fatal transport error or an orderly EOF (bytesRead==0 with no 'want' hint).
-      if (want == TransportHint::Error || (bytesRead == 0 && want == TransportHint::None)) {
-        if (want == TransportHint::Error) [[unlikely]] {
-          log::error("Closing connection fd # {} bytesRead={} want={} err={}", cnxFd, bytesRead, static_cast<int>(want),
-                     LastSystemError());
-#ifdef AERONET_ENABLE_OPENSSL
-          if (_tls.ctxHolder) {
-            auto* tlsTr = pCnx->transport.get<TlsTransport>();
-            if (tlsTr != nullptr) {
-              const SSL* ssl = tlsTr->rawSsl();
-              if (ssl != nullptr) {
-                const char* ver = ::SSL_get_version(ssl);
-                const char* cipher = ::SSL_get_cipher_name(ssl);
-                log::error("TLS state fd # {} ver={} cipher={}", cnxFd, (ver != nullptr) ? ver : "?",
-                           (cipher != nullptr) ? cipher : "?");
-              }
-              tlsTr->logErrorIfAny();
-            }
-          }
-#endif
-        }
-
-#ifdef AERONET_ENABLE_OPENSSL
-        CheckHandshake(_config.tls.enabled && _tls.ctxHolder, *pCnx, _tls.metrics, _callbacks.tlsHandshake, cnxFd,
-                       want);
-#endif
-        closeConnection(cnxIt);
-        pCnx = nullptr;
-        break;
-      }
-      if (want != TransportHint::None) {
-        // Transport indicates we should wait for readability or writability before continuing.
-        // Adjust epoll interest if TLS handshake needs write readiness
-        if (want == TransportHint::WriteReady && !pCnx->waitingWritable && !enableWritableInterest(cnxIt)) {
-          closeConnection(cnxIt);
-          pCnx = nullptr;
-        }
-        break;
-      }
-      bytesReadThisEvent += static_cast<std::size_t>(bytesRead);
-      _telemetry.counterAdd("aeronet.bytes.read", static_cast<uint64_t>(bytesRead));
-      if (bytesRead < chunkSize) {
-        // The socket is drained, but the transport can still report pending input, that the kernel does not signal
-        // again (edge-triggered polling): what the TLS read-ahead buffered behind the returned data, like a peer
-        // close_notify sent with its request. It is read once the input read so far is served: reading it now would
-        // close the connection on the close_notify before answering the request.
-        inputLeft = pCnx->transport.hasPendingReadData();
-        break;
-      }
-      if (_config.fairnessBudgetExhausted(bytesReadThisEvent)) {
-        inputLeft = true;
-        break;
-      }
-    }
-    if (pCnx == nullptr) {
-      continue;
-    }
-
-    bool closeNow = processConnectionInput(cnxIt);
-    // CONNECT setup can grow the POSIX fd-indexed connection vectors and invalidate cnxIt. It can also leave tunnel
-    // bytes that arrived with the request head in inBuffer. Re-find the connection and forward those bytes before
-    // returning to edge-triggered polling, where no further read edge would be guaranteed.
-    cnxIt = _connections.iterator(cnxFd);
-    pCnx = _connections.pConnectionState(cnxFd);
-    // The input left by the read loop is resumed after the other ready connections, as in handleReadableClient(): a
-    // client that completed its handshake and sent its request before the accept may have had all of it read ahead by
-    // the TLS transport, which no read event reports. Unless the input processing stopped reading (it is then resumed
-    // with it), or the tunnel forwarding below reads the rest.
-    const bool deferRemainingInput = inputLeft && !closeNow && !pCnx->isTunneling();
-    if (!closeNow && pCnx->isTunneling()) {
-      closeNow = _tunnels->relayInput(cnxIt) == CloseStatus::Close;
-    } else if (closeNow && !pCnx->isAnyCloseRequested()) {
-      // Input processing only stopped reading (an async handler holding the input, blocked output...).
-      closeNow = false;
-    }
-    if (closeNow && !pCnx->hasPendingOutput() && pCnx->tunnelOrFileBuffer.empty() && !pCnx->isSendingFile()) {
-      // With zerocopy sends still in flight, close once they completed (see canCloseConnectionForDrain()) instead of
-      // aborting them (see closeConnection()).
-      pCnx->requestDrainAndClose();
-      closeNow = !pCnx->hasZerocopySendsInFlight();
-    } else {
-      closeNow = false;
-    }
-    if (closeNow) {
-      closeConnection(cnxIt);
-    } else {
-      if (deferRemainingInput) {
-        deferInput(cnxFd, *pCnx);
-      }
-      releaseServedInBuffer(*pCnx);
-      // A client that pipelines its first request with the connection setup (h2c prior knowledge sends
-      // preface + SETTINGS + HEADERS immediately) gets it dispatched right here, so the handler can outlive
-      // keepAliveTimeout on this path too.
-      restartKeepAliveIdleWindow(cnxFd);
-    }
+    // Serve the input that came with the connection setup (TLS ClientHello, request, h2c preface...) without waiting
+    // for its first readable event.
+    completeOutOfBatchRead(cnxFd, handleReadableClient(cnxIt, true));
 
     ++accepted;
   }
@@ -926,6 +812,18 @@ SingleHttpServer::CloseStatus SingleHttpServer::resumeDeferredInput(ConnectionIt
   return handleReadableClient(_connections.iterator(fd), false);
 }
 
+void SingleHttpServer::completeOutOfBatchRead(NativeHandle fd, CloseStatus closeStatus) {
+  if (closeStatus == CloseStatus::Close) {
+    if (const auto cnxIt = _connections.iterator(fd); IsValid(_connections, cnxIt)) {
+      closeConnection(cnxIt);
+    }
+  } else {
+    // Not covered by restartKeepAliveIdleWindows(): the requests read here (such as the ones that a client sends with
+    // its connection setup, like an h2c client with prior knowledge) may have run handlers outliving keepAliveTimeout.
+    restartKeepAliveIdleWindow(fd);
+  }
+}
+
 void SingleHttpServer::lendInBuffer(ConnectionState& state) noexcept {
   if (state.inBuffer.empty()) {
     // The empty buffer of the connection (without capacity, unless it once kept pending input) waits in its place.
@@ -998,16 +896,25 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
     const std::size_t chunkSize = _config.computeReadChunkSize(bytesReadThisEvent, pCnx->readSizeShift);
     assert(chunkSize > 0);
     const auto [count, want] = pCnx->transportRead(_config, chunkSize);
+    // If the TLS handshake completed during this read, finalize it before the error / EOF handling below: its result
+    // (negotiated ALPN, cipher, version, client certificate, metrics) is recorded even if the same read failed.
     if (finalizeTlsHandshakeIfReady(fd, *pCnx)) {
       return CloseStatus::Close;
     }
-    if (pCnx->waitingForBody && count > 0) {
-      pCnx->bodyLastActivityMs = static_cast<uint32_t>(
-          std::chrono::duration_cast<std::chrono::milliseconds>(_connections.now - pCnx->headerStartTp).count());
+    if (count != 0) {
+      if (pCnx->headerStartTp.time_since_epoch().count() == 0) {
+        // The first bytes of the request following a response (the timer of the first one started at the accept).
+        startHeaderReadTimer(*pCnx);
+      }
+      if (pCnx->waitingForBody) {
+        pCnx->bodyLastActivityMs = static_cast<uint32_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(_connections.now - pCnx->headerStartTp).count());
+      }
     }
     if (want == TransportHint::Error) [[unlikely]] {
+      log::debug("Closing fd # {} on transport read error err={}", fd, LastSystemError());
 #ifdef AERONET_ENABLE_OPENSSL
-      CheckHandshake(_config.tls.enabled && _tls.ctxHolder, *pCnx, _tls.metrics, _callbacks.tlsHandshake, fd);
+      CheckHandshake(_config.tls.enabled && _tls.ctxHolder, *pCnx, _tls.metrics, _callbacks.tlsHandshake, fd, want);
 #endif
       return CloseStatus::Close;
     }
@@ -1032,6 +939,7 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
     }
 
     bytesReadThisEvent += static_cast<std::size_t>(count);
+    _telemetry.counterAdd("aeronet.bytes.read", static_cast<uint64_t>(count));
 
     // A plain socket read returning less than requested emptied the kernel receive queue. Edge-triggered polling
     // reports any byte arriving after it, so the next read would only return EAGAIN: skip that syscall.

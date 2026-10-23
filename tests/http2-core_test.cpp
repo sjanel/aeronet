@@ -447,6 +447,32 @@ TEST(Http2Core, H2cPriorKnowledgeValidPrefaceSwitchesToHttp2) {
   EXPECT_EQ(frames[0].header.streamId(), 0U);
 }
 
+TEST(Http2Core, H2cPriorKnowledgeConnectionOutlivesHeaderReadTimeout) {
+  // The header read timeout bounds the reception of an HTTP/1.1 request head: an idle HTTP/2 connection, whose first
+  // read happened in HTTP/1.1 mode (the preface), is not closed when it elapses.
+  static constexpr auto kHeaderReadTimeout = std::chrono::milliseconds{50};
+  test::TestServer server(HttpServerConfig{}
+                              .withHttp2(Http2Config{}.withEnableH2c(true))
+                              .withHeaderReadTimeout(kHeaderReadTimeout)
+                              .withPollInterval(std::chrono::milliseconds{5}));
+
+  test::ClientConnection cnx(server.port());
+  ASSERT_NE(cnx.fd(), -1);
+  Http2Connection client(Http2Config{}, false);
+  client.sendClientPreface();
+  RawChars clientOutput;
+  while (client.hasPendingOutput()) {
+    const auto out = client.getPendingOutput();
+    clientOutput.append(std::string_view(reinterpret_cast<const char*>(out.data()), out.size()));
+    client.onOutputWritten(out.size());
+  }
+  test::sendAll(cnx.fd(), clientOutput);
+  const std::string settings = test::recvWithTimeout(cnx.fd(), std::chrono::milliseconds{1000}, FrameHeader::kSize);
+  ASSERT_GE(settings.size(), FrameHeader::kSize);
+
+  EXPECT_FALSE(test::WaitForPeerClose(cnx.fd(), kHeaderReadTimeout * 6));
+}
+
 TEST(Http2Core, SlowHandlerDoesNotGetItsOwnResponseSweptAsIdle) {
   // Regression: keepAliveTimeout bounds idleness *between* requests, but the deadline was armed when the
   // request was read, so a handler slower than keepAliveTimeout returned with it already expired. The next
