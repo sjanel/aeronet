@@ -1,33 +1,14 @@
 #pragma once
 
-#include <filesystem>
-#include <string>
-#include <string_view>
-
-#include "aeronet/http-server-config.hpp"
-#include "aeronet/router-config.hpp"
-#include "aeronet/server-config-loader.hpp"
-
-namespace aeronet {
-
-/// Internal top-level configuration combining server and router settings.
-/// Not part of the public API - use server filepath constructors or LoadServerConfig instead.
-struct TopLevelConfig {
-  HttpServerConfig server;
-  RouterConfig router;
-};
-
-namespace detail {
-
-/// Internal: parse full config from a JSON/YAML file (format auto-detected from extension).
-TopLevelConfig ParseConfigFile(const std::filesystem::path& filePath);
-
-/// Internal: parse full config from a string buffer with explicit format.
-TopLevelConfig ParseConfigString(std::string_view content, ConfigFormat format);
-
-/// Internal: serialize full config to a string.
-std::string SerializeConfig(const TopLevelConfig& config, ConfigFormat format);
-
-}  // namespace detail
-
-}  // namespace aeronet
+// Glaze metadata of the server configuration objects: include this header to read or write an HttpServerConfig, a
+// RouterConfig or a StaticFileConfig with Glaze yourself.
+//
+// The glz::meta of a configuration type lives in a companion header named after it with a '-glaze' suffix (such as
+// http-server-config-glaze.hpp), which includes the ones of its members, so that only the translation units that
+// serialize configurations compile Glaze. Without it, serializing an HttpServerConfig, a RouterConfig or a TLSConfig
+// does not compile, but a smaller object (CompressionConfig, AccessLogConfig...) would be written with its
+// enumerations as integers and its internal members exposed.
+#include "aeronet/http-server-config-glaze.hpp"  // IWYU pragma: export
+#include "aeronet/router-config-glaze.hpp"       // IWYU pragma: export
+#include "aeronet/server-config-loader.hpp"      // IWYU pragma: export
+#include "aeronet/static-file-config-glaze.hpp"  // IWYU pragma: export

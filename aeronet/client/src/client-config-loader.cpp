@@ -7,6 +7,7 @@
 
 #include "aeronet/config-file.hpp"
 #include "aeronet/glaze-config.hpp"
+#include "aeronet/http-client-config-glaze.hpp"  // IWYU pragma: keep (glz::meta of HttpClientConfig)
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client.hpp"
 

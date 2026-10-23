@@ -18,7 +18,7 @@
 #include <vector>
 
 #include "aeronet/access-log-config.hpp"
-#include "aeronet/aeronet-config.hpp"
+#include "aeronet/aeronet-config.hpp"  // IWYU pragma: keep (glz::meta of the configuration objects)
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/direct-compression-mode.hpp"
 #include "aeronet/encoding.hpp"
