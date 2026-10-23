@@ -110,6 +110,13 @@ void SingleHttpServer::refreshKeepAliveDeadline(ConnectionIt cnxIt) {
     return;
   }
 #endif
+  // A lingering close keeps the deadline armed when it started (re-armed from the last activity after a rebuild).
+  if (state.isLingering()) {
+    if (!internal::KeepAliveDeadlineQueue::contains(state)) {
+      _keepAliveDeadlines.upsert(state, cnxIt->fd(), state.lastActivity + _config.lingeringCloseTimeout);
+    }
+    return;
+  }
   // A CONNECT waiting for its target resolution has a deadline of its own (TunnelManager::expirePendingTunnels()).
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   const auto* asyncState = state.pAsyncState();
@@ -196,6 +203,13 @@ bool SingleHttpServer::closeExpiredKeepAliveConnections() {
     }
 
     ConnectionState& state = _connections.connectionState(cnxIt);
+    if (state.isLingering()) {
+      log::debug("sweepIdleConnections: fd # {} closed for lingering close timeout", expired.fd);
+      closeConnectionNow(cnxIt);
+      _telemetry.counterAdd("aeronet.connections.closed_for_lingering_close_timeout");
+      closedAny = true;
+      continue;
+    }
 #ifdef AERONET_ENABLE_WEBSOCKET
     if (state.protocol == ProtocolType::WebSocket) {
       closedAny |= checkWebSocketTimeouts(cnxIt);
@@ -685,6 +699,73 @@ void SingleHttpServer::acceptNewConnections() {
 }
 
 void SingleHttpServer::closeConnection(ConnectionIt cnxIt) {
+  if (!startLingeringClose(cnxIt)) {
+    closeConnectionNow(cnxIt);
+  }
+}
+
+bool SingleHttpServer::startLingeringClose(ConnectionIt cnxIt) {
+  ConnectionState& state = _connections.connectionState(cnxIt);
+  // The request answered last starts the input buffer until it is entirely read: an empty one (the common case) leaves
+  // nothing to wait for. A connection still waiting for writable events (a TLS read wanting to write) closes right
+  // away: a level-triggered poller (Windows) would keep reporting it writable while it lingers.
+  if (state.inBuffer.empty() || !state.canCloseConnectionForDrain() || state.waitingWritable || state.eofReceived ||
+      state.protocolHandler != nullptr || state.isTunneling() || _config.lingeringCloseTimeout.count() == 0) {
+    return false;
+  }
+  const NativeHandle fd = cnxIt->fd();
+#ifdef AERONET_ENABLE_OPENSSL
+  // Its close_notify alert ends the TLS stream before the TCP one.
+  if (auto* pTlsTransport = state.transport.get<TlsTransport>(); pTlsTransport != nullptr) {
+    pTlsTransport->shutdown();
+  }
+#endif
+  if (!ShutdownWrite(fd)) {
+    log::debug("shutdown of the write side failed for fd # {} err={}, closing it", fd, LastSystemError());
+    return false;
+  }
+  log::debug("fd # {} lingers before its close", fd);
+  forgetConnectionMaintenance(state);
+  state.closeMode = ConnectionState::CloseMode::Linger;
+  state.inBuffer.clear();
+  releaseServedInBuffer(state);
+  _keepAliveDeadlines.upsert(state, fd, _connections.now + _config.lingeringCloseTimeout);
+  _telemetry.counterAdd("aeronet.connections.lingering_closes");
+  return true;
+}
+
+SingleHttpServer::CloseStatus SingleHttpServer::discardLingeringInput(ConnectionIt cnxIt) {
+  ConnectionState& state = _connections.connectionState(cnxIt);
+  lendInBuffer(state);
+  CloseStatus closeStatus = CloseStatus::Keep;
+  std::size_t bytesRead = 0;
+  while (true) {
+    const auto [count, want] =
+        state.transportRead(_config, _config.computeReadChunkSize(bytesRead, state.readSizeShift));
+    state.inBuffer.clear();
+    bytesRead += count;
+    if (want != TransportHint::None) {
+      // A failed read ends it, as a TLS transport wanting to write: its write side is shut down.
+      if (want != TransportHint::ReadReady) {
+        closeStatus = CloseStatus::Close;
+      }
+      break;
+    }
+    if (count == 0) {
+      closeStatus = CloseStatus::Close;
+      break;
+    }
+    if (_config.fairnessBudgetExhausted(bytesRead)) {
+      deferInput(cnxIt->fd(), state);
+      break;
+    }
+  }
+  releaseServedInBuffer(state);
+  _telemetry.counterAdd("aeronet.bytes.read", static_cast<uint64_t>(bytesRead));
+  return closeStatus;
+}
+
+void SingleHttpServer::closeConnectionNow(ConnectionIt cnxIt) {
   const auto cfd = cnxIt->fd();
 
   log::debug("closeConnection called for fd # {}", cfd);
@@ -802,7 +883,11 @@ void SingleHttpServer::deferInput(NativeHandle fd, ConnectionState& state) {
 
 SingleHttpServer::CloseStatus SingleHttpServer::resumeDeferredInput(ConnectionIt cnxIt) {
   const auto fd = cnxIt->fd();
-  _connections.connectionState(cnxIt).inputDeferred = false;
+  ConnectionState& deferredState = _connections.connectionState(cnxIt);
+  deferredState.inputDeferred = false;
+  if (deferredState.isLingering()) {
+    return discardLingeringInput(cnxIt);
+  }
   processBufferedInput(fd);
   ConnectionState& state = _connections.connectionState(_connections.iterator(fd));
   if (state.inputDeferred || state.isAnyCloseRequested()) {
@@ -849,6 +934,10 @@ void SingleHttpServer::releaseServedInBuffer(ConnectionState& state) noexcept {
 SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionIt cnxIt, bool stopOnShortRead) {
   ConnectionState* pCnx = _connections.pConnectionState(cnxIt);
   assert(pCnx != nullptr);
+
+  if (pCnx->isLingering()) [[unlikely]] {
+    return discardLingeringInput(cnxIt);
+  }
 
   // Pending output can legitimately be non-empty when we get EPOLLIN.
   // This happens with partial writes and very commonly with TLS (SSL_read/handshake progress
@@ -916,6 +1005,8 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
 #ifdef AERONET_ENABLE_OPENSSL
       CheckHandshake(_config.tls.enabled && _tls.ctxHolder, *pCnx, _tls.metrics, _callbacks.tlsHandshake, fd, want);
 #endif
+      // No input to wait for in a lingering close.
+      pCnx->eofReceived = true;
       return CloseStatus::Close;
     }
     if (want != TransportHint::None) {
@@ -929,6 +1020,7 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
 #ifdef AERONET_ENABLE_OPENSSL
       CheckHandshake(_config.tls.enabled && _tls.ctxHolder, *pCnx, _tls.metrics, _callbacks.tlsHandshake, fd);
 #endif
+      pCnx->eofReceived = true;
       // An orderly EOF only tells that the peer stopped sending: while the kernel still sends with zerocopy, close once
       // these sends completed instead of aborting them (see closeConnection()).
       if (pCnx->hasZerocopySendsInFlight()) {

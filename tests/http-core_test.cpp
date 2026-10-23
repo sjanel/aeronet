@@ -903,6 +903,124 @@ TEST(HttpKeepAlive, EmptyBodyResponseCarriesContentLengthZeroAndReusesConnection
 }
 
 namespace {
+
+// A server answering 413 right after the head of a request announcing a larger body than its maxBodyBytes: the client
+// may still be sending this body.
+HttpServerConfig MakeEarlyResponseConfig() {
+  HttpServerConfig cfg;
+  cfg.withMaxBodyBytes(1024);
+  return cfg;
+}
+
+std::string TooLargeRequestHead(std::size_t bodySize) {
+  return std::format("POST /upload HTTP/1.1\r\nhost: x\r\ncontent-length: {}\r\n\r\n", bodySize);
+}
+
+// Sends the head of a too large request with the first 'bodySize' bytes of its body, then checks that the 413 response
+// is followed by an orderly close of the server side: the connection then lingers.
+void ExpectEarlyResponseThenServerSideClose(NativeHandle fd, std::size_t bodySize) {
+  test::sendAll(fd, TooLargeRequestHead(2 * bodySize) + std::string(bodySize, 'b'), 10s);
+  const auto received = test::RecvUntilEnd(fd, 10s);
+  EXPECT_TRUE(received.data.starts_with("HTTP/1.1 413")) << received.data;
+  EXPECT_EQ(received.end, test::ReceivedUntilEnd::End::Closed);
+}
+
+}  // namespace
+
+// RFC 9112 §9.6: closing a connection whose client is still sending would reset it, and the reset can destroy the
+// response before the client reads it (Windows discards the received data). After a response answering a request
+// before its body, the server shuts its side down and discards the input until the client closes the connection.
+TEST(HttpLingeringClose, EarlyResponseReachesAClientStillSendingItsBody) {
+  HttpServerConfig cfg = MakeEarlyResponseConfig();
+  // The discarded input exceeds the read budget of an event: the rest is read after the other connections.
+  cfg.withMaxPerEventReadBytes(16UL << 10U);
+  test::TestServer server(std::move(cfg));
+  server.router().setDefault([](const HttpRequestView&) { return HttpResponse("never served"); });
+
+  test::ClientConnection cnx(server.port());
+  static constexpr std::size_t kBodySize = 1UL << 20U;
+  ExpectEarlyResponseThenServerSideClose(cnx.fd(), kBodySize);
+  // The client can keep sending the body: the server discards it without resetting the connection.
+  test::sendAll(cnx.fd(), std::string(kBodySize, 'b'), 10s);
+  EXPECT_EQ(test::RecvUntilEnd(cnx.fd(), 1s).end, test::ReceivedUntilEnd::End::Closed);
+
+  // The client closing its side ends the lingering close, long before lingeringCloseTimeout (5 s).
+  ASSERT_TRUE(ShutdownWrite(cnx.fd()));
+  EXPECT_TRUE(test::DrainEndsWithin(server.server, 3s));
+}
+
+// The requests pipelined behind a response closing the connection are not served, and their bytes are discarded.
+TEST(HttpLingeringClose, RequestsPipelinedBehindAClosingResponse) {
+  test::TestServer server(HttpServerConfig{});
+  server.router().setDefault(
+      [](const HttpRequestView& req) { return HttpResponse(std::format("ECHO{}", req.path())); });
+
+  test::ClientConnection cnx(server.port());
+  test::sendAll(cnx.fd(),
+                "GET /first HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\nGET /second HTTP/1.1\r\nhost: x\r\n\r\n");
+  const auto received = test::RecvUntilEnd(cnx.fd(), 10s);
+  EXPECT_TRUE(received.data.contains("ECHO/first")) << received.data;
+  EXPECT_FALSE(received.data.contains("ECHO/second")) << received.data;
+  EXPECT_EQ(received.end, test::ReceivedUntilEnd::End::Closed);
+
+  ASSERT_TRUE(ShutdownWrite(cnx.fd()));
+  EXPECT_TRUE(test::DrainEndsWithin(server.server, 3s));
+}
+
+// A client keeping the connection open: the lingering close ends after lingeringCloseTimeout, also without keep-alive,
+// and whatever the client sends meanwhile.
+TEST(HttpLingeringClose, EndsAfterTimeoutWhenTheClientKeepsTheConnectionOpen) {
+  HttpServerConfig cfg = MakeEarlyResponseConfig();
+  cfg.withKeepAliveMode(false).withLingeringCloseTimeout(500ms);
+  test::TestServer server(std::move(cfg));
+
+  test::ClientConnection cnx(server.port());
+  ExpectEarlyResponseThenServerSideClose(cnx.fd(), 64UL << 10U);
+  test::sendAll(cnx.fd(), std::string(64UL << 10U, 'b'));
+
+  EXPECT_TRUE(test::DrainEndsWithin(server.server, 1min));
+}
+
+// A configuration update applies its lingeringCloseTimeout to the connections lingering at that time.
+TEST(HttpLingeringClose, ConfigurationUpdateAppliesToLingeringConnections) {
+  HttpServerConfig cfg = MakeEarlyResponseConfig();
+  cfg.withKeepAliveTimeout(1h).withLingeringCloseTimeout(1h);
+  test::TestServer server(std::move(cfg));
+
+  test::ClientConnection cnx(server.port());
+  ExpectEarlyResponseThenServerSideClose(cnx.fd(), 64UL << 10U);
+  server.postConfigUpdate([](HttpServerConfig& config) { config.withLingeringCloseTimeout(50ms); });
+
+  EXPECT_TRUE(test::DrainEndsWithin(server.server, 1min));
+}
+
+// A client resetting the connection ends the lingering close.
+TEST(HttpLingeringClose, ClientResetEndsIt) {
+  test::TestServer server(MakeEarlyResponseConfig());
+
+  test::ClientConnection cnx(server.port());
+  ExpectEarlyResponseThenServerSideClose(cnx.fd(), 64UL << 10U);
+  ASSERT_TRUE(SetAbortiveClose(cnx.fd()));
+  cnx.close();
+
+  EXPECT_TRUE(test::DrainEndsWithin(server.server, 3s));
+}
+
+// With a lingeringCloseTimeout of 0, the server closes the connection right after the response.
+TEST(HttpLingeringClose, DisabledClosesRightAway) {
+  HttpServerConfig cfg = MakeEarlyResponseConfig();
+  cfg.withLingeringCloseTimeout(0ms);
+  test::TestServer server(std::move(cfg));
+
+  test::ClientConnection cnx(server.port());
+  // Only the head: the server reads it entirely, so its close does not reset the connection.
+  test::sendAll(cnx.fd(), TooLargeRequestHead(64UL << 10U));
+  EXPECT_TRUE(test::recvUntilClosed(cnx.fd()).starts_with("HTTP/1.1 413"));
+
+  EXPECT_TRUE(test::DrainEndsWithin(server.server, 3s));
+}
+
+namespace {
 std::string rawGet() {
   test::RequestOptions opt;
   opt.method = "GET";

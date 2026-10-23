@@ -48,6 +48,9 @@ struct ConnectionState {
 
   [[nodiscard]] bool isDrainCloseRequested() const noexcept { return closeMode == CloseMode::DrainThenClose; }
   [[nodiscard]] bool isAnyCloseRequested() const noexcept { return closeMode != CloseMode::None; }
+  // Tells whether the connection, whose write side is shut down, discards its input until the client closes it (see
+  // SingleHttpServer::startLingeringClose()).
+  [[nodiscard]] bool isLingering() const noexcept { return closeMode == CloseMode::Linger; }
   [[nodiscard]] std::string_view clientAddress() const noexcept { return {clientAddressBuffer, clientAddressLength}; }
 
   [[nodiscard]] bool isTunneling() const noexcept { return peerFd != kInvalidHandle; }
@@ -254,8 +257,8 @@ struct ConnectionState {
 
   char clientAddressBuffer[kFormattedAddressCapacity];
 
-  // Connection close lifecycle.
-  enum class CloseMode : uint8_t { None, DrainThenClose };
+  // Connection close lifecycle: a drain close may linger before the close (see isLingering()).
+  enum class CloseMode : uint8_t { None, DrainThenClose, Linger };
 
   static constexpr uint8_t kFormattedAddressCapacityNbBits =
       static_cast<uint8_t>(std::bit_width(kFormattedAddressCapacity));
@@ -264,7 +267,7 @@ struct ConnectionState {
 
   // Pack small lifecycle/protocol state into one allocation unit to reduce
   // per-connection footprint.
-  CloseMode closeMode : 1 {CloseMode::None};
+  CloseMode closeMode : 2 {CloseMode::None};
   ProtocolType protocol : 2 {ProtocolType::Http11};  // Current protocol type.
   bool waitingWritable : 1 {false};                  // EPOLLOUT registered
   bool tlsEstablished : 1 {false};                   // true once the TLS handshake completed and was finalized
@@ -277,7 +280,7 @@ struct ConnectionState {
   // connection reads nothing until the tunnel is established (or refused).
   bool tunnelResolving : 1 {false};
   bool shutdownWritePending : 1 {false};    // true when we should shutdown(SHUT_WR) after tunnelOrFileBuffer is drained
-  bool eofReceived : 1 {false};             // true when transportRead returned 0 (EOF)
+  bool eofReceived : 1 {false};             // true when transportRead returned 0 (EOF), or failed (HTTP/1)
   bool corkable : 1 {false};                // true when TCP_NODELAY is active; enables TCP_CORK coalescing
   bool fileSendActive : 1 {false};          // true while a file payload is attached and in progress
   bool fileSendHeadersPending : 1 {false};  // true until response headers are flushed before file payload

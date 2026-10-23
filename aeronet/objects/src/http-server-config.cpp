@@ -135,6 +135,11 @@ HttpServerConfig& HttpServerConfig::withBodyReadTimeout(std::chrono::millisecond
   return *this;
 }
 
+HttpServerConfig& HttpServerConfig::withLingeringCloseTimeout(std::chrono::milliseconds timeout) {
+  this->lingeringCloseTimeout = timeout;
+  return *this;
+}
+
 HttpServerConfig& HttpServerConfig::withTlsCertKey(std::string_view certFile, std::string_view keyFile) {
   auto& tlsCfg = ensureTls();
   tlsCfg.withCertPem({});
@@ -437,6 +442,12 @@ void HttpServerConfig::validate() {
   }
   if (bodyReadTimeout > kMaxTimeoutMs) {
     throw std::invalid_argument("bodyReadTimeout exceeds maximum representable duration (~49.7 days)");
+  }
+  if (lingeringCloseTimeout.count() < 0) {
+    throw std::invalid_argument("lingeringCloseTimeout must be non-negative");
+  }
+  if (lingeringCloseTimeout > kMaxTimeoutMs) {
+    throw std::invalid_argument("lingeringCloseTimeout exceeds maximum representable duration (~49.7 days)");
   }
   if (std::cmp_less(maxOutboundBufferBytes, 1024)) {
     throw std::invalid_argument("maxOutboundBufferBytes must be >= 1024");

@@ -120,4 +120,19 @@ inline bool WaitForServer(auto& server, bool running = true,
   return false;
 }
 
+// Begins a drain of 'server' (whose own deadline is too far to be reached), which ends once its last connection is
+// closed, then waits for this end at most for 'timeout'. Returns true if it ended: it tells when the server released
+// its connections. isRunning() cannot tell it, false as soon as the drain begins.
+inline bool DrainEndsWithin(auto& server, std::chrono::milliseconds timeout) {
+  server.beginDrain(std::chrono::hours{1});
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (server.isDraining()) {
+    if (std::chrono::steady_clock::now() >= deadline) {
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+  }
+  return true;
+}
+
 }  // namespace aeronet::test

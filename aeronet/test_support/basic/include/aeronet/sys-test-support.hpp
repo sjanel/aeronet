@@ -582,6 +582,7 @@ inline ActionQueue<SyscallAction> g_bind_actions;
 inline ActionQueue<SyscallAction> g_listen_actions;
 inline ActionQueue<SyscallAction> g_accept_actions;
 inline ActionQueue<SyscallAction> g_getsockname_actions;
+inline ActionQueue<SyscallAction> g_shutdown_actions;
 inline ActionQueue<std::pair<int64_t, int>> g_send_actions;  // (ret, errno)
 inline KeyedActionQueue<int, IoAction> g_recv_actions;
 
@@ -746,6 +747,7 @@ inline void ResetSocketActions() {
   g_listen_actions.reset();
   g_accept_actions.reset();
   g_getsockname_actions.reset();
+  g_shutdown_actions.reset();
   g_send_actions.reset();
   g_on_accept_install_actions.reset();
   g_last_accepted_fd.store(-1, std::memory_order_release);
@@ -765,6 +767,7 @@ inline void PushBindAction(SyscallAction action) { g_bind_actions.push(action); 
 inline void PushListenAction(SyscallAction action) { g_listen_actions.push(action); }
 inline void PushAcceptAction(SyscallAction action) { g_accept_actions.push(action); }
 inline void PushGetsocknameAction(SyscallAction action) { g_getsockname_actions.push(action); }
+inline void PushShutdownAction(SyscallAction action) { g_shutdown_actions.push(action); }
 inline void PushSendAction(std::pair<int64_t, int> action) { g_send_actions.push(action); }
 // NEW
 inline void SetRecvActions(int fd, std::initializer_list<IoAction> actions) { g_recv_actions.setActions(fd, actions); }
@@ -784,6 +787,7 @@ using BindFn = int (*)(int, const struct sockaddr*, socklen_t);
 using ListenFn = int (*)(int, int);
 using AcceptFn = int (*)(int, struct sockaddr*, socklen_t*);
 using GetsocknameFn = int (*)(int, struct sockaddr*, socklen_t*);
+using ShutdownFn = int (*)(int, int);
 using SendFn = ssize_t (*)(int, const void*, size_t, int);
 using RecvFn = ssize_t (*)(int, void*, size_t, int);
 #if AERONET_WANT_SYS_OVERRIDES
@@ -834,6 +838,12 @@ inline Accept4Fn ResolveRealAccept4() {
 inline GetsocknameFn ResolveRealGetsockname() {
   // Thread-safe initialization: the hooks are called from the server event loops and the test threads.
   static const GetsocknameFn fn = aeronet::test::ResolveNext<GetsocknameFn>("getsockname");
+  return fn;
+}
+
+inline ShutdownFn ResolveRealShutdown() {
+  // Thread-safe initialization: the hooks are called from the server event loops and the test threads.
+  static const ShutdownFn fn = aeronet::test::ResolveNext<ShutdownFn>("shutdown");
   return fn;
 }
 
@@ -1498,6 +1508,21 @@ extern "C" __attribute__((no_sanitize("address"))) int getsockname(int sockfd, s
   }
   auto real = aeronet::test::ResolveRealGetsockname();
   return real(sockfd, addr, addrlen);
+}
+
+// NOLINTNEXTLINE
+extern "C" __attribute__((no_sanitize("address"))) int shutdown(int sockfd, int how) {
+  auto act = aeronet::test::g_shutdown_actions.pop();
+  if (act) {
+    auto [ret, err] = *act;
+    if (ret >= 0) {
+      return ret;
+    }
+    errno = err;
+    return -1;
+  }
+  auto real = aeronet::test::ResolveRealShutdown();
+  return real(sockfd, how);
 }
 
 #if AERONET_WANT_SYS_OVERRIDES

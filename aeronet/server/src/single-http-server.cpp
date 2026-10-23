@@ -1029,12 +1029,12 @@ void SingleHttpServer::waitForResetZerocopyBuffers() {
 void SingleHttpServer::closeAllConnections() {
 #ifdef AERONET_WINDOWS
   while (!_connections.empty()) {
-    closeConnection(_connections.begin());
+    closeConnectionNow(_connections.begin());
   }
 #else
   for (auto cnxIt = _connections.begin(); cnxIt != _connections.end(); ++cnxIt) {
     if (*cnxIt) {
-      closeConnection(cnxIt);
+      closeConnectionNow(cnxIt);
     }
   }
 #endif
