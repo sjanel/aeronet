@@ -52,7 +52,6 @@
 #include "aeronet/zerocopy.hpp"
 
 #ifdef AERONET_ENABLE_HTTP2
-#include "aeronet/http2-protocol-handler.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
 #endif
 
@@ -597,8 +596,8 @@ class SingleHttpServer {
   // it, keep-alive is disabled, the request is the last one allowed on the connection, or the server drains or stops.
   // The response then announces the close (RFC 9112 §9.6).
   [[nodiscard]] bool isKeepAliveForHttp1(const HttpRequestView& request) const {
-    return request.isKeepAliveForHttp1(_config.enableKeepAlive, _config.maxRequestsPerConnection,
-                                       _lifecycle.isRunning());
+    return _config.enableKeepAlive && request._pOwnerState->requestsServed < _config.maxRequestsPerConnection &&
+           _lifecycle.isRunning() && request.clientKeepsAliveForHttp1();
   }
   // Sends the response to the current HTTP/1.1 request. With 'close', the connection closes after it, as when the
   // request does not keep it alive.

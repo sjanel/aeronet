@@ -20,8 +20,6 @@
 #include <coroutine>
 #include <functional>
 #include <thread>
-
-#include "aeronet/async-handler-state.hpp"
 #endif
 
 #include "aeronet/compiler-config.hpp"
@@ -678,8 +676,9 @@ class HttpRequestView {
 
   HttpRequestView() noexcept = default;
 
-  [[nodiscard]] bool isKeepAliveForHttp1(bool enableKeepAlive, uint32_t maxRequestsPerConnection,
-                                         bool isServerRunning) const;
+  // Whether the client keeps the connection of this HTTP/1.x request open after its response: it did not send the close
+  // connection option, and sent the keep-alive one or speaks HTTP/1.1, persistent by default (RFC 9112 §9.3).
+  [[nodiscard]] bool clientKeepsAliveForHttp1() const;
 
   void init(const HttpServerConfig& config, CompressionState& compressionState);
 
@@ -706,10 +705,10 @@ class HttpRequestView {
   void finalizeBeforeHandlerCall(std::span<const PathParamCapture> pathParams);
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  // Copies the request head (and the path parameter names, owned by the router) to asyncState.headBuffer and makes all
-  // the views of the request point there, so that they survive the changes of the connection buffer while an async
-  // handler is suspended.
-  void pinHeadStorage(ConnectionState& state, AsyncHandlerStatePool& asyncStatePool);
+  // Copies the request head (and the path parameter names, owned by the router) to headBuffer (the one of the async
+  // handler state of the connection) and makes all the views of the request point there, so that they survive the
+  // changes of the connection buffer while an async handler is suspended.
+  void pinHeadStorage(RawChars& headBuffer);
 
   // Copies the path parameter names (owned by the router, that may be updated while an async handler is suspended) to
   // the end of the given buffer.
@@ -825,7 +824,7 @@ class HttpRequestView {
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   // HTTP/2 async handler support: alternative callback mechanism for per-stream async tasks.
-  // When set, markAwaitingCallback() / postCallback() use these instead of _ownerState->asyncState.
+  // When set, markAwaitingCallback() / postCallback() use these instead of _pOwnerState->asyncState.
   using H2PostCallbackFn = std::function<void(std::coroutine_handle<>, std::function<void()>)>;
   H2PostCallbackFn _h2PostCallback;
   bool* _pH2SuspendedFlag{nullptr};
@@ -840,6 +839,8 @@ class HttpRequestView {
   std::string_view _activeStreamingChunk;
   const BodyAccessBridge* _pBodyAccessBridge{nullptr};
   void* _pBodyAccessContext{nullptr};
+  // The members reading the connection (TLS information, client address, async handler state) are defined by the
+  // server module, which owns ConnectionState (see connection-state.cpp).
   ConnectionState* _pOwnerState{nullptr};
   CompressionState* _pCompressionState{nullptr};
 

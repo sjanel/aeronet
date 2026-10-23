@@ -168,7 +168,7 @@ function(AeronetSetProjectProperties name)
       endif()
     endif()
     # Only link brotli libs into objects library to reduce export surface; others see headers only.
-    # PUBLIC: its public header version.hpp calls brotli inline, and aeronet_http uses the encoder bound
+    # PUBLIC: its public header version.hpp (aeronet_version) calls brotli inline, and aeronet_http uses the encoder bound
     # directly. A PRIVATE dependency only propagates from a static library, so shared builds missed it.
     if(${name} STREQUAL "aeronet_objects")
       if(TARGET brotlicommon AND TARGET brotlidec AND TARGET brotlienc)

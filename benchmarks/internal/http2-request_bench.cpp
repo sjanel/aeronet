@@ -78,7 +78,7 @@ class Http2RequestBench {
   explicit Http2RequestBench(std::size_t nbRegularFields)
       : _compressionState(_serverConfig.compression),
         _handler(_http2Config, RequestPipeline(_router, _telemetry, _middlewareMetrics, _tmpBuffer), _serverConfig,
-                 _compressionState, _decompressionState, kCachedDate) {
+                 _compressionState, _decompressionState, kCachedDate, _connectionState) {
     _router.setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK, "ok"); });
 
     // Connection preface and SETTINGS exchange.
@@ -129,7 +129,7 @@ class Http2RequestBench {
 
   void feed(std::span<const std::byte> input) {
     while (!input.empty()) {
-      const auto res = _handler.processInput(input, _connectionState);
+      const auto res = _handler.processInput(input);
       if (res.bytesConsumed == 0 || res.action == ProtocolProcessResult::Action::Close ||
           res.action == ProtocolProcessResult::Action::CloseImmediate) {
         std::fprintf(stderr, "HTTP/2 connection stopped processing at stream %u (action %d)\n", _streamId,

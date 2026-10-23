@@ -113,7 +113,7 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyn
   state.expectationAnswered = false;
 
   // Keep header storage stable while async work runs so header string_views stay valid
-  state.request.pinHeadStorage(state, _connections.asyncHandlerStatePool());
+  state.request.pinHeadStorage(asyncState.headBuffer);
 
   // Install the postCallback function for deferred work
   asyncState.postCallback = [this, fd = cnxIt->fd(), generation = state.generation](std::coroutine_handle<> handle,

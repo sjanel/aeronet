@@ -354,8 +354,8 @@ if(AeronetFetchContentPackagesToMakeAvailable)
   # Inject MSVC system include dirs into opentelemetry_proto so that protobuf-
   # generated headers (which include <limits> etc. at line 9 in protobuf >=6.x)
   # can be compiled when building outside a VS Developer Command Prompt.
-  # CMAKE_CXX_SCAN_FOR_MODULES is already OFF globally (CMakeLists.txt) for
-  # MSVC, so no separate scanDependencies workaround is needed here.
+  # CMAKE_CXX_SCAN_FOR_MODULES is already OFF globally (CMakeLists.txt), so no
+  # separate scanDependencies workaround is needed here.
   if(TARGET opentelemetry_proto)
     if(MSVC AND CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
       target_include_directories(opentelemetry_proto SYSTEM PRIVATE

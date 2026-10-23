@@ -131,17 +131,6 @@ if(WIN32 AND MSVC AND NOT CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
 endif()
 # ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# CMake 4.x enables C++ module dependency scanning by default for C++20/23.
-# With MSVC + Ninja outside a VS Developer Command Prompt the scanner runs
-# without the MSVC system include paths and fails on any header that pulls in
-# <string>, <stdint.h>, etc. (OpenSSL, protobuf, etc.).  Since this project
-# does not use C++ named modules, disable scanning globally for MSVC builds.
-if(MSVC)
-  set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
-endif()
-# ---------------------------------------------------------------------------
-
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -245,6 +234,12 @@ option(AERONET_ENABLE_CLANG_TIDY "Enable clang-tidy analysis" OFF)
 option(AERONET_ENABLE_WARNINGS "Enable extra compiler warnings" ${PROJECT_IS_TOP_LEVEL})
 option(AERONET_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
+# CMake >= 3.28 scans every C++ source for module imports by default (extra scan step per source, a barrier per target
+# and .ddi files). Only the aeronet_module target needs it (it enables it itself, see modules/CMakeLists.txt), so turn it
+# off for everything else, including the FetchContent dependencies. On MSVC + Ninja outside a VS Developer Command
+# Prompt the scanner also runs without the system include paths and fails on headers pulling in <string>, <stdint.h>...
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+
 if(AERONET_ENABLE_CCACHE)
   # Use ccache if available
   find_program(CCACHE_PROGRAM ccache)
@@ -331,7 +326,7 @@ if(AERONET_INSTALL)
     @ONLY
   )
 
-  set(_AERONET_EXPORT_TARGETS aeronet aeronet_http aeronet_tech aeronet_objects aeronet_sys)
+  set(_AERONET_EXPORT_TARGETS aeronet aeronet_http aeronet_tech aeronet_objects aeronet_sys aeronet_version)
   if(AERONET_ENABLE_HTTP2)
     list(APPEND _AERONET_EXPORT_TARGETS aeronet_http2)
   endif()
@@ -387,6 +382,7 @@ if(AERONET_INSTALL)
   endif()
   install(DIRECTORY aeronet/tech/include/ DESTINATION include)
   install(DIRECTORY aeronet/sys/include/ DESTINATION include)
+  install(DIRECTORY aeronet/version/include/ DESTINATION include)
 
   install(DIRECTORY aeronet/objects/include/ DESTINATION include)
   if(AERONET_ENABLE_OPENSSL)

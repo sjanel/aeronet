@@ -36,7 +36,7 @@ void SingleHttpServer::installHttp2Handler(NativeHandle clientFd, ConnectionStat
                                            bool sendServerPrefaceForTls) {
   state.protocolHandler = http2::CreateHttp2ProtocolHandler(
       _config.http2, requestPipeline(), _config, _compressionState, _decompressionState, sendServerPrefaceForTls,
-      _dateHeader.data(), state.clientAddress(), internal::TunnelManager::MakeH2Bridge(*this, clientFd));
+      _dateHeader.data(), state, internal::TunnelManager::MakeH2Bridge(*this, clientFd));
   // Async resumption, stream deadline sweeps and the HTTP/2 connection count all key off the protocol.
   ++_connectionSweepState.http2Connections;
   state.protocol = ProtocolType::Http2;

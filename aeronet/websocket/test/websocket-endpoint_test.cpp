@@ -10,9 +10,13 @@
 #include <string_view>
 #include <utility>
 
-#include "aeronet/connection-state.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/websocket-handler.hpp"
+
+// The factories are called with the request of a ConnectionState, defined by the server module.
+#ifdef AERONET_ENABLE_HTTP_SERVER
+#include "aeronet/connection-state.hpp"
+#endif
 
 namespace aeronet {
 namespace {
@@ -53,6 +57,7 @@ TEST(WebSocketEndpointTest, WithCallbacks_CreatesEndpointWithFactory) {
   EXPECT_TRUE(static_cast<bool>(endpoint.factory));
 }
 
+#ifdef AERONET_ENABLE_HTTP_SERVER
 TEST(WebSocketEndpointTest, WithCallbacks_FactoryCreatesHandler) {
   websocket::WebSocketCallbacks callbacks;
   callbacks.onMessage = [](std::span<const std::byte> /*payload*/, bool /*isBinary*/) {};
@@ -63,6 +68,7 @@ TEST(WebSocketEndpointTest, WithCallbacks_FactoryCreatesHandler) {
   ASSERT_NE(handler, nullptr);
   EXPECT_TRUE(handler->config().isServerSide);
 }
+#endif
 
 // ============================================================================
 // WithConfigAndCallbacks tests
@@ -99,6 +105,7 @@ TEST(WebSocketEndpointTest, WithProtocolsAndCallbacks_SetsProtocols) {
   EXPECT_TRUE(endpoint.supportedProtocols.contains("chat"));
 }
 
+#ifdef AERONET_ENABLE_HTTP_SERVER
 TEST(WebSocketEndpointTest, WithProtocolsAndCallbacks_FactoryCreatesHandler) {
   std::array<std::string, 2> protocols = {"graphql-ws", "chat"};
   websocket::WebSocketCallbacks callbacks;
@@ -109,6 +116,7 @@ TEST(WebSocketEndpointTest, WithProtocolsAndCallbacks_FactoryCreatesHandler) {
   ASSERT_NE(handler, nullptr);
   EXPECT_TRUE(handler->config().isServerSide);
 }
+#endif
 
 TEST(WebSocketEndpointTest, WithProtocolsAndCallbacks_EmptyProtocols) {
   std::span<const std::string> emptyProtocols;
@@ -152,6 +160,7 @@ TEST(WebSocketEndpointTest, WithFullConfig_SetsAllFields) {
   EXPECT_TRUE(static_cast<bool>(endpoint.factory));
 }
 
+#ifdef AERONET_ENABLE_HTTP_SERVER
 TEST(WebSocketEndpointTest, WithFullConfig_FactoryCreatesHandler) {
   websocket::WebSocketConfig config;
   config.isServerSide = false;  // test non-default
@@ -167,6 +176,7 @@ TEST(WebSocketEndpointTest, WithFullConfig_FactoryCreatesHandler) {
   EXPECT_FALSE(handler->config().isServerSide);
   EXPECT_EQ(handler->config().maxMessageSize, 7777);
 }
+#endif
 
 TEST(WebSocketEndpointTest, WithFullConfig_EmptyProtocols) {
   websocket::WebSocketConfig config;
