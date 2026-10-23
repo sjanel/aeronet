@@ -17,6 +17,7 @@
 #include "aeronet/metric-label.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
+#include "counter-accumulator.hpp"
 #include "dogstatsd-metrics.hpp"
 
 // Detect SDK and processor support
@@ -141,12 +142,44 @@ class TelemetryContextImpl {
  public:
   explicit TelemetryContextImpl(const TelemetryConfig& cfg) : _dogstatsd(cfg) {}
 
+  TelemetryContextImpl(const TelemetryContextImpl&) = delete;
+  TelemetryContextImpl(TelemetryContextImpl&&) = delete;
+  TelemetryContextImpl& operator=(const TelemetryContextImpl&) = delete;
+  TelemetryContextImpl& operator=(TelemetryContextImpl&&) = delete;
+
+  ~TelemetryContextImpl() { flush(); }
+
+  void flush() noexcept {
+    _pendingCounters.flush([this](std::string_view name, uint64_t delta, MetricLabels labels) {
+#ifdef AERONET_HAVE_METRICS_SDK
+      if (_meter) {
+        try {
+          auto [it, inserted] = _counters.emplace(name, nullptr);
+          if (inserted) {
+            it->second = _meter->CreateUInt64Counter(OtelSv(name));
+          }
+          if (labels.empty()) {
+            it->second->Add(delta);
+          } else {
+            it->second->Add(delta, detail::OtelMetricLabels(labels));
+          }
+        } catch (const std::exception& ex) {
+          log::error("Failed to add counter '{}': {}", name, ex.what());
+        }
+      }
+#endif
+      _dogstatsd.increment(name, delta, labels);
+    });
+    _dogstatsd.flush();
+  }
+
   opentelemetry::nostd::shared_ptr<opentelemetry::trace::TracerProvider> _tracerProvider;
   opentelemetry::nostd::shared_ptr<opentelemetry::trace::Tracer> _tracer;
 
 #ifdef AERONET_HAVE_METRICS_SDK
   std::unique_ptr<opentelemetry::sdk::metrics::MeterProvider> _meterProvider;
   opentelemetry::nostd::shared_ptr<opentelemetry::metrics::Meter> _meter;
+  // Keyed by views of the names stored in _pendingCounters.
   flat_hash_map<std::string_view, opentelemetry::nostd::unique_ptr<opentelemetry::metrics::Counter<uint64_t>>, CityHash>
       _counters;
   flat_hash_map<std::string_view, opentelemetry::nostd::unique_ptr<opentelemetry::metrics::Gauge<int64_t>>, CityHash>
@@ -155,6 +188,7 @@ class TelemetryContextImpl {
       _histograms;
 #endif
 
+  detail::CounterAccumulator _pendingCounters;
   detail::DogStatsdMetrics _dogstatsd;
 };
 
@@ -293,45 +327,15 @@ SpanPtr TelemetryContext::createSpan(std::string_view name) const noexcept {
   return std::make_unique<OtelSpan>(_impl->_tracer->StartSpan(OtelSv(name)));
 }
 
-void TelemetryContext::counterAdd(std::string_view name, uint64_t delta) const noexcept {
+void TelemetryContext::counterAdd(std::string_view name, uint64_t delta, MetricLabels labels) const noexcept {
   if (_impl) {
-#ifdef AERONET_HAVE_METRICS_SDK
-    if (_impl->_meter) {
-      try {
-        auto [it, inserted] = _impl->_counters.emplace(name, nullptr);
-        if (inserted) {
-          it->second = _impl->_meter->CreateUInt64Counter(OtelSv(name));
-        }
-        it->second->Add(delta);
-      } catch (const std::exception& ex) {
-        log::error("Failed to add counter '{}': {}", name, ex.what());
-      }
-    }
-#endif
-    _impl->_dogstatsd.increment(name, delta);
+    _impl->_pendingCounters.add(name, delta, labels);
   }
 }
 
-void TelemetryContext::counterAdd(std::string_view name, uint64_t delta, MetricLabels labels) const noexcept {
+void TelemetryContext::flush() const noexcept {
   if (_impl) {
-#ifdef AERONET_HAVE_METRICS_SDK
-    if (_impl->_meter) {
-      try {
-        auto [it, inserted] = _impl->_counters.emplace(name, nullptr);
-        if (inserted) {
-          it->second = _impl->_meter->CreateUInt64Counter(OtelSv(name));
-        }
-        if (labels.empty()) {
-          it->second->Add(delta);
-        } else {
-          it->second->Add(delta, detail::OtelMetricLabels(labels));
-        }
-      } catch (const std::exception& ex) {
-        log::error("Failed to add counter '{}': {}", name, ex.what());
-      }
-    }
-#endif
-    _impl->_dogstatsd.increment(name, delta, labels);
+    _impl->flush();
   }
 }
 

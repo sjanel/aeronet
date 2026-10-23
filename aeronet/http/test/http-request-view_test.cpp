@@ -346,6 +346,7 @@ TEST_F(HttpRequestViewTest, PrefinalizeCompressionExceedsMaxRatioIncrementsMetri
     resp.body(body, http::ContentTypeTextPlain);
 
     prefinalizeResponse(resp, telemetryContext);
+    telemetryContext.flush();
 
     EXPECT_EQ(sink.recvMessage(), "svc.aeronet.http_responses.compression.exceeds_max_ratio_total:1|c");
   }

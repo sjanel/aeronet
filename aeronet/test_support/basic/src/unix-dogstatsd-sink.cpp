@@ -85,11 +85,12 @@ std::string UnixDogstatsdSink::recvMessage(int timeoutMs) const {
 
   std::string out;
 
-  static constexpr int kChunkSize = 512;
+  // Larger than any datagram sent in tests, so that none is truncated.
+  static constexpr std::size_t kMaxMessageSize = 1U << 16U;
 
-  out.resize_and_overwrite(kChunkSize,
+  out.resize_and_overwrite(kMaxMessageSize,
                            [fd = _fd.fd()](char* pData, [[maybe_unused]] std::size_t newCap) -> std::size_t {
-                             const auto bytes = ::recv(fd, pData, kChunkSize, 0);
+                             const auto bytes = ::recv(fd, pData, kMaxMessageSize, 0);
                              if (bytes < 0) {
                                throw std::runtime_error("UnixDogstatsdSink::recvMessage failed");
                              }

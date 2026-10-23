@@ -12,6 +12,7 @@
 #include <functional>
 #include <iterator>
 #include <memory>
+#include <ranges>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -5687,15 +5688,20 @@ TEST(Http2ProtocolHandler, EmitsDetailedLabeledMetrics) {
     loop.pumpClientToServer();
     loop.pumpServerToClient();
   }
+  EXPECT_TRUE(messages.empty());  // buffered until the flush
+  telemetry.flush();
+  ASSERT_EQ(messages.size(), 1U);  // all in one datagram
 
   const auto contains = [&messages](std::string_view metric, std::string_view labels) {
-    return std::ranges::any_of(messages, [metric, labels](const std::string& message) {
-      return message.contains(metric) && message.contains(labels);
+    return std::ranges::any_of(std::views::split(messages.front(), '\n'), [metric, labels](auto lineRange) {
+      const std::string_view line(lineRange.begin(), lineRange.end());
+      return line.contains(metric) && line.contains(labels);
     });
   };
 
   EXPECT_TRUE(contains("aeronet.http2.frames:1|c", "direction:received,frame.type:headers"));
-  EXPECT_TRUE(contains("aeronet.http2.frames:1|c", "direction:sent,frame.type:settings"));
+  // Summed per labels: the server SETTINGS and the ACK of the client ones
+  EXPECT_TRUE(contains("aeronet.http2.frames:2|c", "direction:sent,frame.type:settings"));
   EXPECT_TRUE(contains("aeronet.http2.frame.payload.bytes:", "direction:received,frame.type:headers"));
   EXPECT_TRUE(contains("aeronet.http2.hpack.compression.ratio:", "direction:received"));
   EXPECT_TRUE(contains("aeronet.http2.hpack.block.compressed.bytes:", "direction:sent"));

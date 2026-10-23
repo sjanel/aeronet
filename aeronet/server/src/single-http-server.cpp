@@ -1034,6 +1034,9 @@ void SingleHttpServer::runMaintenance(std::chrono::steady_clock::time_point now)
     beginDrain(SignalHandler::GetMaxDrainPeriod());
   }
 
+  // After the closes above, whose counters are then exported without waiting for the next tick.
+  _telemetry.flush();
+
   // Also shrink per-thread scratch buffers used during decompression / header parsing.
   _sharedBuffers.shrink_to_fit();
 }
