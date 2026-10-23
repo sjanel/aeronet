@@ -1,6 +1,7 @@
 #include "aeronet/http-request-dispatch.hpp"
 
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <optional>
@@ -15,10 +16,17 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/https-redirect.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/middleware.hpp"
+#include "aeronet/path-handlers.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/tracing/tracer.hpp"
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include "aeronet/request-task.hpp"
+#endif
 
 namespace aeronet {
 
@@ -140,16 +148,17 @@ std::optional<HttpResponse> ProcessSpecialMethods(const HttpRequestView& request
   return result;
 }
 
-std::optional<HttpResponse> RunRequestMiddleware(HttpRequestView& request, std::span<const RequestMiddleware> global,
-                                                 std::span<const RequestMiddleware> chain,
-                                                 const tracing::TelemetryContext& telemetryContext, bool streaming,
-                                                 const MiddlewareMetricsCallback& metricsCallback) {
+std::optional<HttpResponse> RequestPipeline::runRequestMiddleware(HttpRequestView& request,
+                                                                  const Router::RoutingResult& routingResult,
+                                                                  bool streaming) const {
+  request.finalizeBeforeHandlerCall(routingResult.pathParams());
+
   std::optional<HttpResponse> result;
 
   auto applyChain = [&, streaming](std::span<const RequestMiddleware> middlewareChain, bool isGlobal) {
     for (uint32_t hookIdx = 0; hookIdx < middlewareChain.size(); ++hookIdx) {
       auto spanScope = StartMiddlewareSpan(request, MiddlewareMetrics::Phase::Pre, hookIdx, isGlobal, streaming,
-                                           telemetryContext.createSpan("aeronet.middleware"));
+                                           _pTelemetry->createSpan("aeronet.middleware"));
       bool threwEx = false;
       bool shortCircuited = false;
       try {
@@ -175,7 +184,7 @@ std::optional<HttpResponse> RunRequestMiddleware(HttpRequestView& request, std::
       }
 
       CallMiddlewareMetricsCallback(request, MiddlewareMetrics::Phase::Pre, isGlobal, hookIdx, shortCircuited, threwEx,
-                                    streaming, metricsCallback);
+                                    streaming, *_pMiddlewareMetrics);
 
       if (result.has_value()) {
         break;
@@ -183,24 +192,77 @@ std::optional<HttpResponse> RunRequestMiddleware(HttpRequestView& request, std::
     }
   };
 
-  applyChain(global, true);
+  applyChain(_pRouter->globalRequestMiddleware(), true);
   if (!result.has_value()) {
-    applyChain(chain, false);
+    applyChain(routingResult.preMiddlewareRange(), false);
   }
 
   return result;
 }
 
-void ApplyResponseMiddleware(const HttpRequestView& request, HttpResponse& response,
-                             std::span<const ResponseMiddleware> chain,
-                             std::span<const ResponseMiddleware> globalMiddleware,
-                             const tracing::TelemetryContext& telemetryContext, bool streaming,
-                             const MiddlewareMetricsCallback& metricsCallback) {
-  auto runChain = [&request, &response, &telemetryContext, &metricsCallback, streaming](
-                      std::span<const ResponseMiddleware> postMiddleware, bool isGlobal) {
+std::optional<HttpResponse> RequestPipeline::callRequestHandler(HttpRequestView& request,
+                                                                const Router::RoutingResult& routingResult,
+                                                                bool streaming) const {
+  const Router::RoutingResult::HandlerKind handlerKind = routingResult.handlerKind();
+  // The streaming handler of a request that cannot be streamed (HTTP/1.0) is not called: answered like without handler.
+  if (handlerKind != Router::RoutingResult::HandlerKind::None &&
+      (handlerKind != Router::RoutingResult::HandlerKind::Streaming || streaming)) {
+    if (IsOriginDenied(request, routingResult)) {
+      return MakeOriginDenial(request);
+    }
+    const RequestHandler* pHandler = routingResult.requestHandler();
+    if (pHandler == nullptr) {
+      return std::nullopt;
+    }
+    try {
+      return (*pHandler)(request);
+    } catch (const std::exception& ex) {
+      log::error("Exception in path handler: {}", ex.what());
+    } catch (...) {
+      log::error("Unknown exception in path handler");
+    }
+    return request.makeResponse(http::StatusCodeInternalServerError);
+  }
+  if (routingResult.redirectSlashMode() != Router::RoutingResult::RedirectSlashMode::None) {
+    return makeTrailingSlashRedirect(request, routingResult.redirectSlashMode());
+  }
+  if (routingResult.methodNotAllowed()) {
+    return request.makeResponse(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed);
+  }
+  return request.makeResponse(http::StatusCodeNotFound);
+}
+
+HttpResponse RequestPipeline::MakeOriginDenial(const HttpRequestView& request) {
+  return request.makeResponse(http::StatusCodeForbidden, "Forbidden by CORS policy");
+}
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+RequestTask<HttpResponse> RequestPipeline::CallAsyncHandler(const AsyncRequestHandler& handler,
+                                                            HttpRequestView& request) {
+  RequestTask<HttpResponse> task;
+  try {
+    task = handler(request);
+  } catch (const std::exception& ex) {
+    log::error("Exception in async path handler for path {}: {}", request.path(), ex.what());
+    return task;
+  } catch (...) {
+    log::error("Unknown exception in async path handler for path {}", request.path());
+    return task;
+  }
+  if (!task.valid()) {
+    log::error("Async path handler returned an invalid RequestTask for path {}", request.path());
+  }
+  return task;
+}
+#endif
+
+void RequestPipeline::applyResponseMiddleware(const HttpRequestView& request, HttpResponse& response,
+                                              std::span<const ResponseMiddleware> routeChain, bool streaming) const {
+  auto runChain = [this, &request, &response, streaming](std::span<const ResponseMiddleware> postMiddleware,
+                                                         bool isGlobal) {
     for (uint32_t hookIdx = 0; hookIdx < postMiddleware.size(); ++hookIdx) {
       auto spanScope = StartMiddlewareSpan(request, MiddlewareMetrics::Phase::Post, hookIdx, isGlobal, streaming,
-                                           telemetryContext.createSpan("aeronet.middleware"));
+                                           _pTelemetry->createSpan("aeronet.middleware"));
       bool threwEx = false;
       try {
         postMiddleware[hookIdx](request, response);
@@ -217,11 +279,43 @@ void ApplyResponseMiddleware(const HttpRequestView& request, HttpResponse& respo
         spanScope.span->setAttribute("aeronet.middleware.short_circuit", int64_t{0});
       }
       CallMiddlewareMetricsCallback(request, MiddlewareMetrics::Phase::Post, isGlobal, hookIdx, false, threwEx,
-                                    streaming, metricsCallback);
+                                    streaming, *_pMiddlewareMetrics);
     }
   };
-  runChain(chain, false);
-  runChain(globalMiddleware, true);
+  runChain(routeChain, false);
+  runChain(_pRouter->globalResponseMiddleware(), true);
+}
+
+void RequestPipeline::prepareStreamingHead(const HttpRequestView& request, HttpResponse& head,
+                                           std::span<const ResponseMiddleware> routeChain,
+                                           const CorsPolicy* pCorsPolicy) const {
+  static constexpr bool kStreaming = true;
+  applyResponseMiddleware(request, head, routeChain, kStreaming);
+  if (pCorsPolicy != nullptr) {
+    (void)pCorsPolicy->applyToResponse(request, head);
+  }
+}
+
+HttpResponse RequestPipeline::makeTrailingSlashRedirect(
+    const HttpRequestView& request, Router::RoutingResult::RedirectSlashMode redirectSlashMode) const {
+  // The path is percent-decoded: re-encode it so that the Location is a valid URI reference. Decoded control
+  // characters (CR, LF...) would otherwise make the header value invalid and throw outside of any handler.
+  static constexpr std::string_view kRedirecting = "Redirecting";
+  const std::string_view reqPath = request.path();
+  RawChars& location = *_pScratch;
+  location.clear();
+  if (redirectSlashMode == Router::RoutingResult::RedirectSlashMode::AddSlash) {
+    http::AppendUrlEncodedPath(location, reqPath);
+    location.push_back('/');
+  } else {
+    http::AppendUrlEncodedPath(location, reqPath.substr(0, reqPath.size() - 1));
+  }
+  const std::size_t additionalCapacity =
+      HttpResponse::BodySize(kRedirecting.size()) + http::HeaderSize(http::Location.size(), location.size());
+  auto resp = request.makeResponse(additionalCapacity, http::StatusCodeMovedPermanently);
+  resp.headerAddLine(http::Location, std::string_view(location));
+  resp.body(kRedirecting);
+  return resp;
 }
 
 }  // namespace aeronet

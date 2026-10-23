@@ -278,6 +278,8 @@ class LoopbackHttp2Transport final : public TransportBackend<LoopbackHttp2Transp
     EmptyData,
     NoContentType,
     EarlyResponse,
+    EarlyResponseThenNoErrorReset,
+    ResetNoErrorBeforeResponseEnd,
     LongerThanContentLength,
     LargeBody,
   };
@@ -392,6 +394,14 @@ class LoopbackHttp2Transport final : public TransportBackend<LoopbackHttp2Transp
       }
       case ResponseMode::EarlyResponse:
         EXPECT_EQ(_server.sendHeaders(streamId, http::StatusCodeOK, HeadersView{}, true), http2::ErrorCode::NoError);
+        break;
+      case ResponseMode::EarlyResponseThenNoErrorReset:
+        EXPECT_EQ(_server.sendHeaders(streamId, http::StatusCodeOK, HeadersView{}, true), http2::ErrorCode::NoError);
+        _server.sendRstStream(streamId, http2::ErrorCode::NoError);
+        break;
+      case ResponseMode::ResetNoErrorBeforeResponseEnd:
+        EXPECT_EQ(_server.sendHeaders(streamId, http::StatusCodeOK, HeadersView{}, false), http2::ErrorCode::NoError);
+        _server.sendRstStream(streamId, http2::ErrorCode::NoError);
         break;
       case ResponseMode::LongerThanContentLength: {
         static constexpr std::byte kBody[]{std::byte{'a'}, std::byte{'b'}, std::byte{'c'}};
@@ -643,6 +653,34 @@ TEST(HttpClientHttp2TransportTest, EarlyResponseResetsUnfinishedUpload) {
   EXPECT_EQ(result->status(), 200);
   EXPECT_TRUE(transport.sawReset());
   EXPECT_GT(transport.bytesWritten(), 0U);
+}
+
+// A server may answer before the whole request is uploaded, then stop the upload with RST_STREAM(NO_ERROR): the
+// complete response stands (RFC 9113 §8.1). A NO_ERROR reset of an incomplete response still fails the exchange.
+TEST(HttpClientHttp2TransportTest, NoErrorResetAfterCompleteResponseKeepsIt) {
+  for (const auto mode : {LoopbackHttp2Transport::ResponseMode::EarlyResponseThenNoErrorReset,
+                          LoopbackHttp2Transport::ResponseMode::ResetNoErrorBeforeResponseEnd}) {
+    HttpClientConfig config;
+    config.withHttpVersion(HttpVersionMode::Http2);
+    HttpClient client(config);
+    auto req = client.makeRequest(http::Method::POST, "http://example.test/upload");
+    req.body(std::string(1UL << 20U, 'x'), "application/octet-stream");
+    HttpRequestTest::Finalize(req);
+    LoopbackHttp2Transport transport(config.http2, mode);
+    internal::ClientConnection connection(config);
+    bool requestSent = false;
+
+    auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
+
+    if (mode == LoopbackHttp2Transport::ResponseMode::EarlyResponseThenNoErrorReset) {
+      ASSERT_TRUE(result);
+      EXPECT_EQ(result->status(), 200);
+    } else {
+      ASSERT_FALSE(result);
+      EXPECT_EQ(result.error(), HttpClientErrc::connectionClosed);
+    }
+    EXPECT_TRUE(connection.keepAlive());
+  }
 }
 
 TEST(HttpClientHttp2TransportTest, PooledReuseDrainsPingAndRejectsGoAway) {

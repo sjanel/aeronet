@@ -63,15 +63,13 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyn
                                             std::size_t perRouteMaxBodyBytes) {
   ConnectionState& state = _connections.connectionState(cnxIt);
   HttpRequestView& request = state.request;
-  RequestTask<HttpResponse> task = (*handler)(request);
+  RequestTask<HttpResponse> task = RequestPipeline::CallAsyncHandler(*handler, request);
 
   if (!task.valid()) {
     static constexpr std::string_view kMessage = "Async handler inactive";
-    log::error("Async path handler returned an invalid RequestTask for path {}", request.path());
     if (bodyReady) {
       HttpResponse resp(http::StatusCodeInternalServerError, kMessage);
-      ApplyResponseMiddleware(request, resp, responseMiddleware, _router.globalResponseMiddleware(), _telemetry, false,
-                              _callbacks.middlewareMetrics);
+      requestPipeline().applyResponseMiddleware(request, resp, responseMiddleware, false);
       finalizeAndSendResponseForHttp1(cnxIt, std::move(resp), pCorsPolicy);
     } else {
       emitSimpleError(cnxIt, http::StatusCodeInternalServerError, kMessage);
@@ -307,8 +305,7 @@ void SingleHttpServer::tryFlushPendingAsyncResponse(ConnectionIt cnxIt) {
     middlewareSpan = routingResult.postMiddlewareRange();
     pCorsPolicy = routingResult.corsPolicy();
   }
-  ApplyResponseMiddleware(state.request, *async.pendingResponse, middlewareSpan, _router.globalResponseMiddleware(),
-                          _telemetry, false, _callbacks.middlewareMetrics);
+  requestPipeline().applyResponseMiddleware(state.request, *async.pendingResponse, middlewareSpan, false);
   finalizeAndSendResponseForHttp1(cnxIt, std::move(*async.pendingResponse), pCorsPolicy);
   state.inBuffer.erase_front(async.consumedBytes);
   async.clear();

@@ -5,6 +5,8 @@
 #include <string_view>
 
 #include "aeronet/decimal-writer.hpp"
+#include "aeronet/http-constants.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -118,6 +120,26 @@ void AppendUrlEncodedQueryParam(RawChars& out, char leadingChar, std::string_vie
   pEnd = URLEncode(decodedValue, isUnreserved, pEnd);
 
   out.setEnd(pEnd);
+}
+
+bool BuildHttpsRedirectUrl(RawChars& out, const HttpRequestView& request, uint16_t targetPort) {
+#ifdef AERONET_ENABLE_HTTP2
+  // :authority replaces the Host header in HTTP/2 (RFC 9113 §8.3.1), which may still send one instead.
+  const std::string_view authority = request.authority();
+  const std::string_view hostHeader = authority.empty() ? request.headerValueOrEmpty(Host) : authority;
+#else
+  const std::string_view hostHeader = request.headerValueOrEmpty(Host);
+#endif
+  if (!AppendHttpsAuthority(out, hostHeader, targetPort)) {
+    return false;
+  }
+  AppendUrlEncodedPath(out, request.path());
+  char querySep = '?';
+  for (const auto& [key, value] : request.queryParamsRange()) {
+    AppendUrlEncodedQueryParam(out, querySep, key, value);
+    querySep = '&';
+  }
+  return true;
 }
 
 }  // namespace aeronet::http
