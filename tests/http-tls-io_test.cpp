@@ -49,6 +49,7 @@
 #include "aeronet/static-file-handler.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/temp-file.hpp"
+#include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_server_tls_fixture.hpp"
 #include "aeronet/test_tls_client.hpp"
 #include "aeronet/test_util.hpp"
@@ -147,6 +148,28 @@ TEST(HttpTlsNegative, LargeResponseFragmentation) {
   ASSERT_FALSE(resp.empty());
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(resp.contains("AAAA"));
+}
+
+// The lingering close of a TLS connection (see the HttpLingeringClose tests) starts with a close_notify alert, then
+// discards the input until the client closes the connection.
+TEST(HttpTlsLingeringClose, EarlyResponseIsFollowedByCloseNotify) {
+  test::TlsTestServer server({}, [](HttpServerConfig& cfg) { cfg.withMaxBodyBytes(1024); });
+  {
+    test::TlsClient client(server.port());
+    ASSERT_TRUE(client.handshakeOk());
+    // 413 right after the head: the server discards the rest of the body.
+    static constexpr std::size_t kBodySize = 256UL << 10U;
+    ASSERT_TRUE(client.writeAll(std::format("POST /upload HTTP/1.1\r\nhost: x\r\ncontent-length: {}\r\n\r\n{}",
+                                            2 * kBodySize, std::string(kBodySize, 'b'))));
+    std::string response = client.drainedDuringWrite() + client.readAll();
+    response += client.readAll();  // up to the close_notify alert
+    EXPECT_TRUE(response.starts_with("HTTP/1.1 413")) << response;
+    const auto shutdownState = static_cast<unsigned>(::SSL_get_shutdown(client.sslHandle()));
+    EXPECT_NE(shutdownState & static_cast<unsigned>(SSL_RECEIVED_SHUTDOWN), 0U);
+  }
+
+  // The client closed the connection: the lingering close ends, long before lingeringCloseTimeout (5 s).
+  EXPECT_TRUE(test::DrainEndsWithin(server.http(), 3s));
 }
 
 TEST(HttpOptionsTraceTls, TraceDisabledOnTlsPolicyRejectsTlsTrace) {

@@ -147,8 +147,18 @@ HTTP/1.1 connections are persistent by default: a client sends several requests 
 | `keepAliveTimeout` | 5 s | An idle connection is closed after this duration. Also applies to WebSocket connections, see [Closing connections](../protocols/websocket.md#closing-connections). |
 | `maxRequestsPerConnection` | 100,000 | The response to the last allowed request carries `Connection: close`. |
 | `maxAcceptBatchSize` | 64 | New connections accepted per loop iteration, so that a connection burst does not starve the existing ones; `0` is unlimited. |
+| `lingeringCloseTimeout` (`withLingeringCloseTimeout()`) | 5 s | Maximum duration of a [lingering close](#lingering-close); `0` closes the connection right away. |
 
 The server closes a connection right away, without waiting for the next request, after a protocol error (malformed request, conflicting framing headers, a limit exceeded): the parser state cannot be trusted anymore, so it never reads further requests from that connection.
+
+### Lingering close
+
+A client may still be sending when its connection closes after a response: the body of a request answered before it was read (`413` for a too large body, another error status, the [HTTPS redirect](../protocols/tls.md#http-to-https-redirect)), or requests pipelined behind the response. Closing a socket with unread input resets the connection, and the reset can destroy the response before the client reads it: Windows discards the data received but not read yet. As RFC 9112 §9.6 recommends, the server closes such a connection in stages:
+
+1. Once the response is written, it shuts down its side of the connection (after a `close_notify` alert over TLS): the client receives the response, then the end of the stream.
+2. It reads and discards the input until the client closes the connection, at most for `lingeringCloseTimeout`, then closes it.
+
+A connection whose input was entirely read, the common case, is closed right away, `Connection: close` included. HTTP/2 and WebSocket connections and CONNECT tunnels are not concerned. A lingering connection is still open: a [drain](#stopping) waits for it, while `stop()` closes it right away. The `aeronet.connections.lingering_closes` counter counts the lingering closes, and `aeronet.connections.closed_for_lingering_close_timeout` those ended by the timeout (see [Observability](../operations/observability.md#built-in-instrumentation)).
 
 ## Port reuse
 
@@ -164,3 +174,4 @@ Keep the default unless several processes must share a port. With `SO_REUSEPORT`
 - Lifecycle, restart, copy, drain, signals, and configuration updates: [tests/http-server-lifecycle_test.cpp](../../tests/http-server-lifecycle_test.cpp).
 - `MultiHttpServer`: [tests/multi-http-server_test.cpp](../../tests/multi-http-server_test.cpp).
 - Keep-alive and `Connection` semantics: [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
+- Lingering close: the `HttpLingeringClose` tests of [tests/http-core_test.cpp](../../tests/http-core_test.cpp), over TLS in [tests/http-tls-io_test.cpp](../../tests/http-tls-io_test.cpp), and the failure to shut down a connection in [tests/http-errors_test.cpp](../../tests/http-errors_test.cpp).

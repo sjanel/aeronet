@@ -82,6 +82,18 @@ std::string recvWithTimeout(NativeHandle fd, std::chrono::milliseconds totalTime
 
 std::string recvUntilClosed(NativeHandle fd, SysDuration recvTimeout = std::chrono::seconds{10});
 
+// The bytes received until the end of the input of a connection, and how it ended.
+struct ReceivedUntilEnd {
+  enum class End : uint8_t { Closed, Reset, TimedOut };
+
+  std::string data;
+  End end{End::Closed};
+};
+
+// Reads until the peer closes the connection (orderly or not) or recvTimeout elapses without data. A reset may have
+// discarded the data received before it was read (Windows).
+ReceivedUntilEnd RecvUntilEnd(NativeHandle fd, SysDuration recvTimeout = std::chrono::seconds{10});
+
 std::string sendAndCollect(uint16_t port, std::string_view raw);
 
 int countOccurrences(std::string_view haystack, std::string_view needle);

@@ -374,6 +374,25 @@ TEST(ConnectionManagerErrors, SweepIdleConnectionsImmediateClose) {
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
 }
 
+// A lingering close (see the HttpLingeringClose tests) that cannot shut down the write side of its connection closes it
+// right away.
+TEST(ConnectionManagerErrors, LingeringCloseShutdownFailureClosesRightAway) {
+  test::QueueResetGuard<decltype(test::g_shutdown_actions)> guard(test::g_shutdown_actions);
+  HttpServerConfig cfg;
+  cfg.withMaxBodyBytes(1024);
+  test::TestServer server(std::move(cfg));
+
+  test::PushShutdownAction({-1, ENOTCONN});
+  test::ClientConnection cnx(server.port());
+  // 413 right after the head, not consumed: the server would linger.
+  test::sendAll(cnx.fd(), "POST /upload HTTP/1.1\r\nhost: x\r\ncontent-length: 4096\r\n\r\n");
+  const std::string resp = test::recvUntilClosed(cnx.fd());
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 413")) << resp;
+
+  // The client keeps the connection open: only a close right away ends the drain before lingeringCloseTimeout (5 s).
+  EXPECT_TRUE(test::DrainEndsWithin(server.server, 3s));
+}
+
 // Test maxPerEventReadBytes fairness cap in handleReadableClient
 // NOTE: This configuration option requires careful tuning and is primarily for server fairness
 // with many concurrent connections. The test verifies the config is accepted and basic operation works.

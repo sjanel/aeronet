@@ -36,6 +36,7 @@ config.withPort(8080)
 | `maxBodyBytes` / `withMaxBodyBytes()` | 256 MiB | Decoded request body ceiling. |
 | `headerReadTimeout` / `withHeaderReadTimeout()` | disabled | Deadline to receive a whole HTTP/1.1 request head: from the accept for the first request of a connection (TLS handshake included), from its first byte for the next ones. Slowloris protection; HTTP/2, WebSocket and tunnel traffic are not concerned. |
 | `bodyReadTimeout` / `withBodyReadTimeout()` | disabled | Progress-based deadline while a handler waits for body data. |
+| `lingeringCloseTimeout` / `withLingeringCloseTimeout()` | 5 s | Maximum duration of the [lingering close](../guides/server-lifecycle.md#lingering-close) of an HTTP/1.1 connection closed while its client may still be sending; `0` closes it right away. |
 | `mergeUnknownRequestHeaders` / `withMergeUnknownRequestHeaders()` | true | Comma-merge repeated unknown headers; use false for stricter custom-header semantics. |
 | `traceMethodPolicy` / `withTracePolicy()` | Disabled | `Disabled`, `EnabledPlainAndTLS`, or `EnabledPlainOnly`. |
 | `addTrailerHeader` / `withTrailerHeader()` | true | Add HTTP/1.1 `Trailer` listing for buffered responses with trailers. Streaming response headers are already sent before trailer names are known. |
