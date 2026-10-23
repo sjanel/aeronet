@@ -106,14 +106,6 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
-    https-redirect_test
-    src/https-redirect.cpp
-    test/https-redirect_test.cpp
-    LIBRARIES
-    aeronet_tech
-)
-
-AeronetAddUnitTest(
     keep-alive-deadline-queue_test
     src/keep-alive-deadline-queue.cpp
     test/keep-alive-deadline-queue_test.cpp

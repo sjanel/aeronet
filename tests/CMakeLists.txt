@@ -47,6 +47,11 @@ endif()
 if(AERONET_ENABLE_HTTP_CLIENT)
 	aeronet_http_test(http-client-integration)
 	target_link_libraries(http-client-integration_test PRIVATE aeronet_client)
+	# The request pipeline scenarios run over HTTP/1.1 and over cleartext HTTP/2.
+	if(AERONET_ENABLE_HTTP2)
+		aeronet_http_test(http-protocol-parity)
+		target_link_libraries(http-protocol-parity_test PRIVATE aeronet_client)
+	endif()
 endif()
 
 if (AERONET_ENABLE_WEBSOCKET)

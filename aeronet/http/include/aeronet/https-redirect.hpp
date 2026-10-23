@@ -5,7 +5,11 @@
 
 #include "aeronet/raw-chars.hpp"
 
-namespace aeronet::http {
+namespace aeronet {
+
+class HttpRequestView;
+
+namespace http {
 
 // Removes a trailing ":port" specifier from a Host header value, returning the bare host.
 // Handles bracketed IPv6 literals (e.g. "[::1]:80" -> "[::1]", "[::1]" -> "[::1]") and plain
@@ -32,4 +36,10 @@ void AppendUrlEncodedPath(RawChars& out, std::string_view decodedPath);
 void AppendUrlEncodedQueryParam(RawChars& out, char leadingChar, std::string_view decodedKey,
                                 std::string_view decodedValue);
 
-}  // namespace aeronet::http
+// Writes into 'out' (cleared first) the https:// URL equivalent to the target of 'request': its host (the :authority
+// of an HTTP/2 request, else its Host header) with targetPort as above, then its path and query parameters, re-encoded.
+// Returns false (and leaves 'out' empty) when the request has no host.
+[[nodiscard]] bool BuildHttpsRedirectUrl(RawChars& out, const HttpRequestView& request, uint16_t targetPort);
+
+}  // namespace http
+}  // namespace aeronet

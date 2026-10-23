@@ -98,5 +98,5 @@ By default, the middleware keeps token buckets in memory, sharded and locked: th
 
 ## Tests
 
-- Ordering, short-circuits, streaming responses, and metrics: [tests/http-routing_test.cpp](../../tests/http-routing_test.cpp).
+- Ordering, short-circuits, streaming responses, and metrics: [tests/http-routing_test.cpp](../../tests/http-routing_test.cpp), and the same over HTTP/1.1 and HTTP/2: [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp).
 - Rate limiting stores, refill, eviction, and concurrency: [rate-limit_test.cpp](../../aeronet/server/test/rate-limit_test.cpp) and [rate-limit-middleware_test.cpp](../../aeronet/server/test/rate-limit-middleware_test.cpp).

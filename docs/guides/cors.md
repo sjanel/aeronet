@@ -70,3 +70,4 @@ A default-constructed `CorsPolicy` is inactive; calling any setter activates it,
 
 - Policy evaluation, preflights, origins, methods, and headers: [cors-policy_test.cpp](../../aeronet/http/test/cors-policy_test.cpp).
 - End to end, including streaming responses and route precedence: [tests/http-routing_test.cpp](../../tests/http-routing_test.cpp) and [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
+- Denied origins not running any kind of handler, over HTTP/1.1 and HTTP/2: [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp).

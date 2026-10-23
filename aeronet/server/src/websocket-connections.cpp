@@ -7,6 +7,7 @@
 #include "aeronet/connection-state.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-message-data.hpp"
+#include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/connection-storage.hpp"
@@ -32,10 +33,11 @@ namespace aeronet {
 SingleHttpServer::LoopAction SingleHttpServer::processWebSocketUpgrade(ConnectionIt cnxIt,
                                                                        const Router::RoutingResult& routingResult) {
   static constexpr bool kStreaming = false;
-  if (rejectDeniedCorsOrigin(cnxIt, routingResult, kStreaming)) {
+  const HttpRequestView& request = _connections.connectionState(cnxIt).request;
+  if (RequestPipeline::IsOriginDenied(request, routingResult)) {
+    sendHttp1Response(cnxIt, RequestPipeline::MakeOriginDenial(request), routingResult, kStreaming);
     return LoopAction::Continue;
   }
-  const HttpRequestView& request = _connections.connectionState(cnxIt).request;
   // Browsers do not apply CORS to WebSocket: without CORS policy, only same-origin pages may connect, which
   // prevents cross-site WebSocket hijacking. Clients that are not browsers send no Origin.
   if (routingResult.corsPolicy() == nullptr &&
