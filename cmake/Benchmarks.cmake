@@ -302,7 +302,7 @@ if(AERONET_ENABLE_HTTP2)
   if(AERONET_ENABLE_HTTP_SERVER)
     set(AERONET_BENCH_INTERNAL_H2_REQUEST ${AERONET_BENCH_ROOT}/internal/http2-request_bench.cpp)
     AeronetAddProjectBenchmark(aeronet-bench-internal-http2-request ${AERONET_BENCH_INTERNAL_H2_REQUEST}
-                               LIBRARIES aeronet_http2)
+                               LIBRARIES aeronet_server)
     set_target_properties(aeronet-bench-internal-http2-request PROPERTIES FOLDER "benchmarks/internal")
   endif()
 endif()

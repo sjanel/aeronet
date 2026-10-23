@@ -223,7 +223,7 @@ class Http2ProtocolLoopback {
         serverConfig(MakeLoopServerConfig(maxOutboundBufferBytes)),
         compressionState(serverConfig.compression),
         tunnelBridge(mockTunnelBridge.get()),
-        handler(serverCfg, Pipeline(router), serverConfig, compressionState, decompressionState, kCachedDate, {},
+        handler(serverCfg, Pipeline(router), serverConfig, compressionState, decompressionState, kCachedDate, state,
                 std::move(mockTunnelBridge)),
         client(clientCfg, false) {
     // Most tests exercise tunnel lifecycle, so explicitly authorize their common target.
@@ -294,7 +294,7 @@ class Http2ProtocolLoopback {
         return;
       }
 
-      auto res = handler.processInput(bytes, state);
+      auto res = handler.processInput(bytes);
       if (res.bytesConsumed == 0) {
         ADD_FAILURE() << "No progress feeding handler";
         return;
@@ -372,10 +372,10 @@ class Http2ProtocolLoopback {
 
   // Owned by handler, null unless constructed WithTunnelBridge.
   MockTunnelBridge* tunnelBridge;
+  ::aeronet::ConnectionState state;
   Http2ProtocolHandler handler;
   Http2Connection client;
   RecordingEventSink clientSink{client};
-  ::aeronet::ConnectionState state;
 
   vector<HeaderEvent> clientHeaders;
   vector<DataEvent> clientData;
@@ -398,8 +398,10 @@ TEST(Http2ProtocolHandler, Creation) {
     return HttpResponse(200);
   });
 
+  ::aeronet::ConnectionState state;
+
   auto handler = CreateHttp2ProtocolHandler(config, Pipeline(router), serverConfig, compressionState,
-                                            decompressionState, false, kCachedDate, {}, nullptr);
+                                            decompressionState, false, kCachedDate, state, nullptr);
 
   ASSERT_NE(handler, nullptr);
   EXPECT_EQ(handler->type(), ProtocolType::Http2);
@@ -412,8 +414,10 @@ TEST(Http2ProtocolHandler, HasNoPendingOutputInitially) {
   HttpServerConfig serverConfig;
   CompressionState compressionState(serverConfig.compression);
   DecompressionState decompressionState;
+  ::aeronet::ConnectionState state;
+
   auto handler = CreateHttp2ProtocolHandler(config, Pipeline(router), serverConfig, compressionState,
-                                            decompressionState, false, kCachedDate, {}, nullptr);
+                                            decompressionState, false, kCachedDate, state, nullptr);
 
   EXPECT_FALSE(handler->hasPendingOutput());
 }
@@ -515,15 +519,14 @@ TEST(Http2ProtocolHandler, SlowReaderOutputPlateausAndLeavesInputUnconsumed) {
   const auto requests = DrainPendingOutput(loop.client, 128);
   ASSERT_FALSE(requests.empty());
 
-  const auto first = loop.handler.processInput(requests, loop.state);
+  const auto first = loop.handler.processInput(requests);
   EXPECT_GT(first.bytesConsumed, 0U);
   EXPECT_LT(first.bytesConsumed, requests.size());
   EXPECT_GE(loop.handler.pendingOutputSize(), kConnectionLimit);
   EXPECT_LE(loop.handler.pendingOutputSize(), kConnectionLimit + 1024U);
 
   const std::size_t plateauBytes = loop.handler.pendingOutputSize();
-  const auto stalled =
-      loop.handler.processInput(std::span<const std::byte>(requests).subspan(first.bytesConsumed), loop.state);
+  const auto stalled = loop.handler.processInput(std::span<const std::byte>(requests).subspan(first.bytesConsumed));
   EXPECT_EQ(stalled.bytesConsumed, 0U);
   EXPECT_EQ(loop.handler.pendingOutputSize(), plateauBytes);
 }
@@ -570,8 +573,10 @@ TEST(Http2ProtocolHandler, ConnectionPreface) {
   HttpServerConfig serverConfig;
   CompressionState compressionState(serverConfig.compression);
   DecompressionState decompressionState;
+  ::aeronet::ConnectionState state;
+
   auto handler = CreateHttp2ProtocolHandler(config, Pipeline(router), serverConfig, compressionState,
-                                            decompressionState, false, kCachedDate, {}, nullptr);
+                                            decompressionState, false, kCachedDate, state, nullptr);
 
   EXPECT_FALSE(handler->hasPendingOutput());
 }
@@ -588,8 +593,10 @@ TEST(CreateHttp2ProtocolHandler, ReturnsValidHandler) {
   router.setDefault([](const HttpRequestView& req) { return HttpResponse("Hello from " + std::string(req.path())); });
 
   DecompressionState decompressionState;
+  ::aeronet::ConnectionState state;
+
   auto handler = CreateHttp2ProtocolHandler(config, Pipeline(router), serverConfig, compressionState,
-                                            decompressionState, false, kCachedDate, {}, nullptr);
+                                            decompressionState, false, kCachedDate, state, nullptr);
 
   ASSERT_NE(handler, nullptr);
   EXPECT_EQ(handler->type(), ProtocolType::Http2);
@@ -604,8 +611,10 @@ TEST(CreateHttp2ProtocolHandler, SendServerPrefaceForTlsQueuesSettingsImmediatel
   CompressionState compressionState(serverConfig.compression);
 
   DecompressionState decompressionState;
+  ::aeronet::ConnectionState state;
+
   auto handlerBase = CreateHttp2ProtocolHandler(config, Pipeline(router), serverConfig, compressionState,
-                                                decompressionState, true, kCachedDate, {}, nullptr);
+                                                decompressionState, true, kCachedDate, state, nullptr);
   auto* pHandler = dynamic_cast<Http2ProtocolHandler*>(handlerBase.get());
   ASSERT_NE(pHandler, nullptr);
 
@@ -623,18 +632,18 @@ TEST(Http2ProtocolHandler, ProcessInputInvalidPrefaceRequestsImmediateClose) {
   HttpServerConfig serverConfig;
   CompressionState compressionState(serverConfig.compression);
   DecompressionState decompressionState;
-  Http2ProtocolHandler handler(config, Pipeline(router), serverConfig, compressionState, decompressionState,
-                               kCachedDate, {});
   ::aeronet::ConnectionState st;
+  Http2ProtocolHandler handler(config, Pipeline(router), serverConfig, compressionState, decompressionState,
+                               kCachedDate, st);
 
   std::array<std::byte, 24> invalidPreface{};
-  auto res = handler.processInput(invalidPreface, st);
+  auto res = handler.processInput(invalidPreface);
   EXPECT_EQ(res.action, ProtocolProcessResult::Action::CloseImmediate);
 
   // After a protocol error, the underlying connection transitions to Closed;
   // further input should map to Close.
   std::array<std::byte, 1> more{};
-  res = handler.processInput(more, st);
+  res = handler.processInput(more);
   EXPECT_EQ(res.action, ProtocolProcessResult::Action::Close);
 }
 
@@ -644,8 +653,9 @@ TEST(Http2ProtocolHandler, MoveConstructAndAssignAreNoexceptAndUsable) {
   HttpServerConfig serverConfig;
   CompressionState compressionState(serverConfig.compression);
   DecompressionState decompressionState;
+  ::aeronet::ConnectionState state;
   Http2ProtocolHandler original(config, Pipeline(router), serverConfig, compressionState, decompressionState,
-                                kCachedDate, {});
+                                kCachedDate, state);
 
   static_assert(noexcept(Http2ProtocolHandler(std::declval<Http2ProtocolHandler&&>())));
   static_assert(noexcept(std::declval<Http2ProtocolHandler&>() = std::declval<Http2ProtocolHandler&&>()));
@@ -654,7 +664,7 @@ TEST(Http2ProtocolHandler, MoveConstructAndAssignAreNoexceptAndUsable) {
   EXPECT_FALSE(moved.hasPendingOutput());
 
   Http2ProtocolHandler assigned(config, Pipeline(router), serverConfig, compressionState, decompressionState,
-                                kCachedDate, {});
+                                kCachedDate, state);
   assigned = std::move(moved);
   EXPECT_FALSE(assigned.hasPendingOutput());
 }
@@ -3058,11 +3068,11 @@ TEST(Http2ProtocolHandler, RejectsWhenClientForbidsIdentityWithoutAcceptableEnco
   CompressionState compressionState(serverConfig.compression);
   DecompressionState decompressionState;
 
+  ::aeronet::ConnectionState state;
   Http2ProtocolHandler handler(serverCfg, Pipeline(router), serverConfig, compressionState, decompressionState,
-                               kCachedDate, {});
+                               kCachedDate, state);
   Http2Connection client(clientCfg, false);
   RecordingEventSink clientSink(client);
-  ::aeronet::ConnectionState state;
 
   vector<HeaderEvent> clientHeaders;
   clientSink.onHeadersDecodedFn = ([&clientHeaders](uint32_t streamId, const SvToSvMap& headers, bool endStream) {
@@ -3087,7 +3097,7 @@ TEST(Http2ProtocolHandler, RejectsWhenClientForbidsIdentityWithoutAcceptableEnco
         ADD_FAILURE() << "feedHandler got stuck";
         return;
       }
-      auto res = handler.processInput(bytes, state);
+      auto res = handler.processInput(bytes);
       if (res.bytesConsumed == 0) {
         ADD_FAILURE() << "No progress feeding handler";
         return;
@@ -3151,7 +3161,7 @@ TEST(Http2ProtocolHandler, RejectsWhenClientForbidsIdentityWithoutAcceptableEnco
         ADD_FAILURE() << "feedHandler got stuck";
         return;
       }
-      auto res = handler.processInput(bytes, state);
+      auto res = handler.processInput(bytes);
       if (res.bytesConsumed == 0) {
         ADD_FAILURE() << "No progress feeding handler";
         return;
@@ -3218,7 +3228,7 @@ TEST(Http2ProtocolHandler, GoAwayFromClientReturnsCloseAction) {
   loop.client.onOutputWritten(out.size());
 
   // Feed the GOAWAY frame to the handler and verify the result
-  auto res = loop.handler.processInput(outCopy, loop.state);
+  auto res = loop.handler.processInput(outCopy);
   EXPECT_EQ(res.action, ProtocolProcessResult::Action::Close);
 }
 

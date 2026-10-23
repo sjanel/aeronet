@@ -270,17 +270,6 @@ constexpr uint64_t MaskingKey64(MaskingKey maskingKey) noexcept {
   return static_cast<uint64_t>(maskingKey) | (static_cast<uint64_t>(maskingKey) << 32U);
 }
 
-// The mask (from MaskingKey64) of the bytes starting 'offset' bytes after a multiple of 4 from the start of the
-// payload. Its two halves are still equal: its low 32 bits mask the 4 bytes starting there.
-constexpr uint64_t ShiftMask(uint64_t mask64, std::size_t offset) noexcept {
-  const auto shift = static_cast<int>((offset % kMaskingKeySize) * 8U);
-  if constexpr (std::endian::native == std::endian::little) {
-    return std::rotr(mask64, shift);
-  } else {
-    return std::rotl(mask64, shift);
-  }
-}
-
 // The key byte masking the byte 'offset' (< 4) bytes after a multiple of 4 from the start of the payload.
 constexpr std::byte KeyByte(MaskingKey maskingKey, std::size_t offset) noexcept {
   if constexpr (std::endian::native == std::endian::little) {
@@ -296,12 +285,20 @@ template <class T>
 void MaskTwoWords(const std::byte* src, std::byte* dst, std::size_t size, uint64_t mask64) noexcept {
   T first;
   T last;
+  const std::size_t offset = size - sizeof(T);
   std::memcpy(&first, src, sizeof(T));
-  std::memcpy(&last, src + size - sizeof(T), sizeof(T));
+  std::memcpy(&last, src + offset, sizeof(T));
   first ^= static_cast<T>(mask64);
-  last ^= static_cast<T>(ShiftMask(mask64, size - sizeof(T)));
+  const auto shift = static_cast<int>((offset % kMaskingKeySize) * 8U);
+  // The mask (from MaskingKey64) of the bytes starting 'offset' bytes after a multiple of 4 from the start of the
+  // payload. Its two halves are still equal: its low 32 bits mask the 4 bytes starting there.
+  if constexpr (std::endian::native == std::endian::little) {
+    last ^= static_cast<T>(std::rotr(mask64, shift));
+  } else {
+    last ^= static_cast<T>(std::rotl(mask64, shift));
+  }
   std::memcpy(dst, &first, sizeof(T));
-  std::memcpy(dst + size - sizeof(T), &last, sizeof(T));
+  std::memcpy(dst + offset, &last, sizeof(T));
 }
 
 // Masks the size bytes of src, starting at the start of the payload, into dst.

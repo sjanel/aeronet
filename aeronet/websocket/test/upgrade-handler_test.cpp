@@ -1,4 +1,4 @@
-#include "../src/upgrade-handler.hpp"
+#include "aeronet/upgrade-handler.hpp"
 
 #include <gtest/gtest.h>
 
@@ -7,7 +7,6 @@
 #include <string_view>
 #include <utility>
 
-#include "aeronet/connection-state.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-request-view.hpp"
@@ -39,13 +38,13 @@ constexpr std::string_view kExpectedWebSocketAccept = "s3pPLMBiTxaQ9kYGzzhZRbK+x
 class UpgradeHandlerHarness : public ::testing::Test {
  protected:
   http::StatusCode parse(RawChars raw) {
-    connState.inBuffer = std::move(raw);
+    inBuffer = std::move(raw);
     RawChars tmp;
-    return request.initTrySetHead(connState.inBuffer, tmp, 4096U, true, nullptr);
+    return request.initTrySetHead(inBuffer, tmp, 4096U, true, nullptr);
   }
 
+  RawChars inBuffer;
   HttpRequestView request;
-  ConnectionState connState;
 };
 
 // Tests for ConnectionContainsUpgrade

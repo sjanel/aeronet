@@ -219,7 +219,7 @@ uint64_t LittleEndianMask(MaskingKey maskingKey) {
 
 // The mask (from LittleEndianMask) of the bytes starting 'offset' bytes after a multiple of 4 from the start of the
 // payload: its low 32 bits mask the 4 bytes starting there.
-constexpr uint64_t ShiftMask(uint64_t mask, std::size_t offset) {
+constexpr uint64_t ShiftMask(uint64_t mask, std::size_t offset) noexcept {
   return std::rotr(mask, static_cast<int>((offset % kMaskingKeySize) * 8U));
 }
 

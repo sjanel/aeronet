@@ -15,7 +15,6 @@
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/compression-test-helpers.hpp"
-#include "aeronet/connection-state.hpp"
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/features.hpp"
@@ -33,6 +32,10 @@
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/vector.hpp"
+
+#ifdef AERONET_ENABLE_HTTP_SERVER
+#include "aeronet/connection-state.hpp"
+#endif
 
 #ifdef AERONET_ENABLE_ZLIB
 #include <utility>
@@ -682,6 +685,8 @@ TEST(HttpCodecCompression, TryCompressResponseStressWithDifferentScenarios) {
   }
 }
 
+// The request decompression tests use the request of a ConnectionState, defined by the server module.
+#ifdef AERONET_ENABLE_HTTP_SERVER
 TEST(HttpCodecDecompression, WillDecompress_DisabledReturnsNotModified) {
   DecompressionConfig cfg;
   cfg.enable = false;
@@ -885,6 +890,7 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_IdentityAndUnknownEncodingRet
       HttpCodec::DecompressChunkedBody(decompressionState, cfg, req, chunks, /*compressedSize=*/1, bodyBuf, tmpBuf);
   EXPECT_EQ(res.status, http::StatusCodeUnsupportedMediaType);
 }
+#endif
 
 TEST(HttpCodecCompression, ResponseCompressionStateEncodeFull_BehaviorPerEncoder) {
   CompressionConfig cfg;
@@ -1096,7 +1102,7 @@ TEST(HttpCodecCompression, ResponseCompressionStateMakeContext_BehaviorPerEncode
   EXPECT_EQ(state.context(static_cast<Encoding>(static_cast<std::underlying_type_t<Encoding>>(-1))), nullptr);
 }
 
-#ifdef AERONET_ENABLE_ZLIB
+#if defined(AERONET_ENABLE_ZLIB) && defined(AERONET_ENABLE_HTTP_SERVER)
 TEST(HttpCodecDecompression, MaybeDecompressRequestBody_StreamingThresholdWithoutContentLengthUsesAggregatedMode) {
   DecompressionConfig cfg;
   cfg.enable = true;
@@ -1280,6 +1286,7 @@ TEST(HttpCodecFullBody, DecompressedSizeLimit) {
   }
 }
 
+#ifdef AERONET_ENABLE_HTTP_SERVER
 // maxDecompressedBytes bounds the whole decoded body of a chunked request, not the output of each chunk, in every stage
 // of stacked codings.
 TEST(HttpCodecDecompression, DecompressChunkedBody_DecompressedSizeLimit) {
@@ -1326,6 +1333,7 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_DecompressedSizeLimit) {
     expectLimit(std::span<const std::string_view>(&outerView, 1), outer.size(), encStr, patterned);
   }
 }
+#endif
 
 #endif
 

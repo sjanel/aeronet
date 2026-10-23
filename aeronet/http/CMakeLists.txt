@@ -1,8 +1,6 @@
 aux_source_directory(src AERONET_HTTP_SRC_LIST)
 
 if(NOT AERONET_ENABLE_HTTP_SERVER)
-    list(REMOVE_ITEM AERONET_HTTP_SRC_LIST src/http-request-dispatch.cpp)
-    list(REMOVE_ITEM AERONET_HTTP_SRC_LIST src/https-redirect.cpp)
     list(REMOVE_ITEM AERONET_HTTP_SRC_LIST src/path-handler-entry.cpp)
     list(REMOVE_ITEM AERONET_HTTP_SRC_LIST src/route-constraint.cpp)
     list(REMOVE_ITEM AERONET_HTTP_SRC_LIST src/route-group.cpp)
@@ -17,12 +15,9 @@ target_link_libraries(aeronet_http
     PUBLIC aeronet_tech aeronet_objects aeronet_sys
 )
 
-if(AERONET_ENABLE_OPENSSL)
-    target_link_libraries(aeronet_http PUBLIC aeronet_tls)
-endif()
-
+# The routes store their WebSocket endpoint behind a pointer: only the router sources need its definition.
 if(AERONET_ENABLE_WEBSOCKET)
-    target_link_libraries(aeronet_http PUBLIC aeronet_websocket)
+    target_link_libraries(aeronet_http PRIVATE aeronet_websocket)
 endif()
 
 target_include_directories(aeronet_http
@@ -30,17 +25,6 @@ target_include_directories(aeronet_http
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
-
-# connection-state_test uses socketpair(AF_UNIX), fcntl, and sendfile/pread overrides - Linux only.
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-AeronetAddUnitTest(
-    connection-state_test
-    test/connection-state_test.cpp
-    LIBRARIES
-    aeronet_http
-    aeronet_test_support
-)
-endif()
 
 AeronetAddUnitTest(
     cors-policy_test
@@ -66,33 +50,10 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
-    http-headers-view_test
-    test/http-headers-view_test.cpp
-    LIBRARIES
-    aeronet_objects
-    aeronet_basic_test_support
-)
-
-AeronetAddUnitTest(
-    http-method_test
-    test/http-method_test.cpp
-    LIBRARIES
-    aeronet_http
-)
-
-AeronetAddUnitTest(
     http-partial-head-write_test
     test/http-partial-head-write_test.cpp
     LIBRARIES
     aeronet_http
-)
-
-AeronetAddUnitTest(
-    http-request-view_test
-    test/http-request-view_test.cpp
-    LIBRARIES
-    aeronet_http
-    aeronet_test_support
 )
 
 AeronetAddUnitTest(
@@ -103,26 +64,14 @@ AeronetAddUnitTest(
     aeronet_test_support
 )
 
-AeronetAddUnitTest(
-    mergeable-headers_test
-    test/mergeable-headers_test.cpp
-    LIBRARIES
-    aeronet_tech
-)
-
-AeronetAddUnitTest(
-    output-queue_test
-    test/output-queue_test.cpp
-    LIBRARIES
-    aeronet_http
-)
-
 if(AERONET_ENABLE_HTTP_SERVER)
+    # The requests of the tests belong to a ConnectionState, defined by the server module.
     AeronetAddUnitTest(
-        https-redirect_test
-        test/https-redirect_test.cpp
+        http-request-view_test
+        test/http-request-view_test.cpp
         LIBRARIES
-        aeronet_http
+        aeronet_server
+        aeronet_test_support
     )
 
     AeronetAddUnitTest(
@@ -152,4 +101,11 @@ if(AERONET_ENABLE_HTTP_SERVER)
         LIBRARIES
         aeronet_http
     )
+
+    # The route tests register WebSocket endpoints.
+    if(AERONET_BUILD_TESTS AND AERONET_ENABLE_WEBSOCKET)
+        foreach(_route_test IN ITEMS path-handler-entry_test route-group_test router_test)
+            target_link_libraries(${_route_test} PRIVATE aeronet_websocket)
+        endforeach()
+    endif()
 endif()

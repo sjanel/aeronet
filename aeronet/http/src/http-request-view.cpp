@@ -13,13 +13,6 @@
 #include <string_view>
 #include <utility>
 
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-#include <coroutine>
-#include <functional>
-#endif
-
-#include "aeronet/async-handler-state.hpp"
-#include "aeronet/connection-state.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/find-char.hpp"
 #include "aeronet/header-line-parse.hpp"
@@ -92,27 +85,6 @@ std::string_view HttpRequestView::body() const {
   return _body;
 }
 
-bool HttpRequestView::hasMoreBody() const {
-  if (_bodyAccessMode == BodyAccessMode::Aggregated) {
-    return false;
-  }
-  if (_pBodyAccessBridge == nullptr) {
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-    // If an async handler started before the body was ready, the server will
-    // set asyncState.needsBody and later install the aggregated bridge when
-    // body bytes arrive. In that intermediate state, treat the request as
-    // having more body so loops using hasMoreBody()+readBodyAsync() will
-    // execute and suspend correctly.
-    assert(_pOwnerState != nullptr);
-    const auto* async = _pOwnerState->asyncState.get();
-    return async != nullptr && async->active && async->needsBody;
-#else
-    return false;
-#endif
-  }
-  return _pBodyAccessBridge->hasMore(*this, _pBodyAccessContext);
-}
-
 std::string_view HttpRequestView::readBody(std::size_t maxBytes) {
   if (_bodyAccessMode == BodyAccessMode::Aggregated) {
     throw std::logic_error("Cannot call readBody() after body() on the same request");
@@ -120,31 +92,6 @@ std::string_view HttpRequestView::readBody(std::size_t maxBytes) {
   _bodyAccessMode = BodyAccessMode::Streaming;
   _activeStreamingChunk = _pBodyAccessBridge->readChunk(*this, _pBodyAccessContext, maxBytes);
   return _activeStreamingChunk;
-}
-
-[[nodiscard]] std::string_view HttpRequestView::alpnProtocol() const noexcept {
-  assert(_pOwnerState != nullptr);
-  return _pOwnerState->tlsInfo.selectedAlpn();
-}
-
-[[nodiscard]] std::string_view HttpRequestView::tlsCipher() const noexcept {
-  assert(_pOwnerState != nullptr);
-  return _pOwnerState->tlsInfo.negotiatedCipher();
-}
-
-[[nodiscard]] std::string_view HttpRequestView::tlsVersion() const noexcept {
-  assert(_pOwnerState != nullptr);
-  return _pOwnerState->tlsInfo.negotiatedVersion();
-}
-
-[[nodiscard]] std::string_view HttpRequestView::tlsPeerSubject() const noexcept {
-  assert(_pOwnerState != nullptr);
-  return _pOwnerState->tlsInfo.peerSubject();
-}
-
-[[nodiscard]] std::string_view HttpRequestView::clientAddress() const noexcept {
-  assert(_pOwnerState != nullptr);
-  return _pOwnerState->clientAddress();
 }
 
 HttpResponse HttpRequestView::makeResponse(std::size_t additionalCapacity, http::StatusCode statusCode) const {
@@ -183,11 +130,7 @@ bool HttpRequestView::hasExpectContinue() const noexcept {
   return version() == http::HTTP_1_1 && CaseInsensitiveEqual(headerValueOrEmpty(http::Expect), http::h100_continue);
 }
 
-bool HttpRequestView::isKeepAliveForHttp1(bool enableKeepAlive, uint32_t maxRequestsPerConnection,
-                                          bool isServerRunning) const {
-  if (!enableKeepAlive || _pOwnerState->requestsServed >= maxRequestsPerConnection || !isServerRunning) {
-    return false;
-  }
+bool HttpRequestView::clientKeepsAliveForHttp1() const {
   // Connection is a list of connection options (RFC 9110 §7.6.1): the close option wins wherever it is.
   bool keepAliveSeen = false;
   for (http::HeaderValueReverseTokensIterator<','> it(headerValueOrEmpty(http::Connection)); it.hasNext();) {
@@ -617,13 +560,12 @@ void UncheckedPinPathParamKeys(SvToSvMap& pathParams, RawChars& storage) {
 
 }  // namespace
 
-void HttpRequestView::pinHeadStorage(ConnectionState& state, AsyncHandlerStatePool& asyncStatePool) {
+void HttpRequestView::pinHeadStorage(RawChars& headBuffer) {
   if (_headPinned || _headSpanSize == 0) {
     return;
   }
   // The head is in the input buffer, not necessarily at its start (the requests pipelined before it may precede it).
   const char* oldBase = _pPath - pathOffsetInHead();
-  RawChars& headBuffer = state.ensureAsyncState(asyncStatePool).headBuffer;
   // A single allocation: the views remapped below must not be invalidated by a later reallocation.
   headBuffer.reserve(_headSpanSize + PathParamKeysSize(_pathParams));
   headBuffer.assign(oldBase, _headSpanSize);
@@ -708,41 +650,6 @@ void HttpRequestView::end(http::StatusCode respStatusCode) noexcept {
     _traceSpan.reset();
   }
 }
-
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-void HttpRequestView::markAwaitingBody() const noexcept {
-  auto* asyncState = _pOwnerState->asyncState.get();
-  assert(asyncState != nullptr);
-  assert(asyncState->active);
-  asyncState->awaitReason = AsyncHandlerState::AwaitReason::WaitingForBody;
-}
-
-void HttpRequestView::markAwaitingCallback() const noexcept {
-  if (_pH2SuspendedFlag != nullptr) {
-    *_pH2SuspendedFlag = true;
-    return;
-  }
-  auto* asyncState = _pOwnerState->asyncState.get();
-  assert(asyncState != nullptr);
-  assert(asyncState->active);
-  asyncState->awaitReason = AsyncHandlerState::AwaitReason::WaitingForCallback;
-}
-
-std::function<void(std::coroutine_handle<>, std::function<void()>)> HttpRequestView::copyPostCallback() const {
-  if (_h2PostCallback) {
-    return _h2PostCallback;
-  }
-  auto* asyncState = _pOwnerState->asyncState.get();
-  assert(asyncState != nullptr);
-  assert(asyncState->active);
-  assert(asyncState->postCallback);
-  return asyncState->postCallback;
-}
-
-void HttpRequestView::postCallback(std::coroutine_handle<> handle, std::function<void()> work) const {
-  copyPostCallback()(handle, std::move(work));
-}
-#endif
 
 HttpResponse::Options HttpRequestView::makeResponseOptions() const noexcept {
   assert(_pCompressionState != nullptr);

@@ -35,6 +35,15 @@ AeronetAddUnitTest(
     test/sha1_test.cpp
 )
 
+AeronetAddUnitTest(
+    upgrade-handler_test
+    test/upgrade-handler_test.cpp
+    LIBRARIES
+    aeronet_http
+    aeronet_basic_test_support
+    aeronet_websocket
+)
+
 if(AERONET_ENABLE_OPENSSL AND AERONET_BUILD_TESTS)
     find_package(OpenSSL REQUIRED)
     target_link_libraries(sha1_test PRIVATE OpenSSL::Crypto)
@@ -65,6 +74,10 @@ AeronetAddUnitTest(
     aeronet_http
 )
 
+if(AERONET_BUILD_TESTS AND AERONET_ENABLE_HTTP_SERVER)
+    target_link_libraries(websocket-endpoint_test PRIVATE aeronet_server)
+endif()
+
 AeronetAddUnitTest(
     websocket-frame_test
     test/websocket-frame_test.cpp
@@ -77,7 +90,6 @@ AeronetAddUnitTest(
     test/websocket-handler_test.cpp
     LIBRARIES
     aeronet_websocket
-    aeronet_http
 )
 
 AeronetAddUnitTest(
