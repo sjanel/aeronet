@@ -264,6 +264,34 @@ TEST_F(HttpConnectDefaultConfig, ForwardsTunnelDataCoalescedWithConnectHead) {
   EXPECT_TRUE(received.ends_with(payload)) << received;
 }
 
+TEST(HttpConnectHeaderReadTimeout, TunnelOutlivesHeaderReadTimeout) {
+  // The header read timeout bounds the reception of a request head: the tunnel bytes, read by the relay on both ends of
+  // the tunnel, do not start it.
+  static constexpr auto kHeaderReadTimeout = 50ms;
+  test::TestServer server(HttpServerConfig{}.withHeaderReadTimeout(kHeaderReadTimeout).withPollInterval(5ms));
+  AllowConnectHost(server, "127.0.0.1");
+  server.router().setDefault([](const HttpRequestView&) { return HttpResponse("alive"); });
+  auto echoSrv = test::startEchoServer();
+
+  {
+    test::ClientConnection tunnelClient(server.port());
+    const std::string request =
+        "CONNECT 127.0.0.1:" + std::to_string(echoSrv.port) + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+    test::sendAll(tunnelClient.fd(), request, 1s);
+    const std::string head = RecvConnectResponseHead(tunnelClient.fd(), 1s);
+    ASSERT_TRUE(head.starts_with("HTTP/1.1 200")) << head;
+
+    for (const std::string_view payload : {"before-the-header-timeout", "after-the-header-timeout"}) {
+      test::sendAll(tunnelClient.fd(), payload, 1s);
+      EXPECT_EQ(test::recvWithTimeout(tunnelClient.fd(), 1s, payload.size()), payload);
+      std::this_thread::sleep_for(kHeaderReadTimeout * 3);
+    }
+  }
+
+  // Closing the tunnel left the server consistent.
+  EXPECT_TRUE(test::simpleGet(server.port(), "/").starts_with("HTTP/1.1 200"));
+}
+
 TEST_F(HttpConnectDefaultConfig, CoalescedDataWriteErrorClosesTunnel) {
   test::QueueResetGuard connectActionsGuard(test::g_connect_actions);
   AllowConnectHost(ts, "127.0.0.1");

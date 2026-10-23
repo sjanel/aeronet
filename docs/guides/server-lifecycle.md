@@ -130,7 +130,7 @@ server.postConfigUpdate([](HttpServerConfig& config) {
 });
 ```
 
-- Most fields can change: limits, timeouts, compression, global headers, access log, TLS (see [hot reload](../protocols/tls.md#hot-reload-and-failure-behavior)).
+- Most fields can change: limits, timeouts, compression, global headers, access log, TLS (see [hot reload](../protocols/tls.md#hot-reload-and-failure-behavior)). A timeout change also applies to the requests in progress: enabling `headerReadTimeout` bounds the request heads already being received.
 - `port`, `reusePort`, `nbThreads`, and `telemetry` cannot: a change is logged and reverted.
 - Each update is applied atomically: if the updater throws, if the result fails validation, or if a component cannot be rebuilt from it (an invalid certificate, an access log file that cannot be opened), the error is logged and the previous configuration stays in place.
 - A `MultiHttpServer` applies the update to every worker.

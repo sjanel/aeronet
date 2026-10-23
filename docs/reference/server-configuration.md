@@ -34,7 +34,7 @@ config.withPort(8080)
 | `maxAcceptBatchSize` / `withMaxAcceptBatchSize()` | 64 | New accepts handled per event-loop iteration; `0` is unlimited. |
 | `maxHeaderBytes` / `withMaxHeaderBytes()` | 8 KiB | Maximum request line, headers, and terminating CRLFCRLF. |
 | `maxBodyBytes` / `withMaxBodyBytes()` | 256 MiB | Decoded request body ceiling. |
-| `headerReadTimeout` / `withHeaderReadTimeout()` | disabled | Whole request-head deadline after the first byte; Slowloris protection. |
+| `headerReadTimeout` / `withHeaderReadTimeout()` | disabled | Deadline to receive a whole HTTP/1.1 request head: from the accept for the first request of a connection (TLS handshake included), from its first byte for the next ones. Slowloris protection; HTTP/2, WebSocket and tunnel traffic are not concerned. |
 | `bodyReadTimeout` / `withBodyReadTimeout()` | disabled | Progress-based deadline while a handler waits for body data. |
 | `mergeUnknownRequestHeaders` / `withMergeUnknownRequestHeaders()` | true | Comma-merge repeated unknown headers; use false for stricter custom-header semantics. |
 | `traceMethodPolicy` / `withTracePolicy()` | Disabled | `Disabled`, `EnabledPlainAndTLS`, or `EnabledPlainOnly`. |

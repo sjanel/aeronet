@@ -544,6 +544,55 @@ TEST(HttpHeaderTimeout, Emits408WhenHeadersNeverComplete) {
   EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, "close"))) << resp;
 }
 
+// The header timer of the requests following the first one of a keep-alive connection is armed by the read of a
+// readable event, not by the read right after the accept: the stall of such a request is detected as well.
+TEST(HttpHeaderTimeout, Emits408WhenHeadersOfKeepAliveRequestNeverComplete) {
+  static constexpr std::chrono::milliseconds readTimeout = std::chrono::milliseconds{50};
+  static constexpr int kNbCompleteRequests = 3;
+  auto headerTimeout = makeHeaderReadTimeoutScope(readTimeout);
+
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("hi"); });
+  test::ClientConnection cnx(ts.port());
+  const NativeHandle fd = cnx.fd();
+  ASSERT_GE(fd, 0) << "connect failed";
+
+  for (int requestIdx = 0; requestIdx < kNbCompleteRequests; ++requestIdx) {
+    test::sendAll(fd, test::SimpleGetRequest("/", "keep-alive"));
+    const std::string resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
+    ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  }
+
+  test::sendAll(fd, "GET /", std::chrono::milliseconds{100});
+  std::this_thread::sleep_for(readTimeout + std::chrono::milliseconds{20});
+
+  const std::string resp = test::recvWithTimeout(fd, std::chrono::milliseconds{500});
+  ASSERT_FALSE(resp.empty());
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 408")) << resp;
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, "close"))) << resp;
+}
+
+// Enabling headerReadTimeout by a configuration update bounds the heads already being received: their timers started
+// with the timeout disabled.
+TEST(HttpHeaderTimeout, EnabledWhileHeadsAreReceived) {
+  static constexpr std::chrono::milliseconds readTimeout = std::chrono::milliseconds{500};
+  test::TestServer server(HttpServerConfig{}.withPollInterval(std::chrono::milliseconds{5}));
+  server.router().setDefault([](const HttpRequestView&) { return HttpResponse("hi"); });
+
+  test::ClientConnection completed(server.port());
+  test::ClientConnection stalled(server.port());
+  test::sendAll(completed.fd(), "GET / HTTP/1.1\r\n", std::chrono::milliseconds{100});
+  test::sendAll(stalled.fd(), "GET /", std::chrono::milliseconds{100});
+  std::this_thread::sleep_for(std::chrono::milliseconds{30});  // both accepted and read with the timeout disabled
+  server.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withHeaderReadTimeout(readTimeout); });
+
+  test::sendAll(completed.fd(), "Host: x\r\nConnection: close\r\n\r\n", std::chrono::milliseconds{100});
+  const std::string completedResp = test::recvUntilClosed(completed.fd(), std::chrono::seconds{2});
+  EXPECT_TRUE(completedResp.starts_with("HTTP/1.1 200")) << completedResp;
+
+  const std::string stalledResp = test::recvUntilClosed(stalled.fd(), std::chrono::seconds{2});
+  EXPECT_TRUE(stalledResp.starts_with("HTTP/1.1 408")) << stalledResp;
+}
+
 TEST(HttpBasic, SimpleGet) {
   ts.router().setDefault([](const HttpRequestView& req) {
     HttpResponse resp;
@@ -1216,6 +1265,40 @@ TEST(HttpServerTelemetry, DogStatsDMetricsSentAtMaintenanceTick) {
     }
   }
   EXPECT_EQ(nbAccepted, kNbRequests);
+}
+
+TEST(HttpServerTelemetry, DogStatsDBytesReadCountsTheReadsOfReadableEvents) {
+  // The request is sent once the read right after the accept found nothing: read on a readable event, it counts too.
+  static constexpr std::string_view kBytesReadPrefix = "svc.aeronet.bytes.read:";
+  test::UnixDogstatsdSink sink;
+
+  TelemetryConfig tcfg;
+  tcfg.withDogStatsdSocketPath(sink.path()).withDogStatsdNamespace("svc").enableDogStatsDMetrics(true);
+
+  HttpServerConfig cfg;
+  cfg.withTelemetryConfig(std::move(tcfg));
+  test::TestServer server(std::move(cfg), RouterConfig{}, std::chrono::milliseconds{10});
+  server.router().setDefault([](const HttpRequestView&) { return HttpResponse("ok"); });
+
+  const std::string request = test::SimpleGetRequest("/");
+  {
+    test::ClientConnection cnx(server.port());
+    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    test::sendAll(cnx.fd(), request);
+    EXPECT_TRUE(test::recvUntilClosed(cnx.fd()).starts_with("HTTP/1.1 200"));
+  }
+
+  std::size_t bytesRead = 0;
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  while (bytesRead < request.size() && std::chrono::steady_clock::now() < deadline) {
+    const std::string datagram = sink.recvMessage(100);
+    const auto bytesReadPos = datagram.find(kBytesReadPrefix);
+    if (bytesReadPos != std::string::npos) {
+      const auto valuePos = bytesReadPos + kBytesReadPrefix.size();
+      bytesRead += std::stoul(datagram.substr(valuePos, datagram.find('|', valuePos) - valuePos));
+    }
+  }
+  EXPECT_GE(bytesRead, request.size());
 }
 #endif
 

@@ -506,11 +506,18 @@ class SingleHttpServer {
 
   // Returns true if connection has been closed, false otherwise.
   CloseStatus handleWritableClient(ConnectionIt cnxIt);
-  // Reads and processes available input of a connection.
-  // stopOnShortRead: the triggering event reported no hang-up / error, so a short plain-socket read proves the kernel
+  // Reads and processes available input of a connection: the only read loop of the HTTP connections (tunnels excepted),
+  // from the read right after the accept on.
+  // stopOnShortRead: no hang-up / error can be pending unreported, so a short plain-socket read proves the kernel
   // receive queue drained and the final read that would only return EAGAIN can be skipped (edge-triggered polling
-  // reports any later data). Pass false when the event may carry a pending EOF, or when no event triggered the read.
+  // reports any later data). True for an event without hang-up / error, and for the read right after the accept
+  // (registering the socket reports what it already received). Pass false when the event may carry a pending EOF, or
+  // when the read resumes input whose events were already consumed.
   CloseStatus handleReadableClient(ConnectionIt cnxIt, bool stopOnShortRead);
+  // Ends the handling of the connection fd outside of an event of the polled batch (right after its accept, or when its
+  // deferred input is resumed): closes it if requested - unless a nested close already recycled it - or restarts its
+  // keep-alive idle window otherwise.
+  void completeOutOfBatchRead(NativeHandle fd, CloseStatus closeStatus);
 
   // Dispatches input to appropriate handler based on protocol.
   // For HTTP/1.1, calls processHttp1Requests.
@@ -530,7 +537,8 @@ class SingleHttpServer {
   // Validate the Transfer-Encoding of the current HTTP/1.1 request. Returns true for chunked, the only coding
   // supported. Otherwise, queues the error response (the connection then closes) and returns false.
   bool acceptChunkedTransferEncoding(ConnectionIt cnxIt, std::string_view transferEncoding);
-  // Track the reception of the body of the current HTTP/1.1 request for the body read timeout.
+  // Track the reception of the body of the current HTTP/1.1 request for the body read timeout. A received body (or a
+  // closed connection: bodyReady true) is no longer awaited, even if the timeout was disabled since.
   void trackBodyReception(ConnectionState& state, bool bodyReady) noexcept;
   // The steps of the request pipeline shared with HTTP/2.
   [[nodiscard]] RequestPipeline requestPipeline() noexcept {
@@ -686,6 +694,11 @@ class SingleHttpServer {
   bool checkWebSocketTimeouts(ConnectionIt cnxIt);
 #endif
   void forgetConnectionMaintenance(ConnectionState& state) noexcept;
+  // Starts the header read timer of the next HTTP/1.1 request of the connection (see
+  // HttpServerConfig::headerReadTimeout), whose start is also the reference of the relative deadlines of the request.
+  void startHeaderReadTimer(ConnectionState& state) noexcept;
+  // Stops it: the request head was received, or the connection no longer receives HTTP/1.1 requests.
+  void stopHeaderReadTimer(ConnectionState& state) noexcept;
   void clearRequestDeadline(ConnectionState& state) noexcept;
   void trackRequestDeadline(ConnectionState& state, uint32_t deadlineMs) noexcept;
   void forgetWritableInterest(ConnectionState& state) noexcept;
@@ -834,9 +847,11 @@ class SingleHttpServer {
 #endif
 
   Socket _listenSocket;
+#ifdef AERONET_LINUX
   // Linux only: bound (never listening) socket keeping an ephemeral port reserved for the whole life of this server
   // when reusePort is enabled, see initListener(). Not copied: it stays with the server that resolved the port.
   Socket _portReservation;
+#endif
   TimerFd _maintenanceTimer;
   EventLoop _eventLoop;
 
@@ -898,7 +913,11 @@ class SingleHttpServer {
 #ifdef AERONET_ENABLE_HTTP2
     uint32_t http2Connections{0};
 #endif
-    uint32_t pendingTimeoutConnections{0};
+    // The connections receiving a request head (ConnectionState::parsingHeaders) and those awaiting body bytes
+    // (ConnectionState::waitingForBody). They follow these flags whatever headerReadTimeout and bodyReadTimeout, which
+    // a configuration update can change while requests are received: only the sweep decision depends on them.
+    uint32_t headerReadConnections{0};
+    uint32_t bodyReadConnections{0};
   };
   ConnectionSweepState _connectionSweepState;
 
