@@ -242,9 +242,10 @@ struct HttpServerConfig {
   // Default: 5000 ms.
   std::chrono::milliseconds keepAliveTimeout{std::chrono::milliseconds{5000}};
 
-  // Maximum duration allowed to fully receive the HTTP request headers (request line + headers + CRLFCRLF)
-  // from the moment the first byte of the request is read on a connection. If exceeded before the header
-  // terminator is observed the server closes the connection and emits a 408 Request Timeout. A value
+  // Maximum duration allowed to fully receive the HTTP/1.1 request headers (request line + headers + CRLFCRLF),
+  // from the accept for the first request of a connection (TLS handshake included), from the moment its first byte is
+  // read for the next ones. If exceeded before the header terminator is observed the server closes the connection and
+  // emits a 408 Request Timeout. HTTP/2 and WebSocket connections and CONNECT tunnels are not concerned. A value
   // of 0 disables this protective timeout. Default: disabled.
   std::chrono::milliseconds headerReadTimeout{std::chrono::milliseconds{0}};
 

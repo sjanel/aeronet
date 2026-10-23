@@ -1595,6 +1595,31 @@ TEST(SingleHttpServer, BodyReadTimeoutClearedWhenReady) {
   ASSERT_TRUE(resp.contains("HELLO")) << resp;
 }
 
+// A body awaited while bodyReadTimeout was enabled stops being awaited once received, even if the timeout was disabled
+// meanwhile: enabling it again does not time out the idle keep-alive connection.
+TEST(SingleHttpServer, BodyReadTimeoutDisabledWhileBodyIsReceived) {
+  test::TestServer server(HttpServerConfig{}.withBodyReadTimeout(1s).withPollInterval(5ms));
+  server.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
+  test::ClientConnection clientConnection(server.port());
+  const NativeHandle fd = clientConnection.fd();
+
+  test::sendAll(fd, "POST /test HTTP/1.1\r\nhost: x\r\ncontent-length: 10\r\n\r\n12345");
+  std::this_thread::sleep_for(50ms);  // the head is read, the body awaited
+  server.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withBodyReadTimeout({}); });
+
+  test::sendAll(fd, "67890");
+  std::string resp = test::recvWithTimeout(fd, 1000ms);
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.ends_with("1234567890")) << resp;
+
+  server.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withBodyReadTimeout(50ms); });
+  std::this_thread::sleep_for(150ms);
+
+  test::sendAll(fd, test::SimpleGetRequest("/next", "keep-alive"));
+  resp = test::recvWithTimeout(fd, 1000ms);
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+}
+
 TEST(SingleHttpServer, KeepAliveTimeoutNotTiedToPollInterval) {
   const auto oldPollInterval = ts.server.config().pollInterval;
 

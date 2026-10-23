@@ -195,15 +195,7 @@ void SingleHttpServer::handleAsyncBodyProgress(ConnectionIt cnxIt) {
       return;
     }
     state.installAggregatedBodyBridge();
-
-    if (_config.bodyReadTimeout.count() > 0) {
-      if (state.waitingForBody) {
-        assert(_connectionSweepState.pendingTimeoutConnections > 0U);
-        --_connectionSweepState.pendingTimeoutConnections;
-      }
-      state.waitingForBody = false;
-      state.bodyLastActivityMs = ConnectionState::kInactiveRelativeMs;
-    }
+    trackBodyReception(state, true);
 
     if (async.awaitReason == AsyncHandlerState::AwaitReason::WaitingForBody) {
       async.awaitReason = AsyncHandlerState::AwaitReason::None;
