@@ -37,13 +37,3 @@ enum class ZerocopyMode : std::uint8_t {
 };
 
 }  // namespace aeronet
-
-#ifdef AERONET_ENABLE_GLAZE
-#include <glaze/glaze.hpp>
-
-template <>
-struct glz::meta<aeronet::ZerocopyMode> {
-  using enum aeronet::ZerocopyMode;
-  static constexpr auto value = enumerate("disabled", Disabled, "opportunistic", Opportunistic, "enabled", Enabled);
-};
-#endif

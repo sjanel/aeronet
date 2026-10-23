@@ -109,5 +109,5 @@ When Glaze is enabled, `aeronet-config-dump` can emit the complete serializable 
 
 Two configuration headers are intentionally not application configuration objects:
 
-- [`aeronet-config.hpp`](../../aeronet/server/include/aeronet/aeronet-config.hpp) contains the internal combined server/router representation used by the config loader. Use a server file-path constructor or the public `LoadServerConfig` path instead of depending on `TopLevelConfig` or its parser helpers.
+- [`aeronet-config.hpp`](../../aeronet/server/include/aeronet/aeronet-config.hpp) holds the Glaze metadata of the server configuration objects, kept out of their headers to save compile time: include it to serialize them with Glaze yourself (see [Serialize configuration objects yourself](../modules/json-and-config-files.md#serialize-configuration-objects-yourself)).
 - [`compiler-config.hpp`](../../aeronet/tech/include/aeronet/compiler-config.hpp) selects portability attributes such as `AERONET_RESTRICT` and `AERONET_ALWAYS_INLINE` for the active compiler. Applications should not define or override these macros; select the compiler/toolchain through CMake.

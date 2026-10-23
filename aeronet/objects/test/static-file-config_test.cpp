@@ -10,6 +10,7 @@
 #include <string_view>
 
 #include "aeronet/glaze-round-trip.hpp"
+#include "aeronet/static-file-config-glaze.hpp"  // IWYU pragma: keep (glz::meta of StaticFileConfig)
 #endif
 
 namespace aeronet {

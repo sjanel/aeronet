@@ -13,5 +13,6 @@
 #include "aeronet/version.hpp"                // IWYU pragma: export
 
 #ifdef AERONET_ENABLE_GLAZE
-#include "aeronet/client-config-loader.hpp"  // IWYU pragma: export
+#include "aeronet/client-config-loader.hpp"      // IWYU pragma: export
+#include "aeronet/http-client-config-glaze.hpp"  // IWYU pragma: export
 #endif

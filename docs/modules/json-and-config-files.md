@@ -105,6 +105,21 @@ A configuration file uses the names of the C++ fields: `maxRedirects`, `retry.ma
 
 The configuration objects are aggregates that Glaze reflects member by member, so that a field added to one of them is read and written without any serialization code. Only the members that hold internal storage (prefixed with `_`, such as the packed strings of `TLSConfig`) are mapped by hand, to the keys listed above. The callbacks are code, not configuration, and are not serializable: the TLS revocation callback and its context, and the `contentTypeResolver` and `directoryIndexRenderer` of `StaticFileConfig`. Neither are the static TLS session ticket keys (`withTlsSessionTicketKey()`).
 
+### Serialize configuration objects yourself
+
+The loaders and `dumpConfig()` cover configuration files. To read or write a configuration object with Glaze in your own code, as part of a larger document for instance, include `<aeronet/aeronet-config.hpp>` for `HttpServerConfig`, `RouterConfig` and `StaticFileConfig`, or `<aeronet/http-client-config-glaze.hpp>` for `HttpClientConfig`. The umbrella headers (`<aeronet/aeronet.hpp>`, `<aeronet/aeronet-server.hpp>`, `<aeronet/aeronet-client.hpp>`) include them.
+
+```cpp
+#include <aeronet/aeronet-config.hpp>
+
+#include <glaze/glaze.hpp>
+#include <string>
+
+const std::string json = glz::write_json(HttpServerConfig{}.withPort(8080)).value_or(std::string{});
+```
+
+The configuration headers do not include Glaze, which is expensive to compile: most files include them without serializing anything. The Glaze metadata of a configuration type (its `glz::meta`, which names the enumerations and maps the internal members to the keys above) lives in a companion header named after it with a `-glaze` suffix, such as `<aeronet/tls-config-glaze.hpp>`, which includes the ones of its members. Without it, serializing an `HttpServerConfig`, a `RouterConfig`, an `HttpClientConfig` or a `TLSConfig` does not compile, but a smaller object such as `CompressionConfig` or `AccessLogConfig` would be written with its enumerations as integers and its internal members exposed.
+
 ## JSON and YAML bodies
 
 The body helpers live in `<aeronet/http-json.hpp>`, which includes Glaze. Glaze is expensive to compile, so the widely included core headers only declare these helpers: include `<aeronet/http-json.hpp>` in the files that use them. The `<aeronet/aeronet.hpp>` umbrella header includes it.

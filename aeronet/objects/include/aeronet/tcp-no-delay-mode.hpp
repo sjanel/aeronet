@@ -17,13 +17,3 @@ enum class TcpNoDelayMode : std::uint8_t {
 };
 
 }
-
-#ifdef AERONET_ENABLE_GLAZE
-#include <glaze/glaze.hpp>
-
-template <>
-struct glz::meta<aeronet::TcpNoDelayMode> {
-  using enum aeronet::TcpNoDelayMode;
-  static constexpr auto value = enumerate("auto", Auto, "disabled", Disabled, "enabled", Enabled);
-};
-#endif
