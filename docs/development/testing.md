@@ -24,6 +24,7 @@ Summary of the automated test coverage; the files named are in [tests/](../../te
 | Expect | `100-continue` for a non-empty body, none for an empty one | ✅ | `http-errors_test.cpp`, `http-additional_test.cpp` |
 | Keep-alive | Persistence, maximum requests per connection | ✅ | `http-core_test.cpp`, `http-server-lifecycle_test.cpp` |
 | Keep-alive | Idle timeout close, active connections outliving the timeout | ✅ | `http-core_test.cpp` |
+| Connection close | Lingering close after an early response or before pipelined requests (client close, reset, timeout, configuration update, TLS `close_notify`, shutdown failure) | ✅ | `http-core_test.cpp`, `http-tls-io_test.cpp`, `http-errors_test.cpp` |
 | Pipelining | Sequential pipelines, malformed second request, bodies and split requests behind served ones, TRACE, CONNECT, `Expect`, async handlers and WebSocket upgrades (with coalesced frames) behind served requests, batched responses | ✅ | `http-core_test.cpp`, `http-errors_test.cpp`, `http-additional_test.cpp`, `http-connect_test.cpp`, `http-async_test.cpp`, `websocket-integration_test.cpp` |
 | Methods | `HEAD` semantics (no body) | ✅ | `http-core_test.cpp`, `aeronet/http/test/router_test.cpp` |
 | Date | RFC 9110 format, same-second caching, second-boundary refresh | ✅ | `aeronet/server/test/date-header-cache_test.cpp`, `http-core_test.cpp` |

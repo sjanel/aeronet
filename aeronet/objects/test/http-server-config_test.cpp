@@ -301,6 +301,18 @@ TEST(HttpServerConfigTest, ExcessiveBodyReadTimeoutThrows) {
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
+TEST(HttpServerConfigTest, InvalidLingeringCloseTimeoutThrows) {
+  HttpServerConfig config;
+  config.withLingeringCloseTimeout(std::chrono::milliseconds{-1});
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
+TEST(HttpServerConfigTest, ExcessiveLingeringCloseTimeoutThrows) {
+  HttpServerConfig config;
+  config.withLingeringCloseTimeout(std::chrono::milliseconds{std::chrono::hours{24 * 50}});
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
 TEST(HttpServerConfigTest, ExcessiveKeepAliveTimeoutThrows) {
   HttpServerConfig config;
   config.withKeepAliveTimeout(std::chrono::milliseconds{std::chrono::hours{24 * 50}});
@@ -313,6 +325,7 @@ TEST(HttpServerConfigTest, LargeButValidTimeoutsPass) {
   config.withHeaderReadTimeout(std::chrono::milliseconds{std::chrono::hours{24 * 49}});
   config.withBodyReadTimeout(std::chrono::milliseconds{std::chrono::hours{24 * 49}});
   config.withKeepAliveTimeout(std::chrono::milliseconds{std::chrono::hours{24 * 49}});
+  config.withLingeringCloseTimeout(std::chrono::milliseconds{std::chrono::hours{24 * 49}});
   EXPECT_NO_THROW(config.validate());
 }
 

@@ -661,10 +661,21 @@ class SingleHttpServer {
   // failed (the file send is then dropped).
   bool flushUserSpaceTlsBuffer(ConnectionIt cnxIt);
 
+  // Closes the connection, unless it starts a lingering close (see startLingeringClose()).
   void closeConnection(ConnectionIt cnxIt);
+  // Closes the connection right away.
+  void closeConnectionNow(ConnectionIt cnxIt);
   // Unregister the connection from the event loop and release its state (closing its socket). Unlike
   // closeConnection(), neither its maintenance nor its tunnels are handled.
   void releaseConnection(ConnectionIt cnxIt);
+  // RFC 9112 §9.6: closing a socket with unread input resets the connection, and the reset can destroy the response
+  // before the client reads it (Windows discards the received data). When the client of an HTTP/1.1 connection whose
+  // drain close is due may still be sending (bytes of the answered request, or of requests pipelined behind it, are
+  // left in its input buffer), shuts down its write side and keeps it open, discarding its input, until the client
+  // closes it or lingeringCloseTimeout elapsed. Returns true if the connection lingers.
+  bool startLingeringClose(ConnectionIt cnxIt);
+  // Reads and discards the input of a lingering connection. Returns Close once the client closed it.
+  CloseStatus discardLingeringInput(ConnectionIt cnxIt);
 
   // Registers (or unregisters) the keep-alive deadline of a connection according to its current state.
   void refreshKeepAliveDeadline(ConnectionIt cnxIt);
