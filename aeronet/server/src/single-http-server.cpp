@@ -389,11 +389,7 @@ bool SingleHttpServer::serveHttp1Requests(ConnectionIt cnxIt) {
 
     // A full request head (and body, if present) will now be processed; mark header parsing as done.
     // headerStartTp is kept alive as the reference for relative body/deadline timestamps.
-    if (state.parsingHeaders && _config.headerReadTimeout.count() > 0) {
-      assert(_connectionSweepState.pendingTimeoutConnections > 0U);
-      --_connectionSweepState.pendingTimeoutConnections;
-    }
-    state.parsingHeaders = false;
+    stopHeaderReadTimer(state);
 
     // Automatic HTTP -> HTTPS redirect: answer every request on this plaintext listener with a 3xx redirect
     // to the equivalent https:// URL, bypassing routing, upgrades and body handling. The connection is closed
@@ -601,24 +597,24 @@ bool SingleHttpServer::acceptChunkedTransferEncoding(ConnectionIt cnxIt, std::st
 }
 
 void SingleHttpServer::trackBodyReception(ConnectionState& state, bool bodyReady) noexcept {
+  if (bodyReady) {
+    if (state.waitingForBody) {
+      assert(_connectionSweepState.bodyReadConnections > 0U);
+      --_connectionSweepState.bodyReadConnections;
+      state.waitingForBody = false;
+      state.bodyLastActivityMs = ConnectionState::kInactiveRelativeMs;
+    }
+    return;
+  }
   if (_config.bodyReadTimeout.count() == 0) {
     return;
   }
-  if (bodyReady) {
-    if (state.waitingForBody) {
-      assert(_connectionSweepState.pendingTimeoutConnections > 0U);
-      --_connectionSweepState.pendingTimeoutConnections;
-    }
-    state.waitingForBody = false;
-    state.bodyLastActivityMs = ConnectionState::kInactiveRelativeMs;
-  } else {
-    if (!state.waitingForBody) {
-      ++_connectionSweepState.pendingTimeoutConnections;
-    }
+  if (!state.waitingForBody) {
+    ++_connectionSweepState.bodyReadConnections;
     state.waitingForBody = true;
-    state.bodyLastActivityMs = static_cast<uint32_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(state.lastActivity - state.headerStartTp).count());
   }
+  state.bodyLastActivityMs = static_cast<uint32_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(state.lastActivity - state.headerStartTp).count());
 }
 
 void SingleHttpServer::sendHttp1Response(ConnectionIt cnxIt, HttpResponse&& resp,
@@ -914,15 +910,7 @@ void SingleHttpServer::resumeDeferredInputs() {
     if (!IsValid(_connections, pendingIt)) {
       continue;
     }
-    const CloseStatus cs = resumeDeferredInput(pendingIt);
-    if (cs == CloseStatus::Close) {
-      const auto finalIt = _connections.iterator(pendingFd);
-      if (IsValid(_connections, finalIt)) {
-        closeConnection(finalIt);
-      }
-    } else {
-      restartKeepAliveIdleWindow(pendingFd);
-    }
+    completeOutOfBatchRead(pendingFd, resumeDeferredInput(pendingIt));
   }
 }
 

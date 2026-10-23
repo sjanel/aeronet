@@ -93,7 +93,7 @@ Data that must outlive the handler, stored in a cache, captured by a callback, o
 | --- | --- | --- |
 | `maxHeaderBytes` | 8 KiB | `431 Request Header Fields Too Large`. Includes request trailers. |
 | `maxBodyBytes` | 256 MiB | `413 Payload Too Large`, before the body is read when a `Content-Length` announces it. |
-| `headerReadTimeout` | disabled | `408 Request Timeout` and connection closed: protects against clients sending their head byte by byte (Slowloris). |
+| `headerReadTimeout` | disabled | `408 Request Timeout` and connection closed: protects against clients sending their head byte by byte (Slowloris). Counted from the accept for the first request of a connection, from its first byte for the next ones. |
 | `bodyReadTimeout` | disabled | `408 Request Timeout` and connection closed when the body stops arriving. |
 
 Routes can lower the size limits, and set a deadline for the whole request: see [Per-route options](routing.md#per-route-options). Request bodies are buffered entirely before the handler reads them: there is no streaming of request bodies to handlers yet, so `maxBodyBytes` also bounds the memory a request can use. Set it, and the timeouts, according to what your endpoints need.

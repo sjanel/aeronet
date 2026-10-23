@@ -96,10 +96,6 @@ TransportResult ConnectionState::transportRead(const HttpServerConfig& config, s
     readSizeShift = static_cast<uint8_t>(config.adaptReadSizeShift(readSizeShift, chunkSize, result.bytesProcessed) &
                                          kReadSizeShiftMask);
   }
-  if (headerStartTp.time_since_epoch().count() == 0) {
-    headerStartTp = lastActivity;
-    parsingHeaders = true;
-  }
   return result;
 }
 

@@ -1219,6 +1219,38 @@ TEST(HttpTlsNegative, PlainHttpToTlsPortRejected) {
   }
 }
 
+TEST(HttpTlsNegative, PlainHttpToTlsPortIsReportedAsHandshakeError) {
+  // Cleartext fails the handshake with a transport error, reported as such (not as an EOF), whether it came with the
+  // connection setup or on a later readable event.
+  test::TlsTestServer ts;
+  std::atomic<int> nbHandshakeErrors{0};
+  ts.server.server.setTlsHandshakeCallback([&](const TlsHandshakeEvent& ev) {
+    if (ev.result == TlsHandshakeEvent::Result::Failed && ev.reason == kTlsHandshakeFailureReasonError) {
+      ++nbHandshakeErrors;
+    }
+  });
+
+  for (const bool sendAfterAccept : {false, true}) {
+    test::ClientConnection cnx(ts.port());
+    if (sendAfterAccept) {
+      std::this_thread::sleep_for(50ms);
+    }
+    test::sendAll(cnx.fd(), "GET / HTTP/1.1\r\nHost: x\r\n\r\n");
+  }
+
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (std::chrono::steady_clock::now() < deadline && nbHandshakeErrors.load() < 2) {
+    std::this_thread::sleep_for(1ms);
+  }
+  const auto st = ts.stats();
+  ts.stop();
+
+  EXPECT_EQ(nbHandshakeErrors.load(), 2);
+  for (const auto& [reason, count] : st.tlsHandshakeFailureReasons) {
+    EXPECT_NE(reason, kTlsHandshakeFailureReasonEof) << count;
+  }
+}
+
 // When server only requests (but does not require) a client cert, handshake should succeed
 // whether or not the client presents one; metric tlsClientCertPresent should reflect presence.
 
