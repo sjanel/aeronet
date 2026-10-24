@@ -108,7 +108,7 @@ struct AsyncHandlerState {
   HttpResponse pendingResponse = internal::HttpResponseAccess::MakeUnallocated();
   // Callback to post async work completion to the server's event loop.
   // Set by the server when dispatching an async handler.
-  std::function<void(std::coroutine_handle<>, std::function<void()>)> postCallback;
+  std::function<void(std::coroutine_handle<>)> postCallback;
 };
 
 using AsyncHandlerStatePool = ObjectPool<AsyncHandlerState>;

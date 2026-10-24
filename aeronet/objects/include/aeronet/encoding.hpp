@@ -39,4 +39,15 @@ constexpr bool IsEncodingEnabled(Encoding enc) {
   return kEncodingEnabled[static_cast<std::underlying_type_t<Encoding>>(enc)];
 }
 
+// Number of encodings enabled in this build, Encoding::none included.
+inline constexpr std::underlying_type_t<Encoding> kNbSupportedEncodings = [] {
+  std::underlying_type_t<Encoding> count = 0;
+  for (std::underlying_type_t<Encoding> pos = 0; pos < kNbContentEncodings; ++pos) {
+    if (IsEncodingEnabled(static_cast<Encoding>(pos))) {
+      ++count;
+    }
+  }
+  return count;
+}();
+
 }  // namespace aeronet

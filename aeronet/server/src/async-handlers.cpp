@@ -118,9 +118,7 @@ bool Http1Pipeline::dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyncRe
 
   // Install the postCallback function for deferred work
   asyncState.postCallback = [pCtx = &ctx, fd = cnxIt->fd(), generation = state.generation](
-                                std::coroutine_handle<> handle, std::function<void()> work) {
-    pCtx->postAsyncCallback(fd, generation, handle, std::move(work));
-  };
+                                std::coroutine_handle<> handle) { pCtx->postAsyncCallback(fd, generation, handle); };
 
   ctx.maintenance.refreshKeepAliveDeadline(cnxIt);
   resumeAsyncHandler(cnxIt);
@@ -350,22 +348,6 @@ void SingleHttpServer::processAsyncCallbacks() {
         // The connection was closed while the work was running: its coroutine was kept for it, release it now.
         connections.releaseOrphanedAsyncTask(cb.connectionGeneration, cb.handle, _ctx.config.maxCachedConnections);
         continue;
-      }
-
-      // Execute any pre-resume work
-      if (cb.work) {
-        try {
-          cb.work();
-        } catch (const std::exception& ex) {
-          log::error("Exception in async callback work: {}", ex.what());
-        } catch (...) {
-          log::error("Unknown exception in async callback work");
-        }
-        it = connections.findConnection(cb.connectionFd, cb.connectionGeneration);
-        if (it == connections.end()) {
-          connections.releaseOrphanedAsyncTask(cb.connectionGeneration, cb.handle, _ctx.config.maxCachedConnections);
-          continue;
-        }
       }
 
       ConnectionState& state = connections.connectionState(it);
