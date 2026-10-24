@@ -190,6 +190,10 @@ AeronetAddUnitTest(
     aeronet_http
 )
 
+if(AERONET_BUILD_TESTS AND AERONET_ENABLE_WEBSOCKET)
+  target_link_libraries(pending-updates_test PRIVATE aeronet_websocket)
+endif()
+
 AeronetAddUnitTest(
     rate-limit_test
     src/rate-limit.cpp
