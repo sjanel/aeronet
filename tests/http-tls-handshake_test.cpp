@@ -512,7 +512,7 @@ TEST(HttpTlsHandshakeCallback, RefillsRateLimitAfterInterval) {
   test::ClientConnection first(ts.port());
   const auto firstHandshakeFinished = std::chrono::steady_clock::now();
   // Wait well over one second to ensure the seconds-based refill calculation
-  // yields addIntervals > 0 in connection-manager.cpp (which uses whole-second intervals).
+  // yields addIntervals > 0 in TlsAcceptor::admitHandshake() (which uses whole-second intervals).
   // 1500 ms gives comfortable margin for Windows timer resolution (~15.6 ms) and
   // the scheduling delta between client-side sleep and server-side accept timestamps.
   const auto waitUntil = firstHandshakeFinished + 1500ms;
@@ -907,6 +907,44 @@ TEST(HttpTlsMoveAlpn, MoveConstructBeforeRunMaintainsAlpnHandshake) {
   ASSERT_TRUE(raw.contains("MOVEALPN:http/1.1")) << raw;
 }
 #endif
+
+// The TLS side of a server reads its configuration and its handshake callback from the internal state of the server: a
+// move points it to the state of the destination. The source is destroyed (heap-allocated) before the destination
+// accepts a TLS connection: a TLS side still pointing to it would touch freed memory.
+TEST(HttpTlsMoveAlpn, AcceptsTlsAfterMovedFromServerIsDestroyed) {
+  auto pair = CertKeyCache::Get().localhost;
+  ASSERT_FALSE(pair.first.empty());
+  ASSERT_FALSE(pair.second.empty());
+
+  HttpServerConfig cfg;
+  cfg.withTlsCertKeyMemory(pair.first, pair.second);
+  cfg.withTlsAlpnProtocols({"http/1.1"});
+
+  std::atomic<int> nbSucceeded{0};
+  auto source = std::make_unique<SingleHttpServer>(cfg);
+  source->router().setDefault([](const HttpRequestView&) { return HttpResponse("MOVEDTLS"); });
+  source->setTlsHandshakeCallback([&nbSucceeded](const TlsHandshakeEvent& event) {
+    if (event.result == TlsHandshakeEvent::Result::Succeeded) {
+      ++nbSucceeded;
+    }
+  });
+  SingleHttpServer moved(std::move(*source));
+  source.reset();
+
+  auto handle = moved.startDetached();
+  ASSERT_TRUE(test::WaitForServer(moved, true));
+
+  test::TlsClient::Options opts;
+  opts.alpn = {"http/1.1"};
+  test::TlsClient client(moved.port(), opts);
+  ASSERT_TRUE(client.handshakeOk());
+  const auto raw = client.get("/moved");
+  handle.stop();
+
+  EXPECT_TRUE(raw.contains("MOVEDTLS")) << raw;
+  EXPECT_EQ(nbSucceeded.load(), 1);
+  EXPECT_EQ(moved.stats().tlsHandshakesSucceeded, 1U);
+}
 
 // Test mutual TLS requirement and ALPN negotiation (server selects http/1.1)
 

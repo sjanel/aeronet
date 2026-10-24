@@ -44,19 +44,21 @@ class Http1WriterTransport;
 class HttpCodec;
 struct CompressionState;
 
-#ifdef AERONET_ENABLE_HTTP_CLIENT
 namespace internal {
+
+class HttpResponseAccess;
+#ifdef AERONET_ENABLE_HTTP_CLIENT
 class ClientConnection;
-}  // namespace internal
 #endif
+#ifdef AERONET_ENABLE_HTTP_SERVER
+class Http1Pipeline;
+#endif
+}  // namespace internal
 
 #ifdef AERONET_ENABLE_HTTP2
 namespace http2 {
 class Http2WriterTransport;
 class Http2ProtocolHandler;
-namespace internal {
-class Http2ClientEngine;
-}
 }  // namespace http2
 #endif
 
@@ -116,6 +118,9 @@ class HttpMessage {
   // --------/
   // GETTERS /
   // --------/
+
+  // Returns true if the HttpMessage is empty (for instance, after being moved-from).
+  [[nodiscard]] bool empty() const noexcept { return _data.empty(); }
 
   // Checks if the given lower-case header key is present. Lower-case literals are checked at compile time;
   // dynamic keys must be normalized before explicitly constructing LowerAsciiKey.
@@ -685,19 +690,17 @@ class HttpMessage {
 #endif
 
  private:
+  friend class internal::HttpResponseAccess;
   friend class Http1WriterTransport;
-  friend class HttpRequest;
   friend class HttpRequestView;
   friend class HttpResponseTest;
   friend class HttpResponse;
   friend class HttpResponseWriter;
   friend class HttpCodec;
 #ifdef AERONET_ENABLE_HTTP_SERVER
-  friend class SingleHttpServer;
+  friend class internal::Http1Pipeline;
 #endif
-  friend class StaticFileHandler;
 #ifdef AERONET_ENABLE_HTTP2
-  friend class http2::internal::Http2ClientEngine;
   friend class http2::Http2WriterTransport;
   friend class http2::Http2ProtocolHandler;
 #endif
@@ -898,7 +901,9 @@ class HttpMessage {
 
    private:
     friend class HttpMessage;
+#ifdef AERONET_ENABLE_HTTP_CLIENT
     friend class HttpRequest;
+#endif
     friend class HttpResponse;
     friend class HttpCodec;
 

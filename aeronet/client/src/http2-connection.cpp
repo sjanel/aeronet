@@ -37,6 +37,7 @@
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/http2-process-result-error-msg-strings.hpp"
 #include "aeronet/http2-stream.hpp"
+#include "aeronet/internal/http-response-access.hpp"
 #include "aeronet/internal/response-streamer.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
@@ -376,7 +377,7 @@ class Http2ClientEngine : private EventSink {
         continue;
       }
 
-      _resp->headerAddLineUnchecked(LowerAsciiKey{name}, value);
+      ::aeronet::internal::HttpResponseAccess::HeaderAddLineUnchecked(*_resp, LowerAsciiKey{name}, value);
     }
     if (endStream) {
       endResponse(streamId);  // response (or its trailers block) carried END_STREAM

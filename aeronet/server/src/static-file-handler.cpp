@@ -31,6 +31,7 @@
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/internal/http-response-access.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/memory-utils-sv.hpp"
@@ -1121,13 +1122,13 @@ const StaticFileHandler::CachedFileHeaders* StaticFileHandler::resolveHeaderMeta
 }
 
 HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const {
-  HttpResponse resp(HttpMessage::Check::No);
+  HttpResponse resp = internal::HttpResponseAccess::MakeUnallocated();
 
   if (request.method() != http::Method::GET && request.method() != http::Method::HEAD) {
     static constexpr std::string_view kAllowedMethods = "GET, HEAD";
     resp = request.makeResponse(http::HeaderSize(http::Allow.size(), kAllowedMethods.size()),
                                 http::StatusCodeMethodNotAllowed);
-    resp.headerAddLineUnchecked(http::Allow, kAllowedMethods);
+    internal::HttpResponseAccess::HeaderAddLineUnchecked(resp, http::Allow, kAllowedMethods);
     return resp;
   }
 
@@ -1159,11 +1160,11 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
           http::HeaderSize(http::ContentLength.size(), kMovedPermanentlyBody.size());  // "Moved Permanently\n"
 
       resp = request.makeResponse(additionalSize, http::StatusCodeMovedPermanently);
-      resp.headerAddLineUnchecked(http::Location, requestPath);
+      internal::HttpResponseAccess::HeaderAddLineUnchecked(resp, http::Location, requestPath);
       if (appendSlash != 0) {
         resp.headerAppendValue(http::Location, "/", "");
       }
-      resp.headerAddLineUnchecked(http::CacheControl, kNoCache);
+      internal::HttpResponseAccess::HeaderAddLineUnchecked(resp, http::CacheControl, kNoCache);
       resp.body(kMovedPermanentlyBody);
 
       return resp;

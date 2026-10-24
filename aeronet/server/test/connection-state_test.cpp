@@ -747,7 +747,7 @@ class ZerocopyConnection {
     EXPECT_EQ(bytesSent, size);
   }
 
-  // Sends 'size' bytes of 'ch' with MSG_ZEROCOPY, then retains them, like SingleHttpServer::queueData().
+  // Sends 'size' bytes of 'ch' with MSG_ZEROCOPY, then retains them, like ConnectionIo::queueData().
   void sendAndRetain(std::size_t size, char ch) {
     HttpMessageData data(RawChars(std::string(size, ch)));
     sendZerocopy(data, size);

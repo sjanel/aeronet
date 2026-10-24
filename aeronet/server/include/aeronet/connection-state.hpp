@@ -49,7 +49,7 @@ struct ConnectionState {
   [[nodiscard]] bool isDrainCloseRequested() const noexcept { return closeMode == CloseMode::DrainThenClose; }
   [[nodiscard]] bool isAnyCloseRequested() const noexcept { return closeMode != CloseMode::None; }
   // Tells whether the connection, whose write side is shut down, discards its input until the client closes it (see
-  // SingleHttpServer::startLingeringClose()).
+  // internal::ConnectionIo::startLingeringClose()).
   [[nodiscard]] bool isLingering() const noexcept { return closeMode == CloseMode::Linger; }
   [[nodiscard]] std::string_view clientAddress() const noexcept { return {clientAddressBuffer, clientAddressLength}; }
 
@@ -217,7 +217,7 @@ struct ConnectionState {
   Transport transport;  // set after accept (plain or TLS)
   std::chrono::steady_clock::time_point lastActivity;
   // Start of the header read timer of the current HTTP/1.1 request: the accept of the connection for its first request,
-  // the first bytes of the next ones (see SingleHttpServer::startHeaderReadTimer()).
+  // the first bytes of the next ones (see internal::ConnectionMaintenance::startHeaderReadTimer()).
   // Kept alive for the full request lifecycle as the reference point for bodyLastActivityMs / requestDeadlineMs.
   // Epoch means inactive (no request in progress).
   std::chrono::steady_clock::time_point headerStartTp;
@@ -252,7 +252,8 @@ struct ConnectionState {
 #endif
 
   // Bytes of the socket send queue at the previous check that the zerocopy sends in flight progress, while the
-  // connection waits for their completion (see SingleHttpServer::watchZerocopySends()). kNoZerocopyStallCheck if none.
+  // connection waits for their completion (see internal::ConnectionMaintenance::watchZerocopySends()).
+  // kNoZerocopyStallCheck if none.
   uint32_t zerocopyStallCheckQueuedBytes{kNoZerocopyStallCheck};
 
   char clientAddressBuffer[kFormattedAddressCapacity];
@@ -299,12 +300,12 @@ struct ConnectionState {
   // SingleHttpServer::handleReadableClient()): they must be read once it completes, no new event reporting them.
   bool readPaused : 1 {false};
 
-  // True while the connection waits in SingleHttpServer::_pendingReadFds for its input to be resumed.
+  // True while the connection waits for its input to be resumed (see internal::ConnectionIo::deferInput()).
   bool inputDeferred : 1 {false};
 
   // True when the input processing stopped on output backpressure, leaving input in inBuffer or in the transport: no
   // read event reports it, so it is resumed once the output drained, whatever drained it (see
-  // SingleHttpServer::flushOutbound).
+  // internal::ConnectionIo::flushOutbound()).
   bool inputBlockedByOutput : 1 {false};
 
   // Tunnel backpressure: true when a relay toward this connection stopped reading its source because of the bytes this

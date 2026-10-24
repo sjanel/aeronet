@@ -68,8 +68,9 @@
 #endif
 
 // Stats / metrics surface
-#include "aeronet/server-stats.hpp"  // IWYU pragma: export
-#include "aeronet/version.hpp"       // IWYU pragma: export
+#include "aeronet/server-callbacks.hpp"  // IWYU pragma: export
+#include "aeronet/server-stats.hpp"      // IWYU pragma: export
+#include "aeronet/version.hpp"           // IWYU pragma: export
 
 #ifdef AERONET_ENABLE_GLAZE
 #include "aeronet/aeronet-config.hpp"        // IWYU pragma: export

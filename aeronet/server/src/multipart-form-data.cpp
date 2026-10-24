@@ -6,7 +6,6 @@
 #include <cstddef>
 #include <functional>
 #include <iterator>
-#include <optional>
 #include <span>
 #include <string_view>
 
@@ -30,8 +29,9 @@ constexpr std::string_view StripQuotes(std::string_view value) {
 
 struct ContentDispositionInfo {
   std::string_view name;
-  std::optional<std::string_view> filename;
+  std::string_view filename;
   std::string_view invalidReason;
+  bool hasFilename{false};
 };
 
 ContentDispositionInfo ParseContentDisposition(std::string_view headerValue) {
@@ -70,6 +70,7 @@ ContentDispositionInfo ParseContentDisposition(std::string_view headerValue) {
           ret.name = value;
         } else if (CaseInsensitiveEqual(key, "filename")) {
           ret.filename = value;
+          ret.hasFilename = true;
         } else if (CaseInsensitiveEqual(key, "filename*")) {
           // RFC 5987 style: charset'lang'value. We only support the simplest utf-8''value case.
           auto firstTick = value.find('\'');
@@ -85,6 +86,7 @@ ContentDispositionInfo ParseContentDisposition(std::string_view headerValue) {
             return ret;
           }
           ret.filename = value.substr(secondTick + 1);
+          ret.hasFilename = true;
         }
       } else {
         ret.invalidReason = "multipart part invalid Content-Disposition parameter";
@@ -244,7 +246,7 @@ MultipartFormData::MultipartFormData(std::string_view contentTypeHeader, std::st
     const auto delimiterLen = DelimiterLength(body, headerEnd);
     body.remove_prefix(headerEnd + delimiterLen);
 
-    auto& part = _parts.emplace_back(_headers);
+    Part& part = _parts.emplace_back(_headers);
 
     std::size_t headerCountForPart = 0;
     while (!headerBlock.empty()) {
@@ -266,7 +268,7 @@ MultipartFormData::MultipartFormData(std::string_view contentTypeHeader, std::st
       }
       ++headerCountForPart;
     }
-    part.headerCount = headerCountForPart;
+    part._headerCount = headerCountForPart;
 
     const auto partHeaders = part.headers();
     const auto contentDispositionIt = std::ranges::find_if(partHeaders, [&](const MultipartHeaderView& header) {
@@ -283,10 +285,8 @@ MultipartFormData::MultipartFormData(std::string_view contentTypeHeader, std::st
     }
     part.name = cdInfo.name;
     part.filename = cdInfo.filename;
-
-    if (auto contentType = part.headerValueOrEmpty(http::ContentType); !contentType.empty()) {
-      part.contentType = contentType;
-    }
+    part._hasFileName = cdInfo.hasFilename;
+    part.contentType = part.headerValueOrEmpty(http::ContentType);
 
     std::size_t boundaryPos = 0;
 

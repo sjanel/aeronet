@@ -2,13 +2,13 @@
 
 #include <cstdint>
 #include <functional>
-#include <optional>
 #include <string_view>
 #include <utility>
 
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/internal/http-response-access.hpp"
 
 namespace aeronet {
 
@@ -29,14 +29,14 @@ class MiddlewareResult {
   // Returns a MiddlewareResult indicating to short-circuit with the given response.
   static MiddlewareResult ShortCircuit(HttpResponse response) noexcept { return MiddlewareResult{std::move(response)}; }
 
-  [[nodiscard]] bool shouldContinue() const noexcept { return !_response.has_value(); }
+  [[nodiscard]] bool shouldContinue() const noexcept { return _response.empty(); }
 
-  [[nodiscard]] bool shouldShortCircuit() const noexcept { return _response.has_value(); }
+  [[nodiscard]] bool shouldShortCircuit() const noexcept { return !_response.empty(); }
 
-  [[nodiscard]] HttpResponse&& takeResponse() && noexcept { return std::move(*_response); }
+  [[nodiscard]] HttpResponse&& takeResponse() && noexcept { return std::move(_response); }
 
  private:
-  std::optional<HttpResponse> _response;
+  HttpResponse _response = internal::HttpResponseAccess::MakeUnallocated();
 };
 
 struct MiddlewareMetrics {

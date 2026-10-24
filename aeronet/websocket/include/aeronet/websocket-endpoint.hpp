@@ -43,7 +43,7 @@ struct WebSocketEndpoint {
   /// This is the simplest way to create a WebSocket endpoint.
   static WebSocketEndpoint WithCallbacks(websocket::WebSocketCallbacks callbacks) {
     WebSocketEndpoint ep;
-    ep.factory = [cb = std::move(callbacks)](const HttpRequestView& /*request*/) mutable {
+    ep.factory = [cb = std::move(callbacks)]([[maybe_unused]] const HttpRequestView& request) mutable {
       return std::make_unique<websocket::WebSocketHandler>(websocket::WebSocketConfig(), std::move(cb));
     };
     return ep;

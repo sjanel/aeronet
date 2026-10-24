@@ -2,7 +2,6 @@
 
 #include <chrono>
 #include <cstdint>
-#include <optional>
 #include <string_view>
 
 #include "aeronet/concatenated-header-values.hpp"
@@ -10,6 +9,7 @@
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/internal/http-response-access.hpp"
 
 namespace aeronet {
 
@@ -31,7 +31,7 @@ class CorsPolicy {
     enum class Status : std::uint8_t { NotPreflight, Allowed, OriginDenied, MethodDenied, HeadersDenied };
 
     Status status{Status::NotPreflight};
-    std::optional<HttpResponse> response;
+    HttpResponse response = internal::HttpResponseAccess::MakeUnallocated();
   };
 
   // Default constructor: policy disabled by default. To enable, call the explicit

@@ -17,11 +17,12 @@
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/internal/connection-io.hpp"
 #include "aeronet/internal/connection-storage.hpp"
+#include "aeronet/internal/server-context.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
-#include "aeronet/single-http-server.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/tcp-connector.hpp"
 #include "aeronet/transport-result.hpp"
@@ -47,14 +48,13 @@ constexpr std::string_view kResolutionTimedOut = "CONNECT target resolution time
 
 }  // namespace
 
-TunnelManager::TunnelManager(SingleHttpServer& server)
-    : _server(server), _resolver([&server] { server._lifecycle.wakeupFd.send(); }) {}
+TunnelManager::TunnelManager(ServerContext& ctx) : _ctx(ctx), _resolver([&ctx] { ctx.lifecycle.wakeupFd.send(); }) {}
 
-TunnelManager& TunnelManager::Of(SingleHttpServer& server) {
-  if (server._tunnels == nullptr) {
-    server._tunnels = std::make_unique<TunnelManager>(server);
+TunnelManager& TunnelManager::Of(ServerContext& ctx) {
+  if (ctx.tunnels == nullptr) {
+    ctx.tunnels = std::make_unique<TunnelManager>(ctx);
   }
-  return *server._tunnels;
+  return *ctx.tunnels;
 }
 
 // ============================================================================
@@ -62,19 +62,19 @@ TunnelManager& TunnelManager::Of(SingleHttpServer& server) {
 // ============================================================================
 
 TunnelManager::LoopAction TunnelManager::startHttp1Tunnel(ConnectionIt& cnxIt, std::size_t consumedBytes) {
-  ConnectionState& state = _server._connections.connectionState(cnxIt);
+  ConnectionState& state = _ctx.connections.connectionState(cnxIt);
 
   // authority-form requires a numeric port (RFC 9110 §9.3.6 / RFC 3986 port = *DIGIT). Reject anything
   // else (empty, non-numeric, or > 65535) up front with 400 instead of handing it to the resolver.
   const ConnectTarget target(state.request.path());
   if (target.invalid()) {
-    _server.emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed CONNECT target");
+    _ctx.http1.emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed CONNECT target");
     return LoopAction::Break;
   }
 
   // CONNECT is disabled unless the target is explicitly allowlisted or unrestricted access was requested with "*".
-  if (!_server._config.connectTargetAllowed(target.host)) {
-    _server.emitSimpleError(cnxIt, http::StatusCodeForbidden, "CONNECT target not allowed");
+  if (!_ctx.config.connectTargetAllowed(target.host)) {
+    _ctx.http1.emitSimpleError(cnxIt, http::StatusCodeForbidden, "CONNECT target not allowed");
     return LoopAction::Break;
   }
 
@@ -89,7 +89,7 @@ TunnelManager::LoopAction TunnelManager::startHttp1Tunnel(ConnectionIt& cnxIt, s
       return LoopAction::Break;
     }
     if (_pendingTunnels.size() >= kMaxPendingTunnels) {
-      _server.emitSimpleError(cnxIt, http::StatusCodeServiceUnavailable, kTooManyPendingTunnels);
+      _ctx.http1.emitSimpleError(cnxIt, http::StatusCodeServiceUnavailable, kTooManyPendingTunnels);
       return LoopAction::Break;
     }
     // Resolving a host name can block for seconds: it runs in the background. Until it completes, the connection reads
@@ -102,11 +102,11 @@ TunnelManager::LoopAction TunnelManager::startHttp1Tunnel(ConnectionIt& cnxIt, s
   const auto upstreamFd = connectUpstream(clientFd, target.host, target.port);
 
   // Re-find client iterator after potential connections reallocation inside connectUpstream.
-  cnxIt = _server._connections.iterator(clientFd);
-  assert(cnxIt != _server._connections.end() && "Client connection cannot vanish during connection insertion");
+  cnxIt = _ctx.connections.iterator(clientFd);
+  assert(cnxIt != _ctx.connections.end() && "Client connection cannot vanish during connection insertion");
 
   if (upstreamFd == kInvalidHandle) {
-    _server.emitSimpleError(cnxIt, http::StatusCodeBadGateway, "Unable to establish CONNECT tunnel");
+    _ctx.http1.emitSimpleError(cnxIt, http::StatusCodeBadGateway, "Unable to establish CONNECT tunnel");
     return LoopAction::Break;
   }
 
@@ -118,19 +118,18 @@ TunnelManager::LoopAction TunnelManager::startHttp1Tunnel(ConnectionIt& cnxIt, s
 }
 
 void TunnelManager::establishHttp1Tunnel(ConnectionIt cnxIt, NativeHandle upstreamFd) {
-  ConnectionState& state = _server._connections.connectionState(cnxIt);
+  ConnectionState& state = _ctx.connections.connectionState(cnxIt);
 
-  _server.clearRequestDeadline(state);
+  _ctx.maintenance.clearRequestDeadline(state);
   state.headerStartTp = {};
 
   // A 2xx response to CONNECT has no content: the tunneled bytes directly follow its head (RFC 9110 §9.3.6).
-  _server.queueData(cnxIt,
-                    HttpMessageData(BuildTunnelEstablished(_server._config.globalHeaders, _server._dateHeader.data())));
-  _server.endRequest(state.request, http::StatusCodeOK);
+  _ctx.io.queueData(cnxIt, HttpMessageData(BuildTunnelEstablished(_ctx.config.globalHeaders, _ctx.dateHeader.data())));
+  _ctx.http1.endRequest(state.request, http::StatusCodeOK);
 
   // Enter tunneling mode: link client -> upstream (upstream -> client is set by registerUpstream).
   state.peerFd = upstreamFd;
-  _server.refreshKeepAliveDeadline(cnxIt);
+  _ctx.maintenance.refreshKeepAliveDeadline(cnxIt);
 }
 
 void TunnelManager::completeHttp1Tunnel(const PendingTunnel& pending) {
@@ -141,8 +140,8 @@ void TunnelManager::completeHttp1Tunnel(const PendingTunnel& pending) {
   }
 
   // The connection insertion may have moved the client connection state.
-  auto cnxIt = _server._connections.iterator(pending.clientFd);
-  ConnectionState& state = _server._connections.connectionState(cnxIt);
+  auto cnxIt = _ctx.connections.iterator(pending.clientFd);
+  ConnectionState& state = _ctx.connections.connectionState(cnxIt);
   state.tunnelResolving = false;
   establishHttp1Tunnel(cnxIt, upstreamFd);
   // The request was kept in the input buffer, where the request views point to, until answered.
@@ -150,37 +149,37 @@ void TunnelManager::completeHttp1Tunnel(const PendingTunnel& pending) {
 
   // Forward the tunnel bytes received with the request, and read those left in the socket while resolving.
   if (relayInput(cnxIt) == CloseStatus::Close) {
-    _server.closeConnection(_server._connections.iterator(pending.clientFd));
+    _ctx.io.closeConnection(_ctx.connections.iterator(pending.clientFd));
     return;
   }
-  cnxIt = _server._connections.iterator(pending.clientFd);
-  if (_server._connections.connectionState(cnxIt).canCloseConnectionForDrain()) {
-    _server.closeConnection(cnxIt);
+  cnxIt = _ctx.connections.iterator(pending.clientFd);
+  if (_ctx.connections.connectionState(cnxIt).canCloseConnectionForDrain()) {
+    _ctx.io.closeConnection(cnxIt);
   }
 }
 
 void TunnelManager::refuseHttp1Tunnel(const PendingTunnel& pending, http::StatusCode statusCode,
                                       std::string_view reason) {
-  const auto cnxIt = _server._connections.iterator(pending.clientFd);
-  assert(IsValid(_server._connections, cnxIt));  // its close forgets its pending tunnel
-  ConnectionState& state = _server._connections.connectionState(cnxIt);
+  const auto cnxIt = _ctx.connections.iterator(pending.clientFd);
+  assert(IsValid(_ctx.connections, cnxIt));  // its close forgets its pending tunnel
+  ConnectionState& state = _ctx.connections.connectionState(cnxIt);
   state.tunnelResolving = false;
-  _server.emitSimpleError(cnxIt, statusCode, reason);
+  _ctx.http1.emitSimpleError(cnxIt, statusCode, reason);
   // The request was kept in the input buffer, where the request views point to, until answered.
   state.inBuffer.erase_front(pending.consumedBytes);
   if (state.canCloseConnectionForDrain()) {
-    _server.closeConnection(cnxIt);
+    _ctx.io.closeConnection(cnxIt);
   }
 }
 
-TunnelManager::CloseStatus TunnelManager::relayInput(ConnectionIt cnxIt) {
+CloseStatus TunnelManager::relayInput(ConnectionIt cnxIt) {
   const auto selfFd = cnxIt->fd();
-  ConnectionState& state = _server._connections.connectionState(cnxIt);
+  ConnectionState& state = _ctx.connections.connectionState(cnxIt);
   // Backpressure: while a whole output buffer waits for the peer, the bytes of this endpoint stay in its socket, which
   // slows its sender down (TCP flow control). The relay resumes once the peer wrote them (see resumeRelaysTowards()).
-  if (const auto peerIt = _server._connections.iterator(state.peerFd); IsValid(_server._connections, peerIt)) {
-    ConnectionState& peerState = _server._connections.connectionState(peerIt);
-    if (peerState.tunnelOrFileBuffer.size() >= _server._config.maxOutboundBufferBytes) {
+  if (const auto peerIt = _ctx.connections.iterator(state.peerFd); IsValid(_ctx.connections, peerIt)) {
+    ConnectionState& peerState = _ctx.connections.connectionState(peerIt);
+    if (peerState.tunnelOrFileBuffer.size() >= _ctx.config.maxOutboundBufferBytes) {
       peerState.relayPausedByBacklog = true;
       return CloseStatus::Keep;
     }
@@ -193,20 +192,20 @@ TunnelManager::CloseStatus TunnelManager::relayInput(ConnectionIt cnxIt) {
 
   if (state.inBuffer.empty()) {
     if (state.eofReceived) {
-      auto peerIt = _server._connections.iterator(state.peerFd);
-      if (IsValid(_server._connections, peerIt) && shutdownWrite(peerIt)) {
+      auto peerIt = _ctx.connections.iterator(state.peerFd);
+      if (IsValid(_ctx.connections, peerIt) && shutdownWrite(peerIt)) {
         return CloseStatus::Keep;  // peer closed and cleaned up
       }
       // Stop reading from this side — wait for the peer to close or drain.
-      if (!_server._eventLoop.mod(EventLoop::EventFd{selfFd, EventOut | EventRdHup | EventEt})) [[unlikely]] {
+      if (!_ctx.eventLoop.mod(EventLoop::EventFd{selfFd, EventOut | EventRdHup | EventEt})) [[unlikely]] {
         return CloseStatus::Close;
       }
     }
     return CloseStatus::Keep;
   }
 
-  auto peerIt = _server._connections.iterator(state.peerFd);
-  if (!IsValid(_server._connections, peerIt)) [[unlikely]] {
+  auto peerIt = _ctx.connections.iterator(state.peerFd);
+  if (!IsValid(_ctx.connections, peerIt)) [[unlikely]] {
     return CloseStatus::Close;
   }
 
@@ -219,7 +218,7 @@ TunnelManager::CloseStatus TunnelManager::relayInput(ConnectionIt cnxIt) {
     if (shutdownWrite(peerIt)) {
       return CloseStatus::Keep;  // already cleaned up
     }
-    if (!_server._eventLoop.mod(EventLoop::EventFd{selfFd, EventOut | EventRdHup | EventEt})) [[unlikely]] {
+    if (!_ctx.eventLoop.mod(EventLoop::EventFd{selfFd, EventOut | EventRdHup | EventEt})) [[unlikely]] {
       return CloseStatus::Close;
     }
   }
@@ -256,15 +255,15 @@ NativeHandle TunnelManager::registerUpstream(NativeHandle clientFd, ConnectResul
 
   // Register upstream in event loop for edge-triggered reads and writes so we can detect
   // completion of non-blocking connect (EPOLLOUT) as well as incoming data.
-  if (!_server._eventLoop.add(EventLoop::EventFd{upstreamFd, EventIn | EventOut | EventRdHup | EventEt})) [[unlikely]] {
+  if (!_ctx.eventLoop.add(EventLoop::EventFd{upstreamFd, EventIn | EventOut | EventRdHup | EventEt})) [[unlikely]] {
     return kInvalidHandle;
   }
 
   // Insert upstream connection state. Insertion may invalidate connection iterators by growing the POSIX fd-indexed
   // vector or rehashing the Windows map, so callers must not hold them across this call. A duplicate fd for a newly
   // connected socket indicates a library bug (the kernel assigns unique fds for each socket()).
-  const auto upIt = _server._connections.emplace(std::move(cres.cnx));
-  ConnectionState& state = _server._connections.connectionState(upIt);
+  const auto upIt = _ctx.connections.emplace(std::move(cres.cnx));
+  ConnectionState& state = _ctx.connections.connectionState(upIt);
 
   // Set upstream transport to plain (no TLS). Tunneled bytes are relayed from reused buffers, with copying writes only
   // (never MSG_ZEROCOPY, whose kernel reads outlive the write).
@@ -278,7 +277,7 @@ NativeHandle TunnelManager::registerUpstream(NativeHandle clientFd, ConnectResul
 void TunnelManager::resolveTarget(NativeHandle clientFd, uint32_t streamId, std::size_t consumedBytes,
                                   std::string_view host, uint16_t port) {
   auto pending = std::make_shared<PendingTunnel>(host, port, clientFd, streamId, consumedBytes,
-                                                 _server._connections.now + _server._config.keepAliveTimeout);
+                                                 _ctx.connections.now + _ctx.config.keepAliveTimeout);
   _pendingTunnels.push_back(pending);
   _resolver.resolve(std::move(pending));
 }
@@ -305,13 +304,13 @@ void TunnelManager::expirePendingTunnels(std::chrono::steady_clock::time_point n
     log::warn("CONNECT target {}:{} not resolved within the keep-alive timeout", pending->host(), pending->port);
 #ifdef AERONET_ENABLE_HTTP2
     if (pending->streamId != 0) {
-      const auto cnxIt = _server._connections.iterator(pending->clientFd);
-      assert(IsValid(_server._connections, cnxIt));  // its close forgets its pending tunnels
+      const auto cnxIt = _ctx.connections.iterator(pending->clientFd);
+      assert(IsValid(_ctx.connections, cnxIt));  // its close forgets its pending tunnels
       auto* h2Handler =
-          static_cast<http2::Http2ProtocolHandler*>(_server._connections.connectionState(cnxIt).protocolHandler.get());
+          static_cast<http2::Http2ProtocolHandler*>(_ctx.connections.connectionState(cnxIt).protocolHandler.get());
       if (h2Handler->isTunnelPending(pending->streamId)) {  // not reset meanwhile
         h2Handler->failPendingTunnel(pending->streamId, http::StatusCodeGatewayTimeout, kResolutionTimedOut);
-        _server.flushOutbound(cnxIt);
+        _ctx.io.flushOutbound(cnxIt);
       }
       continue;
     }
@@ -340,8 +339,8 @@ void TunnelManager::completeResolvedTunnels() {
   }
 }
 
-TunnelManager::CloseStatus TunnelManager::handleReadable(ConnectionIt cnxIt) {
-  const ConnectionState& state = _server._connections.connectionState(cnxIt);
+CloseStatus TunnelManager::handleReadable(ConnectionIt cnxIt) {
+  const ConnectionState& state = _ctx.connections.connectionState(cnxIt);
   if (state.tunnelResolving) {
     // Nothing is read until the CONNECT target is resolved: the tunnel then reads the bytes left in the socket. A
     // client leaving meanwhile is closed right away, which cancels the resolution.
@@ -355,8 +354,8 @@ TunnelManager::CloseStatus TunnelManager::handleReadable(ConnectionIt cnxIt) {
   return relayInput(cnxIt);
 }
 
-TunnelManager::CloseStatus TunnelManager::handleWritable(ConnectionIt cnxIt) {
-  ConnectionState& state = _server._connections.connectionState(cnxIt);
+CloseStatus TunnelManager::handleWritable(ConnectionIt cnxIt) {
+  ConnectionState& state = _ctx.connections.connectionState(cnxIt);
   const auto fd = cnxIt->fd();
 
   // The non-blocking connect to an upstream completed: SO_ERROR tells whether it succeeded.
@@ -365,19 +364,19 @@ TunnelManager::CloseStatus TunnelManager::handleWritable(ConnectionIt cnxIt) {
     state.connectPending = false;
     if (err != 0) {
       // Upstream connect failed. Attempt to notify the client side (peerFd) and close this upstream.
-      const auto peerIt = _server._connections.iterator(state.peerFd);
-      if (IsValid(_server._connections, peerIt)) {
+      const auto peerIt = _ctx.connections.iterator(state.peerFd);
+      if (IsValid(_ctx.connections, peerIt)) {
 #ifdef AERONET_ENABLE_HTTP2
         if (state.peerStreamId != 0) {
           // HTTP/2 tunnel upstream: RST_STREAM the tunnel stream
-          ConnectionState& peerState = _server._connections.connectionState(peerIt);
+          ConnectionState& peerState = _ctx.connections.connectionState(peerIt);
           auto* h2Handler = static_cast<http2::Http2ProtocolHandler*>(peerState.protocolHandler.get());
           h2Handler->tunnelConnectFailed(state.peerStreamId);
-          _server.flushOutbound(peerIt);
+          _ctx.io.flushOutbound(peerIt);
         } else
 #endif
         {
-          _server.emitSimpleError(peerIt, http::StatusCodeBadGateway, "Upstream connect failed");
+          _ctx.http1.emitSimpleError(peerIt, http::StatusCodeBadGateway, "Upstream connect failed");
         }
       } else {
         log::error("Unable to notify client of upstream connect failure: peer fd # {} not found", state.peerFd);
@@ -397,16 +396,16 @@ TunnelManager::CloseStatus TunnelManager::handleWritable(ConnectionIt cnxIt) {
 }
 
 void TunnelManager::resumeRelaysTowards(ConnectionIt cnxIt) {
-  ConnectionState& state = _server._connections.connectionState(cnxIt);
+  ConnectionState& state = _ctx.connections.connectionState(cnxIt);
   state.relayPausedByBacklog = false;
 #ifdef AERONET_ENABLE_HTTP2
   if (state.peerStreamId != 0) {
     // The upstream of an HTTP/2 tunnel: its client stream gets flow-control credit again.
-    const auto peerIt = _server._connections.iterator(state.peerFd);
-    if (IsValid(_server._connections, peerIt)) {
-      ConnectionState& peerState = _server._connections.connectionState(peerIt);
+    const auto peerIt = _ctx.connections.iterator(state.peerFd);
+    if (IsValid(_ctx.connections, peerIt)) {
+      ConnectionState& peerState = _ctx.connections.connectionState(peerIt);
       static_cast<http2::Http2ProtocolHandler*>(peerState.protocolHandler.get())->onTunnelUpstreamDrained(cnxIt->fd());
-      _server.flushOutbound(peerIt);
+      _ctx.io.flushOutbound(peerIt);
     }
     return;
   }
@@ -414,9 +413,9 @@ void TunnelManager::resumeRelaysTowards(ConnectionIt cnxIt) {
     // The client connection of HTTP/2 tunnels wrote its output: their upstreams are read again.
     const auto* h2Handler = static_cast<const http2::Http2ProtocolHandler*>(state.protocolHandler.get());
     for (const auto& [upstreamFd, streamId] : h2Handler->tunnelUpstreams()) {
-      const auto upIt = _server._connections.iterator(upstreamFd);
-      if (IsValid(_server._connections, upIt)) {
-        _server.deferInput(upstreamFd, _server._connections.connectionState(upIt));
+      const auto upIt = _ctx.connections.iterator(upstreamFd);
+      if (IsValid(_ctx.connections, upIt)) {
+        _ctx.io.deferInput(upstreamFd, _ctx.connections.connectionState(upIt));
       }
     }
     return;
@@ -424,15 +423,15 @@ void TunnelManager::resumeRelaysTowards(ConnectionIt cnxIt) {
 #endif
   // An endpoint of an HTTP/1.1 tunnel: its peer is read again. Deferred to the next event-loop iteration: no event
   // reports the bytes left in its socket.
-  const auto peerIt = _server._connections.iterator(state.peerFd);
-  if (IsValid(_server._connections, peerIt)) {
-    _server.deferInput(state.peerFd, _server._connections.connectionState(peerIt));
+  const auto peerIt = _ctx.connections.iterator(state.peerFd);
+  if (IsValid(_ctx.connections, peerIt)) {
+    _ctx.io.deferInput(state.peerFd, _ctx.connections.connectionState(peerIt));
   }
 }
 
 void TunnelManager::closeTunnelsOf(ConnectionIt cnxIt) {
   const auto fd = cnxIt->fd();
-  ConnectionState& state = _server._connections.connectionState(cnxIt);
+  ConnectionState& state = _ctx.connections.connectionState(cnxIt);
 
   if (!_pendingTunnels.empty()) {
     const auto [first, last] =
@@ -450,22 +449,22 @@ void TunnelManager::closeTunnelsOf(ConnectionIt cnxIt) {
   // Tear down the peer of a tunnel endpoint too. Otherwise, peerFd may dangle and later accidentally match a reused fd,
   // causing spurious epoll_ctl failures and incorrect forwarding.
   if (state.peerFd != kInvalidHandle) {
-    auto peerIt = _server._connections.iterator(state.peerFd);
-    if (IsValid(_server._connections, peerIt)) [[likely]] {
-      ConnectionState& peerState = _server._connections.connectionState(peerIt);
+    auto peerIt = _ctx.connections.iterator(state.peerFd);
+    if (IsValid(_ctx.connections, peerIt)) [[likely]] {
+      ConnectionState& peerState = _ctx.connections.connectionState(peerIt);
 #ifdef AERONET_ENABLE_HTTP2
       if (state.peerStreamId != 0) {
         // HTTP/2 tunnel upstream being closed: notify the peer's handler to send END_STREAM,
         // but do NOT tear down the peer HTTP/2 connection (it may have other active streams).
         if (peerState.protocolHandler) {
           static_cast<http2::Http2ProtocolHandler*>(peerState.protocolHandler.get())->closeTunnelByUpstreamFd(fd);
-          _server.flushOutbound(peerIt);
+          _ctx.io.flushOutbound(peerIt);
         }
       } else
 #endif
           if (peerState.peerFd == fd) [[likely]] {
-        _server.forgetConnectionMaintenance(peerState);
-        _server.releaseConnection(peerIt);
+        _ctx.maintenance.forgetConnectionMaintenance(peerState);
+        _ctx.io.releaseConnection(peerIt);
       } else {
         log::error("Tunnel peer mismatch while closing fd # {} (peerFd={}, peer.peerFd={})", fd, state.peerFd,
                    peerState.peerFd);
@@ -479,13 +478,13 @@ void TunnelManager::closeTunnelsOf(ConnectionIt cnxIt) {
   if (state.protocolHandler && state.protocolHandler->type() == ProtocolType::Http2) {
     auto* h2Handler = static_cast<http2::Http2ProtocolHandler*>(state.protocolHandler.get());
     for (const auto& [upFd, streamId] : h2Handler->drainTunnelUpstreamFds()) {
-      auto upIt = _server._connections.iterator(upFd);
-      if (IsValid(_server._connections, upIt)) {
-        ConnectionState& upState = _server._connections.connectionState(upIt);
+      auto upIt = _ctx.connections.iterator(upFd);
+      if (IsValid(_ctx.connections, upIt)) {
+        ConnectionState& upState = _ctx.connections.connectionState(upIt);
         upState.peerFd = kInvalidHandle;
         upState.peerStreamId = 0;
-        _server.forgetConnectionMaintenance(upState);
-        _server.releaseConnection(upIt);
+        _ctx.maintenance.forgetConnectionMaintenance(upState);
+        _ctx.io.releaseConnection(upIt);
       }
     }
   }
@@ -493,12 +492,12 @@ void TunnelManager::closeTunnelsOf(ConnectionIt cnxIt) {
 }
 
 bool TunnelManager::forward(ConnectionIt targetIt, std::string_view data) {
-  ConnectionState& target = _server._connections.connectionState(targetIt);
+  ConnectionState& target = _ctx.connections.connectionState(targetIt);
 
   // If the target is still connecting, waiting for EPOLLOUT, or has buffered data, just buffer.
   if (target.connectPending || target.waitingWritable || !target.tunnelOrFileBuffer.empty()) {
     target.tunnelOrFileBuffer.append(data);
-    return target.waitingWritable || _server.enableWritableInterest(targetIt);
+    return target.waitingWritable || _ctx.io.enableWritableInterest(targetIt);
   }
 
   // Attempt direct write.
@@ -510,13 +509,13 @@ bool TunnelManager::forward(ConnectionIt targetIt, std::string_view data) {
   // Buffer any unwritten remainder.
   if (static_cast<std::size_t>(written) < data.size()) {
     target.tunnelOrFileBuffer.append(data.data() + written, data.size() - written);
-    return target.waitingWritable || _server.enableWritableInterest(targetIt);
+    return target.waitingWritable || _ctx.io.enableWritableInterest(targetIt);
   }
   return true;
 }
 
 bool TunnelManager::forward(ConnectionIt targetIt, RawChars& sourceBuffer) {
-  ConnectionState& target = _server._connections.connectionState(targetIt);
+  ConnectionState& target = _ctx.connections.connectionState(targetIt);
 
   // Buffer the bytes not written yet, swapping the buffers when possible to avoid a copy.
   const auto bufferRemainder = [&] {
@@ -526,7 +525,7 @@ bool TunnelManager::forward(ConnectionIt targetIt, RawChars& sourceBuffer) {
       target.tunnelOrFileBuffer.append(sourceBuffer);
       sourceBuffer.clear();
     }
-    return target.waitingWritable || _server.enableWritableInterest(targetIt);
+    return target.waitingWritable || _ctx.io.enableWritableInterest(targetIt);
   };
 
   // If the target is still connecting, waiting for EPOLLOUT, or has buffered data, just buffer.
@@ -544,12 +543,12 @@ bool TunnelManager::forward(ConnectionIt targetIt, RawChars& sourceBuffer) {
 }
 
 bool TunnelManager::shutdownWrite(ConnectionIt peerIt) {
-  ConnectionState& peer = _server._connections.connectionState(peerIt);
+  ConnectionState& peer = _ctx.connections.connectionState(peerIt);
   peer.shutdownWritePending = true;
   if (peer.tunnelOrFileBuffer.empty()) {
     if (!ShutdownWrite(peerIt->fd())) {
       log::warn("Failed to shutdown write for peer fd # {}", peerIt->fd());
-      _server.closeConnection(peerIt);
+      _ctx.io.closeConnection(peerIt);
       return true;  // peerIt and its peer are now recycled — do not touch state
     }
     peer.shutdownWritePending = false;
@@ -557,10 +556,9 @@ bool TunnelManager::shutdownWrite(ConnectionIt peerIt) {
   return false;
 }
 
-TunnelManager::CloseStatus TunnelManager::readInput(ConnectionIt cnxIt, std::size_t& bytesReadThisEvent,
-                                                    bool& hitEagain) {
-  ConnectionState& state = _server._connections.connectionState(cnxIt);
-  const HttpServerConfig& config = _server._config;
+CloseStatus TunnelManager::readInput(ConnectionIt cnxIt, std::size_t& bytesReadThisEvent, bool& hitEagain) {
+  ConnectionState& state = _ctx.connections.connectionState(cnxIt);
+  const HttpServerConfig& config = _ctx.config;
   while (!state.eofReceived && state.inBuffer.size() < config.maxOutboundBufferBytes) {
     const std::size_t chunkSize = config.computeReadChunkSize(bytesReadThisEvent, state.readSizeShift);
     assert(chunkSize > 0);
@@ -585,7 +583,7 @@ TunnelManager::CloseStatus TunnelManager::readInput(ConnectionIt cnxIt, std::siz
       // Edge-triggered polling (EPOLLET): data may remain in the TCP buffer after the fairness cap.
       // No new read event fires on a non-empty→non-empty transition, so defer this fd for
       // re-processing at the start of the next event-loop iteration (same as handleReadableClient).
-      _server.deferInput(cnxIt->fd(), state);
+      _ctx.io.deferInput(cnxIt->fd(), state);
       hitEagain = true;
       break;
     }
@@ -603,29 +601,29 @@ TunnelManager::CloseStatus TunnelManager::readInput(ConnectionIt cnxIt, std::siz
 // created by the first one.
 class TunnelManager::H2Bridge final : public ITunnelBridge {
  public:
-  H2Bridge(SingleHttpServer& server, NativeHandle clientFd) noexcept : _server(server), _clientFd(clientFd) {}
+  H2Bridge(ServerContext& ctx, NativeHandle clientFd) noexcept : _ctx(ctx), _clientFd(clientFd) {}
 
   TunnelSetup setupTunnel(uint32_t streamId, std::string_view host, uint16_t port) override {
-    return Of(_server).startH2Tunnel(_clientFd, streamId, host, port);
+    return Of(_ctx).startH2Tunnel(_clientFd, streamId, host, port);
   }
 
   bool writeTunnel(NativeHandle upstreamFd, std::span<const std::byte> data) override {
-    return Of(_server).writeToUpstream(upstreamFd, data);
+    return Of(_ctx).writeToUpstream(upstreamFd, data);
   }
 
-  void shutdownTunnelWrite(NativeHandle upstreamFd) override { Of(_server).shutdownUpstreamWrite(upstreamFd); }
+  void shutdownTunnelWrite(NativeHandle upstreamFd) override { Of(_ctx).shutdownUpstreamWrite(upstreamFd); }
 
-  void closeTunnel(NativeHandle upstreamFd) override { Of(_server).closeUpstream(upstreamFd); }
+  void closeTunnel(NativeHandle upstreamFd) override { Of(_ctx).closeUpstream(upstreamFd); }
 
-  void onTunnelWindowUpdate(NativeHandle upstreamFd) override { Of(_server).resumeRelayToStream(upstreamFd); }
+  void onTunnelWindowUpdate(NativeHandle upstreamFd) override { Of(_ctx).resumeRelayToStream(upstreamFd); }
 
  private:
-  SingleHttpServer& _server;
+  ServerContext& _ctx;
   NativeHandle _clientFd;
 };
 
-std::unique_ptr<ITunnelBridge> TunnelManager::MakeH2Bridge(SingleHttpServer& server, NativeHandle clientFd) {
-  return std::make_unique<H2Bridge>(server, clientFd);
+std::unique_ptr<ITunnelBridge> TunnelManager::MakeH2Bridge(ServerContext& ctx, NativeHandle clientFd) {
+  return std::make_unique<H2Bridge>(ctx, clientFd);
 }
 
 ITunnelBridge::TunnelSetup TunnelManager::startH2Tunnel(NativeHandle clientFd, uint32_t streamId, std::string_view host,
@@ -651,7 +649,7 @@ ITunnelBridge::TunnelSetup TunnelManager::startH2Tunnel(NativeHandle clientFd, u
 
 void TunnelManager::completeH2Tunnel(const PendingTunnel& pending) {
   auto* h2Handler = static_cast<http2::Http2ProtocolHandler*>(
-      _server._connections.pConnectionState(pending.clientFd)->protocolHandler.get());
+      _ctx.connections.pConnectionState(pending.clientFd)->protocolHandler.get());
   if (!h2Handler->isTunnelPending(pending.streamId)) {
     return;  // the stream was reset or closed meanwhile
   }
@@ -662,28 +660,28 @@ void TunnelManager::completeH2Tunnel(const PendingTunnel& pending) {
     log::warn("HTTP/2 CONNECT stream {} failed to connect to {}:{}", pending.streamId, pending.host(), pending.port);
   }
   // The connection insertion may have moved the client connection state.
-  ConnectionState& clientState = *_server._connections.pConnectionState(pending.clientFd);
+  ConnectionState& clientState = *_ctx.connections.pConnectionState(pending.clientFd);
   static_cast<http2::Http2ProtocolHandler*>(clientState.protocolHandler.get())
       ->onTunnelResolved(pending.streamId, upstreamFd);
-  _server.flushOutbound(_server._connections.iterator(pending.clientFd));
+  _ctx.io.flushOutbound(_ctx.connections.iterator(pending.clientFd));
 }
 
 void TunnelManager::linkH2Upstream(NativeHandle upstreamFd, uint32_t streamId) {
-  auto upIt = _server._connections.iterator(upstreamFd);
-  assert(upIt != _server._connections.end() && *upIt);
-  _server._connections.connectionState(upIt).peerStreamId = streamId;
+  auto upIt = _ctx.connections.iterator(upstreamFd);
+  assert(upIt != _ctx.connections.end() && *upIt);
+  _ctx.connections.connectionState(upIt).peerStreamId = streamId;
 }
 
-TunnelManager::CloseStatus TunnelManager::relayToStream(ConnectionIt cnxIt) {
-  ConnectionState& state = _server._connections.connectionState(cnxIt);
+CloseStatus TunnelManager::relayToStream(ConnectionIt cnxIt) {
+  ConnectionState& state = _ctx.connections.connectionState(cnxIt);
 
   // Find the client HTTP/2 connection via peerFd.
-  auto peerIt = _server._connections.iterator(state.peerFd);
-  if (!IsValid(_server._connections, peerIt)) [[unlikely]] {
+  auto peerIt = _ctx.connections.iterator(state.peerFd);
+  if (!IsValid(_ctx.connections, peerIt)) [[unlikely]] {
     return CloseStatus::Close;
   }
 
-  ConnectionState& peerState = _server._connections.connectionState(peerIt);
+  ConnectionState& peerState = _ctx.connections.connectionState(peerIt);
   auto* pH2Handler = static_cast<http2::Http2ProtocolHandler*>(peerState.protocolHandler.get());
   if (pH2Handler == nullptr) [[unlikely]] {
     return CloseStatus::Close;
@@ -701,7 +699,7 @@ TunnelManager::CloseStatus TunnelManager::relayToStream(ConnectionIt cnxIt) {
     // Backpressure: the flow-control windows are granted by the client, which may keep granting credit without
     // reading. While its connection has a whole output buffer to write, the upstream bytes stay in the socket (see
     // resumeRelaysTowards()).
-    if (pH2Handler->connection().pendingOutputSize() >= _server._config.maxOutboundBufferBytes) {
+    if (pH2Handler->connection().pendingOutputSize() >= _ctx.config.maxOutboundBufferBytes) {
       peerState.relayPausedByBacklog = true;
       return CloseStatus::Keep;
     }
@@ -741,7 +739,7 @@ TunnelManager::CloseStatus TunnelManager::relayToStream(ConnectionIt cnxIt) {
 
     // Flush the HTTP/2 handler's output through the client connection.
     if (pH2Handler->hasPendingOutput()) {
-      _server.flushOutbound(peerIt);
+      _ctx.io.flushOutbound(peerIt);
     }
 
     // If we hit EAGAIN, we are done for now.
@@ -755,12 +753,12 @@ TunnelManager::CloseStatus TunnelManager::relayToStream(ConnectionIt cnxIt) {
 }
 
 bool TunnelManager::writeToUpstream(NativeHandle upstreamFd, std::span<const std::byte> data) {
-  auto upIt = _server._connections.iterator(upstreamFd);
+  auto upIt = _ctx.connections.iterator(upstreamFd);
   // The handler forgets the upstream of a stream when it closes (closeTunnelsOf() and drainTunnelUpstreamFds()).
-  assert(IsValid(_server._connections, upIt));
-  ConnectionState& upState = _server._connections.connectionState(upIt);
+  assert(IsValid(_ctx.connections, upIt));
+  ConnectionState& upState = _ctx.connections.connectionState(upIt);
   if (!forward(upIt, std::string_view(reinterpret_cast<const char*>(data.data()), data.size()))) [[unlikely]] {
-    _server.closeConnection(upIt);
+    _ctx.io.closeConnection(upIt);
   } else if (!upState.tunnelOrFileBuffer.empty()) {
     // The client stream gets no more flow-control credit until these bytes are written (see resumeRelaysTowards()).
     upState.relayPausedByBacklog = true;
@@ -770,33 +768,33 @@ bool TunnelManager::writeToUpstream(NativeHandle upstreamFd, std::span<const std
 }
 
 void TunnelManager::shutdownUpstreamWrite(NativeHandle upstreamFd) {
-  auto upIt = _server._connections.iterator(upstreamFd);
-  if (IsValid(_server._connections, upIt)) {
+  auto upIt = _ctx.connections.iterator(upstreamFd);
+  if (IsValid(_ctx.connections, upIt)) {
     shutdownWrite(upIt);
   }
 }
 
 void TunnelManager::closeUpstream(NativeHandle upstreamFd) {
-  auto upIt = _server._connections.iterator(upstreamFd);
-  if (!IsValid(_server._connections, upIt)) {
+  auto upIt = _ctx.connections.iterator(upstreamFd);
+  if (!IsValid(_ctx.connections, upIt)) {
     return;
   }
-  ConnectionState& state = _server._connections.connectionState(upIt);
+  ConnectionState& state = _ctx.connections.connectionState(upIt);
   // Clear peerFd so closeConnection won't try to tear down the client HTTP/2 connection.
   state.peerFd = kInvalidHandle;
   state.peerStreamId = 0;
-  _server.closeConnection(upIt);
+  _ctx.io.closeConnection(upIt);
 }
 
 void TunnelManager::resumeRelayToStream(NativeHandle upstreamFd) {
-  auto upIt = _server._connections.iterator(upstreamFd);
-  if (!IsValid(_server._connections, upIt)) {
+  auto upIt = _ctx.connections.iterator(upstreamFd);
+  if (!IsValid(_ctx.connections, upIt)) {
     return;
   }
   // If we have buffered data from upstream, try to inject it now that the window opened.
-  const ConnectionState& state = _server._connections.connectionState(upIt);
+  const ConnectionState& state = _ctx.connections.connectionState(upIt);
   if ((!state.inBuffer.empty() || state.eofReceived) && relayToStream(upIt) == CloseStatus::Close) {
-    _server.closeConnection(_server._connections.iterator(upstreamFd));
+    _ctx.io.closeConnection(_ctx.connections.iterator(upstreamFd));
   }
 }
 
