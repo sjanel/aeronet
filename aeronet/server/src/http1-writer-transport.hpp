@@ -15,13 +15,13 @@
 #include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/internal/server-context.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
-#include "aeronet/single-http-server.hpp"
 #include "aeronet/system-error-message.hpp"
 #include "aeronet/system-error.hpp"
 #include "aeronet/writer-transport.hpp"
@@ -32,9 +32,9 @@ namespace aeronet {
 /// Emits chunked transfer-encoding or fixed-length framed data over a TCP connection.
 class Http1WriterTransport final : public IWriterTransport {
  public:
-  Http1WriterTransport(SingleHttpServer& server, NativeHandle fd, const CorsPolicy* pCorsPolicy,
+  Http1WriterTransport(internal::ServerContext& ctx, NativeHandle fd, const CorsPolicy* pCorsPolicy,
                        std::span<const ResponseMiddleware> routeResponseMiddleware)
-      : _server(server), _fd(fd), _pCorsPolicy(pCorsPolicy), _routeResponseMiddleware(routeResponseMiddleware) {}
+      : _ctx(ctx), _fd(fd), _pCorsPolicy(pCorsPolicy), _routeResponseMiddleware(routeResponseMiddleware) {}
 
   bool emitHeaders(HttpResponse& response, const HttpRequestView& request, std::size_t declaredLength,
                    bool isHead) override {
@@ -42,7 +42,7 @@ class Http1WriterTransport final : public IWriterTransport {
 
     // The head announces the close of the connection after this response, whatever its reason (RFC 9112 §9.6). It is
     // decided when the head is sent, so that it also announces a drain that began while the handler ran.
-    if (!_server.isKeepAliveForHttp1(request)) {
+    if (!_ctx.http1.isKeepAlive(request)) {
       response._opts.setClose();
       _closeAnnounced = true;
     }
@@ -66,16 +66,16 @@ class Http1WriterTransport final : public IWriterTransport {
       _chunked = false;
     }
 
-    _server.requestPipeline().prepareStreamingHead(request, response, _routeResponseMiddleware, _pCorsPolicy);
+    _ctx.requestPipeline().prepareStreamingHead(request, response, _routeResponseMiddleware, _pCorsPolicy);
 
     // The body is streamed separately (chunked framing or a fixed Content-Length was declared above), so the
     // buffer finalized here is header-only: tell finalizeForHttp1 not to synthesize a Content-Length: 0.
     response._opts.setStreamingBody();
 
-    auto cnxIt = _server._connections.iterator(_fd);
-    _server.queueData(cnxIt, response.finalizeForHttp1(_server._dateHeader.data(), http::HTTP_1_1, response._opts,
-                                                       nullptr, _server.config().minCapturedBodySize));
-    ConnectionState& cnx = _server._connections.connectionState(cnxIt);
+    auto cnxIt = _ctx.connections.iterator(_fd);
+    _ctx.io.queueData(cnxIt, response.finalizeForHttp1(_ctx.dateHeader.data(), http::HTTP_1_1, response._opts, nullptr,
+                                                       _ctx.config.minCapturedBodySize));
+    ConnectionState& cnx = _ctx.connections.connectionState(cnxIt);
     if (cnx.isAnyCloseRequested()) {
       log::error("Http1WriterTransport: failed to enqueue headers fd # {} err={} msg={}", _fd, LastSystemError(),
                  SystemErrorMessage(LastSystemError()));
@@ -145,20 +145,20 @@ class Http1WriterTransport final : public IWriterTransport {
 
  private:
   bool enqueue(HttpMessageData responseData) {
-    auto cnxIt = _server._connections.iterator(_fd);
+    auto cnxIt = _ctx.connections.iterator(_fd);
 #ifdef AERONET_WINDOWS
-    if (cnxIt == _server._connections.end()) {
+    if (cnxIt == _ctx.connections.end()) {
 #else
     if (!*cnxIt) {
 #endif
       return false;
     }
-    _server.queueData(cnxIt, std::move(responseData));
-    ConnectionState& state = _server._connections.connectionState(cnxIt);
+    _ctx.io.queueData(cnxIt, std::move(responseData));
+    ConnectionState& state = _ctx.connections.connectionState(cnxIt);
     return !state.isAnyCloseRequested();
   }
 
-  SingleHttpServer& _server;
+  internal::ServerContext& _ctx;
   NativeHandle _fd;
   bool _closeAnnounced{false};
   bool _chunked{true};

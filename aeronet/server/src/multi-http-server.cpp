@@ -11,7 +11,6 @@
 #include <iterator>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
@@ -120,14 +119,16 @@ MultiHttpServer::AsyncHandle::AsyncHandle(vector<SingleHttpServer::AsyncHandle> 
     : _serverHandles(std::move(serverHandles)),
       _control(std::move(control)),
       _state(std::move(state)),
-      _stopTokenBinding(std::move(stopTokenBinding)) {}
+      _stopTokenBinding(std::move(stopTokenBinding)),
+      _active(true) {}
 
 MultiHttpServer::AsyncHandle::AsyncHandle(AsyncHandle&& other) noexcept
     : _serverHandles(std::move(other._serverHandles)),
       _control(std::move(other._control)),
       _state(std::move(other._state)),
       _stopTokenBinding(std::move(other._stopTokenBinding)),
-      _stopCalled(other._stopCalled.exchange(true, std::memory_order_relaxed)) {}
+      _stopCalled(other._stopCalled.exchange(true, std::memory_order_relaxed)),
+      _active(std::exchange(other._active, false)) {}
 
 MultiHttpServer::AsyncHandle& MultiHttpServer::AsyncHandle::operator=(AsyncHandle&& other) noexcept {
   if (this != &other) [[likely]] {
@@ -138,6 +139,7 @@ MultiHttpServer::AsyncHandle& MultiHttpServer::AsyncHandle::operator=(AsyncHandl
     _state = std::move(other._state);
     _stopTokenBinding = std::move(other._stopTokenBinding);
     _stopCalled.store(other._stopCalled.exchange(true, std::memory_order_relaxed), std::memory_order_relaxed);
+    _active = std::exchange(other._active, false);
   }
   return *this;
 }
@@ -246,7 +248,7 @@ std::string MultiHttpServer::dumpConfig(ConfigFormat format) const {
   if (empty()) {
     throw std::logic_error("Cannot dump config from an empty MultiHttpServer");
   }
-  TopLevelConfig config{.server = _servers[0]._config, .router = _servers[0]._router.config()};
+  TopLevelConfig config{.server = _servers[0]._ctx.config, .router = _servers[0]._ctx.router.config()};
   config.server.nbThreads = static_cast<std::uint16_t>(nbThreads());
   return detail::SerializeConfig(config, format);
 }
@@ -322,7 +324,7 @@ RouterUpdateProxy MultiHttpServer::router() {
     throw std::logic_error("Cannot access router proxy on an empty HttpServer");
   }
   return {[this](std::function<void(Router&)> fn) { this->postRouterUpdate(std::move(fn)); },
-          [this] -> Router& { return this->_servers.front()._router; }};
+          [this] -> Router& { return this->_servers.front()._ctx.router; }};
 }
 
 std::string MultiHttpServer::AggregatedStats::json_str() const {
@@ -380,7 +382,7 @@ void MultiHttpServer::stop() noexcept {
   if (!_control) {
     return;  // moved-from
   }
-  std::optional<AsyncHandle> internalHandle;
+  AsyncHandle internalHandle;
   std::shared_ptr<HandleState> lastHandleState;
   {
     // Serialized with startDetachedInternal(), which rebuilds the servers and the handle state.
@@ -401,17 +403,17 @@ void MultiHttpServer::stop() noexcept {
     // group to be joined (run() joins it too). The stop is requested: its event loop exits once the handler returns,
     // and the threads are joined by run(), or by a later stop() from another thread, or by the destructor.
     if (std::ranges::any_of(_servers,
-                            [](const SingleHttpServer& server) { return server._lifecycle.isEventLoopThread(); })) {
+                            [](const SingleHttpServer& server) { return server._ctx.lifecycle.isEventLoopThread(); })) {
       return;
     }
 
-    internalHandle.swap(_internalHandle);
+    internalHandle = std::move(_internalHandle);
     lastHandleState = _lastHandleState.lock();
   }
 
   // Stop internal handle if start() was used (non-blocking API)
-  if (internalHandle) {
-    internalHandle->stop();
+  if (internalHandle._active) {
+    internalHandle.stop();
   }
 
   if (lastHandleState) {
@@ -423,7 +425,7 @@ void MultiHttpServer::stop() noexcept {
 void MultiHttpServer::start() {
   AsyncHandle handle = startDetached();
   std::scoped_lock startLock(_control->startMutex);
-  _internalHandle.emplace(std::move(handle));
+  _internalHandle = std::move(handle);
 }
 
 bool MultiHttpServer::isRunning() const {
@@ -510,13 +512,14 @@ void MultiHttpServer::ensureNextServersBuilt() {
 #ifdef AERONET_ENABLE_OPENSSL
   // Set up shared session ticket key store on firstServer BEFORE duplication.
   // This ensures all copied servers will have the shared store when their TLS contexts are built.
-  const TLSConfig& tlsConfig = firstServer._config.tls;
-  if (tlsConfig.sessionTickets.enabled && !firstServer._tls.sharedTicketKeyStore) {
-    firstServer._tls.sharedTicketKeyStore =
+  const TLSConfig& tlsConfig = firstServer._ctx.config.tls;
+  if (tlsConfig.sessionTickets.enabled && !firstServer._ctx.tls.sharedTicketKeyStore()) {
+    auto sharedTicketKeyStore =
         std::make_shared<TlsTicketKeyStore>(tlsConfig.sessionTickets.lifetime, tlsConfig.sessionTickets.maxKeys);
     if (!tlsConfig.sessionTicketKeys().empty()) {
-      firstServer._tls.sharedTicketKeyStore->loadStaticKeys(tlsConfig.sessionTicketKeys());
+      sharedTicketKeyStore->loadStaticKeys(tlsConfig.sessionTicketKeys());
     }
+    firstServer._ctx.tls.shareTicketKeyStore(std::move(sharedTicketKeyStore));
   }
 #endif
 
@@ -551,7 +554,7 @@ void MultiHttpServer::buildProbeServerIfEnabled() {
   // ProbeState, which is owned by the route-handler lambdas captured in the listener's router (nowhere else).
   _probeServer.reset();
 
-  const BuiltinProbesConfig& probesCfg = _servers.front()._config.builtinProbes;
+  const BuiltinProbesConfig& probesCfg = _servers.front()._ctx.config.builtinProbes;
   if (!probesCfg.enabled || probesCfg.dedicatedPort == 0) {
     return;  // Inline probes (or no probes): nothing dedicated to build.
   }
@@ -569,7 +572,7 @@ void MultiHttpServer::buildProbeServerIfEnabled() {
       std::chrono::duration_cast<std::chrono::nanoseconds>(probesCfg.livenessStaleThreshold).count();
   probeState->workers.reserve(_servers.size());
   for (SingleHttpServer& server : _servers) {
-    probeState->workers.push_back(&server._lifecycle);
+    probeState->workers.push_back(&server._ctx.lifecycle);
   }
 
   // A minimal, plaintext HTTP/1.1 listener dedicated to the probe endpoints. We start from a default config (no TLS,
@@ -593,16 +596,19 @@ void MultiHttpServer::buildProbeServerIfEnabled() {
   SingleHttpServer& probeServer = *_probeServer;
 
   // Register the three probe routes reading the aggregated worker view (mirrors the inline probe responses).
-  probeServer._router.setPath(http::Method::GET, probesCfg.livenessPath(), [probeState](const HttpRequestView& req) {
-    const bool live = probeState->live();
-    return req.makeResponse(live ? http::StatusCodeOK : http::StatusCodeServiceUnavailable, live ? "OK" : "Unhealthy");
-  });
-  probeServer._router.setPath(http::Method::GET, probesCfg.readinessPath(), [probeState](const HttpRequestView& req) {
-    const bool ready = probeState->ready();
-    return req.makeResponse(ready ? http::StatusCodeOK : http::StatusCodeServiceUnavailable,
-                            ready ? "OK" : "Not Ready");
-  });
-  probeServer._router.setPath(http::Method::GET, probesCfg.startupPath(), [probeState](const HttpRequestView& req) {
+  probeServer._ctx.router.setPath(
+      http::Method::GET, probesCfg.livenessPath(), [probeState](const HttpRequestView& req) {
+        const bool live = probeState->live();
+        return req.makeResponse(live ? http::StatusCodeOK : http::StatusCodeServiceUnavailable,
+                                live ? "OK" : "Unhealthy");
+      });
+  probeServer._ctx.router.setPath(
+      http::Method::GET, probesCfg.readinessPath(), [probeState](const HttpRequestView& req) {
+        const bool ready = probeState->ready();
+        return req.makeResponse(ready ? http::StatusCodeOK : http::StatusCodeServiceUnavailable,
+                                ready ? "OK" : "Not Ready");
+      });
+  probeServer._ctx.router.setPath(http::Method::GET, probesCfg.startupPath(), [probeState](const HttpRequestView& req) {
     const bool started = probeState->started();
     return req.makeResponse(started ? http::StatusCodeOK : http::StatusCodeServiceUnavailable,
                             started ? "OK" : "Starting");

@@ -1,85 +1,52 @@
 #pragma once
 
-#include <cerrno>
+#include <atomic>
 #include <chrono>
-#include <cstddef>
 #include <cstdint>
-#include <cstring>
+#include <exception>
 #include <filesystem>
 #include <functional>
 #include <future>
 #include <memory>
 #include <span>
-#include <string_view>
 #include <thread>
-#include <type_traits>
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-#include <coroutine>
-#endif
 
-#include "aeronet/access-log-writer.hpp"
-#include "aeronet/adaptive-poll-timeout.hpp"
+#include "aeronet/compiler-config.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/event-loop.hpp"
-#include "aeronet/http-codec.hpp"
-#include "aeronet/http-message-data.hpp"
-#include "aeronet/http-request-dispatch.hpp"
-#include "aeronet/http-request-view.hpp"
-#include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
-#include "aeronet/http-status-code.hpp"
+#include "aeronet/internal/connection-io.hpp"
 #include "aeronet/internal/connection-storage.hpp"
-#include "aeronet/internal/date-header-cache.hpp"
-#include "aeronet/internal/keep-alive-deadline-queue.hpp"
-#include "aeronet/internal/lifecycle.hpp"
-#include "aeronet/internal/pending-updates.hpp"
-#include "aeronet/internal/shared-buffers.hpp"
+#include "aeronet/internal/server-context.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
-#include "aeronet/path-handlers.hpp"
 #include "aeronet/request-metrics.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/router-update-proxy.hpp"
 #include "aeronet/router.hpp"
+#include "aeronet/server-callbacks.hpp"
 #include "aeronet/server-stats.hpp"
-#include "aeronet/single-writer-counter.hpp"
 #include "aeronet/socket.hpp"
-#include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/timer-fd.hpp"
-#include "aeronet/tracing/tracer.hpp"
-#include "aeronet/transport-result.hpp"
 #include "aeronet/vector.hpp"
-#include "aeronet/zerocopy.hpp"
 
 #ifdef AERONET_ENABLE_HTTP2
 #include "aeronet/tcp-no-delay-mode.hpp"
 #endif
 
 #ifdef AERONET_ENABLE_OPENSSL
-#include "aeronet/internal/tls-runtime-state.hpp"
 #include "aeronet/tls-handshake-callback.hpp"
 #endif
 
-#ifdef AERONET_ENABLE_WEBSOCKET
-#include "aeronet/websocket-deflate.hpp"
-#endif
-
 #ifdef AERONET_ENABLE_GLAZE
+#include <string>
+
 #include "aeronet/server-config-loader.hpp"
 #endif
 
 namespace aeronet {
 
 class ServerLifecycleTracker;
-
-class HttpResponseWriter;
-class CorsPolicy;
-struct WebSocketEndpoint;
-class Http1WriterTransport;
-
-namespace internal {
-class TunnelManager;
-}  // namespace internal
 
 // SingleHttpServer
 //  - Single-threaded event loop by design: one instance == one epoll/reactor running in the
@@ -91,37 +58,21 @@ class TunnelManager;
 //    provided MultiHttpServer class made for this purpose.
 //  - Writes currently assume exclusive ownership of the connection fd within this single
 //    thread, enabling simple sequential ::write / ::writev without partial-write state tracking.
+// Internally, it keeps the lifecycle, the listener, the dispatch of the polled events and the updates: the connections
+// are served by the components of its internal::ServerContext (see there).
 class SingleHttpServer {
  public:
-  using ParserErrorCallback = std::function<void(http::StatusCode)>;
+  using ParserErrorCallback = aeronet::ParserErrorCallback;
 
   // Legacy alias kept for API compatibility.
   using RequestMetrics = aeronet::RequestMetrics;
 
-  // Expectation handling API
-  // ------------------------
-  // The server will honour the standard "Expect: 100-continue" behaviour by default.
-  // For other Expect tokens, applications may register an ExpectationHandler to
-  // implement custom semantics (for example sending an interim 102 Processing
-  // or producing a final response). If no handler is registered and the Expect
-  // header contains any token other than "100-continue", the server will respond
-  // with 417 Expectation Failed per RFC and reject the request.
-  enum class ExpectationResultKind : uint8_t { Continue, Interim, FinalResponse, Reject };
+  // Expectation handling API (see aeronet/server-callbacks.hpp).
+  using ExpectationResultKind = aeronet::ExpectationResultKind;
+  using ExpectationResult = aeronet::ExpectationResult;
+  using ExpectationHandler = aeronet::ExpectationHandler;
 
-  struct ExpectationResult {
-    ExpectationResultKind kind = ExpectationResultKind::Continue;
-    // Used for Interim when the handler wants the server to emit an interim
-    // response with the given status code (e.g. 102). Stored as uint8_t because
-    // only the 1xx class (100-199) is valid and fits in one byte.
-    uint8_t interimStatus = 0;
-    // Used for FinalResponse when the handler wishes to reply immediately
-    // with a full HttpResponse (the server will send it and skip reading the body).
-    HttpResponse finalResponse;
-  };
-
-  using ExpectationHandler = std::function<ExpectationResult(const HttpRequestView&, std::string_view)>;
-
-  using MetricsCallback = std::function<void(const RequestMetrics&)>;
+  using MetricsCallback = aeronet::MetricsCallback;
 
   // AsyncHandle: RAII wrapper for non-blocking server execution
   // ------------------------------------------------------------
@@ -391,11 +342,11 @@ class SingleHttpServer {
 
   // The config given to the server, with the actual allocated port if 0 was given.
   // The config may be modified in-flight via postConfigUpdate.
-  [[nodiscard]] const HttpServerConfig& config() const { return _config; }
+  [[nodiscard]] const HttpServerConfig& config() const { return _ctx.config; }
 
   // Get the actual port of this server.
   // If the configuration port was 0, the port has been automatically allocated by the system.
-  [[nodiscard]] uint16_t port() const { return _config.port; }
+  [[nodiscard]] uint16_t port() const { return _ctx.config.port; }
 
 #ifdef AERONET_ENABLE_GLAZE
   // Serialize the current server and router configuration as a JSON or YAML string.
@@ -413,11 +364,11 @@ class SingleHttpServer {
   // the transition. Primarily intended for coarse-grained coordination / diagnostics, not for
   // high-precision synchronization. For deterministic shutdown sequencing prefer joining the
   // thread that called run()/runUntil().
-  [[nodiscard]] bool isRunning() const { return _lifecycle.isRunning(); }
+  [[nodiscard]] bool isRunning() const { return _ctx.lifecycle.isRunning(); }
 
   // Returns true if the server is in draining mode (no new connections accepted, existing keep-alive
   // connections closed after current response), false otherwise.
-  [[nodiscard]] bool isDraining() const { return _lifecycle.isDraining(); }
+  [[nodiscard]] bool isDraining() const { return _ctx.lifecycle.isDraining(); }
 
   // Retrieve current server statistics snapshot. Safe to call from any thread, also while running.
   [[nodiscard]] ServerStats stats() const;
@@ -460,16 +411,21 @@ class SingleHttpServer {
   void postRouterUpdate(std::function<void(Router&)> updater);
 
  private:
-  friend class HttpResponseWriter;    // allow streaming writer to access queueData and connection storage
-  friend class Http1WriterTransport;  // HTTP/1.1 transport backend for streaming writer
   friend class MultiHttpServer;
-  friend class internal::TunnelManager;  // CONNECT tunnels, relayed through the connection management
 
   using ConnectionIt = internal::ConnectionStorage::ConnectionIt;
+  using CloseStatus = internal::CloseStatus;
+
+  // The context of 'other', after checking that it can be copied from (it does not run).
+  static const internal::ServerContext& CopyableContext(const SingleHttpServer& other);
+
+  // The context of 'other', after checking that it can be moved from (it does not run, and no deferred work still runs
+  // for its closed connections).
+  static internal::ServerContext&& MovableContext(SingleHttpServer& other);
 
   void initListener(NativeHandle listenFd = kInvalidHandle);
 
-  // Leaves Idle for Starting under _updates.lock: an update applied right away because the server is stopped (see
+  // Leaves Idle for Starting under the updates lock: an update applied right away because the server is stopped (see
   // submitRouterUpdate(), submitCallbacksUpdate()) then completes before the startup, every later one being queued
   // for the event loop.
   void beginStartup();
@@ -477,34 +433,49 @@ class SingleHttpServer {
   void prepareRun();
 
   void runUntilStarted(const std::function<bool()>& predicate);
-  static PollTimeoutPolicy MakePollTimeoutPolicy(const HttpServerConfig& config);
 
   // Shared implementation for startDetached / startDetachedAndStopWhen / startDetachedWithStopToken.
   AsyncHandle launchDetached(std::function<bool()> extraPredicate = {});
 
   void eventLoop();
-  // Serves the input of the connections deferred by deferInput().
+
+  // Handles the event of a connection polled at 'now'. Inlined into eventLoop(), its only caller.
+  AERONET_ALWAYS_INLINE void handleConnectionEvent(EventLoop::EventFd event, std::chrono::steady_clock::time_point now);
+
+  // Serves the input of the connections deferred by ConnectionIo::deferInput().
   void resumeDeferredInputs();
+
   // Periodic maintenance: timeouts sweep, access log flush, end of a stop or a drain.
   void runMaintenance(std::chrono::steady_clock::time_point now);
-  void sweepIdleConnections();
+
+  void updateMaintenanceTimer();
+
+  void closeListener() noexcept;
+
+  // Closes the listener and all the connections, at the end of a run.
+  void closeListenerAndConnections();
+
   void applyPendingUpdates();
+
   // Applies the posted config updates, each one atomically (restoring the previous configuration if it fails).
   void applyPendingConfigUpdates();
-#ifdef AERONET_ENABLE_OPENSSL
-  // Rebuilds the TLS context if one of the files it was built from changed on disk, keeping it if the rebuild fails.
-  void reloadChangedTlsFiles();
-  // Session ticket key store for a TLS context built from the current configuration, replacing the current context
-  // which was built from currentContextConfig. Null to let the new context create its own.
-  [[nodiscard]] std::shared_ptr<TlsTicketKeyStore> ticketKeyStoreForNewTlsContext(
-      const TLSConfig& currentContextConfig) const;
-#endif
+
+  void submitRouterUpdate(std::function<void(Router&)> updater,
+                          std::shared_ptr<std::promise<std::exception_ptr>> completion);
+
+  // Applies a change of the callbacks: right away when stopped or when called from the event loop, otherwise by the
+  // event loop (the only thread using them while running), waiting for it (see applyPendingUpdates()).
+  void submitCallbacksUpdate(std::function<void(internal::ServerCallbacks&)> updater);
+
+  // Applies the changes queued by submitCallbacksUpdate(). PRECONDITION: updates lock held, server stopped.
+  void applyQueuedCallbacksUpdates();
+
+  void registerBuiltInProbes();
+
   void acceptNewConnections();
 
-  enum class CloseStatus : uint8_t { Keep, Close };
-
-  // Returns true if connection has been closed, false otherwise.
   CloseStatus handleWritableClient(ConnectionIt cnxIt);
+
   // Reads and processes available input of a connection: the only read loop of the HTTP connections (tunnels excepted),
   // from the read right after the accept on.
   // stopOnShortRead: no hang-up / error can be pending unreported, so a short plain-socket read proves the kernel
@@ -513,42 +484,34 @@ class SingleHttpServer {
   // (registering the socket reports what it already received). Pass false when the event may carry a pending EOF, or
   // when the read resumes input whose events were already consumed.
   CloseStatus handleReadableClient(ConnectionIt cnxIt, bool stopOnShortRead);
+
   // Ends the handling of the connection fd outside of an event of the polled batch (right after its accept, or when its
   // deferred input is resumed): closes it if requested - unless a nested close already recycled it - or restarts its
   // keep-alive idle window otherwise.
   void completeOutOfBatchRead(NativeHandle fd, CloseStatus closeStatus);
 
-  // Dispatches input to appropriate handler based on protocol.
-  // For HTTP/1.1, calls processHttp1Requests.
-  // For WebSocket, routes through the protocol handler.
-  // Returns true if the connection should be closed.
+  // Finalize a TLS handshake if it just completed: emit metrics/events, set up HTTP/2
+  // if ALPN negotiated "h2", and mark the connection as TLS-established.
+  // Returns true if the connection requested close (caller should close/return).
+  bool finalizeTlsHandshakeIfReady(NativeHandle fd, ConnectionState& state);
+
+  // Dispatches input to the protocol of the connection: its protocol handler (WebSocket, HTTP/2), HTTP/2 with prior
+  // knowledge, or HTTP/1.1. Returns true if the connection should stop reading (or close).
   bool processConnectionInput(ConnectionIt cnxIt);
+
   // Processes the input of a connection served by a protocol handler (see processSpecialProtocolHandler()), then
   // re-arms the deadline of a WebSocket connection. Returns true if the connection should be closed.
   bool processProtocolHandlerInput(ConnectionIt cnxIt);
-  // Serves the HTTP/1.1 requests in the input buffer of the connection (see serveHttp1Requests()), then writes their
-  // responses not written yet, and gives the bytes following an upgrade request to the new protocol.
+
+  // Serves the HTTP/1.1 requests in the input buffer of the connection (see Http1Pipeline::processRequests()), then
+  // gives the bytes following an upgrade request to the new protocol.
   // Returns true if the connection should stop reading (or close).
-  bool processHttp1Requests(ConnectionIt cnxIt);
-  // Serves the HTTP/1.1 requests in the input buffer of the connection. The responses to the requests followed by
-  // others are batched (see _pHttp1OutputBatch).
-  bool serveHttp1Requests(ConnectionIt cnxIt);
-  // Validate the Transfer-Encoding of the current HTTP/1.1 request. Returns true for chunked, the only coding
-  // supported. Otherwise, queues the error response (the connection then closes) and returns false.
-  bool acceptChunkedTransferEncoding(ConnectionIt cnxIt, std::string_view transferEncoding);
-  // Track the reception of the body of the current HTTP/1.1 request for the body read timeout. A received body (or a
-  // closed connection: bodyReady true) is no longer awaited, even if the timeout was disabled since.
-  void trackBodyReception(ConnectionState& state, bool bodyReady) noexcept;
-  // The steps of the request pipeline shared with HTTP/2.
-  [[nodiscard]] RequestPipeline requestPipeline() noexcept {
-    return {_router, _telemetry, _callbacks.middlewareMetrics, _sharedBuffers.buf};
-  }
-  // Apply the response middleware of the route, then send the response to the current HTTP/1.1 request.
-  void sendHttp1Response(ConnectionIt cnxIt, HttpResponse&& resp, const Router::RoutingResult& routingResult,
-                         bool streaming);
+  bool processHttp1Input(ConnectionIt cnxIt);
+
   // Process WebSocket / HTTP/2 data through the protocol handler.
   // Returns true if the connection should be closed.
   bool processSpecialProtocolHandler(ConnectionIt cnxIt);
+
   // Tells whether the protocol handler input processing must stop: close requested, or output blocked.
   static bool StopReadingIfOutputBlocked(ConnectionState& state);
 
@@ -556,242 +519,16 @@ class SingleHttpServer {
   // (HTTP/2 frames) left by the output backpressure or the fairness budget, that no event reports.
   void processBufferedInput(NativeHandle fd);
 
-  // Resumes the input processing stopped by the output backpressure (see ConnectionState::inputBlockedByOutput) once
-  // the output and file payload drained.
-  void resumeInputIfOutputDrained(NativeHandle fd, ConnectionState& state);
-
-  // Resumes the input of the connection at the end of the event loop iteration (see _pendingReadFds), once.
-  void deferInput(NativeHandle fd, ConnectionState& state);
-
-  // Resumes the input of a connection deferred by deferInput(): serves its buffered input, then reads.
+  // Resumes the input of a connection deferred by ConnectionIo::deferInput(): serves its buffered input, then reads.
   CloseStatus resumeDeferredInput(ConnectionIt cnxIt);
 
-  // A connection without pending input reads into the input buffer of the event loop (SharedBuffers::inBuffer) instead
-  // of its own: the memory of the previous such read, still in the CPU caches. Does nothing if it has pending input.
-  void lendInBuffer(ConnectionState& state) noexcept;
-
-  // Once the input of a connection is entirely served, its input buffer is not needed until its next read: the larger
-  // of it and the input buffer of the event loop becomes the latter, the other is freed. An idle connection holds no
-  // input buffer. A connection with pending input keeps its buffer.
-  void releaseServedInBuffer(ConnectionState& state) noexcept;
-
-  // Bytes written to all the connections so far, counted toward the fairness budget of the events that wrote them.
-  [[nodiscard]] uint64_t totalBytesWritten() const noexcept {
-    return _stats.totalBytesWrittenImmediate.load() + _stats.totalBytesWrittenFlush.load();
-  }
-  // Split helpers
-  enum class BodyDecodeStatus : uint8_t { Ready, NeedMore, Error };
-
-  // Decodes the body of the current HTTP/1.1 request, whose head starts 'input' (the input buffer from the request on).
-  // Sets consumedBytes to the bytes of the request (head, body and trailers) once Ready.
-  BodyDecodeStatus decodeBodyIfReady(ConnectionIt cnxIt, std::span<char> input, bool isChunked, bool expectContinue,
-                                     std::size_t maxBodyBytes, std::size_t& consumedBytes);
-  BodyDecodeStatus decodeFixedLengthBody(ConnectionIt cnxIt, std::span<const char> input, bool expectContinue,
-                                         std::size_t maxBodyBytes, std::size_t& consumedBytes);
-  BodyDecodeStatus decodeChunkedBody(ConnectionIt cnxIt, std::span<char> input, bool expectContinue,
-                                     std::size_t maxBodyBytes, std::size_t& consumedBytes);
-  bool parseHeadersUnchecked(SvToSvMap& headersMap, char* bufferBeg, char* first, char* last);
-  bool maybeDecompressRequestBody(ConnectionIt cnxIt, bool usePerConnectionBodyStorage);
-  // Whether the connection of this HTTP/1.x request stays open after its response: false when the client asked to close
-  // it, keep-alive is disabled, the request is the last one allowed on the connection, or the server drains or stops.
-  // The response then announces the close (RFC 9112 §9.6).
-  [[nodiscard]] bool isKeepAliveForHttp1(const HttpRequestView& request) const {
-    return _config.enableKeepAlive && request._pOwnerState->requestsServed < _config.maxRequestsPerConnection &&
-           _lifecycle.isRunning() && request.clientKeepsAliveForHttp1();
-  }
-  // Sends the response to the current HTTP/1.1 request. With 'close', the connection closes after it, as when the
-  // request does not keep it alive.
-  void finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpResponse&& resp, const CorsPolicy* pCorsPolicy,
-                                       bool close = false);
-  // Handle Expect header tokens other than the built-in 100-continue.
-  // Returns true if processing should stop for this request (response already queued/sent): only its head is consumed.
-  bool handleExpectHeader(ConnectionIt cnxIt, std::string_view expectHeader, const CorsPolicy* pCorsPolicy,
-                          bool& found100Continue);
-  // Helper to populate and invoke the metrics callback for a completed request.
-  void emitRequestMetrics(const HttpRequestView& request, http::StatusCode status);
-
-  // End an HTTP/1.1 request answered with 'status': emit its metrics (if observed), then end its span.
-  void endRequest(HttpRequestView& request, http::StatusCode status) {
-    if (_callbacks.metrics || _accessLog) {
-      emitRequestMetrics(request, status);
-    }
-    request.end(status);
-  }
-
-  // Helper to build & queue a simple error response, invoke parser error callback (if any).
-  // The connection will be closed after draining buffered writes.
-  void emitSimpleError(ConnectionIt cnxIt, http::StatusCode statusCode, std::string_view body = {});
-
-  // Build & queue an automatic HTTP -> HTTPS redirect response (used when config.httpsRedirect.enabled()).
-  // Derives the target from the request Host header + config.httpsRedirect, then closes the connection.
-  void emitHttpsRedirect(ConnectionIt cnxIt);
-  // Outbound write helpers. On transport failure, the connection is closed immediately.
-  void queueData(ConnectionIt cnxIt, HttpMessageData httpResponseData);
-  void flushOutbound(ConnectionIt cnxIt);
-  // Writes the unsent bytes of 'data' to the connection, with MSG_ZEROCOPY when eligible (Linux): sets 'zerocopySent'
-  // in that case, the kernel then reading the buffers of 'data' until the completion of the send (see
-  // ConnectionState::retainZerocopyBuffer()).
-  TransportResult writeMessage(ConnectionIt cnxIt, const HttpMessageData& data, bool& zerocopySent);
-  // Same for the unsent bytes of messages, as 'buffers' (at most ZeroCopyState::kMaxBuffers), of the sizes in 'output'.
-  TransportResult writeMessages(ConnectionIt cnxIt, std::span<const std::string_view> buffers,
-                                const ConnectionState::GatheredOutput& output, bool& zerocopySent);
-  // Writes outBuffer, gathered with the queued entries that follow it (up to the next file payload, sent before what
-  // follows it). Always gathered, so that a write retried after it would block starts with the same bytes, at least as
-  // many, as user-space TLS requires (OpenSSL keeps the record it could not write, and fails a retry with fewer bytes).
-  // Returns the number of bytes written, 'want' being set to the hint of the transport.
-  std::size_t writeOutBuffer(ConnectionIt cnxIt, TransportHint& want);
-#ifdef AERONET_LINUX
-  // Polls the zerocopy completion notifications of a connection (see ConnectionState::pollZerocopyCompletions()).
-  ZerocopyCompletions pollZerocopyCompletions(ConnectionState& state);
-  // Handles the expired deadline of a connection whose zerocopy sends are in flight: an idle keep-alive connection is
-  // closed once they complete (like copied data the kernel keeps sending after close), and a connection whose sends
-  // made no progress during a whole keepAliveTimeout is reset. Returns true if the connection was closed.
-  bool watchZerocopySends(ConnectionIt cnxIt);
-  // Releases the buffers of the zerocopy sends of reset connections whose grace period elapsed.
-  void releaseResetZerocopyBuffers(std::chrono::steady_clock::time_point now);
-  // Waits for the end of the grace period of the buffers of the zerocopy sends of reset connections, then releases
-  // them.
-  void waitForResetZerocopyBuffers();
-#endif
-  void flushFilePayload(ConnectionIt cnxIt);
-  // Helper: flush pending bytes in tunnelOrFileBuffer via user-space TLS (SSL_write).
-  // Used when kTLS is not available and file data must be encrypted in user-space.
-  // Returns true if the caller should return early: the buffer is still non-empty (the write would block), or its write
-  // failed (the file send is then dropped).
-  bool flushUserSpaceTlsBuffer(ConnectionIt cnxIt);
-
-  // Closes the connection, unless it starts a lingering close (see startLingeringClose()).
-  void closeConnection(ConnectionIt cnxIt);
-  // Closes the connection right away.
-  void closeConnectionNow(ConnectionIt cnxIt);
-  // Unregister the connection from the event loop and release its state (closing its socket). Unlike
-  // closeConnection(), neither its maintenance nor its tunnels are handled.
-  void releaseConnection(ConnectionIt cnxIt);
-  // RFC 9112 §9.6: closing a socket with unread input resets the connection, and the reset can destroy the response
-  // before the client reads it (Windows discards the received data). When the client of an HTTP/1.1 connection whose
-  // drain close is due may still be sending (bytes of the answered request, or of requests pipelined behind it, are
-  // left in its input buffer), shuts down its write side and keeps it open, discarding its input, until the client
-  // closes it or lingeringCloseTimeout elapsed. Returns true if the connection lingers.
-  bool startLingeringClose(ConnectionIt cnxIt);
-  // Reads and discards the input of a lingering connection. Returns Close once the client closed it.
-  CloseStatus discardLingeringInput(ConnectionIt cnxIt);
-
-  // Registers (or unregisters) the keep-alive deadline of a connection according to its current state.
-  void refreshKeepAliveDeadline(ConnectionIt cnxIt);
-  // Restart the keep-alive idle window from workEnd when serving the request outlived keepAliveTimeout,
-  // so a slow handler cannot get its own response swept away as if the connection had been idle.
-  void restartKeepAliveIdleWindow(NativeHandle fd, std::chrono::steady_clock::time_point workEnd);
-  void restartKeepAliveIdleWindow(NativeHandle fd) { restartKeepAliveIdleWindow(fd, std::chrono::steady_clock::now()); }
-  // Same for the connections of a processed batch of events, read at batchStart: a single clock read when the whole
-  // batch was served within keepAliveTimeout, the common case.
+  // Restarts the keep-alive idle windows of the connections of a processed batch of events, read at batchStart: a
+  // single clock read when the whole batch was served within keepAliveTimeout, the common case.
   void restartKeepAliveIdleWindows(std::span<const EventLoop::EventFd> events,
                                    std::chrono::steady_clock::time_point batchStart);
+
   // Listener, wakeup and maintenance timer fds, polled along with the connections.
   [[nodiscard]] bool isServerInternalFd(NativeHandle fd) const noexcept;
-  bool closeExpiredKeepAliveConnections();
-  void rebuildKeepAliveDeadlines();
-#ifdef AERONET_ENABLE_WEBSOCKET
-  enum class WebSocketUpgrade : uint8_t { Upgraded, Invalid, Refused, Failed };
-
-  // Switch the connection of the current request, a WebSocket upgrade that passed the request middleware and the
-  // origin checks, to the WebSocket protocol. Queues the 101 response on success, and the 400 response of an invalid
-  // upgrade. The caller answers a refused upgrade (factory returning no handler) and a failed one (factory throwing).
-  WebSocketUpgrade upgradeToWebSocket(ConnectionIt cnxIt, const WebSocketEndpoint& endpoint);
-  // Arms the deadline of a WebSocket connection when its next timeout check comes before the armed deadline (or
-  // removes it when no timeout applies).
-  void refreshWebSocketDeadline(NativeHandle fd, ConnectionState& state);
-  // Runs the idle and close timeouts of a WebSocket connection whose deadline elapsed. Returns true if it was closed.
-  bool checkWebSocketTimeouts(ConnectionIt cnxIt);
-#endif
-  void forgetConnectionMaintenance(ConnectionState& state) noexcept;
-  // Starts the header read timer of the next HTTP/1.1 request of the connection (see
-  // HttpServerConfig::headerReadTimeout), whose start is also the reference of the relative deadlines of the request.
-  void startHeaderReadTimer(ConnectionState& state) noexcept;
-  // Stops it: the request head was received, or the connection no longer receives HTTP/1.1 requests.
-  void stopHeaderReadTimer(ConnectionState& state) noexcept;
-  void clearRequestDeadline(ConnectionState& state) noexcept;
-  void trackRequestDeadline(ConnectionState& state, uint32_t deadlineMs) noexcept;
-  void forgetWritableInterest(ConnectionState& state) noexcept;
-
-  [[nodiscard]] bool needsFullConnectionMaintenanceSweep() const noexcept;
-
-  enum class LoopAction : uint8_t { Nothing, Continue, Break, SwitchProtocol };
-
-  // Answers the OPTIONS, TRACE and CONNECT requests that are not routed like the other ones. The current request starts
-  // at requestOffset in the input buffer, and takes consumedBytes there.
-  LoopAction processSpecialMethods(ConnectionIt& cnxIt, std::size_t requestOffset, std::size_t consumedBytes,
-                                   const CorsPolicy* pCorsPolicy);
-
-  // Run the streaming handler of the current HTTP/1.1 request. Returns Break when the connection closes afterwards,
-  // Continue otherwise.
-  LoopAction serveStreamingRequest(ConnectionIt cnxIt, const Router::RoutingResult& routingResult);
-
-#ifdef AERONET_ENABLE_WEBSOCKET
-  // Answer the WebSocket upgrade request of the connection, once its request middleware ran: checks its origin, then
-  // switches the connection to WebSocket (SwitchProtocol), or answers it with an error (Continue, or Break when the
-  // connection closes).
-  LoopAction processWebSocketUpgrade(ConnectionIt cnxIt, const Router::RoutingResult& routingResult);
-#endif
-
-  void closeListener() noexcept;
-  void closeAllConnections();
-
-  void registerBuiltInProbes();
-
-  void updateMaintenanceTimer();
-
-  void submitRouterUpdate(std::function<void(Router&)> updater,
-                          std::shared_ptr<std::promise<std::exception_ptr>> completion);
-
-  // Helpers to enable/disable writable interest (EPOLLOUT) for a connection. They wrap
-  // ModWithCloseOnFailure and update `ConnectionState::waitingWritable` and internal stats
-  // consistently. Return true on success, false on failure (caller should handle close).
-  bool enableWritableInterest(ConnectionIt cnxIt);
-  bool disableWritableInterest(ConnectionIt cnxIt);
-
-  // Finalize a TLS handshake if it just completed: emit metrics/events, set up HTTP/2
-  // if ALPN negotiated "h2", and mark the connection as TLS-established.
-  // Returns true if the connection requested close (caller should close/return).
-  bool finalizeTlsHandshakeIfReady(NativeHandle fd, ConnectionState& state);
-
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  bool pinAsyncSharedBodyToConnectionStorage(ConnectionState& state) const;
-
-  // Post an async callback to be processed in the event loop, then resume the coroutine.
-  // Called from background threads via ConnectionState::asyncState.postCallback.
-  void postAsyncCallback(NativeHandle connectionFd, uint32_t connectionGeneration, std::coroutine_handle<> handle,
-                         std::function<void()> work);
-
-  // Processes the async callbacks posted by background threads: resumes their coroutines, or releases the ones kept for
-  // closed connections.
-  void processAsyncCallbacks();
-
-  // Waits until the deferred work run for closed connections completed (no-op while the event loop runs).
-  void waitForOrphanedAsyncWork();
-
-  // Tells whether the given HTTP/1 connection must stop reading because of its async handler (and records it).
-  static bool PauseReadingDuringAsyncHandler(ConnectionState& state) noexcept;
-
-  // Gives up the request of an async handler, its connection closing.
-  static void AbandonAsyncHandler(AsyncHandlerState& async) noexcept;
-
-  // Returns true if the handler was dispatched (it may have completed already), false if it returned an invalid task.
-  // With bodyReady, consumedBytes is the size of the input buffer up to the end of the request (the requests served
-  // before it included): erased once the handler completed, the input buffer not moving meanwhile.
-  bool dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyncRequestHandler& handler, bool bodyReady,
-                            bool isChunked, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy,
-                            std::span<const ResponseMiddleware> responseMiddleware, std::size_t perRouteMaxBodyBytes);
-  void resumeAsyncHandler(ConnectionIt cnxIt);
-  void handleAsyncBodyProgress(ConnectionIt cnxIt);
-  void onAsyncHandlerCompleted(ConnectionIt cnxIt);
-  void tryFlushPendingAsyncResponse(ConnectionIt cnxIt);
-
-  // Resumes the input of an HTTP/1 connection after the completion of its async handler: serves the requests already
-  // received, then reads the bytes left in the socket meanwhile.
-  void resumeInputAfterAsyncHandler(NativeHandle fd);
-#endif
-
-  [[nodiscard]] bool isInMultiHttpServer() const noexcept { return _lifecycleTracker.use_count() != 0; }
 
 #ifdef AERONET_ENABLE_HTTP2
   // Sets up HTTP/2 protocol handler for a connection after ALPN "h2" negotiation.
@@ -804,57 +541,26 @@ class SingleHttpServer {
   void installHttp2Handler(NativeHandle clientFd, ConnectionState& state, bool sendServerPrefaceForTls);
 #endif
 
-  // Updated by the event loop, read by stats() from any thread.
-  struct StatsInternal {
-    SingleWriterCounter<uint64_t> totalBytesQueued;
-    SingleWriterCounter<uint64_t> totalBytesWrittenImmediate;
-    SingleWriterCounter<uint64_t> totalBytesWrittenFlush;
-    SingleWriterCounter<uint64_t> deferredWriteEvents;
-    SingleWriterCounter<uint64_t> flushCycles;
-    SingleWriterCounter<uint64_t> epollModFailures;
-    SingleWriterCounter<std::size_t> maxConnectionOutboundBuffer;
-    SingleWriterCounter<uint64_t> totalRequestsServed;
-    SingleWriterCounter<uint64_t> zerocopySends;
-    SingleWriterCounter<uint64_t> zerocopyBytes;
-    SingleWriterCounter<uint64_t> zerocopyCopiedSends;
-    SingleWriterCounter<uint64_t> zerocopyNoBufferSpaceFallbacks;
-    SingleWriterCounter<uint64_t> zerocopyRetainLimitFallbacks;
-    SingleWriterCounter<uint64_t> zerocopyResetConnections;
-  } _stats;
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  // Processes the async callbacks posted by background threads: resumes their coroutines, or releases the ones kept for
+  // closed connections.
+  void processAsyncCallbacks();
 
-  struct Callbacks {
-    ParserErrorCallback parserErr;
-    MetricsCallback metrics;
-    MiddlewareMetricsCallback middlewareMetrics;
-#ifdef AERONET_ENABLE_OPENSSL
-    TlsHandshakeCallback tlsHandshake;
+  // Waits until the deferred work run for closed connections completed (no-op while the event loop runs).
+  void waitForOrphanedAsyncWork();
+
+  // Resumes the input of an HTTP/1 connection after the completion of its async handler: serves the requests already
+  // received, then reads the bytes left in the socket meanwhile.
+  void resumeInputAfterAsyncHandler(NativeHandle fd);
 #endif
-    ExpectationHandler expectation;
-  } _callbacks;
 
-  // Applies a change of the callbacks: right away when stopped or when called from the event loop, otherwise by the
-  // event loop (the only thread using them while running), waiting for it (see applyPendingUpdates()).
-  void submitCallbacksUpdate(std::function<void(Callbacks&)> updater);
+  [[nodiscard]] bool isInMultiHttpServer() const noexcept { return _lifecycleTracker.use_count() != 0; }
 
-  // Applies the changes queued by submitCallbacksUpdate(). PRECONDITION: _updates.lock held, server stopped.
-  void applyQueuedCallbacksUpdates();
+  internal::ServerContext _ctx;
 
-  internal::PendingUpdates _updates;
-
-  // Callback changes queued by submitCallbacksUpdate() (protected by _updates.lock).
-  vector<std::function<void(Callbacks&)>> _callbacksUpdates;
+  // Callback changes queued by submitCallbacksUpdate() (protected by _ctx.updates.lock).
+  vector<std::function<void(internal::ServerCallbacks&)>> _callbacksUpdates;
   std::atomic<bool> _hasCallbacksUpdates{false};
-
-  HttpServerConfig _config;
-
-  CompressionState _compressionState;
-  DecompressionState _decompressionState;
-
-#ifdef AERONET_ENABLE_WEBSOCKET
-  // permessage-deflate streams of the WebSocket connections, for the directions negotiated without context takeover.
-  // Declared before the connections, whose handlers use them.
-  websocket::SharedDeflateStreams _webSocketDeflateStreams;
-#endif
 
   Socket _listenSocket;
 #ifdef AERONET_LINUX
@@ -863,11 +569,6 @@ class SingleHttpServer {
   Socket _portReservation;
 #endif
   TimerFd _maintenanceTimer;
-  EventLoop _eventLoop;
-
-  internal::Lifecycle _lifecycle;
-
-  internal::DateHeaderCache _dateHeader;
 
 #ifndef AERONET_LINUX
   // Timestamp of last maintenance sweep. Used as fallback on Windows/macOS where the
@@ -875,19 +576,6 @@ class SingleHttpServer {
   // per pollInterval even under sustained event activity.
   std::chrono::steady_clock::time_point _lastMaintenanceTp;
 #endif
-
-  Router _router;
-
-  internal::ConnectionStorage _connections;
-  internal::KeepAliveDeadlineQueue _keepAliveDeadlines;
-
-  internal::SharedBuffers _sharedBuffers;
-
-  // Telemetry context - one per SingleHttpServer instance (no global singletons)
-  tracing::TelemetryContext _telemetry;
-
-  // Structured access log writer - one per event-loop thread.
-  AccessLogWriter _accessLog;
 
   // Internal handle for simple start() API - managed by the server itself.
   // When start() is called, the handle is stored here and the server takes ownership.
@@ -897,77 +585,11 @@ class SingleHttpServer {
   // Used by MultiHttpServer to track lifecycle without strong ownership.
   std::weak_ptr<ServerLifecycleTracker> _lifecycleTracker;
 
-  // CONNECT tunnels: created by the first CONNECT request of a run, and destroyed when the event loop stops (always
-  // null when the server does not run, so the special members of the server need not care).
-  std::unique_ptr<internal::TunnelManager> _tunnels;
-
-  // Largest output batched for a connection by queueData() (see _pHttp1OutputBatch): a response that would exceed it is
-  // written right away, along with the batched ones.
-  static constexpr std::size_t kMaxBatchedOutputBytes = std::size_t{64} << 10U;
-
-  // The HTTP/1.1 connection whose current request is followed by other requests in its input buffer, while
-  // serveHttp1Requests() serves them (nullptr otherwise): queueData() does not write their responses right away, but
-  // keeps them to write them together, in a single write, once they are served. Responding to each pipelined request
-  // with its own write would cost a syscall per request and, with Nagle's algorithm, delay the responses after the
-  // first one until the client acknowledges it.
-  ConnectionState* _pHttp1OutputBatch{nullptr};
-
-  // Fds whose input must be resumed without any event reporting it (see deferInput()): those that hit the per-event
-  // fairness cap with data still in their TCP buffer (edge-triggered polling - EPOLLET on Linux, EV_CLEAR on macOS -
-  // only fires on state transitions), or requests in their input buffer, or records read ahead by their TLS transport.
-  vector<NativeHandle> _pendingReadFds;
-
-  struct ConnectionSweepState {
-    uint32_t writableConnections{0};
-    uint32_t requestDeadlineConnections{0};
-#ifdef AERONET_ENABLE_HTTP2
-    uint32_t http2Connections{0};
-#endif
-    // The connections receiving a request head (ConnectionState::parsingHeaders) and those awaiting body bytes
-    // (ConnectionState::waitingForBody). They follow these flags whatever headerReadTimeout and bodyReadTimeout, which
-    // a configuration update can change while requests are received: only the sweep decision depends on them.
-    uint32_t headerReadConnections{0};
-    uint32_t bodyReadConnections{0};
-  };
-  ConnectionSweepState _connectionSweepState;
-
-#ifdef AERONET_LINUX
-  // A server stops using MSG_ZEROCOPY for this long after a send failed with ENOBUFS.
-  static constexpr std::chrono::seconds kZerocopyNoBufferSpaceBackoff{1};
-  // Buffers of the zerocopy sends of a reset connection are kept this long: the reset dropped the socket send queue,
-  // but the packets already handed to the network device (queuing discipline, NIC ring) may still reference them.
-  static constexpr std::chrono::seconds kZerocopyResetGracePeriod{1};
-
-  struct ZerocopyRuntime {
-    // A buffer of the zerocopy sends of a reset connection, released once releaseTime elapsed.
-    struct ResetBuffer {
-      using trivially_relocatable = std::true_type;
-
-      HttpMessageData data;
-      std::chrono::steady_clock::time_point releaseTime;
-    };
-
-    // In release time order.
-    vector<ResetBuffer> resetBuffers;
-    // No zerocopy send before this time (after ENOBUFS).
-    std::chrono::steady_clock::time_point retryTime;
-    // Whether the listening socket has SO_ZEROCOPY, inherited by the accepted sockets.
-    bool supported{false};
-    // Whether ENOBUFS was already logged (once per server).
-    bool noBufferSpaceLogged{false};
-  };
-  ZerocopyRuntime _zerocopy;
-#endif
-
 #ifdef AERONET_MACOS
   // When true (default), this instance owns the listen socket and will close it
   // on stop/destruction. When false, the socket is borrowed from another instance
   // (shared-fd model on macOS) and must not be closed by this instance.
   bool _ownsListenSocket{true};
-#endif
-
-#ifdef AERONET_ENABLE_OPENSSL
-  internal::TlsRuntimeState _tls;
 #endif
 };
 

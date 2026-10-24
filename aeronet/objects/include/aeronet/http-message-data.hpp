@@ -1,5 +1,6 @@
 #pragma once
 
+#include <amc/type_traits.hpp>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -140,7 +141,7 @@ class HttpMessageData {
   }
 
   // The payload lives in the heap buffer: moving this object around does not move it.
-  using trivially_relocatable = std::true_type;
+  using trivially_relocatable = amc::is_trivially_relocatable<RawChars>::type;
 
  private:
   friend class HttpMessage;

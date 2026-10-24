@@ -6,10 +6,10 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <optional>
 #include <utility>
 
 #include "aeronet/http-response.hpp"
+#include "aeronet/internal/http-response-access.hpp"
 #include "aeronet/object-pool.hpp"
 #include "aeronet/raw-chars.hpp"
 
@@ -105,7 +105,7 @@ struct AsyncHandlerState {
   std::size_t maxBodyBytes = static_cast<std::size_t>(-1);
   const CorsPolicy* corsPolicy{nullptr};
   const void* responseMiddleware{nullptr};
-  std::optional<HttpResponse> pendingResponse;
+  HttpResponse pendingResponse = internal::HttpResponseAccess::MakeUnallocated();
   // Callback to post async work completion to the server's event loop.
   // Set by the server when dispatching an async handler.
   std::function<void(std::coroutine_handle<>, std::function<void()>)> postCallback;

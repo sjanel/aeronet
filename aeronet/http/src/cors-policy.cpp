@@ -120,7 +120,7 @@ CorsPolicy& CorsPolicy::allowPrivateNetwork(bool enable) {
   if (!_active || isPreflightRequest(request)) {
     return ApplyStatus::NotCors;
   }
-  const auto origin = request.headerValueOrEmpty(http::Origin);
+  const std::string_view origin = request.headerValueOrEmpty(http::Origin);
   if (origin.empty()) {
     return ApplyStatus::NotCors;
   }
@@ -131,7 +131,7 @@ CorsPolicy& CorsPolicy::allowPrivateNetwork(bool enable) {
 }
 
 CorsPolicy::ApplyStatus CorsPolicy::applyToResponse(const HttpRequestView& request, HttpResponse& response) const {
-  const auto applyStatus = wouldApply(request);
+  const ApplyStatus applyStatus = wouldApply(request);
 
   if (applyStatus == ApplyStatus::Applied) {
     applyResponseHeaders(response, request.headerValueOrEmpty(http::Origin));
@@ -151,13 +151,13 @@ CorsPolicy::PreflightResult CorsPolicy::handlePreflight(const HttpRequestView& r
     return result;
   }
 
-  const auto origin = request.headerValueOrEmpty(http::Origin);
+  const std::string_view origin = request.headerValueOrEmpty(http::Origin);
   if (!originAllowed(origin)) {
     result.status = PreflightResult::Status::OriginDenied;
     return result;
   }
 
-  const auto effectiveMethods = effectiveAllowedMethods(routeMethods);
+  const http::MethodBmp effectiveMethods = effectiveAllowedMethods(routeMethods);
 
   const std::string_view methodStr = request.headerValueOrEmpty(http::AccessControlRequestMethod);
   if (!methodAllowed(methodStr, effectiveMethods)) {
@@ -181,13 +181,13 @@ CorsPolicy::PreflightResult CorsPolicy::handlePreflight(const HttpRequestView& r
 
   result.response = request.makeResponse(http::StatusCodeNoContent);
 
-  auto& response = *result.response;
+  HttpResponse& response = result.response;
 
   applyResponseHeaders(response, origin);
 
   FixedCapacityVector<char, http::kAllMethodsStrLen + static_cast<uint32_t>((http::kNbMethods - 1U) * 2U)> acamValues;
   for (http::MethodIdx idx = 0; idx < http::kNbMethods; ++idx) {
-    const auto method = http::MethodFromIdx(idx);
+    const http::Method method = http::MethodFromIdx(idx);
     if (http::IsMethodSet(effectiveMethods, method)) {
       if (!acamValues.empty()) {
         static constexpr std::string_view kCommaSep = ", ";
@@ -224,7 +224,7 @@ bool CorsPolicy::isPreflightRequest(const HttpRequestView& request) noexcept {
   if (request.method() != http::Method::OPTIONS) {
     return false;
   }
-  const auto origin = request.headerValueOrEmpty(http::Origin);
+  const std::string_view origin = request.headerValueOrEmpty(http::Origin);
   if (origin.empty()) {
     return false;
   }
@@ -232,14 +232,14 @@ bool CorsPolicy::isPreflightRequest(const HttpRequestView& request) noexcept {
 }
 
 bool CorsPolicy::methodAllowed(std::string_view methodToken, http::MethodBmp routeMethods) const noexcept {
-  const auto effectiveMask = effectiveAllowedMethods(routeMethods);
+  const http::MethodBmp effectiveMask = effectiveAllowedMethods(routeMethods);
   if (effectiveMask == 0) {
     return false;
   }
   // Unlike header names, methods are case-sensitive (RFC 9110 §9.1), and the Fetch CORS check compares them exactly:
   // a browser sends `patch` as is (only DELETE, GET, HEAD, OPTIONS, POST and PUT are normalized to upper case), and the
   // actual `patch` request would be rejected anyway.
-  const auto method = http::ParseMethodStr(methodToken);
+  const http::Method method = http::ParseMethodStr(methodToken);
   if (method != http::kMethodInvalid) {
     return http::IsMethodSet(effectiveMask, method);
   }
@@ -254,7 +254,7 @@ bool CorsPolicy::requestHeadersAllowed(std::string_view headerList) const {
     return false;
   }
   do {
-    auto token = NextCsvToken(headerList);
+    std::string_view token = NextCsvToken(headerList);
     if (token.empty()) {
       continue;
     }

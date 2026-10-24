@@ -16,6 +16,10 @@
 
 namespace aeronet {
 
+namespace internal {
+class Http1Pipeline;
+}  // namespace internal
+
 class HttpRequestView;
 class CorsPolicy;
 struct CompressionConfig;
@@ -193,7 +197,7 @@ class HttpResponseWriter {
 #ifdef AERONET_ENABLE_HTTP2
   friend class http2::Http2ProtocolHandler;
 #endif
-  friend class SingleHttpServer;
+  friend class internal::Http1Pipeline;
 
   /// Construct a writer with a transport backend.
   /// @param transport   Protocol-specific transport (lifetime must exceed writer).

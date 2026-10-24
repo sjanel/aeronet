@@ -137,9 +137,9 @@ Router router;
 router.setPath(http::Method::POST, "/upload", [](const HttpRequestView& req) {
   const MultipartFormData form(req.headerValueOrEmpty(http::ContentType), req.body());
   if (!form.valid()) {
-    return HttpResponse(400).body(std::string("invalid form: ") + std::string(form.invalidReason()));
+    return HttpResponse(400, std::string("invalid form: ") + std::string(form.invalidReason()));
   }
-  if (const MultipartFormData::Part* file = form.part("file"); file != nullptr && file->filename) {
+  if (const MultipartFormData::Part* file = form.part("file"); file != nullptr && file->hasFilename()) {
     // *file->filename is the client-side name, file->value the content, file->contentType its type if sent
   }
   return HttpResponse(204);

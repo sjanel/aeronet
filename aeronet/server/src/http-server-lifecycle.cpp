@@ -11,7 +11,6 @@
 #include <thread>
 #include <utility>
 
-#include "aeronet/adaptive-poll-timeout.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
 #include "aeronet/http-method.hpp"
@@ -20,6 +19,7 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/lifecycle.hpp"
+#include "aeronet/internal/server-context.hpp"
 #include "aeronet/log-noexcept.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
@@ -32,15 +32,8 @@
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/socket.hpp"
 #include "aeronet/timer-fd.hpp"
-#include "aeronet/tls-config.hpp"
-#include "aeronet/tracing/tracer.hpp"
 #include "aeronet/zerocopy-mode.hpp"
 #include "aeronet/zerocopy.hpp"
-#include "tunnel-manager.hpp"  // IWYU pragma: keep (destruction of SingleHttpServer::_tunnels)
-
-#ifdef AERONET_ENABLE_OPENSSL
-#include "aeronet/tls-context.hpp"
-#endif
 
 #ifdef AERONET_ENABLE_GLAZE
 #include <filesystem>
@@ -113,14 +106,6 @@ class LifecycleResetterRAII {
 
 }  // namespace
 
-PollTimeoutPolicy SingleHttpServer::MakePollTimeoutPolicy(const HttpServerConfig& config) {
-  return PollTimeoutPolicy{
-      .baseTimeout = config.pollInterval,
-      .minFactor = config.pollIntervalMinFactor,
-      .maxFactor = config.pollIntervalMaxFactor,
-  };
-}
-
 SingleHttpServer::AsyncHandle::AsyncHandle(std::jthread thread, std::shared_ptr<std::exception_ptr> error)
     : _thread(std::move(thread)), _error(std::move(error)) {}
 
@@ -144,22 +129,12 @@ void SingleHttpServer::AsyncHandle::rethrowIfError() {
 SingleHttpServer::SingleHttpServer() noexcept = default;
 
 SingleHttpServer::SingleHttpServer(HttpServerConfig config, RouterConfig routerConfig)
-    : _config(std::move(config)),
-      _compressionState(_config.compression),
-      _listenSocket(Socket::Type::StreamNonBlock),
-      _eventLoop(MakePollTimeoutPolicy(_config)),
-      _router(std::move(routerConfig)),
-      _telemetry(_config.telemetry) {
+    : _ctx(std::move(config), Router(std::move(routerConfig))), _listenSocket(Socket::Type::StreamNonBlock) {
   initListener();
 }
 
 SingleHttpServer::SingleHttpServer(HttpServerConfig cfg, Router router)
-    : _config(std::move(cfg)),
-      _compressionState(_config.compression),
-      _listenSocket(Socket::Type::StreamNonBlock),
-      _eventLoop(MakePollTimeoutPolicy(_config)),
-      _router(std::move(router)),
-      _telemetry(_config.telemetry) {
+    : _ctx(std::move(cfg), std::move(router)), _listenSocket(Socket::Type::StreamNonBlock) {
   initListener();
 }
 
@@ -175,7 +150,7 @@ SingleHttpServer::SingleHttpServer(const std::filesystem::path& configPath, Rout
 }
 
 std::string SingleHttpServer::dumpConfig(ConfigFormat format) const {
-  TopLevelConfig config{.server = _config, .router = _router.config()};
+  TopLevelConfig config{.server = _ctx.config, .router = _ctx.router.config()};
   return detail::SerializeConfig(config, format);
 }
 
@@ -184,30 +159,33 @@ void SingleHttpServer::saveConfig(const std::filesystem::path& filePath) const {
 }
 #endif
 
-SingleHttpServer::SingleHttpServer(const SingleHttpServer& other, NativeHandle sharedListenFd)
-    : _callbacks([&other] {
-        // Must validate *before* moving any members.
-        // Otherwise we can move out (and destroy) connection storage while the event-loop
-        // thread is still running against the source object, causing UAF.
-        if (!other._lifecycle.isIdle()) {
-          throw std::logic_error("Cannot copy-construct from a running SingleHttpServer");
-        }
-        return other._callbacks;
-      }()),
-      _updates(other._updates),
-      _callbacksUpdates(other._callbacksUpdates),
-      _hasCallbacksUpdates(other._hasCallbacksUpdates.load(std::memory_order_relaxed)),
-      _config(other._config),
-      _compressionState(_config.compression),
-      // do not copy the decompression state, we just use our own.
-      // do not initialize listenSocket and eventLoop, they will be initialized in initListener.
-      _router(other._router),
-      _telemetry(_config.telemetry) {
-#ifdef AERONET_ENABLE_OPENSSL
-  // Copy-constructor inherits the shared ticket key store for MultiHttpServer fan-out.
-  _tls.sharedTicketKeyStore = other._tls.sharedTicketKeyStore;
-#endif
+const internal::ServerContext& SingleHttpServer::CopyableContext(const SingleHttpServer& other) {
+  // Must validate *before* copying any members: the event-loop thread may still be running against the source object.
+  if (!other._ctx.lifecycle.isIdle()) {
+    throw std::logic_error("Cannot copy-construct from a running SingleHttpServer");
+  }
+  return other._ctx;
+}
 
+internal::ServerContext&& SingleHttpServer::MovableContext(SingleHttpServer& other) {
+  // Must validate *before* moving any members.
+  // Otherwise we can move out (and destroy) connection storage while the event-loop
+  // thread is still running against the source object, causing UAF.
+  if (!other._ctx.lifecycle.isIdle()) {
+    throw std::logic_error("Cannot move-construct a running SingleHttpServer");
+  }
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  // Deferred work still running for its closed connections posts its completion to 'other'.
+  other.waitForOrphanedAsyncWork();
+#endif
+  return std::move(other._ctx);
+}
+
+SingleHttpServer::SingleHttpServer(const SingleHttpServer& other, NativeHandle sharedListenFd)
+    // The listen socket and the event loop are initialized by initListener().
+    : _ctx(CopyableContext(other), internal::ServerContext::CopySetupTag{}),
+      _callbacksUpdates(other._callbacksUpdates),
+      _hasCallbacksUpdates(other._hasCallbacksUpdates.load(std::memory_order_relaxed)) {
   initListener(sharedListenFd);
 }
 
@@ -217,13 +195,13 @@ SingleHttpServer::~SingleHttpServer() {
   waitForOrphanedAsyncWork();
 #endif
 #ifdef AERONET_LINUX
-  waitForResetZerocopyBuffers();
+  _ctx.io.waitForResetZerocopyBuffers();
 #endif
 }
 
 SingleHttpServer& SingleHttpServer::operator=(const SingleHttpServer& other) {
   if (this != &other) {
-    if (!other._lifecycle.isIdle()) {
+    if (!other._ctx.lifecycle.isIdle()) {
       throw std::logic_error("Cannot copy-assign from a running SingleHttpServer");
     }
 
@@ -240,59 +218,25 @@ SingleHttpServer& SingleHttpServer::operator=(const SingleHttpServer& other) {
 
 // NOLINTNEXTLINE(bugprone-exception-escape,performance-noexcept-move-constructor)
 SingleHttpServer::SingleHttpServer(SingleHttpServer&& other)
-    : _stats([&other] {
-        // Must validate *before* moving any members.
-        // Otherwise we can move out (and destroy) connection storage while the event-loop
-        // thread is still running against the source object, causing UAF.
-        if (!other._lifecycle.isIdle()) {
-          throw std::logic_error("Cannot move-construct a running SingleHttpServer");
-        }
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-        // Deferred work still running for its closed connections posts its completion to 'other'.
-        other.waitForOrphanedAsyncWork();
-#endif
-        return std::exchange(other._stats, {});
-      }()),
-      _callbacks(std::move(other._callbacks)),
-      _updates(std::move(other._updates)),
+    : _ctx(MovableContext(other)),
       _callbacksUpdates(std::move(other._callbacksUpdates)),
       _hasCallbacksUpdates(other._hasCallbacksUpdates.exchange(false, std::memory_order_relaxed)),
-      _config(std::move(other._config)),
-      _compressionState(std::move(other._compressionState)),
-      _decompressionState(std::move(other._decompressionState)),
-#ifdef AERONET_ENABLE_WEBSOCKET
-      _webSocketDeflateStreams(std::move(other._webSocketDeflateStreams)),
-#endif
       _listenSocket(std::move(other._listenSocket)),
 #ifdef AERONET_LINUX
       _portReservation(std::move(other._portReservation)),
 #endif
       _maintenanceTimer(std::move(other._maintenanceTimer)),
-      _eventLoop(std::move(other._eventLoop)),
-      _lifecycle(std::move(other._lifecycle)),
 #ifndef AERONET_LINUX
       _lastMaintenanceTp(other._lastMaintenanceTp),
 #endif
-      _router(std::move(other._router)),
-      _connections(std::move(other._connections)),
-      _keepAliveDeadlines(std::move(other._keepAliveDeadlines)),
-      _sharedBuffers(std::move(other._sharedBuffers)),
-      _telemetry(std::move(other._telemetry)),
       _internalHandle(std::move(other._internalHandle)),
-      _lifecycleTracker(std::move(other._lifecycleTracker)),
-      _pendingReadFds(std::move(other._pendingReadFds)),
-      _connectionSweepState(std::exchange(other._connectionSweepState, {}))
-#ifdef AERONET_LINUX
+      _lifecycleTracker(std::move(other._lifecycleTracker))
+#ifdef AERONET_MACOS
       ,
-      _zerocopy(std::move(other._zerocopy))
-#endif
-#ifdef AERONET_ENABLE_OPENSSL
-      ,
-      _tls(std::move(other._tls))
+      _ownsListenSocket(std::exchange(other._ownsListenSocket, false))
 #endif
 {
-  _compressionState.pCompressionConfig = &_config.compression;
-  other._lifecycle.reset();
+  other._ctx.lifecycle.reset();
 }
 
 // NOLINTNEXTLINE(bugprone-exception-escape,performance-noexcept-move-constructor)
@@ -300,7 +244,7 @@ SingleHttpServer& SingleHttpServer::operator=(SingleHttpServer&& other) {
   if (this != &other) {
     stop();
 
-    if (!other._lifecycle.isIdle()) {
+    if (!other._ctx.lifecycle.isIdle()) {
       other.stop();
       throw std::logic_error("Cannot move-assign from a running SingleHttpServer");
     }
@@ -310,50 +254,26 @@ SingleHttpServer& SingleHttpServer::operator=(SingleHttpServer&& other) {
     other.waitForOrphanedAsyncWork();
 #endif
 #ifdef AERONET_LINUX
-    waitForResetZerocopyBuffers();
+    _ctx.io.waitForResetZerocopyBuffers();
 #endif
-    _stats = std::exchange(other._stats, {});
-    _callbacks = std::move(other._callbacks);
-    _updates = std::move(other._updates);
+    _ctx = std::move(other._ctx);
     _callbacksUpdates = std::move(other._callbacksUpdates);
     _hasCallbacksUpdates.store(other._hasCallbacksUpdates.exchange(false, std::memory_order_relaxed),
                                std::memory_order_relaxed);
-    _config = std::move(other._config);
-
-    _compressionState = std::move(other._compressionState);
-    _compressionState.pCompressionConfig = &_config.compression;
-
-    _decompressionState = std::move(other._decompressionState);
-#ifdef AERONET_ENABLE_WEBSOCKET
-    _webSocketDeflateStreams = std::move(other._webSocketDeflateStreams);
-#endif
     _listenSocket = std::move(other._listenSocket);
 #ifdef AERONET_LINUX
     _portReservation = std::move(other._portReservation);
 #endif
     _maintenanceTimer = std::move(other._maintenanceTimer);
-    _eventLoop = std::move(other._eventLoop);
-    _lifecycle = std::move(other._lifecycle);
 #ifndef AERONET_LINUX
     _lastMaintenanceTp = other._lastMaintenanceTp;
 #endif
-    _router = std::move(other._router);
-    _connections = std::move(other._connections);
-    _keepAliveDeadlines = std::move(other._keepAliveDeadlines);
-    _sharedBuffers = std::move(other._sharedBuffers);
-    _telemetry = std::move(other._telemetry);
     _internalHandle = std::move(other._internalHandle);
     _lifecycleTracker = std::move(other._lifecycleTracker);
-    _pendingReadFds = std::move(other._pendingReadFds);
-    _connectionSweepState = std::exchange(other._connectionSweepState, {});
-#ifdef AERONET_LINUX
-    _zerocopy = std::move(other._zerocopy);
+#ifdef AERONET_MACOS
+    _ownsListenSocket = std::exchange(other._ownsListenSocket, false);
 #endif
-#ifdef AERONET_ENABLE_OPENSSL
-    _tls = std::move(other._tls);
-#endif
-
-    other._lifecycle.reset();
+    other._ctx.lifecycle.reset();
   }
   return *this;
 }
@@ -398,10 +318,10 @@ SingleHttpServer& SingleHttpServer::operator=(SingleHttpServer&& other) {
 //     the process hits fd limits or severe memory pressure. Fixed ports may legitimately throw due to EADDRINUSE.
 //   - Using ephemeral ports in tests removes port collision flakiness across machines / CI runs.
 void SingleHttpServer::initListener(NativeHandle listenFd) {
-  if (_config.nbThreads > 1U) {
+  if (_ctx.config.nbThreads > 1U) {
     throw std::invalid_argument("SingleHttpServer cannot be configured with nbThreads > 1");
   }
-  _config.validate();
+  _ctx.config.validate();
 
   if (!_listenSocket) {
 #ifdef AERONET_MACOS
@@ -415,30 +335,28 @@ void SingleHttpServer::initListener(NativeHandle listenFd) {
 #ifdef AERONET_MACOS
     }
 #endif
-    _eventLoop = EventLoop(MakePollTimeoutPolicy(_config));
+    _ctx.eventLoop = EventLoop(internal::MakePollTimeoutPolicy(_ctx.config));
   }
 
 #ifdef AERONET_ENABLE_OPENSSL
   // Initialize TLS context if requested (OpenSSL build).
-  if (_config.tls.enabled) {
-    _tls.ctxHolder = std::make_shared<TlsContext>(_config.tls, _tls.sharedTicketKeyStore);
-  }
+  _ctx.tls.initContext();
 #endif
 
 #ifdef AERONET_MACOS
   if (listenFd == kInvalidHandle) {
 #endif
 #ifdef AERONET_LINUX
-    const bool ephemeralPort = _config.port == 0;
+    const bool ephemeralPort = _ctx.config.port == 0;
     // The accepted sockets inherit SO_ZEROCOPY: set it on the listener before it listens (a socket accepted without it
     // would silently copy the MSG_ZEROCOPY sends, without completion notification), whatever the zerocopy mode, so that
     // a configuration update can enable zerocopy for the next connections.
-    _zerocopy.supported = EnableZeroCopy(_listenSocket.fd()) == ZeroCopyEnableResult::Enabled;
-    if (!_zerocopy.supported && _config.zerocopyMode == ZerocopyMode::Enabled) {
+    _ctx.io.setZerocopySupported(EnableZeroCopy(_listenSocket.fd()) == ZeroCopyEnableResult::Enabled);
+    if (!_ctx.io.zerocopySupported() && _ctx.config.zerocopyMode == ZerocopyMode::Enabled) {
       log::warn("MSG_ZEROCOPY is not supported (SO_ZEROCOPY failed): the responses are copied");
     }
 #endif
-    _listenSocket.bindAndListen(_config.reusePort, _config.port);
+    _listenSocket.bindAndListen(_ctx.config.reusePort, _ctx.config.port);
     listenFd = _listenSocket.fd();
 #ifdef AERONET_LINUX
     // The resolved ephemeral port is kept across restarts (rebound by the next initListener()), but the listener is
@@ -446,9 +364,9 @@ void SingleHttpServer::initListener(NativeHandle listenFd) {
     // would silently share the incoming connections with it. Reserve it with a bound socket that never listens:
     // bind(0) never returns a port in use, and a socket that does not listen receives no connection.
     // Linux only: on other platforms, a bound socket that does not listen may be picked for incoming connections.
-    if (ephemeralPort && _config.reusePort) {
+    if (ephemeralPort && _ctx.config.reusePort) {
       Socket reservation(Socket::Type::StreamNonBlock);
-      if (reservation.tryBind(_config.reusePort, _config.port)) {
+      if (reservation.tryBind(_ctx.config.reusePort, _ctx.config.port)) {
         _portReservation = std::move(reservation);
       }
     }
@@ -457,15 +375,15 @@ void SingleHttpServer::initListener(NativeHandle listenFd) {
   }
 #endif
 
-  _eventLoop.addOrThrow(EventLoop::EventFd{listenFd, EventIn});
-  _eventLoop.addOrThrow(EventLoop::EventFd{_lifecycle.wakeupFd.fd(), EventIn});
+  _ctx.eventLoop.addOrThrow(EventLoop::EventFd{listenFd, EventIn});
+  _ctx.eventLoop.addOrThrow(EventLoop::EventFd{_ctx.lifecycle.wakeupFd.fd(), EventIn});
 
   updateMaintenanceTimer();
-  _eventLoop.addOrThrow(EventLoop::EventFd{_maintenanceTimer.fd(), EventIn});
+  _ctx.eventLoop.addOrThrow(EventLoop::EventFd{_maintenanceTimer.fd(), EventIn});
 }
 
 void SingleHttpServer::prepareRun() {
-  assert(_lifecycle.isStarting());
+  assert(_ctx.lifecycle.isStarting());
   if (!_listenSocket) {
     initListener();
   }
@@ -478,18 +396,18 @@ void SingleHttpServer::prepareRun() {
   registerBuiltInProbes();
 
   // Initialize access log writer if configured
-  _accessLog = AccessLogWriter(_config.accessLog);
+  _ctx.accessLog = AccessLogWriter(_ctx.config.accessLog);
 
   // Pre-clamp per-route limits against the global server limits so the hot path only needs a single comparison (no
   // runtime std::min).
-  _router.clampConfigs(_config.maxHeaderBytes, _config.maxBodyBytes);
+  _ctx.router.clampConfigs(_ctx.config.maxHeaderBytes, _ctx.config.maxBodyBytes);
 
-  _lifecycle.enterRunning();
+  _ctx.lifecycle.enterRunning();
 }
 
 void SingleHttpServer::beginStartup() {
-  std::scoped_lock lock(_updates.lock);
-  _lifecycle.enterStarting();
+  std::scoped_lock lock(_ctx.updates.lock);
+  _ctx.lifecycle.enterStarting();
 }
 
 void SingleHttpServer::run() {
@@ -504,21 +422,20 @@ void SingleHttpServer::runUntilStarted(const std::function<bool()>& predicate) {
   const SigpipeBlocker sigpipeBlocker;
 #endif
 
-  EventLoopThreadRAII eventLoopThread(_lifecycle);
-  LifecycleResetterRAII resetter(_lifecycle);
+  EventLoopThreadRAII eventLoopThread(_ctx.lifecycle);
+  LifecycleResetterRAII resetter(_ctx.lifecycle);
 
   prepareRun();
 
-  while (_lifecycle.isActive() && !predicate()) {
+  while (_ctx.lifecycle.isActive() && !predicate()) {
     eventLoop();
   }
 
   // A predicate can become true after eventLoop() returns, bypassing the teardown normally performed inside it.
   // Close all network resources before leaving runUntil() on every platform. This must remain on the event-loop
   // thread because Windows WSAPoll registrations cannot be mutated safely by the controller thread.
-  if (_lifecycle.isActive()) {
-    closeListener();
-    closeAllConnections();
+  if (_ctx.lifecycle.isActive()) {
+    closeListenerAndConnections();
   }
 }
 
@@ -592,7 +509,7 @@ SingleHttpServer::AsyncHandle SingleHttpServer::launchDetached(std::function<boo
   } catch (...) {
     // No thread will ever run prepareRun()/reset() to move us out of Starting - do it here so a concurrent stop()
     // (which now blocks on Starting) doesn't wait forever, then rethrow.
-    _lifecycle.reset();
+    _ctx.lifecycle.reset();
     throw;
   }
 }
@@ -606,14 +523,14 @@ SingleHttpServer::AsyncHandle SingleHttpServer::startDetachedWithStopToken(std::
 }
 
 void SingleHttpServer::stop() noexcept {
-  const auto prevState = _lifecycle.exchangeStopping();
+  const auto prevState = _ctx.lifecycle.exchangeStopping();
   assert(prevState != internal::Lifecycle::State::Starting);
   if (prevState == internal::Lifecycle::State::Running || prevState == internal::Lifecycle::State::Draining) {
     // Wake the event loop immediately so it notices the Stopping state: the event-loop thread then closes the listener
     // and the connections and resets the lifecycle itself. None of them may be touched from here while it may still run
     // (it polls the listen socket, and a reset lifecycle would allow a restart while it is still running; on Windows,
     // closing the listen socket while WSAPoll holds it can even hang).
-    _lifecycle.wakeupFd.send();
+    _ctx.lifecycle.wakeupFd.send();
 
     // Joins the event-loop thread if start() was used (non-blocking API). Otherwise (run() / runUntil() from another
     // thread, startDetached*(), or a MultiHttpServer worker), the thread running it is joined by its owner.
@@ -634,7 +551,7 @@ void SingleHttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
   // Like stop(), wait for an in-flight startup instead of dropping the request: otherwise a drain requested right after
   // start() (e.g. MultiHttpServer::beginDrain() while some workers are still in prepareRun()) would be lost, and these
   // servers would then serve normal traffic and report ready.
-  const auto current = _lifecycle.waitWhileStarting();
+  const auto current = _ctx.lifecycle.waitWhileStarting();
   if (current == internal::Lifecycle::State::Idle || current == internal::Lifecycle::State::Stopping) {
     return;
   }
@@ -642,14 +559,14 @@ void SingleHttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
   if (maxWait.count() > 0) {
     // Set before entering Draining, so that the event loop never observes Draining without it. If the server is already
     // draining (possibly from a concurrent call), keeps the earliest of both deadlines.
-    // Fresh clock read rather than the event loop's cached _connections.now: it is written by the event-loop thread,
+    // Fresh clock read rather than the event loop's cached connections.now: it is written by the event-loop thread,
     // and is stale (or still default-initialized) until the first poll() of a just-started server returns.
-    _lifecycle.shrinkDeadline(std::chrono::steady_clock::now() + maxWait);
+    _ctx.lifecycle.shrinkDeadline(std::chrono::steady_clock::now() + maxWait);
   }
 
   // Only from Running: a concurrent stop() (Stopping) must not be turned back into a drain.
   // The connections are owned by the event loop: their count cannot be read from here.
-  if (current == internal::Lifecycle::State::Running && _lifecycle.enterDraining()) {
+  if (current == internal::Lifecycle::State::Running && _ctx.lifecycle.enterDraining()) {
     log_noexcept::info("Initiating graceful drain");
   }
   // Keep listener open during drain to allow health probes to connect and receive 503 status.
@@ -657,14 +574,14 @@ void SingleHttpServer::beginDrain(std::chrono::milliseconds maxWait) noexcept {
 }
 
 void SingleHttpServer::registerBuiltInProbes() {
-  if (!_config.builtinProbes.enabled) {
+  if (!_ctx.config.builtinProbes.enabled) {
     return;
   }
   // True when this server is a MultiHttpServer worker whose probes are served by a dedicated probe listener.
   // Such workers skip registering the inline probe routes (they live on the dedicated port); the probe listener reads
   // their loop heartbeat (see internal::Lifecycle::loopHeartbeat, published by every event loop) to detect a wedge.
   // A standalone SingleHttpServer ignores dedicatedPort: it has no worker pool to isolate probes from.
-  if (_config.builtinProbes.dedicatedPort != 0 && isInMultiHttpServer()) {
+  if (_ctx.config.builtinProbes.dedicatedPort != 0 && isInMultiHttpServer()) {
     // Probes are answered by MultiHttpServer's dedicated probe listener on its own port/thread; registering them
     // inline here too would just re-expose them on the (contended) application port, defeating the isolation.
     return;
@@ -672,13 +589,13 @@ void SingleHttpServer::registerBuiltInProbes() {
 
   // Liveness: Always returns 200 OK if the server is responding.
   // Indicates the application is alive (not deadlocked/crashed).
-  _router.setPath(http::Method::GET, _config.builtinProbes.livenessPath(),
-                  [](const HttpRequestView& req) { return req.makeResponse("OK"); });
+  _ctx.router.setPath(http::Method::GET, _ctx.config.builtinProbes.livenessPath(),
+                      [](const HttpRequestView& req) { return req.makeResponse("OK"); });
 
   // Readiness: Returns 200 when ready to serve traffic, 503 during drain.
   // Used by load balancers to determine if instance should receive traffic.
-  _router.setPath(http::Method::GET, _config.builtinProbes.readinessPath(), [this](const HttpRequestView& req) {
-    const bool isReady = _lifecycle.ready();
+  _ctx.router.setPath(http::Method::GET, _ctx.config.builtinProbes.readinessPath(), [this](const HttpRequestView& req) {
+    const bool isReady = _ctx.lifecycle.ready();
     return req.makeResponse(isReady ? http::StatusCodeOK : http::StatusCodeServiceUnavailable,
                             isReady ? "OK" : "Not Ready");
   });
@@ -687,8 +604,8 @@ void SingleHttpServer::registerBuiltInProbes() {
   // Note: Since aeronet has no separate initialization phase, this is essentially
   // equivalent to liveness. Provided for Kubernetes compatibility where startup
   // probes can have different timeout/period settings for slow-starting applications.
-  _router.setPath(http::Method::GET, _config.builtinProbes.startupPath(), [this](const HttpRequestView& req) {
-    const bool isStarted = _lifecycle.started();
+  _ctx.router.setPath(http::Method::GET, _ctx.config.builtinProbes.startupPath(), [this](const HttpRequestView& req) {
+    const bool isStarted = _ctx.lifecycle.started();
     return req.makeResponse(isStarted ? http::StatusCodeOK : http::StatusCodeServiceUnavailable,
                             isStarted ? "OK" : "Starting");
   });

@@ -498,9 +498,10 @@ TEST(HttpPipeline, BatchedResponsesAreWrittenInOrderWithTheOthers) {
     writer.end();
   });
 
-  const std::string_view targets[]{"/size/1",      "/size/30000", "/size/30000", "/size/30000", "/size/2",
-                                   "/size/100000", "/size/3",     "/file/0",     "/size/4",     "/file/1",
-                                   "/size/5",      "/stream",     "/size/6"};
+  constexpr std::string_view targets[]{
+      "/size/1", "/size/30000", "/size/30000", "/size/30000", "/size/2", "/size/100000", "/size/3",
+      "/file/0", "/size/4",     "/file/1",     "/size/5",     "/stream", "/size/6",
+  };
   std::string requests;
   std::string expected;
   for (const std::string_view target : targets) {

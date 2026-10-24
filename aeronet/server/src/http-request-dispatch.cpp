@@ -4,7 +4,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
-#include <optional>
 #include <span>
 #include <string_view>
 #include <utility>
@@ -17,6 +16,7 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/https-redirect.hpp"
+#include "aeronet/internal/http-response-access.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/path-handlers.hpp"
@@ -77,17 +77,16 @@ void BuildAllowHeader(http::MethodBmp methodBitmap, HttpResponse& response) {
 
 }  // namespace
 
-std::optional<HttpResponse> ProcessSpecialMethods(const HttpRequestView& request, Router& router,
-                                                  SpecialMethodConfig config, const CorsPolicy* pCorsPolicy,
-                                                  std::string_view requestData) {
-  std::optional<HttpResponse> result;
+HttpResponse ProcessSpecialMethods(const HttpRequestView& request, Router& router, SpecialMethodConfig config,
+                                   const CorsPolicy* pCorsPolicy, std::string_view requestData) {
+  HttpResponse result = internal::HttpResponseAccess::MakeUnallocated();
 
   if (request.method() == http::Method::OPTIONS) {
     if (request.path() == "*") {
       // OPTIONS * request (target="*") should return an Allow header listing supported methods.
       result = request.makeResponse(http::StatusCodeOK);
       const http::MethodBmp allowed = router.allowedMethods("*");
-      BuildAllowHeader(allowed, *result);
+      BuildAllowHeader(allowed, result);
       return result;
     }
 
@@ -102,12 +101,12 @@ std::optional<HttpResponse> ProcessSpecialMethods(const HttpRequestView& request
           [[fallthrough]];
         case CorsPolicy::PreflightResult::Status::OriginDenied:
           result = request.makeResponse(http::StatusCodeForbidden);
-          result->body(http::ReasonForbidden);
+          result.body(http::ReasonForbidden);
           return result;
         case CorsPolicy::PreflightResult::Status::MethodDenied:
           result = request.makeResponse(http::StatusCodeMethodNotAllowed);
-          result->body(http::ReasonMethodNotAllowed);
-          BuildAllowHeader(routeMethods, *result);
+          result.body(http::ReasonMethodNotAllowed);
+          BuildAllowHeader(routeMethods, result);
           return result;
         default:
           // Not a preflight, fall through to normal processing
@@ -143,17 +142,16 @@ std::optional<HttpResponse> ProcessSpecialMethods(const HttpRequestView& request
 
     // TRACE disabled or no request data -> Method Not Allowed
     result = request.makeResponse(http::StatusCodeMethodNotAllowed);
-    result->body(http::ReasonMethodNotAllowed);
+    result.body(http::ReasonMethodNotAllowed);
   }
   return result;
 }
 
-std::optional<HttpResponse> RequestPipeline::runRequestMiddleware(HttpRequestView& request,
-                                                                  const Router::RoutingResult& routingResult,
-                                                                  bool streaming) const {
+HttpResponse RequestPipeline::runRequestMiddleware(HttpRequestView& request, const Router::RoutingResult& routingResult,
+                                                   bool streaming) const {
   request.finalizeBeforeHandlerCall(routingResult.pathParams());
 
-  std::optional<HttpResponse> result;
+  HttpResponse result = internal::HttpResponseAccess::MakeUnallocated();
 
   auto applyChain = [&, streaming](std::span<const RequestMiddleware> middlewareChain, bool isGlobal) {
     for (uint32_t hookIdx = 0; hookIdx < middlewareChain.size(); ++hookIdx) {
@@ -186,23 +184,22 @@ std::optional<HttpResponse> RequestPipeline::runRequestMiddleware(HttpRequestVie
       CallMiddlewareMetricsCallback(request, MiddlewareMetrics::Phase::Pre, isGlobal, hookIdx, shortCircuited, threwEx,
                                     streaming, *_pMiddlewareMetrics);
 
-      if (result.has_value()) {
+      if (!result.empty()) {
         break;
       }
     }
   };
 
   applyChain(_pRouter->globalRequestMiddleware(), true);
-  if (!result.has_value()) {
+  if (result.empty()) {
     applyChain(routingResult.preMiddlewareRange(), false);
   }
 
   return result;
 }
 
-std::optional<HttpResponse> RequestPipeline::callRequestHandler(HttpRequestView& request,
-                                                                const Router::RoutingResult& routingResult,
-                                                                bool streaming) const {
+HttpResponse RequestPipeline::callRequestHandler(HttpRequestView& request, const Router::RoutingResult& routingResult,
+                                                 bool streaming) const {
   const Router::RoutingResult::HandlerKind handlerKind = routingResult.handlerKind();
   // The streaming handler of a request that cannot be streamed (HTTP/1.0) is not called: answered like without handler.
   if (handlerKind != Router::RoutingResult::HandlerKind::None &&
@@ -212,7 +209,7 @@ std::optional<HttpResponse> RequestPipeline::callRequestHandler(HttpRequestView&
     }
     const RequestHandler* pHandler = routingResult.requestHandler();
     if (pHandler == nullptr) {
-      return std::nullopt;
+      return internal::HttpResponseAccess::MakeUnallocated();
     }
     try {
       return (*pHandler)(request);

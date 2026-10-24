@@ -1,34 +1,41 @@
-﻿#include <cassert>
+#include "aeronet/internal/connection-io.hpp"
+
+#include <algorithm>
+#include <cassert>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <memory>
-#include <optional>
 #include <span>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 #include "aeronet/connection-state.hpp"
-#include "aeronet/connection.hpp"
-#include "aeronet/cors-policy.hpp"
+#include "aeronet/event-loop.hpp"
+#include "aeronet/event.hpp"
 #include "aeronet/file-payload.hpp"
 #include "aeronet/http-message-data.hpp"
-#include "aeronet/http-method.hpp"
-#include "aeronet/http-request-dispatch.hpp"
-#include "aeronet/http-request-view.hpp"
-#include "aeronet/http-response.hpp"
-#include "aeronet/internal/keep-alive-deadline-queue.hpp"
+#include "aeronet/http-server-config.hpp"
+#include "aeronet/internal/connection-storage.hpp"
+#include "aeronet/internal/server-context.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
-#include "aeronet/single-http-server.hpp"
+#include "aeronet/protocol-handler.hpp"
+#include "aeronet/raw-chars.hpp"
+#include "aeronet/socket-ops.hpp"
 #include "aeronet/system-error.hpp"
 #include "aeronet/tcp-cork-guard.hpp"
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
+#include "aeronet/vector.hpp"
 #include "aeronet/zerocopy.hpp"
 #include "tunnel-manager.hpp"
 
-namespace aeronet {
+#ifdef AERONET_ENABLE_OPENSSL
+#include "aeronet/tls-transport.hpp"
+#endif
+
+namespace aeronet::internal {
 
 namespace {
 
@@ -37,35 +44,40 @@ constexpr std::size_t kMaxGatheredBuffers = ZeroCopyState::kMaxBuffers;
 
 }  // namespace
 
-TransportResult SingleHttpServer::writeMessage(ConnectionIt cnxIt, const HttpMessageData& data, bool& zerocopySent) {
+// ============================================================================
+// Output
+// ============================================================================
+
+TransportResult ConnectionIo::writeMessage(ConnectionIt cnxIt, const HttpMessageData& data, bool& zerocopySent) {
   const std::string_view buffers[]{data.firstBuffer(), data.secondBuffer()};
   return writeMessages(cnxIt, buffers, {data.remainingSize(), data.retainedSize(), 1}, zerocopySent);
 }
 
-TransportResult SingleHttpServer::writeMessages(ConnectionIt cnxIt, std::span<const std::string_view> buffers,
-                                                [[maybe_unused]] const ConnectionState::GatheredOutput& output,
-                                                [[maybe_unused]] bool& zerocopySent) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
+TransportResult ConnectionIo::writeMessages(ConnectionIt cnxIt, std::span<const std::string_view> buffers,
+                                            [[maybe_unused]] const ConnectionState::GatheredOutput& output,
+                                            [[maybe_unused]] bool& zerocopySent) {
+  ServerContext& ctx = *_pCtx;
+  ConnectionState& state = ctx.connections.connectionState(cnxIt);
 #ifdef AERONET_LINUX
-  if (state.zerocopyEnabled && output.size >= _config.zerocopyMinBytes && _connections.now >= _zerocopy.retryTime) {
+  const HttpServerConfig& config = ctx.config;
+  if (state.zerocopyEnabled && output.size >= config.zerocopyMinBytes && ctx.connections.now >= _zerocopy.retryTime) {
     // A buffer written with MSG_ZEROCOPY is retained until the completion of its sends. The retained buffers of a
     // connection are bounded by maxZerocopyPendingBytes, each counting for at least zerocopyMinBytes, a single larger
     // write being allowed when nothing is retained.
-    if (!state.zerocopyBuffers.canRetain(output.nbMessages, output.retainedSize, _config.zerocopyMinBytes,
-                                         _config.maxZerocopyPendingBytes)) {
-      ++_stats.zerocopyRetainLimitFallbacks;
+    if (!state.zerocopyBuffers.canRetain(output.nbMessages, output.retainedSize, config.zerocopyMinBytes,
+                                         config.maxZerocopyPendingBytes)) {
+      ++ctx.stats.zerocopyRetainLimitFallbacks;
     } else {
       PlainTransport* plain = state.transport.get<PlainTransport>();
       assert(plain != nullptr);
       const auto [bytesSent, status] = plain->writeZerocopy(buffers);
       if (status == ZerocopySendStatus::Sent) {
         zerocopySent = true;
-        ++_stats.zerocopySends;
-        _stats.zerocopyBytes += bytesSent;
-        // Watched until their completion, even when keep-alive does not apply (see watchZerocopySends()).
-        if (!internal::KeepAliveDeadlineQueue::contains(state)) {
-          _keepAliveDeadlines.upsert(state, cnxIt->fd(), _connections.now + _config.keepAliveTimeout);
-        }
+        ++ctx.stats.zerocopySends;
+        ctx.stats.zerocopyBytes += bytesSent;
+        // Watched until their completion, even when keep-alive does not apply (see
+        // ConnectionMaintenance::watchZerocopySends()).
+        ctx.maintenance.armDeadlineIfUnset(state, cnxIt->fd(), ctx.connections.now + config.keepAliveTimeout);
         return {bytesSent, TransportHint::None};
       }
       if (status == ZerocopySendStatus::WouldBlock) {
@@ -77,8 +89,8 @@ TransportResult SingleHttpServer::writeMessages(ConnectionIt cnxIt, std::span<co
       if (status == ZerocopySendStatus::NoBufferSpace) {
         // Locked memory (RLIMIT_MEMLOCK, for the whole user) or socket option memory (net.core.optmem_max) exhausted:
         // copy for a while instead of failing each zerocopy send.
-        ++_stats.zerocopyNoBufferSpaceFallbacks;
-        _zerocopy.retryTime = _connections.now + kZerocopyNoBufferSpaceBackoff;
+        ++ctx.stats.zerocopyNoBufferSpaceFallbacks;
+        _zerocopy.retryTime = ctx.connections.now + kZerocopyNoBufferSpaceBackoff;
         if (!_zerocopy.noBufferSpaceLogged) {
           _zerocopy.noBufferSpaceLogged = true;
           log::warn(
@@ -95,93 +107,30 @@ TransportResult SingleHttpServer::writeMessages(ConnectionIt cnxIt, std::span<co
 }
 
 #ifdef AERONET_LINUX
-ZerocopyCompletions SingleHttpServer::pollZerocopyCompletions(ConnectionState& state) {
+ZerocopyCompletions ConnectionIo::pollZerocopyCompletions(ConnectionState& state) {
   const ZerocopyCompletions completions = state.pollZerocopyCompletions();
-  _stats.zerocopyCopiedSends += completions.nbCopiedSends;
+  _pCtx->stats.zerocopyCopiedSends += completions.nbCopiedSends;
   return completions;
+}
+
+void ConnectionIo::releaseResetZerocopyBuffers(std::chrono::steady_clock::time_point now) {
+  auto& buffers = _zerocopy.resetBuffers;
+  const auto firstKept = std::ranges::find_if(
+      buffers, [now](const ZerocopyRuntime::ResetBuffer& buffer) { return now < buffer.releaseTime; });
+  buffers.erase(buffers.begin(), firstKept);
+}
+
+void ConnectionIo::waitForResetZerocopyBuffers() {
+  if (!_zerocopy.resetBuffers.empty()) {
+    std::this_thread::sleep_until(_zerocopy.resetBuffers.back().releaseTime);
+    _zerocopy.resetBuffers.clear();
+  }
 }
 #endif
 
-SingleHttpServer::LoopAction SingleHttpServer::processSpecialMethods(ConnectionIt& cnxIt, std::size_t requestOffset,
-                                                                     std::size_t consumedBytes,
-                                                                     const CorsPolicy* pCorsPolicy) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
-  HttpRequestView& request = state.request;
-
-  // Handle OPTIONS and TRACE via shared protocol-agnostic code
-  if (request.method() == http::Method::OPTIONS || request.method() == http::Method::TRACE) {
-    const SpecialMethodConfig config{
-        .tracePolicy = _config.traceMethodPolicy,
-        .isTls = !request.tlsVersion().empty(),
-    };
-
-    // For TRACE, we need to pass the raw request data
-    const std::string_view requestData = (request.method() == http::Method::TRACE)
-                                             ? std::string_view(state.inBuffer.data() + requestOffset, consumedBytes)
-                                             : std::string_view{};
-
-    std::optional<HttpResponse> result = ProcessSpecialMethods(request, _router, config, pCorsPolicy, requestData);
-    if (result) {
-      finalizeAndSendResponseForHttp1(cnxIt, std::move(*result), pCorsPolicy);
-      return LoopAction::Continue;
-    }
-    // Not handled (e.g., not a preflight), fall through to normal processing
-    return LoopAction::Nothing;
-  }
-
-  // CONNECT requires protocol-specific handling (TCP tunnel setup)
-  if (request.method() == http::Method::CONNECT) {
-    return internal::TunnelManager::Of(*this).startHttp1Tunnel(cnxIt, requestOffset + consumedBytes);
-  }
-
-  return LoopAction::Nothing;
-}
-
-void SingleHttpServer::finalizeAndSendResponseForHttp1(ConnectionIt cnxIt, HttpResponse&& resp,
-                                                       const CorsPolicy* pCorsPolicy, bool close) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
-  HttpRequestView& request = state.request;
-  if (pCorsPolicy != nullptr) {
-    (void)pCorsPolicy->applyToResponse(request, resp);
-  }
-
-  // Clear per-route request deadline and headerStartTp now that a response is being sent.
-  // Resetting headerStartTp to epoch lets the first bytes of the next keep-alive request start its header read timer.
-  clearRequestDeadline(state);
-  state.headerStartTp = {};
-
-  request.prefinalizeHttpResponse(resp, _telemetry);
-
-  const bool keepAlive = !close && isKeepAliveForHttp1(request);
-
-  const auto respStatusCode = resp.status();
-
-  HttpResponse::Options opts;
-
-  if (!keepAlive) {
-    opts.setClose();
-  }
-  if (_config.addTrailerHeader) {
-    opts.addTrailerHeader();
-  }
-  if (request.method() == http::Method::HEAD) {
-    opts.setHeadMethod();
-  }
-
-  queueData(cnxIt, resp.finalizeForHttp1(_dateHeader.data(), request.version(), opts, &_config.globalHeaders,
-                                         _config.minCapturedBodySize));
-
-  if (!keepAlive) {
-    // Always request drain+close for non-keep-alive connections. The actual close only triggers once outBuffer is empty
-    // (checked by canCloseConnectionForDrain), so it is safe to call this before a large response finishes flushing.
-    state.requestDrainAndClose();
-  }
-  // End the span after response is finalized
-  endRequest(request, respStatusCode);
-}
-
-void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpMessageData httpResponseData) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
+void ConnectionIo::queueData(ConnectionIt cnxIt, HttpMessageData httpResponseData) {
+  ServerContext& ctx = *_pCtx;
+  ConnectionState& state = ctx.connections.connectionState(cnxIt);
   if (state.isAnyCloseRequested()) {
     return;
   }
@@ -191,9 +140,9 @@ void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpMessageData httpRespons
 
   const auto bufferedSz = httpResponseData.remainingSize();
 
-  // The response to a request followed by others in the input is written with theirs (see _pHttp1OutputBatch), unless
-  // it has a file or would make the batch too large: the batch is then written along with it.
-  if (&state == _pHttp1OutputBatch && pFilePayload == nullptr && !state.waitingWritable && !state.isSendingFile() &&
+  // The response to a request followed by others in the input is written with theirs (see batchOutputOf()), unless it
+  // has a file or would make the batch too large: the batch is then written along with it.
+  if (&state == _pOutputBatch && pFilePayload == nullptr && !state.waitingWritable && !state.isSendingFile() &&
       state.bufferedOutputBytes() + bufferedSz <= kMaxBatchedOutputBytes) {
     if (state.outBuffer.empty() && state.outQueue.empty()) {
       assert(!state.outBufferZerocopySent);
@@ -201,7 +150,7 @@ void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpMessageData httpRespons
     } else {
       (void)state.queueOutput(std::move(httpResponseData));
     }
-    _stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz);
+    ctx.stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz);
     return;
   }
 
@@ -209,10 +158,10 @@ void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpMessageData httpRespons
     // Previous output still waits for the socket to become writable: queue this data (its file payload included)
     // after it.
     const bool merged = state.queueOutput(std::move(httpResponseData));
-    _stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz + extraQueuedBytes);
+    ctx.stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz + extraQueuedBytes);
     const std::size_t bufferedBytes = state.bufferedOutputBytes();
-    _stats.maxConnectionOutboundBuffer.updateMax(bufferedBytes);
-    if (bufferedBytes > _config.maxOutboundBufferBytes) {
+    ctx.stats.maxConnectionOutboundBuffer.updateMax(bufferedBytes);
+    if (bufferedBytes > ctx.config.maxOutboundBufferBytes) {
       state.requestDrainAndClose();
     }
     // While the socket is full (its writable event awaited), small data merged into the waiting output leaves the write
@@ -246,8 +195,8 @@ void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpMessageData httpRespons
     return;
   }
   if (written == bufferedSz) {
-    _stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz + extraQueuedBytes);
-    _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
+    ctx.stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz + extraQueuedBytes);
+    ctx.stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
 #ifdef AERONET_LINUX
     if (zerocopySent) {
       state.retainZerocopyBuffer(std::move(httpResponseData));
@@ -263,12 +212,12 @@ void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpMessageData httpRespons
   assert(!state.outBufferZerocopySent);
   state.outBuffer = std::move(httpResponseData);
   state.outBufferZerocopySent = zerocopySent;
-  _stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
+  ctx.stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
 
   const std::size_t remainingSize = state.outBuffer.remainingSize();
-  _stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz + extraQueuedBytes);
-  _stats.maxConnectionOutboundBuffer.updateMax(remainingSize);
-  if (remainingSize > _config.maxOutboundBufferBytes) {
+  ctx.stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz + extraQueuedBytes);
+  ctx.stats.maxConnectionOutboundBuffer.updateMax(remainingSize);
+  if (remainingSize > ctx.config.maxOutboundBufferBytes) {
     state.requestDrainAndClose();
   }
   if (!state.waitingWritable) {
@@ -285,19 +234,20 @@ void SingleHttpServer::queueData(ConnectionIt cnxIt, HttpMessageData httpRespons
   }
 }
 
-std::size_t SingleHttpServer::writeOutBuffer(ConnectionIt cnxIt, TransportHint& want) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
+std::size_t ConnectionIo::writeOutBuffer(ConnectionIt cnxIt, TransportHint& want) {
+  ServerContext& ctx = *_pCtx;
+  ConnectionState& state = ctx.connections.connectionState(cnxIt);
   bool zerocopySent = false;
   TransportResult result;
   if (state.outQueue.empty() || state.isSendingFile()) {
     result = writeMessage(cnxIt, state.outBuffer, zerocopySent);
   } else {
-    auto& buffers = _sharedBuffers.sv;
+    auto& buffers = ctx.sharedBuffers.sv;
     const ConnectionState::GatheredOutput output = state.gatherOutput(buffers, kMaxGatheredBuffers);
     result = writeMessages(cnxIt, buffers, output, zerocopySent);
   }
   want = result.want;
-  _stats.totalBytesWrittenFlush += result.bytesProcessed;
+  ctx.stats.totalBytesWrittenFlush += result.bytesProcessed;
   if (want == TransportHint::Error) {
     log::error("send/transportWrite failed fd # {} err={}", cnxIt->fd(), LastSystemError());
     // Drops the output (outBuffer being retained if previous zerocopy sends may still read it, the socket staying open
@@ -309,10 +259,11 @@ std::size_t SingleHttpServer::writeOutBuffer(ConnectionIt cnxIt, TransportHint& 
   return result.bytesProcessed;
 }
 
-void SingleHttpServer::flushOutbound(ConnectionIt cnxIt) {
-  ++_stats.flushCycles;
+void ConnectionIo::flushOutbound(ConnectionIt cnxIt) {
+  ServerContext& ctx = *_pCtx;
+  ++ctx.stats.flushCycles;
   TransportHint want = TransportHint::None;
-  ConnectionState& state = _connections.connectionState(cnxIt);
+  ConnectionState& state = ctx.connections.connectionState(cnxIt);
 
   const NativeHandle fd = cnxIt->fd();
 
@@ -348,14 +299,14 @@ void SingleHttpServer::flushOutbound(ConnectionIt cnxIt) {
   }
   if (state.protocolHandler != nullptr && state.outBuffer.empty() && state.outQueue.empty()) {
     // The output of the protocol handler follows the HTTP/1 one (its 101 Switching Protocols response).
-    auto& fragments = _sharedBuffers.sv;
+    auto& fragments = ctx.sharedBuffers.sv;
     while (state.protocolHandler->hasPendingOutput()) {
       state.protocolHandler->getPendingOutputFragments(fragments);
       assert(!fragments.empty());
 
       const auto [written, stepWant] = state.transportWrite(fragments);
       want = stepWant;
-      _stats.totalBytesWrittenFlush += written;
+      ctx.stats.totalBytesWrittenFlush += written;
       if (written != 0) {
         state.protocolHandler->onOutputWritten(written);
       }
@@ -403,7 +354,7 @@ void SingleHttpServer::flushOutbound(ConnectionIt cnxIt) {
   }
 }
 
-void SingleHttpServer::resumeInputIfOutputDrained(NativeHandle fd, ConnectionState& state) {
+void ConnectionIo::resumeInputIfOutputDrained(NativeHandle fd, ConnectionState& state) {
   // Whatever drained the output (a writable event, a flush before reading, the maintenance retry of a missed writable
   // event), no read event reports the input left by its backpressure.
   if (state.inputBlockedByOutput && !state.hasPendingOutput() && !state.isSendingFile()) {
@@ -416,14 +367,14 @@ void SingleHttpServer::resumeInputIfOutputDrained(NativeHandle fd, ConnectionSta
   // endpoint resume once its tunnel buffer is written, see TunnelManager::handleWritable()). They resume below half of
   // the limit that stopped them: the other streams of the connection could keep its output from ever being empty.
   if (state.relayPausedByBacklog && state.protocolHandler != nullptr &&
-      state.protocolHandler->pendingOutputSize() < _config.maxOutboundBufferBytes / 2) {
-    assert(_tunnels != nullptr);
-    _tunnels->resumeRelaysTowards(_connections.iterator(fd));
+      state.protocolHandler->pendingOutputSize() < _pCtx->config.maxOutboundBufferBytes / 2) {
+    assert(_pCtx->tunnels != nullptr);
+    _pCtx->tunnels->resumeRelaysTowards(_pCtx->connections.iterator(fd));
   }
 }
 
-bool SingleHttpServer::flushUserSpaceTlsBuffer(ConnectionIt cnxIt) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
+bool ConnectionIo::flushUserSpaceTlsBuffer(ConnectionIt cnxIt) {
+  ConnectionState& state = _pCtx->connections.connectionState(cnxIt);
   if (state.tunnelOrFileBuffer.empty()) {
     return false;
   }
@@ -441,7 +392,7 @@ bool SingleHttpServer::flushUserSpaceTlsBuffer(ConnectionIt cnxIt) {
     state.tunnelOrFileBuffer.erase_front(written);
     // Note: fileSend.offset and fileSend.remaining were already updated in transportFile when the data was read.
     // Do NOT update them again here or we'll double-count and prematurely mark the transfer complete.
-    _stats.totalBytesWrittenFlush += written;
+    _pCtx->stats.totalBytesWrittenFlush += written;
 
     // If buffer is now empty, we're done
     if (state.tunnelOrFileBuffer.empty()) {
@@ -466,8 +417,9 @@ bool SingleHttpServer::flushUserSpaceTlsBuffer(ConnectionIt cnxIt) {
   }
 }
 
-void SingleHttpServer::flushFilePayload(ConnectionIt cnxIt) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
+void ConnectionIo::flushFilePayload(ConnectionIt cnxIt) {
+  ServerContext& ctx = *_pCtx;
+  ConnectionState& state = ctx.connections.connectionState(cnxIt);
 
   if (state.fileSendHeadersPending) {
     if (!state.outBuffer.empty()) {
@@ -517,10 +469,10 @@ void SingleHttpServer::flushFilePayload(ConnectionIt cnxIt) {
         // Successfully flushed, continue loop to read more
         break;
       case ConnectionState::FileResult::Code::Sent:
-        _stats.totalBytesWrittenFlush += static_cast<std::uint64_t>(res.bytesDone);
+        ctx.stats.totalBytesWrittenFlush += static_cast<std::uint64_t>(res.bytesDone);
 #ifdef AERONET_ENABLE_OPENSSL
         if (!userSpaceTls) {
-          _tls.metrics.ktlsSendBytes += static_cast<std::uint64_t>(res.bytesDone);
+          ctx.tls.metrics().ktlsSendBytes += static_cast<std::uint64_t>(res.bytesDone);
         }
 #endif
         // Continue loop to send more
@@ -535,10 +487,10 @@ void SingleHttpServer::flushFilePayload(ConnectionIt cnxIt) {
           // we would miss the edge. This immediate retry catches that case.
           const auto retryRes = state.transportFile(cnxIt->fd(), userSpaceTls);
           if (retryRes.code == ConnectionState::FileResult::Code::Sent) {
-            _stats.totalBytesWrittenFlush += static_cast<std::uint64_t>(retryRes.bytesDone);
+            ctx.stats.totalBytesWrittenFlush += static_cast<std::uint64_t>(retryRes.bytesDone);
 #ifdef AERONET_ENABLE_OPENSSL
             if (!userSpaceTls) {
-              _tls.metrics.ktlsSendBytes += static_cast<std::uint64_t>(retryRes.bytesDone);
+              ctx.tls.metrics().ktlsSendBytes += static_cast<std::uint64_t>(retryRes.bytesDone);
             }
 #endif
             // Socket was writable, continue the loop to send more
@@ -554,4 +506,195 @@ void SingleHttpServer::flushFilePayload(ConnectionIt cnxIt) {
   }
 }
 
-}  // namespace aeronet
+// ============================================================================
+// Writable interest
+// ============================================================================
+
+bool ConnectionIo::enableWritableInterest(ConnectionIt cnxIt) {
+  ServerContext& ctx = *_pCtx;
+  ConnectionState& state = ctx.connections.connectionState(cnxIt);
+  assert(!state.waitingWritable);
+  if (ctx.eventLoop.mod(EventLoop::EventFd{cnxIt->fd(), EventIn | EventOut | EventRdHup | EventEt})) [[likely]] {
+    state.waitingWritable = true;
+    ++_nbWritableConnections;
+    ++ctx.stats.deferredWriteEvents;
+    return true;
+  }
+  // Cannot register for EPOLLOUT so buffered data will never be flushed.
+  // Clear the write buffers so canCloseConnectionForDrain() can proceed;
+  // without this, tunnel connections get stuck forever (exempt from keep-alive reaping).
+  ++ctx.stats.epollModFailures;
+  state.clearBuffers();
+  return false;
+}
+
+bool ConnectionIo::disableWritableInterest(ConnectionIt cnxIt) {
+  ServerContext& ctx = *_pCtx;
+  ConnectionState& state = ctx.connections.connectionState(cnxIt);
+  assert(state.waitingWritable);
+  forgetWritableInterest(state);
+  if (ctx.eventLoop.mod(EventLoop::EventFd{cnxIt->fd(), EventIn | EventRdHup | EventEt})) [[likely]] {
+    return true;
+  }
+  ++ctx.stats.epollModFailures;
+  state.clearBuffers();
+  return false;
+}
+
+// ============================================================================
+// Input
+// ============================================================================
+
+void ConnectionIo::deferInput(NativeHandle fd, ConnectionState& state) {
+  // No wakeup needed: the next poll does not wait while there are deferred inputs (see SingleHttpServer::eventLoop()).
+  if (!state.inputDeferred) {
+    state.inputDeferred = true;
+    _pendingReadFds.push_back(fd);
+  }
+}
+
+// ============================================================================
+// Close
+// ============================================================================
+
+void ConnectionIo::closeConnection(ConnectionIt cnxIt) {
+  if (!startLingeringClose(cnxIt)) {
+    closeConnectionNow(cnxIt);
+  }
+}
+
+bool ConnectionIo::startLingeringClose(ConnectionIt cnxIt) {
+  ServerContext& ctx = *_pCtx;
+  ConnectionState& state = ctx.connections.connectionState(cnxIt);
+  // The request answered last starts the input buffer until it is entirely read: an empty one (the common case) leaves
+  // nothing to wait for. A connection still waiting for writable events (a TLS read wanting to write) closes right
+  // away: a level-triggered poller (Windows) would keep reporting it writable while it lingers.
+  if (state.inBuffer.empty() || !state.canCloseConnectionForDrain() || state.waitingWritable || state.eofReceived ||
+      state.protocolHandler != nullptr || state.isTunneling() || ctx.config.lingeringCloseTimeout.count() == 0) {
+    return false;
+  }
+  const NativeHandle fd = cnxIt->fd();
+#ifdef AERONET_ENABLE_OPENSSL
+  // Its close_notify alert ends the TLS stream before the TCP one.
+  if (auto* pTlsTransport = state.transport.get<TlsTransport>(); pTlsTransport != nullptr) {
+    pTlsTransport->shutdown();
+  }
+#endif
+  if (!ShutdownWrite(fd)) {
+    log::debug("shutdown of the write side failed for fd # {} err={}, closing it", fd, LastSystemError());
+    return false;
+  }
+  log::debug("fd # {} lingers before its close", fd);
+  ctx.maintenance.forgetConnectionMaintenance(state);
+  state.closeMode = ConnectionState::CloseMode::Linger;
+  state.inBuffer.clear();
+  releaseServedInBuffer(state);
+  ctx.maintenance.armDeadline(state, fd, ctx.connections.now + ctx.config.lingeringCloseTimeout);
+  ctx.telemetry.counterAdd("aeronet.connections.lingering_closes");
+  return true;
+}
+
+CloseStatus ConnectionIo::discardLingeringInput(ConnectionIt cnxIt) {
+  ServerContext& ctx = *_pCtx;
+  ConnectionState& state = ctx.connections.connectionState(cnxIt);
+  lendInBuffer(state);
+  CloseStatus closeStatus = CloseStatus::Keep;
+  std::size_t bytesRead = 0;
+  while (true) {
+    const auto [count, want] =
+        state.transportRead(ctx.config, ctx.config.computeReadChunkSize(bytesRead, state.readSizeShift));
+    state.inBuffer.clear();
+    bytesRead += count;
+    if (want != TransportHint::None) {
+      // A failed read ends it, as a TLS transport wanting to write: its write side is shut down.
+      if (want != TransportHint::ReadReady) {
+        closeStatus = CloseStatus::Close;
+      }
+      break;
+    }
+    if (count == 0) {
+      closeStatus = CloseStatus::Close;
+      break;
+    }
+    if (ctx.config.fairnessBudgetExhausted(bytesRead)) {
+      deferInput(cnxIt->fd(), state);
+      break;
+    }
+  }
+  releaseServedInBuffer(state);
+  ctx.telemetry.counterAdd("aeronet.bytes.read", static_cast<uint64_t>(bytesRead));
+  return closeStatus;
+}
+
+void ConnectionIo::closeConnectionNow(ConnectionIt cnxIt) {
+  ServerContext& ctx = *_pCtx;
+  const auto cfd = cnxIt->fd();
+
+  log::debug("closeConnection called for fd # {}", cfd);
+
+  ctx.maintenance.forgetConnectionMaintenance(ctx.connections.connectionState(cnxIt));
+  if (ctx.tunnels != nullptr) {
+    ctx.tunnels->closeTunnelsOf(cnxIt);
+    // Releasing the other ends of its tunnels may have moved the entries of the connection storage (Windows).
+    cnxIt = ctx.connections.iterator(cfd);
+  }
+  releaseConnection(cnxIt);
+}
+
+void ConnectionIo::releaseConnection(ConnectionIt cnxIt) {
+  ServerContext& ctx = *_pCtx;
+  const auto fd = cnxIt->fd();
+  ctx.eventLoop.del(fd);
+  ConnectionState& state = ctx.connections.connectionState(cnxIt);
+  // The input buffer of the event loop may be lent to it: a close does not always come at the end of a read.
+  releaseServedInBuffer(state);
+#ifdef AERONET_LINUX
+  // After a graceful close, the kernel would keep sending from the buffers of the zerocopy sends still in flight: abort
+  // such a connection (reset), so that the kernel drops its send queue. Drain closes wait for the completions instead
+  // (see ConnectionState::canCloseConnectionForDrain()).
+  pollZerocopyCompletions(state);
+  if (state.hasZerocopySendsInFlight()) {
+    log::debug("Resetting fd # {} with zerocopy sends still in flight", fd);
+    if (!SetAbortiveClose(fd)) [[unlikely]] {
+      log::error("setsockopt(SO_LINGER) failed for fd # {} err={}", fd, LastSystemError());
+    }
+    // The packets already handed to the network device still reference the buffers for a short while. A fresh clock
+    // read: the connection may be closed out of the event loop (server stop), where the cached time is not updated.
+    const auto releaseTime = std::chrono::steady_clock::now() + kZerocopyResetGracePeriod;
+    state.zerocopyBuffers.extract([this, releaseTime](HttpMessageData data) {
+      _zerocopy.resetBuffers.push_back(ZerocopyRuntime::ResetBuffer{std::move(data), releaseTime});
+    });
+    if (state.outBufferZerocopySent) {
+      _zerocopy.resetBuffers.push_back(ZerocopyRuntime::ResetBuffer{std::move(state.outBuffer), releaseTime});
+      state.outBufferZerocopySent = false;
+    }
+    ++ctx.stats.zerocopyResetConnections;
+    ctx.telemetry.counterAdd("aeronet.connections.aborted_with_zerocopy_in_flight");
+  }
+#endif
+#ifdef AERONET_ENABLE_OPENSSL
+  ctx.connections.recycleOrRelease(cnxIt, ctx.config.maxCachedConnections, ctx.config.tls.enabled,
+                                   ctx.tls.handshakesInFlight());
+#else
+  ctx.connections.recycleOrRelease(cnxIt, ctx.config.maxCachedConnections);
+#endif
+}
+
+void ConnectionIo::closeAllConnections() {
+  ConnectionStorage& connections = _pCtx->connections;
+#ifdef AERONET_WINDOWS
+  while (!connections.empty()) {
+    closeConnectionNow(connections.begin());
+  }
+#else
+  for (auto cnxIt = connections.begin(); cnxIt != connections.end(); ++cnxIt) {
+    if (*cnxIt) {
+      closeConnectionNow(cnxIt);
+    }
+  }
+#endif
+  // Without connections, no tunnel is left: the resolver threads exit once their current resolution completes.
+  _pCtx->tunnels.reset();
+}
+
+}  // namespace aeronet::internal
