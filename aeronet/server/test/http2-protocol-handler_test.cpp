@@ -5278,11 +5278,10 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkSuspendsAndResumes) {
   });
 
   Http2ProtocolLoopback loop(router);
-  loop.handler.setAsyncPostCallback(
-      [&capturedHandle, &callbackFired](std::coroutine_handle<> handle, const std::function<void()>&) {
-        capturedHandle = handle;
-        callbackFired.store(true, std::memory_order_release);
-      });
+  loop.handler.setAsyncPostCallback([&capturedHandle, &callbackFired](std::coroutine_handle<> handle) {
+    capturedHandle = handle;
+    callbackFired.store(true, std::memory_order_release);
+  });
   loop.connect();
 
   RawChars hdrs;
@@ -5338,11 +5337,10 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkWithCorsAndMiddleware) {
       .after([](const HttpRequestView&, HttpResponse& resp) { resp.header("x-after-mw", "done"); });
 
   Http2ProtocolLoopback loop(router);
-  loop.handler.setAsyncPostCallback(
-      [&capturedHandle, &callbackFired](std::coroutine_handle<> handle, const std::function<void()>&) {
-        capturedHandle = handle;
-        callbackFired.store(true, std::memory_order_release);
-      });
+  loop.handler.setAsyncPostCallback([&capturedHandle, &callbackFired](std::coroutine_handle<> handle) {
+    capturedHandle = handle;
+    callbackFired.store(true, std::memory_order_release);
+  });
   loop.connect();
 
   RawChars hdrs;
@@ -5390,11 +5388,10 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkExceptionInCompletedHandler) {
   });
 
   Http2ProtocolLoopback loop(router);
-  loop.handler.setAsyncPostCallback(
-      [&capturedHandle, &callbackFired](std::coroutine_handle<> handle, const std::function<void()>&) {
-        capturedHandle = handle;
-        callbackFired.store(true, std::memory_order_release);
-      });
+  loop.handler.setAsyncPostCallback([&capturedHandle, &callbackFired](std::coroutine_handle<> handle) {
+    capturedHandle = handle;
+    callbackFired.store(true, std::memory_order_release);
+  });
   loop.connect();
 
   RawChars hdrs;
@@ -5433,11 +5430,10 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkThrowsNonStdExceptionOnCompletio
   });
 
   Http2ProtocolLoopback loop(router);
-  loop.handler.setAsyncPostCallback(
-      [&capturedHandle, &callbackFired](std::coroutine_handle<> handle, const std::function<void()>&) {
-        capturedHandle = handle;
-        callbackFired.store(true, std::memory_order_release);
-      });
+  loop.handler.setAsyncPostCallback([&capturedHandle, &callbackFired](std::coroutine_handle<> handle) {
+    capturedHandle = handle;
+    callbackFired.store(true, std::memory_order_release);
+  });
   loop.connect();
 
   RawChars hdrs;
@@ -5480,11 +5476,10 @@ TEST(Http2ProtocolHandler, AsyncHandlerDoubleDeferWorkSuspendsResumesAndComplete
   });
 
   Http2ProtocolLoopback loop(router);
-  loop.handler.setAsyncPostCallback(
-      [&capturedHandle, &callbackCount](std::coroutine_handle<> handle, const std::function<void()>&) {
-        capturedHandle = handle;
-        callbackCount.fetch_add(1, std::memory_order_release);
-      });
+  loop.handler.setAsyncPostCallback([&capturedHandle, &callbackCount](std::coroutine_handle<> handle) {
+    capturedHandle = handle;
+    callbackCount.fetch_add(1, std::memory_order_release);
+  });
   loop.connect();
 
   RawChars hdrs;
@@ -6104,11 +6099,10 @@ TEST(Http2ProtocolHandler, SweepStreamsAsyncTimeoutSends408) {
 
   Http2ProtocolLoopback loop(router);
 
-  loop.handler.setAsyncPostCallback(
-      [&capturedHandle, &callbackFired](std::coroutine_handle<> handle, const std::function<void()>&) {
-        capturedHandle = handle;
-        callbackFired.store(true, std::memory_order_release);
-      });
+  loop.handler.setAsyncPostCallback([&capturedHandle, &callbackFired](std::coroutine_handle<> handle) {
+    capturedHandle = handle;
+    callbackFired.store(true, std::memory_order_release);
+  });
 
   loop.connect();
 
@@ -6165,11 +6159,10 @@ TEST(Http2ProtocolHandler, SweepStreamsKeepsTheTaskOfATimedOutStreamUntilItsWork
   Http2ProtocolLoopback loop(router);
   std::coroutine_handle<> capturedHandle;
   std::atomic<bool> callbackFired{false};
-  loop.handler.setAsyncPostCallback(
-      [&capturedHandle, &callbackFired](std::coroutine_handle<> handle, const std::function<void()>&) {
-        capturedHandle = handle;
-        callbackFired.store(true, std::memory_order_release);
-      });
+  loop.handler.setAsyncPostCallback([&capturedHandle, &callbackFired](std::coroutine_handle<> handle) {
+    capturedHandle = handle;
+    callbackFired.store(true, std::memory_order_release);
+  });
   loop.connect();
 
   // A response larger than the stream window exhausts it, the rest of its body waiting for credit.
@@ -6228,11 +6221,10 @@ TEST(Http2ProtocolHandler, SweepStreamsNoExpiryDoesNothing) {
 
   Http2ProtocolLoopback loop(router);
 
-  loop.handler.setAsyncPostCallback(
-      [&capturedHandle, &callbackFired](std::coroutine_handle<> handle, const std::function<void()>&) {
-        capturedHandle = handle;
-        callbackFired.store(true, std::memory_order_release);
-      });
+  loop.handler.setAsyncPostCallback([&capturedHandle, &callbackFired](std::coroutine_handle<> handle) {
+    capturedHandle = handle;
+    callbackFired.store(true, std::memory_order_release);
+  });
 
   loop.connect();
 
@@ -6780,11 +6772,10 @@ TEST(Http2ProtocolHandler, AsyncCompletionRejectedWhenTunnelBacklogAlreadyOverLi
   static constexpr uint32_t kMaxOutboundBufferBytes = 200;  // tiny cap; default 65535 flow-control windows untouched
   Http2ProtocolLoopback loop(router, WithTunnelBridge{}, kMaxOutboundBufferBytes);
 
-  loop.handler.setAsyncPostCallback(
-      [&capturedHandle, &callbackFired](std::coroutine_handle<> handle, const std::function<void()>&) {
-        capturedHandle = handle;
-        callbackFired.store(true, std::memory_order_release);
-      });
+  loop.handler.setAsyncPostCallback([&capturedHandle, &callbackFired](std::coroutine_handle<> handle) {
+    capturedHandle = handle;
+    callbackFired.store(true, std::memory_order_release);
+  });
 
   loop.connect();
 

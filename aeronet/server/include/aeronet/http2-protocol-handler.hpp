@@ -194,9 +194,9 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   /// Install a callback for posting deferred async work completion to the server's event loop.
-  /// The callback receives a coroutine handle and optional pre-resume work function.
+  /// The callback receives the coroutine handle to resume.
   /// Must be called before any async handlers are dispatched.
-  using AsyncPostCallbackFn = std::function<void(std::coroutine_handle<>, std::function<void()>)>;
+  using AsyncPostCallbackFn = std::function<void(std::coroutine_handle<>)>;
 
   void setAsyncPostCallback(AsyncPostCallbackFn fn) noexcept { _asyncPostCallback = std::move(fn); }
 

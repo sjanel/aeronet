@@ -626,7 +626,7 @@ void HttpRequestView::markAwaitingCallback() const noexcept {
   asyncState->awaitReason = AsyncHandlerState::AwaitReason::WaitingForCallback;
 }
 
-std::function<void(std::coroutine_handle<>, std::function<void()>)> HttpRequestView::copyPostCallback() const {
+std::function<void(std::coroutine_handle<>)> HttpRequestView::copyPostCallback() const {
   if (_h2PostCallback) {
     return _h2PostCallback;
   }
@@ -635,10 +635,6 @@ std::function<void(std::coroutine_handle<>, std::function<void()>)> HttpRequestV
   assert(asyncState->active);
   assert(asyncState->postCallback);
   return asyncState->postCallback;
-}
-
-void HttpRequestView::postCallback(std::coroutine_handle<> handle, std::function<void()> work) const {
-  copyPostCallback()(handle, std::move(work));
 }
 #endif
 
