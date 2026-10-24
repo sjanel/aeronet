@@ -19,21 +19,21 @@
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/internal/http1-pipeline.hpp"
+#include "aeronet/internal/server-context.hpp"
 #include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/reserved-headers.hpp"
 #include "aeronet/safe-cast.hpp"
 #include "aeronet/search-crlf.hpp"
-#include "aeronet/single-http-server.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/tolower-str.hpp"
 
-namespace aeronet {
+namespace aeronet::internal {
 
-SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeBodyIfReady(ConnectionIt cnxIt, std::span<char> input,
-                                                                       bool isChunked, bool expectContinue,
-                                                                       std::size_t maxBodyBytes,
-                                                                       std::size_t& consumedBytes) {
+Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeBodyIfReady(ConnectionIt cnxIt, std::span<char> input,
+                                                                 bool isChunked, bool expectContinue,
+                                                                 std::size_t maxBodyBytes, std::size_t& consumedBytes) {
   consumedBytes = 0;
   if (isChunked) {
     return decodeChunkedBody(cnxIt, input, expectContinue, maxBodyBytes, consumedBytes);
@@ -42,12 +42,10 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeBodyIfReady(Connectio
   return decodeFixedLengthBody(cnxIt, input, expectContinue, maxBodyBytes, consumedBytes);
 }
 
-SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeFixedLengthBody(ConnectionIt cnxIt,
-                                                                           std::span<const char> input,
-                                                                           bool expectContinue,
-                                                                           std::size_t maxBodyBytes,
-                                                                           std::size_t& consumedBytes) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
+Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeFixedLengthBody(ConnectionIt cnxIt, std::span<const char> input,
+                                                                     bool expectContinue, std::size_t maxBodyBytes,
+                                                                     std::size_t& consumedBytes) {
+  ConnectionState& state = _pCtx->connections.connectionState(cnxIt);
   HttpRequestView& request = state.request;
   // Fixed-length (non-chunked) requests never carry trailers (RFC 7230 section 4.1.2). Clear any trailerLen
   // left over from a previous chunked request on this (keep-alive) connection so the request-finalization
@@ -74,7 +72,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeFixedLengthBody(Conne
     return BodyDecodeStatus::Error;
   }
   if (expectContinue && declaredContentLen > 0) {
-    queueData(cnxIt, HttpMessageData(RawChars{http::HTTP11_100_CONTINUE}));
+    _pCtx->io.queueData(cnxIt, HttpMessageData(RawChars{http::HTTP11_100_CONTINUE}));
   }
   // Compare against the bytes following the head (headerEnd <= input.size()) rather than computing
   // headerEnd + declaredContentLen, which could wrap around for a huge Content-Length if maxBodyBytes allows it.
@@ -86,13 +84,13 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeFixedLengthBody(Conne
   return BodyDecodeStatus::Ready;
 }
 
-SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(ConnectionIt cnxIt, std::span<char> input,
-                                                                       bool expectContinue, std::size_t maxBodyBytes,
-                                                                       std::size_t& consumedBytes) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
+Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeChunkedBody(ConnectionIt cnxIt, std::span<char> input,
+                                                                 bool expectContinue, std::size_t maxBodyBytes,
+                                                                 std::size_t& consumedBytes) {
+  ConnectionState& state = _pCtx->connections.connectionState(cnxIt);
   HttpRequestView& request = state.request;
   if (expectContinue) {
-    queueData(cnxIt, HttpMessageData(RawChars{http::HTTP11_100_CONTINUE}));
+    _pCtx->io.queueData(cnxIt, HttpMessageData(RawChars{http::HTTP11_100_CONTINUE}));
   }
   std::size_t pos = request.headSpanSize();
   RawChars& bodyAndTrailers = state.bodyAndTrailersBuffer;
@@ -100,14 +98,14 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
   state.trailerLen = 0;
 
   // Check if we should use direct decompression (avoids copying compressed chunks to bodyAndTrailers)
-  const http::StatusCode decompressCode = HttpCodec::WillDecompress(_config.decompression, request.headers());
+  const http::StatusCode decompressCode = HttpCodec::WillDecompress(_pCtx->config.decompression, request.headers());
   if (decompressCode == http::StatusCodeBadRequest) {
     emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed Content-Encoding");
     return BodyDecodeStatus::Error;
   }
 
   // For direct decompression, we collect chunk positions instead of copying data
-  auto& compressedChunks = _sharedBuffers.sv;
+  auto& compressedChunks = _pCtx->sharedBuffers.sv;
   compressedChunks.clear();
   std::size_t totalCompressedSize = 0;
 
@@ -165,81 +163,10 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
 
     if (chunkSize == 0) {
       // Zero-chunk detected. Now parse optional trailer headers (RFC 7230 §4.1.2).
-      // Trailers are terminated by a blank line (CRLF).
-
-      // Check if trailers are present (not immediate CRLF)
-      auto* trailerStart = inputBeg + pos;
-      if (std::memcmp(trailerStart, http::CRLF.data(), http::CRLF.size()) == 0) {
-        // No trailers, just the terminating CRLF
-        pos += http::CRLF.size();
-        break;
+      const BodyDecodeStatus trailersStatus = decodeTrailers(cnxIt, input, pos);
+      if (trailersStatus != BodyDecodeStatus::Ready) {
+        return trailersStatus;
       }
-
-      // Parse trailer headers - copy raw trailer data to bodyAndTrailers buffer
-      std::size_t trailerEndPos = pos;  // Track end position for later
-
-      // First pass: validate trailers and find the end position
-      std::size_t tempPos = pos;
-      while (true) {
-        const auto lineEndIt = SearchCRLF(inputBeg + tempPos, last);
-        if (lineEndIt == last) {
-          return BodyDecodeStatus::NeedMore;
-        }
-        if (lineEndIt[1] != '\n') {
-          emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed trailer line");
-          return BodyDecodeStatus::Error;
-        }
-        // Check total trailer size limit
-        const std::size_t trailerSize = static_cast<std::size_t>((inputBeg + tempPos) - trailerStart);
-        if (trailerSize > _config.maxHeaderBytes) {
-          emitSimpleError(cnxIt, http::StatusCodeRequestHeaderFieldsTooLarge);
-          return BodyDecodeStatus::Error;
-        }
-
-        auto* lineStart = inputBeg + tempPos;
-        auto* lineLast = lineEndIt;
-
-        // Detect blank line (end of trailers)
-        if (lineStart == lineLast) {
-          trailerEndPos = static_cast<std::size_t>(lineEndIt - inputBeg) + http::CRLF.size();
-          break;
-        }
-
-        // Parse trailer field: name:value
-        const auto [nameView, valueView] = http::ParseHeaderLineTrimValue(lineStart, lineLast);
-        if (!http::IsValidHeaderName(nameView) || !http::IsValidHeaderValue(valueView)) {
-          emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed / invalid trailer header");
-          return BodyDecodeStatus::Error;
-        }
-
-        // Lower-case trailer name in place for case-sensitive lookup later
-        tolower(lineStart, nameView.size());
-
-        // Check forbidden headers
-        if (http::IsForbiddenTrailerHeader(LowerAsciiKey{nameView})) {
-          emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Forbidden trailer header");
-          return BodyDecodeStatus::Error;
-        }
-
-        tempPos = static_cast<std::size_t>(lineEndIt - inputBeg) + http::CRLF.size();
-      }
-
-      // Copy all trailer data at once to avoid reallocation during parsing
-      const std::size_t trailerLen = trailerEndPos - pos - http::CRLF.size();  // Exclude final CRLF
-      bodyAndTrailers.append(trailerStart, trailerLen);
-      state.trailerLen = SafeCast<uint32_t>(trailerLen);
-
-      // Second pass: parse trailers from copied data in bodyAndTrailers
-      char* trailerDataEnd = bodyAndTrailers.data() + bodyAndTrailers.size();
-      char* trailerDataBeg = trailerDataEnd - trailerLen;
-
-      if (!parseHeadersUnchecked(request._trailers, bodyAndTrailers.data(), trailerDataBeg, trailerDataEnd)) {
-        emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Invalid trailer headers");
-        return BodyDecodeStatus::Error;
-      }
-
-      pos = trailerEndPos;
-
       break;
     }
 
@@ -248,7 +175,7 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
       compressedChunks.emplace_back(inputBeg + pos, chunkSize);
       totalCompressedSize += chunkSize;
 
-      if (totalCompressedSize > maxBodyBytes || totalCompressedSize > _config.decompression.maxCompressedBytes) {
+      if (totalCompressedSize > maxBodyBytes || totalCompressedSize > _pCtx->config.decompression.maxCompressedBytes) {
         emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge);
         return BodyDecodeStatus::Error;
       }
@@ -275,11 +202,11 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
     // Perform direct decompression from the input chunks to bodyAndTrailersBuffer
     // Save trailers if present (they were appended to bodyAndTrailers with trailerLen = 0)
     // In direct decompression mode, bodyAndTrailers only contains trailers (no body chunks were copied)
-    _sharedBuffers.trailers.assign(bodyAndTrailers);
+    _pCtx->sharedBuffers.trailers.assign(bodyAndTrailers);
 
-    const auto res =
-        HttpCodec::DecompressChunkedBody(_decompressionState, _config.decompression, request, compressedChunks,
-                                         totalCompressedSize, bodyAndTrailers, _sharedBuffers.buf);
+    const auto res = HttpCodec::DecompressChunkedBody(_pCtx->decompressionState, _pCtx->config.decompression, request,
+                                                      compressedChunks, totalCompressedSize, bodyAndTrailers,
+                                                      _pCtx->sharedBuffers.buf);
     if (res.message != nullptr) {
       emitSimpleError(cnxIt, res.status, res.message);
       return BodyDecodeStatus::Error;
@@ -289,8 +216,8 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
     // Capacity have been reserved in DecompressChunkedBody, so unchecked append is safe here.
     // In addition, a realloc here would mean that we should re-compute the request._body that is set in
     // DecompressChunkedBody.
-    assert(bodyAndTrailers.capacity() >= bodyAndTrailers.size() + _sharedBuffers.trailers.size());
-    bodyAndTrailers.unchecked_append(_sharedBuffers.trailers);
+    assert(bodyAndTrailers.capacity() >= bodyAndTrailers.size() + _pCtx->sharedBuffers.trailers.size());
+    bodyAndTrailers.unchecked_append(_pCtx->sharedBuffers.trailers);
 
     // Body is set by DecompressChunkedBodyDirect, trailers are appended after
   } else {
@@ -303,7 +230,89 @@ SingleHttpServer::BodyDecodeStatus SingleHttpServer::decodeChunkedBody(Connectio
   return BodyDecodeStatus::Ready;
 }
 
-bool SingleHttpServer::parseHeadersUnchecked(SvToSvMap& headersMap, char* bufferBeg, char* first, char* last) {
+Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeTrailers(ConnectionIt cnxIt, std::span<char> input,
+                                                              std::size_t& pos) {
+  ConnectionState& state = _pCtx->connections.connectionState(cnxIt);
+  RawChars& bodyAndTrailers = state.bodyAndTrailersBuffer;
+  char* const inputBeg = input.data();
+  char* const last = inputBeg + input.size();
+
+  // Trailers are terminated by a blank line (CRLF). Check if trailers are present (not immediate CRLF).
+  auto* trailerStart = inputBeg + pos;
+  if (std::memcmp(trailerStart, http::CRLF.data(), http::CRLF.size()) == 0) {
+    // No trailers, just the terminating CRLF
+    pos += http::CRLF.size();
+    return BodyDecodeStatus::Ready;
+  }
+
+  // Parse trailer headers - copy raw trailer data to bodyAndTrailers buffer
+  std::size_t trailerEndPos = pos;  // Track end position for later
+
+  // First pass: validate trailers and find the end position
+  std::size_t tempPos = pos;
+  while (true) {
+    const auto lineEndIt = SearchCRLF(inputBeg + tempPos, last);
+    if (lineEndIt == last) {
+      return BodyDecodeStatus::NeedMore;
+    }
+    if (lineEndIt[1] != '\n') {
+      emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed trailer line");
+      return BodyDecodeStatus::Error;
+    }
+    // Check total trailer size limit
+    const std::size_t trailerSize = static_cast<std::size_t>((inputBeg + tempPos) - trailerStart);
+    if (trailerSize > _pCtx->config.maxHeaderBytes) {
+      emitSimpleError(cnxIt, http::StatusCodeRequestHeaderFieldsTooLarge);
+      return BodyDecodeStatus::Error;
+    }
+
+    auto* lineStart = inputBeg + tempPos;
+    auto* lineLast = lineEndIt;
+
+    // Detect blank line (end of trailers)
+    if (lineStart == lineLast) {
+      trailerEndPos = static_cast<std::size_t>(lineEndIt - inputBeg) + http::CRLF.size();
+      break;
+    }
+
+    // Parse trailer field: name:value
+    const auto [nameView, valueView] = http::ParseHeaderLineTrimValue(lineStart, lineLast);
+    if (!http::IsValidHeaderName(nameView) || !http::IsValidHeaderValue(valueView)) {
+      emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed / invalid trailer header");
+      return BodyDecodeStatus::Error;
+    }
+
+    // Lower-case trailer name in place for case-sensitive lookup later
+    tolower(lineStart, nameView.size());
+
+    // Check forbidden headers
+    if (http::IsForbiddenTrailerHeader(LowerAsciiKey{nameView})) {
+      emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Forbidden trailer header");
+      return BodyDecodeStatus::Error;
+    }
+
+    tempPos = static_cast<std::size_t>(lineEndIt - inputBeg) + http::CRLF.size();
+  }
+
+  // Copy all trailer data at once to avoid reallocation during parsing
+  const std::size_t trailerLen = trailerEndPos - pos - http::CRLF.size();  // Exclude final CRLF
+  bodyAndTrailers.append(trailerStart, trailerLen);
+  state.trailerLen = SafeCast<uint32_t>(trailerLen);
+
+  // Second pass: parse trailers from copied data in bodyAndTrailers
+  char* trailerDataEnd = bodyAndTrailers.data() + bodyAndTrailers.size();
+  char* trailerDataBeg = trailerDataEnd - trailerLen;
+
+  if (!parseHeadersUnchecked(state.request._trailers, bodyAndTrailers.data(), trailerDataBeg, trailerDataEnd)) {
+    emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Invalid trailer headers");
+    return BodyDecodeStatus::Error;
+  }
+
+  pos = trailerEndPos;
+  return BodyDecodeStatus::Ready;
+}
+
+bool Http1Pipeline::parseHeadersUnchecked(SvToSvMap& headersMap, char* bufferBeg, char* first, char* last) {
   headersMap.clear();
   while (first < last) {
     // Find line end
@@ -316,8 +325,8 @@ bool SingleHttpServer::parseHeadersUnchecked(SvToSvMap& headersMap, char* buffer
     auto [it, inserted] = headersMap.emplace(headerName, headerValue);
 
     // Store trailer using the in-place merge helper so semantics/pointer updates match request parsing.
-    if (!inserted && !http::MergeHeaderInPlace(headersMap, it, headerValue, _sharedBuffers.buf, bufferBeg, first,
-                                               _config.mergeUnknownRequestHeaders)) {
+    if (!inserted && !http::MergeHeaderInPlace(headersMap, it, headerValue, _pCtx->sharedBuffers.buf, bufferBeg, first,
+                                               _pCtx->config.mergeUnknownRequestHeaders)) {
       return false;
     }
 
@@ -326,4 +335,4 @@ bool SingleHttpServer::parseHeadersUnchecked(SvToSvMap& headersMap, char* buffer
   return true;
 }
 
-}  // namespace aeronet
+}  // namespace aeronet::internal

@@ -658,8 +658,10 @@ TEST(HttpClientHttp2TransportTest, EarlyResponseResetsUnfinishedUpload) {
 // A server may answer before the whole request is uploaded, then stop the upload with RST_STREAM(NO_ERROR): the
 // complete response stands (RFC 9113 §8.1). A NO_ERROR reset of an incomplete response still fails the exchange.
 TEST(HttpClientHttp2TransportTest, NoErrorResetAfterCompleteResponseKeepsIt) {
-  for (const auto mode : {LoopbackHttp2Transport::ResponseMode::EarlyResponseThenNoErrorReset,
-                          LoopbackHttp2Transport::ResponseMode::ResetNoErrorBeforeResponseEnd}) {
+  for (const auto mode : {
+           LoopbackHttp2Transport::ResponseMode::EarlyResponseThenNoErrorReset,
+           LoopbackHttp2Transport::ResponseMode::ResetNoErrorBeforeResponseEnd,
+       }) {
     HttpClientConfig config;
     config.withHttpVersion(HttpVersionMode::Http2);
     HttpClient client(config);
@@ -775,8 +777,12 @@ TEST(HttpClientHttp2TransportTest, PooledReuseDrainsFramesStillArrivingOnResetSt
   };
   for (const Case& testCase : {
            Case{data.first(100), test::FaultPolicy(), false, true},
-           Case{data.first(http2::FrameHeader::kSize - 1), test::FaultPolicy(), false,
-                false},  // may be the beginning of a GOAWAY
+           Case{
+               data.first(http2::FrameHeader::kSize - 1),
+               test::FaultPolicy(),
+               false,
+               false,
+           },  // may be the beginning of a GOAWAY
            Case{goAway.first(http2::FrameHeader::kSize + 2), test::FaultPolicy(), false, false},
            Case{data, trickle, false, true},
            Case{data, trickle, true, false},

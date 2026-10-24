@@ -9,7 +9,6 @@
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <random>
 #include <stdexcept>
 #include <string>

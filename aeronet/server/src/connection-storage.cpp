@@ -4,11 +4,12 @@
 #include <chrono>
 #include <cstdint>
 
+#include "aeronet/connection-state.hpp"
+#include "aeronet/internal/http-response-access.hpp"
+
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
 #endif
-
-#include "aeronet/connection-state.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-transport.hpp"
@@ -39,7 +40,7 @@ void ConnectionStorage::recycleOrRelease(ConnectionIt cnxIt, uint32_t maxCachedC
   if (keepForAsyncWork) {
     if (auto* asyncState = pConnectionState->asyncState.get(); asyncState != nullptr) {
       asyncState->active = false;
-      asyncState->pendingResponse.reset();
+      asyncState->pendingResponse = internal::HttpResponseAccess::MakeUnallocated();
     }
   } else if (auto* asyncState = pConnectionState->asyncState.get(); asyncState != nullptr) {
     asyncState->clear();

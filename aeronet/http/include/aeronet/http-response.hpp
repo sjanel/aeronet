@@ -23,6 +23,11 @@
 
 namespace aeronet {
 
+namespace internal {
+class Http1Pipeline;
+class HttpResponseAccess;
+}  // namespace internal
+
 #ifdef AERONET_ENABLE_HTTP2
 namespace http2 {
 class Http2ProtocolHandler;
@@ -821,12 +826,12 @@ class HttpResponse final : public HttpMessage {
   }
 
  private:
+  friend class internal::HttpResponseAccess;
   friend class HttpRequestView;
   friend class HttpResponseTest;
   friend class HttpResponseWriter;  // streaming writer needs access to finalize
 #ifdef AERONET_ENABLE_HTTP_SERVER
-  friend class SingleHttpServer;
-  friend class StaticFileHandler;
+  friend class internal::Http1Pipeline;
 #endif
   friend class Http1WriterTransport;  // HTTP/1.1 transport for streaming
 #ifdef AERONET_ENABLE_HTTP2
@@ -840,6 +845,21 @@ class HttpResponse final : public HttpMessage {
   // 2^kHeaderPosNbBits - 1 - kReasonBeg.
   static constexpr std::uint32_t kMaxReasonLength = static_cast<std::uint32_t>(
       (1U << kHeaderPosNbBits) - 1U - kReasonBeg - http::HeaderSize(http::Date.size(), RFC7231DateStrLen));
+
+  // Size of the head of a response without headers nor body: status line, Date header and final CRLF.
+  static constexpr std::size_t kInitialSize =
+      kReasonBeg + http::HeaderSize(http::Date.size(), RFC7231DateStrLen) + http::DoubleCRLF.size();
+  static_assert(kInitialSize <= kHttpResponseMinInitialCapacity);
+
+  // Capacity of a response head with 'concatenatedHeaders' and, for a non-empty body of 'bodySize' bytes, its body
+  // headers. For a non-empty body, 'contentType' is trimmed and checked (it is ignored otherwise).
+  static constexpr std::size_t HeadCapacity(std::string_view concatenatedHeaders, std::size_t bodySize,
+                                            std::string_view& contentType, bool sendContentLengthHeader) {
+    return kInitialSize + concatenatedHeaders.size() +
+           (bodySize == 0 ? 0
+                          : NeededBodyHeadersSize(bodySize, CheckContentType(false, contentType).size(),
+                                                  sendContentLengthHeader));
+  }
 
   // Private constructor to avoid allocating memory for the data buffer when not needed immediately.
   // Use with care! All setters currently take the assumption that the internal buffer is allocated.
@@ -858,21 +878,6 @@ class HttpResponse final : public HttpMessage {
   // Same as above, but capturing 'body' without copy, like body(std::string&&, ...).
   HttpResponse(std::size_t additionalCapacity, http::StatusCode code, std::string_view concatenatedHeaders,
                HttpPayload body, std::string_view contentType, Options opts);
-
-  // Size of the head of a response without headers nor body: status line, Date header and final CRLF.
-  static constexpr std::size_t kInitialSize =
-      kReasonBeg + http::HeaderSize(http::Date.size(), RFC7231DateStrLen) + http::DoubleCRLF.size();
-  static_assert(kInitialSize <= kHttpResponseMinInitialCapacity);
-
-  // Capacity of a response head with 'concatenatedHeaders' and, for a non-empty body of 'bodySize' bytes, its body
-  // headers. For a non-empty body, 'contentType' is trimmed and checked (it is ignored otherwise).
-  static constexpr std::size_t HeadCapacity(std::string_view concatenatedHeaders, std::size_t bodySize,
-                                            std::string_view& contentType, bool sendContentLengthHeader) {
-    return kInitialSize + concatenatedHeaders.size() +
-           (bodySize == 0 ? 0
-                          : NeededBodyHeadersSize(bodySize, CheckContentType(false, contentType).size(),
-                                                  sendContentLengthHeader));
-  }
 
   // Writes the status line, the concatenated headers and, for a non-empty body of 'bodySize' bytes, its body headers.
   // The data ends at the body start, the body itself is left to the caller. The capacity must be large enough, and

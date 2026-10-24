@@ -10,18 +10,15 @@
 #endif
 
 #include "aeronet/connection-state.hpp"
-#include "aeronet/http-message.hpp"
 #include "aeronet/http-request-view.hpp"
-#include "aeronet/http-response-writer.hpp"
-#include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-protocol-handler.hpp"
 #include "aeronet/internal/connection-storage.hpp"
+#include "aeronet/internal/server-context.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
-#include "aeronet/path-handlers.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/socket-ops.hpp"
@@ -35,34 +32,34 @@ namespace aeronet {
 void SingleHttpServer::installHttp2Handler(NativeHandle clientFd, ConnectionState& state,
                                            bool sendServerPrefaceForTls) {
   state.protocolHandler = http2::CreateHttp2ProtocolHandler(
-      _config.http2, requestPipeline(), _config, _compressionState, _decompressionState, sendServerPrefaceForTls,
-      _dateHeader.data(), state, internal::TunnelManager::MakeH2Bridge(*this, clientFd));
+      _ctx.config.http2, _ctx.requestPipeline(), _ctx.config, _ctx.compressionState, _ctx.decompressionState,
+      sendServerPrefaceForTls, _ctx.dateHeader.data(), state, internal::TunnelManager::MakeH2Bridge(_ctx, clientFd));
   // Async resumption, stream deadline sweeps and the HTTP/2 connection count all key off the protocol.
-  ++_connectionSweepState.http2Connections;
+  _ctx.maintenance.trackHttp2Connection();
   state.protocol = ProtocolType::Http2;
   // The header read timer bounds the reception of an HTTP/1.1 request head: the one started for the request expected
   // since the accept (or since the first bytes of the preface) does not apply to the HTTP/2 connection.
-  stopHeaderReadTimer(state);
+  _ctx.maintenance.stopHeaderReadTimer(state);
 
   auto* h2Handler = static_cast<http2::Http2ProtocolHandler*>(state.protocolHandler.get());
 
   // Install per-request completion callback for metrics, counters and tracing.
   h2Handler->setRequestCompletionCallback(
-      [this, fd = clientFd](const HttpRequestView& request, http::StatusCode status) {
-        auto& state = *_connections.pConnectionState(fd);
+      [pCtx = &_ctx, fd = clientFd](const HttpRequestView& request, http::StatusCode status) {
+        auto& state = *pCtx->connections.pConnectionState(fd);
         ++state.requestsServed;
-        ++_stats.totalRequestsServed;
-        if (_callbacks.metrics || _accessLog) {
-          emitRequestMetrics(request, status);
+        ++pCtx->stats.totalRequestsServed;
+        if (pCtx->callbacks.metrics || pCtx->accessLog) {
+          pCtx->emitRequestMetrics(request, status);
         }
       });
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   // Install async callback so HTTP/2 coroutines can post deferred work to the event loop.
-  h2Handler->setAsyncPostCallback(
-      [this, fd = clientFd, generation = state.generation](std::coroutine_handle<> handle, std::function<void()> work) {
-        postAsyncCallback(fd, generation, handle, std::move(work));
-      });
+  h2Handler->setAsyncPostCallback([pCtx = &_ctx, fd = clientFd, generation = state.generation](
+                                      std::coroutine_handle<> handle, std::function<void()> work) {
+    pCtx->postAsyncCallback(fd, generation, handle, std::move(work));
+  });
 #endif
 }
 
@@ -80,7 +77,7 @@ void SingleHttpServer::setupHttp2Connection(NativeHandle clientFd, TcpNoDelayMod
     } else {
       const auto err = LastSystemError();
       log::error("setsockopt(TCP_NODELAY) failed for fd # {} err={}", clientFd, err);
-      _telemetry.counterAdd("aeronet.connections.errors.tcp_nodelay_failed", 1UL);
+      _ctx.telemetry.counterAdd("aeronet.connections.errors.tcp_nodelay_failed", 1UL);
     }
   }
 

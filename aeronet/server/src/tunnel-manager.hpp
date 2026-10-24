@@ -8,15 +8,19 @@
 #include <string_view>
 
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/internal/connection-io.hpp"
+#include "aeronet/internal/connection-storage.hpp"
+#include "aeronet/internal/http1-pipeline.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
-#include "aeronet/single-http-server.hpp"
 #include "aeronet/tcp-connector.hpp"
 #include "aeronet/tunnel-bridge.hpp"
 #include "aeronet/vector.hpp"
 #include "tunnel-resolver.hpp"
 
 namespace aeronet::internal {
+
+struct ServerContext;
 
 // CONNECT tunnels of a SingleHttpServer (see docs/protocols/connect.md): their setup, with the background resolution
 // of the target host names, the relay of their bytes in both directions, and their teardown. An HTTP/1.1 tunnel takes
@@ -26,21 +30,20 @@ namespace aeronet::internal {
 // server that does not tunnel pays nothing for them.
 class TunnelManager {
  public:
-  using ConnectionIt = SingleHttpServer::ConnectionIt;
-  using CloseStatus = SingleHttpServer::CloseStatus;
-  using LoopAction = SingleHttpServer::LoopAction;
+  using ConnectionIt = ConnectionStorage::ConnectionIt;
+  using LoopAction = Http1Pipeline::LoopAction;
 
   // Maximum number of CONNECT requests waiting for the resolution of their target: the next ones are answered 503.
   static constexpr std::size_t kMaxPendingTunnels = 256;
 
-  explicit TunnelManager(SingleHttpServer& server);
+  explicit TunnelManager(ServerContext& ctx);
 
-  // The tunnel manager of 'server', created on first use.
-  static TunnelManager& Of(SingleHttpServer& server);
+  // The tunnel manager of the server of 'ctx', created on first use.
+  static TunnelManager& Of(ServerContext& ctx);
 
 #ifdef AERONET_ENABLE_HTTP2
   // The bridge between the HTTP/2 handler of the client connection 'clientFd' and the tunnels of its streams.
-  static std::unique_ptr<ITunnelBridge> MakeH2Bridge(SingleHttpServer& server, NativeHandle clientFd);
+  static std::unique_ptr<ITunnelBridge> MakeH2Bridge(ServerContext& ctx, NativeHandle clientFd);
 #endif
 
   // Answer the HTTP/1.1 CONNECT request of the connection, ending at consumedBytes in its input buffer (the requests
@@ -129,7 +132,7 @@ class TunnelManager {
   void resumeRelayToStream(NativeHandle upstreamFd);
 #endif
 
-  SingleHttpServer& _server;
+  ServerContext& _ctx;
   TunnelResolver _resolver;
   // CONNECT tunnels whose target host name is being resolved.
   vector<std::shared_ptr<PendingTunnel>> _pendingTunnels;

@@ -3,7 +3,6 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -13,9 +12,9 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include "aeronet/avx2.hpp"
+#include "aeronet/vector.hpp"
 #include "aeronet/websocket-constants.hpp"
 
 namespace aeronet::websocket {
@@ -29,11 +28,15 @@ struct Kernel {
   bool (*unmaskAndValidate)(std::span<std::byte>, MaskingKey) noexcept;
 };
 
+using KernelVector = vector<Kernel>;
+
 // The dispatchers and every kernel the CPU supports.
-const std::vector<Kernel>& Kernels() {
-  static const std::vector<Kernel> kKernels = [] {
-    std::vector<Kernel> kernels{{"dispatch", &IsValidUtf8, &UnmaskAndValidateUtf8},
-                                {"scalar", &detail::IsValidUtf8Scalar, nullptr}};
+const KernelVector& Kernels() {
+  static const KernelVector kKernels = [] {
+    KernelVector kernels{
+        {"dispatch", &IsValidUtf8, &UnmaskAndValidateUtf8},
+        {"scalar", &detail::IsValidUtf8Scalar, nullptr},
+    };
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
     if (HasSsse3()) {
       kernels.push_back({"ssse3", &detail::IsValidUtf8Ssse3, &detail::UnmaskAndValidateUtf8Ssse3});
@@ -50,12 +53,16 @@ const std::vector<Kernel>& Kernels() {
 }
 
 // Masking key of the data given to the unmasking kernels: distinct bytes, with and without their high bit.
-constexpr std::array<std::byte, kMaskingKeySize> kKeyBytes{std::byte{0xC3}, std::byte{0x5A}, std::byte{0x01},
-                                                           std::byte{0xF0}};
+constexpr std::byte kKeyBytes[]{
+    std::byte{0xC3},
+    std::byte{0x5A},
+    std::byte{0x01},
+    std::byte{0xF0},
+};
 
 MaskingKey TestMaskingKey() {
   MaskingKey maskingKey;
-  std::memcpy(&maskingKey, kKeyBytes.data(), kMaskingKeySize);
+  std::memcpy(&maskingKey, kKeyBytes, kMaskingKeySize);
   return maskingKey;
 }
 
@@ -158,16 +165,16 @@ void ExpectMatchesReference(std::string_view data) {
 
 // Valid UTF-8 of exactly 'size' bytes, mixing 4, 3, 2 and 1-byte characters.
 std::string MultibyteText(std::size_t size) {
-  static constexpr std::array<std::string_view, 4> kChars = {"\xF0\x9F\x8C\x8D", "\xE4\xB8\xAD", "\xC3\xA9", "a"};
+  static constexpr std::string_view kChars[]{"\xF0\x9F\x8C\x8D", "\xE4\xB8\xAD", "\xC3\xA9", "a"};
   std::string text;
   for (std::size_t charPos = 0; text.size() < size; ++charPos) {
-    const std::string_view ch = kChars[charPos % kChars.size()];
+    const std::string_view ch = kChars[charPos % std::size(kChars)];
     text += ch.size() <= size - text.size() ? ch : "a";
   }
   return text;
 }
 
-constexpr auto kValidSamples = std::to_array<std::string_view>({
+constexpr std::string_view kValidSamples[]{
     std::string_view("\0", 1),           // U+0000
     "\x7F",                              // U+007F
     "\xC2\x80",                          // U+0080, smallest 2-byte
@@ -190,9 +197,9 @@ constexpr auto kValidSamples = std::to_array<std::string_view>({
     "\xEF\xBB\xBF",                      // BOM
     "Hello \xE4\xB8\x96\xE7\x95\x8C \xF0\x9F\x8C\x8D",
     "\xC2\xA9\xE2\x82\xAC\xF0\x9D\x84\x9E",  // 2, 3 and 4-byte characters in a row
-});
+};
 
-constexpr auto kInvalidSamples = std::to_array<std::string_view>({
+constexpr std::string_view kInvalidSamples[]{
     "\x80",                      // lone continuation
     "\xBF",                      // lone continuation
     "a\x80",                     // continuation after ASCII
@@ -237,7 +244,7 @@ constexpr auto kInvalidSamples = std::to_array<std::string_view>({
     "\xF4\x90",                  // too large, truncated
     "\xED\xA0",                  // surrogate, truncated
     "\xE0\x80",                  // overlong, truncated
-});
+};
 
 TEST(WebSocketUtf8, Empty) {
   EXPECT_EQ(FirstMismatch({}, true), "");
@@ -288,9 +295,9 @@ TEST(WebSocketUtf8, InvalidSamples) {
 // Places each sample at every offset of the first SIMD blocks, after and before ASCII or multibyte text, so that it
 // straddles each block boundary and lands in the zero-padded last block.
 TEST(WebSocketUtf8, SamplesAtEveryOffset) {
-  static constexpr std::array<std::size_t, 5> kSuffixSizes = {0, 1, 3, 17, 40};
-  std::vector<std::string_view> samples(kValidSamples.begin(), kValidSamples.end());
-  samples.insert(samples.end(), kInvalidSamples.begin(), kInvalidSamples.end());
+  static constexpr std::size_t kSuffixSizes[]{0, 1, 3, 17, 40};
+  vector<std::string_view> samples(std::begin(kValidSamples), std::end(kValidSamples));
+  samples.insert(samples.end(), std::begin(kInvalidSamples), std::end(kInvalidSamples));
   for (const std::string_view sample : samples) {
     const bool expected = ReferenceIsValidUtf8(sample);
     for (std::size_t prefixSize = 0; prefixSize <= 70; ++prefixSize) {
@@ -379,7 +386,7 @@ TEST(WebSocketUtf8, EveryBytePair) {
 // Every lead byte followed by 3 bytes from the values on either side of each decision boundary, straddling a block
 // boundary.
 TEST(WebSocketUtf8, EveryLeadWithBoundaryContinuations) {
-  static constexpr std::array<uint8_t, 13> kNextBytes = {
+  static constexpr uint8_t kNextBytes[]{
       0x00, 0x7F, 0x80, 0x8F, 0x90, 0x9F, 0xA0, 0xBF, 0xC0, 0xC2, 0xE0, 0xF0, 0xFF,
   };
   for (const std::size_t offset : {14U, 30U}) {

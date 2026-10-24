@@ -41,6 +41,8 @@ namespace aeronet {
 
 namespace internal {
 class ConnectionStorage;
+class Http1Pipeline;
+struct ServerContext;
 }  // namespace internal
 
 class HttpCodec;
@@ -659,13 +661,14 @@ class HttpRequestView {
   [[nodiscard]] Encoding responsePossibleEncoding() const noexcept { return _responsePossibleEncoding; }
 
  private:
-  friend class SingleHttpServer;
   friend class HttpRequestViewTest;
   friend class StaticFileHandlerTest;
   friend class CorsPolicyTest;
   friend class UpgradeHandlerHarness;
   friend struct ConnectionState;
   friend class internal::ConnectionStorage;
+  friend class internal::Http1Pipeline;
+  friend struct internal::ServerContext;
 #ifdef AERONET_ENABLE_HTTP2
   friend class http2::Http2ProtocolHandler;
 #endif

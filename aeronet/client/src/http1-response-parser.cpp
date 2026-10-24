@@ -17,6 +17,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/internal/http-response-access.hpp"
 #include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/search-crlf.hpp"
@@ -145,14 +146,6 @@ constexpr void ScanConnectionTokens(std::string_view value, bool& closeSeen, boo
 }
 
 }  // namespace
-
-Http1ResponseParser::Status Http1ResponseParser::EofInLine(std::string_view partialLine) noexcept {
-  return partialLine.contains('\n') ? Status::Error : Status::Truncated;
-}
-
-RawChars* Http1ResponseParser::WholeBufferOwner(std::string_view body, RawChars& candidate) noexcept {
-  return body.size() == candidate.size() && body.data() == candidate.data() ? &candidate : nullptr;
-}
 
 void Http1ResponseParser::InstallBodyStorage(HttpResponse& resp, std::string_view body, std::string_view contentType,
                                              RawChars* owner) {
@@ -619,7 +612,7 @@ Http1ResponseParser::Status Http1ResponseParser::parse(std::span<char> buffer, b
         return Status::Error;
       }
 
-      resp.headerAddLineUnchecked(name, value);
+      internal::HttpResponseAccess::HeaderAddLineUnchecked(resp, name, value);
     }
   }
 

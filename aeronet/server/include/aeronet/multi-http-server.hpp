@@ -8,7 +8,6 @@
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -100,6 +99,8 @@ class MultiHttpServer {
    private:
     friend class MultiHttpServer;
 
+    AsyncHandle() noexcept = default;
+
     AsyncHandle(vector<SingleHttpServer::AsyncHandle> serverHandles, std::shared_ptr<ControlBlock> control,
                 std::shared_ptr<HandleState> state, std::shared_ptr<void> stopTokenBinding);
 
@@ -111,6 +112,7 @@ class MultiHttpServer {
     std::shared_ptr<void> _stopTokenBinding;
     std::exception_ptr _storedError;
     std::atomic<bool> _stopCalled{false};
+    bool _active{false};
   };
 
   // Construct a MultiHttpServer that does nothing.
@@ -380,11 +382,9 @@ class MultiHttpServer {
   // Internal handle for simple start() API - managed by the server itself.
   // When start() is called, the handle is stored here and the server takes ownership.
   // When startDetached() is called, the handle is returned to the caller.
-  std::optional<AsyncHandle> _internalHandle;
+  AsyncHandle _internalHandle;
   // isRunning() with ControlBlock::startMutex held, which protects _internalHandle and _lastHandleState.
-  [[nodiscard]] bool isRunningLocked() const noexcept {
-    return _internalHandle.has_value() || !_lastHandleState.expired();
-  }
+  [[nodiscard]] bool isRunningLocked() const noexcept { return _internalHandle._active || !_lastHandleState.expired(); }
 
   // Weak view of the most recent handle's per-start state. Used to detect a still-running detached handle (isRunning),
   // and to wait for it to finish in stop().

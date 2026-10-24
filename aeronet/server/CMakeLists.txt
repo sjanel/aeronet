@@ -9,6 +9,14 @@ if(NOT AERONET_ENABLE_HTTP2)
     list(REMOVE_ITEM AERONET_SERVER_SRC_LIST src/http2-protocol-handler.cpp)
 endif()
 
+if(NOT AERONET_ENABLE_OPENSSL)
+    list(REMOVE_ITEM AERONET_SERVER_SRC_LIST src/tls-acceptor.cpp)
+endif()
+
+if(NOT AERONET_ENABLE_WEBSOCKET)
+    list(REMOVE_ITEM AERONET_SERVER_SRC_LIST src/websocket-connections.cpp)
+endif()
+
 if(NOT AERONET_ENABLE_GLAZE)
     list(REMOVE_ITEM AERONET_SERVER_SRC_LIST src/server-config-loader.cpp)
 endif()

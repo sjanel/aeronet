@@ -278,7 +278,7 @@ TEST(HttpParserErrors, ContentLengthNearSizeMaxDoesNotWrap) {
 }
 
 // =============================================================================
-// connection-manager.cpp error paths
+// Connection I/O and maintenance error paths
 // =============================================================================
 
 // Test TCP_NODELAY failure path
@@ -433,7 +433,7 @@ TEST(HttpResponseDispatchErrors, QueueDataTransportError) {
   EXPECT_TRUE(test::WaitForPeerClose(client.fd(), 2000ms));
 }
 
-// Test queueData isAnyCloseRequested() early return guard (lines 170-173 in http-response-dispatch.cpp).
+// Test the queueData() isAnyCloseRequested() early return guard (ConnectionIo::queueData()).
 // When an interim 102 Processing response fails to write (transport error), requestDrainAndClose() is
 // set inside queueData(). The subsequent queueData() call for the final response detects
 // isAnyCloseRequested() == true and returns early without queuing the response.
@@ -945,7 +945,7 @@ TEST(HttpResponseDispatchErrors, PreadErrorDuringUserSpaceTlsFileSend) {
 // Outbound buffer retry paths in sweepIdleConnections
 // =============================================================================
 
-// Test sweepIdleConnections outBuffer flush retry path (lines 119-123 in connection-manager.cpp)
+// Test the sweepIdleConnections() outBuffer flush retry path (ConnectionMaintenance::sweepIdleConnections())
 // This exercises the case where a connection has buffered outbound data and is waiting for
 // writable interest; the sweep timer retries the flush.
 TEST(ConnectionManagerErrors, SweepRetriesPendingOutboundData) {
@@ -978,7 +978,7 @@ TEST(ConnectionManagerErrors, SweepRetriesPendingOutboundData) {
   EXPECT_TRUE(resp.contains(largeBody.substr(0, 32))) << resp;
 }
 
-// Test sweepIdleConnections file payload retry path (line 117 in connection-manager.cpp)
+// Test the sweepIdleConnections() file payload retry path (ConnectionMaintenance::sweepIdleConnections())
 // This exercises the case where a file send is pending and waitingWritable; the sweep timer
 // retries the file payload flush.
 TEST(ConnectionManagerErrors, SweepRetriesPendingFilePayload) {
@@ -1019,7 +1019,7 @@ TEST(ConnectionManagerErrors, SweepRetriesPendingFilePayload) {
 // flushOutbound headersPending transition
 // =============================================================================
 
-// Test flushOutbound headersPending->false transition (line 281-283 in http-response-dispatch.cpp)
+// Test the flushOutbound() headersPending->false transition (ConnectionIo::flushOutbound())
 // When a file payload has headersPending=true and outBuffer is flushed empty, headersPending
 // should be cleared to allow flushFilePayload to proceed.
 TEST(HttpResponseDispatchErrors, FlushOutboundClearsHeadersPending) {
@@ -1087,7 +1087,7 @@ TEST(HttpResponseDispatchErrors, FlushOutboundTransportNeedsWrite) {
 // Connection close after TLS handshake finalization
 // =============================================================================
 
-// Test epoll_ctl ADD failure during accept (connection-manager.cpp line ~336)
+// Test epoll_ctl ADD failure during accept (SingleHttpServer::acceptNewConnections())
 // This exercises the code path where adding a new accepted connection to epoll fails.
 TEST(ConnectionManagerErrors, EpollCtlAddFailureDuringAccept) {
   test::EventLoopHookGuard hookGuard;
