@@ -41,6 +41,9 @@
 #endif
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include <coroutine>
+#include <functional>
+
 #include "aeronet/async-handler-state.hpp"
 #endif
 
@@ -554,5 +557,89 @@ void ConnectionState::clearBuffers() {
   tunnelOrFileBuffer.clear();
   requestDrainAndClose();
 }
+
+// The members of HttpRequestView reading the connection of the request: the http module, which declares them, does not
+// know ConnectionState.
+
+std::string_view HttpRequestView::alpnProtocol() const noexcept {
+  assert(_pOwnerState != nullptr);
+  return _pOwnerState->tlsInfo.selectedAlpn();
+}
+
+std::string_view HttpRequestView::tlsCipher() const noexcept {
+  assert(_pOwnerState != nullptr);
+  return _pOwnerState->tlsInfo.negotiatedCipher();
+}
+
+std::string_view HttpRequestView::tlsVersion() const noexcept {
+  assert(_pOwnerState != nullptr);
+  return _pOwnerState->tlsInfo.negotiatedVersion();
+}
+
+std::string_view HttpRequestView::tlsPeerSubject() const noexcept {
+  assert(_pOwnerState != nullptr);
+  return _pOwnerState->tlsInfo.peerSubject();
+}
+
+std::string_view HttpRequestView::clientAddress() const noexcept {
+  assert(_pOwnerState != nullptr);
+  return _pOwnerState->clientAddress();
+}
+
+bool HttpRequestView::hasMoreBody() const {
+  if (_bodyAccessMode == BodyAccessMode::Aggregated) {
+    return false;
+  }
+  if (_pBodyAccessBridge == nullptr) {
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+    // If an async handler started before the body was ready, the server will
+    // set asyncState.needsBody and later install the aggregated bridge when
+    // body bytes arrive. In that intermediate state, treat the request as
+    // having more body so loops using hasMoreBody()+readBodyAsync() will
+    // execute and suspend correctly.
+    assert(_pOwnerState != nullptr);
+    const auto* async = _pOwnerState->asyncState.get();
+    return async != nullptr && async->active && async->needsBody;
+#else
+    return false;
+#endif
+  }
+  return _pBodyAccessBridge->hasMore(*this, _pBodyAccessContext);
+}
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+void HttpRequestView::markAwaitingBody() const noexcept {
+  auto* asyncState = _pOwnerState->asyncState.get();
+  assert(asyncState != nullptr);
+  assert(asyncState->active);
+  asyncState->awaitReason = AsyncHandlerState::AwaitReason::WaitingForBody;
+}
+
+void HttpRequestView::markAwaitingCallback() const noexcept {
+  if (_pH2SuspendedFlag != nullptr) {
+    *_pH2SuspendedFlag = true;
+    return;
+  }
+  auto* asyncState = _pOwnerState->asyncState.get();
+  assert(asyncState != nullptr);
+  assert(asyncState->active);
+  asyncState->awaitReason = AsyncHandlerState::AwaitReason::WaitingForCallback;
+}
+
+std::function<void(std::coroutine_handle<>, std::function<void()>)> HttpRequestView::copyPostCallback() const {
+  if (_h2PostCallback) {
+    return _h2PostCallback;
+  }
+  auto* asyncState = _pOwnerState->asyncState.get();
+  assert(asyncState != nullptr);
+  assert(asyncState->active);
+  assert(asyncState->postCallback);
+  return asyncState->postCallback;
+}
+
+void HttpRequestView::postCallback(std::coroutine_handle<> handle, std::function<void()> work) const {
+  copyPostCallback()(handle, std::move(work));
+}
+#endif
 
 }  // namespace aeronet

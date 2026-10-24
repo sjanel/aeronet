@@ -9,7 +9,6 @@
 #include <utility>
 
 #include "aeronet/compression-config.hpp"
-#include "aeronet/connection-state.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
@@ -19,30 +18,22 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/raw-chars.hpp"
 
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-#include "aeronet/async-handler-state.hpp"
-#endif
-
 namespace aeronet {
 
 class CorsPolicyTest : public ::testing::Test {
  protected:
   void SetUp() override {
     globalHeaders.append("server: aeronet");
-    request._pOwnerState = &connState;
     request._pGlobalHeaders = &globalHeaders;
     request._pCompressionState = &compressionState;
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-    (void)connState.ensureAsyncState(asyncStatePoolStorage);
-#endif
 
     compressionState.pCompressionConfig = &compressionConfig;
   }
 
   http::StatusCode parse(RawChars raw) {
-    connState.inBuffer = std::move(raw);
+    inBuffer = std::move(raw);
     RawChars tmp;
-    return request.initTrySetHead(connState.inBuffer, tmp, 4096U, true, nullptr);
+    return request.initTrySetHead(inBuffer, tmp, 4096U, true, nullptr);
   }
 
   CompressionConfig compressionConfig;
@@ -50,11 +41,8 @@ class CorsPolicyTest : public ::testing::Test {
   ConcatenatedHeaders globalHeaders;
   CorsPolicy policy;
   HttpResponse response;
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  AsyncHandlerStatePool asyncStatePoolStorage;
-#endif
+  RawChars inBuffer;
   HttpRequestView request;
-  ConnectionState connState;
 };
 
 TEST_F(CorsPolicyTest, DefaultConstructedShouldNotBeActive) {

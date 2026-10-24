@@ -1,33 +1,27 @@
-#include "upgrade-handler.hpp"
+#include "aeronet/upgrade-handler.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <cstddef>
 #include <string_view>
-
-#include "aeronet/http-constants.hpp"
-#include "aeronet/protocol-handler.hpp"
-#include "aeronet/string-equal-ignore-case.hpp"
-#include "aeronet/string-trim.hpp"
-#include "aeronet/sv-to-sv-map.hpp"
-
-#ifdef AERONET_ENABLE_WEBSOCKET
-#include <algorithm>
 #include <utility>
 
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/header-write.hpp"
+#include "aeronet/http-constants.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/ndigits.hpp"
+#include "aeronet/protocol-handler.hpp"
+#include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/string-trim.hpp"
+#include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/websocket-constants.hpp"
 #include "aeronet/websocket-deflate.hpp"
 #include "aeronet/websocket-upgrade.hpp"
-#endif
 
 namespace aeronet {
 
 namespace {
-
-#ifdef AERONET_ENABLE_WEBSOCKET
 
 // Parse a comma-separated list of tokens (for Sec-WebSocket-Protocol, etc.)
 ConcatenatedStrings ParseTokenList(std::string_view header) {
@@ -57,7 +51,6 @@ ConcatenatedStrings ParseTokenList(std::string_view header) {
   }
   return {};
 }
-#endif
 
 }  // namespace
 
@@ -81,7 +74,6 @@ bool ConnectionContainsUpgrade(std::string_view connectionValue) {
   return false;
 }
 
-#ifdef AERONET_ENABLE_WEBSOCKET
 UpgradeValidationResult ValidateWebSocketUpgrade(const SvToSvMap& headers, const WebSocketUpgradeConfig& config) {
   UpgradeValidationResult result;
 
@@ -162,20 +154,15 @@ UpgradeValidationResult ValidateWebSocketUpgrade(const SvToSvMap& headers, const
   result.targetProtocol = ProtocolType::WebSocket;
   return result;
 }
-#endif
 
 ProtocolType DetectUpgradeTarget([[maybe_unused]] std::string_view upgradeHeaderValue) {
   // "h2c" is intentionally not an upgrade target (RFC 9113 §3.1 deprecated it): such requests stay on HTTP/1.1.
-#ifdef AERONET_ENABLE_WEBSOCKET
   if (CaseInsensitiveEqual(upgradeHeaderValue, websocket::UpgradeValue)) {
     return ProtocolType::WebSocket;
   }
-#endif
 
   return ProtocolType::Http11;
 }
-
-#ifdef AERONET_ENABLE_WEBSOCKET
 
 namespace {
 
@@ -262,8 +249,6 @@ void BuildWebSocketUpgradeResponse(const UpgradeValidationResult& validationResu
     pData = AppendFixed<http::CRLF>(pData);
   }
 }
-
-#endif
 
 }  // namespace upgrade
 

@@ -81,5 +81,5 @@ A path can mix streaming and buffered handlers for different methods, see [Dispa
 - Chunked and fixed-length streaming, `HEAD`, trailers, and backpressure with slow readers (`HttpBackpressure` tests): [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
 - `Connection: close` announced for keep-alive disabled, the request limit and the client's close (`StreamingKeepAlive` tests): [tests/http-core_test.cpp](../../tests/http-core_test.cpp); for a drain beginning before or after the head: [tests/http-server-lifecycle_test.cpp](../../tests/http-server-lifecycle_test.cpp).
 - Streaming over HTTP/2: [tests/http2-core_test.cpp](../../tests/http2-core_test.cpp).
-- Handlers throwing before or after the head was sent, and compression failing after it: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp) and [http2-protocol-handler_test.cpp](../../aeronet/http2/test/http2-protocol-handler_test.cpp).
+- Handlers throwing before or after the head was sent, and compression failing after it: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp) and [http2-protocol-handler_test.cpp](../../aeronet/server/test/http2-protocol-handler_test.cpp).
 - Streaming compression: [tests/http-compression_test.cpp](../../tests/http-compression_test.cpp).

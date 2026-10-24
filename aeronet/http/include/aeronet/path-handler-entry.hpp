@@ -16,11 +16,14 @@
 
 #ifdef AERONET_ENABLE_WEBSOCKET
 #include <memory>
-
-#include "aeronet/websocket-endpoint.hpp"
 #endif
 
 namespace aeronet {
+
+#ifdef AERONET_ENABLE_WEBSOCKET
+// Only stored behind a pointer: its definition (aeronet/websocket-endpoint.hpp) pulls the whole WebSocket handler.
+struct WebSocketEndpoint;
+#endif
 
 /// Per-path configuration options for route handlers.
 ///

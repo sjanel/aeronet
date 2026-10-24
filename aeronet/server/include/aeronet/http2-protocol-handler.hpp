@@ -66,11 +66,13 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   /// Create an HTTP/2 protocol handler.
   /// @param config HTTP/2 configuration
   /// @param pipeline The request pipeline shared with HTTP/1.1, through which the requests are routed and answered
+  /// @param connectionState The connection owning the handler, to which its requests belong (client address, TLS
+  ///        information). It must outlive the handler.
   /// @param tunnelBridge Bridge to the server for the CONNECT tunnels of the streams, owned by the handler.
   ///        Without one, CONNECT requests are answered 405.
   Http2ProtocolHandler(const Http2Config& config, RequestPipeline pipeline, HttpServerConfig& serverConfig,
                        CompressionState& compressionState, DecompressionState& decompressionState,
-                       const char* cachedDateHeader, std::string_view clientAddress = {},
+                       const char* cachedDateHeader, ::aeronet::ConnectionState& connectionState,
                        std::unique_ptr<ITunnelBridge> tunnelBridge = {});
 
   Http2ProtocolHandler(const Http2ProtocolHandler&) = delete;
@@ -87,8 +89,7 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
 
   [[nodiscard]] ProtocolType type() const noexcept override { return ProtocolType::Http2; }
 
-  [[nodiscard]] ProtocolProcessResult processInput(std::span<const std::byte> data,
-                                                   ::aeronet::ConnectionState& state) override;
+  [[nodiscard]] ProtocolProcessResult processInput(std::span<const std::byte> data) override;
 
   [[nodiscard]] std::span<const std::byte> getPendingOutput() const noexcept override {
     return _connection.getPendingOutput();
@@ -448,13 +449,12 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   // Number of streams with a pending send (see StreamState::hasPendingSend()): the flushes look for them only if any.
   std::size_t _nbPendingSends{0};
 
-  // Connection owning this handler (set by processInput()).
-  ::aeronet::ConnectionState* _pConnectionState{nullptr};
+  // Connection owning this handler.
+  ::aeronet::ConnectionState* _pConnectionState;
   HttpServerConfig* _pServerConfig;
   CompressionState* _pCompressionState;
   DecompressionState* _pDecompressionState;
   const char* _pCachedDateHeader;
-  std::string_view _clientAddress;
 
   // Reverse tunnel map: upstream fd → stream ID (needed for closeTunnelByUpstreamFd).
   TunnelUpstreamsMap _tunnelUpstreams;  // upstreamFd → streamId
@@ -475,12 +475,16 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
 /// @param pipeline The request pipeline shared with HTTP/1.1
 /// @param sendServerPrefaceForTls If true, sends SETTINGS immediately (for TLS ALPN "h2").
 ///        For h2c (cleartext), this should be false as server waits for client preface first.
+/// @param connectionState The connection owning the handler (see Http2ProtocolHandler).
 /// @param tunnelBridge Bridge to the server for the CONNECT tunnels, owned by the handler (may be null).
 /// @return Unique pointer to the created handler
-std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(
-    const Http2Config& config, RequestPipeline pipeline, HttpServerConfig& serverConfig,
-    CompressionState& compressionState, DecompressionState& decompressionState, bool sendServerPrefaceForTls,
-    const char* cachedDateHeader, std::string_view clientAddress, std::unique_ptr<ITunnelBridge> tunnelBridge);
+std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(const Http2Config& config, RequestPipeline pipeline,
+                                                             HttpServerConfig& serverConfig,
+                                                             CompressionState& compressionState,
+                                                             DecompressionState& decompressionState,
+                                                             bool sendServerPrefaceForTls, const char* cachedDateHeader,
+                                                             ::aeronet::ConnectionState& connectionState,
+                                                             std::unique_ptr<ITunnelBridge> tunnelBridge);
 
 }  // namespace http2
 }  // namespace aeronet

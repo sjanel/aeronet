@@ -273,7 +273,7 @@ class HttpRequestViewTest : public ::testing::Test {
   void setOwnerState(ConnectionState* st) { req._pOwnerState = st; }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  void callPinHeadStorage() { req.pinHeadStorage(cs, asyncStatePoolStorage); }
+  void callPinHeadStorage() { req.pinHeadStorage(cs.ensureAsyncState(asyncStatePoolStorage).headBuffer); }
   void callPostCallback(std::coroutine_handle<> handle, std::function<void()> work) {
     req.postCallback(handle, std::move(work));
   }
@@ -293,8 +293,7 @@ class HttpRequestViewTest : public ::testing::Test {
     req._pathParams.try_emplace(key, dataPtr, len);
   }
 
-  // Keep-alive decision with keep-alive enabled, a running server and no request count limit reached.
-  [[nodiscard]] bool callIsKeepAliveForHttp1() const { return req.isKeepAliveForHttp1(true, 100U, true); }
+  [[nodiscard]] bool callClientKeepsAliveForHttp1() const { return req.clientKeepsAliveForHttp1(); }
 
   void attachSpan(tracing::SpanPtr span) { req._traceSpan = std::move(span); }
 
@@ -868,7 +867,7 @@ TEST_F(HttpRequestViewTest, HigherHttp1MinorVersionIsProcessedAsHttp11) {
               http::StatusCodeOK);
     EXPECT_EQ(req.version(), http::HTTP_1_1);
     EXPECT_TRUE(req.hasExpectContinue());
-    EXPECT_TRUE(callIsKeepAliveForHttp1());
+    EXPECT_TRUE(callClientKeepsAliveForHttp1());
 
     RawChars noHost("GET /p ");
     noHost.append(version);
@@ -1544,13 +1543,13 @@ TEST_F(HttpRequestViewTest, ConnectionCloseAndHasExpectContinue) {
   {  // Connection: close
     auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1", MakeHttp1HeaderLine(http::Connection, "close")));
     ASSERT_EQ(st, http::StatusCodeOK);
-    EXPECT_FALSE(callIsKeepAliveForHttp1());
+    EXPECT_FALSE(callClientKeepsAliveForHttp1());
     EXPECT_FALSE(req.hasExpectContinue());
   }
   {  // Expect: 100-continue on HTTP/1.1
     auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1", MakeHttp1HeaderLine(http::Expect, "100-continue")));
     ASSERT_EQ(st, http::StatusCodeOK);
-    EXPECT_TRUE(callIsKeepAliveForHttp1());
+    EXPECT_TRUE(callClientKeepsAliveForHttp1());
     EXPECT_TRUE(req.hasExpectContinue());
   }
   {  // Expect header on HTTP/1.0 should be ignored
@@ -1572,14 +1571,14 @@ TEST_F(HttpRequestViewTest, ConnectionCloseOptionAnywhereInList) {
        }) {
     SCOPED_TRACE(headers);
     ASSERT_EQ(reqSet(BuildRaw("GET", "/p", "HTTP/1.1", headers)), http::StatusCodeOK);
-    EXPECT_FALSE(callIsKeepAliveForHttp1());
+    EXPECT_FALSE(callClientKeepsAliveForHttp1());
   }
   // Options merely containing "close" are distinct options
   for (std::string_view headers :
        {"Connection: closed\r\n", "Connection: not-close\r\n", "Connection: Upgrade\r\n", "Connection: ,\r\n"}) {
     SCOPED_TRACE(headers);
     ASSERT_EQ(reqSet(BuildRaw("GET", "/p", "HTTP/1.1", headers)), http::StatusCodeOK);
-    EXPECT_TRUE(callIsKeepAliveForHttp1());
+    EXPECT_TRUE(callClientKeepsAliveForHttp1());
   }
 }
 
@@ -1598,7 +1597,7 @@ TEST_F(HttpRequestViewTest, Http10KeepAliveRequiresKeepAliveOption) {
        }) {
     SCOPED_TRACE(tc.headers);
     ASSERT_EQ(reqSet(BuildRaw("GET", "/p", "HTTP/1.0", tc.headers)), http::StatusCodeOK);
-    EXPECT_EQ(callIsKeepAliveForHttp1(), tc.keepAlive);
+    EXPECT_EQ(callClientKeepsAliveForHttp1(), tc.keepAlive);
   }
 }
 

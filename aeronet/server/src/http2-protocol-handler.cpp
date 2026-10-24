@@ -81,14 +81,15 @@ namespace aeronet::http2 {
 Http2ProtocolHandler::Http2ProtocolHandler(const Http2Config& config, RequestPipeline pipeline,
                                            HttpServerConfig& serverConfig, CompressionState& compressionState,
                                            DecompressionState& decompressionState, const char* cachedDateHeader,
-                                           std::string_view clientAddress, std::unique_ptr<ITunnelBridge> tunnelBridge)
+                                           ::aeronet::ConnectionState& connectionState,
+                                           std::unique_ptr<ITunnelBridge> tunnelBridge)
     : _connection(config, true, &pipeline.telemetry()),
       _pipeline(pipeline),
+      _pConnectionState(&connectionState),
       _pServerConfig(&serverConfig),
       _pCompressionState(&compressionState),
       _pDecompressionState(&decompressionState),
       _pCachedDateHeader(cachedDateHeader),
-      _clientAddress(clientAddress),
       _tunnelBridge(std::move(tunnelBridge)) {
   setupCallbacks();
 }
@@ -140,10 +141,7 @@ void Http2ProtocolHandler::StreamRequest::clear() noexcept {
 Http2ProtocolHandler::Http2ProtocolHandler(Http2ProtocolHandler&&) noexcept = default;
 Http2ProtocolHandler& Http2ProtocolHandler::operator=(Http2ProtocolHandler&&) noexcept = default;
 
-ProtocolProcessResult Http2ProtocolHandler::processInput(std::span<const std::byte> data,
-                                                         ::aeronet::ConnectionState& state) {
-  // The requests decoded below belong to this connection (client address, TLS information).
-  _pConnectionState = &state;
+ProtocolProcessResult Http2ProtocolHandler::processInput(std::span<const std::byte> data) {
   auto result = _connection.processInput(data, _pServerConfig->maxOutboundBufferBytes);
 
   // If the client granted more flow control (WINDOW_UPDATE), try to continue any pending sends.
@@ -1651,13 +1649,16 @@ void Http2ProtocolHandler::sweepStreams(std::chrono::steady_clock::time_point no
   }
 }
 
-std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(
-    const Http2Config& config, RequestPipeline pipeline, HttpServerConfig& serverConfig,
-    CompressionState& compressionState, DecompressionState& decompressionState, bool sendServerPrefaceForTls,
-    const char* cachedDateHeader, std::string_view clientAddress, std::unique_ptr<ITunnelBridge> tunnelBridge) {
+std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(const Http2Config& config, RequestPipeline pipeline,
+                                                             HttpServerConfig& serverConfig,
+                                                             CompressionState& compressionState,
+                                                             DecompressionState& decompressionState,
+                                                             bool sendServerPrefaceForTls, const char* cachedDateHeader,
+                                                             ::aeronet::ConnectionState& connectionState,
+                                                             std::unique_ptr<ITunnelBridge> tunnelBridge) {
   auto protocolHandler =
       std::make_unique<Http2ProtocolHandler>(config, pipeline, serverConfig, compressionState, decompressionState,
-                                             cachedDateHeader, clientAddress, std::move(tunnelBridge));
+                                             cachedDateHeader, connectionState, std::move(tunnelBridge));
   if (sendServerPrefaceForTls) {
     // For TLS ALPN "h2", the server must send SETTINGS immediately after TLS handshake
     protocolHandler->connection().sendServerPreface();

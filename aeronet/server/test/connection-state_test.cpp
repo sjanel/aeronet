@@ -1393,10 +1393,7 @@ class PendingOutputProtocolHandler final : public IProtocolHandler {
 
   [[nodiscard]] ProtocolType type() const noexcept override { return ProtocolType::WebSocket; }
 
-  [[nodiscard]] ProtocolProcessResult processInput(std::span<const std::byte> /*data*/,
-                                                   ConnectionState& /*state*/) override {
-    return {};
-  }
+  [[nodiscard]] ProtocolProcessResult processInput(std::span<const std::byte> /*data*/) override { return {}; }
 
   [[nodiscard]] std::span<const std::byte> getPendingOutput() const noexcept override { return {}; }
 

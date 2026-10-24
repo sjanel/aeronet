@@ -19,8 +19,7 @@ class StringOutputHandler final : public IProtocolHandler {
  public:
   [[nodiscard]] ProtocolType type() const noexcept override { return ProtocolType::WebSocket; }
 
-  [[nodiscard]] ProtocolProcessResult processInput(std::span<const std::byte> data,
-                                                   [[maybe_unused]] ConnectionState& state) override {
+  [[nodiscard]] ProtocolProcessResult processInput(std::span<const std::byte> data) override {
     output.append(reinterpret_cast<const char*>(data.data()), data.size());
     return ProtocolProcessResult{.bytesConsumed = data.size()};
   }

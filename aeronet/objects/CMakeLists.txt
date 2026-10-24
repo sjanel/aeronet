@@ -79,7 +79,6 @@ endif()
 target_include_directories(aeronet_objects
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<$<BOOL:${AERONET_ENABLE_HTTP2}>:$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../http2/include>>
         $<INSTALL_INTERFACE:include>
 )
 
@@ -294,14 +293,14 @@ AeronetAddUnitTest(
 
 # dogstatsd_test uses AF_UNIX sockets and socket override helpers — Linux only.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-AeronetAddUnitTest(
-    dogstatsd_test
-    test/dogstatsd_test.cpp
-    src/dogstatsd.cpp
-    LIBRARIES
-    aeronet_sys
-    aeronet_basic_test_support
-)
+    AeronetAddUnitTest(
+        dogstatsd_test
+        test/dogstatsd_test.cpp
+        src/dogstatsd.cpp
+        LIBRARIES
+        aeronet_sys
+        aeronet_basic_test_support
+    )
 endif()
 
 AeronetAddUnitTest(
@@ -323,6 +322,21 @@ AeronetAddUnitTest(
 AeronetAddUnitTest(
     http-header-is-valid_test
     test/http-header-is-valid_test.cpp
+)
+
+AeronetAddUnitTest(
+    http-headers-view_test
+    test/http-headers-view_test.cpp
+    LIBRARIES
+    aeronet_objects
+    aeronet_basic_test_support
+)
+
+AeronetAddUnitTest(
+    http-method_test
+    test/http-method_test.cpp
+    LIBRARIES
+    aeronet_tech
 )
 
 AeronetAddUnitTest(
@@ -363,6 +377,13 @@ AeronetAddUnitTest(
 AeronetAddUnitTest(
     major-minor-version_test
     test/major-minor-version_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+AeronetAddUnitTest(
+    mergeable-headers_test
+    test/mergeable-headers_test.cpp
     LIBRARIES
     aeronet_tech
 )
@@ -430,19 +451,6 @@ AeronetAddUnitTest(
     LIBRARIES
     aeronet_objects
 )
-
-AeronetAddUnitTest(
-    version_test
-    test/version_test.cpp
-)
-
-if(AERONET_BUILD_TESTS)
-    if(AERONET_ENABLE_OPENSSL)
-        target_link_libraries(version_test PUBLIC aeronet_tls)
-    else()
-        target_link_libraries(version_test PUBLIC aeronet_objects)
-    endif()
-endif()
 
 if(AERONET_ENABLE_ZLIB)
     AeronetAddUnitTest(

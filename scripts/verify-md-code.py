@@ -285,6 +285,7 @@ def fallback_include_dirs() -> List[str]:
         "aeronet/sys/include",
         "aeronet/tech/include",
         "aeronet/tls/include",
+        "aeronet/version/include",
         "aeronet/websocket/include",
     ]
     dirs: List[str] = []

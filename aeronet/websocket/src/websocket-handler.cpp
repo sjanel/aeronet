@@ -63,8 +63,7 @@ void WebSocketHandler::enableCompression(DeflateNegotiatedParams deflateParams, 
       std::make_unique<DeflateContext>(deflateParams, _config.deflateConfig, _config.isServerSide, sharedStreams);
 }
 
-ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> data,
-                                                     [[maybe_unused]] ConnectionState& state) {
+ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> data) {
   // Only complete frames are consumed. The bytes of a trailing incomplete frame are left to the caller, which passes
   // them again, followed by the next received bytes, at the next call (they are not copied here).
   ProtocolProcessResult result;
