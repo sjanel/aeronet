@@ -62,6 +62,7 @@
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
 
+#include "aeronet/async-resume-poster.hpp"
 #include "aeronet/request-task.hpp"
 #endif
 
@@ -381,6 +382,26 @@ class Http2ProtocolLoopback {
   vector<DataEvent> clientData;
   vector<std::pair<uint32_t, ErrorCode>> streamResets;
 };
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+// Installs on a handler a resume poster recording the coroutine resumptions posted by the deferred work of its async
+// handlers.
+struct AsyncResumeRecorder {
+  explicit AsyncResumeRecorder(Http2ProtocolHandler& handler) {
+    handler.setAsyncResumePoster({.pPost = &Record, .pContext = this});
+  }
+
+  static void Record(const AsyncResumePoster& poster, std::coroutine_handle<> postedHandle) {
+    auto& self = *static_cast<AsyncResumeRecorder*>(poster.pContext);
+    self.handle = postedHandle;
+    self.nbPosts.fetch_add(1, std::memory_order_release);
+  }
+
+  // The coroutine of the last post, to read once nbPosts acknowledged it.
+  std::coroutine_handle<> handle;
+  std::atomic<int> nbPosts{0};
+};
+#endif
 
 }  // namespace
 
@@ -5269,8 +5290,6 @@ TEST(Http2ProtocolHandler, StreamingHandlerHeadRequestSendsNoBody) {
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkSuspendsAndResumes) {
   Router router;
-  std::coroutine_handle<> capturedHandle;
-  std::atomic<bool> callbackFired{false};
 
   router.setPath(http::Method::GET, "/async-defer", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
     const int result = co_await req.deferWork([] { return 42; });
@@ -5278,10 +5297,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkSuspendsAndResumes) {
   });
 
   Http2ProtocolLoopback loop(router);
-  loop.handler.setAsyncPostCallback([&capturedHandle, &callbackFired](std::coroutine_handle<> handle) {
-    capturedHandle = handle;
-    callbackFired.store(true, std::memory_order_release);
-  });
+  AsyncResumeRecorder resumes(loop.handler);
   loop.connect();
 
   RawChars hdrs;
@@ -5295,13 +5311,13 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkSuspendsAndResumes) {
 
   // Wait for the background thread to complete and fire the callback
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while (!callbackFired.load(std::memory_order_acquire)) {
+  while (resumes.nbPosts.load(std::memory_order_acquire) == 0) {
     ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "async callback did not fire in time";
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 
   // Resume the async task via the captured coroutine handle
-  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(capturedHandle));
+  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(resumes.handle));
 
   // Pump response back to client
   loop.pumpServerToClient();
@@ -5321,8 +5337,6 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkSuspendsAndResumes) {
 
 TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkWithCorsAndMiddleware) {
   Router router;
-  std::coroutine_handle<> capturedHandle;
-  std::atomic<bool> callbackFired{false};
 
   CorsPolicy cors(CorsPolicy::Active::On);
   cors.allowOrigin("https://async-defer.example.com");
@@ -5337,10 +5351,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkWithCorsAndMiddleware) {
       .after([](const HttpRequestView&, HttpResponse& resp) { resp.header("x-after-mw", "done"); });
 
   Http2ProtocolLoopback loop(router);
-  loop.handler.setAsyncPostCallback([&capturedHandle, &callbackFired](std::coroutine_handle<> handle) {
-    capturedHandle = handle;
-    callbackFired.store(true, std::memory_order_release);
-  });
+  AsyncResumeRecorder resumes(loop.handler);
   loop.connect();
 
   RawChars hdrs;
@@ -5354,12 +5365,12 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkWithCorsAndMiddleware) {
   loop.pumpClientToServer();
 
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while (!callbackFired.load(std::memory_order_acquire)) {
+  while (resumes.nbPosts.load(std::memory_order_acquire) == 0) {
     ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "async callback did not fire in time";
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 
-  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(capturedHandle));
+  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(resumes.handle));
 
   loop.pumpServerToClient();
 
@@ -5378,8 +5389,6 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkWithCorsAndMiddleware) {
 
 TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkExceptionInCompletedHandler) {
   Router router;
-  std::coroutine_handle<> capturedHandle;
-  std::atomic<bool> callbackFired{false};
 
   router.setPath(http::Method::GET, "/async-defer-throw", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
     (void)co_await req.deferWork([] { return 1; });
@@ -5388,10 +5397,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkExceptionInCompletedHandler) {
   });
 
   Http2ProtocolLoopback loop(router);
-  loop.handler.setAsyncPostCallback([&capturedHandle, &callbackFired](std::coroutine_handle<> handle) {
-    capturedHandle = handle;
-    callbackFired.store(true, std::memory_order_release);
-  });
+  AsyncResumeRecorder resumes(loop.handler);
   loop.connect();
 
   RawChars hdrs;
@@ -5404,12 +5410,12 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkExceptionInCompletedHandler) {
   loop.pumpClientToServer();
 
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while (!callbackFired.load(std::memory_order_acquire)) {
+  while (resumes.nbPosts.load(std::memory_order_acquire) == 0) {
     ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "async callback did not fire in time";
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 
-  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(capturedHandle));
+  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(resumes.handle));
 
   loop.pumpServerToClient();
 
@@ -5420,8 +5426,6 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkExceptionInCompletedHandler) {
 
 TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkThrowsNonStdExceptionOnCompletion) {
   Router router;
-  std::coroutine_handle<> capturedHandle;
-  std::atomic<bool> callbackFired{false};
 
   router.setPath(http::Method::GET, "/async-defer-throw-int", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
     (void)co_await req.deferWork([] { return 1; });
@@ -5430,10 +5434,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkThrowsNonStdExceptionOnCompletio
   });
 
   Http2ProtocolLoopback loop(router);
-  loop.handler.setAsyncPostCallback([&capturedHandle, &callbackFired](std::coroutine_handle<> handle) {
-    capturedHandle = handle;
-    callbackFired.store(true, std::memory_order_release);
-  });
+  AsyncResumeRecorder resumes(loop.handler);
   loop.connect();
 
   RawChars hdrs;
@@ -5446,13 +5447,13 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkThrowsNonStdExceptionOnCompletio
   loop.pumpClientToServer();
 
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while (!callbackFired.load(std::memory_order_acquire)) {
+  while (resumes.nbPosts.load(std::memory_order_acquire) == 0) {
     ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "async callback did not fire in time";
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 
   // Resume — coroutine throws a non-std::exception (int), caught by catch(...)
-  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(capturedHandle));
+  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(resumes.handle));
 
   loop.pumpServerToClient();
 
@@ -5466,8 +5467,6 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkThrowsNonStdExceptionOnCompletio
 
 TEST(Http2ProtocolHandler, AsyncHandlerDoubleDeferWorkSuspendsResumesAndCompletes) {
   Router router;
-  std::coroutine_handle<> capturedHandle;
-  std::atomic<int> callbackCount{0};
 
   router.setPath(http::Method::GET, "/async-double-defer", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
     const int r1 = co_await req.deferWork([] { return 10; });
@@ -5476,10 +5475,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDoubleDeferWorkSuspendsResumesAndComplete
   });
 
   Http2ProtocolLoopback loop(router);
-  loop.handler.setAsyncPostCallback([&capturedHandle, &callbackCount](std::coroutine_handle<> handle) {
-    capturedHandle = handle;
-    callbackCount.fetch_add(1, std::memory_order_release);
-  });
+  AsyncResumeRecorder resumes(loop.handler);
   loop.connect();
 
   RawChars hdrs;
@@ -5493,23 +5489,23 @@ TEST(Http2ProtocolHandler, AsyncHandlerDoubleDeferWorkSuspendsResumesAndComplete
 
   // Wait for the first deferWork callback
   auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while (callbackCount.load(std::memory_order_acquire) < 1) {
+  while (resumes.nbPosts.load(std::memory_order_acquire) < 1) {
     ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "first async callback did not fire in time";
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 
   // Resume — coroutine hits the second deferWork and suspends again (covers resumeAsyncTask re-suspend path)
-  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(capturedHandle));
+  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(resumes.handle));
 
   // Wait for the second deferWork callback
   deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while (callbackCount.load(std::memory_order_acquire) < 2) {
+  while (resumes.nbPosts.load(std::memory_order_acquire) < 2) {
     ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "second async callback did not fire in time";
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 
   // Resume again — coroutine completes and sends the response
-  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(capturedHandle));
+  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(resumes.handle));
 
   loop.pumpServerToClient();
 
@@ -5691,12 +5687,17 @@ TEST(Http2ProtocolHandler, RequestCompletionCallbackInvoked) {
   Http2ProtocolLoopback loop(router);
 
   // Register a completion callback and track invocations.
-  int callbackCount = 0;
-  http::StatusCode lastStatus{};
-  loop.handler.setRequestCompletionCallback([&](const HttpRequestView& /*req*/, http::StatusCode status) {
-    ++callbackCount;
-    lastStatus = status;
-  });
+  struct Completions {
+    int count = 0;
+    http::StatusCode lastStatus{};
+  } completions;
+  loop.handler.setRequestCompletionCallback(
+      [](void* pContext, const HttpRequestView& /*req*/, http::StatusCode status) {
+        auto& completed = *static_cast<Completions*>(pContext);
+        ++completed.count;
+        completed.lastStatus = status;
+      },
+      &completions);
 
   loop.connect();
 
@@ -5712,8 +5713,9 @@ TEST(Http2ProtocolHandler, RequestCompletionCallbackInvoked) {
 
   ASSERT_FALSE(loop.clientHeaders.empty());
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "200");
-  EXPECT_EQ(callbackCount, 1);
-  EXPECT_EQ(lastStatus, http::StatusCodeOK);
+  EXPECT_EQ(completions.count, 1);
+  EXPECT_EQ(completions.lastStatus, http::StatusCodeOK);
+  EXPECT_EQ(loop.state.requestsServed, 1U);
 }
 
 #ifdef AERONET_POSIX
@@ -6086,9 +6088,6 @@ TEST(Http2ProtocolHandler, SweepStreamsAsyncTimeoutSends408) {
   Router router;
   using namespace std::chrono_literals;
 
-  std::coroutine_handle<> capturedHandle;
-  std::atomic<bool> callbackFired{false};
-
   router
       .setPath(http::Method::GET, "/async-slow",
                [](HttpRequestView& req) -> RequestTask<HttpResponse> {
@@ -6099,10 +6098,7 @@ TEST(Http2ProtocolHandler, SweepStreamsAsyncTimeoutSends408) {
 
   Http2ProtocolLoopback loop(router);
 
-  loop.handler.setAsyncPostCallback([&capturedHandle, &callbackFired](std::coroutine_handle<> handle) {
-    capturedHandle = handle;
-    callbackFired.store(true, std::memory_order_release);
-  });
+  AsyncResumeRecorder resumes(loop.handler);
 
   loop.connect();
 
@@ -6117,7 +6113,7 @@ TEST(Http2ProtocolHandler, SweepStreamsAsyncTimeoutSends408) {
 
   // Wait for the background thread to complete and fire the callback
   const auto deadline = std::chrono::steady_clock::now() + 5s;
-  while (!callbackFired.load(std::memory_order_acquire)) {
+  while (resumes.nbPosts.load(std::memory_order_acquire) == 0) {
     ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "async callback did not fire in time";
     std::this_thread::sleep_for(1ms);
   }
@@ -6157,12 +6153,7 @@ TEST(Http2ProtocolHandler, SweepStreamsKeepsTheTaskOfATimedOutStreamUntilItsWork
       .timeout(1ms);
 
   Http2ProtocolLoopback loop(router);
-  std::coroutine_handle<> capturedHandle;
-  std::atomic<bool> callbackFired{false};
-  loop.handler.setAsyncPostCallback([&capturedHandle, &callbackFired](std::coroutine_handle<> handle) {
-    capturedHandle = handle;
-    callbackFired.store(true, std::memory_order_release);
-  });
+  AsyncResumeRecorder resumes(loop.handler);
   loop.connect();
 
   // A response larger than the stream window exhausts it, the rest of its body waiting for credit.
@@ -6190,11 +6181,11 @@ TEST(Http2ProtocolHandler, SweepStreamsKeepsTheTaskOfATimedOutStreamUntilItsWork
   EXPECT_TRUE(loop.handler.hasAsyncWorkInFlight());
   releaseWork.store(true, std::memory_order_release);
   const auto deadline = std::chrono::steady_clock::now() + 5s;
-  while (!callbackFired.load(std::memory_order_acquire)) {
+  while (resumes.nbPosts.load(std::memory_order_acquire) == 0) {
     ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "async callback did not fire in time";
     std::this_thread::sleep_for(1ms);
   }
-  EXPECT_FALSE(loop.handler.resumeAsyncTaskByHandle(capturedHandle));
+  EXPECT_FALSE(loop.handler.resumeAsyncTaskByHandle(resumes.handle));
   EXPECT_FALSE(loop.handler.hasAsyncWorkInFlight());
 
   // The body of stream 1 completes once credited.
@@ -6208,9 +6199,6 @@ TEST(Http2ProtocolHandler, SweepStreamsNoExpiryDoesNothing) {
   Router router;
   using namespace std::chrono_literals;
 
-  std::coroutine_handle<> capturedHandle;
-  std::atomic<bool> callbackFired{false};
-
   router
       .setPath(http::Method::GET, "/async-ok",
                [](HttpRequestView& req) -> RequestTask<HttpResponse> {
@@ -6221,10 +6209,7 @@ TEST(Http2ProtocolHandler, SweepStreamsNoExpiryDoesNothing) {
 
   Http2ProtocolLoopback loop(router);
 
-  loop.handler.setAsyncPostCallback([&capturedHandle, &callbackFired](std::coroutine_handle<> handle) {
-    capturedHandle = handle;
-    callbackFired.store(true, std::memory_order_release);
-  });
+  AsyncResumeRecorder resumes(loop.handler);
 
   loop.connect();
 
@@ -6239,7 +6224,7 @@ TEST(Http2ProtocolHandler, SweepStreamsNoExpiryDoesNothing) {
 
   // Wait for background thread to complete
   const auto deadline = std::chrono::steady_clock::now() + 5s;
-  while (!callbackFired.load(std::memory_order_acquire)) {
+  while (resumes.nbPosts.load(std::memory_order_acquire) == 0) {
     ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "async callback did not fire in time";
     std::this_thread::sleep_for(1ms);
   }
@@ -6254,7 +6239,7 @@ TEST(Http2ProtocolHandler, SweepStreamsNoExpiryDoesNothing) {
   }
 
   // Clean up: resume the coroutine so the stream is properly released
-  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(capturedHandle));
+  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(resumes.handle));
   loop.pumpServerToClient();
 }
 #endif
@@ -6761,8 +6746,6 @@ TEST(Http2ProtocolHandler, TraceStillReturns405WhenPolicyAllowsButNoWireFormat) 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 TEST(Http2ProtocolHandler, AsyncCompletionRejectedWhenTunnelBacklogAlreadyOverLimit) {
   Router router;
-  std::coroutine_handle<> capturedHandle;
-  std::atomic<bool> callbackFired{false};
 
   router.setPath(http::Method::GET, "/async-slow2", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
     const int result = co_await req.deferWork([] { return 7; });
@@ -6772,10 +6755,7 @@ TEST(Http2ProtocolHandler, AsyncCompletionRejectedWhenTunnelBacklogAlreadyOverLi
   static constexpr uint32_t kMaxOutboundBufferBytes = 200;  // tiny cap; default 65535 flow-control windows untouched
   Http2ProtocolLoopback loop(router, WithTunnelBridge{}, kMaxOutboundBufferBytes);
 
-  loop.handler.setAsyncPostCallback([&capturedHandle, &callbackFired](std::coroutine_handle<> handle) {
-    capturedHandle = handle;
-    callbackFired.store(true, std::memory_order_release);
-  });
+  AsyncResumeRecorder resumes(loop.handler);
 
   loop.connect();
 
@@ -6798,7 +6778,7 @@ TEST(Http2ProtocolHandler, AsyncCompletionRejectedWhenTunnelBacklogAlreadyOverLi
   loop.pumpClientToServer();
 
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while (!callbackFired.load(std::memory_order_acquire)) {
+  while (resumes.nbPosts.load(std::memory_order_acquire) == 0) {
     ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "async callback did not fire in time";
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
@@ -6815,7 +6795,7 @@ TEST(Http2ProtocolHandler, AsyncCompletionRejectedWhenTunnelBacklogAlreadyOverLi
   // Resume directly too - onAsyncTaskCompleted()'s sendResponse() -> responseExceedsPendingLimits()
   // now sees `retained` already over the limit purely from unread tunnel bytes, before this
   // response's own (tiny) size ever enters the calculation: `retained > limit` fires immediately.
-  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(capturedHandle));
+  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(resumes.handle));
 
   loop.pumpServerToClient();
 

@@ -2,7 +2,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <memory>
 
 #include "aeronet/access-log-writer.hpp"
@@ -30,6 +29,7 @@
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
 
+#include "aeronet/async-resume-poster.hpp"
 #include "aeronet/native-handle.hpp"
 #endif
 
@@ -114,9 +114,19 @@ struct ServerContext {
   void emitRequestMetrics(const HttpRequestView& request, http::StatusCode status);
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  // Post an async callback to be processed in the event loop, then resume the coroutine.
-  // Called from background threads via ConnectionState::asyncState.postCallback.
-  void postAsyncCallback(NativeHandle connectionFd, uint32_t connectionGeneration, std::coroutine_handle<> handle);
+  // Returns the poster making the event loop resume the coroutines of the connection 'connectionFd'.
+  [[nodiscard]] AsyncResumePoster asyncResumePoster(NativeHandle connectionFd, uint32_t connectionGeneration) noexcept {
+    return {
+        .pPost = &PostAsyncResume,
+        .pContext = this,
+        .connectionFd = connectionFd,
+        .connectionGeneration = connectionGeneration,
+    };
+  }
+
+  // Queues the resumption of 'handle' for the event loop of the server context of 'poster', and wakes it up.
+  // Called from background threads, through the poster of the connection.
+  static void PostAsyncResume(const AsyncResumePoster& poster, std::coroutine_handle<> handle);
 #endif
 
   ServerStatsInternal stats;

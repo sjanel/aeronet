@@ -1,7 +1,5 @@
 #include "aeronet/internal/server-context.hpp"
 
-#include <cstdint>
-#include <functional>
 #include <mutex>
 #include <string_view>
 #include <utility>
@@ -19,7 +17,7 @@
 #include <atomic>
 #include <coroutine>
 
-#include "aeronet/native-handle.hpp"
+#include "aeronet/async-resume-poster.hpp"
 #endif
 
 namespace aeronet::internal {
@@ -173,14 +171,14 @@ void ServerContext::emitRequestMetrics(const HttpRequestView& request, http::Sta
 }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-void ServerContext::postAsyncCallback(NativeHandle connectionFd, uint32_t connectionGeneration,
-                                      std::coroutine_handle<> handle) {
-  std::scoped_lock lock(updates.lock);
-  updates.asyncCallbacks.emplace_back(connectionFd, connectionGeneration, handle);
-  updates.hasAsyncCallbacks.store(true, std::memory_order_release);
+void ServerContext::PostAsyncResume(const AsyncResumePoster& poster, std::coroutine_handle<> handle) {
+  auto& ctx = *static_cast<ServerContext*>(poster.pContext);
+  std::scoped_lock lock(ctx.updates.lock);
+  ctx.updates.asyncCallbacks.emplace_back(poster.connectionFd, poster.connectionGeneration, handle);
+  ctx.updates.hasAsyncCallbacks.store(true, std::memory_order_release);
   // Still under the lock: once it is released, the server may be destroyed (see
   // SingleHttpServer::waitForOrphanedAsyncWork()).
-  lifecycle.wakeupFd.send();
+  ctx.lifecycle.wakeupFd.send();
 }
 #endif
 

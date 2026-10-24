@@ -82,39 +82,44 @@ class ImmutableConfigSnapshot {
 }  // namespace
 
 RouterUpdateProxy SingleHttpServer::router() {
-  return {[this](std::function<void(Router&)> updater) {
+  return {[](void* pServer, std::function<void(Router&)> updater) {
             auto completion = std::make_shared<std::promise<std::exception_ptr>>();
             auto future = completion->get_future();
-            this->submitRouterUpdate(std::move(updater), std::move(completion));
+            static_cast<SingleHttpServer*>(pServer)->submitRouterUpdate(std::move(updater), std::move(completion));
             if (auto ex = future.get()) {
               std::rethrow_exception(ex);
             }
           },
-          [this] -> Router& { return _ctx.router; }};
+          this};
 }
 
 void SingleHttpServer::setParserErrorCallback(ParserErrorCallback cb) {
-  submitCallbacksUpdate([cb = std::move(cb)](internal::ServerCallbacks& callbacks) { callbacks.parserErr = cb; });
+  submitCallbacksUpdate(
+      [cb = std::move(cb)](internal::ServerCallbacks& callbacks) mutable { callbacks.parserErr = std::move(cb); });
 }
 
 void SingleHttpServer::setMetricsCallback(MetricsCallback cb) {
-  submitCallbacksUpdate([cb = std::move(cb)](internal::ServerCallbacks& callbacks) { callbacks.metrics = cb; });
+  submitCallbacksUpdate(
+      [cb = std::move(cb)](internal::ServerCallbacks& callbacks) mutable { callbacks.metrics = std::move(cb); });
 }
 
 #ifdef AERONET_ENABLE_OPENSSL
 void SingleHttpServer::setTlsHandshakeCallback(TlsHandshakeCallback cb) {
-  submitCallbacksUpdate([cb = std::move(cb)](internal::ServerCallbacks& callbacks) { callbacks.tlsHandshake = cb; });
+  submitCallbacksUpdate(
+      [cb = std::move(cb)](internal::ServerCallbacks& callbacks) mutable { callbacks.tlsHandshake = std::move(cb); });
 }
 #endif
 
 void SingleHttpServer::setExpectationHandler(ExpectationHandler handler) {
-  submitCallbacksUpdate(
-      [handler = std::move(handler)](internal::ServerCallbacks& callbacks) { callbacks.expectation = handler; });
+  submitCallbacksUpdate([handler = std::move(handler)](internal::ServerCallbacks& callbacks) mutable {
+    callbacks.expectation = std::move(handler);
+  });
 }
 
 void SingleHttpServer::setMiddlewareMetricsCallback(MiddlewareMetricsCallback cb) {
-  submitCallbacksUpdate(
-      [cb = std::move(cb)](internal::ServerCallbacks& callbacks) { callbacks.middlewareMetrics = cb; });
+  submitCallbacksUpdate([cb = std::move(cb)](internal::ServerCallbacks& callbacks) mutable {
+    callbacks.middlewareMetrics = std::move(cb);
+  });
 }
 
 void SingleHttpServer::submitCallbacksUpdate(std::function<void(internal::ServerCallbacks&)> updater) {

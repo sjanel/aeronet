@@ -1436,7 +1436,7 @@ bool Http2ProtocolHandler::startAsyncHandler(StreamsMap::iterator it, const Rout
 
   // Install HTTP/2 async callback mechanism on the request now
   req._pH2SuspendedFlag = &pendingRef.suspended;
-  req._h2PostCallback = _asyncPostCallback;
+  req._pH2ResumePoster = &_asyncResumePoster;
 
   // Store in the variant
   state.pending = std::move(pendingPtr);
@@ -1607,8 +1607,9 @@ void Http2ProtocolHandler::onRequestCompleted(HttpRequestView& request, http::St
   }
 
   request.end(status);
-  if (_requestCompletionCallback) {
-    _requestCompletionCallback(request, status);
+  ++_pConnectionState->requestsServed;
+  if (_pRequestCompletionFn != nullptr) {
+    _pRequestCompletionFn(_pRequestCompletionContext, request, status);
   }
 }
 

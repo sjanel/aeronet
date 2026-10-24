@@ -68,7 +68,7 @@ class MultiHttpServer {
   };
 
   // HandleState: the per-start shared state referenced by the AsyncHandle, the worker-thread stop predicates and (when
-  // a stop_token is supplied) the stop-token binding. It merges the stop callback and the completion signal into one
+  // a stop_token is supplied) the stop-token binding. It merges the servers to stop and the completion signal into one
   // block so a single allocation and a single weak_ptr replace what were previously two of each. The stop-token binding
   // is kept OUT of this block on purpose: its stop action captures the state, so nesting it here would form a cycle.
   struct HandleState;
@@ -108,7 +108,7 @@ class MultiHttpServer {
 
     vector<SingleHttpServer::AsyncHandle> _serverHandles;
     std::shared_ptr<ControlBlock> _control;  // stopRequested + lifecycleTracker, shared with the MultiHttpServer
-    std::shared_ptr<HandleState> _state;     // stop callback + completion signal
+    std::shared_ptr<HandleState> _state;     // servers to stop + completion signal
     std::shared_ptr<void> _stopTokenBinding;
     std::exception_ptr _storedError;
     std::atomic<bool> _stopCalled{false};

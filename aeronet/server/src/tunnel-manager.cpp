@@ -48,7 +48,7 @@ constexpr std::string_view kResolutionTimedOut = "CONNECT target resolution time
 
 }  // namespace
 
-TunnelManager::TunnelManager(ServerContext& ctx) : _ctx(ctx), _resolver([&ctx] { ctx.lifecycle.wakeupFd.send(); }) {}
+TunnelManager::TunnelManager(ServerContext& ctx) : _ctx(ctx), _resolver(ctx.lifecycle.wakeupFd) {}
 
 TunnelManager& TunnelManager::Of(ServerContext& ctx) {
   if (ctx.tunnels == nullptr) {
