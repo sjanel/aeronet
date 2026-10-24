@@ -6,6 +6,7 @@ endif()
 
 if(NOT AERONET_ENABLE_HTTP2)
     list(REMOVE_ITEM AERONET_SERVER_SRC_LIST src/http2-connections.cpp)
+    list(REMOVE_ITEM AERONET_SERVER_SRC_LIST src/http2-protocol-handler.cpp)
 endif()
 
 if(NOT AERONET_ENABLE_GLAZE)
@@ -14,11 +15,6 @@ endif()
 
 if(NOT AERONET_ENABLE_TEST_HOOKS)
     list(REMOVE_ITEM AERONET_SERVER_SRC_LIST src/transport-test-hook.cpp)
-endif()
-
-# Remove upgrade-handler.cpp if neither HTTP/2 nor WebSocket is enabled
-if(NOT AERONET_ENABLE_HTTP2 AND NOT AERONET_ENABLE_WEBSOCKET)
-    list(REMOVE_ITEM AERONET_SERVER_SRC_LIST src/upgrade-handler.cpp)
 endif()
 
 AeronetAddProjectLibrary(aeronet_server
@@ -47,7 +43,7 @@ if(DEFINED opentelemetry_cpp_SOURCE_DIR)
 endif()
 
 target_link_libraries(aeronet_server
-    PUBLIC aeronet_tech aeronet_sys aeronet_objects aeronet_http
+    PUBLIC aeronet_tech aeronet_sys aeronet_objects aeronet_http aeronet_version
 )
 
 if(AERONET_ENABLE_OPENSSL)
@@ -56,6 +52,10 @@ endif()
 
 if(AERONET_ENABLE_HTTP2)
     target_link_libraries(aeronet_server PUBLIC aeronet_http2)
+endif()
+
+if(AERONET_ENABLE_WEBSOCKET)
+    target_link_libraries(aeronet_server PUBLIC aeronet_websocket)
 endif()
 
 if(AERONET_ENABLE_TEST_HOOKS)
@@ -73,8 +73,20 @@ AeronetAddUnitTest(
     aeronet_test_support
 )
 
+# connection-state_test uses socketpair(AF_UNIX), fcntl, and sendfile/pread overrides - Linux only.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    AeronetAddUnitTest(
+        connection-state_test
+        test/connection-state_test.cpp
+        LIBRARIES
+        aeronet_server
+        aeronet_test_support
+    )
+endif()
+
 AeronetAddUnitTest(
     connection-storage_test
+    src/connection-state.cpp
     src/connection-storage.cpp
     test/connection-storage_test.cpp
     LIBRARIES
@@ -97,12 +109,30 @@ AeronetAddUnitTest(
     aeronet_basic_test_support
 )
 
+if(AERONET_ENABLE_HTTP2)
+    AeronetAddUnitTest(
+        http2-protocol-handler_test
+        test/http2-protocol-handler_test.cpp
+        LIBRARIES
+        aeronet_server
+        aeronet_test_support
+    )
+endif()
+
 AeronetAddUnitTest(
     http-parser_test
     test/http-parser_test.cpp
     LIBRARIES
     aeronet_server
     aeronet_test_support
+)
+
+AeronetAddUnitTest(
+    https-redirect_test
+    src/https-redirect.cpp
+    test/https-redirect_test.cpp
+    LIBRARIES
+    aeronet_http
 )
 
 AeronetAddUnitTest(
@@ -133,6 +163,13 @@ AeronetAddUnitTest(
     multipart-form-data_test
     src/multipart-form-data.cpp
     test/multipart-form-data_test.cpp
+    LIBRARIES
+    aeronet_objects
+)
+
+AeronetAddUnitTest(
+    output-queue_test
+    test/output-queue_test.cpp
     LIBRARIES
     aeronet_objects
 )
@@ -187,6 +224,7 @@ AeronetAddUnitTest(
 if(AERONET_BUILD_TESTS)
     if(AERONET_ENABLE_OPENSSL)
         target_link_libraries(connection-storage_test PUBLIC aeronet_tls)
+        target_link_libraries(keep-alive-deadline-queue_test PUBLIC aeronet_tls)
     endif()
 endif()
 
@@ -198,20 +236,3 @@ AeronetAddUnitTest(
     aeronet_http
     aeronet_test_support
 )
-
-if (AERONET_BUILD_TESTS AND (AERONET_ENABLE_HTTP2 OR AERONET_ENABLE_WEBSOCKET))
-    AeronetAddUnitTest(
-        upgrade-handler_test
-        src/upgrade-handler.cpp
-        test/upgrade-handler_test.cpp
-        LIBRARIES
-        aeronet_basic_test_support
-    )
-    target_link_libraries(upgrade-handler_test PUBLIC aeronet_http)
-    if(AERONET_ENABLE_HTTP2)
-        target_link_libraries(upgrade-handler_test PUBLIC aeronet_http2)
-    endif()
-    if(AERONET_ENABLE_WEBSOCKET)
-        target_link_libraries(upgrade-handler_test PUBLIC aeronet_websocket)
-    endif()
-endif()

@@ -19,28 +19,23 @@ AeronetAddProjectLibrary(aeronet_client
 # Reuse existing aeronet bricks: http (HttpResponse container, http types), sys (event loop,
 # transports, TCP connector, socket ops), objects (http version, flat_hash_map).
 target_link_libraries(aeronet_client
-    PUBLIC aeronet_http aeronet_sys aeronet_objects
+    PUBLIC aeronet_http aeronet_sys aeronet_objects aeronet_version
 )
 
-# Native HTTP/2 client engine: reuses the server's HPACK + frame codecs (Http2Connection).
+# Native HTTP/2 client engine: the HTTP/2 protocol core (HPACK, frames, Http2Connection), shared with the server.
 if(AERONET_ENABLE_HTTP2)
     target_link_libraries(aeronet_client PRIVATE aeronet_http2)
-    target_include_directories(aeronet_client PRIVATE
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/aeronet/http2/include>)
 endif()
 
 target_include_directories(aeronet_client
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/aeronet/http/include>
         $<INSTALL_INTERFACE:include>
 )
 
 if(AERONET_ENABLE_OPENSSL)
     find_package(OpenSSL REQUIRED)
     target_link_libraries(aeronet_client PRIVATE OpenSSL::SSL OpenSSL::Crypto aeronet_tls)
-    target_include_directories(aeronet_client PRIVATE
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/aeronet/tls/include>)
     if(WIN32)
         # The default trust store is loaded from the Windows system certificate store (CertOpenSystemStoreW).
         target_link_libraries(aeronet_client PRIVATE crypt32)

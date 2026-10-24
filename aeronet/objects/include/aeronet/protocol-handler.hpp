@@ -3,7 +3,6 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <span>
 #include <string_view>
 
@@ -15,8 +14,6 @@
 #endif
 
 namespace aeronet {
-
-struct ConnectionState;
 
 /// Protocol type identifier for runtime protocol switching.
 /// Used after successful Upgrade (101) or ALPN negotiation.
@@ -67,15 +64,13 @@ class IProtocolHandler {
   /// Process incoming data from the connection.
   ///
   /// @param data   Incoming bytes from the transport layer
-  /// @param state  Connection state (buffers, flags, transport)
   /// @return       Processing result indicating next action
   ///
   /// The handler should:
   ///   - Parse incoming frames/messages according to protocol rules
-  ///   - Update connection state as needed
   ///   - Return how many bytes were consumed
   ///   - Indicate if a response is ready, upgrade requested, or error occurred
-  [[nodiscard]] virtual ProtocolProcessResult processInput(std::span<const std::byte> data, ConnectionState& state) = 0;
+  [[nodiscard]] virtual ProtocolProcessResult processInput(std::span<const std::byte> data) = 0;
 
   /// Get pending output data to be written to the transport.
   [[nodiscard]] virtual std::span<const std::byte> getPendingOutput() const noexcept = 0;
@@ -144,9 +139,5 @@ class IProtocolHandler {
     }
   }
 };
-
-/// Factory function type for creating protocol handlers.
-/// Used when upgrading protocols or creating handlers for new connections.
-using ProtocolHandlerFactory = std::unique_ptr<IProtocolHandler> (*)(ConnectionState&);
 
 }  // namespace aeronet

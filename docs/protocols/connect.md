@@ -84,5 +84,5 @@ Extended CONNECT (RFC 8441, the `:protocol` pseudo-header used for WebSocket ove
 ## Tests
 
 - HTTP/1.1 tunnels, target validation, allowlist, background resolution and its limits (`504`, `503`), DNS failure, backpressure in both directions, and cleanup: [tests/http-connect_test.cpp](../../tests/http-connect_test.cpp).
-- HTTP/2 tunnels, flow control and backpressure, resolution limits: [tests/http2-connect_test.cpp](../../tests/http2-connect_test.cpp), and streams waiting for their resolution or for a slow target: [http2-protocol-handler_test.cpp](../../aeronet/http2/test/http2-protocol-handler_test.cpp). Stream window hold: [http2-connection_test.cpp](../../aeronet/http2/test/http2-connection_test.cpp).
+- HTTP/2 tunnels, flow control and backpressure, resolution limits: [tests/http2-connect_test.cpp](../../tests/http2-connect_test.cpp), and streams waiting for their resolution or for a slow target: [http2-protocol-handler_test.cpp](../../aeronet/server/test/http2-protocol-handler_test.cpp). Stream window hold: [http2-connection_test.cpp](../../aeronet/http2/test/http2-connection_test.cpp).
 - Target parsing: [connect-target_test.cpp](../../aeronet/objects/test/connect-target_test.cpp). Background resolution: [tunnel-resolver_test.cpp](../../aeronet/server/test/tunnel-resolver_test.cpp).

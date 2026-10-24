@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.28)
 
 add_library(aeronet_module)
 
+# Scanning is disabled project-wide (see the top-level CMakeLists.txt), but a CXX_MODULES file set requires it.
+set_target_properties(aeronet_module PROPERTIES CXX_SCAN_FOR_MODULES ON)
+
 target_sources(aeronet_module
     PUBLIC
         FILE_SET CXX_MODULES FILES
@@ -25,6 +28,7 @@ target_include_directories(aeronet_module PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/aeronet/sys/include>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/aeronet/tech/include>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/aeronet/tls/include>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/aeronet/version/include>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/aeronet/websocket/include>
     $<INSTALL_INTERFACE:include>
 )

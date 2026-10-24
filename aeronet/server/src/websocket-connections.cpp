@@ -20,10 +20,10 @@
 #include "aeronet/single-http-server.hpp"
 
 #ifdef AERONET_ENABLE_WEBSOCKET
+#include "aeronet/upgrade-handler.hpp"
 #include "aeronet/websocket-endpoint.hpp"
 #include "aeronet/websocket-handler.hpp"
 #include "aeronet/websocket-upgrade.hpp"
-#include "upgrade-handler.hpp"
 #endif
 
 namespace aeronet {

@@ -57,16 +57,13 @@
 #include "tunnel-manager.hpp"
 
 #ifdef AERONET_ENABLE_WEBSOCKET
+#include "aeronet/upgrade-handler.hpp"
 #include "aeronet/websocket-endpoint.hpp"
 #include "aeronet/websocket-handler.hpp"
 #endif
 
-#if defined(AERONET_ENABLE_HTTP2) || defined(AERONET_ENABLE_WEBSOCKET)
-#include "upgrade-handler.hpp"
-
 #ifdef AERONET_ENABLE_HTTP2
 #include "aeronet/http2-frame-types.hpp"
-#endif
 #endif
 
 namespace aeronet {
@@ -214,7 +211,7 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
                                          pState->inBuffer.size());
 
     // Process input through the protocol handler.
-    const auto result = handler.processInput(inputData, *pState);
+    const auto result = handler.processInput(inputData);
 
     // processInput may insert new elements in connections.
     cnxIt = _connections.iterator(clientFd);

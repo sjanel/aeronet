@@ -17,8 +17,6 @@
 
 namespace aeronet {
 
-struct ConnectionState;
-
 namespace websocket {
 
 /// Configuration options for WebSocket connections.
@@ -114,7 +112,7 @@ class WebSocketHandler final : public IProtocolHandler {
   // IProtocolHandler implementation
   [[nodiscard]] ProtocolType type() const noexcept override { return ProtocolType::WebSocket; }
 
-  [[nodiscard]] ProtocolProcessResult processInput(std::span<const std::byte> data, ConnectionState& state) override;
+  [[nodiscard]] ProtocolProcessResult processInput(std::span<const std::byte> data) override;
 
   [[nodiscard]] std::span<const std::byte> getPendingOutput() const noexcept override {
     std::span<const std::byte> pending(_outputBuffer.begin() + _outputOffset, _outputBuffer.end());

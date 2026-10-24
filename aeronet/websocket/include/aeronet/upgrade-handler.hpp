@@ -4,11 +4,8 @@
 
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
-
-#ifdef AERONET_ENABLE_WEBSOCKET
 #include "aeronet/websocket-deflate.hpp"
 #include "aeronet/websocket-upgrade.hpp"
-#endif
 
 namespace aeronet {
 
@@ -18,12 +15,10 @@ struct UpgradeValidationResult {
 
   ProtocolType targetProtocol{ProtocolType::Http11};
 
-#ifdef AERONET_ENABLE_WEBSOCKET
   B64EncodedSha1 secWebSocketAccept;  // Computed Sec-WebSocket-Accept value
 
   // Negotiated WebSocket permessage-deflate parameters (if compression was negotiated)
   websocket::DeflateNegotiatedParams deflateParams;
-#endif
 
   const char* pErrorMessage = nullptr;  // Populated if !valid
 
@@ -48,7 +43,6 @@ namespace upgrade {
 /// @return                 True if "upgrade" token is present
 [[nodiscard]] bool ConnectionContainsUpgrade(std::string_view connectionValue);
 
-#ifdef AERONET_ENABLE_WEBSOCKET
 /// Check if the request contains an Upgrade header requesting WebSocket.
 ///
 /// Validates:
@@ -62,7 +56,6 @@ namespace upgrade {
 /// @return         Validation result with computed Sec-WebSocket-Accept if valid
 [[nodiscard]] UpgradeValidationResult ValidateWebSocketUpgrade(const SvToSvMap& headers,
                                                                const WebSocketUpgradeConfig& config);
-#endif
 
 /// Detect the upgrade target from an HTTP request.
 ///
@@ -72,8 +65,6 @@ namespace upgrade {
 /// @param upgradeHeaderValue  Value of the Upgrade request header (empty if absent)
 /// @return                    Target protocol type, or Http11 if no supported upgrade is requested (including "h2c")
 [[nodiscard]] ProtocolType DetectUpgradeTarget(std::string_view upgradeHeaderValue);
-
-#ifdef AERONET_ENABLE_WEBSOCKET
 
 /// Tell whether a WebSocket upgrade request comes from a page of the server itself, or from a client that is not a
 /// browser: either there is no Origin header, or its host and port (default port of its scheme omitted) are the ones
@@ -90,7 +81,6 @@ std::size_t ComputeWebSocketUpgradeResponseSize(const UpgradeValidationResult& v
 ///
 /// @param validationResult  Result from ValidateWebSocketUpgrade() (must be valid)
 void BuildWebSocketUpgradeResponse(const UpgradeValidationResult& validationResult, char* pData);
-#endif
 
 }  // namespace upgrade
 

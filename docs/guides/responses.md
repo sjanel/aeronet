@@ -177,4 +177,4 @@ An exception escaping a handler is caught by the server, logged with its message
 - Response building, headers, bodies, and trailers: [http-response_test.cpp](../../aeronet/http/test/http-response_test.cpp).
 - `makeResponse()`, including moved bodies and `HEAD` requests: [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp).
 - End-to-end responses, keep-alive, and empty bodies: [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
-- Handlers that throw: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp), [tests/http-routing_test.cpp](../../tests/http-routing_test.cpp) (async handlers), and [http2-protocol-handler_test.cpp](../../aeronet/http2/test/http2-protocol-handler_test.cpp) (HTTP/2).
+- Handlers that throw: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp), [tests/http-routing_test.cpp](../../tests/http-routing_test.cpp) (async handlers), and [http2-protocol-handler_test.cpp](../../aeronet/server/test/http2-protocol-handler_test.cpp) (HTTP/2).
