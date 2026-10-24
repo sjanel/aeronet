@@ -108,7 +108,7 @@ PathHandlerEntry& RouteGroup::setPath(http::Method method, std::string_view subp
 
 #ifdef AERONET_ENABLE_WEBSOCKET
 PathHandlerEntry& RouteGroup::setWebSocket(std::string_view subpath, WebSocketEndpoint endpoint) {
-  auto& entry = _router->setWebSocket(FullPath(_prefix, subpath), std::move(endpoint));
+  PathHandlerEntry& entry = _router->setWebSocket(FullPath(_prefix, subpath), std::move(endpoint));
   applyGroupConfig(entry);
   return entry;
 }
