@@ -174,9 +174,9 @@ void ServerContext::emitRequestMetrics(const HttpRequestView& request, http::Sta
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 void ServerContext::postAsyncCallback(NativeHandle connectionFd, uint32_t connectionGeneration,
-                                      std::coroutine_handle<> handle, std::function<void()> work) {
+                                      std::coroutine_handle<> handle) {
   std::scoped_lock lock(updates.lock);
-  updates.asyncCallbacks.emplace_back(connectionFd, connectionGeneration, handle, std::move(work));
+  updates.asyncCallbacks.emplace_back(connectionFd, connectionGeneration, handle);
   updates.hasAsyncCallbacks.store(true, std::memory_order_release);
   // Still under the lock: once it is released, the server may be destroyed (see
   // SingleHttpServer::waitForOrphanedAsyncWork()).

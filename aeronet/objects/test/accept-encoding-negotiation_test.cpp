@@ -2,9 +2,11 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <vector>
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/encoding.hpp"
@@ -112,7 +114,7 @@ TEST(AcceptEncodingNegotiationTest, WildcardZeroPreventsUnlistedSelection) {
     cfg.preferredFormats.push_back(Encoding::gzip);
     cfg.preferredFormats.push_back(Encoding::deflate);
   }
-  auto sel = EncodingSelector(cfg);
+  EncodingSelector sel(cfg);
   // Explicit gzip q=0 -> not acceptable; wildcard q=0 -> nothing else acceptable, identity included (RFC 9110 §12.5.3)
   {
     auto resultWildcardAllZero = sel.negotiateAcceptEncoding("gzip;q=0, *;q=0");
@@ -494,6 +496,9 @@ TEST(AcceptEncodingNegotiationTest, PartialPreferredFormatsRanksUnlistedEncoding
   EXPECT_EQ(sel.negotiateAcceptEncoding("*").encoding, Encoding::deflate);
   EXPECT_EQ(sel.negotiateAcceptEncoding("deflate;q=0, *").encoding, kPreferredEncodingsAfterDeflate);
   EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.5, *;q=0.4").encoding, Encoding::gzip);
+  // On a q tie, deflate reached through the wildcard beats gzip listed explicitly, as it ranks first.
+  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.8, *;q=0.8").encoding, Encoding::deflate);
+  EXPECT_EQ(sel.negotiateAcceptEncoding("*;q=0.8, gzip;q=0.8").encoding, Encoding::deflate);
 }
 
 TEST(AcceptEncodingNegotiationTest, PreferredIdentityOnlyRanksCompressionAfterIdentity) {
@@ -593,6 +598,46 @@ TEST(AcceptEncodingNegotiationTest, DefaultPreferenceOrderCoversExactlyTheEnable
   }
 
   // Every enabled encoding, identity included, is now excluded: nothing is left to pick.
+  const auto exhausted = sel.negotiateAcceptEncoding(excluded + "*");
+  EXPECT_EQ(exhausted.encoding, Encoding::none);
+  EXPECT_TRUE(exhausted.reject);
+}
+
+// Same walk with a configured order: the enabled encodings in reverse enum order, identity first, except the first
+// enabled one which is left unlisted, so it must rank last. Covers every rank in any build configuration.
+TEST(AcceptEncodingNegotiationTest, ConfiguredPreferenceOrderCoversExactlyTheEnabledEncodings) {
+  std::vector<Encoding> order;  // expected server preference order
+  for (auto pos = kNbContentEncodings; pos > 0; --pos) {
+    const auto enc = static_cast<Encoding>(pos - 1);
+    if (IsEncodingEnabled(enc)) {
+      order.push_back(enc);
+    }
+  }
+  CompressionConfig cfg;
+  for (std::size_t idx = 0; idx + 1 < order.size(); ++idx) {
+    cfg.preferredFormats.push_back(order[idx]);
+  }
+  cfg.validate();
+  EncodingSelector sel(cfg);
+
+  std::string excluded;  // "identity;q=0, deflate;q=0, ..."
+  for (std::size_t idx = 0; idx < order.size(); ++idx) {
+    const auto result = sel.negotiateAcceptEncoding(excluded + "*");
+    EXPECT_EQ(result.encoding, order[idx]) << "after excluding: " << excluded;
+    EXPECT_FALSE(result.reject) << "after excluding: " << excluded;
+    // The remaining encodings listed explicitly with the same q select it too, whatever their order in the header.
+    std::string remaining;
+    std::string remainingReversed;
+    for (std::size_t other = idx; other < order.size(); ++other) {
+      const std::string token = std::string(GetEncodingStr(order[other])) + ", ";
+      remaining += token;
+      remainingReversed.insert(0, token);
+    }
+    EXPECT_EQ(sel.negotiateAcceptEncoding(remaining).encoding, order[idx]) << remaining;
+    EXPECT_EQ(sel.negotiateAcceptEncoding(remainingReversed).encoding, order[idx]) << remainingReversed;
+    excluded += std::string(GetEncodingStr(order[idx])) + ";q=0, ";
+  }
+
   const auto exhausted = sel.negotiateAcceptEncoding(excluded + "*");
   EXPECT_EQ(exhausted.encoding, Encoding::none);
   EXPECT_TRUE(exhausted.reject);

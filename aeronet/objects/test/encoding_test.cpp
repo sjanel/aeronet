@@ -4,11 +4,14 @@
 
 #include <type_traits>
 
+#include "aeronet/features.hpp"
 #include "aeronet/http-constants.hpp"
 
 namespace aeronet {
 
 static_assert(kNbContentEncodings == 5);
+static_assert(kNbSupportedEncodings ==
+              1 + (zstdEnabled() ? 1 : 0) + (brotliEnabled() ? 1 : 0) + (zlibEnabled() ? 2 : 0));
 static_assert(GetEncodingStr(Encoding::zstd) == http::zstd);
 static_assert(GetEncodingStr(Encoding::br) == http::br);
 static_assert(GetEncodingStr(Encoding::gzip) == http::gzip);

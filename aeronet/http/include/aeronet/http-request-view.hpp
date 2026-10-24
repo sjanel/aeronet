@@ -149,7 +149,7 @@ class HttpRequestView {
           // this one concurrently with its use.
           state.reset();
           try {
-            postCallback(handle, nullptr);
+            postCallback(handle);
           } catch (const std::exception& ex) {
             // Only fails on memory exhaustion: the coroutine is then never resumed.
             // Logging is delegated to a non-template free function (defined in http-request.cpp) so the
@@ -191,7 +191,7 @@ class HttpRequestView {
     HttpRequestView& _request;
     WorkFn _work;
     std::shared_ptr<State> _state;
-    std::function<void(std::coroutine_handle<>, std::function<void()>)> _postCallback;
+    std::function<void(std::coroutine_handle<>)> _postCallback;
   };
 #endif
 
@@ -735,35 +735,9 @@ class HttpRequestView {
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   void markAwaitingBody() const noexcept;
   void markAwaitingCallback() const noexcept;
-  [[nodiscard]] std::function<void(std::coroutine_handle<>, std::function<void()>)> copyPostCallback() const;
-
-  // Signals the server's event loop to resume the coroutine identified by `handle`.
-  // Typically called from a background thread (e.g. the detached thread inside
-  // DeferredWorkAwaitable::await_suspend) once deferred work has completed.
-  //
-  // `work` is an optional callable that the event loop executes on its own thread
-  // *immediately before* resuming the coroutine. Use it for any mutation of
-  // connection-level state that must happen on the event-loop thread without a lock
-  // (e.g. injecting a side-channel result into a shared data structure). Pass a
-  // default-constructed / nullptr std::function when no pre-resume work is needed;
-  // DeferredWorkAwaitable always passes nullptr because the result is already stored
-  // directly on the coroutine frame in `_result` / `_exception`.
-  //
-  // Routing:
-  //   - HTTP/2 streams: delegates to _h2PostCallback, which posts the (handle, work)
-  //     pair to the per-stream HTTP/2 protocol handler running on the event-loop thread.
-  //   - HTTP/1.x: delegates to asyncState.postCallback installed by SingleHttpServer
-  //     at handler-dispatch time; enqueues the pair into a thread-safe pending-updates
-  //     queue and wakes the event loop via a wakeup fd.
-  //
-  // Thread safety: safe to call from any thread.
-  //
-  // Throws: if the underlying channel to the event loop is broken (e.g. the connection
-  // was closed and its state reclaimed while background work was running). The caller in
-  // DeferredWorkAwaitable::await_suspend wraps this in a try/catch so the exception is
-  // absorbed and logged; the coroutine is simply never resumed and the server's idle-sweep
-  // or drain-close will eventually reclaim any remaining resources.
-  void postCallback(std::coroutine_handle<> handle, std::function<void()> work) const;
+  // Returns the callback that makes the server's event loop resume a coroutine, safe to call from any thread:
+  // _h2PostCallback for an HTTP/2 stream, asyncState.postCallback for HTTP/1.x.
+  [[nodiscard]] std::function<void(std::coroutine_handle<>)> copyPostCallback() const;
 #endif
 
   [[nodiscard]] HttpResponse::Options makeResponseOptions() const noexcept;
@@ -827,8 +801,8 @@ class HttpRequestView {
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   // HTTP/2 async handler support: alternative callback mechanism for per-stream async tasks.
-  // When set, markAwaitingCallback() / postCallback() use these instead of _pOwnerState->asyncState.
-  using H2PostCallbackFn = std::function<void(std::coroutine_handle<>, std::function<void()>)>;
+  // When set, markAwaitingCallback() / copyPostCallback() use these instead of _pOwnerState->asyncState.
+  using H2PostCallbackFn = std::function<void(std::coroutine_handle<>)>;
   H2PostCallbackFn _h2PostCallback;
   bool* _pH2SuspendedFlag{nullptr};
 #endif

@@ -274,9 +274,6 @@ class HttpRequestViewTest : public ::testing::Test {
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   void callPinHeadStorage() { req.pinHeadStorage(cs.ensureAsyncState(asyncStatePoolStorage).headBuffer); }
-  void callPostCallback(std::coroutine_handle<> handle, std::function<void()> work) {
-    req.postCallback(handle, std::move(work));
-  }
   void setH2PostCallback(HttpRequestView::H2PostCallbackFn fn) { req._h2PostCallback = std::move(fn); }
   void setH2SuspendedFlag(bool* flag) { req._pH2SuspendedFlag = flag; }
 #endif
@@ -506,43 +503,6 @@ TEST_F(HttpRequestViewTest, HasMoreBodyNeedsBothActiveAndNeedsBody) {
   EXPECT_TRUE(req.hasMoreBody());
 }
 
-// postCallback: HTTP/1.x path forwards the non-null work function to asyncState.postCallback.
-TEST_F(HttpRequestViewTest, PostCallback_Http1Path_NonNullWork_IsPassedToAsyncState) {
-  cs.asyncState->active = true;
-  std::coroutine_handle<> capturedHandle{};
-  std::function<void()> capturedWork;
-  cs.asyncState->postCallback = [&](std::coroutine_handle<> handle, std::function<void()> work) {
-    capturedHandle = handle;
-    capturedWork = std::move(work);
-  };
-
-  bool workCalled = false;
-  callPostCallback(std::coroutine_handle<>{}, [&workCalled] { workCalled = true; });
-
-  // asyncState.postCallback should have received the non-null work function.
-  ASSERT_TRUE(capturedWork) << "asyncState.postCallback should have received a non-null work callback";
-  capturedWork();
-  EXPECT_TRUE(workCalled) << "The forwarded work function should be invocable";
-}
-
-// postCallback: HTTP/2 path forwards the non-null work function to _h2PostCallback.
-TEST_F(HttpRequestViewTest, PostCallback_H2Path_NonNullWork_IsPassedToH2Callback) {
-  std::coroutine_handle<> capturedHandle{};
-  std::function<void()> capturedWork;
-  setH2PostCallback([&](std::coroutine_handle<> handle, std::function<void()> work) {
-    capturedHandle = handle;
-    capturedWork = std::move(work);
-  });
-
-  bool workCalled = false;
-  callPostCallback(std::coroutine_handle<>{}, [&workCalled] { workCalled = true; });
-
-  // _h2PostCallback should have received the non-null work function.
-  ASSERT_TRUE(capturedWork) << "_h2PostCallback should have received a non-null work callback";
-  capturedWork();
-  EXPECT_TRUE(workCalled) << "The forwarded work function should be invocable";
-}
-
 // When postCallback throws (e.g. connection closed while background work was running),
 // DeferredWorkAwaitable::await_suspend swallows the exception and calls log::error.
 // Verified here by confirming no exception escapes and the code reaches the error path.
@@ -554,7 +514,7 @@ TEST_F(HttpRequestViewTest, DeferredWork_PostCallbackThrows_AbsorbedAndLogged) {
 
   // postCallback will throw, simulating a broken event-loop channel.
   std::atomic<bool> postCallbackInvoked{false};
-  setH2PostCallback([&postCallbackInvoked](std::coroutine_handle<>, const std::function<void()>&) {
+  setH2PostCallback([&postCallbackInvoked](std::coroutine_handle<>) {
     postCallbackInvoked.store(true, std::memory_order_release);
     throw std::runtime_error("connection closed while background work was running");
   });
@@ -584,9 +544,8 @@ TEST_F(HttpRequestViewTest, DeferredWorkCompletionOutlivesAwaitableStorage) {
   std::atomic<bool> workStarted{false};
   std::atomic<bool> finishWork{false};
   std::atomic<bool> postCallbackInvoked{false};
-  setH2PostCallback([&postCallbackInvoked](std::coroutine_handle<>, const std::function<void()>&) {
-    postCallbackInvoked.store(true, std::memory_order_release);
-  });
+  setH2PostCallback(
+      [&postCallbackInvoked](std::coroutine_handle<>) { postCallbackInvoked.store(true, std::memory_order_release); });
 
   {
     auto awaitable = req.deferWork([&] {
@@ -618,7 +577,7 @@ TEST_F(HttpRequestViewTest, DeferredWorkCompletionOutlivesAwaitableStorage) {
 TEST_F(HttpRequestViewTest, DeferredWorkThreadCreationFailureIsRethrownByAwaitResume) {
   bool suspendedFlag = false;
   setH2SuspendedFlag(&suspendedFlag);
-  setH2PostCallback([](std::coroutine_handle<>, const std::function<void()>&) {});
+  setH2PostCallback([](std::coroutine_handle<>) {});
 
   // Run in a forked child: once its user is not allowed any new thread, none can be started (a privileged user ignores
   // the limit, the test is then skipped).
