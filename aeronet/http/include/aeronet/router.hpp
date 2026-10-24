@@ -28,6 +28,10 @@
 #include "aeronet/router-config.hpp"
 #include "aeronet/vector.hpp"
 
+#ifdef AERONET_ENABLE_WEBSOCKET
+#include "aeronet/websocket-endpoint.hpp"
+#endif
+
 namespace aeronet {
 
 class Router {
