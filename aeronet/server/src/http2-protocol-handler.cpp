@@ -1658,7 +1658,7 @@ std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(const Http2Config& 
                                                              bool sendServerPrefaceForTls, const char* cachedDateHeader,
                                                              ::aeronet::ConnectionState& connectionState,
                                                              std::unique_ptr<ITunnelBridge> tunnelBridge) {
-  auto protocolHandler =
+  std::unique_ptr<Http2ProtocolHandler> protocolHandler =
       std::make_unique<Http2ProtocolHandler>(config, pipeline, serverConfig, compressionState, decompressionState,
                                              cachedDateHeader, connectionState, std::move(tunnelBridge));
   if (sendServerPrefaceForTls) {

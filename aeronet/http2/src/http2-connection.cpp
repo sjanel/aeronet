@@ -60,10 +60,10 @@ constexpr uint32_t kMaxMaxFrameSize = 16777215;  // Maximum allowed SETTINGS_MAX
 // Copying a tiny body beside its frame header lets one transport write cover a batch of
 // responses. Larger bodies keep their owned allocation and gather-write without a copy.
 // TODO: make this configurable?
-constexpr std::size_t kMaxInlineDataFrameCopySize = 256;
+constexpr uint32_t kMaxInlineDataFrameCopySize = 256;
 
 // Minimum number of written blocks at the front of the output queue before they are erased (see onOutputWritten()).
-constexpr std::size_t kMinWrittenOutputBlocksToCompact = 16;
+constexpr uint32_t kMinWrittenOutputBlocksToCompact = 16;
 
 // Minimum number of written bytes at the front of the output buffer before they are erased while some output is still
 // pending (see onOutputWritten()).

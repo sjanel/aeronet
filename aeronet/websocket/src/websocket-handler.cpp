@@ -74,8 +74,12 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
     explicit InputScope(WebSocketHandler& handler, std::span<const std::byte> input) : _handler(handler) {
       _handler._input = input;
     }
+
     InputScope(const InputScope&) = delete;
+    InputScope(InputScope&&) noexcept = delete;
     InputScope& operator=(const InputScope&) = delete;
+    InputScope& operator=(InputScope&&) noexcept = delete;
+
     ~InputScope() { _handler._input = {}; }
 
     WebSocketHandler& _handler;
@@ -108,7 +112,7 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
     }
 
     // Frame complete - process it
-    auto frameProcessResult = processFrame(frameResult);
+    ProtocolProcessResult frameProcessResult = processFrame(frameResult);
 
     result.bytesConsumed += frameResult.bytesConsumed;
     data = data.subspan(frameResult.bytesConsumed);
