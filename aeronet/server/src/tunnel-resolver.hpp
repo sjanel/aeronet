@@ -3,7 +3,6 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <string_view>
 
@@ -11,6 +10,12 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/tcp-connector.hpp"
 #include "aeronet/vector.hpp"
+
+namespace aeronet {
+
+class EventFd;
+
+}  // namespace aeronet
 
 namespace aeronet::internal {
 
@@ -51,9 +56,9 @@ class TunnelResolver {
   /// Maximum number of resolutions running concurrently.
   static constexpr uint32_t kMaxThreads = 4;
 
-  /// 'notify' is called from a resolver thread each time a tunnel was resolved: it must wake up the event loop. It is
-  /// never called anymore once the resolver is destroyed.
-  explicit TunnelResolver(std::function<void()> notify);
+  /// 'wakeupFd' is signaled from a resolver thread each time a tunnel was resolved, to wake up the event loop. It is
+  /// never signaled anymore once the resolver is destroyed.
+  explicit TunnelResolver(const EventFd& wakeupFd);
 
   TunnelResolver(const TunnelResolver&) = delete;
   TunnelResolver(TunnelResolver&&) = delete;

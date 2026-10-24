@@ -6,7 +6,6 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
-#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -88,23 +87,14 @@ namespace {
 inline auto OtelSv(std::string_view sv) { return opentelemetry::nostd::string_view(sv.data(), sv.size()); }
 }  // namespace
 
-// Iterate over stored HTTP headers as (name, value) pairs; the callback receives string_view references.
-void ForEachHttpHeader(const TelemetryConfig& cfg, const std::function<void(std::string_view, std::string_view)>& fn) {
-  for (auto header : cfg.httpHeadersRange()) {
-    const auto colonPos = header.find(':');
-    const auto name = header.substr(0, colonPos);
-    const auto value = header.substr(colonPos + 1);
-
-    fn(name, value);
-  }
-}
-
 #if defined(AERONET_HAVE_OTLP_HTTP) || defined(AERONET_HAVE_OTLP_METRICS)
 opentelemetry::exporter::otlp::OtlpHeaders buildOtlpHeaders(const TelemetryConfig& cfg) {
   opentelemetry::exporter::otlp::OtlpHeaders headers;
-  ForEachHttpHeader(cfg, [&](std::string_view name, std::string_view value) {
-    headers.emplace(std::string(name), std::string(value));
-  });
+  // The HTTP headers are stored as 'name:value' strings.
+  for (auto header : cfg.httpHeadersRange()) {
+    const auto colonPos = header.find(':');
+    headers.emplace(std::string(header.substr(0, colonPos)), std::string(header.substr(colonPos + 1)));
+  }
   return headers;
 }
 #endif

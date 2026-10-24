@@ -2,7 +2,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <limits>
 #include <memory>
 #include <span>
@@ -34,6 +33,7 @@
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
 
+#include "aeronet/async-resume-poster.hpp"
 #include "aeronet/request-task.hpp"
 #endif
 
@@ -139,13 +139,13 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   /// Get the underlying HTTP/2 connection for advanced usage.
   [[nodiscard]] Http2Connection& connection() noexcept { return _connection; }
 
-  /// Callback invoked after each HTTP/2 request is completed (response sent).
-  /// Parameters: request reference, response status code.
-  using RequestCompletionCallback = std::function<void(const HttpRequestView&, http::StatusCode)>;
+  /// Callback invoked after each HTTP/2 request is completed (response sent), with the context it was installed with.
+  using RequestCompletionFn = void (*)(void* pContext, const HttpRequestView& request, http::StatusCode status);
 
   /// Install a completion callback for per-request metrics and tracing.
-  void setRequestCompletionCallback(RequestCompletionCallback cb) noexcept {
-    _requestCompletionCallback = std::move(cb);
+  void setRequestCompletionCallback(RequestCompletionFn pFn, void* pContext) noexcept {
+    _pRequestCompletionFn = pFn;
+    _pRequestCompletionContext = pContext;
   }
 
   /// Inject data received from an upstream tunnel fd into the corresponding HTTP/2 stream.
@@ -193,12 +193,9 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   [[nodiscard]] TunnelUpstreamsMap drainTunnelUpstreamFds();
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  /// Install a callback for posting deferred async work completion to the server's event loop.
-  /// The callback receives the coroutine handle to resume.
+  /// Install the poster of the deferred async work completions to the server's event loop.
   /// Must be called before any async handlers are dispatched.
-  using AsyncPostCallbackFn = std::function<void(std::coroutine_handle<>)>;
-
-  void setAsyncPostCallback(AsyncPostCallbackFn fn) noexcept { _asyncPostCallback = std::move(fn); }
+  void setAsyncResumePoster(AsyncResumePoster poster) noexcept { _asyncResumePoster = poster; }
 
   /// Resume a pending async task identified by its coroutine handle.
   /// Called by the server when an async callback fires for this connection.
@@ -460,11 +457,13 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   TunnelUpstreamsMap _tunnelUpstreams;  // upstreamFd → streamId
 
   std::unique_ptr<ITunnelBridge> _tunnelBridge;
-  RequestCompletionCallback _requestCompletionCallback;
+  RequestCompletionFn _pRequestCompletionFn{nullptr};
+  void* _pRequestCompletionContext{nullptr};
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  // Callback to post async work completion to the server's event loop.
-  AsyncPostCallbackFn _asyncPostCallback;
+  // Posts the completion of deferred async work to the server's event loop. The requests of the async streams point to
+  // it (see startAsyncHandler()).
+  AsyncResumePoster _asyncResumePoster;
   // Async tasks of closed streams whose deferred work is still running: destroyed when it completes.
   vector<PoolPtr<PendingWork>> _orphanedAsyncTasks;
 #endif

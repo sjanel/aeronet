@@ -6,7 +6,6 @@
 #include <cstdint>
 #include <cstring>
 #include <exception>
-#include <functional>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -116,9 +115,8 @@ bool Http1Pipeline::dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyncRe
   // Keep header storage stable while async work runs so header string_views stay valid
   state.request.pinHeadStorage(asyncState.headBuffer);
 
-  // Install the postCallback function for deferred work
-  asyncState.postCallback = [pCtx = &ctx, fd = cnxIt->fd(), generation = state.generation](
-                                std::coroutine_handle<> handle) { pCtx->postAsyncCallback(fd, generation, handle); };
+  // Install the poster resuming the coroutine once its deferred work completes
+  asyncState.resumePoster = ctx.asyncResumePoster(cnxIt->fd(), state.generation);
 
   ctx.maintenance.refreshKeepAliveDeadline(cnxIt);
   resumeAsyncHandler(cnxIt);

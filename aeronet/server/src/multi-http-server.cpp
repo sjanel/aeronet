@@ -72,7 +72,12 @@ struct MultiHttpServer::HandleState {
   // stop-token binding - never once the servers may be destroyed (~MultiHttpServer, restart): this requires
   // MultiHttpServer::stop() or !isRunning(), so the live handle has completed, and every caller is then latched
   // (AsyncHandle::_stopCalled, ControlBlock::stopRequested).
-  std::function<void()> onStop;
+  void stopServers() const noexcept {
+    std::ranges::for_each(servers, [](SingleHttpServer* srv) { srv->stop(); });
+  }
+
+  // Workers + optional dedicated probe listener: launched, stopped and joined uniformly.
+  vector<SingleHttpServer*> servers;
   std::mutex mutex;
   std::condition_variable cv;
   bool completed{false};
@@ -154,8 +159,8 @@ void MultiHttpServer::AsyncHandle::stop() noexcept {
     _control->lifecycleTracker.notifyStopRequested();
   }
 
-  if (_state && _state->onStop) {
-    _state->onStop();
+  if (_state) {
+    _state->stopServers();
   }
 
   std::ranges::for_each(_serverHandles, [](auto& handle) { handle.stop(); });
@@ -315,7 +320,7 @@ MultiHttpServer& MultiHttpServer::operator=(const MultiHttpServer& other) {
 }
 
 MultiHttpServer::~MultiHttpServer() {
-  // Waits for a live handle to complete: its stop callback can then no longer run (see HandleState::onStop).
+  // Waits for a live handle to complete: it can then no longer stop the servers (see HandleState::stopServers()).
   stop();
 }
 
@@ -323,8 +328,10 @@ RouterUpdateProxy MultiHttpServer::router() {
   if (empty()) {
     throw std::logic_error("Cannot access router proxy on an empty HttpServer");
   }
-  return {[this](std::function<void(Router&)> fn) { this->postRouterUpdate(std::move(fn)); },
-          [this] -> Router& { return this->_servers.front()._ctx.router; }};
+  return {[](void* pServer, std::function<void(Router&)> updater) {
+            static_cast<MultiHttpServer*>(pServer)->postRouterUpdate(std::move(updater));
+          },
+          this};
 }
 
 std::string MultiHttpServer::AggregatedStats::json_str() const {
@@ -672,30 +679,24 @@ MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedInternal(std::functio
     extraStopCondition = [] { return false; };
   }
 
-  // Workers + optional dedicated probe listener: launched, stopped and joined uniformly.
-  const auto serverPtrs = collectServerPointers();
+  auto serverPtrs = collectServerPointers();
 
   vector<SingleHttpServer::AsyncHandle> serverHandles;
   serverHandles.reserve(serverPtrs.size());
 
   auto control = _control;
 
-  // Per-start shared state. Its stop callback stops every server of the group.
+  // Per-start shared state, stopping every server of the group.
   auto state = std::make_shared<HandleState>();
-  // The warning refers to copying `serverPtrs` into the lambda's captures during closure construction. The callback
-  // itself is noexcept and does not throw.
-  // NOLINTNEXTLINE(bugprone-exception-escape)
-  state->onStop = [serverPtrs] noexcept {
-    std::ranges::for_each(serverPtrs, [](SingleHttpServer* srv) { srv->stop(); });
-  };
+  state->servers = std::move(serverPtrs);
   _lastHandleState = state;
 
   std::shared_ptr<void> externalStopBinding;
   if (externalStopToken.stop_possible()) {
     auto stopAction = [control, state] {
       const bool alreadySet = control->stopRequested.exchange(true, std::memory_order_acq_rel);
-      if (!alreadySet && state->onStop) {
-        state->onStop();
+      if (!alreadySet) {
+        state->stopServers();
       }
       control->lifecycleTracker.notifyStopRequested();
     };
@@ -704,7 +705,7 @@ MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedInternal(std::functio
   }
 
   // Each worker/probe thread stops when the shared flag is set, or when the caller's extra stop condition fires
-  // (in which case it also latches the shared flag and triggers the shared stop callback for the whole group).
+  // (in which case it also latches the shared flag and stops the whole group).
   auto makeStopPredicate = [this, &extraStopCondition, &state, &control] {
     std::atomic<bool>* stopRequested = &_control->stopRequested;
     auto threadExtraStop = extraStopCondition;
@@ -714,8 +715,8 @@ MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedInternal(std::functio
       }
       if (threadExtraStop()) {
         const bool alreadySet = stopRequested->exchange(true, std::memory_order_acq_rel);
-        if (!alreadySet && state->onStop) {
-          state->onStop();
+        if (!alreadySet) {
+          state->stopServers();
           control->lifecycleTracker.notifyStopRequested();
         }
         return true;
@@ -726,7 +727,7 @@ MultiHttpServer::AsyncHandle MultiHttpServer::startDetachedInternal(std::functio
 
   // Launch threads (each captures a stable pointer to its SingleHttpServer). The dedicated probe listener, when
   // present, is the last entry and runs on its own thread, so its availability is never affected by worker load.
-  for (SingleHttpServer* server : serverPtrs) {
+  for (SingleHttpServer* server : state->servers) {
     serverHandles.push_back(server->startDetachedAndStopWhen(makeStopPredicate()));
   }
   log::info("HttpServer started with {} thread(s) on port :{}", _servers.size(), port());

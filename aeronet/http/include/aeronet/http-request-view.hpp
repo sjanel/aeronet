@@ -18,7 +18,6 @@
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
-#include <functional>
 #include <thread>
 #endif
 
@@ -36,6 +35,10 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/tracing/tracer.hpp"
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include "aeronet/async-resume-poster.hpp"
+#endif
 
 namespace aeronet {
 
@@ -119,7 +122,7 @@ class HttpRequestView {
   // Exception handling: If the work function throws, the exception is captured and rethrown when
   // await_resume() is called, propagating it through the coroutine normally. The same goes for a failure to start the
   // background thread (std::system_error).
-  template <typename Result, typename WorkFn = std::function<Result()>>
+  template <typename Result, typename WorkFn>
   class DeferredWorkAwaitable {
    public:
     using AeronetAwaitableTag = void;
@@ -128,13 +131,13 @@ class HttpRequestView {
         : _request(request),
           _work(std::move(work)),
           _state(std::make_shared<State>()),
-          _postCallback(request.copyPostCallback()) {}
+          _resumePoster(request.asyncResumePoster()) {}
 
     [[nodiscard]] bool await_ready() const noexcept { return false; }
 
     bool await_suspend(std::coroutine_handle<> handle) noexcept {
       try {
-        std::thread([handle, work = std::move(_work), state = _state, postCallback = std::move(_postCallback)] mutable {
+        std::thread([handle, work = std::move(_work), state = _state, resumePoster = _resumePoster] mutable {
           try {
             if constexpr (std::is_void_v<Result>) {
               work();
@@ -149,7 +152,7 @@ class HttpRequestView {
           // this one concurrently with its use.
           state.reset();
           try {
-            postCallback(handle);
+            resumePoster(handle);
           } catch (const std::exception& ex) {
             // Only fails on memory exhaustion: the coroutine is then never resumed.
             // Logging is delegated to a non-template free function (defined in http-request.cpp) so the
@@ -191,7 +194,7 @@ class HttpRequestView {
     HttpRequestView& _request;
     WorkFn _work;
     std::shared_ptr<State> _state;
-    std::function<void(std::coroutine_handle<>)> _postCallback;
+    AsyncResumePoster _resumePoster;
   };
 #endif
 
@@ -735,9 +738,9 @@ class HttpRequestView {
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   void markAwaitingBody() const noexcept;
   void markAwaitingCallback() const noexcept;
-  // Returns the callback that makes the server's event loop resume a coroutine, safe to call from any thread:
-  // _h2PostCallback for an HTTP/2 stream, asyncState.postCallback for HTTP/1.x.
-  [[nodiscard]] std::function<void(std::coroutine_handle<>)> copyPostCallback() const;
+  // Returns the poster making the server's event loop resume a coroutine of this request, safe to call from any thread:
+  // the one of the HTTP/2 connection for an HTTP/2 stream, asyncState.resumePoster for HTTP/1.x.
+  [[nodiscard]] AsyncResumePoster asyncResumePoster() const noexcept;
 #endif
 
   [[nodiscard]] HttpResponse::Options makeResponseOptions() const noexcept;
@@ -800,10 +803,9 @@ class HttpRequestView {
   const ConcatenatedHeaders* _pGlobalHeaders{nullptr};
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  // HTTP/2 async handler support: alternative callback mechanism for per-stream async tasks.
-  // When set, markAwaitingCallback() / copyPostCallback() use these instead of _pOwnerState->asyncState.
-  using H2PostCallbackFn = std::function<void(std::coroutine_handle<>)>;
-  H2PostCallbackFn _h2PostCallback;
+  // HTTP/2 async handler support: per-stream async task state, owned by the HTTP/2 protocol handler.
+  // When set, markAwaitingCallback() / asyncResumePoster() use these instead of _pOwnerState->asyncState.
+  const AsyncResumePoster* _pH2ResumePoster{nullptr};
   bool* _pH2SuspendedFlag{nullptr};
 #endif
 
