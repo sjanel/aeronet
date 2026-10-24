@@ -7,7 +7,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
-#include <functional>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -16,6 +15,7 @@
 #include <thread>
 #include <utility>
 
+#include "aeronet/event-fd.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/tcp-connector.hpp"
@@ -41,22 +41,21 @@ struct TunnelResolver::Shared {
   std::condition_variable condition;
   std::deque<std::shared_ptr<PendingTunnel>> queue;
   vector<std::shared_ptr<PendingTunnel>> resolved;
-  std::function<void()> notify;
+  const EventFd* pWakeupFd{nullptr};
   std::atomic<bool> hasResolved{false};
   uint32_t nbThreads{0};
   uint32_t nbIdleThreads{0};
   bool stopped{false};
 };
 
-TunnelResolver::TunnelResolver(std::function<void()> notify) : _shared(std::make_shared<Shared>()) {
-  _shared->notify = std::move(notify);
+TunnelResolver::TunnelResolver(const EventFd& wakeupFd) : _shared(std::make_shared<Shared>()) {
+  _shared->pWakeupFd = &wakeupFd;
 }
 
 TunnelResolver::~TunnelResolver() {
   {
     std::scoped_lock lock(_shared->mutex);
     _shared->stopped = true;
-    _shared->notify = nullptr;
     _shared->queue.clear();
   }
   _shared->condition.notify_all();
@@ -79,9 +78,8 @@ void TunnelResolver::resolve(std::shared_ptr<PendingTunnel> pending) {
         _shared->queue.clear();
         _shared->hasResolved.store(true, std::memory_order_release);
         lock.unlock();
-        // Called from the event loop thread: the notification makes it collect the failed tunnels at its next
-        // iteration.
-        _shared->notify();
+        // Called from the event loop thread: the wakeup makes it collect the failed tunnels at its next iteration.
+        _shared->pWakeupFd->send();
         return;
       }
     }
@@ -130,7 +128,7 @@ void TunnelResolver::ResolveLoop(const std::shared_ptr<Shared>& shared) {
     shared->resolved.push_back(std::move(pending));
     shared->hasResolved.store(true, std::memory_order_release);
     // Under the lock: the resolver cannot be destroyed (and the event loop it wakes up stopped) meanwhile.
-    shared->notify();
+    shared->pWakeupFd->send();
   }
   --shared->nbThreads;
 }

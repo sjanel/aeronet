@@ -25,44 +25,50 @@ namespace aeronet {
  * documentation.
  */
 class RouterUpdateProxy {
- public:
-  using Dispatcher = std::function<void(std::function<void(Router&)>)>;
+  // Posts router updaters to the event loop of the server owning the router.
+  struct Dispatcher {
+    void operator()(std::function<void(Router&)> updater) const { pDispatch(pServer, std::move(updater)); }
 
+    void (*pDispatch)(void* pServer, std::function<void(Router&)> updater);
+    void* pServer;
+  };
+
+ public:
   /** Replace the entire router on the server thread. See Router::operator=(Router&&) */
   RouterUpdateProxy& operator=(Router router) {
-    (*_dispatcher)([router = std::move(router)](Router& target) mutable { target = std::move(router); });
+    _dispatcher([router = std::move(router)](Router& target) mutable { target = std::move(router); });
     return *this;
   }
 
   /** Clear all handlers and middleware. See Router::clear() */
   RouterUpdateProxy& clear() {
-    (*_dispatcher)([](Router& router) { router.clear(); });
+    _dispatcher([](Router& router) { router.clear(); });
     return *this;
   }
 
   /** Set the default fixed-response handler. See Router::setDefault(RequestHandler) */
   RouterUpdateProxy& setDefault(RequestHandler handler) {
-    (*_dispatcher)([handler = std::move(handler)](Router& router) mutable { router.setDefault(std::move(handler)); });
+    _dispatcher([handler = std::move(handler)](Router& router) mutable { router.setDefault(std::move(handler)); });
     return *this;
   }
 
   /** Set the default streaming handler. See Router::setDefault(StreamingHandler) */
   RouterUpdateProxy& setDefault(StreamingHandler handler) {
-    (*_dispatcher)([handler = std::move(handler)](Router& router) mutable { router.setDefault(std::move(handler)); });
+    _dispatcher([handler = std::move(handler)](Router& router) mutable { router.setDefault(std::move(handler)); });
     return *this;
   }
 
   /** Set the default asynchronous handler. See Router::setDefault(AsyncRequestHandler) */
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   RouterUpdateProxy& setDefault(AsyncRequestHandler handler) {
-    (*_dispatcher)([handler = std::move(handler)](Router& router) mutable { router.setDefault(std::move(handler)); });
+    _dispatcher([handler = std::move(handler)](Router& router) mutable { router.setDefault(std::move(handler)); });
     return *this;
   }
 #endif
 
   /** Add a global request middleware. See Router::addRequestMiddleware */
   RouterUpdateProxy& addRequestMiddleware(RequestMiddleware middleware) {
-    (*_dispatcher)([middleware = std::move(middleware)](Router& router) mutable {
+    _dispatcher([middleware = std::move(middleware)](Router& router) mutable {
       router.addRequestMiddleware(std::move(middleware));
     });
     return *this;
@@ -70,7 +76,7 @@ class RouterUpdateProxy {
 
   /** Add a global response middleware. See Router::addResponseMiddleware */
   RouterUpdateProxy& addResponseMiddleware(ResponseMiddleware middleware) {
-    (*_dispatcher)([middleware = std::move(middleware)](Router& router) mutable {
+    _dispatcher([middleware = std::move(middleware)](Router& router) mutable {
       router.addResponseMiddleware(std::move(middleware));
     });
     return *this;
@@ -82,12 +88,12 @@ class RouterUpdateProxy {
    */
   class PathEntryProxy {
    public:
-    PathEntryProxy(std::shared_ptr<Dispatcher> dispatcher, std::shared_ptr<PathHandlerEntry*> entryPtr)
-        : _dispatcher(std::move(dispatcher)), _entryPtr(std::move(entryPtr)) {}
+    PathEntryProxy(Dispatcher dispatcher, std::shared_ptr<PathHandlerEntry*> entryPtr) noexcept
+        : _dispatcher(dispatcher), _entryPtr(std::move(entryPtr)) {}
 
     /** Install per-path request middleware. See PathHandlerEntry::before */
     PathEntryProxy& before(RequestMiddleware middleware) {
-      (*_dispatcher)([entryPtr = _entryPtr, middleware = std::move(middleware)](Router&) mutable {
+      _dispatcher([entryPtr = _entryPtr, middleware = std::move(middleware)](Router&) mutable {
         if (auto* entry = *entryPtr) {
           entry->before(std::move(middleware));
         }
@@ -97,7 +103,7 @@ class RouterUpdateProxy {
 
     /** Install per-path response middleware. See PathHandlerEntry::after */
     PathEntryProxy& after(ResponseMiddleware middleware) {
-      (*_dispatcher)([entryPtr = _entryPtr, middleware = std::move(middleware)](Router&) mutable {
+      _dispatcher([entryPtr = _entryPtr, middleware = std::move(middleware)](Router&) mutable {
         if (auto* entry = *entryPtr) {
           entry->after(std::move(middleware));
         }
@@ -107,7 +113,7 @@ class RouterUpdateProxy {
 
     /** Set CORS policy for the registered path. See PathHandlerEntry::cors */
     PathEntryProxy& cors(CorsPolicy policy) {
-      (*_dispatcher)([entryPtr = _entryPtr, policy = std::move(policy)](Router&) mutable {
+      _dispatcher([entryPtr = _entryPtr, policy = std::move(policy)](Router&) mutable {
         if (auto* entry = *entryPtr) {
           entry->cors(std::move(policy));
         }
@@ -118,7 +124,7 @@ class RouterUpdateProxy {
 #ifdef AERONET_ENABLE_HTTP2
     /** Set HTTP/2 enable mode for the registered path. See PathHandlerEntry::http2Enable */
     PathEntryProxy& http2Enable(PathEntryConfig::Http2Enable mode) {
-      (*_dispatcher)([entryPtr = _entryPtr, mode](Router&) {
+      _dispatcher([entryPtr = _entryPtr, mode](Router&) {
         if (auto* entry = *entryPtr) {
           entry->http2Enable(mode);
         }
@@ -129,7 +135,7 @@ class RouterUpdateProxy {
 
     /** Set per-route maximum header size. See PathHandlerEntry::maxHeaderBytes */
     PathEntryProxy& maxHeaderBytes(uint32_t bytes) {
-      (*_dispatcher)([entryPtr = _entryPtr, bytes](Router&) {
+      _dispatcher([entryPtr = _entryPtr, bytes](Router&) {
         if (auto* entry = *entryPtr) {
           entry->maxHeaderBytes(bytes);
         }
@@ -139,7 +145,7 @@ class RouterUpdateProxy {
 
     /** Set per-route maximum body size. See PathHandlerEntry::maxBodyBytes */
     PathEntryProxy& maxBodyBytes(std::size_t bytes) {
-      (*_dispatcher)([entryPtr = _entryPtr, bytes](Router&) {
+      _dispatcher([entryPtr = _entryPtr, bytes](Router&) {
         if (auto* entry = *entryPtr) {
           entry->maxBodyBytes(bytes);
         }
@@ -149,7 +155,7 @@ class RouterUpdateProxy {
 
     /** Set per-route handler deadline. See PathHandlerEntry::timeout */
     PathEntryProxy& timeout(std::chrono::milliseconds ms) {
-      (*_dispatcher)([entryPtr = _entryPtr, ms](Router&) {
+      _dispatcher([entryPtr = _entryPtr, ms](Router&) {
         if (auto* entry = *entryPtr) {
           entry->timeout(ms);
         }
@@ -158,7 +164,7 @@ class RouterUpdateProxy {
     }
 
    private:
-    std::shared_ptr<Dispatcher> _dispatcher;
+    Dispatcher _dispatcher;
     std::shared_ptr<PathHandlerEntry*> _entryPtr;
   };
 
@@ -239,12 +245,11 @@ class RouterUpdateProxy {
   /**
    * Construct a RouterUpdateProxy.
    *
-   * @param dispatcher A callable used to post updater callbacks to the server's event loop.
-   * @param directAccessor A zero-argument function returning a direct `Router&` for pre-start
-   *        inspection. Calling the direct accessor while the server is running may throw.
+   * @param pDispatch Posts an updater callback to the event loop of the server 'pServer'.
+   * @param pServer The server owning the router.
    */
-  RouterUpdateProxy(Dispatcher dispatcher, std::function<Router&()> directAccessor)
-      : _dispatcher(std::make_shared<Dispatcher>(std::move(dispatcher))), _direct(std::move(directAccessor)) {}
+  RouterUpdateProxy(void (*pDispatch)(void* pServer, std::function<void(Router&)> updater), void* pServer) noexcept
+      : _dispatcher{pDispatch, pServer} {}
 
   /**
    * Internal helper that posts a setPath call to the dispatcher and returns
@@ -254,19 +259,17 @@ class RouterUpdateProxy {
   template <typename MethodTag, typename Handler>
   PathEntryProxy setPathImpl(MethodTag method, std::string_view path, Handler handler) {
     auto entryPtr = std::make_shared<PathHandlerEntry*>(nullptr);
-    auto dispatcher = _dispatcher;
     // Make an owning copy of `path` for the posted callback. The dispatcher may
     // execute the lambda asynchronously on the server thread, so a
     // std::string_view would dangle if the caller's storage is destroyed.
-    (*dispatcher)([entryPtr, method, path = RawChars32(path), handler = std::move(handler)](Router& router) mutable {
+    _dispatcher([entryPtr, method, path = RawChars32(path), handler = std::move(handler)](Router& router) mutable {
       auto& entry = router.setPath(method, path, std::move(handler));
       *entryPtr = &entry;
     });
-    return {std::move(dispatcher), std::move(entryPtr)};
+    return {_dispatcher, std::move(entryPtr)};
   }
 
-  std::shared_ptr<Dispatcher> _dispatcher;
-  std::function<Router&()> _direct;
+  Dispatcher _dispatcher;
 };
 
 }  // namespace aeronet

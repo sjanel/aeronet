@@ -41,10 +41,8 @@
 #endif
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-#include <coroutine>
-#include <functional>
-
 #include "aeronet/async-handler-state.hpp"
+#include "aeronet/async-resume-poster.hpp"
 #endif
 
 namespace aeronet {
@@ -626,15 +624,16 @@ void HttpRequestView::markAwaitingCallback() const noexcept {
   asyncState->awaitReason = AsyncHandlerState::AwaitReason::WaitingForCallback;
 }
 
-std::function<void(std::coroutine_handle<>)> HttpRequestView::copyPostCallback() const {
-  if (_h2PostCallback) {
-    return _h2PostCallback;
+AsyncResumePoster HttpRequestView::asyncResumePoster() const noexcept {
+  if (_pH2ResumePoster != nullptr) {
+    assert(_pH2ResumePoster->pPost != nullptr);
+    return *_pH2ResumePoster;
   }
   auto* asyncState = _pOwnerState->asyncState.get();
   assert(asyncState != nullptr);
   assert(asyncState->active);
-  assert(asyncState->postCallback);
-  return asyncState->postCallback;
+  assert(asyncState->resumePoster.pPost != nullptr);
+  return asyncState->resumePoster;
 }
 #endif
 
