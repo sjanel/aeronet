@@ -1,13 +1,7 @@
 #include <cassert>
 #include <cstring>
-#include <functional>
 #include <memory>
 #include <string_view>
-#include <utility>
-
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-#include <coroutine>
-#endif
 
 #include "aeronet/connection-state.hpp"
 #include "aeronet/http-request-view.hpp"
@@ -15,7 +9,6 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-protocol-handler.hpp"
-#include "aeronet/internal/connection-storage.hpp"
 #include "aeronet/internal/server-context.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
@@ -45,21 +38,18 @@ void SingleHttpServer::installHttp2Handler(NativeHandle clientFd, ConnectionStat
 
   // Install per-request completion callback for metrics, counters and tracing.
   h2Handler->setRequestCompletionCallback(
-      [pCtx = &_ctx, fd = clientFd](const HttpRequestView& request, http::StatusCode status) {
-        auto& state = *pCtx->connections.pConnectionState(fd);
-        ++state.requestsServed;
-        ++pCtx->stats.totalRequestsServed;
-        if (pCtx->callbacks.metrics || pCtx->accessLog) {
-          pCtx->emitRequestMetrics(request, status);
+      [](void* pContext, const HttpRequestView& request, http::StatusCode status) {
+        auto& ctx = *static_cast<internal::ServerContext*>(pContext);
+        ++ctx.stats.totalRequestsServed;
+        if (ctx.callbacks.metrics || ctx.accessLog) {
+          ctx.emitRequestMetrics(request, status);
         }
-      });
+      },
+      &_ctx);
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  // Install async callback so HTTP/2 coroutines can post deferred work to the event loop.
-  h2Handler->setAsyncPostCallback(
-      [pCtx = &_ctx, fd = clientFd, generation = state.generation](std::coroutine_handle<> handle) {
-        pCtx->postAsyncCallback(fd, generation, handle);
-      });
+  // Install the poster with which HTTP/2 coroutines post the completion of their deferred work to the event loop.
+  h2Handler->setAsyncResumePoster(_ctx.asyncResumePoster(clientFd, state.generation));
 #endif
 }
 

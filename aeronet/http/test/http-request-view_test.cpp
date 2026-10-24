@@ -23,7 +23,6 @@
 #include <coroutine>
 #include <cstdio>
 #include <cstdlib>
-#include <functional>
 #include <system_error>
 #include <thread>
 
@@ -32,6 +31,7 @@
 #endif
 
 #include "aeronet/async-handler-state.hpp"
+#include "aeronet/async-resume-poster.hpp"
 #endif
 
 #include "aeronet/compression-config.hpp"
@@ -274,7 +274,7 @@ class HttpRequestViewTest : public ::testing::Test {
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   void callPinHeadStorage() { req.pinHeadStorage(cs.ensureAsyncState(asyncStatePoolStorage).headBuffer); }
-  void setH2PostCallback(HttpRequestView::H2PostCallbackFn fn) { req._h2PostCallback = std::move(fn); }
+  void setH2ResumePoster(const AsyncResumePoster* pPoster) { req._pH2ResumePoster = pPoster; }
   void setH2SuspendedFlag(bool* flag) { req._pH2SuspendedFlag = flag; }
 #endif
 
@@ -503,7 +503,22 @@ TEST_F(HttpRequestViewTest, HasMoreBodyNeedsBothActiveAndNeedsBody) {
   EXPECT_TRUE(req.hasMoreBody());
 }
 
-// When postCallback throws (e.g. connection closed while background work was running),
+namespace {
+
+// Resume poster of the deferred work tests: raises the std::atomic<bool> of its context.
+void RaisePostedFlag(const AsyncResumePoster& poster, std::coroutine_handle<> /*handle*/) {
+  static_cast<std::atomic<bool>*>(poster.pContext)->store(true, std::memory_order_release);
+}
+
+// Resume poster simulating a broken event-loop channel: raises the std::atomic<bool> of its context, then throws.
+void RaisePostedFlagThenThrow(const AsyncResumePoster& poster, std::coroutine_handle<> handle) {
+  RaisePostedFlag(poster, handle);
+  throw std::runtime_error("connection closed while background work was running");
+}
+
+}  // namespace
+
+// When the resume poster throws (e.g. connection closed while background work was running),
 // DeferredWorkAwaitable::await_suspend swallows the exception and calls log::error.
 // Verified here by confirming no exception escapes and the code reaches the error path.
 TEST_F(HttpRequestViewTest, DeferredWork_PostCallbackThrows_AbsorbedAndLogged) {
@@ -512,12 +527,10 @@ TEST_F(HttpRequestViewTest, DeferredWork_PostCallbackThrows_AbsorbedAndLogged) {
   bool suspendedFlag = false;
   setH2SuspendedFlag(&suspendedFlag);
 
-  // postCallback will throw, simulating a broken event-loop channel.
+  // The poster will throw, simulating a broken event-loop channel.
   std::atomic<bool> postCallbackInvoked{false};
-  setH2PostCallback([&postCallbackInvoked](std::coroutine_handle<>) {
-    postCallbackInvoked.store(true, std::memory_order_release);
-    throw std::runtime_error("connection closed while background work was running");
-  });
+  const AsyncResumePoster poster{.pPost = &RaisePostedFlagThenThrow, .pContext = &postCallbackInvoked};
+  setH2ResumePoster(&poster);
 
   // Manually drive await_suspend; it spawns a detached background thread.
   auto awaitable = req.deferWork([] { return 42; });
@@ -544,8 +557,8 @@ TEST_F(HttpRequestViewTest, DeferredWorkCompletionOutlivesAwaitableStorage) {
   std::atomic<bool> workStarted{false};
   std::atomic<bool> finishWork{false};
   std::atomic<bool> postCallbackInvoked{false};
-  setH2PostCallback(
-      [&postCallbackInvoked](std::coroutine_handle<>) { postCallbackInvoked.store(true, std::memory_order_release); });
+  const AsyncResumePoster poster{.pPost = &RaisePostedFlag, .pContext = &postCallbackInvoked};
+  setH2ResumePoster(&poster);
 
   {
     auto awaitable = req.deferWork([&] {
@@ -577,7 +590,8 @@ TEST_F(HttpRequestViewTest, DeferredWorkCompletionOutlivesAwaitableStorage) {
 TEST_F(HttpRequestViewTest, DeferredWorkThreadCreationFailureIsRethrownByAwaitResume) {
   bool suspendedFlag = false;
   setH2SuspendedFlag(&suspendedFlag);
-  setH2PostCallback([](std::coroutine_handle<>) {});
+  const AsyncResumePoster poster{.pPost = [](const AsyncResumePoster&, std::coroutine_handle<>) {}};
+  setH2ResumePoster(&poster);
 
   // Run in a forked child: once its user is not allowed any new thread, none can be started (a privileged user ignores
   // the limit, the test is then skipped).

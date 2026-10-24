@@ -2,7 +2,6 @@
 
 #include <gtest/gtest.h>
 
-#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -10,6 +9,10 @@
 #include <thread>
 #include <utility>
 
+#include "aeronet/adaptive-poll-timeout.hpp"
+#include "aeronet/event-fd.hpp"
+#include "aeronet/event-loop.hpp"
+#include "aeronet/event.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/vector.hpp"
 
@@ -47,6 +50,13 @@ vector<std::shared_ptr<PendingTunnel>> WaitForResolved(TunnelResolver& resolver,
   return all;
 }
 
+// Tells whether 'wakeupFd' was signaled, without waiting.
+bool IsSignaled(const EventFd& wakeupFd) {
+  EventLoop loop(PollTimeoutPolicy{.baseTimeout = 1ms});
+  loop.addOrThrow(EventLoop::EventFd{wakeupFd.fd(), EventIn});
+  return !loop.poll(false).empty();
+}
+
 }  // namespace
 
 TEST(TunnelResolverTest, PendingTunnelKeepsANullTerminatedHost) {
@@ -63,9 +73,10 @@ TEST(TunnelResolverTest, PendingTunnelKeepsANullTerminatedHost) {
 }
 
 TEST(TunnelResolverTest, ResolvesHostNamesAndNotifies) {
-  std::atomic<int> notifications{0};
-  TunnelResolver resolver([&notifications] { notifications.fetch_add(1, std::memory_order_relaxed); });
+  EventFd wakeupFd;
+  TunnelResolver resolver(wakeupFd);
   EXPECT_FALSE(resolver.hasResolved());
+  EXPECT_FALSE(IsSignaled(wakeupFd));
 
   resolver.resolve(std::make_shared<PendingTunnel>("localhost", 80, NativeHandle{1}, 0U, 0U, kNoDeadline));
   resolver.resolve(
@@ -73,7 +84,7 @@ TEST(TunnelResolverTest, ResolvesHostNamesAndNotifies) {
 
   const auto resolved = WaitForResolved(resolver, 2);
   ASSERT_EQ(resolved.size(), 2U);
-  EXPECT_GE(notifications.load(), 1);
+  EXPECT_TRUE(IsSignaled(wakeupFd));
   EXPECT_FALSE(resolver.hasResolved());
   for (const auto& pending : resolved) {
     if (pending->clientFd == NativeHandle{1}) {
@@ -87,7 +98,8 @@ TEST(TunnelResolverTest, ResolvesHostNamesAndNotifies) {
 
 #ifdef AERONET_POSIX
 TEST(TunnelResolverTest, MoreResolutionsThanThreads) {
-  TunnelResolver resolver([] {});
+  EventFd wakeupFd;
+  TunnelResolver resolver(wakeupFd);
   static constexpr uint32_t kNbResolutions = (3U * TunnelResolver::kMaxThreads) + 1U;
   test::GetAddrInfoDelayGuard getAddrInfoDelayGuard(20);
   for (uint32_t idx = 0; idx < kNbResolutions; ++idx) {
@@ -99,7 +111,8 @@ TEST(TunnelResolverTest, MoreResolutionsThanThreads) {
 }
 
 TEST(TunnelResolverTest, CancelDropsQueuedResolutions) {
-  TunnelResolver resolver([] {});
+  EventFd wakeupFd;
+  TunnelResolver resolver(wakeupFd);
   test::GetAddrInfoDelayGuard getAddrInfoDelayGuard(200);
   vector<std::shared_ptr<PendingTunnel>> pendings;
   for (uint32_t idx = 0; idx < TunnelResolver::kMaxThreads + 2U; ++idx) {
@@ -121,11 +134,11 @@ TEST(TunnelResolverTest, CancelDropsQueuedResolutions) {
 }
 
 TEST(TunnelResolverTest, DestructionDoesNotWaitForResolutionsInProgress) {
-  std::atomic<int> notifications{0};
+  EventFd wakeupFd;
   test::GetAddrInfoDelayGuard getAddrInfoDelayGuard(1000);
   const auto start = std::chrono::steady_clock::now();
   {
-    TunnelResolver resolver([&notifications] { notifications.fetch_add(1, std::memory_order_relaxed); });
+    TunnelResolver resolver(wakeupFd);
     resolver.resolve(std::make_shared<PendingTunnel>("localhost", 80, NativeHandle{1}, 0U, 0U, kNoDeadline));
     // Queued behind the first one if a single thread was started, or resolving too: dropped either way.
     resolver.resolve(std::make_shared<PendingTunnel>("localhost", 80, NativeHandle{2}, 0U, 0U, kNoDeadline));
@@ -133,9 +146,9 @@ TEST(TunnelResolverTest, DestructionDoesNotWaitForResolutionsInProgress) {
   }
   EXPECT_LT(std::chrono::steady_clock::now() - start, 700ms);
 
-  // The resolutions complete after the resolver was destroyed: nobody is notified.
+  // The resolutions complete after the resolver was destroyed: the event loop is not woken up.
   std::this_thread::sleep_for(1200ms);
-  EXPECT_EQ(notifications.load(), 0);
+  EXPECT_FALSE(IsSignaled(wakeupFd));
 }
 #endif
 

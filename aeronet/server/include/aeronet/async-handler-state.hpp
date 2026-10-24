@@ -4,10 +4,10 @@
 #include <coroutine>
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <utility>
 
+#include "aeronet/async-resume-poster.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/internal/http-response-access.hpp"
 #include "aeronet/object-pool.hpp"
@@ -106,9 +106,9 @@ struct AsyncHandlerState {
   const CorsPolicy* corsPolicy{nullptr};
   const void* responseMiddleware{nullptr};
   HttpResponse pendingResponse = internal::HttpResponseAccess::MakeUnallocated();
-  // Callback to post async work completion to the server's event loop.
-  // Set by the server when dispatching an async handler.
-  std::function<void(std::coroutine_handle<>)> postCallback;
+  // Posts the completion of deferred work to the server's event loop. Set by the server when dispatching an async
+  // handler.
+  AsyncResumePoster resumePoster;
 };
 
 using AsyncHandlerStatePool = ObjectPool<AsyncHandlerState>;

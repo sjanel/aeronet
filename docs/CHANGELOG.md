@@ -186,6 +186,7 @@ All notable changes to aeronet are documented in this file.
 
 - **Bumped opentelemetry version from 1.29.0 to 1.30.0**
 - **`SingleHttpServer` split into components**: the server keeps its lifecycle, listener, event dispatch and updates, and serves its connections through components (connection I/O, connection maintenance, HTTP/1.1 pipeline, TLS acceptor) sharing an internal context, without virtual calls; the CONNECT tunnels and the streaming response transport no longer need friend access to the server. No behavior change, and no measurable cost end to end. The callback types of the server are also available at namespace scope from the new `<aeronet/server-callbacks.hpp>` (`ExpectationHandler`, `ExpectationResult`, `ExpectationResultKind`, `MetricsCallback`, `ParserErrorCallback`), `SingleHttpServer` keeping its aliases. See [Server architecture](development/server-architecture.md).
+- **Internal callbacks are function pointers instead of `std::function`**: the completion of the deferred work of async handlers, the accounting of completed HTTP/2 requests, the router updates posted through `router()` and the wakeups of the CONNECT target resolver no longer go through a `std::function`. `HttpRequestView` (one per connection and per HTTP/2 stream) is 24 bytes smaller, dispatching an async handler no longer copies a `std::function`, and `router()` no longer allocates. No behavior change; `RouterUpdateProxy::Dispatcher` is no longer public.
 
 ## [1.6.0] - 2026-10-03
 
