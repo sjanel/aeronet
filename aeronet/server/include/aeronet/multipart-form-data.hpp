@@ -1,12 +1,13 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
-#include <optional>
 #include <span>
 #include <string_view>
 #include <type_traits>
 
+#include "aeronet/safe-cast.hpp"
 #include "aeronet/vector.hpp"
 
 namespace aeronet {
@@ -32,27 +33,32 @@ class MultipartFormData {
 
   struct Part {
     explicit Part(const vector<MultipartHeaderView>& headerStoreRef)
-        : headerOffset(headerStoreRef.size()), headerStore(headerStoreRef) {}
+        : _headerStore(headerStoreRef), _headerOffset(SafeCast<uint32_t>(headerStoreRef.size())) {}
 
     std::string_view name;
-    std::optional<std::string_view> filename;
-    std::optional<std::string_view> contentType;
+    std::string_view filename;
+    std::string_view contentType;
     std::string_view value;
 
     // Get all headers associated with this part
     [[nodiscard]] std::span<const MultipartHeaderView> headers() const noexcept {
-      return {headerStore.data() + headerOffset, headerCount};
+      return {_headerStore.data() + _headerOffset, _headerCount};
     }
 
     // Get the value of the specified header, or an empty string_view if not present
     [[nodiscard]] std::string_view headerValueOrEmpty(std::string_view key) const noexcept;
 
+    // Returns true if 'filename' has been set. Use it to remove ambiguity of 'filename' field presence when it is
+    // empty.
+    [[nodiscard]] bool hasFilename() const noexcept { return _hasFileName; }
+
    private:
     friend class MultipartFormData;
 
-    std::size_t headerOffset{0};
-    std::size_t headerCount{0};
-    const vector<MultipartHeaderView>& headerStore;
+    const vector<MultipartHeaderView>& _headerStore;
+    std::size_t _headerCount{0};
+    uint32_t _headerOffset{0};
+    bool _hasFileName{false};
   };
 
   // Get all parsed parts

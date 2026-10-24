@@ -720,8 +720,8 @@ TEST_F(HttpConnectDefaultConfig, EmptyConnectPortReturns400) {
 }
 
 // Test that closing a tunnel connection also cleans up the peer connection.
-// This exercises the closeConnection() path at lines 414-429 in connection-manager.cpp
-// where peerFd != -1 triggers peer lookup and cleanup.
+// This exercises the close path of a tunnel endpoint (TunnelManager::closeTunnelsOf()), where peerFd != -1
+// triggers peer lookup and cleanup.
 TEST(HttpConnectTunnelCleanup, TunnelPeerCleanupOnClientClose) {
   test::TestServer ts;
   AllowConnectHost(ts, "127.0.0.1");

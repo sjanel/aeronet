@@ -152,9 +152,15 @@ class Http1ResponseParser {
     return Status::BodyPiece;
   }
   // Status of a line left without CRLF at eof: Error when it holds a bare LF, Truncated otherwise.
-  static Status EofInLine(std::string_view partialLine) noexcept;
+  static Status EofInLine(std::string_view partialLine) noexcept {
+    return partialLine.contains('\n') ? Status::Error : Status::Truncated;
+  }
+
   // Return candidate when body covers exactly its initialized bytes, otherwise nullptr.
-  static RawChars* WholeBufferOwner(std::string_view body, RawChars& candidate) noexcept;
+  static RawChars* WholeBufferOwner(std::string_view body, RawChars& candidate) noexcept {
+    return body.size() == candidate.size() && body.data() == candidate.data() ? &candidate : nullptr;
+  }
+
   // Install body by rotating a suitably-sized owner allocation into the response. A missing or oversized
   // owner falls back to a copy, retaining oversized scratch for later reuse. `body` may be the complete
   // initialized owner or a suffix ending at owner->end().

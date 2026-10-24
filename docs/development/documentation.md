@@ -14,7 +14,7 @@ Keep links to repository source files relative, so they work when the Markdown i
 | `modules/` | One page per optional module: HTTP client, JWT, JSON and configuration files. |
 | `reference/` | Exhaustive lists: build options, configuration fields, HTTP/1.1 conformance. |
 | `operations/` | Running in production: observability, health probes, Kubernetes, benchmarks. |
-| `development/` | Contributing: documentation, testing. |
+| `development/` | Contributing: documentation, testing, server architecture. |
 
 A feature page explains, in this order when it applies: what the feature is for and how to enable it (CMake option, configuration), a first working example, how it behaves (including limits and error cases), its configuration, performance considerations, limitations, and links to its tests. [Async handlers](../guides/async-handlers.md) is a complete example. Describe the behavior of the code as it is, and verify each claim against the sources and tests rather than against older documentation.
 

@@ -16,7 +16,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <initializer_list>
-#include <optional>
 #include <string>
 #include <string_view>
 

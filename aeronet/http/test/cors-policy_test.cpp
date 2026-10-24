@@ -50,7 +50,7 @@ TEST_F(CorsPolicyTest, DefaultConstructedShouldNotBeActive) {
   CorsPolicy::PreflightResult actual = policy.handlePreflight(request);
 
   EXPECT_EQ(actual.status, CorsPolicy::PreflightResult::Status::NotPreflight);
-  ASSERT_FALSE(actual.response.has_value());
+  EXPECT_TRUE(actual.response.empty());
 }
 
 TEST_F(CorsPolicyTest, ApplyAnyOriginSimpleRequest) {
@@ -117,7 +117,7 @@ TEST_F(CorsPolicyTest, PreflightWithEmptyAccessControlRequestHeaders) {
 
   const auto result = policy.handlePreflight(request);
   EXPECT_EQ(result.status, CorsPolicy::PreflightResult::Status::Allowed);
-  EXPECT_FALSE(result.response.value_or(HttpResponse{}).hasHeader(http::AccessControlAllowHeaders));
+  EXPECT_FALSE(result.response.hasHeader(http::AccessControlAllowHeaders));
 }
 
 TEST_F(CorsPolicyTest, PreflightWithAccessControlHeaders) {
@@ -132,7 +132,7 @@ TEST_F(CorsPolicyTest, PreflightWithAccessControlHeaders) {
 
   const auto result = policy.handlePreflight(request);
   EXPECT_EQ(result.status, CorsPolicy::PreflightResult::Status::Allowed);
-  EXPECT_EQ(result.response.value_or(HttpResponse{}).headerValueOrEmpty(http::AccessControlAllowHeaders), "X-Test");
+  EXPECT_EQ(result.response.headerValueOrEmpty(http::AccessControlAllowHeaders), "X-Test");
 }
 
 TEST_F(CorsPolicyTest, PreflightWithAccessControlHeadersEmpty) {
@@ -147,7 +147,7 @@ TEST_F(CorsPolicyTest, PreflightWithAccessControlHeadersEmpty) {
 
   const auto result = policy.handlePreflight(request);
   EXPECT_EQ(result.status, CorsPolicy::PreflightResult::Status::Allowed);
-  EXPECT_FALSE(result.response.value_or(HttpResponse{}).hasHeader(http::AccessControlAllowHeaders));
+  EXPECT_FALSE(result.response.hasHeader(http::AccessControlAllowHeaders));
 }
 
 TEST_F(CorsPolicyTest, PreflightNoAccessControlRequestHeaders) {
@@ -160,7 +160,7 @@ TEST_F(CorsPolicyTest, PreflightNoAccessControlRequestHeaders) {
 
   const auto result = policy.handlePreflight(request);
   EXPECT_EQ(result.status, CorsPolicy::PreflightResult::Status::Allowed);
-  EXPECT_FALSE(result.response.value_or(HttpResponse{}).hasHeader(http::AccessControlAllowHeaders));
+  EXPECT_FALSE(result.response.hasHeader(http::AccessControlAllowHeaders));
 }
 
 TEST_F(CorsPolicyTest, PreflightAllowed) {
@@ -177,7 +177,7 @@ TEST_F(CorsPolicyTest, PreflightAllowed) {
 
   const auto result = policy.handlePreflight(request);
   ASSERT_EQ(result.status, CorsPolicy::PreflightResult::Status::Allowed);
-  const HttpResponse& httpResponse = result.response.value_or(HttpResponse{});
+  const HttpResponse& httpResponse = result.response;
   EXPECT_EQ(httpResponse.status(), http::StatusCodeNoContent);
   EXPECT_EQ(httpResponse.headerValueOrEmpty(http::AccessControlAllowOrigin), "https://example.com");
   EXPECT_EQ(httpResponse.headerValueOrEmpty(http::AccessControlAllowMethods), "GET, POST");
@@ -224,10 +224,8 @@ TEST_F(CorsPolicyTest, MultipleAllowedOriginsAndMethods) {
 
   const auto result = policy.handlePreflight(request);
   ASSERT_EQ(result.status, CorsPolicy::PreflightResult::Status::Allowed);
-  EXPECT_EQ(result.response.value_or(HttpResponse{}).headerValueOrEmpty(http::AccessControlAllowOrigin),
-            "https://two.example");
-  EXPECT_EQ(result.response.value_or(HttpResponse{}).headerValueOrEmpty(http::AccessControlAllowMethods),
-            "GET, POST, PUT");
+  EXPECT_EQ(result.response.headerValueOrEmpty(http::AccessControlAllowOrigin), "https://two.example");
+  EXPECT_EQ(result.response.headerValueOrEmpty(http::AccessControlAllowMethods), "GET, POST, PUT");
 }
 
 TEST_F(CorsPolicyTest, MultipleAllowedRequestHeaders) {
@@ -245,8 +243,7 @@ TEST_F(CorsPolicyTest, MultipleAllowedRequestHeaders) {
 
   const auto result = policy.handlePreflight(request);
   ASSERT_EQ(result.status, CorsPolicy::PreflightResult::Status::Allowed);
-  EXPECT_EQ(result.response.value_or(HttpResponse{}).headerValueOrEmpty(http::AccessControlAllowHeaders),
-            "X-One, X-Two");
+  EXPECT_EQ(result.response.headerValueOrEmpty(http::AccessControlAllowHeaders), "X-One, X-Two");
 }
 
 TEST_F(CorsPolicyTest, AllowAnyRequestHeadersAcceptsPreflight) {
@@ -261,7 +258,7 @@ TEST_F(CorsPolicyTest, AllowAnyRequestHeadersAcceptsPreflight) {
 
   const auto result = policy.handlePreflight(request);
   ASSERT_EQ(result.status, CorsPolicy::PreflightResult::Status::Allowed);
-  EXPECT_EQ(result.response.value_or(HttpResponse{}).headerValueOrEmpty(http::AccessControlAllowHeaders), "*");
+  EXPECT_EQ(result.response.headerValueOrEmpty(http::AccessControlAllowHeaders), "*");
 }
 
 // Header names are case-insensitive (RFC 9110 §5.1), and browsers send Access-Control-Request-Headers byte-lowercased
@@ -306,7 +303,7 @@ TEST_F(CorsPolicyTest, AllowedAndExposedHeaderNamesAreDeduplicatedCaseInsensitiv
             http::StatusCodeOK);
   const auto result = policy.handlePreflight(request);
   ASSERT_EQ(result.status, CorsPolicy::PreflightResult::Status::Allowed);
-  EXPECT_EQ(result.response.value_or(HttpResponse{}).headerValueOrEmpty(http::AccessControlAllowHeaders), "X-Trace");
+  EXPECT_EQ(result.response.headerValueOrEmpty(http::AccessControlAllowHeaders), "X-Trace");
 
   ASSERT_EQ(parse(BuildRawHttp11(http::GET, "/files", "Origin: https://any\r\n")), http::StatusCodeOK);
   HttpResponse resp;
@@ -359,8 +356,7 @@ TEST_F(CorsPolicyTest, PreflightPrivateNetworkHeaderEmitted) {
 
   const auto result = policy.handlePreflight(request);
   ASSERT_EQ(result.status, CorsPolicy::PreflightResult::Status::Allowed);
-  EXPECT_EQ(result.response.value_or(HttpResponse{}).headerValueOrEmpty(http::AccessControlAllowPrivateNetwork),
-            "true");
+  EXPECT_EQ(result.response.headerValueOrEmpty(http::AccessControlAllowPrivateNetwork), "true");
 }
 
 TEST_F(CorsPolicyTest, NotCorsWhenNoOrigin) {
@@ -468,7 +464,7 @@ TEST_F(CorsPolicyTest, AllowRequestHeaderTrimmingAndDuplicates) {
 
   const auto result = policy.handlePreflight(request);
   ASSERT_EQ(result.status, CorsPolicy::PreflightResult::Status::Allowed);
-  EXPECT_EQ(result.response.value_or(HttpResponse{}).headerValueOrEmpty(http::AccessControlAllowHeaders), "X-T");
+  EXPECT_EQ(result.response.headerValueOrEmpty(http::AccessControlAllowHeaders), "X-T");
 }
 
 TEST_F(CorsPolicyTest, PreflightOptionsWithoutOriginIsNotPreflight) {
@@ -529,7 +525,7 @@ TEST_F(CorsPolicyTest, RequestHeadersEmptyAfterTrimChecksEmptyAllowedList) {
   const auto result = policy.handlePreflight(request);
   // presence of an explicitly empty Access-Control-Request-Headers should be treated as empty list => allow
   EXPECT_EQ(result.status, CorsPolicy::PreflightResult::Status::Allowed);
-  EXPECT_FALSE(result.response.value_or(HttpResponse{}).hasHeader(http::AccessControlAllowHeaders));
+  EXPECT_FALSE(result.response.hasHeader(http::AccessControlAllowHeaders));
 }
 
 TEST_F(CorsPolicyTest, RequestHeadersDoubleCommaSkipsEmptyToken) {
@@ -545,7 +541,7 @@ TEST_F(CorsPolicyTest, RequestHeadersDoubleCommaSkipsEmptyToken) {
 
   const auto result = policy.handlePreflight(request);
   EXPECT_EQ(result.status, CorsPolicy::PreflightResult::Status::Allowed);
-  EXPECT_EQ(result.response.value_or(HttpResponse{}).headerValueOrEmpty(http::AccessControlAllowHeaders), "X-One");
+  EXPECT_EQ(result.response.headerValueOrEmpty(http::AccessControlAllowHeaders), "X-One");
 }
 
 TEST_F(CorsPolicyTest, RequestHeadersCanonicalizationProducesCanonicalList) {

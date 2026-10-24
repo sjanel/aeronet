@@ -1,4 +1,3 @@
-#include <chrono>
 #include <cstddef>
 #include <exception>
 #include <memory>
@@ -10,41 +9,33 @@
 #include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-status-code.hpp"
-#include "aeronet/internal/connection-storage.hpp"
-#include "aeronet/internal/keep-alive-deadline-queue.hpp"
+#include "aeronet/internal/http1-pipeline.hpp"
+#include "aeronet/internal/server-context.hpp"
 #include "aeronet/log.hpp"
-#include "aeronet/native-handle.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router.hpp"
-#include "aeronet/single-http-server.hpp"
-
-#ifdef AERONET_ENABLE_WEBSOCKET
 #include "aeronet/upgrade-handler.hpp"
 #include "aeronet/websocket-endpoint.hpp"
 #include "aeronet/websocket-handler.hpp"
 #include "aeronet/websocket-upgrade.hpp"
-#endif
 
-namespace aeronet {
+namespace aeronet::internal {
 
-#ifdef AERONET_ENABLE_WEBSOCKET
-
-SingleHttpServer::LoopAction SingleHttpServer::processWebSocketUpgrade(ConnectionIt cnxIt,
-                                                                       const Router::RoutingResult& routingResult) {
+Http1Pipeline::LoopAction Http1Pipeline::processWebSocketUpgrade(ConnectionIt cnxIt,
+                                                                 const Router::RoutingResult& routingResult) {
   static constexpr bool kStreaming = false;
-  const HttpRequestView& request = _connections.connectionState(cnxIt).request;
+  const HttpRequestView& request = _pCtx->connections.connectionState(cnxIt).request;
   if (RequestPipeline::IsOriginDenied(request, routingResult)) {
-    sendHttp1Response(cnxIt, RequestPipeline::MakeOriginDenial(request), routingResult, kStreaming);
+    sendResponse(cnxIt, RequestPipeline::MakeOriginDenial(request), routingResult, kStreaming);
     return LoopAction::Continue;
   }
   // Browsers do not apply CORS to WebSocket: without CORS policy, only same-origin pages may connect, which
   // prevents cross-site WebSocket hijacking. Clients that are not browsers send no Origin.
   if (routingResult.corsPolicy() == nullptr &&
       !upgrade::IsSameOriginRequest(request.headerValueOrEmpty(http::Origin), request.headerValueOrEmpty(http::Host))) {
-    sendHttp1Response(cnxIt,
-                      request.makeResponse(http::StatusCodeForbidden, "Cross-origin WebSocket connection refused"),
-                      routingResult, kStreaming);
+    sendResponse(cnxIt, request.makeResponse(http::StatusCodeForbidden, "Cross-origin WebSocket connection refused"),
+                 routingResult, kStreaming);
     return LoopAction::Continue;
   }
   switch (upgradeToWebSocket(cnxIt, *routingResult.webSocketEndpoint())) {
@@ -53,17 +44,18 @@ SingleHttpServer::LoopAction SingleHttpServer::processWebSocketUpgrade(Connectio
     case WebSocketUpgrade::Invalid:
       return LoopAction::Break;  // answered 400, the connection closes
     case WebSocketUpgrade::Refused:
-      sendHttp1Response(cnxIt, request.makeResponse(http::StatusCodeForbidden), routingResult, kStreaming);
+      sendResponse(cnxIt, request.makeResponse(http::StatusCodeForbidden), routingResult, kStreaming);
       return LoopAction::Continue;
     default:
-      sendHttp1Response(cnxIt, request.makeResponse(http::StatusCodeInternalServerError), routingResult, kStreaming);
+      sendResponse(cnxIt, request.makeResponse(http::StatusCodeInternalServerError), routingResult, kStreaming);
       return LoopAction::Continue;
   }
 }
 
-SingleHttpServer::WebSocketUpgrade SingleHttpServer::upgradeToWebSocket(ConnectionIt cnxIt,
-                                                                        const WebSocketEndpoint& endpoint) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
+Http1Pipeline::WebSocketUpgrade Http1Pipeline::upgradeToWebSocket(ConnectionIt cnxIt,
+                                                                  const WebSocketEndpoint& endpoint) {
+  ServerContext& ctx = *_pCtx;
+  ConnectionState& state = ctx.connections.connectionState(cnxIt);
   const HttpRequestView& request = state.request;
 
   const WebSocketUpgradeConfig upgradeConfig{endpoint.supportedProtocols, endpoint.config.deflateConfig};
@@ -96,11 +88,11 @@ SingleHttpServer::WebSocketUpgrade SingleHttpServer::upgradeToWebSocket(Connecti
   if (!wsHandler->hasCompression() && upgradeValidation.deflateParams.hasValue()) {
     // Compression was negotiated but the handler (from the factory, which keeps its callbacks) was created without it.
     // The directions without context takeover use the streams shared by the connections of this server thread.
-    wsHandler->enableCompression(upgradeValidation.deflateParams, &_webSocketDeflateStreams);
+    wsHandler->enableCompression(upgradeValidation.deflateParams, &ctx.webSocketDeflateStreams);
   }
 
   // The per-route request timeout bounds the upgrade request, not the WebSocket connection that follows.
-  clearRequestDeadline(state);
+  ctx.maintenance.clearRequestDeadline(state);
 
   // Install the protocol handler
   state.protocolHandler = std::move(wsHandler);
@@ -111,47 +103,11 @@ SingleHttpServer::WebSocketUpgrade SingleHttpServer::upgradeToWebSocket(Connecti
   RawChars response(responseSize);
   upgrade::BuildWebSocketUpgradeResponse(upgradeValidation, response.data());
   response.setSize(responseSize);
-  queueData(cnxIt, HttpMessageData(std::move(response)));
+  ctx.io.queueData(cnxIt, HttpMessageData(std::move(response)));
 
   // From now on, the WebSocket idle and close timeouts apply instead of keepAliveTimeout.
-  refreshWebSocketDeadline(cnxIt->fd(), state);
+  ctx.maintenance.refreshWebSocketDeadline(cnxIt->fd(), state);
   return WebSocketUpgrade::Upgraded;
 }
 
-void SingleHttpServer::refreshWebSocketDeadline(NativeHandle fd, ConnectionState& state) {
-  const auto& handler = static_cast<const websocket::WebSocketHandler&>(*state.protocolHandler);
-  const auto nextCheck = handler.nextTimeoutCheck(state.lastActivity);
-  if (nextCheck == std::chrono::steady_clock::time_point::max()) {
-    _keepAliveDeadlines.remove(state);
-    return;
-  }
-  // Like for keep-alive, an armed deadline earlier than the next check is kept: lastActivity only moves forward, so
-  // the check re-arms it when it fires. Only the start of a close handshake can bring the next check closer.
-  if (!internal::KeepAliveDeadlineQueue::contains(state) || nextCheck < _keepAliveDeadlines.expiresAt(state)) {
-    _keepAliveDeadlines.upsert(state, fd, nextCheck);
-  }
-}
-
-bool SingleHttpServer::checkWebSocketTimeouts(ConnectionIt cnxIt) {
-  const NativeHandle fd = cnxIt->fd();
-  ConnectionState& state = _connections.connectionState(cnxIt);
-  auto& handler = static_cast<websocket::WebSocketHandler&>(*state.protocolHandler);
-  const auto timeout = handler.checkTimeouts(_connections.now, state.lastActivity);
-  if (timeout != websocket::WebSocketHandler::Timeout::None) {
-    const bool idle = timeout == websocket::WebSocketHandler::Timeout::Idle;
-    log::debug("sweepIdleConnections: fd # {} closed for WebSocket {} timeout", fd, idle ? "idle" : "close");
-    closeConnection(cnxIt);
-    _telemetry.counterAdd(idle ? "aeronet.connections.closed_for_websocket_idle_timeout"
-                               : "aeronet.connections.closed_for_websocket_close_timeout");
-    return true;
-  }
-  if (handler.hasPendingOutput()) {
-    flushOutbound(cnxIt);  // the Ping of an idle connection
-  }
-  refreshWebSocketDeadline(fd, state);
-  return false;
-}
-
-#endif
-
-}  // namespace aeronet
+}  // namespace aeronet::internal

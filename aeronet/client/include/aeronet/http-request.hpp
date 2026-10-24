@@ -659,7 +659,6 @@ class HttpRequest final : public HttpMessage {
   friend class HttpRequestView;
   friend class HttpResponseWriter;  // streaming writer needs access to finalize
   friend class SingleHttpServer;
-  friend class StaticFileHandler;
   friend class Http1WriterTransport;  // HTTP/1.1 transport for streaming
   friend class HttpRequestTest;
 

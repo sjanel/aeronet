@@ -1,6 +1,5 @@
 #pragma once
 
-#include <optional>
 #include <span>
 #include <string_view>
 
@@ -41,10 +40,9 @@ struct SpecialMethodConfig {
 /// @param pCorsPolicy Optional CORS policy (can be nullptr)
 /// @param requestData Raw request data for TRACE echo (only needed for HTTP/1.1 TRACE)
 /// @return Result indicating action taken
-[[nodiscard]] std::optional<HttpResponse> ProcessSpecialMethods(const HttpRequestView& request, Router& router,
-                                                                SpecialMethodConfig config,
-                                                                const CorsPolicy* pCorsPolicy,
-                                                                std::string_view requestData = {});
+[[nodiscard]] HttpResponse ProcessSpecialMethods(const HttpRequestView& request, Router& router,
+                                                 SpecialMethodConfig config, const CorsPolicy* pCorsPolicy,
+                                                 std::string_view requestData = {});
 
 /// The steps of the request pipeline shared by HTTP/1.1 and HTTP/2, so that both protocols answer a request the same
 /// way. Once a request is parsed and routed, and its protocol-specific checks and special methods are handled, the
@@ -64,18 +62,16 @@ class RequestPipeline {
   /// Install the path and query parameters of a routed request, then run its request middleware: the global chain,
   /// then the chain of its route.
   /// Returns the response of a middleware answering instead of the handler (a short-circuit, or a 500 when one throws).
-  [[nodiscard]] std::optional<HttpResponse> runRequestMiddleware(HttpRequestView& request,
-                                                                 const Router::RoutingResult& routingResult,
-                                                                 bool streaming) const;
+  [[nodiscard]] HttpResponse runRequestMiddleware(HttpRequestView& request, const Router::RoutingResult& routingResult,
+                                                  bool streaming) const;
 
   /// Answer a request that went through its request middleware: a 403 when the CORS policy of its route denies its
   /// origin (its handler is not called, so that it has no side effect), the response of its request handler (a 500 when
   /// it throws), or, without handler, a trailing slash redirect, a 405 or a 404.
   /// Returns nothing when the protocol calls the handler of the route: its streaming handler (when 'streaming') or its
   /// async handler.
-  [[nodiscard]] std::optional<HttpResponse> callRequestHandler(HttpRequestView& request,
-                                                               const Router::RoutingResult& routingResult,
-                                                               bool streaming) const;
+  [[nodiscard]] HttpResponse callRequestHandler(HttpRequestView& request, const Router::RoutingResult& routingResult,
+                                                bool streaming) const;
 
   /// Tell whether the CORS policy of the route of a request denies its origin: its handler must then not be called, the
   /// request being answered by MakeOriginDenial().

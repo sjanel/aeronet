@@ -458,7 +458,7 @@ TEST(Http2Core, H2cPriorKnowledgeConnectionOutlivesHeaderReadTimeout) {
 
   test::ClientConnection cnx(server.port());
   ASSERT_NE(cnx.fd(), -1);
-  Http2Connection client(Http2Config{}, false);
+  Http2Connection client(Http2Config(), false);
   client.sendClientPreface();
   RawChars clientOutput;
   while (client.hasPendingOutput()) {

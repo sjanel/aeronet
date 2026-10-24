@@ -50,6 +50,15 @@ using aeronet::StaticFileConfig;
 using aeronet::StaticFileHandler;
 using aeronet::StreamingHandler;
 
+// ── Server callbacks ───────────────────────────────────────────────────────
+
+using aeronet::ExpectationHandler;
+using aeronet::ExpectationResult;
+using aeronet::ExpectationResultKind;
+using aeronet::MetricsCallback;
+using aeronet::ParserErrorCallback;
+using aeronet::RequestMetrics;
+
 // ── Configuration types ────────────────────────────────────────────────────
 
 using aeronet::BuiltinProbesConfig;

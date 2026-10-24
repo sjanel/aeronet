@@ -17,16 +17,15 @@
 #include "aeronet/async-handler-state.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
-#include "aeronet/http-message-data.hpp"
 #include "aeronet/http-message.hpp"
 #include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-request-view.hpp"
-#include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/connection-storage.hpp"
+#include "aeronet/internal/http1-pipeline.hpp"
 #include "aeronet/internal/pending-updates.hpp"
+#include "aeronet/internal/server-context.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
@@ -44,24 +43,26 @@
 
 namespace aeronet {
 
-bool SingleHttpServer::PauseReadingDuringAsyncHandler(ConnectionState& state) noexcept {
+namespace internal {
+
+bool Http1Pipeline::PauseReadingDuringAsyncHandler(ConnectionState& state) noexcept {
   const auto* asyncState = state.pAsyncState();
   if (asyncState == nullptr || !asyncState->holdsInput()) {
     return false;
   }
   // The input buffer holds the body (and the bytes) of the request of the async handler: it must neither grow nor move
   // until it completes. The next bytes are left in the socket (which also bounds them) and read once it completed,
-  // see resumeInputAfterAsyncHandler().
+  // see SingleHttpServer::resumeInputAfterAsyncHandler().
   state.readPaused = true;
   return true;
 }
 
-bool SingleHttpServer::dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyncRequestHandler& handler,
-                                            bool bodyReady, bool isChunked, std::size_t consumedBytes,
-                                            const CorsPolicy* pCorsPolicy,
-                                            std::span<const ResponseMiddleware> responseMiddleware,
-                                            std::size_t perRouteMaxBodyBytes) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
+bool Http1Pipeline::dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyncRequestHandler& handler, bool bodyReady,
+                                         bool isChunked, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy,
+                                         std::span<const ResponseMiddleware> responseMiddleware,
+                                         std::size_t perRouteMaxBodyBytes) {
+  ServerContext& ctx = *_pCtx;
+  ConnectionState& state = ctx.connections.connectionState(cnxIt);
   HttpRequestView& request = state.request;
   RequestTask<HttpResponse> task = RequestPipeline::CallAsyncHandler(*handler, request);
 
@@ -69,8 +70,8 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyn
     static constexpr std::string_view kMessage = "Async handler inactive";
     if (bodyReady) {
       HttpResponse resp(http::StatusCodeInternalServerError, kMessage);
-      requestPipeline().applyResponseMiddleware(request, resp, responseMiddleware, false);
-      finalizeAndSendResponseForHttp1(cnxIt, std::move(resp), pCorsPolicy);
+      ctx.requestPipeline().applyResponseMiddleware(request, resp, responseMiddleware, false);
+      finalizeAndSendResponse(cnxIt, std::move(resp), pCorsPolicy);
     } else {
       emitSimpleError(cnxIt, http::StatusCodeInternalServerError, kMessage);
     }
@@ -81,12 +82,12 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyn
   auto handle = task.release();
   assert(handle);
 
-  auto& asyncState = state.ensureAsyncState(_connections.asyncHandlerStatePool());
+  auto& asyncState = state.ensureAsyncState(ctx.connections.asyncHandlerStatePool());
   const std::string_view bodyView = state.request._body;
   bool usesSharedDecompressedBody = false;
   if (bodyReady && !bodyView.empty()) {
-    const char* sharedBeg = _sharedBuffers.decompressedBody.data();
-    const char* sharedEnd = sharedBeg + _sharedBuffers.decompressedBody.size();
+    const char* sharedBeg = ctx.sharedBuffers.decompressedBody.data();
+    const char* sharedEnd = sharedBeg + ctx.sharedBuffers.decompressedBody.size();
     const char* bodyBeg = bodyView.data();
     const char* bodyEnd = bodyBeg + bodyView.size();
 
@@ -107,7 +108,7 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyn
   asyncState.responseMiddleware = responseMiddleware.data();
   asyncState.responseMiddlewareCount = static_cast<uint32_t>(responseMiddleware.size());
   asyncState.maxBodyBytes = perRouteMaxBodyBytes;
-  asyncState.pendingResponse = {};
+  asyncState.pendingResponse = internal::HttpResponseAccess::MakeUnallocated();
 
   // The request is not parsed again from now on: the expectations of the next one must be answered.
   state.expectationAnswered = false;
@@ -116,12 +117,12 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyn
   state.request.pinHeadStorage(asyncState.headBuffer);
 
   // Install the postCallback function for deferred work
-  asyncState.postCallback = [this, fd = cnxIt->fd(), generation = state.generation](std::coroutine_handle<> handle,
-                                                                                    std::function<void()> work) {
-    postAsyncCallback(fd, generation, handle, std::move(work));
+  asyncState.postCallback = [pCtx = &ctx, fd = cnxIt->fd(), generation = state.generation](
+                                std::coroutine_handle<> handle, std::function<void()> work) {
+    pCtx->postAsyncCallback(fd, generation, handle, std::move(work));
   };
 
-  refreshKeepAliveDeadline(cnxIt);
+  ctx.maintenance.refreshKeepAliveDeadline(cnxIt);
   resumeAsyncHandler(cnxIt);
   if (asyncState.active) {
     // Completes later: the router may be updated meanwhile.
@@ -131,8 +132,8 @@ bool SingleHttpServer::dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyn
   return true;
 }
 
-void SingleHttpServer::resumeAsyncHandler(ConnectionIt cnxIt) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
+void Http1Pipeline::resumeAsyncHandler(ConnectionIt cnxIt) {
+  ConnectionState& state = _pCtx->connections.connectionState(cnxIt);
   auto* asyncState = state.pAsyncState();
   assert(asyncState != nullptr);
   auto& async = *asyncState;
@@ -157,18 +158,18 @@ void SingleHttpServer::resumeAsyncHandler(ConnectionIt cnxIt) {
   }
 }
 
-void SingleHttpServer::AbandonAsyncHandler(AsyncHandlerState& async) noexcept {
+void Http1Pipeline::AbandonAsyncHandler(AsyncHandlerState& async) noexcept {
   if (async.isAwaitingCallback()) {
     // The deferred work may still use the coroutine frame and the request: they are released when it completes.
     async.active = false;
-    async.pendingResponse.reset();
+    async.pendingResponse = internal::HttpResponseAccess::MakeUnallocated();
   } else {
     async.clear();
   }
 }
 
-void SingleHttpServer::handleAsyncBodyProgress(ConnectionIt cnxIt) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
+void Http1Pipeline::handleAsyncBodyProgress(ConnectionIt cnxIt) {
+  ConnectionState& state = _pCtx->connections.connectionState(cnxIt);
   auto* asyncState = state.pAsyncState();
   assert(asyncState != nullptr);
   auto& async = *asyncState;
@@ -195,7 +196,7 @@ void SingleHttpServer::handleAsyncBodyProgress(ConnectionIt cnxIt) {
       return;
     }
     state.installAggregatedBodyBridge();
-    trackBodyReception(state, true);
+    _pCtx->maintenance.trackBodyReception(state, true);
 
     if (async.awaitReason == AsyncHandlerState::AwaitReason::WaitingForBody) {
       async.awaitReason = AsyncHandlerState::AwaitReason::None;
@@ -204,12 +205,12 @@ void SingleHttpServer::handleAsyncBodyProgress(ConnectionIt cnxIt) {
     }
   }
 
-  if (async.pendingResponse.has_value()) {
+  if (!async.pendingResponse.empty()) {
     tryFlushPendingAsyncResponse(cnxIt);
   }
 }
 
-bool SingleHttpServer::pinAsyncSharedBodyToConnectionStorage(ConnectionState& state) const {
+bool Http1Pipeline::pinAsyncSharedBodyToConnectionStorage(ConnectionState& state) const {
   auto* asyncState = state.pAsyncState();
   if (asyncState == nullptr) {
     return true;
@@ -222,9 +223,9 @@ bool SingleHttpServer::pinAsyncSharedBodyToConnectionStorage(ConnectionState& st
   const std::string_view body = state.request._body;
 
   // Async shared-body pinning expects request body to reference shared decompressed storage
-  assert(body.empty() || (_sharedBuffers.decompressedBody.data() <= body.data() &&
-                          body.data() + body.size() <=
-                              _sharedBuffers.decompressedBody.data() + _sharedBuffers.decompressedBody.size()));
+  [[maybe_unused]] const RawChars& sharedBody = _pCtx->sharedBuffers.decompressedBody;
+  assert(body.empty() ||
+         (sharedBody.data() <= body.data() && body.data() + body.size() <= sharedBody.data() + sharedBody.size()));
 
   state.bodyAndTrailersBuffer.assign(body.data(), body.size());
   state.request._body = std::string_view(state.bodyAndTrailersBuffer.data(), body.size());
@@ -237,8 +238,8 @@ bool SingleHttpServer::pinAsyncSharedBodyToConnectionStorage(ConnectionState& st
   return true;
 }
 
-void SingleHttpServer::onAsyncHandlerCompleted(ConnectionIt cnxIt) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
+void Http1Pipeline::onAsyncHandlerCompleted(ConnectionIt cnxIt) {
+  ConnectionState& state = _pCtx->connections.connectionState(cnxIt);
   auto* asyncState = state.pAsyncState();
   if (asyncState == nullptr) {
     return;
@@ -251,7 +252,7 @@ void SingleHttpServer::onAsyncHandlerCompleted(ConnectionIt cnxIt) {
   auto rawHandle = async.handle.release();
   auto typedHandle = std::coroutine_handle<RequestTask<HttpResponse>::promise_type>::from_address(rawHandle.address());
   bool fromException = false;
-  HttpResponse resp(HttpMessage::Check::No);  // do not allocate memory yet
+  HttpResponse resp = internal::HttpResponseAccess::MakeUnallocated();
   try {
     resp = std::move(typedHandle.promise().consume_result());
   } catch (const std::exception& ex) {
@@ -276,8 +277,9 @@ void SingleHttpServer::onAsyncHandlerCompleted(ConnectionIt cnxIt) {
   }
 }
 
-void SingleHttpServer::tryFlushPendingAsyncResponse(ConnectionIt cnxIt) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
+void Http1Pipeline::tryFlushPendingAsyncResponse(ConnectionIt cnxIt) {
+  ServerContext& ctx = *_pCtx;
+  ConnectionState& state = ctx.connections.connectionState(cnxIt);
   auto* asyncState = state.pAsyncState();
   if (asyncState == nullptr) {
     return;
@@ -285,7 +287,7 @@ void SingleHttpServer::tryFlushPendingAsyncResponse(ConnectionIt cnxIt) {
   auto& async = *asyncState;
 
   assert(!async.needsBody);
-  assert(async.pendingResponse.has_value());
+  assert(!async.pendingResponse.empty());
 
   auto middlewareSpan = std::span<const ResponseMiddleware>(
       static_cast<const ResponseMiddleware*>(async.responseMiddleware), async.responseMiddlewareCount);
@@ -293,56 +295,60 @@ void SingleHttpServer::tryFlushPendingAsyncResponse(ConnectionIt cnxIt) {
   if (async.routeMayHaveChanged) {
     // The router may have been updated since the handler was dispatched, possibly destroying the metadata of its route:
     // look it up again.
-    const Router::RoutingResult routingResult = _router.match(state.request.method(), state.request.path());
+    const Router::RoutingResult routingResult = ctx.router.match(state.request.method(), state.request.path());
     middlewareSpan = routingResult.postMiddlewareRange();
     pCorsPolicy = routingResult.corsPolicy();
   }
-  requestPipeline().applyResponseMiddleware(state.request, *async.pendingResponse, middlewareSpan, false);
-  finalizeAndSendResponseForHttp1(cnxIt, std::move(*async.pendingResponse), pCorsPolicy);
+  ctx.requestPipeline().applyResponseMiddleware(state.request, async.pendingResponse, middlewareSpan, false);
+  finalizeAndSendResponse(cnxIt, std::move(async.pendingResponse), pCorsPolicy);
   state.inBuffer.erase_front(async.consumedBytes);
   async.clear();
   state.lastActivity = std::chrono::steady_clock::now();
-  refreshKeepAliveDeadline(cnxIt);
+  ctx.maintenance.refreshKeepAliveDeadline(cnxIt);
 }
 
+}  // namespace internal
+
 void SingleHttpServer::resumeInputAfterAsyncHandler(NativeHandle fd) {
-  auto cnxIt = _connections.iterator(fd);
-  ConnectionState* pState = _connections.pConnectionState(cnxIt);
+  internal::ConnectionStorage& connections = _ctx.connections;
+  auto cnxIt = connections.iterator(fd);
+  ConnectionState* pState = connections.pConnectionState(cnxIt);
   // Serve the requests pipelined behind the completed one: they were already read, no event will report them.
   if (!pState->inBuffer.empty()) {
-    (void)processHttp1Requests(cnxIt);
-    cnxIt = _connections.iterator(fd);
-    pState = _connections.pConnectionState(cnxIt);
+    (void)processHttp1Input(cnxIt);
+    cnxIt = connections.iterator(fd);
+    pState = connections.pConnectionState(cnxIt);
   }
   // Then read the bytes left in the socket while reading was paused: edge-triggered polling does not report them again.
   if (pState->readPaused && !pState->isAnyCloseRequested()) {
     pState->readPaused = false;
     if (handleReadableClient(cnxIt, false) == CloseStatus::Close) {
-      const auto finalIt = _connections.iterator(fd);
-      if (IsValid(_connections, finalIt)) {
-        closeConnection(finalIt);
+      const auto finalIt = connections.iterator(fd);
+      if (IsValid(connections, finalIt)) {
+        _ctx.io.closeConnection(finalIt);
       }
     }
   } else {
     // The input buffer held the request of the handler, read into the input buffer of the event loop.
-    releaseServedInBuffer(*pState);
+    _ctx.io.releaseServedInBuffer(*pState);
   }
 }
 
 void SingleHttpServer::processAsyncCallbacks() {
+  internal::ConnectionStorage& connections = _ctx.connections;
   vector<internal::PendingUpdates::AsyncCallback> callbacks;
   {
-    std::scoped_lock lock(_updates.lock);
-    callbacks.swap(_updates.asyncCallbacks);
-    _updates.hasAsyncCallbacks.store(false, std::memory_order_release);
+    std::scoped_lock lock(_ctx.updates.lock);
+    callbacks.swap(_ctx.updates.asyncCallbacks);
+    _ctx.updates.hasAsyncCallbacks.store(false, std::memory_order_release);
   }
 
   for (auto& cb : callbacks) {
     try {
-      auto it = _connections.findConnection(cb.connectionFd, cb.connectionGeneration);
-      if (it == _connections.end()) {
+      auto it = connections.findConnection(cb.connectionFd, cb.connectionGeneration);
+      if (it == connections.end()) {
         // The connection was closed while the work was running: its coroutine was kept for it, release it now.
-        _connections.releaseOrphanedAsyncTask(cb.connectionGeneration, cb.handle, _config.maxCachedConnections);
+        connections.releaseOrphanedAsyncTask(cb.connectionGeneration, cb.handle, _ctx.config.maxCachedConnections);
         continue;
       }
 
@@ -355,14 +361,14 @@ void SingleHttpServer::processAsyncCallbacks() {
         } catch (...) {
           log::error("Unknown exception in async callback work");
         }
-        it = _connections.findConnection(cb.connectionFd, cb.connectionGeneration);
-        if (it == _connections.end()) {
-          _connections.releaseOrphanedAsyncTask(cb.connectionGeneration, cb.handle, _config.maxCachedConnections);
+        it = connections.findConnection(cb.connectionFd, cb.connectionGeneration);
+        if (it == connections.end()) {
+          connections.releaseOrphanedAsyncTask(cb.connectionGeneration, cb.handle, _ctx.config.maxCachedConnections);
           continue;
         }
       }
 
-      ConnectionState& state = _connections.connectionState(it);
+      ConnectionState& state = connections.connectionState(it);
 #ifdef AERONET_ENABLE_HTTP2
       // For HTTP/2 connections, delegate to the protocol handler which tracks per-stream async state.
       if (state.protocol == ProtocolType::Http2 && state.protocolHandler != nullptr) {
@@ -370,11 +376,11 @@ void SingleHttpServer::processAsyncCallbacks() {
         if (pH2Handler->resumeAsyncTaskByHandle(cb.handle)) {
           // Flush any pending output generated by the completed async handler
           if (pH2Handler->hasPendingOutput()) {
-            flushOutbound(it);
+            _ctx.io.flushOutbound(it);
           }
           // Deferred work that outlived keepAliveTimeout leaves a stale idle deadline behind, exactly as
           // a slow synchronous handler does (HTTP/1 goes through tryFlushPendingAsyncResponse instead).
-          restartKeepAliveIdleWindow(cb.connectionFd);
+          _ctx.maintenance.restartKeepAliveIdleWindow(cb.connectionFd);
         }
         continue;
       }
@@ -385,7 +391,7 @@ void SingleHttpServer::processAsyncCallbacks() {
       if (asyncState != nullptr && asyncState->handle == cb.handle) {
         if (asyncState->active) {
           asyncState->awaitReason = AsyncHandlerState::AwaitReason::None;
-          resumeAsyncHandler(it);
+          _ctx.http1.resumeAsyncHandler(it);
           if (!asyncState->active) {
             resumeInputAfterAsyncHandler(cb.connectionFd);
           }
@@ -397,9 +403,9 @@ void SingleHttpServer::processAsyncCallbacks() {
       // Close connection immediately if response was sent and drain-and-close is pending.
       // On platforms without a real timer fd (Windows, macOS), sweep maintenance may not
       // run often enough, causing Connection: close requests to linger.
-      it = _connections.findConnection(cb.connectionFd, cb.connectionGeneration);
-      if (it != _connections.end() && _connections.connectionState(it).canCloseConnectionForDrain()) {
-        closeConnection(it);
+      it = connections.findConnection(cb.connectionFd, cb.connectionGeneration);
+      if (it != connections.end() && connections.connectionState(it).canCloseConnectionForDrain()) {
+        _ctx.io.closeConnection(it);
       }
     } catch (const std::exception& ex) {
       log::error("Exception processing async callback for fd # {}: {}", static_cast<uintptr_t>(cb.connectionFd),
@@ -410,17 +416,8 @@ void SingleHttpServer::processAsyncCallbacks() {
   }
 }
 
-void SingleHttpServer::postAsyncCallback(NativeHandle connectionFd, uint32_t connectionGeneration,
-                                         std::coroutine_handle<> handle, std::function<void()> work) {
-  std::scoped_lock lock(_updates.lock);
-  _updates.asyncCallbacks.emplace_back(connectionFd, connectionGeneration, handle, std::move(work));
-  _updates.hasAsyncCallbacks.store(true, std::memory_order_release);
-  // Still under the lock: once it is released, the server may be destroyed (see waitForOrphanedAsyncWork()).
-  _lifecycle.wakeupFd.send();
-}
-
 void SingleHttpServer::waitForOrphanedAsyncWork() {
-  if (!_lifecycle.isIdle()) {
+  if (!_ctx.lifecycle.isIdle()) {
     // Still run by another thread, which owns the connections.
     return;
   }
@@ -428,15 +425,15 @@ void SingleHttpServer::waitForOrphanedAsyncWork() {
   // server: wait for it.
   static constexpr auto kLogPeriod = std::chrono::seconds{5};
   auto nextLog = std::chrono::steady_clock::now() + kLogPeriod;
-  while (_connections.hasOrphanedConnectionStates()) {
-    if (_updates.hasAsyncCallbacks.load(std::memory_order_acquire)) {
+  while (_ctx.connections.hasOrphanedConnectionStates()) {
+    if (_ctx.updates.hasAsyncCallbacks.load(std::memory_order_acquire)) {
       processAsyncCallbacks();
       continue;
     }
     const auto now = std::chrono::steady_clock::now();
     if (now >= nextLog) {
       log::warn("Waiting for the deferred work still running for {} closed connection(s)",
-                _connections.nbOrphanedConnectionStates());
+                _ctx.connections.nbOrphanedConnectionStates());
       nextLog = now + kLogPeriod;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds{1});

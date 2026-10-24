@@ -56,16 +56,15 @@ TEST(MultipartFormDataTest, ParsesTextAndFileParts) {
 
   const auto& textPart = form.parts()[0];
   EXPECT_EQ(textPart.name, "field1");
-  EXPECT_FALSE(textPart.filename.has_value());
-  EXPECT_FALSE(textPart.contentType.has_value());
+  EXPECT_FALSE(textPart.hasFilename());
+  EXPECT_TRUE(textPart.contentType.empty());
   EXPECT_EQ(textPart.value, "value-1");
 
   const auto& filePart = form.parts()[1];
   EXPECT_EQ(filePart.name, "file");
-  ASSERT_TRUE(filePart.filename.has_value());
-  EXPECT_EQ(filePart.filename.value_or(std::string_view{}), "hello.txt");
-  ASSERT_TRUE(filePart.contentType.has_value());
-  EXPECT_EQ(filePart.contentType.value_or(std::string_view{}), "text/plain");
+  EXPECT_EQ(filePart.filename, "hello.txt");
+  ASSERT_FALSE(filePart.contentType.empty());
+  EXPECT_EQ(filePart.contentType, "text/plain");
   EXPECT_EQ(filePart.value, "file-content");
   EXPECT_EQ(filePart.headerValueOrEmpty(http::ContentType), "text/plain");
 }
@@ -94,7 +93,7 @@ TEST(MultipartFormDataTest, QuotedBoundaryAndLookupByName) {
 
   auto allAlpha = form.parts("alpha");
   ASSERT_EQ(allAlpha.size(), 2);
-  EXPECT_EQ(allAlpha[1].get().filename.value_or(std::string_view{}), "b.txt");
+  EXPECT_EQ(allAlpha[1].get().filename, "b.txt");
 }
 
 TEST(MultipartFormDataTest, PartLookupGracefullyHandlesMissingNames) {
@@ -135,10 +134,9 @@ TEST(MultipartFormDataTest, FilenameStarParameterIsHandled) {
   ASSERT_TRUE(form.valid());
   ASSERT_EQ(form.parts().size(), 1);
   const auto& part = form.parts()[0];
-  ASSERT_TRUE(part.filename.has_value());
-  EXPECT_EQ(part.filename.value_or(std::string_view{}), "sample.bin");
-  ASSERT_TRUE(part.contentType.has_value());
-  EXPECT_EQ(part.contentType.value_or(std::string_view{}), "application/octet-stream");
+  ASSERT_TRUE(part.hasFilename());
+  EXPECT_EQ(part.filename, "sample.bin");
+  EXPECT_EQ(part.contentType, "application/octet-stream");
 }
 
 TEST(MultipartFormDataTest, MissingBoundaryMakesFormInvalid) {

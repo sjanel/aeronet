@@ -63,7 +63,7 @@ struct TlsTestServer {
 
   explicit TlsTestServer(std::initializer_list<std::string_view> alpn = {}, const Mutator& mut = nullptr,
                          std::chrono::milliseconds poll = std::chrono::milliseconds{1})
-      : server(MakeConfig(alpn, mut), RouterConfig{}, poll) {}
+      : server(MakeConfig(alpn, mut), RouterConfig(), poll) {}
 
   [[nodiscard]] uint16_t port() const noexcept { return server.port(); }
   void stop() { server.stop(); }

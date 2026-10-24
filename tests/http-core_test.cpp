@@ -367,7 +367,7 @@ TEST(HttpServerConfigLimits, DeferredReadDoesNotWaitForThePollTimeout) {
   HttpServerConfig cfg;
   cfg.withKeepAliveTimeout(std::chrono::minutes{1});
   cfg.withMaxPerEventReadBytes(cfg.minReadChunkBytes);
-  test::TestServer localTs(std::move(cfg), RouterConfig{}, kLongPollInterval);
+  test::TestServer localTs(std::move(cfg), RouterConfig(), kLongPollInterval);
   const std::size_t payloadSize = 16UL * localTs.server.config().minReadChunkBytes;
   localTs.router().setDefault([payloadSize](const HttpRequestView& req) {
     return HttpResponse(req.body().size() == payloadSize ? "deferred ok" : "size mismatch");
@@ -1358,7 +1358,7 @@ TEST(HttpServerTelemetry, DogStatsDMetricsSentAtMaintenanceTick) {
 
   HttpServerConfig cfg;
   cfg.withTelemetryConfig(std::move(tcfg));
-  test::TestServer server(std::move(cfg), RouterConfig{}, std::chrono::milliseconds{10});
+  test::TestServer server(std::move(cfg), RouterConfig(), std::chrono::milliseconds{10});
   server.router().setDefault([](const HttpRequestView&) { return HttpResponse("ok"); });
 
   for (int requestIdx = 0; requestIdx < kNbRequests; ++requestIdx) {
@@ -1395,7 +1395,7 @@ TEST(HttpServerTelemetry, DogStatsDBytesReadCountsTheReadsOfReadableEvents) {
 
   HttpServerConfig cfg;
   cfg.withTelemetryConfig(std::move(tcfg));
-  test::TestServer server(std::move(cfg), RouterConfig{}, std::chrono::milliseconds{10});
+  test::TestServer server(std::move(cfg), RouterConfig(), std::chrono::milliseconds{10});
   server.router().setDefault([](const HttpRequestView&) { return HttpResponse("ok"); });
 
   const std::string request = test::SimpleGetRequest("/");

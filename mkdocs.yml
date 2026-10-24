@@ -118,6 +118,7 @@ nav:
   - Project:
       - Documentation development: development/documentation.md
       - Testing: development/testing.md
+      - Server architecture: development/server-architecture.md
       - Changelog: CHANGELOG.md
       - Roadmap: ROADMAP.md
 

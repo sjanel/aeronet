@@ -22,6 +22,7 @@
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/internal/server-context.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/router-update-proxy.hpp"
@@ -89,35 +90,37 @@ RouterUpdateProxy SingleHttpServer::router() {
               std::rethrow_exception(ex);
             }
           },
-          [this] -> Router& { return _router; }};
+          [this] -> Router& { return _ctx.router; }};
 }
 
 void SingleHttpServer::setParserErrorCallback(ParserErrorCallback cb) {
-  submitCallbacksUpdate([cb = std::move(cb)](Callbacks& callbacks) { callbacks.parserErr = cb; });
+  submitCallbacksUpdate([cb = std::move(cb)](internal::ServerCallbacks& callbacks) { callbacks.parserErr = cb; });
 }
 
 void SingleHttpServer::setMetricsCallback(MetricsCallback cb) {
-  submitCallbacksUpdate([cb = std::move(cb)](Callbacks& callbacks) { callbacks.metrics = cb; });
+  submitCallbacksUpdate([cb = std::move(cb)](internal::ServerCallbacks& callbacks) { callbacks.metrics = cb; });
 }
 
 #ifdef AERONET_ENABLE_OPENSSL
 void SingleHttpServer::setTlsHandshakeCallback(TlsHandshakeCallback cb) {
-  submitCallbacksUpdate([cb = std::move(cb)](Callbacks& callbacks) { callbacks.tlsHandshake = cb; });
+  submitCallbacksUpdate([cb = std::move(cb)](internal::ServerCallbacks& callbacks) { callbacks.tlsHandshake = cb; });
 }
 #endif
 
 void SingleHttpServer::setExpectationHandler(ExpectationHandler handler) {
-  submitCallbacksUpdate([handler = std::move(handler)](Callbacks& callbacks) { callbacks.expectation = handler; });
+  submitCallbacksUpdate(
+      [handler = std::move(handler)](internal::ServerCallbacks& callbacks) { callbacks.expectation = handler; });
 }
 
 void SingleHttpServer::setMiddlewareMetricsCallback(MiddlewareMetricsCallback cb) {
-  submitCallbacksUpdate([cb = std::move(cb)](Callbacks& callbacks) { callbacks.middlewareMetrics = cb; });
+  submitCallbacksUpdate(
+      [cb = std::move(cb)](internal::ServerCallbacks& callbacks) { callbacks.middlewareMetrics = cb; });
 }
 
-void SingleHttpServer::submitCallbacksUpdate(std::function<void(Callbacks&)> updater) {
-  if (_lifecycle.isEventLoopThread()) {
+void SingleHttpServer::submitCallbacksUpdate(std::function<void(internal::ServerCallbacks&)> updater) {
+  if (_ctx.lifecycle.isEventLoopThread()) {
     // From a handler or a callback: the event loop is the thread using the callbacks.
-    updater(_callbacks);
+    updater(_ctx.callbacks);
     return;
   }
 
@@ -126,13 +129,13 @@ void SingleHttpServer::submitCallbacksUpdate(std::function<void(Callbacks&)> upd
   // connection initiated after it).
   auto applied = std::make_shared<std::atomic<bool>>(false);
   {
-    std::scoped_lock lock(_updates.lock);
-    if (_lifecycle.isIdle()) {
+    std::scoped_lock lock(_ctx.updates.lock);
+    if (_ctx.lifecycle.isIdle()) {
       applyQueuedCallbacksUpdates();
-      updater(_callbacks);
+      updater(_ctx.callbacks);
       return;
     }
-    _callbacksUpdates.emplace_back([updater = std::move(updater), applied](Callbacks& callbacks) {
+    _callbacksUpdates.emplace_back([updater = std::move(updater), applied](internal::ServerCallbacks& callbacks) {
       // Released even if the updater throws, so that the waiting caller does not wait for the server to stop.
       const auto release = [&applied] noexcept { applied->store(true, std::memory_order_release); };
       try {
@@ -145,12 +148,12 @@ void SingleHttpServer::submitCallbacksUpdate(std::function<void(Callbacks&)> upd
     });
     _hasCallbacksUpdates.store(true, std::memory_order_release);
   }
-  _lifecycle.wakeupFd.send();
+  _ctx.lifecycle.wakeupFd.send();
 
   while (!applied->load(std::memory_order_acquire)) {
     {
-      std::scoped_lock lock(_updates.lock);
-      if (_lifecycle.isIdle()) {
+      std::scoped_lock lock(_ctx.updates.lock);
+      if (_ctx.lifecycle.isIdle()) {
         // The event loop exited before applying it: no thread uses the callbacks anymore.
         applyQueuedCallbacksUpdates();
         return;
@@ -164,7 +167,7 @@ void SingleHttpServer::submitCallbacksUpdate(std::function<void(Callbacks&)> upd
 void SingleHttpServer::applyQueuedCallbacksUpdates() {
   // Changes still queued (posted just before the event loop exited) first, so that the latest one wins.
   for (auto& pendingUpdater : _callbacksUpdates) {
-    pendingUpdater(_callbacks);
+    pendingUpdater(_ctx.callbacks);
   }
   _callbacksUpdates.clear();
   _hasCallbacksUpdates.store(false, std::memory_order_relaxed);
@@ -172,7 +175,7 @@ void SingleHttpServer::applyQueuedCallbacksUpdates() {
 
 void SingleHttpServer::postConfigUpdate(std::function<void(HttpServerConfig&)> updater) {
   {
-    std::scoped_lock lock(_updates.lock);
+    std::scoped_lock lock(_ctx.updates.lock);
     // Wrap user's updater with immutability enforcement: apply user changes then restore immutable fields.
     // The snapshot is taken when applying the update, by the event loop: the config cannot be read from the calling
     // thread, the event loop possibly applying a previous update at the same time.
@@ -186,10 +189,10 @@ void SingleHttpServer::postConfigUpdate(std::function<void(HttpServerConfig&)> u
       std::function<void(HttpServerConfig&)> userUpdater;
     };
 
-    _updates.config.emplace_back(WrappedUpdater{std::move(updater)});
-    _updates.hasConfig.store(true, std::memory_order_release);
+    _ctx.updates.config.emplace_back(WrappedUpdater{std::move(updater)});
+    _ctx.updates.hasConfig.store(true, std::memory_order_release);
   }
-  _lifecycle.wakeupFd.send();
+  _ctx.lifecycle.wakeupFd.send();
 }
 
 void SingleHttpServer::postRouterUpdate(std::function<void(Router&)> updater) {
@@ -217,18 +220,18 @@ void SingleHttpServer::submitRouterUpdate(std::function<void(Router&)> updater,
   };
 
   {
-    std::scoped_lock lock(_updates.lock);
+    std::scoped_lock lock(_ctx.updates.lock);
     // beginStartup() takes this same lock before publishing Starting. A direct update
     // therefore completes before startup begins; every later update is queued for the
     // event-loop thread and clamped there.
-    if (_lifecycle.isIdle()) {
-      wrappedUpdater(_router);
+    if (_ctx.lifecycle.isIdle()) {
+      wrappedUpdater(_ctx.router);
       return;
     }
-    _updates.router.emplace_back(std::move(wrappedUpdater));
-    _updates.hasRouter.store(true, std::memory_order_release);
+    _ctx.updates.router.emplace_back(std::move(wrappedUpdater));
+    _ctx.updates.hasRouter.store(true, std::memory_order_release);
   }
-  _lifecycle.wakeupFd.send();
+  _ctx.lifecycle.wakeupFd.send();
 }
 
 namespace {
@@ -264,44 +267,44 @@ void SingleHttpServer::applyPendingConfigUpdates() {
 #ifdef AERONET_ENABLE_OPENSSL
   bool tlsContextRebuilt = false;
 #endif
-  for (auto& updater : TakePendingUpdates(_updates.lock, _updates.config, _updates.hasConfig)) {
+  for (auto& updater : TakePendingUpdates(_ctx.updates.lock, _ctx.updates.config, _ctx.updates.hasConfig)) {
     try {
       // Each update is applied atomically: if the updater, the validation or the construction of the objects built from
       // the new configuration (TLS context, access log writer) throws, the previous configuration is restored.
-      HttpServerConfig previousConfig(_config);
+      HttpServerConfig previousConfig(_ctx.config);
       try {
-        updater(_config);
-        _config.validate();
+        updater(_ctx.config);
+        _ctx.config.validate();
 
 #ifdef AERONET_ENABLE_OPENSSL
         // Existing connections keep the context they were created from (ConnectionState::tlsContextKeepAlive).
         std::shared_ptr<TlsContext> newTlsContext;
-        const bool tlsChanged = _config.tls != previousConfig.tls;
-        if (tlsChanged && _config.tls.enabled) {
-          newTlsContext = std::make_shared<TlsContext>(_config.tls, ticketKeyStoreForNewTlsContext(previousConfig.tls));
+        const bool tlsChanged = _ctx.config.tls != previousConfig.tls;
+        if (tlsChanged && _ctx.config.tls.enabled) {
+          newTlsContext = _ctx.tls.makeContext(previousConfig.tls);
         }
 #endif
         AccessLogWriter newAccessLog;
-        const bool accessLogChanged = _config.accessLog != previousConfig.accessLog;
+        const bool accessLogChanged = _ctx.config.accessLog != previousConfig.accessLog;
         if (accessLogChanged) {
-          newAccessLog = AccessLogWriter(_config.accessLog);
+          newAccessLog = AccessLogWriter(_ctx.config.accessLog);
         }
 
         // Commit - nothing can throw from here.
 #ifdef AERONET_ENABLE_OPENSSL
         if (tlsChanged) {
-          _tls.ctxHolder = std::move(newTlsContext);
+          _ctx.tls.setContext(std::move(newTlsContext));
           tlsContextRebuilt = true;
         }
 #endif
         if (accessLogChanged) {
           // The previous writer, swapped into newAccessLog, flushes its buffered lines when destroyed.
-          std::swap(_accessLog, newAccessLog);
+          std::swap(_ctx.accessLog, newAccessLog);
         }
       } catch (...) {
         // Swap rather than assign: the rejected configuration is then destroyed with previousConfig, which scrubs its
         // TLS secrets (a move assignment would free their buffers without scrubbing them).
-        std::swap(_config, previousConfig);
+        std::swap(_ctx.config, previousConfig);
         throw;
       }
     } catch (const std::exception& ex) {
@@ -314,75 +317,41 @@ void SingleHttpServer::applyPendingConfigUpdates() {
 #ifdef AERONET_ENABLE_OPENSSL
   // A context built by this batch has just read its files. Otherwise, reload the ones that changed on disk (in-place
   // certificate rotation, OCSP response or CRL refresh, Kubernetes secret update) even if their paths did not change.
-  if (!tlsContextRebuilt && _tls.ctxHolder) {
-    reloadChangedTlsFiles();
+  if (!tlsContextRebuilt && _ctx.tls.hasContext()) {
+    _ctx.tls.reloadChangedFiles();
   }
 #endif
 }
-
-#ifdef AERONET_ENABLE_OPENSSL
-std::shared_ptr<TlsTicketKeyStore> SingleHttpServer::ticketKeyStoreForNewTlsContext(
-    const TLSConfig& currentContextConfig) const {
-  if (_tls.sharedTicketKeyStore) {
-    // MultiHttpServer worker: one store shared by all the workers.
-    return _tls.sharedTicketKeyStore;
-  }
-  // Keep the keys of the current context while the session ticket settings do not change, so that the tickets it issued
-  // still resume after a certificate rotation or another TLS change.
-  if (_tls.ctxHolder && currentContextConfig.sessionTickets == _config.tls.sessionTickets &&
-      std::ranges::equal(currentContextConfig.sessionTicketKeys(), _config.tls.sessionTicketKeys())) {
-    return _tls.ctxHolder->ticketKeyStore();
-  }
-  return {};
-}
-
-void SingleHttpServer::reloadChangedTlsFiles() {
-  // Points into the current context: used before it is replaced.
-  const std::string_view changedFile = _tls.ctxHolder->changedInputFile();
-  if (changedFile.empty()) {
-    return;
-  }
-  try {
-    auto newTlsContext = std::make_shared<TlsContext>(_config.tls, ticketKeyStoreForNewTlsContext(_config.tls));
-    log::info("TLS context reloaded, '{}' changed on disk", changedFile);
-    _tls.ctxHolder = std::move(newTlsContext);
-  } catch (const std::exception& ex) {
-    // Retried at the next config update (the file still differs from the one the current context was built from).
-    log::error("TLS context reload failed after '{}' changed on disk, previous TLS context kept: {}", changedFile,
-               ex.what());
-  }
-}
-#endif
 
 void SingleHttpServer::applyPendingUpdates() {
   bool needsClamp = false;
 
-  if (_updates.hasConfig.load(std::memory_order_acquire)) {
+  if (_ctx.updates.hasConfig.load(std::memory_order_acquire)) {
     applyPendingConfigUpdates();
 
     // Reinitialize components dependent on config values.
-    _compressionState.selector = EncodingSelector(_config.compression);
-    _eventLoop.updatePollTimeoutPolicy(MakePollTimeoutPolicy(_config));
+    _ctx.compressionState.selector = EncodingSelector(_ctx.config.compression);
+    _ctx.eventLoop.updatePollTimeoutPolicy(internal::MakePollTimeoutPolicy(_ctx.config));
     updateMaintenanceTimer();
-    rebuildKeepAliveDeadlines();
+    _ctx.maintenance.rebuildKeepAliveDeadlines();
     registerBuiltInProbes();
     needsClamp = true;
   }
-  if (_updates.hasRouter.load(std::memory_order_acquire)) {
-    ApplyPendingUpdates(_updates.lock, _updates.router, _updates.hasRouter, _router, "router");
+  if (_ctx.updates.hasRouter.load(std::memory_order_acquire)) {
+    ApplyPendingUpdates(_ctx.updates.lock, _ctx.updates.router, _ctx.updates.hasRouter, _ctx.router, "router");
     needsClamp = true;
   }
   if (_hasCallbacksUpdates.load(std::memory_order_acquire)) {
-    ApplyPendingUpdates(_updates.lock, _callbacksUpdates, _hasCallbacksUpdates, _callbacks, "callbacks");
+    ApplyPendingUpdates(_ctx.updates.lock, _callbacksUpdates, _hasCallbacksUpdates, _ctx.callbacks, "callbacks");
   }
 
   if (needsClamp) {
-    _router.clampConfigs(_config.maxHeaderBytes, _config.maxBodyBytes);
+    _ctx.router.clampConfigs(_ctx.config.maxHeaderBytes, _ctx.config.maxBodyBytes);
   }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   // Process async callbacks posted from background threads
-  if (_updates.hasAsyncCallbacks.load(std::memory_order_acquire)) {
+  if (_ctx.updates.hasAsyncCallbacks.load(std::memory_order_acquire)) {
     processAsyncCallbacks();
   }
 #endif

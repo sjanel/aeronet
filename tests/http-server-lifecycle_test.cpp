@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <memory>
 #include <stdexcept>
 #include <stop_token>
 #include <string>
@@ -182,6 +183,39 @@ TEST(HttpServerMove, MoveAssignWhileStopped) {
   auto& s1Ref = s1;
   s1 = std::move(s1Ref);
   EXPECT_EQ(s1.port(), port2);
+}
+
+// The components serving the connections point to the internal state of their server: a move points those of the
+// destination to its own state. The source is destroyed (heap-allocated) before the destination serves: a component
+// still pointing to it would touch freed memory.
+TEST(HttpServerMove, ServesAfterMovedFromServerIsDestroyed) {
+  const auto serve = [](SingleHttpServer& server) {
+    std::jthread thread(
+        [&server](const std::stop_token& token) { server.runUntil([&token] { return token.stop_requested(); }); });
+    EXPECT_TRUE(test::WaitForServer(server));
+    // A request answered by a handler, then one answered by an error (the connection closes after it).
+    std::string responses = test::simpleGet(server.port(), "/moved");
+    responses += test::sendAndCollect(server.port(), "GET /bad HTTP/1.1\r\nHost: h\r\nContent-Length: x\r\n\r\n");
+    thread.request_stop();
+    return responses;
+  };
+
+  auto source = std::make_unique<SingleHttpServer>(HttpServerConfig{});
+  source->router().setDefault(
+      [](const HttpRequestView& req) { return HttpResponse("MOVED:" + std::string(req.path())); });
+  SingleHttpServer moved(std::move(*source));
+  source.reset();
+  std::string responses = serve(moved);
+  EXPECT_TRUE(responses.contains("MOVED:/moved")) << responses;
+  EXPECT_TRUE(responses.contains("HTTP/1.1 400")) << responses;
+
+  source = std::make_unique<SingleHttpServer>(std::move(moved));
+  SingleHttpServer assigned;
+  assigned = std::move(*source);
+  source.reset();
+  responses = serve(assigned);
+  EXPECT_TRUE(responses.contains("MOVED:/moved")) << responses;
+  EXPECT_TRUE(responses.contains("HTTP/1.1 400")) << responses;
 }
 
 TEST(HttpServerMove, MoveConstructProbesCapturesThis) {

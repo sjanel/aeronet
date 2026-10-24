@@ -1,146 +1,728 @@
 #include "aeronet/single-http-server.hpp"
 
+#ifdef AERONET_WINDOWS
+#include <ws2tcpip.h>
+#else
+#include <sys/socket.h>  // sockaddr_storage
+#endif
+
 #include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
-#include <exception>
-#include <functional>
-#include <memory>
 #include <mutex>
-#include <optional>
 #include <span>
 #include <string_view>
-#include <thread>
-#include <type_traits>
 #include <utility>
 
-#include "aeronet/accept-encoding-negotiation.hpp"
-#include "aeronet/access-log-config.hpp"
+#include "aeronet/compiler-config.hpp"
 #include "aeronet/connection-state.hpp"
-#include "aeronet/cors-policy.hpp"
+#include "aeronet/connection.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
-#include "aeronet/http-constants.hpp"
-#include "aeronet/http-message-data.hpp"
-#include "aeronet/http-message.hpp"
-#include "aeronet/http-method.hpp"
-#include "aeronet/http-request-dispatch.hpp"
-#include "aeronet/http-request-view.hpp"
-#include "aeronet/http-response-writer.hpp"
-#include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
-#include "aeronet/http-status-code.hpp"
-#include "aeronet/http-version.hpp"
-#include "aeronet/https-redirect.hpp"
+#include "aeronet/internal/connection-io.hpp"
 #include "aeronet/internal/connection-storage.hpp"
+#include "aeronet/internal/http1-pipeline.hpp"
+#include "aeronet/internal/server-context.hpp"
 #include "aeronet/log.hpp"
-#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/native-handle.hpp"
-#include "aeronet/path-handlers.hpp"
 #include "aeronet/protocol-handler.hpp"
-#include "aeronet/raw-chars.hpp"
-#include "aeronet/router.hpp"
 #include "aeronet/server-stats.hpp"
 #include "aeronet/signal-handler.hpp"
-#include "aeronet/simple-charconv.hpp"
-#include "aeronet/socket.hpp"
-#include "aeronet/string-equal-ignore-case.hpp"
-#include "aeronet/string-trim.hpp"
-#include "aeronet/tls-config.hpp"
-#include "aeronet/tracing/tracer.hpp"
-#include "aeronet/vector.hpp"
-#include "http-error-build.hpp"
-#include "http1-writer-transport.hpp"
+#include "aeronet/socket-ops.hpp"
+#include "aeronet/system-error.hpp"
+#include "aeronet/tcp-no-delay-mode.hpp"
+#include "aeronet/transport-result.hpp"
+#include "aeronet/transport.hpp"
 #include "tunnel-manager.hpp"
-
-#ifdef AERONET_ENABLE_WEBSOCKET
-#include "aeronet/upgrade-handler.hpp"
-#include "aeronet/websocket-endpoint.hpp"
-#include "aeronet/websocket-handler.hpp"
-#endif
 
 #ifdef AERONET_ENABLE_HTTP2
 #include "aeronet/http2-frame-types.hpp"
 #endif
 
+#ifdef AERONET_ENABLE_OPENSSL
+#include "aeronet/tls-metrics.hpp"
+#endif
+
+#ifdef AERONET_ENABLE_TEST_HOOKS
+#include "aeronet/transport-test-hook.hpp"
+#endif
+
 namespace aeronet {
 
-namespace {
+// ============================================================================
+// Event loop
+// ============================================================================
 
-// The input consumed by the requests served by SingleHttpServer::processHttp1Requests(), erased from the input buffer
-// at once when it returns: erasing each request once served would move the requests pipelined behind it each time, in
-// a time quadratic in their number.
-struct ConsumedInputRAII {
-  explicit ConsumedInputRAII(RawChars& inBuffer) noexcept : inBuffer(inBuffer) {}
+void SingleHttpServer::eventLoop() {
+  // Apply any pending config updates posted from other threads.
+  applyPendingUpdates();
 
-  ConsumedInputRAII(const ConsumedInputRAII&) = delete;
-  ConsumedInputRAII(ConsumedInputRAII&&) noexcept = delete;
-  ConsumedInputRAII& operator=(const ConsumedInputRAII&) = delete;
-  ConsumedInputRAII& operator=(ConsumedInputRAII&&) noexcept = delete;
-
-  ~ConsumedInputRAII() { inBuffer.erase_front(nbBytes); }
-
-  // The input not consumed yet, starting with the current request.
-  [[nodiscard]] std::span<char> remaining() const noexcept {
-    return {inBuffer.data() + nbBytes, inBuffer.size() - nbBytes};
+  if (_ctx.tunnels != nullptr && _ctx.tunnels->hasResolvedTargets()) {
+    _ctx.tunnels->completeResolvedTunnels();
   }
 
-  RawChars& inBuffer;
-  std::size_t nbBytes{0};
-};
+  // Poll for events. The connections deferred by ConnectionIo::deferInput() are served at the end of this iteration:
+  // the poll then only collects the events already ready, without waiting.
+  const auto events = _ctx.eventLoop.poll(!_ctx.io.hasDeferredInputs());
 
-// Consumes the bytes of the request once it is served.
-struct RequestFinalizationRAII {
-  RequestFinalizationRAII(ConsumedInputRAII& consumedInput, std::size_t consumedBytes) noexcept
-      : consumedInput(consumedInput), consumedBytes(consumedBytes) {}
+  // Update cached now time
+  const auto now = std::chrono::steady_clock::now();
+  _ctx.connections.now = now;
+  _ctx.dateHeader.refreshIfNeeded(now);
 
-  RequestFinalizationRAII(const RequestFinalizationRAII&) = delete;
-  RequestFinalizationRAII(RequestFinalizationRAII&&) noexcept = delete;
-  RequestFinalizationRAII& operator=(const RequestFinalizationRAII&) = delete;
-  RequestFinalizationRAII& operator=(RequestFinalizationRAII&&) noexcept = delete;
+  // Publish the loop heartbeat (see internal::Lifecycle::loopHeartbeat): a single relaxed store of the 'now' we just
+  // read. A dedicated probe listener (MultiHttpServer, see BuiltinProbesConfig::dedicatedPort) reads it to tell a loop
+  // wedged inside a request handler from an idle or progressing one - without any bookkeeping on the handler hot path.
+  _ctx.lifecycle.loopHeartbeat(now);
 
-  ~RequestFinalizationRAII() { consumedInput.nbBytes += consumedBytes; }
+  bool maintenanceTick = false;
 
-  ConsumedInputRAII& consumedInput;
-  std::size_t consumedBytes;
-};
-
-}  // namespace
-
-bool SingleHttpServer::enableWritableInterest(ConnectionIt cnxIt) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
-  assert(!state.waitingWritable);
-  if (_eventLoop.mod(EventLoop::EventFd{cnxIt->fd(), EventIn | EventOut | EventRdHup | EventEt})) [[likely]] {
-    state.waitingWritable = true;
-    ++_connectionSweepState.writableConnections;
-    ++_stats.deferredWriteEvents;
-    return true;
+  if (events.data() == nullptr) [[unlikely]] {
+    _ctx.telemetry.counterAdd("aeronet.events.errors", 1);
+    _ctx.lifecycle.exchangeStopping();
+  } else if (!events.empty()) {
+    // Read before the batch: the wakeup below may close the listener, whose event already polled in this batch must
+    // then not be taken for the event of a connection.
+    const NativeHandle listenFd = _listenSocket.fd();
+    for (auto event : events) {
+      const auto fd = event.fd;
+      if (fd == listenFd) {
+        // Always attempt to accept new connections when the listener is signaled (unless closed since).
+        // The lifecycle controls higher-level acceptance semantics; accepting
+        // here is safe and allows probes to connect during drain.
+        if (_listenSocket) {
+          acceptNewConnections();
+        }
+      } else if (fd == _ctx.lifecycle.wakeupFd.fd()) {
+        _ctx.lifecycle.wakeupFd.read();
+        // When stop() is called from another thread it sets the state to Stopping
+        // and sends a wakeup.  Close the listener immediately so no new connections
+        // are accepted while we wait for the maintenance tick to clean up.
+        if (_ctx.lifecycle.isStopping()) {
+          closeListener();
+          maintenanceTick = true;
+        }
+      } else if (fd == _maintenanceTimer.fd()) {
+        _maintenanceTimer.drain();
+        maintenanceTick = true;
+      } else {
+        handleConnectionEvent(event, now);
+      }
+    }
+    // Request handlers run from the read path and may have blocked for longer than keepAliveTimeout.
+    restartKeepAliveIdleWindows(events, now);
+    _ctx.telemetry.counterAdd("aeronet.events.processed", static_cast<uint64_t>(events.size()));
+  } else {
+    // timeout / error::kInterrupted (treated as timeout). Retry pending writes to handle edge-triggered epoll timing
+    // issues. With EPOLLET, if a socket becomes writable after sendfile() returns EAGAIN but before
+    // epoll_ctl(EPOLL_CTL_MOD), we miss the edge. Periodic retries ensure we eventually resume.
+    maintenanceTick = true;
   }
-  // Cannot register for EPOLLOUT so buffered data will never be flushed.
-  // Clear the write buffers so canCloseConnectionForDrain() can proceed;
-  // without this, tunnel connections get stuck forever (exempt from keep-alive reaping).
-  ++_stats.epollModFailures;
-  state.clearBuffers();
-  return false;
+
+  if (_ctx.io.hasDeferredInputs()) {
+    resumeDeferredInputs();
+  }
+
+  // Under high load epoll_wait may return immediately and never hit the timeout path.
+  // We still need periodic maintenance for timeouts and edge-triggered sendfile progress.
+  // On Windows and macOS the TimerFd does not fire real events (armPeriodic is a no-op);
+  // maintenance runs only when poll returns empty (timeout). Under sustained event activity
+  // the poll may never timeout, starving maintenance. Fall back to a time-based check.
+#ifndef AERONET_LINUX
+  if (!maintenanceTick && now - _lastMaintenanceTp >= _ctx.config.pollInterval) {
+    maintenanceTick = true;
+  }
+#endif
+  if (maintenanceTick) {
+    runMaintenance(now);
+  }
 }
 
-bool SingleHttpServer::disableWritableInterest(ConnectionIt cnxIt) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
-  assert(state.waitingWritable);
-  forgetWritableInterest(state);
-  if (_eventLoop.mod(EventLoop::EventFd{cnxIt->fd(), EventIn | EventRdHup | EventEt})) [[likely]] {
-    return true;
+AERONET_ALWAYS_INLINE void SingleHttpServer::handleConnectionEvent(EventLoop::EventFd event,
+                                                                   std::chrono::steady_clock::time_point now) {
+  internal::ConnectionStorage& connections = _ctx.connections;
+  const auto fd = event.fd;
+  const auto bmp = event.eventBmp;
+  const auto cnxIt = connections.iterator(fd);
+  if (!IsValid(connections, cnxIt)) [[unlikely]] {
+    log::warn("fd # {} not found (stale epoll event or race)", fd);
+    // Remove stale entry from the event-loop poller so it doesn't keep firing.
+    // Safe to call here because we are inside the event-loop thread.
+    _ctx.eventLoop.del(fd);
+    return;
   }
-  ++_stats.epollModFailures;
-  state.clearBuffers();
-  return false;
+
+  ConnectionState& eventState = connections.connectionState(cnxIt);
+  eventState.lastActivity = now;
+  _ctx.maintenance.refreshKeepAliveDeadline(cnxIt);
+
+  CloseStatus closeStatus = CloseStatus::Keep;
+  // EPOLLERR/EPOLLHUP/EPOLLRDHUP can be delivered without EPOLLIN.
+  // Treat them as a read trigger so we promptly observe EOF/errors and close.
+  EventBmp readEvents = bmp & (EventIn | EventErr | EventHup | EventRdHup);
+#ifdef AERONET_LINUX
+  // EPOLLERR also reports the zerocopy completion notifications queued in the socket error queue: read them,
+  // releasing the buffers of the completed sends. A socket error (reset, timeout) comes with EPOLLHUP: an
+  // EPOLLERR explained by notifications calls for no read.
+  bool zerocopyCompletions = false;
+  if ((bmp & EventErr) != 0 && _ctx.io.pollZerocopyCompletions(eventState).nbSends != 0) {
+    readEvents &= ~EventErr;
+    zerocopyCompletions = true;
+  }
+#endif
+  bool readTrigger = readEvents != 0;
+  if ((bmp & EventOut) != 0) {
+#ifdef AERONET_ENABLE_OPENSSL
+    // A TLS handshake waiting for the socket to be writable (its flight did not fit in the socket send buffer)
+    // is driven by the read path: the writable event alone would only flush the (empty) output.
+    readTrigger = readTrigger || (eventState.transport.isTls() && !eventState.transport.handshakeDone());
+#endif
+    closeStatus = handleWritableClient(cnxIt);
+  }
+  if (readTrigger) {
+    closeStatus =
+        std::max(handleReadableClient(cnxIt, (readEvents & (EventErr | EventHup | EventRdHup)) == 0), closeStatus);
+  }
+#ifdef AERONET_LINUX
+  else if (zerocopyCompletions && (bmp & EventOut) == 0 && eventState.canCloseConnectionForDrain()) {
+    // A drain close was waiting for these completions.
+    closeStatus = CloseStatus::Close;
+  }
+#endif
+  if (closeStatus == CloseStatus::Close) {
+    // A handler (e.g. the half-close of a tunnel peer) may have already recycled
+    // this connection via a nested closeConnection call. Guard against that.
+    const auto finalIt = connections.iterator(fd);
+    if (IsValid(connections, finalIt)) {
+      _ctx.io.closeConnection(finalIt);
+    }
+  }
 }
+
+void SingleHttpServer::resumeDeferredInputs() {
+  // Re-process connections deferred by the per-event fairness cap, or whose input was left by the output backpressure.
+  // Edge-triggered polling (EPOLLET / EV_CLEAR) only fires on state transitions;
+  // a connection that still had TCP data after hitting the cap won't generate a new
+  // read event, so we must re-read it here before waiting for events again.
+  //
+  // Taken out of ConnectionIo so that resumeDeferredInput can safely defer inputs again without invalidating our
+  // iteration and without losing them to a blanket clear().
+  for (const NativeHandle pendingFd : _ctx.io.takeDeferredInputs()) {
+    const auto pendingIt = _ctx.connections.iterator(pendingFd);
+    if (!IsValid(_ctx.connections, pendingIt)) {
+      continue;
+    }
+    completeOutOfBatchRead(pendingFd, resumeDeferredInput(pendingIt));
+  }
+}
+
+void SingleHttpServer::runMaintenance(std::chrono::steady_clock::time_point now) {
+#ifndef AERONET_LINUX
+  _lastMaintenanceTp = now;
+#endif
+  const auto nbActiveConnections = _ctx.connections.size();
+
+  _ctx.telemetry.gauge("aeronet.connections.active_count", static_cast<int64_t>(nbActiveConnections));
+  _ctx.telemetry.gauge("aeronet.events.capacity_current_count", static_cast<int64_t>(_ctx.eventLoop.capacity()));
+
+  _ctx.maintenance.sweepIdleConnections();
+
+  if (_ctx.tunnels != nullptr) {
+    _ctx.tunnels->expirePendingTunnels(now);
+  }
+
+#ifdef AERONET_LINUX
+  _ctx.io.releaseResetZerocopyBuffers(now);
+#endif
+
+  if (_ctx.accessLog) {
+    _ctx.accessLog.flush();
+  }
+
+  internal::Lifecycle& lifecycle = _ctx.lifecycle;
+  if (lifecycle.isStopping() || (lifecycle.isDraining() && nbActiveConnections == 0)) {
+    closeListenerAndConnections();
+    lifecycle.reset();
+    if (!isInMultiHttpServer()) {
+      log::info("Server stopped");
+    }
+  } else if (lifecycle.isDraining()) {
+    if (lifecycle.drainDeadlineReached(now)) {
+      log::warn("Drain deadline reached with {} active connection(s); forcing close", nbActiveConnections);
+      closeListenerAndConnections();
+      lifecycle.reset();
+      log::info("Server drained after deadline");
+    }
+  } else if (SignalHandler::IsStopRequested()) {
+    beginDrain(SignalHandler::GetMaxDrainPeriod());
+  }
+
+  // After the closes above, whose counters are then exported without waiting for the next tick.
+  _ctx.telemetry.flush();
+
+  // Also shrink per-thread scratch buffers used during decompression / header parsing, and the input buffer lent to the
+  // reads.
+  _ctx.sharedBuffers.shrink_to_fit();
+  _ctx.io.shrinkLentInBuffer();
+}
+
+void SingleHttpServer::updateMaintenanceTimer() {
+  // Periodic maintenance timer: drives idle sweeps / housekeeping without relying on epoll_wait timeouts.
+  using namespace std::chrono;
+
+  const HttpServerConfig& config = _ctx.config;
+  milliseconds minTimeout = milliseconds::max();
+  const auto consider = [&](milliseconds dur) {
+    if (dur.count() > 0) {
+      minTimeout = std::min(minTimeout, dur);
+    }
+  };
+
+  if (config.enableKeepAlive) {
+    consider(config.keepAliveTimeout);
+  }
+  consider(config.headerReadTimeout);
+  consider(config.bodyReadTimeout);
+  consider(config.pollInterval);
+
+#ifdef AERONET_ENABLE_OPENSSL
+  if (config.tls.enabled) {
+    consider(config.tls.handshakeTimeout);
+  }
+#endif
+
+  assert(minTimeout != milliseconds::max());
+
+  _maintenanceTimer.armPeriodic(minTimeout);
+}
+
+void SingleHttpServer::closeListener() noexcept {
+  if (_listenSocket) {
+#ifndef AERONET_WINDOWS
+    // On POSIX, epoll_ctl(DEL) / kevent(EV_DELETE) are kernel-level thread-safe,
+    // so removing the fd from the event loop while the poll thread is blocked is fine.
+    _ctx.eventLoop.del(_listenSocket.fd());
+#endif
+    // On Windows, EventLoop::del() mutates the user-space WSAPoll array.
+    // Calling it from a different thread while WSAPoll() is blocked is a data race.
+    // Just close the socket; the next WSAPoll() iteration will report POLLNVAL for
+    // the stale entry, which the event loop handles gracefully (fd won't match
+    // listen/wakeup/timer and the connection lookup returns not-found — logged and skipped).
+    _listenSocket.close();
+    // Trigger wakeup to break any blocking poll quickly.
+    _ctx.lifecycle.wakeupFd.send();
+  }
+}
+
+void SingleHttpServer::closeListenerAndConnections() {
+  closeListener();
+  _ctx.io.closeAllConnections();
+}
+
+bool SingleHttpServer::isServerInternalFd(NativeHandle fd) const noexcept {
+  return fd == _listenSocket.fd() || fd == _ctx.lifecycle.wakeupFd.fd() || fd == _maintenanceTimer.fd();
+}
+
+void SingleHttpServer::restartKeepAliveIdleWindows(std::span<const EventLoop::EventFd> events,
+                                                   std::chrono::steady_clock::time_point batchStart) {
+  const HttpServerConfig& config = _ctx.config;
+  if (!config.enableKeepAlive) {
+    return;
+  }
+  const auto workEnd = std::chrono::steady_clock::now();
+  if (batchStart + config.keepAliveTimeout > workEnd) {
+    return;  // the whole batch was served well within the idle window: no armed deadline can be stale
+  }
+  for (const auto event : events) {
+    if (!isServerInternalFd(event.fd)) {
+      _ctx.maintenance.restartKeepAliveIdleWindow(event.fd, workEnd);
+    }
+  }
+}
+
+ServerStats SingleHttpServer::stats() const {
+  const internal::ServerStatsInternal& stats = _ctx.stats;
+  ServerStats statsOut;
+  statsOut.totalBytesQueued = stats.totalBytesQueued.load();
+  statsOut.totalBytesWrittenImmediate = stats.totalBytesWrittenImmediate.load();
+  statsOut.totalBytesWrittenFlush = stats.totalBytesWrittenFlush.load();
+  statsOut.deferredWriteEvents = stats.deferredWriteEvents.load();
+  statsOut.flushCycles = stats.flushCycles.load();
+  statsOut.epollModFailures = stats.epollModFailures.load();
+  statsOut.maxConnectionOutboundBuffer = stats.maxConnectionOutboundBuffer.load();
+  statsOut.totalRequestsServed = stats.totalRequestsServed.load();
+  statsOut.zerocopySends = stats.zerocopySends.load();
+  statsOut.zerocopyBytes = stats.zerocopyBytes.load();
+  statsOut.zerocopyCopiedSends = stats.zerocopyCopiedSends.load();
+  statsOut.zerocopyNoBufferSpaceFallbacks = stats.zerocopyNoBufferSpaceFallbacks.load();
+  statsOut.zerocopyRetainLimitFallbacks = stats.zerocopyRetainLimitFallbacks.load();
+  statsOut.zerocopyResetConnections = stats.zerocopyResetConnections.load();
+#ifdef AERONET_ENABLE_OPENSSL
+  const TlsMetricsInternal& tlsMetrics = _ctx.tls.metrics();
+  statsOut.tlsHandshakesSucceeded = tlsMetrics.handshakesSucceeded.load();
+  statsOut.tlsHandshakesFull = tlsMetrics.handshakesFull.load();
+  statsOut.tlsHandshakesResumed = tlsMetrics.handshakesResumed.load();
+  statsOut.tlsHandshakesFailed = tlsMetrics.handshakesFailed.load();
+  statsOut.tlsHandshakesRejectedConcurrency = tlsMetrics.handshakesRejectedConcurrency.load();
+  statsOut.tlsHandshakesRejectedRateLimit = tlsMetrics.handshakesRejectedRateLimit.load();
+  statsOut.tlsClientCertPresent = tlsMetrics.clientCertPresent.load();
+  statsOut.tlsAlpnStrictMismatches = tlsMetrics.alpnStrictMismatches.load();
+  // The maps are updated by the event loop on TLS handshakes.
+  std::scoped_lock lock(tlsMetrics.mapsMutex.mutex);
+  statsOut.tlsAlpnDistribution.reserve(tlsMetrics.alpnDistribution.size());
+  for (const auto& [key, value] : tlsMetrics.alpnDistribution) {
+    statsOut.tlsAlpnDistribution.emplace_back(key, value);
+  }
+  statsOut.tlsHandshakeFailureReasons.reserve(tlsMetrics.handshakeFailureReasons.size());
+  for (const auto& [key, value] : tlsMetrics.handshakeFailureReasons) {
+    statsOut.tlsHandshakeFailureReasons.emplace_back(key, value);
+  }
+  statsOut.tlsVersionCounts.reserve(tlsMetrics.versionCounts.size());
+  for (const auto& [key, value] : tlsMetrics.versionCounts) {
+    statsOut.tlsVersionCounts.emplace_back(key, value);
+  }
+  statsOut.tlsCipherCounts.reserve(tlsMetrics.cipherCounts.size());
+  for (const auto& [key, value] : tlsMetrics.cipherCounts) {
+    statsOut.tlsCipherCounts.emplace_back(key, value);
+  }
+  statsOut.tlsHandshakeDurationCount = tlsMetrics.handshakeDurationCount.load();
+  statsOut.tlsHandshakeDurationTotalNs = tlsMetrics.handshakeDurationTotalNs.load();
+  statsOut.tlsHandshakeDurationMaxNs = tlsMetrics.handshakeDurationMaxNs.load();
+  statsOut.ktlsSendEnabledConnections = tlsMetrics.ktlsSendEnabledConnections.load();
+  statsOut.ktlsSendEnableFallbacks = tlsMetrics.ktlsSendEnableFallbacks.load();
+  statsOut.ktlsSendForcedShutdowns = tlsMetrics.ktlsSendForcedShutdowns.load();
+  statsOut.ktlsSendBytes = tlsMetrics.ktlsSendBytes.load();
+#endif
+  return statsOut;
+}
+
+// ============================================================================
+// Connections
+// ============================================================================
+
+void SingleHttpServer::acceptNewConnections() {
+  internal::ConnectionStorage& connections = _ctx.connections;
+  const HttpServerConfig& config = _ctx.config;
+  // Cap the number of connections accepted per event-loop iteration to avoid starving
+  // existing connections when a burst of new connections arrives (e.g. wrk opening 1000
+  // connections simultaneously).  Remaining connections stay in the kernel backlog and
+  // will be accepted on the next EPOLLIN on the listen socket.
+  const auto maxAcceptBatch = config.maxAcceptBatchSize;
+  assert(maxAcceptBatch > 0);
+  for (decltype(config.maxAcceptBatchSize) accepted = 0; accepted < maxAcceptBatch;) {
+    sockaddr_storage peerAddress;
+    Connection cnx(_listenSocket, peerAddress);
+    if (!cnx) {
+      // no more waiting connections
+      break;
+    }
+    const auto cnxFd = cnx.fd();
+    bool tcpNoDelayActive = false;
+    if (config.tcpNoDelay == TcpNoDelayMode::Enabled) {
+      if (SetTcpNoDelay(cnxFd)) [[likely]] {
+        tcpNoDelayActive = true;
+      } else {
+        const auto err = LastSystemError();
+        log::error("setsockopt(TCP_NODELAY) failed for fd # {} err={}", cnxFd, err);
+        _ctx.telemetry.counterAdd("aeronet.connections.errors.tcp_nodelay_failed", 1UL);
+      }
+    }
+    if (!_ctx.eventLoop.add(EventLoop::EventFd{cnxFd, EventIn | EventRdHup | EventEt})) [[unlikely]] {
+      _ctx.telemetry.counterAdd("aeronet.connections.errors.add_event_failed", 1UL);
+      continue;
+    }
+
+    auto cnxIt = connections.emplace(std::move(cnx));
+
+    _ctx.telemetry.counterAdd("aeronet.connections.accepted", 1UL);
+
+    ConnectionState& state = connections.connectionState(cnxIt);
+
+    state.initializeStateNewConnection(config, peerAddress, _ctx.compressionState);
+
+    // TCP_NODELAY disables Nagle — mark corkable so response writes use TCP_CORK to coalesce.
+    state.corkable = tcpNoDelayActive;
+
+#ifdef AERONET_ENABLE_OPENSSL
+    if (_ctx.tls.hasContext()) {
+      if (!_ctx.tls.startHandshake(state, cnxFd)) {
+        _ctx.io.closeConnection(cnxIt);
+        continue;
+      }
+    } else {
+      state.transport = Transport(cnxFd);
+    }
+#else
+    state.transport = Transport(cnxFd);
+#endif
+
+#ifdef AERONET_ENABLE_TEST_HOOKS
+    // Test hook: allow tests to wrap/decorate the transport for fault injection.
+    state.transport = test::ApplyTransportDecorator(std::move(state.transport));
+#endif
+
+#ifdef AERONET_LINUX
+    // MSG_ZEROCOPY needs a plain socket: accepted ones inherit SO_ZEROCOPY from the listener (see initListener()).
+    state.zerocopyEnabled = state.zerocopyEnabled && _ctx.io.zerocopySupported() && state.transport.isPlain();
+#else
+    state.zerocopyEnabled = false;
+#endif
+
+    _ctx.maintenance.refreshKeepAliveDeadline(cnxIt);
+
+    // The header read timer of its first request starts now: a client that does not send it is answered 408 once
+    // headerReadTimeout elapsed. The timers of the next ones start with their first bytes (see handleReadableClient()).
+    _ctx.maintenance.startHeaderReadTimer(state);
+
+    // Serve the input that came with the connection setup (TLS ClientHello, request, h2c preface...) without waiting
+    // for its first readable event.
+    completeOutOfBatchRead(cnxFd, handleReadableClient(cnxIt, true));
+
+    ++accepted;
+  }
+}
+
+bool SingleHttpServer::finalizeTlsHandshakeIfReady([[maybe_unused]] NativeHandle fd, ConnectionState& state) {
+  if (state.tlsEstablished || !state.transport.handshakeDone()) {
+    return false;
+  }
+#ifdef AERONET_ENABLE_OPENSSL
+  _ctx.tls.finalizeHandshake(fd, state);
+#ifdef AERONET_ENABLE_HTTP2
+  if (_ctx.config.http2.enable && state.tlsInfo.selectedAlpn() == http2::kAlpnH2) {
+    setupHttp2Connection(fd, _ctx.config.tcpNoDelay, state);
+  }
+#endif
+#endif
+  state.tlsEstablished = true;
+  return state.isAnyCloseRequested();
+}
+
+SingleHttpServer::CloseStatus SingleHttpServer::handleWritableClient(ConnectionIt cnxIt) {
+  ConnectionState& state = _ctx.connections.connectionState(cnxIt);
+
+  const auto fd = cnxIt->fd();
+  if (state.isTunneling() && _ctx.tunnels->handleWritable(cnxIt) == CloseStatus::Close) {
+    return CloseStatus::Close;
+  }
+  _ctx.io.flushOutbound(cnxIt);
+
+  // Once EPOLLOUT drained the output, resume the input left by its backpressure directly: edge-triggered polling may
+  // not deliver another read event.
+  processBufferedInput(fd);
+  ConnectionState* pState = _ctx.connections.pConnectionState(fd);
+  assert(pState != nullptr);  // the input processing only requests closes
+  // The records that the TLS transport read ahead while the input processing was stopped are not reported by the
+  // kernel either.
+  if (!pState->hasPendingOutput() && !pState->isAnyCloseRequested() && pState->transport.hasPendingReadData()) {
+    _ctx.io.deferInput(fd, *pState);
+  }
+  return pState->canCloseConnectionForDrain() ? CloseStatus::Close : CloseStatus::Keep;
+}
+
+void SingleHttpServer::processBufferedInput(NativeHandle fd) {
+  // Output backpressure can leave complete input in the user-space input buffer: HTTP/2 frames above the output
+  // high-water mark, or HTTP/1 requests pipelined behind a response that waited for the socket (not processed after a
+  // close request). So can the fairness budget, once the responses to the pipelined HTTP/1 requests reached it.
+  ConnectionState* pState = _ctx.connections.pConnectionState(fd);
+  if (pState == nullptr || pState->hasPendingOutput() || pState->inBuffer.empty()) {
+    return;
+  }
+  if (pState->protocolHandler) {
+    (void)processSpecialProtocolHandler(_ctx.connections.iterator(fd));
+  } else if (!pState->isSendingFile() && !pState->isTunneling() && !pState->isAnyCloseRequested()) {
+    (void)processHttp1Input(_ctx.connections.iterator(fd));
+  }
+}
+
+SingleHttpServer::CloseStatus SingleHttpServer::resumeDeferredInput(ConnectionIt cnxIt) {
+  const auto fd = cnxIt->fd();
+  ConnectionState& deferredState = _ctx.connections.connectionState(cnxIt);
+  deferredState.inputDeferred = false;
+  if (deferredState.isLingering()) {
+    return _ctx.io.discardLingeringInput(cnxIt);
+  }
+  processBufferedInput(fd);
+  ConnectionState& state = _ctx.connections.connectionState(_ctx.connections.iterator(fd));
+  if (state.inputDeferred || state.isAnyCloseRequested()) {
+    // Its responses used the fairness budget again, or it closes: nothing more to read now.
+    return state.canCloseConnectionForDrain() ? CloseStatus::Close : CloseStatus::Keep;
+  }
+  return handleReadableClient(_ctx.connections.iterator(fd), false);
+}
+
+void SingleHttpServer::completeOutOfBatchRead(NativeHandle fd, CloseStatus closeStatus) {
+  if (closeStatus == CloseStatus::Close) {
+    if (const auto cnxIt = _ctx.connections.iterator(fd); IsValid(_ctx.connections, cnxIt)) {
+      _ctx.io.closeConnection(cnxIt);
+    }
+  } else {
+    // Not covered by restartKeepAliveIdleWindows(): the requests read here (such as the ones that a client sends with
+    // its connection setup, like an h2c client with prior knowledge) may have run handlers outliving keepAliveTimeout.
+    _ctx.maintenance.restartKeepAliveIdleWindow(fd);
+  }
+}
+
+SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionIt cnxIt, bool stopOnShortRead) {
+  internal::ConnectionStorage& connections = _ctx.connections;
+  const HttpServerConfig& config = _ctx.config;
+  ConnectionState* pCnx = connections.pConnectionState(cnxIt);
+  assert(pCnx != nullptr);
+
+  if (pCnx->isLingering()) [[unlikely]] {
+    return _ctx.io.discardLingeringInput(cnxIt);
+  }
+
+  // Pending output can legitimately be non-empty when we get EPOLLIN.
+  // This happens with partial writes and very commonly with TLS (SSL_read/handshake progress
+  // can generate outbound records that must be written before further progress).
+  // Opportunistically flush here; if still blocked on write, yield and wait for EPOLLOUT.
+  if (pCnx->hasPendingOutput()) {
+    _ctx.io.flushOutbound(cnxIt);
+    if (pCnx->hasPendingOutput()) {
+      if (!pCnx->waitingWritable) {
+        _ctx.io.enableWritableInterest(cnxIt);
+      }
+      return CloseStatus::Keep;
+    }
+  }
+
+  // A tunnel endpoint relays raw bytes to its peer.
+  if (pCnx->isTunneling() || pCnx->tunnelResolving) {
+    return _ctx.tunnels->handleReadable(cnxIt);
+  }
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  if (pCnx->protocolHandler == nullptr && internal::Http1Pipeline::PauseReadingDuringAsyncHandler(*pCnx)) {
+    return pCnx->canCloseConnectionForDrain() ? CloseStatus::Close : CloseStatus::Keep;
+  }
+#endif
+
+  std::size_t bytesReadThisEvent = 0;
+  // The bytes written while serving the input count toward the fairness budget too: a small request can have a large
+  // response, so a client pipelining such requests (an HTTP/2 client keeping several streams busy, say) would otherwise
+  // keep the event loop on its connection, while the other ones wait, until it has sent a whole budget of requests.
+  const uint64_t bytesWrittenAtEventStart = _ctx.totalBytesWritten();
+  const auto fd = cnxIt->fd();
+
+  // Without pending input, the connection reads into the input buffer of the event loop rather than into its own:
+  // HTTP/2 or WebSocket messages of tens of kilobytes on many connections would otherwise be received in cold memory,
+  // and each idle keep-alive connection would hold an input buffer. It is released below if the input was entirely
+  // served, the connection keeping it otherwise.
+  _ctx.io.lendInBuffer(*pCnx);
+
+  while (true) {
+    // Re-set the pointer on each loop iteration in case of connection state reallocations.
+    cnxIt = connections.iterator(fd);
+    pCnx = connections.pConnectionState(fd);
+
+    const std::size_t chunkSize = config.computeReadChunkSize(bytesReadThisEvent, pCnx->readSizeShift);
+    assert(chunkSize > 0);
+    const auto [count, want] = pCnx->transportRead(config, chunkSize);
+    // If the TLS handshake completed during this read, finalize it before the error / EOF handling below: its result
+    // (negotiated ALPN, cipher, version, client certificate, metrics) is recorded even if the same read failed.
+    if (finalizeTlsHandshakeIfReady(fd, *pCnx)) {
+      return CloseStatus::Close;
+    }
+    if (count != 0) {
+      _ctx.maintenance.trackReceivedBytes(*pCnx, connections.now);
+    }
+    if (want == TransportHint::Error) [[unlikely]] {
+      log::debug("Closing fd # {} on transport read error err={}", fd, LastSystemError());
+#ifdef AERONET_ENABLE_OPENSSL
+      _ctx.tls.reportInterruptedHandshake(*pCnx, fd, want);
+#endif
+      // No input to wait for in a lingering close.
+      pCnx->eofReceived = true;
+      return CloseStatus::Close;
+    }
+    if (want != TransportHint::None) {
+      // Non-fatal: transport needs the socket to be readable or writable before proceeding.
+      if (want == TransportHint::WriteReady && !pCnx->waitingWritable && !_ctx.io.enableWritableInterest(cnxIt)) {
+        return CloseStatus::Close;
+      }
+      break;
+    }
+    if (count == 0) {
+#ifdef AERONET_ENABLE_OPENSSL
+      _ctx.tls.reportInterruptedHandshake(*pCnx, fd);
+#endif
+      pCnx->eofReceived = true;
+      // An orderly EOF only tells that the peer stopped sending: while the kernel still sends with zerocopy, close once
+      // these sends completed instead of aborting them (see ConnectionIo::closeConnection()).
+      if (pCnx->hasZerocopySendsInFlight()) {
+        pCnx->requestDrainAndClose();
+        return CloseStatus::Keep;
+      }
+      return CloseStatus::Close;
+    }
+
+    bytesReadThisEvent += static_cast<std::size_t>(count);
+    _ctx.telemetry.counterAdd("aeronet.bytes.read", static_cast<uint64_t>(count));
+
+    // A plain socket read returning less than requested emptied the kernel receive queue. Edge-triggered polling
+    // reports any byte arriving after it, so the next read would only return EAGAIN: skip that syscall.
+    // Server TLS reads qualify too: they read ahead and decrypt records until the socket would block, unless the
+    // transport reports pending input (a peer close_notify or an error to report after the returned data).
+    const bool drained =
+        stopOnShortRead && count < chunkSize &&
+        (pCnx->transport.isPlain() || (pCnx->transport.isTls() && !pCnx->transport.hasPendingReadData()));
+
+    if (processConnectionInput(cnxIt)) {
+      break;
+    }
+
+    // CONNECT can switch this connection from HTTP parsing to raw tunneling inside
+    // processConnectionInput(). The client can receive the 200 response and send its
+    // first tunnel bytes before this edge-triggered read loop runs again. Continue in
+    // tunnel mode immediately so those bytes are never fed back into the HTTP parser.
+    cnxIt = connections.iterator(fd);
+    pCnx = connections.pConnectionState(fd);
+    if (pCnx->isTunneling()) {
+      return _ctx.tunnels->relayInput(cnxIt);
+    }
+
+    // A drained read left nothing to read, and later data raises a new event: no need to defer the connection.
+    if (!drained &&
+        config.fairnessBudgetExhausted(bytesReadThisEvent +
+                                       static_cast<std::size_t>(_ctx.totalBytesWritten() - bytesWrittenAtEventStart))) {
+      // Edge-triggered polling (EPOLLET / EV_CLEAR): data may remain in the TCP buffer
+      // after the fairness cap. No new read event fires on a non-empty→non-empty transition,
+      // so defer this fd to read it again after the other ready connections have been served.
+      _ctx.io.deferInput(fd, *pCnx);
+      break;
+    }
+
+    // The head of the current HTTP/1.1 request may still be incomplete after this read: bound its size and its
+    // reception time.
+    if (pCnx->parsingHeaders && _ctx.http1.rejectIncompleteHead(cnxIt)) {
+      return CloseStatus::Close;
+    }
+
+    if (drained) {
+      break;
+    }
+  }
+  // The input processing may have inserted connections.
+  cnxIt = connections.iterator(fd);
+  pCnx = connections.pConnectionState(fd);
+  _ctx.io.releaseServedInBuffer(*pCnx);
+  // Try to flush again after reading new data, in case TLS needed the read to proceed with write
+  if (pCnx->hasPendingOutput()) {
+    _ctx.io.flushOutbound(cnxIt);
+  }
+  return pCnx->canCloseConnectionForDrain() ? CloseStatus::Close : CloseStatus::Keep;
+}
+
+// ============================================================================
+// Protocol dispatch
+// ============================================================================
 
 bool SingleHttpServer::processConnectionInput(ConnectionIt cnxIt) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
+  ConnectionState& state = _ctx.connections.connectionState(cnxIt);
 
   // If we have a protocol handler installed (e.g., WebSocket, HTTP/2), use it
   if (state.protocolHandler) {
@@ -151,7 +733,8 @@ bool SingleHttpServer::processConnectionInput(ConnectionIt cnxIt) {
   // The preface is "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n" (24 bytes)
   // h2c prior knowledge only applies to non-TLS (plaintext) connections
 #ifdef AERONET_ENABLE_HTTP2
-  if (_config.http2.enable && _config.http2.enableH2c && !_config.tls.enabled) {
+  const HttpServerConfig& config = _ctx.config;
+  if (config.http2.enable && config.http2.enableH2c && !config.tls.enabled) {
     std::string_view bufView(state.inBuffer);
     // Check if buffer starts with "PRI " (first 4 chars of HTTP/2 preface)
     if (bufView.starts_with("PRI ")) {
@@ -172,29 +755,45 @@ bool SingleHttpServer::processConnectionInput(ConnectionIt cnxIt) {
 #endif
 
   // Default to HTTP/1.1 request processing
-  return processHttp1Requests(cnxIt);
+  return processHttp1Input(cnxIt);
 }
 
 bool SingleHttpServer::processProtocolHandlerInput(ConnectionIt cnxIt) {
 #ifdef AERONET_ENABLE_WEBSOCKET
-  if (_connections.connectionState(cnxIt).protocol == ProtocolType::WebSocket) {
+  if (_ctx.connections.connectionState(cnxIt).protocol == ProtocolType::WebSocket) {
     const NativeHandle fd = cnxIt->fd();
     const bool closeRequested = processSpecialProtocolHandler(cnxIt);
     // A callback may have started the close handshake, whose timeout can come before the armed deadline.
-    refreshWebSocketDeadline(fd, *_connections.pConnectionState(fd));
+    _ctx.maintenance.refreshWebSocketDeadline(fd, *_ctx.connections.pConnectionState(fd));
     return closeRequested;
   }
 #endif
   return processSpecialProtocolHandler(cnxIt);
 }
 
+bool SingleHttpServer::processHttp1Input(ConnectionIt cnxIt) {
+  const NativeHandle fd = cnxIt->fd();
+  if (_ctx.http1.processRequests(cnxIt)) {
+    return true;
+  }
+  // The bytes following an upgrade request belong to the new protocol: no read event would report them. An upgraded
+  // connection never goes back to HTTP/1.
+  cnxIt = _ctx.connections.iterator(fd);
+  const ConnectionState& state = _ctx.connections.connectionState(cnxIt);
+  if (state.protocolHandler != nullptr && !state.inBuffer.empty() && !state.isAnyCloseRequested()) {
+    return processProtocolHandlerInput(cnxIt);
+  }
+  return false;
+}
+
 bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
+  internal::ConnectionStorage& connections = _ctx.connections;
   // Save the client fd before entering the loop. processInput() may set up a tunnel through the tunnel bridge
   // (HTTP/2 CONNECT), whose insertion may invalidate cnxIt by growing the POSIX fd vector or rehashing the Windows
   // map. Re-find cnxIt by fd after each processInput() call, matching the HTTP/1.1 CONNECT path.
   const NativeHandle clientFd = cnxIt->fd();
 
-  ConnectionState* pState = _connections.pConnectionState(clientFd);
+  ConnectionState* pState = connections.pConnectionState(clientFd);
   assert(pState != nullptr);
   auto& handler = *pState->protocolHandler;
 
@@ -214,13 +813,13 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
     const auto result = handler.processInput(inputData);
 
     // processInput may insert new elements in connections.
-    cnxIt = _connections.iterator(clientFd);
-    pState = _connections.pConnectionState(clientFd);
+    cnxIt = connections.iterator(clientFd);
+    pState = connections.pConnectionState(clientFd);
 
     if (result.outputRefersToInput) {
       // The output sends data from the input buffer (the payload of a WebSocket echo, say): write it before the input
       // is erased. The handler copies the part left unsent, which waits for the writable event.
-      flushOutbound(cnxIt);
+      _ctx.io.flushOutbound(cnxIt);
       handler.releaseInput();
       hasAccumulatedOutput = false;
     } else if (handler.hasPendingOutput()) {
@@ -240,7 +839,7 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
         // If no bytes were consumed, flush before deciding whether the socket can accept more input.
         if (result.bytesConsumed == 0) {
           if (hasAccumulatedOutput) {
-            flushOutbound(cnxIt);
+            _ctx.io.flushOutbound(cnxIt);
           }
           return StopReadingIfOutputBlocked(*pState);
         }
@@ -254,7 +853,7 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
       case ProtocolProcessResult::Action::Close:
         // Protocol wants to close gracefully - flush GOAWAY etc. before closing
         if (hasAccumulatedOutput) {
-          flushOutbound(cnxIt);
+          _ctx.io.flushOutbound(cnxIt);
         }
         pState->requestDrainAndClose();
         return true;
@@ -262,7 +861,7 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
       case ProtocolProcessResult::Action::CloseImmediate:
         // Protocol error - flush any error frames then close immediately
         if (hasAccumulatedOutput) {
-          flushOutbound(cnxIt);
+          _ctx.io.flushOutbound(cnxIt);
         }
         log::debug("Protocol handler reported error");
         pState->requestDrainAndClose();
@@ -272,7 +871,7 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
 
   // Batch-flush all accumulated output frames in a single transport write.
   if (hasAccumulatedOutput) {
-    flushOutbound(cnxIt);
+    _ctx.io.flushOutbound(cnxIt);
   }
 
   return StopReadingIfOutputBlocked(*pState);
@@ -285,960 +884,6 @@ bool SingleHttpServer::StopReadingIfOutputBlocked(ConnectionState& state) {
   const bool outputBlocked = state.hasPendingOutput();
   state.inputBlockedByOutput = outputBlocked && (!state.inBuffer.empty() || state.transport.hasPendingReadData());
   return state.isAnyCloseRequested() || outputBlocked;
-}
-
-bool SingleHttpServer::processHttp1Requests(ConnectionIt cnxIt) {
-  const NativeHandle fd = cnxIt->fd();
-  const bool stopReading = serveHttp1Requests(cnxIt);
-  _pHttp1OutputBatch = nullptr;
-
-  // Serving the requests may have inserted connections (CONNECT).
-  cnxIt = _connections.iterator(fd);
-  ConnectionState& state = _connections.connectionState(cnxIt);
-  // Write the responses batched while serving the requests (the HTTP/1 output that does not wait for the socket).
-  if (state.hasPendingOutput() && !state.waitingWritable) {
-    flushOutbound(cnxIt);
-  }
-  // The bytes following an upgrade request belong to the new protocol: no read event would report them. An upgraded
-  // connection never goes back to HTTP/1.
-  if (!stopReading && state.protocolHandler != nullptr && !state.inBuffer.empty() && !state.isAnyCloseRequested()) {
-    return processProtocolHandlerInput(cnxIt);
-  }
-  return stopReading;
-}
-
-bool SingleHttpServer::serveHttp1Requests(ConnectionIt cnxIt) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
-  if (state.isAnyCloseRequested() || state.tunnelResolving) {
-    // The bytes still buffered (a request answered by an error, its unread body, the CONNECT request waiting for its
-    // target resolution and the tunnel bytes behind it...) must not be served.
-    return true;
-  }
-  const auto cnxFd = cnxIt->fd();
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  if (auto* asyncState = state.pAsyncState(); asyncState != nullptr && asyncState->active) {
-    handleAsyncBodyProgress(cnxIt);
-    if (asyncState->active || state.isAnyCloseRequested()) {
-      return state.isAnyCloseRequested() || PauseReadingDuringAsyncHandler(state);
-    }
-    // The handler completed: serve the requests pipelined behind it.
-  }
-#endif
-  HttpRequestView& request = state.request;
-  // A small request can have a large response: once the responses written by this call reach the fairness budget, the
-  // next pipelined requests are served after the other ready connections. The read budget alone would let a client
-  // pipelining such requests keep the event loop on its connection until it sent a whole budget of requests.
-  const uint64_t bytesWrittenAtStart = totalBytesWritten();
-  // The current request starts at consumedInput.nbBytes in the input buffer: the requests served before it are erased
-  // when this call returns (a request waiting for more of its bytes then starts the input buffer again).
-  ConsumedInputRAII consumedInput(state.inBuffer);
-  // The responses are batched until the last request of the input (see _pHttp1OutputBatch).
-  _pHttp1OutputBatch = &state;
-  do {
-    const std::span<char> input = consumedInput.remaining();
-    // Do not parse the next pipelined request while a file send is still in progress.
-    // attachFilePayload would silently overwrite the in-flight file payload, corrupting
-    // the response stream (partial data from file1 mixed with file2 headers+data).
-    // Also skip while output waits for the socket: the previous response hasn't been fully written yet, and the
-    // responses to the requests pipelined behind it would only accumulate in the connection. The output batched by this
-    // call does not wait for the socket: it is not written yet.
-    if (state.isSendingFile() || (state.waitingWritable && state.hasPendingOutput())) {
-      state.inputBlockedByOutput = !input.empty();
-      break;
-    }
-    // If we don't have enough bytes for the minimum request line, wait for more data
-    if (input.size() < http::kHttpReqLineMinLen) {
-      break;
-    }
-    // The batched responses count as written: they will be.
-    if (_config.fairnessBudgetExhausted(static_cast<std::size_t>(totalBytesWritten() - bytesWrittenAtStart) +
-                                        state.bufferedOutputBytes())) {
-      deferInput(cnxFd, state);
-      return true;
-    }
-    // The head of a request whose body is received in several reads is parsed once, and the request counted once.
-    const bool headWaitingForBody = request.isHeadWaitingForBody();
-    http::StatusCode statusCode = http::StatusCodeOK;
-    if (headWaitingForBody) {
-      request.resumeHeadWaitingForBody(input);
-    } else {
-      statusCode = request.initTrySetHead(input, _sharedBuffers.buf, _config.maxHeaderBytes,
-                                          _config.mergeUnknownRequestHeaders, _telemetry.createSpan("http.request"));
-      if (statusCode == HttpRequestView::kStatusNeedMoreData) {
-        break;
-      }
-
-      ++state.requestsServed;
-      ++_stats.totalRequestsServed;
-    }
-
-    if (statusCode != http::StatusCodeOK) {
-      emitSimpleError(cnxIt, statusCode, {});
-
-      // We break unconditionally; the connection will be torn down after any queued error bytes are flushed. No partial
-      // recovery is attempted for a malformed / protocol-violating start line or headers.
-      break;
-    }
-
-    if (!headWaitingForBody) {
-      request._reqStart = state.lastActivity;
-    }
-
-    // A full request head (and body, if present) will now be processed; mark header parsing as done.
-    // headerStartTp is kept alive as the reference for relative body/deadline timestamps.
-    stopHeaderReadTimer(state);
-
-    // Automatic HTTP -> HTTPS redirect: answer every request on this plaintext listener with a 3xx redirect
-    // to the equivalent https:// URL, bypassing routing, upgrades and body handling. The connection is closed
-    // afterwards (the client reconnects over TLS).
-    if (_config.httpsRedirect.enabled()) {
-      emitHttpsRedirect(cnxIt);
-      break;
-    }
-
-    bool isChunked = false;
-    if (const auto optTransferEncoding = request.headerValue(http::TransferEncoding)) {
-      if (!acceptChunkedTransferEncoding(cnxIt, *optTransferEncoding)) {
-        break;
-      }
-      isChunked = true;
-    }
-
-    const auto [encoding, reject] =
-        _compressionState.selector.negotiateAcceptEncoding(request.headerValueOrEmpty(http::AcceptEncoding));
-
-    // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
-    // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
-    if (reject) {
-      emitSimpleError(cnxIt, http::StatusCodeNotAcceptable, "No acceptable content-coding available");
-      continue;
-    }
-
-    request._responsePossibleEncoding = encoding;
-
-    // Route matching
-    const Router::RoutingResult routingResult = _router.match(request.method(), request.path());
-    const CorsPolicy* pCorsPolicy = routingResult.corsPolicy();
-
-    // Arm per-route request deadline for sweep enforcement (async/streaming handlers).
-    if (routingResult.pathConfig().requestTimeout != std::chrono::milliseconds::max()) {
-      trackRequestDeadline(state, static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                                            state.lastActivity - state.headerStartTp +
-                                                            routingResult.pathConfig().requestTimeout)
-                                                            .count()));
-    }
-
-    // `Upgrade: h2c` (HTTP/1.1 -> cleartext HTTP/2) is deliberately not honored: RFC 9113 §3.1 deprecated that
-    // mechanism and RFC 9110 §7.8 lets a server ignore Upgrade, so such a request is answered over HTTP/1.1 like any
-    // other. Cleartext HTTP/2 is only available with prior knowledge (Http2Config::enableH2c).
-
-    // Per-route request head size limit (already clamped against the global one, see Router::clampConfigs())
-    if (request.headSpanSize() > routingResult.pathConfig().maxHeaderBytes) {
-      emitSimpleError(cnxIt, http::StatusCodeRequestHeaderFieldsTooLarge, {});
-      break;
-    }
-
-    // Handle Expect header tokens beyond the built-in 100-continue.
-    // RFC: if any expectation token is not understood and not handled, respond 417.
-    // A request whose body is received in several reads is parsed again for each of them: its expectations are only
-    // answered (interim responses, 100 Continue) the first time.
-    bool found100Continue = false;
-    if (!state.expectationAnswered) {
-      auto optExpect = request.headerValue(http::Expect);
-      if (optExpect && handleExpectHeader(cnxIt, *optExpect, pCorsPolicy, found100Continue)) {
-        // Answered without its body (an error or a final response closes the connection if it announces one): its head
-        // is consumed, and the requests behind it are served.
-        consumedInput.nbBytes += request.headSpanSize();
-        continue;
-      }
-    }
-    std::size_t consumedBytes = 0;
-    const BodyDecodeStatus decodeStatus = decodeBodyIfReady(cnxIt, input, isChunked, found100Continue,
-                                                            routingResult.pathConfig().maxBodyBytes, consumedBytes);
-    if (decodeStatus == BodyDecodeStatus::Error) {
-      break;
-    }
-    const bool bodyReady = decodeStatus == BodyDecodeStatus::Ready;
-    state.expectationAnswered = !bodyReady;
-
-    // A response sent before the whole body was received cannot consume the request: the rest of its body would then be
-    // parsed as the next request (and the same request answered again and again). Close the connection after it.
-    const auto closeIfBodyPending = [&state, bodyReady] {
-      if (!bodyReady) {
-        state.requestDrainAndClose();
-      }
-    };
-    trackBodyReception(state, bodyReady);
-    if (bodyReady) {
-      const bool usePerConnectionBodyStorage = state.trailerLen != 0;
-      if (!request._body.empty() && !maybeDecompressRequestBody(cnxIt, usePerConnectionBodyStorage)) {
-        break;
-      }
-      state.installAggregatedBodyBridge();
-    } else {
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-      const bool waitForBody = routingResult.asyncRequestHandler() == nullptr;
-#else
-      static constexpr bool waitForBody = true;
-#endif
-      if (waitForBody) {
-        // Served again once more of its body is received, without parsing its head again.
-        request.keepHeadForBody();
-        break;
-      }
-    }
-
-    RequestFinalizationRAII requestFinalizationRAII(consumedInput, consumedBytes);
-    // The response to the last request of the input is written right away, with the batched ones.
-    _pHttp1OutputBatch = input.size() > consumedBytes ? &state : nullptr;
-
-    // Handle OPTIONS and TRACE per RFC 7231 §4.3
-    // processSpecialMethods may insert an upstream connection and updates cnxIt if insertion invalidates it.
-    // However, no need to update state because the pointer stays valid.
-    const auto action = processSpecialMethods(cnxIt, consumedInput.nbBytes, consumedBytes, pCorsPolicy);
-    if (action == LoopAction::SwitchProtocol) {
-      if (state.tunnelResolving) {
-        // The CONNECT request is answered once its target is resolved: the input buffer, where the request views point
-        // to, stays as is until then. The tunnel then consumes it up to the end of the request.
-        requestFinalizationRAII.consumedBytes = 0;
-        consumedInput.nbBytes = 0;
-        return true;  // stop reading
-      }
-      return state.isAnyCloseRequested();
-    }
-
-    if (action == LoopAction::Continue) {
-      closeIfBodyPending();
-      continue;
-    }
-    if (action == LoopAction::Break) {
-      break;
-    }
-
-    const bool isStreaming = routingResult.streamingHandler() != nullptr && request.version() == http::HTTP_1_1;
-    const RequestPipeline pipeline = requestPipeline();
-    std::optional<HttpResponse> shortCircuit = pipeline.runRequestMiddleware(request, routingResult, isStreaming);
-    if (shortCircuit) {
-      sendHttp1Response(cnxIt, std::move(*shortCircuit), routingResult, isStreaming);
-      closeIfBodyPending();
-      continue;
-    }
-
-#ifdef AERONET_ENABLE_WEBSOCKET
-    // A WebSocket upgrade goes through the request middleware (above) and the origin checks, like a request.
-    if (routingResult.webSocketEndpoint() != nullptr && request.method() == http::Method::GET &&
-        upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)) == ProtocolType::WebSocket) {
-      const LoopAction upgradeAction = processWebSocketUpgrade(cnxIt, routingResult);
-      if (upgradeAction == LoopAction::SwitchProtocol) {
-        // The connection is now a WebSocket and will be handled differently
-        return false;
-      }
-      if (upgradeAction == LoopAction::Break) {
-        break;
-      }
-      continue;
-    }
-#endif
-
-    std::optional<HttpResponse> response = pipeline.callRequestHandler(request, routingResult, isStreaming);
-    if (response) {
-      sendHttp1Response(cnxIt, std::move(*response), routingResult, isStreaming);
-      closeIfBodyPending();
-      continue;
-    }
-
-    if (isStreaming) {
-      if (serveStreamingRequest(cnxIt, routingResult) == LoopAction::Break) {
-        break;
-      }
-      continue;
-    }
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-    if (dispatchAsyncHandler(cnxIt, routingResult.sharedAsyncRequestHandler(), bodyReady, isChunked,
-                             consumedInput.nbBytes + consumedBytes, pCorsPolicy, routingResult.postMiddlewareRange(),
-                             routingResult.pathConfig().maxBodyBytes)) {
-      // The request bytes are consumed by the async handler completion (already done if it completed right away).
-      // With its body, along with the requests served before it: the input buffer, where its body is, must not move
-      // until then. Without, it starts the input buffer once this call returns (its head was copied), its body being
-      // received behind it.
-      requestFinalizationRAII.consumedBytes = 0;
-      if (bodyReady) {
-        consumedInput.nbBytes = 0;
-      }
-      if (state.pAsyncState()->active) {
-        return state.isAnyCloseRequested() || PauseReadingDuringAsyncHandler(state);
-      }
-      // Completed synchronously: serve the next pipelined request.
-    }
-#endif
-  } while (!state.isAnyCloseRequested());
-
-  return state.isAnyCloseRequested();
-}
-
-bool SingleHttpServer::acceptChunkedTransferEncoding(ConnectionIt cnxIt, std::string_view transferEncoding) {
-  const HttpRequestView& request = _connections.connectionState(cnxIt).request;
-  if (request.version() == http::HTTP_1_0) {
-    emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Transfer-Encoding not allowed in HTTP/1.0");
-    return false;
-  }
-  if (!CaseInsensitiveEqual(transferEncoding, http::chunked)) {
-    emitSimpleError(cnxIt, http::StatusCodeNotImplemented, "Unsupported Transfer-Encoding");
-    return false;
-  }
-  if (request.headerValue(http::ContentLength)) {
-    emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Content-Length and Transfer-Encoding cannot be used together");
-    return false;
-  }
-  return true;
-}
-
-void SingleHttpServer::trackBodyReception(ConnectionState& state, bool bodyReady) noexcept {
-  if (bodyReady) {
-    if (state.waitingForBody) {
-      assert(_connectionSweepState.bodyReadConnections > 0U);
-      --_connectionSweepState.bodyReadConnections;
-      state.waitingForBody = false;
-      state.bodyLastActivityMs = ConnectionState::kInactiveRelativeMs;
-    }
-    return;
-  }
-  if (_config.bodyReadTimeout.count() == 0) {
-    return;
-  }
-  if (!state.waitingForBody) {
-    ++_connectionSweepState.bodyReadConnections;
-    state.waitingForBody = true;
-  }
-  state.bodyLastActivityMs = static_cast<uint32_t>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(state.lastActivity - state.headerStartTp).count());
-}
-
-void SingleHttpServer::sendHttp1Response(ConnectionIt cnxIt, HttpResponse&& resp,
-                                         const Router::RoutingResult& routingResult, bool streaming) {
-  requestPipeline().applyResponseMiddleware(_connections.connectionState(cnxIt).request, resp,
-                                            routingResult.postMiddlewareRange(), streaming);
-  finalizeAndSendResponseForHttp1(cnxIt, std::move(resp), routingResult.corsPolicy());
-}
-
-SingleHttpServer::LoopAction SingleHttpServer::serveStreamingRequest(ConnectionIt cnxIt,
-                                                                     const Router::RoutingResult& routingResult) {
-  static constexpr bool kStreaming = true;
-  ConnectionState& state = _connections.connectionState(cnxIt);
-  HttpRequestView& request = state.request;
-
-  // Create the protocol-specific transport backend and the protocol-agnostic writer
-  Http1WriterTransport transport(*this, cnxIt->fd(), routingResult.corsPolicy(), routingResult.postMiddlewareRange());
-  HttpMessage::Options opts;
-  if (_config.addTrailerHeader) {
-    opts.addTrailerHeader();
-  }
-  if (request.method() == http::Method::HEAD) {
-    opts.setHeadMethod();
-  }
-  opts.setPrepared();
-
-  HttpResponseWriter writer(transport, request, request.responsePossibleEncoding(), _config.compression,
-                            _compressionState, _config.globalHeaders.fullStringWithLastSep(), opts);
-
-  bool handlerThrew = false;
-  try {
-    (*routingResult.streamingHandler())(request, writer);
-  } catch (const std::exception& ex) {
-    handlerThrew = true;
-    log::error("Exception in streaming handler: {}", ex.what());
-  } catch (...) {
-    handlerThrew = true;
-    log::error("Unknown exception in streaming handler");
-  }
-  if (handlerThrew) {
-    if (writer.headersPending()) {
-      // Nothing was sent: answer like for any handler throwing.
-      sendHttp1Response(cnxIt, request.makeResponse(http::StatusCodeInternalServerError), routingResult, kStreaming);
-      return LoopAction::Continue;
-    }
-    // Part of the response was sent: close the connection without completing the body (no final chunk, or a short
-    // Content-Length), so that the client knows that it is incomplete.
-    endRequest(request, http::StatusCodeInternalServerError);
-    state.requestDrainAndClose();
-    return LoopAction::Break;
-  }
-  if (!writer.finished()) {
-    writer.end();
-  }
-
-  endRequest(request, writer.status());
-
-  assert(request.version() == http::HTTP_1_1);
-  // A drain or a stop that began after the head was sent, announcing a persistent connection, closes it too. So does a
-  // failed writer (a compression error): the client must not take the next response for the rest of this one.
-  // A close requested meanwhile (a write error, the output limit...) made the transport fail the writer.
-  assert(!state.isAnyCloseRequested() || writer.failed());
-  if (transport.closeAnnounced() || writer.failed() || !_lifecycle.isRunning()) {
-    state.requestDrainAndClose();
-    return LoopAction::Break;
-  }
-  return LoopAction::Continue;
-}
-
-bool SingleHttpServer::maybeDecompressRequestBody(ConnectionIt cnxIt, bool usePerConnectionBodyStorage) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
-  HttpRequestView& request = state.request;
-
-  usePerConnectionBodyStorage = usePerConnectionBodyStorage || state.trailerLen != 0;
-
-  RawChars& decompressedBuffer =
-      usePerConnectionBodyStorage ? state.bodyAndTrailersBuffer : _sharedBuffers.decompressedBody;
-
-  const auto res = HttpCodec::MaybeDecompressRequestBody(_decompressionState, _config.decompression, request,
-                                                         decompressedBuffer, _sharedBuffers.buf);
-
-  if (res.message != nullptr) {
-    emitSimpleError(cnxIt, res.status, res.message);
-    return false;
-  }
-
-  // Parse trailers if present
-  if (state.trailerLen != 0) {
-    auto* buf = decompressedBuffer.data();
-    auto* end = buf + decompressedBuffer.size();
-    [[maybe_unused]] const bool isSuccess = parseHeadersUnchecked(request._trailers, buf, end - state.trailerLen, end);
-    // trailers should have been validated in decodeChunkedBody
-    assert(isSuccess);
-  }
-
-  return true;
-}
-
-void SingleHttpServer::emitRequestMetrics(const HttpRequestView& request, http::StatusCode status) {
-  std::string_view clientIp = "-";
-
-  if (_config.accessLog.useForwardedFor) {
-    const auto xff = request.headerValueOrEmpty("x-forwarded-for");
-    if (!xff.empty()) {
-      // Use the first (leftmost) IP from X-Forwarded-For
-      const auto comma = xff.find(',');
-      clientIp = TrimOws(xff.substr(0, comma));
-    }
-  }
-
-  if (clientIp == "-") {
-    const auto requestClientIp = request.clientAddress();
-    if (!requestClientIp.empty()) {
-      clientIp = requestClientIp;
-    }
-  }
-
-  RequestMetrics metrics{
-      status,
-      request.method(),
-      request.version(),
-      // The request is counted already: when its head is parsed over HTTP/1.x, when it completes over HTTP/2.
-      request._pOwnerState->requestsServed > 1,
-      request.path(),
-      clientIp,
-      request.headerValueOrEmpty("user-agent"),
-      request._body.size(),
-      0,
-      _connections.now - request.reqStart(),
-  };
-
-  if (_accessLog) {
-    _accessLog.log(metrics);
-  }
-
-  if (_callbacks.metrics) {
-    _callbacks.metrics(metrics);
-  }
-}
-
-void SingleHttpServer::eventLoop() {
-  // Apply any pending config updates posted from other threads.
-  applyPendingUpdates();
-
-  if (_tunnels != nullptr && _tunnels->hasResolvedTargets()) {
-    _tunnels->completeResolvedTunnels();
-  }
-
-  // Poll for events. The connections deferred by deferInput() are served at the end of this iteration: the poll then
-  // only collects the events already ready, without waiting.
-  const auto events = _eventLoop.poll(_pendingReadFds.empty());
-
-  // Update cached now time
-  const auto now = std::chrono::steady_clock::now();
-  _connections.now = now;
-  _dateHeader.refreshIfNeeded(now);
-
-  // Publish the loop heartbeat (see internal::Lifecycle::loopHeartbeat): a single relaxed store of the 'now' we just
-  // read. A dedicated probe listener (MultiHttpServer, see BuiltinProbesConfig::dedicatedPort) reads it to tell a loop
-  // wedged inside a request handler from an idle or progressing one - without any bookkeeping on the handler hot path.
-  _lifecycle.loopHeartbeat(now);
-
-  bool maintenanceTick = false;
-
-  if (events.data() == nullptr) [[unlikely]] {
-    _telemetry.counterAdd("aeronet.events.errors", 1);
-    _lifecycle.exchangeStopping();
-  } else if (!events.empty()) {
-    // Read before the batch: the wakeup below may close the listener, whose event already polled in this batch must
-    // then not be taken for the event of a connection.
-    const NativeHandle listenFd = _listenSocket.fd();
-    for (auto event : events) {
-      const auto fd = event.fd;
-      if (fd == listenFd) {
-        // Always attempt to accept new connections when the listener is signaled (unless closed since).
-        // The lifecycle controls higher-level acceptance semantics; accepting
-        // here is safe and allows probes to connect during drain.
-        if (_listenSocket) {
-          acceptNewConnections();
-        }
-      } else if (fd == _lifecycle.wakeupFd.fd()) {
-        _lifecycle.wakeupFd.read();
-        // When stop() is called from another thread it sets the state to Stopping
-        // and sends a wakeup.  Close the listener immediately so no new connections
-        // are accepted while we wait for the maintenance tick to clean up.
-        if (_lifecycle.isStopping()) {
-          closeListener();
-          maintenanceTick = true;
-        }
-      } else if (fd == _maintenanceTimer.fd()) {
-        _maintenanceTimer.drain();
-        maintenanceTick = true;
-      } else {
-        const auto bmp = event.eventBmp;
-        const auto cnxIt = _connections.iterator(fd);
-        if (!IsValid(_connections, cnxIt)) [[unlikely]] {
-          log::warn("fd # {} not found (stale epoll event or race)", fd);
-          // Remove stale entry from the event-loop poller so it doesn't keep firing.
-          // Safe to call here because we are inside the event-loop thread.
-          _eventLoop.del(fd);
-          continue;
-        }
-
-        ConnectionState& eventState = _connections.connectionState(cnxIt);
-        eventState.lastActivity = now;
-        refreshKeepAliveDeadline(cnxIt);
-
-        CloseStatus closeStatus = CloseStatus::Keep;
-        // EPOLLERR/EPOLLHUP/EPOLLRDHUP can be delivered without EPOLLIN.
-        // Treat them as a read trigger so we promptly observe EOF/errors and close.
-        EventBmp readEvents = bmp & (EventIn | EventErr | EventHup | EventRdHup);
-#ifdef AERONET_LINUX
-        // EPOLLERR also reports the zerocopy completion notifications queued in the socket error queue: read them,
-        // releasing the buffers of the completed sends. A socket error (reset, timeout) comes with EPOLLHUP: an
-        // EPOLLERR explained by notifications calls for no read.
-        bool zerocopyCompletions = false;
-        if ((bmp & EventErr) != 0 && pollZerocopyCompletions(eventState).nbSends != 0) {
-          readEvents &= ~EventErr;
-          zerocopyCompletions = true;
-        }
-#endif
-        bool readTrigger = readEvents != 0;
-        if ((bmp & EventOut) != 0) {
-#ifdef AERONET_ENABLE_OPENSSL
-          // A TLS handshake waiting for the socket to be writable (its flight did not fit in the socket send buffer)
-          // is driven by the read path: the writable event alone would only flush the (empty) output.
-          readTrigger = readTrigger || (eventState.transport.isTls() && !eventState.transport.handshakeDone());
-#endif
-          closeStatus = handleWritableClient(cnxIt);
-        }
-        if (readTrigger) {
-          closeStatus = std::max(handleReadableClient(cnxIt, (readEvents & (EventErr | EventHup | EventRdHup)) == 0),
-                                 closeStatus);
-        }
-#ifdef AERONET_LINUX
-        else if (zerocopyCompletions && (bmp & EventOut) == 0 && eventState.canCloseConnectionForDrain()) {
-          // A drain close was waiting for these completions.
-          closeStatus = CloseStatus::Close;
-        }
-#endif
-        if (closeStatus == CloseStatus::Close) {
-          // A handler (e.g. the half-close of a tunnel peer) may have already recycled
-          // this connection via a nested closeConnection call. Guard against that.
-          const auto finalIt = _connections.iterator(fd);
-          if (IsValid(_connections, finalIt)) {
-            closeConnection(finalIt);
-          }
-        }
-      }
-    }
-    // Request handlers run from the read path and may have blocked for longer than keepAliveTimeout.
-    restartKeepAliveIdleWindows(events, now);
-    _telemetry.counterAdd("aeronet.events.processed", static_cast<uint64_t>(events.size()));
-  } else {
-    // timeout / error::kInterrupted (treated as timeout). Retry pending writes to handle edge-triggered epoll timing
-    // issues. With EPOLLET, if a socket becomes writable after sendfile() returns EAGAIN but before
-    // epoll_ctl(EPOLL_CTL_MOD), we miss the edge. Periodic retries ensure we eventually resume.
-    maintenanceTick = true;
-  }
-
-  if (!_pendingReadFds.empty()) {
-    resumeDeferredInputs();
-  }
-
-  // Under high load epoll_wait may return immediately and never hit the timeout path.
-  // We still need periodic maintenance for timeouts and edge-triggered sendfile progress.
-  // On Windows and macOS the TimerFd does not fire real events (armPeriodic is a no-op);
-  // maintenance runs only when poll returns empty (timeout). Under sustained event activity
-  // the poll may never timeout, starving maintenance. Fall back to a time-based check.
-#ifndef AERONET_LINUX
-  if (!maintenanceTick && now - _lastMaintenanceTp >= _config.pollInterval) {
-    maintenanceTick = true;
-  }
-#endif
-  if (maintenanceTick) {
-    runMaintenance(now);
-  }
-}
-
-void SingleHttpServer::resumeDeferredInputs() {
-  // Re-process connections deferred by the per-event fairness cap, or whose input was left by the output backpressure.
-  // Edge-triggered polling (EPOLLET / EV_CLEAR) only fires on state transitions;
-  // a connection that still had TCP data after hitting the cap won't generate a new
-  // read event, so we must re-read it here before waiting for events again.
-  //
-  // Swap into a local so that resumeDeferredInput can safely push new deferrals
-  // into the (now-empty) member vector without invalidating our iteration and
-  // without losing them to a blanket clear().
-  decltype(_pendingReadFds) batch;
-  batch.swap(_pendingReadFds);
-  for (const NativeHandle pendingFd : batch) {
-    const auto pendingIt = _connections.iterator(pendingFd);
-    if (!IsValid(_connections, pendingIt)) {
-      continue;
-    }
-    completeOutOfBatchRead(pendingFd, resumeDeferredInput(pendingIt));
-  }
-}
-
-void SingleHttpServer::runMaintenance(std::chrono::steady_clock::time_point now) {
-#ifndef AERONET_LINUX
-  _lastMaintenanceTp = now;
-#endif
-  const auto nbActiveConnections = _connections.size();
-
-  _telemetry.gauge("aeronet.connections.active_count", static_cast<int64_t>(nbActiveConnections));
-  _telemetry.gauge("aeronet.events.capacity_current_count", static_cast<int64_t>(_eventLoop.capacity()));
-
-  sweepIdleConnections();
-
-  if (_tunnels != nullptr) {
-    _tunnels->expirePendingTunnels(now);
-  }
-
-#ifdef AERONET_LINUX
-  releaseResetZerocopyBuffers(now);
-#endif
-
-  if (_accessLog) {
-    _accessLog.flush();
-  }
-
-  if (_lifecycle.isStopping() || (_lifecycle.isDraining() && nbActiveConnections == 0)) {
-    closeListener();
-    closeAllConnections();
-    _lifecycle.reset();
-    if (!isInMultiHttpServer()) {
-      log::info("Server stopped");
-    }
-  } else if (_lifecycle.isDraining()) {
-    if (_lifecycle.drainDeadlineReached(now)) {
-      log::warn("Drain deadline reached with {} active connection(s); forcing close", nbActiveConnections);
-      closeListener();
-      closeAllConnections();
-      _lifecycle.reset();
-      log::info("Server drained after deadline");
-    }
-  } else if (SignalHandler::IsStopRequested()) {
-    beginDrain(SignalHandler::GetMaxDrainPeriod());
-  }
-
-  // After the closes above, whose counters are then exported without waiting for the next tick.
-  _telemetry.flush();
-
-  // Also shrink per-thread scratch buffers used during decompression / header parsing.
-  _sharedBuffers.shrink_to_fit();
-}
-
-void SingleHttpServer::updateMaintenanceTimer() {
-  // Periodic maintenance timer: drives idle sweeps / housekeeping without relying on epoll_wait timeouts.
-  using namespace std::chrono;
-
-  milliseconds minTimeout = milliseconds::max();
-  const auto consider = [&](milliseconds dur) {
-    if (dur.count() > 0) {
-      minTimeout = std::min(minTimeout, dur);
-    }
-  };
-
-  if (_config.enableKeepAlive) {
-    consider(_config.keepAliveTimeout);
-  }
-  consider(_config.headerReadTimeout);
-  consider(_config.bodyReadTimeout);
-  consider(_config.pollInterval);
-
-#ifdef AERONET_ENABLE_OPENSSL
-  if (_config.tls.enabled) {
-    consider(_config.tls.handshakeTimeout);
-  }
-#endif
-
-  assert(minTimeout != milliseconds::max());
-
-  _maintenanceTimer.armPeriodic(minTimeout);
-}
-
-void SingleHttpServer::closeListener() noexcept {
-  if (_listenSocket) {
-#ifndef AERONET_WINDOWS
-    // On POSIX, epoll_ctl(DEL) / kevent(EV_DELETE) are kernel-level thread-safe,
-    // so removing the fd from the event loop while the poll thread is blocked is fine.
-    _eventLoop.del(_listenSocket.fd());
-#endif
-    // On Windows, EventLoop::del() mutates the user-space WSAPoll array.
-    // Calling it from a different thread while WSAPoll() is blocked is a data race.
-    // Just close the socket; the next WSAPoll() iteration will report POLLNVAL for
-    // the stale entry, which the event loop handles gracefully (fd won't match
-    // listen/wakeup/timer and the connection lookup returns not-found — logged and skipped).
-    _listenSocket.close();
-    // Trigger wakeup to break any blocking poll quickly.
-    _lifecycle.wakeupFd.send();
-  }
-}
-
-#ifdef AERONET_LINUX
-void SingleHttpServer::releaseResetZerocopyBuffers(std::chrono::steady_clock::time_point now) {
-  auto& buffers = _zerocopy.resetBuffers;
-  const auto firstKept = std::ranges::find_if(
-      buffers, [now](const ZerocopyRuntime::ResetBuffer& buffer) { return now < buffer.releaseTime; });
-  buffers.erase(buffers.begin(), firstKept);
-}
-
-void SingleHttpServer::waitForResetZerocopyBuffers() {
-  if (!_zerocopy.resetBuffers.empty()) {
-    std::this_thread::sleep_until(_zerocopy.resetBuffers.back().releaseTime);
-    _zerocopy.resetBuffers.clear();
-  }
-}
-#endif
-
-void SingleHttpServer::closeAllConnections() {
-#ifdef AERONET_WINDOWS
-  while (!_connections.empty()) {
-    closeConnectionNow(_connections.begin());
-  }
-#else
-  for (auto cnxIt = _connections.begin(); cnxIt != _connections.end(); ++cnxIt) {
-    if (*cnxIt) {
-      closeConnectionNow(cnxIt);
-    }
-  }
-#endif
-  // Without connections, no tunnel is left: the resolver threads exit once their current resolution completes.
-  _tunnels.reset();
-}
-
-ServerStats SingleHttpServer::stats() const {
-  ServerStats statsOut;
-  statsOut.totalBytesQueued = _stats.totalBytesQueued.load();
-  statsOut.totalBytesWrittenImmediate = _stats.totalBytesWrittenImmediate.load();
-  statsOut.totalBytesWrittenFlush = _stats.totalBytesWrittenFlush.load();
-  statsOut.deferredWriteEvents = _stats.deferredWriteEvents.load();
-  statsOut.flushCycles = _stats.flushCycles.load();
-  statsOut.epollModFailures = _stats.epollModFailures.load();
-  statsOut.maxConnectionOutboundBuffer = _stats.maxConnectionOutboundBuffer.load();
-  statsOut.totalRequestsServed = _stats.totalRequestsServed.load();
-  statsOut.zerocopySends = _stats.zerocopySends.load();
-  statsOut.zerocopyBytes = _stats.zerocopyBytes.load();
-  statsOut.zerocopyCopiedSends = _stats.zerocopyCopiedSends.load();
-  statsOut.zerocopyNoBufferSpaceFallbacks = _stats.zerocopyNoBufferSpaceFallbacks.load();
-  statsOut.zerocopyRetainLimitFallbacks = _stats.zerocopyRetainLimitFallbacks.load();
-  statsOut.zerocopyResetConnections = _stats.zerocopyResetConnections.load();
-#ifdef AERONET_ENABLE_OPENSSL
-  statsOut.tlsHandshakesSucceeded = _tls.metrics.handshakesSucceeded.load();
-  statsOut.tlsHandshakesFull = _tls.metrics.handshakesFull.load();
-  statsOut.tlsHandshakesResumed = _tls.metrics.handshakesResumed.load();
-  statsOut.tlsHandshakesFailed = _tls.metrics.handshakesFailed.load();
-  statsOut.tlsHandshakesRejectedConcurrency = _tls.metrics.handshakesRejectedConcurrency.load();
-  statsOut.tlsHandshakesRejectedRateLimit = _tls.metrics.handshakesRejectedRateLimit.load();
-  statsOut.tlsClientCertPresent = _tls.metrics.clientCertPresent.load();
-  statsOut.tlsAlpnStrictMismatches = _tls.metrics.alpnStrictMismatches.load();
-  // The maps are updated by the event loop on TLS handshakes.
-  std::scoped_lock lock(_tls.metrics.mapsMutex.mutex);
-  statsOut.tlsAlpnDistribution.reserve(_tls.metrics.alpnDistribution.size());
-  for (const auto& [key, value] : _tls.metrics.alpnDistribution) {
-    statsOut.tlsAlpnDistribution.emplace_back(key, value);
-  }
-  statsOut.tlsHandshakeFailureReasons.reserve(_tls.metrics.handshakeFailureReasons.size());
-  for (const auto& [key, value] : _tls.metrics.handshakeFailureReasons) {
-    statsOut.tlsHandshakeFailureReasons.emplace_back(key, value);
-  }
-  statsOut.tlsVersionCounts.reserve(_tls.metrics.versionCounts.size());
-  for (const auto& [key, value] : _tls.metrics.versionCounts) {
-    statsOut.tlsVersionCounts.emplace_back(key, value);
-  }
-  statsOut.tlsCipherCounts.reserve(_tls.metrics.cipherCounts.size());
-  for (const auto& [key, value] : _tls.metrics.cipherCounts) {
-    statsOut.tlsCipherCounts.emplace_back(key, value);
-  }
-  statsOut.tlsHandshakeDurationCount = _tls.metrics.handshakeDurationCount.load();
-  statsOut.tlsHandshakeDurationTotalNs = _tls.metrics.handshakeDurationTotalNs.load();
-  statsOut.tlsHandshakeDurationMaxNs = _tls.metrics.handshakeDurationMaxNs.load();
-  statsOut.ktlsSendEnabledConnections = _tls.metrics.ktlsSendEnabledConnections.load();
-  statsOut.ktlsSendEnableFallbacks = _tls.metrics.ktlsSendEnableFallbacks.load();
-  statsOut.ktlsSendForcedShutdowns = _tls.metrics.ktlsSendForcedShutdowns.load();
-  statsOut.ktlsSendBytes = _tls.metrics.ktlsSendBytes.load();
-#endif
-  return statsOut;
-}
-
-void SingleHttpServer::emitSimpleError(ConnectionIt cnxIt, http::StatusCode statusCode, std::string_view body) {
-  queueData(cnxIt, HttpMessageData(BuildSimpleError(statusCode, _config.globalHeaders, body, _dateHeader.data())));
-
-  if (_callbacks.parserErr) {
-    // Swallow exceptions from user callback to avoid destabilizing the server
-    try {
-      _callbacks.parserErr(statusCode);
-    } catch (const std::exception& ex) {
-      log::error("Exception raised in user callback: {}", ex.what());
-    } catch (...) {
-      log::error("Unknown exception raised in user callback");
-    }
-  }
-
-  ConnectionState& state = _connections.connectionState(cnxIt);
-
-  state.requestDrainAndClose();
-  state.request.end(statusCode);
-}
-
-void SingleHttpServer::emitHttpsRedirect(ConnectionIt cnxIt) {
-  ConnectionState& state = _connections.connectionState(cnxIt);
-  HttpRequestView& request = state.request;
-
-  // Build the absolute https:// target into a scratch buffer, re-encoding the (decoded) path and query so the
-  // result is always a valid URL / header value. HttpResponse::location() copies it out, so the scratch buffer
-  // can be reused freely afterwards.
-  RawChars& urlBuf = _sharedBuffers.buf;
-  if (!http::BuildHttpsRedirectUrl(urlBuf, request, _config.httpsRedirect.targetPort)) {
-    // No (or empty) Host header: an absolute https URL cannot be constructed.
-    emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Missing Host header for HTTPS redirect");
-    return;
-  }
-
-  const http::StatusCode statusCode = _config.httpsRedirect.statusCode;
-  HttpResponse resp(statusCode);
-  resp.location(urlBuf);
-
-  clearRequestDeadline(state);
-  state.headerStartTp = {};
-
-  // Force connection close: the redirected client reconnects over TLS, and closing avoids any
-  // request-body framing concerns since the body is intentionally not consumed.
-  HttpResponse::Options opts;
-  opts.setClose();
-  if (request.method() == http::Method::HEAD) {
-    opts.setHeadMethod();
-  }
-
-  queueData(cnxIt, resp.finalizeForHttp1(_dateHeader.data(), request.version(), opts, &_config.globalHeaders,
-                                         _config.minCapturedBodySize));
-
-  state.requestDrainAndClose();
-  endRequest(request, statusCode);
-}
-
-bool SingleHttpServer::handleExpectHeader(ConnectionIt cnxIt, std::string_view expectHeader,
-                                          const CorsPolicy* pCorsPolicy, bool& found100Continue) {
-  HttpRequestView& request = _connections.connectionState(cnxIt).request;
-  // Parse comma-separated tokens (trim OWS). Case-insensitive comparison for 100-continue.
-  for (std::size_t pos = 0; pos < expectHeader.size();) {
-    const auto commaPos = expectHeader.find(',', pos);
-    const auto tokenEnd = (commaPos == std::string_view::npos) ? expectHeader.size() : commaPos;
-
-    const auto token = TrimOws(expectHeader.substr(pos, tokenEnd - pos));
-    pos = (commaPos == std::string_view::npos) ? expectHeader.size() : commaPos + 1;
-
-    if (token.empty()) {
-      continue;
-    }
-    if (CaseInsensitiveEqual(token, http::h100_continue)) {
-      // Note presence of 100-continue; we'll use this to trigger interim 100
-      found100Continue = true;
-      // built-in behaviour; leave actual 100 emission to body-decoding logic
-      continue;
-    }
-    if (!_callbacks.expectation) {
-      // No handler and not 100-continue -> RFC says respond 417
-      emitSimpleError(cnxIt, http::StatusCodeExpectationFailed, {});
-      return true;
-    }
-    try {
-      auto expectationResult = _callbacks.expectation(request, token);
-      switch (expectationResult.kind) {
-        case ExpectationResultKind::Reject:
-          emitSimpleError(cnxIt, http::StatusCodeExpectationFailed, {});
-          return true;
-        case ExpectationResultKind::Interim: {
-          // Emit an interim response immediately. Common case: 102 "Processing"
-          const auto status = expectationResult.interimStatus;
-          // Validate that the handler returned an informational 1xx status.
-          if (status < 100U || status >= 200U) {
-            emitSimpleError(cnxIt, http::StatusCodeInternalServerError, "Invalid interim status (must be 1xx)");
-            return true;
-          }
-
-          switch (status) {
-            case 100:
-              queueData(cnxIt, HttpMessageData(RawChars{http::HTTP11_100_CONTINUE}));
-              break;
-            case 102:
-              queueData(cnxIt, HttpMessageData(RawChars{http::HTTP11_102_PROCESSING}));
-              break;
-            default: {
-              static constexpr std::string_view kHttpResponseLinePrefix = "HTTP/1.1 ";
-
-              RawChars buf(kHttpResponseLinePrefix.size() + 3U + http::DoubleCRLF.size());
-              buf.setSize(buf.capacity());
-
-              char* insertPtr = AppendFixed<kHttpResponseLinePrefix>(buf.data());
-              insertPtr = writeStatusCode(insertPtr, status);
-              CopyFixed<http::DoubleCRLF>(insertPtr);
-
-              queueData(cnxIt, HttpMessageData(std::move(buf)));
-              break;
-            }
-          }
-
-          break;
-        }
-        case ExpectationResultKind::FinalResponse: {
-          // Send the provided final response immediately and skip body processing. The client may send the body that
-          // the request announces anyway (it is not required to wait for the response), which could not be told apart
-          // from the next request: the connection then closes after the response.
-          const bool announcesBody =
-              request.headerValue(http::TransferEncoding).has_value() ||
-              request.headerValueOrEmpty(http::ContentLength).find_first_not_of('0') != std::string_view::npos;
-          finalizeAndSendResponseForHttp1(cnxIt, std::move(expectationResult.finalResponse), pCorsPolicy,
-                                          announcesBody);
-          return true;
-        }
-        default:
-          assert(expectationResult.kind == ExpectationResultKind::Continue);
-          break;
-      }
-    } catch (const std::exception& ex) {
-      log::error("Exception in ExpectationHandler: {}", ex.what());
-      emitSimpleError(cnxIt, http::StatusCodeInternalServerError, {});
-      return true;
-    } catch (...) {
-      log::error("Unknown exception in ExpectationHandler");
-      emitSimpleError(cnxIt, http::StatusCodeInternalServerError, {});
-      return true;
-    }
-  }
-  return false;
 }
 
 }  // namespace aeronet

@@ -9,7 +9,6 @@
 #include <cstdint>
 #include <exception>
 #include <memory>
-#include <optional>
 #include <ratio>
 #include <span>
 #include <string_view>
@@ -45,6 +44,7 @@
 #include "aeronet/http2-process-result-error-msg-strings.hpp"
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/https-redirect.hpp"
+#include "aeronet/internal/http-response-access.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/metric-label.hpp"
 #include "aeronet/middleware.hpp"
@@ -1007,9 +1007,9 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
     };
     // Note: For HTTP/2, TRACE cannot echo raw request data (no wire format available)
     // So we pass empty requestData, which will result in 405 Method Not Allowed
-    auto result = ProcessSpecialMethods(request, _pipeline.router(), config, routingResult.corsPolicy(), {});
-    if (result) {
-      finalizeAndSendResponse(it, std::move(*result), routingResult.corsPolicy());
+    HttpResponse result = ProcessSpecialMethods(request, _pipeline.router(), config, routingResult.corsPolicy(), {});
+    if (!result.empty()) {
+      finalizeAndSendResponse(it, std::move(result), routingResult.corsPolicy());
       return;
     }
     // Not handled (e.g., not a preflight), fall through to normal processing
@@ -1020,12 +1020,13 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
     _pipeline.applyResponseMiddleware(request, response, routingResult.postMiddlewareRange(), streaming);
     finalizeAndSendResponse(it, std::move(response), routingResult.corsPolicy());
   };
-  if (std::optional<HttpResponse> shortCircuit = _pipeline.runRequestMiddleware(request, routingResult, streaming)) {
-    sendPipelineResponse(*shortCircuit);
+  if (HttpResponse shortCircuit = _pipeline.runRequestMiddleware(request, routingResult, streaming);
+      !shortCircuit.empty()) {
+    sendPipelineResponse(shortCircuit);
     return;
   }
-  if (std::optional<HttpResponse> response = _pipeline.callRequestHandler(request, routingResult, streaming)) {
-    sendPipelineResponse(*response);
+  if (HttpResponse response = _pipeline.callRequestHandler(request, routingResult, streaming); !response.empty()) {
+    sendPipelineResponse(response);
     return;
   }
 
@@ -1067,7 +1068,7 @@ void Http2ProtocolHandler::answerHttpsRedirect(StreamsMap::iterator it, bool end
 
   // Like for HTTP/1.1: bypasses routing, the request middleware and the body.
   RawChars& urlBuf = _pipeline.scratch();
-  HttpResponse response(HttpMessage::Check::No);
+  HttpResponse response = ::aeronet::internal::HttpResponseAccess::MakeUnallocated();
   if (http::BuildHttpsRedirectUrl(urlBuf, request, _pServerConfig->httpsRedirect.targetPort)) {
     response = HttpResponse(_pServerConfig->httpsRedirect.statusCode);
     response.location(std::string_view(urlBuf));
@@ -1498,7 +1499,7 @@ void Http2ProtocolHandler::onAsyncTaskCompleted(uint32_t streamId, bool routeMay
   assert(pAsync != nullptr);
 
   HttpRequestView& req = pAsync->streamRequest->request;
-  HttpResponse resp(HttpMessage::Check::No);  // do not allocate memory yet
+  HttpResponse resp = ::aeronet::internal::HttpResponseAccess::MakeUnallocated();
   try {
     resp = pAsync->task.runSynchronously();
   } catch (const std::exception& ex) {
