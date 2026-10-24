@@ -53,11 +53,10 @@ class EncodingSelector {
   // Negotiates a non-empty Accept-Encoding value, without the cache.
   [[nodiscard]] NegotiatedResult negotiate(std::string_view acceptEncoding) const;
 
-  // Server preference order of the supported encodings: the 'preferredFormats' sequence first (when provided),
-  // followed by the remaining supported encodings in the static enumeration order.
-  Encoding _preferenceOrdered[kNbContentEncodings];
-  // Position of each supported encoding in _preferenceOrdered (lower is preferred).
-  int8_t _serverPrefIndex[kNbContentEncodings];
+  // Server preference rank of each supported encoding (lower is preferred), indexed by its position among the supported
+  // encodings in enumeration order: the 'preferredFormats' sequence first (when provided), followed by the remaining
+  // supported encodings in the static enumeration order.
+  uint8_t _serverPrefIndex[kNbSupportedEncodings];
   // The last negotiated value (if not longer than kMaxCachedAcceptEncodingSize) and its result. A size of 0 means no
   // value, an empty one being negotiated without the cache.
   NegotiatedResult _cachedResult;

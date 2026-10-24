@@ -7,7 +7,6 @@
 #include <climits>
 #include <cstddef>
 #include <cstdint>
-#include <iterator>
 #include <limits>
 #include <numeric>
 #include <string_view>
@@ -103,31 +102,8 @@ double ParseQ(std::string_view token) {
   return 1.0;
 }
 
-constexpr EncodingInt kNbSupportedEncodings = [] {
-  EncodingInt count = 0;
-  for (EncodingInt pos = 0; pos < kNbContentEncodings; ++pos) {
-    const Encoding enc = static_cast<Encoding>(pos);
-    if (IsEncodingEnabled(enc)) {
-      ++count;
-    }
-  }
-  return count;
-}();
-
-constexpr std::array<Encoding, kNbSupportedEncodings> kPreferredEncodingsDefault = [] {
-  std::array<Encoding, kNbSupportedEncodings> arr;
-  for (EncodingInt pos = 0, sz = 0; pos < kNbContentEncodings; ++pos) {
-    const Encoding enc = static_cast<Encoding>(pos);
-    if (IsEncodingEnabled(enc)) {
-      arr[sz++] = enc;
-    }
-  }
-  return arr;
-}();
-
-static_assert(kPreferredEncodingsDefault.back() == Encoding::none);
-
-// Compile-time construction of supported encodings array from reflected keys
+// Compile-time construction of supported encodings array from reflected keys, in enumeration order (the default server
+// preference order).
 struct Sup {
   std::string_view name;
   Encoding enc;
@@ -145,39 +121,28 @@ constexpr auto kSupportedEncodings = [] {
   return arr;
 }();
 
+static_assert(kSupportedEncodings.back().enc == Encoding::none);
+
 }  // namespace
 
-EncodingSelector::EncodingSelector() noexcept {
-  std::ranges::copy(kPreferredEncodingsDefault, _preferenceOrdered);
-  std::ranges::iota(_serverPrefIndex, 0);
-}
+EncodingSelector::EncodingSelector() noexcept { std::ranges::iota(_serverPrefIndex, uint8_t{0}); }
 
-EncodingSelector::EncodingSelector(const CompressionConfig& compressionConfig) noexcept : EncodingSelector() {
+EncodingSelector::EncodingSelector(const CompressionConfig& compressionConfig) noexcept {
   const auto& preferredFormats = compressionConfig.preferredFormats;
-  if (preferredFormats.empty()) {
-    return;
-  }
-  // preferredFormats should not contain duplicates
-  assert(std::ranges::all_of(
-      preferredFormats, [&preferredFormats](Encoding enc) { return std::ranges::count(preferredFormats, enc) == 1; }));
+  // preferredFormats should only contain enabled encodings (config should have been validated), without duplicates
+  assert(std::ranges::all_of(preferredFormats, [&preferredFormats](Encoding enc) {
+    return IsEncodingEnabled(enc) && std::ranges::count(preferredFormats, enc) == 1;
+  }));
 
   // The configured encodings come first, in their order, followed by the remaining supported encodings in default
-  // order, so that every supported encoding has a defined server preference index.
-  EncodingInt nbPreferences = 0;
-  for (Encoding enc : preferredFormats) {
-    assert(IsEncodingEnabled(enc));  // config should have been validated
-    _preferenceOrdered[nbPreferences++] = enc;
+  // order, so that every supported encoding has a defined server preference rank.
+  auto nextRank = static_cast<uint8_t>(preferredFormats.size());
+  for (std::size_t pos = 0; pos < kSupportedEncodings.size(); ++pos) {
+    const auto it = std::ranges::find(preferredFormats, kSupportedEncodings[pos].enc);
+    _serverPrefIndex[pos] =
+        it == preferredFormats.end() ? nextRank++ : static_cast<uint8_t>(it - preferredFormats.begin());
   }
-  for (EncodingInt pos = 0; pos < kNbSupportedEncodings; ++pos) {
-    const Encoding enc = kPreferredEncodingsDefault[pos];
-    if (!std::ranges::contains(preferredFormats, enc)) {
-      _preferenceOrdered[nbPreferences++] = enc;
-    }
-  }
-  assert(nbPreferences == kNbSupportedEncodings);
-  for (EncodingInt pos = 0; pos < kNbSupportedEncodings; ++pos) {
-    _serverPrefIndex[static_cast<EncodingInt>(_preferenceOrdered[pos])] = static_cast<int8_t>(pos);
-  }
+  assert(nextRank == kNbSupportedEncodings);
 }
 
 EncodingSelector::NegotiatedResult EncodingSelector::negotiateAcceptEncoding(std::string_view acceptEncoding) {
@@ -236,39 +201,25 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiate(std::string_view 
   double bestQ = -1.0;
   int bestServerPreferenceIndex = std::numeric_limits<int>::max();
 
-  auto consider = [&](Encoding enc, double quality, int serverPreferenceIndex) {
-    if (quality <= 0.0) {
-      return;  // q=0 means "not acceptable"
+  // Pick the highest q among the explicitly listed supported encodings and, with a wildcard, the unlisted ones. Ties
+  // are resolved by the lower server preference rank instead of client header order. Ranks being distinct, the result
+  // does not depend on the order in which encodings are evaluated.
+  for (std::size_t pos = 0; pos < kSupportedEncodings.size(); ++pos) {
+    double quality = knownEncodingsQuality[pos];
+    if (quality < 0.0) {
+      if (!sawWildcard) {
+        continue;
+      }
+      quality = wildcardQ;  // the wildcard applies to any supported encoding not explicitly listed
     }
+    if (quality <= 0.0) {
+      continue;  // q=0 means "not acceptable"
+    }
+    const int serverPreferenceIndex = _serverPrefIndex[pos];
     if (quality > bestQ || (quality == bestQ && serverPreferenceIndex < bestServerPreferenceIndex)) {
       bestQ = quality;
       bestServerPreferenceIndex = serverPreferenceIndex;
-      chosen = enc;
-    }
-  };
-
-  // Evaluate explicitly listed supported encodings. We map back to server preference index (via _serverPrefIndex)
-  // and pick highest q; ties resolved by lower preference index instead of client header order.
-  for (std::size_t pos = 0; pos < kSupportedEncodings.size(); ++pos) {
-    const double quality = knownEncodingsQuality[pos];
-    if (quality < 0.0) {
-      continue;
-    }
-    const auto enc = kSupportedEncodings[pos].enc;
-    consider(enc, quality, _serverPrefIndex[static_cast<EncodingInt>(enc)]);
-  }
-
-  // Apply wildcard to any supported encoding not explicitly mentioned, iterating in server preference order.
-  if (sawWildcard) {
-    for (EncodingInt pos = 0; pos < kNbSupportedEncodings; ++pos) {
-      const Encoding enc = _preferenceOrdered[pos];
-
-      const auto encPos = std::ranges::find_if(kSupportedEncodings, [enc](const Sup& sup) { return sup.enc == enc; });
-      const auto idx = static_cast<std::size_t>(std::distance(kSupportedEncodings.begin(), encPos));
-      assert(idx < kSupportedEncodings.size());
-      if (knownEncodingsQuality[idx] < 0.0) {
-        consider(enc, wildcardQ, _serverPrefIndex[static_cast<EncodingInt>(enc)]);
-      }
+      chosen = kSupportedEncodings[pos].enc;
     }
   }
 

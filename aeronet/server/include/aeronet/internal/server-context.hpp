@@ -116,8 +116,7 @@ struct ServerContext {
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   // Post an async callback to be processed in the event loop, then resume the coroutine.
   // Called from background threads via ConnectionState::asyncState.postCallback.
-  void postAsyncCallback(NativeHandle connectionFd, uint32_t connectionGeneration, std::coroutine_handle<> handle,
-                         std::function<void()> work);
+  void postAsyncCallback(NativeHandle connectionFd, uint32_t connectionGeneration, std::coroutine_handle<> handle);
 #endif
 
   ServerStatsInternal stats;

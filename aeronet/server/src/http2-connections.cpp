@@ -56,10 +56,10 @@ void SingleHttpServer::installHttp2Handler(NativeHandle clientFd, ConnectionStat
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   // Install async callback so HTTP/2 coroutines can post deferred work to the event loop.
-  h2Handler->setAsyncPostCallback([pCtx = &_ctx, fd = clientFd, generation = state.generation](
-                                      std::coroutine_handle<> handle, std::function<void()> work) {
-    pCtx->postAsyncCallback(fd, generation, handle, std::move(work));
-  });
+  h2Handler->setAsyncPostCallback(
+      [pCtx = &_ctx, fd = clientFd, generation = state.generation](std::coroutine_handle<> handle) {
+        pCtx->postAsyncCallback(fd, generation, handle);
+      });
 #endif
 }
 
