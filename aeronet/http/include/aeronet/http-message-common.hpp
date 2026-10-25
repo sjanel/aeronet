@@ -1,6 +1,5 @@
 #pragma once
 
-#include <stdexcept>
 #include <string_view>
 
 #include "aeronet/http-constants.hpp"
@@ -10,6 +9,11 @@
 
 namespace aeronet {
 
+// Cold paths of the HTTP messages: log the offending value, then throw (std::invalid_argument for the first,
+// std::logic_error for the second). They are defined out of line to keep them out of the callers.
+[[noreturn]] void ThrowInvalidContentTypeHeaderValue(std::string_view contentType);
+[[noreturn]] void ThrowSetBodyAfterTrailers();
+
 // Tells whether 'contentType' (already trimmed) can be the Content-Type value of a message with a body.
 constexpr bool IsValidContentType(std::string_view contentType) {
   return contentType.size() >= http::ContentTypeMinLen && http::IsValidHeaderValue(contentType);
@@ -18,7 +22,7 @@ constexpr bool IsValidContentType(std::string_view contentType) {
 constexpr std::string_view CheckContentType(bool isBodyEmpty, std::string_view& contentType) {
   contentType = TrimOws(contentType);
   if (!isBodyEmpty && !IsValidContentType(contentType)) [[unlikely]] {
-    throw std::invalid_argument("HTTP content-type header value is invalid");
+    ThrowInvalidContentTypeHeaderValue(contentType);
   }
   return contentType;
 }

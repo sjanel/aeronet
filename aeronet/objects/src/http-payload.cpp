@@ -147,10 +147,14 @@ void HttpPayload::append(const char* data, std::size_t size) {
         } else if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, RawChars>) {
           val.append(data, size);
         } else if constexpr (std::is_same_v<T, RawCharsSuffix>) {
-          RawChars body(val.size + size);
-          body.unchecked_append(val.view());
-          body.unchecked_append(data, size);
-          _data = std::move(body);
+          RawChars rawChars(val.size + size);
+
+          char* pData = rawChars.data();
+          pData = Append(val.view(), pData);
+          pData = Append(data, size, pData);
+          rawChars.setEnd(pData);
+
+          _data = std::move(rawChars);
         } else if constexpr (std::is_same_v<T, std::vector<char>>) {
           val.insert(val.end(), data, data + size);
         } else if constexpr (std::is_same_v<T, std::vector<std::byte>>) {
@@ -160,16 +164,20 @@ void HttpPayload::append(const char* data, std::size_t size) {
           // switch to RawChars to simplify appending
           RawChars rawChars(val.second + size);
 
-          rawChars.unchecked_append(reinterpret_cast<const char*>(val.first.get()), val.second);
-          rawChars.unchecked_append(data, size);
+          char* pData = rawChars.data();
+          pData = Append(reinterpret_cast<const char*>(val.first.get()), val.second, pData);
+          pData = Append(data, size, pData);
+          rawChars.setEnd(pData);
 
           _data = std::move(rawChars);
         } else if constexpr (std::is_same_v<T, std::string_view>) {
           // switch to RawChars to simplify appending
           RawChars rawChars(val.size() + size);
 
-          rawChars.unchecked_append(val);
-          rawChars.unchecked_append(data, size);
+          char* pData = rawChars.data();
+          pData = Append(val, pData);
+          pData = Append(data, size, pData);
+          rawChars.setEnd(pData);
 
           _data = std::move(rawChars);
         }
@@ -188,10 +196,14 @@ void HttpPayload::append(const HttpPayload& other) {
           val.append(other.view());
         } else if constexpr (std::is_same_v<T, RawCharsSuffix>) {
           const std::string_view otherView = other.view();
-          RawChars body(val.size + otherView.size());
-          body.unchecked_append(val.view());
-          body.unchecked_append(otherView);
-          _data = std::move(body);
+          RawChars rawChars(val.size + otherView.size());
+
+          char* pData = rawChars.data();
+          pData = Append(val.view(), pData);
+          pData = Append(otherView, pData);
+          rawChars.setEnd(pData);
+
+          _data = std::move(rawChars);
         } else if constexpr (std::is_same_v<T, std::vector<char>>) {
           const auto otherView = other.view();
           val.insert(val.end(), otherView.data(), otherView.data() + otherView.size());
@@ -204,8 +216,10 @@ void HttpPayload::append(const HttpPayload& other) {
           const auto otherView = other.view();
           RawChars rawChars(val.second + otherView.size());
 
-          rawChars.unchecked_append(reinterpret_cast<const char*>(val.first.get()), val.second);
-          rawChars.unchecked_append(otherView);
+          char* pData = rawChars.data();
+          pData = Append(reinterpret_cast<const char*>(val.first.get()), val.second, pData);
+          pData = Append(otherView, pData);
+          rawChars.setEnd(pData);
 
           _data = std::move(rawChars);
         } else if constexpr (std::is_same_v<T, std::string_view>) {
@@ -213,8 +227,10 @@ void HttpPayload::append(const HttpPayload& other) {
           const auto otherView = other.view();
           RawChars rawChars(val.size() + otherView.size());
 
-          rawChars.unchecked_append(val);
-          rawChars.unchecked_append(otherView);
+          char* pData = rawChars.data();
+          pData = Append(val, pData);
+          pData = Append(otherView, pData);
+          rawChars.setEnd(pData);
 
           _data = std::move(rawChars);
         }

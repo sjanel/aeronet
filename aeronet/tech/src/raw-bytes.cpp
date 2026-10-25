@@ -8,6 +8,7 @@
 #include <cstring>
 #include <new>
 #include <span>
+#include <stdexcept>
 #include <string_view>
 #include <utility>
 
@@ -16,6 +17,8 @@
 #include "aeronet/safe-cast.hpp"
 
 namespace aeronet {
+
+void ThrowRawBytesBaseCapacityOverflow() { throw std::overflow_error("required capacity overflows uintmax_t"); }
 
 namespace {
 
@@ -34,30 +37,27 @@ constexpr bool kAlwaysGrowIntoNewBuffer = false;
 }  // namespace
 
 template <class T, class ViewType, class SizeType>
-RawBytesBase<T, ViewType, SizeType>::RawBytesBase(uint64_t capacity)
-    : _buf(static_cast<value_type*>(std::malloc(SafeCast<size_type>(capacity)))),
-      _capacity(static_cast<size_type>(capacity)) {
-  if (capacity != 0 && _buf == nullptr) [[unlikely]] {
-    throw std::bad_alloc();
-  }
+RawBytesBase<T, ViewType, SizeType>::RawBytesBase(uint64_t capacity) {
+  if (capacity == 0) {
+    _buf = nullptr;
+  } else {
+    _buf = static_cast<value_type*>(std::malloc(SafeCast<size_type>(capacity)));
+    if (_buf == nullptr) [[unlikely]] {
+      throw std::bad_alloc();
+    }
 #ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
-  if (_capacity != 0) {
-    std::memset(_buf, 255, _capacity);
-  }
+    std::memset(_buf, 255, capacity);
 #endif
+  }
+  _size = 0;
+  _capacity = static_cast<SizeType>(capacity);
 }
 
 template <class T, class ViewType, class SizeType>
-RawBytesBase<T, ViewType, SizeType>::RawBytesBase(const RawBytesBase& rhs) : RawBytesBase(rhs.capacity()) {
+RawBytesBase<T, ViewType, SizeType>::RawBytesBase(const RawBytesBase& rhs) : RawBytesBase(rhs.size()) {
   _size = rhs.size();
   Copy(rhs.data(), _size, _buf);
 }
-
-template <class T, class ViewType, class SizeType>
-RawBytesBase<T, ViewType, SizeType>::RawBytesBase(RawBytesBase&& rhs) noexcept
-    : _buf(std::exchange(rhs._buf, nullptr)),
-      _size(std::exchange(rhs._size, static_cast<SizeType>(0))),
-      _capacity(std::exchange(rhs._capacity, static_cast<SizeType>(0))) {}
 
 template <class T, class ViewType, class SizeType>
 RawBytesBase<T, ViewType, SizeType>& RawBytesBase<T, ViewType, SizeType>::operator=(RawBytesBase&& rhs) noexcept {
@@ -74,14 +74,7 @@ RawBytesBase<T, ViewType, SizeType>& RawBytesBase<T, ViewType, SizeType>::operat
 template <class T, class ViewType, class SizeType>
 RawBytesBase<T, ViewType, SizeType>& RawBytesBase<T, ViewType, SizeType>::operator=(const RawBytesBase& rhs) {
   if (this != &rhs) [[likely]] {
-    reserve(rhs.size());
-#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
-    if (rhs.size() < _size) {
-      std::memset(_buf + rhs.size(), 255, _size - rhs.size());
-    }
-#endif
-    _size = rhs.size();
-    Copy(rhs.data(), _size, _buf);
+    assign(rhs.data(), rhs.size());
   }
   return *this;
 }
@@ -96,10 +89,32 @@ RawBytesBase<T, ViewType, SizeType>::~RawBytesBase() {
 
 template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::assign(const_pointer data, uint64_t size) {
-  reserve(size);
+  if (_capacity < SafeCast<size_type>(size)) {
+    pointer pNewBuf;
+    if (kAlwaysGrowIntoNewBuffer || _buf == nullptr || size <= kMaxCopiedGrowthCapacity) {
+      pNewBuf = static_cast<pointer>(std::malloc(size));
+      if (pNewBuf == nullptr) [[unlikely]] {
+        throw std::bad_alloc();
+      }
+      // A default constructed buffer has nothing to copy nor free.
+      std::free(_buf);
+    } else {
+      pNewBuf = static_cast<pointer>(std::realloc(_buf, size));
+      if (pNewBuf == nullptr) [[unlikely]] {
+        throw std::bad_alloc();
+      }
+    }
+    _buf = pNewBuf;
+    _capacity = static_cast<SizeType>(size);
+  }
   Copy(data, size, _buf);
 
-  _size = static_cast<size_type>(size);
+  _size = static_cast<SizeType>(size);
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+  if (_capacity != _size) {
+    std::memset(_buf + _size, 255, _capacity - _size);
+  }
+#endif
 }
 
 template <class T, class ViewType, class SizeType>
@@ -116,13 +131,6 @@ void RawBytesBase<T, ViewType, SizeType>::erase_front(size_type n) noexcept {
 #ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
     std::memset(_buf + _size, 255, n);
 #endif
-  }
-}
-
-template <class T, class ViewType, class SizeType>
-void RawBytesBase<T, ViewType, SizeType>::reserve(uint64_t newCapacity) {
-  if (_capacity < SafeCast<size_type>(newCapacity)) {
-    reallocUp(static_cast<size_type>(newCapacity));
   }
 }
 
@@ -167,27 +175,27 @@ bool RawBytesBase<T, ViewType, SizeType>::operator==(const RawBytesBase& rhs) co
 
 template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::reallocUp(size_type newCapacity) {
-  pointer newBuf;
+  pointer pNewBuf;
   if (kAlwaysGrowIntoNewBuffer || _buf == nullptr || newCapacity <= kMaxCopiedGrowthCapacity) {
-    newBuf = static_cast<pointer>(std::malloc(newCapacity));
-    if (newBuf == nullptr) [[unlikely]] {
+    pNewBuf = static_cast<pointer>(std::malloc(newCapacity));
+    if (pNewBuf == nullptr) [[unlikely]] {
       throw std::bad_alloc();
     }
     // A default constructed buffer has nothing to copy nor free.
     if (_buf != nullptr) {
-      Copy(_buf, _size, newBuf);
+      Copy(_buf, _size, pNewBuf);
       std::free(_buf);
     }
   } else {
-    newBuf = static_cast<pointer>(std::realloc(_buf, newCapacity));
-    if (newBuf == nullptr) [[unlikely]] {
+    pNewBuf = static_cast<pointer>(std::realloc(_buf, newCapacity));
+    if (pNewBuf == nullptr) [[unlikely]] {
       throw std::bad_alloc();
     }
   }
 #ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
-  std::memset(newBuf + _size, 255, newCapacity - _size);
+  std::memset(pNewBuf + _size, 255, newCapacity - _size);
 #endif
-  _buf = newBuf;
+  _buf = pNewBuf;
   _capacity = newCapacity;
 }
 

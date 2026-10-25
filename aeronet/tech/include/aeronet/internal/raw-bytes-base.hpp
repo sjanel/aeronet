@@ -2,6 +2,7 @@
 
 #include <concepts>
 #include <cstdint>
+#include <limits>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -9,7 +10,6 @@
 #ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
 #include <cassert>
 #include <cstring>
-#include <limits>
 #endif
 
 #include "aeronet/memory-utils.hpp"
@@ -17,11 +17,12 @@
 
 namespace aeronet {
 
+[[noreturn]] void ThrowRawBytesBaseCapacityOverflow();
+
 /**
- * A simple buffer class that manages a dynamically allocated buffer.
- * It is designed to be used by compression libraries (gzip, zstd) that
- * require a simple, low-level buffer interface, do not use it for general-purpose data storage (prefer vector in that
- * case).
+ * A lightweight, SSO-free byte buffer: no zero-initialization, explicit control over exact vs exponential growth,
+ * realloc-based growth for large sizes, and trivially relocatable. Not a general std::string replacement: small
+ * contents cost a heap allocation, and there is no null terminator.
  */
 template <class T, class ViewType, class SizeType>
 class RawBytesBase {
@@ -40,7 +41,7 @@ class RawBytesBase {
   static_assert(std::is_unsigned_v<SizeType>, "RawBytesBase requires an unsigned size type");
 
   // Constructs an empty buffer, without any allocated storage.
-  RawBytesBase() noexcept = default;
+  RawBytesBase() noexcept : _buf(nullptr), _size(0), _capacity(0) {}
 
   // Constructs an empty buffer with the specified capacity.
   // Warning: unlike std::string or std::vector, the size is set to 0, not to capacity.
@@ -62,7 +63,10 @@ class RawBytesBase {
         _capacity(std::exchange(rhs._capacity, 0)) {}
 
   RawBytesBase(const RawBytesBase& rhs);
-  RawBytesBase(RawBytesBase&& rhs) noexcept;
+  RawBytesBase(RawBytesBase&& rhs) noexcept
+      : _buf(std::exchange(rhs._buf, nullptr)),
+        _size(std::exchange(rhs._size, 0)),
+        _capacity(std::exchange(rhs._capacity, 0)) {}
 
   RawBytesBase& operator=(const RawBytesBase& rhs);
   RawBytesBase& operator=(RawBytesBase&& rhs) noexcept;
@@ -171,16 +175,23 @@ class RawBytesBase {
   [[nodiscard]] size_type availableCapacity() const noexcept { return _capacity - _size; }
 
   // Reserves capacity for at least newCapacity bytes.
-  void reserve(uint64_t newCapacity);
+  void reserve(uint64_t newCapacity) {
+    if (_capacity < SafeCast<size_type>(newCapacity)) {
+      reallocUp(static_cast<size_type>(newCapacity));
+    }
+  }
 
   // Heuristically reduces unused capacity.
   // The current implementation algorithm is to halve the capacity if the size is less than a quarter of the capacity.
   void shrink_to_fit() noexcept;
 
   // Ensures that the buffer has at least the specified available capacity.
-  void ensureAvailableCapacity(std::unsigned_integral auto availableCapacity) { reserve(availableCapacity + _size); }
+  // Throws std::overflow_error if the resulting capacity does not fit in size_type.
+  void ensureAvailableCapacity(std::unsigned_integral auto availableCapacity) {
+    reserve(requiredCapacity(availableCapacity));
+  }
 
-  // Overload to accept int64_t for convenience.
+  // Overload to accept signed integrals for convenience.
   void ensureAvailableCapacity(std::signed_integral auto capa) {
     if (capa > 0) {
       ensureAvailableCapacity(static_cast<std::make_unsigned_t<decltype(capa)>>(capa));
@@ -189,20 +200,20 @@ class RawBytesBase {
 
   // Ensures that the buffer has at least the specified available capacity,
   // growing the capacity exponentially.
+  // Throws std::overflow_error if the resulting capacity does not fit in size_type.
   void ensureAvailableCapacityExponential(std::unsigned_integral auto availableCapacity) {
 #ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
     ensureAvailableCapacity(availableCapacity);
 #else
-    const uintmax_t required = availableCapacity + _size;
+    const uintmax_t required = requiredCapacity(availableCapacity);
 
     if (_capacity < required) {
-      const uintmax_t doubled = 2ULL * _capacity;
-      reallocUp(SafeCast<size_type>(required < doubled ? doubled : required));
+      reallocUp(SafeCast<size_type>(ExponentialCapacity(required, _capacity)));
     }
 #endif
   }
 
-  // Overload to accept int64_t for convenience.
+  // Overload to accept signed integrals for convenience.
   void ensureAvailableCapacityExponential(std::signed_integral auto capa) {
     if (capa > 0) {
       ensureAvailableCapacityExponential(static_cast<std::make_unsigned_t<decltype(capa)>>(capa));
@@ -262,17 +273,43 @@ class RawBytesBase {
 
   bool operator==(const RawBytesBase& rhs) const noexcept;
 
+  // Capacity to grow to (doubling, for amortized growth) when at least 'required' bytes of capacity are needed.
+  // The doubled capacity is clamped to the maximum of size_type, so a buffer whose doubled capacity would overflow
+  // still grows to the largest representable capacity as long as 'required' fits. A 'required' beyond size_type is
+  // returned unchanged, for the caller to reject.
+  [[nodiscard]] static constexpr uintmax_t ExponentialCapacity(uintmax_t required, size_type capacity) noexcept {
+    uintmax_t doubled = uintmax_t{2} * capacity;
+    if constexpr (sizeof(size_type) < sizeof(uintmax_t)) {
+      constexpr uintmax_t kMaxCapacity = std::numeric_limits<size_type>::max();
+      doubled = doubled < kMaxCapacity ? doubled : kMaxCapacity;
+    }
+    return required < doubled ? doubled : required;
+  }
+
   using trivially_relocatable = std::true_type;
 
  private:
   template <class T2, class V2, class S2>
   friend class RawBytesBase;
 
+  // Capacity needed to hold 'extra' more bytes, throws std::overflow_error if the sum wraps around.
+  template <std::unsigned_integral ExtraT>
+  [[nodiscard]] uintmax_t requiredCapacity(ExtraT extra) const {
+    const uintmax_t required = static_cast<uintmax_t>(extra) + _size;
+    // The sum can only wrap when one of the operands is as wide as uintmax_t.
+    if constexpr (sizeof(ExtraT) >= sizeof(uintmax_t) || sizeof(size_type) >= sizeof(uintmax_t)) {
+      if (required < extra) [[unlikely]] {
+        ThrowRawBytesBaseCapacityOverflow();
+      }
+    }
+    return required;
+  }
+
   void reallocUp(size_type newCapacity);
 
-  pointer _buf = nullptr;
-  size_type _size = 0;
-  size_type _capacity = 0;
+  pointer _buf;
+  size_type _size;
+  size_type _capacity;
 };
 
 template <class T, class ViewType, class SizeType>

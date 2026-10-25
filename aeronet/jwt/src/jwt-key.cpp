@@ -27,6 +27,7 @@
 #include "aeronet/base64.hpp"
 #include "aeronet/jwt-algorithm.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
@@ -218,9 +219,12 @@ struct GroupName {
   }
   // Uncompressed point: 0x04 || X || Y.
   RawChars point(1U + (2U * coordLen));
-  point.unchecked_push_back('\x04');
-  point.unchecked_append(xCoord.data(), coordLen);
-  point.unchecked_append(yCoord.data(), coordLen);
+
+  char* pData = point.data();
+  *pData++ = '\x04';
+  pData = Append(xCoord.data(), coordLen, pData);
+  pData = Append(yCoord.data(), coordLen, pData);
+  point.setEnd(pData);
 
   ParamBldPtr bld(::OSSL_PARAM_BLD_new());
   if (!bld) {

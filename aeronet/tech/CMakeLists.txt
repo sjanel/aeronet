@@ -161,6 +161,8 @@ AeronetAddUnitTest(
 AeronetAddUnitTest(
     safe-cast_test
     test/safe-cast_test.cpp
+    LIBRARIES
+    aeronet_tech
 )
 
 AeronetAddUnitTest(
