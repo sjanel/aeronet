@@ -955,7 +955,6 @@ std::string_view HttpClient::buildCacheKey(const HttpRequest& req) {
 
   static_assert(sizeof(_config.cache.maxRequestSize) == 4U, "_cacheKeyScratch is a RawChars32");
 
-  _cacheKeyScratch.clear();
   const FilePayload* filePayload = req.filePayloadPtr();
 
   const std::size_t wireSize = req.wireDataSize();
@@ -966,9 +965,13 @@ std::string_view HttpClient::buildCacheKey(const HttpRequest& req) {
 
     _cacheKeyScratch.reserve(wireSize + bodyInMemory.size() + trailers.size());
 
-    _cacheKeyScratch.unchecked_append(req._data.data(), wireSize);
-    _cacheKeyScratch.unchecked_append(bodyInMemory);
-    _cacheKeyScratch.unchecked_append(trailers);
+    char* pData = _cacheKeyScratch.data();
+
+    pData = Append(req._data.data(), wireSize, pData);
+    pData = Append(bodyInMemory, pData);
+    pData = Append(trailers, pData);
+
+    _cacheKeyScratch.setEnd(pData);
 
     return _cacheKeyScratch;
   }

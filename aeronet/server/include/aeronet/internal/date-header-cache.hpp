@@ -1,7 +1,6 @@
 #pragma once
 
 #include <chrono>
-#include <string_view>
 
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
@@ -34,10 +33,8 @@ class DateHeaderCache {
   }
 
   // Returns a pointer to the date buffer.
-  // Beware - it's not null terminated, and the length is RFC7231DateStrLen.
+  // It's not null terminated, and the length is RFC7231DateStrLen.
   [[nodiscard]] const char* data() const noexcept { return _header; }
-
-  [[nodiscard]] std::string_view view() const noexcept { return {_header, sizeof(_header)}; }
 
  private:
   SteadyClock::time_point _refreshAt{SteadyClock::time_point::min()};

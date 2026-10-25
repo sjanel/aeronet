@@ -7,7 +7,6 @@
 #include <initializer_list>
 #include <iterator>
 #include <limits>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -18,6 +17,14 @@
 #include "aeronet/secure-zero.hpp"
 
 namespace aeronet {
+
+// Cold paths of StaticConcatenatedStrings: log the offending sizes or counts, then throw. They are defined out of line
+// to keep them out of every instantiation. The content of the parts is never logged, it may be a secret.
+[[noreturn]] void ThrowStaticConcatenatedStringsPartOverflow(std::size_t partSize, std::uintmax_t maxSize);
+[[noreturn]] void ThrowStaticConcatenatedStringsTotalOverflow(std::uintmax_t totalSize, std::uintmax_t maxSize);
+[[noreturn]] void ThrowStaticConcatenatedStringsDifferentNumberOfParts(std::size_t nbParts,
+                                                                       std::size_t expectedNbParts);
+[[noreturn]] void ThrowStaticConcatenatedStringsTooManyParts(std::size_t maxNbParts);
 
 // StaticConcatenatedStrings stores N string parts in a single contiguous RawChars buffer.
 // It provides access to individual parts as string_views pointing to null-terminated strings,
@@ -58,7 +65,7 @@ class StaticConcatenatedStrings {
 
   // The copy is made first, then the previous content is scrubbed with the buffer holding it.
   StaticConcatenatedStrings& operator=(const StaticConcatenatedStrings& other)
-    requires(Secure)
+    requires Secure
   {
     if (this != &other) {
       StaticConcatenatedStrings copy(other);
@@ -68,7 +75,7 @@ class StaticConcatenatedStrings {
   }
 
   StaticConcatenatedStrings& operator=(StaticConcatenatedStrings&& other) noexcept
-    requires(Secure)
+    requires Secure
   {
     if (this != &other) {
       scrub();
@@ -84,44 +91,47 @@ class StaticConcatenatedStrings {
   = default;
 
   ~StaticConcatenatedStrings()
-    requires(Secure)
+    requires Secure
   {
     scrub();
   }
 
   StaticConcatenatedStrings(std::initializer_list<std::string_view> parts) {
     if (parts.size() != kParts) {
-      throw std::length_error("StaticConcatenatedStrings: must provide exactly the compile-time number of parts");
+      ThrowStaticConcatenatedStringsDifferentNumberOfParts(parts.size(), kParts);
     }
 
-    uintmax_t total = kParts;  // +1 for null terminator after each part
+    uintmax_t totalSz = kParts;  // +1 for null terminator after each part
     for (std::string_view part : parts) {
       if constexpr (sizeof(size_type) < sizeof(std::string_view::size_type)) {
         if (std::cmp_greater_equal(part.size(), std::numeric_limits<size_type>::max())) {
-          throw std::overflow_error("StaticConcatenatedStrings: part size exceeds maximum");
+          ThrowStaticConcatenatedStringsPartOverflow(part.size(), std::numeric_limits<size_type>::max());
         }
       }
-      total += part.size();
+      totalSz += part.size();
       if constexpr (sizeof(size_type) < sizeof(std::string_view::size_type)) {
-        if (std::cmp_greater_equal(total, std::numeric_limits<size_type>::max())) {
-          throw std::overflow_error("StaticConcatenatedStrings: total size exceeds maximum");
+        if (std::cmp_greater_equal(totalSz, std::numeric_limits<size_type>::max())) {
+          ThrowStaticConcatenatedStringsTotalOverflow(totalSz, std::numeric_limits<size_type>::max());
         }
       }
     }
 
-    _buf.reserve(static_cast<size_type>(total));
+    _buf.reserve(static_cast<size_type>(totalSz));
+
+    char* pData = _buf.data();
 
     size_type pos = 0;
     size_type index = 0;
     for (std::string_view part : parts) {
-      _buf.unchecked_append(part);
-      _buf.unchecked_push_back('\0');
+      pData = Append(part, pData);
+      *pData++ = '\0';
       pos += static_cast<size_type>(part.size() + 1UL);
       if (std::cmp_less(index + size_type{1}, kParts)) {
         _offsets[static_cast<Offsets::size_type>(index)] = pos;
         ++index;
       }
     }
+    _buf.setEnd(pData);
   }
 
   void set(size_type idx, std::string_view str) {
@@ -207,7 +217,7 @@ class StaticConcatenatedStrings {
   // JSON set-like path uses range value type (std::string_view) rather than value_type.
   void emplace(std::string_view str) {
     if (_nextInsertIdx >= static_cast<size_type>(kParts)) {
-      throw std::length_error("StaticConcatenatedStrings::emplace: too many parts");
+      ThrowStaticConcatenatedStringsTooManyParts(kParts);
     }
     set(_nextInsertIdx, str);
     ++_nextInsertIdx;

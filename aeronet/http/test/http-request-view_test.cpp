@@ -153,7 +153,9 @@ class HttpRequestViewTest : public ::testing::Test {
   }
 
   void keepHeadForBody() { req.keepHeadForBody(); }
+
   [[nodiscard]] bool isHeadWaitingForBody() const { return req.isHeadWaitingForBody(); }
+
   void resumeHeadWaitingForBody() {
     req.resumeHeadWaitingForBody(cs.inBuffer);
     req.finalizeBeforeHandlerCall({});
@@ -298,10 +300,11 @@ class HttpRequestViewTest : public ::testing::Test {
 
   // Feed raw bytes to HttpRequestView parser and ensure no crash/UB
   void fuzzHttpRequestParsing(const RawChars& input, bool mergeUnknownHeaders = true) {
+    if (input.size() < http::kHttpReqLineMinLen) {
+      return;  // the server does not parse a head before the minimal request line is received
+    }
     cs.inBuffer = input;  // reset
     [[maybe_unused]] auto status = reqSet(input, mergeUnknownHeaders);
-    // We don't care about the result - just that we don't crash
-    (void)status;
   }
 
   ConcatenatedHeaders globalHeaders;
@@ -624,9 +627,11 @@ TEST_F(HttpRequestViewTest, DeferredWorkThreadCreationFailureIsRethrownByAwaitRe
 
 #endif
 
-TEST_F(HttpRequestViewTest, NoCRLF) { EXPECT_EQ(reqSet(RawChars("GET")), 0); }
+TEST_F(HttpRequestViewTest, NoCRLF) { EXPECT_EQ(reqSet(RawChars("GET /some-path HTTP/1.1")), 0); }
 
-TEST_F(HttpRequestViewTest, TrailingRequestLineCRNeedsMoreData) { EXPECT_EQ(reqSet(RawChars("GET / HTTP/1.1\r")), 0); }
+TEST_F(HttpRequestViewTest, TrailingRequestLineCRNeedsMoreData) {
+  EXPECT_EQ(reqSet(RawChars("GET /some-path HTTP/1.1\r")), 0);
+}
 
 TEST_F(HttpRequestViewTest, BareRequestLineCRIsRejectedImmediately) {
   EXPECT_EQ(reqSet(RawChars("GET / HTTP/1.1\rX")), http::StatusCodeBadRequest);
@@ -648,9 +653,9 @@ TEST_F(HttpRequestViewTest, BareHeaderCRIsRejectedImmediately) {
 
 TEST_F(HttpRequestViewTest, InvalidHttpVersion) {
   EXPECT_EQ(reqSet(BuildRaw("GET", "/", "HTTP")), http::StatusCodeBadRequest);
-  EXPECT_EQ(reqSet(RawChars("GET /path HTTP1.1\r\n\r\n")), http::StatusCodeBadRequest);
-  EXPECT_EQ(reqSet(RawChars("GET /path\r\n\r\n")), http::StatusCodeBadRequest);
-  EXPECT_EQ(reqSet(RawChars("GET /path \r\n\r\n")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(RawChars("GET /some-path HTTP1.1\r\n\r\n")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(RawChars("GET /some-path\r\n\r\n")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(RawChars("GET /some-path \r\n\r\n")), http::StatusCodeBadRequest);
 }
 
 TEST_F(HttpRequestViewTest, InvalidMethod) {
@@ -755,7 +760,9 @@ TEST_F(HttpRequestViewTest, HeadReceivedInTwoPartsIsParsedOnce) {
   EXPECT_EQ(req.headerValueOrEmpty("x-dup"), "v1,v2");
   EXPECT_EQ(req.headerValueOrEmpty("content-encoding"), "gzip");
 
-  for (std::size_t cut = 1; cut < kHeadModifiedByItsParsing.size(); ++cut) {
+  static_assert(kHeadModifiedByItsParsing.size() > http::kHttpReqLineMinLen);
+  // The server parses a head only once the minimal request line is received.
+  for (std::size_t cut = http::kHttpReqLineMinLen; cut < kHeadModifiedByItsParsing.size(); ++cut) {
     SCOPED_TRACE(cut);
     cs.inBuffer.clear();
     ASSERT_EQ(receiveAndParse(kHeadModifiedByItsParsing.substr(0, cut)), kNeedMoreData);
@@ -768,8 +775,10 @@ TEST_F(HttpRequestViewTest, HeadReceivedByteByByteIsParsedOnce) {
   ASSERT_EQ(reqSet(RawChars(kHeadModifiedByItsParsing)), http::StatusCodeOK);
   const HeadSnapshot expected = snapshot();
 
+  // The server parses a head only once the minimal request line is received: nothing is parsed before.
   cs.inBuffer.clear();
-  for (std::size_t pos = 0; pos + 1 < kHeadModifiedByItsParsing.size(); ++pos) {
+  receive(kHeadModifiedByItsParsing.substr(0, http::kHttpReqLineMinLen - 1));
+  for (std::size_t pos = http::kHttpReqLineMinLen - 1; pos + 1 < kHeadModifiedByItsParsing.size(); ++pos) {
     ASSERT_EQ(receiveAndParse(kHeadModifiedByItsParsing.substr(pos, 1)), kNeedMoreData) << pos;
   }
   ASSERT_EQ(receiveAndParse(kHeadModifiedByItsParsing.substr(kHeadModifiedByItsParsing.size() - 1)),
@@ -1645,9 +1654,11 @@ class FuzzRng {
 // Generate a random buffer of given size
 RawChars RandomBuffer(FuzzRng& rng, std::size_t size) {
   RawChars buf(size);
+  char* pData = buf.data();
   for (std::size_t ii = 0; ii < size; ++ii) {
-    buf.unchecked_push_back(static_cast<char>(rng.byte()));
+    *pData++ = static_cast<char>(rng.byte());
   }
+  buf.setEnd(pData);
   return buf;
 }
 
@@ -1847,23 +1858,14 @@ TEST_F(HttpRequestViewTest, MutatedValidRequests) {
       }
     }
 
-    RawChars rawInput;
-    rawInput.append(input);
-    ASSERT_NO_FATAL_FAILURE(fuzzHttpRequestParsing(rawInput));
+    ASSERT_NO_FATAL_FAILURE(fuzzHttpRequestParsing(RawChars(input)));
   }
 }
 
 // Fuzz test with edge case patterns
 TEST_F(HttpRequestViewTest, EdgeCasePatterns) {
   // Collection of edge case inputs
-  static const std::array<std::string_view, 16> kEdgeCases = {
-      "",                                                                     // Empty
-      "\r\n",                                                                 // Just CRLF
-      "\r\n\r\n",                                                             // Double CRLF
-      "GET",                                                                  // Incomplete
-      "GET ",                                                                 // Method only
-      "GET /",                                                                // No version
-      "GET / HTTP/1.1",                                                       // No CRLF
+  static constexpr std::string_view kEdgeCases[]{
       "GET / HTTP/1.1\r\n",                                                   // No headers end
       "GET / HTTP/1.1\r\n\r\n",                                               // Minimal valid
       "GET / HTTP/1.1\r\nHost:\r\n\r\n",                                      // Empty header value
@@ -1875,17 +1877,13 @@ TEST_F(HttpRequestViewTest, EdgeCasePatterns) {
       "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA / HTTP/1.1\r\nHost: h\r\n\r\n",  // Long method
   };
 
-  for (const auto& input : kEdgeCases) {
-    RawChars buf;
-    buf.append(input);
-    ASSERT_NO_FATAL_FAILURE(fuzzHttpRequestParsing(buf));
+  for (std::string_view input : kEdgeCases) {
+    ASSERT_NO_FATAL_FAILURE(fuzzHttpRequestParsing(RawChars(input)));
   }
 
   // Also fuzz with merge disabled
-  for (const auto& input : kEdgeCases) {
-    RawChars buf;
-    buf.append(input);
-    ASSERT_NO_FATAL_FAILURE(fuzzHttpRequestParsing(buf, false));
+  for (std::string_view input : kEdgeCases) {
+    ASSERT_NO_FATAL_FAILURE(fuzzHttpRequestParsing(RawChars(input), false));
   }
 }
 
