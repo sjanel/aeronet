@@ -8,7 +8,6 @@
 #include <cstring>
 #include <initializer_list>
 #include <iterator>
-#include <stdexcept>
 #include <string_view>
 #include <type_traits>
 
@@ -24,6 +23,14 @@
 #include "aeronet/string-equal-ignore-case.hpp"
 
 namespace aeronet {
+
+// Cold paths of DynamicConcatenatedStrings: log the sizes (and the offset of the separator) of the offending strings,
+// then throw std::invalid_argument. They are defined out of line to keep them out of every instantiation. The content
+// of the strings is never logged: it may be a secret (such as an Authorization header value) or hold a separator
+// (such as CRLF), which would forge log lines.
+[[noreturn]] void ThrowDynamicConcatenatedStringsPartContainsSeparator(std::string_view part, std::string_view sep);
+[[noreturn]] void ThrowDynamicConcatenatedStringsNameOrValueContainsSeparator(std::string_view name,
+                                                                              std::string_view value);
 
 template <const char* Sep, class SizeType = uint64_t>
 class DynamicConcatenatedStrings {
@@ -64,11 +71,13 @@ class DynamicConcatenatedStrings {
   // The string must not contain the separator character.
   void append(std::string_view str) {
     if (str.contains(kSep)) {
-      throw std::invalid_argument("DynamicConcatenatedStrings::append: part contains separator");
+      ThrowDynamicConcatenatedStringsPartContainsSeparator(str, kSep);
     }
     _buf.ensureAvailableCapacityExponential(str.size() + kSep.size());
-    _buf.unchecked_append(str);
-    _buf.unchecked_append(kSep);
+    char* pData = _buf.data() + _buf.size();
+    pData = Append(str, pData);
+    pData = AppendFixed<kSep>(pData);
+    _buf.setEnd(pData);
   }
 
   // Append a new string part, from the string representation of an integral value.
@@ -87,7 +96,7 @@ class DynamicConcatenatedStrings {
     static_assert(kSep == http::CRLF,
                   "DynamicConcatenatedStrings::appendAsHttp1Header: separator must be CRLF for HTTP/1.1 headers");
     if (name.contains(kSep) || value.contains(kSep)) {
-      throw std::invalid_argument("DynamicConcatenatedStrings::appendAsHttp1Header: name or value contains separator");
+      ThrowDynamicConcatenatedStringsNameOrValueContainsSeparator(name, value);
     }
     _buf.ensureAvailableCapacityExponential(name.size() + http::HeaderSep.size() + value.size() + kSep.size());
 
