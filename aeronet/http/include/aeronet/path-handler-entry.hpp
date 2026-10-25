@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <limits>
 #include <span>
-#include <stdexcept>
 #include <type_traits>
 
 #include "aeronet/cors-policy.hpp"
@@ -57,6 +56,9 @@ struct PathEntryConfig {
   /// Per-route handler deadline. std::chrono::milliseconds::max() means use the global timeout (or no limit).
   std::chrono::milliseconds requestTimeout = std::chrono::milliseconds::max();
 };
+
+// Cold path of PathHandlerEntry::timeout: logs the offending value, then throws std::invalid_argument.
+[[noreturn]] void ThrowRequestTimeoutTooLarge(std::chrono::milliseconds ms);
 
 // Object that stores handlers and options for a specific group of paths.
 class PathHandlerEntry {
@@ -111,7 +113,7 @@ class PathHandlerEntry {
   /// Set a per-route handler deadline. Overrides the global timeout for this route.
   PathHandlerEntry& timeout(std::chrono::milliseconds ms) {
     if (ms != std::chrono::milliseconds::max() && ms > PathEntryConfig::kMaxRequestTimeout) {
-      throw std::invalid_argument("per-route requestTimeout exceeds maximum representable duration (~49.7 days)");
+      ThrowRequestTimeoutTooLarge(ms);
     }
     _pathConfig.requestTimeout = ms;
     return *this;

@@ -9,6 +9,7 @@
 #include <string_view>
 
 #include "aeronet/avx2.hpp"
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/websocket-constants.hpp"
 
@@ -385,6 +386,8 @@ inline void AppendFrameHeader(RawBytes& output, Opcode opcode, std::size_t paylo
 
   output.ensureAvailableCapacity(headerSize + reservedPayloadSize);
 
+  std::byte* pData = output.data() + output.size();
+
   // First byte: FIN | RSV1-3 | Opcode
   std::byte byte0 = static_cast<std::byte>(opcode);
   if (fin) {
@@ -393,7 +396,7 @@ inline void AppendFrameHeader(RawBytes& output, Opcode opcode, std::size_t paylo
   if (rsv1) {
     byte0 |= kRsv1Bit;
   }
-  output.unchecked_push_back(byte0);
+  *pData++ = byte0;
 
   // Second byte: MASK | Payload length (7 bits or indicator)
   std::byte byte1{};
@@ -403,26 +406,30 @@ inline void AppendFrameHeader(RawBytes& output, Opcode opcode, std::size_t paylo
 
   if (payloadSize < static_cast<uint64_t>(kPayloadLen16)) {
     byte1 |= static_cast<std::byte>(payloadSize);
-    output.unchecked_push_back(byte1);
-  } else if (payloadSize <= 0xFFFF) {
+
+    *pData++ = byte1;
+  } else if (payloadSize <= 0xFFFFU) {
     byte1 |= kPayloadLen16;
-    output.unchecked_push_back(byte1);
+    *pData++ = byte1;
     // 16-bit big-endian length
-    output.unchecked_push_back(static_cast<std::byte>((payloadSize >> 8U) & 0xFFU));
-    output.unchecked_push_back(static_cast<std::byte>(payloadSize & 0xFFU));
+    *pData++ = static_cast<std::byte>((payloadSize >> 8U) & 0xFFU);
+    *pData++ = static_cast<std::byte>(payloadSize & 0xFFU);
   } else {
     byte1 |= kPayloadLen64;
-    output.unchecked_push_back(byte1);
+    *pData++ = byte1;
     // 64-bit big-endian length
+    const uint64_t len64 = static_cast<uint64_t>(payloadSize);
     for (int idx = 7; idx >= 0; --idx) {
-      output.unchecked_push_back(static_cast<std::byte>((payloadSize >> static_cast<uint8_t>(idx * 8)) & 0xFFU));
+      *pData++ = static_cast<std::byte>((len64 >> static_cast<uint8_t>(idx * 8)) & 0xFFU);
     }
   }
 
   // Masking key (if masking)
   if (shouldMask) {
-    output.unchecked_append(reinterpret_cast<const std::byte*>(&maskingKey), kMaskingKeySize);
+    pData = Append(reinterpret_cast<const std::byte*>(&maskingKey), kMaskingKeySize, pData);
   }
+
+  output.setEnd(pData);
 }
 
 inline void AppendFramePayload(RawBytes& output, std::span<const std::byte> payload, bool shouldMask,
@@ -473,12 +480,15 @@ void BuildCloseFrame(RawBytes& output, CloseCode code, std::string_view reason, 
   if (payloadSize != 0) {
     const auto codeVal = static_cast<uint16_t>(code);
 
-    output.unchecked_push_back(static_cast<std::byte>(static_cast<uint8_t>(codeVal >> 8U) & 0xFFU));
-    output.unchecked_push_back(static_cast<std::byte>(codeVal & 0xFFU));
+    std::byte* pData = output.data() + output.size();
 
-    output.unchecked_append(reinterpret_cast<const std::byte*>(reason.data()), reasonLen);
+    *pData++ = static_cast<std::byte>(static_cast<uint8_t>(codeVal >> 8U) & 0xFFU);
+    *pData++ = static_cast<std::byte>(codeVal & 0xFFU);
+    pData = Append(reinterpret_cast<const std::byte*>(reason.data()), reasonLen, pData);
+
+    output.setEnd(pData);
     if (shouldMask) {
-      ApplyMask(std::as_writable_bytes(std::span(output.end() - payloadSize, payloadSize)), maskingKey);
+      ApplyMask(std::as_writable_bytes(std::span(pData - payloadSize, payloadSize)), maskingKey);
     }
   }
 }

@@ -11,6 +11,7 @@
 
 #include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/string-trim.hpp"
 
@@ -44,7 +45,7 @@ void TelemetryConfig::validate() {
                     std::chrono::duration_cast<std::chrono::milliseconds>(exportInterval).count()));
   }
 
-  auto svcName = serviceName();
+  std::string_view svcName = serviceName();
   if (!svcName.empty()) {
     static constexpr std::string_view kServiceTagPrefix = "service:";
     RawChars serviceTag(kServiceTagPrefix.size() + svcName.size());
@@ -127,9 +128,13 @@ TelemetryConfig& TelemetryConfig::addHttpHeader(std::string_view name, std::stri
   }
 
   RawChars header(name.size() + 1U + value.size());
-  header.unchecked_append(name);
-  header.unchecked_push_back(':');
-  header.unchecked_append(value);
+
+  char* pData = header.data();
+  pData = Append(name, pData);
+  *pData++ = ':';
+  pData = Append(value, pData);
+  header.setEnd(pData);
+
   _httpHeaders.append(header);
   return *this;
 }

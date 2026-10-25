@@ -1268,7 +1268,7 @@ void EncodeInteger(RawBytes& output, uint64_t value, uint8_t prefixBits, uint8_t
 
   *pData++ = static_cast<std::byte>(prefixMask | maxPrefix);
 
-  while (value >= 128) {
+  while (value >= 128U) {
     *pData++ = static_cast<std::byte>((value & 0x7FU) | 0x80U);
     value >>= 7U;
   }

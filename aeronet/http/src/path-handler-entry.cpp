@@ -1,11 +1,13 @@
 #include "aeronet/path-handler-entry.hpp"
 
+#include <chrono>
 #include <memory>
 #include <stdexcept>
 #include <utility>
 
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/log.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/path-handlers.hpp"
 
@@ -14,6 +16,12 @@
 #endif
 
 namespace aeronet {
+
+void ThrowRequestTimeoutTooLarge(std::chrono::milliseconds ms) {
+  log::critical("Per-route requestTimeout of {} ms exceeds the maximum of {} ms", ms.count(),
+                PathEntryConfig::kMaxRequestTimeout.count());
+  throw std::invalid_argument("per-route requestTimeout exceeds maximum representable duration (~49.7 days)");
+}
 
 PathHandlerEntry::PathHandlerEntry(const PathHandlerEntry& rhs)
     : _normalMethodBmp(rhs._normalMethodBmp),

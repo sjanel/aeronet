@@ -309,8 +309,10 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
   char* first = inBuffer.data();
   char* last = first + inBuffer.size();
 
-  // The bytes parsed so far, modified in place, must not be parsed again: an incomplete head is resumed at its first
-  // header line not parsed yet. The state is saved again below if the head is still incomplete.
+  assert(inBuffer.size() >= http::kHttpReqLineMinLen);
+
+  // The bytes parsed so far, modified in place, must not be parsed again: an incomplete head is resumed at its
+  // first header line not parsed yet. The state is saved again below if the head is still incomplete.
   assert(_headParseState != HeadParseState::WaitingForBody);  // see resumeHeadWaitingForBody()
   const bool resume = _headParseState == HeadParseState::Partial;
   _headParseState = HeadParseState::None;

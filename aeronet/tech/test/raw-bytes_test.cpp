@@ -460,7 +460,50 @@ TYPED_TEST(RawBaseTest, EnsureExponentialAndOverflowCheck) {
   }
 }
 
-TYPED_TEST(RawBaseTest, Assign) {
+TYPED_TEST(RawBaseTest, EnsureCapacitySumWrappingAroundThrows) {
+  using RawT = TypeParam;
+  using SizeType = RawT::size_type;
+
+  RawT buf;
+  buf.ensureAvailableCapacity(16UL);
+  buf.unchecked_append(reinterpret_cast<const RawT::value_type*>("1234567890"), 10U);
+  const SizeType capacity = buf.capacity();
+
+  // size + max would wrap around in the arithmetic of the argument type and look like a small, valid capacity.
+  EXPECT_THROW(buf.ensureAvailableCapacity(std::numeric_limits<SizeType>::max()), std::overflow_error);
+  EXPECT_THROW(buf.ensureAvailableCapacityExponential(std::numeric_limits<SizeType>::max()), std::overflow_error);
+  EXPECT_THROW(buf.ensureAvailableCapacity(std::numeric_limits<uint64_t>::max()), std::overflow_error);
+  EXPECT_THROW(buf.ensureAvailableCapacityExponential(std::numeric_limits<uint64_t>::max()), std::overflow_error);
+
+  EXPECT_EQ(buf.capacity(), capacity);
+  EXPECT_EQ(buf.size(), 10U);
+}
+
+TYPED_TEST(RawBaseTest, ExponentialCapacity) {
+  using RawT = TypeParam;
+  using SizeType = RawT::size_type;
+
+  constexpr uintmax_t kMaxSize = std::numeric_limits<SizeType>::max();
+
+  EXPECT_EQ(RawT::ExponentialCapacity(5, 0), 5U);
+  EXPECT_EQ(RawT::ExponentialCapacity(5, 4), 8U);
+  EXPECT_EQ(RawT::ExponentialCapacity(10, 4), 10U);
+  EXPECT_EQ(RawT::ExponentialCapacity(8, 4), 8U);
+
+  const SizeType halfMaxPlusOne = static_cast<SizeType>((kMaxSize / 2) + 1);
+  if constexpr (sizeof(SizeType) < sizeof(uintmax_t)) {
+    // Doubling would overflow size_type, but the required capacity fits: grow to the maximum instead.
+    EXPECT_EQ(RawT::ExponentialCapacity(uintmax_t{halfMaxPlusOne} + 1, halfMaxPlusOne), kMaxSize);
+    EXPECT_EQ(RawT::ExponentialCapacity(kMaxSize, halfMaxPlusOne), kMaxSize);
+    // The required capacity itself does not fit: returned unchanged for SafeCast to reject.
+    EXPECT_EQ(RawT::ExponentialCapacity(kMaxSize + 1, halfMaxPlusOne), kMaxSize + 1);
+  } else {
+    // The doubled capacity wraps around: the required capacity is used.
+    EXPECT_EQ(RawT::ExponentialCapacity(uintmax_t{halfMaxPlusOne} + 1, halfMaxPlusOne), uintmax_t{halfMaxPlusOne} + 1);
+  }
+}
+
+TYPED_TEST(RawBaseTest, AssignSameSize) {
   using RawT = TypeParam;
   using Type = RawT::value_type;
   using ViewType = RawT::view_type;
@@ -480,6 +523,41 @@ TYPED_TEST(RawBaseTest, Assign) {
 
   buf.assign(reinterpret_cast<const Type*>("abcdef"), 0);
   EXPECT_EQ(buf.size(), 0U);
+}
+
+TYPED_TEST(RawBaseTest, AssignDifferentSizes) {
+  using RawT = TypeParam;
+  using Type = RawT::value_type;
+  using SizeType = RawT::size_type;
+
+  std::string_view text = "range";
+  std::string_view smaller = "rng";
+  std::string_view larger = "larger";
+  std::string muchLarger(16UL << 10U, 'a');
+  RawT buf(reinterpret_cast<const Type*>(text.data()), static_cast<SizeType>(text.size()));
+
+  EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(buf.data()), buf.size()), text);
+
+  buf.assign(reinterpret_cast<const Type*>(smaller.data()), smaller.size());
+#if AERONET_WANT_MALLOC_OVERRIDES
+  test::FailNextMalloc();
+  EXPECT_THROW(buf.assign(reinterpret_cast<const Type*>(larger.data()), larger.size()), std::bad_alloc);
+#endif
+  EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(buf.data()), buf.size()), smaller);
+
+  buf.assign(reinterpret_cast<const Type*>(larger.data()), larger.size());
+#if AERONET_WANT_MALLOC_OVERRIDES
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+  test::FailNextMalloc();
+#else
+  test::FailNextRealloc();
+#endif
+  EXPECT_THROW(buf.assign(reinterpret_cast<const Type*>(muchLarger.data()), muchLarger.size()), std::bad_alloc);
+#endif
+  EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(buf.data()), buf.size()), larger);
+
+  buf.assign(reinterpret_cast<const Type*>(muchLarger.data()), muchLarger.size());
+  EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(buf.data()), buf.size()), muchLarger);
 }
 
 TYPED_TEST(RawBaseTest, ContPointersConstructor) {
@@ -593,16 +671,20 @@ TYPED_TEST(RawBaseTest, ShrinkToFit) {
       std::ranges::iota(data, 'A');
 
       buf.assign(reinterpret_cast<const Type*>(data.data()), dataSz);
-      EXPECT_EQ(std::memcmp(buf.data(), data.data(), dataSz), 0);
-      EXPECT_EQ(buf.size(), dataSz);
+      ASSERT_EQ(buf.size(), dataSz);
+      if (dataSz != 0) {
+        EXPECT_EQ(std::memcmp(buf.data(), data.data(), dataSz), 0);
+      }
 
       auto oldCap = buf.capacity();
       EXPECT_EQ(oldCap, capacity);
 
       buf.shrink_to_fit();
 
-      EXPECT_EQ(buf.size(), dataSz);
-      EXPECT_EQ(std::memcmp(buf.data(), data.data(), dataSz), 0);
+      ASSERT_EQ(buf.size(), dataSz);
+      if (dataSz != 0) {
+        EXPECT_EQ(std::memcmp(buf.data(), data.data(), dataSz), 0);
+      }
 
       if (1024UL < oldCap && dataSz * 4 < oldCap) {
         EXPECT_EQ(buf.capacity(), oldCap / 2);

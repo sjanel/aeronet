@@ -42,6 +42,7 @@
 #include "aeronet/log-noexcept.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
+#include "aeronet/memory-utils.hpp"
 #include "aeronet/object-array-pool.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
@@ -454,10 +455,14 @@ TlsContext::TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> 
       alpnProtocols, std::size_t{0}, [](std::size_t sum, const auto& proto) { return sum + 1UL + proto.size(); });
   if (wireLen != 0) {
     _alpnData = AlpnData{RawBytes32{wireLen}, cfg.alpnMustMatch};
+
+    std::byte* pAlpnWire = _alpnData.wire.data();
     for (const auto& proto : alpnProtocols) {
-      _alpnData.wire.unchecked_push_back(static_cast<std::byte>(proto.size()));
-      _alpnData.wire.unchecked_append(reinterpret_cast<const std::byte*>(proto.data()), proto.size());
+      *pAlpnWire++ = static_cast<std::byte>(proto.size());
+      pAlpnWire = Append(reinterpret_cast<const std::byte*>(proto.data()), proto.size(), pAlpnWire);
     }
+    _alpnData.wire.setEnd(pAlpnWire);
+
     ::SSL_CTX_set_alpn_select_cb(ctx, &TlsContext::SelectAlpn, &_alpnData);
     if (cfg.alpnMustMatch) {
       // OpenSSL only calls SelectAlpn when the client offers protocols: reject a ClientHello without any.
@@ -592,23 +597,33 @@ TlsContext::SessionIdContext TlsContext::ComputeSessionIdContext(const TLSConfig
     inputSize += sizeof(uint64_t) + pem.size();
   }
   RawBytes input(inputSize);
-  const auto append = [&input](const void* data, std::size_t size) {
-    input.unchecked_append(static_cast<const std::byte*>(data), size);
-  };
+
+  std::byte* pData = input.data();
+
+  *pData++ = static_cast<std::byte>(verifyFlags);
+
   // Variable-size parts are prefixed with their size, so that different inputs never digest the same bytes.
-  const auto appendSized = [&append](std::string_view part) {
-    const uint64_t size = part.size();
-    append(&size, sizeof(size));
-    append(part.data(), part.size());
-  };
-  append(&verifyFlags, sizeof(verifyFlags));
   for (std::string_view pem : trustedCerts) {
-    appendSized(pem);
+    const uint64_t size = pem.size();
+    std::memcpy(pData, &size, sizeof(size));
+    pData = Append(reinterpret_cast<const std::byte*>(pem.data()), pem.size(), pData + sizeof(size));
   }
-  appendSized(cfg.crlFile());
-  append(&crlStamp, sizeof(crlStamp));
-  append(static_cast<const void*>(&cfg.revocationCallback), sizeof(cfg.revocationCallback));
-  append(static_cast<const void*>(&cfg.revocationUserContext), sizeof(cfg.revocationUserContext));
+  const std::string_view crlFile = cfg.crlFile();
+  const uint64_t crlFileSz = crlFile.size();
+  std::memcpy(pData, &crlFileSz, sizeof(crlFileSz));
+  pData = Append(reinterpret_cast<const std::byte*>(crlFile.data()), crlFile.size(), pData + sizeof(crlFileSz));
+
+  std::memcpy(pData, &crlStamp, sizeof(crlStamp));
+  pData += sizeof(crlStamp);
+
+  std::memcpy(pData, static_cast<const void*>(&cfg.revocationCallback), sizeof(cfg.revocationCallback));
+  pData += sizeof(cfg.revocationCallback);
+
+  std::memcpy(pData, static_cast<const void*>(&cfg.revocationUserContext), sizeof(cfg.revocationUserContext));
+  pData += sizeof(cfg.revocationUserContext);
+
+  input.setEnd(pData);
+
   assert(input.size() == inputSize);
 
   SessionIdContext sessionIdContext;

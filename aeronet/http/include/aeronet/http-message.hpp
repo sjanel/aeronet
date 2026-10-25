@@ -10,7 +10,6 @@
 #include <new>
 #include <optional>
 #include <span>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -1084,11 +1083,11 @@ class HttpMessage {
   // An empty 'contentType' keeps or defaults the content type, a given one is checked as in CheckContentType().
   void bodyPrecheckContentType(std::string_view& contentType) const {
     if (trailersSize() != 0) [[unlikely]] {
-      throw std::logic_error("Cannot set body after trailers have been added");
+      ThrowSetBodyAfterTrailers();
     }
     contentType = TrimOws(contentType);
     if (!contentType.empty() && !IsValidContentType(contentType)) [[unlikely]] {
-      throw std::invalid_argument("Invalid Content-Type header value");
+      ThrowInvalidContentTypeHeaderValue(contentType);
     }
   }
 

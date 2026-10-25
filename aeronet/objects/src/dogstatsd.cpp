@@ -76,11 +76,14 @@ DogStatsD::DogStatsD(std::string_view socketPath, std::string_view ns) {
 
   // Room for a full datagram: buffering metrics then never reallocates.
   _buf.reserve(headerSize() + kMaxDatagramSize);
-  _buf.unchecked_append(socketPath);
-  _buf.unchecked_append(ns);
+  char* pData = _buf.data();
+  pData = Append(socketPath, pData);
+  pData = Append(ns, pData);
   if (dotAppendSz != 0) {
-    _buf.unchecked_push_back('.');
+    *pData++ = '.';
   }
+
+  _buf.setEnd(pData);
 
   // Perform a single connect attempt to validate the socket path format.
   // Some errors indicate a structural/problematic path (treat as fatal),
