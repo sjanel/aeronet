@@ -25,6 +25,7 @@
 #include "aeronet/websocket-frame.hpp"
 
 #ifdef AERONET_ENABLE_ZLIB
+#include "aeronet/websocket-deflate-context.hpp"
 #include "aeronet/websocket-deflate.hpp"
 #endif
 

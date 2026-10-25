@@ -3,20 +3,26 @@
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
+#include <exception>
+#include <memory>
 #include <string_view>
 #include <utility>
 
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/header-write.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/ndigits.hpp"
 #include "aeronet/protocol-handler.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/websocket-constants.hpp"
 #include "aeronet/websocket-deflate.hpp"
+#include "aeronet/websocket-endpoint.hpp"
+#include "aeronet/websocket-handler.hpp"
 #include "aeronet/websocket-upgrade.hpp"
 
 namespace aeronet {
@@ -248,6 +254,51 @@ void BuildWebSocketUpgradeResponse(const UpgradeValidationResult& validationResu
   } else {
     pData = AppendFixed<http::CRLF>(pData);
   }
+}
+
+WebSocketAcceptResult AcceptWebSocketUpgrade(const HttpRequestView& request, const SvToSvMap& requestHeaders,
+                                             const WebSocketEndpoint& endpoint,
+                                             websocket::SharedDeflateStreams& sharedStreams) {
+  WebSocketAcceptResult result;
+  const WebSocketUpgradeConfig upgradeConfig{endpoint.supportedProtocols, endpoint.config.deflateConfig};
+  const UpgradeValidationResult validation = ValidateWebSocketUpgrade(requestHeaders, upgradeConfig);
+  if (!validation.valid()) {
+    result.pErrorMessage = validation.pErrorMessage;
+    result.status = WebSocketAcceptResult::Status::Invalid;
+    return result;
+  }
+
+  if (endpoint.factory) {
+    try {
+      result.handler = endpoint.factory(request);
+    } catch (const std::exception& ex) {
+      log::error("Exception in WebSocket handler factory: {}", ex.what());
+      result.status = WebSocketAcceptResult::Status::Failed;
+      return result;
+    } catch (...) {
+      log::error("Unknown exception in WebSocket handler factory");
+      result.status = WebSocketAcceptResult::Status::Failed;
+      return result;
+    }
+    if (!result.handler) {
+      result.status = WebSocketAcceptResult::Status::Refused;
+      return result;
+    }
+  } else {
+    auto config = endpoint.config;
+    config.isServerSide = true;
+    result.handler = std::make_unique<websocket::WebSocketHandler>(std::move(config));
+  }
+  if (!result.handler->hasCompression() && validation.deflateParams.hasValue()) {
+    // Compression was negotiated but the handler (from the factory, which keeps its callbacks) was created without it.
+    result.handler->enableCompression(validation.deflateParams, &sharedStreams);
+  }
+
+  const std::size_t responseSize = ComputeWebSocketUpgradeResponseSize(validation);
+  result.response.ensureAvailableCapacity(responseSize);
+  BuildWebSocketUpgradeResponse(validation, result.response.data());
+  result.response.setSize(responseSize);
+  return result;
 }
 
 }  // namespace upgrade

@@ -72,11 +72,8 @@ AeronetAddUnitTest(
     LIBRARIES
     aeronet_websocket
     aeronet_http
+    aeronet_basic_test_support
 )
-
-if(AERONET_BUILD_TESTS AND AERONET_ENABLE_HTTP_SERVER)
-    target_link_libraries(websocket-endpoint_test PRIVATE aeronet_server)
-endif()
 
 AeronetAddUnitTest(
     websocket-frame_test

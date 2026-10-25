@@ -37,6 +37,9 @@
 #include "aeronet/tracing/tracer.hpp"
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include <cassert>
+
+#include "aeronet/async-await-state.hpp"
 #include "aeronet/async-resume-poster.hpp"
 #endif
 
@@ -50,13 +53,19 @@ struct ServerContext;
 
 class HttpCodec;
 class RequestPipeline;
+struct AsyncHandlerTask;
 struct CompressionState;
+struct ConnectionInfo;
 struct ConnectionState;
 struct HttpServerConfig;
 
 namespace http2 {
 class Http2ProtocolHandler;
 }  // namespace http2
+
+namespace test {
+struct HttpRequestViewTestAccess;
+}  // namespace test
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 // Logs (at error level) a failure to post an async callback back to the event loop.
@@ -668,6 +677,7 @@ class HttpRequestView {
   friend class StaticFileHandlerTest;
   friend class CorsPolicyTest;
   friend class UpgradeHandlerHarness;
+  friend struct test::HttpRequestViewTestAccess;
   friend struct ConnectionState;
   friend class internal::ConnectionStorage;
   friend class internal::Http1Pipeline;
@@ -677,6 +687,7 @@ class HttpRequestView {
 #endif
   friend class HttpCodec;
   friend class RequestPipeline;
+  friend struct AsyncHandlerTask;
 
   static constexpr http::StatusCode kStatusNeedMoreData = static_cast<http::StatusCode>(0);
 
@@ -736,11 +747,21 @@ class HttpRequestView {
   void end(http::StatusCode respStatusCode) noexcept;
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  void markAwaitingBody() const noexcept;
-  void markAwaitingCallback() const noexcept;
-  // Returns the poster making the server's event loop resume a coroutine of this request, safe to call from any thread:
-  // the one of the HTTP/2 connection for an HTTP/2 stream, asyncState.resumePoster for HTTP/1.x.
-  [[nodiscard]] AsyncResumePoster asyncResumePoster() const noexcept;
+  void markAwaitingBody() const noexcept {
+    assert(_pAsyncAwait != nullptr);
+    _pAsyncAwait->reason = AsyncAwaitState::Reason::WaitingForBody;
+  }
+
+  void markAwaitingCallback() const noexcept {
+    assert(_pAsyncAwait != nullptr);
+    _pAsyncAwait->reason = AsyncAwaitState::Reason::WaitingForCallback;
+  }
+
+  // Returns the poster making the server's event loop resume a coroutine of this request, safe to call from any thread.
+  [[nodiscard]] AsyncResumePoster asyncResumePoster() const noexcept {
+    assert(_pAsyncAwait != nullptr && _pAsyncAwait->resumePoster.pPost != nullptr);
+    return _pAsyncAwait->resumePoster;
+  }
 #endif
 
   [[nodiscard]] HttpResponse::Options makeResponseOptions() const noexcept;
@@ -769,6 +790,9 @@ class HttpRequestView {
     _trailers.clear();
     _pathParams.clear();
     _queryParams.clear();
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+    _pAsyncAwait = nullptr;
+#endif
 
     _headPinned = false;
   }
@@ -803,10 +827,8 @@ class HttpRequestView {
   const ConcatenatedHeaders* _pGlobalHeaders{nullptr};
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  // HTTP/2 async handler support: per-stream async task state, owned by the HTTP/2 protocol handler.
-  // When set, markAwaitingCallback() / asyncResumePoster() use these instead of _pOwnerState->asyncState.
-  const AsyncResumePoster* _pH2ResumePoster{nullptr};
-  bool* _pH2SuspendedFlag{nullptr};
+  // State of the async handler of the request while it runs, owned by its protocol (see AsyncAwaitState).
+  AsyncAwaitState* _pAsyncAwait{nullptr};
 #endif
 
   SvToSvMap _headers;
@@ -818,9 +840,8 @@ class HttpRequestView {
   std::string_view _activeStreamingChunk;
   const BodyAccessBridge* _pBodyAccessBridge{nullptr};
   void* _pBodyAccessContext{nullptr};
-  // The members reading the connection (TLS information, client address, async handler state) are defined by the
-  // server module, which owns ConnectionState (see connection-state.cpp).
-  ConnectionState* _pOwnerState{nullptr};
+  // The connection of the request (TLS information, client address).
+  const ConnectionInfo* _pConnectionInfo{nullptr};
   CompressionState* _pCompressionState{nullptr};
 
   std::chrono::steady_clock::time_point _reqStart;

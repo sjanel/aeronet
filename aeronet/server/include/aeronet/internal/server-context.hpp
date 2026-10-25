@@ -39,7 +39,7 @@
 #endif
 
 #ifdef AERONET_ENABLE_WEBSOCKET
-#include "aeronet/websocket-deflate.hpp"
+#include "aeronet/websocket-shared-deflate-streams.hpp"
 #endif
 
 namespace aeronet::internal {

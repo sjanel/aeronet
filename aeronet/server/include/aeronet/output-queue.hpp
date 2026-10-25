@@ -3,7 +3,6 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <span>
 #include <utility>
 
@@ -32,86 +31,67 @@ class OutputQueue {
            !data.hasFilePayload();
   }
 
-  [[nodiscard]] bool empty() const noexcept {
-    return _pStorage == nullptr || _pStorage->first == _pStorage->entries.size();
-  }
+  [[nodiscard]] bool empty() const noexcept { return _first == _entries.size(); }
 
   // The queued entries, in order. None of them was written yet.
   [[nodiscard]] std::span<const HttpMessageData> entries() const noexcept {
-    if (_pStorage == nullptr) {
-      return {};
-    }
-    return {_pStorage->entries.data() + _pStorage->first, _pStorage->entries.size() - _pStorage->first};
+    return {_entries.data() + _first, _entries.size() - _first};
   }
 
   // Total size of the queued entries (their file payloads excluded).
-  [[nodiscard]] std::size_t bytes() const noexcept { return _pStorage == nullptr ? 0 : _pStorage->bytes; }
+  [[nodiscard]] std::size_t bytes() const noexcept { return _bytes; }
 
   // Queues 'data' (offset 0): copied at the end of the last entry when CanMerge() allows it, moved in otherwise.
   // Returns true if it was copied at the end of the last entry, false if queued as a new entry.
   bool push(HttpMessageData data) {
-    if (_pStorage == nullptr) {
-      _pStorage = std::make_unique<Storage>();
-    }
-    Storage& storage = *_pStorage;
-    storage.bytes += data.remainingSize();
-    if (!empty() && CanMerge(storage.entries.back(), data)) {
-      storage.entries.back().append(std::move(data));
+    _bytes += data.remainingSize();
+    if (!empty() && CanMerge(_entries.back(), data)) {
+      _entries.back().append(std::move(data));
       return true;
     }
-    if (storage.entries.size() == storage.entries.capacity() && storage.first != 0 &&
-        storage.first >= storage.entries.size() / 2) {
+    if (_entries.size() == _entries.capacity() && _first != 0 && _first >= _entries.size() / 2) {
       // Reuses the room of the popped entries rather than growing: at least half of it, for amortized O(1) pushes.
-      storage.entries.erase(storage.entries.begin(), storage.entries.begin() + storage.first);
-      storage.first = 0;
+      _entries.erase(_entries.begin(), _entries.begin() + _first);
+      _first = 0;
     }
-    storage.entries.push_back(std::move(data));
+    _entries.push_back(std::move(data));
     return false;
   }
 
   // Removes the first entry and returns it.
   [[nodiscard]] HttpMessageData pop() noexcept {
-    assert(!empty());
-    Storage& storage = *_pStorage;
-    HttpMessageData data = std::move(storage.entries[storage.first]);
-    storage.bytes -= data.remainingSize();
-    if (++storage.first == storage.entries.size()) {
-      storage.entries.clear();
-      storage.first = 0;
+    assert(_first < _entries.size());
+    HttpMessageData data = std::move(_entries[_first]);
+    _bytes -= data.remainingSize();
+    if (++_first == _entries.size()) {
+      _entries.clear();
+      _first = 0;
     }
     return data;
   }
 
   // Drops all the entries (none of them is read by a zerocopy send), keeping the storage.
   void clear() noexcept {
-    if (_pStorage != nullptr) {
-      _pStorage->entries.clear();
-      _pStorage->first = 0;
-      _pStorage->bytes = 0;
-    }
+    _entries.clear();
+    _first = 0;
+    _bytes = 0;
   }
 
   // Releases the storage when empty, otherwise the room of the popped entries and the unused capacity.
   void shrink_to_fit() {
-    if (empty()) {
-      _pStorage.reset();
-    } else {
-      _pStorage->entries.erase(_pStorage->entries.begin(), _pStorage->entries.begin() + _pStorage->first);
-      _pStorage->first = 0;
-      _pStorage->entries.shrink_to_fit();
+    if (!empty()) {
+      _entries.erase(_entries.begin(), _entries.begin() + _first);
+      _first = 0;
     }
+    _entries.shrink_to_fit();
   }
 
  private:
-  struct Storage {
-    // The popped entries (moved from) come first, before the queued ones.
-    vector<HttpMessageData> entries;
-    std::size_t bytes{};
-    // Index of the first queued entry.
-    std::uint32_t first{};
-  };
-
-  std::unique_ptr<Storage> _pStorage;
+  // The popped entries (moved from) come first, before the queued ones.
+  vector<HttpMessageData> _entries;
+  std::size_t _bytes{};
+  // Index of the first queued entry.
+  std::uint32_t _first{};
 };
 
 }  // namespace aeronet
