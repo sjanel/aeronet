@@ -63,6 +63,7 @@ void ConnectionState::initializeStateNewConnection(const HttpServerConfig& confi
     clientAddressLength = 0;
   }
 
+#ifdef AERONET_LINUX
   // Decide per-connection zerocopy preference at accept time (the server also requires a plain socket accepted from a
   // listener with SO_ZEROCOPY).
   switch (config.zerocopyMode) {
@@ -84,6 +85,7 @@ void ConnectionState::initializeStateNewConnection(const HttpServerConfig& confi
       zerocopyStopOnCopy = true;
       break;
   }
+#endif
 }
 
 TransportResult ConnectionState::transportRead(const HttpServerConfig& config, std::size_t chunkSize) {
