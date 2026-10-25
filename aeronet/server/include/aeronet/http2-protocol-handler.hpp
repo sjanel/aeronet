@@ -33,16 +33,16 @@
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
 
-#include "aeronet/async-resume-poster.hpp"
-#include "aeronet/request-task.hpp"
+#include "aeronet/async-handler-state.hpp"
 #endif
 
 namespace aeronet {
 
 struct ConnectionState;
-struct HttpServerConfig;
-struct CompressionState;
-struct DecompressionState;
+
+namespace internal {
+struct ServerContext;
+}  // namespace internal
 
 namespace http2 {
 
@@ -64,16 +64,16 @@ namespace http2 {
 class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
  public:
   /// Create an HTTP/2 protocol handler.
-  /// @param config HTTP/2 configuration
-  /// @param pipeline The request pipeline shared with HTTP/1.1, through which the requests are routed and answered
+  /// @param ctx The server context: configuration, request pipeline shared with HTTP/1.1 (through which the requests
+  ///        are routed and answered), states shared by the connections, statistics and metrics. It must outlive the
+  ///        handler.
   /// @param connectionState The connection owning the handler, to which its requests belong (client address, TLS
   ///        information). It must outlive the handler.
-  /// @param tunnelBridge Bridge to the server for the CONNECT tunnels of the streams, owned by the handler.
-  ///        Without one, CONNECT requests are answered 405.
-  Http2ProtocolHandler(const Http2Config& config, RequestPipeline pipeline, HttpServerConfig& serverConfig,
-                       CompressionState& compressionState, DecompressionState& decompressionState,
-                       const char* cachedDateHeader, ::aeronet::ConnectionState& connectionState,
-                       std::unique_ptr<ITunnelBridge> tunnelBridge = {});
+  /// @param fd The socket of the connection, which identifies it to the server (CONNECT tunnels, async handlers).
+  /// @param tunnelBridge Bridge to the server for the CONNECT tunnels of the streams, owned by the handler. Without
+  ///        one, the first CONNECT request creates the one forwarding to the tunnels of the server context.
+  Http2ProtocolHandler(::aeronet::internal::ServerContext& ctx, ::aeronet::ConnectionState& connectionState,
+                       NativeHandle fd, std::unique_ptr<ITunnelBridge> tunnelBridge = {});
 
   Http2ProtocolHandler(const Http2ProtocolHandler&) = delete;
   Http2ProtocolHandler& operator=(const Http2ProtocolHandler&) = delete;
@@ -139,15 +139,6 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   /// Get the underlying HTTP/2 connection for advanced usage.
   [[nodiscard]] Http2Connection& connection() noexcept { return _connection; }
 
-  /// Callback invoked after each HTTP/2 request is completed (response sent), with the context it was installed with.
-  using RequestCompletionFn = void (*)(void* pContext, const HttpRequestView& request, http::StatusCode status);
-
-  /// Install a completion callback for per-request metrics and tracing.
-  void setRequestCompletionCallback(RequestCompletionFn pFn, void* pContext) noexcept {
-    _pRequestCompletionFn = pFn;
-    _pRequestCompletionContext = pContext;
-  }
-
   /// Inject data received from an upstream tunnel fd into the corresponding HTTP/2 stream.
   /// Called by the server when an upstream fd becomes readable.
   /// @return ErrorCode::NoError on success, or an error if the stream is gone.
@@ -193,10 +184,6 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   [[nodiscard]] TunnelUpstreamsMap drainTunnelUpstreamFds();
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  /// Install the poster of the deferred async work completions to the server's event loop.
-  /// Must be called before any async handlers are dispatched.
-  void setAsyncResumePoster(AsyncResumePoster poster) noexcept { _asyncResumePoster = poster; }
-
   /// Resume a pending async task identified by its coroutine handle.
   /// Called by the server when an async callback fires for this connection.
   /// The coroutine of a task whose stream was closed meanwhile is destroyed instead (it was kept for its work).
@@ -263,19 +250,12 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   /// Per-stream async handler state for coroutines that suspend (e.g., co_await deferWork).
   struct PendingAsyncTask {
-    // Members destroyed in reverse order: the coroutine frame first, as it may use the request and the handler.
-
-    // Keeps the handler (whose captures the coroutine may use) alive even if the router replaces it meanwhile.
-    std::shared_ptr<const void> handlerKeepAlive;
     // Path parameter names of the request, owned by the router until copied here (see startAsyncHandler()).
     RawChars pathParamKeys;
     // The request, owned by the task while the coroutine runs: an orphaned task keeps it for its deferred work.
     StreamRequestPtr streamRequest;
-    RequestTask<HttpResponse> task;
-    const CorsPolicy* pCorsPolicy{};
-    const ResponseMiddleware* pResponseMiddleware{};
-    uint32_t responseMiddlewareCount{0};
-    bool suspended{false};  // Set to true when the coroutine suspends
+    // Declared last, destroyed first: the coroutine may use the request.
+    AsyncHandlerTask task;
   };
 
   using PendingWork = std::variant<PendingFileSend, PendingStreamingSend, PendingAsyncTask>;
@@ -400,7 +380,7 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   // Answer 200 to the CONNECT request of the stream, which tunnels with upstreamFd from now on.
   void establishTunnel(uint32_t streamId, NativeHandle upstreamFd);
 
-  /// Emit metrics and end trace span for a completed request.
+  /// Emit metrics, account the request in the server statistics and end its trace span.
   void onRequestCompleted(HttpRequestView& request, http::StatusCode status);
 
   /// Send an HTTP response on a stream.
@@ -416,8 +396,7 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   void resumeAsyncTask(uint32_t streamId);
 
   /// Called when an async task completes: finalize and send the response.
-  /// routeMayHaveChanged: the coroutine suspended, the router may have been updated since its dispatch.
-  void onAsyncTaskCompleted(uint32_t streamId, bool routeMayHaveChanged);
+  void onAsyncTaskCompleted(uint32_t streamId);
 
   /// Keeps the async task of a stream about to be erased if its coroutine waits for deferred work (which may use it).
   void orphanAsyncTask(StreamState& state);
@@ -427,8 +406,6 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
 #endif
 
   Http2Connection _connection;
-
-  RequestPipeline _pipeline;
 
   /// Requests of closed streams, reused by the next ones (see recycleRequest()).
   vector<StreamRequestPtr> _recycledRequests;
@@ -443,47 +420,34 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   // Bytes owned by flow-control-deferred in-memory response bodies and trailers across all streams.
   std::size_t _deferredOutputBytes{0};
 
-  // Number of streams with a pending send (see StreamState::hasPendingSend()): the flushes look for them only if any.
-  std::size_t _nbPendingSends{0};
-
+  ::aeronet::internal::ServerContext* _pCtx;
   // Connection owning this handler.
   ::aeronet::ConnectionState* _pConnectionState;
-  HttpServerConfig* _pServerConfig;
-  CompressionState* _pCompressionState;
-  DecompressionState* _pDecompressionState;
-  const char* _pCachedDateHeader;
 
   // Reverse tunnel map: upstream fd → stream ID (needed for closeTunnelByUpstreamFd).
   TunnelUpstreamsMap _tunnelUpstreams;  // upstreamFd → streamId
 
+  // Null until the first CONNECT request (unless given at construction).
   std::unique_ptr<ITunnelBridge> _tunnelBridge;
-  RequestCompletionFn _pRequestCompletionFn{nullptr};
-  void* _pRequestCompletionContext{nullptr};
+
+  NativeHandle _fd;
+
+  // Number of streams with a pending send (see StreamState::hasPendingSend()): the flushes look for them only if any.
+  uint32_t _nbPendingSends{0};
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  // Posts the completion of deferred async work to the server's event loop. The requests of the async streams point to
-  // it (see startAsyncHandler()).
-  AsyncResumePoster _asyncResumePoster;
   // Async tasks of closed streams whose deferred work is still running: destroyed when it completes.
   vector<PoolPtr<PendingWork>> _orphanedAsyncTasks;
 #endif
 };
 
-/// Factory function for creating HTTP/2 protocol handlers.
-/// @param config HTTP/2 configuration
-/// @param pipeline The request pipeline shared with HTTP/1.1
+/// Factory function for creating HTTP/2 protocol handlers (see Http2ProtocolHandler for the parameters).
 /// @param sendServerPrefaceForTls If true, sends SETTINGS immediately (for TLS ALPN "h2").
 ///        For h2c (cleartext), this should be false as server waits for client preface first.
-/// @param connectionState The connection owning the handler (see Http2ProtocolHandler).
-/// @param tunnelBridge Bridge to the server for the CONNECT tunnels, owned by the handler (may be null).
 /// @return Unique pointer to the created handler
-std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(const Http2Config& config, RequestPipeline pipeline,
-                                                             HttpServerConfig& serverConfig,
-                                                             CompressionState& compressionState,
-                                                             DecompressionState& decompressionState,
-                                                             bool sendServerPrefaceForTls, const char* cachedDateHeader,
+std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(::aeronet::internal::ServerContext& ctx,
                                                              ::aeronet::ConnectionState& connectionState,
-                                                             std::unique_ptr<ITunnelBridge> tunnelBridge);
+                                                             NativeHandle fd, bool sendServerPrefaceForTls);
 
 }  // namespace http2
 }  // namespace aeronet

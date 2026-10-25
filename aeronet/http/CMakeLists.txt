@@ -64,16 +64,15 @@ AeronetAddUnitTest(
     aeronet_test_support
 )
 
-if(AERONET_ENABLE_HTTP_SERVER)
-    # The requests of the tests belong to a ConnectionState, defined by the server module.
-    AeronetAddUnitTest(
-        http-request-view_test
-        test/http-request-view_test.cpp
-        LIBRARIES
-        aeronet_server
-        aeronet_test_support
-    )
+AeronetAddUnitTest(
+    http-request-view_test
+    test/http-request-view_test.cpp
+    LIBRARIES
+    aeronet_http
+    aeronet_test_support
+)
 
+if(AERONET_ENABLE_HTTP_SERVER)
     AeronetAddUnitTest(
         path-handler-entry_test
         test/path-handler-entry_test.cpp

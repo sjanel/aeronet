@@ -66,7 +66,7 @@ class StaticFileHandlerTest : public ::testing::Test {
   test::ScopedTempDir tmpDir;
 
   void SetUp() override {
-    req._pOwnerState = &cs;
+    req._pConnectionInfo = &cs;
     req._pGlobalHeaders = &globalHeaders;
     req._pCompressionState = &compressionState;
 

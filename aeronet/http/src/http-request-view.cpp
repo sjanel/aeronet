@@ -13,6 +13,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/connection-info.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/find-char.hpp"
 #include "aeronet/header-line-parse.hpp"
@@ -651,6 +652,47 @@ void HttpRequestView::end(http::StatusCode respStatusCode) noexcept {
     _traceSpan->end();
     _traceSpan.reset();
   }
+}
+
+std::string_view HttpRequestView::alpnProtocol() const noexcept {
+  assert(_pConnectionInfo != nullptr);
+  return _pConnectionInfo->tlsInfo.selectedAlpn();
+}
+
+std::string_view HttpRequestView::tlsCipher() const noexcept {
+  assert(_pConnectionInfo != nullptr);
+  return _pConnectionInfo->tlsInfo.negotiatedCipher();
+}
+
+std::string_view HttpRequestView::tlsVersion() const noexcept {
+  assert(_pConnectionInfo != nullptr);
+  return _pConnectionInfo->tlsInfo.negotiatedVersion();
+}
+
+std::string_view HttpRequestView::tlsPeerSubject() const noexcept {
+  assert(_pConnectionInfo != nullptr);
+  return _pConnectionInfo->tlsInfo.peerSubject();
+}
+
+std::string_view HttpRequestView::clientAddress() const noexcept {
+  assert(_pConnectionInfo != nullptr);
+  return _pConnectionInfo->clientAddress();
+}
+
+bool HttpRequestView::hasMoreBody() const {
+  if (_bodyAccessMode == BodyAccessMode::Aggregated) {
+    return false;
+  }
+  if (_pBodyAccessBridge == nullptr) {
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+    // An async handler started before its body was received: the server installs the aggregated bridge once it is.
+    // Meanwhile, the request has more body, so that loops using hasMoreBody() and readBodyAsync() suspend correctly.
+    return _pAsyncAwait != nullptr && _pAsyncAwait->needsBody;
+#else
+    return false;
+#endif
+  }
+  return _pBodyAccessBridge->hasMore(*this, _pBodyAccessContext);
 }
 
 HttpResponse::Options HttpRequestView::makeResponseOptions() const noexcept {

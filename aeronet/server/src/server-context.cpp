@@ -152,7 +152,7 @@ void ServerContext::emitRequestMetrics(const HttpRequestView& request, http::Sta
       request.method(),
       request.version(),
       // The request is counted already: when its head is parsed over HTTP/1.x, when it completes over HTTP/2.
-      request._pOwnerState->requestsServed > 1,
+      request._pConnectionInfo->requestsServed > 1,
       request.path(),
       clientIp,
       request.headerValueOrEmpty("user-agent"),
