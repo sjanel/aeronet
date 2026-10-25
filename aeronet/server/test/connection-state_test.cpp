@@ -730,7 +730,9 @@ class ZerocopyConnection {
   }
 
   ZerocopyConnection(const ZerocopyConnection&) = delete;
+  ZerocopyConnection(ZerocopyConnection&&) noexcept = delete;
   ZerocopyConnection& operator=(const ZerocopyConnection&) = delete;
+  ZerocopyConnection& operator=(ZerocopyConnection&&) noexcept = delete;
 
   ~ZerocopyConnection() {
     test::g_sendmsg_actions.reset();
