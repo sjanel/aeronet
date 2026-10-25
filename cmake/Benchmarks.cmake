@@ -239,7 +239,7 @@ endif()
 AeronetAddProjectBenchmark(aeronet-bench-internal-reserved-header-check ${AERONET_BENCH_INTERNAL_RESERVED_HEADER_CHECK} LIBRARIES aeronet_objects)
 set_target_properties(aeronet-bench-internal-reserved-header-check PROPERTIES FOLDER "benchmarks/internal")
 
-if(AERONET_ENABLE_HTTP_SERVER)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND AERONET_ENABLE_HTTP_SERVER)
   AeronetAddProjectBenchmark(aeronet-bench-internal-zerocopy ${AERONET_BENCH_INTERNAL_ZEROCOPY}
                              LIBRARIES aeronet_server aeronet_test_support)
   set_target_properties(aeronet-bench-internal-zerocopy PROPERTIES FOLDER "benchmarks/internal")

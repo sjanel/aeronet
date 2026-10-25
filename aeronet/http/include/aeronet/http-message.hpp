@@ -913,7 +913,9 @@ class HttpMessage {
 
     std::uint32_t _trailerLen{0};  // trailer length - no logical reason to be there, it's just to benefit from packing
     BmpType _optionsBitmap{};
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
     Encoding _pickedEncoding{Encoding::none};
+#endif
     DirectCompressionMode _directCompressionMode{DirectCompressionMode::Off};
   };
 

@@ -406,10 +406,9 @@ ServerStats SingleHttpServer::stats() const {
 void SingleHttpServer::acceptNewConnections() {
   internal::ConnectionStorage& connections = _ctx.connections;
   const HttpServerConfig& config = _ctx.config;
-  // Cap the number of connections accepted per event-loop iteration to avoid starving
-  // existing connections when a burst of new connections arrives (e.g. wrk opening 1000
-  // connections simultaneously).  Remaining connections stay in the kernel backlog and
-  // will be accepted on the next EPOLLIN on the listen socket.
+  // Cap the number of connections accepted per event-loop iteration to avoid starving existing connections when a burst
+  // of new connections arrives (e.g. wrk opening 1000b connections simultaneously).  Remaining connections stay in the
+  // kernel backlog and will be accepted on the next EPOLLIN on the listen socket.
   const auto maxAcceptBatch = config.maxAcceptBatchSize;
   assert(maxAcceptBatch > 0);
   for (decltype(config.maxAcceptBatchSize) accepted = 0; accepted < maxAcceptBatch;) {
@@ -435,7 +434,7 @@ void SingleHttpServer::acceptNewConnections() {
       continue;
     }
 
-    auto cnxIt = connections.emplace(std::move(cnx));
+    const ConnectionIt cnxIt = connections.emplace(std::move(cnx));
 
     _ctx.telemetry.counterAdd("aeronet.connections.accepted", 1UL);
 
@@ -467,8 +466,6 @@ void SingleHttpServer::acceptNewConnections() {
 #ifdef AERONET_LINUX
     // MSG_ZEROCOPY needs a plain socket: accepted ones inherit SO_ZEROCOPY from the listener (see initListener()).
     state.zerocopyEnabled = state.zerocopyEnabled && _ctx.io.zerocopySupported() && state.transport.isPlain();
-#else
-    state.zerocopyEnabled = false;
 #endif
 
     _ctx.maintenance.refreshKeepAliveDeadline(cnxIt);
