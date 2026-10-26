@@ -326,8 +326,8 @@ struct ConnectionState : public ConnectionInfo {
   uint32_t zerocopyStallCheckQueuedBytes{kNoZerocopyStallCheck};
 
 #ifdef AERONET_ENABLE_OPENSSL
-  // Keep the TLS context alive for as long as this connection's SSL/handshake may reference
-  // callback user pointers (ALPN/SNI). This is required for safe hot-reload of TLS contexts.
+  // Keep the TLS context alive for as long as this connection's SSL/handshake may reference callback user pointers
+  // (ALPN/SNI). This is required for safe hot-reload of TLS contexts.
   std::shared_ptr<const TlsContext> tlsContextKeepAlive;
 #endif
 
