@@ -92,17 +92,17 @@ class Http1WriterTransport final : public IWriterTransport {
 
     if (_chunked) {
       // Format: hex-size\r\ndata\r\n
-      const auto nbDigitsHex = hex_digits(data.size());
+      const auto nbDigitsHex = HexDigits(data.size());
       const auto totalSize = nbDigitsHex + http::CRLF.size() + data.size() + http::CRLF.size();
 
       RawChars chunkBuffer(totalSize);
-      char* pData = to_lower_hex(data.size(), chunkBuffer.data());
+      char* pData = ToLowerHex(data.size(), chunkBuffer.data());
 
       pData = AppendFixed<http::CRLF>(pData);
 
       pData = Append(data, pData);
 
-      pData = AppendFixed<http::CRLF>(pData);
+      CopyFixed<http::CRLF>(pData);
       chunkBuffer.setSize(totalSize);
 
       return enqueue(HttpMessageData(std::move(chunkBuffer)));

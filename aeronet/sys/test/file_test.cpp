@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <bit>
 #include <cerrno>
 #include <chrono>
 #include <cstdarg>
@@ -40,7 +41,7 @@ TEST(FileTest, DefaultConstructedIsFalse) {
 }
 
 TEST(FileTest, InvalidOpenMode) {
-  EXPECT_THROW(File fileObj("somefile.txt", static_cast<File::OpenMode>(0xFF)), std::invalid_argument);
+  EXPECT_THROW(File fileObj("somefile.txt", std::bit_cast<File::OpenMode>(uint8_t{0xFF})), std::invalid_argument);
 }
 
 TEST(FileTest, SizeAndLoadAllContent) {

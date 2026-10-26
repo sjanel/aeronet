@@ -6,6 +6,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include <bit>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
@@ -51,7 +52,7 @@ class UnixSocketTest : public ::testing::Test {
 
 TEST_F(UnixSocketTest, InvalidUnixSocketTypeThrows) {
   EXPECT_THROW(
-      UnixSocket(static_cast<UnixSocket::Type>(std::numeric_limits<std::underlying_type_t<UnixSocket::Type>>::max())),
+      UnixSocket(std::bit_cast<UnixSocket::Type>(std::numeric_limits<std::underlying_type_t<UnixSocket::Type>>::max())),
       std::invalid_argument);
 }
 

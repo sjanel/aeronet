@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -13,13 +14,14 @@
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/compression-test-helpers.hpp"
+#include "aeronet/encoder-result.hpp"
 #include "aeronet/encoder.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/vector.hpp"
 #include "aeronet/zlib-decoder.hpp"
 #include "aeronet/zlib-encoder.hpp"
 #include "aeronet/zlib-gateway.hpp"
-#include "aeronet/zlib-stream-raii.hpp"
+#include "aeronet/zlib-variant.hpp"
 
 namespace aeronet {
 
@@ -38,11 +40,9 @@ vector<std::string> SamplePayloads() {
   return payloads;
 }
 
-const char* VariantName(ZStreamRAII::Variant variant) {
-  return variant == ZStreamRAII::Variant::gzip ? "gzip" : "deflate";
-}
+const char* VariantName(ZlibVariant variant) { return variant == ZlibVariant::gzip ? "gzip" : "deflate"; }
 
-void EncodeFull(ZlibEncoder& encoder, ZStreamRAII::Variant variant, std::string_view payload, RawChars& out,
+void EncodeFull(ZlibEncoder& encoder, ZlibVariant variant, std::string_view payload, RawChars& out,
                 std::size_t extraCapacity = 0) {
   out.clear();
   out.reserve(ZDeflateBound(nullptr, payload.size()) + extraCapacity);
@@ -51,7 +51,7 @@ void EncodeFull(ZlibEncoder& encoder, ZStreamRAII::Variant variant, std::string_
   out.setSize(result.writtenIfNoError());
 }
 
-void ExpectOneShotRoundTrip(ZStreamRAII::Variant variant, std::string_view payload, std::size_t extraCapacity = 0) {
+void ExpectOneShotRoundTrip(ZlibVariant variant, std::string_view payload, std::size_t extraCapacity = 0) {
   CompressionConfig cfg;
   ZlibEncoder encoder(cfg.zlib.level);
   RawChars compressed;
@@ -63,7 +63,7 @@ void ExpectOneShotRoundTrip(ZStreamRAII::Variant variant, std::string_view paylo
   EXPECT_EQ(std::string_view(decompressed), payload);
 }
 
-void ExpectStreamingRoundTrip(ZStreamRAII::Variant variant, std::string_view payload, std::size_t split,
+void ExpectStreamingRoundTrip(ZlibVariant variant, std::string_view payload, std::size_t split,
                               std::size_t maxPlainBytes = kMaxPlainBytes) {
   CompressionConfig cfg;
   ZlibEncoder encoder(cfg.zlib.level);
@@ -89,7 +89,7 @@ void ExpectStreamingRoundTrip(ZStreamRAII::Variant variant, std::string_view pay
   EXPECT_EQ(std::string_view(decompressed), payload);
 }
 
-void ExpectStreamingDecoderRoundTrip(ZStreamRAII::Variant variant, std::string_view payload, std::size_t split) {
+void ExpectStreamingDecoderRoundTrip(ZlibVariant variant, std::string_view payload, std::size_t split) {
   CompressionConfig cfg;
   ZlibEncoder encoder(cfg.zlib.level);
   const auto compressed = test::BuildStreamingCompressed(*encoder.makeContext(variant), payload, 4096U);
@@ -110,12 +110,174 @@ void ExpectStreamingDecoderRoundTrip(ZStreamRAII::Variant variant, std::string_v
   EXPECT_EQ(std::string_view(decompressed), payload);
 }
 
-class ZlibEncoderDecoderTest : public ::testing::TestWithParam<ZStreamRAII::Variant> {};
+class ZlibEncoderDecoderTest : public ::testing::TestWithParam<ZlibVariant> {};
 
 }  // namespace
 
-INSTANTIATE_TEST_SUITE_P(Variants, ZlibEncoderDecoderTest,
-                         ::testing::Values(ZStreamRAII::Variant::gzip, ZStreamRAII::Variant::deflate));
+// zlib counts sizes in 32 bits: the contexts give inputs of 4 GiB and more in slices, tested here with small slices.
+struct ZlibTestAccess {
+  // Deflates data like encodeChunk() (Z_NO_FLUSH) or encodeFull() (Z_FINISH), appending the output to out.
+  // Returns the status of the last deflate() call.
+  static int Deflate(ZlibEncoderContext& ctx, std::string_view data, int flush, std::size_t maxSliceSize,
+                     RawChars& out) {
+    const int ret = ctx.deflateSlices(data, flush, out.availableCapacity(), out.end(), maxSliceSize);
+    out.setEnd(ZOutputEnd(ctx._zs.stream));
+    return ret;
+  }
+
+  static std::size_t AvailIn(const ZlibEncoderContext& ctx) { return ctx._zs.stream.avail_in; }
+
+  static bool DecompressChunk(ZlibDecoderContext& ctx, std::string_view chunk, bool finalChunk,
+                              std::size_t maxDecompressedBytes, std::size_t maxSliceSize, RawChars& out) {
+    return ctx.decompressChunk(chunk, finalChunk, maxDecompressedBytes, kDecoderChunkSize, out, maxSliceSize);
+  }
+};
+
+INSTANTIATE_TEST_SUITE_P(Variants, ZlibEncoderDecoderTest, ::testing::Values(ZlibVariant::gzip, ZlibVariant::deflate));
+
+TEST(ZlibGateway, ClampSize) {
+  static constexpr uint32_t kMax = std::numeric_limits<uint32_t>::max();
+  EXPECT_EQ(ZClampSize(0), 0U);
+  EXPECT_EQ(ZClampSize(42), 42U);
+  EXPECT_EQ(ZClampSize(kZMaxSize - 1), kMax - 1U);
+  EXPECT_EQ(ZClampSize(kZMaxSize), kMax);
+  EXPECT_EQ(ZClampSize(kZMaxSize + 1), kMax);
+  EXPECT_EQ(ZClampSize(std::numeric_limits<std::size_t>::max()), kMax);
+}
+
+// An output room clamped to 32 bits is enough for the largest deflate input slice.
+TEST(ZlibGateway, DeflateBoundOfTheLargestDeflateSliceFitsIn32Bits) {
+  EXPECT_LE(ZDeflateBound(nullptr, kZMaxDeflateInputSize), kZMaxSize);
+}
+
+TEST_P(ZlibEncoderDecoderTest, MinEncodeChunkCapacityOfChunksLargerThanADeflateSlice) {
+  ZlibEncoderContext ctx;
+  ctx.init(CompressionConfig{}.zlib.level, GetParam());
+  const std::size_t sliceBound = ctx.minEncodeChunkCapacity(kZMaxDeflateInputSize);
+  EXPECT_GT(sliceBound, kZMaxDeflateInputSize);
+  EXPECT_EQ(ctx.minEncodeChunkCapacity(kZMaxDeflateInputSize + 1), sliceBound + ctx.minEncodeChunkCapacity(1));
+  EXPECT_EQ(ctx.minEncodeChunkCapacity(2 * kZMaxDeflateInputSize), (2 * sliceBound) + ctx.minEncodeChunkCapacity(0));
+  EXPECT_EQ(ctx.minEncodeChunkCapacity((5 * kZMaxDeflateInputSize) + 7),
+            (5 * sliceBound) + ctx.minEncodeChunkCapacity(7));
+}
+
+TEST_P(ZlibEncoderDecoderTest, DeflateInSlicesRoundTrips) {
+  const auto variant = GetParam();
+  const RawChars random = test::MakeRandomPayload(20000);
+  const std::string patterned = test::MakePatternedPayload(20000);
+  for (const std::string_view payload : {std::string_view(random), std::string_view(patterned)}) {
+    for (const std::size_t sliceSize : {std::size_t{1}, std::size_t{7}, std::size_t{4096}, payload.size()}) {
+      SCOPED_TRACE(testing::Message() << VariantName(variant) << " slice=" << sliceSize);
+      ZlibEncoderContext ctx;
+      ctx.init(CompressionConfig{}.zlib.level, variant);
+
+      // Streaming: encodeChunk() then end().
+      RawChars streamed(ctx.minEncodeChunkCapacity(payload.size()));
+      ASSERT_EQ(ZlibTestAccess::Deflate(ctx, payload, Z_NO_FLUSH, sliceSize, streamed), Z_OK);
+      EXPECT_EQ(ZlibTestAccess::AvailIn(ctx), 0U);
+      test::EndStream(ctx, streamed);
+
+      // One shot: encodeFull().
+      ctx.init(CompressionConfig{}.zlib.level, variant);
+      RawChars oneShot(ZDeflateBound(nullptr, payload.size()));
+      ASSERT_EQ(ZlibTestAccess::Deflate(ctx, payload, Z_FINISH, sliceSize, oneShot), Z_STREAM_END);
+
+      for (const RawChars* pCompressed : {&streamed, &oneShot}) {
+        ZlibDecoder decoder(variant);
+        RawChars decompressed;
+        ASSERT_TRUE(decoder.decompressFull(*pCompressed, kMaxPlainBytes, kDecoderChunkSize, decompressed));
+        EXPECT_TRUE(std::string_view(decompressed) == payload);
+      }
+    }
+  }
+}
+
+// Deflating stops at the first input slice not entirely consumed for lack of output room.
+TEST_P(ZlibEncoderDecoderTest, DeflateInSlicesStopsWhenTheOutputIsFull) {
+  const RawChars payload = test::MakeRandomPayload(200000);
+  ZlibEncoderContext ctx;
+  ctx.init(CompressionConfig{}.zlib.level, GetParam());
+  RawChars out(1024);
+  // zlib holds back output it cannot write: a slice may be consumed with the output full, the next one cannot progress
+  // then (Z_BUF_ERROR).
+  const int ret = ZlibTestAccess::Deflate(ctx, payload, Z_NO_FLUSH, 65536, out);
+  EXPECT_TRUE(ret == Z_OK || ret == Z_BUF_ERROR) << ret;
+  EXPECT_EQ(out.size(), 1024U);
+  EXPECT_NE(ZlibTestAccess::AvailIn(ctx), 0U);
+
+  // Without any output room, deflate() cannot progress.
+  ctx.init(CompressionConfig{}.zlib.level, GetParam());
+  RawChars full(16);
+  full.setSize(16);
+  EXPECT_EQ(ZlibTestAccess::Deflate(ctx, payload, Z_NO_FLUSH, 7, full), Z_BUF_ERROR);
+  EXPECT_EQ(ZlibTestAccess::AvailIn(ctx), 7U);
+}
+
+TEST_P(ZlibEncoderDecoderTest, EncodeFullWithoutOutputRoomIsNotEnoughCapacity) {
+  ZlibEncoder encoder(CompressionConfig{}.zlib.level);
+  char buf[1];
+  const auto result = encoder.encodeFull(GetParam(), "some data", 0, buf);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_EQ(result.error(), EncoderResult::Error::NotEnoughCapacity);
+
+  // Without any output buffer, deflate() reports an inconsistent stream.
+  const auto noBuffer = encoder.encodeFull(GetParam(), "some data", 0, nullptr);
+  ASSERT_TRUE(noBuffer.hasError());
+  EXPECT_EQ(noBuffer.error(), EncoderResult::Error::CompressionError);
+}
+
+TEST_P(ZlibEncoderDecoderTest, DecompressChunkInSlicesRoundTrips) {
+  const auto variant = GetParam();
+  const std::string payload = test::MakePatternedPayload(50000);
+  ZlibEncoder encoder(CompressionConfig{}.zlib.level);
+  RawChars compressed;
+  EncodeFull(encoder, variant, payload, compressed);
+  for (const std::size_t sliceSize : {std::size_t{1}, std::size_t{3}, std::size_t{4096}}) {
+    SCOPED_TRACE(testing::Message() << VariantName(variant) << " slice=" << sliceSize);
+    ZlibDecoder decoder(variant);
+    RawChars decompressed;
+    EXPECT_TRUE(ZlibTestAccess::DecompressChunk(*decoder.makeContext(), compressed, true, kMaxPlainBytes, sliceSize,
+                                                decompressed));
+    EXPECT_EQ(std::string_view(decompressed), payload);
+
+    // The limit holds across the slices.
+    for (const std::size_t limit : {payload.size() - 1, payload.size()}) {
+      decompressed.clear();
+      EXPECT_EQ(
+          ZlibTestAccess::DecompressChunk(*decoder.makeContext(), compressed, true, limit, sliceSize, decompressed),
+          limit == payload.size());
+      EXPECT_LE(decompressed.size(), limit + 1);
+    }
+
+    // A truncated stream continues in the next chunk, unless this one is the last.
+    const std::string_view truncated = std::string_view(compressed).substr(0, compressed.size() - 1);
+    decompressed.clear();
+    EXPECT_TRUE(ZlibTestAccess::DecompressChunk(*decoder.makeContext(), truncated, false, kMaxPlainBytes, sliceSize,
+                                                decompressed));
+    decompressed.clear();
+    EXPECT_FALSE(ZlibTestAccess::DecompressChunk(*decoder.makeContext(), truncated, true, kMaxPlainBytes, sliceSize,
+                                                 decompressed));
+  }
+}
+
+// Data after the end of the stream is rejected, also when the stream ends exactly at the end of a slice.
+TEST_P(ZlibEncoderDecoderTest, DecompressChunkInSlicesRejectsDataAfterTheStreamEnd) {
+  const auto variant = GetParam();
+  const std::string payload = test::MakePatternedPayload(5000);
+  ZlibEncoder encoder(CompressionConfig{}.zlib.level);
+  RawChars compressed;
+  EncodeFull(encoder, variant, payload, compressed);
+  const std::size_t streamSize = compressed.size();
+  compressed.append(std::string_view("trailing garbage"));
+  for (const std::size_t sliceSize : {std::size_t{1}, std::size_t{5}, streamSize}) {
+    SCOPED_TRACE(testing::Message() << VariantName(variant) << " slice=" << sliceSize);
+    ZlibDecoder decoder(variant);
+    RawChars decompressed;
+    EXPECT_FALSE(ZlibTestAccess::DecompressChunk(*decoder.makeContext(), compressed, true, kMaxPlainBytes, sliceSize,
+                                                 decompressed));
+    EXPECT_EQ(std::string_view(decompressed), payload);
+  }
+}
 
 TEST_P(ZlibEncoderDecoderTest, EncodeFullRoundTripsPayloads) {
   const auto variant = GetParam();
@@ -248,7 +410,7 @@ TEST(ZlibEncoderDecoderTest, SmallEncoderChunkSizeLargeChunks) {
   const auto largePayload = test::MakePatternedPayload(kChunkSize);
   // This test validates handling of very large streaming chunk sizes; it must not be
   // constrained by the small default max-decompressed limit used by other tests.
-  ExpectStreamingRoundTrip(ZStreamRAII::Variant::deflate, largePayload, 8, kChunkSize);
+  ExpectStreamingRoundTrip(ZlibVariant::deflate, largePayload, 8, kChunkSize);
 }
 
 TEST_P(ZlibEncoderDecoderTest, EncodeChunkAfterFinalizationReturnsZero) {
@@ -385,6 +547,10 @@ TEST_P(ZlibEncoderDecoderTest, ZlibEndWithoutEnoughBufferShouldFail) {
   // Provide a too-small buffer to end()
   const auto tailWritten = ctx->end(0UL, nullptr);
   EXPECT_TRUE(tailWritten.hasError());
+
+  // A buffer without room: nothing can be written.
+  char buf[1];
+  EXPECT_TRUE(ctx->end(0UL, buf).hasError());
 }
 
 TEST_P(ZlibEncoderDecoderTest, StreamingAndOneShotProduceSameOutput) {
@@ -473,7 +639,7 @@ TEST_P(ZlibEncoderDecoderTest, VariantSwitchingDuringSession) {
   // Initialize with one variant
   CompressionConfig cfg;
   ZlibEncoder encoder1(cfg.zlib.level);
-  auto ctx1 = encoder1.makeContext(ZStreamRAII::Variant::gzip);
+  auto ctx1 = encoder1.makeContext(ZlibVariant::gzip);
   RawChars compressed1;
   {
     RawChars chunkOut;
@@ -486,7 +652,7 @@ TEST_P(ZlibEncoderDecoderTest, VariantSwitchingDuringSession) {
 
   // Create a new encoder with different variant
   ZlibEncoder encoder2(cfg.zlib.level);
-  auto ctx2 = encoder2.makeContext(ZStreamRAII::Variant::deflate);
+  auto ctx2 = encoder2.makeContext(ZlibVariant::deflate);
   RawChars compressed2;
   {
     RawChars chunkOut;
@@ -537,10 +703,10 @@ TEST(ZlibEncoderDecoderTest, AllVariantsCoverageSmallDataGzip) {
   ZlibEncoder encoder(cfg.zlib.level);
   for (const auto& payload : SamplePayloads()) {
     RawChars compressed;
-    EncodeFull(encoder, ZStreamRAII::Variant::gzip, payload, compressed, 64UL);
+    EncodeFull(encoder, ZlibVariant::gzip, payload, compressed, 64UL);
     RawChars decompressed;
     ZlibDecoder decoder;
-    decoder.setVariant(ZStreamRAII::Variant::gzip);
+    decoder.setVariant(ZlibVariant::gzip);
     ASSERT_TRUE(decoder.decompressFull(compressed, kMaxPlainBytes, kDecoderChunkSize, decompressed));
     EXPECT_EQ(std::string_view(decompressed), payload);
   }
@@ -552,10 +718,10 @@ TEST(ZlibEncoderDecoderTest, AllVariantsCoverageSmallDataDeflate) {
   ZlibEncoder encoder(cfg.zlib.level);
   for (const auto& payload : SamplePayloads()) {
     RawChars compressed;
-    EncodeFull(encoder, ZStreamRAII::Variant::deflate, payload, compressed, 64UL);
+    EncodeFull(encoder, ZlibVariant::deflate, payload, compressed, 64UL);
     RawChars decompressed;
     ZlibDecoder decoder;
-    decoder.setVariant(ZStreamRAII::Variant::deflate);
+    decoder.setVariant(ZlibVariant::deflate);
     ASSERT_TRUE(decoder.decompressFull(compressed, kMaxPlainBytes, kDecoderChunkSize, decompressed));
     EXPECT_EQ(std::string_view(decompressed), payload);
   }
@@ -564,7 +730,7 @@ TEST(ZlibEncoderDecoderTest, AllVariantsCoverageSmallDataDeflate) {
 TEST(ZlibEncoderDecoderTest, EncodeChunkWithInsufficientOutputCapacity) {
   CompressionConfig cfg;
   ZlibEncoder encoder(cfg.zlib.level);
-  auto ctx = encoder.makeContext(ZStreamRAII::Variant::deflate);
+  auto ctx = encoder.makeContext(ZlibVariant::deflate);
 
   // Create a large input.
   std::string large(4096, 'X');

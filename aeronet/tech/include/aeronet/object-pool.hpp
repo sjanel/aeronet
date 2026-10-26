@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -261,6 +262,7 @@ T* ObjectPool<T, SizeType>::allocateAndConstruct(Args&&... args) {
       addBlock();
     }
 
+    assert(_pNextSlot != slotEnd(_pLastBlock));
     pSlot = _pNextSlot;
     ++_pNextSlot;
     AsanUnpoison(pSlot, sizeof(Slot));

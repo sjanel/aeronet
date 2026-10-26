@@ -546,8 +546,8 @@ TEST_F(WebSocketTest, CompressedMessageFromStandardClientIsEchoedCompressed) {
   zstream deflater{};
   ASSERT_EQ(ZDeflateInit2(deflater, 6, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY), Z_OK);
   std::string compressed(text.size() + 256, '\0');
-  ZSetInput(deflater, text);
-  ZSetOutput(deflater, compressed.data(), compressed.size());
+  ZSetInput(deflater, text.data(), static_cast<uint32_t>(text.size()));
+  ZSetOutput(deflater, compressed.data(), static_cast<uint32_t>(compressed.size()));
   ASSERT_EQ(ZDeflate(deflater, Z_SYNC_FLUSH), Z_OK);
   compressed.resize(compressed.size() - deflater.avail_out - 4);
   ZDeflateEnd(deflater);
@@ -568,8 +568,8 @@ TEST_F(WebSocketTest, CompressedMessageFromStandardClientIsEchoedCompressed) {
   zstream inflater{};
   ASSERT_EQ(ZInflateInit2(inflater, -15), Z_OK);
   std::string decompressed(text.size() * 2, '\0');
-  ZSetInput(inflater, echoPayload);
-  ZSetOutput(inflater, decompressed.data(), decompressed.size());
+  ZSetInput(inflater, echoPayload.data(), static_cast<uint32_t>(echoPayload.size()));
+  ZSetOutput(inflater, decompressed.data(), static_cast<uint32_t>(decompressed.size()));
   const auto ret = ZInflate(inflater, Z_SYNC_FLUSH);
   EXPECT_TRUE(ret == Z_OK || ret == Z_BUF_ERROR) << ret;
   decompressed.resize(decompressed.size() - inflater.avail_out);

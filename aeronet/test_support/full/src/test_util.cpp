@@ -46,7 +46,7 @@
 #endif
 #ifdef AERONET_ENABLE_ZLIB
 #include "aeronet/zlib-decoder.hpp"
-#include "aeronet/zlib-stream-raii.hpp"
+#include "aeronet/zlib-variant.hpp"
 #endif
 #ifdef AERONET_ENABLE_ZSTD
 #include "aeronet/zstd-decoder.hpp"
@@ -511,7 +511,7 @@ bool PortIsFreeForPlainBind(uint16_t port) {
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = htonl(INADDR_ANY);
   addr.sin_port = htons(port);
-  return ::bind(fd.fd(), reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == 0;
+  return fd && ::bind(fd.fd(), reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == 0;
 }
 #endif
 
@@ -536,7 +536,6 @@ std::optional<ParsedResponse> parseResponse(std::string_view raw) {
   }
   auto codeEnd = statusLine.find(' ', firstSpace + 1);
   if (codeEnd == std::string_view::npos) {
-    codeEnd = statusLine.size();
     pr.reason.clear();
   } else {
     pr.reason = statusLine.substr(codeEnd + 1);
@@ -872,7 +871,7 @@ EncodingAndBody extractContentEncodingAndBody(std::string_view raw) {
 #ifdef AERONET_ENABLE_ZLIB
     if (encLower.contains("gzip") || encLower.contains("deflate")) {
       RawChars tmp;
-      ZlibDecoder decoder(encLower.contains("gzip") ? ZStreamRAII::Variant::gzip : ZStreamRAII::Variant::deflate);
+      ZlibDecoder decoder(encLower.contains("gzip") ? ZlibVariant::gzip : ZlibVariant::deflate);
       if (decoder.decompressFull(out.body,
                                  /*maxDecompressedBytes=*/1UL << 20U,
                                  /*decoderChunkSize=*/65536, tmp)) {

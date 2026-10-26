@@ -39,7 +39,7 @@ class ResponseStreamer {
   // (decoders, and its decompressOut buffer receiving the decoded bytes) are borrowed until the next call.
   void beginRequest(ResponseBodySink* sink, const HttpClientConfig& config, HttpClientCodec& codec) noexcept;
 
-  [[nodiscard]] bool active() const noexcept { return _sink != nullptr; }
+  [[nodiscard]] bool active() const noexcept { return _pSink != nullptr; }
 
   // Whether the sink received a response head during the current request: from then on, it cannot be retried.
   [[nodiscard]] bool headDelivered() const noexcept { return _headDelivered; }
@@ -87,9 +87,9 @@ class ResponseStreamer {
 
   bool deliver(std::string_view data);
 
-  ResponseBodySink* _sink{nullptr};
-  const HttpClientConfig* _config{nullptr};
-  HttpClientCodec* _codec{nullptr};
+  ResponseBodySink* _pSink{nullptr};
+  const HttpClientConfig* _pConfig{nullptr};
+  HttpClientCodec* _pCodec{nullptr};
   std::string_view _bufferedBody;   // see setBufferedBody()
   RawChars32 _bufferedContentType;  // raw Content-Type value of the response received whole
   void* _decoder{nullptr};          // context of the decoder of _coding

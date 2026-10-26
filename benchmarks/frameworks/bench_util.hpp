@@ -300,7 +300,7 @@ inline std::optional<std::size_t> requestBodySize(std::string_view method, std::
     // Parse hex chunk size
     std::size_t chunkSz = 0;
     for (const char* pc = lineStart; pc < crlfPos; ++pc) {
-      int digit = aeronet::from_hex_digit(*pc);
+      int digit = aeronet::FromHexDigit(*pc);
       if (digit < 0) {
         break;
       }

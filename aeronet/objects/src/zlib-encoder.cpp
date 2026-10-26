@@ -2,42 +2,69 @@
 
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <string_view>
 
 #include "aeronet/encoder-result.hpp"
 #include "aeronet/zlib-gateway.hpp"
 #include "aeronet/zlib-stream-raii.hpp"
+#include "aeronet/zlib-variant.hpp"
 
 namespace aeronet {
+
+int ZlibEncoderContext::deflateSlices(std::string_view data, int flush, std::size_t availableCapacity, char* buf,
+                                      std::size_t maxSliceSize) {
+  assert(maxSliceSize != 0 && maxSliceSize <= kZMaxSize);
+  auto& stream = _zs.stream;
+  const char* const pBufEnd = buf + availableCapacity;
+  char* pOut = buf;
+  while (true) {
+    const std::string_view slice = data.substr(0, maxSliceSize);
+    ZSetInput(stream, slice.data(), static_cast<uint32_t>(slice.size()));
+    ZSetOutput(stream, pOut, ZClampSize(static_cast<std::size_t>(pBufEnd - pOut)));
+    data.remove_prefix(slice.size());
+
+    const int ret = ZDeflate(stream, data.empty() ? flush : Z_NO_FLUSH);
+    if (data.empty() || ret != Z_OK || stream.avail_in != 0) {
+      return ret;
+    }
+    pOut = ZOutputEnd(stream);
+  }
+}
 
 EncoderResult ZlibEncoderContext::encodeChunk(std::string_view data, std::size_t availableCapacity, char* buf) {
   assert(!data.empty());
 
-  ZSetInput(_zs.stream, data);
-  ZSetOutput(_zs.stream, buf, availableCapacity);
-
-  const auto ret = ZDeflate(_zs.stream, Z_NO_FLUSH);
+  const auto ret = deflateSlices(data, Z_NO_FLUSH, availableCapacity, buf);
   if (ret == Z_STREAM_ERROR || _zs.stream.avail_in != 0) [[unlikely]] {
     return EncoderResult(EncoderResult::Error::CompressionError);
   }
 
-  return EncoderResult(availableCapacity - _zs.stream.avail_out);
+  return EncoderResult(static_cast<std::size_t>(ZOutputEnd(_zs.stream) - buf));
 }
 
 std::size_t ZlibEncoderContext::minEncodeChunkCapacity(std::size_t chunkSize) const {
-  return ZDeflateBound(const_cast<zstream*>(&_zs.stream), chunkSize);
+  auto* pStream = const_cast<zstream*>(&_zs.stream);
+  if (chunkSize <= kZMaxDeflateInputSize) [[likely]] {
+    return ZDeflateBound(pStream, chunkSize);
+  }
+  // encodeChunk() deflates a larger chunk in slices.
+  return ((chunkSize / kZMaxDeflateInputSize) * ZDeflateBound(pStream, kZMaxDeflateInputSize)) +
+         ZDeflateBound(pStream, chunkSize % kZMaxDeflateInputSize);
 }
 
 EncoderResult ZlibEncoderContext::end(std::size_t availableCapacity, char* buf) noexcept {
-  ZSetInput(_zs.stream, std::string_view{});
-  ZSetOutput(_zs.stream, buf, availableCapacity);
+  // A clamped output room only delays the remaining output to the next end() call.
+  const uint32_t room = ZClampSize(availableCapacity);
+  ZSetInput(_zs.stream, nullptr, 0);
+  ZSetOutput(_zs.stream, buf, room);
 
   const int ret = ZDeflate(_zs.stream, Z_FINISH);
   if (ret == Z_STREAM_ERROR) {
     return EncoderResult(EncoderResult::Error::CompressionError);
   }
 
-  const std::size_t writtenNow = availableCapacity - _zs.stream.avail_out;
+  const std::size_t writtenNow = room - _zs.stream.avail_out;
   if (ret == Z_STREAM_END) {
     if (writtenNow == 0) {
       _zs.end();
@@ -52,27 +79,21 @@ EncoderResult ZlibEncoderContext::end(std::size_t availableCapacity, char* buf) 
   return EncoderResult(writtenNow);
 }
 
-EncoderResult ZlibEncoder::encodeFull(ZStreamRAII::Variant variant, std::string_view data,
-                                      std::size_t availableCapacity, char* buf) {
+EncoderResult ZlibEncoder::encodeFull(ZlibVariant variant, std::string_view data, std::size_t availableCapacity,
+                                      char* buf) {
   _ctx.init(_level, variant);
 
-  auto& zstream = _ctx._zs.stream;
-
-  ZSetInput(zstream, data);
-  ZSetOutput(zstream, buf, availableCapacity);
-
-  const auto rc = ZDeflate(zstream, Z_FINISH);
-  const std::size_t written = availableCapacity - zstream.avail_out;
-
+  const auto rc = _ctx.deflateSlices(data, Z_FINISH, availableCapacity, buf);
   if (rc != Z_STREAM_END) {
-    if (rc == Z_OK) {
+    // Z_OK: the output is full. Z_BUF_ERROR: no output room is left for the next input slice.
+    if (rc == Z_OK || rc == Z_BUF_ERROR) {
       return EncoderResult(EncoderResult::Error::NotEnoughCapacity);
     }
     return EncoderResult(EncoderResult::Error::CompressionError);
   }
-  assert(zstream.avail_in == 0);
+  assert(_ctx._zs.stream.avail_in == 0);
 
-  return EncoderResult(written);
+  return EncoderResult(static_cast<std::size_t>(ZOutputEnd(_ctx._zs.stream) - buf));
 }
 
 }  // namespace aeronet

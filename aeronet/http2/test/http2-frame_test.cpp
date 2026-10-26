@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -38,7 +39,7 @@ TEST(Http2FrameNames, ErrorCodeName_AllKnown) {
   EXPECT_EQ(ErrorCodeName(ErrorCode::Http11Required), "HTTP_1_1_REQUIRED");
 
   // Unknown numeric value -> "UNKNOWN_ERROR"
-  EXPECT_EQ(ErrorCodeName(static_cast<ErrorCode>(256U)), "UNKNOWN_ERROR");
+  EXPECT_EQ(ErrorCodeName(std::bit_cast<ErrorCode>(uint32_t{256U})), "UNKNOWN_ERROR");
 }
 
 // ============================
