@@ -62,7 +62,9 @@
 #endif
 
 #include "aeronet/multipart-form-data.hpp"  // IWYU pragma: export
+
 #ifdef AERONET_ENABLE_WEBSOCKET
+#include "aeronet/websocket-config.hpp"     // IWYU pragma: export
 #include "aeronet/websocket-constants.hpp"  // IWYU pragma: export
 #include "aeronet/websocket-endpoint.hpp"   // IWYU pragma: export
 #endif

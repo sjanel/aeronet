@@ -56,7 +56,7 @@ class WebSocketDecompressor {
   /// Decompress a WebSocket message payload.
   /// @param input Compressed message data (without trailing 0x00 0x00 0xff 0xff)
   /// @param output Buffer to append decompressed data to
-  /// @param maxDecompressedSize Maximum allowed decompressed size (0 = unlimited)
+  /// @param maxDecompressedSize Maximum allowed decompressed size
   /// @param resetContext If true, reset the decompression context before decompressing
   /// @return nullptr on success, error message on decompression error or size limit exceeded
   [[nodiscard]] const char* decompress(std::span<const std::byte> input, RawBytes& output,

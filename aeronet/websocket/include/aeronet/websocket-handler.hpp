@@ -12,6 +12,7 @@
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/vector.hpp"
+#include "aeronet/websocket-config.hpp"
 #include "aeronet/websocket-constants.hpp"
 #include "aeronet/websocket-deflate.hpp"
 #include "aeronet/websocket-frame.hpp"
@@ -19,35 +20,6 @@
 namespace aeronet::websocket {
 
 class DeflateContext;
-
-/// Configuration options for WebSocket connections.
-struct WebSocketConfig {
-  void validate() const { deflateConfig.validate(); }
-
-  /// Maximum size of a single message (after reassembly from fragments).
-  /// Set to 0 for unlimited (use with caution).
-  std::size_t maxMessageSize{kDefaultMaxMessageSize};
-
-  /// Maximum size of a single frame payload.
-  std::size_t maxFrameSize{kDefaultMaxFrameSize};
-
-  /// Time to wait for the peer's Close frame after sending one. The connection is then closed.
-  std::chrono::milliseconds closeTimeout{std::chrono::milliseconds{5000}};
-
-  /// A connection on which nothing was received for this long is closed. 0 disables the idle timeout.
-  /// It replaces HttpServerConfig::keepAliveTimeout, which does not apply to upgraded connections.
-  std::chrono::milliseconds idleTimeout{std::chrono::seconds{60}};
-
-  /// Deflate configuration (optional, for permessage-deflate extension).
-  DeflateConfig deflateConfig;
-
-  /// Whether this is the server side (affects masking validation).
-  bool isServerSide{true};
-
-  /// Send a Ping frame once the connection has been idle for half of idleTimeout, so that a live peer, which answers
-  /// with a Pong, never reaches the idle timeout. Without effect when idleTimeout is 0.
-  bool autoPing{true};
-};
 
 /// Callbacks for WebSocket events.
 /// All callbacks are invoked on the event loop thread.

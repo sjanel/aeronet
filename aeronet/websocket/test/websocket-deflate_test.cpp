@@ -13,6 +13,7 @@
 #ifdef AERONET_ENABLE_ZLIB
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string>
@@ -751,7 +752,7 @@ TEST(WebSocketDeflateTest, ShouldSkipCompression_ZeroThreshold) {
   EXPECT_FALSE(ctx.shouldSkipCompression(1000));
 }
 
-TEST(WebSocketDeflateTest, DecompressZeroSizeLimit) {
+TEST(WebSocketDeflateTest, DecompressMaxSizeLimit) {
   DeflateNegotiatedParams params;
   DeflateConfig config;
   DeflateContext ctx(params, config, true);
@@ -762,10 +763,10 @@ TEST(WebSocketDeflateTest, DecompressZeroSizeLimit) {
   RawBytes compressed;
   ASSERT_EQ(ctx.compress(inputSpan, compressed), nullptr);
 
-  // Zero limit means unlimited
+  // The largest limit is the closest to unlimited
   RawBytes decompressed;
   auto compressedSpan = buf_bytes(compressed);
-  EXPECT_EQ(ctx.decompress(compressedSpan, decompressed, 0), nullptr);
+  EXPECT_EQ(ctx.decompress(compressedSpan, decompressed, std::numeric_limits<std::size_t>::max()), nullptr);
   EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(decompressed.data()), decompressed.size()), original);
 }
 

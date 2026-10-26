@@ -12,6 +12,7 @@
 
 #include "aeronet/http-request-view-test-access.hpp"
 #include "aeronet/http-request-view.hpp"
+#include "aeronet/websocket-config.hpp"
 #include "aeronet/websocket-handler.hpp"
 
 namespace aeronet {

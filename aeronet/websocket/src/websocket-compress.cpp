@@ -5,7 +5,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <limits>
 #include <span>
 
 #include "aeronet/decoder-buffer-manager.hpp"
@@ -112,10 +111,7 @@ const char* WebSocketDecompressor::decompress(std::span<const std::byte> input, 
   };
   feedNextSlice();
 
-  // 0: unlimited.
-  DecoderBufferManager bufferManager(
-      output, kDecompressChunkSize,
-      maxDecompressedSize == 0 ? std::numeric_limits<std::size_t>::max() : maxDecompressedSize);
+  DecoderBufferManager bufferManager(output, kDecompressChunkSize, maxDecompressedSize);
 
   // The message is followed by the sync flush marker removed by the sender (0x00 0x00 0xff 0xff, RFC 7692 section
   // 7.2.2), inflated once the message data is: it leaves the stream at a block boundary, where the next message

@@ -59,6 +59,13 @@ if(AERONET_ENABLE_ZLIB)
 endif()
 
 AeronetAddUnitTest(
+    websocket-config_test
+    test/websocket-config_test.cpp
+    LIBRARIES
+    aeronet_websocket
+)
+
+AeronetAddUnitTest(
     websocket-deflate_test
     test/websocket-deflate_test.cpp
     LIBRARIES

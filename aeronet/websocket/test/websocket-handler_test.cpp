@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <span>
@@ -21,6 +22,7 @@
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/vector.hpp"
+#include "aeronet/websocket-config.hpp"
 #include "aeronet/websocket-constants.hpp"
 #include "aeronet/websocket-frame.hpp"
 
@@ -31,6 +33,8 @@
 
 namespace aeronet::websocket {
 namespace {
+
+constexpr std::size_t kNoLimit = std::numeric_limits<std::size_t>::max();
 
 std::span<const std::byte> sv_bytes(std::string_view sv) noexcept {
   return std::as_bytes(std::span<const char>(sv.data(), sv.size()));
@@ -1108,13 +1112,13 @@ TEST_F(WebSocketHandlerTest, SingleFrameMessageExactlyAtLimit) {
 }
 
 // ============================================================================
-// maxMessageSize = 0 (unlimited) on fast path
+// maxMessageSize = max() (no practical limit) on fast path
 // ============================================================================
 
-TEST_F(WebSocketHandlerTest, MaxMessageSizeZeroAllowsAnySize) {
+TEST_F(WebSocketHandlerTest, MaxMessageSizeMaxAllowsAnySize) {
   WebSocketConfig config;
   config.isServerSide = false;
-  config.maxMessageSize = 0;
+  config.maxMessageSize = kNoLimit;
 
   WebSocketCallbacks callbacks;
   callbacks.onMessage = [this](std::span<const std::byte> payload, bool /*isBinary*/) {
@@ -2154,7 +2158,7 @@ FrameParseResult ParseOutputFrame(WebSocketHandler& handler) {
   // Client sends masked frames → ParseFrame needs isServerSide=true (expects masking).
   // Server sends unmasked frames → ParseFrame needs isServerSide=false.
   const bool expectMasked = !handler.config().isServerSide;
-  return ParseFrame(pending, /*maxPayloadSize=*/0, /*isServerSide=*/expectMasked, /*allowRsv1=*/false);
+  return ParseFrame(pending, kNoLimit, /*isServerSide=*/expectMasked, /*allowRsv1=*/false);
 }
 }  // namespace
 
@@ -2535,7 +2539,7 @@ TEST(WebSocketInputPayloadTest, ClientSideNeverSendsFromInput) {
   BuildFrame(input, Opcode::Binary, sv_bytes(payload), true, false);
 
   EXPECT_FALSE(client.processInput(buf_bytes(input)).outputRefersToInput);
-  const auto frame = ParseFrame(client.getPendingOutput(), 0, /*isServerSide=*/true, false);
+  const auto frame = ParseFrame(client.getPendingOutput(), kNoLimit, /*isServerSide=*/true, false);
   ASSERT_EQ(frame.status, FrameParseResult::Status::Complete);
   EXPECT_TRUE(frame.header.masked);
   EXPECT_EQ(frame.payload.size(), payload.size());
@@ -2753,7 +2757,7 @@ TEST(WebSocketInputPayloadTest, CompressedEchoRoundTrips) {
     EXPECT_EQ(result.bytesConsumed, input.size());
     EXPECT_FALSE(result.outputRefersToInput);
     const std::string output = WriteAllOutput(*server.handler);
-    const auto frame = ParseFrame(sv_bytes(output), 0, /*isServerSide=*/false, /*allowRsv1=*/true);
+    const auto frame = ParseFrame(sv_bytes(output), kNoLimit, /*isServerSide=*/false, /*allowRsv1=*/true);
     ASSERT_EQ(frame.status, FrameParseResult::Status::Complete);
     RawBytes echo;
     if (frame.header.rsv1) {
@@ -2808,7 +2812,7 @@ TEST(WebSocketInputPayloadTest, HandlersSharingDeflateStreams) {
       ASSERT_EQ(server->handler->processInput(buf_bytes(input)).bytesConsumed, input.size());
 
       const std::string output = WriteAllOutput(*server->handler);
-      const auto frame = ParseFrame(sv_bytes(output), 0, /*isServerSide=*/false, /*allowRsv1=*/true);
+      const auto frame = ParseFrame(sv_bytes(output), kNoLimit, /*isServerSide=*/false, /*allowRsv1=*/true);
       ASSERT_EQ(frame.status, FrameParseResult::Status::Complete);
       ASSERT_TRUE(frame.header.rsv1);
       RawBytes echo;
@@ -2840,7 +2844,7 @@ struct ServerMessage {
 vector<ServerMessage> ParseServerFrames(DeflateContext& client, std::string_view output) {
   vector<ServerMessage> messages;
   while (!output.empty()) {
-    const auto frame = ParseFrame(sv_bytes(output), 0, /*isServerSide=*/false, /*allowRsv1=*/true);
+    const auto frame = ParseFrame(sv_bytes(output), kNoLimit, /*isServerSide=*/false, /*allowRsv1=*/true);
     if (frame.status != FrameParseResult::Status::Complete) {
       ADD_FAILURE() << "incomplete frame";
       break;
@@ -2957,7 +2961,7 @@ TEST(WebSocketInputPayloadTest, ClientSideLargeCompressedMessageIsMaskedInPlace)
   ASSERT_EQ(fragments.size(), 2U);
 
   const std::string output = WriteAllOutput(client);
-  const auto frame = ParseFrame(sv_bytes(output), 0, /*isServerSide=*/true, /*allowRsv1=*/true);
+  const auto frame = ParseFrame(sv_bytes(output), kNoLimit, /*isServerSide=*/true, /*allowRsv1=*/true);
   ASSERT_EQ(frame.status, FrameParseResult::Status::Complete);
   EXPECT_EQ(frame.bytesConsumed, output.size());
   EXPECT_TRUE(frame.header.masked);

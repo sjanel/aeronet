@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "aeronet/concatenated-strings.hpp"
+#include "aeronet/websocket-config.hpp"
 #include "aeronet/websocket-handler.hpp"
 
 namespace aeronet {
