@@ -142,12 +142,9 @@ bool Http1Pipeline::serveRequests(ConnectionIt cnxIt) {
   ctx.io.batchOutputOf(&state);
   do {
     const std::span<char> input = consumedInput.remaining();
-    // Do not parse the next pipelined request while a file send is still in progress.
-    // attachFilePayload would silently overwrite the in-flight file payload, corrupting
-    // the response stream (partial data from file1 mixed with file2 headers+data).
-    // Also skip while output waits for the socket: the previous response hasn't been fully written yet, and the
-    // responses to the requests pipelined behind it would only accumulate in the connection. The output batched by this
-    // call does not wait for the socket: it is not written yet.
+    // Do not parse the next pipelined request while a file is being sent, or while output waits for the socket: the
+    // previous response hasn't been fully written yet, and the responses to the requests pipelined behind it would only
+    // accumulate in the connection (the output batched by this call, not written yet, does not wait for the socket).
     if (state.isSendingFile() || (state.waitingWritable && state.hasPendingOutput())) {
       state.inputBlockedByOutput = !input.empty();
       break;
@@ -779,8 +776,9 @@ void Http1Pipeline::finalizeAndSendResponse(ConnectionIt cnxIt, HttpResponse&& r
                                                 &ctx.config.globalHeaders, ctx.config.minCapturedBodySize));
 
   if (!keepAlive) {
-    // Always request drain+close for non-keep-alive connections. The actual close only triggers once outBuffer is empty
-    // (checked by canCloseConnectionForDrain), so it is safe to call this before a large response finishes flushing.
+    // Always request drain+close for non-keep-alive connections. The actual close only triggers once the output is
+    // written (checked by canCloseConnectionForDrain), so it is safe to call this before a large response finishes
+    // flushing.
     state.requestDrainAndClose();
   }
   // End the span after response is finalized

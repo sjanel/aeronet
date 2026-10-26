@@ -159,11 +159,11 @@ class ConnectionIo {
   TransportResult writeMessages(ConnectionIt cnxIt, std::span<const std::string_view> buffers,
                                 const ConnectionState::GatheredOutput& output, bool& zerocopySent);
 
-  // Writes outBuffer, gathered with the queued entries that follow it (up to the next file payload, sent before what
-  // follows it). Always gathered, so that a write retried after it would block starts with the same bytes, at least as
-  // many, as user-space TLS requires (OpenSSL keeps the record it could not write, and fails a retry with fewer bytes).
-  // Returns the number of bytes written, 'want' being set to the hint of the transport.
-  std::size_t writeOutBuffer(ConnectionIt cnxIt, TransportHint& want);
+  // Writes the first entries of the queued HTTP/1 output, gathered up to the head of the first file response (its file
+  // is sent before what follows it). Always gathered, so that a write retried after it would block starts with the same
+  // bytes, at least as many, as user-space TLS requires (OpenSSL keeps the record it could not write, and fails a retry
+  // with fewer bytes). Returns the number of bytes written, 'want' being set to the hint of the transport.
+  std::size_t writeOutput(ConnectionIt cnxIt, TransportHint& want);
 
   void flushFilePayload(ConnectionIt cnxIt);
 

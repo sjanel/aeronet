@@ -6,6 +6,7 @@
 #include <memory>
 #include <span>
 #include <string_view>
+#include <utility>
 
 #include "aeronet/connection-info.hpp"
 #include "aeronet/file-payload.hpp"
@@ -56,14 +57,11 @@ struct ConnectionState : public ConnectionInfo {
   [[nodiscard]] bool isSendingFile() const noexcept { return fileSendActive; }
 
   [[nodiscard]] bool hasPendingOutput() const noexcept {
-    return !outBuffer.empty() || !outQueue.empty() ||
-           (protocolHandler != nullptr && protocolHandler->hasPendingOutput());
+    return !outQueue.empty() || (protocolHandler != nullptr && protocolHandler->hasPendingOutput());
   }
 
   // Size of the HTTP/1 output not written yet (the files to send excluded).
-  [[nodiscard]] std::size_t bufferedOutputBytes() const noexcept {
-    return outBuffer.remainingSize() + outQueue.bytes();
-  }
+  [[nodiscard]] std::size_t bufferedOutputBytes() const noexcept { return outQueue.bytes(); }
 
   // Tells whether the output of this connection is encrypted by OpenSSL (TLS without kTLS send), which writes each of
   // its TLS records on its own.
@@ -147,7 +145,8 @@ struct ConnectionState : public ConnectionInfo {
   // Reset the connection state usable for a new connection without freeing allocated buffers.
   void reset();
 
-  // Returns true if we should flush file now
+  // Sets the file to send, before the HTTP/1 output not written yet (its response head being written). Returns true if
+  // it is not empty (see isSendingFile()).
   bool attachFilePayload(FilePayload filePayload);
 
   void reclaimMemoryFromOversizedBuffers();
@@ -162,18 +161,11 @@ struct ConnectionState : public ConnectionInfo {
   void retainZerocopyBuffer(HttpMessageData data);
 #endif
 
-  /// Empties outBuffer, written or dropped: retains its storage if zerocopy sends may still read it.
-  void discardOutBuffer();
-
   /// Queues 'data' (its file payload included) behind the HTTP/1 output not written yet. Neither 'data' nor that output
   /// is copied, except small ones (see OutputQueue::CanMerge()): 'data' is then appended to the last of them, unless
   /// zerocopy sends may read it. Returns true if 'data' was appended to the output ahead of it, false if queued on its
   /// own.
-  bool queueOutput(HttpMessageData data);
-
-  /// Continues the HTTP/1 output, outBuffer and its file payload being written, with the first queued entry: moved to
-  /// outBuffer, its file payload being attached to be sent after it.
-  void dequeueOutput();
+  bool queueOutput(HttpMessageData data) { return outQueue.push(std::move(data), !outQueueFrontZerocopySent); }
 
   struct GatheredOutput {
     std::size_t size;          // bytes of the gathered buffers
@@ -181,18 +173,22 @@ struct ConnectionState : public ConnectionInfo {
     std::size_t nbMessages;    // number of their messages
   };
 
-  /// Gathers in 'buffers' (cleared first) the non-empty unsent buffers of outBuffer, then of the queued entries written
-  /// with it in a single write: up to the first one with a file payload (sent before what follows it), and within
-  /// 'maxBuffers' buffers. outBuffer must have no file payload attached.
+  /// Gathers in 'buffers' (cleared first) the non-empty unsent buffers of the first entries of outQueue, written in a
+  /// single write: up to the first one with a file payload included (its file is sent before what follows it), within
+  /// 'maxBuffers' buffers. No file must be being sent (it is sent before outQueue).
   GatheredOutput gatherOutput(vector<std::string_view>& buffers, std::size_t maxBuffers) const;
 
-  /// Records that the first 'written' bytes of outBuffer, followed by the first queued entries (gathered in the same
-  /// write), were written, with MSG_ZEROCOPY if 'zerocopySent'. The written buffers are released, or retained while
-  /// zerocopy sends may read them, and the entry written in part becomes outBuffer.
+  /// Records that the first 'written' bytes of outQueue (gathered in a single write) were written, with MSG_ZEROCOPY if
+  /// 'zerocopySent'. The written entries are released, or retained while zerocopy sends may read them, the file of the
+  /// last one being attached to be sent next.
   void outputWritten(std::size_t written, bool zerocopySent);
 
-  /// Drops the output not written yet (outBuffer being retained if zerocopy sends may read it, the queued entries, the
-  /// file being sent and the output of the protocol handler), then requests a drain close.
+  /// Removes the first entry of outQueue, fully written: released, or retained while zerocopy sends may read it. Its
+  /// file payload, if any, is attached to be sent next.
+  void popWrittenOutput();
+
+  /// Drops the output not written yet (the first entry of outQueue being retained if zerocopy sends may read it, the
+  /// queued entries, the file being sent and the output of the protocol handler), then requests a drain close.
   void clearBuffers();
 
   using AggregatedBodyStreamContext = HttpRequestView::AggregatedBodyContext;
@@ -214,11 +210,10 @@ struct ConnectionState : public ConnectionInfo {
   // True while the target host name of the HTTP/1.1 CONNECT request in inBuffer is resolved in the background: the
   // connection reads nothing until the tunnel is established (or refused).
   bool tunnelResolving : 1 {false};
-  bool shutdownWritePending : 1 {false};    // true when we should shutdown(SHUT_WR) after tunnelOrFileBuffer is drained
-  bool eofReceived : 1 {false};             // true when transportRead returned 0 (EOF), or failed (HTTP/1)
-  bool corkable : 1 {false};                // true when TCP_NODELAY is active; enables TCP_CORK coalescing
-  bool fileSendActive : 1 {false};          // true while a file payload is attached and in progress
-  bool fileSendHeadersPending : 1 {false};  // true until response headers are flushed before file payload
+  bool shutdownWritePending : 1 {false};  // true when we should shutdown(SHUT_WR) after tunnelOrFileBuffer is drained
+  bool eofReceived : 1 {false};           // true when transportRead returned 0 (EOF), or failed (HTTP/1)
+  bool corkable : 1 {false};              // true when TCP_NODELAY is active; enables TCP_CORK coalescing
+  bool fileSendActive : 1 {false};        // true while a file payload is attached and in progress
 
 #ifdef AERONET_LINUX
   // Whether the large writes of the responses use MSG_ZEROCOPY (plain sockets only, Linux).
@@ -229,9 +224,9 @@ struct ConnectionState : public ConnectionInfo {
   bool zerocopyStopOnCopy : 1 {false};
 #endif
 
-  // Whether some bytes of outBuffer were written with MSG_ZEROCOPY by sends not completed yet: outBuffer must then
-  // neither be modified nor freed (see discardOutBuffer()).
-  bool outBufferZerocopySent : 1 {false};
+  // Whether some bytes of the first entry of outQueue were written with MSG_ZEROCOPY by sends not completed yet: it
+  // must then neither be modified nor freed (see clearBuffers()).
+  bool outQueueFrontZerocopySent : 1 {false};
 
   // True when socket bytes may have been left unread while an HTTP/1 async handler was running (see
   // SingleHttpServer::handleReadableClient()): they must be read once it completes, no new event reporting them.
@@ -283,9 +278,7 @@ struct ConnectionState : public ConnectionInfo {
   // per-connection request object reused across dispatches
   HttpRequestView request;
   AggregatedBodyStreamContext bodyStreamContext;
-  // pending outbound data not yet written
-  HttpMessageData outBuffer;  // TODO: remove it to keep only outQueue?
-  // HTTP/1 output queued behind outBuffer (and the file sent after it), produced while it waits for the socket.
+  // HTTP/1 output not written yet, sent after the file being sent (if any).
   OutputQueue outQueue;
 #ifdef AERONET_LINUX
   // Written buffers still read by the kernel for zerocopy sends in flight.

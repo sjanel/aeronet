@@ -276,8 +276,7 @@ void ConnectionState::reset() {
 
   request.shrinkAndMaybeClear();
 
-  shrinkAndClear(outBuffer);
-  // Never written, so not read by the kernel.
+  // Its first entry is not read by the kernel anymore either (see below).
   shrinkAndClear(outQueue);
 
 #ifdef AERONET_LINUX
@@ -322,7 +321,7 @@ void ConnectionState::reset() {
   zerocopyEnabled = false;
   zerocopyStopOnCopy = false;
 #endif
-  outBufferZerocopySent = false;
+  outQueueFrontZerocopySent = false;
   tlsInfo = {};
 #ifdef AERONET_ENABLE_OPENSSL
   tlsHandshakeObserver = {};
@@ -333,7 +332,6 @@ void ConnectionState::reset() {
   fileSend = {};
   // A connection may close in the middle of a file transfer (peer gone): its next user must not look busy sending it.
   fileSendActive = false;
-  fileSendHeadersPending = false;
 
   // Reset protocol handler (e.g., WebSocket, HTTP/2)
   protocolHandler.reset();
@@ -369,11 +367,11 @@ bool ConnectionState::flushNeedsCork() const noexcept {
   if (!corkable) {
     return false;
   }
-  const bool hasHttp1Output = !outBuffer.empty() || !outQueue.empty();
+  const bool hasHttp1Output = !outQueue.empty();
   const std::size_t handlerBytes = protocolHandler != nullptr ? protocolHandler->pendingOutputSize() : 0;
-  // Written apart: the file being sent from the output around it (the head of its response, the queued output), the
-  // queued output from the files of its responses (it is gathered up to the first one), and the protocol handler output
-  // from the HTTP/1 output ahead of it (its 101 Switching Protocols response).
+  // Written apart: the file being sent from the queued output behind it, the queued output from the files of its
+  // responses (it is gathered up to the head of the first one), and the protocol handler output from the HTTP/1 output
+  // ahead of it (its 101 Switching Protocols response).
   const bool severalParts = (hasHttp1Output && (isSendingFile() || handlerBytes != 0)) ||
                             std::ranges::any_of(outQueue.entries(), &HttpMessageData::hasFilePayload);
   std::size_t nbBytes = bufferedOutputBytes() + handlerBytes;
@@ -387,11 +385,10 @@ bool ConnectionState::attachFilePayload(FilePayload filePayload) {
   assert(!fileSendActive && "Cannot attach file payload while a previous file send is still active");
   fileSend.filePayload = std::move(filePayload);
   fileSendActive = fileSend.filePayload.length > 0;
-  fileSendHeadersPending = !outBuffer.empty();
   // Don't enable writable interest here - let flushFilePayload do it when it actually blocks.
   // Enabling it prematurely (when the socket is already writable) causes us to miss the edge
   // in edge-triggered epoll mode.
-  return isSendingFile() && !fileSendHeadersPending;
+  return fileSendActive;
 }
 
 void ConnectionState::reclaimMemoryFromOversizedBuffers() {
@@ -425,11 +422,6 @@ void ConnectionState::reclaimMemoryFromOversizedBuffers() {
   }
 #endif
 
-  // outBuffer: grows when TCP writes can't keep up and responses queue. Not while zerocopy sends may read it.
-  if (!outBufferZerocopySent) {
-    outBuffer.shrink_to_fit();
-  }
-
   // outQueue: released once empty, as the common case does not use it.
   outQueue.shrink_to_fit();
 #ifdef AERONET_LINUX
@@ -452,7 +444,7 @@ ZerocopyCompletions ConnectionState::pollZerocopyCompletions() noexcept {
   }
   zerocopyBuffers.releaseCompleted(plain->zerocopy());
   if (!plain->zerocopy().pendingCompletions()) {
-    outBufferZerocopySent = false;
+    outQueueFrontZerocopySent = false;
   }
   return completions;
 }
@@ -464,95 +456,74 @@ void ConnectionState::retainZerocopyBuffer(HttpMessageData data) {
 }
 #endif
 
-void ConnectionState::discardOutBuffer() {
+void ConnectionState::popWrittenOutput() {
+  HttpMessageData entry = outQueue.pop();
+  if (FilePayload* pFilePayload = entry.getIfFilePayload()) {
+    // Its response head written, the file is sent next (gathered last, see gatherOutput()).
+    attachFilePayload(std::move(*pFilePayload));
+  }
 #ifdef AERONET_LINUX
-  if (outBufferZerocopySent) {
-    retainZerocopyBuffer(std::move(outBuffer));
-    outBufferZerocopySent = false;
+  if (outQueueFrontZerocopySent) {
+    retainZerocopyBuffer(std::move(entry));
+    outQueueFrontZerocopySent = false;
   }
 #endif
-  outBuffer.clear();
-}
-
-bool ConnectionState::queueOutput(HttpMessageData data) {
-  // outBuffer can only be appended to when it is the last output: no queued entry nor file payload after it.
-  if (outQueue.empty() && !isSendingFile() && !outBufferZerocopySent && OutputQueue::CanMerge(outBuffer, data)) {
-    outBuffer.append(std::move(data));
-    return true;
-  }
-  return outQueue.push(std::move(data));
-}
-
-void ConnectionState::dequeueOutput() {
-  assert(outBuffer.empty() && !outBufferZerocopySent && !isSendingFile());
-  outBuffer = outQueue.pop();
-  if (FilePayload* pFilePayload = outBuffer.getIfFilePayload()) {
-    // Sent once outBuffer, the head of its response, is written.
-    [[maybe_unused]] const bool sendNow = attachFilePayload(std::move(*pFilePayload));
-    assert(!sendNow);
-  }
 }
 
 ConnectionState::GatheredOutput ConnectionState::gatherOutput(vector<std::string_view>& buffers,
                                                               std::size_t maxBuffers) const {
-  assert(!isSendingFile());
+  assert(!isSendingFile() && maxBuffers >= 2);
   buffers.clear();
-  const auto gather = [&buffers](const HttpMessageData& data) {
-    for (const std::string_view buffer : {data.firstBuffer(), data.secondBuffer()}) {
+  GatheredOutput gathered{0, 0, 0};
+  for (const HttpMessageData& entry : outQueue.entries()) {
+    if (buffers.size() + 2 > maxBuffers) {
+      break;
+    }
+    for (const std::string_view buffer : {entry.firstBuffer(), entry.secondBuffer()}) {
       if (!buffer.empty()) {
         buffers.push_back(buffer);
       }
     }
-  };
-  gather(outBuffer);
-  GatheredOutput gathered{outBuffer.remainingSize(), outBuffer.retainedSize(), 1};
-  for (const HttpMessageData& entry : outQueue.entries()) {
-    if (buffers.size() + 2 > maxBuffers || entry.hasFilePayload()) {
-      break;
-    }
-    gather(entry);
     gathered.size += entry.remainingSize();
     gathered.retainedSize += entry.retainedSize();
     ++gathered.nbMessages;
+    if (entry.hasFilePayload()) {
+      // Its file is sent before what follows it.
+      break;
+    }
   }
   return gathered;
 }
 
 void ConnectionState::outputWritten(std::size_t written, bool zerocopySent) {
-  outBufferZerocopySent = outBufferZerocopySent || zerocopySent;
-  std::size_t entrySize = outBuffer.remainingSize();
-  if (written < entrySize) {
-    outBuffer.addOffset(written);
-    return;
-  }
-  written -= entrySize;
-  discardOutBuffer();
-  while (written != 0) {
-    // The next entries, gathered after outBuffer: none of them has a file payload, sent apart.
-    HttpMessageData entry = outQueue.pop();
-    assert(!entry.hasFilePayload());
-    entrySize = entry.remainingSize();
+  outQueueFrontZerocopySent = outQueueFrontZerocopySent || zerocopySent;
+  for (;;) {
+    const std::size_t entrySize = outQueue.front().remainingSize();
     if (written < entrySize) {
-      entry.addOffset(written);
-      outBuffer = std::move(entry);
-      outBufferZerocopySent = zerocopySent;
+      outQueue.frontWritten(written);
       return;
     }
     written -= entrySize;
-#ifdef AERONET_LINUX
-    if (zerocopySent) {
-      retainZerocopyBuffer(std::move(entry));
+    popWrittenOutput();
+    if (written == 0) {
+      return;
     }
-#endif
+    // The next entry, gathered in the same write: not behind a file.
+    assert(!isSendingFile());
+    outQueueFrontZerocopySent = zerocopySent;
   }
 }
 
 void ConnectionState::clearBuffers() {
-  discardOutBuffer();
+#ifdef AERONET_LINUX
+  if (outQueueFrontZerocopySent) {
+    retainZerocopyBuffer(outQueue.pop());
+    outQueueFrontZerocopySent = false;
+  }
+#endif
   outQueue.clear();
-  // The file to send after outBuffer as well: a drain close would wait for it otherwise.
+  // The file to send before outQueue as well: a drain close would wait for it otherwise.
   fileSendActive = false;
-  fileSendHeadersPending = false;
   if (protocolHandler != nullptr) {
     protocolHandler->discardPendingOutput();
   }
