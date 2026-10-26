@@ -959,6 +959,8 @@ std::string_view HttpClient::buildCacheKey(const HttpRequest& req) {
 
   const std::size_t wireSize = req.wireDataSize();
 
+  _cacheKeyScratch.clear();  // avoids a useless Copy in the next reserve call.
+
   if (filePayload == nullptr) {
     const std::string_view bodyInMemory = req.bodyInMemory();
     const std::string_view trailers = req.trailersFlatView();

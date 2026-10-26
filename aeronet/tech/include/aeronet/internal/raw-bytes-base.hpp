@@ -2,6 +2,7 @@
 
 #include <concepts>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <string_view>
 #include <type_traits>
@@ -13,11 +14,11 @@
 #endif
 
 #include "aeronet/memory-utils.hpp"
-#include "aeronet/safe-cast.hpp"
 
 namespace aeronet {
 
-[[noreturn]] void ThrowRawBytesBaseCapacityOverflow();
+// Cold path of RawBytesBase: logs the current size and the requested extra capacity, then throws std::overflow_error.
+[[noreturn]] void ThrowRawBytesBaseCapacityOverflow(uintmax_t size, uintmax_t extra);
 
 /**
  * A lightweight, SSO-free byte buffer: no zero-initialization, explicit control over exact vs exponential growth,
@@ -41,11 +42,12 @@ class RawBytesBase {
   static_assert(std::is_unsigned_v<SizeType>, "RawBytesBase requires an unsigned size type");
 
   // Constructs an empty buffer, without any allocated storage.
-  RawBytesBase() noexcept : _buf(nullptr), _size(0), _capacity(0) {}
+  RawBytesBase() noexcept = default;
 
   // Constructs an empty buffer with the specified capacity.
   // Warning: unlike std::string or std::vector, the size is set to 0, not to capacity.
-  explicit RawBytesBase(uint64_t capacity);
+  explicit RawBytesBase(uint64_t capacity)
+      : _buf(Allocate(capacity)), _size(0), _capacity(static_cast<size_type>(capacity)) {}
 
   // Constructs a buffer initialized with the specified data.
   explicit RawBytesBase(ViewType data) : RawBytesBase(data.data(), data.size()) {}
@@ -69,9 +71,23 @@ class RawBytesBase {
         _capacity(std::exchange(rhs._capacity, 0)) {}
 
   RawBytesBase& operator=(const RawBytesBase& rhs);
-  RawBytesBase& operator=(RawBytesBase&& rhs) noexcept;
 
-  ~RawBytesBase();
+  RawBytesBase& operator=(RawBytesBase&& rhs) noexcept {
+    if (this != &rhs) [[likely]] {
+      std::free(_buf);
+      _buf = std::exchange(rhs._buf, nullptr);
+      _size = std::exchange(rhs._size, 0);
+      _capacity = std::exchange(rhs._capacity, 0);
+    }
+    return *this;
+  }
+
+  ~RawBytesBase() {
+    std::free(_buf);
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+    _buf = nullptr;
+#endif
+  }
 
   // Appends data to the end of the buffer without checking capacity.
   constexpr void unchecked_append(const_pointer data, uint64_t sz) {
@@ -89,12 +105,17 @@ class RawBytesBase {
   void unchecked_append(ViewType data) { unchecked_append(data.data(), data.size()); }
 
   // Appends data to the end of the buffer, reallocating if necessary.
+  // 'data' must not point into this buffer: a reallocation would free it before the copy.
   void append(const_pointer data, uint64_t sz) {
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+    assert(sz == 0 || !pointsInto(data));
+#endif
     ensureAvailableCapacityExponential(sz);
     unchecked_append(data, sz);
   }
 
   // Appends data to the end of the buffer, reallocating if necessary.
+  // 'data' must not point into this buffer: a reallocation would free it before the copy.
   void append(ViewType data) { append(data.data(), data.size()); }
 
   // Appends a single byte to the end of the buffer without checking capacity.
@@ -112,9 +133,11 @@ class RawBytesBase {
   }
 
   // Assigns new data to the buffer, replacing its current contents.
+  // 'data' must not point into this buffer: it would be freed, or overwritten, before being copied.
   void assign(const_pointer data, uint64_t size);
 
   // Assigns new data to the buffer, replacing its current contents.
+  // 'data' must not point into this buffer: it would be freed, or overwritten, before being copied.
   void assign(ViewType data) { assign(data.data(), data.size()); }
 
   // Clears the buffer, setting its size to zero.
@@ -128,7 +151,13 @@ class RawBytesBase {
   }
 
   // Erases the first n bytes from the buffer.
-  void erase_front(size_type n) noexcept;
+  void erase_front(size_type n) noexcept {
+    if (n == _size) {
+      clear();
+    } else if (n != 0) {
+      erasePartialFront(n);
+    }
+  }
 
   // Sets the size of the buffer.
   void setSize(size_type newSize) noexcept {
@@ -175,9 +204,10 @@ class RawBytesBase {
   [[nodiscard]] size_type availableCapacity() const noexcept { return _capacity - _size; }
 
   // Reserves capacity for at least newCapacity bytes.
+  // Throws std::overflow_error if newCapacity does not fit in size_type.
   void reserve(uint64_t newCapacity) {
-    if (_capacity < SafeCast<size_type>(newCapacity)) {
-      reallocUp(static_cast<size_type>(newCapacity));
+    if (_capacity < newCapacity) {
+      reallocUp(newCapacity);
     }
   }
 
@@ -208,7 +238,7 @@ class RawBytesBase {
     const uintmax_t required = requiredCapacity(availableCapacity);
 
     if (_capacity < required) {
-      reallocUp(SafeCast<size_type>(ExponentialCapacity(required, _capacity)));
+      reallocUpExponential(required);
     }
 #endif
   }
@@ -250,7 +280,11 @@ class RawBytesBase {
   [[nodiscard]] bool empty() const noexcept { return _size == 0; }
 
   // Swaps the contents of this buffer with another buffer.
-  void swap(RawBytesBase& rhs) noexcept;
+  void swap(RawBytesBase& rhs) noexcept {
+    std::swap(_buf, rhs._buf);
+    std::swap(_size, rhs._size);
+    std::swap(_capacity, rhs._capacity);
+  }
 
   value_type& operator[](size_type pos) {
 #ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
@@ -299,17 +333,36 @@ class RawBytesBase {
     // The sum can only wrap when one of the operands is as wide as uintmax_t.
     if constexpr (sizeof(ExtraT) >= sizeof(uintmax_t) || sizeof(size_type) >= sizeof(uintmax_t)) {
       if (required < extra) [[unlikely]] {
-        ThrowRawBytesBaseCapacityOverflow();
+        ThrowRawBytesBaseCapacityOverflow(_size, extra);
       }
     }
     return required;
   }
 
-  void reallocUp(size_type newCapacity);
+#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+  // Tells whether 'ptr' points into the allocated storage of this buffer.
+  [[nodiscard]] bool pointsInto(const_pointer ptr) const noexcept {
+    return reinterpret_cast<uintptr_t>(ptr) - reinterpret_cast<uintptr_t>(_buf) < _capacity;
+  }
+#endif
 
-  pointer _buf;
-  size_type _size;
-  size_type _capacity;
+  // Allocates 'capacity' bytes (none for 0), throws std::overflow_error if it does not fit in size_type.
+  static pointer Allocate(uint64_t capacity);
+
+  // Erases the first n bytes, 0 < n < size().
+  void erasePartialFront(size_type n) noexcept;
+
+  // Grows the capacity to exactly newCapacity (larger than the current one), keeping the content.
+  // Throws std::overflow_error if newCapacity does not fit in size_type.
+  void reallocUp(uintmax_t newCapacity);
+
+  // Grows the capacity to ExponentialCapacity(required, capacity()), keeping the content.
+  // Throws std::overflow_error if required does not fit in size_type.
+  void reallocUpExponential(uintmax_t required);
+
+  pointer _buf = nullptr;
+  size_type _size = 0;
+  size_type _capacity = 0;
 };
 
 template <class T, class ViewType, class SizeType>
