@@ -98,12 +98,12 @@ TEST(ConnectionStateSendfileTest, KernelSendfileSuccess) {
   EXPECT_EQ(static_cast<decltype(res.bytesDone)>(rd), res.bytesDone);
 }
 
-TEST(ConnectionStateTest, CannotCloseIfOutBufferNotEmpty) {
+TEST(ConnectionStateTest, CannotCloseWithPendingOutput) {
   ConnectionState state;
   state.closeMode = ConnectionState::CloseMode::DrainThenClose;
-  state.outBuffer = HttpMessageData{RawChars("test")};
+  state.queueOutput(HttpMessageData{RawChars("test")});
   EXPECT_FALSE(state.canCloseConnectionForDrain());
-  state.outBuffer.clear();
+  state.outputWritten(4, /*zerocopySent=*/false);
   state.tunnelOrFileBuffer.append("data");
   EXPECT_FALSE(state.canCloseConnectionForDrain());
   state.tunnelOrFileBuffer.clear();
@@ -822,47 +822,58 @@ TEST(ConnectionStateZerocopyTest, CopiedSendStopsZerocopyWhenRequested) {
   }
 }
 
-TEST(ConnectionStateZerocopyTest, ZerocopySentOutBufferIsNeitherShrunkNorModifiedInPlace) {
+namespace {
+
+// Queues 'size' bytes of 'ch', then writes the first 'written' of them with MSG_ZEROCOPY.
+void QueueAndSendZerocopy(ZerocopyConnection& cnx, std::size_t size, char ch, std::size_t written) {
+  cnx.state.queueOutput(test::MakeMessageData(size, ch));
+  cnx.sendZerocopy(cnx.state.outQueue.front(), written);
+  cnx.state.outputWritten(written, /*zerocopySent=*/true);
+}
+
+}  // namespace
+
+TEST(ConnectionStateZerocopyTest, ZerocopySentFirstEntryIsNeitherShrunkNorModifiedInPlace) {
   ZerocopyConnection cnx;
   ConnectionState& state = cnx.state;
-  state.outBuffer = test::MakeMessageData(1000, 'o');
   // Partially written with MSG_ZEROCOPY: the kernel reads its first 300 bytes until the send completes.
-  cnx.sendZerocopy(state.outBuffer, 300);
-  state.outBuffer.addOffset(300);
-  state.outBufferZerocopySent = true;
-  const char* storage = state.outBuffer.firstBuffer().data();
+  QueueAndSendZerocopy(cnx, 1000, 'o', 300);
+  EXPECT_TRUE(state.outQueueFrontZerocopySent);
+  const char* storage = state.outQueue.front().firstBuffer().data();
 
   state.reclaimMemoryFromOversizedBuffers();
-  EXPECT_EQ(state.outBuffer.firstBuffer().data(), storage);
+  EXPECT_EQ(state.outQueue.front().firstBuffer().data(), storage);
 
   // Output produced meanwhile, even small, is queued behind it: neither of them is copied.
-  state.queueOutput(test::MakeMessageData(16, 'n'));
-  EXPECT_TRUE(state.outBufferZerocopySent);
-  EXPECT_EQ(state.outBuffer.firstBuffer().data(), storage);
-  EXPECT_EQ(state.outBuffer.firstBuffer(), std::string(700, 'o'));
-  ASSERT_EQ(state.outQueue.entries().size(), 1U);
-  EXPECT_EQ(state.outQueue.entries()[0].firstBuffer(), std::string(16, 'n'));
+  EXPECT_FALSE(state.queueOutput(test::MakeMessageData(16, 'n')));
+  EXPECT_TRUE(state.outQueueFrontZerocopySent);
+  ASSERT_EQ(state.outQueue.size(), 2U);
+  EXPECT_EQ(state.outQueue.front().firstBuffer().data(), storage);
+  EXPECT_EQ(state.outQueue.front().firstBuffer(), std::string(700, 'o'));
+  EXPECT_EQ(state.outQueue.entries()[1].firstBuffer(), std::string(16, 'n'));
   EXPECT_EQ(state.bufferedOutputBytes(), 716U);
   EXPECT_TRUE(state.zerocopyBuffers.empty());
 
+  // Not written yet, the entry behind it is appended to.
+  EXPECT_TRUE(state.queueOutput(test::MakeMessageData(4, 'm')));
+  ASSERT_EQ(state.outQueue.size(), 2U);
+  EXPECT_EQ(state.outQueue.entries()[1].firstBuffer(), std::string(16, 'n') + std::string(4, 'm'));
+
   cnx.complete(0, 0);
-  EXPECT_FALSE(state.outBufferZerocopySent);
+  EXPECT_FALSE(state.outQueueFrontZerocopySent);
 }
 
-TEST(ConnectionStateZerocopyTest, OutBufferIsAppendedToOnceItsSendsCompleted) {
+TEST(ConnectionStateZerocopyTest, FirstEntryIsAppendedToOnceItsSendsCompleted) {
   ZerocopyConnection cnx;
   ConnectionState& state = cnx.state;
-  state.outBuffer = test::MakeMessageData(1000, 'o');
-  cnx.sendZerocopy(state.outBuffer, 300);
-  state.outBuffer.addOffset(300);
-  state.outBufferZerocopySent = true;
+  QueueAndSendZerocopy(cnx, 1000, 'o', 300);
 
   cnx.complete(0, 0);
-  EXPECT_FALSE(state.outBufferZerocopySent);
+  EXPECT_FALSE(state.outQueueFrontZerocopySent);
 
-  state.queueOutput(test::MakeMessageData(16, 'n'));
-  EXPECT_TRUE(state.outQueue.empty());
-  EXPECT_EQ(state.outBuffer.firstBuffer(), std::string(700, 'o') + std::string(16, 'n'));
+  EXPECT_TRUE(state.queueOutput(test::MakeMessageData(16, 'n')));
+  ASSERT_EQ(state.outQueue.size(), 1U);
+  EXPECT_EQ(state.outQueue.front().firstBuffer(), std::string(700, 'o') + std::string(16, 'n'));
   EXPECT_TRUE(state.zerocopyBuffers.empty());
 }
 
@@ -870,49 +881,66 @@ TEST(ConnectionStateZerocopyTest, GatheredZerocopyWriteRetainsTheWrittenEntries)
   ZerocopyConnection cnx;
   ConnectionState& state = cnx.state;
   static constexpr std::size_t kEntrySize = OutputQueue::kMaxMergedSize;
-  state.outBuffer = test::MakeMessageData(kEntrySize, 'a');
+  state.queueOutput(test::MakeMessageData(kEntrySize, 'a'));
   state.queueOutput(test::MakeMessageData(kEntrySize, 'b'));
   state.queueOutput(test::MakeMessageData(kEntrySize, 'c'));
-  ASSERT_EQ(state.outQueue.entries().size(), 2U);
-  const char* lastStorage = state.outQueue.entries()[1].firstBuffer().data();
+  ASSERT_EQ(state.outQueue.size(), 3U);
+  const char* lastStorage = state.outQueue.entries()[2].firstBuffer().data();
 
-  // One send of outBuffer, of the first entry, and of the start of the second one.
+  // One send of the first 2 entries, and of the start of the third one.
   test::PushSendmsgAction(cnx.fd(), IoAction{static_cast<int64_t>((2 * kEntrySize) + 100), 0});
-  const std::string_view buffers[]{
-      state.outBuffer.firstBuffer(),
-      state.outQueue.entries()[0].firstBuffer(),
-      state.outQueue.entries()[1].firstBuffer(),
-  };
+  vector<std::string_view> buffers;
+  const auto gathered = state.gatherOutput(buffers, ZeroCopyState::kMaxBuffers);
+  EXPECT_EQ(gathered.size, 3 * kEntrySize);
+  EXPECT_EQ(gathered.nbMessages, 3U);
   const auto [bytesSent, status] = state.transport.get<PlainTransport>()->writeZerocopy(buffers);
   ASSERT_EQ(status, ZerocopySendStatus::Sent);
   state.outputWritten(bytesSent, /*zerocopySent=*/true);
 
-  // The kernel reads the 2 fully written buffers, and the one written in part, now outBuffer, until the completion.
+  // The kernel reads the 2 fully written buffers, and the one written in part, still queued, until the completion.
   EXPECT_EQ(state.zerocopyBuffers.size(), 2U);
   EXPECT_EQ(state.zerocopyBuffers.bytes(), 2 * kEntrySize);
-  EXPECT_TRUE(state.outQueue.empty());
-  EXPECT_TRUE(state.outBufferZerocopySent);
-  EXPECT_EQ(state.outBuffer.firstBuffer(), std::string(kEntrySize - 100, 'c'));
-  EXPECT_EQ(state.outBuffer.firstBuffer().data(), lastStorage + 100);
+  ASSERT_EQ(state.outQueue.size(), 1U);
+  EXPECT_TRUE(state.outQueueFrontZerocopySent);
+  EXPECT_EQ(state.outQueue.front().firstBuffer(), std::string(kEntrySize - 100, 'c'));
+  EXPECT_EQ(state.outQueue.front().firstBuffer().data(), lastStorage + 100);
+  EXPECT_EQ(state.bufferedOutputBytes(), kEntrySize - 100);
 
   cnx.complete(0, 0);
   EXPECT_TRUE(state.zerocopyBuffers.empty());
-  EXPECT_FALSE(state.outBufferZerocopySent);
+  EXPECT_FALSE(state.outQueueFrontZerocopySent);
 }
 
-TEST(ConnectionStateZerocopyTest, DiscardedOutBufferIsRetainedWhileItsSendsAreInFlight) {
+TEST(ConnectionStateZerocopyTest, EntriesWrittenWithoutZerocopyAfterAZerocopySentOneAreReleased) {
   ZerocopyConnection cnx;
   ConnectionState& state = cnx.state;
-  state.outBuffer = test::MakeMessageData(1000, 'o');
-  cnx.sendZerocopy(state.outBuffer, 300);
-  state.outBuffer.addOffset(300);
-  state.outBufferZerocopySent = true;
+  static constexpr std::size_t kEntrySize = OutputQueue::kMaxMergedSize;
+  QueueAndSendZerocopy(cnx, kEntrySize, 'a', 100);
+  state.queueOutput(test::MakeMessageData(kEntrySize, 'b'));
+  state.queueOutput(test::MakeMessageData(kEntrySize, 'c'));
 
-  // Dropped (failed write, epoll failure): the kernel still reads it.
-  state.clearBuffers();
-  EXPECT_TRUE(state.outBuffer.empty());
-  EXPECT_FALSE(state.outBufferZerocopySent);
+  // The rest of the first entry, the second one and the start of the third one, copied.
+  state.outputWritten((2 * kEntrySize) - 100 + 10, /*zerocopySent=*/false);
+  // Only the first one is read by the kernel.
   EXPECT_EQ(state.zerocopyBuffers.size(), 1U);
+  EXPECT_EQ(state.zerocopyBuffers.bytes(), kEntrySize);
+  ASSERT_EQ(state.outQueue.size(), 1U);
+  EXPECT_FALSE(state.outQueueFrontZerocopySent);
+  EXPECT_EQ(state.outQueue.front().firstBuffer(), std::string(kEntrySize - 10, 'c'));
+}
+
+TEST(ConnectionStateZerocopyTest, ClearedFirstEntryIsRetainedWhileItsSendsAreInFlight) {
+  ZerocopyConnection cnx;
+  ConnectionState& state = cnx.state;
+  QueueAndSendZerocopy(cnx, 1000, 'o', 300);
+  state.queueOutput(test::MakeMessageData(OutputQueue::kMaxMergedSize, 'n'));
+
+  // Dropped (failed write, epoll failure): the kernel still reads the first entry.
+  state.clearBuffers();
+  EXPECT_TRUE(state.outQueue.empty());
+  EXPECT_FALSE(state.outQueueFrontZerocopySent);
+  EXPECT_EQ(state.zerocopyBuffers.size(), 1U);
+  EXPECT_EQ(state.zerocopyBuffers.bytes(), 1000U);
   EXPECT_TRUE(state.isDrainCloseRequested());
   // A drain close waits for the completion of the zerocopy sends: after close, the kernel would still send from their
   // buffers, released with the connection state.
@@ -923,12 +951,13 @@ TEST(ConnectionStateZerocopyTest, DiscardedOutBufferIsRetainedWhileItsSendsAreIn
   EXPECT_TRUE(state.canCloseConnectionForDrain());
 }
 
-TEST(ConnectionStateZerocopyTest, DiscardedOutBufferWithoutZerocopySendIsReleased) {
+TEST(ConnectionStateZerocopyTest, ClearedOutputWithoutZerocopySendIsReleased) {
   ZerocopyConnection cnx;
   ConnectionState& state = cnx.state;
-  state.outBuffer = test::MakeMessageData(1000, 'o');
-  state.discardOutBuffer();
-  EXPECT_TRUE(state.outBuffer.empty());
+  state.queueOutput(test::MakeMessageData(1000, 'o'));
+  state.outputWritten(300, /*zerocopySent=*/false);
+  state.clearBuffers();
+  EXPECT_TRUE(state.outQueue.empty());
   EXPECT_TRUE(state.zerocopyBuffers.empty());
 }
 
@@ -936,14 +965,16 @@ TEST(ConnectionStateZerocopyTest, ResetForgetsTheZerocopyState) {
   ZerocopyConnection cnx;
   ConnectionState& state = cnx.state;
   state.zerocopyStopOnCopy = true;
-  state.outBufferZerocopySent = true;
+  state.queueOutput(test::MakeMessageData(10, 'b'));
+  state.outQueueFrontZerocopySent = true;
   state.zerocopyStallCheckQueuedBytes = 42;
   state.zerocopyBuffers.retain(test::MakeMessageData(10, 'a'), 1);
 
   state.reset();
   EXPECT_FALSE(state.zerocopyEnabled);
   EXPECT_FALSE(state.zerocopyStopOnCopy);
-  EXPECT_FALSE(state.outBufferZerocopySent);
+  EXPECT_TRUE(state.outQueue.empty());
+  EXPECT_FALSE(state.outQueueFrontZerocopySent);
   EXPECT_EQ(state.zerocopyStallCheckQueuedBytes, ConnectionState::kNoZerocopyStallCheck);
   EXPECT_TRUE(state.zerocopyBuffers.empty());
 }
@@ -1181,25 +1212,24 @@ TEST(ConnectionStateSendfileTest, TlsPreadErrorTriggersCloseAndClearsActive) {
 // inherit the transfer: its requests would never be processed while a file send looks in progress.
 TEST(ConnectionStateTest, ResetEndsAnInterruptedFileTransfer) {
   ConnectionState state;
-  state.outBuffer = HttpMessageData{RawChars("HTTP/1.1 200 OK\r\n\r\n")};  // response head not flushed yet
-  EXPECT_FALSE(state.attachFilePayload(FilePayload{File{}, 0, 4}));
+  EXPECT_TRUE(state.attachFilePayload(FilePayload{File{}, 0, 4}));
+  state.queueOutput(HttpMessageData{RawChars("HTTP/1.1 200 OK\r\n\r\n")});  // the next response, sent after it
   ASSERT_TRUE(state.isSendingFile());
-  ASSERT_TRUE(state.fileSendHeadersPending);
 
   state.reset();
 
   EXPECT_FALSE(state.isSendingFile());
-  EXPECT_FALSE(state.fileSendHeadersPending);
+  EXPECT_FALSE(state.hasPendingOutput());
   EXPECT_EQ(state.fileSend.filePayload.length, 0U);
 }
 
-TEST(ConnectionStateTest, AttachFilePayloadMustReturnFalseIfNoFile) {
+TEST(ConnectionStateTest, AttachFilePayloadReturnsWhetherThereIsSomethingToSend) {
   ConnectionState state;
+  EXPECT_FALSE(state.attachFilePayload(FilePayload{File{}, 2, 0}));
+  EXPECT_FALSE(state.isSendingFile());
 
-  state.outBuffer = HttpMessageData{RawChars("response data")};
-
-  // With file attached, attachFilePayload should return false for non-empty output buffer
-  EXPECT_FALSE(state.attachFilePayload(FilePayload{File{}, 2, 4}));
+  EXPECT_TRUE(state.attachFilePayload(FilePayload{File{}, 2, 4}));
+  EXPECT_TRUE(state.isSendingFile());
 }
 
 namespace {
@@ -1208,139 +1238,158 @@ constexpr std::string_view kFileResponseHead = "HTTP/1.1 200 OK\r\ncontent-lengt
 
 }  // namespace
 
-TEST(ConnectionStateOutputTest, SmallOutputIsAppendedToOutBuffer) {
+namespace {
+
+HttpMessageData FileResponse(std::size_t offset = 0) {
+  return {RawChars(kFileResponseHead), HttpPayload(FilePayload{File{}, offset, 4})};
+}
+
+}  // namespace
+
+TEST(ConnectionStateOutputTest, SmallOutputIsAppendedToTheLastEntry) {
   ConnectionState state;
-  state.outBuffer = test::MakeMessageData(100, 'a');
+  EXPECT_FALSE(state.queueOutput(test::MakeMessageData(100, 'a')));
   EXPECT_TRUE(state.queueOutput(test::MakeMessageData(50, 'b')));
-  EXPECT_TRUE(state.outQueue.empty());
-  EXPECT_EQ(state.outBuffer.firstBuffer(), std::string(100, 'a') + std::string(50, 'b'));
+  ASSERT_EQ(state.outQueue.size(), 1U);
+  EXPECT_EQ(state.outQueue.front().firstBuffer(), std::string(100, 'a') + std::string(50, 'b'));
   EXPECT_EQ(state.bufferedOutputBytes(), 150U);
   EXPECT_TRUE(state.hasPendingOutput());
+
+  // Even written in part.
+  state.outputWritten(30, /*zerocopySent=*/false);
+  EXPECT_EQ(state.bufferedOutputBytes(), 120U);
+  EXPECT_TRUE(state.queueOutput(test::MakeMessageData(10, 'c')));
+  ASSERT_EQ(state.outQueue.size(), 1U);
+  EXPECT_EQ(state.outQueue.front().firstBuffer(), std::string(70, 'a') + std::string(50, 'b') + std::string(10, 'c'));
+  EXPECT_EQ(state.bufferedOutputBytes(), 130U);
 }
 
 TEST(ConnectionStateOutputTest, LargeOutputIsQueuedWithoutCopy) {
   ConnectionState state;
-  state.outBuffer = test::MakeMessageData(100, 'a');
+  state.queueOutput(test::MakeMessageData(100, 'a'));
   HttpMessageData large = test::MakeMessageData(OutputQueue::kMaxMergedSize, 'b');
   const char* storage = large.firstBuffer().data();
   EXPECT_FALSE(state.queueOutput(std::move(large)));
   // Not merged into the large entry either.
   EXPECT_FALSE(state.queueOutput(test::MakeMessageData(10, 'c')));
 
-  EXPECT_EQ(state.outBuffer.firstBuffer(), std::string(100, 'a'));
-  ASSERT_EQ(state.outQueue.entries().size(), 2U);
-  EXPECT_EQ(state.outQueue.entries()[0].firstBuffer().data(), storage);
-  EXPECT_EQ(state.outQueue.entries()[1].firstBuffer(), std::string(10, 'c'));
+  ASSERT_EQ(state.outQueue.size(), 3U);
+  EXPECT_EQ(state.outQueue.entries()[0].firstBuffer(), std::string(100, 'a'));
+  EXPECT_EQ(state.outQueue.entries()[1].firstBuffer().data(), storage);
+  EXPECT_EQ(state.outQueue.entries()[2].firstBuffer(), std::string(10, 'c'));
   EXPECT_EQ(state.bufferedOutputBytes(), 110U + OutputQueue::kMaxMergedSize);
 }
 
 TEST(ConnectionStateOutputTest, OutputBehindAFileIsQueued) {
   ConnectionState state;
-  state.outBuffer = HttpMessageData{RawChars(kFileResponseHead)};
-  EXPECT_FALSE(state.attachFilePayload(FilePayload{File{}, 0, 4}));
+  EXPECT_TRUE(state.attachFilePayload(FilePayload{File{}, 0, 4}));
 
-  // Small, but the file goes first.
+  // Sent after the file, merged together.
   EXPECT_FALSE(state.queueOutput(test::MakeMessageData(10, 'b')));
-  EXPECT_EQ(state.outBuffer.firstBuffer(), kFileResponseHead);
-  EXPECT_EQ(state.outQueue.entries().size(), 1U);
-
-  // Still once outBuffer is written, the file not being sent yet.
-  state.outputWritten(kFileResponseHead.size(), /*zerocopySent=*/false);
-  EXPECT_TRUE(state.outBuffer.empty());
-  // Merged into the queued entry.
   EXPECT_TRUE(state.queueOutput(test::MakeMessageData(10, 'c')));
-  EXPECT_TRUE(state.outBuffer.empty());
-  ASSERT_EQ(state.outQueue.entries().size(), 1U);
-  EXPECT_EQ(state.outQueue.entries()[0].firstBuffer(), std::string(10, 'b') + std::string(10, 'c'));
+  ASSERT_EQ(state.outQueue.size(), 1U);
+  EXPECT_EQ(state.outQueue.front().firstBuffer(), std::string(10, 'b') + std::string(10, 'c'));
+
+  // A file response is never merged, nor merged into.
+  EXPECT_FALSE(state.queueOutput(FileResponse()));
+  EXPECT_FALSE(state.queueOutput(test::MakeMessageData(10, 'd')));
+  EXPECT_EQ(state.outQueue.size(), 3U);
 }
 
-TEST(ConnectionStateOutputTest, QueuedFileIsAttachedOnceItsResponseIsDequeued) {
+TEST(ConnectionStateOutputTest, QueuedFileIsAttachedOnceItsResponseHeadIsWritten) {
   ConnectionState state;
-  state.outBuffer = test::MakeMessageData(10, 'a');
-  state.queueOutput(HttpMessageData(RawChars(kFileResponseHead), HttpPayload(FilePayload{File{}, 3, 4})));
+  state.queueOutput(test::MakeMessageData(10, 'a'));
+  state.queueOutput(FileResponse(3));
   state.queueOutput(test::MakeMessageData(10, 'b'));
-  ASSERT_EQ(state.outQueue.entries().size(), 2U);
+  ASSERT_EQ(state.outQueue.size(), 3U);
   EXPECT_FALSE(state.isSendingFile());
   // The file is not counted.
   EXPECT_EQ(state.bufferedOutputBytes(), 20U + kFileResponseHead.size());
 
-  state.outputWritten(10, /*zerocopySent=*/false);
-  EXPECT_TRUE(state.outBuffer.empty());
-  state.dequeueOutput();
-  EXPECT_EQ(state.outBuffer.firstBuffer(), kFileResponseHead);
+  // Up to the middle of its head.
+  state.outputWritten(15, /*zerocopySent=*/false);
+  EXPECT_FALSE(state.isSendingFile());
+  EXPECT_EQ(state.outQueue.front().firstBuffer(), kFileResponseHead.substr(5));
+
+  state.outputWritten(kFileResponseHead.size() - 5, /*zerocopySent=*/false);
   EXPECT_TRUE(state.isSendingFile());
-  EXPECT_TRUE(state.fileSendHeadersPending);
   EXPECT_EQ(state.fileSend.filePayload.offset, 3U);
   EXPECT_EQ(state.fileSend.filePayload.length, 4U);
-  EXPECT_EQ(state.outQueue.entries().size(), 1U);
+  ASSERT_EQ(state.outQueue.size(), 1U);
+  EXPECT_EQ(state.outQueue.front().firstBuffer(), std::string(10, 'b'));
+  EXPECT_EQ(state.bufferedOutputBytes(), 10U);
 }
 
 TEST(ConnectionStateOutputTest, WrittenOutputIsReleasedInOrder) {
   static constexpr std::size_t kSize = OutputQueue::kMaxMergedSize;
   ConnectionState state;
-  state.outBuffer = test::MakeMessageData(kSize, 'a');
+  state.queueOutput(test::MakeMessageData(kSize, 'a'));
   state.queueOutput(test::MakeMessageData(kSize, 'b'));
   state.queueOutput(test::MakeMessageData(kSize, 'c'));
 
   state.outputWritten(100, /*zerocopySent=*/false);
-  EXPECT_EQ(state.outBuffer.firstBuffer(), std::string(kSize - 100, 'a'));
-  EXPECT_EQ(state.outQueue.entries().size(), 2U);
+  EXPECT_EQ(state.outQueue.front().firstBuffer(), std::string(kSize - 100, 'a'));
+  EXPECT_EQ(state.outQueue.size(), 3U);
 
-  // The rest of outBuffer and the whole first entry, up to the second one, still queued.
+  // The rest of the first entry and the whole second one, up to the third one.
   state.outputWritten((2 * kSize) - 100, /*zerocopySent=*/false);
-  EXPECT_TRUE(state.outBuffer.empty());
-  EXPECT_FALSE(state.outBufferZerocopySent);
-  EXPECT_EQ(state.outQueue.entries().size(), 1U);
+  EXPECT_FALSE(state.outQueueFrontZerocopySent);
+  ASSERT_EQ(state.outQueue.size(), 1U);
+  EXPECT_FALSE(state.isSendingFile());
+  EXPECT_EQ(state.outQueue.front().firstBuffer(), std::string(kSize, 'c'));
   EXPECT_EQ(state.bufferedOutputBytes(), kSize);
 
-  state.dequeueOutput();
-  EXPECT_FALSE(state.isSendingFile());
-  EXPECT_EQ(state.outBuffer.firstBuffer(), std::string(kSize, 'c'));
-  EXPECT_TRUE(state.outQueue.empty());
-
-  // Written in part with the entry that followed outBuffer.
+  // Written in part with the entry that follows it.
   state.queueOutput(test::MakeMessageData(kSize, 'd'));
   state.outputWritten(kSize + 10, /*zerocopySent=*/false);
-  EXPECT_EQ(state.outBuffer.firstBuffer(), std::string(kSize - 10, 'd'));
-  EXPECT_TRUE(state.outQueue.empty());
+  ASSERT_EQ(state.outQueue.size(), 1U);
+  EXPECT_EQ(state.outQueue.front().firstBuffer(), std::string(kSize - 10, 'd'));
+  EXPECT_EQ(state.bufferedOutputBytes(), kSize - 10);
 }
 
-TEST(ConnectionStateOutputTest, GatheredOutputStopsBeforeTheFirstFileResponse) {
+TEST(ConnectionStateOutputTest, GatheredOutputStopsAtTheHeadOfTheFirstFileResponse) {
   static constexpr std::size_t kSize = OutputQueue::kMaxMergedSize;
   ConnectionState state;
-  state.outBuffer = test::MakeMessageData(kSize, 'a');
-  state.outBuffer.addOffset(100);
+  state.queueOutput(test::MakeMessageData(kSize, 'a'));
+  state.outputWritten(100, /*zerocopySent=*/false);
   state.queueOutput(test::MakeMessageData(kSize, 'b'));
   // A message with a payload: its head, then its body.
   state.queueOutput(HttpMessageData(RawChars("head"), HttpPayload(std::string(kSize, 'c'))));
-  state.queueOutput(HttpMessageData(RawChars(kFileResponseHead), HttpPayload(FilePayload{File{}, 0, 4})));
+  state.queueOutput(FileResponse());
   state.queueOutput(test::MakeMessageData(kSize, 'd'));
 
   vector<std::string_view> buffers{"stale"};
   const auto [size, retainedSize, nbMessages] = state.gatherOutput(buffers, ZeroCopyState::kMaxBuffers);
-  ASSERT_EQ(buffers.size(), 4U);
+  ASSERT_EQ(buffers.size(), 5U);
   EXPECT_EQ(buffers[0], std::string(kSize - 100, 'a'));
   EXPECT_EQ(buffers[1], std::string(kSize, 'b'));
   EXPECT_EQ(buffers[2], "head");
   EXPECT_EQ(buffers[3], std::string(kSize, 'c'));
-  EXPECT_EQ(size, (3 * kSize) - 100 + 4);
-  // outBuffer retains its written start as well.
-  EXPECT_EQ(retainedSize, (3 * kSize) + 4);
-  EXPECT_EQ(nbMessages, 3U);
+  EXPECT_EQ(buffers[4], kFileResponseHead);
+  EXPECT_EQ(size, (3 * kSize) - 100 + 4 + kFileResponseHead.size());
+  // The first entry retains its written start as well.
+  EXPECT_EQ(retainedSize, (3 * kSize) + 4 + kFileResponseHead.size());
+  EXPECT_EQ(nbMessages, 4U);
+
+  // All written: the file is sent before the rest.
+  state.outputWritten(size, /*zerocopySent=*/false);
+  EXPECT_TRUE(state.isSendingFile());
+  ASSERT_EQ(state.outQueue.size(), 1U);
+  EXPECT_EQ(state.outQueue.front().firstBuffer(), std::string(kSize, 'd'));
 }
 
 TEST(ConnectionStateOutputTest, GatheredOutputIsBoundedByMaxBuffers) {
   static constexpr std::size_t kSize = OutputQueue::kMaxMergedSize;
   ConnectionState state;
-  state.outBuffer = HttpMessageData(RawChars("head"), HttpPayload(std::string(kSize, 'a')));
+  state.queueOutput(HttpMessageData(RawChars("head"), HttpPayload(std::string(kSize, 'a'))));
   // Its head written: only its body is left.
-  state.outBuffer.addOffset(4);
+  state.outputWritten(4, /*zerocopySent=*/false);
   for (int pos = 0; pos < 10; ++pos) {
     state.queueOutput(test::MakeMessageData(kSize, static_cast<char>('b' + pos)));
   }
 
   vector<std::string_view> buffers;
-  // Room for 2 buffers per message: 1 for outBuffer, then 3 entries.
+  // Room for 2 buffers per message: 1 for the first entry, then 3 entries.
   const auto [size, retainedSize, nbMessages] = state.gatherOutput(buffers, 5);
   ASSERT_EQ(buffers.size(), 4U);
   EXPECT_EQ(buffers[0], std::string(kSize, 'a'));
@@ -1352,25 +1401,24 @@ TEST(ConnectionStateOutputTest, GatheredOutputIsBoundedByMaxBuffers) {
 
 TEST(ConnectionStateOutputTest, ClearBuffersDropsTheQueueAndTheFile) {
   ConnectionState state;
-  state.outBuffer = HttpMessageData{RawChars(kFileResponseHead)};
-  EXPECT_FALSE(state.attachFilePayload(FilePayload{File{}, 0, 4}));
+  EXPECT_TRUE(state.attachFilePayload(FilePayload{File{}, 0, 4}));
+  state.queueOutput(FileResponse());
   state.queueOutput(test::MakeMessageData(10, 'b'));
 
   state.clearBuffers();
   EXPECT_FALSE(state.hasPendingOutput());
   EXPECT_FALSE(state.isSendingFile());
-  EXPECT_FALSE(state.fileSendHeadersPending);
   EXPECT_EQ(state.bufferedOutputBytes(), 0U);
   EXPECT_TRUE(state.canCloseConnectionForDrain());
 }
 
 TEST(ConnectionStateOutputTest, QueueIsKeptByReclaimAndDroppedByReset) {
   ConnectionState state;
-  state.outBuffer = test::MakeMessageData(10, 'a');
+  state.queueOutput(test::MakeMessageData(10, 'a'));
   state.queueOutput(test::MakeMessageData(OutputQueue::kMaxMergedSize, 'b'));
 
   state.reclaimMemoryFromOversizedBuffers();
-  EXPECT_EQ(state.outQueue.entries().size(), 1U);
+  EXPECT_EQ(state.outQueue.size(), 2U);
 
   state.reset();
   EXPECT_TRUE(state.outQueue.empty());
@@ -1402,9 +1450,9 @@ class PendingOutputProtocolHandler final : public IProtocolHandler {
 
 TEST(ConnectionStateCorkTest, NeverCorksWhenNotCorkable) {
   ConnectionState state;
-  state.outBuffer = test::MakeMessageData(100, 'a');
-  EXPECT_FALSE(state.attachFilePayload(FilePayload{File{}, 0, 4}));
-  state.queueOutput(HttpMessageData(RawChars(kFileResponseHead), HttpPayload(FilePayload{File{}, 3, 4})));
+  EXPECT_TRUE(state.attachFilePayload(FilePayload{File{}, 0, 4}));
+  state.queueOutput(test::MakeMessageData(100, 'a'));
+  state.queueOutput(FileResponse(3));
 
   EXPECT_FALSE(state.needsCork(1UL << 20U, true));
   EXPECT_FALSE(state.flushNeedsCork());
@@ -1420,11 +1468,11 @@ TEST(ConnectionStateCorkTest, SingleWritesAreNotCorked) {
   EXPECT_FALSE(state.needsCork(1UL << 20U, false));
   EXPECT_FALSE(state.flushNeedsCork());
 
-  state.outBuffer = test::MakeMessageData(1UL << 16U, 'a');
+  state.queueOutput(test::MakeMessageData(1UL << 16U, 'a'));
   EXPECT_FALSE(state.flushNeedsCork());
-  // Gathered with outBuffer.
+  // Gathered with it.
   state.queueOutput(test::MakeMessageData(OutputQueue::kMaxMergedSize, 'b'));
-  ASSERT_FALSE(state.outQueue.empty());
+  ASSERT_EQ(state.outQueue.size(), 2U);
   EXPECT_FALSE(state.flushNeedsCork());
 
   // A file alone.
@@ -1448,8 +1496,7 @@ TEST(ConnectionStateCorkTest, OutputWrittenInSeveralPartsIsCorked) {
   // A response head, then its file.
   ConnectionState headThenFile;
   headThenFile.corkable = true;
-  headThenFile.outBuffer = HttpMessageData{RawChars(kFileResponseHead)};
-  EXPECT_FALSE(headThenFile.attachFilePayload(FilePayload{File{}, 0, 4}));
+  headThenFile.queueOutput(FileResponse());
   EXPECT_TRUE(headThenFile.flushNeedsCork());
 
   // A file, then the queued output.
@@ -1462,14 +1509,14 @@ TEST(ConnectionStateCorkTest, OutputWrittenInSeveralPartsIsCorked) {
   // Queued output with a file response: gathered up to it.
   ConnectionState queuedFile;
   queuedFile.corkable = true;
-  queuedFile.outBuffer = test::MakeMessageData(10, 'a');
-  queuedFile.queueOutput(HttpMessageData(RawChars(kFileResponseHead), HttpPayload(FilePayload{File{}, 3, 4})));
+  queuedFile.queueOutput(test::MakeMessageData(10, 'a'));
+  queuedFile.queueOutput(FileResponse(3));
   EXPECT_TRUE(queuedFile.flushNeedsCork());
 
   // The HTTP/1 output (a 101 Switching Protocols response), then the protocol handler output.
   ConnectionState upgraded;
   upgraded.corkable = true;
-  upgraded.outBuffer = test::MakeMessageData(10, 'a');
+  upgraded.queueOutput(test::MakeMessageData(10, 'a'));
   upgraded.protocolHandler = std::make_unique<PendingOutputProtocolHandler>(10);
   EXPECT_TRUE(upgraded.flushNeedsCork());
   // Unless the protocol handler has nothing to write.
@@ -1496,7 +1543,7 @@ TEST(ConnectionStateCorkTest, UserSpaceTlsOutputLongerThanOneRecordIsCorked) {
   EXPECT_TRUE(state.needsCork(kRecordSize + 1U, false));
 
   // HTTP/1 output.
-  state.outBuffer = test::MakeMessageData(kRecordSize, 'a');
+  state.queueOutput(test::MakeMessageData(kRecordSize, 'a'));
   EXPECT_FALSE(state.flushNeedsCork());
   state.queueOutput(test::MakeMessageData(1, 'b'));
   EXPECT_TRUE(state.flushNeedsCork());

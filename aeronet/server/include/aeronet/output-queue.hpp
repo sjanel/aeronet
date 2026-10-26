@@ -11,12 +11,11 @@
 
 namespace aeronet {
 
-// HTTP/1 output of a connection queued behind the output it is writing (ConnectionState::outBuffer, then the file sent
-// after it): the responses, or the parts of a streamed response, produced while earlier output waits for the socket.
-// They are written in order, several at once, and moved in rather than copied: neither them nor the output ahead of
-// them, which zerocopy sends may still read, are copied.
-// The common case does not need it (output written at once, or waiting alone in outBuffer): its storage is allocated on
-// first use only, keeping it a single pointer in ConnectionState.
+// HTTP/1 output of a connection not written yet: the responses, or the parts of a streamed response, produced while
+// earlier output waits for the socket (or batched, see internal::ConnectionIo::batchOutputOf()). They are written in
+// order, several at once, the first entry possibly in part, and moved in rather than copied: neither them nor the
+// first entry, which zerocopy sends may still read, are copied.
+// The common case does not need it (output written at once): its storage is allocated on first use only.
 class OutputQueue {
  public:
   // Data is copied at the end of the last entry, rather than queued on its own, when both are at most this large
@@ -33,19 +32,28 @@ class OutputQueue {
 
   [[nodiscard]] bool empty() const noexcept { return _first == _entries.size(); }
 
-  // The queued entries, in order. None of them was written yet.
-  [[nodiscard]] std::span<const HttpMessageData> entries() const noexcept {
-    return {_entries.data() + _first, _entries.size() - _first};
+  // Number of queued entries.
+  [[nodiscard]] std::size_t size() const noexcept { return _entries.size() - _first; }
+
+  // The queued entries, in order. Only the first one may have been written, in part.
+  [[nodiscard]] std::span<const HttpMessageData> entries() const noexcept { return {_entries.data() + _first, size()}; }
+
+  // The first queued entry, the next one to write.
+  [[nodiscard]] const HttpMessageData& front() const noexcept {
+    assert(!empty());
+    return _entries[_first];
   }
 
-  // Total size of the queued entries (their file payloads excluded).
+  // Total size of the queued entries not written yet (their file payloads excluded).
   [[nodiscard]] std::size_t bytes() const noexcept { return _bytes; }
 
-  // Queues 'data' (offset 0): copied at the end of the last entry when CanMerge() allows it, moved in otherwise.
+  // Queues 'data' (not empty, offset 0): copied at the end of the last entry when CanMerge() allows it, unless that
+  // entry is the first one and not 'frontAppendable' (zerocopy sends may read it), moved in otherwise.
   // Returns true if it was copied at the end of the last entry, false if queued as a new entry.
-  bool push(HttpMessageData data) {
+  bool push(HttpMessageData data, bool frontAppendable = true) {
+    assert(!data.empty());
     _bytes += data.remainingSize();
-    if (!empty() && CanMerge(_entries.back(), data)) {
+    if (!empty() && (frontAppendable || size() > 1) && CanMerge(_entries.back(), data)) {
       _entries.back().append(std::move(data));
       return true;
     }
@@ -56,6 +64,13 @@ class OutputQueue {
     }
     _entries.push_back(std::move(data));
     return false;
+  }
+
+  // Records that the first 'nbBytes' unsent bytes of the first entry, fewer than all of them, were written.
+  void frontWritten(std::size_t nbBytes) noexcept {
+    assert(nbBytes < front().remainingSize());
+    _entries[_first].addOffset(nbBytes);
+    _bytes -= nbBytes;
   }
 
   // Removes the first entry and returns it.
@@ -70,7 +85,7 @@ class OutputQueue {
     return data;
   }
 
-  // Drops all the entries (none of them is read by a zerocopy send), keeping the storage.
+  // Drops all the entries (none of them is read by zerocopy sends), keeping the storage.
   void clear() noexcept {
     _entries.clear();
     _first = 0;

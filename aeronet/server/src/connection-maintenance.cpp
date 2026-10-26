@@ -335,7 +335,7 @@ void ConnectionMaintenance::sweepIdleConnections() {
     // Retry pending outbound flushes (buffered output, file sends, and the output queued behind them) to handle
     // potential missed EPOLLOUT edges.
     // On Windows, WSAPoll can fail to report writability on loopback sockets, leaving
-    // buffered response data (including HTTP/2 DATA frames) stuck in outBuffer indefinitely.
+    // buffered response data (including HTTP/2 DATA frames) stuck in the connection indefinitely.
     // Periodic retry here ensures forward progress regardless of missed poll events.
     if ((state.isSendingFile() || state.hasPendingOutput()) && state.waitingWritable &&
         flushRetries < kMaxFlushRetriesPerSweep) {
