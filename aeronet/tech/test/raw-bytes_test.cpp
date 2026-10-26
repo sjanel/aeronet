@@ -215,12 +215,13 @@ TYPED_TEST(RawBaseTest, CopyConstructorNonEmpty) {
   using SizeType = RawT::size_type;
 
   const char* payload = "CopyConstructorData";  // 19 bytes
-  RawT src(reinterpret_cast<const Type*>(payload), static_cast<SizeType>(std::strlen(payload)));
+  RawT src(64UL);
+  src.unchecked_append(reinterpret_cast<const Type*>(payload), static_cast<SizeType>(std::strlen(payload)));
   ASSERT_EQ(src.size(), strlen(payload));
-  auto srcCap = src.capacity();
   RawT dst(src);  // invoke copy ctor
   EXPECT_EQ(dst.size(), src.size());
-  EXPECT_EQ(dst.capacity(), srcCap);  // copy ctor mirrors capacity
+  EXPECT_EQ(dst.capacity(), src.size());  // the copy allocates the size only, not the spare capacity of the source
+  EXPECT_EQ(src.capacity(), 64U);
   EXPECT_TRUE(std::equal(dst.begin(), dst.end(), src.begin()));
 }
 
@@ -547,15 +548,24 @@ TYPED_TEST(RawBaseTest, AssignDifferentSizes) {
 
   buf.assign(reinterpret_cast<const Type*>(larger.data()), larger.size());
 #if AERONET_WANT_MALLOC_OVERRIDES
-#ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
+  // Beyond 1 KiB too, the content is replaced: a new block is allocated, the previous one is not reallocated.
   test::FailNextMalloc();
-#else
-  test::FailNextRealloc();
-#endif
   EXPECT_THROW(buf.assign(reinterpret_cast<const Type*>(muchLarger.data()), muchLarger.size()), std::bad_alloc);
 #endif
   EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(buf.data()), buf.size()), larger);
 
+  if constexpr (sizeof(SizeType) < sizeof(std::size_t)) {
+    Type fakeByte{};
+    EXPECT_THROW(buf.assign(&fakeByte, uint64_t{std::numeric_limits<SizeType>::max()} + 1U), std::overflow_error);
+    EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(buf.data()), buf.size()), larger);
+  }
+
+  buf.assign(reinterpret_cast<const Type*>(muchLarger.data()), muchLarger.size());
+  EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(buf.data()), buf.size()), muchLarger);
+  EXPECT_EQ(buf.capacity(), muchLarger.size());
+
+  // A larger content again, from a buffer above 1 KiB.
+  muchLarger.append(muchLarger.size(), 'b');
   buf.assign(reinterpret_cast<const Type*>(muchLarger.data()), muchLarger.size());
   EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(buf.data()), buf.size()), muchLarger);
 }
