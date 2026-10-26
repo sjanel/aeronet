@@ -1,13 +1,23 @@
 #pragma once
 
+#include <cstdint>
+#include <memory>
 #include <string_view>
 
 #include "aeronet/protocol-handler.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/websocket-deflate.hpp"
 #include "aeronet/websocket-upgrade.hpp"
 
 namespace aeronet {
+
+class HttpRequestView;
+struct WebSocketEndpoint;
+
+namespace websocket {
+class WebSocketHandler;
+}  // namespace websocket
 
 /// Result of validating an HTTP Upgrade request.
 struct UpgradeValidationResult {
@@ -81,6 +91,33 @@ std::size_t ComputeWebSocketUpgradeResponseSize(const UpgradeValidationResult& v
 ///
 /// @param validationResult  Result from ValidateWebSocketUpgrade() (must be valid)
 void BuildWebSocketUpgradeResponse(const UpgradeValidationResult& validationResult, char* pData);
+
+/// Outcome of AcceptWebSocketUpgrade().
+struct WebSocketAcceptResult {
+  enum class Status : uint8_t {
+    Accepted,  // handler and response are set
+    Invalid,   // not a valid WebSocket upgrade request (see pErrorMessage), to answer with 400
+    Refused,   // the factory of the endpoint refused the upgrade (returned no handler), to answer with 403
+    Failed,    // the factory of the endpoint threw (logged), to answer with 500
+  };
+
+  std::unique_ptr<websocket::WebSocketHandler> handler;  // Protocol handler of the upgraded connection
+  RawChars response;                                     // 101 Switching Protocols response
+  const char* pErrorMessage{nullptr};                    // Why the request is invalid
+  Status status{Status::Accepted};
+};
+
+/// Perform the server side of the WebSocket opening handshake (RFC 6455 §4.2) for an upgrade request routed to an
+/// endpoint: validate it, create the handler of the connection (with the endpoint's factory, or its configuration
+/// without factory), enable the negotiated permessage-deflate compression on it, and build the 101 response.
+/// @param request        The upgrade request, only given to the factory of the endpoint
+/// @param requestHeaders The headers of the request
+/// @param sharedStreams  Streams shared by the connections of the event loop, used by the compression for the
+///                       directions negotiated without context takeover. They must outlive the handler.
+[[nodiscard]] WebSocketAcceptResult AcceptWebSocketUpgrade(const HttpRequestView& request,
+                                                           const SvToSvMap& requestHeaders,
+                                                           const WebSocketEndpoint& endpoint,
+                                                           websocket::SharedDeflateStreams& sharedStreams);
 
 }  // namespace upgrade
 

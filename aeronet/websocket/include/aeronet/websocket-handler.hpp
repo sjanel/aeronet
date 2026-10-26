@@ -19,6 +19,8 @@ namespace aeronet {
 
 namespace websocket {
 
+class DeflateContext;
+
 /// Configuration options for WebSocket connections.
 struct WebSocketConfig {
   void validate() const { deflateConfig.validate(); }

@@ -13,7 +13,9 @@
 #include <thread>
 #include <utility>
 
+#include "aeronet/async-await-state.hpp"
 #include "aeronet/async-handler-state.hpp"
+#include "aeronet/async-resume-poster.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/http-message.hpp"
@@ -42,6 +44,64 @@
 
 namespace aeronet {
 
+void AsyncHandlerTask::start(RequestTask<HttpResponse> requestTask, SharedAsyncRequestHandler handler,
+                             const CorsPolicy* pRouteCorsPolicy, std::span<const ResponseMiddleware> responseMiddleware,
+                             AsyncResumePoster resumePoster) {
+  assert(requestTask.valid());
+  handlerKeepAlive = std::move(handler);
+  coroutine = std::move(requestTask);
+  pCorsPolicy = pRouteCorsPolicy;
+  pResponseMiddleware = responseMiddleware.data();
+  responseMiddlewareCount = static_cast<uint32_t>(responseMiddleware.size());
+  await = AsyncAwaitState{.resumePoster = resumePoster};
+  routeMayHaveChanged = false;
+}
+
+bool AsyncHandlerTask::run() {
+  while (!coroutine.done()) {
+    await.reason = AsyncAwaitState::Reason::None;
+    coroutine.resume();
+    if (await.reason != AsyncAwaitState::Reason::None) {
+      // Suspended by an awaitable of the request: the event loop resumes it once its body or its deferred work is
+      // ready.
+      return false;
+    }
+    // Completed, or suspended by an awaitable that does not need the event loop: resumed right away.
+  }
+  return true;
+}
+
+HttpResponse AsyncHandlerTask::takeResponse(const HttpRequestView& request) {
+  assert(coroutine.done());
+  HttpResponse response = internal::HttpResponseAccess::MakeUnallocated();
+  try {
+    // Already completed: returns its result, or rethrows its exception.
+    response = coroutine.runSynchronously();
+  } catch (const std::exception& ex) {
+    log::error("Exception in async path handler for path {}: {}", request.path(), ex.what());
+    response = request.makeResponse(http::StatusCodeInternalServerError);
+  } catch (...) {
+    log::error("Unknown exception in async path handler for path {}", request.path());
+    response = request.makeResponse(http::StatusCodeInternalServerError);
+  }
+  reset();
+  return response;
+}
+
+const CorsPolicy* AsyncHandlerTask::applyResponseMiddleware(const RequestPipeline& pipeline,
+                                                            const HttpRequestView& request,
+                                                            HttpResponse& response) const {
+  std::span<const ResponseMiddleware> middleware(pResponseMiddleware, responseMiddlewareCount);
+  const CorsPolicy* pRouteCorsPolicy = pCorsPolicy;
+  if (routeMayHaveChanged) {
+    const Router::RoutingResult routingResult = pipeline.router().match(request.method(), request.path());
+    middleware = routingResult.postMiddlewareRange();
+    pRouteCorsPolicy = routingResult.corsPolicy();
+  }
+  pipeline.applyResponseMiddleware(request, response, middleware, false);
+  return pRouteCorsPolicy;
+}
+
 namespace internal {
 
 bool Http1Pipeline::PauseReadingDuringAsyncHandler(ConnectionState& state) noexcept {
@@ -63,9 +123,9 @@ bool Http1Pipeline::dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyncRe
   ServerContext& ctx = *_pCtx;
   ConnectionState& state = ctx.connections.connectionState(cnxIt);
   HttpRequestView& request = state.request;
-  RequestTask<HttpResponse> task = RequestPipeline::CallAsyncHandler(*handler, request);
+  RequestTask<HttpResponse> requestTask = RequestPipeline::CallAsyncHandler(*handler, request);
 
-  if (!task.valid()) {
+  if (!requestTask.valid()) {
     static constexpr std::string_view kMessage = "Async handler inactive";
     if (bodyReady) {
       HttpResponse resp(http::StatusCodeInternalServerError, kMessage);
@@ -77,9 +137,6 @@ bool Http1Pipeline::dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyncRe
 
     return false;
   }
-
-  auto handle = task.release();
-  assert(handle);
 
   auto& asyncState = state.ensureAsyncState(ctx.connections.asyncHandlerStatePool());
   const std::string_view bodyView = state.request._body;
@@ -93,19 +150,13 @@ bool Http1Pipeline::dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyncRe
     usesSharedDecompressedBody = sharedBeg <= bodyBeg && bodyEnd <= sharedEnd;
   }
 
-  // The coroutine may use the captures of the handler: keep it alive even if the router replaces it meanwhile.
-  asyncState.handlerKeepAlive = handler;
+  asyncState.task.start(std::move(requestTask), handler, pCorsPolicy, responseMiddleware,
+                        ctx.asyncResumePoster(cnxIt->fd(), state.generation));
+  asyncState.task.await.needsBody = !bodyReady;
   asyncState.active = true;
-  asyncState.handle = std::move(handle);
-  asyncState.awaitReason = AsyncHandlerState::AwaitReason::None;
-  asyncState.needsBody = !bodyReady;
   asyncState.usesSharedDecompressedBody = usesSharedDecompressedBody;
   asyncState.isChunked = isChunked;
-  asyncState.routeMayHaveChanged = false;
   asyncState.consumedBytes = bodyReady ? consumedBytes : 0;
-  asyncState.corsPolicy = pCorsPolicy;
-  asyncState.responseMiddleware = responseMiddleware.data();
-  asyncState.responseMiddlewareCount = static_cast<uint32_t>(responseMiddleware.size());
   asyncState.maxBodyBytes = perRouteMaxBodyBytes;
   asyncState.pendingResponse = internal::HttpResponseAccess::MakeUnallocated();
 
@@ -113,16 +164,14 @@ bool Http1Pipeline::dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyncRe
   state.expectationAnswered = false;
 
   // Keep header storage stable while async work runs so header string_views stay valid
-  state.request.pinHeadStorage(asyncState.headBuffer);
-
-  // Install the poster resuming the coroutine once its deferred work completes
-  asyncState.resumePoster = ctx.asyncResumePoster(cnxIt->fd(), state.generation);
+  request.pinHeadStorage(asyncState.headBuffer);
+  asyncState.task.bind(request);
 
   ctx.maintenance.refreshKeepAliveDeadline(cnxIt);
   resumeAsyncHandler(cnxIt);
   if (asyncState.active) {
     // Completes later: the router may be updated meanwhile.
-    asyncState.routeMayHaveChanged = true;
+    asyncState.task.routeMayHaveChanged = true;
   }
 
   return true;
@@ -133,29 +182,19 @@ void Http1Pipeline::resumeAsyncHandler(ConnectionIt cnxIt) {
   auto* asyncState = state.pAsyncState();
   assert(asyncState != nullptr);
   auto& async = *asyncState;
-  if (!async.active || !async.handle) {
+  if (!async.active || !async.task.coroutine.valid()) {
     return;
   }
 
-  while (async.handle && !async.handle.done()) {
-    async.awaitReason = AsyncHandlerState::AwaitReason::None;
-    async.handle.resume();
-    if (async.awaitReason != AsyncHandlerState::AwaitReason::None) {
-      if (async.usesSharedDecompressedBody && !pinAsyncSharedBodyToConnectionStorage(state)) {
-        state.requestDrainAndClose();
-      }
-      return;
-    }
-    // Suspended by an awaitable that does not need the event loop (std::suspend_always for instance): resume it.
-  }
-
-  if (async.handle && async.handle.done()) {
+  if (async.task.run()) {
     onAsyncHandlerCompleted(cnxIt);
+  } else if (async.usesSharedDecompressedBody && !pinAsyncSharedBodyToConnectionStorage(state)) {
+    state.requestDrainAndClose();
   }
 }
 
 void Http1Pipeline::AbandonAsyncHandler(AsyncHandlerState& async) noexcept {
-  if (async.isAwaitingCallback()) {
+  if (async.task.isAwaitingCallback()) {
     // The deferred work may still use the coroutine frame and the request: they are released when it completes.
     async.active = false;
     async.pendingResponse = internal::HttpResponseAccess::MakeUnallocated();
@@ -171,7 +210,7 @@ void Http1Pipeline::handleAsyncBodyProgress(ConnectionIt cnxIt) {
   auto& async = *asyncState;
   assert(async.active);
 
-  if (async.needsBody) {
+  if (async.task.await.needsBody) {
     std::size_t consumedBytes = 0;
     // 100 Continue (if expected) was sent when the request was dispatched. The request starts the input buffer, where
     // its body is received.
@@ -185,7 +224,7 @@ void Http1Pipeline::handleAsyncBodyProgress(ConnectionIt cnxIt) {
       return;
     }
 
-    async.needsBody = false;
+    async.task.await.needsBody = false;
     async.consumedBytes = consumedBytes;
     if (!state.request._body.empty() && !maybeDecompressRequestBody(cnxIt, true)) {
       AbandonAsyncHandler(async);
@@ -194,8 +233,7 @@ void Http1Pipeline::handleAsyncBodyProgress(ConnectionIt cnxIt) {
     state.installAggregatedBodyBridge();
     _pCtx->maintenance.trackBodyReception(state, true);
 
-    if (async.awaitReason == AsyncHandlerState::AwaitReason::WaitingForBody) {
-      async.awaitReason = AsyncHandlerState::AwaitReason::None;
+    if (async.task.await.reason == AsyncAwaitState::Reason::WaitingForBody) {
       resumeAsyncHandler(cnxIt);
       return;
     }
@@ -236,39 +274,10 @@ bool Http1Pipeline::pinAsyncSharedBodyToConnectionStorage(ConnectionState& state
 
 void Http1Pipeline::onAsyncHandlerCompleted(ConnectionIt cnxIt) {
   ConnectionState& state = _pCtx->connections.connectionState(cnxIt);
-  auto* asyncState = state.pAsyncState();
-  if (asyncState == nullptr) {
-    return;
-  }
-  auto& async = *asyncState;
-  if (!async.handle) {
-    return;
-  }
-
-  auto rawHandle = async.handle.release();
-  auto typedHandle = std::coroutine_handle<RequestTask<HttpResponse>::promise_type>::from_address(rawHandle.address());
-  bool fromException = false;
-  HttpResponse resp = internal::HttpResponseAccess::MakeUnallocated();
-  try {
-    resp = std::move(typedHandle.promise().consume_result());
-  } catch (const std::exception& ex) {
-    fromException = true;
-    log::error("Exception in async path handler: {}", ex.what());
-    resp = HttpResponse(http::StatusCodeInternalServerError);
-  } catch (...) {
-    fromException = true;
-    log::error("Unknown exception in async path handler");
-    resp = HttpResponse(http::StatusCodeInternalServerError);
-  }
-  typedHandle.destroy();
-  async.handlerKeepAlive.reset();
-  async.pendingResponse = std::move(resp);
-
-  if (async.needsBody) {
-    if (fromException) {
-      // Body will still be drained before response is flushed; nothing else to do here.
-    }
-  } else {
+  AsyncHandlerState& async = *state.pAsyncState();
+  async.pendingResponse = async.task.takeResponse(state.request);
+  // Without its whole body, the request is answered once the rest of it is received (and drained).
+  if (!async.task.await.needsBody) {
     tryFlushPendingAsyncResponse(cnxIt);
   }
 }
@@ -276,26 +285,13 @@ void Http1Pipeline::onAsyncHandlerCompleted(ConnectionIt cnxIt) {
 void Http1Pipeline::tryFlushPendingAsyncResponse(ConnectionIt cnxIt) {
   ServerContext& ctx = *_pCtx;
   ConnectionState& state = ctx.connections.connectionState(cnxIt);
-  auto* asyncState = state.pAsyncState();
-  if (asyncState == nullptr) {
-    return;
-  }
-  auto& async = *asyncState;
+  AsyncHandlerState& async = *state.pAsyncState();
 
-  assert(!async.needsBody);
+  assert(!async.task.await.needsBody);
   assert(!async.pendingResponse.empty());
 
-  auto middlewareSpan = std::span<const ResponseMiddleware>(
-      static_cast<const ResponseMiddleware*>(async.responseMiddleware), async.responseMiddlewareCount);
-  const CorsPolicy* pCorsPolicy = async.corsPolicy;
-  if (async.routeMayHaveChanged) {
-    // The router may have been updated since the handler was dispatched, possibly destroying the metadata of its route:
-    // look it up again.
-    const Router::RoutingResult routingResult = ctx.router.match(state.request.method(), state.request.path());
-    middlewareSpan = routingResult.postMiddlewareRange();
-    pCorsPolicy = routingResult.corsPolicy();
-  }
-  ctx.requestPipeline().applyResponseMiddleware(state.request, async.pendingResponse, middlewareSpan, false);
+  const CorsPolicy* pCorsPolicy =
+      async.task.applyResponseMiddleware(ctx.requestPipeline(), state.request, async.pendingResponse);
   finalizeAndSendResponse(cnxIt, std::move(async.pendingResponse), pCorsPolicy);
   state.inBuffer.erase_front(async.consumedBytes);
   async.clear();
@@ -368,9 +364,8 @@ void SingleHttpServer::processAsyncCallbacks() {
       // The coroutine frame is kept until its deferred work completes: a coroutine created meanwhile cannot have the
       // same address, the handle identifies it.
       auto* asyncState = state.pAsyncState();
-      if (asyncState != nullptr && asyncState->handle == cb.handle) {
+      if (asyncState != nullptr && asyncState->task.runs(cb.handle)) {
         if (asyncState->active) {
-          asyncState->awaitReason = AsyncHandlerState::AwaitReason::None;
           _ctx.http1.resumeAsyncHandler(it);
           if (!asyncState->active) {
             resumeInputAfterAsyncHandler(cb.connectionFd);

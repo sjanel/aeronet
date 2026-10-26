@@ -23,7 +23,6 @@
 namespace aeronet {
 
 class CorsPolicy;
-struct WebSocketEndpoint;
 
 namespace internal {
 
@@ -149,17 +148,10 @@ class Http1Pipeline {
                                    const CorsPolicy* pCorsPolicy);
 
 #ifdef AERONET_ENABLE_WEBSOCKET
-  enum class WebSocketUpgrade : uint8_t { Upgraded, Invalid, Refused, Failed };
-
   // Answer the WebSocket upgrade request of the connection, once its request middleware ran: checks its origin, then
   // switches the connection to WebSocket (SwitchProtocol), or answers it with an error (Continue, or Break when the
   // connection closes).
   LoopAction processWebSocketUpgrade(ConnectionIt cnxIt, const Router::RoutingResult& routingResult);
-
-  // Switch the connection of the current request, a WebSocket upgrade that passed the request middleware and the
-  // origin checks, to the WebSocket protocol. Queues the 101 response on success, and the 400 response of an invalid
-  // upgrade. The caller answers a refused upgrade (factory returning no handler) and a failed one (factory throwing).
-  WebSocketUpgrade upgradeToWebSocket(ConnectionIt cnxIt, const WebSocketEndpoint& endpoint);
 #endif
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS

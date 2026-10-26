@@ -1,12 +1,6 @@
 #include <cassert>
-#include <cstring>
-#include <memory>
-#include <string_view>
 
 #include "aeronet/connection-state.hpp"
-#include "aeronet/http-request-view.hpp"
-#include "aeronet/http-server-config.hpp"
-#include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-protocol-handler.hpp"
 #include "aeronet/internal/server-context.hpp"
@@ -17,40 +11,18 @@
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/system-error.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
-#include "aeronet/tracing/tracer.hpp"
-#include "tunnel-manager.hpp"
 
 namespace aeronet {
 
 void SingleHttpServer::installHttp2Handler(NativeHandle clientFd, ConnectionState& state,
                                            bool sendServerPrefaceForTls) {
-  state.protocolHandler = http2::CreateHttp2ProtocolHandler(
-      _ctx.config.http2, _ctx.requestPipeline(), _ctx.config, _ctx.compressionState, _ctx.decompressionState,
-      sendServerPrefaceForTls, _ctx.dateHeader.data(), state, internal::TunnelManager::MakeH2Bridge(_ctx, clientFd));
+  state.protocolHandler = http2::CreateHttp2ProtocolHandler(_ctx, state, clientFd, sendServerPrefaceForTls);
   // Async resumption, stream deadline sweeps and the HTTP/2 connection count all key off the protocol.
   _ctx.maintenance.trackHttp2Connection();
   state.protocol = ProtocolType::Http2;
   // The header read timer bounds the reception of an HTTP/1.1 request head: the one started for the request expected
   // since the accept (or since the first bytes of the preface) does not apply to the HTTP/2 connection.
   _ctx.maintenance.stopHeaderReadTimer(state);
-
-  auto* h2Handler = static_cast<http2::Http2ProtocolHandler*>(state.protocolHandler.get());
-
-  // Install per-request completion callback for metrics, counters and tracing.
-  h2Handler->setRequestCompletionCallback(
-      [](void* pContext, const HttpRequestView& request, http::StatusCode status) {
-        auto& ctx = *static_cast<internal::ServerContext*>(pContext);
-        ++ctx.stats.totalRequestsServed;
-        if (ctx.callbacks.metrics || ctx.accessLog) {
-          ctx.emitRequestMetrics(request, status);
-        }
-      },
-      &_ctx);
-
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  // Install the poster with which HTTP/2 coroutines post the completion of their deferred work to the event loop.
-  h2Handler->setAsyncResumePoster(_ctx.asyncResumePoster(clientFd, state.generation));
-#endif
 }
 
 void SingleHttpServer::setupHttp2Connection(NativeHandle clientFd, TcpNoDelayMode tcpNoDelayMode,

@@ -22,6 +22,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-helpers.hpp"
+#include "aeronet/http-request-view-test-access.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -685,14 +686,11 @@ TEST(HttpCodecCompression, TryCompressResponseStressWithDifferentScenarios) {
   }
 }
 
-// The request decompression tests use the request of a ConnectionState, defined by the server module.
-#ifdef AERONET_ENABLE_HTTP_SERVER
 TEST(HttpCodecDecompression, WillDecompress_DisabledReturnsNotModified) {
   DecompressionConfig cfg;
   cfg.enable = false;
 
-  ConnectionState cs;
-  HttpRequestView& req = cs.request;
+  HttpRequestView req = test::HttpRequestViewTestAccess::Make();
   const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip");
 
   const auto code = HttpCodec::WillDecompress(cfg, req.headers());
@@ -703,8 +701,7 @@ TEST(HttpCodecDecompression, WillDecompress_NoHeaderReturnsNotModified) {
   DecompressionConfig cfg;
   cfg.enable = true;
 
-  ConnectionState cs;
-  HttpRequestView& req = cs.request;
+  HttpRequestView req = test::HttpRequestViewTestAccess::Make();
 
   const auto code = HttpCodec::WillDecompress(cfg, req.headers());
   EXPECT_EQ(code, http::StatusCodeNotModified);
@@ -714,8 +711,7 @@ TEST(HttpCodecDecompression, WillDecompress_EmptyHeaderReturnsBadRequest) {
   DecompressionConfig cfg;
   cfg.enable = true;
 
-  ConnectionState cs;
-  HttpRequestView& req = cs.request;
+  HttpRequestView req = test::HttpRequestViewTestAccess::Make();
   const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "");
 
   const auto code = HttpCodec::WillDecompress(cfg, req.headers());
@@ -726,8 +722,7 @@ TEST(HttpCodecDecompression, WillDecompress_OnlyIdentityReturnsNotModified) {
   DecompressionConfig cfg;
   cfg.enable = true;
 
-  ConnectionState cs;
-  HttpRequestView& req = cs.request;
+  HttpRequestView req = test::HttpRequestViewTestAccess::Make();
   const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "identity");
 
   const auto code = HttpCodec::WillDecompress(cfg, req.headers());
@@ -738,8 +733,7 @@ TEST(HttpCodecDecompression, WillDecompress_NonIdentityReturnsOK) {
   DecompressionConfig cfg;
   cfg.enable = true;
 
-  ConnectionState cs;
-  HttpRequestView& req = cs.request;
+  HttpRequestView req = test::HttpRequestViewTestAccess::Make();
   const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip");
 
   const auto code = HttpCodec::WillDecompress(cfg, req.headers());
@@ -750,8 +744,7 @@ TEST(HttpCodecDecompression, WillDecompress_MalformedDoubleCommaReturnsBadReques
   DecompressionConfig cfg;
   cfg.enable = true;
 
-  ConnectionState cs;
-  HttpRequestView& req = cs.request;
+  HttpRequestView req = test::HttpRequestViewTestAccess::Make();
   // double comma (possibly with spaces) between tokens should be treated as malformed
   const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip,,deflate");
 
@@ -763,8 +756,7 @@ TEST(HttpCodecDecompression, WillDecompress_SeveralIdentityValuesReturnsNotModif
   DecompressionConfig cfg;
   cfg.enable = true;
 
-  ConnectionState cs;
-  HttpRequestView& req = cs.request;
+  HttpRequestView req = test::HttpRequestViewTestAccess::Make();
   // Content-Encoding values are lower-cased by the request parsers (see the HttpRequestView and HPACK tests).
   const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "identity, identity,identity");
 
@@ -776,8 +768,7 @@ TEST(HttpCodecDecompression, WillDecompress_OWSAndSpacesAreHandled) {
   DecompressionConfig cfg;
   cfg.enable = true;
 
-  ConnectionState cs;
-  HttpRequestView& req = cs.request;
+  HttpRequestView req = test::HttpRequestViewTestAccess::Make();
   // leading/trailing spaces and OWS around commas should be tolerated and parsed
   const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip ,  deflate");
 
@@ -789,8 +780,7 @@ TEST(HttpCodecDecompression, WillDecompress_IdentityMixedWithOtherEncodings) {
   DecompressionConfig cfg;
   cfg.enable = true;
 
-  ConnectionState cs;
-  HttpRequestView& req = cs.request;
+  HttpRequestView req = test::HttpRequestViewTestAccess::Make();
   // identity present but not alone; should result in OK because a non-identity is present
   const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "identity, br");
 
@@ -802,8 +792,7 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_MalformedEncodingReturnsBadRe
   DecompressionConfig cfg;
   cfg.enable = true;
 
-  ConnectionState cs;
-  HttpRequestView& req = cs.request;
+  HttpRequestView req = test::HttpRequestViewTestAccess::Make();
   // malformed double-comma should be treated as malformed by the decoder iterator
   const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip,,deflate");
 
@@ -830,8 +819,7 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_ExpansionTooLargeReturnsPaylo
   // set a very small allowed expansion ratio so normal compression expansion will exceed it
   cfg.maxExpansionRatio = 0.001;  // 0.1%
 
-  ConnectionState cs;
-  HttpRequestView& req = cs.request;
+  HttpRequestView req = test::HttpRequestViewTestAccess::Make();
   const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "identity,gzip,identity");
 
   // Prepare a large uncompressed payload that compresses well
@@ -875,8 +863,7 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_IdentityAndUnknownEncodingRet
   DecompressionConfig cfg;
   cfg.enable = true;
 
-  ConnectionState cs;
-  HttpRequestView& req = cs.request;
+  HttpRequestView req = test::HttpRequestViewTestAccess::Make();
   // identity and unknown encoding should return unsupported media type
   const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "identity, unknown");
 
@@ -890,7 +877,6 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_IdentityAndUnknownEncodingRet
       HttpCodec::DecompressChunkedBody(decompressionState, cfg, req, chunks, /*compressedSize=*/1, bodyBuf, tmpBuf);
   EXPECT_EQ(res.status, http::StatusCodeUnsupportedMediaType);
 }
-#endif
 
 TEST(HttpCodecCompression, ResponseCompressionStateEncodeFull_BehaviorPerEncoder) {
   CompressionConfig cfg;
@@ -1286,7 +1272,6 @@ TEST(HttpCodecFullBody, DecompressedSizeLimit) {
   }
 }
 
-#ifdef AERONET_ENABLE_HTTP_SERVER
 // maxDecompressedBytes bounds the whole decoded body of a chunked request, not the output of each chunk, in every stage
 // of stacked codings.
 TEST(HttpCodecDecompression, DecompressChunkedBody_DecompressedSizeLimit) {
@@ -1297,8 +1282,7 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_DecompressedSizeLimit) {
       cfg.decoderChunkSize = 1024;
       cfg.maxDecompressedBytes = limit;
       cfg.maxExpansionRatio = 1e6;
-      ConnectionState cs;
-      HttpRequestView& req = cs.request;
+      HttpRequestView req = test::HttpRequestViewTestAccess::Make();
       const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, contentEncoding);
       RawChars bodyBuf;
       RawChars tmpBuf;
@@ -1333,7 +1317,6 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_DecompressedSizeLimit) {
     expectLimit(std::span<const std::string_view>(&outerView, 1), outer.size(), encStr, patterned);
   }
 }
-#endif
 
 #endif
 

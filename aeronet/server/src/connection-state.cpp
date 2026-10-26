@@ -32,17 +32,16 @@
 #include "aeronet/zerocopy-mode.hpp"
 #include "aeronet/zerocopy.hpp"
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include "aeronet/async-handler-state.hpp"
+#endif
+
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tls-handshake-callback.hpp"
 #include "aeronet/tls-handshake.hpp"
 #include "aeronet/tls-metrics.hpp"
 #include "aeronet/tls-transport.hpp"
-#endif
-
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-#include "aeronet/async-handler-state.hpp"
-#include "aeronet/async-resume-poster.hpp"
 #endif
 
 namespace aeronet {
@@ -52,13 +51,8 @@ void ConnectionState::initializeStateNewConnection(const HttpServerConfig& confi
   request.init(config, compressionState);
   const bool isIpAddress = peerAddress.ss_family == AF_INET || peerAddress.ss_family == AF_INET6;
   if (isIpAddress) {
-    static constexpr uint8_t kClientAddressLengthMask =
-        static_cast<uint8_t>((1U << kFormattedAddressCapacityNbBits) - 1U);
-    const uint8_t formattedLen =
+    clientAddressLength =
         FormatAddress(peerAddress, clientAddressBuffer, static_cast<uint8_t>(sizeof(clientAddressBuffer)));
-    assert(formattedLen <= kClientAddressLengthMask);
-    // clientAddressLength is a 6-bit bitfield: mask explicitly to make the narrowing conversion intentional.
-    clientAddressLength = static_cast<uint8_t>(formattedLen & kClientAddressLengthMask);
   } else {
     clientAddressLength = 0;
   }
@@ -268,6 +262,7 @@ AsyncHandlerState& ConnectionState::ensureAsyncState(AsyncHandlerStatePool& asyn
 void ConnectionState::reset() {
   // In order to avoid retaining large buffers in cached ConnectionState objects,
   // we shrink (before clear, otherwise it would free all memory) and clear them before reuse.
+
   const auto shrinkAndClear = [](auto& buffer) {
     buffer.shrink_to_fit();
     buffer.clear();
@@ -283,12 +278,14 @@ void ConnectionState::reset() {
 
   shrinkAndClear(outBuffer);
   // Never written, so not read by the kernel.
-  outQueue.clear();
-  outQueue.shrink_to_fit();
+  shrinkAndClear(outQueue);
+
+#ifdef AERONET_LINUX
   // The socket is closed at this point, and the kernel no longer reads the zerocopy buffers: SingleHttpServer only
   // closes a connection gracefully once its zerocopy sends completed, and takes them over when resetting it (see
   // SingleHttpServer::releaseConnection()).
   shrinkAndClear(zerocopyBuffers);
+#endif
   zerocopyStallCheckQueuedBytes = kNoZerocopyStallCheck;
   // no need to clear request, it's built from scratch from initTrySetHead
   bodyStreamContext = {};
@@ -300,7 +297,9 @@ void ConnectionState::reset() {
   keepAliveDeadlineIndex = kNoKeepAliveDeadlineIndex;
   parsingHeaders = false;
   peerFd = kInvalidHandle;
+#ifdef AERONET_ENABLE_HTTP2
   peerStreamId = 0;
+#endif
   requestsServed = 0;
   trailerLen = 0;
   clientAddressLength = 0;
@@ -319,8 +318,10 @@ void ConnectionState::reset() {
   shutdownWritePending = false;
   eofReceived = false;
   corkable = false;
+#ifdef AERONET_LINUX
   zerocopyEnabled = false;
   zerocopyStopOnCopy = false;
+#endif
   outBufferZerocopySent = false;
   tlsInfo = {};
 #ifdef AERONET_ENABLE_OPENSSL
@@ -409,7 +410,7 @@ void ConnectionState::reclaimMemoryFromOversizedBuffers() {
   // The inBuffer also holds the CONNECT request whose target is being resolved, answered (and logged) from its views
   // once the resolution completes: it must not move either.
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  if (!asyncState || (!asyncState->active && !asyncState->handle)) {
+  if (!asyncState || (!asyncState->active && !asyncState->task.coroutine.valid())) {
     bodyAndTrailersBuffer.shrink_to_fit();
     bodyAndTrailersBuffer.clear();
     if (!tunnelResolving) {
@@ -431,9 +432,10 @@ void ConnectionState::reclaimMemoryFromOversizedBuffers() {
 
   // outQueue: released once empty, as the common case does not use it.
   outQueue.shrink_to_fit();
-
+#ifdef AERONET_LINUX
   // zerocopyBuffers: holds one entry per written buffer still read by the kernel.
   zerocopyBuffers.shrink_to_fit();
+#endif
 }
 
 #ifdef AERONET_LINUX
@@ -557,86 +559,5 @@ void ConnectionState::clearBuffers() {
   tunnelOrFileBuffer.clear();
   requestDrainAndClose();
 }
-
-// The members of HttpRequestView reading the connection of the request: the http module, which declares them, does not
-// know ConnectionState.
-
-std::string_view HttpRequestView::alpnProtocol() const noexcept {
-  assert(_pOwnerState != nullptr);
-  return _pOwnerState->tlsInfo.selectedAlpn();
-}
-
-std::string_view HttpRequestView::tlsCipher() const noexcept {
-  assert(_pOwnerState != nullptr);
-  return _pOwnerState->tlsInfo.negotiatedCipher();
-}
-
-std::string_view HttpRequestView::tlsVersion() const noexcept {
-  assert(_pOwnerState != nullptr);
-  return _pOwnerState->tlsInfo.negotiatedVersion();
-}
-
-std::string_view HttpRequestView::tlsPeerSubject() const noexcept {
-  assert(_pOwnerState != nullptr);
-  return _pOwnerState->tlsInfo.peerSubject();
-}
-
-std::string_view HttpRequestView::clientAddress() const noexcept {
-  assert(_pOwnerState != nullptr);
-  return _pOwnerState->clientAddress();
-}
-
-bool HttpRequestView::hasMoreBody() const {
-  if (_bodyAccessMode == BodyAccessMode::Aggregated) {
-    return false;
-  }
-  if (_pBodyAccessBridge == nullptr) {
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-    // If an async handler started before the body was ready, the server will
-    // set asyncState.needsBody and later install the aggregated bridge when
-    // body bytes arrive. In that intermediate state, treat the request as
-    // having more body so loops using hasMoreBody()+readBodyAsync() will
-    // execute and suspend correctly.
-    assert(_pOwnerState != nullptr);
-    const auto* async = _pOwnerState->asyncState.get();
-    return async != nullptr && async->active && async->needsBody;
-#else
-    return false;
-#endif
-  }
-  return _pBodyAccessBridge->hasMore(*this, _pBodyAccessContext);
-}
-
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-void HttpRequestView::markAwaitingBody() const noexcept {
-  auto* asyncState = _pOwnerState->asyncState.get();
-  assert(asyncState != nullptr);
-  assert(asyncState->active);
-  asyncState->awaitReason = AsyncHandlerState::AwaitReason::WaitingForBody;
-}
-
-void HttpRequestView::markAwaitingCallback() const noexcept {
-  if (_pH2SuspendedFlag != nullptr) {
-    *_pH2SuspendedFlag = true;
-    return;
-  }
-  auto* asyncState = _pOwnerState->asyncState.get();
-  assert(asyncState != nullptr);
-  assert(asyncState->active);
-  asyncState->awaitReason = AsyncHandlerState::AwaitReason::WaitingForCallback;
-}
-
-AsyncResumePoster HttpRequestView::asyncResumePoster() const noexcept {
-  if (_pH2ResumePoster != nullptr) {
-    assert(_pH2ResumePoster->pPost != nullptr);
-    return *_pH2ResumePoster;
-  }
-  auto* asyncState = _pOwnerState->asyncState.get();
-  assert(asyncState != nullptr);
-  assert(asyncState->active);
-  assert(asyncState->resumePoster.pPost != nullptr);
-  return asyncState->resumePoster;
-}
-#endif
 
 }  // namespace aeronet

@@ -19,7 +19,7 @@ A `SingleHttpServer` is one event loop (epoll, kqueue or WSAPoll) serving its co
 | `Http2ProtocolHandler` | [http2-protocol-handler.cpp](../../aeronet/server/src/http2-protocol-handler.cpp) | HTTP/2 connection (one per connection): frames, streams, flow control, and the requests of its streams through the `RequestPipeline` |
 | `TunnelManager` | [tunnel-manager.cpp](../../aeronet/server/src/tunnel-manager.cpp) | `CONNECT` tunnels of both protocols: background name resolution, relay with backpressure, teardown. Created by the first `CONNECT` request of a run |
 
-The connection storage ([connection-storage.hpp](../../aeronet/server/include/aeronet/internal/connection-storage.hpp)) holds a `ConnectionState` per connection ([connection-state.hpp](../../aeronet/server/include/aeronet/connection-state.hpp)): its transport, input and output buffers, current HTTP/1.1 request, protocol handler, timers and flags.
+The connection storage ([connection-storage.hpp](../../aeronet/server/include/aeronet/internal/connection-storage.hpp)) holds a `ConnectionState` per connection ([connection-state.hpp](../../aeronet/server/include/aeronet/connection-state.hpp)): its transport, input and output buffers, current HTTP/1.1 request, protocol handler, timers and flags. Its `ConnectionInfo` base ([connection-info.hpp](../../aeronet/http/include/aeronet/connection-info.hpp)) is the part that its requests read (TLS information, client address, number of requests served): `HttpRequestView`, in the `http` module, only knows this part.
 
 ## How the parts reach each other
 
@@ -29,7 +29,7 @@ A server can be moved (only while it does not run): the move operations of `Serv
 
 A call into another source file costs a few nanoseconds that add up on the per-event and per-request paths: the bookkeeping that runs for each request (timers, writable interest, input buffer lending) is defined inline in the component headers, and the steps a hot function was split into are `AERONET_ALWAYS_INLINE` (`Http1Pipeline::readHead()`, `callHandlers()`...). Check such changes with [http1-pipeline_bench.cpp](../../benchmarks/internal/http1-pipeline_bench.cpp) (request path) and the scripted servers under `wrk` (event path, see [Benchmarks](../BENCHMARKS.md)), in Release.
 
-The objects working on the connections on behalf of the server hold a `ServerContext&`: the `TunnelManager`, the HTTP/1.1 transport of the streaming response writers ([http1-writer-transport.hpp](../../aeronet/server/src/http1-writer-transport.hpp)) and the tunnel bridge of the HTTP/2 handlers. They only exist while the server runs, so the server cannot move under them.
+The objects working on the connections on behalf of the server point to the `ServerContext`: the `TunnelManager`, the HTTP/2 handlers (which reach the configuration, the request pipeline, the statistics and the metrics through it), the HTTP/1.1 transport of the streaming response writers ([http1-writer-transport.hpp](../../aeronet/server/src/http1-writer-transport.hpp)) and the tunnel bridge of the HTTP/2 handlers. They only exist while the server runs, so the server cannot move under them.
 
 ## Life of an HTTP/1.1 request
 
@@ -40,6 +40,8 @@ The objects working on the connections on behalf of the server hold a `ServerCon
 5. The maintenance tick (`runMaintenance()`) closes the connections whose deadline elapsed, and sweeps those that need a closer look (pending output, timers, HTTP/2 streams, drain).
 
 Changes to the steps shared by both protocols belong in the `RequestPipeline`, with a scenario in [http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp) checking that HTTP/1.1 and HTTP/2 answer alike.
+
+The coroutine of an async handler runs in an `AsyncHandlerTask` ([async-handler-state.hpp](../../aeronet/server/include/aeronet/async-handler-state.hpp)), shared by both protocols: it keeps the handler alive, resumes the coroutine until it completes or waits for the event loop, takes its response (a `500` when it threw), and applies the response middleware of its route, looked up again when the router may have changed meanwhile. The awaitables of the request update its `AsyncAwaitState` ([async-await-state.hpp](../../aeronet/http/include/aeronet/async-await-state.hpp)). Each protocol only keeps what is its own around it: the state of the request body and of the pending response for an HTTP/1.1 connection (`AsyncHandlerState`, [async-handlers.cpp](../../aeronet/server/src/async-handlers.cpp)), the request owned by the task for an HTTP/2 stream.
 
 ## Invariants
 

@@ -18,8 +18,12 @@
 #include "aeronet/connection.hpp"
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include "aeronet/async-await-state.hpp"
 #include "aeronet/async-handler-state.hpp"
+#include "aeronet/http-response.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/protocol-handler.hpp"
+#include "aeronet/request-task.hpp"
 #endif
 
 #ifdef AERONET_POSIX
@@ -42,47 +46,8 @@ void RecycleConnection(ConnectionStorage& storage, uint32_t maxCached, Connectio
 }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-// A minimal coroutine that creates a proper coroutine frame for testing
-struct TestCoroutine {
-  struct promise_type {
-    TestCoroutine get_return_object() {
-      return TestCoroutine{std::coroutine_handle<promise_type>::from_promise(*this)};
-    }
-
-    // NOLINTNEXTLINE(readability-convert-member-functions-to-static)
-    std::suspend_always initial_suspend() noexcept { return {}; }
-
-    // NOLINTNEXTLINE(readability-convert-member-functions-to-static)
-    std::suspend_always final_suspend() noexcept { return {}; }
-
-    void return_void() {}
-    void unhandled_exception() {}
-  };
-
-  std::coroutine_handle<promise_type> handle;
-
-  explicit TestCoroutine(std::coroutine_handle<promise_type> handle) : handle(handle) {}
-
-  TestCoroutine(const TestCoroutine&) = delete;
-  TestCoroutine& operator=(const TestCoroutine&) = delete;
-  TestCoroutine(TestCoroutine&& other) noexcept : handle(std::exchange(other.handle, {})) {}
-  TestCoroutine& operator=(TestCoroutine&& other) noexcept {
-    if (this != &other) {
-      if (handle) {
-        handle.destroy();
-      }
-      handle = std::exchange(other.handle, {});
-    }
-    return *this;
-  }
-  ~TestCoroutine() {
-    if (handle) {
-      handle.destroy();
-    }
-  }
-};
-
-TestCoroutine makeTestCoroutine() { co_return; }
+// The coroutine of an async handler, created suspended (never started by the tests).
+RequestTask<HttpResponse> MakeTestTask() { co_return HttpResponse(http::StatusCodeOK); }
 
 // Protocol handler reporting background work in flight until told otherwise (dropAsyncTask() is not overridden).
 class AsyncWorkProtocolHandler final : public IProtocolHandler {
@@ -304,15 +269,12 @@ TEST(ConnectionStorage, RecycleOrReleaseWithActiveAsyncState) {
   auto it = storage.emplace(Connection(BaseFd(300)));
   ASSERT_TRUE(it != storage.end());
 
-  // Create a real coroutine to get a valid handle
-  auto coro = makeTestCoroutine();
   auto& state = storage.connectionState(it);
   (void)state.ensureAsyncState(storage.asyncHandlerStatePool());
 
-  // Simulate an active async handler with a coroutine handle
+  // Simulate an active async handler with its coroutine (clear() destroys it)
   state.asyncState->active = true;
-  state.asyncState->handle = coro.handle;
-  coro.handle = {};  // Transfer ownership to asyncState (clear() will destroy it)
+  state.asyncState->task.coroutine = MakeTestTask();
 
   // Recycle should clear the async state
   RecycleConnection(storage, 10, it);
@@ -326,15 +288,12 @@ TEST(ConnectionStorage, RecycleOrReleaseWithHandleButNotActive) {
   auto it = storage.emplace(Connection(BaseFd(400)));
   ASSERT_TRUE(it != storage.end());
 
-  // Create a real coroutine to get a valid handle
-  auto coro = makeTestCoroutine();
   auto& state = storage.connectionState(it);
   (void)state.ensureAsyncState(storage.asyncHandlerStatePool());
 
-  // Set handle but not active - this covers the branch: asyncState.handle && !asyncState.active
-  state.asyncState->handle = coro.handle;
-  state.asyncState->active = false;  // handle set but not active
-  coro.handle = {};                  // Transfer ownership
+  // Coroutine set but not active - this covers the branch: coroutine valid && !asyncState.active
+  state.asyncState->task.coroutine = MakeTestTask();
+  state.asyncState->active = false;
 
   // Recycle should clear the async state (covers the || branch)
   RecycleConnection(storage, 10, it);
@@ -362,15 +321,13 @@ TEST(ConnectionStorage, ClosedConnectionIsKeptUntilItsDeferredWorkCompletes) {
   ConnectionStorage storage;
 
   auto it = storage.emplace(Connection(BaseFd(500)));
-  auto coro = makeTestCoroutine();
-  const std::coroutine_handle<> handle = coro.handle;
   auto& state = storage.connectionState(it);
   const uint32_t generation = state.generation;
   auto& asyncState = state.ensureAsyncState(storage.asyncHandlerStatePool());
   asyncState.active = true;
-  asyncState.handle = coro.handle;
-  asyncState.awaitReason = AsyncHandlerState::AwaitReason::WaitingForCallback;
-  coro.handle = {};  // Transfer ownership
+  asyncState.task.coroutine = MakeTestTask();
+  asyncState.task.await.reason = AsyncAwaitState::Reason::WaitingForCallback;
+  const auto handle = std::coroutine_handle<>::from_address(asyncState.task.coroutine.coroutineAddress());
 
   // The coroutine waits for deferred work, which may use it: the state is not reused.
   RecycleConnection(storage, 10, it);

@@ -12,6 +12,7 @@
 #include <functional>
 #include <iterator>
 #include <memory>
+#include <mutex>
 #include <ranges>
 #include <span>
 #include <stdexcept>
@@ -24,12 +25,10 @@
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/file.hpp"
-#include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
-#include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
@@ -41,11 +40,13 @@
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/http2-test-helpers.hpp"
+#include "aeronet/internal/server-context.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/path-handler-entry.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/request-metrics.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 #ifdef AERONET_POSIX
@@ -54,6 +55,7 @@
 #endif
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/temp-file.hpp"
+#include "aeronet/timedef.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/tunnel-bridge.hpp"
 #include "aeronet/unix-dogstatsd-sink.hpp"
@@ -62,20 +64,22 @@
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <coroutine>
 
-#include "aeronet/async-resume-poster.hpp"
 #include "aeronet/request-task.hpp"
 #endif
 
 namespace aeronet::http2 {
 namespace {
 
-RawChars tmpBuffer;
-tracing::TelemetryContext telemetry;
-MiddlewareMetricsCallback middlewareMetrics;
-
-RequestPipeline Pipeline(Router& router) { return {router, telemetry, middlewareMetrics, tmpBuffer}; }
-
 constexpr const char* const kCachedDate = "Sun, 06 Nov 1994 08:49:37 GMT";
+
+// The server context of the handlers of the tests, whose Date header is kCachedDate.
+struct TestServerContext : ::aeronet::internal::ServerContext {
+  explicit TestServerContext(HttpServerConfig config = {}, Router router = {})
+      : ServerContext(std::move(config), std::move(router)) {
+    static constexpr std::chrono::seconds kCachedDateSinceEpoch{784111777};
+    dateHeader.refreshIfNeeded(std::chrono::steady_clock::now(), [] { return SysTimePoint(kCachedDateSinceEpoch); });
+  }
+};
 
 struct HeaderEvent {
   uint32_t streamId{0};
@@ -192,9 +196,12 @@ Http2Config MakeLoopHttp2Config(uint32_t maxStreamPendingBytes, uint32_t initial
   return config;
 }
 
-HttpServerConfig MakeLoopServerConfig(uint32_t maxOutboundBufferBytes) {
+HttpServerConfig MakeLoopServerConfig(uint32_t maxOutboundBufferBytes, const Http2Config& http2Config,
+                                      TelemetryConfig telemetryConfig) {
   HttpServerConfig config;
   config.maxOutboundBufferBytes = maxOutboundBufferBytes;
+  config.http2 = http2Config;
+  config.telemetry = std::move(telemetryConfig);
   return config;
 }
 
@@ -210,6 +217,11 @@ RawChars MakeGetHeaders(std::string_view path) {
 // Tag of the Http2ProtocolLoopback constructor whose handler owns a MockTunnelBridge, for the CONNECT tunnel tests.
 struct WithTunnelBridge {};
 
+// Tag of the Http2ProtocolLoopback constructor whose server context has the given telemetry.
+struct WithTelemetry {
+  TelemetryConfig config;
+};
+
 class Http2ProtocolLoopback {
  public:
   static constexpr uint32_t kDefaultBufferBytes = 4U << 20U;
@@ -218,14 +230,16 @@ class Http2ProtocolLoopback {
                                  uint32_t maxStreamPendingBytes = kDefaultBufferBytes,
                                  uint32_t clientInitialWindowSize = kDefaultInitialWindowSize,
                                  uint32_t serverMaxConcurrentStreams = 0,
-                                 std::unique_ptr<MockTunnelBridge> mockTunnelBridge = {})
-      : serverCfg(MakeLoopHttp2Config(maxStreamPendingBytes, 65535U, serverMaxConcurrentStreams)),
+                                 std::unique_ptr<MockTunnelBridge> mockTunnelBridge = {},
+                                 TelemetryConfig telemetryConfig = {})
+      : ctx(MakeLoopServerConfig(maxOutboundBufferBytes,
+                                 MakeLoopHttp2Config(maxStreamPendingBytes, 65535U, serverMaxConcurrentStreams),
+                                 std::move(telemetryConfig)),
+            router),
+        serverConfig(ctx.config),
         clientCfg(MakeLoopHttp2Config(1U << 20U, clientInitialWindowSize)),
-        serverConfig(MakeLoopServerConfig(maxOutboundBufferBytes)),
-        compressionState(serverConfig.compression),
         tunnelBridge(mockTunnelBridge.get()),
-        handler(serverCfg, Pipeline(router), serverConfig, compressionState, decompressionState, kCachedDate, state,
-                std::move(mockTunnelBridge)),
+        handler(ctx, state, kInvalidHandle, std::move(mockTunnelBridge)),
         client(clientCfg, false) {
     // Most tests exercise tunnel lifecycle, so explicitly authorize their common target.
     static constexpr std::array<std::string_view, 1> kConnectAllowlist{"example.com"};
@@ -258,6 +272,10 @@ class Http2ProtocolLoopback {
                         uint32_t maxOutboundBufferBytes = kDefaultBufferBytes)
       : Http2ProtocolLoopback(router, maxOutboundBufferBytes, kDefaultBufferBytes, kDefaultInitialWindowSize, 0,
                               std::make_unique<MockTunnelBridge>()) {}
+
+  Http2ProtocolLoopback(Router& router, WithTelemetry withTelemetry)
+      : Http2ProtocolLoopback(router, kDefaultBufferBytes, kDefaultBufferBytes, kDefaultInitialWindowSize, 0, {},
+                              std::move(withTelemetry.config)) {}
 
   void connect() {
     client.sendClientPreface();
@@ -364,12 +382,9 @@ class Http2ProtocolLoopback {
     }
   }
 
-  Http2Config serverCfg;
+  TestServerContext ctx;
+  HttpServerConfig& serverConfig;  // the configuration of ctx
   Http2Config clientCfg;
-
-  HttpServerConfig serverConfig;
-  CompressionState compressionState;
-  DecompressionState decompressionState;
 
   // Owned by handler, null unless constructed WithTunnelBridge.
   MockTunnelBridge* tunnelBridge;
@@ -384,45 +399,43 @@ class Http2ProtocolLoopback {
 };
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-// Installs on a handler a resume poster recording the coroutine resumptions posted by the deferred work of its async
-// handlers.
-struct AsyncResumeRecorder {
-  explicit AsyncResumeRecorder(Http2ProtocolHandler& handler) {
-    handler.setAsyncResumePoster({.pPost = &Record, .pContext = this});
+// Reads the coroutine resumptions posted to the server context of a loopback by the deferred work of its async
+// handlers (which the event loop of a server would process).
+class AsyncResumeRecorder {
+ public:
+  explicit AsyncResumeRecorder(Http2ProtocolLoopback& loop) : _pCtx(&loop.ctx) {}
+
+  [[nodiscard]] int nbPosts() const {
+    std::scoped_lock lock(_pCtx->updates.lock);
+    return static_cast<int>(_pCtx->updates.asyncCallbacks.size());
   }
 
-  static void Record(const AsyncResumePoster& poster, std::coroutine_handle<> postedHandle) {
-    auto& self = *static_cast<AsyncResumeRecorder*>(poster.pContext);
-    self.handle = postedHandle;
-    self.nbPosts.fetch_add(1, std::memory_order_release);
+  // The coroutine of the last post, to read once nbPosts() acknowledged it.
+  [[nodiscard]] std::coroutine_handle<> handle() const {
+    std::scoped_lock lock(_pCtx->updates.lock);
+    return _pCtx->updates.asyncCallbacks.back().handle;
   }
 
-  // The coroutine of the last post, to read once nbPosts acknowledged it.
-  std::coroutine_handle<> handle;
-  std::atomic<int> nbPosts{0};
+ private:
+  ::aeronet::internal::ServerContext* _pCtx;
 };
 #endif
 
 }  // namespace
 
 TEST(Http2ProtocolHandler, Creation) {
-  Http2Config config;
   Router router;
   bool handlerCalled = false;
-
-  HttpServerConfig serverConfig;
-  CompressionState compressionState(serverConfig.compression);
-  DecompressionState decompressionState;
 
   router.setDefault([&handlerCalled](const HttpRequestView& /*req*/) {
     handlerCalled = true;
     return HttpResponse(200);
   });
 
+  TestServerContext ctx({}, std::move(router));
   ::aeronet::ConnectionState state;
 
-  auto handler = CreateHttp2ProtocolHandler(config, Pipeline(router), serverConfig, compressionState,
-                                            decompressionState, false, kCachedDate, state, nullptr);
+  auto handler = CreateHttp2ProtocolHandler(ctx, state, kInvalidHandle, false);
 
   ASSERT_NE(handler, nullptr);
   EXPECT_EQ(handler->type(), ProtocolType::Http2);
@@ -430,15 +443,10 @@ TEST(Http2ProtocolHandler, Creation) {
 }
 
 TEST(Http2ProtocolHandler, HasNoPendingOutputInitially) {
-  Http2Config config;
-  Router router;
-  HttpServerConfig serverConfig;
-  CompressionState compressionState(serverConfig.compression);
-  DecompressionState decompressionState;
+  TestServerContext ctx;
   ::aeronet::ConnectionState state;
 
-  auto handler = CreateHttp2ProtocolHandler(config, Pipeline(router), serverConfig, compressionState,
-                                            decompressionState, false, kCachedDate, state, nullptr);
+  auto handler = CreateHttp2ProtocolHandler(ctx, state, kInvalidHandle, false);
 
   EXPECT_FALSE(handler->hasPendingOutput());
 }
@@ -589,53 +597,39 @@ TEST(Http2ProtocolHandler, NewStreamRejectedAtOutboundHighWaterMark) {
 }
 
 TEST(Http2ProtocolHandler, ConnectionPreface) {
-  Http2Config config;
-  Router router;
-  HttpServerConfig serverConfig;
-  CompressionState compressionState(serverConfig.compression);
-  DecompressionState decompressionState;
+  TestServerContext ctx;
   ::aeronet::ConnectionState state;
 
-  auto handler = CreateHttp2ProtocolHandler(config, Pipeline(router), serverConfig, compressionState,
-                                            decompressionState, false, kCachedDate, state, nullptr);
+  auto handler = CreateHttp2ProtocolHandler(ctx, state, kInvalidHandle, false);
 
   EXPECT_FALSE(handler->hasPendingOutput());
 }
 
 TEST(CreateHttp2ProtocolHandler, ReturnsValidHandler) {
-  Http2Config config;
-  config.maxConcurrentStreams = 200;
-  config.initialWindowSize = 32768;
-
   HttpServerConfig serverConfig;
-  CompressionState compressionState(serverConfig.compression);
+  serverConfig.http2.maxConcurrentStreams = 200;
+  serverConfig.http2.initialWindowSize = 32768;
 
   Router router;
   router.setDefault([](const HttpRequestView& req) { return HttpResponse("Hello from " + std::string(req.path())); });
 
-  DecompressionState decompressionState;
+  TestServerContext ctx(std::move(serverConfig), std::move(router));
   ::aeronet::ConnectionState state;
 
-  auto handler = CreateHttp2ProtocolHandler(config, Pipeline(router), serverConfig, compressionState,
-                                            decompressionState, false, kCachedDate, state, nullptr);
+  auto handler = CreateHttp2ProtocolHandler(ctx, state, kInvalidHandle, false);
 
   ASSERT_NE(handler, nullptr);
   EXPECT_EQ(handler->type(), ProtocolType::Http2);
 }
 
 TEST(CreateHttp2ProtocolHandler, SendServerPrefaceForTlsQueuesSettingsImmediately) {
-  Http2Config config;
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  HttpServerConfig serverConfig;
-  CompressionState compressionState(serverConfig.compression);
-
-  DecompressionState decompressionState;
+  TestServerContext ctx({}, std::move(router));
   ::aeronet::ConnectionState state;
 
-  auto handlerBase = CreateHttp2ProtocolHandler(config, Pipeline(router), serverConfig, compressionState,
-                                                decompressionState, true, kCachedDate, state, nullptr);
+  auto handlerBase = CreateHttp2ProtocolHandler(ctx, state, kInvalidHandle, true);
   auto* pHandler = dynamic_cast<Http2ProtocolHandler*>(handlerBase.get());
   ASSERT_NE(pHandler, nullptr);
 
@@ -648,14 +642,9 @@ TEST(CreateHttp2ProtocolHandler, SendServerPrefaceForTlsQueuesSettingsImmediatel
 }
 
 TEST(Http2ProtocolHandler, ProcessInputInvalidPrefaceRequestsImmediateClose) {
-  Http2Config config;
-  Router router;
-  HttpServerConfig serverConfig;
-  CompressionState compressionState(serverConfig.compression);
-  DecompressionState decompressionState;
+  TestServerContext ctx;
   ::aeronet::ConnectionState st;
-  Http2ProtocolHandler handler(config, Pipeline(router), serverConfig, compressionState, decompressionState,
-                               kCachedDate, st);
+  Http2ProtocolHandler handler(ctx, st, kInvalidHandle);
 
   std::array<std::byte, 24> invalidPreface{};
   auto res = handler.processInput(invalidPreface);
@@ -669,14 +658,9 @@ TEST(Http2ProtocolHandler, ProcessInputInvalidPrefaceRequestsImmediateClose) {
 }
 
 TEST(Http2ProtocolHandler, MoveConstructAndAssignAreNoexceptAndUsable) {
-  Http2Config config;
-  Router router;
-  HttpServerConfig serverConfig;
-  CompressionState compressionState(serverConfig.compression);
-  DecompressionState decompressionState;
+  TestServerContext ctx;
   ::aeronet::ConnectionState state;
-  Http2ProtocolHandler original(config, Pipeline(router), serverConfig, compressionState, decompressionState,
-                                kCachedDate, state);
+  Http2ProtocolHandler original(ctx, state, kInvalidHandle);
 
   static_assert(noexcept(Http2ProtocolHandler(std::declval<Http2ProtocolHandler&&>())));
   static_assert(noexcept(std::declval<Http2ProtocolHandler&>() = std::declval<Http2ProtocolHandler&&>()));
@@ -684,8 +668,7 @@ TEST(Http2ProtocolHandler, MoveConstructAndAssignAreNoexceptAndUsable) {
   Http2ProtocolHandler moved(std::move(original));
   EXPECT_FALSE(moved.hasPendingOutput());
 
-  Http2ProtocolHandler assigned(config, Pipeline(router), serverConfig, compressionState, decompressionState,
-                                kCachedDate, state);
+  Http2ProtocolHandler assigned(ctx, state, kInvalidHandle);
   assigned = std::move(moved);
   EXPECT_FALSE(assigned.hasPendingOutput());
 }
@@ -1043,7 +1026,12 @@ TEST(Http2ProtocolHandler, ConnectNonNumericPortReturns400) {
 
 TEST(Http2ProtocolHandler, ConnectContentLengthIsNotChecked) {
   Router router;
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
+  bool setupCalled = false;
+  loop.tunnelBridge->onSetup = [&setupCalled](uint32_t, std::string_view, uint16_t) {
+    setupCalled = true;
+    return kInvalidHandle;
+  };
   loop.connect();
 
   // A CONNECT request has no content (its DATA frames carry the tunneled bytes): a content-length does not make it
@@ -1057,7 +1045,8 @@ TEST(Http2ProtocolHandler, ConnectContentLengthIsNotChecked) {
   loop.pumpServerToClient();
 
   ASSERT_FALSE(loop.clientHeaders.empty());
-  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "405");  // no tunnel bridge
+  EXPECT_TRUE(setupCalled);
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "502");  // the mock does not connect
   EXPECT_TRUE(loop.streamResets.empty());
 }
 
@@ -2330,7 +2319,7 @@ TEST(Http2ProtocolHandler, ParsesSupportedMethodsAndReturns501ForUnknown) {
 
   // TRACE in HTTP/2 returns 405 since there's no wire format to echo (per RFC 9113).
   // It gets handled by ProcessSpecialMethods and never reaches the default handler.
-  // CONNECT also does not reach the handler; this loopback has no tunnel bridge and returns 405.
+  // CONNECT also does not reach the handler; its target has no port and is answered 400.
   const std::array cases{
       MethodCase{1, "PUT", http::Method::PUT, true},           MethodCase{3, "PAT", http::kMethodInvalid, false},
 
@@ -3079,19 +3068,15 @@ TEST(Http2ProtocolHandler, RejectsWhenClientForbidsIdentityWithoutAcceptableEnco
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2Config serverCfg;
   Http2Config clientCfg;
   HttpServerConfig serverConfig;
 
   // Configure server with NO supported encodings
   serverConfig.compression.preferredFormats.clear();
 
-  CompressionState compressionState(serverConfig.compression);
-  DecompressionState decompressionState;
-
+  TestServerContext ctx(std::move(serverConfig), std::move(router));
   ::aeronet::ConnectionState state;
-  Http2ProtocolHandler handler(serverCfg, Pipeline(router), serverConfig, compressionState, decompressionState,
-                               kCachedDate, state);
+  Http2ProtocolHandler handler(ctx, state, kInvalidHandle);
   Http2Connection client(clientCfg, false);
   RecordingEventSink clientSink(client);
 
@@ -5297,7 +5282,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkSuspendsAndResumes) {
   });
 
   Http2ProtocolLoopback loop(router);
-  AsyncResumeRecorder resumes(loop.handler);
+  AsyncResumeRecorder resumes(loop);
   loop.connect();
 
   RawChars hdrs;
@@ -5311,13 +5296,13 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkSuspendsAndResumes) {
 
   // Wait for the background thread to complete and fire the callback
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while (resumes.nbPosts.load(std::memory_order_acquire) == 0) {
+  while (resumes.nbPosts() == 0) {
     ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "async callback did not fire in time";
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 
   // Resume the async task via the captured coroutine handle
-  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(resumes.handle));
+  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(resumes.handle()));
 
   // Pump response back to client
   loop.pumpServerToClient();
@@ -5351,7 +5336,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkWithCorsAndMiddleware) {
       .after([](const HttpRequestView&, HttpResponse& resp) { resp.header("x-after-mw", "done"); });
 
   Http2ProtocolLoopback loop(router);
-  AsyncResumeRecorder resumes(loop.handler);
+  AsyncResumeRecorder resumes(loop);
   loop.connect();
 
   RawChars hdrs;
@@ -5365,12 +5350,12 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkWithCorsAndMiddleware) {
   loop.pumpClientToServer();
 
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while (resumes.nbPosts.load(std::memory_order_acquire) == 0) {
+  while (resumes.nbPosts() == 0) {
     ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "async callback did not fire in time";
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 
-  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(resumes.handle));
+  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(resumes.handle()));
 
   loop.pumpServerToClient();
 
@@ -5397,7 +5382,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkExceptionInCompletedHandler) {
   });
 
   Http2ProtocolLoopback loop(router);
-  AsyncResumeRecorder resumes(loop.handler);
+  AsyncResumeRecorder resumes(loop);
   loop.connect();
 
   RawChars hdrs;
@@ -5410,12 +5395,12 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkExceptionInCompletedHandler) {
   loop.pumpClientToServer();
 
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while (resumes.nbPosts.load(std::memory_order_acquire) == 0) {
+  while (resumes.nbPosts() == 0) {
     ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "async callback did not fire in time";
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 
-  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(resumes.handle));
+  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(resumes.handle()));
 
   loop.pumpServerToClient();
 
@@ -5434,7 +5419,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkThrowsNonStdExceptionOnCompletio
   });
 
   Http2ProtocolLoopback loop(router);
-  AsyncResumeRecorder resumes(loop.handler);
+  AsyncResumeRecorder resumes(loop);
   loop.connect();
 
   RawChars hdrs;
@@ -5447,13 +5432,13 @@ TEST(Http2ProtocolHandler, AsyncHandlerDeferWorkThrowsNonStdExceptionOnCompletio
   loop.pumpClientToServer();
 
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while (resumes.nbPosts.load(std::memory_order_acquire) == 0) {
+  while (resumes.nbPosts() == 0) {
     ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "async callback did not fire in time";
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 
   // Resume — coroutine throws a non-std::exception (int), caught by catch(...)
-  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(resumes.handle));
+  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(resumes.handle()));
 
   loop.pumpServerToClient();
 
@@ -5475,7 +5460,7 @@ TEST(Http2ProtocolHandler, AsyncHandlerDoubleDeferWorkSuspendsResumesAndComplete
   });
 
   Http2ProtocolLoopback loop(router);
-  AsyncResumeRecorder resumes(loop.handler);
+  AsyncResumeRecorder resumes(loop);
   loop.connect();
 
   RawChars hdrs;
@@ -5489,23 +5474,23 @@ TEST(Http2ProtocolHandler, AsyncHandlerDoubleDeferWorkSuspendsResumesAndComplete
 
   // Wait for the first deferWork callback
   auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while (resumes.nbPosts.load(std::memory_order_acquire) < 1) {
+  while (resumes.nbPosts() < 1) {
     ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "first async callback did not fire in time";
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 
   // Resume — coroutine hits the second deferWork and suspends again (covers resumeAsyncTask re-suspend path)
-  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(resumes.handle));
+  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(resumes.handle()));
 
   // Wait for the second deferWork callback
   deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while (resumes.nbPosts.load(std::memory_order_acquire) < 2) {
+  while (resumes.nbPosts() < 2) {
     ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "second async callback did not fire in time";
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 
   // Resume again — coroutine completes and sends the response
-  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(resumes.handle));
+  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(resumes.handle()));
 
   loop.pumpServerToClient();
 
@@ -5523,28 +5508,6 @@ TEST(Http2ProtocolHandler, AsyncHandlerDoubleDeferWorkSuspendsResumesAndComplete
 
 #endif
 
-// ============== CONNECT Without Tunnel Bridge ==============
-
-TEST(Http2ProtocolHandler, ConnectWithoutTunnelBridgeReturns405) {
-  Router router;
-  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
-
-  Http2ProtocolLoopback loop(router);
-  loop.connect();
-
-  // No tunnel bridge set — CONNECT should be rejected with 405.
-  RawChars hdrs;
-  hdrs.append(MakeHttp1HeaderLine(":method", "CONNECT"));
-  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
-  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
-
-  loop.pumpClientToServer();
-  loop.pumpServerToClient();
-
-  ASSERT_FALSE(loop.clientHeaders.empty());
-  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "405");
-}
-
 // ============== DATA for Unknown Stream (L298-300) ==============
 
 TEST(Http2ProtocolHandler, DataForUnknownStreamIsIgnored) {
@@ -5554,14 +5517,14 @@ TEST(Http2ProtocolHandler, DataForUnknownStreamIsIgnored) {
   Http2ProtocolLoopback loop(router);
   loop.connect();
 
-  // Send CONNECT with no tunnel bridge → server processes CONNECT, sends 405, erases stream request.
+  // Send CONNECT to a target out of the allowlist → server processes CONNECT, sends 403, erases stream request.
   // Then send DATA on the same stream → triggers the "unknown stream" warning path.
   RawChars hdrs;
   hdrs.append(MakeHttp1HeaderLine(":method", "CONNECT"));
-  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "forbidden.example:443"));
   ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), false), ErrorCode::NoError);
 
-  loop.pumpClientToServer();  // server processes CONNECT, sends 405, erases stream request
+  loop.pumpClientToServer();  // server processes CONNECT, sends 403, erases stream request
 
   // Stream is half-closed(local) from server's perspective. Client can still send DATA.
   const std::string payload = "tunnel-data-after-reject";
@@ -5573,7 +5536,7 @@ TEST(Http2ProtocolHandler, DataForUnknownStreamIsIgnored) {
   loop.pumpServerToClient();
 
   ASSERT_FALSE(loop.clientHeaders.empty());
-  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "405");
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "403");
 }
 
 // ============== Streaming Handler RST During Deferred Send ==============
@@ -5686,18 +5649,15 @@ TEST(Http2ProtocolHandler, RequestCompletionCallbackInvoked) {
 
   Http2ProtocolLoopback loop(router);
 
-  // Register a completion callback and track invocations.
+  // Track the completed requests through the metrics callback of the server.
   struct Completions {
     int count = 0;
     http::StatusCode lastStatus{};
   } completions;
-  loop.handler.setRequestCompletionCallback(
-      [](void* pContext, const HttpRequestView& /*req*/, http::StatusCode status) {
-        auto& completed = *static_cast<Completions*>(pContext);
-        ++completed.count;
-        completed.lastStatus = status;
-      },
-      &completions);
+  loop.ctx.callbacks.metrics = [&completions](const RequestMetrics& metrics) {
+    ++completions.count;
+    completions.lastStatus = metrics.status;
+  };
 
   loop.connect();
 
@@ -5716,52 +5676,37 @@ TEST(Http2ProtocolHandler, RequestCompletionCallbackInvoked) {
   EXPECT_EQ(completions.count, 1);
   EXPECT_EQ(completions.lastStatus, http::StatusCodeOK);
   EXPECT_EQ(loop.state.requestsServed, 1U);
+  EXPECT_EQ(loop.ctx.stats.totalRequestsServed.load(), 1U);
 }
 
 #ifdef AERONET_POSIX
 TEST(Http2ProtocolHandler, EmitsDetailedLabeledMetrics) {
-  struct TelemetryRestorer {
-    explicit TelemetryRestorer(tracing::TelemetryContext&& savedContext) : saved(std::move(savedContext)) {}
-
-    TelemetryRestorer(const TelemetryRestorer&) = delete;
-    TelemetryRestorer(TelemetryRestorer&&) = delete;
-
-    TelemetryRestorer& operator=(const TelemetryRestorer&) = delete;
-    TelemetryRestorer& operator=(TelemetryRestorer&&) = delete;
-
-    ~TelemetryRestorer() { telemetry = std::move(saved); }
-
-    tracing::TelemetryContext saved;
-  } telemetryRestorer{std::move(telemetry)};
-
   test::UnixDogstatsdSink sink;
   TelemetryConfig cfg;
   cfg.dogStatsDEnabled = true;
   cfg.withDogStatsdSocketPath(sink.path());
-  telemetry = tracing::TelemetryContext(cfg);
 
   vector<std::string> messages;
   test::SendCaptureGuard sendCapture(messages);
 
-  {
-    Router router;
-    router.setDefault([](const HttpRequestView& req) { return req.makeResponse(200); });
+  Router router;
+  router.setDefault([](const HttpRequestView& req) { return req.makeResponse(200); });
 
-    Http2ProtocolLoopback loop(router);
-    loop.connect();
+  Http2ProtocolLoopback loop(router, WithTelemetry{cfg});
+  loop.connect();
 
-    RawChars hdrs;
-    hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
-    hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
-    hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
-    hdrs.append(MakeHttp1HeaderLine(":path", "/metrics"));
-    ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+  RawChars hdrs;
+  hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  hdrs.append(MakeHttp1HeaderLine(":path", "/metrics"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
 
-    loop.pumpClientToServer();
-    loop.pumpServerToClient();
-  }
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
   EXPECT_TRUE(messages.empty());  // buffered until the flush
-  telemetry.flush();
+  loop.ctx.telemetry.flush();
   ASSERT_EQ(messages.size(), 1U);  // all in one datagram
 
   const auto contains = [&messages](std::string_view metric, std::string_view labels) {
@@ -5791,19 +5736,16 @@ TEST(Http2ProtocolHandler, EmitsDetailedLabeledMetrics) {
 // ============== Trace Span Attributes (OpenTelemetry) ==============
 
 TEST(Http2ProtocolHandler, TraceSpanAttributesPopulated) {
-  // Temporarily configure OpenTelemetry so createSpan returns a non-null span.
-  auto savedTelemetry = std::move(telemetry);
-
+  // Configure OpenTelemetry so createSpan returns a non-null span.
   TelemetryConfig cfg;
   cfg.otelEnabled = true;
   cfg.withEndpoint("http://127.0.0.1:0");
   cfg.withServiceName("test-http2-handler");
-  telemetry = tracing::TelemetryContext(cfg);
 
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTelemetry{cfg});
   loop.connect();
 
   RawChars hdrs;
@@ -5818,21 +5760,14 @@ TEST(Http2ProtocolHandler, TraceSpanAttributesPopulated) {
 
   ASSERT_FALSE(loop.clientHeaders.empty());
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "200");
-
-  // Restore original telemetry.
-  telemetry = std::move(savedTelemetry);
 }
 
 TEST(Http2ProtocolHandler, RouteScopedMiddlewareSpanAttributeIsRoute) {
-  // Temporarily enable OpenTelemetry so createSpan() returns a non-null span,
-  // exactly like TraceSpanAttributesPopulated does.
-  auto savedTelemetry = std::move(telemetry);
-
+  // Enable OpenTelemetry so createSpan() returns a non-null span, exactly like TraceSpanAttributesPopulated does.
   TelemetryConfig cfg;
   cfg.otelEnabled = true;
   cfg.withEndpoint("http://127.0.0.1:0");
   cfg.withServiceName("test-http2-route-mw-span");
-  telemetry = tracing::TelemetryContext(cfg);
 
   Router router;
   bool middlewareCalled = false;
@@ -5846,7 +5781,7 @@ TEST(Http2ProtocolHandler, RouteScopedMiddlewareSpanAttributeIsRoute) {
         return MiddlewareResult::Continue();
       });
 
-  Http2ProtocolLoopback loop(router);
+  Http2ProtocolLoopback loop(router, WithTelemetry{cfg});
   loop.connect();
 
   RawChars hdrs;
@@ -5862,9 +5797,6 @@ TEST(Http2ProtocolHandler, RouteScopedMiddlewareSpanAttributeIsRoute) {
   EXPECT_TRUE(middlewareCalled);
   ASSERT_FALSE(loop.clientHeaders.empty());
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "200");
-
-  // Restore original telemetry.
-  telemetry = std::move(savedTelemetry);
 }
 #endif
 
@@ -6098,7 +6030,7 @@ TEST(Http2ProtocolHandler, SweepStreamsAsyncTimeoutSends408) {
 
   Http2ProtocolLoopback loop(router);
 
-  AsyncResumeRecorder resumes(loop.handler);
+  AsyncResumeRecorder resumes(loop);
 
   loop.connect();
 
@@ -6113,7 +6045,7 @@ TEST(Http2ProtocolHandler, SweepStreamsAsyncTimeoutSends408) {
 
   // Wait for the background thread to complete and fire the callback
   const auto deadline = std::chrono::steady_clock::now() + 5s;
-  while (resumes.nbPosts.load(std::memory_order_acquire) == 0) {
+  while (resumes.nbPosts() == 0) {
     ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "async callback did not fire in time";
     std::this_thread::sleep_for(1ms);
   }
@@ -6153,7 +6085,7 @@ TEST(Http2ProtocolHandler, SweepStreamsKeepsTheTaskOfATimedOutStreamUntilItsWork
       .timeout(1ms);
 
   Http2ProtocolLoopback loop(router);
-  AsyncResumeRecorder resumes(loop.handler);
+  AsyncResumeRecorder resumes(loop);
   loop.connect();
 
   // A response larger than the stream window exhausts it, the rest of its body waiting for credit.
@@ -6181,11 +6113,11 @@ TEST(Http2ProtocolHandler, SweepStreamsKeepsTheTaskOfATimedOutStreamUntilItsWork
   EXPECT_TRUE(loop.handler.hasAsyncWorkInFlight());
   releaseWork.store(true, std::memory_order_release);
   const auto deadline = std::chrono::steady_clock::now() + 5s;
-  while (resumes.nbPosts.load(std::memory_order_acquire) == 0) {
+  while (resumes.nbPosts() == 0) {
     ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "async callback did not fire in time";
     std::this_thread::sleep_for(1ms);
   }
-  EXPECT_FALSE(loop.handler.resumeAsyncTaskByHandle(resumes.handle));
+  EXPECT_FALSE(loop.handler.resumeAsyncTaskByHandle(resumes.handle()));
   EXPECT_FALSE(loop.handler.hasAsyncWorkInFlight());
 
   // The body of stream 1 completes once credited.
@@ -6209,7 +6141,7 @@ TEST(Http2ProtocolHandler, SweepStreamsNoExpiryDoesNothing) {
 
   Http2ProtocolLoopback loop(router);
 
-  AsyncResumeRecorder resumes(loop.handler);
+  AsyncResumeRecorder resumes(loop);
 
   loop.connect();
 
@@ -6224,7 +6156,7 @@ TEST(Http2ProtocolHandler, SweepStreamsNoExpiryDoesNothing) {
 
   // Wait for background thread to complete
   const auto deadline = std::chrono::steady_clock::now() + 5s;
-  while (resumes.nbPosts.load(std::memory_order_acquire) == 0) {
+  while (resumes.nbPosts() == 0) {
     ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "async callback did not fire in time";
     std::this_thread::sleep_for(1ms);
   }
@@ -6239,7 +6171,7 @@ TEST(Http2ProtocolHandler, SweepStreamsNoExpiryDoesNothing) {
   }
 
   // Clean up: resume the coroutine so the stream is properly released
-  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(resumes.handle));
+  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(resumes.handle()));
   loop.pumpServerToClient();
 }
 #endif
@@ -6755,7 +6687,7 @@ TEST(Http2ProtocolHandler, AsyncCompletionRejectedWhenTunnelBacklogAlreadyOverLi
   static constexpr uint32_t kMaxOutboundBufferBytes = 200;  // tiny cap; default 65535 flow-control windows untouched
   Http2ProtocolLoopback loop(router, WithTunnelBridge{}, kMaxOutboundBufferBytes);
 
-  AsyncResumeRecorder resumes(loop.handler);
+  AsyncResumeRecorder resumes(loop);
 
   loop.connect();
 
@@ -6778,7 +6710,7 @@ TEST(Http2ProtocolHandler, AsyncCompletionRejectedWhenTunnelBacklogAlreadyOverLi
   loop.pumpClientToServer();
 
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while (resumes.nbPosts.load(std::memory_order_acquire) == 0) {
+  while (resumes.nbPosts() == 0) {
     ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "async callback did not fire in time";
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
@@ -6795,7 +6727,7 @@ TEST(Http2ProtocolHandler, AsyncCompletionRejectedWhenTunnelBacklogAlreadyOverLi
   // Resume directly too - onAsyncTaskCompleted()'s sendResponse() -> responseExceedsPendingLimits()
   // now sees `retained` already over the limit purely from unread tunnel bytes, before this
   // response's own (tiny) size ever enters the calculation: `retained > limit` fires immediately.
-  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(resumes.handle));
+  ASSERT_TRUE(loop.handler.resumeAsyncTaskByHandle(resumes.handle()));
 
   loop.pumpServerToClient();
 

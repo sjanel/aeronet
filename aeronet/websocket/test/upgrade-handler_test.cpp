@@ -16,11 +16,15 @@
 
 #ifdef AERONET_ENABLE_WEBSOCKET
 #include <algorithm>
+#include <memory>
+#include <stdexcept>
 #include <string>
 
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/websocket-constants.hpp"
 #include "aeronet/websocket-deflate.hpp"
+#include "aeronet/websocket-endpoint.hpp"
+#include "aeronet/websocket-handler.hpp"
 #include "aeronet/websocket-upgrade.hpp"
 #endif
 
@@ -777,6 +781,125 @@ TEST(UpgradeHandlerTest, IsSameOriginRequest) {
   EXPECT_FALSE(IsSameOriginRequest("example.com", "example.com"));
   EXPECT_TRUE(IsSameOriginRequest("chrome-extension://example.com", "example.com"));
   EXPECT_FALSE(IsSameOriginRequest("chrome-extension://example.com:443", "example.com"));
+}
+
+// ============================================================================
+// AcceptWebSocketUpgrade tests
+// ============================================================================
+
+namespace {
+
+constexpr std::string_view kUpgradeHeaders =
+    "Upgrade: websocket\r\n"
+    "Connection: Upgrade\r\n"
+    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+    "Sec-WebSocket-Version: 13\r\n";
+
+}  // namespace
+
+TEST_F(UpgradeHandlerHarness, AcceptWebSocketUpgrade_InvalidRequest) {
+  ASSERT_EQ(parse(BuildRawHttp11("GET", "/ws",
+                                 "Upgrade: websocket\r\n"
+                                 "Connection: Upgrade\r\n"
+                                 "Sec-WebSocket-Version: 13\r\n")),
+            http::StatusCodeOK);
+  bool factoryCalled = false;
+  const auto endpoint = WebSocketEndpoint::WithFactory([&factoryCalled](const HttpRequestView&) {
+    factoryCalled = true;
+    return std::make_unique<websocket::WebSocketHandler>();
+  });
+  websocket::SharedDeflateStreams sharedStreams;
+
+  const auto result = upgrade::AcceptWebSocketUpgrade(request, request.headers(), endpoint, sharedStreams);
+  EXPECT_EQ(result.status, upgrade::WebSocketAcceptResult::Status::Invalid);
+  EXPECT_NE(result.pErrorMessage, nullptr);
+  EXPECT_EQ(result.handler, nullptr);
+  EXPECT_TRUE(result.response.empty());
+  EXPECT_FALSE(factoryCalled);
+}
+
+TEST_F(UpgradeHandlerHarness, AcceptWebSocketUpgrade_DefaultHandlerWithoutFactory) {
+  ASSERT_EQ(parse(BuildRawHttp11("GET", "/ws",
+                                 std::string(kUpgradeHeaders) +
+                                     "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n")),
+            http::StatusCodeOK);
+  WebSocketEndpoint endpoint;
+  endpoint.config.isServerSide = false;  // the handshake makes it a server handler anyway
+  endpoint.supportedProtocols.append("chat");
+  websocket::SharedDeflateStreams sharedStreams;
+
+  const auto result = upgrade::AcceptWebSocketUpgrade(request, request.headers(), endpoint, sharedStreams);
+  ASSERT_EQ(result.status, upgrade::WebSocketAcceptResult::Status::Accepted);
+  EXPECT_EQ(result.pErrorMessage, nullptr);
+  ASSERT_NE(result.handler, nullptr);
+  EXPECT_TRUE(result.handler->config().isServerSide);
+  const std::string_view response(result.response.data(), result.response.size());
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+  EXPECT_TRUE(response.ends_with("\r\n\r\n"));
+  EXPECT_TRUE(response.contains(kExpectedWebSocketAccept));
+#ifdef AERONET_ENABLE_ZLIB
+  EXPECT_TRUE(result.handler->hasCompression());
+  EXPECT_TRUE(response.contains("permessage-deflate"));
+#else
+  EXPECT_FALSE(result.handler->hasCompression());
+#endif
+}
+
+TEST_F(UpgradeHandlerHarness, AcceptWebSocketUpgrade_FactoryGetsRequestAndNegotiatedCompression) {
+  ASSERT_EQ(parse(BuildRawHttp11("GET", "/ws/room",
+                                 std::string(kUpgradeHeaders) + "Sec-WebSocket-Extensions: permessage-deflate\r\n")),
+            http::StatusCodeOK);
+  std::string_view seenPath;
+  // The factory creates its handler without compression: the handshake enables the negotiated one.
+  const auto endpoint = WebSocketEndpoint::WithFactory([&seenPath](const HttpRequestView& req) {
+    seenPath = req.path();
+    return std::make_unique<websocket::WebSocketHandler>();
+  });
+  websocket::SharedDeflateStreams sharedStreams;
+
+  const auto result = upgrade::AcceptWebSocketUpgrade(request, request.headers(), endpoint, sharedStreams);
+  ASSERT_EQ(result.status, upgrade::WebSocketAcceptResult::Status::Accepted);
+  ASSERT_NE(result.handler, nullptr);
+  EXPECT_EQ(seenPath, "/ws/room");
+  EXPECT_FALSE(result.response.empty());
+#ifdef AERONET_ENABLE_ZLIB
+  EXPECT_TRUE(result.handler->hasCompression());
+#else
+  EXPECT_FALSE(result.handler->hasCompression());
+#endif
+}
+
+TEST_F(UpgradeHandlerHarness, AcceptWebSocketUpgrade_FactoryRefuses) {
+  ASSERT_EQ(parse(BuildRawHttp11("GET", "/ws", kUpgradeHeaders)), http::StatusCodeOK);
+  const auto endpoint = WebSocketEndpoint::WithFactory(
+      [](const HttpRequestView&) -> std::unique_ptr<websocket::WebSocketHandler> { return nullptr; });
+  websocket::SharedDeflateStreams sharedStreams;
+
+  const auto result = upgrade::AcceptWebSocketUpgrade(request, request.headers(), endpoint, sharedStreams);
+  EXPECT_EQ(result.status, upgrade::WebSocketAcceptResult::Status::Refused);
+  EXPECT_EQ(result.handler, nullptr);
+  EXPECT_TRUE(result.response.empty());
+}
+
+TEST_F(UpgradeHandlerHarness, AcceptWebSocketUpgrade_FactoryThrows) {
+  ASSERT_EQ(parse(BuildRawHttp11("GET", "/ws", kUpgradeHeaders)), http::StatusCodeOK);
+  websocket::SharedDeflateStreams sharedStreams;
+
+  const auto stdException =
+      WebSocketEndpoint::WithFactory([](const HttpRequestView&) -> std::unique_ptr<websocket::WebSocketHandler> {
+        throw std::runtime_error("factory failure");
+      });
+  auto result = upgrade::AcceptWebSocketUpgrade(request, request.headers(), stdException, sharedStreams);
+  EXPECT_EQ(result.status, upgrade::WebSocketAcceptResult::Status::Failed);
+  EXPECT_EQ(result.handler, nullptr);
+  EXPECT_TRUE(result.response.empty());
+
+  const auto otherException = WebSocketEndpoint::WithFactory(
+      // NOLINTNEXTLINE(bugprone-std-exception-baseclass)
+      [](const HttpRequestView&) -> std::unique_ptr<websocket::WebSocketHandler> { throw 42; });
+  result = upgrade::AcceptWebSocketUpgrade(request, request.headers(), otherException, sharedStreams);
+  EXPECT_EQ(result.status, upgrade::WebSocketAcceptResult::Status::Failed);
+  EXPECT_EQ(result.handler, nullptr);
 }
 #endif
 

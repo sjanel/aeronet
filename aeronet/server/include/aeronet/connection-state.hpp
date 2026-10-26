@@ -1,6 +1,5 @@
 #pragma once
 
-#include <bit>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -8,6 +7,7 @@
 #include <span>
 #include <string_view>
 
+#include "aeronet/connection-info.hpp"
 #include "aeronet/file-payload.hpp"
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-request-view.hpp"
@@ -15,8 +15,6 @@
 #include "aeronet/output-queue.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
-#include "aeronet/socket-ops.hpp"
-#include "aeronet/tls-info.hpp"
 #include "aeronet/transport.hpp"
 #include "aeronet/vector.hpp"
 #include "aeronet/zerocopy-buffers.hpp"
@@ -42,7 +40,9 @@ struct HttpServerConfig;
 class TlsContext;
 #endif
 
-struct ConnectionState {
+// The state of a connection of the server. The part read by its requests (TLS information, client address) is its
+// ConnectionInfo base.
+struct ConnectionState : public ConnectionInfo {
   void initializeStateNewConnection(const HttpServerConfig& config, const sockaddr_storage& peerAddress,
                                     CompressionState& compressionState);
 
@@ -51,7 +51,6 @@ struct ConnectionState {
   // Tells whether the connection, whose write side is shut down, discards its input until the client closes it (see
   // internal::ConnectionIo::startLingeringClose()).
   [[nodiscard]] bool isLingering() const noexcept { return closeMode == CloseMode::Linger; }
-  [[nodiscard]] std::string_view clientAddress() const noexcept { return {clientAddressBuffer, clientAddressLength}; }
 
   [[nodiscard]] bool isTunneling() const noexcept { return peerFd != kInvalidHandle; }
   [[nodiscard]] bool isSendingFile() const noexcept { return fileSendActive; }
@@ -198,76 +197,11 @@ struct ConnectionState {
 
   using AggregatedBodyStreamContext = HttpRequestView::AggregatedBodyContext;
 
-  // accumulated input raw data
-  RawChars inBuffer;
-  // decoded body + optional trailer headers (RFC 7230 §4.1.2)
-  RawChars bodyAndTrailersBuffer;
-  // Buffer used for tunneling raw bytes when peer is not writable, or for send file buffer (they are both mutually
-  // exclusive).
-  RawChars tunnelOrFileBuffer;
-  // per-connection request object reused across dispatches
-  HttpRequestView request;
-  AggregatedBodyStreamContext bodyStreamContext;
-  // pending outbound data not yet written
-  HttpMessageData outBuffer;
-  // HTTP/1 output queued behind outBuffer (and the file sent after it), produced while it waits for the socket.
-  OutputQueue outQueue;
-  // Written buffers still read by the kernel for zerocopy sends in flight.
-  ZerocopyBuffers zerocopyBuffers;
-  Transport transport;  // set after accept (plain or TLS)
-  std::chrono::steady_clock::time_point lastActivity;
-  // Start of the header read timer of the current HTTP/1.1 request: the accept of the connection for its first request,
-  // the first bytes of the next ones (see internal::ConnectionMaintenance::startHeaderReadTimer()).
-  // Kept alive for the full request lifecycle as the reference point for bodyLastActivityMs / requestDeadlineMs.
-  // Epoch means inactive (no request in progress).
-  std::chrono::steady_clock::time_point headerStartTp;
-
-  TLSInfo tlsInfo;
-
-  // Tunnel support: when a connection is acting as a tunnel endpoint, peerFd holds the
-  // file descriptor of the other side (upstream or client).
-  NativeHandle peerFd{kInvalidHandle};
-  // HTTP/2 CONNECT tunnel: when non-zero, this upstream connection is paired with a specific
-  // HTTP/2 stream on the peer (HTTP/2 client) connection. Zero for HTTP/1.1 tunnels.
-  uint32_t peerStreamId{0};
-  uint32_t requestsServed{0};
-  // Length of trailer headers in bodyAndTrailersBuffer (0 if no trailers).
-  // Trailers occupy [bodyAndTrailersBuffer.size() - trailerLen, bodyAndTrailersBuffer.size()).
-  uint32_t trailerLen{0};
-
-  /// Sentinel value for bodyLastActivityMs / requestDeadlineMs indicating no active timestamp.
-  static constexpr uint32_t kInactiveRelativeMs = static_cast<uint32_t>(-1);
-  static constexpr uint32_t kNoKeepAliveDeadlineIndex = static_cast<uint32_t>(-1);
-  /// Sentinel value for zerocopyStallCheckQueuedBytes when no stall check was made.
-  static constexpr uint32_t kNoZerocopyStallCheck = static_cast<uint32_t>(-1);
-
-  // Milliseconds since headerStartTp of last body read progress. kInactiveRelativeMs means inactive.
-  uint32_t bodyLastActivityMs{kInactiveRelativeMs};
-  // Milliseconds since headerStartTp of per-route handler deadline. kInactiveRelativeMs means inactive.
-  uint32_t requestDeadlineMs{kInactiveRelativeMs};
-  // Intrusive index in the server keep-alive deadline heap. kNoKeepAliveDeadlineIndex means unscheduled.
-  uint32_t keepAliveDeadlineIndex{kNoKeepAliveDeadlineIndex};
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  uint32_t generation{0};
-#endif
-
-  // Bytes of the socket send queue at the previous check that the zerocopy sends in flight progress, while the
-  // connection waits for their completion (see internal::ConnectionMaintenance::watchZerocopySends()).
-  // kNoZerocopyStallCheck if none.
-  uint32_t zerocopyStallCheckQueuedBytes{kNoZerocopyStallCheck};
-
-  char clientAddressBuffer[kFormattedAddressCapacity];
-
   // Connection close lifecycle: a drain close may linger before the close (see isLingering()).
   enum class CloseMode : uint8_t { None, DrainThenClose, Linger };
 
-  static constexpr uint8_t kFormattedAddressCapacityNbBits =
-      static_cast<uint8_t>(std::bit_width(kFormattedAddressCapacity));
-
-  uint8_t clientAddressLength : kFormattedAddressCapacityNbBits{0};
-
-  // Pack small lifecycle/protocol state into one allocation unit to reduce
-  // per-connection footprint.
+  // Small lifecycle / protocol state, packed in bit-fields. Declared first: with the TLS handshake observer, they fill
+  // the tail padding of ConnectionInfo (4 + 1 bytes after its client address).
   CloseMode closeMode : 2 {CloseMode::None};
   ProtocolType protocol : 2 {ProtocolType::Http11};  // Current protocol type.
   bool waitingWritable : 1 {false};                  // EPOLLOUT registered
@@ -286,12 +220,15 @@ struct ConnectionState {
   bool fileSendActive : 1 {false};          // true while a file payload is attached and in progress
   bool fileSendHeadersPending : 1 {false};  // true until response headers are flushed before file payload
 
+#ifdef AERONET_LINUX
   // Whether the large writes of the responses use MSG_ZEROCOPY (plain sockets only, Linux).
   // Decided at accept time from the server configuration and the peer address.
   bool zerocopyEnabled : 1 {false};
   // Whether zerocopyEnabled is cleared once the kernel reports that it copied the data of a zerocopy send anyway
   // (local peer, device without scatter-gather): ZerocopyMode::Opportunistic.
   bool zerocopyStopOnCopy : 1 {false};
+#endif
+
   // Whether some bytes of outBuffer were written with MSG_ZEROCOPY by sends not completed yet: outBuffer must then
   // neither be modified nor freed (see discardOutBuffer()).
   bool outBufferZerocopySent : 1 {false};
@@ -334,7 +271,68 @@ struct ConnectionState {
   // Observability / attribution for handshake failures.
   // Populated by OpenSSL callbacks via SSL ex_data (see tls-handshake-observer).
   TlsHandshakeObserver tlsHandshakeObserver;
+#endif
 
+  // accumulated input raw data
+  RawChars inBuffer;
+  // decoded body + optional trailer headers (RFC 7230 §4.1.2)
+  RawChars bodyAndTrailersBuffer;
+  // Buffer used for tunneling raw bytes when peer is not writable, or for send file buffer (they are both mutually
+  // exclusive).
+  RawChars tunnelOrFileBuffer;
+  // per-connection request object reused across dispatches
+  HttpRequestView request;
+  AggregatedBodyStreamContext bodyStreamContext;
+  // pending outbound data not yet written
+  HttpMessageData outBuffer;  // TODO: remove it to keep only outQueue?
+  // HTTP/1 output queued behind outBuffer (and the file sent after it), produced while it waits for the socket.
+  OutputQueue outQueue;
+#ifdef AERONET_LINUX
+  // Written buffers still read by the kernel for zerocopy sends in flight.
+  ZerocopyBuffers zerocopyBuffers;
+#endif
+  Transport transport;  // set after accept (plain or TLS)
+  std::chrono::steady_clock::time_point lastActivity;
+  // Start of the header read timer of the current HTTP/1.1 request: the accept of the connection for its first request,
+  // the first bytes of the next ones (see internal::ConnectionMaintenance::startHeaderReadTimer()).
+  // Kept alive for the full request lifecycle as the reference point for bodyLastActivityMs / requestDeadlineMs.
+  // Epoch means inactive (no request in progress).
+  std::chrono::steady_clock::time_point headerStartTp;
+
+  // Tunnel support: when a connection is acting as a tunnel endpoint, peerFd holds the
+  // file descriptor of the other side (upstream or client).
+  NativeHandle peerFd{kInvalidHandle};
+#ifdef AERONET_ENABLE_HTTP2
+  // HTTP/2 CONNECT tunnel: when non-zero, this upstream connection is paired with a specific
+  // HTTP/2 stream on the peer (HTTP/2 client) connection. Zero for HTTP/1.1 tunnels.
+  uint32_t peerStreamId{0};
+#endif
+  // Length of trailer headers in bodyAndTrailersBuffer (0 if no trailers).
+  // Trailers occupy [bodyAndTrailersBuffer.size() - trailerLen, bodyAndTrailersBuffer.size()).
+  uint32_t trailerLen{0};
+
+  /// Sentinel value for bodyLastActivityMs / requestDeadlineMs indicating no active timestamp.
+  static constexpr uint32_t kInactiveRelativeMs = static_cast<uint32_t>(-1);
+  static constexpr uint32_t kNoKeepAliveDeadlineIndex = static_cast<uint32_t>(-1);
+  /// Sentinel value for zerocopyStallCheckQueuedBytes when no stall check was made.
+  static constexpr uint32_t kNoZerocopyStallCheck = static_cast<uint32_t>(-1);
+
+  // Milliseconds since headerStartTp of last body read progress. kInactiveRelativeMs means inactive.
+  uint32_t bodyLastActivityMs{kInactiveRelativeMs};
+  // Milliseconds since headerStartTp of per-route handler deadline. kInactiveRelativeMs means inactive.
+  uint32_t requestDeadlineMs{kInactiveRelativeMs};
+  // Intrusive index in the server keep-alive deadline heap. kNoKeepAliveDeadlineIndex means unscheduled.
+  uint32_t keepAliveDeadlineIndex{kNoKeepAliveDeadlineIndex};
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  uint32_t generation{0};
+#endif
+
+  // Bytes of the socket send queue at the previous check that the zerocopy sends in flight progress, while the
+  // connection waits for their completion (see internal::ConnectionMaintenance::watchZerocopySends()).
+  // kNoZerocopyStallCheck if none.
+  uint32_t zerocopyStallCheckQueuedBytes{kNoZerocopyStallCheck};
+
+#ifdef AERONET_ENABLE_OPENSSL
   // Keep the TLS context alive for as long as this connection's SSL/handshake may reference
   // callback user pointers (ALPN/SNI). This is required for safe hot-reload of TLS contexts.
   std::shared_ptr<const TlsContext> tlsContextKeepAlive;
@@ -357,7 +355,7 @@ struct ConnectionState {
   // Tells whether deferred work (deferWork()) is still running for a coroutine of this connection: its frame and its
   // request must then be kept until the work completes, even if the connection is closed.
   [[nodiscard]] bool hasAsyncWorkInFlight() const noexcept {
-    return (asyncState && asyncState->isAwaitingCallback()) ||
+    return (asyncState && asyncState->task.isAwaitingCallback()) ||
            (protocolHandler != nullptr && protocolHandler->hasAsyncWorkInFlight());
   }
 

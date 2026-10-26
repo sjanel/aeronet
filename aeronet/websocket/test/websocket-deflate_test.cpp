@@ -20,6 +20,7 @@
 
 #include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/websocket-deflate-context.hpp"
 #endif
 
 namespace aeronet::websocket {

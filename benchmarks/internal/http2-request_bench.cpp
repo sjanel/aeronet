@@ -4,6 +4,7 @@
 #include <benchmark/benchmark.h>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -13,23 +14,19 @@
 
 #include "aeronet/connection-state.hpp"
 #include "aeronet/hpack.hpp"
-#include "aeronet/http-codec.hpp"
 #include "aeronet/http-header.hpp"
-#include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
-#include "aeronet/http2-config.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/http2-protocol-handler.hpp"
-#include "aeronet/middleware.hpp"
+#include "aeronet/internal/server-context.hpp"
+#include "aeronet/native-handle.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-bytes.hpp"
-#include "aeronet/raw-chars.hpp"
 #include "aeronet/router.hpp"
-#include "aeronet/tracing/tracer.hpp"
 #include "aeronet/vector.hpp"
 
 namespace aeronet::http2 {
@@ -70,16 +67,13 @@ constexpr std::array<http::HeaderView, 24> kRegularFields{{
     {"if-none-match", "W/\"5e8b-1a2b3c4d\""},
 }};
 
-constexpr const char* const kCachedDate = "Sun, 06 Nov 1994 08:49:37 GMT";
-
 // The server side of an HTTP/2 connection, fed with HEADERS frames as a client would send them.
 class Http2RequestBench {
  public:
   explicit Http2RequestBench(std::size_t nbRegularFields)
-      : _compressionState(_serverConfig.compression),
-        _handler(_http2Config, RequestPipeline(_router, _telemetry, _middlewareMetrics, _tmpBuffer), _serverConfig,
-                 _compressionState, _decompressionState, kCachedDate, _connectionState) {
-    _router.setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK, "ok"); });
+      : _ctx(HttpServerConfig{}, Router{}), _handler(_ctx, _connectionState, kInvalidHandle) {
+    _ctx.router.setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK, "ok"); });
+    _ctx.dateHeader.refreshIfNeeded(std::chrono::steady_clock::now());
 
     // Connection preface and SETTINGS exchange.
     RawBytes setup;
@@ -94,7 +88,7 @@ class Http2RequestBench {
 
     // A client indexes the fields of its first request, and refers to them for the next ones: the first block inserts
     // them in the dynamic table, the second one, sent for each benchmarked stream, references them.
-    HpackEncoder encoder(_http2Config.headerTableSize);
+    HpackEncoder encoder(_ctx.config.http2.headerTableSize);
     RawBytes firstBlock;
     RawBytes block;
     for (RawBytes* pBlock : {&firstBlock, &block}) {
@@ -149,14 +143,7 @@ class Http2RequestBench {
     }
   }
 
-  Http2Config _http2Config;
-  HttpServerConfig _serverConfig;
-  Router _router;
-  CompressionState _compressionState;
-  DecompressionState _decompressionState;
-  tracing::TelemetryContext _telemetry;
-  MiddlewareMetricsCallback _middlewareMetrics;
-  RawChars _tmpBuffer;
+  ::aeronet::internal::ServerContext _ctx;
   ::aeronet::ConnectionState _connectionState;
   Http2ProtocolHandler _handler;
   vector<std::string_view> _fragments;
