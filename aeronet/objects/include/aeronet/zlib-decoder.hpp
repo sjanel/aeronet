@@ -5,7 +5,9 @@
 #include <string_view>
 
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/zlib-gateway.hpp"
 #include "aeronet/zlib-stream-raii.hpp"
+#include "aeronet/zlib-variant.hpp"
 
 namespace aeronet {
 
@@ -21,16 +23,24 @@ class ZlibDecoderContext {
   // maxDecompressedBytes bounds the bytes this call appends to out (the caller passes what is left of its budget):
   // exceeding it fails with more than maxDecompressedBytes bytes appended.
   bool decompressChunk(std::string_view chunk, bool finalChunk, std::size_t maxDecompressedBytes,
-                       uint32_t decoderChunkSize, RawChars& out);
+                       uint32_t decoderChunkSize, RawChars& out) {
+    return decompressChunk(chunk, finalChunk, maxDecompressedBytes, decoderChunkSize, out, kZMaxSize);
+  }
 
   /// Initialize (or reinitialize) the decompression context with given parameters.
   /// Reuses internal zlib state if already initialized.
-  void init(ZStreamRAII::Variant variant) {
+  void init(ZlibVariant variant) {
     _zs.initDecompress(variant);
     _streamEnded = false;
   }
 
  private:
+  friend struct ZlibTestAccess;
+
+  // zlib counts the input in 32 bits: the chunk is given to inflate() in slices of at most maxSliceSize bytes.
+  bool decompressChunk(std::string_view chunk, bool finalChunk, std::size_t maxDecompressedBytes,
+                       uint32_t decoderChunkSize, RawChars& out, std::size_t maxSliceSize);
+
   ZStreamRAII _zs;
   bool _streamEnded{false};  // the end of the compressed stream was decoded
 };
@@ -39,7 +49,7 @@ class ZlibDecoderContext {
 // Not exposed publicly; header installed only because internal components span static libs.
 class ZlibDecoder {
  public:
-  explicit ZlibDecoder(ZStreamRAII::Variant variant = ZStreamRAII::Variant::gzip) noexcept : _variant(variant) {}
+  explicit ZlibDecoder(ZlibVariant variant = ZlibVariant::gzip) noexcept : _variant(variant) {}
 
   bool decompressFull(std::string_view input, std::size_t maxDecompressedBytes, uint32_t decoderChunkSize,
                       RawChars& out) {
@@ -51,11 +61,11 @@ class ZlibDecoder {
     return &_ctx;
   }
 
-  void setVariant(ZStreamRAII::Variant variant) { _variant = variant; }
+  void setVariant(ZlibVariant variant) { _variant = variant; }
 
  private:
   ZlibDecoderContext _ctx;
-  ZStreamRAII::Variant _variant;
+  ZlibVariant _variant;
 };
 
 }  // namespace aeronet

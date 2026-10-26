@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <bit>
 #include <chrono>
 #include <cstddef>
 #include <initializer_list>
@@ -462,7 +463,7 @@ TEST(TLSConfigTest, KtlsModeBuildGuard) {
   EXPECT_NO_THROW(cfg.validate());
 
   cfg.withKtlsMode(
-      static_cast<TLSConfig::KtlsMode>(std::numeric_limits<std::underlying_type_t<TLSConfig::KtlsMode>>::max()));
+      std::bit_cast<TLSConfig::KtlsMode>(std::numeric_limits<std::underlying_type_t<TLSConfig::KtlsMode>>::max()));
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
 }
 

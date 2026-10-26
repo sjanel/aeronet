@@ -46,7 +46,7 @@
 #ifdef AERONET_ENABLE_ZLIB
 #include "aeronet/zlib-decoder.hpp"
 #include "aeronet/zlib-gateway.hpp"
-#include "aeronet/zlib-stream-raii.hpp"
+#include "aeronet/zlib-variant.hpp"
 #endif
 
 #ifdef AERONET_ENABLE_ZSTD
@@ -172,11 +172,11 @@ inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] Decompre
       // NOLINTNEXTLINE(readability-else-after-return)
     } else if (encoding == http::gzip) {
       ZlibDecoder& decoder = decompressionState.zlibDecoder;
-      decoder.setVariant(ZStreamRAII::Variant::gzip);
+      decoder.setVariant(ZlibVariant::gzip);
       stageOk = runDecoder(decoder, *dst);
     } else if (encoding == http::deflate) {
       ZlibDecoder& decoder = decompressionState.zlibDecoder;
-      decoder.setVariant(ZStreamRAII::Variant::deflate);
+      decoder.setVariant(ZlibVariant::deflate);
       stageOk = runDecoder(decoder, *dst);
 #endif
 #ifdef AERONET_ENABLE_ZSTD
@@ -307,10 +307,10 @@ EncoderResult CompressionState::encodeFull([[maybe_unused]] Encoding encoding, [
 #endif
 #ifdef AERONET_ENABLE_ZLIB
   if (encoding == Encoding::gzip) {
-    return zlibEncoder.encodeFull(ZStreamRAII::Variant::gzip, data, availableCapacity, buf);
+    return zlibEncoder.encodeFull(ZlibVariant::gzip, data, availableCapacity, buf);
   }
   if (encoding == Encoding::deflate) {
-    return zlibEncoder.encodeFull(ZStreamRAII::Variant::deflate, data, availableCapacity, buf);
+    return zlibEncoder.encodeFull(ZlibVariant::deflate, data, availableCapacity, buf);
   }
 #endif
 #ifdef AERONET_ENABLE_ZSTD
@@ -329,10 +329,10 @@ EncoderContext* CompressionState::makeContext([[maybe_unused]] Encoding encoding
 #endif
 #ifdef AERONET_ENABLE_ZLIB
   if (encoding == Encoding::gzip) {
-    return zlibEncoder.makeContext(ZStreamRAII::Variant::gzip);
+    return zlibEncoder.makeContext(ZlibVariant::gzip);
   }
   if (encoding == Encoding::deflate) {
-    return zlibEncoder.makeContext(ZStreamRAII::Variant::deflate);
+    return zlibEncoder.makeContext(ZlibVariant::deflate);
   }
 #endif
 #ifdef AERONET_ENABLE_ZSTD

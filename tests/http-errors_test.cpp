@@ -199,7 +199,7 @@ TEST(HttpParserErrors, ChunkIncrementalFuzz) {
     std::string chunk(static_cast<std::size_t>(sz), static_cast<char>('a' + (i % 26)));
     original += chunk;
     char hex[16];
-    std::string frame(hex, to_lower_hex(static_cast<std::size_t>(sz), hex));
+    std::string frame(hex, ToLowerHex(static_cast<std::size_t>(sz), hex));
     frame += "\r\n" + chunk + "\r\n";
     std::size_t pos = 0;
     while (pos < frame.size()) {

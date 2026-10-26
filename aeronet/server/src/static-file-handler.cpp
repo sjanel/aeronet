@@ -766,7 +766,7 @@ struct UnsatisfiedRangeHeaderBuf {
 
 UnsatisfiedRangeHeaderBuf BuildUnsatisfiedRangeHeader(std::uint64_t total) {
   UnsatisfiedRangeHeaderBuf result;
-  auto* buf = AppendFixed<kUnsatisfiedRangePrefixStr>(result.buf);
+  char* buf = AppendFixed<kUnsatisfiedRangePrefixStr>(result.buf);
 
   buf = WriteUInt(buf, total, ndigits(total));
   assert(buf <= result.buf + kMaxUnsatisfiedRangeHeaderLen);
@@ -775,7 +775,7 @@ UnsatisfiedRangeHeaderBuf BuildUnsatisfiedRangeHeader(std::uint64_t total) {
   return result;
 }
 
-constexpr std::size_t kBoundarySize = 24;
+constexpr uint32_t kBoundarySize = 24;
 constexpr std::string_view kAeronetPrefix = "aeronet";
 
 struct Boundary {
@@ -785,20 +785,21 @@ struct Boundary {
 // Generate a unique boundary string for multipart/byteranges responses.
 // Format: "aeronet" + 16 hex chars (24 chars total).
 Boundary GenerateBoundary() {
-  // NOLINTNEXTLINE(cert-msc51-cpp) — thread_local PRNG seeded from random_device is intentional
+  // NOLINTNEXTLINE(cert-msc51-cpp) - thread_local PRNG seeded from random_device is intentional
   thread_local std::mt19937_64 rng(std::random_device{}());
 
   const std::uint64_t val = rng();
-  const auto nbHexChars = hex_digits(val);
-  const auto nbZeros = kBoundarySize - kAeronetPrefix.size() - nbHexChars;  // 7 chars in "aeronet"
+  static_assert(kBoundarySize >= kAeronetPrefix.size() + HexDigits(std::numeric_limits<decltype(val)>::max()),
+                "Boundary size is too small");
+  const auto nbZeros = kBoundarySize - kAeronetPrefix.size() - HexDigits(val);
 
   Boundary res;
 
-  auto* insertPtr = AppendFixed<kAeronetPrefix>(res.data);
-  std::memset(insertPtr, '0', nbZeros);
+  char* pData = AppendFixed<kAeronetPrefix>(res.data);
+  std::memset(pData, '0', nbZeros);
 
-  insertPtr = to_lower_hex(val, insertPtr + nbZeros);
-  assert(insertPtr == res.data + kBoundarySize);
+  pData = ToLowerHex(val, pData + nbZeros);
+  assert(pData == res.data + kBoundarySize);
 
   return res;
 }

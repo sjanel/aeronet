@@ -59,7 +59,7 @@
 
 #include "aeronet/zlib-decoder.hpp"
 #include "aeronet/zlib-encoder.hpp"
-#include "aeronet/zlib-stream-raii.hpp"
+#include "aeronet/zlib-variant.hpp"
 #endif
 
 namespace aeronet::http2 {
@@ -2671,7 +2671,7 @@ TEST(TlsHttp2Client, AutomaticResponseCompressionRespectsConfig) {
   EXPECT_EQ(response.header("vary"), http::AcceptEncoding);
 
   RawChars out;
-  ZlibDecoder decoder(ZStreamRAII::Variant::gzip);
+  ZlibDecoder decoder(ZlibVariant::gzip);
   ASSERT_TRUE(decoder.decompressFull(response.body, std::numeric_limits<std::size_t>::max(), 32U * 1024U, out));
   EXPECT_EQ(std::string_view(out), plainBody);
 }
@@ -2698,7 +2698,7 @@ TEST(TlsHttp2Client, AutomaticRequestDecompressionDeliversCanonicalBody) {
   RawChars buf;
   ZlibEncoder encoder(compressionCfg.zlib.level);
   RawChars compressed(64UL + plain.size());
-  const auto result = encoder.encodeFull(ZStreamRAII::Variant::gzip, plain, compressed.capacity(), compressed.data());
+  const auto result = encoder.encodeFull(ZlibVariant::gzip, plain, compressed.capacity(), compressed.data());
   ASSERT_FALSE(result.hasError());
   compressed.setSize(result.writtenIfNoError());
   const std::string compressedBody(compressed.data(), compressed.size());

@@ -95,7 +95,7 @@ FrameParseResult ParseFrame(std::span<const std::byte> data, std::size_t maxPayl
     result.pErrorMessage = "Reserved opcode";
     return result;
   }
-  result.header.opcode = static_cast<Opcode>(rawOpcode);
+  result.header.opcode = std::bit_cast<Opcode>(rawOpcode);
 
   // Control frames must have FIN set
   if (IsControlFrame(result.header.opcode) && !result.header.fin) {

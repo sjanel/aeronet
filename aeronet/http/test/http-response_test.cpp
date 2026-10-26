@@ -1875,7 +1875,6 @@ TEST_F(HttpResponseTest, LargeHeaderCountStress) {
     auto lineEnd = full.find(http::CRLF, pos);
     ASSERT_NE(lineEnd, std::string_view::npos);
     if (lineEnd == pos) {
-      pos += 2;
       break;
     }
     auto line = full.substr(pos, lineEnd - pos);
@@ -2112,28 +2111,28 @@ TEST_F(HttpResponseTest, ConstructorsCaptureOwnedBodiesWithoutCopy) {
   const char* pStr = str.data();
   HttpResponse fromString{std::move(str)};
   EXPECT_EQ(fromString.status(), http::StatusCodeOK);
-  EXPECT_EQ(fromString.bodyInMemory().data(), pStr);
+  EXPECT_TRUE(fromString.bodyInMemory().data() == pStr);
 
   std::vector<char> vecChar(kSize, 'v');
   const char* pVecChar = vecChar.data();
   HttpResponse fromVectorChar(http::StatusCodeAccepted, std::move(vecChar));
   EXPECT_EQ(fromVectorChar.status(), http::StatusCodeAccepted);
-  EXPECT_EQ(fromVectorChar.bodyInMemory().data(), pVecChar);
+  EXPECT_TRUE(fromVectorChar.bodyInMemory().data() == pVecChar);
 
   std::vector<std::byte> vecByte(kSize, std::byte{'b'});
   const auto* pVecByte = reinterpret_cast<const char*>(vecByte.data());
   HttpResponse fromVectorByte{std::move(vecByte)};
-  EXPECT_EQ(fromVectorByte.bodyInMemory().data(), pVecByte);
+  EXPECT_TRUE(fromVectorByte.bodyInMemory().data() == pVecByte);
 
   auto charBuf = std::make_unique<char[]>(kSize);
   const char* pCharBuf = charBuf.get();
   HttpResponse fromCharBuf(http::StatusCodeAccepted, std::move(charBuf), kSize);
-  EXPECT_EQ(fromCharBuf.bodyInMemory().data(), pCharBuf);
+  EXPECT_TRUE(fromCharBuf.bodyInMemory().data() == pCharBuf);
 
   auto bytesBuf = std::make_unique<std::byte[]>(kSize);
   const auto* pBytesBuf = reinterpret_cast<const char*>(bytesBuf.get());
   HttpResponse fromBytesBuf(std::move(bytesBuf), kSize);
-  EXPECT_EQ(fromBytesBuf.bodyInMemory().data(), pBytesBuf);
+  EXPECT_TRUE(fromBytesBuf.bodyInMemory().data() == pBytesBuf);
 
   // An lvalue std::string is not captured: it is copied (as a std::string_view) and left untouched.
   const std::string lvalue(kSize, 'l');
@@ -2371,7 +2370,7 @@ TEST_F(HttpResponseTest, BodyInlineAppendToCapturedStringOrVectorKeepsItsBuffer)
 #ifndef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
     // Written in place in the captured buffer: no copy of the captured data (the additional memory checks move a
     // growing std::string or vector to a new buffer on purpose, to expose dangling pointers)
-    EXPECT_EQ(resp.bodyInMemory().data(), data);
+    EXPECT_TRUE(resp.bodyInMemory().data() == data);
 #endif
     EXPECT_EQ(resp.bodyInMemory(), std::string(64, 'x') + std::string(100, 'y'));
     EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "164");
@@ -5138,36 +5137,29 @@ ParsedResponse parseResponse(std::string_view full, bool hasFile) {
     }
     pr.body.assign(full.substr(cursor, contentLen));
     cursor += contentLen;
-    // After body, there may be optional trailer headers terminated by a blank line (CRLF CRLF)
-    // If there's remaining data, parse trailers until an empty line is encountered.
-    if (cursor < full.size()) {
-      // If the next characters are CRLF, consume and treat as no trailers
-      if (full.substr(cursor, http::CRLF.size()) == http::CRLF) {
-        cursor += http::CRLF.size();  // consume terminating CRLF (no trailers)
-      } else {
-        while (true) {
-          auto eol = full.find(http::CRLF, cursor);
-          if (eol == std::string_view::npos) {
-            throw std::runtime_error("No terminating trailer line in response");
-          }
-          if (eol == cursor) {  // blank line terminator
-            cursor += http::CRLF.size();
-            break;
-          }
-          auto line = full.substr(cursor, eol - cursor);
-          auto sep = line.find(http::HeaderSep);
-          if (sep == std::string_view::npos) {
-            throw std::runtime_error("No separator in trailer line in response");
-          }
-          pr.trailers.emplace_back(std::string(line.substr(0, sep)), std::string(line.substr(sep + http::CRLF.size())));
-          cursor = eol + http::CRLF.size();
+    // After body, there may be optional trailer headers terminated by a blank line (CRLF CRLF).
+    // If the next characters are CRLF, there are no trailers: it is the end of the message.
+    if (cursor < full.size() && full.substr(cursor, http::CRLF.size()) != http::CRLF) {
+      while (true) {
+        auto eol = full.find(http::CRLF, cursor);
+        if (eol == std::string_view::npos) {
+          throw std::runtime_error("No terminating trailer line in response");
         }
+        if (eol == cursor) {  // blank line terminator
+          break;
+        }
+        auto line = full.substr(cursor, eol - cursor);
+        auto sep = line.find(http::HeaderSep);
+        if (sep == std::string_view::npos) {
+          throw std::runtime_error("No separator in trailer line in response");
+        }
+        pr.trailers.emplace_back(std::string(line.substr(0, sep)), std::string(line.substr(sep + http::CRLF.size())));
+        cursor = eol + http::CRLF.size();
       }
     }
   } else {
     // No Content-Length header: treat rest as body
     pr.body.assign(full.substr(cursor));
-    cursor = full.size();
   }
   return pr;
 }

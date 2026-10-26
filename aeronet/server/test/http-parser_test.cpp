@@ -446,7 +446,7 @@ TEST(HttpParserChunked, LargeBody_ManyChunks) {
   char hex[16];
   for (int i = 0; i < kChunkCount; ++i) {
     std::string data(kChunkDataSize, static_cast<char>('A' + (i % 26)));
-    req.append(std::string_view(hex, to_lower_hex(kChunkDataSize, hex)));
+    req.append(std::string_view(hex, ToLowerHex(kChunkDataSize, hex)));
     req += "\r\n" + data + "\r\n";
     expected += data;
   }

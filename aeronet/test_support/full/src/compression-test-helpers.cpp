@@ -23,7 +23,7 @@
 #ifdef AERONET_ENABLE_ZLIB
 #include "aeronet/zlib-decoder.hpp"
 #include "aeronet/zlib-encoder.hpp"
-#include "aeronet/zlib-stream-raii.hpp"
+#include "aeronet/zlib-variant.hpp"
 #endif
 
 #ifdef AERONET_ENABLE_ZSTD
@@ -107,8 +107,7 @@ RawChars Compress(Encoding encoding, std::string_view payload) {
 #ifdef AERONET_ENABLE_ZLIB
     case Encoding::gzip: {
       ZlibEncoder encoder(3);
-      const auto result =
-          encoder.encodeFull(ZStreamRAII::Variant::gzip, payload, compressed.capacity(), compressed.data());
+      const auto result = encoder.encodeFull(ZlibVariant::gzip, payload, compressed.capacity(), compressed.data());
       if (result.hasError()) {
         throw std::runtime_error("ZlibEncoder error");
       }
@@ -117,8 +116,7 @@ RawChars Compress(Encoding encoding, std::string_view payload) {
     }
     case Encoding::deflate: {
       ZlibEncoder encoder(3);
-      const auto result =
-          encoder.encodeFull(ZStreamRAII::Variant::deflate, payload, compressed.capacity(), compressed.data());
+      const auto result = encoder.encodeFull(ZlibVariant::deflate, payload, compressed.capacity(), compressed.data());
       if (result.hasError()) {
         throw std::runtime_error("ZlibEncoder error");
       }
@@ -163,14 +161,14 @@ RawChars Decompress(Encoding encoding, std::string_view compressed) {
   switch (encoding) {
 #ifdef AERONET_ENABLE_ZLIB
     case Encoding::gzip: {
-      ZlibDecoder decoder(ZStreamRAII::Variant::gzip);
+      ZlibDecoder decoder(ZlibVariant::gzip);
       if (!decoder.decompressFull(compressed, std::numeric_limits<std::size_t>::max(), 1024, decompressed)) {
         throw std::runtime_error("ZlibDecoder error gzip");
       }
       break;
     }
     case Encoding::deflate: {
-      ZlibDecoder decoder(ZStreamRAII::Variant::deflate);
+      ZlibDecoder decoder(ZlibVariant::deflate);
       if (!decoder.decompressFull(compressed, std::numeric_limits<std::size_t>::max(), 1024, decompressed)) {
         throw std::runtime_error("ZlibDecoder error deflate");
       }

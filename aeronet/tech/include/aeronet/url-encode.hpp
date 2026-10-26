@@ -41,7 +41,7 @@ constexpr char* URLEncode(std::string_view data, IsNotEncodedFunc isNotEncodedFu
 
     if (it != last) {
       *buf++ = '%';
-      buf = to_upper_hex(static_cast<unsigned char>(*it), buf);
+      buf = ToUpperHex(static_cast<unsigned char>(*it), buf);
       ++it;
     }
   }

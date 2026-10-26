@@ -1,6 +1,7 @@
 #pragma once
 
 #include <bit>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -75,7 +76,10 @@ constexpr MethodIdx MethodToIdx(Method method) {
 constexpr Method MethodFromIdx(MethodIdx methodIdx) { return static_cast<http::Method>(1U << methodIdx); }
 constexpr MethodBmp MethodBmpFromIdx(MethodIdx methodIdx) { return static_cast<http::MethodBmp>(1U << methodIdx); }
 
-constexpr std::string_view MethodIdxToStr(MethodIdx methodIdx) { return kMethodStrings[methodIdx]; }
+constexpr std::string_view MethodIdxToStr(MethodIdx methodIdx) {
+  assert(methodIdx < kNbMethods);
+  return kMethodStrings[methodIdx];
+}
 
 constexpr std::string_view MethodToStr(Method method) { return MethodIdxToStr(MethodToIdx(method)); }
 

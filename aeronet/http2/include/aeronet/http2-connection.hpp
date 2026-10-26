@@ -294,7 +294,7 @@ class Http2Connection {
   [[nodiscard]] int32_t connectionRecvWindow() const noexcept { return _connectionRecvWindow; }
 
   /// Install (or clear, with nullptr) the event sink. Not owned.
-  void setEventSink(EventSink* sink) noexcept { _sink = sink; }
+  void setEventSink(EventSink* pSink) noexcept { _pSink = pSink; }
 
  private:
   friend class Http2ConnectionTest;
@@ -481,7 +481,7 @@ class Http2Connection {
   std::size_t _outputWritePos{0};
 
   // Callbacks
-  EventSink* _sink{nullptr};
+  EventSink* _pSink{nullptr};
   tracing::TelemetryContext* _pTelemetryContext;
 
   ConnectionState _state{ConnectionState::AwaitingPreface};

@@ -4,15 +4,12 @@
 
 #include "aeronet/buffer-cache.hpp"
 #include "aeronet/zlib-gateway.hpp"
+#include "aeronet/zlib-variant.hpp"
 
 namespace aeronet {
 
-struct ZStreamRAII {
-  // gzip: gzip wrapper (RFC 1952). deflate: zlib wrapper (RFC 1950), the HTTP 'deflate' content-coding.
-  // raw: raw DEFLATE stream without wrapper (RFC 1951), as used by WebSocket permessage-deflate (RFC 7692).
-  enum class Variant : int8_t { uninitialized, gzip, deflate, raw };
-  enum class Mode : int8_t { uninitialized, compress, decompress };
-
+class ZStreamRAII {
+ public:
   // Base two logarithm of the default (and maximum) window size.
   static constexpr uint8_t kMaxWindowBits = 15;
 
@@ -21,11 +18,11 @@ struct ZStreamRAII {
 
   // Initialize a z_stream for decompression.
   // Throws std::runtime_error on failure.
-  explicit ZStreamRAII(Variant variant) { initDecompress(variant); }
+  explicit ZStreamRAII(ZlibVariant variant) { initDecompress(variant); }
 
   // Initialize a z_stream for compression.
   // Throws std::runtime_error on failure.
-  ZStreamRAII(Variant variant, int8_t level) { initCompress(variant, level); }
+  ZStreamRAII(ZlibVariant variant, int8_t level) { initCompress(variant, level); }
 
   // The zlib state is bound to the address of its z_stream (zlib refuses a moved one) and of the cache allocating it:
   // it cannot move. A move only hands over the cached memory, leaving both streams uninitialized (initialized again by
@@ -39,24 +36,26 @@ struct ZStreamRAII {
 
   /// Initialize (or reinitialize) a z_stream for compression, with a window of 2^windowBits bytes (9-15).
   /// Reuses internal state if already initialized for compression.
-  void initCompress(Variant variant, int8_t level, uint8_t windowBits = kMaxWindowBits);
+  void initCompress(ZlibVariant variant, int8_t level, uint8_t windowBits = kMaxWindowBits);
 
   // Initialize (or reinitialize) a z_stream for decompression, with a window of 2^windowBits bytes (8-15).
   // Reuses internal state if already initialized for decompression.
-  void initDecompress(Variant variant, uint8_t windowBits = kMaxWindowBits);
+  void initDecompress(ZlibVariant variant, uint8_t windowBits = kMaxWindowBits);
 
   void end() noexcept;
 
   /// Tells whether the z_stream is initialized (for compression or decompression).
   [[nodiscard]] bool initialized() const noexcept { return _mode != Mode::uninitialized; }
 
-  zstream stream;
+  zstream stream{};
 
  private:
+  enum class Mode : int8_t { uninitialized, compress, decompress };
+
   void initZcache();
 
   internal::BufferCache _cache;
-  Variant _variant{Variant::uninitialized};
+  ZlibVariant _variant{ZlibVariant::uninitialized};
   Mode _mode{Mode::uninitialized};
   int8_t _level{};
   uint8_t _windowBits{kMaxWindowBits};

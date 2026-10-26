@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -2135,7 +2136,7 @@ TEST(HttpClientErrcTest, DescriptionsAreStable) {
 // The "unknown" fallback guards against an out-of-range value (e.g. from a future enum extension or a
 // corrupted cast) without throwing.
 TEST(HttpClientErrcTest, UnknownCodeFallsBack) {
-  EXPECT_EQ(ErrcToStr(static_cast<HttpClientErrc>(0xFF)), "unknown error");
+  EXPECT_EQ(ErrcToStr(std::bit_cast<HttpClientErrc>(uint8_t{0xFF})), "unknown error");
 }
 
 // --- Request trailers -------------------------------------------------------
@@ -3435,7 +3436,7 @@ std::string Chunked(std::string_view body, std::size_t chunkSize) {
   for (std::size_t off = 0; off < body.size(); off += chunkSize) {
     const std::string_view chunk = body.substr(off, chunkSize);
     char hex[32];
-    out.append(hex, to_lower_hex(chunk.size(), hex)).append(http::CRLF).append(chunk).append(http::CRLF);
+    out.append(hex, ToLowerHex(chunk.size(), hex)).append(http::CRLF).append(chunk).append(http::CRLF);
   }
   return out + "0\r\n\r\n";
 }
