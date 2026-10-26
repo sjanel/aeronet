@@ -2,12 +2,15 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
+#include <string_view>
 #include <utility>
 
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/http-method.hpp"
+#include "aeronet/middleware.hpp"
 #include "aeronet/path-handler-entry.hpp"
 #include "aeronet/path-handlers.hpp"
 #include "aeronet/raw-chars.hpp"

@@ -9,7 +9,7 @@
 
 #if defined(AERONET_LINUX) || defined(AERONET_MACOS)
 #include <sys/un.h>
-#elif defined(AERONET_WINDOWS)
+#elifdef AERONET_WINDOWS
 #include <afunix.h>
 #endif
 
@@ -19,7 +19,7 @@ namespace aeronet {
 inline constexpr std::size_t kUnixSocketMaxPath =
 #if defined(AERONET_LINUX) || defined(AERONET_MACOS)
     sizeof(sockaddr_un{}.sun_path)
-#elif defined(AERONET_WINDOWS)
+#elifdef AERONET_WINDOWS
     sizeof(SOCKADDR_UN{}.sun_path)
 #else
 #error "UnixSocket is only supported on Linux, macOS, and Windows"

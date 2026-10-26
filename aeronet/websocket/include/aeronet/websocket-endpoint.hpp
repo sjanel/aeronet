@@ -2,7 +2,9 @@
 
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
+#include <utility>
 
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/websocket-handler.hpp"

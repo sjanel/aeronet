@@ -26,14 +26,16 @@ class DefaultSigpipeScope {
 inline bool IsSigpipeBlocked() {
   sigset_t mask;
   ::pthread_sigmask(SIG_BLOCK, nullptr, &mask);
-  return (sigismember)(&mask, SIGPIPE) == 1;  // parenthesized: the function, not the macOS macro (sign-conversion)
+  // parenthesized: the function, not the macOS macro (sign-conversion)
+  return (sigismember)(&mask, SIGPIPE) == 1;  // NOLINT(readability-redundant-parentheses)
 }
 
 // Whether a SIGPIPE is pending for the calling thread (or the process).
 inline bool IsSigpipePending() {
   sigset_t pending;
   ::sigpending(&pending);
-  return (sigismember)(&pending, SIGPIPE) == 1;  // parenthesized: the function, not the macOS macro
+  // parenthesized: the function, not the macOS macro
+  return (sigismember)(&pending, SIGPIPE) == 1;  // NOLINT(readability-redundant-parentheses)
 }
 
 }  // namespace aeronet::test

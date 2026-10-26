@@ -3,6 +3,7 @@
 #include <string>
 #include <string_view>
 
+#include "aeronet/ndigits.hpp"
 #include "aeronet/static-string-view-helpers.hpp"
 
 #ifdef AERONET_ENABLE_GLAZE
@@ -179,9 +180,9 @@ inline std::string fullVersionWithRuntime() {
   static_assert(kBaseStr.ends_with("brotli"), "brotli should be last because we concatenate the runtime version");
 
   const uint32_t fullVersion = BrotliDecoderVersion();
-  const uint8_t major = static_cast<uint8_t>(fullVersion >> 24);
-  const uint16_t minor = static_cast<uint16_t>((fullVersion >> 12) & 0xFFF);
-  const uint16_t patch = static_cast<uint16_t>(fullVersion & 0xFFF);
+  const uint8_t major = static_cast<uint8_t>(fullVersion >> 24U);
+  const uint16_t minor = static_cast<uint16_t>((fullVersion >> 12U) & 0xFFFU);
+  const uint16_t patch = static_cast<uint16_t>(fullVersion & 0xFFFU);
 
   const auto nDigitsMajor = ndigits(major);
   const auto nDigitsMinor = ndigits(minor);

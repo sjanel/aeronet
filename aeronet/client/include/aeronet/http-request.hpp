@@ -1,12 +1,18 @@
 #pragma once
 
 #include <cassert>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
+#include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
+#include "aeronet/direct-compression-mode.hpp"
+#include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-message.hpp"

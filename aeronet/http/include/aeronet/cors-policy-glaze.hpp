@@ -1,11 +1,16 @@
 #pragma once
 
 #include <cassert>
+#include <cstdint>
 #include <glaze/glaze.hpp>
 #include <glaze/yaml.hpp>  // IWYU pragma: keep
+#include <string>
 #include <utility>
 
+#include "aeronet/concatenated-header-values.hpp"
+#include "aeronet/concatenated-strings.hpp"
 #include "aeronet/cors-policy.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/vector.hpp"
 
 // ============================================================================
@@ -117,12 +122,12 @@ struct from<Format, aeronet::CorsPolicy> {
 template <uint32_t Format>
 struct to<Format, aeronet::CorsPolicy> {
   template <auto Opts, is_context Ctx, class B, class IX>
-  static void op(const aeronet::CorsPolicy& self, Ctx&& ctx, B&& b, IX&& ix) {
+  static void op(const aeronet::CorsPolicy& self, Ctx&& ctx, B&& buffer, IX&& ix) {
     const auto data = aeronet::detail::BuildCorsPolicyData(self);
     if constexpr (Format == YAML) {
-      serialize<Format>::template op<yaml::flow_context_on<Opts>()>(data, ctx, b, ix);
+      serialize<Format>::template op<yaml::flow_context_on<Opts>()>(data, ctx, buffer, ix);
     } else {
-      serialize<Format>::template op<Opts>(data, ctx, b, ix);
+      serialize<Format>::template op<Opts>(data, ctx, buffer, ix);
     }
   }
 };

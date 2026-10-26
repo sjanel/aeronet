@@ -13,7 +13,9 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/config-file.hpp"
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/middleware.hpp"
 #include "aeronet/router-update-proxy.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/server-lifecycle-tracker.hpp"

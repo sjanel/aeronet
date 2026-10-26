@@ -4,6 +4,7 @@
 #include <functional>
 #include <string_view>
 
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/rate-limit.hpp"

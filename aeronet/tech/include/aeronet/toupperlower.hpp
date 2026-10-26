@@ -4,7 +4,7 @@ namespace aeronet {
 
 constexpr unsigned char tolower(unsigned char ch) {
   if (ch >= 'A' && ch <= 'Z') {
-    ch |= 0x20;
+    ch |= 0x20U;
   }
   return ch;
 }
@@ -17,7 +17,7 @@ constexpr signed char tolower(signed char ch) {
 
 constexpr unsigned char toupper(unsigned char ch) {
   if (ch >= 'a' && ch <= 'z') {
-    ch &= 0xDF;  // clear lowercase bit
+    ch &= 0xDFU;  // clear lowercase bit
   }
   return ch;
 }

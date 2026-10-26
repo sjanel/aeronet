@@ -20,7 +20,7 @@ aeronet is deliberately modular. CMake options select code and dependencies at c
 | `AERONET_ENABLE_TSAN` | OFF | Enable ThreadSanitizer. Cannot be combined with `AERONET_ENABLE_ASAN`. |
 | `AERONET_ASAN_OPTIONS` / `AERONET_TSAN_OPTIONS` | preset | Override the compile and link flags of the AddressSanitizer / ThreadSanitizer builds. |
 | `AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS` | OFF | Enable aeronet's additional runtime memory checks. |
-| `AERONET_ENABLE_CLANG_TIDY` | OFF | Run clang-tidy during the build. |
+| `AERONET_ENABLE_CLANG_TIDY` | OFF | Run clang-tidy during the build, on the translation units and on every header (see the [static analysis recipe](#static-analysis)). `-D CLANG_TIDY=<path>` selects the executable (the first `clang-tidy` of `PATH` by default). With `AERONET_WARNINGS_AS_ERRORS`, a finding fails the build. |
 | `AERONET_ENABLE_WARNINGS` | top-level | Enable the project warning set. |
 | `AERONET_WARNINGS_AS_ERRORS` | OFF | Promote warnings to errors in Debug builds, except for the benchmark executables built on competitor frameworks, whose warnings are kept as warnings. |
 | `AERONET_SPDLOG_USE_STD_FORMAT` | ON | Use `std::format` rather than fmt through spdlog. |
@@ -78,6 +78,17 @@ cmake --build build --parallel
 ```
 
 The aeronet libraries are then compiled in batches of 16 sources, which parse the shared headers (standard library, glaze, spdlog...) once per batch instead of once per source: their compilation CPU time is divided by 4 to 6 in Release. Not for development: editing a source recompiles its whole batch, and `compile_commands.json` lists the batches instead of the sources. The tests and examples are never built as unity builds.
+
+Static analysis with clang-tidy:
+{ #static-analysis }
+
+```bash
+cmake -S . -B build -G Ninja -D CMAKE_BUILD_TYPE=Debug -D AERONET_BUILD_TESTS=ON \
+  -D AERONET_ENABLE_CLANG_TIDY=ON -D AERONET_WARNINGS_AS_ERRORS=ON -D CLANG_TIDY=/usr/bin/clang-tidy-23
+cmake --build build --parallel
+```
+
+The checks are those of the `.clang-tidy` file. `CXX_CLANG_TIDY` only analyzes translation units, and a check like `misc-include-cleaner` (missing and unused includes) reports on the main file only, so the headers get a target of their own, `aeronet-clang-tidy-headers` (part of `all`), which analyzes each `.hpp` as the main file of a clang-tidy run. The diagnostics of a header reached through a translation unit are dropped (`HeaderFilterRegex` in `.clang-tidy`), so that each finding is reported once, by the run of its header. A header is analyzed again only when it changes (a stamp file per header in `<build>/clang-tidy-headers`), not when a header it includes does. clang-tidy takes the compile flags of a header from the closest translation unit of `compile_commands.json`, which the option enables: the headers of the tests (`test_support` and the `test` directories) are therefore analyzed only with `AERONET_BUILD_TESTS=ON`. Without any test, `cmake --build build --target aeronet-clang-tidy-headers` is enough to check the headers of an edit.
 
 Full development profile, matching the enabled-feature CI leg:
 

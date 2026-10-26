@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include "aeronet/access-log-config.hpp"
 #include "aeronet/base-fd.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -25,7 +27,7 @@ class AccessLogWriter {
 
   ~AccessLogWriter() { flush(); }
 
-  [[nodiscard]] operator bool() const noexcept { return _sink != AccessLogConfig::Sink::None; }
+  [[nodiscard]] explicit operator bool() const noexcept { return _sink != AccessLogConfig::Sink::None; }
 
   // Format and buffer a log line for the given request metrics.
   void log(const RequestMetrics& metrics);

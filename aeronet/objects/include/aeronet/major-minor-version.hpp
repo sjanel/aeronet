@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 
@@ -22,8 +23,8 @@ class MajorMinorVersion {
   // Constructs a version with given major and minor version numbers.
   // If the numbers are not both single-digit (0-9), equivalent to default constructed.
   constexpr MajorMinorVersion(std::uint8_t majorVer, std::uint8_t minorVer) noexcept {
-    if (majorVer <= 9 && minorVer <= 9) {
-      _data = static_cast<std::uint8_t>((majorVer << 4U) | minorVer);
+    if (majorVer <= 9U && minorVer <= 9U) {
+      _data = static_cast<std::uint8_t>(static_cast<uint8_t>(majorVer << 4U) | minorVer);
     }
   }
 
@@ -38,7 +39,7 @@ class MajorMinorVersion {
     }
   }
 
-  constexpr MajorMinorVersion(std::string_view versionStr) noexcept
+  constexpr MajorMinorVersion(std::string_view versionStr) noexcept  // NOLINT(*-explicit-constructor)
       : MajorMinorVersion(versionStr.data(), versionStr.size()) {}
 
   // Get the major version number.

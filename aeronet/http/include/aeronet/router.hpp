@@ -1,7 +1,7 @@
 #pragma once
 
-#include <amc/type_traits.hpp>
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <iosfwd>

@@ -1,7 +1,5 @@
 #pragma once
 
-#include <gtest/gtest.h>
-
 #ifdef AERONET_POSIX
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -127,6 +125,7 @@ class FileSyscallHookGuard {
 }  // namespace aeronet::test
 
 #ifdef AERONET_POSIX
+// NOLINTBEGIN(misc-definitions-in-headers): interposers, defined once per test binary
 
 #ifdef __clang__
 #pragma clang diagnostic push
@@ -219,4 +218,5 @@ extern "C" int fcntl(int __fd, int __cmd, ...) {
 #pragma GCC diagnostic pop
 #endif
 
+// NOLINTEND(misc-definitions-in-headers)
 #endif  // AERONET_POSIX
