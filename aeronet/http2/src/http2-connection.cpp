@@ -161,7 +161,6 @@ void Http2Connection::OutputBlock::appendFragments(vector<std::string_view>& fra
     if (headerOffset < FrameHeader::kSize) {
       fragments.emplace_back(reinterpret_cast<const char*>(frameHeader(frameIndex) + headerOffset),
                              FrameHeader::kSize - headerOffset);
-      headerOffset = FrameHeader::kSize;
     }
 
     // The payload of a pending frame is never fully written (the frame would be done).
@@ -506,8 +505,8 @@ void Http2Connection::closeStream(StreamsMap::iterator it, ErrorCode errorCode) 
   --_activeStreamCount;
   recordStreamClosed(streamId, errorCode);
 
-  if (_sink != nullptr) {
-    _sink->onStreamClosed(streamId);
+  if (_pSink != nullptr) {
+    _pSink->onStreamClosed(streamId);
   }
 
   // Don't remove immediately - keep for a short time for late frames.
@@ -706,8 +705,8 @@ void Http2Connection::sendRstStream(uint32_t streamId, ErrorCode errorCode) {
     it->second.onSendRstStream();
     it->second.setErrorCode(errorCode);
     closeStream(it, errorCode);
-    if (_sink != nullptr) {
-      _sink->onStreamReset(streamId, errorCode);
+    if (_pSink != nullptr) {
+      _pSink->onStreamReset(streamId, errorCode);
     }
   }
 }
@@ -925,8 +924,8 @@ Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader head
   assert(err == ErrorCode::NoError);
 
   // Invoke callback
-  if (_sink != nullptr) {
-    _sink->onData(streamId, frame.data, endStream);
+  if (_pSink != nullptr) {
+    _pSink->onData(streamId, frame.data, endStream);
 
     // The callback may have reset streams, whose pruning can move the map entries. This stream, closed or not, is not
     // pruned yet: the closed streams are retained a while for late frames.
@@ -1123,8 +1122,8 @@ Http2Connection::ProcessResult Http2Connection::handleRstStreamFrame(FrameHeader
     it->second.onRecvRstStream();
     it->second.setErrorCode(frame.errorCode);
     closeStream(it, frame.errorCode);
-    if (_sink != nullptr) {
-      _sink->onStreamReset(streamId, frame.errorCode);
+    if (_pSink != nullptr) {
+      _pSink->onStreamReset(streamId, frame.errorCode);
     }
   }
 
@@ -1259,9 +1258,9 @@ Http2Connection::ProcessResult Http2Connection::handleGoAwayFrame(std::span<cons
   _state = ConnectionState::GoAwayReceived;
   _goAwayLastStreamId = frame.lastStreamId;
 
-  if (_sink != nullptr) {
+  if (_pSink != nullptr) {
     std::string_view debugData(reinterpret_cast<const char*>(frame.debugData.data()), frame.debugData.size());
-    _sink->onGoAway(frame.lastStreamId, frame.errorCode, debugData);
+    _pSink->onGoAway(frame.lastStreamId, frame.errorCode, debugData);
   }
 
   return ProcessResult{ProcessResult::Action::GoAway};
@@ -1301,8 +1300,8 @@ Http2Connection::ProcessResult Http2Connection::handleWindowUpdateFrame(FrameHea
     }
   }
 
-  if (_sink != nullptr) {
-    _sink->onWindowUpdate(streamId, frame.windowSizeIncrement);
+  if (_pSink != nullptr) {
+    _pSink->onWindowUpdate(streamId, frame.windowSizeIncrement);
   }
 
   return ProcessResult{ProcessResult::Action::Continue};
@@ -1500,8 +1499,8 @@ ErrorCode Http2Connection::decodeAndEmitHeaders(uint32_t streamId, std::span<con
 
   recordHpack(false, headerBlock.size(), decodeResult.headerListSize);
 
-  if (_sink != nullptr) {
-    _sink->onHeadersDecoded(streamId, decodeResult.decodedHeaders, endStream);
+  if (_pSink != nullptr) {
+    _pSink->onHeadersDecoded(streamId, decodeResult.decodedHeaders, endStream);
   }
 
   return ErrorCode::NoError;

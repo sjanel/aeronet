@@ -377,7 +377,7 @@ int poll(struct pollfd* _fds, nfds_t _nfds, int _timeout) {
       return action.result;
     }
   }
-  log::error("Falling through to real poll syscall for fd {}", _fds[0].fd);
+  log::error("Falling through to real poll syscall for fd {}", watchesAFd ? _fds[0].fd : -1);
   return real_poll(_fds, _nfds, _timeout);
 }
 

@@ -9,6 +9,7 @@
 
 #include "aeronet/buffer-cache.hpp"
 #include "aeronet/zlib-gateway.hpp"
+#include "aeronet/zlib-variant.hpp"
 
 #ifdef AERONET_ENABLE_ZLIBNG
 #include <zconf-ng.h>
@@ -20,14 +21,14 @@ namespace aeronet {
 
 namespace {
 
-[[nodiscard]] constexpr int ComputeWindowBits(ZStreamRAII::Variant variant, uint8_t windowBits) {
+[[nodiscard]] constexpr int ComputeWindowBits(ZlibVariant variant, uint8_t windowBits) {
   static_assert(ZStreamRAII::kMaxWindowBits == MAX_WBITS);
   switch (variant) {
-    case ZStreamRAII::Variant::gzip:
+    case ZlibVariant::gzip:
       return windowBits + 16;
-    case ZStreamRAII::Variant::deflate:
+    case ZlibVariant::deflate:
       return windowBits;
-    case ZStreamRAII::Variant::raw:
+    case ZlibVariant::raw:
       return -static_cast<int>(windowBits);
     default:
       throw std::invalid_argument("Invalid zlib variant");
@@ -74,7 +75,7 @@ constexpr auto CheckError = [](auto ret, const char* pMsg) {
 
 }  // namespace
 
-void ZStreamRAII::initCompress(Variant variant, int8_t level, uint8_t windowBits) {
+void ZStreamRAII::initCompress(ZlibVariant variant, int8_t level, uint8_t windowBits) {
   if (_variant == variant && _windowBits == windowBits) {
     assert(_mode == Mode::compress);
     // Reuse existing deflate state by resetting it
@@ -100,8 +101,8 @@ void ZStreamRAII::initCompress(Variant variant, int8_t level, uint8_t windowBits
   }
 }
 
-void ZStreamRAII::initDecompress(Variant variant, uint8_t windowBits) {
-  if (_variant == Variant::uninitialized) {
+void ZStreamRAII::initDecompress(ZlibVariant variant, uint8_t windowBits) {
+  if (_variant == ZlibVariant::uninitialized) {
     initZcache();
     CheckError(ZInflateInit2(stream, ComputeWindowBits(variant, windowBits)), "Error from ZInflateInit2");
     _variant = variant;
@@ -136,7 +137,7 @@ void ZStreamRAII::end() noexcept {
   // permessage-deflate streams (sync flushes only) and for compressed responses interrupted by a peer disconnection.
   // Other errors denote an inconsistent stream state, a programming error.
   assert(ret == Z_OK || ret == Z_DATA_ERROR);
-  _variant = Variant::uninitialized;
+  _variant = ZlibVariant::uninitialized;
   _mode = Mode::uninitialized;
   _level = 0;
   _windowBits = kMaxWindowBits;

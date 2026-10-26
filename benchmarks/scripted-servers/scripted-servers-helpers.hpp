@@ -119,12 +119,12 @@ inline std::optional<std::string> GzipCompress(std::string_view input, int level
     return std::nullopt;
   }
 
-  ZSetInput(stream, input);
+  ZSetInput(stream, input.data(), static_cast<uint32_t>(input.size()));
 
   std::string output;
   output.resize(ZDeflateBound(&stream, input.size()));
 
-  ZSetOutput(stream, output.data(), output.size());
+  ZSetOutput(stream, output.data(), static_cast<uint32_t>(output.size()));
 
   int ret = ZDeflate(stream, Z_FINISH);
   if (ret != Z_STREAM_END) {
@@ -144,7 +144,7 @@ inline std::optional<std::string> GzipDecompress(std::string_view input) {
     return std::nullopt;
   }
 
-  ZSetInput(stream, input);
+  ZSetInput(stream, input.data(), static_cast<uint32_t>(input.size()));
 
   std::string output;
   std::array<char, 8192> buffer{};

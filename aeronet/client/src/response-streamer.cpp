@@ -24,7 +24,7 @@
 #endif
 #ifdef AERONET_ENABLE_ZLIB
 #include "aeronet/zlib-decoder.hpp"
-#include "aeronet/zlib-stream-raii.hpp"
+#include "aeronet/zlib-variant.hpp"
 #endif
 #ifdef AERONET_ENABLE_ZSTD
 #include "aeronet/zstd-decoder.hpp"
@@ -53,11 +53,11 @@ bool IsSupportedCoding(std::string_view coding) noexcept {
 
 void ResponseStreamer::beginRequest(ResponseBodySink* sink, const HttpClientConfig& config,
                                     HttpClientCodec& codec) noexcept {
-  _sink = sink;
+  _pSink = sink;
   _headDelivered = false;
   if (sink != nullptr) {
-    _config = &config;
-    _codec = &codec;
+    _pConfig = &config;
+    _pCodec = &codec;
   }
 }
 
@@ -90,8 +90,8 @@ ResponseStreamer::Coding ResponseStreamer::selectDecoder(std::string_view conten
 #ifdef AERONET_ENABLE_ZLIB
   const bool isGzip = contentEncoding == http::gzip;
   if (isGzip || contentEncoding == http::deflate) {
-    ZlibDecoder& decoder = _codec->decompressionState.zlibDecoder;
-    decoder.setVariant(isGzip ? ZStreamRAII::Variant::gzip : ZStreamRAII::Variant::deflate);
+    ZlibDecoder& decoder = _pCodec->decompressionState.zlibDecoder;
+    decoder.setVariant(isGzip ? ZlibVariant::gzip : ZlibVariant::deflate);
     _decoder = decoder.makeContext();
     _encoding = isGzip ? Encoding::gzip : Encoding::deflate;
     return Coding::Streamed;
@@ -99,14 +99,14 @@ ResponseStreamer::Coding ResponseStreamer::selectDecoder(std::string_view conten
 #endif
 #ifdef AERONET_ENABLE_ZSTD
   if (contentEncoding == http::zstd) {
-    _decoder = _codec->decompressionState.zstdDecoder.makeContext();
+    _decoder = _pCodec->decompressionState.zstdDecoder.makeContext();
     _encoding = Encoding::zstd;
     return Coding::Streamed;
   }
 #endif
 #ifdef AERONET_ENABLE_BROTLI
   if (contentEncoding == http::br) {
-    _decoder = _codec->decompressionState.brotliDecoder.makeContext();
+    _decoder = _pCodec->decompressionState.brotliDecoder.makeContext();
     _encoding = Encoding::br;
     return Coding::Streamed;
   }
@@ -119,11 +119,11 @@ HttpClientErrc ResponseStreamer::startResponse(HttpResponse& head, ResponseBodyI
   stream = false;
   const http::StatusCode status = head.status();
   if ((_bufferRedirects && IsRedirectStatus(status) && !head.headerValueOrEmpty(http::Location).empty()) ||
-      (_bufferRetries && _config->retry.retryStatuses.contains(status))) {
+      (_bufferRetries && _pConfig->retry.retryStatuses.contains(status))) {
     return HttpClientErrc::noError;  // this response will be followed or retried, not delivered
   }
   const std::string_view contentEncoding = head.headerValueOrEmpty(http::ContentEncoding);
-  if (!contentEncoding.empty() && _config->decompression.enable) {
+  if (!contentEncoding.empty() && _pConfig->decompression.enable) {
     switch (selectDecoder(contentEncoding)) {
       case Coding::Buffered:
         return HttpClientErrc::noError;
@@ -145,7 +145,7 @@ HttpClientErrc ResponseStreamer::startResponse(HttpResponse& head, ResponseBodyI
   }
   stream = true;
   _headDelivered = true;
-  if (!_sink->onHead(head, body)) {
+  if (!_pSink->onHead(head, body)) {
     log::debug("HTTP client: transfer aborted by the response body sink at the head");
     _error = HttpClientErrc::aborted;
   }
@@ -153,7 +153,7 @@ HttpClientErrc ResponseStreamer::startResponse(HttpResponse& head, ResponseBodyI
 }
 
 bool ResponseStreamer::deliver(std::string_view data) {
-  if (!_sink->onBody(data)) {
+  if (!_pSink->onBody(data)) {
     log::debug("HTTP client: transfer aborted by the response body sink");
     _error = HttpClientErrc::aborted;
     return false;
@@ -162,8 +162,8 @@ bool ResponseStreamer::deliver(std::string_view data) {
 }
 
 bool ResponseStreamer::decode(std::string_view chunk, bool finalChunk) {
-  const DecompressionConfig& cfg = _config->decompression;
-  RawChars& out = _codec->decompressOut;
+  const DecompressionConfig& cfg = _pConfig->decompression;
+  RawChars& out = _pCodec->decompressOut;
   // A zero limit means none for the decoders: always leave them at least one byte of budget.
   // Unused when no decoder is compiled in.
   [[maybe_unused]] const std::size_t budget = std::max<std::size_t>(cfg.maxDecompressedBytes - _decodedBytes, 1);
@@ -225,7 +225,7 @@ bool ResponseStreamer::feed(std::string_view data) {
   if (_encoding == Encoding::none) {
     return deliver(data);
   }
-  RawChars& out = _codec->decompressOut;
+  RawChars& out = _pCodec->decompressOut;
   out.clear();
   return decode(data, false) && (out.empty() || deliver(out));
 }
@@ -246,14 +246,14 @@ HttpClientErrc ResponseStreamer::deliverBuffered(const HttpResponse& head) {
   assert(active() && !_headDelivered);
   _headDelivered = true;
   if (_bufferedBody.empty()) {
-    return _sink->onHead(head, ResponseBodyInfo{.contentType = {}, .size = 0}) ? HttpClientErrc::noError
-                                                                               : HttpClientErrc::aborted;
+    return _pSink->onHead(head, ResponseBodyInfo{.contentType = {}, .size = 0}) ? HttpClientErrc::noError
+                                                                                : HttpClientErrc::aborted;
   }
   // Only bodyless responses, redirects that are not followed and bodies with stacked codings are delivered this way.
   const std::string_view contentType =
       _bufferedContentType.empty() ? http::ContentTypeApplicationOctetStream : std::string_view(_bufferedContentType);
-  if (!_sink->onHead(head, ResponseBodyInfo{.contentType = contentType, .size = _bufferedBody.size()}) ||
-      !_sink->onBody(_bufferedBody)) {
+  if (!_pSink->onHead(head, ResponseBodyInfo{.contentType = contentType, .size = _bufferedBody.size()}) ||
+      !_pSink->onBody(_bufferedBody)) {
     return HttpClientErrc::aborted;
   }
   return HttpClientErrc::noError;

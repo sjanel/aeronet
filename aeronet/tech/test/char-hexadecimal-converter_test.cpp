@@ -14,12 +14,12 @@ using namespace aeronet;
 
 TEST(CharHexConverter, ToLowerHexBasic) {
   char buf[3]{};
-  char* end = to_lower_hex(',', buf);
+  char* end = ToLowerHex(',', buf);
   EXPECT_EQ(end, buf + 2);
   buf[2] = '\0';
   EXPECT_STREQ(buf, "2c");
 
-  end = to_lower_hex('?', buf);
+  end = ToLowerHex('?', buf);
   EXPECT_EQ(end, buf + 2);
   buf[2] = '\0';
   EXPECT_STREQ(buf, "3f");
@@ -28,39 +28,39 @@ TEST(CharHexConverter, ToLowerHexBasic) {
 TEST(CharHexConverter, ToHexEdgeValues) {
   char buf[3]{};
   // 0x00
-  to_lower_hex(static_cast<unsigned char>(0x00), buf);
+  ToLowerHex(static_cast<unsigned char>(0x00), buf);
   buf[2] = '\0';
   EXPECT_STREQ(buf, "00");
 
   // 0x0F
-  to_lower_hex(static_cast<unsigned char>(0x0F), buf);
+  ToLowerHex(static_cast<unsigned char>(0x0F), buf);
   buf[2] = '\0';
   EXPECT_STREQ(buf, "0f");
 
   // 0x10
-  to_lower_hex(static_cast<unsigned char>(0x10), buf);
+  ToLowerHex(static_cast<unsigned char>(0x10), buf);
   buf[2] = '\0';
   EXPECT_STREQ(buf, "10");
 
   // 0xFF
-  to_lower_hex(static_cast<unsigned char>(0xFF), buf);
+  ToLowerHex(static_cast<unsigned char>(0xFF), buf);
   buf[2] = '\0';
   EXPECT_STREQ(buf, "ff");
 }
 
 TEST(CharHexConverter, FromHexDigitValidDigits) {
   for (char ch = '0'; ch <= '9'; ++ch) {
-    auto val = from_hex_digit(ch);
+    auto val = FromHexDigit(ch);
     EXPECT_EQ(val, ch - '0') << "char=" << ch;
   }
 
   for (char ch = 'A'; ch <= 'F'; ++ch) {
-    auto val = from_hex_digit(ch);
+    auto val = FromHexDigit(ch);
     EXPECT_EQ(val, 10 + (ch - 'A')) << "char=" << ch;
   }
 
   for (char ch = 'a'; ch <= 'f'; ++ch) {
-    auto val = from_hex_digit(ch);
+    auto val = FromHexDigit(ch);
     EXPECT_EQ(val, 10 + (ch - 'a')) << "char=" << ch;
   }
 }
@@ -68,7 +68,7 @@ TEST(CharHexConverter, FromHexDigitValidDigits) {
 TEST(CharHexConverter, FromHexDigitInvalid) {
   static constexpr const char invalids[]{'g', 'G', '/', ':', ' ', 'z', '\0'};
   for (char ch : invalids) {
-    auto val = from_hex_digit(ch);
+    auto val = FromHexDigit(ch);
     EXPECT_EQ(val, -1) << "char=" << ch;
   }
 }
@@ -77,10 +77,10 @@ TEST(CharHexConverter, RoundTrip) {
   // Round-trip test: encode then decode two hex digits
   for (int i = 0; i <= 0xFF; ++i) {
     char buf[3]{};
-    to_lower_hex(static_cast<unsigned char>(i), buf);
+    ToLowerHex(static_cast<unsigned char>(i), buf);
     // decode high nibble
-    auto hi = from_hex_digit(buf[0]);
-    auto lo = from_hex_digit(buf[1]);
+    auto hi = FromHexDigit(buf[0]);
+    auto lo = FromHexDigit(buf[1]);
     EXPECT_GE(hi, 0);
     EXPECT_GE(lo, 0);
     int value = static_cast<uint8_t>(static_cast<uint8_t>(hi) << 4U) | static_cast<uint8_t>(lo);
@@ -90,7 +90,7 @@ TEST(CharHexConverter, RoundTrip) {
 
 namespace {
 
-constexpr uint32_t kMaxHexDigitsSizeT = hex_digits(std::numeric_limits<std::size_t>::max());
+constexpr uint8_t kMaxHexDigitsSizeT = HexDigits(std::numeric_limits<std::size_t>::max());
 
 }
 
@@ -100,16 +100,17 @@ TEST(CharHexConverterSizeT, HexDigitsAndToLower) {
   static constexpr std::size_t vals[]{
       0U, 1U, 15U, 16U, 255U, 256U, 4095U, 4096U, 0x1234U, static_cast<std::size_t>(-1),
   };
+
   for (std::size_t val : vals) {
     std::ostringstream oss;
     oss << std::hex << std::nouppercase << val;
     const std::string expect = oss.str();
 
-    const std::size_t digits = hex_digits(val);
+    const auto digits = HexDigits(val);
     EXPECT_EQ(digits, expect.size());
 
     char buf[kMaxHexDigitsSizeT + 1];
-    char* end = to_lower_hex(val, buf);
+    char* end = ToLowerHex(val, buf);
     *end = '\0';
     EXPECT_STREQ(buf, expect.c_str());
     EXPECT_EQ(static_cast<std::size_t>(end - buf), expect.size());
@@ -120,13 +121,13 @@ TEST(CharHexConverterSizeT, ToLowerHexAndRoundTrip) {
   static constexpr std::size_t vals[]{0U, 1U, 0xAU, 0x10U, 0xFFU, 0x100U, 0xDEADBEEFU};
   for (std::size_t val : vals) {
     char buf[kMaxHexDigitsSizeT + 1];
-    char* end = to_lower_hex(val, buf);
+    char* end = ToLowerHex(val, buf);
     *end = '\0';
 
-    // Reconstruct numeric value from hex digits using from_hex_digit
+    // Reconstruct numeric value from hex digits using FromHexDigit
     std::size_t reconstructed = 0;
     for (char* ptr = buf; ptr < end; ++ptr) {
-      auto dec = from_hex_digit(*ptr);
+      auto dec = FromHexDigit(*ptr);
       EXPECT_GE(dec, 0);
       reconstructed = (reconstructed << 4U) | static_cast<std::size_t>(dec);
     }
@@ -137,7 +138,7 @@ TEST(CharHexConverterSizeT, ToLowerHexAndRoundTrip) {
 TEST(CharHexConverterSizeT, LargeValueFormatting) {
   const std::size_t maxv = static_cast<std::size_t>(-1);
   char buf[kMaxHexDigitsSizeT + 1];
-  char* end = to_lower_hex(maxv, buf);
+  char* end = ToLowerHex(maxv, buf);
   *end = '\0';
   // Expect length equals kMaxHexDigitsSizeT
   EXPECT_EQ(static_cast<std::size_t>(end - buf), kMaxHexDigitsSizeT);

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -728,19 +729,19 @@ TEST(Http2Connection, BufferedFramesAndBlocksAreSentInQueuingOrderThroughSmallWr
   EXPECT_EQ(wire, expected);
 
   struct ExpectedFrame {
-    FrameType type;
     std::size_t length;
+    FrameType type;
     char payloadChar;
   };
   const uint32_t maxFrameSize = connection.peerSettings().maxFrameSize;
   const ExpectedFrame expectedFrames[]{
-      {FrameType::Headers, 0, 0},
-      {FrameType::Data, kSmallBlockSize, 'A'},
-      {FrameType::Ping, 8, 0},
-      {FrameType::Data, kInlineSize, 'b'},
-      {FrameType::Data, maxFrameSize, 'C'},
-      {FrameType::Data, kLargeBlockSize - maxFrameSize, 'C'},
-      {FrameType::WindowUpdate, 4, 0},
+      {0, FrameType::Headers, 0},
+      {kSmallBlockSize, FrameType::Data, 'A'},
+      {8, FrameType::Ping, 0},
+      {kInlineSize, FrameType::Data, 'b'},
+      {maxFrameSize, FrameType::Data, 'C'},
+      {kLargeBlockSize - maxFrameSize, FrameType::Data, 'C'},
+      {4, FrameType::WindowUpdate, 0},
   };
   std::size_t pos = 0;
   for (const ExpectedFrame& expectedFrame : expectedFrames) {
@@ -2273,8 +2274,9 @@ TEST(Http2Connection, UnknownFrameTypeIsIgnored) {
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Frame type 0xFE is unknown and should be silently ignored per RFC 9113 §4.1
-  std::array<std::byte, 4> payload = {std::byte{0xDE}, std::byte{0xAD}, std::byte{0xBE}, std::byte{0xEF}};
-  const FrameHeader header(static_cast<uint32_t>(payload.size()), static_cast<FrameType>(0xFE), FrameFlags::None, 0);
+  constexpr std::byte payload[]{std::byte{0xDE}, std::byte{0xAD}, std::byte{0xBE}, std::byte{0xEF}};
+  const FrameHeader header(static_cast<uint32_t>(std::size(payload)), std::bit_cast<FrameType>(uint8_t{0xFE}),
+                           FrameFlags::None, 0);
 
   auto bytes = SerializeFrame(header, payload);
   auto res = conn.processInput(bytes);
@@ -2293,7 +2295,7 @@ TEST(Http2Connection, DataFrameWithInvalidPaddingIsProtocolError) {
   AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Create a stream first
-  ASSERT_EQ(conn.sendHeaders(1, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
+  ASSERT_EQ(conn.sendHeaders(1, http::StatusCodeOK, HeadersView(), false), ErrorCode::NoError);
   if (conn.hasPendingOutput()) {
     conn.onOutputWritten(conn.getPendingOutput().size());
   }

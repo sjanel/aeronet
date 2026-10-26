@@ -11,6 +11,7 @@
 #endif
 
 #include <algorithm>
+#include <cassert>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -446,6 +447,7 @@ std::span<const EventLoop::EventFd> EventLoop::poll(bool wait) {
   // On Windows, buffer growth is handled in add() when registration count reaches capacity.
 #ifndef AERONET_WINDOWS
   if (nbReadyEvents == capacityBeforePoll) {
+    assert(capacityBeforePoll != 0);  // _nbAllocatedEvents is at least 1 (a moved-from loop must not be polled)
     const uint32_t newCapacity = capacityBeforePoll * 2U;
     void* newEvents = std::realloc(_pEvents, static_cast<std::size_t>(newCapacity) * NativeEventSize());
     if (newEvents == nullptr) {

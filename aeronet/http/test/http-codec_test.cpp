@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <bit>
 #include <charconv>
 #include <cmath>
 #include <cstddef>
@@ -43,7 +44,7 @@
 
 #include "aeronet/zlib-decoder.hpp"
 #include "aeronet/zlib-encoder.hpp"
-#include "aeronet/zlib-stream-raii.hpp"
+#include "aeronet/zlib-variant.hpp"
 #endif
 
 namespace aeronet {
@@ -333,7 +334,7 @@ TEST(HttpCodecCompression, GzipCompressedBodyRoundTrips) {
   EXPECT_EQ(static_cast<unsigned char>(compressedBody[1]), 0x8bU);
 
   RawChars out;
-  ZlibDecoder decoder(ZStreamRAII::Variant::gzip);
+  ZlibDecoder decoder(ZlibVariant::gzip);
   ASSERT_TRUE(decoder.decompressFull(compressedBody, /*maxDecompressedBytes=*/1UL << 20U, 32U * 1024, out));
   EXPECT_EQ(std::string_view(out), std::string_view(body));
 }
@@ -373,7 +374,7 @@ TEST(HttpCodecCompression, GzipCapturedBodyWithTrailersRoundTrips) {
   EXPECT_EQ(static_cast<unsigned char>(compressedBody[1]), 0x8bU);
 
   RawChars out;
-  ZlibDecoder decoder(ZStreamRAII::Variant::gzip);
+  ZlibDecoder decoder(ZlibVariant::gzip);
   ASSERT_TRUE(decoder.decompressFull(compressedBody, /*maxDecompressedBytes=*/1UL << 20U, 32U * 1024, out));
   EXPECT_EQ(std::string_view(out), std::string_view(expectedBody));
 }
@@ -486,7 +487,7 @@ TEST(HttpCodecCompression, GzipNearOverlapTrailerMove_AllCombinationsRoundTrip) 
       EXPECT_EQ(static_cast<unsigned char>(compressedBody[1]), 0x8bU);
 
       RawChars out;
-      ZlibDecoder decoder(ZStreamRAII::Variant::gzip);
+      ZlibDecoder decoder(ZlibVariant::gzip);
       ASSERT_TRUE(decoder.decompressFull(compressedBody, /*maxDecompressedBytes=*/1UL << 20U, 32U * 1024, out));
       EXPECT_EQ(std::string_view(out), std::string_view(body));
     }
@@ -831,8 +832,8 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_ExpansionTooLargeReturnsPaylo
   ZlibEncoder encoder(encCfg.zlib.level);
   RawChars compressedOut(plain.size());
   {
-    const auto result = encoder.encodeFull(ZStreamRAII::Variant::gzip, std::string_view(plain),
-                                           compressedOut.capacity(), compressedOut.data());
+    const auto result =
+        encoder.encodeFull(ZlibVariant::gzip, std::string_view(plain), compressedOut.capacity(), compressedOut.data());
     ASSERT_FALSE(result.hasError());
     const std::size_t written = result.writtenIfNoError();
     ASSERT_GT(written, 0UL);
@@ -936,9 +937,10 @@ TEST(HttpCodecCompression, ResponseCompressionStateEncodeFull_BehaviorPerEncoder
 
   // The API should return an error when asked to encode with Encoding::none
   EXPECT_TRUE(state.encodeFull(Encoding::none, plain, 1024UL, nullptr).hasError());
-  EXPECT_TRUE(
-      state.encodeFull(static_cast<Encoding>(static_cast<std::underlying_type_t<Encoding>>(-1)), plain, 1024UL, nullptr)
-          .hasError());
+  EXPECT_TRUE(state
+                  .encodeFull(std::bit_cast<Encoding>(static_cast<std::underlying_type_t<Encoding>>(-1)), plain, 1024UL,
+                              nullptr)
+                  .hasError());
 }
 
 TEST(HttpCodecCompression, ResponseCompressionStateMakeContext_BehaviorPerEncoder) {
@@ -1082,10 +1084,10 @@ TEST(HttpCodecCompression, ResponseCompressionStateMakeContext_BehaviorPerEncode
 
   // Invalid encodings throw (per API)
   EXPECT_EQ(state.makeContext(Encoding::none), nullptr);
-  EXPECT_EQ(state.makeContext(static_cast<Encoding>(static_cast<std::underlying_type_t<Encoding>>(-1))), nullptr);
+  EXPECT_EQ(state.makeContext(std::bit_cast<Encoding>(static_cast<std::underlying_type_t<Encoding>>(-1))), nullptr);
 
   EXPECT_EQ(state.context(Encoding::none), nullptr);
-  EXPECT_EQ(state.context(static_cast<Encoding>(static_cast<std::underlying_type_t<Encoding>>(-1))), nullptr);
+  EXPECT_EQ(state.context(std::bit_cast<Encoding>(static_cast<std::underlying_type_t<Encoding>>(-1))), nullptr);
 }
 
 #if defined(AERONET_ENABLE_ZLIB) && defined(AERONET_ENABLE_HTTP_SERVER)
@@ -1107,8 +1109,8 @@ TEST(HttpCodecDecompression, MaybeDecompressRequestBody_StreamingThresholdWithou
   ZlibEncoder encoder(encCfg.zlib.level);
   RawChars compressedOut(64UL + plain.size());
   {
-    const auto result = encoder.encodeFull(ZStreamRAII::Variant::gzip, std::string_view(plain),
-                                           compressedOut.capacity(), compressedOut.data());
+    const auto result =
+        encoder.encodeFull(ZlibVariant::gzip, std::string_view(plain), compressedOut.capacity(), compressedOut.data());
     ASSERT_FALSE(result.hasError());
     const auto written = result.writtenIfNoError();
     ASSERT_GT(written, 0UL);
@@ -1379,8 +1381,8 @@ TEST(HttpCodecCompression, UseLeadingZeroesInContentLengthTogglePadsWithZeroes) 
 
   RawChars outPadded;
   RawChars outCompact;
-  ZlibDecoder decoderPadded(ZStreamRAII::Variant::gzip);
-  ZlibDecoder decoderCompact(ZStreamRAII::Variant::gzip);
+  ZlibDecoder decoderPadded(ZlibVariant::gzip);
+  ZlibDecoder decoderCompact(ZlibVariant::gzip);
   ASSERT_TRUE(decoderPadded.decompressFull(paddedResp.bodyInMemory(), 1UL << 20U, 32U * 1024, outPadded));
   ASSERT_TRUE(decoderCompact.decompressFull(compactResp.bodyInMemory(), 1UL << 20U, 32U * 1024, outCompact));
   EXPECT_EQ(std::string_view(outPadded), std::string_view(body));
@@ -1482,7 +1484,7 @@ TEST(HttpCodecCompression, UseLeadingZeroesDisabled_CapturedBodyWithTrailersPres
   EXPECT_EQ(ParseContentLength(contentLen), resp.bodyInMemoryLength());
 
   RawChars out;
-  ZlibDecoder decoder(ZStreamRAII::Variant::gzip);
+  ZlibDecoder decoder(ZlibVariant::gzip);
   ASSERT_TRUE(decoder.decompressFull(resp.bodyInMemory(), /*maxDecompressedBytes=*/1UL << 20U, 32U * 1024, out))
       << "compressed body tail was corrupted by trailer relocation (see TryCompressBody trailer/body "
          "move ordering)";
@@ -1551,7 +1553,7 @@ TEST(HttpCodecCompression, UseLeadingZeroesDisabled_NoNeedToMemmove) {
   EXPECT_TRUE(contentLen.size() == 1 || contentLen.front() != '0');
 
   RawChars out;
-  ZlibDecoder decoder(ZStreamRAII::Variant::gzip);
+  ZlibDecoder decoder(ZlibVariant::gzip);
   ASSERT_TRUE(decoder.decompressFull(resp.bodyInMemory(), /*maxDecompressedBytes=*/1UL << 20U, 32U * 1024, out));
   EXPECT_EQ(std::string_view(out), std::string_view(body));
 }

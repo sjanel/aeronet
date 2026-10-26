@@ -34,7 +34,9 @@ class FrameHeader {
   [[nodiscard]] constexpr uint32_t length() const noexcept { return static_cast<uint32_t>(_bytes0To7 >> 40U); }
 
   /// Frame type.
-  [[nodiscard]] constexpr FrameType type() const noexcept { return static_cast<FrameType>(_bytes0To7 >> 32U); }
+  [[nodiscard]] constexpr FrameType type() const noexcept {
+    return static_cast<FrameType>(static_cast<uint8_t>(_bytes0To7 >> 32U));
+  }
 
   /// Frame flags.
   [[nodiscard]] constexpr uint8_t flags() const noexcept { return static_cast<uint8_t>(_bytes0To7 >> 24U); }

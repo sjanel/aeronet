@@ -847,7 +847,7 @@ TEST(ResponseParserDecompress, DecodesChunkedCompressed) {
   raw.append(GetEncodingStr(enc));
   raw.append("\r\ntransfer-encoding: chunked\r\n\r\n");
   char hex[32];
-  raw.append(hex, to_lower_hex(compressed.size(), hex));
+  raw.append(hex, ToLowerHex(compressed.size(), hex));
   raw.append(http::CRLF);
   raw.append(std::string_view(compressed));
   raw.append("\r\n0\r\n\r\n");

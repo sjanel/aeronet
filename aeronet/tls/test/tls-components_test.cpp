@@ -22,6 +22,7 @@
 #include <sys/types.h>
 
 #include <array>
+#include <bit>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
@@ -531,7 +532,7 @@ TEST(TlsContextTest, RevocationCallbackGoodOrNoOpinionAllowsVerifiedClientCertif
 
 TEST(TlsContextTest, RevocationCallbackInvalidDecisionFailsClosed) {
   auto clientCert = CertKeyCache::Get().client;
-  RevocationDecision decision{static_cast<TlsRevocationStatus>(255)};
+  RevocationDecision decision{std::bit_cast<TlsRevocationStatus>(uint8_t{255})};
   TLSConfig cfg = MakeTlsConfig({"http/1.1"}, false);
   cfg.requireClientCert = true;
   cfg.withTlsTrustedClientCert(clientCert.first).withTlsRevocationCallback(&DecideCertificateStatus, &decision);
@@ -661,7 +662,7 @@ TEST(TlsContextTest, InvalidKtlsModeThrows) {
   cfg.enabled = true;
   cfg.withCertPem(certKey.first).withKeyPem(certKey.second);
   cfg.withKtlsMode(
-      static_cast<TLSConfig::KtlsMode>(std::numeric_limits<std::underlying_type_t<TLSConfig::KtlsMode>>::max()));
+      std::bit_cast<TLSConfig::KtlsMode>(std::numeric_limits<std::underlying_type_t<TLSConfig::KtlsMode>>::max()));
   EXPECT_THROW(TlsContext{cfg}, std::invalid_argument);
 }
 
@@ -1611,8 +1612,8 @@ TEST(TlsContextTest, InvalidCipherPolicyThrowsInvalidArgument) {
   TLSConfig cfg;
   cfg.enabled = true;
   cfg.withCertPem(certKey.first).withKeyPem(certKey.second);
-  cfg.cipherPolicy =
-      static_cast<TLSConfig::CipherPolicy>(std::numeric_limits<std::underlying_type_t<TLSConfig::CipherPolicy>>::max());
+  cfg.cipherPolicy = std::bit_cast<TLSConfig::CipherPolicy>(
+      std::numeric_limits<std::underlying_type_t<TLSConfig::CipherPolicy>>::max());
 
   EXPECT_THROW(TlsContext{cfg}, std::invalid_argument);
 }
@@ -1868,7 +1869,8 @@ struct TcpLoopbackPair {
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     socklen_t addrLen = sizeof(addr);  // NOLINT(misc-include-cleaner)
-    if (::bind(listener.fd(), reinterpret_cast<sockaddr*>(&addr), addrLen) != 0 || ::listen(listener.fd(), 1) != 0 ||
+    if (!listener || ::bind(listener.fd(), reinterpret_cast<sockaddr*>(&addr), addrLen) != 0 ||
+        ::listen(listener.fd(), 1) != 0 ||
         ::getsockname(listener.fd(), reinterpret_cast<sockaddr*>(&addr), &addrLen) != 0) {
       throw std::runtime_error("failed to set up the TCP listener");
     }

@@ -30,8 +30,8 @@ char* DecodeInPlaceImpl(char* first, const char* last, char plusAs, bool strictI
         }
         const char c1 = *++first;
         const char c2 = *++first;
-        const int8_t v1 = from_hex_digit(c1);
-        const int8_t v2 = from_hex_digit(c2);
+        const int8_t v1 = FromHexDigit(c1);
+        const int8_t v2 = FromHexDigit(c2);
         // only meaningful if both digits are valid
         const char decoded =
             static_cast<char>(static_cast<uint8_t>(static_cast<uint8_t>(v1) << 4U) | static_cast<uint8_t>(v2));
@@ -92,10 +92,10 @@ char* DecodeQueryParamsInPlace(char* first, char* last) {
     // --- Decode key ---
     {
       char* newEnd = DecodeInPlaceImpl(keyBegin, keyEnd, '+', /*strictInvalid*/ false, isSeparator);
-      const auto decodedLen = static_cast<std::size_t>(newEnd - keyBegin);
-      const auto origLen = static_cast<std::size_t>(keyEnd - keyBegin);
+      const std::size_t decodedLen = static_cast<std::size_t>(newEnd - keyBegin);
+      const std::size_t origLen = static_cast<std::size_t>(keyEnd - keyBegin);
       if (decodedLen < origLen) {
-        const auto shift = origLen - decodedLen;
+        const std::size_t shift = origLen - decodedLen;
         std::memmove(newEnd, keyEnd, static_cast<std::size_t>(last - keyEnd));
         last -= shift;
         // adjust valueBegin/valueEnd/pairEnd
@@ -103,21 +103,19 @@ char* DecodeQueryParamsInPlace(char* first, char* last) {
         valueEnd -= shift;
         pairEnd -= shift;
       }
-      keyEnd = newEnd;
     }
 
     // --- Decode value (if any) ---
     if (valueBegin < valueEnd) {
       char* newEnd = DecodeInPlaceImpl(valueBegin, valueEnd, /*plusAs*/ ' ', /*strictInvalid*/ false, isSeparator);
-      const auto decodedLen = static_cast<std::size_t>(newEnd - valueBegin);
-      const auto origLen = static_cast<std::size_t>(valueEnd - valueBegin);
+      const std::size_t decodedLen = static_cast<std::size_t>(newEnd - valueBegin);
+      const std::size_t origLen = static_cast<std::size_t>(valueEnd - valueBegin);
       if (decodedLen < origLen) {
-        const auto shift = origLen - decodedLen;
+        const std::size_t shift = origLen - decodedLen;
         std::memmove(newEnd, valueEnd, static_cast<std::size_t>(last - valueEnd));
         last -= shift;
         pairEnd -= shift;
       }
-      valueEnd = newEnd;
     }
 
     // Advance to next pair
