@@ -42,6 +42,12 @@
 #include "aeronet/vector.hpp"
 #include "aeronet/zerocopy-mode.hpp"
 
+#ifdef AERONET_ENABLE_WEBSOCKET
+#include "aeronet/router.hpp"
+#include "aeronet/websocket-endpoint.hpp"
+#include "aeronet/websocket-handler.hpp"
+#endif
+
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/test_server_tls_fixture.hpp"
 #include "aeronet/test_tls_client.hpp"
@@ -945,7 +951,7 @@ TEST(HttpResponseDispatchErrors, PreadErrorDuringUserSpaceTlsFileSend) {
 // Outbound buffer retry paths in sweepIdleConnections
 // =============================================================================
 
-// Test the sweepIdleConnections() outBuffer flush retry path (ConnectionMaintenance::sweepIdleConnections())
+// Test the sweepIdleConnections() output flush retry path (ConnectionMaintenance::sweepIdleConnections())
 // This exercises the case where a connection has buffered outbound data and is waiting for
 // writable interest; the sweep timer retries the flush.
 TEST(ConnectionManagerErrors, SweepRetriesPendingOutboundData) {
@@ -971,7 +977,7 @@ TEST(ConnectionManagerErrors, SweepRetriesPendingOutboundData) {
   test::ClientConnection client(localTs.port());
   test::sendAll(client.fd(), SimpleGetRequest("/sweep-retry"));
 
-  // The first writev returns EAGAIN, leaving data in outBuffer.
+  // The first writev returns EAGAIN, leaving the response queued.
   // The sweep timer should retry and eventually flush the data.
   auto resp = test::recvWithTimeout(client.fd(), 3000ms);
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
@@ -1016,13 +1022,12 @@ TEST(ConnectionManagerErrors, SweepRetriesPendingFilePayload) {
 }
 
 // =============================================================================
-// flushOutbound headersPending transition
+// File response whose head is written in part
 // =============================================================================
 
-// Test the flushOutbound() headersPending->false transition (ConnectionIo::flushOutbound())
-// When a file payload has headersPending=true and outBuffer is flushed empty, headersPending
-// should be cleared to allow flushFilePayload to proceed.
-TEST(HttpResponseDispatchErrors, FlushOutboundClearsHeadersPending) {
+// The file of a response whose head is written in part is sent once the rest of its head is (ConnectionIo::queueData(),
+// then ConnectionIo::flushOutbound()).
+TEST(HttpResponseDispatchErrors, FileIsSentOncePartiallyWrittenHeadIsFlushed) {
   test::QueueResetGuard<decltype(test::g_sendfile_actions)> guard(test::g_sendfile_actions);
   test::QueueResetGuard<decltype(test::g_on_accept_install_actions)> guardOnAccept(test::g_on_accept_install_actions);
   test::QueueResetGuard<decltype(test::g_writev_actions)> guardWritev(test::g_writev_actions);
@@ -1038,7 +1043,7 @@ TEST(HttpResponseDispatchErrors, FlushOutboundClearsHeadersPending) {
     writer.end();
   });
 
-  // First writev returns partial write (headers still buffered), second succeeds
+  // First writev returns partial write (head still queued), second succeeds
   test::g_on_accept_install_actions.push(test::AcceptInstallActions{
       .writeActions = {},
       .writevActions = {{10, 0}},
@@ -1049,16 +1054,63 @@ TEST(HttpResponseDispatchErrors, FlushOutboundClearsHeadersPending) {
   test::sendAll(client.fd(), SimpleGetRequest("/headers-pending"));
 
   auto resp = test::recvWithTimeout(client.fd(), 3000ms);
-  // The partial write path may cause a truncated status line, but the file content should be delivered
-  EXPECT_TRUE(resp.contains("200") || resp.contains("HHHH")) << resp;
+  // The 10 bytes reported written by the fake writev never reach the client: the rest of the head, then the whole file.
+  EXPECT_TRUE(resp.starts_with("00 \r\n")) << resp;
+  EXPECT_TRUE(resp.ends_with("\r\n\r\n" + payload)) << resp;
 }
+
+#ifdef AERONET_ENABLE_WEBSOCKET
+// The output of a connection upgraded to WebSocket waits for its 101 response, written in part, then blocked
+// (ConnectionIo::flushOutbound()): the pong answering a ping sent with the upgrade request follows the whole 101.
+TEST(HttpResponseDispatchErrors, UpgradedConnectionOutputWaitsForItsPartiallyWritten101) {
+  test::QueueResetGuard<decltype(test::g_on_accept_install_actions)> guardOnAccept(test::g_on_accept_install_actions);
+  test::QueueResetGuard<decltype(test::g_writev_actions)> guardWritev(test::g_writev_actions);
+
+  ts.postRouterUpdate([](Router& router) {
+    router.setWebSocket("/ws", WebSocketEndpoint::WithCallbacks(websocket::WebSocketCallbacks{
+                                   .onMessage = {},
+                                   .onPing = {},
+                                   .onPong = {},
+                                   .onClose = {},
+                                   .onError = {},
+                               }));
+  });
+
+  // The first 10 bytes of the 101 response are reported written (never sent), then the socket looks full twice: when
+  // the rest of the 101 is retried, and again when the pong is ready to be written.
+  test::g_on_accept_install_actions.push(test::AcceptInstallActions{
+      .writeActions = {},
+      .writevActions = {{10, 0}, {-1, error::kWouldBlock}, {-1, error::kWouldBlock}},
+      .sendfileActions = {},
+  });
+
+  static constexpr std::string_view kUpgradeRequest =
+      "GET /ws HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+      "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
+  // A masked ping without payload, sent without waiting for the 101 response.
+  static constexpr std::string_view kPing = "\x89\x80\x37\xfa\x21\x3d"sv;
+  // An unmasked pong without payload.
+  static constexpr std::string_view kPong = "\x8a\x00"sv;
+  // The 101 response to this upgrade request is 129 bytes long.
+  static constexpr std::size_t kReceivedSize = 129 - 10 + kPong.size();
+
+  test::ClientConnection client(ts.port());
+  test::sendAll(client.fd(), std::string(kUpgradeRequest) + std::string(kPing));
+
+  const std::string resp = test::recvWithTimeout(client.fd(), 3000ms, kReceivedSize);
+  ASSERT_EQ(resp.size(), kReceivedSize) << resp;
+  EXPECT_TRUE(resp.starts_with("01 ")) << resp;
+  EXPECT_TRUE(resp.contains("sec-websocket-accept:")) << resp;
+  EXPECT_TRUE(resp.ends_with("\r\n\r\n" + std::string(kPong))) << resp;
+}
+#endif
 
 // =============================================================================
 // flushOutbound transportNeedsWrite path
 // =============================================================================
 
 // Test flushOutbound when transport needs write after non-TLS flush (lines 303-311)
-// This exercises the path where outBuffer is empty but transport still reports WriteReady.
+// This exercises the path where the output is written but transport still reports WriteReady.
 // This typically happens briefly during TLS handshake completion. We simulate it by causing
 // the first write to return partial (with WriteReady need), then subsequent writes succeed.
 TEST(HttpResponseDispatchErrors, FlushOutboundTransportNeedsWrite) {

@@ -79,6 +79,40 @@ TEST(OutputQueueTest, SmallDataIsMergedIntoTheLastEntry) {
   EXPECT_EQ(Contents(queue.pop()), "d");
 }
 
+TEST(OutputQueueTest, FirstEntryWrittenInPart) {
+  OutputQueue queue;
+  queue.push(test::MakeMessageData(100, 'a'));
+  queue.frontWritten(30);
+  EXPECT_EQ(queue.size(), 1U);
+  EXPECT_EQ(queue.bytes(), 70U);
+  EXPECT_EQ(Contents(queue.front()), std::string(70, 'a'));
+
+  // Still appended to.
+  EXPECT_TRUE(queue.push(test::MakeMessageData(10, 'b')));
+  EXPECT_EQ(queue.bytes(), 80U);
+  EXPECT_EQ(Contents(queue.front()), std::string(70, 'a') + std::string(10, 'b'));
+
+  // Its written part is not counted anymore once popped.
+  EXPECT_EQ(Contents(queue.pop()), std::string(70, 'a') + std::string(10, 'b'));
+  EXPECT_EQ(queue.bytes(), 0U);
+}
+
+TEST(OutputQueueTest, FirstEntryNotAppendableIsOnlyNotMergedInto) {
+  OutputQueue queue;
+  queue.push(test::MakeMessageData(100, 'a'));
+  const char* firstStorage = queue.front().firstBuffer().data();
+  EXPECT_FALSE(queue.push(test::MakeMessageData(10, 'b'), /*frontAppendable=*/false));
+  ASSERT_EQ(queue.size(), 2U);
+  EXPECT_EQ(queue.front().firstBuffer().data(), firstStorage);
+
+  // The last entry, behind it, is.
+  EXPECT_TRUE(queue.push(test::MakeMessageData(10, 'c'), /*frontAppendable=*/false));
+  ASSERT_EQ(queue.size(), 2U);
+  EXPECT_EQ(Contents(queue.front()), std::string(100, 'a'));
+  EXPECT_EQ(Contents(queue.entries()[1]), std::string(10, 'b') + std::string(10, 'c'));
+  EXPECT_EQ(queue.bytes(), 120U);
+}
+
 TEST(OutputQueueTest, ManySmallPiecesAreMergedInFewEntries) {
   OutputQueue queue;
   std::string expected;
