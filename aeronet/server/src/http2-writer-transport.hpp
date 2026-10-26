@@ -17,6 +17,7 @@
 #include "aeronet/http2-connection.hpp"
 #include "aeronet/http2-error-code-name.hpp"
 #include "aeronet/http2-frame-types.hpp"
+#include "aeronet/http2-frame.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router.hpp"

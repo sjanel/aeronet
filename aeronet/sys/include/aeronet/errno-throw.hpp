@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cerrno>
 #include <format>
 #include <string_view>
 #include <system_error>

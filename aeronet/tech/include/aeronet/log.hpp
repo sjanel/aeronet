@@ -23,7 +23,7 @@
 namespace aeronet {
 
 #ifdef AERONET_ENABLE_SPDLOG
-namespace log = spdlog;
+namespace log = spdlog;  // NOLINT(misc-unused-alias-decls)
 #else
 namespace log {
 // Fallback logger with runtime formatting (std::vformat) and graceful degradation.

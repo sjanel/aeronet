@@ -74,7 +74,7 @@ constexpr const char* const kCachedDate = "Sun, 06 Nov 1994 08:49:37 GMT";
 
 // The server context of the handlers of the tests, whose Date header is kCachedDate.
 struct TestServerContext : ::aeronet::internal::ServerContext {
-  explicit TestServerContext(HttpServerConfig config = {}, Router router = {})
+  explicit TestServerContext(HttpServerConfig config = HttpServerConfig(), Router router = Router())
       : ServerContext(std::move(config), std::move(router)) {
     static constexpr std::chrono::seconds kCachedDateSinceEpoch{784111777};
     dateHeader.refreshIfNeeded(std::chrono::steady_clock::now(), [] { return SysTimePoint(kCachedDateSinceEpoch); });
@@ -432,7 +432,7 @@ TEST(Http2ProtocolHandler, Creation) {
     return HttpResponse(200);
   });
 
-  TestServerContext ctx({}, std::move(router));
+  TestServerContext ctx(HttpServerConfig(), std::move(router));
   ::aeronet::ConnectionState state;
 
   auto handler = CreateHttp2ProtocolHandler(ctx, state, kInvalidHandle, false);
@@ -626,7 +626,7 @@ TEST(CreateHttp2ProtocolHandler, SendServerPrefaceForTlsQueuesSettingsImmediatel
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  TestServerContext ctx({}, std::move(router));
+  TestServerContext ctx(HttpServerConfig(), std::move(router));
   ::aeronet::ConnectionState state;
 
   auto handlerBase = CreateHttp2ProtocolHandler(ctx, state, kInvalidHandle, true);

@@ -4,11 +4,13 @@
 #include <cstdint>
 #include <span>
 #include <string_view>
+#include <utility>
 
 #include "aeronet/encoder.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-message.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/lower-ascii-key.hpp"

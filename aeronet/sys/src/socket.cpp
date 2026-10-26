@@ -10,7 +10,6 @@
 #include <sys/socket.h>
 #endif
 
-#include <cerrno>
 #include <cstdint>
 #include <stdexcept>
 

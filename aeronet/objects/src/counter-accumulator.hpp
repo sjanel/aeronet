@@ -2,8 +2,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <functional>
-#include <new>
 #include <string_view>
 #include <utility>
 
@@ -28,8 +28,8 @@ class CounterAccumulator {
       // Room for the labels of any counter, so that flush() decodes them without allocating.
       _labels.reserve(static_cast<decltype(_labels)::size_type>(labels.size()));
       _counters.emplace(buildKey(name, labels), uint64_t{0}).first->second += delta;
-    } catch (const std::bad_alloc&) {
-      log_noexcept::error("Unable to allocate memory for counter '{}'", name);
+    } catch (const std::exception& ex) {
+      log_noexcept::error("Unable to record counter '{}': {}", name, ex.what());
     }
   }
 
@@ -69,6 +69,7 @@ class CounterAccumulator {
   }
 
   // Returns the name of the counter key, and stores its labels in _labels.
+  // NOLINTNEXTLINE(bugprone-exception-escape): _labels has the room for any labels, reserved by add()
   std::string_view decodeKey(std::string_view key) noexcept {
     _labels.clear();
     const std::string_view name = PopPiece(key);

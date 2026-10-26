@@ -8,6 +8,7 @@
 #include <span>
 #include <string_view>
 
+#include "aeronet/http-message-data.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/vector.hpp"
@@ -15,9 +16,7 @@
 #include "aeronet/websocket-deflate.hpp"
 #include "aeronet/websocket-frame.hpp"
 
-namespace aeronet {
-
-namespace websocket {
+namespace aeronet::websocket {
 
 class DeflateContext;
 
@@ -296,5 +295,4 @@ class WebSocketHandler final : public IProtocolHandler {
 [[nodiscard]] std::unique_ptr<WebSocketHandler> CreateClientWebSocketHandler(
     WebSocketCallbacks callbacks = WebSocketCallbacks(), std::size_t maxMessageSize = kDefaultMaxMessageSize);
 
-}  // namespace websocket
-}  // namespace aeronet
+}  // namespace aeronet::websocket

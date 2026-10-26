@@ -82,9 +82,11 @@ function(AeronetSetProjectProperties name)
   endif()
 
   if(AERONET_ENABLE_CLANG_TIDY AND CLANG_TIDY)
-    set_target_properties(${name} PROPERTIES
-      CXX_CLANG_TIDY "clang-tidy;--extra-arg-before=--driver-mode=g++"
-    )
+    set(clang_tidy_command "${CLANG_TIDY}" --extra-arg-before=--driver-mode=g++)
+    if(AERONET_WARNINGS_AS_ERRORS AND NOT ARG_NO_WARNINGS_AS_ERRORS)
+      list(APPEND clang_tidy_command --warnings-as-errors=*)
+    endif()
+    set_target_properties(${name} PROPERTIES CXX_CLANG_TIDY "${clang_tidy_command}")
   endif()
   if (LINK_AMC)
     target_link_libraries(${name} PRIVATE amc::amc)

@@ -1,7 +1,10 @@
 #pragma once
 
+#include <cassert>
+#include <cstdint>
 #include <glaze/glaze.hpp>
 #include <string>
+#include <string_view>
 
 #include "aeronet/major-minor-version.hpp"
 
@@ -43,13 +46,13 @@ struct glz::from<Format, aeronet::MajorMinorVersion<Prefix>> {
 template <uint32_t Format, const char* Prefix>
 struct glz::to<Format, aeronet::MajorMinorVersion<Prefix>> {
   template <auto Opts, is_context Ctx, class B, class IX>
-  static void op(const aeronet::MajorMinorVersion<Prefix>& value, Ctx&& ctx, B&& b, IX&& ix) {
+  static void op(const aeronet::MajorMinorVersion<Prefix>& value, Ctx&& ctx, B&& buffer, IX&& ix) {
     if (value.isValid()) {
       // Write as short form "X.Y"
       const char buf[]{static_cast<char>('0' + value.major()), '.', static_cast<char>('0' + value.minor())};
-      serialize<Format>::template op<Opts>(std::string_view{buf, sizeof(buf)}, ctx, b, ix);
+      serialize<Format>::template op<Opts>(std::string_view{buf, sizeof(buf)}, ctx, buffer, ix);
     } else {
-      serialize<Format>::template op<Opts>(std::string_view{""}, ctx, b, ix);
+      serialize<Format>::template op<Opts>(std::string_view{""}, ctx, buffer, ix);
     }
   }
 };

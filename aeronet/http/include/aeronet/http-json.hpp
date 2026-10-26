@@ -11,6 +11,7 @@
 //   response.bodyJson(obj) / response.bodyYaml(obj)
 //   request.bodyAs<T>()    / request.bodyAsYaml<T>()
 
+#include "aeronet/http-message.hpp"
 #ifdef AERONET_ENABLE_GLAZE
 
 #include <expected>

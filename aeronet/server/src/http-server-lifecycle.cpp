@@ -1,7 +1,6 @@
 #include <atomic>
 #include <cassert>
 #include <chrono>
-#include <cstring>
 #include <exception>
 #include <functional>
 #include <memory>

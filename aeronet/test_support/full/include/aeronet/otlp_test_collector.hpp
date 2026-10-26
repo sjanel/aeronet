@@ -11,6 +11,7 @@
 #include <thread>
 #include <utility>
 
+#include "aeronet/native-handle.hpp"
 #include "aeronet/socket.hpp"
 #include "aeronet/vector.hpp"
 

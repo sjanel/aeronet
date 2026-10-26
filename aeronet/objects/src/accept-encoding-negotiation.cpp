@@ -4,7 +4,6 @@
 #include <array>
 #include <cassert>
 #include <charconv>
-#include <climits>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -61,7 +60,7 @@ double ParseQ(std::string_view token) {
       while (!val.empty() && kWhitespace.contains(val.back())) {
         val.remove_suffix(1);
       }
-      auto cut = val.find_first_of(" ;\t");
+      const auto cut = val.find_first_of(" ;\t");
       if (cut != std::string_view::npos) {
         val = val.substr(0, cut);
       }

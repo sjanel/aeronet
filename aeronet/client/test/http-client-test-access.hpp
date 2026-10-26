@@ -30,12 +30,17 @@ class HttpClientTest {
   // Whether `ptr` points into one of the scratch buffers holding received or decoded response bytes.
   static bool InScratch(const HttpClient& client, const char* ptr) {
     const auto address = reinterpret_cast<std::uintptr_t>(ptr);
-    return std::ranges::any_of(std::array{&client._responseBuffer, &client._reqBodyScratch,
-                                          &client._codec.decompressOut, &client._codec.decompressTmp},
-                               [address](const RawChars* buf) {
-                                 const auto begin = reinterpret_cast<std::uintptr_t>(buf->data());
-                                 return address >= begin && address < begin + buf->size();
-                               });
+    return std::ranges::any_of(
+        std::array{
+            &client._responseBuffer,
+            &client._reqBodyScratch,
+            &client._codec.decompressOut,
+            &client._codec.decompressTmp,
+        },
+        [address](const RawChars* buf) {
+          const auto begin = reinterpret_cast<std::uintptr_t>(buf->data());
+          return address >= begin && address < begin + buf->size();
+        });
   }
 
   // Summed capacity of the reusable request / response / decompression scratch buffers.

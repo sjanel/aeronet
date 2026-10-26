@@ -1,5 +1,4 @@
 #include <aeronet/aeronet-server.hpp>
-#include <csignal>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>

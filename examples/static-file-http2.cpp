@@ -17,7 +17,6 @@
 
 #include <aeronet/aeronet-server.hpp>
 #include <charconv>
-#include <csignal>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>

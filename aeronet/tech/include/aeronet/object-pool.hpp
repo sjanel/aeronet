@@ -348,7 +348,7 @@ class PoolPtr {
  public:
   PoolPtr() noexcept = default;
 
-  PoolPtr(std::nullptr_t) noexcept {}
+  PoolPtr(std::nullptr_t) noexcept {}  // NOLINT(*-explicit-constructor)
 
   PoolPtr(ObjectPool<T, SizeType>& pool, T* pObj) noexcept : _pPool(&pool), _pObj(pObj) {}
 

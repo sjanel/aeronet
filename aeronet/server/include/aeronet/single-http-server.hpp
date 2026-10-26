@@ -9,6 +9,7 @@
 #include <future>
 #include <memory>
 #include <span>
+#include <stop_token>
 #include <thread>
 
 #include "aeronet/compiler-config.hpp"

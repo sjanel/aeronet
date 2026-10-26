@@ -1,10 +1,13 @@
 #pragma once
 
+#include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <limits>
 #include <span>
 #include <string_view>
+#include <utility>
 
 #include "aeronet/char-hexadecimal-converter.hpp"
 #include "aeronet/connection-state.hpp"

@@ -11,11 +11,13 @@
 
 #include "aeronet/native-handle.hpp"
 #include "aeronet/tls-ktls.hpp"
+#include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
 
 namespace aeronet {
 
 // TLS transport (OpenSSL). Implementation will live in tls-transport.cpp.
+// NOLINTNEXTLINE(misc-multiple-inheritance): both bases are data holders, not interfaces
 class TlsTransport final : public TransportBackend<TlsTransport, TransportKind::Tls>, public SocketTransportState {
  public:
   using SslPtr = std::unique_ptr<SSL, void (*)(SSL*)>;

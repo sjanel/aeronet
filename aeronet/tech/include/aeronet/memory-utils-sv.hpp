@@ -3,6 +3,7 @@
 #include <cstring>
 #include <string_view>
 
+#include "aeronet/compiler-config.hpp"
 #include "aeronet/memory-utils.hpp"
 
 namespace aeronet {
