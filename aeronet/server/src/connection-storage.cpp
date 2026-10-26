@@ -107,7 +107,7 @@ void ConnectionStorage::releaseOrphanedAsyncTask(uint32_t generation, std::corou
     return;
   }
   ConnectionState* pConnectionState = *it;
-  if (auto* asyncState = pConnectionState->asyncState.get(); asyncState != nullptr && asyncState->handle == handle) {
+  if (auto* asyncState = pConnectionState->asyncState.get(); asyncState != nullptr && asyncState->task.runs(handle)) {
     asyncState->clear();
   }
   if (pConnectionState->protocolHandler != nullptr) {

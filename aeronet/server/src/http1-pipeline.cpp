@@ -523,7 +523,7 @@ bool Http1Pipeline::maybeDecompressRequestBody(ConnectionIt cnxIt, bool usePerCo
 
 bool Http1Pipeline::isKeepAlive(const HttpRequestView& request) const {
   const ServerContext& ctx = *_pCtx;
-  return ctx.config.enableKeepAlive && request._pOwnerState->requestsServed < ctx.config.maxRequestsPerConnection &&
+  return ctx.config.enableKeepAlive && request._pConnectionInfo->requestsServed < ctx.config.maxRequestsPerConnection &&
          ctx.lifecycle.isRunning() && request.clientKeepsAliveForHttp1();
 }
 

@@ -2,16 +2,9 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <memory>
-#include <span>
 #include <string_view>
-#include <type_traits>
 
-#include "aeronet/raw-bytes.hpp"
-
-#ifdef AERONET_ENABLE_ZLIB
-#include "aeronet/websocket-compress.hpp"
-#endif
+#include "aeronet/websocket-shared-deflate-streams.hpp"  // IWYU pragma: export
 
 namespace aeronet::websocket {
 
@@ -84,85 +77,5 @@ std::size_t ComputeDeflateResponseSize(DeflateNegotiatedParams params, uint8_t n
 /// @param params The negotiated parameters
 /// @param pData Output buffer to append the response string to
 char* BuildDeflateResponse(DeflateNegotiatedParams params, char* pData);
-
-/// zlib streams shared by the WebSocket connections of an event loop (a server thread), for the directions negotiated
-/// without context takeover (server_no_context_takeover, client_no_context_takeover): their state does not survive a
-/// message, so one stream serves all these connections. This saves the memory of a stream per connection (about 300 KB
-/// for compression) and keeps the shared one in the CPU caches. Not thread-safe: only used by its event loop.
-class SharedDeflateStreams {
- public:
-  SharedDeflateStreams() noexcept;
-
-  SharedDeflateStreams(const SharedDeflateStreams&) = delete;
-  SharedDeflateStreams& operator=(const SharedDeflateStreams&) = delete;
-  SharedDeflateStreams(SharedDeflateStreams&&) noexcept;
-  SharedDeflateStreams& operator=(SharedDeflateStreams&&) noexcept;
-
-  ~SharedDeflateStreams();
-
-  using trivially_relocatable = std::true_type;
-
- private:
-  friend class DeflateContext;
-
-  struct Impl;
-
-  // On the heap, created on first use: the connections keep pointers to the streams, and a zlib stream cannot move.
-  // Only followed when a connection sets up its DeflateContext, which then points to the streams themselves.
-  std::unique_ptr<Impl> _impl;
-};
-
-/// RAII wrapper for zlib deflate/inflate context.
-/// This is an internal implementation detail.
-class DeflateContext {
- public:
-  /// Create a deflate context for compression/decompression.
-  /// @param params Negotiated parameters from upgrade
-  /// @param config Server's configuration (for compression level, etc.)
-  /// @param isServerSide True for server, false for client
-  /// @param sharedStreams If not null, streams used for the directions without context takeover instead of own ones.
-  /// They must outlive this context.
-  DeflateContext(DeflateNegotiatedParams params, const DeflateConfig& config, bool isServerSide,
-                 SharedDeflateStreams* sharedStreams = nullptr);
-
-  // Neither copyable nor movable: it may point to its own streams, which cannot move anyway.
-  DeflateContext(const DeflateContext&) = delete;
-  DeflateContext(DeflateContext&&) = delete;
-  DeflateContext& operator=(const DeflateContext&) = delete;
-  DeflateContext& operator=(DeflateContext&&) = delete;
-
-  ~DeflateContext() = default;
-
-  /// Compress a message payload.
-  /// @param input Uncompressed message data
-  /// @param output Buffer to append compressed data to
-  /// @return nullptr on success, error message on compression error
-  [[nodiscard]] const char* compress(std::span<const std::byte> input, RawBytes& output);
-
-  /// Decompress a message payload.
-  /// @param input Compressed message data
-  /// @param output Buffer to append decompressed data to
-  /// @param maxDecompressedSize Maximum allowed decompressed size (0 = unlimited)
-  /// @return nullptr on success, error message on decompression error or size limit exceeded
-  [[nodiscard]] const char* decompress(std::span<const std::byte> input, RawBytes& output,
-                                       std::size_t maxDecompressedSize = 0);
-
-  /// Check if compression should be skipped for a given payload size.
-  [[nodiscard]] bool shouldSkipCompression(std::size_t payloadSize) const noexcept {
-    return payloadSize < _minCompressSize;
-  }
-
- private:
-#ifdef AERONET_ENABLE_ZLIB
-  // Window bits and context takeover: own parameters when compressing, the peer's when decompressing.
-  WebSocketCompressor _ownCompressor;
-  WebSocketDecompressor _ownDecompressor;
-  WebSocketCompressor* _compressor;
-  WebSocketDecompressor* _decompressor;
-  bool _deflateNoContextTakeover;
-  bool _inflateNoContextTakeover;
-#endif
-  uint32_t _minCompressSize{0};
-};
 
 }  // namespace aeronet::websocket

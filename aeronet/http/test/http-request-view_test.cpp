@@ -30,13 +30,13 @@
 #include <sys/resource.h>
 #endif
 
-#include "aeronet/async-handler-state.hpp"
+#include "aeronet/async-await-state.hpp"
 #include "aeronet/async-resume-poster.hpp"
 #endif
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/compression-test-helpers.hpp"
-#include "aeronet/connection-state.hpp"
+#include "aeronet/connection-info.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
@@ -85,21 +85,18 @@ class HttpRequestViewTest : public ::testing::Test {
  protected:
   void SetUp() override {
     globalHeaders.append("server: aeronet");
-    req._pOwnerState = &cs;
+    req._pConnectionInfo = &connectionInfo;
     req._pGlobalHeaders = &globalHeaders;
     req._pCompressionState = &compressionState;
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-    (void)cs.ensureAsyncState(asyncStatePoolStorage);
-#endif
 
     compressionState.pCompressionConfig = &compressionConfig;
   }
 
   http::StatusCode reqSet(RawChars raw, bool mergeAllowedForUnknownRequestHeaders = true) {
-    cs.inBuffer = std::move(raw);
+    inBuffer = std::move(raw);
     req._headParseState = HttpRequestView::HeadParseState::None;  // a new request
     RawChars tmpBuffer;
-    auto ret = req.initTrySetHead(cs.inBuffer, tmpBuffer, 4096U, mergeAllowedForUnknownRequestHeaders, nullptr);
+    auto ret = req.initTrySetHead(inBuffer, tmpBuffer, 4096U, mergeAllowedForUnknownRequestHeaders, nullptr);
     if (ret == http::StatusCodeOK) {
       req.finalizeBeforeHandlerCall({});
     }
@@ -108,10 +105,10 @@ class HttpRequestViewTest : public ::testing::Test {
 
   http::StatusCode reqSetWithSpan(RawChars raw, tracing::SpanPtr span,
                                   bool mergeAllowedForUnknownRequestHeaders = true) {
-    cs.inBuffer = std::move(raw);
+    inBuffer = std::move(raw);
     req._headParseState = HttpRequestView::HeadParseState::None;  // a new request
     RawChars tmpBuffer;
-    auto ret = req.initTrySetHead(cs.inBuffer, tmpBuffer, 4096U, mergeAllowedForUnknownRequestHeaders, std::move(span));
+    auto ret = req.initTrySetHead(inBuffer, tmpBuffer, 4096U, mergeAllowedForUnknownRequestHeaders, std::move(span));
     if (ret == http::StatusCodeOK) {
       req.finalizeBeforeHandlerCall({});
     }
@@ -132,20 +129,20 @@ class HttpRequestViewTest : public ::testing::Test {
   // buffer grows. The previous buffer is kept until the next call, overwritten: views not moved to the new buffer read
   // garbage instead of the head.
   void receive(std::string_view bytes) {
-    RawChars grown(cs.inBuffer.size() + bytes.size());
-    grown.unchecked_append(std::string_view(cs.inBuffer));
+    RawChars grown(inBuffer.size() + bytes.size());
+    grown.unchecked_append(std::string_view(inBuffer));
     grown.unchecked_append(bytes);
-    if (!cs.inBuffer.empty()) {  // data() is null before the first allocation
-      std::memset(cs.inBuffer.data(), 'X', cs.inBuffer.size());
+    if (!inBuffer.empty()) {  // data() is null before the first allocation
+      std::memset(inBuffer.data(), 'X', inBuffer.size());
     }
-    previousInBuffer.swap(cs.inBuffer);
-    cs.inBuffer.swap(grown);
+    previousInBuffer.swap(inBuffer);
+    inBuffer.swap(grown);
   }
 
   // Receives 'bytes' then attempts to parse the head received so far, as the server does after each read.
   http::StatusCode receiveAndParse(std::string_view bytes) {
     receive(bytes);
-    auto ret = req.initTrySetHead(cs.inBuffer, headTmpBuffer, 4096U, true, nullptr);
+    auto ret = req.initTrySetHead(inBuffer, headTmpBuffer, 4096U, true, nullptr);
     if (ret == http::StatusCodeOK) {
       req.finalizeBeforeHandlerCall({});
     }
@@ -157,7 +154,7 @@ class HttpRequestViewTest : public ::testing::Test {
   [[nodiscard]] bool isHeadWaitingForBody() const { return req.isHeadWaitingForBody(); }
 
   void resumeHeadWaitingForBody() {
-    req.resumeHeadWaitingForBody(cs.inBuffer);
+    req.resumeHeadWaitingForBody(inBuffer);
     req.finalizeBeforeHandlerCall({});
   }
 
@@ -272,12 +269,11 @@ class HttpRequestViewTest : public ::testing::Test {
     req._pBodyAccessContext = nullptr;
   }
 
-  void setOwnerState(ConnectionState* st) { req._pOwnerState = st; }
-
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  void callPinHeadStorage() { req.pinHeadStorage(cs.ensureAsyncState(asyncStatePoolStorage).headBuffer); }
-  void setH2ResumePoster(const AsyncResumePoster* pPoster) { req._pH2ResumePoster = pPoster; }
-  void setH2SuspendedFlag(bool* flag) { req._pH2SuspendedFlag = flag; }
+  void callPinHeadStorage() { req.pinHeadStorage(headBuffer); }
+  // Points the request to the state of its async handler, as its protocol does when dispatching it.
+  void setAsyncAwait(AsyncAwaitState* pAsyncAwait) { req._pAsyncAwait = pAsyncAwait; }
+  [[nodiscard]] AsyncResumePoster callAsyncResumePoster() const { return req.asyncResumePoster(); }
 #endif
 
   // Helper to set a header view pointing at arbitrary bytes (fixture has friend access)
@@ -303,18 +299,21 @@ class HttpRequestViewTest : public ::testing::Test {
     if (input.size() < http::kHttpReqLineMinLen) {
       return;  // the server does not parse a head before the minimal request line is received
     }
-    cs.inBuffer = input;  // reset
+    inBuffer = input;  // reset
     [[maybe_unused]] auto status = reqSet(input, mergeUnknownHeaders);
   }
 
   ConcatenatedHeaders globalHeaders;
   CompressionConfig compressionConfig;
   CompressionState compressionState;
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  AsyncHandlerStatePool asyncStatePoolStorage;
-#endif
   HttpRequestView req;
-  ConnectionState cs;
+  ConnectionInfo connectionInfo;
+  // Input of the connection, where the request is parsed
+  RawChars inBuffer;
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  // Storage of the head pinned for an async handler
+  RawChars headBuffer;
+#endif
   RawChars previousInBuffer;
   RawChars headTmpBuffer;
 };
@@ -409,19 +408,6 @@ TEST_F(HttpRequestViewTest, BridgePointerPresentButAggregateNull) {
   EXPECT_FALSE(req.hasMoreBody());
 }
 
-TEST_F(HttpRequestViewTest, AggregatedBridgeReadOffsetPastEndHandled) {
-  // Install aggregated bridge and ensure the body context is present.
-  cs.installAggregatedBodyBridge();
-
-  // Provide an empty body so offset (0) is already past/equal to size (0).
-  cs.bodyStreamContext.body = std::string_view();
-  cs.bodyStreamContext.offset = 0;
-
-  // readBody should see offset >= body.size() and return empty without crashing.
-  auto chunk = cs.request.readBody(4);
-  EXPECT_TRUE(chunk.empty());
-}
-
 TEST_F(HttpRequestViewTest, TraceSpanNotSetWhenNoHostHeader) {
   // Build a raw request without a Host header and pass a FakeSpan into
   // initTrySetHead; the span should receive http.method, http.target, and
@@ -459,7 +445,7 @@ TEST_F(HttpRequestViewTest, PinHead_NormalCopiesAndRemaps) {
   auto st = reqSet(std::move(raw));
   ASSERT_EQ(st, http::StatusCodeOK);
 
-  // Before pinning, header views point into cs.inBuffer
+  // Before pinning, header views point into inBuffer
   auto before = req.headerValueOrEmpty("x-test");
   EXPECT_EQ(before, "v");
 
@@ -489,21 +475,21 @@ TEST_F(HttpRequestViewTest, PinHead_SecondCallIsNoop) {
   EXPECT_EQ(val1, val2);
 }
 
-TEST_F(HttpRequestViewTest, HasMoreBodyNeedsBothActiveAndNeedsBody) {
-  // Ensure _ownerState is set so hasMoreBody() consults asyncState
-  setOwnerState(&cs);
-
-  cs.asyncState->active = false;
-  cs.asyncState->needsBody = true;
-
+TEST_F(HttpRequestViewTest, HasMoreBodyWhileAsyncHandlerWaitsForBody) {
+  // Without body bridge nor async handler, there is no more body.
   EXPECT_FALSE(req.hasMoreBody());
 
-  cs.asyncState->active = true;
-  cs.asyncState->needsBody = false;
+  AsyncAwaitState asyncAwait;
+  setAsyncAwait(&asyncAwait);
   EXPECT_FALSE(req.hasMoreBody());
 
-  cs.asyncState->needsBody = true;
+  // The async handler started before the body was received.
+  asyncAwait.needsBody = true;
   EXPECT_TRUE(req.hasMoreBody());
+
+  // The next request is not served by the async handler anymore.
+  ASSERT_EQ(reqSet(BuildRaw("GET", "/next")), http::StatusCodeOK);
+  EXPECT_FALSE(req.hasMoreBody());
 }
 
 namespace {
@@ -521,19 +507,40 @@ void RaisePostedFlagThenThrow(const AsyncResumePoster& poster, std::coroutine_ha
 
 }  // namespace
 
+TEST_F(HttpRequestViewTest, AwaitablesUpdateTheAsyncAwaitState) {
+  AsyncAwaitState asyncAwait;
+  std::atomic<bool> posted{false};
+  asyncAwait.resumePoster = {.pPost = &RaisePostedFlag, .pContext = &posted};
+  setAsyncAwait(&asyncAwait);
+
+  // The body is not received yet: the body awaitables suspend until it is.
+  asyncAwait.needsBody = true;
+  auto bodyAwaitable = req.bodyAwaitable();
+  EXPECT_FALSE(bodyAwaitable.await_ready());
+  bodyAwaitable.await_suspend(std::coroutine_handle<>{});
+  EXPECT_EQ(asyncAwait.reason, AsyncAwaitState::Reason::WaitingForBody);
+
+  auto chunkAwaitable = req.readBodyAsync(16);
+  EXPECT_FALSE(chunkAwaitable.await_ready());
+  asyncAwait.reason = AsyncAwaitState::Reason::None;
+  chunkAwaitable.await_suspend(std::coroutine_handle<>{});
+  EXPECT_EQ(asyncAwait.reason, AsyncAwaitState::Reason::WaitingForBody);
+
+  // The poster of the request is the one of its async handler.
+  const AsyncResumePoster poster = callAsyncResumePoster();
+  poster(std::coroutine_handle<>{});
+  EXPECT_TRUE(posted.load(std::memory_order_acquire));
+}
+
 // When the resume poster throws (e.g. connection closed while background work was running),
 // DeferredWorkAwaitable::await_suspend swallows the exception and calls log::error.
 // Verified here by confirming no exception escapes and the code reaches the error path.
 TEST_F(HttpRequestViewTest, DeferredWork_PostCallbackThrows_AbsorbedAndLogged) {
-  // Use the H2 path: _h2SuspendedFlag satisfies markAwaitingCallback() without
-  // requiring asyncState.active, keeping the test self-contained.
-  bool suspendedFlag = false;
-  setH2SuspendedFlag(&suspendedFlag);
-
   // The poster will throw, simulating a broken event-loop channel.
   std::atomic<bool> postCallbackInvoked{false};
-  const AsyncResumePoster poster{.pPost = &RaisePostedFlagThenThrow, .pContext = &postCallbackInvoked};
-  setH2ResumePoster(&poster);
+  AsyncAwaitState asyncAwait;
+  asyncAwait.resumePoster = {.pPost = &RaisePostedFlagThenThrow, .pContext = &postCallbackInvoked};
+  setAsyncAwait(&asyncAwait);
 
   // Manually drive await_suspend; it spawns a detached background thread.
   auto awaitable = req.deferWork([] { return 42; });
@@ -550,18 +557,16 @@ TEST_F(HttpRequestViewTest, DeferredWork_PostCallbackThrows_AbsorbedAndLogged) {
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
   // If we reach here without a crash, the throwing path is handled correctly.
-  EXPECT_TRUE(suspendedFlag) << "markAwaitingCallback should have set the H2 suspended flag";
+  EXPECT_EQ(asyncAwait.reason, AsyncAwaitState::Reason::WaitingForCallback);
 }
 
 TEST_F(HttpRequestViewTest, DeferredWorkCompletionOutlivesAwaitableStorage) {
-  bool suspendedFlag = false;
-  setH2SuspendedFlag(&suspendedFlag);
-
   std::atomic<bool> workStarted{false};
   std::atomic<bool> finishWork{false};
   std::atomic<bool> postCallbackInvoked{false};
-  const AsyncResumePoster poster{.pPost = &RaisePostedFlag, .pContext = &postCallbackInvoked};
-  setH2ResumePoster(&poster);
+  AsyncAwaitState asyncAwait;
+  asyncAwait.resumePoster = {.pPost = &RaisePostedFlag, .pContext = &postCallbackInvoked};
+  setAsyncAwait(&asyncAwait);
 
   {
     auto awaitable = req.deferWork([&] {
@@ -586,19 +591,18 @@ TEST_F(HttpRequestViewTest, DeferredWorkCompletionOutlivesAwaitableStorage) {
     std::this_thread::yield();
   }
   EXPECT_TRUE(postCallbackInvoked.load(std::memory_order_acquire));
-  EXPECT_TRUE(suspendedFlag);
+  EXPECT_EQ(asyncAwait.reason, AsyncAwaitState::Reason::WaitingForCallback);
 }
 
 #ifdef AERONET_LINUX
 TEST_F(HttpRequestViewTest, DeferredWorkThreadCreationFailureIsRethrownByAwaitResume) {
-  bool suspendedFlag = false;
-  setH2SuspendedFlag(&suspendedFlag);
-  const AsyncResumePoster poster{.pPost = [](const AsyncResumePoster&, std::coroutine_handle<>) {}};
-  setH2ResumePoster(&poster);
+  AsyncAwaitState asyncAwait;
+  asyncAwait.resumePoster = {.pPost = [](const AsyncResumePoster&, std::coroutine_handle<>) {}};
+  setAsyncAwait(&asyncAwait);
 
   // Run in a forked child: once its user is not allowed any new thread, none can be started (a privileged user ignores
   // the limit, the test is then skipped).
-  const auto deferWorkWithoutThreads = [this, &suspendedFlag] {
+  const auto deferWorkWithoutThreads = [this, &asyncAwait] {
     const rlimit noNewThread{0, 0};
     if (::setrlimit(RLIMIT_NPROC, &noNewThread) != 0) {
       std::fputs("skipped\n", stderr);
@@ -610,7 +614,7 @@ TEST_F(HttpRequestViewTest, DeferredWorkThreadCreationFailureIsRethrownByAwaitRe
       std::_Exit(0);
     }
     // Not suspended: the coroutine continues right away, without waiting for a completion.
-    if (suspendedFlag) {
+    if (asyncAwait.reason != AsyncAwaitState::Reason::None) {
       std::_Exit(2);
     }
     try {
@@ -764,7 +768,7 @@ TEST_F(HttpRequestViewTest, HeadReceivedInTwoPartsIsParsedOnce) {
   // The server parses a head only once the minimal request line is received.
   for (std::size_t cut = http::kHttpReqLineMinLen; cut < kHeadModifiedByItsParsing.size(); ++cut) {
     SCOPED_TRACE(cut);
-    cs.inBuffer.clear();
+    inBuffer.clear();
     ASSERT_EQ(receiveAndParse(kHeadModifiedByItsParsing.substr(0, cut)), kNeedMoreData);
     ASSERT_EQ(receiveAndParse(kHeadModifiedByItsParsing.substr(cut)), http::StatusCodeOK);
     EXPECT_EQ(snapshot(), expected);
@@ -776,7 +780,7 @@ TEST_F(HttpRequestViewTest, HeadReceivedByteByByteIsParsedOnce) {
   const HeadSnapshot expected = snapshot();
 
   // The server parses a head only once the minimal request line is received: nothing is parsed before.
-  cs.inBuffer.clear();
+  inBuffer.clear();
   receive(kHeadModifiedByItsParsing.substr(0, http::kHttpReqLineMinLen - 1));
   for (std::size_t pos = http::kHttpReqLineMinLen - 1; pos + 1 < kHeadModifiedByItsParsing.size(); ++pos) {
     ASSERT_EQ(receiveAndParse(kHeadModifiedByItsParsing.substr(pos, 1)), kNeedMoreData) << pos;
@@ -786,7 +790,7 @@ TEST_F(HttpRequestViewTest, HeadReceivedByteByByteIsParsedOnce) {
   EXPECT_EQ(snapshot(), expected);
 
   // The next request on the connection is parsed from its start.
-  cs.inBuffer.clear();
+  inBuffer.clear();
   ASSERT_EQ(receiveAndParse("GET /next?k=v HTTP/1.1\r\nHost: h\r\n\r\n"), http::StatusCodeOK);
   EXPECT_EQ(req.path(), "/next");
   EXPECT_EQ(req.queryParamValueOrEmpty("k"), "v");
@@ -794,11 +798,11 @@ TEST_F(HttpRequestViewTest, HeadReceivedByteByByteIsParsedOnce) {
 }
 
 TEST_F(HttpRequestViewTest, ErrorInTheRestOfAPartialHead) {
-  cs.inBuffer.clear();
+  inBuffer.clear();
   ASSERT_EQ(receiveAndParse("GET /?a=1 HTTP/1.1\r\nHost: h\r\n"), kNeedMoreData);
   EXPECT_EQ(receiveAndParse("Bad Header\r\n\r\n"), http::StatusCodeBadRequest);
 
-  cs.inBuffer.clear();
+  inBuffer.clear();
   ASSERT_EQ(receiveAndParse("GET /?a=1 HTTP/1.1\r\nHost: h\r\nX-Long: "), kNeedMoreData);
   EXPECT_EQ(receiveAndParse(std::string(4096, 'v') + "\r\n\r\n"), http::StatusCodeRequestHeaderFieldsTooLarge);
 
@@ -811,7 +815,7 @@ TEST_F(HttpRequestViewTest, ErrorInTheRestOfAPartialHead) {
 TEST_F(HttpRequestViewTest, HeadWaitingForBodyIsNotParsedAgain) {
   static constexpr std::string_view kPostHead =
       "POST /upload?id=7&name=a+b HTTP/1.1\r\nHost: h\r\nX-Dup: v1\r\nX-Dup: v2\r\nContent-Length: 12\r\n\r\n";
-  cs.inBuffer.clear();
+  inBuffer.clear();
   ASSERT_EQ(receiveAndParse(std::string(kPostHead) + "partial"), http::StatusCodeOK);
   const HeadSnapshot expected = snapshot();
   EXPECT_FALSE(isHeadWaitingForBody());
@@ -826,7 +830,7 @@ TEST_F(HttpRequestViewTest, HeadWaitingForBodyIsNotParsedAgain) {
   EXPECT_EQ(req.path(), "/upload");
   EXPECT_EQ(req.queryParamValueOrEmpty("name"), "a b");
   EXPECT_EQ(req.headerValueOrEmpty("x-dup"), "v1,v2");
-  EXPECT_EQ(std::string_view(cs.inBuffer).substr(req.headSpanSize()), "partial body");
+  EXPECT_EQ(std::string_view(inBuffer).substr(req.headSpanSize()), "partial body");
 
   // Resuming without a buffer move keeps the views.
   keepHeadForBody();
@@ -1403,9 +1407,9 @@ TEST_F(HttpRequestViewTest, PinHeadStorageRemapsViews) {
 
   ASSERT_NE(originalPtr, pinnedPtr);
   // pinned pointer should be within headBuffer data range
-  const char* hb = cs.asyncState->headBuffer.data();
+  const char* hb = headBuffer.data();
   EXPECT_GE(pinnedPtr, hb);
-  EXPECT_LT(pinnedPtr, hb + static_cast<std::ptrdiff_t>(cs.asyncState->headBuffer.size()));
+  EXPECT_LT(pinnedPtr, hb + static_cast<std::ptrdiff_t>(headBuffer.size()));
 }
 
 TEST_F(HttpRequestViewTest, PinHead_SkipsRemapForViewsBeyondOldLimit) {
@@ -1416,10 +1420,10 @@ TEST_F(HttpRequestViewTest, PinHead_SkipsRemapForViewsBeyondOldLimit) {
 
   // Ensure there is extra data in the connection buffer after the head span
   const char* extra = "EXTRA_PAYLOAD_DATA";
-  cs.inBuffer.append(extra, static_cast<std::size_t>(std::strlen(extra)));
+  inBuffer.append(extra, static_cast<std::size_t>(std::strlen(extra)));
 
   // Create a header whose value points to bytes beyond the head span (>= oldLimit)
-  const char* oldBase = cs.inBuffer.data();
+  const char* oldBase = inBuffer.data();
   const char* beyond = oldBase + static_cast<std::ptrdiff_t>(req.headSpanSize()) + 2;
   // Use fixture helper to add header view pointing into connection buffer beyond oldLimit
   setHeaderViewToPtr("x-outside", beyond, 5);
@@ -1437,12 +1441,12 @@ TEST_F(HttpRequestViewTest, PinHead_SkipsRemapForViewsBeyondOldLimit) {
   EXPECT_EQ(beforePtr, afterPtr);
 
   // Ensure the after pointer still points into connection inBuffer (not into headBuffer)
-  const char* inBase = cs.inBuffer.data();
+  const char* inBase = inBuffer.data();
   EXPECT_GE(afterPtr, inBase);
-  EXPECT_LT(afterPtr, inBase + static_cast<std::ptrdiff_t>(cs.inBuffer.size()));
+  EXPECT_LT(afterPtr, inBase + static_cast<std::ptrdiff_t>(inBuffer.size()));
   // And ensure it's not inside headBuffer
-  const char* hb = cs.asyncState->headBuffer.data();
-  EXPECT_FALSE(afterPtr >= hb && afterPtr < hb + static_cast<std::ptrdiff_t>(cs.asyncState->headBuffer.size()));
+  const char* hb = headBuffer.data();
+  EXPECT_FALSE(afterPtr >= hb && afterPtr < hb + static_cast<std::ptrdiff_t>(headBuffer.size()));
 }
 
 TEST_F(HttpRequestViewTest, PinHead_SkipsRemapForViewsBeforeOldBase) {
@@ -1472,8 +1476,8 @@ TEST_F(HttpRequestViewTest, PinHead_SkipsRemapForViewsBeforeOldBase) {
   EXPECT_EQ(beforePtr, afterPtr);
 
   // Ensure it still points into tmp buffer (not into headBuffer)
-  const char* hb = cs.asyncState->headBuffer.data();
-  EXPECT_FALSE(afterPtr >= hb && afterPtr < hb + static_cast<std::ptrdiff_t>(cs.asyncState->headBuffer.size()));
+  const char* hb = headBuffer.data();
+  EXPECT_FALSE(afterPtr >= hb && afterPtr < hb + static_cast<std::ptrdiff_t>(headBuffer.size()));
 }
 
 TEST_F(HttpRequestViewTest, PinHead_RemapsEntriesInsideOldSpan) {
@@ -1510,13 +1514,13 @@ TEST_F(HttpRequestViewTest, PinHead_RemapsEntriesInsideOldSpan) {
   EXPECT_NE(origPtr, ppPtr);
 
   // All remapped pointers should be inside headBuffer
-  const char* hb = cs.asyncState->headBuffer.data();
+  const char* hb = headBuffer.data();
   EXPECT_GE(pinnedPtr, hb);
-  EXPECT_LT(pinnedPtr, hb + static_cast<std::ptrdiff_t>(cs.asyncState->headBuffer.size()));
+  EXPECT_LT(pinnedPtr, hb + static_cast<std::ptrdiff_t>(headBuffer.size()));
   EXPECT_GE(trPtr, hb);
-  EXPECT_LT(trPtr, hb + static_cast<std::ptrdiff_t>(cs.asyncState->headBuffer.size()));
+  EXPECT_LT(trPtr, hb + static_cast<std::ptrdiff_t>(headBuffer.size()));
   EXPECT_GE(ppPtr, hb);
-  EXPECT_LT(ppPtr, hb + static_cast<std::ptrdiff_t>(cs.asyncState->headBuffer.size()));
+  EXPECT_LT(ppPtr, hb + static_cast<std::ptrdiff_t>(headBuffer.size()));
 }
 
 #endif

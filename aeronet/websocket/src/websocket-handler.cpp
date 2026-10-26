@@ -16,6 +16,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/vector.hpp"
 #include "aeronet/websocket-constants.hpp"
+#include "aeronet/websocket-deflate-context.hpp"
 #include "aeronet/websocket-deflate.hpp"
 #include "aeronet/websocket-frame.hpp"
 #include "aeronet/websocket-utf8.hpp"

@@ -14,6 +14,8 @@
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/ndigits.hpp"
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/websocket-deflate-context.hpp"
+#include "aeronet/websocket-shared-deflate-streams.hpp"
 
 #ifdef AERONET_ENABLE_ZLIB
 #include <algorithm>

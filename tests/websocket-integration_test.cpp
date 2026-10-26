@@ -35,6 +35,7 @@
 #include "aeronet/test_util.hpp"
 #include "aeronet/vector.hpp"
 #include "aeronet/websocket-constants.hpp"
+#include "aeronet/websocket-deflate-context.hpp"
 #include "aeronet/websocket-deflate.hpp"
 #include "aeronet/websocket-endpoint.hpp"
 #include "aeronet/websocket-handler.hpp"

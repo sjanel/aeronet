@@ -24,7 +24,6 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
-#include <coroutine>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -59,6 +58,9 @@
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include "aeronet/async-handler-state.hpp"
+#include "aeronet/http-response.hpp"
+#include "aeronet/http-status-code.hpp"
+#include "aeronet/request-task.hpp"
 #endif
 
 #ifdef AERONET_ENABLE_OPENSSL
@@ -510,6 +512,19 @@ TEST(ConnectionStateBridgeTest, InstallAggregatedBodyBridgeIdempotent) {
   EXPECT_EQ(state.request.body(), payload2);
 }
 
+TEST(ConnectionStateBridgeTest, AggregatedBridgeReadOffsetPastEndHandled) {
+  ConnectionState state;
+  state.installAggregatedBodyBridge();
+
+  // Provide an empty body so offset (0) is already past/equal to size (0).
+  state.bodyStreamContext.body = std::string_view();
+  state.bodyStreamContext.offset = 0;
+
+  // readBody should see offset >= body.size() and return empty without crashing.
+  auto chunk = state.request.readBody(4);
+  EXPECT_TRUE(chunk.empty());
+}
+
 TEST(ConnectionStateBridgeTest, AggregatedBridgeReadWithZeroMaxBytesReturnsEmpty) {
   ConnectionState state;
 
@@ -531,42 +546,17 @@ TEST(ConnectionStateBridgeTest, AggregatedBridgeReadWithZeroMaxBytesReturnsEmpty
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 
-TEST(ConnectionStateAsyncStateTest, ClearDestroysNonNullHandle) {
+TEST(ConnectionStateAsyncStateTest, ResetDestroysTheCoroutine) {
   AsyncHandlerStatePool asyncStatePool;
   ConnectionState state;
   (void)state.ensureAsyncState(asyncStatePool);
 
-  // Helper coroutine type that exposes a coroutine handle without destroying it.
-  struct HandleBox {
-    struct promise_type {
-      HandleBox get_return_object() { return HandleBox{std::coroutine_handle<promise_type>::from_promise(*this)}; }
-      static std::suspend_always initial_suspend() noexcept { return {}; }
-      static std::suspend_never final_suspend() noexcept { return {}; }
-      void return_void() {}
-      void unhandled_exception() {}
-    };
+  // A coroutine created suspended, never started.
+  auto makeSuspended = [] -> RequestTask<HttpResponse> { co_return HttpResponse(http::StatusCodeOK); };
+  state.asyncState->task.coroutine = makeSuspended();
+  EXPECT_TRUE(state.asyncState->task.coroutine.valid());
 
-    std::coroutine_handle<promise_type> h;
-    explicit HandleBox(std::coroutine_handle<promise_type> hh) : h(hh) {}
-    // Release ownership of the handle so caller can transfer it to ConnectionState
-    std::coroutine_handle<> release() {
-      auto tmp = std::coroutine_handle<>::from_address(h.address());
-      h = {};
-      return tmp;
-    }
-  };
-
-  auto make_suspended = [] -> HandleBox { co_return; };
-
-  auto box = make_suspended();
-  auto handle = box.release();
-  ASSERT_TRUE(handle);
-
-  // Move the handle into state.asyncState and ensure it's present
-  state.asyncState->handle = handle;
-  EXPECT_TRUE(static_cast<bool>(state.asyncState->handle));
-
-  // clear() should destroy the handle and set it to null
+  // reset() should destroy the coroutine along with the async state
   state.reset();
   EXPECT_FALSE(static_cast<bool>(state.asyncState));
 }
