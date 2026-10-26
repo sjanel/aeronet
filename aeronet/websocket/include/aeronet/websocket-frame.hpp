@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <string_view>
 
@@ -45,13 +46,14 @@ struct FrameParseResult {
 /// Parse a WebSocket frame from raw bytes.
 ///
 /// @param data           Input buffer containing raw WebSocket data
-/// @param maxPayloadSize Maximum allowed payload size (0 = unlimited)
+/// @param maxPayloadSize Maximum allowed payload size
 /// @param isServerSide   True if we're the server (clients MUST mask, servers MUST NOT)
 /// @param allowRsv1      True if RSV1 bit is allowed (when permessage-deflate is negotiated)
 /// @return               Parse result with frame data or error status
 ///
 /// Thread safety: Not thread-safe (designed for single-threaded event loop).
-[[nodiscard]] FrameParseResult ParseFrame(std::span<const std::byte> data, std::size_t maxPayloadSize = 0,
+[[nodiscard]] FrameParseResult ParseFrame(std::span<const std::byte> data,
+                                          std::size_t maxPayloadSize = std::numeric_limits<std::size_t>::max(),
                                           bool isServerSide = true, bool allowRsv1 = false);
 
 /// Apply XOR masking to WebSocket payload data.

@@ -15,6 +15,7 @@
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/vector.hpp"
+#include "aeronet/websocket-config.hpp"
 #include "aeronet/websocket-constants.hpp"
 #include "aeronet/websocket-deflate-context.hpp"
 #include "aeronet/websocket-deflate.hpp"
@@ -182,7 +183,7 @@ ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& heade
     // because the buffer will be consumed (erased) immediately after processInput returns.
     // With permessage-deflate, RSV1 tells whether the message is compressed (only allowed when negotiated).
     if (header.fin && !header.rsv1) {
-      if (_config.maxMessageSize > 0 && payload.size() > _config.maxMessageSize) {
+      if (payload.size() > _config.maxMessageSize) {
         if (_callbacks.onError) {
           _callbacks.onError(CloseCode::MessageTooBig, "Message too large");
         }
@@ -228,7 +229,7 @@ ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& heade
 
   // Check message size limit (fragmented / compressed path)
   const std::size_t newSize = _message.buffer.size() + payload.size();
-  if (_config.maxMessageSize > 0 && newSize > _config.maxMessageSize) {
+  if (newSize > _config.maxMessageSize) {
     if (_callbacks.onError) {
       _callbacks.onError(CloseCode::MessageTooBig, "Message too large");
     }

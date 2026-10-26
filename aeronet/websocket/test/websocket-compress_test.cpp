@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
@@ -17,6 +18,8 @@
 
 namespace aeronet {
 namespace {
+
+constexpr std::size_t kNoLimit = std::numeric_limits<std::size_t>::max();
 
 // Helper function to convert string_view to bytes
 std::span<const std::byte> StringToBytes(std::string_view sv) noexcept {
@@ -38,7 +41,7 @@ std::pair<bool, std::string> CompressData(std::string_view input, bool resetCont
 }
 
 // Helper to decompress data
-std::pair<bool, std::string> DecompressData(std::span<const std::byte> input, std::size_t maxSize = 0,
+std::pair<bool, std::string> DecompressData(std::span<const std::byte> input, std::size_t maxSize = kNoLimit,
                                             bool resetContext = false) {
   WebSocketDecompressor decompressor;
   RawBytes output;
@@ -81,7 +84,7 @@ TEST_F(WebSocketCompressorTest, CompressTinyInputsWithAnyOutputCapacity) {
 
       WebSocketDecompressor decompressor;
       RawBytes decompressed;
-      ASSERT_EQ(decompressor.decompress(compressed, decompressed, 0, false), nullptr) << capacity;  // 0: no limit
+      ASSERT_EQ(decompressor.decompress(compressed, decompressed, kNoLimit, false), nullptr) << capacity;
       EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(decompressed.data()), decompressed.size()), message);
     }
   }
@@ -176,7 +179,7 @@ class WebSocketDecompressorTest : public ::testing::Test {
 }  // namespace
 
 TEST_F(WebSocketDecompressorTest, DecompressEmptyInput) {
-  const char* error = decompressor.decompress(StringToBytes(""), output, 0, false);
+  const char* error = decompressor.decompress(StringToBytes(""), output, kNoLimit, false);
   EXPECT_EQ(error, nullptr);
   EXPECT_EQ(output.size(), 0);
 }
@@ -187,7 +190,7 @@ TEST_F(WebSocketDecompressorTest, DecompressValidCompressedData) {
   ASSERT_TRUE(compressOk);
 
   // Then decompress it
-  const char* error = decompressor.decompress(StringToBytes(compressed), output, 0, true);
+  const char* error = decompressor.decompress(StringToBytes(compressed), output, kNoLimit, true);
   EXPECT_EQ(error, nullptr);
   EXPECT_EQ(BytesToString(output), "Hello World");
 }
@@ -198,7 +201,7 @@ TEST_F(WebSocketDecompressorTest, DecompressLargeData) {
   ASSERT_TRUE(compressOk);
 
   output.clear();
-  const char* error = decompressor.decompress(StringToBytes(compressed), output, 0, true);
+  const char* error = decompressor.decompress(StringToBytes(compressed), output, kNoLimit, true);
   EXPECT_EQ(error, nullptr);
   EXPECT_EQ(BytesToString(output), large);
 }
@@ -213,14 +216,14 @@ TEST_F(WebSocketDecompressorTest, DecompressMultipleCalls) {
   // Decompress first message
   WebSocketDecompressor dec1;
   RawBytes out1;
-  const char* error1 = dec1.decompress(StringToBytes(compressed1), out1, 0, true);
+  const char* error1 = dec1.decompress(StringToBytes(compressed1), out1, kNoLimit, true);
   EXPECT_EQ(error1, nullptr);
   EXPECT_EQ(BytesToString(out1), "First");
 
   // Decompress second message
   WebSocketDecompressor dec2;
   RawBytes out2;
-  const char* error2 = dec2.decompress(StringToBytes(compressed2), out2, 0, true);
+  const char* error2 = dec2.decompress(StringToBytes(compressed2), out2, kNoLimit, true);
   EXPECT_EQ(error2, nullptr);
   EXPECT_EQ(BytesToString(out2), "Second");
 }
@@ -239,7 +242,7 @@ TEST_F(WebSocketDecompressorTest, DecompressWithContextMaintained) {
   // Decompress with context maintained
   WebSocketDecompressor decompressor1;
   RawBytes output1;
-  const char* error1 = decompressor1.decompress(std::span<const std::byte>(), output1, 0, true);
+  const char* error1 = decompressor1.decompress(std::span<const std::byte>(), output1, kNoLimit, true);
   // Decompressing empty data should succeed
   EXPECT_EQ(error1, nullptr);
 }
@@ -249,7 +252,7 @@ TEST_F(WebSocketDecompressorTest, DecompressWithContextReset) {
   ASSERT_TRUE(compressOk);
 
   // Decompress with context reset
-  const char* error = decompressor.decompress(StringToBytes(compressed), output, 0, true);
+  const char* error = decompressor.decompress(StringToBytes(compressed), output, kNoLimit, true);
   EXPECT_EQ(error, nullptr);
   EXPECT_EQ(BytesToString(output), "Test data");
 }
@@ -259,7 +262,7 @@ TEST_F(WebSocketDecompressorTest, DecompressMaxSizeZeroNoLimit) {
   auto [compressOk, compressed] = CompressData(large, true);
   ASSERT_TRUE(compressOk);
 
-  const char* error = decompressor.decompress(StringToBytes(compressed), output, 0, true);
+  const char* error = decompressor.decompress(StringToBytes(compressed), output, kNoLimit, true);
   EXPECT_EQ(error, nullptr);
   EXPECT_EQ(BytesToString(output), large);
 }
@@ -337,7 +340,7 @@ TEST_F(WebSocketDecompressorTest, DecompressInvalidData) {
   // Create some invalid compressed data
   std::string invalidData = "This is not valid compressed data at all!";
 
-  const char* error = decompressor.decompress(StringToBytes(invalidData), output, 0, true);
+  const char* error = decompressor.decompress(StringToBytes(invalidData), output, kNoLimit, true);
   EXPECT_NE(error, nullptr);
   // Should return an error message
   EXPECT_TRUE(std::string(error).contains("inflate") || std::string(error).contains("error") ||
@@ -354,7 +357,7 @@ TEST_F(WebSocketDecompressorTest, DecompressPartialCompressedData) {
   // The key is that we either get valid decompression or an error, not undefined behavior
   const auto partialData = std::span<const std::byte>(
       StringToBytes(compressed).data(), std::min(static_cast<size_t>(2), StringToBytes(compressed).size()));
-  const char* error = decompressor.decompress(partialData, output, 0, true);
+  const char* error = decompressor.decompress(partialData, output, kNoLimit, true);
   // The result depends on how the compression worked and where we cut
   // Just verify that we either get success or a proper error, and no crash
   if (error == nullptr) {
@@ -370,7 +373,7 @@ TEST_F(WebSocketDecompressorTest, DecompressTinyData) {
   auto [compressOk, compressed] = CompressData("x", true);
   ASSERT_TRUE(compressOk);
 
-  const char* error = decompressor.decompress(StringToBytes(compressed), output, 0, true);
+  const char* error = decompressor.decompress(StringToBytes(compressed), output, kNoLimit, true);
   EXPECT_EQ(error, nullptr);
   EXPECT_EQ(BytesToString(output), "x");
 }
@@ -381,7 +384,7 @@ TEST_F(WebSocketDecompressorTest, DecompressSpecialCharacters) {
   auto [compressOk, compressed] = CompressData(special, true);
   ASSERT_TRUE(compressOk);
 
-  const char* error = decompressor.decompress(StringToBytes(compressed), output, 0, true);
+  const char* error = decompressor.decompress(StringToBytes(compressed), output, kNoLimit, true);
   EXPECT_EQ(error, nullptr);
   EXPECT_EQ(BytesToString(output), special);
 }
@@ -391,7 +394,7 @@ TEST_F(WebSocketDecompressorTest, DecompressUTF8Text) {
   auto [compressOk, compressed] = CompressData(utf8, true);
   ASSERT_TRUE(compressOk);
 
-  const char* error = decompressor.decompress(StringToBytes(compressed), output, 0, true);
+  const char* error = decompressor.decompress(StringToBytes(compressed), output, kNoLimit, true);
   EXPECT_EQ(error, nullptr);
   EXPECT_EQ(BytesToString(output), utf8);
 }
@@ -404,7 +407,7 @@ TEST_F(WebSocketDecompressorTest, DecompressRepeatingPattern) {
   auto [compressOk, compressed] = CompressData(pattern, true);
   ASSERT_TRUE(compressOk);
 
-  const char* error = decompressor.decompress(StringToBytes(compressed), output, 0, true);
+  const char* error = decompressor.decompress(StringToBytes(compressed), output, kNoLimit, true);
   EXPECT_EQ(error, nullptr);
   EXPECT_EQ(BytesToString(output), pattern);
 }
@@ -423,7 +426,7 @@ TEST_F(WebSocketCompressRoundTripTest, RoundTripSimpleText) {
   auto [compressOk, compressed] = CompressData(original, true);
   ASSERT_TRUE(compressOk);
 
-  auto [decompressOk, decompressed] = DecompressData(StringToBytes(compressed), 0, true);
+  auto [decompressOk, decompressed] = DecompressData(StringToBytes(compressed), kNoLimit, true);
   ASSERT_TRUE(decompressOk);
 
   EXPECT_EQ(decompressed, original);
@@ -435,7 +438,7 @@ TEST_F(WebSocketCompressRoundTripTest, RoundTripEmptyString) {
   auto [compressOk, compressed] = CompressData(original, true);
   ASSERT_TRUE(compressOk);
 
-  auto [decompressOk, decompressed] = DecompressData(StringToBytes(compressed), 0, true);
+  auto [decompressOk, decompressed] = DecompressData(StringToBytes(compressed), kNoLimit, true);
   ASSERT_TRUE(decompressOk);
 
   EXPECT_EQ(decompressed, original);
@@ -450,7 +453,7 @@ TEST_F(WebSocketCompressRoundTripTest, RoundTripLargeText) {
   auto [compressOk, compressed] = CompressData(original, true);
   ASSERT_TRUE(compressOk);
 
-  auto [decompressOk, decompressed] = DecompressData(StringToBytes(compressed), 0, true);
+  auto [decompressOk, decompressed] = DecompressData(StringToBytes(compressed), kNoLimit, true);
   ASSERT_TRUE(decompressOk);
 
   EXPECT_EQ(decompressed, original);
@@ -465,7 +468,7 @@ TEST_F(WebSocketCompressRoundTripTest, RoundTripRandomBinary) {
   auto [compressOk, compressed] = CompressData(original, true);
   ASSERT_TRUE(compressOk);
 
-  auto [decompressOk, decompressed] = DecompressData(StringToBytes(compressed), 0, true);
+  auto [decompressOk, decompressed] = DecompressData(StringToBytes(compressed), kNoLimit, true);
   ASSERT_TRUE(decompressOk);
 
   EXPECT_EQ(decompressed, original);
@@ -484,7 +487,7 @@ TEST_F(WebSocketCompressRoundTripTest, RoundTripMultipleMessages) {
     auto [compressOk, compressed] = CompressData(msg, true);
     ASSERT_TRUE(compressOk) << "Failed to compress: " << msg;
 
-    auto [decompressOk, decompressed] = DecompressData(StringToBytes(compressed), 0, true);
+    auto [decompressOk, decompressed] = DecompressData(StringToBytes(compressed), kNoLimit, true);
     ASSERT_TRUE(decompressOk) << "Failed to decompress: " << msg;
 
     EXPECT_EQ(decompressed, msg) << "Mismatch for message: " << msg;
@@ -507,7 +510,7 @@ TEST_F(WebSocketCompressRoundTripTest, RoundTripContextMaintained) {
   // Note: testing context maintained across multiple deflate() calls
   // would require more complex setup with partial data
   // This test verifies that a decompressor can be created and reset
-  EXPECT_EQ(decompressor.decompress(std::span<const std::byte>(), output, 0, true), nullptr);
+  EXPECT_EQ(decompressor.decompress(std::span<const std::byte>(), output, kNoLimit, true), nullptr);
 }
 
 // ============================================================================
@@ -548,7 +551,7 @@ TEST_F(WebSocketCompressEdgeCasesTest, DecompressZeroMaxSize) {
   WebSocketDecompressor decompressor;
   RawBytes output;
   // maxDecompressedSize = 0 means no limit
-  const char* error = decompressor.decompress(StringToBytes(compressed), output, 0, true);
+  const char* error = decompressor.decompress(StringToBytes(compressed), output, kNoLimit, true);
   EXPECT_EQ(error, nullptr);
   EXPECT_EQ(BytesToString(output), "test");
 }
@@ -570,7 +573,7 @@ TEST_F(WebSocketCompressEdgeCasesTest, VeryLargeData) {
   ASSERT_TRUE(compressOk);
   EXPECT_LT(compressed.size(), large.size());  // Should compress very well
 
-  auto [decompressOk, decompressed] = DecompressData(StringToBytes(compressed), 0, true);
+  auto [decompressOk, decompressed] = DecompressData(StringToBytes(compressed), kNoLimit, true);
   ASSERT_TRUE(decompressOk);
   EXPECT_EQ(decompressed, large);
 }
@@ -582,7 +585,7 @@ TEST_F(WebSocketCompressEdgeCasesTest, IncompatibleCompressionLevels) {
     auto [compressOk, compressed] = CompressData(msg, true);
     ASSERT_TRUE(compressOk) << "Compression failed at level " << level;
 
-    auto [decompressOk, decompressed] = DecompressData(StringToBytes(compressed), 0, true);
+    auto [decompressOk, decompressed] = DecompressData(StringToBytes(compressed), kNoLimit, true);
     ASSERT_TRUE(decompressOk) << "Decompression failed for data compressed at level " << level;
     EXPECT_EQ(decompressed, msg);
   }
@@ -608,7 +611,7 @@ TEST_F(WebSocketCompressEdgeCasesTest, Whitespace) {
   auto [compressOk, compressed] = CompressData(whitespace, true);
   ASSERT_TRUE(compressOk);
 
-  auto [decompressOk, decompressed] = DecompressData(StringToBytes(compressed), 0, true);
+  auto [decompressOk, decompressed] = DecompressData(StringToBytes(compressed), kNoLimit, true);
   ASSERT_TRUE(decompressOk);
   EXPECT_EQ(decompressed, whitespace);
 }
@@ -621,7 +624,7 @@ TEST_F(WebSocketCompressEdgeCasesTest, AllBytesValues) {
   auto [compressOk, compressed] = CompressData(allBytes, true);
   ASSERT_TRUE(compressOk);
 
-  auto [decompressOk, decompressed] = DecompressData(StringToBytes(compressed), 0, true);
+  auto [decompressOk, decompressed] = DecompressData(StringToBytes(compressed), kNoLimit, true);
   ASSERT_TRUE(decompressOk);
   EXPECT_EQ(decompressed, allBytes);
 }
@@ -668,7 +671,7 @@ TEST_F(WebSocketCompressEdgeCasesTest, DecompressCorruptedData) {
 
   // Test 1: Random bytes that are not valid deflate data
   std::string corruptData1 = "\xFF\xFE\xFD\xFC\xFB\xFA";
-  const char* error1 = decompressor.decompress(StringToBytes(corruptData1), output, 0, true);
+  const char* error1 = decompressor.decompress(StringToBytes(corruptData1), output, kNoLimit, true);
   EXPECT_NE(error1, nullptr);
   EXPECT_STREQ(error1, "inflate() failed");
 
@@ -682,7 +685,7 @@ TEST_F(WebSocketCompressEdgeCasesTest, DecompressCorruptedData) {
     WebSocketDecompressor decompressor2;
     RawBytes output2;
     // This should decompress but then fail when we add the trailer because data is incomplete
-    const char* error2 = decompressor2.decompress(StringToBytes(truncated), output2, 0, true);
+    const char* error2 = decompressor2.decompress(StringToBytes(truncated), output2, kNoLimit, true);
     // This may or may not fail depending on where we truncated - just check it doesn't crash
     (void)error2;
   }
@@ -692,7 +695,7 @@ TEST_F(WebSocketCompressEdgeCasesTest, DecompressCorruptedData) {
   std::string invalidDeflate = "\x78\x9C\xFF\xFF\xFF\xFF";  // Valid header but invalid data
   WebSocketDecompressor decompressor3;
   RawBytes output3;
-  const char* error3 = decompressor3.decompress(StringToBytes(invalidDeflate), output3, 0, true);
+  const char* error3 = decompressor3.decompress(StringToBytes(invalidDeflate), output3, kNoLimit, true);
   // May or may not fail - zlib is resilient
   (void)error3;
 }
@@ -710,7 +713,7 @@ TEST_F(WebSocketCompressEdgeCasesTest, ManuallyCorruptedCompressedData) {
 
   WebSocketDecompressor decompressor;
   RawBytes output;
-  const char* error = decompressor.decompress(StringToBytes(corrupted), output, 0, true);
+  const char* error = decompressor.decompress(StringToBytes(corrupted), output, kNoLimit, true);
   // This should fail with Z_DATA_ERROR
   EXPECT_NE(error, nullptr);
   EXPECT_STREQ(error, "inflate() failed");
@@ -778,7 +781,7 @@ TEST(WebSocketCompressInterop, DecompressesStandardRawDeflatePayload) {
 
   WebSocketDecompressor decompressor;
   RawBytes output;
-  ASSERT_EQ(decompressor.decompress(StringToBytes(compressed), output, 0, true), nullptr);
+  ASSERT_EQ(decompressor.decompress(StringToBytes(compressed), output, kNoLimit, true), nullptr);
   EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(output.data()), output.size()), text);
 }
 
@@ -820,8 +823,9 @@ TEST(WebSocketCompressInterop, CompressorHonorsNegotiatedWindowBits) {
   // The decompressor inflates any window up to its own.
   WebSocketDecompressor decompressor(9);
   RawBytes output;
-  ASSERT_EQ(decompressor.decompress(std::span<const std::byte>(compressed.data(), compressed.size()), output, 0, true),
-            nullptr);
+  ASSERT_EQ(
+      decompressor.decompress(std::span<const std::byte>(compressed.data(), compressed.size()), output, kNoLimit, true),
+      nullptr);
   EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(output.data()), output.size()), text);
 }
 
@@ -854,9 +858,9 @@ TEST(WebSocketCompressSlices, CompressInSlicesRoundTrips) {
         EXPECT_EQ(decompressed, text);
       }
       RawBytes output;
-      ASSERT_EQ(
-          decompressor.decompress(std::span<const std::byte>(compressed.data(), compressed.size()), output, 0, false),
-          nullptr);
+      ASSERT_EQ(decompressor.decompress(std::span<const std::byte>(compressed.data(), compressed.size()), output,
+                                        kNoLimit, false),
+                nullptr);
       EXPECT_EQ(BytesToString(output), text);
     }
   }
@@ -877,10 +881,10 @@ TEST(WebSocketCompressSlices, DecompressInSlicesRoundTrips) {
     WebSocketDecompressor decompressor;
     for (const RawBytes* pCompressed : {&first, &second}) {
       RawBytes output;
-      ASSERT_EQ(
-          WebSocketCompressTestAccess::Decompress(
-              decompressor, std::span<const std::byte>(pCompressed->data(), pCompressed->size()), output, 0, sliceSize),
-          nullptr);
+      ASSERT_EQ(WebSocketCompressTestAccess::Decompress(
+                    decompressor, std::span<const std::byte>(pCompressed->data(), pCompressed->size()), output,
+                    kNoLimit, sliceSize),
+                nullptr);
       EXPECT_EQ(BytesToString(output), text);
     }
   }
@@ -913,8 +917,9 @@ TEST(WebSocketCompressSlices, DecompressInSlicesStopsAtTheStreamEnd) {
   for (const std::size_t sliceSize : {std::size_t{1}, std::size_t{5}, compressed.size()}) {
     WebSocketDecompressor decompressor;
     RawBytes output;
-    ASSERT_EQ(WebSocketCompressTestAccess::Decompress(decompressor, StringToBytes(compressed), output, 0, sliceSize),
-              nullptr);
+    ASSERT_EQ(
+        WebSocketCompressTestAccess::Decompress(decompressor, StringToBytes(compressed), output, kNoLimit, sliceSize),
+        nullptr);
     EXPECT_EQ(BytesToString(output), text) << sliceSize;
   }
 }
