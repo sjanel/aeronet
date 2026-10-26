@@ -59,7 +59,7 @@ class RawBytesBase {
   /// After this call, other is left in a valid empty state.
   template <class OtherT, class OtherView>
     requires(!std::is_same_v<T, OtherT>)
-  RawBytesBase(RawBytesBase<OtherT, OtherView, SizeType>&& rhs) noexcept
+  RawBytesBase(RawBytesBase<OtherT, OtherView, SizeType>&& rhs) noexcept  // NOLINT(*-explicit-constructor)
       : _buf(reinterpret_cast<pointer>(std::exchange(rhs._buf, nullptr))),
         _size(std::exchange(rhs._size, 0)),
         _capacity(std::exchange(rhs._capacity, 0)) {}
@@ -301,7 +301,7 @@ class RawBytesBase {
 
   template <class V = ViewType>
     requires std::same_as<V, std::string_view>
-  operator ViewType() const noexcept {
+  operator ViewType() const noexcept {  // NOLINT(*-explicit-constructor)
     return {_buf, _size};
   }
 

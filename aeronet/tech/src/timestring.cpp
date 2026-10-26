@@ -2,12 +2,10 @@
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
-#include <ctime>
 #include <string_view>
-#include <utility>
 
 #include "aeronet/cctype.hpp"
 #include "aeronet/simple-charconv.hpp"
@@ -29,8 +27,8 @@ SysTimePoint TryParseTimeRFC7231(const char* begPtr, const char* endPtr) {
     return ret;
   }
 
-  const auto len = endPtr - begPtr;
-  if (std::cmp_not_equal(len, RFC7231DateStrLen)) {
+  const std::size_t len = static_cast<std::size_t>(endPtr - begPtr);
+  if (len != RFC7231DateStrLen) {
     return ret;  // Expect strict IMF-fixdate form
   }
 

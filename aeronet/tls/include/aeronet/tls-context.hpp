@@ -9,7 +9,6 @@
 
 #include "aeronet/object-array-pool.hpp"
 #include "aeronet/raw-bytes.hpp"
-#include "aeronet/raw-chars.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/vector.hpp"
 
@@ -31,7 +30,7 @@ class TlsContext {
 
   // Creates a new TLSContext. Throws if the configuration or one of its files (certificate, private key, OCSP response,
   // CRL) is invalid or cannot be read, leaving the OpenSSL error queue of the calling thread empty.
-  TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> ticketKeyStore = {});
+  explicit TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> ticketKeyStore = {});
 
   TlsContext(const TlsContext&) = delete;
   TlsContext& operator=(const TlsContext&) = delete;

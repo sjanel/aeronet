@@ -251,11 +251,14 @@ if(AERONET_ENABLE_CCACHE)
   endif()
 endif()
 
-# Clang-Tidy integration
+# Clang-Tidy integration. Another version than the one in PATH (the one of the compiler, for instance) is selected with
+# -D CLANG_TIDY=/usr/bin/clang-tidy-23
 if(AERONET_ENABLE_CLANG_TIDY)
   find_program(CLANG_TIDY "clang-tidy")
   if(CLANG_TIDY)
-    message(STATUS "Activate clang-tidy")
+    message(STATUS "Activate clang-tidy: ${CLANG_TIDY}")
+    # Before the targets are created. cmake/ClangTidyHeaders.cmake needs the compile database to analyze headers.
+    set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
   else()
     message(FATAL_ERROR "clang-tidy executable cannot be found")
   endif()
@@ -307,6 +310,11 @@ endif()
 
 if(AERONET_BUILD_BENCHMARKS)
   include(cmake/Benchmarks.cmake)
+endif()
+
+if(AERONET_ENABLE_CLANG_TIDY)
+  # Headers are not translation units: CXX_CLANG_TIDY never analyzes them.
+  include(cmake/ClangTidyHeaders.cmake)
 endif()
 
 # Installation & Packaging

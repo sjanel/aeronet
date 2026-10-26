@@ -82,18 +82,18 @@ struct from<YAML, std::chrono::milliseconds> {
 template <>
 struct to<JSON, std::chrono::milliseconds> {
   template <auto Opts, is_context Ctx, class B, class IX>
-  static void op(const std::chrono::milliseconds& value, Ctx&& ctx, B&& b, IX&& ix) {
+  static void op(const std::chrono::milliseconds& value, Ctx&& ctx, B&& buffer, IX&& ix) {
     auto str = aeronet::DurationToString(value);
-    serialize<JSON>::op<Opts>(std::string_view(str), ctx, b, ix);
+    serialize<JSON>::op<Opts>(std::string_view(str), ctx, buffer, ix);
   }
 };
 
 template <>
 struct to<YAML, std::chrono::milliseconds> {
   template <auto Opts, is_context Ctx, class B, class IX>
-  static void op(const std::chrono::milliseconds& value, Ctx&& ctx, B&& b, IX&& ix) {
+  static void op(const std::chrono::milliseconds& value, Ctx&& ctx, B&& buffer, IX&& ix) {
     auto str = aeronet::DurationToString(value);
-    serialize<YAML>::op<Opts>(std::string_view(str), ctx, b, ix);
+    serialize<YAML>::op<Opts>(std::string_view(str), ctx, buffer, ix);
   }
 };
 
@@ -143,18 +143,18 @@ struct from<YAML, std::chrono::seconds> {
 template <>
 struct to<JSON, std::chrono::seconds> {
   template <auto Opts, is_context Ctx, class B, class IX>
-  static void op(const std::chrono::seconds& value, Ctx&& ctx, B&& b, IX&& ix) {
+  static void op(const std::chrono::seconds& value, Ctx&& ctx, B&& buffer, IX&& ix) {
     auto str = aeronet::DurationToString(std::chrono::duration_cast<std::chrono::milliseconds>(value));
-    serialize<JSON>::op<Opts>(std::string_view(str), ctx, b, ix);
+    serialize<JSON>::op<Opts>(std::string_view(str), ctx, buffer, ix);
   }
 };
 
 template <>
 struct to<YAML, std::chrono::seconds> {
   template <auto Opts, is_context Ctx, class B, class IX>
-  static void op(const std::chrono::seconds& value, Ctx&& ctx, B&& b, IX&& ix) {
+  static void op(const std::chrono::seconds& value, Ctx&& ctx, B&& buffer, IX&& ix) {
     auto str = aeronet::DurationToString(std::chrono::duration_cast<std::chrono::milliseconds>(value));
-    serialize<YAML>::op<Opts>(std::string_view(str), ctx, b, ix);
+    serialize<YAML>::op<Opts>(std::string_view(str), ctx, buffer, ix);
   }
 };
 

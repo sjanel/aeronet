@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
-#include <cctype>
 #include <charconv>
 #include <chrono>
 #include <cstddef>

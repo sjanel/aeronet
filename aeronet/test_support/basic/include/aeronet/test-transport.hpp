@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string_view>
 
 #include "aeronet/fault-policy.hpp"
 #include "aeronet/test-pipe.hpp"
@@ -52,7 +53,7 @@ class TestTransport final : public TransportBackend<TestTransport> {
   [[nodiscard]] uint32_t writeCallCount() const { return _writeCallCount; }
 
  private:
-  std::size_t computeReadLimit(std::size_t available) const;
+  [[nodiscard]] std::size_t computeReadLimit(std::size_t available) const;
 
   TestPipe& _pipe;
   FaultPolicy _policy;

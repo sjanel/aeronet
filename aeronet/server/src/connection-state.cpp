@@ -2,6 +2,8 @@
 
 #ifdef AERONET_POSIX
 #include <sys/socket.h>
+#elifdef AERONET_WINDOWS
+#include <winsock2.h>  // sockaddr_storage, AF_INET, AF_INET6 (after connection-state.hpp, which removes the DELETE macro)
 #endif
 
 #include <algorithm>

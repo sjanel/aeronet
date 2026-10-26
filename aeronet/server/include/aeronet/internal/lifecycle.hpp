@@ -4,6 +4,7 @@
 #include <cassert>
 #include <chrono>
 #include <cstdint>
+#include <stdexcept>
 #include <thread>
 #include <utility>
 

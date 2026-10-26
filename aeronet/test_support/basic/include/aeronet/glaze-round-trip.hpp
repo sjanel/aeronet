@@ -9,7 +9,7 @@ namespace aeronet::test {
 
 // Change every boolean and number of a generic JSON value, recursively. Strings are kept as is: they may be enum
 // names, durations or versions, which only accept specific values.
-inline void MutateScalars(glz::generic_u64& value) {
+inline void MutateScalars(glz::generic_u64& value) {  // NOLINT(misc-no-recursion)
   if (value.is_object()) {
     for (auto& [key, child] : value.get_object()) {
       MutateScalars(child);

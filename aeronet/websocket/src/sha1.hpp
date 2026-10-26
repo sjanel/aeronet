@@ -50,7 +50,7 @@ class SHA1 {
   static uint32_t rol(uint32_t value, std::size_t bits) noexcept { return (value << bits) | (value >> (32 - bits)); }
 
   static uint32_t blk(const uint32_t block[kBlockInts], std::size_t idx) noexcept {
-    return rol(block[(idx + 13) & 15] ^ block[(idx + 8) & 15] ^ block[(idx + 2) & 15] ^ block[idx], 1);
+    return rol(block[(idx + 13) & 15U] ^ block[(idx + 8) & 15U] ^ block[(idx + 2) & 15U] ^ block[idx], 1);
   }
 
   static void R0(const uint32_t block[kBlockInts], uint32_t vv, uint32_t& ww, uint32_t xx, uint32_t yy, uint32_t& zz,
@@ -210,9 +210,9 @@ inline void SHA1::transform(uint32_t block[kBlockInts]) noexcept {
 inline void SHA1::bufferToBlock(uint32_t block[kBlockInts]) const noexcept {
   for (std::size_t idx = 0; idx < kBlockInts; ++idx) {
     block[idx] = static_cast<uint32_t>(static_cast<unsigned char>(_buffer[(4 * idx) + 3])) |
-                 static_cast<uint32_t>(static_cast<unsigned char>(_buffer[(4 * idx) + 2])) << 8 |
-                 static_cast<uint32_t>(static_cast<unsigned char>(_buffer[(4 * idx) + 1])) << 16 |
-                 static_cast<uint32_t>(static_cast<unsigned char>(_buffer[(4 * idx) + 0])) << 24;
+                 static_cast<uint32_t>(static_cast<unsigned char>(_buffer[(4 * idx) + 2])) << 8U |
+                 static_cast<uint32_t>(static_cast<unsigned char>(_buffer[(4 * idx) + 1])) << 16U |
+                 static_cast<uint32_t>(static_cast<unsigned char>(_buffer[(4 * idx) + 0])) << 24U;
   }
 }
 
@@ -238,7 +238,7 @@ inline void SHA1::update(const char* data, std::size_t sz) noexcept {
 }
 
 inline Sha1Digest SHA1::final() noexcept {
-  const uint64_t totalBits = (_transforms * kBlockBytes + _bufferSize) * 8;
+  const uint64_t totalBits = ((_transforms * kBlockBytes) + _bufferSize) * 8;
 
   // Append padding byte
   _buffer[_bufferSize] = static_cast<char>(0x80);
@@ -262,16 +262,16 @@ inline Sha1Digest SHA1::final() noexcept {
 
   // Append total bit count (big-endian)
   block[kBlockInts - 1] = static_cast<uint32_t>(totalBits);
-  block[kBlockInts - 2] = static_cast<uint32_t>(totalBits >> 32);
+  block[kBlockInts - 2] = static_cast<uint32_t>(totalBits >> 32U);
   transform(block);
 
   // Convert digest to bytes (big-endian)
   Sha1Digest result;
   for (std::size_t idx = 0; idx < 5; ++idx) {
-    result[(idx * 4) + 0] = static_cast<char>((_digest[idx] >> 24) & 0xff);
-    result[(idx * 4) + 1] = static_cast<char>((_digest[idx] >> 16) & 0xff);
-    result[(idx * 4) + 2] = static_cast<char>((_digest[idx] >> 8) & 0xff);
-    result[(idx * 4) + 3] = static_cast<char>(_digest[idx] & 0xff);
+    result[(idx * 4) + 0] = static_cast<char>((_digest[idx] >> 24U) & 0xFFU);
+    result[(idx * 4) + 1] = static_cast<char>((_digest[idx] >> 16U) & 0xFFU);
+    result[(idx * 4) + 2] = static_cast<char>((_digest[idx] >> 8U) & 0xFFU);
+    result[(idx * 4) + 3] = static_cast<char>(_digest[idx] & 0xFFU);
   }
 
   reset();

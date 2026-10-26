@@ -1,5 +1,6 @@
 #pragma once
 
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -11,6 +12,8 @@
 
 #include "aeronet/compiler-config.hpp"
 #include "aeronet/concatenated-headers.hpp"
+#include "aeronet/direct-compression-mode.hpp"
+#include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-message-common.hpp"
 #include "aeronet/http-message-data.hpp"

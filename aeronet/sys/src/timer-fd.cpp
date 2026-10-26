@@ -14,7 +14,6 @@
 // Socket pair — included via socket-ops.hpp
 #endif
 
-#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <ctime>
