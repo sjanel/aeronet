@@ -1,6 +1,5 @@
 #include <aeronet/aeronet-client.hpp>
 #include <cstdlib>
-#include <cstring>
 #include <exception>
 #include <iostream>
 #include <string_view>

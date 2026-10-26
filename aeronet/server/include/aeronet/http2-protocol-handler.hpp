@@ -400,8 +400,8 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   /// Keeps the async task of a stream about to be erased if its coroutine waits for deferred work (which may use it).
   void orphanAsyncTask(StreamState& state);
 
-  /// Moves the request of the async task of a stream back to the stream, and destroys the task.
-  static void ReleaseAsyncTask(StreamState& state) noexcept;
+  /// Moves the request of the async task of a stream back to the stream, destroys the task and returns the request.
+  static HttpRequestView& ReleaseAsyncTask(StreamState& state) noexcept;
 #endif
 
   Http2Connection _connection;

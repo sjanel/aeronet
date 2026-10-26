@@ -5,6 +5,7 @@
 #include <span>
 
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/zlib-gateway.hpp"
 #include "aeronet/zlib-stream-raii.hpp"
 
 namespace aeronet {
@@ -29,9 +30,17 @@ class WebSocketCompressor {
   /// @param output Buffer to append compressed data to
   /// @param resetContext If true, reset the compression context before compressing
   /// @return nullptr on success, error message on compression error
-  [[nodiscard]] const char* compress(std::span<const std::byte> input, RawBytes& output, bool resetContext);
+  [[nodiscard]] const char* compress(std::span<const std::byte> input, RawBytes& output, bool resetContext) {
+    return compress(input, output, resetContext, kZMaxDeflateInputSize);
+  }
 
  private:
+  friend struct WebSocketCompressTestAccess;
+
+  // zlib counts sizes in 32 bits: the input is given to deflate() in slices of at most maxSliceSize bytes.
+  [[nodiscard]] const char* compress(std::span<const std::byte> input, RawBytes& output, bool resetContext,
+                                     std::size_t maxSliceSize);
+
   ZStreamRAII _zs;
   int8_t _level;
   uint8_t _windowBits;
@@ -51,9 +60,17 @@ class WebSocketDecompressor {
   /// @param resetContext If true, reset the decompression context before decompressing
   /// @return nullptr on success, error message on decompression error or size limit exceeded
   [[nodiscard]] const char* decompress(std::span<const std::byte> input, RawBytes& output,
-                                       std::size_t maxDecompressedSize, bool resetContext);
+                                       std::size_t maxDecompressedSize, bool resetContext) {
+    return decompress(input, output, maxDecompressedSize, resetContext, kZMaxSize);
+  }
 
  private:
+  friend struct WebSocketCompressTestAccess;
+
+  // zlib counts the input in 32 bits: it is given to inflate() in slices of at most maxSliceSize bytes.
+  [[nodiscard]] const char* decompress(std::span<const std::byte> input, RawBytes& output,
+                                       std::size_t maxDecompressedSize, bool resetContext, std::size_t maxSliceSize);
+
   ZStreamRAII _zs;
   uint8_t _windowBits;
 };

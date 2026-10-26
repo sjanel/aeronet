@@ -102,7 +102,6 @@ CapturedOtlpRequest parseHeadAndBody(std::string_view request, std::string_view 
       break;
     }
     if (next == cursor) {
-      cursor += 2;
       break;  // reached end of headers
     }
     std::string_view line(request.data() + cursor, next - cursor);

@@ -1,12 +1,11 @@
 #pragma once
 
 #include <cstddef>
-#include <string_view>
+#include <cstdint>
+#include <limits>
 
 #ifdef AERONET_ENABLE_ZLIBNG
 #include <zlib-ng.h>
-
-#include <cstdint>
 #else
 #include <zlib.h>
 #endif
@@ -19,25 +18,40 @@ using zstream = zng_stream;
 using zstream = z_stream;
 #endif
 
-inline void ZSetInput(zstream& stream, std::string_view data) {
+// zlib counts the input and output buffer sizes in 32 bits: larger buffers are given in slices.
+inline constexpr std::size_t kZMaxSize = std::numeric_limits<uint32_t>::max();
+
+// Largest input slice given to one deflate() call: its deflate bound fits in 32 bits (deflateBound() counts in unsigned
+// long, of 32 bits on Windows), so an output room clamped to kZMaxSize is always enough for it.
+inline constexpr std::size_t kZMaxDeflateInputSize = std::size_t{1} << 30U;
+
+// Clamps a buffer size to what zlib can count.
+[[nodiscard]] inline uint32_t ZClampSize(std::size_t size) {
+  return size < kZMaxSize ? static_cast<uint32_t>(size) : static_cast<uint32_t>(kZMaxSize);
+}
+
+inline void ZSetInput(zstream& stream, const char* pData, uint32_t size) {
 #ifdef AERONET_ENABLE_ZLIBNG
-  stream.next_in = reinterpret_cast<const uint8_t*>(data.data());
-  stream.avail_in = static_cast<uint32_t>(data.size());
+  stream.next_in = reinterpret_cast<const uint8_t*>(pData);
+  stream.avail_in = size;
 #else
-  stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(data.data()));
-  stream.avail_in = static_cast<uInt>(data.size());
+  stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(pData));
+  stream.avail_in = static_cast<uInt>(size);
 #endif
 }
 
-inline void ZSetOutput(zstream& stream, char* data, std::size_t capacity) {
+inline void ZSetOutput(zstream& stream, char* pData, uint32_t capacity) {
 #ifdef AERONET_ENABLE_ZLIBNG
-  stream.next_out = reinterpret_cast<uint8_t*>(data);
-  stream.avail_out = static_cast<uint32_t>(capacity);
+  stream.next_out = reinterpret_cast<uint8_t*>(pData);
+  stream.avail_out = capacity;
 #else
-  stream.next_out = reinterpret_cast<Bytef*>(data);
+  stream.next_out = reinterpret_cast<Bytef*>(pData);
   stream.avail_out = static_cast<uInt>(capacity);
 #endif
 }
+
+// End of the output written by the last deflate() / inflate() call.
+[[nodiscard]] inline char* ZOutputEnd(const zstream& stream) { return reinterpret_cast<char*>(stream.next_out); }
 
 inline auto ZInflate(zstream& stream, int flush) {
 #ifdef AERONET_ENABLE_ZLIBNG

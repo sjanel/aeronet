@@ -230,7 +230,7 @@ RedisEvalRequest RedisSlidingWindowRateLimitStore::buildConsumeRequest(std::stri
   pArgs = WriteInt(pArgs, windowMs, windowMsNbDigits);
 
   req.args[2] = std::string_view(pArgs, maxInWindowNbDigits);
-  pArgs = WriteInt(pArgs, maxInWindow, maxInWindowNbDigits);
+  WriteInt(pArgs, maxInWindow, maxInWindowNbDigits);
 
   return req;
 }

@@ -2755,7 +2755,7 @@ TEST(Http2ProtocolHandler, RejectsMalformedRequestPseudoHeaderSets) {
   unsupportedExtendedConnect.append(MakeHttp1HeaderLine(":scheme", "https"));
   unsupportedExtendedConnect.append(MakeHttp1HeaderLine(":authority", "example.com"));
   unsupportedExtendedConnect.append(MakeHttp1HeaderLine(":path", "/chat"));
-  cases.push_back({streamId += 2, std::move(unsupportedExtendedConnect)});
+  cases.push_back({streamId + 2, std::move(unsupportedExtendedConnect)});
 
   for (const auto& malformedCase : cases) {
     ASSERT_EQ(

@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <bit>
 #include <limits>
 #include <stdexcept>
 #include <type_traits>
@@ -32,7 +33,7 @@ TEST(CompressionConfigTest, InitialCompressionBufferLimitZeroThrows) {
 
 TEST(CompressionConfigTest, InvalidPreferredFormatsThrows) {
   CompressionConfig config;
-  config.preferredFormats.push_back(static_cast<Encoding>(static_cast<std::underlying_type_t<Encoding>>(-1)));
+  config.preferredFormats.push_back(std::bit_cast<Encoding>(static_cast<std::underlying_type_t<Encoding>>(-1)));
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 

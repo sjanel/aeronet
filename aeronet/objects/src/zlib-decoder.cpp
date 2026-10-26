@@ -1,10 +1,8 @@
 #include "aeronet/zlib-decoder.hpp"
 
-#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <string_view>
 
 #include "aeronet/decoder-buffer-manager.hpp"
@@ -16,21 +14,25 @@
 namespace aeronet {
 
 bool ZlibDecoderContext::decompressChunk(std::string_view chunk, bool finalChunk, std::size_t maxDecompressedBytes,
-                                         uint32_t decoderChunkSize, RawChars& out) {
+                                         uint32_t decoderChunkSize, RawChars& out, std::size_t maxSliceSize) {
+  assert(maxSliceSize != 0 && maxSliceSize <= kZMaxSize);
   if (chunk.empty()) {
     return !finalChunk || _streamEnded;
   }
 
   auto& stream = _zs.stream;
 
-  ZSetInput(stream, chunk);
+  const auto feedNextSlice = [&stream, &chunk, maxSliceSize] {
+    const std::string_view slice = chunk.substr(0, maxSliceSize);
+    ZSetInput(stream, slice.data(), static_cast<uint32_t>(slice.size()));
+    chunk.remove_prefix(slice.size());
+  };
+  feedNextSlice();
 
   DecoderBufferManager decoderBufferManager(out, decoderChunkSize, maxDecompressedBytes);
 
   while (true) {
-    // zlib counts the output room in 32 bits.
-    const auto room = static_cast<uint32_t>(
-        std::min<std::size_t>(decoderBufferManager.nextReserve(), std::numeric_limits<uint32_t>::max()));
+    const uint32_t room = ZClampSize(decoderBufferManager.nextReserve());
 
     ZSetOutput(stream, out.data() + out.size(), room);
 
@@ -42,22 +44,22 @@ bool ZlibDecoderContext::decompressChunk(std::string_view chunk, bool finalChunk
     }
     if (ret == Z_STREAM_END) {
       _streamEnded = true;
-      return stream.avail_in == 0;
+      return stream.avail_in == 0 && chunk.empty();
     }
-    if (ret == Z_BUF_ERROR) {
-      // No progress possible with output room: nothing left to decode or flush without more input. The stream continues
-      // in the next chunk, so it is truncated when this one is the last.
-      assert(stream.avail_in == 0);
-      return !finalChunk;
-    }
-    if (ret != Z_OK) [[unlikely]] {
+    // Z_BUF_ERROR: no progress possible with output room, so nothing left to decode or flush without more input.
+    if (ret != Z_OK && ret != Z_BUF_ERROR) [[unlikely]] {
       log::debug("ZlibDecoderContext::decompressChunk - inflate failed with error {}", ret);
       return false;
     }
+    assert(ret == Z_OK || stream.avail_in == 0);
     if (stream.avail_in == 0 && stream.avail_out != 0) {
-      // All the input is consumed with output room left (so nothing pending): same as above. A full output may hold
-      // back decoded bytes, flushed by the next iteration.
-      return !finalChunk;
+      // The input slice is consumed with output room left (so nothing pending, as always with Z_BUF_ERROR). A full
+      // output may hold back decoded bytes, flushed by the next iteration.
+      if (chunk.empty()) {
+        // The stream continues in the next chunk, so it is truncated when this one is the last.
+        return !finalChunk;
+      }
+      feedNextSlice();
     }
   }
 }

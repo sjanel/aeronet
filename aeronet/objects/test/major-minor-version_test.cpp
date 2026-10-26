@@ -70,10 +70,12 @@ TEST(MajorMinorVersion, WriteFull) {
 
   http::Version vers1{1, 1};
   endPtr = vers1.writeFull(buf);
+  EXPECT_EQ(static_cast<std::size_t>(endPtr - buf), sv.size());
   EXPECT_EQ(sv, "HTTP/1.1");
 
   http::Version vers2{2, 0};
   endPtr = vers2.writeFull(buf);
+  EXPECT_EQ(static_cast<std::size_t>(endPtr - buf), sv.size());
   EXPECT_EQ(sv, "HTTP/2.0");
 }
 

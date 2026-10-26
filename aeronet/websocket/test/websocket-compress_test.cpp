@@ -727,8 +727,8 @@ std::string ReferenceRawDeflate(std::string_view input, int windowBits = 15) {
   zstream stream{};
   EXPECT_EQ(ZDeflateInit2(stream, 6, Z_DEFLATED, -windowBits, 8, Z_DEFAULT_STRATEGY), Z_OK);
   std::string out(input.size() + 1024, '\0');
-  ZSetInput(stream, input);
-  ZSetOutput(stream, out.data(), out.size());
+  ZSetInput(stream, input.data(), static_cast<uint32_t>(input.size()));
+  ZSetOutput(stream, out.data(), static_cast<uint32_t>(out.size()));
   EXPECT_EQ(ZDeflate(stream, Z_SYNC_FLUSH), Z_OK);
   out.resize(out.size() - stream.avail_out);
   ZDeflateEnd(stream);
@@ -745,7 +745,7 @@ bool ReferenceRawInflate(std::string_view compressed, std::string& output, int w
   EXPECT_EQ(ZInflateInit2(stream, -windowBits), Z_OK);
   std::string input(compressed);
   input.append("\x00\x00\xff\xff", 4);
-  ZSetInput(stream, input);
+  ZSetInput(stream, input.data(), static_cast<uint32_t>(input.size()));
   output.clear();
   std::array<char, 256> chunk{};
   bool ok = true;
@@ -823,6 +823,100 @@ TEST(WebSocketCompressInterop, CompressorHonorsNegotiatedWindowBits) {
   ASSERT_EQ(decompressor.decompress(std::span<const std::byte>(compressed.data(), compressed.size()), output, 0, true),
             nullptr);
   EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(output.data()), output.size()), text);
+}
+
+// zlib counts sizes in 32 bits: messages of 4 GiB and more are given to zlib in slices, tested here with small slices.
+struct WebSocketCompressTestAccess {
+  static const char* Compress(WebSocketCompressor& compressor, std::string_view input, RawBytes& output,
+                              std::size_t maxSliceSize) {
+    return compressor.compress(StringToBytes(input), output, false, maxSliceSize);
+  }
+
+  static const char* Decompress(WebSocketDecompressor& decompressor, std::span<const std::byte> input, RawBytes& output,
+                                std::size_t maxDecompressedSize, std::size_t maxSliceSize) {
+    return decompressor.decompress(input, output, maxDecompressedSize, false, maxSliceSize);
+  }
+};
+
+TEST(WebSocketCompressSlices, CompressInSlicesRoundTrips) {
+  const std::string text = CompressibleText();
+  for (const std::size_t sliceSize : {std::size_t{1}, std::size_t{7}, std::size_t{4096}}) {
+    SCOPED_TRACE(testing::Message() << "slice=" << sliceSize);
+    WebSocketCompressor compressor(6);
+    WebSocketDecompressor decompressor;
+    // Two messages: the second one refers to the first one (context takeover).
+    for (int messageIdx = 0; messageIdx < 2; ++messageIdx) {
+      RawBytes compressed;
+      ASSERT_EQ(WebSocketCompressTestAccess::Compress(compressor, text, compressed, sliceSize), nullptr);
+      if (messageIdx == 0) {
+        std::string decompressed;
+        ASSERT_TRUE(ReferenceRawInflate(BytesToString(compressed), decompressed));
+        EXPECT_EQ(decompressed, text);
+      }
+      RawBytes output;
+      ASSERT_EQ(
+          decompressor.decompress(std::span<const std::byte>(compressed.data(), compressed.size()), output, 0, false),
+          nullptr);
+      EXPECT_EQ(BytesToString(output), text);
+    }
+  }
+}
+
+// Slices smaller than the sync flush marker split it too: the marker is entirely inflated, so that the next message
+// continues the stream at a block boundary.
+TEST(WebSocketCompressSlices, DecompressInSlicesRoundTrips) {
+  const std::string text = CompressibleText();
+  WebSocketCompressor compressor(6);
+  RawBytes first;
+  RawBytes second;
+  ASSERT_EQ(compressor.compress(StringToBytes(text), first, false), nullptr);
+  ASSERT_EQ(compressor.compress(StringToBytes(text), second, false), nullptr);
+  for (const std::size_t sliceSize :
+       {std::size_t{1}, std::size_t{2}, std::size_t{3}, std::size_t{4}, std::size_t{7}, std::size_t{4096}}) {
+    SCOPED_TRACE(testing::Message() << "slice=" << sliceSize);
+    WebSocketDecompressor decompressor;
+    for (const RawBytes* pCompressed : {&first, &second}) {
+      RawBytes output;
+      ASSERT_EQ(
+          WebSocketCompressTestAccess::Decompress(
+              decompressor, std::span<const std::byte>(pCompressed->data(), pCompressed->size()), output, 0, sliceSize),
+          nullptr);
+      EXPECT_EQ(BytesToString(output), text);
+    }
+  }
+}
+
+TEST(WebSocketCompressSlices, DecompressInSlicesHonorsTheLimit) {
+  const std::string text = CompressibleText();
+  const auto [compressOk, compressed] = CompressData(text);
+  ASSERT_TRUE(compressOk);
+  for (const std::size_t limit : {text.size() - 1, text.size()}) {
+    WebSocketDecompressor decompressor;
+    RawBytes output;
+    const char* error =
+        WebSocketCompressTestAccess::Decompress(decompressor, StringToBytes(compressed), output, limit, 5);
+    EXPECT_EQ(error == nullptr, limit == text.size()) << limit;
+  }
+}
+
+// A sender may end the stream with a final block: the message ends there, whatever the slices.
+TEST(WebSocketCompressSlices, DecompressInSlicesStopsAtTheStreamEnd) {
+  const std::string text = CompressibleText();
+  zstream stream{};
+  ASSERT_EQ(ZDeflateInit2(stream, 6, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY), Z_OK);
+  std::string compressed(text.size() + 1024, '\0');
+  ZSetInput(stream, text.data(), static_cast<uint32_t>(text.size()));
+  ZSetOutput(stream, compressed.data(), static_cast<uint32_t>(compressed.size()));
+  ASSERT_EQ(ZDeflate(stream, Z_FINISH), Z_STREAM_END);
+  compressed.resize(compressed.size() - stream.avail_out);
+  ZDeflateEnd(stream);
+  for (const std::size_t sliceSize : {std::size_t{1}, std::size_t{5}, compressed.size()}) {
+    WebSocketDecompressor decompressor;
+    RawBytes output;
+    ASSERT_EQ(WebSocketCompressTestAccess::Decompress(decompressor, StringToBytes(compressed), output, 0, sliceSize),
+              nullptr);
+    EXPECT_EQ(BytesToString(output), text) << sliceSize;
+  }
 }
 
 }  // namespace aeronet

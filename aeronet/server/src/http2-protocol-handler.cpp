@@ -1416,7 +1416,8 @@ bool Http2ProtocolHandler::startAsyncHandler(StreamsMap::iterator it, const Rout
 
   // Prepare the pending task entry, which owns the request while the coroutine runs (its address does not change).
   auto pendingPtr = _pendingWorkPool.allocateAndConstructPoolPtr(PendingAsyncTask{});
-  auto& pendingRef = std::get<PendingAsyncTask>(*pendingPtr);
+  PendingAsyncTask& pendingRef = std::get<PendingAsyncTask>(*pendingPtr);
+  assert(state.hasRequest());
   pendingRef.streamRequest = std::move(state.request);
   HttpRequestView& req = pendingRef.streamRequest->request;
 
@@ -1428,9 +1429,8 @@ bool Http2ProtocolHandler::startAsyncHandler(StreamsMap::iterator it, const Rout
 
   auto requestTask = RequestPipeline::CallAsyncHandler(*routingResult.sharedAsyncRequestHandler(), req);
   if (!requestTask.valid()) {
-    ReleaseAsyncTask(state);
-    // req and pendingRef are dangling now that the pending task is released, use the restored request instead.
-    HttpRequestView& restoredReq = state.request->request;
+    // pendingRef is dangling once the pending task is released: use the restored request.
+    HttpRequestView& restoredReq = ReleaseAsyncTask(state);
     HttpResponse response = restoredReq.makeResponse(http::StatusCodeInternalServerError, "Async handler inactive");
     _pCtx->requestPipeline().applyResponseMiddleware(restoredReq, response, routingResult.postMiddlewareRange(), false);
     finalizeAndSendResponse(it, std::move(response), routingResult.corsPolicy());
@@ -1482,13 +1482,15 @@ void Http2ProtocolHandler::onAsyncTaskCompleted(uint32_t streamId) {
   finalizeAndSendResponse(it, std::move(resp), pCorsPolicy);
 }
 
-void Http2ProtocolHandler::ReleaseAsyncTask(StreamState& state) noexcept {
+HttpRequestView& Http2ProtocolHandler::ReleaseAsyncTask(StreamState& state) noexcept {
   auto* pAsync = state.asyncTask();
   assert(pAsync != nullptr);
   state.request = std::move(pAsync->streamRequest);
+  HttpRequestView& req = state.request->request;
   // Their names were copied to the task, released below.
-  state.request->request._pathParams.clear();
+  req._pathParams.clear();
   state.pending.reset();
+  return req;
 }
 
 void Http2ProtocolHandler::orphanAsyncTask(StreamState& state) {

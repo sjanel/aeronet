@@ -598,7 +598,7 @@ class HttpMessage {
     }
 
     const auto contentTypeValueSize = contentType.empty() ? defaultContentType.size() : contentType.size();
-    const std::size_t oldBodyLen = _opts.hasEmbeddedPayload() ? pPayload->size() : inlinedBodyAndTrailersLen();
+    const std::size_t oldBodyLen = pPayload != nullptr ? pPayload->size() : inlinedBodyAndTrailersLen();
     const auto maxBodyLen = oldBodyLen + maxLen;
 
     // Remove embedded size only payload if any, we stored its size in oldBodyLen.
@@ -843,6 +843,9 @@ class HttpMessage {
 #endif
 
     [[nodiscard]] constexpr bool hasEmbeddedPayload() const noexcept {
+      // The analyzer does not model the promise of a coroutine, whose HttpMessage members are initialized by its
+      // constructor (RequestTask<HttpResponse> in the tests): it sees a garbage _optionsBitmap there.
+      // NOLINTNEXTLINE(clang-analyzer-core.UndefinedBinaryOperatorResult)
       return (_optionsBitmap & HasEmbeddedPayload) != 0;
     }
 

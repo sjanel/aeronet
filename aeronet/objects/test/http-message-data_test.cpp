@@ -636,8 +636,8 @@ TEST(HttpResponseDataTest, MoveAssignmentReleasesPreviousPayload) {
     EXPECT_EQ(dst.secondBuffer(), payloadCase.expected);
 
     // The moved-from object is empty and reusable.
-    EXPECT_TRUE(src.empty());  // NOLINT(bugprone-use-after-move,hicpp-invalid-access-moved)
-    EXPECT_EQ(src.secondBuffer(), "");
+    EXPECT_TRUE(src.empty());           // NOLINT(bugprone-use-after-move,hicpp-invalid-access-moved)
+    EXPECT_EQ(src.secondBuffer(), "");  // NOLINT(clang-analyzer-cplusplus.Move)
     src.append("reused");
     EXPECT_EQ(src.firstBuffer(), "reused");
 

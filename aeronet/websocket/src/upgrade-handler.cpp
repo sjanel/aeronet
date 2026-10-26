@@ -248,9 +248,9 @@ void BuildWebSocketUpgradeResponse(const UpgradeValidationResult& validationResu
 
     pData = websocket::BuildDeflateResponse(params, pData);
 
-    pData = AppendFixed<http::DoubleCRLF>(pData);
+    CopyFixed<http::DoubleCRLF>(pData);
   } else {
-    pData = AppendFixed<http::CRLF>(pData);
+    CopyFixed<http::CRLF>(pData);
   }
 }
 

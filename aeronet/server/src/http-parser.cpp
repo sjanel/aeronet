@@ -135,7 +135,7 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeChunkedBody(ConnectionIt cn
     }
     std::size_t chunkSize = 0;
     for (auto* it = first; it != sizeLineEnd; ++it) {
-      const int8_t digit = from_hex_digit(*it);
+      const int8_t digit = FromHexDigit(*it);
       if (digit < 0) {
         emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Invalid chunk size");
         return BodyDecodeStatus::Error;
@@ -246,7 +246,7 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeTrailers(ConnectionIt cnxIt
   }
 
   // Parse trailer headers - copy raw trailer data to bodyAndTrailers buffer
-  std::size_t trailerEndPos = pos;  // Track end position for later
+  std::size_t trailerEndPos;  // Track end position for later
 
   // First pass: validate trailers and find the end position
   std::size_t tempPos = pos;

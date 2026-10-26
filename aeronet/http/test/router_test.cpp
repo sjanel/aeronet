@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -1334,7 +1335,7 @@ TEST_F(RouterTest, AllowedMethodsNoMatch) {
 }
 
 TEST_F(RouterTest, InvalidTrailingSlashPolicyNeverMatches) {
-  cfg.withTrailingSlashPolicy(static_cast<RouterConfig::TrailingSlashPolicy>(-1));
+  cfg.withTrailingSlashPolicy(std::bit_cast<RouterConfig::TrailingSlashPolicy>(std::int8_t{-1}));
   router = Router(cfg);
   router.setPath(http::Method::GET, "/test", OkHandler);
 

@@ -12,6 +12,7 @@
 #include "aeronet/decimal-writer.hpp"
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/embedded-payload.hpp"
+#include "aeronet/encoder-result.hpp"
 #include "aeronet/header-write.hpp"
 #include "aeronet/http-client-codec.hpp"
 #include "aeronet/http-codec.hpp"
@@ -37,12 +38,12 @@ namespace {
 
 constexpr std::string_view kSchemeSep = "://";
 
-constexpr bool IsHex(unsigned char ch) noexcept {
+bool IsHex(unsigned char ch) noexcept {
   return (ch >= '0' && ch <= '9') || ((ch | 0x20U) >= 'a' && (ch | 0x20U) <= 'f');
 }
 
 // Tells whether [pData, end) starts with the 2 hex digits ending a percent-escape.
-constexpr bool StartsWithHexPair(const unsigned char* pData, const unsigned char* end) noexcept {
+bool StartsWithHexPair(const unsigned char* pData, const unsigned char* end) noexcept {
   return end - pData >= 2 && IsHex(pData[0]) && IsHex(pData[1]);
 }
 
@@ -50,16 +51,16 @@ constexpr bool StartsWithHexPair(const unsigned char* pData, const unsigned char
 // If 'afterPercent' is true, 'chars' directly follows a '%' and must start with the 2 hex digits completing its escape.
 bool IsValidRequestTargetChars(std::string_view chars, bool afterPercent = false) noexcept {
   const auto* pData = reinterpret_cast<const unsigned char*>(chars.data());
-  const auto* end = pData + chars.size();
+  const auto* pEnd = pData + chars.size();
 
   if (afterPercent) {
-    if (!StartsWithHexPair(pData, end)) {
+    if (!StartsWithHexPair(pData, pEnd)) {
       return false;
     }
     pData += 2;
   }
 
-  while (pData != end) {
+  while (pData != pEnd) {
     unsigned char ch = *pData++;
 
     // RFC 9112 :
@@ -70,7 +71,7 @@ bool IsValidRequestTargetChars(std::string_view chars, bool afterPercent = false
     }
 
     if (ch == '%') {
-      if (!StartsWithHexPair(pData, end)) {
+      if (!StartsWithHexPair(pData, pEnd)) {
         return false;
       }
 
@@ -464,7 +465,7 @@ HttpRequest::RedirectOutcome HttpRequest::resolveRedirect(std::string_view locat
     // We need to restore current HttpRequest compression state to make it as if finalize() was never called, so that
     // the current HttpRequest can be reused. This is because the compression state is shared between the current
     // HttpRequest and the copy, and finalizeInlineBody() modifies the compression state.
-    auto& compressionState = *_opts._pCompressionState;
+    CompressionState& compressionState = *_opts._pCompressionState;
 
     // Then, we need to decompress the compressed data in the copy and restore the encoder state to what it was before
     // finalizeInlineBody() was called
@@ -479,9 +480,9 @@ HttpRequest::RedirectOutcome HttpRequest::resolveRedirect(std::string_view locat
 
     // Finally simulate the encode of the decoded data to restore the encoder state to what it was before
     // finalizeInlineBody() was called.
-    auto& newContext = *compressionState.makeContext(_opts._pickedEncoding);
+    EncoderContext& newContext = *compressionState.makeContext(_opts._pickedEncoding);
     const auto bodyStartPos = this->bodyStartPos();
-    const auto result =
+    const EncoderResult result =
         newContext.encodeChunk(decoded, _data.size() - bodyStartPos, const_cast<char*>(_data.data() + bodyStartPos));
     if (result.hasError()) {
       throw std::runtime_error("Failed to restore encoder state during finalize() of HttpRequest");
