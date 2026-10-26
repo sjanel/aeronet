@@ -8,6 +8,7 @@
 #include "aeronet/glaze-internal-members.hpp"
 #include "aeronet/major-minor-version-glaze.hpp"  // IWYU pragma: export
 #include "aeronet/tls-config.hpp"
+#include "aeronet/vector.hpp"
 
 template <>
 struct glz::meta<aeronet::TLSConfig::KtlsMode> {

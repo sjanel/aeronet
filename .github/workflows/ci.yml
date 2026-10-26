@@ -337,7 +337,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        compiler: [clang-21]
+        compiler: [clang-23]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -381,6 +381,8 @@ jobs:
 
       - name: Configure examples build
         run: |
+          compiler="${{ matrix.compiler }}"
+          version="${compiler##*-}"
           ./scripts/retry.sh cmake -S . -B ${BUILD_DIR} -G Ninja \
             -D CMAKE_BUILD_TYPE=Debug \
             -D AERONET_BUILD_EXAMPLES=ON \
@@ -399,7 +401,9 @@ jobs:
             -D AERONET_ENABLE_SPDLOG=ON \
             -D AERONET_ENABLE_WEBSOCKET=ON \
             -D AERONET_ENABLE_HTTP_CLIENT=ON \
-            ${{ startsWith(matrix.compiler, 'clang') && '-D AERONET_ENABLE_CLANG_TIDY=OFF' || '' }}
+            -D AERONET_ENABLE_CLANG_TIDY=ON \
+            -D CLANG_TIDY="$(command -v clang-tidy-$version)" \
+            -D AERONET_WARNINGS_AS_ERRORS=ON
 
 
       - name: Build examples
@@ -416,7 +420,8 @@ jobs:
           aeronet-static-file-http2 \
           aeronet-tls-ktls \
           aeronet-tls-session-tickets \
-          aeronet-websocket-echo
+          aeronet-websocket-echo \
+          aeronet-clang-tidy-headers
 
       - name: Generate TLS certificate for ktls example
         run: |

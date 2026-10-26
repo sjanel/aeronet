@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstddef>
 #include <string_view>
 
 #include "aeronet/is-header-whitespace.hpp"

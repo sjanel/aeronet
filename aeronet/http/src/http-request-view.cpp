@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <bit>
 #include <cassert>
-#include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>

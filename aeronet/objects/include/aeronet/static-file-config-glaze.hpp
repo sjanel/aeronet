@@ -1,6 +1,8 @@
 #pragma once
 
 #include <glaze/glaze.hpp>
+#include <string>
+#include <string_view>
 
 #include "aeronet/glaze-internal-members.hpp"
 #include "aeronet/static-file-config.hpp"

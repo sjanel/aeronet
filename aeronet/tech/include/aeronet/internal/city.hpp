@@ -64,9 +64,9 @@ constexpr uint64 Hash128to64(uint64 low, uint64 high) {
   // Murmur-inspired hashing.
   static constexpr uint64 kMul = 0x9ddfea08eb382d69ULL;
   uint64 lhs = (low ^ high) * kMul;
-  lhs ^= (lhs >> 47);
+  lhs ^= (lhs >> 47U);
   uint64 rhs = (high ^ lhs) * kMul;
-  rhs ^= (rhs >> 47);
+  rhs ^= (rhs >> 47U);
   rhs *= kMul;
   return rhs;
 }

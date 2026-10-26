@@ -117,8 +117,12 @@ class RequestTask<void> {
       return RequestTask{std::coroutine_handle<promise_type>::from_promise(*this)};
     }
 
+    // Not static: the coroutine machinery calls them on the promise, which readability-static-accessed-through-instance
+    // would then report in every coroutine.
+    // NOLINTBEGIN(readability-convert-member-functions-to-static)
     std::suspend_always initial_suspend() noexcept { return {}; }
     std::suspend_always final_suspend() noexcept { return {}; }
+    // NOLINTEND(readability-convert-member-functions-to-static)
 
     void return_void() const noexcept {}
 

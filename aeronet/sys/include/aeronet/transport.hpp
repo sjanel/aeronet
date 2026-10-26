@@ -156,7 +156,7 @@ class Transport final {
   }
 
   /// Destroy the current transport state and become empty.
-  void reset() noexcept { _storage.emplace<std::monostate>(); }
+  void reset() noexcept { _storage.emplace<std::monostate>(); }  // NOLINT(bugprone-exception-escape)
 
   [[nodiscard]] explicit operator bool() const noexcept { return _storage.index() != kEmptyIndex; }
 
@@ -294,7 +294,7 @@ class Transport final {
   }
 
   template <typename Backend>
-  void setBackend(std::unique_ptr<Backend> backend) noexcept {
+  void setBackend(std::unique_ptr<Backend> backend) noexcept {  // NOLINT(bugprone-exception-escape)
     assert(backend);
     static_assert(Backend::transportKind == TransportKind::Tls || Backend::transportKind == TransportKind::Custom);
     using BackendBase = TransportBackend<Backend, Backend::transportKind>;
@@ -306,7 +306,7 @@ class Transport final {
   }
 
   template <typename Backend>
-  void setBorrowedBackend(Backend& backend) noexcept {
+  void setBorrowedBackend(Backend& backend) noexcept {  // NOLINT(bugprone-exception-escape)
     auto retain = [](ErasedTransportBackend*) noexcept {};
     _storage.template emplace<BackendPtr>(static_cast<ErasedTransportBackend*>(&backend), BackendDeleter{retain});
   }

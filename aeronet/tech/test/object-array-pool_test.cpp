@@ -534,7 +534,7 @@ void RunFuzzPoolChar(unsigned seed) {
   bool lastWasAlloc = false;
 
   for (int op = 0; op < 1000; ++op) {
-    int choice = rng() % 4;
+    const int choice = static_cast<int>(rng() % 4U);
     if (choice == 0) {
       // allocate a random small array
       size_t sz = 1 + (rng() % 16);
@@ -542,7 +542,7 @@ void RunFuzzPoolChar(unsigned seed) {
       allocated.emplace_back(ptr, sz);
       // write some sentinel bytes
       for (size_t i = 0; i < sz; ++i) {
-        ptr[i] = static_cast<char>((rng() % 26) + 'a');
+        ptr[i] = static_cast<char>((rng() % 26U) + 'a');
       }
       lastWasAlloc = true;
     } else if (choice == 1 && !allocated.empty()) {
@@ -575,14 +575,14 @@ void RunFuzzPoolString(unsigned seed) {
   bool lastWasAlloc = false;
 
   for (int op = 0; op < 1000; ++op) {
-    int choice = rng() % 4;
+    const int choice = static_cast<int>(rng() % 4U);
     if (choice == 0) {
-      size_t sz = 1 + (rng() % 12);
+      size_t sz = 1 + (rng() % 12U);
       std::string* ptr =
           pool.allocateAndDefaultConstruct(static_cast<aeronet::ObjectArrayPool<std::string>::size_type>(sz));
       allocated.emplace_back(ptr, sz);
       for (size_t i = 0; i < sz; ++i) {
-        ptr[i] = std::string("str") + std::to_string(rng() % 100);
+        ptr[i] = std::string("str") + std::to_string(rng() % 100U);
       }
       lastWasAlloc = true;
     } else if (choice == 1 && !allocated.empty()) {

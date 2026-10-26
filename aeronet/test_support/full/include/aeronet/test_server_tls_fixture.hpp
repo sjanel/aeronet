@@ -1,14 +1,17 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <initializer_list>
+#include <string>
 #include <string_view>
 #include <utility>
 
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/path-handlers.hpp"
 #include "aeronet/router-config.hpp"
+#include "aeronet/router-update-proxy.hpp"
 #include "aeronet/test-tls-helper.hpp"
 #include "aeronet/test_server_fixture.hpp"
 
@@ -61,6 +64,8 @@ struct TlsTestServer {
     return cfg;
   }
 
+  // Also the default constructor: explicit would only be wrong for a braced list of protocols.
+  // NOLINTNEXTLINE(*-explicit-constructor)
   explicit TlsTestServer(std::initializer_list<std::string_view> alpn = {}, const Mutator& mut = nullptr,
                          std::chrono::milliseconds poll = std::chrono::milliseconds{1})
       : server(MakeConfig(alpn, mut), RouterConfig(), poll) {}

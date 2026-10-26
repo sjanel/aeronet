@@ -1,7 +1,6 @@
 #include "aeronet/tls-config.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <stdexcept>
 #include <string_view>
 #include <utility>

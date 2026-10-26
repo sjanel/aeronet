@@ -6,9 +6,9 @@
 
 // AERONET_ASAN_ENABLED is 1 when the translation unit is instrumented with AddressSanitizer, 0 otherwise.
 // gcc and MSVC define __SANITIZE_ADDRESS__, clang exposes __has_feature(address_sanitizer).
-#if defined(__SANITIZE_ADDRESS__)
+#ifdef __SANITIZE_ADDRESS__
 #define AERONET_ASAN_ENABLED 1
-#elif defined(__has_feature)
+#elifdef __has_feature
 #if __has_feature(address_sanitizer)
 #define AERONET_ASAN_ENABLED 1
 #endif

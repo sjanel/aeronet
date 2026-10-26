@@ -11,6 +11,7 @@
 #include "aeronet/glaze-chrono-durations-adapters.hpp"  // IWYU pragma: export
 #include "aeronet/glaze-internal-members.hpp"
 #include "aeronet/http-client-config.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/major-minor-version-glaze.hpp"  // IWYU pragma: export
 #include "aeronet/tcp-no-delay-mode-glaze.hpp"    // IWYU pragma: export
 #include "aeronet/telemetry-config-glaze.hpp"     // IWYU pragma: export

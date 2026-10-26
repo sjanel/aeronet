@@ -19,15 +19,15 @@ using MethodBmp = uint16_t;
 // GET/POST dominate real traffic; PATCH/CONNECT/TRACE are rare. Ordering
 // matters here because the HTTP/1 request line parser scans the method codes linearly.
 enum class Method : MethodBmp {
-  GET = 1 << 0,
-  POST = 1 << 1,
-  PUT = 1 << 2,
-  DELETE = 1 << 3,
-  HEAD = 1 << 4,
-  OPTIONS = 1 << 5,
-  PATCH = 1 << 6,
-  CONNECT = 1 << 7,
-  TRACE = 1 << 8,
+  GET = 1U << 0U,
+  POST = 1U << 1U,
+  PUT = 1U << 2U,
+  DELETE = 1U << 3U,
+  HEAD = 1U << 4U,
+  OPTIONS = 1U << 5U,
+  PATCH = 1U << 6U,
+  CONNECT = 1U << 7U,
+  TRACE = 1U << 8U,
 };
 
 inline constexpr Method kMethodInvalid = static_cast<Method>(0);

@@ -21,6 +21,7 @@
 #include "aeronet/direct-compression-mode.hpp"
 #include "aeronet/embedded-payload.hpp"
 #include "aeronet/encoding.hpp"
+#include "aeronet/file-payload.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-headers-view.hpp"
@@ -284,7 +285,7 @@ class HttpMessage {
    public:
     explicit IntegralCharBuffer(T value) : _end(WriteInt(_buf, value, ndigits(value))) {}
 
-    operator std::string_view() const { return {_buf, _end}; }
+    operator std::string_view() const { return {_buf, _end}; }  // NOLINT(*-explicit-constructor)
 
    private:
     char _buf[std::numeric_limits<T>::digits10 + 1U + static_cast<std::size_t>(std::is_signed_v<T>)];

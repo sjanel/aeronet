@@ -2,7 +2,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <string_view>
 
 #include "aeronet/fault-policy.hpp"

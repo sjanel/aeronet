@@ -1,7 +1,6 @@
 #include "aeronet/upgrade-handler.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <cstddef>
 #include <exception>
 #include <memory>
@@ -35,7 +34,6 @@ ConcatenatedStrings ParseTokenList(std::string_view header) {
   for (std::size_t pos = 0; pos < header.size();) {
     const auto commaPos = header.find(',', pos);
     const auto tokenEnd = (commaPos == std::string_view::npos) ? header.size() : commaPos;
-
     const auto token = TrimOws(header.substr(pos, tokenEnd - pos));
     if (!token.empty()) {
       result.append(token);

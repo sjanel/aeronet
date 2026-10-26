@@ -1,6 +1,5 @@
 #include <aeronet/aeronet-server.hpp>
 #include <charconv>
-#include <csignal>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>

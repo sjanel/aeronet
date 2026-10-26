@@ -2,8 +2,6 @@
 Checks: "-*,\
   bugprone-*,\
   -bugprone-easily-swappable-parameters,\
-  -bugprone-narrowing-conversions,\
-  google-readability-casting,\
   misc-*,\
   -misc-non-private-member-variables-in-classes,\
   -misc-const-correctness,\
@@ -13,17 +11,23 @@ Checks: "-*,\
   -modernize-use-trailing-return-type,\
   performance-*,\
   portability-*,\
+  -portability-avoid-pragma-once,\
   readability-*,\
   -readability-function-cognitive-complexity,\
   -readability-magic-numbers,\
   -readability-qualified-auto,\
   "
-HeaderFilterRegex: 'Source/cm[^/]*\.(h|hxx|cxx)$'
+# Matches no file: the diagnostics of a header reached through a translation unit are dropped, because every header is
+# analyzed once as the main file of its own run (cmake/ClangTidyHeaders.cmake), where they are always displayed.
+# Without it the default ('.*') would report each header once per translation unit including it.
+HeaderFilterRegex: '^$'
 CheckOptions:
   # Glaze ships no IWYU pragmas: its symbols live in internal headers (glaze/core/read.hpp, ...)
   # that are only meant to be reached through the public umbrellas (glaze/glaze.hpp, glaze/yaml.hpp).
+  # Same for OpenSSL (SSL is declared in openssl/types.h, but openssl/ssl.h is the header to include) and for the
+  # implementation headers of the standard library and glibc (bits/chrono.h for the literals, bits/types/sigset_t.h...).
   - key: misc-include-cleaner.IgnoreHeaders
-    value: "glaze/.*"
+    value: "glaze/.*;openssl/.*;bits/.*"
   - key: modernize-use-equals-default.IgnoreMacros
     value: "0"
   - key: modernize-use-auto.MinTypeNameLength

@@ -10,8 +10,6 @@
 // Socket pair — included via socket-ops.hpp
 #endif
 
-#include <cerrno>
-
 #include "aeronet/base-fd.hpp"
 #include "aeronet/errno-throw.hpp"
 #include "aeronet/log-noexcept.hpp"

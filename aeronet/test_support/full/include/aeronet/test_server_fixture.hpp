@@ -8,6 +8,8 @@
 
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/router-config.hpp"
+#include "aeronet/router-update-proxy.hpp"
+#include "aeronet/router.hpp"
 #include "aeronet/single-http-server.hpp"
 
 namespace aeronet::test {

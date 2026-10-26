@@ -1,10 +1,13 @@
 #pragma once
 
 #include <cstdio>
-#include <string_view>
 #include <utility>
 
 #include "aeronet/log.hpp"
+
+#ifndef AERONET_ENABLE_SPDLOG
+#include <string_view>
+#endif
 
 namespace aeronet::log_noexcept {
 

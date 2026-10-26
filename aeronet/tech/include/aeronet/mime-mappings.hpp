@@ -24,7 +24,8 @@ class MIMEExtensionCode {
   // "json"}.
   template <unsigned N>
     requires(N <= kMaxChars + 1U)
-  constexpr MIMEExtensionCode(const char (&ext)[N]) : MIMEExtensionCode(std::string_view(ext, N - 1U)) {}
+  constexpr MIMEExtensionCode(const char (&ext)[N])  // NOLINT(*-explicit-constructor)
+      : MIMEExtensionCode(std::string_view(ext, N - 1U)) {}
 
   constexpr bool operator==(const MIMEExtensionCode&) const = default;
   constexpr auto operator<=>(const MIMEExtensionCode&) const = default;
@@ -49,7 +50,7 @@ struct MIMEMapping {
 
 using MIMETypeIdx = uint8_t;
 
-inline constexpr MIMETypeIdx kUnknownMIMEMappingIdx = static_cast<MIMETypeIdx>(~0);
+inline constexpr MIMETypeIdx kUnknownMIMEMappingIdx = static_cast<MIMETypeIdx>(~0U);
 
 // Single source of truth, written in plain alphabetical order for
 // readability -- this order is also required for binary search on

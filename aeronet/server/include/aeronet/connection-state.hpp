@@ -16,6 +16,7 @@
 #include "aeronet/output-queue.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
 #include "aeronet/vector.hpp"
 #include "aeronet/zerocopy-buffers.hpp"
@@ -32,6 +33,8 @@
 #include "aeronet/async-handler-state.hpp"
 #include "aeronet/object-pool.hpp"
 #endif
+
+struct sockaddr_storage;
 
 namespace aeronet {
 

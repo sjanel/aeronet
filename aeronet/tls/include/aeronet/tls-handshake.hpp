@@ -1,12 +1,10 @@
-// TLS handshake helpers (factored out of SingleHttpServer implementation)
-// Provides a free function to extract negotiated parameters and peer certificate subject
-// without depending on SingleHttpServer private internals.
 #pragma once
 
 #include <openssl/types.h>
 
 #include <chrono>
 #include <cstdint>
+#include <string_view>
 
 #include "aeronet/native-handle.hpp"
 #include "aeronet/tls-config.hpp"

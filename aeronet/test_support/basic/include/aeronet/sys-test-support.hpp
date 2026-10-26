@@ -2,10 +2,10 @@
 
 #ifdef AERONET_POSIX
 #include <dlfcn.h>
-#include <netdb.h>
+#include <netdb.h>  // IWYU pragma: keep (struct addrinfo)
 #include <sys/socket.h>
 #include <sys/types.h>
-#include <sys/uio.h>
+#include <sys/uio.h>  // IWYU pragma: keep (struct iovec)
 #include <unistd.h>
 
 #include "aeronet/decimal-writer.hpp"
@@ -32,12 +32,12 @@
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <functional>
 #include <initializer_list>
 #include <limits>
 #include <mutex>
@@ -45,7 +45,6 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <unordered_map>
 #include <utility>
 
@@ -59,8 +58,11 @@
 #endif
 
 #ifdef AERONET_LINUX
-#include <linux/errqueue.h>
-#include <netinet/in.h>
+#include <linux/errqueue.h>  // IWYU pragma: keep (struct sock_extended_err, SO_EE_ORIGIN_ZEROCOPY)
+#endif
+
+#ifdef AERONET_WANT_SOCKET_OVERRIDES
+#include <thread>
 #endif
 
 #ifdef __GLIBC__
@@ -298,6 +300,7 @@ Fn ResolveNext(const char* /*name*/) {
 #endif
 
 #if AERONET_WANT_MALLOC_OVERRIDES
+// NOLINTBEGIN(misc-definitions-in-headers): defined once per test binary
 void* CallRealMalloc(size_t size) {
   using MallocFn = void* (*)(size_t);
   static MallocFn fn = nullptr;
@@ -373,6 +376,7 @@ void* CallRealCalloc(size_t nmemb, size_t size) {
   resolving = 0;
   return fn(nmemb, size);
 }
+// NOLINTEND(misc-definitions-in-headers)
 #endif  // AERONET_WANT_MALLOC_OVERRIDES
 
 // Note: we intentionally do NOT override `free` to avoid interfering with
@@ -385,6 +389,7 @@ void* CallRealCalloc(size_t nmemb, size_t size) {
 // calloc must be overridden because compilers (e.g. clang -O3) can fold
 // malloc+memset(0) into calloc, bypassing a malloc-only override.
 #if AERONET_WANT_MALLOC_OVERRIDES
+// NOLINTBEGIN(misc-definitions-in-headers): interposers, defined once per test binary
 extern "C" void* malloc(size_t size) {
   if (aeronet::test::ShouldFailMalloc()) {
     errno = ENOMEM;
@@ -410,6 +415,7 @@ extern "C" void* realloc(void* ptr, size_t size) {
 }
 
 // free is intentionally left un-overridden.
+// NOLINTEND(misc-definitions-in-headers)
 #endif  // AERONET_WANT_MALLOC_OVERRIDES
 
 namespace aeronet::test {

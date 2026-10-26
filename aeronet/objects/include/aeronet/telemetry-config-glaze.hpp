@@ -8,6 +8,7 @@
 #include "aeronet/glaze-internal-members.hpp"
 #include "aeronet/glaze-vector-sv-adapter.hpp"
 #include "aeronet/telemetry-config.hpp"
+#include "aeronet/vector.hpp"
 
 // TelemetryConfig is reflected by glaze: only its internal members (see glaze-internal-members.hpp) need an entry.
 template <>
