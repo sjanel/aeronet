@@ -4,6 +4,8 @@ All notable changes to aeronet are documented in this file.
 
 ## Unreleased
 
+## [1.7.0] - 2026-10-26
+
 ### 1.7.0 Highlights
 
 The most important changes. Upgrade especially if one of these applies to you:
