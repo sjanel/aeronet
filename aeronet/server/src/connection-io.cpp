@@ -144,12 +144,7 @@ void ConnectionIo::queueData(ConnectionIt cnxIt, HttpMessageData httpResponseDat
   // has a file or would make the batch too large: the batch is then written along with it.
   if (&state == _pOutputBatch && pFilePayload == nullptr && !state.waitingWritable && !state.isSendingFile() &&
       state.bufferedOutputBytes() + bufferedSz <= kMaxBatchedOutputBytes) {
-    if (state.outBuffer.empty() && state.outQueue.empty()) {
-      assert(!state.outBufferZerocopySent);
-      state.outBuffer = std::move(httpResponseData);
-    } else {
-      (void)state.queueOutput(std::move(httpResponseData));
-    }
+    (void)state.queueOutput(std::move(httpResponseData));
     ctx.stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz);
     return;
   }
@@ -174,17 +169,9 @@ void ConnectionIo::queueData(ConnectionIt cnxIt, HttpMessageData httpResponseDat
     return;
   }
 
-  // Extract file payload early so we can move the File once and avoid double-moves
-  // when the response writes immediately.
-  FilePayload filePayload;
-  const bool haveFilePayload = pFilePayload != nullptr;
-  if (haveFilePayload) {
-    filePayload = std::move(*pFilePayload);
-  }
-
   // Cork the socket to coalesce the writes of the response (its head then its file, or several TLS records) into fewer
   // TCP segments. The guard uncorks on scope exit, flushing any accumulated data.
-  const TcpCorkGuard corkGuard(state.needsCork(bufferedSz, haveFilePayload) ? cnxIt->fd() : kInvalidHandle);
+  const TcpCorkGuard corkGuard(state.needsCork(bufferedSz, pFilePayload != nullptr) ? cnxIt->fd() : kInvalidHandle);
 
   // Plain TCP path: try immediate write optimization
   bool zerocopySent = false;
@@ -194,28 +181,28 @@ void ConnectionIo::queueData(ConnectionIt cnxIt, HttpMessageData httpResponseDat
     state.requestDrainAndClose();
     return;
   }
+  ctx.stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz + extraQueuedBytes);
+  ctx.stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
   if (written == bufferedSz) {
-    ctx.stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz + extraQueuedBytes);
-    ctx.stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
+    // The head of its response written, the file is sent.
+    const bool sendFile = pFilePayload != nullptr && state.attachFilePayload(std::move(*pFilePayload));
 #ifdef AERONET_LINUX
     if (zerocopySent) {
       state.retainZerocopyBuffer(std::move(httpResponseData));
     }
 #endif
-    if (haveFilePayload && state.attachFilePayload(std::move(filePayload))) {
+    if (sendFile) {
       flushFilePayload(cnxIt);
     }
     return;
   }
-  // partial write, capture the buffer in the connection state
+  // Partial write: the rest of the response, its file included, waits for the socket.
   httpResponseData.addOffset(static_cast<std::size_t>(written));
-  assert(!state.outBufferZerocopySent);
-  state.outBuffer = std::move(httpResponseData);
-  state.outBufferZerocopySent = zerocopySent;
-  ctx.stats.totalBytesWrittenImmediate += static_cast<uint64_t>(written);
+  assert(state.outQueue.empty() && !state.outQueueFrontZerocopySent);
+  (void)state.queueOutput(std::move(httpResponseData));
+  state.outQueueFrontZerocopySent = zerocopySent;
 
-  const std::size_t remainingSize = state.outBuffer.remainingSize();
-  ctx.stats.totalBytesQueued += static_cast<uint64_t>(bufferedSz + extraQueuedBytes);
+  const std::size_t remainingSize = state.bufferedOutputBytes();
   ctx.stats.maxConnectionOutboundBuffer.updateMax(remainingSize);
   if (remainingSize > ctx.config.maxOutboundBufferBytes) {
     state.requestDrainAndClose();
@@ -224,23 +211,17 @@ void ConnectionIo::queueData(ConnectionIt cnxIt, HttpMessageData httpResponseDat
     enableWritableInterest(cnxIt);
   }
 
-  // If we buffered data, try flushing it immediately
-  if (!state.outBuffer.empty()) {
-    flushOutbound(cnxIt);
-  }
-
-  if (haveFilePayload && state.attachFilePayload(std::move(filePayload))) {
-    flushFilePayload(cnxIt);
-  }
+  // Try flushing it immediately (its file once it is written).
+  flushOutbound(cnxIt);
 }
 
-std::size_t ConnectionIo::writeOutBuffer(ConnectionIt cnxIt, TransportHint& want) {
+std::size_t ConnectionIo::writeOutput(ConnectionIt cnxIt, TransportHint& want) {
   ServerContext& ctx = *_pCtx;
   ConnectionState& state = ctx.connections.connectionState(cnxIt);
   bool zerocopySent = false;
   TransportResult result;
-  if (state.outQueue.empty() || state.isSendingFile()) {
-    result = writeMessage(cnxIt, state.outBuffer, zerocopySent);
+  if (state.outQueue.size() == 1) {
+    result = writeMessage(cnxIt, state.outQueue.front(), zerocopySent);
   } else {
     auto& buffers = ctx.sharedBuffers.sv;
     const ConnectionState::GatheredOutput output = state.gatherOutput(buffers, kMaxGatheredBuffers);
@@ -250,8 +231,8 @@ std::size_t ConnectionIo::writeOutBuffer(ConnectionIt cnxIt, TransportHint& want
   ctx.stats.totalBytesWrittenFlush += result.bytesProcessed;
   if (want == TransportHint::Error) {
     log::error("send/transportWrite failed fd # {} err={}", cnxIt->fd(), LastSystemError());
-    // Drops the output (outBuffer being retained if previous zerocopy sends may still read it, the socket staying open
-    // until they complete) and closes.
+    // Drops the output (its first entry being retained if previous zerocopy sends may still read it, the socket staying
+    // open until they complete) and closes.
     state.clearBuffers();
   } else if (result.bytesProcessed != 0) {
     state.outputWritten(result.bytesProcessed, zerocopySent);
@@ -270,22 +251,9 @@ void ConnectionIo::flushOutbound(ConnectionIt cnxIt) {
   // Cork the socket to coalesce the writes of the flush into fewer TCP segments.
   const TcpCorkGuard corkGuard(state.flushNeedsCork() ? fd : kInvalidHandle);
 
-  // The HTTP/1 output, in order: outBuffer, the file sent after it (if any), then the queued entries.
+  // The HTTP/1 output, in order: the file being sent (if any), then the queued entries (each file being sent after the
+  // head of its response).
   for (;;) {
-    if (!state.outBuffer.empty()) {
-      const std::size_t written = writeOutBuffer(cnxIt, want);
-      if (want == TransportHint::Error) {
-        break;
-      }
-      if (!state.outBuffer.empty()) {
-        if (written == 0 || want != TransportHint::None) {
-          // The socket is not writable (anymore). Wait for the writable event (enabled below) instead of retrying,
-          // which would block the whole event loop for as long as the peer does not read.
-          break;
-        }
-        continue;
-      }
-    }
     if (state.isSendingFile()) {
       flushFilePayload(cnxIt);
       if (state.isSendingFile()) {
@@ -295,9 +263,17 @@ void ConnectionIo::flushOutbound(ConnectionIt cnxIt) {
     if (state.outQueue.empty()) {
       break;
     }
-    state.dequeueOutput();
+    const std::size_t written = writeOutput(cnxIt, want);
+    if (want == TransportHint::Error) {
+      break;
+    }
+    if (!state.isSendingFile() && (written == 0 || want != TransportHint::None)) {
+      // The socket is not writable (anymore). Wait for the writable event (enabled below) instead of retrying, which
+      // would block the whole event loop for as long as the peer does not read.
+      break;
+    }
   }
-  if (state.protocolHandler != nullptr && state.outBuffer.empty() && state.outQueue.empty()) {
+  if (state.protocolHandler != nullptr && state.outQueue.empty()) {
     // The output of the protocol handler follows the HTTP/1 one (its 101 Switching Protocols response).
     auto& fragments = ctx.sharedBuffers.sv;
     while (state.protocolHandler->hasPendingOutput()) {
@@ -325,10 +301,6 @@ void ConnectionIo::flushOutbound(ConnectionIt cnxIt) {
 
   if (state.hasPendingOutput() && !state.waitingWritable && !enableWritableInterest(cnxIt)) {
     return;
-  }
-
-  if (state.outBuffer.empty() && state.fileSendHeadersPending) {
-    state.fileSendHeadersPending = false;
   }
 
   // Determine if we can drop EPOLLOUT: only when no buffered data AND no handshake wantWrite pending.
@@ -420,13 +392,6 @@ bool ConnectionIo::flushUserSpaceTlsBuffer(ConnectionIt cnxIt) {
 void ConnectionIo::flushFilePayload(ConnectionIt cnxIt) {
   ServerContext& ctx = *_pCtx;
   ConnectionState& state = ctx.connections.connectionState(cnxIt);
-
-  if (state.fileSendHeadersPending) {
-    if (!state.outBuffer.empty()) {
-      return;
-    }
-    state.fileSendHeadersPending = false;
-  }
 
   // Only treat the send as fully complete when both the file is exhausted AND any
   // user-space TLS staging buffer has been drained.  Clearing tunnelOrFileBuffer here
@@ -664,9 +629,9 @@ void ConnectionIo::releaseConnection(ConnectionIt cnxIt) {
     state.zerocopyBuffers.extract([this, releaseTime](HttpMessageData data) {
       _zerocopy.resetBuffers.push_back(ZerocopyRuntime::ResetBuffer{std::move(data), releaseTime});
     });
-    if (state.outBufferZerocopySent) {
-      _zerocopy.resetBuffers.push_back(ZerocopyRuntime::ResetBuffer{std::move(state.outBuffer), releaseTime});
-      state.outBufferZerocopySent = false;
+    if (state.outQueueFrontZerocopySent) {
+      _zerocopy.resetBuffers.push_back(ZerocopyRuntime::ResetBuffer{state.outQueue.pop(), releaseTime});
+      state.outQueueFrontZerocopySent = false;
     }
     ++ctx.stats.zerocopyResetConnections;
     ctx.telemetry.counterAdd("aeronet.connections.aborted_with_zerocopy_in_flight");

@@ -2166,7 +2166,7 @@ TEST(ZerocopyMode, StressVaryingPayloadSizes) {
 
 TEST(ZerocopyMode, StressKeepAliveBackpressure) {
   // Stress test over a single keep-alive connection with many large responses.
-  // This exercises the flushOutbound / outBuffer append paths with zerocopy.
+  // This exercises the flushOutbound / output queue append paths with zerocopy.
   ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
     cfg.withZerocopyMode(ZerocopyMode::Enabled);
     cfg.withZerocopyMinBytes(1U);
