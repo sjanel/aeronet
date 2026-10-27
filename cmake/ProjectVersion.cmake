@@ -1,0 +1,22 @@
+# Reads the VERSION file at the repo root ("X.Y.Z" or "X.Y.Z-suffix", e.g. "1.6.0-dev").
+# project() only accepts a numeric version, so the pre-release suffix is returned separately.
+# Falls back to 0.0.0 (with a warning) when the file is missing or malformed.
+function(AeronetReadVersion numberVar suffixVar)
+  set(number "0.0.0")
+  set(suffix "")
+  set(versionFile "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
+  if(EXISTS "${versionFile}")
+    file(READ "${versionFile}" content)
+    string(STRIP "${content}" content)
+    if(content MATCHES "^([0-9]+\\.[0-9]+\\.[0-9]+)(-([0-9A-Za-z.-]+))?$")
+      set(number "${CMAKE_MATCH_1}")
+      set(suffix "${CMAKE_MATCH_3}")
+    else()
+      message(WARNING "VERSION file content '${content}' doesn't match 'X.Y.Z[-suffix]'; using ${number}")
+    endif()
+  else()
+    message(WARNING "VERSION file not found; defaulting to version ${number}")
+  endif()
+  set(${numberVar} "${number}" PARENT_SCOPE)
+  set(${suffixVar} "${suffix}" PARENT_SCOPE)
+endfunction()

@@ -136,6 +136,8 @@ The complete list is in the [feature overview](docs/getting-started/overview.md#
 
 Linux-specific optimizations (kTLS, `sendfile`, `MSG_ZEROCOPY`, `eventfd` / `timerfd`, DogStatsD over Unix sockets) are automatically disabled on other platforms.
 
+**64-bit targets only**: 32-bit targets (i386, armv7...) are not supported and fail at configure time, see [Installation and build](docs/getting-started/install.md#64-bit-targets-only).
+
 ## Build & Installation
 
 Full build, install, package manager (Conan, vcpkg), `find_package` / FetchContent and C++ modules instructions live in [docs/getting-started/install.md](docs/getting-started/install.md).

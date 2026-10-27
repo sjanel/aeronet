@@ -1,5 +1,12 @@
 #pragma once
 
+#include <cstddef>
+
+// aeronet only supports 64-bit targets, see docs/getting-started/install.md#toolchain-platform
+static_assert(sizeof(void*) == 8 && sizeof(std::size_t) == 8,
+              "aeronet requires a 64-bit target (sizeof(void*) == sizeof(std::size_t) == 8): 32-bit targets are not "
+              "supported");
+
 #if defined(_MSC_VER) && !defined(__clang__)
 #define AERONET_RESTRICT __restrict
 #define AERONET_ALWAYS_INLINE __forceinline
