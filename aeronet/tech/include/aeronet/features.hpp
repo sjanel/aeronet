@@ -2,6 +2,18 @@
 
 namespace aeronet {
 
+#ifdef AERONET_ENABLE_HTTP_SERVER
+constexpr bool httpServerEnabled() { return true; }
+#else
+constexpr bool httpServerEnabled() { return false; }
+#endif
+
+#ifdef AERONET_ENABLE_HTTP_CLIENT
+constexpr bool httpClientEnabled() { return true; }
+#else
+constexpr bool httpClientEnabled() { return false; }
+#endif
+
 #ifdef AERONET_ENABLE_SPDLOG
 constexpr bool spdLogEnabled() { return true; }
 #else
