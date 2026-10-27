@@ -1,162 +1,54 @@
 cmake_minimum_required(VERSION 3.28)
 
-# Silence FetchContent CMP0135 warnings about archive timestamps by opting in
-# to the NEW behavior when supported (policy introduced in newer CMake).
-if(POLICY CMP0135)
-  cmake_policy(SET CMP0135 NEW)
-endif()
-
-# De-duplicate libraries on link lines based on linker capabilities. Our static
-# libraries depend on each other transitively (e.g. tests link both aeronet_http
-# and aeronet, which itself pulls in aeronet_http), so the traditional link line
-# repeats the same .a. The Apple/LLVM linkers do not need the repetition and emit
-# "ld: warning: ignoring duplicate libraries" for it. CMP0156 (CMake >= 3.29)
-# lets CMake drop the duplicates on Apple/Windows; CMP0179 (CMake >= 3.31) keeps
-# the first occurrence so the project-specified link order is preserved.
-if(POLICY CMP0156)
-  cmake_policy(SET CMP0156 NEW)
-endif()
-if(POLICY CMP0179)
-  cmake_policy(SET CMP0179 NEW)
-endif()
-
-# Centralize version: read from VERSION file at repo root (fallback to 0.0.0 if missing).
-# The VERSION file may include an optional pre-release suffix, e.g. "1.6.0-dev".
-# CMake's project() only accepts a strictly numeric dot-separated version, so we
-# split the suffix off before calling project() and keep the full string separately.
-set(AERONET_PROJECT_VERSION "0.0.0")
-set(AERONET_PROJECT_VERSION_SUFFIX "")
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
-  file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" AERONET_VERSION_FILE)
-  string(STRIP "${AERONET_VERSION_FILE}" AERONET_VERSION_FILE)
-  if(AERONET_VERSION_FILE MATCHES "^([0-9]+\\.[0-9]+\\.[0-9]+)(-([0-9A-Za-z.-]+))?$")
-    set(AERONET_PROJECT_VERSION "${CMAKE_MATCH_1}")
-    set(AERONET_PROJECT_VERSION_SUFFIX "${CMAKE_MATCH_3}")
-  else()
-    message(WARNING "VERSION file content '${AERONET_VERSION_FILE}' doesn't match 'X.Y.Z[-suffix]'; using ${AERONET_PROJECT_VERSION}")
+# Newer behaviors when CMake knows them: CMP0135 (FetchContent archive timestamps) and CMP0156 / CMP0179 (drop the
+# duplicated libraries of the link lines, which our mutually dependent static libraries would otherwise repeat, and
+# which the Apple linker warns about; the project link order is kept).
+foreach(_policy IN ITEMS CMP0135 CMP0156 CMP0179)
+  if(POLICY ${_policy})
+    cmake_policy(SET ${_policy} NEW)
   endif()
-else()
-  message(WARNING "VERSION file not found; defaulting to version ${AERONET_PROJECT_VERSION}")
+endforeach()
+
+include(cmake/ProjectVersion.cmake)
+AeronetReadVersion(AERONET_VERSION_NUMBER AERONET_VERSION_SUFFIX)
+
+project(aeronet VERSION ${AERONET_VERSION_NUMBER} LANGUAGES CXX)
+
+# Full version: numeric part and optional pre-release suffix.
+set(AERONET_PROJECT_VERSION "${PROJECT_VERSION}")
+if(AERONET_VERSION_SUFFIX)
+  string(APPEND AERONET_PROJECT_VERSION "-${AERONET_VERSION_SUFFIX}")
 endif()
-
-project(aeronet VERSION ${AERONET_PROJECT_VERSION} LANGUAGES CXX)
-
-# Reconstruct the full, human-facing version (numeric part + optional suffix).
-if(AERONET_PROJECT_VERSION_SUFFIX)
-  set(AERONET_PROJECT_VERSION "${PROJECT_VERSION}-${AERONET_PROJECT_VERSION_SUFFIX}")
-else()
-  set(AERONET_PROJECT_VERSION "${PROJECT_VERSION}")
-endif()
-
-# ---------------------------------------------------------------------------
-# MSVC system path injection (Ninja + MSVC without VS Developer Command Prompt)
-# ---------------------------------------------------------------------------
-# When CMake is configured with the Ninja generator + MSVC outside a VS
-# Developer Command Prompt, both CMAKE_CXX_IMPLICIT_LINK_DIRECTORIES and
-# CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES are empty.  This causes:
-#   - LNK1104 for bare library names (ws2_32, mswsock, …)
-#   - C1083 "Cannot open include file: 'string'" for standard headers
-# We detect the MSVC toolchain root from CMAKE_CXX_COMPILER and the Windows
-# SDK root from the registry, then inject both the include and lib dirs.
-if(WIN32 AND MSVC AND NOT CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
-  # --- MSVC include + lib dirs ------------------------------------------------
-  # CMAKE_CXX_COMPILER = .../VC/Tools/MSVC/<ver>/bin/Hostx64/x64/cl.exe
-  # so parent of parent of parent of parent = .../VC/Tools/MSVC/<ver>
-  get_filename_component(_cl_dir  "${CMAKE_CXX_COMPILER}"  DIRECTORY)  # .../Hostx64/x64
-  get_filename_component(_cl_dir  "${_cl_dir}"             DIRECTORY)  # .../Hostx64
-  get_filename_component(_cl_dir  "${_cl_dir}"             DIRECTORY)  # .../bin
-  get_filename_component(_msvc_root "${_cl_dir}"           DIRECTORY)  # .../MSVC/<ver>
-  set(_msvc_include "${_msvc_root}/include")
-  if(EXISTS "${_msvc_include}")
-    message(STATUS "[aeronet] Injecting MSVC include dir (no VS env): ${_msvc_include}")
-    include_directories(SYSTEM "${_msvc_include}")
-  endif()
-  # MSVC lib dir: .../MSVC/<ver>/lib/x64 - needed for msvcprt, vcruntime, etc.
-  set(_msvc_libdir "${_msvc_root}/lib/x64")
-  if(EXISTS "${_msvc_libdir}")
-    message(STATUS "[aeronet] Injecting MSVC lib dir (no VS env): ${_msvc_libdir}")
-    link_directories("${_msvc_libdir}")
-  endif()
-  unset(_cl_dir)
-  unset(_msvc_root)
-  unset(_msvc_include)
-  unset(_msvc_libdir)
-
-  # --- Windows SDK include + lib dirs -----------------------------------------
-  cmake_host_system_information(
-    RESULT _winsdk_root
-    QUERY WINDOWS_REGISTRY
-      "HKLM/SOFTWARE/Microsoft/Windows Kits/Installed Roots"
-    VALUE "KitsRoot10"
-    VIEW HOST
-  )
-  if(_winsdk_root)
-    cmake_path(SET _winsdk_root NORMALIZE "${_winsdk_root}")
-
-    # Newest SDK version directory under Include/
-    file(GLOB _winsdk_inc_dirs "${_winsdk_root}/Include/*")
-    list(SORT _winsdk_inc_dirs ORDER DESCENDING)
-    if(_winsdk_inc_dirs)
-      list(GET _winsdk_inc_dirs 0 _winsdk_inc_ver)
-      foreach(_sub ucrt shared um winrt km)
-        if(EXISTS "${_winsdk_inc_ver}/${_sub}")
-          message(STATUS "[aeronet] Injecting WinSDK include (no VS env): ${_winsdk_inc_ver}/${_sub}")
-          include_directories(SYSTEM "${_winsdk_inc_ver}/${_sub}")
-        endif()
-      endforeach()
-    endif()
-
-    # Newest SDK version directory under Lib/
-    file(GLOB _winsdk_um_dirs "${_winsdk_root}/Lib/*/um/x64")
-    list(SORT _winsdk_um_dirs ORDER DESCENDING)
-    if(_winsdk_um_dirs)
-      list(GET _winsdk_um_dirs 0 _winsdk_libdir)
-      message(STATUS "[aeronet] Injecting Windows SDK lib dir (no VS env): ${_winsdk_libdir}")
-      link_directories("${_winsdk_libdir}")
-      # ucrt/x64 is needed for ucrtd.lib / ucrt.lib (Universal CRT)
-      get_filename_component(_winsdk_lib_ver "${_winsdk_libdir}" DIRECTORY)  # .../um
-      get_filename_component(_winsdk_lib_ver "${_winsdk_lib_ver}" DIRECTORY) # .../10.0.26100.0
-      set(_winsdk_ucrt_lib "${_winsdk_lib_ver}/ucrt/x64")
-      if(EXISTS "${_winsdk_ucrt_lib}")
-        message(STATUS "[aeronet] Injecting WinSDK ucrt lib dir (no VS env): ${_winsdk_ucrt_lib}")
-        link_directories("${_winsdk_ucrt_lib}")
-      endif()
-    endif()
-  endif()
-  unset(_winsdk_root)
-  unset(_winsdk_inc_dirs)
-  unset(_winsdk_inc_ver)
-  unset(_winsdk_um_dirs)
-  unset(_winsdk_libdir)
-endif()
-# ---------------------------------------------------------------------------
-
-set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
-
 message(STATUS "[aeronet] version: ${AERONET_PROJECT_VERSION}")
 
+# 64-bit targets only (CMAKE_SIZEOF_VOID_P is empty for a multi-architecture macOS build).
+if(CMAKE_SIZEOF_VOID_P AND NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+  math(EXPR _target_bits "${CMAKE_SIZEOF_VOID_P} * 8")
+  message(FATAL_ERROR
+    "[aeronet] ${_target_bits}-bit targets are not supported: aeronet requires a 64-bit target (x86_64, aarch64...). "
+    "See docs/getting-started/install.md#64-bit-targets-only")
+endif()
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Options
+# ----------------------------------------------------------------------------------------------------------------------
+
+# Build
+option(AERONET_ENABLE_CCACHE "Compile with ccache for faster incremental compilation" ${PROJECT_IS_TOP_LEVEL})
+option(AERONET_INSTALL "Enable install & package config generation" ${PROJECT_IS_TOP_LEVEL})
+option(AERONET_BUILD_SHARED "Build aeronet libraries as shared instead of static" OFF)
+option(AERONET_BUILD_MODULES "Build aeronet libraries as C++ module (experimental)" OFF)
+option(AERONET_UNITY_BUILD "Build the aeronet libraries as unity builds (several sources per compilation)" OFF)
+
+# Tests, examples and benchmarks are only built by default as the main project (benchmarks: not in Debug).
 set(AERONET_BUILD_BENCHMARKS_DEFAULT ${PROJECT_IS_TOP_LEVEL})
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   set(AERONET_BUILD_BENCHMARKS_DEFAULT OFF)
 endif()
+option(AERONET_BUILD_EXAMPLES "Build example programs" ${PROJECT_IS_TOP_LEVEL})
+option(AERONET_BUILD_TESTS "Build tests" ${PROJECT_IS_TOP_LEVEL})
+option(AERONET_BUILD_BENCHMARKS "Build benchmark executables" ${AERONET_BUILD_BENCHMARKS_DEFAULT})
 
-option(AERONET_ENABLE_CCACHE "Compile with ccache for faster incremental compilation" ${PROJECT_IS_TOP_LEVEL})
-
-# Build options
-option(AERONET_INSTALL "Enable install & package config generation" ${PROJECT_IS_TOP_LEVEL})
-# When consumed as a package (not the main project) we never want to build tests or examples.
-# Some package managers (vcpkg/Conan) may still pass defaults or reuse a cached build tree;
-# enforce OFF deterministically here to avoid leaking test targets into consumer builds.
-set(AERONET_BUILD_TESTS_EXAMPLES_DEFAULT ${PROJECT_IS_TOP_LEVEL})
-if(AERONET_INSTALL AND NOT PROJECT_IS_TOP_LEVEL)
-  set(AERONET_BUILD_TESTS_EXAMPLES_DEFAULT OFF CACHE BOOL "Build tests and examples" FORCE)
-  set(AERONET_BUILD_BENCHMARKS_DEFAULT OFF CACHE BOOL "Build benchmarks" FORCE)
-endif()
-
-option(AERONET_BUILD_EXAMPLES "Build example programs" ${AERONET_BUILD_TESTS_EXAMPLES_DEFAULT})
-option(AERONET_BUILD_TESTS "Build tests" ${AERONET_BUILD_TESTS_EXAMPLES_DEFAULT})
 set(AERONET_ENABLE_TEST_HOOKS_DEFAULT OFF)
 if(AERONET_BUILD_TESTS AND NOT CMAKE_BUILD_TYPE STREQUAL "Release")
   set(AERONET_ENABLE_TEST_HOOKS_DEFAULT ON)
@@ -164,13 +56,8 @@ endif()
 option(AERONET_ENABLE_TEST_HOOKS
   "Enable transport test hooks (auto-on in non-Release test builds, off by default for Release)"
   ${AERONET_ENABLE_TEST_HOOKS_DEFAULT})
-option(AERONET_BUILD_SHARED "Build aeronet libraries as shared instead of static" OFF)
-option(AERONET_BUILD_MODULES "Build aeronet libraries as C++ module (experimental)" OFF)
-option(AERONET_UNITY_BUILD "Build the aeronet libraries as unity builds (several sources per compilation)" OFF)
-option(AERONET_BUILD_BENCHMARKS "Build benchmark executables" ${AERONET_BUILD_BENCHMARKS_DEFAULT})
 
-# Split + compressed debug info (see cmake/CompactDebugInfo.cmake). Only on by default for Debug test builds:
-# installed artifacts would reference .dwo files left in the build tree.
+# Installed artifacts would reference the .dwo files left in the build tree: only on by default for Debug test builds.
 set(AERONET_COMPACT_DEBUG_INFO_DEFAULT OFF)
 if(AERONET_BUILD_TESTS AND CMAKE_BUILD_TYPE STREQUAL "Debug")
   set(AERONET_COMPACT_DEBUG_INFO_DEFAULT ON)
@@ -179,26 +66,16 @@ option(AERONET_COMPACT_DEBUG_INFO
   "Split DWARF + compressed debug sections, to shrink the binaries (on by default for Debug test builds)"
   ${AERONET_COMPACT_DEBUG_INFO_DEFAULT})
 
-if(AERONET_BUILD_SHARED)
-  # Static dependencies (zlib-ng, zstd, ...) are linked into the aeronet shared libraries.
-  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-  # Do not relink the executables (tests, examples) when only the implementation of a shared library changed:
-  # editing one library source then only relinks that library.
-  set(CMAKE_LINK_DEPENDS_NO_SHARED ON)
-endif()
-
-# Features
-# All features are optional, and independent of each other.
-# For example, you may activate WebSocket without zlib support, in which case the WebSocket implementation will simply not support permessage-deflate compression.
-
+# Features: all optional and independent of each other (WebSocket without zlib simply has no permessage-deflate).
 option(AERONET_ENABLE_HTTP_CLIENT "Enable the HTTP client (HttpClient)" ON)
 option(AERONET_ENABLE_HTTP_SERVER "Enable the HTTP server (HttpServer)" ON)
 
-if (NOT AERONET_ENABLE_HTTP_CLIENT AND NOT AERONET_ENABLE_HTTP_SERVER)
-  message(FATAL_ERROR "[aeronet] invalid configuration - client and server cannot be both disabled")
-endif()
+# Features without external dependencies: enabled by default, disable them to reduce binary size and compilation time.
+option(AERONET_ENABLE_ASYNC_HANDLERS "Enable asynchronous routing handlers" ${AERONET_ENABLE_HTTP_SERVER})
+option(AERONET_ENABLE_HTTP2 "Enable HTTP/2 (RFC 9113) support" ON)
+option(AERONET_ENABLE_WEBSOCKET "Enable WebSocket support" ${AERONET_ENABLE_HTTP_SERVER})
 
-# Features needing external dependencies (disabled by default, except if compiled as main project)
+# Features with external dependencies: disabled by default, except as the main project.
 option(AERONET_ENABLE_SPDLOG "Use spdlog library for logging" ${PROJECT_IS_TOP_LEVEL})
 option(AERONET_ENABLE_OPENSSL "Enable usage of OpenSSL for HTTPS support" ${PROJECT_IS_TOP_LEVEL})
 option(AERONET_ENABLE_BROTLI "Enable usage of Brotli for br codec support" ${PROJECT_IS_TOP_LEVEL})
@@ -207,26 +84,16 @@ option(AERONET_ENABLE_ZSTD "Enable usage of Zstandard for zstd codec support" ${
 option(AERONET_ENABLE_OPENTELEMETRY "Enable OpenTelemetry C++ integration" ${PROJECT_IS_TOP_LEVEL})
 option(AERONET_ENABLE_GLAZE "Enable glaze library for JSON serialization" ${PROJECT_IS_TOP_LEVEL})
 
-# Features without external dependencies (enabled by default, but you can disable them if you don't need them to reduce binary size and compilation time)
-option(AERONET_ENABLE_ASYNC_HANDLERS "Enable asynchronous routing handlers" ${AERONET_ENABLE_HTTP_SERVER})
-option(AERONET_ENABLE_HTTP2 "Enable HTTP/2 (RFC 9113) support" ON)
-option(AERONET_ENABLE_WEBSOCKET "Enable WebSocket support" ${AERONET_ENABLE_HTTP_SERVER})
-
-# JWT (JWS-profile) support reuses the OpenSSL crypto already linked for TLS and the glaze JSON
-# parser; it adds no new dependency. It is therefore not a standalone opt-in: it is available by
-# default whenever both prerequisites are present, and forced OFF (with a kill switch) otherwise.
+# JWT (JWS) reuses the OpenSSL crypto and the glaze JSON parser, and adds no dependency: on whenever both are, else off.
 include(CMakeDependentOption)
 cmake_dependent_option(AERONET_ENABLE_JWT "Enable JWT (JWS) support"
     ON "AERONET_ENABLE_OPENSSL;AERONET_ENABLE_GLAZE" OFF)
 
-# zlib-ng is a drop-in replacement for zlib with better performance and compression ratios, and is the default when AERONET_ENABLE_ZLIB is ON.
-# You can disable it in favor of classic zlib by setting this option to OFF.
+# Dependency variants
 option(AERONET_ENABLE_ZLIBNG "Prefer zlib-ng over zlib when AERONET_ENABLE_ZLIB is ON" ON)
-
-# Miscellaneous
 option(AERONET_SPDLOG_USE_STD_FORMAT "Use std::format instead of fmt::format in spdlog" ON)
 
-# Linting
+# Developer tools
 option(AERONET_ENABLE_ASAN "Enable Address/Undefined Behavior Sanitizers" OFF)
 option(AERONET_ENABLE_TSAN "Enable Thread Sanitizer (cannot be combined with AERONET_ENABLE_ASAN)" OFF)
 option(AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS "Enable miscellaneous additional memory checks to complement ASAN" OFF)
@@ -234,64 +101,47 @@ option(AERONET_ENABLE_CLANG_TIDY "Enable clang-tidy analysis" OFF)
 option(AERONET_ENABLE_WARNINGS "Enable extra compiler warnings" ${PROJECT_IS_TOP_LEVEL})
 option(AERONET_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
 
-# CMake >= 3.28 scans every C++ source for module imports by default (extra scan step per source, a barrier per target
-# and .ddi files). Only the aeronet_module target needs it (it enables it itself, see modules/CMakeLists.txt), so turn it
-# off for everything else, including the FetchContent dependencies. On MSVC + Ninja outside a VS Developer Command
-# Prompt the scanner also runs without the system include paths and fails on headers pulling in <string>, <stdint.h>...
-set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
-
-if(AERONET_ENABLE_CCACHE)
-  # Use ccache if available
-  find_program(CCACHE_PROGRAM ccache)
-
-  if(CCACHE_PROGRAM)
-    set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE "${CCACHE_PROGRAM}")
-  else()
-    message(WARNING "ccache wanted but not found in PATH")
-  endif()
+if(NOT AERONET_ENABLE_HTTP_CLIENT AND NOT AERONET_ENABLE_HTTP_SERVER)
+  message(FATAL_ERROR "[aeronet] invalid configuration - client and server cannot be both disabled")
 endif()
-
-# Clang-Tidy integration. Another version than the one in PATH (the one of the compiler, for instance) is selected with
-# -D CLANG_TIDY=/usr/bin/clang-tidy-23
-if(AERONET_ENABLE_CLANG_TIDY)
-  find_program(CLANG_TIDY "clang-tidy")
-  if(CLANG_TIDY)
-    message(STATUS "Activate clang-tidy: ${CLANG_TIDY}")
-    # Before the targets are created. cmake/ClangTidyHeaders.cmake needs the compile database to analyze headers.
-    set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-  else()
-    message(FATAL_ERROR "clang-tidy executable cannot be found")
-  endif()
-endif()
-
 if(AERONET_ENABLE_ASAN AND AERONET_ENABLE_TSAN)
   message(FATAL_ERROR "AERONET_ENABLE_ASAN and AERONET_ENABLE_TSAN cannot be enabled together")
 endif()
 
-if(AERONET_ENABLE_ASAN)
-  if (NOT AERONET_ASAN_OPTIONS)
-    set(AERONET_ASAN_OPTIONS -fsanitize=address -fsanitize=undefined -fsanitize=float-divide-by-zero -fno-sanitize-recover)
-  endif()
-  message(STATUS "Activate asan with options ${AERONET_ASAN_OPTIONS}")
+# ----------------------------------------------------------------------------------------------------------------------
+# Toolchain and dependencies
+# ----------------------------------------------------------------------------------------------------------------------
+
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+if(AERONET_BUILD_SHARED)
+  # Static dependencies (zlib-ng, zstd...) are linked into the aeronet shared libraries.
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+  # Editing the implementation of a shared library only relinks that library, not the tests and examples.
+  set(CMAKE_LINK_DEPENDS_NO_SHARED ON)
 endif()
 
-if(AERONET_ENABLE_TSAN)
-  if (NOT AERONET_TSAN_OPTIONS)
-    set(AERONET_TSAN_OPTIONS -fsanitize=thread -fno-omit-frame-pointer)
-  endif()
-  message(STATUS "Activate tsan with options ${AERONET_TSAN_OPTIONS}")
-endif()
+# CMake >= 3.28 scans every C++ source for module imports by default. Only aeronet_module needs it (it enables it
+# itself, see modules/CMakeLists.txt): off for everything else, FetchContent dependencies included. On MSVC + Ninja
+# outside a VS Developer Command Prompt, the scanner also runs without system include paths and fails.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
+include(cmake/MsvcSystemPaths.cmake)
+AeronetInjectMsvcSystemPaths()
+
+include(cmake/BuildTooling.cmake)
 # Before the dependencies, which are linked into the test executables as well.
 include(cmake/CompactDebugInfo.cmake)
-
 include(cmake/Dependencies.cmake)
-
-# Job pool detection and defaults (compute cpus and RAM-derived link pool)
 include(cmake/JobPool.cmake)
-
 include(cmake/SetProjectProperties.cmake)
 include(cmake/AddUnitTest.cmake)
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Targets
+# ----------------------------------------------------------------------------------------------------------------------
 
 add_subdirectory(aeronet)
 
@@ -299,8 +149,8 @@ if(AERONET_BUILD_EXAMPLES)
   add_subdirectory(examples)
 endif()
 
+# Tests need the server.
 if(AERONET_BUILD_TESTS AND AERONET_ENABLE_HTTP_SERVER)
-  # Tests need the server to be compiled.
   add_subdirectory(tests)
 endif()
 
@@ -312,128 +162,11 @@ if(AERONET_BUILD_BENCHMARKS)
   include(cmake/Benchmarks.cmake)
 endif()
 
+# Headers are not translation units: CXX_CLANG_TIDY never analyzes them.
 if(AERONET_ENABLE_CLANG_TIDY)
-  # Headers are not translation units: CXX_CLANG_TIDY never analyzes them.
   include(cmake/ClangTidyHeaders.cmake)
 endif()
 
-# Installation & Packaging
 if(AERONET_INSTALL)
-  include(CMakePackageConfigHelpers)
-  set(AERONET_INSTALL_CMAKE_DIR "lib/cmake/aeronet")
-
-  write_basic_package_version_file(
-    "${CMAKE_CURRENT_BINARY_DIR}/aeronetConfigVersion.cmake"
-    VERSION ${PROJECT_VERSION}
-    COMPATIBILITY SameMajorVersion
-  )
-
-  configure_file(
-    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/aeronetConfig.cmake.in
-    ${CMAKE_CURRENT_BINARY_DIR}/aeronetConfig.cmake
-    @ONLY
-  )
-
-  set(_AERONET_EXPORT_TARGETS aeronet aeronet_http aeronet_tech aeronet_objects aeronet_sys aeronet_version)
-  if(AERONET_ENABLE_HTTP2)
-    list(APPEND _AERONET_EXPORT_TARGETS aeronet_http2)
-  endif()
-  if(AERONET_ENABLE_HTTP_CLIENT)
-    list(APPEND _AERONET_EXPORT_TARGETS aeronet_client)
-  endif()
-  if(AERONET_ENABLE_HTTP_SERVER)
-    list(APPEND _AERONET_EXPORT_TARGETS aeronet_server)
-  endif()
-  if(AERONET_ENABLE_WEBSOCKET)
-    list(APPEND _AERONET_EXPORT_TARGETS aeronet_websocket)
-  endif()
-  if(AERONET_ENABLE_JWT)
-    list(APPEND _AERONET_EXPORT_TARGETS aeronet_jwt)
-  endif()
-  if(TARGET aeronet_zstd_headers)
-    list(APPEND _AERONET_EXPORT_TARGETS aeronet_zstd_headers)
-  endif()
-  if(TARGET aeronet_brotli_headers)
-    list(APPEND _AERONET_EXPORT_TARGETS aeronet_brotli_headers)
-  endif()
-  install(TARGETS ${_AERONET_EXPORT_TARGETS}
-    EXPORT aeronetTargets
-    ARCHIVE DESTINATION lib
-    LIBRARY DESTINATION lib
-    RUNTIME DESTINATION bin
-    INCLUDES DESTINATION include
-  )
-  if(AERONET_ENABLE_OPENSSL)
-    install(TARGETS aeronet_tls
-      EXPORT aeronetTargets
-      ARCHIVE DESTINATION lib
-      LIBRARY DESTINATION lib
-      RUNTIME DESTINATION bin
-      INCLUDES DESTINATION include
-    )
-  endif()
-
-  # Headers: install each public include tree
-  install(DIRECTORY aeronet/main/include/ DESTINATION include)
-  install(DIRECTORY aeronet/http/include/ DESTINATION include)
-  if(AERONET_ENABLE_HTTP2)
-    install(DIRECTORY aeronet/http2/include/ DESTINATION include)
-  endif()
-  if(AERONET_ENABLE_HTTP_CLIENT)
-    install(DIRECTORY aeronet/client/include/ DESTINATION include)
-  endif()
-  if(AERONET_ENABLE_HTTP_SERVER)
-    install(DIRECTORY aeronet/server/include/ DESTINATION include)
-  endif()
-  if(AERONET_ENABLE_JWT)
-    install(DIRECTORY aeronet/jwt/include/ DESTINATION include)
-  endif()
-  install(DIRECTORY aeronet/tech/include/ DESTINATION include)
-  install(DIRECTORY aeronet/sys/include/ DESTINATION include)
-  install(DIRECTORY aeronet/version/include/ DESTINATION include)
-
-  install(DIRECTORY aeronet/objects/include/ DESTINATION include)
-  if(AERONET_ENABLE_OPENSSL)
-    install(DIRECTORY aeronet/tls/include/ DESTINATION include)
-  endif()
-
-  # Export brotli third-party static libs when enabled so exported aeronet targets have resolvable deps.
-  if(AERONET_ENABLE_BROTLI)
-    if(TARGET brotlicommon)
-      install(TARGETS brotlicommon EXPORT aeronetTargets ARCHIVE DESTINATION lib LIBRARY DESTINATION lib)
-    endif()
-    if(TARGET brotlidec)
-      install(TARGETS brotlidec EXPORT aeronetTargets ARCHIVE DESTINATION lib LIBRARY DESTINATION lib)
-    endif()
-    if(TARGET brotlienc)
-      install(TARGETS brotlienc EXPORT aeronetTargets ARCHIVE DESTINATION lib LIBRARY DESTINATION lib)
-    endif()
-  endif()
-
-  # Skip exporting aeronetTargets when some dependencies are built via
-  # FetchContent and are not themselves exported, otherwise install(EXPORT ...)
-  # fails while generating the export set.
-  # Users should rely on find_package(aeronet) for system-installed builds,
-  # or use FetchContent for the full dependency tree.
-  if(NOT (
-    (AERONET_ENABLE_OPENTELEMETRY AND DEFINED opentelemetry_cpp_SOURCE_DIR)
-    OR
-    (AERONET_ENABLE_GLAZE AND DEFINED glaze_SOURCE_DIR)
-  ))
-    install(EXPORT aeronetTargets
-      NAMESPACE aeronet::
-      FILE aeronetTargets.cmake
-      DESTINATION ${AERONET_INSTALL_CMAKE_DIR}
-    )
-  endif()
-
-  if(AERONET_ENABLE_WEBSOCKET)
-    install(DIRECTORY aeronet/websocket/include/ DESTINATION include)
-  endif()
-
-  install(FILES
-    "${CMAKE_CURRENT_BINARY_DIR}/aeronetConfig.cmake"
-    "${CMAKE_CURRENT_BINARY_DIR}/aeronetConfigVersion.cmake"
-    DESTINATION ${AERONET_INSTALL_CMAKE_DIR}
-  )
+  include(cmake/Install.cmake)
 endif()
