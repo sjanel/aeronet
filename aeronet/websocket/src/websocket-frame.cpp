@@ -186,7 +186,7 @@ FrameParseResult ParseFrame(std::span<const std::byte> data, std::size_t maxPayl
   }
 
   // Check against configured maximum
-  if (maxPayloadSize > 0 && result.header.payloadLength > maxPayloadSize) {
+  if (result.header.payloadLength > maxPayloadSize) {
     result.status = FrameParseResult::Status::PayloadTooLarge;
     result.pErrorMessage = "Payload exceeds maximum size";
     return result;

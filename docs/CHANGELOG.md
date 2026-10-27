@@ -4,6 +4,10 @@ All notable changes to aeronet are documented in this file.
 
 ## Unreleased
 
+### Breaking changes
+
+- **`WebSocketConfig::maxMessageSize` and `maxFrameSize` no longer accept `0`**: `0` used to mean unlimited (for `maxFrameSize`, undocumented). `WebSocketConfig::validate()` now throws `std::invalid_argument` for it, like the other limits of the library. Set `std::numeric_limits<std::size_t>::max()` to approximate no limit. `WebSocketConfig` moved to `aeronet/websocket-config.hpp` (still included by `websocket-handler.hpp`). See [Configuration](protocols/websocket.md#configuration).
+
 ## [1.7.0] - 2026-10-26
 
 ### 1.7.0 Highlights
