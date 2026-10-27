@@ -4,7 +4,7 @@
   "description": "C++ HTTP server library with built-in HTTP/2, WebSocket, OpenTelemetry, compression, and more",
   "homepage": "https://github.com/sjanel/aeronet",
   "license": "MIT",
-  "supports": "linux | osx | windows",
+  "supports": "(linux | osx | windows) & (x64 | arm64)",
   "dependencies": [
     "vcpkg-cmake",
     "vcpkg-cmake-config",

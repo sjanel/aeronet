@@ -2,13 +2,14 @@
 
 This document centralizes how to build, install, and consume **aeronet**.
 
-> Cross-platform C++23 HTTP/1.1, HTTP/2 and WebSocket server and client library. Tested on Linux, macOS, and Windows.
+> Cross-platform C++23 HTTP/1.1, HTTP/2 and WebSocket server and client library for 64-bit targets. Tested on Linux, macOS, and Windows.
 
 ## Toolchain & Platform
 
 | Component | Minimum / Tested | Notes |
 | --------- | ---------------- | ----- |
 | OS | Linux (x86_64, aarch64), macOS (arm64, x86_64), Windows (x64) | Linux is primary (epoll); macOS uses kqueue; Windows uses WSAPoll |
+| Architecture | 64-bit only (`sizeof(void*) == sizeof(std::size_t) == 8`) | 32-bit targets (i386, armv7, 32-bit MIPS or RISC-V, wasm32...) are rejected, see [64-bit targets only](#64-bit-targets-only) |
 | CMake | 3.28+ | Enforced at configure time; see [Glaze with CMake older than 3.31](#glaze-with-cmake-older-than-331) |
 | C++ | C++23 | `CMAKE_CXX_STANDARD 23` required |
 | Clang | 21.x | Earlier might work, not guaranteed |
@@ -21,6 +22,16 @@ This document centralizes how to build, install, and consume **aeronet**.
 | GoogleTest (tests) | 1.13+ | Auto-fetched if missing |
 
 > **Note:** Some features are Linux-specific and auto-disabled on other platforms: kTLS, `MSG_ZEROCOPY`, `sendfile`, `eventfd`/`timerfd`, DogStatsD via Unix sockets. The core HTTP server works on all supported platforms.
+
+### 64-bit targets only
+
+aeronet does not support 32-bit targets (i386, armv7, 32-bit MIPS or RISC-V, wasm32...), and refuses to build for them:
+
+- CMake stops at configure time with `[aeronet] 32-bit targets are not supported` when the target has pointers of another size than 8 bytes (for instance with `-m32`).
+- `aeronet/compiler-config.hpp`, included by the main public headers, has a `static_assert` on `sizeof(void*)` and `sizeof(std::size_t)`, for code that includes the headers without going through the aeronet CMake targets.
+- The vcpkg port is only supported on `x64` and `arm64`, and the Conan recipe rejects the 32-bit `arch` settings.
+
+Sizes, offsets and lengths of bodies, files and WebSocket frames are 64-bit values on the wire and on disk (`Content-Length`, WebSocket 64-bit payload length, files larger than 4 GiB), kept in `std::size_t` internally: a 32-bit `std::size_t` would truncate them. The vendored hash maps and several vectorized routines also assume a 64-bit `std::size_t`. 32-bit targets are not part of the CI, and issues that only affect them are out of scope.
 
 ### Glaze with CMake older than 3.31
 
