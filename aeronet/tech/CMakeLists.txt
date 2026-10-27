@@ -31,6 +31,15 @@ if(AERONET_ENABLE_GLAZE)
     target_compile_definitions(aeronet_tech PUBLIC AERONET_ENABLE_GLAZE)
 endif()
 
+# The protobuf support is header-only: the aeronet libraries do not use protobuf, the targets whose public headers
+# include protobuf link it as INTERFACE (aeronet_version).
+if(AERONET_ENABLE_PROTOBUF)
+    target_compile_definitions(aeronet_tech PUBLIC AERONET_ENABLE_PROTOBUF)
+    if(AERONET_PROTOBUF_RUNTIME STREQUAL "lite")
+        target_compile_definitions(aeronet_tech PUBLIC AERONET_PROTOBUF_LITE)
+    endif()
+endif()
+
 AeronetAddUnitTest(
     base64_test
     test/base64_test.cpp
