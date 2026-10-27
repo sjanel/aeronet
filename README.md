@@ -86,7 +86,7 @@ Minimal server examples for typical use cases (multi-threaded server, TLS, HTTP/
 
 ```bash
 cmake -S . -B build -D CMAKE_BUILD_TYPE=Release
-cmake --build build
+cmake --build build --target aeronet-server-minimal
 
 ./build/examples/aeronet-server-minimal 8080   # or omit 8080 for ephemeral
 ```
@@ -96,11 +96,11 @@ Test with curl:
 ```bash
 curl -i http://localhost:8080/hello
 
-HTTP/1.1 200
-date: Wed, 11 Feb 2026 22:46:04 GMT
-content-type: text/plain
-content-length: 151
+HTTP/1.1 200 
+date: Tue, 27 Oct 2026 06:35:01 GMT
 server: aeronet
+content-type: text/plain
+content-length: 347
 
 Hello from aeronet minimal server! You requested /hello
 ```
