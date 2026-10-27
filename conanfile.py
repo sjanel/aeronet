@@ -1,4 +1,5 @@
 from conan import ConanFile
+from conan.errors import ConanInvalidConfiguration
 from conan.tools.cmake import CMake, CMakeToolchain, CMakeDeps, cmake_layout
 from conan.tools.files import copy
 
@@ -61,6 +62,35 @@ class AeronetConan(ConanFile):
     )
     package_type = "library"
     required_conan_version = ">=2.0"
+
+    # 32-bit architectures of the Conan 'arch' setting: aeronet only supports 64-bit targets.
+    _unsupported_32bit_archs = (
+        "x86",
+        "armv4",
+        "armv4i",
+        "armv5el",
+        "armv5hf",
+        "armv6",
+        "armv7",
+        "armv7hf",
+        "armv7s",
+        "armv7k",
+        "armv8_32",
+        "arm64_32",
+        "mips",
+        "ppc32",
+        "ppc32be",
+        "riscv32",
+        "sparc",
+        "wasm",
+    )
+
+    def validate(self):
+        arch = str(self.settings.get_safe("arch"))
+        if arch in self._unsupported_32bit_archs:
+            raise ConanInvalidConfiguration(
+                f"aeronet only supports 64-bit targets (arch={arch} is 32-bit)"
+            )
 
     def layout(self):
         cmake_layout(self)

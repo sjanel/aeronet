@@ -4,7 +4,7 @@ This section takes you from a checkout to a running server, then points to the n
 
 ## Prerequisites
 
-aeronet requires a C++23 compiler and CMake 3.28 or newer. Linux is the primary platform; macOS and Windows are also supported through the same public API. The complete toolchain matrix and package-manager instructions are in [Installation and build](install.md).
+aeronet requires a C++23 compiler and CMake 3.28 or newer. Linux is the primary platform; macOS and Windows are also supported through the same public API. Only 64-bit targets are supported. The complete toolchain matrix and package-manager instructions are in [Installation and build](install.md).
 
 ## Choose the features you need
 

@@ -10,6 +10,7 @@ All notable changes to aeronet are documented in this file.
 
 ### Breaking changes
 
+- **32-bit targets are rejected**: CMake stops at configure time (`CMAKE_SIZEOF_VOID_P` other than 8) and `aeronet/compiler-config.hpp` has a `static_assert` on `sizeof(void*)` and `sizeof(std::size_t)`. The vcpkg port is only supported on `x64` and `arm64`, and the Conan recipe rejects the 32-bit `arch` settings. 32-bit targets never were in the CI and did not work in practice (a 32-bit `std::size_t` truncates 64-bit sizes and lengths, and the vendored hash maps crash). See [64-bit targets only](getting-started/install.md#64-bit-targets-only).
 - **`WebSocketConfig::maxMessageSize` and `maxFrameSize` no longer accept `0`**: `0` used to mean unlimited (for `maxFrameSize`, undocumented). `WebSocketConfig::validate()` now throws `std::invalid_argument` for it, like the other limits of the library. Set `std::numeric_limits<std::size_t>::max()` to approximate no limit. `WebSocketConfig` moved to `aeronet/websocket-config.hpp` (still included by `websocket-handler.hpp`). See [Configuration](protocols/websocket.md#configuration).
 
 ## [1.7.0] - 2026-10-26
