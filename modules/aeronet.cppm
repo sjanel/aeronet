@@ -95,6 +95,7 @@ using aeronet::http2Enabled;
 using aeronet::MajorMinorVersion;
 using aeronet::openSslEnabled;
 using aeronet::openTelemetryEnabled;
+using aeronet::protobufEnabled;
 using aeronet::spdLogEnabled;
 using aeronet::version;
 using aeronet::webSocketEnabled;

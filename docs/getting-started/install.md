@@ -19,6 +19,7 @@ This document centralizes how to build, install, and consume **aeronet**.
 | OpenSSL (opt) | 1.1.1 / 3.x | For TLS (HTTPS) support |
 | spdlog (opt) | 1.11+ | Logging; header-only usage |
 | glaze (opt) | 8.4+ | JSON / YAML support (`AERONET_ENABLE_GLAZE`); 9.0.0 when fetched |
+| protobuf (opt) | 3.21+ | Protocol Buffers support (`AERONET_ENABLE_PROTOBUF`), also required by OpenTelemetry; never fetched, install it (`libprotobuf-dev protobuf-compiler` on Debian / Ubuntu) |
 | GoogleTest (tests) | 1.13+ | Auto-fetched if missing |
 
 > **Note:** Some features are Linux-specific and auto-disabled on other platforms: kTLS, `MSG_ZEROCOPY`, `sendfile`, `eventfd`/`timerfd`, DogStatsD via Unix sockets. The core HTTP server works on all supported platforms.
@@ -81,7 +82,8 @@ cmake -S . -B build-plain -G Ninja -D CMAKE_BUILD_TYPE=Release \
   -D AERONET_ENABLE_WEBSOCKET=OFF -D AERONET_ENABLE_HTTP_CLIENT=OFF \
   -D AERONET_ENABLE_ZLIB=OFF -D AERONET_ENABLE_ZSTD=OFF \
   -D AERONET_ENABLE_BROTLI=OFF -D AERONET_ENABLE_SPDLOG=OFF \
-  -D AERONET_ENABLE_GLAZE=OFF -D AERONET_ENABLE_OPENTELEMETRY=OFF
+  -D AERONET_ENABLE_GLAZE=OFF -D AERONET_ENABLE_OPENTELEMETRY=OFF \
+  -D AERONET_ENABLE_PROTOBUF=OFF
 cmake --build build-plain --parallel
 ```
 
@@ -101,7 +103,8 @@ cmake -S . -B build-shared -G Ninja -D CMAKE_BUILD_TYPE=Release \
   -D AERONET_ENABLE_WEBSOCKET=OFF -D AERONET_ENABLE_HTTP_CLIENT=OFF \
   -D AERONET_ENABLE_ZLIB=OFF -D AERONET_ENABLE_ZSTD=OFF \
   -D AERONET_ENABLE_BROTLI=OFF -D AERONET_ENABLE_SPDLOG=OFF \
-  -D AERONET_ENABLE_GLAZE=OFF -D AERONET_ENABLE_OPENTELEMETRY=OFF
+  -D AERONET_ENABLE_GLAZE=OFF -D AERONET_ENABLE_OPENTELEMETRY=OFF \
+  -D AERONET_ENABLE_PROTOBUF=OFF
 cmake --build build-shared --parallel
 ```
 
@@ -262,6 +265,7 @@ Available Conan options map:
   | `with_br` | brotli support (conan option name in recipe) | `AERONET_ENABLE_BROTLI` |
   | `with_opentelemetry` | Enable OpenTelemetry instrumentation (pulls opentelemetry-cpp & protobuf) | `AERONET_ENABLE_OPENTELEMETRY` |
   | `with_glaze` | Enable glaze JSON support | `AERONET_ENABLE_GLAZE` |
+  | `with_protobuf` | Enable Protocol Buffers support (pulls protobuf) | `AERONET_ENABLE_PROTOBUF` |
 
 ### vcpkg (Overlay Port)
 
