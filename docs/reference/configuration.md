@@ -108,6 +108,37 @@ ctest --test-dir build --output-on-failure
 
 The [installation guide](../getting-started/install.md) covers compilers, packages, installation, Conan, and vcpkg. Runtime controls are split into the [server](server-configuration.md) and [client](client-configuration.md) references.
 
+## Checking what a binary was built with
+
+The options above are compile-time, so a binary does not necessarily have the features of the build you had in mind. Two headers report it, both at no runtime cost:
+
+- [`aeronet/features.hpp`](../../aeronet/tech/include/aeronet/features.hpp): one `constexpr bool` per feature, usable in `if constexpr` - `httpServerEnabled()`, `httpClientEnabled()`, `http2Enabled()`, `webSocketEnabled()`, `asyncHandlersEnabled()`, `openSslEnabled()`, `openTelemetryEnabled()`, `spdLogEnabled()`, `zlibEnabled()`, `zstdEnabled()` and `brotliEnabled()`.
+- [`aeronet/version.hpp`](../../aeronet/version/include/aeronet/version.hpp): `version()` is the aeronet semver, `fullVersionStringView()` a `constexpr` multi-line description of the build and `fullVersionWithRuntime()` the same string completed with the version of brotli loaded at runtime (brotli's version cannot be read at compile time). `aeronet-client.hpp` and `aeronet-server.hpp` include it.
+
+```cpp
+#include <aeronet/features.hpp>
+#include <aeronet/version.hpp>
+
+#include <iostream>
+
+if constexpr (aeronet::http2Enabled()) {
+  std::cout << "HTTP/2 is compiled in\n";
+}
+std::cout << aeronet::fullVersionWithRuntime() << '\n';
+```
+
+```text
+aeronet 1.8.0-dev
+  glaze: 8.1.0
+  tls: OpenSSL 3.0.13 30 Jan 2024
+  logging: spdlog 1.15.0
+  opentelemetry: 1.30.0
+  features: http-server, http-client, http2, websocket, async-handlers
+  compression: zlib-ng 2.2.4, zstd 1.5.6, brotli 1.1.0
+```
+
+A disabled dependency prints `disabled` (`tls: disabled`, `opentelemetry: disabled`...), `logging` is `in-house` without spdlog, and the `features` line lists only the enabled flags among HTTP server, HTTP client, HTTP/2, WebSocket and async handlers (`none` when all are off). The dependencies that have their own line (TLS, glaze, spdlog, OpenTelemetry, compression codecs) are not repeated there. Tests: [version_test.cpp](../../aeronet/version/test/version_test.cpp).
+
 ## Public headers and configuration files
 
 Use `aeronet/aeronet.hpp` for the umbrella library API and `aeronet/aeronet-server.hpp` for server assembly. These headers define the configuration surface documented here:

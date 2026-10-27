@@ -1,8 +1,11 @@
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <string>
 #include <string_view>
 
+#include "aeronet/features.hpp"
 #include "aeronet/ndigits.hpp"
 #include "aeronet/static-string-view-helpers.hpp"
 
@@ -17,7 +20,6 @@
 #ifdef AERONET_ENABLE_BROTLI
 #include <brotli/decode.h>
 
-#include <cstddef>
 #include <cstdint>
 
 #include "aeronet/decimal-writer.hpp"
@@ -34,6 +36,10 @@
 
 #ifdef AERONET_ENABLE_SPDLOG
 #include <spdlog/version.h>
+#endif
+
+#ifdef AERONET_ENABLE_OPENTELEMETRY
+#include <opentelemetry/version.h>
 #endif
 
 #ifndef AERONET_VERSION_STR
@@ -93,6 +99,70 @@ inline constexpr std::string_view _sv_logging_section =
 #else
 inline constexpr std::string_view _sv_logging_section = "logging: in-house";
 #endif
+
+// OpenTelemetry section fragment (either version or disabled)
+#ifdef AERONET_ENABLE_OPENTELEMETRY
+inline constexpr std::string_view _sv_opentelemetry_prefix = "opentelemetry: ";
+inline constexpr std::string_view _sv_opentelemetry_ver = OPENTELEMETRY_VERSION;  // e.g. "1.30.0"
+inline constexpr std::string_view _sv_opentelemetry_section =
+    JoinStringView<_sv_opentelemetry_prefix, _sv_opentelemetry_ver>::value;
+#else
+inline constexpr std::string_view _sv_opentelemetry_section = "opentelemetry: disabled";
+#endif
+
+// Features section fragment: the compile-time flags that have no section of their own, as a comma separated list.
+struct FeatureFlag {
+  std::string_view name;
+  bool enabled;
+};
+
+inline constexpr FeatureFlag _features[]{
+    {"http-server", httpServerEnabled()}, {"http-client", httpClientEnabled()},       {"http2", http2Enabled()},
+    {"websocket", webSocketEnabled()},    {"async-handlers", asyncHandlersEnabled()},
+};
+
+inline constexpr std::string_view _sv_features_prefix = "features: ";
+inline constexpr std::string_view _sv_features_none = "none";
+inline constexpr std::string_view _sv_features_sep = ", ";
+
+// Writes the section into dst (when not null) and returns its length.
+constexpr std::size_t WriteFeaturesSection(char* dst) {
+  std::size_t len = 0;
+  const auto append = [dst, &len](std::string_view sv) {
+    for (const char ch : sv) {
+      if (dst != nullptr) {
+        dst[len] = ch;
+      }
+      ++len;
+    }
+  };
+  append(_sv_features_prefix);
+  bool first = true;
+  for (const FeatureFlag& feature : _features) {
+    if (feature.enabled) {
+      if (!first) {
+        append(_sv_features_sep);
+      }
+      append(feature.name);
+      first = false;
+    }
+  }
+  if (first) {
+    append(_sv_features_none);
+  }
+  return len;
+}
+
+inline constexpr std::size_t _features_section_len = WriteFeaturesSection(nullptr);
+
+// Null terminated static storage of the section
+inline constexpr std::array<char, _features_section_len + 1U> _features_section_chars = [] {
+  std::array<char, _features_section_len + 1U> chars{};
+  WriteFeaturesSection(chars.data());
+  return chars;
+}();
+
+inline constexpr std::string_view _sv_features_section{_features_section_chars.data(), _features_section_len};
 
 // Compression section fragment
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
@@ -158,6 +228,9 @@ inline constexpr std::string_view _sv_compression_section = "compression: disabl
 //   aeronet <version>\n
 //   tls: <...>\n
 //   logging: <...>
+//   opentelemetry: <...>
+//   features: <...>
+//   compression: <...>
 //
 // Each feature section is determined at compile time via feature macros.
 constexpr std::string_view fullVersionStringView() {  // Assemble multiline string (no trailing newline):
@@ -165,7 +238,8 @@ constexpr std::string_view fullVersionStringView() {  // Assemble multiline stri
 
   using full_version_join_t =
       JoinStringView<_sv_name, _sv_version_macro, _sv_newline, _sv_glaze_section, _sv_newline, _sv_tls_section,
-                     _sv_newline, _sv_logging_section, _sv_newline, _sv_compression_section>;
+                     _sv_newline, _sv_logging_section, _sv_newline, _sv_opentelemetry_section, _sv_newline,
+                     _sv_features_section, _sv_newline, _sv_compression_section>;
 
   return full_version_join_t::value;
 }
