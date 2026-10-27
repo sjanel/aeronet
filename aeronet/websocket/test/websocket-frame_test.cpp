@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <span>
@@ -20,6 +21,8 @@
 
 namespace aeronet::websocket {
 namespace {
+
+constexpr std::size_t kNoLimit = std::numeric_limits<std::size_t>::max();
 
 inline std::span<const std::byte> sv_bytes(std::string_view sv) noexcept {
   return std::as_bytes(std::span<const char>(sv.data(), sv.size()));
@@ -259,7 +262,7 @@ TEST_F(WebSocketFrameTest, ParseIncompleteExtendedLength) {
   // 16-bit length marker but only 1 extra byte
   // Use client-side parsing (isServerSide=false) to avoid mask validation
   std::array data{std::byte{0x81}, std::byte{126}, std::byte{0x00}};
-  auto result = ParseFrame(data, 0, false);
+  auto result = ParseFrame(data, kNoLimit, false);
   EXPECT_EQ(result.status, FrameParseResult::Status::Incomplete);
 }
 
@@ -269,7 +272,7 @@ TEST_F(WebSocketFrameTest, ParseUnmaskedTextFrame) {
   BuildFrame(buffer, Opcode::Text, sv_bytes(payload));
 
   auto data = buf_bytes(buffer);
-  auto result = ParseFrame(data, 0, false);
+  auto result = ParseFrame(data, kNoLimit, false);
 
   EXPECT_EQ(result.status, FrameParseResult::Status::Complete);
   EXPECT_EQ(result.header.opcode, Opcode::Text);
@@ -285,7 +288,7 @@ TEST_F(WebSocketFrameTest, ParseMaskedTextFrame) {
   BuildFrame(buffer, Opcode::Text, sv_bytes(payload), true, true, mask);
 
   auto data = buf_bytes(buffer);
-  auto result = ParseFrame(data, 0, true);
+  auto result = ParseFrame(data, kNoLimit, true);
 
   EXPECT_EQ(result.status, FrameParseResult::Status::Complete);
   EXPECT_EQ(result.header.opcode, Opcode::Text);
@@ -299,7 +302,7 @@ TEST_F(WebSocketFrameTest, ParseServerRejectsUnmaskedClient) {
   BuildFrame(buffer, Opcode::Text, sv_bytes(payload), true, false);
 
   auto data = buf_bytes(buffer);
-  auto result = ParseFrame(data, 0, true);  // Server-side
+  auto result = ParseFrame(data, kNoLimit, true);  // Server-side
 
   EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
 }
@@ -310,7 +313,7 @@ TEST_F(WebSocketFrameTest, ParseClientAcceptsUnmasked) {
   BuildFrame(buffer, Opcode::Text, sv_bytes(payload), true, false);
 
   auto data = buf_bytes(buffer);
-  auto result = ParseFrame(data, 0, false);  // Client-side
+  auto result = ParseFrame(data, kNoLimit, false);  // Client-side
 
   EXPECT_EQ(result.status, FrameParseResult::Status::Complete);
 }
@@ -338,7 +341,7 @@ TEST_F(WebSocketFrameTest, ParseCloseFrame) {
   BuildCloseFrame(buffer, CloseCode::Normal, "bye");
 
   auto data = buf_bytes(buffer);
-  auto result = ParseFrame(data, 0, false);
+  auto result = ParseFrame(data, kNoLimit, false);
 
   EXPECT_EQ(result.status, FrameParseResult::Status::Complete);
   EXPECT_EQ(result.header.opcode, Opcode::Close);
@@ -349,7 +352,7 @@ TEST_F(WebSocketFrameTest, ParsePingFrame) {
   BuildFrame(buffer, Opcode::Ping, sv_bytes("test", 4));
 
   auto data = buf_bytes(buffer);
-  auto result = ParseFrame(data, 0, false);
+  auto result = ParseFrame(data, kNoLimit, false);
 
   EXPECT_EQ(result.status, FrameParseResult::Status::Complete);
   EXPECT_EQ(result.header.opcode, Opcode::Ping);
@@ -361,7 +364,7 @@ TEST_F(WebSocketFrameTest, Parse16BitLength) {
   BuildFrame(buffer, Opcode::Binary, container_bytes(payload));
 
   auto data = buf_bytes(buffer);
-  auto result = ParseFrame(data, 0, false);
+  auto result = ParseFrame(data, kNoLimit, false);
 
   EXPECT_EQ(result.status, FrameParseResult::Status::Complete);
   EXPECT_EQ(result.header.payloadLength, 200);
@@ -374,7 +377,7 @@ TEST_F(WebSocketFrameTest, ParseIncompletePayload) {
 
   // Only provide half the frame
   auto data = buf_bytes_partial(buffer, buffer.size() / 2);
-  auto result = ParseFrame(data, 0, false);
+  auto result = ParseFrame(data, kNoLimit, false);
 
   EXPECT_EQ(result.status, FrameParseResult::Status::Incomplete);
 }
@@ -521,7 +524,7 @@ TEST_F(WebSocketFrameTest, BuildFrameHeaderOfPayloadSentApart) {
     frame.ensureAvailableCapacity(size);
     frame.setEnd(AppendMasked(payload, frame.data() + frame.size(), mask));
 
-    const auto result = ParseFrame(buf_bytes(frame), 0, /*isServerSide=*/true, /*allowRsv1=*/true);
+    const auto result = ParseFrame(buf_bytes(frame), kNoLimit, /*isServerSide=*/true, /*allowRsv1=*/true);
     ASSERT_EQ(result.status, FrameParseResult::Status::Complete) << size;
     EXPECT_EQ(result.header.headerSize(), headerSize);
     EXPECT_EQ(result.header.opcode, Opcode::Binary);
@@ -553,7 +556,7 @@ TEST_F(WebSocketFrameTest, ParseClosePayloadWithReason) {
   BuildCloseFrame(buffer, CloseCode::GoingAway, "Going Away");
 
   auto data = buf_bytes(buffer);
-  auto frameResult = ParseFrame(data, 0, false);
+  auto frameResult = ParseFrame(data, kNoLimit, false);
   ASSERT_EQ(frameResult.status, FrameParseResult::Status::Complete);
 
   auto closePayload = ParseClosePayload(frameResult.payload);
@@ -565,7 +568,7 @@ TEST_F(WebSocketFrameTest, ParseClosePayloadNoReason) {
   BuildCloseFrame(buffer, CloseCode::ProtocolError, "");
 
   auto data = buf_bytes(buffer);
-  auto frameResult = ParseFrame(data, 0, false);
+  auto frameResult = ParseFrame(data, kNoLimit, false);
   ASSERT_EQ(frameResult.status, FrameParseResult::Status::Complete);
 
   auto closePayload = ParseClosePayload(frameResult.payload);
@@ -619,7 +622,7 @@ TEST_F(WebSocketFrameTest, RoundTripUnmaskedText) {
   BuildFrame(buffer, Opcode::Text, sv_bytes(original));
 
   auto data = buf_bytes(buffer);
-  auto result = ParseFrame(data, 0, false);
+  auto result = ParseFrame(data, kNoLimit, false);
 
   ASSERT_EQ(result.status, FrameParseResult::Status::Complete);
   std::string_view parsed(reinterpret_cast<const char*>(result.payload.data()), result.payload.size());
@@ -635,7 +638,7 @@ TEST_F(WebSocketFrameTest, RoundTripMaskedText) {
   vector<std::byte> mutableData(static_cast<uint32_t>(buffer.size()));
   std::memcpy(mutableData.data(), buffer.data(), buffer.size());
 
-  auto result = ParseFrame(mutableData, 0, true);
+  auto result = ParseFrame(mutableData, kNoLimit, true);
 
   ASSERT_EQ(result.status, FrameParseResult::Status::Complete);
   ASSERT_TRUE(result.header.masked);
@@ -655,7 +658,7 @@ TEST_F(WebSocketFrameTest, RoundTripBinary) {
   BuildFrame(buffer, Opcode::Binary, container_bytes(original));
 
   auto data = buf_bytes(buffer);
-  auto result = ParseFrame(data, 0, false);
+  auto result = ParseFrame(data, kNoLimit, false);
 
   ASSERT_EQ(result.status, FrameParseResult::Status::Complete);
   EXPECT_EQ(result.header.opcode, Opcode::Binary);
@@ -675,7 +678,7 @@ TEST_F(WebSocketFrameTest, BuildCloseFrameNoStatusReceived) {
   BuildCloseFrame(buffer, CloseCode::NoStatusReceived, "ignored");
 
   auto data = buf_bytes(buffer);
-  auto result = ParseFrame(data, 0, false);
+  auto result = ParseFrame(data, kNoLimit, false);
 
   ASSERT_EQ(result.status, FrameParseResult::Status::Complete);
   EXPECT_EQ(result.header.opcode, Opcode::Close);
@@ -688,7 +691,7 @@ TEST_F(WebSocketFrameTest, BuildCloseFrameReasonTruncated) {
   BuildCloseFrame(buffer, CloseCode::Normal, longReason);
 
   auto data = buf_bytes(buffer);
-  auto result = ParseFrame(data, 0, false);
+  auto result = ParseFrame(data, kNoLimit, false);
 
   ASSERT_EQ(result.status, FrameParseResult::Status::Complete);
   // Payload should be 2 (code) + 123 (truncated reason) = 125
@@ -700,7 +703,7 @@ TEST_F(WebSocketFrameTest, BuildCloseFrameMasked) {
   BuildCloseFrame(buffer, CloseCode::GoingAway, "bye", true, mask);
 
   auto data = buf_bytes(buffer);
-  auto result = ParseFrame(data, 0, true);
+  auto result = ParseFrame(data, kNoLimit, true);
 
   ASSERT_EQ(result.status, FrameParseResult::Status::Complete);
   EXPECT_TRUE(result.header.masked);
@@ -731,7 +734,7 @@ TEST_F(WebSocketFrameTest, BuildMediumLengthFrame) {
   BuildFrame(buffer, Opcode::Binary, mediumPayload);
 
   auto data = buf_bytes(buffer);
-  auto result = ParseFrame(data, 0, false);
+  auto result = ParseFrame(data, kNoLimit, false);
 
   ASSERT_EQ(result.status, FrameParseResult::Status::Complete);
   EXPECT_EQ(result.payload.size(), mediumPayload.size());
@@ -749,7 +752,7 @@ TEST_F(WebSocketFrameTest, Build64BitLengthFrame) {
   BuildFrame(buffer, Opcode::Binary, largePayload);
 
   auto data = buf_bytes(buffer);
-  auto result = ParseFrame(data, 0, false);
+  auto result = ParseFrame(data, kNoLimit, false);
 
   ASSERT_EQ(result.status, FrameParseResult::Status::Complete);
   EXPECT_EQ(result.payload.size(), largePayload.size());
@@ -766,7 +769,7 @@ TEST_F(WebSocketFrameTest, BuildMasked64BitLengthFrame) {
   vector<std::byte> mutableData(static_cast<uint32_t>(buffer.size()));
   std::memcpy(mutableData.data(), buffer.data(), buffer.size());
 
-  auto result = ParseFrame(mutableData, 0, true);
+  auto result = ParseFrame(mutableData, kNoLimit, true);
 
   ASSERT_EQ(result.status, FrameParseResult::Status::Complete);
   EXPECT_TRUE(result.header.masked);
@@ -788,7 +791,7 @@ TEST_F(WebSocketFrameTest, ParseFrame64BitLengthNonMinimal) {
     frame.push_back(std::byte{'X'});
   }
 
-  auto result = ParseFrame(frame, 0, false);
+  auto result = ParseFrame(frame, kNoLimit, false);
   EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
   EXPECT_STREQ(result.pErrorMessage, "Non-minimal extended length encoding");
 }
@@ -803,7 +806,7 @@ TEST_F(WebSocketFrameTest, ParseFrame64BitLengthMSBSet) {
     frame.push_back(std::byte{0x00});
   }
 
-  auto result = ParseFrame(frame, 0, false);
+  auto result = ParseFrame(frame, kNoLimit, false);
   EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
   EXPECT_STREQ(result.pErrorMessage, "Invalid payload length (MSB set)");
 }
@@ -814,7 +817,7 @@ TEST_F(WebSocketFrameTest, BuildFrameNonFinFragment) {
   BuildFrame(buffer, Opcode::Text, sv_bytes(payload), false);
 
   auto data = buf_bytes(buffer);
-  auto result = ParseFrame(data, 0, false);
+  auto result = ParseFrame(data, kNoLimit, false);
 
   ASSERT_EQ(result.status, FrameParseResult::Status::Complete);
   EXPECT_FALSE(result.header.fin);
@@ -826,7 +829,7 @@ TEST_F(WebSocketFrameTest, BuildEmptyPayloadMasked) {
   BuildFrame(buffer, Opcode::Text, emptyPayload, true, true, mask);
 
   auto data = buf_bytes(buffer);
-  auto result = ParseFrame(data, 0, true);
+  auto result = ParseFrame(data, kNoLimit, true);
 
   ASSERT_EQ(result.status, FrameParseResult::Status::Complete);
   EXPECT_TRUE(result.header.masked);
@@ -901,7 +904,7 @@ TEST_F(WebSocketFrameTest, ParseRSV1BitSet) {
   frame.push_back(std::byte{'l'});
   frame.push_back(std::byte{'o'});
 
-  auto result = ParseFrame(frame, 0, false);
+  auto result = ParseFrame(frame, kNoLimit, false);
   EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
   EXPECT_STREQ(result.pErrorMessage, "Reserved bits RSV2/RSV3 must be 0");
 }
@@ -920,7 +923,7 @@ TEST_F(WebSocketFrameTest, ParseRSV1WithoutPerMessageDeflate) {
   frame.push_back(std::byte{'o'});
 
   // allowRsv1 == false (no permessage-deflate negotiated)
-  auto result = ParseFrame(frame, 0, false, false);
+  auto result = ParseFrame(frame, kNoLimit, false, false);
   EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
   EXPECT_STREQ(result.pErrorMessage, "RSV1 bit set without permessage-deflate extension");
 }
@@ -934,7 +937,7 @@ TEST_F(WebSocketFrameTest, ParseRSV1OnControlFrame) {
   frame.push_back(std::byte{0x00});  // MASK=0, length=0
 
   // allowRsv1 == true but RSV1 must not be set on control frames
-  auto result = ParseFrame(frame, 0, false, true);
+  auto result = ParseFrame(frame, kNoLimit, false, true);
   EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
   EXPECT_STREQ(result.pErrorMessage, "RSV1 bit must not be set on control frames");
 }
@@ -945,7 +948,7 @@ TEST_F(WebSocketFrameTest, ParseRSV2BitSet) {
   frame.push_back(std::byte{0xA1});  // FIN=1, RSV2=1, opcode=Text
   frame.push_back(std::byte{0x00});  // MASK=0, length=0
 
-  auto result = ParseFrame(frame, 0, false);
+  auto result = ParseFrame(frame, kNoLimit, false);
   EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
 }
 
@@ -955,7 +958,7 @@ TEST_F(WebSocketFrameTest, ParseRSV3BitSet) {
   frame.push_back(std::byte{0x91});  // FIN=1, RSV3=1, opcode=Text (0x81 | 0x10)
   frame.push_back(std::byte{0x00});  // MASK=0, length=0
 
-  auto result = ParseFrame(frame, 0, false);
+  auto result = ParseFrame(frame, kNoLimit, false);
   EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
 }
 
@@ -968,7 +971,7 @@ TEST_F(WebSocketFrameTest, ParseReservedDataOpcode3) {
   frame.push_back(std::byte{0x83});  // FIN=1, opcode=3 (reserved)
   frame.push_back(std::byte{0x00});  // MASK=0, length=0
 
-  auto result = ParseFrame(frame, 0, false);
+  auto result = ParseFrame(frame, kNoLimit, false);
   EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
   EXPECT_STREQ(result.pErrorMessage, "Reserved opcode");
 }
@@ -978,7 +981,7 @@ TEST_F(WebSocketFrameTest, ParseReservedControlOpcode11) {
   frame.push_back(std::byte{0x8B});  // FIN=1, opcode=0x0B (reserved control)
   frame.push_back(std::byte{0x00});  // MASK=0, length=0
 
-  auto result = ParseFrame(frame, 0, false);
+  auto result = ParseFrame(frame, kNoLimit, false);
   EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
 }
 
@@ -991,7 +994,7 @@ TEST_F(WebSocketFrameTest, ParseFragmentedPingFrame) {
   frame.push_back(std::byte{0x09});  // FIN=0, opcode=Ping (fragmented - invalid)
   frame.push_back(std::byte{0x00});  // MASK=0, length=0
 
-  auto result = ParseFrame(frame, 0, false);
+  auto result = ParseFrame(frame, kNoLimit, false);
   EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
   EXPECT_STREQ(result.pErrorMessage, "Control frames must not be fragmented");
 }
@@ -1001,7 +1004,7 @@ TEST_F(WebSocketFrameTest, ParseFragmentedCloseFrame) {
   frame.push_back(std::byte{0x08});  // FIN=0, opcode=Close (fragmented - invalid)
   frame.push_back(std::byte{0x00});  // MASK=0, length=0
 
-  auto result = ParseFrame(frame, 0, false);
+  auto result = ParseFrame(frame, kNoLimit, false);
   EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
 }
 
@@ -1020,7 +1023,7 @@ TEST_F(WebSocketFrameTest, ParsePingPayloadTooLarge) {
     frame.push_back(std::byte{'X'});
   }
 
-  auto result = ParseFrame(frame, 0, false);
+  auto result = ParseFrame(frame, kNoLimit, false);
   EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
   EXPECT_STREQ(result.pErrorMessage, "Control frame payload too large");
 }
@@ -1036,7 +1039,7 @@ TEST_F(WebSocketFrameTest, ParseClientRejectsServerMaskedFrame) {
   BuildFrame(buffer, Opcode::Text, sv_bytes(payload), true, true, mask);
 
   auto data = buf_bytes(buffer);
-  auto result = ParseFrame(data, 0, false);  // Client-side
+  auto result = ParseFrame(data, kNoLimit, false);  // Client-side
 
   EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
   EXPECT_STREQ(result.pErrorMessage, "Server frames must not be masked");
@@ -1059,7 +1062,7 @@ TEST_F(WebSocketFrameTest, ParseFrame16BitLengthNonMinimal) {
     frame.push_back(std::byte{'X'});
   }
 
-  auto result = ParseFrame(frame, 0, false);
+  auto result = ParseFrame(frame, kNoLimit, false);
   EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
   EXPECT_STREQ(result.pErrorMessage, "Non-minimal extended length encoding");
 }
@@ -1075,7 +1078,7 @@ TEST_F(WebSocketFrameTest, ParseIncompleteMaskingKey) {
   frame.push_back(std::byte{0x85});  // MASK=1, length=5
   frame.push_back(std::byte{0x12});  // Only 1 byte of masking key
 
-  auto result = ParseFrame(frame, 0, true);  // Server-side
+  auto result = ParseFrame(frame, kNoLimit, true);  // Server-side
   EXPECT_EQ(result.status, FrameParseResult::Status::Incomplete);
 }
 
@@ -1093,7 +1096,7 @@ TEST_F(WebSocketFrameTest, ParseIncomplete64BitLength) {
   frame.push_back(std::byte{0x00});
   frame.push_back(std::byte{0x00});  // Only 4 bytes, need 8
 
-  auto result = ParseFrame(frame, 0, false);
+  auto result = ParseFrame(frame, kNoLimit, false);
   EXPECT_EQ(result.status, FrameParseResult::Status::Incomplete);
 }
 

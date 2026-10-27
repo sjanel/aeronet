@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 
 #include "aeronet/raw-bytes.hpp"
@@ -43,10 +44,10 @@ class DeflateContext {
   /// Decompress a message payload.
   /// @param input Compressed message data
   /// @param output Buffer to append decompressed data to
-  /// @param maxDecompressedSize Maximum allowed decompressed size (0 = unlimited)
+  /// @param maxDecompressedSize Maximum allowed decompressed size
   /// @return nullptr on success, error message on decompression error or size limit exceeded
   [[nodiscard]] const char* decompress(std::span<const std::byte> input, RawBytes& output,
-                                       std::size_t maxDecompressedSize = 0);
+                                       std::size_t maxDecompressedSize = std::numeric_limits<std::size_t>::max());
 
   /// Check if compression should be skipped for a given payload size.
   [[nodiscard]] bool shouldSkipCompression(std::size_t payloadSize) const noexcept {
