@@ -4,6 +4,10 @@ All notable changes to aeronet are documented in this file.
 
 ## Unreleased
 
+### Fixed
+
+- **`fullVersionStringView()` / `fullVersionWithRuntime()` report the OpenTelemetry version and the compile-time features**: new `opentelemetry: <version>` (or `disabled`) and `features: http-server, http-client, http2, websocket, async-handlers` (the enabled ones, or `none`) lines between `logging` and `compression`.
+
 ### Breaking changes
 
 - **`WebSocketConfig::maxMessageSize` and `maxFrameSize` no longer accept `0`**: `0` used to mean unlimited (for `maxFrameSize`, undocumented). `WebSocketConfig::validate()` now throws `std::invalid_argument` for it, like the other limits of the library. Set `std::numeric_limits<std::size_t>::max()` to approximate no limit. `WebSocketConfig` moved to `aeronet/websocket-config.hpp` (still included by `websocket-handler.hpp`). See [Configuration](protocols/websocket.md#configuration).
