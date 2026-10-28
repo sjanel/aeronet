@@ -56,23 +56,10 @@ if(AERONET_ENABLE_ZSTD)
         set(_AERONET_ZSTD_TARGET ZSTD::ZSTD)
     endif()
     if(_AERONET_ZSTD_TARGET)
-        # Keep PRIVATE to signal implementation detail; for static libs some CMake versions may still
-        # surface it transitively when exporting. If stricter encapsulation is desired we would need
-        # to vendor or wrap symbols.
-        target_link_libraries(aeronet_objects PRIVATE ${_AERONET_ZSTD_TARGET})
-        get_target_property(_zstd_includes ${_AERONET_ZSTD_TARGET} INTERFACE_INCLUDE_DIRECTORIES)
-        if(_zstd_includes)
-            # Create an INTERFACE wrapper for zstd include dirs so we can re-export
-            # them cleanly to Aeronet consumers without exposing the library link.
-            if(NOT TARGET aeronet_zstd_headers)
-                add_library(aeronet_zstd_headers INTERFACE)
-            endif()
-            if(NOT TARGET aeronet::zstd_headers)
-                add_library(aeronet::zstd_headers ALIAS aeronet_zstd_headers)
-            endif()
-            target_include_directories(aeronet_zstd_headers INTERFACE ${_zstd_includes})
-            target_link_libraries(aeronet_objects PUBLIC aeronet::zstd_headers)
-        endif()
+        # PUBLIC: the public headers compression-config.hpp and version.hpp include zstd.h. Its include directories
+        # are not copied: those of a package are absolute paths, refused in exported targets inside the source tree,
+        # and a Conan alias target (zstd::libzstd) has none of its own.
+        target_link_libraries(aeronet_objects PUBLIC ${_AERONET_ZSTD_TARGET})
     endif()
 endif()
 
@@ -83,145 +70,18 @@ target_include_directories(aeronet_objects
 )
 
 if(AERONET_ENABLE_OPENTELEMETRY)
-    # Link opentelemetry targets. Use system package if validated, otherwise FetchContent.
-    # The _USE_SYSTEM_OPENTELEMETRY variable is set in Dependencies.cmake after validation.
-    
-    # Core SDK trace library (prefer namespaced opentelemetry-cpp::trace)
-    if(TARGET opentelemetry-cpp::trace)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::trace)
-    elseif(TARGET opentelemetry_trace)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry_trace)
-    endif()
-
-    # Core SDK metrics library
-    if(TARGET opentelemetry-cpp::metrics)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::metrics)
-    elseif(TARGET opentelemetry_metrics)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry_metrics)
-    endif()
-
-    # OTLP HTTP exporter and related targets
-    if(TARGET opentelemetry-cpp::otlp_http_exporter)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::otlp_http_exporter)
-    elseif(TARGET opentelemetry_exporter_otlp_http)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry_exporter_otlp_http)
-    endif()
-
-    # OTLP HTTP metrics exporter
-    if(TARGET opentelemetry-cpp::otlp_http_metric_exporter)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::otlp_http_metric_exporter)
-    elseif(TARGET opentelemetry_exporter_otlp_http_metric)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry_exporter_otlp_http_metric)
-    endif()
-
-    # Ostream exporter for metrics (used in tests)
-    if(TARGET opentelemetry-cpp::ostream_metrics_exporter)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::ostream_metrics_exporter)
-    elseif(TARGET opentelemetry_exporter_ostream_metrics)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry_exporter_ostream_metrics)
-    endif()
-
-    if(TARGET opentelemetry-cpp::otlp_http_client)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::otlp_http_client)
-    elseif(TARGET opentelemetry_exporter_otlp_http_client)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry_exporter_otlp_http_client)
-    endif()
-
-    if(TARGET opentelemetry-cpp::otlp_recordable)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::otlp_recordable)
-    elseif(TARGET opentelemetry_otlp_recordable)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry_otlp_recordable)
-    endif()
-
-    if(TARGET opentelemetry-cpp::proto)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::proto)
-        get_target_property(_otel_proto_includes opentelemetry-cpp::proto INTERFACE_INCLUDE_DIRECTORIES)
-        if(_otel_proto_includes)
-            target_include_directories(aeronet_objects PUBLIC ${_otel_proto_includes})
-        endif()
-    elseif(TARGET opentelemetry_proto)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry_proto)
-        get_target_property(_otel_proto_includes opentelemetry_proto INTERFACE_INCLUDE_DIRECTORIES)
-        if(_otel_proto_includes)
-            target_include_directories(aeronet_objects PUBLIC ${_otel_proto_includes})
-        endif()
-    endif()
-
-    if(TARGET opentelemetry-cpp::logs)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::logs)
-    elseif(TARGET opentelemetry_logs)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry_logs)
-    endif()
-
-    if(TARGET opentelemetry-cpp::ostream_span_exporter)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::ostream_span_exporter)
-        get_target_property(_otel_exp_includes opentelemetry-cpp::ostream_span_exporter INTERFACE_INCLUDE_DIRECTORIES)
-        if(_otel_exp_includes)
-            target_include_directories(aeronet_objects PUBLIC ${_otel_exp_includes})
-        endif()
-    elseif(TARGET opentelemetry_exporter_ostream_span)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry_exporter_ostream_span)
-        get_target_property(_otel_exp_includes opentelemetry_exporter_ostream_span INTERFACE_INCLUDE_DIRECTORIES)
-        if(_otel_exp_includes)
-            target_include_directories(aeronet_objects PUBLIC ${_otel_exp_includes})
-        endif()
-    endif()
-
-    # SDK support libraries
-    if(TARGET opentelemetry-cpp::common)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::common)
-    elseif(TARGET opentelemetry_common)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry_common)
-    endif()
-    if(TARGET opentelemetry-cpp::sdk)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::sdk)
-    elseif(TARGET opentelemetry_sdk)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry_sdk)
-    endif()
-    if(TARGET opentelemetry-cpp::resources)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::resources)
-    elseif(TARGET opentelemetry_resources)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry_resources)
-    endif()
-    if(TARGET opentelemetry-cpp::version)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::version)
-    elseif(TARGET opentelemetry_version)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry_version)
-    endif()
-
-    # HTTP client extension (curl-based)
-    if(TARGET opentelemetry-cpp::http_client_curl)
-        target_link_libraries(aeronet_objects PRIVATE opentelemetry-cpp::http_client_curl)
-    elseif(TARGET http_client_curl)
-        target_link_libraries(aeronet_objects PRIVATE http_client_curl)
-    endif()
+    # The targets of the opentelemetry-cpp package, or of the downloaded opentelemetry-cpp (see Dependencies.cmake).
+    target_link_libraries(aeronet_objects PRIVATE ${AERONET_OPENTELEMETRY_TARGETS})
 
     # Link system libraries required by opentelemetry (protobuf and curl).
     # Ensure protobuf and curl are available to consumers. System-installed OpenTelemetry
     # targets may or may not expose these transitively, so always find and link them.
-    # Use modern cmake targets (protobuf::libprotobuf, CURL::libcurl) rather than the
-    # old-style Protobuf_LIBRARIES / CURL_LIBRARIES variables: on Windows with shared
-    # protobuf the module-mode variable is set to the DLL path (LOCATION), not the
-    # import library, which would cause LNK1107 (linker fed a DLL directly).
+    # Only their targets: not the old-style Protobuf_LIBRARIES / CURL_LIBRARIES variables (on Windows with shared
+    # protobuf, the module-mode variable is the DLL path, which would cause LNK1107), nor their *_INCLUDE_DIRS, absolute
+    # paths refused in exported targets inside the source tree (vcpkg cloned in the checkout).
     find_package(Protobuf REQUIRED)
-    if(Protobuf_FOUND)
-        target_include_directories(aeronet_objects PUBLIC ${Protobuf_INCLUDE_DIRS})
-        if(TARGET protobuf::libprotobuf)
-            target_link_libraries(aeronet_objects PUBLIC protobuf::libprotobuf)
-        else()
-            target_link_libraries(aeronet_objects PUBLIC ${Protobuf_LIBRARIES})
-        endif()
-    endif()
-
     find_package(CURL REQUIRED)
-    if(CURL_FOUND)
-        target_include_directories(aeronet_objects PUBLIC ${CURL_INCLUDE_DIRS})
-        if(TARGET CURL::libcurl)
-            target_link_libraries(aeronet_objects PUBLIC CURL::libcurl)
-        else()
-            target_link_libraries(aeronet_objects PUBLIC ${CURL_LIBRARIES})
-        endif()
-    endif()
+    target_link_libraries(aeronet_objects PUBLIC protobuf::libprotobuf CURL::libcurl)
 endif()
 
 AeronetAddUnitTest(
@@ -280,6 +140,14 @@ AeronetAddUnitTest(
 AeronetAddUnitTest(
     counter-accumulator_test
     test/counter-accumulator_test.cpp
+    LIBRARIES
+    aeronet_tech
+    aeronet_basic_test_support
+)
+
+AeronetAddUnitTest(
+    gauge-deltas_test
+    test/gauge-deltas_test.cpp
     LIBRARIES
     aeronet_tech
     aeronet_basic_test_support
@@ -406,11 +274,7 @@ AeronetAddUnitTest(
 )
 
 if(AERONET_BUILD_TESTS AND AERONET_ENABLE_OPENTELEMETRY)
-    if(TARGET opentelemetry-cpp::metrics)
-        target_link_libraries(opentelemetry-integration_test PRIVATE opentelemetry-cpp::metrics)
-    elseif(TARGET opentelemetry_metrics)
-        target_link_libraries(opentelemetry-integration_test PRIVATE opentelemetry_metrics)
-    endif()
+    target_link_libraries(opentelemetry-integration_test PRIVATE ${AERONET_OPENTELEMETRY_METRICS_TARGET})
 endif()
 
 AeronetAddUnitTest(

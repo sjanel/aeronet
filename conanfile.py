@@ -24,7 +24,7 @@ class AeronetConan(ConanFile):
     version = _read_version()
     license = "MIT"
     url = "https://github.com/sjanel/aeronet"
-    description = "C++23 HTTP/1.1, WebSocket and HTTP/2 server library with optional TLS (OpenSSL)"
+    description = "C++23 HTTP/1.1, WebSocket and HTTP/2 client and server library with optional TLS (OpenSSL)"
     topics = ("http", "server", "epoll", "tls", "networking")
     settings = "os", "compiler", "build_type", "arch"
     options = {

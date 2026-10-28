@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <functional>
@@ -10,10 +9,10 @@
 #include "aeronet/city-hash.hpp"
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/log-noexcept.hpp"
-#include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/metric-label.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/vector.hpp"
+#include "metric-key.hpp"
 
 namespace aeronet::tracing::detail {
 
@@ -27,7 +26,7 @@ class CounterAccumulator {
     try {
       // Room for the labels of any counter, so that flush() decodes them without allocating.
       _labels.reserve(static_cast<decltype(_labels)::size_type>(labels.size()));
-      _counters.emplace(buildKey(name, labels), uint64_t{0}).first->second += delta;
+      _counters.emplace(BuildMetricKey(name, labels, _keyScratch), uint64_t{0}).first->second += delta;
     } catch (const std::exception& ex) {
       log_noexcept::error("Unable to record counter '{}': {}", name, ex.what());
     }
@@ -46,28 +45,6 @@ class CounterAccumulator {
   }
 
  private:
-  // Terminates the name, each label key and each label value of a counter key (no exporter accepts it in them), so that
-  // the name is a C string too: the OpenTelemetry SDK before 1.30 reads instrument names as such.
-  static constexpr char kSep = '\0';
-
-  std::string_view buildKey(std::string_view name, MetricLabels labels) {
-    std::size_t keySize = name.size() + 1U;
-    for (const auto& [key, value] : labels) {
-      keySize += key.size() + value.size() + 2U;
-    }
-    _keyScratch.reserve(keySize);
-    char* pKey = Append(name, _keyScratch.data());
-    *pKey++ = kSep;
-    for (const auto& [key, value] : labels) {
-      pKey = Append(key, pKey);
-      *pKey++ = kSep;
-      pKey = Append(value, pKey);
-      *pKey++ = kSep;
-    }
-    _keyScratch.setEnd(pKey);
-    return _keyScratch;
-  }
-
   // Returns the name of the counter key, and stores its labels in _labels.
   // NOLINTNEXTLINE(bugprone-exception-escape): _labels has the room for any labels, reserved by add()
   std::string_view decodeKey(std::string_view key) noexcept {
@@ -80,10 +57,10 @@ class CounterAccumulator {
     return name;
   }
 
-  // Removes the first piece of the key, with its terminating kSep, and returns it. Only an empty key has no kSep: it
-  // stays empty (npos + 1 wraps to 0).
+  // Removes the first piece of the key, with its terminating kMetricKeySep, and returns it. Only an empty key has no
+  // kMetricKeySep: it stays empty (npos + 1 wraps to 0).
   static std::string_view PopPiece(std::string_view& key) noexcept {
-    const auto sepPos = key.find(kSep);
+    const auto sepPos = key.find(kMetricKeySep);
     const std::string_view piece = key.substr(0, sepPos);
     key.remove_prefix(sepPos + 1U);
     return piece;

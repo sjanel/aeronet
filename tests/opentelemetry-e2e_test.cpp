@@ -157,6 +157,41 @@ bool MetricsContainLabel(const ::opentelemetry::proto::collector::metrics::v1::E
   return false;
 }
 
+// Value of the gauge of this name in proto, with the label key=value, or without labels when key is empty. A gauge is
+// exported as a gauge with the OpenTelemetry ABI v2, and as an up-down counter (a non-monotonic sum) with the ABI v1.
+// Returns -1 if absent.
+int64_t ExportedGaugeValue(const ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest& proto,
+                           std::string_view metricName, std::string_view key, std::string_view value) {
+  const auto pointValue = [key, value](const auto& points) -> int64_t {
+    for (const auto& point : points) {
+      const bool matches = key.empty() ? point.attributes_size() == 0
+                                       : point.attributes_size() == 1 && point.attributes(0).key() == key &&
+                                             point.attributes(0).value().string_value() == value;
+      if (matches) {
+        return point.as_int();
+      }
+    }
+    return -1;
+  };
+
+  for (const auto& resourceMetric : proto.resource_metrics()) {
+    for (const auto& scopeMetric : resourceMetric.scope_metrics()) {
+      for (const auto& metric : scopeMetric.metrics()) {
+        if (metric.name() != metricName) {
+          continue;
+        }
+        if (metric.has_gauge()) {
+          return pointValue(metric.gauge().data_points());
+        }
+        if (metric.has_sum()) {
+          return pointValue(metric.sum().data_points());
+        }
+      }
+    }
+  }
+  return -1;
+}
+
 }  // namespace
 
 TEST(OpenTelemetryEndToEnd, EmitsTracesAndMetrics) {
@@ -278,6 +313,64 @@ TEST(OpenTelemetryEndToEnd, EmitsPerMeasurementLabels) {
   EXPECT_TRUE(gaugeFound);
   EXPECT_TRUE(histogramFound);
   EXPECT_TRUE(timingFound);
+}
+
+// A gauge exports its last value, per label set, whatever the OpenTelemetry ABI.
+TEST(OpenTelemetryEndToEnd, GaugesExportTheirLastValue) {
+  test::OtlpTestCollector collector;
+
+  TelemetryConfig cfg;
+  cfg.otelEnabled = true;
+  cfg.withEndpoint(collector.endpointForTraces());
+  cfg.withServiceName("aeronet-gauge-e2e");
+  cfg.exportInterval = 50ms;
+  cfg.exportTimeout = 49ms;
+
+  tracing::TelemetryContext telemetry(cfg);
+  const MetricLabel h2[]{{"protocol", "h2"}};
+  const MetricLabel h1[]{{"protocol", "http/1.1"}};
+  for (const int64_t value : {5, 12, 3}) {
+    telemetry.gauge("aeronet.test.last_gauge", value);
+  }
+  for (const int64_t value : {7, 2}) {
+    telemetry.gauge("aeronet.test.last_gauge", value, h2);
+  }
+  for (const int64_t value : {9, 0, 4}) {
+    telemetry.gauge("aeronet.test.last_gauge", value, h1);
+  }
+  telemetry.timing("aeronet.test.last_timing", 40ms);
+  telemetry.timing("aeronet.test.last_timing", 25ms);
+
+  // An export may happen in the middle of the updates above: wait for one with all the last values.
+  int64_t noLabelValue = -1;
+  int64_t h2Value = -1;
+  int64_t h1Value = -1;
+  int64_t timingValue = -1;
+  const auto hasLastValues = [&] { return noLabelValue == 3 && h2Value == 2 && h1Value == 4 && timingValue == 25; };
+  const auto deadline = std::chrono::steady_clock::now() + 2s;  // NOLINT(misc-include-cleaner)
+  while (!hasLastValues() && std::chrono::steady_clock::now() < deadline) {
+    try {
+      const auto request = collector.waitForRequest(250ms);
+      if (request.path != "/v1/metrics") {
+        continue;
+      }
+
+      ::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest proto;
+      ASSERT_TRUE(proto.ParseFromString(request.body));
+      noLabelValue = ExportedGaugeValue(proto, "aeronet.test.last_gauge", "", "");
+      h2Value = ExportedGaugeValue(proto, "aeronet.test.last_gauge", "protocol", "h2");
+      h1Value = ExportedGaugeValue(proto, "aeronet.test.last_gauge", "protocol", "http/1.1");
+      timingValue = ExportedGaugeValue(proto, "aeronet.test.last_timing", "", "");
+    } catch (const std::exception& ex) {
+      // Periodic exports are asynchronous. Keep polling until the overall deadline.
+      log::warn("timed out waiting for a single request; loop and check overall deadline: {}", ex.what());
+    }
+  }
+
+  EXPECT_EQ(noLabelValue, 3);
+  EXPECT_EQ(h2Value, 2);
+  EXPECT_EQ(h1Value, 4);
+  EXPECT_EQ(timingValue, 25);
 }
 
 TEST(OpenTelemetryEndToEnd, EmitsMiddlewareSpanAttributes) {
