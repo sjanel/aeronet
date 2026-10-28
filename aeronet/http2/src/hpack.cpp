@@ -732,8 +732,12 @@ DecodedIndex DecodeInteger(std::span<const std::byte> data, uint8_t prefixBits) 
     ++pos;
 
     if ((currByte & 0x80U) == 0) {
-      ret.index = static_cast<uint32_t>(value);
-      ret.consumed = pos;
+      // A value not fitting in 32 bits exceeds the limits of the implementation: a decoding error (RFC 7541 §5.1),
+      // instead of a truncated value.
+      if (value < DecodedIndex::kInvalidIndex) {
+        ret.index = static_cast<uint32_t>(value);
+        ret.consumed = pos;
+      }
       break;
     }
   }
@@ -760,7 +764,17 @@ HpackDecoder::HpackDecoder(uint32_t maxDynamicTableSize, uint32_t maxHeaderListS
                            bool mergeAllowedForUnknownRequestHeaders) noexcept
     : _dynamicTable(maxDynamicTableSize),
       _maxHeaderListSize(maxHeaderListSize),
+      _dynamicTableSizeLimit(maxDynamicTableSize),
       _mergeAllowedForUnknownRequestHeaders(mergeAllowedForUnknownRequestHeaders) {}
+
+void HpackDecoder::setMaxDynamicTableSize(uint32_t maxSize) {
+  _dynamicTableSizeLimit = maxSize;
+  // The encoder has to start its next header block with a size update not above the reduced limit (RFC 9113 §4.3.1),
+  // which evicts the same entries.
+  if (maxSize < _dynamicTable.maxSizeBytes()) {
+    _dynamicTable.setMaxSize(maxSize);
+  }
+}
 
 HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data) {
   _decodedHeaders.clear();
@@ -814,12 +828,23 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
 
     } else if ((firstByte & 0xE0U) == 0x20U) {
       // Dynamic Table Size Update (RFC 7541 §6.3) - Format: 001xxxxx
+      // Only at the beginning of a header block (RFC 7541 §4.2): each decoded field adds at least 32 bytes to the list.
+      if (res.headerListSize != 0) {
+        res.error = DecodeResult::Error::DynamicTableSizeUpdateAfterField;
+        return res;
+      }
       const auto sizeResult = DecodeInteger(data.subspan(pos), 5);
       if (sizeResult.index == DecodedIndex::kInvalidIndex) {
         res.error = DecodeResult::Error::FailedToDecodeDynamicTableSizeUpdate;
         return res;
       }
       pos += sizeResult.consumed;
+
+      // Without this check, the encoder could make the table hold up to 4 GiB, whatever the advertised limit.
+      if (sizeResult.index > _dynamicTableSizeLimit) {
+        res.error = DecodeResult::Error::DynamicTableSizeUpdateAboveLimit;
+        return res;
+      }
 
       _dynamicTable.setMaxSize(sizeResult.index);
 
@@ -887,17 +912,13 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
 
 HpackDecoder::DecodedString HpackDecoder::decodeString(std::span<const std::byte> data) {
   const auto [length, consumed] = DecodeInteger(data, 7);
-  HpackDecoder::DecodedString ret({}, length + consumed);
-  if (length == DecodedIndex::kInvalidIndex) {
-    ret.consumed = DecodedString::kInvalidConsumed;
-    return ret;
+  HpackDecoder::DecodedString ret;
+  // Not 'data.size() < consumed + length': computed in 32 bits, the sum wraps around for a length close to 2^32, and
+  // the string would extend far beyond the block.
+  if (length == DecodedIndex::kInvalidIndex || data.size() - consumed < length) {
+    return ret;  // Invalid length, or not enough data
   }
-
-  if (data.size() < consumed + length) {
-    // Not enough data
-    ret.consumed = DecodedString::kInvalidConsumed;
-    return ret;
-  }
+  ret.consumed = consumed + static_cast<std::size_t>(length);
 
   const auto stringData = data.subspan(consumed, length);
 
@@ -1439,6 +1460,9 @@ void HpackEncoder::encodeDynamicTableSizeUpdate(RawBytes& output, uint32_t newSi
 }
 
 void HpackEncoder::setMaxDynamicTableSize(uint32_t maxSize) {
+  if (!_hasPendingTableSizeUpdate && maxSize == _dynamicTable.maxSizeBytes()) {
+    return;  // Nothing to signal
+  }
   _pendingTableSizeUpdate = maxSize;
   _hasPendingTableSizeUpdate = true;
 }

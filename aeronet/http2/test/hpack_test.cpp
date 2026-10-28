@@ -220,6 +220,20 @@ namespace {
 
 HpackDecoder CreateHpackDecoder() { return {4096, std::numeric_limits<uint32_t>::max(), true}; }
 
+// Append the representation of an integer (RFC 7541 §5.1), whose first byte starts with the bits of 'flags'.
+void AppendInteger(vector<uint8_t>& out, uint8_t flags, uint8_t prefixBits, uint64_t value) {
+  const uint8_t prefixMask = static_cast<uint8_t>((1U << prefixBits) - 1U);
+  if (value < prefixMask) {
+    out.push_back(static_cast<uint8_t>(flags | value));
+    return;
+  }
+  out.push_back(static_cast<uint8_t>(flags | prefixMask));
+  for (value -= prefixMask; value >= 128U; value >>= 7U) {
+    out.push_back(static_cast<uint8_t>((value & 0x7FU) | 0x80U));
+  }
+  out.push_back(static_cast<uint8_t>(value));
+}
+
 }  // namespace
 
 TEST(HpackDecoder, DecodeIndexedHeader) {
@@ -1055,6 +1069,120 @@ TEST(HpackDecoder, DecodeDynamicTableSizeUpdate) {
   EXPECT_EQ(decoder.dynamicTable().maxSizeBytes(), 1024U);
 }
 
+// RFC 7541 §6.3: a size update beyond the limit of the decoder would let the encoder make the table hold up to 4 GiB.
+TEST(HpackDecoder, DynamicTableSizeUpdateAboveTheLimitIsACompressionError) {
+  auto decoder = CreateHpackDecoder();
+  HpackEncoder encoder;
+
+  RawBytes block;
+  encoder.encodeDynamicTableSizeUpdate(block, 0);
+  encoder.encodeDynamicTableSizeUpdate(block, 4096U);
+  EXPECT_TRUE(decoder.decode(block).isSuccess());
+  EXPECT_EQ(decoder.dynamicTable().maxSizeBytes(), 4096U);
+
+  for (const uint32_t size : {4097U, 1U << 20U, std::numeric_limits<uint32_t>::max() - 1U}) {
+    block.clear();
+    encoder.encodeDynamicTableSizeUpdate(block, size);
+    encoder.encode(block, "x-filler", std::string(4000U, 'f'));
+    const auto result = decoder.decode(block);
+    EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::DynamicTableSizeUpdateAboveLimit) << size;
+    EXPECT_TRUE(result.isCompressionError());
+    EXPECT_EQ(decoder.dynamicTable().maxSizeBytes(), 4096U);
+    EXPECT_EQ(decoder.dynamicTable().entryCount(), 0U);
+  }
+}
+
+// The length of a string close to 2^32 must not wrap around the check that its bytes are in the block.
+TEST(HpackDecoder, StringLongerThanTheBlockIsAnError) {
+  for (const uint8_t huffmanFlag : {uint8_t{0}, uint8_t{0x80}}) {
+    auto decoder = CreateHpackDecoder();
+    // Literal field without indexing with a new name, whose value claims 2^32 - 6 bytes after its 6 length bytes.
+    vector<uint8_t> encoded{0x00, 0x01, 'a'};
+    AppendInteger(encoded, huffmanFlag, 7, (uint64_t{1} << 32U) - 6U);
+    encoded.resize(encoded.size() + 64U, 0x00);  // valid Huffman codes ('0')
+    const auto result = decoder.decode(AsBytes(encoded));
+    EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::FailedToDecodeLiteralHeaderValue) << int{huffmanFlag};
+  }
+}
+
+// RFC 7541 §5.1: an integer beyond the limits of the implementation is a decoding error, not a truncated value.
+TEST(HpackDecoder, IntegerNotFittingIn32BitsIsAnError) {
+  using Error = HpackDecoder::DecodeResult::Error;
+  static constexpr uint64_t k2Pow32 = uint64_t{1} << 32U;
+  struct Case {
+    uint8_t flags;
+    uint8_t prefixBits;
+    uint64_t value;  // Truncated to 32 bits, a valid one
+    Error expected;
+  };
+  for (const Case& testCase : {
+           Case{0x80, 7, k2Pow32 + 2U, Error::FailedToDecodeIndexedHeaderFieldIndex},  // :method GET
+           Case{0x20, 5, k2Pow32 + 100U, Error::FailedToDecodeDynamicTableSizeUpdate},
+           Case{0x40, 6, k2Pow32 + 1U, Error::FailedToDecodeLiteralHeaderIndex},  // :authority
+           Case{0x80, 7, k2Pow32 - 1U, Error::FailedToDecodeIndexedHeaderFieldIndex},
+       }) {
+    auto decoder = CreateHpackDecoder();
+    vector<uint8_t> encoded;
+    AppendInteger(encoded, testCase.flags, testCase.prefixBits, testCase.value);
+    encoded.push_back(0x00);  // an empty value for the literal field
+    const auto result = decoder.decode(AsBytes(encoded));
+    EXPECT_EQ(result.error, testCase.expected) << testCase.value;
+    EXPECT_TRUE(result.isCompressionError());
+  }
+
+  // The length of a string.
+  auto decoder = CreateHpackDecoder();
+  vector<uint8_t> encoded{0x00};  // literal field without indexing, new name
+  AppendInteger(encoded, 0x00, 7, k2Pow32 + 1U);
+  encoded.push_back('a');
+  EXPECT_EQ(decoder.decode(AsBytes(encoded)).error, Error::FailedToDecodeLiteralHeaderName);
+
+  // The largest value.
+  encoded.clear();
+  AppendInteger(encoded, 0x80, 7, k2Pow32 - 2U);
+  EXPECT_EQ(decoder.decode(AsBytes(encoded)).error, Error::IndexOutOfBoundsInIndexedHeaderField);
+}
+
+// RFC 7541 §4.2: dynamic table size updates only come at the beginning of a header block.
+TEST(HpackDecoder, DynamicTableSizeUpdateAfterAFieldIsACompressionError) {
+  auto decoder = CreateHpackDecoder();
+
+  static constexpr uint8_t kAtTheBeginning[]{0x20, 0x3f, 0xe1, 0x1f, 0x82};  // 0, 4096, then :method GET
+  const auto success = decoder.decode(AsBytes(kAtTheBeginning));
+  EXPECT_TRUE(success.isSuccess());
+  EXPECT_EQ(success.decodedHeaders.pseudoHeader(PseudoHeader::Method), "GET");
+
+  static constexpr uint8_t kAfterAField[]{0x82, 0x3f, 0xe1, 0x07};  // :method GET, then 1024
+  const auto result = decoder.decode(AsBytes(kAfterAField));
+  EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::DynamicTableSizeUpdateAfterField);
+  EXPECT_TRUE(result.isCompressionError());
+  EXPECT_EQ(decoder.dynamicTable().maxSizeBytes(), 4096U);
+}
+
+TEST(HpackDecoder, SetMaxDynamicTableSizeBoundsTheSizeUpdates) {
+  auto decoder = CreateHpackDecoder();
+  HpackEncoder encoder;
+  RawBytes block;
+
+  // A lower limit reduces the table right away.
+  decoder.setMaxDynamicTableSize(1024U);
+  EXPECT_EQ(decoder.dynamicTable().maxSizeBytes(), 1024U);
+  encoder.encodeDynamicTableSizeUpdate(block, 1025U);
+  EXPECT_EQ(decoder.decode(block).error, HpackDecoder::DecodeResult::Error::DynamicTableSizeUpdateAboveLimit);
+
+  // A higher one leaves the table size to the size updates of the encoder.
+  decoder.setMaxDynamicTableSize(65536U);
+  EXPECT_EQ(decoder.dynamicTable().maxSizeBytes(), 1024U);
+  block.clear();
+  encoder.encodeDynamicTableSizeUpdate(block, 65536U);
+  EXPECT_TRUE(decoder.decode(block).isSuccess());
+  EXPECT_EQ(decoder.dynamicTable().maxSizeBytes(), 65536U);
+  block.clear();
+  encoder.encodeDynamicTableSizeUpdate(block, 65537U);
+  EXPECT_EQ(decoder.decode(block).error, HpackDecoder::DecodeResult::Error::DynamicTableSizeUpdateAboveLimit);
+  EXPECT_EQ(decoder.dynamicTable().maxSizeBytes(), 65536U);
+}
+
 TEST(HpackDecoder, InvalidIndexedHeader) {
   auto decoder = CreateHpackDecoder();
 
@@ -1519,6 +1647,22 @@ TEST(HpackEncoder, EncodeDynamicTableSizeUpdate) {
   EXPECT_GT(output.size(), 0);
   // First byte should have 001xxxxx pattern
   EXPECT_EQ(static_cast<uint8_t>(output[0]) & 0xE0U, 0x20);
+}
+
+TEST(HpackEncoder, SetMaxDynamicTableSizeSignalsOnlyAChange) {
+  HpackEncoder encoder;
+  RawBytes output;
+
+  encoder.setMaxDynamicTableSize(4096U);
+  encoder.encode(output, ":method", "GET");
+  EXPECT_EQ(output.size(), 1U);  // 0x82 only
+
+  output.clear();
+  encoder.setMaxDynamicTableSize(1024U);
+  encoder.encode(output, ":method", "GET");
+  ASSERT_EQ(output.size(), 4U);  // 0x3f 0xe1 0x07 (1024), then 0x82
+  EXPECT_EQ(static_cast<uint8_t>(output[0]), 0x3FU);
+  EXPECT_EQ(encoder.dynamicTable().maxSizeBytes(), 1024U);
 }
 
 TEST(HpackEncoder, EncodeNeverIndexed_WithStaticName) {

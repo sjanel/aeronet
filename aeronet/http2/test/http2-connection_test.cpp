@@ -53,6 +53,10 @@ class Http2ConnectionTest {
   [[nodiscard]] static const HpackDynamicTable& EncoderDynamicTable(const Http2Connection& connection) noexcept {
     return connection._hpackEncoder.dynamicTable();
   }
+
+  [[nodiscard]] static const HpackDynamicTable& DecoderDynamicTable(const Http2Connection& connection) noexcept {
+    return connection._hpackDecoder.dynamicTable();
+  }
 };
 
 namespace {
@@ -2681,6 +2685,152 @@ TEST(Http2Connection, UndecodableFieldBlockOnAResetStreamIsAConnectionError) {
   const auto res = conn.processInput(frame);
   EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
   EXPECT_EQ(res.errorCode, ErrorCode::CompressionError);
+}
+
+// A dynamic table size update above our SETTINGS_HEADER_TABLE_SIZE is a connection error (RFC 7541 §6.3): the peer
+// could otherwise make the dynamic table of the decoder hold up to 4 GiB.
+TEST(Http2Connection, DynamicTableSizeUpdateAboveHeaderTableSizeIsCompressionError) {
+  Http2Config config;
+  config.headerTableSize = 8192;
+  Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  const uint8_t flags = FrameFlags::HeadersEndHeaders | FrameFlags::HeadersEndStream;
+
+  HpackEncoder encoder;
+  encoder.setMaxDynamicTableSize(config.headerTableSize);
+  const RawBytes request = EncodeFieldBlock(
+      encoder, {{":method", "GET"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/"}});
+  FeedConnection(conn, HeadersFrame(1, request, flags));
+  EXPECT_EQ(Http2ConnectionTest::DecoderDynamicTable(conn).maxSizeBytes(), config.headerTableSize);
+
+  RawBytes oversized;
+  encoder.encodeDynamicTableSizeUpdate(oversized, config.headerTableSize + 1U);
+  const auto res = conn.processInput(HeadersFrame(3, oversized, flags));
+  EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
+  EXPECT_EQ(res.errorCode, ErrorCode::CompressionError);
+  EXPECT_EQ(Http2ConnectionTest::DecoderDynamicTable(conn).maxSizeBytes(), config.headerTableSize);
+}
+
+// A headerTableSize below the initial 4096 bytes applies once the peer acknowledges our SETTINGS (RFC 9113 §4.3.1):
+// the requests its encoder sent before may refer to the dynamic table it had until then.
+TEST(Http2Connection, SmallerHeaderTableSizeAppliesOnSettingsAck) {
+  Http2Config config;
+  config.headerTableSize = 0;
+  Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  vector<uint32_t> headerStreams;
+  connSink.onHeadersDecodedFn = [&](uint32_t streamId, const SvToSvMap&, bool) { headerStreams.push_back(streamId); };
+  const uint8_t flags = FrameFlags::HeadersEndHeaders | FrameFlags::HeadersEndStream;
+  const std::initializer_list<std::pair<std::string_view, std::string_view>> fields{
+      {":method", "GET"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/"}, {"x-custom", "value"},
+  };
+
+  // The second request refers to the fields of the first one by their dynamic table index.
+  HpackEncoder encoder;
+  FeedConnection(conn, HeadersFrame(1, EncodeFieldBlock(encoder, fields), flags));
+  FeedConnection(conn, HeadersFrame(3, EncodeFieldBlock(encoder, fields), flags));
+  EXPECT_EQ(headerStreams, (vector<uint32_t>{1, 3}));
+  EXPECT_GT(Http2ConnectionTest::DecoderDynamicTable(conn).entryCount(), 0U);
+
+  FeedConnection(conn, SerializeFrame(FrameHeader(0, FrameType::Settings, FrameFlags::SettingsAck, 0),
+                                      std::span<const std::byte>{}));
+  EXPECT_EQ(Http2ConnectionTest::DecoderDynamicTable(conn).maxSizeBytes(), 0U);
+  EXPECT_EQ(Http2ConnectionTest::DecoderDynamicTable(conn).entryCount(), 0U);
+
+  // The encoder starts its next block by reducing its table accordingly.
+  encoder.setMaxDynamicTableSize(config.headerTableSize);
+  FeedConnection(conn, HeadersFrame(5, EncodeFieldBlock(encoder, fields), flags));
+  EXPECT_EQ(headerStreams, (vector<uint32_t>{1, 3, 5}));
+
+  RawBytes oversized;
+  encoder.encodeDynamicTableSizeUpdate(oversized, kDefaultHeaderTableSize);
+  const auto res = conn.processInput(HeadersFrame(7, oversized, flags));
+  EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
+  EXPECT_EQ(res.errorCode, ErrorCode::CompressionError);
+}
+
+// The encoder starts with the initial 4096 bytes of the table of the peer (RFC 9113 §4.3.1), and keeps at most
+// headerTableSize bytes whatever the peer advertises: advertising 4 GiB would otherwise make it keep every indexed
+// field sent on the connection.
+TEST(Http2Connection, EncoderDynamicTableIsCappedByHeaderTableSize) {
+  Http2Config serverConfig;
+  serverConfig.headerTableSize = 8192;
+  Http2Config clientConfig;
+  clientConfig.headerTableSize = std::numeric_limits<uint32_t>::max();
+  Http2Connection server(serverConfig, true);
+  Http2Connection client(clientConfig, false);
+  RecordingEventSink clientSink(client);
+  vector<std::string> requestIds;
+  clientSink.onHeadersDecodedFn = [&](uint32_t, const SvToSvMap& headers, bool) {
+    if (const auto it = headers.find("x-request-id"); it != headers.end()) {
+      requestIds.emplace_back(it->second);
+    }
+  };
+  EXPECT_EQ(Http2ConnectionTest::EncoderDynamicTable(server).maxSizeBytes(), kDefaultHeaderTableSize);
+
+  client.sendClientPreface();
+  const auto pump = [&] {
+    for (int iter = 0; iter < 8 && (client.hasPendingOutput() || server.hasPendingOutput()); ++iter) {
+      if (client.hasPendingOutput()) {
+        PumpOutput(client, server);
+      }
+      if (server.hasPendingOutput()) {
+        PumpOutput(server, client);
+      }
+    }
+  };
+  pump();
+  ASSERT_TRUE(server.isOpen());
+
+  // Each response adds a field of about 110 bytes to the dynamic table.
+  static constexpr uint32_t kNbResponses = 300;
+  const std::string idPrefix(64U, 'r');
+  for (uint32_t idx = 0; idx < kNbResponses; ++idx) {
+    const uint32_t streamId = 1U + (2U * idx);
+    RawChars reqHeaders;
+    reqHeaders.append(MakeHttp1HeaderLine(":method", "GET"));
+    reqHeaders.append(MakeHttp1HeaderLine(":scheme", "http"));
+    reqHeaders.append(MakeHttp1HeaderLine(":authority", "example.com"));
+    reqHeaders.append(MakeHttp1HeaderLine(":path", "/"));
+    ASSERT_EQ(client.sendHeaders(streamId, http::StatusCode{}, HeadersView(reqHeaders), true), ErrorCode::NoError);
+    pump();
+
+    RawChars respHeaders;
+    respHeaders.append(MakeHttp1HeaderLine("x-request-id", idPrefix + std::to_string(idx)));
+    ASSERT_EQ(server.sendHeaders(streamId, http::StatusCodeOK, HeadersView(respHeaders), true), ErrorCode::NoError);
+    server.finalizeSendClosedStream(streamId);
+    pump();
+  }
+
+  ASSERT_EQ(requestIds.size(), kNbResponses);
+  EXPECT_EQ(requestIds.back(), idPrefix + std::to_string(kNbResponses - 1U));
+  const HpackDynamicTable& table = Http2ConnectionTest::EncoderDynamicTable(server);
+  EXPECT_EQ(table.maxSizeBytes(), serverConfig.headerTableSize);
+  EXPECT_LE(table.currentSizeBytes(), serverConfig.headerTableSize);
+  EXPECT_EQ(Http2ConnectionTest::DecoderDynamicTable(client).maxSizeBytes(), serverConfig.headerTableSize);
+}
+
+// Browsers advertise a larger table than the default headerTableSize: the table of the encoder does not change, so
+// there is no size update to send.
+TEST(Http2Connection, LargerPeerHeaderTableSizeSendsNoSizeUpdate) {
+  Http2Config config;
+  Http2Connection conn(config, true);
+  AdvanceToAwaitingSettingsAndDrainSettings(conn);
+  RawBytes settings;
+  const std::array settingsEntries{SettingsEntry{SettingsParameter::HeaderTableSize, 65536U}};
+  WriteSettingsFrame(settings, settingsEntries);
+  FeedConnection(conn, std::span<const std::byte>(settings.data(), settings.size()));
+  (void)DrainPendingOutput(conn);
+  ASSERT_EQ(conn.state(), ConnectionState::Open);
+
+  ASSERT_EQ(conn.sendHeaders(1, http::StatusCodeOK, HeadersView{}, true), ErrorCode::NoError);
+  const auto dbg = DecodeFirstHeadersFromOutput(DrainPendingOutput(conn));
+  ASSERT_TRUE(dbg.decodeSuccess);
+  ASSERT_FALSE(dbg.headerBlockBytes.empty());
+  EXPECT_NE(static_cast<uint8_t>(dbg.headerBlockBytes[0]) & 0xE0U, 0x20U);
+  EXPECT_EQ(Http2ConnectionTest::EncoderDynamicTable(conn).maxSizeBytes(), kDefaultHeaderTableSize);
 }
 
 TEST(Http2Connection, DataFrameExceedsStreamRecvWindow) {
