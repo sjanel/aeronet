@@ -2265,6 +2265,19 @@ TEST_F(HttpResponseTest, PreparedConstructorCapturingBodyReservesAdditionalCapac
   EXPECT_TRUE(resp.headersFlatView().ends_with("content-length: 9\r\n"));
 }
 
+TEST_F(HttpResponseTest, HeaderAddLineAroundInlineBodyKeepsBodyHeadersLast) {
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine("x-first", "1");
+  resp.body("hello");
+  // Added once the body is set: inserted before its Content-Type and Content-Length.
+  resp.headerAddLine("x-second", "22");
+  resp.headerAddLine("x-empty", "");
+
+  EXPECT_EQ(resp.headersFlatView(),
+            "x-first: 1\r\nx-second: 22\r\nx-empty: \r\ncontent-type: text/plain\r\ncontent-length: 5\r\n");
+  EXPECT_EQ(resp.bodyInMemory(), "hello");
+}
+
 TEST_F(HttpResponseTest, ConstructorCapturingBodyCanBeModifiedAfterwards) {
   HttpResponse resp(http::StatusCodeOK, std::string(kCapturedContent), "text/captured");
   resp.reason("Fine").headerAddLine("x-after", "body");

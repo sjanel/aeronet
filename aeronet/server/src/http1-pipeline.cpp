@@ -393,7 +393,8 @@ AERONET_ALWAYS_INLINE Http1Pipeline::LoopAction Http1Pipeline::callHandlers(Conn
     return processWebSocketUpgrade(cnxIt, routingResult);
   }
 #endif
-  if (HttpResponse response = pipeline.callRequestHandler(request, routingResult, isStreaming); !response.empty()) {
+  if (HttpResponse response = RequestPipeline::CallRequestHandler(request, routingResult, isStreaming);
+      !response.empty()) {
     sendResponse(cnxIt, std::move(response), routingResult, isStreaming);
     CloseIfBodyPending(state, bodyReady);
     return LoopAction::Continue;

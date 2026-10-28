@@ -9,7 +9,6 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/path-handlers.hpp"
-#include "aeronet/raw-chars.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/tracing/tracer.hpp"
 
@@ -48,7 +47,7 @@ struct SpecialMethodConfig {
 /// way. Once a request is parsed and routed, and its protocol-specific checks and special methods are handled, the
 /// protocol:
 ///  1. runs its request middleware with runRequestMiddleware(),
-///  2. unless a middleware answered, calls callRequestHandler(), which answers the request unless the protocol has to
+///  2. unless a middleware answered, calls CallRequestHandler(), which answers the request unless the protocol has to
 ///     call the streaming or the async handler of its route,
 ///  3. runs the response middleware on the response with applyResponseMiddleware(), then applies the CORS policy of
 ///     the route while finalizing it. The head of a streaming response goes through prepareStreamingHead() instead.
@@ -56,8 +55,8 @@ struct SpecialMethodConfig {
 class RequestPipeline {
  public:
   RequestPipeline(Router& router, tracing::TelemetryContext& telemetry,
-                  const MiddlewareMetricsCallback& middlewareMetrics, RawChars& scratch) noexcept
-      : _pRouter(&router), _pTelemetry(&telemetry), _pMiddlewareMetrics(&middlewareMetrics), _pScratch(&scratch) {}
+                  const MiddlewareMetricsCallback& middlewareMetrics) noexcept
+      : _pRouter(&router), _pTelemetry(&telemetry), _pMiddlewareMetrics(&middlewareMetrics) {}
 
   /// Install the path and query parameters of a routed request, then run its request middleware: the global chain,
   /// then the chain of its route.
@@ -70,8 +69,8 @@ class RequestPipeline {
   /// it throws), or, without handler, a trailing slash redirect, a 405 or a 404.
   /// Returns nothing when the protocol calls the handler of the route: its streaming handler (when 'streaming') or its
   /// async handler.
-  [[nodiscard]] HttpResponse callRequestHandler(HttpRequestView& request, const Router::RoutingResult& routingResult,
-                                                bool streaming) const;
+  [[nodiscard]] static HttpResponse CallRequestHandler(HttpRequestView& request,
+                                                       const Router::RoutingResult& routingResult, bool streaming);
 
   /// Tell whether the CORS policy of the route of a request denies its origin: its handler must then not be called, the
   /// request being answered by MakeOriginDenial().
@@ -106,13 +105,12 @@ class RequestPipeline {
   [[nodiscard]] tracing::TelemetryContext& telemetry() const noexcept { return *_pTelemetry; }
 
  private:
-  [[nodiscard]] HttpResponse makeTrailingSlashRedirect(
-      const HttpRequestView& request, Router::RoutingResult::RedirectSlashMode redirectSlashMode) const;
+  [[nodiscard]] static HttpResponse MakeTrailingSlashRedirect(
+      const HttpRequestView& request, Router::RoutingResult::RedirectSlashMode redirectSlashMode);
 
   Router* _pRouter;
   tracing::TelemetryContext* _pTelemetry;
   const MiddlewareMetricsCallback* _pMiddlewareMetrics;
-  RawChars* _pScratch;
 };
 
 }  // namespace aeronet

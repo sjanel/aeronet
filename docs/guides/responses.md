@@ -69,7 +69,7 @@ All other headers (custom application, caching, CORS, ...) may be set freely. Va
 
 ### Global headers
 
-`HttpServerConfig::globalHeaders` are added to every response of the server, including the error responses the server generates itself (`400`, `404`, `413`, ...). A global header never overrides a header of the same name set by the handler. It contains `server: aeronet` by default:
+`HttpServerConfig::globalHeaders` are added to every response of the server, including the error responses the server generates itself (`400`, `404`, `413`, ...). A global header never overrides a header of the same name set by the handler. A [reserved header](#reserved-headers) cannot be a global header, nor can `location`, whose value is specific to each response (and which the server sets itself on its redirects): `HttpServerConfig::validate()` throws `std::invalid_argument`. It contains `server: aeronet` by default:
 
 ```cpp
 HttpServerConfig config;

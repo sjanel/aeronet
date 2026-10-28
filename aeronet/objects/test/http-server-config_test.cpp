@@ -123,6 +123,49 @@ TEST(HttpServerConfigTest, GlobalHeaderShouldContainHeaderSep2) {
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
+// The value of a Location header is specific to each response, and the redirects of the server are built on a response
+// that already starts with the global headers: a global one would be duplicated, and followed first by the clients.
+TEST(HttpServerConfigTest, LocationAsGlobalHeaderShouldThrow) {
+  for (std::string_view name : {"location", "Location", "LOCATION"}) {
+    SCOPED_TRACE(name);
+
+    HttpServerConfig config;
+    config.addGlobalHeader(http::Header{name, "/home"});
+    EXPECT_THROW(config.validate(), std::invalid_argument);
+
+    // Among other valid headers.
+    HttpServerConfig other;
+    other.addGlobalHeader(http::Header{"X-Before", "1"});
+    other.addGlobalHeader(http::Header{name, "/home"});
+    other.addGlobalHeader(http::Header{"X-After", "2"});
+    EXPECT_THROW(other.validate(), std::invalid_argument);
+
+    HttpServerConfig appended;
+    appended.globalHeaders.append(std::string(name) + ": /home");
+    EXPECT_THROW(appended.validate(), std::invalid_argument);
+  }
+}
+
+TEST(HttpServerConfigTest, LocationAsGlobalHeaderErrorMentionsTheHeader) {
+  HttpServerConfig config;
+  config.addGlobalHeader(http::Header{"Location", "/home"});
+  try {
+    config.validate();
+    FAIL() << "validate() should throw for a global location header";
+  } catch (const std::invalid_argument& ex) {
+    EXPECT_TRUE(std::string_view(ex.what()).contains("location")) << ex.what();
+  }
+}
+
+// Only the exact name is rejected.
+TEST(HttpServerConfigTest, HeadersWithLocationInTheirNameAreValidGlobalHeaders) {
+  HttpServerConfig config;
+  config.addGlobalHeader(http::Header{"Content-Location", "/home"});
+  config.addGlobalHeader(http::Header{"X-Location", "/home"});
+  config.addGlobalHeader(http::Header{"Locations", "/home"});
+  EXPECT_NO_THROW(config.validate());
+}
+
 TEST(HttpServerConfigTest, TooManyGlobalHeaders1) {
   HttpServerConfig config;
   std::vector<http::Header> headers;
