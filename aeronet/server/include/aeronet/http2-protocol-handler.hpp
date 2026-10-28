@@ -197,9 +197,16 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   [[nodiscard]] bool hasAsyncWorkInFlight() const noexcept override;
 #endif
 
-  /// Check per-stream request deadlines and send 408 + RST_STREAM for expired ones.
-  /// Called during the server's periodic sweep of idle connections.
-  void sweepStreams(std::chrono::steady_clock::time_point now);
+  /// Send a graceful GOAWAY (NO_ERROR), for a drain of the server: the client opens its next streams on another
+  /// connection, while this one serves its open streams, then closes. No-op once a GOAWAY was sent. A connection whose
+  /// client preface was not received yet, without streams, is closed without GOAWAY.
+  void initiateGoAway();
+
+  /// Check per-stream request deadlines and send 408 + RST_STREAM for expired ones, then run the timers of the
+  /// connection (SETTINGS acknowledgement and PING keepalive, see Http2Connection::checkTimeouts()). Called during the
+  /// server's periodic sweep of idle connections, which sends the output queued meanwhile.
+  /// @return false when a timer of the connection expired: it should be closed.
+  [[nodiscard]] bool sweepStreams(std::chrono::steady_clock::time_point now);
 
  private:
   /// Per-stream request state during aggregation.

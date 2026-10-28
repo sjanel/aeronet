@@ -117,7 +117,8 @@ ErrorCode Http2Stream::onRecvData(bool endStream) noexcept {
 // ============================
 
 bool Http2Stream::consumeSendWindow(std::size_t bytes) noexcept {
-  if (std::cmp_less(_sendWindow, bytes)) {
+  // An empty DATA frame may end the stream even without available window (RFC 9113 §6.9.1), which can be negative.
+  if (std::cmp_less(_sendWindow, bytes) && bytes != 0) {
     return false;
   }
   _sendWindow -= static_cast<int32_t>(bytes);
@@ -166,10 +167,13 @@ ErrorCode Http2Stream::updateInitialWindowSize(uint32_t newInitialWindowSize) no
   // Compute delta in 64-bit to avoid overflow
   const int64_t delta = static_cast<int64_t>(newInitialWindowSize) - static_cast<int64_t>(_initialSendWindow);
 
-  // Check for overflow
+  // A decrease can make the window negative (RFC 9113 §6.9.2): DATA then waits for enough WINDOW_UPDATE credit. Only
+  // exceeding 2^31-1 is an error. DATA is only sent within the window, so the window minus the initial window size
+  // (kept by this adjustment) is at least -kMaxWindowSize: the new window fits in an int32_t.
   const int64_t newWindow = static_cast<int64_t>(_sendWindow) + delta;
+  assert(newWindow >= -static_cast<int64_t>(kMaxWindowSize));
 
-  if (std::cmp_less(kMaxWindowSize, newWindow) || newWindow < 0) {
+  if (std::cmp_less(kMaxWindowSize, newWindow)) {
     return ErrorCode::FlowControlError;
   }
 

@@ -347,6 +347,29 @@ void ConnectionMaintenance::sweepIdleConnections() {
     // EPOLLERR reports the zerocopy completions: polled here as well, in case of a missed event.
     ctx.io.pollZerocopyCompletions(state);
 #endif
+#ifdef AERONET_ENABLE_HTTP2
+    // Sweep per-stream request deadlines and the timers of HTTP/2 connections. A drain ends them like the HTTP/1.1
+    // ones, once their current requests are answered: a graceful GOAWAY makes their clients open their next streams
+    // elsewhere.
+    if (state.protocol == ProtocolType::Http2 && state.protocolHandler) {
+      auto& handler = static_cast<http2::Http2ProtocolHandler&>(*state.protocolHandler);
+      if (ctx.lifecycle.isDraining()) {
+        handler.initiateGoAway();
+      }
+      const bool keep = handler.sweepStreams(now);
+      // The 408 responses, PING and GOAWAY frames it queued: the connection may receive no event to send them.
+      if (handler.hasPendingOutput() && !state.waitingWritable) {
+        ctx.io.flushOutbound(cnxIt);
+      }
+      if (!keep) {
+        ctx.io.closeConnection(cnxIt);
+#ifdef AERONET_WINDOWS
+        cnxIt = connections.begin();
+#endif
+        continue;
+      }
+    }
+#endif
     // For DrainThenClose mode, only close after buffers and file payload are fully drained
     if (state.canCloseConnectionForDrain()) {
       ctx.io.closeConnection(cnxIt);
@@ -363,13 +386,6 @@ void ConnectionMaintenance::sweepIdleConnections() {
 #endif
       continue;
     }
-
-#ifdef AERONET_ENABLE_HTTP2
-    // Sweep per-stream request deadlines for HTTP/2 connections.
-    if (state.protocol == ProtocolType::Http2 && state.protocolHandler) {
-      static_cast<http2::Http2ProtocolHandler*>(state.protocolHandler.get())->sweepStreams(now);
-    }
-#endif
 
     state.reclaimMemoryFromOversizedBuffers();
 

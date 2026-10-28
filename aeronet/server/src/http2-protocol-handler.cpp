@@ -42,6 +42,7 @@
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/http2-process-result-error-msg-strings.hpp"
+#include "aeronet/http2-process-result-error-msg.hpp"
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/https-redirect.hpp"
 #include "aeronet/internal/http-response-access.hpp"
@@ -560,25 +561,28 @@ void Http2ProtocolHandler::onTrailersReceived(StreamsMap::iterator it, DecodedHe
 }
 
 void Http2ProtocolHandler::onStreamClosed(uint32_t streamId) {
-  const auto it = _streams.find(streamId);
-  if (it == _streams.end()) {
-    return;
-  }
+  if (const auto it = _streams.find(streamId); it != _streams.end()) {
+    // Clean up tunnel state for a given stream (using the consolidated StreamState).
+    const auto upstreamFd = it->second.tunnelUpstreamFd;
+    if (upstreamFd != kInvalidHandle) {
+      _tunnelUpstreams.erase(upstreamFd);
+      it->second.tunnelUpstreamFd = kInvalidHandle;
 
-  // Clean up tunnel state for a given stream (using the consolidated StreamState).
-  const auto upstreamFd = it->second.tunnelUpstreamFd;
-  if (upstreamFd != kInvalidHandle) {
-    _tunnelUpstreams.erase(upstreamFd);
-    it->second.tunnelUpstreamFd = kInvalidHandle;
-
-    _tunnelBridge->closeTunnel(upstreamFd);
-  }
-  releasePendingSend(it->second);
+      _tunnelBridge->closeTunnel(upstreamFd);
+    }
+    releasePendingSend(it->second);
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  orphanAsyncTask(it->second);
+    orphanAsyncTask(it->second);
 #endif
-  recycleRequest(it->second.request);
-  _streams.erase(it);
+    recycleRequest(it->second.request);
+    _streams.erase(it);
+  }
+
+  // The last stream served after the GOAWAY of the connection (see Http2Config::maxStreamsPerConnection): the
+  // connection closes once its output is written.
+  if (_connection.goAwayCompleted()) {
+    _pConnectionState->requestDrainAndClose();
+  }
 }
 
 void Http2ProtocolHandler::onWindowUpdate(uint32_t streamId, [[maybe_unused]] uint32_t increment) {
@@ -1570,7 +1574,19 @@ void Http2ProtocolHandler::onRequestCompleted(HttpRequestView& request, http::St
   }
 }
 
-void Http2ProtocolHandler::sweepStreams(std::chrono::steady_clock::time_point now) {
+void Http2ProtocolHandler::initiateGoAway() {
+  // Before the client preface, the connection has no stream, and a GOAWAY would make the preface be read as frames.
+  if (_connection.state() == ConnectionState::AwaitingPreface) {
+    _pConnectionState->requestDrainAndClose();
+    return;
+  }
+  _connection.initiateGoAway(ErrorCode::NoError, ErrorMsg::ServerDraining);
+  if (_connection.goAwayCompleted()) {
+    _pConnectionState->requestDrainAndClose();
+  }
+}
+
+bool Http2ProtocolHandler::sweepStreams(std::chrono::steady_clock::time_point now) {
   for (auto it = _streams.begin(); it != _streams.end();) {
     auto& streamState = it->second;
     if (streamState.requestDeadline.time_since_epoch().count() != 0 && streamState.requestDeadline < now) {
@@ -1606,6 +1622,16 @@ void Http2ProtocolHandler::sweepStreams(std::chrono::steady_clock::time_point no
       ++it;
     }
   }
+
+  const auto result = _connection.checkTimeouts(now, _pConnectionState->lastActivity);
+  if (result.action == Http2Connection::ProcessResult::Action::Error) [[unlikely]] {
+    log::debug("HTTP/2 connection fd # {} closed: {}", _fd, ConvertProcessResultErrorMsgToSv(result.errorMsg));
+    _pCtx->telemetry.counterAdd(result.errorMsg == ErrorMsg::SETTINGSTimeout
+                                    ? "aeronet.connections.closed_for_http2_settings_timeout"
+                                    : "aeronet.connections.closed_for_http2_ping_timeout");
+    return false;
+  }
+  return true;
 }
 
 std::unique_ptr<IProtocolHandler> CreateHttp2ProtocolHandler(::aeronet::internal::ServerContext& ctx,

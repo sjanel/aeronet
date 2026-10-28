@@ -362,16 +362,45 @@ TEST(Http2Stream, UpdateInitialWindowSizeOverflow) {
   EXPECT_EQ(err, ErrorCode::FlowControlError);
 }
 
-TEST(Http2Stream, UpdateInitialWindowSizeDecreaseCanUnderflowCurrentSendWindow) {
+// RFC 9113 §6.9.2: a decrease can make the send window negative, which is not an error.
+TEST(Http2Stream, UpdateInitialWindowSizeDecreaseCanMakeSendWindowNegative) {
   Http2Stream stream(1, 1000);
   ASSERT_TRUE(stream.consumeSendWindow(900));
   ASSERT_EQ(stream.sendWindow(), 100);
 
-  // New initial window is 0, delta = -1000 => newWindow would become negative
-  const ErrorCode err = stream.updateInitialWindowSize(0);
+  // New initial window is 0, delta = -1000
+  EXPECT_EQ(stream.updateInitialWindowSize(0), ErrorCode::NoError);
+  EXPECT_EQ(stream.sendWindow(), -900);
 
-  EXPECT_EQ(err, ErrorCode::FlowControlError);
-  EXPECT_EQ(stream.sendWindow(), 100);
+  // Only an empty DATA frame can be sent until enough credit arrives (RFC 9113 §6.9.1).
+  EXPECT_FALSE(stream.consumeSendWindow(1));
+  EXPECT_TRUE(stream.consumeSendWindow(0));
+  EXPECT_EQ(stream.sendWindow(), -900);
+
+  EXPECT_EQ(stream.increaseSendWindow(900), ErrorCode::NoError);
+  EXPECT_EQ(stream.sendWindow(), 0);
+  EXPECT_FALSE(stream.consumeSendWindow(1));
+  EXPECT_EQ(stream.increaseSendWindow(10), ErrorCode::NoError);
+  EXPECT_TRUE(stream.consumeSendWindow(10));
+  EXPECT_EQ(stream.sendWindow(), 0);
+
+  // A larger initial window gives the credit back: delta = +1000
+  EXPECT_EQ(stream.updateInitialWindowSize(1000), ErrorCode::NoError);
+  EXPECT_EQ(stream.sendWindow(), 1000);
+}
+
+// The lowest window: the largest initial window consumed, then reduced to 0.
+TEST(Http2Stream, UpdateInitialWindowSizeToZeroAfterConsumingTheLargestWindow) {
+  Http2Stream stream(1, kMaxWindowSize);
+  ASSERT_TRUE(stream.consumeSendWindow(kMaxWindowSize));
+
+  EXPECT_EQ(stream.updateInitialWindowSize(0), ErrorCode::NoError);
+  EXPECT_EQ(stream.sendWindow(), -static_cast<int32_t>(kMaxWindowSize));
+  EXPECT_FALSE(stream.consumeSendWindow(1));
+  EXPECT_TRUE(stream.consumeSendWindow(0));
+
+  EXPECT_EQ(stream.updateInitialWindowSize(kMaxWindowSize), ErrorCode::NoError);
+  EXPECT_EQ(stream.sendWindow(), 0);
 }
 
 // ============================
