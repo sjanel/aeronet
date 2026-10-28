@@ -290,6 +290,8 @@ AERONET_ALWAYS_INLINE Http1Pipeline::LoopAction Http1Pipeline::readHead(Connecti
   if (headWaitingForBody) {
     request.resumeHeadWaitingForBody(input);
   } else {
+    // The body of the previous request was completely decoded (or the connection closes).
+    assert(!state.isDecodingChunkedBody());
     statusCode =
         request.initTrySetHead(input, ctx.sharedBuffers.buf, ctx.config.maxHeaderBytes,
                                ctx.config.mergeUnknownRequestHeaders, ctx.telemetry.createSpan("http.request"));

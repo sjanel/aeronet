@@ -18,7 +18,7 @@ namespace {
 std::string BuildUrl(std::string_view host, uint16_t port, std::string_view path,
                      std::initializer_list<std::pair<std::string_view, std::string_view>> query = {}) {
   RawChars buf;
-  if (!http::AppendHttpsAuthority(buf, host, port)) {
+  if (!http::SetHttpsAuthority(buf, host, port)) {
     return {};
   }
   http::AppendUrlEncodedPath(buf, path);
@@ -84,14 +84,14 @@ TEST(HttpsRedirectTest, IPv6Url) { EXPECT_EQ(BuildUrl("[::1]:80", 8443, "/a"), "
 TEST(HttpsRedirectTest, EmptyHostReturnsFalse) {
   RawChars buf;
   buf.append("garbage");
-  EXPECT_FALSE(http::AppendHttpsAuthority(buf, "", 443));
+  EXPECT_FALSE(http::SetHttpsAuthority(buf, "", 443));
   EXPECT_TRUE(std::string_view(buf).empty());  // cleared even on failure
 }
 
 TEST(HttpsRedirectTest, HostThatIsOnlyAPortReturnsFalse) {
   RawChars buf;
   // ":80" strips to an empty host -> cannot build absolute URL.
-  EXPECT_FALSE(http::AppendHttpsAuthority(buf, ":80", 443));
+  EXPECT_FALSE(http::SetHttpsAuthority(buf, ":80", 443));
 }
 
 TEST(HttpsRedirectTest, PathWithUnsafeCharactersIsEncoded) {

@@ -293,6 +293,7 @@ void ConnectionState::reset() {
   transport.reset();
   lastActivity = {};
   headerStartTp = {};
+  chunkedBody = {};
   bodyLastActivityMs = kInactiveRelativeMs;
   requestDeadlineMs = kInactiveRelativeMs;
   keepAliveDeadlineIndex = kNoKeepAliveDeadlineIndex;
@@ -401,7 +402,8 @@ void ConnectionState::reclaimMemoryFromOversizedBuffers() {
   // of live data while progressively reclaiming unused memory.
 
   // bodyAndTrailersBuffer: grows to accommodate decompressed request bodies (up to maxBodyBytes).
-  // Safe to clear - body data has been consumed by the handler.
+  // Safe to clear - body data has been consumed by the handler - unless it holds the chunks of a request body received
+  // so far, which are decoded only once.
   // inBuffer: grows during transportRead to hold pipelined/accumulated request data.
   // Cannot clear - may contain a partial next request. shrink_to_fit alone is safe.
   // Both hold the request body (and the inBuffer the request head of a waiting body) of a running async handler, or of
@@ -410,15 +412,19 @@ void ConnectionState::reclaimMemoryFromOversizedBuffers() {
   // once the resolution completes: it must not move either.
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   if (!asyncState || (!asyncState->active && !asyncState->task.coroutine.valid())) {
-    bodyAndTrailersBuffer.shrink_to_fit();
-    bodyAndTrailersBuffer.clear();
+    if (!isDecodingChunkedBody()) {
+      bodyAndTrailersBuffer.shrink_to_fit();
+      bodyAndTrailersBuffer.clear();
+    }
     if (!tunnelResolving) {
       inBuffer.shrink_to_fit();
     }
   }
 #else
-  bodyAndTrailersBuffer.shrink_to_fit();
-  bodyAndTrailersBuffer.clear();
+  if (!isDecodingChunkedBody()) {
+    bodyAndTrailersBuffer.shrink_to_fit();
+    bodyAndTrailersBuffer.clear();
+  }
   if (!tunnelResolving) {
     inBuffer.shrink_to_fit();
   }

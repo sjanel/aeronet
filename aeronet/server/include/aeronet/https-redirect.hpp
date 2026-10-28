@@ -16,13 +16,13 @@ namespace http {
 // hostnames / IPv4 ("example.com:80" -> "example.com"). A value without a port is returned as-is.
 [[nodiscard]] std::string_view StripPortFromHost(std::string_view hostHeader) noexcept;
 
-// Writes the absolute-URL authority "https://host[:port]" into 'out' (cleared first).
+// Writes the absolute-URL authority "https://host[:port]" into 'out'.
 //   - hostHeader : request Host header value; any embedded port is stripped and replaced by targetPort.
 //   - targetPort : HTTPS port to advertise; the standard port 443 is omitted from the URL, any other
 //                  value is appended as ":port".
 // Returns false (and leaves 'out' empty) when the host is empty (no absolute URL can be built).
 // On success the caller appends the path/query via AppendUrlEncodedPath / AppendUrlEncodedQueryParam.
-[[nodiscard]] bool AppendHttpsAuthority(RawChars& out, std::string_view hostHeader, uint16_t targetPort);
+[[nodiscard]] bool SetHttpsAuthority(RawChars& out, std::string_view hostHeader, uint16_t targetPort);
 
 // Appends a (URL-decoded) request path to 'out', percent-encoding any character that is not safe in a
 // URL path component. Path-structural characters ('/', sub-delims, ':' and '@') are preserved; spaces,
