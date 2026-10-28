@@ -150,6 +150,15 @@ uint32_t TlsHttp2Client::sendAsyncRequest(std::string_view method, std::string_v
   return sendRequest(method, path, headers, body);
 }
 
+uint32_t TlsHttp2Client::openRequestStream(std::string_view method, std::string_view path,
+                                           const std::vector<std::pair<std::string, std::string>>& headers) {
+  if (!_connected) {
+    log::warn("HTTP/2 client not connected");
+    return 0;
+  }
+  return sendRequestHeaders(method, path, headers, false);
+}
+
 std::optional<TlsHttp2Client::Response> TlsHttp2Client::waitAndGetResponse(uint32_t streamId,
                                                                            std::chrono::milliseconds timeout) {
   if (!waitForResponse(streamId, timeout)) {
@@ -433,10 +442,31 @@ bool TlsHttp2Client::waitForResponse(uint32_t streamId, std::chrono::millisecond
 uint32_t TlsHttp2Client::sendRequest(std::string_view method, std::string_view path,
                                      const std::vector<std::pair<std::string, std::string>>& headers,
                                      std::string_view body) {
+  const uint32_t streamId = sendRequestHeaders(method, path, headers, body.empty());
+  if (streamId == 0 || body.empty()) {
+    return streamId;
+  }
+
+  // Send DATA frame
+  std::span<const std::byte> bodyData(reinterpret_cast<const std::byte*>(body.data()), body.size());
+  const auto err = _http2Connection->sendData(streamId, bodyData, true);
+  if (err != http2::ErrorCode::NoError) {
+    log::error("Failed to send DATA: {}", http2::ErrorCodeName(err));
+    return 0;
+  }
+
+  if (!flushConnectionOutput()) {
+    return 0;
+  }
+
+  return streamId;
+}
+
+uint32_t TlsHttp2Client::sendRequestHeaders(std::string_view method, std::string_view path,
+                                            const std::vector<std::pair<std::string, std::string>>& headers,
+                                            bool endStream) {
   uint32_t streamId = _nextStreamId;
   _nextStreamId += 2;  // Client streams are odd-numbered
-
-  bool endStream = body.empty();
 
   // Send HEADERS frame
   RawChars hdrs;
@@ -450,7 +480,7 @@ uint32_t TlsHttp2Client::sendRequest(std::string_view method, std::string_view p
     std::ranges::transform(lname, lname.begin(), [](char ch) { return tolower(ch); });
     hdrs.append(MakeHttp1HeaderLine(lname, value));
   }
-  auto err = _http2Connection->sendHeaders(streamId, http::StatusCode{}, HeadersView(hdrs), endStream);
+  const auto err = _http2Connection->sendHeaders(streamId, http::StatusCode{}, HeadersView(hdrs), endStream);
 
   if (err != http2::ErrorCode::NoError) {
     log::error("Failed to send HEADERS: {}", http2::ErrorCodeName(err));
@@ -460,20 +490,6 @@ uint32_t TlsHttp2Client::sendRequest(std::string_view method, std::string_view p
   // Send pending output
   if (!flushConnectionOutput()) {
     return 0;
-  }
-
-  // Send DATA frame if there's a body
-  if (!body.empty()) {
-    std::span<const std::byte> bodyData(reinterpret_cast<const std::byte*>(body.data()), body.size());
-    err = _http2Connection->sendData(streamId, bodyData, true);
-    if (err != http2::ErrorCode::NoError) {
-      log::error("Failed to send DATA: {}", http2::ErrorCodeName(err));
-      return 0;
-    }
-
-    if (!flushConnectionOutput()) {
-      return 0;
-    }
   }
 
   // Initialize response tracking
