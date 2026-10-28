@@ -74,6 +74,10 @@ The OTLP exporter sends over HTTP. Each `SingleHttpServer` owns an independent t
 
 Ended spans are only queued by the event loop: a background thread exports them in batches, at the latest `exportInterval` after they end, so a slow or unreachable collector never delays request processing. A span ending while the queue is full (2048 spans by default) is dropped.
 
+### opentelemetry-cpp ABI
+
+aeronet builds with both ABIs of opentelemetry-cpp: the ABI v1, its default, built by the vcpkg and Conan packages and by the system ones, and the ABI v2, the one of the opentelemetry-cpp that aeronet downloads when none is installed. The ABI v1 has no synchronous gauge: `gauge()` and `timing()` are then exported as up-down counters (non-monotonic sums) whose value is the last one recorded, per label set, instead of gauges. Prometheus maps both to a gauge. With the ABI v1, give the labels of a gauge in the same order at each call: the last value is remembered per label sequence. Tests: [gauge-deltas_test.cpp](../../aeronet/objects/test/gauge-deltas_test.cpp), [opentelemetry-e2e_test.cpp](../../tests/opentelemetry-e2e_test.cpp) (`GaugesExportTheirLastValue`).
+
 DogStatsD metrics do not require OpenTelemetry at build time. They can be enabled alone or together with OTLP:
 
 ```cpp

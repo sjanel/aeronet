@@ -40,7 +40,7 @@ aeronet is deliberately modular. CMake options select code and dependencies at c
 | `AERONET_ENABLE_ZSTD` | top-level | zstd encoders/decoders | zstd |
 | `AERONET_ENABLE_BROTLI` | top-level | Brotli encoders/decoders | Brotli |
 | `AERONET_ENABLE_SPDLOG` | top-level | spdlog integration | spdlog |
-| `AERONET_ENABLE_OPENTELEMETRY` | top-level | OpenTelemetry traces/metrics exporter | OpenTelemetry C++, curl, protobuf/protoc |
+| `AERONET_ENABLE_OPENTELEMETRY` | top-level | OpenTelemetry traces/metrics exporter | OpenTelemetry C++, curl, protobuf/protoc. An installed opentelemetry-cpp with the OTLP HTTP exporter is used (Release builds, vcpkg, Conan), otherwise it is downloaded. With vcpkg and Conan, an opentelemetry-cpp package without the OTLP HTTP exporter is a configure error instead |
 | `AERONET_ENABLE_GLAZE` | top-level | JSON/YAML config loading and serialization helpers | glaze |
 | `AERONET_ENABLE_PROTOBUF` | top-level | Protocol Buffers support. Header-only: the aeronet libraries do not use protobuf, the code including the aeronet protobuf headers links it | protobuf (libprotobuf, protoc), found with `find_package` and never fetched: it must be installed |
 | `AERONET_PROTOBUF_RUNTIME` | `full` | protobuf runtime linked with `AERONET_ENABLE_PROTOBUF`: `full` (libprotobuf) or `lite` (libprotobuf-lite, for messages generated with `option optimize_for = LITE_RUNTIME`) | A program must not link both runtimes: `lite` cannot be combined with `AERONET_ENABLE_OPENTELEMETRY` |

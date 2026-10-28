@@ -1,15 +1,25 @@
 include(FetchContent)
 
+# Sets out_var to TRUE when a package manager (vcpkg, Conan) provides the dependencies: the consumers of aeronet link
+# its packages, so aeronet must be built with them, never with a downloaded copy. Conan defines no variable of its
+# own: it is recognized by the name of the toolchain file it generates.
+function(aeronet_package_manager_used out_var)
+  if(DEFINED VCPKG_TOOLCHAIN OR CMAKE_TOOLCHAIN_FILE MATCHES "conan_toolchain\\.cmake$")
+    set(${out_var} TRUE PARENT_SCOPE)
+  else()
+    set(${out_var} FALSE PARENT_SCOPE)
+  endif()
+endfunction()
+
 # Decide whether system packages are allowed for this configuration.
 # Policy:
+#  - Package manager      -> System packages allowed (full multi-config support)
 #  - Single-config Debug  -> FetchContent
 #  - Multi-config         -> FetchContent
 #  - Release              -> System packages allowed
 function(aeronet_system_packages_allowed out_var)
-  # vcpkg / Conan → full multi-config support
-  if(DEFINED VCPKG_TOOLCHAIN
-     OR DEFINED CONAN_TOOLCHAIN_FILE
-     OR DEFINED CONAN_CMAKE_TOOLCHAIN_FILE)
+  aeronet_package_manager_used(_package_manager)
+  if(_package_manager)
     set(${out_var} TRUE PARENT_SCOPE)
     return()
   endif()

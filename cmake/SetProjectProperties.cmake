@@ -133,43 +133,8 @@ function(AeronetSetProjectProperties name)
   endif()
   if(AERONET_ENABLE_BROTLI)
     target_compile_definitions(${name} PUBLIC AERONET_ENABLE_BROTLI)
-    # Harvest include directories from one of the brotli targets if available (applies to ALL targets needing headers).
-    set(_brotli_includes "")
-    foreach(_btl_target IN ITEMS brotlicommon brotlienc brotlidec)
-      if(TARGET ${_btl_target})
-        get_target_property(_tmp_includes ${_btl_target} INTERFACE_INCLUDE_DIRECTORIES)
-        if(_tmp_includes)
-          set(_brotli_includes ${_tmp_includes})
-          break()
-        endif()
-      endif()
-    endforeach()
-    if(_brotli_includes)
-      # Create an INTERFACE wrapper for brotli include dirs so we can re-export
-      # them cleanly to Aeronet consumers without exposing the library link.
-      if(NOT TARGET aeronet_brotli_headers)
-        add_library(aeronet_brotli_headers INTERFACE)
-      endif()
-      if(NOT TARGET aeronet::brotli_headers)
-        add_library(aeronet::brotli_headers ALIAS aeronet_brotli_headers)
-      endif()
-      target_include_directories(aeronet_brotli_headers INTERFACE ${_brotli_includes})
-      target_link_libraries(${name} PUBLIC aeronet::brotli_headers)
-    endif()
-    # Fallback: some brotli builds expose no INTERFACE include dirs (e.g. legacy or minimal builds); use FetchContent source dir.
-    if(NOT _brotli_includes AND DEFINED brotli_SOURCE_DIR)
-      if(EXISTS "${brotli_SOURCE_DIR}/c/include")
-        if(NOT TARGET aeronet_brotli_headers)
-          add_library(aeronet_brotli_headers INTERFACE)
-        endif()
-        if(NOT TARGET aeronet::brotli_headers)
-          add_library(aeronet::brotli_headers ALIAS aeronet_brotli_headers)
-        endif()
-        target_include_directories(aeronet_brotli_headers INTERFACE "${brotli_SOURCE_DIR}/c/include")
-        target_link_libraries(${name} PUBLIC aeronet::brotli_headers)
-      endif()
-    endif()
-    # Only link brotli libs into objects library to reduce export surface; others see headers only.
+    # Only the objects library links brotli, the others get its headers through it. Its include directories are not
+    # copied: those of a package are absolute paths, refused in exported targets inside the source tree.
     # PUBLIC: its public header version.hpp (aeronet_version) calls brotli inline, and aeronet_http uses the encoder bound
     # directly. A PRIVATE dependency only propagates from a static library, so shared builds missed it.
     if(${name} STREQUAL "aeronet_objects")

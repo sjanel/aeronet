@@ -96,6 +96,61 @@ macro(_aeronet_find_protobuf feature)
   endif()
 endmacro()
 
+# Sets AERONET_OPENTELEMETRY_<LIBRARY>_TARGET to the target of each opentelemetry-cpp library linked by aeronet,
+# AERONET_OPENTELEMETRY_TARGETS to all of them, and missing_var to the targets not found. They are looked up in the
+# opentelemetry-cpp package when from_package is TRUE: its CMake package (system, vcpkg) names them
+# opentelemetry-cpp::<EXPORT_NAME>, Conan opentelemetry-cpp::<library>. Otherwise, in the build tree of opentelemetry-cpp
+# (FetchContent), named opentelemetry_<library>.
+function(_aeronet_resolve_opentelemetry_targets from_package missing_var)
+  # <library>[:<EXPORT_NAME> when it differs]. Each library comes before the ones it uses: CMake keeps this order on the
+  # link line where the package does not declare the dependency, which the Conan one omits for some (metrics on common).
+  set(_libraries
+    exporter_otlp_http:otlp_http_exporter
+    exporter_otlp_http_metric:otlp_http_metric_exporter
+    exporter_ostream_span:ostream_span_exporter
+    exporter_otlp_http_client:otlp_http_client
+    http_client_curl
+    otlp_recordable
+    proto
+    trace
+    metrics
+    logs
+    resources
+    common
+    api
+  )
+  set(_targets "")
+  set(_missing "")
+  foreach(_names IN LISTS _libraries)
+    string(REPLACE ":" ";" _names "${_names}")
+    list(GET _names 0 _library)
+    list(GET _names -1 _export_name)
+    if(from_package)
+      set(_candidates opentelemetry-cpp::${_export_name} opentelemetry-cpp::${_library})
+    else()
+      set(_candidates opentelemetry_${_library})
+    endif()
+    set(_target "")
+    foreach(_candidate IN LISTS _candidates)
+      if(TARGET ${_candidate})
+        set(_target ${_candidate})
+        break()
+      endif()
+    endforeach()
+    if(_target)
+      string(TOUPPER "${_library}" _library)
+      set(AERONET_OPENTELEMETRY_${_library}_TARGET ${_target} PARENT_SCOPE)
+      list(APPEND _targets ${_target})
+    else()
+      list(GET _candidates 0 _candidate)
+      list(APPEND _missing ${_candidate})
+    endif()
+  endforeach()
+  set(AERONET_OPENTELEMETRY_TARGETS ${_targets} PARENT_SCOPE)
+  list(JOIN _missing ", " _missing)
+  set(${missing_var} "${_missing}" PARENT_SCOPE)
+endfunction()
+
 set(LINK_AMC FALSE)
 find_package(amc CONFIG)
 if(amc_FOUND)
@@ -225,18 +280,31 @@ if(AERONET_ENABLE_BROTLI)
 
   # Brotli does not reliably provide Debug libs on many systems,
   # so policy decides whether system packages are allowed.
-  aeronet_find_or_declare(
-    NAME brotli
-    CONFIG
-    TARGETS
-      brotlicommon
-      brotlidec
-      brotlienc
-    DECLARE
-      URL https://github.com/google/brotli/archive/refs/tags/v1.2.1.tar.gz
-      URL_HASH SHA256=98d35d11a78dc453aebb7d10c3748f3f73ff78c8267c0dc697b8631f67bf7e8f
-      DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-  )
+  # The brotli build installs no CMake package. vcpkg adds one, unofficial-brotli, whose targets are aliased to the names
+  # of the targets of the brotli build. AERONET_BROTLI_PACKAGE is the package that the consumers of aeronet look for.
+  aeronet_system_packages_allowed(_brotli_allow_system)
+  if(_brotli_allow_system)
+    find_package(unofficial-brotli CONFIG QUIET)
+  endif()
+  if(unofficial-brotli_FOUND)
+    set(AERONET_BROTLI_PACKAGE unofficial-brotli)
+    foreach(_brotli_lib IN ITEMS brotlicommon brotlidec brotlienc)
+      add_library(${_brotli_lib} ALIAS unofficial::brotli::${_brotli_lib})
+    endforeach()
+  else()
+    aeronet_find_or_declare(
+      NAME brotli
+      CONFIG
+      TARGETS
+        brotlicommon
+        brotlidec
+        brotlienc
+      DECLARE
+        URL https://github.com/google/brotli/archive/refs/tags/v1.2.1.tar.gz
+        URL_HASH SHA256=98d35d11a78dc453aebb7d10c3748f3f73ff78c8267c0dc697b8631f67bf7e8f
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+  endif()
 endif()
 
 if(AERONET_ENABLE_OPENTELEMETRY)
@@ -249,30 +317,21 @@ if(AERONET_ENABLE_OPENTELEMETRY)
     find_package(opentelemetry-cpp CONFIG QUIET)
   endif()
   if(opentelemetry-cpp_FOUND)
-
-    # Check required OTLP HTTP exporter
-    set(_otel_has_http FALSE)
-    if(TARGET opentelemetry-cpp::otlp_http_exporter
-       OR TARGET opentelemetry-cpp::otlp_http_client
-       OR TARGET opentelemetry-cpp::otlp_http_metric_exporter)
-      set(_otel_has_http TRUE)
-    endif()
-
-    # Check proto target or headers
-    set(_otel_has_proto FALSE)
-    if(TARGET opentelemetry-cpp::proto OR TARGET opentelemetry_proto)
-      set(_otel_has_proto TRUE)
-    elseif(EXISTS "/usr/local/include/opentelemetry/proto/collector/metrics/v1/metrics_service.pb.h")
-      set(_otel_has_proto TRUE)
-    endif()
-
-    if(_otel_has_http AND _otel_has_proto)
-      message(STATUS "Using system opentelemetry-cpp with OTLP HTTP + proto support")
+    _aeronet_resolve_opentelemetry_targets(TRUE _otel_missing)
+    if(NOT _otel_missing)
+      message(STATUS "[aeronet] opentelemetry-cpp ${opentelemetry-cpp_VERSION} found")
       set(_USE_SYSTEM_OPENTELEMETRY TRUE)
     else()
-      message(STATUS "System opentelemetry-cpp missing required OTLP HTTP/proto components")
+      # Downloading opentelemetry-cpp would leave two of them in the programs linking the package of aeronet.
+      aeronet_package_manager_used(_otel_package_manager)
+      if(_otel_package_manager)
+        message(FATAL_ERROR "[aeronet] the opentelemetry-cpp ${opentelemetry-cpp_VERSION} package has no ${_otel_missing} "
+                            "target: build it with the OTLP HTTP exporter (vcpkg feature otlp-http, Conan option "
+                            "with_otlp_http)")
+      endif()
+      message(STATUS "[aeronet] opentelemetry-cpp ${opentelemetry-cpp_VERSION} found without ${_otel_missing}: "
+                     "downloading it")
     endif()
-
   endif()
   if(NOT _USE_SYSTEM_OPENTELEMETRY)
 
@@ -317,15 +376,15 @@ if(AERONET_ENABLE_OPENTELEMETRY)
     set(OTELCPP_WITH_ABI_VERSION_1 OFF CACHE BOOL "Use ABI v1" FORCE)
     set(OTELCPP_WITH_ABI_VERSION_2 ON CACHE BOOL "Use ABI v2" FORCE)
 
-    aeronet_find_or_declare(
-      NAME opentelemetry_cpp
-      TARGETS
-        opentelemetry-cpp::otlp_http_exporter
-      DECLARE
-        URL https://github.com/open-telemetry/opentelemetry-cpp/archive/refs/tags/v1.30.0.tar.gz
-        URL_HASH SHA256=85aae7a42d7b71d17e510ddebc85db622d9078cc6d29cf9fb7373014b063859f
-        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    # Not aeronet_find_or_declare: the package was looked for above.
+    FetchContent_Declare(
+      opentelemetry_cpp
+      URL https://github.com/open-telemetry/opentelemetry-cpp/archive/refs/tags/v1.30.0.tar.gz
+      URL_HASH SHA256=85aae7a42d7b71d17e510ddebc85db622d9078cc6d29cf9fb7373014b063859f
+      DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+      EXCLUDE_FROM_ALL
     )
+    list(APPEND AeronetFetchContentPackagesToMakeAvailable opentelemetry_cpp)
 
   endif()
 
@@ -375,6 +434,13 @@ if(AeronetFetchContentPackagesToMakeAvailable)
   # expected targets we degrade gracefully by disabling AMC linkage.
   FetchContent_MakeAvailable(${AeronetFetchContentPackagesToMakeAvailable})
 
+  if(AERONET_ENABLE_OPENTELEMETRY AND NOT _USE_SYSTEM_OPENTELEMETRY)
+    _aeronet_resolve_opentelemetry_targets(FALSE _otel_missing)
+    if(_otel_missing)
+      message(FATAL_ERROR "[aeronet] the opentelemetry-cpp build has no ${_otel_missing} target")
+    endif()
+  endif()
+
   # Inject MSVC system include dirs into opentelemetry_proto so that protobuf-
   # generated headers (which include <limits> etc. at line 9 in protobuf >=6.x)
   # can be compiled when building outside a VS Developer Command Prompt.
@@ -409,38 +475,39 @@ if(AeronetFetchContentPackagesToMakeAvailable)
       target_compile_options(glaze_glaze INTERFACE $<$<COMPILE_LANGUAGE:CXX>:-Wno-missing-braces>)
     endif()
   endif()
+endif()
 
-  # Create ZLIBNG::ZLIBNG interface library for zlib-ng (native mode).
-  # zlib-ng 2.3+ provides ALIAS targets (zlib-ng::zlib, zlib-ng::zlibstatic),
-  # and CMake disallows ALIAS-of-ALIAS. Use INTERFACE library instead.
-  # System packages expose zlib-ng::zlib / zlib-ng::zlibstatic.
-  # FetchContent with BUILD_SHARED_LIBS=ON creates only "zlib" (shared),
-  # otherwise both "zlib" and "zlibstatic" exist.
-  if(AERONET_ENABLE_ZLIB AND NOT TARGET ZLIBNG::ZLIBNG)
-    set(_zlib_target "")
-    if(TARGET zlib-ng::zlibstatic)
-      set(_zlib_target zlib-ng::zlibstatic)
-    elseif(TARGET zlib-ng::zlib)
-      set(_zlib_target zlib-ng::zlib)
-    elseif(TARGET zlibstatic)
-      set(_zlib_target zlibstatic)
-    elseif(TARGET zlib)
-      set(_zlib_target zlib)
-    endif()
-    
-    if(_zlib_target)
-      add_library(ZLIBNG::ZLIBNG INTERFACE IMPORTED GLOBAL)
-      target_link_libraries(ZLIBNG::ZLIBNG INTERFACE ${_zlib_target})
-    endif()
+# Create ZLIBNG::ZLIBNG interface library for zlib-ng (native mode), whether zlib-ng is installed or downloaded
+# (with vcpkg, nothing is downloaded).
+# zlib-ng 2.3+ provides ALIAS targets (zlib-ng::zlib, zlib-ng::zlibstatic),
+# and CMake disallows ALIAS-of-ALIAS. Use INTERFACE library instead.
+# System packages expose zlib-ng::zlib / zlib-ng::zlibstatic.
+# FetchContent with BUILD_SHARED_LIBS=ON creates only "zlib" (shared),
+# otherwise both "zlib" and "zlibstatic" exist.
+if(AERONET_ENABLE_ZLIB AND AERONET_ENABLE_ZLIBNG AND NOT TARGET ZLIBNG::ZLIBNG)
+  set(_zlib_target "")
+  if(TARGET zlib-ng::zlibstatic)
+    set(_zlib_target zlib-ng::zlibstatic)
+  elseif(TARGET zlib-ng::zlib)
+    set(_zlib_target zlib-ng::zlib)
+  elseif(TARGET zlibstatic)
+    set(_zlib_target zlibstatic)
+  elseif(TARGET zlib)
+    set(_zlib_target zlib)
   endif()
 
-  # Create ZLIB::ZLIB interface library for standard zlib.
-  # When zlib is fetched from source, it provides ZLIB::ZLIBSTATIC.
-  # System packages typically provide ZLIB::ZLIB.
-  if(AERONET_ENABLE_ZLIB AND NOT AERONET_ENABLE_ZLIBNG AND NOT TARGET ZLIB::ZLIB)
-    if(TARGET ZLIB::ZLIBSTATIC)
-      add_library(ZLIB::ZLIB INTERFACE IMPORTED GLOBAL)
-      target_link_libraries(ZLIB::ZLIB INTERFACE ZLIB::ZLIBSTATIC)
-    endif()
+  if(_zlib_target)
+    add_library(ZLIBNG::ZLIBNG INTERFACE IMPORTED GLOBAL)
+    target_link_libraries(ZLIBNG::ZLIBNG INTERFACE ${_zlib_target})
+  endif()
+endif()
+
+# Create ZLIB::ZLIB interface library for standard zlib.
+# When zlib is fetched from source, it provides ZLIB::ZLIBSTATIC.
+# System packages typically provide ZLIB::ZLIB.
+if(AERONET_ENABLE_ZLIB AND NOT AERONET_ENABLE_ZLIBNG AND NOT TARGET ZLIB::ZLIB)
+  if(TARGET ZLIB::ZLIBSTATIC)
+    add_library(ZLIB::ZLIB INTERFACE IMPORTED GLOBAL)
+    target_link_libraries(ZLIB::ZLIB INTERFACE ZLIB::ZLIBSTATIC)
   endif()
 endif()
