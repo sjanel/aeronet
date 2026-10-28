@@ -32,7 +32,7 @@ HttpResponseWriter::HttpResponseWriter(IWriterTransport& transport, const HttpRe
                                        std::string_view globalHeadersStr, HttpMessage::Options opts)
     : _transport(&transport),
       _request(&request),
-      _head(request.method() == http::Method::HEAD),
+      _noContent(request.method() == http::Method::HEAD),
       _encoding(encoding),
       // 64UL for Transfer-Encoding: chunked, Content-Length and other headers
       _fixedResponse(64UL, http::StatusCodeOK, globalHeadersStr, std::string_view{}, std::string_view{}, opts),
@@ -109,6 +109,10 @@ void HttpResponseWriter::ensureHeadersSent() {
     return;
   }
 
+  if (!http::StatusCodeAllowsBody(_statusCode)) {
+    dropContent();
+  }
+
   // Compute needed header size and reserve capacity in the fixed response buffer to have at most 1 allocation.
   std::size_t neededSize = 0UL;
 
@@ -134,11 +138,32 @@ void HttpResponseWriter::ensureHeadersSent() {
     _fixedResponse.headerAppendValue(http::Vary, http::AcceptEncoding);
   }
 
-  if (!_transport->emitHeaders(_fixedResponse, *_request, _declaredLength, _head)) {
+  if (!_transport->emitHeaders(_fixedResponse, *_request, _declaredLength, _noContent)) {
     _state = State::Failed;
     log::error("Streaming: failed to emit headers {}", _transport->logId());
   } else {
     _state = State::HeadersSent;
+  }
+}
+
+void HttpResponseWriter::dropContent() {
+  // 1xx, 204 and 304 responses end at the empty line after their headers (RFC 9110 §6.4.1): whatever the handler
+  // writes from now on is dropped, as for a HEAD request. The head carries no Content-Type, Content-Encoding,
+  // Content-Length nor Transfer-Encoding, and no trailers.
+  _noContent = true;
+  _encoding = Encoding::none;
+  _activeEncoderCtx = nullptr;
+  _preCompressBuffer.clear();
+  _trailers.clear();
+  _declaredLength = 0;
+  if (_isFile) {
+    // The file comes with its body headers.
+    _fixedResponse.body(std::string_view{});
+    _isFile = false;
+  } else {
+    // The Content-Type placeholder set at construction.
+    const std::string_view placeholder = _fixedResponse.headerValueOrEmpty(http::ContentType);
+    _fixedResponse.eraseHeaderLine(http::ContentType, placeholder.data(), placeholder.data() + placeholder.size());
   }
 }
 
@@ -204,7 +229,7 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
     data = _compressedBuffer;
   }
 
-  if (!_head && !_transport->emitData(data)) {
+  if (!_noContent && !_transport->emitData(data)) {
     _state = State::Failed;
     log::error("Streaming: failed emitting data {} size={}", _transport->logId(), data.size());
     return false;
@@ -277,11 +302,11 @@ void HttpResponseWriter::end() {
       }
       _compressedBuffer.addSize(written);
     }
-    if (!_head && !_compressedBuffer.empty() && !_transport->emitData(_compressedBuffer)) {
+    if (!_noContent && !_compressedBuffer.empty() && !_transport->emitData(_compressedBuffer)) {
       _state = State::Failed;
       return;
     }
-  } else if (!_head && !_preCompressBuffer.empty()) {
+  } else if (!_noContent && !_preCompressBuffer.empty()) {
     // Identity path; emit headers now (they may not have been sent yet due to delayed strategy) then flush buffered.
     if (!_transport->emitData(_preCompressBuffer)) {
       _state = State::Failed;
@@ -299,7 +324,7 @@ void HttpResponseWriter::end() {
   _state = State::Ended;
 #ifndef NDEBUG
   // Debug-only protocol correctness check: if a fixed Content-Length was declared, assert body byte count match.
-  if (!_head && _declaredLength != 0 && (_activeEncoderCtx == nullptr || _encoding == Encoding::none)) {
+  if (!_noContent && _declaredLength != 0 && (_activeEncoderCtx == nullptr || _encoding == Encoding::none)) {
     assert(_bytesWritten == _declaredLength && "Declared Content-Length does not match bytes written");
   }
 #endif

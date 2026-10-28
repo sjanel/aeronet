@@ -17,6 +17,7 @@
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/internal/server-context.hpp"
 #include "aeronet/log.hpp"
@@ -41,7 +42,11 @@ class Http1WriterTransport final : public IWriterTransport {
 
   bool emitHeaders(HttpResponse& response, const HttpRequestView& request, std::size_t declaredLength,
                    bool isHead) override {
-    const bool chunked = !isHead && (declaredLength == 0) && !response.hasBodyFile();
+    // 1xx, 204 and 304 responses end at the empty line after their headers: neither Transfer-Encoding nor
+    // Content-Length may frame a body (RFC 9112 §6.1 and §6.3, RFC 9110 §8.6).
+    const bool bodyAllowed = http::StatusCodeAllowsBody(response.status());
+    const bool chunked = bodyAllowed && !isHead && (declaredLength == 0) && !response.hasBodyFile();
+    _chunked = chunked;
 
     // The head announces the close of the connection after this response, whatever its reason (RFC 9112 §9.6). It is
     // decided when the head is sent, so that it also announces a drain that began while the handler ran.
@@ -56,8 +61,7 @@ class Http1WriterTransport final : public IWriterTransport {
 
       response.reserve(response.sizeInlined() + needed);
       response.headerAddLineUnchecked(http::TransferEncoding, http::chunked);
-      _chunked = true;
-    } else if (!response.hasBodyFile()) {
+    } else if (bodyAllowed && !response.hasBodyFile()) {
       const auto declaredLengthIntegralLen = ndigits(declaredLength);
       const std::size_t needed = http::HeaderSize(http::ContentLength.size(), declaredLengthIntegralLen);
 
@@ -66,7 +70,6 @@ class Http1WriterTransport final : public IWriterTransport {
       std::string_view declaredLenStr(declaredLenBuf,
                                       WriteUInt(declaredLenBuf, declaredLength, declaredLengthIntegralLen));
       response.headerAddLineUnchecked(http::ContentLength, declaredLenStr);
-      _chunked = false;
     }
 
     _ctx.requestPipeline().prepareStreamingHead(request, response, _routeResponseMiddleware, _pCorsPolicy);
@@ -164,7 +167,7 @@ class Http1WriterTransport final : public IWriterTransport {
   internal::ServerContext& _ctx;
   NativeHandle _fd;
   bool _closeAnnounced{false};
-  bool _chunked{true};
+  bool _chunked{false};
   const CorsPolicy* _pCorsPolicy;
   std::span<const ResponseMiddleware> _routeResponseMiddleware;
 };

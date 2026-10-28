@@ -123,6 +123,10 @@ An owned body smaller than `HttpServerConfig::minCapturedBodySize` (1 KiB by def
 
 The response body is buffered: its size is known, and it is sent with `Content-Length`. For bodies too large to build in memory, use a [streaming handler](streaming-responses.md).
 
+### Statuses without content
+
+`1xx`, `204 No Content` and `304 Not Modified` responses end at the empty line after their headers (RFC 9112 §6.3), and `204` and `1xx` forbid `Content-Length` and `Transfer-Encoding` (RFC 9110 §8.6, RFC 9112 §6.1). The server therefore drops the body, the trailers, and the `Content-Type`, `Content-Length` and `Content-Encoding` headers a handler set on such a response, over HTTP/1.1 and HTTP/2 alike, for `HEAD` requests too: a body sent anyway would be read by the client as the start of the next response of the connection. The same holds for [streaming handlers](streaming-responses.md#how-it-works): what they write after setting such a status is discarded. Other headers (`ETag`, `Cache-Control`, ...) are kept.
+
 ## Operation costs
 
 The methods that build an `HttpResponse` edit a single contiguous buffer holding the status line, the headers, and the inline body, so their cost depends on how much has to move:
@@ -177,4 +181,5 @@ An exception escaping a handler is caught by the server, logged with its message
 - Response building, headers, bodies, and trailers: [http-response_test.cpp](../../aeronet/http/test/http-response_test.cpp).
 - `makeResponse()`, including moved bodies and `HEAD` requests: [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp).
 - End-to-end responses, keep-alive, and empty bodies: [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
+- Body dropped on `1xx`, `204` and `304`: `HttpBodylessStatus` tests of [tests/http-core_test.cpp](../../tests/http-core_test.cpp) (raw HTTP/1.1 connection), [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp) (HTTP/1.1 and HTTP/2), and `Prefinalize` tests of [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp).
 - Handlers that throw: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp), [tests/http-routing_test.cpp](../../tests/http-routing_test.cpp) (async handlers), and [http2-protocol-handler_test.cpp](../../aeronet/server/test/http2-protocol-handler_test.cpp) (HTTP/2).

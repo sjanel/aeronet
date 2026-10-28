@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <format>
 #include <initializer_list>
 #include <memory>
 #include <random>
@@ -350,6 +351,58 @@ TEST_F(HttpRequestViewTest, PrefinalizeCompressionExceedsMaxRatioIncrementsMetri
   }
 }
 #endif
+
+// 1xx, 204 and 304 responses end at the empty line after their headers (RFC 9112 §6.3): the body set by a handler, its
+// headers and its trailers are dropped before the response is serialized, for HTTP/1.1 and HTTP/2 alike.
+TEST_F(HttpRequestViewTest, PrefinalizeDropsBodyOfStatusesWithoutContent) {
+  static constexpr std::string_view kBigBody =
+      "a body long enough not to be inlined, whatever the minimum size of the captured bodies";
+  tracing::TelemetryContext telemetryContext{TelemetryConfig{}};
+
+  for (std::string_view method : {"GET", "HEAD"}) {
+    ASSERT_EQ(reqSet(BuildRaw(method, "/test", "HTTP/1.1")), http::StatusCodeOK);
+    for (http::StatusCode status : {http::StatusCodeNoContent, http::StatusCodeNotModified, http::StatusCode{199}}) {
+      for (bool captured : {false, true}) {
+        SCOPED_TRACE(std::format("{} {} captured={}", method, status, captured));
+        HttpResponse resp(status);
+        if (captured) {
+          resp.body(std::string(kBigBody));
+        } else {
+          resp.body("body");
+        }
+        resp.trailerAddLine("x-trailer", "t").headerAddLine("x-custom", "kept");
+
+        prefinalizeResponse(resp, telemetryContext);
+
+        EXPECT_EQ(resp.status(), status);
+        EXPECT_FALSE(resp.hasBody());
+        EXPECT_TRUE(resp.bodyInMemory().empty());
+        EXPECT_EQ(resp.bodyLength(), 0U);
+        EXPECT_EQ(resp.trailersSize(), 0U);
+        EXPECT_FALSE(resp.headerValue(http::ContentType).has_value());
+        EXPECT_FALSE(resp.headerValue(http::ContentLength).has_value());
+        EXPECT_EQ(resp.headerValueOrEmpty("x-custom"), "kept");
+
+        // The response stays usable: a body set afterwards is a regular one.
+        resp.status(http::StatusCodeOK).body("again");
+        EXPECT_EQ(resp.bodyInMemory(), "again");
+      }
+    }
+  }
+}
+
+TEST_F(HttpRequestViewTest, PrefinalizeKeepsBodyOfStatusesWithContent) {
+  tracing::TelemetryContext telemetryContext{TelemetryConfig{}};
+  ASSERT_EQ(reqSet(BuildRaw("GET", "/test", "HTTP/1.1")), http::StatusCodeOK);
+
+  for (http::StatusCode status : {http::StatusCodeOK, http::StatusCodeResetContent, http::StatusCodeNotFound,
+                                  http::StatusCodeInternalServerError}) {
+    HttpResponse resp(status, "body");
+    prefinalizeResponse(resp, telemetryContext);
+    EXPECT_EQ(resp.bodyInMemory(), "body") << status;
+    EXPECT_TRUE(resp.headerValue(http::ContentType).has_value()) << status;
+  }
+}
 
 TEST_F(HttpRequestViewTest, BridgeWithNullContextAggregateHandledGracefully) {
   // Aggregate accessor: null context -> empty body
