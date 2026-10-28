@@ -365,9 +365,21 @@ void ConnectionMaintenance::sweepIdleConnections() {
     }
 
 #ifdef AERONET_ENABLE_HTTP2
-    // Sweep per-stream request deadlines for HTTP/2 connections.
+    // Sweep per-stream request deadlines and the timers of HTTP/2 connections.
     if (state.protocol == ProtocolType::Http2 && state.protocolHandler) {
-      static_cast<http2::Http2ProtocolHandler*>(state.protocolHandler.get())->sweepStreams(now);
+      auto& handler = static_cast<http2::Http2ProtocolHandler&>(*state.protocolHandler);
+      const bool keep = handler.sweepStreams(now);
+      // The 408 responses, PING and GOAWAY frames it queued: the connection may receive no event to send them.
+      if (handler.hasPendingOutput() && !state.waitingWritable) {
+        ctx.io.flushOutbound(cnxIt);
+      }
+      if (!keep) {
+        ctx.io.closeConnection(cnxIt);
+#ifdef AERONET_WINDOWS
+        cnxIt = connections.begin();
+#endif
+        continue;
+      }
     }
 #endif
 

@@ -26,6 +26,8 @@ constexpr std::string_view ConvertProcessResultErrorMsgToSv(ErrorMsg msg) {
       return "Invalid DATA Frame";
     case ErrorMsg::DATAOnClosedStream:
       return "DATA On Closed Stream";
+    case ErrorMsg::DATAOnIdleStream:
+      return "DATA On Idle Stream";
     case ErrorMsg::ConnectionFlowControlExceeded:
       return "Connection Flow Control Exceeded";
     case ErrorMsg::HEADERSFrameOnStreamZero:
@@ -36,14 +38,14 @@ constexpr std::string_view ConvertProcessResultErrorMsgToSv(ErrorMsg msg) {
       return "Invalid HEADERS Frame";
     case ErrorMsg::ServerInitiatedStreamIdFromClient:
       return "Server Initiated Stream Id From Client";
+    case ErrorMsg::HEADERSOnIdleStream:
+      return "HEADERS On Idle Stream";
     case ErrorMsg::StreamIdNotIncreasing:
       return "Stream Id Not Increasing";
     case ErrorMsg::StreamFlowControlExceeded:
       return "Stream Flow Control Exceeded";
     case ErrorMsg::StreamDependsOnItself:
       return "Stream Depends On Itself";
-    case ErrorMsg::MaxConcurrentStreamsExceeded:
-      return "Max Concurrent Streams Exceeded";
     case ErrorMsg::HeaderBlockTooLarge:
       return "Header Block Too Large";
     case ErrorMsg::HeaderListTooLarge:
@@ -64,6 +66,8 @@ constexpr std::string_view ConvertProcessResultErrorMsgToSv(ErrorMsg msg) {
       return "RST_STREAM Frame On Stream Zero";
     case ErrorMsg::InvalidRST_STREAMFrame:
       return "Invalid RST_STREAM Frame";
+    case ErrorMsg::RST_STREAMOnIdleStream:
+      return "RST_STREAM On Idle Stream";
     case ErrorMsg::SETTINGSFrameOnNonZeroStream:
       return "SETTINGS Frame On Non Zero Stream";
     case ErrorMsg::InvalidSETTINGSFrame:
@@ -86,6 +90,8 @@ constexpr std::string_view ConvertProcessResultErrorMsgToSv(ErrorMsg msg) {
       return "Invalid GOAWAY Frame";
     case ErrorMsg::InvalidWINDOW_UPDATEFrame:
       return "Invalid WINDOW_UPDATE Frame";
+    case ErrorMsg::WINDOW_UPDATEOnIdleStream:
+      return "WINDOW_UPDATE On Idle Stream";
     case ErrorMsg::ZeroWINDOW_UPDATEIncrement:
       return "Zero WINDOW_UPDATE Increment";
     case ErrorMsg::ZeroWINDOW_UPDATEIncrementOnConnection:
@@ -96,10 +102,14 @@ constexpr std::string_view ConvertProcessResultErrorMsgToSv(ErrorMsg msg) {
       return "Stream Window Overflow";
     case ErrorMsg::CONTINUATIONOnWrongStream:
       return "CONTINUATION On Wrong Stream";
-    case ErrorMsg::StreamNotFoundForCONTINUATION:
-      return "Stream Not Found For CONTINUATION";
     case ErrorMsg::UnexpectedCONTINUATIONFrame:
       return "Unexpected CONTINUATION Frame";
+    case ErrorMsg::SETTINGSTimeout:
+      return "SETTINGS Timeout";
+    case ErrorMsg::PINGTimeout:
+      return "PING Timeout";
+    case ErrorMsg::MaxStreamsPerConnectionReached:
+      return "Max Streams Per Connection Reached";
     default:
       return "Unknown Error";
   }

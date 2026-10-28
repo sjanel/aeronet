@@ -3,6 +3,7 @@
 #include <amc/type_traits.hpp>
 #include <array>
 #include <cassert>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -118,6 +119,24 @@ class Http2Connection {
     return _state == ConnectionState::Open || (!_isServer && _state == ConnectionState::AwaitingSettings);
   }
 
+  /// Whether this endpoint sent a GOAWAY (see initiateGoAway()) and all the streams it still served are closed: the
+  /// connection has nothing left to do once its output is written.
+  [[nodiscard]] bool goAwayCompleted() const noexcept {
+    return _state == ConnectionState::GoAwaySent && _activeStreamCount == 0;
+  }
+
+  /// Run the timers of the connection, to be called periodically.
+  /// - The SETTINGS of this endpoint must be acknowledged within Http2Config::settingsTimeout of their sending: a
+  ///   connection error SETTINGS_TIMEOUT otherwise (RFC 9113 §6.5.3).
+  /// - While streams are open, a PING is sent once nothing happened on the connection for Http2Config::pingInterval,
+  ///   and must be acknowledged within pingTimeout. An idle connection is not pinged: its keep-alive timeout applies.
+  /// @param now The current time
+  /// @param lastActivity The last time the connection received (or sent) bytes
+  /// @return Error when a timeout elapsed (a GOAWAY is queued, with SETTINGS_TIMEOUT or NO_ERROR for a PING): the
+  ///         connection should be closed. OutputReady when a PING was queued, Continue otherwise.
+  [[nodiscard]] ProcessResult checkTimeouts(std::chrono::steady_clock::time_point now,
+                                            std::chrono::steady_clock::time_point lastActivity);
+
   /// Process incoming data from the transport.
   /// @param data Incoming bytes from the socket
   /// @return ProcessResult indicating next action and bytes consumed
@@ -188,7 +207,7 @@ class Http2Connection {
   /// Get the highest stream ID received from the peer.
   [[nodiscard]] uint32_t lastPeerStreamId() const noexcept { return _lastPeerStreamId; }
 
-  /// Get the highest stream ID we've created.
+  /// Get the highest stream ID of the streams this endpoint initiated.
   [[nodiscard]] uint32_t lastLocalStreamId() const noexcept { return _lastLocalStreamId; }
 
   // ============================
@@ -381,11 +400,33 @@ class Http2Connection {
   ProcessResult handleWindowUpdateFrame(FrameHeader header, std::span<const std::byte> payload);
   ProcessResult handleContinuationFrame(FrameHeader header, std::span<const std::byte> payload);
 
+  // A HEADERS frame on a stream absent from _streams: opens a stream of the peer, or decodes only the field block.
+  ProcessResult handleHeadersOnUnknownStream(FrameHeader header, const HeadersFrame& frame);
+
+  // Keep the first fragment of a field block, completed by the CONTINUATION frames that follow.
+  ProcessResult startFieldBlock(uint32_t streamId, std::span<const std::byte> fragment, bool endStream);
+
   // ============================
   // Stream management
   // ============================
 
   void closeStream(StreamsMap::iterator it, ErrorCode errorCode = ErrorCode::NoError);
+
+  // Whether a stream was initiated by the peer: odd ids are initiated by the client, even ones by the server.
+  [[nodiscard]] bool isPeerStream(uint32_t streamId) const noexcept { return ((streamId & 1U) != 0) == _isServer; }
+
+  // Whether a stream absent from _streams was never opened (idle, RFC 9113 §5.1): its id is above the last one opened
+  // by its initiator. A lower one was closed, then pruned, or skipped by its initiator (implicitly closed, §5.1.1).
+  [[nodiscard]] bool isIdleStream(uint32_t streamId) const noexcept {
+    return streamId > (isPeerStream(streamId) ? _lastPeerStreamId : _lastLocalStreamId);
+  }
+
+  // Whether a stream absent from _streams was opened, then pruned (see pruneClosedStreams()). All the streams are
+  // opened by the client (the server does not push), so all the opened ones above the highest pruned id are in
+  // _streams.
+  [[nodiscard]] bool wasPruned(uint32_t streamId) const noexcept {
+    return (streamId & 1U) != 0 && streamId <= _maxPrunedStreamId;
+  }
 
   /// Give back the connection-level credit once half of it was consumed (see handleDataFrame()).
   void replenishConnectionRecvWindow();
@@ -406,6 +447,10 @@ class Http2Connection {
   // the HPACK decoding state is shared by the whole connection (RFC 9113 §4.3). Only a compression error fails the
   // connection.
   ProcessResult discardFieldBlock(std::span<const std::byte> headerBlock);
+
+  // Process the complete field block of a HEADERS frame (and of its CONTINUATION frames) on the stream `it`: decoded
+  // and delivered, or only decoded when the stream does not accept it.
+  ProcessResult processFieldBlock(StreamsMap::iterator it, std::span<const std::byte> headerBlock, bool endStream);
 
   // ============================
   // Output helpers
@@ -452,11 +497,16 @@ class Http2Connection {
   // Stream management
   StreamsMap _streams;
   std::deque<uint32_t> _closedStreamsFifo;
+
+  // Timers (see checkTimeouts()), the epoch when not running.
+  std::chrono::steady_clock::time_point _settingsAckDeadline;
+  std::chrono::steady_clock::time_point _pingAckDeadline;
+
   uint32_t _headerBlockStreamId{0};
   uint32_t _activeStreamCount{0};
   uint32_t _lastPeerStreamId{0};
   uint32_t _lastLocalStreamId{0};
-  uint32_t _goAwayLastStreamId{UINT32_MAX};
+  uint32_t _maxPrunedStreamId{0};
 
   // Security hardening: counter for PRIORITY frames on non-existent streams (flood mitigation)
   uint32_t _idlePriorityFrameCount{0};
@@ -486,9 +536,7 @@ class Http2Connection {
 
   ConnectionState _state{ConnectionState::AwaitingPreface};
 
-  // Settings acknowledgment tracking
   bool _settingsSent{false};
-  bool _settingsAckReceived{false};
   bool _isServer;
   bool _expectingContinuation{false};
   bool _headerBlockEndStream{false};

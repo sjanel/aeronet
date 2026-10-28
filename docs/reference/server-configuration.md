@@ -119,9 +119,9 @@ HTTP/2 requires `AERONET_ENABLE_HTTP2=ON`; `Http2Config::enable` defaults to tru
 | `connectionWindowSize` | 1 MiB | Connection-level receive window. |
 | `maxFrameSize` | 16,384 | Frame payload limit; valid range 16,384 through 16,777,215. |
 | `maxHeaderListSize` | 8192 | Decoded header-list ceiling, advertised to the peer and enforced: a larger header block resets its stream with `ENHANCE_YOUR_CALM`, and its fields beyond the limit are not stored while decoded. |
-| `settingsTimeout` | 5 s | Deadline for the peer SETTINGS acknowledgement. |
-| `pingInterval`, `pingTimeout` | disabled, 10 s | Optional PING keepalive and response deadline. |
-| `maxStreamsPerConnection` | 1000000 | Lifetime stream count before graceful GOAWAY. |
+| `settingsTimeout` | 5 s | Deadline for the acknowledgement of the server `SETTINGS`, after which the connection is closed with `SETTINGS_TIMEOUT`; 0 disables it. |
+| `pingInterval`, `pingTimeout` | disabled, 10 s | Optional PING keepalive: a connection with open streams but no activity for `pingInterval` is pinged, and closed without acknowledgement within `pingTimeout`. Idle connections are not pinged. |
+| `maxStreamsPerConnection` | 1000000 | Streams of a connection: the last one sends a graceful `GOAWAY`, and the connection is closed once its streams are answered. Also the stream budget of an `HttpClient` connection. |
 | `sendContentLengthHeader` | true | Add `content-length` to responses built with `HttpRequestView::makeResponse()`. Optional in HTTP/2; disabling it avoids moving the body when its length changes digit count. |
 | `maxStreamPendingBytes` | 4 MiB | Per-stream cap for in-memory response body and trailer bytes waiting on peer flow-control credit. Oversized fixed responses receive 503; overflowing streaming responses are reset with `ENHANCE_YOUR_CALM`. |
 | `maxRecycledRequests` | 8 | Server only, at most 255: request objects a connection keeps from its finished streams, reused by the next ones with the capacity of their header maps and buffers. Only connections receiving that many request bodies (or running that many suspended async handlers) at once need more; each one kept costs idle memory. 0 disables the recycling. |
