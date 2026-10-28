@@ -215,6 +215,9 @@ class HttpResponseWriter {
 
   void ensureHeadersSent();
 
+  // Called when the status code forbids any content: discards what could have been accumulated for the body.
+  void dropContent();
+
   // Tells whether nothing was sent yet (the head is sent with the first body bytes past the compression threshold).
   [[nodiscard]] bool headersPending() const noexcept { return _state == State::Opened; }
 
@@ -223,7 +226,7 @@ class HttpResponseWriter {
 
   IWriterTransport* _transport;
   const HttpRequestView* _request;
-  bool _head;
+  bool _noContent;      // HEAD request, or a status code without content (1xx, 204, 304): the body is never sent
   bool _isFile{false};  // the file payload is moved out of _fixedResponse when headers are emitted
   State _state{State::Opened};
   Encoding _encoding;

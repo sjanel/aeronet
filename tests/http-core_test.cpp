@@ -904,6 +904,123 @@ TEST(HttpKeepAlive, EmptyBodyResponseCarriesContentLengthZeroAndReusesConnection
 
 namespace {
 
+// Registers one bodyless-status route per kind of handler, each one trying to send a body and a trailer.
+void RegisterBodylessStatusRoutes(http::StatusCode status) {
+  auto router = ts.router();
+  const std::string suffix = std::to_string(status);
+  router.setPath(http::Method::GET | http::Method::HEAD, "/buffered" + suffix, [status](const HttpRequestView&) {
+    HttpResponse resp(status, "BODY-OF-" + std::to_string(status));
+    resp.trailerAddLine("x-trailer", "t").headerAddLine("x-custom", "kept");
+    return resp;
+  });
+  router.setPath(http::Method::GET | http::Method::HEAD, "/streamed" + suffix,
+                 [status](const HttpRequestView&, HttpResponseWriter& writer) {
+                   writer.status(status);
+                   writer.headerAddLine("x-custom", "kept");
+                   writer.contentLength(17);
+                   writer.writeBody("STREAM-BODY-OF-" + std::to_string(status));
+                   writer.trailerAddLine("x-trailer", "t");
+                   writer.end();
+                 });
+}
+
+// Sends a request to each bodyless-status route followed by a request on the same connection, and checks that no
+// body nor framing header follows the head of the bodyless responses and that the last response is read intact.
+void ExpectBodylessStatusEndsAtHeaders(std::string_view method, http::StatusCode status) {
+  for (std::string_view kind : {"/buffered", "/streamed"}) {
+    const std::string requests = std::format("{} {}{} HTTP/1.1\r\nhost: x\r\n\r\n", method, kind, status) +
+                                 std::format("{} {}{} HTTP/1.1\r\nhost: x\r\n\r\n", method, kind, status) +
+                                 "GET /after HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n";
+    test::ClientConnection cnx(port);
+    test::sendAll(cnx.fd(), requests);
+    const std::string resp = test::recvUntilClosed(cnx.fd());
+
+    const std::string statusLine = std::format("HTTP/1.1 {} ", status);
+    ASSERT_TRUE(resp.starts_with(statusLine)) << kind << ' ' << resp;
+    const std::size_t afterPos = resp.find("HTTP/1.1 200");
+    ASSERT_NE(afterPos, std::string::npos) << resp;
+
+    const std::string_view bodylessResponses = std::string_view(resp).substr(0, afterPos);
+    EXPECT_EQ(test::countOccurrences(bodylessResponses, statusLine), 2) << kind << ' ' << resp;
+    EXPECT_TRUE(bodylessResponses.contains(MakeHttp1HeaderLine("x-custom", "kept"))) << kind << ' ' << resp;
+    EXPECT_FALSE(bodylessResponses.contains("BODY-OF-")) << kind << ' ' << resp;
+    EXPECT_FALSE(bodylessResponses.contains("x-trailer")) << kind << ' ' << resp;
+    EXPECT_FALSE(bodylessResponses.contains(http::ContentLength)) << kind << ' ' << resp;
+    EXPECT_FALSE(bodylessResponses.contains(http::TransferEncoding)) << kind << ' ' << resp;
+    EXPECT_FALSE(bodylessResponses.contains(http::ContentType)) << kind << ' ' << resp;
+    EXPECT_FALSE(bodylessResponses.contains("0\r\n\r\n")) << kind << ' ' << resp;
+    // Each head is directly followed by the next response: nothing but the end of the head in between.
+    EXPECT_TRUE(bodylessResponses.ends_with(http::DoubleCRLF)) << kind << ' ' << resp;
+
+    // The next response is read intact.
+    EXPECT_TRUE(std::string_view(resp).substr(afterPos).starts_with("HTTP/1.1 200")) << kind << ' ' << resp;
+    EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 3) << kind << ' ' << resp;
+  }
+}
+
+}  // namespace
+
+// RFC 9112 §6.3: 204 and 304 responses end at the empty line after their headers, and RFC 9110 §8.6 forbids a
+// Content-Length on a 204 (RFC 9112 §6.1: no Transfer-Encoding either). A body set by the handler must not reach the
+// wire, otherwise the client reads it as the start of the next response of the connection.
+TEST(HttpBodylessStatus, NoContentAndNotModifiedEndAtTheHeaders) {
+  ts.router().setPath(http::Method::GET, "/after", [](const HttpRequestView&) { return HttpResponse("after"); });
+  for (http::StatusCode status : {http::StatusCodeNoContent, http::StatusCodeNotModified}) {
+    RegisterBodylessStatusRoutes(status);
+    for (std::string_view method : {"GET", "HEAD"}) {
+      SCOPED_TRACE(std::format("{} {}", method, status));
+      ExpectBodylessStatusEndsAtHeaders(method, status);
+    }
+  }
+}
+
+TEST(HttpBodylessStatus, InformationalStatusEndsAtTheHeaders) {
+  // A 1xx status answered as a final response (a handler error, but the framing must stay correct).
+  RegisterBodylessStatusRoutes(199);
+  ts.router().setPath(http::Method::GET, "/after", [](const HttpRequestView&) { return HttpResponse("after"); });
+  ExpectBodylessStatusEndsAtHeaders("GET", 199);
+}
+
+TEST(HttpBodylessStatus, FileAndCompressedBodiesAreDroppedToo) {
+  ts.router().setPath(http::Method::GET, "/streamed-file", [](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeNoContent);
+    EXPECT_TRUE(writer.file(File(__FILE__)));
+    writer.end();
+  });
+  ts.router().setPath(http::Method::GET, "/buffered-big", [](const HttpRequestView&) {
+    return HttpResponse(http::StatusCodeNoContent, std::string(64UL << 10U, 'z'));
+  });
+  ts.router().setPath(http::Method::GET, "/streamed-big", [](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeNotModified);
+    writer.writeBody(std::string(64UL << 10U, 'z'));
+    writer.writeBody(std::string(64UL << 10U, 'z'));
+    writer.end();
+  });
+  ts.router().setPath(http::Method::GET, "/after", [](const HttpRequestView&) { return HttpResponse("after"); });
+
+  const std::string requests =
+      "GET /streamed-file HTTP/1.1\r\nhost: x\r\naccept-encoding: gzip\r\n\r\n"
+      "GET /buffered-big HTTP/1.1\r\nhost: x\r\naccept-encoding: gzip\r\n\r\n"
+      "GET /streamed-big HTTP/1.1\r\nhost: x\r\naccept-encoding: gzip\r\n\r\n"
+      "GET /after HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n";
+  test::ClientConnection cnx(port);
+  test::sendAll(cnx.fd(), requests);
+  const std::string resp = test::recvUntilClosed(cnx.fd());
+  const std::size_t afterPos = resp.find("HTTP/1.1 200");
+  ASSERT_NE(afterPos, std::string::npos) << resp;
+  const std::string_view bodylessResponses = std::string_view(resp).substr(0, afterPos);
+  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 4) << resp;
+  EXPECT_FALSE(bodylessResponses.contains(http::ContentLength)) << resp;
+  EXPECT_FALSE(bodylessResponses.contains(http::Vary)) << resp;
+  EXPECT_FALSE(bodylessResponses.contains(http::TransferEncoding)) << resp;
+  EXPECT_FALSE(bodylessResponses.contains(http::ContentEncoding)) << resp;
+  EXPECT_FALSE(bodylessResponses.contains(http::ContentType)) << resp;
+  EXPECT_TRUE(bodylessResponses.ends_with(http::DoubleCRLF)) << resp;
+  EXPECT_TRUE(std::string_view(resp).substr(afterPos).ends_with("after")) << resp;
+}
+
+namespace {
+
 // A server answering 413 right after the head of a request announcing a larger body than its maxBodyBytes: the client
 // may still be sending this body.
 HttpServerConfig MakeEarlyResponseConfig() {

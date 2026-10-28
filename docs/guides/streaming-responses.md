@@ -26,6 +26,7 @@ router.setPath(http::Method::GET, "/export", [](const HttpRequestView&, HttpResp
 - `end()` completes the response. The server calls it when the handler returns without calling it, and further calls are ignored.
 - Over HTTP/1.1, the head carries `Connection: close` when the connection closes after the response, as for buffered responses: the client asked for it, keep-alive is disabled, the request is the last one allowed by `maxRequestsPerConnection`, or the server drains. A drain that begins once the head was sent closes the connection after the complete response, without announcing it.
 - For a `HEAD` request, the headers are sent and the body is discarded, so the same handler serves both methods.
+- For a `1xx`, `204` or `304` status, which carry no content, the headers are sent without `Content-Length` nor `Transfer-Encoding`, and what the handler writes is discarded (see [Statuses without content](responses.md#statuses-without-content)).
 - The body is compressed automatically, like buffered responses: the server buffers the first `minBytes`, then compresses each piece written. See [Compression](compression.md#streaming-responses).
 
 !!! warning
@@ -80,6 +81,7 @@ A path can mix streaming and buffered handlers for different methods, see [Dispa
 
 - Chunked and fixed-length streaming, `HEAD`, trailers, and backpressure with slow readers (`HttpBackpressure` tests): [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
 - `Connection: close` announced for keep-alive disabled, the request limit and the client's close (`StreamingKeepAlive` tests): [tests/http-core_test.cpp](../../tests/http-core_test.cpp); for a drain beginning before or after the head: [tests/http-server-lifecycle_test.cpp](../../tests/http-server-lifecycle_test.cpp).
+- Streaming handlers answering `204` or `304` (`HttpBodylessStatus` tests): [tests/http-core_test.cpp](../../tests/http-core_test.cpp) and [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp).
 - Streaming over HTTP/2: [tests/http2-core_test.cpp](../../tests/http2-core_test.cpp).
 - Handlers throwing before or after the head was sent, and compression failing after it: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp) and [http2-protocol-handler_test.cpp](../../aeronet/server/test/http2-protocol-handler_test.cpp).
 - Streaming compression: [tests/http-compression_test.cpp](../../tests/http-compression_test.cpp).

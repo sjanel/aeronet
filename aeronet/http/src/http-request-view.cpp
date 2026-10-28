@@ -496,6 +496,13 @@ void HttpRequestView::rebaseHeadViews(const char* newBase) noexcept {
 }
 
 void HttpRequestView::prefinalizeHttpResponse(HttpResponse& response, tracing::TelemetryContext& telemetryContext) {
+  if (response.hasBodyHeaders() && !http::StatusCodeAllowsBody(response.status())) {
+    // 1xx, 204 and 304 responses end at the empty line after their headers: a body set by the handler would be read by
+    // the client as the start of the next response, and its Content-Length is forbidden (RFC 9110 §8.6). This also
+    // holds for HEAD, whose Content-Length would otherwise announce the body of the dropped GET.
+    response.removeBodyAndItsHeaders();
+    return;
+  }
   if (method() == http::Method::HEAD) {
     return;
   }
