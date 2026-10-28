@@ -100,8 +100,8 @@ class TlsHttp2Client {
   uint32_t sendConnect(std::string_view authority,
                        const std::vector<std::pair<std::string, std::string>>& headers = {});
 
-  /// Send data on an established tunnel stream.
-  /// @param streamId Stream ID returned by connect()
+  /// Send data on an open stream: an established tunnel, or a request opened by openRequestStream().
+  /// @param streamId Stream ID returned by connect() or openRequestStream()
   /// @param data Data to send
   /// @param endStream Whether this is the last data frame
   /// @return True if successful
@@ -125,6 +125,12 @@ class TlsHttp2Client {
   uint32_t sendAsyncRequest(std::string_view method, std::string_view path,
                             const std::vector<std::pair<std::string, std::string>>& headers = {},
                             std::string_view body = {});
+
+  /// Send the HEADERS of a request on a new stream without ending it: the stream stays open until its body is sent with
+  /// sendTunnelData(), whose call with endStream ends it (see waitAndGetResponse()).
+  /// @return Stream ID, or 0 on failure
+  uint32_t openRequestStream(std::string_view method, std::string_view path,
+                             const std::vector<std::pair<std::string, std::string>>& headers = {});
 
   /// Wait for a response on a specific stream.
   std::optional<Response> waitAndGetResponse(uint32_t streamId,
@@ -151,6 +157,10 @@ class TlsHttp2Client {
   /// Build and send a request on a new stream.
   uint32_t sendRequest(std::string_view method, std::string_view path,
                        const std::vector<std::pair<std::string, std::string>>& headers, std::string_view body);
+
+  /// Send the HEADERS of a request on a new stream.
+  uint32_t sendRequestHeaders(std::string_view method, std::string_view path,
+                              const std::vector<std::pair<std::string, std::string>>& headers, bool endStream);
 
   /// Process all data currently in _pendingInput through the HTTP/2 layer,
   /// sending any resulting output frames (SETTINGS ACK, WINDOW_UPDATE, etc.).

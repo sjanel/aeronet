@@ -516,14 +516,17 @@ TEST_F(HttpConnectDefaultConfig, SlowResolutionDoesNotBlockTheEventLoop) {
 TEST_F(HttpConnectDefaultConfig, UnresolvedTargetIsAnswered504AfterKeepAliveTimeout) {
   AllowConnectHost(ts, "localhost");
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withKeepAliveTimeout(300ms); });
+  // The connection of the fixture, idle since its accept, may have exceeded the new keep-alive timeout already.
+  test::ClientConnection cnx(ts.port());
+  const NativeHandle cnxFd = cnx.fd();
 
   test::GetAddrInfoDelayGuard getAddrInfoDelayGuard(3000);
   const auto start = std::chrono::steady_clock::now();
-  test::sendAll(fd, "CONNECT localhost:9 HTTP/1.1\r\nHost: localhost\r\n\r\n");
-  const std::string head = RecvConnectResponseHead(fd, 5000ms);
+  test::sendAll(cnxFd, "CONNECT localhost:9 HTTP/1.1\r\nHost: localhost\r\n\r\n");
+  const std::string head = RecvConnectResponseHead(cnxFd, 5000ms);
   EXPECT_TRUE(head.starts_with("HTTP/1.1 504 ")) << head;
   EXPECT_LT(std::chrono::steady_clock::now() - start, 2500ms);
-  EXPECT_TRUE(test::WaitForPeerClose(fd, 2s));
+  EXPECT_TRUE(test::WaitForPeerClose(cnxFd, 2s));
 }
 
 #ifdef AERONET_LINUX
