@@ -2,9 +2,11 @@
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <format>
 #include <ios>
 #include <iterator>
 #include <limits>
@@ -16,6 +18,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 
 #include "aeronet/compression-test-helpers.hpp"
@@ -31,6 +34,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/simple-charconv.hpp"
+#include "aeronet/socket-ops.hpp"
 #include "aeronet/string-trim.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
@@ -372,6 +376,80 @@ TEST(HttpRequestDecompression, ChunkedCompressedBodyExceedsMaxBodyBytesCumulativ
   }
 
   ts.postConfigUpdate([defaultMaxBodyBytes](HttpServerConfig& cfg) { cfg.maxBodyBytes = defaultMaxBodyBytes; });
+}
+
+// The chunks of a compressed body received by several reads are decoded as they come, then decompressed together: the
+// result is the one of a body received at once.
+TEST(HttpRequestDecompression, ChunkedCompressedBodyReceivedInSeveralReads) {
+  using namespace std::chrono_literals;
+
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
+  ts.router().setDefault([](const HttpRequestView& req) {
+    return HttpResponse(std::format("{}|{}", req.trailerValueOrEmpty("x-checksum"), req.body()));
+  });
+
+  std::string plain;
+  std::uniform_int_distribution<int> letter('a', 'p');
+  while (plain.size() < 30000) {
+    plain.push_back(static_cast<char>(letter(rng)));
+  }
+
+  for (const Encoding enc : test::SupportedEncodings()) {
+    const auto comp = test::Compress(enc, plain);
+    SCOPED_TRACE(GetEncodingStr(enc));
+    ASSERT_GT(comp.size(), 3000U);
+
+    for (const bool withTrailer : {false, true}) {
+      SCOPED_TRACE(withTrailer);
+      std::string req = "POST /resume HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\nContent-Encoding: ";
+      req.append(GetEncodingStr(enc));
+      req.append("\r\nConnection: close\r\n\r\n");
+      static constexpr std::size_t kChunkSize = 1000;
+      for (std::size_t pos = 0; pos < comp.size(); pos += kChunkSize) {
+        const std::size_t chunkSize = std::min<std::size_t>(kChunkSize, comp.size() - pos);
+        req.append(std::format("{:x}\r\n", chunkSize));
+        req.append(comp.data() + pos, chunkSize);
+        req.append("\r\n");
+      }
+      req.append(withTrailer ? "0\r\nX-Checksum: abc123\r\n\r\n" : "0\r\n\r\n");
+
+      // Parts of a different size than the chunks: the reads end in the chunk data, the size lines and the trailers.
+      test::ClientConnection sock(ts.port());
+      NativeHandle fd = sock.fd();
+      ASSERT_TRUE(SetTcpNoDelay(fd));
+      static constexpr std::size_t kPartSize = 700;
+      for (std::size_t pos = 0; pos < req.size(); pos += kPartSize) {
+        test::sendAll(fd, std::string_view(req).substr(pos, kPartSize));
+        std::this_thread::sleep_for(1ms);
+      }
+      const std::string resp = test::recvUntilClosed(fd);
+      ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp.substr(0, 100);
+      EXPECT_TRUE(resp.ends_with(std::format("{}|{}", withTrailer ? "abc123" : "", plain)));
+    }
+  }
+}
+
+// A chunked body without any chunk has nothing to decompress, whatever its Content-Encoding (trailers are kept).
+TEST(HttpRequestDecompression, ChunkedEmptyBodyWithContentEncoding) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
+  ts.router().setDefault([](const HttpRequestView& req) {
+    return HttpResponse(std::format("[{}|{}]", req.body(), req.trailerValueOrEmpty("x-checksum")));
+  });
+
+  for (const Encoding enc : test::SupportedEncodings()) {
+    SCOPED_TRACE(GetEncodingStr(enc));
+    for (const bool withTrailer : {false, true}) {
+      SCOPED_TRACE(withTrailer);
+      std::string req = "POST /empty HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\nContent-Encoding: ";
+      req.append(GetEncodingStr(enc));
+      req.append("\r\nConnection: close\r\n\r\n");
+      req.append(withTrailer ? "0\r\nX-Checksum: abc123\r\n\r\n" : "0\r\n\r\n");
+
+      const std::string resp = test::sendAndCollect(ts.port(), req);
+      ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+      EXPECT_TRUE(resp.ends_with(withTrailer ? "[|abc123]" : "[|]")) << resp;
+    }
+  }
 }
 
 TEST(HttpRequestDecompression, ExpansionRatioGuard) {

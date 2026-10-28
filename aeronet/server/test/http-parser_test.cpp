@@ -1,8 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -11,6 +13,7 @@
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/native-handle.hpp"
+#include "aeronet/socket-ops.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 
@@ -40,6 +43,35 @@ std::string SendSplit(uint16_t targetPort, std::string_view head, std::string_vi
   std::this_thread::sleep_for(delayBetween);
   test::sendAll(fd, restChunk);
   return test::recvUntilClosed(fd);
+}
+
+// Sends head, then body in parts of at most partSize bytes, each in its own write, pausing between them so that the
+// server reads them separately. Returns the raw response string.
+std::string SendInParts(uint16_t targetPort, std::string_view head, std::string_view body, std::size_t partSize,
+                        std::chrono::microseconds delayBetween = 2ms) {
+  test::ClientConnection conn(targetPort);
+  NativeHandle fd = conn.fd();
+  EXPECT_TRUE(SetTcpNoDelay(fd));  // the parts are not coalesced while the previous one is not acknowledged
+  test::sendAll(fd, head);
+  while (!body.empty()) {
+    const std::size_t partLen = std::min(partSize, body.size());
+    test::sendAll(fd, body.substr(0, partLen));
+    body.remove_prefix(partLen);
+    std::this_thread::sleep_for(delayBetween);
+  }
+  return test::recvUntilClosed(fd);
+}
+
+constexpr std::string_view kChunkedHead =
+    "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+
+// FNV-1a: tells large bodies apart without echoing them.
+uint64_t Fnv1a(std::string_view data) {
+  uint64_t hash = 14695981039346656037ULL;
+  for (const char ch : data) {
+    hash = (hash ^ static_cast<unsigned char>(ch)) * 1099511628211ULL;
+  }
+  return hash;
 }
 
 }  // namespace
@@ -477,6 +509,199 @@ TEST(HttpParserFixedLength, LargeBody) {
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+}
+
+// =============================================================================
+// Chunked body received in several reads: decoded once, from where the previous read stopped.
+// =============================================================================
+
+// Whatever the byte where the reads of a body end (in a chunk size, its extension, its data, the CRLF after it, the
+// last chunk or the trailers), the decoded body and trailers are the same.
+TEST(HttpParserChunkedResume, BodyAndTrailersReceivedByteByByte) {
+  ts.resetConfig();
+  ts.router().setDefault([](const HttpRequestView& req) {
+    return req.makeResponse(
+        std::format("{}|{}|{}", req.body(), req.trailerValueOrEmpty("x-sum"), req.trailerValueOrEmpty("x-note")));
+  });
+  static constexpr std::string_view kBody =
+      "3\r\nfoo\r\n"
+      "6;ext=1\r\nbarbaz\r\n"
+      "a\r\n0123456789\r\n"
+      "0\r\n"
+      "X-Sum: 42\r\n"
+      "X-Note: n\r\n"
+      "\r\n";
+  const std::string resp = SendInParts(port, kChunkedHead, kBody, 1);
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.ends_with("foobarbaz0123456789|42|n")) << resp;
+}
+
+TEST(HttpParserChunkedResume, BodyWithoutTrailersReceivedByteByByte) {
+  ts.resetConfig();
+  InstallEchoHandler();
+  const std::string resp = SendInParts(port, kChunkedHead, "3\r\nfoo\r\n1;a=b\r\nX\r\n0\r\n\r\n", 1);
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.ends_with("fooX")) << resp;
+}
+
+// A body of many chunks, each received on its own: the chunks already decoded are not decoded again, nor lost.
+TEST(HttpParserChunkedResume, LargeBodyReceivedChunkByChunk) {
+  ts.resetConfig();
+  ts.router().setDefault([](const HttpRequestView& req) {
+    return req.makeResponse(
+        std::format("{}:{:x}:{}", req.body().size(), Fnv1a(req.body()), req.trailerValueOrEmpty("x-end")));
+  });
+  static constexpr std::size_t kNbChunks = 512;
+  static constexpr std::size_t kChunkSize = 2048;
+
+  std::string expectedBody;
+  std::string chunkedBody;
+  for (std::size_t chunkPos = 0; chunkPos < kNbChunks; ++chunkPos) {
+    // Distinct contents: a chunk copied twice, or lost, changes the checksum.
+    std::string chunk(kChunkSize, static_cast<char>('a' + (chunkPos % 26)));
+    chunk.replace(0, 8, std::format("{:08d}", chunkPos));
+    chunkedBody += std::format("{:x}\r\n", kChunkSize);
+    chunkedBody += chunk;
+    chunkedBody += "\r\n";
+    expectedBody += chunk;
+  }
+  chunkedBody += "0\r\nX-End: done\r\n\r\n";
+
+  // One chunk framing (size line, data and CRLF) per write, a little more than one per read.
+  const std::string resp = SendInParts(port, kChunkedHead, chunkedBody, kChunkSize / 2 + 100, 100us);
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.ends_with(std::format("{}:{:x}:done", expectedBody.size(), Fnv1a(expectedBody)))) << resp;
+}
+
+// A single chunk larger than the reads: its size line is the only part decoded again by each of them.
+TEST(HttpParserChunkedResume, SingleLargeChunkReceivedInManyReads) {
+  ts.resetConfig();
+  ts.router().setDefault([](const HttpRequestView& req) {
+    return req.makeResponse(std::format("{}:{:x}", req.body().size(), Fnv1a(req.body())));
+  });
+  std::string body(512UL * 1024UL, 'x');
+  for (std::size_t bodyPos = 0; bodyPos < body.size(); bodyPos += 997) {
+    body[bodyPos] = static_cast<char>('a' + (bodyPos % 26));
+  }
+  const std::string chunked = std::format("{:x}\r\n", body.size()) + body + "\r\n0\r\n\r\n";
+  const std::string resp = SendInParts(port, kChunkedHead, chunked, 8192, 50us);
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.ends_with(std::format("{}:{:x}", body.size(), Fnv1a(body)))) << resp;
+}
+
+// The requests following a chunked body received in several reads are served: its end is found at the right place.
+TEST(HttpParserChunkedResume, PipelinedRequestsAfterBodyReceivedInSeveralReads) {
+  ts.resetConfig();
+  InstallEchoHandler();
+  test::ClientConnection conn(port);
+  NativeHandle fd = conn.fd();
+  ASSERT_TRUE(SetTcpNoDelay(fd));
+  test::sendAll(fd, "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nA1" +
+                        std::string("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nB2"));
+  std::this_thread::sleep_for(20ms);
+  test::sendAll(fd, "B\r\n3\r\nB3");
+  std::this_thread::sleep_for(20ms);
+  test::sendAll(fd, "B\r\n0\r\n\r\nPOST / HTTP/1.1\r\nHost: x\r\nConnection: close\r\nContent-Length: 2\r\n\r\nC4");
+  const std::string resp = test::recvUntilClosed(fd);
+  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 200"), 3) << resp;
+  EXPECT_LT(resp.find("A1"), resp.find("B2B"));
+  EXPECT_LT(resp.find("B2B"), resp.find("C4"));
+  EXPECT_TRUE(resp.contains("B2BB3B")) << resp;
+}
+
+// =============================================================================
+// Lines of a chunked body are bounded by maxHeaderBytes, whatever the way they are received.
+// =============================================================================
+
+// A chunk-size line without end was buffered (and searched again by each read) without limit.
+TEST(HttpParserChunkedLimits, UnterminatedChunkSizeLineIsBounded) {
+  ts.resetConfig();
+  InstallEchoHandler();
+  const std::string resp = SendInParts(port, kChunkedHead, "1;" + std::string(3 * 3000, 'a'), 3000);
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
+  EXPECT_TRUE(resp.contains("Chunk size line too long")) << resp;
+}
+
+TEST(HttpParserChunkedLimits, UnterminatedChunkSizeLineReceivedAtOnceIsBounded) {
+  ts.resetConfig();
+  InstallEchoHandler();
+  const std::string resp =
+      test::sendAndCollect(port, std::string(kChunkedHead) + "1;" + std::string(64UL * 1024UL, 'a'));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
+  EXPECT_TRUE(resp.contains("Chunk size line too long")) << resp;
+}
+
+TEST(HttpParserChunkedLimits, TerminatedChunkSizeLineIsBounded) {
+  ts.resetConfig();
+  InstallEchoHandler();
+  const std::string resp =
+      test::sendAndCollect(port, std::string(kChunkedHead) + "1;" + std::string(10000, 'a') + "\r\nX\r\n0\r\n\r\n");
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
+  EXPECT_TRUE(resp.contains("Chunk size line too long")) << resp;
+}
+
+// The limit includes the CRLF of the line, and does not depend on how the line is received.
+TEST(HttpParserChunkedLimits, ChunkSizeLineBoundary) {
+  static constexpr std::size_t kMaxHeaderBytes = 128;  // the minimum accepted value
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) { cfg.withMaxHeaderBytes(kMaxHeaderBytes); });
+  InstallEchoHandler();
+
+  for (const std::size_t lineSize : {kMaxHeaderBytes - 1, kMaxHeaderBytes, kMaxHeaderBytes + 1}) {
+    SCOPED_TRACE(lineSize);
+    // "5;" + extension + CRLF
+    const std::string line = "5;" + std::string(lineSize - 4, 'e') + "\r\n";
+    ASSERT_EQ(line.size(), lineSize);
+    const bool accepted = lineSize <= kMaxHeaderBytes;
+    const std::string chunked = line + "Hello\r\n0\r\n\r\n";
+
+    for (const std::size_t partSize : {chunked.size(), std::size_t{50}, std::size_t{1}}) {
+      SCOPED_TRACE(partSize);
+      const std::string resp = SendInParts(port, kChunkedHead, chunked, partSize, 1ms);
+      if (accepted) {
+        ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+        EXPECT_TRUE(resp.ends_with("Hello")) << resp;
+      } else {
+        ASSERT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
+      }
+    }
+  }
+  ts.resetConfig();
+}
+
+// A trailer line without end was buffered (and parsed again by each read) without limit.
+TEST(HttpParserChunkedLimits, UnterminatedTrailerLineIsBounded) {
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) { cfg.withMaxHeaderBytes(128); });
+  InstallEchoHandler();
+  const std::string resp = SendInParts(port, kChunkedHead, "3\r\nfoo\r\n0\r\nX-Big: " + std::string(300, 'V'), 100);
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 431")) << resp;
+  ts.resetConfig();
+}
+
+// A chunk making the body exceed its limit is rejected when announced, without waiting for (and buffering) its data.
+TEST(HttpParserChunkedLimits, ChunkExceedingTheBodyLimitIsRejectedBeforeItsData) {
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) { cfg.withMaxBodyBytes(8U); });
+  InstallEchoHandler();
+  test::ClientConnection conn(port);
+  NativeHandle fd = conn.fd();
+  // 5 bytes received, then a chunk of 5 more is announced: 10 > 8. Its data is never sent.
+  test::sendAll(fd, std::string(kChunkedHead) + "5\r\nhello\r\n5\r\n");
+  const std::string resp = test::recvUntilClosed(fd, 3s);
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 413")) << resp;
+  ts.resetConfig();
+}
+
+// The body limit applies to the sum of the chunks received by several reads, and is exact.
+TEST(HttpParserChunkedLimits, BodyLimitAppliesToChunksOfSeveralReads) {
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) { cfg.withMaxBodyBytes(10U); });
+  InstallEchoHandler();
+  const std::string atLimit = SendInParts(port, kChunkedHead, "5\r\nhello\r\n5\r\nworld\r\n0\r\n\r\n", 6, 3ms);
+  ASSERT_TRUE(atLimit.starts_with("HTTP/1.1 200")) << atLimit;
+  EXPECT_TRUE(atLimit.ends_with("helloworld")) << atLimit;
+
+  const std::string overLimit =
+      SendInParts(port, kChunkedHead, "5\r\nhello\r\n5\r\nworld\r\n1\r\n!\r\n0\r\n\r\n", 6, 3ms);
+  ASSERT_TRUE(overLimit.starts_with("HTTP/1.1 413")) << overLimit;
+  ts.resetConfig();
 }
 
 }  // namespace aeronet

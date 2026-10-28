@@ -1,12 +1,17 @@
 // Throughput of HTTP/1.1 requests pipelined on a single keep-alive connection: each iteration writes a batch of
 // pipelined requests at once, then receives all their responses. The server serves many requests from each read of
 // its input buffer, which exercises the consumption of the served requests from it and the batching of their responses.
+//
+// Throughput of the upload of a chunked request body received by many reads: each iteration writes a request whose
+// chunks are each in their own write, then receives its response. The time must be linear in the size of the body, as
+// the chunks received by the previous reads are not decoded again.
 #include <benchmark/benchmark.h>
 
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <limits>
 #include <memory>
 #include <string>
@@ -19,6 +24,7 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/single-http-server.hpp"
+#include "aeronet/socket-ops.hpp"
 #include "aeronet/test_util.hpp"
 
 #ifdef AERONET_WINDOWS
@@ -111,6 +117,45 @@ class PipelineFixture : public benchmark::Fixture {
     state.SetBytesProcessed(state.iterations() * static_cast<int64_t>(batch.size()));
   }
 
+  // Argument 0: the size of the body in KiB, sent in chunks of kUploadChunkSize bytes.
+  void runChunkedUpload(benchmark::State& state) {
+    static constexpr std::size_t kUploadChunkSize = std::size_t{16} << 10U;
+    static constexpr std::string_view kHead =
+        "POST /upload HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n";
+    static constexpr std::string_view kLastChunk = "0\r\n\r\n";
+
+    const std::size_t nbChunks = (static_cast<std::size_t>(state.range(0)) << 10U) / kUploadChunkSize;
+    const std::string chunk = std::format("{:x}\r\n", kUploadChunkSize) + std::string(kUploadChunkSize, 'x') + "\r\n";
+    recvBuffer.resize(std::size_t{1} << 16U);
+    // A chunk is not delayed until the previous one is acknowledged.
+    if (!SetTcpNoDelay(client->fd())) {
+      state.SkipWithError("TCP_NODELAY failed");
+      return;
+    }
+
+    // The size of a response, constant (fixed width Date header): measured on a first request.
+    test::sendAll(client->fd(), kHead);
+    test::sendAll(client->fd(), kLastChunk);
+    const std::size_t responseSize = test::recvWithTimeout(client->fd(), 2s).size();
+    if (responseSize == 0) {
+      state.SkipWithError("no response");
+      return;
+    }
+
+    for ([[maybe_unused]] auto iter : state) {
+      test::sendAll(client->fd(), kHead, 5s);
+      for (std::size_t chunkPos = 0; chunkPos < nbChunks; ++chunkPos) {
+        test::sendAll(client->fd(), chunk, 5s);
+      }
+      test::sendAll(client->fd(), kLastChunk, 5s);
+      if (!recvExactly(responseSize)) {
+        state.SkipWithError("response not received");
+        break;
+      }
+    }
+    state.SetBytesProcessed(state.iterations() * static_cast<int64_t>(nbChunks * kUploadChunkSize));
+  }
+
   std::unique_ptr<SingleHttpServer> server;
   std::atomic<bool> stopFlag{false};
   std::jthread loopThread;
@@ -130,6 +175,13 @@ BENCHMARK_DEFINE_F(PipelineFixture, PipelinedPostWithBody)(benchmark::State& sta
 BENCHMARK_REGISTER_F(PipelineFixture, PipelinedPostWithBody)
     ->ArgsProduct({{1, 8, 64, 512, 4096}, {1}})
     ->ArgNames({"batch", "nodelay"})
+    ->UseRealTime();
+
+// Argument 0 is the size of the body in KiB (1, 8 and 64 MiB).
+BENCHMARK_DEFINE_F(PipelineFixture, ChunkedUpload)(benchmark::State& state) { runChunkedUpload(state); }
+BENCHMARK_REGISTER_F(PipelineFixture, ChunkedUpload)
+    ->ArgsProduct({{1024, 8192, 65536}, {1}})
+    ->ArgNames({"bodyKiB", "nodelay"})
     ->UseRealTime();
 
 }  // namespace aeronet

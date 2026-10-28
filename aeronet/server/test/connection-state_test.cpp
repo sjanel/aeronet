@@ -131,6 +131,32 @@ TEST(ConnectionStateTest, InBufferIsNotShrunkWhileTheConnectTargetIsResolved) {
   EXPECT_EQ(std::string_view(state.inBuffer.data(), state.inBuffer.size()), kConnectRequest);
 }
 
+TEST(ConnectionStateTest, BodyAndTrailersBufferIsKeptWhileAChunkedBodyIsDecoded) {
+  static constexpr std::string_view kChunks = "hello";
+  ConnectionState state;
+  state.bodyAndTrailersBuffer.reserve(4096);
+  state.bodyAndTrailersBuffer.append(kChunks);
+
+  // The chunks received so far are decoded once: the next ones are appended to them.
+  state.chunkedBody = {.pos = 40, .bodySize = kChunks.size()};
+  EXPECT_TRUE(state.isDecodingChunkedBody());
+  state.reclaimMemoryFromOversizedBuffers();
+  EXPECT_EQ(std::string_view(state.bodyAndTrailersBuffer.data(), state.bodyAndTrailersBuffer.size()), kChunks);
+
+  state.chunkedBody = {};
+  EXPECT_FALSE(state.isDecodingChunkedBody());
+  state.reclaimMemoryFromOversizedBuffers();
+  EXPECT_TRUE(state.bodyAndTrailersBuffer.empty());
+}
+
+TEST(ConnectionStateTest, ResetForgetsTheProgressOfAChunkedBody) {
+  ConnectionState state;
+  state.chunkedBody = {.pos = 40, .bodySize = 5};
+  state.reset();
+  EXPECT_FALSE(state.isDecodingChunkedBody());
+  EXPECT_EQ(state.chunkedBody.bodySize, 0U);
+}
+
 TEST(ConnectionState, RequestDrainAndCloseIsIdempotent) {
   ConnectionState state;
 

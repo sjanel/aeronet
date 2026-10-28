@@ -122,8 +122,17 @@ class Http1Pipeline {
                                      std::size_t maxBodyBytes, std::size_t& consumedBytes);
   BodyDecodeStatus decodeFixedLengthBody(ConnectionIt cnxIt, std::span<const char> input, bool expectContinue,
                                          std::size_t maxBodyBytes, std::size_t& consumedBytes);
+  // The body of a chunked request received in several reads is decoded once: the progress of its decoding is kept in
+  // the connection (see ConnectionState::ChunkedBodyProgress), each read decoding the chunks received since the
+  // previous one.
   BodyDecodeStatus decodeChunkedBody(ConnectionIt cnxIt, std::span<char> input, bool expectContinue,
                                      std::size_t maxBodyBytes, std::size_t& consumedBytes);
+
+  // Decodes the chunks of the body of the current request received since its last decoding, up to its end (trailers
+  // included). Keeps its progress in the connection if the body is incomplete (NeedMore), whose caller resets it
+  // otherwise.
+  BodyDecodeStatus decodeNextChunks(ConnectionIt cnxIt, std::span<char> input, std::size_t maxBodyBytes,
+                                    std::size_t& consumedBytes);
 
   // Decodes the trailers of a chunked body, starting at pos in 'input' (after the last chunk): copies them to the body
   // and trailers buffer of the connection, and parses them. Sets pos after the blank line ending them once Ready.
