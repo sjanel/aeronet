@@ -31,7 +31,7 @@ class IWriterTransport {
   ///                  The transport may mutate it (e.g. add protocol-specific headers).
   /// @param request   The originating request (needed for middleware / CORS).
   /// @param declaredLength  The declared Content-Length (0 = chunked/unknown).
-  /// @param isHead    Whether the request is a HEAD request.
+  /// @param isHead    Whether no content will be sent: HEAD request, or a status code without content (1xx, 204, 304).
   /// @return true on success, false if the connection/stream is dead.
   virtual bool emitHeaders(HttpResponse& response, const HttpRequestView& request, std::size_t declaredLength,
                            bool isHead) = 0;

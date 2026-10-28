@@ -230,6 +230,36 @@ TEST_P(ProtocolParity, StreamingResponseGoesThroughResponseMiddlewareAndCors) {
 }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
+// 1xx, 204 and 304 responses carry no content, whatever the handler set: no body, no Content-Length, no Content-Type.
+TEST_P(ProtocolParity, StatusesWithoutContentDropTheBody) {
+  for (http::StatusCode status : {http::StatusCodeNoContent, http::StatusCodeNotModified}) {
+    ts.router().setPath(http::Method::GET, std::format("/buffered{}", status), [status](const HttpRequestView&) {
+      HttpResponse resp(status, "BODY-OF-RESPONSE");
+      resp.trailerAddLine("x-trailer", "t").headerAddLine("x-custom", "kept");
+      return resp;
+    });
+    ts.router().setPath(http::Method::GET, std::format("/streamed{}", status),
+                        [status](const HttpRequestView&, HttpResponseWriter& writer) {
+                          writer.status(status);
+                          writer.headerAddLine("x-custom", "kept");
+                          writer.writeBody("STREAMED-BODY-OF-RESPONSE");
+                          writer.trailerAddLine("x-trailer", "t");
+                          writer.end();
+                        });
+    for (std::string_view kind : {"/buffered", "/streamed"}) {
+      SCOPED_TRACE(std::format("{}{}", kind, status));
+      const auto resp = send(http::Method::GET, std::format("{}{}", kind, status));
+      EXPECT_EQ(resp.status(), status);
+      EXPECT_TRUE(resp.bodyInMemory().empty());
+      EXPECT_EQ(resp.trailersSize(), 0U);
+      EXPECT_EQ(resp.headerValueOrEmpty("x-custom"), "kept");
+      EXPECT_FALSE(resp.headerValue(http::ContentLength).has_value());
+      EXPECT_FALSE(resp.headerValue(http::TransferEncoding).has_value());
+      EXPECT_FALSE(resp.headerValue(http::ContentType).has_value());
+    }
+  }
+}
+
 TEST_P(ProtocolParity, CorsDeniedOriginDoesNotRunAsyncHandler) {
   std::atomic<int> handlerCalls{0};
   ts.router()
