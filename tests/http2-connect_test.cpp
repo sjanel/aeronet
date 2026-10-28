@@ -374,13 +374,15 @@ TEST(Http2ConnectTest, ClientGrantingCreditWithoutReadingStopsReadingTheUpstream
 #ifdef AERONET_POSIX
 TEST(Http2ConnectTest, UnresolvedTargetIsAnswered504AfterKeepAliveTimeout) {
   test::TlsHttp2TestServer ts;
-  ts.server.postConfigUpdate([](HttpServerConfig& cfg) {
-    static constexpr std::array<std::string_view, 1> kAllowlist{"localhost"};
-    cfg.withConnectAllowlist(kAllowlist.begin(), kAllowlist.end());
-    cfg.withKeepAliveTimeout(300ms);
-  });
+  AllowConnectHost(ts, "localhost");
+  // The keep-alive timeout also bounds the idleness of the connection setup, which can exceed 300 ms on a loaded
+  // machine (a client stalled within its TLS handshake): the connection is set up with the default one, and kept busy
+  // by a request waiting for its body while the timeout is short.
   test::TlsHttp2Client client(ts.port());
   ASSERT_TRUE(client.isConnected());
+  const uint32_t openStreamId = client.openRequestStream("POST", "/");
+  ASSERT_GT(openStreamId, 0U);
+  ts.server.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withKeepAliveTimeout(300ms); });
 
   test::GetAddrInfoDelayGuard getAddrInfoDelayGuard(3000);
   const auto start = std::chrono::steady_clock::now();
@@ -396,6 +398,8 @@ TEST(Http2ConnectTest, UnresolvedTargetIsAnswered504AfterKeepAliveTimeout) {
 
   // The connection still serves the other streams.
   EXPECT_EQ(client.get("/").statusCode, 404);
+  ASSERT_TRUE(client.sendTunnelData(openStreamId, {}, true));
+  EXPECT_EQ(client.waitAndGetResponse(openStreamId).value_or(test::TlsHttp2Client::Response{}).statusCode, 404);
 }
 
 TEST(Http2ConnectTest, TooManyUnresolvedTargetsAreAnswered503) {
