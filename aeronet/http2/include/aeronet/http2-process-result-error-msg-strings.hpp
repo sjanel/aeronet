@@ -110,6 +110,8 @@ constexpr std::string_view ConvertProcessResultErrorMsgToSv(ErrorMsg msg) {
       return "PING Timeout";
     case ErrorMsg::MaxStreamsPerConnectionReached:
       return "Max Streams Per Connection Reached";
+    case ErrorMsg::ServerDraining:
+      return "Server Draining";
     default:
       return "Unknown Error";
   }

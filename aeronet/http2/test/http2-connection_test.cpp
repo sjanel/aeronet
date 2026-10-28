@@ -262,7 +262,7 @@ void AdvanceClientToOpen(Http2Connection& conn) {
   ASSERT_EQ(conn.state(), ConnectionState::Open);
 }
 
-// The single frame of `output`, with its payload.
+// The single frame of `output`, with its payload (which points into `output`).
 struct SingleFrame {
   FrameHeader header;
   std::span<const std::byte> payload;
@@ -278,7 +278,10 @@ struct SingleFrame {
   return {header, output.subspan(FrameHeader::kSize)};
 }
 
-// The GOAWAY frame that `output` must be made of.
+// Its payload would point into a destroyed output.
+SingleFrame ParseSingleFrame(vector<std::byte>&& output) = delete;
+
+// The GOAWAY frame that `output` must be made of (its debug data points into `output`).
 [[nodiscard]] GoAwayFrame ParseSingleGoAway(std::span<const std::byte> output) {
   const SingleFrame frame = ParseSingleFrame(output);
   EXPECT_EQ(frame.header.type(), FrameType::GoAway);
@@ -286,6 +289,9 @@ struct SingleFrame {
   EXPECT_EQ(ParseGoAwayFrame(frame.payload, goAway), FrameParseResult::Ok);
   return goAway;
 }
+
+// Its debug data would point into a destroyed output.
+GoAwayFrame ParseSingleGoAway(vector<std::byte>&& output) = delete;
 
 // SETTINGS frame with a single SETTINGS_ENABLE_PUSH entry.
 [[nodiscard]] vector<std::byte> MakeEnablePushSettingsFrame(std::byte value) {
@@ -2936,7 +2942,8 @@ TEST(Http2Connection, NewStreamsAfterTheGoAwayOfThisEndpointAreDecodedAndIgnored
   const FieldBlockRecorder recorder(connSink);
   OpenClientStream(conn, 1);
   conn.initiateGoAway(ErrorCode::NoError);
-  EXPECT_EQ(ParseSingleGoAway(DrainPendingOutput(conn)).lastStreamId, 1U);
+  const auto goAwayOutput = DrainPendingOutput(conn);
+  EXPECT_EQ(ParseSingleGoAway(goAwayOutput).lastStreamId, 1U);
 
   HpackEncoder encoder(config.headerTableSize);
   const RawBytes three = EncodeRequest(encoder, "x-one", "first");
@@ -3088,7 +3095,8 @@ TEST(Http2Connection, MaxStreamsPerConnectionSendsAGracefulGoAway) {
   EXPECT_TRUE(conn.isOpen());
 
   FeedConnection(conn, StaticGetRequestFrame(3));
-  const GoAwayFrame goAway = ParseSingleGoAway(DrainPendingOutput(conn));
+  const auto output = DrainPendingOutput(conn);
+  const GoAwayFrame goAway = ParseSingleGoAway(output);
   EXPECT_EQ(goAway.lastStreamId, 3U);
   EXPECT_EQ(goAway.errorCode, ErrorCode::NoError);
   EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(goAway.debugData.data()), goAway.debugData.size()),
@@ -3123,7 +3131,8 @@ TEST(Http2Connection, UnacknowledgedSettingsTimeOut) {
   EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
   EXPECT_EQ(res.errorCode, ErrorCode::SettingsTimeout);
   EXPECT_EQ(res.errorMsg, ErrorMsg::SETTINGSTimeout);
-  EXPECT_EQ(ParseSingleGoAway(DrainPendingOutput(conn)).errorCode, ErrorCode::SettingsTimeout);
+  const auto output = DrainPendingOutput(conn);
+  EXPECT_EQ(ParseSingleGoAway(output).errorCode, ErrorCode::SettingsTimeout);
 
   // Acknowledged, or without timeout, they never time out.
   for (const auto settingsTimeout : {100ms, 0ms}) {
@@ -3158,7 +3167,8 @@ TEST(Http2Connection, PingKeepAliveDetectsADeadPeer) {
   OpenClientStream(conn, 1);
   EXPECT_EQ(conn.checkTimeouts(start + 999ms, start).action, Action::Continue);
   EXPECT_EQ(conn.checkTimeouts(start + 1s, start).action, Action::OutputReady);
-  const SingleFrame ping = ParseSingleFrame(DrainPendingOutput(conn));
+  const auto pingOutput = DrainPendingOutput(conn);
+  const SingleFrame ping = ParseSingleFrame(pingOutput);
   EXPECT_EQ(ping.header.type(), FrameType::Ping);
   EXPECT_FALSE(ping.header.hasFlag(FrameFlags::PingAck));
 
@@ -3177,7 +3187,8 @@ TEST(Http2Connection, PingKeepAliveDetectsADeadPeer) {
   const auto res = conn.checkTimeouts(start + 7500ms, start + 4500ms);
   EXPECT_EQ(res.action, Action::Error);
   EXPECT_EQ(res.errorMsg, ErrorMsg::PINGTimeout);
-  EXPECT_EQ(ParseSingleGoAway(DrainPendingOutput(conn)).errorCode, ErrorCode::NoError);
+  const auto goAwayOutput = DrainPendingOutput(conn);
+  EXPECT_EQ(ParseSingleGoAway(goAwayOutput).errorCode, ErrorCode::NoError);
 }
 
 // A dynamic table size update above our SETTINGS_HEADER_TABLE_SIZE is a connection error (RFC 7541 §6.3): the peer

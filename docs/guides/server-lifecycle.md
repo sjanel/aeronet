@@ -63,7 +63,7 @@ handle.rethrowIfError();  // rethrows an exception that ended the event loop, if
 | | `stop()` | `beginDrain(maxWait)` |
 | --- | --- | --- |
 | New connections | Refused: the listening socket is closed. | Refused: the listening socket is closed. |
-| Open connections | Closed right away. | Finish their current request; their response carries `Connection: close`, unless it is [streamed](streaming-responses.md#how-it-works) and its head was sent before the drain. |
+| Open connections | Closed right away. | Finish their current request; their response carries `Connection: close`, unless it is [streamed](streaming-responses.md#how-it-works) and its head was sent before the drain. An HTTP/2 connection receives a graceful `GOAWAY` at the next maintenance tick: it serves its open streams, then closes (see [HTTP/2 connection lifetime](../protocols/http2.md#connection-lifetime)). |
 | End | Immediate. | When the last connection closed, or at `maxWait` (when not zero), where the remaining connections are closed. |
 | Use it for | Fatal errors, tests. | Graceful shutdown and rolling updates. |
 

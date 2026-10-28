@@ -606,7 +606,9 @@ struct ManualH2cClient {
     inBuf += test::recvWithTimeout(cnx.fd(), timeout, 1);
     const std::span<const std::byte> received(reinterpret_cast<const std::byte*>(inBuf.data()), inBuf.size());
     for (const ParsedFrame& frame : ParseFrames(received)) {
-      nbPings += static_cast<int>(frame.header.type() == FrameType::Ping && !frame.header.hasFlag(FrameFlags::PingAck));
+      if (frame.header.type() == FrameType::Ping) {
+        ++(frame.header.hasFlag(FrameFlags::PingAck) ? nbPingAcks : nbPings);
+      }
     }
     std::size_t consumed = 0;
     while (consumed < inBuf.size()) {
@@ -634,8 +636,21 @@ struct ManualH2cClient {
   test::ClientConnection cnx;
   Http2Connection client{Http2Config{}, false};
   RecordingEventSink sink{client};
+  // Make sure that the server processed the frames sent so far: it answers a PING after them.
+  void roundTrip() {
+    const int nbAcksBefore = nbPingAcks;
+    client.sendPing(PingFrame{});
+    writePending();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (nbPingAcks == nbAcksBefore && std::chrono::steady_clock::now() < deadline) {
+      receive(std::chrono::milliseconds{10});
+    }
+    ASSERT_GT(nbPingAcks, nbAcksBefore);
+  }
+
   std::string inBuf;
   int nbPings{0};
+  int nbPingAcks{0};
 };
 
 }  // namespace
@@ -725,6 +740,55 @@ TEST(Http2Core, PingKeepAliveClosesTheConnectionOfADeadPeer) {
 
   // It stops answering.
   EXPECT_TRUE(test::WaitForPeerClose(h2.cnx.fd(), std::chrono::milliseconds{2000}));
+}
+
+TEST(Http2Core, DrainSendsAGoAwayAndClosesTheConnectionsOnceTheirStreamsAreAnswered) {
+  // Like the HTTP/1.1 connections, which announce their close in the response of their current request, the HTTP/2
+  // connections receive a graceful GOAWAY: they serve their open streams, then close. An idle one closes right away.
+  test::TestServer server(HttpServerConfig{}
+                              .withHttp2(Http2Config{}.withEnableH2c(true))
+                              .withKeepAliveTimeout(std::chrono::seconds{10})
+                              .withPollInterval(std::chrono::milliseconds{5}));
+  server.router().setPath(http::Method::POST, "/upload",
+                          [](const HttpRequestView& req) { return req.makeResponse(req.body()); });
+
+  ManualH2cClient idle(server.port());
+  idle.receive(std::chrono::milliseconds{1000});
+  ManualH2cClient busy(server.port());
+  std::string status;
+  busy.sink.onHeadersDecodedFn = [&status](uint32_t, const SvToSvMap& headers, bool) {
+    if (const auto it = headers.find(":status"); it != headers.end()) {
+      status.assign(it->second);
+    }
+  };
+  vector<uint32_t> goAwayLastStreamIds;
+  busy.sink.onGoAwayFn = [&goAwayLastStreamIds](uint32_t lastStreamId, ErrorCode errorCode, std::string_view) {
+    EXPECT_EQ(errorCode, ErrorCode::NoError);
+    goAwayLastStreamIds.push_back(lastStreamId);
+  };
+  busy.receive(std::chrono::milliseconds{1000});
+  // The server processed the request before the drain: otherwise, the GOAWAY would make it ignore the stream.
+  busy.sendRequest(1, http::Method::POST, "/upload", false);
+  busy.roundTrip();
+
+  server.server.beginDrain(std::chrono::seconds{10});
+  EXPECT_TRUE(test::WaitForPeerClose(idle.cnx.fd(), std::chrono::milliseconds{2000}));
+  const auto goAwayDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+  while (goAwayLastStreamIds.empty() && std::chrono::steady_clock::now() < goAwayDeadline) {
+    busy.receive(std::chrono::milliseconds{10});
+  }
+  EXPECT_EQ(goAwayLastStreamIds, vector<uint32_t>{1});
+
+  // Its open stream is still served.
+  const std::array body{std::byte{'d'}, std::byte{'o'}, std::byte{'n'}, std::byte{'e'}};
+  ASSERT_EQ(busy.client.sendData(1, body, true), ErrorCode::NoError);
+  busy.writePending();
+  const auto responseDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+  while (status.empty() && std::chrono::steady_clock::now() < responseDeadline) {
+    busy.receive(std::chrono::milliseconds{10});
+  }
+  EXPECT_EQ(status, "200");
+  EXPECT_TRUE(test::WaitForPeerClose(busy.cnx.fd(), std::chrono::milliseconds{2000}));
 }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
