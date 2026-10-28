@@ -215,8 +215,13 @@ Http2Connection::Http2Connection(const Http2Config& config, bool isServer, traci
     : _localSettings(config),
       _connectionSendWindow(static_cast<int32_t>(kDefaultInitialWindowSize)),
       _connectionRecvWindow(static_cast<int32_t>(config.connectionWindowSize)),
-      _hpackEncoder(config.headerTableSize),
-      _hpackDecoder(config.headerTableSize, config.maxHeaderListSize, config.mergeUnknownRequestHeaders),
+      // The tables of both endpoints start with the initial size (RFC 9113 §4.3.1), and headerTableSize caps both of
+      // ours. A smaller encoder table needs no signaling: its entries are the newest ones of the table of the peer.
+      _hpackEncoder(std::min(config.headerTableSize, kDefaultHeaderTableSize)),
+      // Until the peer acknowledges our SETTINGS, its encoder may still use the initial table size: a smaller
+      // headerTableSize is applied on the acknowledgement.
+      _hpackDecoder(std::max(config.headerTableSize, kDefaultHeaderTableSize), config.maxHeaderListSize,
+                    config.mergeUnknownRequestHeaders),
       _pTelemetryContext(telemetryContext != nullptr && telemetryContext->enabled() ? telemetryContext : nullptr),
       _isServer(isServer) {}
 
@@ -1144,6 +1149,7 @@ Http2Connection::ProcessResult Http2Connection::handleSettingsFrame(FrameHeader 
     if (_state == ConnectionState::AwaitingSettings) {
       _state = ConnectionState::Open;
     }
+    _hpackDecoder.setMaxDynamicTableSize(_localSettings.headerTableSize);
     _settingsAckReceived = true;
     return ProcessResult{ProcessResult::Action::Continue};
   }
@@ -1170,7 +1176,8 @@ Http2Connection::ProcessResult Http2Connection::handleSettingsFrame(FrameHeader 
     switch (id) {
       case SettingsParameter::HeaderTableSize:
         _peerSettings.headerTableSize = value;
-        _hpackEncoder.setMaxDynamicTableSize(value);
+        // Capped by our own limit: a peer advertising 4 GiB would make the encoder keep every indexed field it sends.
+        _hpackEncoder.setMaxDynamicTableSize(std::min(value, _localSettings.headerTableSize));
         break;
       case SettingsParameter::EnablePush:
         // RFC 9113 §6.5.2: the value MUST be 0 or 1, and a server MUST NOT send 1. As aeronet never pushes,
