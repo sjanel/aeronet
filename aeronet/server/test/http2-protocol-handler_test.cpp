@@ -45,6 +45,7 @@
 #include "aeronet/native-handle.hpp"
 #include "aeronet/path-handler-entry.hpp"
 #include "aeronet/protocol-handler.hpp"
+#include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/request-metrics.hpp"
 #include "aeronet/router.hpp"
@@ -775,7 +776,61 @@ namespace {
   return nbBytes;
 }
 
+[[nodiscard]] RawBytes InitialWindowSizeSettings(uint32_t initialWindowSize) {
+  RawBytes settings;
+  const std::array entries{SettingsEntry{SettingsParameter::InitialWindowSize, initialWindowSize}};
+  WriteSettingsFrame(settings, entries);
+  return settings;
+}
+
 }  // namespace
+
+// A client lowering its SETTINGS_INITIAL_WINDOW_SIZE while a response is sent makes the window of the stream negative
+// (RFC 9113 §6.9.2): the response waits for enough credit instead of failing the connection, then completes.
+TEST(Http2ProtocolHandler, InitialWindowSizeDecreaseDuringResponseWaitsForCredit) {
+  static constexpr std::size_t kBodySize = 200000;
+  const std::string body = MakePatternedBody(kBodySize);
+
+  Router router;
+  router.setPath(http::Method::GET, "/big", [&body](const HttpRequestView&) { return HttpResponse(200, body); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+  RawChars headers = MakeGetHeaders("/big");
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(headers), true), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+  ASSERT_EQ(loop.receivedData(1).size(), kDefaultInitialWindowSize);
+
+  // The SETTINGS frame reaches the server before the WINDOW_UPDATEs of the client.
+  loop.feedHandler(InitialWindowSizeSettings(0));
+  ASSERT_TRUE(loop.handler.connection().isOpen());
+  ASSERT_NE(loop.handler.connection().getStream(1), nullptr);
+  EXPECT_EQ(loop.handler.connection().getStream(1)->sendWindow(), -static_cast<int32_t>(kDefaultInitialWindowSize));
+
+  // The WINDOW_UPDATEs of the client do not bring the window above 0: nothing more is sent.
+  for (int round = 0; round < 4; ++round) {
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
+  }
+  ASSERT_NE(loop.handler.connection().getStream(1), nullptr);
+  EXPECT_LT(loop.handler.connection().getStream(1)->sendWindow(), 0);
+  EXPECT_EQ(loop.receivedData(1).size(), kDefaultInitialWindowSize);
+  EXPECT_EQ(loop.client.state(), ConnectionState::Open);
+
+  // Restoring the initial window resumes the response, completed by the next WINDOW_UPDATEs.
+  loop.feedHandler(InitialWindowSizeSettings(kDefaultInitialWindowSize));
+  for (int round = 0; round < 64 && loop.receivedData(1).size() < kBodySize; ++round) {
+    loop.pumpServerToClient();
+    loop.pumpClientToServer();
+  }
+  EXPECT_EQ(loop.receivedData(1), body);
+  ASSERT_FALSE(loop.clientData.empty());
+  EXPECT_TRUE(loop.clientData.back().endStream);
+  EXPECT_TRUE(loop.streamResets.empty());
+  EXPECT_EQ(loop.client.state(), ConnectionState::Open);
+  EXPECT_EQ(loop.handler.connection().activeStreamCount(), 0U);
+}
 
 // A captured body is sent from its own storage, like HTTP/1 does: its DATA frames gather their payload from it.
 TEST(Http2ProtocolHandler, CapturedBodyIsSentWithoutCopy) {
@@ -6011,7 +6066,7 @@ TEST(Http2ProtocolHandler, SweepStreamsOnEmptyStreamsIsNoOp) {
   loop.connect();
 
   // sweepStreams on an empty map should be a no-op
-  loop.handler.sweepStreams(std::chrono::steady_clock::now() + std::chrono::hours(1));
+  EXPECT_TRUE(loop.handler.sweepStreams(std::chrono::steady_clock::now() + std::chrono::hours(1)));
   EXPECT_TRUE(loop.clientHeaders.empty());
 }
 
@@ -6052,7 +6107,7 @@ TEST(Http2ProtocolHandler, SweepStreamsAsyncTimeoutSends408) {
 
   // Instead of resuming, sweep with a far-future time to trigger the deadline
   const auto farFuture = std::chrono::steady_clock::now() + 10s;
-  loop.handler.sweepStreams(farFuture);
+  EXPECT_TRUE(loop.handler.sweepStreams(farFuture));
   loop.pumpServerToClient();
 
   // Expect 408 status and a RST_STREAM
@@ -6100,7 +6155,7 @@ TEST(Http2ProtocolHandler, SweepStreamsKeepsTheTaskOfATimedOutStreamUntilItsWork
   EXPECT_TRUE(loop.handler.hasAsyncWorkInFlight());
 
   // Stream 3 times out while its work runs: answered 408 (without credit), then reset.
-  loop.handler.sweepStreams(std::chrono::steady_clock::now() + 10s);
+  EXPECT_TRUE(loop.handler.sweepStreams(std::chrono::steady_clock::now() + 10s));
   loop.pumpServerToClient();
   const auto resp = std::ranges::find(loop.clientHeaders, 3U, &HeaderEvent::streamId);
   ASSERT_NE(resp, loop.clientHeaders.end());
@@ -6162,7 +6217,7 @@ TEST(Http2ProtocolHandler, SweepStreamsNoExpiryDoesNothing) {
   }
 
   // Sweep with current time — deadline not yet reached (1 hour timeout)
-  loop.handler.sweepStreams(std::chrono::steady_clock::now());
+  EXPECT_TRUE(loop.handler.sweepStreams(std::chrono::steady_clock::now()));
   loop.pumpServerToClient();
 
   // No 408 should have been sent

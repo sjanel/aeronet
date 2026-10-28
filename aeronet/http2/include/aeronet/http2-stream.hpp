@@ -101,7 +101,7 @@ class Http2Stream {
 
   /// Consume bytes from the send window (when sending DATA).
   /// @param bytes Number of bytes to consume
-  /// @return True if there was sufficient window, false otherwise
+  /// @return True if there was sufficient window (always for 0 bytes, even with a negative window), false otherwise
   [[nodiscard]] bool consumeSendWindow(std::size_t bytes) noexcept;
 
   /// Consume bytes from the receive window (when receiving DATA).
@@ -127,9 +127,9 @@ class Http2Stream {
   void holdRecvWindow(bool held) noexcept { _recvWindowHeld = held; }
 
   /// Update the initial window size from SETTINGS.
-  /// Adjusts the current send window by the delta.
+  /// Adjusts the current send window by the delta, which can make it negative (RFC 9113 §6.9.2).
   /// @param newInitialWindowSize New initial window size from SETTINGS
-  /// @return ErrorCode if overflow would occur, NoError otherwise
+  /// @return FlowControlError if the window would exceed 2^31-1, NoError otherwise
   [[nodiscard]] ErrorCode updateInitialWindowSize(uint32_t newInitialWindowSize) noexcept;
 
   // ============================

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -444,7 +445,25 @@ void Http2Connection::initiateGoAway(ErrorCode errorCode, ErrorMsg msg) {
   WriteGoAwayFrame(_outputBuffer, _lastPeerStreamId, errorCode, msg);
   recordFrame(true, FrameType::GoAway, 8U + ConvertProcessResultErrorMsgToSv(msg).size());
   _state = ConnectionState::GoAwaySent;
-  _goAwayLastStreamId = _lastPeerStreamId;
+}
+
+Http2Connection::ProcessResult Http2Connection::checkTimeouts(std::chrono::steady_clock::time_point now,
+                                                              std::chrono::steady_clock::time_point lastActivity) {
+  using TimePoint = std::chrono::steady_clock::time_point;
+  if (_settingsAckDeadline != TimePoint{} && now >= _settingsAckDeadline) {
+    return connectionError(ErrorCode::SettingsTimeout, ErrorMsg::SETTINGSTimeout);
+  }
+  if (_pingAckDeadline != TimePoint{}) {
+    if (now >= _pingAckDeadline) {
+      return connectionError(ErrorCode::NoError, ErrorMsg::PINGTimeout);
+    }
+  } else if (_localSettings.pingInterval.count() > 0 && _activeStreamCount != 0 &&
+             now - lastActivity >= _localSettings.pingInterval) {
+    sendPing(PingFrame{});
+    _pingAckDeadline = now + _localSettings.pingTimeout;
+    return ProcessResult{ProcessResult::Action::OutputReady};
+  }
+  return ProcessResult{ProcessResult::Action::Continue};
 }
 
 void Http2Connection::sendPing(PingFrame pingFrame) {
@@ -527,6 +546,7 @@ void Http2Connection::pruneClosedStreams() {
     const auto it = _streams.find(streamId);
     assert(it != _streams.end() && it->second.isClosed());
     _streams.erase(it);
+    _maxPrunedStreamId = std::max(_maxPrunedStreamId, streamId);
   }
 }
 
@@ -546,6 +566,9 @@ ErrorCode Http2Connection::prepareSendHeaders(uint32_t streamId, bool endStream)
 
     ++_activeStreamCount;
     recordStreamOpened(true);
+    if (!isPeerStream(streamId)) {
+      _lastLocalStreamId = std::max(_lastLocalStreamId, streamId);
+    }
   }
   Http2Stream* pStream = &it->second;
 
@@ -903,6 +926,10 @@ Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader head
 
   auto it = _streams.find(streamId);
   if (it == _streams.end()) {
+    // RFC 9113 §5.1: DATA on an idle stream is a connection error.
+    if (isIdleStream(streamId)) [[unlikely]] {
+      return connectionError(ErrorCode::ProtocolError, ErrorMsg::DATAOnIdleStream);
+    }
     // Stream may have been reset. The discarded frame still consumed connection-level credit.
     replenishConnectionRecvWindow();
     return ProcessResult{ProcessResult::Action::Continue};
@@ -974,12 +1001,6 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
     return connectionError(ErrorCode::ProtocolError, ErrorMsg::HEADERSFrameOnStreamZero);
   }
 
-  // Check for GOAWAY - don't accept new streams
-  if ((_state == ConnectionState::GoAwaySent || _state == ConnectionState::GoAwayReceived) &&
-      streamId > _goAwayLastStreamId) {
-    return ProcessResult{ProcessResult::Action::Continue};  // Ignore
-  }
-
   HeadersFrame frame;
   uint32_t streamDependency;
   FrameParseResult parseResult = ParseHeadersFrame(header, payload, frame, streamDependency);
@@ -997,81 +1018,87 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
   auto [it, inserted] =
       _streams.try_emplace(streamId, streamId, _peerSettings.initialWindowSize, _localSettings.initialWindowSize);
   if (inserted) {
-    // Validate stream ID
-    if (_isServer) {
-      // Client-initiated streams must be odd and increasing
-      if ((streamId & 1U) == 0) {
-        _streams.erase(it);
-        return connectionError(ErrorCode::ProtocolError, ErrorMsg::ServerInitiatedStreamIdFromClient);
-      }
-      if (streamId <= _lastPeerStreamId) {
-        _streams.erase(it);
-        return connectionError(ErrorCode::ProtocolError, ErrorMsg::StreamIdNotIncreasing);
-      }
-    }
-
-    // For peer-created streams, enforce OUR max concurrent streams limit
-    // (not _peerSettings which limits streams WE initiate).
-    if (_activeStreamCount >= _localSettings.maxConcurrentStreams) [[unlikely]] {
+    // Only a client opens streams with HEADERS (a server would push them, which is disabled), with odd and increasing
+    // ids, and not after the GOAWAY of this endpoint.
+    if (!_isServer || !isPeerStream(streamId) || streamId <= _lastPeerStreamId || _state == ConnectionState::GoAwaySent)
+        [[unlikely]] {
       _streams.erase(it);
-      return connectionError(ErrorCode::ProtocolError, ErrorMsg::MaxConcurrentStreamsExceeded);
+      return handleHeadersOnUnknownStream(header, frame);
     }
 
     ++_activeStreamCount;
     recordStreamOpened(false);
     _lastPeerStreamId = streamId;
+
+    // The last stream of the budget of the connection (Http2Config::maxStreamsPerConnection): a graceful GOAWAY makes
+    // the client open its next streams on another connection, this one closing once its streams are served (see
+    // goAwayCompleted()). The stream ids of a client are odd: this one is its (streamId / 2 + 1)th.
+    if ((streamId / 2U) + 1U >= _localSettings.maxStreamsPerConnection) [[unlikely]] {
+      initiateGoAway(ErrorCode::NoError, ErrorMsg::MaxStreamsPerConnectionReached);
+    }
+
+    // For peer-created streams, enforce OUR max concurrent streams limit (not _peerSettings which limits streams WE
+    // initiate). Exceeding it is a stream error (RFC 9113 §5.1.2) that a peer may hit before receiving our SETTINGS:
+    // REFUSED_STREAM tells it that the request can be retried. The reset stream still decodes its field block below,
+    // which keeps the HPACK dynamic table in sync.
+    if (_activeStreamCount > _localSettings.maxConcurrentStreams) [[unlikely]] {
+      sendRstStream(streamId, ErrorCode::RefusedStream);
+      // Its pruning of the closed streams can move the map entries.
+      it = _streams.find(streamId);
+      assert(it != _streams.end());
+    }
   }
-  Http2Stream* pStream = &it->second;
 
   // Handle priority if present
   if (header.hasFlag(FrameFlags::HeadersPriority)) {
     const uint32_t effectiveDependency = priorityDepthExceeded(streamDependency) ? 0U : streamDependency;
-    pStream->setPriority(effectiveDependency, frame.weightMinusOne, frame.exclusive);
+    it->second.setPriority(effectiveDependency, frame.weightMinusOne, frame.exclusive);
   }
 
   const std::span<const std::byte> headerBlockFragment = frame.headerBlockFragment();
   const bool endStream = header.hasFlag(FrameFlags::HeadersEndStream);
-
-  // Accumulate header block
   if (!header.hasFlag(FrameFlags::HeadersEndHeaders)) {
-    // Security hardening (CVE-2024-27316): reject oversized initial header block fragment
-    // to prevent unbounded memory growth via CONTINUATION flood.
-    if (headerBlockFragment.size() > kMaxHeaderBlockAccumulationSize) [[unlikely]] {
-      return connectionError(ErrorCode::EnhanceYourCalm, ErrorMsg::HeaderBlockTooLarge);
+    return startFieldBlock(streamId, headerBlockFragment, endStream);
+  }
+  return processFieldBlock(it, headerBlockFragment, endStream);
+}
+
+Http2Connection::ProcessResult Http2Connection::handleHeadersOnUnknownStream(FrameHeader header,
+                                                                             const HeadersFrame& frame) {
+  const uint32_t streamId = header.streamId();
+  // A new stream of the client after the GOAWAY of this endpoint, whose last stream id is _lastPeerStreamId, is
+  // ignored (RFC 9113 §6.8), like the frames on a stream closed then forgotten (§5.1). Their field block is decoded all
+  // the same: it updates the HPACK dynamic table of the connection, which the next field blocks refer to (§4.3).
+  const bool newStreamAfterGoAway = _isServer && isPeerStream(streamId) && streamId > _lastPeerStreamId;
+  if (!newStreamAfterGoAway && !wasPruned(streamId)) {
+    // An unexpected stream identifier (RFC 9113 §5.1.1): a stream initiated by the server, or a lower one than the last
+    // stream opened by the client (skipped by it), or a stream a client did not open.
+    if (!_isServer) {
+      return connectionError(ErrorCode::ProtocolError, ErrorMsg::HEADERSOnIdleStream);
     }
-    _expectingContinuation = true;
-    _headerBlockStreamId = streamId;
-    _headerBlockEndStream = endStream;
-    _headerBlockBuffer.assign(headerBlockFragment);
-    return ProcessResult{ProcessResult::Action::Continue};
+    return connectionError(ErrorCode::ProtocolError, isPeerStream(streamId)
+                                                         ? ErrorMsg::StreamIdNotIncreasing
+                                                         : ErrorMsg::ServerInitiatedStreamIdFromClient);
   }
 
-  if (pStream->resetSent()) {
-    return discardFieldBlock(headerBlockFragment);
+  const std::span<const std::byte> headerBlockFragment = frame.headerBlockFragment();
+  if (!header.hasFlag(FrameFlags::HeadersEndHeaders)) {
+    return startFieldBlock(streamId, headerBlockFragment, header.hasFlag(FrameFlags::HeadersEndStream));
   }
+  return discardFieldBlock(headerBlockFragment);
+}
 
-  // Complete header block - decode and deliver
-  ErrorCode err = pStream->onRecvHeaders(endStream);
-  if (err != ErrorCode::NoError) [[unlikely]] {
-    return streamError(streamId, err, ErrorMsg::InvalidStreamStateForHEADERS);
+Http2Connection::ProcessResult Http2Connection::startFieldBlock(uint32_t streamId, std::span<const std::byte> fragment,
+                                                                bool endStream) {
+  // Security hardening (CVE-2024-27316): reject oversized initial header block fragment
+  // to prevent unbounded memory growth via CONTINUATION flood.
+  if (fragment.size() > kMaxHeaderBlockAccumulationSize) [[unlikely]] {
+    return connectionError(ErrorCode::EnhanceYourCalm, ErrorMsg::HeaderBlockTooLarge);
   }
-
-  // Decode and emit headers via helper
-  ErrorCode decodeErr = decodeAndEmitHeaders(streamId, headerBlockFragment, endStream);
-  if (decodeErr != ErrorCode::NoError) [[unlikely]] {
-    if (decodeErr == ErrorCode::EnhanceYourCalm) {
-      return streamError(streamId, decodeErr, ErrorMsg::HeaderListTooLarge);
-    }
-    if (decodeErr == ErrorCode::ProtocolError) {
-      return streamError(streamId, decodeErr, ErrorMsg::MalformedFieldSection);
-    }
-    return connectionError(decodeErr, ErrorMsg::HPACKDecodingFailed);
-  }
-
-  if (endStream && pStream->isClosed()) {
-    closeStream(it);
-  }
-
+  _expectingContinuation = true;
+  _headerBlockStreamId = streamId;
+  _headerBlockEndStream = endStream;
+  _headerBlockBuffer.assign(fragment);
   return ProcessResult{ProcessResult::Action::Continue};
 }
 
@@ -1122,8 +1149,15 @@ Http2Connection::ProcessResult Http2Connection::handleRstStreamFrame(FrameHeader
   }
 
   auto it = _streams.find(streamId);
+  if (it == _streams.end()) {
+    // RFC 9113 §6.4: a RST_STREAM on an idle stream is a connection error. On a closed stream, it is ignored.
+    if (isIdleStream(streamId)) [[unlikely]] {
+      return connectionError(ErrorCode::ProtocolError, ErrorMsg::RST_STREAMOnIdleStream);
+    }
+    return ProcessResult{ProcessResult::Action::Continue};
+  }
   // A stream this endpoint reset is already closed: the peer's own RST_STREAM is ignored (RFC 9113 §5.1).
-  if (it != _streams.end() && !it->second.resetSent()) {
+  if (!it->second.resetSent()) {
     it->second.onRecvRstStream();
     it->second.setErrorCode(frame.errorCode);
     closeStream(it, frame.errorCode);
@@ -1150,7 +1184,7 @@ Http2Connection::ProcessResult Http2Connection::handleSettingsFrame(FrameHeader 
       _state = ConnectionState::Open;
     }
     _hpackDecoder.setMaxDynamicTableSize(_localSettings.headerTableSize);
-    _settingsAckReceived = true;
+    _settingsAckDeadline = {};
     return ProcessResult{ProcessResult::Action::Continue};
   }
 
@@ -1251,7 +1285,8 @@ Http2Connection::ProcessResult Http2Connection::handlePingFrame(FrameHeader head
     return ProcessResult{ProcessResult::Action::OutputReady};
   }
 
-  // PING ACK received - could track RTT here
+  // The peer is alive (see checkTimeouts()).
+  _pingAckDeadline = {};
   return ProcessResult{ProcessResult::Action::Continue};
 }
 
@@ -1262,8 +1297,11 @@ Http2Connection::ProcessResult Http2Connection::handleGoAwayFrame(std::span<cons
     return connectionError(ErrorCode::FrameSizeError, ErrorMsg::InvalidGOAWAYFrame);
   }
 
-  _state = ConnectionState::GoAwayReceived;
-  _goAwayLastStreamId = frame.lastStreamId;
+  // The GOAWAY of this endpoint, if it sent one first, still applies to the new streams of the peer (see
+  // handleHeadersFrame()).
+  if (_state != ConnectionState::GoAwaySent) {
+    _state = ConnectionState::GoAwayReceived;
+  }
 
   if (_pSink != nullptr) {
     std::string_view debugData(reinterpret_cast<const char*>(frame.debugData.data()), frame.debugData.size());
@@ -1304,6 +1342,9 @@ Http2Connection::ProcessResult Http2Connection::handleWindowUpdateFrame(FrameHea
       if (err != ErrorCode::NoError) {
         return streamError(streamId, err, ErrorMsg::StreamWindowOverflow);
       }
+    } else if (isIdleStream(streamId)) [[unlikely]] {
+      // RFC 9113 §5.1: WINDOW_UPDATE on an idle stream is a connection error. On a closed stream, it is ignored.
+      return connectionError(ErrorCode::ProtocolError, ErrorMsg::WINDOW_UPDATEOnIdleStream);
     }
   }
 
@@ -1343,46 +1384,15 @@ Http2Connection::ProcessResult Http2Connection::handleContinuationFrame(FrameHea
   // Complete header block
   _expectingContinuation = false;
 
+  // An unknown stream when its HEADERS frame was ignored (see handleHeadersOnUnknownStream()), or when it was reset and
+  // pruned meanwhile: its field block is only decoded.
   const auto it = _streams.find(_headerBlockStreamId);
-  if (it == _streams.end()) [[unlikely]] {
-    return connectionError(ErrorCode::InternalError, ErrorMsg::StreamNotFoundForCONTINUATION);
-  }
-
-  if (it->second.resetSent()) {
-    const ProcessResult res = discardFieldBlock(std::span<const std::byte>(_headerBlockBuffer));
-    _headerBlockBuffer.clear();
-    _headerBlockStreamId = 0;
-    return res;
-  }
-
-  const ErrorCode err = it->second.onRecvHeaders(_headerBlockEndStream);
-  if (err != ErrorCode::NoError) [[unlikely]] {
-    return streamError(_headerBlockStreamId, err, ErrorMsg::InvalidStreamStateForHEADERS);
-  }
-
-  // Decode complete header block
-  const auto headerSpan = std::span<const std::byte>(_headerBlockBuffer);
-
-  // Decode and emit headers via helper
-  ErrorCode decodeErr = decodeAndEmitHeaders(_headerBlockStreamId, headerSpan, _headerBlockEndStream);
-  if (decodeErr != ErrorCode::NoError) [[unlikely]] {
-    if (decodeErr == ErrorCode::EnhanceYourCalm) {
-      return streamError(_headerBlockStreamId, decodeErr, ErrorMsg::HeaderListTooLarge);
-    }
-    if (decodeErr == ErrorCode::ProtocolError) {
-      return streamError(_headerBlockStreamId, decodeErr, ErrorMsg::MalformedFieldSection);
-    }
-    return connectionError(decodeErr, ErrorMsg::HPACKDecodingFailed);
-  }
-
-  if (_headerBlockEndStream && it->second.isClosed()) {
-    closeStream(it);
-  }
-
+  const std::span<const std::byte> headerBlock(_headerBlockBuffer);
+  const ProcessResult res =
+      it == _streams.end() ? discardFieldBlock(headerBlock) : processFieldBlock(it, headerBlock, _headerBlockEndStream);
   _headerBlockBuffer.clear();
   _headerBlockStreamId = 0;
-
-  return ProcessResult{ProcessResult::Action::Continue};
+  return res;
 }
 
 // ============================
@@ -1489,6 +1499,48 @@ Http2Connection::ProcessResult Http2Connection::discardFieldBlock(std::span<cons
   return ProcessResult{ProcessResult::Action::Continue};
 }
 
+Http2Connection::ProcessResult Http2Connection::processFieldBlock(StreamsMap::iterator it,
+                                                                  std::span<const std::byte> headerBlock,
+                                                                  bool endStream) {
+  if (it->second.resetSent()) {
+    return discardFieldBlock(headerBlock);
+  }
+
+  const uint32_t streamId = it->first;
+  const ErrorCode err = it->second.onRecvHeaders(endStream);
+  if (err != ErrorCode::NoError) [[unlikely]] {
+    // A field block the stream cannot accept is decoded all the same: the peer encoded it with the HPACK dynamic table
+    // of the connection, which its next field blocks refer to (RFC 9113 §4.3).
+    ProcessResult res = discardFieldBlock(headerBlock);
+    if (res.action == ProcessResult::Action::Continue) {
+      res = streamError(streamId, err, ErrorMsg::InvalidStreamStateForHEADERS);
+    }
+    return res;
+  }
+
+  const ErrorCode decodeErr = decodeAndEmitHeaders(streamId, headerBlock, endStream);
+  if (decodeErr != ErrorCode::NoError) [[unlikely]] {
+    if (decodeErr == ErrorCode::EnhanceYourCalm) {
+      return streamError(streamId, decodeErr, ErrorMsg::HeaderListTooLarge);
+    }
+    if (decodeErr == ErrorCode::ProtocolError) {
+      return streamError(streamId, decodeErr, ErrorMsg::MalformedFieldSection);
+    }
+    return connectionError(decodeErr, ErrorMsg::HPACKDecodingFailed);
+  }
+
+  if (endStream) {
+    // The sink may have closed streams (its response, for instance), whose pruning can move the map entries.
+    it = _streams.find(streamId);
+    assert(it != _streams.end());
+    if (it->second.isClosed()) {
+      closeStream(it);
+    }
+  }
+
+  return ProcessResult{ProcessResult::Action::Continue};
+}
+
 ErrorCode Http2Connection::decodeAndEmitHeaders(uint32_t streamId, std::span<const std::byte> headerBlock,
                                                 bool endStream) {
   // The decoder writes the fields in a storage independent of the dynamic table (whose entries may be evicted), that
@@ -1531,6 +1583,9 @@ void Http2Connection::sendSettings() {
   WriteSettingsFrame(_outputBuffer, entries);
   recordFrame(true, FrameType::Settings, std::size(entries) * 6U);
   _settingsSent = true;
+  if (_localSettings.settingsTimeout.count() > 0) {
+    _settingsAckDeadline = std::chrono::steady_clock::now() + _localSettings.settingsTimeout;
+  }
 
   // Also send connection-level WINDOW_UPDATE if needed
   if (_localSettings.connectionWindowSize > kDefaultInitialWindowSize) {

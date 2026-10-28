@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -582,6 +583,189 @@ TEST(Http2Core, SlowHandlerDoesNotGetItsOwnResponseSweptAsIdle) {
   EXPECT_TRUE(test::WaitForPeerClose(fd, kKeepAlive * 3));
 }
 
+namespace {
+
+// An h2c client connection over a socket, driven by hand: the test decides when it reads, and therefore when it answers
+// the SETTINGS and PING frames of the server.
+struct ManualH2cClient {
+  explicit ManualH2cClient(uint16_t port) : cnx(port) {
+    client.sendClientPreface();
+    writePending();
+  }
+
+  void writePending() {
+    while (client.hasPendingOutput()) {
+      const auto out = client.getPendingOutput();
+      test::sendAll(cnx.fd(), std::string_view(reinterpret_cast<const char*>(out.data()), out.size()));
+      client.onOutputWritten(out.size());
+    }
+  }
+
+  // Process the frames received within `timeout` (returning as soon as some arrive), then write the answers.
+  void receive(std::chrono::milliseconds timeout) {
+    inBuf += test::recvWithTimeout(cnx.fd(), timeout, 1);
+    const std::span<const std::byte> received(reinterpret_cast<const std::byte*>(inBuf.data()), inBuf.size());
+    for (const ParsedFrame& frame : ParseFrames(received)) {
+      nbPings += static_cast<int>(frame.header.type() == FrameType::Ping && !frame.header.hasFlag(FrameFlags::PingAck));
+    }
+    std::size_t consumed = 0;
+    while (consumed < inBuf.size()) {
+      const auto res = client.processInput(received.subspan(consumed));
+      ASSERT_NE(res.action, Http2Connection::ProcessResult::Action::Error);
+      if (res.bytesConsumed == 0) {
+        break;
+      }
+      consumed += res.bytesConsumed;
+    }
+    inBuf.erase(0, consumed);
+    writePending();
+  }
+
+  void sendRequest(uint32_t streamId, http::Method method, std::string_view path, bool endStream) {
+    RawChars hdrs;
+    hdrs.append(MakeHttp1HeaderLine(":method", http::MethodToStr(method)));
+    hdrs.append(MakeHttp1HeaderLine(":scheme", "http"));
+    hdrs.append(MakeHttp1HeaderLine(":authority", "localhost"));
+    hdrs.append(MakeHttp1HeaderLine(":path", path));
+    ASSERT_EQ(client.sendHeaders(streamId, http::StatusCode{}, HeadersView(hdrs), endStream), ErrorCode::NoError);
+    writePending();
+  }
+
+  test::ClientConnection cnx;
+  Http2Connection client{Http2Config{}, false};
+  RecordingEventSink sink{client};
+  std::string inBuf;
+  int nbPings{0};
+};
+
+}  // namespace
+
+TEST(Http2Core, ConnectionClosesAfterTheStreamsOfItsBudget) {
+  // The stream completing maxStreamsPerConnection sends a graceful GOAWAY naming it as the last one: the connection
+  // closes once its streams are answered.
+  test::TestServer server(HttpServerConfig{}
+                              .withHttp2(Http2Config{}.withEnableH2c(true).withMaxStreamsPerConnection(2))
+                              .withPollInterval(std::chrono::milliseconds{5}));
+  server.router().setPath(http::Method::GET, "/hello",
+                          [](const HttpRequestView& req) { return req.makeResponse("world"); });
+
+  ManualH2cClient h2(server.port());
+  int nbResponses = 0;
+  h2.sink.onHeadersDecodedFn = [&nbResponses](uint32_t, const SvToSvMap& headers, bool) {
+    nbResponses += static_cast<int>(headers.contains(":status"));
+  };
+  uint32_t goAwayLastStreamId = 0;
+  ErrorCode goAwayErrorCode = ErrorCode::InternalError;
+  h2.sink.onGoAwayFn = [&](uint32_t lastStreamId, ErrorCode errorCode, std::string_view) {
+    goAwayLastStreamId = lastStreamId;
+    goAwayErrorCode = errorCode;
+  };
+  h2.receive(std::chrono::milliseconds{1000});
+  h2.sendRequest(1, http::Method::GET, "/hello", true);
+  h2.sendRequest(3, http::Method::GET, "/hello", true);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+  while ((nbResponses < 2 || goAwayLastStreamId == 0) && std::chrono::steady_clock::now() < deadline) {
+    h2.receive(std::chrono::milliseconds{20});
+  }
+
+  EXPECT_EQ(nbResponses, 2);
+  EXPECT_EQ(goAwayLastStreamId, 3U);
+  EXPECT_EQ(goAwayErrorCode, ErrorCode::NoError);
+  EXPECT_TRUE(test::WaitForPeerClose(h2.cnx.fd(), std::chrono::milliseconds{2000}));
+}
+
+TEST(Http2Core, UnacknowledgedServerSettingsCloseTheConnection) {
+  // A client not acknowledging the SETTINGS of the server within settingsTimeout gets a GOAWAY SETTINGS_TIMEOUT.
+  test::TestServer server(
+      HttpServerConfig{}
+          .withHttp2(Http2Config{}.withEnableH2c(true).withSettingsTimeout(std::chrono::milliseconds{50}))
+          .withPollInterval(std::chrono::milliseconds{5}));
+  test::ClientConnection cnx(server.port());
+  const vector<std::byte> preface = MakePreface();
+  const RawBytes settings = BuildSettingsFrame(Http2Config{});
+  std::string raw(reinterpret_cast<const char*>(preface.data()), preface.size());
+  raw.append(reinterpret_cast<const char*>(settings.data()), settings.size());
+  test::sendAll(cnx.fd(), raw);
+
+  const test::ReceivedUntilEnd received = test::RecvUntilEnd(cnx.fd(), std::chrono::seconds{2});
+  EXPECT_NE(received.end, test::ReceivedUntilEnd::End::TimedOut);
+  const std::span<const std::byte> bytes(reinterpret_cast<const std::byte*>(received.data.data()),
+                                         received.data.size());
+  const auto frames = ParseFrames(bytes);
+  const auto goAwayIt =
+      std::ranges::find_if(frames, [](const ParsedFrame& frame) { return frame.header.type() == FrameType::GoAway; });
+  ASSERT_NE(goAwayIt, frames.end());
+  GoAwayFrame goAway{};
+  ASSERT_EQ(ParseGoAwayFrame(goAwayIt->payload, goAway), FrameParseResult::Ok);
+  EXPECT_EQ(goAway.errorCode, ErrorCode::SettingsTimeout);
+}
+
+TEST(Http2Core, PingKeepAliveClosesTheConnectionOfADeadPeer) {
+  // A stream waiting for the body of its request keeps the connection out of its keep-alive timeout: the server pings
+  // the client while it is silent, and closes the connection once a PING is not acknowledged within pingTimeout.
+  test::TestServer server(HttpServerConfig{}
+                              .withHttp2(Http2Config{}
+                                             .withEnableH2c(true)
+                                             .withPingInterval(std::chrono::milliseconds{50})
+                                             .withPingTimeout(std::chrono::milliseconds{100}))
+                              .withPollInterval(std::chrono::milliseconds{5}));
+  server.router().setPath(http::Method::POST, "/upload",
+                          [](const HttpRequestView& req) { return req.makeResponse("done"); });
+
+  ManualH2cClient h2(server.port());
+  h2.receive(std::chrono::milliseconds{1000});
+  h2.sendRequest(1, http::Method::POST, "/upload", false);
+
+  // The client acknowledges the PING frames: the connection stays open.
+  const auto answeringEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds{400};
+  while (std::chrono::steady_clock::now() < answeringEnd) {
+    h2.receive(std::chrono::milliseconds{10});
+  }
+  EXPECT_GE(h2.nbPings, 2);
+
+  // It stops answering.
+  EXPECT_TRUE(test::WaitForPeerClose(h2.cnx.fd(), std::chrono::milliseconds{2000}));
+}
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+TEST(Http2Core, PerRouteTimeoutResponseIsSentWithoutWaitingForAnEvent) {
+  // The 408 answering a stream whose per-route timeout elapsed is queued by the periodic maintenance, which sends it:
+  // the connection may receive no event meanwhile, here its handler waiting for deferred work.
+  static std::atomic<bool> releaseWork;
+  releaseWork.store(false, std::memory_order_relaxed);
+  test::TestServer server(
+      HttpServerConfig{}.withHttp2(Http2Config{}.withEnableH2c(true)).withPollInterval(std::chrono::milliseconds{5}));
+  server.router()
+      .setPath(http::Method::GET, "/slow",
+               [](HttpRequestView& req) -> RequestTask<HttpResponse> {
+                 const int value = co_await req.deferWork([] {
+                   while (!releaseWork.load(std::memory_order_acquire)) {
+                     std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                   }
+                   return 1;
+                 });
+                 co_return req.makeResponse(std::to_string(value));
+               })
+      .timeout(std::chrono::milliseconds{20});
+
+  ManualH2cClient h2(server.port());
+  std::string status;
+  h2.sink.onHeadersDecodedFn = [&status](uint32_t, const SvToSvMap& headers, bool) {
+    if (const auto it = headers.find(":status"); it != headers.end()) {
+      status.assign(it->second);
+    }
+  };
+  h2.receive(std::chrono::milliseconds{1000});
+  h2.sendRequest(1, http::Method::GET, "/slow", true);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+  while (status.empty() && std::chrono::steady_clock::now() < deadline) {
+    h2.receive(std::chrono::milliseconds{10});
+  }
+  releaseWork.store(true, std::memory_order_release);
+  EXPECT_EQ(status, "408");
+}
+#endif
+
 TEST(Http2Core, LoopbackHandshakeOpensConnection) {
   Http2Config clientCfg;
   Http2Config serverCfg;
@@ -699,7 +883,15 @@ TEST(Http2Core, ServerSendHeadersIsDecodedOnClient) {
   Http2Loopback h2(clientCfg, serverCfg);
   h2.connect(true);
 
-  constexpr uint32_t streamId = 2;
+  // The request of the client opens the stream.
+  constexpr uint32_t streamId = 1;
+  RawChars request;
+  request.append(MakeHttp1HeaderLine(":method", "GET"));
+  request.append(MakeHttp1HeaderLine(":scheme", "https"));
+  request.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  request.append(MakeHttp1HeaderLine(":path", "/"));
+  ASSERT_EQ(h2.client.sendHeaders(streamId, http::StatusCode{}, HeadersView(request), true), ErrorCode::NoError);
+  Http2Loopback::pump(h2.client, h2.server);
 
   RawChars hdrs2;
   hdrs2.append(MakeHttp1HeaderLine(http::ContentType, "text/plain"));
@@ -1177,29 +1369,53 @@ TEST(Http2Core, PingOnNonZeroStreamIsProtocolError) {
 // GOAWAY
 // ============================
 
-TEST(Http2Core, GoAwayReceivedPreventsNewStreamsBeyondLastStreamId) {
+TEST(Http2Core, GoAwaySentIgnoresNewStreamsBeyondLastStreamId) {
   Http2Config clientCfg;
   Http2Config serverCfg;
 
   Http2Loopback h2(clientCfg, serverCfg);
   h2.connect(true);
 
-  // Send GOAWAY to server with lastStreamId=1.
-  RawBytes go;
-  WriteGoAwayFrame(go, 1, ErrorCode::NoError, ErrorMsg::NoError);
-  auto resGo = h2.server.processInput(AsSpan(go));
-  ASSERT_NE(resGo.action, Http2Connection::ProcessResult::Action::Error);
-  EXPECT_EQ(h2.server.state(), ConnectionState::GoAwayReceived);
+  h2.server.initiateGoAway(ErrorCode::NoError, ErrorMsg::NoError);
+  EXPECT_EQ(h2.server.state(), ConnectionState::GoAwaySent);
+  h2.server.onOutputWritten(h2.server.getPendingOutput().size());
 
-  // Now attempt to open stream 3 (should be ignored).
+  // Stream 3 is above the last stream id of the GOAWAY (0): ignored, its field block being decoded.
   RawBytes headers;
-  std::array<std::byte, 4> hb = {std::byte{0x82}, std::byte{0x86}, std::byte{0x84}, std::byte{0x01}};
+  std::array<std::byte, 3> hb = {std::byte{0x82}, std::byte{0x86}, std::byte{0x84}};
   WriteFrame(headers, FrameType::Headers, ComputeHeaderFrameFlags(false, true), 3, static_cast<uint32_t>(hb.size()));
   headers.append(hb);
 
   auto resHeaders = h2.server.processInput(AsSpan(headers));
   EXPECT_EQ(resHeaders.action, Http2Connection::ProcessResult::Action::Continue);
   EXPECT_EQ(h2.server.getStream(3), nullptr);
+  EXPECT_TRUE(h2.serverHeaders.empty());
+}
+
+TEST(Http2Core, GoAwayReceivedDoesNotApplyToTheStreamsOfItsSender) {
+  // The last stream id of a GOAWAY refers to the streams of its receiver (RFC 9113 §6.8): those of its sender are still
+  // processed.
+  Http2Config clientCfg;
+  Http2Config serverCfg;
+
+  Http2Loopback h2(clientCfg, serverCfg);
+  h2.connect(true);
+
+  RawBytes go;
+  WriteGoAwayFrame(go, 0, ErrorCode::NoError, ErrorMsg::NoError);
+  auto resGo = h2.server.processInput(AsSpan(go));
+  ASSERT_NE(resGo.action, Http2Connection::ProcessResult::Action::Error);
+  EXPECT_EQ(h2.server.state(), ConnectionState::GoAwayReceived);
+
+  RawBytes headers;
+  std::array<std::byte, 3> hb = {std::byte{0x82}, std::byte{0x86}, std::byte{0x84}};
+  WriteFrame(headers, FrameType::Headers, ComputeHeaderFrameFlags(false, true), 3, static_cast<uint32_t>(hb.size()));
+  headers.append(hb);
+
+  auto resHeaders = h2.server.processInput(AsSpan(headers));
+  EXPECT_NE(resHeaders.action, Http2Connection::ProcessResult::Action::Error);
+  EXPECT_NE(h2.server.getStream(3), nullptr);
+  EXPECT_EQ(h2.serverHeaders.size(), 1U);
 }
 
 TEST(Http2Core, InitiateGoAwayQueuesFrameAndUpdatesState) {
