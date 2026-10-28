@@ -1112,6 +1112,8 @@ void HttpMessage::finalizeInlineBody(std::size_t additionalCapacity) {
 void HttpMessage::removeBodyAndItsHeaders() {
   // Clear any payload variant
   destroyEmbeddedPayload();
+  // The trailers (if any) were stored with the body: they go with it.
+  _opts._trailerLen = 0;
 
   // Remove all body, Content-Length and Content-Encoding headers at once.
   char* pContentTypeHeaderLine = getContentTypeHeaderLinePtr();

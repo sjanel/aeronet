@@ -18,4 +18,15 @@ TEST(HttpConstantsTest, DefaultReasonPhrase) {
   EXPECT_EQ(ReasonPhraseFor(static_cast<StatusCode>(599)), "");
 }
 
+TEST(HttpConstantsTest, StatusCodeAllowsBody) {
+  for (StatusCode code : {StatusCodeContinue, StatusCodeSwitchingProtocols, StatusCodeEarlyHints, StatusCode{199},
+                          StatusCodeNoContent, StatusCodeNotModified, MagicForHttpRequest}) {
+    EXPECT_FALSE(StatusCodeAllowsBody(code)) << code;
+  }
+  for (StatusCode code : {StatusCodeOK, StatusCodeResetContent, StatusCodePartialContent, StatusCodeMovedPermanently,
+                          StatusCodeSeeOther, StatusCodeNotFound, StatusCodeInternalServerError, StatusCode{599}}) {
+    EXPECT_TRUE(StatusCodeAllowsBody(code)) << code;
+  }
+}
+
 }  // namespace aeronet::http
