@@ -56,6 +56,12 @@ constexpr bool openTelemetryEnabled() { return true; }
 constexpr bool openTelemetryEnabled() { return false; }
 #endif
 
+#ifdef AERONET_ENABLE_PROTOBUF
+constexpr bool protobufEnabled() { return true; }
+#else
+constexpr bool protobufEnabled() { return false; }
+#endif
+
 #ifdef AERONET_ENABLE_WEBSOCKET
 constexpr bool webSocketEnabled() { return true; }
 #else

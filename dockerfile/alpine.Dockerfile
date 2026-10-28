@@ -30,6 +30,7 @@ RUN cmake -S . -B build-alpine -G Ninja \
             -D AERONET_ENABLE_ASAN=OFF \
             -D AERONET_ENABLE_ASYNC_HANDLERS=ON \
             -D AERONET_ENABLE_GLAZE=ON \
+            -D AERONET_ENABLE_PROTOBUF=ON \
             -D AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS=ON \
             -D AERONET_ENABLE_HTTP2=ON \
             -D AERONET_ENABLE_BROTLI=ON \

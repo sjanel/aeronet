@@ -13,6 +13,10 @@ All notable changes to aeronet are documented in this file.
 - **32-bit targets are rejected**: CMake stops at configure time (`CMAKE_SIZEOF_VOID_P` other than 8) and `aeronet/compiler-config.hpp` has a `static_assert` on `sizeof(void*)` and `sizeof(std::size_t)`. The vcpkg port is only supported on `x64` and `arm64`, and the Conan recipe rejects the 32-bit `arch` settings. 32-bit targets never were in the CI and did not work in practice (a 32-bit `std::size_t` truncates 64-bit sizes and lengths, and the vendored hash maps crash). See [64-bit targets only](getting-started/install.md#64-bit-targets-only).
 - **`WebSocketConfig::maxMessageSize` and `maxFrameSize` no longer accept `0`**: `0` used to mean unlimited (for `maxFrameSize`, undocumented). `WebSocketConfig::validate()` now throws `std::invalid_argument` for it, like the other limits of the library. Set `std::numeric_limits<std::size_t>::max()` to approximate no limit. `WebSocketConfig` moved to `aeronet/websocket-config.hpp` (still included by `websocket-handler.hpp`). See [Configuration](protocols/websocket.md#configuration).
 
+### Improvements
+
+- **New `AERONET_ENABLE_PROTOBUF` CMake option** for Protocol Buffers support, `ON` by default when aeronet is the top-level project like the other optional dependencies: turn it `OFF` when protobuf is not installed, as it is never fetched. The support is header-only (the aeronet libraries do not use protobuf), and `find_package(aeronet)` finds protobuf for the consumers. `AERONET_PROTOBUF_RUNTIME` selects the `full` (default) or `lite` runtime. `protobufEnabled()` (`aeronet/features.hpp`) and a new `protobuf: <version>` line of `fullVersionStringView()` report it. Conan option `with_protobuf`, vcpkg feature `protobuf`. See [Build configuration](reference/configuration.md#protocol-and-integration-features).
+
 ## [1.7.0] - 2026-10-26
 
 ### 1.7.0 Highlights

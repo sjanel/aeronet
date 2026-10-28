@@ -38,6 +38,7 @@ class AeronetConan(ConanFile):
         "with_zstd": [True, False],
         "with_opentelemetry": [True, False],
         "with_glaze": [True, False],
+        "with_protobuf": [True, False],
     }
     default_options = {
         "shared": False,
@@ -50,6 +51,7 @@ class AeronetConan(ConanFile):
         "with_zstd": False,
         "with_opentelemetry": False,
         "with_glaze": False,
+        "with_protobuf": False,
     }
     exports_sources = (
         "CMakeLists.txt",
@@ -116,6 +118,9 @@ class AeronetConan(ConanFile):
         tc.variables["AERONET_ENABLE_GLAZE"] = (
             "ON" if self.options.with_glaze else "OFF"
         )
+        tc.variables["AERONET_ENABLE_PROTOBUF"] = (
+            "ON" if self.options.with_protobuf else "OFF"
+        )
         # Force OFF for tests/examples in package context
         tc.variables["AERONET_BUILD_TESTS"] = "OFF"
         tc.variables["AERONET_BUILD_BENCHMARKS"] = "OFF"
@@ -150,11 +155,18 @@ class AeronetConan(ConanFile):
             self.requires("zstd/[~1.5]")
         if self.options.with_opentelemetry:
             self.requires("opentelemetry-cpp/[~1.24]")
+        if self.options.with_opentelemetry or self.options.with_protobuf:
             # We prefer OTLP HTTP exporter in the codebase (otel-tracer.cpp)
             # and do not currently use the gRPC exporter path. Avoid pulling
             # the heavy gRPC dependency transitively. Keep protobuf since
             # some opentelemetry pieces and generated protos may need it.
-            self.requires("protobuf/[~5.27]")
+            # The protobuf support is header-only: the consumers need the protobuf headers and libraries.
+            consumer_traits = (
+                {"transitive_headers": True, "transitive_libs": True}
+                if self.options.with_protobuf
+                else {}
+            )
+            self.requires("protobuf/[~5.27]", **consumer_traits)
         if self.options.with_glaze:
             self.requires("glaze/7.0.2")
 
@@ -197,7 +209,8 @@ class AeronetConan(ConanFile):
             self.cpp_info.requires.append("zstd::zstd")
         if self.options.with_opentelemetry:
             self.cpp_info.requires.append("opentelemetry-cpp::opentelemetry-cpp")
-            # Protobuf is a direct requirement when OpenTelemetry support is enabled
+        if self.options.with_opentelemetry or self.options.with_protobuf:
+            # Protobuf is a direct requirement when OpenTelemetry or protobuf support is enabled
             # and some exported CMake targets / generated protos may need it. Ensure
             # the Conan package_info references the protobuf requirement so Conan
             # doesn't treat it as unused when creating the package.

@@ -13,6 +13,10 @@
 #include <glaze/version.hpp>
 #endif
 
+#ifdef AERONET_ENABLE_PROTOBUF
+#include <google/protobuf/stubs/common.h>
+#endif
+
 #ifdef AERONET_ENABLE_OPENSSL
 #include <openssl/opensslv.h>
 #endif
@@ -85,6 +89,27 @@ inline constexpr std::string_view _sv_glaze_section =
                    _sv_glaze_patch>::value;
 #else
 inline constexpr std::string_view _sv_glaze_section = "glaze: disabled";
+#endif
+
+// Protobuf section fragment: version of the C++ runtime headers (e.g. 5.29.3 for protobuf v29.3), with the runtime.
+#ifdef AERONET_ENABLE_PROTOBUF
+inline constexpr std::string_view _sv_protobuf_prefix = "protobuf: ";
+inline constexpr auto _sv_protobuf_major = IntToStringView<GOOGLE_PROTOBUF_VERSION / 1000000>::value;
+inline constexpr auto _sv_protobuf_minor = IntToStringView<GOOGLE_PROTOBUF_VERSION / 1000 % 1000>::value;
+inline constexpr auto _sv_protobuf_patch = IntToStringView<GOOGLE_PROTOBUF_VERSION % 1000>::value;
+// Empty for a stable release, "-rc1" for a release candidate.
+// NOLINTNEXTLINE(readability-redundant-string-init)
+inline constexpr std::string_view _sv_protobuf_suffix = GOOGLE_PROTOBUF_VERSION_SUFFIX;
+#ifdef AERONET_PROTOBUF_LITE
+inline constexpr std::string_view _sv_protobuf_runtime = " (lite)";
+#else
+inline constexpr std::string_view _sv_protobuf_runtime{};
+#endif
+inline constexpr std::string_view _sv_protobuf_section =
+    JoinStringView<_sv_protobuf_prefix, _sv_protobuf_major, CharToStringView_v<'.'>, _sv_protobuf_minor,
+                   CharToStringView_v<'.'>, _sv_protobuf_patch, _sv_protobuf_suffix, _sv_protobuf_runtime>::value;
+#else
+inline constexpr std::string_view _sv_protobuf_section = "protobuf: disabled";
 #endif
 
 // Logging section fragment
@@ -226,6 +251,8 @@ inline constexpr std::string_view _sv_compression_section = "compression: disabl
 //
 // Layout (multiline):
 //   aeronet <version>\n
+//   glaze: <...>\n
+//   protobuf: <...>\n
 //   tls: <...>\n
 //   logging: <...>
 //   opentelemetry: <...>
@@ -236,10 +263,10 @@ inline constexpr std::string_view _sv_compression_section = "compression: disabl
 constexpr std::string_view fullVersionStringView() {  // Assemble multiline string (no trailing newline):
   using namespace details;
 
-  using full_version_join_t =
-      JoinStringView<_sv_name, _sv_version_macro, _sv_newline, _sv_glaze_section, _sv_newline, _sv_tls_section,
-                     _sv_newline, _sv_logging_section, _sv_newline, _sv_opentelemetry_section, _sv_newline,
-                     _sv_features_section, _sv_newline, _sv_compression_section>;
+  using full_version_join_t = JoinStringView<_sv_name, _sv_version_macro, _sv_newline, _sv_glaze_section, _sv_newline,
+                                             _sv_protobuf_section, _sv_newline, _sv_tls_section, _sv_newline,
+                                             _sv_logging_section, _sv_newline, _sv_opentelemetry_section, _sv_newline,
+                                             _sv_features_section, _sv_newline, _sv_compression_section>;
 
   return full_version_join_t::value;
 }
