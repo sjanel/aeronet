@@ -29,7 +29,7 @@ With Glaze, the configuration can also be loaded from the `client` section of a 
 | `keepAliveTimeout` / `withKeepAliveTimeout()` | 30 s | Maximum age of an idle pooled connection; 0 disables expiry. Also the period of the automatic sweep of expired idle connections over all origins. |
 | `maxIdleConnectionsPerHost` | 8 | Per-origin pool cap. |
 | `httpVersion` / `withHttpVersion()` | Auto | `Auto` uses HTTPS ALPN when available and otherwise HTTP/1.1; `Http1_1` disables HTTP/2; `Http2` requires HTTP/2, including prior-knowledge h2c for plaintext. |
-| `http2` / `withHttp2Config()` | `Http2Config` defaults | Native HTTP/2 settings and flow-control limits. Server-only settings such as h2c, priority, and push do not affect a client. |
+| `http2` / `withHttp2Config()` | `Http2Config` defaults | Native HTTP/2 settings and flow-control limits. Server-only settings such as h2c, priority, push, `settingsTimeout`, `pingInterval`, and `pingTimeout` do not affect a client; `maxStreamsPerConnection` bounds the streams of a pooled connection. |
 | `tcpNoDelay` / `withTcpNoDelay[Mode]()` | Auto | Request/response traffic normally benefits from Auto/Enabled TCP_NODELAY. |
 | `globalHeaders` / `withGlobalHeaders()` / `addGlobalHeader()` | `user-agent: aeronet` | Headers supplied unless a request already provides a value. |
 | `addTrailerHeader` | true | Add a `Trailer` header to requests that contain trailers. |

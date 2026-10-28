@@ -1033,9 +1033,10 @@ TEST_F(WebSocketTest, LargeEchoesBlockedByThePeerAreIntact) {
     frames.append(FrameView(BuildClientFrame(Opcode::Binary, payloads.back())));
   }
 
-  // The server stops reading once its output blocks: the sender waits until the echoes are read.
+  // The server stops reading once its output blocks: the sender waits until the echoes are read. Joined on a failed
+  // assertion too (by its destructor), instead of terminating the test binary.
   bool sendFailed = false;
-  std::thread sender([&] {
+  std::jthread sender([&] {
     try {
       test::sendAll(conn.fd(), frames, 20000ms);
     } catch (const std::exception&) {
