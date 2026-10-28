@@ -309,7 +309,7 @@ HttpResponse RequestPipeline::makeTrailingSlashRedirect(
   }
   const std::size_t additionalCapacity =
       HttpResponse::BodySize(kRedirecting.size()) + http::HeaderSize(http::Location.size(), location.size());
-  auto resp = request.makeResponse(additionalCapacity, http::StatusCodeMovedPermanently);
+  HttpResponse resp = request.makeResponse(additionalCapacity, http::StatusCodeMovedPermanently);
   resp.headerAddLine(http::Location, std::string_view(location));
   resp.body(kRedirecting);
   return resp;

@@ -196,6 +196,21 @@ struct ConnectionState : public ConnectionInfo {
 
   using AggregatedBodyStreamContext = HttpRequestView::AggregatedBodyContext;
 
+  // Progress of the decoding of the chunked body of the HTTP/1 request at the head of inBuffer, kept between the reads
+  // of that body: each one decodes the chunks received since the previous one only, instead of the whole body again.
+  // The chunks decoded are in bodyAndTrailersBuffer (unless the body is decompressed from its chunks, which are then
+  // not copied): it must be kept as is until the body is complete.
+  struct ChunkedBodyProgress {
+    // Offset, from the start of the request, of the first byte not decoded yet: the size line of the next chunk.
+    // 0 if the decoding did not start (the request head is not empty).
+    std::size_t pos{0};
+    // Sum of the sizes of the chunks decoded: the size of the body before its decompression.
+    std::size_t bodySize{0};
+  };
+
+  // Tells whether the decoding of a chunked request body started, but did not complete.
+  [[nodiscard]] bool isDecodingChunkedBody() const noexcept { return chunkedBody.pos != 0; }
+
   // Connection close lifecycle: a drain close may linger before the close (see isLingering()).
   enum class CloseMode : uint8_t { None, DrainThenClose, Linger };
 
@@ -294,6 +309,8 @@ struct ConnectionState : public ConnectionInfo {
   // Kept alive for the full request lifecycle as the reference point for bodyLastActivityMs / requestDeadlineMs.
   // Epoch means inactive (no request in progress).
   std::chrono::steady_clock::time_point headerStartTp;
+
+  ChunkedBodyProgress chunkedBody;
 
   // Tunnel support: when a connection is acting as a tunnel endpoint, peerFd holds the
   // file descriptor of the other side (upstream or client).

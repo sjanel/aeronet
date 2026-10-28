@@ -105,9 +105,6 @@ class RequestPipeline {
 
   [[nodiscard]] tracing::TelemetryContext& telemetry() const noexcept { return *_pTelemetry; }
 
-  /// Server-wide buffer for transient data: its content is only valid until its next use.
-  [[nodiscard]] RawChars& scratch() const noexcept { return *_pScratch; }
-
  private:
   [[nodiscard]] HttpResponse makeTrailingSlashRedirect(
       const HttpRequestView& request, Router::RoutingResult::RedirectSlashMode redirectSlashMode) const;
