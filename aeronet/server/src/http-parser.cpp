@@ -28,8 +28,115 @@
 #include "aeronet/search-crlf.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/tolower-str.hpp"
+#include "aeronet/vector.hpp"
 
 namespace aeronet::internal {
+
+namespace {
+
+// Tells whether adding 'size' bytes to 'current' ones exceeds 'limit' (written so that it cannot overflow).
+constexpr bool ExceedsLimit(std::size_t current, std::size_t size, std::size_t limit) noexcept {
+  return size > limit || current > limit - size;
+}
+
+// A chunk-size line (RFC 9112 §7.1: chunk-size [ chunk-ext ] CRLF), as parsed by ParseChunkSizeLine().
+struct ChunkSizeLine {
+  enum class State : uint8_t { Complete, Incomplete, Rejected };
+
+  void setRejected(http::StatusCode statusCode, const char* pRejectedMessage) {
+    status = statusCode;
+    pMessage = pRejectedMessage;
+    state = State::Rejected;
+  }
+
+  std::size_t chunkSize{0};        // Complete only
+  std::size_t size{0};             // bytes of the line, CRLF included (Complete only)
+  const char* pMessage = nullptr;  // Rejected only: the body of the error response
+  http::StatusCode status{};       // Rejected only: the status of the error response
+  State state{State::Complete};
+};
+
+// Parses the size line of the chunk starting at pFirst. The line is bounded by maxLineSize, CRLF included, whether it
+// is received at once or not: without its end, it takes at least one more byte. Otherwise, a client could make the
+// server buffer (and search again at each read) an unterminated line without limit. Chunk sizes above maxChunkSize are
+// rejected.
+ChunkSizeLine ParseChunkSizeLine(const char* pFirst, const char* pLast, std::size_t maxLineSize,
+                                 std::size_t maxChunkSize) noexcept {
+  const char* pLineEnd = SearchCRLF(pFirst, pLast);
+  const bool isComplete = pLineEnd != pLast;
+  const std::size_t lineSize = static_cast<std::size_t>(pLineEnd - pFirst) + (isComplete ? http::CRLF.size() : 1U);
+
+  ChunkSizeLine out;
+
+  if (lineSize > maxLineSize) {
+    out.setRejected(http::StatusCodeBadRequest, "Chunk size line too long");
+    return out;
+  }
+
+  if (!isComplete) {
+    out.state = ChunkSizeLine::State::Incomplete;
+    return out;
+  }
+
+  if (pLineEnd[1] != '\n') {
+    out.setRejected(http::StatusCodeBadRequest, "Malformed chunk size line");
+    return out;
+  }
+
+  // chunk-size = 1*HEXDIG (RFC 9112 §7.1). An empty chunk-size is not a last-chunk.
+  const char* pSizeEnd = std::find(pFirst, pLineEnd, ';');
+  if (pSizeEnd == pFirst) {
+    out.setRejected(http::StatusCodeBadRequest, "Invalid chunk size");
+    return out;
+  }
+  // Chunk extensions are ignored, but must not contain control characters: a parser accepting a bare LF as chunk
+  // line terminator would otherwise not agree with us on where the chunk data starts.
+  if (!http::IsValidHeaderValue(std::string_view(pSizeEnd, pLineEnd))) {
+    out.setRejected(http::StatusCodeBadRequest, "Invalid chunk extension");
+    return out;
+  }
+  for (const char* pDigit = pFirst; pDigit != pSizeEnd; ++pDigit) {
+    const int8_t digit = FromHexDigit(*pDigit);
+    if (digit < 0) {
+      out.setRejected(http::StatusCodeBadRequest, "Invalid chunk size");
+      return out;
+    }
+    // Never let the chunk size wrap around (it could become 0, ending the body early) - can only happen if
+    // maxChunkSize does not already bound it.
+    if (out.chunkSize > (std::numeric_limits<std::size_t>::max() >> 4U)) {
+      out.setRejected(http::StatusCodePayloadTooLarge, "Chunk size too large");
+      return out;
+    }
+    out.chunkSize = (out.chunkSize << 4U) | static_cast<std::size_t>(digit);
+    if (maxChunkSize < out.chunkSize) {
+      out.setRejected(http::StatusCodePayloadTooLarge, "Chunk size too large");
+      return out;
+    }
+  }
+  out.size = lineSize;
+  return out;
+}
+
+// Collects in 'chunks' the data of the chunks of the body in 'input' starting at the offset 'pos', up to its
+// last-chunk. The body was validated while it was received: only its framing is read again.
+void CollectChunks(std::span<const char> input, std::size_t pos, vector<std::string_view>& chunks) {
+  static constexpr std::size_t kNoLimit = std::numeric_limits<std::size_t>::max();
+
+  const char* pInputBeg = input.data();
+  const char* pLast = pInputBeg + input.size();
+  while (true) {
+    const ChunkSizeLine line = ParseChunkSizeLine(pInputBeg + pos, pLast, kNoLimit, kNoLimit);
+    assert(line.state == ChunkSizeLine::State::Complete);
+    if (line.chunkSize == 0) {
+      return;
+    }
+    pos += line.size;
+    chunks.emplace_back(pInputBeg + pos, line.chunkSize);
+    pos += line.chunkSize + http::CRLF.size();
+  }
+}
+
+}  // namespace
 
 Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeBodyIfReady(ConnectionIt cnxIt, std::span<char> input,
                                                                  bool isChunked, bool expectContinue,
@@ -87,15 +194,23 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeFixedLengthBody(ConnectionI
 Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeChunkedBody(ConnectionIt cnxIt, std::span<char> input,
                                                                  bool expectContinue, std::size_t maxBodyBytes,
                                                                  std::size_t& consumedBytes) {
-  ConnectionState& state = _pCtx->connections.connectionState(cnxIt);
-  HttpRequestView& request = state.request;
   if (expectContinue) {
     _pCtx->io.queueData(cnxIt, HttpMessageData(RawChars{http::HTTP11_100_CONTINUE}));
   }
-  std::size_t pos = request.headSpanSize();
+  const BodyDecodeStatus status = decodeNextChunks(cnxIt, input, maxBodyBytes, consumedBytes);
+  if (status != BodyDecodeStatus::NeedMore) {
+    // Complete, or rejected: the next body starts from its first chunk.
+    _pCtx->connections.connectionState(cnxIt).chunkedBody = {};
+  }
+  return status;
+}
+
+Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeNextChunks(ConnectionIt cnxIt, std::span<char> input,
+                                                                std::size_t maxBodyBytes, std::size_t& consumedBytes) {
+  ConnectionState& state = _pCtx->connections.connectionState(cnxIt);
+  HttpRequestView& request = state.request;
+  ConnectionState::ChunkedBodyProgress& progress = state.chunkedBody;
   RawChars& bodyAndTrailers = state.bodyAndTrailersBuffer;
-  bodyAndTrailers.clear();
-  state.trailerLen = 0;
 
   // Check if we should use direct decompression (avoids copying compressed chunks to bodyAndTrailers)
   const http::StatusCode decompressCode = HttpCodec::WillDecompress(_pCtx->config.decompression, request.headers());
@@ -103,66 +218,54 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeChunkedBody(ConnectionIt cn
     emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed Content-Encoding");
     return BodyDecodeStatus::Error;
   }
+  const bool decompressFromChunks = decompressCode == http::StatusCodeOK;
+
+  // The chunks decoded by the previous reads of this body are not decoded again: this one continues where the last one
+  // stopped, at the size line of the first chunk not complete.
+  const bool resumed = progress.pos != 0;
+  std::size_t pos = progress.pos;
+  std::size_t bodySize = progress.bodySize;
+  if (!resumed) {
+    pos = request.headSpanSize();
+    bodyAndTrailers.clear();
+    state.trailerLen = 0;
+  }
 
   // For direct decompression, we collect chunk positions instead of copying data
-  auto& compressedChunks = _pCtx->sharedBuffers.sv;
+  vector<std::string_view>& compressedChunks = _pCtx->sharedBuffers.sv;
   compressedChunks.clear();
-  std::size_t totalCompressedSize = 0;
 
-  char* const inputBeg = input.data();
-  char* const last = inputBeg + input.size();
+  char* const pInputBeg = input.data();
+  char* const pLast = pInputBeg + input.size();
+  const std::size_t maxLineSize = _pCtx->config.maxHeaderBytes;
   while (true) {
-    auto* first = inputBeg + pos;
-    auto* lineEnd = SearchCRLF(first, last);
-    if (lineEnd == last) {
+    const ChunkSizeLine line = ParseChunkSizeLine(pInputBeg + pos, pLast, maxLineSize, maxBodyBytes);
+    if (line.state == ChunkSizeLine::State::Incomplete) {
       return BodyDecodeStatus::NeedMore;
     }
-    if (lineEnd[1] != '\n') {
-      emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed chunk size line");
+    if (line.state == ChunkSizeLine::State::Rejected) {
+      emitSimpleError(cnxIt, line.status, line.pMessage);
       return BodyDecodeStatus::Error;
     }
-    // chunk-size = 1*HEXDIG (RFC 9112 §7.1). An empty chunk-size is not a last-chunk.
-    auto* sizeLineEnd = std::find(first, lineEnd, ';');
-    if (sizeLineEnd == first) {
-      emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Invalid chunk size");
-      return BodyDecodeStatus::Error;
-    }
-    // Chunk extensions are ignored, but must not contain control characters: a parser accepting a bare LF as chunk
-    // line terminator would otherwise not agree with us on where the chunk data starts.
-    if (!http::IsValidHeaderValue(std::string_view(sizeLineEnd, lineEnd))) {
-      emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Invalid chunk extension");
-      return BodyDecodeStatus::Error;
-    }
-    std::size_t chunkSize = 0;
-    for (auto* it = first; it != sizeLineEnd; ++it) {
-      const int8_t digit = FromHexDigit(*it);
-      if (digit < 0) {
-        emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Invalid chunk size");
-        return BodyDecodeStatus::Error;
-      }
-      // Never let the chunk size wrap around (it could become 0, ending the body early) - can only happen if
-      // maxBodyBytes does not already bound it.
-      if (chunkSize > (std::numeric_limits<std::size_t>::max() >> 4U)) {
-        emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, {});
-        return BodyDecodeStatus::Error;
-      }
-      chunkSize = (chunkSize << 4U) | static_cast<std::size_t>(digit);
-      if (maxBodyBytes < chunkSize) {
-        emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, {});
-        return BodyDecodeStatus::Error;
-      }
-    }
+    const std::size_t chunkSize = line.chunkSize;
+    const std::size_t dataPos = pos + line.size;
 
-    pos = static_cast<std::size_t>(lineEnd - inputBeg) + http::CRLF.size();
+    // A chunk making the body exceed its limits is rejected as soon as it is announced, instead of buffering it first.
+    if (ExceedsLimit(bodySize, chunkSize, maxBodyBytes) ||
+        (decompressFromChunks && ExceedsLimit(bodySize, chunkSize, _pCtx->config.decompression.maxCompressedBytes))) {
+      emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge);
+      return BodyDecodeStatus::Error;
+    }
 
     // First, check if we have at least the immediate terminating CRLF (written so that it cannot overflow)
-    const std::size_t availableBytes = input.size() - pos;
+    const std::size_t availableBytes = input.size() - dataPos;
     if (availableBytes < http::CRLF.size() || availableBytes - http::CRLF.size() < chunkSize) {
       return BodyDecodeStatus::NeedMore;
     }
 
     if (chunkSize == 0) {
       // Zero-chunk detected. Now parse optional trailer headers (RFC 7230 §4.1.2).
+      pos = dataPos;
       const BodyDecodeStatus trailersStatus = decodeTrailers(cnxIt, input, pos);
       if (trailersStatus != BodyDecodeStatus::Ready) {
         return trailersStatus;
@@ -170,43 +273,39 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeChunkedBody(ConnectionIt cn
       break;
     }
 
-    if (decompressCode == http::StatusCodeOK) {
-      // Just record chunk position for later direct decompression
-      compressedChunks.emplace_back(inputBeg + pos, chunkSize);
-      totalCompressedSize += chunkSize;
-
-      if (totalCompressedSize > maxBodyBytes || totalCompressedSize > _pCtx->config.decompression.maxCompressedBytes) {
-        emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge);
-        return BodyDecodeStatus::Error;
+    if (decompressFromChunks) {
+      // Just record chunk position for later direct decompression (the chunks of the previous reads are recorded when
+      // the body is complete, see below)
+      if (!resumed) {
+        compressedChunks.emplace_back(pInputBeg + dataPos, chunkSize);
       }
     } else {
       // Append chunk data to body buffer (original path)
-      const auto appendSz = std::min(chunkSize, input.size() - pos);
-
-      if (bodyAndTrailers.size() + appendSz > maxBodyBytes) {
-        emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge);
-        return BodyDecodeStatus::Error;
-      }
-
-      bodyAndTrailers.append(inputBeg + pos, appendSz);
+      bodyAndTrailers.append(pInputBeg + dataPos, chunkSize);
     }
-    pos += chunkSize;
-    if (std::memcmp(inputBeg + pos, http::CRLF.data(), http::CRLF.size()) != 0) {
+    bodySize += chunkSize;
+    pos = dataPos + chunkSize;
+    if (std::memcmp(pInputBeg + pos, http::CRLF.data(), http::CRLF.size()) != 0) {
       emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed chunk CRLF");
       return BodyDecodeStatus::Error;
     }
     pos += http::CRLF.size();
+    progress = {.pos = pos, .bodySize = bodySize};
   }
 
-  if (totalCompressedSize != 0) {
+  if (decompressFromChunks && bodySize != 0) {
+    if (resumed) {
+      compressedChunks.clear();
+      CollectChunks(input, request.headSpanSize(), compressedChunks);
+    }
     // Perform direct decompression from the input chunks to bodyAndTrailersBuffer
     // Save trailers if present (they were appended to bodyAndTrailers with trailerLen = 0)
     // In direct decompression mode, bodyAndTrailers only contains trailers (no body chunks were copied)
     _pCtx->sharedBuffers.trailers.assign(bodyAndTrailers);
 
-    const auto res = HttpCodec::DecompressChunkedBody(_pCtx->decompressionState, _pCtx->config.decompression, request,
-                                                      compressedChunks, totalCompressedSize, bodyAndTrailers,
-                                                      _pCtx->sharedBuffers.buf);
+    const auto res =
+        HttpCodec::DecompressChunkedBody(_pCtx->decompressionState, _pCtx->config.decompression, request,
+                                         compressedChunks, bodySize, bodyAndTrailers, _pCtx->sharedBuffers.buf);
     if (res.message != nullptr) {
       emitSimpleError(cnxIt, res.status, res.message);
       return BodyDecodeStatus::Error;
@@ -253,6 +352,13 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeTrailers(ConnectionIt cnxIt
   while (true) {
     const auto lineEndIt = SearchCRLF(inputBeg + tempPos, last);
     if (lineEndIt == last) {
+      // The trailers are bounded whether their line ends are received or not: a client could otherwise make the server
+      // buffer (and parse again at each read) a trailer line without end, without limit.
+      const std::size_t receivedTrailerSize = static_cast<std::size_t>(last - trailerStart);
+      if (receivedTrailerSize > _pCtx->config.maxHeaderBytes) {
+        emitSimpleError(cnxIt, http::StatusCodeRequestHeaderFieldsTooLarge);
+        return BodyDecodeStatus::Error;
+      }
       return BodyDecodeStatus::NeedMore;
     }
     if (lineEndIt[1] != '\n') {

@@ -251,6 +251,28 @@ TEST(HttpAsyncHandlers, PipelinedRequestWaitingForItsBody) {
   }
 }
 
+// The body of a chunked request, whose async handler waits for it, is decoded by pieces as it is received.
+TEST(HttpAsyncHandlers, ChunkedBodyReceivedInSeveralReadsAfterDispatch) {
+  ts.resetRouterAndGet().setPath(http::Method::POST, "/chunked", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
+    const std::string_view body = co_await req.bodyAwaitable();
+    co_return HttpResponse(std::format("{}|{}", body, req.trailerValueOrEmpty("x-end")));
+  });
+
+  test::ClientConnection client(ts.port());
+  ASSERT_TRUE(SetTcpNoDelay(client.fd()));  // a part is not delayed until the previous one is acknowledged
+  test::sendAll(client.fd(),
+                "POST /chunked HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
+  // The reads end in a size line, a chunk data, the CRLF after it, the last chunk and the trailers.
+  for (const std::string_view part :
+       {"3\r\nfoo\r\n", "6;e=1\r\nbarb", "az", "\r\n", "0\r\nX-En", "d: done\r\n", "\r\n"}) {
+    std::this_thread::sleep_for(15ms);
+    test::sendAll(client.fd(), part);
+  }
+  const std::string resp = test::recvUntilClosed(client.fd(), std::chrono::seconds{3});
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.ends_with("foobarbaz|done")) << resp;
+}
+
 // Requests pipelined behind an async handler were only served when new bytes arrived.
 TEST(HttpAsyncHandlers, PipelinedRequestAfterImmediatelyCompletingAsyncHandler) {
   ts.resetRouterAndGet().setPath(http::Method::GET, "/async", [](HttpRequestView&) -> RequestTask<HttpResponse> {

@@ -64,7 +64,7 @@ std::string_view StripPortFromHost(std::string_view hostHeader) noexcept {
   return hostHeader;
 }
 
-bool AppendHttpsAuthority(RawChars& out, std::string_view hostHeader, uint16_t targetPort) {
+bool SetHttpsAuthority(RawChars& out, std::string_view hostHeader, uint16_t targetPort) {
   out.clear();
 
   const std::string_view host = StripPortFromHost(hostHeader);
@@ -99,7 +99,7 @@ void AppendUrlEncodedPath(RawChars& out, std::string_view decodedPath) {
   // per-char predicate inlines into the encode loop instead of becoming an indirect call through a function pointer.
   constexpr auto isPathSafe = [](char ch) { return IsPathSafe(ch); };
 
-  out.ensureAvailableCapacity(URLEncodedSize(decodedPath, isPathSafe));
+  out.ensureAvailableCapacityExponential(URLEncodedSize(decodedPath, isPathSafe));
   char* pEnd = URLEncode(decodedPath, isPathSafe, out.data() + out.size());
 
   out.setEnd(pEnd);
@@ -109,8 +109,8 @@ void AppendUrlEncodedQueryParam(RawChars& out, char leadingChar, std::string_vie
                                 std::string_view decodedValue) {
   constexpr auto isUnreserved = [](char ch) { return IsUnreserved(ch); };
 
-  out.ensureAvailableCapacity(1UL + URLEncodedSize(decodedKey, isUnreserved) + 1UL +
-                              URLEncodedSize(decodedValue, isUnreserved));
+  out.ensureAvailableCapacityExponential(1UL + URLEncodedSize(decodedKey, isUnreserved) + 1UL +
+                                         URLEncodedSize(decodedValue, isUnreserved));
 
   char* pEnd = out.data() + out.size();
 
@@ -130,7 +130,7 @@ bool BuildHttpsRedirectUrl(RawChars& out, const HttpRequestView& request, uint16
 #else
   const std::string_view hostHeader = request.headerValueOrEmpty(Host);
 #endif
-  if (!AppendHttpsAuthority(out, hostHeader, targetPort)) {
+  if (!SetHttpsAuthority(out, hostHeader, targetPort)) {
     return false;
   }
   AppendUrlEncodedPath(out, request.path());

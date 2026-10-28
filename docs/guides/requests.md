@@ -103,8 +103,9 @@ Routes can lower the size limits, and set a deadline for the whole request: see 
 HTTP/1.1 clients may send a body without knowing its size, with `Transfer-Encoding: chunked`. The server decodes it (RFC 9112 §7.1) before the handler sees it:
 
 - Chunk sizes are strict hexadecimal numbers. Empty sizes, prefixes such as `0x`, `+`, or `-`, whitespace, sizes overflowing 64 bits, and bare CR or LF characters are rejected with `400 Bad Request`, and every framing error closes the connection, so that the following bytes are never parsed as another request.
-- Chunk extensions (`4;name=value`) are validated and ignored.
-- The decoded body counts toward `maxBodyBytes` (`413` beyond it), and the trailer section toward `maxHeaderBytes` (`431`).
+- Chunk extensions (`4;name=value`) are validated and ignored. A chunk-size line (extensions and CRLF included) longer than `maxHeaderBytes` is rejected with `400`, whether or not its end was received: a line without end is not buffered further.
+- The decoded body counts toward `maxBodyBytes` (`413` beyond it, as soon as a chunk announces the excess, without waiting for its data), and the trailer section toward `maxHeaderBytes` (`431`, whether or not the end of its last line was received).
+- A body received in several reads is decoded once: each read decodes the chunks received since the previous one, so the time spent is linear in the size of the body.
 - `Transfer-Encoding` on an HTTP/1.0 request, or together with `Content-Length`, is rejected with `400`.
 
 Trailers are header fields sent after the last chunk, typically a checksum or a signature computed while sending the body. They are exposed by `trailers()`, with lower-case names and trimmed values, identically for HTTP/1.1 chunked requests and HTTP/2 requests:
@@ -166,4 +167,5 @@ A client that sends `Expect: 100-continue` waits for the server's `100 Continue`
 
 - Request parsing, header merging, and query decoding: [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp) and [http-parser_test.cpp](../../aeronet/server/test/http-parser_test.cpp).
 - Chunked bodies and trailers end to end: [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
+- Chunked bodies received in several reads (byte by byte, large, compressed, async handler), and the limits of their lines: [http-parser_test.cpp](../../aeronet/server/test/http-parser_test.cpp), [http-request-decompression_test.cpp](../../tests/http-request-decompression_test.cpp) and [http-async_test.cpp](../../tests/http-async_test.cpp). The upload throughput is measured by `ChunkedUpload` in [http1-pipeline_bench.cpp](../../benchmarks/internal/http1-pipeline_bench.cpp).
 - Multipart parsing: [multipart-form-data_test.cpp](../../aeronet/server/test/multipart-form-data_test.cpp).
