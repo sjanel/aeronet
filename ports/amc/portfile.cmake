@@ -1,8 +1,8 @@
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO AmadeusITGroup/amc
-    REF v2.6.1
-    SHA512 6a944e8234420afebe5fb07c49aa07225c111f7d11426a279011d2aa29a36cd171cd999ee0dd3ebba544e1ef31918be69ecb8b8bc63072dda4fbcfc5b8c38d0e
+    REF v2.7.0
+    SHA512 90281d598f93efa76a55bdfb8f2b28d17443ea6fc75730aa1bf39f078146621235e9b255b3d160cd8c4e34fea687b9f186ae6d56b3a1819039d9e5901c485421
 )
 
 # Install headers (best effort)

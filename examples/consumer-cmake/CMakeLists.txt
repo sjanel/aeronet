@@ -9,7 +9,11 @@ set(CMAKE_CXX_STANDARD 23)
 
 find_package(aeronet CONFIG REQUIRED)
 
-add_executable(consumer-example ../server-minimal.cpp)
+if(AERONET_WITH_HTTP2 AND AERONET_WITH_OPENSSL)
+  add_executable(consumer-example ../static-file-http2.cpp)
+else()
+  add_executable(consumer-example ../server-minimal.cpp)
+endif()
 
 # Link against the imported target installed by aeronet
 # (public headers and transitive usage requirements are propagated)

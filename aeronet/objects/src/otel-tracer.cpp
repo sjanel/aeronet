@@ -62,10 +62,16 @@
 #include <opentelemetry/sdk/metrics/view/meter_selector_factory.h>
 #include <opentelemetry/sdk/metrics/view/view.h>
 #include <opentelemetry/sdk/metrics/view/view_registry.h>
+#include <opentelemetry/version.h>  // needed for OPENTELEMETRY_ABI_VERSION_NO NOLINT(misc-include-cleaner)
 
 #include "aeronet/city-hash.hpp"
 #include "aeronet/flat-hash-map.hpp"
 #include "otel-metric-labels.hpp"
+#if OPENTELEMETRY_ABI_VERSION_NO < 2
+#include <opentelemetry/context/context.h>
+
+#include "gauge-deltas.hpp"
+#endif
 #endif
 
 // Detect OTLP metrics exporter
@@ -106,6 +112,16 @@ opentelemetry::sdk::resource::Resource buildTelemetryResource(const TelemetryCon
   }
   return opentelemetry::sdk::resource::Resource::Create({{"service.name", std::string(cfg.serviceName())}});
 }
+
+#ifdef AERONET_HAVE_METRICS_SDK
+#if OPENTELEMETRY_ABI_VERSION_NO >= 2
+using OtelGauge = opentelemetry::metrics::Gauge<int64_t>;
+#else
+// The ABI v1 - the default one of opentelemetry-cpp, built by vcpkg, Conan and the system packages - has no synchronous
+// gauge: see GaugeDeltas.
+using OtelGauge = opentelemetry::metrics::UpDownCounter<int64_t>;
+#endif
+#endif
 
 // OpenTelemetry Span implementation
 class OtelSpan final : public Span {
@@ -163,6 +179,67 @@ class TelemetryContextImpl {
     _dogstatsd.flush();
   }
 
+#ifdef AERONET_HAVE_METRICS_SDK
+  void recordGauge(std::string_view name, int64_t value, MetricLabels labels) noexcept {
+    if (!_meter) {
+      return;
+    }
+    try {
+      auto [it, inserted] = _gauges.emplace(name, nullptr);
+#if OPENTELEMETRY_ABI_VERSION_NO >= 2
+      if (inserted) {
+        it->second = _meter->CreateInt64Gauge(OtelSv(name));
+      }
+      if (labels.empty()) {
+        it->second->Record(value);
+      } else {
+        it->second->Record(value, detail::OtelMetricLabels(labels));
+      }
+#else
+      if (inserted) {
+        it->second = _meter->CreateInt64UpDownCounter(OtelSv(name));
+      }
+      const int64_t delta = _gaugeDeltas.update(name, labels, value);
+      if (labels.empty()) {
+        it->second->Add(delta);
+      } else {
+        it->second->Add(delta, detail::OtelMetricLabels(labels));
+      }
+#endif
+    } catch (const std::exception& ex) {
+      log::error("Failed to set gauge '{}': {}", name, ex.what());
+    }
+  }
+
+  void recordHistogram(std::string_view name, double value, MetricLabels labels) noexcept {
+    if (!_meter) {
+      return;
+    }
+    try {
+      auto [it, inserted] = _histograms.emplace(name, nullptr);
+      if (inserted) {
+        it->second = _meter->CreateDoubleHistogram(OtelSv(name));
+      }
+#if OPENTELEMETRY_ABI_VERSION_NO >= 2
+      if (labels.empty()) {
+        it->second->Record(value);
+      } else {
+        it->second->Record(value, detail::OtelMetricLabels(labels));
+      }
+#else
+      // The ABI v1 only records a histogram value with an explicit context.
+      if (labels.empty()) {
+        it->second->Record(value, opentelemetry::context::Context{});
+      } else {
+        it->second->Record(value, detail::OtelMetricLabels(labels), opentelemetry::context::Context{});
+      }
+#endif
+    } catch (const std::exception& ex) {
+      log::error("Failed to record histogram '{}': {}", name, ex.what());
+    }
+  }
+#endif
+
   opentelemetry::nostd::shared_ptr<opentelemetry::trace::TracerProvider> _tracerProvider;
   opentelemetry::nostd::shared_ptr<opentelemetry::trace::Tracer> _tracer;
 
@@ -172,10 +249,12 @@ class TelemetryContextImpl {
   // Keyed by views of the names stored in _pendingCounters.
   flat_hash_map<std::string_view, opentelemetry::nostd::unique_ptr<opentelemetry::metrics::Counter<uint64_t>>, CityHash>
       _counters;
-  flat_hash_map<std::string_view, opentelemetry::nostd::unique_ptr<opentelemetry::metrics::Gauge<int64_t>>, CityHash>
-      _gauges;
+  flat_hash_map<std::string_view, opentelemetry::nostd::unique_ptr<OtelGauge>, CityHash> _gauges;
   flat_hash_map<std::string_view, opentelemetry::nostd::unique_ptr<opentelemetry::metrics::Histogram<double>>, CityHash>
       _histograms;
+#if OPENTELEMETRY_ABI_VERSION_NO < 2
+  detail::GaugeDeltas _gaugeDeltas;
+#endif
 #endif
 
   detail::CounterAccumulator _pendingCounters;
@@ -332,17 +411,7 @@ void TelemetryContext::flush() const noexcept {
 void TelemetryContext::gauge(std::string_view name, int64_t value) const noexcept {
   if (_impl) {
 #ifdef AERONET_HAVE_METRICS_SDK
-    if (_impl->_meter) {
-      try {
-        auto [it, inserted] = _impl->_gauges.emplace(name, nullptr);
-        if (inserted) {
-          it->second = _impl->_meter->CreateInt64Gauge(OtelSv(name));
-        }
-        it->second->Record(value);
-      } catch (const std::exception& ex) {
-        log::error("Failed to set gauge '{}': {}", name, ex.what());
-      }
-    }
+    _impl->recordGauge(name, value, {});
 #endif
     _impl->_dogstatsd.gauge(name, value);
   }
@@ -351,21 +420,7 @@ void TelemetryContext::gauge(std::string_view name, int64_t value) const noexcep
 void TelemetryContext::gauge(std::string_view name, int64_t value, MetricLabels labels) const noexcept {
   if (_impl) {
 #ifdef AERONET_HAVE_METRICS_SDK
-    if (_impl->_meter) {
-      try {
-        auto [it, inserted] = _impl->_gauges.emplace(name, nullptr);
-        if (inserted) {
-          it->second = _impl->_meter->CreateInt64Gauge(OtelSv(name));
-        }
-        if (labels.empty()) {
-          it->second->Record(value);
-        } else {
-          it->second->Record(value, detail::OtelMetricLabels(labels));
-        }
-      } catch (const std::exception& ex) {
-        log::error("Failed to set gauge '{}': {}", name, ex.what());
-      }
-    }
+    _impl->recordGauge(name, value, labels);
 #endif
     _impl->_dogstatsd.gauge(name, value, labels);
   }
@@ -374,17 +429,7 @@ void TelemetryContext::gauge(std::string_view name, int64_t value, MetricLabels 
 void TelemetryContext::histogram(std::string_view name, double value) const noexcept {
   if (_impl) {
 #ifdef AERONET_HAVE_METRICS_SDK
-    if (_impl->_meter) {
-      try {
-        auto [it, inserted] = _impl->_histograms.emplace(name, nullptr);
-        if (inserted) {
-          it->second = _impl->_meter->CreateDoubleHistogram(OtelSv(name));
-        }
-        it->second->Record(value);
-      } catch (const std::exception& ex) {
-        log::error("Failed to record histogram '{}': {}", name, ex.what());
-      }
-    }
+    _impl->recordHistogram(name, value, {});
 #endif
     _impl->_dogstatsd.histogram(name, value);
   }
@@ -393,21 +438,7 @@ void TelemetryContext::histogram(std::string_view name, double value) const noex
 void TelemetryContext::histogram(std::string_view name, double value, MetricLabels labels) const noexcept {
   if (_impl) {
 #ifdef AERONET_HAVE_METRICS_SDK
-    if (_impl->_meter) {
-      try {
-        auto [it, inserted] = _impl->_histograms.emplace(name, nullptr);
-        if (inserted) {
-          it->second = _impl->_meter->CreateDoubleHistogram(OtelSv(name));
-        }
-        if (labels.empty()) {
-          it->second->Record(value);
-        } else {
-          it->second->Record(value, detail::OtelMetricLabels(labels));
-        }
-      } catch (const std::exception& ex) {
-        log::error("Failed to record histogram '{}': {}", name, ex.what());
-      }
-    }
+    _impl->recordHistogram(name, value, labels);
 #endif
     _impl->_dogstatsd.histogram(name, value, labels);
   }
@@ -416,17 +447,7 @@ void TelemetryContext::histogram(std::string_view name, double value, MetricLabe
 void TelemetryContext::timing(std::string_view name, std::chrono::milliseconds ms) const noexcept {
   if (_impl) {
 #ifdef AERONET_HAVE_METRICS_SDK
-    if (_impl->_meter) {
-      try {
-        auto [it, inserted] = _impl->_gauges.emplace(name, nullptr);
-        if (inserted) {
-          it->second = _impl->_meter->CreateInt64Gauge(OtelSv(name));
-        }
-        it->second->Record(std::chrono::duration_cast<std::chrono::milliseconds>(ms).count());
-      } catch (const std::exception& ex) {
-        log::error("Failed to set gauge '{}': {}", name, ex.what());
-      }
-    }
+    _impl->recordGauge(name, ms.count(), {});
 #endif
     _impl->_dogstatsd.timing(name, ms);
   }
@@ -435,22 +456,7 @@ void TelemetryContext::timing(std::string_view name, std::chrono::milliseconds m
 void TelemetryContext::timing(std::string_view name, std::chrono::milliseconds ms, MetricLabels labels) const noexcept {
   if (_impl) {
 #ifdef AERONET_HAVE_METRICS_SDK
-    if (_impl->_meter) {
-      try {
-        auto [it, inserted] = _impl->_gauges.emplace(name, nullptr);
-        if (inserted) {
-          it->second = _impl->_meter->CreateInt64Gauge(OtelSv(name));
-        }
-        const auto value = std::chrono::duration_cast<std::chrono::milliseconds>(ms).count();
-        if (labels.empty()) {
-          it->second->Record(value);
-        } else {
-          it->second->Record(value, detail::OtelMetricLabels(labels));
-        }
-      } catch (const std::exception& ex) {
-        log::error("Failed to set gauge '{}': {}", name, ex.what());
-      }
-    }
+    _impl->recordGauge(name, ms.count(), labels);
 #endif
     _impl->_dogstatsd.timing(name, ms, labels);
   }

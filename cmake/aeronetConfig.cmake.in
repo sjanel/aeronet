@@ -1,25 +1,36 @@
 @PACKAGE_INIT@
 
 include(CMakeFindDependencyMacro)
-# Locate OpenSSL if TLS target expects its imported targets.
-if(NOT TARGET OpenSSL::SSL)
-	find_dependency(OpenSSL REQUIRED)
-endif()
-
-# Conditionally locate compression dependencies based on build-time options so that
+# Conditionally locate dependencies based on build-time options so that
 # exported targets referencing their imported targets do not break consumer configure.
+set(AERONET_WITH_OPENSSL "@AERONET_ENABLE_OPENSSL@")
+set(AERONET_WITH_HTTP2 "@AERONET_ENABLE_HTTP2@")
 set(AERONET_WITH_ZLIB "@AERONET_ENABLE_ZLIB@")
 set(AERONET_WITH_ZSTD "@AERONET_ENABLE_ZSTD@")
+set(AERONET_WITH_BROTLI "@AERONET_ENABLE_BROTLI@")
+set(AERONET_BROTLI_PACKAGE "@AERONET_BROTLI_PACKAGE@")
+set(AERONET_WITH_OPENTELEMETRY "@AERONET_ENABLE_OPENTELEMETRY@")
 set(AERONET_WITH_WEBSOCKET "@AERONET_ENABLE_WEBSOCKET@")
 set(AERONET_WITH_GLAZE "@AERONET_ENABLE_GLAZE@")
 set(AERONET_WITH_PROTOBUF "@AERONET_ENABLE_PROTOBUF@")
 set(AERONET_PROTOBUF_TARGET "@AERONET_PROTOBUF_TARGET@")
 
+if(AERONET_WITH_OPENSSL)
+	if(NOT TARGET OpenSSL::SSL)
+		find_dependency(OpenSSL REQUIRED)
+	endif()
+endif()
+
 if(AERONET_WITH_ZLIB)
 	if(NOT TARGET ZLIBNG::ZLIBNG)
 		find_dependency(zlib-ng CONFIG REQUIRED)
-		if(TARGET zlib-ng::zlibstatic AND NOT TARGET ZLIBNG::ZLIBNG)
-			add_library(ZLIBNG::ZLIBNG ALIAS zlib-ng::zlibstatic)
+		# Same as the build of aeronet: zlib-ng::zlibstatic when zlib-ng installs both libraries, zlib-ng::zlib (static
+		# or shared) when it installs only one, like vcpkg.
+		add_library(ZLIBNG::ZLIBNG INTERFACE IMPORTED)
+		if(TARGET zlib-ng::zlibstatic)
+			target_link_libraries(ZLIBNG::ZLIBNG INTERFACE zlib-ng::zlibstatic)
+		else()
+			target_link_libraries(ZLIBNG::ZLIBNG INTERFACE zlib-ng::zlib)
 		endif()
 	endif()
 endif()
@@ -42,6 +53,20 @@ if(AERONET_WITH_ZSTD)
 	endif()
 endif()
 
+# aeronet was built with a brotli package (vcpkg) rather than building brotli itself.
+if(AERONET_WITH_BROTLI AND AERONET_BROTLI_PACKAGE)
+	find_dependency(${AERONET_BROTLI_PACKAGE} CONFIG REQUIRED)
+endif()
+
+# An installed aeronet was built with an installed opentelemetry-cpp (with a downloaded one, aeronetTargets is not
+# exported). Its targets are referenced by the exported ones: link-only dependencies of the static libraries, and the
+# API headers that version.hpp includes.
+if(AERONET_WITH_OPENTELEMETRY)
+	if(NOT TARGET opentelemetry-cpp::api)
+		find_dependency(opentelemetry-cpp CONFIG REQUIRED)
+	endif()
+endif()
+
 if(AERONET_WITH_GLAZE)
 	if(NOT TARGET glaze::glaze)
 		find_dependency(glaze CONFIG REQUIRED)
@@ -58,15 +83,16 @@ if(AERONET_WITH_PROTOBUF)
 	endif()
 endif()
 
-include("${CMAKE_CURRENT_LIST_DIR}/aeronetTargets.cmake")
-
-# Provide version variable
-set(AERONET_VERSION_STR "@AERONET_PROJECT_VERSION@")
-
-# If the vendored amc dependency was built internally it may have been linked privately.
-# Consumers of the exported aeronet targets do not need to locate a separate amc package;
-# create a lightweight interface target if it is absent so that transitive linking succeeds.
+# If the vendored amc dependency was built internally (downloaded rather than found installed) it is linked
+# privately, but the exported targets still reference amc::amc (as a link-only dependency of static libraries).
+# Consumers do not need a separate amc package: create a lightweight interface target if it is absent.
+# It must exist BEFORE aeronetTargets.cmake is loaded, which validates every target it references.
 if(NOT TARGET amc::amc)
 	add_library(amc::amc INTERFACE IMPORTED)
 	# No include dirs needed: headers were installed alongside other public headers already.
 endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/aeronetTargets.cmake")
+
+# Provide version variable
+set(AERONET_VERSION_STR "@AERONET_PROJECT_VERSION@")
