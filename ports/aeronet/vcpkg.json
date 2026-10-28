@@ -38,6 +38,10 @@
     "glaze": {
       "description": "Enable glaze JSON serialization support",
       "dependencies": ["glaze"]
+    },
+    "protobuf": {
+      "description": "Enable Protocol Buffers support",
+      "dependencies": ["protobuf"]
     }
   }
 }

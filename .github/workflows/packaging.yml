@@ -48,6 +48,7 @@ jobs:
             -o aeronet/*:with_zlib=${{ matrix.features == 'ON' && 'True' || 'False' }} \
             -o aeronet/*:with_zstd=${{ matrix.features == 'ON' && 'True' || 'False' }} \
             -o aeronet/*:with_opentelemetry=${{ matrix.features == 'ON' && 'True' || 'False' }} \
+            -o aeronet/*:with_protobuf=${{ matrix.features == 'ON' && 'True' || 'False' }} \
             -s build_type=Release \
             -s compiler.cppstd=23 \
             --build=missing
@@ -95,7 +96,7 @@ jobs:
           if [ "${{ matrix.features }}" = "OFF" ]; then
             ./scripts/retry.sh ./vcpkg/vcpkg install aeronet --overlay-ports=./ports --triplet x64-linux
           else
-            ./scripts/retry.sh ./vcpkg/vcpkg install aeronet[openssl,spdlog,brotli,zlib,zstd,opentelemetry] --overlay-ports=./ports --triplet x64-linux
+            ./scripts/retry.sh ./vcpkg/vcpkg install aeronet[openssl,spdlog,brotli,zlib,zstd,opentelemetry,protobuf] --overlay-ports=./ports --triplet x64-linux
           fi
 
       - name: Build simple consumer
