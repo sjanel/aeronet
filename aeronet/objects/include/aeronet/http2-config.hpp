@@ -176,7 +176,8 @@ struct Http2Config {
   /// Default: 8.
   uint8_t maxRecycledRequests{8};
 
-  /// SETTINGS_HEADER_TABLE_SIZE (0x1): Maximum size of the HPACK dynamic table.
+  /// SETTINGS_HEADER_TABLE_SIZE (0x1): Maximum size of the HPACK dynamic table of the decoder, enforced on the size
+  /// updates of the peer. Also caps the table of the encoder, whatever the peer advertises.
   /// Default: 4096 bytes (RFC 9113 default).
   uint32_t headerTableSize{4096};
 
@@ -188,7 +189,7 @@ struct Http2Config {
   /// SETTINGS_INITIAL_WINDOW_SIZE (0x4): Initial flow control window size for streams.
   /// The peer sends at most this many bytes on a stream before receiving credit: with the RFC 9113 default (65535
   /// bytes), a single upload (server) or download (client) would be capped to about 64 KiB per round trip.
-  /// Default: 1 MiB, like hyper and Go.
+  /// Default: 1 MiB.
   uint32_t initialWindowSize{1U << 20U};
 
   /// SETTINGS_MAX_FRAME_SIZE (0x5): Maximum frame payload size.

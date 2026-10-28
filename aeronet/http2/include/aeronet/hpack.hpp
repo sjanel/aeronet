@@ -143,7 +143,8 @@ struct DecodedHeaders {
 /// The decoder maintains state (dynamic table) that persists across header blocks.
 class HpackDecoder {
  public:
-  /// Create a decoder with the specified maximum dynamic table size.
+  /// Create a decoder with the specified maximum dynamic table size, also the limit of the Dynamic Table Size Updates
+  /// of the encoder (see setMaxDynamicTableSize()).
   /// The fields of a header list larger than maxHeaderListSize (sum of the sizes of the names and values of its fields,
   /// plus 32 bytes per field, RFC 7541 §4.1) are not stored: its decoding fails with HeaderListTooLarge, without taking
   /// more memory than this limit, whatever the number of references to the dynamic table in its block.
@@ -169,6 +170,8 @@ class HpackDecoder {
       InvalidIndexZeroInIndexedHeaderField,
       IndexOutOfBoundsInIndexedHeaderField,
       FailedToDecodeDynamicTableSizeUpdate,
+      DynamicTableSizeUpdateAboveLimit,
+      DynamicTableSizeUpdateAfterField,
       FailedToDecodeLiteralHeaderIndex,
       FailedToDecodeLiteralHeaderName,
       IndexOutOfBoundsForHeaderName,
@@ -193,8 +196,10 @@ class HpackDecoder {
   /// @return DecodeResult indicating success or failure with the decoded headers
   DecodeResult decode(std::span<const std::byte> data);
 
-  /// Update the maximum dynamic table size (from SETTINGS frame).
-  void setMaxDynamicTableSize(uint32_t maxSize) { _dynamicTable.setMaxSize(maxSize); }
+  /// Set the limit of the dynamic table size (SETTINGS_HEADER_TABLE_SIZE for HTTP/2, once acknowledged by the peer):
+  /// a Dynamic Table Size Update above it is a decoding error (RFC 7541 §6.3). The table is reduced to it if larger,
+  /// while a larger limit is only reached by a size update of the encoder.
+  void setMaxDynamicTableSize(uint32_t maxSize);
 
   /// Get the current dynamic table for inspection.
   [[nodiscard]] const HpackDynamicTable& dynamicTable() const noexcept { return _dynamicTable; }
@@ -255,6 +260,7 @@ class HpackDecoder {
   DecodedHeaders _decodedHeaders;
   vector<DeferredJoin> _deferredJoins;
   uint32_t _maxHeaderListSize;
+  uint32_t _dynamicTableSizeLimit;
   bool _mergeAllowedForUnknownRequestHeaders{true};
 };
 
@@ -295,7 +301,8 @@ class HpackEncoder {
   /// Encode a dynamic table size update.
   void encodeDynamicTableSizeUpdate(RawBytes& output, uint32_t newSize);
 
-  /// Update the maximum dynamic table size (from SETTINGS frame).
+  /// Set the maximum dynamic table size (at most the SETTINGS_HEADER_TABLE_SIZE of the peer for HTTP/2), signaled by a
+  /// Dynamic Table Size Update at the beginning of the next header block, unless it does not change.
   void setMaxDynamicTableSize(uint32_t maxSize);
 
   /// Get the current dynamic table for inspection.
