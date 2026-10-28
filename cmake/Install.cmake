@@ -32,11 +32,6 @@ foreach(_module IN LISTS _aeronet_modules)
   list(APPEND _aeronet_export_targets aeronet_${_module})
   install(DIRECTORY aeronet/${_module}/include/ DESTINATION include)
 endforeach()
-foreach(_headers_target IN ITEMS aeronet_zstd_headers aeronet_brotli_headers)
-  if(TARGET ${_headers_target})
-    list(APPEND _aeronet_export_targets ${_headers_target})
-  endif()
-endforeach()
 
 install(TARGETS ${_aeronet_export_targets}
   EXPORT aeronetTargets
@@ -46,8 +41,9 @@ install(TARGETS ${_aeronet_export_targets}
   INCLUDES DESTINATION include
 )
 
-# The brotli static libraries are exported too, so that the exported aeronet targets have resolvable dependencies.
-if(AERONET_ENABLE_BROTLI)
+# The brotli static libraries built with aeronet are exported too, so that the exported aeronet targets have resolvable
+# dependencies. Those of a brotli package are found by aeronetConfig.cmake instead.
+if(AERONET_ENABLE_BROTLI AND NOT AERONET_BROTLI_PACKAGE)
   foreach(_brotli_target IN ITEMS brotlicommon brotlidec brotlienc)
     if(TARGET ${_brotli_target})
       install(TARGETS ${_brotli_target} EXPORT aeronetTargets ARCHIVE DESTINATION lib LIBRARY DESTINATION lib)

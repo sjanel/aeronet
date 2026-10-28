@@ -24,11 +24,7 @@ endif()
 
 if(AERONET_ENABLE_OPENTELEMETRY)
     # OPENTELEMETRY_VERSION is read from <opentelemetry/version.h> (API headers only).
-    if(TARGET opentelemetry-cpp::api)
-        target_link_libraries(aeronet_version INTERFACE opentelemetry-cpp::api)
-    elseif(TARGET opentelemetry_api)
-        target_link_libraries(aeronet_version INTERFACE opentelemetry_api)
-    endif()
+    target_link_libraries(aeronet_version INTERFACE ${AERONET_OPENTELEMETRY_API_TARGET})
 endif()
 
 AeronetAddUnitTest(

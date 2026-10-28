@@ -24,9 +24,11 @@ else()
     endif()
 endif()
 
-# Map enabled features to CMake options
+# Map enabled features with an external dependency to CMake options. The internal features (HTTP/2, WebSocket, async
+# handlers, ...) add no dependency: they are not passed, so they keep their default (ON).
+# vcpkg feature names are lowercase, and IN_LIST is case-sensitive.
 set(AERONET_FEATURE_OPTS)
-foreach(f OPENSSL SPDLOG BROTLI ZLIB ZSTD WEBSOCKET OPENTELEMETRY GLAZE PROTOBUF)
+foreach(f openssl spdlog brotli zlib zstd opentelemetry glaze protobuf)
     string(TOUPPER ${f} _F)
     if("${f}" IN_LIST FEATURES)
         list(APPEND AERONET_FEATURE_OPTS -D AERONET_ENABLE_${_F}=ON)

@@ -48,10 +48,6 @@ DEPENDENCY_LIBRARY_PATTERNS = [
         "libopentelemetry_exporter_otlp_http_client.a",
         "-lopentelemetry_exporter_otlp_http_client",
     ),
-    (
-        "libopentelemetry_exporter_ostream_metrics.a",
-        "-lopentelemetry_exporter_ostream_metrics",
-    ),
     ("libopentelemetry_http_client_curl.a", "-lopentelemetry_http_client_curl"),
     ("libopentelemetry_otlp_recordable.a", "-lopentelemetry_otlp_recordable"),
     ("libopentelemetry_proto.a", "-lopentelemetry_proto"),
@@ -60,7 +56,6 @@ DEPENDENCY_LIBRARY_PATTERNS = [
     ("libopentelemetry_logs.a", "-lopentelemetry_logs"),
     ("libopentelemetry_common.a", "-lopentelemetry_common"),
     ("libopentelemetry_resources.a", "-lopentelemetry_resources"),
-    ("libopentelemetry_version.a", "-lopentelemetry_version"),
     # Also look for shared object variants (.so) - LLD may require them
     ("libopentelemetry_exporter_otlp.so*", "-lopentelemetry_exporter_otlp"),
     ("libopentelemetry_exporter_otlp_http.so*", "-lopentelemetry_exporter_otlp_http"),

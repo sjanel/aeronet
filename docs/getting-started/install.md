@@ -297,21 +297,15 @@ Then install with:
 VCPKG_OVERLAY_PORTS=./ports vcpkg install --triplet x64-linux
 ```
 
-Enable TLS and specific compression features explicitly (all codecs opt-in except zlib default when top-level):
+The features with a dependency are opt-in: `openssl`, `spdlog`, `brotli`, `zlib` (zlib-ng), `zstd`, `opentelemetry` (opentelemetry-cpp with its OTLP HTTP exporter, see [opentelemetry-cpp ABI](../operations/observability.md#opentelemetry-cpp-abi)), `glaze` and `protobuf`. The features without one (HTTP/2, WebSocket, ...) keep their default (`ON`).
 
 ```bash
-VCPKG_OVERLAY_PORTS=./ports vcpkg install aeronet[tls,zstd,brotli,spdlog] --triplet x64-linux
-```
-
-Feature switches (examples):
-
-```bash
-# Minimal (zlib only)
+# Minimal (no external dependency)
 VCPKG_OVERLAY_PORTS=./ports vcpkg install aeronet --triplet x64-linux
 # Add TLS
-VCPKG_OVERLAY_PORTS=./ports vcpkg install aeronet[tls] --triplet x64-linux
-# Full (TLS + zstd + brotli + spdlog)
-VCPKG_OVERLAY_PORTS=./ports vcpkg install aeronet[tls,zstd,brotli,spdlog] --triplet x64-linux
+VCPKG_OVERLAY_PORTS=./ports vcpkg install aeronet[openssl] --triplet x64-linux
+# TLS, compression, logging and OpenTelemetry
+VCPKG_OVERLAY_PORTS=./ports vcpkg install aeronet[openssl,zlib,zstd,brotli,spdlog,opentelemetry] --triplet x64-linux
 ```
 
 In your CMake project (after integrating vcpkg toolchain):
@@ -321,7 +315,7 @@ find_package(aeronet CONFIG REQUIRED)
 
 add_executable(app main.cpp)
 
-target_link_libraries(app PRIVATE aeronet)
+target_link_libraries(app PRIVATE aeronet::aeronet)
 ```
 
 Shared libraries via vcpkg: use (or create) a dynamic triplet, e.g.:

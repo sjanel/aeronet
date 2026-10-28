@@ -1,8 +1,8 @@
 {
   "name": "amc",
-  "version-string": "2.6.1",
+  "version-string": "2.7.0",
   "description": "Minimal overlay for Amadeus AMC dependency (headers + interface target)",
   "homepage": "https://github.com/AmadeusITGroup/amc",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "supports": "linux"
 }
