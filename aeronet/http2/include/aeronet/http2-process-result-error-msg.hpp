@@ -56,6 +56,7 @@ enum class ErrorMsg : uint8_t {
   SETTINGSTimeout,
   PINGTimeout,
   MaxStreamsPerConnectionReached,
+  ServerDraining,
 };
 
 }

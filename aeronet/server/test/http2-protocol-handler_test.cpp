@@ -6056,6 +6056,58 @@ TEST(Http2ProtocolHandler, PerRouteMaxBodyBytesAllowsSmaller) {
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], ":status"), "201");
 }
 
+// ============== Graceful GOAWAY (drain) Tests ==============
+
+// The GOAWAY of a drain lets the open streams complete: the connection is closed once they are answered, and the
+// streams the client opens meanwhile are ignored. A connection whose client preface was not received yet is closed
+// right away.
+TEST(Http2ProtocolHandler, InitiateGoAwayClosesTheConnectionOnceItsStreamsAreAnswered) {
+  Router router;
+  router.setPath(http::Method::POST, "/upload",
+                 [](const HttpRequestView& req) { return HttpResponse(200, req.body()); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.handler.initiateGoAway();
+  EXPECT_FALSE(loop.handler.hasPendingOutput());
+  EXPECT_TRUE(loop.state.isDrainCloseRequested());
+
+  Http2ProtocolLoopback openLoop(router);
+  openLoop.connect();
+  vector<uint32_t> goAwayLastStreamIds;
+  openLoop.clientSink.onGoAwayFn = [&goAwayLastStreamIds](uint32_t lastStreamId, ErrorCode errorCode,
+                                                          std::string_view debugData) {
+    EXPECT_EQ(errorCode, ErrorCode::NoError);
+    EXPECT_EQ(debugData, "Server Draining");
+    goAwayLastStreamIds.push_back(lastStreamId);
+  };
+  RawChars headers;
+  headers.append(MakeHttp1HeaderLine(":method", "POST"));
+  headers.append(MakeHttp1HeaderLine(":scheme", "https"));
+  headers.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  headers.append(MakeHttp1HeaderLine(":path", "/upload"));
+  ASSERT_EQ(openLoop.client.sendHeaders(1, http::StatusCode{}, HeadersView(headers), false), ErrorCode::NoError);
+  openLoop.pumpClientToServer();
+
+  openLoop.handler.initiateGoAway();
+  openLoop.handler.initiateGoAway();
+  EXPECT_FALSE(openLoop.state.isDrainCloseRequested());
+
+  // A stream opened by the client before receiving the GOAWAY is ignored.
+  RawChars getHeaders = MakeGetHeaders("/upload");
+  ASSERT_EQ(openLoop.client.sendHeaders(3, http::StatusCode{}, HeadersView(getHeaders), true), ErrorCode::NoError);
+  openLoop.pumpServerToClient();
+  EXPECT_EQ(goAwayLastStreamIds, vector<uint32_t>{1});
+  const std::array body{std::byte{'d'}, std::byte{'a'}, std::byte{'t'}, std::byte{'a'}};
+  ASSERT_EQ(openLoop.client.sendData(1, body, true), ErrorCode::NoError);
+  openLoop.pumpClientToServer();
+  openLoop.pumpServerToClient();
+  ASSERT_EQ(openLoop.clientHeaders.size(), 1U);
+  EXPECT_EQ(openLoop.clientHeaders[0].streamId, 1U);
+  EXPECT_EQ(GetHeaderValue(openLoop.clientHeaders[0], ":status"), "200");
+  EXPECT_EQ(openLoop.receivedData(1), "data");
+  EXPECT_TRUE(openLoop.state.isDrainCloseRequested());
+}
+
 // ============== Per-route requestTimeout / sweepStreams Tests ==============
 
 TEST(Http2ProtocolHandler, SweepStreamsOnEmptyStreamsIsNoOp) {

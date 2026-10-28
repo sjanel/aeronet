@@ -42,6 +42,7 @@
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/http2-process-result-error-msg-strings.hpp"
+#include "aeronet/http2-process-result-error-msg.hpp"
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/https-redirect.hpp"
 #include "aeronet/internal/http-response-access.hpp"
@@ -1570,6 +1571,18 @@ void Http2ProtocolHandler::onRequestCompleted(HttpRequestView& request, http::St
   ++_pCtx->stats.totalRequestsServed;
   if (_pCtx->callbacks.metrics || _pCtx->accessLog) {
     _pCtx->emitRequestMetrics(request, status);
+  }
+}
+
+void Http2ProtocolHandler::initiateGoAway() {
+  // Before the client preface, the connection has no stream, and a GOAWAY would make the preface be read as frames.
+  if (_connection.state() == ConnectionState::AwaitingPreface) {
+    _pConnectionState->requestDrainAndClose();
+    return;
+  }
+  _connection.initiateGoAway(ErrorCode::NoError, ErrorMsg::ServerDraining);
+  if (_connection.goAwayCompleted()) {
+    _pConnectionState->requestDrainAndClose();
   }
 }
 
