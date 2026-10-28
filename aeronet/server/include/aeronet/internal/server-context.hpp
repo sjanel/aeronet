@@ -101,9 +101,7 @@ struct ServerContext {
   ~ServerContext();
 
   // The steps of the request pipeline shared by HTTP/1.1 and HTTP/2.
-  [[nodiscard]] RequestPipeline requestPipeline() noexcept {
-    return {router, telemetry, callbacks.middlewareMetrics, sharedBuffers.buf};
-  }
+  [[nodiscard]] RequestPipeline requestPipeline() noexcept { return {router, telemetry, callbacks.middlewareMetrics}; }
 
   // Bytes written to all the connections so far, counted toward the fairness budget of the events that wrote them.
   [[nodiscard]] uint64_t totalBytesWritten() const noexcept {

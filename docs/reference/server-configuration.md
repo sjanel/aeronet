@@ -54,7 +54,7 @@ config.withPort(8080)
 | `maxPerEventReadBytes` / `withMaxPerEventReadBytes()` | 128 KiB | Fairness budget per connection event: bytes read plus bytes written while serving them. Raise for few large uploads or downloads; lower for latency across many connections. Each read is at most the read size of the connection (see `minReadChunkBytes`); `std::numeric_limits<uint32_t>::max()` approximates no limit. |
 | `zerocopyMode` / `withZerocopyMode()` | Opportunistic | `MSG_ZEROCOPY` policy for the large response writes of plaintext HTTP/1.1 connections; Linux-specific. `Opportunistic` skips loopback peers and stops on a connection once the kernel reports copied sends; `Enabled` uses it for every connection. See [MSG_ZEROCOPY](../operations/performance.md#msg_zerocopy). |
 | `zerocopyMinBytes` / `withZerocopyMinBytes()` | 128 KiB | Minimum write size for `MSG_ZEROCOPY` (cannot be `0`). |
-| `globalHeaders` / `withGlobalHeaders()` / `addGlobalHeader()` | `server: aeronet` | Headers added unless the response already supplies that header. Maximum 256 entries. |
+| `globalHeaders` / `withGlobalHeaders()` / `addGlobalHeader()` | `server: aeronet` | Headers added unless the response already supplies that header. Maximum 256 entries. The [reserved headers](../guides/responses.md#reserved-headers) and `location` are rejected by `validate()`. |
 
 ## HTTPS redirects and CONNECT
 

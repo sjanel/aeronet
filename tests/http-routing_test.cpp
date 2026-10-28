@@ -270,6 +270,54 @@ TEST_F(HttpTrailingSlash, RedirectLocationIsReEncoded) {
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
 }
 
+// The Location header is built from the percent-decoded path: whitespace at its end (the target of the redirect, so
+// right before the added slash or at the end of the path with the removed slash) must be encoded too.
+TEST_F(HttpTrailingSlash, RedirectLocationEncodesTrailingWhitespace) {
+  setTrailingSlash(RouterConfig::TrailingSlashPolicy::Redirect);
+  ts.router().setPath(http::Method::GET, "/users/{id}", [](const HttpRequestView&) { return HttpResponse("user"); });
+  ts.router().setPath(http::Method::GET, "/dirs/{id}/", [](const HttpRequestView&) { return HttpResponse("dir"); });
+
+  for (std::string_view encodedChar : {"%20", "%09"}) {
+    SCOPED_TRACE(encodedChar);
+
+    auto resp = rawRequest(ts.port(), std::string("/dirs/a").append(encodedChar));
+    ASSERT_TRUE(resp.starts_with("HTTP/1.1 301")) << resp;
+    EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Location, std::string("/dirs/a").append(encodedChar) + "/")))
+        << resp;
+
+    resp = rawRequest(ts.port(), std::string("/users/a").append(encodedChar) + "/");
+    ASSERT_TRUE(resp.starts_with("HTTP/1.1 301")) << resp;
+    EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Location, std::string("/users/a").append(encodedChar))))
+        << resp;
+  }
+
+  // Server still serving.
+  auto resp = rawRequest(ts.port(), "/users/a");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+}
+
+// A long path: the response is made with the exact capacity of its Location header.
+TEST_F(HttpTrailingSlash, RedirectLocationOfLongPath) {
+  setTrailingSlash(RouterConfig::TrailingSlashPolicy::Redirect);
+  ts.router().setPath(http::Method::GET, "/dirs/{id}/", [](const HttpRequestView&) { return HttpResponse("dir"); });
+  ts.router().setPath(http::Method::GET, "/users/{id}", [](const HttpRequestView&) { return HttpResponse("user"); });
+
+  static constexpr std::size_t kNbEncodedChars = 1000;
+
+  std::string encoded;
+  for (std::size_t pos = 0; pos < kNbEncodedChars; ++pos) {
+    encoded.append(pos % 2 == 0 ? "%20" : "%C3%A9");
+  }
+
+  auto resp = rawRequest(ts.port(), "/dirs/" + encoded);
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 301")) << resp;
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Location, "/dirs/" + encoded + "/"))) << resp;
+
+  resp = rawRequest(ts.port(), "/users/" + encoded + "/");
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 301")) << resp;
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Location, "/users/" + encoded))) << resp;
+}
+
 TEST_F(HttpTrailingSlash, RootPathNotRedirected) {
   setTrailingSlash(RouterConfig::TrailingSlashPolicy::Redirect);
   auto resp = rawRequest(ts.port(), "/");  // no handlers => 404 but not 301

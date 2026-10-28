@@ -47,6 +47,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/internal/http-response-access.hpp"
 #include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/telemetry-config.hpp"
@@ -2055,6 +2056,96 @@ TEST_F(HttpRequestViewTest, MakeResponseAdditionalCapacityStatusCodeOnly) {
 
   // Check that global headers are present
   EXPECT_TRUE(resp.hasHeader("server"));
+  EXPECT_EQ(resp.headerValueOrEmpty("server"), "aeronet");
+}
+
+TEST_F(HttpRequestViewTest, HeaderAddLocationUnchecked) {
+  ASSERT_EQ(reqSet(BuildRaw("GET", "/test", "HTTP/1.1")), http::StatusCodeOK);
+
+  struct Case {
+    std::string_view location;
+    bool addSlash;
+    std::string_view expected;
+  };
+
+  static constexpr std::string_view kBody = "Redirecting";
+
+  // The location is a raw (percent-decoded) target: only its encoded form is written, so the header value is trimmed
+  // and valid whatever the target.
+  static constexpr Case kCases[] = {
+      {"/foo", false, "/foo"},
+      {"/foo", true, "/foo/"},
+      {"", true, "/"},
+      {"/a ", false, "/a%20"},
+      {"/a ", true, "/a%20/"},
+      {"/a\t", true, "/a%09/"},
+      {" /a", false, "%20/a"},
+      {"\t/a ", true, "%09/a%20/"},
+      {"/a\r\nSet-Cookie: x=1", false, "/a%0D%0ASet-Cookie:%20x=1"},
+      {"/100%/b?c#d", true, "/100%25/b%3Fc%23d/"},
+      {"/caf\xC3\xA9", false, "/caf%C3%A9"},
+      {"/a:b@c!$&'()*+,;=~._-", true, "/a:b@c!$&'()*+,;=~._-/"},
+  };
+
+  for (const auto& [location, addSlash, expected] : kCases) {
+    SCOPED_TRACE(expected);
+
+    const std::size_t locationHeaderSize = internal::HttpResponseAccess::LocationHeaderSize(location, addSlash);
+    EXPECT_EQ(locationHeaderSize, http::HeaderSize(http::Location.size(), expected.size()));
+
+    HttpResponse resp =
+        req.makeResponse(HttpResponse::BodySize(kBody.size()) + locationHeaderSize, http::StatusCodeMovedPermanently);
+    const std::size_t capacity = resp.capacityInlined();
+
+    internal::HttpResponseAccess::HeaderAddLocationUnchecked(resp, location, addSlash);
+    resp.body(kBody);
+
+    // The reserved capacity was exactly the needed one: nothing reallocated.
+    EXPECT_EQ(resp.capacityInlined(), capacity);
+    EXPECT_EQ(resp.status(), http::StatusCodeMovedPermanently);
+    EXPECT_TRUE(resp.hasHeader(http::Location));
+    EXPECT_EQ(resp.headerValueOrEmpty(http::Location), expected);
+    EXPECT_EQ(resp.bodyInMemory(), kBody);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), http::ContentTypeTextPlain);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), "11");
+    EXPECT_EQ(resp.headerValueOrEmpty("server"), "aeronet");
+  }
+}
+
+TEST_F(HttpRequestViewTest, HeaderAddLocationUncheckedLargeLocation) {
+  ASSERT_EQ(reqSet(BuildRaw("GET", "/test", "HTTP/1.1")), http::StatusCodeOK);
+
+  static constexpr std::size_t kNbChars = 64UL * 1024UL;
+  static constexpr std::string_view kBody = "Redirecting";
+
+  // One char out of three has to be encoded.
+  std::string location(kNbChars, 'x');
+  std::string expected;
+  for (std::size_t pos = 0; pos < kNbChars; pos += 3UL) {
+    location[pos] = ' ';
+  }
+  for (char ch : location) {
+    if (ch == ' ') {
+      expected.append("%20");
+    } else {
+      expected.push_back(ch);
+    }
+  }
+  expected.push_back('/');
+
+  const std::size_t locationHeaderSize = internal::HttpResponseAccess::LocationHeaderSize(location, true);
+  EXPECT_EQ(locationHeaderSize, http::HeaderSize(http::Location.size(), expected.size()));
+
+  HttpResponse resp =
+      req.makeResponse(HttpResponse::BodySize(kBody.size()) + locationHeaderSize, http::StatusCodeMovedPermanently);
+  const std::size_t capacity = resp.capacityInlined();
+
+  internal::HttpResponseAccess::HeaderAddLocationUnchecked(resp, location, true);
+  resp.body(kBody);
+
+  EXPECT_EQ(resp.capacityInlined(), capacity);
+  EXPECT_EQ(resp.headerValueOrEmpty(http::Location), expected);
+  EXPECT_EQ(resp.bodyInMemory(), kBody);
   EXPECT_EQ(resp.headerValueOrEmpty("server"), "aeronet");
 }
 

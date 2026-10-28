@@ -613,18 +613,18 @@ void HttpMessage::headerAddLineUnchecked(LowerAsciiKey key, std::string_view val
 
   HeadGrowthManager headGrowthManager(*this, static_cast<int64_t>(headerLineSize));
 
-  char* pData = _data.data() + bodyStartPos() - http::DoubleCRLF.size();
-
-  if (!hasBodyHeaders) {
-    CopyFixed<http::DoubleCRLF>(pData + headerLineSize);
-  } else {
+  char* pData;
+  if (hasBodyHeaders) {
     // We want to keep Content-Type and Content-Length together with the body (we use this property for optimization)
     // so we insert new headers before them. Of course, this code has a runtime cost, but it should be discouraged to
     // add headers after setting the body, so we can consider this as a 'slow' path.
-    pData = getContentTypeHeaderLinePtr();
+    pData = getContentTypeHeaderLinePtr() + http::CRLF.size();
     std::memmove(pData + headerLineSize, pData, static_cast<std::size_t>(_data.end() - pData));
+  } else {
+    pData = _data.data() + bodyStartPos() - http::CRLF.size();
+    CopyFixed<http::CRLF>(pData + headerLineSize);
   }
-  WriteCRLFHeader(key, value, pData);
+  WriteHeaderCRLF(key, value, pData);
 
   _data.addSize(headerLineSize);
 
