@@ -102,6 +102,7 @@ inline constexpr uint8_t ContinuationEndHeaders = 0x04;  // END_HEADERS: end of 
 
 // HTTP/2 Default Values (RFC 9113 §6.5.2)
 // =======================================
+inline constexpr uint32_t kDefaultHeaderTableSize = 4096;
 inline constexpr uint32_t kDefaultInitialWindowSize = 65535;
 
 inline constexpr uint32_t kMaxWindowSize = (1U << 31U) - 1U;  // Maximum flow control window size (RFC 9113 §6.9.1)
