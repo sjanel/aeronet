@@ -902,6 +902,16 @@ class HttpResponse final : public HttpMessage {
     return static_cast<uint32_t>(headersStartPos() - http::HeaderSize(http::Date.size(), RFC7231DateStrLen));
   }
 
+  // Size of the line added by headerAddLocationUnchecked(): a Location header with the percent-encoded 'location',
+  // followed by a '/' if 'addSlash'.
+  [[nodiscard]] static std::size_t LocationHeaderSize(std::string_view location, bool addSlash);
+
+  // Adds a Location header with the percent-encoded 'location', followed by a '/' if 'addSlash'. 'location' is the raw
+  // (percent-decoded) target: only its encoded form is written, so it needs no trimming nor validation.
+  // The response must be freshly made, without body nor Location header, and its capacity must be large enough
+  // for LocationHeaderSize(location, addSlash) more bytes: nothing is checked.
+  void headerAddLocationUnchecked(std::string_view location, bool addSlash);
+
   // IMPORTANT: This method finalizes the response by appending reserved headers,
   // and returns the internal buffers stolen from this HttpMessage instance.
   // So this instance must not be used anymore after this call.
