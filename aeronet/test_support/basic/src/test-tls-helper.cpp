@@ -195,11 +195,15 @@ std::pair<std::string, std::string> MakeEphemeralCertKey(const char* pCommonName
   if (pX509 == nullptr) {
     return {"", ""};
   }
+  X509_set_version(pX509, 2);  // v3, for the extensions
   ASN1_INTEGER_set(X509_get_serialNumber(pX509), 1);
   X509_gmtime_adj(X509_get_notBefore(pX509), 0);
   X509_gmtime_adj(X509_get_notAfter(pX509), validSeconds);
   X509_set_pubkey(pX509, pkey.get());
   SetNames(pX509, {{"C", "XX"}, {"O", "AeronetTest"}, {"CN", pCommonName}}, nullptr);
+  // Since OpenSSL 4.1, host name verification ignores the subject CN: the name must be a subject alternative name.
+  const std::string san = std::string("DNS:") + pCommonName;
+  AddExtension(pX509, pX509, NID_subject_alt_name, san.c_str());
   if (X509_sign(pX509, pkey.get(), EVP_sha256()) <= 0) {
     return {"", ""};
   }

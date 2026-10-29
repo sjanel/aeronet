@@ -368,6 +368,24 @@ const std::string_view kLongTargetRequestLines[]{
     "GET /images/products/2024/summer-collection/linen-shirt-white-front-1200x1600.webp HTTP/1.1\r\n",
 };
 
+// Absolute-form request-targets (RFC 9112 §3.2.2), and the same requests in origin-form to compare with: the authority
+// is moved in front of the path, then the path and query are decoded, like the ones of an origin-form.
+const std::string_view kAbsoluteFormRequestLines[]{
+    "GET http://example.com/ HTTP/1.1\r\n",
+    "GET http://example.com HTTP/1.1\r\n",
+    "GET http://example.com/some-path HTTP/1.1\r\n",
+    "GET http://example.com/some-path?query=param&another=one HTTP/1.1\r\n",
+    "POST http://user@api.example.com:8443/this-is-a-very-long-path HTTP/1.1\r\n",
+};
+
+const std::string_view kOriginFormTwinRequestLines[]{
+    "GET / HTTP/1.1\r\n",
+    "GET / HTTP/1.1\r\n",
+    "GET /some-path HTTP/1.1\r\n",
+    "GET /some-path?query=param&another=one HTTP/1.1\r\n",
+    "POST /this-is-a-very-long-path HTTP/1.1\r\n",
+};
+
 #define DEFINE_PRODUCTION_PARSE_BENCH(BenchName, RequestLines, HeaderSetFn)                                           \
   void BenchName(benchmark::State& state) {                                                                           \
     std::vector<std::string> requestLines;                                                                            \
@@ -403,6 +421,10 @@ DEFINE_PRODUCTION_PARSE_BENCH(ProductionParse_short_name_headers, kRequestLines,
 DEFINE_PRODUCTION_PARSE_BENCH(ProductionParse_typical_browser_headers, kRequestLines, TypicalBrowserHeaders);
 DEFINE_PRODUCTION_PARSE_BENCH(ProductionParse_api_proxy_headers, kRequestLines, ApiProxyHeaders);
 DEFINE_PRODUCTION_PARSE_BENCH(ProductionParse_long_targets_minimal_requests, kLongTargetRequestLines,
+                              MinimalRequestHeaders);
+DEFINE_PRODUCTION_PARSE_BENCH(ProductionParse_absolute_form_minimal_requests, kAbsoluteFormRequestLines,
+                              MinimalRequestHeaders);
+DEFINE_PRODUCTION_PARSE_BENCH(ProductionParse_origin_form_twin_minimal_requests, kOriginFormTwinRequestLines,
                               MinimalRequestHeaders);
 
 }  // namespace aeronet::http

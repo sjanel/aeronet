@@ -764,7 +764,7 @@ RequestDecompressionResult HttpCodec::MaybeDecompressRequestBody(DecompressionSt
     return {};
   }
 
-  auto& headersMap = request._headers;
+  SvToSvMap& headersMap = request._headers;
   const auto encodingHeaderIt = headersMap.find(http::ContentEncoding);
   if (encodingHeaderIt == headersMap.end()) {
     return {};

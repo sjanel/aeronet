@@ -167,13 +167,15 @@ class HttpRequestViewTest : public ::testing::Test {
     http::Method method{http::Method::GET};
     http::Version version;
     std::string path;
+    std::string authority;
     std::vector<std::pair<std::string, std::string>> queryParams;
     std::vector<std::pair<std::string, std::string>> headers;
     std::size_t headSpanSize{};
   };
 
   [[nodiscard]] HeadSnapshot snapshot() const {
-    HeadSnapshot ret{req.method(), req.version(), std::string(req.path()), {}, {}, req.headSpanSize()};
+    HeadSnapshot ret{req.method(), req.version(),     std::string(req.path()), std::string(req.authority()), {},
+                     {},           req.headSpanSize()};
     for (const auto& [key, value] : req.queryParamsRange()) {
       ret.queryParams.emplace_back(key, value);
     }
@@ -208,6 +210,7 @@ class HttpRequestViewTest : public ::testing::Test {
     static inline int64_t lastDurationUs = -1;
     static inline bool ended = false;
     static inline bool sawHttpHost = false;
+    static inline std::string lastHttpHost;
 
     void setAttribute(std::string_view key, int64_t val) noexcept override {
       if (key == "http.status_code") {
@@ -217,9 +220,10 @@ class HttpRequestViewTest : public ::testing::Test {
       }
     }
 
-    void setAttribute(std::string_view key, [[maybe_unused]] std::string_view val) noexcept override {
+    void setAttribute(std::string_view key, std::string_view val) noexcept override {
       if (key == "http.host") {
         sawHttpHost = true;
+        lastHttpHost.assign(val);
       }
     }
 
@@ -529,6 +533,22 @@ TEST_F(HttpRequestViewTest, PinHead_SecondCallIsNoop) {
   EXPECT_EQ(val1, val2);
 }
 
+TEST_F(HttpRequestViewTest, PinHead_AbsoluteFormKeepsItsHost) {
+  ASSERT_EQ(reqSet(BuildRaw("GET", "http://example.com:81/p?x=1", "HTTP/1.1", "X-Test: v\r\n")), http::StatusCodeOK);
+  const HeadSnapshot expected = snapshot();
+
+  callPinHeadStorage();
+  // The connection buffer is reused for other requests while the async handler is suspended.
+  std::ranges::fill(inBuffer, 'X');
+
+  EXPECT_EQ(snapshot(), expected);
+  EXPECT_EQ(req.path(), "/p");
+  EXPECT_EQ(req.authority(), "example.com:81");
+  EXPECT_EQ(req.headerValueOrEmpty("host"), "example.com:81");
+  EXPECT_EQ(req.queryParamValueOrEmpty("x"), "1");
+  EXPECT_EQ(req.headerValueOrEmpty("x-test"), "v");
+}
+
 TEST_F(HttpRequestViewTest, HasMoreBodyWhileAsyncHandlerWaitsForBody) {
   // Without body bridge nor async handler, there is no more body.
   EXPECT_FALSE(req.hasMoreBody());
@@ -762,6 +782,85 @@ TEST_F(HttpRequestViewTest, RequestTargetForms) {
   EXPECT_EQ(reqSet(BuildRaw("GET", "Z09azAZ://a/b")), http::StatusCodeOK);
 }
 
+// RFC 9112 §3.2.2: a server accepts the absolute-form, and takes the host from the request-target (§3.3), ignoring
+// Host.
+TEST_F(HttpRequestViewTest, AbsoluteFormTakesTheHostFromTheTarget) {
+  struct Case {
+    std::string_view target;
+    std::string_view authority;
+    std::string_view path;
+    std::string_view queryX;
+  };
+  static constexpr Case kCases[] = {
+      {"http://example.com:8080/onlyget?x=1&y=2", "example.com:8080", "/onlyget", "1"},
+      {"http://h/onlyget", "h", "/onlyget", ""},
+      {"http://h", "h", "/", ""},  // an empty path stands for "/" (RFC 9110 §4.2.3)
+      {"http://h?x=1", "h", "/", "1"},
+      {"http://h/", "h", "/", ""},
+      {"http://h:80/a%2Fb/%41?x=a%20b+c", "h:80", "/a/b/A", "a b c"},
+      {"HTTP://Mixed.Example/Path", "Mixed.Example", "/Path", ""},  // the host is kept as is
+      {"http://user:pw@host:8080/p?x=1", "host:8080", "/p", "1"},   // the userinfo is not part of the host
+      {"http://@h/p", "h", "/p", ""},
+      {"http://[::1]:8080/p", "[::1]:8080", "/p", ""},
+      {"http://h/p?x=http://other/z", "h", "/p", "http://other/z"},
+      {"coap+tcp.x-y://a/b", "a", "/b", ""},
+      {"h://a/a/very/long/path/with/many/segments?x=1&y=2&z=3", "a", "/a/very/long/path/with/many/segments", "1"},
+      {"http://a-very-long-host-name.example.com:12345/p", "a-very-long-host-name.example.com:12345", "/p", ""},
+  };
+  for (const Case& testCase : kCases) {
+    SCOPED_TRACE(testCase.target);
+    ASSERT_EQ(reqSet(BuildRaw("GET", testCase.target)), http::StatusCodeOK);  // with a "Host: h" header
+    EXPECT_EQ(req.path(), testCase.path);
+    EXPECT_EQ(req.authority(), testCase.authority);
+    EXPECT_EQ(req.headerValueOrEmpty("host"), testCase.authority);
+    EXPECT_EQ(req.queryParamValueOrEmpty("x"), testCase.queryX);
+    EXPECT_EQ(req.method(), http::Method::GET);
+    EXPECT_EQ(req.version(), http::HTTP_1_1);
+  }
+
+  // The next request of the connection, in origin-form, takes its host from Host.
+  ASSERT_EQ(reqSet(BuildRaw("GET", "/plain?x=2")), http::StatusCodeOK);
+  EXPECT_EQ(req.path(), "/plain");
+  EXPECT_TRUE(req.authority().empty());
+  EXPECT_EQ(req.headerValueOrEmpty("host"), "h");
+  EXPECT_EQ(req.queryParamValueOrEmpty("x"), "2");
+}
+
+TEST_F(HttpRequestViewTest, AbsoluteFormMalformedTargetIsRejected) {
+  for (const std::string_view target :
+       {"http:", "http:/p", "http:p", "mailto:a@b", "http://", "http://?x=1", "http:///p", "http://@/p", "http://u@/p",
+        "http://a@b@c/p", "http://h#f", "http://h#f/p", "http://\x01h/p", "http://u\x7F@h/p", "http://h\x1F/p"}) {
+    SCOPED_TRACE(target);
+    EXPECT_EQ(reqSet(BuildRaw("GET", target)), http::StatusCodeBadRequest);
+  }
+  // CONNECT keeps its authority-form, whatever the target looks like.
+  EXPECT_EQ(reqSet(BuildRaw("CONNECT", "http://h/p")), http::StatusCodeOK);
+  EXPECT_EQ(req.path(), "http://h/p");
+  EXPECT_TRUE(req.authority().empty());
+}
+
+// The Host header field is required for HTTP/1.1 and not repeated, whatever the target, but the host comes from the
+// absolute-form target (RFC 9112 §3.2.2, §3.3).
+TEST_F(HttpRequestViewTest, AbsoluteFormHostHeaderField) {
+  EXPECT_EQ(reqSet(RawChars("GET http://a/p HTTP/1.1\r\nX-Header: value\r\n\r\n")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(RawChars("GET http://a/p HTTP/1.1\r\nHost: b\r\nHost: c\r\n\r\n")), http::StatusCodeBadRequest);
+
+  ASSERT_EQ(reqSet(RawChars("GET http://a:1/p HTTP/1.1\r\nHost:\r\n\r\n")), http::StatusCodeOK);  // empty Host
+  EXPECT_EQ(req.headerValueOrEmpty("host"), "a:1");
+
+  ASSERT_EQ(reqSet(RawChars("GET http://a:1/p HTTP/1.0\r\nX-Header: value\r\n\r\n")), http::StatusCodeOK);
+  EXPECT_EQ(req.headerValueOrEmpty("host"), "a:1");
+  EXPECT_EQ(req.authority(), "a:1");
+  EXPECT_EQ(req.headerValueOrEmpty("x-header"), "value");
+  EXPECT_EQ(req.headers().size(), 2U);
+}
+
+TEST_F(HttpRequestViewTest, AbsoluteFormHostIsInTheTraceSpan) {
+  ASSERT_EQ(reqSetWithSpan(BuildRaw("GET", "http://example.com:81/p"), std::make_unique<FakeSpan>()),
+            http::StatusCodeOK);
+  EXPECT_EQ(FakeSpan::lastHttpHost, "example.com:81");
+}
+
 // Control characters are never valid in a request-target, whatever its form.
 TEST_F(HttpRequestViewTest, ControlCharactersInRequestTargetAreRejected) {
   for (int ch = 0; ch < 0x20; ++ch) {
@@ -890,6 +989,67 @@ TEST_F(HttpRequestViewTest, HeadWaitingForBodyIsNotParsedAgain) {
   keepHeadForBody();
   resumeHeadWaitingForBody();
   EXPECT_EQ(snapshot(), expected);
+}
+
+// The authority of an absolute-form request-target is kept while the head is received in several parts, and moves with
+// the buffer.
+TEST_F(HttpRequestViewTest, AbsoluteFormHeadReceivedInSeveralPartsIsParsedOnce) {
+  static constexpr std::string_view kHead =
+      "GET http://user@example.com:8080/a%2Fb?k=v%20w&flag HTTP/1.1\r\n"
+      "Host: ignored\r\n"
+      "X-Dup: v1\r\n"
+      "X-Dup: v2\r\n"
+      "\r\n";
+  ASSERT_EQ(reqSet(RawChars(kHead)), http::StatusCodeOK);
+  const HeadSnapshot expected = snapshot();
+  EXPECT_EQ(expected.path, "/a/b");
+  EXPECT_EQ(expected.authority, "example.com:8080");
+  EXPECT_EQ(req.headerValueOrEmpty("host"), "example.com:8080");
+  EXPECT_EQ(req.queryParamValueOrEmpty("k"), "v w");
+
+  for (std::size_t cut = http::kHttpReqLineMinLen; cut < kHead.size(); ++cut) {
+    SCOPED_TRACE(cut);
+    inBuffer.clear();
+    ASSERT_EQ(receiveAndParse(kHead.substr(0, cut)), kNeedMoreData);
+    ASSERT_EQ(receiveAndParse(kHead.substr(cut)), http::StatusCodeOK);
+    EXPECT_EQ(snapshot(), expected);
+  }
+
+  // One byte at a time, the buffer moving each time.
+  inBuffer.clear();
+  receive(kHead.substr(0, http::kHttpReqLineMinLen - 1));
+  for (std::size_t pos = http::kHttpReqLineMinLen - 1; pos + 1 < kHead.size(); ++pos) {
+    ASSERT_EQ(receiveAndParse(kHead.substr(pos, 1)), kNeedMoreData) << pos;
+  }
+  ASSERT_EQ(receiveAndParse(kHead.substr(kHead.size() - 1)), http::StatusCodeOK);
+  EXPECT_EQ(snapshot(), expected);
+
+  // The next request on the connection, in origin-form, is parsed from its start.
+  inBuffer.clear();
+  ASSERT_EQ(receiveAndParse("GET /next HTTP/1.1\r\nHost: next\r\n\r\n"), http::StatusCodeOK);
+  EXPECT_EQ(req.path(), "/next");
+  EXPECT_TRUE(req.authority().empty());
+  EXPECT_EQ(req.headerValueOrEmpty("host"), "next");
+}
+
+TEST_F(HttpRequestViewTest, AbsoluteFormHeadWaitingForBodyIsNotParsedAgain) {
+  static constexpr std::string_view kPostHead =
+      "POST http://h.example:81/upload?id=7 HTTP/1.1\r\nHost: x\r\nContent-Length: 12\r\n\r\n";
+  inBuffer.clear();
+  ASSERT_EQ(receiveAndParse(std::string(kPostHead) + "partial"), http::StatusCodeOK);
+  const HeadSnapshot expected = snapshot();
+  EXPECT_EQ(expected.authority, "h.example:81");
+  keepHeadForBody();
+
+  // The rest of the body moves the buffer: the request is resumed without parsing its head again.
+  receive(" body");
+  resumeHeadWaitingForBody();
+  EXPECT_EQ(snapshot(), expected);
+  EXPECT_EQ(req.path(), "/upload");
+  EXPECT_EQ(req.authority(), "h.example:81");
+  EXPECT_EQ(req.headerValueOrEmpty("host"), "h.example:81");
+  EXPECT_EQ(req.queryParamValueOrEmpty("id"), "7");
+  EXPECT_EQ(std::string_view(inBuffer).substr(req.headSpanSize()), "partial body");
 }
 
 TEST_F(HttpRequestViewTest, Http11WithoutHostShouldBeRejected) {
