@@ -19,6 +19,7 @@
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/internal/is-path-safe.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/search-crlf.hpp"
@@ -26,6 +27,7 @@
 #include "aeronet/string-trim.hpp"
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
+#include "aeronet/url-encode.hpp"
 
 #ifndef NDEBUG
 #include "aeronet/timestring.hpp"
@@ -37,6 +39,10 @@ namespace {
 
 // Date header will always be present at headersStartPos.
 constexpr std::size_t kDateHeaderLenWithCRLF = http::HeaderSize(http::Date.size(), RFC7231DateStrLen);
+
+// Captureless lambda (not the function name): the template monomorphizes on its unique closure type, so the per-char
+// predicate inlines into the encode loop instead of becoming an indirect call through a function pointer.
+constexpr auto kIsPathSafe = [](char ch) { return internal::IsPathSafe(ch); };
 
 constexpr void InitData(char* data) {
   data[http::HTTP10Sv.size()] = ' ';          // SP after the HTTP version
@@ -207,6 +213,35 @@ HttpMessageData HttpResponse::finalizeForHttp1(const char* cachedDateHeader, htt
   HttpMessage::finalizeForHttp1(version, opts, pGlobalHeaders, minCapturedBodySize);
 
   return releaseMessageData();
+}
+
+std::size_t HttpResponse::LocationHeaderSize(std::string_view location, bool addSlash) {
+  return http::HeaderSize(http::Location.size(),
+                          URLEncodedSize(location, kIsPathSafe) + static_cast<std::size_t>(addSlash));
+}
+
+void HttpResponse::headerAddLocationUnchecked(std::string_view location, bool addSlash) {
+  assert(!_opts.hasEmbeddedPayload());
+  assert(!hasBodyHeaders());
+  assert(!hasHeader(http::Location));  // not a global header (see Validate of the global headers)
+  assert(_data.size() == bodyStartPos());
+  assert(_data.availableCapacity() >= LocationHeaderSize(location, addSlash));
+
+  // The CRLF that ends the last header line (the first of the final CRLFCRLF) starts the new line, like in
+  // headerAddLineUnchecked.
+  char* pData = _data.data() + bodyStartPos() - http::CRLF.size();
+
+  pData = AppendFixed<http::Location>(pData);
+  pData = AppendFixed<http::HeaderSep>(pData);
+
+  pData = URLEncode(location, kIsPathSafe, pData);
+  if (addSlash) {
+    *pData++ = '/';
+  }
+
+  pData = AppendFixed<http::DoubleCRLF>(pData);
+
+  setBodyStartPosAndDataEnd(pData);
 }
 
 }  // namespace aeronet

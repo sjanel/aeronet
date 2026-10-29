@@ -43,6 +43,13 @@ void Validate(const ConcatenatedHeaders& headers, HeaderType type) {
       if (http::IsReservedResponseHeader(headerName)) {
         throw std::invalid_argument(std::format("attempt to set reserved header: '{}'", std::string_view(headerName)));
       }
+      // Not reserved (a handler sets it with HttpResponse::location()), but specific to each response: a global one
+      // would be on every response, and duplicated (the global first, which clients follow) in the redirects that the
+      // server builds itself on a response starting with the global headers.
+      if (headerName == http::Location) {
+        throw std::invalid_argument(
+            "attempt to set location as a global header: its value is specific to each response");
+      }
     } else {
       assert(type == HeaderType::Request);
       if (http::IsReservedOrForbiddenRequestHeader(headerName)) {

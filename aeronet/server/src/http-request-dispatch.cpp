@@ -1,7 +1,6 @@
 #include "aeronet/http-request-dispatch.hpp"
 
 #include <cassert>
-#include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <span>
@@ -20,7 +19,6 @@
 #include "aeronet/log.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/path-handlers.hpp"
-#include "aeronet/raw-chars.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/tracing/tracer.hpp"
 
@@ -90,9 +88,9 @@ HttpResponse ProcessSpecialMethods(const HttpRequestView& request, Router& route
       return result;
     }
 
-    const auto routeMethods = router.allowedMethods(request.path());
+    const http::MethodBmp routeMethods = router.allowedMethods(request.path());
     if (pCorsPolicy != nullptr) {
-      auto preflight = pCorsPolicy->handlePreflight(request, routeMethods);
+      CorsPolicy::PreflightResult preflight = pCorsPolicy->handlePreflight(request, routeMethods);
       switch (preflight.status) {
         case CorsPolicy::PreflightResult::Status::Allowed:
           result = std::move(preflight.response);
@@ -141,8 +139,7 @@ HttpResponse ProcessSpecialMethods(const HttpRequestView& request, Router& route
     }
 
     // TRACE disabled or no request data -> Method Not Allowed
-    result = request.makeResponse(http::StatusCodeMethodNotAllowed);
-    result.body(http::ReasonMethodNotAllowed);
+    result = request.makeResponse(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed);
   }
   return result;
 }
@@ -198,8 +195,8 @@ HttpResponse RequestPipeline::runRequestMiddleware(HttpRequestView& request, con
   return result;
 }
 
-HttpResponse RequestPipeline::callRequestHandler(HttpRequestView& request, const Router::RoutingResult& routingResult,
-                                                 bool streaming) const {
+HttpResponse RequestPipeline::CallRequestHandler(HttpRequestView& request, const Router::RoutingResult& routingResult,
+                                                 bool streaming) {
   const Router::RoutingResult::HandlerKind handlerKind = routingResult.handlerKind();
   // The streaming handler of a request that cannot be streamed (HTTP/1.0) is not called: answered like without handler.
   if (handlerKind != Router::RoutingResult::HandlerKind::None &&
@@ -221,7 +218,7 @@ HttpResponse RequestPipeline::callRequestHandler(HttpRequestView& request, const
     return request.makeResponse(http::StatusCodeInternalServerError);
   }
   if (routingResult.redirectSlashMode() != Router::RoutingResult::RedirectSlashMode::None) {
-    return makeTrailingSlashRedirect(request, routingResult.redirectSlashMode());
+    return MakeTrailingSlashRedirect(request, routingResult.redirectSlashMode());
   }
   if (routingResult.methodNotAllowed()) {
     return request.makeResponse(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed);
@@ -293,25 +290,28 @@ void RequestPipeline::prepareStreamingHead(const HttpRequestView& request, HttpR
   }
 }
 
-HttpResponse RequestPipeline::makeTrailingSlashRedirect(
-    const HttpRequestView& request, Router::RoutingResult::RedirectSlashMode redirectSlashMode) const {
+HttpResponse RequestPipeline::MakeTrailingSlashRedirect(const HttpRequestView& request,
+                                                        Router::RoutingResult::RedirectSlashMode redirectSlashMode) {
   // The path is percent-decoded: re-encode it so that the Location is a valid URI reference. Decoded control
   // characters (CR, LF...) would otherwise make the header value invalid and throw outside of any handler.
   static constexpr std::string_view kRedirecting = "Redirecting";
-  const std::string_view reqPath = request.path();
-  RawChars& location = *_pScratch;
-  location.clear();
-  if (redirectSlashMode == Router::RoutingResult::RedirectSlashMode::AddSlash) {
-    http::AppendUrlEncodedPath(location, reqPath);
-    location.push_back('/');
-  } else {
-    http::AppendUrlEncodedPath(location, reqPath.substr(0, reqPath.size() - 1));
+
+  const bool addSlash = redirectSlashMode == Router::RoutingResult::RedirectSlashMode::AddSlash;
+
+  std::string_view reqPath = request.path();
+  if (!addSlash) {
+    assert(reqPath.ends_with('/'));
+    reqPath.remove_suffix(1);
   }
-  const std::size_t additionalCapacity =
-      HttpResponse::BodySize(kRedirecting.size()) + http::HeaderSize(http::Location.size(), location.size());
-  HttpResponse resp = request.makeResponse(additionalCapacity, http::StatusCodeMovedPermanently);
-  resp.headerAddLine(http::Location, std::string_view(location));
+
+  HttpResponse resp = request.makeResponse(
+      HttpResponse::BodySize(kRedirecting.size()) + internal::HttpResponseAccess::LocationHeaderSize(reqPath, addSlash),
+      http::StatusCodeMovedPermanently);
+
+  internal::HttpResponseAccess::HeaderAddLocationUnchecked(resp, reqPath, addSlash);
+
   resp.body(kRedirecting);
+
   return resp;
 }
 
