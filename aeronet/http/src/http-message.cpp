@@ -63,10 +63,9 @@ constexpr std::string_view TrimmedValidHeaderValue(std::string_view value) {
   return value;
 }
 
-constexpr void CheckContentTypeLengthEncoding(std::string_view headerName, bool hasBody) {
+constexpr void CheckContentTypeLengthEncoding(LowerAsciiKey headerName, bool hasBody) {
   // Fast path: most headers don't start with 'c'
-  assert(!headerName.empty());
-  if (headerName[0] != 'c') {
+  if (headerName.data()[0] != 'c') {
     return;
   }
   if (hasBody && headerName == http::ContentEncoding) [[unlikely]] {

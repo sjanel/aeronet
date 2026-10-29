@@ -14,7 +14,8 @@ A handler receives the request as an `HttpRequestView`: a set of non-owning view
 | `body()`, `readBody()`, `hasMoreBody()` | Body, see [Bodies](#bodies). |
 | `trailers()`, `trailerValueOrEmpty(name)` | Trailer fields of a chunked (HTTP/1.1) or HTTP/2 request. |
 | `clientAddress()` | Peer address of the connection, as text. |
-| `isHttp2()`, `streamId()`, `scheme()`, `authority()` | HTTP/2 specifics, see [HTTP/2](../protocols/http2.md#handlers). |
+| `authority()` | Host and optional port the request is for, when its request target gives it: the `:authority` of an HTTP/2 request, or the authority of an absolute-form HTTP/1.1 target, see [Request target forms](#request-target-forms). Empty otherwise: use the `host` header field. |
+| `isHttp2()`, `streamId()`, `scheme()` | HTTP/2 specifics, see [HTTP/2](../protocols/http2.md#handlers). |
 | `alpnProtocol()`, `tlsVersion()`, `tlsCipher()` | TLS parameters of the connection, empty on plaintext connections. |
 | `reqStart()` | Time the request head started arriving. |
 
@@ -60,6 +61,14 @@ router.setPath(http::Method::GET, "/search", [](const HttpRequestView& req) {
 ```
 
 The path is decoded once too. A request target with an invalid escape, a decoded NUL byte (`%00`), or control characters is rejected with `400 Bad Request`.
+
+### Request target forms
+
+An HTTP/1.1 request target is accepted in the four forms of RFC 9112 §3.2: origin-form (`/path?query`, the usual one), absolute-form (`GET http://example.com/path?query HTTP/1.1`), authority-form (`CONNECT` only, see [CONNECT](../protocols/connect.md)) and asterisk-form (`OPTIONS *` only). Any other target is rejected with `400 Bad Request`.
+
+With an absolute-form target, `path()` and the query parameters are the ones of its path and query: the request is routed as if it had been sent in origin-form, an empty path being `/`. The host is taken from the target, not from the `Host` header field (RFC 9112 §3.3): `authority()` and `headerValueOrEmpty("host")` both return its host and optional port, without userinfo, whatever the value of `Host`. This holds for the [HTTP to HTTPS redirect](../protocols/tls.md#http-to-https-redirect) and the WebSocket origin check too. The scheme of the target is not used, and an HTTP/1.1 request still needs exactly one `Host` header field. A target without authority (`mailto:a@b`, `http:/path`), with an empty host, a fragment, control characters or several `@` in its authority is rejected with `400 Bad Request`.
+
+Tests: `AbsoluteForm*` in [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp), and `AbsoluteFormTargetIsRoutedByItsPathAndHost` in [http-errors_test.cpp](../../tests/http-errors_test.cpp).
 
 ## Lifetime of request data
 

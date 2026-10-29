@@ -333,12 +333,12 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeTrailers(ConnectionIt cnxIt
                                                               std::size_t& pos) {
   ConnectionState& state = _pCtx->connections.connectionState(cnxIt);
   RawChars& bodyAndTrailers = state.bodyAndTrailersBuffer;
-  char* const inputBeg = input.data();
-  char* const last = inputBeg + input.size();
+  char* const pInputBeg = input.data();
+  char* const pLast = pInputBeg + input.size();
 
   // Trailers are terminated by a blank line (CRLF). Check if trailers are present (not immediate CRLF).
-  auto* trailerStart = inputBeg + pos;
-  if (std::memcmp(trailerStart, http::CRLF.data(), http::CRLF.size()) == 0) {
+  char* pTrailerStart = pInputBeg + pos;
+  if (std::memcmp(pTrailerStart, http::CRLF.data(), http::CRLF.size()) == 0) {
     // No trailers, just the terminating CRLF
     pos += http::CRLF.size();
     return BodyDecodeStatus::Ready;
@@ -350,11 +350,11 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeTrailers(ConnectionIt cnxIt
   // First pass: validate trailers and find the end position
   std::size_t tempPos = pos;
   while (true) {
-    const auto lineEndIt = SearchCRLF(inputBeg + tempPos, last);
-    if (lineEndIt == last) {
+    const auto lineEndIt = SearchCRLF(pInputBeg + tempPos, pLast);
+    if (lineEndIt == pLast) {
       // The trailers are bounded whether their line ends are received or not: a client could otherwise make the server
       // buffer (and parse again at each read) a trailer line without end, without limit.
-      const std::size_t receivedTrailerSize = static_cast<std::size_t>(last - trailerStart);
+      const std::size_t receivedTrailerSize = static_cast<std::size_t>(pLast - pTrailerStart);
       if (receivedTrailerSize > _pCtx->config.maxHeaderBytes) {
         emitSimpleError(cnxIt, http::StatusCodeRequestHeaderFieldsTooLarge);
         return BodyDecodeStatus::Error;
@@ -366,30 +366,30 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeTrailers(ConnectionIt cnxIt
       return BodyDecodeStatus::Error;
     }
     // Check total trailer size limit
-    const std::size_t trailerSize = static_cast<std::size_t>((inputBeg + tempPos) - trailerStart);
+    const std::size_t trailerSize = static_cast<std::size_t>((pInputBeg + tempPos) - pTrailerStart);
     if (trailerSize > _pCtx->config.maxHeaderBytes) {
       emitSimpleError(cnxIt, http::StatusCodeRequestHeaderFieldsTooLarge);
       return BodyDecodeStatus::Error;
     }
 
-    auto* lineStart = inputBeg + tempPos;
-    auto* lineLast = lineEndIt;
+    char* pLineStart = pInputBeg + tempPos;
+    char* pLineLast = lineEndIt;
 
     // Detect blank line (end of trailers)
-    if (lineStart == lineLast) {
-      trailerEndPos = static_cast<std::size_t>(lineEndIt - inputBeg) + http::CRLF.size();
+    if (pLineStart == pLineLast) {
+      trailerEndPos = static_cast<std::size_t>(lineEndIt - pInputBeg) + http::CRLF.size();
       break;
     }
 
     // Parse trailer field: name:value
-    const auto [nameView, valueView] = http::ParseHeaderLineTrimValue(lineStart, lineLast);
+    const auto [nameView, valueView] = http::ParseHeaderLineTrimValue(pLineStart, pLineLast);
     if (!http::IsValidHeaderName(nameView) || !http::IsValidHeaderValue(valueView)) {
       emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed / invalid trailer header");
       return BodyDecodeStatus::Error;
     }
 
     // Lower-case trailer name in place for case-sensitive lookup later
-    tolower(lineStart, nameView.size());
+    tolower(pLineStart, nameView.size());
 
     // Check forbidden headers
     if (http::IsForbiddenTrailerHeader(LowerAsciiKey{nameView})) {
@@ -397,19 +397,19 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeTrailers(ConnectionIt cnxIt
       return BodyDecodeStatus::Error;
     }
 
-    tempPos = static_cast<std::size_t>(lineEndIt - inputBeg) + http::CRLF.size();
+    tempPos = static_cast<std::size_t>(lineEndIt - pInputBeg) + http::CRLF.size();
   }
 
   // Copy all trailer data at once to avoid reallocation during parsing
   const std::size_t trailerLen = trailerEndPos - pos - http::CRLF.size();  // Exclude final CRLF
-  bodyAndTrailers.append(trailerStart, trailerLen);
+  bodyAndTrailers.append(pTrailerStart, trailerLen);
   state.trailerLen = SafeCast<uint32_t>(trailerLen);
 
   // Second pass: parse trailers from copied data in bodyAndTrailers
-  char* trailerDataEnd = bodyAndTrailers.data() + bodyAndTrailers.size();
-  char* trailerDataBeg = trailerDataEnd - trailerLen;
+  char* pTrailerDataEnd = bodyAndTrailers.data() + bodyAndTrailers.size();
+  char* pTrailerDataBeg = pTrailerDataEnd - trailerLen;
 
-  if (!parseHeadersUnchecked(state.request._trailers, bodyAndTrailers.data(), trailerDataBeg, trailerDataEnd)) {
+  if (!parseHeadersUnchecked(state.request._trailers, bodyAndTrailers.data(), pTrailerDataBeg, pTrailerDataEnd)) {
     emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Invalid trailer headers");
     return BodyDecodeStatus::Error;
   }
