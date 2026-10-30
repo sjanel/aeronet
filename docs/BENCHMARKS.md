@@ -114,6 +114,7 @@ Each internal micro-benchmark is its own executable named `aeronet-bench-interna
 | `aeronet-bench-internal-zerocopy` | HTTP server | `MSG_ZEROCOPY` sends, including a response streamed to a slow reader. |
 | `aeronet-bench-internal-event-loop-poll-timeout` | HTTP server, Linux | Event loop poll timeout computation. |
 | `aeronet-bench-internal-http-message-construct`, `-http-message-header-search`, `-http-response-payload`, `-init-try-set-head`, `-reserved-header-check` | none | `HttpResponse` construction, header search and payload handling. |
+| `aeronet-bench-internal-uri-host` | none | Validation of the `Host` header field value, compared with the scan of any header value. |
 | `aeronet-bench-internal-http1-response-parse`, `-response-streamer` | HTTP client | Client response parser, response streaming. |
 | `aeronet-bench-internal-hpack`, `-http2-frame`, `-http2-flow-control` | HTTP/2 | HPACK, frame codec, flow control. |
 | `aeronet-bench-internal-http2-request` | HTTP/2, HTTP server | Server side of a stream, from its HEADERS frame to its response: request head decoding, routing, response encoding. |

@@ -3985,6 +3985,22 @@ TEST(HttpsRedirectIntegration, MissingHostReturns400) {
   EXPECT_EQ(resp.statusCode, http::StatusCodeBadRequest);
 }
 
+// RFC 9112 §3.2: an invalid Host is refused, instead of being copied into the Location of the redirect.
+TEST(HttpsRedirectIntegration, InvalidHostReturns400) {
+  ts.resetConfigAndPostUpdate(
+      [](HttpServerConfig& cfg) { cfg.withHttpsRedirect(443, http::StatusCodeMovedPermanently); });
+
+  for (std::string_view host : {"evil.example/x", "a b/c@d", "user@evil.example", "evil.example?x"}) {
+    test::RequestOptions opt;
+    opt.target = "/path";
+    opt.host = host;
+    auto resp = test::parseResponseOrThrow(test::requestOrThrow(port, opt));
+
+    EXPECT_EQ(resp.statusCode, http::StatusCodeBadRequest) << host;
+    EXPECT_EQ(test::getHeader(resp, "location"), "") << host;
+  }
+}
+
 TEST(HttpsRedirectIntegration, IPv6HostPreservedWithBrackets) {
   ts.resetConfigAndPostUpdate(
       [](HttpServerConfig& cfg) { cfg.withHttpsRedirect(8443, http::StatusCodeMovedPermanently); });
