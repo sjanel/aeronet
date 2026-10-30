@@ -470,23 +470,24 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
     if (!decodePath(pPathBeg, pPathEnd)) {
       return http::StatusCodeBadRequest;
     }
+
     // rebaseHeadViews() locates the head from the path, decoded in place where the request-target starts, or just after
     // the authority of an absolute-form one.
     assert(_pPath == inBuffer.data() + methodLen + 1 + _authorityLength);
 
-    // Version
     pFirst = pNextSep + 1;
-    _version = http::Version{pFirst, static_cast<std::size_t>(pLineLast - pFirst)};
-    if (!_version.isValid()) {
-      // malformed version token
-      return http::StatusCodeBadRequest;
-    }
-    if (_version.major() != 1) {
-      // RFC 9110 §2.5 - "The first digit (major version) indicates the messaging syntax, whereas the second digit
-      // (minor version) indicates the highest minor version within that major version to which the sender is conformant
-      // (able to understand for future communication)."
-      // In other words, we accept something like HTTP/1.9
-      return http::StatusCodeHTTPVersionNotSupported;
+
+    // Version
+    // RFC 9110 §2.5 - "The first digit (major version) indicates the messaging syntax, whereas the second digit
+    // (minor version) indicates the highest minor version within that major version to which the sender is conformant
+    // (able to understand for future communication)."
+    // In other words, we accept something like HTTP/1.9
+    const std::size_t versionLen = static_cast<std::size_t>(pLineLast - pFirst);
+    _version = http::Version::OfMajor<1>(pFirst, versionLen);
+    if (!_version.isValid()) [[unlikely]] {
+      // A well-formed version of another major version is not supported, anything else is a malformed version token.
+      return http::Version{pFirst, versionLen}.isValid() ? http::StatusCodeHTTPVersionNotSupported
+                                                         : http::StatusCodeBadRequest;
     }
     // RFC 9110 §6.2 - a higher minor version is processed, and answered, as the highest version we conform to.
     _version = std::min(_version, http::HTTP_1_1);

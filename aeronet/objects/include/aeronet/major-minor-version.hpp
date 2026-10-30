@@ -6,11 +6,12 @@
 #include <string_view>
 
 #include "aeronet/memory-utils-sv.hpp"
+#include "aeronet/static-string-view-helpers.hpp"
 
 namespace aeronet {
 
 // Single digit Major.Minor version representation, e.g. HTTP/1.1, TLS 1.2.
-// Are considered valid if both major and minor are in 0-9 range, and major != 0.
+// Are considered valid if both major and minor are in 0-9 range, and the version is not 0.0.
 template <const char* Prefix>
 class MajorMinorVersion {
  public:
@@ -28,19 +29,30 @@ class MajorMinorVersion {
     }
   }
 
+  // Parses a full version string "<Prefix>X.Y" (e.g. "HTTP/1.1"), X and Y being digits.
+  // Any other string (including a different case of the prefix) gives an invalid version.
   constexpr MajorMinorVersion(const char* pStr, std::size_t len) noexcept {
-    if (len == kStrLen) {
-      const char major = pStr[kPrefix.size()];
-      const char minor = pStr[kPrefix.size() + 2UL];
-      if (major >= '0' && major <= '9' && pStr[kPrefix.size() + 1UL] == '.' && minor >= '0' && minor <= '9') {
-        _data = static_cast<std::uint8_t>(static_cast<std::uint8_t>(static_cast<std::uint8_t>(major - '0') << 4U) |
-                                          static_cast<std::uint8_t>(minor - '0'));
-      }
+    if (len == kStrLen && std::string_view(pStr, kPrefix.size()) == kPrefix && pStr[kPrefix.size() + 1UL] == '.') {
+      *this = MajorMinorVersion(DigitValue(pStr[kPrefix.size()]), DigitValue(pStr[kPrefix.size() + 2UL]));
     }
   }
 
   constexpr MajorMinorVersion(std::string_view versionStr) noexcept  // NOLINT(*-explicit-constructor)
       : MajorMinorVersion(versionStr.data(), versionStr.size()) {}
+
+  // Parses a full version string "<Prefix><Major>.Y" (e.g. "HTTP/1.1" for Major 1), Y being a digit.
+  // Any other string gives an invalid version - even a valid version of another major version, which the constructor
+  // from a string tells apart from a malformed one. Faster than the latter, as "<Prefix><Major>." is matched in a
+  // single comparison: use it first when a single major version is supported.
+  template <std::uint8_t Major>
+  [[nodiscard]] static constexpr MajorMinorVersion OfMajor(const char* pStr, std::size_t len) noexcept {
+    static_assert(Major >= 1U && Major <= 9U);
+    constexpr std::string_view kHead = kMajorHead<Major>;
+    if (len == kStrLen && std::string_view(pStr, kHead.size()) == kHead) {
+      return {Major, DigitValue(pStr[kHead.size()])};
+    }
+    return {};
+  }
 
   // Get the major version number.
   [[nodiscard]] constexpr std::uint8_t major() const noexcept { return static_cast<std::uint8_t>(_data >> 4U); }
@@ -74,6 +86,14 @@ class MajorMinorVersion {
   constexpr auto operator<=>(const MajorMinorVersion&) const noexcept = default;
 
  private:
+  // Value of a digit character, or a value above 9 if ch is not a digit.
+  static constexpr std::uint8_t DigitValue(char ch) noexcept { return static_cast<std::uint8_t>(ch - '0'); }
+
+  // "<Prefix><Major>." (e.g. "HTTP/1."): a version string of major version Major, without its minor version.
+  template <std::uint8_t Major>
+  static constexpr std::string_view kMajorHead =
+      JoinStringView_v<kPrefix, CharToStringView_v<static_cast<char>('0' + Major)>, CharToStringView_v<'.'>>;
+
   std::uint8_t _data{};
 };
 

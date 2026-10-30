@@ -1076,6 +1076,40 @@ TEST_F(HttpRequestViewTest, HigherHttp1MinorVersionIsProcessedAsHttp11) {
   }
 }
 
+// RFC 9112 §2.3: HTTP-version = HTTP-name "/" DIGIT "." DIGIT, HTTP-name being the case-sensitive "HTTP". A well-formed
+// version of another major version is not supported (505), any other version token is malformed (400).
+TEST_F(HttpRequestViewTest, VersionOtherThanHttp1IsRejected) {
+  struct VersionAndStatus {
+    std::string_view version;
+    http::StatusCode status;
+  };
+  for (const auto [version, status] : {
+           VersionAndStatus{"HTTP/2.0", http::StatusCodeHTTPVersionNotSupported},
+           VersionAndStatus{"HTTP/0.9", http::StatusCodeHTTPVersionNotSupported},
+           VersionAndStatus{"HTTP/9.9", http::StatusCodeHTTPVersionNotSupported},
+           VersionAndStatus{"HTTP/0.0", http::StatusCodeBadRequest},
+           VersionAndStatus{"XTTP/1.1", http::StatusCodeBadRequest},
+           VersionAndStatus{"http/1.1", http::StatusCodeBadRequest},
+           VersionAndStatus{"HTTP-1.1", http::StatusCodeBadRequest},
+           VersionAndStatus{"XTTP/2.0", http::StatusCodeBadRequest},
+           VersionAndStatus{"http/2.0", http::StatusCodeBadRequest},
+           VersionAndStatus{"HTTP/2x0", http::StatusCodeBadRequest},
+           VersionAndStatus{"HTTP/1x1", http::StatusCodeBadRequest},
+           VersionAndStatus{"HTTP/1.x", http::StatusCodeBadRequest},
+           VersionAndStatus{"HTTP/1./", http::StatusCodeBadRequest},
+           VersionAndStatus{"HTTP/1.:", http::StatusCodeBadRequest},
+           VersionAndStatus{"HTTP/x.1", http::StatusCodeBadRequest},
+           VersionAndStatus{"HTTP/1.10", http::StatusCodeBadRequest},
+           VersionAndStatus{"HTTP/10.1", http::StatusCodeBadRequest},
+       }) {
+    SCOPED_TRACE(version);
+    RawChars raw("GET /p ");
+    raw.append(version);
+    raw.append("\r\nHost: h\r\n\r\n");
+    EXPECT_EQ(reqSet(std::move(raw)), status);
+  }
+}
+
 TEST_F(HttpRequestViewTest, InvalidHeaderKey) {
   EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\n:value\r\n")), http::StatusCodeBadRequest);
   EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\n  :value\r\n")), http::StatusCodeBadRequest);

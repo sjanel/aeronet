@@ -1,4 +1,6 @@
 
+#include "aeronet/major-minor-version.hpp"
+
 #include <gtest/gtest.h>
 
 #include <cstdint>
@@ -22,6 +24,11 @@ TEST(MajorMinorVersion, ParseInvalidPrefix) {
   std::string_view str = "NOTHTTP/1.1";
   vers = http::Version{str};
   EXPECT_EQ(vers, http::Version{});
+
+  // Same length as a valid version: the prefix itself is checked, case-sensitively.
+  for (std::string_view prefixMismatch : {"XTTP/1.1", "HTTX/1.1", "http/1.1", "HTTP-1.1", "HTTP 1.1", "XTTP/2.0"}) {
+    EXPECT_EQ(http::Version{prefixMismatch}, http::Version{}) << prefixMismatch;
+  }
 }
 
 TEST(MajorMinorVersion, ParseInvalidFormat) {
@@ -45,6 +52,58 @@ TEST(MajorMinorVersion, ParseInvalidFormat) {
   std::string_view s5 = "HTTP/1.10";  // minor > 9
   vers = http::Version{s5};
   EXPECT_EQ(vers, http::Version{});
+
+  // Characters just around the digits range.
+  for (std::string_view notDigit : {"HTTP//.1", "HTTP/:.1", "HTTP/1./", "HTTP/1.:", "HTTP/1.\xFF"}) {
+    EXPECT_EQ(http::Version{notDigit}, http::Version{}) << notDigit;
+  }
+}
+
+namespace {
+constexpr char kTlsPrefix[] = "TLS";
+using TlsVersion = MajorMinorVersion<kTlsPrefix>;
+}  // namespace
+
+TEST(MajorMinorVersion, ParseOtherPrefix) {
+  static_assert(TlsVersion{"TLS1.3"} == TlsVersion{1, 3});
+  static_assert(!TlsVersion{"TLX1.3"}.isValid());
+  static_assert(!TlsVersion{"tls1.3"}.isValid());
+  static_assert(TlsVersion::OfMajor<1>("TLS1.2", 6) == TlsVersion{1, 2});
+  static_assert(!TlsVersion::OfMajor<1>("HTTP/1.2", 8).isValid());
+}
+
+TEST(MajorMinorVersion, OfMajor) {
+  for (std::uint8_t minorVer = 0; minorVer <= 9; ++minorVer) {
+    const char str[]{'H', 'T', 'T', 'P', '/', '1', '.', static_cast<char>('0' + minorVer)};
+    EXPECT_EQ(http::Version::OfMajor<1>(str, sizeof(str)), (http::Version{1, minorVer}));
+    EXPECT_EQ(http::Version::OfMajor<1>(str, sizeof(str)), (http::Version{str, sizeof(str)}));
+  }
+  static_assert(http::Version::OfMajor<2>("HTTP/2.0", 8) == http::HTTP_2_0);
+  static_assert(http::Version::OfMajor<9>("HTTP/9.9", 8) == http::Version{9, 9});
+
+  // A valid version of another major version is not a version of the expected one.
+  for (std::string_view otherMajor : {"HTTP/0.9", "HTTP/2.0", "HTTP/9.1"}) {
+    EXPECT_FALSE(http::Version::OfMajor<1>(otherMajor.data(), otherMajor.size()).isValid()) << otherMajor;
+    EXPECT_TRUE(http::Version{otherMajor}.isValid()) << otherMajor;
+  }
+  EXPECT_FALSE(http::Version::OfMajor<2>("HTTP/1.1", 8).isValid());
+
+  for (std::string_view malformed : {
+           "",
+           "HTTP/1.",
+           "HTTP/1.10",
+           "HTTP/1.1 ",
+           "XTTP/1.1",
+           "http/1.1",
+           "HTTP/1,1",
+           "HTTP/1x1",
+           "HTTP/1.x",
+           "HTTP/1./",
+           "HTTP/1.:",
+           "HTTP/1.\xFF",
+       }) {
+    EXPECT_FALSE(http::Version::OfMajor<1>(malformed.data(), malformed.size()).isValid()) << malformed;
+  }
 }
 
 TEST(MajorMinorVersion, StrAndCompare) {
