@@ -1099,8 +1099,11 @@ TEST(HttpCodecDecompression, MaybeDecompressRequestBody_StreamingThresholdWithou
 
   ConnectionState cs;
   HttpRequestView& req = cs.request;
+
+  RawChars contentEncodingValue("gzip");
+
   // set a supported encoding header so decompression codepath is attempted
-  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip");
+  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, contentEncodingValue);
 
   // Prepare a small compressed payload if zlib available, otherwise use placeholder bytes.
   const std::string plain = "small payload";

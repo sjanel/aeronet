@@ -50,7 +50,7 @@ HTTP/2 requests reach the same handlers as HTTP/1.1 requests, through the same `
 | `isHttp2()` | `true` | `false` |
 | `streamId()` | Stream identifier | `0` |
 | `scheme()` | `:scheme` pseudo-header | empty |
-| `authority()` | `:authority` pseudo-header (equivalent of `Host`) | empty |
+| `authority()` | `:authority` pseudo-header (equivalent of `Host`) | authority of an absolute-form request target (see [Request target forms](../guides/requests.md#request-target-forms)), otherwise empty |
 
 Every handler kind works over HTTP/2:
 

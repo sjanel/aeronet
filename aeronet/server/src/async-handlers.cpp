@@ -205,9 +205,9 @@ void Http1Pipeline::AbandonAsyncHandler(AsyncHandlerState& async) noexcept {
 
 void Http1Pipeline::handleAsyncBodyProgress(ConnectionIt cnxIt) {
   ConnectionState& state = _pCtx->connections.connectionState(cnxIt);
-  auto* asyncState = state.pAsyncState();
+  AsyncHandlerState* asyncState = state.pAsyncState();
   assert(asyncState != nullptr);
-  auto& async = *asyncState;
+  AsyncHandlerState& async = *asyncState;
   assert(async.active);
 
   if (async.task.await.needsBody) {
