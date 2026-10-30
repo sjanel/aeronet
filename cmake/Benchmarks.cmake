@@ -125,6 +125,7 @@ set(AERONET_BENCH_INTERNAL_MEMORY_UTILS ${AERONET_BENCH_ROOT}/internal/memory-ut
 set(AERONET_BENCH_INTERNAL_RAW_BYTES_GROWTH ${AERONET_BENCH_ROOT}/internal/raw-bytes-growth_bench.cpp)
 set(AERONET_BENCH_INTERNAL_DATE_HEADER_CACHE ${AERONET_BENCH_ROOT}/internal/date-header-cache_bench.cpp)
 set(AERONET_BENCH_INTERNAL_RESERVED_HEADER_CHECK ${AERONET_BENCH_ROOT}/internal/reserved-header-check_bench.cpp)
+set(AERONET_BENCH_INTERNAL_URI_HOST ${AERONET_BENCH_ROOT}/internal/uri-host_bench.cpp)
 set(AERONET_BENCH_INTERNAL_ZEROCOPY ${AERONET_BENCH_ROOT}/internal/zerocopy_bench.cpp)
 set(AERONET_BENCH_INTERNAL_TRANSPORT_DISPATCH ${AERONET_BENCH_ROOT}/internal/transport-dispatch_bench.cpp)
 
@@ -238,6 +239,9 @@ endif()
 
 AeronetAddProjectBenchmark(aeronet-bench-internal-reserved-header-check ${AERONET_BENCH_INTERNAL_RESERVED_HEADER_CHECK} LIBRARIES aeronet_objects)
 set_target_properties(aeronet-bench-internal-reserved-header-check PROPERTIES FOLDER "benchmarks/internal")
+
+AeronetAddProjectBenchmark(aeronet-bench-internal-uri-host ${AERONET_BENCH_INTERNAL_URI_HOST} LIBRARIES aeronet_objects)
+set_target_properties(aeronet-bench-internal-uri-host PROPERTIES FOLDER "benchmarks/internal")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND AERONET_ENABLE_HTTP_SERVER)
   AeronetAddProjectBenchmark(aeronet-bench-internal-zerocopy ${AERONET_BENCH_INTERNAL_ZEROCOPY}

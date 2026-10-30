@@ -1847,6 +1847,9 @@ TEST(Http2ProtocolHandler, HttpsRedirectAnswersBeforeRouting) {
            Case{"HEAD", "", "host.example", true, "308", "https://host.example:8443/page?q=a%20b"},
            Case{"POST", "example.com", "", false, "308", "https://example.com:8443/page?q=a%20b"},
            Case{"GET", "", "", true, "400", ""},
+           // An invalid host is refused, not copied into the Location.
+           Case{"GET", "evil.example/x", "", true, "400", ""},
+           Case{"GET", "", "evil.example/x", true, "400", ""},
        }) {
     RawChars headers;
     headers.append(MakeHttp1HeaderLine(":method", testCase.method));
@@ -3337,6 +3340,62 @@ TEST(Http2ProtocolHandler, TruncatedPercentEncodingInPathReturns400) {
 
   ASSERT_FALSE(loop.clientHeaders.empty());
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "400");
+}
+
+// As over HTTP/1 (RFC 9112 §3.2), a request whose :authority or Host header field is not uri-host [ ":" port ]
+// (RFC 9110 §7.2) is answered 400 without reaching the handler.
+TEST(Http2ProtocolHandler, InvalidAuthorityOrHostReturns400) {
+  Router router;
+  int nbHandlerCalls = 0;
+  router.setDefault([&nbHandlerCalls](const HttpRequestView&) {
+    ++nbHandlerCalls;
+    return HttpResponse(200);
+  });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  struct Case {
+    std::string_view authority;  // not sent when empty
+    std::string_view host;       // not sent when empty
+    std::string_view status;
+  };
+  uint32_t streamId = 1;
+  for (const Case& testCase : {
+           Case{"a b/c@d", "", "400"},
+           Case{"evil.example/x", "", "400"},
+           Case{"user@example.com", "", "400"},  // RFC 9113 §8.3.1: no userinfo
+           Case{"example.com:8x", "", "400"},
+           Case{":443", "", "400"},
+           Case{"[::1", "", "400"},
+           Case{"", "evil.example/x", "400"},
+           Case{"example.com", "a b/c@d", "400"},
+           Case{"example.com:8080", "", "200"},
+           Case{"[::1]:8080", "example.com", "200"},
+           Case{"", "host.example:80", "200"},
+           Case{"", "", "200"},
+       }) {
+    RawChars hdrs;
+    hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+    hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+    if (!testCase.authority.empty()) {
+      hdrs.append(MakeHttp1HeaderLine(":authority", testCase.authority));
+    }
+    hdrs.append(MakeHttp1HeaderLine(":path", "/p"));
+    if (!testCase.host.empty()) {
+      hdrs.append(MakeHttp1HeaderLine("host", testCase.host));
+    }
+    loop.clientHeaders.clear();
+    ASSERT_EQ(loop.client.sendHeaders(streamId, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
+
+    ASSERT_FALSE(loop.clientHeaders.empty()) << testCase.authority << ' ' << testCase.host;
+    EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), testCase.status)
+        << testCase.authority << ' ' << testCase.host;
+    streamId += 2;
+  }
+  EXPECT_EQ(nbHandlerCalls, 4);
 }
 
 // ============== POST with Body and Decompression Tests ==============

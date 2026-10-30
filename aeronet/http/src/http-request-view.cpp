@@ -40,6 +40,7 @@
 #include "aeronet/template-constants.hpp"
 #include "aeronet/tolower-str.hpp"
 #include "aeronet/tracing/tracer.hpp"
+#include "aeronet/uri-host.hpp"
 #include "aeronet/url-decode.hpp"
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
@@ -346,19 +347,17 @@ AERONET_NOINLINE bool MoveAuthorityFirst(char* pFirst, char* pLast, MovedAbsolut
     return false;  // a request-target has no fragment
   }
   std::string_view authority = target.substr(authorityBeg, authorityEnd - authorityBeg);
-  if (std::ranges::any_of(authority, IsControlChar)) {
-    return false;
-  }
-  // The userinfo (RFC 3986 §3.2.1) is not part of the host. '@' is not allowed in it: with several, parsers disagree on
+  // The userinfo (RFC 3986 §3.2.1) is not part of the host, which allows no '@': with several, parsers disagree on
   // which one ends the userinfo, so the host they pick differs.
   if (const std::size_t atPos = authority.find('@'); atPos != std::string_view::npos) {
-    authority.remove_prefix(atPos + 1);
-    if (authority.contains('@')) {
+    if (std::ranges::any_of(authority.substr(0, atPos), IsControlChar)) {
       return false;
     }
+    authority.remove_prefix(atPos + 1);
   }
-  if (authority.empty()) {
-    return false;  // RFC 9110 §4.2.1: a recipient rejects an http(s) URI with an empty host
+  // The rest becomes the Host of the request: same syntax, but the host cannot be empty (RFC 9110 §4.2.1).
+  if (!http::IsValidHostAndPort(authority)) {
+    return false;
   }
 
   // Both moves go towards the start of the target (the scheme and "://" take at least 4 bytes): the first one does not
@@ -545,11 +544,15 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
     return needMoreData(pFirst);
   }
 
+  // RFC 9112 §3.2 : "A server MUST respond with 400 (Bad Request) to any HTTP/1.1 request message that lacks a Host
+  // header field and to any request message that contains more than one Host header field line or a Host header field
+  // with an invalid field value." Several Host lines are refused when merged above.
   auto hostIt = _headers.find(http::Host);
-  if (_version.minor() == 1 && hostIt == _headers.end()) {
-    // RFC 9112 §3.2 : "A server MUST respond with 400 (Bad Request) to any HTTP/1.1 request message that lacks a Host
-    // header field and to any request message that contains more than one Host header field line or a Host header field
-    // with an invalid field value."
+  if (hostIt == _headers.end()) {
+    if (_version.minor() == 1) {
+      return http::StatusCodeBadRequest;
+    }
+  } else if (!http::IsValidHostFieldValue(hostIt->second)) {
     return http::StatusCodeBadRequest;
   }
   if (_authorityLength != 0) [[unlikely]] {

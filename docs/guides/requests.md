@@ -66,9 +66,20 @@ The path is decoded once too. A request target with an invalid escape, a decoded
 
 An HTTP/1.1 request target is accepted in the four forms of RFC 9112 §3.2: origin-form (`/path?query`, the usual one), absolute-form (`GET http://example.com/path?query HTTP/1.1`), authority-form (`CONNECT` only, see [CONNECT](../protocols/connect.md)) and asterisk-form (`OPTIONS *` only). Any other target is rejected with `400 Bad Request`.
 
-With an absolute-form target, `path()` and the query parameters are the ones of its path and query: the request is routed as if it had been sent in origin-form, an empty path being `/`. The host is taken from the target, not from the `Host` header field (RFC 9112 §3.3): `authority()` and `headerValueOrEmpty("host")` both return its host and optional port, without userinfo, whatever the value of `Host`. This holds for the [HTTP to HTTPS redirect](../protocols/tls.md#http-to-https-redirect) and the WebSocket origin check too. The scheme of the target is not used, and an HTTP/1.1 request still needs exactly one `Host` header field. A target without authority (`mailto:a@b`, `http:/path`), with an empty host, a fragment, control characters or several `@` in its authority is rejected with `400 Bad Request`.
+With an absolute-form target, `path()` and the query parameters are the ones of its path and query: the request is routed as if it had been sent in origin-form, an empty path being `/`. The host is taken from the target, not from the `Host` header field (RFC 9112 §3.3): `authority()` and `headerValueOrEmpty("host")` both return its host and optional port, without userinfo, whatever the value of `Host`. This holds for the [HTTP to HTTPS redirect](../protocols/tls.md#http-to-https-redirect) and the WebSocket origin check too. The scheme of the target is not used, and an HTTP/1.1 request still needs exactly one valid `Host` header field. A target without authority (`mailto:a@b`, `http:/path`), with a fragment or control characters, or whose host and port, after the userinfo, are not a valid `Host` value (see below, the host cannot be empty here) is rejected with `400 Bad Request`.
 
 Tests: `AbsoluteForm*` in [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp), and `AbsoluteFormTargetIsRoutedByItsPathAndHost` in [http-errors_test.cpp](../../tests/http-errors_test.cpp).
+
+### Host header field
+
+The `Host` header field must be `uri-host [ ":" port ]` (RFC 9110 §7.2), as must the `:authority` and `host` fields of an HTTP/2 request:
+
+- the host is a name or an IPv4 address made of letters, digits, `-._~!$&'()*+,;=` and `%` escapes (an RFC 3986 reg-name), or an IPv6 address in brackets (`[::1]`, `[::ffff:192.0.2.1]`, or an `IPvFuture` such as `[v1.x]`);
+- the optional port, after a `:`, is made of digits only.
+
+Any other value, like `a b/c@d`, `evil.example/x` or `user@host`, is rejected with `400 Bad Request` before routing (RFC 9112 §3.2), so that handlers, the [HTTP to HTTPS redirect](../protocols/tls.md#http-to-https-redirect) and the WebSocket origin check can build URLs from it as is. The value is kept unchanged: its case is preserved and its `%` escapes are not decoded. An empty `Host`, which a client sends for a target URI without authority, is accepted. A host name with non-ASCII characters must be sent in its ASCII form (punycode).
+
+Tests: `InvalidHostHeaderFieldIsRejected` and `ValidHostHeaderFieldIsKeptAsIs` in [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp), `InvalidAuthorityOrHostReturns400` in [http2-protocol-handler_test.cpp](../../aeronet/server/test/http2-protocol-handler_test.cpp), the syntax itself in [uri-host_test.cpp](../../aeronet/objects/test/uri-host_test.cpp).
 
 ## Lifetime of request data
 

@@ -40,7 +40,7 @@ Host: api.internal.example:443
 
 The server then:
 
-1. validates the target: the port must be numeric, between 1 and 65535 (RFC 3986 `port = *DIGIT`). A missing port, a service name such as `host:https`, or an out-of-range value is answered `400 Bad Request`, before any name resolution;
+1. validates the target: the host must be a name or an IPv4 address (an RFC 3986 reg-name, see [Host header field](../guides/requests.md#host-header-field)), or an IPv6 address in brackets, and the port must be numeric, between 1 and 65535 (RFC 3986 `port = *DIGIT`). An invalid host (`evil.example/x`), a missing port, a service name such as `host:https`, or an out-of-range value is answered `400 Bad Request`, before any name resolution;
 2. checks the allowlist, and answers `403 Forbidden` for a target that is not allowed;
 3. resolves the host name, see [Name resolution](#name-resolution), and starts a non-blocking TCP connection. A resolution failure, or a connection that fails, is answered `502 Bad Gateway`;
 4. answers `200 OK` and relays bytes between the client and the target until either side closes. As required for a successful CONNECT response (RFC 9110 §9.3.6), the `200` has neither content nor `Content-Length`: the tunneled bytes directly follow its head.
@@ -68,7 +68,7 @@ The resolver of the operating system applies its own timeouts and retries (`opti
 
 Over HTTP/2 ([RFC 9113 §8.5](https://www.rfc-editor.org/rfc/rfc9113#section-8.5)), a tunnel occupies a single stream, so several tunnels and ordinary requests can share one connection.
 
-- The request carries `:method CONNECT` and `:authority host:port`, and neither `:scheme` nor `:path`. The port must be numeric and in range (`400` otherwise), and the allowlist applies (`403`). Host names are [resolved in the background](#name-resolution), and a target that cannot be resolved or reached is answered `502`.
+- The request carries `:method CONNECT` and `:authority host:port`, and neither `:scheme` nor `:path`. The host must be valid and the port numeric and in range (`400` otherwise), and the allowlist applies (`403`). Host names are [resolved in the background](#name-resolution), and a target that cannot be resolved or reached is answered `502`.
 - On success, the server answers `200` without ending the stream. DATA frames on the stream then carry the tunneled bytes in both directions.
 - When the connection to the target fails after the request was accepted, the stream is reset with `CONNECT_ERROR`.
 - Flow control applies to the tunneled bytes. Toward the target, the server stops granting credit to the stream (`WINDOW_UPDATE`) while bytes wait for the target to be writable: what it holds for a slow target is bounded by the stream window. Toward the client, it sends within the windows granted by the client, and stops reading the target while the output of the connection reaches `maxOutboundBufferBytes`, in case the client grants credit without reading.
