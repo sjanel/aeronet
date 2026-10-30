@@ -54,4 +54,21 @@ TEST(ConnectTargetTest, InvalidTargets) {
   ExpectInvalid("[]:443");
 }
 
+// The host is a reg-name (RFC 3986 §3.2.2), or an IPv6 address in brackets: never a value that would reach the resolver
+// with characters that a host name cannot have.
+TEST(ConnectTargetTest, InvalidHosts) {
+  ExpectInvalid("a b:443");
+  ExpectInvalid("evil.example/x:443");
+  ExpectInvalid("user@example.com:443");
+  ExpectInvalid("a%2:443");
+  ExpectInvalid("caf\xC3\xA9:443");
+  ExpectInvalid("[1.2.3.4]:443");
+  ExpectInvalid("[v1.x]:443");  // IPvFuture: no address to connect to
+  ExpectInvalid("[::1::2]:443");
+  ExpectInvalid("[::1%25eth0]:443");
+
+  ExpectTarget("my_host-1.example:443", "my_host-1.example", 443);
+  ExpectTarget("[::ffff:192.0.2.1]:443", "::ffff:192.0.2.1", 443);
+}
+
 }  // namespace aeronet

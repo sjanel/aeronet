@@ -81,6 +81,16 @@ RawChars BuildRaw(std::string_view method, std::string_view target, std::string_
   return str;
 }
 
+// Request line (without its CRLF), then a single Host header field with the given value.
+RawChars BuildRawWithHost(std::string_view requestLine, std::string_view host) {
+  RawChars str(requestLine.size() + host.size() + 16U);
+  str.append(requestLine);
+  str.append("\r\nHost: ");
+  str.append(host);
+  str.append(http::DoubleCRLF);
+  return str;
+}
+
 }  // namespace
 
 class HttpRequestViewTest : public ::testing::Test {
@@ -174,8 +184,9 @@ class HttpRequestViewTest : public ::testing::Test {
   };
 
   [[nodiscard]] HeadSnapshot snapshot() const {
-    HeadSnapshot ret{req.method(), req.version(),     std::string(req.path()), std::string(req.authority()), {},
-                     {},           req.headSpanSize()};
+    HeadSnapshot ret{
+        req.method(), req.version(), std::string(req.path()), std::string(req.authority()), {}, {}, req.headSpanSize(),
+    };
     for (const auto& [key, value] : req.queryParamsRange()) {
       ret.queryParams.emplace_back(key, value);
     }
@@ -400,8 +411,12 @@ TEST_F(HttpRequestViewTest, PrefinalizeKeepsBodyOfStatusesWithContent) {
   tracing::TelemetryContext telemetryContext{TelemetryConfig{}};
   ASSERT_EQ(reqSet(BuildRaw("GET", "/test", "HTTP/1.1")), http::StatusCodeOK);
 
-  for (http::StatusCode status : {http::StatusCodeOK, http::StatusCodeResetContent, http::StatusCodeNotFound,
-                                  http::StatusCodeInternalServerError}) {
+  for (http::StatusCode status : {
+           http::StatusCodeOK,
+           http::StatusCodeResetContent,
+           http::StatusCodeNotFound,
+           http::StatusCodeInternalServerError,
+       }) {
     HttpResponse resp(status, "body");
     prefinalizeResponse(resp, telemetryContext);
     EXPECT_EQ(resp.bodyInMemory(), "body") << status;
@@ -806,6 +821,10 @@ TEST_F(HttpRequestViewTest, AbsoluteFormTakesTheHostFromTheTarget) {
       {"coap+tcp.x-y://a/b", "a", "/b", ""},
       {"h://a/a/very/long/path/with/many/segments?x=1&y=2&z=3", "a", "/a/very/long/path/with/many/segments", "1"},
       {"http://a-very-long-host-name.example.com:12345/p", "a-very-long-host-name.example.com:12345", "/p", ""},
+      {"http://h:/p", "h:", "/p", ""},                // an empty port is allowed (RFC 3986 §3.2.3)
+      {"http://my_h%41st/p", "my_h%41st", "/p", ""},  // the host is not decoded
+      {"http://u%40:p!w@[2001:db8::7]:1/p", "[2001:db8::7]:1", "/p", ""},
+      {"http://[v1.x]/p", "[v1.x]", "/p", ""},
   };
   for (const Case& testCase : kCases) {
     SCOPED_TRACE(testCase.target);
@@ -827,9 +846,40 @@ TEST_F(HttpRequestViewTest, AbsoluteFormTakesTheHostFromTheTarget) {
 }
 
 TEST_F(HttpRequestViewTest, AbsoluteFormMalformedTargetIsRejected) {
-  for (const std::string_view target :
-       {"http:", "http:/p", "http:p", "mailto:a@b", "http://", "http://?x=1", "http:///p", "http://@/p", "http://u@/p",
-        "http://a@b@c/p", "http://h#f", "http://h#f/p", "http://\x01h/p", "http://u\x7F@h/p", "http://h\x1F/p"}) {
+  for (const std::string_view target : {
+           "http:",
+           "http:/p",
+           "http:p",
+           "mailto:a@b",
+           "http://",
+           "http://?x=1",
+           "http:///p",
+           "http://@/p",
+           "http://u@/p",
+           "http://a@b@c/p",
+           "http://h#f",
+           "http://h#f/p",
+           "http://\x01h/p",
+           "http://u\x7F@h/p",
+           "http://h\x1F/p",
+           "http://:80/p",
+           "http://u@:80/p",
+           "http://h:8x/p",
+           "http://h:80:90/p",
+           "http://h\\x/p",
+           "http://h%zz/p",
+           "http://h\"/p",
+           "http://h<x>/p",
+           "http://h|x/p",
+           "http://h{x}/p",
+           "http://h^/p",
+           "http://caf\xC3\xA9/p",
+           "http://[::1/p",
+           "http://[::1]x/p",
+           "http://[::1]:8x/p",
+           "http://[1.2.3.4]/p",
+           "http://[]/p",
+       }) {
     SCOPED_TRACE(target);
     EXPECT_EQ(reqSet(BuildRaw("GET", target)), http::StatusCodeBadRequest);
   }
@@ -853,6 +903,68 @@ TEST_F(HttpRequestViewTest, AbsoluteFormHostHeaderField) {
   EXPECT_EQ(req.authority(), "a:1");
   EXPECT_EQ(req.headerValueOrEmpty("x-header"), "value");
   EXPECT_EQ(req.headers().size(), 2U);
+}
+
+// RFC 9112 §3.2: a request whose Host header field is not uri-host [ ":" port ] (RFC 9110 §7.2) is refused, whatever
+// its version and the form of its request-target. The redirect to https and the handlers build URLs from it.
+TEST_F(HttpRequestViewTest, InvalidHostHeaderFieldIsRejected) {
+  for (std::string_view host : {
+           "a b/c@d",
+           "evil.example/x",
+           "evil.example?x",
+           "evil.example#x",
+           "user@h",
+           "h:8x",
+           ":80",
+           "h:80:90",
+           "[::1",
+           "[::1]x",
+           "[]",
+           "[1.2.3.4]",
+           "a\\b",
+           "a\tb",
+           "h%zz",
+           "caf\xC3\xA9",
+           "h\x7F",
+       }) {
+    SCOPED_TRACE(host);
+    for (std::string_view requestLine : {
+             "GET / HTTP/1.1",
+             "GET / HTTP/1.0",
+             "GET http://a/p HTTP/1.1",
+             "CONNECT a:443 HTTP/1.1",
+             "OPTIONS * HTTP/1.1",
+         }) {
+      EXPECT_EQ(reqSet(BuildRawWithHost(requestLine, host)), http::StatusCodeBadRequest) << requestLine;
+    }
+  }
+}
+
+TEST_F(HttpRequestViewTest, ValidHostHeaderFieldIsKeptAsIs) {
+  for (std::string_view host : {
+           "",
+           "h",
+           "h:80",
+           "h:",
+           "Example.COM:8080",
+           "my_host-1",
+           "%41",
+           "1.2.3.4:80",
+           "[::1]",
+           "[2001:db8::7]:8443",
+           "[::ffff:192.0.2.1]",
+           "[v1.x]",
+           "a!$&'()*+,;=~",
+       }) {
+    SCOPED_TRACE(host);
+    ASSERT_EQ(reqSet(BuildRawWithHost("GET /p HTTP/1.1", host)), http::StatusCodeOK);
+    ASSERT_TRUE(req.headerValue("host"));
+    EXPECT_EQ(*req.headerValue("host"), host);
+    EXPECT_EQ(req.path(), "/p");
+  }
+  // Optional whitespace around the value is not part of it.
+  ASSERT_EQ(reqSet(RawChars("GET / HTTP/1.1\r\nHost: \t h:1 \t\r\n\r\n")), http::StatusCodeOK);
+  EXPECT_EQ(req.headerValueOrEmpty("host"), "h:1");
 }
 
 TEST_F(HttpRequestViewTest, AbsoluteFormHostIsInTheTraceSpan) {
