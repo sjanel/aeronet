@@ -519,18 +519,20 @@ Http1ResponseParser::Status Http1ResponseParser::parse(std::span<char> buffer, b
     }
 
     if (_state == State::StatusLine) {
-      const auto sp1 = line.find(' ');
-      if (sp1 == std::string_view::npos) {
+      // status-line = HTTP-version SP status-code SP [ reason-phrase ] (RFC 9112 §4), of an HTTP/1.x version.
+      if (line.size() <= http::Version::kStrLen || line[http::Version::kStrLen] != ' ') {
         return Status::Error;
       }
-      const http::Version version{line.substr(0, sp1)};
+      // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
+      const http::Version version = http::Version::OfMajor<1>(line.data(), http::Version::kStrLen);
       if (!version.isValid()) {
         return Status::Error;
       }
-      // HTTP/1.1 (and newer) default to keep-alive; HTTP/1.0 defaults to close.
-      _http11 = version == http::HTTP_1_1;
+      // HTTP/1.1 defaults to keep-alive; HTTP/1.0 defaults to close. RFC 9110 §6.2 - a higher minor version is
+      // processed as the highest version we conform to, HTTP/1.1.
+      _http11 = version >= http::HTTP_1_1;
 
-      const std::string_view afterVersion = line.substr(sp1 + 1);
+      const std::string_view afterVersion = line.substr(http::Version::kStrLen + 1);
       const auto sp2 = afterVersion.find(' ');
       const std::string_view codeTok = sp2 == std::string_view::npos ? afterVersion : afterVersion.substr(0, sp2);
       const auto* begin = codeTok.data();

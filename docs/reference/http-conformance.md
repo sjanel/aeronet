@@ -74,7 +74,7 @@ The server answers these errors itself, before or instead of calling a handler:
 | `500 Internal Server Error` | Handler exception, or an invalid interim status returned by an expectation handler. |
 | `501 Not Implemented` | Unknown method, or unsupported `Transfer-Encoding`. |
 | `502 Bad Gateway` | `CONNECT` target unreachable. |
-| `505 HTTP Version Not Supported` | Major version other than 1. A higher minor version, such as `HTTP/1.3`, is processed and answered as HTTP/1.1 (RFC 9110 §6.2). |
+| `505 HTTP Version Not Supported` | Well-formed version of a major version other than 1, such as `HTTP/2.0`. A higher minor version, such as `HTTP/1.3`, is processed and answered as HTTP/1.1 (RFC 9110 §6.2). Any other version token, such as `http/1.1` (the name is case-sensitive) or `HTTP/1.10`, is a `400`. |
 
 aeronet does not validate the `Content-Type` of request bodies: a `415` based on the media type is the application's decision, for instance in a request middleware.
 

@@ -35,6 +35,7 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/http-version.hpp"
 #include "aeronet/internal/response-streamer.hpp"
 #include "aeronet/internal/url-parsed-result.hpp"
 #include "aeronet/log.hpp"
@@ -103,14 +104,15 @@ RetryConfig::Duration ParseRetryAfter(std::string_view value, RetryConfig::Durat
 }
 
 // Interpret the status line of a proxy CONNECT response ("HTTP/1.x <code> <reason>"). A 2xx code means the
-// tunnel is open; anything else (or a line we cannot parse a status code out of) is a proxy failure.
+// tunnel is open; anything else (or a line that is not an HTTP/1.x status line) is a proxy failure.
 HttpClientErrc CheckProxyTunnelStatus(std::string_view statusLine) {
-  auto sp = statusLine.find(' ');
-  if (sp == std::string_view::npos) {
+  if (statusLine.size() <= http::Version::kStrLen || statusLine[http::Version::kStrLen] != ' ' ||
+      // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
+      !http::Version::OfMajor<1>(statusLine.data(), http::Version::kStrLen).isValid()) {
     return HttpClientErrc::proxyError;
   }
   uint32_t code;
-  const auto pBeg = statusLine.data() + sp + 1;
+  const auto pBeg = statusLine.data() + http::Version::kStrLen + 1;
   if (pBeg + http::StatusCodeLen >= statusLine.data() + statusLine.size() || pBeg[http::StatusCodeLen] != ' ') {
     return HttpClientErrc::proxyError;
   }
