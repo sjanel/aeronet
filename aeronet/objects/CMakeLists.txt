@@ -316,6 +316,14 @@ AeronetAddUnitTest(
     aeronet_objects
 )
 
+AeronetAddUnitTest(
+    uri-host_test
+    src/uri-host.cpp
+    test/uri-host_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
 if(AERONET_ENABLE_ZLIB)
     AeronetAddUnitTest(
         zlib-encoder-decoder_test

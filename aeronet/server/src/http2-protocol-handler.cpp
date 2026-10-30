@@ -64,6 +64,7 @@
 #include "aeronet/tchars.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/tunnel-bridge.hpp"
+#include "aeronet/uri-host.hpp"
 #include "http2-writer-transport.hpp"
 #include "tunnel-manager.hpp"
 
@@ -332,6 +333,17 @@ void Http2ProtocolHandler::onHeadersDecoded(uint32_t streamId, DecodedHeaders& d
       releaseStreamAfterResponse(it);
       return;
     }
+  }
+
+  // As over HTTP/1 (RFC 9112 §3.2), a request is refused when its host, from which the https redirect and the handlers
+  // build URLs, is not uri-host [ ":" port ] (RFC 9110 §7.2): in its :authority (absent when empty, see above) or its
+  // Host header field, which a request may send instead (RFC 9113 §8.3.1).
+  if (!http::IsValidHostFieldValue(authorityValue) ||
+      !http::IsValidHostFieldValue(req.headerValueOrEmpty(http::Host))) {
+    (void)sendResponse(streamId, req.makeResponse(http::StatusCodeBadRequest, "Invalid :authority or Host header"),
+                       isHeadMethod);
+    releaseStreamAfterResponse(it);
+    return;
   }
 
   // RFC 9113 §8.1.1: a request is malformed when its content-length is not a number, or differs from the sum of the
