@@ -498,6 +498,36 @@ TEST(ResponseParserTest, RejectsBadVersionDigits) {
   EXPECT_EQ(st, Http1ResponseParser::Status::Error);
 }
 
+// RFC 9112 §2.3: the version of the status line must be "HTTP/" DIGIT "." DIGIT (case-sensitive), of major version 1.
+TEST(ResponseParserTest, RejectsNonHttp1Version) {
+  for (std::string_view statusLine : {"HTTP/2.0 200 OK", "HTTP/0.9 200 OK", "XTTP/1.1 200 OK", "http/1.1 200 OK",
+                                      "HTTP-1.1 200 OK", "HTTP/1x1 200 OK", "HTTP/1.x 200 OK", "HTTP/1.10 200 OK",
+                                      "HTTP/1.1200 OK", "HTTP/1.1", "HTTP/1. 200 OK", " HTTP/1.1 200 OK"}) {
+    SCOPED_TRACE(statusLine);
+    HttpResponse resp;
+    std::string raw(statusLine);
+    raw.append("\r\ncontent-length: 0\r\n\r\n");
+    EXPECT_EQ(parseAll(raw, resp, false, true), Http1ResponseParser::Status::Error);
+  }
+}
+
+// RFC 9110 §6.2: a higher HTTP/1 minor version is processed as HTTP/1.1 - keep-alive by default.
+TEST(ResponseParserTest, HigherHttp1MinorVersionIsProcessedAsHttp11) {
+  for (std::string_view version : {"HTTP/1.2", "HTTP/1.9"}) {
+    SCOPED_TRACE(version);
+    RawChars bodyBuf;
+    Http1ResponseParser parser(bodyBuf);
+    parser.reset(false);
+    HttpResponse resp;
+    std::string raw(version);
+    raw.append(" 200 OK\r\ncontent-length: 2\r\n\r\nok");
+    EXPECT_EQ(ParseCopy(parser, raw, false, resp, kMax), Http1ResponseParser::Status::Complete);
+    EXPECT_EQ(resp.status(), 200);
+    EXPECT_EQ(resp.bodyInMemory(), "ok");
+    EXPECT_TRUE(parser.keepAlive());
+  }
+}
+
 TEST(ResponseParserTest, RejectsBadStatusCode) {
   HttpResponse resp;
   auto st = parseAll("HTTP/1.1 99 OK\r\n\r\n", resp, false, true);

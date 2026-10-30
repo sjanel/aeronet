@@ -101,7 +101,7 @@ struct RequestDataAndExpectedStatusCode {
 TEST(HttpParserErrors, InvalidHTTPVersion) {
   Capture cap;
   ts.server.setParserErrorCallback([&](http::StatusCode err) { cap.push(err); });
-  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
+  ts.router().setDefault([](const HttpRequestView& req) { return req.makeResponse(http::StatusCodeOK); });
 
   for (RequestDataAndExpectedStatusCode expected : {
            RequestDataAndExpectedStatusCode("GET / HTTP/4.1\r\nHost: x\r\nConnection: close\r\n\r\n",
@@ -115,6 +115,10 @@ TEST(HttpParserErrors, InvalidHTTPVersion) {
            RequestDataAndExpectedStatusCode("GET /test HTTP/91.1\r\nHost: x\r\nConnection: close\r\n\r\n",
                                             http::StatusCodeBadRequest),
            RequestDataAndExpectedStatusCode("GET /test HTTP/r.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+                                            http::StatusCodeBadRequest),
+           RequestDataAndExpectedStatusCode("GET /test http/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+                                            http::StatusCodeBadRequest),
+           RequestDataAndExpectedStatusCode("GET /test http/..1\r\nHost: x\r\nConnection: close\r\n\r\n",
                                             http::StatusCodeBadRequest),
            RequestDataAndExpectedStatusCode("GET /test HTTP/-1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
                                             http::StatusCodeBadRequest),

@@ -37,7 +37,7 @@ Every request returns an `HttpClientResult`, a `std::expected<HttpResponse, Http
 | `timeout` | TLS handshake, request write, or response read not completed in time (see [Timeouts](#timeouts)). |
 | `writeError`, `ioError` | Transport write failure, internal I/O failure. |
 | `connectionClosed` | Connection closed (or HTTP/2 stream reset) by the peer before a complete response, such as a body shorter than its `Content-Length`. |
-| `malformedResponse` | Response that cannot be parsed, or body that cannot be decoded: corrupt or truncated content coding, unsupported `Content-Encoding`. Over HTTP/2, also a body longer or shorter than its `content-length`. |
+| `malformedResponse` | Response that cannot be parsed, or body that cannot be decoded: corrupt or truncated content coding, unsupported `Content-Encoding`. Over HTTP/1.1, also a status line whose version is not `HTTP/1.x` (a higher minor version, such as `HTTP/1.2`, is processed as HTTP/1.1). Over HTTP/2, also a body longer or shorter than its `content-length`. |
 | `responseTooLarge` | Response larger than `maxResponseBytes`, or whose decoding exceeds the [decompression limits](../guides/compression.md#request-body-decompression) (`maxCompressedBytes`, `maxDecompressedBytes`, `maxExpansionRatio` of `HttpClientConfig::decompression`). |
 | `aborted` | Transfer stopped by the [`ResponseBodySink`](#streaming-response-bodies) of the request. |
 | `protocolUnsupported` | The server selected a protocol this build cannot speak, such as `h2` without HTTP/2 support. |
