@@ -12,6 +12,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/compiler-config.hpp"
 #include "aeronet/connection-info.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/find-char.hpp"
@@ -61,13 +62,13 @@ void HttpRequestView::QueryParamRange::iterator::advance() {
 }
 
 HttpRequestView::QueryParam HttpRequestView::QueryParamRange::iterator::operator*() const {
-  const char* commaPtr = std::find(_begKey + 1, _endFullQuery, url::kNewPairSep);
-  const char* equalPtr = std::find(_begKey, commaPtr, url::kNewKeyValueSep);
-  const char* keyEnd = (equalPtr == commaPtr) ? commaPtr : equalPtr;
+  const char* pComma = std::find(_begKey + 1, _endFullQuery, url::kNewPairSep);
+  const char* pEqual = std::find(_begKey, pComma, url::kNewKeyValueSep);
+  const char* pKeyEnd = (pEqual == pComma) ? pComma : pEqual;
 
-  QueryParam ret(std::string_view{_begKey, keyEnd}, {});
-  if (equalPtr != commaPtr) {
-    ret.value = std::string_view(equalPtr + 1, commaPtr);
+  QueryParam ret(std::string_view{_begKey, pKeyEnd}, {});
+  if (pEqual != pComma) {
+    ret.value = std::string_view(pEqual + 1, pComma);
   }
   return ret;
 }
@@ -77,7 +78,7 @@ std::string_view HttpRequestView::body() const {
     throw std::logic_error("Cannot call body() after readBody() on the same request");
   }
   // Not the cleanest, but it should appear as const from the caller.
-  auto& self = *const_cast<HttpRequestView*>(this);
+  HttpRequestView& self = *const_cast<HttpRequestView*>(this);
   self._bodyAccessMode = BodyAccessMode::Aggregated;
   if (self._pBodyAccessBridge != nullptr && self._pBodyAccessBridge->aggregate != nullptr) {
     self._body = self._pBodyAccessBridge->aggregate(self, self._pBodyAccessContext);
@@ -278,27 +279,111 @@ constexpr bool IsSchemeChar(char ch) noexcept {
   return kSchemeCharTable.data[static_cast<unsigned char>(ch)];
 }
 
+// Control characters are never valid in a request-target (RFC 3986 §2). A bare LF in particular could end the request
+// line for lenient parsers.
+// A captureless lambda (not a function): the algorithms taking it monomorphize on its unique closure type, so that the
+// per-char predicate always inlines into their loop instead of becoming an indirect call through a function pointer.
+constexpr auto IsControlChar = [](char ch) noexcept {
+  return static_cast<unsigned char>(ch) < 0x20U || static_cast<unsigned char>(ch) == 0x7FU;
+};
+
 // RFC 9112 §3.2: request-target = origin-form / absolute-form / authority-form / asterisk-form.
-// Only the form is checked here; the content is validated later (path decoding, CONNECT target parsing).
-constexpr bool IsValidRequestTargetForm(std::string_view target, http::Method method) noexcept {
+enum class RequestTargetForm : uint8_t {
+  Invalid,
+  AsPath,    // origin-form, authority-form (CONNECT) or asterisk-form (OPTIONS): the target is kept as the path
+  Absolute,  // absolute-form: the host of the request is its authority
+};
+
+// Only the form is checked here; the content is validated later (path decoding, CONNECT target parsing,
+// MoveAuthorityFirst).
+constexpr RequestTargetForm ClassifyRequestTarget(std::string_view target, http::Method method) noexcept {
   if (target.empty()) {
-    return false;
+    return RequestTargetForm::Invalid;
   }
   if (target.front() == '/') {
-    return true;  // origin-form
+    return RequestTargetForm::AsPath;  // origin-form
   }
   if (method == http::Method::CONNECT) {
-    return true;  // authority-form
+    return RequestTargetForm::AsPath;  // authority-form
   }
   if (target == "*") {
-    return method == http::Method::OPTIONS;  // asterisk-form
+    // asterisk-form
+    return method == http::Method::OPTIONS ? RequestTargetForm::AsPath : RequestTargetForm::Invalid;
   }
   // absolute-form, starting with scheme ":" where scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
   if (!IsAsciiAlpha(target.front())) {
+    return RequestTargetForm::Invalid;
+  }
+  const auto pSchemeEnd = std::find_if_not(target.begin() + 1, target.end(), IsSchemeChar);
+  return pSchemeEnd != target.end() && *pSchemeEnd == ':' ? RequestTargetForm::Absolute : RequestTargetForm::Invalid;
+}
+
+// Where MoveAuthorityFirst() left the parts of an absolute-form request-target.
+struct MovedAbsoluteTarget {
+  char* pPathBeg;  // the authority is just before it, at the start of the request-target
+  char* pPathEnd;
+  std::size_t authorityLength;
+};
+
+// Rewrites in place the absolute-form request-target [pFirst, pLast), "scheme://[userinfo@]host[:port][/path][?query]"
+// (RFC 9112 §3.2.2), as "host[:port]/path[?query]": the authority moves over the scheme and the userinfo preceding it,
+// and an empty path becomes "/" (RFC 9110 §4.2.3). The path and the query are then decoded like the ones of an
+// origin-form, and the head of the request is still located from the start of its request-target.
+// Returns false if the target is malformed, in which case the request line is left in an unspecified state.
+// Out of line: rare in practice, it would otherwise be inlined in the parsing of every request head.
+AERONET_NOINLINE bool MoveAuthorityFirst(char* pFirst, char* pLast, MovedAbsoluteTarget& moved) {
+  const std::string_view target(pFirst, pLast);
+  const std::size_t schemeEnd = target.find(':');
+  assert(schemeEnd != std::string_view::npos);  // see ClassifyRequestTarget()
+
+  // Without "//", the target has no authority: the server cannot know which host is requested.
+  if (!target.substr(schemeEnd + 1).starts_with("//")) {
     return false;
   }
-  const auto schemeEnd = std::find_if_not(target.begin() + 1, target.end(), IsSchemeChar);
-  return schemeEnd != target.end() && *schemeEnd == ':';
+  const std::size_t authorityBeg = schemeEnd + 3;
+  const std::size_t authorityEnd = std::min(target.find_first_of("/?#", authorityBeg), target.size());
+  if (authorityEnd != target.size() && target[authorityEnd] == '#') {
+    return false;  // a request-target has no fragment
+  }
+  std::string_view authority = target.substr(authorityBeg, authorityEnd - authorityBeg);
+  if (std::ranges::any_of(authority, IsControlChar)) {
+    return false;
+  }
+  // The userinfo (RFC 3986 §3.2.1) is not part of the host. '@' is not allowed in it: with several, parsers disagree on
+  // which one ends the userinfo, so the host they pick differs.
+  if (const std::size_t atPos = authority.find('@'); atPos != std::string_view::npos) {
+    authority.remove_prefix(atPos + 1);
+    if (authority.contains('@')) {
+      return false;
+    }
+  }
+  if (authority.empty()) {
+    return false;  // RFC 9110 §4.2.1: a recipient rejects an http(s) URI with an empty host
+  }
+
+  // Both moves go towards the start of the target (the scheme and "://" take at least 4 bytes): the first one does not
+  // overwrite the rest of the target, and the second one has room for the "/" of an empty path.
+  const char* pRest = pFirst + authorityEnd;
+  const std::size_t restLength = target.size() - authorityEnd;
+  const bool emptyPath = restLength == 0 || *pRest == '?';
+  const std::size_t authorityLength = authority.size();
+
+  std::memmove(pFirst, authority.data(), authorityLength);
+  char* pPathBeg = pFirst + authorityLength;
+  char* pRestDest = pPathBeg;
+  if (emptyPath) {
+    *pRestDest++ = '/';
+  }
+  std::memmove(pRestDest, pRest, restLength);
+
+  moved = {pPathBeg, pRestDest + restLength, authorityLength};
+  return true;
+}
+
+// Sets the host of the request to the authority of its absolute-form request-target, whatever its Host header field.
+// Out of line: rare, and an insertion in the map of headers would be inlined in the parsing of every request head.
+AERONET_NOINLINE SvToSvMap::iterator SetHost(SvToSvMap& headers, std::string_view authority) {
+  return headers.insert_or_assign(std::string_view(http::Host), authority).first;
 }
 
 }  // namespace
@@ -306,8 +391,8 @@ constexpr bool IsValidRequestTargetForm(std::string_view target, http::Method me
 http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawChars& tmpBuffer,
                                                  uint32_t maxHeadersBytes, bool mergeAllowedForUnknownRequestHeaders,
                                                  tracing::SpanPtr traceSpan) {
-  char* first = inBuffer.data();
-  char* last = first + inBuffer.size();
+  char* pFirst = inBuffer.data();
+  char* pLast = pFirst + inBuffer.size();
 
   assert(inBuffer.size() >= http::kHttpReqLineMinLen);
 
@@ -316,33 +401,33 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
   assert(_headParseState != HeadParseState::WaitingForBody);  // see resumeHeadWaitingForBody()
   const bool resume = _headParseState == HeadParseState::Partial;
   _headParseState = HeadParseState::None;
-  const auto needMoreData = [this, base = inBuffer.data()](const char* resumePos) {
-    _headSpanSize = static_cast<std::size_t>(resumePos - base);
+  const auto needMoreData = [this, base = inBuffer.data()](const char* pResumePos) {
+    _headSpanSize = static_cast<std::size_t>(pResumePos - base);
     _headParseState = HeadParseState::Partial;
     return kStatusNeedMoreData;
   };
 
   if (resume) {
-    rebaseHeadViews(first);
-    first += _headSpanSize;
+    rebaseHeadViews(pFirst);
+    pFirst += _headSpanSize;
   } else {
-    char* lineLast = SearchCRLF(first, last);
-    if (lineLast == last) {
+    char* pLineLast = SearchCRLF(pFirst, pLast);
+    if (pLineLast == pLast) {
       return kStatusNeedMoreData;
     }
-    if (lineLast[1] != '\n' || std::cmp_less(lineLast - first, http::kHttpReqLineMinLen - http::CRLF.size())) {
+    if (pLineLast[1] != '\n' || std::cmp_less(pLineLast - pFirst, http::kHttpReqLineMinLen - http::CRLF.size())) {
       return http::StatusCodeBadRequest;
     }
 
     static_assert(http::kHttpReqLineMinLen - http::CRLF.size() >= 8);
 
     uint64_t start;
-    std::memcpy(&start, first, sizeof(start));
+    std::memcpy(&start, pFirst, sizeof(start));
 
     const uint64_t spaceMask = SwarFindByte(start, ' ');
     if (spaceMask == 0) {
-      char* realSep = std::find(first + 8, lineLast, ' ');
-      return realSep == lineLast ? http::StatusCodeBadRequest : http::StatusCodeNotImplemented;
+      char* realSep = std::find(pFirst + 8, pLineLast, ' ');
+      return realSep == pLineLast ? http::StatusCodeBadRequest : http::StatusCodeNotImplemented;
     }
 
     const auto methodLen = LeadingMatchIndex(spaceMask);
@@ -350,8 +435,7 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
       // request line starting with a space: empty method token
       return http::StatusCodeBadRequest;
     }
-    // RFC 9110 §9.1: the method token is case-sensitive ("get" is not "GET"). Matching it case-insensitively would let
-    // a request bypass an intermediary rule written for the exact method name.
+    // RFC 9110 §9.1: the method token is case-sensitive.
     const uint64_t candidate = start & FirstNBytesMask(methodLen);
 
     const auto methodIt = std::ranges::find(kMethodCodes.codes, candidate);
@@ -360,21 +444,39 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
     }
     _method = http::MethodFromIdx(static_cast<http::MethodIdx>(methodIt - std::begin(kMethodCodes.codes)));
 
-    char* nextSep = first + methodLen;
+    char* pNextSep = pFirst + methodLen;
 
     // Path
-    first = nextSep + 1;
-    nextSep = FindChar(first, lineLast, ' ');
+    pFirst = pNextSep + 1;
+    pNextSep = FindChar(pFirst, pLineLast, ' ');
 
-    if (!IsValidRequestTargetForm(std::string_view(first, nextSep), _method) || !decodePath(first, nextSep)) {
+    const RequestTargetForm targetForm = ClassifyRequestTarget(std::string_view(pFirst, pNextSep), _method);
+    if (targetForm == RequestTargetForm::Invalid) {
       return http::StatusCodeBadRequest;
     }
-    // rebaseHeadViews() locates the head from the path, decoded in place where the request-target starts.
-    assert(_pPath == inBuffer.data() + methodLen + 1);
+    char* pPathBeg = pFirst;
+    char* pPathEnd = pNextSep;
+    _authorityLength = 0;
+    if (targetForm == RequestTargetForm::Absolute) {
+      MovedAbsoluteTarget moved;
+      if (!MoveAuthorityFirst(pFirst, pNextSep, moved)) {
+        return http::StatusCodeBadRequest;
+      }
+      _pAuthority = pFirst;
+      _authorityLength = SafeCast<uint32_t>(moved.authorityLength);
+      pPathBeg = moved.pPathBeg;
+      pPathEnd = moved.pPathEnd;
+    }
+    if (!decodePath(pPathBeg, pPathEnd)) {
+      return http::StatusCodeBadRequest;
+    }
+    // rebaseHeadViews() locates the head from the path, decoded in place where the request-target starts, or just after
+    // the authority of an absolute-form one.
+    assert(_pPath == inBuffer.data() + methodLen + 1 + _authorityLength);
 
     // Version
-    first = nextSep + 1;
-    _version = http::Version{first, static_cast<std::size_t>(lineLast - first)};
+    pFirst = pNextSep + 1;
+    _version = http::Version{pFirst, static_cast<std::size_t>(pLineLast - pFirst)};
     if (!_version.isValid()) {
       // malformed version token
       return http::StatusCodeBadRequest;
@@ -391,63 +493,68 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
 
     // Headers
     _headers.clear();
-    first = lineLast + http::CRLF.size();
-    if (first == last) {
+    pFirst = pLineLast + http::CRLF.size();
+    if (pFirst == pLast) {
       // need more data - the headers are not complete yet
-      return needMoreData(first);
+      return needMoreData(pFirst);
     }
   }
   bool foundEmptyLine = false;
-  while (first < last) {
-    char* lineLast = SearchCRLF(first, last);
-    if (lineLast == last) {
-      return needMoreData(first);
+  while (pFirst < pLast) {
+    char* pLineLast = SearchCRLF(pFirst, pLast);
+    if (pLineLast == pLast) {
+      return needMoreData(pFirst);
     }
-    if (lineLast[1] != '\n') {
+    if (pLineLast[1] != '\n') {
       return http::StatusCodeBadRequest;
     }
-    if (lineLast == first) {
+    if (pLineLast == pFirst) {
       // we are pointing to a CRLF (empty line) - end of headers
       foundEmptyLine = true;
       break;
     }
-    if (std::cmp_less(maxHeadersBytes, lineLast + http::CRLF.size() - inBuffer.data())) {
+    if (maxHeadersBytes < static_cast<uint64_t>(pLineLast - inBuffer.data()) + http::CRLF.size()) {
       return http::StatusCodeRequestHeaderFieldsTooLarge;
     }
 
-    const auto [nameView, valueView] = http::ParseHeaderLineTrimValue(first, lineLast);
+    const auto [nameView, valueView] = http::ParseHeaderLineTrimValue(pFirst, pLineLast);
     // tolower in place for header name (to avoid having to compare strings case-insensitively later)
-    tolower(first, nameView.size());
+    tolower(pFirst, nameView.size());
     if (!http::IsValidHeaderName(nameView) || !http::IsValidHeaderValue(valueView)) {
       return http::StatusCodeBadRequest;
     }
 
     if (nameView == http::ContentEncoding) {
       // Content codings are case-insensitive (RFC 9110 §8.4.1): lower-case them in place too.
-      tolower(first + (valueView.data() - first), valueView.size());
+      tolower(pFirst + (valueView.data() - pFirst), valueView.size());
     }
 
     auto [insertedIt, inserted] = _headers.emplace(nameView, valueView);
     // Store header using in-place merge helper (headers live inside connection buffer).
-    if (!inserted && !http::MergeHeaderInPlace(_headers, insertedIt, valueView, tmpBuffer, inBuffer.data(), first,
+    if (!inserted && !http::MergeHeaderInPlace(_headers, insertedIt, valueView, tmpBuffer, inBuffer.data(), pFirst,
                                                mergeAllowedForUnknownRequestHeaders)) {
       return http::StatusCodeBadRequest;
     }
-    first = lineLast + http::CRLF.size();
+    pFirst = pLineLast + http::CRLF.size();
   }
 
   if (!foundEmptyLine) {
     // The loop exited because first >= last after advancing past the last header's CRLF,
     // without finding the empty line that terminates the header section.
-    return needMoreData(first);
+    return needMoreData(pFirst);
   }
 
-  const auto hostIt = _headers.find(http::Host);
+  auto hostIt = _headers.find(http::Host);
   if (_version.minor() == 1 && hostIt == _headers.end()) {
     // RFC 9112 §3.2 : "A server MUST respond with 400 (Bad Request) to any HTTP/1.1 request message that lacks a Host
     // header field and to any request message that contains more than one Host header field line or a Host header field
     // with an invalid field value."
     return http::StatusCodeBadRequest;
+  }
+  if (_authorityLength != 0) [[unlikely]] {
+    // RFC 9112 §3.3: the host of an absolute-form request-target is the one of the request, its Host header field (that
+    // was required above for HTTP/1.1) is ignored.
+    hostIt = SetHost(_headers, authority());
   }
 
   // At this point, we have a complete request head, and we point to a CRLF.
@@ -463,7 +570,7 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
   }
 
   _traceSpan = std::move(traceSpan);
-  _headSpanSize = static_cast<std::size_t>(first + http::CRLF.size() - inBuffer.data());
+  _headSpanSize = static_cast<std::size_t>(pFirst + http::CRLF.size() - inBuffer.data());
 
   resetBodyState();
 
@@ -479,8 +586,9 @@ void HttpRequestView::resumeHeadWaitingForBody(std::span<char> inBuffer) noexcep
 }
 
 std::size_t HttpRequestView::pathOffsetInHead() const noexcept {
-  // The request-target, where the path is decoded in place, starts after the method and a space.
-  return http::MethodToStr(_method).size() + 1U;
+  // The request-target starts after the method and a space. The path is decoded in place there, or after the authority
+  // of an absolute-form request-target.
+  return http::MethodToStr(_method).size() + 1U + _authorityLength;
 }
 
 void HttpRequestView::rebaseHeadViews(const char* newBase) noexcept {
@@ -491,6 +599,7 @@ void HttpRequestView::rebaseHeadViews(const char* newBase) noexcept {
   }
   const HeadViewsRemapper remap(oldBase, _headSpanSize, newBase);
   _pPath = remap(_pPath);
+  _pAuthority = remap(_pAuthority);
   _pDecodedQueryParams = remap(_pDecodedQueryParams);
   remap(_headers);
 }
@@ -581,6 +690,7 @@ void HttpRequestView::pinHeadStorage(RawChars& headBuffer) {
 
   const HeadViewsRemapper remap(reinterpret_cast<std::uintptr_t>(oldBase), _headSpanSize, headBuffer.data());
   _pPath = remap(_pPath);
+  _pAuthority = remap(_pAuthority);
   _pDecodedQueryParams = remap(_pDecodedQueryParams);
   remap(_headers);
   remap(_trailers);
@@ -727,11 +837,7 @@ HttpResponse::Options HttpRequestView::makeResponseOptions() const noexcept {
 }
 
 bool HttpRequestView::decodePath(char* pathStart, char* pathEnd) {
-  // Control characters are never valid in a request-target (RFC 3986 §2). A bare LF in particular could end the
-  // request line for lenient parsers.
-  if (std::any_of(pathStart, pathEnd, [](char ch) {
-        return static_cast<unsigned char>(ch) < 0x20U || static_cast<unsigned char>(ch) == 0x7FU;
-      })) {
+  if (std::any_of(pathStart, pathEnd, IsControlChar)) {
     return false;
   }
   char* questionMark = FindChar(pathStart, pathEnd, '?');

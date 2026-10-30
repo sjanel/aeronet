@@ -445,7 +445,7 @@ SingleHttpServer app(tlsConfig);
 | `httpsRedirect.targetPort` | `0` (disabled) | Any non-zero port enables the redirect. Port 443 is omitted from the URL, other ports are appended (`https://host:8443/path`). |
 | `httpsRedirect.statusCode` | `301` | One of `301`, `302`, `307`, `308`. Use `308` (`http::StatusCodePermanentRedirect`) to make clients keep the method and body of non-`GET` requests. |
 
-- The host is taken from the `Host` header (the `:authority` of a cleartext HTTP/2 request, if any), with its port replaced by the target port. A request without host receives `400 Bad Request`.
+- The host is taken from the `Host` header (the authority of an absolute-form request target, or the `:authority` of a cleartext HTTP/2 request, if any), with its port replaced by the target port. A request without host receives `400 Bad Request`.
 - The path and query are preserved and re-encoded, so the `Location` value is always a valid URL, safe from header injection.
 - The redirect bypasses routing, protocol upgrades, and request bodies. Over HTTP/1.1, it closes the connection, after a [lingering close](../guides/server-lifecycle.md#lingering-close) when the body of the request is still coming. A cleartext HTTP/2 client ([h2c](http2.md#how-a-connection-becomes-http2)) gets the redirect on each of its streams, and the stream of a request whose body is still coming is reset with `NO_ERROR`, so that the client stops sending it.
 - Redirecting is a plaintext feature: it does not require OpenSSL, and enabling it together with TLS on the same listener fails validation.

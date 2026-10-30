@@ -523,10 +523,13 @@ class HttpRequestView {
   // HTTP/2 :scheme pseudo-header as string ("https", "http" or custom scheme); empty for HTTP/1.x.
   [[nodiscard]] std::string_view scheme() const noexcept { return {_pScheme, _schemeLength}; }
 
-  // HTTP/2 :authority pseudo-header (equivalent to Host header); empty for HTTP/1.x.
-  // For HTTP/1.x requests, use headerValueOrEmpty("host") instead.
-  [[nodiscard]] std::string_view authority() const noexcept { return {_pAuthority, _authorityLength}; }
 #endif
+
+  // Authority of the request (host and optional port): the HTTP/2 :authority pseudo-header (equivalent to Host header),
+  // or, for an HTTP/1.x request, the authority of its absolute-form request-target without userinfo (RFC 9112 §3.2.2),
+  // that replaces its Host header field: headerValueOrEmpty("host") then returns it too.
+  // Empty otherwise, use headerValueOrEmpty("host") instead.
+  [[nodiscard]] std::string_view authority() const noexcept { return {_pAuthority, _authorityLength}; }
 
   // Tells whether this request has a 'Expect: 100-continue' header.
   [[nodiscard]] bool hasExpectContinue() const noexcept;
@@ -774,7 +777,8 @@ class HttpRequestView {
   // percent-encoding).
   bool decodePath(char* pathStart, char* pathEnd);
 
-  // Offset in the head of the request-target, where the path is decoded in place: locates the head from the path.
+  // Offset in the head of the path, decoded in place at the start of the request-target (after the authority of an
+  // absolute-form one): locates the head from the path.
   [[nodiscard]] std::size_t pathOffsetInHead() const noexcept;
 
   // Makes the views set by the parsing of the head point into the head at newBase, from where it was parsed.
@@ -819,9 +823,10 @@ class HttpRequestView {
   };
 
   const char* _pPath{nullptr};
+  // HTTP/2 :authority pseudo-header (equivalent to Host), or authority of an absolute-form HTTP/1.x request-target
+  const char* _pAuthority{nullptr};
 #ifdef AERONET_ENABLE_HTTP2
-  const char* _pAuthority{nullptr};  // :authority pseudo-header (equivalent to Host)
-  const char* _pScheme{nullptr};     // :scheme pseudo-header ("https", "http" or custom scheme)
+  const char* _pScheme{nullptr};  // :scheme pseudo-header ("https", "http" or custom scheme)
 #endif
   // Raw query component (excluding '?') retained as-is; per-key/value decoding happens on iteration.
   const char* _pDecodedQueryParams{nullptr};
@@ -849,9 +854,9 @@ class HttpRequestView {
   std::size_t _headSpanSize{0};
   tracing::SpanPtr _traceSpan;
   uint32_t _pathLength{0};
+  uint32_t _authorityLength{0};
 #ifdef AERONET_ENABLE_HTTP2
   uint32_t _streamId{0};  // HTTP/2 stream ID (0 indicates HTTP/1.x)
-  uint32_t _authorityLength{0};
   uint32_t _schemeLength{0};
 #endif
   uint32_t _decodedQueryParamsLength{0};

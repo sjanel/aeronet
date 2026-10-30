@@ -365,7 +365,7 @@ class HttpMessage {
   // BODY SETTERS /
   // -------------/
 
-  // Assigns the given body to this HttpMessage.
+  // Assigns the given body to this HttpMessage, along with the given content type value.
   // Empty body is allowed - this will remove any existing body.
   // The whole buffer is copied internally in the HttpMessage. If the body is large, prefer the capture by value of
   // body() overloads to avoid a copy (and possibly an allocation).

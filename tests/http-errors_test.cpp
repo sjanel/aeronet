@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <format>
 #include <initializer_list>
 #include <mutex>
 #include <random>
@@ -1255,6 +1256,44 @@ TEST(HttpGardenRequestLine, ValidRequestTargetFormsAreAccepted) {
   }
   const std::string resp = test::sendAndCollect(port, "OPTIONS * HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n");
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+}
+
+// RFC 9112 §3.2.2: a server accepts the absolute-form, routed by the path of the target, and takes the host from the
+// target, ignoring Host (§3.3).
+TEST(HttpGardenRequestLine, AbsoluteFormTargetIsRoutedByItsPathAndHost) {
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/onlyget", [](const HttpRequestView& req) {
+    return req.makeResponse(
+        std::format("host={};x={}", req.headerValueOrEmpty(http::Host), req.queryParamValueOrEmpty("x")));
+  });
+
+  const auto exchange = [](std::string_view target, std::string_view method = "GET") {
+    return test::sendAndCollect(
+        port, std::format("{} {} HTTP/1.1\r\nHost: ignored\r\nConnection: close\r\n\r\n", method, target));
+  };
+
+  std::string resp = exchange("http://h/onlyget");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.ends_with("host=h;x=")) << resp;
+
+  resp = exchange("https://user@example.com:8443/onlyget?x=a%20b");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.ends_with("host=example.com:8443;x=a b")) << resp;
+
+  // the routing applies to the path of the target
+  resp = exchange("http://h/missing");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 404")) << resp;
+  resp = exchange("http://h/onlyget", "POST");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 405")) << resp;
+
+  // an origin-form request still takes its host from Host
+  resp = exchange("/onlyget");
+  EXPECT_TRUE(resp.ends_with("host=ignored;x=")) << resp;
+
+  for (const std::string_view target :
+       {"http://", "http:/onlyget", "mailto:a@b", "http://a@b@c/onlyget", "http://h#f"}) {
+    SCOPED_TRACE(target);
+    EXPECT_TRUE(exchange(target).starts_with("HTTP/1.1 400"));
+  }
 }
 
 // =============================================================================

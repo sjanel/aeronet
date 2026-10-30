@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cassert>
-#include <cstddef>
 #include <stdexcept>
 #include <string_view>
 
@@ -40,7 +39,7 @@ class LowerAsciiKey {
  public:
   // Implicit on purpose: lets call sites pass literals directly, e.g. req.headerValue("content-type").
   // See class-level doc, construction path 1, for the compile-time precondition this enforces.
-  template <std::size_t N>
+  template <std::string_view::size_type N>
   consteval LowerAsciiKey(const char (&str)[N]) : _sv(str, N - 1) {  // NOLINT(*-explicit-constructor)
     static_assert(N != 0);
     if (_sv.empty()) {
@@ -65,7 +64,7 @@ class LowerAsciiKey {
   [[nodiscard]] constexpr const char* data() const noexcept { return _sv.data(); }
 
   // Returns the underlying string_view's size.
-  [[nodiscard]] constexpr std::size_t size() const noexcept { return _sv.size(); }
+  [[nodiscard]] constexpr std::string_view::size_type size() const noexcept { return _sv.size(); }
 
   // Defaulted equality operator: compares the underlying string_view.
   constexpr bool operator==(const LowerAsciiKey&) const noexcept = default;
