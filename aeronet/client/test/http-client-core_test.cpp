@@ -2696,6 +2696,11 @@ TEST_F(HttpClientProxyTlsE2ETest, ProxyMalformedStatusLineReturnsProxyError) {
 
 TEST_F(HttpClientProxyTlsE2ETest, ProxyInvalidAndInformationalStatusCodesReturnProxyError) {
   for (std::string response : {
+           "XTTP/1.1 200 Connection established\r\n\r\n",
+           "http/1.1 200 Connection established\r\n\r\n",
+           "HTTP/2.0 200 Connection established\r\n\r\n",
+           "HTTP/1.10 200 Connection established\r\n\r\n",
+           "HTTP/1.1\r\n\r\n",
            "HTTP/1.1 invalid status\r\n\r\n",
            "HTTP/1.1 200invalid\r\n\r\n",
            "HTTP/1.1 2\r\n\r\n",
