@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <format>
 #include <string>
 #include <string_view>
 
@@ -10,12 +13,14 @@
 #include "aeronet/encoding.hpp"
 #include "aeronet/features.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response-writer.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/native-handle.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 
@@ -1285,3 +1290,261 @@ TEST(HttpCompression, DirectCompression_ZstdRoundTrip) {
 }
 
 #endif  // AERONET_ENABLE_ZSTD
+
+// =============================================================================
+// HEAD responses carry the headers of the GET ones (RFC 9110 §9.3.2), compression included: their Content-Length is
+// the length of the compressed body (RFC 9110 §8.6).
+// =============================================================================
+
+#ifdef AERONET_ENABLE_ZLIB
+
+namespace {
+
+constexpr std::size_t kHeadMinBytes = 64;
+
+void ConfigureHeadCompression(bool useLeadingZeroes = true) {
+  ts.postConfigUpdate([useLeadingZeroes](HttpServerConfig& cfg) {
+    cfg.compression.minBytes = kHeadMinBytes;
+    cfg.compression.maxCompressRatio = 0.6F;
+    cfg.compression.addVaryAcceptEncodingHeader = true;
+    cfg.compression.useLeadingZeroesInContentLength = useLeadingZeroes;
+    cfg.compression.defaultDirectCompressionMode = DirectCompressionMode::Auto;
+    cfg.compression.preferredFormats = {Encoding::gzip};
+    cfg.compression.contentTypeAllowList.clear();
+  });
+}
+
+// Sends a 'method' request to 'target' with the given Accept-Encoding (none if empty) and HTTP version, and returns the
+// parsed response, read until the server closes the connection.
+test::ParsedResponse Fetch(std::string_view method, std::string_view target, std::string_view acceptEncoding,
+                           std::string_view version = "HTTP/1.1") {
+  std::string req = std::format("{} {} {}\r\nhost: x\r\nconnection: close\r\n", method, target, version);
+  if (!acceptEncoding.empty()) {
+    req += std::format("accept-encoding: {}\r\n", acceptEncoding);
+  }
+  req += http::CRLF;
+  test::ClientConnection cnx(ts.port());
+  test::sendAll(cnx.fd(), req);
+  return test::parseResponseOrThrow(test::recvUntilClosed(cnx.fd()));
+}
+
+// Checks that the Content-Length of 'resp' is 'expected', compared as a number, and without leading zeroes unless
+// 'leadingZeroesAllowed'.
+void ExpectContentLength(const test::ParsedResponse& resp, std::size_t expected, bool leadingZeroesAllowed) {
+  const std::string value = test::getHeader(resp, http::ContentLength);
+  ASSERT_FALSE(value.empty()) << resp.headersRaw;
+  EXPECT_EQ(std::stoull(value), expected) << resp.headersRaw;
+  if (!leadingZeroesAllowed) {
+    EXPECT_TRUE(value == "0" || !value.starts_with('0')) << resp.headersRaw;
+  }
+}
+
+// Checks that the HEAD response to 'target' has the status and the headers describing the content of the GET one,
+// whose Content-Length is the length of the GET content (de-chunked), and no body. Returns the GET response.
+test::ParsedResponse ExpectHeadMatchesGet(std::string_view target, std::string_view acceptEncoding,
+                                          std::string_view version, bool useLeadingZeroes) {
+  test::ParsedResponse get = Fetch("GET", target, acceptEncoding, version);
+  const test::ParsedResponse head = Fetch("HEAD", target, acceptEncoding, version);
+  EXPECT_EQ(head.statusCode, get.statusCode);
+  for (std::string_view name : {
+           http::ContentType.get(),
+           http::ContentEncoding.get(),
+           http::Vary.get(),
+           http::Trailer.get(),
+           std::string_view{"x-custom"},
+       }) {
+    EXPECT_EQ(test::getHeader(head, name), test::getHeader(get, name)) << name << '\n' << head.headersRaw;
+  }
+  if (get.chunked) {
+    // Sent chunked for its trailers: the HEAD response announces the length of the de-chunked content.
+    ExpectContentLength(head, get.body.size(), useLeadingZeroes);
+  } else {
+    ExpectContentLength(get, get.body.size(), useLeadingZeroes);
+    EXPECT_EQ(test::getHeader(head, http::ContentLength), test::getHeader(get, http::ContentLength));
+  }
+  EXPECT_FALSE(head.headers.contains(http::TransferEncoding.get())) << head.headersRaw;
+  EXPECT_TRUE(head.body.empty()) << head.body.size();
+  return get;
+}
+
+// How the body of a GET response is compressed when a coding is negotiated.
+enum class GetCompression : std::uint8_t {
+  None,       // too small, or does not shrink enough
+  Direct,     // while the body is set (makeResponse(), then body() / bodyAppend()), with an exact Content-Length
+  Finalized,  // when the response is finalized, Content-Length keeping the width of the largest accepted size
+};
+
+}  // namespace
+
+TEST(HttpCompression, HeadCarriesTheHeadersOfTheGet) {
+  const std::string payload = test::MakePatternedPayload(4000);
+  const std::string largePayload = test::MakePatternedPayload(1UL << 20U);
+  const RawChars randomChars = test::MakeRandomPayload(64UL << 10U);
+  const std::string random(randomChars.data(), randomChars.size());
+  static constexpr auto kGetHead = http::Method::GET | http::Method::HEAD;
+
+  auto router = ts.router();
+  router.setPath(kGetHead, "/head-gz/plain",
+                 [payload](const HttpRequestView&) { return HttpResponse(payload).headerAddLine("x-custom", "kept"); });
+  router.setPath(kGetHead, "/head-gz/prepared-inline",
+                 [payload](const HttpRequestView& req) { return req.makeResponse(std::string_view(payload)); });
+  router.setPath(kGetHead, "/head-gz/captured",
+                 [payload](const HttpRequestView& req) { return req.makeResponse().body(std::string(payload)); });
+  router.setPath(kGetHead, "/head-gz/captured-large", [largePayload](const HttpRequestView& req) {
+    return req.makeResponse().body(std::string(largePayload));
+  });
+  router.setPath(kGetHead, "/head-gz/direct", [payload](const HttpRequestView& req) {
+    auto resp = req.makeResponse();
+    resp.body(std::string_view(payload));
+    return resp;
+  });
+  router.setPath(kGetHead, "/head-gz/direct-append", [payload](const HttpRequestView& req) {
+    const std::string_view view(payload);
+    auto resp = req.makeResponse();
+    resp.body(view.substr(0, view.size() / 2));
+    resp.bodyAppend(view.substr(view.size() / 2));
+    return resp;
+  });
+  router.setPath(kGetHead, "/head-gz/direct-large", [largePayload](const HttpRequestView& req) {
+    auto resp = req.makeResponse();
+    resp.body(std::string_view(largePayload));
+    return resp;
+  });
+  router.setPath(kGetHead, "/head-gz/random-plain", [random](const HttpRequestView&) {
+    return HttpResponse(random, http::ContentTypeApplicationOctetStream);
+  });
+  router.setPath(kGetHead, "/head-gz/random-captured", [random](const HttpRequestView& req) {
+    return req.makeResponse().body(std::string(random), http::ContentTypeApplicationOctetStream);
+  });
+  router.setPath(kGetHead, "/head-gz/small", [](const HttpRequestView& req) { return req.makeResponse("tiny"); });
+  // The body of a 404 without body is the default page, whose headers a HEAD response announces too. It does not
+  // shrink enough to be compressed.
+  router.setPath(kGetHead, "/head-gz/not-found",
+                 [](const HttpRequestView&) { return HttpResponse(http::StatusCodeNotFound); });
+  // A GET response with trailers is chunked (over HTTP/1.1): the HEAD one announces the length of its content.
+  router.setPath(kGetHead, "/head-gz/plain-trailers", [payload](const HttpRequestView&) {
+    return HttpResponse(payload).trailerAddLine("x-checksum", "abc");
+  });
+  router.setPath(kGetHead, "/head-gz/direct-trailers", [payload](const HttpRequestView& req) {
+    auto resp = req.makeResponse();
+    resp.body(std::string_view(payload));
+    resp.trailerAddLine("x-checksum", "abc");
+    return resp;
+  });
+
+  struct HeadCase {
+    std::string_view target;
+    GetCompression compression;
+  };
+  static constexpr HeadCase kCases[]{
+      {"/head-gz/plain", GetCompression::Finalized},        {"/head-gz/prepared-inline", GetCompression::Finalized},
+      {"/head-gz/captured", GetCompression::Finalized},     {"/head-gz/captured-large", GetCompression::Finalized},
+      {"/head-gz/direct", GetCompression::Direct},          {"/head-gz/direct-append", GetCompression::Direct},
+      {"/head-gz/direct-large", GetCompression::Direct},    {"/head-gz/random-plain", GetCompression::None},
+      {"/head-gz/random-captured", GetCompression::None},   {"/head-gz/small", GetCompression::None},
+      {"/head-gz/not-found", GetCompression::None},         {"/head-gz/plain-trailers", GetCompression::Finalized},
+      {"/head-gz/direct-trailers", GetCompression::Direct},
+  };
+  for (bool useLeadingZeroes : {true, false}) {
+    ConfigureHeadCompression(useLeadingZeroes);
+    for (const HeadCase& headCase : kCases) {
+      for (std::string_view version : {"HTTP/1.1", "HTTP/1.0"}) {
+        for (std::string_view acceptEncoding : {"gzip", ""}) {
+          SCOPED_TRACE(std::format("{} {} accept-encoding '{}' leading zeroes {}", headCase.target, version,
+                                   acceptEncoding, useLeadingZeroes));
+          const test::ParsedResponse get =
+              ExpectHeadMatchesGet(headCase.target, acceptEncoding, version, useLeadingZeroes);
+          const bool compressed = headCase.compression != GetCompression::None && !acceptEncoding.empty();
+          EXPECT_EQ(test::getHeader(get, http::ContentEncoding), compressed ? "gzip" : "") << get.headersRaw;
+          if (!get.chunked) {
+            // The compressed sizes have fewer digits than the largest accepted ones (60% of the body size).
+            const bool padded = compressed && headCase.compression == GetCompression::Finalized && useLeadingZeroes;
+            EXPECT_EQ(test::getHeader(get, http::ContentLength).starts_with('0'), padded) << get.headersRaw;
+          }
+        }
+      }
+    }
+  }
+}
+
+// The Content-Length written by the compression of a body may be padded with leading zeros to the number of digits of
+// the largest accepted compressed size: the chunked framing that replaces it for trailers must account for its real
+// size.
+TEST(HttpCompression, CompressedBodyWithTrailersKeepsItsChunkedFraming) {
+  const std::string payload = test::MakePatternedPayload(4000);  // compresses to far less than 2400 bytes (4 digits)
+  static constexpr auto kGetHead = http::Method::GET | http::Method::HEAD;
+  ts.router().setPath(kGetHead, "/trailers-gz/inline", [payload](const HttpRequestView&) {
+    return HttpResponse(std::string_view(payload)).trailerAddLine("x-checksum", "abc");
+  });
+  ts.router().setPath(kGetHead, "/trailers-gz/captured", [payload](const HttpRequestView&) {
+    return HttpResponse(std::string(payload)).trailerAddLine("x-checksum", "abc");
+  });
+  ts.router().setPath(kGetHead, "/trailers-gz/prepared", [payload](const HttpRequestView& req) {
+    return req.makeResponse(std::string_view(payload)).trailerAddLine("x-checksum", "abc");
+  });
+
+  for (bool useLeadingZeroes : {true, false}) {
+    ConfigureHeadCompression(useLeadingZeroes);
+    for (std::string_view target : {"/trailers-gz/inline", "/trailers-gz/captured", "/trailers-gz/prepared"}) {
+      SCOPED_TRACE(std::format("{} leading zeroes {}", target, useLeadingZeroes));
+      test::ClientConnection cnx(ts.port());
+      test::sendAll(
+          cnx.fd(),
+          std::format("GET {} HTTP/1.1\r\nhost: x\r\nconnection: close\r\naccept-encoding: gzip\r\n\r\n", target));
+      const std::string raw = test::recvUntilClosed(cnx.fd());
+      const test::ParsedResponse resp = test::parseResponseOrThrow(raw);
+      ASSERT_TRUE(resp.chunked) << resp.headersRaw;
+      EXPECT_EQ(test::getHeader(resp, http::ContentEncoding), "gzip");
+      EXPECT_FALSE(resp.headers.contains(http::ContentLength.get())) << resp.headersRaw;
+      // The first chunk size follows the head, its body is the whole compressed content, then the trailers.
+      EXPECT_EQ(
+          raw.substr(resp.headersRaw.size(), raw.find(http::CRLF, resp.headersRaw.size()) - resp.headersRaw.size()),
+          std::format("{:x}", resp.body.size()));
+      EXPECT_TRUE(raw.ends_with("\r\n0\r\nx-checksum: abc\r\n\r\n")) << raw.substr(raw.size() - 32);
+      const RawChars decompressed = test::Decompress(Encoding::gzip, resp.body);
+      EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), payload);
+    }
+  }
+}
+
+TEST(HttpCompression, StreamingHeadCarriesTheHeadersOfTheGetWithoutContentLength) {
+  ConfigureHeadCompression();
+
+  static constexpr auto kGetHead = http::Method::GET | http::Method::HEAD;
+  const std::string payload = test::MakePatternedPayload(4000);
+  ts.router().setPath(kGetHead, "/head-gz/streamed", [payload](const HttpRequestView&, HttpResponseWriter& writer) {
+    const std::string_view view(payload);
+    writer.contentType(http::ContentTypeTextPlain);
+    writer.writeBody(view.substr(0, kHeadMinBytes / 2));  // buffered, below the compression threshold
+    writer.writeBody(view.substr(kHeadMinBytes / 2));     // compression starts
+    writer.writeBody(view);                               // compressed
+    writer.end();
+  });
+  ts.router().setPath(kGetHead, "/head-gz/streamed-small", [](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.writeBody("tiny");
+    writer.end();
+  });
+
+  for (std::string_view target : {"/head-gz/streamed", "/head-gz/streamed-small"}) {
+    SCOPED_TRACE(target);
+    const test::ParsedResponse get = Fetch("GET", target, "gzip");
+    const test::ParsedResponse head = Fetch("HEAD", target, "gzip");
+    ASSERT_EQ(get.statusCode, http::StatusCodeOK);
+    ASSERT_EQ(head.statusCode, http::StatusCodeOK);
+    EXPECT_TRUE(get.chunked) << get.headersRaw;
+    for (std::string_view name : {http::ContentType.get(), http::ContentEncoding.get(), http::Vary.get()}) {
+      EXPECT_EQ(test::getHeader(head, name), test::getHeader(get, name)) << name << '\n' << head.headersRaw;
+    }
+    // The length of the chunked GET content is not known when the head is sent.
+    EXPECT_FALSE(head.headers.contains(http::ContentLength.get())) << head.headersRaw;
+    EXPECT_FALSE(head.headers.contains(http::TransferEncoding.get())) << head.headersRaw;
+    EXPECT_TRUE(head.body.empty()) << head.body.size();
+  }
+
+  const test::ParsedResponse get = Fetch("GET", "/head-gz/streamed", "gzip");
+  EXPECT_EQ(test::getHeader(get, http::ContentEncoding), "gzip");
+  const RawChars decompressed = test::Decompress(Encoding::gzip, get.body);
+  EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), payload + payload);
+}
+
+#endif  // AERONET_ENABLE_ZLIB

@@ -16,8 +16,6 @@
 
 - **Windows event loop performance**: The Windows backend uses WSAPoll (readiness‑based, like epoll/kqueue) which is functionally correct but less performant than IOCP for high‑concurrency workloads. A future IOCP backend would require a fundamental architecture shift from readiness to completion semantics.
 - **macOS `EVFILT_TIMER` integration**: `TimerFd::armPeriodic()` on macOS is currently a no-op and relies on poll timeouts. Using kqueue's native `EVFILT_TIMER` would improve timer precision but requires event-loop refactoring to accommodate heterogeneous kqueue filter types.
-- **Direct compression option for HEAD**: optional config to allow HEAD responses to match GET headers
-  (Content-Encoding + compressed Content-Length) when desired.
 
 ### Performance optimization backlog
 

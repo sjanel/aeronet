@@ -463,8 +463,8 @@ class HttpResponse final : public HttpMessage {
   // Override the direct compression mode for this HttpMessage.
   // Note that this will not have any effect if the HttpMessage has not been constructed with
   // HttpRequestView::makeResponse().
-  // HEAD responses never activate direct compression to avoid extra CPU work; headers reflect
-  // the uncompressed body size and no Content-Encoding is added.
+  // A HEAD response is compressed like the GET one, so that it carries the same Content-Encoding and Content-Length,
+  // and its body is dropped when it is sent.
   HttpResponse& directCompressionMode(DirectCompressionMode mode) & {
     _opts._directCompressionMode = mode;
     return *this;
@@ -872,10 +872,15 @@ class HttpResponse final : public HttpMessage {
   HttpResponse(std::size_t additionalCapacity, http::StatusCode code, std::string_view concatenatedHeaders,
                std::string_view body, std::string_view contentType, Options opts)
       : HttpMessage(HeadCapacity(concatenatedHeaders, body.size(), contentType, opts.sendContentLengthHeader()) +
-                        body.size() + additionalCapacity,
+                        (opts.isHeadMethod() ? EmbeddedPayload::kMaxFootprint : body.size()) + additionalCapacity,
                     opts) {
     initHead(code, concatenatedHeaders, body.size(), contentType);
-    _data.setEnd(Append(body, _data.end()));
+    if (isHead() && !body.empty()) [[unlikely]] {
+      // Like body(), a HEAD message only stores the size of its body.
+      setHeadSize(body.size());
+    } else {
+      _data.setEnd(Append(body, _data.end()));
+    }
   }
 
   // Same as above, but capturing 'body' without copy, like body(std::string&&, ...).
