@@ -24,17 +24,11 @@
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
 #include "aeronet/tolower-str.hpp"
+#include "aeronet/transfer-coding.hpp"
 
 namespace aeronet {
 
 namespace {
-
-// True if the last token of a (possibly comma-separated) Transfer-Encoding value is "chunked".
-constexpr bool LastTransferEncodingIsChunked(std::string_view value) {
-  const auto comma = value.rfind(',');
-  const std::string_view last = comma == std::string_view::npos ? value : value.substr(comma + 1);
-  return CaseInsensitiveEqual(TrimOws(last), http::chunked);
-}
 
 enum class ChunkLineStatus : uint8_t { Complete, NeedMore, Error };
 
@@ -603,7 +597,7 @@ Http1ResponseParser::Status Http1ResponseParser::parse(std::span<char> buffer, b
       }
       _hasContentLength = true;
     } else if (name == http::TransferEncoding) {
-      _chunked = LastTransferEncodingIsChunked(value);
+      _chunked = http::LastTransferCodingIsChunked(value);
     } else {
       if (name == http::Connection) {
         ScanConnectionTokens(value, _connectionCloseSeen, _connectionKeepAliveSeen);

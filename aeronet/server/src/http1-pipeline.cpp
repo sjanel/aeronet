@@ -35,6 +35,7 @@
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
+#include "aeronet/transfer-coding.hpp"
 #include "http-error-build.hpp"
 #include "http1-writer-transport.hpp"
 #include "trace-echo.hpp"
@@ -461,7 +462,13 @@ bool Http1Pipeline::acceptChunkedTransferEncoding(ConnectionIt cnxIt, std::strin
     return false;
   }
   if (!CaseInsensitiveEqual(transferEncoding, http::chunked)) {
-    emitSimpleError(cnxIt, http::StatusCodeNotImplemented, "Unsupported Transfer-Encoding");
+    // RFC 9112 §6.3: without chunked as final coding, the body length cannot be determined. Otherwise, chunked follows
+    // codings the server cannot decode (RFC 9112 §6.1).
+    if (http::LastTransferCodingIsChunked(transferEncoding)) {
+      emitSimpleError(cnxIt, http::StatusCodeNotImplemented, "Unsupported Transfer-Encoding");
+    } else {
+      emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Transfer-Encoding must end with chunked");
+    }
     return false;
   }
   if (request.headerValue(http::ContentLength)) {
