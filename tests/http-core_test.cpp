@@ -1261,8 +1261,12 @@ INSTANTIATE_TEST_SUITE_P(
     HttpErrors, HttpErrorParamTest,
     ::testing::Values(ErrorCase{"MalformedRequestLine", "GETONLYNOPATH\r\n\r\n", "400"},
                       ErrorCase{"VersionNotSupported", "GET /test HTTP/2.0\r\nhost: x\r\n\r\n", "505"},
-                      ErrorCase{"UnsupportedTransferEncoding",
+                      ErrorCase{"TransferEncodingNotEndingWithChunked",
                                 "POST /u HTTP/1.1\r\nhost: x\r\ntransfer-encoding: gzip\r\nconnection: close\r\n\r\n",
+                                "400"},
+                      ErrorCase{"UnsupportedTransferCodingBeforeChunked",
+                                "POST /u HTTP/1.1\r\nhost: x\r\ntransfer-encoding: gzip, chunked\r\nconnection: "
+                                "close\r\n\r\n0\r\n\r\n",
                                 "501"},
                       ErrorCase{"ContentLengthTransferEncodingConflict",
                                 "POST /c HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\ntransfer-encoding: "
