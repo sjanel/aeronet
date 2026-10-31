@@ -16,6 +16,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-request-dispatch.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
@@ -32,8 +33,8 @@
 
 namespace aeronet {
 
-/// HTTP/1.1 transport backend for HttpResponseWriter.
-/// Emits chunked transfer-encoding or fixed-length framed data over a TCP connection.
+/// HTTP/1.x transport backend for HttpResponseWriter.
+/// Emits chunked transfer-encoding, fixed-length or (HTTP/1.0) close-delimited data over a TCP connection.
 class Http1WriterTransport final : public IWriterTransport {
  public:
   Http1WriterTransport(internal::ServerContext& ctx, NativeHandle fd, const CorsPolicy* pCorsPolicy,
@@ -45,12 +46,16 @@ class Http1WriterTransport final : public IWriterTransport {
     // 1xx, 204 and 304 responses end at the empty line after their headers: neither Transfer-Encoding nor
     // Content-Length may frame a body (RFC 9112 §6.1 and §6.3, RFC 9110 §8.6).
     const bool bodyAllowed = http::StatusCodeAllowsBody(response.status());
-    const bool chunked = bodyAllowed && !isHead && (declaredLength == 0) && !response.hasBodyFile();
+    const bool unknownLength = bodyAllowed && !isHead && (declaredLength == 0) && !response.hasBodyFile();
+    // An HTTP/1.0 client does not understand chunked encoding (RFC 9112 §6.1): a body of unknown length is delimited by
+    // the close of the connection instead (RFC 9112 §6.3), and its trailers are dropped.
+    const bool closeDelimited = unknownLength && request.version() == http::HTTP_1_0;
+    const bool chunked = unknownLength && !closeDelimited;
     _chunked = chunked;
 
     // The head announces the close of the connection after this response, whatever its reason (RFC 9112 §9.6). It is
     // decided when the head is sent, so that it also announces a drain that began while the handler ran.
-    if (!_ctx.http1.isKeepAlive(request)) {
+    if (closeDelimited || !_ctx.http1.isKeepAlive(request)) {
       response._opts.setClose();
       _closeAnnounced = true;
     }
@@ -75,13 +80,14 @@ class Http1WriterTransport final : public IWriterTransport {
 
     _ctx.requestPipeline().prepareStreamingHead(request, response, _routeResponseMiddleware, _pCorsPolicy);
 
-    // The body is streamed separately (chunked framing or a fixed Content-Length was declared above), so the
-    // buffer finalized here is header-only: tell finalizeForHttp1 not to synthesize a Content-Length: 0.
+    // The body is streamed separately (chunked framing, a fixed Content-Length declared above, or the close of the
+    // connection), so the buffer finalized here is header-only: tell finalizeForHttp1 not to synthesize a
+    // Content-Length: 0.
     response._opts.setStreamingBody();
 
     auto cnxIt = _ctx.connections.iterator(_fd);
-    _ctx.io.queueData(cnxIt, response.finalizeForHttp1(_ctx.dateHeader.data(), http::HTTP_1_1, response._opts, nullptr,
-                                                       _ctx.config.minCapturedBodySize));
+    _ctx.io.queueData(cnxIt, response.finalizeForHttp1(_ctx.dateHeader.data(), request.version(), response._opts,
+                                                       nullptr, _ctx.config.minCapturedBodySize));
     ConnectionState& cnx = _ctx.connections.connectionState(cnxIt);
     if (cnx.isAnyCloseRequested()) {
       log::error("Http1WriterTransport: failed to enqueue headers fd # {} err={} msg={}", _fd, LastSystemError(),
@@ -116,7 +122,7 @@ class Http1WriterTransport final : public IWriterTransport {
 
   bool emitEnd(RawChars trailers) override {
     if (!_chunked) {
-      return true;  // Fixed-length: no end marker needed
+      return true;  // Fixed-length or close-delimited: no end marker needed (trailers are dropped)
     }
 
     // Emit final chunk with optional trailers (RFC 7230 §4.1.2):

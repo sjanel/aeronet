@@ -76,7 +76,8 @@ class HttpResponseWriter {
   // Usage & semantics:
   // - Optional. If you never call contentLength(), the writer will default to Transfer-Encoding: chunked for
   //   non-HEAD requests (allowing indefinite / unknown-length streaming), and HEAD responses carry no Content-Length
-  //   (the length of the GET response is not known).
+  //   (the length of the GET response is not known). An HTTP/1.0 client does not understand chunked encoding: its
+  //   response body is then delimited by the close of the connection instead.
   // - Call only if you know the exact number of body bytes that will be sent (the on-the-wire size). This means:
   //     * If you rely on aeronet's automatic compression (no user provided Content-Encoding and compression
   //       is enabled), you SHOULD NOT call contentLength() because the final compressed size is not known
@@ -130,7 +131,7 @@ class HttpResponseWriter {
   //
   // IMPORTANT CONSTRAINTS:
   //   - Trailers are ONLY supported for chunked responses (the default for streaming).
-  //   - If contentLength() was called (fixed-length response), trailers are NOT sent.
+  //   - If contentLength() was called (fixed-length response), or for an HTTP/1.0 client, trailers are NOT sent.
   //   - trailerAddLine() must be called BEFORE end() is called.
   //
   // Trailer semantics (per RFC 7230 §4.1.2):
