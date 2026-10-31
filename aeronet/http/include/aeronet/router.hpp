@@ -243,6 +243,13 @@ class Router {
     [[nodiscard]] RedirectSlashMode redirectSlashMode() const noexcept { return _redirectSlashMode; }
     [[nodiscard]] bool methodNotAllowed() const noexcept { return _methodNotAllowed; }
 
+    // The methods of the matched route, as reported by Router::allowedMethods(): the Allow header of its 405.
+    // PRECONDITION: methodNotAllowed().
+    [[nodiscard]] http::MethodBmp allowedMethods() const noexcept {
+      assert(_pPathEntry != nullptr);
+      return _pPathEntry->handlerMethodBmp();
+    }
+
     void resetHandler() noexcept {
       _handlerKind = HandlerKind::None;
       _handler.request = nullptr;

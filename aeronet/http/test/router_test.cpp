@@ -181,6 +181,31 @@ TEST_F(RouterTest, MethodNotAllowedAndFallback) {
   EXPECT_FALSE(resMissing.methodNotAllowed());
 }
 
+// The methods of the route of a 405, listed by its Allow header, are the ones reported by allowedMethods().
+TEST_F(RouterTest, MethodNotAllowedReportsTheMethodsOfTheRoute) {
+  router.setPath(http::Method::GET | http::Method::PATCH, "/literal", OkHandler);
+  router.setPath(http::Method::PUT, "/literal", [](const HttpRequestView&, HttpResponseWriter&) {});
+  router.setPath(http::Method::DELETE, "/items/{id}", OkHandler);
+  router.setPath(http::Method::GET, "/items/{id}", [](const HttpRequestView&, HttpResponseWriter&) {});
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  router.setPath(http::Method::HEAD, "/items/{id}",
+                 AsyncRequestHandler([](HttpRequestView&) -> RequestTask<HttpResponse> { co_return HttpResponse(); }));
+  static constexpr http::MethodBmp kItemsMethods = http::Method::GET | http::Method::DELETE | http::Method::HEAD;
+#else
+  static constexpr http::MethodBmp kItemsMethods = http::Method::GET | http::Method::DELETE;
+#endif
+
+  const auto literal = router.match(http::Method::POST, "/literal");
+  ASSERT_TRUE(literal.methodNotAllowed());
+  EXPECT_EQ(literal.allowedMethods(), http::Method::GET | http::Method::PUT | http::Method::PATCH);
+  EXPECT_EQ(literal.allowedMethods(), router.allowedMethods("/literal"));
+
+  const auto pattern = router.match(http::Method::POST, "/items/42");
+  ASSERT_TRUE(pattern.methodNotAllowed());
+  EXPECT_EQ(pattern.allowedMethods(), kItemsMethods);
+  EXPECT_EQ(pattern.allowedMethods(), router.allowedMethods("/items/42"));
+}
+
 TEST_F(RouterTest, GlobalDefaultHandlersUsedWhenNoPath) {
   router.setDefault([](const HttpRequestView&) { return HttpResponse(204); });
 
