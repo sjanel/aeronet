@@ -2906,9 +2906,8 @@ TEST(Http2ProtocolHandler, OptionsStarReturnsAllowedMethods) {
   ASSERT_FALSE(loop.clientHeaders.empty());
   const auto& resp = loop.clientHeaders.back();
   EXPECT_EQ(GetHeaderValue(resp, ":status"), "200");
-  const auto allow = GetHeaderValue(resp, "allow");
   // With a default handler, all methods should be allowed
-  EXPECT_FALSE(allow.empty());
+  EXPECT_EQ(GetHeaderValue(resp, "allow"), "GET, POST, PUT, DELETE, HEAD, OPTIONS, PATCH, CONNECT, TRACE");
 }
 
 TEST(Http2ProtocolHandler, OptionsPathWithoutHandlerReturns405) {
@@ -2936,6 +2935,7 @@ TEST(Http2ProtocolHandler, OptionsPathWithoutHandlerReturns405) {
   const auto& resp = loop.clientHeaders.back();
   // Without CORS preflight or a registered OPTIONS handler, 405 is expected
   EXPECT_EQ(GetHeaderValue(resp, ":status"), "405");
+  EXPECT_EQ(GetHeaderValue(resp, "allow"), "GET, POST");
 }
 
 TEST(Http2ProtocolHandler, TraceReturns405InHttp2) {
@@ -2960,6 +2960,8 @@ TEST(Http2ProtocolHandler, TraceReturns405InHttp2) {
   ASSERT_FALSE(loop.clientHeaders.empty());
   const auto& resp = loop.clientHeaders.back();
   EXPECT_EQ(GetHeaderValue(resp, ":status"), "405");
+  // The default handler answers every method but TRACE.
+  EXPECT_EQ(GetHeaderValue(resp, "allow"), "GET, POST, PUT, DELETE, HEAD, OPTIONS, PATCH, CONNECT");
 }
 
 TEST(Http2ProtocolHandler, CorsPreflightReturnsAllowOrigin) {

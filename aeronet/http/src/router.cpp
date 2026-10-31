@@ -1232,24 +1232,14 @@ http::MethodBmp Router::allowedMethods(std::string_view path) {
       return 0U;
     }
 
-    const auto& entry = literalEntry.handlers;
-    return static_cast<http::MethodBmp>(static_cast<http::MethodBmp>(entry._normalMethodBmp | entry._streamingMethodBmp)
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-                                        | entry._asyncMethodBmp
-#endif
-    );
+    return literalEntry.handlers.handlerMethodBmp();
   }
 
   // Radix tree traversal
   const RadixNode* pMatchedNode = _pRootNode == nullptr ? nullptr : matchImpl(path, pathHasTrailingSlash);
 
   if (pMatchedNode != nullptr) {
-    const auto& entry = pMatchedNode->handlers;
-    return static_cast<http::MethodBmp>(static_cast<http::MethodBmp>(entry._normalMethodBmp | entry._streamingMethodBmp)
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-                                        | entry._asyncMethodBmp
-#endif
-    );
+    return pMatchedNode->handlers.handlerMethodBmp();
   }
 
   if (_streamingHandler || _handler

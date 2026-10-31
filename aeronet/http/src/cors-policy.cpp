@@ -5,7 +5,6 @@
 #include <stdexcept>
 #include <string_view>
 
-#include "aeronet/fixedcapacityvector.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"
@@ -185,18 +184,9 @@ CorsPolicy::PreflightResult CorsPolicy::handlePreflight(const HttpRequestView& r
 
   applyResponseHeaders(response, origin);
 
-  FixedCapacityVector<char, http::kAllMethodsStrLen + static_cast<uint32_t>((http::kNbMethods - 1U) * 2U)> acamValues;
-  for (http::MethodIdx idx = 0; idx < http::kNbMethods; ++idx) {
-    const http::Method method = http::MethodFromIdx(idx);
-    if (http::IsMethodSet(effectiveMethods, method)) {
-      if (!acamValues.empty()) {
-        static constexpr std::string_view kCommaSep = ", ";
-        acamValues.append_range(kCommaSep);
-      }
-      acamValues.append_range(http::MethodToStr(method));
-    }
-  }
-  response.header(http::AccessControlAllowMethods, std::string_view(acamValues));
+  char acamValues[http::kMethodListMaxLen];
+  response.header(http::AccessControlAllowMethods,
+                  std::string_view(acamValues, http::AppendMethodList(effectiveMethods, acamValues)));
 
   // Only send Access-Control-Allow-Headers when the server allows any header (`*`),
   // or when the client explicitly requested non-empty headers and they passed validation.
