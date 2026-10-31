@@ -207,12 +207,8 @@ HttpResponse RequestPipeline::runRequestMiddleware(HttpRequestView& request, con
   return result;
 }
 
-HttpResponse RequestPipeline::CallRequestHandler(HttpRequestView& request, const Router::RoutingResult& routingResult,
-                                                 bool streaming) {
-  const Router::RoutingResult::HandlerKind handlerKind = routingResult.handlerKind();
-  // The streaming handler of a request that cannot be streamed (HTTP/1.0) is not called: answered like without handler.
-  if (handlerKind != Router::RoutingResult::HandlerKind::None &&
-      (handlerKind != Router::RoutingResult::HandlerKind::Streaming || streaming)) {
+HttpResponse RequestPipeline::CallRequestHandler(HttpRequestView& request, const Router::RoutingResult& routingResult) {
+  if (routingResult.hasHandler()) {
     if (IsOriginDenied(request, routingResult)) {
       return MakeOriginDenial(request);
     }
