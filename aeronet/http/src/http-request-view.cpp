@@ -412,7 +412,8 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
   } else {
     char* pLineLast = SearchCRLF(pFirst, pLast);
     if (pLineLast == pLast) {
-      return kStatusNeedMoreData;
+      // A bare LF can never be followed by the CRLF ending the line: answered now, not once the head times out.
+      return HasBareLF(pFirst, pLast) ? http::StatusCodeBadRequest : kStatusNeedMoreData;
     }
     if (pLineLast[1] != '\n' || std::cmp_less(pLineLast - pFirst, http::kHttpReqLineMinLen - http::CRLF.size())) {
       return http::StatusCodeBadRequest;
@@ -509,7 +510,7 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
   while (pFirst < pLast) {
     char* pLineLast = SearchCRLF(pFirst, pLast);
     if (pLineLast == pLast) {
-      return needMoreData(pFirst);
+      return HasBareLF(pFirst, pLast) ? http::StatusCodeBadRequest : needMoreData(pFirst);
     }
     if (pLineLast[1] != '\n') {
       return http::StatusCodeBadRequest;

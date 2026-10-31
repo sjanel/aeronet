@@ -12,7 +12,8 @@ namespace aeronet {
 // header fields likely to contain sensitive data are left out: the credentials (Authorization, Proxy-Authorization) and
 // the cookies (Cookie).
 // Returns false if the head of the TRACE request is not complete yet: it must not be parsed before it is copied by a
-// next call. 'echo' is left empty for another method, and for a head longer than 'maxHeaderBytes', rejected anyway.
+// next call. 'echo' is left empty for another method, and for a head longer than 'maxHeaderBytes' or holding a bare LF,
+// rejected anyway.
 [[nodiscard]] bool CopyTraceEcho(std::string_view input, std::size_t maxHeaderBytes, RawChars32& echo);
 
 }  // namespace aeronet
