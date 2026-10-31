@@ -427,6 +427,29 @@ TEST(HttpParserChunked, ChunkExtensionObsTextIsAcceptedControlCharactersAreNot) 
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
 }
 
+// chunk-ext = *( BWS ";" BWS chunk-ext-name ... ) (RFC 9112 §7.1.1): spaces and tabs are allowed around the semicolon.
+TEST(HttpParserChunked, WhitespaceBeforeChunkExtensionIsAccepted) {
+  InstallEchoHandler();
+  for (const std::string_view sizeLine : {"5 ;ext", "5\t;ext", "5 \t ;ext", "5 ; ext", "5 \t;\t name = \"v\"", "5 ;"}) {
+    SCOPED_TRACE(sizeLine);
+    const std::string resp = test::sendAndCollect(
+        port, std::string(kChunkedHead).append(sizeLine).append("\r\nHello\r\n").append("0 ;last\r\n\r\n"));
+    ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+    EXPECT_TRUE(resp.ends_with("Hello")) << resp;
+  }
+}
+
+// ... but not elsewhere: before the chunk size, inside it, or after it when no extension follows.
+TEST(HttpParserChunked, WhitespaceElsewhereInChunkSizeLineIsRejected) {
+  InstallEchoHandler();
+  for (const std::string_view sizeLine : {"5 ", "5\t", " 5;ext", " 5 ;ext", "5 5 ;ext", " ;ext", "\t;ext", "5 ;\x01"}) {
+    SCOPED_TRACE(sizeLine);
+    const std::string resp =
+        SendAndCollectPromptly(std::string(kChunkedHead).append(sizeLine).append("\r\nHello\r\n").append("0\r\n\r\n"));
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
+  }
+}
+
 // Non-hexadecimal chunk size → 400 Bad Request.
 TEST(HttpParserChunked, InvalidChunkSize_NonHex) {
   std::string req =
@@ -730,7 +753,7 @@ TEST(HttpParserChunkedResume, LargeBodyReceivedChunkByChunk) {
   chunkedBody += "0\r\nX-End: done\r\n\r\n";
 
   // One chunk framing (size line, data and CRLF) per write, a little more than one per read.
-  const std::string resp = SendInParts(port, kChunkedHead, chunkedBody, kChunkSize / 2 + 100, 100us);
+  const std::string resp = SendInParts(port, kChunkedHead, chunkedBody, (kChunkSize / 2) + 100, 100us);
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
   EXPECT_TRUE(resp.ends_with(std::format("{}:{:x}:done", expectedBody.size(), Fnv1a(expectedBody)))) << resp;
 }
@@ -779,7 +802,7 @@ TEST(HttpParserChunkedResume, PipelinedRequestsAfterBodyReceivedInSeveralReads) 
 TEST(HttpParserChunkedLimits, UnterminatedChunkSizeLineIsBounded) {
   ts.resetConfig();
   InstallEchoHandler();
-  const std::string resp = SendInParts(port, kChunkedHead, "1;" + std::string(3 * 3000, 'a'), 3000);
+  const std::string resp = SendInParts(port, kChunkedHead, "1;" + std::string(3UL * 3000U, 'a'), 3000);
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
   EXPECT_TRUE(resp.contains("Chunk size line too long")) << resp;
 }
@@ -797,7 +820,7 @@ TEST(HttpParserChunkedLimits, TerminatedChunkSizeLineIsBounded) {
   ts.resetConfig();
   InstallEchoHandler();
   const std::string resp =
-      test::sendAndCollect(port, std::string(kChunkedHead) + "1;" + std::string(10000, 'a') + "\r\nX\r\n0\r\n\r\n");
+      test::sendAndCollect(port, std::string(kChunkedHead) + "1;" + std::string(10000UL, 'a') + "\r\nX\r\n0\r\n\r\n");
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
   EXPECT_TRUE(resp.contains("Chunk size line too long")) << resp;
 }
