@@ -53,6 +53,7 @@
 #include "aeronet/system-error.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test-tls-helper.hpp"
+#include "aeronet/test_util.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tls-context.hpp"
 #include "aeronet/tls-handshake-observer.hpp"
@@ -1772,10 +1773,7 @@ namespace {
 // Reads from a non-blocking client SSL until it would block.
 std::string DrainClient(SSL* clientSsl) {
   std::string received;
-  char buf[16384];
-  std::size_t nbRead = 0;
-  while (::SSL_read_ex(clientSsl, buf, sizeof(buf), &nbRead) == 1) {
-    received.append(buf, nbRead);
+  while (test::SslReadAppend(clientSsl, received) != 0) {
   }
   EXPECT_EQ(::SSL_get_error(clientSsl, 0), SSL_ERROR_WANT_READ);
   return received;
@@ -1795,10 +1793,7 @@ std::string ReceiveAtLeast(SSL* clientSsl, int fd, std::size_t size) {
 // Returns the length of each TLS record received raw (not decrypted) on fd, until it would block.
 std::vector<std::size_t> ReceiveRawRecordLengths(int fd) {
   std::string raw;
-  char buf[65536];
-  for (ssize_t nb = ::recv(fd, buf, sizeof(buf), MSG_DONTWAIT); nb > 0;
-       nb = ::recv(fd, buf, sizeof(buf), MSG_DONTWAIT)) {
-    raw.append(buf, static_cast<std::size_t>(nb));
+  while (test::RecvAppend(fd, raw, 65536, MSG_DONTWAIT) > 0) {
   }
   std::vector<std::size_t> lengths;
   std::size_t pos = 0;

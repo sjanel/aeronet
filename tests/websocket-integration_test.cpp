@@ -197,13 +197,10 @@ std::optional<ServerFrame> ParseServerFrame(std::span<const std::byte> data) {
 std::string ReceiveServerFrameBytes(NativeHandle fd, std::chrono::milliseconds timeout) {
   test::setRecvTimeout(fd, timeout);
   std::string raw;
-  char buf[16384];
   while (!ParseServerFrame(std::span<const std::byte>(reinterpret_cast<const std::byte*>(raw.data()), raw.size()))) {
-    const auto nb = ::recv(fd, buf, static_cast<int>(sizeof(buf)), 0);
-    if (nb <= 0) {
+    if (test::RecvAppend(fd, raw, 16384) <= 0) {
       return {};
     }
-    raw.append(buf, static_cast<std::size_t>(nb));
   }
   return raw;
 }
@@ -805,16 +802,7 @@ std::string UpgradeResponse(std::string_view path, std::string_view extraHeaders
   test::ClientConnection conn(ts.port());
   test::sendAll(conn.fd(), BuildUpgradeRequestWithHeaders(path, extraHeaders));
   test::setRecvTimeout(conn.fd(), 1000ms);
-  std::string head;
-  char buf[1024];
-  while (!head.contains(http::DoubleCRLF)) {
-    const auto nb = ::recv(conn.fd(), buf, static_cast<int>(sizeof(buf)), 0);
-    if (nb <= 0) {
-      break;
-    }
-    head.append(buf, static_cast<std::size_t>(nb));
-  }
-  return head;
+  return test::RecvHead(conn.fd());
 }
 
 TEST_F(WebSocketTest, UpgradeRunsRequestMiddleware) {
@@ -991,12 +979,9 @@ class ServerFrameReader {
         _buf.erase(0, headerSize + payloadSize);
         return Frame{std::move(*frame), rsv1};
       }
-      char buf[16384];
-      const auto nb = ::recv(_fd, buf, static_cast<int>(sizeof(buf)), 0);
-      if (nb <= 0) {
+      if (test::RecvAppend(_fd, _buf, 16384) <= 0) {
         return std::nullopt;
       }
-      _buf.append(buf, static_cast<std::size_t>(nb));
     }
   }
 

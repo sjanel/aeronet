@@ -199,10 +199,8 @@ bool OtlpTestCollector::acceptOnce() {
 void OtlpTestCollector::handleClient(NativeHandle clientFd) {
   BaseFd client(clientFd);
   std::string buffer;
-  buffer.reserve(4096);
   while (!_stop.load()) {
-    char chunk[4096];
-    const auto received = ::recv(client.fd(), chunk, sizeof(chunk), 0);
+    const auto received = RecvAppend(client.fd(), buffer, 4096);
     if (received == 0) {
       break;
     }
@@ -215,10 +213,9 @@ void OtlpTestCollector::handleClient(NativeHandle clientFd) {
         std::this_thread::sleep_for(std::chrono::milliseconds{1});
         continue;
       }
-      log::error("OTLP test collector recv failed: {}", recvErr);
+      log::error("OTLP test collector drops its client after a recv failure");
       return;
     }
-    buffer.append(chunk, static_cast<std::size_t>(received));
     auto headEnd = buffer.find("\r\n\r\n");
     if (headEnd == std::string::npos) {
       continue;

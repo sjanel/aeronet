@@ -74,6 +74,20 @@ struct RequestOptions {
 
 void sendAll(NativeHandle fd, std::string_view data, std::chrono::milliseconds totalTimeout = 500ms);
 
+// Whether the recv error 'err' only tells that no data arrived in time (receive timeout, or nothing to read on a
+// non-blocking socket) or that recv was interrupted: a new recv may succeed.
+bool IsTransientRecvError(int err);
+
+// Receives once (at most 'maxBytes', with the recv 'flags') from 'fd', appending the received bytes to 'out'. Returns
+// what recv returned: the number of appended bytes, 0 when the peer closed the connection, -1 on error,
+// LastSystemError() then telling which. Errors are logged, except the transient ones (see IsTransientRecvError).
+int64_t RecvAppend(NativeHandle fd, std::string& out, std::size_t maxBytes, int flags = 0);
+
+// Receives from 'fd' until the received bytes contain the end of an HTTP head ("\r\n\r\n"), the peer closed the
+// connection or recv failed (a receive timeout for instance). Returns all the received bytes, that may go past the end
+// of the head (empty when the peer closed the connection without sending anything).
+std::string RecvHead(NativeHandle fd);
+
 // Reads until we have a complete HTTP response or timeout.
 // For chunked responses, continues reading until the terminating chunk (0\r\n\r\n).
 // For responses with Content-Length, continues until body is complete.

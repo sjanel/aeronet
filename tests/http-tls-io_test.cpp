@@ -5,7 +5,6 @@
 #include <openssl/types.h>
 
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <cerrno>
 #include <charconv>
@@ -402,14 +401,11 @@ TEST(HttpTlsFairness, PipelinedRequestsYieldToOtherConnectionsOnceResponsesReach
   for (test::TlsClient* client : {&pipelining, &other}) {
     ASSERT_TRUE(client->writeAll("GET /warmup HTTP/1.1\r\nHost: x\r\n\r\n"));
     std::string warmupResponse;
-    std::array<char, 1024> warmupBuf;
     const auto warmupDeadline = std::chrono::steady_clock::now() + 10s;
     while (!warmupResponse.contains("warm") && std::chrono::steady_clock::now() < warmupDeadline) {
-      const std::string_view data = client->readSome(warmupBuf);
-      if (data.empty()) {
+      if (client->readSomeInto(warmupResponse) == 0) {
         std::this_thread::sleep_for(1ms);
       }
-      warmupResponse.append(data);
     }
     ASSERT_TRUE(warmupResponse.starts_with("HTTP/1.1 200")) << warmupResponse;
   }
@@ -434,15 +430,12 @@ TEST(HttpTlsFairness, PipelinedRequestsYieldToOtherConnectionsOnceResponsesReach
   EXPECT_TRUE(blocker.readAll().contains("blocked"));
   EXPECT_TRUE(other.readAll().starts_with("HTTP/1.1 200"));
   std::string pipelinedResponses;
-  std::array<char, 4096> buf;
   const auto deadline = std::chrono::steady_clock::now() + 10s;
   while (test::countOccurrences(pipelinedResponses, "HTTP/1.1 200") < kNbPipelinedRequests &&
          std::chrono::steady_clock::now() < deadline) {
-    const std::string_view data = pipelining.readSome(buf);
-    if (data.empty()) {
+    if (pipelining.readSomeInto(pipelinedResponses) == 0) {
       std::this_thread::sleep_for(1ms);
     }
-    pipelinedResponses.append(data);
   }
   EXPECT_EQ(test::countOccurrences(pipelinedResponses, "HTTP/1.1 200"), kNbPipelinedRequests);
 
@@ -479,16 +472,13 @@ TEST(HttpTlsBackpressure, PipelinedRequestsBufferedBehindBlockedOutputAreAllServ
   // The received bytes whose status lines are not counted yet: only a truncated status line at the end.
   std::string pending = std::move(client.drainedDuringWrite());
   int nbResponses = 0;
-  std::array<char, 65536> buf;
   const auto deadline = std::chrono::steady_clock::now() + 10s;
   while (nbResponses < kNbRequests && std::chrono::steady_clock::now() < deadline) {
     nbResponses += test::countOccurrences(pending, kStatusLinePrefix);
     pending.erase(0, pending.size() - std::min(pending.size(), kStatusLinePrefix.size() - 1));
-    const std::string_view data = client.readSome(buf);
-    if (data.empty()) {
+    if (client.readSomeInto(pending) == 0) {
       std::this_thread::sleep_for(1ms);
     }
-    pending.append(data);
   }
   EXPECT_EQ(nbResponses, kNbRequests);
 }
@@ -522,15 +512,12 @@ TEST(HttpTlsBackpressure, SmallChunksStreamedToSlowReaderAreIntact) {
   std::this_thread::sleep_for(200ms);  // the response fills the socket buffers: the output blocks
 
   std::string resp = std::move(client.drainedDuringWrite());
-  std::array<char, 16384> buf;
   const auto deadline = std::chrono::steady_clock::now() + 10s;
   while (!resp.ends_with(http::EndChunk) && std::chrono::steady_clock::now() < deadline) {
-    const std::string_view data = client.readSome(buf);
-    if (data.empty()) {
+    if (client.readSomeInto(resp) == 0) {
       std::this_thread::sleep_for(1ms);
       continue;
     }
-    resp.append(data);
     std::this_thread::sleep_for(100us);  // a slow reader: the server writes are blocked again and again
   }
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp.substr(0, 64);

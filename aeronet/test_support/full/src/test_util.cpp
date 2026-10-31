@@ -36,6 +36,7 @@
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/socket.hpp"
+#include "aeronet/system-error-message.hpp"
 #include "aeronet/system-error.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/tolower-str.hpp"
@@ -111,6 +112,51 @@ void sendAll(NativeHandle fd, std::string_view data, std::chrono::milliseconds t
     }
     cursor += sent;
     remaining -= static_cast<std::size_t>(sent);
+  }
+}
+
+bool IsTransientRecvError(int err) {
+  return err == error::kWouldBlock || err == error::kTimedOut || err == error::kInterrupted;
+}
+
+int64_t RecvAppend(NativeHandle fd, std::string& out, std::size_t maxBytes, int flags) {
+  int64_t nbReceived = 0;
+  int err = 0;
+  const std::size_t oldSize = out.size();
+  out.resize_and_overwrite(oldSize + maxBytes, [fd, maxBytes, flags, oldSize, &nbReceived, &err](
+                                                   char* pData, [[maybe_unused]] std::size_t newSize) {
+#ifdef AERONET_WINDOWS
+    nbReceived = ::recv(fd, pData + oldSize, static_cast<int>(maxBytes), flags);
+#else
+    nbReceived = ::recv(fd, pData + oldSize, maxBytes, flags);
+#endif
+    if (nbReceived < 0) {
+      err = LastSystemError();
+      return oldSize;
+    }
+    return oldSize + static_cast<std::size_t>(nbReceived);
+  });
+  if (nbReceived < 0 && !IsTransientRecvError(err)) {
+    log::error("RecvAppend: recv on fd # {} failed: {} ({})", static_cast<int64_t>(fd), err, SystemErrorMessage(err));
+    // Logging may have overwritten it, while the caller may check it.
+#ifdef AERONET_WINDOWS
+    ::WSASetLastError(err);
+#else
+    errno = err;
+#endif
+  }
+  return nbReceived;
+}
+
+std::string RecvHead(NativeHandle fd) {
+  static constexpr std::size_t kHeadChunkSize = 1024;
+  std::string head;
+  for (;;) {
+    // The end of the head may begin in the previously received bytes.
+    const std::size_t searchPos = head.size() - std::min(head.size(), http::DoubleCRLF.size() - 1);
+    if (RecvAppend(fd, head, kHeadChunkSize) <= 0 || head.find(http::DoubleCRLF, searchPos) != std::string::npos) {
+      return head;
+    }
   }
 }
 
@@ -349,18 +395,19 @@ int RecvPipelinedResponses(NativeHandle fd, int nbResponses, std::chrono::millis
   setRecvTimeout(fd, 50ms);
   // The received bytes whose status lines are not counted yet: only a truncated status line at the end.
   std::string pending;
-  char buf[1UL << 16U];
   int nbReceived = 0;
   const auto deadline = std::chrono::steady_clock::now() + totalTimeout;
   while (nbReceived < nbResponses && std::chrono::steady_clock::now() < deadline) {
-    const auto nb = ::recv(fd, buf, static_cast<int>(sizeof(buf)), 0);
+    const auto nb = RecvAppend(fd, pending, 1UL << 16U);
     if (nb == 0) {
       break;
     }
     if (nb < 0) {
-      continue;  // receive timeout: retry until the deadline
+      if (IsTransientRecvError(LastSystemError())) {
+        continue;  // receive timeout: retry until the deadline
+      }
+      break;  // logged by RecvAppend
     }
-    pending.append(buf, static_cast<std::size_t>(nb));
     nbReceived += countOccurrences(pending, kStatusLinePrefix);
     pending.erase(0, pending.size() - std::min(pending.size(), kStatusLinePrefix.size() - 1));
   }
