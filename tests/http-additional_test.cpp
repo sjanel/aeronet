@@ -238,20 +238,74 @@ TEST(Http10, BasicVersionEcho) {
   ASSERT_TRUE(resp.starts_with("HTTP/1.0 200"));
 }
 
-TEST(Http10, StreamingHandlerCannotBePickedInHttp10) {
-  ts.resetRouterAndGet().setDefault([]([[maybe_unused]] const HttpRequestView& req, HttpResponseWriter& writer) {
-    writer.status(http::StatusCodeOK);
-    writer.end();
+// RFC 9112 §6.1: an HTTP/1.0 response cannot be chunked. Without contentLength(), a streamed body is delimited by the
+// close of the connection (RFC 9112 §6.3), even if the client asked to keep it alive: the request pipelined behind it
+// is not served. Its trailers are dropped.
+TEST(Http10, StreamedBodyWithoutLengthIsDelimitedByClose) {
+  for (std::size_t partSize : {std::size_t{5}, std::size_t{64UL << 10U}}) {
+    const std::string part(partSize, 'p');
+    ts.resetRouterAndGet().setDefault([part](const HttpRequestView&, HttpResponseWriter& writer) {
+      for (int partPos = 0; partPos < 4; ++partPos) {
+        writer.writeBody(part);
+      }
+      writer.trailerAddLine("x-checksum", "abc123");
+      writer.end();
+    });
+    test::ClientConnection cnx(ts.port());
+    test::sendAll(cnx.fd(),
+                  "GET /s HTTP/1.0\r\nhost: h\r\nconnection: keep-alive\r\n\r\n"
+                  "GET /s HTTP/1.0\r\nhost: h\r\nconnection: keep-alive\r\n\r\n");
+    const std::string resp = test::recvUntilClosed(cnx.fd());
+    EXPECT_TRUE(resp.starts_with("HTTP/1.0 200")) << resp.substr(0, 512);
+    EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.0 "), 1);
+    const std::string_view head = std::string_view(resp).substr(0, resp.find(http::DoubleCRLF));
+    EXPECT_FALSE(head.contains(http::TransferEncoding)) << head;
+    EXPECT_FALSE(head.contains(http::ContentLength)) << head;
+    EXPECT_FALSE(head.contains(http::Connection)) << head;
+    EXPECT_FALSE(resp.contains("x-checksum")) << head;
+    std::string expectedEnd(http::DoubleCRLF);
+    for (int partPos = 0; partPos < 4; ++partPos) {
+      expectedEnd += part;
+    }
+    EXPECT_TRUE(resp.ends_with(expectedEnd)) << head;
+  }
+}
+
+// With contentLength(), a streamed HTTP/1.0 response keeps its Content-Length, and its connection persists if the
+// client asks for it. So does the one of a HEAD request, which has no body.
+TEST(Http10, StreamedResponseOfKnownLengthKeepsConnectionAlive) {
+  ts.resetRouterAndGet().setDefault([](const HttpRequestView& req, HttpResponseWriter& writer) {
+    if (req.path() == "/len") {
+      writer.contentLength(4);
+    }
+    writer.writeBody("ab");
+    writer.writeBody("cd");
   });
+  const RawChars keepAliveLine = MakeHttp1HeaderLine(http::Connection, http::keepalive);
+  test::ClientConnection cnx(ts.port());
 
-  std::string req = "GET /x HTTP/1.0\r\nhost: h\r\n\r\n";
-  std::string resp = test::sendAndCollect(ts.port(), req);
-  ASSERT_TRUE(resp.starts_with("HTTP/1.0 404"));
+  test::sendAll(cnx.fd(), "HEAD /unknown-length HTTP/1.0\r\nhost: h\r\nconnection: keep-alive\r\n\r\n");
+  const std::string headResp = test::RecvHead(cnx.fd());
+  EXPECT_TRUE(headResp.starts_with("HTTP/1.0 200")) << headResp;
+  EXPECT_TRUE(headResp.contains(keepAliveLine)) << headResp;
+  EXPECT_FALSE(headResp.contains(http::ContentLength)) << headResp;
+  EXPECT_FALSE(headResp.contains(http::TransferEncoding)) << headResp;
+  EXPECT_TRUE(headResp.ends_with(http::DoubleCRLF)) << headResp;
 
-  ts.router().setDefault([]([[maybe_unused]] const HttpRequestView& req) { return req.makeResponse("A"); });
-  req = "GET /x HTTP/1.0\r\nhost: h\r\n\r\n";
-  resp = test::sendAndCollect(ts.port(), req);
-  ASSERT_TRUE(resp.starts_with("HTTP/1.0 200"));
+  test::sendAll(cnx.fd(), "GET /len HTTP/1.0\r\nhost: h\r\nconnection: keep-alive\r\n\r\n");
+  const std::string first = test::recvWithTimeout(cnx.fd(), 2s);
+  EXPECT_TRUE(first.starts_with("HTTP/1.0 200")) << first;
+  EXPECT_TRUE(first.contains(MakeHttp1HeaderLine(http::ContentLength, "4"))) << first;
+  EXPECT_TRUE(first.contains(keepAliveLine)) << first;
+  EXPECT_TRUE(first.ends_with("\r\n\r\nabcd")) << first;
+
+  // Without keep-alive, the connection is closed after the response.
+  test::sendAll(cnx.fd(), "GET /len HTTP/1.0\r\nhost: h\r\n\r\n");
+  const std::string last = test::recvUntilClosed(cnx.fd());
+  EXPECT_TRUE(last.starts_with("HTTP/1.0 200")) << last;
+  EXPECT_TRUE(last.contains(MakeHttp1HeaderLine(http::ContentLength, "4"))) << last;
+  EXPECT_FALSE(last.contains(http::Connection)) << last;
+  EXPECT_TRUE(last.ends_with("\r\n\r\nabcd")) << last;
 }
 
 // RFC 9110 §10.1.1: the 100-continue expectation of an HTTP/1.0 request is ignored, as an HTTP/1.0 client cannot
