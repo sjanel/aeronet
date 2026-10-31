@@ -32,11 +32,13 @@ When a header appears several times, the server combines the occurrences while p
 | List fields | joined with `,` | `accept`, `accept-encoding`, `via`, `te` |
 | `cookie` | joined with `;` | `cookie` |
 | `user-agent` | joined with a space | `user-agent` |
-| Singleton fields | replaced: the last occurrence wins | `authorization`, `proxy-authorization`, `content-type`, `range`, `if-range`, `if-modified-since`, `if-unmodified-since`, `referer`, `from`, `max-forwards` |
+| Singleton fields | rejected with `400 Bad Request` | `authorization`, `proxy-authorization`, `content-type`, `range`, `if-range`, `if-modified-since`, `if-unmodified-since`, `referer`, `from`, `max-forwards` |
 | Framing and routing fields | rejected with `400 Bad Request` | `content-length`, `host`, `content-md5`, `content-transfer-encoding`, `http2-settings`, `upgrade-insecure-requests` |
 | Unknown fields | joined with `,` | custom `x-...` headers |
 
-Rejecting duplicate `content-length` and `host` closes classic request smuggling vectors, where two intermediaries pick different occurrences. An empty occurrence does not add a separator. To reject, rather than merge, duplicates of unknown fields that your application treats as singletons, set `HttpServerConfig::mergeUnknownRequestHeaders` to `false`.
+Rejecting duplicate singleton, `content-length` and `host` fields closes classic request smuggling vectors, where two intermediaries pick different occurrences: keeping the last `authorization`, `content-type` or `range` could differ from a proxy in front keeping the first (RFC 9110 §5.3 lets a recipient reject them). Over HTTP/2, the stream is reset with `PROTOCOL_ERROR` (malformed request, RFC 9113 §8.1.1). For the other fields, an empty occurrence does not add a separator. To reject, rather than merge, duplicates of unknown fields that your application treats as singletons, set `HttpServerConfig::mergeUnknownRequestHeaders` to `false`.
+
+Tests: `DuplicateSingletonHeadersProduce400` in [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp), `DuplicateSingletonTrailersRejected` in [http-core_test.cpp](../../tests/http-core_test.cpp), `DuplicateSingletonHeaderIsRejected` in [hpack_test.cpp](../../aeronet/http2/test/hpack_test.cpp), and the table in [mergeable-headers_test.cpp](../../aeronet/objects/test/mergeable-headers_test.cpp).
 
 ### Header values
 

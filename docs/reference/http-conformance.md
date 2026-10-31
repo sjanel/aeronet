@@ -16,7 +16,7 @@ This page lists the HTTP/1.1 behaviors aeronet implements ([RFC 9110](https://ww
 | `Content-Length` and `Transfer-Encoding` together are rejected (`400`), as is `Transfer-Encoding` on an HTTP/1.0 request | Supported |
 | `Transfer-Encoding` whose final coding is not `chunked` rejected (`400`), the body length being undetermined (RFC 9112 §6.3). Codings before a final `chunked`, such as `gzip, chunked`, are not supported (`501`, RFC 9112 §6.1). The connection is closed after both | Supported |
 | Pipelined requests, processed one after the other | Supported |
-| Duplicate request headers merged, overridden, or rejected depending on the header ([details](../guides/requests.md#header-names)) | Supported |
+| Duplicate request headers merged or rejected depending on the header: singleton fields such as `authorization`, `content-type` and `range` are rejected with `400` (RFC 9110 §5.3) ([details](../guides/requests.md#header-names)) | Supported |
 | Optional stricter policy failing on unknown duplicate headers | Not implemented |
 
 ## Connections
