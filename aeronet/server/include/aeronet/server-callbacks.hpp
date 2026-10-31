@@ -33,7 +33,8 @@ struct ExpectationResult {
   ExpectationResultKind kind = ExpectationResultKind::Continue;
   // Used for Interim when the handler wants the server to emit an interim
   // response with the given status code (e.g. 102). Stored as uint8_t because
-  // only the 1xx class (100-199) is valid and fits in one byte.
+  // only the 1xx class (100-199) is valid and fits in one byte. 101 is refused
+  // (answered 500): Switching Protocols is not an interim response.
   uint8_t interimStatus = 0;
   // Used for FinalResponse when the handler wishes to reply immediately
   // with a full HttpResponse (the server will send it and skip reading the body).

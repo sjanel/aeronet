@@ -1240,8 +1240,8 @@ TEST(HttpExpectation, HandlerCanEmitArbitraryInterimStatus) {
       "POST /x HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\nexpect: 103-early-hints\r\nconnection: close\r\n\r\nHELLO";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.starts_with("HTTP/1.1 103")) << resp;
-  ASSERT_TRUE(resp.contains("200")) << resp;
+  // Status line without reason phrase, but with the space before it (RFC 9112 §4), then the empty line.
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 103 \r\n\r\nHTTP/1.1 200")) << resp;
 }
 
 // RFC 9110 §15.2: an HTTP/1.0 client cannot receive a 1xx response. The interim responses of the expectation handler
@@ -1284,6 +1284,11 @@ TEST(HttpExpectation, ExpectationHandlerErrors) {
       res.interimStatus = 99;  // invalid: not 1xx
       return res;
     }
+    if (token == "bad-interim3") {
+      res.kind = SingleHttpServer::ExpectationResultKind::Interim;
+      res.interimStatus = 101;  // invalid: Switching Protocols is not an interim response
+      return res;
+    }
     if (token == "expectation-failure") {
       res.kind = SingleHttpServer::ExpectationResultKind::Reject;
       return res;
@@ -1294,8 +1299,14 @@ TEST(HttpExpectation, ExpectationHandlerErrors) {
 
   ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("SHOULD NOT SEE"); });
 
-  for (std::string_view token :
-       {"throwsStdException", "throwsCustomException", "bad-interim1", "bad-interim2", "expectation-failure"}) {
+  for (std::string_view token : {
+           "throwsStdException",
+           "throwsCustomException",
+           "bad-interim1",
+           "bad-interim2",
+           "bad-interim3",
+           "expectation-failure",
+       }) {
     auto req = std::format(
         "POST /x HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\nexpect: {}\r\nconnection: close\r\n\r\nHELLO", token);
 
@@ -1308,6 +1319,7 @@ TEST(HttpExpectation, ExpectationHandlerErrors) {
       EXPECT_TRUE(resp.starts_with("HTTP/1.1 500")) << resp;
       EXPECT_TRUE(resp.contains("Internal Server Error")) << resp;
     } else if (token.starts_with("bad")) {
+      // No interim response is sent before the 500.
       EXPECT_TRUE(resp.starts_with("HTTP/1.1 500")) << resp;
       EXPECT_TRUE(resp.contains("Server Error")) << resp;
     } else {
