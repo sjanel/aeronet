@@ -50,6 +50,15 @@ std::string AlternateCase(std::string_view token) {
   return mixed;
 }
 
+constexpr std::string_view MethodList(MethodBmp methodBmp, char* pOut) {
+  return {pOut, aeronet::http::AppendMethodList(methodBmp, pOut)};
+}
+
+static_assert([] {
+  char buf[aeronet::http::kMethodListMaxLen]{};
+  return MethodList(Method::HEAD | Method::GET, buf) == "GET, HEAD";
+}());
+
 }  // namespace
 
 TEST(HttpMethod, MethodIdxRoundTrip) {
@@ -103,6 +112,21 @@ TEST(HttpMethod, AllMethodsStringLengthMatchesSum) {
     sum += methodCase.token.size();
   }
   EXPECT_EQ(sum, aeronet::http::kAllMethodsStrLen);
+}
+
+TEST(HttpMethod, AppendMethodList) {
+  char buf[aeronet::http::kMethodListMaxLen];
+  EXPECT_EQ(MethodList(0, buf), "");
+  EXPECT_EQ(MethodList(static_cast<MethodBmp>(Method::TRACE), buf), "TRACE");
+  EXPECT_EQ(MethodList(Method::PATCH | Method::POST, buf), "POST, PATCH");
+
+  MethodBmp all = 0;
+  for (const auto& methodCase : kMethodCases) {
+    all = all | methodCase.method;
+  }
+  const std::string_view allList = MethodList(all, buf);
+  EXPECT_EQ(allList, "GET, POST, PUT, DELETE, HEAD, OPTIONS, PATCH, CONNECT, TRACE");
+  EXPECT_EQ(allList.size(), aeronet::http::kMethodListMaxLen);
 }
 
 // RFC 9110 §9.1: the method token is case-sensitive.

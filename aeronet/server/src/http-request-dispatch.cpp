@@ -1,6 +1,7 @@
 #include "aeronet/http-request-dispatch.hpp"
 
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <span>
@@ -64,13 +65,25 @@ void CallMiddlewareMetricsCallback(const HttpRequestView& request, MiddlewareMet
   }
 }
 
-void BuildAllowHeader(http::MethodBmp methodBitmap, HttpResponse& response) {
-  for (http::MethodIdx methodIdx = 0; methodIdx < http::kNbMethods; ++methodIdx) {
-    if (!http::IsMethodIdxSet(methodBitmap, methodIdx)) {
-      continue;
-    }
-    response.headerAppendValue(http::Allow, http::MethodIdxToStr(methodIdx), ",");
-  }
+// A response with an Allow header listing the methods of 'allowedMethods' (empty when there are none, RFC 9110
+// §10.2.1), with 'bodyCapacity' more bytes for the body set by the caller.
+HttpResponse MakeAllowResponse(const HttpRequestView& request, http::StatusCode statusCode,
+                               http::MethodBmp allowedMethods, std::size_t bodyCapacity = 0) {
+  char allowValue[http::kMethodListMaxLen];
+  const std::string_view allow(allowValue, http::AppendMethodList(allowedMethods, allowValue));
+
+  HttpResponse resp =
+      request.makeResponse(bodyCapacity + http::HeaderSize(http::Allow.size(), allow.size()), statusCode);
+  internal::HttpResponseAccess::HeaderAddLineUnchecked(resp, http::Allow, allow);
+  return resp;
+}
+
+// The 405 of a target supporting the methods of 'allowedMethods', which its Allow header must list (RFC 9110 §15.5.6).
+HttpResponse MakeMethodNotAllowed(const HttpRequestView& request, http::MethodBmp allowedMethods) {
+  HttpResponse resp = MakeAllowResponse(request, http::StatusCodeMethodNotAllowed, allowedMethods,
+                                        HttpResponse::BodySize(http::ReasonMethodNotAllowed.size()));
+  resp.body(http::ReasonMethodNotAllowed);
+  return resp;
 }
 
 }  // namespace
@@ -82,9 +95,7 @@ HttpResponse ProcessSpecialMethods(const HttpRequestView& request, Router& route
   if (request.method() == http::Method::OPTIONS) {
     if (request.path() == "*") {
       // OPTIONS * request (target="*") should return an Allow header listing supported methods.
-      result = request.makeResponse(http::StatusCodeOK);
-      const http::MethodBmp allowed = router.allowedMethods("*");
-      BuildAllowHeader(allowed, result);
+      result = MakeAllowResponse(request, http::StatusCodeOK, router.allowedMethods("*"));
       return result;
     }
 
@@ -102,9 +113,7 @@ HttpResponse ProcessSpecialMethods(const HttpRequestView& request, Router& route
           result.body(http::ReasonForbidden);
           return result;
         case CorsPolicy::PreflightResult::Status::MethodDenied:
-          result = request.makeResponse(http::StatusCodeMethodNotAllowed);
-          result.body(http::ReasonMethodNotAllowed);
-          BuildAllowHeader(routeMethods, result);
+          result = MakeMethodNotAllowed(request, routeMethods);
           return result;
         default:
           // Not a preflight, fall through to normal processing
@@ -138,8 +147,11 @@ HttpResponse ProcessSpecialMethods(const HttpRequestView& request, Router& route
       return result;
     }
 
-    // TRACE disabled or no request data -> Method Not Allowed
-    result = request.makeResponse(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed);
+    // TRACE disabled or no request data -> Method Not Allowed, listing the methods of the route. TRACE is never one of
+    // them: a TRACE handler is not called, the request being answered here.
+    const http::MethodBmp routeMethods = router.allowedMethods(request.path());
+    result = MakeMethodNotAllowed(
+        request, static_cast<http::MethodBmp>(routeMethods & ~static_cast<unsigned>(http::Method::TRACE)));
   }
   return result;
 }
@@ -221,7 +233,7 @@ HttpResponse RequestPipeline::CallRequestHandler(HttpRequestView& request, const
     return MakeTrailingSlashRedirect(request, routingResult.redirectSlashMode());
   }
   if (routingResult.methodNotAllowed()) {
-    return request.makeResponse(http::StatusCodeMethodNotAllowed, http::ReasonMethodNotAllowed);
+    return MakeMethodNotAllowed(request, routingResult.allowedMethods());
   }
   return request.makeResponse(http::StatusCodeNotFound);
 }

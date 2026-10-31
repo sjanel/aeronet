@@ -3374,9 +3374,8 @@ TEST(HttpOptionsTrace, OptionsStarReturnsAllow) {
   auto resp =
       test::requestOrThrow(port, test::RequestOptions{.method = "OPTIONS", .target = "*", .body = "", .headers = {}});
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
-  std::string allow(http::Allow);
-  allow += http::HeaderSep;
-  ASSERT_TRUE(resp.contains(allow));
+  ASSERT_TRUE(
+      resp.contains(MakeHttp1HeaderLine(http::Allow, "GET, POST, PUT, DELETE, HEAD, OPTIONS, PATCH, CONNECT, TRACE")));
 }
 
 TEST(HttpOptionsTrace, TraceEchoWhenEnabled) {

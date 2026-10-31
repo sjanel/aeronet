@@ -67,7 +67,7 @@ The server answers these errors itself, before or instead of calling a handler:
 | `400 Bad Request` | Malformed request, conflicting framing headers, `Transfer-Encoding` on HTTP/1.0, invalid `CONNECT` target, failed WebSocket handshake. |
 | `403 Forbidden` | `CONNECT` target not in the allowlist, request denied by a CORS policy. |
 | `404 Not Found` | No route matches the path. |
-| `405 Method Not Allowed` | The path exists but not for this method, with an `Allow` header. Also `TRACE` when disabled. |
+| `405 Method Not Allowed` | The path exists but not for this method, with an `Allow` header listing the methods registered on its route. Also `TRACE` when disabled (see [TRACE](#trace)). |
 | `406 Not Acceptable` | No acceptable content coding. |
 | `413 Payload Too Large` | Body larger than `maxBodyBytes`. |
 | `415 Unsupported Media Type` | Unsupported `Content-Encoding` on a request body, when decompression is enabled. |
@@ -95,6 +95,8 @@ aeronet does not validate the `Content-Type` of request bodies: a `415` based on
 | `Disabled` (default) | `TRACE` is answered `405`. |
 | `EnabledPlainAndTLS` | `TRACE` is echoed on every connection. |
 | `EnabledPlainOnly` | `TRACE` is echoed on plaintext connections and answered `405` on TLS connections. |
+
+A `TRACE` request is never routed to a handler: an HTTP/2 one is always answered `405`, having no message to echo. The `Allow` header of this `405` lists the methods registered on the route of the path, without `TRACE`, and is empty when no route matches (RFC 9110 §10.2.1).
 
 ```cpp
 HttpServerConfig config;
@@ -137,5 +139,6 @@ The handler runs on the event-loop thread, so it must be fast. An `Interim` resu
 - Error statuses and version handling: [tests/http-errors_test.cpp](../../tests/http-errors_test.cpp).
 - Keep-alive, pipelining, empty bodies: [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
 - `Expect`, `OPTIONS`, `TRACE`, and other protocol details: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp), including HTTP/1.0 clients (`Http10` tests and `HttpExpectation.NoInterimResponseToHttp10Client`).
+- `Allow` header of the `405` responses, over HTTP/1.1 and HTTP/2: `MethodNotAllowedListsTheMethodsOfTheRoute`, `DisabledTraceListsTheMethodsOfTheRoute` and `CorsPreflightOfAMethodOfNoHandlerIsAnswered405WithAllow` in [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp).
 - Trailers dropped for HTTP/1.0: `TrailersDroppedForHttp10` and `TrailersOfDirectCompressionDroppedForHttp10` in [http-response_test.cpp](../../aeronet/http/test/http-response_test.cpp).
 - `Upgrade` ignored in an HTTP/1.0 request: `WebSocketTest.UpgradeIgnoredInHttp10` in [tests/websocket-integration_test.cpp](../../tests/websocket-integration_test.cpp).

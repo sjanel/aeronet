@@ -177,6 +177,15 @@ class PathHandlerEntry {
     return http::IsMethodIdxSet(_streamingMethodBmp, methodIdx);
   }
 
+  // The methods with a handler, of any kind.
+  [[nodiscard]] http::MethodBmp handlerMethodBmp() const noexcept {
+    return static_cast<http::MethodBmp>(_normalMethodBmp | _streamingMethodBmp
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+                                        | _asyncMethodBmp
+#endif
+    );
+  }
+
   [[nodiscard]] const RequestHandler* requestHandlerPtr(http::MethodIdx methodIdx) const {
     return &reinterpret_cast<const RequestHandler&>(_handlers[methodIdx]);
   }
