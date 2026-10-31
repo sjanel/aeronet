@@ -3,10 +3,12 @@
 #include <openssl/asn1.h>
 #include <openssl/bio.h>
 #include <openssl/ec.h>
+#include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/obj_mac.h>
 #include <openssl/pem.h>
 #include <openssl/rsa.h>
+#include <openssl/ssl.h>
 #include <openssl/types.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
@@ -17,6 +19,10 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+
+#include "aeronet/log.hpp"
+#include "aeronet/system-error-message.hpp"
+#include "aeronet/system-error.hpp"
 
 namespace aeronet::test {
 
@@ -247,6 +253,28 @@ std::string SubjectCommonName(const X509* pCert) {
   const ASN1_STRING* data = ::X509_NAME_ENTRY_get_data(::X509_NAME_get_entry(subject, pos));
   return {reinterpret_cast<const char*>(::ASN1_STRING_get0_data(data)),
           static_cast<std::size_t>(::ASN1_STRING_length(data))};
+}
+
+std::size_t SslReadAppend(SSL* pSsl, std::string& out, std::size_t maxBytes) {
+  std::size_t nbRead = 0;
+  const std::size_t oldSize = out.size();
+  out.resize_and_overwrite(oldSize + maxBytes,
+                           [pSsl, maxBytes, oldSize, &nbRead](char* pData, [[maybe_unused]] std::size_t newSize) {
+                             if (::SSL_read_ex(pSsl, pData + oldSize, maxBytes, &nbRead) != 1) {
+                               nbRead = 0;
+                             }
+                             return oldSize + nbRead;
+                           });
+  if (nbRead == 0) {
+    const int sysErr = LastSystemError();
+    const int err = ::SSL_get_error(pSsl, 0);
+    if (err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE && err != SSL_ERROR_ZERO_RETURN) {
+      const char* pReason = ::ERR_reason_error_string(::ERR_peek_error());
+      log::error("SslReadAppend: SSL_read_ex failed with SSL error {} ({}), last system error {} ({})", err,
+                 pReason == nullptr ? "no queued OpenSSL error" : pReason, sysErr, SystemErrorMessage(sysErr));
+    }
+  }
+  return nbRead;
 }
 
 }  // namespace aeronet::test

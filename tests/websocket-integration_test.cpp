@@ -197,13 +197,10 @@ std::optional<ServerFrame> ParseServerFrame(std::span<const std::byte> data) {
 std::string ReceiveServerFrameBytes(NativeHandle fd, std::chrono::milliseconds timeout) {
   test::setRecvTimeout(fd, timeout);
   std::string raw;
-  char buf[16384];
   while (!ParseServerFrame(std::span<const std::byte>(reinterpret_cast<const std::byte*>(raw.data()), raw.size()))) {
-    const auto nb = ::recv(fd, buf, static_cast<int>(sizeof(buf)), 0);
-    if (nb <= 0) {
+    if (test::RecvAppend(fd, raw, 16384) <= 0) {
       return {};
     }
-    raw.append(buf, static_cast<std::size_t>(nb));
   }
   return raw;
 }
@@ -805,16 +802,7 @@ std::string UpgradeResponse(std::string_view path, std::string_view extraHeaders
   test::ClientConnection conn(ts.port());
   test::sendAll(conn.fd(), BuildUpgradeRequestWithHeaders(path, extraHeaders));
   test::setRecvTimeout(conn.fd(), 1000ms);
-  std::string head;
-  char buf[1024];
-  while (!head.contains(http::DoubleCRLF)) {
-    const auto nb = ::recv(conn.fd(), buf, static_cast<int>(sizeof(buf)), 0);
-    if (nb <= 0) {
-      break;
-    }
-    head.append(buf, static_cast<std::size_t>(nb));
-  }
-  return head;
+  return test::RecvHead(conn.fd());
 }
 
 TEST_F(WebSocketTest, UpgradeRunsRequestMiddleware) {
@@ -844,6 +832,30 @@ TEST_F(WebSocketTest, UpgradeChecksOriginWithoutCorsPolicy) {
   EXPECT_TRUE(UpgradeResponse("/ws-origin", "Origin: https://evil.example\r\n").starts_with("HTTP/1.1 403"));
   EXPECT_TRUE(UpgradeResponse("/ws-origin", "Origin: http://localhost:8080\r\n").starts_with("HTTP/1.1 403"));
   EXPECT_TRUE(UpgradeResponse("/ws-origin", "Origin: null\r\n").starts_with("HTTP/1.1 403"));
+}
+
+// RFC 9110 §7.8: the Upgrade header of an HTTP/1.0 request is ignored, and an HTTP/1.0 client cannot receive the 101
+// (§15.2): the request is served like any GET.
+TEST_F(WebSocketTest, UpgradeIgnoredInHttp10) {
+  ts.postRouterUpdate([](Router& router) {
+    router.setWebSocket("/ws-http10", SilentEndpoint());
+    router.setPath(http::Method::GET, "/ws-http10-get", [](const HttpRequestView&) { return HttpResponse("plain"); });
+    router.setWebSocket("/ws-http10-get", SilentEndpoint());
+  });
+  const auto http10Upgrade = [](std::string_view path) {
+    std::string req = BuildUpgradeRequest(path);
+    req.replace(req.find("HTTP/1.1"), 8, "HTTP/1.0");
+    return test::sendAndCollect(ts.port(), req);
+  };
+
+  std::string resp = http10Upgrade("/ws-http10");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.0 404")) << resp;
+  resp = http10Upgrade("/ws-http10-get");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.0 200")) << resp;
+  EXPECT_TRUE(resp.ends_with("\r\n\r\nplain")) << resp;
+
+  EXPECT_TRUE(UpgradeResponse("/ws-http10", "").starts_with("HTTP/1.1 101"));
+  EXPECT_TRUE(UpgradeResponse("/ws-http10-get", "").starts_with("HTTP/1.1 101"));
 }
 
 TEST_F(WebSocketTest, UpgradeAppliesCorsPolicyToOrigin) {
@@ -967,12 +979,9 @@ class ServerFrameReader {
         _buf.erase(0, headerSize + payloadSize);
         return Frame{std::move(*frame), rsv1};
       }
-      char buf[16384];
-      const auto nb = ::recv(_fd, buf, static_cast<int>(sizeof(buf)), 0);
-      if (nb <= 0) {
+      if (test::RecvAppend(_fd, _buf, 16384) <= 0) {
         return std::nullopt;
       }
-      _buf.append(buf, static_cast<std::size_t>(nb));
     }
   }
 

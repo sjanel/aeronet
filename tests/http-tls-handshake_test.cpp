@@ -1460,14 +1460,11 @@ TEST(HttpTlsHandshakeTest, OpenSslErrorLeftByAHandlerDoesNotCloseTheConnection) 
   for (int requestIdx = 0; requestIdx < 3; ++requestIdx) {
     ASSERT_TRUE(client.writeAll("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")) << requestIdx;
     std::string response;
-    char buf[1024];
     const auto deadline = std::chrono::steady_clock::now() + 5s;
     while (!response.ends_with("handled") && std::chrono::steady_clock::now() < deadline) {
-      const auto chunk = client.readSome(buf);
-      if (chunk.empty()) {
+      if (client.readSomeInto(response) == 0) {
         std::this_thread::sleep_for(1ms);
       }
-      response.append(chunk);
     }
     EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << requestIdx << ": " << response;
     EXPECT_TRUE(response.ends_with("handled")) << requestIdx;
@@ -1560,10 +1557,7 @@ TEST(HttpTlsHandshakeTest, HandshakeLargerThanTheSocketBuffersCompletes) {
   ASSERT_EQ(::SSL_write(ssl.get(), kRequest.data(), static_cast<int>(kRequest.size())),
             static_cast<int>(kRequest.size()));
   std::string response;
-  char buf[4096];
-  for (int nbRead = ::SSL_read(ssl.get(), buf, sizeof(buf)); nbRead > 0;
-       nbRead = ::SSL_read(ssl.get(), buf, sizeof(buf))) {
-    response.append(buf, static_cast<std::size_t>(nbRead));
+  while (test::SslReadAppend(ssl.get(), response) != 0) {
   }
   ::ERR_clear_error();
   EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << response;

@@ -167,6 +167,10 @@ class HttpPayload {
   // least size() + sz)
   void addSize(std::size_t sz);
 
+  // Keeps the first 'newSize' bytes (at most size()), without reallocation. Like addSize(), only for the
+  // representations that grow in place (std::string, std::vector, RawChars).
+  void truncate(std::size_t newSize);
+
   void reset() noexcept { _data = std::monostate{}; }
 
   void shrink_to_fit();

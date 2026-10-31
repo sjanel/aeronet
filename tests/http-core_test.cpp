@@ -1931,10 +1931,8 @@ TEST(ZerocopyMode, HalfClosingClientReceivesWholeResponse) {
   test::sendAll(fd, "GET /half-close HTTP/1.1\r\nhost: h\r\n\r\n");
   // Half-close once the response started, while most of it is still in the server send queue.
   test::setRecvTimeout(fd, std::chrono::seconds{5});
-  char head[512];
-  const auto headSize = ::recv(fd, head, sizeof(head), 0);
-  ASSERT_GT(headSize, 0);
-  std::string resp(head, static_cast<std::size_t>(headSize));
+  std::string resp;
+  ASSERT_GT(test::RecvAppend(fd, resp, 512), 0);
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
   ASSERT_TRUE(ShutdownWrite(fd));
   std::this_thread::sleep_for(std::chrono::milliseconds{50});  // let the server observe the EOF first
@@ -1972,14 +1970,10 @@ std::string SlowlyReceive(NativeHandle fd, std::chrono::milliseconds pause, std:
   resetSeen = false;
   test::setRecvTimeout(fd, std::chrono::seconds{2});
   std::string received;
-  static constexpr std::size_t kChunkSize = 64UL << 10U;
-  std::string chunk(kChunkSize, '\0');
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   while (!received.ends_with(expectedEnd) && std::chrono::steady_clock::now() < deadline) {
-    const auto ret = ::recv(fd, chunk.data(), kChunkSize, 0);
-    if (ret > 0) {
-      received.append(chunk.data(), static_cast<std::size_t>(ret));
-    } else if (ret == 0 || errno != EAGAIN) {
+    const auto ret = test::RecvAppend(fd, received, 64UL << 10U);
+    if (ret == 0 || (ret < 0 && !test::IsTransientRecvError(errno))) {
       resetSeen = ret == -1 && errno == ECONNRESET;
       break;
     }
@@ -2618,14 +2612,8 @@ TEST(HttpBackpressure, StreamedResponseToSlowReaderIsIntact) {
 
     // Reads at a limited rate, until the server closes the connection.
     std::string resp;
-    char buf[16UL << 10U];
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{10};
-    while (std::chrono::steady_clock::now() < deadline) {
-      const auto nb = ::recv(fd, buf, sizeof(buf), 0);
-      if (nb <= 0) {
-        break;
-      }
-      resp.append(buf, static_cast<std::size_t>(nb));
+    while (std::chrono::steady_clock::now() < deadline && test::RecvAppend(fd, resp, 16UL << 10U) > 0) {
       std::this_thread::sleep_for(std::chrono::microseconds{200});
     }
     ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp.substr(0, 64);

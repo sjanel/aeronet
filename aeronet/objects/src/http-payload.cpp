@@ -455,6 +455,23 @@ void HttpPayload::addSize(std::size_t sz) {
       _data);
 }
 
+void HttpPayload::truncate(std::size_t newSize) {
+  assert(!isFilePayload() && newSize <= size());
+  std::visit(
+      [newSize](auto& val) -> void {
+        using T = std::decay_t<decltype(val)>;
+        if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::vector<char>> ||
+                      std::is_same_v<T, std::vector<std::byte>>) {
+          val.resize(newSize);
+        } else if constexpr (std::is_same_v<T, RawChars>) {
+          val.setSize(newSize);
+        } else {
+          throw std::logic_error("Cannot call truncate on this HttpPayload representation");
+        }
+      },
+      _data);
+}
+
 void HttpPayload::shrink_to_fit() {
   std::visit(
       [this](auto& val) -> void {

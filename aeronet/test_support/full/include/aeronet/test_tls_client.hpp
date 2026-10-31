@@ -3,6 +3,7 @@
 #include <openssl/ssl.h>
 #include <openssl/types.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -65,6 +66,10 @@ class TlsClient {
   /// Read some data into buffer, returning a view of what was read.
   /// Non-blocking if no data immediately available.
   std::string_view readSome(std::span<char> buffer);
+
+  /// Read some data (at most maxBytes), appending it to out. Returns the number of appended bytes.
+  /// Non-blocking: returns 0 if no data immediately available (or on close / error).
+  std::size_t readSomeInto(std::string& out, std::size_t maxBytes = 16384);
 
   /// Convenience: perform a GET request and read entire response.
   std::string get(std::string_view target, const vector<http::Header>& extraHeaders = {});
