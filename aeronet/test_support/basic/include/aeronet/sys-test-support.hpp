@@ -486,6 +486,12 @@ class ActionQueue {
     return front;
   }
 
+  /// Tell whether all the queued actions were consumed.
+  [[nodiscard]] bool empty() {
+    std::scoped_lock<std::mutex> lock(_mutex);
+    return _actions.empty();
+  }
+
  private:
   std::mutex _mutex;
   std::deque<Action> _actions;
