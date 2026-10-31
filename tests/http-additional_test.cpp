@@ -254,14 +254,42 @@ TEST(Http10, StreamingHandlerCannotBePickedInHttp10) {
   ASSERT_TRUE(resp.starts_with("HTTP/1.0 200"));
 }
 
+// RFC 9110 §10.1.1: the 100-continue expectation of an HTTP/1.0 request is ignored, as an HTTP/1.0 client cannot
+// receive a 1xx response (§15.2).
 TEST(Http10, No100ContinueEvenIfHeaderPresent) {
-  ts.router().setDefault([]([[maybe_unused]] const HttpRequestView& req) { return HttpResponse("B"); });
-  // Expect ignored in HTTP/1.0
-  std::string req =
-      "POST /p HTTP/1.0\r\nhost: h\r\ncontent-length: 0\r\nexpect: 100-continue\r\nconnection: close\r\n\r\n";
-  std::string resp = test::sendAndCollect(ts.port(), req);
-  ASSERT_FALSE(resp.contains("100 Continue"));
-  ASSERT_TRUE(resp.starts_with("HTTP/1.0 200"));
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
+  for (std::string_view body : {std::string_view{}, std::string_view{"HELLO"}}) {
+    const std::string req = std::format(
+        "POST /p HTTP/1.0\r\nhost: h\r\ncontent-length: {}\r\nexpect: 100-continue\r\nconnection: close\r\n\r\n{}",
+        body.size(), body);
+    const std::string resp = test::sendAndCollect(ts.port(), req);
+    EXPECT_FALSE(resp.contains("100 Continue")) << resp;
+    EXPECT_TRUE(resp.starts_with("HTTP/1.0 200")) << resp;
+    EXPECT_TRUE(resp.ends_with(std::string(http::DoubleCRLF) + std::string(body))) << resp;
+  }
+}
+
+// RFC 9112 §6.1: an HTTP/1.0 response cannot be chunked. Its trailers are dropped, and its body keeps its
+// Content-Length, whether it is inline or captured.
+TEST(Http10, TrailersAreDroppedAndBodyKeepsItsContentLength) {
+  for (std::size_t bodySize : {std::size_t{7}, std::size_t{64} * 1024}) {
+    const std::string body(bodySize, 'b');
+    ts.router().setDefault([body](const HttpRequestView& req) {
+      HttpResponse resp = req.makeResponse(std::string(body));
+      resp.trailerAddLine("x-checksum", "abc123");
+      return resp;
+    });
+    for (std::string_view method : {"GET", "HEAD"}) {
+      const std::string resp =
+          test::sendAndCollect(ts.port(), std::format("{} /t HTTP/1.0\r\nhost: h\r\n\r\n", method));
+      EXPECT_TRUE(resp.starts_with("HTTP/1.0 200")) << resp;
+      EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(bodySize)))) << resp;
+      EXPECT_FALSE(resp.contains(http::TransferEncoding)) << resp;
+      EXPECT_FALSE(resp.contains(MakeHttp1HeaderLine(http::Trailer, "x-checksum"))) << resp;
+      EXPECT_FALSE(resp.contains("x-checksum: abc123")) << resp;
+      EXPECT_TRUE(resp.ends_with(std::string(http::DoubleCRLF) + (method == "GET" ? body : std::string{}))) << method;
+    }
+  }
 }
 
 TEST(Http10, RejectTransferEncoding) {
@@ -1160,6 +1188,25 @@ TEST(HttpExpectation, HandlerCanEmitArbitraryInterimStatus) {
   std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 103")) << resp;
   ASSERT_TRUE(resp.contains("200")) << resp;
+}
+
+// RFC 9110 §15.2: an HTTP/1.0 client cannot receive a 1xx response. The interim responses of the expectation handler
+// are not sent, like the 100 Continue, and the request is served.
+TEST(HttpExpectation, NoInterimResponseToHttp10Client) {
+  ts.server.setExpectationHandler([](const HttpRequestView& /*req*/, std::string_view token) {
+    SingleHttpServer::ExpectationResult res;
+    res.kind = SingleHttpServer::ExpectationResultKind::Interim;
+    res.interimStatus = token == "x-continue" ? 100 : 102;
+    return res;
+  });
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
+
+  const std::string resp = test::sendAndCollect(ts.port(),
+                                                "POST /x HTTP/1.0\r\nhost: x\r\ncontent-length: 5\r\nexpect: "
+                                                "x-continue, 102-processing, 100-continue\r\n\r\nHELLO");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.0 200")) << resp;
+  EXPECT_FALSE(resp.contains("HTTP/1.1")) << resp;
+  EXPECT_TRUE(resp.ends_with("\r\n\r\nHELLO")) << resp;
 }
 
 TEST(HttpExpectation, ExpectationHandlerErrors) {

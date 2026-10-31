@@ -825,7 +825,8 @@ HttpResponse::Options HttpRequestView::makeResponseOptions() const noexcept {
 #else
   HttpResponse::Options opts;
 #endif
-  if (_addTrailerHeader) {
+  // The trailers of an HTTP/1.0 response are dropped (it cannot be chunked): none to announce, even for HEAD.
+  if (_addTrailerHeader && version() != http::HTTP_1_0) {
     opts.addTrailerHeader();
   }
   if (method() == http::Method::HEAD) {

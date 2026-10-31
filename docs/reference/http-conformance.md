@@ -21,6 +21,8 @@ This page lists the HTTP/1.1 behaviors aeronet implements ([RFC 9110](https://ww
 | --- | --- |
 | Persistent connections: default for HTTP/1.1, opt-in with `Connection: keep-alive` for HTTP/1.0 | Supported |
 | HTTP/1.0 requests answered with HTTP/1.0 responses (no silent upgrade) | Supported |
+| No `1xx` response to an HTTP/1.0 client (RFC 9110 §15.2): its `Expect: 100-continue` (§10.1.1) and `Upgrade` (§7.8) are ignored, and so are the interim responses of the expectation handler | Supported |
+| No chunked response to an HTTP/1.0 client (RFC 9112 §6.1): the trailers of a buffered response are dropped, and its body keeps its `Content-Length` | Supported |
 | `Connection: close` from either side | Supported |
 | Requests per connection limit (`maxRequestsPerConnection`) and idle timeout (`keepAliveTimeout`) | Supported |
 | Closing in stages a connection whose client may still be sending (RFC 9112 §9.6) | Supported, see [Lingering close](../guides/server-lifecycle.md#lingering-close) |
@@ -51,7 +53,7 @@ This page lists the HTTP/1.1 behaviors aeronet implements ([RFC 9110](https://ww
 | `1xx`, `204`, `304` responses ending at the empty line after their headers: body, trailers and `Content-Length` / `Transfer-Encoding` dropped ([details](../guides/responses.md#statuses-without-content)) | Supported |
 | `HEAD` answered by the `GET` handler, without body and with the `GET` length | Supported |
 | Chunked streaming responses, with trailers | Supported |
-| Buffered responses with trailers, sent chunked | Supported |
+| Buffered responses with trailers, sent chunked (to an HTTP/1.1 client, see [Trailers](../guides/responses.md#trailers)) | Supported |
 | Response compression (gzip, deflate, br, zstd) negotiated from `Accept-Encoding` with q-values ([details](../guides/compression.md)) | Supported |
 | `406 Not Acceptable` when the client refuses `identity` and no offered coding is available | Supported |
 | Range and conditional requests for files ([details](../guides/static-files.md)) | Supported |
@@ -101,14 +103,14 @@ config.withTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainOnly);
 
 ### Expect
 
-For `Expect: 100-continue`, the server sends `100 Continue` when it starts reading the body, so a client waiting for it does not send a body that would be refused. The token is recognized in a comma-separated list, with surrounding whitespace.
+For `Expect: 100-continue`, the server sends `100 Continue` when it starts reading the body, so a client waiting for it does not send a body that would be refused. The token is recognized in a comma-separated list, with surrounding whitespace. An HTTP/1.0 client cannot receive a `1xx` response (RFC 9110 §15.2): the `100-continue` expectation of an HTTP/1.0 request is ignored (§10.1.1), and its body is read without `100 Continue`.
 
 Other expectation tokens go to the expectation handler, when one is installed. Without a handler, they are answered `417 Expectation Failed`. The handler receives the request and the token, and returns an `ExpectationResult`:
 
 | `ExpectationResultKind` | Effect |
 | --- | --- |
 | `Continue` | Process the request normally. |
-| `Interim` | Send the informational response `interimStatus` (a `1xx` status, such as `102`), then continue. |
+| `Interim` | Send the informational response `interimStatus` (a `1xx` status, such as `102`), then continue. It is not sent to an HTTP/1.0 client, whose request continues without it. |
 | `FinalResponse` | Send `finalResponse` and skip the body and the handler. When the request announces a body (`Content-Length` other than 0, or `Transfer-Encoding`), the response carries `Connection: close` and the connection closes: the client may send the body anyway, which could not be told apart from the next request. Otherwise the requests pipelined behind it are served. |
 | `Reject` | Answer `417 Expectation Failed`. |
 
@@ -134,4 +136,6 @@ The handler runs on the event-loop thread, so it must be fast. An `Interim` resu
 
 - Error statuses and version handling: [tests/http-errors_test.cpp](../../tests/http-errors_test.cpp).
 - Keep-alive, pipelining, empty bodies: [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
-- `Expect`, `OPTIONS`, `TRACE`, and other protocol details: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp).
+- `Expect`, `OPTIONS`, `TRACE`, and other protocol details: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp), including HTTP/1.0 clients (`Http10` tests and `HttpExpectation.NoInterimResponseToHttp10Client`).
+- Trailers dropped for HTTP/1.0: `TrailersDroppedForHttp10` and `TrailersOfDirectCompressionDroppedForHttp10` in [http-response_test.cpp](../../aeronet/http/test/http-response_test.cpp).
+- `Upgrade` ignored in an HTTP/1.0 request: `WebSocketTest.UpgradeIgnoredInHttp10` in [tests/websocket-integration_test.cpp](../../tests/websocket-integration_test.cpp).
