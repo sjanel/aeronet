@@ -37,6 +37,7 @@
 #include "aeronet/string-trim.hpp"
 #include "http-error-build.hpp"
 #include "http1-writer-transport.hpp"
+#include "trace-echo.hpp"
 #include "tunnel-manager.hpp"
 
 #ifdef AERONET_ENABLE_WEBSOCKET
@@ -92,6 +93,12 @@ void CloseIfBodyPending(ConnectionState& state, bool bodyReady) {
   if (!bodyReady) {
     state.requestDrainAndClose();
   }
+}
+
+// Whether the request announces a body: chunked, or with a Content-Length other than 0.
+bool AnnouncesBody(const HttpRequestView& request) {
+  return request.headerValue(http::TransferEncoding).has_value() ||
+         request.headerValueOrEmpty(http::ContentLength).find_first_not_of('0') != std::string_view::npos;
 }
 
 }  // namespace
@@ -226,7 +233,7 @@ bool Http1Pipeline::serveRequests(ConnectionIt cnxIt) {
     // Handle OPTIONS and TRACE per RFC 7231 §4.3
     // processSpecialMethods may insert an upstream connection and updates cnxIt if insertion invalidates it.
     // However, no need to update state because the pointer stays valid.
-    const auto action = processSpecialMethods(cnxIt, consumedInput.nbBytes, consumedBytes, pCorsPolicy);
+    const auto action = processSpecialMethods(cnxIt, consumedInput.nbBytes + consumedBytes, pCorsPolicy);
     if (action == LoopAction::SwitchProtocol) {
       if (state.tunnelResolving) {
         // The CONNECT request is answered once its target is resolved: the input buffer, where the request views point
@@ -292,6 +299,16 @@ AERONET_ALWAYS_INLINE Http1Pipeline::LoopAction Http1Pipeline::readHead(Connecti
   } else {
     // The body of the previous request was completely decoded (or the connection closes).
     assert(!state.isDecodingChunkedBody());
+    if (ctx.config.traceMethodPolicy != HttpServerConfig::TraceMethodPolicy::Disabled) [[unlikely]] {
+      // A TRACE request echoes its head as received: it is copied before being parsed in place, once complete. A head
+      // parsed in part already (received while TRACE was disabled) has no echo.
+      if (request._headParseState == HttpRequestView::HeadParseState::Partial) {
+        ctx.sharedBuffers.trailersOrTraceEcho.clear();
+      } else if (!CopyTraceEcho(std::string_view(input.data(), input.size()), ctx.config.maxHeaderBytes,
+                                ctx.sharedBuffers.trailersOrTraceEcho)) {
+        return LoopAction::Break;
+      }
+    }
     statusCode =
         request.initTrySetHead(input, ctx.sharedBuffers.buf, ctx.config.maxHeaderBytes,
                                ctx.config.mergeUnknownRequestHeaders, ctx.telemetry.createSpan("http.request"));
@@ -689,10 +706,8 @@ bool Http1Pipeline::handleExpectHeader(ConnectionIt cnxIt, std::string_view expe
           // Send the provided final response immediately and skip body processing. The client may send the body that
           // the request announces anyway (it is not required to wait for the response), which could not be told apart
           // from the next request: the connection then closes after the response.
-          const bool announcesBody =
-              request.headerValue(http::TransferEncoding).has_value() ||
-              request.headerValueOrEmpty(http::ContentLength).find_first_not_of('0') != std::string_view::npos;
-          finalizeAndSendResponse(cnxIt, std::move(expectationResult.finalResponse), pCorsPolicy, announcesBody);
+          finalizeAndSendResponse(cnxIt, std::move(expectationResult.finalResponse), pCorsPolicy,
+                                  AnnouncesBody(request));
           return true;
         }
         default:
@@ -712,8 +727,7 @@ bool Http1Pipeline::handleExpectHeader(ConnectionIt cnxIt, std::string_view expe
   return false;
 }
 
-Http1Pipeline::LoopAction Http1Pipeline::processSpecialMethods(ConnectionIt& cnxIt, std::size_t requestOffset,
-                                                               std::size_t consumedBytes,
+Http1Pipeline::LoopAction Http1Pipeline::processSpecialMethods(ConnectionIt& cnxIt, std::size_t requestEnd,
                                                                const CorsPolicy* pCorsPolicy) {
   ServerContext& ctx = *_pCtx;
   ConnectionState& state = ctx.connections.connectionState(cnxIt);
@@ -726,12 +740,20 @@ Http1Pipeline::LoopAction Http1Pipeline::processSpecialMethods(ConnectionIt& cnx
         .isTls = !request.tlsVersion().empty(),
     };
 
-    // For TRACE, we need to pass the raw request data
-    const std::string_view requestData = (request.method() == http::Method::TRACE)
-                                             ? std::string_view(state.inBuffer.data() + requestOffset, consumedBytes)
-                                             : std::string_view{};
+    // A TRACE request echoes the copy of its head made before its parsing (see readHead()).
+    std::string_view traceEcho;
+    if (request.method() == http::Method::TRACE && config.traceEnabled()) {
+      // A client must not send content in a TRACE request (RFC 9110 §9.3.8). Without, the request is served right after
+      // its head is parsed, and has no chunked body whose trailers would overwrite the copy of its head: no other
+      // request, TRACE or chunked, was served meanwhile.
+      if (AnnouncesBody(request)) {
+        emitSimpleError(cnxIt, http::StatusCodeBadRequest, "TRACE request with content");
+        return LoopAction::Break;
+      }
+      traceEcho = ctx.sharedBuffers.trailersOrTraceEcho;
+    }
 
-    HttpResponse result = ProcessSpecialMethods(request, ctx.router, config, pCorsPolicy, requestData);
+    HttpResponse result = ProcessSpecialMethods(request, ctx.router, config, pCorsPolicy, traceEcho);
     if (!result.empty()) {
       finalizeAndSendResponse(cnxIt, std::move(result), pCorsPolicy);
       return LoopAction::Continue;
@@ -742,7 +764,7 @@ Http1Pipeline::LoopAction Http1Pipeline::processSpecialMethods(ConnectionIt& cnx
 
   // CONNECT requires protocol-specific handling (TCP tunnel setup)
   if (request.method() == http::Method::CONNECT) {
-    return TunnelManager::Of(ctx).startHttp1Tunnel(cnxIt, requestOffset + consumedBytes);
+    return TunnelManager::Of(ctx).startHttp1Tunnel(cnxIt, requestEnd);
   }
 
   return LoopAction::Nothing;

@@ -152,6 +152,14 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    trace-echo_test
+    src/trace-echo.cpp
+    test/trace-echo_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+AeronetAddUnitTest(
     tunnel-resolver_test
     src/tunnel-resolver.cpp
     test/tunnel-resolver_test.cpp
