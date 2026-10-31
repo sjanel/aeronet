@@ -151,10 +151,9 @@ class Http1Pipeline {
   // Derives the target from the request Host header + config.httpsRedirect, then closes the connection.
   void emitHttpsRedirect(ConnectionIt cnxIt);
 
-  // Answers the OPTIONS, TRACE and CONNECT requests that are not routed like the other ones. The current request starts
-  // at requestOffset in the input buffer, and takes consumedBytes there.
-  LoopAction processSpecialMethods(ConnectionIt& cnxIt, std::size_t requestOffset, std::size_t consumedBytes,
-                                   const CorsPolicy* pCorsPolicy);
+  // Answers the OPTIONS, TRACE and CONNECT requests that are not routed like the other ones. The current request ends
+  // at requestEnd in the input buffer.
+  LoopAction processSpecialMethods(ConnectionIt& cnxIt, std::size_t requestEnd, const CorsPolicy* pCorsPolicy);
 
 #ifdef AERONET_ENABLE_WEBSOCKET
   // Answer the WebSocket upgrade request of the connection, once its request middleware ran: checks its origin, then

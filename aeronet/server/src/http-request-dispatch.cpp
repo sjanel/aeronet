@@ -13,7 +13,6 @@
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
-#include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/https-redirect.hpp"
 #include "aeronet/internal/http-response-access.hpp"
@@ -89,7 +88,7 @@ HttpResponse MakeMethodNotAllowed(const HttpRequestView& request, http::MethodBm
 }  // namespace
 
 HttpResponse ProcessSpecialMethods(const HttpRequestView& request, Router& router, SpecialMethodConfig config,
-                                   const CorsPolicy* pCorsPolicy, std::string_view requestData) {
+                                   const CorsPolicy* pCorsPolicy, std::string_view traceEcho) {
   HttpResponse result = internal::HttpResponseAccess::MakeUnallocated();
 
   if (request.method() == http::Method::OPTIONS) {
@@ -126,24 +125,8 @@ HttpResponse ProcessSpecialMethods(const HttpRequestView& request, Router& route
 
     // TRACE: echo the received request message as the body with Content-Type: message/http
     // Respect configured TracePolicy. Default: Disabled.
-    bool allowTrace;
-    switch (config.tracePolicy) {
-      case HttpServerConfig::TraceMethodPolicy::EnabledPlainAndTLS:
-        allowTrace = true;
-        break;
-      case HttpServerConfig::TraceMethodPolicy::EnabledPlainOnly:
-        // If this request arrived over TLS, disallow TRACE
-        allowTrace = !config.isTls;
-        break;
-      default:
-        assert(config.tracePolicy == HttpServerConfig::TraceMethodPolicy::Disabled);
-        allowTrace = false;
-        break;
-    }
-
-    if (allowTrace && !requestData.empty()) {
-      // Echo the raw request data
-      result = request.makeResponse(requestData, http::ContentTypeMessageHttp);
+    if (config.traceEnabled() && !traceEcho.empty()) {
+      result = request.makeResponse(traceEcho, http::ContentTypeMessageHttp);
       return result;
     }
 
