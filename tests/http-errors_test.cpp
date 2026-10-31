@@ -315,6 +315,30 @@ TEST(ConnectionManagerErrors, TcpNoDelayFailure) {
 }
 
 #ifdef AERONET_LINUX
+// A connection whose send buffer size cannot be set (SO_SNDBUF) is served with the default one.
+TEST(ConnectionManagerErrors, SendBufferSizeFailure) {
+  const test::ScopedConfigUpdate<std::uint32_t> sendBufferGuard(
+      ts, [](const HttpServerConfig& cfg) { return cfg.socketSendBufferBytes; },
+      [](HttpServerConfig& cfg, std::uint32_t bytes) { cfg.withSocketSendBufferBytes(bytes); }, 64U << 10U);
+  ts.router().setDefault([](const HttpRequestView& req) { return req.makeResponse(http::StatusCodeOK); });
+
+  test::QueueResetGuard<decltype(test::g_setsockopt_actions)> guard(test::g_setsockopt_actions);
+  // On Linux, the client creates and connects its socket without setsockopt: the first one is the server setting the
+  // send buffer of the connection it accepts. The client waits for it before sending (sendAll sets a send timeout).
+  test::PushSetsockoptAction({-1, ENOBUFS});
+  test::ClientConnection sock(ts.port());
+  for (int attempt = 0; attempt < 500 && !test::g_setsockopt_actions.empty(); ++attempt) {
+    std::this_thread::sleep_for(10ms);
+  }
+  ASSERT_TRUE(test::g_setsockopt_actions.empty()) << "the connection was not accepted within 5 s";
+
+  test::sendAll(sock.fd(), "GET /sndbuf-fail HTTP/1.1\r\nhost: h\r\nconnection: close\r\n\r\n");
+  const std::string resp = test::recvUntilClosed(sock.fd());
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+}
+#endif
+
+#ifdef AERONET_LINUX
 // Without SO_ZEROCOPY support (older kernel), the server warns once for the Enabled mode and copies its responses.
 TEST(ConnectionManagerErrors, ZerocopyUnsupportedByListenerCopiesResponses) {
   const test::ScopedConfigUpdate<ZerocopyMode> modeGuard(
