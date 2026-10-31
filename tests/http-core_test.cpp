@@ -1380,6 +1380,55 @@ TEST(HttpMalformed, OversizedHeaders) {
   ASSERT_TRUE(resp.contains("431")) << resp;
 }
 
+// RFC 9112 §3: a request-target longer than the server wishes to parse is answered 414, whether the end of the request
+// line is received in the same read as the start of its target or later.
+TEST(HttpMalformed, TooLongRequestTargetIsUriTooLong) {
+  static constexpr std::uint32_t kMaxHeaderBytes = 256;
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxHeaderBytes(kMaxHeaderBytes); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
+
+  const std::string target(2U * kMaxHeaderBytes, 'a');
+
+  // Whole request line, then a valid head.
+  std::string resp = sendRaw("GET /" + target + " HTTP/1.1\r\nhost: x\r\n\r\n");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 414 URI Too Long\r\n")) << resp;
+
+  // Request line without its end.
+  resp = sendRaw("GET /" + target);
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 414 URI Too Long\r\n")) << resp;
+
+  // Request line received in several reads, the limit being reached by the last one.
+  {
+    test::ClientConnection clientConnection(port);
+    const NativeHandle fd = clientConnection.fd();
+    test::sendAll(fd, "GET /" + target.substr(0, kMaxHeaderBytes / 2));
+    std::this_thread::sleep_for(20ms);
+    test::sendAll(fd, target.substr(kMaxHeaderBytes / 2));
+    resp = test::recvUntilClosed(fd);
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 414 URI Too Long\r\n")) << resp;
+  }
+
+  // The largest request line accepted takes the whole limit, with the empty line ending the head: any header line
+  // is then answered 431.
+  const std::string_view kStart = "GET /";
+  const std::string_view kVersion = " HTTP/1.0\r\n";
+  const std::string fittingTarget(kMaxHeaderBytes - kStart.size() - kVersion.size() - http::CRLF.size(), 'b');
+  resp = sendRaw(std::string(kStart) + fittingTarget + std::string(kVersion) + "\r\n");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.0 200")) << resp;
+  resp = sendRaw(std::string(kStart) + fittingTarget + std::string(kVersion) + "x: y\r\n\r\n");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 431 Request Header Fields Too Large\r\n")) << resp;
+}
+
+// The request line being complete, a head over the limit is a header section too large (431), not a long target.
+TEST(HttpMalformed, TooLongIncompleteHeaderSectionIsHeadersTooLarge) {
+  static constexpr std::uint32_t kMaxHeaderBytes = 256;
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxHeaderBytes(kMaxHeaderBytes); });
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
+
+  const std::string resp = sendRaw("GET / HTTP/1.1\r\nhost: x\r\nx-big: " + std::string(2U * kMaxHeaderBytes, 'A'));
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 431 Request Header Fields Too Large\r\n")) << resp;
+}
+
 TEST(HttpMalformed, BadChunkExtensionHex) {
   ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
 

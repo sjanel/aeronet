@@ -417,6 +417,12 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
     if (pLineLast[1] != '\n' || std::cmp_less(pLineLast - pFirst, http::kHttpReqLineMinLen - http::CRLF.size())) {
       return http::StatusCodeBadRequest;
     }
+    // RFC 9112 §3: a request-target longer than the server wishes to parse is answered 414. The request line, made
+    // almost only of the request-target, is bounded by the size limit of the head, with the empty line that ends it:
+    // no head with a longer request line fits. The header lines are bounded by the same limit (431).
+    if (maxHeadersBytes < static_cast<uint64_t>(pLineLast - pFirst) + http::DoubleCRLF.size()) [[unlikely]] {
+      return http::StatusCodeURITooLong;
+    }
 
     static_assert(http::kHttpReqLineMinLen - http::CRLF.size() >= 8);
 
