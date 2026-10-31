@@ -117,7 +117,7 @@ Data that must outlive the handler, stored in a cache, captured by a callback, o
 
 | Setting | Default | When exceeded |
 | --- | --- | --- |
-| `maxHeaderBytes` | 8 KiB | `431 Request Header Fields Too Large`. Includes request trailers. |
+| `maxHeaderBytes` | 8 KiB | `431 Request Header Fields Too Large`, includes request trailers. A request line too long for it, whose request target is too long, is answered `414 URI Too Long` (RFC 9112 §3) instead, whether or not its end was received. |
 | `maxBodyBytes` | 256 MiB | `413 Payload Too Large`, before the body is read when a `Content-Length` announces it (the connection then closes after a [lingering close](server-lifecycle.md#lingering-close)). |
 | `headerReadTimeout` | disabled | `408 Request Timeout` and connection closed: protects against clients sending their head byte by byte (Slowloris). Counted from the accept for the first request of a connection, from its first byte for the next ones. |
 | `bodyReadTimeout` | disabled | `408 Request Timeout` and connection closed when the body stops arriving. |

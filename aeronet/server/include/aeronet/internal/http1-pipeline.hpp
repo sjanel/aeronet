@@ -67,8 +67,9 @@ class Http1Pipeline {
   // End an HTTP/1.1 request answered with 'status': emit its metrics (if observed), then end its span.
   void endRequest(HttpRequestView& request, http::StatusCode status);
 
-  // Answers the request whose head is still being received after a read when its input exceeds maxHeaderBytes (431) or
-  // its headerReadTimeout elapsed (408). Returns true if it was answered: the connection then closes.
+  // Answers the request whose head is still being received after a read when its input exceeds maxHeaderBytes (414 if
+  // the end of its request line was not received, 431 otherwise) or its headerReadTimeout elapsed (408). Returns true
+  // if it was answered: the connection then closes.
   bool rejectIncompleteHead(ConnectionIt cnxIt);
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS

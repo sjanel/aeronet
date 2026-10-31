@@ -181,7 +181,8 @@ struct HttpServerConfig {
   // ============================
 
   // Maximum allowed size (in bytes) of the aggregate HTTP request head (request line + all headers + CRLFCRLF).
-  // If exceeded while parsing, the server replies 431/400 and closes the connection. Default: 8 KiB.
+  // If exceeded while parsing, the server replies 431/400 and closes the connection. The request line alone is
+  // bounded by it too (414). Default: 8 KiB.
   std::uint32_t maxHeaderBytes{8192};
 
   // Maximum allowed size (in bytes) of a request body (after decoding any chunked framing). Requests exceeding this
