@@ -376,7 +376,7 @@ AERONET_ALWAYS_INLINE Http1Pipeline::LoopAction Http1Pipeline::callHandlers(Conn
                                                                             bool bodyReady) {
   HttpRequestView& request = state.request;
 
-  const bool isStreaming = routingResult.streamingHandler() != nullptr && request.version() == http::HTTP_1_1;
+  const bool isStreaming = routingResult.streamingHandler() != nullptr;
   const RequestPipeline pipeline = _pCtx->requestPipeline();
   // Each response is constructed in place from its call: assigning an optional HttpResponse would move and destroy one
   // (out of line) for each request.
@@ -395,8 +395,7 @@ AERONET_ALWAYS_INLINE Http1Pipeline::LoopAction Http1Pipeline::callHandlers(Conn
     return processWebSocketUpgrade(cnxIt, routingResult);
   }
 #endif
-  if (HttpResponse response = RequestPipeline::CallRequestHandler(request, routingResult, isStreaming);
-      !response.empty()) {
+  if (HttpResponse response = RequestPipeline::CallRequestHandler(request, routingResult); !response.empty()) {
     sendResponse(cnxIt, std::move(response), routingResult, isStreaming);
     CloseIfBodyPending(state, bodyReady);
     return LoopAction::Continue;
@@ -481,7 +480,7 @@ Http1Pipeline::LoopAction Http1Pipeline::serveStreamingRequest(ConnectionIt cnxI
 
   endRequest(request, writer.status());
 
-  assert(request.version() == http::HTTP_1_1);
+  // A close-delimited body (HTTP/1.0 without Content-Length) ends with the connection, announced by its head.
   // A drain or a stop that began after the head was sent, announcing a persistent connection, closes it too. So does a
   // failed writer (a compression error): the client must not take the next response for the rest of this one.
   // A close requested meanwhile (a write error, the output limit...) made the transport fail the writer.

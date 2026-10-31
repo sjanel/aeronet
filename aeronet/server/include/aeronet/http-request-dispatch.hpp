@@ -68,10 +68,9 @@ class RequestPipeline {
   /// origin (its handler is not called, so that it has no side effect), the response of its request handler (a 500 when
   /// it throws), or, without handler, a trailing slash redirect, a 405 (with an Allow header listing the methods of the
   /// route) or a 404.
-  /// Returns nothing when the protocol calls the handler of the route: its streaming handler (when 'streaming') or its
-  /// async handler.
+  /// Returns nothing when the protocol calls the handler of the route: its streaming handler or its async handler.
   [[nodiscard]] static HttpResponse CallRequestHandler(HttpRequestView& request,
-                                                       const Router::RoutingResult& routingResult, bool streaming);
+                                                       const Router::RoutingResult& routingResult);
 
   /// Tell whether the CORS policy of the route of a request denies its origin: its handler must then not be called, the
   /// request being answered by MakeOriginDenial().
