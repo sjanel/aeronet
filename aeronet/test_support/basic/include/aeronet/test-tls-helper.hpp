@@ -1,9 +1,11 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <utility>
 
+struct ssl_st;   // SSL
 struct x509_st;  // X509
 
 namespace aeronet::test {
@@ -38,5 +40,10 @@ void SetSelfIssuedName(x509_st* cert, const char* pCommonName);
 
 // The first common name (CN) of the subject of `cert`, or an empty string if it has none.
 std::string SubjectCommonName(const x509_st* pCert);
+
+// Reads at most `maxBytes` from `pSsl` (SSL_read_ex), appending them to `out`. Returns the number of appended bytes, 0
+// when nothing was read, SSL_get_error(pSsl, 0) then telling why. Failures are logged, except when the read would block
+// and when the peer closed the connection (close_notify).
+std::size_t SslReadAppend(ssl_st* pSsl, std::string& out, std::size_t maxBytes = 16384);
 
 }  // namespace aeronet::test

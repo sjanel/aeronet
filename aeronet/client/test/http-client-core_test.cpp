@@ -50,7 +50,6 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
-#include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/response-body-sink.hpp"
@@ -2301,27 +2300,6 @@ void DrainUntilClosed(NativeHandle fd, int timeoutMs) {
   }
 }
 
-// Read the request header block up to (and including) the terminating "\r\n\r\n". Returns what was read so
-// far on EOF (empty when the peer closed without sending anything). Good enough for bodyless GET / CONNECT.
-std::string ReadRequestHead(NativeHandle fd) {
-  std::string buf;
-  for (bool end = false; !end;) {
-    buf.resize_and_overwrite(1024UL, [fd, &end](char* pData, std::size_t size) -> std::size_t {
-      const auto sz = ::recv(fd, pData, size, 0);
-      if (sz <= 0) {
-        if (sz < 0) {
-          log::error("ReadRequestHead: failed to receive from socket");
-        }
-        end = true;
-        return 0;
-      }
-      end = std::string_view(pData, static_cast<std::size_t>(sz)).contains(http::DoubleCRLF);
-      return static_cast<std::size_t>(sz);
-    });
-  }
-  return buf;
-}
-
 void SendAll(NativeHandle fd, std::string_view data) {
   std::size_t off = 0;
   while (off < data.size()) {
@@ -2466,7 +2444,7 @@ class TinyProxy {
   }
 
   void handleConnection(NativeHandle clientFd) {
-    const std::string head = ReadRequestHead(clientFd);
+    const std::string head = test::RecvHead(clientFd);
     if (head.empty()) {
       CloseNativeHandle(clientFd);
       return;
@@ -2498,7 +2476,7 @@ class TinyProxy {
     // Absolute-form http request: capture it and answer directly (looping to serve keep-alive requests).
     SendAll(clientFd, _httpResponse);
     while (!_stop.load(std::memory_order_relaxed)) {
-      const std::string next = ReadRequestHead(clientFd);
+      const std::string next = test::RecvHead(clientFd);
       if (next.empty()) {
         break;
       }
@@ -2763,24 +2741,6 @@ TEST_F(HttpClientProxyTlsE2ETest, Ipv6OriginIsBracketedInConnectAuthority) {
 
 namespace {
 
-// Read until the end of the request header block ("\r\n\r\n") and return what was read. The tests only issue
-// bodyless GETs, so this is enough to know the client finished writing its request before we script the response.
-RawChars DrainRequest(NativeHandle fd) {
-  RawChars buf;
-  char tmp[1024];
-  for (;;) {
-    const auto sz = ::recv(fd, tmp, static_cast<int>(sizeof(tmp)), 0);
-    if (sz <= 0) {
-      return buf;
-    }
-    std::string_view chunk(tmp, static_cast<std::size_t>(sz));
-    buf.append(chunk);
-    if (chunk.contains(http::DoubleCRLF)) {
-      return buf;
-    }
-  }
-}
-
 // Minimal scriptable raw TCP server bound to an ephemeral loopback port. For each accepted connection
 // it invokes a user handler with the socket fd and a 0-based connection index, then closes the socket.
 class RawServer {
@@ -2908,7 +2868,7 @@ class RequestHeadRecorder {
  public:
   RequestHeadRecorder()
       : _server([this](NativeHandle fd, int) {
-          RawChars head = DrainRequest(fd);
+          std::string head = test::RecvHead(fd);
           {
             std::scoped_lock lock(_mutex);
             _heads.push_back(std::move(head));
@@ -2918,14 +2878,14 @@ class RequestHeadRecorder {
 
   [[nodiscard]] uint16_t port() const noexcept { return _server.port(); }
 
-  [[nodiscard]] vector<RawChars> heads() {
+  [[nodiscard]] vector<std::string> heads() {
     std::scoped_lock lock(_mutex);
     return _heads;
   }
 
  private:
   std::mutex _mutex;
-  vector<RawChars> _heads;
+  vector<std::string> _heads;
   RawServer _server;  // last: stopped (and joined) before the recorded heads are destroyed
 };
 
@@ -2947,7 +2907,7 @@ TEST(HttpClientErrorE2ETest, DnsResolutionFailureReturnsError) {
 // retried away.
 TEST(HttpClientErrorE2ETest, ClosedBeforeCompleteResponseReturnsError) {
   RawServer server([](NativeHandle fd, int) {
-    DrainRequest(fd);
+    test::RecvHead(fd);
     SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\nshort");
   });
   HttpClientConfig cfg;  // default retry policy: a fresh-connection post-send failure is never retried
@@ -2983,7 +2943,7 @@ TEST(HttpClientErrorE2ETest, ServerClosingDuringFileUploadDoesNotRaiseSigpipe) {
 
 TEST(HttpClientErrorE2ETest, ShortContentTypeFromServerIsAccepted) {
   RawServer server([](NativeHandle fd, int) {
-    DrainRequest(fd);
+    test::RecvHead(fd);
     SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-type: a/b\r\ncontent-length: 5\r\nconnection: close\r\n\r\nhello");
   });
   HttpClient client;
@@ -3048,7 +3008,7 @@ TEST(HttpClientRawServerTest, KeepAliveOnSendsNoConnectionHeader) {
 // if a descheduled client observes the late close as soon as its poll resumes.
 TEST(HttpClientErrorE2ETest, ReadTimeoutReturnsError) {
   RawServer server([](NativeHandle fd, int) {
-    DrainRequest(fd);
+    test::RecvHead(fd);
     DrainUntilClosed(fd, 5000);  // stall until the client gives up: the server outlives the client's deadline
   });
   HttpClientConfig cfg;
@@ -3065,7 +3025,7 @@ constexpr std::string_view kTrickleBody = "0123456789012345678901234567890123456
 
 // Sends a 200 response whose body trickles in one byte every `gap`, until the client stops reading it.
 void TrickleResponse(NativeHandle fd, std::chrono::milliseconds gap) {
-  DrainRequest(fd);
+  test::RecvHead(fd);
   SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: " + std::to_string(kTrickleBody.size()) + "\r\n\r\n");
   for (const char& ch : kTrickleBody) {
     std::this_thread::sleep_for(gap);
@@ -3098,7 +3058,7 @@ TEST(HttpClientErrorE2ETest, InactivityTimeoutLetsASteadySlowResponseComplete) {
 // A stalled exchange fails after the inactivity timeout, long before the request timeout.
 TEST(HttpClientErrorE2ETest, InactivityTimeoutFailsAStalledResponse) {
   RawServer server([](NativeHandle fd, int) {
-    DrainRequest(fd);
+    test::RecvHead(fd);
     SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 10\r\n\r\n0123");
     DrainUntilClosed(fd, 5000);  // stall until the client gives up: the server outlives the inactivity timeout
   });
@@ -3130,7 +3090,7 @@ TEST(HttpClientErrorE2ETest, RequestTimeoutStillBoundsASteadyResponse) {
 // pooled connection dead and transparently retries on a fresh one (the stale keep-alive race).
 TEST(HttpClientErrorE2ETest, StaleKeepAliveConnectionRetriedOnFreshSucceeds) {
   RawServer server([](NativeHandle fd, int idx) {
-    DrainRequest(fd);
+    test::RecvHead(fd);
     SendAll(fd, idx == 0 ? "HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nfirst"
                          : "HTTP/1.1 200 OK\r\ncontent-length: 6\r\n\r\nsecond");
   });
@@ -3155,7 +3115,7 @@ TEST(HttpClientErrorE2ETest, StaleKeepAliveConnectionRetriedOnFreshSucceeds) {
 // drops the now-useless pooled bucket before the final (also failing) attempt.
 TEST(HttpClientErrorE2ETest, RetryExhaustionDropsDeadPoolThenReturnsError) {
   auto server = std::make_unique<RawServer>([](NativeHandle fd, int) {
-    DrainRequest(fd);
+    test::RecvHead(fd);
     SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nfirst");
   });
   const uint16_t serverPort = server->port();
@@ -3183,7 +3143,7 @@ TEST(HttpClientErrorE2ETest, RequestNotReSentAfterBytesWritten) {
   std::atomic<int> connections{0};
   RawServer server([&](NativeHandle fd, int) {
     connections.fetch_add(1, std::memory_order_relaxed);
-    DrainRequest(fd);
+    test::RecvHead(fd);
     // Promise 100 body bytes but deliver 5 then close: the failure surfaces only after the full request
     // was written.
     SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\nshort");
@@ -3201,7 +3161,7 @@ TEST(HttpClientErrorE2ETest, RequestNotReSentAfterBytesWritten) {
 // connection already closed is transparently sent on a fresh connection (and exactly once).
 TEST(HttpClientErrorE2ETest, PostOnStalePooledConnectionUsesFreshConnection) {
   RawServer server([](NativeHandle fd, int idx) {
-    DrainRequest(fd);
+    test::RecvHead(fd);
     SendAll(fd, idx == 0 ? "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok"
                          : "HTTP/1.1 201 Created\r\ncontent-length: 4\r\n\r\ndone");
   });
@@ -3231,9 +3191,9 @@ TEST(HttpClientErrorE2ETest, StatusRetryReusesKeepAliveConnection) {
   std::atomic<int> connections{0};
   RawServer server([&](NativeHandle fd, int) {
     connections.fetch_add(1, std::memory_order_relaxed);
-    DrainRequest(fd);
+    test::RecvHead(fd);
     SendAll(fd, "HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\n\r\n");
-    DrainRequest(fd);  // the retry arrives on the same kept-alive connection
+    test::RecvHead(fd);  // the retry arrives on the same kept-alive connection
     SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok");
   });
   HttpClientConfig cfg;
@@ -3253,7 +3213,7 @@ TEST(HttpClientErrorE2ETest, StatusRetryExhaustedReturnsLastResponse) {
   std::atomic<int> connections{0};
   RawServer server([&](NativeHandle fd, int) {
     connections.fetch_add(1, std::memory_order_relaxed);
-    DrainRequest(fd);
+    test::RecvHead(fd);
     SendAll(fd, "HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
   });
   HttpClientConfig cfg;
@@ -3271,7 +3231,7 @@ TEST(HttpClientErrorE2ETest, StatusNotInRetrySetIsNotRetried) {
   std::atomic<int> connections{0};
   RawServer server([&](NativeHandle fd, int) {
     connections.fetch_add(1, std::memory_order_relaxed);
-    DrainRequest(fd);
+    test::RecvHead(fd);
     SendAll(fd, "HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
   });
   HttpClientConfig cfg;
@@ -3289,13 +3249,13 @@ TEST(HttpClientErrorE2ETest, StatusNotInRetrySetIsNotRetried) {
 TEST(HttpClientErrorE2ETest, StatusRetryHonorsRetryAfter) {
   for (std::string_view retryAfterValue : {"5", "5invalid"}) {
     RawServer server([retryAfterValue](NativeHandle fd, int) {
-      DrainRequest(fd);
+      test::RecvHead(fd);
       RawChars data;
       data.append("HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nretry-after: ");
       data.append(retryAfterValue);
       data.append("\r\n\r\n");
       SendAll(fd, data);
-      DrainRequest(fd);
+      test::RecvHead(fd);
       SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 4\r\n\r\ndone");
     });
     RetryConfig retry = FastRetry(2);
@@ -3323,7 +3283,7 @@ TEST(HttpClientErrorE2ETest, StatusRetryWithoutKeepAliveIgnoresRetryAfter) {
   std::atomic<int> connections{0};
   RawServer server([&](NativeHandle fd, int idx) {
     connections.fetch_add(1, std::memory_order_relaxed);
-    DrainRequest(fd);
+    test::RecvHead(fd);
     SendAll(fd, idx == 0 ? "HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\nretry-after: 9\r\n\r\n"
                          : "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok");
   });
@@ -3350,7 +3310,7 @@ TEST(HttpClientErrorE2ETest, IdempotentPostSendFailureRetriedWhenEnabled) {
   std::atomic<int> connections{0};
   RawServer server([&](NativeHandle fd, int idx) {
     connections.fetch_add(1, std::memory_order_relaxed);
-    DrainRequest(fd);
+    test::RecvHead(fd);
     SendAll(fd, idx == 0 ? "HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\nshort"  // truncated -> malformed
                          : "HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello");
   });
@@ -3373,7 +3333,7 @@ TEST(HttpClientErrorE2ETest, NonIdempotentPostSendFailureNotRetried) {
   std::atomic<int> connections{0};
   RawServer server([&](NativeHandle fd, int) {
     connections.fetch_add(1, std::memory_order_relaxed);
-    DrainRequest(fd);
+    test::RecvHead(fd);
     SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\nshort");
   });
   RetryConfig retry = FastRetry(3);
@@ -3392,7 +3352,7 @@ TEST(HttpClientErrorE2ETest, NonIdempotentPostSendFailureNotRetried) {
 // A connect failure is a pre-send failure, so it is retried (with backoff) up to the attempt budget before
 // surfacing. Jitter is enabled to drive the backoff PRNG. The origin is a torn-down server (refused connects).
 TEST(HttpClientErrorE2ETest, ConnectFailureRetriedThenExhausted) {
-  auto server = std::make_unique<RawServer>([](NativeHandle fd, int) { DrainRequest(fd); });
+  auto server = std::make_unique<RawServer>([](NativeHandle fd, int) { test::RecvHead(fd); });
   const uint16_t serverPort = server->port();
   server.reset();  // nothing listens on `port` now: every connect is refused
   std::this_thread::sleep_for(std::chrono::milliseconds{50});
@@ -3416,7 +3376,7 @@ TEST(HttpClientErrorE2ETest, Ipv6LiteralHostHeaderIsBracketed) {
   std::string capturedHead;
   RawServer server(
       [&](NativeHandle fd, int) {
-        std::string head = ReadRequestHead(fd);
+        std::string head = test::RecvHead(fd);
         {
           const std::scoped_lock lock(mtx);
           capturedHead = std::move(head);
@@ -3492,7 +3452,7 @@ TEST_F(HttpClientE2ETest, SinkStreamsLargeBodyBeyondMaxResponseBytes) {
 TEST(HttpClientSinkE2ETest, ChunkedAndUntilCloseBodiesAreStreamed) {
   const std::string payload = test::MakePatternedPayload(300000);
   RawServer server([&payload](NativeHandle fd, int idx) {
-    DrainRequest(fd);
+    test::RecvHead(fd);
     if (idx == 0) {
       SendAll(fd,
               "HTTP/1.1 200 OK\r\ncontent-type: text/csv\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n" +
@@ -3528,7 +3488,7 @@ TEST(HttpClientSinkE2ETest, ContentCodedBodiesAreDecodedAsTheyArrive) {
     std::ranges::transform(upperCaseEnc, upperCaseEnc.begin(), [](char ch) { return toupper(ch); });
     for (const bool chunked : {false, true}) {
       RawServer server([&](NativeHandle fd, int) {
-        DrainRequest(fd);
+        test::RecvHead(fd);
         if (chunked) {
           SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-encoding: " + upperCaseEnc +
                           "\r\ntransfer-encoding: chunked\r\n\r\n" + Chunked(std::string_view(encoded), 4093));
@@ -3574,7 +3534,7 @@ TEST(HttpClientSinkE2ETest, TruncatedContentCodingIsMalformed) {
     for (const std::size_t cut : {std::size_t{1}, std::size_t{4}, static_cast<std::size_t>(encoded.size() / 2)}) {
       const std::string_view truncated = std::string_view(encoded).substr(0, encoded.size() - cut);
       RawServer server([&](NativeHandle fd, int) {
-        DrainRequest(fd);
+        test::RecvHead(fd);
         SendAll(fd, EncodedResponse(GetEncodingStr(enc), truncated));
       });
       HttpClient client;
@@ -3598,7 +3558,7 @@ TEST(HttpClientSinkE2ETest, TruncatedContentCodingIsMalformed) {
 TEST(HttpClientSinkE2ETest, EmptyStreamedContentCodedBodyIsAccepted) {
   for (const Encoding enc : test::SupportedEncodings()) {
     RawServer server([enc](NativeHandle fd, int) {
-      DrainRequest(fd);
+      test::RecvHead(fd);
       SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-encoding: " + std::string(GetEncodingStr(enc)) +
                       "\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n0\r\n\r\n");
     });
@@ -3619,7 +3579,7 @@ TEST(HttpClientSinkE2ETest, SinkCanStopADecodedBody) {
   for (const Encoding enc : test::SupportedEncodings()) {
     const RawChars encoded = test::Compress(enc, payload);
     RawServer server([&](NativeHandle fd, int) {
-      DrainRequest(fd);
+      test::RecvHead(fd);
       SendAll(fd, EncodedResponse(GetEncodingStr(enc), std::string_view(encoded)));
     });
     HttpClientConfig cfg;
@@ -3642,7 +3602,7 @@ TEST(HttpClientSinkE2ETest, DecompressionLimitsApplyToStreamedBodies) {
   for (const Encoding enc : test::SupportedEncodings()) {
     const RawChars encoded = test::Compress(enc, payload);
     RawServer server([&](NativeHandle fd, int) {
-      DrainRequest(fd);
+      test::RecvHead(fd);
       SendAll(fd, EncodedResponse(GetEncodingStr(enc), std::string_view(encoded)));
     });
     for (const bool ratio : {false, true}) {
@@ -3674,7 +3634,7 @@ TEST(HttpClientSinkE2ETest, StackedContentCodingsAreBufferedThenDelivered) {
   const std::string payload = test::MakePatternedPayload(50000);
   const RawChars encoded = test::Compress(enc, payload);
   RawServer server([&](NativeHandle fd, int) {
-    DrainRequest(fd);
+    test::RecvHead(fd);
     SendAll(fd,
             EncodedResponse(std::string("identity, ") + std::string(GetEncodingStr(enc)), std::string_view(encoded)));
   });
@@ -3711,7 +3671,7 @@ TEST(HttpClientSinkE2ETest, BufferedBodyWithoutContentTypeIsOctetStream) {
   const std::string payload = test::MakePatternedPayload(10000);
   const RawChars encoded = test::Compress(enc, payload);
   RawServer server([&](NativeHandle fd, int) {
-    DrainRequest(fd);
+    test::RecvHead(fd);
     SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-encoding: identity, " + std::string(GetEncodingStr(enc)) +
                     "\r\ncontent-length: " + std::to_string(encoded.size()) + "\r\nconnection: close\r\n\r\n" +
                     std::string(std::string_view(encoded)));
@@ -3729,7 +3689,7 @@ TEST(HttpClientSinkE2ETest, BufferedBodyWithoutContentTypeIsOctetStream) {
 TEST(HttpClientSinkE2ETest, IdentityContentCodingIsStreamed) {
   const std::string payload = test::MakePatternedPayload(100000);
   RawServer server([&](NativeHandle fd, int) {
-    DrainRequest(fd);
+    test::RecvHead(fd);
     SendAll(fd, EncodedResponse("identity", payload));
   });
   // Decompression is enabled by default when a decoder is compiled in, and cannot be enabled otherwise.
@@ -3790,7 +3750,7 @@ TEST_F(HttpClientE2ETest, SinkOnlySeesTheFinalResponseOfRedirects) {
 // A redirect with a body, to follow, is buffered and discarded; one that cannot be followed is delivered with its body.
 TEST(HttpClientSinkE2ETest, RedirectBodiesAreNotStreamed) {
   RawServer server([](NativeHandle fd, int idx) {
-    DrainRequest(fd);
+    test::RecvHead(fd);
     if (idx == 0) {
       SendAll(fd, "HTTP/1.1 302 Found\r\nlocation: /next\r\ncontent-length: 5\r\nconnection: close\r\n\r\nmoved");
     } else if (idx == 1) {
@@ -3818,7 +3778,7 @@ TEST(HttpClientSinkE2ETest, RedirectBodiesAreNotStreamed) {
 // A response retried for its status is never delivered to the sink.
 TEST(HttpClientSinkE2ETest, StatusRetriedResponsesAreNotDelivered) {
   RawServer server([](NativeHandle fd, int idx) {
-    DrainRequest(fd);
+    test::RecvHead(fd);
     SendAll(fd, idx == 0 ? "HTTP/1.1 503 Busy\r\nretry-after: 0\r\ncontent-length: 4\r\nconnection: close\r\n\r\nbusy"
                          : "HTTP/1.1 200 OK\r\ncontent-length: 4\r\nconnection: close\r\n\r\ndone");
   });
@@ -3834,7 +3794,7 @@ TEST(HttpClientSinkE2ETest, StatusRetriedResponsesAreNotDelivered) {
 
   // Once the retry budget is exhausted, the retryable status is the final response, and is delivered.
   RawServer busy([](NativeHandle fd, int) {
-    DrainRequest(fd);
+    test::RecvHead(fd);
     SendAll(fd, "HTTP/1.1 503 Busy\r\ncontent-length: 4\r\nconnection: close\r\n\r\nbusy");
   });
   HttpClient noRetry;
@@ -3852,7 +3812,7 @@ TEST(HttpClientSinkE2ETest, NoRetryOnceTheHeadWasDelivered) {
   std::atomic<int> connections{0};
   RawServer server([&connections](NativeHandle fd, int) {
     connections.fetch_add(1, std::memory_order_relaxed);
-    DrainRequest(fd);
+    test::RecvHead(fd);
     SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\nshort");
   });
   RetryConfig retry = FastRetry(3);
@@ -3921,7 +3881,7 @@ TEST_F(HttpClientE2ETest, SinkGetsBodylessResponses) {
   EXPECT_EQ(sink.bodySize, 0U);  // the Content-Length of a HEAD response describes the body of a GET
 
   RawServer server([](NativeHandle fd, int) {
-    DrainRequest(fd);
+    test::RecvHead(fd);
     SendAll(fd, "HTTP/1.1 204 No Content\r\nconnection: close\r\n\r\n");
   });
   test::CollectingBodySink noContent;
@@ -3938,7 +3898,7 @@ TEST(HttpClientSinkE2ETest, SinkRequestsBypassTheCache) {
   std::atomic<int> requests{0};
   RawServer server([&requests](NativeHandle fd, int) {
     requests.fetch_add(1, std::memory_order_relaxed);
-    DrainRequest(fd);
+    test::RecvHead(fd);
     SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 5\r\nconnection: close\r\n\r\nfresh");
   });
   HttpClientConfig cfg;
@@ -3970,7 +3930,7 @@ class ThrowingBodySink final : public ResponseBodySink {
 // reading from is closed and unregistered, so the next request (likely given the same fd number) is not affected.
 TEST(HttpClientSinkE2ETest, ThrowingSinkLeavesTheClientUsable) {
   RawServer server([](NativeHandle fd, int) {
-    DrainRequest(fd);
+    test::RecvHead(fd);
     // Head then body in two writes, so that the client waits on the connection before the body arrives. Each response
     // closes its connection: every request uses a new one, likely given the fd number of the previous one.
     SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 10\r\nconnection: close\r\n\r\n");
@@ -3995,7 +3955,7 @@ TEST(HttpClientSinkE2ETest, StreamedBodyCloseToTheDecompressionLimitIsAccepted) 
   for (const Encoding enc : test::SupportedEncodings()) {
     const RawChars encoded = test::Compress(enc, std::string_view{payload});
     RawServer server([&](NativeHandle fd, int) {
-      DrainRequest(fd);
+      test::RecvHead(fd);
       SendAll(fd, EncodedResponse(GetEncodingStr(enc), std::string_view{encoded}));
     });
     HttpClientConfig cfg;
@@ -4014,7 +3974,7 @@ TEST(HttpClientSinkE2ETest, UnsupportedContentCodingFailsBeforeTheBody) {
   for (const std::string_view coding : {std::string_view("compress"), std::string_view("gzip, made-up")}) {
     const std::string response = EncodedResponse(coding, std::string(1UL << 20U, 'c'));
     RawServer server([&response](NativeHandle fd, int) {
-      DrainRequest(fd);
+      test::RecvHead(fd);
       SendAll(fd, response);
     });
     // Decompression is enabled by default only when a decoder is compiled in.
@@ -4043,7 +4003,7 @@ TEST(HttpClientSinkE2ETest, UnsupportedContentCodingFailsBeforeTheBody) {
 TEST(HttpClientErrorE2ETest, InactivityTimeoutFailsAStalledUpload) {
   std::binary_semaphore clientDone{0};
   RawServer server([&clientDone](NativeHandle fd, int) {
-    ReadRequestHead(fd);
+    test::RecvHead(fd);
     EXPECT_TRUE(clientDone.try_acquire_for(std::chrono::seconds{5}));  // never read the body, until the client gave up
   });
   HttpClientConfig cfg;
@@ -4063,7 +4023,7 @@ TEST(HttpClientErrorE2ETest, InactivityTimeoutFailsAStalledUpload) {
 
 // HTTP/2 (prior-knowledge h2c) error paths against the scriptable raw server. The client sends its
 // connection preface + SETTINGS + HEADERS in one flight; the preface magic ends with "\r\n\r\n" so
-// DrainRequest() still delimits "the client has written its request".
+// test::RecvHead() still delimits "the client has written its request".
 
 namespace {
 HttpClientConfig Http2RawConfig() {
@@ -4075,7 +4035,7 @@ HttpClientConfig Http2RawConfig() {
 
 // The server closes right after the request reaches it: EOF before the stream completed.
 TEST(HttpClientErrorE2ETest, Http2AbruptCloseReturnsConnectionClosed) {
-  RawServer server([](NativeHandle fd, int) { DrainRequest(fd); });
+  RawServer server([](NativeHandle fd, int) { test::RecvHead(fd); });
   HttpClient client(Http2RawConfig());
   auto result = client.get(MakeUrl(server.port()));
   ASSERT_FALSE(result);
@@ -4086,7 +4046,7 @@ TEST(HttpClientErrorE2ETest, Http2AbruptCloseReturnsConnectionClosed) {
 // frame, a connection-level protocol error surfaced as malformedResponse.
 TEST(HttpClientErrorE2ETest, Http2NonHttp2PeerReturnsMalformedResponse) {
   RawServer server([](NativeHandle fd, int) {
-    DrainRequest(fd);
+    test::RecvHead(fd);
     SendAll(fd, "HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n");
   });
   HttpClient client(Http2RawConfig());
@@ -4099,7 +4059,7 @@ TEST(HttpClientErrorE2ETest, Http2NonHttp2PeerReturnsMalformedResponse) {
 // if a descheduled client observes the late close as soon as its poll resumes.
 TEST(HttpClientErrorE2ETest, Http2ReadTimeoutReturnsError) {
   RawServer server([](NativeHandle fd, int) {
-    DrainRequest(fd);
+    test::RecvHead(fd);
     DrainUntilClosed(fd, 5000);  // stall until the client gives up: the server outlives the client's deadline
   });
   HttpClientConfig cfg = Http2RawConfig();
@@ -4113,7 +4073,7 @@ TEST(HttpClientErrorE2ETest, Http2ReadTimeoutReturnsError) {
 // Over HTTP/2 too, a stalled exchange fails after the inactivity timeout, long before the request timeout.
 TEST(HttpClientErrorE2ETest, Http2InactivityTimeoutFailsAStalledExchange) {
   RawServer server([](NativeHandle fd, int) {
-    DrainRequest(fd);
+    test::RecvHead(fd);
     DrainUntilClosed(fd, 5000);  // stall until the client gives up: the server outlives the inactivity timeout
   });
   HttpClientConfig cfg = Http2RawConfig();
@@ -4204,7 +4164,7 @@ std::string Http2EncodedResponse(std::string_view encodingName, std::string_view
 TEST(HttpClientErrorE2ETest, Http2InformationalResponseNotCached) {
   std::atomic<int> hits{0};
   RawServer server([&hits](NativeHandle fd, int) {
-    DrainRequest(fd);
+    test::RecvHead(fd);
     const int nth = hits.fetch_add(1, std::memory_order_relaxed) + 1;
     const std::string body = std::to_string(nth);
 
@@ -4251,7 +4211,7 @@ TEST(HttpClientSinkE2ETest, Http2ContentCodedBodiesAreDecodedOrRejected) {
           continue;
         }
         RawServer server([&](NativeHandle fd, int) {
-          DrainRequest(fd);
+          test::RecvHead(fd);
           SendAll(fd, Http2EncodedResponse(GetEncodingStr(enc), data, frameSize));
           DrainUntilClosed(fd, 500);  // keep the connection open until the client is done
         });
@@ -4291,7 +4251,7 @@ TEST(HttpClientSinkE2ETest, Http2ResetAfterTheHeadIsNotRetried) {
   std::atomic<int> connections{0};
   RawServer server([&connections](NativeHandle fd, int) {
     connections.fetch_add(1, std::memory_order_relaxed);
-    DrainRequest(fd);
+    test::RecvHead(fd);
     std::string out;
     AppendH2Frame(out, kFrameSettings, 0, 0, {});
     AppendH2Frame(out, kFrameSettings, kFlagAck, 0, {});
@@ -4325,7 +4285,7 @@ TEST(HttpClientSinkE2ETest, Http2StackedContentCodingsAreBufferedThenDelivered) 
   const std::string payload = test::MakePatternedPayload(30000);
   const RawChars encoded = test::Compress(enc, payload);
   RawServer server([&](NativeHandle fd, int) {
-    DrainRequest(fd);
+    test::RecvHead(fd);
     SendAll(fd, Http2EncodedResponse(std::string("identity, ") + std::string(GetEncodingStr(enc)),
                                      std::string_view{encoded}));
     DrainUntilClosed(fd, 500);
@@ -4369,7 +4329,7 @@ TEST(HttpClientSinkE2ETest, Http2ContentLengthIsAnnouncedAndChecked) {
     }
     const std::string response = Http2Response(headerBlock, testCase.data);
     RawServer server([&response](NativeHandle fd, int) {
-      DrainRequest(fd);
+      test::RecvHead(fd);
       SendAll(fd, response);
       DrainUntilClosed(fd, 500);  // keep the connection open until the client is done
     });
@@ -4417,7 +4377,7 @@ TEST(HttpClientSinkE2ETest, Http2BodylessResponsesKeepTheirContentLength) {
     const std::string response =
         Http2Response(HpackStatusLiteral(testCase.status) + HpackLiteral("content-length", "100"), {});
     RawServer server([&response](NativeHandle fd, int) {
-      DrainRequest(fd);
+      test::RecvHead(fd);
       SendAll(fd, response);
       DrainUntilClosed(fd, 500);
     });
@@ -4441,7 +4401,7 @@ TEST(HttpClientSinkE2ETest, Http2ContentLengthOfTrailersIsIgnored) {
   AppendH2Frame(response, kFrameData, 0, 1, "body");
   AppendH2Frame(response, kFrameHeaders, kFlagEndHeaders | kFlagEndStream, 1, HpackLiteral("content-length", "x"));
   RawServer server([&response](NativeHandle fd, int) {
-    DrainRequest(fd);
+    test::RecvHead(fd);
     SendAll(fd, response);
     DrainUntilClosed(fd, 500);
   });

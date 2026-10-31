@@ -1205,7 +1205,8 @@ constexpr std::string_view kEndChunkedBody = "\r\n0\r\n";
 void HttpMessage::finalizeForHttp1(http::Version version, Options opts, const ConcatenatedHeaders* pGlobalHeaders,
                                    std::size_t minCapturedBodySize) {
   assert(_opts.sendContentLengthHeader());  // This method is called in HTTP/1.x where Content-Length header is expected
-  if (trailersSize() != 0 && version == http::HTTP_1_0) [[unlikely]] {
+  const bool isHttp10 = version == http::HTTP_1_0;
+  if (isHttp10 && _opts._trailerLen != 0) [[unlikely]] {
     // Trailers need the chunked transfer coding, which an HTTP/1.0 recipient does not understand (RFC 9112 §6.1): they
     // are dropped (RFC 9110 §6.5.1), and the body keeps its Content-Length.
     if (hasBodyCaptured()) {
@@ -1220,11 +1221,11 @@ void HttpMessage::finalizeForHttp1(http::Version version, Options opts, const Co
   }
   std::size_t bodySz = bodyLength();
 
-  const std::string_view connectionValue = opts.isClose() ? http::close : http::keepalive;
+  const bool isClose = opts.isClose();
+  const std::string_view connectionValue = isClose ? http::close : http::keepalive;
   // HTTP/1.1 (RFC 7230 / RFC 9110) specifies that Connection: keep-alive is the default.
   // HTTP/1.0 is the opposite - Connection: close is the default.
-  const bool addConnectionHeader =
-      (opts.isClose() && version == http::HTTP_1_1) || (!opts.isClose() && version == http::HTTP_1_0);
+  const bool addConnectionHeader = (isClose && version == http::HTTP_1_1) || (!isClose && isHttp10);
   const bool hasHeaders = !headersFlatView().empty();
   const bool isHeadMethod = opts.isHeadMethod();
   const bool addTrailerHeader = trailersSize() != 0 && opts.isAddTrailerHeader();
