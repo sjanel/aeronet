@@ -520,7 +520,7 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
     const auto [nameView, valueView] = http::ParseHeaderLineTrimValue(pFirst, pLineLast);
     // tolower in place for header name (to avoid having to compare strings case-insensitively later)
     tolower(pFirst, nameView.size());
-    if (!http::IsValidHeaderName(nameView) || !http::IsValidHeaderValue(valueView)) {
+    if (!http::IsValidHeaderName(nameView) || !http::IsValidReceivedHeaderValue(valueView)) {
       return http::StatusCodeBadRequest;
     }
 

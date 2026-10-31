@@ -1239,7 +1239,24 @@ TEST_F(HttpRequestViewTest, InvalidHeaderValue) {
   EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\nKey:Value\x01\r\n")), http::StatusCodeBadRequest);
   EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\nKey:Value\r\r\n")), http::StatusCodeBadRequest);
   EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\nKey:Val\nue\r\n")), http::StatusCodeBadRequest);
-  EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\nKey:Val\x80ue\r\n")), http::StatusCodeBadRequest);
+  EXPECT_EQ(reqSet(RawChars("GET /test HTTP/1.0\r\nKey:caf\xC3\xA9\x01\r\n")), http::StatusCodeBadRequest);
+}
+
+// RFC 9110 §5.5: obs-text (bytes 0x80-0xFF) is allowed in field values, and kept as opaque data.
+TEST_F(HttpRequestViewTest, ObsTextHeaderValueIsKeptAsIs) {
+  ASSERT_EQ(reqSet(RawChars("GET /test HTTP/1.1\r\nHost: h\r\nX-Test: caf\xC3\xA9\r\n"
+                            "Content-Disposition: attachment; filename=\"r\xC3\xA9sum\xC3\xA9.pdf\"\r\n"
+                            "X-Latin1:  \xE9t\xE9 \r\nX-Bytes: \x80\xFF\r\n\r\n")),
+            http::StatusCodeOK);
+  EXPECT_EQ(req.headerValueOrEmpty("x-test"), "caf\xC3\xA9");
+  EXPECT_EQ(req.headerValueOrEmpty("content-disposition"), "attachment; filename=\"r\xC3\xA9sum\xC3\xA9.pdf\"");
+  EXPECT_EQ(req.headerValueOrEmpty("x-latin1"), "\xE9t\xE9");
+  EXPECT_EQ(req.headerValueOrEmpty("x-bytes"), "\x80\xFF");
+
+  // Duplicates are merged like any other value.
+  ASSERT_EQ(reqSet(RawChars("GET /test HTTP/1.1\r\nHost: h\r\nX-Test: \xC3\xA9t\xC3\xA9\r\nX-Test: hiver\r\n\r\n")),
+            http::StatusCodeOK);
+  EXPECT_EQ(req.headerValueOrEmpty("x-test"), "\xC3\xA9t\xC3\xA9,hiver");
 }
 
 TEST_F(HttpRequestViewTest, InvalidHeaderKeyValueSeparator) {

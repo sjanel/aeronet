@@ -90,8 +90,9 @@ ChunkSizeLine ParseChunkSizeLine(const char* pFirst, const char* pLast, std::siz
     return out;
   }
   // Chunk extensions are ignored, but must not contain control characters: a parser accepting a bare LF as chunk
-  // line terminator would otherwise not agree with us on where the chunk data starts.
-  if (!http::IsValidHeaderValue(std::string_view(pSizeEnd, pLineEnd))) {
+  // line terminator would otherwise not agree with us on where the chunk data starts. Bytes above 0x7F are allowed, as
+  // in a quoted-string (RFC 9112 §7.1.1).
+  if (!http::IsValidReceivedHeaderValue(std::string_view(pSizeEnd, pLineEnd))) {
     out.setRejected(http::StatusCodeBadRequest, "Invalid chunk extension");
     return out;
   }
@@ -383,7 +384,7 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeTrailers(ConnectionIt cnxIt
 
     // Parse trailer field: name:value
     const auto [nameView, valueView] = http::ParseHeaderLineTrimValue(pLineStart, pLineLast);
-    if (!http::IsValidHeaderName(nameView) || !http::IsValidHeaderValue(valueView)) {
+    if (!http::IsValidHeaderName(nameView) || !http::IsValidReceivedHeaderValue(valueView)) {
       emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed / invalid trailer header");
       return BodyDecodeStatus::Error;
     }

@@ -280,6 +280,24 @@ TEST(HttpParserChunked, ChunkExtension_Ignored) {
   ASSERT_TRUE(resp.contains("Hello")) << resp;
 }
 
+// Chunk extensions may contain obs-text (in a quoted-string, RFC 9112 §7.1.1), but no control character.
+TEST(HttpParserChunked, ChunkExtensionObsTextIsAcceptedControlCharactersAreNot) {
+  InstallEchoHandler();
+  std::string resp = test::sendAndCollect(port,
+                                          "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: "
+                                          "close\r\n\r\n"
+                                          "5;name=\"caf\xC3\xA9\"\r\nHello\r\n"
+                                          "0\r\n\r\n");
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.ends_with("Hello")) << resp;
+
+  resp = test::sendAndCollect(port,
+                              "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+                              "5;name=\"caf\xC3\xA9\x7F\"\r\nHello\r\n"
+                              "0\r\n\r\n");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
+}
+
 // Non-hexadecimal chunk size → 400 Bad Request.
 TEST(HttpParserChunked, InvalidChunkSize_NonHex) {
   std::string req =
@@ -369,6 +387,21 @@ TEST(HttpParserChunkedTrailers, ParsedTrailerValuesShouldBeTrimmed) {
   std::string resp = test::sendAndCollect(port, req);
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200 ")) << resp;
   EXPECT_TRUE(resp.ends_with("abc123")) << resp;
+}
+
+// Trailer values may contain obs-text (bytes 0x80-0xFF), kept as is (RFC 9110 §5.5).
+TEST(HttpParserChunkedTrailers, ObsTextTrailerValueIsKeptAsIs) {
+  ts.router().setDefault(
+      [](const HttpRequestView& req) { return req.makeResponse(req.trailerValueOrEmpty("x-name")); });
+  std::string req =
+      "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+      "4\r\ndata\r\n"
+      "0\r\n"
+      "X-Name: r\xC3\xA9sum\xC3\xA9 \xE9\r\n"
+      "\r\n";
+  std::string resp = test::sendAndCollect(port, req);
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200 ")) << resp;
+  EXPECT_TRUE(resp.ends_with("\r\n\r\nr\xC3\xA9sum\xC3\xA9 \xE9")) << resp;
 }
 
 // NeedMore in trailer parsing: the trailer line arrives without its CRLF.

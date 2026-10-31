@@ -1473,11 +1473,11 @@ TEST(HttpCompression, HeadCarriesTheHeadersOfTheGet) {
 TEST(HttpCompression, CompressedBodyWithTrailersKeepsItsChunkedFraming) {
   const std::string payload = test::MakePatternedPayload(4000);  // compresses to far less than 2400 bytes (4 digits)
   static constexpr auto kGetHead = http::Method::GET | http::Method::HEAD;
-  ts.router().setPath(kGetHead, "/trailers-gz/inline", [payload](const HttpRequestView&) {
-    return HttpResponse(std::string_view(payload)).trailerAddLine("x-checksum", "abc");
+  ts.router().setPath(kGetHead, "/trailers-gz/inline", [payload](const HttpRequestView& req) {
+    return req.makeResponse(std::string_view(payload)).trailerAddLine("x-checksum", "abc");
   });
-  ts.router().setPath(kGetHead, "/trailers-gz/captured", [payload](const HttpRequestView&) {
-    return HttpResponse(std::string(payload)).trailerAddLine("x-checksum", "abc");
+  ts.router().setPath(kGetHead, "/trailers-gz/captured", [payload](const HttpRequestView& req) {
+    return req.makeResponse(std::string(payload)).trailerAddLine("x-checksum", "abc");
   });
   ts.router().setPath(kGetHead, "/trailers-gz/prepared", [payload](const HttpRequestView& req) {
     return req.makeResponse(std::string_view(payload)).trailerAddLine("x-checksum", "abc");

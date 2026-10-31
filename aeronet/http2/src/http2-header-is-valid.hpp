@@ -35,11 +35,11 @@ constexpr bool IsValidHTTP2HeaderName(std::string_view name) noexcept {
 // RFC 9113 §8.2.1 : A HTTP/2 header field value is invalid only if it contains
 // NUL, CR, or LF, or if it starts or ends with whitespace (SP or HTAB) - such a value would
 // not survive a translation to HTTP/1.1, where surrounding whitespace is not part of the value.
-// Everything else — including bytes >= 0x80 - is legal opaque data;
+// Everything else - including bytes >= 0x80 - is legal opaque data;
 // this is exactly what the HPACK Huffman code (RFC 7541 Appendix B, which has a code
 // for all 256 byte values) is designed to transport. This is intentionally more permissive
-// than aeronet::http::IsValidHeaderValue, which restricts to printable ASCII - a separate
-// and defensible choice for HTTP/1.1, but not required or enforced by HTTP/2.
+// than aeronet::http::IsValidReceivedHeaderValue, which also rejects the other control characters
+// (RFC 9110 §5.5 field-value grammar) - a stricter choice for HTTP/1.1, not enforced by HTTP/2.
 constexpr bool IsValidHTTP2HeaderValue(std::string_view value) noexcept {
   if (!value.empty() && (http::IsHeaderWhitespace(value.front()) || http::IsHeaderWhitespace(value.back()))) {
     return false;

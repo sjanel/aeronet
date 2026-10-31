@@ -582,7 +582,7 @@ Http1ResponseParser::Status Http1ResponseParser::parse(std::span<char> buffer, b
     const LowerAsciiKey name(line.substr(0, colon));
     const std::string_view value = TrimOws(line.substr(colon + 1));
 
-    if (!http::IsValidHeaderValue(value)) {
+    if (!http::IsValidReceivedHeaderValue(value)) {
       return Status::Error;
     }
 
