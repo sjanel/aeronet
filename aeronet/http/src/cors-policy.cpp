@@ -6,6 +6,7 @@
 #include <string_view>
 
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
@@ -113,6 +114,16 @@ CorsPolicy& CorsPolicy::allowPrivateNetwork(bool enable) {
   _active = true;
   _allowPrivateNetwork = enable;
   return *this;
+}
+
+bool CorsPolicy::originAllowed(std::string_view origin) const noexcept {
+  if (_originMode == OriginMode::Enumerated) {
+    return _allowedOrigins.containsCI(origin);
+  }
+  // With credentials, the origin is mirrored in the response instead of '*': a received origin with bytes that aeronet
+  // does not send (obs-text, or control characters over HTTP/2) is not a serialized origin (RFC 6454 §6.2), it cannot
+  // be allowed.
+  return !_allowCredentials || http::IsValidHeaderValue(origin);
 }
 
 [[nodiscard]] CorsPolicy::ApplyStatus CorsPolicy::wouldApply(const HttpRequestView& request) const noexcept {

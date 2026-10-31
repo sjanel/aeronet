@@ -1416,23 +1416,8 @@ TEST(HttpGardenHeaderValues, InvalidHeaderValuesAreRejected) {
           "GET / HTTP/1.1\r\nHost: whatever\r\nTest: test\x00THESE BYTES GET DROPPED\r\nConnection: close\r\n\r\n"sv,
           http::StatusCodeBadRequest,
       },
-      // server #41: \xa0 and \x85 stripped from header values.
-      {
-          "server #41",
-          "GET /login HTTP/1.1\r\nHost: a\r\nUser: \x85"
-          "admin\xa0\r\n\r\n",
-          http::StatusCodeBadRequest,
-      },
       // server #43: \x00 stripped from the end of header values.
       {"server #43", "GET / HTTP/1.1\r\nHost: a\r\nEvil: evil\x00\r\n\r\n"sv, http::StatusCodeBadRequest},
-      // server #46: bytes above \x80 stripped from header values.
-      {
-          "server #46",
-          "POST / HTTP/1.1\r\nHost: \xff"
-          "a\xff\r\nTransfer-Encoding: \xff"
-          "chunked\xff\r\n\r\n1\r\nZ\r\n0\r\n\r\n",
-          http::StatusCodeBadRequest,
-      },
       // transducer #10: '\r' in header values.
       {
           "transducer #10",
@@ -1444,6 +1429,39 @@ TEST(HttpGardenHeaderValues, InvalidHeaderValuesAreRejected) {
       // transducer #20: headers containing \x00 or \n concatenated into the previous header value.
       {"transducer #20", "GET / HTTP/1.1\r\nHost: a\r\na:b\r\nc\x00\r\n\r\n"sv, http::StatusCodeBadRequest},
   });
+}
+
+// Bytes above 0x7F are obs-text, allowed in header values (RFC 9110 §5.5): they are kept as is, neither stripped nor
+// taken for whitespace.
+TEST(HttpGardenHeaderValues, ObsTextIsNotStripped) {
+  ExpectSingleResponses({
+      // server #46: bytes above \x80 stripped from header values. The Host is not a valid uri-host...
+      {
+          "server #46",
+          "POST / HTTP/1.1\r\nHost: \xff"
+          "a\xff\r\nTransfer-Encoding: \xff"
+          "chunked\xff\r\n\r\n1\r\nZ\r\n0\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      // ... and the transfer coding is unknown, not chunked.
+      {
+          "server #46 (Transfer-Encoding)",
+          "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: \xff"
+          "chunked\xff\r\n\r\n1\r\nZ\r\n0\r\n\r\n",
+          http::StatusCodeNotImplemented,
+      },
+  });
+
+  // server #41: \xa0 and \x85 stripped from header values.
+  ts.router().setDefault([](const HttpRequestView& req) { return req.makeResponse(req.headerValueOrEmpty("user")); });
+  const std::string resp = test::sendAndCollect(port,
+                                                "GET /login HTTP/1.1\r\nHost: a\r\nUser: \x85"
+                                                "admin\xa0\r\nConnection: close\r\n\r\n");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(
+      resp.ends_with("\r\n\r\n\x85"
+                     "admin\xa0"))
+      << resp;
 }
 
 TEST(HttpGardenHeaderValues, HeaderBlockTerminatorsAreStrict) {

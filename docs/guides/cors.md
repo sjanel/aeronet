@@ -42,7 +42,7 @@ A default-constructed `CorsPolicy` is inactive; calling any setter activates it,
 | --- | --- |
 | `allowOrigin(origin)` | Add an allowed origin, compared case-insensitively. Repeat for several. |
 | `allowAnyOrigin()` | Allow every origin (`Access-Control-Allow-Origin: *`). |
-| `allowCredentials(bool)` | Allow cookies and HTTP authentication (`Access-Control-Allow-Credentials: true`). The request origin is then echoed instead of `*`, as browsers require. |
+| `allowCredentials(bool)` | Allow cookies and HTTP authentication (`Access-Control-Allow-Credentials: true`). The request origin is then echoed instead of `*`, as browsers require. With `allowAnyOrigin()`, an origin with other bytes than visible ASCII characters, spaces and tabs, which is not a valid origin and cannot be echoed, is denied (`403`). |
 | `allowMethods(methods)` | Methods allowed cross-origin, `GET`, `HEAD`, and `POST` by default. A preflight only succeeds for methods both allowed by the policy and registered on the route. |
 | `allowRequestHeader(name)`, `allowAnyRequestHeaders()` | Request headers that pages may send, beyond the CORS-safelisted ones. |
 | `exposeHeader(name)` | Response headers that page scripts may read, beyond the CORS-safelisted ones. |

@@ -93,9 +93,7 @@ class CorsPolicy {
 
   [[nodiscard]] static bool isPreflightRequest(const HttpRequestView& request) noexcept;
 
-  [[nodiscard]] bool originAllowed(std::string_view origin) const noexcept {
-    return _originMode == OriginMode::Any || _allowedOrigins.containsCI(origin);
-  }
+  [[nodiscard]] bool originAllowed(std::string_view origin) const noexcept;
 
   [[nodiscard]] bool methodAllowed(std::string_view methodToken, http::MethodBmp routeMethods) const noexcept;
 

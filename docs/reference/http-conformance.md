@@ -8,6 +8,7 @@ This page lists the HTTP/1.1 behaviors aeronet implements ([RFC 9110](https://ww
 | --- | --- |
 | Request line parsing (method, target, version) | Supported |
 | Header fields, looked up case-insensitively. Obsolete line folding is not accepted. | Supported |
+| Header field values with `obs-text` (bytes `0x80`-`0xFF`, RFC 9110 §5.5), kept as is. Other control characters than HTAB are rejected (`400`) ([details](../guides/requests.md#header-values)) | Supported |
 | Method tokens are case-sensitive (RFC 9110 §9.1): `GET` is a method, `get` is an unknown method answered `501` | Supported |
 | A bare CR in a request head is rejected (`400`) as soon as the byte following it is received | Supported |
 | `Content-Length` and `Transfer-Encoding` together are rejected (`400`), as is `Transfer-Encoding` on an HTTP/1.0 request | Supported |
