@@ -3195,23 +3195,15 @@ TEST(HttpTrailers, DuplicateMergeTrailers) {
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
 }
 
-// Duplicate trailers with override semantics (keep last)
-TEST(HttpTrailers, DuplicateOverrideTrailers) {
-  ts.router().setDefault([](const HttpRequestView& req) {
-    auto it = req.trailers().find("from");
-    EXPECT_NE(it, req.trailers().end());
-    if (it != req.trailers().end()) {
-      // 'From' has override semantics in ReqHeaderValueSeparator, keep the last occurrence
-      EXPECT_EQ(it->second, "b@example.com");
-    }
-    return HttpResponse("OK");
-  });
+// Duplicate singleton trailers are rejected: keeping one of them could differ from the one a proxy in front keeps
+TEST(HttpTrailers, DuplicateSingletonTrailersRejected) {
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("FAIL"); });
 
   test::ClientConnection sock(port);
   NativeHandle fd = sock.fd();
 
   std::string req =
-      "POST /dupoverride HTTP/1.1\r\n"
+      "POST /dupsingleton HTTP/1.1\r\n"
       "host: example.com\r\n"
       "transfer-encoding: chunked\r\n"
       "connection: close\r\n"
@@ -3223,7 +3215,7 @@ TEST(HttpTrailers, DuplicateOverrideTrailers) {
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400"));
 }
 
 // Unknown header duplicates when mergeUnknownRequestHeaders is disabled -> should be rejected

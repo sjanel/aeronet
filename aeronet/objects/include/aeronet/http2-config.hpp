@@ -150,8 +150,8 @@ struct Http2Config {
   bool enablePriority{true};
 
   /// Whether to merge multiple header values for unknown request headers.
-  /// If true, multiple values for unknown headers are concatenated with commas, per RFC 9113 §8.1.2. If false, only the
-  /// last value is kept. Default: true.
+  /// If true, multiple values for unknown headers are concatenated with commas, per RFC 9113 §8.1.2. If false, a
+  /// repeated unknown header is rejected. Default: true.
   bool mergeUnknownRequestHeaders{true};
 
   /// Whether to automatically add a Content-Length header to HTTP/2 responses built via

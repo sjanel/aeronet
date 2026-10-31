@@ -1111,8 +1111,8 @@ HpackDecoder::DecodeResult::Error HpackDecoder::storeHeader(std::string_view nam
       return DecodeResult::Error::DuplicateHeaderForbiddenToMerge;
     }
 
-    if (it->second.empty() || mergeSep == 'O') {
-      // Keep the last value (the first one is empty, or 'O' tells to override it)
+    if (it->second.empty()) {
+      // The first value is empty: keep the last one
       it->second = storedValue;
     } else if (!storedValue.empty()) {
       // Joined once the whole block is decoded: joining each value as it comes would copy the previous ones again each

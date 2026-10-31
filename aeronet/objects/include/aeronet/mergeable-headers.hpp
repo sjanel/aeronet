@@ -20,12 +20,11 @@ namespace aeronet::http {
 //   ','  -> list-style merge (append comma + new non-empty value)
 //   ';'  -> Cookie multi-line merge (semicolon join) per RFC 6265 §5.4
 //   ' '  -> space join (User-Agent tokens)
-//   'O'  -> Override semantic: do NOT concatenate; caller should keep ONLY the last occurrence ("keep last")
-//   '\0'-> Disallow merge (treat duplicates as error OR ignore subsequent depending on higher-level policy)
+//   '\0'-> Disallow merge: a duplicate is an error, answered 400 Bad Request (singleton fields, RFC 9110 §5.3).
+//         Keeping one occurrence instead would let a proxy in front that keeps another one disagree with us.
 //
 // Fallback for unknown headers currently returns ',' (optimistic list assumption)
-// unless caller disables it. 'O' is chosen because it's an ASCII letter not used
-// as a list separator, so it's an unambiguous sentinel.
+// unless caller disables it.
 constexpr char ReqHeaderValueSeparator(std::string_view headerNameLowerCase,
                                        bool mergeAllowedForUnknownRequestHeaders) {
   struct Entry {
@@ -37,40 +36,39 @@ constexpr char ReqHeaderValueSeparator(std::string_view headerNameLowerCase,
   //   ',' : list headers (ABNF 1#element)
   //   ';' : Cookie concatenation (caller may later insert space after ';')
   //   ' ' : space join (User-Agent)
-  //   'O' : override / keep-last semantics (Authorization, Host, Range, ...)
-  //   '\0': duplicate forbidden
+  //   '\0': duplicate forbidden (Authorization, Content-Length, Host, Range, ...)
   static constexpr Entry kEntries[]{
       {"accept", ','},
       {"accept-charset", ','},
       {"accept-datetime", ','},
       {http::AcceptEncoding, ','},
       {"accept-language", ','},
-      {"authorization", 'O'},
+      {"authorization", '\0'},
       {http::CacheControl, ','},
       {http::Connection, ','},
       {http::ContentLength, '\0'},
       {"content-md5", '\0'},
       {"content-transfer-encoding", '\0'},
-      {http::ContentType, 'O'},
+      {http::ContentType, '\0'},
       {"cookie", ';'},
       {"dnt", ','},
       {"expect", ','},
       {"forwarded", ','},
-      {"from", 'O'},
+      {"from", '\0'},
       {http::Host, '\0'},
       {"http2-settings", '\0'},
       {"if-match", ','},
-      {"if-modified-since", 'O'},
+      {"if-modified-since", '\0'},
       {"if-none-match", ','},
-      {"if-range", 'O'},
-      {"if-unmodified-since", 'O'},
-      {"max-forwards", 'O'},
+      {"if-range", '\0'},
+      {"if-unmodified-since", '\0'},
+      {"max-forwards", '\0'},
       {"origin", ','},
       {"pragma", ','},
       {"prefer", ','},
-      {"proxy-authorization", 'O'},
-      {http::Range, 'O'},
-      {"referer", 'O'},
+      {"proxy-authorization", '\0'},
+      {http::Range, '\0'},
+      {"referer", '\0'},
       {"save-data", ','},
       {"sec-fetch-dest", ','},
       {"sec-fetch-mode", ','},

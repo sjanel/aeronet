@@ -1748,28 +1748,11 @@ TEST_F(HttpRequestViewTest, UserAgentSpaceMerge) {
   EXPECT_EQ(req.headerValueOrEmpty("user-agent"), "Foo Bar");
 }
 
-TEST_F(HttpRequestViewTest, AuthorizationOverrideKeepsLast) {
-  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
-                            "Authorization: Bearer first\r\n"
-                            "Authorization: Bearer second\r\n"));
-  ASSERT_EQ(st, http::StatusCodeOK);
-  EXPECT_EQ(req.headerValueOrEmpty("authorization"), "Bearer second");
-}
-
-TEST_F(HttpRequestViewTest, AuthorizationEmptyFirstThenValue) {
-  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
-                            "Authorization:   \r\n"
-                            "Authorization: Bearer token\r\n"));
-  ASSERT_EQ(st, http::StatusCodeOK);
-  EXPECT_EQ(req.headerValueOrEmpty("authorization"), "Bearer token");
-}
-
-TEST_F(HttpRequestViewTest, AuthorizationOverrideCaseInsensitive) {
+TEST_F(HttpRequestViewTest, DuplicateAuthorizationIsRejectedWhateverTheCaseOfItsName) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
                             "aUtHoRiZaTiOn: Bearer First\r\n"
                             "AUTHORIZATION: Bearer Second\r\n"));
-  ASSERT_EQ(st, http::StatusCodeOK);
-  EXPECT_EQ(req.headerValueOrEmpty("authorization"), "Bearer Second");
+  EXPECT_EQ(st, http::StatusCodeBadRequest);
 }
 
 TEST_F(HttpRequestViewTest, HasMoreBodyReturnsFalseWhenAggregated) {
@@ -2102,12 +2085,27 @@ TEST_F(HttpRequestViewTest, EndSetsSpanAttributesAndEnds) {
   EXPECT_TRUE(FakeSpan::ended);
 }
 
-TEST_F(HttpRequestViewTest, RangeOverrideKeepsLast) {
-  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
-                            "Range: bytes=0-99\r\n"
-                            "Range: bytes=100-199\r\n"));
-  ASSERT_EQ(st, http::StatusCodeOK);
-  EXPECT_EQ(req.headerValueOrEmpty(http::Range), "bytes=100-199");
+TEST_F(HttpRequestViewTest, DuplicateSingletonHeadersProduce400) {
+  // A proxy in front may keep the first occurrence where we would keep the last one: they are rejected.
+  for (std::string_view name : {"authorization", "proxy-authorization", "content-type", "range", "if-range",
+                                "if-modified-since", "if-unmodified-since", "referer", "from", "max-forwards"}) {
+    SCOPED_TRACE(name);
+    std::string first(name);
+    first.append(": bytes=0-99\r\n");
+    std::string second(name);
+    second.append(": bytes=100-199\r\n");
+    EXPECT_EQ(reqSet(BuildRaw("GET", "/p", "HTTP/1.1", first + second)), http::StatusCodeBadRequest);
+
+    // Also when the first occurrence is empty, or the second one.
+    std::string empty(name);
+    empty.append(":\r\n");
+    EXPECT_EQ(reqSet(BuildRaw("GET", "/p", "HTTP/1.1", empty + second)), http::StatusCodeBadRequest);
+    EXPECT_EQ(reqSet(BuildRaw("GET", "/p", "HTTP/1.1", first + empty)), http::StatusCodeBadRequest);
+
+    // A single occurrence is kept as is.
+    EXPECT_EQ(reqSet(BuildRaw("GET", "/p", "HTTP/1.1", second)), http::StatusCodeOK);
+    EXPECT_EQ(req.headerValueOrEmpty(LowerAsciiKey{name}), "bytes=100-199");
+  }
 }
 
 TEST_F(HttpRequestViewTest, DuplicateContentLengthProduces400) {
