@@ -164,6 +164,31 @@ TEST(TraceEchoTest, HeadLongerThanTheLimit) {
   EXPECT_TRUE(Copy(incomplete, incomplete.size() - 1).echo.empty());
 }
 
+TEST(TraceEchoTest, HeadWithABareLfDoesNotWait) {
+  // Its parsing rejects it: waiting for the rest of a head that can no longer be valid would last until its timeout.
+  for (std::string_view input : {
+           "TRACE /a HTTP/1.1\nHost: h\n\n",
+           "TRACE /a HTTP/1.1\nHost: h\n",
+           "TRACE /a HTTP/1.1\n",
+           "TRACE /a HTTP/1.1\r\nHost: h\n\n",
+           "TRACE /a HTTP/1.1\r\nHost: h\r\nX: v\n",
+           "TRACE /a HTTP/1.1\r\nHost: h\r\n\n",
+           "TRACE /a HTTP/1.1\r\nHo\nst: h\r\n",
+       }) {
+    SCOPED_TRACE(input);
+    const auto [complete, echo] = Copy(input);
+    EXPECT_TRUE(complete);
+    EXPECT_TRUE(echo.empty());
+  }
+
+  // A CR and its LF received apart are a CRLF: the head is waited for.
+  for (std::string_view input :
+       {"TRACE /a HTTP/1.1\r", "TRACE /a HTTP/1.1\r\nHost: h\r", "TRACE /a HTTP/1.1\r\nHost: h\r\n\r"}) {
+    SCOPED_TRACE(input);
+    EXPECT_FALSE(Copy(input).complete);
+  }
+}
+
 TEST(TraceEchoTest, LargeHead) {
   static constexpr std::size_t kLargeMaxHeaderBytes = 1 << 20;
   std::string head = "TRACE /large HTTP/1.1\r\nHost: h\r\n";

@@ -1079,6 +1079,76 @@ TEST_F(HttpRequestViewTest, ErrorInTheRestOfAPartialHead) {
   EXPECT_EQ(req.queryParamValueOrEmpty("x"), "y");
 }
 
+// A line that can never end with a CRLF is rejected as soon as it is received: waiting for the rest of the head would
+// last until its timeout, if any.
+TEST_F(HttpRequestViewTest, BareLfInTheLastLineReceivedIsRejectedWithoutWaiting) {
+  // No CR at all (a client using LF as line terminator), the head being complete or not.
+  for (std::string_view head : {"GET / HTTP/1.1\nHost: h\n\n", "GET / HTTP/1.1\nHost: h\n", "GET /a HTTP/1.1\n",
+                                "GET / HTTP/1.0\n\n", "GET / HTTP/1.1\nHost: h\nContent-Length: 4\n\nabcd"}) {
+    SCOPED_TRACE(head);
+    EXPECT_EQ(receiveAndParse(head), http::StatusCodeBadRequest);
+    inBuffer.clear();
+  }
+
+  // The request line is terminated by a CRLF, the last lines are not.
+  for (std::string_view head : {"GET / HTTP/1.1\r\nHost: h\n\n", "GET / HTTP/1.1\r\nHost: h\r\nX: v\n",
+                                "GET / HTTP/1.1\r\nHost: h\r\n\n", "GET / HTTP/1.1\r\nHost: h\r\nX: v\nY: w\n\n"}) {
+    SCOPED_TRACE(head);
+    EXPECT_EQ(receiveAndParse(head), http::StatusCodeBadRequest);
+    inBuffer.clear();
+  }
+
+  // A bare LF in a line a CRLF terminates later is rejected as well.
+  for (std::string_view head : {"GET / HTTP/1.1\nHost: h\r\n\r\n", "GET /a\nb HTTP/1.1\r\nHost: h\r\n\r\n",
+                                "GET / HTTP/1.1\r\nHost: h\nX: v\r\n\r\n"}) {
+    SCOPED_TRACE(head);
+    EXPECT_EQ(receiveAndParse(head), http::StatusCodeBadRequest);
+    inBuffer.clear();
+  }
+
+  // The CR of a line terminator still to be followed by its LF, or no terminator yet, is waited for.
+  struct Split {
+    std::string_view received;
+    std::string_view rest;
+  };
+  for (const auto& [received, rest] :
+       {Split{"GET /ab HTTP/1.1", "\r\nHost: h\r\n\r\n"}, Split{"GET /ab HTTP/1.1\r", "\nHost: h\r\n\r\n"},
+        Split{"GET / HTTP/1.1\r\nHo", "st: h\r\n\r\n"}, Split{"GET / HTTP/1.1\r\nHost: h\r", "\n\r\n"},
+        Split{"GET / HTTP/1.1\r\nHost: h\r\nX: v", "\r\n\r\n"}}) {
+    SCOPED_TRACE(received);
+    ASSERT_EQ(receiveAndParse(received), kNeedMoreData);
+    EXPECT_EQ(receiveAndParse(rest), http::StatusCodeOK);
+    inBuffer.clear();
+  }
+}
+
+// The lines already parsed by a previous read are not searched again, only the one being received: a bare LF there
+// is rejected whatever its size.
+TEST_F(HttpRequestViewTest, BareLfInTheRestOfAPartialHeadIsRejected) {
+  inBuffer.clear();
+  ASSERT_EQ(receiveAndParse("GET /?a=1 HTTP/1.1\r\nHost: h\r\nX-Part"), kNeedMoreData);
+  EXPECT_EQ(receiveAndParse("ial: v\nY: w\n\n"), http::StatusCodeBadRequest);
+
+  inBuffer.clear();
+  ASSERT_EQ(receiveAndParse("GET /?a=1 HTTP/1.1\r\nHost: h\r\n"), kNeedMoreData);
+  EXPECT_EQ(receiveAndParse("\n"), http::StatusCodeBadRequest);
+
+  inBuffer.clear();
+  ASSERT_EQ(receiveAndParse("GET /?a=1 HTTP/1.1\r\nHost: h\r\nX: "), kNeedMoreData);
+  ASSERT_EQ(receiveAndParse(std::string(1000, 'v')), kNeedMoreData);
+  EXPECT_EQ(receiveAndParse("\n"), http::StatusCodeBadRequest);
+
+  // A CRLF split between two reads is not a bare LF.
+  inBuffer.clear();
+  ASSERT_EQ(receiveAndParse("GET /?a=1 HTTP/1.1\r\nHost: h\r"), kNeedMoreData);
+  ASSERT_EQ(receiveAndParse("\n"), kNeedMoreData);
+  EXPECT_EQ(receiveAndParse("\r\n"), http::StatusCodeOK);
+
+  // A new request after an error is parsed from its start.
+  EXPECT_EQ(reqSet(BuildRaw("GET", "/fresh")), http::StatusCodeOK);
+  EXPECT_EQ(req.path(), "/fresh");
+}
+
 // RFC 9112 §3: a request-target longer than the server wishes to parse is answered 414. The request line, with the
 // empty line that ends the head, is bounded by the size limit of the head (4096 bytes here), as the header lines are
 // (431).

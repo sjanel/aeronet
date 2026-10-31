@@ -74,7 +74,11 @@ ChunkSizeLine ParseChunkSizeLine(const char* pFirst, const char* pLast, std::siz
   }
 
   if (!isComplete) {
-    out.state = ChunkSizeLine::State::Incomplete;
+    if (HasBareLF(pFirst, pLast)) {
+      out.setRejected(http::StatusCodeBadRequest, "Malformed chunk size line");
+    } else {
+      out.state = ChunkSizeLine::State::Incomplete;
+    }
     return out;
   }
 
@@ -261,6 +265,12 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeNextChunks(ConnectionIt cnx
     // First, check if we have at least the immediate terminating CRLF (written so that it cannot overflow)
     const std::size_t availableBytes = input.size() - dataPos;
     if (availableBytes < http::CRLF.size() || availableBytes - http::CRLF.size() < chunkSize) {
+      // A single byte follows the data (or the last-chunk, followed by the trailers or an empty line): a bare LF, as
+      // the CR of a CRLF would be.
+      if (chunkSize < availableBytes && pInputBeg[dataPos + chunkSize] == '\n') {
+        emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed chunk CRLF");
+        return BodyDecodeStatus::Error;
+      }
       return BodyDecodeStatus::NeedMore;
     }
 
@@ -353,6 +363,10 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeTrailers(ConnectionIt cnxIt
   while (true) {
     const auto lineEndIt = SearchCRLF(pInputBeg + tempPos, pLast);
     if (lineEndIt == pLast) {
+      if (HasBareLF(pInputBeg + tempPos, pLast)) {
+        emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed trailer line");
+        return BodyDecodeStatus::Error;
+      }
       // The trailers are bounded whether their line ends are received or not: a client could otherwise make the server
       // buffer (and parse again at each read) a trailer line without end, without limit.
       const std::size_t receivedTrailerSize = static_cast<std::size_t>(pLast - pTrailerStart);
