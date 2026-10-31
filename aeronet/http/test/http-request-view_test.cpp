@@ -297,6 +297,8 @@ class HttpRequestViewTest : public ::testing::Test {
   void setHeaderViewToPtr(std::string_view key, const char* dataPtr, std::size_t len) {
     req._headers.try_emplace(key, dataPtr, len);
   }
+  void setAddTrailerHeader(bool addTrailerHeader) { req._addTrailerHeader = addTrailerHeader; }
+
   void setTrailerViewToPtr(std::string_view key, const char* dataPtr, std::size_t len) {
     req._trailers.try_emplace(key, dataPtr, len);
   }
@@ -2665,6 +2667,17 @@ TEST_F(HttpRequestViewTest, MakeResponseCapturingEmptyBodyHasNoBody) {
   EXPECT_FALSE(resp.hasBody());
   EXPECT_FALSE(resp.hasHeader(http::ContentType));
   EXPECT_EQ(resp.headersFlatView(), req.makeResponse(http::StatusCodeNoContent).headersFlatView());
+}
+
+// The trailers of an HTTP/1.0 response are dropped (it cannot be chunked): a HEAD response does not announce them.
+TEST_F(HttpRequestViewTest, MakeResponseForHttp10HeadRequestAnnouncesNoTrailer) {
+  setAddTrailerHeader(true);
+  for (std::string_view version : {"HTTP/1.0", "HTTP/1.1"}) {
+    ASSERT_EQ(reqSet(BuildRaw("HEAD", "/test", version)), http::StatusCodeOK);
+    HttpResponse resp = req.makeResponse("body");
+    resp.trailerAddLine("x-checksum", "abc");
+    EXPECT_EQ(resp.headerValueOrEmpty(http::Trailer), version == "HTTP/1.1" ? "x-checksum" : "") << version;
+  }
 }
 
 TEST_F(HttpRequestViewTest, MakeResponseCapturedBodyForHeadRequestKeepsOnlyItsSize) {

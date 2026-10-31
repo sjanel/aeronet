@@ -571,6 +571,35 @@ std::size_t AppendWritten(HttpPayload& body, std::size_t maxLen, std::string_vie
 
 }  // namespace
 
+TEST(HttpPayload, TruncateKeepsTheFirstBytesInPlace) {
+  for (PayloadKind kind :
+       {PayloadKind::String, PayloadKind::VectorChar, PayloadKind::VectorByte, PayloadKind::RawChars}) {
+    SCOPED_TRACE(static_cast<int>(kind));
+    HttpPayload body = MakePayload(kind, kInitialContent);
+    const char* pData = body.view().data();
+
+    body.truncate(4);
+    EXPECT_EQ(body.view(), "init");
+    EXPECT_EQ(body.view().data(), pData);
+
+    body.truncate(4);
+    EXPECT_EQ(body.view(), "init");
+
+    body.truncate(0);
+    EXPECT_EQ(body.size(), 0U);
+  }
+}
+
+TEST(HttpPayload, TruncateThrowsForRepresentationsNotGrowingInPlace) {
+  for (PayloadKind kind :
+       {PayloadKind::Empty, PayloadKind::StaticView, PayloadKind::CharBuffer, PayloadKind::BytesBuffer}) {
+    SCOPED_TRACE(static_cast<int>(kind));
+    HttpPayload body = MakePayload(kind, InitialContent(kind));
+    EXPECT_THROW(body.truncate(0), std::logic_error);
+    EXPECT_EQ(body.view(), InitialContent(kind));
+  }
+}
+
 TEST(HttpPayload, AppendFromWriterEveryRepresentation) {
   for (PayloadKind kind : kPayloadKinds) {
     SCOPED_TRACE(static_cast<int>(kind));

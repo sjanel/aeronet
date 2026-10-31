@@ -21,7 +21,7 @@ Summary of the automated test coverage; the files named are in [tests/](../../te
 | Limits | Maximum body size (413), `Content-Length` and chunked growth | ✅ | `http-additional_test.cpp`, `http-request-decompression_test.cpp` |
 | Bodies | `Content-Length` bodies, chunked decoding | ✅ | `http-core_test.cpp`, `http-errors_test.cpp`, `aeronet/server/test/http-parser_test.cpp` |
 | Bodies | Trailers (incoming and outgoing) | ✅ | `http-core_test.cpp`, `aeronet/http/test/http-response_test.cpp` |
-| Expect | `100-continue` for a non-empty body, none for an empty one | ✅ | `http-errors_test.cpp`, `http-additional_test.cpp` |
+| Expect | `100-continue` for a non-empty body, none for an empty one, no `1xx` to an HTTP/1.0 client | ✅ | `http-errors_test.cpp`, `http-additional_test.cpp` |
 | Keep-alive | Persistence, maximum requests per connection | ✅ | `http-core_test.cpp`, `http-server-lifecycle_test.cpp` |
 | Keep-alive | Idle timeout close, active connections outliving the timeout | ✅ | `http-core_test.cpp` |
 | Connection close | Lingering close after an early response or before pipelined requests (client close, reset, timeout, configuration update, TLS `close_notify`, shutdown failure) | ✅ | `http-core_test.cpp`, `http-tls-io_test.cpp`, `http-errors_test.cpp` |

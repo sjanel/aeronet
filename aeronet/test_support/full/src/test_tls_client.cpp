@@ -111,24 +111,18 @@ bool TlsClient::writeAll(std::string_view data) {
       // though data is available via SSL_read.  Always attempt SSL_read first
       // to drain any OpenSSL-buffered bytes; only block on the socket if
       // SSL_pending is zero (i.e., no data in OpenSSL's internal buffer).
-      {
-        char drainBuf[16384];
-        int drained = ::SSL_read(_ssl.get(), drainBuf, static_cast<int>(sizeof(drainBuf)));
-        if (drained > 0) {
-          _drainedDuringWrite.append(drainBuf, static_cast<std::size_t>(drained));
-          continue;  // retry SSL_write
-        }
-        int readErr = ::SSL_get_error(_ssl.get(), drained);
-        if (readErr == SSL_ERROR_WANT_READ) {
-          // Nothing buffered in OpenSSL; wait for kernel socket to become readable.
-          // NOLINTNEXTLINE(misc-include-cleaner) header is <poll.h>, not <sys/poll.h>
-          if (!waitForSocketReady(POLLIN, std::chrono::seconds(30))) {
-            return false;
-          }
-        }
-        // For any other error (WANT_WRITE etc.), just retry SSL_write.
-        continue;
+      if (SslReadAppend(_ssl.get(), _drainedDuringWrite) != 0) {
+        continue;  // retry SSL_write
       }
+      if (::SSL_get_error(_ssl.get(), 0) == SSL_ERROR_WANT_READ) {
+        // Nothing buffered in OpenSSL; wait for kernel socket to become readable.
+        // NOLINTNEXTLINE(misc-include-cleaner) header is <poll.h>, not <sys/poll.h>
+        if (!waitForSocketReady(POLLIN, std::chrono::seconds(30))) {
+          return false;
+        }
+      }
+      // For any other error (WANT_WRITE etc.), just retry SSL_write.
+      continue;
     }
     if (err == SSL_ERROR_WANT_WRITE) {
       // SSL cannot flush to the socket yet. Poll for both POLLIN and POLLOUT:
@@ -144,15 +138,7 @@ bool TlsClient::writeAll(std::string_view data) {
       // frees TCP receive-window space so the peer can flush its send buffer,
       // which in turn lets the peer read our blocked bytes and free our TCP
       // send buffer.
-      {
-        char drainBuf[16384];
-        for (;;) {
-          int drained = ::SSL_read(_ssl.get(), drainBuf, static_cast<int>(sizeof(drainBuf)));
-          if (drained <= 0) {
-            break;
-          }
-          _drainedDuringWrite.append(drainBuf, static_cast<std::size_t>(drained));
-        }
+      while (SslReadAppend(_ssl.get(), _drainedDuringWrite) != 0) {
       }
       // Check the shared deadline AFTER draining so that as long as data
       // keeps flowing (drain succeeds) we don't give up prematurely.
@@ -200,13 +186,7 @@ bool TlsClient::writeAll(std::string_view data) {
 #endif
       if (readable) {
         // Drain the newly arrived data to further free TCP receive window.
-        char drainBuf[16384];
-        for (;;) {
-          int drained = ::SSL_read(_ssl.get(), drainBuf, static_cast<int>(sizeof(drainBuf)));
-          if (drained <= 0) {
-            break;
-          }
-          _drainedDuringWrite.append(drainBuf, static_cast<std::size_t>(drained));
+        while (SslReadAppend(_ssl.get(), _drainedDuringWrite) != 0) {
         }
       }
       // Fall through to retry SSL_write regardless of whether select() reported
@@ -407,6 +387,14 @@ std::string_view TlsClient::readSome(std::span<char> buffer) {
 
   // Error or shutdown
   return {};
+}
+
+std::size_t TlsClient::readSomeInto(std::string& out, std::size_t maxBytes) {
+  if (!_handshakeOk) {
+    return 0;
+  }
+  [[maybe_unused]] const SigpipeGuard sigpipeGuard;
+  return SslReadAppend(_ssl.get(), out, maxBytes);
 }
 
 int TlsClient::fd() const noexcept {

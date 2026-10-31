@@ -387,8 +387,10 @@ AERONET_ALWAYS_INLINE Http1Pipeline::LoopAction Http1Pipeline::callHandlers(Conn
     return LoopAction::Continue;
   }
 #ifdef AERONET_ENABLE_WEBSOCKET
-  // A WebSocket upgrade goes through the request middleware (above) and the origin checks, like a request.
+  // A WebSocket upgrade goes through the request middleware (above) and the origin checks, like a request. The Upgrade
+  // header of an HTTP/1.0 request is ignored (RFC 9110 §7.8): it is served like any GET.
   if (routingResult.webSocketEndpoint() != nullptr && request.method() == http::Method::GET &&
+      request.version() == http::HTTP_1_1 &&
       upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)) == ProtocolType::WebSocket) {
     return processWebSocketUpgrade(cnxIt, routingResult);
   }
@@ -631,9 +633,9 @@ bool Http1Pipeline::handleExpectHeader(ConnectionIt cnxIt, std::string_view expe
       continue;
     }
     if (CaseInsensitiveEqual(token, http::h100_continue)) {
-      // Note presence of 100-continue; we'll use this to trigger interim 100
-      found100Continue = true;
-      // built-in behaviour; leave actual 100 emission to body-decoding logic
+      // The 100 Continue is sent by the body decoding. An HTTP/1.0 client cannot receive a 1xx response (RFC 9110
+      // §15.2): its 100-continue expectation is ignored (§10.1.1).
+      found100Continue = request.version() == http::HTTP_1_1;
       continue;
     }
     if (!ctx.callbacks.expectation) {
@@ -654,6 +656,10 @@ bool Http1Pipeline::handleExpectHeader(ConnectionIt cnxIt, std::string_view expe
           if (status < 100U || status >= 200U) {
             emitSimpleError(cnxIt, http::StatusCodeInternalServerError, "Invalid interim status (must be 1xx)");
             return true;
+          }
+          // An HTTP/1.0 client cannot receive a 1xx response (RFC 9110 §15.2): the request goes on without it.
+          if (request.version() == http::HTTP_1_0) {
+            break;
           }
 
           switch (status) {
