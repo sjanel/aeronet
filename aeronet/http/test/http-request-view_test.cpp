@@ -1079,6 +1079,50 @@ TEST_F(HttpRequestViewTest, ErrorInTheRestOfAPartialHead) {
   EXPECT_EQ(req.queryParamValueOrEmpty("x"), "y");
 }
 
+// RFC 9112 §3: a request-target longer than the server wishes to parse is answered 414. The request line, with the
+// empty line that ends the head, is bounded by the size limit of the head (4096 bytes here), as the header lines are
+// (431).
+TEST_F(HttpRequestViewTest, RequestLineLongerThanTheHeadLimitIsUriTooLong) {
+  static constexpr std::size_t kHeadLimit = 4096;
+  static constexpr std::string_view kBeforeTarget = "GET ";
+  static constexpr std::string_view kAfterTarget = " HTTP/1.0\r\n";  // no Host header field required
+  static constexpr std::size_t kMaxTargetSize =
+      kHeadLimit - kBeforeTarget.size() - kAfterTarget.size() - http::CRLF.size();
+
+  const auto makeHead = [](std::size_t targetSize, std::string_view rest) {
+    std::string head(kBeforeTarget);
+    head.push_back('/');
+    head.append(targetSize - 1U, 'a');
+    head.append(kAfterTarget).append(rest);
+    return RawChars(std::string_view(head));
+  };
+
+  // The largest request line accepted takes the whole limit, with the empty line.
+  ASSERT_EQ(reqSet(makeHead(kMaxTargetSize, http::CRLF)), http::StatusCodeOK);
+  EXPECT_EQ(req.path().size(), kMaxTargetSize);
+
+  // One byte more, whatever follows the request line.
+  for (std::string_view rest : {"", "\r\n", "Host: h\r\n\r\n", "X-Not-Parsed: v\r\n"}) {
+    SCOPED_TRACE(rest);
+    EXPECT_EQ(reqSet(makeHead(kMaxTargetSize + 1U, rest)), http::StatusCodeURITooLong);
+  }
+  EXPECT_EQ(reqSet(makeHead(3U * kHeadLimit, "Host: h\r\n\r\n")), http::StatusCodeURITooLong);
+
+  // The header lines remain bounded with 431, the request line fitting the limit or not.
+  EXPECT_EQ(reqSet(makeHead(kMaxTargetSize, "X: v\r\n\r\n")), http::StatusCodeRequestHeaderFieldsTooLarge);
+  EXPECT_EQ(reqSet(makeHead(kMaxTargetSize - 100U, std::string(200, 'x').append(": v\r\n\r\n"))),
+            http::StatusCodeRequestHeaderFieldsTooLarge);
+
+  // An absolute-form request-target is bounded as well.
+  std::string absolute("GET http://example.com/");
+  absolute.append(kHeadLimit, 'a').append(" HTTP/1.0\r\n\r\n");
+  EXPECT_EQ(reqSet(RawChars(std::string_view(absolute))), http::StatusCodeURITooLong);
+
+  // A new request after an error is parsed from its start.
+  EXPECT_EQ(reqSet(BuildRaw("GET", "/fresh")), http::StatusCodeOK);
+  EXPECT_EQ(req.path(), "/fresh");
+}
+
 TEST_F(HttpRequestViewTest, HeadWaitingForBodyIsNotParsedAgain) {
   static constexpr std::string_view kPostHead =
       "POST /upload?id=7&name=a+b HTTP/1.1\r\nHost: h\r\nX-Dup: v1\r\nX-Dup: v2\r\nContent-Length: 12\r\n\r\n";

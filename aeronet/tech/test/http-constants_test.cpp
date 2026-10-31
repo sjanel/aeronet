@@ -14,6 +14,8 @@ TEST(HttpConstantsTest, DefaultReasonPhrase) {
   EXPECT_EQ(ReasonPhraseFor(StatusCodeMethodNotAllowed), "Method Not Allowed");
   EXPECT_EQ(ReasonPhraseFor(StatusCodeBadRequest), "Bad Request");
   EXPECT_EQ(ReasonPhraseFor(StatusCodeNotAcceptable), "Not Acceptable");
+  EXPECT_EQ(ReasonPhraseFor(StatusCodeURITooLong), "URI Too Long");
+  EXPECT_EQ(ReasonPhraseFor(StatusCodeRequestHeaderFieldsTooLarge), "Request Header Fields Too Large");
   EXPECT_EQ(ReasonPhraseFor(StatusCodeInternalServerError), "Internal Server Error");
   EXPECT_EQ(ReasonPhraseFor(static_cast<StatusCode>(599)), "");
 }

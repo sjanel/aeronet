@@ -17,7 +17,7 @@ Summary of the automated test coverage; the files named are in [tests/](../../te
 | Parsing | Request line (method, target, version), header parsing and lookup | ✅ | `http-core_test.cpp`, `aeronet/server/test/http-parser_test.cpp` |
 | Parsing | Percent-decoding of the path | ✅ | `http-core_test.cpp`, `aeronet/tech/test/url-encode-decode_test.cpp` |
 | Parsing | Unsupported HTTP version (505), unsupported method (501), malformed request line (400) | ✅ | `http-errors_test.cpp`, `http-core_test.cpp` |
-| Limits | Maximum header size (431) | ✅ | `http-core_test.cpp`, `http-additional_test.cpp` |
+| Limits | Maximum header size (431), request line too long (414) | ✅ | `http-core_test.cpp`, `http-additional_test.cpp` |
 | Limits | Maximum body size (413), `Content-Length` and chunked growth | ✅ | `http-additional_test.cpp`, `http-request-decompression_test.cpp` |
 | Bodies | `Content-Length` bodies, chunked decoding | ✅ | `http-core_test.cpp`, `http-errors_test.cpp`, `aeronet/server/test/http-parser_test.cpp` |
 | Bodies | Trailers (incoming and outgoing) | ✅ | `http-core_test.cpp`, `aeronet/http/test/http-response_test.cpp` |

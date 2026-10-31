@@ -203,7 +203,7 @@ class SingleHttpServer {
   //
   // Semantics:
   //   - Callback is executed in the server's event loop thread just before the server
-  //     generates and queues an error response (usually 400 / 413 / 431 depending on case).
+  //     generates and queues an error response (usually 400 / 413 / 414 / 431 depending on case).
   //   - Keep the body extremely light (metrics increment, logging). Avoid blocking or heavy
   //     allocations – it delays processing of other connections.
   //   - The connection may be closed after the error response depending on the nature of the
