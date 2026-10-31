@@ -131,7 +131,7 @@ HTTP/2 requires `AERONET_ENABLE_HTTP2=ON`; `Http2Config::enable` defaults to tru
 
 | Configuration | Defaults and decisions |
 | --- | --- |
-| `CompressionConfig` | `minBytes = 1024`, `maxCompressRatio = 0.6`, 32 KiB initial buffer, `Vary: Accept-Encoding` enabled, and automatic direct-compression mode. Choose `preferredFormats`, per-codec levels, and a content-type allowlist when CPU use needs controlling. Only compiled codecs can be negotiated. See [Compression](../guides/compression.md). |
+| `CompressionConfig` | `minBytes = 1024`, `maxCompressRatio = 0.6`, 32 KiB initial buffer, `Vary: Accept-Encoding` enabled, automatic direct-compression mode, and leading zeroes in the `Content-Length` of bodies compressed when the response is finalized (`useLeadingZeroesInContentLength`: set `false` when a proxy may misread them). Choose `preferredFormats`, per-codec levels, and a content-type allowlist when CPU use needs controlling. Only compiled codecs can be negotiated. See [Compression](../guides/compression.md). |
 | `DecompressionConfig` | Enabled by default when a codec is compiled in; `enable = false` passes encoded bodies to handlers unchanged. Decodes the compiled codings with a 128 MiB compressed cap, a 4 GiB decoded cap, a 1000x expansion-ratio cap (both caps must be positive), 32 KiB decoder chunks, and a 16 MiB streaming threshold. See [Compression](../guides/compression.md#request-body-decompression). |
 | `StaticFileConfig` | The file handler defaults to ranges and conditional requests enabled, 16 ranges, a 32 MiB assembled multipart-range cap, 1024 header-cache entries, strong ETags and Last-Modified, 128 KiB inline files, and no directory index/dotfiles. It also accepts custom MIME and directory-renderer callbacks. |
 

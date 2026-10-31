@@ -229,6 +229,44 @@ TEST_P(ProtocolParity, StreamingResponseGoesThroughResponseMiddlewareAndCors) {
   EXPECT_EQ(resp.headerValueOrEmpty(http::AccessControlAllowOrigin), kAllowedOrigin);
 }
 
+#ifdef AERONET_ENABLE_ZLIB
+// A HEAD response carries the headers of the GET one (RFC 9110 §9.3.2), compression included. The client keeps no
+// Content-Type nor Content-Length without a body: their values are checked on the wire by the tests of each protocol.
+TEST_P(ProtocolParity, HeadCarriesTheHeadersOfTheCompressedGet) {
+  static constexpr auto kGetHead = http::Method::GET | http::Method::HEAD;
+  const std::string payload(4000, 'a');
+  ts.router().setPath(kGetHead, "/head/plain", [payload](const HttpRequestView&) { return HttpResponse(payload); });
+  ts.router().setPath(kGetHead, "/head/direct", [payload](const HttpRequestView& req) {
+    auto resp = req.makeResponse();
+    resp.body(std::string_view(payload));  // direct compression
+    return resp;
+  });
+  ts.router().setPath(kGetHead, "/head/streamed", [payload](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.writeBody(payload);
+    writer.end();
+  });
+
+  // Without automatic decompression, the client keeps the headers and the body as received.
+  HttpClientConfig cfg;
+  cfg.withHttpVersion(GetParam());
+  cfg.withDecompression(false).withDefaultAcceptEncoding("gzip");
+  HttpClient client(std::move(cfg));
+  for (std::string_view target : {"/head/plain", "/head/direct", "/head/streamed"}) {
+    SCOPED_TRACE(target);
+    auto get = client.request(client.makeRequest(http::Method::GET, url(target)));
+    auto head = client.request(client.makeRequest(http::Method::HEAD, url(target)));
+    ASSERT_TRUE(get.has_value() && head.has_value());
+    EXPECT_EQ(get->status(), http::StatusCodeOK);
+    EXPECT_EQ(head->status(), http::StatusCodeOK);
+    EXPECT_EQ(get->headerValueOrEmpty(http::ContentEncoding), "gzip");
+    EXPECT_LT(get->bodyInMemory().size(), payload.size());
+    EXPECT_EQ(head->headerValueOrEmpty(http::ContentEncoding), "gzip");
+    EXPECT_EQ(head->headerValueOrEmpty(http::Vary), get->headerValueOrEmpty(http::Vary));
+    EXPECT_TRUE(head->bodyInMemory().empty());
+  }
+}
+#endif
+
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 // 1xx, 204 and 304 responses carry no content, whatever the handler set: no body, no Content-Length, no Content-Type.
 TEST_P(ProtocolParity, StatusesWithoutContentDropTheBody) {

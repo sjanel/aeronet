@@ -616,9 +616,8 @@ void HttpRequestView::prefinalizeHttpResponse(HttpResponse& response, tracing::T
     response.removeBodyAndItsHeaders();
     return;
   }
-  if (method() == http::Method::HEAD) {
-    return;
-  }
+  // A HEAD response goes through the same steps as the GET one, compression included: it carries the same headers (RFC
+  // 9110 §9.3.2), its body being dropped when it is sent.
   if (response.status() == http::StatusCodeNotFound && !response.hasBody()) {
     response.bodyStatic(k404NotFoundTemplate2, http::ContentTypeTextHtml);
   }
@@ -829,7 +828,9 @@ HttpResponse::Options HttpRequestView::makeResponseOptions() const noexcept {
   if (_addTrailerHeader && version() != http::HTTP_1_0) {
     opts.addTrailerHeader();
   }
-  if (method() == http::Method::HEAD) {
+  // The body of a HEAD response is dropped as soon as it is set, unless a content coding was negotiated: it is then
+  // built like the GET one, as its Content-Length must be the length of the compressed body (RFC 9110 §8.6).
+  if (method() == http::Method::HEAD && _responsePossibleEncoding == Encoding::none) {
     opts.setHeadMethod();
   }
 #ifdef AERONET_ENABLE_HTTP2

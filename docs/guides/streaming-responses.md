@@ -25,7 +25,7 @@ router.setPath(http::Method::GET, "/export", [](const HttpRequestView&, HttpResp
 - `writeBody()` sends the data, or queues it when the socket cannot take it yet. It returns `false` when the connection is closing: an error occurred, or the queued data exceeded `HttpServerConfig::maxOutboundBufferBytes` (over HTTP/2, the stream exceeded `Http2Config::maxStreamPendingBytes` and was reset). Stop writing then.
 - `end()` completes the response. The server calls it when the handler returns without calling it, and further calls are ignored.
 - Over HTTP/1.1, the head carries `Connection: close` when the connection closes after the response, as for buffered responses: the client asked for it, keep-alive is disabled, the request is the last one allowed by `maxRequestsPerConnection`, or the server drains. A drain that begins once the head was sent closes the connection after the complete response, without announcing it.
-- For a `HEAD` request, the headers are sent and the body is discarded, so the same handler serves both methods.
+- For a `HEAD` request, the headers are sent and the body is discarded, so the same handler serves both methods. Without `contentLength()`, the `HEAD` response has no `Content-Length`, as the length of the chunked `GET` response is not known (see [Compression](compression.md#head-requests)).
 - For a `1xx`, `204` or `304` status, which carry no content, the headers are sent without `Content-Length` nor `Transfer-Encoding`, and what the handler writes is discarded (see [Statuses without content](responses.md#statuses-without-content)).
 - The body is compressed automatically, like buffered responses: the server buffers the first `minBytes`, then compresses each piece written. See [Compression](compression.md#streaming-responses).
 
