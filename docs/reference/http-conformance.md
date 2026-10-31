@@ -6,7 +6,7 @@ This page lists the HTTP/1.1 behaviors aeronet implements ([RFC 9110](https://ww
 
 | Behavior | Status |
 | --- | --- |
-| Request line parsing (method, target, version) | Supported |
+| Request line parsing (method, target, version). A request line too long for `maxHeaderBytes`, with the empty line ending the head, is answered `414 URI Too Long` (RFC 9112 §3), whether or not its end was received | Supported |
 | Empty lines (CRLF) received before a request line ignored (RFC 9112 §2.2), as some clients send one after the body of a `POST` request. Until a request line follows them, they count toward `maxHeaderBytes` (`431` beyond it) | Supported |
 | Header fields, looked up case-insensitively. Obsolete line folding is not accepted. | Supported |
 | Header field values with `obs-text` (bytes `0x80`-`0xFF`, RFC 9110 §5.5), kept as is. Other control characters than HTAB are rejected (`400`) ([details](../guides/requests.md#header-values)) | Supported |
@@ -73,9 +73,10 @@ The server answers these errors itself, before or instead of calling a handler:
 | `405 Method Not Allowed` | The path exists but not for this method, with an `Allow` header listing the methods registered on its route. Also `TRACE` when disabled (see [TRACE](#trace)). |
 | `406 Not Acceptable` | No acceptable content coding. |
 | `413 Payload Too Large` | Body larger than `maxBodyBytes`. |
+| `414 URI Too Long` | Request line, with the empty line ending the head, larger than `maxHeaderBytes` (the request target is too long). |
 | `415 Unsupported Media Type` | Unsupported `Content-Encoding` on a request body, when decompression is enabled. |
 | `417 Expectation Failed` | `Expect` token other than `100-continue` without expectation handler. |
-| `431 Request Header Fields Too Large` | Request head larger than `maxHeaderBytes`. |
+| `431 Request Header Fields Too Large` | Request head larger than `maxHeaderBytes`, its request line fitting it. |
 | `500 Internal Server Error` | Handler exception, or an invalid interim status returned by an expectation handler. |
 | `501 Not Implemented` | Unknown method, or transfer codings before a final `chunked` (`Transfer-Encoding: gzip, chunked`). |
 | `502 Bad Gateway` | `CONNECT` target unreachable. |

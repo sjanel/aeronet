@@ -149,6 +149,7 @@ inline constexpr std::string_view NotFound = "Not Found";                       
 inline constexpr std::string_view ReasonMethodNotAllowed = "Method Not Allowed";                 // 405
 inline constexpr std::string_view ReasonNotAcceptable = "Not Acceptable";                        // 406
 inline constexpr std::string_view ReasonPayloadTooLarge = "Payload Too Large";                   // 413
+inline constexpr std::string_view ReasonURITooLong = "URI Too Long";                             // 414
 inline constexpr std::string_view ReasonUnsupportedMediaType = "Unsupported Media Type";         // 415
 inline constexpr std::string_view ReasonHeadersTooLarge = "Request Header Fields Too Large";     // 431
 inline constexpr std::string_view ReasonInternalServerError = "Internal Server Error";           // 500
@@ -190,6 +191,8 @@ constexpr std::string_view ReasonPhraseFor(http::StatusCode status) noexcept {
       return ReasonNotAcceptable;
     case StatusCodePayloadTooLarge:
       return ReasonPayloadTooLarge;
+    case StatusCodeURITooLong:
+      return ReasonURITooLong;
     case StatusCodeUnsupportedMediaType:
       return ReasonUnsupportedMediaType;
     case StatusCodeRequestHeaderFieldsTooLarge:
