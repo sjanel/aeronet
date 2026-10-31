@@ -34,36 +34,11 @@ DEPENDENCY_LIBRARY_PATTERNS = [
     ("libbrotlienc*.a", "-lbrotlienc"),
     ("libbrotlidec*.a", "-lbrotlidec"),
     ("libbrotlicommon*.a", "-lbrotlicommon"),
-    # OpenTelemetry libraries - only include those that are actually built.
-    # Note: patterns with wildcards (like *_http*.a) can match multiple libs,
-    # so we use exact names where possible to avoid duplicates.
-    # Link base OTLP exporter library first (contains class implementations)
-    ("libopentelemetry_exporter_otlp.a", "-lopentelemetry_exporter_otlp"),
-    ("libopentelemetry_exporter_otlp_http.a", "-lopentelemetry_exporter_otlp_http"),
-    (
-        "libopentelemetry_exporter_otlp_http_metric.a",
-        "-lopentelemetry_exporter_otlp_http_metric",
-    ),
-    (
-        "libopentelemetry_exporter_otlp_http_client.a",
-        "-lopentelemetry_exporter_otlp_http_client",
-    ),
-    ("libopentelemetry_http_client_curl.a", "-lopentelemetry_http_client_curl"),
-    ("libopentelemetry_otlp_recordable.a", "-lopentelemetry_otlp_recordable"),
-    ("libopentelemetry_proto.a", "-lopentelemetry_proto"),
-    ("libopentelemetry_trace.a", "-lopentelemetry_trace"),
-    ("libopentelemetry_metrics.a", "-lopentelemetry_metrics"),
-    ("libopentelemetry_logs.a", "-lopentelemetry_logs"),
-    ("libopentelemetry_common.a", "-lopentelemetry_common"),
-    ("libopentelemetry_resources.a", "-lopentelemetry_resources"),
-    # Also look for shared object variants (.so) - LLD may require them
-    ("libopentelemetry_exporter_otlp.so*", "-lopentelemetry_exporter_otlp"),
-    ("libopentelemetry_exporter_otlp_http.so*", "-lopentelemetry_exporter_otlp_http"),
-    ("libopentelemetry_exporter_otlp_http_metric.so*", "-lopentelemetry_exporter_otlp_http_metric"),
-    ("libopentelemetry_exporter_otlp_http_client.so*", "-lopentelemetry_exporter_otlp_http_client"),
-    ("libopentelemetry_trace.so*", "-lopentelemetry_trace"),
-    ("libopentelemetry_metrics.so*", "-lopentelemetry_metrics"),
-    ("libopentelemetry_common.so*", "-lopentelemetry_common"),
+    # OpenTelemetry: every library of the downloaded opentelemetry-cpp, static like the other downloaded dependencies
+    # (cmake/Dependencies.cmake). Only the ones that aeronet links are built (EXCLUDE_FROM_ALL), with their
+    # dependencies, whose names change between versions, and the link group makes their order irrelevant.
+    # No fallback flag: OpenTelemetry may be disabled.
+    ("libopentelemetry_*.a", None),
 ]
 
 SYSTEM_LINK_FLAGS = [
@@ -629,7 +604,8 @@ def locate_dependency_libraries(build_dir: Path) -> Tuple[List[str], List[str]]:
     for pattern, flag in DEPENDENCY_LIBRARY_PATTERNS:
         matches = sorted(build_dir.rglob(pattern))
         if not matches:
-            fallback_flags.append(flag)
+            if flag:
+                fallback_flags.append(flag)
             continue
         for candidate in matches:
             candidate_str = str(candidate)

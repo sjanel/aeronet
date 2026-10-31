@@ -428,11 +428,16 @@ endif()
 # Make fetch content available
 if(AeronetFetchContentPackagesToMakeAvailable)
   message(STATUS "Configuring packages ${AeronetFetchContentPackagesToMakeAvailable}")
-  # In vcpkg builds, FETCHCONTENT_FULLY_DISCONNECTED is forced ON, so
-  # population of new content that is not already present will fail.
-  # We let FetchContent attempt population; if it fails to create the
-  # expected targets we degrade gracefully by disabling AMC linkage.
+  # In vcpkg builds, FETCHCONTENT_FULLY_DISCONNECTED is forced ON, so population of new content that is not already present will fail.
+  # We let FetchContent attempt population; if it fails to create the expected targets we degrade gracefully by disabling AMC linkage.
+  # The downloaded dependencies are static libraries, linked into the aeronet libraries whether these are static or
+  # shared (AERONET_BUILD_SHARED). BUILD_SHARED_LIBS is not an aeronet option, but brotli declares it as an ON cache
+  # option: unpinned, it made brotli and opentelemetry-cpp shared, and from the second configuration on (the cache
+  # entry then exists) googletest, spdlog and zlib-ng too, while zstd warned about the contradiction with
+  # ZSTD_BUILD_SHARED. A normal variable takes precedence over the cache entry, and keeps brotli from creating it.
+  set(BUILD_SHARED_LIBS OFF)
   FetchContent_MakeAvailable(${AeronetFetchContentPackagesToMakeAvailable})
+  unset(BUILD_SHARED_LIBS)
 
   if(AERONET_ENABLE_OPENTELEMETRY AND NOT _USE_SYSTEM_OPENTELEMETRY)
     _aeronet_resolve_opentelemetry_targets(FALSE _otel_missing)
@@ -441,11 +446,9 @@ if(AeronetFetchContentPackagesToMakeAvailable)
     endif()
   endif()
 
-  # Inject MSVC system include dirs into opentelemetry_proto so that protobuf-
-  # generated headers (which include <limits> etc. at line 9 in protobuf >=6.x)
-  # can be compiled when building outside a VS Developer Command Prompt.
-  # CMAKE_CXX_SCAN_FOR_MODULES is already OFF globally (CMakeLists.txt), so no
-  # separate scanDependencies workaround is needed here.
+  # Inject MSVC system include dirs into opentelemetry_proto so that protobuf-generated headers
+  # can be compiled when building outside a VS Developer Command Prompt. 
+  # CMAKE_CXX_SCAN_FOR_MODULES is already OFF globally (CMakeLists.txt), so no separate scanDependencies workaround is needed here.
   if(TARGET opentelemetry_proto)
     if(MSVC AND CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
       target_include_directories(opentelemetry_proto SYSTEM PRIVATE

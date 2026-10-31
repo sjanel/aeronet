@@ -10,7 +10,7 @@ aeronet is deliberately modular. CMake options select code and dependencies at c
 | `AERONET_BUILD_EXAMPLES` | ON | Build the programs in `examples/`; OFF for a dependency. |
 | `AERONET_BUILD_TESTS` | ON | Build unit and integration tests; OFF for a dependency. |
 | `AERONET_BUILD_BENCHMARKS` | ON except Debug | Build benchmarks and their selected comparison backends. |
-| `AERONET_BUILD_SHARED` | OFF | Build shared libraries instead of static libraries. Recommended for development: editing a library source then relinks only that library, not the test executables. |
+| `AERONET_BUILD_SHARED` | OFF | Build shared libraries instead of static libraries. Recommended for development: editing a library source then relinks only that library, not the test executables. The dependencies that aeronet downloads are static libraries either way, linked into the aeronet libraries (`BUILD_SHARED_LIBS` does not apply to them). |
 | `AERONET_COMPACT_DEBUG_INFO` | ON for Debug with tests | Split DWARF (`-gsplit-dwarf`) + zstd-compressed debug sections (zlib fallback), on Linux with GCC or Clang. Divides the size of the Debug test executables by ~3.5. The `.dwo` files stay in the build tree, so keep it OFF for builds that are installed elsewhere. |
 | `AERONET_BUILD_MODULES` | OFF | Experimental C++ module build. |
 | `AERONET_UNITY_BUILD` | OFF | Build the aeronet libraries (not the tests) as CMake unity builds, in batches of 16 sources (`CMAKE_UNITY_BUILD_BATCH_SIZE` overrides it). Divides their compilation CPU time by 4 to 6 in Release, at the cost of slower incremental rebuilds: see the [unity build recipe](#unity-build). |
