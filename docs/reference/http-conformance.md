@@ -118,7 +118,7 @@ Other expectation tokens go to the expectation handler, when one is installed. W
 | `ExpectationResultKind` | Effect |
 | --- | --- |
 | `Continue` | Process the request normally. |
-| `Interim` | Send the informational response `interimStatus` (a `1xx` status, such as `102`), then continue. It is not sent to an HTTP/1.0 client, whose request continues without it. |
+| `Interim` | Send the informational response `interimStatus` (a `1xx` status other than `101`, such as `102` or `103`), then continue. `100` and `102` have their reason phrase, the other statuses none (`HTTP/1.1 103 `). It is not sent to an HTTP/1.0 client, whose request continues without it. |
 | `FinalResponse` | Send `finalResponse` and skip the body and the handler. When the request announces a body (`Content-Length` other than 0, or `Transfer-Encoding`), the response carries `Connection: close` and the connection closes: the client may send the body anyway, which could not be told apart from the next request. Otherwise the requests pipelined behind it are served. |
 | `Reject` | Answer `417 Expectation Failed`. |
 
@@ -138,13 +138,13 @@ server.setExpectationHandler([](const HttpRequestView& /*request*/, std::string_
 });
 ```
 
-The handler runs on the event-loop thread, so it must be fast. An `Interim` result with a status outside `1xx` is a programming error, answered `500`. `MultiHttpServer::setExpectationHandler()` installs a handler on every worker.
+The handler runs on the event-loop thread, so it must be fast. An `Interim` result with a status outside `1xx`, or `101 Switching Protocols`, after which the connection would no longer speak HTTP/1.1, is a programming error, answered `500`. `MultiHttpServer::setExpectationHandler()` installs a handler on every worker.
 
 ## Tests
 
 - Error statuses and version handling: [tests/http-errors_test.cpp](../../tests/http-errors_test.cpp).
 - Keep-alive, pipelining, empty bodies: [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
-- `Expect`, `OPTIONS`, `TRACE`, and other protocol details: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp), including HTTP/1.0 clients (`Http10` tests and `HttpExpectation.NoInterimResponseToHttp10Client`).
+- `Expect`, `OPTIONS`, `TRACE`, and other protocol details: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp), including HTTP/1.0 clients (`Http10` tests and `HttpExpectation.NoInterimResponseToHttp10Client`), the status line of an interim response without reason phrase (`HttpExpectation.HandlerCanEmitArbitraryInterimStatus`) and the invalid interim statuses (`HttpExpectation.ExpectationHandlerErrors`).
 - Empty lines before a request line, pipelined or received apart from it, limited by `maxHeaderBytes`: `HttpEmptyLinesBeforeRequestLine` tests in [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
 - `TRACE` echo as received, without sensitive fields, for heads received in several reads, up to `maxHeaderBytes`, and rejected with content: `HttpOptionsTrace` tests in [tests/http-core_test.cpp](../../tests/http-core_test.cpp), and the copy of the head in [aeronet/server/test/trace-echo_test.cpp](../../aeronet/server/test/trace-echo_test.cpp).
 - `Allow` header of the `405` responses, over HTTP/1.1 and HTTP/2: `MethodNotAllowedListsTheMethodsOfTheRoute`, `DisabledTraceListsTheMethodsOfTheRoute` and `CorsPreflightOfAMethodOfNoHandlerIsAnswered405WithAllow` in [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp).

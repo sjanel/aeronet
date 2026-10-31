@@ -698,9 +698,11 @@ bool Http1Pipeline::handleExpectHeader(ConnectionIt cnxIt, std::string_view expe
         case ExpectationResultKind::Interim: {
           // Emit an interim response immediately. Common case: 102 "Processing"
           const auto status = expectationResult.interimStatus;
-          // Validate that the handler returned an informational 1xx status.
-          if (status < 100U || status >= 200U) {
-            emitSimpleError(cnxIt, http::StatusCodeInternalServerError, "Invalid interim status (must be 1xx)");
+          // Validate that the handler returned an informational 1xx status. 101 Switching Protocols is not an interim
+          // response: the connection would no longer speak HTTP/1.1 after it (RFC 9110 §15.2.2).
+          if (status < 100U || status >= 200U || status == http::StatusCodeSwitchingProtocols) {
+            emitSimpleError(cnxIt, http::StatusCodeInternalServerError,
+                            "Invalid interim status (must be 1xx other than 101)");
             return true;
           }
           // An HTTP/1.0 client cannot receive a 1xx response (RFC 9110 §15.2): the request goes on without it.
@@ -717,13 +719,15 @@ bool Http1Pipeline::handleExpectHeader(ConnectionIt cnxIt, std::string_view expe
               break;
             default: {
               static constexpr std::string_view kHttpResponseLinePrefix = "HTTP/1.1 ";
+              // The reason phrase is optional, not the space before it (RFC 9112 §4).
+              static constexpr std::string_view kEmptyReasonDoubleCRLF = " \r\n\r\n";
 
-              RawChars buf(kHttpResponseLinePrefix.size() + 3U + http::DoubleCRLF.size());
+              RawChars buf(kHttpResponseLinePrefix.size() + 3U + kEmptyReasonDoubleCRLF.size());
               buf.setSize(buf.capacity());
 
               char* insertPtr = AppendFixed<kHttpResponseLinePrefix>(buf.data());
               insertPtr = writeStatusCode(insertPtr, status);
-              CopyFixed<http::DoubleCRLF>(insertPtr);
+              CopyFixed<kEmptyReasonDoubleCRLF>(insertPtr);
 
               ctx.io.queueData(cnxIt, HttpMessageData(std::move(buf)));
               break;
