@@ -51,7 +51,7 @@ client.releaseUnusedMemory();  // buffers left oversized by a past burst of larg
 
 The response decompressor is enabled by default whenever at least one codec is compiled in. If the caller does not set an explicit `Accept-Encoding`, it advertises the decoders actually compiled into the client. Decoded response bodies replace the compressed body and lose the `Content-Encoding` header. Set `withDefaultAcceptEncoding("identity")` to suppress this advertisement, or `withDecompression(false)` to stop automatic decoding.
 
-`requestCompression` is distinct and opt-in. Call `withRequestCompression(Encoding::zstd)` or `withRequestCompression(true)` to encode outbound bodies that meet its `CompressionConfig::minBytes` and `maxCompressRatio` rules. The client leaves a body unchanged when the request already has `Content-Encoding` or `Transfer-Encoding`; selecting a codec that was not compiled in fails construction.
+`requestCompression` is distinct and opt-in. Call `withRequestCompression(Encoding::zstd)` or `withRequestCompression(true)` to encode outbound bodies that meet its `CompressionConfig::minBytes` and `maxCompressRatio` rules. The client leaves a body unchanged when the request already has `Content-Encoding` or `Transfer-Encoding`; selecting a codec that was not compiled in fails construction. Like for server responses, the `Content-Length` of a compressed request is padded with leading zeroes unless `requestCompression.codec.useLeadingZeroesInContentLength` is `false`: set it when an intermediary may misread them (see [Compression](../guides/compression.md#response-compression)).
 
 The built-in cache is also opt-in:
 

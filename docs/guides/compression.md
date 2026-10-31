@@ -43,7 +43,7 @@ config.withCompression(std::move(compression));
 | `addVaryAcceptEncodingHeader` | `true` | Add `Vary: Accept-Encoding` to compressed responses. |
 | `defaultDirectCompressionMode` | `Auto` | See [Direct compression](#direct-compression). |
 | `initialCompressionBufferLimit` | 32 KiB | Output buffer reserved upfront; larger bodies grow it while compressing. |
-| `useLeadingZeroesInContentLength` | `true` | Keep the reserved width of `Content-Length` with leading zeroes when the compressed size has fewer digits, which avoids moving the body. Some broken parsers misread leading zeroes: set `false` behind such a proxy. |
+| `useLeadingZeroesInContentLength` | `true` | A body compressed when the response is finalized gets a `Content-Length` as wide as the largest accepted compressed size (`maxCompressRatio` of the body size), padded with leading zeroes (`content-length: 0333`), which avoids moving the body. [Direct compression](#direct-compression) writes the exact length, and streamed responses have none. Leading zeroes are valid HTTP (`1*DIGIT`), but a parser reading `010` as octal 8 disagrees with aeronet on where the body ends, which a proxy chain can turn into request smuggling: set `false` when such a parser may sit between the server and its clients. Also applies to the request bodies compressed by `HttpClient` (`requestCompression.codec`). |
 | `zlib.level`, `zstd.compressionLevel`, `zstd.windowLog`, `brotli.quality`, `brotli.window` | library defaults | Codec tuning: higher levels compress better and cost more CPU. |
 
 Already compressed content, such as images, video, or archives, gains nothing: restrict `contentTypeAllowList` to text types (HTML, JSON, JavaScript, CSS, SVG) when a server mixes both, to save the CPU of a compression attempt that would be discarded.
@@ -63,7 +63,12 @@ Each event loop remembers the result for the last `Accept-Encoding` value it neg
 - Bodies smaller than `minBytes`, of a content type outside `contentTypeAllowList`, or that do not shrink enough.
 - Responses that already have a `Content-Encoding` header (see [Send your own encoding](#send-your-own-encoding)).
 - File bodies (`HttpResponse::file()`, the static file handler), which are sent with `sendfile()` or read from disk as they are. Store pre-compressed variants of large static assets if they need compression.
-- Responses to `HEAD` requests, which describe the uncompressed body. A `HEAD` response may therefore advertise a different `Content-Length` than the corresponding compressed `GET`.
+
+### HEAD requests
+
+A `HEAD` response carries the headers of the `GET` response (RFC 9110 §9.3.2), and its `Content-Length` must be the length of the `GET` content (§8.6). When a coding is negotiated, the server therefore compresses the body of a `HEAD` response like the one of a `GET`, then drops it: the response gets the same `Content-Encoding`, `Vary` and `Content-Length`, including when the body does not shrink enough and is sent uncompressed. Without a negotiated coding, nothing is compressed, and a response made with `makeResponse()` only keeps the size of the body set by the handler.
+
+A streaming handler answering a `HEAD` request takes the same decision as for a `GET` (`Content-Encoding` once `minBytes` are written), but the body is neither compressed nor sent. As the length of a chunked `GET` response is not known when its head is sent, the `HEAD` response has no `Content-Length`, unless the handler declared one with `contentLength()`.
 
 ### Streaming responses
 
@@ -149,6 +154,7 @@ The decoded body is limited by `maxDecompressedBytes`, not by `maxBodyBytes`, wh
 ## Tests
 
 - Response compression, negotiation, thresholds, streaming, and direct compression end to end: [tests/http-compression_test.cpp](../../tests/http-compression_test.cpp).
+- `HEAD` responses carrying the headers of the compressed `GET` ones (`HttpCompression.HeadCarriesTheHeadersOfTheGet`, `HttpCompression.StreamingHeadCarriesTheHeadersOfTheGetWithoutContentLength`): [tests/http-compression_test.cpp](../../tests/http-compression_test.cpp); over HTTP/2: [tests/http2-core_test.cpp](../../tests/http2-core_test.cpp) and [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp).
 - Request decompression, stacked codings, limits, and errors: [tests/http-request-decompression_test.cpp](../../tests/http-request-decompression_test.cpp).
 - Lower-casing of the received codings: [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp) (HTTP/1.1) and [hpack_test.cpp](../../aeronet/http2/test/hpack_test.cpp) (HTTP/2).
 - `Accept-Encoding` parsing and selection: [accept-encoding-negotiation_test.cpp](../../aeronet/objects/test/accept-encoding-negotiation_test.cpp).

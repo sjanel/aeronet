@@ -51,7 +51,7 @@ This page lists the HTTP/1.1 behaviors aeronet implements ([RFC 9110](https://ww
 | `Date`, `Content-Length`, `Connection`, `Transfer-Encoding`, `Trailer`, `TE`, and `Upgrade` response headers managed by the server ([details](../guides/responses.md#status-and-headers)) | Supported |
 | `Content-Length: 0` on empty responses, except for `1xx`, `204`, `304`, `HEAD`, file, streaming, and direct-compression responses | Supported |
 | `1xx`, `204`, `304` responses ending at the empty line after their headers: body, trailers and `Content-Length` / `Transfer-Encoding` dropped ([details](../guides/responses.md#statuses-without-content)) | Supported |
-| `HEAD` answered by the `GET` handler, without body and with the `GET` length | Supported |
+| `HEAD` answered by the `GET` handler, without body, with the `GET` headers and length, compression included ([details](../guides/compression.md#head-requests)) | Supported |
 | Chunked streaming responses, with trailers | Supported |
 | Buffered responses with trailers, sent chunked (to an HTTP/1.1 client, see [Trailers](../guides/responses.md#trailers)) | Supported |
 | Response compression (gzip, deflate, br, zstd) negotiated from `Accept-Encoding` with q-values ([details](../guides/compression.md)) | Supported |

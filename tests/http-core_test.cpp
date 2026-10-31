@@ -4515,15 +4515,12 @@ TEST(HttpStreaming, HeadSuppressedBody) {
   });
   std::string resp = BlockingFetch("HEAD", "/head");
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
-  // For HEAD we expect no chunked framing. "0\r\n" alone would falsely match the Content-Length header line
-  // ("content-length: 0\r\n"). What we really want to assert is that there is no terminating chunk sequence.
-  // The terminating chunk in a chunked response would appear as "\r\n0\r\n\r\n" (preceded by the blank line
-  // after headers or previous chunk). We also assert absence of Transfer-Encoding: chunked and body payload.
+  // For HEAD we expect no chunked framing: no terminating chunk sequence, no Transfer-Encoding: chunked and no body.
   ASSERT_FALSE(resp.contains("\r\n0\r\n\r\n"));
   ASSERT_FALSE(resp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
   ASSERT_FALSE(resp.contains("ignored body"));
-  // Positive check: we do expect a Content-Length: 0 header for HEAD.
-  ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, "0")));
+  // The length of the (chunked) GET response is not known: no Content-Length (RFC 9110 §8.6).
+  ASSERT_FALSE(resp.contains(http::ContentLength));
 }
 
 #ifdef AERONET_ENABLE_ZLIB
@@ -4684,9 +4681,11 @@ TEST(HttpStreamingSetHeader, MultipleCustomHeadersAndOverrideContentType) {
   // Body present in GET but not in HEAD.
   ASSERT_TRUE(getResp.contains("{\"k\":1}"));
   ASSERT_FALSE(headResp.contains("{\"k\":1}"));
-  // HEAD: ensure Content-Length auto added (0 since body suppressed) and no chunk framing.
-  ASSERT_TRUE(headResp.contains(MakeHttp1HeaderLine(http::ContentLength, "0")));
+  // HEAD: no chunk framing, and no Content-Length as the length of the chunked GET response is not known.
+  ASSERT_FALSE(headResp.contains(http::ContentLength));
   ASSERT_FALSE(headResp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
+  ASSERT_TRUE(headResp.contains("x-custom-a: alpha\r\n"));
+  ASSERT_TRUE(headResp.contains(MakeHttp1HeaderLine(http::ContentType, "application/json")));
 }
 
 TEST(HttpServerMixed, MixedPerPathHandlers) {
@@ -4770,13 +4769,13 @@ TEST(HttpServerMixed, HeadRequestOnStreamingPathSuppressesBody) {
     writer.end();
   });
   std::string headResp = RequestMethod("HEAD", "/head");
-  // Body should be empty; ensure word not present and Content-Length: 0 (or if chunked not used at all)
+  // Body should be empty, with neither Content-Length (unknown length of the chunked GET) nor chunked framing.
   auto headerEnd = headResp.find(http::DoubleCRLF);
   ASSERT_NE(std::string::npos, headerEnd);
   std::string bodyPart = headResp.substr(headerEnd + http::DoubleCRLF.size());
   EXPECT_TRUE(bodyPart.empty());
-  // Either explicit Content-Length: 0 is present or (future) alternate header; assert current behavior.
-  EXPECT_TRUE(headResp.contains(MakeHttp1HeaderLine(http::ContentLength, "0")));
+  EXPECT_FALSE(headResp.contains(http::ContentLength));
+  EXPECT_FALSE(headResp.contains(http::TransferEncoding));
   EXPECT_FALSE(headResp.contains("SHOULD_NOT_APPEAR"));
 }
 

@@ -6124,6 +6124,28 @@ TEST_F(HttpResponseTest, HeadLargeCapturedBodyDoesNotGrowInlineCapacity) {
   EXPECT_LE(resp.capacityInlined(), initialCapacity + 512U);
 }
 
+// Like body(), the prepared constructor with a body (HttpRequestView::makeResponse(body)) only stores the size of the
+// body of a HEAD message, which can then be appended to.
+TEST_F(HttpResponseTest, HeadPreparedConstructorWithBodyStoresItsSizeOnly) {
+  const std::string largeBody(1UL << 20U, 'x');
+  for (std::string_view body : {std::string_view{"abc"}, std::string_view{largeBody}}) {
+    SCOPED_TRACE(body.size());
+    HttpResponse resp = makePrepared(PreparedOptions{.head = true}, http::StatusCodeOK, body);
+    HttpResponse expected = makePrepared(PreparedOptions{.head = true});
+    expected.body(body);
+    EXPECT_EQ(resp.headersFlatView(), expected.headersFlatView());
+    EXPECT_EQ(resp.bodyLength(), body.size());
+    EXPECT_FALSE(resp.hasBodyInlined());
+    EXPECT_LT(resp.capacityInlined(), 1024U);
+
+    resp.bodyAppend("more");
+    expected.bodyAppend("more");
+    EXPECT_EQ(resp.bodyLength(), body.size() + 4U);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentLength), std::to_string(body.size() + 4U));
+    EXPECT_EQ(concatenated(std::move(resp), {}, true), concatenated(std::move(expected), {}, true));
+  }
+}
+
 TEST_F(HttpResponseTest, HeadBodyInlineAppend) {
   for (bool useBytes : {false, true}) {
     for (bool prepared : {true, false}) {

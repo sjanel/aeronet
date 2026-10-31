@@ -55,13 +55,14 @@ class Http1WriterTransport final : public IWriterTransport {
       _closeAnnounced = true;
     }
 
-    // Transfer-Encoding or Content-Length header
+    // Transfer-Encoding or Content-Length header. Without a declared length, the GET response is chunked: the HEAD one
+    // has no Content-Length, as the length is not known (RFC 9110 §8.6).
     if (chunked) {
       const std::size_t needed = http::HeaderSize(http::TransferEncoding.size(), http::chunked.size());
 
       response.reserve(response.sizeInlined() + needed);
       response.headerAddLineUnchecked(http::TransferEncoding, http::chunked);
-    } else if (bodyAllowed && !response.hasBodyFile()) {
+    } else if (bodyAllowed && !response.hasBodyFile() && declaredLength != 0) {
       const auto declaredLengthIntegralLen = ndigits(declaredLength);
       const std::size_t needed = http::HeaderSize(http::ContentLength.size(), declaredLengthIntegralLen);
 
