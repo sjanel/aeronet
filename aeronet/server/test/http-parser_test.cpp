@@ -62,6 +62,14 @@ std::string SendInParts(uint16_t targetPort, std::string_view head, std::string_
   return test::recvUntilClosed(fd);
 }
 
+// The response to 'raw', waited for at most 2 s: a server waiting for the rest of a request that can no longer be valid
+// (until a timeout, if configured) answers nothing.
+std::string SendAndCollectPromptly(std::string_view raw) {
+  test::ClientConnection conn(port);
+  test::sendAll(conn.fd(), raw);
+  return test::recvUntilClosed(conn.fd(), 2s);
+}
+
 constexpr std::string_view kChunkedHead =
     "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
 
@@ -79,6 +87,61 @@ uint64_t Fnv1a(std::string_view data) {
 TEST(HttpParserRequestHead, BareCRIsRejectedWithoutWaitingForAnotherLineTerminator) {
   const std::string resp = test::sendAndCollect(port, "GET / HTTP/1.1\r\nHost: bad\rX");
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
+}
+
+// A client using LF as line terminator never sends the CR the head is searched for: the request is answered 400 as soon
+// as it is received, instead of waiting for the rest of a head that cannot be valid.
+TEST(HttpParserRequestHead, BareLfLineEndingsAreRejectedWithoutWaiting) {
+  InstallEchoHandler();
+  for (const std::string_view raw : {
+           "GET / HTTP/1.1\nHost: x\n\n",
+           "GET / HTTP/1.1\nHost: x\nConnection: close\n\n",
+           "GET / HTTP/1.0\n\n",
+           "GET / HTTP/1.1\nHost: x\n",
+           "POST / HTTP/1.1\nHost: x\nContent-Length: 5\n\nHello",
+           "GET / HTTP/1.1\r\nHost: x\n\n",
+           "GET / HTTP/1.1\r\nHost: x\r\n\n",
+           "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\n",
+           "GET / HTTP/1.1\nHost: x\r\n\r\n",
+       }) {
+    SCOPED_TRACE(raw);
+    const std::string resp = SendAndCollectPromptly(raw);
+    ASSERT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
+    EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp;
+  }
+}
+
+// The line being received, not the ones parsed by the previous reads, is the one a bare LF is looked for in.
+TEST(HttpParserRequestHead, BareLfInTheRestOfAHeadReceivedInSeveralReadsIsRejected) {
+  InstallEchoHandler();
+  for (const std::string_view rest : {"\nHost: x\n\n", "Host: x\n\n", "\n", "st: x\r\nX: y\n"}) {
+    SCOPED_TRACE(rest);
+    test::ClientConnection conn(port);
+    ASSERT_TRUE(SetTcpNoDelay(conn.fd()));
+    test::sendAll(conn.fd(), "GET / HTTP/1.1\r\nHo");
+    std::this_thread::sleep_for(15ms);
+    test::sendAll(conn.fd(), rest);
+    const std::string resp = test::recvUntilClosed(conn.fd(), 2s);
+    ASSERT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
+  }
+}
+
+// A CR followed by its LF in another read is a CRLF, whichever line it ends.
+TEST(HttpParserRequestHead, CrLfSplitBetweenReadsIsNotABareLf) {
+  InstallEchoHandler();
+  struct Split {
+    std::string_view first;
+    std::string_view rest;
+  };
+  for (const auto& [first, rest] : {
+           Split{"GET / HTTP/1.1\r", "\nHost: x\r\nConnection: close\r\n\r\n"},
+           Split{"GET / HTTP/1.1\r\nHost: x\r", "\nConnection: close\r\n\r\n"},
+           Split{"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r", "\n"},
+       }) {
+    SCOPED_TRACE(first);
+    const std::string resp = SendSplit(port, first, "", rest);
+    ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  }
 }
 
 TEST(HttpParserRequestHead, WaitsWhenHeaderCRIsLastBufferedByte) {
@@ -243,6 +306,72 @@ TEST(HttpParserChunked, BareCarriageReturnInChunkSizeLineIsRejected) {
   const std::string resp = test::sendAndCollect(port, req);
 
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
+}
+
+// A bare LF never completes into the CRLF ending a line of the chunked framing: a chunk-size line, the line ending
+// chunk data, the empty line ending the body, or a trailer line. Rejected as soon as received, with no CR following it
+// for the framing to find.
+TEST(HttpParserChunked, BareLfLineEndingsAreRejectedWithoutWaiting) {
+  InstallEchoHandler();
+  for (const std::string_view chunks : {
+           "5\nhello\n0\n\n",                        // LF-only framing
+           "5\n",                                    // first chunk-size line
+           "5;ext\n",                                // ... with an extension
+           "5\r\nhello\r\n5\nhello\n",               // a following chunk-size line
+           "5\r\nhello\n",                           // end of the chunk data
+           "5\r\nhello\r\n0\r\n\n",                  // empty line ending the body
+           "0\r\n\n",                                // ... of a body without chunk
+           "5\r\nhello\r\n0\r\nX-Tag: v\n\n",        // trailer line
+           "5\r\nhello\r\n0\r\nX-A: 1\r\nX-B: 2\n",  // second trailer line
+       }) {
+    SCOPED_TRACE(chunks);
+    const std::string resp = SendAndCollectPromptly(std::string(kChunkedHead).append(chunks));
+    ASSERT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
+    EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp;
+  }
+}
+
+// ... whether it is received in the first read of the framing or in a later one.
+TEST(HttpParserChunked, BareLfInChunkedFramingReceivedInSeveralReadsIsRejected) {
+  InstallEchoHandler();
+  struct Split {
+    std::string_view first;
+    std::string_view rest;
+  };
+  for (const auto& [first, rest] : {
+           Split{"5", "\n"},
+           Split{"5\r\nhel", "lo\n"},
+           Split{"5\r\nhello", "\n"},
+           Split{"5\r\nhello\r\n", "5\nhello\n"},
+           Split{"5\r\nhello\r\n0\r\n", "\n"},
+           Split{"5\r\nhello\r\n0\r\nX-A: ", "1\n\n"},
+           Split{"5\r\nhello\r\n0\r\nX-A: 1\r\nX-B", ": 2\n"},
+       }) {
+    SCOPED_TRACE(std::string(first).append(" | ").append(rest));
+    const std::string resp = SendSplit(port, std::string(kChunkedHead).append(first), "", rest);
+    ASSERT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
+  }
+}
+
+// The CR and the LF of a CRLF of the chunked framing received in two reads are not a bare LF.
+TEST(HttpParserChunked, CrLfSplitBetweenReadsIsNotABareLf) {
+  InstallEchoHandler();
+  struct Split {
+    std::string_view first;
+    std::string_view rest;
+  };
+  for (const auto& [first, rest] : {
+           Split{"5\r", "\nhello\r\n0\r\n\r\n"},            // chunk-size line
+           Split{"5\r\nhello\r", "\n0\r\n\r\n"},            // end of the chunk data
+           Split{"5\r\nhello\r\n0\r\n\r", "\n"},            // empty line ending the body
+           Split{"5\r\nhello\r\n0\r\nX-A: 1\r", "\n\r\n"},  // trailer line
+           Split{"5\r\nhello\r\n0\r\nX-A: 1\r\n\r", "\n"},  // empty line ending the trailers
+       }) {
+    SCOPED_TRACE(first);
+    const std::string resp = SendSplit(port, std::string(kChunkedHead).append(first), "", rest);
+    ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+    EXPECT_TRUE(resp.contains("hello")) << resp;
+  }
 }
 
 // NeedMore path (line 132): chunk-size line is complete but chunk data is incomplete.

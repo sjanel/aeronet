@@ -100,4 +100,24 @@ TEST(MemoryUtilsSearchCRLF, StrictSearchDistinguishesIncompleteAndMalformedLines
   EXPECT_EQ(mutableResult, mutableLine.data() + 13);
 }
 
+TEST(MemoryUtilsSearchCRLF, HasBareLFOfALineWithoutCRLF) {
+  const auto hasBareLF = [](std::string_view line) {
+    // The lines are the ones SearchCRLF() did not find the end of.
+    EXPECT_EQ(SearchCRLF(line.data(), line.data() + line.size()), line.data() + line.size()) << line;
+    return HasBareLF(line.data(), line.data() + line.size());
+  };
+
+  EXPECT_FALSE(hasBareLF(""));
+  EXPECT_FALSE(hasBareLF("Header: val"));
+  EXPECT_FALSE(hasBareLF("Header: value\r"));  // the CR of a CRLF still to come
+  EXPECT_FALSE(hasBareLF("\r"));
+
+  EXPECT_TRUE(hasBareLF("\n"));
+  EXPECT_TRUE(hasBareLF("Header: value\n"));
+  EXPECT_TRUE(hasBareLF("GET / HTTP/1.1\nHost: x\n\n"));
+  EXPECT_TRUE(hasBareLF("Header: val\nue\r"));
+  EXPECT_TRUE(hasBareLF(std::string(4096, 'x') + "\n" + std::string(4096, 'y')));
+  EXPECT_FALSE(hasBareLF(std::string(8192, 'x')));
+}
+
 }  // namespace aeronet
