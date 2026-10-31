@@ -168,6 +168,14 @@ struct HttpServerConfig {
   // Should be > 0. Use std::numeric_limits<uint32_t>::max() to approximate unlimited behavior. Default: 64.
   std::uint32_t maxAcceptBatchSize{64};
 
+  // Size (bytes) of the kernel send buffer (SO_SNDBUF) of each accepted connection, or 0 (default) to keep the system
+  // default, which Linux grows as needed (net.ipv4.tcp_wmem). A fixed size disables this automatic tuning and bounds
+  // the bytes the kernel takes from a connection before the server keeps the rest in its own output buffer (see
+  // maxOutboundBufferBytes): a client reading slowly then holds less kernel memory. Linux doubles the value for its
+  // bookkeeping and caps it to net.core.wmem_max. A configuration update applies to the connections accepted after it.
+  // Must be at most std::numeric_limits<int>::max().
+  std::uint32_t socketSendBufferBytes{0};
+
   // ============================
   // Request parsing & body limits
   // ============================
@@ -448,6 +456,9 @@ struct HttpServerConfig {
 
   // Set maximum accept batch size per event-loop iteration (0 = unlimited).
   HttpServerConfig& withMaxAcceptBatchSize(uint32_t batchSize);
+
+  // Set the kernel send buffer size (SO_SNDBUF) of accepted connections (0 = system default, automatically tuned).
+  HttpServerConfig& withSocketSendBufferBytes(uint32_t bytes);
 
   // Adjust event loop max idle wait
   HttpServerConfig& withPollInterval(std::chrono::milliseconds interval);

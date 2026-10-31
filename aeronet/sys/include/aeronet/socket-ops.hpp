@@ -51,6 +51,10 @@ void SetPipeNonBlockingCloExec(NativeHandle pipeRd, NativeHandle pipeWr) noexcep
 // Returns true on success.
 bool SetTcpNoDelay(NativeHandle fd) noexcept;
 
+// Set the size of the kernel send buffer of a socket (SO_SNDBUF), which disables its automatic tuning on Linux.
+// Returns true on success.
+bool SetSendBufferSize(NativeHandle fd, int bytes) noexcept;
+
 // Set TCP_CORK (Linux) to coalesce small writes into full TCP segments.
 // When corked, the kernel accumulates data and avoids sending partial segments.
 // Clearing the cork flushes any accumulated data immediately.

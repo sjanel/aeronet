@@ -41,6 +41,12 @@ void EnsureWinsockInitialized() {
       WSADATA wsaData;
       ::WSAStartup(MAKEWORD(2, 2), &wsaData);
     }
+
+    WinsockInit(const WinsockInit&) = delete;
+    WinsockInit(WinsockInit&&) noexcept = delete;
+    WinsockInit& operator=(const WinsockInit&) = delete;
+    WinsockInit& operator=(WinsockInit&&) noexcept = delete;
+
     ~WinsockInit() { ::WSACleanup(); }
   };
   static WinsockInit instance;
@@ -112,6 +118,15 @@ bool SetTcpNoDelay(NativeHandle fd) noexcept {
   return ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&kEnable), sizeof(kEnable)) == 0;
 #else
   return ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &kEnable, sizeof(kEnable)) == 0;
+#endif
+}
+
+bool SetSendBufferSize(NativeHandle fd, int bytes) noexcept {
+#ifdef AERONET_WINDOWS
+  return ::setsockopt(fd, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<const char*>(&bytes), sizeof(bytes)) == 0;
+#else
+  // NOLINTNEXTLINE(misc-include-cleaner) sys/socket.h is the correct header for SOL_SOCKET
+  return ::setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bytes, sizeof(bytes)) == 0;
 #endif
 }
 

@@ -429,6 +429,12 @@ void SingleHttpServer::acceptNewConnections() {
         _ctx.telemetry.counterAdd("aeronet.connections.errors.tcp_nodelay_failed", 1UL);
       }
     }
+    if (config.socketSendBufferBytes != 0 && !SetSendBufferSize(cnxFd, static_cast<int>(config.socketSendBufferBytes)))
+        [[unlikely]] {
+      const auto err = LastSystemError();
+      log::error("setsockopt(SO_SNDBUF, {}) failed for fd # {} err={}", config.socketSendBufferBytes, cnxFd, err);
+      _ctx.telemetry.counterAdd("aeronet.connections.errors.send_buffer_failed", 1UL);
+    }
     if (!_ctx.eventLoop.add(EventLoop::EventFd{cnxFd, EventIn | EventRdHup | EventEt})) [[unlikely]] {
       _ctx.telemetry.counterAdd("aeronet.connections.errors.add_event_failed", 1UL);
       continue;

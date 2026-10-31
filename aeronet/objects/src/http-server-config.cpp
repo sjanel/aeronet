@@ -114,6 +114,11 @@ HttpServerConfig& HttpServerConfig::withMaxAcceptBatchSize(uint32_t batchSize) {
   return *this;
 }
 
+HttpServerConfig& HttpServerConfig::withSocketSendBufferBytes(uint32_t bytes) {
+  this->socketSendBufferBytes = bytes;
+  return *this;
+}
+
 HttpServerConfig& HttpServerConfig::withPollInterval(std::chrono::milliseconds interval) {
   this->pollInterval = interval;
   return *this;
@@ -361,6 +366,10 @@ void HttpServerConfig::validate() {
 
   if (maxAcceptBatchSize == 0) {
     throw std::invalid_argument("maxAcceptBatchSize must be > 0");
+  }
+
+  if (std::cmp_greater(socketSendBufferBytes, std::numeric_limits<int>::max())) {
+    throw std::invalid_argument("socketSendBufferBytes must be <= INT_MAX");
   }
 
   if (globalHeaders.nbConcatenatedStrings() > kMaxGlobalHeaders) {

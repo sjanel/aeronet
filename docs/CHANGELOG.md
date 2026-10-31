@@ -39,6 +39,7 @@ All notable changes to aeronet are documented in this file.
 
 ### Improvements
 
+- **New `HttpServerConfig::socketSendBufferBytes`** (`withSocketSendBufferBytes()`): sets the kernel send buffer (`SO_SNDBUF`) of the accepted connections, `0` (default) keeping the system default and its automatic tuning. A fixed size bounds the kernel memory held by a client reading slowly. See [Server configuration](reference/server-configuration.md#event-loop-buffering-and-performance-controls).
 - **New `AERONET_ENABLE_PROTOBUF` CMake option** for Protocol Buffers support, `ON` by default when aeronet is the top-level project like the other optional dependencies: turn it `OFF` when protobuf is not installed, as it is never fetched. The support is header-only (the aeronet libraries do not use protobuf), and `find_package(aeronet)` finds protobuf for the consumers. `AERONET_PROTOBUF_RUNTIME` selects the `full` (default) or `lite` runtime. `protobufEnabled()` (`aeronet/features.hpp`) and a new `protobuf: <version>` line of `fullVersionStringView()` report it. Conan option `with_protobuf`, vcpkg feature `protobuf`. See [Build configuration](reference/configuration.md#protocol-and-integration-features).
 
 ## [1.7.0] - 2026-10-26
