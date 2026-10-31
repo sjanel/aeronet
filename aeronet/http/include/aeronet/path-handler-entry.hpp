@@ -179,7 +179,7 @@ class PathHandlerEntry {
 
   // The methods with a handler, of any kind.
   [[nodiscard]] http::MethodBmp handlerMethodBmp() const noexcept {
-    return static_cast<http::MethodBmp>(_normalMethodBmp | _streamingMethodBmp
+    return static_cast<http::MethodBmp>(static_cast<http::MethodBmp>(_normalMethodBmp | _streamingMethodBmp)
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
                                         | _asyncMethodBmp
 #endif
