@@ -12,13 +12,15 @@ struct SharedBuffers {
   void shrink_to_fit() {
     buf.shrink_to_fit();
     decompressedBody.shrink_to_fit();
-    trailers.shrink_to_fit();
+    trailersOrTraceEcho.shrink_to_fit();
     sv.shrink_to_fit();
   }
 
-  RawChars buf;                 // can be used for any kind of temporary buffer
-  RawChars decompressedBody;    // shared body buffer for non-async request decompression
-  RawChars32 trailers;          // scratch buffer to preserve request trailers during decompression
+  RawChars buf;               // can be used for any kind of temporary buffer
+  RawChars decompressedBody;  // shared body buffer for non-async request decompression
+  // Two mutually exclusive uses: the request trailers preserved during the decompression of a chunked body, and the
+  // head of the HTTP/1 TRACE request being served, as received (see CopyTraceEcho()), only echoed without body.
+  RawChars32 trailersOrTraceEcho;
   vector<std::string_view> sv;  // scratch views for chunked decoding and protocol gather writes
 };
 

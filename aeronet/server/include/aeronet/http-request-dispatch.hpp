@@ -20,6 +20,12 @@ namespace aeronet {
 
 /// Configuration for special method processing.
 struct SpecialMethodConfig {
+  /// Whether the TRACE requests of the connection are echoed, according to the policy and the transport.
+  [[nodiscard]] bool traceEnabled() const noexcept {
+    return tracePolicy == HttpServerConfig::TraceMethodPolicy::EnabledPlainAndTLS ||
+           (tracePolicy == HttpServerConfig::TraceMethodPolicy::EnabledPlainOnly && !isTls);
+  }
+
   HttpServerConfig::TraceMethodPolicy tracePolicy{HttpServerConfig::TraceMethodPolicy::Disabled};
   bool isTls{false};  // true if request arrived over TLS (for TRACE policy check)
 };
@@ -28,7 +34,7 @@ struct SpecialMethodConfig {
 ///
 /// This function handles:
 /// - OPTIONS: Returns Allow header with supported methods, handles CORS preflight
-/// - TRACE: Echoes request if policy allows
+/// - TRACE: Echoes traceEcho if the policy allows it and it is not empty, answers 405 otherwise
 ///
 /// Note: CONNECT is NOT handled here as it requires protocol-specific tunnel setup.
 /// HTTP/1.1 and HTTP/2 must handle CONNECT differently due to transport semantics.
@@ -37,11 +43,11 @@ struct SpecialMethodConfig {
 /// @param router Router for method allow-list lookup (non-const: allowedMethods mutates internal buffer)
 /// @param config Special method configuration
 /// @param pCorsPolicy Optional CORS policy (can be nullptr)
-/// @param requestData Raw request data for TRACE echo (only needed for HTTP/1.1 TRACE)
+/// @param traceEcho The message echoed by a TRACE request (only available over HTTP/1.1, see CopyTraceEcho())
 /// @return Result indicating action taken
 [[nodiscard]] HttpResponse ProcessSpecialMethods(const HttpRequestView& request, Router& router,
                                                  SpecialMethodConfig config, const CorsPolicy* pCorsPolicy,
-                                                 std::string_view requestData = {});
+                                                 std::string_view traceEcho = {});
 
 /// The steps of the request pipeline shared by HTTP/1.1 and HTTP/2, so that both protocols answer a request the same
 /// way. Once a request is parsed and routed, and its protocol-specific checks and special methods are handled, the
