@@ -1018,6 +1018,25 @@ TEST(ResponseParserTest, RejectsInvalidHeaderValue) {
   rawDel.push_back('\x7f');
   rawDel.append("value\r\n\r\n");
   EXPECT_EQ(parseAll(rawDel, delResp, /*head=*/false, /*eof=*/true), Http1ResponseParser::Status::Error);
+
+  HttpResponse obsTextControlResp;
+  EXPECT_EQ(parseAll("HTTP/1.1 200 OK\r\nX-Test: caf\xC3\xA9\x01\r\n\r\n", obsTextControlResp, /*head=*/false,
+                     /*eof=*/true),
+            Http1ResponseParser::Status::Error);
+}
+
+// RFC 9110 §5.5: obs-text (bytes 0x80-0xFF, such as UTF-8 text) is allowed in header values, and kept as is.
+TEST(ResponseParserTest, AcceptsObsTextInHeaderValue) {
+  HttpResponse resp;
+  EXPECT_EQ(parseAll("HTTP/1.1 200 OK\r\nContent-Disposition: attachment; filename=\"r\xC3\xA9sum\xC3\xA9.pdf\"\r\n"
+                     "X-Latin1: \xE9t\xE9\r\nX-Bytes: \x80\xFF\r\nContent-Length: 2\r\n\r\nok",
+                     resp),
+            Http1ResponseParser::Status::Complete);
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.headerValueOrEmpty("content-disposition"), "attachment; filename=\"r\xC3\xA9sum\xC3\xA9.pdf\"");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-latin1"), "\xE9t\xE9");
+  EXPECT_EQ(resp.headerValueOrEmpty("x-bytes"), "\x80\xFF");
+  EXPECT_EQ(resp.bodyInMemory(), "ok");
 }
 
 // The Connection header is no longer exempt from the general header-value grammar: ScanConnectionTokens
