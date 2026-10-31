@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <format>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -101,7 +102,51 @@ TEST_P(ProtocolParity, MethodNotAllowed) {
   const auto resp = send(http::Method::POST, "/get-only", [](auto& req) { req.body("data"); });
   EXPECT_EQ(resp.status(), http::StatusCodeMethodNotAllowed);
   EXPECT_EQ(resp.bodyInMemory(), http::ReasonMethodNotAllowed);
+  EXPECT_EQ(resp.headerValueOrEmpty(http::Allow), "GET");
   EXPECT_EQ(resp.headerValueOrEmpty("x-post"), "1");
+}
+
+// The Allow header of a 405 lists the methods of the route, whatever the kind of their handler (RFC 9110 §15.5.6).
+TEST_P(ProtocolParity, MethodNotAllowedListsTheMethodsOfTheRoute) {
+  ts.router().setPath(http::Method::GET | http::Method::PATCH, "/items/{id}",
+                      [](const HttpRequestView&) { return HttpResponse("ok"); });
+  ts.router().setPath(http::Method::PUT, "/items/{id}", [](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.writeBody("ok");
+    writer.end();
+  });
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  ts.router().setPath(http::Method::DELETE, "/items/{id}",
+                      [](HttpRequestView&) -> RequestTask<HttpResponse> { co_return HttpResponse("ok"); });
+  static constexpr std::string_view kAllow = "GET, PUT, DELETE, PATCH";
+#else
+  static constexpr std::string_view kAllow = "GET, PUT, PATCH";
+#endif
+  const auto resp = send(http::Method::POST, "/items/42", [](auto& req) { req.body("data"); });
+  EXPECT_EQ(resp.status(), http::StatusCodeMethodNotAllowed);
+  EXPECT_EQ(resp.bodyInMemory(), http::ReasonMethodNotAllowed);
+  EXPECT_EQ(resp.headerValueOrEmpty(http::Allow), kAllow);
+}
+
+// TRACE, disabled by default, is answered 405 with the methods of its route, without TRACE: a TRACE handler is not
+// called.
+TEST_P(ProtocolParity, DisabledTraceListsTheMethodsOfTheRoute) {
+  std::atomic<int> traceCalls{0};
+  ts.router().setPath(http::Method::GET | http::Method::POST, "/res",
+                      [](const HttpRequestView&) { return HttpResponse("ok"); });
+  ts.router().setPath(http::Method::TRACE, "/res", [&traceCalls](const HttpRequestView&) {
+    ++traceCalls;
+    return HttpResponse("trace");
+  });
+  const auto resp = send(http::Method::TRACE, "/res");
+  EXPECT_EQ(resp.status(), http::StatusCodeMethodNotAllowed);
+  EXPECT_EQ(resp.bodyInMemory(), http::ReasonMethodNotAllowed);
+  EXPECT_EQ(resp.headerValueOrEmpty(http::Allow), "GET, POST");
+  EXPECT_EQ(traceCalls.load(), 0);
+
+  // A target without route supports no method: its Allow header is empty (RFC 9110 §10.2.1).
+  const auto missing = send(http::Method::TRACE, "/missing");
+  EXPECT_EQ(missing.status(), http::StatusCodeMethodNotAllowed);
+  EXPECT_EQ(missing.headerValue(http::Allow), std::optional<std::string_view>(""));
 }
 
 TEST_P(ProtocolParity, HandlerExceptionAnswers500ThroughResponseMiddleware) {
@@ -347,6 +392,20 @@ TEST_P(ProtocolParity, CorsPreflight) {
   });
   EXPECT_EQ(resp.status(), http::StatusCodeNoContent);
   EXPECT_EQ(resp.headerValueOrEmpty(http::AccessControlAllowOrigin), kAllowedOrigin);
+}
+
+TEST_P(ProtocolParity, CorsPreflightOfAMethodOfNoHandlerIsAnswered405WithAllow) {
+  ts.router()
+      .setPath(http::Method::GET | http::Method::POST, "/cors",
+               [](const HttpRequestView&) { return HttpResponse("ok"); })
+      .cors(MakeCorsPolicy());
+  const auto resp = send(http::Method::OPTIONS, "/cors", [](auto& req) {
+    req.headerAddLine(http::Origin, kAllowedOrigin);
+    req.headerAddLine(http::AccessControlRequestMethod, "PUT");
+  });
+  EXPECT_EQ(resp.status(), http::StatusCodeMethodNotAllowed);
+  EXPECT_EQ(resp.bodyInMemory(), http::ReasonMethodNotAllowed);
+  EXPECT_EQ(resp.headerValueOrEmpty(http::Allow), "GET, POST");
 }
 
 class ProtocolParityTrailingSlashRedirect : public ProtocolParity {

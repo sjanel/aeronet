@@ -105,4 +105,26 @@ inline constexpr std::size_t kAllMethodsStrLen = [] {
   return len;
 }();
 
+// Length of the list of all methods written by AppendMethodList.
+inline constexpr std::size_t kMethodListMaxLen = kAllMethodsStrLen + (static_cast<std::size_t>(kNbMethods - 1U) * 2U);
+
+// Writes the methods set in 'methodBmp' at 'pOut', in index order and separated by ", " (the syntax of the Allow and
+// Access-Control-Allow-Methods values), and returns the end of the list. 'pOut' must have room for kMethodListMaxLen
+// chars. Nothing is written for an empty bitmap.
+constexpr char* AppendMethodList(MethodBmp methodBmp, char* pOut) {
+  const char* pBeg = pOut;
+  for (MethodIdx methodIdx = 0; methodIdx < kNbMethods; ++methodIdx) {
+    if (!IsMethodIdxSet(methodBmp, methodIdx)) {
+      continue;
+    }
+    if (pOut != pBeg) {
+      *pOut++ = ',';
+      *pOut++ = ' ';
+    }
+    const std::string_view methodStr = MethodIdxToStr(methodIdx);
+    pOut += methodStr.copy(pOut, methodStr.size());
+  }
+  return pOut;
+}
+
 }  // namespace aeronet::http
