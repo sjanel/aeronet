@@ -170,7 +170,7 @@ router.setPath(http::Method::GET, "/data", [](const HttpRequestView& req) {
 });
 ```
 
-Adding a trailer before the body throws `std::logic_error`. Over HTTP/1.1, trailers require chunked encoding: the server converts the response to `Transfer-Encoding: chunked` when it is finalized, and announces the trailer names in a `trailer` header, unless `HttpServerConfig::addTrailerHeader` is `false`. Over HTTP/2, trailers are sent as a final `HEADERS` frame. Trailer names are not validated: do not send fields that frame, route, or authenticate messages (`content-length`, `content-type`, `transfer-encoding`, `host`, `authorization`, `set-cookie`, ...), which clients and intermediaries reject or misinterpret.
+Adding a trailer before the body throws `std::logic_error`. Over HTTP/1.1, trailers require chunked encoding: the server converts the response to `Transfer-Encoding: chunked` when it is finalized, and announces the trailer names in a `trailer` header, unless `HttpServerConfig::addTrailerHeader` is `false`. An HTTP/1.0 client does not understand chunked encoding (RFC 9112 §6.1): its response drops the trailers and keeps its `Content-Length`, without `trailer` header, for `HEAD` too. Over HTTP/2, trailers are sent as a final `HEADERS` frame. Trailer names are not validated: do not send fields that frame, route, or authenticate messages (`content-length`, `content-type`, `transfer-encoding`, `host`, `authorization`, `set-cookie`, ...), which clients and intermediaries reject or misinterpret.
 
 ## Errors
 

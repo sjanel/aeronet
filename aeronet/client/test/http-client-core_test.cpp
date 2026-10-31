@@ -50,6 +50,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/response-body-sink.hpp"
@@ -2304,17 +2305,21 @@ void DrainUntilClosed(NativeHandle fd, int timeoutMs) {
 // far on EOF (empty when the peer closed without sending anything). Good enough for bodyless GET / CONNECT.
 std::string ReadRequestHead(NativeHandle fd) {
   std::string buf;
-  char tmp[1024];
-  for (;;) {
-    const auto sz = ::recv(fd, tmp, static_cast<int>(sizeof(tmp)), 0);
-    if (sz <= 0) {
-      return buf;
-    }
-    buf.append(tmp, static_cast<std::size_t>(sz));
-    if (buf.contains(http::DoubleCRLF)) {
-      return buf;
-    }
+  for (bool end = false; !end;) {
+    buf.resize_and_overwrite(1024UL, [fd, &end](char* pData, std::size_t size) -> std::size_t {
+      const auto sz = ::recv(fd, pData, size, 0);
+      if (sz <= 0) {
+        if (sz < 0) {
+          log::error("ReadRequestHead: failed to receive from socket");
+        }
+        end = true;
+        return 0;
+      }
+      end = std::string_view(pData, static_cast<std::size_t>(sz)).contains(http::DoubleCRLF);
+      return static_cast<std::size_t>(sz);
+    });
   }
+  return buf;
 }
 
 void SendAll(NativeHandle fd, std::string_view data) {

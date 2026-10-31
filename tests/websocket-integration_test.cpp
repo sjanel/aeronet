@@ -846,6 +846,30 @@ TEST_F(WebSocketTest, UpgradeChecksOriginWithoutCorsPolicy) {
   EXPECT_TRUE(UpgradeResponse("/ws-origin", "Origin: null\r\n").starts_with("HTTP/1.1 403"));
 }
 
+// RFC 9110 §7.8: the Upgrade header of an HTTP/1.0 request is ignored, and an HTTP/1.0 client cannot receive the 101
+// (§15.2): the request is served like any GET.
+TEST_F(WebSocketTest, UpgradeIgnoredInHttp10) {
+  ts.postRouterUpdate([](Router& router) {
+    router.setWebSocket("/ws-http10", SilentEndpoint());
+    router.setPath(http::Method::GET, "/ws-http10-get", [](const HttpRequestView&) { return HttpResponse("plain"); });
+    router.setWebSocket("/ws-http10-get", SilentEndpoint());
+  });
+  const auto http10Upgrade = [](std::string_view path) {
+    std::string req = BuildUpgradeRequest(path);
+    req.replace(req.find("HTTP/1.1"), 8, "HTTP/1.0");
+    return test::sendAndCollect(ts.port(), req);
+  };
+
+  std::string resp = http10Upgrade("/ws-http10");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.0 404")) << resp;
+  resp = http10Upgrade("/ws-http10-get");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.0 200")) << resp;
+  EXPECT_TRUE(resp.ends_with("\r\n\r\nplain")) << resp;
+
+  EXPECT_TRUE(UpgradeResponse("/ws-http10", "").starts_with("HTTP/1.1 101"));
+  EXPECT_TRUE(UpgradeResponse("/ws-http10-get", "").starts_with("HTTP/1.1 101"));
+}
+
 TEST_F(WebSocketTest, UpgradeAppliesCorsPolicyToOrigin) {
   ts.postRouterUpdate([](Router& router) {
     CorsPolicy cors;

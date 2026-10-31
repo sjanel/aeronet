@@ -162,7 +162,8 @@ class HttpResponseTest : public ::testing::Test {
   }
 
   static HttpMessageData finalizePrepared(HttpResponse&& resp, const ConcatenatedHeaders& globalHeaders, bool head,
-                                          bool addTrailerHeader, bool keepAliveFlag, std::size_t minCapturedBodySize) {
+                                          bool addTrailerHeader, bool keepAliveFlag, std::size_t minCapturedBodySize,
+                                          http::Version version = http::HTTP_1_1) {
     HttpResponse::Options opts;
 
     if (!keepAliveFlag) {
@@ -175,17 +176,18 @@ class HttpResponseTest : public ::testing::Test {
       opts.setHeadMethod();
     }
 
-    return resp.finalizeForHttp1(kDateHeader, http::HTTP_1_1, opts, &globalHeaders, minCapturedBodySize);
+    return resp.finalizeForHttp1(kDateHeader, version, opts, &globalHeaders, minCapturedBodySize);
   }
 
   static HttpMessageData finalize(HttpResponse&& resp, const ConcatenatedHeaders& globalHeaders, bool head,
-                                  bool keepAliveFlag, bool addTrailerHeader, std::size_t minCapturedBodySize) {
+                                  bool keepAliveFlag, bool addTrailerHeader, std::size_t minCapturedBodySize,
+                                  http::Version version = http::HTTP_1_1) {
     std::size_t expectedFileLen = 0;
     if (resp.hasBodyFile()) {
       expectedFileLen = resp.file()->size();
     }
-    auto prepared =
-        finalizePrepared(std::move(resp), globalHeaders, head, addTrailerHeader, keepAliveFlag, minCapturedBodySize);
+    auto prepared = finalizePrepared(std::move(resp), globalHeaders, head, addTrailerHeader, keepAliveFlag,
+                                     minCapturedBodySize, version);
     if (auto pFilePayload = prepared.getIfFilePayload(); pFilePayload != nullptr) {
       EXPECT_EQ(pFilePayload->length, expectedFileLen);
     }
@@ -195,9 +197,9 @@ class HttpResponseTest : public ::testing::Test {
   static std::string concatenated(HttpResponse&& resp, const ConcatenatedHeaders& globalHeaders = {},
                                   bool head = kIsHeadMethod, bool keepAliveFlag = kKeepAlive,
                                   std::size_t minCapturedBodySize = kMinCapturedBodySize,
-                                  bool addTrailerHeader = kAddTrailerHeader) {
+                                  bool addTrailerHeader = kAddTrailerHeader, http::Version version = http::HTTP_1_1) {
     HttpMessageData httpResponseData =
-        finalize(std::move(resp), globalHeaders, head, keepAliveFlag, addTrailerHeader, minCapturedBodySize);
+        finalize(std::move(resp), globalHeaders, head, keepAliveFlag, addTrailerHeader, minCapturedBodySize, version);
     std::string_view firstBuf = httpResponseData.firstBuffer();
     std::string_view secondBuf = httpResponseData.secondBuffer();
     std::string out;
@@ -4808,6 +4810,29 @@ TEST_F(HttpResponseTest, TrailerAddLine_FinalizesDirectCompression) {
   }
 }
 
+// The trailers of an HTTP/1.0 response are dropped: its compressed body, ended by the first trailer, is sent as is.
+TEST_F(HttpResponseTest, TrailersOfDirectCompressionDroppedForHttp10) {
+  const std::string body(2048, 'T');
+  for (Encoding enc : test::SupportedEncodings()) {
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+    resp.body(body, http::ContentTypeTextPlain);
+    ASSERT_TRUE(IsAutomaticDirectCompression(resp));
+    resp.trailerAddLine("x-checksum", "abc123");
+    const std::string compressed(resp.bodyInMemory());
+
+    const std::string result = concatenated(std::move(resp), {}, kIsHeadMethod, kKeepAlive, kMinCapturedBodySize,
+                                            kAddTrailerHeader, http::HTTP_1_0);
+
+    EXPECT_TRUE(result.starts_with("HTTP/1.0 200")) << result;
+    EXPECT_TRUE(result.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(compressed.size()))));
+    EXPECT_FALSE(result.contains(http::TransferEncoding));
+    EXPECT_FALSE(result.contains("x-checksum"));
+    ASSERT_TRUE(result.ends_with(std::string(http::DoubleCRLF) + compressed));
+    const auto decompressed = test::Decompress(enc, std::string_view(result).substr(result.size() - compressed.size()));
+    EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), body);
+  }
+}
+
 // Test: defaultDirectCompressionMode from CompressionConfig is respected
 TEST_F(HttpResponseTest, DefaultDirectCompressionMode_FromConfig) {
   for (Encoding enc : test::SupportedEncodings()) {
@@ -6019,6 +6044,58 @@ TEST_F(HttpResponseTest, TrailersAutoChunkedMultipleTrailers) {
   EXPECT_TRUE(result.contains("trailer-one: value1\r\n"));
   EXPECT_TRUE(result.contains("trailer-two: value2\r\n"));
   EXPECT_TRUE(result.contains("trailer-three: value3\r\n"));
+}
+
+// RFC 9112 §6.1: an HTTP/1.0 response cannot be chunked. Its trailers are dropped, and its body keeps its
+// Content-Length, whatever its storage (inline, captured and kept captured or moved inline at finalization).
+TEST_F(HttpResponseTest, TrailersDroppedForHttp10) {
+  static constexpr std::string_view kBody = "CapturedData12345";
+  enum class BodyKind : std::uint8_t { Inline, String, Vector, UniquePtr };
+  for (BodyKind bodyKind : {BodyKind::Inline, BodyKind::String, BodyKind::Vector, BodyKind::UniquePtr}) {
+    for (std::size_t minCapturedBodySz : {std::size_t{1}, kMinCapturedBodySize}) {
+      for (bool head : {false, true}) {
+        for (bool keepAlive : {false, true}) {
+          HttpResponse resp(http::StatusCodeOK);
+          switch (bodyKind) {
+            case BodyKind::Inline:
+              resp.body(kBody);
+              break;
+            case BodyKind::String:
+              resp.body(std::string(kBody));
+              break;
+            case BodyKind::Vector:
+              resp.body(std::vector<char>(kBody.begin(), kBody.end()), http::ContentTypeTextPlain);
+              break;
+            case BodyKind::UniquePtr: {
+              auto buf = std::make_unique<char[]>(kBody.size());
+              std::ranges::copy(kBody, buf.get());
+              resp.body(std::move(buf), kBody.size(), http::ContentTypeTextPlain);
+              break;
+            }
+          }
+          resp.trailerAddLine("x-sig", "sig-value").trailerAddLine("x-sig-2", "sig-value-2");
+
+          const std::string result =
+              concatenated(std::move(resp), {}, head, keepAlive, minCapturedBodySz, true, http::HTTP_1_0);
+
+          std::string exp("HTTP/1.0 200 \r\n");
+          exp += MakeHttp1HeaderLine(http::Date, kDateHeader);
+          exp += MakeHttp1HeaderLine(http::ContentType, http::ContentTypeTextPlain);
+          exp += MakeHttp1HeaderLine(http::ContentLength, std::to_string(kBody.size()));
+          if (keepAlive) {
+            exp += MakeHttp1HeaderLine(http::Connection, http::keepalive);
+          }
+          exp += http::CRLF;
+          if (!head) {
+            exp += kBody;
+          }
+          EXPECT_EQ(result, exp) << "bodyKind=" << static_cast<int>(bodyKind)
+                                 << " minCapturedBodySz=" << minCapturedBodySz << " head=" << head
+                                 << " keepAlive=" << keepAlive;
+        }
+      }
+    }
+  }
 }
 
 TEST_F(HttpResponseTest, HeadLargeBodyDoesNotGrowInlineCapacity) {
