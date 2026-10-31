@@ -1443,12 +1443,12 @@ TEST(HttpGardenHeaderValues, ObsTextIsNotStripped) {
           "chunked\xff\r\n\r\n1\r\nZ\r\n0\r\n\r\n",
           http::StatusCodeBadRequest,
       },
-      // ... and the transfer coding is unknown, not chunked.
+      // ... and the transfer coding is unknown, not chunked: the body length cannot be determined (RFC 9112 §6.3).
       {
           "server #46 (Transfer-Encoding)",
           "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: \xff"
           "chunked\xff\r\n\r\n1\r\nZ\r\n0\r\n\r\n",
-          http::StatusCodeNotImplemented,
+          http::StatusCodeBadRequest,
       },
   });
 
@@ -1574,11 +1574,12 @@ TEST(HttpGardenTransferEncoding, AmbiguousTransferEncodingsAreRejected) {
           "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: ,chunked\r\n\r\n0\r\n\r\n",
           http::StatusCodeNotImplemented,
       },
-      // server #44: unknown transfer codings treated as chunked.
+      // server #44: unknown transfer codings treated as chunked. Not ending with chunked, the body length cannot be
+      // determined (RFC 9112 §6.3).
       {
           "server #44",
           "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: blegh\r\n\r\n1\r\nZ\r\n0\r\n\r\n",
-          http::StatusCodeNotImplemented,
+          http::StatusCodeBadRequest,
       },
       // transducer #23: Content-Length together with Transfer-Encoding.
       {
@@ -1600,6 +1601,72 @@ TEST(HttpGardenTransferEncoding, AmbiguousTransferEncodingsAreRejected) {
           http::StatusCodeBadRequest,
       },
   });
+}
+
+// RFC 9112 §6.3: a Transfer-Encoding whose final coding is not chunked leaves the body length undetermined: 400, and
+// the connection is closed. With chunked as final coding, the codings before it are not supported (RFC 9112 §6.1): 501.
+// Either way, nothing after the head is read as another request.
+TEST(HttpTransferEncoding, UnsupportedCodingsAreRejected) {
+  ExpectSingleResponses({
+      {
+          "gzip",
+          "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: gzip\r\n\r\nZ"
+          "GET / HTTP/1.1\r\nHost: a\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      {
+          "identity",
+          "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: identity\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      {
+          "chunked, gzip",
+          "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked, gzip\r\n\r\n1\r\nZ\r\n0\r\n\r\n"
+          "GET / HTTP/1.1\r\nHost: a\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      {
+          "chunked then gzip header lines",
+          "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: gzip\r\n\r\n"
+          "1\r\nZ\r\n0\r\n\r\nGET / HTTP/1.1\r\nHost: a\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      {
+          "empty final element",
+          "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked,\r\n\r\n0\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      {
+          "chunked with a parameter",
+          "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked;a=b\r\n\r\n0\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      {
+          "gzip, chunked",
+          "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: gzip, chunked\r\n\r\n1\r\nZ\r\n0\r\n\r\n"
+          "GET / HTTP/1.1\r\nHost: a\r\n\r\n",
+          http::StatusCodeNotImplemented,
+      },
+      {
+          "gzip then chunked header lines",
+          "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: gzip\r\nTransfer-Encoding: CHUNKED\r\n\r\n"
+          "1\r\nZ\r\n0\r\n\r\n",
+          http::StatusCodeNotImplemented,
+      },
+      // Transfer-Encoding is rejected in HTTP/1.0 whatever its codings.
+      {
+          "HTTP/1.0 gzip, chunked",
+          "POST / HTTP/1.0\r\nTransfer-Encoding: gzip, chunked\r\n\r\n0\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+  });
+
+  // The final coding being chunked, in any case and after OWS, frames the body.
+  const std::string resp = test::sendAndCollect(
+      port,
+      "POST /te HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: \tChUnKeD\r\nConnection: close\r\n\r\n1\r\nZ\r\n0\r\n\r\n");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.ends_with("m=POST;p=[/te];b=[Z];t=[]")) << resp;
 }
 
 // =============================================================================

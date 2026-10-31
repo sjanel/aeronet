@@ -13,6 +13,7 @@ This page lists the HTTP/1.1 behaviors aeronet implements ([RFC 9110](https://ww
 | Method tokens are case-sensitive (RFC 9110 §9.1): `GET` is a method, `get` is an unknown method answered `501` | Supported |
 | A bare CR in a request head is rejected (`400`) as soon as the byte following it is received | Supported |
 | `Content-Length` and `Transfer-Encoding` together are rejected (`400`), as is `Transfer-Encoding` on an HTTP/1.0 request | Supported |
+| `Transfer-Encoding` whose final coding is not `chunked` rejected (`400`), the body length being undetermined (RFC 9112 §6.3). Codings before a final `chunked`, such as `gzip, chunked`, are not supported (`501`, RFC 9112 §6.1). The connection is closed after both | Supported |
 | Pipelined requests, processed one after the other | Supported |
 | Duplicate request headers merged, overridden, or rejected depending on the header ([details](../guides/requests.md#header-names)) | Supported |
 | Optional stricter policy failing on unknown duplicate headers | Not implemented |
@@ -66,7 +67,7 @@ The server answers these errors itself, before or instead of calling a handler:
 
 | Status | Cause |
 | --- | --- |
-| `400 Bad Request` | Malformed request, conflicting framing headers, `Transfer-Encoding` on HTTP/1.0, invalid `CONNECT` target, failed WebSocket handshake. |
+| `400 Bad Request` | Malformed request, conflicting framing headers, `Transfer-Encoding` on HTTP/1.0 or whose final coding is not `chunked`, invalid `CONNECT` target, failed WebSocket handshake. |
 | `403 Forbidden` | `CONNECT` target not in the allowlist, request denied by a CORS policy. |
 | `404 Not Found` | No route matches the path. |
 | `405 Method Not Allowed` | The path exists but not for this method, with an `Allow` header listing the methods registered on its route. Also `TRACE` when disabled (see [TRACE](#trace)). |
@@ -76,7 +77,7 @@ The server answers these errors itself, before or instead of calling a handler:
 | `417 Expectation Failed` | `Expect` token other than `100-continue` without expectation handler. |
 | `431 Request Header Fields Too Large` | Request head larger than `maxHeaderBytes`. |
 | `500 Internal Server Error` | Handler exception, or an invalid interim status returned by an expectation handler. |
-| `501 Not Implemented` | Unknown method, or unsupported `Transfer-Encoding`. |
+| `501 Not Implemented` | Unknown method, or transfer codings before a final `chunked` (`Transfer-Encoding: gzip, chunked`). |
 | `502 Bad Gateway` | `CONNECT` target unreachable. |
 | `505 HTTP Version Not Supported` | Well-formed version of a major version other than 1, such as `HTTP/2.0`. A higher minor version, such as `HTTP/1.3`, is processed and answered as HTTP/1.1 (RFC 9110 §6.2). Any other version token, such as `http/1.1` (the name is case-sensitive) or `HTTP/1.10`, is a `400`. |
 

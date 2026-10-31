@@ -132,7 +132,7 @@ HTTP/1.1 clients may send a body without knowing its size, with `Transfer-Encodi
 - Chunk extensions (`4;name=value`) are validated and ignored. A chunk-size line (extensions and CRLF included) longer than `maxHeaderBytes` is rejected with `400`, whether or not its end was received: a line without end is not buffered further.
 - The decoded body counts toward `maxBodyBytes` (`413` beyond it, as soon as a chunk announces the excess, without waiting for its data), and the trailer section toward `maxHeaderBytes` (`431`, whether or not the end of its last line was received).
 - A body received in several reads is decoded once: each read decodes the chunks received since the previous one, so the time spent is linear in the size of the body.
-- `Transfer-Encoding` on an HTTP/1.0 request, or together with `Content-Length`, is rejected with `400`.
+- `Transfer-Encoding` on an HTTP/1.0 request, together with `Content-Length`, or whose final coding is not `chunked` (RFC 9112 §6.3), is rejected with `400`. Other transfer codings before `chunked` (`gzip, chunked`) are not supported: `501 Not Implemented`.
 
 Trailers are header fields sent after the last chunk, typically a checksum or a signature computed while sending the body. They are exposed by `trailers()`, with lower-case names and trimmed values, identically for HTTP/1.1 chunked requests and HTTP/2 requests:
 

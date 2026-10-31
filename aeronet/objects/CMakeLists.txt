@@ -317,6 +317,13 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    transfer-coding_test
+    test/transfer-coding_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+AeronetAddUnitTest(
     uri-host_test
     src/uri-host.cpp
     test/uri-host_test.cpp
