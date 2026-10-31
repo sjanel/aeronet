@@ -89,7 +89,7 @@ aeronet does not validate the `Content-Type` of request bodies: a `415` based on
 
 ### TRACE
 
-`TRACE` echoes the received request back to the client, with `Content-Type: message/http` (RFC 9110 §9.3.8). Because the echo includes every header, cookies and credentials included, it is disabled by default:
+`TRACE` echoes the received request back to the client, with `Content-Type: message/http` (RFC 9110 §9.3.8). Because the echo reflects the request headers, it is disabled by default:
 
 | `HttpServerConfig::TraceMethodPolicy` | Effect |
 | --- | --- |
@@ -97,7 +97,11 @@ aeronet does not validate the `Content-Type` of request bodies: a `415` based on
 | `EnabledPlainAndTLS` | `TRACE` is echoed on every connection. |
 | `EnabledPlainOnly` | `TRACE` is echoed on plaintext connections and answered `405` on TLS connections. |
 
+The echo is the request head as received: the request line, with its target neither decoded nor rewritten, then the header fields in their order, with their original case and without merging the repeated ones, then the empty line. The fields likely to contain sensitive data are left out, as RFC 9110 §9.3.8 recommends: `Authorization`, `Proxy-Authorization` and `Cookie`. Other headers carrying secrets, such as an API key, are echoed. A client must not send content in a `TRACE` request: when `TRACE` is enabled, one announcing a body (`Transfer-Encoding`, or a `Content-Length` other than `0`) is answered `400` and its connection closed.
+
 A `TRACE` request is never routed to a handler: an HTTP/2 one is always answered `405`, having no message to echo. The `Allow` header of this `405` lists the methods registered on the route of the path, without `TRACE`, and is empty when no route matches (RFC 9110 §10.2.1).
+
+The parsing of a request head modifies it in place, so the head of a `TRACE` request is copied first, once it is completely received. This only happens when `TRACE` is enabled: with the default policy, the parsing of the requests does no extra work.
 
 ```cpp
 HttpServerConfig config;
@@ -140,6 +144,7 @@ The handler runs on the event-loop thread, so it must be fast. An `Interim` resu
 - Error statuses and version handling: [tests/http-errors_test.cpp](../../tests/http-errors_test.cpp).
 - Keep-alive, pipelining, empty bodies: [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
 - `Expect`, `OPTIONS`, `TRACE`, and other protocol details: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp), including HTTP/1.0 clients (`Http10` tests and `HttpExpectation.NoInterimResponseToHttp10Client`).
+- `TRACE` echo as received, without sensitive fields, for heads received in several reads, up to `maxHeaderBytes`, and rejected with content: `HttpOptionsTrace` tests in [tests/http-core_test.cpp](../../tests/http-core_test.cpp), and the copy of the head in [aeronet/server/test/trace-echo_test.cpp](../../aeronet/server/test/trace-echo_test.cpp).
 - `Allow` header of the `405` responses, over HTTP/1.1 and HTTP/2: `MethodNotAllowedListsTheMethodsOfTheRoute`, `DisabledTraceListsTheMethodsOfTheRoute` and `CorsPreflightOfAMethodOfNoHandlerIsAnswered405WithAllow` in [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp).
 - Trailers dropped for HTTP/1.0: `TrailersDroppedForHttp10` and `TrailersOfDirectCompressionDroppedForHttp10` in [http-response_test.cpp](../../aeronet/http/test/http-response_test.cpp).
 - Streamed responses to HTTP/1.0 clients, close-delimited or with a `Content-Length`: `Http10.StreamedBodyWithoutLengthIsDelimitedByClose` and `Http10.StreamedResponseOfKnownLengthKeepsConnectionAlive` in [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp).

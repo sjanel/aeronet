@@ -302,7 +302,7 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeNextChunks(ConnectionIt cnx
     // Perform direct decompression from the input chunks to bodyAndTrailersBuffer
     // Save trailers if present (they were appended to bodyAndTrailers with trailerLen = 0)
     // In direct decompression mode, bodyAndTrailers only contains trailers (no body chunks were copied)
-    _pCtx->sharedBuffers.trailers.assign(bodyAndTrailers);
+    _pCtx->sharedBuffers.trailersOrTraceEcho.assign(bodyAndTrailers);
 
     const auto res =
         HttpCodec::DecompressChunkedBody(_pCtx->decompressionState, _pCtx->config.decompression, request,
@@ -316,8 +316,8 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeNextChunks(ConnectionIt cnx
     // Capacity have been reserved in DecompressChunkedBody, so unchecked append is safe here.
     // In addition, a realloc here would mean that we should re-compute the request._body that is set in
     // DecompressChunkedBody.
-    assert(bodyAndTrailers.capacity() >= bodyAndTrailers.size() + _pCtx->sharedBuffers.trailers.size());
-    bodyAndTrailers.unchecked_append(_pCtx->sharedBuffers.trailers);
+    assert(bodyAndTrailers.capacity() >= bodyAndTrailers.size() + _pCtx->sharedBuffers.trailersOrTraceEcho.size());
+    bodyAndTrailers.unchecked_append(_pCtx->sharedBuffers.trailersOrTraceEcho);
 
     // Body is set by DecompressChunkedBodyDirect, trailers are appended after
   } else {

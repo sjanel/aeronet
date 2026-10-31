@@ -43,6 +43,7 @@
 
 #include "aeronet/base-fd.hpp"
 #include "aeronet/compression-config.hpp"
+#include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/features.hpp"
@@ -59,6 +60,7 @@
 #include "aeronet/native-handle.hpp"
 #include "aeronet/rate-limit-middleware.hpp"
 #include "aeronet/rate-limit.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/request-metrics.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/router.hpp"
@@ -78,10 +80,6 @@
 #include "aeronet/vector.hpp"
 #include "aeronet/version.hpp"
 #include "aeronet/zerocopy-mode.hpp"
-
-#ifdef AERONET_ENABLE_ZLIB
-#include "aeronet/compression-test-helpers.hpp"
-#endif
 
 using namespace std::chrono_literals;
 
@@ -2519,30 +2517,34 @@ int SendBufferSize(int fd) {
   return ::getsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bytes, &len) == 0 ? bytes : -1;
 }
 
-// The server end, in this process, of the connection of 'clientFd', or -1 if not accepted within 5 s: the socket whose
-// local and peer ports are the peer and local ports of 'clientFd' (other connections of the process may share one).
-int AcceptedSocketOf(int clientFd) {
+// SO_SNDBUF of the server end, in this process, of a new connection to 'ts' whose GET 'path' is answered with a 200,
+// or -1: the socket whose local and peer ports are the peer and local ports of the client one (other connections of the
+// process may share one). The response is awaited first: the server sets the buffer right after accepting the
+// connection, so reading it as soon as the accepted socket exists may see the system default.
+int AcceptedSendBufferSize(std::string_view path) {
+  test::ClientConnection sock(port);
+  test::sendAll(sock.fd(), std::format("GET {} HTTP/1.1\r\nhost: h\r\n\r\n", path));
+  if (!test::recvWithTimeout(sock.fd(), 2s).starts_with("HTTP/1.1 200")) {
+    return -1;
+  }
   sockaddr_in client{};
   sockaddr_in server{};
   socklen_t clientLen = sizeof(client);
   socklen_t serverLen = sizeof(server);
-  if (::getsockname(clientFd, reinterpret_cast<sockaddr*>(&client), &clientLen) != 0 ||
-      ::getpeername(clientFd, reinterpret_cast<sockaddr*>(&server), &serverLen) != 0) {
+  if (::getsockname(sock.fd(), reinterpret_cast<sockaddr*>(&client), &clientLen) != 0 ||
+      ::getpeername(sock.fd(), reinterpret_cast<sockaddr*>(&server), &serverLen) != 0) {
     return -1;
   }
-  for (int attempt = 0; attempt < 500; ++attempt) {
-    for (int fd = 0; fd < 4096; ++fd) {
-      sockaddr_in local{};
-      sockaddr_in peer{};
-      socklen_t localLen = sizeof(local);
-      socklen_t peerLen = sizeof(peer);
-      if (fd != clientFd && ::getsockname(fd, reinterpret_cast<sockaddr*>(&local), &localLen) == 0 &&
-          ::getpeername(fd, reinterpret_cast<sockaddr*>(&peer), &peerLen) == 0 && local.sin_family == AF_INET &&
-          local.sin_port == server.sin_port && peer.sin_port == client.sin_port) {
-        return fd;
-      }
+  for (int fd = 0; fd < 4096; ++fd) {
+    sockaddr_in local{};
+    sockaddr_in peer{};
+    socklen_t localLen = sizeof(local);
+    socklen_t peerLen = sizeof(peer);
+    if (fd != sock.fd() && ::getsockname(fd, reinterpret_cast<sockaddr*>(&local), &localLen) == 0 &&
+        ::getpeername(fd, reinterpret_cast<sockaddr*>(&peer), &peerLen) == 0 && local.sin_family == AF_INET &&
+        local.sin_port == server.sin_port && peer.sin_port == client.sin_port) {
+      return SendBufferSize(fd);
     }
-    std::this_thread::sleep_for(10ms);
   }
   return -1;
 }
@@ -2556,20 +2558,14 @@ TEST(HttpServerSocketOptions, SendBufferOfAcceptedConnections) {
   ASSERT_TRUE(SetSendBufferSize(probe.fd(), kSendBufferBytes));
   const int expected = SendBufferSize(probe.fd());  // as stored by the kernel (Linux doubles it)
   ASSERT_GT(expected, 0);
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/sndbuf",
+                                 [](const HttpRequestView&) { return HttpResponse("ok"); });
 
   ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) { cfg.withSocketSendBufferBytes(kSendBufferBytes); });
-  {
-    test::ClientConnection sock(ts.port());
-    const int serverFd = AcceptedSocketOf(sock.fd());
-    ASSERT_NE(serverFd, -1);
-    EXPECT_EQ(SendBufferSize(serverFd), expected);
-  }
+  EXPECT_EQ(AcceptedSendBufferSize("/sndbuf"), expected);
 
   ts.resetConfigAndPostUpdate([](HttpServerConfig&) {});
-  test::ClientConnection sock(ts.port());
-  const int serverFd = AcceptedSocketOf(sock.fd());
-  ASSERT_NE(serverFd, -1);
-  const int defaultSize = SendBufferSize(serverFd);
+  const int defaultSize = AcceptedSendBufferSize("/sndbuf");
   EXPECT_GT(defaultSize, 0);
   EXPECT_NE(defaultSize, expected);
 }
@@ -3394,8 +3390,8 @@ TEST(HttpOptionsTrace, TraceEchoWhenEnabled) {
   // Should echo request line
   ASSERT_TRUE(resp.contains("TRACE /test HTTP/"));
 
-  // Should echo headers
-  ASSERT_TRUE(resp.contains("x-test-header: value"));
+  // Should echo headers, as received
+  ASSERT_TRUE(resp.contains("X-Test-Header: value"));
 }
 
 // TRACE echoes its own request, not the requests served before it from the same input.
@@ -3413,9 +3409,204 @@ TEST(HttpOptionsTrace, TraceEchoesItsOwnPipelinedRequest) {
   ASSERT_EQ(test::countOccurrences(resp, "HTTP/1.1 200"), 3) << resp;
   const auto traceBodyPos = resp.find("\r\n\r\nTRACE /traced HTTP/1.1\r\n");
   ASSERT_NE(traceBodyPos, std::string::npos) << resp;
-  EXPECT_TRUE(resp.find("x-traced: yes\r\n\r\nHTTP/1.1 200", traceBodyPos) != std::string::npos) << resp;
+  EXPECT_TRUE(resp.find("X-Traced: yes\r\n\r\nHTTP/1.1 200", traceBodyPos) != std::string::npos) << resp;
   EXPECT_FALSE(resp.contains("GET /first")) << resp;
   EXPECT_TRUE(resp.ends_with("served")) << resp;
+}
+
+namespace {
+// From the default configuration: the limits set by the previous tests could reject the requests.
+void EnableTrace() {
+  ts.resetConfigAndPostUpdate(
+      [](HttpServerConfig& cfg) { cfg.withTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainAndTLS); });
+}
+
+// Serves a request on another connection: the bytes sent before on a connection are then read by the server.
+void ServeAnotherRequest() { ASSERT_TRUE(test::simpleGet(port, "/other").starts_with("HTTP/1.1 ")); }
+}  // namespace
+
+// The parsing of a head modifies it in place (decoded target, lower-cased names, merged values): TRACE echoes it as
+// received, without the fields likely to contain sensitive data (RFC 9110 §9.3.8).
+TEST(HttpOptionsTrace, TraceEchoesTheHeadAsReceived) {
+  EnableTrace();
+
+  auto resp = test::parseResponseOrThrow(test::sendAndCollect(port,
+                                                              "TRACE /a%20b?x=%41&y=%2F HTTP/1.1\r\n"
+                                                              "Host: Example.com\r\n"
+                                                              "Cookie: session=secret\r\n"
+                                                              "X-Mixed-Case: Value\r\n"
+                                                              "Authorization: Basic Zm9vOmJhcg==\r\n"
+                                                              "Accept: text/plain\r\n"
+                                                              "proxy-authorization: Basic eDp5\r\n"
+                                                              "Accept: text/html\r\n"
+                                                              "COOKIE: other=secret\r\n"
+                                                              "Connection: close\r\n"
+                                                              "\r\n"));
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  EXPECT_EQ(resp.body,
+            "TRACE /a%20b?x=%41&y=%2F HTTP/1.1\r\n"
+            "Host: Example.com\r\n"
+            "X-Mixed-Case: Value\r\n"
+            "Accept: text/plain\r\n"
+            "Accept: text/html\r\n"
+            "Connection: close\r\n"
+            "\r\n");
+
+  resp = test::parseResponseOrThrow(test::sendAndCollect(port, "TRACE http://Example.com/%7Eu HTTP/1.0\r\n\r\n"));
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  EXPECT_EQ(resp.body, "TRACE http://Example.com/%7Eu HTTP/1.0\r\n\r\n");
+}
+
+TEST(HttpOptionsTrace, TraceHeadReceivedInSeveralReads) {
+  EnableTrace();
+
+  test::ClientConnection cnx(port);
+  test::sendAll(cnx.fd(), "TRACE /split%2F HTTP/1.1\r\nHost: h\r\nX-Part");
+  ServeAnotherRequest();
+  test::sendAll(cnx.fd(), ": One\r\nCookie: c=1\r\nConnection: close\r\n");
+  ServeAnotherRequest();
+  test::sendAll(cnx.fd(), "\r\n");
+
+  const auto resp = test::parseResponseOrThrow(test::recvUntilClosed(cnx.fd()));
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  EXPECT_EQ(resp.body, "TRACE /split%2F HTTP/1.1\r\nHost: h\r\nX-Part: One\r\nConnection: close\r\n\r\n");
+}
+
+TEST(HttpOptionsTrace, TraceEchoesALargeHead) {
+  static constexpr std::uint32_t kMaxHeaderBytes = 64U * 1024U;
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
+    cfg.withTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainAndTLS).withMaxHeaderBytes(kMaxHeaderBytes);
+  });
+
+  std::string head = "TRACE /large HTTP/1.1\r\nHost: h\r\nConnection: close\r\n";
+  std::string echoed = head;
+  for (int fieldPos = 0; head.size() < kMaxHeaderBytes - 256; ++fieldPos) {
+    const bool cookie = fieldPos % 5 == 0;
+    const std::string line = std::format("{}: {}\r\n", cookie ? "Cookie" : std::format("X-Field-{}", fieldPos),
+                                         std::string(100, static_cast<char>('a' + (fieldPos % 26))));
+    head += line;
+    if (!cookie) {
+      echoed += line;
+    }
+  }
+  // The largest head accepted, its empty line included.
+  static constexpr std::string_view kPadLineStart = "X-Pad: ";
+  const std::string padLine =
+      std::format("{}{}\r\n", kPadLineStart,
+                  std::string(kMaxHeaderBytes - head.size() - kPadLineStart.size() - (2 * http::CRLF.size()), 'p'));
+  head += padLine;
+  head += http::CRLF;
+  echoed += padLine;
+  echoed += http::CRLF;
+  ASSERT_EQ(head.size(), kMaxHeaderBytes);
+
+  const auto resp = test::parseResponseOrThrow(test::sendAndCollect(port, head));
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  EXPECT_EQ(resp.body, echoed);
+
+  head.insert(head.size() - (2 * http::CRLF.size()), "p");
+  EXPECT_TRUE(test::sendAndCollect(port, head).starts_with("HTTP/1.1 431"));
+
+  ts.resetConfig();
+}
+
+// A head parsed in part while TRACE was disabled was already modified in place: it is not echoed once TRACE is enabled.
+TEST(HttpOptionsTrace, TraceEnabledWhileItsHeadIsReceivedIsNotEchoed) {
+  ts.resetConfig();  // TRACE disabled
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("served"); });
+
+  test::ClientConnection cnx(port);
+  test::sendAll(cnx.fd(), "TRACE /a%20b HTTP/1.1\r\nHost: h\r\n");
+  ServeAnotherRequest();
+  EnableTrace();
+  test::sendAll(cnx.fd(), "X-Last: z\r\nConnection: close\r\n\r\n");
+
+  const std::string raw = test::recvUntilClosed(cnx.fd());
+  EXPECT_TRUE(raw.starts_with("HTTP/1.1 405")) << raw;
+  EXPECT_FALSE(raw.contains("TRACE /a")) << raw;
+}
+
+// A client must not send content in a TRACE request (RFC 9110 §9.3.8).
+TEST(HttpOptionsTrace, TraceWithContentIsRejected) {
+  EnableTrace();
+
+  for (std::string_view framing : {
+           "Content-Length: 4\r\n\r\nbody",
+           "Transfer-Encoding: chunked\r\n\r\n4\r\nbody\r\n0\r\n\r\n",
+           "Transfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+       }) {
+    SCOPED_TRACE(framing);
+    const std::string raw = test::sendAndCollect(port, std::format("TRACE /c HTTP/1.1\r\nHost: h\r\n{}", framing));
+    EXPECT_TRUE(raw.starts_with("HTTP/1.1 400")) << raw;
+    EXPECT_FALSE(raw.contains("TRACE /c")) << raw;
+  }
+
+  // A Content-Length of 0 announces no content.
+  static constexpr std::string_view kNoContent =
+      "TRACE /c HTTP/1.1\r\nHost: h\r\nContent-Length: 00\r\nConnection: close\r\n\r\n";
+  const auto resp = test::parseResponseOrThrow(test::sendAndCollect(port, kNoContent));
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  EXPECT_EQ(resp.body, kNoContent);
+}
+
+// The head of a TRACE request is copied in a buffer shared by the connections: a request whose body is received after
+// the head of another TRACE request was copied must not echo it.
+TEST(HttpOptionsTrace, TraceWithContentNeverEchoesAnotherRequest) {
+  EnableTrace();
+
+  test::ClientConnection cnx(port);
+  test::sendAll(cnx.fd(), "TRACE /mine HTTP/1.1\r\nHost: h\r\nContent-Length: 4\r\n\r\n");
+  const std::string other =
+      test::sendAndCollect(port, "TRACE /other HTTP/1.1\r\nHost: h\r\nX-Other: 1\r\nConnection: close\r\n\r\n");
+  ASSERT_TRUE(other.contains("\r\n\r\nTRACE /other HTTP/1.1\r\n")) << other;
+  test::sendAll(cnx.fd(), "body");
+
+  const std::string raw = test::recvUntilClosed(cnx.fd());
+  EXPECT_TRUE(raw.starts_with("HTTP/1.1 400")) << raw;
+  EXPECT_FALSE(raw.contains("TRACE /")) << raw;
+}
+
+// The copy of the head of a TRACE request shares its buffer with the trailers of a chunked body being decompressed:
+// served in turn on a connection, neither overwrites the other.
+TEST(HttpOptionsTrace, TraceEchoBetweenCompressedChunkedBodiesWithTrailers) {
+  const auto encodings = test::SupportedEncodings();
+  if (encodings.empty()) {
+    GTEST_SKIP() << "No compression codec enabled";
+  }
+  EnableTrace();
+  ts.router().setDefault([](const HttpRequestView& req) {
+    const auto checksumIt = req.trailers().find("x-checksum");
+    return HttpResponse(
+        std::format("body={} checksum={}", req.body(), checksumIt == req.trailers().end() ? "" : checksumIt->second));
+  });
+
+  static constexpr std::string_view kTrace = "TRACE /t HTTP/1.1\r\nHost: h\r\nCookie: secret\r\nX-Traced: 1\r\n\r\n";
+  static constexpr std::string_view kEchoed = "TRACE /t HTTP/1.1\r\nHost: h\r\nX-Traced: 1\r\n\r\n";
+  for (const Encoding encoding : encodings) {
+    SCOPED_TRACE(GetEncodingStr(encoding));
+    const auto compressedRequest = [encoding](std::string_view body, std::string_view checksum,
+                                              std::string_view connection) {
+      const RawChars compressed = test::Compress(encoding, body);
+      return std::format(
+          "POST /compressed HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\nContent-Encoding: {}\r\n"
+          "Connection: {}\r\n\r\n{:x}\r\n{}\r\n0\r\nX-Checksum: {}\r\nX-Other-Trailer: {}\r\n\r\n",
+          GetEncodingStr(encoding), connection, compressed.size(), std::string_view(compressed), checksum, checksum);
+    };
+
+    test::ClientConnection cnx(port);
+    test::sendAll(cnx.fd(), compressedRequest("one", "first", "keep-alive") + std::string(kTrace) +
+                                compressedRequest("two", "second", "close"));
+    const std::string raw = test::recvUntilClosed(cnx.fd());
+
+    EXPECT_EQ(test::countOccurrences(raw, "HTTP/1.1 200"), 3) << raw;
+    const auto firstPos = raw.find("\r\n\r\nbody=one checksum=first");
+    const auto tracePos = raw.find(std::format("\r\n\r\n{}HTTP/1.1 200", kEchoed));
+    const auto secondPos = raw.find("\r\n\r\nbody=two checksum=second");
+    EXPECT_LT(firstPos, tracePos) << raw;
+    EXPECT_LT(tracePos, secondPos) << raw;
+    EXPECT_NE(secondPos, std::string::npos) << raw;
+    EXPECT_FALSE(raw.contains("secret")) << raw;
+  }
 }
 
 TEST(HttpOptionsTrace, TraceDisabledReturns405) {
