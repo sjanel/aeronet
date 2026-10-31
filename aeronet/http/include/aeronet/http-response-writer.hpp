@@ -75,8 +75,8 @@ class HttpResponseWriter {
   // Declare an explicit fixed Content-Length for the streaming response and disable chunked framing.
   // Usage & semantics:
   // - Optional. If you never call contentLength(), the writer will default to Transfer-Encoding: chunked for
-  //   non-HEAD requests (allowing indefinite / unknown-length streaming) and will synthesize a correct
-  //   Content-Length: 0 for HEAD responses.
+  //   non-HEAD requests (allowing indefinite / unknown-length streaming), and HEAD responses carry no Content-Length
+  //   (the length of the GET response is not known).
   // - Call only if you know the exact number of body bytes that will be sent (the on-the-wire size). This means:
   //     * If you rely on aeronet's automatic compression (no user provided Content-Encoding and compression
   //       is enabled), you SHOULD NOT call contentLength() because the final compressed size is not known
@@ -87,7 +87,7 @@ class HttpResponseWriter {
   // - Precondition (only if you decide to use it): call before any body data is written (i.e. before the first
   //   write()) and before headers are sent. If you never call contentLength(), chunked mode is automatically used.
   //   Calls made after write(), end(), or once headers have been flushed are ignored (a debug log is emitted) and
-  //   the response continues in chunked mode (or with an auto-synthesized length for HEAD).
+  //   the response continues in chunked mode (or without Content-Length for HEAD).
   // - Passing 0 is allowed and results in an empty fixed-length body (no chunked framing).
   // - The library does not (yet) enforce that the number of bytes written matches len; a mismatch is a protocol
   //   error and may confuse clients (too few bytes => truncated response; too many bytes => bytes interpreted
@@ -178,8 +178,8 @@ class HttpResponseWriter {
   //   protocol error at the application layer and may lead to client confusion; future versions may add debug checks.
   //
   // HEAD requests:
-  // - You should still call end(); headers (including Content-Length and any negotiated encoding) are sent, but the
-  //   body / chunks are suppressed.
+  // - You should still call end(); the headers of the GET response (declared Content-Length if any, Content-Encoding
+  //   if the written bytes reach the compression threshold) are sent, but the body is neither compressed nor sent.
   //
   // Ordering & network I/O:
   // - After end() returns, all response bytes have been enqueued to the server's outgoing queue; they may still be

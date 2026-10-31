@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstring>
 #include <exception>
+#include <format>
 #include <iterator>
 #include <optional>
 #include <span>
@@ -634,7 +635,7 @@ struct ManualH2cClient {
   }
 
   test::ClientConnection cnx;
-  Http2Connection client{Http2Config{}, false};
+  Http2Connection client{Http2Config(), false};
   RecordingEventSink sink{client};
   // Make sure that the server processed the frames sent so far: it answers a PING after them.
   void roundTrip() {
@@ -722,7 +723,8 @@ TEST(Http2Core, PingKeepAliveClosesTheConnectionOfADeadPeer) {
                               .withHttp2(Http2Config{}
                                              .withEnableH2c(true)
                                              .withPingInterval(std::chrono::milliseconds{50})
-                                             .withPingTimeout(std::chrono::milliseconds{100}))
+                                             // Large enough to survive the stalls of a loaded CI runner.
+                                             .withPingTimeout(std::chrono::milliseconds{500}))
                               .withPollInterval(std::chrono::milliseconds{5}));
   server.router().setPath(http::Method::POST, "/upload",
                           [](const HttpRequestView& req) { return req.makeResponse("done"); });
@@ -731,9 +733,10 @@ TEST(Http2Core, PingKeepAliveClosesTheConnectionOfADeadPeer) {
   h2.receive(std::chrono::milliseconds{1000});
   h2.sendRequest(1, http::Method::POST, "/upload", false);
 
-  // The client acknowledges the PING frames: the connection stays open.
-  const auto answeringEnd = std::chrono::steady_clock::now() + std::chrono::milliseconds{400};
-  while (std::chrono::steady_clock::now() < answeringEnd) {
+  // The client acknowledges the PING frames: the connection stays open. The server only sends the next PING once the
+  // previous one is acknowledged.
+  const auto answeringEnd = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+  while (h2.nbPings < 2 && std::chrono::steady_clock::now() < answeringEnd) {
     h2.receive(std::chrono::milliseconds{10});
   }
   EXPECT_GE(h2.nbPings, 2);
@@ -2585,6 +2588,60 @@ TEST(Http2StreamingCompression, IdentityEncodingPreventsCompression) {
   EXPECT_EQ(response.statusCode, 200);
   // With identity encoding, body should be uncompressed
   EXPECT_EQ(response.body, std::string(128, 'B'));
+}
+
+// A HEAD response carries the headers of the GET one (RFC 9110 §9.3.2): its Content-Length is the length of the
+// compressed body (RFC 9110 §8.6), and there is none when the GET one is streamed.
+TEST(Http2Compression, HeadCarriesTheHeadersOfTheCompressedGet) {
+  static constexpr auto kGetHead = http::Method::GET | http::Method::HEAD;
+  const std::string payload(4000, 'a');
+  auto router = ts.http().router();
+  // Compressed when the response is finalized: its content-length may have leading zeroes.
+  router.setPath(kGetHead, "/head-gz/plain", [payload](const HttpRequestView&) { return HttpResponse(payload); });
+  // Compressed while the body is set (direct compression).
+  router.setPath(kGetHead, "/head-gz/direct", [payload](const HttpRequestView& req) {
+    auto resp = req.makeResponse();
+    resp.body(std::string_view(payload));
+    return resp;
+  });
+  router.setPath(kGetHead, "/head-gz/streamed", [payload](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.writeBody(payload);
+    writer.end();
+  });
+
+  const std::vector<std::pair<std::string, std::string>> acceptGzip{{"accept-encoding", "gzip"}};
+  for (bool useLeadingZeroes : {true, false}) {
+    ts.server.postConfigUpdate([useLeadingZeroes](HttpServerConfig& cfg) {
+      CompressionConfig compression;
+      compression.minBytes = 64;
+      compression.preferredFormats = {Encoding::gzip};
+      compression.useLeadingZeroesInContentLength = useLeadingZeroes;
+      cfg.withCompression(compression);
+    });
+    test::TlsHttp2Client client(ts.port());
+    ASSERT_TRUE(client.isConnected());
+    for (std::string_view target : {"/head-gz/plain", "/head-gz/direct", "/head-gz/streamed"}) {
+      SCOPED_TRACE(std::format("{} leading zeroes {}", target, useLeadingZeroes));
+      const auto get = client.request("GET", target, acceptGzip);
+      const auto head = client.request("HEAD", target, acceptGzip);
+      EXPECT_EQ(get.statusCode, 200);
+      EXPECT_EQ(head.statusCode, 200);
+      EXPECT_EQ(get.header("content-encoding"), "gzip");
+      EXPECT_LT(get.body.size(), payload.size());
+      for (std::string_view name : {"content-encoding", "vary", "content-type", "content-length"}) {
+        EXPECT_EQ(head.header(name), get.header(name)) << name;
+      }
+      const std::string_view contentLength = head.header("content-length");
+      if (target == "/head-gz/streamed") {
+        EXPECT_TRUE(contentLength.empty());
+      } else {
+        // Compared as a number, the value may have leading zeroes.
+        EXPECT_EQ(std::stoull(std::string(contentLength)), get.body.size());
+        EXPECT_EQ(contentLength.starts_with('0'), useLeadingZeroes && target == "/head-gz/plain") << contentLength;
+      }
+      EXPECT_TRUE(head.body.empty());
+    }
+  }
 }
 #endif  // AERONET_ENABLE_ZLIB
 

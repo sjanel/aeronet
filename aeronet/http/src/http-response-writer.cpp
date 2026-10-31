@@ -210,6 +210,10 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
   if (_state == State::Failed) {
     return false;
   }
+  if (_noContent) {
+    // The decision to compress, made above, gives the headers of the GET response: the body itself is not sent.
+    return true;
+  }
 
   if (_activeEncoderCtx != nullptr) {
     assert(_encoding != Encoding::none);
@@ -229,7 +233,7 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
     data = _compressedBuffer;
   }
 
-  if (!_noContent && !_transport->emitData(data)) {
+  if (!_transport->emitData(data)) {
     _state = State::Failed;
     log::error("Streaming: failed emitting data {} size={}", _transport->logId(), data.size());
     return false;
@@ -285,7 +289,7 @@ void HttpResponseWriter::end() {
     return;
   }
 
-  if (_activeEncoderCtx != nullptr) {
+  if (_activeEncoderCtx != nullptr && !_noContent) {
     const std::size_t endChunkSize = _activeEncoderCtx->endChunkSize();
     // encoders may need several calls to end() to flush all remaining data. We loop until they indicate completion.
     _compressedBuffer.clear();
@@ -302,7 +306,7 @@ void HttpResponseWriter::end() {
       }
       _compressedBuffer.addSize(written);
     }
-    if (!_noContent && !_compressedBuffer.empty() && !_transport->emitData(_compressedBuffer)) {
+    if (!_compressedBuffer.empty() && !_transport->emitData(_compressedBuffer)) {
       _state = State::Failed;
       return;
     }

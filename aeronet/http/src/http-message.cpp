@@ -244,9 +244,8 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
   const bool hadDirectCompression = _opts.isAutomaticDirectCompression();
   // We do NOT use direct compression for captured bodies - they will be compressed at finalization if needed.
-  // We also do not activate direct compression for HEAD responses to avoid extra CPU work (see
-  // docs/guides/compression.md). Note that this behavior is not strictly respecting RFC 9110 in this aspect. This could
-  // be configurable in the future.
+  // A HEAD message stores no body, so there is nothing to compress: a response to a HEAD request is only made one when
+  // no content coding was negotiated (see HttpRequestView::makeResponseOptions()).
   const bool tryCompression = setInlineBody && (!hasContentEncoding() || hadDirectCompression) &&
                               _opts.directCompressionPossible(newBodySize, contentTypeValue);
   const bool addEncodingHeaders = tryCompression && !hasContentEncoding();
@@ -1219,6 +1218,11 @@ void HttpMessage::finalizeForHttp1(http::Version version, Options opts, const Co
     // A direct compression ended with the first trailer (see trailerAddLineImpl): its body is complete.
     _opts.resetAutomaticDirectCompression();
   }
+  if (opts.isHeadMethod()) {
+    // The body of a HEAD response is dropped below, but its Content-Length is the length of the complete compressed
+    // body of a direct compression.
+    finalizeHeadersAndBody();
+  }
   std::size_t bodySz = bodyLength();
 
   const bool isClose = opts.isClose();
@@ -1404,10 +1408,12 @@ void HttpMessage::finalizeForHttp1(http::Version version, Options opts, const Co
 
       // Calculate size difference between Content-Length header and Transfer-Encoding: chunked header
       // Content-Length: N -> Transfer-Encoding: chunked
-      // Old header size: CRLF + "content-length" + ": " + nchars(bodySz)
+      // Old header size: CRLF + "content-length" + ": " + value
       // New header size: CRLF + "transfer-encoding" + ": " + "chunked"
-      const auto nCharsBodyLen = nchars(bodySz);
-      int64_t headerSizeDiff = TransferEncodingHeaderSizeDiff(nCharsBodyLen);
+      // The value may be longer than nchars(bodySz): the compression of the body pads it with leading zeros.
+      const auto contentLengthValueLen =
+          static_cast<std::uint8_t>(getLastHeaderValueEndPtr() - getLastHeaderValuePtr());
+      int64_t headerSizeDiff = TransferEncodingHeaderSizeDiff(contentLengthValueLen);
 
       if (addTrailerHeader) {
         // We need to add the Trailer header as well
