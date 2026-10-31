@@ -44,6 +44,12 @@ Header values are trimmed of their leading and trailing spaces and tabs. Besides
 
 The header values aeronet sends are stricter: visible ASCII characters, spaces and tabs only, as RFC 9110 recommends for new fields. Copying a received value with other bytes into a response header throws `std::invalid_argument`, answered `500` when the handler does not catch it. Encode such a value first, for instance with the notation of RFC 8187 for `content-disposition`: `attachment; filename*=UTF-8''r%C3%A9sum%C3%A9.pdf`.
 
+### Line endings
+
+The request line and the header lines end with CRLF. RFC 9112 §2.2 lets a server accept a bare LF as line terminator, which aeronet does not: a line left without CRLF that holds a bare LF can never be completed, and is answered `400 Bad Request` as soon as received, instead of waiting for a timeout (`headerReadTimeout`, then `keepAliveTimeout`). The same holds for the lines of a chunked body (see [Chunked bodies and trailers](#chunked-bodies-and-trailers)) and for `TRACE` requests. A CR whose LF is received in the next read is waited for. A request head received at once is not scanned any further for this: the check only runs when a line is incomplete.
+
+Tests: `BareLf*` and `CrLfSplitBetweenReadsIsNotABareLf` in [http-parser_test.cpp](../../aeronet/server/test/http-parser_test.cpp), `BareLfIn*` in [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp), `HeadWithABareLfDoesNotWait` in [trace-echo_test.cpp](../../aeronet/server/test/trace-echo_test.cpp), `TraceWithBareLfLineEndingsIsRejectedWithoutWaiting` in [http-core_test.cpp](../../tests/http-core_test.cpp).
+
 ### Query parameters
 
 The query string is decoded once: `%XX` escapes are decoded and `+` becomes a space, in keys and values. A parameter without `=` has an empty value. A malformed escape is kept literally rather than rejected.
@@ -128,7 +134,7 @@ Routes can lower the size limits, and set a deadline for the whole request: see 
 
 HTTP/1.1 clients may send a body without knowing its size, with `Transfer-Encoding: chunked`. The server decodes it (RFC 9112 §7.1) before the handler sees it:
 
-- Chunk sizes are strict hexadecimal numbers. Empty sizes, prefixes such as `0x`, `+`, or `-`, whitespace, sizes overflowing 64 bits, and bare CR or LF characters are rejected with `400 Bad Request`, and every framing error closes the connection, so that the following bytes are never parsed as another request.
+- Chunk sizes are strict hexadecimal numbers. Empty sizes, prefixes such as `0x`, `+`, or `-`, whitespace, sizes overflowing 64 bits, and bare CR or LF characters are rejected with `400 Bad Request` (a chunk-size line, the line ending the data of a chunk or the body, or a trailer line ending with a bare LF is answered as soon as received, not once a timeout expires), and every framing error closes the connection, so that the following bytes are never parsed as another request.
 - Chunk extensions (`4;name=value`) are validated and ignored. A chunk-size line (extensions and CRLF included) longer than `maxHeaderBytes` is rejected with `400`, whether or not its end was received: a line without end is not buffered further.
 - The decoded body counts toward `maxBodyBytes` (`413` beyond it, as soon as a chunk announces the excess, without waiting for its data), and the trailer section toward `maxHeaderBytes` (`431`, whether or not the end of its last line was received).
 - A body received in several reads is decoded once: each read decodes the chunks received since the previous one, so the time spent is linear in the size of the body.

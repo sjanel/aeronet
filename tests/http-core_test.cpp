@@ -3667,6 +3667,29 @@ TEST(HttpOptionsTrace, TraceEchoesALargeHead) {
   ts.resetConfig();
 }
 
+// The head of a TRACE request is copied once complete: one using bare LF line endings is rejected as soon as it is
+// received, not waited for.
+TEST(HttpOptionsTrace, TraceWithBareLfLineEndingsIsRejectedWithoutWaiting) {
+  ts.resetConfigAndPostUpdate(
+      [](HttpServerConfig& cfg) { cfg.withTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainAndTLS); });
+  for (const std::string_view raw : {"TRACE /bare HTTP/1.1\nHost: h\n\n", "TRACE /bare HTTP/1.1\r\nHost: h\n\n",
+                                     "TRACE /bare HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\n"}) {
+    SCOPED_TRACE(raw);
+    test::ClientConnection cnx(port);
+    test::sendAll(cnx.fd(), raw);
+    const std::string resp = test::recvUntilClosed(cnx.fd(), 2s);
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
+  }
+
+  // The line terminators of a TRACE request are still echoed as received.
+  static constexpr std::string_view kRequest = "TRACE /e HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n";
+  const auto resp = test::parseResponseOrThrow(test::sendAndCollect(port, kRequest));
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  EXPECT_EQ(resp.body, kRequest);
+
+  ts.resetConfig();
+}
+
 // A head parsed in part while TRACE was disabled was already modified in place: it is not echoed once TRACE is enabled.
 TEST(HttpOptionsTrace, TraceEnabledWhileItsHeadIsReceivedIsNotEchoed) {
   ts.resetConfig();  // TRACE disabled
