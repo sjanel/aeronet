@@ -38,6 +38,12 @@ When a header appears several times, the server combines the occurrences while p
 
 Rejecting duplicate `content-length` and `host` closes classic request smuggling vectors, where two intermediaries pick different occurrences. An empty occurrence does not add a separator. To reject, rather than merge, duplicates of unknown fields that your application treats as singletons, set `HttpServerConfig::mergeUnknownRequestHeaders` to `false`.
 
+### Header values
+
+Header values are trimmed of their leading and trailing spaces and tabs. Besides visible ASCII characters, spaces and tabs, they may contain the bytes `0x80` to `0xFF` (`obs-text`, RFC 9110 §5.5): UTF-8 or ISO-8859-1 text, such as a raw UTF-8 file name in `content-disposition`. The server does not decode them: `headerValue()` returns the bytes as they were received. Any other control character (CR, LF, NUL, DEL...) makes the request a `400 Bad Request`. The same rules apply to trailers and to chunk extensions. Over HTTP/2, only NUL, CR, LF and leading or trailing whitespace are forbidden (RFC 9113 §8.2.1).
+
+The header values aeronet sends are stricter: visible ASCII characters, spaces and tabs only, as RFC 9110 recommends for new fields. Copying a received value with other bytes into a response header throws `std::invalid_argument`, answered `500` when the handler does not catch it. Encode such a value first, for instance with the notation of RFC 8187 for `content-disposition`: `attachment; filename*=UTF-8''r%C3%A9sum%C3%A9.pdf`.
+
 ### Query parameters
 
 The query string is decoded once: `%XX` escapes are decoded and `+` becomes a space, in keys and values. A parameter without `=` has an empty value. A malformed escape is kept literally rather than rejected.
@@ -186,6 +192,7 @@ A client that sends `Expect: 100-continue` waits for the server's `100 Continue`
 ## Tests
 
 - Request parsing, header merging, and query decoding: [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp) and [http-parser_test.cpp](../../aeronet/server/test/http-parser_test.cpp).
+- Header value validation, received (`obs-text` allowed) and sent: [http-header-is-valid_test.cpp](../../aeronet/objects/test/http-header-is-valid_test.cpp), and end to end, with the HTTP Garden cases of bytes above `0x7F` kept as is: [tests/http-errors_test.cpp](../../tests/http-errors_test.cpp).
 - Chunked bodies and trailers end to end: [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
 - Chunked bodies received in several reads (byte by byte, large, compressed, async handler), and the limits of their lines: [http-parser_test.cpp](../../aeronet/server/test/http-parser_test.cpp), [http-request-decompression_test.cpp](../../tests/http-request-decompression_test.cpp) and [http-async_test.cpp](../../tests/http-async_test.cpp). The upload throughput is measured by `ChunkedUpload` in [http1-pipeline_bench.cpp](../../benchmarks/internal/http1-pipeline_bench.cpp).
 - Multipart parsing: [multipart-form-data_test.cpp](../../aeronet/server/test/multipart-form-data_test.cpp).

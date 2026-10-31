@@ -3726,6 +3726,34 @@ TEST(HttpCorsDetailed, ActualRequestWithCredentialsEmitsCredentials) {
   EXPECT_EQ(credIt->second, "true");
 }
 
+// A received Origin may contain obs-text, which cannot be mirrored in the response: it is denied, and the server keeps
+// serving.
+TEST(HttpCorsDetailed, AnyOriginWithCredentialsDeniesObsTextOrigin) {
+  CorsPolicy policy;
+  policy.allowAnyOrigin().allowCredentials(true);
+  RouterConfig routerCfg;
+  routerCfg.withDefaultCorsPolicy(std::move(policy));
+
+  ts.router() = Router{routerCfg};
+  ts.router().setPath(http::Method::GET, "/data", [](const HttpRequestView&) { return HttpResponse("ok"); });
+
+  test::RequestOptions opt;
+  opt.method = "GET";
+  opt.target = "/data";
+  opt.headers = {{"Origin", "https://caf\xC3\xA9.example"}};
+
+  auto parsed = test::parseResponseOrThrow(test::requestOrThrow(ts.port(), opt));
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeForbidden);
+  EXPECT_FALSE(parsed.headers.contains(http::AccessControlAllowOrigin.get()));
+
+  opt.headers = {{"Origin", "https://cafe.example"}};
+  parsed = test::parseResponseOrThrow(test::requestOrThrow(ts.port(), opt));
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
+  const auto originIt = parsed.headers.find(http::AccessControlAllowOrigin.get());
+  ASSERT_NE(originIt, parsed.headers.end());
+  EXPECT_EQ(originIt->second, "https://cafe.example");
+}
+
 TEST(HttpCorsDetailed, PreflightExposeHeadersAndMaxAge) {
   CorsPolicy policy = MakePolicy();
   policy.exposeHeader("X-My-Header").maxAge(std::chrono::seconds{600});

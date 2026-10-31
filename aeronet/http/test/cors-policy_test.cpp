@@ -343,6 +343,41 @@ TEST_F(CorsPolicyTest, WildcardOriginWithCredentialsMirrorsOrigin) {
   EXPECT_EQ(response.headerValueOrEmpty(http::AccessControlAllowCredentials), "true");
 }
 
+// A received Origin may contain obs-text (RFC 9110 §5.5), unlike a serialized origin: it cannot be mirrored, as aeronet
+// does not send obs-text, so it is denied with credentials instead of making the policy throw.
+TEST_F(CorsPolicyTest, WildcardOriginWithCredentialsDeniesObsTextOrigin) {
+  policy.allowAnyOrigin().allowCredentials(true);
+
+  ASSERT_EQ(parse(BuildRawHttp11(http::GET, "/cred", "Origin: https://caf\xC3\xA9.example\r\n")), http::StatusCodeOK);
+
+  EXPECT_EQ(policy.applyToResponse(request, response), CorsPolicy::ApplyStatus::OriginDenied);
+  EXPECT_EQ(response.status(), http::StatusCodeForbidden);
+  EXPECT_FALSE(response.headerValue(http::AccessControlAllowOrigin));
+}
+
+TEST_F(CorsPolicyTest, PreflightWildcardOriginWithCredentialsDeniesObsTextOrigin) {
+  policy.allowAnyOrigin().allowCredentials(true);
+
+  ASSERT_EQ(parse(BuildRawHttp11(http::OPTIONS, "/cred",
+                                 "Origin: https://caf\xC3\xA9.example\r\n"
+                                 "Access-Control-Request-Method: GET\r\n")),
+            http::StatusCodeOK);
+
+  const auto result = policy.handlePreflight(request);
+  EXPECT_EQ(result.status, CorsPolicy::PreflightResult::Status::OriginDenied);
+  EXPECT_TRUE(result.response.empty());
+}
+
+// Without credentials, the origin is not mirrored: any origin is answered '*'.
+TEST_F(CorsPolicyTest, WildcardOriginWithoutCredentialsAllowsObsTextOrigin) {
+  policy.allowAnyOrigin();
+
+  ASSERT_EQ(parse(BuildRawHttp11(http::GET, "/res", "Origin: https://caf\xC3\xA9.example\r\n")), http::StatusCodeOK);
+
+  EXPECT_EQ(policy.applyToResponse(request, response), CorsPolicy::ApplyStatus::Applied);
+  EXPECT_EQ(response.headerValueOrEmpty(http::AccessControlAllowOrigin), "*");
+}
+
 TEST_F(CorsPolicyTest, PreflightPrivateNetworkHeaderEmitted) {
   policy.allowOrigin("https://pnet.example")
       .allowPrivateNetwork(true)
