@@ -95,6 +95,25 @@ void CloseIfBodyPending(ConnectionState& state, bool bodyReady) {
   }
 }
 
+constexpr std::size_t kWaitForRequestLine = static_cast<std::size_t>(-1);
+
+// RFC 9112 §2.2: a server SHOULD ignore at least one empty line (CRLF) received before a request line - some clients
+// send one after the body of a POST request. Returns the size of the empty lines starting the input, once followed by a
+// byte that cannot start another one, or kWaitForRequestLine. Until then, they stay in the input buffer like the start
+// of a request head, bounded by maxHeaderBytes: a client sending only empty lines cannot keep its connection forever.
+// Out of line: rare, its loop would otherwise be inlined in the loop serving the requests.
+AERONET_NOINLINE std::size_t LeadingEmptyLinesSize(std::string_view input) noexcept {
+  std::string_view rest = input;
+  while (rest.starts_with(http::CRLF)) {
+    rest.remove_prefix(http::CRLF.size());
+  }
+  // A CR alone may start another empty line.
+  if (rest.empty() || rest == "\r") {
+    return kWaitForRequestLine;
+  }
+  return input.size() - rest.size();
+}
+
 // Whether the request announces a body: chunked, or with a Content-Length other than 0.
 bool AnnouncesBody(const HttpRequestView& request) {
   return request.headerValue(http::TransferEncoding).has_value() ||
@@ -148,13 +167,24 @@ bool Http1Pipeline::serveRequests(ConnectionIt cnxIt) {
   // The responses are batched until the last request of the input (see ConnectionIo::batchOutputOf()).
   ctx.io.batchOutputOf(&state);
   do {
-    const std::span<char> input = consumedInput.remaining();
+    std::span<char> input = consumedInput.remaining();
     // Do not parse the next pipelined request while a file is being sent, or while output waits for the socket: the
     // previous response hasn't been fully written yet, and the responses to the requests pipelined behind it would only
     // accumulate in the connection (the output batched by this call, not written yet, does not wait for the socket).
     if (state.isSendingFile() || (state.waitingWritable && state.hasPendingOutput())) {
       state.inputBlockedByOutput = !input.empty();
       break;
+    }
+    if (!input.empty() && input.front() == '\r') [[unlikely]] {
+      // A head received in part, or waiting for its body, starts with its method: these are empty lines before a
+      // request line, consumed like a request served before it.
+      assert(request._headParseState == HttpRequestView::HeadParseState::None);
+      const std::size_t emptyLinesSize = LeadingEmptyLinesSize(std::string_view(input.data(), input.size()));
+      if (emptyLinesSize == kWaitForRequestLine) {
+        break;
+      }
+      consumedInput.nbBytes += emptyLinesSize;
+      input = input.subspan(emptyLinesSize);
     }
     // If we don't have enough bytes for the minimum request line, wait for more data
     if (input.size() < http::kHttpReqLineMinLen) {

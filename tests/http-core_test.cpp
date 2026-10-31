@@ -1409,6 +1409,100 @@ TEST(HttpMethodParsing, MethodTokensAreCaseSensitive) {
   }
 }
 
+namespace {
+// Answers each request with its description.
+void DescribeServedRequests(test::TestServer& server) {
+  server.router().setDefault([](const HttpRequestView& req) {
+    return HttpResponse(std::format("{} {} [{}]", http::MethodToStr(req.method()), req.path(), req.body()));
+  });
+}
+
+// Serves a request on another connection: the bytes sent before on a connection are then read by the server.
+void ServeRequestOnAnotherConnection(test::TestServer& server) {
+  ASSERT_TRUE(test::simpleGet(server.port(), "/other").starts_with("HTTP/1.1 200"));
+}
+}  // namespace
+
+// RFC 9112 §2.2: the empty lines received before a request line are ignored, before the first request of a connection
+// as well as between pipelined requests (some clients send one after the body of a POST request).
+TEST(HttpEmptyLinesBeforeRequestLine, AreIgnored) {
+  ts.resetConfig();
+  DescribeServedRequests(ts);
+
+  test::ClientConnection cnx(port);
+  test::sendAll(cnx.fd(),
+                "\r\nPOST /first HTTP/1.1\r\nHost: h\r\nContent-Length: 3\r\n\r\nabc\r\n"
+                "GET /second HTTP/1.1\r\nHost: h\r\n\r\n\r\n\r\n\r\n"
+                "GET /last HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n");
+  const std::string resp = test::recvUntilClosed(cnx.fd());
+  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 200"), 3) << resp;
+  EXPECT_TRUE(resp.contains("POST /first [abc]")) << resp;
+  EXPECT_TRUE(resp.contains("GET /second []")) << resp;
+  EXPECT_TRUE(resp.ends_with("GET /last []")) << resp;
+}
+
+// The empty lines wait for the request line following them, here received a byte at a time, then the request is served
+// as if they had not been received: its head and its body are received in several reads.
+TEST(HttpEmptyLinesBeforeRequestLine, ReceivedApartFromTheRequest) {
+  ts.resetConfig();
+  DescribeServedRequests(ts);
+
+  test::ClientConnection cnx(port);
+  for (std::string_view part : {
+           "POST /first HTTP/1.1\r\nHost: h\r\nContent-Length: 3\r\n\r\nabc\r",
+           "\n",
+           "\r",
+           "\n",
+           "POST /second HTTP/1.1\r\nHo",
+           "st: h\r\nContent-Length: 6\r\nConnection: close\r\n\r\nabc",
+       }) {
+    test::sendAll(cnx.fd(), part);
+    ServeRequestOnAnotherConnection(ts);
+  }
+  test::sendAll(cnx.fd(), "def");
+  const std::string resp = test::recvUntilClosed(cnx.fd());
+  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 200"), 2) << resp;
+  EXPECT_TRUE(resp.contains("POST /first [abc]")) << resp;
+  EXPECT_TRUE(resp.ends_with("POST /second [abcdef]")) << resp;
+}
+
+// A CR is the start of an empty line only when followed by a LF: a bare CR is rejected, after empty lines or not.
+TEST(HttpEmptyLinesBeforeRequestLine, BareCarriageReturnIsRejected) {
+  ts.resetConfig();
+  DescribeServedRequests(ts);
+
+  for (std::string_view request : {"\rGET / HTTP/1.1\r\nHost: h\r\n\r\n", "\r\n\rGET / HTTP/1.1\r\nHost: h\r\n\r\n"}) {
+    const std::string resp = test::sendAndCollect(port, request);
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
+    EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp;
+  }
+}
+
+// Until a request line follows them, the empty lines count toward maxHeaderBytes like a request head being received: a
+// client sending only empty lines cannot keep its connection open forever.
+TEST(HttpEmptyLinesBeforeRequestLine, WaitingOnesAreLimitedByMaxHeaderBytes) {
+  static constexpr std::uint32_t kMaxHeaderBytes = 256;
+  test::TestServer localTs(HttpServerConfig{}.withMaxHeaderBytes(kMaxHeaderBytes));
+  DescribeServedRequests(localTs);
+
+  std::string emptyLines;
+  while (emptyLines.size() + http::CRLF.size() <= kMaxHeaderBytes) {
+    emptyLines.append(http::CRLF);
+  }
+  {
+    test::ClientConnection cnx(localTs.port());
+    test::sendAll(cnx.fd(), emptyLines);
+    ServeRequestOnAnotherConnection(localTs);
+    test::sendAll(cnx.fd(), "GET /after HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n");
+    const std::string resp = test::recvUntilClosed(cnx.fd());
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+    EXPECT_TRUE(resp.ends_with("GET /after []")) << resp;
+  }
+  emptyLines.append(http::CRLF);
+  const std::string resp = test::sendAndCollect(localTs.port(), emptyLines);
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 431")) << resp;
+}
+
 #ifdef AERONET_POSIX
 TEST(HttpServerTelemetry, DogStatsDClientSendsMetricsWithServiceName) {
   test::UnixDogstatsdSink sink;
@@ -3470,6 +3564,16 @@ TEST(HttpOptionsTrace, TraceHeadReceivedInSeveralReads) {
   const auto resp = test::parseResponseOrThrow(test::recvUntilClosed(cnx.fd()));
   EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
   EXPECT_EQ(resp.body, "TRACE /split%2F HTTP/1.1\r\nHost: h\r\nX-Part: One\r\nConnection: close\r\n\r\n");
+}
+
+// The empty lines received before a request line are not part of the request (RFC 9112 §2.2): they are not echoed.
+TEST(HttpOptionsTrace, TraceEchoesNotTheEmptyLinesBeforeIt) {
+  EnableTrace();
+
+  static constexpr std::string_view kRequest = "TRACE /e HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n";
+  const auto resp = test::parseResponseOrThrow(test::sendAndCollect(port, std::format("\r\n\r\n{}", kRequest)));
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  EXPECT_EQ(resp.body, kRequest);
 }
 
 TEST(HttpOptionsTrace, TraceEchoesALargeHead) {
