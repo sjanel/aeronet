@@ -480,6 +480,18 @@ TEST(HttpServerConfigTest, MaxAcceptBatchSizeShouldNotBeZero) {
   EXPECT_THROW(config.validate(), std::invalid_argument);  // 0 is not a valid value for maxAcceptBatchSize
 }
 
+TEST(HttpServerConfigTest, SocketSendBufferBytesShouldFitInAnInt) {
+  HttpServerConfig config;
+  EXPECT_EQ(config.socketSendBufferBytes, 0U);  // system default
+  config.withSocketSendBufferBytes(64U << 10U);
+  EXPECT_EQ(config.socketSendBufferBytes, 64U << 10U);
+  EXPECT_NO_THROW(config.validate());
+  config.withSocketSendBufferBytes(static_cast<std::uint32_t>(std::numeric_limits<int>::max()));
+  EXPECT_NO_THROW(config.validate());
+  config.withSocketSendBufferBytes(static_cast<std::uint32_t>(std::numeric_limits<int>::max()) + 1U);
+  EXPECT_THROW(config.validate(), std::invalid_argument);  // SO_SNDBUF takes an int
+}
+
 TEST(HttpServerConfigTest, ZeroCopyMinBytesShouldNotBeZero) {
   HttpServerConfig config;
   config.zerocopyMinBytes = 0;

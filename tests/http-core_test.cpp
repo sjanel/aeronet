@@ -66,6 +66,7 @@
 #include "aeronet/sigpipe-test-helpers.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/socket-ops.hpp"
+#include "aeronet/socket.hpp"
 #include "aeronet/static-file-handler.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
 #include "aeronet/telemetry-config.hpp"
@@ -1828,8 +1829,13 @@ namespace {
 // Receive buffer sizes for slow reader tests. The minimal one (raised to the kernel minimum), set before connecting,
 // keeps the advertised window small: a few KiB of response then stay in the server send queue, still referencing the
 // server buffers. Switching to the large one afterwards quickly delivers the rest.
+// Some kernels (Linux 7.0) then deliver MSG_ZEROCOPY sends by a few hundred bytes per delayed ACK or retransmission
+// timeout, even once the buffer is enlarged. The tests queueing large zerocopy responses rather fix the server send
+// buffer (kSmallSendBufferBytes), the client receiving with the large buffer from the start: the server socket fills
+// all the same, the kernel automatic tuning no longer growing its send buffer to the size of the response.
 constexpr int kMinimalReceiveBufferSize = 1;
 constexpr int kLargeReceiveBufferSize = 65536;
+constexpr std::uint32_t kSmallSendBufferBytes = 64U << 10U;
 
 // Expects the server to reset the connection of a client reading nothing from it (reading would make its zerocopy sends
 // progress): waits for the reset without reading, then checks that only a part of the payload was received before it.
@@ -1913,12 +1919,14 @@ TEST(ZerocopyMode, HalfClosingClientReceivesWholeResponse) {
   ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
     cfg.withZerocopyMode(ZerocopyMode::Enabled);
     cfg.withZerocopyMinBytes(1U);
+    cfg.withSocketSendBufferBytes(kSmallSendBufferBytes);
   });
-  const std::string payload(8UL << 10U, 'h');
+  // Several times the server send buffer and the client receive buffer together.
+  const std::string payload(1UL << 20U, 'h');
   ts.resetRouterAndGet().setPath(http::Method::GET, "/half-close",
                                  [&payload](const HttpRequestView& req) { return req.makeResponse(payload); });
 
-  test::ClientConnection sock(ts.port(), 500ms, kMinimalReceiveBufferSize);
+  test::ClientConnection sock(ts.port(), 500ms, kLargeReceiveBufferSize);
   const NativeHandle fd = sock.fd();
   test::sendAll(fd, "GET /half-close HTTP/1.1\r\nhost: h\r\n\r\n");
   // Half-close once the response started, while most of it is still in the server send queue.
@@ -1930,8 +1938,6 @@ TEST(ZerocopyMode, HalfClosingClientReceivesWholeResponse) {
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
   ASSERT_TRUE(ShutdownWrite(fd));
   std::this_thread::sleep_for(std::chrono::milliseconds{50});  // let the server observe the EOF first
-  // Then open the receive window, so that the rest of the response is quickly delivered.
-  test::SetReceiveBufferSize(fd, kLargeReceiveBufferSize);
   resp += test::recvUntilClosed(fd);
   EXPECT_TRUE(resp.ends_with(payload)) << "received " << resp.size() << " bytes";
 }
@@ -2416,6 +2422,7 @@ TEST(HttpBackpressure, ZerocopyBufferedStreamingResponseIsIntact) {
   ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
     cfg.withZerocopyMode(ZerocopyMode::Enabled);
     cfg.withZerocopyMinBytes(1U);
+    cfg.withSocketSendBufferBytes(kSmallSendBufferBytes);
   });
   static constexpr int kNbChunks = 16;
   static constexpr std::size_t kChunkSize = 64UL << 10U;
@@ -2433,11 +2440,10 @@ TEST(HttpBackpressure, ZerocopyBufferedStreamingResponseIsIntact) {
         writer.end();
       });
 
-  test::ClientConnection sock(ts.port(), 500ms, kMinimalReceiveBufferSize);
+  test::ClientConnection sock(ts.port(), 500ms, kLargeReceiveBufferSize);
   const NativeHandle fd = sock.fd();
   test::sendAll(fd, "GET /zerocopy-stream HTTP/1.1\r\nhost: h\r\nconnection: close\r\n\r\n");
   std::this_thread::sleep_for(std::chrono::milliseconds{100});  // the chunks now accumulate behind the first one
-  test::SetReceiveBufferSize(fd, kLargeReceiveBufferSize);
 
   const std::string resp = test::recvUntilClosed(fd, std::chrono::seconds{5});
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp.substr(0, 64);
@@ -2481,8 +2487,9 @@ TEST(HttpBackpressure, PipelinedFileResponsesBehindBufferedResponseAreIntact) {
     ts.resetConfigAndPostUpdate([mode](HttpServerConfig& cfg) {
       cfg.withZerocopyMode(mode);
       cfg.withZerocopyMinBytes(1U);
+      cfg.withSocketSendBufferBytes(kSmallSendBufferBytes);
     });
-    test::ClientConnection sock(ts.port(), 500ms, kMinimalReceiveBufferSize);
+    test::ClientConnection sock(ts.port(), 500ms, kLargeReceiveBufferSize);
     const NativeHandle fd = sock.fd();
     test::sendAll(fd,
                   "GET /in-memory HTTP/1.1\r\nhost: h\r\n\r\n"
@@ -2491,7 +2498,6 @@ TEST(HttpBackpressure, PipelinedFileResponsesBehindBufferedResponseAreIntact) {
                   "GET /in-memory HTTP/1.1\r\nhost: h\r\n\r\n"
                   "GET /file/2 HTTP/1.1\r\nhost: h\r\nconnection: close\r\n\r\n");
     std::this_thread::sleep_for(std::chrono::milliseconds{100});  // the first response now waits for the socket
-    test::SetReceiveBufferSize(fd, kLargeReceiveBufferSize);
 
     const std::string resp = test::recvUntilClosed(fd, std::chrono::seconds{5});
     std::string_view rest = resp;
@@ -2509,6 +2515,71 @@ TEST(HttpBackpressure, PipelinedFileResponsesBehindBufferedResponseAreIntact) {
     EXPECT_TRUE(rest.empty()) << rest.size() << " unexpected bytes";
   }
 }
+
+#ifdef AERONET_POSIX
+namespace {
+// SO_SNDBUF of a socket as reported by the kernel, or -1.
+int SendBufferSize(int fd) {
+  int bytes = -1;
+  socklen_t len = sizeof(bytes);
+  return ::getsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bytes, &len) == 0 ? bytes : -1;
+}
+
+// The server end, in this process, of the connection of 'clientFd', or -1 if not accepted within 5 s: the socket whose
+// local and peer ports are the peer and local ports of 'clientFd' (other connections of the process may share one).
+int AcceptedSocketOf(int clientFd) {
+  sockaddr_in client{};
+  sockaddr_in server{};
+  socklen_t clientLen = sizeof(client);
+  socklen_t serverLen = sizeof(server);
+  if (::getsockname(clientFd, reinterpret_cast<sockaddr*>(&client), &clientLen) != 0 ||
+      ::getpeername(clientFd, reinterpret_cast<sockaddr*>(&server), &serverLen) != 0) {
+    return -1;
+  }
+  for (int attempt = 0; attempt < 500; ++attempt) {
+    for (int fd = 0; fd < 4096; ++fd) {
+      sockaddr_in local{};
+      sockaddr_in peer{};
+      socklen_t localLen = sizeof(local);
+      socklen_t peerLen = sizeof(peer);
+      if (fd != clientFd && ::getsockname(fd, reinterpret_cast<sockaddr*>(&local), &localLen) == 0 &&
+          ::getpeername(fd, reinterpret_cast<sockaddr*>(&peer), &peerLen) == 0 && local.sin_family == AF_INET &&
+          local.sin_port == server.sin_port && peer.sin_port == client.sin_port) {
+        return fd;
+      }
+    }
+    std::this_thread::sleep_for(10ms);
+  }
+  return -1;
+}
+}  // namespace
+
+// The send buffer of the accepted connections is the configured one, and the system default again for the connections
+// accepted after a configuration update back to 0.
+TEST(HttpServerSocketOptions, SendBufferOfAcceptedConnections) {
+  static constexpr int kSendBufferBytes = 48 << 10;  // no system default is that
+  Socket probe(Socket::Type::Stream);
+  ASSERT_TRUE(SetSendBufferSize(probe.fd(), kSendBufferBytes));
+  const int expected = SendBufferSize(probe.fd());  // as stored by the kernel (Linux doubles it)
+  ASSERT_GT(expected, 0);
+
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) { cfg.withSocketSendBufferBytes(kSendBufferBytes); });
+  {
+    test::ClientConnection sock(ts.port());
+    const int serverFd = AcceptedSocketOf(sock.fd());
+    ASSERT_NE(serverFd, -1);
+    EXPECT_EQ(SendBufferSize(serverFd), expected);
+  }
+
+  ts.resetConfigAndPostUpdate([](HttpServerConfig&) {});
+  test::ClientConnection sock(ts.port());
+  const int serverFd = AcceptedSocketOf(sock.fd());
+  ASSERT_NE(serverFd, -1);
+  const int defaultSize = SendBufferSize(serverFd);
+  EXPECT_GT(defaultSize, 0);
+  EXPECT_NE(defaultSize, expected);
+}
+#endif
 
 // A large response streamed to a slow reader in chunks of various sizes, waiting in the connection output (the small
 // ones merged, the others queued on their own and written several at once, with MSG_ZEROCOPY when enabled), is received
