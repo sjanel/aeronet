@@ -13,6 +13,7 @@
 #include "aeronet/encoding.hpp"
 #include "aeronet/features.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response-writer.hpp"
@@ -29,6 +30,7 @@
 #endif
 
 using namespace aeronet;
+using namespace std::string_view_literals;
 
 namespace {  // Helper utilities local to this test file
 
@@ -292,6 +294,45 @@ TEST(HttpCompression, IdentityForbiddenNoAlternativesReturns406) {
   auto resp = test::simpleGet(ts.port(), "/br5", {{"Accept-Encoding", "identity;q=0, snappy;q=0"}});
   EXPECT_EQ(resp.statusCode, http::StatusCodeNotAcceptable);
   EXPECT_EQ(resp.body, "No acceptable content-coding available");
+}
+
+// A 406 is not a framing error: the connection persists (RFC 9112 §9.3), and the many requests pipelined behind it are
+// served.
+TEST(HttpCompression, NotAcceptableKeepsConnectionAlive) {
+  ts.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("hello"); });
+  static constexpr int kNbRounds = 100;
+  std::string requests;
+  for (int round = 0; round < kNbRounds; ++round) {
+    requests.append("GET /a HTTP/1.1\r\nHost: x\r\nAccept-Encoding: identity;q=0\r\n\r\n");
+    requests.append("HEAD /b HTTP/1.1\r\nHost: x\r\nAccept-Encoding: *;q=0\r\n\r\n");
+    requests.append("GET /c HTTP/1.1\r\nHost: x\r\nAccept-Encoding: identity\r\n\r\n");
+  }
+  requests.append("GET /d HTTP/1.1\r\nHost: x\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n");
+
+  const std::string resp = test::sendAndCollect(ts.port(), requests);
+  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 406"), 2 * kNbRounds);
+  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 200"), kNbRounds + 1);
+  // The response to HEAD has no body.
+  EXPECT_EQ(test::countOccurrences(resp, "No acceptable content-coding available"), kNbRounds);
+  EXPECT_EQ(test::countOccurrences(resp, MakeHttp1HeaderLine(http::Connection, http::close)), 1);
+  EXPECT_TRUE(resp.ends_with("hello"));
+}
+
+// The body announced by a request answered 406 is not read: the connection closes after the response, as it could not
+// be told apart from the next request.
+TEST(HttpCompression, NotAcceptableWithBodyClosesConnection) {
+  ts.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("hello"); });
+  for (std::string_view framing :
+       {"Content-Length: 5\r\n\r\nhello"sv, "Transfer-Encoding: chunked\r\n\r\n0\r\n\r\n"sv}) {
+    SCOPED_TRACE(framing);
+    const std::string resp =
+        test::sendAndCollect(ts.port(), std::string("POST /a HTTP/1.1\r\nHost: x\r\nAccept-Encoding: identity;q=0\r\n")
+                                            .append(framing)
+                                            .append("GET /b HTTP/1.1\r\nHost: x\r\n\r\n"));
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 406")) << resp;
+    EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp;
+    EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << resp;
+  }
 }
 
 TEST(HttpCompression, BrActivatedOverThreshold) {

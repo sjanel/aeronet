@@ -54,7 +54,7 @@ The `Accept-Encoding` header lists the codings a client accepts, with optional q
 
 When several codings share the best quality, the server preference decides: the codings of `preferredFormats` in their order, then the other compiled codings in the default order, `zstd`, `br`, `gzip`, `deflate`, and finally the uncompressed form (`identity`). With `preferredFormats` set to `gzip` only, `Accept-Encoding: br, gzip` selects `gzip`, while `Accept-Encoding: br` still selects `br`.
 
-Without `Accept-Encoding`, or when no compiled coding is acceptable, the response is sent uncompressed. If the client also excludes the uncompressed form (`identity;q=0`, or `*;q=0` without `identity`), the server answers `406 Not Acceptable`.
+Without `Accept-Encoding`, or when no compiled coding is acceptable, the response is sent uncompressed. If the client also excludes the uncompressed form (`identity;q=0`, or `*;q=0` without `identity`), the server answers `406 Not Acceptable`, before calling any handler. Over HTTP/1.1, the connection stays open for the next requests, unless the request announces a body: the body is not read, so the connection closes after the `406`.
 
 Each event loop remembers the result for the last `Accept-Encoding` value it negotiated, if it is not longer than that of the current browsers (`gzip, deflate, br, zstd`, 23 bytes): clients mostly send the value of their browser or HTTP library, so that the negotiation of most requests is a comparison with the previous one.
 
@@ -154,6 +154,7 @@ The decoded body is limited by `maxDecompressedBytes`, not by `maxBodyBytes`, wh
 ## Tests
 
 - Response compression, negotiation, thresholds, streaming, and direct compression end to end: [tests/http-compression_test.cpp](../../tests/http-compression_test.cpp).
+- `406` keeping the HTTP/1.1 connection open, unless the request announces a body (`HttpCompression.NotAcceptableKeepsConnectionAlive`, `HttpCompression.NotAcceptableWithBodyClosesConnection`): [tests/http-compression_test.cpp](../../tests/http-compression_test.cpp).
 - `HEAD` responses carrying the headers of the compressed `GET` ones (`HttpCompression.HeadCarriesTheHeadersOfTheGet`, `HttpCompression.StreamingHeadCarriesTheHeadersOfTheGetWithoutContentLength`): [tests/http-compression_test.cpp](../../tests/http-compression_test.cpp); over HTTP/2: [tests/http2-core_test.cpp](../../tests/http2-core_test.cpp) and [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp).
 - Request decompression, stacked codings, limits, and errors: [tests/http-request-decompression_test.cpp](../../tests/http-request-decompression_test.cpp).
 - Lower-casing of the received codings: [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp) (HTTP/1.1) and [hpack_test.cpp](../../aeronet/http2/test/hpack_test.cpp) (HTTP/2).

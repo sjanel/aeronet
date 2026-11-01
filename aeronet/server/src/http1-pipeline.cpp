@@ -214,6 +214,9 @@ bool Http1Pipeline::serveRequests(ConnectionIt cnxIt) {
       break;
     }
     if (headAction == LoopAction::Continue) {
+      // Answered from its head alone: its head is consumed, and the requests behind it are served (unless it announces
+      // a body, the connection then closing).
+      consumedInput.nbBytes += request.headSpanSize();
       continue;
     }
 
@@ -404,15 +407,20 @@ AERONET_ALWAYS_INLINE Http1Pipeline::LoopAction Http1Pipeline::readHead(Connecti
 
   const auto [encoding, reject] =
       ctx.compressionState.selector.negotiateAcceptEncoding(request.headerValueOrEmpty(http::AcceptEncoding));
+  // Set before answering a rejected request (none): its response must not use the coding of the previous request.
+  request._responsePossibleEncoding = encoding;
 
   // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
   // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
   if (reject) {
-    emitSimpleError(cnxIt, http::StatusCodeNotAcceptable, "No acceptable content-coding available");
+    // Not a framing error: the connection persists (RFC 9112 §9.3), unless the request announces a body, which is not
+    // read and could not be told apart from the next request.
+    finalizeAndSendResponse(
+        cnxIt, request.makeResponse(http::StatusCodeNotAcceptable, "No acceptable content-coding available"), nullptr,
+        AnnouncesBody(request));
     return LoopAction::Continue;
   }
 
-  request._responsePossibleEncoding = encoding;
   return LoopAction::Nothing;
 }
 
