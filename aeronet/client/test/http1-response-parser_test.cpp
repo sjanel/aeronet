@@ -165,6 +165,12 @@ TEST(ResponseParserTest, HeadRequestHasNoBodyDespiteContentLength) {
   EXPECT_TRUE(resp.bodyInMemory().empty());
 }
 
+TEST(ResponseParserTest, RepeatedContentLengthHeader) {
+  HttpResponse resp;
+  auto st = parseAll("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Length: 3\r\n\r\nhi", resp);
+  EXPECT_EQ(st, Http1ResponseParser::Status::Error);
+}
+
 TEST(ResponseParserTest, ChunkedDecoding) {
   HttpResponse resp;
   std::string raw =
@@ -500,9 +506,20 @@ TEST(ResponseParserTest, RejectsBadVersionDigits) {
 
 // RFC 9112 §2.3: the version of the status line must be "HTTP/" DIGIT "." DIGIT (case-sensitive), of major version 1.
 TEST(ResponseParserTest, RejectsNonHttp1Version) {
-  for (std::string_view statusLine : {"HTTP/2.0 200 OK", "HTTP/0.9 200 OK", "XTTP/1.1 200 OK", "http/1.1 200 OK",
-                                      "HTTP-1.1 200 OK", "HTTP/1x1 200 OK", "HTTP/1.x 200 OK", "HTTP/1.10 200 OK",
-                                      "HTTP/1.1200 OK", "HTTP/1.1", "HTTP/1. 200 OK", " HTTP/1.1 200 OK"}) {
+  for (std::string_view statusLine : {
+           "HTTP/2.0 200 OK",
+           "HTTP/0.9 200 OK",
+           "XTTP/1.1 200 OK",
+           "http/1.1 200 OK",
+           "HTTP-1.1 200 OK",
+           "HTTP/1x1 200 OK",
+           "HTTP/1.x 200 OK",
+           "HTTP/1.10 200 OK",
+           "HTTP/1.1200 OK",
+           "HTTP/1.1",
+           "HTTP/1. 200 OK",
+           " HTTP/1.1 200 OK",
+       }) {
     SCOPED_TRACE(statusLine);
     HttpResponse resp;
     std::string raw(statusLine);

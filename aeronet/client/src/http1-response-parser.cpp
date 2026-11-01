@@ -589,6 +589,11 @@ Http1ResponseParser::Status Http1ResponseParser::parse(std::span<char> buffer, b
       _contentTypeOff = static_cast<std::size_t>(value.data() - buffer.data());
       _contentTypeLen = value.size();
     } else if (name == http::ContentLength) {
+      if (_hasContentLength) {
+        // Repeated header keys are equivalent to a single header with comma-separated values (RFC 9110 §5.3),
+        // and Content-Length should be digits only - so multiple Content-Length headers are not allowed.
+        return Status::Error;
+      }
       const auto* pBeg = value.data();
       const auto* pEnd = pBeg + value.size();
       const auto [ptr, ec] = std::from_chars(pBeg, pEnd, _bodyRemaining);
