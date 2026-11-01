@@ -238,13 +238,21 @@ TEST(HttpParserFixedLength, Expect100Continue_ZeroBody_NoInterim) {
 TEST(HttpParserFixedLength, Expect100Continue_NonZeroBody_InterimThenFinal) {
   InstallEchoHandler();
   test::ClientConnection conn(port);
-  NativeHandle fd = conn.fd();
-  std::string req =
-      "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue\r\nConnection: close\r\n\r\nHello";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.starts_with("HTTP/1.1 100 Continue")) << resp;
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  const std::string resp = test::SendExpectingContinue(
+      conn.fd(), "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n",
+      "Hello");
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.ends_with("Hello")) << resp;
+}
+
+// Expect: 100-continue with the body received along with the head: 100 Continue is not needed (RFC 9110 §10.1.1).
+TEST(HttpParserFixedLength, Expect100Continue_BodyWithHead_NoInterim) {
+  InstallEchoHandler();
+  const std::string resp = test::sendAndCollect(
+      port,
+      "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue\r\nConnection: close\r\n\r\nHello");
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.ends_with("Hello")) << resp;
 }
 
 // =============================================================================
@@ -490,18 +498,20 @@ TEST(HttpParserChunked, MissingCRLFAfterChunkData) {
 
 // Chunked request with Expect: 100-continue → server sends interim 100 then processes body.
 TEST(HttpParserChunked, Expect100Continue) {
+  static constexpr std::string_view kHead =
+      "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n";
+  static constexpr std::string_view kBody = "5\r\nHello\r\n0\r\n\r\n";
   InstallEchoHandler();
-  test::ClientConnection conn(port);
-  NativeHandle fd = conn.fd();
-  std::string req =
-      "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nExpect: 100-continue\r\nConnection: "
-      "close\r\n\r\n"
-      "5\r\nHello\r\n"
-      "0\r\n\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.starts_with("HTTP/1.1 100 Continue")) << resp;
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  {
+    test::ClientConnection conn(port);
+    const std::string resp = test::SendExpectingContinue(conn.fd(), kHead, kBody);
+    ASSERT_TRUE(resp.starts_with("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200")) << resp;
+    EXPECT_TRUE(resp.ends_with("Hello")) << resp;
+  }
+  // The whole body received with the head does not need 100 Continue.
+  const std::string resp = test::sendAndCollect(port, std::string(kHead) + std::string(kBody));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.ends_with("Hello")) << resp;
 }
 
 // =============================================================================
