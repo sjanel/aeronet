@@ -9,6 +9,7 @@
 #include <exception>
 #include <filesystem>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <semaphore>
@@ -2952,6 +2953,28 @@ TEST(HttpClientErrorE2ETest, ShortContentTypeFromServerIsAccepted) {
   EXPECT_EQ(result->status(), 200);
   EXPECT_EQ(result->headerValueOrEmpty(http::ContentType), "a/b");
   EXPECT_EQ(result->bodyInMemory(), "hello");
+}
+
+// RFC 9112 §6.1 / §6.3: a Transfer-Encoding without final chunked coding, or in an HTTP/1.0 response, delimits the body
+// by the close of the connection, whatever Content-Length says. A chunked body with a Content-Length is de-chunked, but
+// its connection is not pooled.
+TEST(HttpClientRawServerTest, ConflictingFramingHeadersAreNotTrusted) {
+  static constexpr std::string_view kResponses[] = {
+      "HTTP/1.1 200 OK\r\ntransfer-encoding: gzip\r\ncontent-length: 2\r\n\r\nhello",
+      "HTTP/1.0 200 OK\r\nconnection: keep-alive\r\ntransfer-encoding: chunked\r\ncontent-length: 2\r\n\r\nhello",
+      "HTTP/1.1 200 OK\r\ncontent-length: 2\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+  };
+  RawServer server([](NativeHandle fd, int idx) {
+    test::RecvHead(fd);
+    SendAll(fd, kResponses[static_cast<std::size_t>(idx) % std::size(kResponses)]);
+  });
+  HttpClient client;
+  for (std::size_t idx = 0; idx < std::size(kResponses); ++idx) {
+    auto result = client.get(MakeUrl(server.port()));
+    ASSERT_TRUE(result) << idx << ' ' << ErrcToStr(result.error());
+    EXPECT_EQ(result->bodyInMemory(), "hello") << idx;
+    EXPECT_EQ(HttpClientTest::IdleConnections(client), 0U) << idx;
+  }
 }
 
 // RFC 9112 section 9.6: with keep-alive disabled, every HTTP/1.1 request carries 'Connection: close' (so that the

@@ -170,7 +170,7 @@ void Http1ResponseParser::InstallBodyStorage(HttpResponse& resp, std::string_vie
 }
 
 void Http1ResponseParser::reset(bool headRequest, bool streamHead) noexcept {
-  _bodyBuf->clear();
+  _bodyBuf.clear();
   _pos = 0;
   _bodyStart = 0;
   _contentTypeOff = 0;
@@ -190,6 +190,7 @@ void Http1ResponseParser::reset(bool headRequest, bool streamHead) noexcept {
   _connectionCloseSeen = false;
   _connectionKeepAliveSeen = false;
   _hasContentLength = false;
+  _hasTransferEncoding = false;
   _chunked = false;
 }
 
@@ -200,19 +201,19 @@ Http1ResponseParser::Status Http1ResponseParser::installBody(HttpResponse& resp,
   // Chunked bodies are reassembled in _bodyBuf; Length / UntilClose bodies are contiguous suffixes of the
   // receive buffer. Either allocation can become the response's owner when it is suitably sized.
   const std::string_view body =
-      _framing == Framing::Chunked ? std::string_view(*_bodyBuf) : buffer.substr(_bodyStart, _pos - _bodyStart);
+      _framing == Framing::Chunked ? std::string_view(_bodyBuf) : buffer.substr(_bodyStart, _pos - _bodyStart);
 
   // Automatic decompression: decode straight from `body` (receive buffer / de-framed chunks) into the
   // borrowed scratch buffer and drop the now-stale Content-Encoding header (the body is not installed yet, so
   // removal is cheap and legal). No intermediate copy of the compressed body.
   std::string_view decoded = body;
-  if (_decode.state != nullptr) {
+  if (_decode.pState != nullptr) {
     const std::string_view contentEncoding = resp.headerValueOrEmpty(http::ContentEncoding);
     if (!contentEncoding.empty()) {
       // An empty body has nothing to decode: it is delivered like a decoded one, without its coding.
       if (!body.empty()) {
-        const auto res = HttpCodec::DecompressFullBody(*_decode.state, *_decode.config, contentEncoding, body,
-                                                       *_decode.out, *_decode.tmp, decoded);
+        const auto res = HttpCodec::DecompressFullBody(*_decode.pState, *_decode.pConfig, contentEncoding, body,
+                                                       *_decode.pOut, *_decode.pTmp, decoded);
         if (res.status != http::StatusCodeOK) {
           return res.status == http::StatusCodePayloadTooLarge ? Status::TooLarge : Status::Error;
         }
@@ -232,21 +233,21 @@ Http1ResponseParser::Status Http1ResponseParser::installBody(HttpResponse& resp,
   // If the scratch is over twice the body size, retain it and copy the small body instead of making both the response
   // and client pin that high-water allocation. The common stable-size path keeps the same allocation count and retained
   // capacity as before, but removes the large final memcpy.
-  RawChars* owner = nullptr;
+  RawChars* pOwner = nullptr;
   if (decoded.data() != body.data()) {  // decoded into a scratch buffer (an identity coding returns the body itself)
-    owner = WholeBufferOwner(decoded, *_decode.out);
-    if (owner == nullptr) {
-      owner = WholeBufferOwner(decoded, *_bodyBuf);
+    pOwner = WholeBufferOwner(decoded, *_decode.pOut);
+    if (pOwner == nullptr) {
+      pOwner = WholeBufferOwner(decoded, _bodyBuf);
     }
   } else if (_framing == Framing::Chunked) {
-    owner = _bodyBuf;
+    pOwner = &_bodyBuf;
   } else if (_receiveBuf != nullptr && buffer.data() == _receiveBuf->data() && buffer.size() == _receiveBuf->size() &&
              _pos == buffer.size()) {
-    owner = _receiveBuf;
+    pOwner = _receiveBuf;
   }
   const std::string_view contentType =
       _contentTypeLen == 0 ? http::ContentTypeApplicationOctetStream : buffer.substr(_contentTypeOff, _contentTypeLen);
-  InstallBodyStorage(resp, decoded, contentType, owner);
+  InstallBodyStorage(resp, decoded, contentType, pOwner);
   return Status::Complete;
 }
 
@@ -283,21 +284,25 @@ Http1ResponseParser::Status Http1ResponseParser::decideFraming() {
     return Status::Complete;
   }
 
-  if (_chunked) {
-    _framing = Framing::Chunked;
-    _state = State::BodyChunkSize;
-    _keepAlive = keepAlive;
-    return Status::NeedMore;
-  }
-
-  if (_hasContentLength) {
+  if (_hasTransferEncoding) {
+    // Transfer-Encoding overrides Content-Length (RFC 9112 §6.3). It frames the body when its final coding is chunked,
+    // except in an HTTP/1.0 response, whose framing is then faulty (§6.1): its body ends with the connection, like
+    // the one of a response whose final coding is not chunked.
+    if (_chunked && _http11) {
+      _framing = Framing::Chunked;
+      _state = State::BodyChunkSize;
+      // Both framing headers may be an attempt at response splitting (§11.1): the connection is not reused.
+      _keepAlive = keepAlive && !_hasContentLength;
+      return Status::NeedMore;
+    }
+  } else if (_hasContentLength) {
     _framing = Framing::Length;
     _keepAlive = keepAlive;
     _state = _bodyRemaining == 0 ? State::Done : State::BodyLength;
     return _bodyRemaining == 0 ? Status::Complete : Status::NeedMore;
   }
 
-  // No explicit framing: body runs until the server closes the connection.
+  // No usable framing: body runs until the server closes the connection.
   _framing = Framing::UntilClose;
   _keepAlive = false;  // cannot reuse a connection whose body end is signalled by close
   _state = State::BodyUntilClose;
@@ -358,7 +363,7 @@ Http1ResponseParser::Status Http1ResponseParser::parseBody(std::string_view buff
       // parseBody() is only ever entered for Length / UntilClose / Chunked. None / default is unreachable.
       assert(_framing == Framing::Chunked);
       const Status status = parseChunkedBody(buffer, eof, maxResponseBytes);
-      if (_streaming && status != Status::BodyPiece && !_bodyBuf->empty()) {
+      if (_streaming && status != Status::BodyPiece && !_bodyBuf.empty()) {
         // Deliver the small chunks gathered so far before the status ending them, which the next call finds again
         // (it only depends on the received bytes from the current position).
         _gatheredPiece = true;
@@ -406,7 +411,7 @@ Http1ResponseParser::Status Http1ResponseParser::parseChunkedBody(std::string_vi
         if (take == 0) {
           return eof ? Status::Truncated : Status::NeedMore;
         }
-        if (take >= kMinDirectPieceBytes && !_bodyBuf->empty()) {
+        if (take >= kMinDirectPieceBytes && !_bodyBuf.empty()) {
           // The small chunks gathered before this one are delivered first: the next call comes back here.
           _gatheredPiece = true;
           return Status::BodyPiece;
@@ -419,15 +424,15 @@ Http1ResponseParser::Status Http1ResponseParser::parseChunkedBody(std::string_vi
           return bodyPiece(take);  // delivered from the receive buffer, without copy
         }
         // A small piece is gathered with the next ones, to be delivered with them (see kMinDirectPieceBytes).
-        _bodyBuf->append(buffer.data() + _pos, take);
+        _bodyBuf.append(buffer.data() + _pos, take);
         _pos += take;
         continue;
       }
-      const std::size_t bodySize = static_cast<std::size_t>(_bodyBuf->size());
+      const std::size_t bodySize = static_cast<std::size_t>(_bodyBuf.size());
       if (bodySize > maxResponseBytes || take > maxResponseBytes - bodySize) {
         return Status::TooLarge;
       }
-      _bodyBuf->append(buffer.data() + _pos, take);
+      _bodyBuf.append(buffer.data() + _pos, take);
       _pos += take;
       _bodyRemaining -= take;
       if (_bodyRemaining != 0) {
@@ -481,7 +486,7 @@ Http1ResponseParser::Status Http1ResponseParser::parse(std::span<char> buffer, b
                                                        std::size_t maxResponseBytes) {
   if (_gatheredPiece) {
     // Delivered by the previous call.
-    _bodyBuf->clear();
+    _bodyBuf.clear();
     _gatheredPiece = false;
   }
   // --- Status line + headers ---
@@ -529,6 +534,10 @@ Http1ResponseParser::Status Http1ResponseParser::parse(std::span<char> buffer, b
       const std::string_view afterVersion = line.substr(http::Version::kStrLen + 1);
       const auto sp2 = afterVersion.find(' ');
       const std::string_view codeTok = sp2 == std::string_view::npos ? afterVersion : afterVersion.substr(0, sp2);
+      // status-code = 3DIGIT (RFC 9112 §4): from_chars alone would also accept "0200".
+      if (codeTok.size() != 3) {
+        return Status::Error;
+      }
       const auto* begin = codeTok.data();
       const auto* end = begin + codeTok.size();
       const auto [ptr, ec] = std::from_chars(begin, end, _statusCode);
@@ -552,6 +561,7 @@ Http1ResponseParser::Status Http1ResponseParser::parse(std::span<char> buffer, b
         _connectionCloseSeen = false;
         _connectionKeepAliveSeen = false;
         _hasContentLength = false;
+        _hasTransferEncoding = false;
         _chunked = false;
         _contentTypeLen = 0;
         _state = State::StatusLine;
@@ -594,14 +604,16 @@ Http1ResponseParser::Status Http1ResponseParser::parse(std::span<char> buffer, b
         // and Content-Length should be digits only - so multiple Content-Length headers are not allowed.
         return Status::Error;
       }
-      const auto* pBeg = value.data();
-      const auto* pEnd = pBeg + value.size();
-      const auto [ptr, ec] = std::from_chars(pBeg, pEnd, _bodyRemaining);
-      if (ec != std::errc{} || ptr != pEnd) {
+      const char* pBeg = value.data();
+      const char* pEnd = pBeg + value.size();
+      const auto [pActualEnd, ec] = std::from_chars(pBeg, pEnd, _bodyRemaining);
+      if (ec != std::errc{} || pActualEnd != pEnd) {
         return Status::Error;
       }
       _hasContentLength = true;
     } else if (name == http::TransferEncoding) {
+      // A repeated field continues the list of codings (RFC 9110 §5.3): the last one decides the framing.
+      _hasTransferEncoding = true;
       _chunked = http::LastTransferCodingIsChunked(value);
     } else {
       if (name == http::Connection) {
@@ -630,7 +642,7 @@ Http1ResponseParser::Status Http1ResponseParser::parse(std::span<char> buffer, b
 
 void Http1ResponseParser::discardStreamed(RawChars& buffer) noexcept {
   // Gathered chunks are always delivered before the status following them.
-  assert(_streaming && !_gatheredPiece && _bodyBuf->empty());
+  assert(_streaming && !_gatheredPiece && _bodyBuf.empty());
   buffer.erase_front(_pos);
   _pos = 0;
   _bodyStart = 0;
