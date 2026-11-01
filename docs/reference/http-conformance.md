@@ -14,6 +14,7 @@ This page lists the HTTP/1.1 behaviors aeronet implements ([RFC 9110](https://ww
 | Method tokens are case-sensitive (RFC 9110 §9.1): `GET` is a method, `get` is an unknown method answered `501` | Supported |
 | A bare CR in a request head is rejected (`400`) as soon as the byte following it is received | Supported |
 | A bare LF (line ending without CR) in a request head, a chunk-size line or a trailer is rejected (`400`) as soon as received, instead of waiting for a CRLF that cannot follow. RFC 9112 §2.2 allows a server to accept it, aeronet does not | Supported |
+| Multiple `Content-Length` header fields are rejected (`400`) as per RFC 9110 §5.3 & §8.6 | Supported |
 | `Content-Length` and `Transfer-Encoding` together are rejected (`400`), as is `Transfer-Encoding` on an HTTP/1.0 request | Supported |
 | `Transfer-Encoding` whose final coding is not `chunked` rejected (`400`), the body length being undetermined (RFC 9112 §6.3). Codings before a final `chunked`, such as `gzip, chunked`, are not supported (`501`, RFC 9112 §6.1). The connection is closed after both | Supported |
 | Pipelined requests, processed one after the other | Supported |
