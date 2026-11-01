@@ -19,6 +19,7 @@
 #include <openssl/x509_vfy.h>
 #include <openssl/x509v3.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -905,6 +906,51 @@ TEST(HttpClientTlsRawServerTest, BytesAfterTheResponseEndInItsRecordPreventReuse
     ASSERT_TRUE(result) << requestIdx << ' ' << ErrcToStr(result.error());
     EXPECT_EQ(result->bodyInMemory(), "he") << requestIdx;
     EXPECT_EQ(HttpClientTest::IdleConnections(client), 0U) << requestIdx;
+  }
+}
+
+// RFC 9112 §9.5 over TLS: the response of a server rejecting the request before its end (here holding the connection
+// without reading it) is read while the body is written, from memory or from a file, which stops the upload.
+TEST(HttpClientTlsRawServerTest, EarlyRejectionStopsTheUpload) {
+  const std::string body(8UL << 20U, 'b');  // more than the socket buffers hold
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, body);
+  for (const bool fileBody : {false, true}) {
+    std::atomic<bool> clientDone{false};
+    RawTlsServer server([&clientDone](SSL* ssl) {
+      const int receiveBufferSize = 256 * 1024;
+      ::setsockopt(::SSL_get_fd(ssl), SOL_SOCKET, SO_RCVBUF, &receiveBufferSize,  // NOLINT(misc-include-cleaner)
+                   sizeof(receiveBufferSize));
+      std::string request;
+      char buf[1024];
+      for (std::size_t nbRead = 0; !request.contains(http::DoubleCRLF);) {
+        ASSERT_EQ(::SSL_read_ex(ssl, buf, sizeof(buf), &nbRead), 1);
+        request.append(buf, nbRead);
+      }
+      static constexpr std::string_view kRejection = "HTTP/1.1 413 Content Too Large\r\ncontent-length: 0\r\n\r\n";
+      std::size_t nbWritten = 0;
+      ASSERT_EQ(::SSL_write_ex(ssl, kRejection.data(), kRejection.size(), &nbWritten), 1);
+      // Neither read nor closed meanwhile: the client cannot write more than the buffers hold.
+      for (const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+           !clientDone.load() && std::chrono::steady_clock::now() < deadline;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+      }
+    });
+    HttpClientConfig cfg;
+    cfg.tlsVerifyPeer = false;  // self-signed server cert
+    cfg.requestTimeout = std::chrono::seconds{10};
+    HttpClient client(cfg);
+    auto req = client.makeRequest(http::Method::POST, "https://127.0.0.1:" + std::to_string(server.port()) + "/upload");
+    if (fileBody) {
+      req.file(File(tmp.filePath().string()), "application/octet-stream");
+    } else {
+      req.bodyStatic(body, "application/octet-stream");
+    }
+    const auto result = client.request(std::move(req));
+    clientDone = true;
+    ASSERT_TRUE(result) << fileBody << ' ' << ErrcToStr(result.error());
+    EXPECT_EQ(result->status(), http::StatusCodePayloadTooLarge);
+    EXPECT_EQ(HttpClientTest::IdleConnections(client), 0U);
   }
 }
 #endif

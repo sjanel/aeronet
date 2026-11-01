@@ -76,6 +76,28 @@ upload.file(File("/var/reports/2026-10.pdf"), "application/pdf");  // or file(fi
 const HttpClientResult stored = client.request(std::move(upload));
 ```
 
+### Early responses and `Expect: 100-continue`
+
+A server may answer a request before receiving all of its body, such as with a `413` for a body larger than it accepts, then stop reading it or close the connection. While it sends a body over HTTP/1.1, the client watches the connection for such a response (RFC 9112 §9.5): a final status from `300` stops the upload, and the response is returned once received, its connection being closed instead of pooled. A `2xx` response does not stop the upload, as the server may still read the body. When a write fails because the server closed the connection, the response it sent before is returned too, instead of `writeError`.
+
+To avoid sending a large body for nothing, a request can carry the `Expect: 100-continue` header (RFC 9110 §10.1.1):
+
+```cpp
+#include <aeronet/file.hpp>
+#include <aeronet/http-client.hpp>
+
+#include <utility>
+
+HttpClient client;
+auto upload = client.makeRequest(http::Method::PUT, "https://storage.example.com/reports/2026-10.pdf");
+upload.headerAddLine(http::Expect, http::h100_continue).file(File("/var/reports/2026-10.pdf"), "application/pdf");
+const HttpClientResult stored = client.request(std::move(upload));
+```
+
+Over HTTP/1.1, the client then sends the head of the request alone, and its body once the server answered `100 Continue`, or after `expectContinueTimeout` (1 s by default) without answer, as from a server ignoring expectations. A final response received meanwhile answers the request: the body is not sent, and the connection is closed. A `417 Expectation Failed`, which tells that a server along the way does not support expectations, makes the client repeat the request without its expectation. Over HTTP/2, the body is sent right away, which RFC 9110 allows, and the `100 Continue` of the server is skipped.
+
+The expectation (the `Expect` value `100-continue`, case-insensitive) is only meaningful with a body, as a request without content must not carry it: it cannot be one of the `globalHeaders`, and a redirect turning the request into a body-less `GET` removes it.
+
 ## Responses
 
 The response is an `HttpResponse`, the same type the server builds. `status()`, `headers()`, `headerValueOrEmpty()`, and `bodyInMemory()` read it. Header names are lower-case. The body is complete when the request returns: chunked transfer coding is removed, a compressed body is decoded (and its `Content-Encoding` header dropped, also for an empty body), and `Content-Type` and `Content-Length` describe the decoded body. Other headers keep their received values, except the codings of a `Content-Encoding` kept (decompression disabled), which are lower-cased as they are case-insensitive. A received value may contain the bytes `0x80` to `0xFF` (`obs-text`, RFC 9110 §5.5), such as a raw UTF-8 file name in `content-disposition`, kept as is. Over HTTP/1.1, a value with a control character other than a tab fails the request with `malformedResponse`.
@@ -266,6 +288,7 @@ The client counts retries, redirects, and request compression outcomes (`aeronet
 
 - HTTP/1.1 exchanges, pooling, redirects (and the credentials they drop), retries, cache, timeouts, response buffers, and response body sinks (also over HTTP/2 for content-coded bodies and the `content-length` check): [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp). Request building and redirect URL resolution: [http-request_test.cpp](../../aeronet/client/test/http-request_test.cpp).
 - HTTP/1.1 response parsing, including body framing (`Transfer-Encoding` against `Content-Length`, HTTP/1.0) and connection reuse (bytes received after the end of a response included), body streaming and the failure statuses: [http1-response-parser_test.cpp](../../aeronet/client/test/http1-response-parser_test.cpp). Bytes after the end of a response, over a plain connection (`HttpClientRawServerTest.BytesAfterTheResponseEndAreNotTakenForTheNextResponse` in [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp)) and left in the TLS layer (`HttpClientTlsRawServerTest.BytesAfterTheResponseEndInItsRecordPreventReuse` in [http-client-tls-e2e_test.cpp](../../aeronet/client/test/http-client-tls-e2e_test.cpp)).
+- Early responses and `Expect: 100-continue` over HTTP/1.1: the `EarlyRejection`, `EarlySuccess`, `RejectionBeforeAReset` and `ExpectContinue` / `ExpectationFailed` tests of `HttpClientRawServerTest`, `HttpClientE2ETest.BodyLargerThanTheServerAcceptsIsRejectedWith413` (an aeronet server with and without lingering close) and `HttpClientE2ETest.ExpectContinueSendsTheBodyAfter100Continue` in [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp), with the write failures after a response (`FileBody*ReturnsTheResponseAlreadyReceived`). Over TLS, `HttpClientTlsRawServerTest.EarlyRejectionStopsTheUpload` in [http-client-tls-e2e_test.cpp](../../aeronet/client/test/http-client-tls-e2e_test.cpp). Classification of the response bytes received during the upload: `ResponseParserTest.PeekEarlyResponse` in [http1-response-parser_test.cpp](../../aeronet/client/test/http1-response-parser_test.cpp).
 - HTTP/2, including response body sinks and the connection kept after a stream failure: [http-client-http2-e2e_test.cpp](../../aeronet/client/test/http-client-http2-e2e_test.cpp).
 - HTTPS, trust stores, mutual TLS, and redirects to cleartext: [http-client-tls-e2e_test.cpp](../../aeronet/client/test/http-client-tls-e2e_test.cpp).
 - Configuration and retry policy: [http-client-config_test.cpp](../../aeronet/client/test/http-client-config_test.cpp) and [retry-config_test.cpp](../../aeronet/client/test/retry-config_test.cpp).

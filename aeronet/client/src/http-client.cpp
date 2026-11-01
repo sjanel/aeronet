@@ -432,33 +432,34 @@ void HttpClient::ActiveConnection::reset() noexcept {
   reused = false;
 }
 
-bool HttpClient::waitIo(NativeHandle fd, EventBmp interest, SteadyClock::time_point deadline) {
+EventBmp HttpClient::waitEvents(NativeHandle fd, EventBmp interest, SteadyClock::time_point deadline) {
   if (!armLoop(fd, interest)) {
-    return false;
+    return 0;
   }
   for (;;) {
     if (SteadyClock::now() >= deadline) {
-      return false;
+      return 0;
     }
     const std::span<const EventLoop::EventFd> events = _loop.poll();
     if (events.data() == nullptr) {
-      return false;  // unrecoverable poll failure (already logged)
+      return 0;  // unrecoverable poll failure (already logged)
     }
     for (const auto& ev : events) {
-      if (ev.fd == fd && (ev.eventBmp & (interest | EventErr | EventHup | EventRdHup)) != 0U) {
+      const EventBmp signaled = ev.eventBmp & (interest | EventErr | EventHup | EventRdHup);
+      if (ev.fd == fd && signaled != 0U) {
         // Poll may return an event after the deadline (notably when this thread was descheduled). The
         // request timeout is a hard upper bound, so a late error/hup must not replace it with an I/O error.
         // Otherwise surface error/hup to the next I/O attempt, and report interest readiness.
-        return SteadyClock::now() < deadline;
+        return SteadyClock::now() < deadline ? signaled : 0;
       }
     }
     // Empty span => poll timeout; loop and re-check the deadline.
   }
 }
 
-bool HttpClient::waitExchangeIo(NativeHandle fd, EventBmp interest, SteadyClock::time_point deadline) {
+EventBmp HttpClient::waitExchangeEvents(NativeHandle fd, EventBmp interest, SteadyClock::time_point deadline) {
   deadline = std::min(deadline, SteadyClock::now() + _config.inactivityTimeout);
-  return waitIo(fd, interest, deadline);
+  return waitEvents(fd, interest, deadline);
 }
 
 std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectNew(const HttpRequest& req) {
@@ -878,7 +879,7 @@ HttpClientResult HttpClient::performExchange(HttpRequest& req, bool redirectFoll
     bool requestSent = false;
     if (_streamer.active()) {
       // A response this loop would retry for its status is never given to a sink.
-      _streamer.beginExchange(redirectFollowed, canBackoff());
+      _streamer.beginExchange(redirectFollowed, canBackoff(), req.expectsContinue());
     }
 
     // Drive the connection to a full exchange: finish the (TLS) connect, ensure a protocol engine, then hand
@@ -889,11 +890,26 @@ HttpClientResult HttpClient::performExchange(HttpRequest& req, bool redirectFoll
             .and_then([&] { return check(ensureProtocolHandler(conn)); })
             .and_then([&] { return conn.proto.exchange(*this, conn.transport, fd, req, ioDeadline, requestSent); });
 
+    // The connection goes back to the pool when it stays usable (also after a failure confined to its HTTP/2 stream,
+    // which was reset), for a retry or a later request.
+    if (_config.keepAlive && conn.proto.keepAlive()) {
+      releaseConnection(req, std::move(conn));
+    } else {
+      dropConnection(conn);  // close the socket / transport (and unregister its fd from the loop)
+    }
+
     if (result) {
+      // Such responses are buffered by the streamer, never delivered to a sink (see beginExchange above).
+      if (result->status() == http::StatusCodeExpectationFailed && req.expectsContinue()) {
+        // RFC 9110 §10.1.1: a 417 only tells that a server along the way does not support expectations (such as an
+        // HTTP/1.0 one): the request is repeated without its expectation.
+        assert(!_streamer.headDelivered());
+        req.headerRemoveLine(http::Expect);
+        continue;
+      }
       // A retryable status (e.g. 429 / 503) is a *successful* exchange we choose to retry: back off (honoring
       // a delta-seconds Retry-After when present) and try again, discarding this response.
       if (canBackoff() && retry.retryStatuses.contains(result->status())) {
-        // Such a response is buffered by the streamer, never delivered to a sink (see beginExchange above).
         assert(!_streamer.headDelivered());
         RetryConfig::Duration delay = computedBackoff();
         if (retry.honorRetryAfter) {
@@ -903,29 +919,12 @@ HttpClientResult HttpClient::performExchange(HttpRequest& req, bool redirectFoll
             delay = ra;
           }
         }
-        // The connection may still be reusable (keep-alive); hand it back so the retry can reuse it.
-        if (_config.keepAlive && conn.proto.keepAlive()) {
-          releaseConnection(req, std::move(conn));
-        } else {
-          dropConnection(conn);
-        }
         sleepBackoff(delay);
         continue;
-      }
-      if (_config.keepAlive && conn.proto.keepAlive()) {
-        releaseConnection(req, std::move(conn));
-      } else {
-        dropConnection(conn);  // not reusable: unregister its fd before the socket closes
       }
       return result;
     }
 
-    if (_config.keepAlive && conn.proto.keepAlive()) {
-      // A failure confined to its HTTP/2 stream, which was reset: the connection stays usable.
-      releaseConnection(req, std::move(conn));
-    } else {
-      dropConnection(conn);  // close the socket / transport (and unregister its fd from the loop)
-    }
     if (_streamer.headDelivered()) {
       return result;  // the sink already received part of this response: retrying would deliver it twice
     }
@@ -1121,6 +1120,8 @@ HttpClientResult HttpClient::requestUncached(HttpRequest&& req) {
     if (rewriteToGet) {
       req.body(std::string_view{});
       req.method(http::Method::GET);
+      // A request without content must not carry the 100-continue expectation (RFC 9110 §10.1.1).
+      req.headerRemoveLine(http::Expect);
     }
 
     --redirectsLeft;

@@ -10,6 +10,7 @@
 #include <system_error>
 #include <utility>
 
+#include "aeronet/cctype.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
@@ -659,6 +660,31 @@ void Http1ResponseParser::discardStreamed(RawChars& buffer) noexcept {
   buffer.erase_front(_pos);
   _pos = 0;
   _bodyStart = 0;
+}
+
+Http1ResponseParser::EarlyResponse Http1ResponseParser::PeekEarlyResponse(std::string_view received) noexcept {
+  // status-line = HTTP-version SP status-code SP [ reason-phrase ] (RFC 9112 §4): only the status code matters here.
+  static constexpr std::size_t kStatusCodePos = http::Version::kStrLen + 1;
+  static constexpr std::size_t kStatusCodeEnd = kStatusCodePos + 3;
+  EarlyResponse early = EarlyResponse::None;
+  while (received.size() >= kStatusCodeEnd) {
+    const char* code = received.data() + kStatusCodePos;
+    if (received[http::Version::kStrLen] != ' ' || !isdigit(code[0]) || !isdigit(code[1]) || !isdigit(code[2])) {
+      return EarlyResponse::Rejection;
+    }
+    if (code[0] != '1') {
+      return code[0] == '2' ? EarlyResponse::Success : EarlyResponse::Rejection;
+    }
+    const std::size_t headEnd = received.find(http::DoubleCRLF);
+    if (headEnd == std::string_view::npos) {
+      break;
+    }
+    if (code[1] == '0' && code[2] == '0') {
+      early = EarlyResponse::Continue;
+    }
+    received.remove_prefix(headEnd + http::DoubleCRLF.size());
+  }
+  return early;
 }
 
 }  // namespace aeronet

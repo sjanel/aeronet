@@ -39,6 +39,9 @@ void HttpClientConfig::validate() const {
   if (keepAliveTimeout < std::chrono::milliseconds{0}) {
     throw std::invalid_argument("keepAliveTimeout must be greater than or equal to 0");
   }
+  if (expectContinueTimeout < std::chrono::milliseconds{0}) {
+    throw std::invalid_argument("expectContinueTimeout must be greater than or equal to 0");
+  }
   if (maxResponseBytes < 1U) {
     throw std::invalid_argument("maxResponseBytes must be > 0");
   }

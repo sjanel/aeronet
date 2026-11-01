@@ -86,6 +86,22 @@ class HttpRequestTest {
 
 namespace {
 
+constexpr std::string_view kScriptedResponse = "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok";
+
+// Response of a server rejecting a request before its end, keeping the connection open (no 'Connection: close').
+constexpr std::string_view kScriptedEarlyRejection = "HTTP/1.1 413 Content Too Large\r\ncontent-length: 0\r\n\r\n";
+
+// Serve `response` from `offset` (advanced by the read), then the closing of the connection.
+TransportResult ServeScriptedResponse(std::string_view response, std::size_t& offset, char* buf, std::size_t len) {
+  if (offset == response.size()) {
+    return {0, TransportHint::None};
+  }
+  const std::size_t size = std::min(len, response.size() - offset);
+  std::char_traits<char>::copy(buf, response.data() + offset, size);
+  offset += size;
+  return {size, TransportHint::None};
+}
+
 class ScriptedHttp11Transport final : public TransportBackend<ScriptedHttp11Transport> {
  public:
   enum class WriteMode : uint8_t { SplitAfterHead, Error, ReadReady, WriteReady, ReadWriteReady };
@@ -96,14 +112,7 @@ class ScriptedHttp11Transport final : public TransportBackend<ScriptedHttp11Tran
     if (_writeMode == WriteMode::ReadWriteReady) {
       return {0, TransportHint::WriteReady};
     }
-    static constexpr std::string_view kResponse = "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok";
-    if (_responseOffset == kResponse.size()) {
-      return {0, TransportHint::None};
-    }
-    const std::size_t size = std::min(len, kResponse.size() - _responseOffset);
-    std::char_traits<char>::copy(buf, kResponse.data() + _responseOffset, size);
-    _responseOffset += size;
-    return {size, TransportHint::None};
+    return ServeScriptedResponse(kScriptedResponse, _responseOffset, buf, len);
   }
 
   TransportResult write(std::string_view data) {
@@ -500,6 +509,23 @@ TEST_F(HttpClientE2ETest, Http11PartialScatterWriteContinuesWithBodyOnly) {
 TEST_F(HttpClientE2ETest, Http11WriteErrorBeforeAnyBytesLeavesRequestUnsent) {
   HttpClient client;
   auto req = client.makeRequest(http::Method::GET, Url("/hello"));
+  HttpRequestTest::Finalize(req);
+  ScriptedHttp11Transport transport(ScriptedHttp11Transport::WriteMode::Error);
+  internal::ClientConnection connection(internal::ClientConnection::Type::Http11);
+  bool requestSent = false;
+
+  auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
+
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::writeError);
+  EXPECT_FALSE(requestSent);
+}
+
+// The head of a request with the 100-continue expectation, written alone, fails like any request head.
+TEST_F(HttpClientE2ETest, Http11ExpectContinueHeadWriteErrorLeavesRequestUnsent) {
+  HttpClient client;
+  auto req = client.makeRequest(http::Method::POST, Url("/echo"));
+  req.headerAddLine(http::Expect, http::h100_continue).body("payload");
   HttpRequestTest::Finalize(req);
   ScriptedHttp11Transport transport(ScriptedHttp11Transport::WriteMode::Error);
   internal::ClientConnection connection(internal::ClientConnection::Type::Http11);
@@ -941,22 +967,23 @@ std::string MakeFilePayload(std::size_t size) {
 // Advertises sendfile support and scripts the sendFile() outcomes so the HTTP/1.1 file-body sendfile loop
 // can be exercised deterministically (would-block -> retry, fatal error, and a persistent would-block that
 // times out) without depending on socket buffer sizing. The head write is accepted verbatim and a canned
-// 200 response is served on read().
+// 200 response is served on read(). After a fatal error, nothing was received (Error), or a rejection of the request
+// (ErrorAfterResponse).
 class ScriptedSendfileTransport final : public TransportBackend<ScriptedSendfileTransport> {
  public:
-  enum class Mode : uint8_t { WouldBlockThenSuccess, Error, AlwaysWouldBlock };
+  enum class Mode : uint8_t { WouldBlockThenSuccess, Error, ErrorAfterResponse, AlwaysWouldBlock };
 
   explicit ScriptedSendfileTransport(Mode mode) : _mode(mode) {}
 
   TransportResult read(char* buf, std::size_t len) {
-    static constexpr std::string_view kResponse = "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok";
-    if (_responseOffset == kResponse.size()) {
-      return {0, TransportHint::None};
+    switch (_mode) {
+      case Mode::Error:
+        return {0, TransportHint::ReadReady};
+      case Mode::ErrorAfterResponse:
+        return ServeScriptedResponse(kScriptedEarlyRejection, _responseOffset, buf, len);
+      default:
+        return ServeScriptedResponse(kScriptedResponse, _responseOffset, buf, len);
     }
-    const std::size_t size = std::min(len, kResponse.size() - _responseOffset);
-    std::char_traits<char>::copy(buf, kResponse.data() + _responseOffset, size);
-    _responseOffset += size;
-    return {size, TransportHint::None};
   }
 
   static TransportResult write(std::string_view data) { return {data.size(), TransportHint::None}; }
@@ -969,7 +996,7 @@ class ScriptedSendfileTransport final : public TransportBackend<ScriptedSendfile
 
   TransportResult sendFile(const File& /*file*/, std::size_t& offset, std::size_t count) {
     ++_sendFileCalls;
-    if (_mode == Mode::Error) {
+    if (_mode == Mode::Error || _mode == Mode::ErrorAfterResponse) {
       return {0, TransportHint::Error};
     }
     if (_mode == Mode::AlwaysWouldBlock) {
@@ -993,28 +1020,30 @@ class ScriptedSendfileTransport final : public TransportBackend<ScriptedSendfile
 
 // A transport that reports no sendfile support, so a file body takes the read-into-buffer + write fallback
 // (the TLS path in production). The head write is accepted verbatim; the body write() is scripted so the
-// fallback's write-error and write-would-block branches can be reached deterministically.
+// fallback's write-error and write-would-block branches can be reached deterministically. After a write error, nothing
+// was received (WriteError), or a rejection of the request (WriteErrorAfterResponse).
 class ScriptedFallbackTransport final : public TransportBackend<ScriptedFallbackTransport> {
  public:
-  enum class Mode : uint8_t { AcceptWrites, WriteError, WriteWouldBlock };
+  enum class Mode : uint8_t { AcceptWrites, WriteError, WriteErrorAfterResponse, WriteWouldBlock };
 
   explicit ScriptedFallbackTransport(Mode mode) : _mode(mode) {}
 
   TransportResult read(char* buf, std::size_t len) {
-    static constexpr std::string_view kResponse = "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok";
-    if (_responseOffset == kResponse.size()) {
-      return {0, TransportHint::None};
+    switch (_mode) {
+      case Mode::WriteError:
+        return {0, TransportHint::ReadReady};
+      case Mode::WriteErrorAfterResponse:
+        return ServeScriptedResponse(kScriptedEarlyRejection, _responseOffset, buf, len);
+      default:
+        return ServeScriptedResponse(kScriptedResponse, _responseOffset, buf, len);
     }
-    const std::size_t size = std::min(len, kResponse.size() - _responseOffset);
-    std::char_traits<char>::copy(buf, kResponse.data() + _responseOffset, size);
-    _responseOffset += size;
-    return {size, TransportHint::None};
   }
 
   // Body chunk writes (single-buffer): scripted per mode.
   TransportResult write(std::string_view data) {
     switch (_mode) {
       case Mode::WriteError:
+      case Mode::WriteErrorAfterResponse:
         return {0, TransportHint::Error};
       case Mode::WriteWouldBlock:
         return {0, TransportHint::WriteReady};
@@ -1061,7 +1090,7 @@ TEST_F(HttpClientE2ETest, FileBodySendfileWouldBlockThenResumes) {
   EXPECT_GE(transport.sendFileCalls(), 2U);  // at least one would-block + one successful send
 }
 
-// A fatal sendfile error aborts the exchange with a write error.
+// A fatal sendfile error, after which no response was received, aborts the exchange with a write error.
 TEST_F(HttpClientE2ETest, FileBodySendfileErrorFailsExchange) {
   test::ScopedTempDir tmpDir;
   test::ScopedTempFile tmp(tmpDir, std::string_view{"sendfile-payload"});
@@ -1079,6 +1108,30 @@ TEST_F(HttpClientE2ETest, FileBodySendfileErrorFailsExchange) {
 
   ASSERT_FALSE(result);
   EXPECT_EQ(result.error(), HttpClientErrc::writeError);
+}
+
+// RFC 9112 §9.5: a server rejecting a request may close the connection before its end, making the next write fail.
+// The response it sent before is returned instead of the write error, and the connection is not reused: the server
+// expects the rest of the request.
+TEST_F(HttpClientE2ETest, FileBodySendfileErrorReturnsTheResponseAlreadyReceived) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, std::string_view{"sendfile-payload"});
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+
+  HttpClient client;
+  auto req = client.makeRequest(http::Method::POST, Url("/echo")).file(std::move(file), "application/octet-stream");
+  HttpRequestTest::Finalize(req);
+  ScriptedSendfileTransport transport(ScriptedSendfileTransport::Mode::ErrorAfterResponse);
+  internal::ClientConnection connection(internal::ClientConnection::Type::Http11);
+  bool requestSent = false;
+
+  auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
+
+  ASSERT_TRUE(result) << ErrcToStr(result.error());
+  EXPECT_EQ(result->status(), http::StatusCodePayloadTooLarge);
+  EXPECT_TRUE(requestSent);
+  EXPECT_FALSE(connection.keepAlive());
 }
 
 // A sendfile that never drains (persistent would-block) must eventually surface a timeout when the event
@@ -1129,7 +1182,7 @@ TEST_F(HttpClientE2ETest, FileBodyFallbackReadErrorFailsExchange) {
   EXPECT_EQ(result.error(), HttpClientErrc::writeError);
 }
 
-// The read + write fallback must surface a fatal transport write error.
+// The read + write fallback must surface a fatal transport write error, after which no response was received.
 TEST_F(HttpClientE2ETest, FileBodyFallbackWriteErrorFailsExchange) {
   test::ScopedTempDir tmpDir;
   test::ScopedTempFile tmp(tmpDir, MakeFilePayload(1024));
@@ -1147,6 +1200,27 @@ TEST_F(HttpClientE2ETest, FileBodyFallbackWriteErrorFailsExchange) {
 
   ASSERT_FALSE(result);
   EXPECT_EQ(result.error(), HttpClientErrc::writeError);
+}
+
+// Like FileBodySendfileErrorReturnsTheResponseAlreadyReceived, for the read + write fallback.
+TEST_F(HttpClientE2ETest, FileBodyFallbackWriteErrorReturnsTheResponseAlreadyReceived) {
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, MakeFilePayload(1024));
+  File file(tmp.filePath().string());
+  ASSERT_TRUE(file);
+
+  HttpClient client;
+  auto req = client.makeRequest(http::Method::POST, Url("/echo")).file(std::move(file), "application/octet-stream");
+  HttpRequestTest::Finalize(req);
+  ScriptedFallbackTransport transport(ScriptedFallbackTransport::Mode::WriteErrorAfterResponse);
+  internal::ClientConnection connection(internal::ClientConnection::Type::Http11);
+  bool requestSent = false;
+
+  auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
+
+  ASSERT_TRUE(result) << ErrcToStr(result.error());
+  EXPECT_EQ(result->status(), http::StatusCodePayloadTooLarge);
+  EXPECT_FALSE(connection.keepAlive());
 }
 
 // A file-body request must surface a failure to write the request head (before any body byte is streamed);
@@ -3066,6 +3140,403 @@ TEST(HttpClientRawServerTest, KeepAliveOnSendsNoConnectionHeader) {
   ASSERT_EQ(heads.size(), 1U);
   std::string_view head = heads[0];
   EXPECT_FALSE(head.contains("connection:")) << head;
+}
+
+namespace {
+
+// What a raw server received on its connections, recorded by its handler and read by the test once the server stopped.
+class ReceivedLog {
+ public:
+  void add(std::string received) {
+    std::scoped_lock lock(_mutex);
+    _entries.push_back(std::move(received));
+  }
+
+  [[nodiscard]] vector<std::string> entries() {
+    std::scoped_lock lock(_mutex);
+    return _entries;
+  }
+
+ private:
+  std::mutex _mutex;
+  vector<std::string> _entries;
+};
+
+// Rejection of a request, sent before its end, keeping the connection open (no 'Connection: close').
+constexpr std::string_view kEarlyRejection = "HTTP/1.1 413 Content Too Large\r\ncontent-length: 0\r\n\r\n";
+constexpr std::string_view kOkResponse = "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok";
+
+// Larger than what the socket buffers of a connection hold once its server limits its receive buffer to
+// kSmallReceiveBuffer: a client writing it blocks until the server reads.
+constexpr std::size_t kLargeUploadSize = 8UL << 20U;
+constexpr int kSmallReceiveBuffer = 256 * 1024;
+
+// Complete `received`, the start of a request, with the rest of its body of `bodySize` bytes (or what the client sends
+// until it closes the connection).
+void RecvBody(NativeHandle fd, std::string& received, std::size_t bodySize) {
+  const std::size_t headEnd = received.find(http::DoubleCRLF);
+  if (headEnd == std::string::npos) {
+    return;
+  }
+  const std::size_t requestSize = headEnd + http::DoubleCRLF.size() + bodySize;
+  while (received.size() < requestSize && test::RecvAppend(fd, received, requestSize - received.size()) > 0) {
+  }
+}
+
+// Wait until `flag` is set, at most 10 s.
+void WaitFor(const std::atomic<bool>& flag) {
+  for (const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+       !flag.load() && std::chrono::steady_clock::now() < deadline;) {
+    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+  }
+}
+
+}  // namespace
+
+// RFC 9112 §9.5: a client sending a body watches the connection for a response. A server rejecting the request before
+// its end (here holding the connection without reading it) is not sent the rest of the body: the client stops as soon
+// as the response arrives, instead of blocking until the request timeout. The connection, whose server expects the rest
+// of the request, is not reused.
+TEST(HttpClientRawServerTest, EarlyRejectionStopsTheUpload) {
+  const std::string body = MakeFilePayload(kLargeUploadSize);
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, body);
+  for (const bool fileBody : {false, true}) {
+    ReceivedLog received;
+    std::atomic<bool> clientDone{false};
+    {
+      RawServer server([&received, &clientDone](NativeHandle fd, int) {
+        test::SetReceiveBufferSize(fd, kSmallReceiveBuffer);
+        std::string request = test::RecvHead(fd);
+        SendAll(fd, kEarlyRejection);
+        WaitFor(clientDone);  // neither read nor closed meanwhile: the client cannot write more than the buffers hold
+        request += test::RecvUntilEnd(fd).data;
+        received.add(std::move(request));
+      });
+      HttpClientConfig cfg;
+      cfg.requestTimeout = std::chrono::seconds{10};
+      HttpClient client(cfg);
+      auto req = client.makeRequest(http::Method::POST, MakeUrl(server.port(), "/upload"));
+      if (fileBody) {
+        req.file(File(tmp.filePath().string()), "application/octet-stream");
+      } else {
+        req.bodyStatic(body, "application/octet-stream");
+      }
+      const auto result = client.request(std::move(req));
+      clientDone = true;
+      ASSERT_TRUE(result) << fileBody << ' ' << ErrcToStr(result.error());
+      EXPECT_EQ(result->status(), http::StatusCodePayloadTooLarge);
+      EXPECT_EQ(HttpClientTest::IdleConnections(client), 0U);
+    }
+    const auto entries = received.entries();
+    ASSERT_EQ(entries.size(), 1U);
+    EXPECT_LT(entries[0].size(), body.size()) << fileBody;  // the upload stopped
+  }
+}
+
+// The response bytes read during the upload are bounded by maxResponseBytes, here those of an endless interim response.
+TEST(HttpClientRawServerTest, EndlessResponseDuringTheUploadIsTooLarge) {
+  const std::string body = MakeFilePayload(kLargeUploadSize);
+  std::atomic<bool> clientDone{false};
+  RawServer server([&clientDone](NativeHandle fd, int) {
+    test::SetReceiveBufferSize(fd, kSmallReceiveBuffer);
+    test::RecvHead(fd);
+    SendAll(fd, "HTTP/1.1 102 Processing\r\nx-filler: " + std::string(4096, 'f'));  // a head without end
+    WaitFor(clientDone);
+  });
+  HttpClientConfig cfg;
+  cfg.maxResponseBytes = 1024;
+  cfg.requestTimeout = std::chrono::seconds{10};
+  HttpClient client(cfg);
+  const auto result =
+      client.request(client.makeRequest(http::Method::POST, MakeUrl(server.port(), "/upload")).bodyStatic(body));
+  clientDone = true;
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::responseTooLarge);
+}
+
+// A server closing the connection during the upload, without answering, stops it: the request fails with
+// connectionClosed, also while waiting for the answer to a 100-continue expectation.
+TEST(HttpClientRawServerTest, ServerClosingDuringTheUploadStopsIt) {
+  const std::string body = MakeFilePayload(kLargeUploadSize);
+  for (const bool expectContinue : {false, true}) {
+    std::atomic<bool> clientDone{false};
+    RawServer server([&clientDone](NativeHandle fd, int) {
+      test::SetReceiveBufferSize(fd, kSmallReceiveBuffer);
+      test::RecvHead(fd);
+      // Its side only: the client reads the end of the connection, and its writes do not fail.
+      EXPECT_TRUE(ShutdownWrite(fd));
+      WaitFor(clientDone);
+    });
+    HttpClientConfig cfg;
+    cfg.requestTimeout = std::chrono::seconds{10};
+    cfg.expectContinueTimeout = std::chrono::seconds{20};
+    HttpClient client(cfg);
+    auto req = client.makeRequest(http::Method::POST, MakeUrl(server.port(), "/upload"));
+    if (expectContinue) {
+      req.headerAddLine(http::Expect, http::h100_continue);
+    }
+    const auto result = client.request(std::move(req.bodyStatic(body)));
+    clientDone = true;
+    ASSERT_FALSE(result) << expectContinue;
+    EXPECT_EQ(result.error(), HttpClientErrc::connectionClosed) << expectContinue;
+  }
+}
+
+// A 2xx response received before the end of the request does not stop its upload: the server may still read the
+// request content, as here. The connection stays reusable.
+TEST(HttpClientRawServerTest, EarlySuccessDoesNotStopTheUpload) {
+  const std::string body = MakeFilePayload(kLargeUploadSize);
+  ReceivedLog received;
+  {
+    RawServer server([&received, bodySize = body.size()](NativeHandle fd, int) {
+      test::SetReceiveBufferSize(fd, kSmallReceiveBuffer);
+      std::string request = test::RecvHead(fd);
+      SendAll(fd, kOkResponse);
+      std::this_thread::sleep_for(std::chrono::milliseconds{20});  // the client fills the buffers, then sees the 200
+      RecvBody(fd, request, bodySize);
+      received.add(std::move(request));
+      test::RecvUntilEnd(fd);  // until the client closes its pooled connection
+    });
+    HttpClient client;
+    const auto result =
+        client.request(client.makeRequest(http::Method::POST, MakeUrl(server.port(), "/upload")).bodyStatic(body));
+    ASSERT_TRUE(result) << ErrcToStr(result.error());
+    EXPECT_EQ(result->bodyInMemory(), "ok");
+    EXPECT_EQ(HttpClientTest::IdleConnections(client), 1U);
+  }
+  const auto entries = received.entries();
+  ASSERT_EQ(entries.size(), 1U);
+  EXPECT_TRUE(entries[0].ends_with(body));
+}
+
+#ifdef AERONET_LINUX
+// A server rejecting a request may also close the connection at once, without reading the rest of it, which resets
+// the connection. The client returns the response received before the reset (kept by Linux) instead of a write error,
+// whether it sees it while waiting to write, or after a write failed.
+TEST(HttpClientRawServerTest, RejectionBeforeAResetIsReturned) {
+  const std::string body = MakeFilePayload(kLargeUploadSize);
+  RawServer server([](NativeHandle fd, int) {
+    test::SetReceiveBufferSize(fd, kSmallReceiveBuffer);
+    test::RecvHead(fd);
+    SendAll(fd, "HTTP/1.1 413 Content Too Large\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+  });
+  HttpClient client;
+  for (int attempt = 0; attempt < 5; ++attempt) {
+    const auto result =
+        client.request(client.makeRequest(http::Method::POST, MakeUrl(server.port(), "/upload")).bodyStatic(body));
+    ASSERT_TRUE(result) << attempt << ' ' << ErrcToStr(result.error());
+    EXPECT_EQ(result->status(), http::StatusCodePayloadTooLarge);
+  }
+}
+#endif
+
+// The same against an aeronet server whose maximum body size is exceeded: it answers 413 from the head, then closes
+// the connection, at once or after draining its input for a while (lingering close). With 'Expect: 100-continue', the
+// body is not even sent.
+TEST_F(HttpClientE2ETest, BodyLargerThanTheServerAcceptsIsRejectedWith413) {
+  const std::string body = MakeFilePayload(kLargeUploadSize);
+  for (const auto lingeringCloseTimeout : {std::chrono::milliseconds{0}, std::chrono::milliseconds{5000}}) {
+    HttpServerConfig serverConfig;
+    serverConfig.withMaxBodyBytes(1024).withLingeringCloseTimeout(lingeringCloseTimeout);
+    test::TestServer server(std::move(serverConfig));
+    server.router().setPath(http::Method::POST, "/upload", [](const HttpRequestView& req) {
+      return req.makeResponse(http::StatusCodeOK, "stored", "text/plain");
+    });
+    HttpClient client;
+    for (const bool expectContinue : {false, true}) {
+      auto req =
+          client.makeRequest(http::Method::POST, "http://127.0.0.1:" + std::to_string(server.port()) + "/upload");
+      if (expectContinue) {
+        req.headerAddLine(http::Expect, http::h100_continue);
+      }
+      const auto result = client.request(std::move(req.bodyStatic(body)));
+      ASSERT_TRUE(result) << lingeringCloseTimeout.count() << ' ' << expectContinue << ' ' << ErrcToStr(result.error());
+      EXPECT_EQ(result->status(), http::StatusCodePayloadTooLarge);
+    }
+  }
+}
+
+// RFC 9110 §10.1.1: the body of a request with 'Expect: 100-continue' is sent once the server answered 100 (Continue),
+// without waiting for expectContinueTimeout. The connection stays reusable.
+TEST_F(HttpClientE2ETest, ExpectContinueSendsTheBodyAfter100Continue) {
+  enum class Body : uint8_t { Inlined, Captured, WithTrailers };
+  for (const bool keepAlive : {true, false}) {
+    HttpClientConfig cfg;
+    cfg.keepAlive = keepAlive;
+    cfg.expectContinueTimeout = std::chrono::seconds{20};
+    cfg.withDefaultAcceptEncoding("identity");  // the echoed body, a repeated byte, would exceed maxExpansionRatio
+    HttpClient client(cfg);
+    for (const Body bodyKind : {Body::Inlined, Body::Captured, Body::WithTrailers}) {
+      const std::string body(bodyKind == Body::Captured ? 64UL * 1024UL : 5UL, 'e');
+      auto req = client.makeRequest(http::Method::POST, Url("/echo"));
+      req.headerAddLine(http::Expect, http::h100_continue).body(std::string_view(body), "text/plain");
+      if (bodyKind == Body::WithTrailers) {
+        req.trailerAddLine("x-checksum", "abc");
+      }
+      const auto start = std::chrono::steady_clock::now();
+      const auto result = client.request(std::move(req));
+      ASSERT_TRUE(result) << keepAlive << ' ' << static_cast<int>(bodyKind) << ' ' << ErrcToStr(result.error());
+      EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds{10});
+      EXPECT_EQ(result->status(), http::StatusCodeOK);
+      EXPECT_EQ(result->bodyInMemory(), body);
+      EXPECT_EQ(HttpClientTest::IdleConnections(client), keepAlive ? 1U : 0U);
+    }
+  }
+}
+
+// A final response to the head of a request with 'Expect: 100-continue' answers it: its body is never sent, and the
+// connection, whose server may still expect it, is not reused. The expectation is case-insensitive.
+TEST(HttpClientRawServerTest, ExpectContinueFinalResponseSkipsTheBody) {
+  for (const std::string_view response : {kEarlyRejection, kOkResponse}) {
+    ReceivedLog received;
+    {
+      RawServer server([&received, response](NativeHandle fd, int) {
+        std::string request = test::RecvHead(fd);
+        SendAll(fd, response);
+        request += test::RecvUntilEnd(fd).data;  // until the client closes the connection
+        received.add(std::move(request));
+      });
+      HttpClientConfig cfg;
+      cfg.expectContinueTimeout = std::chrono::seconds{20};
+      HttpClient client(cfg);
+      auto req = client.makeRequest(http::Method::PUT, MakeUrl(server.port(), "/file"));
+      req.headerAddLine(http::Expect, "100-Continue").body(std::string(64UL * 1024UL, 'b'), "application/octet-stream");
+      const auto result = client.request(std::move(req));
+      ASSERT_TRUE(result) << response << ' ' << ErrcToStr(result.error());
+      EXPECT_EQ(result->status(), response == kOkResponse ? http::StatusCodeOK : http::StatusCodePayloadTooLarge);
+      EXPECT_EQ(HttpClientTest::IdleConnections(client), 0U);
+    }
+    const auto entries = received.entries();
+    ASSERT_EQ(entries.size(), 1U);
+    EXPECT_TRUE(entries[0].contains("\r\nexpect: 100-Continue\r\n")) << entries[0];
+    EXPECT_TRUE(entries[0].ends_with(http::DoubleCRLF)) << entries[0];  // the head only
+  }
+}
+
+// A server ignoring expectations (such as an HTTP/1.0 one) does not answer 100 (Continue): the body is sent after
+// expectContinueTimeout, or right after the head with a zero one.
+TEST(HttpClientRawServerTest, ExpectContinueWithoutAnswerSendsTheBodyAfterTheTimeout) {
+  static constexpr std::string_view kBody = "expected body";
+  for (const auto timeout : {std::chrono::milliseconds{0}, std::chrono::milliseconds{100}}) {
+    ReceivedLog received;
+    {
+      RawServer server([&received](NativeHandle fd, int) {
+        std::string request = test::RecvHead(fd);
+        RecvBody(fd, request, kBody.size());
+        SendAll(fd, kOkResponse);
+        received.add(std::move(request));
+        test::RecvUntilEnd(fd);  // until the client closes its pooled connection
+      });
+      HttpClientConfig cfg;
+      cfg.expectContinueTimeout = timeout;
+      HttpClient client(cfg);
+      auto req = client.makeRequest(http::Method::POST, MakeUrl(server.port()));
+      req.headerAddLine(http::Expect, http::h100_continue).body(kBody);
+      const auto start = std::chrono::steady_clock::now();
+      const auto result = client.request(std::move(req));
+      const auto elapsed = std::chrono::steady_clock::now() - start;
+      ASSERT_TRUE(result) << timeout.count() << ' ' << ErrcToStr(result.error());
+      EXPECT_EQ(result->bodyInMemory(), "ok");
+      EXPECT_GE(elapsed, timeout);
+      EXPECT_EQ(HttpClientTest::IdleConnections(client), 1U);
+    }
+    const auto entries = received.entries();
+    ASSERT_EQ(entries.size(), 1U);
+    EXPECT_TRUE(entries[0].ends_with(kBody)) << entries[0];
+  }
+}
+
+// The wait for the answer to the expectation also ends with the request timeout.
+TEST(HttpClientRawServerTest, ExpectContinueWaitEndsWithTheRequestTimeout) {
+  std::atomic<bool> clientDone{false};
+  RawServer server([&clientDone](NativeHandle fd, int) {
+    test::RecvHead(fd);
+    WaitFor(clientDone);  // no answer
+  });
+  HttpClientConfig cfg;
+  cfg.requestTimeout = std::chrono::milliseconds{100};
+  cfg.expectContinueTimeout = std::chrono::seconds{20};
+  HttpClient client(cfg);
+  auto req = client.makeRequest(http::Method::POST, MakeUrl(server.port()));
+  req.headerAddLine(http::Expect, http::h100_continue).body("payload");
+  const auto result = client.request(std::move(req));
+  clientDone = true;
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::timeout);
+}
+
+// RFC 9110 §10.1.1: a 417 (Expectation Failed) only tells that a server does not support expectations: the request is
+// repeated without its expectation, and the 417 is never given to a response body sink.
+TEST(HttpClientRawServerTest, ExpectationFailedRepeatsTheRequestWithoutExpectation) {
+  static constexpr std::string_view kBody = "payload";
+  for (const bool withSink : {false, true}) {
+    ReceivedLog received;
+    {
+      RawServer server([&received](NativeHandle fd, int) {
+        std::string request = test::RecvHead(fd);
+        if (request.contains("\r\nexpect:")) {
+          SendAll(fd, "HTTP/1.1 417 Expectation Failed\r\ncontent-length: 0\r\n\r\n");
+          request += test::RecvUntilEnd(fd).data;  // until the client closes the connection
+          received.add(std::move(request));
+          return;
+        }
+        RecvBody(fd, request, kBody.size());
+        SendAll(fd, kOkResponse);
+        received.add(std::move(request));
+        test::RecvUntilEnd(fd);
+      });
+      HttpClientConfig cfg;
+      cfg.expectContinueTimeout = std::chrono::seconds{20};
+      HttpClient client(cfg);
+      auto req = client.makeRequest(http::Method::POST, MakeUrl(server.port()));
+      req.headerAddLine(http::Expect, http::h100_continue).body(kBody);
+      test::CollectingBodySink sink;
+      const auto result = withSink ? client.request(std::move(req), sink) : client.request(std::move(req));
+      ASSERT_TRUE(result) << withSink << ' ' << ErrcToStr(result.error());
+      EXPECT_EQ(result->status(), http::StatusCodeOK);
+      if (withSink) {
+        EXPECT_EQ(sink.headCalls, 1U);
+        EXPECT_EQ(sink.status, http::StatusCodeOK);
+        EXPECT_EQ(sink.body, "ok");
+      } else {
+        EXPECT_EQ(result->bodyInMemory(), "ok");
+      }
+    }
+    const auto entries = received.entries();
+    ASSERT_EQ(entries.size(), 2U);
+    EXPECT_TRUE(entries[0].ends_with(http::DoubleCRLF)) << entries[0];  // the head only
+    EXPECT_FALSE(entries[1].contains("expect:")) << entries[1];
+    EXPECT_TRUE(entries[1].ends_with(kBody)) << entries[1];
+  }
+}
+
+// A redirect turning the request into a body-less GET drops its 100-continue expectation, which a request without
+// content must not carry (RFC 9110 §10.1.1).
+TEST(HttpClientRawServerTest, RedirectToGetDropsTheExpectation) {
+  ReceivedLog received;
+  {
+    RawServer server([&received](NativeHandle fd, int idx) {
+      std::string request = test::RecvHead(fd);
+      SendAll(fd, idx == 0 ? "HTTP/1.1 303 See Other\r\nlocation: /next\r\ncontent-length: 0\r\n\r\n" : kOkResponse);
+      request += test::RecvUntilEnd(fd).data;
+      received.add(std::move(request));
+    });
+    HttpClientConfig cfg;
+    cfg.expectContinueTimeout = std::chrono::seconds{20};
+    HttpClient client(cfg);
+    auto req = client.makeRequest(http::Method::POST, MakeUrl(server.port(), "/form"));
+    req.headerAddLine(http::Expect, http::h100_continue).body("field=value", "application/x-www-form-urlencoded");
+    const auto result = client.request(std::move(req));
+    ASSERT_TRUE(result) << ErrcToStr(result.error());
+    EXPECT_EQ(result->bodyInMemory(), "ok");
+  }
+  const auto entries = received.entries();
+  ASSERT_EQ(entries.size(), 2U);
+  EXPECT_TRUE(entries[0].contains("\r\nexpect: 100-continue\r\n")) << entries[0];
+  EXPECT_TRUE(entries[0].ends_with(http::DoubleCRLF)) << entries[0];  // the head only
+  EXPECT_TRUE(entries[1].starts_with("GET /next HTTP/1.1\r\n")) << entries[1];
+  EXPECT_FALSE(entries[1].contains("expect:")) << entries[1];
 }
 
 // The server reads the request but never answers, then closes after the deadline. The deadline must win even

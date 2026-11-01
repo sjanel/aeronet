@@ -45,8 +45,9 @@ class ResponseStreamer {
   [[nodiscard]] bool headDelivered() const noexcept { return _headDelivered; }
 
   // Prepare for one exchange of a sink request. A response that would then be followed (a redirect when
-  // `redirectFollowed`) or retried (a status of retryStatuses when `statusRetried`) is buffered instead of delivered.
-  void beginExchange(bool redirectFollowed, bool statusRetried) noexcept;
+  // `redirectFollowed`) or retried (a status of retryStatuses when `statusRetried`, a 417 when `expectationRetried`) is
+  // buffered instead of delivered.
+  void beginExchange(bool redirectFollowed, bool statusRetried, bool expectationRetried) noexcept;
 
   // Called once the head of a final response announcing a body is received, `body` holding its raw Content-Type value
   // (empty when absent) and its Content-Length (ResponseBodyInfo::kUnknownSize when absent, or for chunked framing).
@@ -99,6 +100,7 @@ class ResponseStreamer {
   Encoding _encoding{Encoding::none};  // none: the body is delivered as received
   bool _bufferRedirects{false};
   bool _bufferRetries{false};
+  bool _bufferExpectationFailed{false};
   bool _headDelivered{false};
 };
 
