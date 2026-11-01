@@ -232,16 +232,22 @@ bool WaitForPeerClosedNonBlocking(int fd, std::chrono::milliseconds timeout) {
 
 }  // namespace
 
-TEST(Http10, BasicVersionEcho) {
+// RFC 9110 §2.5: an HTTP/1.0 request is answered with the highest version the server conforms to, HTTP/1.1. Such a
+// response persists by default (RFC 9112 §9.3): the close of the connection, default for HTTP/1.0, is announced.
+TEST(Http10, AnsweredWithHttp11StatusLine) {
   ts.router().setDefault([]([[maybe_unused]] const HttpRequestView& req) { return HttpResponse("A"); });
-  std::string req = "GET /x HTTP/1.0\r\nhost: h\r\n\r\n";
-  std::string resp = test::sendAndCollect(ts.port(), req);
-  ASSERT_TRUE(resp.starts_with("HTTP/1.0 200"));
+  for (std::string_view method : {"GET", "HEAD"}) {
+    const std::string resp = test::sendAndCollect(ts.port(), std::format("{} /x HTTP/1.0\r\nhost: h\r\n\r\n", method));
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 200 ")) << resp;
+    EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << resp;
+    EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, "1"))) << resp;
+    EXPECT_TRUE(resp.ends_with(method == "GET" ? "\r\n\r\nA" : "\r\n\r\n")) << resp;
+  }
 }
 
 // RFC 9112 §6.1: an HTTP/1.0 response cannot be chunked. Without contentLength(), a streamed body is delimited by the
-// close of the connection (RFC 9112 §6.3), even if the client asked to keep it alive: the request pipelined behind it
-// is not served. Its trailers are dropped.
+// close of the connection (RFC 9112 §6.3), even if the client asked to keep it alive: the head announces it, and the
+// request pipelined behind it is not served. Its trailers are dropped.
 TEST(Http10, StreamedBodyWithoutLengthIsDelimitedByClose) {
   for (std::size_t partSize : {std::size_t{5}, std::size_t{64UL << 10U}}) {
     const std::string part(partSize, 'p');
@@ -257,12 +263,13 @@ TEST(Http10, StreamedBodyWithoutLengthIsDelimitedByClose) {
                   "GET /s HTTP/1.0\r\nhost: h\r\nconnection: keep-alive\r\n\r\n"
                   "GET /s HTTP/1.0\r\nhost: h\r\nconnection: keep-alive\r\n\r\n");
     const std::string resp = test::recvUntilClosed(cnx.fd());
-    EXPECT_TRUE(resp.starts_with("HTTP/1.0 200")) << resp.substr(0, 512);
-    EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.0 "), 1);
-    const std::string_view head = std::string_view(resp).substr(0, resp.find(http::DoubleCRLF));
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp.substr(0, 512);
+    EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1);
+    // The head, with the CRLF of its last header line.
+    const std::string_view head = std::string_view(resp).substr(0, resp.find(http::DoubleCRLF) + http::CRLF.size());
     EXPECT_FALSE(head.contains(http::TransferEncoding)) << head;
     EXPECT_FALSE(head.contains(http::ContentLength)) << head;
-    EXPECT_FALSE(head.contains(http::Connection)) << head;
+    EXPECT_TRUE(head.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << head;
     EXPECT_FALSE(resp.contains("x-checksum")) << head;
     std::string expectedEnd(http::DoubleCRLF);
     for (int partPos = 0; partPos < 4; ++partPos) {
@@ -287,7 +294,7 @@ TEST(Http10, StreamedResponseOfKnownLengthKeepsConnectionAlive) {
 
   test::sendAll(cnx.fd(), "HEAD /unknown-length HTTP/1.0\r\nhost: h\r\nconnection: keep-alive\r\n\r\n");
   const std::string headResp = test::RecvHead(cnx.fd());
-  EXPECT_TRUE(headResp.starts_with("HTTP/1.0 200")) << headResp;
+  EXPECT_TRUE(headResp.starts_with("HTTP/1.1 200")) << headResp;
   EXPECT_TRUE(headResp.contains(keepAliveLine)) << headResp;
   EXPECT_FALSE(headResp.contains(http::ContentLength)) << headResp;
   EXPECT_FALSE(headResp.contains(http::TransferEncoding)) << headResp;
@@ -295,17 +302,17 @@ TEST(Http10, StreamedResponseOfKnownLengthKeepsConnectionAlive) {
 
   test::sendAll(cnx.fd(), "GET /len HTTP/1.0\r\nhost: h\r\nconnection: keep-alive\r\n\r\n");
   const std::string first = test::recvWithTimeout(cnx.fd(), 2s);
-  EXPECT_TRUE(first.starts_with("HTTP/1.0 200")) << first;
+  EXPECT_TRUE(first.starts_with("HTTP/1.1 200")) << first;
   EXPECT_TRUE(first.contains(MakeHttp1HeaderLine(http::ContentLength, "4"))) << first;
   EXPECT_TRUE(first.contains(keepAliveLine)) << first;
   EXPECT_TRUE(first.ends_with("\r\n\r\nabcd")) << first;
 
-  // Without keep-alive, the connection is closed after the response.
+  // Without keep-alive, the connection is closed after the response, which announces it.
   test::sendAll(cnx.fd(), "GET /len HTTP/1.0\r\nhost: h\r\n\r\n");
   const std::string last = test::recvUntilClosed(cnx.fd());
-  EXPECT_TRUE(last.starts_with("HTTP/1.0 200")) << last;
+  EXPECT_TRUE(last.starts_with("HTTP/1.1 200")) << last;
   EXPECT_TRUE(last.contains(MakeHttp1HeaderLine(http::ContentLength, "4"))) << last;
-  EXPECT_FALSE(last.contains(http::Connection)) << last;
+  EXPECT_TRUE(last.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << last;
   EXPECT_TRUE(last.ends_with("\r\n\r\nabcd")) << last;
 }
 
@@ -319,7 +326,7 @@ TEST(Http10, No100ContinueEvenIfHeaderPresent) {
         body.size(), body);
     const std::string resp = test::sendAndCollect(ts.port(), req);
     EXPECT_FALSE(resp.contains("100 Continue")) << resp;
-    EXPECT_TRUE(resp.starts_with("HTTP/1.0 200")) << resp;
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
     EXPECT_TRUE(resp.ends_with(std::string(http::DoubleCRLF) + std::string(body))) << resp;
   }
 }
@@ -337,7 +344,7 @@ TEST(Http10, TrailersAreDroppedAndBodyKeepsItsContentLength) {
     for (std::string_view method : {"GET", "HEAD"}) {
       const std::string resp =
           test::sendAndCollect(ts.port(), std::format("{} /t HTTP/1.0\r\nhost: h\r\n\r\n", method));
-      EXPECT_TRUE(resp.starts_with("HTTP/1.0 200")) << resp;
+      EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
       EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(bodySize)))) << resp;
       EXPECT_FALSE(resp.contains(http::TransferEncoding)) << resp;
       EXPECT_FALSE(resp.contains(MakeHttp1HeaderLine(http::Trailer, "x-checksum"))) << resp;
@@ -363,12 +370,12 @@ TEST(Http10, KeepAliveOptInStillWorks) {
   std::string req1 = "GET /k1 HTTP/1.0\r\nhost: h\r\nconnection: keep-alive\r\n\r\n";
   test::sendAll(fd, req1);
   std::string first = test::recvWithTimeout(fd, 300ms);  // NOLINT(misc-include-cleaner)
-  ASSERT_TRUE(first.starts_with("HTTP/1.0 200"));
+  ASSERT_TRUE(first.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(first.contains(MakeHttp1HeaderLine(http::Connection, http::keepalive)));
   std::string req2 = "GET /k2 HTTP/1.0\r\nhost: h\r\nconnection: keep-alive\r\n\r\n";
   test::sendAll(fd, req2);
   std::string second = test::recvWithTimeout(fd, 300ms);  // NOLINT(misc-include-cleaner)
-  ASSERT_TRUE(second.starts_with("HTTP/1.0 200"));
+  ASSERT_TRUE(second.starts_with("HTTP/1.1 200"));
 }
 
 // RFC 9110 §6.2: a request with a higher HTTP/1 minor version is processed, and answered, as HTTP/1.1.
@@ -1259,8 +1266,8 @@ TEST(HttpExpectation, NoInterimResponseToHttp10Client) {
   const std::string resp = test::sendAndCollect(ts.port(),
                                                 "POST /x HTTP/1.0\r\nhost: x\r\ncontent-length: 5\r\nexpect: "
                                                 "x-continue, 102-processing, 100-continue\r\n\r\nHELLO");
-  EXPECT_TRUE(resp.starts_with("HTTP/1.0 200")) << resp;
-  EXPECT_FALSE(resp.contains("HTTP/1.1")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp;
   EXPECT_TRUE(resp.ends_with("\r\n\r\nHELLO")) << resp;
 }
 

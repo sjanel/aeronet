@@ -4823,7 +4823,7 @@ TEST_F(HttpResponseTest, TrailersOfDirectCompressionDroppedForHttp10) {
     const std::string result = concatenated(std::move(resp), {}, kIsHeadMethod, kKeepAlive, kMinCapturedBodySize,
                                             kAddTrailerHeader, http::HTTP_1_0);
 
-    EXPECT_TRUE(result.starts_with("HTTP/1.0 200")) << result;
+    EXPECT_TRUE(result.starts_with("HTTP/1.1 200")) << result;
     EXPECT_TRUE(result.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(compressed.size()))));
     EXPECT_FALSE(result.contains(http::TransferEncoding));
     EXPECT_FALSE(result.contains("x-checksum"));
@@ -6078,13 +6078,11 @@ TEST_F(HttpResponseTest, TrailersDroppedForHttp10) {
           const std::string result =
               concatenated(std::move(resp), {}, head, keepAlive, minCapturedBodySz, true, http::HTTP_1_0);
 
-          std::string exp("HTTP/1.0 200 \r\n");
+          std::string exp("HTTP/1.1 200 \r\n");
           exp += MakeHttp1HeaderLine(http::Date, kDateHeader);
           exp += MakeHttp1HeaderLine(http::ContentType, http::ContentTypeTextPlain);
           exp += MakeHttp1HeaderLine(http::ContentLength, std::to_string(kBody.size()));
-          if (keepAlive) {
-            exp += MakeHttp1HeaderLine(http::Connection, http::keepalive);
-          }
+          exp += MakeHttp1HeaderLine(http::Connection, keepAlive ? http::keepalive : http::close);
           exp += http::CRLF;
           if (!head) {
             exp += kBody;
@@ -6093,6 +6091,45 @@ TEST_F(HttpResponseTest, TrailersDroppedForHttp10) {
                                  << " minCapturedBodySz=" << minCapturedBodySz << " head=" << head
                                  << " keepAlive=" << keepAlive;
         }
+      }
+    }
+  }
+}
+
+// RFC 9110 §2.5: the status line is HTTP/1.1 whatever the request version. An HTTP/1.1 response persists by default
+// (RFC 9112 §9.3): its close is always announced, and its persistence only for an HTTP/1.0 request.
+TEST_F(HttpResponseTest, StatusLineIsHttp11WhateverTheRequestVersion) {
+  for (http::Version version : {http::HTTP_1_0, http::HTTP_1_1}) {
+    for (bool keepAlive : {false, true}) {
+      for (std::string_view body : {std::string_view{}, std::string_view{"payload"}}) {
+        HttpResponse resp(http::StatusCodeNotFound);
+        resp.body(body);
+        const std::string result = concatenated(std::move(resp), {}, kIsHeadMethod, keepAlive, kMinCapturedBodySize,
+                                                kAddTrailerHeader, version);
+
+        RawChars connectionLine;
+        if (!keepAlive) {
+          connectionLine = MakeHttp1HeaderLine(http::Connection, http::close);
+        } else if (version == http::HTTP_1_0) {
+          connectionLine = MakeHttp1HeaderLine(http::Connection, http::keepalive);
+        }
+        const RawChars contentLengthLine = MakeHttp1HeaderLine(http::ContentLength, std::to_string(body.size()));
+
+        std::string exp("HTTP/1.1 404 \r\n");
+        exp += MakeHttp1HeaderLine(http::Date, kDateHeader);
+        if (body.empty()) {
+          // The Content-Length: 0 of an empty body is synthesized after the Connection header.
+          exp += connectionLine;
+          exp += contentLengthLine;
+        } else {
+          exp += MakeHttp1HeaderLine(http::ContentType, http::ContentTypeTextPlain);
+          exp += contentLengthLine;
+          exp += connectionLine;
+        }
+        exp += http::CRLF;
+        exp += body;
+        EXPECT_EQ(result, exp) << "minor=" << static_cast<int>(version.minor()) << " keepAlive=" << keepAlive
+                               << " body=" << body;
       }
     }
   }

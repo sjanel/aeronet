@@ -1227,9 +1227,9 @@ void HttpMessage::finalizeForHttp1(http::Version version, Options opts, const Co
 
   const bool isClose = opts.isClose();
   const std::string_view connectionValue = isClose ? http::close : http::keepalive;
-  // HTTP/1.1 (RFC 7230 / RFC 9110) specifies that Connection: keep-alive is the default.
-  // HTTP/1.0 is the opposite - Connection: close is the default.
-  const bool addConnectionHeader = (isClose && version == http::HTTP_1_1) || (!isClose && isHttp10);
+  // A response carries an HTTP/1.1 status line, whose connection persists by default (RFC 9112 §9.3): its close is
+  // always announced. An HTTP/1.0 recipient closes the connection by default: its persistence is announced too.
+  const bool addConnectionHeader = isClose || isHttp10;
   const bool hasHeaders = !headersFlatView().empty();
   const bool isHeadMethod = opts.isHeadMethod();
   const bool addTrailerHeader = trailersSize() != 0 && opts.isAddTrailerHeader();

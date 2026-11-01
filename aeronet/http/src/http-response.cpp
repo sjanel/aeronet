@@ -204,8 +204,9 @@ HttpResponse& HttpResponse::reason(std::string_view newReason) & {
 HttpMessageData HttpResponse::finalizeForHttp1(const char* cachedDateHeader, http::Version version, Options opts,
                                                const ConcatenatedHeaders* pGlobalHeaders,
                                                std::size_t minCapturedBodySize) {
-  // Write the Http version (1.0 or 1.1)
-  version.writeFull(_data.data());
+  // The status line carries the highest minor version of HTTP/1 the server conforms to, also for an HTTP/1.0 request
+  // (RFC 9110 §2.5 and §6.2). The request version still decides the framing and the persistence of the response.
+  CopyFixed<http::HTTP11Sv>(_data.data());
 
   // Write date header
   CopyCRLFDateHeader(cachedDateHeader, _data.data() + dateHeaderStartPos());

@@ -870,9 +870,9 @@ TEST_F(WebSocketTest, UpgradeIgnoredInHttp10) {
   };
 
   std::string resp = http10Upgrade("/ws-http10");
-  EXPECT_TRUE(resp.starts_with("HTTP/1.0 404")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 404")) << resp;
   resp = http10Upgrade("/ws-http10-get");
-  EXPECT_TRUE(resp.starts_with("HTTP/1.0 200")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
   EXPECT_TRUE(resp.ends_with("\r\n\r\nplain")) << resp;
 
   EXPECT_TRUE(UpgradeResponse("/ws-http10", "").starts_with("HTTP/1.1 101"));
