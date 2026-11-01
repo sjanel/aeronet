@@ -19,6 +19,7 @@ class CollectingBodySink final : public ResponseBodySink {
  public:
   bool onHead(const HttpResponse& head, const ResponseBodyInfo& info) override {
     EXPECT_EQ(bodyCalls, 0U) << "onHead() after onBody()";
+    EXPECT_EQ(info.sizeKnown(), info.size != ResponseBodyInfo::kUnknownSize);
     ++headCalls;
     status = head.status();
     contentType.assign(info.contentType);

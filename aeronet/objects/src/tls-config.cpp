@@ -151,7 +151,7 @@ TLSConfig& TLSConfig::withTlsSessionTicketKey(SessionTicketKey keyMaterial) {
 
   // Avoid leaving an abandoned key copy behind when the vector grows: relocate through a pre-reserved replacement,
   // scrub the old inline elements, then publish the replacement.
-  auto& keys = _staticTicketKeys.keys;
+  vector<SessionTicketKey>& keys = _staticTicketKeys.keys;
   if (keys.size() == keys.capacity()) {
     vector<SessionTicketKey> replacement;
     replacement.reserve((keys.size() * 2U) + 1U);

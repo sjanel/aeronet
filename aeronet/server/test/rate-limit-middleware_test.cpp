@@ -146,7 +146,7 @@ TEST(RateLimitMiddleware, RvalueBuildMovesBuilderAndDoesNotDuplicateStoreOwnersh
   // shared_ptr's use_count stays at 2 (local `store` + the closure's copy), and the
   // moved-from builder no longer holds the store.
   EXPECT_EQ(store.use_count(), 2);
-  EXPECT_EQ(options.store, nullptr);  // NOLINT(bugprone-use-after-move) -- intentionally inspecting moved-from state
+  EXPECT_EQ(options.store, nullptr);  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
 }
 
 TEST(RateLimitMiddleware, AcceptsCustomIRateLimitStoreImplementation) {

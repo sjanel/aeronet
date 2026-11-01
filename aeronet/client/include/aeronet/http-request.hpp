@@ -668,10 +668,6 @@ class HttpRequest final : public HttpMessage {
   friend class Http1WriterTransport;  // HTTP/1.1 transport for streaming
   friend class HttpRequestTest;
 
-  // Private constructor to avoid allocating memory for the data buffer when not needed immediately.
-  // Use with care! All setters currently take the assumption that the internal buffer is allocated.
-  explicit constexpr HttpRequest([[maybe_unused]] HttpMessage::Check check) noexcept : HttpMessage(check) {}
-
   HttpRequest(std::size_t additionalCapacity, http::Method method, std::string_view url,
               std::string_view concatenatedHeaders, Options opts)
       : HttpMessage(opts) {

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -929,7 +930,8 @@ TEST(Http2Connection, SmallOwnedMessageDataIsCopiedAndLeftToItsOwner) {
   const std::string_view payload = owner.secondBuffer();
   ASSERT_EQ(connection.sendData(1, std::move(owner), std::as_bytes(std::span<const char>(payload)), true),
             ErrorCode::NoError);
-  EXPECT_EQ(owner.secondBuffer().data(), payload.data());  // NOLINT(bugprone-use-after-move)
+  // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+  EXPECT_EQ(owner.secondBuffer().data(), payload.data());
   EXPECT_EQ(Http2ConnectionTest::NbOutputBlocks(connection), 0U);
 
   vector<std::string_view> fragments;
@@ -952,9 +954,10 @@ TEST(Http2Connection, OwnedMessageDataRefusedOnUnknownOrClosedStream) {
   EXPECT_EQ(connection.sendData(1, std::move(owner), data, true), ErrorCode::ProtocolError);
 
   ASSERT_EQ(connection.sendHeaders(1, http::StatusCodeOK, HeadersView{}, true), ErrorCode::NoError);
-  // NOLINTNEXTLINE(bugprone-use-after-move)
+  // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
   EXPECT_EQ(connection.sendData(1, std::move(owner), data, true), ErrorCode::StreamClosed);
-  EXPECT_EQ(owner.secondBuffer().data(), payload.data());  // NOLINT(bugprone-use-after-move)
+  // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+  EXPECT_EQ(owner.secondBuffer().data(), payload.data());
   EXPECT_EQ(Http2ConnectionTest::NbOutputBlocks(connection), 0U);
 }
 
@@ -2888,7 +2891,7 @@ TEST(Http2Connection, FieldBlocksOnAStreamResetThenPrunedAreDecodedAndIgnored) {
   EXPECT_EQ(conn.getStream(3), nullptr);
 
   // The next request refers to these fields by their dynamic table index: decoded only if they were.
-  const uint32_t nextStreamId = 2U * kNbStreams + 1U;
+  const uint32_t nextStreamId = (2U * kNbStreams) + 1U;
   const RawBytes next = EncodeFieldBlock(
       encoder, {{":method", "GET"}, {":scheme", "https"}, {":path", "/"}, {"x-one", "first"}, {"x-two", "second"}});
   FeedConnection(conn, HeadersFrame(nextStreamId, next, FrameFlags::HeadersEndHeaders | FrameFlags::HeadersEndStream));
@@ -2909,7 +2912,7 @@ TEST(Http2Connection, ContinuationOfAStreamPrunedMeanwhileIsDecoded) {
     OpenClientStream(conn, streamId);
   }
 
-  const uint32_t streamId = 2U * kNbOtherStreams + 1U;
+  const uint32_t streamId = (2U * kNbOtherStreams) + 1U;
   HpackEncoder encoder(config.headerTableSize);
   const RawBytes request = EncodeRequest(encoder, "x-one", "first");
   const std::span<const std::byte> requestSpan(request.data(), request.size());
@@ -2992,7 +2995,7 @@ TEST(Http2Connection, ClientIgnoresTheResponseOfAForgottenStreamAndRejectsTheOth
     ASSERT_EQ(client.sendHeaders(streamId, http::StatusCode{}, HeadersView(request), true), ErrorCode::NoError);
     client.sendRstStream(streamId, ErrorCode::Cancel);
   }
-  const uint32_t liveStreamId = 2U * kNbStreams + 1U;
+  const uint32_t liveStreamId = (2U * kNbStreams) + 1U;
   ASSERT_EQ(client.sendHeaders(liveStreamId, http::StatusCode{}, HeadersView(request), true), ErrorCode::NoError);
   (void)DrainPendingOutput(client);
   ASSERT_EQ(client.getStream(1), nullptr);
@@ -3029,26 +3032,32 @@ TEST(Http2Connection, FramesOnIdleStreamsAreConnectionErrors) {
     ErrorMsg errorMsg;
   };
   const std::array frameCases{
-      FrameCase{[](uint32_t streamId) {
-                  RawBytes frame;
-                  WriteRstStreamFrame(frame, streamId, ErrorCode::Cancel);
-                  return frame;
-                },
-                ErrorMsg::RST_STREAMOnIdleStream},
-      FrameCase{[](uint32_t streamId) {
-                  static constexpr std::array kPayload{std::byte{'d'}, std::byte{'a'}, std::byte{'t'}, std::byte{'a'}};
-                  const auto frame = SerializeFrame(
-                      FrameHeader(static_cast<uint32_t>(kPayload.size()), FrameType::Data, FrameFlags::None, streamId),
-                      kPayload);
-                  return RawBytes(std::span<const std::byte>(frame));
-                },
-                ErrorMsg::DATAOnIdleStream},
-      FrameCase{[](uint32_t streamId) {
-                  RawBytes frame;
-                  WriteWindowUpdateFrame(frame, streamId, 100);
-                  return frame;
-                },
-                ErrorMsg::WINDOW_UPDATEOnIdleStream},
+      FrameCase{
+          [](uint32_t streamId) {
+            RawBytes frame;
+            WriteRstStreamFrame(frame, streamId, ErrorCode::Cancel);
+            return frame;
+          },
+          ErrorMsg::RST_STREAMOnIdleStream,
+      },
+      FrameCase{
+          [](uint32_t streamId) {
+            static constexpr std::array kPayload{std::byte{'d'}, std::byte{'a'}, std::byte{'t'}, std::byte{'a'}};
+            const auto frame = SerializeFrame(
+                FrameHeader(static_cast<uint32_t>(kPayload.size()), FrameType::Data, FrameFlags::None, streamId),
+                kPayload);
+            return RawBytes(std::span<const std::byte>(frame));
+          },
+          ErrorMsg::DATAOnIdleStream,
+      },
+      FrameCase{
+          [](uint32_t streamId) {
+            RawBytes frame;
+            WriteWindowUpdateFrame(frame, streamId, 100);
+            return frame;
+          },
+          ErrorMsg::WINDOW_UPDATEOnIdleStream,
+      },
   };
   const auto expectIdleStreamError = [](Http2Connection& conn, std::span<const std::byte> frame, ErrorMsg errorMsg) {
     const auto res = conn.processInput(frame);
@@ -3539,11 +3548,9 @@ TEST(Http2Connection, HeadersAboveMaxConcurrentStreamsRefuseTheStream) {
     ASSERT_EQ(headerStreams, vector<uint32_t>{1});
 
     // Stream 3 exceeds the limit. Its x-refused field goes into the HPACK dynamic table.
-    const std::initializer_list<std::pair<std::string_view, std::string_view>> request{{":method", "GET"},
-                                                                                       {":scheme", "https"},
-                                                                                       {":authority", "example.com"},
-                                                                                       {":path", "/"},
-                                                                                       {"x-refused", "value"}};
+    const std::initializer_list<std::pair<std::string_view, std::string_view>> request{
+        {":method", "GET"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/"}, {"x-refused", "value"},
+    };
     const RawBytes refused = EncodeFieldBlock(encoder, request);
     const std::span<const std::byte> refusedSpan(refused.data(), refused.size());
     if (split) {

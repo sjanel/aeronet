@@ -107,7 +107,7 @@ const CorsPolicy* AsyncHandlerTask::applyResponseMiddleware(const RequestPipelin
 namespace internal {
 
 bool Http1Pipeline::PauseReadingDuringAsyncHandler(ConnectionState& state) noexcept {
-  const auto* asyncState = state.pAsyncState();
+  const AsyncHandlerState* asyncState = state.pAsyncState();
   if (asyncState == nullptr || !asyncState->holdsInput()) {
     return false;
   }

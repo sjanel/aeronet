@@ -21,7 +21,6 @@
 #include "aeronet/features.hpp"
 #include "aeronet/http-codec-result.hpp"
 #include "aeronet/http-constants.hpp"
-#include "aeronet/http-header.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-request-view-test-access.hpp"
 #include "aeronet/http-request-view.hpp"

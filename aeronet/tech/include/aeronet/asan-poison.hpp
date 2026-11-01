@@ -47,13 +47,12 @@ AERONET_ALWAYS_INLINE void AsanUnpoison([[maybe_unused]] const void* addr, [[may
 #endif
 }
 
-// Tells whether the byte at addr is poisoned (either by AsanPoison or by ASan itself). Always false without ASan.
-[[nodiscard]] AERONET_ALWAYS_INLINE bool AsanIsPoisoned([[maybe_unused]] const void* addr) noexcept {
 #if AERONET_ASAN_ENABLED
+
+// Tells whether the byte at addr is poisoned (either by AsanPoison or by ASan itself). Always false without ASan.
+[[nodiscard]] AERONET_ALWAYS_INLINE bool AsanIsPoisoned(const void* addr) noexcept {
   return __asan_address_is_poisoned(addr) != 0;
-#else
-  return false;
-#endif
 }
 
+#endif
 }  // namespace aeronet

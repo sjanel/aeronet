@@ -7,6 +7,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/http-header-value-reverse-tokens-iterator.hpp"
 #include "aeronet/is-header-whitespace.hpp"
 #include "aeronet/sys-test-support.hpp"
 

@@ -1344,7 +1344,8 @@ TEST(ServerConfigDumpTest, MultiHttpServerMovedFromDumpConfigThrows) {
 
   MultiHttpServer moved(std::move(server));
   // server is now empty (moved-from)
-  EXPECT_THROW((void)server.dumpConfig(), std::logic_error);  // NOLINT(bugprone-use-after-move)
+  // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+  EXPECT_THROW((void)server.dumpConfig(), std::logic_error);
   EXPECT_THROW(server.saveConfig(tmpDir / "should_not_exist.json"), std::logic_error);
 }
 

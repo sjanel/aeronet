@@ -79,7 +79,7 @@ void HttpResponseWriter::contentType(std::string_view ct) {
     log::warn("Streaming: cannot set content-type after headers sent");
     return;
   }
-  ct = CheckContentType(false, ct);
+  ct = CheckContentType(ct);
 
   // Not using headerImpl / other header public methods to avoid std::invalid_argument on ContentType header set without
   // the body.

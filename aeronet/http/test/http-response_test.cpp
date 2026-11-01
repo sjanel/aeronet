@@ -38,6 +38,7 @@
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header-value-reverse-tokens-iterator.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-message-data.hpp"

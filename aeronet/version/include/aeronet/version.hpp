@@ -151,7 +151,7 @@ inline constexpr std::string_view _sv_features_none = "none";
 inline constexpr std::string_view _sv_features_sep = ", ";
 
 // Writes the section into dst (when not null) and returns its length.
-constexpr std::size_t WriteFeaturesSection(char* dst) {
+consteval std::size_t WriteFeaturesSection(char* dst) {
   std::size_t len = 0;
   const auto append = [dst, &len](std::string_view sv) {
     for (const char ch : sv) {
@@ -181,7 +181,7 @@ constexpr std::size_t WriteFeaturesSection(char* dst) {
 inline constexpr std::size_t _features_section_len = WriteFeaturesSection(nullptr);
 
 // Null terminated static storage of the section
-inline constexpr std::array<char, _features_section_len + 1U> _features_section_chars = [] {
+inline constexpr std::array<char, _features_section_len + 1U> _features_section_chars = [] consteval {
   std::array<char, _features_section_len + 1U> chars{};
   WriteFeaturesSection(chars.data());
   return chars;

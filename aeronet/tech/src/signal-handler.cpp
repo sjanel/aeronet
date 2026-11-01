@@ -13,7 +13,7 @@ namespace {
 std::atomic<int> g_signalStatus{0};
 static_assert(std::atomic<int>::is_always_lock_free);
 
-std::atomic<bool> g_stopRequestLogged{false};
+std::atomic_flag g_stopRequestLogged;  // C++20: default-initialized to clear
 std::atomic<std::chrono::milliseconds::rep> g_maxDrainPeriodMs{5000};
 
 }  // namespace
@@ -42,8 +42,7 @@ bool SignalHandler::IsStopRequested() {
   if (sigNum == 0) {
     return false;
   }
-  if (!g_stopRequestLogged.load(std::memory_order_relaxed) &&
-      !g_stopRequestLogged.exchange(true, std::memory_order_relaxed)) {
+  if (!g_stopRequestLogged.test_and_set(std::memory_order_relaxed)) {
     log::warn("Signal {} received, gracefully shutting down with a max drain period of {}ms", sigNum,
               g_maxDrainPeriodMs.load(std::memory_order_relaxed));
   }
@@ -56,7 +55,7 @@ std::chrono::milliseconds SignalHandler::GetMaxDrainPeriod() {
 
 void SignalHandler::ResetStopRequest() {
   g_signalStatus.store(0, std::memory_order_relaxed);
-  g_stopRequestLogged.store(false, std::memory_order_relaxed);
+  g_stopRequestLogged.clear(std::memory_order_relaxed);
 }
 
 }  // namespace aeronet

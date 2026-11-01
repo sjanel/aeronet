@@ -260,4 +260,28 @@ TEST(UrlEncodeDecode, URLEncodedSizeMatchesOutput) {
   EXPECT_EQ(out.size(), expectedSize);
 }
 
+TEST(UrlEncodeDecode, InPlaceLenientKeepsInvalidSequencesVerbatim) {
+  // truncated and non-hex sequences are left untouched in lenient mode
+  for (std::string_view input : {"abc%", "abc%2", "abc%2X", "Bad%G1", "%ZZ", "%g0", "100%"}) {
+    RawChars inputStr(input);
+    char* last = url::DecodeInPlace(inputStr.begin(), inputStr.end(), '+', /*strictInvalid*/ false);
+    ASSERT_NE(last, nullptr) << input;
+    EXPECT_EQ(std::string_view(inputStr.data(), last), input);
+  }
+  // valid sequences around invalid ones are still decoded, '+' still translated
+  RawChars mixed("a%41%G1+%");
+  char* last = url::DecodeInPlace(mixed.begin(), mixed.end(), ' ', /*strictInvalid*/ false);
+  ASSERT_NE(last, nullptr);
+  EXPECT_EQ(std::string_view(mixed.data(), last), "aA%G1 %");
+}
+
+TEST(UrlEncodeDecode, InPlaceLenientDecodesFF) {
+  RawChars inputStr("a%FFb");
+  char* last = url::DecodeInPlace(inputStr.begin(), inputStr.end(), '+', /*strictInvalid*/ false);
+  ASSERT_NE(last, nullptr);
+  EXPECT_EQ(std::string_view(inputStr.data(), last),
+            "a\xFF"
+            "b");
+}
+
 }  // namespace aeronet

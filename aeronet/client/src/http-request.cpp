@@ -222,8 +222,8 @@ void HttpRequest::initHead(std::size_t extraCapacity, http::Method method, std::
   const auto neededCapacity =
       HttpRequestInitialSize(method, hasNonTlsProxy, HttpMessage::kHeaderPosNbBits, _originKeyLen, res.target) +
       hostHeaderSize + concatenatedHeaders.size() +
-      (bodySize == 0 ? 0 : NeededBodyHeadersSize(bodySize, CheckContentType(false, contentType).size())) +
-      extraCapacity + _originKeyLen;
+      (bodySize == 0 ? 0 : NeededBodyHeadersSize(bodySize, CheckContentType(contentType).size())) + extraCapacity +
+      _originKeyLen;
 
   _data.reserve(neededCapacity);
 

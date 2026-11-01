@@ -25,7 +25,7 @@
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
-#include "aeronet/http-header.hpp"
+#include "aeronet/http-header-value-reverse-tokens-iterator.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-message-common.hpp"
 #include "aeronet/http-message-data.hpp"
@@ -230,7 +230,7 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
     return;
   }
 
-  contentTypeValue = CheckContentType(newBodySize == 0, contentTypeValue);
+  contentTypeValue = CheckContentType(contentTypeValue);
 
   const std::size_t newContentTypeHeaderSize = http::HeaderSize(http::ContentType.size(), contentTypeValue.size());
   const bool setInlineBody = context == BodySetContext::Inline && !isHead();

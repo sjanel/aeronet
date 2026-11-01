@@ -293,7 +293,7 @@ jobs:
           done
 
           # Ignore patterns: test files, test_support, CompilerId, _deps, and generated protobuf
-          IGNORE='(_test\.cpp$|test_support|CompilerId|_deps|generated/|static-string-view-helpers.hpp|internal/city_impl.hpp|internal/flat_hash_map.hpp|internal/bytell_hash_map.hpp|internal/city.hpp)'
+          IGNORE='(/test/|_test\.cpp$|test_support|CompilerId|_deps|generated/|static-string-view-helpers.hpp|internal/city_impl.hpp|internal/flat_hash_map.hpp|internal/bytell_hash_map.hpp|internal/city.hpp)'
 
           # Generate lcov report for Codecov
           llvm-cov-21 export --format=lcov \
@@ -342,7 +342,7 @@ jobs:
       matrix:
         compiler: [clang-23]
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 50
     env:
       BUILD_DIR: build-examples
     steps:

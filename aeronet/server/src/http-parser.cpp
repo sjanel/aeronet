@@ -437,11 +437,11 @@ bool Http1Pipeline::parseHeadersUnchecked(SvToSvMap& headersMap, char* bufferBeg
   headersMap.clear();
   while (first < last) {
     // Find line end
-    char* lineEnd = SearchCRLF(first, last);
-    assert(lineEnd != last && lineEnd[1] == '\n');  // guaranteed by the validating pass that built this buffer
+    char* pLineEnd = SearchCRLF(first, last);
+    assert(pLineEnd != last && pLineEnd[1] == '\n');  // guaranteed by the validating pass that built this buffer
 
     // No check is made on header line format here
-    auto [headerName, headerValue] = http::ParseHeaderLineTrimValue(first, lineEnd);
+    auto [headerName, headerValue] = http::ParseHeaderLineTrimValue(first, pLineEnd);
 
     auto [it, inserted] = headersMap.emplace(headerName, headerValue);
 
@@ -451,7 +451,7 @@ bool Http1Pipeline::parseHeadersUnchecked(SvToSvMap& headersMap, char* bufferBeg
       return false;
     }
 
-    first = lineEnd + http::CRLF.size();
+    first = pLineEnd + http::CRLF.size();
   }
   return true;
 }

@@ -147,7 +147,7 @@ TEST(RequestTaskExtras, MoveAssignmentAndRelease) {
   // move-assign into t2
   RequestTask<int> t2;
   t2 = std::move(t1);
-  EXPECT_FALSE(t1.valid());  // NOLINT(bugprone-use-after-move)
+  EXPECT_FALSE(t1.valid());  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
   EXPECT_TRUE(t2.valid());
 
   // release returns the handle and leaves task empty
@@ -192,7 +192,7 @@ TEST(RequestTaskExtras, MoveAssignmentDestroysPreviousFrame) {
   // Move-assign source into target. This should call reset() on target and
   // thus destroy the previous guarded frame (alive_old becomes 0).
   target = std::move(source);
-  EXPECT_FALSE(source.valid());  // NOLINT(bugprone-use-after-move)
+  EXPECT_FALSE(source.valid());  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
   EXPECT_TRUE(target.valid());
   EXPECT_EQ(alive_old->load(std::memory_order_relaxed), 0);
 }
@@ -218,7 +218,7 @@ TEST(RequestTaskExtras, MoveAssignmentDestroysPreviousFrame_Void) {
   // Move-assign source into target. This should call reset() on target and
   // thus destroy the previous guarded frame (alive_old becomes 0).
   target = std::move(source);
-  EXPECT_FALSE(source.valid());  // NOLINT(bugprone-use-after-move)
+  EXPECT_FALSE(source.valid());  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
   EXPECT_TRUE(target.valid());
   EXPECT_EQ(alive_old->load(std::memory_order_relaxed), 0);
 }
@@ -241,7 +241,7 @@ TEST(RequestTask, MoveConstructor) {
   auto t1 = make_int_ok();
   EXPECT_TRUE(t1.valid());
   RequestTask<int> t2(std::move(t1));
-  t1.reset();  // NOLINT(bugprone-use-after-move)
+  t1.reset();  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
   EXPECT_FALSE(t1.valid());
   EXPECT_TRUE(t1.done());
   t1.resume();

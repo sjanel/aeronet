@@ -1532,8 +1532,10 @@ TEST(HttpExpectContinue, FinalStatusKnownFromHeadIsSentWithout100Continue) {
   };
   for (const Case& tc : {
            Case{ExpectContinueHead("POST", "/missing"), http::StatusCodeNotFound},
-           Case{"PUT /missing HTTP/1.1\r\nhost: x\r\ntransfer-encoding: chunked\r\nexpect: 100-continue\r\n\r\n",
-                http::StatusCodeNotFound},
+           Case{
+               "PUT /missing HTTP/1.1\r\nhost: x\r\ntransfer-encoding: chunked\r\nexpect: 100-continue\r\n\r\n",
+               http::StatusCodeNotFound,
+           },
            Case{ExpectContinueHead("POST", "/get-only"), http::StatusCodeMethodNotAllowed},
            Case{ExpectContinueHead("TRACE", "/get-only"), http::StatusCodeMethodNotAllowed},  // TRACE disabled
            Case{ExpectContinueHead("OPTIONS", "*"), http::StatusCodeOK},

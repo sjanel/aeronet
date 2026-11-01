@@ -17,11 +17,12 @@ namespace aeronet::http {
 
 namespace {
 
+#ifndef NDEBUG
 // Tells whether str starts in the size bytes at pBuffer.
 [[maybe_unused]] bool StartsIn(std::string_view str, const char* pBuffer, std::size_t size) noexcept {
   return reinterpret_cast<std::uintptr_t>(str.data()) - reinterpret_cast<std::uintptr_t>(pBuffer) < size;
 }
-
+#endif
 }  // namespace
 
 Header::Header(std::string_view name, std::string_view value)

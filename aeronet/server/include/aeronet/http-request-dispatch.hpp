@@ -116,8 +116,6 @@ class RequestPipeline {
 
   [[nodiscard]] Router& router() const noexcept { return *_pRouter; }
 
-  [[nodiscard]] tracing::TelemetryContext& telemetry() const noexcept { return *_pTelemetry; }
-
  private:
   [[nodiscard]] static HttpResponse MakeTrailingSlashRedirect(
       const HttpRequestView& request, Router::RoutingResult::RedirectSlashMode redirectSlashMode);
