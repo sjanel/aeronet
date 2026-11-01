@@ -109,11 +109,11 @@ An exception escaping the coroutine (from its body, or rethrown by `co_await`) p
 ### HTTP/1.1
 
 1. The request head is parsed. The handler is dispatched **as soon as the head is complete**, even if the body is still being received: the coroutine can validate the head, start work, or decide to reject the request before the body has arrived.
-2. Request middleware, CORS checks and `OPTIONS` / `TRACE` handling run first, like for any route. When one of them answers before the body was received, the server closes the connection after the response: the rest of the body cannot be skipped reliably.
+2. Request middleware, CORS checks and `OPTIONS` / `TRACE` handling run first, like for any route. When one of them answers before the body was received, the server closes the connection after the response, which announces it (`Connection: close`): the rest of the body cannot be skipped reliably.
 3. The coroutine runs on the event loop until its first suspension:
     - `co_await req.bodyAwaitable()` / `readBodyAsync()` suspends until the whole body is received (it completes right away if it already is);
     - `co_await req.deferWork(work)` suspends until `work` returns on its background thread.
-4. On `co_return`, the response middleware runs, then the response is sent. If the handler completed without reading the body, the response is sent once the body was fully received, to keep the connection in sync.
+4. On `co_return`, the response middleware runs, then the response is sent. If the handler completed without reading the body, the response is sent once the body was fully received, to keep the connection in sync. Unless the client waits for `100 Continue` (`Expect: 100-continue`), only sent once the handler waits for the body: the response is then sent right away, and the connection closes after it.
 5. The requests pipelined behind it on the same connection are then served, in order.
 
 While a handler runs with its whole request received, the server does not read the next bytes of the connection: they stay in the socket until the handler completes. This keeps the request memory stable (its views stay valid), bounds what a client can make the server buffer, and lets TCP flow control push back on a client sending more than it should.
@@ -167,7 +167,7 @@ router.setPath(http::Method::POST, "/checksum", [](HttpRequestView& req) -> Requ
 - The body is buffered by the server (decompressed if needed, de-chunked), within the `maxBodyBytes` limits of the server and of the route. `readBodyAsync()` gives a chunked access to it; it does not stream the upload from the socket.
 - A request is read either with `bodyAwaitable()` / `body()`, or with `readBodyAsync()` / `readBody()`: once one style was used, the other one throws `std::logic_error`.
 - Trailers (chunked requests, HTTP/2) are available through `req.trailers()` once the body was awaited.
-- `Expect: 100-continue` is answered by the server when the handler is dispatched.
+- `Expect: 100-continue` is answered with `100 Continue` once the handler waits for the body, so that a handler answering from the head alone (after `deferWork()` for instance) does not make the client send it.
 
 ### Running blocking work with deferWork()
 
@@ -388,7 +388,7 @@ upload.before([](HttpRequestView& req) {
 upload.maxBodyBytes(64UL << 20U);
 ```
 
-The same applies to CORS rejections. A coroutine that returns its response without awaiting the body is different: its response is only sent once the body was received.
+The same applies to CORS rejections. A coroutine that returns its response without awaiting the body is different: its response is only sent once the body was received, unless the client waits for `100 Continue` (`Expect: 100-continue`): it is then sent right away, without `100 Continue`, and the connection closes.
 
 ### Call another HTTP service
 

@@ -16,7 +16,6 @@
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
-#include "aeronet/http-message-data.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/http1-pipeline.hpp"
@@ -152,18 +151,18 @@ void CollectChunks(std::span<const char> input, std::size_t pos, vector<std::str
 }  // namespace
 
 Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeBodyIfReady(ConnectionIt cnxIt, std::span<char> input,
-                                                                 bool isChunked, bool expectContinue,
-                                                                 std::size_t maxBodyBytes, std::size_t& consumedBytes) {
+                                                                 bool isChunked, std::size_t maxBodyBytes,
+                                                                 std::size_t& consumedBytes) {
   consumedBytes = 0;
   if (isChunked) {
-    return decodeChunkedBody(cnxIt, input, expectContinue, maxBodyBytes, consumedBytes);
+    return decodeChunkedBody(cnxIt, input, maxBodyBytes, consumedBytes);
   }
   // For fixed-length, non-chunked HTTP/1.1 requests there are no trailers per RFC 7230 §4.1.2
-  return decodeFixedLengthBody(cnxIt, input, expectContinue, maxBodyBytes, consumedBytes);
+  return decodeFixedLengthBody(cnxIt, input, maxBodyBytes, consumedBytes);
 }
 
 Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeFixedLengthBody(ConnectionIt cnxIt, std::span<const char> input,
-                                                                     bool expectContinue, std::size_t maxBodyBytes,
+                                                                     std::size_t maxBodyBytes,
                                                                      std::size_t& consumedBytes) {
   ConnectionState& state = _pCtx->connections.connectionState(cnxIt);
   HttpRequestView& request = state.request;
@@ -191,9 +190,6 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeFixedLengthBody(ConnectionI
     emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, {});
     return BodyDecodeStatus::Error;
   }
-  if (expectContinue && declaredContentLen > 0) {
-    _pCtx->io.queueData(cnxIt, HttpMessageData(RawChars{http::HTTP11_100_CONTINUE}));
-  }
   // Compare against the bytes following the head (headerEnd <= input.size()) rather than computing
   // headerEnd + declaredContentLen, which could wrap around for a huge Content-Length if maxBodyBytes allows it.
   if (input.size() - headerEnd < declaredContentLen) {
@@ -205,11 +201,7 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeFixedLengthBody(ConnectionI
 }
 
 Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeChunkedBody(ConnectionIt cnxIt, std::span<char> input,
-                                                                 bool expectContinue, std::size_t maxBodyBytes,
-                                                                 std::size_t& consumedBytes) {
-  if (expectContinue) {
-    _pCtx->io.queueData(cnxIt, HttpMessageData(RawChars{http::HTTP11_100_CONTINUE}));
-  }
+                                                                 std::size_t maxBodyBytes, std::size_t& consumedBytes) {
   const BodyDecodeStatus status = decodeNextChunks(cnxIt, input, maxBodyBytes, consumedBytes);
   if (status != BodyDecodeStatus::NeedMore) {
     // Complete, or rejected: the next body starts from its first chunk.

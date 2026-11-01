@@ -32,11 +32,13 @@ When a header appears several times, the server combines the occurrences while p
 | List fields | joined with `,` | `accept`, `accept-encoding`, `via`, `te` |
 | `cookie` | joined with `;` | `cookie` |
 | `user-agent` | joined with a space | `user-agent` |
-| Singleton fields | replaced: the last occurrence wins | `authorization`, `proxy-authorization`, `content-type`, `range`, `if-range`, `if-modified-since`, `if-unmodified-since`, `referer`, `from`, `max-forwards` |
+| Singleton fields | rejected with `400 Bad Request` | `authorization`, `proxy-authorization`, `content-type`, `range`, `if-range`, `if-modified-since`, `if-unmodified-since`, `referer`, `from`, `max-forwards` |
 | Framing and routing fields | rejected with `400 Bad Request` | `content-length`, `host`, `content-md5`, `content-transfer-encoding`, `http2-settings`, `upgrade-insecure-requests` |
 | Unknown fields | joined with `,` | custom `x-...` headers |
 
-Rejecting duplicate `content-length` and `host` closes classic request smuggling vectors, where two intermediaries pick different occurrences. An empty occurrence does not add a separator. To reject, rather than merge, duplicates of unknown fields that your application treats as singletons, set `HttpServerConfig::mergeUnknownRequestHeaders` to `false`.
+Rejecting duplicate singleton, `content-length` and `host` fields closes classic request smuggling vectors, where two intermediaries pick different occurrences: keeping the last `authorization`, `content-type` or `range` could differ from a proxy in front keeping the first (RFC 9110 §5.3 lets a recipient reject them). Over HTTP/2, the stream is reset with `PROTOCOL_ERROR` (malformed request, RFC 9113 §8.1.1). For the other fields, an empty occurrence does not add a separator. To reject, rather than merge, duplicates of unknown fields that your application treats as singletons, set `HttpServerConfig::mergeUnknownRequestHeaders` to `false`.
+
+Tests: `DuplicateSingletonHeadersProduce400` in [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp), `DuplicateSingletonTrailersRejected` in [http-core_test.cpp](../../tests/http-core_test.cpp), `DuplicateSingletonHeaderIsRejected` in [hpack_test.cpp](../../aeronet/http2/test/hpack_test.cpp), and the table in [mergeable-headers_test.cpp](../../aeronet/objects/test/mergeable-headers_test.cpp).
 
 ### Header values
 
@@ -72,7 +74,9 @@ router.setPath(http::Method::GET, "/search", [](const HttpRequestView& req) {
 });
 ```
 
-The path is decoded once too. A request target with an invalid escape, a decoded NUL byte (`%00`), or control characters is rejected with `400 Bad Request`.
+The path is decoded once too. A request target with an invalid escape, a decoded NUL byte (`%00`), an encoded slash (`%2F` or `%2f`), or control characters is rejected with `400 Bad Request`. An encoded slash is not equivalent to a path separator (RFC 3986 §6.2.2.2): decoded before routing, `/a%2Fb` would reach the route `/a/b`, so it is refused instead (as Tomcat and Spring Security do by default). An application that needs a `/` in a value should send it in the query string, where `%2F` is decoded as usual, or in the body.
+
+Tests: `EncodedSlashInPathIsRejected` in [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp), `EncodedSlashInPath400` in [http-core_test.cpp](../../tests/http-core_test.cpp) and `EncodedSlashInPathReturns400` (HTTP/2) in [http2-protocol-handler_test.cpp](../../aeronet/server/test/http2-protocol-handler_test.cpp).
 
 ### Request target forms
 
@@ -193,7 +197,15 @@ A malformed body (missing boundary, part without `Content-Disposition`, exceeded
 
 ## Expectations
 
-A client that sends `Expect: 100-continue` waits for the server's `100 Continue` before sending a large body. aeronet sends it when it starts reading the body, so that a request rejected on its head, for instance because its `Content-Length` exceeds `maxBodyBytes`, is answered before the client sends its body. An HTTP/1.0 client cannot receive a `1xx` response: its `100-continue` expectation is ignored (RFC 9110 §10.1.1). Other expectations can be handled by an expectation handler, see [HTTP/1.1 conformance](../reference/http-conformance.md#expect).
+A client that sends `Expect: 100-continue` waits for the server's `100 Continue` before sending a large body. aeronet sends it only once it waits for a body that the request needs. A request whose final status is known from its head is answered right away instead, so that the client does not send its body for nothing (RFC 9110 §10.1.1):
+
+- a `Content-Length` above `maxBodyBytes` (`413`);
+- no handler for the path or the method (`404`, `405`, trailing slash redirect);
+- a CORS policy denying the origin (`403`), an `OPTIONS` or `TRACE` request answered by the server;
+- a request middleware answering: it runs before the body of such a request is received, once, as for an [async handler](async-handlers.md#how-a-request-flows), so it must not rely on the body;
+- an async handler completing without waiting for the body: its `100 Continue` is only sent once it waits for it.
+
+The response then carries `Connection: close`, and the connection closes after it: the client may send the body anyway, which could not be told apart from the next request. A body received along with its head does not need `100 Continue`, which is not sent. An HTTP/1.0 client cannot receive a `1xx` response: its `100-continue` expectation is ignored (RFC 9110 §10.1.1). Other expectations can be handled by an expectation handler, see [HTTP/1.1 conformance](../reference/http-conformance.md#expect).
 
 ## Tests
 
@@ -202,3 +214,4 @@ A client that sends `Expect: 100-continue` waits for the server's `100 Continue`
 - Chunked bodies and trailers end to end: [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
 - Chunked bodies received in several reads (byte by byte, large, compressed, async handler), and the limits of their lines: [http-parser_test.cpp](../../aeronet/server/test/http-parser_test.cpp), [http-request-decompression_test.cpp](../../tests/http-request-decompression_test.cpp) and [http-async_test.cpp](../../tests/http-async_test.cpp). The upload throughput is measured by `ChunkedUpload` in [http1-pipeline_bench.cpp](../../benchmarks/internal/http1-pipeline_bench.cpp).
 - Multipart parsing: [multipart-form-data_test.cpp](../../aeronet/server/test/multipart-form-data_test.cpp).
+- `100 Continue` sent only when the body is needed: `HttpExpectContinue` tests in [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp), `HttpAsyncHandlers.ExpectContinueIsSentWhenTheHandlerWaitsForTheBody` in [tests/http-async_test.cpp](../../tests/http-async_test.cpp), and `WebSocketTest.UpgradeWaitingFor100ContinueIsUpgradedAfterTheBody` in [tests/websocket-integration_test.cpp](../../tests/websocket-integration_test.cpp).

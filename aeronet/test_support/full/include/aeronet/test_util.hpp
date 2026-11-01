@@ -111,6 +111,10 @@ ReceivedUntilEnd RecvUntilEnd(NativeHandle fd, SysDuration recvTimeout = std::ch
 
 std::string sendAndCollect(uint16_t port, std::string_view raw);
 
+// Sends 'head', of a request with Expect: 100-continue, then 'body' only once the server answered 100 Continue, like a
+// client waiting for it (and never otherwise). Returns all the bytes received until the server closes the connection.
+std::string SendExpectingContinue(NativeHandle fd, std::string_view head, std::string_view body);
+
 int countOccurrences(std::string_view haystack, std::string_view needle);
 
 // Receives the responses of requests pipelined on fd until nbResponses HTTP/1.1 status lines were received, the peer

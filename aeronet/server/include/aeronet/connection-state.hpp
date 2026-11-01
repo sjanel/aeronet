@@ -263,9 +263,13 @@ struct ConnectionState : public ConnectionInfo {
   // internal::TunnelManager::resumeRelaysTowards()).
   bool relayPausedByBacklog : 1 {false};
 
-  // True when the expectations (Expect header) of the request at the head of inBuffer were already answered: its head
-  // is parsed again each time a part of its body is received, but interim responses must be sent once.
+  // True when the expectations (Expect header) of the request at the head of inBuffer were already answered: it is
+  // served again each time a part of its body is received, but interim responses must be sent once.
   bool expectationAnswered : 1 {false};
+
+  // True when the request middleware of the request at the head of inBuffer already ran, before 100 Continue was sent
+  // for its body: it does not run again once its body is received (see internal::Http1Pipeline::answerBeforeBody()).
+  bool requestMiddlewareRan : 1 {false};
 
   static constexpr uint8_t kReadSizeShiftNbBits = 5;
 

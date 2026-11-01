@@ -41,7 +41,7 @@ A request middleware has the signature `MiddlewareResult(HttpRequestView&)`. It 
 
 An exception escaping a request middleware is logged and answered with `500 Internal Server Error`.
 
-Request middleware runs before the body of an [async handler](async-handlers.md#how-a-request-flows) is received: it can check the head of the request, and answer early, but must not rely on the body. When it answers before the body arrived, the server closes the connection after the response, since the rest of the body cannot be skipped reliably (with a [lingering close](server-lifecycle.md#lingering-close), so that the client still receives the response).
+Request middleware runs before the body is received for an [async handler](async-handlers.md#how-a-request-flows), and for a request whose client waits for `100 Continue` (`Expect: 100-continue`, see [Expectations](requests.md#expectations)): it can check the head of the request, and answer early, but must not rely on the body. It still runs once per request. When it answers before the body arrived, the response carries `Connection: close` and the server closes the connection after it, since the rest of the body cannot be skipped reliably (with a [lingering close](server-lifecycle.md#lingering-close), so that the client still receives the response).
 
 ## Response middleware
 

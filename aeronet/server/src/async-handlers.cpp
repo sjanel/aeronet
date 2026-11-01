@@ -18,6 +18,8 @@
 #include "aeronet/async-resume-poster.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
+#include "aeronet/http-constants.hpp"
+#include "aeronet/http-message-data.hpp"
 #include "aeronet/http-message.hpp"
 #include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-request-view.hpp"
@@ -117,7 +119,8 @@ bool Http1Pipeline::PauseReadingDuringAsyncHandler(ConnectionState& state) noexc
 }
 
 bool Http1Pipeline::dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyncRequestHandler& handler, bool bodyReady,
-                                         bool isChunked, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy,
+                                         bool isChunked, bool found100Continue, std::size_t consumedBytes,
+                                         const CorsPolicy* pCorsPolicy,
                                          std::span<const ResponseMiddleware> responseMiddleware,
                                          std::size_t perRouteMaxBodyBytes) {
   ServerContext& ctx = *_pCtx;
@@ -156,6 +159,7 @@ bool Http1Pipeline::dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyncRe
   asyncState.active = true;
   asyncState.usesSharedDecompressedBody = usesSharedDecompressedBody;
   asyncState.isChunked = isChunked;
+  asyncState.continueExpected = found100Continue && !bodyReady;
   asyncState.consumedBytes = bodyReady ? consumedBytes : 0;
   asyncState.maxBodyBytes = perRouteMaxBodyBytes;
   asyncState.pendingResponse = internal::HttpResponseAccess::MakeUnallocated();
@@ -188,6 +192,9 @@ void Http1Pipeline::resumeAsyncHandler(ConnectionIt cnxIt) {
 
   if (async.task.run()) {
     onAsyncHandlerCompleted(cnxIt);
+  } else if (async.continueExpected && async.task.await.reason == AsyncAwaitState::Reason::WaitingForBody) {
+    async.continueExpected = false;
+    _pCtx->io.queueData(cnxIt, HttpMessageData(RawChars{http::HTTP11_100_CONTINUE}));
   } else if (async.usesSharedDecompressedBody && !pinAsyncSharedBodyToConnectionStorage(state)) {
     state.requestDrainAndClose();
   }
@@ -212,10 +219,9 @@ void Http1Pipeline::handleAsyncBodyProgress(ConnectionIt cnxIt) {
 
   if (async.task.await.needsBody) {
     std::size_t consumedBytes = 0;
-    // 100 Continue (if expected) was sent when the request was dispatched. The request starts the input buffer, where
-    // its body is received.
+    // The request starts the input buffer, where its body is received.
     const BodyDecodeStatus status =
-        decodeBodyIfReady(cnxIt, state.inBuffer, async.isChunked, false, async.maxBodyBytes, consumedBytes);
+        decodeBodyIfReady(cnxIt, state.inBuffer, async.isChunked, async.maxBodyBytes, consumedBytes);
     if (status == BodyDecodeStatus::Error) {
       AbandonAsyncHandler(async);
       return;
@@ -276,23 +282,27 @@ void Http1Pipeline::onAsyncHandlerCompleted(ConnectionIt cnxIt) {
   ConnectionState& state = _pCtx->connections.connectionState(cnxIt);
   AsyncHandlerState& async = *state.pAsyncState();
   async.pendingResponse = async.task.takeResponse(state.request);
-  // Without its whole body, the request is answered once the rest of it is received (and drained).
   if (!async.task.await.needsBody) {
     tryFlushPendingAsyncResponse(cnxIt);
+  } else if (async.continueExpected) {
+    // Its client may wait for 100 Continue, not sent as the handler did not wait for the body: it is answered right
+    // away, the connection closing since its body may still come (RFC 9110 §10.1.1).
+    tryFlushPendingAsyncResponse(cnxIt, true);
   }
+  // Otherwise, the request is answered once the rest of its body is received (and drained).
 }
 
-void Http1Pipeline::tryFlushPendingAsyncResponse(ConnectionIt cnxIt) {
+void Http1Pipeline::tryFlushPendingAsyncResponse(ConnectionIt cnxIt, bool close) {
   ServerContext& ctx = *_pCtx;
   ConnectionState& state = ctx.connections.connectionState(cnxIt);
   AsyncHandlerState& async = *state.pAsyncState();
 
-  assert(!async.task.await.needsBody);
+  assert(close || !async.task.await.needsBody);
   assert(!async.pendingResponse.empty());
 
   const CorsPolicy* pCorsPolicy =
       async.task.applyResponseMiddleware(ctx.requestPipeline(), state.request, async.pendingResponse);
-  finalizeAndSendResponse(cnxIt, std::move(async.pendingResponse), pCorsPolicy);
+  finalizeAndSendResponse(cnxIt, std::move(async.pendingResponse), pCorsPolicy, close);
   state.inBuffer.erase_front(async.consumedBytes);
   async.clear();
   state.lastActivity = std::chrono::steady_clock::now();

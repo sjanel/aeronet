@@ -810,22 +810,30 @@ TEST(HpackDecoder, DuplicateContentLengthIsForbidden) {
   EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::DuplicateHeaderForbiddenToMerge);
 }
 
-TEST(HpackDecoder, OverrideHeaderKeepsLastValue) {
-  auto decoder = CreateHpackDecoder();
-
-  // authorization (static name index 23) is an override header: only its last value is kept, like for HTTP/1.1.
-  static constexpr uint8_t encoded[]{
-      0x57, 0x01, 'a',  // authorization: a
-      0x57, 0x01, 'b',  // authorization: b
-  };
-
-  const auto result = decoder.decode(AsBytes(encoded));
-
-  ASSERT_TRUE(result.isSuccess());
-  ASSERT_EQ(result.decodedHeaders.headers.size(), 1U);
-  EXPECT_EQ(result.decodedHeaders.headers.at("authorization"), "b");
-  // The size counts the fields as received.
-  EXPECT_EQ(result.decodedHeaders.namesAndValuesSize, 2U * std::string_view("authorizationa").size());
+TEST(HpackDecoder, DuplicateSingletonHeaderIsRejected) {
+  // authorization (static name index 23) is a singleton field: its duplicates are rejected, like for HTTP/1.1, instead
+  // of keeping one of them (a proxy in front may keep another one).
+  {
+    auto decoder = CreateHpackDecoder();
+    static constexpr uint8_t encoded[]{
+        0x57, 0x01, 'a',  // authorization: a
+        0x57, 0x01, 'b',  // authorization: b
+    };
+    const auto result = decoder.decode(AsBytes(encoded));
+    EXPECT_FALSE(result.isSuccess());
+    EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::DuplicateHeaderForbiddenToMerge);
+  }
+  {
+    // content-type (static name index 31), the first one being empty
+    auto decoder = CreateHpackDecoder();
+    static constexpr uint8_t encoded[]{
+        0x5F, 0x00,                 // content-type: (empty)
+        0x5F, 0x03, 't', 'e', 'x',  // content-type: tex
+    };
+    const auto result = decoder.decode(AsBytes(encoded));
+    EXPECT_FALSE(result.isSuccess());
+    EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::DuplicateHeaderForbiddenToMerge);
+  }
 }
 
 TEST(HpackDecoder, DuplicateWithEmptyValueAddsNoSeparator) {

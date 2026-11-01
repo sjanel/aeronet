@@ -77,8 +77,8 @@ struct HttpServerConfig {
   // ===========================================
   // When merging repeated unknown (i.e. not in the curated table) request headers, the default policy (true)
   // assumes list semantics and joins with a comma. If set to false, unknown headers are treated as non-mergeable
-  // (duplicates will be handled according to parser singleton logic or rejected). This allows stricter deployments
-  // to avoid accidentally merging custom singleton semantics.
+  // (a repeated one is rejected with 400 Bad Request). This allows stricter deployments to avoid accidentally
+  // merging custom singleton semantics.
   bool mergeUnknownRequestHeaders{true};
 
   enum class TraceMethodPolicy : std::uint8_t {

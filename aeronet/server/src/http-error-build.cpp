@@ -17,8 +17,9 @@
 namespace aeronet {
 
 RawChars BuildSimpleError(http::StatusCode status, const ConcatenatedHeaders& globalHeaders, std::string_view body,
-                          const char* cachedDateHeader) {
+                          const char* cachedDateHeader, bool isHeadMethod) {
   const std::string_view reason = http::ReasonPhraseFor(status);
+  const std::string_view content = isHeadMethod ? std::string_view{} : body;
 
   static constexpr std::size_t kStatusLen = 3U;
 
@@ -29,10 +30,11 @@ RawChars BuildSimpleError(http::StatusCode status, const ConcatenatedHeaders& gl
   static constexpr std::string_view kConnectionCloseStr = "\r\nconnection: close\r\n";
 
   // Exact allocation size
-  RawChars out(
-      kHTTP11Str.size() + kStatusLen + 1UL + reason.size() + http::HeaderSize(http::Date.size(), RFC7231DateStrLen) +
-      kConnectionCloseStr.size() + globalHeadersSize + http::HeaderSize(http::ContentLength.size(), nbCharsBodyLen) +
-      http::HeaderSize(http::ContentType.size(), http::ContentTypeTextPlain.size()) + http::CRLF.size() + body.size());
+  RawChars out(kHTTP11Str.size() + kStatusLen + 1UL + reason.size() +
+               http::HeaderSize(http::Date.size(), RFC7231DateStrLen) + kConnectionCloseStr.size() + globalHeadersSize +
+               http::HeaderSize(http::ContentLength.size(), nbCharsBodyLen) +
+               http::HeaderSize(http::ContentType.size(), http::ContentTypeTextPlain.size()) + http::CRLF.size() +
+               content.size());
 
   char* pData = out.data();
 
@@ -52,11 +54,11 @@ RawChars BuildSimpleError(http::StatusCode status, const ConcatenatedHeaders& gl
   // Append global headers
   pData = Append(globalHeaders.fullStringWithLastSep(), pData);
 
-  // content-length
+  // content-length: the one of the body, also for HEAD
   pData = WriteContentTypeContentLengthDoubleCRLF(http::ContentTypeTextPlain, body.size(), pData);
 
   // Body
-  pData = Append(body, pData);
+  pData = Append(content, pData);
 
   assert(static_cast<std::size_t>(pData - out.data()) == out.capacity());
 

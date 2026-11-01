@@ -1275,7 +1275,8 @@ INSTANTIATE_TEST_SUITE_P(
 
 TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
   ts.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("ok"); });
-  // HTTP/1.0 without Connection: keep-alive should close
+  // HTTP/1.0 without Connection: keep-alive should close. The response, whose HTTP/1.1 status line implies a persistent
+  // connection (RFC 9112 §9.3), announces it.
   test::ClientConnection clientConnection(port);
   NativeHandle fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
@@ -1284,7 +1285,8 @@ TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
 
   std::string resp = test::recvUntilClosed(fd);
 
-  ASSERT_FALSE(resp.contains("connection:"));
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << resp;
   // Second request should not yield another response (connection closed). We attempt to read after sending.
   std::string_view req2 = "GET /h2 HTTP/1.0\r\nhost: x\r\n\r\n";
   test::sendAll(fd, req2);
@@ -1329,7 +1331,7 @@ TEST(HttpKeepAlive10, KeepAliveOptionInConnectionList) {
     test::sendAll(fd, "GET /h HTTP/1.0\r\nhost: x\r\nconnection: x-option\r\n\r\n");
     const std::string resp = test::recvUntilClosed(fd);
     EXPECT_TRUE(resp.ends_with("ok")) << resp;
-    EXPECT_FALSE(resp.contains("connection:")) << resp;
+    EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << resp;
   }
 }
 
@@ -1414,7 +1416,7 @@ TEST(HttpMalformed, TooLongRequestTargetIsUriTooLong) {
   const std::string_view kVersion = " HTTP/1.0\r\n";
   const std::string fittingTarget(kMaxHeaderBytes - kStart.size() - kVersion.size() - http::CRLF.size(), 'b');
   resp = sendRaw(std::string(kStart) + fittingTarget + std::string(kVersion) + "\r\n");
-  EXPECT_TRUE(resp.starts_with("HTTP/1.0 200")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
   resp = sendRaw(std::string(kStart) + fittingTarget + std::string(kVersion) + "x: y\r\n\r\n");
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 431 Request Header Fields Too Large\r\n")) << resp;
 }
@@ -1738,6 +1740,24 @@ TEST(HttpUrlDecoding, IncompletePercentSequence400) {
   opt.target = "/bad%";
   auto resp = test::requestOrThrow(ts.server.port(), opt);
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 400"));
+}
+
+// RFC 3986 §6.2.2.2: an encoded slash is not equivalent to a path separator, so "/a%2Fb" must not be routed as "/a/b".
+TEST(HttpUrlDecoding, EncodedSlashInPath400) {
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/a/b", [](const HttpRequestView&) { return HttpResponse("ab"); });
+  for (std::string_view target : {"/a%2Fb", "/a%2fb", "/%2F", "/a/b%2F", "/a/%2f%2Fb"}) {
+    test::RequestOptions opt;
+    opt.method = "GET";
+    opt.target = target;
+    EXPECT_TRUE(test::requestOrThrow(ts.server.port(), opt).starts_with("HTTP/1.1 400")) << target;
+  }
+  // a real slash is routed, and an encoded slash in the query string is not a path matter
+  test::RequestOptions opt;
+  opt.method = "GET";
+  opt.target = "/a/b?x=%2F";
+  const auto resp = test::requestOrThrow(ts.server.port(), opt);
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
+  EXPECT_TRUE(resp.ends_with("ab"));
 }
 
 TEST(HttpUrlDecoding, MixedSegmentsDecoding) {
@@ -3195,23 +3215,15 @@ TEST(HttpTrailers, DuplicateMergeTrailers) {
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
 }
 
-// Duplicate trailers with override semantics (keep last)
-TEST(HttpTrailers, DuplicateOverrideTrailers) {
-  ts.router().setDefault([](const HttpRequestView& req) {
-    auto it = req.trailers().find("from");
-    EXPECT_NE(it, req.trailers().end());
-    if (it != req.trailers().end()) {
-      // 'From' has override semantics in ReqHeaderValueSeparator, keep the last occurrence
-      EXPECT_EQ(it->second, "b@example.com");
-    }
-    return HttpResponse("OK");
-  });
+// Duplicate singleton trailers are rejected: keeping one of them could differ from the one a proxy in front keeps
+TEST(HttpTrailers, DuplicateSingletonTrailersRejected) {
+  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("FAIL"); });
 
   test::ClientConnection sock(port);
   NativeHandle fd = sock.fd();
 
   std::string req =
-      "POST /dupoverride HTTP/1.1\r\n"
+      "POST /dupsingleton HTTP/1.1\r\n"
       "host: example.com\r\n"
       "transfer-encoding: chunked\r\n"
       "connection: close\r\n"
@@ -3223,7 +3235,7 @@ TEST(HttpTrailers, DuplicateOverrideTrailers) {
       "\r\n";
   test::sendAll(fd, req);
   std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400"));
 }
 
 // Unknown header duplicates when mergeUnknownRequestHeaders is disabled -> should be rejected
@@ -3608,7 +3620,7 @@ TEST(HttpOptionsTrace, TraceHeadReceivedInSeveralReads) {
   EnableTrace();
 
   test::ClientConnection cnx(port);
-  test::sendAll(cnx.fd(), "TRACE /split%2F HTTP/1.1\r\nHost: h\r\nX-Part");
+  test::sendAll(cnx.fd(), "TRACE /split%41 HTTP/1.1\r\nHost: h\r\nX-Part");
   ServeAnotherRequest();
   test::sendAll(cnx.fd(), ": One\r\nCookie: c=1\r\nConnection: close\r\n");
   ServeAnotherRequest();
@@ -3616,7 +3628,7 @@ TEST(HttpOptionsTrace, TraceHeadReceivedInSeveralReads) {
 
   const auto resp = test::parseResponseOrThrow(test::recvUntilClosed(cnx.fd()));
   EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
-  EXPECT_EQ(resp.body, "TRACE /split%2F HTTP/1.1\r\nHost: h\r\nX-Part: One\r\nConnection: close\r\n\r\n");
+  EXPECT_EQ(resp.body, "TRACE /split%41 HTTP/1.1\r\nHost: h\r\nX-Part: One\r\nConnection: close\r\n\r\n");
 }
 
 // The empty lines received before a request line are not part of the request (RFC 9112 §2.2): they are not echoed.

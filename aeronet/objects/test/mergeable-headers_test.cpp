@@ -47,25 +47,28 @@ TEST(MergeableHeaders, UserAgentSpaceJoin) {
   EXPECT_EQ(' ', http::ReqHeaderValueSeparator("user-agent", false));
 }
 
-TEST(MergeableHeaders, OverrideHeadersReturnO) {
-  for (std::string_view hdr : {
-           "authorization",
-           "from",
-           "if-modified-since",
-           "if-range",
-           "if-unmodified-since",
-           "max-forwards",
-           "proxy-authorization",
-           "range",
-           "referer",
-       }) {
-    EXPECT_EQ('O', http::ReqHeaderValueSeparator(hdr, true)) << hdr;
-    EXPECT_EQ('O', http::ReqHeaderValueSeparator(hdr, false)) << hdr << " (strict)";
-  }
-}
-
 TEST(MergeableHeaders, DisallowedDuplicateHeadersReturnNull) {
-  for (std::string_view hdr : {http::ContentLength, http::Host}) {
+  // Singleton fields: a duplicate is rejected rather than resolved by keeping one occurrence, as a proxy in front may
+  // keep another one.
+  static constexpr std::string_view kHeaders[]{
+      "authorization",
+      http::ContentLength,
+      "content-md5",
+      "content-transfer-encoding",
+      http::ContentType,
+      "from",
+      http::Host,
+      "http2-settings",
+      "if-modified-since",
+      "if-range",
+      "if-unmodified-since",
+      "max-forwards",
+      "proxy-authorization",
+      http::Range,
+      "referer",
+      "upgrade-insecure-requests",
+  };
+  for (std::string_view hdr : kHeaders) {
     EXPECT_EQ('\0', http::ReqHeaderValueSeparator(hdr, true)) << hdr;
     EXPECT_EQ('\0', http::ReqHeaderValueSeparator(hdr, false)) << hdr << " (strict)";
   }
@@ -80,7 +83,7 @@ TEST(MergeableHeaders, NoAccidentalTableCollisions) {
   // Sanity: calling the function with each known header twice produces stable result; acts as a rudimentary
   // duplicate guard (compile-time table already static_asserts ordering, but not duplicates).
   static constexpr std::array<std::pair<std::string_view, char>, 5> probe{
-      {{"accept", ','}, {"cookie", ';'}, {"user-agent", ' '}, {"authorization", 'O'}, {"host", '\0'}},
+      {{"accept", ','}, {"cookie", ';'}, {"user-agent", ' '}, {"authorization", '\0'}, {"host", '\0'}},
   };
   for (auto [key, expected] : probe) {
     EXPECT_EQ(expected, http::ReqHeaderValueSeparator(key, true));
