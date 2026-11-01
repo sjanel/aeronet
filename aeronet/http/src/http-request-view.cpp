@@ -863,7 +863,8 @@ bool HttpRequestView::decodePath(char* pathStart, char* pathEnd) {
   }
   // Strict decoding also rejects a decoded NUL (%00): C APIs (file system...) would truncate the path there, while
   // checks made on the full path (by middleware for instance) would see something else. A raw NUL has already been
-  // rejected above with the other control characters.
+  // rejected above with the other control characters. An encoded slash (%2F) is rejected too: decoded, it would be
+  // routed as a path separator ("/a%2Fb" as "/a/b").
   const char* pathLast = url::DecodeInPlace(pathStart, questionMark);
   if (pathLast == nullptr || pathStart == pathLast) {
     return false;

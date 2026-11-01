@@ -3344,6 +3344,32 @@ TEST(Http2ProtocolHandler, TruncatedPercentEncodingInPathReturns400) {
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "400");
 }
 
+// As over HTTP/1, an encoded slash in :path is not a path separator: it is rejected instead of being routed as one.
+TEST(Http2ProtocolHandler, EncodedSlashInPathReturns400) {
+  Router router;
+  router.setPath(http::Method::GET, "/a/b", [](const HttpRequestView&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  uint32_t streamId = 1;
+  for (std::string_view path : {"/a%2Fb", "/a%2fb"}) {
+    RawChars hdrs;
+    hdrs.append(MakeHttp1HeaderLine(":method", "GET"));
+    hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+    hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+    hdrs.append(MakeHttp1HeaderLine(":path", path));
+    ASSERT_EQ(loop.client.sendHeaders(streamId, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
+
+    ASSERT_FALSE(loop.clientHeaders.empty());
+    EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "400") << path;
+    streamId += 2;
+  }
+}
+
 // As over HTTP/1 (RFC 9112 §3.2), a request whose :authority or Host header field is not uri-host [ ":" port ]
 // (RFC 9110 §7.2) is answered 400 without reaching the handler.
 TEST(Http2ProtocolHandler, InvalidAuthorityOrHostReturns400) {

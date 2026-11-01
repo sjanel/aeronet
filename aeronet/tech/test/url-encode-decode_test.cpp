@@ -88,10 +88,28 @@ TEST(UrlEncodeDecode, PlusAsSpaceDecode) {
 
 TEST(UrlEncodeDecode, PercentLowerCaseHex) {
   // Lowercase hex should still decode
-  RawChars lower("abc%2fdef");
+  RawChars lower("abc%2edef%7e");
   char* last = url::DecodeInPlace(lower.begin(), lower.end());
   EXPECT_NE(last, nullptr);
-  EXPECT_EQ(std::string_view(lower.data(), last), "abc/def");
+  EXPECT_EQ(std::string_view(lower.data(), last), "abc.def~");
+}
+
+TEST(UrlEncodeDecode, InPlaceEncodedSlash) {
+  // strict mode rejects an encoded slash, in any case and wherever it is
+  for (std::string_view input : {"%2F", "%2f", "a%2Fb", "a/b%2F", "%2F%2F", "%41%2f%41"}) {
+    RawChars inputStr(input);
+    EXPECT_EQ(url::DecodeInPlace(inputStr.begin(), inputStr.end()), nullptr) << input;
+  }
+  // a real slash is kept, and the lenient mode decodes it
+  RawChars strictOk("a/b%2Ec");
+  char* last = url::DecodeInPlace(strictOk.begin(), strictOk.end());
+  ASSERT_NE(last, nullptr);
+  EXPECT_EQ(std::string_view(strictOk.data(), last), "a/b.c");
+
+  RawChars lenient("a%2Fb");
+  last = url::DecodeInPlace(lenient.begin(), lenient.end(), '+', /*strictInvalid*/ false);
+  ASSERT_NE(last, nullptr);
+  EXPECT_EQ(std::string_view(lenient.data(), last), "a/b");
 }
 
 TEST(UrlEncodeDecode, InvalidPercentTooShort) {
@@ -183,7 +201,7 @@ TEST(UrlEncodeDecode, QueryParamsDoNotDecodeSeparatorBytes) {
 
 TEST(UrlEncodeDecode, InPlaceEncodedNul) {
   // strict mode rejects an encoded NUL, wherever it is
-  for (std::string_view input : {"%00", "a%00", "%00b", "a%00b", "%2F%00%2F"}) {
+  for (std::string_view input : {"%00", "a%00", "%00b", "a%00b", "%41%00%41"}) {
     RawChars inputStr(input);
     EXPECT_EQ(url::DecodeInPlace(inputStr.begin(), inputStr.end()), nullptr) << input;
   }

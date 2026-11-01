@@ -74,7 +74,9 @@ router.setPath(http::Method::GET, "/search", [](const HttpRequestView& req) {
 });
 ```
 
-The path is decoded once too. A request target with an invalid escape, a decoded NUL byte (`%00`), or control characters is rejected with `400 Bad Request`.
+The path is decoded once too. A request target with an invalid escape, a decoded NUL byte (`%00`), an encoded slash (`%2F` or `%2f`), or control characters is rejected with `400 Bad Request`. An encoded slash is not equivalent to a path separator (RFC 3986 §6.2.2.2): decoded before routing, `/a%2Fb` would reach the route `/a/b`, so it is refused instead (as Tomcat and Spring Security do by default). An application that needs a `/` in a value should send it in the query string, where `%2F` is decoded as usual, or in the body.
+
+Tests: `EncodedSlashInPathIsRejected` in [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp), `EncodedSlashInPath400` in [http-core_test.cpp](../../tests/http-core_test.cpp) and `EncodedSlashInPathReturns400` (HTTP/2) in [http2-protocol-handler_test.cpp](../../aeronet/server/test/http2-protocol-handler_test.cpp).
 
 ### Request target forms
 
