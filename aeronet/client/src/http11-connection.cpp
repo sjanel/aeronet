@@ -215,10 +215,10 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
     // Decode Content-Encoding'd response bodies in place at install time (straight from the receive
     // buffer / de-framed chunk buffer, no intermediate copy of the compressed bytes).
     parser.setDecodeContext({
-        .state = &client._codec.decompressionState,
-        .config = &config.decompression,
-        .out = &client._codec.decompressOut,
-        .tmp = &client._codec.decompressTmp,
+        .pState = &client._codec.decompressionState,
+        .pConfig = &config.decompression,
+        .pOut = &client._codec.decompressOut,
+        .pTmp = &client._codec.decompressTmp,
     });
   }
   RawChars& responseBuffer = client.responseBuffer();
@@ -304,7 +304,10 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
     break;
   }
 
-  _keepAlive = parser.keepAlive();
+  // Bytes still held by the transport (decrypted by TLS but not read yet) were received after the end of the response,
+  // like the ones following it in the receive buffer (see Http1ResponseParser::keepAlive()). The ones still in the
+  // socket are found by the probe of the idle connection before its reuse.
+  _keepAlive = parser.keepAlive() && !transport.hasPendingReadData();
   return resp;
 }
 
