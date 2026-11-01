@@ -128,18 +128,6 @@ class HttpMessageData {
     _offsetBitmap = 0;
   }
 
-  void shrink_to_fit() {
-    if (hasPayload()) {
-      HttpPayload* pPayload = payload();
-      pPayload->shrink_to_fit();
-      if (!EmbeddedPayload::AllowsBufferReallocation(*pPayload)) {
-        // Shrinking _buf would copy the payload object bitwise, which is not a valid relocation for it.
-        return;
-      }
-    }
-    _buf.shrink_to_fit();
-  }
-
   // The payload lives in the heap buffer: moving this object around does not move it.
   using trivially_relocatable = amc::is_trivially_relocatable<RawChars>::type;
 

@@ -6,7 +6,7 @@
 #include <net/if.h>  // NOLINT(misc-include-cleaner) IFF_LOOPBACK, IFF_UP
 #include <netinet/in.h>
 #include <sys/resource.h>
-#include <sys/socket.h>
+#include <sys/socket.h>  // NOLINT(misc-include-cleaner) socklen_t, SOL_SOCKET, SO_SNDBUF
 #include <sys/types.h>
 #elifdef AERONET_WINDOWS
 #include <winsock2.h>
@@ -1389,7 +1389,7 @@ TEST(HttpMalformed, TooLongRequestTargetIsUriTooLong) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxHeaderBytes(kMaxHeaderBytes); });
   ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
 
-  const std::string target(2U * kMaxHeaderBytes, 'a');
+  const std::string target(2UL * kMaxHeaderBytes, 'a');
 
   // Whole request line, then a valid head.
   std::string resp = sendRaw("GET /" + target + " HTTP/1.1\r\nhost: x\r\n\r\n");
@@ -1427,7 +1427,7 @@ TEST(HttpMalformed, TooLongIncompleteHeaderSectionIsHeadersTooLarge) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxHeaderBytes(kMaxHeaderBytes); });
   ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK); });
 
-  const std::string resp = sendRaw("GET / HTTP/1.1\r\nhost: x\r\nx-big: " + std::string(2U * kMaxHeaderBytes, 'A'));
+  const std::string resp = sendRaw("GET / HTTP/1.1\r\nhost: x\r\nx-big: " + std::string(2UL * kMaxHeaderBytes, 'A'));
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 431 Request Header Fields Too Large\r\n")) << resp;
 }
 
@@ -2680,7 +2680,8 @@ namespace {
 // SO_SNDBUF of a socket as reported by the kernel, or -1.
 int SendBufferSize(int fd) {
   int bytes = -1;
-  socklen_t len = sizeof(bytes);
+  socklen_t len = sizeof(bytes);  // NOLINT(misc-include-cleaner)
+  // NOLINTNEXTLINE(misc-include-cleaner)
   return ::getsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bytes, &len) == 0 ? bytes : -1;
 }
 
@@ -2720,7 +2721,7 @@ int AcceptedSendBufferSize(std::string_view path) {
 // The send buffer of the accepted connections is the configured one, and the system default again for the connections
 // accepted after a configuration update back to 0.
 TEST(HttpServerSocketOptions, SendBufferOfAcceptedConnections) {
-  static constexpr int kSendBufferBytes = 48 << 10;  // no system default is that
+  static constexpr uint16_t kSendBufferBytes = 48U << 10U;  // no system default is that
   Socket probe(Socket::Type::Stream);
   ASSERT_TRUE(SetSendBufferSize(probe.fd(), kSendBufferBytes));
   const int expected = SendBufferSize(probe.fd());  // as stored by the kernel (Linux doubles it)
@@ -3684,8 +3685,11 @@ TEST(HttpOptionsTrace, TraceEchoesALargeHead) {
 TEST(HttpOptionsTrace, TraceWithBareLfLineEndingsIsRejectedWithoutWaiting) {
   ts.resetConfigAndPostUpdate(
       [](HttpServerConfig& cfg) { cfg.withTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainAndTLS); });
-  for (const std::string_view raw : {"TRACE /bare HTTP/1.1\nHost: h\n\n", "TRACE /bare HTTP/1.1\r\nHost: h\n\n",
-                                     "TRACE /bare HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\n"}) {
+  for (const std::string_view raw : {
+           "TRACE /bare HTTP/1.1\nHost: h\n\n",
+           "TRACE /bare HTTP/1.1\r\nHost: h\n\n",
+           "TRACE /bare HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\n",
+       }) {
     SCOPED_TRACE(raw);
     test::ClientConnection cnx(port);
     test::sendAll(cnx.fd(), raw);

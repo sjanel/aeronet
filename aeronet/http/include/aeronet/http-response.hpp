@@ -859,9 +859,9 @@ class HttpResponse final : public HttpMessage {
   static constexpr std::size_t HeadCapacity(std::string_view concatenatedHeaders, std::size_t bodySize,
                                             std::string_view& contentType, bool sendContentLengthHeader) {
     return kInitialSize + concatenatedHeaders.size() +
-           (bodySize == 0 ? 0
-                          : NeededBodyHeadersSize(bodySize, CheckContentType(false, contentType).size(),
-                                                  sendContentLengthHeader));
+           (bodySize == 0
+                ? 0
+                : NeededBodyHeadersSize(bodySize, CheckContentType(contentType).size(), sendContentLengthHeader));
   }
 
   // Private constructor to avoid allocating memory for the data buffer when not needed immediately.

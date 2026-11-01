@@ -281,20 +281,6 @@ TEST(HttpResponseDataTest, Clear) {
   EXPECT_EQ(data.secondBuffer(), "");
 }
 
-// Test shrink_to_fit method
-TEST(HttpResponseDataTest, ShrinkToFit) {
-  RawChars head(1024);
-  head.append("Small");
-  HttpPayload body(std::string("Content"));
-  HttpMessageData data(std::move(head), std::move(body));
-
-  data.shrink_to_fit();
-
-  EXPECT_EQ(data.firstBuffer(), "Small");
-  EXPECT_EQ(data.secondBuffer(), "Content");
-  EXPECT_EQ(data.remainingSize(), 12U);
-}
-
 // Test with empty strings
 TEST(HttpResponseDataTest, EmptyStrings) {
   HttpMessageData data1(RawChars{});
@@ -688,21 +674,6 @@ TEST(HttpResponseDataTest, ClearDestroysPayload) {
     data.append("New head");
     EXPECT_EQ(data.firstBuffer(), "New head");
     EXPECT_EQ(data.secondBuffer(), "");
-  }
-}
-
-TEST(HttpResponseDataTest, ShrinkToFitWithPayloadKeepsData) {
-  for (const PayloadCase& payloadCase : PayloadCases()) {
-    // Large spare capacity so that the head buffer is eligible for shrinking. It may only be reallocated when the
-    // payload object can be relocated bitwise: address sanitizer would catch a dangling SSO std::string otherwise.
-    RawChars head(16UL * 1024UL);
-    head.append(std::string_view("Small"));
-    HttpMessageData data(std::move(head), payloadCase.make());
-
-    data.shrink_to_fit();
-
-    EXPECT_EQ(data.firstBuffer(), "Small");
-    EXPECT_EQ(data.secondBuffer(), payloadCase.expected);
   }
 }
 

@@ -364,17 +364,15 @@ TEST(ObjectArrayPoolTest, ThrowingConstructionDoesNotConsumeSpace) {
   EXPECT_THROW((void)pool.allocateAndDefaultConstruct(3), std::runtime_error);
   gElemDoThrow = false;
 
-  if (AERONET_ASAN_ENABLED) {
-    EXPECT_FALSE(AsanIsPoisoned(arr + 1));
-    EXPECT_TRUE(AsanIsPoisoned(arr + 2));
-  }
+#if AERONET_ASAN_ENABLED
+  EXPECT_FALSE(AsanIsPoisoned(arr + 1));
+  EXPECT_TRUE(AsanIsPoisoned(arr + 2));
+#endif
   EXPECT_EQ(pool.allocateAndDefaultConstruct(1), arr + 2);
 }
 
+#if AERONET_ASAN_ENABLED
 TEST(ObjectArrayPoolTest, AsanPoisonsUnallocatedPart) {
-  if (!AERONET_ASAN_ENABLED) {
-    GTEST_SKIP() << "AddressSanitizer is not enabled";
-  }
   ObjectArrayPool<char> pool(16);
 
   // Poisoning is byte precise after the end of the last allocated array
@@ -412,9 +410,6 @@ TEST(ObjectArrayPoolTest, AsanPoisonsUnallocatedPart) {
 }
 
 TEST(ObjectArrayPoolTest, AsanPoisonsShrunkNonTrivialObjects) {
-  if (!AERONET_ASAN_ENABLED) {
-    GTEST_SKIP() << "AddressSanitizer is not enabled";
-  }
   ObjectArrayPool<std::string> pool(8);
 
   std::string* arr = pool.allocateAndDefaultConstruct(3);
@@ -425,14 +420,13 @@ TEST(ObjectArrayPoolTest, AsanPoisonsShrunkNonTrivialObjects) {
 }
 
 TEST(ObjectArrayPoolDeathTest, AsanReportsAccessPastLastArray) {
-  if (!AERONET_ASAN_ENABLED) {
-    GTEST_SKIP() << "AddressSanitizer is not enabled";
-  }
   ObjectArrayPool<char> pool;
   char* arr = pool.allocateAndDefaultConstruct(5);
 
   EXPECT_DEATH({ [[maybe_unused]] volatile char ch = arr[5]; }, "use-after-poison");
 }
+
+#endif
 
 TEST(ObjectArrayPoolTest, ShouldReuseNextBlocksAfterClear) {
   // Construct a pool with small initial capacity so multiple blocks are created.

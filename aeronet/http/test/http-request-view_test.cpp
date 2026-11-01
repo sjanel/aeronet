@@ -12,6 +12,7 @@
 #include <format>
 #include <initializer_list>
 #include <memory>
+#include <optional>
 #include <random>
 #include <span>
 #include <stdexcept>
@@ -41,7 +42,7 @@
 #include "aeronet/encoding.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
-#include "aeronet/http-header.hpp"
+#include "aeronet/http-header-view.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-response.hpp"
@@ -960,8 +961,9 @@ TEST_F(HttpRequestViewTest, ValidHostHeaderFieldIsKeptAsIs) {
        }) {
     SCOPED_TRACE(host);
     ASSERT_EQ(reqSet(BuildRawWithHost("GET /p HTTP/1.1", host)), http::StatusCodeOK);
-    ASSERT_TRUE(req.headerValue("host"));
-    EXPECT_EQ(*req.headerValue("host"), host);
+    std::optional<std::string_view> optHostHeaderValue = req.headerValue("host");
+    ASSERT_TRUE(optHostHeaderValue);
+    EXPECT_EQ(optHostHeaderValue.value_or(std::string_view{}), host);
     EXPECT_EQ(req.path(), "/p");
   }
   // Optional whitespace around the value is not part of it.
@@ -1096,24 +1098,36 @@ TEST_F(HttpRequestViewTest, ErrorInTheRestOfAPartialHead) {
 // last until its timeout, if any.
 TEST_F(HttpRequestViewTest, BareLfInTheLastLineReceivedIsRejectedWithoutWaiting) {
   // No CR at all (a client using LF as line terminator), the head being complete or not.
-  for (std::string_view head : {"GET / HTTP/1.1\nHost: h\n\n", "GET / HTTP/1.1\nHost: h\n", "GET /a HTTP/1.1\n",
-                                "GET / HTTP/1.0\n\n", "GET / HTTP/1.1\nHost: h\nContent-Length: 4\n\nabcd"}) {
+  for (std::string_view head : {
+           "GET / HTTP/1.1\nHost: h\n\n",
+           "GET / HTTP/1.1\nHost: h\n",
+           "GET /a HTTP/1.1\n",
+           "GET / HTTP/1.0\n\n",
+           "GET / HTTP/1.1\nHost: h\nContent-Length: 4\n\nabcd",
+       }) {
     SCOPED_TRACE(head);
     EXPECT_EQ(receiveAndParse(head), http::StatusCodeBadRequest);
     inBuffer.clear();
   }
 
   // The request line is terminated by a CRLF, the last lines are not.
-  for (std::string_view head : {"GET / HTTP/1.1\r\nHost: h\n\n", "GET / HTTP/1.1\r\nHost: h\r\nX: v\n",
-                                "GET / HTTP/1.1\r\nHost: h\r\n\n", "GET / HTTP/1.1\r\nHost: h\r\nX: v\nY: w\n\n"}) {
+  for (std::string_view head : {
+           "GET / HTTP/1.1\r\nHost: h\n\n",
+           "GET / HTTP/1.1\r\nHost: h\r\nX: v\n",
+           "GET / HTTP/1.1\r\nHost: h\r\n\n",
+           "GET / HTTP/1.1\r\nHost: h\r\nX: v\nY: w\n\n",
+       }) {
     SCOPED_TRACE(head);
     EXPECT_EQ(receiveAndParse(head), http::StatusCodeBadRequest);
     inBuffer.clear();
   }
 
   // A bare LF in a line a CRLF terminates later is rejected as well.
-  for (std::string_view head : {"GET / HTTP/1.1\nHost: h\r\n\r\n", "GET /a\nb HTTP/1.1\r\nHost: h\r\n\r\n",
-                                "GET / HTTP/1.1\r\nHost: h\nX: v\r\n\r\n"}) {
+  for (std::string_view head : {
+           "GET / HTTP/1.1\nHost: h\r\n\r\n",
+           "GET /a\nb HTTP/1.1\r\nHost: h\r\n\r\n",
+           "GET / HTTP/1.1\r\nHost: h\nX: v\r\n\r\n",
+       }) {
     SCOPED_TRACE(head);
     EXPECT_EQ(receiveAndParse(head), http::StatusCodeBadRequest);
     inBuffer.clear();
@@ -1124,10 +1138,13 @@ TEST_F(HttpRequestViewTest, BareLfInTheLastLineReceivedIsRejectedWithoutWaiting)
     std::string_view received;
     std::string_view rest;
   };
-  for (const auto& [received, rest] :
-       {Split{"GET /ab HTTP/1.1", "\r\nHost: h\r\n\r\n"}, Split{"GET /ab HTTP/1.1\r", "\nHost: h\r\n\r\n"},
-        Split{"GET / HTTP/1.1\r\nHo", "st: h\r\n\r\n"}, Split{"GET / HTTP/1.1\r\nHost: h\r", "\n\r\n"},
-        Split{"GET / HTTP/1.1\r\nHost: h\r\nX: v", "\r\n\r\n"}}) {
+  for (const auto& [received, rest] : {
+           Split{"GET /ab HTTP/1.1", "\r\nHost: h\r\n\r\n"},
+           Split{"GET /ab HTTP/1.1\r", "\nHost: h\r\n\r\n"},
+           Split{"GET / HTTP/1.1\r\nHo", "st: h\r\n\r\n"},
+           Split{"GET / HTTP/1.1\r\nHost: h\r", "\n\r\n"},
+           Split{"GET / HTTP/1.1\r\nHost: h\r\nX: v", "\r\n\r\n"},
+       }) {
     SCOPED_TRACE(received);
     ASSERT_EQ(receiveAndParse(received), kNeedMoreData);
     EXPECT_EQ(receiveAndParse(rest), http::StatusCodeOK);
@@ -2100,8 +2117,18 @@ TEST_F(HttpRequestViewTest, EndSetsSpanAttributesAndEnds) {
 
 TEST_F(HttpRequestViewTest, DuplicateSingletonHeadersProduce400) {
   // A proxy in front may keep the first occurrence where we would keep the last one: they are rejected.
-  for (std::string_view name : {"authorization", "proxy-authorization", "content-type", "range", "if-range",
-                                "if-modified-since", "if-unmodified-since", "referer", "from", "max-forwards"}) {
+  for (std::string_view name : {
+           "authorization",
+           "proxy-authorization",
+           "content-type",
+           "range",
+           "if-range",
+           "if-modified-since",
+           "if-unmodified-since",
+           "referer",
+           "from",
+           "max-forwards",
+       }) {
     SCOPED_TRACE(name);
     std::string first(name);
     first.append(": bytes=0-99\r\n");

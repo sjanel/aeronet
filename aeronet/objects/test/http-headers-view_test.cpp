@@ -6,7 +6,7 @@
 #include <string>
 
 #include "aeronet/http-constants.hpp"
-#include "aeronet/http-header.hpp"
+#include "aeronet/http-header-view.hpp"
 #include "aeronet/http-helpers.hpp"
 
 namespace aeronet {

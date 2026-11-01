@@ -383,7 +383,7 @@ TEST(ZStreamRAII, MoveConstructionOfInitializedStreams) {
   EXPECT_FALSE(compressor.initialized());  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
   movedCompressor.initCompress(ZlibVariant::gzip, 6);
   EXPECT_EQ(CompressAll(movedCompressor, payload), compressed);
-  compressor.initCompress(ZlibVariant::gzip, 6);  // NOLINT(bugprone-use-after-move)
+  compressor.initCompress(ZlibVariant::gzip, 6);  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
   EXPECT_EQ(CompressAll(compressor, payload), compressed);
 
   ZStreamRAII decompressor(ZlibVariant::gzip);
@@ -408,7 +408,7 @@ TEST(ZStreamRAII, MoveAssignmentOfInitializedStreams) {
   EXPECT_FALSE(compressor.initialized());  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
   decompressor.initCompress(ZlibVariant::deflate, 6);
   EXPECT_EQ(CompressAll(decompressor, payload), compressed);
-  compressor.initDecompress(ZlibVariant::deflate);  // NOLINT(bugprone-use-after-move)
+  compressor.initDecompress(ZlibVariant::deflate);  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
   EXPECT_EQ(DecompressAll(compressor, compressed, payload.size()), payload);
 }
 

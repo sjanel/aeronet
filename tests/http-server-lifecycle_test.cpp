@@ -961,8 +961,8 @@ TEST(HttpServerAsyncHandle, MoveHandle) {
   // Move construct
   SingleHttpServer::AsyncHandle handle2(std::move(handle1));
   EXPECT_TRUE(handle2.started());
-  EXPECT_FALSE(handle1.started());            // NOLINT(bugprone-use-after-move)
-  EXPECT_NO_THROW(handle1.rethrowIfError());  // NOLINT(bugprone-use-after-move)
+  EXPECT_FALSE(handle1.started());            // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+  EXPECT_NO_THROW(handle1.rethrowIfError());  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
 
   auto resp = test::simpleGet(port, "/");
   EXPECT_TRUE(resp.contains("move-test"));

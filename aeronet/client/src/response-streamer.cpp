@@ -11,7 +11,7 @@
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"
 #include "aeronet/http-constants.hpp"
-#include "aeronet/http-header.hpp"
+#include "aeronet/http-header-value-reverse-tokens-iterator.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/log.hpp"
@@ -203,6 +203,7 @@ bool ResponseStreamer::decode(std::string_view chunk, bool finalChunk) {
   // The decoders fail on corrupt input as when reaching their budget: being within one decoder chunk of the limit
   // tells the latter (like for a buffered body). An empty chunk decodes nothing, so it can only fail on a truncated
   // stream.
+
   if (_decodedBytes > cfg.maxDecompressedBytes ||
       static_cast<double>(_decodedBytes) > static_cast<double>(ratioBase) * cfg.maxExpansionRatio ||
       (!decoded && !chunk.empty() && _decodedBytes + cfg.decoderChunkSize > cfg.maxDecompressedBytes)) {

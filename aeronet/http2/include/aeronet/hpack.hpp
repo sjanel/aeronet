@@ -7,6 +7,7 @@
 
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header-view.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/object-array-pool.hpp"
 #include "aeronet/raw-bytes.hpp"

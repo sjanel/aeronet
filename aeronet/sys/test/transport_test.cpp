@@ -441,8 +441,10 @@ TEST(TransportTest, InlinePlainTransportMovesAndLeavesSourceEmpty) {
   EXPECT_NE(transport.get<PlainTransport>(), nullptr);
 
   Transport moved(std::move(transport));
-  EXPECT_FALSE(transport);                            // NOLINT(bugprone-use-after-move)
-  EXPECT_EQ(transport.kind(), TransportKind::Empty);  // NOLINT(bugprone-use-after-move)
+  // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+  EXPECT_FALSE(transport);
+  // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+  EXPECT_EQ(transport.kind(), TransportKind::Empty);
   EXPECT_NE(moved.get<PlainTransport>(), nullptr);
   moved.reset();
   EXPECT_FALSE(moved);
@@ -484,7 +486,7 @@ TEST(TransportTest, MoveAssignmentReleasesThePreviousOwnedBackend) {
   Transport destination(std::make_unique<CountingTransportBackend>(destructions));
 
   destination = std::move(source);
-  EXPECT_FALSE(source);  // NOLINT(bugprone-use-after-move)
+  EXPECT_FALSE(source);  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
   EXPECT_EQ(destructions, 1U);
 
   destination.reset();

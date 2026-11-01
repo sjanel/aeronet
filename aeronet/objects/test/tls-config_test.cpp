@@ -578,9 +578,12 @@ TEST(TlsConfigTest, ClearTlsSessionTicketKeys) {
   key.fill(std::byte{0x1});
 
   cfg.withTlsSessionTicketKey(key);
+  EXPECT_EQ(cfg.sessionTicketKeys().size(), 1U);
   cfg.withTlsSessionTicketKey(key);
-
   EXPECT_EQ(cfg.sessionTicketKeys().size(), 2U);
+  cfg._staticTicketKeys.keys.reserve(8U);
+  cfg.withTlsSessionTicketKey(key);
+  EXPECT_EQ(cfg.sessionTicketKeys().size(), 3U);
 
   cfg.clearTlsSessionTicketKeys();
   EXPECT_TRUE(cfg.sessionTicketKeys().empty());

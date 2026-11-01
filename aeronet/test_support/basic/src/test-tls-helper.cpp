@@ -244,15 +244,20 @@ std::pair<std::string, std::string> MakeEphemeralCertKey(const char* pCommonName
 void SetSelfIssuedName(X509* cert, const char* pCommonName) { SetNames(cert, {{"CN", pCommonName}}, nullptr); }
 
 std::string SubjectCommonName(const X509* pCert) {
-  // X509_NAME_get_text_by_NID() is deprecated since OpenSSL 4.0: read the entry itself.
-  const X509_NAME* subject = ::X509_get_subject_name(pCert);
-  const int pos = ::X509_NAME_get_index_by_NID(subject, NID_commonName, -1);
+  const X509_NAME* pSubject = ::X509_get_subject_name(pCert);
+  const int pos = ::X509_NAME_get_index_by_NID(pSubject, NID_commonName, -1);
   if (pos < 0) {
     return {};
   }
-  const ASN1_STRING* data = ::X509_NAME_ENTRY_get_data(::X509_NAME_get_entry(subject, pos));
-  return {reinterpret_cast<const char*>(::ASN1_STRING_get0_data(data)),
-          static_cast<std::size_t>(::ASN1_STRING_length(data))};
+  const ASN1_STRING* pData = ::X509_NAME_ENTRY_get_data(::X509_NAME_get_entry(pSubject, pos));
+  unsigned char* utf8 = nullptr;
+  const int len = ::ASN1_STRING_to_UTF8(&utf8, pData);
+  if (len < 0) {
+    return {};
+  }
+  std::string ret(reinterpret_cast<const char*>(utf8), static_cast<std::size_t>(len));
+  ::OPENSSL_free(utf8);
+  return ret;
 }
 
 std::size_t SslReadAppend(SSL* pSsl, std::string& out, std::size_t maxBytes) {

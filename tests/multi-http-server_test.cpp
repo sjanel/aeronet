@@ -614,7 +614,7 @@ TEST(MultiHttpServer, AsyncHandleMoveConstructorAndAssignment) {
   // Move-construct from hA -> hB
   auto hB = std::move(hA);
   EXPECT_TRUE(hB.started());
-  EXPECT_FALSE(hA.started());  // NOLINT(bugprone-use-after-move)
+  EXPECT_FALSE(hA.started());  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
 
   // Start another server to provide a second handle for move-assignment
   MultiHttpServer multiB(MakeConfig(1U));
@@ -626,7 +626,7 @@ TEST(MultiHttpServer, AsyncHandleMoveConstructorAndAssignment) {
   // Move-assign hB into hC
   hC = std::move(hB);
   // After move assignment, source is moved-from
-  EXPECT_FALSE(hB.started());  // NOLINT(bugprone-use-after-move)
+  EXPECT_FALSE(hB.started());  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
   // Destination now should be running
   EXPECT_TRUE(hC.started());
 

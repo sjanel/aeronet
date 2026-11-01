@@ -9,7 +9,7 @@
 
 #include "aeronet/raw-chars.hpp"
 
-using namespace aeronet;
+namespace aeronet {
 
 namespace {
 
@@ -190,7 +190,7 @@ TEST(TraceEchoTest, HeadWithABareLfDoesNotWait) {
 }
 
 TEST(TraceEchoTest, LargeHead) {
-  static constexpr std::size_t kLargeMaxHeaderBytes = 1 << 20;
+  static constexpr std::size_t kLargeMaxHeaderBytes = 1UL << 20U;
   std::string head = "TRACE /large HTTP/1.1\r\nHost: h\r\n";
   std::string expected = head;
   for (int fieldPos = 0; head.size() < kLargeMaxHeaderBytes - 512; ++fieldPos) {
@@ -212,3 +212,5 @@ TEST(TraceEchoTest, LargeHead) {
 
   EXPECT_FALSE(Copy(std::string_view(head).substr(0, head.size() - 1), kLargeMaxHeaderBytes).complete);
 }
+
+}  // namespace aeronet

@@ -808,24 +808,20 @@ TEST_F(HttpClientE2ETest, ConnectionRefusedReturnsError) {
 TEST_F(HttpClientE2ETest, MaxResponseBytesExceededReturnsErrorInHeaders) {
   HttpClientConfig cfg;
   cfg.maxResponseBytes = 128;
-  HttpClient client(cfg);
-  auto result = client.get(Url("/headers"));
-  ASSERT_FALSE(result);
-  EXPECT_EQ(result.error(), HttpClientErrc::responseTooLarge);
-}
-
+  for (HttpVersionMode httpVersion : {
+           HttpVersionMode::Http1_1,
 #ifdef AERONET_ENABLE_HTTP2
-TEST_F(HttpClientE2ETest, MaxResponseBytesExceededReturnsErrorInHeadersHttp2) {
-  HttpClientConfig cfg;
-  cfg.maxResponseBytes = 128;
-  cfg.httpVersion = HttpVersionMode::Http2;
-
-  HttpClient client(cfg);
-  auto result = client.get(Url("/headers"));
-  ASSERT_FALSE(result);
-  EXPECT_EQ(result.error(), HttpClientErrc::responseTooLarge);
-}
+           HttpVersionMode::Http2,
 #endif
+       }) {
+    cfg.httpVersion = httpVersion;
+
+    HttpClient client(cfg);
+    auto result = client.get(Url("/headers"));
+    ASSERT_FALSE(result);
+    EXPECT_EQ(result.error(), HttpClientErrc::responseTooLarge);
+  }
+}
 
 TEST_F(HttpClientE2ETest, MaxResponseBytesExceededReturnsErrorInBody) {
   HttpClientConfig cfg;
@@ -907,7 +903,7 @@ TEST_F(HttpClientE2ETest, RejectedSeeOtherLeavesTheRequestUnchanged) {
   EXPECT_EQ(result.error(), HttpClientErrc::invalidUrl);
 
   // The request given to request(HttpRequest&&) is not rewritten to a body-less GET for a redirect it does not follow.
-  EXPECT_EQ(req.method(), http::Method::POST);  // NOLINT(bugprone-use-after-move)
+  EXPECT_EQ(req.method(), http::Method::POST);  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
   EXPECT_EQ(req.target(), "/see-other-invalid-path");
   EXPECT_EQ(req.bodyInMemory(), "kept-payload");
 
@@ -3666,30 +3662,35 @@ TEST(HttpClientSinkE2ETest, SinkCanStopADecodedBody) {
 
 // The decompression limits still apply to a streamed body.
 TEST(HttpClientSinkE2ETest, DecompressionLimitsApplyToStreamedBodies) {
-  const std::string payload = test::MakePatternedPayload(1UL << 20U);
+  const std::size_t rawSize = 1UL << 20U;
+  const std::string payload = test::MakePatternedPayload(rawSize);
+  HttpClientConfig cfg;
+  cfg.decompression.decoderChunkSize = 4096;
+
   for (const Encoding enc : test::SupportedEncodings()) {
     const RawChars encoded = test::Compress(enc, payload);
     RawServer server([&](NativeHandle fd, int) {
       test::RecvHead(fd);
       SendAll(fd, EncodedResponse(GetEncodingStr(enc), std::string_view(encoded)));
     });
-    for (const bool ratio : {false, true}) {
-      HttpClientConfig cfg;
-      if (ratio) {
-        cfg.decompression.maxExpansionRatio = 2.0;
-      } else {
+    for (int scenario = 0; scenario < 2; ++scenario) {
+      if (scenario == 0) {
+        // max decompressed bytes exceeded
         cfg.decompression.maxExpansionRatio = 1e9;
         cfg.decompression.maxDecompressedBytes = 100000;
+      } else if (scenario == 1) {
+        // max expansion ratio exceeded
+        cfg.decompression.maxExpansionRatio = 2.0;
+        cfg.decompression.maxDecompressedBytes = rawSize;
       }
       HttpClient client(cfg);
       test::CollectingBodySink sink;
       auto result = client.get(MakeUrl(server.port()), sink);
-      ASSERT_FALSE(result) << GetEncodingStr(enc) << ' ' << ratio;
-      EXPECT_EQ(result.error(), HttpClientErrc::responseTooLarge) << GetEncodingStr(enc) << ' ' << ratio;
-      if (!ratio) {
-        EXPECT_LE(sink.body.size(), 100000U) << GetEncodingStr(enc);
-      }
+      ASSERT_FALSE(result) << GetEncodingStr(enc) << ' ' << scenario;
+      EXPECT_EQ(result.error(), HttpClientErrc::responseTooLarge) << GetEncodingStr(enc) << ' ' << scenario;
+      EXPECT_LE(sink.body.size(), cfg.decompression.maxDecompressedBytes) << GetEncodingStr(enc);
     }
+    break;
   }
 }
 

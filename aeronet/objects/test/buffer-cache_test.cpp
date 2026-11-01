@@ -59,10 +59,8 @@ TEST(BufferCacheTest, MoveTransfersCachedBuffer) {
   other.deallocate(buf);
 }
 
+#if AERONET_ASAN_ENABLED
 TEST(BufferCacheTest, AsanPoisonsCachedBuffer) {
-  if (!AERONET_ASAN_ENABLED) {
-    GTEST_SKIP() << "AddressSanitizer is not enabled";
-  }
   BufferCache cache;
 
   auto* buf = static_cast<char*>(cache.allocate(64));
@@ -82,14 +80,13 @@ TEST(BufferCacheTest, AsanPoisonsCachedBuffer) {
 }
 
 TEST(BufferCacheDeathTest, AsanReportsUseAfterDeallocate) {
-  if (!AERONET_ASAN_ENABLED) {
-    GTEST_SKIP() << "AddressSanitizer is not enabled";
-  }
   BufferCache cache;
   auto* buf = static_cast<char*>(cache.allocate(64));
   cache.deallocate(buf);
 
   EXPECT_DEATH({ [[maybe_unused]] volatile char ch = buf[0]; }, "use-after-poison");
 }
+
+#endif
 
 }  // namespace aeronet::internal

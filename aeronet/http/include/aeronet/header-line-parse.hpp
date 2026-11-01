@@ -3,7 +3,7 @@
 #include <string_view>
 
 #include "aeronet/compiler-config.hpp"
-#include "aeronet/http-header.hpp"
+#include "aeronet/http-header-view.hpp"
 #include "aeronet/string-trim.hpp"
 
 namespace aeronet::http {

@@ -20,9 +20,9 @@ constexpr bool IsValidContentType(std::string_view contentType) {
   return contentType.size() >= http::ContentTypeMinLen && http::IsValidHeaderValue(contentType);
 }
 
-constexpr std::string_view CheckContentType(bool isBodyEmpty, std::string_view& contentType) {
+constexpr std::string_view CheckContentType(std::string_view& contentType) {
   contentType = TrimOws(contentType);
-  if (!isBodyEmpty && !IsValidContentType(contentType)) [[unlikely]] {
+  if (!IsValidContentType(contentType)) [[unlikely]] {
     ThrowInvalidContentTypeHeaderValue(contentType);
   }
   return contentType;

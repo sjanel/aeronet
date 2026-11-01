@@ -16,6 +16,7 @@
 
 #include "aeronet/city-hash.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header-view.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/mergeable-headers.hpp"

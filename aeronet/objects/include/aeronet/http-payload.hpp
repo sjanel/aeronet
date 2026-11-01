@@ -38,12 +38,6 @@ class HttpPayload {
 
     RawCharsSuffix(RawChars rawChars, std::size_t suffixOffset) noexcept;
 
-    RawCharsSuffix(const RawCharsSuffix&) = delete;
-    RawCharsSuffix(RawCharsSuffix&&) noexcept = default;
-
-    RawCharsSuffix& operator=(const RawCharsSuffix&) = delete;
-    RawCharsSuffix& operator=(RawCharsSuffix&&) noexcept = default;
-
     [[nodiscard]] std::string_view view() const noexcept { return {buffer.get() + offset, size}; }
 
     using trivially_relocatable = std::true_type;

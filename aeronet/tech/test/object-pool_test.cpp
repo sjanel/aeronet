@@ -524,10 +524,8 @@ TEST(ObjectPoolTest, ClearPreservesCapacityForString) {
   EXPECT_EQ(pool.capacity(), capBefore);
 }
 
+#if AERONET_ASAN_ENABLED
 TEST(ObjectPoolTest, AsanPoisonsUnallocatedSlots) {
-  if (!AERONET_ASAN_ENABLED) {
-    GTEST_SKIP() << "AddressSanitizer is not enabled";
-  }
   ObjectPool<std::string> pool(4);
 
   std::string* str1 = pool.allocateAndConstruct("first");
@@ -564,9 +562,6 @@ TEST(ObjectPoolTest, AsanPoisonsUnallocatedSlots) {
 }
 
 TEST(ObjectPoolTest, AsanPoisonsSlotWhoseConstructionThrows) {
-  if (!AERONET_ASAN_ENABLED) {
-    GTEST_SKIP() << "AddressSanitizer is not enabled";
-  }
   struct ThrowingCtor {
     explicit ThrowingCtor(bool doThrow) {
       if (doThrow) {
@@ -584,9 +579,6 @@ TEST(ObjectPoolTest, AsanPoisonsSlotWhoseConstructionThrows) {
 }
 
 TEST(ObjectPoolDeathTest, AsanReportsUseAfterRelease) {
-  if (!AERONET_ASAN_ENABLED) {
-    GTEST_SKIP() << "AddressSanitizer is not enabled";
-  }
   ObjectPool<std::string> pool;
   std::string* str = pool.allocateAndConstruct("released");
   pool.destroyAndRelease(str);
@@ -594,6 +586,7 @@ TEST(ObjectPoolDeathTest, AsanReportsUseAfterRelease) {
   EXPECT_DEATH({ [[maybe_unused]] volatile auto sz = str->size(); }, "use-after-poison");
   EXPECT_DEATH(pool.destroyAndRelease(str), "use-after-poison");
 }
+#endif
 
 #if AERONET_WANT_MALLOC_OVERRIDES
 
@@ -688,7 +681,7 @@ TEST(PoolPtrTest, MoveConstructorTransfersOwnership) {
   auto pp1 = pool.allocateAndConstructPoolPtr(99);
   int* raw = pp1.get();
   PoolPtr<int> pp2 = std::move(pp1);
-  EXPECT_FALSE(pp1);  // NOLINT(bugprone-use-after-move)
+  EXPECT_FALSE(pp1);  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
   EXPECT_TRUE(pp2);
   EXPECT_EQ(pp2.get(), raw);
   EXPECT_EQ(*pp2, 99);
@@ -705,7 +698,7 @@ TEST(PoolPtrTest, MoveAssignmentTransfersOwnership) {
   // pp2's old value (20) should have been released
   EXPECT_EQ(pool.size(), 1U);
   EXPECT_EQ(*pp2, 10);
-  EXPECT_FALSE(pp1);  // NOLINT(bugprone-use-after-move)
+  EXPECT_FALSE(pp1);  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
 }
 
 TEST(PoolPtrTest, SelfMoveAssignIsSafe) {

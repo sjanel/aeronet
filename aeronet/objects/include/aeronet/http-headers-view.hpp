@@ -8,7 +8,7 @@
 #include <string_view>
 
 #include "aeronet/http-constants.hpp"
-#include "aeronet/http-header.hpp"
+#include "aeronet/http-header-view.hpp"
 #include "aeronet/search-crlf.hpp"
 
 namespace aeronet {
