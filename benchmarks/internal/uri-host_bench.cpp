@@ -38,7 +38,7 @@ void ValidateHost(benchmark::State& state) {
     nbValid += static_cast<int64_t>(kValidate(value));
   }
   state.SetLabel(std::string(host));
-  state.SetBytesProcessed(static_cast<int64_t>(state.iterations() * host.size()));
+  state.SetBytesProcessed(state.iterations() * static_cast<int64_t>(host.size()));
   state.counters["valid"] = benchmark::Counter(static_cast<double>(nbValid == state.iterations()));
 }
 
