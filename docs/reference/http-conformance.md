@@ -25,7 +25,7 @@ This page lists the HTTP/1.1 behaviors aeronet implements ([RFC 9110](https://ww
 | Behavior | Status |
 | --- | --- |
 | Persistent connections: default for HTTP/1.1, opt-in with `Connection: keep-alive` for HTTP/1.0 | Supported |
-| HTTP/1.0 requests answered with HTTP/1.0 responses (no silent upgrade) | Supported |
+| HTTP/1.0 requests answered with an `HTTP/1.1` status line, the highest version the server conforms to (RFC 9110 §2.5), but with the semantics of HTTP/1.0 (below). As an HTTP/1.1 response persists by default (RFC 9112 §9.3), the response always carries `Connection: close` or `Connection: keep-alive` | Supported |
 | No `1xx` response to an HTTP/1.0 client (RFC 9110 §15.2): its `Expect: 100-continue` (§10.1.1) and `Upgrade` (§7.8) are ignored, and so are the interim responses of the expectation handler | Supported |
 | No chunked response to an HTTP/1.0 client (RFC 9112 §6.1): the trailers of a buffered response are dropped, and its body keeps its `Content-Length`. A streamed body without `contentLength()` is delimited by the close of the connection (§6.3), see [Streaming responses](../guides/streaming-responses.md#how-it-works) | Supported |
 | `Connection: close` from either side | Supported |
@@ -155,5 +155,6 @@ The handler runs on the event-loop thread, so it must be fast. An `Interim` resu
 - `TRACE` echo as received, without sensitive fields, for heads received in several reads, up to `maxHeaderBytes`, and rejected with content: `HttpOptionsTrace` tests in [tests/http-core_test.cpp](../../tests/http-core_test.cpp), and the copy of the head in [aeronet/server/test/trace-echo_test.cpp](../../aeronet/server/test/trace-echo_test.cpp).
 - `Allow` header of the `405` responses, over HTTP/1.1 and HTTP/2: `MethodNotAllowedListsTheMethodsOfTheRoute`, `DisabledTraceListsTheMethodsOfTheRoute` and `CorsPreflightOfAMethodOfNoHandlerIsAnswered405WithAllow` in [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp).
 - Trailers dropped for HTTP/1.0: `TrailersDroppedForHttp10` and `TrailersOfDirectCompressionDroppedForHttp10` in [http-response_test.cpp](../../aeronet/http/test/http-response_test.cpp).
+- `HTTP/1.1` status line and `Connection` header of the responses to HTTP/1.0 requests: `HttpResponseTest.StatusLineIsHttp11WhateverTheRequestVersion` in [http-response_test.cpp](../../aeronet/http/test/http-response_test.cpp), `Http10.AnsweredWithHttp11StatusLine` in [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp) and the `HttpKeepAlive10` tests in [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
 - Streamed responses to HTTP/1.0 clients, close-delimited or with a `Content-Length`: `Http10.StreamedBodyWithoutLengthIsDelimitedByClose` and `Http10.StreamedResponseOfKnownLengthKeepsConnectionAlive` in [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp).
 - `Upgrade` ignored in an HTTP/1.0 request: `WebSocketTest.UpgradeIgnoredInHttp10` in [tests/websocket-integration_test.cpp](../../tests/websocket-integration_test.cpp).

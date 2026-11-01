@@ -920,6 +920,8 @@ class HttpResponse final : public HttpMessage {
   // IMPORTANT: This method finalizes the response by appending reserved headers,
   // and returns the internal buffers stolen from this HttpMessage instance.
   // So this instance must not be used anymore after this call.
+  // The status line is always HTTP/1.1: 'version' is the one of the request, which decides the framing and the
+  // Connection header of the response.
   HttpMessageData finalizeForHttp1(const char* cachedDateHeader, http::Version version, Options opts,
                                    const ConcatenatedHeaders* pGlobalHeaders, std::size_t minCapturedBodySize);
 };

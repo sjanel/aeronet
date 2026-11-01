@@ -1275,7 +1275,8 @@ INSTANTIATE_TEST_SUITE_P(
 
 TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
   ts.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("ok"); });
-  // HTTP/1.0 without Connection: keep-alive should close
+  // HTTP/1.0 without Connection: keep-alive should close. The response, whose HTTP/1.1 status line implies a persistent
+  // connection (RFC 9112 §9.3), announces it.
   test::ClientConnection clientConnection(port);
   NativeHandle fd = clientConnection.fd();
   ASSERT_GE(fd, 0);
@@ -1284,7 +1285,8 @@ TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
 
   std::string resp = test::recvUntilClosed(fd);
 
-  ASSERT_FALSE(resp.contains("connection:"));
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << resp;
   // Second request should not yield another response (connection closed). We attempt to read after sending.
   std::string_view req2 = "GET /h2 HTTP/1.0\r\nhost: x\r\n\r\n";
   test::sendAll(fd, req2);
@@ -1329,7 +1331,7 @@ TEST(HttpKeepAlive10, KeepAliveOptionInConnectionList) {
     test::sendAll(fd, "GET /h HTTP/1.0\r\nhost: x\r\nconnection: x-option\r\n\r\n");
     const std::string resp = test::recvUntilClosed(fd);
     EXPECT_TRUE(resp.ends_with("ok")) << resp;
-    EXPECT_FALSE(resp.contains("connection:")) << resp;
+    EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << resp;
   }
 }
 
@@ -1414,7 +1416,7 @@ TEST(HttpMalformed, TooLongRequestTargetIsUriTooLong) {
   const std::string_view kVersion = " HTTP/1.0\r\n";
   const std::string fittingTarget(kMaxHeaderBytes - kStart.size() - kVersion.size() - http::CRLF.size(), 'b');
   resp = sendRaw(std::string(kStart) + fittingTarget + std::string(kVersion) + "\r\n");
-  EXPECT_TRUE(resp.starts_with("HTTP/1.0 200")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
   resp = sendRaw(std::string(kStart) + fittingTarget + std::string(kVersion) + "x: y\r\n\r\n");
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 431 Request Header Fields Too Large\r\n")) << resp;
 }
