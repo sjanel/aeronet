@@ -14,6 +14,34 @@
 
 namespace aeronet {
 
+namespace {
+
+void ValidateRequestHeader(LowerAsciiKey headerName) {
+  if (http::IsReservedOrForbiddenRequestHeader(headerName)) {
+    throw std::invalid_argument(
+        std::format("attempt to set reserved request header: '{}'", std::string_view(headerName)));
+  }
+  // Not reserved (a request with a body may carry it), but a client must not send a 100-continue expectation in a
+  // request without content (RFC 9110 §10.1.1), as most requests sent with the global headers are.
+  if (headerName == http::Expect) {
+    throw std::invalid_argument("attempt to set expect as a global header: only a request with a body may carry it");
+  }
+}
+
+void ValidateResponseHeader(LowerAsciiKey headerName) {
+  if (http::IsReservedResponseHeader(headerName)) {
+    throw std::invalid_argument(std::format("attempt to set reserved header: '{}'", std::string_view(headerName)));
+  }
+  // Not reserved (a handler sets it with HttpResponse::location()), but specific to each response: a global one
+  // would be on every response, and duplicated (the global first, which clients follow) in the redirects that the
+  // server builds itself on a response starting with the global headers.
+  if (headerName == http::Location) {
+    throw std::invalid_argument("attempt to set location as a global header: its value is specific to each response");
+  }
+}
+
+}  // namespace
+
 void Validate(const ConcatenatedHeaders& headers, HeaderType type) {
   for (std::string_view headerNameValue : headers) {
     const auto colonPos = headerNameValue.find(http::HeaderSep);
@@ -40,22 +68,10 @@ void Validate(const ConcatenatedHeaders& headers, HeaderType type) {
     }
 
     if (type == HeaderType::Response) {
-      if (http::IsReservedResponseHeader(headerName)) {
-        throw std::invalid_argument(std::format("attempt to set reserved header: '{}'", std::string_view(headerName)));
-      }
-      // Not reserved (a handler sets it with HttpResponse::location()), but specific to each response: a global one
-      // would be on every response, and duplicated (the global first, which clients follow) in the redirects that the
-      // server builds itself on a response starting with the global headers.
-      if (headerName == http::Location) {
-        throw std::invalid_argument(
-            "attempt to set location as a global header: its value is specific to each response");
-      }
+      ValidateResponseHeader(headerName);
     } else {
       assert(type == HeaderType::Request);
-      if (http::IsReservedOrForbiddenRequestHeader(headerName)) {
-        throw std::invalid_argument(
-            std::format("attempt to set reserved request header: '{}'", std::string_view(headerName)));
-      }
+      ValidateRequestHeader(headerName);
     }
   }
 }

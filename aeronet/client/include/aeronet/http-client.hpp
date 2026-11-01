@@ -418,11 +418,22 @@ class HttpClient {
   friend class http2::internal::Http2ClientEngine;
 #endif
 
+  // Block (up to the deadline) until fd signals one of the interest events. Returns the signaled events (among the
+  // interest ones, EventErr, EventHup and EventRdHup), 0 on timeout or poll failure.
+  EventBmp waitEvents(NativeHandle fd, EventBmp interest, SteadyClock::time_point deadline);
+
   // Block (up to the deadline) until fd signals one of the interest events. Returns true if ready.
-  bool waitIo(NativeHandle fd, EventBmp interest, SteadyClock::time_point deadline);
+  bool waitIo(NativeHandle fd, EventBmp interest, SteadyClock::time_point deadline) {
+    return waitEvents(fd, interest, deadline) != 0U;
+  }
+
+  // waitEvents() for the request / response exchange: also gives up after HttpClientConfig::inactivityTimeout.
+  EventBmp waitExchangeEvents(NativeHandle fd, EventBmp interest, SteadyClock::time_point deadline);
 
   // waitIo() for the request / response exchange: also gives up after HttpClientConfig::inactivityTimeout.
-  bool waitExchangeIo(NativeHandle fd, EventBmp interest, SteadyClock::time_point deadline);
+  bool waitExchangeIo(NativeHandle fd, EventBmp interest, SteadyClock::time_point deadline) {
+    return waitExchangeEvents(fd, interest, deadline) != 0U;
+  }
 
   // Ensure the event loop is watching `fd` for exactly `interest`, reusing the existing registration when
   // possible. The client keeps a single fd registered at a time (the one it is currently driving): a

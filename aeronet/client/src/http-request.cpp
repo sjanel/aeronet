@@ -494,4 +494,8 @@ HttpRequest::RedirectOutcome HttpRequest::resolveRedirect(std::string_view locat
   return copy;
 }
 
+bool HttpRequest::expectsContinue() const noexcept {
+  return bodyLength() != 0 && CaseInsensitiveEqual(headerValueOrEmpty(http::Expect), http::h100_continue);
+}
+
 }  // namespace aeronet

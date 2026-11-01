@@ -59,7 +59,7 @@ void BM_StreamDecodedBody(benchmark::State& state) {
   CountingSink sink;
   for ([[maybe_unused]] auto _ : state) {
     streamer.beginRequest(&sink, config, codec);
-    streamer.beginExchange(false, false);
+    streamer.beginExchange(false, false, false);
     HttpResponse head(http::StatusCodeOK);
     head.headerAddLine(http::ContentEncoding, GetEncodingStr(encoding));
     bool stream = false;

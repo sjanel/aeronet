@@ -766,6 +766,10 @@ class HttpRequest final : public HttpMessage {
 
   [[nodiscard]] std::string_view capturedPayloadForHttp11() const noexcept { return getHttpPayload()->view(); }
 
+  // Whether the request has a body and the 'Expect: 100-continue' header: the body is then only sent once the server
+  // accepts it (RFC 9110 §10.1.1). The expectation is meaningless without content.
+  [[nodiscard]] bool expectsContinue() const noexcept;
+
   // URL data - will be set at construction time and cannot be modified.
   uint16_t _hostLen;       // length of host
   uint16_t _port;          // parsed port

@@ -61,7 +61,7 @@ void ResponseStreamer::beginRequest(ResponseBodySink* sink, const HttpClientConf
   }
 }
 
-void ResponseStreamer::beginExchange(bool redirectFollowed, bool statusRetried) noexcept {
+void ResponseStreamer::beginExchange(bool redirectFollowed, bool statusRetried, bool expectationRetried) noexcept {
   _decoder = nullptr;
   _compressedBytes = 0;
   _decodedBytes = 0;
@@ -70,6 +70,7 @@ void ResponseStreamer::beginExchange(bool redirectFollowed, bool statusRetried) 
   _bufferedBody = {};
   _bufferRedirects = redirectFollowed;
   _bufferRetries = statusRetried;
+  _bufferExpectationFailed = expectationRetried;
 }
 
 ResponseStreamer::Coding ResponseStreamer::selectDecoder(std::string_view contentEncoding) {
@@ -119,7 +120,8 @@ HttpClientErrc ResponseStreamer::startResponse(HttpResponse& head, ResponseBodyI
   stream = false;
   const http::StatusCode status = head.status();
   if ((_bufferRedirects && IsRedirectStatus(status) && !head.headerValueOrEmpty(http::Location).empty()) ||
-      (_bufferRetries && _pConfig->retry.retryStatuses.contains(status))) {
+      (_bufferRetries && _pConfig->retry.retryStatuses.contains(status)) ||
+      (_bufferExpectationFailed && status == http::StatusCodeExpectationFailed)) {
     return HttpClientErrc::noError;  // this response will be followed or retried, not delivered
   }
   const std::string_view contentEncoding = head.headerValueOrEmpty(http::ContentEncoding);
