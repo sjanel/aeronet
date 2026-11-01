@@ -1527,4 +1527,36 @@ TEST(ResponseParserDecompress, DecodingBeyondTheLimitsIsTooLarge) {
   }
 }
 
+// RFC 9112 §9.5: the response bytes received while the request is sent tell whether to stop sending it. The heads of
+// the interim responses are skipped, a final status from 300 (or bytes that are no status line) stops it.
+TEST(ResponseParserTest, PeekEarlyResponse) {
+  using Early = Http1ResponseParser::EarlyResponse;
+  struct Case {
+    std::string_view received;
+    Early expected;
+  };
+  static constexpr Case kCases[] = {
+      {"", Early::None},
+      {"HTTP/1.1 41", Early::None},
+      {"HTTP/1.1 100 Continue\r\n", Early::None},
+      {"HTTP/1.1 103 Early Hints\r\nlink: </a.css>\r\n\r\n", Early::None},
+      {"HTTP/1.1 100 Continue\r\n\r\n", Early::Continue},
+      {"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 103 \r\n\r\nHTTP/1.1 2", Early::Continue},
+      {"HTTP/1.1 102 Processing\r\n\r\nHTTP/1.1 100 Continue\r\n\r\n", Early::Continue},
+      {"HTTP/1.1 200", Early::Success},
+      {"HTTP/1.0 204 No Content\r\n\r\n", Early::Success},
+      {"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 201 Created\r\n", Early::Success},
+      {"HTTP/1.1 307 Temporary Redirect\r\n", Early::Rejection},
+      {"HTTP/1.1 413 Content Too Large\r\ncontent-length: 0\r\n\r\n", Early::Rejection},
+      {"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 500 ", Early::Rejection},
+      {"HTTP/1.1 099 Too Low\r\n", Early::Rejection},
+      {"HTTP/1.1 2x0 OK\r\n", Early::Rejection},
+      {"HTTP/1.1\t200 OK\r\n", Early::Rejection},
+      {"garbage, not a response\r\n\r\n", Early::Rejection},
+  };
+  for (const Case& testCase : kCases) {
+    EXPECT_EQ(Http1ResponseParser::PeekEarlyResponse(testCase.received), testCase.expected) << testCase.received;
+  }
+}
+
 }  // namespace aeronet

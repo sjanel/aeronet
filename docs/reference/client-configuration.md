@@ -26,6 +26,7 @@ With Glaze, the configuration can also be loaded from the `client` section of a 
 | `maxResponseBytes` | 64 MiB | Maximum headers plus decoded body accepted before the client aborts (`responseTooLarge`). Only bounds the head of a response streamed to a [`ResponseBodySink`](../modules/http-client.md#streaming-response-bodies). |
 | `followRedirects`, `maxRedirects` | true, 5 | Follow redirects and bound the chain. |
 | `keepAlive` | true | Reuse compatible HTTP connections. When false, each request uses a fresh connection and HTTP/1.1 requests carry `Connection: close` (RFC 9112 §9.6) unless they set their own `Connection` header, so that the server closes first and keeps the `TIME_WAIT` state. |
+| `expectContinueTimeout` | 1 s | Over HTTP/1.1, maximum wait for the `100 Continue` of a request with a body and `Expect: 100-continue`, before sending the body anyway. 0 sends the body right after the head. Must be >= 0. See [Early responses and `Expect: 100-continue`](../modules/http-client.md#early-responses-and-expect-100-continue). |
 | `keepAliveTimeout` / `withKeepAliveTimeout()` | 30 s | Maximum age of an idle pooled connection; 0 disables expiry. Also the period of the automatic sweep of expired idle connections over all origins. |
 | `maxIdleConnectionsPerHost` | 8 | Per-origin pool cap. |
 | `httpVersion` / `withHttpVersion()` | Auto | `Auto` uses HTTPS ALPN when available and otherwise HTTP/1.1; `Http1_1` disables HTTP/2; `Http2` requires HTTP/2, including prior-knowledge h2c for plaintext. |

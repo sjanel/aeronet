@@ -73,6 +73,11 @@ class HttpClientConfig {
   // 0 disables expiry. Mirrors HttpServerConfig::keepAliveTimeout. Default: 30s.
   Duration keepAliveTimeout{std::chrono::seconds{30}};
 
+  // Over HTTP/1.1, maximum wait for the 100 (Continue) response of a request with 'Expect: 100-continue' and a body
+  // before sending the body anyway (RFC 9110 §10.1.1). A final response received meanwhile answers the request without
+  // its body being sent. 0 sends the body right after the head. Must be >= 0. Default: 1s.
+  Duration expectContinueTimeout{std::chrono::seconds{1}};
+
   // Hard cap on the total response size (headers + decoded body) accepted before aborting.
   // For HTTP/1.1, all the bytes of the response (including headers and body) count towards this limit.
   // For HTTP/2, all header bytes (including pseudo-headers) and the decoded body count towards this limit.

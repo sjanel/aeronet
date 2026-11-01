@@ -3,7 +3,6 @@
 #include <concepts>
 #include <cstdint>
 #include <expected>
-#include <string_view>
 
 #ifdef AERONET_ENABLE_HTTP2
 #include <memory>
@@ -21,7 +20,6 @@ namespace aeronet {
 
 class HttpClient;
 class HttpRequest;
-struct FilePayload;
 
 #ifdef AERONET_ENABLE_HTTP2
 namespace http2::internal {
@@ -137,28 +135,9 @@ class ClientConnection {
                                                    HttpRequest& req, SteadyClock::time_point ioDeadline,
                                                    bool& requestSent);
 
-  // Write the request head followed by the body, pumping the event loop on would-block. While both buffers
-  // are still pending they are sent with a single scatter write (writev / ordered TLS write) so the body is
-  // never copied into the head buffer. Resumes correctly across partial writes spanning the two. Sets
-  // `requestSent` to true as soon as any byte reaches the transport (the request can no longer be retried).
-  // Returns an empty result on success or an HttpClientErrc on write failure / timeout.
-  [[nodiscard]] static HttpClientErrc writeAllForHttp11(HttpClient& client, Transport& transport, NativeHandle fd,
-                                                        std::string_view head, std::string_view body,
-                                                        SteadyClock::time_point deadline, bool& requestSent);
-
-  // Stream a captured file body to the transport after the head has been written, reading it from disk in
-  // bounded chunks (into HttpClient's reusable scratch buffer) so it is never fully materialized in memory.
-  // Pumps the event loop on would-block and sets `requestSent` as soon as any byte reaches the transport.
-  // Returns an empty result on success or an HttpClientErrc on read / write failure / timeout.
-  [[nodiscard]] static HttpClientErrc writeFileBodyForHttp11(HttpClient& client, Transport& transport, NativeHandle fd,
-                                                             const FilePayload& filePayload,
-                                                             SteadyClock::time_point deadline, bool& requestSent);
-
-  // Write a whole request without trailers with the two functions above: `head` (the request's
-  // completeRequestForHttp11(), possibly with extra header lines), then its captured in-memory or file body.
-  [[nodiscard]] static HttpClientErrc writeRequestForHttp11(HttpClient& client, Transport& transport, NativeHandle fd,
-                                                            const HttpRequest& req, std::string_view head,
-                                                            SteadyClock::time_point ioDeadline, bool& requestSent);
+  // Writes the request of an HTTP/1.1 exchange, watching the connection for an early response (defined in
+  // http11-connection.cpp).
+  class Http11RequestWriter;
 
 #ifdef AERONET_ENABLE_HTTP2
   [[nodiscard]] HttpClientResult exchangeForHttp2(HttpClient& client, Transport& transport, NativeHandle fd,

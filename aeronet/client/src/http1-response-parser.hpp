@@ -127,6 +127,19 @@ class Http1ResponseParser {
   // unparsed tail (streaming only, once parse() returned another status than BodyPiece).
   void discardStreamed(RawChars& buffer) noexcept;
 
+  // What the response bytes received before the end of the request tell its sender (RFC 9112 §9.5).
+  enum class EarlyResponse : uint8_t {
+    None,       // nothing decisive yet: an incomplete status line, or interim (1xx) responses other than 100
+    Continue,   // a complete 100 (Continue) response, and no final response yet
+    Success,    // status line of a final 2xx response: the server may still read the request content
+    Rejection,  // status line of a final response from 300, or bytes that are no status line (parse() reports them)
+  };
+
+  // Classify `received`, the response bytes received while the request is sent: the complete heads of the interim
+  // (1xx) responses are skipped, then the status code of the next response is read. The bytes stay in the receive
+  // buffer, parsed by parse() once the request is sent or stopped.
+  [[nodiscard]] static EarlyResponse PeekEarlyResponse(std::string_view received) noexcept;
+
  private:
   friend class internal::ClientConnection;
 

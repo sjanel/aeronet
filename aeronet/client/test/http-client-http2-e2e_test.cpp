@@ -851,6 +851,22 @@ TEST(HttpClientHttp2E2ETest, PostEchoSmallBody) {
   EXPECT_EQ(resp.bodyInMemory(), "ping");
 }
 
+// Over HTTP/2, the body of a request with 'Expect: 100-continue' is sent without waiting for 100 (Continue), which RFC
+// 9110 §10.1.1 allows: the interim response of the server is skipped.
+TEST(HttpClientHttp2E2ETest, PostWithExpectContinueSendsTheBodyRightAway) {
+  HttpClientConfig cfg;
+  cfg.httpVersion = HttpVersionMode::Http2;
+  cfg.expectContinueTimeout = std::chrono::seconds{20};
+  HttpClient client(cfg);
+  auto req = client.makeRequest(http::Method::POST, Url("/echo"));
+  req.headerAddLine(http::Expect, http::h100_continue).body("ping", "text/plain");
+  const auto start = std::chrono::steady_clock::now();
+  auto resp = client.request(std::move(req)).value();
+  EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds{10});
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_EQ(resp.bodyInMemory(), "ping");
+}
+
 TEST(HttpClientHttp2E2ETest, PostEchoLargeBodyExercisesSendFlowControl) {
   // 1 MiB upload: far beyond the default 65535-byte stream window, so the engine must repeatedly stall
   // on flow control and resume on the server's WINDOW_UPDATEs.
