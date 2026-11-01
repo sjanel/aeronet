@@ -197,7 +197,15 @@ A malformed body (missing boundary, part without `Content-Disposition`, exceeded
 
 ## Expectations
 
-A client that sends `Expect: 100-continue` waits for the server's `100 Continue` before sending a large body. aeronet sends it when it starts reading the body, so that a request rejected on its head, for instance because its `Content-Length` exceeds `maxBodyBytes`, is answered before the client sends its body. An HTTP/1.0 client cannot receive a `1xx` response: its `100-continue` expectation is ignored (RFC 9110 §10.1.1). Other expectations can be handled by an expectation handler, see [HTTP/1.1 conformance](../reference/http-conformance.md#expect).
+A client that sends `Expect: 100-continue` waits for the server's `100 Continue` before sending a large body. aeronet sends it only once it waits for a body that the request needs. A request whose final status is known from its head is answered right away instead, so that the client does not send its body for nothing (RFC 9110 §10.1.1):
+
+- a `Content-Length` above `maxBodyBytes` (`413`);
+- no handler for the path or the method (`404`, `405`, trailing slash redirect);
+- a CORS policy denying the origin (`403`), an `OPTIONS` or `TRACE` request answered by the server;
+- a request middleware answering: it runs before the body of such a request is received, once, as for an [async handler](async-handlers.md#how-a-request-flows), so it must not rely on the body;
+- an async handler completing without waiting for the body: its `100 Continue` is only sent once it waits for it.
+
+The response then carries `Connection: close`, and the connection closes after it: the client may send the body anyway, which could not be told apart from the next request. A body received along with its head does not need `100 Continue`, which is not sent. An HTTP/1.0 client cannot receive a `1xx` response: its `100-continue` expectation is ignored (RFC 9110 §10.1.1). Other expectations can be handled by an expectation handler, see [HTTP/1.1 conformance](../reference/http-conformance.md#expect).
 
 ## Tests
 
@@ -206,3 +214,4 @@ A client that sends `Expect: 100-continue` waits for the server's `100 Continue`
 - Chunked bodies and trailers end to end: [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
 - Chunked bodies received in several reads (byte by byte, large, compressed, async handler), and the limits of their lines: [http-parser_test.cpp](../../aeronet/server/test/http-parser_test.cpp), [http-request-decompression_test.cpp](../../tests/http-request-decompression_test.cpp) and [http-async_test.cpp](../../tests/http-async_test.cpp). The upload throughput is measured by `ChunkedUpload` in [http1-pipeline_bench.cpp](../../benchmarks/internal/http1-pipeline_bench.cpp).
 - Multipart parsing: [multipart-form-data_test.cpp](../../aeronet/server/test/multipart-form-data_test.cpp).
+- `100 Continue` sent only when the body is needed: `HttpExpectContinue` tests in [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp), `HttpAsyncHandlers.ExpectContinueIsSentWhenTheHandlerWaitsForTheBody` in [tests/http-async_test.cpp](../../tests/http-async_test.cpp), and `WebSocketTest.UpgradeWaitingFor100ContinueIsUpgradedAfterTheBody` in [tests/websocket-integration_test.cpp](../../tests/websocket-integration_test.cpp).

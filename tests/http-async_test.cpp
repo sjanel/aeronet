@@ -12,6 +12,8 @@
 #include <utility>
 
 #include "aeronet/cors-policy.hpp"
+#include "aeronet/http-constants.hpp"
+#include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response-writer.hpp"
@@ -95,6 +97,8 @@ TEST(HttpAsyncHandlers, MiddlewareShortCircuitBeforeBodyIsAnsweredOnce) {
   const std::string resp = test::recvUntilClosed(client.fd(), std::chrono::seconds{3});
   EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp.substr(0, 512);
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 401")) << resp.substr(0, 512);
+  // The connection closes after it, as it announces (RFC 9110 §10.1.1).
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << resp.substr(0, 512);
   EXPECT_FALSE(handlerCalled.load());
 }
 
@@ -111,6 +115,7 @@ TEST(HttpAsyncHandlers, CorsRejectionBeforeBodyIsAnsweredOnce) {
   const std::string resp = test::recvUntilClosed(client.fd(), std::chrono::seconds{3});
   EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp.substr(0, 512);
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 403")) << resp.substr(0, 512);
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << resp.substr(0, 512);
 }
 
 TEST(HttpAsyncHandlers, PreflightBeforeBodyIsAnsweredOnce) {
@@ -128,6 +133,7 @@ TEST(HttpAsyncHandlers, PreflightBeforeBodyIsAnsweredOnce) {
   test::sendAll(client.fd(), request);
   const std::string resp = test::recvUntilClosed(client.fd(), std::chrono::seconds{3});
   EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp.substr(0, 512);
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << resp.substr(0, 512);
 }
 
 // Query and path parameters point into the request head, copied out of the connection buffer when an async handler
@@ -332,6 +338,60 @@ TEST(HttpAsyncHandlers, ExpectContinueIsSentOnceForBodyReceivedInSeveralParts) {
     EXPECT_EQ(test::countOccurrences(resp, "100 Continue"), 1) << resp;
     EXPECT_TRUE(resp.ends_with(":12")) << resp;
   }
+}
+
+// 100 Continue is sent once the async handler waits for the body (here after deferred work), not when it is called: a
+// handler answering from the head alone, or a request middleware, is answered without it (RFC 9110 §10.1.1). The
+// connection then closes, as the response announces: the client may send the body anyway.
+TEST(HttpAsyncHandlers, ExpectContinueIsSentWhenTheHandlerWaitsForTheBody) {
+  std::atomic<int> handlerCalls{0};
+  ts.resetRouterAndGet().setPath(http::Method::POST, "/deferred",
+                                 [](HttpRequestView& req) -> RequestTask<HttpResponse> {
+                                   const int value = co_await req.deferWork([] { return 7; });
+                                   const std::string_view body = co_await req.bodyAwaitable();
+                                   co_return HttpResponse(std::format("{}:{}", value, body));
+                                 });
+  ts.router().setPath(http::Method::POST, "/reject", [](HttpRequestView&) -> RequestTask<HttpResponse> {
+    co_return HttpResponse(http::StatusCodeForbidden, "rejected");
+  });
+  ts.router().setPath(http::Method::POST, "/deferred-reject", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
+    const bool allowed = co_await req.deferWork([] { return false; });
+    co_return HttpResponse(allowed ? http::StatusCodeOK : http::StatusCodeForbidden, "rejected later");
+  });
+  ts.router()
+      .setPath(http::Method::POST, "/guarded",
+               [&handlerCalls](HttpRequestView&) -> RequestTask<HttpResponse> {
+                 ++handlerCalls;
+                 co_return HttpResponse("handled");
+               })
+      .before([](HttpRequestView&) {
+        return MiddlewareResult::ShortCircuit(HttpResponse(http::StatusCodeUnauthorized, "denied"));
+      });
+
+  {
+    test::ClientConnection client(ts.port());
+    const std::string resp = test::SendExpectingContinue(
+        client.fd(), PostHead("/deferred", 5, "Expect: 100-continue\r\nConnection: close\r\n"), "hello");
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 ")) << resp;
+    EXPECT_TRUE(resp.ends_with("7:hello")) << resp;
+  }
+  {  // A body received along with its head does not need 100 Continue.
+    const std::string resp = test::sendAndCollect(
+        ts.port(), PostHead("/deferred", 5, "Expect: 100-continue\r\nConnection: close\r\n") + "hello");
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 200 ")) << resp;
+    EXPECT_TRUE(resp.ends_with("7:hello")) << resp;
+  }
+  for (std::string_view target : {"/reject", "/deferred-reject", "/guarded"}) {
+    SCOPED_TRACE(target);
+    test::ClientConnection client(ts.port());
+    const std::string resp =
+        test::SendExpectingContinue(client.fd(), PostHead(target, 5, "Expect: 100-continue\r\n"), "hello");
+    EXPECT_FALSE(resp.contains("100 Continue")) << resp;
+    EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp;
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 401 ") || resp.starts_with("HTTP/1.1 403 ")) << resp;
+    EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << resp;
+  }
+  EXPECT_EQ(handlerCalls.load(), 0);
 }
 
 // The router may be updated while an async handler is suspended: the handler (whose captures the coroutine uses), the

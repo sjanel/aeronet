@@ -103,6 +103,9 @@ struct AsyncHandlerState {
   bool active{false};
   bool usesSharedDecompressedBody{false};
   bool isChunked{false};
+  // True while the client may wait for 100 Continue before sending the body: it is sent once the handler waits for the
+  // body, so that a handler answering from the head alone does not make the client send it (RFC 9110 §10.1.1).
+  bool continueExpected{false};
 };
 
 using AsyncHandlerStatePool = ObjectPool<AsyncHandlerState>;

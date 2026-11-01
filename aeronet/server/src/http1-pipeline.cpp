@@ -88,14 +88,6 @@ struct RequestFinalizationRAII {
   std::size_t consumedBytes;
 };
 
-// A response sent before the whole body was received cannot consume the request: the rest of its body would then be
-// parsed as the next request (and the same request answered again and again). Close the connection after it.
-void CloseIfBodyPending(ConnectionState& state, bool bodyReady) {
-  if (!bodyReady) {
-    state.requestDrainAndClose();
-  }
-}
-
 constexpr std::size_t kWaitForRequestLine = static_cast<std::size_t>(-1);
 
 // RFC 9112 §2.2: a server SHOULD ignore at least one empty line (CRLF) received before a request line - some clients
@@ -115,10 +107,28 @@ AERONET_NOINLINE std::size_t LeadingEmptyLinesSize(std::string_view input) noexc
   return input.size() - rest.size();
 }
 
+// A response sent before the whole body was received cannot consume the request: the rest of its body would then be
+// parsed as the next request (and the same request answered again and again). The connection closes after it, as the
+// response announces (RFC 9110 §10.1.1).
+constexpr bool CloseIfBodyPending(bool bodyReady) noexcept { return !bodyReady; }
+
 // Whether the request announces a body: chunked, or with a Content-Length other than 0.
 bool AnnouncesBody(const HttpRequestView& request) {
   return request.headerValue(http::TransferEncoding).has_value() ||
          request.headerValueOrEmpty(http::ContentLength).find_first_not_of('0') != std::string_view::npos;
+}
+
+// Whether the request upgrades its connection to the WebSocket endpoint of its route. The Upgrade header of an HTTP/1.0
+// request is ignored (RFC 9110 §7.8): it is served like any GET.
+AERONET_ALWAYS_INLINE bool IsWebSocketUpgrade([[maybe_unused]] const HttpRequestView& request,
+                                              [[maybe_unused]] const Router::RoutingResult& routingResult) {
+#ifdef AERONET_ENABLE_WEBSOCKET
+  return routingResult.webSocketEndpoint() != nullptr && request.method() == http::Method::GET &&
+         request.version() == http::HTTP_1_1 &&
+         upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)) == ProtocolType::WebSocket;
+#else
+  return false;
+#endif
 }
 
 }  // namespace
@@ -216,7 +226,7 @@ bool Http1Pipeline::serveRequests(ConnectionIt cnxIt) {
 
     // Handle Expect header tokens beyond the built-in 100-continue.
     // RFC: if any expectation token is not understood and not handled, respond 417.
-    // A request whose body is received in several reads is parsed again for each of them: its expectations are only
+    // A request whose body is received in several reads is served again for each of them: its expectations are only
     // answered (interim responses, 100 Continue) the first time.
     bool found100Continue = false;
     if (!state.expectationAnswered) {
@@ -229,8 +239,8 @@ bool Http1Pipeline::serveRequests(ConnectionIt cnxIt) {
       }
     }
     std::size_t consumedBytes = 0;
-    const BodyDecodeStatus decodeStatus = decodeBodyIfReady(cnxIt, input, isChunked, found100Continue,
-                                                            routingResult.pathConfig().maxBodyBytes, consumedBytes);
+    const BodyDecodeStatus decodeStatus =
+        decodeBodyIfReady(cnxIt, input, isChunked, routingResult.pathConfig().maxBodyBytes, consumedBytes);
     if (decodeStatus == BodyDecodeStatus::Error) {
       break;
     }
@@ -251,6 +261,17 @@ bool Http1Pipeline::serveRequests(ConnectionIt cnxIt) {
       static constexpr bool waitForBody = true;
 #endif
       if (waitForBody) {
+        // Its client may wait for 100 Continue before sending its body: unless it is answered without it, 100 Continue
+        // is sent once (a body already complete with its head does not need it, RFC 9110 §10.1.1).
+        if (found100Continue) {
+          const LoopAction action = answerBeforeBody(cnxIt, state, routingResult);
+          if (action == LoopAction::Continue) {
+            continue;
+          }
+          if (action == LoopAction::Break) {
+            break;
+          }
+        }
         // Served again once more of its body is received, without parsing its head again.
         request.keepHeadForBody();
         break;
@@ -264,7 +285,7 @@ bool Http1Pipeline::serveRequests(ConnectionIt cnxIt) {
     // Handle OPTIONS and TRACE per RFC 7231 §4.3
     // processSpecialMethods may insert an upstream connection and updates cnxIt if insertion invalidates it.
     // However, no need to update state because the pointer stays valid.
-    const auto action = processSpecialMethods(cnxIt, consumedInput.nbBytes + consumedBytes, pCorsPolicy);
+    const auto action = processSpecialMethods(cnxIt, consumedInput.nbBytes + consumedBytes, pCorsPolicy, bodyReady);
     if (action == LoopAction::SwitchProtocol) {
       if (state.tunnelResolving) {
         // The CONNECT request is answered once its target is resolved: the input buffer, where the request views point
@@ -276,7 +297,6 @@ bool Http1Pipeline::serveRequests(ConnectionIt cnxIt) {
       return state.isAnyCloseRequested();
     }
     if (action == LoopAction::Continue) {
-      CloseIfBodyPending(state, bodyReady);
       continue;
     }
     if (action == LoopAction::Break) {
@@ -295,7 +315,7 @@ bool Http1Pipeline::serveRequests(ConnectionIt cnxIt) {
       continue;
     }
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-    if (dispatchAsyncHandler(cnxIt, routingResult.sharedAsyncRequestHandler(), bodyReady, isChunked,
+    if (dispatchAsyncHandler(cnxIt, routingResult.sharedAsyncRequestHandler(), bodyReady, isChunked, found100Continue,
                              consumedInput.nbBytes + consumedBytes, pCorsPolicy, routingResult.postMiddlewareRange(),
                              routingResult.pathConfig().maxBodyBytes)) {
       // The request bytes are consumed by the async handler completion (already done if it completed right away).
@@ -425,33 +445,64 @@ AERONET_ALWAYS_INLINE Http1Pipeline::LoopAction Http1Pipeline::callHandlers(Conn
   HttpRequestView& request = state.request;
 
   const bool isStreaming = routingResult.streamingHandler() != nullptr;
-  const RequestPipeline pipeline = _pCtx->requestPipeline();
   // Each response is constructed in place from its call: assigning an optional HttpResponse would move and destroy one
   // (out of line) for each request.
-  if (HttpResponse shortCircuit = pipeline.runRequestMiddleware(request, routingResult, isStreaming);
-      !shortCircuit.empty()) {
-    sendResponse(cnxIt, std::move(shortCircuit), routingResult, isStreaming);
-    CloseIfBodyPending(state, bodyReady);
+  if (state.requestMiddlewareRan) [[unlikely]] {
+    // It ran before 100 Continue was sent. Its path and query parameters, reset when the request was served again with
+    // its body, are installed again.
+    state.requestMiddlewareRan = false;
+    request.finalizeBeforeHandlerCall(routingResult.pathParams());
+  } else if (HttpResponse shortCircuit =
+                 _pCtx->requestPipeline().runRequestMiddleware(request, routingResult, isStreaming);
+             !shortCircuit.empty()) {
+    sendResponse(cnxIt, std::move(shortCircuit), routingResult, isStreaming, CloseIfBodyPending(bodyReady));
     return LoopAction::Continue;
   }
 #ifdef AERONET_ENABLE_WEBSOCKET
-  // A WebSocket upgrade goes through the request middleware (above) and the origin checks, like a request. The Upgrade
-  // header of an HTTP/1.0 request is ignored (RFC 9110 §7.8): it is served like any GET.
-  if (routingResult.webSocketEndpoint() != nullptr && request.method() == http::Method::GET &&
-      request.version() == http::HTTP_1_1 &&
-      upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)) == ProtocolType::WebSocket) {
+  // A WebSocket upgrade goes through the request middleware (above) and the origin checks, like a request.
+  if (IsWebSocketUpgrade(request, routingResult)) {
     return processWebSocketUpgrade(cnxIt, routingResult);
   }
 #endif
   if (HttpResponse response = RequestPipeline::CallRequestHandler(request, routingResult); !response.empty()) {
-    sendResponse(cnxIt, std::move(response), routingResult, isStreaming);
-    CloseIfBodyPending(state, bodyReady);
+    sendResponse(cnxIt, std::move(response), routingResult, isStreaming, CloseIfBodyPending(bodyReady));
     return LoopAction::Continue;
   }
   if (isStreaming) {
     return serveStreamingRequest(cnxIt, routingResult);
   }
   // Its async handler is to be called.
+  return LoopAction::Nothing;
+}
+
+Http1Pipeline::LoopAction Http1Pipeline::answerBeforeBody(ConnectionIt cnxIt, ConnectionState& state,
+                                                          const Router::RoutingResult& routingResult) {
+  HttpRequestView& request = state.request;
+  // A CONNECT request is not routed: its tunnel is established once its body is received.
+  if (request.method() != http::Method::CONNECT) {
+    // Its client may send its body anyway, not waiting for 100 Continue any longer (RFC 9110 §10.1.1): a response sent
+    // before it closes the connection (see CloseIfBodyPending()).
+    static constexpr bool kBodyReady = false;
+    const LoopAction action = processSpecialMethods(cnxIt, 0, routingResult.corsPolicy(), kBodyReady);
+    if (action != LoopAction::Nothing) {
+      return action;
+    }
+    // The steps of callHandlers() up to the call of the handler.
+    const bool isStreaming = routingResult.streamingHandler() != nullptr;
+    if (HttpResponse shortCircuit = _pCtx->requestPipeline().runRequestMiddleware(request, routingResult, isStreaming);
+        !shortCircuit.empty()) {
+      sendResponse(cnxIt, std::move(shortCircuit), routingResult, isStreaming, CloseIfBodyPending(kBodyReady));
+      return LoopAction::Continue;
+    }
+    if (!IsWebSocketUpgrade(request, routingResult) &&
+        RequestPipeline::IsAnsweredWithoutHandler(request, routingResult)) {
+      sendResponse(cnxIt, RequestPipeline::CallRequestHandler(request, routingResult), routingResult, isStreaming,
+                   CloseIfBodyPending(kBodyReady));
+      return LoopAction::Continue;
+    }
+    state.requestMiddlewareRan = true;
+  }
+  _pCtx->io.queueData(cnxIt, HttpMessageData(RawChars{http::HTTP11_100_CONTINUE}));
   return LoopAction::Nothing;
 }
 
@@ -479,10 +530,10 @@ bool Http1Pipeline::acceptChunkedTransferEncoding(ConnectionIt cnxIt, std::strin
 }
 
 void Http1Pipeline::sendResponse(ConnectionIt cnxIt, HttpResponse&& resp, const Router::RoutingResult& routingResult,
-                                 bool streaming) {
+                                 bool streaming, bool close) {
   _pCtx->requestPipeline().applyResponseMiddleware(_pCtx->connections.connectionState(cnxIt).request, resp,
                                                    routingResult.postMiddlewareRange(), streaming);
-  finalizeAndSendResponse(cnxIt, std::move(resp), routingResult.corsPolicy());
+  finalizeAndSendResponse(cnxIt, std::move(resp), routingResult.corsPolicy(), close);
 }
 
 Http1Pipeline::LoopAction Http1Pipeline::serveStreamingRequest(ConnectionIt cnxIt,
@@ -775,7 +826,7 @@ bool Http1Pipeline::handleExpectHeader(ConnectionIt cnxIt, std::string_view expe
 }
 
 Http1Pipeline::LoopAction Http1Pipeline::processSpecialMethods(ConnectionIt& cnxIt, std::size_t requestEnd,
-                                                               const CorsPolicy* pCorsPolicy) {
+                                                               const CorsPolicy* pCorsPolicy, bool bodyReady) {
   ServerContext& ctx = *_pCtx;
   ConnectionState& state = ctx.connections.connectionState(cnxIt);
   HttpRequestView& request = state.request;
@@ -802,7 +853,7 @@ Http1Pipeline::LoopAction Http1Pipeline::processSpecialMethods(ConnectionIt& cnx
 
     HttpResponse result = ProcessSpecialMethods(request, ctx.router, config, pCorsPolicy, traceEcho);
     if (!result.empty()) {
-      finalizeAndSendResponse(cnxIt, std::move(result), pCorsPolicy);
+      finalizeAndSendResponse(cnxIt, std::move(result), pCorsPolicy, CloseIfBodyPending(bodyReady));
       return LoopAction::Continue;
     }
     // Not handled (e.g., not a preflight), fall through to normal processing

@@ -315,6 +315,7 @@ void ConnectionState::reset() {
   inputBlockedByOutput = false;
   relayPausedByBacklog = false;
   expectationAnswered = false;
+  requestMiddlewareRan = false;
   connectPending = false;
   tunnelResolving = false;
   shutdownWritePending = false;

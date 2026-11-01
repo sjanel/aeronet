@@ -175,14 +175,10 @@ TEST(HttpParserErrors, Expect100OnlyWithBody) {
   ASSERT_FALSE(respZero.contains("100 Continue"));
   // non-zero length with Expect should produce interim 100 then 200
   test::ClientConnection clientConnection2(port);
-  int fd2 = clientConnection2.fd();
-  ASSERT_GE(fd2, 0);
-  std::string post =
-      "POST /p HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue\r\nConnection: close\r\n\r\nHELLO";
-  test::sendAll(fd2, post);
-  std::string resp = test::recvUntilClosed(fd2);
-  ASSERT_TRUE(resp.starts_with("HTTP/1.1 100 Continue"));
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  const std::string resp = test::SendExpectingContinue(
+      clientConnection2.fd(),
+      "POST /p HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n", "HELLO");
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200")) << resp;
 }
 
 // Fuzz-ish incremental chunk framing with random chunk sizes & boundaries.
@@ -559,8 +555,9 @@ TEST(HttpResponseDispatchErrors, FlushOutboundTransportError) {
   EXPECT_TRUE(test::WaitForPeerClose(client.fd(), 2000ms)) << resp;
 }
 
-// A file response produced while an interim response (here 100 Continue, the body coming with the request head) still
-// waits for the socket is queued behind it: its head after the buffered output, its file once that output is written.
+// A file response produced while an interim response (here 102 Processing, the body coming with the request head)
+// still waits for the socket is queued behind it: its head after the buffered output, its file once that output is
+// written.
 TEST(HttpResponseDispatchErrors, FileResponseQueuedBehindPendingInterimResponse) {
   test::QueueResetGuard<decltype(test::g_writev_actions)> guardWritev(test::g_writev_actions);
 
@@ -583,14 +580,21 @@ TEST(HttpResponseDispatchErrors, FileResponseQueuedBehindPendingInterimResponse)
   }
   ASSERT_GE(serverFd, 0);
 
-  // The 100 Continue cannot be written, neither at once nor by the flush following it: it stays buffered.
+  ts.server.setExpectationHandler([](const HttpRequestView& /*req*/, std::string_view /*token*/) {
+    SingleHttpServer::ExpectationResult res;
+    res.kind = SingleHttpServer::ExpectationResultKind::Interim;
+    res.interimStatus = 102;
+    return res;
+  });
+  // The 102 Processing cannot be written, neither at once nor by the flush following it: it stays buffered.
   test::SetWritevActions(serverFd, {{-1, error::kWouldBlock}, {-1, error::kWouldBlock}});
   test::sendAll(client.fd(),
-                "POST /file HTTP/1.1\r\nhost: x\r\nexpect: 100-continue\r\ncontent-length: 5\r\n"
+                "POST /file HTTP/1.1\r\nhost: x\r\nexpect: x-processing\r\ncontent-length: 5\r\n"
                 "connection: close\r\n\r\nhello");
 
   const std::string resp = test::recvUntilClosed(client.fd());
-  EXPECT_TRUE(resp.starts_with("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200")) << resp;
+  ts.server.setExpectationHandler({});
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 102 Processing\r\n\r\nHTTP/1.1 200")) << resp;
   EXPECT_TRUE(resp.ends_with(kPayload)) << resp;
 }
 

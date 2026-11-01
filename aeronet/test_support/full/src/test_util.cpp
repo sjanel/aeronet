@@ -348,6 +348,15 @@ std::string sendAndCollect(uint16_t port, std::string_view raw) {
   return recvUntilClosed(fd);
 }
 
+std::string SendExpectingContinue(NativeHandle fd, std::string_view head, std::string_view body) {
+  sendAll(fd, head);
+  std::string received = RecvHead(fd);
+  if (received == http::HTTP11_100_CONTINUE) {
+    sendAll(fd, body);
+  }
+  return received + recvUntilClosed(fd);
+}
+
 namespace {
 Socket ConnectLoop(auto port, std::chrono::milliseconds timeout, int receiveBufferSize) {
   sockaddr_in addr{};
