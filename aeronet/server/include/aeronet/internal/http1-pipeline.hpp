@@ -60,7 +60,8 @@ class Http1Pipeline {
   void finalizeAndSendResponse(ConnectionIt cnxIt, HttpResponse&& resp, const CorsPolicy* pCorsPolicy,
                                bool close = false);
 
-  // Builds & queues a simple error response, invoking the parser error callback (if any).
+  // Builds & queues a simple error response, invoking the parser error callback (if any). The response to a HEAD
+  // request has the header fields of the GET one, without its body.
   // The connection will be closed after draining buffered writes.
   void emitSimpleError(ConnectionIt cnxIt, http::StatusCode statusCode, std::string_view body = {});
 

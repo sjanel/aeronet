@@ -860,7 +860,7 @@ class HttpRequestView {
   uint32_t _schemeLength{0};
 #endif
   uint32_t _decodedQueryParamsLength{0};
-  http::Method _method;
+  http::Method _method{http::kMethodInvalid};  // until the request line of the first request is parsed
   http::Version _version;
   BodyAccessMode _bodyAccessMode{BodyAccessMode::Undecided};
   Encoding _responsePossibleEncoding{Encoding::none};

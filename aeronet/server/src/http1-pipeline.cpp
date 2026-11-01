@@ -670,8 +670,11 @@ bool Http1Pipeline::rejectIncompleteHead(ConnectionIt cnxIt) {
 
 void Http1Pipeline::emitSimpleError(ConnectionIt cnxIt, http::StatusCode statusCode, std::string_view body) {
   ServerContext& ctx = *_pCtx;
-  ctx.io.queueData(
-      cnxIt, HttpMessageData(BuildSimpleError(statusCode, ctx.config.globalHeaders, body, ctx.dateHeader.data())));
+  // The response to a HEAD request has no content (RFC 9110 §9.3.2). The method of a request whose request line is not
+  // parsed yet is the one of the previous request, if any: the errors answering such a request have no body anyway.
+  const bool isHeadMethod = ctx.connections.connectionState(cnxIt).request.method() == http::Method::HEAD;
+  ctx.io.queueData(cnxIt, HttpMessageData(BuildSimpleError(statusCode, ctx.config.globalHeaders, body,
+                                                           ctx.dateHeader.data(), isHeadMethod)));
 
   if (ctx.callbacks.parserErr) {
     // Swallow exceptions from user callback to avoid destabilizing the server
