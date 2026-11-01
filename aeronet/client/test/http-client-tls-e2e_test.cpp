@@ -20,12 +20,14 @@
 #include <openssl/x509v3.h>
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <stop_token>
@@ -320,6 +322,7 @@ TEST_F(HttpClientTlsE2ETest, KeepAliveOverTls) {
     auto resp = Unwrap(client.get(url("/secure")));
     EXPECT_EQ(resp.status(), 200);
     EXPECT_EQ(resp.bodyInMemory(), "secret");
+    EXPECT_EQ(HttpClientTest::IdleConnections(client), 1U);  // nothing left in the TLS layer after the response
   }
 }
 
@@ -790,12 +793,13 @@ TEST(HttpClientMtlsTest, RejectsClientWithoutCert) {
 #ifdef AERONET_LINUX
 namespace {
 
-// TLS 1.2 server closing each connection right after its handshake. Its Finished message ends the handshake, so the
-// connection is closed before the client sends its request: the first write of the client meets a closed socket, which
-// its kernel answers with a reset, and the next one fails with EPIPE (raising SIGPIPE).
-class HandshakeThenCloseTlsServer {
+// TLS server serving its connections one after the other: `handler` runs on each connection whose handshake succeeded,
+// then the connection is closed, without close_notify. A non-zero `maxProtoVersion` caps the TLS version.
+class RawTlsServer {
  public:
-  HandshakeThenCloseTlsServer() {
+  using Handler = std::function<void(SSL*)>;
+
+  explicit RawTlsServer(Handler handler, int maxProtoVersion = 0) : _handler(std::move(handler)) {
     auto [certPem, keyPem] = test::MakeEphemeralCertKey("localhost");
     auto certBio = MakeMemBio(certPem.data(), static_cast<int>(certPem.size()));
     auto keyBio = MakeMemBio(keyPem.data(), static_cast<int>(keyPem.size()));
@@ -803,7 +807,9 @@ class HandshakeThenCloseTlsServer {
     auto key = MakePKey(::PEM_read_bio_PrivateKey(keyBio.get(), nullptr, nullptr, nullptr));
     EXPECT_EQ(::SSL_CTX_use_certificate(_ctx.get(), cert.get()), 1);
     EXPECT_EQ(::SSL_CTX_use_PrivateKey(_ctx.get(), key.get()), 1);
-    EXPECT_EQ(::SSL_CTX_set_max_proto_version(_ctx.get(), TLS1_2_VERSION), 1);
+    if (maxProtoVersion != 0) {
+      EXPECT_EQ(::SSL_CTX_set_max_proto_version(_ctx.get(), maxProtoVersion), 1);
+    }
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
@@ -835,11 +841,14 @@ class HandshakeThenCloseTlsServer {
       ::setsockopt(cnx.fd(), SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));  // NOLINT(misc-include-cleaner)
       SslPtr ssl(::SSL_new(_ctx.get()), ::SSL_free);
       ::SSL_set_fd(ssl.get(), cnx.fd());
-      ::SSL_accept(ssl.get());
+      if (::SSL_accept(ssl.get()) == 1) {
+        _handler(ssl.get());
+      }
       // The connection is closed here, without close_notify.
     }
   }
 
+  Handler _handler;
   SslCtxPtr _ctx{::SSL_CTX_new(::TLS_server_method()), ::SSL_CTX_free};
   BaseFd _listenFd{::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0)};
   uint16_t _port{0};
@@ -852,7 +861,10 @@ class HandshakeThenCloseTlsServer {
 // the request body is still being sent, a write fails with EPIPE and raises SIGPIPE, which terminates the process by
 // default. The client must report an error instead.
 TEST(HttpClientTlsSigpipeTest, ServerClosingDuringTheRequestDoesNotRaiseSigpipe) {
-  HandshakeThenCloseTlsServer server;
+  // TLS 1.2 server closing each connection right after its handshake. Its Finished message ends the handshake, so the
+  // connection is closed before the client sends its request: the first write of the client meets a closed socket,
+  // which its kernel answers with a reset, and the next one fails with EPIPE (raising SIGPIPE).
+  RawTlsServer server([](SSL*) {}, TLS1_2_VERSION);
   test::DefaultSigpipeScope sigpipeScope;  // a SIGPIPE reaching the process terminates the test
   HttpClientConfig cfg;
   cfg.tlsVerifyPeer = false;  // self-signed server cert
@@ -863,6 +875,37 @@ TEST(HttpClientTlsSigpipeTest, ServerClosingDuringTheRequestDoesNotRaiseSigpipe)
   EXPECT_FALSE(result);
   EXPECT_FALSE(test::IsSigpipeBlocked());  // the exchange restored the signal mask
   EXPECT_FALSE(test::IsSigpipePending());
+}
+
+// RFC 9112 §6.3: bytes received after the end of a response are never taken for the response to the next request. Here,
+// they come in the TLS record of the response, the read of which ends with the response: they are left decrypted in the
+// TLS layer, invisible to the probe of the idle connection. The connection is not reused.
+TEST(HttpClientTlsRawServerTest, BytesAfterTheResponseEndInItsRecordPreventReuse) {
+  static constexpr std::string_view kResponse = "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nhe";
+  static constexpr std::string_view kResponseAndExtra = "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nhello";
+  RawTlsServer server([](SSL* ssl) {
+    std::string request;
+    char buf[1024];
+    for (std::size_t nbRead = 0; !request.contains(http::DoubleCRLF);) {
+      ASSERT_EQ(::SSL_read_ex(ssl, buf, sizeof(buf), &nbRead), 1);
+      request.append(buf, nbRead);
+    }
+    std::size_t nbWritten = 0;
+    ASSERT_EQ(::SSL_write_ex(ssl, kResponseAndExtra.data(), kResponseAndExtra.size(), &nbWritten), 1);  // one record
+    // The connection stays open until the client closes it: the client must not send it another request.
+    std::size_t nbRead = 0;
+    EXPECT_NE(::SSL_read_ex(ssl, buf, sizeof(buf), &nbRead), 1) << std::string_view(buf, nbRead);
+  });
+  HttpClientConfig cfg;
+  cfg.tlsVerifyPeer = false;  // self-signed server cert
+  cfg.minReadChunkBytes = static_cast<uint32_t>(kResponse.size());
+  HttpClient client(cfg);
+  for (int requestIdx = 0; requestIdx < 2; ++requestIdx) {
+    auto result = client.get("https://127.0.0.1:" + std::to_string(server.port()) + "/");
+    ASSERT_TRUE(result) << requestIdx << ' ' << ErrcToStr(result.error());
+    EXPECT_EQ(result->bodyInMemory(), "he") << requestIdx;
+    EXPECT_EQ(HttpClientTest::IdleConnections(client), 0U) << requestIdx;
+  }
 }
 #endif
 

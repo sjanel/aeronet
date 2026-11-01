@@ -313,6 +313,42 @@ TEST(ResponseParserTest, ConsumedTracksHeadPlusBody) {
   EXPECT_EQ(st, Http1ResponseParser::Status::Complete);
   EXPECT_EQ(resp.bodyInMemory(), "abc");
   EXPECT_EQ(parser.consumed(), raw.size() - std::string_view("LEFTOVER").size());
+  EXPECT_FALSE(parser.keepAlive());  // bytes received after the end of the response
+}
+
+// Bytes received after the end of a response cannot be a response of their own: the connection is not reused, so that
+// they are never taken for the response to the next request (RFC 9112 §6.3).
+TEST(ResponseParserTest, BytesAfterTheResponseEndPreventReuse) {
+  struct Case {
+    std::string_view response;
+    std::string_view body;
+    bool head;
+  };
+  static constexpr Case kCases[] = {
+      {"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nhe", "he", false},
+      {"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n", "", false},
+      {"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n2\r\nhe\r\n0\r\n\r\n", "he", false},
+      {"HTTP/1.1 204 No Content\r\n\r\n", "", false},
+      {"HTTP/1.1 304 Not Modified\r\n\r\n", "", false},
+      {"HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\n", "", true},
+      {"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nhe", "he", false},
+  };
+  for (const Case& testCase : kCases) {
+    for (const std::string_view extra : {std::string_view{}, std::string_view{"l"}, std::string_view{"llo"}}) {
+      RawChars bodyBuf;
+      Http1ResponseParser parser(bodyBuf);
+      parser.reset(testCase.head);
+      RawChars receive(testCase.response.size() + extra.size());
+      receive.unchecked_append(testCase.response);
+      receive.unchecked_append(extra);
+      HttpResponse resp;
+      ASSERT_EQ(parser.parse(receive, /*eof=*/false, resp, kMax), Http1ResponseParser::Status::Complete)
+          << testCase.response;
+      EXPECT_EQ(resp.bodyInMemory(), testCase.body) << testCase.response;
+      EXPECT_EQ(parser.consumed(), testCase.response.size()) << testCase.response;
+      EXPECT_EQ(parser.keepAlive(), extra.empty()) << testCase.response << extra;
+    }
+  }
 }
 
 TEST(ResponseParserTest, ContentLengthTruncatedAtEofIsTruncated) {
@@ -1165,6 +1201,7 @@ struct StreamedParse {
   std::string contentType;
   std::size_t announcedBodySize{0};
   vector<StreamedPiece> pieces;
+  bool keepAlive{false};
 };
 
 StreamedParse StreamParse(std::string_view raw, std::size_t step, std::size_t maxBytes = kMax, bool stream = true) {
@@ -1211,6 +1248,7 @@ StreamedParse StreamParse(std::string_view raw, std::size_t step, std::size_t ma
         EXPECT_TRUE(resp.bodyInMemory().empty());
         out.body.assign(parser.bufferedBody());
       }
+      out.keepAlive = parser.keepAlive();
       return out;
     }
   }
@@ -1273,6 +1311,28 @@ TEST(ResponseParserStreamingTest, ChunkedBodyWithContentLengthHasNoAnnouncedSize
   EXPECT_EQ(res.status, Http1ResponseParser::Status::Complete);
   EXPECT_EQ(res.announcedBodySize, ResponseBodyInfo::kUnknownSize);
   EXPECT_EQ(res.body, "hello");
+}
+
+// Bytes received after the end of a body, streamed or received whole, prevent the reuse of the connection (RFC 9112
+// §6.3). The ones not received yet when the response is complete are left to the probe of the idle connection.
+TEST(ResponseParserStreamingTest, BytesAfterTheBodyEndPreventReuse) {
+  for (const std::string_view response : {
+           "HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello",
+           "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+       }) {
+    for (const bool stream : {true, false}) {
+      const std::string raw = std::string(response) + "EXTRA";
+      for (const std::size_t step : {raw.size(), response.size() - 1, response.size()}) {
+        const StreamedParse res = StreamParse(raw, step, kMax, stream);
+        EXPECT_EQ(res.status, Http1ResponseParser::Status::Complete) << response << step;
+        EXPECT_EQ(res.body, "hello") << response << step;
+        EXPECT_EQ(res.keepAlive, step == response.size()) << response << step;  // the last read ends with the response
+      }
+      const StreamedParse res = StreamParse(response, response.size(), kMax, stream);
+      EXPECT_EQ(res.status, Http1ResponseParser::Status::Complete) << response;
+      EXPECT_TRUE(res.keepAlive) << response;
+    }
+  }
 }
 
 // So does a Transfer-Encoding whose final coding is not chunked: the body then ends with the connection.

@@ -2977,6 +2977,51 @@ TEST(HttpClientRawServerTest, ConflictingFramingHeadersAreNotTrusted) {
   }
 }
 
+// RFC 9112 §6.3: bytes received after the end of a response (after a wrong Content-Length or chunked body, or the body
+// of a bodyless response) are never taken for the response to the next request, which goes out on a new connection.
+// Received with the response, they prevent the reuse of its connection. Left in the socket (by a read ending with the
+// response), they are found by the probe of the idle connection before its reuse.
+TEST(HttpClientRawServerTest, BytesAfterTheResponseEndAreNotTakenForTheNextResponse) {
+  struct Case {
+    std::string_view response;
+    std::string_view extra;
+    std::string_view body;
+    bool head;
+  };
+  static constexpr Case kCases[] = {
+      {"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nhe", "llo", "he", false},
+      {"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n2\r\nhe\r\n0\r\n\r\n", "llo", "he", false},
+      {"HTTP/1.1 204 No Content\r\n\r\n", "hello", "", false},
+      {"HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\n", "hello", "", true},
+  };
+  for (const Case& testCase : kCases) {
+    for (const bool readEndsWithResponse : {false, true}) {
+      RawServer server([testCase](NativeHandle fd, int) {
+        if (test::RecvHead(fd).empty()) {
+          return;
+        }
+        SendAll(fd, std::string(testCase.response) + std::string(testCase.extra));
+        // The connection stays open until the client closes it: the client must not send it another request.
+        EXPECT_EQ(test::RecvHead(fd), "") << testCase.response;
+      });
+      HttpClientConfig cfg;
+      if (readEndsWithResponse) {
+        cfg.minReadChunkBytes = static_cast<uint32_t>(testCase.response.size());
+      }
+      HttpClient client(cfg);
+      const std::string url = MakeUrl(server.port());
+      for (int requestIdx = 0; requestIdx < 2; ++requestIdx) {
+        auto result = testCase.head ? client.head(url) : client.get(url);
+        ASSERT_TRUE(result) << testCase.response << ' ' << ErrcToStr(result.error());
+        EXPECT_EQ(result->bodyInMemory(), testCase.body) << testCase.response;
+        if (!readEndsWithResponse) {
+          EXPECT_EQ(HttpClientTest::IdleConnections(client), 0U) << testCase.response;
+        }
+      }
+    }
+  }
+}
+
 // RFC 9112 section 9.6: with keep-alive disabled, every HTTP/1.1 request carries 'Connection: close' (so that the
 // server closes first and keeps the TIME_WAIT state), without modifying the user's request object.
 TEST(HttpClientRawServerTest, KeepAliveOffSendsConnectionClose) {
