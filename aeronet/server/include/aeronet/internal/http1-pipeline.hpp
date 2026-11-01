@@ -92,7 +92,8 @@ class Http1Pipeline {
 
   // Parses the head of the current request starting 'input' (or resumes the one received before its body), then runs
   // the checks that do not depend on its route: HTTPS redirect, Transfer-Encoding (sets isChunked), Accept-Encoding.
-  // Returns Nothing when the request can be routed.
+  // Returns Nothing when the request can be routed, Continue when it was answered from its head (406), its head being
+  // left to consume, and Break otherwise.
   AERONET_ALWAYS_INLINE LoopAction readHead(ConnectionIt cnxIt, ConnectionState& state, std::span<char> input,
                                             bool& isChunked);
 

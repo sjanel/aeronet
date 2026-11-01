@@ -73,7 +73,7 @@ The server answers these errors itself, before or instead of calling a handler:
 | `403 Forbidden` | `CONNECT` target not in the allowlist, request denied by a CORS policy. |
 | `404 Not Found` | No route matches the path. |
 | `405 Method Not Allowed` | The path exists but not for this method, with an `Allow` header listing the methods registered on its route. Also `TRACE` when disabled (see [TRACE](#trace)). |
-| `406 Not Acceptable` | No acceptable content coding. |
+| `406 Not Acceptable` | No acceptable content coding. Over HTTP/1.1, the connection persists, unless the request announces a body, which is not read ([details](../guides/compression.md#negotiation)). |
 | `413 Payload Too Large` | Body larger than `maxBodyBytes`. |
 | `414 URI Too Long` | Request line, with the empty line ending the head, larger than `maxHeaderBytes` (the request target is too long). |
 | `415 Unsupported Media Type` | Unsupported `Content-Encoding` on a request body, when decompression is enabled. |

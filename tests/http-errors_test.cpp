@@ -292,7 +292,8 @@ TEST(HttpParserErrors, ErrorResponsesToHeadHaveNoBody) {
            "Host: x\r\nTransfer-Encoding: gzip\r\n\r\n"sv,
            "Host: x\r\nTransfer-Encoding: gzip, chunked\r\n\r\n"sv,
            "Host: x\r\nContent-Length: 1\r\nTransfer-Encoding: chunked\r\n\r\nZ"sv,
-           "Host: x\r\nAccept-Encoding: identity;q=0\r\n\r\n"sv,
+           // Not an error closing the connection.
+           "Host: x\r\nAccept-Encoding: identity;q=0\r\nConnection: close\r\n\r\n"sv,
            "Host: x\r\nContent-Length: abc\r\n\r\n"sv,
            "Host: x\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nab\r\n0\r\n\r\n"sv,
        }) {
