@@ -49,17 +49,17 @@ class Http1ResponseParser {
   // with an equal-capacity empty allocation; an oversized scratch is instead retained while the small body is copied.
   // It must outlive the parser and stay distinct from the receive buffer fed to parse() (de-framing reads from that
   // buffer while writing into this one).
-  explicit Http1ResponseParser(RawChars& bodyBuf) noexcept : _bodyBuf(&bodyBuf) {}
+  explicit Http1ResponseParser(RawChars& bodyBuf) noexcept : _bodyBuf(bodyBuf) {}
 
   // Optional automatic response-body decompression. When `state` is non-null and the response carries a
   // (non-identity) Content-Encoding, the body is decoded at install time directly from the receive buffer
   // into `out` (with `tmp` as ping-pong scratch for stacked encodings) and the Content-Encoding header is
   // dropped. All pointers are borrowed and must outlive the parse() call(s).
   struct DecodeContext {
-    DecompressionState* state{nullptr};
-    const DecompressionConfig* config{nullptr};
-    RawChars* out{nullptr};
-    RawChars* tmp{nullptr};
+    DecompressionState* pState{nullptr};
+    const DecompressionConfig* pConfig{nullptr};
+    RawChars* pOut{nullptr};
+    RawChars* pTmp{nullptr};
   };
 
   // Install (or clear) the decompression context used by subsequent parse() calls.
@@ -119,7 +119,7 @@ class Http1ResponseParser {
   // for Length / UntilClose framing, a chunk (or the part of it received) of at least kMinDirectPieceBytes for chunked
   // framing. Smaller consecutive chunks of a read are gathered in the reassembly buffer, and delivered as one piece.
   [[nodiscard]] std::string_view streamedBody(std::string_view buffer) const noexcept {
-    return _gatheredPiece ? std::string_view(*_bodyBuf) : buffer.substr(_bodyStart, _pos - _bodyStart);
+    return _gatheredPiece ? std::string_view(_bodyBuf) : buffer.substr(_bodyStart, _pos - _bodyStart);
   }
 
   // Erase the bytes consumed so far from `buffer` (head and streamed body), so that the receive buffer only keeps the
@@ -175,7 +175,7 @@ class Http1ResponseParser {
   // interleaved with chunk metadata and must be reassembled (when streaming, only the small chunks are gathered). For
   // Length / UntilClose framing the body is already contiguous in the caller's receive buffer. The RawChars parse
   // overload can transfer that allocation.
-  RawChars* _bodyBuf;
+  RawChars& _bodyBuf;
   RawChars* _receiveBuf{nullptr};
   std::string_view _bufferedBody;  // see bufferedBody()
   std::size_t _pos{0};             // absolute cursor into the accumulated buffer
@@ -196,7 +196,8 @@ class Http1ResponseParser {
   bool _connectionCloseSeen{false};
   bool _connectionKeepAliveSeen{false};
   bool _hasContentLength{false};
-  bool _chunked{false};
+  bool _hasTransferEncoding{false};
+  bool _chunked{false};  // the final transfer coding is chunked
 };
 
 }  // namespace aeronet

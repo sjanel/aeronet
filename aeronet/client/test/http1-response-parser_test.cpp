@@ -545,12 +545,6 @@ TEST(ResponseParserTest, HigherHttp1MinorVersionIsProcessedAsHttp11) {
   }
 }
 
-TEST(ResponseParserTest, RejectsBadStatusCode) {
-  HttpResponse resp;
-  auto st = parseAll("HTTP/1.1 99 OK\r\n\r\n", resp, false, true);
-  EXPECT_EQ(st, Http1ResponseParser::Status::Error);
-}
-
 TEST(ResponseParserTest, RejectsHeaderWithoutColon) {
   HttpResponse resp;
   auto st = parseAll("HTTP/1.1 200 OK\r\nnocolon\r\n\r\n", resp, false, true);
@@ -584,6 +578,81 @@ TEST(ResponseParserTest, TransferEncodingCommaListLastTokenChunked) {
   auto st = parseAll(raw, resp);
   EXPECT_EQ(st, Http1ResponseParser::Status::Complete);
   EXPECT_EQ(resp.bodyInMemory(), "hello");
+}
+
+// Without chunked as final coding, the body ends with the connection (RFC 9112 §6.3), whatever Content-Length says.
+// The coding list goes on over repeated fields: only the last one decides.
+TEST(ResponseParserTest, TransferEncodingWithoutFinalChunkedIsDelimitedByClose) {
+  for (const std::string_view head : {
+           "transfer-encoding: gzip\r\ncontent-length: 2\r\n",
+           "content-length: 2\r\ntransfer-encoding: chunked, gzip\r\n",
+           "transfer-encoding: chunked\r\ntransfer-encoding: gzip\r\n",
+           "transfer-encoding: gzip\r\n",
+       }) {
+    HttpResponse resp;
+    RawChars bodyBuf;
+    Http1ResponseParser parser(bodyBuf);
+    parser.reset(false);
+    std::string raw = "HTTP/1.1 200 OK\r\n" + std::string(head) + "\r\nhello";
+    EXPECT_EQ(parser.parse(raw, /*eof=*/false, resp, kMax), Http1ResponseParser::Status::NeedMore) << head;
+    EXPECT_EQ(parser.parse(raw, /*eof=*/true, resp, kMax), Http1ResponseParser::Status::Complete) << head;
+    EXPECT_EQ(resp.bodyInMemory(), "hello") << head;
+    EXPECT_FALSE(parser.keepAlive()) << head;
+  }
+}
+
+// Chunked framing wins over Content-Length (RFC 9112 §6.3), but the connection is not reused after a response with both
+// (possible response splitting, §11.1).
+TEST(ResponseParserTest, ChunkedWithContentLengthIsNotReused) {
+  constexpr std::string_view kChunkedBody = "5\r\nhello\r\n0\r\n\r\n";
+  for (const bool withContentLength : {false, true}) {
+    HttpResponse resp;
+    RawChars bodyBuf;
+    Http1ResponseParser parser(bodyBuf);
+    parser.reset(false);
+    const std::string raw = std::string("HTTP/1.1 200 OK\r\n") + (withContentLength ? "content-length: 3\r\n" : "") +
+                            "transfer-encoding: chunked\r\n\r\n" + std::string(kChunkedBody);
+    EXPECT_EQ(ParseCopy(parser, raw, /*eof=*/false, resp, kMax), Http1ResponseParser::Status::Complete);
+    EXPECT_EQ(resp.bodyInMemory(), "hello");
+    EXPECT_EQ(parser.keepAlive(), !withContentLength);
+    EXPECT_EQ(parser.consumed(), raw.size());
+  }
+}
+
+// An HTTP/1.0 response cannot be transfer-coded: its framing is faulty, even with a Content-Length (RFC 9112 §6.1). Its
+// body ends with the connection, which is not reused despite its keep-alive.
+TEST(ResponseParserTest, Http10TransferEncodingIsDelimitedByClose) {
+  constexpr std::string_view kChunkedBody = "5\r\nhello\r\n0\r\n\r\n";
+  for (const std::string_view head : {
+           "transfer-encoding: chunked\r\n",
+           "transfer-encoding: chunked\r\ncontent-length: 5\r\n",
+       }) {
+    HttpResponse resp;
+    RawChars bodyBuf;
+    Http1ResponseParser parser(bodyBuf);
+    parser.reset(false);
+    std::string raw =
+        "HTTP/1.0 200 OK\r\nconnection: keep-alive\r\n" + std::string(head) + "\r\n" + std::string(kChunkedBody);
+    EXPECT_EQ(parser.parse(raw, /*eof=*/false, resp, kMax), Http1ResponseParser::Status::NeedMore) << head;
+    EXPECT_EQ(parser.parse(raw, /*eof=*/true, resp, kMax), Http1ResponseParser::Status::Complete) << head;
+    EXPECT_EQ(resp.bodyInMemory(), kChunkedBody) << head;
+    EXPECT_FALSE(parser.keepAlive()) << head;
+  }
+}
+
+// The framing headers of a discarded interim response do not apply to the final one.
+TEST(ResponseParserTest, InterimTransferEncodingDoesNotFrameFinalResponse) {
+  HttpResponse resp;
+  RawChars bodyBuf;
+  Http1ResponseParser parser(bodyBuf);
+  parser.reset(false);
+  auto st = ParseCopy(parser,
+                      "HTTP/1.1 103 Early Hints\r\ntransfer-encoding: gzip\r\ncontent-length: 7\r\n\r\n"
+                      "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok",
+                      /*eof=*/false, resp, kMax);
+  EXPECT_EQ(st, Http1ResponseParser::Status::Complete);
+  EXPECT_EQ(resp.bodyInMemory(), "ok");
+  EXPECT_TRUE(parser.keepAlive());
 }
 
 // A chunk-size token with a valid hex prefix followed by trailing junk ("5x") is rejected (the parse
@@ -662,11 +731,14 @@ TEST(ResponseParserTest, ChunkSizeScannerRejectsMalformedSyntax) {
 // Status codes that parse to a value but leave trailing junk, or fall outside the valid 100..599 range,
 // are all rejected.
 TEST(ResponseParserTest, RejectsStatusCodeTrailingJunkOrOutOfRange) {
-  for (const std::string_view raw : {
-           std::string_view("HTTP/1.1 20x OK\r\n\r\n"),  // trailing junk after digits
-           std::string_view("HTTP/1.1 600 X\r\n\r\n"),   // above 599
-           std::string_view("HTTP/1.1 abc OK\r\n\r\n"),
-       }) {  // non-numeric
+  static constexpr std::string_view kBadStatusCodeResponseLines[]{
+      "HTTP/1.1 20x OK\r\n\r\n",   // trailing junk after digits
+      "HTTP/1.1 600 X\r\n\r\n",    // above 599
+      "HTTP/1.1 abc OK\r\n\r\n",   // non-numeric
+      "HTTP/1.1 99 OK\r\n\r\n",    // below 100
+      "HTTP/1.1 0200 OK\r\n\r\n",  // != 3 DIGIT
+  };
+  for (const std::string_view raw : kBadStatusCodeResponseLines) {
     HttpResponse resp;
     EXPECT_EQ(parseAll(raw, resp, /*head=*/false, /*eof=*/true), Http1ResponseParser::Status::Error) << raw;
   }
@@ -840,7 +912,9 @@ struct Decode {
   RawChars tmp;
   RawChars bodyBuf;  // borrowed by the Http1ResponseParser for chunked reassembly
 
-  Http1ResponseParser::DecodeContext ctx() { return {.state = &state, .config = &config, .out = &out, .tmp = &tmp}; }
+  Http1ResponseParser::DecodeContext ctx() {
+    return {.pState = &state, .pConfig = &config, .pOut = &out, .pTmp = &tmp};
+  }
 };
 
 std::string LengthFramed(std::string_view encodingName, std::string_view body) {
@@ -1201,6 +1275,15 @@ TEST(ResponseParserStreamingTest, ChunkedBodyWithContentLengthHasNoAnnouncedSize
   EXPECT_EQ(res.body, "hello");
 }
 
+// So does a Transfer-Encoding whose final coding is not chunked: the body then ends with the connection.
+TEST(ResponseParserStreamingTest, NonChunkedTransferEncodingWithContentLengthHasNoAnnouncedSize) {
+  const StreamedParse res =
+      StreamParse("HTTP/1.1 200 OK\r\ncontent-length: 3\r\ntransfer-encoding: gzip\r\n\r\nhello world", 4);
+  EXPECT_EQ(res.status, Http1ResponseParser::Status::Complete);
+  EXPECT_EQ(res.announcedBodySize, ResponseBodyInfo::kUnknownSize);
+  EXPECT_EQ(res.body, "hello world");
+}
+
 // A body cut short is delivered up to its end, then reported as truncated.
 TEST(ResponseParserStreamingTest, TruncatedStreamedBodies) {
   for (const std::size_t step : {std::size_t{2}, std::size_t{100}}) {
@@ -1347,7 +1430,7 @@ TEST(ResponseParserTest, EmptyBodyWithContentEncodingIsNotDecoded) {
   const DecompressionConfig config;
   Http1ResponseParser parser(bodyBuf);
   parser.reset(false);
-  parser.setDecodeContext({.state = &state, .config = &config, .out = &out, .tmp = &tmp});
+  parser.setDecodeContext({.pState = &state, .pConfig = &config, .pOut = &out, .pTmp = &tmp});
   HttpResponse resp;
   EXPECT_EQ(
       ParseCopy(parser, "HTTP/1.1 200 OK\r\ncontent-encoding: gzip\r\ncontent-length: 0\r\n\r\n", false, resp, kMax),
