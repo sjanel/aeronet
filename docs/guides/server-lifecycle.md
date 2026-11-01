@@ -139,7 +139,7 @@ Routes are updated the same way, with `router()` or `postRouterUpdate()`, see [U
 
 ## Connections and keep-alive
 
-HTTP/1.1 connections are persistent by default: a client sends several requests on one connection, one after the other. `Connection` is a list of options: `close` closes the connection after the response wherever it appears, and an HTTP/1.0 connection persists only if it lists `keep-alive`.
+HTTP/1.1 connections are persistent by default: a client sends several requests on one connection, one after the other. `Connection` is a list of options: `close` closes the connection after the response wherever it appears, and an HTTP/1.0 connection persists only if it lists `keep-alive`. An HTTP/1.0 request is answered with an `HTTP/1.1` status line (RFC 9110 §2.5), which always carries `Connection: close` or `Connection: keep-alive`, as an HTTP/1.1 response persists by default.
 
 | Setting | Default | Effect |
 | --- | --- | --- |

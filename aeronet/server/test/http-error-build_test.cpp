@@ -98,3 +98,18 @@ TEST(HttpErrorBuildTest, ShouldEmitContentType) {
   EXPECT_TRUE(full.contains(MakeHttp1HeaderLine(http::ContentType, http::ContentTypeTextPlain))) << full;
   EXPECT_TRUE(full.ends_with(http::DoubleCRLF)) << full;
 }
+
+TEST(HttpErrorBuildTest, ResponseToHeadHasTheHeadersOfGetWithoutBody) {
+  // RFC 9110 §9.3.2: same header fields as for GET, Content-Length included, without content.
+  for (const std::string& body : {std::string(), std::string("Bad request"), std::string(1024, 'A')}) {
+    ConcatenatedHeaders gh;
+    gh.append("X-Test: foo");
+    const auto getResp = BuildSimpleError(http::StatusCode{400}, gh, body, pDateHeader);
+    const auto headResp = BuildSimpleError(http::StatusCode{400}, gh, body, pDateHeader, true);
+    const std::string_view head(headResp);
+
+    EXPECT_TRUE(head.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(body.size())))) << head;
+    EXPECT_TRUE(head.ends_with(http::DoubleCRLF)) << head;
+    EXPECT_EQ(std::string(head) + body, std::string_view(getResp));
+  }
+}

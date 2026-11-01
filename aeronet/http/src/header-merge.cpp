@@ -32,8 +32,8 @@ bool MergeHeaderInPlace(SvToSvMap& map, SvToSvMap::iterator it, std::string_view
     return false;
   }
 
-  if (it->second.empty() || mergeSep == 'O') {
-    // we keep the last value in the map (either second value is empty, or mergeSep is 'O' for override)
+  if (it->second.empty()) {
+    // the first value is empty - we keep the last value in the map
     it->second = value;
     return true;
   }

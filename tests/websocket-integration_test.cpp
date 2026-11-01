@@ -328,6 +328,27 @@ TEST_F(WebSocketTest, UpgradeNonWebSocketPath) {
   EXPECT_TRUE(response.starts_with("HTTP/1.1 404")) << "Response: " << response;
 }
 
+// An upgrade request announcing a body, whose client waits for 100 Continue: the upgrade, like a handler, takes place
+// once the body is received, so 100 Continue is sent (and not the 405 of a path without handler for GET).
+TEST_F(WebSocketTest, UpgradeWaitingFor100ContinueIsUpgradedAfterTheBody) {
+  ts.postRouterUpdate([](Router& router) {
+    router.setWebSocket("/ws", WebSocketEndpoint::WithCallbacks({
+                                   .onMessage = {},
+                                   .onPing = {},
+                                   .onPong = {},
+                                   .onClose = {},
+                                   .onError = {},
+                               }));
+  });
+
+  test::ClientConnection conn(ts.port());
+  test::sendAll(conn.fd(), BuildUpgradeRequestWithHeaders("/ws", "Content-Length: 5\r\nExpect: 100-continue\r\n"));
+  EXPECT_EQ(test::RecvHead(conn.fd()), http::HTTP11_100_CONTINUE);
+  test::sendAll(conn.fd(), "hello");
+  const std::string response = test::RecvHead(conn.fd());
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 101")) << "Response: " << response;
+}
+
 TEST_F(WebSocketTest, SendAndReceiveTextMessage) {
   ts.postRouterUpdate([this](Router& router) {
     router.setWebSocket("/echo", WebSocketEndpoint::WithFactory([this](const HttpRequestView& /*req*/) {
@@ -849,9 +870,9 @@ TEST_F(WebSocketTest, UpgradeIgnoredInHttp10) {
   };
 
   std::string resp = http10Upgrade("/ws-http10");
-  EXPECT_TRUE(resp.starts_with("HTTP/1.0 404")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 404")) << resp;
   resp = http10Upgrade("/ws-http10-get");
-  EXPECT_TRUE(resp.starts_with("HTTP/1.0 200")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
   EXPECT_TRUE(resp.ends_with("\r\n\r\nplain")) << resp;
 
   EXPECT_TRUE(UpgradeResponse("/ws-http10", "").starts_with("HTTP/1.1 101"));

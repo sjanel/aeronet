@@ -86,6 +86,14 @@ class RequestPipeline {
     return pCorsPolicy != nullptr && pCorsPolicy->wouldApply(request) == CorsPolicy::ApplyStatus::OriginDenied;
   }
 
+  /// Tell whether CallRequestHandler() answers a request without calling a handler: its route has no handler for its
+  /// method (a trailing slash redirect, a 405 or a 404), or denies its origin. Its answer then does not depend on its
+  /// body.
+  [[nodiscard]] static bool IsAnsweredWithoutHandler(const HttpRequestView& request,
+                                                     const Router::RoutingResult& routingResult) noexcept {
+    return !routingResult.hasHandler() || IsOriginDenied(request, routingResult);
+  }
+
   /// The 403 answering a request whose origin is denied by the CORS policy of its route (see IsOriginDenied()).
   [[nodiscard]] static HttpResponse MakeOriginDenial(const HttpRequestView& request);
 

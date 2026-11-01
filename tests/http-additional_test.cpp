@@ -26,6 +26,7 @@
 #include <utility>
 
 #include "aeronet/access-log-config.hpp"
+#include "aeronet/cors-policy.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
@@ -231,16 +232,22 @@ bool WaitForPeerClosedNonBlocking(int fd, std::chrono::milliseconds timeout) {
 
 }  // namespace
 
-TEST(Http10, BasicVersionEcho) {
+// RFC 9110 §2.5: an HTTP/1.0 request is answered with the highest version the server conforms to, HTTP/1.1. Such a
+// response persists by default (RFC 9112 §9.3): the close of the connection, default for HTTP/1.0, is announced.
+TEST(Http10, AnsweredWithHttp11StatusLine) {
   ts.router().setDefault([]([[maybe_unused]] const HttpRequestView& req) { return HttpResponse("A"); });
-  std::string req = "GET /x HTTP/1.0\r\nhost: h\r\n\r\n";
-  std::string resp = test::sendAndCollect(ts.port(), req);
-  ASSERT_TRUE(resp.starts_with("HTTP/1.0 200"));
+  for (std::string_view method : {"GET", "HEAD"}) {
+    const std::string resp = test::sendAndCollect(ts.port(), std::format("{} /x HTTP/1.0\r\nhost: h\r\n\r\n", method));
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 200 ")) << resp;
+    EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << resp;
+    EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, "1"))) << resp;
+    EXPECT_TRUE(resp.ends_with(method == "GET" ? "\r\n\r\nA" : "\r\n\r\n")) << resp;
+  }
 }
 
 // RFC 9112 §6.1: an HTTP/1.0 response cannot be chunked. Without contentLength(), a streamed body is delimited by the
-// close of the connection (RFC 9112 §6.3), even if the client asked to keep it alive: the request pipelined behind it
-// is not served. Its trailers are dropped.
+// close of the connection (RFC 9112 §6.3), even if the client asked to keep it alive: the head announces it, and the
+// request pipelined behind it is not served. Its trailers are dropped.
 TEST(Http10, StreamedBodyWithoutLengthIsDelimitedByClose) {
   for (std::size_t partSize : {std::size_t{5}, std::size_t{64UL << 10U}}) {
     const std::string part(partSize, 'p');
@@ -256,12 +263,13 @@ TEST(Http10, StreamedBodyWithoutLengthIsDelimitedByClose) {
                   "GET /s HTTP/1.0\r\nhost: h\r\nconnection: keep-alive\r\n\r\n"
                   "GET /s HTTP/1.0\r\nhost: h\r\nconnection: keep-alive\r\n\r\n");
     const std::string resp = test::recvUntilClosed(cnx.fd());
-    EXPECT_TRUE(resp.starts_with("HTTP/1.0 200")) << resp.substr(0, 512);
-    EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.0 "), 1);
-    const std::string_view head = std::string_view(resp).substr(0, resp.find(http::DoubleCRLF));
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp.substr(0, 512);
+    EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1);
+    // The head, with the CRLF of its last header line.
+    const std::string_view head = std::string_view(resp).substr(0, resp.find(http::DoubleCRLF) + http::CRLF.size());
     EXPECT_FALSE(head.contains(http::TransferEncoding)) << head;
     EXPECT_FALSE(head.contains(http::ContentLength)) << head;
-    EXPECT_FALSE(head.contains(http::Connection)) << head;
+    EXPECT_TRUE(head.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << head;
     EXPECT_FALSE(resp.contains("x-checksum")) << head;
     std::string expectedEnd(http::DoubleCRLF);
     for (int partPos = 0; partPos < 4; ++partPos) {
@@ -286,7 +294,7 @@ TEST(Http10, StreamedResponseOfKnownLengthKeepsConnectionAlive) {
 
   test::sendAll(cnx.fd(), "HEAD /unknown-length HTTP/1.0\r\nhost: h\r\nconnection: keep-alive\r\n\r\n");
   const std::string headResp = test::RecvHead(cnx.fd());
-  EXPECT_TRUE(headResp.starts_with("HTTP/1.0 200")) << headResp;
+  EXPECT_TRUE(headResp.starts_with("HTTP/1.1 200")) << headResp;
   EXPECT_TRUE(headResp.contains(keepAliveLine)) << headResp;
   EXPECT_FALSE(headResp.contains(http::ContentLength)) << headResp;
   EXPECT_FALSE(headResp.contains(http::TransferEncoding)) << headResp;
@@ -294,17 +302,17 @@ TEST(Http10, StreamedResponseOfKnownLengthKeepsConnectionAlive) {
 
   test::sendAll(cnx.fd(), "GET /len HTTP/1.0\r\nhost: h\r\nconnection: keep-alive\r\n\r\n");
   const std::string first = test::recvWithTimeout(cnx.fd(), 2s);
-  EXPECT_TRUE(first.starts_with("HTTP/1.0 200")) << first;
+  EXPECT_TRUE(first.starts_with("HTTP/1.1 200")) << first;
   EXPECT_TRUE(first.contains(MakeHttp1HeaderLine(http::ContentLength, "4"))) << first;
   EXPECT_TRUE(first.contains(keepAliveLine)) << first;
   EXPECT_TRUE(first.ends_with("\r\n\r\nabcd")) << first;
 
-  // Without keep-alive, the connection is closed after the response.
+  // Without keep-alive, the connection is closed after the response, which announces it.
   test::sendAll(cnx.fd(), "GET /len HTTP/1.0\r\nhost: h\r\n\r\n");
   const std::string last = test::recvUntilClosed(cnx.fd());
-  EXPECT_TRUE(last.starts_with("HTTP/1.0 200")) << last;
+  EXPECT_TRUE(last.starts_with("HTTP/1.1 200")) << last;
   EXPECT_TRUE(last.contains(MakeHttp1HeaderLine(http::ContentLength, "4"))) << last;
-  EXPECT_FALSE(last.contains(http::Connection)) << last;
+  EXPECT_TRUE(last.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << last;
   EXPECT_TRUE(last.ends_with("\r\n\r\nabcd")) << last;
 }
 
@@ -318,7 +326,7 @@ TEST(Http10, No100ContinueEvenIfHeaderPresent) {
         body.size(), body);
     const std::string resp = test::sendAndCollect(ts.port(), req);
     EXPECT_FALSE(resp.contains("100 Continue")) << resp;
-    EXPECT_TRUE(resp.starts_with("HTTP/1.0 200")) << resp;
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
     EXPECT_TRUE(resp.ends_with(std::string(http::DoubleCRLF) + std::string(body))) << resp;
   }
 }
@@ -336,7 +344,7 @@ TEST(Http10, TrailersAreDroppedAndBodyKeepsItsContentLength) {
     for (std::string_view method : {"GET", "HEAD"}) {
       const std::string resp =
           test::sendAndCollect(ts.port(), std::format("{} /t HTTP/1.0\r\nhost: h\r\n\r\n", method));
-      EXPECT_TRUE(resp.starts_with("HTTP/1.0 200")) << resp;
+      EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
       EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(bodySize)))) << resp;
       EXPECT_FALSE(resp.contains(http::TransferEncoding)) << resp;
       EXPECT_FALSE(resp.contains(MakeHttp1HeaderLine(http::Trailer, "x-checksum"))) << resp;
@@ -362,12 +370,12 @@ TEST(Http10, KeepAliveOptInStillWorks) {
   std::string req1 = "GET /k1 HTTP/1.0\r\nhost: h\r\nconnection: keep-alive\r\n\r\n";
   test::sendAll(fd, req1);
   std::string first = test::recvWithTimeout(fd, 300ms);  // NOLINT(misc-include-cleaner)
-  ASSERT_TRUE(first.starts_with("HTTP/1.0 200"));
+  ASSERT_TRUE(first.starts_with("HTTP/1.1 200"));
   ASSERT_TRUE(first.contains(MakeHttp1HeaderLine(http::Connection, http::keepalive)));
   std::string req2 = "GET /k2 HTTP/1.0\r\nhost: h\r\nconnection: keep-alive\r\n\r\n";
   test::sendAll(fd, req2);
   std::string second = test::recvWithTimeout(fd, 300ms);  // NOLINT(misc-include-cleaner)
-  ASSERT_TRUE(second.starts_with("HTTP/1.0 200"));
+  ASSERT_TRUE(second.starts_with("HTTP/1.1 200"));
 }
 
 // RFC 9110 §6.2: a request with a higher HTTP/1 minor version is processed, and answered, as HTTP/1.1.
@@ -397,11 +405,11 @@ TEST(Http1HigherMinorVersion, MissingHostIsRejected) {
 
 TEST(Http1HigherMinorVersion, Interim100ContinueIsSent) {
   ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
-  std::string resp = test::sendAndCollect(
-      ts.port(),
-      "POST /p HTTP/1.2\r\nhost: h\r\ncontent-length: 5\r\nexpect: 100-continue\r\nconnection: close\r\n\r\nHELLO");
-  ASSERT_TRUE(resp.starts_with("HTTP/1.1 100 Continue")) << resp;
-  EXPECT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  test::ClientConnection cnx(ts.port());
+  const std::string resp = test::SendExpectingContinue(
+      cnx.fd(), "POST /p HTTP/1.2\r\nhost: h\r\ncontent-length: 5\r\nexpect: 100-continue\r\nconnection: close\r\n\r\n",
+      "HELLO");
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200")) << resp;
   EXPECT_TRUE(resp.ends_with("HELLO")) << resp;
 }
 
@@ -1258,8 +1266,8 @@ TEST(HttpExpectation, NoInterimResponseToHttp10Client) {
   const std::string resp = test::sendAndCollect(ts.port(),
                                                 "POST /x HTTP/1.0\r\nhost: x\r\ncontent-length: 5\r\nexpect: "
                                                 "x-continue, 102-processing, 100-continue\r\n\r\nHELLO");
-  EXPECT_TRUE(resp.starts_with("HTTP/1.0 200")) << resp;
-  EXPECT_FALSE(resp.contains("HTTP/1.1")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp;
   EXPECT_TRUE(resp.ends_with("\r\n\r\nHELLO")) << resp;
 }
 
@@ -1421,16 +1429,12 @@ TEST(HttpExpectation, Mixed100AndCustomWithHandlerContinue) {
   ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("DONE"); });
 
   test::ClientConnection clientConnection(ts.port());
-  NativeHandle fd = clientConnection.fd();
-  ASSERT_GE(fd, 0);
-  std::string req =
-      "POST /x HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\nexpect: 100-continue, custom-ok\r\nconnection: "
-      "close\r\n\r\nHELLO";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
-  // Should see 100 Continue (from expectContinue path) and final 200
-  ASSERT_TRUE(resp.starts_with("HTTP/1.1 100 Continue")) << resp;
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200")) << resp;
+  const std::string resp = test::SendExpectingContinue(clientConnection.fd(),
+                                                       "POST /x HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\nexpect: "
+                                                       "100-continue, custom-ok\r\nconnection: close\r\n\r\n",
+                                                       "HELLO");
+  // Should see 100 Continue (the custom token continuing) and final 200
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200")) << resp;
   ASSERT_TRUE(resp.contains("DONE")) << resp;
 }
 
@@ -1491,6 +1495,218 @@ TEST(HttpExpect, ContinueFlow) {
   std::string full = interim + test::recvUntilClosed(cnx.fd());
 
   ASSERT_TRUE(full.contains("hello"));
+}
+
+namespace {
+
+// The head of a request announcing a body of 5 bytes, whose client waits for 100 Continue before sending it. Without
+// 'connection: close' among extraHeaders, the client keeps its connection alive.
+std::string ExpectContinueHead(std::string_view method, std::string_view target, std::string_view extraHeaders = {}) {
+  return std::format("{} {} HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\nexpect: 100-continue\r\n{}\r\n", method, target,
+                     extraHeaders);
+}
+
+// Checks the response to a request, keeping its connection alive, answered from its head with 'statusCode' (RFC 9110
+// §10.1.1): without 100 Continue, the client not sending its body, and announcing the close of the connection (as
+// returned by SendExpectingContinue()), since the client may send its body anyway.
+void ExpectAnsweredWithout100Continue(std::string_view resp, http::StatusCode statusCode) {
+  EXPECT_TRUE(resp.starts_with(std::format("HTTP/1.1 {} ", statusCode))) << resp;
+  EXPECT_FALSE(resp.contains("100 Continue")) << resp;
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << resp;
+}
+
+}  // namespace
+
+// A request whose final status is known from its method, path and headers is answered without 100 Continue.
+TEST(HttpExpectContinue, FinalStatusKnownFromHeadIsSentWithout100Continue) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg = TestServerConfig(); });
+  std::atomic<int> handlerCalls{0};
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/get-only", [&handlerCalls](const HttpRequestView&) {
+    ++handlerCalls;
+    return HttpResponse("get");
+  });
+
+  struct Case {
+    std::string head;
+    http::StatusCode statusCode;
+  };
+  for (const Case& tc : {
+           Case{ExpectContinueHead("POST", "/missing"), http::StatusCodeNotFound},
+           Case{"PUT /missing HTTP/1.1\r\nhost: x\r\ntransfer-encoding: chunked\r\nexpect: 100-continue\r\n\r\n",
+                http::StatusCodeNotFound},
+           Case{ExpectContinueHead("POST", "/get-only"), http::StatusCodeMethodNotAllowed},
+           Case{ExpectContinueHead("TRACE", "/get-only"), http::StatusCodeMethodNotAllowed},  // TRACE disabled
+           Case{ExpectContinueHead("OPTIONS", "*"), http::StatusCodeOK},
+       }) {
+    SCOPED_TRACE(tc.head);
+    test::ClientConnection cnx(ts.port());
+    ExpectAnsweredWithout100Continue(test::SendExpectingContinue(cnx.fd(), tc.head, "hello"), tc.statusCode);
+  }
+  EXPECT_EQ(handlerCalls.load(), 0);
+}
+
+// A TRACE request announcing content is answered 400 when TRACE is enabled: without 100 Continue either.
+TEST(HttpExpectContinue, TraceWithContentIsAnswered400Without100Continue) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg = TestServerConfig();
+    cfg.withTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainAndTLS);
+  });
+  ts.resetRouterAndGet();
+  test::ClientConnection cnx(ts.port());
+  ExpectAnsweredWithout100Continue(test::SendExpectingContinue(cnx.fd(), ExpectContinueHead("TRACE", "/t"), "hello"),
+                                   http::StatusCodeBadRequest);
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg = TestServerConfig(); });
+}
+
+// The request middleware runs before 100 Continue is sent: when it answers, the client does not send the body.
+TEST(HttpExpectContinue, RequestMiddlewareAnswerIsSentWithout100Continue) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg = TestServerConfig(); });
+  std::atomic<int> handlerCalls{0};
+  auto router = ts.resetRouterAndGet();
+  router.addRequestMiddleware([](HttpRequestView& req) {
+    if (req.headerValueOrEmpty("authorization").empty()) {
+      return MiddlewareResult::ShortCircuit(HttpResponse(http::StatusCodeUnauthorized, "authentication required"));
+    }
+    return MiddlewareResult::Continue();
+  });
+  router
+      .setPath(http::Method::POST, "/upload",
+               [&handlerCalls](const HttpRequestView& req) {
+                 ++handlerCalls;
+                 return HttpResponse(req.body());
+               })
+      .before([](HttpRequestView& req) {
+        if (req.queryParamValueOrEmpty("deny") == "1") {
+          return MiddlewareResult::ShortCircuit(HttpResponse(http::StatusCodeForbidden, "denied"));
+        }
+        return MiddlewareResult::Continue();
+      });
+
+  {  // The global middleware answers
+    test::ClientConnection cnx(ts.port());
+    const std::string resp = test::SendExpectingContinue(cnx.fd(), ExpectContinueHead("POST", "/upload"), "hello");
+    ExpectAnsweredWithout100Continue(resp, http::StatusCodeUnauthorized);
+    EXPECT_TRUE(resp.ends_with("authentication required")) << resp;
+  }
+  {  // The middleware of the route answers
+    test::ClientConnection cnx(ts.port());
+    const std::string resp = test::SendExpectingContinue(
+        cnx.fd(), ExpectContinueHead("POST", "/upload?deny=1", "authorization: Bearer t\r\n"), "hello");
+    ExpectAnsweredWithout100Continue(resp, http::StatusCodeForbidden);
+    EXPECT_TRUE(resp.ends_with("denied")) << resp;
+  }
+  EXPECT_EQ(handlerCalls.load(), 0);
+  {  // Both continue: 100 Continue, then the response of the handler
+    test::ClientConnection cnx(ts.port());
+    const std::string resp = test::SendExpectingContinue(
+        cnx.fd(), ExpectContinueHead("POST", "/upload", "authorization: Bearer t\r\nconnection: close\r\n"), "hello");
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 ")) << resp;
+    EXPECT_TRUE(resp.ends_with("hello")) << resp;
+  }
+  EXPECT_EQ(handlerCalls.load(), 1);
+  ts.resetRouterAndGet();
+}
+
+// The request middleware of a request whose client waits for 100 Continue runs once, before its body is received; its
+// handler, called once the body is received, sees the path and query parameters. The request pipelined behind it goes
+// through its own request middleware.
+TEST(HttpExpectContinue, RequestMiddlewareRunsOnceBefore100Continue) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg = TestServerConfig(); });
+  std::atomic<int> globalCalls{0};
+  std::atomic<int> routeCalls{0};
+  auto router = ts.resetRouterAndGet();
+  router.addRequestMiddleware([&globalCalls](HttpRequestView&) {
+    ++globalCalls;
+    return MiddlewareResult::Continue();
+  });
+  router
+      .setPath(http::Method::POST, "/items/{id}",
+               [](const HttpRequestView& req) {
+                 return HttpResponse(std::format("{}|{}|{}", req.pathParamValueOrEmpty("id"),
+                                                 req.queryParamValueOrEmpty("q"), req.body()));
+               })
+      .before([&routeCalls](HttpRequestView&) {
+        ++routeCalls;
+        return MiddlewareResult::Continue();
+      });
+
+  test::ClientConnection cnx(ts.port());
+  test::sendAll(cnx.fd(), ExpectContinueHead("POST", "/items/42?q=abc"));
+  EXPECT_EQ(test::RecvHead(cnx.fd()), http::HTTP11_100_CONTINUE);
+  EXPECT_EQ(globalCalls.load(), 1);
+  EXPECT_EQ(routeCalls.load(), 1);
+
+  // The body, in two parts, the second one followed by the next request.
+  test::sendAll(cnx.fd(), "hel");
+  std::this_thread::sleep_for(20ms);
+  test::sendAll(cnx.fd(), "loPOST /items/7 HTTP/1.1\r\nhost: x\r\ncontent-length: 2\r\nconnection: close\r\n\r\nhi");
+  const std::string resp = test::recvUntilClosed(cnx.fd());
+  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 200 "), 2) << resp;
+  EXPECT_TRUE(resp.contains("\r\n\r\n42|abc|helloHTTP/1.1 200 ")) << resp;
+  EXPECT_TRUE(resp.ends_with("\r\n\r\n7||hi")) << resp;
+  EXPECT_EQ(globalCalls.load(), 2);
+  EXPECT_EQ(routeCalls.load(), 2);
+  ts.resetRouterAndGet();
+}
+
+// The CORS policy of the route denying the origin of the request: answered 403 without 100 Continue.
+TEST(HttpExpectContinue, CorsDenialIsSentWithout100Continue) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg = TestServerConfig(); });
+  std::atomic<int> handlerCalls{0};
+  CorsPolicy policy(CorsPolicy::Active::On);
+  policy.allowOrigin("https://app.example").allowMethods(http::Method::POST);
+  ts.resetRouterAndGet()
+      .setPath(http::Method::POST, "/cors",
+               [&handlerCalls](const HttpRequestView&) {
+                 ++handlerCalls;
+                 return HttpResponse("side effect");
+               })
+      .cors(std::move(policy));
+
+  test::ClientConnection cnx(ts.port());
+  ExpectAnsweredWithout100Continue(
+      test::SendExpectingContinue(cnx.fd(), ExpectContinueHead("POST", "/cors", "origin: https://evil.example\r\n"),
+                                  "hello"),
+      http::StatusCodeForbidden);
+  EXPECT_EQ(handlerCalls.load(), 0);
+}
+
+// The body of a request with a streaming handler is received before its call: 100 Continue is sent.
+TEST(HttpExpectContinue, StreamingHandlerGets100Continue) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg = TestServerConfig(); });
+  ts.resetRouterAndGet().setPath(http::Method::POST, "/stream",
+                                 [](const HttpRequestView& req, HttpResponseWriter& writer) {
+                                   writer.status(http::StatusCodeOK);
+                                   writer.writeBody(req.body());
+                                   writer.end();
+                                 });
+  test::ClientConnection cnx(ts.port());
+  const std::string resp =
+      test::SendExpectingContinue(cnx.fd(), ExpectContinueHead("POST", "/stream", "connection: close\r\n"), "hello");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 ")) << resp;
+  EXPECT_TRUE(resp.contains("hello")) << resp;
+}
+
+// A body received along with its head does not need 100 Continue (RFC 9110 §10.1.1): the connection stays open.
+TEST(HttpExpectContinue, BodyReceivedWithHeadGetsNo100Continue) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg = TestServerConfig(); });
+  ts.resetRouterAndGet().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
+  const std::string resp =
+      test::sendAndCollect(ts.port(), ExpectContinueHead("POST", "/a") + "hello" +
+                                          ExpectContinueHead("POST", "/b", "connection: close\r\n") + "world");
+  EXPECT_FALSE(resp.contains("100 Continue")) << resp;
+  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 200 "), 2) << resp;
+  EXPECT_TRUE(resp.ends_with("world")) << resp;
+}
+
+// A CONNECT request is not routed: its tunnel is established once its body is received, after 100 Continue.
+TEST(HttpExpectContinue, ConnectGets100Continue) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg = TestServerConfig(); });
+  test::ClientConnection cnx(ts.port());
+  const std::string resp = test::SendExpectingContinue(
+      cnx.fd(), ExpectContinueHead("CONNECT", "example.com:443", "connection: close\r\n"), "hello");
+  // No CONNECT target is allowed by default.
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 403 ")) << resp;
 }
 
 TEST(HttpChunked, RejectTooLarge) {

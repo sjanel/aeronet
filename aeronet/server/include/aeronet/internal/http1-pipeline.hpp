@@ -60,7 +60,8 @@ class Http1Pipeline {
   void finalizeAndSendResponse(ConnectionIt cnxIt, HttpResponse&& resp, const CorsPolicy* pCorsPolicy,
                                bool close = false);
 
-  // Builds & queues a simple error response, invoking the parser error callback (if any).
+  // Builds & queues a simple error response, invoking the parser error callback (if any). The response to a HEAD
+  // request has the header fields of the GET one, without its body.
   // The connection will be closed after draining buffered writes.
   void emitSimpleError(ConnectionIt cnxIt, http::StatusCode statusCode, std::string_view body = {});
 
@@ -91,7 +92,8 @@ class Http1Pipeline {
 
   // Parses the head of the current request starting 'input' (or resumes the one received before its body), then runs
   // the checks that do not depend on its route: HTTPS redirect, Transfer-Encoding (sets isChunked), Accept-Encoding.
-  // Returns Nothing when the request can be routed.
+  // Returns Nothing when the request can be routed, Continue when it was answered from its head (406), its head being
+  // left to consume, and Break otherwise.
   AERONET_ALWAYS_INLINE LoopAction readHead(ConnectionIt cnxIt, ConnectionState& state, std::span<char> input,
                                             bool& isChunked);
 
@@ -100,18 +102,28 @@ class Http1Pipeline {
   AERONET_ALWAYS_INLINE bool applyRouteLimits(ConnectionIt cnxIt, ConnectionState& state,
                                               const Router::RoutingResult& routingResult);
 
-  // Answers the current request, routed and with its special methods handled: runs its request middleware, then its
-  // WebSocket upgrade or its handler. Returns Nothing when its async handler is to be dispatched.
+  // Answers the current request, routed and with its special methods handled: runs its request middleware (unless it
+  // ran before 100 Continue was sent), then its WebSocket upgrade or its handler. Returns Nothing when its async
+  // handler is to be dispatched.
   AERONET_ALWAYS_INLINE LoopAction callHandlers(ConnectionIt cnxIt, ConnectionState& state,
                                                 const Router::RoutingResult& routingResult, bool bodyReady);
+
+  // The client of the current request, routed, waits for 100 Continue before sending its body (RFC 9110 §10.1.1), that
+  // its handler needs. Answers it right away when its final status is known without its body: a special method, a
+  // request middleware answering, a CORS denial, or no handler for its method and path (404, 405, trailing slash
+  // redirect). The connection then closes, its body not being read. Otherwise, sends 100 Continue, its request
+  // middleware having run: its handler is called once its body is received.
+  // Returns Nothing when 100 Continue was sent, Continue or Break (as callHandlers()) when it was answered.
+  LoopAction answerBeforeBody(ConnectionIt cnxIt, ConnectionState& state, const Router::RoutingResult& routingResult);
 
   // Validate the Transfer-Encoding of the current request. Returns true for chunked, the only coding supported.
   // Otherwise, queues the error response (the connection then closes) and returns false.
   bool acceptChunkedTransferEncoding(ConnectionIt cnxIt, std::string_view transferEncoding);
 
-  // Apply the response middleware of the route, then send the response to the current request.
-  void sendResponse(ConnectionIt cnxIt, HttpResponse&& resp, const Router::RoutingResult& routingResult,
-                    bool streaming);
+  // Apply the response middleware of the route, then send the response to the current request. With 'close', the
+  // connection closes after it.
+  void sendResponse(ConnectionIt cnxIt, HttpResponse&& resp, const Router::RoutingResult& routingResult, bool streaming,
+                    bool close = false);
 
   // Run the streaming handler of the current request. Returns Break when the connection closes afterwards, Continue
   // otherwise.
@@ -119,15 +131,15 @@ class Http1Pipeline {
 
   // Decodes the body of the current request, whose head starts 'input' (the input buffer from the request on).
   // Sets consumedBytes to the bytes of the request (head, body and trailers) once Ready.
-  BodyDecodeStatus decodeBodyIfReady(ConnectionIt cnxIt, std::span<char> input, bool isChunked, bool expectContinue,
+  BodyDecodeStatus decodeBodyIfReady(ConnectionIt cnxIt, std::span<char> input, bool isChunked,
                                      std::size_t maxBodyBytes, std::size_t& consumedBytes);
-  BodyDecodeStatus decodeFixedLengthBody(ConnectionIt cnxIt, std::span<const char> input, bool expectContinue,
-                                         std::size_t maxBodyBytes, std::size_t& consumedBytes);
+  BodyDecodeStatus decodeFixedLengthBody(ConnectionIt cnxIt, std::span<const char> input, std::size_t maxBodyBytes,
+                                         std::size_t& consumedBytes);
   // The body of a chunked request received in several reads is decoded once: the progress of its decoding is kept in
   // the connection (see ConnectionState::ChunkedBodyProgress), each read decoding the chunks received since the
   // previous one.
-  BodyDecodeStatus decodeChunkedBody(ConnectionIt cnxIt, std::span<char> input, bool expectContinue,
-                                     std::size_t maxBodyBytes, std::size_t& consumedBytes);
+  BodyDecodeStatus decodeChunkedBody(ConnectionIt cnxIt, std::span<char> input, std::size_t maxBodyBytes,
+                                     std::size_t& consumedBytes);
 
   // Decodes the chunks of the body of the current request received since its last decoding, up to its end (trailers
   // included). Keeps its progress in the connection if the body is incomplete (NeedMore), whose caller resets it
@@ -143,7 +155,8 @@ class Http1Pipeline {
 
   bool maybeDecompressRequestBody(ConnectionIt cnxIt, bool usePerConnectionBodyStorage);
 
-  // Handle Expect header tokens other than the built-in 100-continue.
+  // Handle Expect header tokens other than the built-in 100-continue, whose presence (in an HTTP/1.1 request) sets
+  // found100Continue.
   // Returns true if processing should stop for this request (response already queued/sent): only its head is consumed.
   bool handleExpectHeader(ConnectionIt cnxIt, std::string_view expectHeader, const CorsPolicy* pCorsPolicy,
                           bool& found100Continue);
@@ -153,8 +166,9 @@ class Http1Pipeline {
   void emitHttpsRedirect(ConnectionIt cnxIt);
 
   // Answers the OPTIONS, TRACE and CONNECT requests that are not routed like the other ones. The current request ends
-  // at requestEnd in the input buffer.
-  LoopAction processSpecialMethods(ConnectionIt& cnxIt, std::size_t requestEnd, const CorsPolicy* pCorsPolicy);
+  // at requestEnd in the input buffer. Without bodyReady, an OPTIONS or TRACE response closes the connection.
+  LoopAction processSpecialMethods(ConnectionIt& cnxIt, std::size_t requestEnd, const CorsPolicy* pCorsPolicy,
+                                   bool bodyReady);
 
 #ifdef AERONET_ENABLE_WEBSOCKET
   // Answer the WebSocket upgrade request of the connection, once its request middleware ran: checks its origin, then
@@ -169,13 +183,17 @@ class Http1Pipeline {
 
   // Returns true if the handler was dispatched (it may have completed already), false if it returned an invalid task.
   // With bodyReady, consumedBytes is the size of the input buffer up to the end of the request (the requests served
-  // before it included): erased once the handler completed, the input buffer not moving meanwhile.
+  // before it included): erased once the handler completed, the input buffer not moving meanwhile. Without, and with
+  // found100Continue, 100 Continue is sent once the handler waits for the body.
   bool dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyncRequestHandler& handler, bool bodyReady,
-                            bool isChunked, std::size_t consumedBytes, const CorsPolicy* pCorsPolicy,
-                            std::span<const ResponseMiddleware> responseMiddleware, std::size_t perRouteMaxBodyBytes);
+                            bool isChunked, bool found100Continue, std::size_t consumedBytes,
+                            const CorsPolicy* pCorsPolicy, std::span<const ResponseMiddleware> responseMiddleware,
+                            std::size_t perRouteMaxBodyBytes);
   void handleAsyncBodyProgress(ConnectionIt cnxIt);
   void onAsyncHandlerCompleted(ConnectionIt cnxIt);
-  void tryFlushPendingAsyncResponse(ConnectionIt cnxIt);
+  // Sends the response of the completed async handler. With 'close', before its body is received: the connection then
+  // closes.
+  void tryFlushPendingAsyncResponse(ConnectionIt cnxIt, bool close = false);
   bool pinAsyncSharedBodyToConnectionStorage(ConnectionState& state) const;
 #endif
 

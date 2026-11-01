@@ -7,6 +7,7 @@ This page lists the HTTP/1.1 behaviors aeronet implements ([RFC 9110](https://ww
 | Behavior | Status |
 | --- | --- |
 | Request line parsing (method, target, version). A request line too long for `maxHeaderBytes`, with the empty line ending the head, is answered `414 URI Too Long` (RFC 9112 §3), whether or not its end was received | Supported |
+| An encoded slash (`%2F`) in the path is rejected (`400`) instead of being decoded and routed as a path separator (RFC 3986 §6.2.2.2), like a decoded NUL (`%00`) ([details](../guides/requests.md#query-parameters)) | Supported |
 | Empty lines (CRLF) received before a request line ignored (RFC 9112 §2.2), as some clients send one after the body of a `POST` request. Until a request line follows them, they count toward `maxHeaderBytes` (`431` beyond it) | Supported |
 | Header fields, looked up case-insensitively. Obsolete line folding is not accepted. | Supported |
 | Header field values with `obs-text` (bytes `0x80`-`0xFF`, RFC 9110 §5.5), kept as is. Other control characters than HTAB are rejected (`400`) ([details](../guides/requests.md#header-values)) | Supported |
@@ -16,7 +17,7 @@ This page lists the HTTP/1.1 behaviors aeronet implements ([RFC 9110](https://ww
 | `Content-Length` and `Transfer-Encoding` together are rejected (`400`), as is `Transfer-Encoding` on an HTTP/1.0 request | Supported |
 | `Transfer-Encoding` whose final coding is not `chunked` rejected (`400`), the body length being undetermined (RFC 9112 §6.3). Codings before a final `chunked`, such as `gzip, chunked`, are not supported (`501`, RFC 9112 §6.1). The connection is closed after both | Supported |
 | Pipelined requests, processed one after the other | Supported |
-| Duplicate request headers merged, overridden, or rejected depending on the header ([details](../guides/requests.md#header-names)) | Supported |
+| Duplicate request headers merged or rejected depending on the header: singleton fields such as `authorization`, `content-type` and `range` are rejected with `400` (RFC 9110 §5.3) ([details](../guides/requests.md#header-names)) | Supported |
 | Optional stricter policy failing on unknown duplicate headers | Not implemented |
 
 ## Connections
@@ -24,7 +25,7 @@ This page lists the HTTP/1.1 behaviors aeronet implements ([RFC 9110](https://ww
 | Behavior | Status |
 | --- | --- |
 | Persistent connections: default for HTTP/1.1, opt-in with `Connection: keep-alive` for HTTP/1.0 | Supported |
-| HTTP/1.0 requests answered with HTTP/1.0 responses (no silent upgrade) | Supported |
+| HTTP/1.0 requests answered with an `HTTP/1.1` status line, the highest version the server conforms to (RFC 9110 §2.5), but with the semantics of HTTP/1.0 (below). As an HTTP/1.1 response persists by default (RFC 9112 §9.3), the response always carries `Connection: close` or `Connection: keep-alive` | Supported |
 | No `1xx` response to an HTTP/1.0 client (RFC 9110 §15.2): its `Expect: 100-continue` (§10.1.1) and `Upgrade` (§7.8) are ignored, and so are the interim responses of the expectation handler | Supported |
 | No chunked response to an HTTP/1.0 client (RFC 9112 §6.1): the trailers of a buffered response are dropped, and its body keeps its `Content-Length`. A streamed body without `contentLength()` is delimited by the close of the connection (§6.3), see [Streaming responses](../guides/streaming-responses.md#how-it-works) | Supported |
 | `Connection: close` from either side | Supported |
@@ -72,7 +73,7 @@ The server answers these errors itself, before or instead of calling a handler:
 | `403 Forbidden` | `CONNECT` target not in the allowlist, request denied by a CORS policy. |
 | `404 Not Found` | No route matches the path. |
 | `405 Method Not Allowed` | The path exists but not for this method, with an `Allow` header listing the methods registered on its route. Also `TRACE` when disabled (see [TRACE](#trace)). |
-| `406 Not Acceptable` | No acceptable content coding. |
+| `406 Not Acceptable` | No acceptable content coding. Over HTTP/1.1, the connection persists, unless the request announces a body, which is not read ([details](../guides/compression.md#negotiation)). |
 | `413 Payload Too Large` | Body larger than `maxBodyBytes`. |
 | `414 URI Too Long` | Request line, with the empty line ending the head, larger than `maxHeaderBytes` (the request target is too long). |
 | `415 Unsupported Media Type` | Unsupported `Content-Encoding` on a request body, when decompression is enabled. |
@@ -82,6 +83,8 @@ The server answers these errors itself, before or instead of calling a handler:
 | `501 Not Implemented` | Unknown method, or transfer codings before a final `chunked` (`Transfer-Encoding: gzip, chunked`). |
 | `502 Bad Gateway` | `CONNECT` target unreachable. |
 | `505 HTTP Version Not Supported` | Well-formed version of a major version other than 1, such as `HTTP/2.0`. A higher minor version, such as `HTTP/1.3`, is processed and answered as HTTP/1.1 (RFC 9110 §6.2). Any other version token, such as `http/1.1` (the name is case-sensitive) or `HTTP/1.10`, is a `400`. |
+
+Their `text/plain` body, when they have one, is left out of the response to a `HEAD` request, which keeps the other header fields of the `GET` one, `Content-Length` included (RFC 9110 §9.3.2).
 
 aeronet does not validate the `Content-Type` of request bodies: a `415` based on the media type is the application's decision, for instance in a request middleware.
 
@@ -114,7 +117,7 @@ config.withTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainOnly);
 
 ### Expect
 
-For `Expect: 100-continue`, the server sends `100 Continue` when it starts reading the body, so a client waiting for it does not send a body that would be refused. The token is recognized in a comma-separated list, with surrounding whitespace. An HTTP/1.0 client cannot receive a `1xx` response (RFC 9110 §15.2): the `100-continue` expectation of an HTTP/1.0 request is ignored (§10.1.1), and its body is read without `100 Continue`.
+For `Expect: 100-continue`, the server sends `100 Continue` only when it waits for a body that the request needs, so a client waiting for it does not send a body that would be refused: a final status known from the head (`413`, `404`, `405`, a CORS denial, a request middleware answering...) is sent instead, with `Connection: close` (RFC 9110 §10.1.1), and a body received along with the head gets no `100 Continue`. See [Expectations](../guides/requests.md#expectations). The token is recognized in a comma-separated list, with surrounding whitespace. An HTTP/1.0 client cannot receive a `1xx` response (RFC 9110 §15.2): the `100-continue` expectation of an HTTP/1.0 request is ignored (§10.1.1), and its body is read without `100 Continue`.
 
 Other expectation tokens go to the expectation handler, when one is installed. Without a handler, they are answered `417 Expectation Failed`. The handler receives the request and the token, and returns an `ExpectationResult`:
 
@@ -145,12 +148,13 @@ The handler runs on the event-loop thread, so it must be fast. An `Interim` resu
 
 ## Tests
 
-- Error statuses and version handling: [tests/http-errors_test.cpp](../../tests/http-errors_test.cpp).
+- Error statuses and version handling: [tests/http-errors_test.cpp](../../tests/http-errors_test.cpp), including the error responses to `HEAD` requests without body (`HttpParserErrors.ErrorResponsesToHeadHaveNoBody` and `HttpParserErrors.ErrorResponseToGetAfterHeadHasBody`).
 - Keep-alive, pipelining, empty bodies: [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
-- `Expect`, `OPTIONS`, `TRACE`, and other protocol details: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp), including HTTP/1.0 clients (`Http10` tests and `HttpExpectation.NoInterimResponseToHttp10Client`), the status line of an interim response without reason phrase (`HttpExpectation.HandlerCanEmitArbitraryInterimStatus`) and the invalid interim statuses (`HttpExpectation.ExpectationHandlerErrors`).
+- `Expect`, `OPTIONS`, `TRACE`, and other protocol details: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp), including the final statuses known from the head sent without `100 Continue` (`HttpExpectContinue` tests), HTTP/1.0 clients (`Http10` tests and `HttpExpectation.NoInterimResponseToHttp10Client`), the status line of an interim response without reason phrase (`HttpExpectation.HandlerCanEmitArbitraryInterimStatus`) and the invalid interim statuses (`HttpExpectation.ExpectationHandlerErrors`).
 - Empty lines before a request line, pipelined or received apart from it, limited by `maxHeaderBytes`: `HttpEmptyLinesBeforeRequestLine` tests in [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
 - `TRACE` echo as received, without sensitive fields, for heads received in several reads, up to `maxHeaderBytes`, and rejected with content: `HttpOptionsTrace` tests in [tests/http-core_test.cpp](../../tests/http-core_test.cpp), and the copy of the head in [aeronet/server/test/trace-echo_test.cpp](../../aeronet/server/test/trace-echo_test.cpp).
 - `Allow` header of the `405` responses, over HTTP/1.1 and HTTP/2: `MethodNotAllowedListsTheMethodsOfTheRoute`, `DisabledTraceListsTheMethodsOfTheRoute` and `CorsPreflightOfAMethodOfNoHandlerIsAnswered405WithAllow` in [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp).
 - Trailers dropped for HTTP/1.0: `TrailersDroppedForHttp10` and `TrailersOfDirectCompressionDroppedForHttp10` in [http-response_test.cpp](../../aeronet/http/test/http-response_test.cpp).
+- `HTTP/1.1` status line and `Connection` header of the responses to HTTP/1.0 requests: `HttpResponseTest.StatusLineIsHttp11WhateverTheRequestVersion` in [http-response_test.cpp](../../aeronet/http/test/http-response_test.cpp), `Http10.AnsweredWithHttp11StatusLine` in [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp) and the `HttpKeepAlive10` tests in [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
 - Streamed responses to HTTP/1.0 clients, close-delimited or with a `Content-Length`: `Http10.StreamedBodyWithoutLengthIsDelimitedByClose` and `Http10.StreamedResponseOfKnownLengthKeepsConnectionAlive` in [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp).
 - `Upgrade` ignored in an HTTP/1.0 request: `WebSocketTest.UpgradeIgnoredInHttp10` in [tests/websocket-integration_test.cpp](../../tests/websocket-integration_test.cpp).

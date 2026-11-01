@@ -175,14 +175,10 @@ TEST(HttpParserErrors, Expect100OnlyWithBody) {
   ASSERT_FALSE(respZero.contains("100 Continue"));
   // non-zero length with Expect should produce interim 100 then 200
   test::ClientConnection clientConnection2(port);
-  int fd2 = clientConnection2.fd();
-  ASSERT_GE(fd2, 0);
-  std::string post =
-      "POST /p HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue\r\nConnection: close\r\n\r\nHELLO";
-  test::sendAll(fd2, post);
-  std::string resp = test::recvUntilClosed(fd2);
-  ASSERT_TRUE(resp.starts_with("HTTP/1.1 100 Continue"));
-  ASSERT_TRUE(resp.contains("HTTP/1.1 200"));
+  const std::string resp = test::SendExpectingContinue(
+      clientConnection2.fd(),
+      "POST /p HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n", "HELLO");
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200")) << resp;
 }
 
 // Fuzz-ish incremental chunk framing with random chunk sizes & boundaries.
@@ -286,6 +282,47 @@ TEST(HttpParserErrors, ContentLengthNearSizeMaxDoesNotWrap) {
   // The body can never be complete: the server must keep waiting instead of exposing an out-of-bounds body.
   const std::string resp = test::recvWithTimeout(conn.fd(), 200ms);
   EXPECT_TRUE(resp.empty()) << resp;
+}
+
+// RFC 9110 §9.3.2: the response to a HEAD request has no content. The error responses with a body (framing, content
+// coding, body decoding errors) have the header fields of the GET ones, Content-Length included, without their body.
+TEST(HttpParserErrors, ErrorResponsesToHeadHaveNoBody) {
+  ts.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("hello"); });
+  for (std::string_view afterRequestLine : {
+           "Host: x\r\nTransfer-Encoding: gzip\r\n\r\n"sv,
+           "Host: x\r\nTransfer-Encoding: gzip, chunked\r\n\r\n"sv,
+           "Host: x\r\nContent-Length: 1\r\nTransfer-Encoding: chunked\r\n\r\nZ"sv,
+           // Not an error closing the connection.
+           "Host: x\r\nAccept-Encoding: identity;q=0\r\nConnection: close\r\n\r\n"sv,
+           "Host: x\r\nContent-Length: abc\r\n\r\n"sv,
+           "Host: x\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nab\r\n0\r\n\r\n"sv,
+       }) {
+    SCOPED_TRACE(afterRequestLine);
+    const std::string getResp = test::sendAndCollect(port, std::string("GET / HTTP/1.1\r\n").append(afterRequestLine));
+    ASSERT_FALSE(getResp.starts_with("HTTP/1.1 200")) << getResp;
+    const std::size_t getHeadEnd = getResp.find(http::DoubleCRLF);
+    ASSERT_NE(getHeadEnd, std::string::npos) << getResp;
+    const std::size_t getBodySize = getResp.size() - getHeadEnd - http::DoubleCRLF.size();
+    ASSERT_NE(getBodySize, 0U) << getResp;
+
+    const std::string headResp =
+        test::sendAndCollect(port, std::string("HEAD / HTTP/1.1\r\n").append(afterRequestLine));
+    EXPECT_EQ(std::string_view(headResp).substr(0, getResp.find(http::CRLF)),
+              std::string_view(getResp).substr(0, getResp.find(http::CRLF)));
+    EXPECT_TRUE(headResp.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(getBodySize)))) << headResp;
+    EXPECT_TRUE(headResp.ends_with(http::DoubleCRLF)) << headResp;
+  }
+}
+
+// The method of the request in error decides, not the one of the previous request of the connection.
+TEST(HttpParserErrors, ErrorResponseToGetAfterHeadHasBody) {
+  ts.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("hello"); });
+  const std::string resp = test::sendAndCollect(
+      port, "HEAD / HTTP/1.1\r\nHost: x\r\n\r\nGET / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\n\r\n");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 2) << resp;
+  EXPECT_FALSE(resp.contains("hello")) << resp;
+  EXPECT_TRUE(resp.ends_with("\r\n\r\nTransfer-Encoding must end with chunked")) << resp;
 }
 
 // =============================================================================
@@ -559,8 +596,9 @@ TEST(HttpResponseDispatchErrors, FlushOutboundTransportError) {
   EXPECT_TRUE(test::WaitForPeerClose(client.fd(), 2000ms)) << resp;
 }
 
-// A file response produced while an interim response (here 100 Continue, the body coming with the request head) still
-// waits for the socket is queued behind it: its head after the buffered output, its file once that output is written.
+// A file response produced while an interim response (here 102 Processing, the body coming with the request head)
+// still waits for the socket is queued behind it: its head after the buffered output, its file once that output is
+// written.
 TEST(HttpResponseDispatchErrors, FileResponseQueuedBehindPendingInterimResponse) {
   test::QueueResetGuard<decltype(test::g_writev_actions)> guardWritev(test::g_writev_actions);
 
@@ -583,14 +621,21 @@ TEST(HttpResponseDispatchErrors, FileResponseQueuedBehindPendingInterimResponse)
   }
   ASSERT_GE(serverFd, 0);
 
-  // The 100 Continue cannot be written, neither at once nor by the flush following it: it stays buffered.
+  ts.server.setExpectationHandler([](const HttpRequestView& /*req*/, std::string_view /*token*/) {
+    SingleHttpServer::ExpectationResult res;
+    res.kind = SingleHttpServer::ExpectationResultKind::Interim;
+    res.interimStatus = 102;
+    return res;
+  });
+  // The 102 Processing cannot be written, neither at once nor by the flush following it: it stays buffered.
   test::SetWritevActions(serverFd, {{-1, error::kWouldBlock}, {-1, error::kWouldBlock}});
   test::sendAll(client.fd(),
-                "POST /file HTTP/1.1\r\nhost: x\r\nexpect: 100-continue\r\ncontent-length: 5\r\n"
+                "POST /file HTTP/1.1\r\nhost: x\r\nexpect: x-processing\r\ncontent-length: 5\r\n"
                 "connection: close\r\n\r\nhello");
 
   const std::string resp = test::recvUntilClosed(client.fd());
-  EXPECT_TRUE(resp.starts_with("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200")) << resp;
+  ts.server.setExpectationHandler({});
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 102 Processing\r\n\r\nHTTP/1.1 200")) << resp;
   EXPECT_TRUE(resp.ends_with(kPayload)) << resp;
 }
 

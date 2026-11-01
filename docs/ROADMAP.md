@@ -15,6 +15,7 @@
 ## Low priority
 
 - **Windows event loop performance**: The Windows backend uses WSAPoll (readiness‑based, like epoll/kqueue) which is functionally correct but less performant than IOCP for high‑concurrency workloads. A future IOCP backend would require a fundamental architecture shift from readiness to completion semantics.
+- **Encoded slash handling option**: an encoded slash (`%2F`) in the request path is always answered `400`. Some APIs put one in an identifier (npm scoped packages `/@scope%2fname`, GitLab `/projects/group%2Fproject`), and Tomcat, Apache and Spring Security let it through on demand. A parsing setting in `HttpServerConfig` (not `RouterConfig`: the path is decoded before routing, and `req.path()` is also read by middleware and static files) could add a `Keep` mode leaving `%2F` encoded in `req.path()`, so that `/{id}` captures `group%2Fproject`. It must then also keep `%25` encoded, otherwise `/a%252Fb` and `/a%2Fb` give the same path. A `Decode` mode (the former behavior) would only help catch-all and static routes.
 - **macOS `EVFILT_TIMER` integration**: `TimerFd::armPeriodic()` on macOS is currently a no-op and relies on poll timeouts. Using kqueue's native `EVFILT_TIMER` would improve timer precision but requires event-loop refactoring to accommodate heterogeneous kqueue filter types.
 
 ### Performance optimization backlog
