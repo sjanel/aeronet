@@ -814,7 +814,7 @@ TEST_F(HttpRequestViewTest, AbsoluteFormTakesTheHostFromTheTarget) {
       {"http://h", "h", "/", ""},  // an empty path stands for "/" (RFC 9110 §4.2.3)
       {"http://h?x=1", "h", "/", "1"},
       {"http://h/", "h", "/", ""},
-      {"http://h:80/a%2Fb/%41?x=a%20b+c", "h:80", "/a/b/A", "a b c"},
+      {"http://h:80/a%2Eb/%41?x=a%20b+c", "h:80", "/a.b/A", "a b c"},
       {"HTTP://Mixed.Example/Path", "Mixed.Example", "/Path", ""},  // the host is kept as is
       {"http://user:pw@host:8080/p?x=1", "host:8080", "/p", "1"},   // the userinfo is not part of the host
       {"http://@h/p", "h", "/p", ""},
@@ -1004,6 +1004,19 @@ TEST_F(HttpRequestViewTest, DecodedNulInPathIsRejected) {
   // other decoded control characters stay the business of the application
   EXPECT_EQ(reqSet(BuildRaw("GET", "/a%0Ab")), http::StatusCodeOK);
   EXPECT_EQ(req.path(), "/a\nb");
+}
+
+// RFC 3986 §6.2.2.2: an encoded slash is not equivalent to a path separator, so it must not be routed as one.
+TEST_F(HttpRequestViewTest, EncodedSlashInPathIsRejected) {
+  for (std::string_view target : {"/a%2Fb", "/a%2fb", "/%2F", "/a/b%2F", "/a%2F%2Fb", "http://h/a%2Fb"}) {
+    EXPECT_EQ(reqSet(BuildRaw("GET", target)), http::StatusCodeBadRequest) << target;
+  }
+  // only the path is concerned, and other reserved characters stay decoded
+  EXPECT_EQ(reqSet(BuildRaw("GET", "/a/b?x=%2F")), http::StatusCodeOK);
+  EXPECT_EQ(req.path(), "/a/b");
+  EXPECT_EQ(req.queryParamValueOrEmpty("x"), "/");
+  EXPECT_EQ(reqSet(BuildRaw("GET", "/a%3Fb%23c")), http::StatusCodeOK);
+  EXPECT_EQ(req.path(), "/a?b#c");
 }
 
 namespace {
@@ -1223,14 +1236,14 @@ TEST_F(HttpRequestViewTest, HeadWaitingForBodyIsNotParsedAgain) {
 // the buffer.
 TEST_F(HttpRequestViewTest, AbsoluteFormHeadReceivedInSeveralPartsIsParsedOnce) {
   static constexpr std::string_view kHead =
-      "GET http://user@example.com:8080/a%2Fb?k=v%20w&flag HTTP/1.1\r\n"
+      "GET http://user@example.com:8080/a%2Eb?k=v%20w&flag HTTP/1.1\r\n"
       "Host: ignored\r\n"
       "X-Dup: v1\r\n"
       "X-Dup: v2\r\n"
       "\r\n";
   ASSERT_EQ(reqSet(RawChars(kHead)), http::StatusCodeOK);
   const HeadSnapshot expected = snapshot();
-  EXPECT_EQ(expected.path, "/a/b");
+  EXPECT_EQ(expected.path, "/a.b");
   EXPECT_EQ(expected.authority, "example.com:8080");
   EXPECT_EQ(req.headerValueOrEmpty("host"), "example.com:8080");
   EXPECT_EQ(req.queryParamValueOrEmpty("k"), "v w");

@@ -1740,6 +1740,24 @@ TEST(HttpUrlDecoding, IncompletePercentSequence400) {
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 400"));
 }
 
+// RFC 3986 §6.2.2.2: an encoded slash is not equivalent to a path separator, so "/a%2Fb" must not be routed as "/a/b".
+TEST(HttpUrlDecoding, EncodedSlashInPath400) {
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/a/b", [](const HttpRequestView&) { return HttpResponse("ab"); });
+  for (std::string_view target : {"/a%2Fb", "/a%2fb", "/%2F", "/a/b%2F", "/a/%2f%2Fb"}) {
+    test::RequestOptions opt;
+    opt.method = "GET";
+    opt.target = target;
+    EXPECT_TRUE(test::requestOrThrow(ts.server.port(), opt).starts_with("HTTP/1.1 400")) << target;
+  }
+  // a real slash is routed, and an encoded slash in the query string is not a path matter
+  test::RequestOptions opt;
+  opt.method = "GET";
+  opt.target = "/a/b?x=%2F";
+  const auto resp = test::requestOrThrow(ts.server.port(), opt);
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
+  EXPECT_TRUE(resp.ends_with("ab"));
+}
+
 TEST(HttpUrlDecoding, MixedSegmentsDecoding) {
   ts.resetRouterAndGet().setPath(http::Method::GET, "/seg one/part%/two",
                                  [](const HttpRequestView& req) { return HttpResponse(req.path()); });
@@ -3600,7 +3618,7 @@ TEST(HttpOptionsTrace, TraceHeadReceivedInSeveralReads) {
   EnableTrace();
 
   test::ClientConnection cnx(port);
-  test::sendAll(cnx.fd(), "TRACE /split%2F HTTP/1.1\r\nHost: h\r\nX-Part");
+  test::sendAll(cnx.fd(), "TRACE /split%41 HTTP/1.1\r\nHost: h\r\nX-Part");
   ServeAnotherRequest();
   test::sendAll(cnx.fd(), ": One\r\nCookie: c=1\r\nConnection: close\r\n");
   ServeAnotherRequest();
@@ -3608,7 +3626,7 @@ TEST(HttpOptionsTrace, TraceHeadReceivedInSeveralReads) {
 
   const auto resp = test::parseResponseOrThrow(test::recvUntilClosed(cnx.fd()));
   EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
-  EXPECT_EQ(resp.body, "TRACE /split%2F HTTP/1.1\r\nHost: h\r\nX-Part: One\r\nConnection: close\r\n\r\n");
+  EXPECT_EQ(resp.body, "TRACE /split%41 HTTP/1.1\r\nHost: h\r\nX-Part: One\r\nConnection: close\r\n\r\n");
 }
 
 // The empty lines received before a request line are not part of the request (RFC 9112 §2.2): they are not echoed.

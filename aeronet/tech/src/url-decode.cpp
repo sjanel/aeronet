@@ -58,9 +58,11 @@ char* DecodeInPlaceImpl(char* first, const char* last, char plusAs, bool strictI
 }  // namespace
 
 char* DecodeInPlace(char* first, const char* last, char plusAs, bool strictInvalid) {
-  // In strict mode, a decoded NUL makes the decoding fail: it would truncate the decoded string for C APIs.
+  // In strict mode, a decoded NUL makes the decoding fail: it would truncate the decoded string for C APIs. So does a
+  // decoded '/': an encoded slash is data, not a path separator (RFC 3986 §2.2 and §6.2.2.2), and decoding it would
+  // route "/a%2Fb" as "/a/b".
   return DecodeInPlaceImpl(first, last, plusAs, strictInvalid,
-                           [strictInvalid](char ch) { return strictInvalid && ch == '\0'; });
+                           [strictInvalid](char ch) { return strictInvalid && (ch == '\0' || ch == '/'); });
 }
 
 char* DecodeQueryParamsInPlace(char* first, char* last) {

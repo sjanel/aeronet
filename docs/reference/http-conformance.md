@@ -7,6 +7,7 @@ This page lists the HTTP/1.1 behaviors aeronet implements ([RFC 9110](https://ww
 | Behavior | Status |
 | --- | --- |
 | Request line parsing (method, target, version). A request line too long for `maxHeaderBytes`, with the empty line ending the head, is answered `414 URI Too Long` (RFC 9112 §3), whether or not its end was received | Supported |
+| An encoded slash (`%2F`) in the path is rejected (`400`) instead of being decoded and routed as a path separator (RFC 3986 §6.2.2.2), like a decoded NUL (`%00`) ([details](../guides/requests.md#query-parameters)) | Supported |
 | Empty lines (CRLF) received before a request line ignored (RFC 9112 §2.2), as some clients send one after the body of a `POST` request. Until a request line follows them, they count toward `maxHeaderBytes` (`431` beyond it) | Supported |
 | Header fields, looked up case-insensitively. Obsolete line folding is not accepted. | Supported |
 | Header field values with `obs-text` (bytes `0x80`-`0xFF`, RFC 9110 §5.5), kept as is. Other control characters than HTAB are rejected (`400`) ([details](../guides/requests.md#header-values)) | Supported |
