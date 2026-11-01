@@ -304,7 +304,10 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
     break;
   }
 
-  _keepAlive = parser.keepAlive();
+  // Bytes still held by the transport (decrypted by TLS but not read yet) were received after the end of the response,
+  // like the ones following it in the receive buffer (see Http1ResponseParser::keepAlive()). The ones still in the
+  // socket are found by the probe of the idle connection before its reuse.
+  _keepAlive = parser.keepAlive() && !transport.hasPendingReadData();
   return resp;
 }
 

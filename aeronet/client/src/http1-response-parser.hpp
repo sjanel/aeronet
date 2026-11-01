@@ -79,7 +79,8 @@ class Http1ResponseParser {
   // transfer that allocation into the response. The buffer receives an equal-capacity empty replacement.
   Status parse(RawChars& buffer, bool eof, HttpResponse& resp, std::size_t maxResponseBytes);
 
-  // Whether the parsed response permits connection reuse (keep-alive and bounded framing).
+  // Whether the parsed response permits connection reuse: keep-alive, bounded framing, and no byte received after its
+  // end (RFC 9112 §6.3).
   [[nodiscard]] bool keepAlive() const noexcept { return _keepAlive; }
 
   // Bytes consumed from the front of the buffer once Complete.
@@ -142,6 +143,7 @@ class Http1ResponseParser {
   };
   enum class Framing : uint8_t { None, Length, Chunked, UntilClose };
 
+  Status parseResponse(std::span<char> buffer, bool eof, HttpResponse& resp, std::size_t maxResponseBytes);
   Status decideFraming();
   Status parseBody(std::string_view buffer, bool eof, std::size_t maxResponseBytes);
   Status parseChunkedBody(std::string_view buffer, bool eof, std::size_t maxResponseBytes);

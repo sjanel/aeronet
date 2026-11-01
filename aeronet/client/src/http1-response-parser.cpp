@@ -259,6 +259,19 @@ Http1ResponseParser::Status Http1ResponseParser::parse(RawChars& buffer, bool eo
   return status;
 }
 
+Http1ResponseParser::Status Http1ResponseParser::parse(std::span<char> buffer, bool eof, HttpResponse& resp,
+                                                       std::size_t maxResponseBytes) {
+  const Status status = parseResponse(buffer, eof, resp, maxResponseBytes);
+  if (status == Status::Complete && _pos != buffer.size()) {
+    // Bytes received after the end of the response cannot be a response of their own, as no other request was sent:
+    // they betray a framing error (a wrong Content-Length, a body sent with a bodyless response), whose next bytes may
+    // still be on their way. The connection is not reused, so that they are never taken for the response to the next
+    // request (RFC 9112 §6.3).
+    _keepAlive = false;
+  }
+  return status;
+}
+
 Http1ResponseParser::Status Http1ResponseParser::decideFraming() {
   // Connection persistence: HTTP/1.1 defaults to keep-alive, HTTP/1.0 defaults to close.
   bool keepAlive = _http11;
@@ -482,8 +495,8 @@ Http1ResponseParser::Status Http1ResponseParser::parseChunkedBody(std::string_vi
   }
 }
 
-Http1ResponseParser::Status Http1ResponseParser::parse(std::span<char> buffer, bool eof, HttpResponse& resp,
-                                                       std::size_t maxResponseBytes) {
+Http1ResponseParser::Status Http1ResponseParser::parseResponse(std::span<char> buffer, bool eof, HttpResponse& resp,
+                                                               std::size_t maxResponseBytes) {
   if (_gatheredPiece) {
     // Delivered by the previous call.
     _bodyBuf.clear();
