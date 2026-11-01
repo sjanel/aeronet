@@ -284,6 +284,46 @@ TEST(HttpParserErrors, ContentLengthNearSizeMaxDoesNotWrap) {
   EXPECT_TRUE(resp.empty()) << resp;
 }
 
+// RFC 9110 §9.3.2: the response to a HEAD request has no content. The error responses with a body (framing, content
+// coding, body decoding errors) have the header fields of the GET ones, Content-Length included, without their body.
+TEST(HttpParserErrors, ErrorResponsesToHeadHaveNoBody) {
+  ts.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("hello"); });
+  for (std::string_view afterRequestLine : {
+           "Host: x\r\nTransfer-Encoding: gzip\r\n\r\n"sv,
+           "Host: x\r\nTransfer-Encoding: gzip, chunked\r\n\r\n"sv,
+           "Host: x\r\nContent-Length: 1\r\nTransfer-Encoding: chunked\r\n\r\nZ"sv,
+           "Host: x\r\nAccept-Encoding: identity;q=0\r\n\r\n"sv,
+           "Host: x\r\nContent-Length: abc\r\n\r\n"sv,
+           "Host: x\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nab\r\n0\r\n\r\n"sv,
+       }) {
+    SCOPED_TRACE(afterRequestLine);
+    const std::string getResp = test::sendAndCollect(port, std::string("GET / HTTP/1.1\r\n").append(afterRequestLine));
+    ASSERT_FALSE(getResp.starts_with("HTTP/1.1 200")) << getResp;
+    const std::size_t getHeadEnd = getResp.find(http::DoubleCRLF);
+    ASSERT_NE(getHeadEnd, std::string::npos) << getResp;
+    const std::size_t getBodySize = getResp.size() - getHeadEnd - http::DoubleCRLF.size();
+    ASSERT_NE(getBodySize, 0U) << getResp;
+
+    const std::string headResp =
+        test::sendAndCollect(port, std::string("HEAD / HTTP/1.1\r\n").append(afterRequestLine));
+    EXPECT_EQ(std::string_view(headResp).substr(0, getResp.find(http::CRLF)),
+              std::string_view(getResp).substr(0, getResp.find(http::CRLF)));
+    EXPECT_TRUE(headResp.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(getBodySize)))) << headResp;
+    EXPECT_TRUE(headResp.ends_with(http::DoubleCRLF)) << headResp;
+  }
+}
+
+// The method of the request in error decides, not the one of the previous request of the connection.
+TEST(HttpParserErrors, ErrorResponseToGetAfterHeadHasBody) {
+  ts.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("hello"); });
+  const std::string resp = test::sendAndCollect(
+      port, "HEAD / HTTP/1.1\r\nHost: x\r\n\r\nGET / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\n\r\n");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 2) << resp;
+  EXPECT_FALSE(resp.contains("hello")) << resp;
+  EXPECT_TRUE(resp.ends_with("\r\n\r\nTransfer-Encoding must end with chunked")) << resp;
+}
+
 // =============================================================================
 // Connection I/O and maintenance error paths
 // =============================================================================

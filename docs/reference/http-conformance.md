@@ -84,6 +84,8 @@ The server answers these errors itself, before or instead of calling a handler:
 | `502 Bad Gateway` | `CONNECT` target unreachable. |
 | `505 HTTP Version Not Supported` | Well-formed version of a major version other than 1, such as `HTTP/2.0`. A higher minor version, such as `HTTP/1.3`, is processed and answered as HTTP/1.1 (RFC 9110 §6.2). Any other version token, such as `http/1.1` (the name is case-sensitive) or `HTTP/1.10`, is a `400`. |
 
+Their `text/plain` body, when they have one, is left out of the response to a `HEAD` request, which keeps the other header fields of the `GET` one, `Content-Length` included (RFC 9110 §9.3.2).
+
 aeronet does not validate the `Content-Type` of request bodies: a `415` based on the media type is the application's decision, for instance in a request middleware.
 
 ## Configurable behaviors
@@ -146,7 +148,7 @@ The handler runs on the event-loop thread, so it must be fast. An `Interim` resu
 
 ## Tests
 
-- Error statuses and version handling: [tests/http-errors_test.cpp](../../tests/http-errors_test.cpp).
+- Error statuses and version handling: [tests/http-errors_test.cpp](../../tests/http-errors_test.cpp), including the error responses to `HEAD` requests without body (`HttpParserErrors.ErrorResponsesToHeadHaveNoBody` and `HttpParserErrors.ErrorResponseToGetAfterHeadHasBody`).
 - Keep-alive, pipelining, empty bodies: [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
 - `Expect`, `OPTIONS`, `TRACE`, and other protocol details: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp), including the final statuses known from the head sent without `100 Continue` (`HttpExpectContinue` tests), HTTP/1.0 clients (`Http10` tests and `HttpExpectation.NoInterimResponseToHttp10Client`), the status line of an interim response without reason phrase (`HttpExpectation.HandlerCanEmitArbitraryInterimStatus`) and the invalid interim statuses (`HttpExpectation.ExpectationHandlerErrors`).
 - Empty lines before a request line, pipelined or received apart from it, limited by `maxHeaderBytes`: `HttpEmptyLinesBeforeRequestLine` tests in [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
