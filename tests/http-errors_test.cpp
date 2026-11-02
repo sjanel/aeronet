@@ -226,7 +226,7 @@ TEST(HttpParserErrors, EmptyChunkSizeIsRejected) {
     req.append(chunks);
     const std::string resp = test::sendAndCollect(port, req);
     EXPECT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
-    EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp;
+    EXPECT_EQ(test::countOccurrences(resp, http::HTTP11SPSv), 1) << resp;
   }
 }
 
@@ -243,7 +243,7 @@ TEST(HttpParserErrors, ControlCharactersInChunkExtensionAreRejected) {
     req.append(chunks);
     const std::string resp = test::sendAndCollect(port, req);
     EXPECT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
-    EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp;
+    EXPECT_EQ(test::countOccurrences(resp, http::HTTP11SPSv), 1) << resp;
   }
 }
 
@@ -320,7 +320,7 @@ TEST(HttpParserErrors, ErrorResponseToGetAfterHeadHasBody) {
   const std::string resp = test::sendAndCollect(
       port, "HEAD / HTTP/1.1\r\nHost: x\r\n\r\nGET / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\n\r\n");
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
-  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 2) << resp;
+  EXPECT_EQ(test::countOccurrences(resp, http::HTTP11SPSv), 2) << resp;
   EXPECT_FALSE(resp.contains("hello")) << resp;
   EXPECT_TRUE(resp.ends_with("\r\n\r\nTransfer-Encoding must end with chunked")) << resp;
 }
@@ -1276,7 +1276,9 @@ struct GardenCase {
   http::StatusCode expectedStatus;
 };
 
-std::string StatusLine(http::StatusCode statusCode) { return "HTTP/1.1 " + std::to_string(statusCode) + ' '; }
+std::string StatusLine(http::StatusCode statusCode) {
+  return std::string(http::HTTP11SPSv) + std::to_string(statusCode) + ' ';
+}
 
 // Sends the payload on a fresh connection and checks that the server answered with exactly one response with the
 // expected status, then closed the connection: nothing after the offending bytes may be read as another request.
@@ -1284,7 +1286,7 @@ void ExpectSingleResponse(const GardenCase& gardenCase) {
   SCOPED_TRACE(gardenCase.ref);
   const std::string resp = test::sendAndCollect(port, gardenCase.payload);
   EXPECT_TRUE(resp.starts_with(StatusLine(gardenCase.expectedStatus))) << resp;
-  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp;
+  EXPECT_EQ(test::countOccurrences(resp, http::HTTP11SPSv), 1) << resp;
 }
 
 void ExpectSingleResponses(std::initializer_list<GardenCase> gardenCases) {
@@ -1598,7 +1600,7 @@ TEST(HttpGardenContentLength, GetBodyIsConsumed) {
   InstallDescribeHandler();
   const std::string resp = test::sendAndCollect(
       port, "GET / HTTP/1.1\r\nHost: a\r\nContent-Length: 10\r\nConnection: close\r\n\r\n1234567890");
-  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp;
+  EXPECT_EQ(test::countOccurrences(resp, http::HTTP11SPSv), 1) << resp;
   EXPECT_TRUE(resp.contains(";b=[1234567890];")) << resp;
 }
 
@@ -1823,7 +1825,7 @@ TEST(HttpGardenChunked, TrailerFieldIsNotParsedAsNextRequest) {
                            "GET / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
                            "0\r\nX:POST / HTTP/1.1\r\n\r\n");
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
-  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp;
+  EXPECT_EQ(test::countOccurrences(resp, http::HTTP11SPSv), 1) << resp;
   EXPECT_TRUE(resp.contains(";t=[POST / HTTP/1.1]")) << resp;
 }
 
@@ -1838,7 +1840,7 @@ TEST(HttpGardenPipelining, InvalidRequestAfterConnectionCloseIsIgnored) {
   const std::string resp =
       test::sendAndCollect(port, "GET / HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\nInvalid\r\n\r\n");
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
-  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp;
+  EXPECT_EQ(test::countOccurrences(resp, http::HTTP11SPSv), 1) << resp;
 }
 
 // server #48: pipelined requests are not merged into the body of the first one, even when it has Content-Length: 0.

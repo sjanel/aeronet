@@ -477,7 +477,7 @@ TEST_F(HttpConnectDefaultConfig, PipelinedUnresolvedTargetIsRefused) {
   // 502 once the resolution failed (504 if it did not complete in the keep-alive timeout).
   const std::string resp = test::recvUntilClosed(fd);
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 50")) << resp;
-  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp;
+  EXPECT_EQ(test::countOccurrences(resp, http::HTTP11SPSv), 1) << resp;
 }
 
 TEST_F(HttpConnectDefaultConfig, Ipv6TargetInBrackets) {

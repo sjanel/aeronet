@@ -330,7 +330,7 @@ TEST(HttpCompression, NotAcceptableWithBodyClosesConnection) {
                                             .append(framing)
                                             .append("GET /b HTTP/1.1\r\nHost: x\r\n\r\n"));
     EXPECT_TRUE(resp.starts_with("HTTP/1.1 406")) << resp;
-    EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp;
+    EXPECT_EQ(test::countOccurrences(resp, http::HTTP11SPSv), 1) << resp;
     EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << resp;
   }
 }

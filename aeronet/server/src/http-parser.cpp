@@ -1,15 +1,13 @@
-#include <algorithm>
 #include <cassert>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <limits>
 #include <span>
 #include <string_view>
 #include <system_error>
 
-#include "aeronet/char-hexadecimal-converter.hpp"
+#include "aeronet/chunk-size-line.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/header-line-parse.hpp"
 #include "aeronet/header-merge.hpp"
@@ -38,107 +36,16 @@ constexpr bool ExceedsLimit(std::size_t current, std::size_t size, std::size_t l
   return size > limit || current > limit - size;
 }
 
-// A chunk-size line (RFC 9112 §7.1: chunk-size [ chunk-ext ] CRLF), as parsed by ParseChunkSizeLine().
-struct ChunkSizeLine {
-  enum class State : uint8_t { Complete, Incomplete, Rejected };
-
-  void setRejected(http::StatusCode statusCode, const char* pRejectedMessage) {
-    status = statusCode;
-    pMessage = pRejectedMessage;
-    state = State::Rejected;
-  }
-
-  std::size_t chunkSize{0};        // Complete only
-  std::size_t size{0};             // bytes of the line, CRLF included (Complete only)
-  const char* pMessage = nullptr;  // Rejected only: the body of the error response
-  http::StatusCode status{};       // Rejected only: the status of the error response
-  State state{State::Complete};
-};
-
-// Parses the size line of the chunk starting at pFirst. The line is bounded by maxLineSize, CRLF included, whether it
-// is received at once or not: without its end, it takes at least one more byte. Otherwise, a client could make the
-// server buffer (and search again at each read) an unterminated line without limit. Chunk sizes above maxChunkSize are
-// rejected.
-ChunkSizeLine ParseChunkSizeLine(const char* pFirst, const char* pLast, std::size_t maxLineSize,
-                                 std::size_t maxChunkSize) noexcept {
-  const char* pLineEnd = SearchCRLF(pFirst, pLast);
-  const bool isComplete = pLineEnd != pLast;
-  const std::size_t lineSize = static_cast<std::size_t>(pLineEnd - pFirst) + (isComplete ? http::CRLF.size() : 1U);
-
-  ChunkSizeLine out;
-
-  if (lineSize > maxLineSize) {
-    out.setRejected(http::StatusCodeBadRequest, "Chunk size line too long");
-    return out;
-  }
-
-  if (!isComplete) {
-    if (HasBareLF(pFirst, pLast)) {
-      out.setRejected(http::StatusCodeBadRequest, "Malformed chunk size line");
-    } else {
-      out.state = ChunkSizeLine::State::Incomplete;
-    }
-    return out;
-  }
-
-  if (pLineEnd[1] != '\n') {
-    out.setRejected(http::StatusCodeBadRequest, "Malformed chunk size line");
-    return out;
-  }
-
-  // chunk-size = 1*HEXDIG (RFC 9112 §7.1). An empty chunk-size is not a last-chunk.
-  const char* pExtBeg = std::find(pFirst, pLineEnd, ';');
-  const char* pSizeEnd = pExtBeg;
-  if (pExtBeg != pLineEnd) {
-    // chunk-ext = *( BWS ";" BWS chunk-ext-name [ BWS "=" BWS chunk-ext-val ] ): whitespace is allowed before the
-    // semicolon, but not after a chunk-size without extension.
-    while (pSizeEnd != pFirst && (pSizeEnd[-1] == ' ' || pSizeEnd[-1] == '\t')) {
-      --pSizeEnd;
-    }
-  }
-  if (pSizeEnd == pFirst) {
-    out.setRejected(http::StatusCodeBadRequest, "Invalid chunk size");
-    return out;
-  }
-  // Chunk extensions are ignored, but must not contain control characters: a parser accepting a bare LF as chunk
-  // line terminator would otherwise not agree with us on where the chunk data starts. Bytes above 0x7F are allowed, as
-  // in a quoted-string (RFC 9112 §7.1.1).
-  if (!http::IsValidReceivedHeaderValue(std::string_view(pExtBeg, pLineEnd))) {
-    out.setRejected(http::StatusCodeBadRequest, "Invalid chunk extension");
-    return out;
-  }
-  for (const char* pDigit = pFirst; pDigit != pSizeEnd; ++pDigit) {
-    const int8_t digit = FromHexDigit(*pDigit);
-    if (digit < 0) {
-      out.setRejected(http::StatusCodeBadRequest, "Invalid chunk size");
-      return out;
-    }
-    // Never let the chunk size wrap around (it could become 0, ending the body early) - can only happen if
-    // maxChunkSize does not already bound it.
-    if (out.chunkSize > (std::numeric_limits<std::size_t>::max() >> 4U)) {
-      out.setRejected(http::StatusCodePayloadTooLarge, "Chunk size too large");
-      return out;
-    }
-    out.chunkSize = (out.chunkSize << 4U) | static_cast<std::size_t>(digit);
-    if (maxChunkSize < out.chunkSize) {
-      out.setRejected(http::StatusCodePayloadTooLarge, "Chunk size too large");
-      return out;
-    }
-  }
-  out.size = lineSize;
-  return out;
-}
-
 // Collects in 'chunks' the data of the chunks of the body in 'input' starting at the offset 'pos', up to its
 // last-chunk. The body was validated while it was received: only its framing is read again.
 void CollectChunks(std::span<const char> input, std::size_t pos, vector<std::string_view>& chunks) {
-  static constexpr std::size_t kNoLimit = std::numeric_limits<std::size_t>::max();
-
   const char* pInputBeg = input.data();
   const char* pLast = pInputBeg + input.size();
   while (true) {
-    const ChunkSizeLine line = ParseChunkSizeLine(pInputBeg + pos, pLast, kNoLimit, kNoLimit);
-    assert(line.state == ChunkSizeLine::State::Complete);
+    const http::ChunkSizeLine line =
+        http::ParseChunkSizeLine(pInputBeg + pos, pLast, http::kNoChunkSizeLineLimit, http::kNoChunkSizeLineLimit,
+                                 http::ChunkSizeSyntax::Strict);
+    assert(line.state == http::ChunkSizeLine::State::Complete);
     if (line.chunkSize == 0) {
       return;
     }
@@ -244,11 +151,12 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeNextChunks(ConnectionIt cnx
   char* const pLast = pInputBeg + input.size();
   const std::size_t maxLineSize = _pCtx->config.maxHeaderBytes;
   while (true) {
-    const ChunkSizeLine line = ParseChunkSizeLine(pInputBeg + pos, pLast, maxLineSize, maxBodyBytes);
-    if (line.state == ChunkSizeLine::State::Incomplete) {
+    const http::ChunkSizeLine line =
+        http::ParseChunkSizeLine(pInputBeg + pos, pLast, maxLineSize, maxBodyBytes, http::ChunkSizeSyntax::Strict);
+    if (line.state == http::ChunkSizeLine::State::Incomplete) {
       return BodyDecodeStatus::NeedMore;
     }
-    if (line.state == ChunkSizeLine::State::Rejected) {
+    if (line.state == http::ChunkSizeLine::State::Rejected) {
       emitSimpleError(cnxIt, line.status, line.pMessage);
       return BodyDecodeStatus::Error;
     }

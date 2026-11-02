@@ -953,7 +953,7 @@ void ExpectBodylessStatusEndsAtHeaders(std::string_view method, http::StatusCode
 
     // The next response is read intact.
     EXPECT_TRUE(std::string_view(resp).substr(afterPos).starts_with("HTTP/1.1 200")) << kind << ' ' << resp;
-    EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 3) << kind << ' ' << resp;
+    EXPECT_EQ(test::countOccurrences(resp, http::HTTP11SPSv), 3) << kind << ' ' << resp;
   }
 }
 
@@ -1008,7 +1008,7 @@ TEST(HttpBodylessStatus, FileAndCompressedBodiesAreDroppedToo) {
   const std::size_t afterPos = resp.find("HTTP/1.1 200");
   ASSERT_NE(afterPos, std::string::npos) << resp;
   const std::string_view bodylessResponses = std::string_view(resp).substr(0, afterPos);
-  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 4) << resp;
+  EXPECT_EQ(test::countOccurrences(resp, http::HTTP11SPSv), 4) << resp;
   EXPECT_FALSE(bodylessResponses.contains(http::ContentLength)) << resp;
   EXPECT_FALSE(bodylessResponses.contains(http::Vary)) << resp;
   EXPECT_FALSE(bodylessResponses.contains(http::TransferEncoding)) << resp;
@@ -1529,7 +1529,7 @@ TEST(HttpEmptyLinesBeforeRequestLine, BareCarriageReturnIsRejected) {
   for (std::string_view request : {"\rGET / HTTP/1.1\r\nHost: h\r\n\r\n", "\r\n\rGET / HTTP/1.1\r\nHost: h\r\n\r\n"}) {
     const std::string resp = test::sendAndCollect(port, request);
     EXPECT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
-    EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp;
+    EXPECT_EQ(test::countOccurrences(resp, http::HTTP11SPSv), 1) << resp;
   }
 }
 
@@ -3582,7 +3582,7 @@ void EnableTrace() {
 }
 
 // Serves a request on another connection: the bytes sent before on a connection are then read by the server.
-void ServeAnotherRequest() { ASSERT_TRUE(test::simpleGet(port, "/other").starts_with("HTTP/1.1 ")); }
+void ServeAnotherRequest() { ASSERT_TRUE(test::simpleGet(port, "/other").starts_with(http::HTTP11SPSv)); }
 }  // namespace
 
 // The parsing of a head modifies it in place (decoded target, lower-cased names, merged values): TRACE echoes it as

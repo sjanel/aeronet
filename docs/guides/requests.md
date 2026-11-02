@@ -138,11 +138,13 @@ Routes can lower the size limits, and set a deadline for the whole request: see 
 
 HTTP/1.1 clients may send a body without knowing its size, with `Transfer-Encoding: chunked`. The server decodes it (RFC 9112 §7.1) before the handler sees it:
 
-- Chunk sizes are strict hexadecimal numbers. Empty sizes, prefixes such as `0x`, `+`, or `-`, whitespace (except before the `;` of a chunk extension), sizes overflowing 64 bits, and bare CR or LF characters are rejected with `400 Bad Request` (a chunk-size line, the line ending the data of a chunk or the body, or a trailer line ending with a bare LF is answered as soon as received, not once a timeout expires), and every framing error closes the connection, so that the following bytes are never parsed as another request.
+- Chunk sizes are strict hexadecimal numbers. Empty sizes, prefixes such as `0x`, `+`, or `-`, whitespace (except before the `;` of a chunk extension), and bare CR or LF characters are rejected with `400 Bad Request`, and every framing error closes the connection, so that the following bytes are never parsed as another request. A chunk-size line is rejected at its first invalid byte, without waiting for its end, and so is a bare LF ending the data of a chunk, the body or a trailer line: the answer comes as soon as it is received, not once a timeout expires.
 - Chunk extensions (`4;name=value`, or `4 ; name=value`: spaces and tabs are allowed around the semicolon) are validated and ignored. A chunk-size line (extensions and CRLF included) longer than `maxHeaderBytes` is rejected with `400`, whether or not its end was received: a line without end is not buffered further.
-- The decoded body counts toward `maxBodyBytes` (`413` beyond it, as soon as a chunk announces the excess, without waiting for its data), and the trailer section toward `maxHeaderBytes` (`431`, whether or not the end of its last line was received).
+- The decoded body counts toward `maxBodyBytes` (`413` beyond it, as soon as a chunk size announces the excess, from the digit making it too large, without waiting for its data; so are sizes overflowing 64 bits), and the trailer section toward `maxHeaderBytes` (`431`, whether or not the end of its last line was received).
 - A body received in several reads is decoded once: each read decodes the chunks received since the previous one, so the time spent is linear in the size of the body.
 - `Transfer-Encoding` on an HTTP/1.0 request, together with `Content-Length`, or whose final coding is not `chunked` (RFC 9112 §6.3), is rejected with `400`. Other transfer codings before `chunked` (`gzip, chunked`) are not supported: `501 Not Implemented`.
+
+Tests: the `HttpParserChunked*` tests of [http-parser_test.cpp](../../aeronet/server/test/http-parser_test.cpp), and the chunk-size line syntax and limits in [chunk-size-line_test.cpp](../../aeronet/objects/test/chunk-size-line_test.cpp).
 
 Trailers are header fields sent after the last chunk, typically a checksum or a signature computed while sending the body. They are exposed by `trailers()`, with lower-case names and trimmed values, identically for HTTP/1.1 chunked requests and HTTP/2 requests:
 

@@ -10,6 +10,7 @@
 #include <thread>
 
 #include "aeronet/char-hexadecimal-converter.hpp"
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/native-handle.hpp"
@@ -107,7 +108,7 @@ TEST(HttpParserRequestHead, BareLfLineEndingsAreRejectedWithoutWaiting) {
     SCOPED_TRACE(raw);
     const std::string resp = SendAndCollectPromptly(raw);
     ASSERT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
-    EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp;
+    EXPECT_EQ(test::countOccurrences(resp, http::HTTP11SPSv), 1) << resp;
   }
 }
 
@@ -335,7 +336,7 @@ TEST(HttpParserChunked, BareLfLineEndingsAreRejectedWithoutWaiting) {
     SCOPED_TRACE(chunks);
     const std::string resp = SendAndCollectPromptly(std::string(kChunkedHead).append(chunks));
     ASSERT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
-    EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp;
+    EXPECT_EQ(test::countOccurrences(resp, http::HTTP11SPSv), 1) << resp;
   }
 }
 
@@ -456,6 +457,19 @@ TEST(HttpParserChunked, WhitespaceElsewhereInChunkSizeLineIsRejected) {
         SendAndCollectPromptly(std::string(kChunkedHead).append(sizeLine).append("\r\nHello\r\n").append("0\r\n\r\n"));
     EXPECT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
   }
+}
+
+// A chunk-size line is rejected at its first invalid byte, without waiting for a CRLF.
+TEST(HttpParserChunked, InvalidChunkSizeLineIsRejectedBeforeItsEnd) {
+  InstallEchoHandler();
+  for (const std::string_view sizeLine : {"5x", " 5", "5 5", "5 \r", "5;\x01", "5\rX"}) {
+    SCOPED_TRACE(sizeLine);
+    const std::string resp = SendAndCollectPromptly(std::string(kChunkedHead).append(sizeLine));
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
+  }
+  // ... and at the digit making the chunk size exceed maxBodyBytes.
+  const std::string resp = SendAndCollectPromptly(std::string(kChunkedHead).append(16, 'f'));
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 413")) << resp;
 }
 
 // Non-hexadecimal chunk size → 400 Bad Request.

@@ -412,7 +412,13 @@ void ConnectionState::reclaimMemoryFromOversizedBuffers() {
   // The inBuffer also holds the CONNECT request whose target is being resolved, answered (and logged) from its views
   // once the resolution completes: it must not move either.
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  if (!asyncState || (!asyncState->active && !asyncState->task.coroutine.valid())) {
+  const bool shrinkAndClearBodyTrailersAndInBufferBuffers =
+      !asyncState || (!asyncState->active && !asyncState->task.coroutine.valid());
+#else
+  constexpr bool shrinkAndClearBodyTrailersAndInBufferBuffers = true;
+#endif
+
+  if (shrinkAndClearBodyTrailersAndInBufferBuffers) {
     if (!isDecodingChunkedBody()) {
       bodyAndTrailersBuffer.shrink_to_fit();
       bodyAndTrailersBuffer.clear();
@@ -421,15 +427,6 @@ void ConnectionState::reclaimMemoryFromOversizedBuffers() {
       inBuffer.shrink_to_fit();
     }
   }
-#else
-  if (!isDecodingChunkedBody()) {
-    bodyAndTrailersBuffer.shrink_to_fit();
-    bodyAndTrailersBuffer.clear();
-  }
-  if (!tunnelResolving) {
-    inBuffer.shrink_to_fit();
-  }
-#endif
 
   // outQueue: released once empty, as the common case does not use it.
   outQueue.shrink_to_fit();

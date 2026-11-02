@@ -3,14 +3,13 @@
 #include <cassert>
 #include <charconv>
 #include <cstddef>
-#include <cstdint>
-#include <limits>
 #include <span>
 #include <string_view>
 #include <system_error>
 #include <utility>
 
 #include "aeronet/cctype.hpp"
+#include "aeronet/chunk-size-line.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
@@ -30,95 +29,6 @@
 namespace aeronet {
 
 namespace {
-
-enum class ChunkLineStatus : uint8_t { Complete, NeedMore, Error };
-
-struct ChunkLineResult {
-  std::size_t chunkSize;
-  std::size_t nextPos;
-  ChunkLineStatus status;
-};
-
-// Convert one ASCII hexadecimal digit without a lookup table. Decimal digits are the common path for
-// HTTP chunk sizes; folding alphabetic digits to lowercase keeps the uncommon branch compact.
-constexpr uint32_t HexDigitValue(unsigned char ch) noexcept {
-  const uint32_t decimal = ch - static_cast<unsigned char>('0');
-  if (decimal <= 9U) {
-    return decimal;
-  }
-  const uint32_t alpha = (ch | 0x20U) - static_cast<unsigned char>('a');
-  return alpha <= 5U ? alpha + 10U : 16U;
-}
-
-// Parse a complete chunk-size line in one forward pass. The common path touches each hexadecimal byte once,
-// folds overflow checking into the shift, and consumes CRLF directly. Extensions remain opaque as required
-// by HTTP chunk decoding, but their bytes and line ending are validated while they are skipped.
-constexpr ChunkLineResult ParseChunkSizeLine(std::string_view buffer, std::size_t pos) noexcept {
-  const char* const base = buffer.data();
-  const char* cur = base + pos;
-  const char* const end = base + buffer.size();
-  std::size_t chunkSize = 0;
-  bool hasDigit = false;
-  bool trailingOws = false;
-
-  const auto finish = [&chunkSize, base, &hasDigit](const char* next) {
-    return ChunkLineResult{
-        .chunkSize = chunkSize,
-        .nextPos = static_cast<std::size_t>(next - base),
-        .status = hasDigit ? ChunkLineStatus::Complete : ChunkLineStatus::Error,
-    };
-  };
-
-  while (cur != end) {
-    const unsigned char ch = static_cast<unsigned char>(*cur++);
-    const uint32_t digit = HexDigitValue(ch);
-    if (digit < 16U) {
-      if (trailingOws || chunkSize > (std::numeric_limits<std::size_t>::max() >> 4U)) {
-        return {.chunkSize = 0, .nextPos = pos, .status = ChunkLineStatus::Error};
-      }
-      chunkSize = (chunkSize << 4U) | digit;
-      hasDigit = true;
-      continue;
-    }
-
-    if (ch == '\r') {
-      if (cur == end) {
-        return {.chunkSize = 0, .nextPos = pos, .status = ChunkLineStatus::NeedMore};
-      }
-      if (*cur != '\n') {
-        return {.chunkSize = 0, .nextPos = pos, .status = ChunkLineStatus::Error};
-      }
-      return finish(cur + 1);
-    }
-    if (ch == ';') {
-      if (!hasDigit) {
-        return {.chunkSize = 0, .nextPos = pos, .status = ChunkLineStatus::Error};
-      }
-      while (cur != end) {
-        const unsigned char extensionCh = static_cast<unsigned char>(*cur++);
-        if (extensionCh == '\r') {
-          if (cur == end) {
-            return {.chunkSize = 0, .nextPos = pos, .status = ChunkLineStatus::NeedMore};
-          }
-          if (*cur != '\n') {
-            return {.chunkSize = 0, .nextPos = pos, .status = ChunkLineStatus::Error};
-          }
-          return finish(cur + 1);
-        }
-        if ((extensionCh < 0x20U && extensionCh != '\t') || extensionCh == 0x7FU) {
-          return {.chunkSize = 0, .nextPos = pos, .status = ChunkLineStatus::Error};
-        }
-      }
-      return {.chunkSize = 0, .nextPos = pos, .status = ChunkLineStatus::NeedMore};
-    }
-    if (ch == ' ' || ch == '\t') {
-      trailingOws = hasDigit;
-      continue;
-    }
-    return {.chunkSize = 0, .nextPos = pos, .status = ChunkLineStatus::Error};
-  }
-  return {.chunkSize = 0, .nextPos = pos, .status = ChunkLineStatus::NeedMore};
-}
 
 // Scan a (possibly comma-separated) Connection token list, flagging the close / keep-alive directives.
 // Connection is defined as a list of options (e.g. "close, foo" / "keep-alive, Upgrade"), so each token
@@ -399,14 +309,17 @@ Http1ResponseParser::Status Http1ResponseParser::parseChunkedBody(std::string_vi
   };
   for (;;) {
     if (_state == State::BodyChunkSize) {
-      const ChunkLineResult chunkLine = ParseChunkSizeLine(buffer, _pos);
-      if (chunkLine.status == ChunkLineStatus::Error) {
+      // No limit for the parser: incompleteLine() bounds the line, as it does the trailer lines.
+      const http::ChunkSizeLine chunkLine =
+          http::ParseChunkSizeLine(buffer.data() + _pos, buffer.data() + buffer.size(), http::kNoChunkSizeLineLimit,
+                                   http::kNoChunkSizeLineLimit, http::ChunkSizeSyntax::Lenient);
+      if (chunkLine.state == http::ChunkSizeLine::State::Rejected) {
         return Status::Error;
       }
-      if (chunkLine.status == ChunkLineStatus::NeedMore) {
+      if (chunkLine.state == http::ChunkSizeLine::State::Incomplete) {
         return incompleteLine();
       }
-      _pos = chunkLine.nextPos;
+      _pos += chunkLine.size;
       if (chunkLine.chunkSize == 0) {
         _state = State::BodyChunkTrailers;
       } else {

@@ -793,14 +793,13 @@ bool Http1Pipeline::handleExpectHeader(ConnectionIt cnxIt, std::string_view expe
               ctx.io.queueData(cnxIt, HttpMessageData(RawChars{http::HTTP11_102_PROCESSING}));
               break;
             default: {
-              static constexpr std::string_view kHttpResponseLinePrefix = "HTTP/1.1 ";
               // The reason phrase is optional, not the space before it (RFC 9112 §4).
               static constexpr std::string_view kEmptyReasonDoubleCRLF = " \r\n\r\n";
 
-              RawChars buf(kHttpResponseLinePrefix.size() + 3U + kEmptyReasonDoubleCRLF.size());
+              RawChars buf(http::HTTP11SPSv.size() + 3U + kEmptyReasonDoubleCRLF.size());
               buf.setSize(buf.capacity());
 
-              char* insertPtr = AppendFixed<kHttpResponseLinePrefix>(buf.data());
+              char* insertPtr = AppendFixed<http::HTTP11SPSv>(buf.data());
               insertPtr = writeStatusCode(insertPtr, status);
               CopyFixed<kEmptyReasonDoubleCRLF>(insertPtr);
 

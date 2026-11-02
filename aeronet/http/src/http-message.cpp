@@ -1164,7 +1164,7 @@ inline bool StatusAllowsSynthesizedContentLengthZero(bool isHttpRequest, const c
   if (isHttpRequest) {
     return false;
   }
-  pData += http::HTTP10Sv.size() + 1;  // skip "HTTP/1.1 "
+  pData += http::HTTP11SPSv.size();
   return pData[0] >= '2' && std::memcmp(pData, "204", http::StatusCodeLen) != 0 &&
          std::memcmp(pData, "304", http::StatusCodeLen) != 0;
 }

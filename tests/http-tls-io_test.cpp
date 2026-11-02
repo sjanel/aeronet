@@ -468,14 +468,13 @@ TEST(HttpTlsBackpressure, PipelinedRequestsBufferedBehindBlockedOutputAreAllServ
   ASSERT_TRUE(client.writeAll(requests));
   std::this_thread::sleep_for(200ms);  // the responses fill the socket buffers: the output blocks
 
-  static constexpr std::string_view kStatusLinePrefix = "HTTP/1.1 ";
   // The received bytes whose status lines are not counted yet: only a truncated status line at the end.
   std::string pending = std::move(client.drainedDuringWrite());
   int nbResponses = 0;
   const auto deadline = std::chrono::steady_clock::now() + 10s;
   while (nbResponses < kNbRequests && std::chrono::steady_clock::now() < deadline) {
-    nbResponses += test::countOccurrences(pending, kStatusLinePrefix);
-    pending.erase(0, pending.size() - std::min(pending.size(), kStatusLinePrefix.size() - 1));
+    nbResponses += test::countOccurrences(pending, http::HTTP11SPSv);
+    pending.erase(0, pending.size() - std::min(pending.size(), http::HTTP11SPSv.size() - 1));
     if (client.readSomeInto(pending) == 0) {
       std::this_thread::sleep_for(1ms);
     }

@@ -95,7 +95,7 @@ TEST(HttpAsyncHandlers, MiddlewareShortCircuitBeforeBodyIsAnsweredOnce) {
   test::ClientConnection client(ts.port());
   test::sendAll(client.fd(), PostHead("/upload", 100) + "partial");
   const std::string resp = test::recvUntilClosed(client.fd(), std::chrono::seconds{3});
-  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp.substr(0, 512);
+  EXPECT_EQ(test::countOccurrences(resp, http::HTTP11SPSv), 1) << resp.substr(0, 512);
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 401")) << resp.substr(0, 512);
   // The connection closes after it, as it announces (RFC 9110 §10.1.1).
   EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << resp.substr(0, 512);
@@ -113,7 +113,7 @@ TEST(HttpAsyncHandlers, CorsRejectionBeforeBodyIsAnsweredOnce) {
   test::ClientConnection client(ts.port());
   test::sendAll(client.fd(), PostHead("/upload", 100, "Origin: https://evil.example\r\n") + "partial");
   const std::string resp = test::recvUntilClosed(client.fd(), std::chrono::seconds{3});
-  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp.substr(0, 512);
+  EXPECT_EQ(test::countOccurrences(resp, http::HTTP11SPSv), 1) << resp.substr(0, 512);
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 403")) << resp.substr(0, 512);
   EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << resp.substr(0, 512);
 }
@@ -132,7 +132,7 @@ TEST(HttpAsyncHandlers, PreflightBeforeBodyIsAnsweredOnce) {
       "Content-Length: 100\r\n\r\npartial");
   test::sendAll(client.fd(), request);
   const std::string resp = test::recvUntilClosed(client.fd(), std::chrono::seconds{3});
-  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp.substr(0, 512);
+  EXPECT_EQ(test::countOccurrences(resp, http::HTTP11SPSv), 1) << resp.substr(0, 512);
   EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << resp.substr(0, 512);
 }
 
@@ -387,7 +387,7 @@ TEST(HttpAsyncHandlers, ExpectContinueIsSentWhenTheHandlerWaitsForTheBody) {
     const std::string resp =
         test::SendExpectingContinue(client.fd(), PostHead(target, 5, "Expect: 100-continue\r\n"), "hello");
     EXPECT_FALSE(resp.contains("100 Continue")) << resp;
-    EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp;
+    EXPECT_EQ(test::countOccurrences(resp, http::HTTP11SPSv), 1) << resp;
     EXPECT_TRUE(resp.starts_with("HTTP/1.1 401 ") || resp.starts_with("HTTP/1.1 403 ")) << resp;
     EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << resp;
   }

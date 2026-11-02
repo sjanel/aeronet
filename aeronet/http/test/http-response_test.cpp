@@ -5115,7 +5115,7 @@ struct ParsedResponse {
 
 ParsedResponse parseResponse(std::string_view full, bool hasFile) {
   ParsedResponse pr;
-  if (!full.starts_with("HTTP/1.1 ")) {
+  if (!full.starts_with(http::HTTP11SPSv)) {
     throw std::runtime_error("Bad version in response");
   }
   // Extract the status line first (up to CRLF)

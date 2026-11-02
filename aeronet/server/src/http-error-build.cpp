@@ -26,11 +26,10 @@ RawChars BuildSimpleError(http::StatusCode status, const ConcatenatedHeaders& gl
   const std::size_t globalHeadersSize = globalHeaders.fullSizeWithLastSep();
   const auto nbCharsBodyLen = nchars(body.size());
 
-  static constexpr std::string_view kHTTP11Str = "HTTP/1.1 ";
   static constexpr std::string_view kConnectionCloseStr = "\r\nconnection: close\r\n";
 
   // Exact allocation size
-  RawChars out(kHTTP11Str.size() + kStatusLen + 1UL + reason.size() +
+  RawChars out(http::HTTP11SPSv.size() + kStatusLen + 1UL + reason.size() +
                http::HeaderSize(http::Date.size(), RFC7231DateStrLen) + kConnectionCloseStr.size() + globalHeadersSize +
                http::HeaderSize(http::ContentLength.size(), nbCharsBodyLen) +
                http::HeaderSize(http::ContentType.size(), http::ContentTypeTextPlain.size()) + http::CRLF.size() +
@@ -39,7 +38,7 @@ RawChars BuildSimpleError(http::StatusCode status, const ConcatenatedHeaders& gl
   char* pData = out.data();
 
   // Status line: HTTP/1.1 404 Not Found\r\n
-  pData = AppendFixed<kHTTP11Str>(pData);
+  pData = AppendFixed<http::HTTP11SPSv>(pData);
 
   pData = writeStatusCode(pData, status);
   *pData++ = ' ';
