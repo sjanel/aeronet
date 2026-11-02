@@ -29,7 +29,7 @@ constexpr bool IsReservedResponseHeader(LowerAsciiKey name) noexcept {
 // Same as IsReservedResponseHeader but for request headers.
 constexpr bool IsReservedOrForbiddenRequestHeader(LowerAsciiKey name) noexcept {
   static constexpr LowerAsciiKey kHeaders[]{
-      http::ContentLength, http::ContentType,      http::Expect,  http::Host, http::TE,
+      http::ContentLength, http::ContentType,      http::Host,    http::TE,
       http::Trailer,       http::TransferEncoding, http::Upgrade,
   };
   return std::ranges::any_of(kHeaders, [name](LowerAsciiKey candidate) { return name == candidate; });

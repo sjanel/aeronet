@@ -51,6 +51,15 @@ TEST(HttpClientConfigTest, KeepAliveTimeout) {
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
+TEST(HttpClientConfigTest, ExpectContinueTimeout) {
+  HttpClientConfig config;
+  config.expectContinueTimeout = std::chrono::milliseconds{0};  // the body follows the head right away
+  EXPECT_NO_THROW(config.validate());
+
+  config.expectContinueTimeout = std::chrono::milliseconds{-1};
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
 TEST(HttpClientConfigTest, InactivityTimeout) {
   HttpClientConfig config;
   config.inactivityTimeout = std::chrono::seconds{30};
@@ -124,6 +133,14 @@ TEST(HttpClientConfigTest, HeaderKey4) {
 TEST(HttpClientConfigTest, ReservedGlobalHeaderShouldThrow) {
   HttpClientConfig config;
   config.globalHeaders.append("Content-Length: 10");
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
+// A request without content must not carry the 100-continue expectation (RFC 9110 §10.1.1): Expect can only be set on
+// a request.
+TEST(HttpClientConfigTest, ExpectGlobalHeaderShouldThrow) {
+  HttpClientConfig config;
+  config.globalHeaders.append("Expect: 100-continue");
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
