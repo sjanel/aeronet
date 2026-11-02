@@ -131,6 +131,13 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    chunk-size-line_test
+    test/chunk-size-line_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+AeronetAddUnitTest(
     compression-config_test
     test/compression-config_test.cpp
     LIBRARIES

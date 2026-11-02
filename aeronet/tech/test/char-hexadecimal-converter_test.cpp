@@ -73,6 +73,15 @@ TEST(CharHexConverter, FromHexDigitInvalid) {
   }
 }
 
+TEST(CharHexConverter, FromHexDigitLowLatencyIsFromHexDigit) {
+  for (int byte = 0; byte <= 0xFF; ++byte) {
+    const char ch = static_cast<char>(byte);
+    EXPECT_EQ(FromHexDigitLowLatency(ch), FromHexDigit(ch)) << "byte=" << byte;
+  }
+  static_assert(FromHexDigitLowLatency('7') == 7 && FromHexDigitLowLatency('c') == 12 &&
+                FromHexDigitLowLatency('F') == 15 && FromHexDigitLowLatency('g') == -1);
+}
+
 TEST(CharHexConverter, RoundTrip) {
   // Round-trip test: encode then decode two hex digits
   for (int i = 0; i <= 0xFF; ++i) {

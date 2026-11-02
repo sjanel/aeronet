@@ -400,7 +400,6 @@ int countOccurrences(std::string_view haystack, std::string_view needle) {
 }
 
 int RecvPipelinedResponses(NativeHandle fd, int nbResponses, std::chrono::milliseconds totalTimeout) {
-  static constexpr std::string_view kStatusLinePrefix = "HTTP/1.1 ";
   setRecvTimeout(fd, 50ms);
   // The received bytes whose status lines are not counted yet: only a truncated status line at the end.
   std::string pending;
@@ -417,8 +416,8 @@ int RecvPipelinedResponses(NativeHandle fd, int nbResponses, std::chrono::millis
       }
       break;  // logged by RecvAppend
     }
-    nbReceived += countOccurrences(pending, kStatusLinePrefix);
-    pending.erase(0, pending.size() - std::min(pending.size(), kStatusLinePrefix.size() - 1));
+    nbReceived += countOccurrences(pending, http::HTTP11SPSv);
+    pending.erase(0, pending.size() - std::min(pending.size(), http::HTTP11SPSv.size() - 1));
   }
   return nbReceived;
 }

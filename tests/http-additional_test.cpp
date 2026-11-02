@@ -264,7 +264,7 @@ TEST(Http10, StreamedBodyWithoutLengthIsDelimitedByClose) {
                   "GET /s HTTP/1.0\r\nhost: h\r\nconnection: keep-alive\r\n\r\n");
     const std::string resp = test::recvUntilClosed(cnx.fd());
     EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp.substr(0, 512);
-    EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1);
+    EXPECT_EQ(test::countOccurrences(resp, http::HTTP11SPSv), 1);
     // The head, with the CRLF of its last header line.
     const std::string_view head = std::string_view(resp).substr(0, resp.find(http::DoubleCRLF) + http::CRLF.size());
     EXPECT_FALSE(head.contains(http::TransferEncoding)) << head;
@@ -1267,7 +1267,7 @@ TEST(HttpExpectation, NoInterimResponseToHttp10Client) {
                                                 "POST /x HTTP/1.0\r\nhost: x\r\ncontent-length: 5\r\nexpect: "
                                                 "x-continue, 102-processing, 100-continue\r\n\r\nHELLO");
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
-  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 1) << resp;
+  EXPECT_EQ(test::countOccurrences(resp, http::HTTP11SPSv), 1) << resp;
   EXPECT_TRUE(resp.ends_with("\r\n\r\nHELLO")) << resp;
 }
 
@@ -1409,7 +1409,7 @@ TEST(HttpExpectation, HandlerFinalResponseToRequestAnnouncingBodyClosesConnectio
                                                     "GET /b HTTP/1.1\r\nhost: x\r\n\r\n",
                                                     framing));
     EXPECT_EQ(BracketedFragments(resp), "[/a][denied]");
-    EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 "), 2) << resp;
+    EXPECT_EQ(test::countOccurrences(resp, http::HTTP11SPSv), 2) << resp;
     EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << resp;
   }
 }

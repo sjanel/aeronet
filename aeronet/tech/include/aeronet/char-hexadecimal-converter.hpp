@@ -87,4 +87,15 @@ constexpr int8_t FromHexDigit(char ch) {
   return kHexTable.data[static_cast<unsigned char>(ch)];
 }
 
+/// Same as FromHexDigit, computed without lookup table: faster when the result is on a dependency chain (the size of a
+/// chunk gives the position of the next one), slower to decode many independent digits (percent-decoding).
+constexpr int8_t FromHexDigitLowLatency(char ch) {
+  const unsigned uc = static_cast<unsigned char>(ch);
+  const unsigned decimal = uc - '0';
+  // Setting bit 5 folds 'A'-'F' to 'a'-'f', and no other byte into them.
+  const unsigned alpha = (uc | 0x20U) - 'a';
+  const unsigned value = decimal <= 9U ? decimal : alpha + 10U;
+  return decimal <= 9U || alpha <= 5U ? static_cast<int8_t>(value) : int8_t{-1};
+}
+
 }  // namespace aeronet

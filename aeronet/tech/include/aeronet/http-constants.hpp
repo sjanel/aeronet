@@ -19,6 +19,7 @@ namespace aeronet::http {
 // Version
 inline constexpr std::string_view HTTP10Sv = "HTTP/1.0";
 inline constexpr std::string_view HTTP11Sv = "HTTP/1.1";
+inline constexpr std::string_view HTTP11SPSv = "HTTP/1.1 ";
 
 // Methods GET, HEAD, POST, PUT, DELETE, CONNECT, OPTIONS, TRACE, PATCH
 
