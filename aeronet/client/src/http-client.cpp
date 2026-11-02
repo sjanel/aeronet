@@ -35,7 +35,6 @@
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
-#include "aeronet/http-version.hpp"
 #include "aeronet/internal/response-streamer.hpp"
 #include "aeronet/internal/url-parsed-result.hpp"
 #include "aeronet/log.hpp"
@@ -56,6 +55,7 @@
 #include "aeronet/transport.hpp"
 #include "aeronet/vector.hpp"
 #include "client-accept-encoding.hpp"
+#include "status-line.hpp"
 #include "url-parse.hpp"
 
 #ifdef AERONET_LINUX
@@ -101,28 +101,6 @@ RetryConfig::Duration ParseRetryAfter(std::string_view value, RetryConfig::Durat
   }
   const auto capSeconds = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(cap).count());
   return std::chrono::duration_cast<RetryConfig::Duration>(std::chrono::seconds{std::min(seconds, capSeconds)});
-}
-
-// Interpret the status line of a proxy CONNECT response ("HTTP/1.x <code> <reason>"). A 2xx code means the
-// tunnel is open; anything else (or a line that is not an HTTP/1.x status line) is a proxy failure.
-HttpClientErrc CheckProxyTunnelStatus(std::string_view statusLine) {
-  if (statusLine.size() <= http::Version::kStrLen || statusLine[http::Version::kStrLen] != ' ' ||
-      // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
-      !http::Version::OfMajor<1>(statusLine.data(), http::Version::kStrLen).isValid()) {
-    return HttpClientErrc::proxyError;
-  }
-  uint32_t code;
-  const auto pBeg = statusLine.data() + http::Version::kStrLen + 1;
-  if (pBeg + http::StatusCodeLen >= statusLine.data() + statusLine.size() || pBeg[http::StatusCodeLen] != ' ') {
-    return HttpClientErrc::proxyError;
-  }
-  const auto pEnd = pBeg + http::StatusCodeLen;
-  // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
-  const auto [ptr, ec] = std::from_chars(pBeg, pEnd, code);
-  if (ec != std::errc{} || ptr != pEnd || code < 200 || code >= 300) {
-    return HttpClientErrc::proxyError;
-  }
-  return HttpClientErrc::noError;
 }
 
 void FinalizeConfig(HttpClientConfig& config) {
@@ -597,8 +575,11 @@ HttpClientErrc HttpClient::establishProxyTunnel(Transport& transport, NativeHand
   for (;;) {
     const std::string_view view(respBuffer.data(), respBuffer.size());
     if (const auto endPos = view.find(http::DoubleCRLF); endPos != std::string_view::npos) {
-      // Status line is everything up to the first CRLF (guaranteed present within [0, endPos]).
-      return CheckProxyTunnelStatus(view.substr(0, view.find(http::CRLF)));
+      // Status line is everything up to the first CRLF (guaranteed present within [0, endPos]). Any 2xx response opens
+      // the tunnel (RFC 9110 §9.3.6); anything else, or a line that is not a status line, is a proxy failure.
+      const http::StatusCode code = http::ParseStatusLine(view.substr(0, view.find(http::CRLF))).code;
+      return code >= http::StatusCodeOK && code < http::StatusCodeMultipleChoices ? HttpClientErrc::noError
+                                                                                  : HttpClientErrc::proxyError;
     }
     if (respBuffer.size() >= kMaxTunnelResponse) {
       return HttpClientErrc::proxyError;

@@ -936,6 +936,47 @@ TEST(ResponseParserTest, StatusLineWithoutReasonPhrase) {
   EXPECT_TRUE(resp.reason().empty());
 }
 
+// reason-phrase = 1*( HTAB / SP / VCHAR / obs-text ) (RFC 9112 §4): a control character, such as a bare LF that another
+// parser would take for the end of the line, makes the status line malformed.
+TEST(ResponseParserTest, ReasonPhraseWithControlCharacterIsError) {
+  for (std::string_view statusLine : {
+           std::string_view("HTTP/1.1 200 O\nK"),
+           std::string_view("HTTP/1.1 200 O\x01K"),
+           std::string_view("HTTP/1.1 200 O\x7FK"),
+           std::string_view("HTTP/1.1 200 O\0K", 16),
+       }) {
+    SCOPED_TRACE(statusLine);
+    HttpResponse resp;
+    std::string raw(statusLine);
+    raw.append("\r\ncontent-length: 0\r\n\r\n");
+    EXPECT_EQ(parseAll(raw, resp, false, true), Http1ResponseParser::Status::Error);
+  }
+}
+
+// A reason phrase with obs-text (bytes above 0x7F, such as UTF-8 text) is valid, but HttpResponse only holds the
+// characters aeronet sends: it is ignored, as a client SHOULD do with any reason phrase (RFC 9112 §4).
+TEST(ResponseParserTest, ReasonPhraseWithObsTextIsIgnored) {
+  HttpResponse resp;
+  auto st = parseAll("HTTP/1.1 200 Tr\xC3\xA8s bien\r\ncontent-length: 2\r\n\r\nok", resp);
+  EXPECT_EQ(st, Http1ResponseParser::Status::Complete);
+  EXPECT_EQ(resp.status(), 200);
+  EXPECT_TRUE(resp.reason().empty());
+  EXPECT_EQ(resp.bodyInMemory(), "ok");
+}
+
+// The reason phrase is the one of the final response, not of a discarded interim one.
+TEST(ResponseParserTest, ReasonPhraseOfInterimResponseIsNotKept) {
+  for (std::string_view finalStatusLine : {"HTTP/1.1 200", "HTTP/1.1 200 ", "HTTP/1.1 200 \t "}) {
+    SCOPED_TRACE(finalStatusLine);
+    HttpResponse resp;
+    std::string raw("HTTP/1.1 103 Early Hints\r\n\r\n");
+    raw.append(finalStatusLine).append("\r\ncontent-length: 0\r\n\r\n");
+    EXPECT_EQ(parseAll(raw, resp), Http1ResponseParser::Status::Complete);
+    EXPECT_EQ(resp.status(), 200);
+    EXPECT_TRUE(resp.reason().empty());
+  }
+}
+
 namespace {
 
 constexpr std::size_t kMaxResponseBytes = 8UL * 1024UL * 1024UL;
@@ -1553,6 +1594,18 @@ TEST(ResponseParserTest, PeekEarlyResponse) {
       {"HTTP/1.1 2x0 OK\r\n", Early::Rejection},
       {"HTTP/1.1\t200 OK\r\n", Early::Rejection},
       {"garbage, not a response\r\n\r\n", Early::Rejection},
+      // The status line received so far is checked like parse() does, the end of a final one included when received.
+      {"HTTP/1.1 200 O", Early::Success},
+      {"HTTP/1.0 100\r\n\r\n", Early::Continue},
+      {"HTTP/2.0 200 OK\r\n", Early::Rejection},
+      {"XTTP/1.1 200 OK\r\n", Early::Rejection},
+      {"HTTP/1.1 600 ", Early::Rejection},
+      {"HTTP/1.1 2000", Early::Rejection},
+      {"HTTP/1.1 200OK\r\n", Early::Rejection},
+      {"HTTP/1.1 200 O\nK\r\n", Early::Rejection},
+      {"HTTP/1.1\r\n\r\n", Early::Rejection},
+      {"HTTP/1.1 100 Cont\x01inue\r\n\r\n", Early::Rejection},
+      {"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 2000", Early::Rejection},
   };
   for (const Case& testCase : kCases) {
     EXPECT_EQ(Http1ResponseParser::PeekEarlyResponse(testCase.received), testCase.expected) << testCase.received;

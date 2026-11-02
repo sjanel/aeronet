@@ -8,7 +8,6 @@
 #include <system_error>
 #include <utility>
 
-#include "aeronet/cctype.hpp"
 #include "aeronet/chunk-size-line.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
@@ -25,6 +24,7 @@
 #include "aeronet/string-trim.hpp"
 #include "aeronet/tolower-str.hpp"
 #include "aeronet/transfer-coding.hpp"
+#include "status-line.hpp"
 
 namespace aeronet {
 
@@ -445,35 +445,20 @@ Http1ResponseParser::Status Http1ResponseParser::parseResponse(std::span<char> b
     }
 
     if (_state == State::StatusLine) {
-      // status-line = HTTP-version SP status-code SP [ reason-phrase ] (RFC 9112 §4), of an HTTP/1.x version.
-      if (line.size() <= http::Version::kStrLen || line[http::Version::kStrLen] != ' ') {
-        return Status::Error;
-      }
-      // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
-      const http::Version version = http::Version::OfMajor<1>(line.data(), http::Version::kStrLen);
-      if (!version.isValid()) {
+      const http::StatusLine statusLine = http::ParseStatusLine(line);
+      if (!statusLine.valid()) {
         return Status::Error;
       }
       // HTTP/1.1 defaults to keep-alive; HTTP/1.0 defaults to close. RFC 9110 §6.2 - a higher minor version is
       // processed as the highest version we conform to, HTTP/1.1.
-      _http11 = version >= http::HTTP_1_1;
-
-      const std::string_view afterVersion = line.substr(http::Version::kStrLen + 1);
-      const auto sp2 = afterVersion.find(' ');
-      const std::string_view codeTok = sp2 == std::string_view::npos ? afterVersion : afterVersion.substr(0, sp2);
-      // status-code = 3DIGIT (RFC 9112 §4): from_chars alone would also accept "0200".
-      if (codeTok.size() != 3) {
-        return Status::Error;
-      }
-      const auto* begin = codeTok.data();
-      const auto* end = begin + codeTok.size();
-      const auto [ptr, ec] = std::from_chars(begin, end, _statusCode);
-      if (ec != std::errc{} || ptr != end || _statusCode < 100 || _statusCode > 599) {
-        return Status::Error;
-      }
+      _http11 = statusLine.version >= http::HTTP_1_1;
+      _statusCode = statusLine.code;
       resp.status(_statusCode);
-      if (sp2 != std::string_view::npos) {
-        resp.reason(TrimOws(afterVersion.substr(sp2 + 1)));
+      // The reason phrase of a discarded interim response is replaced, even by an absent one.
+      if (!statusLine.reason.empty() || resp.hasReason()) {
+        // HttpResponse only holds the characters aeronet sends: a reason phrase with obs-text is ignored, as a client
+        // SHOULD ignore any (RFC 9112 §4).
+        resp.reason(http::IsValidHeaderValue(statusLine.reason) ? statusLine.reason : std::string_view{});
       }
       _state = State::Headers;
       continue;
@@ -576,23 +561,22 @@ void Http1ResponseParser::discardStreamed(RawChars& buffer) noexcept {
 }
 
 Http1ResponseParser::EarlyResponse Http1ResponseParser::PeekEarlyResponse(std::string_view received) noexcept {
-  // status-line = HTTP-version SP status-code SP [ reason-phrase ] (RFC 9112 §4): only the status code matters here.
-  static constexpr std::size_t kStatusCodePos = http::Version::kStrLen + 1;
-  static constexpr std::size_t kStatusCodeEnd = kStatusCodePos + 3;
   EarlyResponse early = EarlyResponse::None;
-  while (received.size() >= kStatusCodeEnd) {
-    const char* code = received.data() + kStatusCodePos;
-    if (received[http::Version::kStrLen] != ' ' || !isdigit(code[0]) || !isdigit(code[1]) || !isdigit(code[2])) {
+  while (received.size() >= http::kStatusLineMinLen) {
+    // The status line, or the part of it received so far: parse() would reject it if this part is not one.
+    const std::string_view line = received.substr(0, received.find('\r'));
+    const http::StatusLine statusLine = http::ParseStatusLine(line);
+    if (!statusLine.valid()) {
       return EarlyResponse::Rejection;
     }
-    if (code[0] != '1') {
-      return code[0] == '2' ? EarlyResponse::Success : EarlyResponse::Rejection;
+    if (statusLine.code >= http::StatusCodeOK) {
+      return statusLine.code < http::StatusCodeMultipleChoices ? EarlyResponse::Success : EarlyResponse::Rejection;
     }
-    const std::size_t headEnd = received.find(http::DoubleCRLF);
+    const std::size_t headEnd = received.find(http::DoubleCRLF, line.size());
     if (headEnd == std::string_view::npos) {
       break;
     }
-    if (code[1] == '0' && code[2] == '0') {
+    if (statusLine.code == http::StatusCodeContinue) {
       early = EarlyResponse::Continue;
     }
     received.remove_prefix(headEnd + http::DoubleCRLF.size());

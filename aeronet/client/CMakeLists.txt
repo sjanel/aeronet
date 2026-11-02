@@ -140,3 +140,10 @@ AeronetAddUnitTest(
     LIBRARIES
     aeronet_client
 )
+
+AeronetAddUnitTest(
+    status-line_test
+    test/status-line_test.cpp
+    LIBRARIES
+    aeronet_objects
+)
