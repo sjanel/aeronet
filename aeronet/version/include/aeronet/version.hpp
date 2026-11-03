@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -81,9 +82,9 @@ inline constexpr std::string_view _sv_glaze_prefix = "glaze: ";
 inline constexpr int _glaze_major = static_cast<int>(glz::version.major);
 inline constexpr int _glaze_minor = static_cast<int>(glz::version.minor);
 inline constexpr int _glaze_patch = static_cast<int>(glz::version.patch);
-inline constexpr auto _sv_glaze_major = IntToStringView<_glaze_major>::value;
-inline constexpr auto _sv_glaze_minor = IntToStringView<_glaze_minor>::value;
-inline constexpr auto _sv_glaze_patch = IntToStringView<_glaze_patch>::value;
+inline constexpr std::string_view _sv_glaze_major = IntToStringView<_glaze_major>::value;
+inline constexpr std::string_view _sv_glaze_minor = IntToStringView<_glaze_minor>::value;
+inline constexpr std::string_view _sv_glaze_patch = IntToStringView<_glaze_patch>::value;
 inline constexpr std::string_view _sv_glaze_section =
     JoinStringView<_sv_glaze_prefix, _sv_glaze_major, CharToStringView_v<'.'>, _sv_glaze_minor, CharToStringView_v<'.'>,
                    _sv_glaze_patch>::value;
@@ -94,9 +95,9 @@ inline constexpr std::string_view _sv_glaze_section = "glaze: disabled";
 // Protobuf section fragment: version of the C++ runtime headers (e.g. 5.29.3 for protobuf v29.3), with the runtime.
 #ifdef AERONET_ENABLE_PROTOBUF
 inline constexpr std::string_view _sv_protobuf_prefix = "protobuf: ";
-inline constexpr auto _sv_protobuf_major = IntToStringView<GOOGLE_PROTOBUF_VERSION / 1000000>::value;
-inline constexpr auto _sv_protobuf_minor = IntToStringView<GOOGLE_PROTOBUF_VERSION / 1000 % 1000>::value;
-inline constexpr auto _sv_protobuf_patch = IntToStringView<GOOGLE_PROTOBUF_VERSION % 1000>::value;
+inline constexpr std::string_view _sv_protobuf_major = IntToStringView<GOOGLE_PROTOBUF_VERSION / 1000000>::value;
+inline constexpr std::string_view _sv_protobuf_minor = IntToStringView<GOOGLE_PROTOBUF_VERSION / 1000 % 1000>::value;
+inline constexpr std::string_view _sv_protobuf_patch = IntToStringView<GOOGLE_PROTOBUF_VERSION % 1000>::value;
 // Empty for a stable release, "-rc1" for a release candidate.
 // NOLINTNEXTLINE(readability-redundant-string-init)
 inline constexpr std::string_view _sv_protobuf_suffix = GOOGLE_PROTOBUF_VERSION_SUFFIX;
@@ -135,63 +136,83 @@ inline constexpr std::string_view _sv_opentelemetry_section =
 inline constexpr std::string_view _sv_opentelemetry_section = "opentelemetry: disabled";
 #endif
 
-// Features section fragment: the compile-time flags that have no section of their own, as a comma separated list.
-struct FeatureFlag {
+// ---- Generic comma separated list section ----
+// Used by every section that is a list of optional items (features, compression codecs).
+// Only the enabled items are written, in declaration order; when none is enabled the section is prefix + empty text.
+struct ListItem {
   std::string_view name;
   bool enabled;
 };
 
-inline constexpr FeatureFlag _features[]{
+inline constexpr std::string_view _sv_list_sep = ", ";
+
+struct ListSpec {
+  std::string_view prefix;
+  std::span<const ListItem> items;
+  std::string_view whenEmpty;
+
+  // Writes the section into dst (when not null) and returns its length.
+  consteval std::size_t write(char* dst) const {
+    std::size_t len = 0;
+    const auto append = [dst, &len](std::string_view sv) {
+      for (const char ch : sv) {
+        if (dst != nullptr) {
+          dst[len] = ch;
+        }
+        ++len;
+      }
+    };
+    append(prefix);
+    bool first = true;
+    for (const ListItem& item : items) {
+      if (item.enabled) {
+        if (!first) {
+          append(_sv_list_sep);
+        }
+        append(item.name);
+        first = false;
+      }
+    }
+    if (first) {
+      append(whenEmpty);
+    }
+    return len;
+  }
+};
+
+// Writes the section of spec into an array of its exact length (N = spec.write(nullptr)).
+template <std::size_t N>
+consteval std::array<char, N> ListSectionChars(const ListSpec& spec) {
+  std::array<char, N> chars{};
+  spec.write(chars.data());
+  return chars;
+}
+
+// Static storage of the section, exposed as a string_view.
+// No lambda here: inside one, MSVC takes the pointer template parameter for a ListSpec object (C2819).
+template <const ListSpec* Spec>
+struct ListSection {
+  static constexpr std::size_t kLen = Spec->write(nullptr);
+
+  static constexpr std::array<char, kLen> kChars = ListSectionChars<kLen>(*Spec);
+
+  static constexpr std::string_view value{kChars.data(), kLen};
+};
+
+// Features section fragment: the compile-time flags that have no section of their own.
+inline constexpr ListItem _features[]{
     {"http-server", httpServerEnabled()}, {"http-client", httpClientEnabled()},       {"http2", http2Enabled()},
     {"websocket", webSocketEnabled()},    {"async-handlers", asyncHandlersEnabled()},
 };
 
 inline constexpr std::string_view _sv_features_prefix = "features: ";
 inline constexpr std::string_view _sv_features_none = "none";
-inline constexpr std::string_view _sv_features_sep = ", ";
 
-// Writes the section into dst (when not null) and returns its length.
-consteval std::size_t WriteFeaturesSection(char* dst) {
-  std::size_t len = 0;
-  const auto append = [dst, &len](std::string_view sv) {
-    for (const char ch : sv) {
-      if (dst != nullptr) {
-        dst[len] = ch;
-      }
-      ++len;
-    }
-  };
-  append(_sv_features_prefix);
-  bool first = true;
-  for (const FeatureFlag& feature : _features) {
-    if (feature.enabled) {
-      if (!first) {
-        append(_sv_features_sep);
-      }
-      append(feature.name);
-      first = false;
-    }
-  }
-  if (first) {
-    append(_sv_features_none);
-  }
-  return len;
-}
+inline constexpr ListSpec _features_spec{_sv_features_prefix, _features, _sv_features_none};
 
-inline constexpr std::size_t _features_section_len = WriteFeaturesSection(nullptr);
-
-// Null terminated static storage of the section
-inline constexpr std::array<char, _features_section_len + 1U> _features_section_chars = [] consteval {
-  std::array<char, _features_section_len + 1U> chars{};
-  WriteFeaturesSection(chars.data());
-  return chars;
-}();
-
-inline constexpr std::string_view _sv_features_section{_features_section_chars.data(), _features_section_len};
+inline constexpr std::string_view _sv_features_section = ListSection<&_features_spec>::value;
 
 // Compression section fragment
-#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
-inline constexpr std::string_view _sv_compression_prefix = "compression: ";
 #ifdef AERONET_ENABLE_ZLIB
 #ifdef AERONET_ENABLE_ZLIBNG
 inline constexpr std::string_view _sv_zlib = "zlib-ng ";
@@ -208,40 +229,36 @@ inline constexpr std::string_view _sv_zstd_ver = ZSTD_VERSION_STRING;  // e.g. "
 inline constexpr std::string_view _sv_zstd_full = JoinStringView<_sv_zstd, _sv_zstd_ver>::value;
 #endif
 #ifdef AERONET_ENABLE_BROTLI
-// Brotli version detection is impossible at compile time.
+// Brotli version detection is impossible at compile time (it is appended at runtime, see fullVersionWithRuntime).
 inline constexpr std::string_view _sv_brotli_full = "brotli";
 #endif
 
-// Build a combined list with comma when both present
-[[maybe_unused]] inline constexpr std::string_view _sv_comma_space = ", ";
-
-// Enumerate all combinations (zlib, zstd, brotli) to keep compile-time join logic straightforward.
-#if defined(AERONET_ENABLE_ZLIB) && defined(AERONET_ENABLE_ZSTD) && defined(AERONET_ENABLE_BROTLI)
-using compression_join_t = JoinStringView<_sv_compression_prefix, _sv_zlib_full, _sv_comma_space, _sv_zstd_full,
-                                          _sv_comma_space, _sv_brotli_full>;
-inline constexpr std::string_view _sv_compression_section = compression_join_t::value;
-#elif defined(AERONET_ENABLE_ZLIB) && defined(AERONET_ENABLE_ZSTD)
-using compression_join_t = JoinStringView<_sv_compression_prefix, _sv_zlib_full, _sv_comma_space, _sv_zstd_full>;
-inline constexpr std::string_view _sv_compression_section = compression_join_t::value;
-#elif defined(AERONET_ENABLE_ZLIB) && defined(AERONET_ENABLE_BROTLI)
-using compression_join_t = JoinStringView<_sv_compression_prefix, _sv_zlib_full, _sv_comma_space, _sv_brotli_full>;
-inline constexpr std::string_view _sv_compression_section = compression_join_t::value;
-#elif defined(AERONET_ENABLE_ZSTD) && defined(AERONET_ENABLE_BROTLI)
-using compression_join_t = JoinStringView<_sv_compression_prefix, _sv_zstd_full, _sv_comma_space, _sv_brotli_full>;
-inline constexpr std::string_view _sv_compression_section = compression_join_t::value;
-#elifdef AERONET_ENABLE_ZLIB
-using compression_join_t = JoinStringView<_sv_compression_prefix, _sv_zlib_full>;
-inline constexpr std::string_view _sv_compression_section = compression_join_t::value;
-#elifdef AERONET_ENABLE_ZSTD
-using compression_join_t = JoinStringView<_sv_compression_prefix, _sv_zstd_full>;
-inline constexpr std::string_view _sv_compression_section = compression_join_t::value;
-#elifdef AERONET_ENABLE_BROTLI
-using compression_join_t = JoinStringView<_sv_compression_prefix, _sv_brotli_full>;
-inline constexpr std::string_view _sv_compression_section = compression_join_t::value;
-#endif
+// One entry per codec, in display order. brotli must stay last: fullVersionWithRuntime appends its version.
+// Adding a codec only needs its version fragment above and one entry here.
+inline constexpr ListItem _compression_codecs[]{
+#ifdef AERONET_ENABLE_ZLIB
+    {_sv_zlib_full, true},
 #else
-inline constexpr std::string_view _sv_compression_section = "compression: disabled";
+    {std::string_view{}, false},
 #endif
+#ifdef AERONET_ENABLE_ZSTD
+    {_sv_zstd_full, true},
+#else
+    {std::string_view{}, false},
+#endif
+#ifdef AERONET_ENABLE_BROTLI
+    {_sv_brotli_full, true},
+#else
+    {std::string_view{}, false},
+#endif
+};
+
+inline constexpr std::string_view _sv_compression_prefix = "compression: ";
+inline constexpr std::string_view _sv_compression_none = "disabled";
+
+inline constexpr ListSpec _compression_spec{_sv_compression_prefix, _compression_codecs, _sv_compression_none};
+
+inline constexpr std::string_view _sv_compression_section = ListSection<&_compression_spec>::value;
 
 }  // namespace details
 
@@ -292,15 +309,15 @@ inline std::string fullVersionWithRuntime() {
   // reserve enough space for the base string + brotli version
   fullVersionStr.resize_and_overwrite(
       kBaseStr.size() + 3U + nDigitsMajor + nDigitsMinor + nDigitsPatch,
-      [major, minor, patch, nDigitsMajor, nDigitsMinor, nDigitsPatch](char* data, std::size_t sz) {
-        data = AppendFixed<kBaseStr>(data);
-        *data++ = ' ';
+      [major, minor, patch, nDigitsMajor, nDigitsMinor, nDigitsPatch](char* pData, std::size_t sz) {
+        pData = AppendFixed<kBaseStr>(pData);
+        *pData++ = ' ';
 
-        data = WriteUInt(data, major, nDigitsMajor);
-        *data++ = '.';
-        data = WriteUInt(data, minor, nDigitsMinor);
-        *data++ = '.';
-        data = WriteUInt(data, patch, nDigitsPatch);
+        pData = WriteUInt(pData, major, nDigitsMajor);
+        *pData++ = '.';
+        pData = WriteUInt(pData, minor, nDigitsMinor);
+        *pData++ = '.';
+        pData = WriteUInt(pData, patch, nDigitsPatch);
 
         return sz;
       });

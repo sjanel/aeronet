@@ -2446,10 +2446,13 @@ class TinyProxy {
  public:
   // rejectResponse: when non-empty, CONNECT requests are answered with it (and closed) instead of tunnelled.
   // dropOnConnect: when true, CONNECT requests are dropped (socket closed with no response at all).
+  // establishedResponse: the response to the CONNECT requests that are tunnelled.
   explicit TinyProxy(std::string httpResponse = "HTTP/1.1 200 OK\r\ncontent-length: 3\r\n\r\nhey",
-                     std::string rejectResponse = {}, bool dropOnConnect = false)
+                     std::string rejectResponse = {}, bool dropOnConnect = false,
+                     std::string establishedResponse = "HTTP/1.1 200 Connection Established\r\n\r\n")
       : _httpResponse(std::move(httpResponse)),
         _rejectResponse(std::move(rejectResponse)),
+        _establishedResponse(std::move(establishedResponse)),
         _dropOnConnect(dropOnConnect) {
 #ifdef AERONET_WINDOWS
     EnsureWinsockInitialized();
@@ -2538,7 +2541,7 @@ class TinyProxy {
         CloseNativeHandle(clientFd);
         return;
       }
-      SendAll(clientFd, "HTTP/1.1 200 Connection Established\r\n\r\n");
+      SendAll(clientFd, _establishedResponse);
       PumpTunnel(clientFd, targetFd, _stop);
       CloseNativeHandle(targetFd);
       CloseNativeHandle(clientFd);
@@ -2566,6 +2569,7 @@ class TinyProxy {
 
   std::string _httpResponse;
   std::string _rejectResponse;
+  std::string _establishedResponse;
   bool _dropOnConnect;
   std::thread _acceptThread;
   vector<std::thread> _workers;
@@ -2764,6 +2768,9 @@ TEST_F(HttpClientProxyTlsE2ETest, ProxyInvalidAndInformationalStatusCodesReturnP
            "HTTP/1.1 687 Informational\r\n\r\n",
            "HTTP/1.1 20O OK\r\n\r\n",
            "HTTP/1.1 200p OK\r\n\r\n",
+           "HTTP/1.1 2000 OK\r\n\r\n",
+           "HTTP/1.1 200 Connection\x01 established\r\n\r\n",
+           "HTTP/1.1 200 Connection\nestablished\r\n\r\n",
        }) {
     TinyProxy proxy("", std::move(response));
     HttpClientConfig cfg;
@@ -2775,6 +2782,27 @@ TEST_F(HttpClientProxyTlsE2ETest, ProxyInvalidAndInformationalStatusCodesReturnP
 
     ASSERT_FALSE(result);
     EXPECT_EQ(result.error(), HttpClientErrc::proxyError);
+  }
+}
+
+// Any 2xx status line opens the tunnel, with or without reason phrase, in HTTP/1.0 as well (RFC 9110 §9.3.6).
+TEST_F(HttpClientProxyTlsE2ETest, AnySuccessfulStatusLineOpensTheTunnel) {
+  for (std::string established : {
+           "HTTP/1.1 200\r\n\r\n",
+           "HTTP/1.1 204 \r\n\r\n",
+           "HTTP/1.0 200 Tunnel ouvert \xC3\xA0 tous\r\n\r\n",
+       }) {
+    SCOPED_TRACE(established);
+    TinyProxy proxy(std::string(), std::string(), false, std::move(established));
+    HttpClientConfig cfg;
+    cfg.tlsVerifyPeer = false;
+    cfg.withProxy(ProxyUrl(proxy.port()));
+    HttpClient client(cfg);
+
+    const auto result = client.get(secureUrl());
+    ASSERT_TRUE(result) << ErrcToStr(result.error());
+    EXPECT_EQ(result->status(), 200);
+    EXPECT_EQ(result->bodyInMemory(), "secret");
   }
 }
 
