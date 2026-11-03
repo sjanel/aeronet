@@ -156,6 +156,16 @@ class Http1ResponseParser {
   };
   enum class Framing : uint8_t { None, Length, Chunked, UntilClose };
 
+  // What the header fields of the head being parsed tell about its framing and persistence. Reset with = {} for each
+  // head, the ones of the discarded interim (1xx) responses included.
+  struct HeaderFlags {
+    bool connectionCloseSeen{false};
+    bool connectionKeepAliveSeen{false};
+    bool hasContentLength{false};
+    bool hasTransferEncoding{false};
+    bool chunked{false};  // the final transfer coding is chunked
+  };
+
   Status parseResponse(std::span<char> buffer, bool eof, HttpResponse& resp, std::size_t maxResponseBytes);
   Status decideFraming();
   Status parseBody(std::string_view buffer, bool eof, std::size_t maxResponseBytes);
@@ -208,11 +218,7 @@ class Http1ResponseParser {
   bool _gatheredPiece{false};  // the last BodyPiece is the gathered small chunks, in the reassembly buffer
   bool _keepAlive{false};
   bool _http11{false};
-  bool _connectionCloseSeen{false};
-  bool _connectionKeepAliveSeen{false};
-  bool _hasContentLength{false};
-  bool _hasTransferEncoding{false};
-  bool _chunked{false};  // the final transfer coding is chunked
+  HeaderFlags _headerFlags;
 };
 
 }  // namespace aeronet
