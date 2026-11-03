@@ -29,7 +29,8 @@ class HttpRequestViewTest {
   static HttpRequestView MakeRequest() { return HttpRequestView(); }
 
   static http::StatusCode ParseHead(HttpRequestView& request, std::span<char> buffer, RawChars& tmpBuffer) {
-    return request.initTrySetHead(buffer, tmpBuffer, 64U * 1024U, true, {});
+    HttpRequestView::HeadParseState headParseState = HttpRequestView::HeadParseState::None;  // a new request
+    return request.initTrySetHead(buffer, headParseState, tmpBuffer, 64U * 1024U, true, {});
   }
 };
 

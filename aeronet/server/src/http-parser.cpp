@@ -73,10 +73,9 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeFixedLengthBody(ConnectionI
                                                                      std::size_t& consumedBytes) {
   ConnectionState& state = _pCtx->connections.connectionState(cnxIt);
   HttpRequestView& request = state.request;
-  // Fixed-length (non-chunked) requests never carry trailers (RFC 7230 section 4.1.2). Clear any trailerLen
-  // left over from a previous chunked request on this (keep-alive) connection so the request-finalization
-  // path does not spuriously re-parse stale trailer bytes into this request's trailers.
-  state.trailerLen = 0;
+  // Fixed-length (non-chunked) requests never carry trailers (RFC 7230 section 4.1.2), and the trailers of a previous
+  // chunked request on this (keep-alive) connection were forgotten when it ended.
+  assert(state.pendingRequest.trailerLen == 0);
   auto optContentLength = request.headerValue(http::ContentLength);
   const std::size_t headerEnd = request.headSpanSize();
   if (!optContentLength) {
@@ -109,19 +108,9 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeFixedLengthBody(ConnectionI
 
 Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeChunkedBody(ConnectionIt cnxIt, std::span<char> input,
                                                                  std::size_t maxBodyBytes, std::size_t& consumedBytes) {
-  const BodyDecodeStatus status = decodeNextChunks(cnxIt, input, maxBodyBytes, consumedBytes);
-  if (status != BodyDecodeStatus::NeedMore) {
-    // Complete, or rejected: the next body starts from its first chunk.
-    _pCtx->connections.connectionState(cnxIt).chunkedBody = {};
-  }
-  return status;
-}
-
-Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeNextChunks(ConnectionIt cnxIt, std::span<char> input,
-                                                                std::size_t maxBodyBytes, std::size_t& consumedBytes) {
   ConnectionState& state = _pCtx->connections.connectionState(cnxIt);
   HttpRequestView& request = state.request;
-  ConnectionState::ChunkedBodyProgress& progress = state.chunkedBody;
+  ConnectionState::ChunkedBodyProgress& progress = state.pendingRequest.chunkedBody;
   RawChars& bodyAndTrailers = state.bodyAndTrailersBuffer;
 
   // Check if we should use direct decompression (avoids copying compressed chunks to bodyAndTrailers)
@@ -138,9 +127,10 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeNextChunks(ConnectionIt cnx
   std::size_t pos = progress.pos;
   std::size_t bodySize = progress.bodySize;
   if (!resumed) {
+    // The trailers are decoded with the end of the body.
+    assert(state.pendingRequest.trailerLen == 0);
     pos = request.headSpanSize();
     bodyAndTrailers.clear();
-    state.trailerLen = 0;
   }
 
   // For direct decompression, we collect chunk positions instead of copying data
@@ -240,7 +230,7 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeNextChunks(ConnectionIt cnx
     // Body is set by DecompressChunkedBodyDirect, trailers are appended after
   } else {
     // Body is everything before trailers
-    std::size_t bodyLen = bodyAndTrailers.size() - state.trailerLen;
+    std::size_t bodyLen = bodyAndTrailers.size() - state.pendingRequest.trailerLen;
     request._body = {bodyAndTrailers.data(), bodyLen};
   }
 
@@ -326,7 +316,7 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeTrailers(ConnectionIt cnxIt
   // Copy all trailer data at once to avoid reallocation during parsing
   const std::size_t trailerLen = trailerEndPos - pos - http::CRLF.size();  // Exclude final CRLF
   bodyAndTrailers.append(pTrailerStart, trailerLen);
-  state.trailerLen = SafeCast<uint32_t>(trailerLen);
+  state.pendingRequest.trailerLen = SafeCast<uint32_t>(trailerLen);
 
   // Second pass: parse trailers from copied data in bodyAndTrailers
   char* pTrailerDataEnd = bodyAndTrailers.data() + bodyAndTrailers.size();

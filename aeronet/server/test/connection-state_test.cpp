@@ -138,23 +138,52 @@ TEST(ConnectionStateTest, BodyAndTrailersBufferIsKeptWhileAChunkedBodyIsDecoded)
   state.bodyAndTrailersBuffer.append(kChunks);
 
   // The chunks received so far are decoded once: the next ones are appended to them.
-  state.chunkedBody = {.pos = 40, .bodySize = kChunks.size()};
+  state.pendingRequest.chunkedBody = {.pos = 40, .bodySize = kChunks.size()};
   EXPECT_TRUE(state.isDecodingChunkedBody());
   state.reclaimMemoryFromOversizedBuffers();
   EXPECT_EQ(std::string_view(state.bodyAndTrailersBuffer.data(), state.bodyAndTrailersBuffer.size()), kChunks);
 
-  state.chunkedBody = {};
+  state.pendingRequest.chunkedBody = {};
   EXPECT_FALSE(state.isDecodingChunkedBody());
   state.reclaimMemoryFromOversizedBuffers();
   EXPECT_TRUE(state.bodyAndTrailersBuffer.empty());
 }
 
-TEST(ConnectionStateTest, ResetForgetsTheProgressOfAChunkedBody) {
+namespace {
+
+// The state of a request served in several passes, none of its fields left to its default value.
+ConnectionState::PendingHttp1Request AllPendingHttp1Request() {
+  return {
+      .chunkedBody = {.pos = 40, .bodySize = 5},
+      .trailerLen = 12,
+      .headParseState = ConnectionState::HeadParseState::WaitingForBody,
+      .expectationAnswered = true,
+      .requestMiddlewareRan = true,
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+      .continueExpected = true,
+#endif
+  };
+}
+
+}  // namespace
+
+TEST(ConnectionStateTest, ResetForgetsThePendingHttp1Request) {
   ConnectionState state;
-  state.chunkedBody = {.pos = 40, .bodySize = 5};
+  state.pendingRequest = AllPendingHttp1Request();
+  ASSERT_TRUE(state.isDecodingChunkedBody());
   state.reset();
   EXPECT_FALSE(state.isDecodingChunkedBody());
-  EXPECT_EQ(state.chunkedBody.bodySize, 0U);
+  EXPECT_EQ(state.pendingRequest, ConnectionState::PendingHttp1Request{});
+}
+
+// The state kept between the passes serving a request is forgotten as a whole once it ends: the next request starts
+// from it.
+TEST(ConnectionStateTest, EndHttp1RequestForgetsItsPendingState) {
+  ConnectionState state;
+  state.pendingRequest = AllPendingHttp1Request();
+  state.endHttp1Request(http::StatusCodeOK);
+  EXPECT_FALSE(state.isDecodingChunkedBody());
+  EXPECT_EQ(state.pendingRequest, ConnectionState::PendingHttp1Request{});
 }
 
 TEST(ConnectionState, RequestDrainAndCloseIsIdempotent) {

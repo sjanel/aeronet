@@ -703,22 +703,27 @@ class HttpRequestView {
 
   void init(const HttpServerConfig& config, CompressionState& compressionState);
 
-  // Attempts to set this HttpRequestView (except body) from given ConnectionState.
+  // Progress of the parsing of the head of an HTTP/1 request received in several reads, kept by its connection between
+  // them (see ConnectionState::PendingHttp1Request). The parsing modifies the head in place (decoded request-target,
+  // lower-cased header names, merged header values): it must never parse it twice.
+  enum class HeadParseState : uint8_t {
+    None,            // initTrySetHead() parses the head from the start of the buffer
+    Partial,         // the request line and the header lines of the first _headSpanSize bytes are parsed
+    WaitingForBody,  // the whole head is parsed, the request waits for the rest of its body
+  };
+
+  // Attempts to set this HttpRequestView (except body) from given ConnectionState, whose head parsing is at
+  // headParseState (None for a new request, never WaitingForBody: see resumeHeadWaitingForBody()).
   // Returns StatusCode OK if the request is good (it will be fully set) or an HTTP error status to forward.
   // If 0 is returned, the head is not complete yet: the next call, with more bytes appended to the same head (the
-  // buffer may have moved meanwhile), resumes the parsing where this one stopped.
-  http::StatusCode initTrySetHead(std::span<char> inBuffer, RawChars& tmpBuffer, uint32_t maxHeadersBytes,
-                                  bool mergeAllowedForUnknownRequestHeaders, tracing::SpanPtr traceSpan);
+  // buffer may have moved meanwhile) and the headParseState left by this one, resumes the parsing where it stopped.
+  http::StatusCode initTrySetHead(std::span<char> inBuffer, HeadParseState& headParseState, RawChars& tmpBuffer,
+                                  uint32_t maxHeadersBytes, bool mergeAllowedForUnknownRequestHeaders,
+                                  tracing::SpanPtr traceSpan);
 
-  // Tells whether the head of this request was parsed while its body is not received yet (see keepHeadForBody()).
-  [[nodiscard]] bool isHeadWaitingForBody() const noexcept { return _headParseState == HeadParseState::WaitingForBody; }
-
-  // Keeps the head parsed by initTrySetHead() for the next attempt to serve this request, once more of its body is
-  // received: it must not be parsed again, initTrySetHead() having modified it in place.
-  void keepHeadForBody() noexcept { _headParseState = HeadParseState::WaitingForBody; }
-
-  // Resumes the request whose head waited for its body, at the start of inBuffer (that may have moved meanwhile): same
-  // state as after initTrySetHead() returned OK for it.
+  // Resumes the request whose head was parsed by initTrySetHead() while its body was not received yet
+  // (HeadParseState::WaitingForBody), at the start of inBuffer (that may have moved meanwhile): same state as after
+  // initTrySetHead() returned OK for it. The head is not parsed again, initTrySetHead() having modified it in place.
   void resumeHeadWaitingForBody(std::span<char> inBuffer) noexcept;
 
   void prefinalizeHttpResponse(HttpResponse& response, tracing::TelemetryContext& telemetryContext);
@@ -802,14 +807,6 @@ class HttpRequestView {
     _headPinned = false;
   }
 
-  // Progress of the parsing of the head of an HTTP/1 request received in several reads. The parsing modifies the head
-  // in place (decoded request-target, lower-cased header names, merged header values): it must never parse it twice.
-  enum class HeadParseState : uint8_t {
-    None,            // initTrySetHead() parses the head from the start of the buffer
-    Partial,         // the request line and the header lines of the first _headSpanSize bytes are parsed
-    WaitingForBody,  // the whole head is parsed, the request waits for the rest of its body
-  };
-
   enum class BodyAccessMode : uint8_t { Undecided, Streaming, Aggregated };
 
   struct BodyAccessBridge {
@@ -865,7 +862,6 @@ class HttpRequestView {
   BodyAccessMode _bodyAccessMode{BodyAccessMode::Undecided};
   Encoding _responsePossibleEncoding{Encoding::none};
   bool _headPinned{false};
-  HeadParseState _headParseState{HeadParseState::None};
   bool _addTrailerHeader{false};
   bool _addVaryAcceptEncoding{false};
 #ifdef AERONET_ENABLE_HTTP2

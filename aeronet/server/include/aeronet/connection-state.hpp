@@ -12,6 +12,7 @@
 #include "aeronet/file-payload.hpp"
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-request-view.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/output-queue.hpp"
 #include "aeronet/protocol-handler.hpp"
@@ -201,6 +202,8 @@ struct ConnectionState : public ConnectionInfo {
   // The chunks decoded are in bodyAndTrailersBuffer (unless the body is decompressed from its chunks, which are then
   // not copied): it must be kept as is until the body is complete.
   struct ChunkedBodyProgress {
+    bool operator==(const ChunkedBodyProgress&) const noexcept = default;
+
     // Offset, from the start of the request, of the first byte not decoded yet: the size line of the next chunk.
     // 0 if the decoding did not start (the request head is not empty).
     std::size_t pos{0};
@@ -208,8 +211,40 @@ struct ConnectionState : public ConnectionInfo {
     std::size_t bodySize{0};
   };
 
-  // Tells whether the decoding of a chunked request body started, but did not complete.
-  [[nodiscard]] bool isDecodingChunkedBody() const noexcept { return chunkedBody.pos != 0; }
+  using HeadParseState = HttpRequestView::HeadParseState;
+
+  // The state of the HTTP/1 request at the head of inBuffer kept between the passes serving it: when its head or its
+  // body is received in several reads, or while its async handler runs. Reset as a whole once it ends (see
+  // endHttp1Request()), whatever answered it: the next request starts from it.
+  struct PendingHttp1Request {
+    bool operator==(const PendingHttp1Request&) const noexcept = default;
+
+    ChunkedBodyProgress chunkedBody;
+    // Length of its trailer headers, at the end of bodyAndTrailersBuffer (0 if none).
+    uint32_t trailerLen{0};
+    HeadParseState headParseState{HeadParseState::None};
+    // True once its expectations (Expect header) were answered: interim responses are sent once.
+    bool expectationAnswered{false};
+    // True when its request middleware ran before 100 Continue was sent for its body: it does not run again once its
+    // body is received (see internal::Http1Pipeline::answerBeforeBody()).
+    bool requestMiddlewareRan{false};
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+    // True while its client may wait for 100 Continue, not sent yet: its async handler sends it once it waits for the
+    // body, so that a handler answering from the head alone does not make the client send it (RFC 9110 §10.1.1).
+    bool continueExpected{false};
+#endif
+  };
+
+  // Tells whether the decoding of the chunked body of the current request started: the chunks decoded so far are kept
+  // until it ends.
+  [[nodiscard]] bool isDecodingChunkedBody() const noexcept { return pendingRequest.chunkedBody.pos != 0; }
+
+  // Ends the HTTP/1 request at the head of inBuffer, answered with 'status': ends its span, then resets its pending
+  // state.
+  void endHttp1Request(http::StatusCode status) noexcept {
+    request.end(status);
+    pendingRequest = {};
+  }
 
   // Connection close lifecycle: a drain close may linger before the close (see isLingering()).
   enum class CloseMode : uint8_t { None, DrainThenClose, Linger };
@@ -263,14 +298,6 @@ struct ConnectionState : public ConnectionInfo {
   // internal::TunnelManager::resumeRelaysTowards()).
   bool relayPausedByBacklog : 1 {false};
 
-  // True when the expectations (Expect header) of the request at the head of inBuffer were already answered: it is
-  // served again each time a part of its body is received, but interim responses must be sent once.
-  bool expectationAnswered : 1 {false};
-
-  // True when the request middleware of the request at the head of inBuffer already ran, before 100 Continue was sent
-  // for its body: it does not run again once its body is received (see internal::Http1Pipeline::answerBeforeBody()).
-  bool requestMiddlewareRan : 1 {false};
-
   static constexpr uint8_t kReadSizeShiftNbBits = 5;
 
   // Number of times the read size of the connection was doubled from HttpServerConfig::minReadChunkBytes (see
@@ -300,8 +327,12 @@ struct ConnectionState : public ConnectionInfo {
   // per-connection request object reused across dispatches
   HttpRequestView request;
   AggregatedBodyStreamContext bodyStreamContext;
-  // HTTP/1 output not written yet, sent after the file being sent (if any).
-  OutputQueue outQueue;
+  // HTTP/1 output not written yet, sent after the file being sent (if any). The next member fills its tail padding.
+  [[no_unique_address]] OutputQueue outQueue;
+  // Bytes of the socket send queue at the previous check that the zerocopy sends in flight progress, while the
+  // connection waits for their completion (see internal::ConnectionMaintenance::watchZerocopySends()).
+  // kNoZerocopyStallCheck if none.
+  uint32_t zerocopyStallCheckQueuedBytes{kNoZerocopyStallCheck};
 #ifdef AERONET_LINUX
   // Written buffers still read by the kernel for zerocopy sends in flight.
   ZerocopyBuffers zerocopyBuffers;
@@ -314,7 +345,7 @@ struct ConnectionState : public ConnectionInfo {
   // Epoch means inactive (no request in progress).
   std::chrono::steady_clock::time_point headerStartTp;
 
-  ChunkedBodyProgress chunkedBody;
+  PendingHttp1Request pendingRequest;
 
   // Tunnel support: when a connection is acting as a tunnel endpoint, peerFd holds the
   // file descriptor of the other side (upstream or client).
@@ -324,9 +355,6 @@ struct ConnectionState : public ConnectionInfo {
   // HTTP/2 stream on the peer (HTTP/2 client) connection. Zero for HTTP/1.1 tunnels.
   uint32_t peerStreamId{0};
 #endif
-  // Length of trailer headers in bodyAndTrailersBuffer (0 if no trailers).
-  // Trailers occupy [bodyAndTrailersBuffer.size() - trailerLen, bodyAndTrailersBuffer.size()).
-  uint32_t trailerLen{0};
 
   /// Sentinel value for bodyLastActivityMs / requestDeadlineMs indicating no active timestamp.
   static constexpr uint32_t kInactiveRelativeMs = static_cast<uint32_t>(-1);
@@ -343,11 +371,6 @@ struct ConnectionState : public ConnectionInfo {
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   uint32_t generation{0};
 #endif
-
-  // Bytes of the socket send queue at the previous check that the zerocopy sends in flight progress, while the
-  // connection waits for their completion (see internal::ConnectionMaintenance::watchZerocopySends()).
-  // kNoZerocopyStallCheck if none.
-  uint32_t zerocopyStallCheckQueuedBytes{kNoZerocopyStallCheck};
 
 #ifdef AERONET_ENABLE_OPENSSL
   // Keep the TLS context alive for as long as this connection's SSL/handshake may reference callback user pointers

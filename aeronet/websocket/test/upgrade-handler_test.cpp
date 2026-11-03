@@ -44,7 +44,8 @@ class UpgradeHandlerHarness : public ::testing::Test {
   http::StatusCode parse(RawChars raw) {
     inBuffer = std::move(raw);
     RawChars tmp;
-    return request.initTrySetHead(inBuffer, tmp, 4096U, true, nullptr);
+    HttpRequestView::HeadParseState headParseState = HttpRequestView::HeadParseState::None;  // a new request
+    return request.initTrySetHead(inBuffer, headParseState, tmp, 4096U, true, nullptr);
   }
 
   RawChars inBuffer;

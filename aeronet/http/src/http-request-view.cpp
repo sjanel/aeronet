@@ -156,7 +156,6 @@ void HttpRequestView::init(const HttpServerConfig& config, CompressionState& com
   _doNotSendContentLengthHeader = !config.http2.sendContentLengthHeader;
 #endif
   _pCompressionState = &compressionState;
-  _headParseState = HeadParseState::None;
 }
 
 namespace {
@@ -387,8 +386,9 @@ AERONET_NOINLINE SvToSvMap::iterator SetHost(SvToSvMap& headers, std::string_vie
 
 }  // namespace
 
-http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawChars& tmpBuffer,
-                                                 uint32_t maxHeadersBytes, bool mergeAllowedForUnknownRequestHeaders,
+http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, HeadParseState& headParseState,
+                                                 RawChars& tmpBuffer, uint32_t maxHeadersBytes,
+                                                 bool mergeAllowedForUnknownRequestHeaders,
                                                  tracing::SpanPtr traceSpan) {
   char* pFirst = inBuffer.data();
   char* pLast = pFirst + inBuffer.size();
@@ -397,12 +397,12 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
 
   // The bytes parsed so far, modified in place, must not be parsed again: an incomplete head is resumed at its
   // first header line not parsed yet. The state is saved again below if the head is still incomplete.
-  assert(_headParseState != HeadParseState::WaitingForBody);  // see resumeHeadWaitingForBody()
-  const bool resume = _headParseState == HeadParseState::Partial;
-  _headParseState = HeadParseState::None;
-  const auto needMoreData = [this, base = inBuffer.data()](const char* pResumePos) {
+  assert(headParseState != HeadParseState::WaitingForBody);  // see resumeHeadWaitingForBody()
+  const bool resume = headParseState == HeadParseState::Partial;
+  headParseState = HeadParseState::None;
+  const auto needMoreData = [this, &headParseState, base = inBuffer.data()](const char* pResumePos) {
     _headSpanSize = static_cast<std::size_t>(pResumePos - base);
-    _headParseState = HeadParseState::Partial;
+    headParseState = HeadParseState::Partial;
     return kStatusNeedMoreData;
   };
 
@@ -589,9 +589,7 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, RawCh
 }
 
 void HttpRequestView::resumeHeadWaitingForBody(std::span<char> inBuffer) noexcept {
-  assert(_headParseState == HeadParseState::WaitingForBody);
   assert(_headSpanSize <= inBuffer.size());
-  _headParseState = HeadParseState::None;
   rebaseHeadViews(inBuffer.data());
   resetBodyState();
 }

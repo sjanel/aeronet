@@ -99,7 +99,10 @@ class StaticFileHandlerTest : public ::testing::Test {
     cs.inBuffer.assign(raw);
   }
 
-  auto setHead() { return req.initTrySetHead(cs.inBuffer, tmpBuffer, 4096U, true, nullptr); }
+  auto setHead() {
+    HttpRequestView::HeadParseState headParseState = HttpRequestView::HeadParseState::None;  // a new request
+    return req.initTrySetHead(cs.inBuffer, headParseState, tmpBuffer, 4096U, true, nullptr);
+  }
 
   // Test-only accessors for the private header cache (the fixture is a friend of StaticFileHandler).
   // The cache is keyed by the resolved absolute file path, so 'name' is resolved against the handler root.

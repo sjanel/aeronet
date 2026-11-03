@@ -18,8 +18,6 @@
 #include "aeronet/async-resume-poster.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
-#include "aeronet/http-constants.hpp"
-#include "aeronet/http-message-data.hpp"
 #include "aeronet/http-message.hpp"
 #include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-request-view.hpp"
@@ -159,13 +157,10 @@ bool Http1Pipeline::dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyncRe
   asyncState.active = true;
   asyncState.usesSharedDecompressedBody = usesSharedDecompressedBody;
   asyncState.isChunked = isChunked;
-  asyncState.continueExpected = found100Continue && !bodyReady;
   asyncState.consumedBytes = bodyReady ? consumedBytes : 0;
   asyncState.maxBodyBytes = perRouteMaxBodyBytes;
   asyncState.pendingResponse = internal::HttpResponseAccess::MakeUnallocated();
-
-  // The request is not parsed again from now on: the expectations of the next one must be answered.
-  state.expectationAnswered = false;
+  state.pendingRequest.continueExpected = found100Continue && !bodyReady;
 
   // Keep header storage stable while async work runs so header string_views stay valid
   request.pinHeadStorage(asyncState.headBuffer);
@@ -192,9 +187,10 @@ void Http1Pipeline::resumeAsyncHandler(ConnectionIt cnxIt) {
 
   if (async.task.run()) {
     onAsyncHandlerCompleted(cnxIt);
-  } else if (async.continueExpected && async.task.await.reason == AsyncAwaitState::Reason::WaitingForBody) {
-    async.continueExpected = false;
-    _pCtx->io.queueData(cnxIt, HttpMessageData(RawChars{http::HTTP11_100_CONTINUE}));
+  } else if (state.pendingRequest.continueExpected &&
+             async.task.await.reason == AsyncAwaitState::Reason::WaitingForBody) {
+    state.pendingRequest.continueExpected = false;
+    queue100Continue(cnxIt);
   } else if (async.usesSharedDecompressedBody && !pinAsyncSharedBodyToConnectionStorage(state)) {
     state.requestDrainAndClose();
   }
@@ -284,7 +280,7 @@ void Http1Pipeline::onAsyncHandlerCompleted(ConnectionIt cnxIt) {
   async.pendingResponse = async.task.takeResponse(state.request);
   if (!async.task.await.needsBody) {
     tryFlushPendingAsyncResponse(cnxIt);
-  } else if (async.continueExpected) {
+  } else if (state.pendingRequest.continueExpected) {
     // Its client may wait for 100 Continue, not sent as the handler did not wait for the body: it is answered right
     // away, the connection closing since its body may still come (RFC 9110 §10.1.1).
     tryFlushPendingAsyncResponse(cnxIt, true);

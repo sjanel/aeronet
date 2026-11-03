@@ -293,7 +293,7 @@ void ConnectionState::reset() {
   transport.reset();
   lastActivity = {};
   headerStartTp = {};
-  chunkedBody = {};
+  pendingRequest = {};
   bodyLastActivityMs = kInactiveRelativeMs;
   requestDeadlineMs = kInactiveRelativeMs;
   keepAliveDeadlineIndex = kNoKeepAliveDeadlineIndex;
@@ -303,7 +303,6 @@ void ConnectionState::reset() {
   peerStreamId = 0;
 #endif
   requestsServed = 0;
-  trailerLen = 0;
   clientAddressLength = 0;
   readSizeShift = 0;
   closeMode = CloseMode::None;
@@ -314,8 +313,6 @@ void ConnectionState::reset() {
   inputDeferred = false;
   inputBlockedByOutput = false;
   relayPausedByBacklog = false;
-  expectationAnswered = false;
-  requestMiddlewareRan = false;
   connectPending = false;
   tunnelResolving = false;
   shutdownWritePending = false;

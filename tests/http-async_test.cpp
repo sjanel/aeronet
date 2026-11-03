@@ -340,6 +340,32 @@ TEST(HttpAsyncHandlers, ExpectContinueIsSentOnceForBodyReceivedInSeveralParts) {
   }
 }
 
+// What is kept while a request is served (its expectations answered, the 100 Continue its async handler owes) is
+// forgotten once it ends: on a keep-alive connection, each request waiting for 100 Continue gets it, whether its
+// handler is async or not.
+TEST(HttpAsyncHandlers, ExpectContinueIsSentForEachRequestOfAKeepAliveConnection) {
+  ts.resetRouterAndGet().setPath(http::Method::POST, "/sync", [](const HttpRequestView& req) {
+    return HttpResponse(std::format("sync:{}", req.body()));
+  });
+  ts.router().setPath(http::Method::POST, "/async", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
+    const std::string_view body = co_await req.bodyAwaitable();
+    co_return HttpResponse(std::format("async:{}", body));
+  });
+
+  test::ClientConnection client(ts.port());
+  for (std::string_view target : {"/async", "/async", "/sync", "/async"}) {
+    SCOPED_TRACE(target);
+    test::sendAll(client.fd(), PostHead(target, 5, "Expect: 100-continue\r\n"));
+    ASSERT_EQ(test::RecvHead(client.fd()), http::HTTP11_100_CONTINUE);
+    test::sendAll(client.fd(), "hel");
+    std::this_thread::sleep_for(20ms);
+    test::sendAll(client.fd(), "lo");
+    const std::string resp = test::recvWithTimeout(client.fd(), 2s);
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 200 ")) << resp;
+    EXPECT_TRUE(resp.ends_with(std::format("\r\n\r\n{}:hello", target.substr(1)))) << resp;
+  }
+}
+
 // 100 Continue is sent once the async handler waits for the body (here after deferred work), not when it is called: a
 // handler answering from the head alone, or a request middleware, is answered without it (RFC 9110 §10.1.1). The
 // connection then closes, as the response announces: the client may send the body anyway.
