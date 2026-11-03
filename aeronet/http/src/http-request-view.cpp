@@ -41,6 +41,7 @@
 #include "aeronet/tolower-str.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/uri-host.hpp"
+#include "aeronet/url-char-class.hpp"
 #include "aeronet/url-decode.hpp"
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
@@ -264,29 +265,6 @@ constexpr bool IsAsciiAlpha(char ch) noexcept {
   return lower >= 'a' && lower <= 'z';
 }
 
-// RFC 3986 §3.1: characters allowed after the first one of a scheme: ALPHA / DIGIT / "+" / "-" / "."
-constexpr bool IsSchemeChar(char ch) noexcept {
-  static constexpr auto kSchemeCharTable = [] {
-    struct {
-      bool data[256];
-    } table{};
-    for (int ic = 0; ic < 256; ++ic) {
-      const char cc = static_cast<char>(ic);
-      table.data[ic] = IsAsciiAlpha(cc) || (cc >= '0' && cc <= '9') || cc == '+' || cc == '-' || cc == '.';
-    }
-    return table;
-  }();
-  return kSchemeCharTable.data[static_cast<unsigned char>(ch)];
-}
-
-// Control characters are never valid in a request-target (RFC 3986 §2). A bare LF in particular could end the request
-// line for lenient parsers.
-// A captureless lambda (not a function): the algorithms taking it monomorphize on its unique closure type, so that the
-// per-char predicate always inlines into their loop instead of becoming an indirect call through a function pointer.
-constexpr auto IsControlChar = [](char ch) noexcept {
-  return static_cast<unsigned char>(ch) < 0x20U || static_cast<unsigned char>(ch) == 0x7FU;
-};
-
 // RFC 9112 §3.2: request-target = origin-form / absolute-form / authority-form / asterisk-form.
 enum class RequestTargetForm : uint8_t {
   Invalid,
@@ -314,7 +292,7 @@ constexpr RequestTargetForm ClassifyRequestTarget(std::string_view target, http:
   if (!IsAsciiAlpha(target.front())) {
     return RequestTargetForm::Invalid;
   }
-  const auto pSchemeEnd = std::find_if_not(target.begin() + 1, target.end(), IsSchemeChar);
+  const auto pSchemeEnd = std::find_if_not(target.begin() + 1, target.end(), url::IsSchemeChar);
   return pSchemeEnd != target.end() && *pSchemeEnd == ':' ? RequestTargetForm::Absolute : RequestTargetForm::Invalid;
 }
 
@@ -349,7 +327,7 @@ AERONET_NOINLINE bool MoveAuthorityFirst(char* pFirst, char* pLast, MovedAbsolut
   // The userinfo (RFC 3986 §3.2.1) is not part of the host, which allows no '@': with several, parsers disagree on
   // which one ends the userinfo, so the host they pick differs.
   if (const std::size_t atPos = authority.find('@'); atPos != std::string_view::npos) {
-    if (std::ranges::any_of(authority.substr(0, atPos), IsControlChar)) {
+    if (std::ranges::any_of(authority.substr(0, atPos), url::IsControlChar)) {
       return false;
     }
     authority.remove_prefix(atPos + 1);
@@ -846,7 +824,7 @@ HttpResponse::Options HttpRequestView::makeResponseOptions() const noexcept {
 }
 
 bool HttpRequestView::decodePath(char* pathStart, char* pathEnd) {
-  if (std::any_of(pathStart, pathEnd, IsControlChar)) {
+  if (std::any_of(pathStart, pathEnd, url::IsControlChar)) {
     return false;
   }
   char* questionMark = FindChar(pathStart, pathEnd, '?');

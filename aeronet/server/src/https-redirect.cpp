@@ -7,10 +7,10 @@
 #include "aeronet/decimal-writer.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-request-view.hpp"
-#include "aeronet/internal/is-path-safe.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/url-char-class.hpp"
 #include "aeronet/url-encode.hpp"
 
 namespace aeronet::http {
@@ -70,29 +70,23 @@ bool SetHttpsAuthority(RawChars& out, std::string_view hostHeader, uint16_t targ
 }
 
 void AppendUrlEncodedPath(RawChars& out, std::string_view decodedPath) {
-  // Captureless lambda (not the function name): the template monomorphizes on its unique closure type, so the
-  // per-char predicate inlines into the encode loop instead of becoming an indirect call through a function pointer.
-  constexpr auto isPathSafe = [](char ch) { return internal::IsPathSafe(ch); };
-
-  out.ensureAvailableCapacityExponential(URLEncodedSize(decodedPath, isPathSafe));
-  char* pEnd = URLEncode(decodedPath, isPathSafe, out.data() + out.size());
+  out.ensureAvailableCapacityExponential(URLEncodedSize(decodedPath, url::IsPathChar));
+  char* pEnd = URLEncode(decodedPath, url::IsPathChar, out.data() + out.size());
 
   out.setEnd(pEnd);
 }
 
 void AppendUrlEncodedQueryParam(RawChars& out, char leadingChar, std::string_view decodedKey,
                                 std::string_view decodedValue) {
-  constexpr auto isUnreserved = [](char ch) { return internal::IsUnreserved(ch); };
-
-  out.ensureAvailableCapacityExponential(1UL + URLEncodedSize(decodedKey, isUnreserved) + 1UL +
-                                         URLEncodedSize(decodedValue, isUnreserved));
+  out.ensureAvailableCapacityExponential(1UL + URLEncodedSize(decodedKey, url::IsUnreserved) + 1UL +
+                                         URLEncodedSize(decodedValue, url::IsUnreserved));
 
   char* pEnd = out.data() + out.size();
 
   *pEnd++ = leadingChar;
-  pEnd = URLEncode(decodedKey, isUnreserved, pEnd);
+  pEnd = URLEncode(decodedKey, url::IsUnreserved, pEnd);
   *pEnd++ = '=';
-  pEnd = URLEncode(decodedValue, isUnreserved, pEnd);
+  pEnd = URLEncode(decodedValue, url::IsUnreserved, pEnd);
 
   out.setEnd(pEnd);
 }

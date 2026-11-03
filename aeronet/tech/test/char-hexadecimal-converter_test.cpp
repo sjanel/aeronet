@@ -82,6 +82,15 @@ TEST(CharHexConverter, FromHexDigitLowLatencyIsFromHexDigit) {
                 FromHexDigitLowLatency('F') == 15 && FromHexDigitLowLatency('g') == -1);
 }
 
+TEST(CharHexConverter, IsHexDigitForEveryByte) {
+  for (int byte = 0; byte <= 0xFF; ++byte) {
+    const char ch = static_cast<char>(byte);
+    const bool expected = (byte >= '0' && byte <= '9') || (byte >= 'a' && byte <= 'f') || (byte >= 'A' && byte <= 'F');
+    EXPECT_EQ(IsHexDigit(ch), expected) << "byte=" << byte;
+  }
+  static_assert(IsHexDigit('0') && IsHexDigit('f') && IsHexDigit('F') && !IsHexDigit('g') && !IsHexDigit('\xFF'));
+}
+
 TEST(CharHexConverter, RoundTrip) {
   // Round-trip test: encode then decode two hex digits
   for (int i = 0; i <= 0xFF; ++i) {

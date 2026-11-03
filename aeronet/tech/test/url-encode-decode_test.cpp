@@ -5,30 +5,13 @@
 #include <string_view>
 
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/url-char-class.hpp"
 #include "aeronet/url-decode.hpp"
 #include "aeronet/url-encode.hpp"
 
 namespace aeronet {
 namespace {
 
-// Helper predicate: unreserved characters per RFC 3986
-struct IsUnreserved {
-  bool operator()(char ch) const noexcept {
-    return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' ||
-           ch == '.' || ch == '~';
-  }
-};
-
-std::string EncodeString(std::string_view input, const IsUnreserved& isUnreserved) {
-  const std::size_t size = URLEncodedSize(input, isUnreserved);
-  std::string out(size, '\0');
-  char* end = URLEncode(input, isUnreserved, out.data());
-  // end should point just past the last written char
-  EXPECT_EQ(end, out.data() + static_cast<std::ptrdiff_t>(size));
-  return out;
-}
-
-// Overload accepting a generic predicate functor
 template <class Pred>
 std::string EncodeString(std::string_view input, Pred pred) {
   const std::size_t size = URLEncodedSize(input, pred);
@@ -42,13 +25,13 @@ std::string EncodeString(std::string_view input, Pred pred) {
 
 TEST(UrlEncodeDecode, EncodeBasic) {
   std::string input = "ABC xyz";  // space must be encoded
-  auto encoded = EncodeString(input, IsUnreserved{});
+  auto encoded = EncodeString(input, url::IsUnreserved);
   EXPECT_EQ(encoded, "ABC%20xyz");
 }
 
 TEST(UrlEncodeDecode, EncodeReserved) {
   std::string input = "!*'();:@&=+$,/?#[]";  // From RFC 3986 reserved set + others to ensure encoding
-  auto encoded = EncodeString(input, IsUnreserved{});
+  auto encoded = EncodeString(input, url::IsUnreserved);
   // All should be percent encoded
   // We'll just verify no raw reserved characters remain except percent
   for (char ch : input) {
@@ -60,7 +43,7 @@ TEST(UrlEncodeDecode, EncodeReserved) {
 
 TEST(UrlEncodeDecode, RoundTripSimple) {
   std::string original = "Hello-World_~";  // all unreserved
-  auto encoded = EncodeString(original, IsUnreserved{});
+  auto encoded = EncodeString(original, url::IsUnreserved);
   EXPECT_EQ(encoded, original);  // no change
   RawChars copy(encoded);
   char* last = url::DecodeInPlace(copy.begin(), copy.end());
@@ -70,7 +53,7 @@ TEST(UrlEncodeDecode, RoundTripSimple) {
 
 TEST(UrlEncodeDecode, RoundTripWithSpaces) {
   std::string original = "Hello World";  // space encoded as %20
-  auto encoded = EncodeString(original, IsUnreserved{});
+  auto encoded = EncodeString(original, url::IsUnreserved);
   EXPECT_EQ(encoded, "Hello%20World");
   RawChars copy(encoded);
   char* last = url::DecodeInPlace(copy.begin(), copy.end());
@@ -136,7 +119,7 @@ TEST(UrlEncodeDecode, InvalidPercentNonHex) {
 TEST(UrlEncodeDecode, UTF8RoundTrip) {
   // UTF-8 snowman + text
   std::string original = "\xE2\x98\x83 snow";  // ☃ snow
-  auto encoded = EncodeString(original, IsUnreserved{});
+  auto encoded = EncodeString(original, url::IsUnreserved);
   RawChars copy2(encoded);
   char* last = url::DecodeInPlace(copy2.begin(), copy2.end());
   EXPECT_NE(last, nullptr);
@@ -217,13 +200,7 @@ TEST(UrlEncodeDecode, InPlaceEncodedNul) {
 TEST(UrlEncodeDecode, InPlaceUTF8) {
   RawChars original("\xE2\x98\x83");  // snowman
   // Encode it using existing encoder predicate (will encode all non-unreserved)
-  struct IsUnreservedLocal {
-    bool operator()(char ch) const noexcept {
-      return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' ||
-             ch == '_' || ch == '.' || ch == '~';
-    }
-  };
-  auto encoded = EncodeString(std::string_view(original.data(), original.size()), IsUnreservedLocal{});
+  auto encoded = EncodeString(std::string_view(original.data(), original.size()), url::IsUnreserved);
   RawChars copy(encoded);
   char* last = url::DecodeInPlace(copy.begin(), copy.end());
   EXPECT_NE(last, nullptr);
@@ -238,7 +215,7 @@ TEST(UrlEncodeDecode, EncodeUppercaseHexAndNonAscii) {
   input.push_back(static_cast<char>(0x01));  // should encode as %01
   input.push_back('A');                      // unreserved
 
-  auto encoded = EncodeString(input, IsUnreserved{});
+  auto encoded = EncodeString(input, url::IsUnreserved);
   EXPECT_NE(encoded.find("%FF"), std::string::npos);
   EXPECT_NE(encoded.find("%01"), std::string::npos);
   EXPECT_EQ(encoded.back(), 'A');
@@ -255,8 +232,8 @@ TEST(UrlEncodeDecode, URLEncodedSizeMatchesOutput) {
   sample.push_back(static_cast<char>(0x80));
   sample.push_back('~');
 
-  const std::size_t expectedSize = URLEncodedSize(sample, IsUnreserved{});
-  auto out = EncodeString(sample, IsUnreserved{});
+  const std::size_t expectedSize = URLEncodedSize(sample, url::IsUnreserved);
+  auto out = EncodeString(sample, url::IsUnreserved);
   EXPECT_EQ(out.size(), expectedSize);
 }
 

@@ -72,13 +72,6 @@ AeronetAddUnitTest(
     aeronet_test_support
 )
 
-AeronetAddUnitTest(
-    is-path-safe_test
-    test/is-path-safe_test.cpp
-    LIBRARIES
-    aeronet_http
-)
-
 if(AERONET_ENABLE_HTTP_SERVER)
     AeronetAddUnitTest(
         path-handler-entry_test

@@ -87,6 +87,9 @@ constexpr int8_t FromHexDigit(char ch) {
   return kHexTable.data[static_cast<unsigned char>(ch)];
 }
 
+/// Returns true if 'ch' is a hexadecimal digit (HEXDIG, of either case).
+constexpr bool IsHexDigit(char ch) noexcept { return FromHexDigit(ch) >= 0; }
+
 /// Same as FromHexDigit, computed without lookup table: faster when the result is on a dependency chain (the size of a
 /// chunk gives the position of the next one), slower to decode many independent digits (percent-decoding).
 constexpr int8_t FromHexDigitLowLatency(char ch) {

@@ -9,6 +9,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/char-hexadecimal-converter.hpp"
 #include "aeronet/decimal-writer.hpp"
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/embedded-payload.hpp"
@@ -30,6 +31,7 @@
 #include "aeronet/search-crlf.hpp"
 #include "aeronet/static-string-view-helpers.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/url-char-class.hpp"
 #include "url-parse.hpp"
 
 namespace aeronet {
@@ -38,20 +40,16 @@ namespace {
 
 constexpr std::string_view kSchemeSep = "://";
 
-bool IsHex(unsigned char ch) noexcept {
-  return (ch >= '0' && ch <= '9') || ((ch | 0x20U) >= 'a' && (ch | 0x20U) <= 'f');
-}
-
-// Tells whether [pData, end) starts with the 2 hex digits ending a percent-escape.
-bool StartsWithHexPair(const unsigned char* pData, const unsigned char* end) noexcept {
-  return end - pData >= 2 && IsHex(pData[0]) && IsHex(pData[1]);
+// Tells whether [pData, pEnd) starts with the 2 hex digits ending a percent-escape.
+bool StartsWithHexPair(const char* pData, const char* pEnd) noexcept {
+  return pEnd - pData >= 2 && IsHexDigit(pData[0]) && IsHexDigit(pData[1]);
 }
 
 // Checks the chars of (a part of) a request-target, which may be empty.
 // If 'afterPercent' is true, 'chars' directly follows a '%' and must start with the 2 hex digits completing its escape.
 bool IsValidRequestTargetChars(std::string_view chars, bool afterPercent = false) noexcept {
-  const auto* pData = reinterpret_cast<const unsigned char*>(chars.data());
-  const auto* pEnd = pData + chars.size();
+  const char* pData = chars.data();
+  const char* pEnd = pData + chars.size();
 
   if (afterPercent) {
     if (!StartsWithHexPair(pData, pEnd)) {
@@ -61,12 +59,10 @@ bool IsValidRequestTargetChars(std::string_view chars, bool afterPercent = false
   }
 
   while (pData != pEnd) {
-    unsigned char ch = *pData++;
+    const char ch = *pData++;
 
-    // RFC 9112 :
-    // request-target must not contain SP, CTL or DEL.
-
-    if (ch <= 0x20 || ch == 0x7F) {
+    // RFC 9112 §3.2: a request-target contains no SP and no CTL (DEL included).
+    if (ch == ' ' || url::IsControlChar(ch)) {
       return false;
     }
 

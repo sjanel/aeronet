@@ -221,6 +221,11 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    url-char-class_test
+    test/url-char-class_test.cpp
+)
+
+AeronetAddUnitTest(
     url-encode-decode_test
     test/url-encode-decode_test.cpp
     LIBRARIES
