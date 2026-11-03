@@ -759,7 +759,7 @@ class HttpRequest final : public HttpMessage {
   }
 
   // Position in completeRequestForHttp11() of the blank line (CRLFCRLF) ending the head, where header lines can be
-  // spliced in on the wire.
+  // spliced in on the wire. Not for a finalizeTrailersForHttp11() copy, whose body starts after its chunk-size line.
   [[nodiscard]] std::size_t headEndForHttp11() const noexcept {
     return static_cast<std::size_t>(bodyStartPos()) - _originKeyLen - http::DoubleCRLF.size();
   }

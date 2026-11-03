@@ -1039,8 +1039,12 @@ class ScriptedFallbackTransport final : public TransportBackend<ScriptedFallback
     }
   }
 
-  // Body chunk writes (single-buffer): scripted per mode.
+  // The head (first write, a file body request has no captured body) is accepted verbatim so the body phase is reached,
+  // the body chunk writes are scripted per mode.
   TransportResult write(std::string_view data) {
+    if (!std::exchange(_headWritten, true)) {
+      return {data.size(), TransportHint::None};
+    }
     switch (_mode) {
       case Mode::WriteError:
       case Mode::WriteErrorAfterResponse:
@@ -1052,16 +1056,12 @@ class ScriptedFallbackTransport final : public TransportBackend<ScriptedFallback
     }
   }
 
-  // Head write (scatter): always accepted verbatim so the body phase is reached.
-  static TransportResult write(std::string_view head, std::string_view body) {
-    return {head.size() + body.size(), TransportHint::None};
-  }
-
   // supportsSendfile() intentionally not overridden -> inherits false (read + write fallback path).
 
  private:
-  Mode _mode;
   std::size_t _responseOffset{0};
+  Mode _mode;
+  bool _headWritten{false};
 };
 }  // namespace
 
@@ -2228,6 +2228,7 @@ class HttpClientTrailerE2ETest : public ::testing::Test {
       resp.header("echo-checksum", req.trailerValueOrEmpty("x-checksum"));
       resp.header("echo-signature", req.trailerValueOrEmpty("x-signature"));
       resp.header("echo-trailer-count", req.trailers().size());
+      resp.header("echo-connection", req.headerValueOrEmpty(http::Connection));
       return resp;
     });
   }
@@ -2280,6 +2281,27 @@ TEST_F(HttpClientTrailerE2ETest, SendsLargeCapturedBodyWithTrailer) {
   EXPECT_EQ(resp.bodyInMemory(), payload);
   EXPECT_EQ(resp.headerValueOrEmpty("echo-checksum"), "large-body");
   EXPECT_EQ(resp.headerValueOrEmpty("echo-trailer-count"), "1");
+}
+
+// RFC 9112 section 9.6: with keep-alive disabled, a request with trailers carries 'Connection: close' once, written by
+// the serialization of its chunked wire copy, with an inlined (small) or a captured (large) body.
+TEST_F(HttpClientTrailerE2ETest, KeepAliveOffSendsConnectionClose) {
+  for (const std::size_t bodySize : {std::size_t{16}, std::size_t{64} * 1024}) {
+    HttpClientConfig cfg;
+    cfg.keepAlive = false;
+    cfg.minCapturedBodySize = 1024;
+    cfg.withDefaultAcceptEncoding("identity");  // the echoed body, a repeated byte, would exceed maxExpansionRatio
+    HttpClient client(cfg);
+    const std::string payload(bodySize, 'x');
+    auto req = client.makeRequest(http::Method::POST, Url("/trailer-echo"));
+    req.body(payload, "text/plain").trailerAddLine("x-checksum", "abc123");
+    const auto resp = client.request(req).value();
+    EXPECT_EQ(resp.status(), 200);
+    EXPECT_EQ(resp.headerValueOrEmpty("echo-connection"), "close") << bodySize;
+    EXPECT_EQ(resp.headerValueOrEmpty("echo-checksum"), "abc123") << bodySize;
+    EXPECT_EQ(resp.bodyInMemory(), payload) << bodySize;
+    EXPECT_FALSE(req.hasHeader(http::Connection));  // the header is added to the wire only
+  }
 }
 
 // The chunked+trailer request must be fully framed so the connection stays reusable: a plain request right
@@ -3423,10 +3445,12 @@ TEST_F(HttpClientE2ETest, ExpectContinueSendsTheBodyAfter100Continue) {
   }
 }
 
-// A final response to the head of a request with 'Expect: 100-continue' answers it: its body is never sent, and the
-// connection, whose server may still expect it, is not reused. The expectation is case-insensitive.
+// A final response to the head of a request with 'Expect: 100-continue' answers it: its body is never sent, not even
+// the chunk-size line of a body with trailers, and the connection, whose server may still expect it, is not reused. The
+// expectation is case-insensitive.
 TEST(HttpClientRawServerTest, ExpectContinueFinalResponseSkipsTheBody) {
-  for (const std::string_view response : {kEarlyRejection, kOkResponse}) {
+  for (const auto [response, withTrailers] : {std::pair{kEarlyRejection, false}, std::pair{kOkResponse, false},
+                                              std::pair{kEarlyRejection, true}, std::pair{kOkResponse, true}}) {
     ReceivedLog received;
     {
       RawServer server([&received, response](NativeHandle fd, int) {
@@ -3440,14 +3464,18 @@ TEST(HttpClientRawServerTest, ExpectContinueFinalResponseSkipsTheBody) {
       HttpClient client(cfg);
       auto req = client.makeRequest(http::Method::PUT, MakeUrl(server.port(), "/file"));
       req.headerAddLine(http::Expect, "100-Continue").body(std::string(64UL * 1024UL, 'b'), "application/octet-stream");
+      if (withTrailers) {
+        req.trailerAddLine("x-checksum", "abc");
+      }
       const auto result = client.request(std::move(req));
-      ASSERT_TRUE(result) << response << ' ' << ErrcToStr(result.error());
+      ASSERT_TRUE(result) << response << ' ' << withTrailers << ' ' << ErrcToStr(result.error());
       EXPECT_EQ(result->status(), response == kOkResponse ? http::StatusCodeOK : http::StatusCodePayloadTooLarge);
       EXPECT_EQ(HttpClientTest::IdleConnections(client), 0U);
     }
     const auto entries = received.entries();
     ASSERT_EQ(entries.size(), 1U);
     EXPECT_TRUE(entries[0].contains("\r\nexpect: 100-Continue\r\n")) << entries[0];
+    EXPECT_EQ(entries[0].contains("\r\ntransfer-encoding: chunked\r\n"), withTrailers) << entries[0];
     EXPECT_TRUE(entries[0].ends_with(http::DoubleCRLF)) << entries[0];  // the head only
   }
 }

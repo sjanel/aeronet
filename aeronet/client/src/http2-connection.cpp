@@ -15,7 +15,6 @@
 #include <system_error>
 
 #include "aeronet/client-connection.hpp"
-#include "aeronet/event.hpp"
 #include "aeronet/file-payload.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/hpack.hpp"
@@ -48,6 +47,7 @@
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
 #include "http1-response-parser.hpp"
+#include "transport-io.hpp"
 
 namespace aeronet::http2::internal {
 
@@ -200,10 +200,8 @@ class Http2ClientEngine : private EventSink {
         }
       }
 
-      _inBuf.ensureAvailableCapacityExponential(_minReadChunkBytes);
-      const TransportResult res = transport.read(_inBuf.data() + _inBuf.size(), _minReadChunkBytes);
+      const TransportResult res = aeronet::internal::ReadAppend(transport, _inBuf, _minReadChunkBytes);
       if (res.bytesProcessed != 0) {
-        _inBuf.addSize(res.bytesProcessed);
         continue;
       }
       if (res.want == TransportHint::ReadReady) {
@@ -244,8 +242,7 @@ class Http2ClientEngine : private EventSink {
       if (!_conn.hasPendingOutput() || (res.bytesProcessed != 0 && res.want == TransportHint::None)) {
         continue;
       }
-      const EventBmp interest = res.want == TransportHint::ReadReady ? EventIn : EventOut;
-      if (!client.waitExchangeIo(fd, interest, deadline)) {
+      if (!client.waitExchangeIo(fd, aeronet::internal::InterestFor(res.want), deadline)) {
         return HttpClientErrc::timeout;
       }
     }
@@ -278,26 +275,17 @@ class Http2ClientEngine : private EventSink {
         }
         // Only a partial frame is buffered: fall through and read more.
       }
-      _inBuf.ensureAvailableCapacityExponential(_minReadChunkBytes);
-      const TransportResult res = transport.read(_inBuf.data() + _inBuf.size(), _minReadChunkBytes);
+      const TransportResult res = aeronet::internal::ReadAppend(transport, _inBuf, _minReadChunkBytes);
       if (res.bytesProcessed > 0) {
-        _inBuf.addSize(res.bytesProcessed);
         continue;  // process what we just buffered
       }
-      if (res.want == TransportHint::ReadReady) {
-        if (!client.waitExchangeIo(fd, EventIn, deadline)) {
-          return HttpClientErrc::timeout;
-        }
-        continue;
+      if (res.want != TransportHint::ReadReady && res.want != TransportHint::WriteReady) {
+        // 0 bytes, no want => orderly close before the exchange completed.
+        return HttpClientErrc::connectionClosed;
       }
-      if (res.want == TransportHint::WriteReady) {
-        if (!client.waitExchangeIo(fd, EventOut, deadline)) {
-          return HttpClientErrc::timeout;
-        }
-        continue;
+      if (!client.waitExchangeIo(fd, aeronet::internal::InterestFor(res.want), deadline)) {
+        return HttpClientErrc::timeout;
       }
-      // 0 bytes, no want => orderly close before the exchange completed.
-      return HttpClientErrc::connectionClosed;
     }
   }
 

@@ -164,6 +164,11 @@ TransportResult TlsTransport::write(std::string_view firstBuf, std::string_view 
   if (isKtlsSendEnabled()) {
     return socketWrite(firstBuf, secondBuf);
   }
+  // A single buffer is the common case (head and small body stored contiguously): written in place, as a small first
+  // buffer followed by another one is copied with its start into a record.
+  if (secondBuf.empty()) {
+    return write(firstBuf);
+  }
   const std::string_view buffers[]{firstBuf, secondBuf};
   return write(std::span<const std::string_view>(buffers));
 }
