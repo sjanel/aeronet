@@ -37,6 +37,8 @@ class TlsTransport final : public TransportBackend<TlsTransport, TransportKind::
   /// otherwise. Without read-ahead, a read returns the data of one TLS record at most.
   TransportResult read(char* buf, std::size_t len);
 
+  /// Write `data` until it is written whole, the socket would block or the write fails, like a socket write. Without
+  /// kTLS send, record by record.
   TransportResult write(std::string_view data);
 
   /// Ordered write of two buffers (see the gather write below).
@@ -79,12 +81,15 @@ class TlsTransport final : public TransportBackend<TlsTransport, TransportKind::
   [[nodiscard]] NativeHandle underlyingFd() const noexcept { return _fd; }
 
  private:
-  // What stopped the last read decrypting records until its buffer was full (read-ahead SSL objects only).
+  // What stopped the last read decrypting records until its buffer was full (read-ahead SSL objects only), or a fatal
+  // read error (any SSL object).
   enum class ReadStop : std::uint8_t {
     None,     // the buffer was filled, or no read yet: OpenSSL's buffered data tells if more is pending
     Drained,  // the socket would block: OpenSSL holds at most an incomplete record, that only new bytes can complete
     Pending,  // a condition the next SSL_read_ex reports again (peer close_notify, write needed)
-    Failed,   // a fatal error, already logged: the next read reports it
+    // A fatal error, already logged: every later read reports it. OpenSSL reports it once: in its error state, a later
+    // SSL_read_ex fails without queuing any error, which SSL_get_error() takes for a read that would block.
+    Failed,
   };
 
   TransportHint handshake(TransportHint want);
