@@ -56,6 +56,7 @@
 #include "aeronet/vector.hpp"
 #include "client-accept-encoding.hpp"
 #include "status-line.hpp"
+#include "transport-io.hpp"
 #include "url-parse.hpp"
 
 #ifdef AERONET_LINUX
@@ -560,8 +561,7 @@ HttpClientErrc HttpClient::establishProxyTunnel(Transport& transport, NativeHand
     if (wr.want == TransportHint::Error) {
       return HttpClientErrc::proxyError;
     }
-    const EventBmp interest = (wr.want == TransportHint::ReadReady) ? EventIn : EventOut;
-    if (!waitIo(fd, interest, deadline)) {
+    if (!waitIo(fd, internal::InterestFor(wr.want), deadline)) {
       return HttpClientErrc::timeout;
     }
   }
@@ -584,26 +584,17 @@ HttpClientErrc HttpClient::establishProxyTunnel(Transport& transport, NativeHand
     if (respBuffer.size() >= kMaxTunnelResponse) {
       return HttpClientErrc::proxyError;
     }
-    respBuffer.ensureAvailableCapacityExponential(kReadChunk);
-    const TransportResult rd = transport.read(respBuffer.data() + respBuffer.size(), kReadChunk);
+    const TransportResult rd = internal::ReadAppend(transport, respBuffer, kReadChunk);
     if (rd.bytesProcessed > 0) {
-      respBuffer.addSize(rd.bytesProcessed);
       continue;
     }
-    if (rd.want == TransportHint::ReadReady) {
-      if (!waitIo(fd, EventIn, deadline)) {
-        return HttpClientErrc::timeout;
-      }
-      continue;
+    if (rd.want != TransportHint::ReadReady && rd.want != TransportHint::WriteReady) {
+      // 0 bytes and no want => the proxy closed before completing the tunnel handshake.
+      return HttpClientErrc::proxyError;
     }
-    if (rd.want == TransportHint::WriteReady) {
-      if (!waitIo(fd, EventOut, deadline)) {
-        return HttpClientErrc::timeout;
-      }
-      continue;
+    if (!waitIo(fd, internal::InterestFor(rd.want), deadline)) {
+      return HttpClientErrc::timeout;
     }
-    // 0 bytes and no want => the proxy closed before completing the tunnel handshake.
-    return HttpClientErrc::proxyError;
   }
 }
 
@@ -678,8 +669,7 @@ HttpClientErrc HttpClient::finishConnect(ActiveConnection& conn, [[maybe_unused]
     if (transportRes.want == TransportHint::Error) {
       return HttpClientErrc::tlsError;
     }
-    const EventBmp interest = (transportRes.want == TransportHint::ReadReady) ? EventIn : EventOut;
-    if (!waitIo(fd, interest, deadline)) {
+    if (!waitIo(fd, internal::InterestFor(transportRes.want), deadline)) {
       return HttpClientErrc::timeout;
     }
   }
