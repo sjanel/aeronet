@@ -191,22 +191,26 @@ HttpResponse RequestPipeline::runRequestMiddleware(HttpRequestView& request, con
 }
 
 HttpResponse RequestPipeline::CallRequestHandler(HttpRequestView& request, const Router::RoutingResult& routingResult) {
+  assert(!IsAnsweredWithoutHandler(request, routingResult));
+  const RequestHandler* pHandler = routingResult.requestHandler();
+  if (pHandler == nullptr) {
+    return internal::HttpResponseAccess::MakeUnallocated();
+  }
+  try {
+    return (*pHandler)(request);
+  } catch (const std::exception& ex) {
+    log::error("Exception in path handler: {}", ex.what());
+  } catch (...) {
+    log::error("Unknown exception in path handler");
+  }
+  return request.makeResponse(http::StatusCodeInternalServerError);
+}
+
+HttpResponse RequestPipeline::AnswerWithoutHandler(const HttpRequestView& request,
+                                                   const Router::RoutingResult& routingResult) {
+  assert(IsAnsweredWithoutHandler(request, routingResult));
   if (routingResult.hasHandler()) {
-    if (IsOriginDenied(request, routingResult)) {
-      return MakeOriginDenial(request);
-    }
-    const RequestHandler* pHandler = routingResult.requestHandler();
-    if (pHandler == nullptr) {
-      return internal::HttpResponseAccess::MakeUnallocated();
-    }
-    try {
-      return (*pHandler)(request);
-    } catch (const std::exception& ex) {
-      log::error("Exception in path handler: {}", ex.what());
-    } catch (...) {
-      log::error("Unknown exception in path handler");
-    }
-    return request.makeResponse(http::StatusCodeInternalServerError);
+    return MakeOriginDenial(request);
   }
   if (routingResult.redirectSlashMode() != Router::RoutingResult::RedirectSlashMode::None) {
     return MakeTrailingSlashRedirect(request, routingResult.redirectSlashMode());

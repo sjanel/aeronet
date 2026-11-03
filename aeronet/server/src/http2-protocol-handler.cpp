@@ -1039,6 +1039,11 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
     sendPipelineResponse(shortCircuit);
     return;
   }
+  if (RequestPipeline::IsAnsweredWithoutHandler(request, routingResult)) {
+    HttpResponse response = RequestPipeline::AnswerWithoutHandler(request, routingResult);
+    sendPipelineResponse(response);
+    return;
+  }
   if (HttpResponse response = RequestPipeline::CallRequestHandler(request, routingResult); !response.empty()) {
     sendPipelineResponse(response);
     return;

@@ -1651,6 +1651,26 @@ TEST(HttpExpectContinue, RequestMiddlewareRunsOnceBefore100Continue) {
   ts.resetRouterAndGet();
 }
 
+// The route of a request is matched again once its body is received after 100 Continue: removed meanwhile by a router
+// update, the request is answered 404, without calling a handler.
+TEST(HttpExpectContinue, RouteRemovedAfter100ContinueIsAnswered404) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg = TestServerConfig(); });
+  std::atomic<int> handlerCalls{0};
+  ts.resetRouterAndGet().setPath(http::Method::POST, "/upload", [&handlerCalls](const HttpRequestView& req) {
+    ++handlerCalls;
+    return HttpResponse(req.body());
+  });
+
+  test::ClientConnection cnx(ts.port());
+  test::sendAll(cnx.fd(), ExpectContinueHead("POST", "/upload", "connection: close\r\n"));
+  EXPECT_EQ(test::RecvHead(cnx.fd()), http::HTTP11_100_CONTINUE);
+  ts.resetRouter();
+  test::sendAll(cnx.fd(), "hello");
+  const std::string resp = test::recvUntilClosed(cnx.fd());
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 404 ")) << resp;
+  EXPECT_EQ(handlerCalls.load(), 0);
+}
+
 // What is kept while a request is served in several passes (its expectations answered, its request middleware run
 // before 100 Continue, its parsed head waiting for its body) is forgotten once it ends: on a keep-alive connection,
 // each request waiting for 100 Continue gets it, and each request goes through its own request middleware and is parsed

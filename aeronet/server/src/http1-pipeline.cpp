@@ -456,9 +456,9 @@ AERONET_ALWAYS_INLINE bool Http1Pipeline::applyRouteLimits(ConnectionIt cnxIt, C
   return true;
 }
 
-AERONET_ALWAYS_INLINE Http1Pipeline::LoopAction Http1Pipeline::callHandlers(ConnectionIt cnxIt, ConnectionState& state,
-                                                                            const Router::RoutingResult& routingResult,
-                                                                            bool bodyReady) {
+AERONET_ALWAYS_INLINE bool Http1Pipeline::answerBeforeHandler(ConnectionIt cnxIt, ConnectionState& state,
+                                                              const Router::RoutingResult& routingResult,
+                                                              bool bodyReady) {
   HttpRequestView& request = state.request;
 
   const bool isStreaming = routingResult.streamingHandler() != nullptr;
@@ -466,20 +466,40 @@ AERONET_ALWAYS_INLINE Http1Pipeline::LoopAction Http1Pipeline::callHandlers(Conn
   // (out of line) for each request.
   if (state.pendingRequest.requestMiddlewareRan) [[unlikely]] {
     // It ran before 100 Continue was sent. Its path and query parameters, reset when the request was served again with
-    // its body, are installed again.
+    // its body, are installed again. Its route, matched again, is checked again below: a router update may have changed
+    // it meanwhile.
     request.finalizeBeforeHandlerCall(routingResult.pathParams());
   } else if (HttpResponse shortCircuit =
                  _pCtx->requestPipeline().runRequestMiddleware(request, routingResult, isStreaming);
              !shortCircuit.empty()) {
     sendResponse(cnxIt, std::move(shortCircuit), routingResult, isStreaming, CloseIfBodyPending(bodyReady));
+    return true;
+  }
+  // A WebSocket upgrade is answered by its endpoint, which checks its origin (see processWebSocketUpgrade()).
+  if (RequestPipeline::IsAnsweredWithoutHandler(request, routingResult) &&
+      !IsWebSocketUpgrade(request, routingResult)) {
+    sendResponse(cnxIt, RequestPipeline::AnswerWithoutHandler(request, routingResult), routingResult, isStreaming,
+                 CloseIfBodyPending(bodyReady));
+    return true;
+  }
+  return false;
+}
+
+AERONET_ALWAYS_INLINE Http1Pipeline::LoopAction Http1Pipeline::callHandlers(ConnectionIt cnxIt, ConnectionState& state,
+                                                                            const Router::RoutingResult& routingResult,
+                                                                            bool bodyReady) {
+  if (answerBeforeHandler(cnxIt, state, routingResult, bodyReady)) {
     return LoopAction::Continue;
   }
+  HttpRequestView& request = state.request;
 #ifdef AERONET_ENABLE_WEBSOCKET
-  // A WebSocket upgrade goes through the request middleware (above) and the origin checks, like a request.
+  // A WebSocket upgrade goes through the request middleware (see answerBeforeHandler()) and the origin checks, like a
+  // request.
   if (IsWebSocketUpgrade(request, routingResult)) {
     return processWebSocketUpgrade(cnxIt, routingResult);
   }
 #endif
+  const bool isStreaming = routingResult.streamingHandler() != nullptr;
   if (HttpResponse response = RequestPipeline::CallRequestHandler(request, routingResult); !response.empty()) {
     sendResponse(cnxIt, std::move(response), routingResult, isStreaming, CloseIfBodyPending(bodyReady));
     return LoopAction::Continue;
@@ -493,9 +513,8 @@ AERONET_ALWAYS_INLINE Http1Pipeline::LoopAction Http1Pipeline::callHandlers(Conn
 
 Http1Pipeline::LoopAction Http1Pipeline::answerBeforeBody(ConnectionIt cnxIt, ConnectionState& state,
                                                           const Router::RoutingResult& routingResult) {
-  HttpRequestView& request = state.request;
   // A CONNECT request is not routed: its tunnel is established once its body is received.
-  if (request.method() != http::Method::CONNECT) {
+  if (state.request.method() != http::Method::CONNECT) {
     // Its client may send its body anyway, not waiting for 100 Continue any longer (RFC 9110 §10.1.1): a response sent
     // before it closes the connection (see CloseIfBodyPending()).
     static constexpr bool kBodyReady = false;
@@ -503,17 +522,7 @@ Http1Pipeline::LoopAction Http1Pipeline::answerBeforeBody(ConnectionIt cnxIt, Co
     if (action != LoopAction::Nothing) {
       return action;
     }
-    // The steps of callHandlers() up to the call of the handler.
-    const bool isStreaming = routingResult.streamingHandler() != nullptr;
-    if (HttpResponse shortCircuit = _pCtx->requestPipeline().runRequestMiddleware(request, routingResult, isStreaming);
-        !shortCircuit.empty()) {
-      sendResponse(cnxIt, std::move(shortCircuit), routingResult, isStreaming, CloseIfBodyPending(kBodyReady));
-      return LoopAction::Continue;
-    }
-    if (!IsWebSocketUpgrade(request, routingResult) &&
-        RequestPipeline::IsAnsweredWithoutHandler(request, routingResult)) {
-      sendResponse(cnxIt, RequestPipeline::CallRequestHandler(request, routingResult), routingResult, isStreaming,
-                   CloseIfBodyPending(kBodyReady));
+    if (answerBeforeHandler(cnxIt, state, routingResult, kBodyReady)) {
       return LoopAction::Continue;
     }
     state.pendingRequest.requestMiddlewareRan = true;
