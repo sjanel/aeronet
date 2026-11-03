@@ -696,11 +696,9 @@ void HttpRequestView::pinHeadStorage(RawChars& headBuffer) {
   headBuffer.reserve(_headSpanSize + PathParamKeysSize(_pathParams));
   headBuffer.assign(oldBase, _headSpanSize);
 
+  rebaseHeadViews(headBuffer.data());
+  // The views set after the parsing of the head.
   const HeadViewsRemapper remap(reinterpret_cast<std::uintptr_t>(oldBase), _headSpanSize, headBuffer.data());
-  _pPath = remap(_pPath);
-  _pAuthority = remap(_pAuthority);
-  _pDecodedQueryParams = remap(_pDecodedQueryParams);
-  remap(_headers);
   remap(_trailers);
   remap(_pathParams);
   remap(_queryParams);

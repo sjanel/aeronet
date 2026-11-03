@@ -98,11 +98,7 @@ void Http1ResponseParser::reset(bool headRequest, bool streamHead) noexcept {
   _bufferedBody = {};
   _keepAlive = false;
   _http11 = false;
-  _connectionCloseSeen = false;
-  _connectionKeepAliveSeen = false;
-  _hasContentLength = false;
-  _hasTransferEncoding = false;
-  _chunked = false;
+  _headerFlags = {};
 }
 
 Http1ResponseParser::Status Http1ResponseParser::installBody(HttpResponse& resp, std::string_view buffer) {
@@ -186,9 +182,9 @@ Http1ResponseParser::Status Http1ResponseParser::parse(std::span<char> buffer, b
 Http1ResponseParser::Status Http1ResponseParser::decideFraming() {
   // Connection persistence: HTTP/1.1 defaults to keep-alive, HTTP/1.0 defaults to close.
   bool keepAlive = _http11;
-  if (_connectionCloseSeen) {
+  if (_headerFlags.connectionCloseSeen) {
     keepAlive = false;
-  } else if (_connectionKeepAliveSeen) {
+  } else if (_headerFlags.connectionKeepAliveSeen) {
     keepAlive = true;
   }
 
@@ -208,18 +204,18 @@ Http1ResponseParser::Status Http1ResponseParser::decideFraming() {
     return Status::Complete;
   }
 
-  if (_hasTransferEncoding) {
+  if (_headerFlags.hasTransferEncoding) {
     // Transfer-Encoding overrides Content-Length (RFC 9112 §6.3). It frames the body when its final coding is chunked,
     // except in an HTTP/1.0 response, whose framing is then faulty (§6.1): its body ends with the connection, like
     // the one of a response whose final coding is not chunked.
-    if (_chunked && _http11) {
+    if (_headerFlags.chunked && _http11) {
       _framing = Framing::Chunked;
       _state = State::BodyChunkSize;
       // Both framing headers may be an attempt at response splitting (§11.1): the connection is not reused.
-      _keepAlive = keepAlive && !_hasContentLength;
+      _keepAlive = keepAlive && !_headerFlags.hasContentLength;
       return Status::NeedMore;
     }
-  } else if (_hasContentLength) {
+  } else if (_headerFlags.hasContentLength) {
     _framing = Framing::Length;
     _keepAlive = keepAlive;
     _state = _bodyRemaining == 0 ? State::Done : State::BodyLength;
@@ -470,11 +466,7 @@ Http1ResponseParser::Status Http1ResponseParser::parseResponse(std::span<char> b
       // status code should have been parsed already.
       assert(_statusCode >= 100 && _statusCode <= 599);
       if (_statusCode < 200) {
-        _connectionCloseSeen = false;
-        _connectionKeepAliveSeen = false;
-        _hasContentLength = false;
-        _hasTransferEncoding = false;
-        _chunked = false;
+        _headerFlags = {};
         _contentTypeLen = 0;
         _state = State::StatusLine;
         continue;
@@ -511,7 +503,7 @@ Http1ResponseParser::Status Http1ResponseParser::parseResponse(std::span<char> b
       _contentTypeOff = static_cast<std::size_t>(value.data() - buffer.data());
       _contentTypeLen = value.size();
     } else if (name == http::ContentLength) {
-      if (_hasContentLength) {
+      if (_headerFlags.hasContentLength) {
         // Repeated header keys are equivalent to a single header with comma-separated values (RFC 9110 §5.3),
         // and Content-Length should be digits only - so multiple Content-Length headers are not allowed.
         return Status::Error;
@@ -522,14 +514,14 @@ Http1ResponseParser::Status Http1ResponseParser::parseResponse(std::span<char> b
       if (ec != std::errc{} || pActualEnd != pEnd) {
         return Status::Error;
       }
-      _hasContentLength = true;
+      _headerFlags.hasContentLength = true;
     } else if (name == http::TransferEncoding) {
       // A repeated field continues the list of codings (RFC 9110 §5.3): the last one decides the framing.
-      _hasTransferEncoding = true;
-      _chunked = http::LastTransferCodingIsChunked(value);
+      _headerFlags.hasTransferEncoding = true;
+      _headerFlags.chunked = http::LastTransferCodingIsChunked(value);
     } else {
       if (name == http::Connection) {
-        ScanConnectionTokens(value, _connectionCloseSeen, _connectionKeepAliveSeen);
+        ScanConnectionTokens(value, _headerFlags.connectionCloseSeen, _headerFlags.connectionKeepAliveSeen);
       } else if (name == http::ContentEncoding) {
         // Content codings are case-insensitive (RFC 9110 §8.4.1): lower-case them in place before storing.
         tolower(lineFirst + (value.data() - line.data()), value.size());
