@@ -53,8 +53,9 @@ struct SpecialMethodConfig {
 /// way. Once a request is parsed and routed, and its protocol-specific checks and special methods are handled, the
 /// protocol:
 ///  1. runs its request middleware with runRequestMiddleware(),
-///  2. unless a middleware answered, calls CallRequestHandler(), which answers the request unless the protocol has to
-///     call the streaming or the async handler of its route,
+///  2. unless a middleware answered, answers the request with AnswerWithoutHandler() when IsAnsweredWithoutHandler(),
+///     otherwise calls CallRequestHandler(), which answers it unless the protocol has to call the streaming or the
+///     async handler of its route,
 ///  3. runs the response middleware on the response with applyResponseMiddleware(), then applies the CORS policy of
 ///     the route while finalizing it. The head of a streaming response goes through prepareStreamingHead() instead.
 /// It points to objects owned by the server, and is cheap to copy.
@@ -70,11 +71,16 @@ class RequestPipeline {
   [[nodiscard]] HttpResponse runRequestMiddleware(HttpRequestView& request, const Router::RoutingResult& routingResult,
                                                   bool streaming) const;
 
-  /// Answer a request that went through its request middleware: a 403 when the CORS policy of its route denies its
-  /// origin (its handler is not called, so that it has no side effect), the response of its request handler (a 500 when
-  /// it throws), or, without handler, a trailing slash redirect, a 405 (with an Allow header listing the methods of the
-  /// route) or a 404.
+  /// Answer a request that went through its request middleware without calling its handler: a 403 when the CORS policy
+  /// of its route denies its origin (its handler is not called, so that it has no side effect), or, without handler, a
+  /// trailing slash redirect, a 405 (with an Allow header listing the methods of the route) or a 404.
+  /// PRECONDITION: IsAnsweredWithoutHandler().
+  [[nodiscard]] static HttpResponse AnswerWithoutHandler(const HttpRequestView& request,
+                                                         const Router::RoutingResult& routingResult);
+
+  /// Answer a request that went through its request middleware with its request handler (a 500 when it throws).
   /// Returns nothing when the protocol calls the handler of the route: its streaming handler or its async handler.
+  /// PRECONDITION: !IsAnsweredWithoutHandler().
   [[nodiscard]] static HttpResponse CallRequestHandler(HttpRequestView& request,
                                                        const Router::RoutingResult& routingResult);
 
@@ -86,9 +92,9 @@ class RequestPipeline {
     return pCorsPolicy != nullptr && pCorsPolicy->wouldApply(request) == CorsPolicy::ApplyStatus::OriginDenied;
   }
 
-  /// Tell whether CallRequestHandler() answers a request without calling a handler: its route has no handler for its
-  /// method (a trailing slash redirect, a 405 or a 404), or denies its origin. Its answer then does not depend on its
-  /// body.
+  /// Tell whether a request is answered without calling a handler (see AnswerWithoutHandler()): its route has no
+  /// handler for its method (a trailing slash redirect, a 405 or a 404), or denies its origin. Its answer then does not
+  /// depend on its body.
   [[nodiscard]] static bool IsAnsweredWithoutHandler(const HttpRequestView& request,
                                                      const Router::RoutingResult& routingResult) noexcept {
     return !routingResult.hasHandler() || IsOriginDenied(request, routingResult);

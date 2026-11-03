@@ -40,9 +40,9 @@ constexpr StatusLine ParseStatusLine(std::string_view line) noexcept {
   const auto digit = [pCode = line.data() + Version::kStrLen + 1U](std::size_t pos) {
     return static_cast<unsigned char>(pCode[pos] - '0');
   };
-  const unsigned hundreds = digit(0);
-  const unsigned tens = digit(1);
-  const unsigned units = digit(2);
+  const unsigned char hundreds = digit(0);
+  const unsigned char tens = digit(1);
+  const unsigned char units = digit(2);
   if (!version.isValid() || hundreds < 1U || hundreds > 5U || tens > 9U || units > 9U) {
     return {};
   }
@@ -56,8 +56,11 @@ constexpr StatusLine ParseStatusLine(std::string_view line) noexcept {
       return {};
     }
   }
-  const auto code = static_cast<StatusCode>((hundreds * 100U) + (tens * 10U) + units);
-  return {.reason = reason, .code = code, .version = version};
+  return {
+      .reason = reason,
+      .code = static_cast<StatusCode>((100U * hundreds) + (10U * tens) + units),
+      .version = version,
+  };
 }
 
 }  // namespace aeronet::http

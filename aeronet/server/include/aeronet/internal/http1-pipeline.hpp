@@ -103,9 +103,16 @@ class Http1Pipeline {
   AERONET_ALWAYS_INLINE bool applyRouteLimits(ConnectionIt cnxIt, ConnectionState& state,
                                               const Router::RoutingResult& routingResult);
 
-  // Answers the current request, routed and with its special methods handled: runs its request middleware (unless it
-  // ran before 100 Continue was sent), then its WebSocket upgrade or its handler. Returns Nothing when its async
-  // handler is to be dispatched.
+  // The steps of callHandlers() before the call of the handler, shared with answerBeforeBody(): runs the request
+  // middleware of the current request, routed and with its special methods handled (unless it ran before 100 Continue
+  // was sent), then answers it when no handler is to be called: a request middleware answering, a CORS denial, or no
+  // handler for its method and path (404, 405, trailing slash redirect). A WebSocket upgrade is left to its endpoint.
+  // Without bodyReady, the response closes the connection. Returns true if it was answered.
+  AERONET_ALWAYS_INLINE bool answerBeforeHandler(ConnectionIt cnxIt, ConnectionState& state,
+                                                 const Router::RoutingResult& routingResult, bool bodyReady);
+
+  // Answers the current request, routed and with its special methods handled: answerBeforeHandler(), then its
+  // WebSocket upgrade or its handler. Returns Nothing when its async handler is to be dispatched.
   AERONET_ALWAYS_INLINE LoopAction callHandlers(ConnectionIt cnxIt, ConnectionState& state,
                                                 const Router::RoutingResult& routingResult, bool bodyReady);
 

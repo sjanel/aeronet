@@ -226,7 +226,7 @@ struct ConnectionState : public ConnectionInfo {
     // True once its expectations (Expect header) were answered: interim responses are sent once.
     bool expectationAnswered{false};
     // True when its request middleware ran before 100 Continue was sent for its body: it does not run again once its
-    // body is received (see internal::Http1Pipeline::answerBeforeBody()).
+    // body is received (see internal::Http1Pipeline::answerBeforeHandler()).
     bool requestMiddlewareRan{false};
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
     // True while its client may wait for 100 Continue, not sent yet: its async handler sends it once it waits for the
