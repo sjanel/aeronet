@@ -1348,6 +1348,61 @@ TEST(TlsTransportTest, SuccessfulReadReturnsData) {
   EXPECT_EQ(std::string_view(buf, readRes.bytesProcessed), payload);
 }
 
+// OpenSSL reports a fatal read error once: in its error state, a later SSL_read_ex fails without queuing any error,
+// which SSL_get_error() takes for a read that would block. The transport keeps reporting the error instead: its caller
+// would wait for the socket to become readable, which its hang-up reports at once, in a busy loop until a deadline.
+TEST(TlsTransportTest, ReadsAfterAFatalReadErrorKeepFailing) {
+  for (const bool readAhead : {true, false}) {
+    SslTestPair pair({"http/1.1"}, {"http/1.1"});
+    ASSERT_TRUE(PerformHandshake(pair));
+    // The server SSL object reads ahead, not the client one. Their peer stops sending without close_notify, so that the
+    // read fails with "unexpected eof while reading". Half-closed only: the alert that OpenSSL sends then raises no
+    // SIGPIPE.
+    TlsTransport transport(std::move(readAhead ? pair.serverSsl : pair.clientSsl));
+    ASSERT_TRUE(SetNonBlocking((readAhead ? pair.serverFd : pair.clientFd).fd()));
+    ASSERT_TRUE(ShutdownWrite((readAhead ? pair.clientFd : pair.serverFd).fd()));
+    ERR_clear_error();
+    char buf[16];
+    for (int readIdx = 0; readIdx < 3; ++readIdx) {
+      const TransportResult res = transport.read(buf, sizeof(buf));
+      EXPECT_EQ(res.bytesProcessed, 0U) << readAhead << ' ' << readIdx;
+      EXPECT_EQ(res.want, TransportHint::Error) << readAhead << ' ' << readIdx;
+    }
+    EXPECT_EQ(ERR_peek_error(), 0UL) << readAhead;
+  }
+}
+
+// Like a socket write, a write of more than a record writes them all, until the socket would block: SSL_write_ex
+// returns after the first one (partial writes), and its caller would wait for a writability that it already has.
+TEST(TlsTransportTest, WriteOfSeveralRecordsWritesThemAll) {
+  SslTestPair pair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(PerformHandshake(pair));
+  // Room for the whole payload in the socket buffers, that macOS does not give to a socket pair by default.
+  static constexpr int kBufferSize = 512 * 1024;
+  // NOLINTBEGIN(misc-include-cleaner) sys/socket.h is the correct header for SOL_SOCKET, SO_SNDBUF and SO_RCVBUF
+  ASSERT_EQ(::setsockopt(pair.serverFd.fd(), SOL_SOCKET, SO_SNDBUF, &kBufferSize, sizeof(kBufferSize)), 0);
+  ASSERT_EQ(::setsockopt(pair.clientFd.fd(), SOL_SOCKET, SO_RCVBUF, &kBufferSize, sizeof(kBufferSize)), 0);
+  // NOLINTEND(misc-include-cleaner)
+  ASSERT_TRUE(SetNonBlocking(pair.serverFd.fd()));
+  TlsTransport transport(std::move(pair.serverSsl));
+  std::string payload(4UL * TlsTransport::kMaxRecordPlainSize, '\0');
+  for (std::size_t pos = 0; pos < payload.size(); ++pos) {
+    payload[pos] = static_cast<char>('a' + (pos % 26U));
+  }
+  for (const bool emptySecondBuffer : {false, true}) {
+    const TransportResult res =
+        emptySecondBuffer ? transport.write(payload, std::string_view{}) : transport.write(payload);
+    EXPECT_EQ(res.want, TransportHint::None) << emptySecondBuffer;
+    ASSERT_EQ(res.bytesProcessed, payload.size()) << emptySecondBuffer;
+    std::string received;
+    char buf[TlsTransport::kMaxRecordPlainSize];
+    for (std::size_t nbRead = 0; received.size() < payload.size(); received.append(buf, nbRead)) {
+      ASSERT_EQ(::SSL_read_ex(pair.clientSsl.get(), buf, sizeof(buf), &nbRead), 1) << emptySecondBuffer;
+    }
+    EXPECT_EQ(received, payload) << emptySecondBuffer;
+  }
+}
+
 TEST(TlsHandshakeTest, FinalizeTlsHandshakeLogsHandshake) {
   // Covers the logging path in collectAndLogTlsHandshake (line 64)
   SslTestPair pair({"http/1.1"}, {"http/1.1"});

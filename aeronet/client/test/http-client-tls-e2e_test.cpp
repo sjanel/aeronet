@@ -869,11 +869,14 @@ TEST(HttpClientTlsSigpipeTest, ServerClosingDuringTheRequestDoesNotRaiseSigpipe)
   test::DefaultSigpipeScope sigpipeScope;  // a SIGPIPE reaching the process terminates the test
   HttpClientConfig cfg;
   cfg.tlsVerifyPeer = false;  // self-signed server cert
+  cfg.requestTimeout = std::chrono::seconds{10};
   HttpClient client(cfg);
   const std::string body(4UL << 20U, 'b');  // several TLS records: several writes
   const auto result =
       client.post("https://127.0.0.1:" + std::to_string(server.port()) + "/upload", body, "application/octet-stream");
-  EXPECT_FALSE(result);
+  ASSERT_FALSE(result);
+  // The broken connection fails the request at once.
+  EXPECT_NE(result.error(), HttpClientErrc::timeout) << ErrcToStr(result.error());
   EXPECT_FALSE(test::IsSigpipeBlocked());  // the exchange restored the signal mask
   EXPECT_FALSE(test::IsSigpipePending());
 }
@@ -952,6 +955,32 @@ TEST(HttpClientTlsRawServerTest, EarlyRejectionStopsTheUpload) {
     EXPECT_EQ(result->status(), http::StatusCodePayloadTooLarge);
     EXPECT_EQ(HttpClientTest::IdleConnections(client), 0U);
   }
+}
+
+// A server closing the connection, without close_notify, while the client awaits its answer to 'Expect: 100-continue'
+// fails the request at once. The read of the close fails the TLS session, that the following read finds failed: a read
+// that would block, for OpenSSL, which made the client wait for the hung-up socket to become readable until its
+// deadline.
+TEST(HttpClientTlsRawServerTest, CloseWhileAwaitingContinueFailsTheRequestAtOnce) {
+  RawTlsServer server([](SSL* ssl) {
+    std::string request;
+    char buf[1024];
+    for (std::size_t nbRead = 0; !request.contains(http::DoubleCRLF);) {
+      ASSERT_EQ(::SSL_read_ex(ssl, buf, sizeof(buf), &nbRead), 1);
+      request.append(buf, nbRead);
+    }
+  });
+  HttpClientConfig cfg;
+  cfg.tlsVerifyPeer = false;  // self-signed server cert
+  cfg.expectContinueTimeout = std::chrono::seconds{20};
+  cfg.requestTimeout = std::chrono::seconds{10};
+  HttpClient client(cfg);
+  auto req = client.makeRequest(http::Method::PUT, "https://127.0.0.1:" + std::to_string(server.port()) + "/file");
+  req.headerAddLine(http::Expect, http::h100_continue)
+      .body(std::string(64UL * 1024UL, 'b'), "application/octet-stream");
+  const auto result = client.request(std::move(req));
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::connectionClosed) << ErrcToStr(result.error());
 }
 #endif
 

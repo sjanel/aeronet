@@ -70,7 +70,9 @@ TransportResult TlsTransport::read(char* buf, std::size_t len) {
   if (::SSL_read_ex(_ssl.get(), buf, len, &ret.bytesProcessed) != 1) [[unlikely]] {
     ret.bytesProcessed = 0;
     ret.want = readFailureHint();
-    if (_readUntilDrained && ret.want == TransportHint::ReadReady) {
+    if (ret.want == TransportHint::Error) {
+      _readStop = ReadStop::Failed;
+    } else if (_readUntilDrained && ret.want == TransportHint::ReadReady) {
       _readStop = ReadStop::Drained;
     }
     return ret;
@@ -151,13 +153,17 @@ TransportResult TlsTransport::write(std::string_view data) {
     return ret;
   }
 
-  // Avoid calling OpenSSL with a zero-length buffer. Some OpenSSL builds treat a null/zero-length pointer as an invalid
-  // argument and return 'bad length'. If there's nothing to write, simply return 0.
-  if (data.empty()) {
-    return ret;
+  // SSL_write_ex returns once a record is written (partial writes): the following ones are written until the socket
+  // would block. Never with a zero-length buffer, which some OpenSSL builds reject ('bad length').
+  while (ret.bytesProcessed < data.size()) {
+    const auto [nbWritten, want] = sslWrite(data.substr(ret.bytesProcessed));
+    ret.bytesProcessed += nbWritten;
+    if (want != TransportHint::None) {
+      ret.want = want;
+      break;
+    }
   }
-
-  return sslWrite(data);
+  return ret;
 }
 
 TransportResult TlsTransport::write(std::string_view firstBuf, std::string_view secondBuf) {
