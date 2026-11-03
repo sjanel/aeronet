@@ -112,6 +112,14 @@ AERONET_NOINLINE std::size_t LeadingEmptyLinesSize(std::string_view input) noexc
 // response announces (RFC 9110 §10.1.1).
 constexpr bool CloseIfBodyPending(bool bodyReady) noexcept { return !bodyReady; }
 
+#ifndef NDEBUG
+// Tells whether nothing of the current request is pending but the parsing of its head, as when the previous one ended.
+[[maybe_unused]] bool OnlyHeadParsingPending(ConnectionState::PendingHttp1Request pending) noexcept {
+  pending.headParseState = ConnectionState::HeadParseState::None;
+  return pending == ConnectionState::PendingHttp1Request{};
+}
+#endif
+
 // Whether the request announces a body: chunked, or with a Content-Length other than 0.
 bool AnnouncesBody(const HttpRequestView& request) {
   return request.headerValue(http::TransferEncoding).has_value() ||
@@ -189,7 +197,7 @@ bool Http1Pipeline::serveRequests(ConnectionIt cnxIt) {
     if (!input.empty() && input.front() == '\r') [[unlikely]] {
       // A head received in part, or waiting for its body, starts with its method: these are empty lines before a
       // request line, consumed like a request served before it.
-      assert(request._headParseState == HttpRequestView::HeadParseState::None);
+      assert(state.pendingRequest.headParseState == HttpRequestView::HeadParseState::None);
       const std::size_t emptyLinesSize = LeadingEmptyLinesSize(std::string_view(input.data(), input.size()));
       if (emptyLinesSize == kWaitForRequestLine) {
         break;
@@ -232,7 +240,7 @@ bool Http1Pipeline::serveRequests(ConnectionIt cnxIt) {
     // A request whose body is received in several reads is served again for each of them: its expectations are only
     // answered (interim responses, 100 Continue) the first time.
     bool found100Continue = false;
-    if (!state.expectationAnswered) {
+    if (!state.pendingRequest.expectationAnswered) {
       auto optExpect = request.headerValue(http::Expect);
       if (optExpect && handleExpectHeader(cnxIt, *optExpect, pCorsPolicy, found100Continue)) {
         // Answered without its body (an error or a final response closes the connection if it announces one): its head
@@ -240,6 +248,7 @@ bool Http1Pipeline::serveRequests(ConnectionIt cnxIt) {
         consumedInput.nbBytes += request.headSpanSize();
         continue;
       }
+      state.pendingRequest.expectationAnswered = true;
     }
     std::size_t consumedBytes = 0;
     const BodyDecodeStatus decodeStatus =
@@ -248,11 +257,10 @@ bool Http1Pipeline::serveRequests(ConnectionIt cnxIt) {
       break;
     }
     const bool bodyReady = decodeStatus == BodyDecodeStatus::Ready;
-    state.expectationAnswered = !bodyReady;
 
     ctx.maintenance.trackBodyReception(state, bodyReady);
     if (bodyReady) {
-      const bool usePerConnectionBodyStorage = state.trailerLen != 0;
+      const bool usePerConnectionBodyStorage = state.pendingRequest.trailerLen != 0;
       if (!request._body.empty() && !maybeDecompressRequestBody(cnxIt, usePerConnectionBodyStorage)) {
         break;
       }
@@ -276,7 +284,7 @@ bool Http1Pipeline::serveRequests(ConnectionIt cnxIt) {
           }
         }
         // Served again once more of its body is received, without parsing its head again.
-        request.keepHeadForBody();
+        state.pendingRequest.headParseState = HttpRequestView::HeadParseState::WaitingForBody;
         break;
       }
     }
@@ -346,17 +354,18 @@ AERONET_ALWAYS_INLINE Http1Pipeline::LoopAction Http1Pipeline::readHead(Connecti
   HttpRequestView& request = state.request;
 
   // The head of a request whose body is received in several reads is parsed once, and the request counted once.
-  const bool headWaitingForBody = request.isHeadWaitingForBody();
+  HttpRequestView::HeadParseState& headParseState = state.pendingRequest.headParseState;
+  const bool headWaitingForBody = headParseState == HttpRequestView::HeadParseState::WaitingForBody;
   http::StatusCode statusCode = http::StatusCodeOK;
   if (headWaitingForBody) {
     request.resumeHeadWaitingForBody(input);
   } else {
-    // The body of the previous request was completely decoded (or the connection closes).
-    assert(!state.isDecodingChunkedBody());
+    // The previous request ended: nothing of it is pending, only the parsing of this head may have started.
+    assert(OnlyHeadParsingPending(state.pendingRequest));
     if (ctx.config.traceMethodPolicy != HttpServerConfig::TraceMethodPolicy::Disabled) [[unlikely]] {
       // A TRACE request echoes its head as received: it is copied before being parsed in place, once complete. A head
       // parsed in part already (received while TRACE was disabled) has no echo.
-      if (request._headParseState == HttpRequestView::HeadParseState::Partial) {
+      if (headParseState == HttpRequestView::HeadParseState::Partial) {
         ctx.sharedBuffers.trailersOrTraceEcho.clear();
       } else if (!CopyTraceEcho(std::string_view(input.data(), input.size()), ctx.config.maxHeaderBytes,
                                 ctx.sharedBuffers.trailersOrTraceEcho)) {
@@ -364,7 +373,7 @@ AERONET_ALWAYS_INLINE Http1Pipeline::LoopAction Http1Pipeline::readHead(Connecti
       }
     }
     statusCode =
-        request.initTrySetHead(input, ctx.sharedBuffers.buf, ctx.config.maxHeaderBytes,
+        request.initTrySetHead(input, headParseState, ctx.sharedBuffers.buf, ctx.config.maxHeaderBytes,
                                ctx.config.mergeUnknownRequestHeaders, ctx.telemetry.createSpan("http.request"));
     if (statusCode == HttpRequestView::kStatusNeedMoreData) {
       return LoopAction::Break;
@@ -455,10 +464,9 @@ AERONET_ALWAYS_INLINE Http1Pipeline::LoopAction Http1Pipeline::callHandlers(Conn
   const bool isStreaming = routingResult.streamingHandler() != nullptr;
   // Each response is constructed in place from its call: assigning an optional HttpResponse would move and destroy one
   // (out of line) for each request.
-  if (state.requestMiddlewareRan) [[unlikely]] {
+  if (state.pendingRequest.requestMiddlewareRan) [[unlikely]] {
     // It ran before 100 Continue was sent. Its path and query parameters, reset when the request was served again with
     // its body, are installed again.
-    state.requestMiddlewareRan = false;
     request.finalizeBeforeHandlerCall(routingResult.pathParams());
   } else if (HttpResponse shortCircuit =
                  _pCtx->requestPipeline().runRequestMiddleware(request, routingResult, isStreaming);
@@ -508,10 +516,14 @@ Http1Pipeline::LoopAction Http1Pipeline::answerBeforeBody(ConnectionIt cnxIt, Co
                    CloseIfBodyPending(kBodyReady));
       return LoopAction::Continue;
     }
-    state.requestMiddlewareRan = true;
+    state.pendingRequest.requestMiddlewareRan = true;
   }
-  _pCtx->io.queueData(cnxIt, HttpMessageData(RawChars{http::HTTP11_100_CONTINUE}));
+  queue100Continue(cnxIt);
   return LoopAction::Nothing;
+}
+
+void Http1Pipeline::queue100Continue(ConnectionIt cnxIt) {
+  _pCtx->io.queueData(cnxIt, HttpMessageData(RawChars{http::HTTP11_100_CONTINUE}));
 }
 
 bool Http1Pipeline::acceptChunkedTransferEncoding(ConnectionIt cnxIt, std::string_view transferEncoding) {
@@ -583,7 +595,7 @@ Http1Pipeline::LoopAction Http1Pipeline::serveStreamingRequest(ConnectionIt cnxI
     }
     // Part of the response was sent: close the connection without completing the body (no final chunk, or a short
     // Content-Length), so that the client knows that it is incomplete.
-    endRequest(request, http::StatusCodeInternalServerError);
+    endRequest(state, http::StatusCodeInternalServerError);
     state.requestDrainAndClose();
     return LoopAction::Break;
   }
@@ -591,7 +603,7 @@ Http1Pipeline::LoopAction Http1Pipeline::serveStreamingRequest(ConnectionIt cnxI
     writer.end();
   }
 
-  endRequest(request, writer.status());
+  endRequest(state, writer.status());
 
   // A close-delimited body (HTTP/1.0 without Content-Length) ends with the connection, announced by its head.
   // A drain or a stop that began after the head was sent, announcing a persistent connection, closes it too. So does a
@@ -610,7 +622,8 @@ bool Http1Pipeline::maybeDecompressRequestBody(ConnectionIt cnxIt, bool usePerCo
   ConnectionState& state = ctx.connections.connectionState(cnxIt);
   HttpRequestView& request = state.request;
 
-  usePerConnectionBodyStorage = usePerConnectionBodyStorage || state.trailerLen != 0;
+  const uint32_t trailerLen = state.pendingRequest.trailerLen;
+  usePerConnectionBodyStorage = usePerConnectionBodyStorage || trailerLen != 0;
 
   RawChars& decompressedBuffer =
       usePerConnectionBodyStorage ? state.bodyAndTrailersBuffer : ctx.sharedBuffers.decompressedBody;
@@ -624,10 +637,10 @@ bool Http1Pipeline::maybeDecompressRequestBody(ConnectionIt cnxIt, bool usePerCo
   }
 
   // Parse trailers if present
-  if (state.trailerLen != 0) {
+  if (trailerLen != 0) {
     auto* buf = decompressedBuffer.data();
     auto* end = buf + decompressedBuffer.size();
-    [[maybe_unused]] const bool isSuccess = parseHeadersUnchecked(request._trailers, buf, end - state.trailerLen, end);
+    [[maybe_unused]] const bool isSuccess = parseHeadersUnchecked(request._trailers, buf, end - trailerLen, end);
     // trailers should have been validated in decodeChunkedBody
     assert(isSuccess);
   }
@@ -641,11 +654,11 @@ bool Http1Pipeline::isKeepAlive(const HttpRequestView& request) const {
          ctx.lifecycle.isRunning() && request.clientKeepsAliveForHttp1();
 }
 
-void Http1Pipeline::endRequest(HttpRequestView& request, http::StatusCode status) {
+void Http1Pipeline::endRequest(ConnectionState& state, http::StatusCode status) {
   if (_pCtx->callbacks.metrics || _pCtx->accessLog) {
-    _pCtx->emitRequestMetrics(request, status);
+    _pCtx->emitRequestMetrics(state.request, status);
   }
-  request.end(status);
+  state.endHttp1Request(status);
 }
 
 bool Http1Pipeline::rejectIncompleteHead(ConnectionIt cnxIt) {
@@ -659,7 +672,7 @@ bool Http1Pipeline::rejectIncompleteHead(ConnectionIt cnxIt) {
     // The end of the request line itself was not found when none of the head was parsed, unless the input only holds
     // empty lines waiting for it: its request-target is too long (RFC 9112 §3).
     const bool isRequestLineIncomplete =
-        state.request._headParseState == HttpRequestView::HeadParseState::None &&
+        state.pendingRequest.headParseState == HttpRequestView::HeadParseState::None &&
         LeadingEmptyLinesSize(std::string_view(state.inBuffer.data(), state.inBuffer.size())) != kWaitForRequestLine;
     emitSimpleError(
         cnxIt, isRequestLineIncomplete ? http::StatusCodeURITooLong : http::StatusCodeRequestHeaderFieldsTooLarge, {});
@@ -698,7 +711,7 @@ void Http1Pipeline::emitSimpleError(ConnectionIt cnxIt, http::StatusCode statusC
   ConnectionState& state = ctx.connections.connectionState(cnxIt);
 
   state.requestDrainAndClose();
-  state.request.end(statusCode);
+  state.endHttp1Request(statusCode);
 }
 
 void Http1Pipeline::emitHttpsRedirect(ConnectionIt cnxIt) {
@@ -735,7 +748,7 @@ void Http1Pipeline::emitHttpsRedirect(ConnectionIt cnxIt) {
                                                 &ctx.config.globalHeaders, ctx.config.minCapturedBodySize));
 
   state.requestDrainAndClose();
-  endRequest(request, statusCode);
+  endRequest(state, statusCode);
 }
 
 bool Http1Pipeline::handleExpectHeader(ConnectionIt cnxIt, std::string_view expectHeader, const CorsPolicy* pCorsPolicy,
@@ -787,7 +800,7 @@ bool Http1Pipeline::handleExpectHeader(ConnectionIt cnxIt, std::string_view expe
 
           switch (status) {
             case 100:
-              ctx.io.queueData(cnxIt, HttpMessageData(RawChars{http::HTTP11_100_CONTINUE}));
+              queue100Continue(cnxIt);
               break;
             case 102:
               ctx.io.queueData(cnxIt, HttpMessageData(RawChars{http::HTTP11_102_PROCESSING}));
@@ -920,7 +933,7 @@ void Http1Pipeline::finalizeAndSendResponse(ConnectionIt cnxIt, HttpResponse&& r
     state.requestDrainAndClose();
   }
   // End the span after response is finalized
-  endRequest(request, respStatusCode);
+  endRequest(state, respStatusCode);
 }
 
 }  // namespace aeronet::internal

@@ -1651,6 +1651,45 @@ TEST(HttpExpectContinue, RequestMiddlewareRunsOnceBefore100Continue) {
   ts.resetRouterAndGet();
 }
 
+// What is kept while a request is served in several passes (its expectations answered, its request middleware run
+// before 100 Continue, its parsed head waiting for its body) is forgotten once it ends: on a keep-alive connection,
+// each request waiting for 100 Continue gets it, and each request goes through its own request middleware and is parsed
+// from its head, whatever the previous one.
+TEST(HttpExpectContinue, EachRequestOfAKeepAliveConnectionIsServedFromItsStart) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg = TestServerConfig(); });
+  std::atomic<int> middlewareCalls{0};
+  auto router = ts.resetRouterAndGet();
+  router.addRequestMiddleware([&middlewareCalls](HttpRequestView&) {
+    ++middlewareCalls;
+    return MiddlewareResult::Continue();
+  });
+  router.setPath(http::Method::POST, "/items/{id}", [](const HttpRequestView& req) {
+    return HttpResponse(std::format("{}|{}", req.pathParamValueOrEmpty("id"), req.body()));
+  });
+
+  test::ClientConnection cnx(ts.port());
+  for (int requestPos = 1; requestPos <= 4; ++requestPos) {
+    SCOPED_TRACE(requestPos);
+    const std::string target = std::format("/items/{}", requestPos);
+    const bool expectsContinue = requestPos % 2 == 1;
+    test::sendAll(cnx.fd(), expectsContinue
+                                ? ExpectContinueHead("POST", target)
+                                : std::format("POST {} HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\n\r\n", target));
+    if (expectsContinue) {
+      ASSERT_EQ(test::RecvHead(cnx.fd()), http::HTTP11_100_CONTINUE);
+    }
+    // The body in two parts: the request is served again for the second one.
+    test::sendAll(cnx.fd(), "hel");
+    std::this_thread::sleep_for(20ms);
+    test::sendAll(cnx.fd(), "lo");
+    const std::string resp = test::recvWithTimeout(cnx.fd(), 2s);
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 200 ")) << resp;
+    EXPECT_TRUE(resp.ends_with(std::format("\r\n\r\n{}|hello", requestPos))) << resp;
+    EXPECT_EQ(middlewareCalls.load(), requestPos);
+  }
+  ts.resetRouterAndGet();
+}
+
 // The CORS policy of the route denying the origin of the request: answered 403 without 100 Continue.
 TEST(HttpExpectContinue, CorsDenialIsSentWithout100Continue) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg = TestServerConfig(); });

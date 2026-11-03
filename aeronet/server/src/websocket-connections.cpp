@@ -53,6 +53,9 @@ Http1Pipeline::LoopAction Http1Pipeline::processWebSocketUpgrade(ConnectionIt cn
   ConnectionState& state = ctx.connections.connectionState(cnxIt);
   // The per-route request timeout bounds the upgrade request, not the WebSocket connection that follows.
   ctx.maintenance.clearRequestDeadline(state);
+  // The connection serves no more HTTP/1 requests: nothing of the upgrade request is pending (the chunks of its body
+  // would otherwise be kept, see ConnectionState::reclaimMemoryFromOversizedBuffers()).
+  state.pendingRequest = {};
 
   state.protocolHandler = std::move(accept.handler);
   state.protocol = ProtocolType::WebSocket;

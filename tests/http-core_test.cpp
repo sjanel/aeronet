@@ -2920,9 +2920,9 @@ TEST(HttpTrailers, MultipleTrailers) {
 }
 
 // Regression: a chunked request carrying trailers followed by a fixed-length request on the SAME keep-alive
-// connection must not leak the first request's trailers into the second. The per-connection trailerLen is
-// reset for non-chunked bodies (see SingleHttpServer::decodeFixedLengthBody); without that reset the second
-// request would spuriously re-parse the previous request's trailer bytes.
+// connection must not leak the first request's trailers into the second. The length of the trailers is kept in the
+// state of the request served in several passes, reset once it ends (see ConnectionState::PendingHttp1Request);
+// without that reset the second request would spuriously re-parse the previous request's trailer bytes.
 TEST(HttpTrailers, TrailersDoNotLeakAcrossKeepAliveRequests) {
   ts.router().setDefault(
       [](const HttpRequestView& req) { return req.makeResponse("trailers=" + std::to_string(req.trailers().size())); });

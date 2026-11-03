@@ -65,8 +65,9 @@ class Http1Pipeline {
   // The connection will be closed after draining buffered writes.
   void emitSimpleError(ConnectionIt cnxIt, http::StatusCode statusCode, std::string_view body = {});
 
-  // End an HTTP/1.1 request answered with 'status': emit its metrics (if observed), then end its span.
-  void endRequest(HttpRequestView& request, http::StatusCode status);
+  // End the HTTP/1.1 request of the connection answered with 'status': emit its metrics (if observed), then end it
+  // (see ConnectionState::endHttp1Request()).
+  void endRequest(ConnectionState& state, http::StatusCode status);
 
   // Answers the request whose head is still being received after a read when its input exceeds maxHeaderBytes (414 if
   // the end of its request line was not received, 431 otherwise) or its headerReadTimeout elapsed (408). Returns true
@@ -116,6 +117,10 @@ class Http1Pipeline {
   // Returns Nothing when 100 Continue was sent, Continue or Break (as callHandlers()) when it was answered.
   LoopAction answerBeforeBody(ConnectionIt cnxIt, ConnectionState& state, const Router::RoutingResult& routingResult);
 
+  // Queues the interim 100 (Continue) response to the current request, whose client may wait for it before sending its
+  // body.
+  void queue100Continue(ConnectionIt cnxIt);
+
   // Validate the Transfer-Encoding of the current request. Returns true for chunked, the only coding supported.
   // Otherwise, queues the error response (the connection then closes) and returns false.
   bool acceptChunkedTransferEncoding(ConnectionIt cnxIt, std::string_view transferEncoding);
@@ -135,17 +140,12 @@ class Http1Pipeline {
                                      std::size_t maxBodyBytes, std::size_t& consumedBytes);
   BodyDecodeStatus decodeFixedLengthBody(ConnectionIt cnxIt, std::span<const char> input, std::size_t maxBodyBytes,
                                          std::size_t& consumedBytes);
-  // The body of a chunked request received in several reads is decoded once: the progress of its decoding is kept in
-  // the connection (see ConnectionState::ChunkedBodyProgress), each read decoding the chunks received since the
-  // previous one.
+  // Decodes the chunks of the body of the current request received since its last decoding, up to its end (trailers
+  // included). A body received in several reads is decoded once: the progress of its decoding is kept in the
+  // connection until the request ends (see ConnectionState::PendingHttp1Request), each read decoding the chunks
+  // received since the previous one.
   BodyDecodeStatus decodeChunkedBody(ConnectionIt cnxIt, std::span<char> input, std::size_t maxBodyBytes,
                                      std::size_t& consumedBytes);
-
-  // Decodes the chunks of the body of the current request received since its last decoding, up to its end (trailers
-  // included). Keeps its progress in the connection if the body is incomplete (NeedMore), whose caller resets it
-  // otherwise.
-  BodyDecodeStatus decodeNextChunks(ConnectionIt cnxIt, std::span<char> input, std::size_t maxBodyBytes,
-                                    std::size_t& consumedBytes);
 
   // Decodes the trailers of a chunked body, starting at pos in 'input' (after the last chunk): copies them to the body
   // and trailers buffer of the connection, and parses them. Sets pos after the blank line ending them once Ready.

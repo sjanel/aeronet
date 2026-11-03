@@ -96,6 +96,8 @@ RawChars BuildRawWithHost(std::string_view requestLine, std::string_view host) {
 
 class HttpRequestViewTest : public ::testing::Test {
  protected:
+  using HeadParseState = HttpRequestView::HeadParseState;
+
   void SetUp() override {
     globalHeaders.append("server: aeronet");
     req._pConnectionInfo = &connectionInfo;
@@ -107,9 +109,10 @@ class HttpRequestViewTest : public ::testing::Test {
 
   http::StatusCode reqSet(RawChars raw, bool mergeAllowedForUnknownRequestHeaders = true) {
     inBuffer = std::move(raw);
-    req._headParseState = HttpRequestView::HeadParseState::None;  // a new request
+    headParseState = HeadParseState::None;  // a new request
     RawChars tmpBuffer;
-    auto ret = req.initTrySetHead(inBuffer, tmpBuffer, 4096U, mergeAllowedForUnknownRequestHeaders, nullptr);
+    auto ret =
+        req.initTrySetHead(inBuffer, headParseState, tmpBuffer, 4096U, mergeAllowedForUnknownRequestHeaders, nullptr);
     if (ret == http::StatusCodeOK) {
       req.finalizeBeforeHandlerCall({});
     }
@@ -119,9 +122,10 @@ class HttpRequestViewTest : public ::testing::Test {
   http::StatusCode reqSetWithSpan(RawChars raw, tracing::SpanPtr span,
                                   bool mergeAllowedForUnknownRequestHeaders = true) {
     inBuffer = std::move(raw);
-    req._headParseState = HttpRequestView::HeadParseState::None;  // a new request
+    headParseState = HeadParseState::None;  // a new request
     RawChars tmpBuffer;
-    auto ret = req.initTrySetHead(inBuffer, tmpBuffer, 4096U, mergeAllowedForUnknownRequestHeaders, std::move(span));
+    auto ret = req.initTrySetHead(inBuffer, headParseState, tmpBuffer, 4096U, mergeAllowedForUnknownRequestHeaders,
+                                  std::move(span));
     if (ret == http::StatusCodeOK) {
       req.finalizeBeforeHandlerCall({});
     }
@@ -155,17 +159,15 @@ class HttpRequestViewTest : public ::testing::Test {
   // Receives 'bytes' then attempts to parse the head received so far, as the server does after each read.
   http::StatusCode receiveAndParse(std::string_view bytes) {
     receive(bytes);
-    auto ret = req.initTrySetHead(inBuffer, headTmpBuffer, 4096U, true, nullptr);
+    auto ret = req.initTrySetHead(inBuffer, headParseState, headTmpBuffer, 4096U, true, nullptr);
     if (ret == http::StatusCodeOK) {
       req.finalizeBeforeHandlerCall({});
     }
     return ret;
   }
 
-  void keepHeadForBody() { req.keepHeadForBody(); }
-
-  [[nodiscard]] bool isHeadWaitingForBody() const { return req.isHeadWaitingForBody(); }
-
+  // Resumes the request whose head was parsed before its body was received, as the server does once more of its body
+  // is received.
   void resumeHeadWaitingForBody() {
     req.resumeHeadWaitingForBody(inBuffer);
     req.finalizeBeforeHandlerCall({});
@@ -336,6 +338,8 @@ class HttpRequestViewTest : public ::testing::Test {
 #endif
   RawChars previousInBuffer;
   RawChars headTmpBuffer;
+  // Progress of the parsing of the head, kept by the connection between its reads
+  HeadParseState headParseState{HeadParseState::None};
 };
 
 TEST_F(HttpRequestViewTest, ReadBodyWithZeroMaxBytesReturnsEmpty) {
@@ -1052,7 +1056,11 @@ TEST_F(HttpRequestViewTest, HeadReceivedInTwoPartsIsParsedOnce) {
     SCOPED_TRACE(cut);
     inBuffer.clear();
     ASSERT_EQ(receiveAndParse(kHeadModifiedByItsParsing.substr(0, cut)), kNeedMoreData);
+    // Nothing is parsed until the end of the request line is received.
+    const bool requestLineReceived = kHeadModifiedByItsParsing.substr(0, cut).contains(http::CRLF);
+    EXPECT_EQ(headParseState, requestLineReceived ? HeadParseState::Partial : HeadParseState::None);
     ASSERT_EQ(receiveAndParse(kHeadModifiedByItsParsing.substr(cut)), http::StatusCodeOK);
+    EXPECT_EQ(headParseState, HeadParseState::None);
     EXPECT_EQ(snapshot(), expected);
   }
 }
@@ -1229,14 +1237,12 @@ TEST_F(HttpRequestViewTest, HeadWaitingForBodyIsNotParsedAgain) {
   inBuffer.clear();
   ASSERT_EQ(receiveAndParse(std::string(kPostHead) + "partial"), http::StatusCodeOK);
   const HeadSnapshot expected = snapshot();
-  EXPECT_FALSE(isHeadWaitingForBody());
-  keepHeadForBody();
-  EXPECT_TRUE(isHeadWaitingForBody());
+  // The whole head is parsed: the server then keeps it for its body (HeadParseState::WaitingForBody).
+  EXPECT_EQ(headParseState, HeadParseState::None);
 
   // The rest of the body moves the buffer: the request is resumed without parsing its head again.
   receive(" body");
   resumeHeadWaitingForBody();
-  EXPECT_FALSE(isHeadWaitingForBody());
   EXPECT_EQ(snapshot(), expected);
   EXPECT_EQ(req.path(), "/upload");
   EXPECT_EQ(req.queryParamValueOrEmpty("name"), "a b");
@@ -1244,7 +1250,6 @@ TEST_F(HttpRequestViewTest, HeadWaitingForBodyIsNotParsedAgain) {
   EXPECT_EQ(std::string_view(inBuffer).substr(req.headSpanSize()), "partial body");
 
   // Resuming without a buffer move keeps the views.
-  keepHeadForBody();
   resumeHeadWaitingForBody();
   EXPECT_EQ(snapshot(), expected);
 }
@@ -1297,7 +1302,6 @@ TEST_F(HttpRequestViewTest, AbsoluteFormHeadWaitingForBodyIsNotParsedAgain) {
   ASSERT_EQ(receiveAndParse(std::string(kPostHead) + "partial"), http::StatusCodeOK);
   const HeadSnapshot expected = snapshot();
   EXPECT_EQ(expected.authority, "h.example:81");
-  keepHeadForBody();
 
   // The rest of the body moves the buffer: the request is resumed without parsing its head again.
   receive(" body");
