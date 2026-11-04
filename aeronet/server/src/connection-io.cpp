@@ -135,7 +135,7 @@ void ConnectionIo::queueData(ConnectionIt cnxIt, HttpMessageData httpResponseDat
     return;
   }
 
-  auto* pFilePayload = httpResponseData.getIfFilePayload();
+  FilePayload* pFilePayload = httpResponseData.getIfFilePayload();
   const std::uint64_t extraQueuedBytes = pFilePayload != nullptr ? pFilePayload->length : 0;
 
   const auto bufferedSz = httpResponseData.remainingSize();

@@ -2934,6 +2934,70 @@ TEST(Http2Connection, ContinuationOfAStreamPrunedMeanwhileIsDecoded) {
   EXPECT_EQ(recorder.values, "first");
 }
 
+// The streams closed while a frame is processed, from the sink callbacks or by the frame itself, are pruned once it is
+// done: after the callbacks, its handler goes on with its stream (replenishing its window for DATA, closing it for a
+// field block ending it). Outside frame processing, a closed stream is pruned at once.
+TEST(Http2Connection, StreamsClosedWhileAFrameIsProcessedArePrunedAfterIt) {
+  Http2Config config;
+  config.initialWindowSize = 65535;
+  config.maxFrameSize = 40000;
+  Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+
+  // As many closed streams as retained (1 to 31): the next closing prunes stream 1.
+  for (uint32_t streamId = 1; streamId < 2U * kClosedStreamsMaxRetainedForTest; streamId += 2) {
+    OpenClientStream(conn, streamId);
+    conn.sendRstStream(streamId, ErrorCode::Cancel);
+  }
+  constexpr uint32_t kDataStreamId = (2U * kClosedStreamsMaxRetainedForTest) + 1U;
+  constexpr uint32_t kResetStreamId = kDataStreamId + 2U;
+  constexpr uint32_t kRequestStreamId = kResetStreamId + 2U;
+  OpenClientStream(conn, kDataStreamId);
+  OpenClientStream(conn, kResetStreamId);
+  (void)DrainPendingOutput(conn);
+  ASSERT_NE(conn.getStream(1), nullptr);
+
+  // DATA whose callback resets another stream.
+  bool retainedInDataCallback = false;
+  connSink.onDataFn = [&](uint32_t streamId, std::span<const std::byte>, bool) {
+    ASSERT_EQ(streamId, kDataStreamId);
+    conn.sendRstStream(kResetStreamId, ErrorCode::Cancel);
+    retainedInDataCallback = conn.getStream(1) != nullptr;
+  };
+  FeedDataFrame(conn, kDataStreamId, 40000);
+  EXPECT_TRUE(retainedInDataCallback);
+  EXPECT_EQ(conn.getStream(1), nullptr);
+  EXPECT_EQ(WindowUpdateIncrements(DrainPendingOutput(conn), kDataStreamId), vector<uint32_t>{40000U});
+  EXPECT_EQ(conn.activeStreamCount(), 1U);
+
+  // A request whose callback resets the DATA stream and answers it, closing its stream.
+  bool retainedInHeadersCallback = false;
+  connSink.onHeadersDecodedFn = [&](uint32_t streamId, const SvToSvMap&, bool endStream) {
+    ASSERT_EQ(streamId, kRequestStreamId);
+    ASSERT_TRUE(endStream);
+    conn.sendRstStream(kDataStreamId, ErrorCode::Cancel);
+    EXPECT_EQ(conn.sendHeaders(streamId, http::StatusCodeNoContent, HeadersView{}, true), ErrorCode::NoError);
+    retainedInHeadersCallback = conn.getStream(3) != nullptr && conn.getStream(5) != nullptr;
+  };
+  vector<uint32_t> closedStreams;
+  connSink.onStreamClosedFn = [&](uint32_t streamId) { closedStreams.push_back(streamId); };
+  FeedConnection(conn, HeadersFrame(kRequestStreamId, kStaticGetRequest,
+                                    FrameFlags::HeadersEndHeaders | FrameFlags::HeadersEndStream));
+  EXPECT_TRUE(retainedInHeadersCallback);
+  EXPECT_EQ(closedStreams, (vector<uint32_t>{kDataStreamId, kRequestStreamId}));
+  EXPECT_EQ(conn.getStream(3), nullptr);
+  EXPECT_EQ(conn.getStream(5), nullptr);
+  ASSERT_NE(conn.getStream(kRequestStreamId), nullptr);
+  EXPECT_TRUE(conn.getStream(kRequestStreamId)->isClosed());
+  EXPECT_EQ(conn.activeStreamCount(), 0U);
+
+  // Outside frame processing.
+  ASSERT_EQ(conn.sendHeaders(kRequestStreamId + 2U, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
+  conn.sendRstStream(kRequestStreamId + 2U, ErrorCode::Cancel);
+  EXPECT_EQ(conn.getStream(7), nullptr);
+}
+
 // After the GOAWAY of this endpoint, the new streams of the client are ignored (RFC 9113 §6.8): neither opened nor
 // answered. Their field block is decoded all the same, in a HEADERS frame or split into CONTINUATION frames: the next
 // field blocks of the client, the trailers of a stream still served here, refer to its dynamic table insertions.

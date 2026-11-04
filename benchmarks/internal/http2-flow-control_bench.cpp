@@ -6,18 +6,24 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
 #include <utility>
 
 #include "aeronet/flat-hash-map.hpp"
+#include "aeronet/hpack.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-config.hpp"
 #include "aeronet/http2-connection.hpp"
+#include "aeronet/http2-event-sink.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/http2-stream.hpp"
@@ -450,6 +456,155 @@ void BM_ConnectionProcessDataFrames(benchmark::State& state) {
   state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * frameCount);
 }
 BENCHMARK(BM_ConnectionProcessDataFrames)->Arg(10)->Arg(100)->Arg(500);
+
+// ---------------------------------------------------------------------------
+// Connection with a sink: streams answered from its callback, DATA received on an open stream
+// ---------------------------------------------------------------------------
+
+// Answers each complete request from its onHeadersDecoded callback with a bodyless response, which closes the stream,
+// as a protocol handler does for a synchronous handler.
+class AnsweringSink final : public EventSink {
+ public:
+  explicit AnsweringSink(Http2Connection& connection) noexcept : _connection(connection) {
+    _connection.setEventSink(this);
+  }
+
+  AnsweringSink(const AnsweringSink&) = delete;
+  AnsweringSink(AnsweringSink&&) noexcept = delete;
+  AnsweringSink& operator=(const AnsweringSink&) = delete;
+  AnsweringSink& operator=(AnsweringSink&&) noexcept = delete;
+
+  ~AnsweringSink() override { _connection.setEventSink(nullptr); }
+
+  void onHeadersDecoded(uint32_t streamId, [[maybe_unused]] DecodedHeaders& decodedHeaders, bool endStream) override {
+    if (endStream) {
+      benchmark::DoNotOptimize(_connection.sendHeaders(streamId, http::StatusCodeNoContent, HeadersView{}, true));
+    }
+  }
+  void onData([[maybe_unused]] uint32_t streamId, std::span<const std::byte> data,
+              [[maybe_unused]] bool endStream) override {
+    benchmark::DoNotOptimize(data.data());
+  }
+  void onStreamReset([[maybe_unused]] uint32_t streamId, [[maybe_unused]] ErrorCode errorCode) override {}
+  void onStreamClosed([[maybe_unused]] uint32_t streamId) override {}
+  void onGoAway([[maybe_unused]] uint32_t lastStreamId, [[maybe_unused]] ErrorCode errorCode,
+                [[maybe_unused]] std::string_view debugData) override {}
+  void onWindowUpdate([[maybe_unused]] uint32_t streamId, [[maybe_unused]] uint32_t increment) override {}
+
+ private:
+  Http2Connection& _connection;
+};
+
+// The server side of an open connection with an AnsweringSink, fed with frames as a client would send them.
+class SinkConnectionBench {
+ public:
+  SinkConnectionBench()
+      : _connection(Http2Config{}.withMaxStreamsPerConnection(std::numeric_limits<uint32_t>::max()), true),
+        _sink(_connection) {
+    RawBytes setup;
+    setup.append(reinterpret_cast<const std::byte*>(kConnectionPreface.data()), kConnectionPreface.size());
+    WriteSettingsFrame(setup, {});
+    WriteSettingsAckFrame(setup);
+    feed(setup);
+  }
+
+  // Process all of 'input' (whole frames), then write all the output.
+  void feed(std::span<const std::byte> input) {
+    while (!input.empty()) {
+      const auto result = _connection.processInput(input);
+      if (result.bytesConsumed == 0 || result.action == Http2Connection::ProcessResult::Action::Error ||
+          result.action == Http2Connection::ProcessResult::Action::GoAway) {
+        std::fprintf(stderr, "HTTP/2 connection stopped processing (action %d)\n", static_cast<int>(result.action));
+        std::abort();
+      }
+      input = input.subspan(result.bytesConsumed);
+    }
+    _connection.onOutputWritten(_connection.pendingOutputSize());
+  }
+
+ private:
+  Http2Connection _connection;
+  AnsweringSink _sink;
+};
+
+// The fields of a small GET request: the first block indexes them in the dynamic table, the next ones refer to them.
+struct RequestFieldBlocks {
+  RequestFieldBlocks() {
+    HpackEncoder encoder;
+    for (RawBytes* pBlock : {&first, &next}) {
+      encoder.encode(*pBlock, ":method", "GET");
+      encoder.encode(*pBlock, ":path", "/ping");
+      encoder.encode(*pBlock, ":scheme", "https");
+      encoder.encode(*pBlock, ":authority", "localhost");
+    }
+  }
+
+  RawBytes first;
+  RawBytes next;
+};
+
+void WriteHeadersFrame(std::byte* pFrame, std::size_t blockSize, uint32_t streamId, bool endStream) {
+  WriteFrameHeader(pFrame, FrameHeader(static_cast<uint32_t>(blockSize), FrameType::Headers,
+                                       ComputeHeaderFrameFlags(endStream, true), streamId));
+}
+
+// 'batch' requests per input, each in a new stream (HEADERS with END_STREAM) answered and closed from the callback.
+void BM_ConnectionSinkAnsweredStreams(benchmark::State& state) {
+  const auto batch = static_cast<uint32_t>(state.range(0));
+  SinkConnectionBench bench;
+  const RequestFieldBlocks blocks;
+
+  RawBytes input(FrameHeader::kSize + blocks.first.size());
+  input.addSize(FrameHeader::kSize);
+  input.unchecked_append(blocks.first);
+  WriteHeadersFrame(input.data(), blocks.first.size(), 1U, true);
+  bench.feed(input);
+
+  const std::size_t frameSize = FrameHeader::kSize + blocks.next.size();
+  input.clear();
+  input.ensureAvailableCapacity(frameSize * batch);
+  for (uint32_t idx = 0; idx < batch; ++idx) {
+    input.addSize(FrameHeader::kSize);
+    input.unchecked_append(blocks.next);
+  }
+
+  uint32_t streamId = 3;
+  for ([[maybe_unused]] auto iter : state) {
+    for (uint32_t idx = 0; idx < batch; ++idx) {
+      WriteHeadersFrame(input.data() + (idx * frameSize), blocks.next.size(), streamId, true);
+      streamId += 2U;
+    }
+    bench.feed(input);
+  }
+  state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * batch);
+}
+BENCHMARK(BM_ConnectionSinkAnsweredStreams)->Arg(1)->Arg(16);
+
+// 'batch' DATA frames per input on an open stream, delivered to the sink.
+void BM_ConnectionSinkDataFrames(benchmark::State& state) {
+  const auto batch = static_cast<uint32_t>(state.range(0));
+  constexpr uint32_t kPayloadSize = 128;
+  SinkConnectionBench bench;
+  const RequestFieldBlocks blocks;
+
+  RawBytes input(FrameHeader::kSize + blocks.first.size());
+  input.addSize(FrameHeader::kSize);
+  input.unchecked_append(blocks.first);
+  WriteHeadersFrame(input.data(), blocks.first.size(), 1U, false);
+  bench.feed(input);
+
+  input.clear();
+  for (uint32_t idx = 0; idx < batch; ++idx) {
+    std::byte* pData = PrepareDataFrameGetStartPtr(input, 1U, kPayloadSize, false);
+    std::memset(pData, 'D', kPayloadSize);
+  }
+
+  for ([[maybe_unused]] auto iter : state) {
+    bench.feed(input);
+  }
+  state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * batch);
+}
+BENCHMARK(BM_ConnectionSinkDataFrames)->Arg(1)->Arg(16);
 
 }  // namespace
 }  // namespace aeronet::http2
