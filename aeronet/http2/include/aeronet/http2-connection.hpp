@@ -320,6 +320,14 @@ class Http2Connection {
 
   using StreamsMap = flat_hash_map<uint32_t, Http2Stream>;
 
+  // When the retained closed streams are pruned. Not while a frame is processed: its handler keeps an iterator to its
+  // stream across the sink callbacks, which erasing another stream from _streams could move.
+  enum class ClosedStreamsPruning : uint8_t {
+    Immediate,   // no frame is processed: at the closing of a stream
+    AfterFrame,  // a frame is processed, and no stream was closed meanwhile yet
+    Pending,     // a stream was closed while the frame is processed: pruned once it is done
+  };
+
   // A payload sent as frames without copy, its memory being owned by the block. It is sent after the bytes of the
   // output buffer before its buffer offset: the output buffer keeps accumulating the next frames after it.
   class OutputBlock {
@@ -430,6 +438,8 @@ class Http2Connection {
 
   /// Give back the connection-level credit once half of it was consumed (see handleDataFrame()).
   void replenishConnectionRecvWindow();
+
+  // Erase the oldest closed streams beyond the retention limit. Moves the entries of _streams.
   void pruneClosedStreams();
 
   // ============================
@@ -540,6 +550,7 @@ class Http2Connection {
   bool _isServer;
   bool _expectingContinuation{false};
   bool _headerBlockEndStream{false};
+  ClosedStreamsPruning _closedStreamsPruning{ClosedStreamsPruning::Immediate};
 };
 
 }  // namespace aeronet::http2

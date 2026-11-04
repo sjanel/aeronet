@@ -13,6 +13,8 @@ struct DecodedHeaders;
 
 /// Observer for connection-level events. At most one sink is attached per connection
 /// (1:1 with the owning protocol handler or client engine).
+/// A callback may send on, reset or finalize streams of the connection, but must not open a new one: the connection
+/// keeps an iterator to the stream of the frame being processed across its callbacks.
 class EventSink {
  public:
   virtual ~EventSink() = default;

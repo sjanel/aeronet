@@ -45,6 +45,10 @@ namespace {
 constexpr std::size_t kConnectionPrefaceLength = kConnectionPreface.size();
 constexpr std::size_t kClosedStreamsMaxRetained = 16;
 
+// The receive window at or below which its credit is given back: half of its configured size. Unsigned, to be a
+// shift: GCC compiles a signed division by 2 into an idiv in the blocks it optimizes for size.
+constexpr int32_t ReplenishThreshold(uint32_t windowSize) noexcept { return static_cast<int32_t>(windowSize / 2U); }
+
 // Security hardening (CVE-2024-27316 mitigation): limit the total accumulated
 // header block size across HEADERS + CONTINUATION frames to prevent unbounded
 // memory growth from a CONTINUATION flood attack.
@@ -535,7 +539,11 @@ void Http2Connection::closeStream(StreamsMap::iterator it, ErrorCode errorCode) 
 
   // Don't remove immediately - keep for a short time for late frames.
   _closedStreamsFifo.push_back(streamId);
-  pruneClosedStreams();
+  if (_closedStreamsPruning == ClosedStreamsPruning::Immediate) {
+    pruneClosedStreams();
+  } else {
+    _closedStreamsPruning = ClosedStreamsPruning::Pending;
+  }
 }
 
 void Http2Connection::pruneClosedStreams() {
@@ -754,7 +762,7 @@ void Http2Connection::releaseStreamRecvWindow(uint32_t streamId) {
   pStream->holdRecvWindow(false);
   // Same threshold as the replenishment on reception (handleDataFrame()): above it, the next DATA frame replenishes it.
   const int32_t initialStreamWindow = static_cast<int32_t>(_localSettings.initialWindowSize);
-  if (pStream->canReceive() && pStream->recvWindow() <= initialStreamWindow / 2) {
+  if (pStream->canReceive() && pStream->recvWindow() <= ReplenishThreshold(_localSettings.initialWindowSize)) {
     sendWindowUpdate(streamId, static_cast<uint32_t>(initialStreamWindow - pStream->recvWindow()));
   }
 }
@@ -845,7 +853,12 @@ Http2Connection::ProcessResult Http2Connection::processFrames(std::span<const st
 
     recordFrame(false, header.type(), headerLength);
 
+    _closedStreamsPruning = ClosedStreamsPruning::AfterFrame;
     ProcessResult result = processFrame(header, payload);
+    if (_closedStreamsPruning == ClosedStreamsPruning::Pending) {
+      pruneClosedStreams();
+    }
+    _closedStreamsPruning = ClosedStreamsPruning::Immediate;
 
     // The current frame was processed, include it in bytes consumed.
     totalConsumed += totalFrameSize;
@@ -924,7 +937,7 @@ Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader head
   }
   _connectionRecvWindow -= payloadSize;
 
-  auto it = _streams.find(streamId);
+  const auto it = _streams.find(streamId);
   if (it == _streams.end()) {
     // RFC 9113 §5.1: DATA on an idle stream is a connection error.
     if (isIdleStream(streamId)) [[unlikely]] {
@@ -958,11 +971,8 @@ Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader head
   // Invoke callback
   if (_pSink != nullptr) {
     _pSink->onData(streamId, frame.data, endStream);
-
-    // The callback may have reset streams, whose pruning can move the map entries. This stream, closed or not, is not
-    // pruned yet: the closed streams are retained a while for late frames.
-    it = _streams.find(streamId);
-    assert(it != _streams.end());
+    // The streams the callback closed are pruned after the frame: 'it' is still valid.
+    assert(it == _streams.find(streamId));
 
     // Replenish a receive window only after half its configured credit has been consumed. Restoring the
     // full credit at once keeps large transfers moving while avoiding two tiny WINDOW_UPDATE frames for
@@ -972,7 +982,7 @@ Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader head
       Http2Stream& stream = it->second;
       const int32_t initialStreamWindow = static_cast<int32_t>(_localSettings.initialWindowSize);
       if (!endStream && !stream.recvWindowHeld() && stream.canReceive() &&
-          stream.recvWindow() <= initialStreamWindow / 2) {
+          stream.recvWindow() <= ReplenishThreshold(_localSettings.initialWindowSize)) {
         sendWindowUpdate(streamId, static_cast<uint32_t>(initialStreamWindow - stream.recvWindow()));
       }
 
@@ -989,7 +999,7 @@ Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader head
 
 void Http2Connection::replenishConnectionRecvWindow() {
   const int32_t initialConnectionWindow = static_cast<int32_t>(_localSettings.connectionWindowSize);
-  if (_connectionRecvWindow <= initialConnectionWindow / 2) {
+  if (_connectionRecvWindow <= ReplenishThreshold(_localSettings.connectionWindowSize)) {
     sendWindowUpdate(0, static_cast<uint32_t>(initialConnectionWindow - _connectionRecvWindow));
   }
 }
@@ -1043,9 +1053,7 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
     // which keeps the HPACK dynamic table in sync.
     if (_activeStreamCount > _localSettings.maxConcurrentStreams) [[unlikely]] {
       sendRstStream(streamId, ErrorCode::RefusedStream);
-      // Its pruning of the closed streams can move the map entries.
-      it = _streams.find(streamId);
-      assert(it != _streams.end());
+      assert(it == _streams.find(streamId));
     }
   }
 
@@ -1529,13 +1537,10 @@ Http2Connection::ProcessResult Http2Connection::processFieldBlock(StreamsMap::it
     return connectionError(decodeErr, ErrorMsg::HPACKDecodingFailed);
   }
 
-  if (endStream) {
-    // The sink may have closed streams (its response, for instance), whose pruning can move the map entries.
-    it = _streams.find(streamId);
-    assert(it != _streams.end());
-    if (it->second.isClosed()) {
-      closeStream(it);
-    }
+  // The sink may have closed streams (this one with its response, for instance): they are pruned after the frame.
+  assert(it == _streams.find(streamId));
+  if (endStream && it->second.isClosed()) {
+    closeStream(it);
   }
 
   return ProcessResult{ProcessResult::Action::Continue};
