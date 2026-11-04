@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cassert>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -111,6 +112,19 @@ class IProtocolHandler {
   /// Called when the underlying transport is about to be closed.
   /// Allows cleanup of protocol-specific state.
   virtual void onTransportClosing() = 0;
+
+  /// Called by the periodic maintenance sweep of the server, which then sends the output queued meanwhile: runs the
+  /// timers of the handler. While the server drains, the handler lets its current requests complete, then requests the
+  /// close of its connection.
+  /// @return false when the connection should be closed now.
+  [[nodiscard]] virtual bool onSweep([[maybe_unused]] std::chrono::steady_clock::time_point now,
+                                     [[maybe_unused]] bool draining) {
+    return true;
+  }
+
+  /// Tells whether requests are in progress on the connection: the keep-alive idle timeout, which applies between
+  /// requests, does not close it meanwhile (a response waiting for flow-control credit produces no socket event).
+  [[nodiscard]] virtual bool hasRequestsInProgress() const noexcept { return false; }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   /// Tells whether background work started by an async handler of this connection is still running: the handler (and
