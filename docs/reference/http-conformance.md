@@ -109,7 +109,7 @@ The echo is the request head as received: the request line, with its target neit
 
 A `TRACE` request is never routed to a handler: an HTTP/2 one is always answered `405`, having no message to echo. The `Allow` header of this `405` lists the methods registered on the route of the path, without `TRACE`, and is empty when no route matches (RFC 9110 §10.2.1).
 
-The parsing of a request head modifies it in place, so the head of a `TRACE` request is copied first, once it is completely received. This only happens when `TRACE` is enabled: with the default policy, the parsing of the requests does no extra work.
+The parsing of a request head modifies it in place, so the head of a `TRACE` request is copied first, once it is completely received. A head that no more input can make valid is not waited for: one longer than `maxHeaderBytes`, or with a bare CR or LF, is answered right away, like the head of another method (with the check the parsing makes on its incomplete lines). This only happens when `TRACE` is enabled: with the default policy, the parsing of the requests does no extra work.
 
 ```cpp
 HttpServerConfig config;

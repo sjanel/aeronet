@@ -18,11 +18,11 @@ namespace aeronet {
   return first;
 }
 
-// Whether the line left without CRLF in [first, last), where SearchCRLF() returned last, holds a bare LF: no more input
-// can make it a valid line, so waiting for it is vain. Only to be called once SearchCRLF() did not find a line end: the
-// first CR is then the last byte, if any, so that every LF of the range is a bare one.
-[[nodiscard]] inline bool HasBareLF(const char* first, const char* last) noexcept {
-  return std::memchr(first, '\n', static_cast<std::size_t>(last - first)) != nullptr;
-}
+// Whether more input can still make [first, last), received from the start of a line of an HTTP head or trailer
+// section, the start of valid lines: every CR is followed by a LF and every LF preceded by a CR (RFC 9112 §2.2: aeronet
+// rejects a bare CR or LF), but a last CR, whose LF may come in the next read. When SearchCRLF() does not find the
+// CRLF ending a line, this tells whether to wait for the rest of it: a line that can no longer be valid is answered
+// right away, not once its head times out. Out of line: only needed when a line is incomplete or malformed.
+[[nodiscard]] bool CanStillBeValidLines(const char* first, const char* last) noexcept;
 
 }  // namespace aeronet

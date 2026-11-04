@@ -177,6 +177,8 @@ AeronetAddUnitTest(
 AeronetAddUnitTest(
     search-crlf_test
     test/search-crlf_test.cpp
+    LIBRARIES
+    aeronet_tech
 )
 
 AeronetAddUnitTest(

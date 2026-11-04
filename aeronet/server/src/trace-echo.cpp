@@ -7,6 +7,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/search-crlf.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 
 namespace aeronet {
@@ -26,17 +27,6 @@ bool IsExcludedField(std::string_view line) {
                              [name](std::string_view field) { return CaseInsensitiveEqual(name, field); });
 }
 
-// Whether a LF of the input is not preceded by a CR. The input starts with kTraceRequestLineStart: no LF is the first
-// byte.
-bool ContainsBareLF(std::string_view input) {
-  for (std::size_t pos = input.find('\n'); pos != std::string_view::npos; pos = input.find('\n', pos + 1)) {
-    if (input[pos - 1] != '\r') {
-      return true;
-    }
-  }
-  return false;
-}
-
 }  // namespace
 
 bool CopyTraceEcho(std::string_view input, std::size_t maxHeaderBytes, RawChars32& echo) {
@@ -47,9 +37,12 @@ bool CopyTraceEcho(std::string_view input, std::size_t maxHeaderBytes, RawChars3
   // The head ends with an empty line: the first CRLF following another one.
   const std::size_t emptyLinePos = input.substr(0, maxHeaderBytes).find(http::DoubleCRLF);
   if (emptyLinePos == std::string_view::npos) {
-    // Not complete yet, unless already longer than the largest head accepted, or holding a bare LF: its parsing rejects
-    // them both, instead of waiting for the rest of a head that can no longer be valid.
-    return input.size() >= maxHeaderBytes || ContainsBareLF(input);
+    // Not complete yet: not parsed (which modifies it in place) before its rest is received and copied, unless no rest
+    // can make it valid. It is then parsed now, and answered like the head of another method: when it no longer fits
+    // in maxHeaderBytes (what is parsed of it tells 414 from 431), or when a bare CR or LF makes its parsing reject it
+    // (CanStillBeValidLines() is the check its parsing makes on a line not complete yet). Other errors in its lines
+    // are answered once its rest is received.
+    return input.size() >= maxHeaderBytes || !CanStillBeValidLines(input.data(), input.data() + input.size());
   }
   const std::string_view head = input.substr(0, emptyLinePos + http::DoubleCRLF.size());
 

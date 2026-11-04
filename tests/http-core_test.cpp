@@ -3680,8 +3680,8 @@ TEST(HttpOptionsTrace, TraceEchoesALargeHead) {
   ts.resetConfig();
 }
 
-// The head of a TRACE request is copied once complete: one using bare LF line endings is rejected as soon as it is
-// received, not waited for.
+// The head of a TRACE request is copied once complete: one using bare LF line endings, or holding a bare CR, is
+// rejected as soon as it is received, not waited for.
 TEST(HttpOptionsTrace, TraceWithBareLfLineEndingsIsRejectedWithoutWaiting) {
   ts.resetConfigAndPostUpdate(
       [](HttpServerConfig& cfg) { cfg.withTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainAndTLS); });
@@ -3689,6 +3689,8 @@ TEST(HttpOptionsTrace, TraceWithBareLfLineEndingsIsRejectedWithoutWaiting) {
            "TRACE /bare HTTP/1.1\nHost: h\n\n",
            "TRACE /bare HTTP/1.1\r\nHost: h\n\n",
            "TRACE /bare HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\n",
+           "TRACE /bare HTTP/1.1\rX",
+           "TRACE /bare HTTP/1.1\r\nHost: h\rX",
        }) {
     SCOPED_TRACE(raw);
     test::ClientConnection cnx(port);

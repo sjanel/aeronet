@@ -100,24 +100,60 @@ TEST(MemoryUtilsSearchCRLF, StrictSearchDistinguishesIncompleteAndMalformedLines
   EXPECT_EQ(mutableResult, mutableLine.data() + 13);
 }
 
-TEST(MemoryUtilsSearchCRLF, HasBareLFOfALineWithoutCRLF) {
-  const auto hasBareLF = [](std::string_view line) {
-    // The lines are the ones SearchCRLF() did not find the end of.
-    EXPECT_EQ(SearchCRLF(line.data(), line.data() + line.size()), line.data() + line.size()) << line;
-    return HasBareLF(line.data(), line.data() + line.size());
-  };
+namespace {
 
-  EXPECT_FALSE(hasBareLF(""));
-  EXPECT_FALSE(hasBareLF("Header: val"));
-  EXPECT_FALSE(hasBareLF("Header: value\r"));  // the CR of a CRLF still to come
-  EXPECT_FALSE(hasBareLF("\r"));
+bool CanStillBeValid(std::string_view lines) { return CanStillBeValidLines(lines.data(), lines.data() + lines.size()); }
 
-  EXPECT_TRUE(hasBareLF("\n"));
-  EXPECT_TRUE(hasBareLF("Header: value\n"));
-  EXPECT_TRUE(hasBareLF("GET / HTTP/1.1\nHost: x\n\n"));
-  EXPECT_TRUE(hasBareLF("Header: val\nue\r"));
-  EXPECT_TRUE(hasBareLF(std::string(4096, 'x') + "\n" + std::string(4096, 'y')));
-  EXPECT_FALSE(hasBareLF(std::string(8192, 'x')));
+}  // namespace
+
+TEST(MemoryUtilsSearchCRLF, CanStillBeValidLinesOfALineWithoutCRLF) {
+  // The lines SearchCRLF() did not find the end of: only a bare LF makes them invalid.
+  EXPECT_TRUE(CanStillBeValid(""));
+  EXPECT_TRUE(CanStillBeValid("Header: val"));
+  EXPECT_TRUE(CanStillBeValid("Header: value\r"));  // the CR of a CRLF still to come
+  EXPECT_TRUE(CanStillBeValid("\r"));
+  EXPECT_TRUE(CanStillBeValid(std::string(8192, 'x')));
+
+  EXPECT_FALSE(CanStillBeValid("\n"));
+  EXPECT_FALSE(CanStillBeValid("Header: value\n"));
+  EXPECT_FALSE(CanStillBeValid("GET / HTTP/1.1\nHost: x\n\n"));
+  EXPECT_FALSE(CanStillBeValid("Header: val\nue\r"));
+  EXPECT_FALSE(CanStillBeValid(std::string(4096, 'x') + "\n" + std::string(4096, 'y')));
+}
+
+TEST(MemoryUtilsSearchCRLF, CanStillBeValidLinesWithABareCR) {
+  // A CR followed by anything but its LF, whether it ends the first line or another one.
+  EXPECT_FALSE(CanStillBeValid("\rX"));
+  EXPECT_FALSE(CanStillBeValid("Header: bad\rvalue\r\n"));
+  EXPECT_FALSE(CanStillBeValid("Header: value\r\r\n"));
+  EXPECT_FALSE(CanStillBeValid("GET / HTTP/1.1\r\nHost: x\rX"));
+  EXPECT_FALSE(CanStillBeValid("GET / HTTP/1.1\r\nHost: x\r\n\r\r"));
+  EXPECT_FALSE(CanStillBeValid(std::string(4096, 'x') + "\r\n" + std::string(4096, 'y') + "\r\r"));
+}
+
+TEST(MemoryUtilsSearchCRLF, CanStillBeValidLinesOfSeveralLines) {
+  // Every line but the last one ends with CRLF, an empty one included.
+  EXPECT_TRUE(CanStillBeValid("\r\n"));
+  EXPECT_TRUE(CanStillBeValid("\r\n\r\n"));
+  EXPECT_TRUE(CanStillBeValid("GET / HTTP/1.1\r\nHost: x\r\n"));
+  EXPECT_TRUE(CanStillBeValid("GET / HTTP/1.1\r\nHost: x\r\nX-Last: z"));
+  EXPECT_TRUE(CanStillBeValid("GET / HTTP/1.1\r\nHost: x\r\n\r"));
+  EXPECT_TRUE(CanStillBeValid("GET / HTTP/1.1\r\nHost: x\r\n\r\nGET /next HTTP/1.1\r\n"));
+
+  // A bare LF in a line ended by CRLF, or starting a line.
+  EXPECT_FALSE(CanStillBeValid("GET / HTTP/1.1\r\nHo\nst: x\r\n"));
+  EXPECT_FALSE(CanStillBeValid("GET / HTTP/1.1\r\n\nHost: x\r\n"));
+  EXPECT_FALSE(CanStillBeValid("GET / HTTP/1.1\r\nHost: x\n\r\n"));
+  EXPECT_FALSE(CanStillBeValid("GET / HTTP/1.1\r\nHost: x\r\n\n"));
+
+  // Many lines, with the bare one at the end.
+  std::string lines;
+  for (int lineNb = 0; lineNb < 1000; ++lineNb) {
+    lines.append("X-Field: value\r\n");
+  }
+  EXPECT_TRUE(CanStillBeValid(lines));
+  EXPECT_FALSE(CanStillBeValid(lines + "X-Last: \n"));
+  EXPECT_FALSE(CanStillBeValid(lines + "X-Last: \rz"));
 }
 
 }  // namespace aeronet
