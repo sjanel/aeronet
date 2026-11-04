@@ -6145,16 +6145,16 @@ TEST(Http2ProtocolHandler, PerRouteMaxBodyBytesAllowsSmaller) {
 
 // ============== Graceful GOAWAY (drain) Tests ==============
 
-// The GOAWAY of a drain lets the open streams complete: the connection is closed once they are answered, and the
-// streams the client opens meanwhile are ignored. A connection whose client preface was not received yet is closed
-// right away.
-TEST(Http2ProtocolHandler, InitiateGoAwayClosesTheConnectionOnceItsStreamsAreAnswered) {
+// The GOAWAY that the sweep of a drain sends (once) lets the open streams complete: the connection is closed once they
+// are answered, and the streams the client opens meanwhile are ignored. A connection whose client preface was not
+// received yet is closed right away.
+TEST(Http2ProtocolHandler, DrainSweepClosesTheConnectionOnceItsStreamsAreAnswered) {
   Router router;
   router.setPath(http::Method::POST, "/upload",
                  [](const HttpRequestView& req) { return HttpResponse(200, req.body()); });
 
   Http2ProtocolLoopback loop(router);
-  loop.handler.initiateGoAway();
+  EXPECT_TRUE(loop.handler.onSweep(std::chrono::steady_clock::now(), true));
   EXPECT_FALSE(loop.handler.hasPendingOutput());
   EXPECT_TRUE(loop.state.isDrainCloseRequested());
 
@@ -6174,9 +6174,10 @@ TEST(Http2ProtocolHandler, InitiateGoAwayClosesTheConnectionOnceItsStreamsAreAns
   headers.append(MakeHttp1HeaderLine(":path", "/upload"));
   ASSERT_EQ(openLoop.client.sendHeaders(1, http::StatusCode{}, HeadersView(headers), false), ErrorCode::NoError);
   openLoop.pumpClientToServer();
+  EXPECT_TRUE(openLoop.handler.hasRequestsInProgress());
 
-  openLoop.handler.initiateGoAway();
-  openLoop.handler.initiateGoAway();
+  EXPECT_TRUE(openLoop.handler.onSweep(std::chrono::steady_clock::now(), true));
+  EXPECT_TRUE(openLoop.handler.onSweep(std::chrono::steady_clock::now(), true));
   EXPECT_FALSE(openLoop.state.isDrainCloseRequested());
 
   // A stream opened by the client before receiving the GOAWAY is ignored.
@@ -6192,25 +6193,26 @@ TEST(Http2ProtocolHandler, InitiateGoAwayClosesTheConnectionOnceItsStreamsAreAns
   EXPECT_EQ(openLoop.clientHeaders[0].streamId, 1U);
   EXPECT_EQ(GetHeaderValue(openLoop.clientHeaders[0], ":status"), "200");
   EXPECT_EQ(openLoop.receivedData(1), "data");
+  EXPECT_FALSE(openLoop.handler.hasRequestsInProgress());
   EXPECT_TRUE(openLoop.state.isDrainCloseRequested());
 }
 
-// ============== Per-route requestTimeout / sweepStreams Tests ==============
+// ============== Per-route requestTimeout / onSweep Tests ==============
 
-TEST(Http2ProtocolHandler, SweepStreamsOnEmptyStreamsIsNoOp) {
+TEST(Http2ProtocolHandler, SweepOnEmptyStreamsIsNoOp) {
   Router router;
   router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
   loop.connect();
 
-  // sweepStreams on an empty map should be a no-op
-  EXPECT_TRUE(loop.handler.sweepStreams(std::chrono::steady_clock::now() + std::chrono::hours(1)));
+  // A sweep without streams is a no-op
+  EXPECT_TRUE(loop.handler.onSweep(std::chrono::steady_clock::now() + std::chrono::hours(1), false));
   EXPECT_TRUE(loop.clientHeaders.empty());
 }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-TEST(Http2ProtocolHandler, SweepStreamsAsyncTimeoutSends408) {
+TEST(Http2ProtocolHandler, SweepAsyncTimeoutSends408) {
   Router router;
   using namespace std::chrono_literals;
 
@@ -6246,7 +6248,7 @@ TEST(Http2ProtocolHandler, SweepStreamsAsyncTimeoutSends408) {
 
   // Instead of resuming, sweep with a far-future time to trigger the deadline
   const auto farFuture = std::chrono::steady_clock::now() + 10s;
-  EXPECT_TRUE(loop.handler.sweepStreams(farFuture));
+  EXPECT_TRUE(loop.handler.onSweep(farFuture, false));
   loop.pumpServerToClient();
 
   // Expect 408 status and a RST_STREAM
@@ -6256,7 +6258,7 @@ TEST(Http2ProtocolHandler, SweepStreamsAsyncTimeoutSends408) {
   EXPECT_EQ(loop.streamResets.back().second, ErrorCode::Cancel);
 }
 
-TEST(Http2ProtocolHandler, SweepStreamsKeepsTheTaskOfATimedOutStreamUntilItsWorkCompletes) {
+TEST(Http2ProtocolHandler, SweepKeepsTheTaskOfATimedOutStreamUntilItsWorkCompletes) {
   using namespace std::chrono_literals;
   // The work of the handler runs until released: it is still running when its stream times out.
   static std::atomic<bool> releaseWork;
@@ -6294,7 +6296,7 @@ TEST(Http2ProtocolHandler, SweepStreamsKeepsTheTaskOfATimedOutStreamUntilItsWork
   EXPECT_TRUE(loop.handler.hasAsyncWorkInFlight());
 
   // Stream 3 times out while its work runs: answered 408 (without credit), then reset.
-  EXPECT_TRUE(loop.handler.sweepStreams(std::chrono::steady_clock::now() + 10s));
+  EXPECT_TRUE(loop.handler.onSweep(std::chrono::steady_clock::now() + 10s, false));
   loop.pumpServerToClient();
   const auto resp = std::ranges::find(loop.clientHeaders, 3U, &HeaderEvent::streamId);
   ASSERT_NE(resp, loop.clientHeaders.end());
@@ -6321,7 +6323,7 @@ TEST(Http2ProtocolHandler, SweepStreamsKeepsTheTaskOfATimedOutStreamUntilItsWork
   EXPECT_EQ(loop.receivedData(1), body);
 }
 
-TEST(Http2ProtocolHandler, SweepStreamsNoExpiryDoesNothing) {
+TEST(Http2ProtocolHandler, SweepNoExpiryDoesNothing) {
   Router router;
   using namespace std::chrono_literals;
 
@@ -6356,7 +6358,7 @@ TEST(Http2ProtocolHandler, SweepStreamsNoExpiryDoesNothing) {
   }
 
   // Sweep with current time — deadline not yet reached (1 hour timeout)
-  EXPECT_TRUE(loop.handler.sweepStreams(std::chrono::steady_clock::now()));
+  EXPECT_TRUE(loop.handler.onSweep(std::chrono::steady_clock::now(), false));
   loop.pumpServerToClient();
 
   // No 408 should have been sent

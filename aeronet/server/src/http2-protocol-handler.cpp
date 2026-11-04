@@ -590,8 +590,11 @@ void Http2ProtocolHandler::onStreamClosed(uint32_t streamId) {
     _streams.erase(it);
   }
 
-  // The last stream served after the GOAWAY of the connection (see Http2Config::maxStreamsPerConnection): the
-  // connection closes once its output is written.
+  // It may be the last stream served after the GOAWAY of the connection (see Http2Config::maxStreamsPerConnection).
+  requestCloseIfGoAwayCompleted();
+}
+
+void Http2ProtocolHandler::requestCloseIfGoAwayCompleted() {
   if (_connection.goAwayCompleted()) {
     _pConnectionState->requestDrainAndClose();
   }
@@ -1597,12 +1600,15 @@ void Http2ProtocolHandler::initiateGoAway() {
     return;
   }
   _connection.initiateGoAway(ErrorCode::NoError, ErrorMsg::ServerDraining);
-  if (_connection.goAwayCompleted()) {
-    _pConnectionState->requestDrainAndClose();
-  }
+  requestCloseIfGoAwayCompleted();
 }
 
-bool Http2ProtocolHandler::sweepStreams(std::chrono::steady_clock::time_point now) {
+bool Http2ProtocolHandler::onSweep(std::chrono::steady_clock::time_point now, bool draining) {
+  // A drain ends HTTP/2 connections like the HTTP/1.1 ones, once their current requests are answered: a graceful GOAWAY
+  // makes their clients open their next streams elsewhere.
+  if (draining) {
+    initiateGoAway();
+  }
   for (auto it = _streams.begin(); it != _streams.end();) {
     auto& streamState = it->second;
     if (streamState.requestDeadline.time_since_epoch().count() != 0 && streamState.requestDeadline < now) {

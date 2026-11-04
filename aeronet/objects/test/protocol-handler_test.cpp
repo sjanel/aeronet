@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstddef>
 #include <span>
 #include <string>
@@ -81,6 +82,15 @@ TEST(ProtocolHandlerTest, DefaultDrainCopiesThePendingOutput) {
   EXPECT_TRUE(handler.drainOutputBuffer(dest));
   EXPECT_EQ(dest.firstBuffer(), "cdef");
   EXPECT_FALSE(handler.hasPendingOutput());
+}
+
+// By default, a handler has no timer and no request keeping its connection out of the keep-alive idle timeout.
+TEST(ProtocolHandlerTest, DefaultSweepKeepsTheConnectionWithoutOutput) {
+  StringOutputHandler handler;
+  EXPECT_TRUE(handler.onSweep(std::chrono::steady_clock::now(), false));
+  EXPECT_TRUE(handler.onSweep(std::chrono::steady_clock::now(), true));
+  EXPECT_FALSE(handler.hasPendingOutput());
+  EXPECT_FALSE(handler.hasRequestsInProgress());
 }
 
 }  // namespace aeronet

@@ -18,10 +18,6 @@
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/system-error.hpp"
 
-#ifdef AERONET_ENABLE_HTTP2
-#include "aeronet/http2-protocol-handler.hpp"
-#endif
-
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-handshake-failure-reasons.hpp"
 #endif
@@ -143,17 +139,14 @@ bool ConnectionMaintenance::closeExpiredKeepAliveConnections() {
       continue;
     }
 
-#ifdef AERONET_ENABLE_HTTP2
     // keepAliveTimeout applies between requests, after the previous response has completed. An active HTTP/2
     // stream may be waiting for peer flow-control credit and therefore produce no socket events at all; reaping
     // it here would truncate a response at the current window boundary. Recheck periodically until all streams
     // complete, at which point the last event-refreshed deadline resumes normal idle expiry.
-    if (state.protocolHandler && state.protocolHandler->type() == ProtocolType::Http2 &&
-        static_cast<http2::Http2ProtocolHandler*>(state.protocolHandler.get())->connection().activeStreamCount() != 0) {
+    if (state.protocolHandler && state.protocolHandler->hasRequestsInProgress()) {
       _deadlines.upsert(state, expired.fd, now + config.keepAliveTimeout);
       continue;
     }
-#endif
 
     // File sends are exempt because their progress is driven by this very sweep (flushFilePayload retries
     // above), which does not refresh lastActivity.
@@ -347,18 +340,11 @@ void ConnectionMaintenance::sweepIdleConnections() {
     // EPOLLERR reports the zerocopy completions: polled here as well, in case of a missed event.
     ctx.io.pollZerocopyCompletions(state);
 #endif
-#ifdef AERONET_ENABLE_HTTP2
-    // Sweep per-stream request deadlines and the timers of HTTP/2 connections. A drain ends them like the HTTP/1.1
-    // ones, once their current requests are answered: a graceful GOAWAY makes their clients open their next streams
-    // elsewhere.
-    if (state.protocol == ProtocolType::Http2 && state.protocolHandler) {
-      auto& handler = static_cast<http2::Http2ProtocolHandler&>(*state.protocolHandler);
-      if (ctx.lifecycle.isDraining()) {
-        handler.initiateGoAway();
-      }
-      const bool keep = handler.sweepStreams(now);
-      // The 408 responses, PING and GOAWAY frames it queued: the connection may receive no event to send them.
-      if (handler.hasPendingOutput() && !state.waitingWritable) {
+    // The timers of the protocol handler (HTTP/2 stream deadlines, PING keepalive, GOAWAY of a drain).
+    if (state.protocolHandler) {
+      const bool keep = state.protocolHandler->onSweep(now, ctx.lifecycle.isDraining());
+      // The output it queued (408 responses, PING and GOAWAY frames): the connection may receive no event to send it.
+      if (state.protocolHandler->hasPendingOutput() && !state.waitingWritable) {
         ctx.io.flushOutbound(cnxIt);
       }
       if (!keep) {
@@ -369,7 +355,6 @@ void ConnectionMaintenance::sweepIdleConnections() {
         continue;
       }
     }
-#endif
     // For DrainThenClose mode, only close after buffers and file payload are fully drained
     if (state.canCloseConnectionForDrain()) {
       ctx.io.closeConnection(cnxIt);

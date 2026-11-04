@@ -131,6 +131,14 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
     _connection.setEventSink(nullptr);
   }
 
+  /// Sends the GOAWAY of a drain first (see initiateGoAway()), then answers 408 + RST_STREAM to the streams whose
+  /// per-route request deadline expired, then runs the timers of the connection (SETTINGS acknowledgement and PING
+  /// keepalive, see Http2Connection::checkTimeouts()).
+  /// @return false when a timer of the connection expired: it should be closed.
+  [[nodiscard]] bool onSweep(std::chrono::steady_clock::time_point now, bool draining) override;
+
+  [[nodiscard]] bool hasRequestsInProgress() const noexcept override { return _connection.activeStreamCount() != 0; }
+
   // ============================
   // HTTP/2 specific
   // ============================
@@ -196,17 +204,6 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   /// Tells whether deferred work started by a coroutine of this connection is still running.
   [[nodiscard]] bool hasAsyncWorkInFlight() const noexcept override;
 #endif
-
-  /// Send a graceful GOAWAY (NO_ERROR), for a drain of the server: the client opens its next streams on another
-  /// connection, while this one serves its open streams, then closes. No-op once a GOAWAY was sent. A connection whose
-  /// client preface was not received yet, without streams, is closed without GOAWAY.
-  void initiateGoAway();
-
-  /// Check per-stream request deadlines and send 408 + RST_STREAM for expired ones, then run the timers of the
-  /// connection (SETTINGS acknowledgement and PING keepalive, see Http2Connection::checkTimeouts()). Called during the
-  /// server's periodic sweep of idle connections, which sends the output queued meanwhile.
-  /// @return false when a timer of the connection expired: it should be closed.
-  [[nodiscard]] bool sweepStreams(std::chrono::steady_clock::time_point now);
 
  private:
   /// Per-stream request state during aggregation.
@@ -315,6 +312,15 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   void onGoAway([[maybe_unused]] uint32_t lastStreamId, [[maybe_unused]] ErrorCode errorCode,
                 [[maybe_unused]] std::string_view debugData) override {}
   void onWindowUpdate(uint32_t streamId, [[maybe_unused]] uint32_t increment) override;
+
+  /// Send a graceful GOAWAY (NO_ERROR), for a drain of the server: the client opens its next streams on another
+  /// connection, while this one serves its open streams, then closes. No-op once a GOAWAY was sent. A connection whose
+  /// client preface was not received yet, without streams, is closed without GOAWAY.
+  void initiateGoAway();
+
+  /// Once the streams served after a GOAWAY of the connection are closed, the connection closes when its output is
+  /// written.
+  void requestCloseIfGoAwayCompleted();
 
   [[nodiscard]] std::size_t retainedOutboundBytes() const noexcept {
     return _connection.pendingOutputSize() + _deferredOutputBytes;
