@@ -7,6 +7,9 @@
 #include <string>
 #include <string_view>
 
+#include "aeronet/http-constants.hpp"
+#include "aeronet/http-request-view-test-access.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
@@ -25,6 +28,31 @@ CopyResult Copy(std::string_view input, std::size_t maxHeaderBytes = kMaxHeaderB
   echo.append(std::string_view("stale echo of a previous request"));
   const bool complete = CopyTraceEcho(input, maxHeaderBytes, echo);
   return {complete, std::string(std::string_view(echo))};
+}
+
+http::StatusCode ParseHead(std::string_view input) {
+  return test::HttpRequestViewTestAccess::ParseHead(input, kMaxHeaderBytes);
+}
+
+// A head that no more input can make valid is not waited for, as its parsing rejects it right away: the copy must not
+// let the parsing start on a head it would wait for, whose echo would then be lost.
+void ExpectRejectedWithoutWaiting(std::string_view input) {
+  SCOPED_TRACE(input);
+  const auto [complete, echo] = Copy(input);
+  EXPECT_TRUE(complete);
+  EXPECT_TRUE(echo.empty());
+  EXPECT_EQ(ParseHead(input), http::StatusCodeBadRequest);
+}
+
+// A head whose rest can make it valid is waited for, as its parsing does.
+void ExpectWaitedFor(std::string_view input) {
+  SCOPED_TRACE(input);
+  const auto [complete, echo] = Copy(input);
+  EXPECT_FALSE(complete);
+  EXPECT_TRUE(echo.empty());
+  if (input.size() >= http::kHttpReqLineMinLen) {  // the parsing starts with the shortest request line
+    EXPECT_EQ(ParseHead(input), test::HttpRequestViewTestAccess::kStatusNeedMoreData);
+  }
 }
 
 }  // namespace
@@ -136,10 +164,7 @@ TEST(TraceEchoTest, OtherMethodsAreNotCopied) {
 TEST(TraceEchoTest, WaitsForTheWholeHead) {
   static constexpr std::string_view kHead = "TRACE /a HTTP/1.1\r\nHost: h\r\nCookie: c\r\nX-Last: z\r\n\r\n";
   for (std::size_t size = std::string_view("TRACE ").size(); size < kHead.size(); ++size) {
-    SCOPED_TRACE(size);
-    const auto [complete, echo] = Copy(kHead.substr(0, size));
-    EXPECT_FALSE(complete);
-    EXPECT_TRUE(echo.empty());
+    ExpectWaitedFor(kHead.substr(0, size));
   }
   EXPECT_EQ(Copy(kHead).echo, "TRACE /a HTTP/1.1\r\nHost: h\r\nX-Last: z\r\n\r\n");
 }
@@ -174,18 +199,28 @@ TEST(TraceEchoTest, HeadWithABareLfDoesNotWait) {
            "TRACE /a HTTP/1.1\r\nHost: h\r\nX: v\n",
            "TRACE /a HTTP/1.1\r\nHost: h\r\n\n",
            "TRACE /a HTTP/1.1\r\nHo\nst: h\r\n",
+           "TRACE /a\nb HTTP/1.1\r\nHost: h\r\n",
        }) {
-    SCOPED_TRACE(input);
-    const auto [complete, echo] = Copy(input);
-    EXPECT_TRUE(complete);
-    EXPECT_TRUE(echo.empty());
+    ExpectRejectedWithoutWaiting(input);
   }
 
   // A CR and its LF received apart are a CRLF: the head is waited for.
   for (std::string_view input :
        {"TRACE /a HTTP/1.1\r", "TRACE /a HTTP/1.1\r\nHost: h\r", "TRACE /a HTTP/1.1\r\nHost: h\r\n\r"}) {
-    SCOPED_TRACE(input);
-    EXPECT_FALSE(Copy(input).complete);
+    ExpectWaitedFor(input);
+  }
+}
+
+TEST(TraceEchoTest, HeadWithABareCrDoesNotWait) {
+  // A CR followed by anything but its LF, in the line being received or in a line before it.
+  for (std::string_view input : {
+           "TRACE /a HTTP/1.1\rX",
+           "TRACE /a HTTP/1.1\r\r\n",
+           "TRACE /a HTTP/1.1\r\nHost: h\rX",
+           "TRACE /a HTTP/1.1\r\nHost: h\r\nX: a\rb\r\n",
+           "TRACE /a HTTP/1.1\r\nHost: h\r\n\rX",
+       }) {
+    ExpectRejectedWithoutWaiting(input);
   }
 }
 

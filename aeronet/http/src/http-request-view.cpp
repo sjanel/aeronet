@@ -389,11 +389,11 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, HeadP
     pFirst += _headSpanSize;
   } else {
     char* pLineLast = SearchCRLF(pFirst, pLast);
-    if (pLineLast == pLast) {
-      // A bare LF can never be followed by the CRLF ending the line: answered now, not once the head times out.
-      return HasBareLF(pFirst, pLast) ? http::StatusCodeBadRequest : kStatusNeedMoreData;
+    if (pLineLast == pLast || pLineLast[1] != '\n') {
+      // Not complete yet, or with a bare CR: waited for only if more input can still make it valid.
+      return CanStillBeValidLines(pFirst, pLast) ? kStatusNeedMoreData : http::StatusCodeBadRequest;
     }
-    if (pLineLast[1] != '\n' || std::cmp_less(pLineLast - pFirst, http::kHttpReqLineMinLen - http::CRLF.size())) {
+    if (std::cmp_less(pLineLast - pFirst, http::kHttpReqLineMinLen - http::CRLF.size())) {
       return http::StatusCodeBadRequest;
     }
     // RFC 9112 §3: a request-target longer than the server wishes to parse is answered 414. The request line, made
@@ -487,11 +487,8 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, HeadP
   bool foundEmptyLine = false;
   while (pFirst < pLast) {
     char* pLineLast = SearchCRLF(pFirst, pLast);
-    if (pLineLast == pLast) {
-      return HasBareLF(pFirst, pLast) ? http::StatusCodeBadRequest : needMoreData(pFirst);
-    }
-    if (pLineLast[1] != '\n') {
-      return http::StatusCodeBadRequest;
+    if (pLineLast == pLast || pLineLast[1] != '\n') {
+      return CanStillBeValidLines(pFirst, pLast) ? needMoreData(pFirst) : http::StatusCodeBadRequest;
     }
     if (pLineLast == pFirst) {
       // we are pointing to a CRLF (empty line) - end of headers

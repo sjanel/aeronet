@@ -156,7 +156,8 @@ AeronetAddUnitTest(
     src/trace-echo.cpp
     test/trace-echo_test.cpp
     LIBRARIES
-    aeronet_tech
+    aeronet_http
+    aeronet_basic_test_support
 )
 
 AeronetAddUnitTest(

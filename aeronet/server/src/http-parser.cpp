@@ -260,8 +260,9 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeTrailers(ConnectionIt cnxIt
   std::size_t tempPos = pos;
   while (true) {
     const auto lineEndIt = SearchCRLF(pInputBeg + tempPos, pLast);
-    if (lineEndIt == pLast) {
-      if (HasBareLF(pInputBeg + tempPos, pLast)) {
+    if (lineEndIt == pLast || lineEndIt[1] != '\n') {
+      // Not complete yet, or with a bare CR: waited for only if more input can still make it valid.
+      if (!CanStillBeValidLines(pInputBeg + tempPos, pLast)) {
         emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed trailer line");
         return BodyDecodeStatus::Error;
       }
@@ -273,10 +274,6 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeTrailers(ConnectionIt cnxIt
         return BodyDecodeStatus::Error;
       }
       return BodyDecodeStatus::NeedMore;
-    }
-    if (lineEndIt[1] != '\n') {
-      emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed trailer line");
-      return BodyDecodeStatus::Error;
     }
     // Check total trailer size limit
     const std::size_t trailerSize = static_cast<std::size_t>((pInputBeg + tempPos) - pTrailerStart);
