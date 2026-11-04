@@ -6,6 +6,7 @@
 #include <string_view>
 
 #include "aeronet/log.hpp"
+#include "aeronet/url-char-class.hpp"
 
 namespace aeronet {
 
@@ -21,7 +22,7 @@ void BuiltinProbesConfig::validate() const {
         throw std::invalid_argument("builtin probe path must start with '/'");
       }
       // Disallow spaces and control characters in probe paths
-      if (std::ranges::any_of(path, [](unsigned char ch) { return ch <= 0x1F || ch == 0x7F || ch == ' '; })) {
+      if (path.contains(' ') || std::ranges::any_of(path, url::IsControlChar)) {
         log::critical("builtin probe path '{}' contains invalid characters", name);
         throw std::invalid_argument("builtin probe path contains invalid characters");
       }

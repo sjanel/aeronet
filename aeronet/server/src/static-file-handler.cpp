@@ -1,7 +1,6 @@
 #include "aeronet/static-file-handler.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cassert>
 #include <charconv>
 #include <chrono>
@@ -44,6 +43,7 @@
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
+#include "aeronet/url-char-class.hpp"
 #include "aeronet/url-encode.hpp"
 #include "aeronet/vector.hpp"
 
@@ -79,24 +79,6 @@ struct PathString {
 #endif
   std::string_view view;
 };
-
-// Use a constexpr lookup table indexed by unsigned char for a fast, branchless test.
-// This avoids multiple comparisons and gives the compiler a chance to emit a single
-// table-lookup instruction. We use unsigned char to index the array safely.
-constexpr auto kUnreservedTable = [] constexpr {
-  std::array<bool, std::numeric_limits<unsigned char>::max() + 1> table{};
-
-  std::ranges::fill(table.begin() + 'A', table.begin() + 'Z' + 1, true);
-  std::ranges::fill(table.begin() + 'a', table.begin() + 'z' + 1, true);
-  std::ranges::fill(table.begin() + '0', table.begin() + '9' + 1, true);
-
-  table[static_cast<unsigned char>('-')] = true;
-  table[static_cast<unsigned char>('_')] = true;
-  table[static_cast<unsigned char>('.')] = true;
-  table[static_cast<unsigned char>('~')] = true;
-
-  return table;
-}();
 
 // Dotfiles and dot-directories are hidden, except '.well-known' that RFC 8615 reserves for public metadata.
 // Templated on the character type of native paths (wchar_t on Windows).
@@ -207,15 +189,12 @@ RawChars RenderDefaultDirectoryListing(std::string_view requestPath, std::span<c
 
   for (const auto& entry : entries) {
     const bool isDir = entry.isDirectory;
-    const auto encodedSz =
-        URLEncodedSize(entry.name, [](char ch) { return kUnreservedTable[static_cast<unsigned char>(ch)]; });
+    const auto encodedSz = URLEncodedSize(entry.name, url::IsUnreserved);
 
     body.append(R"(<tr><td class="name"><a href=")");
 
     body.ensureAvailableCapacityExponential(encodedSz);
-    URLEncode(
-        entry.name, [](char ch) { return kUnreservedTable[static_cast<unsigned char>(ch)]; },
-        body.data() + body.size());
+    URLEncode(entry.name, url::IsUnreserved, body.data() + body.size());
     body.addSize(encodedSz);
 
     if (isDir) {

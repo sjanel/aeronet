@@ -19,7 +19,6 @@
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
-#include "aeronet/internal/is-path-safe.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/search-crlf.hpp"
@@ -27,6 +26,7 @@
 #include "aeronet/string-trim.hpp"
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
+#include "aeronet/url-char-class.hpp"
 #include "aeronet/url-encode.hpp"
 
 #ifndef NDEBUG
@@ -39,10 +39,6 @@ namespace {
 
 // Date header will always be present at headersStartPos.
 constexpr std::size_t kDateHeaderLenWithCRLF = http::HeaderSize(http::Date.size(), RFC7231DateStrLen);
-
-// Captureless lambda (not the function name): the template monomorphizes on its unique closure type, so the per-char
-// predicate inlines into the encode loop instead of becoming an indirect call through a function pointer.
-constexpr auto kIsPathSafe = [](char ch) { return internal::IsPathSafe(ch); };
 
 constexpr void InitData(char* data) {
   data[http::HTTP10Sv.size()] = ' ';          // SP after the HTTP version
@@ -218,7 +214,7 @@ HttpMessageData HttpResponse::finalizeForHttp1(const char* cachedDateHeader, htt
 
 std::size_t HttpResponse::LocationHeaderSize(std::string_view location, bool addSlash) {
   return http::HeaderSize(http::Location.size(),
-                          URLEncodedSize(location, kIsPathSafe) + static_cast<std::size_t>(addSlash));
+                          URLEncodedSize(location, url::IsPathChar) + static_cast<std::size_t>(addSlash));
 }
 
 void HttpResponse::headerAddLocationUnchecked(std::string_view location, bool addSlash) {
@@ -235,7 +231,7 @@ void HttpResponse::headerAddLocationUnchecked(std::string_view location, bool ad
   pData = AppendFixed<http::Location>(pData);
   pData = AppendFixed<http::HeaderSep>(pData);
 
-  pData = URLEncode(location, kIsPathSafe, pData);
+  pData = URLEncode(location, url::IsPathChar, pData);
   if (addSlash) {
     *pData++ = '/';
   }

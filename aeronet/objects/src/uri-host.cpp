@@ -8,38 +8,20 @@
 #include "aeronet/cctype.hpp"
 #include "aeronet/char-hexadecimal-converter.hpp"
 #include "aeronet/compiler-config.hpp"
+#include "aeronet/url-char-class.hpp"
 
 namespace aeronet::http {
 
 namespace {
 
-constexpr bool IsHexDigit(char ch) noexcept { return FromHexDigit(ch) >= 0; }
-
-// RFC 3986 §3.2.2: the characters of a reg-name, besides its pct-encoded octets: unreserved / sub-delims.
-constexpr bool IsRegNameChar(char ch) noexcept {
-  static constexpr auto kRegNameCharTable = [] {
-    struct {
-      bool data[256];
-    } table{};
-    constexpr std::string_view kSymbols = "-._~!$&'()*+,;=";
-    for (int ic = 0; ic < 256; ++ic) {
-      const char ch = static_cast<char>(ic);
-      table.data[ic] = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || isdigit(ch) || kSymbols.contains(ch);
-    }
-    return table;
-  }();
-  return kRegNameCharTable.data[static_cast<unsigned char>(ch)];
-}
-
 // Length of the longest prefix of 'str' that is a reg-name (RFC 3986 §3.2.2):
 // reg-name = *( unreserved / pct-encoded / sub-delims ), where pct-encoded = "%" HEXDIG HEXDIG.
 constexpr std::size_t RegNameLength(std::string_view str) noexcept {
   // The scan of the characters other than pct-encoded octets is kept free of their handling, so that it stays a tight
-  // loop. A captureless lambda (not a function): find_if_not monomorphizes on its closure type, inlining the predicate.
-  constexpr auto isRegNameChar = [](char ch) { return IsRegNameChar(ch); };
+  // loop.
   auto it = str.begin();
   while (true) {
-    it = std::find_if_not(it, str.end(), isRegNameChar);
+    it = std::find_if_not(it, str.end(), url::IsRegNameChar);
     if (str.end() - it < 3 || *it != '%' || !IsHexDigit(it[1]) || !IsHexDigit(it[2])) {
       return static_cast<std::size_t>(it - str.begin());
     }
@@ -128,7 +110,7 @@ AERONET_NOINLINE std::size_t IPLiteralLength(std::string_view str) noexcept {
     const std::size_t dotPos = literal.find('.');
     if (dotPos == std::string_view::npos || dotPos == 1U || dotPos + 1U == literal.size() ||
         !std::ranges::all_of(literal.substr(1, dotPos - 1), IsHexDigit) ||
-        !std::ranges::all_of(literal.substr(dotPos + 1), [](char ch) { return IsRegNameChar(ch) || ch == ':'; })) {
+        !std::ranges::all_of(literal.substr(dotPos + 1), [](char ch) { return url::IsRegNameChar(ch) || ch == ':'; })) {
       return 0;
     }
   } else if (!IsIPv6Address(literal)) {
