@@ -226,6 +226,67 @@ TEST_P(ZlibEncoderDecoderTest, EncodeFullWithoutOutputRoomIsNotEnoughCapacity) {
   EXPECT_EQ(noBuffer.error(), EncoderResult::Error::CompressionError);
 }
 
+// Without enough output room, encodeChunk() leaves the rest of its input, taken by the next calls with more room.
+// Without any output buffer, deflate() reports an inconsistent stream.
+TEST_P(ZlibEncoderDecoderTest, EncodeChunkWithoutEnoughOutputRoom) {
+  const RawChars payload = test::MakeRandomPayload(200000);
+  ZlibEncoderContext ctx;
+  ctx.init(CompressionConfig{}.zlib.level, GetParam());
+  char small[64];  // with 1 byte, deflate() writes the first byte of its header and returns before reading any input
+  std::string_view rest = payload;
+  auto result = ctx.encodeChunk(rest, sizeof(small), small);
+  ASSERT_FALSE(result.hasError());
+  ASSERT_LE(result.writtenIfNoError(), sizeof(small));
+  EXPECT_FALSE(rest.empty());
+  EXPECT_LT(rest.size(), payload.size());
+
+  RawChars compressed;
+  compressed.append(small, result.writtenIfNoError());
+  ASSERT_FALSE(test::AppendEncodedChunk(ctx, rest, compressed).hasError());
+  test::EndStream(ctx, compressed);
+  ZlibDecoder decoder(GetParam());
+  RawChars decompressed;
+  ASSERT_TRUE(decoder.decompressFull(compressed, kMaxPlainBytes, kDecoderChunkSize, decompressed));
+  EXPECT_EQ(std::string_view(decompressed), std::string_view(payload));
+
+  ctx.init(CompressionConfig{}.zlib.level, GetParam());
+  rest = payload;
+  result = ctx.encodeChunk(rest, 0, nullptr);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_EQ(result.error(), EncoderResult::Error::CompressionError);
+}
+
+// end() without output room reports NotEnoughCapacity while the stream is not finished, and its end once it is.
+TEST_P(ZlibEncoderDecoderTest, EndWithoutOutputRoom) {
+  static constexpr std::string_view kPayload = "some data to compress";
+  ZlibEncoderContext ctx;
+  ctx.init(CompressionConfig{}.zlib.level, GetParam());
+  RawChars compressed(ctx.minEncodeChunkCapacity(kPayload.size()) + ctx.endChunkSize());
+  std::string_view input = kPayload;
+  auto result = ctx.encodeChunk(input, compressed.capacity(), compressed.data());
+  ASSERT_FALSE(result.hasError());
+  compressed.setSize(result.writtenIfNoError());
+
+  char noRoom[1];
+  result = ctx.end(0, noRoom);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_EQ(result.error(), EncoderResult::Error::NotEnoughCapacity);
+
+  result = ctx.end(compressed.availableCapacity(), compressed.end());
+  ASSERT_FALSE(result.hasError());
+  ASSERT_GT(result.writtenIfNoError(), 0U);
+  compressed.addSize(result.writtenIfNoError());
+
+  result = ctx.end(0, noRoom);
+  ASSERT_FALSE(result.hasError());
+  EXPECT_EQ(result.writtenIfNoError(), 0U);
+
+  ZlibDecoder decoder(GetParam());
+  RawChars decompressed;
+  ASSERT_TRUE(decoder.decompressFull(compressed, kMaxPlainBytes, kDecoderChunkSize, decompressed));
+  EXPECT_EQ(std::string_view(decompressed), kPayload);
+}
+
 TEST_P(ZlibEncoderDecoderTest, DecompressChunkInSlicesRoundTrips) {
   const auto variant = GetParam();
   const std::string payload = test::MakePatternedPayload(50000);
@@ -429,7 +490,8 @@ TEST_P(ZlibEncoderDecoderTest, EncodeChunkAfterFinalizationReturnsZero) {
   // Encoding after finalization should return -1 to signal an error.
   RawChars extra;
   extra.reserve(ZDeflateBound(nullptr, std::string_view{"More data"}.size()));
-  EXPECT_TRUE(ctx->encodeChunk("More data", extra.capacity(), extra.data()).hasError());
+  std::string_view moreData = "More data";
+  EXPECT_TRUE(ctx->encodeChunk(moreData, extra.capacity(), extra.data()).hasError());
 }
 
 TEST_P(ZlibEncoderDecoderTest, StreamingSmallOutputBufferDrainsAndRoundTrips) {
@@ -524,8 +586,10 @@ TEST_P(ZlibEncoderDecoderTest, MaxCompressedBytesAndEndAreSane) {
   const auto maxChunk = ctx->minEncodeChunkCapacity(payload.size());
   ASSERT_GT(maxChunk, 0U);
   RawChars chunkOut(maxChunk);
-  const auto result = ctx->encodeChunk(payload, chunkOut.capacity(), chunkOut.data());
+  std::string_view input = payload;
+  const auto result = ctx->encodeChunk(input, chunkOut.capacity(), chunkOut.data());
   ASSERT_FALSE(result.hasError());
+  EXPECT_TRUE(input.empty());
   EXPECT_LE(static_cast<std::size_t>(result.writtenIfNoError()), maxChunk);
 
   RawChars tailOut(ctx->endChunkSize());
@@ -733,11 +797,12 @@ TEST(ZlibEncoderDecoderTest, EncodeChunkWithInsufficientOutputCapacity) {
   auto ctx = encoder.makeContext(ZlibVariant::deflate);
 
   // Create a large input.
-  std::string large(4096, 'X');
+  const std::string large(4096, 'X');
 
   // Try to encode with only 1 byte available.
   char tiny[1];
-  const auto result = ctx->encodeChunk(large, sizeof(tiny), tiny);
+  std::string_view input = large;
+  const auto result = ctx->encodeChunk(input, sizeof(tiny), tiny);
 
   if (!result.hasError()) {
     // If zlib has not reported an error at encodeChunk time, it should report an error at end() time since the stream

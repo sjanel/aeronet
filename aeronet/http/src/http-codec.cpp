@@ -548,22 +548,20 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
     totalCompSize = result.writtenIfNoError();
   } else {
     std::size_t totalCompCapa = std::min<std::size_t>(maxCompressedBytes, msg._data.capacity() - bodyCompStartPos);
-    const std::size_t maxCapacity = initialNeededCapacity + (maxCompressedBytes - initialCompressedBytes);
 
     // For larger max compressed size, we will do streaming compression with flushes, to avoid compressing more than
     // needed in case the compression ratio is not satisfied.
     EncoderContext* encoder = compressionState.makeContext(encoding);
     totalCompSize = 0;
 
+    // Grows the output room for the worst case of the next encoder call, up to maxCompressedBytes only: close to the
+    // limit, the encoder gets the rest of the budget, and input left once it is used up means that the compressed body
+    // exceeds it. Aborting as soon as the worst case exceeded the budget left most bodies of one to three chunks
+    // uncompressed.
     const auto ensureEnoughCapacity = [&msg, &totalCompSize, &totalCompCapa, &pCompBody, &body, hasBodyCaptured,
-                                       bodyCompStartPos, capturedTrailerGrowth, maxCapacity,
+                                       bodyCompStartPos, capturedTrailerGrowth,
                                        maxCompressedBytes](std::size_t neededCompressedChunkCapacity) {
-      if (totalCompCapa < totalCompSize + neededCompressedChunkCapacity) {
-        if (maxCapacity < bodyCompStartPos + totalCompSize + neededCompressedChunkCapacity + capturedTrailerGrowth) {
-          // We cannot compress within the max compressed size limit - abort compression and leave the response
-          // unmodified.
-          return false;
-        }
+      if (totalCompCapa < totalCompSize + neededCompressedChunkCapacity && totalCompCapa < maxCompressedBytes) {
         const std::size_t newTotalCompCapa =
             std::min(maxCompressedBytes, std::max(totalCompCapa * 2UL, totalCompSize + neededCompressedChunkCapacity));
         const std::size_t newTotalCapacity = bodyCompStartPos + newTotalCompCapa + capturedTrailerGrowth;
@@ -584,7 +582,6 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
           body = msg.bodyInMemory();
         }
       }
-      return true;
     };
 
     // Compress body in chunks, with flushes in between, to be able to stop as soon as we exceed maxCompressedBytes
@@ -592,12 +589,14 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
     for (std::size_t offsetBody = 0; offsetBody < bodySz;) {
       const std::size_t chunkSize = std::min<std::size_t>(bodySz - offsetBody, initialCompressionBufferLimit);
 
-      if (!ensureEnoughCapacity(encoder->minEncodeChunkCapacity(chunkSize))) {
+      ensureEnoughCapacity(encoder->minEncodeChunkCapacity(chunkSize));
+      if (totalCompSize == totalCompCapa) {
+        // The budget is used up with input left: end() would write more.
         return CompressResponseResult::ExceedsMaxRatio;
       }
 
-      const auto result = encoder->encodeChunk(body.substr(offsetBody, chunkSize), totalCompCapa - totalCompSize,
-                                               pCompBody + totalCompSize);
+      std::string_view chunk = body.substr(offsetBody, chunkSize);
+      const auto result = encoder->encodeChunk(chunk, totalCompCapa - totalCompSize, pCompBody + totalCompSize);
       if (result.hasError()) {
         return ConvertEncoderResultErrorToCompressResponseResult(result);
       }
@@ -605,15 +604,14 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
       // Pre-sizing based on historical compression ratio per route?
       totalCompSize += result.writtenIfNoError();
       assert(totalCompSize <= maxCompressedBytes);
-      offsetBody += chunkSize;
+      // The rest of a chunk not consumed for lack of output room starts the next one, with more room.
+      offsetBody += chunkSize - chunk.size();
     }
 
     // finalization flush(es)
     const auto endChunkSz = encoder->endChunkSize();
     while (true) {
-      if (!ensureEnoughCapacity(endChunkSz)) {
-        return CompressResponseResult::ExceedsMaxRatio;
-      }
+      ensureEnoughCapacity(endChunkSz);
       const auto result = encoder->end(totalCompCapa - totalCompSize, pCompBody + totalCompSize);
       if (result.hasError()) {
         return ConvertEncoderResultErrorToCompressResponseResult(result);

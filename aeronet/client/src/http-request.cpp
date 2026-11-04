@@ -13,7 +13,6 @@
 #include "aeronet/decimal-writer.hpp"
 #include "aeronet/decompression-config.hpp"
 #include "aeronet/embedded-payload.hpp"
-#include "aeronet/encoder-result.hpp"
 #include "aeronet/header-write.hpp"
 #include "aeronet/http-client-codec.hpp"
 #include "aeronet/http-codec.hpp"
@@ -475,15 +474,11 @@ HttpRequest::RedirectOutcome HttpRequest::resolveRedirect(std::string_view locat
     }
 
     // Finally simulate the encode of the decoded data to restore the encoder state to what it was before
-    // finalizeInlineBody() was called.
-    EncoderContext& newContext = *compressionState.makeContext(_opts._pickedEncoding);
-    const auto bodyStartPos = this->bodyStartPos();
-    const EncoderResult result =
-        newContext.encodeChunk(decoded, _data.size() - bodyStartPos, const_cast<char*>(_data.data() + bodyStartPos));
-    if (result.hasError()) {
-      throw std::runtime_error("Failed to restore encoder state during finalize() of HttpRequest");
-    }
-    const_cast<HttpRequest&>(*this)._data.setSize(bodyStartPos + result.writtenIfNoError());
+    // finalizeInlineBody() was called. Its output replaces the body, which grows if it does not fit.
+    compressionState.makeContext(_opts._pickedEncoding);
+    auto& self = const_cast<HttpRequest&>(*this);
+    self._data.setSize(bodyStartPos());
+    self.appendEncodedInlineOrThrow(decoded);
   }
 #endif
 

@@ -1982,6 +1982,10 @@ class HttpClientCompressionE2E : public ::testing::Test {
     router.setPath(http::Method::POST, "/size", [](const HttpRequestView& req) {
       return HttpResponse(http::StatusCodeOK, std::to_string(req.body().size()), "text/plain");
     });
+    // Returns the Content-Encoding of the request body the server decompressed (empty if it was not compressed).
+    router.setPath(http::Method::POST, "/original-encoding", [](const HttpRequestView& req) {
+      return HttpResponse(http::StatusCodeOK, req.headerValueOrEmpty(http::OriginalEncodingHeaderName), "text/plain");
+    });
     // Returns the Accept-Encoding header the server received (to observe what the client advertised).
     router.setPath(http::Method::GET, "/accept-encoding", [](const HttpRequestView& req) {
       return HttpResponse(http::StatusCodeOK, req.headerValueOrEmpty("accept-encoding"), "text/plain");
@@ -2108,6 +2112,43 @@ TEST_F(HttpClientCompressionE2E, CompressesLargeRequestBody) {
   auto echo = client.post(Url("/echo"), payload, "text/plain").value();
   EXPECT_EQ(echo.status(), 200);
   EXPECT_EQ(echo.bodyInMemory(), payload);
+}
+
+// A moderately compressible body of a few compression chunks (256 KiB of digits, compressed to about half its size) is
+// compressed with the default ratio limit (0.6), whatever the encoding.
+TEST_F(HttpClientCompressionE2E, CompressesMidSizeModeratelyCompressibleRequestBody) {
+  const std::string payload = test::MakeDigitsPayload(256UL * 1024UL);
+  for (const Encoding enc : test::SupportedEncodings()) {
+    HttpClientConfig cfg;
+    cfg.withRequestCompression(enc);
+    HttpClient client(cfg);
+    auto resp = client.post(Url("/original-encoding"), payload, "text/plain").value();
+    EXPECT_EQ(resp.status(), 200) << GetEncodingStr(enc);
+    EXPECT_EQ(resp.bodyInMemory(), GetEncodingStr(enc));
+  }
+}
+
+// A directly compressed request body of a few MiB of incompressible data, appended in pieces, reaches the server whole
+// whatever the encoding: brotli and zstd write their output in bursts larger than the room one piece gives them.
+TEST_F(HttpClientCompressionE2E, LargeIncompressibleDirectlyCompressedRequestBody) {
+  static constexpr std::size_t kPieceSize = 64UL << 10;
+  static constexpr std::size_t kNbPieces = 40;
+  const RawChars payload = test::MakeRandomPayload(kPieceSize * kNbPieces);
+  for (const Encoding enc : test::SupportedEncodings()) {
+    SCOPED_TRACE(GetEncodingStr(enc));
+    HttpClientConfig cfg;
+    cfg.withRequestCompression(enc);
+    cfg.requestCompression.codec.brotli.quality = 5;  // the default one (11) is slow in Debug builds
+    HttpClient client(cfg);
+    auto req = client.makeRequest(http::Method::POST, Url("/echo"));
+    for (std::size_t pos = 0; pos < payload.size(); pos += kPieceSize) {
+      req.bodyAppend(std::string_view(payload.data() + pos, kPieceSize));
+    }
+    ASSERT_EQ(req.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));  // directly compressed
+    const auto echo = client.request(req).value();
+    EXPECT_EQ(echo.status(), 200);
+    EXPECT_EQ(echo.bodyInMemory(), std::string_view(payload));
+  }
 }
 
 TEST_F(HttpClientCompressionE2E, IncompressibleRequestBodyFallsBackToPlain) {

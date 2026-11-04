@@ -4,7 +4,9 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <format>
 #include <mutex>
 #include <optional>
@@ -14,7 +16,9 @@
 #include <utility>
 
 #include "aeronet/client-protocol.hpp"
+#include "aeronet/compression-test-helpers.hpp"
 #include "aeronet/cors-policy.hpp"
+#include "aeronet/encoding.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client.hpp"
 #include "aeronet/http-constants.hpp"
@@ -25,6 +29,7 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/middleware.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/test_server_fixture.hpp"
 
@@ -312,6 +317,81 @@ TEST_P(ProtocolParity, HeadCarriesTheHeadersOfTheCompressedGet) {
 }
 #endif
 
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+// brotli and zstd write their output in bursts larger than the room given for one write of the handler: brotli (from
+// quality 4) once per metablock, spanning many input blocks, zstd once per block. A streaming or directly compressed
+// body of a few MiB of incompressible data used to fail: brotli stopped reading its input after about 1.5 MiB of 64 KiB
+// writes, zstd after a block of a 1 MiB write.
+class ProtocolParityFastBrotli : public ProtocolParity {
+ protected:
+  // The default brotli quality (11) is slow in Debug builds: quality 5 stalls the same way.
+  ProtocolParityFastBrotli() : ProtocolParity(MakeFastBrotliServerConfig()) {}
+
+  static HttpServerConfig MakeFastBrotliServerConfig() {
+    HttpServerConfig cfg = MakeServerConfig();
+    cfg.compression.brotli.quality = 5;
+    return cfg;
+  }
+};
+
+TEST_P(ProtocolParityFastBrotli, LargeIncompressibleBodiesAreCompressedWhole) {
+  static constexpr std::size_t kPieceSize = 64UL << 10;
+  static constexpr std::size_t kNbPieces = 32;
+  static constexpr std::size_t kLargeSize = 1UL << 20;
+  const RawChars payload = test::MakeRandomPayload((kPieceSize * kNbPieces) + kLargeSize);
+  // kNbPieces pieces of kPieceSize bytes, then one of kLargeSize bytes.
+  const auto forEachPiece = [](std::string_view body, auto&& func) {
+    for (std::size_t pos = 0; pos < kPieceSize * kNbPieces; pos += kPieceSize) {
+      func(body.substr(pos, kPieceSize));
+    }
+    func(body.substr(kPieceSize * kNbPieces));
+  };
+
+  ts.router().setPath(http::Method::GET, "/streamed",
+                      [payload, forEachPiece](const HttpRequestView&, HttpResponseWriter& writer) {
+                        forEachPiece(payload, [&writer](std::string_view piece) { writer.writeBody(piece); });
+                        writer.end();
+                      });
+  ts.router().setPath(http::Method::GET, "/appended", [payload, forEachPiece](const HttpRequestView& req) {
+    auto resp = req.makeResponse();
+    forEachPiece(payload, [&resp](std::string_view piece) { resp.bodyAppend(piece); });  // the first sets the body
+    return resp;
+  });
+  ts.router().setPath(http::Method::GET, "/inline-appended", [payload, forEachPiece](const HttpRequestView& req) {
+    auto resp = req.makeResponse();
+    bool first = true;
+    forEachPiece(payload, [&resp, &first](std::string_view piece) {
+      if (first) {
+        resp.body(piece);  // starts the direct compression, that bodyInlineAppend() continues
+        first = false;
+      } else {
+        resp.bodyInlineAppend(piece.size(), [piece](char* out) {
+          std::memcpy(out, piece.data(), piece.size());
+          return piece.size();
+        });
+      }
+    });
+    return resp;
+  });
+
+  for (const Encoding encoding : test::SupportedEncodings()) {
+    // Without automatic decompression, the client keeps the body as received.
+    HttpClientConfig cfg;
+    cfg.withHttpVersion(GetParam());
+    cfg.withDecompression(false).withDefaultAcceptEncoding(GetEncodingStr(encoding));
+    HttpClient client(std::move(cfg));
+    for (std::string_view target : {"/streamed", "/appended", "/inline-appended"}) {
+      SCOPED_TRACE(std::format("{} {}", GetEncodingStr(encoding), target));
+      const auto resp = client.request(client.makeRequest(http::Method::GET, url(target)));
+      ASSERT_TRUE(resp.has_value());
+      EXPECT_EQ(resp->status(), http::StatusCodeOK);
+      EXPECT_EQ(resp->headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(encoding));
+      EXPECT_EQ(std::string_view(test::Decompress(encoding, resp->bodyInMemory())), std::string_view(payload));
+    }
+  }
+}
+#endif
+
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 // 1xx, 204 and 304 responses carry no content, whatever the handler set: no body, no Content-Length, no Content-Type.
 TEST_P(ProtocolParity, StatusesWithoutContentDropTheBody) {
@@ -467,6 +547,10 @@ INSTANTIATE_TEST_SUITE_P(Protocols, ProtocolParityTrailingSlashRedirect,
                          ::testing::Values(HttpVersionMode::Http1_1, HttpVersionMode::Http2), ProtocolName);
 INSTANTIATE_TEST_SUITE_P(Protocols, ProtocolParityHttpsRedirect,
                          ::testing::Values(HttpVersionMode::Http1_1, HttpVersionMode::Http2), ProtocolName);
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+INSTANTIATE_TEST_SUITE_P(Protocols, ProtocolParityFastBrotli,
+                         ::testing::Values(HttpVersionMode::Http1_1, HttpVersionMode::Http2), ProtocolName);
+#endif
 
 }  // namespace
 }  // namespace aeronet

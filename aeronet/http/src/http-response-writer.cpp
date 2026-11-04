@@ -217,19 +217,25 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
 
   if (_activeEncoderCtx != nullptr) {
     assert(_encoding != Encoding::none);
-    _compressedBuffer.reserve(_activeEncoderCtx->minEncodeChunkCapacity(data.size()));
-    const auto result = _activeEncoderCtx->encodeChunk(data, _compressedBuffer.capacity(), _compressedBuffer.data());
-    if (result.hasError()) [[unlikely]] {
-      _state = State::Failed;
-      return false;
-    }
-    const auto written = result.writtenIfNoError();
-    if (written == 0) {
+    // The output of one write is emitted at once: when it does not fit (a brotli or zstd burst), the buffer grows, as
+    // in end(), and keeps its capacity for the next writes.
+    _compressedBuffer.clear();
+    do {
+      _compressedBuffer.ensureAvailableCapacityExponential(_activeEncoderCtx->minEncodeChunkCapacity(data.size()));
+      const auto result =
+          _activeEncoderCtx->encodeChunk(data, _compressedBuffer.availableCapacity(), _compressedBuffer.end());
+      if (result.hasError()) [[unlikely]] {
+        _state = State::Failed;
+        log::error("Streaming: compression failed {}", _transport->logId());
+        return false;
+      }
+      _compressedBuffer.addSize(result.writtenIfNoError());
+    } while (!data.empty());
+    if (_compressedBuffer.empty()) {
       // This happens regularly - the compressors often keeps data in their own internal buffers before any flush
       // occurs.
       return true;
     }
-    _compressedBuffer.setSize(written);
     data = _compressedBuffer;
   }
 

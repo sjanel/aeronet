@@ -12,7 +12,9 @@
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/compression-test-helpers.hpp"
+#include "aeronet/encoder-result.hpp"
 #include "aeronet/encoder.hpp"
+#include "aeronet/encoding.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/vector.hpp"
@@ -123,7 +125,8 @@ TEST(ZstdEncoderDecoderTest, EncodeFails) {
   auto ctx = encoder.makeContext();
   RawChars out(ZSTD_compressBound(std::string_view{"some-data"}.size()));
   test::FailNextRealloc();
-  EXPECT_TRUE(ctx->encodeChunk("some-data", out.capacity(), out.data()).hasError());
+  std::string_view input = "some-data";
+  EXPECT_TRUE(ctx->encodeChunk(input, out.capacity(), out.data()).hasError());
 }
 
 #endif
@@ -188,7 +191,75 @@ TEST(ZstdEncoderDecoderTest, ZstdEndWithoutEnoughBufferShouldFail) {
   auto ctx = encoder.makeContext();
 
   // Provide a too-small buffer to end()
-  EXPECT_TRUE(ctx->end(0UL, nullptr).hasError());
+  const auto result = ctx->end(0UL, nullptr);
+  ASSERT_TRUE(result.hasError());
+  EXPECT_EQ(result.error(), EncoderResult::Error::NotEnoughCapacity);
+}
+
+// Without enough output room, encodeChunk() leaves the rest of its input, taken by the next calls with more room.
+TEST(ZstdEncoderDecoderTest, EncodeChunkWithoutEnoughOutputRoom) {
+  const RawChars payload = test::MakeRandomPayload(1UL << 20);
+  CompressionConfig cfg;
+  ZstdEncoder encoder(cfg.zstd);
+  auto* ctx = encoder.makeContext();
+  char tiny[1];
+  std::string_view rest = payload;
+  const auto result = ctx->encodeChunk(rest, sizeof(tiny), tiny);
+  ASSERT_FALSE(result.hasError());
+  ASSERT_LE(result.writtenIfNoError(), sizeof(tiny));
+  EXPECT_FALSE(rest.empty());
+  EXPECT_LT(rest.size(), payload.size());
+
+  RawChars compressed;
+  compressed.append(tiny, result.writtenIfNoError());
+  ASSERT_FALSE(test::AppendEncodedChunk(*ctx, rest, compressed).hasError());
+  test::EndStream(*ctx, compressed);
+  EXPECT_EQ(std::string_view(test::Decompress(Encoding::zstd, compressed)), std::string_view(payload));
+}
+
+// minEncodeChunkCapacity() is the output of one zstd block, whatever the chunk size: a call to encodeChunk() with that
+// room stops reading a large incompressible chunk after a few blocks.
+TEST(ZstdEncoderDecoderTest, LargeIncompressibleChunkWithMinEncodeChunkCapacity) {
+  const RawChars payload = test::MakeRandomPayload(1UL << 20);
+  CompressionConfig cfg;
+  ZstdEncoder encoder(cfg.zstd);
+  auto* ctx = encoder.makeContext();
+  RawChars out(ctx->minEncodeChunkCapacity(payload.size()));
+  std::string_view rest = payload;
+  const auto result = ctx->encodeChunk(rest, out.capacity(), out.data());
+  ASSERT_FALSE(result.hasError());
+  EXPECT_FALSE(rest.empty());
+
+  RawChars compressed;
+  compressed.append(out.data(), result.writtenIfNoError());
+  ASSERT_FALSE(test::AppendEncodedChunk(*ctx, rest, compressed).hasError());
+  test::EndStream(*ctx, compressed);
+  EXPECT_EQ(std::string_view(test::Decompress(Encoding::zstd, compressed)), std::string_view(payload));
+}
+
+// end() without output room reports the end of a finished frame.
+TEST(ZstdEncoderDecoderTest, EndWithoutOutputRoomAfterTheFrameEnd) {
+  static constexpr std::string_view kPayload = "some data to compress";
+  CompressionConfig cfg;
+  ZstdEncoder encoder(cfg.zstd);
+  auto* ctx = encoder.makeContext();
+  RawChars compressed;
+  ASSERT_FALSE(test::EncodeChunk(*ctx, kPayload, compressed).hasError());
+  compressed.ensureAvailableCapacity(ctx->endChunkSize());
+  auto result = ctx->end(compressed.availableCapacity(), compressed.end());
+  ASSERT_FALSE(result.hasError());
+  ASSERT_GT(result.writtenIfNoError(), 0U);
+  compressed.addSize(result.writtenIfNoError());
+
+  char noRoom[1];
+  result = ctx->end(0, noRoom);
+  ASSERT_FALSE(result.hasError());
+  EXPECT_EQ(result.writtenIfNoError(), 0U);
+
+  ZstdDecoder decoder;
+  RawChars decompressed;
+  ASSERT_TRUE(decoder.decompressFull(compressed, kMaxPlainBytes, kDecoderChunkSize, decompressed));
+  EXPECT_EQ(std::string_view(decompressed), kPayload);
 }
 
 TEST(ZstdEncoderDecoderTest, MaxDecompressedBytesFull) {
@@ -226,8 +297,10 @@ TEST(ZstdEncoderDecoderTest, MaxCompressedBytesAndEndAreSane) {
   const auto maxChunk = ctx->minEncodeChunkCapacity(payload.size());
   ASSERT_GT(maxChunk, 0U);
   RawChars chunkOut(maxChunk);
-  auto result = ctx->encodeChunk(payload, chunkOut.capacity(), chunkOut.data());
+  std::string_view input = payload;
+  auto result = ctx->encodeChunk(input, chunkOut.capacity(), chunkOut.data());
   ASSERT_FALSE(result.hasError());
+  EXPECT_TRUE(input.empty());
   EXPECT_LE(result.writtenIfNoError(), maxChunk);
 
   RawChars tailOut(ctx->endChunkSize());
@@ -381,11 +454,12 @@ TEST(ZstdEncoderDecoderTest, EncodeChunkWithInsufficientOutputCapacity) {
   auto ctx = encoder.makeContext();
 
   // Create a large input.
-  std::string large(4096, 'X');
+  const std::string large(4096, 'X');
 
   // Try to encode with only 1 byte available.
   char tiny[1];
-  const auto result = ctx->encodeChunk(large, sizeof(tiny), tiny);
+  std::string_view input = large;
+  const auto result = ctx->encodeChunk(input, sizeof(tiny), tiny);
 
   if (!result.hasError()) {
     // If zstd has not reported an error at encodeChunk time, it should report an error at end() time since the stream

@@ -91,6 +91,20 @@ RawChars MakeRandomPayload(std::size_t size) {
   return payload;
 }
 
+std::string MakeDigitsPayload(std::size_t size) {
+  std::string payload;
+  // NOLINTNEXTLINE(bugprone-random-generator-seed)
+  std::mt19937_64 rng{987654321ULL};
+  std::uniform_int_distribution<int> dist(0, 9);
+  payload.resize_and_overwrite(size, [&rng, &dist](char* data, std::size_t size) {
+    for (std::size_t pos = 0; pos < size; ++pos) {
+      data[pos] = static_cast<char>('0' + dist(rng));
+    }
+    return size;
+  });
+  return payload;
+}
+
 RawChars MakeMixedPayload(std::size_t randomSize, std::size_t patternSize) {
   RawChars random = MakeRandomPayload(randomSize);
   std::string pattern = MakePatternedPayload(patternSize);
@@ -229,12 +243,20 @@ void CorruptData(Encoding encoding, RawChars& data) {
 
 EncoderResult EncodeChunk(EncoderContext& ctx, std::string_view data, RawChars& out) {
   out.clear();
-  out.reserve(ctx.minEncodeChunkCapacity(data.size()));
-  const auto result = ctx.encodeChunk(data, out.capacity(), out.data());
-  if (!result.hasError()) {
-    out.setSize(result.writtenIfNoError());
-  }
-  return result;
+  return AppendEncodedChunk(ctx, data, out);
+}
+
+EncoderResult AppendEncodedChunk(EncoderContext& ctx, std::string_view data, RawChars& out) {
+  const std::size_t oldSize = out.size();
+  do {
+    out.ensureAvailableCapacityExponential(ctx.minEncodeChunkCapacity(data.size()));
+    const auto result = ctx.encodeChunk(data, out.availableCapacity(), out.end());
+    if (result.hasError()) {
+      return result;
+    }
+    out.addSize(result.writtenIfNoError());
+  } while (!data.empty());
+  return EncoderResult(out.size() - oldSize);
 }
 
 void EndStream(EncoderContext& ctx, RawChars& out) {
@@ -261,17 +283,9 @@ RawChars BuildStreamingCompressed(EncoderContext& ctx, std::string_view payload,
     const auto chunk = remaining.substr(0, take);
     remaining.remove_prefix(take);
 
-    // Reserve minimum possible compressed size for this chunk
-    compressed.ensureAvailableCapacityExponential(ctx.minEncodeChunkCapacity(chunk.size()));
-
-    const auto result = ctx.encodeChunk(chunk, compressed.availableCapacity(), compressed.data() + compressed.size());
-
-    if (result.hasError()) {
-      // Still failed, give up
+    if (AppendEncodedChunk(ctx, chunk, compressed).hasError()) {
       throw std::runtime_error("Encoding chunk failed");
     }
-
-    compressed.addSize(result.writtenIfNoError());
   }
 
   test::EndStream(ctx, compressed);

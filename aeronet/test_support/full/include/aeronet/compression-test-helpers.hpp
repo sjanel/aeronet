@@ -38,6 +38,10 @@ RawChars MakeRandomPayload(std::size_t size);
 
 RawChars MakeMixedPayload(std::size_t randomSize, std::size_t patternSize);
 
+// Create a payload of random decimal digits: moderately compressible (to about 0.42-0.5 of its size whatever the
+// codec), unlike the patterned payload (almost free) and the random one (incompressible).
+std::string MakeDigitsPayload(std::size_t size);
+
 RawChars Compress(Encoding encoding, std::string_view payload);
 
 RawChars Decompress(Encoding encoding, std::string_view compressed);
@@ -45,7 +49,12 @@ RawChars Decompress(Encoding encoding, std::string_view compressed);
 // Corrupt the compressed data in-place for the given encoding.
 void CorruptData(Encoding encoding, RawChars& data);
 
+// Encodes data with ctx into out (cleared first), growing it until the whole input is consumed, as the library does.
+// Returns the number of written bytes, or the encoder error.
 EncoderResult EncodeChunk(EncoderContext& ctx, std::string_view data, RawChars& out);
+
+// Same as EncodeChunk(), appending to out.
+EncoderResult AppendEncodedChunk(EncoderContext& ctx, std::string_view data, RawChars& out);
 
 void EndStream(EncoderContext& ctx, RawChars& out);
 
