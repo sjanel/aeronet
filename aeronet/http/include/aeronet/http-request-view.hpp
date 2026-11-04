@@ -672,6 +672,22 @@ class HttpRequestView {
   [[nodiscard]] std::expected<T, HttpResponse> bodyAsYaml() const;
 #endif
 
+#ifdef AERONET_ENABLE_PROTOBUF
+  /// Parse the request body as the protobuf message T, in the encoding given by its Content-Type (see ProtoFormatOf()):
+  /// binary, or ProtoJSON for a message of the full runtime. An empty body is a message with all its fields at their
+  /// default value.
+  /// Returns the message, or the response to send (see ProtoParseError::status()): 415 Unsupported Media Type with an
+  /// Accept header for a Content-Type of no supported encoding, 413 for a body larger than kProtoMaxBodySize, 400 Bad
+  /// Request for a malformed body or missing required fields.
+  /// Definition lives in <aeronet/http-protobuf.hpp> (include it to use this method), which includes protobuf.
+  template <class T>
+  [[nodiscard]] std::expected<T, HttpResponse> bodyAsProto() const;
+
+  /// Same as bodyAsProto<T>(), but parses into 'msg' (for instance allocated on an Arena), which is replaced.
+  template <class T>
+  [[nodiscard]] std::expected<void, HttpResponse> bodyAsProto(T& msg) const;
+#endif
+
   // Returns the best encoding that can be used for the response based on the
   // Accept-Encoding header of the request and the server compression configuration.
   [[nodiscard]] Encoding responsePossibleEncoding() const noexcept { return _responsePossibleEncoding; }

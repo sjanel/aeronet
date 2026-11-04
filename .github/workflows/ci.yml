@@ -24,6 +24,8 @@ jobs:
         include:
           - { compiler: gcc-13, features: OFF, client: OFF, server: ON, build: Debug, asan: ON, tsan: OFF}
           - { compiler: gcc-13, features: ON, client: ON, server: ON, build: Debug, asan: ON, tsan: OFF }
+          # protobuf lite runtime: AERONET_PROTOBUF_LITE code paths. OpenTelemetry links the full runtime, so it is off.
+          - { compiler: gcc-13, features: ON, client: ON, server: ON, build: Debug, asan: ON, tsan: OFF, protobuf: lite }
           - { compiler: clang-21, features: OFF, client: OFF, server: ON, build: Debug, asan: ON, tsan: OFF }
           # Also the unity build leg: a static helper or constant defined twice in the sources of a library
           # breaks AERONET_UNITY_BUILD, which is only built here.
@@ -102,12 +104,13 @@ jobs:
             -D AERONET_ENABLE_ASYNC_HANDLERS=${{ matrix.features }} \
             -D AERONET_ENABLE_GLAZE=${{ matrix.features }} \
             -D AERONET_ENABLE_PROTOBUF=${{ matrix.features }} \
+            -D AERONET_PROTOBUF_RUNTIME=${{ matrix.protobuf || 'full' }} \
             -D AERONET_ENABLE_HTTP2=${{ matrix.features }} \
             -D AERONET_ENABLE_BROTLI=${{ matrix.features }} \
             -D AERONET_ENABLE_ZLIB=${{ matrix.features }} \
             -D AERONET_ENABLE_ZSTD=${{ matrix.features }} \
             -D AERONET_ENABLE_OPENSSL=${{ matrix.features }} \
-            -D AERONET_ENABLE_OPENTELEMETRY=${{ matrix.features }} \
+            -D AERONET_ENABLE_OPENTELEMETRY=${{ matrix.protobuf == 'lite' && 'OFF' || matrix.features }} \
             -D AERONET_ENABLE_SPDLOG=${{ matrix.features }} \
             -D AERONET_ENABLE_WEBSOCKET=${{ matrix.features }}
 
@@ -143,7 +146,7 @@ jobs:
           # Adding the build axis (and keeping compiler + features toggle) makes each
           # matrix combination distinct. If you ever re-run a failed job (run_attempt > 1)
           # and want full uniqueness across attempts, you could append `-ra${{ github.run_attempt }}`.
-          name: aeronet-${{ matrix.compiler }}-features-${{ matrix.features }}-build-${{ matrix.build }}
+          name: aeronet-${{ matrix.compiler }}-features-${{ matrix.features }}-build-${{ matrix.build }}${{ matrix.protobuf && format('-protobuf-{0}', matrix.protobuf) || '' }}
           path: install
           if-no-files-found: ignore
           retention-days: 7
@@ -419,6 +422,7 @@ jobs:
           aeronet-http2 \
           aeronet-server-minimal \
           aeronet-multi \
+          aeronet-protobuf \
           aeronet-sendfile \
           aeronet-static-example \
           aeronet-static-file-http2 \
@@ -513,6 +517,10 @@ jobs:
 
           run_server_and_curl websocket-echo "http://127.0.0.1:18086/" -- \
             "${EXAMPLE_DIR}/aeronet-websocket-echo" 18086
+
+          run_server_and_curl protobuf "http://127.0.0.1:18087/orders" -H 'content-type: application/json' \
+            -d '{"customer":"jdoe","items":[{"sku":"BOOK-1","quantity":2,"unitPrice":12.5}]}' -- \
+            "${EXAMPLE_DIR}/aeronet-protobuf" 18087
 
       - name: Verify markdown C/C++ examples (compile & link)
         run: |

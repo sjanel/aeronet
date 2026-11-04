@@ -7,6 +7,10 @@ if(NOT AERONET_ENABLE_HTTP_SERVER)
     list(REMOVE_ITEM AERONET_HTTP_SRC_LIST src/router.cpp)
 endif()
 
+if(NOT AERONET_ENABLE_PROTOBUF)
+    list(REMOVE_ITEM AERONET_HTTP_SRC_LIST src/http-protobuf-common.cpp)
+endif()
+
 AeronetAddProjectLibrary(aeronet_http
     ${AERONET_HTTP_SRC_LIST}
 )
@@ -18,6 +22,12 @@ target_link_libraries(aeronet_http
 # The routes store their WebSocket endpoint behind a pointer: only the router sources need its definition.
 if(AERONET_ENABLE_WEBSOCKET)
     target_link_libraries(aeronet_http PRIVATE aeronet_websocket)
+endif()
+
+# The protobuf body helpers are header-only (<aeronet/http-protobuf.hpp>): aeronet_http itself does not use protobuf,
+# the code including the header links it.
+if(AERONET_ENABLE_PROTOBUF)
+    target_link_libraries(aeronet_http INTERFACE ${AERONET_PROTOBUF_TARGET})
 endif()
 
 target_include_directories(aeronet_http
@@ -55,6 +65,17 @@ AeronetAddUnitTest(
     LIBRARIES
     aeronet_http
 )
+
+if(AERONET_ENABLE_PROTOBUF)
+    AeronetAddUnitTest(
+        http-protobuf_test
+        test/http-protobuf_test.cpp
+        LIBRARIES
+        aeronet_http
+        aeronet_test_support
+        aeronet_test_protos
+    )
+endif()
 
 AeronetAddUnitTest(
     http-response_test

@@ -60,7 +60,7 @@ Each event loop remembers the result for the last `Accept-Encoding` value it neg
 
 ### What is not compressed
 
-- Bodies smaller than `minBytes`, of a content type outside `contentTypeAllowList`, or that do not shrink enough.
+- Bodies smaller than `minBytes`, of a content type outside `contentTypeAllowList`, or that do not shrink enough. Compact binary encodings often do not, such as small [Protocol Buffers](../modules/protobuf.md#compression) messages.
 - Responses that already have a `Content-Encoding` header (see [Send your own encoding](#send-your-own-encoding)).
 - File bodies (`HttpResponse::file()`, the static file handler), which are sent with `sendfile()` or read from disk as they are. Store pre-compressed variants of large static assets if they need compression.
 

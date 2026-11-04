@@ -459,6 +459,43 @@ class HttpRequest final : public HttpMessage {
   }
 #endif
 
+#ifdef AERONET_ENABLE_PROTOBUF
+  /// Serialize the protobuf message 'msg' in its binary encoding directly into the inline body, without intermediate
+  /// buffer. The body is compressed if request compression is configured (HttpClientConfig::requestCompression).
+  /// Throws std::length_error if the encoding would exceed kProtoMaxBodySize (2 GiB - 1).
+  /// Definition lives in <aeronet/http-protobuf.hpp> (include it to use this method), which includes protobuf.
+  template <class T>
+  HttpRequest& bodyProto(const T& msg, std::string_view contentType = http::ContentTypeApplicationProtobuf) & {
+    HttpMessage::bodyProto(msg, contentType);
+    return *this;
+  }
+
+  /// Rvalue overload of bodyProto. See bodyProto(const T&, std::string_view) & and include <aeronet/http-protobuf.hpp>.
+  template <class T>
+  HttpRequest&& bodyProto(const T& msg, std::string_view contentType = http::ContentTypeApplicationProtobuf) && {
+    return std::move(bodyProto(msg, contentType));
+  }
+
+#ifndef AERONET_PROTOBUF_LITE
+  /// Serialize the protobuf message 'msg' (of the full runtime) as ProtoJSON into the body.
+  /// RFC 9996 requires the default media type, application/protobuf+json, for ProtoJSON.
+  /// Throws std::runtime_error if the serialization fails (for instance, an Any of an unknown type).
+  /// Definition lives in <aeronet/http-protobuf.hpp> (include it to use this method).
+  template <class T>
+  HttpRequest& bodyProtoJson(const T& msg, std::string_view contentType = http::ContentTypeApplicationProtobufJson) & {
+    HttpMessage::bodyProtoJson(msg, contentType);
+    return *this;
+  }
+
+  /// Rvalue overload of bodyProtoJson. See bodyProtoJson(const T&, std::string_view) &.
+  template <class T>
+  HttpRequest&& bodyProtoJson(const T& msg,
+                              std::string_view contentType = http::ContentTypeApplicationProtobufJson) && {
+    return std::move(bodyProtoJson(msg, contentType));
+  }
+#endif
+#endif
+
   // Sets the body of this HttpRequest to point to a static buffer.
   // This can be useful for large static content like HTML pages, images, etc. that are known at compile time and have a
   // lifetime that exceeds the HttpRequest, until its data is conveyed to the transport layer.

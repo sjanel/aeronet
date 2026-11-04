@@ -16,7 +16,7 @@ The core build is intentionally modular. Enable optional capabilities at CMake c
 - `AERONET_ENABLE_ASYNC_HANDLERS` for coroutine handlers.
 - `AERONET_ENABLE_HTTP_CLIENT` for the synchronous client and connection pool.
 - `AERONET_ENABLE_HTTP_SERVER` for the `HttpServer`
-- `AERONET_ENABLE_OPENTELEMETRY` for traces/metrics, `AERONET_ENABLE_GLAZE` for JSON/YAML configuration, and `AERONET_ENABLE_JWT` for JWT/JWKS. JWT is available only when both OpenSSL and Glaze are enabled.
+- `AERONET_ENABLE_OPENTELEMETRY` for traces/metrics, `AERONET_ENABLE_GLAZE` for JSON/YAML configuration, `AERONET_ENABLE_PROTOBUF` for Protocol Buffers bodies, and `AERONET_ENABLE_JWT` for JWT/JWKS. JWT is available only when both OpenSSL and Glaze are enabled.
 
 Set `AERONET_ENABLE_HTTP_CLIENT`to `OFF` if you need only the server, or `AERONET_ENABLE_HTTP_SERVER` to `OFF` if you need only the client to minimize the code to be compiled.
 

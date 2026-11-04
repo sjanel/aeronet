@@ -44,6 +44,24 @@ if(AERONET_ENABLE_HTTP_SERVER)
 		target_link_libraries(aeronet-websocket-echo PRIVATE aeronet_server)
 	endif()
 
+	# ProtoJSON needs the descriptors of the full runtime.
+	if(AERONET_ENABLE_PROTOBUF AND AERONET_PROTOBUF_RUNTIME STREQUAL "full")
+		# Generated code: not a project target, it is compiled without the warnings and clang-tidy of the project.
+		add_library(protobuf_shop_messages STATIC)
+		protobuf_generate(
+			TARGET protobuf_shop_messages
+			LANGUAGE cpp
+			PROTOS protobuf-shop.proto
+			IMPORT_DIRS "${CMAKE_CURRENT_SOURCE_DIR}"
+			PROTOC_OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}"
+		)
+		target_include_directories(protobuf_shop_messages SYSTEM PUBLIC "${CMAKE_CURRENT_BINARY_DIR}")
+		target_link_libraries(protobuf_shop_messages PUBLIC ${AERONET_PROTOBUF_TARGET})
+
+		AeronetAddProjectExecutable(aeronet-protobuf protobuf.cpp)
+		target_link_libraries(aeronet-protobuf PRIVATE aeronet_server protobuf_shop_messages)
+	endif()
+
 	if (AERONET_ENABLE_GLAZE)
 		AeronetAddProjectExecutable(aeronet-config-dump config-dump.cpp)
 		target_link_libraries(aeronet-config-dump PRIVATE aeronet_server)

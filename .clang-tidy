@@ -27,8 +27,10 @@ CheckOptions:
   # that are only meant to be reached through the public umbrellas (glaze/glaze.hpp, glaze/yaml.hpp).
   # Same for OpenSSL (SSL is declared in openssl/types.h, but openssl/ssl.h is the header to include) and for the
   # implementation headers of the standard library and glibc (bits/chrono.h for the literals, bits/types/sigset_t.h...).
+  # protobuf moves its symbols between headers across versions (util/json_util.h only re-exports json/json.h since
+  # protobuf 22, its statuses are absl ones), so that no include list is right for all the supported versions.
   - key: misc-include-cleaner.IgnoreHeaders
-    value: "glaze/.*;openssl/.*;bits/.*"
+    value: "glaze/.*;openssl/.*;bits/.*;google/protobuf/.*;absl/.*"
   - key: modernize-use-equals-default.IgnoreMacros
     value: "0"
   - key: modernize-use-auto.MinTypeNameLength
