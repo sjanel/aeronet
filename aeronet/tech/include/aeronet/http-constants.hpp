@@ -57,6 +57,7 @@ inline constexpr std::string_view CRLFContentLengthHeaderSep = "\r\ncontent-leng
 inline constexpr LowerAsciiKey CacheControl = "cache-control";
 inline constexpr LowerAsciiKey ContentDisposition = "content-disposition";
 inline constexpr LowerAsciiKey ContentEncoding = "content-encoding";
+inline constexpr LowerAsciiKey Accept = "accept";
 inline constexpr LowerAsciiKey AcceptEncoding = "accept-encoding";
 inline constexpr LowerAsciiKey UserAgent = "user-agent";
 inline constexpr LowerAsciiKey RetryAfter = "retry-after";
@@ -162,6 +163,9 @@ inline constexpr std::string_view ContentTypeTextPlain = "text/plain";
 inline constexpr std::string_view ContentTypeTextHtml = "text/html";
 inline constexpr std::string_view ContentTypeApplicationJson = "application/json";
 inline constexpr std::string_view ContentTypeApplicationOctetStream = "application/octet-stream";
+// Protocol Buffers binary and ProtoJSON encodings (RFC 9996). charset is a required parameter of the JSON one.
+inline constexpr std::string_view ContentTypeApplicationProtobuf = "application/protobuf";
+inline constexpr std::string_view ContentTypeApplicationProtobufJson = "application/protobuf+json; charset=utf-8";
 inline constexpr std::string_view ContentTypeMessageHttp = "message/http";
 inline constexpr std::string_view ContentTypeTextCss = "text/css";
 inline constexpr std::string_view ContentTypeTextJavascript = "text/javascript";

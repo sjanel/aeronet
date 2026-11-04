@@ -11,6 +11,12 @@
 - **Pluggable logging sink API (non-access logs)** - spdlog backend supports custom sinks/formatters; an aeronet-native sink registration API is not yet exposed.
 - **Enhanced parser diagnostics** (byte offset in parse errors for better debugging)
 - **Manage TE header in the client**: currently the TE header is reserved in the framework, so it cannot be sent. It could be a good idea to have a flag in the config to allow sending TE headers in the client with trailers essentially (because trailers are natively supported by aeronet). If `TE: trailers` is sent, in HTTP/1.1 we also need to add `Connection: TE`.
+- **Protocol Buffers, next steps** (the binary and ProtoJSON bodies are [delivered](modules/protobuf.md)):
+  - choose the encoding of a response from the `Accept` header of the request (binary or ProtoJSON, `Vary: Accept`, `406` on demand);
+  - make `CompressionConfig::contentTypeAllowList` compare the media type only, without its parameters (`application/protobuf+json; charset=utf-8`, `text/html; charset=utf-8` match no entry today);
+  - ProtoJSON options (`ignore_unknown_fields`, printing the fields at their default value) and deterministic binary serialization, behind an aeronet options struct, since their names differ between protobuf versions;
+  - streaming: length-delimited message streams over `HttpResponseWriter` and `readBody()`;
+  - Connect unary (a plain `POST` with `application/proto`), then gRPC unary over HTTP/2 (5-byte message framing, `grpc-status` trailers, `grpc-encoding`, `grpc-timeout`).
 
 ## Low priority
 

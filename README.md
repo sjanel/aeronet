@@ -120,6 +120,7 @@ Hello from aeronet minimal server! You requested /hello
 | WebSocket (flag) | RFC 6455, permessage-deflate, ping/pong, close handshake | [WebSocket](docs/protocols/websocket.md) |
 | HTTP client (flag) | HTTP/1.1 + HTTP/2, keep-alive pool, redirects, proxy, streamed bodies, auto (de)compression | [HTTP client](docs/modules/http-client.md) |
 | JWT (flag) | RFC 7519 JWS sign / verify, JWK / JWKS, rejects `alg:none` | [JWT](docs/modules/jwt.md) |
+| Protocol Buffers (flag) | Binary and ProtoJSON bodies (RFC 9996) for the server and the client, compressed like any body | [Protocol Buffers](docs/modules/protobuf.md) |
 | Observability | OpenTelemetry (experimental), DogStatsD, logging, metrics callback | [Observability](docs/operations/observability.md) |
 | Operations | Kubernetes-style probes, graceful drain, signal handling, runtime config / router updates, JSON / YAML configuration | [Health probes](docs/operations/health-probes.md), [Kubernetes examples](docs/operations/kubernetes.md), [JSON and config files](docs/modules/json-and-config-files.md) |
 | Performance | Edge-triggered reactor, `SO_REUSEPORT` scaling, `writev`, `MSG_ZEROCOPY` | [Performance and tuning](docs/operations/performance.md) |

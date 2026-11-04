@@ -22,6 +22,15 @@ AERONET_ALWAYS_INLINE constexpr std::string_view TrimOws(std::string_view sv) no
   return {begin, end};
 }
 
+// Removes the surrounding double quotes of a quoted-string (RFC 9110 §5.6.4), without unescaping its content.
+constexpr std::string_view StripQuotes(std::string_view value) noexcept {
+  if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
+    value.remove_prefix(1);
+    value.remove_suffix(1);
+  }
+  return value;
+}
+
 constexpr bool IsOwsTrimmed(std::string_view sv) noexcept {
   return sv.empty() || (!http::IsHeaderWhitespace(sv.front()) && !http::IsHeaderWhitespace(sv.back()));
 }

@@ -1,0 +1,21 @@
+// Messages of the Protocol Buffers example (protobuf.cpp).
+syntax = "proto3";
+
+package shop;
+
+message Item {
+  string sku = 1;
+  uint32 quantity = 2;
+  double unit_price = 3;
+}
+
+message Order {
+  string customer = 1;
+  repeated Item items = 2;
+}
+
+message Receipt {
+  uint64 order_id = 1;
+  uint32 nb_items = 2;
+  double total = 3;
+}

@@ -1,0 +1,12 @@
+// proto2 messages of the tests of the protobuf support, for the required fields.
+syntax = "proto2";
+
+package aeronet_proto_test;
+
+option optimize_for = @AERONET_TEST_PROTO_OPTIMIZE_FOR@;
+
+message Credentials {
+  required string user = 1;
+  required string token = 2;
+  optional uint32 ttl_seconds = 3;
+}

@@ -191,6 +191,12 @@ AeronetAddProjectBenchmark(aeronet-bench-internal-http-response-payload ${AERONE
                            LIBRARIES aeronet_http)
 set_target_properties(aeronet-bench-internal-http-response-payload PROPERTIES FOLDER "benchmarks/internal")
 
+if(AERONET_ENABLE_PROTOBUF)
+  AeronetAddProjectBenchmark(aeronet-bench-internal-protobuf-body ${AERONET_BENCH_ROOT}/internal/protobuf-body_bench.cpp
+                             LIBRARIES aeronet_http aeronet_test_protos)
+  set_target_properties(aeronet-bench-internal-protobuf-body PROPERTIES FOLDER "benchmarks/internal")
+endif()
+
 AeronetAddProjectBenchmark(aeronet-bench-internal-http-message-construct ${AERONET_BENCH_INTERNAL_HTTP_MESSAGE_CONSTRUCT}
                            LIBRARIES aeronet_http)
 if(AERONET_ENABLE_HTTP_CLIENT)

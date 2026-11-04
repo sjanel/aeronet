@@ -18,14 +18,6 @@ namespace {
 
 constexpr std::string_view kMultipartMediaType{"multipart/form-data"};
 
-constexpr std::string_view StripQuotes(std::string_view value) {
-  if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
-    value.remove_prefix(1);
-    value.remove_suffix(1);
-  }
-  return value;
-}
-
 struct ContentDispositionInfo {
   std::string_view name;
   std::string_view filename;

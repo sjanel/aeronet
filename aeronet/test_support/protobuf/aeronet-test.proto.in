@@ -1,0 +1,42 @@
+// Messages of the tests of the protobuf support (configured by CMake for the runtime of AERONET_PROTOBUF_RUNTIME).
+syntax = "proto3";
+
+package aeronet_proto_test;
+
+option optimize_for = @AERONET_TEST_PROTO_OPTIMIZE_FOR@;
+
+enum OrderStatus {
+  ORDER_STATUS_UNSPECIFIED = 0;
+  ORDER_STATUS_PENDING = 1;
+  ORDER_STATUS_SHIPPED = 2;
+}
+
+message Item {
+  string sku = 1;
+  uint32 quantity = 2;
+  double unit_price = 3;
+}
+
+message Order {
+  uint64 id = 1;
+  string customer = 2;
+  OrderStatus status = 3;
+  repeated Item items = 4;
+  map<string, string> tags = 5;
+  // Large bodies: compression and chunked transfers.
+  bytes payload = 6;
+}
+
+// What a server handler received.
+message OrderAck {
+  uint64 order_id = 1;
+  uint32 nb_items = 2;
+  uint64 payload_size = 3;
+  string content_type = 4;       // Content-Type of the request
+  string original_encoding = 5;  // Content-Encoding of the request, decoded by the server
+}
+
+// Nested messages, for the recursion limit of the parser.
+message Tree {
+  repeated Tree children = 1;
+}

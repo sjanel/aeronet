@@ -54,6 +54,11 @@ if(AERONET_ENABLE_HTTP_CLIENT)
 	endif()
 endif()
 
+if(AERONET_ENABLE_PROTOBUF AND AERONET_ENABLE_HTTP_CLIENT)
+	aeronet_http_test(http-protobuf-integration)
+	target_link_libraries(http-protobuf-integration_test PRIVATE aeronet_client aeronet_test_protos)
+endif()
+
 if (AERONET_ENABLE_WEBSOCKET)
 	aeronet_http_test(websocket-integration)
 endif()

@@ -13,7 +13,7 @@ description: Documentation for the high-performance, modular C++23 HTTP, HTTP/2,
 ## What aeronet provides
 
 - HTTP/1.1 server and client support, with keep-alive, streaming, trailers, compression, and static-file helpers.
-- Optional TLS, HTTP/2, WebSocket, asynchronous handlers, OpenTelemetry, Glaze, and JWT modules.
+- Optional TLS, HTTP/2, WebSocket, asynchronous handlers, OpenTelemetry, Glaze, JWT, and Protocol Buffers modules.
 - A portable event-loop abstraction for Linux, macOS, and Windows, while preserving Linux-focused performance features where available.
 - A CMake-first integration model: enable only the modules your application needs.
 

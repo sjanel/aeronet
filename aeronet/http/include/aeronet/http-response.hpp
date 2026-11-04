@@ -24,6 +24,12 @@
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/time-constants.hpp"
 
+#ifdef AERONET_ENABLE_PROTOBUF
+#include <expected>
+
+#include "aeronet/http-protobuf-common.hpp"
+#endif
+
 namespace aeronet {
 
 namespace internal {
@@ -624,6 +630,54 @@ class HttpResponse final : public HttpMessage {
   HttpResponse&& bodyYaml(const T& obj) && {
     return std::move(bodyYaml(obj));
   }
+#endif
+
+#ifdef AERONET_ENABLE_PROTOBUF
+  /// Serialize the protobuf message 'msg' in its binary encoding directly into the inline body, without intermediate
+  /// buffer. The body is compressed when the response is finalized, like any other inline body.
+  /// Throws std::length_error if the encoding would exceed kProtoMaxBodySize (2 GiB - 1).
+  /// Definition lives in <aeronet/http-protobuf.hpp> (include it to use this method), which includes protobuf.
+  template <class T>
+  HttpResponse& bodyProto(const T& msg, std::string_view contentType = http::ContentTypeApplicationProtobuf) & {
+    HttpMessage::bodyProto(msg, contentType);
+    return *this;
+  }
+
+  /// Rvalue overload of bodyProto. See bodyProto(const T&, std::string_view) & and include <aeronet/http-protobuf.hpp>.
+  template <class T>
+  HttpResponse&& bodyProto(const T& msg, std::string_view contentType = http::ContentTypeApplicationProtobuf) && {
+    return std::move(bodyProto(msg, contentType));
+  }
+
+#ifndef AERONET_PROTOBUF_LITE
+  /// Serialize the protobuf message 'msg' (of the full runtime) as ProtoJSON into the body.
+  /// RFC 9996 requires the default media type, application/protobuf+json, for ProtoJSON.
+  /// Throws std::runtime_error if the serialization fails (for instance, an Any of an unknown type).
+  /// Definition lives in <aeronet/http-protobuf.hpp> (include it to use this method).
+  template <class T>
+  HttpResponse& bodyProtoJson(const T& msg, std::string_view contentType = http::ContentTypeApplicationProtobufJson) & {
+    HttpMessage::bodyProtoJson(msg, contentType);
+    return *this;
+  }
+
+  /// Rvalue overload of bodyProtoJson. See bodyProtoJson(const T&, std::string_view) &.
+  template <class T>
+  HttpResponse&& bodyProtoJson(const T& msg,
+                               std::string_view contentType = http::ContentTypeApplicationProtobufJson) && {
+    return std::move(bodyProtoJson(msg, contentType));
+  }
+#endif
+
+  /// Parse the body of this (received) response as the protobuf message T, in the encoding given by its Content-Type
+  /// (see ProtoFormatOf()): binary, or ProtoJSON for a message of the full runtime. An empty body is a message with
+  /// all its fields at their default value.
+  /// Definition lives in <aeronet/http-protobuf.hpp> (include it to use this method).
+  template <class T>
+  [[nodiscard]] std::expected<T, ProtoParseError> bodyAsProto() const;
+
+  /// Same as bodyAsProto<T>(), but parses into 'msg' (for instance allocated on an Arena), which is replaced.
+  template <class T>
+  [[nodiscard]] std::expected<void, ProtoParseError> bodyAsProto(T& msg) const;
 #endif
 
   // Sets the body of this HttpResponse to point to a static buffer.

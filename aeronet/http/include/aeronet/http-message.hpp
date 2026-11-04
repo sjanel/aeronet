@@ -689,6 +689,20 @@ class HttpMessage {
   void bodyYaml(const T& obj);
 #endif
 
+#ifdef AERONET_ENABLE_PROTOBUF
+  // Serializes the protobuf message 'msg' in its binary encoding directly into the inline body.
+  // Definition lives in <aeronet/http-protobuf.hpp> (include it to use this method).
+  template <class T>
+  void bodyProto(const T& msg, std::string_view contentType);
+
+#ifndef AERONET_PROTOBUF_LITE
+  // Serializes the protobuf message 'msg' as ProtoJSON into a captured body.
+  // Definition lives in <aeronet/http-protobuf.hpp> (include it to use this method).
+  template <class T>
+  void bodyProtoJson(const T& msg, std::string_view contentType);
+#endif
+#endif
+
  private:
   friend class internal::HttpResponseAccess;
   friend class Http1WriterTransport;
