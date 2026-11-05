@@ -26,6 +26,11 @@
 #include "aeronet/request-task.hpp"
 #endif
 
+#ifdef AERONET_ENABLE_WEBSOCKET
+#include "aeronet/http-version.hpp"
+#include "aeronet/websocket-constants.hpp"
+#endif
+
 namespace aeronet {
 
 namespace {
@@ -84,6 +89,19 @@ HttpResponse MakeMethodNotAllowed(const HttpRequestView& request, http::MethodBm
   resp.body(http::ReasonMethodNotAllowed);
   return resp;
 }
+
+#ifdef AERONET_ENABLE_WEBSOCKET
+// The 426 of a WebSocket endpoint requested without upgrade: its Upgrade header names the protocol to switch to (RFC
+// 9110 §15.5.22), and is announced in Connection like any sent Upgrade header (§7.8).
+HttpResponse MakeUpgradeRequired(const HttpRequestView& request) {
+  HttpResponse resp = request.makeResponse(http::HeaderSize(http::Upgrade.size(), websocket::UpgradeValue.size()) +
+                                               http::HeaderSize(http::Connection.size(), http::Upgrade.size()),
+                                           http::StatusCodeUpgradeRequired);
+  internal::HttpResponseAccess::HeaderAddLineUnchecked(resp, http::Upgrade, websocket::UpgradeValue);
+  internal::HttpResponseAccess::HeaderAddLineUnchecked(resp, http::Connection, http::Upgrade);
+  return resp;
+}
+#endif
 
 }  // namespace
 
@@ -218,6 +236,14 @@ HttpResponse RequestPipeline::AnswerWithoutHandler(const HttpRequestView& reques
   if (routingResult.methodNotAllowed()) {
     return MakeMethodNotAllowed(request, routingResult.allowedMethods());
   }
+#ifdef AERONET_ENABLE_WEBSOCKET
+  // A GET without upgrade to a WebSocket endpoint (other methods are answered 405 above). Not over HTTP/2, which
+  // forbids the Upgrade and Connection headers (RFC 9113 §8.2.2) and has no WebSocket support: there, the resource does
+  // not exist.
+  if (routingResult.webSocketEndpoint() != nullptr && request.version() != http::HTTP_2_0) {
+    return MakeUpgradeRequired(request);
+  }
+#endif
   return request.makeResponse(http::StatusCodeNotFound);
 }
 

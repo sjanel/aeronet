@@ -13,7 +13,7 @@ concurrency:
   
 jobs:
   conan:
-    name: Conan Package Build
+    name: Conan Package Build (${{ matrix.shared == 'ON' && 'shared' || 'static' }}, ${{ matrix.features == 'ON' && 'features' || 'minimal' }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -54,7 +54,7 @@ jobs:
             --build=missing
 
   vcpkg:
-    name: vcpkg Overlay Build
+    name: vcpkg Overlay Build (${{ matrix.features == 'ON' && 'features' || 'minimal' }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:

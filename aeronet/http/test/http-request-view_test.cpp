@@ -51,6 +51,7 @@
 #include "aeronet/internal/http-response-access.hpp"
 #include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/sanitizer-test-support.hpp"
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/unix-dogstatsd-sink.hpp"
@@ -2458,6 +2459,9 @@ TEST_F(HttpRequestViewTest, LongInputs) {
 
 // Fuzz test specifically targeting header parsing
 TEST_F(HttpRequestViewTest, HeaderParsingStress) {
+  if constexpr (test::kThreadSanitizer) {
+    GTEST_SKIP() << test::kSkippedUnderThreadSanitizer;
+  }
   constexpr std::size_t kIterations = 100;
 
   RawChars input;

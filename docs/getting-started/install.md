@@ -199,6 +199,8 @@ if (TARGET aeronet_tls)
 endif()
 ```
 
+`find_package(aeronet)` also finds the libraries that aeronet was built with, such as OpenSSL, zstd and zlib-ng (zlib when built with `AERONET_ENABLE_ZLIBNG=OFF`). Install them for the consumer as well: a dependency downloaded by the build of aeronet is not installed with it, except brotli and the headers of amc.
+
 ## FetchContent Integration
 
 ```cmake

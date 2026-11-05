@@ -1,5 +1,6 @@
 #include "aeronet/http-response-writer.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -296,12 +297,15 @@ void HttpResponseWriter::end() {
   }
 
   if (_activeEncoderCtx != nullptr && !_noContent) {
-    const std::size_t endChunkSize = _activeEncoderCtx->endChunkSize();
     // encoders may need several calls to end() to flush all remaining data. We loop until they indicate completion.
+    // A call after one that filled its room gets as much room as already written (see
+    // HttpMessage::finalizeInlineBody()): the end of a brotli stream may be several MiB.
+    std::size_t room = _activeEncoderCtx->endChunkSize();
     _compressedBuffer.clear();
     while (true) {
-      _compressedBuffer.ensureAvailableCapacityExponential(endChunkSize);
-      const auto result = _activeEncoderCtx->end(_compressedBuffer.availableCapacity(), _compressedBuffer.end());
+      _compressedBuffer.ensureAvailableCapacityExponential(room);
+      const std::size_t givenRoom = _compressedBuffer.availableCapacity();
+      const auto result = _activeEncoderCtx->end(givenRoom, _compressedBuffer.end());
       if (result.hasError()) [[unlikely]] {
         _state = State::Failed;
         return;
@@ -311,6 +315,9 @@ void HttpResponseWriter::end() {
         break;
       }
       _compressedBuffer.addSize(written);
+      if (written == givenRoom) {
+        room = std::max<std::size_t>(room, _compressedBuffer.size());
+      }
     }
     if (!_compressedBuffer.empty() && !_transport->emitData(_compressedBuffer)) {
       _state = State::Failed;

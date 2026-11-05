@@ -1070,6 +1070,84 @@ TEST_F(WebSocketHandlerTest, Utf8IncompleteAtEnd) {
   EXPECT_EQ(lastErrorCode, CloseCode::InvalidPayloadData);
 }
 
+// ============================================================================
+// Fragmented text messages: UTF-8 validated fragment by fragment (fail fast)
+// ============================================================================
+
+// Invalid UTF-8 fails the connection with the fragment holding it, without waiting for the end of the message (Autobahn
+// case 6.4.1).
+TEST_F(WebSocketHandlerTest, InvalidUtf8FailsWithItsFragment) {
+  EXPECT_EQ(process(BuildUnmaskedFrame(Opcode::Text, "valid start", false)).action,
+            ProtocolProcessResult::Action::Continue);
+  EXPECT_EQ(process(BuildUnmaskedFrame(Opcode::Continuation, "\xF4\x90\x80\x80", false)).action,
+            ProtocolProcessResult::Action::Close);
+  EXPECT_EQ(errorCount, 1);
+  EXPECT_EQ(lastErrorCode, CloseCode::InvalidPayloadData);
+  EXPECT_EQ(messageCount, 0);
+}
+
+TEST_F(WebSocketHandlerTest, InvalidUtf8InFirstFragment) {
+  EXPECT_EQ(process(BuildUnmaskedFrame(Opcode::Text, "\xC0\x80", false)).action, ProtocolProcessResult::Action::Close);
+  EXPECT_EQ(lastErrorCode, CloseCode::InvalidPayloadData);
+}
+
+// A code point split between fragments fails with the first byte that cannot continue it (Autobahn case 6.4.2: F4 then
+// 90, above U+10FFFF).
+TEST_F(WebSocketHandlerTest, InvalidUtf8SplitBetweenFragments) {
+  EXPECT_EQ(process(BuildUnmaskedFrame(Opcode::Text, "abc\xF4", false)).action,
+            ProtocolProcessResult::Action::Continue);
+  EXPECT_EQ(process(BuildUnmaskedFrame(Opcode::Continuation, "\x90", false)).action,
+            ProtocolProcessResult::Action::Close);
+  EXPECT_EQ(lastErrorCode, CloseCode::InvalidPayloadData);
+  EXPECT_EQ(messageCount, 0);
+}
+
+// Code points of 2, 3 and 4 bytes split between 3 fragments at every pair of positions are reassembled.
+TEST_F(WebSocketHandlerTest, CodePointsSplitBetweenFragments) {
+  static constexpr std::string_view kText = "caf\xC3\xA9 \xE2\x82\xAC \xF0\x9F\x98\x80";
+  for (std::size_t cut1 = 0; cut1 <= kText.size(); ++cut1) {
+    for (std::size_t cut2 = cut1; cut2 <= kText.size(); ++cut2) {
+      (void)process(BuildUnmaskedFrame(Opcode::Text, kText.substr(0, cut1), false));
+      (void)process(BuildUnmaskedFrame(Opcode::Continuation, kText.substr(cut1, cut2 - cut1), false));
+      (void)process(BuildUnmaskedFrame(Opcode::Continuation, kText.substr(cut2), true));
+      ASSERT_EQ(errorCount, 0) << cut1 << ' ' << cut2;
+      ASSERT_EQ(lastMessage, kText) << cut1 << ' ' << cut2;
+    }
+  }
+}
+
+// The last fragment must complete the code point started by the previous one.
+TEST_F(WebSocketHandlerTest, CodePointIncompleteAtTheEndOfTheMessage) {
+  EXPECT_EQ(process(BuildUnmaskedFrame(Opcode::Text, "abc\xE2\x82", false)).action,
+            ProtocolProcessResult::Action::Continue);
+  EXPECT_EQ(process(BuildUnmaskedFrame(Opcode::Continuation, "", true)).action, ProtocolProcessResult::Action::Close);
+  EXPECT_EQ(lastErrorCode, CloseCode::InvalidPayloadData);
+  EXPECT_EQ(messageCount, 0);
+}
+
+// Masked fragments are validated once unmasked: a code point split between two of them, then an invalid byte.
+TEST_F(WebSocketHandlerTest, ServerSideInvalidUtf8FailsWithItsMaskedFragment) {
+  WebSocketConfig config;
+  config.isServerSide = true;
+  WebSocketCallbacks callbacks;
+  callbacks.onMessage = [this](std::span<const std::byte> /*payload*/, bool /*isBinary*/) { messageCount++; };
+  callbacks.onError = [this](CloseCode code, std::string_view /*message*/) {
+    lastErrorCode = code;
+    errorCount++;
+  };
+  WebSocketHandler serverHandler(config, std::move(callbacks));
+
+  EXPECT_EQ(serverHandler.processInput(buf_bytes(BuildMaskedFrame(Opcode::Text, "caf\xC3", false))).action,
+            ProtocolProcessResult::Action::Continue);
+  EXPECT_EQ(serverHandler.processInput(buf_bytes(BuildMaskedFrame(Opcode::Continuation, "\xA9 ok", false))).action,
+            ProtocolProcessResult::Action::Continue);
+  EXPECT_EQ(serverHandler.processInput(buf_bytes(BuildMaskedFrame(Opcode::Continuation, "\xFF", false))).action,
+            ProtocolProcessResult::Action::Close);
+  EXPECT_EQ(errorCount, 1);
+  EXPECT_EQ(lastErrorCode, CloseCode::InvalidPayloadData);
+  EXPECT_EQ(messageCount, 0);
+}
+
 TEST_F(WebSocketHandlerTest, Utf8OutOfRange) {
   // Codepoint > U+10FFFF (4-byte sequence: F4 90 80 80 would be U+110000)
   std::array<char, 4> outOfRange = {'\xF4', '\x90', '\x80', '\x80'};
@@ -1599,6 +1677,52 @@ TEST_F(WebSocketHandlerTest, CompressedTextWithInvalidUtf8) {
 }
 
 // ============================================================================
+// A compressed message decompressing beyond maxMessageSize is too big (1009), like an uncompressed one: its data is
+// valid. One of exactly maxMessageSize bytes is delivered.
+TEST_F(WebSocketHandlerTest, CompressedMessageDecompressingBeyondMaxMessageSize) {
+  WebSocketConfig config;
+  config.isServerSide = false;
+  config.maxMessageSize = 100;
+  DeflateNegotiatedParams deflateParams{
+      .serverMaxWindowBits = 15,
+      .clientMaxWindowBits = 15,
+      .serverNoContextTakeover = true,
+      .clientNoContextTakeover = true,
+  };
+  WebSocketCallbacks callbacks;
+  callbacks.onMessage = [this](std::span<const std::byte> payload, bool /*isBinary*/) {
+    lastMessage = std::string(reinterpret_cast<const char*>(payload.data()), payload.size());
+    messageCount++;
+  };
+  callbacks.onError = [this](CloseCode code, std::string_view message) {
+    lastErrorCode = code;
+    lastErrorMessage = std::string(message);
+    errorCount++;
+  };
+  WebSocketHandler compressHandler(config, std::move(callbacks), deflateParams);
+  DeflateContext ctx(deflateParams, DeflateConfig(), false);
+
+  const auto compressedFrame = [&ctx](std::string_view message) {
+    RawBytes compressed;
+    EXPECT_EQ(ctx.compress(sv_bytes(message), compressed), nullptr);
+    RawBytes frame;
+    BuildFrame(frame, Opcode::Text, buf_bytes(compressed), true, false, MaskingKey{}, true);
+    return frame;
+  };
+
+  const std::string largest(100, 'a');
+  EXPECT_EQ(compressHandler.processInput(buf_bytes(compressedFrame(largest))).action,
+            ProtocolProcessResult::Action::Continue);
+  EXPECT_EQ(lastMessage, largest);
+
+  EXPECT_EQ(compressHandler.processInput(buf_bytes(compressedFrame(std::string(101, 'a')))).action,
+            ProtocolProcessResult::Action::Close);
+  EXPECT_EQ(errorCount, 1);
+  EXPECT_EQ(lastErrorCode, CloseCode::MessageTooBig);
+  EXPECT_EQ(lastErrorMessage, "Message too large");
+  EXPECT_EQ(messageCount, 1);
+}
+
 // Compression produces output larger than input (fallback to uncompressed)
 // ============================================================================
 
@@ -1617,11 +1741,12 @@ TEST_F(WebSocketHandlerTest, CompressionFallbackWhenNotBeneficial) {
 
   // High-entropy data that doesn't compress well; >= minCompressSize so compression is attempted.
   // With noContextTakeover, deflate overhead exceeds savings for small incompressible data.
+  // Binary: most of these bytes are above 0x7F, which a text message may not carry outside of UTF-8 sequences.
   std::string incompressible;
   for (int ch = 0; ch < 17; ++ch) {
     incompressible += static_cast<char>((ch * 37) + 97);
   }
-  EXPECT_TRUE(compressHandler->sendText(incompressible));
+  EXPECT_TRUE(compressHandler->sendBinary(sv_bytes(incompressible)));
 
   auto output = compressHandler->getPendingOutput();
   // First byte should NOT have RSV1 set (fell back to uncompressed)

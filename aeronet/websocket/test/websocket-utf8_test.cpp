@@ -12,8 +12,10 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 
 #include "aeronet/avx2.hpp"
+#include "aeronet/sanitizer-test-support.hpp"
 #include "aeronet/vector.hpp"
 #include "aeronet/websocket-constants.hpp"
 
@@ -370,6 +372,9 @@ TEST(WebSocketUtf8, ContinuationAfterAsciiBlock) {
 
 // Every pair of bytes, at offsets around the 16 and 32-byte block boundaries and in the last block.
 TEST(WebSocketUtf8, EveryBytePair) {
+  if constexpr (test::kThreadSanitizer) {
+    GTEST_SKIP() << test::kSkippedUnderThreadSanitizer;
+  }
   for (const std::size_t offset : {0U, 15U, 31U, 37U}) {
     std::string data(offset + 2 + 8, 'a');
     for (unsigned first = 0; first < 256; ++first) {
@@ -386,6 +391,9 @@ TEST(WebSocketUtf8, EveryBytePair) {
 // Every lead byte followed by 3 bytes from the values on either side of each decision boundary, straddling a block
 // boundary.
 TEST(WebSocketUtf8, EveryLeadWithBoundaryContinuations) {
+  if constexpr (test::kThreadSanitizer) {
+    GTEST_SKIP() << test::kSkippedUnderThreadSanitizer;
+  }
   static constexpr uint8_t kNextBytes[]{
       0x00, 0x7F, 0x80, 0x8F, 0x90, 0x9F, 0xA0, 0xBF, 0xC0, 0xC2, 0xE0, 0xF0, 0xFF,
   };
@@ -410,6 +418,9 @@ TEST(WebSocketUtf8, EveryLeadWithBoundaryContinuations) {
 
 // Valid text of random characters and sizes, then corrupted by random byte changes, insertions and deletions.
 TEST(WebSocketUtf8, RandomMutations) {
+  if constexpr (test::kThreadSanitizer) {
+    GTEST_SKIP() << test::kSkippedUnderThreadSanitizer;
+  }
   std::mt19937 rng(42);  // NOLINT(bugprone-random-generator-seed) - reproducible
   const auto randomBelow = [&rng](std::size_t bound) {
     return std::uniform_int_distribution<std::size_t>(0, bound - 1)(rng);
@@ -478,6 +489,9 @@ TEST(WebSocketUtf8, RandomMutations) {
 }
 
 TEST(WebSocketUtf8, LargePayload) {
+  if constexpr (test::kThreadSanitizer) {
+    GTEST_SKIP() << test::kSkippedUnderThreadSanitizer;
+  }
   std::string data;
   while (data.size() < (1U << 20U)) {
     data.append(1000, 'x');
@@ -495,6 +509,114 @@ TEST(WebSocketUtf8, LargePayload) {
   std::string truncated = data;
   truncated.pop_back();
   EXPECT_EQ(FirstMismatch(truncated, false), "");
+}
+
+// The proper prefixes of the UTF-8 encodings of all the code points: the incomplete sequences that the next fragment of
+// a text message may complete. They only depend on the code point without its 6 low bits, encoded by its last byte.
+const std::unordered_set<std::string>& ReferenceSequencePrefixes() {
+  static const auto kPrefixes = [] {
+    std::unordered_set<std::string> prefixes;
+    for (uint32_t codePoint = 0x80; codePoint <= 0x10FFFF; codePoint += 0x40) {
+      if (codePoint >= 0xD800 && codePoint <= 0xDFFF) {
+        continue;  // surrogates
+      }
+      unsigned nbContinuations = 3;
+      uint32_t leadBits = 0xF0;
+      if (codePoint < 0x800) {
+        nbContinuations = 1;
+        leadBits = 0xC0;
+      } else if (codePoint < 0x10000) {
+        nbContinuations = 2;
+        leadBits = 0xE0;
+      }
+      std::string encoded(1, static_cast<char>(leadBits | (codePoint >> (6U * nbContinuations))));
+      for (unsigned shift = 6U * nbContinuations; shift != 0;) {
+        shift -= 6U;
+        encoded += static_cast<char>(0x80U | ((codePoint >> shift) & 0x3FU));
+      }
+      for (std::size_t size = 1; size < encoded.size(); ++size) {
+        prefixes.insert(encoded.substr(0, size));
+      }
+    }
+    return prefixes;
+  }();
+  return kPrefixes;
+}
+
+// Reference of ValidateUtf8Prefix(): data is well-formed but for an incomplete sequence at its end.
+std::size_t ReferenceValidateUtf8Prefix(std::string_view data) {
+  for (std::size_t tailSize = 0; tailSize <= std::min<std::size_t>(3, data.size()); ++tailSize) {
+    const std::string_view tail = data.substr(data.size() - tailSize);
+    if (ReferenceIsValidUtf8(data.substr(0, data.size() - tailSize)) &&
+        (tail.empty() || ReferenceSequencePrefixes().contains(std::string(tail)))) {
+      return tailSize;
+    }
+  }
+  return kInvalidUtf8Prefix;
+}
+
+std::size_t Utf8PrefixTailSize(std::string_view data) {
+  return ValidateUtf8Prefix(std::as_bytes(std::span<const char>(data.data(), data.size())));
+}
+
+TEST(WebSocketUtf8Prefix, Samples) {
+  EXPECT_EQ(Utf8PrefixTailSize(""), 0U);
+  EXPECT_EQ(Utf8PrefixTailSize("caf\xC3\xA9"), 0U);
+  // Each start of a 2, 3 and 4-byte character
+  EXPECT_EQ(Utf8PrefixTailSize("caf\xC3"), 1U);
+  EXPECT_EQ(Utf8PrefixTailSize("\xE2"), 1U);
+  EXPECT_EQ(Utf8PrefixTailSize("\xE2\x82"), 2U);
+  EXPECT_EQ(Utf8PrefixTailSize("\xF0\x9F\x98"), 3U);
+  // The second bytes of E0, ED, F0 and F4 at their limits
+  EXPECT_EQ(Utf8PrefixTailSize("\xE0"), 1U);
+  EXPECT_EQ(Utf8PrefixTailSize("\xE0\xA0"), 2U);
+  EXPECT_EQ(Utf8PrefixTailSize("\xE0\x9F"), kInvalidUtf8Prefix);  // overlong
+  EXPECT_EQ(Utf8PrefixTailSize("\xED\x9F"), 2U);
+  EXPECT_EQ(Utf8PrefixTailSize("\xED\xA0"), kInvalidUtf8Prefix);  // surrogate
+  EXPECT_EQ(Utf8PrefixTailSize("\xF0"), 1U);
+  EXPECT_EQ(Utf8PrefixTailSize("\xF0\x8F"), kInvalidUtf8Prefix);  // overlong
+  EXPECT_EQ(Utf8PrefixTailSize("\xF4\x8F\xBF"), 3U);
+  EXPECT_EQ(Utf8PrefixTailSize("\xF4\x90"), kInvalidUtf8Prefix);  // above U+10FFFF (Autobahn case 6.4.2)
+  // Bytes that start no sequence, invalid data before a valid incomplete sequence, and a complete invalid one
+  for (const std::string_view invalid : {"\xC0", "\xC1", "\xF5", "\xFF", "\x80", "\xC0\x80\xC3", "\xF4\x90\x80\x80"}) {
+    EXPECT_EQ(Utf8PrefixTailSize(invalid), kInvalidUtf8Prefix) << Hex(invalid);
+  }
+}
+
+// Every sequence of 1 and 2 bytes, then 3 and 4 bytes starting with a lead byte, followed by the values on either side
+// of each decision boundary, after text long enough for the SIMD kernels to validate its complete part.
+TEST(WebSocketUtf8Prefix, AgreesWithReference) {
+  if constexpr (test::kThreadSanitizer) {
+    GTEST_SKIP() << test::kSkippedUnderThreadSanitizer;
+  }
+  static constexpr uint8_t kNextBytes[]{
+      0x00, 0x7F, 0x80, 0x8F, 0x90, 0x9F, 0xA0, 0xBF, 0xC0, 0xC2, 0xE0, 0xF0, 0xFF,
+  };
+  for (const std::string& before : {std::string(), std::string(40, 'a') + "\xC3\xA9"}) {
+    const auto expectAgreement = [&before](std::string_view end) {
+      const std::string data = before + std::string(end);
+      ASSERT_EQ(Utf8PrefixTailSize(data), ReferenceValidateUtf8Prefix(data)) << Hex(end) << " after " << before.size();
+    };
+    for (unsigned first = 0; first < 256; ++first) {
+      const std::string one(1, static_cast<char>(first));
+      expectAgreement(one);
+      for (unsigned second = 0; second < 256; ++second) {
+        expectAgreement(one + static_cast<char>(second));
+      }
+      if (first < 0xC0) {
+        continue;
+      }
+      for (const uint8_t second : kNextBytes) {
+        for (const uint8_t third : kNextBytes) {
+          const std::string three = one + static_cast<char>(second) + static_cast<char>(third);
+          expectAgreement(three);
+          for (const uint8_t fourth : kNextBytes) {
+            expectAgreement(three + static_cast<char>(fourth));
+          }
+        }
+      }
+    }
+  }
 }
 
 }  // namespace

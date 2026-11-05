@@ -101,6 +101,7 @@ AeronetAddUnitTest(
     test/websocket-utf8_test.cpp
     LIBRARIES
     aeronet_websocket
+    aeronet_basic_test_support
 )
 
 AeronetAddUnitTest(

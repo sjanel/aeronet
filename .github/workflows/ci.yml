@@ -17,7 +17,10 @@ env:
 
 jobs:
   build-test:
-    name: ubuntu x86_64
+    # Compiler, build type, then the names of the enabled options (a name referencing the matrix replaces the
+    # positional value list GitHub appends by default).
+    name: >-
+      ubuntu x86_64 (${{ matrix.compiler }} ${{ matrix.build }}${{ matrix.features == 'ON' && ', features' || '' }}${{ matrix.client == 'ON' && ', client' || '' }}${{ matrix.server == 'ON' && ', server' || '' }}${{ matrix.asan == 'ON' && ', asan' || '' }}${{ matrix.tsan == 'ON' && ', tsan' || '' }}${{ matrix.shared == 'ON' && ', shared' || '' }}${{ matrix.unity == 'ON' && ', unity' || '' }}${{ matrix.protobuf && format(', protobuf-{0}', matrix.protobuf) || '' }})
     strategy:
       fail-fast: false
       matrix:
@@ -122,8 +125,9 @@ jobs:
           cmake --build build --parallel
 
       - name: Run unit tests
-        # ThreadSanitizer instruments every memory access: CPU-heavy single-threaded tests (parsing / codec stress
-        # tests) run several times slower, http-request-view_test taking close to a minute on GitHub runners.
+        # ThreadSanitizer instruments every memory access: the CPU-bound single-threaded tests (parsing, UTF-8 kernels),
+        # which have no data race to find, are skipped under it (test::kThreadSanitizer), the others run several times
+        # slower.
         run: |
           ctest --test-dir build --repeat until-fail:3 --output-on-failure --timeout ${{ matrix.tsan == 'ON' && 300 || 60 }} -j
 
@@ -155,7 +159,8 @@ jobs:
           retention-days: 7
 
   arm:
-    name: ubuntu arm
+    # features is always ON here: only the build type distinguishes the legs.
+    name: ubuntu arm (${{ matrix.build }})
     strategy:
       fail-fast: false
       matrix:

@@ -44,7 +44,7 @@ class DeflateContext {
   /// Decompress a message payload.
   /// @param input Compressed message data
   /// @param output Buffer to append decompressed data to
-  /// @param maxDecompressedSize Maximum allowed decompressed size
+  /// @param maxDecompressedSize Maximum allowed decompressed size: when exceeded, one byte more is appended to output
   /// @return nullptr on success, error message on decompression error or size limit exceeded
   [[nodiscard]] const char* decompress(std::span<const std::byte> input, RawBytes& output,
                                        std::size_t maxDecompressedSize = std::numeric_limits<std::size_t>::max());

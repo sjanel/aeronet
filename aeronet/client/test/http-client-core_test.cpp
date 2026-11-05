@@ -3490,8 +3490,12 @@ TEST_F(HttpClientE2ETest, ExpectContinueSendsTheBodyAfter100Continue) {
 // the chunk-size line of a body with trailers, and the connection, whose server may still expect it, is not reused. The
 // expectation is case-insensitive.
 TEST(HttpClientRawServerTest, ExpectContinueFinalResponseSkipsTheBody) {
-  for (const auto [response, withTrailers] : {std::pair{kEarlyRejection, false}, std::pair{kOkResponse, false},
-                                              std::pair{kEarlyRejection, true}, std::pair{kOkResponse, true}}) {
+  for (const auto& [response, withTrailers] : {
+           std::pair{kEarlyRejection, false},
+           std::pair{kOkResponse, false},
+           std::pair{kEarlyRejection, true},
+           std::pair{kOkResponse, true},
+       }) {
     ReceivedLog received;
     {
       RawServer server([&received, response](NativeHandle fd, int) {

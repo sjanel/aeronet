@@ -360,6 +360,33 @@ TEST(HttpCompression, BrActivatedOverThreshold) {
   EXPECT_LT(resp.body.size(), part1.size() + part2.size());
 }
 
+// The end of a streamed brotli body can exceed the room left by its writes: from quality 4, brotli outputs nothing
+// before a full input block (256 KiB), so that small writes of less than one leave it all to end(). The writer then
+// gives end() as much room as it already wrote, instead of growing its buffer by endChunkSize() steps that would each
+// copy it (exact growth with AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS).
+TEST(HttpCompression, StreamingBrotliLargeIncompressibleEnd) {
+  if constexpr (!brotliEnabled()) {
+    GTEST_SKIP();
+  }
+  static constexpr std::size_t kPieceSize = 2048;
+  HttpServerConfig cfg;
+  cfg.compression.minBytes = 64;
+  cfg.compression.preferredFormats = {Encoding::br};
+  cfg.compression.brotli.quality = 5;
+  test::TestServer localTs(std::move(cfg));
+  const RawChars payload = test::MakeRandomPayload(128UL << 10);
+  localTs.router().setDefault([payload](const HttpRequestView&, HttpResponseWriter& writer) {
+    for (std::size_t pos = 0; pos < payload.size(); pos += kPieceSize) {
+      writer.writeBody(std::string_view(payload).substr(pos, kPieceSize));
+    }
+    writer.end();
+  });
+  const auto resp = test::simpleGet(localTs.port(), "/sbr-large", {{"Accept-Encoding", "br"}});
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  const RawChars decompressed = test::Decompress(Encoding::br, resp.plainBody);
+  EXPECT_EQ(std::string_view(decompressed), std::string_view(payload));
+}
+
 TEST(HttpCompression, BelowThresholdIdentity) {
   if constexpr (!brotliEnabled()) {
     GTEST_SKIP();

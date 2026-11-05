@@ -6,10 +6,17 @@ function(aeronet_http_test NAME)
 	_aeronet_inject_dll_path(${TGT})
 endfunction()
 
+# Its tests driven by Linux syscall overrides are compiled on Linux only.
+aeronet_http_test(http-additional)
+# Not an executable of its own: in static builds, each test executable embeds a copy of the aeronet libraries.
+if(AERONET_ENABLE_PROTOBUF AND AERONET_ENABLE_HTTP_CLIENT)
+	target_sources(http-additional_test PRIVATE http-protobuf-integration_test.cpp)
+	target_link_libraries(http-additional_test PRIVATE aeronet_client aeronet_test_protos)
+endif()
+
 # These integration tests use Linux-specific syscall overrides (epoll, sendfile/pread,
 # /proc/self/fd, MSG_PEEK|MSG_DONTWAIT) or dlsym/RTLD_NEXT.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  aeronet_http_test(http-additional)
   aeronet_http_test(http-connect)
   aeronet_http_test(http-errors)
 endif()
@@ -52,11 +59,6 @@ if(AERONET_ENABLE_HTTP_CLIENT)
 		aeronet_http_test(http-protocol-parity)
 		target_link_libraries(http-protocol-parity_test PRIVATE aeronet_client)
 	endif()
-endif()
-
-if(AERONET_ENABLE_PROTOBUF AND AERONET_ENABLE_HTTP_CLIENT)
-	aeronet_http_test(http-protobuf-integration)
-	target_link_libraries(http-protobuf-integration_test PRIVATE aeronet_client aeronet_test_protos)
 endif()
 
 if (AERONET_ENABLE_WEBSOCKET)

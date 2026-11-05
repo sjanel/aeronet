@@ -43,6 +43,13 @@ TEST(UpgradeHandlerTest, IsValidWebSocketKey_ExactlyWrongPadding) {
   EXPECT_FALSE(IsValidWebSocketKey("dGhlIHNhbXBsZSBub25jZQ=A"));  // Single = at wrong position
 }
 
+// Keys of the right length that do not decode to 16 bytes (RFC 6455 §4.2.1): padding only, or padding before the end.
+TEST(UpgradeHandlerTest, IsValidWebSocketKey_PaddingElsewhereThanAtTheEnd) {
+  EXPECT_FALSE(IsValidWebSocketKey("========================"));
+  EXPECT_FALSE(IsValidWebSocketKey("dGhlIHNhbXBsZSBub25jZ==="));
+  EXPECT_FALSE(IsValidWebSocketKey("dGhl=HNhbXBsZSBub25jZQ=="));
+}
+
 TEST(UpgradeHandlerTest, IsValidWebSocketKey_NonBase64InMiddle) {
   EXPECT_FALSE(IsValidWebSocketKey("dGhlIHNhbXBsZS!ub25jZQ=="));  // ! is not base64
 }

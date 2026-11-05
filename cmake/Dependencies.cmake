@@ -223,8 +223,8 @@ if(AERONET_ENABLE_ZLIB AND NOT AERONET_ENABLE_ZLIBNG)
     CONFIG
     TARGETS ZLIB::ZLIBSTATIC
     DECLARE
-      URL https://github.com/madler/zlib/archive/refs/tags/v1.3.2.tar.gz
-      URL_HASH SHA256=b99a0b86c0ba9360ec7e78c4f1e43b1cbdf1e6936c8fa0f6835c0cd694a495a1
+      URL https://github.com/madler/zlib/archive/refs/tags/v1.4.tar.gz
+      URL_HASH SHA256=4331355048e286908260fdbeaa0b8cf75ceaf2907c75855a093a6487c7032aaa
       DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   )
 endif()
