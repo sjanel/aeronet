@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <string>
 #include <string_view>
 
@@ -48,6 +49,29 @@ TEST(UpgradeHandlerTest, IsValidWebSocketKey_NonBase64InMiddle) {
 
 TEST(UpgradeHandlerTest, IsValidWebSocketKey_SpacesInKey) {
   EXPECT_FALSE(IsValidWebSocketKey("dGhlIHNhbXBsZS ub25jZQ=="));  // Space not allowed
+}
+
+TEST(UpgradeHandlerTest, IsValidWebSocketKey_EveryByteAtEveryPosition) {
+  // 22 symbols of the base64 alphabet, then "==". Bytes 0x7F-0xFF used to be read past the end of the lookup table, and
+  // '=' was accepted before the padding.
+  const auto isBase64Symbol = [](unsigned char ch) {
+    return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '+' || ch == '/';
+  };
+  for (unsigned byteValue = 0; byteValue <= 0xFFU; ++byteValue) {
+    const auto ch = static_cast<unsigned char>(byteValue);
+    for (std::size_t pos = 0; pos < kValidWebSocketKey.size(); ++pos) {
+      std::string key(kValidWebSocketKey);
+      key[pos] = static_cast<char>(ch);
+      const bool expected = pos < 22 ? isBase64Symbol(ch) : ch == '=';
+      EXPECT_EQ(IsValidWebSocketKey(key), expected) << "byte " << byteValue << " at position " << pos;
+    }
+  }
+}
+
+TEST(UpgradeHandlerTest, IsValidWebSocketKey_PaddingBeforeTheEnd) {
+  EXPECT_FALSE(IsValidWebSocketKey("dG=lIHNhbXBsZSBub25jZQ=="));
+  EXPECT_FALSE(IsValidWebSocketKey("dGhlIHNhbXBsZSBub25jZ==="));
+  EXPECT_FALSE(IsValidWebSocketKey("========================"));
 }
 
 // Test for ComputeWebSocketAccept

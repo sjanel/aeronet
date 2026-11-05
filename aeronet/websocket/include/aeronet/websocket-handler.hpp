@@ -223,6 +223,9 @@ class WebSocketHandler final : public IProtocolHandler {
   /// Complete a message (called when FIN=1 after fragment reassembly or decompression).
   ProtocolProcessResult completeMessage();
 
+  /// Fail the WebSocket connection (RFC 6455 §7.1.7): report the error to onError, then send a Close frame with code.
+  void failConnection(CloseCode code, std::string_view message);
+
   /// Queue a frame for sending.
   void queueFrame(Opcode opcode, std::span<const std::byte> payload, bool fin = true);
 

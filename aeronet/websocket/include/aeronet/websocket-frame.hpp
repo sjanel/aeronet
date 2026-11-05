@@ -92,22 +92,25 @@ void BuildFrameHeader(RawBytes& output, Opcode opcode, std::size_t payloadSize, 
 /// Build a Close frame with an optional status code and reason.
 ///
 /// @param output     Output buffer to append the frame to
-/// @param code       Close status code (0 = no code)
-/// @param reason     Optional close reason (UTF-8 string, max ~123 bytes)
+/// @param code       Close status code. A code that may not be sent (see IsValidWireCloseCode(), NoStatusReceived
+///                   for instance) gives a Close frame without status code nor reason.
+/// @param reason     Optional close reason (UTF-8 string, truncated to 123 bytes on a code point boundary)
 /// @param shouldMask  Whether to mask the payload
 /// @param maskingKey  Masking key (only used if shouldMask=true)
 void BuildCloseFrame(RawBytes& output, CloseCode code = CloseCode::Normal, std::string_view reason = {},
                      bool shouldMask = false, MaskingKey maskingKey = {});
 
-/// Parse a Close frame payload to extract status code and reason.
-///
-/// @param payload Close frame payload (2+ bytes for code, remainder is reason)
-/// @return        Pair of (status code, reason). Code is 0 if payload is empty.
+/// Status code and reason of a Close frame payload.
 struct ClosePayload {
-  CloseCode code{CloseCode::NoStatusReceived};
   std::string_view reason;
+  // Set when the payload is invalid. code is then the code to fail the connection with.
+  const char* pErrorMessage{nullptr};
+  CloseCode code{CloseCode::NoStatusReceived};
 };
 
+/// Parse a Close frame payload (RFC 6455 §5.5.1): empty (code NoStatusReceived), or a 2-byte status code followed by
+/// an UTF-8 reason. A 1-byte payload or a code that may not be sent fails with ProtocolError, a reason that is not
+/// UTF-8 with InvalidPayloadData.
 [[nodiscard]] ClosePayload ParseClosePayload(std::span<const std::byte> payload);
 
 }  // namespace aeronet::websocket

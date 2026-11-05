@@ -96,19 +96,13 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
 
     if (frameResult.status == FrameParseResult::Status::ProtocolError) {
       // Protocol violation - close with error
-      if (_callbacks.onError) {
-        _callbacks.onError(CloseCode::ProtocolError, frameResult.pErrorMessage);
-      }
-      sendClose(CloseCode::ProtocolError, frameResult.pErrorMessage);
+      failConnection(CloseCode::ProtocolError, frameResult.pErrorMessage);
       result.action = ProtocolProcessResult::Action::Close;
       break;
     }
 
     if (frameResult.status == FrameParseResult::Status::PayloadTooLarge) {
-      if (_callbacks.onError) {
-        _callbacks.onError(CloseCode::MessageTooBig, "Frame payload too large");
-      }
-      sendClose(CloseCode::MessageTooBig, "Frame payload too large");
+      failConnection(CloseCode::MessageTooBig, "Frame payload too large");
       result.action = ProtocolProcessResult::Action::Close;
       break;
     }
@@ -157,20 +151,14 @@ ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& heade
   if (header.opcode == Opcode::Continuation) {
     // Continuation frame - must be in a fragmented message
     if (!_message.inProgress) {
-      if (_callbacks.onError) {
-        _callbacks.onError(CloseCode::ProtocolError, "Unexpected continuation frame");
-      }
-      sendClose(CloseCode::ProtocolError, "Unexpected continuation frame");
+      failConnection(CloseCode::ProtocolError, "Unexpected continuation frame");
       result.action = ProtocolProcessResult::Action::Close;
       return result;
     }
   } else {
     // Text or Binary - must NOT be in a fragmented message
     if (_message.inProgress) {
-      if (_callbacks.onError) {
-        _callbacks.onError(CloseCode::ProtocolError, "Expected continuation frame");
-      }
-      sendClose(CloseCode::ProtocolError, "Expected continuation frame");
+      failConnection(CloseCode::ProtocolError, "Expected continuation frame");
       result.action = ProtocolProcessResult::Action::Close;
       return result;
     }
@@ -184,10 +172,7 @@ ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& heade
     // With permessage-deflate, RSV1 tells whether the message is compressed (only allowed when negotiated).
     if (header.fin && !header.rsv1) {
       if (payload.size() > _config.maxMessageSize) {
-        if (_callbacks.onError) {
-          _callbacks.onError(CloseCode::MessageTooBig, "Message too large");
-        }
-        sendClose(CloseCode::MessageTooBig, "Message too large");
+        failConnection(CloseCode::MessageTooBig, "Message too large");
         result.action = ProtocolProcessResult::Action::Close;
         return result;
       }
@@ -198,10 +183,7 @@ ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& heade
         const bool isValidUtf8 =
             header.masked ? UnmaskAndValidateUtf8(mutablePayload, header.maskingKey) : IsValidUtf8(payload);
         if (!isValidUtf8) {
-          if (_callbacks.onError) {
-            _callbacks.onError(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
-          }
-          sendClose(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
+          failConnection(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
           result.action = ProtocolProcessResult::Action::Close;
           return result;
         }
@@ -230,10 +212,7 @@ ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& heade
   // Check message size limit (fragmented / compressed path)
   const std::size_t newSize = _message.buffer.size() + payload.size();
   if (newSize > _config.maxMessageSize) {
-    if (_callbacks.onError) {
-      _callbacks.onError(CloseCode::MessageTooBig, "Message too large");
-    }
-    sendClose(CloseCode::MessageTooBig, "Message too large");
+    failConnection(CloseCode::MessageTooBig, "Message too large");
     result.action = ProtocolProcessResult::Action::Close;
     _message.inProgress = false;
     _message.buffer.clear();
@@ -285,6 +264,12 @@ ProtocolProcessResult WebSocketHandler::handleControlFrame(const FrameHeader& he
       // Opcode::Close
       assert(header.opcode == Opcode::Close);
       const auto closeInfo = ParseClosePayload(payload);
+      if (closeInfo.pErrorMessage != nullptr) {
+        // Invalid Close frame (code that may not be sent, reason that is not UTF-8...): not echoed
+        failConnection(closeInfo.code, closeInfo.pErrorMessage);
+        result.action = ProtocolProcessResult::Action::Close;
+        break;
+      }
 
       if (_closeState == CloseState::Open) {
         // Peer initiated close - respond with Close. Both Close frames are then exchanged: a server closes the TCP
@@ -324,10 +309,7 @@ ProtocolProcessResult WebSocketHandler::completeMessage() {
     _compressBuffer.clear();
     const char* errMsg = _deflateContext->decompress(_message.buffer, _compressBuffer, _config.maxMessageSize);
     if (errMsg != nullptr) {
-      if (_callbacks.onError) {
-        _callbacks.onError(CloseCode::InvalidPayloadData, "Decompression failed");
-      }
-      sendClose(CloseCode::InvalidPayloadData, "Decompression failed");
+      failConnection(CloseCode::InvalidPayloadData, "Decompression failed");
       result.action = ProtocolProcessResult::Action::Close;
       _message.inProgress = false;
       _message.buffer.clear();
@@ -342,10 +324,7 @@ ProtocolProcessResult WebSocketHandler::completeMessage() {
 
   // For text messages, validate UTF-8
   if (_message.opcode == Opcode::Text && !IsValidUtf8(messageData)) {
-    if (_callbacks.onError) {
-      _callbacks.onError(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
-    }
-    sendClose(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
+    failConnection(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
     result.action = ProtocolProcessResult::Action::Close;
     _message.inProgress = false;
     _message.buffer.clear();
@@ -524,6 +503,13 @@ bool WebSocketHandler::sendPong(std::span<const std::byte> payload) {
 
   queueFrame(Opcode::Pong, payload);
   return true;
+}
+
+void WebSocketHandler::failConnection(CloseCode code, std::string_view message) {
+  if (_callbacks.onError) {
+    _callbacks.onError(code, message);
+  }
+  sendClose(code, message);
 }
 
 bool WebSocketHandler::sendClose(CloseCode code, std::string_view reason) {

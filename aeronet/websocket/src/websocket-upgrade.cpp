@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <limits>
 #include <string_view>
 
@@ -12,42 +13,28 @@
 namespace aeronet {
 
 namespace {
-constexpr auto kIsBase64CharTable = [] {
-  std::array<bool, std::numeric_limits<char>::max()> table{};
-  for (unsigned char ch = 'A'; ch <= 'Z'; ++ch) {
-    table[ch] = true;
-  }
-  for (unsigned char ch = 'a'; ch <= 'z'; ++ch) {
-    table[ch] = true;
-  }
-  for (unsigned char ch = '0'; ch <= '9'; ++ch) {
-    table[ch] = true;
-  }
-  table[static_cast<unsigned char>('+')] = true;
-  table[static_cast<unsigned char>('/')] = true;
-  table[static_cast<unsigned char>('=')] = true;
-  return table;
-}();
 
-// Check if a character is valid base64
-[[nodiscard]] constexpr bool IsBase64Char(char ch) noexcept {
-  return kIsBase64CharTable[static_cast<unsigned char>(ch)];
+[[nodiscard]] constexpr bool IsBase64Symbol(char ch) noexcept {
+  // Tells whether a byte is one of the 64 symbols of the base64 alphabet ('=' padding excluded).
+  static constexpr auto kIsBase64SymbolTable = [] {
+    // One entry per byte value: header values may hold bytes 0x80-0xFF (obs-text, RFC 9110 §5.5).
+    std::array<bool, std::numeric_limits<unsigned char>::max() + 1> table{};
+    for (char ch : kB64Table) {
+      table[static_cast<unsigned char>(ch)] = true;
+    }
+    return table;
+  }();
+
+  return kIsBase64SymbolTable[static_cast<unsigned char>(ch)];
 }
 }  // namespace
 
 bool IsValidWebSocketKey(std::string_view key) {
-  // Must be exactly 24 base64 characters (16 bytes -> 24 chars with padding)
-  if (key.size() != 24) {
-    return false;
-  }
-
-  // Verify all characters are valid base64
-  if (!std::ranges::all_of(key, [](char ch) { return IsBase64Char(ch); })) {
-    return false;
-  }
-
-  // The key should end with "==" as 16 bytes encodes to 22 chars + 2 padding
-  return key[22] == '=' && key[23] == '=';
+  // A base64-encoded 16-byte value (RFC 6455 §4.2.1): 22 symbols holding the 128 bits, then 2 '=' padding characters
+  // (RFC 4648 §4). '=' anywhere else cannot be decoded.
+  static constexpr std::size_t kNbSymbols = 22;
+  return key.size() == kNbSymbols + 2 && key[kNbSymbols] == '=' && key[kNbSymbols + 1] == '=' &&
+         std::ranges::all_of(key.substr(0, kNbSymbols), IsBase64Symbol);
 }
 
 B64EncodedSha1 ComputeWebSocketAccept(std::string_view key) {

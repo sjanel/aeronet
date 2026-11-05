@@ -86,10 +86,11 @@ enum class CloseCode : uint16_t {
   TLSHandshake = 1015,        // Reserved for use in APIs (TLS handshake failure)
 };
 
-// Check if a close code is valid for transmission in a Close frame
-// Codes 1005 and 1006 are reserved for APIs only (must not be sent over wire)
+// Check if a close code may be carried by a Close frame (RFC 6455 §7.4, IANA WebSocket Close Code Number Registry).
+// 1004 is reserved, 1005, 1006 and 1015 are reserved for APIs only (must not be sent over wire), and the other codes
+// below 3000 are not assigned.
 [[nodiscard]] constexpr bool IsValidWireCloseCode(uint16_t code) noexcept {
-  return (code >= 1000 && code <= 1003) || (code >= 1007 && code <= 1011) || (code >= 3000 && code <= 4999);
+  return (code >= 1000 && code <= 1003) || (code >= 1007 && code <= 1014) || (code >= 3000 && code <= 4999);
 }
 
 // WebSocket Frame Flags (RFC 6455 §5.2)

@@ -1,6 +1,5 @@
 #include "aeronet/websocket-frame.hpp"
 
-#include <algorithm>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -12,6 +11,7 @@
 #include "aeronet/memory-utils.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/websocket-constants.hpp"
+#include "aeronet/websocket-utf8.hpp"
 
 // On x86-64, always include the full intrinsic header so both SSE2 and AVX2
 // code paths can be compiled.  The AVX2 path is gated by a target attribute
@@ -462,17 +462,20 @@ void BuildFrameHeader(RawBytes& output, Opcode opcode, std::size_t payloadSize, 
 void BuildCloseFrame(RawBytes& output, CloseCode code, std::string_view reason, bool shouldMask,
                      MaskingKey maskingKey) {
   // Close frame payload: 2-byte status code (big-endian) + optional reason
+  // A code that may not be sent (NoStatusReceived, AbnormalClosure...) gives a Close frame without status code.
   std::size_t payloadSize = 0;
   std::size_t reasonLen = 0;
-  if (code != CloseCode::NoStatusReceived) {
-    if (reason.empty()) {
-      payloadSize = 2UL;
-    } else {
-      // Truncate reason if it would exceed control frame limit
-      const std::size_t maxReasonLen = kMaxControlFramePayload - 2;
-      reasonLen = std::min(reason.size(), maxReasonLen);
-      payloadSize = 2UL + reasonLen;
+  if (IsValidWireCloseCode(static_cast<uint16_t>(code))) {
+    reasonLen = reason.size();
+    if (reasonLen > kMaxControlFramePayload - 2) {
+      // Truncated to the control frame limit without splitting a code point: the peer fails the connection on a
+      // reason that is not UTF-8 (RFC 6455 §8.1). reason[reasonLen] is the first byte dropped.
+      reasonLen = kMaxControlFramePayload - 2;
+      while (reasonLen != 0 && (static_cast<unsigned char>(reason[reasonLen]) & 0xC0U) == 0x80U) {
+        --reasonLen;
+      }
     }
+    payloadSize = 2UL + reasonLen;
   }
 
   AppendFrameHeader(output, Opcode::Close, payloadSize, true, shouldMask, maskingKey, false, payloadSize);
@@ -495,22 +498,30 @@ void BuildCloseFrame(RawBytes& output, CloseCode code, std::string_view reason, 
 
 ClosePayload ParseClosePayload(std::span<const std::byte> payload) {
   ClosePayload result;
-
-  if (payload.size() >= 2) {
-    const auto* bytes = reinterpret_cast<const uint8_t*>(payload.data());
-    result.code = static_cast<CloseCode>(static_cast<uint16_t>(static_cast<uint16_t>(bytes[0]) << 8U) |
-                                         static_cast<uint16_t>(bytes[1]));
-
-    if (payload.size() > 2) {
-      result.reason = std::string_view(reinterpret_cast<const char*>(payload.data() + 2), payload.size() - 2);
-    }
-  } else if (payload.empty()) {
-    result.code = CloseCode::NoStatusReceived;
-  } else {
-    // 1 byte is invalid per RFC 6455
-    result.code = CloseCode::ProtocolError;
+  if (payload.empty()) {
+    return result;
   }
-
+  if (payload.size() == 1) {
+    result.code = CloseCode::ProtocolError;
+    result.pErrorMessage = "Close frame payload of 1 byte";
+    return result;
+  }
+  const auto* bytes = reinterpret_cast<const uint8_t*>(payload.data());
+  const auto code = static_cast<uint16_t>(static_cast<uint16_t>(static_cast<uint16_t>(bytes[0]) << 8U) |
+                                          static_cast<uint16_t>(bytes[1]));
+  if (!IsValidWireCloseCode(code)) {
+    result.code = CloseCode::ProtocolError;
+    result.pErrorMessage = "Invalid close code";
+    return result;
+  }
+  const auto reason = payload.subspan(2);
+  if (!IsValidUtf8(reason)) {
+    result.code = CloseCode::InvalidPayloadData;
+    result.pErrorMessage = "Invalid UTF-8 in close reason";
+    return result;
+  }
+  result.code = static_cast<CloseCode>(code);
+  result.reason = std::string_view(reinterpret_cast<const char*>(reason.data()), reason.size());
   return result;
 }
 

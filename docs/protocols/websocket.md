@@ -100,7 +100,7 @@ The server accepts an upgrade when the request:
 1. uses the `GET` method and HTTP/1.1 - the `Upgrade` header of an HTTP/1.0 request is ignored (RFC 9110 §7.8), and the request is served like any `GET`, by the `GET` handler of the path if any,
 2. carries `Upgrade: websocket` and `Connection: Upgrade`,
 3. carries `Sec-WebSocket-Version: 13`,
-4. carries a valid `Sec-WebSocket-Key` (16 random bytes in base64, 24 characters).
+4. carries a valid `Sec-WebSocket-Key`: 16 random bytes in base64, so 22 characters of the base64 alphabet followed by `==`.
 
 A `GET` request on the endpoint's path with an `Upgrade: websocket` header goes through the same steps as other requests before it is upgraded:
 
@@ -188,17 +188,19 @@ When a factory returns a handler without compression and the client negotiated i
 
 ## Closing connections
 
-When the peer sends a Close frame, the server invokes `onClose()`, answers with its own Close frame, then closes the TCP connection. Closing first leaves the `TIME_WAIT` state on the server rather than on the client, as RFC 6455 §7.1.1 recommends.
+When the peer sends a Close frame, the server invokes `onClose()`, answers with its own Close frame, echoing the peer's status code and reason, then closes the TCP connection. Closing first leaves the `TIME_WAIT` state on the server rather than on the client, as RFC 6455 §7.1.1 recommends.
 
 The server initiates the close itself when the peer violates the protocol:
 
 | Close code | Sent when |
 | --- | --- |
-| `ProtocolError` (1002) | Malformed frame, unmasked client frame, unexpected or missing continuation frame. |
-| `InvalidPayloadData` (1007) | Text message that is not valid UTF-8, or a compressed message that fails to decompress. |
+| `ProtocolError` (1002) | Malformed frame, unmasked client frame, unexpected or missing continuation frame, Close frame with a 1-byte payload or a status code that may not be sent (see below). |
+| `InvalidPayloadData` (1007) | Text message or Close frame reason that is not valid UTF-8, or a compressed message that fails to decompress. |
 | `MessageTooBig` (1009) | Frame larger than `maxFrameSize`, or message larger than `maxMessageSize`. |
 
-An application closes a connection with `sendClose(code, reason)`. `websocket::CloseCode` lists the standard codes, from `Normal` (1000) to `TLSHandshake` (1015). `NoStatusReceived` (1005), `AbnormalClosure` (1006) and `TLSHandshake` (1015) are reserved for reporting and are never sent in a frame.
+An invalid Close frame is not echoed, and `onError()` is invoked instead of `onClose()`.
+
+An application closes a connection with `sendClose(code, reason)`. `websocket::CloseCode` lists the standard codes, from `Normal` (1000) to `TLSHandshake` (1015). A Close frame may carry the codes 1000 to 1003, 1007 to 1014 and 3000 to 4999 (RFC 6455 §7.4 and the IANA registry, `websocket::IsValidWireCloseCode()`). `sendClose()` with another code sends a Close frame without status code nor reason: `Reserved` (1004) and unassigned codes, and `NoStatusReceived` (1005), `AbnormalClosure` (1006) and `TLSHandshake` (1015), which are reserved for reporting. A reason longer than 123 bytes is truncated before the UTF-8 code point that does not fit.
 
 After sending a Close frame, from `sendClose()` or after a protocol error, the server waits `closeTimeout` (5 seconds by default) for the peer's Close frame, then closes the connection.
 
@@ -231,8 +233,8 @@ The timeouts are checked by the server's maintenance timer, so they are accurate
 ## Tests
 
 - Handshake (ignored in HTTP/1.0: `UpgradeIgnoredInHttp10`), middleware, origin checks, factory refusal, messaging, large echoes (also when the client does not read), compression interoperability and connections sharing the streams of a server thread, close handshake, and idle and close timeouts against a real socket: [tests/websocket-integration_test.cpp](../../tests/websocket-integration_test.cpp).
-- Frame parsing, masking, SIMD unmasking and masked copies of every size: [websocket-frame_test.cpp](../../aeronet/websocket/test/websocket-frame_test.cpp).
-- Message reassembly, control frames, close handshake, split frames, payloads sent from the input or the compression buffer (`WebSocketInputPayloadTest`), masked messages and fragments of every size (`WebSocketMaskedPayloadTest`), and timeout computation: [websocket-handler_test.cpp](../../aeronet/websocket/test/websocket-handler_test.cpp).
+- Frame parsing, masking, SIMD unmasking and masked copies of every size, Close frame payloads (codes that may be sent, reasons truncated on a code point boundary): [websocket-frame_test.cpp](../../aeronet/websocket/test/websocket-frame_test.cpp).
+- Message reassembly, control frames, close handshake, validation of received Close frames (`WebSocketReceivedCloseTest`, `WebSocketInvalidCloseCodeTest`, `WebSocketValidCloseCodeTest`), split frames, payloads sent from the input or the compression buffer (`WebSocketInputPayloadTest`), masked messages and fragments of every size (`WebSocketMaskedPayloadTest`), and timeout computation: [websocket-handler_test.cpp](../../aeronet/websocket/test/websocket-handler_test.cpp).
 - UTF-8 validation by each kernel (scalar, SSSE3, AVX2, NEON) and its variant unmasking the data in the same pass, against a reference validator, for every byte pair and every sample at every block offset: [websocket-utf8_test.cpp](../../aeronet/websocket/test/websocket-utf8_test.cpp).
-- Upgrade validation and subprotocol negotiation: [websocket-upgrade_test.cpp](../../aeronet/websocket/test/websocket-upgrade_test.cpp).
+- Upgrade validation (every byte value at every position of `Sec-WebSocket-Key`) and subprotocol negotiation: [websocket-upgrade_test.cpp](../../aeronet/websocket/test/websocket-upgrade_test.cpp).
 - permessage-deflate negotiation and interoperability, context takeover across messages, streams shared without context takeover (`WebSocketSharedDeflateStreamsTest`): [websocket-deflate_test.cpp](../../aeronet/websocket/test/websocket-deflate_test.cpp) and [websocket-compress_test.cpp](../../aeronet/websocket/test/websocket-compress_test.cpp).
