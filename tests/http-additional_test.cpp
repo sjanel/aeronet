@@ -2,7 +2,7 @@
 
 #include "aeronet/system-error.hpp"
 
-#ifdef AERONET_POSIX
+#ifdef AERONET_LINUX
 #include <dirent.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -53,10 +53,13 @@
 #include "aeronet/request-task.hpp"
 #endif
 
-// Enable epoll/socket syscall overrides from sys-test-support.hpp
+// Linux only: the epoll / accept4 / read / write / realloc overrides of sys-test-support.hpp and /proc/self/fd drive
+// the fault injection tests. The other tests run on every platform.
+#ifdef AERONET_LINUX
 #define AERONET_WANT_SOCKET_OVERRIDES
 #define AERONET_WANT_READ_WRITE_OVERRIDES
 #include "aeronet/sys-test-support.hpp"
+#endif
 
 using namespace std::chrono_literals;
 using namespace aeronet;
@@ -76,6 +79,7 @@ HttpServerConfig TestServerConfig() {
 
 test::TestServer ts;
 
+#ifdef AERONET_LINUX
 struct Ipv4Endpoint {
   uint32_t addr{0};
   uint16_t port{0};
@@ -229,6 +233,7 @@ bool WaitForPeerClosedNonBlocking(int fd, std::chrono::milliseconds timeout) {
   }
   return false;
 }
+#endif  // AERONET_LINUX
 
 }  // namespace
 
@@ -2325,6 +2330,7 @@ TEST(SingleHttpServer, MultipleResponseMiddleware) {
   ts.router() = Router();  // Clear middlewares for other tests
 }
 
+#ifdef AERONET_LINUX
 // Test epoll_ctl MOD failure handling - simulates EBADF (benign) error
 // This test verifies that when epoll_ctl MOD operations fail, the server handles
 // them gracefully. While the normal HTTP request/response flow may not always trigger
@@ -2493,3 +2499,4 @@ TEST(Http1WriterTransport, WriteBodyReturnsFalseAfterTransportError) {
   // Second write should see the connection marked for close
   EXPECT_FALSE(secondWriteOk);
 }
+#endif  // AERONET_LINUX
