@@ -41,6 +41,7 @@
 #include "aeronet/websocket-deflate-context.hpp"
 #include "aeronet/websocket-deflate.hpp"
 #include "aeronet/websocket-endpoint.hpp"
+#include "aeronet/websocket-frame.hpp"
 #include "aeronet/websocket-handler.hpp"
 #ifdef AERONET_ENABLE_ZLIB
 #include "aeronet/zlib-gateway.hpp"
@@ -803,6 +804,43 @@ TEST(WebSocketTimeouts, CloseTimeoutClosesConnectionWithoutPeerClose) {
   auto val = close.value_or(ServerFrame{});
   EXPECT_EQ(val.opcode, Opcode::Close);
   // The client never answers the Close frame: the server gives up after closeTimeout.
+  EXPECT_TRUE(test::WaitForPeerClose(conn.fd(), 2000ms));
+}
+
+// A drain closes the WebSocket connections with Going Away, instead of their abnormal closure at its deadline, and ends
+// once their peers answered.
+TEST(WebSocketDrain, ClosesWithGoingAway) {
+  test::TestServer server(TimeoutServerConfig(10s));
+  server.postRouterUpdate([](Router& router) { router.setWebSocket("/echo", EchoEndpoint(WebSocketConfig{})); });
+
+  test::ClientConnection conn(server.port());
+  Upgrade(conn.fd(), "/echo");
+
+  server.server.beginDrain(10s);
+  const auto close = ReceiveServerFrame(conn.fd(), 2000ms);
+  ASSERT_TRUE(close.has_value());
+  const auto val = close.value_or(ServerFrame{});
+  EXPECT_EQ(val.opcode, Opcode::Close);
+  EXPECT_EQ(ParseClosePayload(val.payload).code, CloseCode::GoingAway);
+
+  SendFrame(conn.fd(), BuildClientCloseFrame(CloseCode::GoingAway));
+  EXPECT_TRUE(test::WaitForPeerClose(conn.fd(), 2000ms));  // long before the drain deadline
+}
+
+// A peer that does not answer the Close frame of the drain is closed after closeTimeout, not at the drain deadline.
+TEST(WebSocketDrain, PeerNotAnsweringIsClosedAfterCloseTimeout) {
+  test::TestServer server(TimeoutServerConfig(10s));
+  WebSocketConfig config;
+  config.closeTimeout = 200ms;
+  server.postRouterUpdate([config](Router& router) { router.setWebSocket("/echo", EchoEndpoint(config)); });
+
+  test::ClientConnection conn(server.port());
+  Upgrade(conn.fd(), "/echo");
+
+  server.server.beginDrain(10s);
+  const auto close = ReceiveServerFrame(conn.fd(), 2000ms);
+  ASSERT_TRUE(close.has_value());
+  EXPECT_EQ(close.value_or(ServerFrame{}).opcode, Opcode::Close);
   EXPECT_TRUE(test::WaitForPeerClose(conn.fd(), 2000ms));
 }
 

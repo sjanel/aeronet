@@ -83,8 +83,10 @@ namespace upgrade {
 
 /// Tell whether a WebSocket upgrade request comes from a page of the server itself, or from a client that is not a
 /// browser: either there is no Origin header, or its host and port (default port of its scheme omitted) are the ones
-/// of the Host header, compared case-insensitively. An opaque origin ("null") is never the same origin.
-[[nodiscard]] bool IsSameOriginRequest(std::string_view origin, std::string_view host);
+/// of the Host header, compared case-insensitively, with the scheme of the connection: https over TLS
+/// (secureConnection), http or https otherwise (https being the scheme of the pages behind a reverse proxy terminating
+/// TLS). An opaque origin ("null") or an origin of another scheme is never the same origin.
+[[nodiscard]] bool IsSameOriginRequest(std::string_view origin, std::string_view host, bool secureConnection);
 
 std::size_t ComputeWebSocketUpgradeResponseSize(const UpgradeValidationResult& validationResult);
 

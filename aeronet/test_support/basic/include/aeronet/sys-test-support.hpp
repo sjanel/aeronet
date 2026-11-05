@@ -1677,4 +1677,38 @@ extern "C" __attribute__((no_sanitize("address"))) ssize_t recvmsg(int fd, struc
 }
 #endif  // AERONET_WANT_SYS_OVERRIDES
 
-#endif
+#endif  // AERONET_WANT_SOCKET_OVERRIDES
+
+#if defined(AERONET_WANT_GETRANDOM_OVERRIDES) && defined(AERONET_LINUX)
+#include <sys/random.h>
+
+#include <algorithm>
+#include <cerrno>
+
+namespace aeronet::test {
+using GetrandomFn = ssize_t (*)(void*, size_t, unsigned int);
+
+inline GetrandomFn ResolveRealGetrandom() {
+  // Thread-safe initialization: the hooks are called from the server event loops and the test threads.
+  static const GetrandomFn fn = aeronet::test::ResolveNext<GetrandomFn>("getrandom");
+  return fn;
+}
+
+// Actions of the next getrandom() calls: a return value >= 0 limits the bytes written by the real getrandom() (a short
+// read), -1 fails with the errno.
+inline ActionQueue<IoAction> g_getrandom_actions;
+}  // namespace aeronet::test
+
+// NOLINTNEXTLINE
+extern "C" __attribute__((no_sanitize("address"))) ssize_t getrandom(void* buf, size_t buflen, unsigned int flags) {
+  if (auto act = aeronet::test::g_getrandom_actions.pop()) {
+    auto [ret, err] = *act;
+    if (ret < 0) {
+      errno = err;
+      return -1;
+    }
+    buflen = std::min(buflen, static_cast<size_t>(ret));
+  }
+  return aeronet::test::ResolveRealGetrandom()(buf, buflen, flags);
+}
+#endif  // AERONET_WANT_GETRANDOM_OVERRIDES && AERONET_LINUX

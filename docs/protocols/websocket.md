@@ -113,7 +113,7 @@ On success, the server answers `101 Switching Protocols` with the computed `Sec-
 
 **Origin checks.** Browsers do not apply CORS to WebSocket connections: a page of any site can open one to the server, and the browser attaches the server's cookies to the upgrade request. To prevent this cross-site WebSocket hijacking, the server checks the `Origin` header that browsers always send:
 
-- Without [CORS policy](../guides/cors.md) for the route, only the server's own pages may connect: the host and port of `Origin` must be those of the `Host` header (the default port of the scheme may be omitted on either side). An opaque origin (`null`) is refused.
+- Without [CORS policy](../guides/cors.md) for the route, only the server's own pages may connect: the host and port of `Origin` must be those of the `Host` header (the default port of the scheme may be omitted on either side), and its scheme `https` over TLS. A page served over plain HTTP, whose content a network attacker can alter, is another origin than the TLS endpoint. Over a plain connection, `http` and `https` are accepted: browsers do not let an `https` page open a `ws://` connection, so that such an origin comes through a reverse proxy terminating TLS. An opaque origin (`null`) and the other schemes are refused.
 - With a CORS policy (the route's or the router's default), the policy decides: an origin it does not allow is refused, and an allowed origin is accepted even from another site.
 - A request without `Origin` comes from a client that is not a browser, and is accepted.
 
@@ -128,7 +128,7 @@ router.setWebSocket("/ws", WebSocketEndpoint::WithCallbacks(websocket::WebSocket
 !!! warning "Behind a reverse proxy"
     A proxy that sets the `Host` header of the requests it forwards to the address of the upstream, as nginx does by default (`proxy_set_header Host $proxy_host`), makes the same-origin check fail for every browser: `Origin` names the public site, while `Host` names the upstream. Every browser upgrade is then answered `403`. Either attach a CORS policy listing the allowed origins to the route, or have the proxy forward the `Host` header sent by the browser (`proxy_set_header Host $http_host;` with nginx, which keeps its port).
 
-**Subprotocols.** When the client sends `Sec-WebSocket-Protocol`, the server selects the first of the endpoint's `supportedProtocols` (in the endpoint's preference order) that the client offered, compared case-insensitively. When none matches, the handshake succeeds without a subprotocol, and the client decides whether to continue.
+**Subprotocols.** When the client sends `Sec-WebSocket-Protocol`, the server selects the first of the endpoint's `supportedProtocols` (in the endpoint's preference order) that the client offered, compared case-insensitively, and answers with the client's spelling of it: browsers compare the answer with their offer byte for byte (RFC 6455 §4.1). When none matches, the handshake succeeds without a subprotocol, and the client decides whether to continue.
 
 ## Configuration
 
@@ -154,7 +154,7 @@ Router router;
 router.setWebSocket("/ws", WebSocketEndpoint::WithConfigAndCallbacks(config, websocket::WebSocketCallbacks{}));
 ```
 
-Frames may arrive split across any number of reads, or several in one read: the handler consumes complete frames only, and keeps the bytes of an incomplete trailing frame in the connection buffer without copying them. A connection without such pending bytes reads into the input buffer of the previous read of its server thread, still in the CPU caches, rather than into its own: with many connections exchanging large messages, they would otherwise be received into cold memory. Client frames must be masked; an unmasked frame is a protocol error. Unmasking uses SIMD instructions (AVX2 or SSE2 on x86, NEON on ARM) with a scalar fallback, in the same pass as the UTF-8 validation of a text message, or as the copy of a fragment to the reassembly buffer.
+Frames may arrive split across any number of reads, or several in one read: the handler consumes complete frames only, and keeps the bytes of an incomplete trailing frame in the connection buffer without copying them. A connection without such pending bytes reads into the input buffer of the previous read of its server thread, still in the CPU caches, rather than into its own: with many connections exchanging large messages, they would otherwise be received into cold memory. Client frames must be masked; an unmasked frame is a protocol error. In client mode (`WebSocketConfig::isServerSide` false, `CreateClientWebSocketHandler()`), the handler masks its frames with unpredictable keys, as RFC 6455 §5.3 requires: they come from the secure generator of the system (`getrandom()`, `arc4random_buf()`, `BCryptGenRandom()`), 64 keys per call. Unmasking uses SIMD instructions (AVX2 or SSE2 on x86, NEON on ARM) with a scalar fallback, in the same pass as the UTF-8 validation of a text message, or as the copy of a fragment to the reassembly buffer.
 
 ## Compression (permessage-deflate)
 
@@ -206,6 +206,8 @@ An application closes a connection with `sendClose(code, reason)`. `websocket::C
 
 After sending a Close frame, from `sendClose()` or after a protocol error, the server waits `closeTimeout` (5 seconds by default) for the peer's Close frame, then closes the connection.
 
+A [drain](../guides/server-lifecycle.md#stopping) (`beginDrain()`, or a signal) closes every WebSocket connection with `GoingAway` (1001) at the next maintenance tick, instead of the abnormal closure (1006, seen by the client) of its deadline. Each connection is closed once its peer answered, or `closeTimeout` later: the drain then ends without waiting for its deadline.
+
 ## Idle connections
 
 `HttpServerConfig::keepAliveTimeout` bounds the idleness between HTTP requests: it does not apply to an upgraded connection, which has its own `idleTimeout` (60 seconds by default). A connection on which nothing was received for `idleTimeout` is closed, without Close frame: the peer is most likely gone (a closed laptop, a lost network).
@@ -234,9 +236,9 @@ The timeouts are checked by the server's maintenance timer, so they are accurate
 
 ## Tests
 
-- Handshake (ignored in HTTP/1.0: `UpgradeIgnoredInHttp10`), middleware, origin checks, factory refusal, messaging, large echoes (also when the client does not read), compression interoperability and connections sharing the streams of a server thread, close handshake, and idle and close timeouts against a real socket: [tests/websocket-integration_test.cpp](../../tests/websocket-integration_test.cpp).
+- Handshake (ignored in HTTP/1.0: `UpgradeIgnoredInHttp10`), middleware, origin checks, factory refusal, messaging, large echoes (also when the client does not read), compression interoperability and connections sharing the streams of a server thread, close handshake, idle and close timeouts, and drains (`WebSocketDrain`) against a real socket: [tests/websocket-integration_test.cpp](../../tests/websocket-integration_test.cpp).
 - Frame parsing, masking, SIMD unmasking and masked copies of every size, Close frame payloads (codes that may be sent, reasons truncated on a code point boundary): [websocket-frame_test.cpp](../../aeronet/websocket/test/websocket-frame_test.cpp).
-- Message reassembly, control frames, close handshake, validation of received Close frames (`WebSocketReceivedCloseTest`, `WebSocketInvalidCloseCodeTest`, `WebSocketValidCloseCodeTest`), split frames, payloads sent from the input or the compression buffer (`WebSocketInputPayloadTest`), masked messages and fragments of every size (`WebSocketMaskedPayloadTest`), and timeout computation: [websocket-handler_test.cpp](../../aeronet/websocket/test/websocket-handler_test.cpp).
+- Message reassembly, control frames, close handshake, validation of received Close frames (`WebSocketReceivedCloseTest`, `WebSocketInvalidCloseCodeTest`, `WebSocketValidCloseCodeTest`), split frames, payloads sent from the input or the compression buffer (`WebSocketInputPayloadTest`), masked messages and fragments of every size (`WebSocketMaskedPayloadTest`), timeout computation, the Going Away of a drain, and client masking keys (`ClientMaskingKeysAreRandom`): [websocket-handler_test.cpp](../../aeronet/websocket/test/websocket-handler_test.cpp).
 - UTF-8 validation by each kernel (scalar, SSSE3, AVX2, NEON) and its variant unmasking the data in the same pass, against a reference validator, for every byte pair and every sample at every block offset: [websocket-utf8_test.cpp](../../aeronet/websocket/test/websocket-utf8_test.cpp).
 - Upgrade validation (every byte value at every position of `Sec-WebSocket-Key`, unsupported versions, declined permessage-deflate offers falling back to the next one) and subprotocol negotiation: [websocket-upgrade_test.cpp](../../aeronet/websocket/test/websocket-upgrade_test.cpp).
 - permessage-deflate negotiation (offers declined for unknown, repeated or invalid parameters: `ParseDeflateOffer_InvalidOffersDeclined`) and interoperability, context takeover across messages, messages ending with a final block (`WebSocketCompressFinalBlock`), RSV1 on a continuation frame (`CompressedFragmentedMessageWithRsv1OnContinuation`), streams shared without context takeover (`WebSocketSharedDeflateStreamsTest`): [websocket-deflate_test.cpp](../../aeronet/websocket/test/websocket-deflate_test.cpp) and [websocket-compress_test.cpp](../../aeronet/websocket/test/websocket-compress_test.cpp).

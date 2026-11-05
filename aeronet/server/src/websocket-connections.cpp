@@ -29,7 +29,8 @@ Http1Pipeline::LoopAction Http1Pipeline::processWebSocketUpgrade(ConnectionIt cn
   // Browsers do not apply CORS to WebSocket: without CORS policy, only same-origin pages may connect, which
   // prevents cross-site WebSocket hijacking. Clients that are not browsers send no Origin.
   if (routingResult.corsPolicy() == nullptr &&
-      !upgrade::IsSameOriginRequest(request.headerValueOrEmpty(http::Origin), request.headerValueOrEmpty(http::Host))) {
+      !upgrade::IsSameOriginRequest(request.headerValueOrEmpty(http::Origin), request.headerValueOrEmpty(http::Host),
+                                    _pCtx->connections.connectionState(cnxIt).transport.isTls())) {
     sendResponse(cnxIt, request.makeResponse(http::StatusCodeForbidden, "Cross-origin WebSocket connection refused"),
                  routingResult, kStreaming);
     return LoopAction::Continue;

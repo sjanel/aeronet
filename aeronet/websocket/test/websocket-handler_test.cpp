@@ -652,6 +652,21 @@ TEST_F(WebSocketReceivedCloseTest, InvalidCloseAnsweringOurs) {
   EXPECT_FALSE(handler->hasPendingOutput());
 }
 
+// While the server drains, the sweep closes the connection with Going Away, once, then gives up after closeTimeout.
+TEST_F(WebSocketReceivedCloseTest, DrainSendsGoingAwayThenTimesOut) {
+  const auto now = std::chrono::steady_clock::now();
+  EXPECT_TRUE(handler->onSweep(now, false));
+  EXPECT_FALSE(handler->hasPendingOutput());
+
+  EXPECT_TRUE(handler->onSweep(now, true));
+  EXPECT_EQ(sentClose().code, CloseCode::GoingAway);
+  handler->onOutputWritten(handler->getPendingOutput().size());
+  EXPECT_TRUE(handler->onSweep(now, true));
+  EXPECT_FALSE(handler->hasPendingOutput());  // a single Close frame
+
+  EXPECT_FALSE(handler->onSweep(handler->closeInitiatedAt() + handler->config().closeTimeout, true));
+}
+
 // An application closing with a code reserved for APIs sends a Close frame without status code (RFC 6455 §7.4.1).
 TEST_F(WebSocketReceivedCloseTest, SendCloseWithReservedCodeHasNoStatusCode) {
   ASSERT_TRUE(handler->sendClose(CloseCode::AbnormalClosure, "gone"));
@@ -814,6 +829,32 @@ TEST_F(WebSocketHandlerTest, ClientSideMasksOutgoingFrames) {
   // Second byte should have mask bit set
   auto byte1 = static_cast<uint8_t>(output[1]);
   EXPECT_TRUE((byte1 & 0x80U) != 0);  // MASK bit should be set
+}
+
+// The masking keys come from the secure generator of the system, by batches of 64: more frames than a batch get
+// distinct keys (the odds of a collision among 200 random 32-bit keys are below 1e-5), and are unmasked correctly.
+TEST_F(WebSocketHandlerTest, ClientMaskingKeysAreRandom) {
+  WebSocketConfig config;
+  config.isServerSide = false;
+  WebSocketHandler clientHandler(config, WebSocketCallbacks());
+
+  static constexpr std::size_t kNbFrames = 200;
+  vector<MaskingKey> keys;
+  for (std::size_t idx = 0; idx < kNbFrames; ++idx) {
+    const std::string text = "message " + std::to_string(idx);
+    ASSERT_TRUE(clientHandler.sendText(text));
+    const auto output = clientHandler.getPendingOutput();
+    const auto frame = ParseFrame(output, kNoLimit, /*isServerSide=*/true);
+    ASSERT_EQ(frame.status, FrameParseResult::Status::Complete);
+    ASSERT_TRUE(frame.header.masked);
+    vector<std::byte> payload(frame.payload.begin(), frame.payload.end());
+    ApplyMask(payload, frame.header.maskingKey);
+    EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(payload.data()), payload.size()), text);
+    keys.push_back(frame.header.maskingKey);
+    clientHandler.onOutputWritten(output.size());
+  }
+  std::ranges::sort(keys);
+  EXPECT_EQ(std::ranges::unique(keys).begin(), keys.end());
 }
 
 TEST_F(WebSocketHandlerTest, ServerSideDoesNotMaskOutgoing) {
