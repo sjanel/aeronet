@@ -32,6 +32,22 @@ constexpr std::size_t kDecompressChunkSize = 16UL * 1024;  // 16 KB
 // flush marker at the next call - an endless loop for an empty message, whose raw DEFLATE bound (5 bytes) is exactly
 // the size of its marker.
 constexpr std::size_t kSyncFlushMargin = 8;
+
+// Restarts an inflate stream ended by a final block, which inflates nothing more, keeping its sliding window for the
+// next messages that refer to it (context takeover, RFC 7692 §7.2.3.4).
+void RestartKeepingWindow(zstream& stream) {
+  unsigned char window[1U << ZStreamRAII::kMaxWindowBits];
+  uint32_t windowSize = 0;
+  [[maybe_unused]] auto ret = ZInflateGetDictionary(stream, window, windowSize);
+  assert(ret == Z_OK);
+  ret = ZInflateReset(stream);
+  assert(ret == Z_OK);
+  if (windowSize != 0) {
+    ret = ZInflateSetDictionary(stream, window, windowSize);
+    assert(ret == Z_OK);
+  }
+}
+
 }  // namespace
 
 // ============================================================================
@@ -133,11 +149,22 @@ const char* WebSocketDecompressor::decompress(std::span<const std::byte> input, 
     if (bufferManager.limitExceeded()) {
       return "Decompressed size exceeds maximum";
     }
+    if (ret == Z_STREAM_END) {
+      // The sender ended the message with a final block (RFC 7692 §7.2.3.4): nothing of the message may follow it, only
+      // a part of the trailer appended to it.
+      if (!trailerSet && (stream.avail_in != 0 || !input.empty())) {
+        return "Data after the final DEFLATE block";
+      }
+      if (!resetContext) {
+        RestartKeepingWindow(stream);
+      }
+      break;
+    }
     if (stream.avail_out == 0) {
       continue;  // the output is full: inflate may have more of it
     }
-    // The input slice was inflated (or the sender ended the stream with a final block).
-    if (ret == Z_STREAM_END || (trailerSet && input.empty())) {
+    // The input slice was inflated.
+    if (trailerSet && input.empty()) {
       break;
     }
     if (input.empty()) {

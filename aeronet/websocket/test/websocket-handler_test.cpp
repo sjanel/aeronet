@@ -1769,6 +1769,43 @@ TEST_F(WebSocketHandlerTest, CompressedFragmentedMessage) {
   EXPECT_EQ(receivedMessage, original);
 }
 
+// RSV1 tells whether a message is compressed on its first fragment only: set on a continuation frame, it fails the
+// connection (RFC 7692 §6.1) instead of being ignored.
+TEST_F(WebSocketHandlerTest, CompressedFragmentedMessageWithRsv1OnContinuation) {
+  WebSocketConfig config;
+  config.isServerSide = false;
+  const DeflateNegotiatedParams deflateParams{
+      .serverMaxWindowBits = 15,
+      .clientMaxWindowBits = 15,
+      .serverNoContextTakeover = false,
+      .clientNoContextTakeover = false,
+  };
+  int messageCount = 0;
+  CloseCode errorCode{CloseCode::Normal};
+  WebSocketCallbacks callbacks;
+  callbacks.onMessage = [&messageCount](std::span<const std::byte>, bool) { ++messageCount; };
+  callbacks.onError = [&errorCode](CloseCode code, std::string_view) { errorCode = code; };
+  auto compressHandler = std::make_unique<WebSocketHandler>(config, std::move(callbacks), deflateParams);
+
+  DeflateContext ctx(deflateParams, DeflateConfig(), false);
+  RawBytes compressed;
+  ASSERT_EQ(ctx.compress(sv_bytes("Hello, fragmented compressed world!"), compressed), nullptr);
+  const std::size_t half = compressed.size() / 2;
+
+  RawBytes frames;
+  frames.push_back(std::byte{0x41});  // FIN=0, RSV1=1, opcode=Text
+  frames.push_back(std::byte{static_cast<uint8_t>(half)});
+  frames.append(compressed.data(), half);
+  frames.push_back(std::byte{0xC0});  // FIN=1, RSV1=1, opcode=Continuation
+  frames.push_back(std::byte{static_cast<uint8_t>(compressed.size() - half)});
+  frames.append(compressed.data() + half, compressed.size() - half);
+
+  const auto result = compressHandler->processInput(buf_bytes(frames));
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
+  EXPECT_EQ(errorCode, CloseCode::ProtocolError);
+  EXPECT_EQ(messageCount, 0);
+}
+
 #endif  // AERONET_ENABLE_ZLIB
 
 // ============================================================================

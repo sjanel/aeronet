@@ -4,6 +4,8 @@
 #include <sys/socket.h>
 #endif
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -906,6 +908,27 @@ TEST_F(WebSocketTest, FactoryCanRefuseUpgrade) {
 
   EXPECT_TRUE(UpgradeResponse("/rooms/lobby", "").starts_with("HTTP/1.1 101"));
   EXPECT_TRUE(UpgradeResponse("/rooms/private", "").starts_with("HTTP/1.1 403"));
+}
+
+// RFC 6455 §4.4: an unsupported version is answered with the supported one, and the client may repeat the handshake
+// with it on the same connection.
+TEST_F(WebSocketTest, UnsupportedVersionAnnouncesTheSupportedOne) {
+  ts.postRouterUpdate([](Router& router) {
+    router.setWebSocket("/ws", WebSocketEndpoint::WithCallbacks(websocket::WebSocketCallbacks{}));
+  });
+
+  test::ClientConnection conn(ts.port());
+  std::string request = BuildUpgradeRequest("/ws");
+  request.replace(request.find("Version: 13"), std::string_view("Version: 13").size(), "Version: 8");
+  test::sendAll(conn.fd(), request);
+  std::string head = ReceiveResponseHead(conn.fd(), 1s);
+  EXPECT_TRUE(head.starts_with("HTTP/1.1 400")) << head;
+  std::ranges::transform(head, head.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+  EXPECT_TRUE(head.contains("\r\nsec-websocket-version: 13\r\n")) << head;
+
+  // The next head follows the body of the 400 response.
+  test::sendAll(conn.fd(), BuildUpgradeRequest("/ws"));
+  EXPECT_TRUE(ReceiveResponseHead(conn.fd(), 1s).contains("HTTP/1.1 101"));
 }
 
 TEST_F(WebSocketTest, EndpointWithoutFactoryUsesADefaultHandler) {

@@ -1041,6 +1041,16 @@ TEST_F(WebSocketFrameTest, ParseRSV1OnControlFrame) {
   EXPECT_STREQ(result.pErrorMessage, "RSV1 bit must not be set on control frames");
 }
 
+TEST_F(WebSocketFrameTest, ParseRSV1OnContinuationFrame) {
+  // FIN=1, RSV1=1, opcode=Continuation, then MASK=0, length=0
+  const std::array frame{std::byte{0xC0}, std::byte{0x00}};
+
+  // allowRsv1 == true but RSV1 is only set on the first fragment of a compressed message (RFC 7692 §6.1)
+  const auto result = ParseFrame(frame, kNoLimit, false, true);
+  EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
+  EXPECT_STREQ(result.pErrorMessage, "RSV1 bit must not be set on continuation frames");
+}
+
 TEST_F(WebSocketFrameTest, ParseRSV2BitSet) {
   // Build frame with RSV2 bit set
   vector<std::byte> frame;

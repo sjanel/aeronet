@@ -104,11 +104,13 @@ UpgradeValidationResult ValidateWebSocketUpgrade(const SvToSvMap& headers, const
   it = headers.find(websocket::SecWebSocketVersion);
   if (it == headers.end()) {
     result.pErrorMessage = "Missing Sec-WebSocket-Version header";
+    result.unsupportedVersion = true;
     return result;
   }
 
   if (it->second != websocket::kWebSocketVersion) {
     result.pErrorMessage = "Unsupported Sec-WebSocket-Version (expected 13)";
+    result.unsupportedVersion = true;
     return result;
   }
 
@@ -262,7 +264,8 @@ WebSocketAcceptResult AcceptWebSocketUpgrade(const HttpRequestView& request, con
   const UpgradeValidationResult validation = ValidateWebSocketUpgrade(requestHeaders, upgradeConfig);
   if (!validation.valid()) {
     result.pErrorMessage = validation.pErrorMessage;
-    result.status = WebSocketAcceptResult::Status::Invalid;
+    result.status = validation.unsupportedVersion ? WebSocketAcceptResult::Status::UnsupportedVersion
+                                                  : WebSocketAcceptResult::Status::Invalid;
     return result;
   }
 

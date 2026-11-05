@@ -31,6 +31,10 @@ struct UpgradeValidationResult {
   // Negotiated WebSocket permessage-deflate parameters (if compression was negotiated)
   websocket::DeflateNegotiatedParams deflateParams;
 
+  // Set with pErrorMessage when Sec-WebSocket-Version is missing or not 13: the response announces the supported
+  // version (RFC 6455 §4.4).
+  bool unsupportedVersion{false};
+
   const char* pErrorMessage = nullptr;  // Populated if !valid
 
   // WebSocket-specific fields (populated when targetProtocol == WebSocket)
@@ -96,10 +100,12 @@ void BuildWebSocketUpgradeResponse(const UpgradeValidationResult& validationResu
 /// Outcome of AcceptWebSocketUpgrade().
 struct WebSocketAcceptResult {
   enum class Status : uint8_t {
-    Accepted,  // handler and response are set
-    Invalid,   // not a valid WebSocket upgrade request (see pErrorMessage), to answer with 400
-    Refused,   // the factory of the endpoint refused the upgrade (returned no handler), to answer with 403
-    Failed,    // the factory of the endpoint threw (logged), to answer with 500
+    Accepted,            // handler and response are set
+    Invalid,             // not a valid WebSocket upgrade request (see pErrorMessage), to answer with 400
+    UnsupportedVersion,  // Sec-WebSocket-Version missing or not 13 (see pErrorMessage), to answer with 400 and
+                         // Sec-WebSocket-Version: 13 (RFC 6455 §4.4)
+    Refused,             // the factory of the endpoint refused the upgrade (returned no handler), to answer with 403
+    Failed,              // the factory of the endpoint threw (logged), to answer with 500
   };
 
   std::unique_ptr<websocket::WebSocketHandler> handler;  // Protocol handler of the upgraded connection

@@ -12,6 +12,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/upgrade-handler.hpp"
+#include "aeronet/websocket-constants.hpp"
 #include "aeronet/websocket-endpoint.hpp"
 #include "aeronet/websocket-handler.hpp"  // IWYU pragma: keep (handler of the accept result, moved to the connection)
 
@@ -42,6 +43,13 @@ Http1Pipeline::LoopAction Http1Pipeline::processWebSocketUpgrade(ConnectionIt cn
     case upgrade::WebSocketAcceptResult::Status::Invalid:
       emitSimpleError(cnxIt, http::StatusCodeBadRequest, accept.pErrorMessage);
       return LoopAction::Break;  // the connection closes
+    case upgrade::WebSocketAcceptResult::Status::UnsupportedVersion:
+      // The client may repeat the handshake with the version announced (RFC 6455 §4.4), on the same connection.
+      sendResponse(cnxIt,
+                   request.makeResponse(http::StatusCodeBadRequest, accept.pErrorMessage)
+                       .headerAddLine(websocket::SecWebSocketVersion, websocket::kWebSocketVersion),
+                   routingResult, kStreaming);
+      return LoopAction::Continue;
     case upgrade::WebSocketAcceptResult::Status::Refused:
       sendResponse(cnxIt, request.makeResponse(http::StatusCodeForbidden), routingResult, kStreaming);
       return LoopAction::Continue;

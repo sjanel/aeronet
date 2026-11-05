@@ -125,6 +125,26 @@ inline auto ZInflateReset2(zstream& stream, int windowBits) {
 #endif
 }
 
+// Copies the sliding window of an inflate stream (at most 32 KiB) to pDictionary, and sets dictLength to its size.
+inline auto ZInflateGetDictionary(zstream& stream, unsigned char* pDictionary, uint32_t& dictLength) {
+#ifdef AERONET_ENABLE_ZLIBNG
+  return zng_inflateGetDictionary(&stream, pDictionary, &dictLength);
+#else
+  uInt length = 0;
+  const auto ret = inflateGetDictionary(&stream, pDictionary, &length);
+  dictLength = static_cast<uint32_t>(length);
+  return ret;
+#endif
+}
+
+inline auto ZInflateSetDictionary(zstream& stream, const unsigned char* pDictionary, uint32_t dictLength) {
+#ifdef AERONET_ENABLE_ZLIBNG
+  return zng_inflateSetDictionary(&stream, pDictionary, dictLength);
+#else
+  return inflateSetDictionary(&stream, pDictionary, static_cast<uInt>(dictLength));
+#endif
+}
+
 inline auto ZInflateEnd(zstream& stream) {
 #ifdef AERONET_ENABLE_ZLIBNG
   return zng_inflateEnd(&stream);

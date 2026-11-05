@@ -87,6 +87,12 @@ FrameParseResult ParseFrame(std::span<const std::byte> data, std::size_t maxPayl
       result.pErrorMessage = "RSV1 bit must not be set on control frames";
       return result;
     }
+    // Nor on continuation frames: only the first fragment of a message tells whether it is compressed (RFC 7692 §6.1)
+    if (opcodeVal == std::byte{0x00}) {  // Opcode::Continuation
+      result.status = FrameParseResult::Status::ProtocolError;
+      result.pErrorMessage = "RSV1 bit must not be set on continuation frames";
+      return result;
+    }
   }
 
   // Validate opcode
