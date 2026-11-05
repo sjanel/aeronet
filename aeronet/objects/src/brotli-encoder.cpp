@@ -55,7 +55,7 @@ void BrotliEncoderContext::BrotliStateDeleter::operator()(BrotliEncoderState* pt
   BrotliEncoderDestroyInstance(ptr);
 }
 
-EncoderResult BrotliEncoderContext::encodeChunk(std::string_view data, std::size_t availableCapacity, char* buf) {
+EncoderResult BrotliEncoderContext::encodeChunk(std::string_view& data, std::size_t availableCapacity, char* buf) {
   assert(!data.empty());
 
   const uint8_t* nextIn = reinterpret_cast<const uint8_t*>(data.data());
@@ -69,17 +69,17 @@ EncoderResult BrotliEncoderContext::encodeChunk(std::string_view data, std::size
     return EncoderResult(EncoderResult::Error::CompressionError);
   }
 
-  // BROTLI_OPERATION_PROCESS always fully consumes input into internal buffers regardless of output space — it only
-  // needs availOut > 0 to not stall, but even that is a soft requirement for input consumption specifically. This would
-  // indicate a bug in minEncodeChunkCapacity() if it ever happens.
-  assert(availIn == 0);
+  // Brotli stops reading input once an input block is full while the output of the previous ones is still pending, for
+  // lack of output room.
+  data.remove_prefix(data.size() - availIn);
 
   return EncoderResult(availableCapacity - availOut);
 }
 
 std::size_t BrotliEncoderContext::minEncodeChunkCapacity(std::size_t chunkSize) const {
-  // heuristic - But what is important is that we return non-zero value here.
-  // In any case, brotli will catch-up in the end() process.
+  // Heuristic: from quality 4, brotli merges several input blocks into one metablock and writes its output at once, so
+  // no room bounds the output of one call. A quarter of the input suits compressible data, larger bursts take more
+  // calls.
   return BrotliEncoderMaxCompressedSize(chunkSize >> 2U);
 }
 
@@ -101,7 +101,8 @@ EncoderResult BrotliEncoderContext::end(std::size_t availableCapacity, char* buf
   }
 
   if (writtenNow == 0) [[unlikely]] {
-    return EncoderResult(EncoderResult::Error::CompressionError);
+    // Stream not finished and no output room left for its remaining bytes.
+    return EncoderResult(EncoderResult::Error::NotEnoughCapacity);
   }
 
   return EncoderResult(writtenNow);

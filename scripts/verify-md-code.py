@@ -724,19 +724,66 @@ def normalize_define(flag: str) -> str:
     return flag[2:] if flag.startswith("-D") else flag
 
 
+def find_consumer_target_reply(reply_dir: Path, library_name: str) -> Optional[dict]:
+    """Return the CMake file API reply of the simplest executable built against library_name.
+
+    The current reply index is the one with the largest name, the other reply files are only read
+    through its references. Of the executables depending on the library, the one with the fewest
+    dependencies wins (ties broken by name, for a stable choice).
+    """
+    index_files = sorted(reply_dir.glob("index-*.json"))
+    if not index_files:
+        return None
+    index = json.loads(index_files[-1].read_text())
+    codemodel_file = next(
+        (
+            obj["jsonFile"]
+            for obj in index.get("objects", [])
+            if obj.get("kind") == "codemodel"
+        ),
+        None,
+    )
+    if codemodel_file is None:
+        return None
+    configurations = json.loads((reply_dir / codemodel_file).read_text()).get(
+        "configurations", []
+    )
+    if not configurations:
+        return None
+    best: Optional[Tuple[int, str, dict]] = None
+    for entry in configurations[0].get("targets", []):
+        target = json.loads((reply_dir / entry["jsonFile"]).read_text())
+        if target.get("type") != "EXECUTABLE" or not target.get("compileGroups"):
+            continue
+        # Target ids are "<name>::@<directory hash>".
+        dependency_names = {
+            dependency["id"].split("::", 1)[0]
+            for dependency in target.get("dependencies", [])
+        }
+        if library_name not in dependency_names:
+            continue
+        if best is None or (len(dependency_names), target["name"]) < best[:2]:
+            best = (len(dependency_names), target["name"], target)
+    return best[2] if best else None
+
+
 def load_target_usage(
-    build_dir: Path, target_name: str = "aeronet"
+    build_dir: Path, library_name: str = "aeronet_server"
 ) -> Optional[TargetUsage]:
+    """Return the compile usage of a program built against the aeronet libraries.
+
+    The `aeronet` target is an INTERFACE library without compile groups: the include dirs, definitions
+    and options come from the simplest executable built against library_name, found in the CMake code
+    model. Matching reply file names instead (target-aeronet-*.json) picked any target named aeronet-*,
+    even a generated-code library without the aeronet include dirs.
+    """
     reply_dir = build_dir / ".cmake" / "api" / "v1" / "reply"
     if not reply_dir.is_dir():
         return None
-    pattern = f"target-{target_name}-*.json"
-    matches = sorted(
-        reply_dir.glob(pattern), key=lambda path: path.stat().st_mtime, reverse=True
-    )
-    if not matches:
+    data = find_consumer_target_reply(reply_dir, library_name)
+    if data is None:
         return None
-    data = json.loads(matches[0].read_text())
+    print(f"Compiling snippets with the flags of CMake target {data['name']}")
     includes: List[str] = []
     compile_defs: List[str] = []
     compile_opts: List[str] = []
@@ -1125,7 +1172,7 @@ def main() -> None:
 
     include_dirs.extend(gather_user_include_dirs(args.include))
     # The HTTP client and JWT modules have public include trees that are not pulled in by the
-    # main `aeronet` target metadata; add them explicitly so documentation snippets using
+    # target metadata (a server program); add them explicitly so documentation snippets using
     # <aeronet/http-client.hpp> or <aeronet/jwt.hpp> compile (the matching libraries are linked via rglob).
     for module_include in (Path("aeronet/client/include"), Path("aeronet/jwt/include")):
         if module_include.is_dir():

@@ -77,7 +77,7 @@ inline EncoderResult ZstdConvertError(ZSTD_ErrorCode code) {
 
 }  // namespace
 
-EncoderResult ZstdEncoderContext::encodeChunk(std::string_view data, std::size_t availableCapacity, char* buf) {
+EncoderResult ZstdEncoderContext::encodeChunk(std::string_view& data, std::size_t availableCapacity, char* buf) {
   assert(!data.empty());
 
   ZSTD_inBuffer inBuf{data.data(), data.size(), 0};
@@ -87,7 +87,9 @@ EncoderResult ZstdEncoderContext::encodeChunk(std::string_view data, std::size_t
     return ZstdConvertError(ZSTD_getErrorCode(ret));
   }
 
-  assert(inBuf.pos == inBuf.size);  // guaranteed by zstd contract (minEncodeChunkCapacity() should ensure this)
+  // zstd stops reading input while its output does not fit: minEncodeChunkCapacity() is the output of one block,
+  // whatever the chunk size.
+  data.remove_prefix(inBuf.pos);
 
   return EncoderResult(outBuf.pos);
 }
@@ -116,7 +118,8 @@ EncoderResult ZstdEncoderContext::end(std::size_t availableCapacity, char* buf) 
   }
 
   if (outBuf.pos == 0) [[unlikely]] {
-    return EncoderResult(EncoderResult::Error::CompressionError);
+    // Frame not complete and no output room left for its remaining bytes.
+    return EncoderResult(EncoderResult::Error::NotEnoughCapacity);
   }
 
   return EncoderResult(outBuf.pos);

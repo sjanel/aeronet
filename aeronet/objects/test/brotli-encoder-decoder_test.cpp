@@ -14,7 +14,9 @@
 #include "aeronet/brotli-encoder.hpp"
 #include "aeronet/compression-config.hpp"
 #include "aeronet/compression-test-helpers.hpp"
+#include "aeronet/encoder-result.hpp"
 #include "aeronet/encoder.hpp"
+#include "aeronet/encoding.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/vector.hpp"
@@ -191,7 +193,89 @@ TEST(BrotliEncoderDecoderTest, BrotliEndWithoutEnoughBufferShouldFail) {
 
   // Provide a too-small buffer to end()
   const auto result = ctx->end(0UL, nullptr);
-  EXPECT_TRUE(result.hasError());
+  ASSERT_TRUE(result.hasError());
+  EXPECT_EQ(result.error(), EncoderResult::Error::NotEnoughCapacity);
+}
+
+// Brotli buffers input up to its window, then stops reading it while the output it holds back does not fit: without
+// enough output room, encodeChunk() leaves the rest of its input, taken by the next calls with more room.
+TEST(BrotliEncoderDecoderTest, EncodeChunkWithoutEnoughOutputRoom) {
+  const RawChars payload = test::MakeRandomPayload(1UL << 20);
+  CompressionConfig cfg;
+  cfg.brotli.quality = 5;
+  cfg.brotli.window = 16;  // 64 KiB window: the default one (4 MiB) would take this whole payload in
+  BrotliEncoder encoder(cfg.brotli);
+  auto* ctx = encoder.makeContext();
+  char tiny[1];
+  std::string_view rest = payload;
+  const auto result = ctx->encodeChunk(rest, sizeof(tiny), tiny);
+  ASSERT_FALSE(result.hasError());
+  ASSERT_LE(result.writtenIfNoError(), sizeof(tiny));
+  EXPECT_FALSE(rest.empty());
+  EXPECT_LT(rest.size(), payload.size());
+
+  RawChars compressed;
+  compressed.append(tiny, result.writtenIfNoError());
+  ASSERT_FALSE(test::AppendEncodedChunk(*ctx, rest, compressed).hasError());
+  test::EndStream(*ctx, compressed);
+  EXPECT_EQ(std::string_view(test::Decompress(Encoding::br, compressed)), std::string_view(payload));
+}
+
+// From quality 4, brotli writes the output of several input blocks at once: with the room the streaming writer gives
+// (minEncodeChunkCapacity()), a call to encodeChunk() stops reading its input after about 1.5 MiB of incompressible
+// 64 KiB chunks. The calls that follow, with room made, take the rest.
+TEST(BrotliEncoderDecoderTest, IncompressibleChunksWithMinEncodeChunkCapacity) {
+  static constexpr std::size_t kChunkSize = 64UL << 10;
+  static constexpr std::size_t kNbChunks = 40;
+  const RawChars payload = test::MakeRandomPayload(kChunkSize * kNbChunks);
+  CompressionConfig cfg;
+  cfg.brotli.quality = 5;
+  BrotliEncoder encoder(cfg.brotli);
+  auto* ctx = encoder.makeContext();
+
+  RawChars compressed;
+  RawChars out;
+  bool partial = false;
+  for (std::size_t chunkPos = 0; chunkPos < payload.size(); chunkPos += kChunkSize) {
+    std::string_view chunk(payload.data() + chunkPos, kChunkSize);
+    // One output buffer of fixed size, emitted after each call, as HttpResponseWriter did before.
+    out.reserve(ctx->minEncodeChunkCapacity(kChunkSize));
+    while (!chunk.empty()) {
+      const auto result = ctx->encodeChunk(chunk, out.capacity(), out.data());
+      ASSERT_FALSE(result.hasError());
+      ASSERT_LE(result.writtenIfNoError(), out.capacity());
+      compressed.append(out.data(), result.writtenIfNoError());
+      partial |= !chunk.empty();
+    }
+  }
+  EXPECT_TRUE(partial);
+  test::EndStream(*ctx, compressed);
+  EXPECT_EQ(std::string_view(test::Decompress(Encoding::br, compressed)), std::string_view(payload));
+}
+
+// end() without output room reports the end of a finished stream.
+TEST(BrotliEncoderDecoderTest, EndWithoutOutputRoomAfterTheStreamEnd) {
+  static constexpr std::string_view kPayload = "some data to compress";
+  CompressionConfig cfg;
+  BrotliEncoder encoder(cfg.brotli);
+  auto* ctx = encoder.makeContext();
+  RawChars compressed;
+  ASSERT_FALSE(test::EncodeChunk(*ctx, kPayload, compressed).hasError());
+  compressed.ensureAvailableCapacity(ctx->endChunkSize());
+  auto result = ctx->end(compressed.availableCapacity(), compressed.end());
+  ASSERT_FALSE(result.hasError());
+  ASSERT_GT(result.writtenIfNoError(), 0U);
+  compressed.addSize(result.writtenIfNoError());
+
+  char noRoom[1];
+  result = ctx->end(0, noRoom);
+  ASSERT_FALSE(result.hasError());
+  EXPECT_EQ(result.writtenIfNoError(), 0U);
+
+  BrotliDecoder decoder;
+  RawChars decompressed;
+  ASSERT_TRUE(decoder.decompressFull(compressed, kMaxPlainBytes, kDecoderChunkSize, decompressed));
+  EXPECT_EQ(std::string_view(decompressed), kPayload);
 }
 
 TEST(BrotliEncoderDecoderTest, EncodeChunkAfterFinalizationReturnsZero) {
@@ -210,7 +294,8 @@ TEST(BrotliEncoderDecoderTest, EncodeChunkAfterFinalizationReturnsZero) {
   // Encoding after finalization should return -1 to signal an error.
   RawChars extra;
   extra.reserve(BrotliEncoderMaxCompressedSize(std::string_view{"More data"}.size()));
-  EXPECT_TRUE(ctx->encodeChunk("More data", extra.capacity(), extra.data()).hasError());
+  std::string_view moreData = "More data";
+  EXPECT_TRUE(ctx->encodeChunk(moreData, extra.capacity(), extra.data()).hasError());
 
   // self move does nothing
   auto& self = encoder;
@@ -240,8 +325,10 @@ TEST(BrotliEncoderDecoderTest, MaxCompressedBytesAndEndAreSane) {
   const auto maxChunk = ctx->minEncodeChunkCapacity(payload.size());
   ASSERT_GT(maxChunk, 0U);
   RawChars chunkOut(maxChunk);
-  const auto result = ctx->encodeChunk(payload, chunkOut.capacity(), chunkOut.data());
+  std::string_view input = payload;
+  const auto result = ctx->encodeChunk(input, chunkOut.capacity(), chunkOut.data());
   ASSERT_FALSE(result.hasError());
+  EXPECT_TRUE(input.empty());
   EXPECT_LE(result.writtenIfNoError(), maxChunk);
 
   RawChars tailOut(ctx->endChunkSize());
@@ -436,11 +523,12 @@ TEST(BrotliEncoderDecoderTest, EncodeChunkWithInsufficientOutputCapacity) {
   auto ctx = encoder.makeContext();
 
   // Create a large input.
-  std::string large(4096, 'X');
+  const std::string large(4096, 'X');
 
   // Try to encode with only 1 byte available.
   char tiny[1];
-  const auto result = ctx->encodeChunk(large, sizeof(tiny), tiny);
+  std::string_view input = large;
+  const auto result = ctx->encodeChunk(input, sizeof(tiny), tiny);
 
   if (!result.hasError()) {
     // If brotli has not reported an error at encodeChunk time, it should report an error at end() time since the stream

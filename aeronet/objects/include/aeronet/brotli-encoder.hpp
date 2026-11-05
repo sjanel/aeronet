@@ -59,7 +59,7 @@ class BrotliEncoderContext final : public EncoderContext {
 
   [[nodiscard]] std::size_t endChunkSize() const override { return 128UL; }
 
-  EncoderResult encodeChunk(std::string_view data, std::size_t availableCapacity, char* buf) override;
+  EncoderResult encodeChunk(std::string_view& data, std::size_t availableCapacity, char* buf) override;
 
   EncoderResult end(std::size_t availableCapacity, char* buf) noexcept override;
 

@@ -57,25 +57,6 @@ constexpr Encoding kCodec = zstdEnabled()     ? Encoding::zstd
 // Larger than the 32 KiB of the first compression buffer and than the 16 KiB of an HTTP/2 DATA frame.
 constexpr std::size_t kLargePayloadSize = 256UL << 10;
 
-// A block of 1 KiB of decimal numbers, repeated: compressible enough for the streaming compression of the server and
-// client, which stops when the worst case of the next chunk exceeds the ratio limit, not enough to be rejected as a
-// compression bomb (maxExpansionRatio).
-std::string MakePayload(std::size_t size) {
-  std::string block;
-  for (std::size_t value = 0; block.size() < 1024U; ++value) {
-    block.append(std::to_string((value * 2654435761U) % 1000003U));
-    block.push_back(',');
-  }
-  block.resize(1024U);
-  std::string payload;
-  payload.reserve(size + block.size());
-  while (payload.size() < size) {
-    payload.append(block);
-  }
-  payload.resize(size);
-  return payload;
-}
-
 Order MakeOrder(std::size_t payloadSize = 16) {
   Order order;
   order.set_id(42);
@@ -86,7 +67,7 @@ Order MakeOrder(std::size_t payloadSize = 16) {
     item->set_quantity(static_cast<uint32_t>(pos + 1));
   }
   (*order.mutable_tags())["channel"] = "web";
-  order.set_payload(MakePayload(payloadSize));
+  order.set_payload(test::MakeDigitsPayload(payloadSize));
   return order;
 }
 

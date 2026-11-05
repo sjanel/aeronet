@@ -585,6 +585,95 @@ TEST(HttpCodecCompression, TryCompressResponseStreamingEarlyExit) {
   }
 }
 
+namespace {
+
+// Smallest maxCompressRatio whose maxCompressedBytes(bodySz) is exactly maxCompressedBytes.
+float RatioForMaxCompressedBytes(std::size_t maxCompressedBytes, std::size_t bodySz) {
+  CompressionConfig cfg;
+  cfg.maxCompressRatio = static_cast<float>(static_cast<double>(maxCompressedBytes) / static_cast<double>(bodySz));
+  while (cfg.maxCompressedBytes(bodySz) >= maxCompressedBytes) {
+    cfg.maxCompressRatio = std::nextafter(cfg.maxCompressRatio, 0.0F);
+  }
+  while (cfg.maxCompressedBytes(bodySz) < maxCompressedBytes) {
+    cfg.maxCompressRatio = std::nextafter(cfg.maxCompressRatio, 1.0F);
+  }
+  return cfg.maxCompressRatio;
+}
+
+}  // namespace
+
+// Bodies of a few compression chunks that meet the ratio are compressed: the worst case of the next chunk (128 KiB for
+// zstd, 32 KiB for gzip and br) does not need to fit in the rest of the budget, the encoder writes in what is left.
+TEST(HttpCodecCompression, TryCompressBodyOfAFewChunksUsesTheWholeBudget) {
+  CompressionConfig cfg;  // default maxCompressRatio (0.6) and initialCompressionBufferLimit (32 KiB)
+  cfg.minBytes = 16U;
+
+  for (const std::size_t bodySz : {64UL << 10U, 256UL << 10U}) {
+    const std::string body = test::MakeDigitsPayload(bodySz);
+    for (Encoding enc : test::SupportedEncodings()) {
+      cfg.preferredFormats.assign(1U, enc);
+      CompressionState state(cfg);
+      for (bool capturedBody : {false, true}) {
+        SCOPED_TRACE(testing::Message() << GetEncodingStr(enc) << " body=" << bodySz << " captured=" << capturedBody);
+        HttpResponse resp = HttpResponseTest::MakeResponse(std::string_view{}, capturedBody, true, body);
+
+        ASSERT_EQ(HttpCodec::TryCompressBody(state, enc, resp), CompressResponseResult::Compressed);
+        EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc));
+        EXPECT_LE(resp.bodyInMemoryLength(), cfg.maxCompressedBytes(bodySz));
+        EXPECT_EQ(ParseContentLength(resp.headerValueOrEmpty(http::ContentLength)), resp.bodyInMemoryLength());
+        EXPECT_EQ(std::string_view(test::Decompress(enc, resp.bodyInMemory())), body);
+        EXPECT_EQ(resp.trailerValueOrEmpty(kTrailerName), kTrailerValue);
+      }
+    }
+  }
+}
+
+// The compressed body may fill the budget exactly. With less, the compression aborts in the middle of the body or in
+// its final flush, and the response is left as it was.
+TEST(HttpCodecCompression, TryCompressBodyStreamingBudgetBoundary) {
+  // Large enough for a streamed zstd compression of the 3/4 budget (above its 128 KiB first output buffer).
+  static constexpr std::size_t kBodySz = 400UL << 10U;
+  const std::string body = test::MakeDigitsPayload(kBodySz);
+
+  for (Encoding enc : test::SupportedEncodings()) {
+    CompressionConfig cfg;
+    cfg.minBytes = 16U;
+    cfg.brotli.quality = 5;  // the budget logic does not depend on it, the default one is slow
+    cfg.preferredFormats.assign(1U, enc);
+
+    std::size_t compressedSz;
+    {
+      CompressionState state(cfg);
+      HttpResponse resp = HttpResponseTest::MakeResponse(std::string_view{}, false, false, body);
+      ASSERT_EQ(HttpCodec::TryCompressBody(state, enc, resp), CompressResponseResult::Compressed);
+      compressedSz = resp.bodyInMemoryLength();
+    }
+
+    for (const std::size_t maxCompressedBytes : {compressedSz, compressedSz - 1U, (compressedSz * 3U) / 4U}) {
+      cfg.maxCompressRatio = RatioForMaxCompressedBytes(maxCompressedBytes, kBodySz);
+      ASSERT_EQ(cfg.maxCompressedBytes(kBodySz), maxCompressedBytes);
+      CompressionState state(cfg);
+      for (bool capturedBody : {false, true}) {
+        SCOPED_TRACE(testing::Message() << GetEncodingStr(enc) << " compressed=" << compressedSz
+                                        << " max=" << maxCompressedBytes << " captured=" << capturedBody);
+        HttpResponse resp = HttpResponseTest::MakeResponse(std::string_view{}, capturedBody, true, body);
+        const CompressResponseResult result = HttpCodec::TryCompressBody(state, enc, resp);
+        if (maxCompressedBytes == compressedSz) {
+          ASSERT_EQ(result, CompressResponseResult::Compressed);
+          EXPECT_EQ(resp.bodyInMemoryLength(), compressedSz);
+          EXPECT_EQ(std::string_view(test::Decompress(enc, resp.bodyInMemory())), body);
+        } else {
+          ASSERT_EQ(result, CompressResponseResult::ExceedsMaxRatio);
+          EXPECT_FALSE(resp.hasHeader(http::ContentEncoding));
+          EXPECT_EQ(resp.bodyInMemory(), body);
+          EXPECT_EQ(ParseContentLength(resp.headerValueOrEmpty(http::ContentLength)), kBodySz);
+        }
+        EXPECT_EQ(resp.trailerValueOrEmpty(kTrailerName), kTrailerValue);
+      }
+    }
+  }
+}
+
 TEST(HttpCodecCompression, TryCompressResponseStressWithDifferentScenarios) {
   static constexpr std::uint32_t bodySz = 24U << 10U;
 
@@ -959,7 +1048,9 @@ TEST(HttpCodecCompression, ResponseCompressionStateMakeContext_BehaviorPerEncode
     auto ctx = state.makeContext(Encoding::gzip);
     ASSERT_NE(ctx, nullptr);
     RawChars produced(ctx->minEncodeChunkCapacity(plain.size()));
-    auto result = ctx->encodeChunk(plain, produced.capacity(), produced.data());
+    std::string_view input = plain;
+    auto result = ctx->encodeChunk(input, produced.capacity(), produced.data());
+    EXPECT_TRUE(input.empty());
     ASSERT_FALSE(result.hasError());
     RawChars producedFinal(ctx->endChunkSize());
     std::size_t tailWritten = 0;
@@ -990,7 +1081,9 @@ TEST(HttpCodecCompression, ResponseCompressionStateMakeContext_BehaviorPerEncode
     auto ctx = state.makeContext(Encoding::deflate);
     ASSERT_NE(ctx, nullptr);
     RawChars produced(ctx->minEncodeChunkCapacity(plain.size()));
-    auto result = ctx->encodeChunk(plain, produced.capacity(), produced.data());
+    std::string_view input = plain;
+    auto result = ctx->encodeChunk(input, produced.capacity(), produced.data());
+    EXPECT_TRUE(input.empty());
     RawChars producedFinal(ctx->endChunkSize());
     std::size_t tailWritten = 0;
     do {
@@ -1022,7 +1115,9 @@ TEST(HttpCodecCompression, ResponseCompressionStateMakeContext_BehaviorPerEncode
     auto ctx = state.makeContext(Encoding::zstd);
     ASSERT_NE(ctx, nullptr);
     RawChars produced(ctx->minEncodeChunkCapacity(plain.size()));
-    auto result = ctx->encodeChunk(plain, produced.capacity(), produced.data());
+    std::string_view input = plain;
+    auto result = ctx->encodeChunk(input, produced.capacity(), produced.data());
+    EXPECT_TRUE(input.empty());
     ASSERT_FALSE(result.hasError());
     RawChars producedFinal(ctx->endChunkSize());
     std::size_t tailWritten = 0;
@@ -1054,7 +1149,9 @@ TEST(HttpCodecCompression, ResponseCompressionStateMakeContext_BehaviorPerEncode
     auto ctx = state.makeContext(Encoding::br);
     ASSERT_NE(ctx, nullptr);
     RawChars produced(ctx->minEncodeChunkCapacity(plain.size()));
-    auto result = ctx->encodeChunk(plain, produced.capacity(), produced.data());
+    std::string_view input = plain;
+    auto result = ctx->encodeChunk(input, produced.capacity(), produced.data());
+    EXPECT_TRUE(input.empty());
     ASSERT_FALSE(result.hasError());
     RawChars producedFinal(ctx->endChunkSize());
     std::size_t tailWritten = 0;

@@ -37,12 +37,12 @@ config.withCompression(std::move(compression));
 | Setting | Default | Effect |
 | --- | --- | --- |
 | `minBytes` | 1024 | Bodies smaller than this are sent uncompressed. `std::numeric_limits<std::size_t>::max()` disables compression. |
-| `maxCompressRatio` | 0.6 | The compressed body is kept only if its size is at most this fraction of the original (at least 40% smaller by default). |
+| `maxCompressRatio` | 0.6 | The compressed body is kept only if its size is at most this fraction of the original (at least 40% smaller by default). The compression stops as soon as its output exceeds this size. |
 | `contentTypeAllowList` | empty: every type | Content types eligible for compression, compared case-insensitively. |
 | `preferredFormats` | empty | Codings preferred by the server, used to break ties (see below). |
 | `addVaryAcceptEncodingHeader` | `true` | Add `Vary: Accept-Encoding` to compressed responses. |
 | `defaultDirectCompressionMode` | `Auto` | See [Direct compression](#direct-compression). |
-| `initialCompressionBufferLimit` | 32 KiB | Output buffer reserved upfront; larger bodies grow it while compressing. |
+| `initialCompressionBufferLimit` | 32 KiB | Output buffer reserved upfront; larger bodies grow it while compressing, up to `maxCompressRatio` of the body size. |
 | `useLeadingZeroesInContentLength` | `true` | A body compressed when the response is finalized gets a `Content-Length` as wide as the largest accepted compressed size (`maxCompressRatio` of the body size), padded with leading zeroes (`content-length: 0333`), which avoids moving the body. [Direct compression](#direct-compression) writes the exact length, and streamed responses have none. Leading zeroes are valid HTTP (`1*DIGIT`), but a parser reading `010` as octal 8 disagrees with aeronet on where the body ends, which a proxy chain can turn into request smuggling: set `false` when such a parser may sit between the server and its clients. Also applies to the request bodies compressed by `HttpClient` (`requestCompression.codec`). |
 | `zlib.level`, `zstd.compressionLevel`, `zstd.windowLog`, `brotli.quality`, `brotli.window` | library defaults | Codec tuning: higher levels compress better and cost more CPU. |
 
@@ -74,6 +74,8 @@ A streaming handler answering a `HEAD` request takes the same decision as for a 
 
 For a response written with `HttpResponseWriter`, the server holds the headers and buffers the body until it reaches `minBytes`. It then decides once: either it starts a streaming encoder, adds `Content-Encoding`, and compresses each chunk as it is written, reusing one output buffer for the whole response, or the response ends before the threshold and is sent uncompressed with accurate headers.
 
+The output of one write is sent at once. brotli (from quality 4) and zstd write theirs in bursts, brotli once for several input blocks and zstd once per block of 128 KiB, which can exceed the output buffer on incompressible data: the buffer then grows, and keeps that capacity for the next writes of the response.
+
 ### Direct compression
 
 A response created with `HttpRequestView::makeResponse()` knows the negotiated coding, so it can compress its body while the handler writes it, in `body()` and `bodyAppend()`, instead of compressing a complete body when the response is finalized. This saves a pass over the body and a temporary buffer.
@@ -93,7 +95,7 @@ router.setPath(http::Method::GET, "/report", [](const HttpRequestView& req) {
 | `On` | Same, without the size and content type conditions. |
 | `Off` | Never compress inline. The response may still be compressed when finalized. |
 
-Set the mode for all responses with `CompressionConfig::defaultDirectCompressionMode`, or for one response with `HttpResponse::directCompressionMode()`. Direct compression only applies to inline bodies: an owned body passed by value (`body(std::string)`, `body(std::vector<char>)`) is captured without copy and compressed when the response is finalized, and a file body is never compressed. When direct compression is active, the server manages `Content-Encoding` and `Vary` as the body changes, and the finalization step does not compress again.
+Set the mode for all responses with `CompressionConfig::defaultDirectCompressionMode`, or for one response with `HttpResponse::directCompressionMode()`. The compressed body grows in the response buffer as the encoder writes it, whatever the size of its output bursts (see [Streaming responses](#streaming-responses)). Direct compression only applies to inline bodies: an owned body passed by value (`body(std::string)`, `body(std::vector<char>)`) is captured without copy and compressed when the response is finalized, and a file body is never compressed. When direct compression is active, the server manages `Content-Encoding` and `Vary` as the body changes, and the finalization step does not compress again.
 
 ### Send your own encoding
 
@@ -159,4 +161,6 @@ The decoded body is limited by `maxDecompressedBytes`, not by `maxBodyBytes`, wh
 - Request decompression, stacked codings, limits, and errors: [tests/http-request-decompression_test.cpp](../../tests/http-request-decompression_test.cpp).
 - Lower-casing of the received codings: [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp) (HTTP/1.1) and [hpack_test.cpp](../../aeronet/http2/test/hpack_test.cpp) (HTTP/2).
 - `Accept-Encoding` parsing and selection: [accept-encoding-negotiation_test.cpp](../../aeronet/objects/test/accept-encoding-negotiation_test.cpp).
+- Bodies of a few compression chunks, and a compressed body filling the `maxCompressRatio` budget exactly or exceeding it by one byte (`HttpCodecCompression.TryCompressBodyOfAFewChunksUsesTheWholeBudget`, `HttpCodecCompression.TryCompressBodyStreamingBudgetBoundary`): [http-codec_test.cpp](../../aeronet/http/test/http-codec_test.cpp); request bodies compressed by `HttpClient` (`HttpClientCompressionE2E.CompressesMidSizeModeratelyCompressibleRequestBody`): [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp).
+- Large incompressible bodies, whose brotli and zstd output comes in bursts larger than the room of one write, streamed, set with `bodyAppend()` and with `bodyInlineAppend()`, over HTTP/1.1 and HTTP/2 (`ProtocolParityFastBrotli.LargeIncompressibleBodiesAreCompressedWhole`): [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp); request bodies directly compressed by `HttpClient` (`HttpClientCompressionE2E.LargeIncompressibleDirectlyCompressedRequestBody`): [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp), and restored after a const finalization (`HttpRequestTest.LargeIncompressibleDirectlyCompressedBody`): [http-request_test.cpp](../../aeronet/client/test/http-request_test.cpp); encoders reading part of their input only (`BrotliEncoderDecoderTest.IncompressibleChunksWithMinEncodeChunkCapacity`, `ZstdEncoderDecoderTest.LargeIncompressibleChunkWithMinEncodeChunkCapacity`, `*.EncodeChunkWithoutEnoughOutputRoom`).
 - Codecs: [zlib-encoder-decoder_test.cpp](../../aeronet/objects/test/zlib-encoder-decoder_test.cpp), [zstd-encoder-decoder_test.cpp](../../aeronet/objects/test/zstd-encoder-decoder_test.cpp), [brotli-encoder-decoder_test.cpp](../../aeronet/objects/test/brotli-encoder-decoder_test.cpp).

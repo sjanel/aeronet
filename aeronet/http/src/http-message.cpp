@@ -372,9 +372,7 @@ void HttpMessage::setBodyInternal(std::string_view newBody) {
 
     _data.setSize(bodyStartPos());
 
-    const auto written = appendEncodedInlineOrThrow(newBody);
-
-    _data.setSize(_data.size() + written);
+    appendEncodedInlineOrThrow(newBody);
     return;
   }
 #endif
@@ -447,7 +445,7 @@ void HttpMessage::bodyAppendImpl(std::string_view body, std::string_view content
     headGrowthManager.extractedPayload()->append(body);
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
   } else if (_opts.isAutomaticDirectCompression()) {
-    _data.addSize(appendEncodedInlineOrThrow(body));
+    appendEncodedInlineOrThrow(body);
 #endif
   } else {
     _data.unchecked_append(body);
@@ -1066,12 +1064,45 @@ std::size_t GetWrittenOrThrow(const EncoderResult& result, const char* pMsg) {
 
 std::size_t HttpMessage::appendEncodedInlineOrThrow(std::string_view sv) {
   assert(_opts.isAutomaticDirectCompression() && _opts._pCompressionState != nullptr);
-  CompressionState& compressionState = *_opts._pCompressionState;
-  EncoderContext& encoderCtx = *compressionState.context(_opts._pickedEncoding);
-  assert(encoderCtx.minEncodeChunkCapacity(sv.size()) <= _data.availableCapacity());
-  const EncoderResult result = encoderCtx.encodeChunk(sv, _data.availableCapacity(), _data.end());
+  EncoderContext& encoderCtx = *_opts._pCompressionState->context(_opts._pickedEncoding);
+  const std::size_t oldSize = _data.size();
+  while (true) {
+    const EncoderResult result = encoderCtx.encodeChunk(sv, _data.availableCapacity(), _data.end());
+    _data.addSize(GetWrittenOrThrow(result, "HttpMessage::appendEncodedInlineOrThrow compression failed"));
+    if (sv.empty()) {
+      return _data.size() - oldSize;
+    }
+    // The output did not fit (brotli and zstd write theirs in bursts).
+    _data.ensureAvailableCapacityExponential(encoderCtx.minEncodeChunkCapacity(sv.size()));
+  }
+}
 
-  return GetWrittenOrThrow(result, "HttpMessage::appendEncodedInlineOrThrow compression failed");
+std::size_t HttpMessage::appendEncodedFromScratchOrThrow(std::size_t gap, std::size_t written) {
+  assert(_opts.isAutomaticDirectCompression() && _opts._pCompressionState != nullptr);
+  assert(gap != 0 && _data.size() + gap + written <= _data.capacity());
+  EncoderContext& encoderCtx = *_opts._pCompressionState->context(_opts._pickedEncoding);
+  const std::size_t oldSize = _data.size();
+  std::size_t inPos = oldSize + gap;
+  while (written != 0) {
+    if (inPos == _data.size()) {
+      // The output reached the input not consumed yet: move it to the end of a larger buffer. A reallocation only keeps
+      // [0, size()), so the size covers the input meanwhile.
+      const std::size_t outSize = _data.size();
+      _data.setSize(inPos + written);
+      _data.ensureAvailableCapacityExponential(encoderCtx.minEncodeChunkCapacity(written));
+      _data.setSize(outSize);
+      const std::size_t newInPos = _data.capacity() - written;
+      std::memmove(_data.data() + newInPos, _data.data() + inPos, written);
+      inPos = newInPos;
+    }
+    // The output room stops where the input starts, so that no output overwrites it.
+    std::string_view in(_data.data() + inPos, written);
+    const EncoderResult result = encoderCtx.encodeChunk(in, inPos - _data.size(), _data.end());
+    _data.addSize(GetWrittenOrThrow(result, "HttpMessage::appendEncodedFromScratchOrThrow compression failed"));
+    inPos += written - in.size();
+    written = in.size();
+  }
+  return _data.size() - oldSize;
 }
 
 void HttpMessage::finalizeInlineBody(std::size_t additionalCapacity) {

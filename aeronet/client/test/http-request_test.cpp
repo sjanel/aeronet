@@ -126,6 +126,17 @@ class HttpRequestTest : public ::testing::Test {
     EXPECT_EQ(req.bodyInMemory(), expected.bodyInMemory());
   }
 
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+  // Same as makeRequest(method, url), with a body compressed with 'encoding' by 'state'.
+  HttpRequest makeCompressedRequest(http::Method method, std::string_view url, CompressionState& state,
+                                    Encoding encoding) {
+    HttpMessage::Options opts(state, encoding);
+    opts.setHttpRequest();
+    opts.setPrepared();
+    return {0, method, url, globalHeaders.fullStringWithLastSep(), opts};
+  }
+#endif
+
   HttpMessage::Options makeRequestOptions(bool addTrailerHeader = true) {
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
     HttpMessage::Options opts(compressionState, test::SupportedEncodings().front());
@@ -899,6 +910,40 @@ TEST_F(HttpRequestTest, ConstFinalizePreservesCompressionStateForReuse) {
   EXPECT_EQ(std::string_view(secondDecoded.data(), secondDecoded.size()), firstChunk + secondChunk);
   EXPECT_EQ(secondFinalized.headerValueOrEmpty(http::ContentLength),
             std::to_string(secondFinalized.bodyInMemory().size()));
+}
+
+// brotli and zstd write their output in bursts, larger than the room one body piece gives them: a directly compressed
+// body of a few MiB of incompressible data, set then appended in pieces, is compressed whole, and a const finalization
+// restores the encoder state for the next appends.
+TEST_F(HttpRequestTest, LargeIncompressibleDirectlyCompressedBody) {
+  static constexpr std::size_t kPieceSize = 64UL << 10;
+  static constexpr std::size_t kNbPieces = 32;
+  CompressionConfig codecConfig;
+  codecConfig.minBytes = 1;
+  codecConfig.brotli.quality = 5;  // the default one (11) is slow in Debug builds
+  const RawChars payload = test::MakeRandomPayload((kNbPieces + 1) * kPieceSize);
+  const std::string_view firstPart(payload.data(), (kNbPieces / 2) * kPieceSize);
+  internal::HttpClientCodec clientCodec(codecConfig);
+  for (const Encoding encoding : test::SupportedEncodings()) {
+    SCOPED_TRACE(GetEncodingStr(encoding));
+    CompressionState state = CreateResponseCompressionState(&codecConfig);
+    auto req = makeCompressedRequest(http::Method::POST, "http://h/large", state, encoding);
+    req.body(std::string_view(payload.data(), kPieceSize));
+    ASSERT_TRUE(IsAutomaticDirectCompression(req));
+    for (std::size_t pos = kPieceSize; pos < firstPart.size(); pos += kPieceSize) {
+      req.bodyAppend(std::string_view(payload.data() + pos, kPieceSize));
+    }
+
+    const auto firstFinalized = FinalizeHeadersAndBody(std::as_const(req), clientCodec, config.decompression);
+    EXPECT_EQ(std::string_view(test::Decompress(encoding, firstFinalized.bodyInMemory())), firstPart);
+
+    for (std::size_t pos = firstPart.size(); pos < payload.size(); pos += kPieceSize) {
+      req.bodyAppend(std::string_view(payload.data() + pos, kPieceSize));
+    }
+    FinalizeHeadersAndBody(req);
+    EXPECT_EQ(std::string_view(test::Decompress(encoding, req.bodyInMemory())), std::string_view(payload));
+    EXPECT_EQ(req.headerValueOrEmpty(http::ContentLength), std::to_string(req.bodyInMemory().size()));
+  }
 }
 
 TEST_F(HttpRequestTest, AutomaticDirectCompressionWithTrailersIsFinalizedOnce) {

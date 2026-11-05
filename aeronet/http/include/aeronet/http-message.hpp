@@ -650,21 +650,22 @@ class HttpMessage {
           setHeadSize(oldBodyLen);  // the size-only payload was dropped above
         }
       }
+    } else if (isHead()) {
+      replaceContentLengthValueNoRealloc(maxBodyLen - (maxLen - written));
+      setHeadSize(written + oldBodyLen);
     } else {
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
       if (_opts.isAutomaticDirectCompression()) {
-        // during streaming compression, if the output buffer is too small, encoders do NOT fail - they keep compressed
-        // data in their internal state and wait for more output space.
-        written = appendEncodedInlineOrThrow(std::string_view(first, written));
-      }
-#endif
-      if (isHead()) {
-        replaceContentLengthValueNoRealloc(maxBodyLen - (maxLen - written));
-        setHeadSize(written + oldBodyLen);
+        // The Content-Length value counts the raw bytes, as for bodyAppend(): it is only rewritten at finalization,
+        // and never needs more digits than reserved above.
+        appendEncodedFromScratchOrThrow(maxLen, written);
       } else {
         _data.addSize(written);
-        replaceContentLengthValueNoRealloc(maxBodyLen - (maxLen - written));
       }
+#else
+      _data.addSize(written);
+#endif
+      replaceContentLengthValueNoRealloc(maxBodyLen - (maxLen - written));
     }
   }
 
@@ -1128,8 +1129,12 @@ class HttpMessage {
   }
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
-  // Returns the number of written bytes
+  // Compresses sv (not in _data) and appends the output to _data, which grows when the output does not fit.
+  // Returns the number of written bytes.
   std::size_t appendEncodedInlineOrThrow(std::string_view sv);
+
+  // Same for the 'len' raw bytes stored 'gap' bytes past the end of _data, out of its size (bodyInlineAppend()).
+  std::size_t appendEncodedFromScratchOrThrow(std::size_t gap, std::size_t written);
 
   void finalizeInlineBody(std::size_t additionalCapacity = 0);
 #endif
