@@ -1109,19 +1109,25 @@ void HttpMessage::finalizeInlineBody(std::size_t additionalCapacity) {
   assert(_opts.isAutomaticDirectCompression() && !isHead() && !hasBodyCaptured() && !hasBodyFile());
   std::size_t bodyLen = inlinedBodyAndTrailersLen();
   auto& encoder = *_opts._pCompressionState->context(_opts._pickedEncoding);
-  const std::size_t chunkSize = encoder.endChunkSize();
+  // The first end() call takes the room left in the buffer (endChunkSize() at least), enough for most encoders. A call
+  // filling its room may leave much more in the encoder (the last metablock of brotli: up to several MiB of
+  // incompressible data): the next one gets as much room as the body has, so that the buffer grows once or twice, not
+  // by small steps that would each copy the whole body (endChunkSize() is a few hundred bytes at most, and the growth
+  // exact with AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS).
+  std::size_t room = encoder.endChunkSize();
   while (true) {
     std::size_t reservedCapacity = additionalCapacity;
 
     if (_opts.sendContentLengthHeader()) {
       // This difference is positive because adding a chunk to the body cannot decrease the number of digits needed
       // for the content-length header.
-      reservedCapacity += static_cast<std::size_t>(nchars(bodyLen + chunkSize) - nchars(bodyLen));
+      reservedCapacity += static_cast<std::size_t>(nchars(bodyLen + room) - nchars(bodyLen));
     }
 
-    _data.ensureAvailableCapacityExponential(chunkSize + reservedCapacity);
+    _data.ensureAvailableCapacityExponential(room + reservedCapacity);
 
-    const auto result = encoder.end(_data.availableCapacity() - reservedCapacity, _data.end());
+    const std::size_t givenRoom = _data.availableCapacity() - reservedCapacity;
+    const auto result = encoder.end(givenRoom, _data.end());
     const auto written = GetWrittenOrThrow(result, "HttpMessage::finalizeInlineBody compression failed");
     if (written == 0) {
       break;
@@ -1129,6 +1135,9 @@ void HttpMessage::finalizeInlineBody(std::size_t additionalCapacity) {
 
     _data.addSize(written);
     bodyLen += written;
+    if (written == givenRoom) {
+      room = std::max(room, bodyLen);
+    }
   }
 
   // TODO: avoid memmove of 'large' bodies if the number of chars of the body length changes (e.g. from 999 to 1000

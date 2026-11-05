@@ -15,6 +15,7 @@
 #include <unordered_set>
 
 #include "aeronet/avx2.hpp"
+#include "aeronet/sanitizer-test-support.hpp"
 #include "aeronet/vector.hpp"
 #include "aeronet/websocket-constants.hpp"
 
@@ -371,6 +372,9 @@ TEST(WebSocketUtf8, ContinuationAfterAsciiBlock) {
 
 // Every pair of bytes, at offsets around the 16 and 32-byte block boundaries and in the last block.
 TEST(WebSocketUtf8, EveryBytePair) {
+  if constexpr (test::kThreadSanitizer) {
+    GTEST_SKIP() << test::kSkippedUnderThreadSanitizer;
+  }
   for (const std::size_t offset : {0U, 15U, 31U, 37U}) {
     std::string data(offset + 2 + 8, 'a');
     for (unsigned first = 0; first < 256; ++first) {
@@ -387,6 +391,9 @@ TEST(WebSocketUtf8, EveryBytePair) {
 // Every lead byte followed by 3 bytes from the values on either side of each decision boundary, straddling a block
 // boundary.
 TEST(WebSocketUtf8, EveryLeadWithBoundaryContinuations) {
+  if constexpr (test::kThreadSanitizer) {
+    GTEST_SKIP() << test::kSkippedUnderThreadSanitizer;
+  }
   static constexpr uint8_t kNextBytes[]{
       0x00, 0x7F, 0x80, 0x8F, 0x90, 0x9F, 0xA0, 0xBF, 0xC0, 0xC2, 0xE0, 0xF0, 0xFF,
   };
@@ -411,6 +418,9 @@ TEST(WebSocketUtf8, EveryLeadWithBoundaryContinuations) {
 
 // Valid text of random characters and sizes, then corrupted by random byte changes, insertions and deletions.
 TEST(WebSocketUtf8, RandomMutations) {
+  if constexpr (test::kThreadSanitizer) {
+    GTEST_SKIP() << test::kSkippedUnderThreadSanitizer;
+  }
   std::mt19937 rng(42);  // NOLINT(bugprone-random-generator-seed) - reproducible
   const auto randomBelow = [&rng](std::size_t bound) {
     return std::uniform_int_distribution<std::size_t>(0, bound - 1)(rng);
@@ -479,6 +489,9 @@ TEST(WebSocketUtf8, RandomMutations) {
 }
 
 TEST(WebSocketUtf8, LargePayload) {
+  if constexpr (test::kThreadSanitizer) {
+    GTEST_SKIP() << test::kSkippedUnderThreadSanitizer;
+  }
   std::string data;
   while (data.size() < (1U << 20U)) {
     data.append(1000, 'x');
@@ -573,6 +586,9 @@ TEST(WebSocketUtf8Prefix, Samples) {
 // Every sequence of 1 and 2 bytes, then 3 and 4 bytes starting with a lead byte, followed by the values on either side
 // of each decision boundary, after text long enough for the SIMD kernels to validate its complete part.
 TEST(WebSocketUtf8Prefix, AgreesWithReference) {
+  if constexpr (test::kThreadSanitizer) {
+    GTEST_SKIP() << test::kSkippedUnderThreadSanitizer;
+  }
   static constexpr uint8_t kNextBytes[]{
       0x00, 0x7F, 0x80, 0x8F, 0x90, 0x9F, 0xA0, 0xBF, 0xC0, 0xC2, 0xE0, 0xF0, 0xFF,
   };

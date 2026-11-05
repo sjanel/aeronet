@@ -8,6 +8,8 @@ cmake --build build
 ctest --test-dir build --output-on-failure --timeout 300
 ```
 
+CI also runs the tests under AddressSanitizer and ThreadSanitizer, most jobs with `AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS`: buffers then grow to exactly the requested capacity, so that AddressSanitizer reports any access past it, and a loop growing a buffer by small steps copies the whole buffer at each step. Such a loop must ask for room in proportion to what it already wrote, as `HttpMessage::finalizeInlineBody()` does for the end of a compressed body. A CPU-bound single-threaded test, which has no data race for ThreadSanitizer to find, skips itself under it with `GTEST_SKIP() << test::kSkippedUnderThreadSanitizer` when `test::kThreadSanitizer` is set (`aeronet/sanitizer-test-support.hpp`): the other builds run it.
+
 ## Test coverage matrix
 
 Summary of the automated test coverage; the files named are in [tests/](../../tests/) unless a module path is given. Legend: ✅ covered by explicit tests, ⚠ partial or indirect.

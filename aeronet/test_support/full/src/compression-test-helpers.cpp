@@ -260,17 +260,24 @@ EncoderResult AppendEncodedChunk(EncoderContext& ctx, std::string_view data, Raw
 }
 
 void EndStream(EncoderContext& ctx, RawChars& out) {
+  // The room grows with the output, as in HttpMessage::finalizeInlineBody(): not by endChunkSize() steps.
+  std::size_t room = ctx.endChunkSize();
   while (true) {
-    out.ensureAvailableCapacityExponential(ctx.endChunkSize());
-    const auto result = ctx.end(out.availableCapacity(), out.end());
+    out.ensureAvailableCapacityExponential(room);
+    const std::size_t givenRoom = out.availableCapacity();
+    const auto result = ctx.end(givenRoom, out.end());
     if (result.hasError()) {
       out.clear();
       break;
     }
-    if (result.writtenIfNoError() == 0) {
+    const std::size_t written = result.writtenIfNoError();
+    if (written == 0) {
       break;
     }
-    out.addSize(result.writtenIfNoError());
+    out.addSize(written);
+    if (written == givenRoom) {
+      room = std::max<std::size_t>(room, out.size());
+    }
   }
 }
 
