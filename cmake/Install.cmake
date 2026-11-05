@@ -51,6 +51,14 @@ if(AERONET_ENABLE_BROTLI AND NOT AERONET_BROTLI_PACKAGE)
   endforeach()
 endif()
 
+# amc is header-only, and the public headers of aeronet include it. The install rules of a downloaded amc do not run,
+# its directory being EXCLUDE_FROM_ALL: its headers are installed with the ones of aeronet, in the include directory of
+# the exported targets, with its license (the headers have no notice).
+if(DEFINED amadeusamc_SOURCE_DIR)
+  install(DIRECTORY ${amadeusamc_SOURCE_DIR}/include/amc DESTINATION include)
+  install(FILES ${amadeusamc_SOURCE_DIR}/LICENSE DESTINATION share/licenses/amc)
+endif()
+
 # aeronetTargets is not exported when a dependency is built with FetchContent and is not exported itself:
 # install(EXPORT) would fail. Such builds should use FetchContent for the whole dependency tree.
 if(NOT ((AERONET_ENABLE_OPENTELEMETRY AND DEFINED opentelemetry_cpp_SOURCE_DIR)
