@@ -2,11 +2,11 @@
 
 #include <gtest/gtest.h>
 
-#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
 #include <limits>
 #include <span>
 #include <string>
@@ -347,26 +347,51 @@ TEST_F(WebSocketDecompressorTest, DecompressInvalidData) {
               std::string(error).contains("failed"));
 }
 
-TEST_F(WebSocketDecompressorTest, DecompressPartialCompressedData) {
-  auto [compressOk, compressed] = CompressData("Hello World", true);
-  ASSERT_TRUE(compressOk);
-
-  // Try to decompress only part of the compressed data
-  // Note: depending on where we cut, zlib might fail or succeed
-  // If we cut in the middle of valid data, it might decompress fine or fail
-  // The key is that we either get valid decompression or an error, not undefined behavior
-  const auto partialData = std::span<const std::byte>(
-      StringToBytes(compressed).data(), std::min(static_cast<size_t>(2), StringToBytes(compressed).size()));
-  const char* error = decompressor.decompress(partialData, output, kNoLimit, true);
-  // The result depends on how the compression worked and where we cut
-  // Just verify that we either get success or a proper error, and no crash
-  if (error == nullptr) {
-    // If decompression succeeded, we got some output (may be empty or partial)
-    EXPECT_GE(output.size(), 0);
-  } else {
-    // If there was an error, it should be a proper error message
-    EXPECT_NE(std::string(error).find("inflate"), std::string::npos);
+// With the trailer appended, the data of a message ends at a block boundary (RFC 7692 §7.2.2): data cut anywhere before
+// its end is rejected, instead of delivering its first bytes. Not with stored blocks (level 0), whose cut data can be
+// valid: the first byte alone is the header of an empty stored block, and the trailer can complete its data.
+TEST_F(WebSocketDecompressorTest, DecompressTruncatedDataFails) {
+  for (const int8_t level : std::initializer_list<int8_t>{1, 6, 9}) {
+    WebSocketCompressor compressor(level);
+    RawBytes compressed;
+    ASSERT_EQ(compressor.compress(StringToBytes("Hello World, Hello World, Hello World"), compressed, true), nullptr);
+    for (std::size_t size = 1; size < compressed.size(); ++size) {
+      WebSocketDecompressor truncatedDecompressor;
+      RawBytes truncatedOutput;
+      EXPECT_NE(truncatedDecompressor.decompress(std::span<const std::byte>(compressed).first(size), truncatedOutput,
+                                                 kNoLimit, true),
+                nullptr)
+          << "level " << level << ", " << size << " of " << compressed.size() << " bytes";
+    }
   }
+}
+
+// A stored block (level 0) cut in its data takes the trailer as more of its data, then waits for the rest of it.
+TEST_F(WebSocketDecompressorTest, DecompressStoredBlockCutInItsData) {
+  WebSocketCompressor storingCompressor(0);
+  RawBytes compressed;
+  ASSERT_EQ(storingCompressor.compress(StringToBytes("Hello World"), compressed, true), nullptr);
+  const char* error = decompressor.decompress(std::span<const std::byte>(compressed).first(compressed.size() / 2),
+                                              output, kNoLimit, true);
+  EXPECT_STREQ(error, "Truncated DEFLATE data");
+}
+
+// An empty payload is an empty message, the stream staying as it is for the next messages with context takeover: the
+// trailer alone would have left it in the middle of a block header.
+TEST_F(WebSocketDecompressorTest, EmptyPayloadBetweenMessagesWithContextTakeover) {
+  WebSocketCompressor takeoverCompressor(6);
+  RawBytes first;
+  RawBytes second;
+  ASSERT_EQ(takeoverCompressor.compress(StringToBytes("Hello World"), first, false), nullptr);
+  ASSERT_EQ(takeoverCompressor.compress(StringToBytes("Hello World again"), second, false), nullptr);
+
+  ASSERT_EQ(decompressor.decompress(first, output, kNoLimit, false), nullptr);
+  EXPECT_EQ(BytesToString(output), "Hello World");
+  output.clear();
+  ASSERT_EQ(decompressor.decompress({}, output, kNoLimit, false), nullptr);
+  EXPECT_TRUE(output.empty());
+  ASSERT_EQ(decompressor.decompress(second, output, kNoLimit, false), nullptr);
+  EXPECT_EQ(BytesToString(output), "Hello World again");
 }
 
 TEST_F(WebSocketDecompressorTest, DecompressTinyData) {
@@ -684,10 +709,9 @@ TEST_F(WebSocketCompressEdgeCasesTest, DecompressCorruptedData) {
     std::string truncated = compressed.substr(0, compressed.size() - 2);
     WebSocketDecompressor decompressor2;
     RawBytes output2;
-    // This should decompress but then fail when we add the trailer because data is incomplete
+    // Its last block is incomplete, even with the trailer
     const char* error2 = decompressor2.decompress(StringToBytes(truncated), output2, kNoLimit, true);
-    // This may or may not fail depending on where we truncated - just check it doesn't crash
-    (void)error2;
+    EXPECT_NE(error2, nullptr);
   }
 
   // Test 3: Corrupt byte sequence that will fail inflate

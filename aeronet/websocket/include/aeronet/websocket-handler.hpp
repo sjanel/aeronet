@@ -116,11 +116,10 @@ class WebSocketHandler final : public IProtocolHandler {
   void setCallbacks(WebSocketCallbacks callbacks);
 
   /// Send a text message.
-  /// @param text UTF-8 encoded text message
+  /// @param text UTF-8 encoded text message. The peer fails the connection on invalid UTF-8 (RFC 6455 §8.1): it is a
+  ///             precondition, checked by an assert in debug builds only.
   /// @return true if queued successfully, false if connection is closing
-  bool sendText(std::string_view text) {
-    return sendData(Opcode::Text, std::span(reinterpret_cast<const std::byte*>(text.data()), text.size()));
-  }
+  bool sendText(std::string_view text);
 
   /// Send a binary message.
   /// @param data Binary data to send
@@ -213,6 +212,8 @@ class WebSocketHandler final : public IProtocolHandler {
     RawBytes buffer;              // Accumulated payload from fragments
     Opcode opcode{Opcode::Text};  // Message type from first fragment
     bool inProgress{false};       // True when receiving a fragmented message
+    // Uncompressed text: size of the incomplete code point ending the buffer, validated with the next fragment
+    uint8_t utf8TailSize{0};
   };
 
   /// Process a single complete frame.

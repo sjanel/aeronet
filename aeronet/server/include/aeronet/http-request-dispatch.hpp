@@ -73,7 +73,8 @@ class RequestPipeline {
 
   /// Answer a request that went through its request middleware without calling its handler: a 403 when the CORS policy
   /// of its route denies its origin (its handler is not called, so that it has no side effect), or, without handler, a
-  /// trailing slash redirect, a 405 (with an Allow header listing the methods of the route) or a 404.
+  /// trailing slash redirect, a 405 (with an Allow header listing the methods of the route), a 426 with Upgrade:
+  /// websocket for a WebSocket endpoint (HTTP/1.x only) or a 404.
   /// PRECONDITION: IsAnsweredWithoutHandler().
   [[nodiscard]] static HttpResponse AnswerWithoutHandler(const HttpRequestView& request,
                                                          const Router::RoutingResult& routingResult);

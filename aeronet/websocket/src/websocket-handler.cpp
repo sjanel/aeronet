@@ -210,6 +210,7 @@ ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& heade
     _message.opcode = header.opcode;
     _message.inProgress = true;
     _message.buffer.clear();
+    _message.utf8TailSize = 0;
 
     // Per RFC 7692: RSV1 is set only on the first frame of a compressed message
     _messageCompressed = header.rsv1;
@@ -231,6 +232,28 @@ ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& heade
     _message.buffer.setEnd(AppendMasked(payload, _message.buffer.data() + _message.buffer.size(), header.maskingKey));
   } else {
     _message.buffer.append(payload);
+  }
+
+  // An uncompressed text message is validated fragment by fragment: invalid UTF-8 fails the connection at once (fail
+  // fast, RFC 6455 §8.1), without buffering the rest of the message. The incomplete code point that may end a fragment
+  // is validated again with the start of the next one.
+  if (_message.opcode == Opcode::Text && !_messageCompressed) {
+    const auto unvalidated = std::span<const std::byte>(_message.buffer).last(payload.size() + _message.utf8TailSize);
+    bool isValidUtf8 = true;
+    if (header.fin) {
+      isValidUtf8 = IsValidUtf8(unvalidated);
+    } else {
+      const std::size_t tailSize = ValidateUtf8Prefix(unvalidated);
+      isValidUtf8 = tailSize != kInvalidUtf8Prefix;
+      _message.utf8TailSize = static_cast<uint8_t>(tailSize);
+    }
+    if (!isValidUtf8) {
+      failConnection(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
+      result.action = ProtocolProcessResult::Action::Close;
+      _message.inProgress = false;
+      _message.buffer.clear();
+      return result;
+    }
   }
 
   // If FIN bit is set, message is complete
@@ -315,7 +338,12 @@ ProtocolProcessResult WebSocketHandler::completeMessage() {
     _compressBuffer.clear();
     const char* errMsg = _deflateContext->decompress(_message.buffer, _compressBuffer, _config.maxMessageSize);
     if (errMsg != nullptr) {
-      failConnection(CloseCode::InvalidPayloadData, "Decompression failed");
+      // A message decompressing beyond maxMessageSize is too big, not invalid: its output then holds more bytes.
+      if (_compressBuffer.size() > _config.maxMessageSize) {
+        failConnection(CloseCode::MessageTooBig, "Message too large");
+      } else {
+        failConnection(CloseCode::InvalidPayloadData, "Decompression failed");
+      }
       result.action = ProtocolProcessResult::Action::Close;
       _message.inProgress = false;
       _message.buffer.clear();
@@ -328,8 +356,8 @@ ProtocolProcessResult WebSocketHandler::completeMessage() {
   }
   const std::span<const std::byte> messageData = _message.buffer;
 
-  // For text messages, validate UTF-8
-  if (_message.opcode == Opcode::Text && !IsValidUtf8(messageData)) {
+  // A decompressed text message is validated whole (an uncompressed one was, fragment by fragment)
+  if (_message.opcode == Opcode::Text && _messageCompressed && !IsValidUtf8(messageData)) {
     failConnection(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
     result.action = ProtocolProcessResult::Action::Close;
     _message.inProgress = false;
@@ -437,6 +465,12 @@ void WebSocketHandler::queueFrame(Opcode opcode, std::span<const std::byte> payl
   const bool shouldMask = !_config.isServerSide;
   const MaskingKey mask = shouldMask ? nextMaskingKey() : MaskingKey{};
   BuildFrame(_outputBuffer, opcode, payload, fin, shouldMask, mask, false);
+}
+
+bool WebSocketHandler::sendText(std::string_view text) {
+  const auto payload = std::as_bytes(std::span(text));
+  assert(IsValidUtf8(payload));
+  return sendData(Opcode::Text, payload);
 }
 
 bool WebSocketHandler::sendData(Opcode opcode, std::span<const std::byte> payload) {

@@ -909,14 +909,52 @@ TEST_F(WebSocketTest, UpgradeIgnoredInHttp10) {
     return test::sendAndCollect(ts.port(), req);
   };
 
+  // Served like a GET without upgrade: the endpoint asks for one with HTTP/1.1.
   std::string resp = http10Upgrade("/ws-http10");
-  EXPECT_TRUE(resp.starts_with("HTTP/1.1 404")) << resp;
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 426")) << resp;
+  EXPECT_TRUE(resp.contains("\r\nupgrade: websocket\r\n")) << resp;
   resp = http10Upgrade("/ws-http10-get");
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
   EXPECT_TRUE(resp.ends_with("\r\n\r\nplain")) << resp;
 
   EXPECT_TRUE(UpgradeResponse("/ws-http10", "").starts_with("HTTP/1.1 101"));
   EXPECT_TRUE(UpgradeResponse("/ws-http10-get", "").starts_with("HTTP/1.1 101"));
+}
+
+// A GET without upgrade to a WebSocket endpoint is answered 426 naming the protocol to switch to (RFC 9110 §15.5.22,
+// §7.8), and the connection persists. A path that also has a GET handler serves the request with it.
+TEST_F(WebSocketTest, GetWithoutUpgradeIsAnsweredUpgradeRequired) {
+  ts.postRouterUpdate([](Router& router) {
+    router.setWebSocket("/ws-only", SilentEndpoint());
+    router.setPath(http::Method::GET, "/ws-and-get", [](const HttpRequestView&) { return HttpResponse("plain"); });
+    router.setWebSocket("/ws-and-get", SilentEndpoint());
+  });
+
+  test::ClientConnection conn(ts.port());
+  test::sendAll(conn.fd(), "GET /ws-only HTTP/1.1\r\nHost: localhost\r\n\r\n");
+  std::string resp = test::recvWithTimeout(conn.fd(), 1000ms);
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 426")) << resp;
+  EXPECT_TRUE(resp.contains("\r\nupgrade: websocket\r\n")) << resp;
+  EXPECT_TRUE(resp.contains("\r\nconnection: upgrade\r\n")) << resp;
+
+  test::sendAll(conn.fd(), "GET /ws-and-get HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+  resp = test::recvUntilClosed(conn.fd());
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.ends_with("\r\n\r\nplain")) << resp;
+}
+
+// Upgrade is a list of protocols in the client's order of preference (RFC 9110 §7.8): websocket may follow others.
+TEST_F(WebSocketTest, UpgradeListingOtherProtocols) {
+  ts.postRouterUpdate([](Router& router) { router.setWebSocket("/ws-upgrade-list", SilentEndpoint()); });
+
+  std::string req = BuildUpgradeRequest("/ws-upgrade-list");
+  req.replace(req.find("Upgrade: websocket"), std::string_view("Upgrade: websocket").size(),
+              "Upgrade: foo/2, WebSocket");
+  test::ClientConnection conn(ts.port());
+  test::sendAll(conn.fd(), req);
+  test::setRecvTimeout(conn.fd(), 1000ms);
+  const std::string head = test::RecvHead(conn.fd());
+  EXPECT_TRUE(head.starts_with("HTTP/1.1 101")) << head;
 }
 
 TEST_F(WebSocketTest, UpgradeAppliesCorsPolicyToOrigin) {

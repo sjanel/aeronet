@@ -54,11 +54,12 @@ class WebSocketDecompressor {
   explicit WebSocketDecompressor(uint8_t windowBits = ZStreamRAII::kMaxWindowBits) noexcept : _windowBits(windowBits) {}
 
   /// Decompress a WebSocket message payload.
-  /// @param input Compressed message data (without trailing 0x00 0x00 0xff 0xff)
+  /// @param input Compressed message data (without trailing 0x00 0x00 0xff 0xff). Empty, an empty message.
   /// @param output Buffer to append decompressed data to
-  /// @param maxDecompressedSize Maximum allowed decompressed size
+  /// @param maxDecompressedSize Maximum allowed decompressed size: when exceeded, one byte more is appended to output
   /// @param resetContext If true, reset the decompression context before decompressing
-  /// @return nullptr on success, error message on decompression error or size limit exceeded
+  /// @return nullptr on success, error message on decompression error (data that is not DEFLATE, truncated, or with
+  /// data after a final block) or size limit exceeded
   [[nodiscard]] const char* decompress(std::span<const std::byte> input, RawBytes& output,
                                        std::size_t maxDecompressedSize, bool resetContext) {
     return decompress(input, output, maxDecompressedSize, resetContext, kZMaxSize);

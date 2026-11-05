@@ -1,5 +1,6 @@
 #include "aeronet/websocket-utf8.hpp"
 
+#include <algorithm>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -738,6 +739,55 @@ bool UnmaskAndValidateUtf8(std::span<std::byte> data, MaskingKey maskingKey) noe
   // Two passes without SIMD kernel: the scalar validation is much slower than the unmasking anyway.
   ApplyMask(data, maskingKey);
   return detail::IsValidUtf8Scalar(data);
+}
+
+namespace {
+
+// The number of bytes of the sequence starting with a byte that is not a continuation byte (10______): 1 for ASCII. A
+// byte that cannot start a sequence (C0, C1, F5 - FF) counts as the start of the sequence its high bits announce, which
+// the validation rejects.
+constexpr std::size_t SequenceSize(uint8_t lead) noexcept {
+  if (lead < 0xC0U) {
+    return 1;
+  }
+  if (lead < 0xE0U) {
+    return 2;
+  }
+  return lead < 0xF0U ? 3 : 4;
+}
+
+}  // namespace
+
+std::size_t ValidateUtf8Prefix(std::span<const std::byte> data) noexcept {
+  // The trailing sequence is incomplete when its first byte, among the last 3 bytes, announces more bytes than follow.
+  std::size_t tailSize = 0;
+  const std::size_t maxTailSize = std::min<std::size_t>(data.size(), 3);
+  for (std::size_t nbBytes = 1; nbBytes <= maxTailSize; ++nbBytes) {
+    const auto byte = static_cast<uint8_t>(data[data.size() - nbBytes]);
+    if ((byte & 0xC0U) != 0x80U) {
+      if (nbBytes < SequenceSize(byte)) {
+        tailSize = nbBytes;
+      }
+      break;
+    }
+  }
+  if (!IsValidUtf8(data.first(data.size() - tailSize))) {
+    return kInvalidUtf8Prefix;
+  }
+  if (tailSize == 0) {
+    return 0;
+  }
+  // The tail starts a code point when the smallest continuation bytes allowed after it complete one: 0x80, except for
+  // the second byte after E0 (0xA0) and F0 (0x90), smaller ones making an overlong encoding.
+  const auto tail = data.last(tailSize);
+  const auto lead = static_cast<uint8_t>(tail.front());
+  std::byte sequence[4]{std::byte{0x80}, std::byte{0x80}, std::byte{0x80}, std::byte{0x80}};
+  std::ranges::copy(tail, sequence);
+  if (tailSize == 1 && (lead == 0xE0U || lead == 0xF0U)) {
+    sequence[1] = static_cast<std::byte>(lead == 0xE0U ? 0xA0U : 0x90U);
+  }
+  return detail::IsValidUtf8Scalar(std::span<const std::byte>(sequence, SequenceSize(lead))) ? tailSize
+                                                                                             : kInvalidUtf8Prefix;
 }
 
 }  // namespace aeronet::websocket

@@ -67,7 +67,7 @@ The handler is destroyed with its connection, so the pointer captured by its own
 
 The factory receives the upgrade request after the request middleware ran, with its path parameters. It can refuse the connection by returning `nullptr`: the server then answers `403 Forbidden`. An exception escaping the factory is logged and answered `500 Internal Server Error`. The factory runs on the event-loop thread, so keep it fast. `RouteGroup::setWebSocket()` registers an endpoint under a group prefix like `setPath()` does.
 
-A path may carry both a WebSocket endpoint and ordinary handlers: a `GET` request with `Upgrade: websocket` goes to the endpoint, and other requests are routed to the handlers registered for their method.
+A path may carry both a WebSocket endpoint and ordinary handlers: a `GET` request with `Upgrade: websocket` goes to the endpoint, and other requests are routed to the handlers registered for their method. Without a `GET` handler, a `GET` request that is not an upgrade is answered `426 Upgrade Required` with `Upgrade: websocket` (RFC 9110 §15.5.22), over HTTP/1.x. Over HTTP/2, which does not carry WebSocket here and forbids the `Upgrade` header, it is answered `404 Not Found`.
 
 ## Callbacks
 
@@ -83,11 +83,11 @@ All callbacks run on the event-loop thread of the connection.
 
 The payload span is valid only during the callback: copy it to keep it.
 
-Text messages are validated before `onMessage` with SIMD instructions, AVX2 or SSSE3 on x86 (detected at runtime) and NEON on ARM, at the same speed whatever their script: about 25 GB/s with AVX2. The text messages of a client are unmasked in the same pass. A message that is not valid UTF-8 (RFC 3629: no overlong encoding, surrogate, code point above U+10FFFF or truncated sequence) closes the connection with `InvalidPayloadData` (1007).
+Text messages are validated before `onMessage` with SIMD instructions, AVX2 or SSSE3 on x86 (detected at runtime) and NEON on ARM, at the same speed whatever their script: about 25 GB/s with AVX2. The text messages of a client are unmasked in the same pass. A message that is not valid UTF-8 (RFC 3629: no overlong encoding, surrogate, code point above U+10FFFF or truncated sequence) closes the connection with `InvalidPayloadData` (1007). A fragmented message is validated fragment by fragment, a code point split between two fragments being validated with the second one: invalid UTF-8 fails the connection with the fragment that holds it, without waiting for the rest of the message (fail fast, RFC 6455 §8.1). A compressed message is validated once decompressed.
 
 ## Sending messages
 
-`WebSocketHandler` sends with `sendText()`, `sendBinary()`, `sendPing()`, `sendPong()`, and `sendClose(code, reason)`. Each call queues a frame on the connection and returns `false` once the close handshake has started. A message is sent as a single frame. When compression was negotiated, a message of at least `DeflateConfig::minCompressSize` bytes is sent compressed, unless compression does not make it smaller.
+`WebSocketHandler` sends with `sendText()`, `sendBinary()`, `sendPing()`, `sendPong()`, and `sendClose(code, reason)`. Each call queues a frame on the connection and returns `false` once the close handshake has started. The text given to `sendText()` must be valid UTF-8, which its peer checks (RFC 6455 §8.1): an assert checks it in debug builds only, so send any other data with `sendBinary()`. A message is sent as a single frame. When compression was negotiated, a message of at least `DeflateConfig::minCompressSize` bytes is sent compressed, unless compression does not make it smaller.
 
 Sending from `onMessage` a payload of at least 4 KiB that it received (an echo, or a part of the message) does not copy it: only the frame header is queued, and the server writes the payload from its receive buffer right after the callbacks of this input, copying only what the socket did not accept. Likewise, a message compressed to at least 4 KiB is written from the buffer it was compressed into, and only copied if another message is queued (or a compressed message received) before the socket accepted all of it.
 
@@ -97,8 +97,8 @@ These methods are not thread-safe: call them from a callback of the same connect
 
 The server accepts an upgrade when the request:
 
-1. uses the `GET` method and HTTP/1.1 - the `Upgrade` header of an HTTP/1.0 request is ignored (RFC 9110 §7.8), and the request is served like any `GET`, by the `GET` handler of the path if any,
-2. carries `Upgrade: websocket` and `Connection: Upgrade`,
+1. uses the `GET` method and HTTP/1.1 - the `Upgrade` header of an HTTP/1.0 request is ignored (RFC 9110 §7.8), and the request is served like any `GET`: by the `GET` handler of the path if any, otherwise with a `426`,
+2. carries `Upgrade: websocket` and `Connection: Upgrade` - `Upgrade` lists the protocols the client offers, in its order of preference, and `websocket` may come among others (`Upgrade: foo/2, websocket`),
 3. carries `Sec-WebSocket-Version: 13`,
 4. carries a valid `Sec-WebSocket-Key`: 16 random bytes in base64, so 22 characters of the base64 alphabet followed by `==`.
 
@@ -136,7 +136,7 @@ router.setWebSocket("/ws", WebSocketEndpoint::WithCallbacks(websocket::WebSocket
 
 | Field | Default | Effect |
 | --- | --- | --- |
-| `maxMessageSize` | 64 MiB | Maximum size of a reassembled message, decompressed. Must be greater than 0 (set `std::numeric_limits<std::size_t>::max()` to approximate no limit). A larger message closes the connection with `MessageTooBig` (1009), or `InvalidPayloadData` (1007) when it is compressed. |
+| `maxMessageSize` | 64 MiB | Maximum size of a reassembled message, decompressed. Must be greater than 0 (set `std::numeric_limits<std::size_t>::max()` to approximate no limit). A larger message closes the connection with `MessageTooBig` (1009), compressed or not. |
 | `maxFrameSize` | 16 MiB | Maximum payload of a single frame. Must be greater than 0 (same as above for no limit). A larger frame closes the connection with `MessageTooBig`. |
 | `idleTimeout` | 60 s | A connection on which nothing was received for this long is closed. `0` disables it. See [Idle connections](#idle-connections). |
 | `autoPing` | `true` | Send a Ping after half of `idleTimeout` without received data, so that live peers are never closed. |
@@ -184,7 +184,7 @@ The server accepts the first acceptable offer of the client, and each side compr
 
 A direction negotiated with context takeover (the default) continues the same DEFLATE stream from message to message, so that a message can refer to the previous ones: its connection keeps a zlib stream for it, allocated by its first message (about 300 KB to compress, 40 KB to decompress). A direction negotiated without context takeover (`server_no_context_takeover` and `client_no_context_takeover`, requested by either side) starts each message afresh: its connections share a single stream per server thread, which uses no memory per connection and stays in the CPU caches. This is much faster for many connections exchanging small messages, the compression stream being reset for each one.
 
-A peer may end a message with a final DEFLATE block (RFC 7692 §7.2.3.4), which ends its DEFLATE stream: the server then starts a new one for the next message, keeping the sliding window with context takeover so that this message can still refer to the previous ones. Data after the final block fails the connection with `InvalidPayloadData` (1007), like any message that fails to decompress. RSV1, which marks a compressed message, is only allowed on its first fragment: set on a continuation frame, it fails the connection with `ProtocolError` (1002), as on a control frame (RFC 7692 §6.1).
+A peer may end a message with a final DEFLATE block (RFC 7692 §7.2.3.4), which ends its DEFLATE stream: the server then starts a new one for the next message, keeping the sliding window with context takeover so that this message can still refer to the previous ones. Data after the final block fails the connection with `InvalidPayloadData` (1007), like any message that fails to decompress, and so does truncated data: with the 4 trailing bytes appended, the data of a message must end on a block boundary (RFC 7692 §7.2.2), and a message cut in the middle of a block is rejected instead of being delivered in part. An empty payload with RSV1 is an empty message, which zlib otherwise compresses to the byte `0x00`. RSV1, which marks a compressed message, is only allowed on its first fragment: set on a continuation frame, it fails the connection with `ProtocolError` (1002), as on a control frame (RFC 7692 §6.1).
 
 When a factory returns a handler without compression and the client negotiated it, the server enables it on that handler (`WebSocketHandler::enableCompression()`), keeps its callbacks, and gives it the streams shared by its server thread.
 
@@ -197,8 +197,8 @@ The server initiates the close itself when the peer violates the protocol:
 | Close code | Sent when |
 | --- | --- |
 | `ProtocolError` (1002) | Malformed frame (RSV1 on a control or continuation frame for instance), unmasked client frame, unexpected or missing continuation frame, Close frame with a 1-byte payload or a status code that may not be sent (see below). |
-| `InvalidPayloadData` (1007) | Text message or Close frame reason that is not valid UTF-8, or a compressed message that fails to decompress. |
-| `MessageTooBig` (1009) | Frame larger than `maxFrameSize`, or message larger than `maxMessageSize`. |
+| `InvalidPayloadData` (1007) | Text message (or fragment of one) or Close frame reason that is not valid UTF-8, or a compressed message that fails to decompress, truncated ones included. |
+| `MessageTooBig` (1009) | Frame larger than `maxFrameSize`, or message larger than `maxMessageSize` (decompressed). |
 
 An invalid Close frame is not echoed, and `onError()` is invoked instead of `onClose()`.
 
@@ -236,9 +236,9 @@ The timeouts are checked by the server's maintenance timer, so they are accurate
 
 ## Tests
 
-- Handshake (ignored in HTTP/1.0: `UpgradeIgnoredInHttp10`), middleware, origin checks, factory refusal, messaging, large echoes (also when the client does not read), compression interoperability and connections sharing the streams of a server thread, close handshake, idle and close timeouts, and drains (`WebSocketDrain`) against a real socket: [tests/websocket-integration_test.cpp](../../tests/websocket-integration_test.cpp).
+- Handshake (ignored in HTTP/1.0: `UpgradeIgnoredInHttp10`, `Upgrade` listing other protocols: `UpgradeListingOtherProtocols`), `426` to a `GET` without upgrade (`GetWithoutUpgradeIsAnsweredUpgradeRequired`, and `404` over HTTP/2: `WebSocketEndpointWithoutUpgrade` in [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp)), middleware, origin checks, factory refusal, messaging, large echoes (also when the client does not read), compression interoperability and connections sharing the streams of a server thread, close handshake, idle and close timeouts, and drains (`WebSocketDrain`) against a real socket: [tests/websocket-integration_test.cpp](../../tests/websocket-integration_test.cpp).
 - Frame parsing, masking, SIMD unmasking and masked copies of every size, Close frame payloads (codes that may be sent, reasons truncated on a code point boundary): [websocket-frame_test.cpp](../../aeronet/websocket/test/websocket-frame_test.cpp).
-- Message reassembly, control frames, close handshake, validation of received Close frames (`WebSocketReceivedCloseTest`, `WebSocketInvalidCloseCodeTest`, `WebSocketValidCloseCodeTest`), split frames, payloads sent from the input or the compression buffer (`WebSocketInputPayloadTest`), masked messages and fragments of every size (`WebSocketMaskedPayloadTest`), timeout computation, the Going Away of a drain, and client masking keys (`ClientMaskingKeysAreRandom`): [websocket-handler_test.cpp](../../aeronet/websocket/test/websocket-handler_test.cpp).
-- UTF-8 validation by each kernel (scalar, SSSE3, AVX2, NEON) and its variant unmasking the data in the same pass, against a reference validator, for every byte pair and every sample at every block offset: [websocket-utf8_test.cpp](../../aeronet/websocket/test/websocket-utf8_test.cpp).
+- Message reassembly, control frames, close handshake, validation of received Close frames (`WebSocketReceivedCloseTest`, `WebSocketInvalidCloseCodeTest`, `WebSocketValidCloseCodeTest`), split frames, payloads sent from the input or the compression buffer (`WebSocketInputPayloadTest`), masked messages and fragments of every size (`WebSocketMaskedPayloadTest`), UTF-8 validated fragment by fragment (`InvalidUtf8FailsWithItsFragment`, `CodePointsSplitBetweenFragments`), compressed messages beyond `maxMessageSize` (`CompressedMessageDecompressingBeyondMaxMessageSize`), timeout computation, the Going Away of a drain, and client masking keys (`ClientMaskingKeysAreRandom`): [websocket-handler_test.cpp](../../aeronet/websocket/test/websocket-handler_test.cpp).
+- UTF-8 validation by each kernel (scalar, SSSE3, AVX2, NEON) and its variant unmasking the data in the same pass, against a reference validator, for every byte pair and every sample at every block offset, and the validation of fragments ending in the middle of a code point (`WebSocketUtf8Prefix`): [websocket-utf8_test.cpp](../../aeronet/websocket/test/websocket-utf8_test.cpp).
 - Upgrade validation (every byte value at every position of `Sec-WebSocket-Key`, unsupported versions, declined permessage-deflate offers falling back to the next one) and subprotocol negotiation: [websocket-upgrade_test.cpp](../../aeronet/websocket/test/websocket-upgrade_test.cpp).
-- permessage-deflate negotiation (offers declined for unknown, repeated or invalid parameters: `ParseDeflateOffer_InvalidOffersDeclined`) and interoperability, context takeover across messages, messages ending with a final block (`WebSocketCompressFinalBlock`), RSV1 on a continuation frame (`CompressedFragmentedMessageWithRsv1OnContinuation`), streams shared without context takeover (`WebSocketSharedDeflateStreamsTest`): [websocket-deflate_test.cpp](../../aeronet/websocket/test/websocket-deflate_test.cpp) and [websocket-compress_test.cpp](../../aeronet/websocket/test/websocket-compress_test.cpp).
+- permessage-deflate negotiation (offers declined for unknown, repeated or invalid parameters: `ParseDeflateOffer_InvalidOffersDeclined`) and interoperability, context takeover across messages, messages ending with a final block (`WebSocketCompressFinalBlock`), RSV1 on a continuation frame (`CompressedFragmentedMessageWithRsv1OnContinuation`), streams shared without context takeover (`WebSocketSharedDeflateStreamsTest`), truncated data (`DecompressTruncatedDataFails`) and empty payloads (`EmptyPayloadBetweenMessagesWithContextTakeover`): [websocket-deflate_test.cpp](../../aeronet/websocket/test/websocket-deflate_test.cpp) and [websocket-compress_test.cpp](../../aeronet/websocket/test/websocket-compress_test.cpp).

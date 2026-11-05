@@ -142,6 +142,22 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WrongUpgradeValue) {
   EXPECT_TRUE(std::string_view(result.pErrorMessage).contains(websocket::UpgradeValue));
 }
 
+// Upgrade is a list of protocols (RFC 9110 §7.8): the server picks websocket among the ones offered.
+TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_UpgradeListingOtherProtocols) {
+  const auto status = parse(BuildRawHttp11("GET", "/ws",
+                                           "Upgrade: foo/2, WebSocket\r\n"
+                                           "Connection: Upgrade\r\n"
+                                           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                                           "Sec-WebSocket-Version: 13\r\n"));
+  ASSERT_EQ(status, http::StatusCodeOK);
+
+  ConcatenatedStrings serverProtocols;
+  WebSocketUpgradeConfig config{serverProtocols, {}};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
+  EXPECT_TRUE(result.valid()) << result.pErrorMessage;
+  EXPECT_EQ(result.targetProtocol, ProtocolType::WebSocket);
+}
+
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_MissingConnectionHeader) {
   const auto status = parse(BuildRawHttp11("GET", "/ws",
                                            "Upgrade: websocket\r\n"
@@ -369,6 +385,31 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_PermessageDeflateNegotiat
 #endif
 }
 
+// Of several acceptable offers, the first one of the client, its preferred one (RFC 7692 §5), is negotiated.
+TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_FirstAcceptableDeflateOfferIsNegotiated) {
+  const auto status =
+      parse(BuildRawHttp11("GET", "/ws",
+                           "Upgrade: websocket\r\n"
+                           "Connection: Upgrade\r\n"
+                           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                           "Sec-WebSocket-Version: 13\r\n"
+                           "Sec-WebSocket-Extensions: x-unknown, permessage-deflate; server_max_window_bits=10, "
+                           "permessage-deflate; server_max_window_bits=12, permessage-deflate\r\n"));
+  ASSERT_EQ(status, http::StatusCodeOK);
+
+  websocket::DeflateConfig deflateConfig;
+  deflateConfig.enabled = true;
+  WebSocketUpgradeConfig config{{}, deflateConfig};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
+
+#ifdef AERONET_ENABLE_ZLIB
+  ASSERT_TRUE(result.deflateParams.hasValue());
+  EXPECT_EQ(result.deflateParams.serverMaxWindowBits, 10);
+#else
+  EXPECT_FALSE(result.valid());
+#endif
+}
+
 // An invalid offer is declined (RFC 7692 §7): the next offer of the client is negotiated instead.
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_InvalidDeflateOfferFallsBackToTheNextOne) {
   const auto status =
@@ -518,6 +559,16 @@ TEST_F(UpgradeHandlerHarness, DetectUpgradeTarget_WithWhitespace) {
 #else
   EXPECT_EQ(upgrade::DetectUpgradeTarget(request.headerValueOrEmpty(http::Upgrade)), ProtocolType::Http11);
 #endif
+}
+
+// websocket among other protocols of the list, in any position, but not as a part of another protocol name.
+TEST(UpgradeHandlerTest, DetectUpgradeTarget_ListOfProtocols) {
+  EXPECT_EQ(upgrade::DetectUpgradeTarget("websocket, foo"), ProtocolType::WebSocket);
+  EXPECT_EQ(upgrade::DetectUpgradeTarget("foo/2, WebSocket"), ProtocolType::WebSocket);
+  EXPECT_EQ(upgrade::DetectUpgradeTarget("h2c,websocket,"), ProtocolType::WebSocket);
+  EXPECT_EQ(upgrade::DetectUpgradeTarget("websocketx, foo"), ProtocolType::Http11);
+  EXPECT_EQ(upgrade::DetectUpgradeTarget("web socket"), ProtocolType::Http11);
+  EXPECT_EQ(upgrade::DetectUpgradeTarget(", ,"), ProtocolType::Http11);
 }
 
 #ifdef AERONET_ENABLE_WEBSOCKET

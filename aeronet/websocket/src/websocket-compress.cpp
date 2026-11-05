@@ -27,11 +27,15 @@ constexpr std::byte kDeflateTrailer[]{
 
 // Chunk size for streaming decompression with size limit control
 constexpr std::size_t kDecompressChunkSize = 16UL * 1024;  // 16 KB
+
 // Output space reserved beyond deflateBound(): it bounds a Z_FINISH deflate, not the sync flush marker. The zlib manual
 // asks for more than 6 bytes of avail_out with Z_SYNC_FLUSH: a deflate call returning with avail_out == 0 emits a new
 // flush marker at the next call - an endless loop for an empty message, whose raw DEFLATE bound (5 bytes) is exactly
 // the size of its marker.
 constexpr std::size_t kSyncFlushMargin = 8;
+
+// Bit of zstream::data_type set by inflate() when it stops at a block boundary, before the header of the next block.
+constexpr unsigned kInflateAtBlockBoundary = 128U;
 
 // Restarts an inflate stream ended by a final block, which inflates nothing more, keeping its sliding window for the
 // next messages that refer to it (context takeover, RFC 7692 §7.2.3.4).
@@ -112,6 +116,12 @@ const char* WebSocketDecompressor::decompress(std::span<const std::byte> input, 
                                               std::size_t maxDecompressedSize, bool resetContext,
                                               std::size_t maxSliceSize) {
   assert(maxSliceSize != 0 && maxSliceSize <= kZMaxSize);
+  if (input.empty()) {
+    // An empty message, which zlib compresses to 0x00 (the header of the empty stored block of the trailer). Without
+    // this byte, the trailer alone would leave the stream in the middle of a block header, garbling the next messages
+    // with context takeover: the stream is left as it is.
+    return nullptr;
+  }
   auto& stream = _zs.stream;
 
   if (!_zs.initialized()) {
@@ -165,6 +175,11 @@ const char* WebSocketDecompressor::decompress(std::span<const std::byte> input, 
     }
     // The input slice was inflated.
     if (trailerSet && input.empty()) {
+      // The trailer ends the data at a block boundary, where inflate() waits for the next block header. Elsewhere, the
+      // data was truncated: the rest of its last block is missing.
+      if ((static_cast<unsigned>(stream.data_type) & kInflateAtBlockBoundary) == 0U) {
+        return "Truncated DEFLATE data";
+      }
       break;
     }
     if (input.empty()) {

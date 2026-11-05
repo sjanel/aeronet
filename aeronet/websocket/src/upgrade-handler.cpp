@@ -9,13 +9,13 @@
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/header-write.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header-value-reverse-tokens-iterator.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/ndigits.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
-#include "aeronet/string-trim.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/websocket-constants.hpp"
 #include "aeronet/websocket-deflate.hpp"
@@ -27,13 +27,20 @@ namespace aeronet {
 
 namespace {
 
-// Pops the first element of a comma-separated list (RFC 9110 §5.6.1) from 'list', trimmed of whitespace (empty for an
-// empty element): no allocation, the element is a view of the list.
-[[nodiscard]] std::string_view PopListElement(std::string_view& list) {
-  const auto commaPos = list.find(',');
-  const std::string_view element = TrimOws(list.substr(0, commaPos));
-  list = commaPos == std::string_view::npos ? std::string_view{} : list.substr(commaPos + 1);
-  return element;
+// The element of a comma-separated list (RFC 9110 §5.6.1) equal to 'token', compared case-insensitively: a view of the
+// list, trimmed of whitespace, empty if there is none.
+[[nodiscard]] std::string_view FindListElement(std::string_view list, std::string_view token) {
+  for (http::HeaderValueReverseTokensIterator<','> it(list); it.hasNext();) {
+    const std::string_view element = it.next();
+    if (CaseInsensitiveEqual(element, token)) {
+      return element;
+    }
+  }
+  return {};
+}
+
+[[nodiscard]] bool ListContains(std::string_view list, std::string_view token) {
+  return !FindListElement(list, token).empty();
 }
 
 // Select the first subprotocol of the server (in its preference order) that the client offers, compared
@@ -41,11 +48,8 @@ namespace {
 // offer byte for byte (RFC 6455 §4.1).
 [[nodiscard]] std::string_view NegotiateSubprotocol(std::string_view offered, const ConcatenatedStrings& supported) {
   for (const std::string_view serverProto : supported) {
-    for (std::string_view list = offered; !list.empty();) {
-      const std::string_view clientProto = PopListElement(list);
-      if (CaseInsensitiveEqual(clientProto, serverProto)) {
-        return clientProto;
-      }
+    if (const std::string_view clientProto = FindListElement(offered, serverProto); !clientProto.empty()) {
+      return clientProto;
     }
   }
   return {};
@@ -56,12 +60,7 @@ namespace {
 namespace upgrade {
 
 bool ConnectionContainsUpgrade(std::string_view connectionValue) {
-  while (!connectionValue.empty()) {
-    if (CaseInsensitiveEqual(PopListElement(connectionValue), http::Upgrade)) {
-      return true;
-    }
-  }
-  return false;
+  return ListContains(connectionValue, http::Upgrade);
 }
 
 UpgradeValidationResult ValidateWebSocketUpgrade(const SvToSvMap& headers, const WebSocketUpgradeConfig& config) {
@@ -74,8 +73,9 @@ UpgradeValidationResult ValidateWebSocketUpgrade(const SvToSvMap& headers, const
     return result;
   }
 
-  if (!CaseInsensitiveEqual(it->second, websocket::UpgradeValue)) {
-    result.pErrorMessage = "Upgrade header is not 'websocket'";
+  // A list of protocols, in the client's order of preference (RFC 9110 §7.8): the server picks websocket among them.
+  if (!ListContains(it->second, websocket::UpgradeValue)) {
+    result.pErrorMessage = "Upgrade header does not contain 'websocket'";
     return result;
   }
 
@@ -129,14 +129,12 @@ UpgradeValidationResult ValidateWebSocketUpgrade(const SvToSvMap& headers, const
     // Negotiate permessage-deflate if compression is enabled
     if (config.deflateConfig.enabled) {
 #ifdef AERONET_ENABLE_ZLIB
-      for (std::string_view offers = it->second; !offers.empty();) {
-        const std::string_view offer = PopListElement(offers);
-        if (offer.empty()) {
-          continue;
-        }
-        result.deflateParams = websocket::ParseDeflateOffer(offer, config.deflateConfig);
-        if (result.deflateParams.hasValue()) {
-          break;  // Take the first acceptable offer
+      // The first acceptable offer, in the client's order of preference (RFC 7692 §5): read from the end of the list,
+      // it is the last one found (a client sends a few offers at most).
+      for (http::HeaderValueReverseTokensIterator<','> offers(it->second); offers.hasNext();) {
+        const auto params = websocket::ParseDeflateOffer(offers.next(), config.deflateConfig);
+        if (params.hasValue()) {
+          result.deflateParams = params;
         }
       }
 #else
@@ -151,9 +149,9 @@ UpgradeValidationResult ValidateWebSocketUpgrade(const SvToSvMap& headers, const
   return result;
 }
 
-ProtocolType DetectUpgradeTarget([[maybe_unused]] std::string_view upgradeHeaderValue) {
+ProtocolType DetectUpgradeTarget(std::string_view upgradeHeaderValue) {
   // "h2c" is intentionally not an upgrade target (RFC 9113 §3.1 deprecated it): such requests stay on HTTP/1.1.
-  if (CaseInsensitiveEqual(upgradeHeaderValue, websocket::UpgradeValue)) {
+  if (ListContains(upgradeHeaderValue, websocket::UpgradeValue)) {
     return ProtocolType::WebSocket;
   }
 

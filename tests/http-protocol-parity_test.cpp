@@ -37,6 +37,11 @@
 #include "aeronet/request-task.hpp"
 #endif
 
+#ifdef AERONET_ENABLE_WEBSOCKET
+#include "aeronet/websocket-endpoint.hpp"
+#include "aeronet/websocket-handler.hpp"
+#endif
+
 namespace aeronet {
 namespace {
 
@@ -100,6 +105,26 @@ TEST_P(ProtocolParity, NotFound) {
   EXPECT_EQ(resp.status(), http::StatusCodeNotFound);
   EXPECT_EQ(resp.headerValueOrEmpty("x-post"), "1");
 }
+
+#ifdef AERONET_ENABLE_WEBSOCKET
+// A GET without upgrade to a WebSocket endpoint: 426 with Upgrade over HTTP/1.1 (RFC 9110 §15.5.22), 404 over HTTP/2,
+// which forbids the Upgrade header (RFC 9113 §8.2.2) and does not support WebSocket. Both go through the response
+// middleware.
+TEST_P(ProtocolParity, WebSocketEndpointWithoutUpgrade) {
+  ts.postRouterUpdate([](Router& router) {
+    router.addResponseMiddleware(TagResponse);
+    router.setWebSocket("/ws", WebSocketEndpoint::WithCallbacks(websocket::WebSocketCallbacks{}));
+  });
+  const auto resp = send(http::Method::GET, "/ws");
+  if (GetParam() == HttpVersionMode::Http2) {
+    EXPECT_EQ(resp.status(), http::StatusCodeNotFound);
+  } else {
+    EXPECT_EQ(resp.status(), http::StatusCodeUpgradeRequired);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::Upgrade), "websocket");
+  }
+  EXPECT_EQ(resp.headerValueOrEmpty("x-post"), "1");
+}
+#endif
 
 TEST_P(ProtocolParity, MethodNotAllowed) {
   ts.router().addResponseMiddleware(TagResponse);

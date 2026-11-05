@@ -49,13 +49,18 @@ constexpr bool kJsonSupported =
 #endif
 
 // A compression codec compiled in this build (Encoding::none if there is none).
-constexpr Encoding kCodec = zstdEnabled()     ? Encoding::zstd
-                            : brotliEnabled() ? Encoding::br
-                            : zlibEnabled()   ? Encoding::gzip
-                                              : Encoding::none;
+constexpr Encoding kCodec = [] {
+  if constexpr (zstdEnabled()) {
+    return Encoding::zstd;
+  }
+  if constexpr (brotliEnabled()) {
+    return Encoding::br;
+  }
+  return zlibEnabled() ? Encoding::gzip : Encoding::none;
+}();
 
 // Larger than the 32 KiB of the first compression buffer and than the 16 KiB of an HTTP/2 DATA frame.
-constexpr std::size_t kLargePayloadSize = 256UL << 10;
+constexpr std::size_t kLargePayloadSize = 256UL << 10U;
 
 Order MakeOrder(std::size_t payloadSize = 16) {
   Order order;
@@ -341,8 +346,10 @@ TEST_P(HttpProtobuf, AsyncHandler) {
 TEST(HttpProtobufHead, ContentLengthOfTheEncoding) {
   test::TestServer ts(HttpServerConfig{});
   const Order order = MakeOrder(1000);
+  // Captured by value: the handler runs on the server thread, and TSAN does not see the request and its response going
+  // through the socket as synchronizing it with the destruction of 'order' at the end of the test.
   ts.router().setPath(http::Method::GET, "/order",
-                      [&order](const HttpRequestView& req) { return req.makeResponse().bodyProto(order); });
+                      [order](const HttpRequestView& req) { return req.makeResponse().bodyProto(order); });
   test::RequestOptions opts;
   opts.method = "HEAD";
   opts.target = "/order";

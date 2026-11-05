@@ -17,6 +17,15 @@ namespace aeronet::websocket {
 /// The data is entirely unmasked whatever the result.
 [[nodiscard]] bool UnmaskAndValidateUtf8(std::span<std::byte> data, MaskingKey maskingKey) noexcept;
 
+/// ValidateUtf8Prefix() result for data that no continuation can make well-formed UTF-8.
+inline constexpr std::size_t kInvalidUtf8Prefix = ~std::size_t{0};
+
+/// Validates data as the start of a UTF-8 text that may end in the middle of a code point, like a fragment of a text
+/// message that the next fragments complete. Returns the number of bytes (0 to 3) of its trailing incomplete sequence,
+/// a valid start of a code point, or kInvalidUtf8Prefix when no continuation can make data well-formed (see
+/// IsValidUtf8()).
+[[nodiscard]] std::size_t ValidateUtf8Prefix(std::span<const std::byte> data) noexcept;
+
 namespace detail {
 
 // The kernels behind IsValidUtf8 and UnmaskAndValidateUtf8, exposed for tests and benchmarks.

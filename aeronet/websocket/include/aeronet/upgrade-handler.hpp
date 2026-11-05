@@ -61,7 +61,7 @@ namespace upgrade {
 /// Check if the request contains an Upgrade header requesting WebSocket.
 ///
 /// Validates:
-///   - Upgrade: websocket (case-insensitive)
+///   - Upgrade: a list of protocols containing websocket (case-insensitive)
 ///   - Connection: upgrade (case-insensitive, may contain other tokens)
 ///   - Sec-WebSocket-Version: 13
 ///   - Sec-WebSocket-Key: present and 24 bytes (base64 of 16 random bytes)
@@ -74,7 +74,7 @@ namespace upgrade {
 
 /// Detect the upgrade target from an HTTP request.
 ///
-/// Examines the Upgrade header and returns the target protocol.
+/// Examines the Upgrade header, a list of protocols, and returns the target protocol.
 /// Does NOT perform full validation - use ValidateWebSocketUpgrade() for complete validation.
 ///
 /// @param upgradeHeaderValue  Value of the Upgrade request header (empty if absent)
