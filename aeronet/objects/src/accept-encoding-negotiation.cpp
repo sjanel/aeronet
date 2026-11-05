@@ -171,7 +171,7 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiate(std::string_view 
   double wildcardQ = 0.0;
 
   bool identityExplicit = false;
-  for (http::HeaderValueReverseTokensIterator<','> it(acceptEncoding); it.hasNext();) {
+  for (http::HeaderValueReverseTokensIterator it(acceptEncoding); it.hasNext();) {
     const std::string_view raw = it.next();
     if (raw.empty()) {
       continue;

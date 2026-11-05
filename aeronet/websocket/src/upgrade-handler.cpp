@@ -30,7 +30,7 @@ namespace {
 // The element of a comma-separated list (RFC 9110 §5.6.1) equal to 'token', compared case-insensitively: a view of the
 // list, trimmed of whitespace, empty if there is none.
 [[nodiscard]] std::string_view FindListElement(std::string_view list, std::string_view token) {
-  for (http::HeaderValueReverseTokensIterator<','> it(list); it.hasNext();) {
+  for (http::HeaderValueReverseTokensIterator it(list); it.hasNext();) {
     const std::string_view element = it.next();
     if (CaseInsensitiveEqual(element, token)) {
       return element;
@@ -131,8 +131,9 @@ UpgradeValidationResult ValidateWebSocketUpgrade(const SvToSvMap& headers, const
 #ifdef AERONET_ENABLE_ZLIB
       // The first acceptable offer, in the client's order of preference (RFC 7692 §5): read from the end of the list,
       // it is the last one found (a client sends a few offers at most).
-      for (http::HeaderValueReverseTokensIterator<','> offers(it->second); offers.hasNext();) {
-        const auto params = websocket::ParseDeflateOffer(offers.next(), config.deflateConfig);
+      for (http::HeaderValueReverseTokensIterator offers(it->second); offers.hasNext();) {
+        const websocket::DeflateNegotiatedParams params =
+            websocket::ParseDeflateOffer(offers.next(), config.deflateConfig);
         if (params.hasValue()) {
           result.deflateParams = params;
         }

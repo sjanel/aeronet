@@ -78,7 +78,7 @@ ResponseStreamer::Coding ResponseStreamer::selectDecoder(std::string_view conten
   assert(!LowerAsciiKey::ContainsUpperAscii(contentEncoding));
   if (contentEncoding.contains(',')) {
     // Stacked codings are decoded whole, once buffered: they must all be supported.
-    for (http::HeaderValueReverseTokensIterator<','> it(contentEncoding); it.hasNext();) {
+    for (http::HeaderValueReverseTokensIterator it(contentEncoding); it.hasNext();) {
       if (!IsSupportedCoding(it.next())) {
         return Coding::Unsupported;
       }

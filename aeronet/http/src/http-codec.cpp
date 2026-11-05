@@ -88,7 +88,7 @@ struct VaryResult {
     // Response headers are guaranteed to be trimmed on the extreme sides.
     // We can therefore use the reverse CSV iterator (order doesn't matter).
     const std::string_view value = hdr.value;
-    for (http::HeaderValueReverseTokensIterator<','> it(value); it.hasNext();) {
+    for (http::HeaderValueReverseTokensIterator it(value); it.hasNext();) {
       const std::string_view token = it.next();
       if (token == "*" || CaseInsensitiveEqual(token, http::AcceptEncoding)) {
         res.valueFirst = kVaryAcceptEncodingNotNeeded;
@@ -160,8 +160,8 @@ inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] Decompre
 
   // Decode in reverse order, algorithm by algorithm.
   // For the first stage, we read from chunks. For subsequent stages, we read from the previous output buffer.
-  for (http::HeaderValueReverseTokensIterator<','> encIt(contentEncoding); encIt.hasNext();) {
-    auto encoding = encIt.next();
+  for (http::HeaderValueReverseTokensIterator encIt(contentEncoding); encIt.hasNext();) {
+    std::string_view encoding = encIt.next();
     if (encoding.empty()) {
       return {.status = http::StatusCodeBadRequest, .message = "Malformed Content-Encoding"};
     }
@@ -823,7 +823,7 @@ http::StatusCode HttpCodec::WillDecompress(const DecompressionConfig& decompress
   bool foundNonIdentity = false;
 
   // Parse the encoding string to check for non-identity encodings
-  http::HeaderValueReverseTokensIterator<','> encIt(encodingStr);
+  http::HeaderValueReverseTokensIterator encIt(encodingStr);
   assert(encIt.hasNext());
   do {
     std::string_view encoding = encIt.next();

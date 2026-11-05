@@ -2169,17 +2169,15 @@ TEST(SingleHttpServer, OptionsMethod) {
 
 // Test exception in request middleware
 TEST(SingleHttpServer, MiddlewareExceptionHandling) {
-  ts.router().addRequestMiddleware([](HttpRequestView&) {
+  ts.router().addRequestMiddleware([](HttpRequestView&) -> MiddlewareResult {
     // Test just that adding a middleware that throws doesn't crash
     throw std::runtime_error("middleware failure");
-    return MiddlewareResult::Continue();
   });
 
-  ts.router().addRequestMiddleware([](HttpRequestView&) {
+  ts.router().addRequestMiddleware([](HttpRequestView&) -> MiddlewareResult {
     // Test just that adding a middleware that throws doesn't crash
     // NOLINTNEXTLINE(bugprone-std-exception-baseclass)
     throw 42;
-    return MiddlewareResult::Continue();
   });
 
   ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("should not reach"); });
