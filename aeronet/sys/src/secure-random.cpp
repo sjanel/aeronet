@@ -16,6 +16,9 @@
 #include <bcrypt.h>
 // clang-format on
 
+#include <algorithm>
+#include <format>
+#include <limits>
 #include <system_error>
 #else
 #include <cstdlib>  // arc4random_buf
@@ -38,10 +41,18 @@ void FillSecureRandomBytes(std::span<std::byte> out) {
     out = out.subspan(static_cast<std::size_t>(nbBytes));
   }
 #elifdef AERONET_WINDOWS
-  const NTSTATUS status = ::BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(out.data()),
-                                            static_cast<ULONG>(out.size()), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
-  if (!BCRYPT_SUCCESS(status)) {
-    throw std::system_error(static_cast<int>(status), std::system_category(), "BCryptGenRandom() failed");
+  // BCryptGenRandom() rejects a null buffer (that of an empty span) and takes a 32-bit size.
+  while (!out.empty()) {
+    const auto nbBytes = static_cast<ULONG>(std::min<std::size_t>(out.size(), std::numeric_limits<ULONG>::max()));
+    const NTSTATUS status =
+        ::BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(out.data()), nbBytes, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+    if (!BCRYPT_SUCCESS(status)) {
+      // An NTSTATUS is not a Win32 error code: std::system_category() cannot describe it, hence its value in the text.
+      throw std::system_error(static_cast<int>(status), std::system_category(),
+                              std::format("BCryptGenRandom() failed for {} bytes with NTSTATUS {:#010x}", nbBytes,
+                                          static_cast<unsigned long>(status)));
+    }
+    out = out.subspan(nbBytes);
   }
 #else
   ::arc4random_buf(out.data(), out.size());  // never fails

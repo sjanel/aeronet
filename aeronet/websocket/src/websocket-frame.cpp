@@ -526,7 +526,8 @@ ClosePayload ParseClosePayload(std::span<const std::byte> payload) {
     result.pErrorMessage = "Invalid UTF-8 in close reason";
     return result;
   }
-  result.code = static_cast<CloseCode>(code);
+  // The library and application codes (3000-4999) are valid without being enumerators of CloseCode.
+  result.code = static_cast<CloseCode>(code);  // NOLINT(clang-analyzer-optin.core.EnumCastOutOfRange)
   result.reason = std::string_view(reinterpret_cast<const char*>(reason.data()), reason.size());
   return result;
 }
