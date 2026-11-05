@@ -73,11 +73,11 @@ constexpr uint8_t DeflateWindowBits(DeflateNegotiatedParams params, bool isServe
   return std::max(isServerSide ? params.serverMaxWindowBits : params.clientMaxWindowBits, kMinDeflateWindowBits);
 }
 
-// Parse window bits value (8-15), 0 if invalid
+// Parse window bits value (8-15), a decimal integer without leading zeroes (RFC 7692 §7.1.2), 0 if invalid
 [[nodiscard]] uint8_t ParseWindowBits(std::string_view value) {
   uint8_t bits = 0;
   const auto [ptr, ec] = std::from_chars(value.data(), value.data() + value.size(), bits);
-  if (ec != std::errc{} || ptr != value.data() + value.size() || !IsValidWindowBits(bits)) {
+  if (ec != std::errc{} || ptr != value.data() + value.size() || value.front() == '0' || !IsValidWindowBits(bits)) {
     bits = 0;  // Invalid value
   }
   return bits;
@@ -130,47 +130,58 @@ DeflateNegotiatedParams ParseDeflateOffer([[maybe_unused]] std::string_view exte
     return params;  // No parameters, use defaults
   }
 
-  // Parse extension offer: "permessage-deflate; param1; param2=value; ..."
+  // Parse extension offer: "permessage-deflate; param1; param2=value; ...". The offer is declined when a parameter is
+  // unknown, has an invalid value or is repeated (RFC 7692 §7): the next offer of the client, if any, is considered.
+  enum : uint8_t {
+    kSeenServerNoContextTakeover = 1U << 0U,
+    kSeenClientNoContextTakeover = 1U << 1U,
+    kSeenServerMaxWindowBits = 1U << 2U,
+    kSeenClientMaxWindowBits = 1U << 3U,
+  };
+  uint8_t seenParams = 0;
+  // Tells whether the parameter was not seen yet, and records it.
+  const auto firstOccurrence = [&seenParams](uint8_t paramBit) {
+    const bool first = (seenParams & paramBit) == 0;
+    seenParams |= paramBit;
+    return first;
+  };
 
   std::size_t pos = semiPos + 1;
-
-  // Parse remaining parameters
-  while (pos < extensionOffer.size()) {
+  for (;;) {
     const auto nextSemi = extensionOffer.find(';', pos);
     const auto paramEnd = (nextSemi == std::string_view::npos) ? extensionOffer.size() : nextSemi;
+    const auto param = ParseExtensionParam(extensionOffer.substr(pos, paramEnd - pos));
 
-    const auto paramStr = extensionOffer.substr(pos, paramEnd - pos);
-    const auto param = ParseExtensionParam(paramStr);
-
+    bool valid = false;
     if (CaseInsensitiveEqual(param.name, kServerNoContextTakeover)) {
+      // A parameter without value (RFC 7692 §7.1.1.1)
+      valid = !param.hasValue() && firstOccurrence(kSeenServerNoContextTakeover);
       params.serverNoContextTakeover = true;
     } else if (CaseInsensitiveEqual(param.name, kClientNoContextTakeover)) {
+      // A parameter without value (RFC 7692 §7.1.1.2)
+      valid = !param.hasValue() && firstOccurrence(kSeenClientNoContextTakeover);
       params.clientNoContextTakeover = true;
     } else if (CaseInsensitiveEqual(param.name, kServerMaxWindowBits)) {
-      if (param.hasValue()) {
-        const auto bits = ParseWindowBits(param.value);
-        if (bits == 0) {
-          params.setEmpty();  // invalid parameter value
-          return params;
-        }
-        // Server can accept client's request if it's <= our configured value
-        params.serverMaxWindowBits = std::min(bits, serverConfig.serverMaxWindowBits);
-      }
+      // The largest window the server may use, a value is required in an offer (RFC 7692 §7.1.2.1)
+      const auto bits = param.hasValue() ? ParseWindowBits(param.value) : uint8_t{0};
+      valid = bits != 0 && firstOccurrence(kSeenServerMaxWindowBits);
+      // Server can accept client's request if it's <= our configured value
+      params.serverMaxWindowBits = std::min(bits, serverConfig.serverMaxWindowBits);
     } else if (CaseInsensitiveEqual(param.name, kClientMaxWindowBits)) {
-      // The client accepts a limit on its window. A value tells the largest window it will use.
-      params.clientMaxWindowBits = serverConfig.clientMaxWindowBits;
-      if (param.hasValue()) {
-        const auto bits = ParseWindowBits(param.value);
-        if (bits == 0) {
-          params.setEmpty();  // invalid parameter value
-          return params;
-        }
-        params.clientMaxWindowBits = std::min(bits, serverConfig.clientMaxWindowBits);
-      }
+      // The client accepts a limit on its window. A value, optional, tells the largest window it will use
+      // (RFC 7692 §7.1.2.2).
+      const auto bits = param.hasValue() ? ParseWindowBits(param.value) : serverConfig.clientMaxWindowBits;
+      valid = bits != 0 && firstOccurrence(kSeenClientMaxWindowBits);
+      params.clientMaxWindowBits = std::min(bits, serverConfig.clientMaxWindowBits);
     }
-    // Unknown parameters are ignored per RFC 7692
-
-    pos = (nextSemi == std::string_view::npos) ? extensionOffer.size() : nextSemi + 1;
+    if (!valid) {
+      params.setEmpty();  // unknown or repeated parameter, or invalid value
+      return params;
+    }
+    if (nextSemi == std::string_view::npos) {
+      break;
+    }
+    pos = nextSemi + 1;
   }
 #endif
   return params;

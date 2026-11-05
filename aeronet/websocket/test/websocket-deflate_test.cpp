@@ -256,17 +256,10 @@ TEST(WebSocketDeflateTest, ParseDeflateOffer_ClientMaxWindowBitsNoValue) {
 }
 
 TEST(WebSocketDeflateTest, ParseDeflateOffer_ServerMaxWindowBitsNoValue) {
-  // server_max_window_bits without a value means server is advertising capability
+  // server_max_window_bits requires a value in an offer (RFC 7692 §7.1.2.1)
   DeflateConfig serverConfig;
   auto result = ParseDeflateOffer("permessage-deflate; server_max_window_bits", serverConfig);
-
-#ifdef AERONET_ENABLE_ZLIB
-  ASSERT_TRUE(result.hasValue());
-  // Server can set the value, defaults to server's configured max
-  EXPECT_EQ(result.serverMaxWindowBits, 15);
-#else
   EXPECT_FALSE(result.hasValue());
-#endif
 }
 
 TEST(WebSocketDeflateTest, ParseDeflateOffer_QuotedValue) {
@@ -289,13 +282,46 @@ TEST(WebSocketDeflateTest, ParseDeflateOffer_QuotedValueMissingEndQuote) {
   EXPECT_FALSE(result.hasValue());
 }
 
-TEST(WebSocketDeflateTest, ParseDeflateOffer_UnknownParameterIgnored) {
+TEST(WebSocketDeflateTest, ParseDeflateOffer_UnknownParameterDeclined) {
+  // An offer with a parameter not defined for it is declined (RFC 7692 §7)
   DeflateConfig serverConfig;
   auto result = ParseDeflateOffer("permessage-deflate; unknown_param=value; server_max_window_bits=10", serverConfig);
+  EXPECT_FALSE(result.hasValue());
+}
 
+// RFC 7692 §7: unknown parameters, invalid values and repeated parameters make the server decline the offer.
+TEST(WebSocketDeflateTest, ParseDeflateOffer_InvalidOffersDeclined) {
+  DeflateConfig serverConfig;
+  for (const std::string_view offer : {
+           "permessage-deflate; foo",
+           "permessage-deflate;",
+           "permessage-deflate; ; server_no_context_takeover",
+           "permessage-deflate; server_no_context_takeover=1",
+           "permessage-deflate; client_no_context_takeover=\"\"",
+           "permessage-deflate; server_no_context_takeover; server_no_context_takeover",
+           "permessage-deflate; client_no_context_takeover; Client_No_Context_Takeover",
+           "permessage-deflate; server_max_window_bits=10; server_max_window_bits=10",
+           "permessage-deflate; client_max_window_bits; client_max_window_bits=10",
+           "permessage-deflate; server_max_window_bits=010",
+           "permessage-deflate; client_max_window_bits=09",
+           "permessage-deflate; server_max_window_bits=\"08\"",
+       }) {
+    EXPECT_FALSE(ParseDeflateOffer(offer, serverConfig).hasValue()) << offer;
+  }
+}
+
+TEST(WebSocketDeflateTest, ParseDeflateOffer_EveryParameterOnce) {
+  DeflateConfig serverConfig;
+  const auto result = ParseDeflateOffer(
+      "permessage-deflate; server_no_context_takeover; client_no_context_takeover; server_max_window_bits=10; "
+      "client_max_window_bits=9",
+      serverConfig);
 #ifdef AERONET_ENABLE_ZLIB
   ASSERT_TRUE(result.hasValue());
+  EXPECT_TRUE(result.serverNoContextTakeover);
+  EXPECT_TRUE(result.clientNoContextTakeover);
   EXPECT_EQ(result.serverMaxWindowBits, 10);
+  EXPECT_EQ(result.clientMaxWindowBits, 9);
 #else
   EXPECT_FALSE(result.hasValue());
 #endif
@@ -326,15 +352,11 @@ TEST(WebSocketDeflateTest, ParseDeflateOffer_WhitespaceInParams) {
 #endif
 }
 
-TEST(WebSocketDeflateTest, ParseDeflateOffer_MaxWindowBitsNoEqualsSignShouldBeIgnored) {
+TEST(WebSocketDeflateTest, ParseDeflateOffer_MaxWindowBitsNoEqualsSignDeclined) {
+  // Not a parameter name followed by its value: an unknown parameter
   DeflateConfig serverConfig;
   auto result = ParseDeflateOffer("permessage-deflate; server_max_window_bits abc", serverConfig);
-
-#ifdef AERONET_ENABLE_ZLIB
-  ASSERT_TRUE(result.hasValue());
-#else
   EXPECT_FALSE(result.hasValue());
-#endif
 }
 
 TEST(WebSocketDeflateTest, ParseDeflateOffer_InvalidWindowBitsNonNumeric) {

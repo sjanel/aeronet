@@ -23,9 +23,12 @@ jobs:
       matrix:
         include:
           - { compiler: gcc-13, features: OFF, client: OFF, server: ON, build: Debug, asan: ON, tsan: OFF}
-          - { compiler: gcc-13, features: ON, client: ON, server: ON, build: Debug, asan: ON, tsan: OFF }
+          # The gcc-13 Debug legs with features build shared libraries: static libraries copy every library, with its
+          # GCC debug info and ASAN instrumentation, into each of the ~150 test executables, which fills the disk of
+          # the ubuntu-24.04 runner. Static linking stays covered by the clang-21 legs and the gcc-13 leg without features.
+          - { compiler: gcc-13, features: ON, client: ON, server: ON, build: Debug, asan: ON, tsan: OFF, shared: ON }
           # protobuf lite runtime: AERONET_PROTOBUF_LITE code paths. OpenTelemetry links the full runtime, so it is off.
-          - { compiler: gcc-13, features: ON, client: ON, server: ON, build: Debug, asan: ON, tsan: OFF, protobuf: lite }
+          - { compiler: gcc-13, features: ON, client: ON, server: ON, build: Debug, asan: ON, tsan: OFF, protobuf: lite, shared: ON }
           - { compiler: clang-21, features: OFF, client: OFF, server: ON, build: Debug, asan: ON, tsan: OFF }
           # Also the unity build leg: a static helper or constant defined twice in the sources of a library
           # breaks AERONET_UNITY_BUILD, which is only built here.

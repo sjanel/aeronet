@@ -31,6 +31,10 @@ struct UpgradeValidationResult {
   // Negotiated WebSocket permessage-deflate parameters (if compression was negotiated)
   websocket::DeflateNegotiatedParams deflateParams;
 
+  // Set with pErrorMessage when Sec-WebSocket-Version is missing or not 13: the response announces the supported
+  // version (RFC 6455 §4.4).
+  bool unsupportedVersion{false};
+
   const char* pErrorMessage = nullptr;  // Populated if !valid
 
   // WebSocket-specific fields (populated when targetProtocol == WebSocket)
@@ -79,8 +83,10 @@ namespace upgrade {
 
 /// Tell whether a WebSocket upgrade request comes from a page of the server itself, or from a client that is not a
 /// browser: either there is no Origin header, or its host and port (default port of its scheme omitted) are the ones
-/// of the Host header, compared case-insensitively. An opaque origin ("null") is never the same origin.
-[[nodiscard]] bool IsSameOriginRequest(std::string_view origin, std::string_view host);
+/// of the Host header, compared case-insensitively, with the scheme of the connection: https over TLS
+/// (secureConnection), http or https otherwise (https being the scheme of the pages behind a reverse proxy terminating
+/// TLS). An opaque origin ("null") or an origin of another scheme is never the same origin.
+[[nodiscard]] bool IsSameOriginRequest(std::string_view origin, std::string_view host, bool secureConnection);
 
 std::size_t ComputeWebSocketUpgradeResponseSize(const UpgradeValidationResult& validationResult);
 
@@ -96,10 +102,12 @@ void BuildWebSocketUpgradeResponse(const UpgradeValidationResult& validationResu
 /// Outcome of AcceptWebSocketUpgrade().
 struct WebSocketAcceptResult {
   enum class Status : uint8_t {
-    Accepted,  // handler and response are set
-    Invalid,   // not a valid WebSocket upgrade request (see pErrorMessage), to answer with 400
-    Refused,   // the factory of the endpoint refused the upgrade (returned no handler), to answer with 403
-    Failed,    // the factory of the endpoint threw (logged), to answer with 500
+    Accepted,            // handler and response are set
+    Invalid,             // not a valid WebSocket upgrade request (see pErrorMessage), to answer with 400
+    UnsupportedVersion,  // Sec-WebSocket-Version missing or not 13 (see pErrorMessage), to answer with 400 and
+                         // Sec-WebSocket-Version: 13 (RFC 6455 §4.4)
+    Refused,             // the factory of the endpoint refused the upgrade (returned no handler), to answer with 403
+    Failed,              // the factory of the endpoint threw (logged), to answer with 500
   };
 
   std::unique_ptr<websocket::WebSocketHandler> handler;  // Protocol handler of the upgraded connection

@@ -1,6 +1,5 @@
 #include "aeronet/upgrade-handler.hpp"
 
-#include <algorithm>
 #include <cstddef>
 #include <exception>
 #include <memory>
@@ -28,30 +27,26 @@ namespace aeronet {
 
 namespace {
 
-// Parse a comma-separated list of tokens (for Sec-WebSocket-Protocol, etc.)
-ConcatenatedStrings ParseTokenList(std::string_view header) {
-  ConcatenatedStrings result;
-  for (std::size_t pos = 0; pos < header.size();) {
-    const auto commaPos = header.find(',', pos);
-    const auto tokenEnd = (commaPos == std::string_view::npos) ? header.size() : commaPos;
-    const auto token = TrimOws(header.substr(pos, tokenEnd - pos));
-    if (!token.empty()) {
-      result.append(token);
-    }
-
-    pos = (commaPos == std::string_view::npos) ? header.size() : commaPos + 1;
-  }
-  return result;
+// Pops the first element of a comma-separated list (RFC 9110 §5.6.1) from 'list', trimmed of whitespace (empty for an
+// empty element): no allocation, the element is a view of the list.
+[[nodiscard]] std::string_view PopListElement(std::string_view& list) {
+  const auto commaPos = list.find(',');
+  const std::string_view element = TrimOws(list.substr(0, commaPos));
+  list = commaPos == std::string_view::npos ? std::string_view{} : list.substr(commaPos + 1);
+  return element;
 }
 
-// Select the first matching subprotocol from client's offer
-[[nodiscard]] std::string_view NegotiateSubprotocol(const ConcatenatedStrings& offered,
-                                                    const ConcatenatedStrings& supported) {
-  // Server's preference order
-  const auto it = std::ranges::find_if(
-      supported, [&offered](std::string_view serverProto) { return offered.containsCI(serverProto); });
-  if (it != supported.end()) {
-    return *it;
+// Select the first subprotocol of the server (in its preference order) that the client offers, compared
+// case-insensitively. Returns the client's spelling, a view of 'offered': the client compares the response with its
+// offer byte for byte (RFC 6455 §4.1).
+[[nodiscard]] std::string_view NegotiateSubprotocol(std::string_view offered, const ConcatenatedStrings& supported) {
+  for (const std::string_view serverProto : supported) {
+    for (std::string_view list = offered; !list.empty();) {
+      const std::string_view clientProto = PopListElement(list);
+      if (CaseInsensitiveEqual(clientProto, serverProto)) {
+        return clientProto;
+      }
+    }
   }
   return {};
 }
@@ -61,19 +56,10 @@ ConcatenatedStrings ParseTokenList(std::string_view header) {
 namespace upgrade {
 
 bool ConnectionContainsUpgrade(std::string_view connectionValue) {
-  // Split by comma and check each token
-  std::size_t pos = 0;
-  while (pos < connectionValue.size()) {
-    const auto commaPos = connectionValue.find(',', pos);
-    const auto tokenEnd = (commaPos == std::string_view::npos) ? connectionValue.size() : commaPos;
-
-    std::string_view token = TrimOws(connectionValue.substr(pos, tokenEnd - pos));
-
-    if (CaseInsensitiveEqual(token, http::Upgrade)) {
+  while (!connectionValue.empty()) {
+    if (CaseInsensitiveEqual(PopListElement(connectionValue), http::Upgrade)) {
       return true;
     }
-
-    pos = (commaPos == std::string_view::npos) ? connectionValue.size() : commaPos + 1;
   }
   return false;
 }
@@ -104,11 +90,13 @@ UpgradeValidationResult ValidateWebSocketUpgrade(const SvToSvMap& headers, const
   it = headers.find(websocket::SecWebSocketVersion);
   if (it == headers.end()) {
     result.pErrorMessage = "Missing Sec-WebSocket-Version header";
+    result.unsupportedVersion = true;
     return result;
   }
 
   if (it->second != websocket::kWebSocketVersion) {
     result.pErrorMessage = "Unsupported Sec-WebSocket-Version (expected 13)";
+    result.unsupportedVersion = true;
     return result;
   }
 
@@ -132,7 +120,7 @@ UpgradeValidationResult ValidateWebSocketUpgrade(const SvToSvMap& headers, const
   it = headers.find(websocket::SecWebSocketProtocol);
   if (it != headers.end() && !it->second.empty()) {
     // Negotiate subprotocol if server supports any
-    result.selectedProtocol = NegotiateSubprotocol(ParseTokenList(it->second), config.supportedProtocols);
+    result.selectedProtocol = NegotiateSubprotocol(it->second, config.supportedProtocols);
   }
 
   // Parse Sec-WebSocket-Extensions and negotiate permessage-deflate
@@ -141,8 +129,12 @@ UpgradeValidationResult ValidateWebSocketUpgrade(const SvToSvMap& headers, const
     // Negotiate permessage-deflate if compression is enabled
     if (config.deflateConfig.enabled) {
 #ifdef AERONET_ENABLE_ZLIB
-      for (std::string_view ext : ParseTokenList(it->second)) {
-        result.deflateParams = websocket::ParseDeflateOffer(ext, config.deflateConfig);
+      for (std::string_view offers = it->second; !offers.empty();) {
+        const std::string_view offer = PopListElement(offers);
+        if (offer.empty()) {
+          continue;
+        }
+        result.deflateParams = websocket::ParseDeflateOffer(offer, config.deflateConfig);
         if (result.deflateParams.hasValue()) {
           break;  // Take the first acceptable offer
         }
@@ -174,7 +166,7 @@ constexpr std::string_view kSwitchingProtocolsHttp11HeaderLine = "HTTP/1.1 101 S
 
 }  // namespace
 
-bool IsSameOriginRequest(std::string_view origin, std::string_view host) {
+bool IsSameOriginRequest(std::string_view origin, std::string_view host, bool secureConnection) {
   if (origin.empty()) {
     return true;
   }
@@ -186,12 +178,18 @@ bool IsSameOriginRequest(std::string_view origin, std::string_view host) {
   const std::string_view scheme = origin.substr(0, schemeEnd);
   std::string_view defaultPort;
   if (CaseInsensitiveEqual(scheme, "https")) {
+    // Over a plain connection, the scheme of the pages served by a reverse proxy terminating TLS: browsers do not let
+    // an https page open a ws:// connection itself.
     defaultPort = ":443";
-  } else if (CaseInsensitiveEqual(scheme, "http")) {
+  } else if (!secureConnection && CaseInsensitiveEqual(scheme, "http")) {
+    // Not over TLS: a page served over plain HTTP, whose content a network attacker can alter, is another origin than
+    // the TLS endpoint, whose cookies the browser would attach.
     defaultPort = ":80";
+  } else {
+    return false;
   }
   const auto withoutDefaultPort = [defaultPort](std::string_view authority) {
-    if (!defaultPort.empty() && authority.ends_with(defaultPort)) {
+    if (authority.ends_with(defaultPort)) {
       authority.remove_suffix(defaultPort.size());
     }
     return authority;
@@ -262,7 +260,8 @@ WebSocketAcceptResult AcceptWebSocketUpgrade(const HttpRequestView& request, con
   const UpgradeValidationResult validation = ValidateWebSocketUpgrade(requestHeaders, upgradeConfig);
   if (!validation.valid()) {
     result.pErrorMessage = validation.pErrorMessage;
-    result.status = WebSocketAcceptResult::Status::Invalid;
+    result.status = validation.unsupportedVersion ? WebSocketAcceptResult::Status::UnsupportedVersion
+                                                  : WebSocketAcceptResult::Status::Invalid;
     return result;
   }
 

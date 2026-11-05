@@ -4,6 +4,8 @@
 #include <sys/socket.h>
 #endif
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -39,6 +41,7 @@
 #include "aeronet/websocket-deflate-context.hpp"
 #include "aeronet/websocket-deflate.hpp"
 #include "aeronet/websocket-endpoint.hpp"
+#include "aeronet/websocket-frame.hpp"
 #include "aeronet/websocket-handler.hpp"
 #ifdef AERONET_ENABLE_ZLIB
 #include "aeronet/zlib-gateway.hpp"
@@ -804,6 +807,43 @@ TEST(WebSocketTimeouts, CloseTimeoutClosesConnectionWithoutPeerClose) {
   EXPECT_TRUE(test::WaitForPeerClose(conn.fd(), 2000ms));
 }
 
+// A drain closes the WebSocket connections with Going Away, instead of their abnormal closure at its deadline, and ends
+// once their peers answered.
+TEST(WebSocketDrain, ClosesWithGoingAway) {
+  test::TestServer server(TimeoutServerConfig(10s));
+  server.postRouterUpdate([](Router& router) { router.setWebSocket("/echo", EchoEndpoint(WebSocketConfig{})); });
+
+  test::ClientConnection conn(server.port());
+  Upgrade(conn.fd(), "/echo");
+
+  server.server.beginDrain(10s);
+  const auto close = ReceiveServerFrame(conn.fd(), 2000ms);
+  ASSERT_TRUE(close.has_value());
+  const auto val = close.value_or(ServerFrame{});
+  EXPECT_EQ(val.opcode, Opcode::Close);
+  EXPECT_EQ(ParseClosePayload(val.payload).code, CloseCode::GoingAway);
+
+  SendFrame(conn.fd(), BuildClientCloseFrame(CloseCode::GoingAway));
+  EXPECT_TRUE(test::WaitForPeerClose(conn.fd(), 2000ms));  // long before the drain deadline
+}
+
+// A peer that does not answer the Close frame of the drain is closed after closeTimeout, not at the drain deadline.
+TEST(WebSocketDrain, PeerNotAnsweringIsClosedAfterCloseTimeout) {
+  test::TestServer server(TimeoutServerConfig(10s));
+  WebSocketConfig config;
+  config.closeTimeout = 200ms;
+  server.postRouterUpdate([config](Router& router) { router.setWebSocket("/echo", EchoEndpoint(config)); });
+
+  test::ClientConnection conn(server.port());
+  Upgrade(conn.fd(), "/echo");
+
+  server.server.beginDrain(10s);
+  const auto close = ReceiveServerFrame(conn.fd(), 2000ms);
+  ASSERT_TRUE(close.has_value());
+  EXPECT_EQ(close.value_or(ServerFrame{}).opcode, Opcode::Close);
+  EXPECT_TRUE(test::WaitForPeerClose(conn.fd(), 2000ms));
+}
+
 // ============================================================================
 // Upgrade: middleware, origin checks, CORS, factory
 // ============================================================================
@@ -906,6 +946,27 @@ TEST_F(WebSocketTest, FactoryCanRefuseUpgrade) {
 
   EXPECT_TRUE(UpgradeResponse("/rooms/lobby", "").starts_with("HTTP/1.1 101"));
   EXPECT_TRUE(UpgradeResponse("/rooms/private", "").starts_with("HTTP/1.1 403"));
+}
+
+// RFC 6455 §4.4: an unsupported version is answered with the supported one, and the client may repeat the handshake
+// with it on the same connection.
+TEST_F(WebSocketTest, UnsupportedVersionAnnouncesTheSupportedOne) {
+  ts.postRouterUpdate([](Router& router) {
+    router.setWebSocket("/ws", WebSocketEndpoint::WithCallbacks(websocket::WebSocketCallbacks{}));
+  });
+
+  test::ClientConnection conn(ts.port());
+  std::string request = BuildUpgradeRequest("/ws");
+  request.replace(request.find("Version: 13"), std::string_view("Version: 13").size(), "Version: 8");
+  test::sendAll(conn.fd(), request);
+  std::string head = ReceiveResponseHead(conn.fd(), 1s);
+  EXPECT_TRUE(head.starts_with("HTTP/1.1 400")) << head;
+  std::ranges::transform(head, head.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+  EXPECT_TRUE(head.contains("\r\nsec-websocket-version: 13\r\n")) << head;
+
+  // The next head follows the body of the 400 response.
+  test::sendAll(conn.fd(), BuildUpgradeRequest("/ws"));
+  EXPECT_TRUE(ReceiveResponseHead(conn.fd(), 1s).contains("HTTP/1.1 101"));
 }
 
 TEST_F(WebSocketTest, EndpointWithoutFactoryUsesADefaultHandler) {

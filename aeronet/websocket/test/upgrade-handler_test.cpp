@@ -168,6 +168,7 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_MissingVersion) {
   const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_FALSE(result.valid());
   EXPECT_TRUE(std::string_view(result.pErrorMessage).contains("Version"));
+  EXPECT_TRUE(result.unsupportedVersion);
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WrongVersion) {
@@ -183,6 +184,7 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WrongVersion) {
   const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_FALSE(result.valid());
   EXPECT_TRUE(std::string_view(result.pErrorMessage).contains("13"));
+  EXPECT_TRUE(result.unsupportedVersion);
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_MissingKey) {
@@ -196,6 +198,7 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_MissingKey) {
   const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_FALSE(result.valid());
   EXPECT_TRUE(std::string_view(result.pErrorMessage).contains("Key"));
+  EXPECT_FALSE(result.unsupportedVersion);
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_InvalidKeyFormat) {
@@ -289,7 +292,8 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_SubprotocolCaseInsensitiv
 
   const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
   EXPECT_TRUE(result.valid());
-  EXPECT_EQ(result.selectedProtocol, "graphql-ws");
+  // The client's spelling: browsers compare the response with their offer byte for byte (RFC 6455 §4.1).
+  EXPECT_EQ(result.selectedProtocol, "GraphQL-WS");
 }
 
 TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_WithExtensions) {
@@ -362,6 +366,33 @@ TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_PermessageDeflateNegotiat
   // Compression not supported in this build
   EXPECT_FALSE(result.valid());
   EXPECT_FALSE(result.deflateParams.hasValue());
+#endif
+}
+
+// An invalid offer is declined (RFC 7692 §7): the next offer of the client is negotiated instead.
+TEST_F(UpgradeHandlerHarness, ValidateWebSocketUpgrade_InvalidDeflateOfferFallsBackToTheNextOne) {
+  const auto status =
+      parse(BuildRawHttp11("GET", "/ws",
+                           "Upgrade: websocket\r\n"
+                           "Connection: Upgrade\r\n"
+                           "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                           "Sec-WebSocket-Version: 13\r\n"
+                           "Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover=1, "
+                           "permessage-deflate; foo, permessage-deflate; server_max_window_bits=10\r\n"));
+  ASSERT_EQ(status, http::StatusCodeOK);
+
+  websocket::DeflateConfig deflateConfig;
+  deflateConfig.enabled = true;
+  WebSocketUpgradeConfig config{{}, deflateConfig};
+  const auto result = upgrade::ValidateWebSocketUpgrade(request.headers(), config);
+
+#ifdef AERONET_ENABLE_ZLIB
+  EXPECT_TRUE(result.valid());
+  ASSERT_TRUE(result.deflateParams.hasValue());
+  EXPECT_EQ(result.deflateParams.serverMaxWindowBits, 10);
+  EXPECT_FALSE(result.deflateParams.serverNoContextTakeover);
+#else
+  EXPECT_FALSE(result.valid());
 #endif
 }
 
@@ -760,28 +791,35 @@ TEST(UpgradeHandlerTest, BuildWebSocketUpgradeResponse_WithDeflateNoContextTakeo
 
 TEST(UpgradeHandlerTest, IsSameOriginRequest) {
   using upgrade::IsSameOriginRequest;
-  // No Origin: the client is not a browser.
-  EXPECT_TRUE(IsSameOriginRequest("", "example.com"));
+  for (const bool secure : {false, true}) {
+    SCOPED_TRACE(testing::Message() << "secure=" << secure);
+    // No Origin: the client is not a browser.
+    EXPECT_TRUE(IsSameOriginRequest("", "example.com", secure));
 
-  EXPECT_TRUE(IsSameOriginRequest("https://example.com", "example.com"));
-  EXPECT_TRUE(IsSameOriginRequest("HTTPS://Example.COM", "example.com"));
-  EXPECT_TRUE(IsSameOriginRequest("http://example.com:8080", "example.com:8080"));
-  // Default port of the Origin scheme, on either side.
-  EXPECT_TRUE(IsSameOriginRequest("https://example.com:443", "example.com"));
-  EXPECT_TRUE(IsSameOriginRequest("https://example.com", "example.com:443"));
-  EXPECT_TRUE(IsSameOriginRequest("http://example.com", "example.com:80"));
-  EXPECT_TRUE(IsSameOriginRequest("https://[::1]", "[::1]:443"));
+    EXPECT_TRUE(IsSameOriginRequest("https://example.com", "example.com", secure));
+    EXPECT_TRUE(IsSameOriginRequest("HTTPS://Example.COM", "example.com", secure));
+    EXPECT_TRUE(IsSameOriginRequest("https://example.com:8443", "example.com:8443", secure));
+    // Default port of the Origin scheme, on either side.
+    EXPECT_TRUE(IsSameOriginRequest("https://example.com:443", "example.com", secure));
+    EXPECT_TRUE(IsSameOriginRequest("https://example.com", "example.com:443", secure));
+    EXPECT_TRUE(IsSameOriginRequest("https://[::1]", "[::1]:443", secure));
 
-  EXPECT_FALSE(IsSameOriginRequest("https://evil.example", "example.com"));
-  EXPECT_FALSE(IsSameOriginRequest("https://example.com.evil.example", "example.com"));
-  EXPECT_FALSE(IsSameOriginRequest("https://example.com:8443", "example.com"));
-  EXPECT_FALSE(IsSameOriginRequest("http://example.com", "example.com:443"));
-  EXPECT_FALSE(IsSameOriginRequest("https://example.com", "example.com:8443"));
-  // Opaque origin, malformed origin, and unknown scheme without default port.
-  EXPECT_FALSE(IsSameOriginRequest("null", "example.com"));
-  EXPECT_FALSE(IsSameOriginRequest("example.com", "example.com"));
-  EXPECT_TRUE(IsSameOriginRequest("chrome-extension://example.com", "example.com"));
-  EXPECT_FALSE(IsSameOriginRequest("chrome-extension://example.com:443", "example.com"));
+    EXPECT_FALSE(IsSameOriginRequest("https://evil.example", "example.com", secure));
+    EXPECT_FALSE(IsSameOriginRequest("https://example.com.evil.example", "example.com", secure));
+    EXPECT_FALSE(IsSameOriginRequest("https://example.com:8443", "example.com", secure));
+    EXPECT_FALSE(IsSameOriginRequest("http://example.com", "example.com:443", secure));
+    EXPECT_FALSE(IsSameOriginRequest("https://example.com", "example.com:8443", secure));
+    // Opaque origin, malformed origin, and other schemes, whatever their authority.
+    EXPECT_FALSE(IsSameOriginRequest("null", "example.com", secure));
+    EXPECT_FALSE(IsSameOriginRequest("example.com", "example.com", secure));
+    EXPECT_FALSE(IsSameOriginRequest("chrome-extension://example.com", "example.com", secure));
+    EXPECT_FALSE(IsSameOriginRequest("chrome-extension://example.com:443", "example.com", secure));
+  }
+  // A page served over plain HTTP is another origin than a TLS endpoint, of the same host.
+  EXPECT_TRUE(IsSameOriginRequest("http://example.com:8080", "example.com:8080", false));
+  EXPECT_TRUE(IsSameOriginRequest("http://example.com", "example.com:80", false));
+  EXPECT_FALSE(IsSameOriginRequest("http://example.com:8080", "example.com:8080", true));
+  EXPECT_FALSE(IsSameOriginRequest("http://example.com", "example.com", true));
 }
 
 // ============================================================================
@@ -817,6 +855,24 @@ TEST_F(UpgradeHandlerHarness, AcceptWebSocketUpgrade_InvalidRequest) {
   EXPECT_EQ(result.handler, nullptr);
   EXPECT_TRUE(result.response.empty());
   EXPECT_FALSE(factoryCalled);
+}
+
+TEST_F(UpgradeHandlerHarness, AcceptWebSocketUpgrade_UnsupportedVersion) {
+  for (const std::string_view versionHeader : {std::string_view("Sec-WebSocket-Version: 8\r\n"), std::string_view()}) {
+    std::string headers(
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n");
+    headers.append(versionHeader);
+    ASSERT_EQ(parse(BuildRawHttp11("GET", "/ws", headers)), http::StatusCodeOK);
+    const auto endpoint = WebSocketEndpoint::WithCallbacks(websocket::WebSocketCallbacks{});
+    websocket::SharedDeflateStreams sharedStreams;
+
+    const auto result = upgrade::AcceptWebSocketUpgrade(request, request.headers(), endpoint, sharedStreams);
+    EXPECT_EQ(result.status, upgrade::WebSocketAcceptResult::Status::UnsupportedVersion) << versionHeader;
+    EXPECT_NE(result.pErrorMessage, nullptr);
+    EXPECT_EQ(result.handler, nullptr);
+  }
 }
 
 TEST_F(UpgradeHandlerHarness, AcceptWebSocketUpgrade_DefaultHandlerWithoutFactory) {

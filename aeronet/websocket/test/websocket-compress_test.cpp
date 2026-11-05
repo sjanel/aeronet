@@ -765,6 +765,30 @@ bool ReferenceRawInflate(std::string_view compressed, std::string& output, int w
   return ok;
 }
 
+// Compresses like a peer ending each message with a final block (RFC 7692 §7.2.3.4): a raw deflate stream per message.
+std::string FinalBlockRawDeflate(std::string_view input) {
+  zstream stream{};
+  EXPECT_EQ(ZDeflateInit2(stream, 6, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY), Z_OK);
+  std::string compressed(input.size() + 1024, '\0');
+  ZSetInput(stream, input.data(), static_cast<uint32_t>(input.size()));
+  ZSetOutput(stream, compressed.data(), static_cast<uint32_t>(compressed.size()));
+  EXPECT_EQ(ZDeflate(stream, Z_FINISH), Z_STREAM_END);
+  compressed.resize(compressed.size() - stream.avail_out);
+  ZDeflateEnd(stream);
+  return compressed;
+}
+
+// Incompressible data: a message made of it is only compressed by references to a previous one.
+std::string PseudoRandomBytes(std::size_t size) {
+  std::string bytes(size, '\0');
+  uint32_t state = 12345;
+  for (auto& ch : bytes) {
+    state = (state * 1103515245U) + 12345U;
+    ch = static_cast<char>(state >> 24U);
+  }
+  return bytes;
+}
+
 std::string CompressibleText() {
   std::string text;
   for (int idx = 0; idx < 200; ++idx) {
@@ -799,12 +823,7 @@ TEST(WebSocketCompressInterop, ProducesStandardRawDeflatePayload) {
 
 TEST(WebSocketCompressInterop, CompressorHonorsNegotiatedWindowBits) {
   // A 1 KiB pseudo-random block repeated: matches are 1024 bytes back, beyond a 512 bytes (9 bits) window.
-  std::string block(1024, '\0');
-  uint32_t state = 12345;
-  for (auto& ch : block) {
-    state = (state * 1103515245U) + 12345U;
-    ch = static_cast<char>(state >> 24U);
-  }
+  const std::string block = PseudoRandomBytes(1024);
   const std::string text = block + block;
 
   WebSocketCompressor compressor(6, 9);
@@ -906,14 +925,7 @@ TEST(WebSocketCompressSlices, DecompressInSlicesHonorsTheLimit) {
 // A sender may end the stream with a final block: the message ends there, whatever the slices.
 TEST(WebSocketCompressSlices, DecompressInSlicesStopsAtTheStreamEnd) {
   const std::string text = CompressibleText();
-  zstream stream{};
-  ASSERT_EQ(ZDeflateInit2(stream, 6, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY), Z_OK);
-  std::string compressed(text.size() + 1024, '\0');
-  ZSetInput(stream, text.data(), static_cast<uint32_t>(text.size()));
-  ZSetOutput(stream, compressed.data(), static_cast<uint32_t>(compressed.size()));
-  ASSERT_EQ(ZDeflate(stream, Z_FINISH), Z_STREAM_END);
-  compressed.resize(compressed.size() - stream.avail_out);
-  ZDeflateEnd(stream);
+  const std::string compressed = FinalBlockRawDeflate(text);
   for (const std::size_t sliceSize : {std::size_t{1}, std::size_t{5}, compressed.size()}) {
     WebSocketDecompressor decompressor;
     RawBytes output;
@@ -921,6 +933,80 @@ TEST(WebSocketCompressSlices, DecompressInSlicesStopsAtTheStreamEnd) {
         WebSocketCompressTestAccess::Decompress(decompressor, StringToBytes(compressed), output, kNoLimit, sliceSize),
         nullptr);
     EXPECT_EQ(BytesToString(output), text) << sliceSize;
+  }
+}
+
+// ============================================================================
+// Messages ending with a final block (RFC 7692 §7.2.3.4)
+// ============================================================================
+
+// A final block ends the DEFLATE stream: the messages after it are inflated by a restarted stream. They used to be
+// decompressed as empty with context takeover.
+TEST(WebSocketCompressFinalBlock, MessagesAfterAFinalBlock) {
+  const std::string text = CompressibleText();
+  for (const bool resetContext : {false, true}) {
+    SCOPED_TRACE(testing::Message() << "resetContext=" << resetContext);
+    WebSocketDecompressor decompressor;
+    for (const std::string_view message :
+         {std::string_view(text), std::string_view("Second message"), std::string_view()}) {
+      const std::string compressed = FinalBlockRawDeflate(message);
+      RawBytes output;
+      ASSERT_EQ(decompressor.decompress(StringToBytes(compressed), output, kNoLimit, resetContext), nullptr);
+      EXPECT_EQ(BytesToString(output), message);
+    }
+  }
+}
+
+// A first message without any data leaves an empty window to restore.
+TEST(WebSocketCompressFinalBlock, EmptyFirstMessage) {
+  WebSocketDecompressor decompressor;
+  for (const std::string_view message : {std::string_view(), std::string_view("after an empty message")}) {
+    const std::string compressed = FinalBlockRawDeflate(message);
+    RawBytes output;
+    ASSERT_EQ(decompressor.decompress(StringToBytes(compressed), output, kNoLimit, false), nullptr);
+    EXPECT_EQ(BytesToString(output), message);
+  }
+}
+
+// With context takeover, the message after a final block refers to the data of the previous ones: the sliding window
+// survives the restart of the stream. Here the sender ends its first message with an empty final stored block (0x01,
+// then LEN and NLEN: 0x00 0x00 0xff 0xff, removed as the trailer of the message), its stream going on with the second
+// message.
+TEST(WebSocketCompressFinalBlock, WindowKeptForTheNextMessage) {
+  const std::string text = PseudoRandomBytes(4096);
+  WebSocketCompressor compressor(6);
+  RawBytes first;
+  RawBytes second;
+  ASSERT_EQ(compressor.compress(StringToBytes(text), first, false), nullptr);
+  ASSERT_EQ(compressor.compress(StringToBytes(text), second, false), nullptr);
+  ASSERT_LT(second.size(), first.size() / 16);  // the second message refers to the first one
+  const std::string firstWithFinalBlock = BytesToString(first) + std::string("\x00\x00\xff\xff\x01", 5);
+
+  for (const std::size_t sliceSize : {std::size_t{1}, std::size_t{3}, firstWithFinalBlock.size()}) {
+    SCOPED_TRACE(testing::Message() << "slice=" << sliceSize);
+    WebSocketDecompressor decompressor;
+    RawBytes output;
+    ASSERT_EQ(WebSocketCompressTestAccess::Decompress(decompressor, StringToBytes(firstWithFinalBlock), output,
+                                                      kNoLimit, sliceSize),
+              nullptr);
+    EXPECT_EQ(BytesToString(output), text);
+    output.clear();
+    ASSERT_EQ(WebSocketCompressTestAccess::Decompress(
+                  decompressor, std::span<const std::byte>(second.data(), second.size()), output, kNoLimit, sliceSize),
+              nullptr);
+    EXPECT_EQ(BytesToString(output), text);
+  }
+}
+
+TEST(WebSocketCompressFinalBlock, DataAfterTheFinalBlockIsAnError) {
+  const std::string compressed = FinalBlockRawDeflate(CompressibleText()) + "extra";
+  for (const std::size_t sliceSize : {std::size_t{1}, compressed.size()}) {
+    WebSocketDecompressor decompressor;
+    RawBytes output;
+    EXPECT_STREQ(
+        WebSocketCompressTestAccess::Decompress(decompressor, StringToBytes(compressed), output, kNoLimit, sliceSize),
+        "Data after the final DEFLATE block")
+        << sliceSize;
   }
 }
 

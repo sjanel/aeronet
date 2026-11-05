@@ -506,6 +506,178 @@ TEST_F(WebSocketHandlerTest, ServerClosesConnectionAfterAnsweringPeerClose) {
 }
 
 // ============================================================================
+// Received Close frame validation (RFC 6455 §5.5.1, §7.4)
+// ============================================================================
+
+namespace {
+
+std::array<std::byte, 2> CloseCodeBytes(uint16_t code) noexcept {
+  return {static_cast<std::byte>(code >> 8U), static_cast<std::byte>(code & 0xFFU)};
+}
+
+class WebSocketReceivedCloseTest : public ::testing::Test {
+ protected:
+  WebSocketReceivedCloseTest() {
+    WebSocketCallbacks callbacks;
+    callbacks.onClose = [this](CloseCode code, std::string_view reason) {
+      closeCode = code;
+      closeReason = std::string(reason);
+      ++closeCount;
+    };
+    callbacks.onError = [this](CloseCode code, std::string_view) {
+      errorCode = code;
+      ++errorCount;
+    };
+    WebSocketConfig config;
+    config.isServerSide = true;
+    handler = std::make_unique<WebSocketHandler>(config, std::move(callbacks));
+  }
+
+  // Process a Close frame of a client (masked) with a raw payload, which may be invalid.
+  ProtocolProcessResult receiveClose(std::span<const std::byte> payload) {
+    RawBytes frame;
+    BuildFrame(frame, Opcode::Close, payload, true, true, MaskingKey{0x12345678});
+    const auto result = handler->processInput(buf_bytes(frame));
+    EXPECT_EQ(result.bytesConsumed, frame.size());
+    return result;
+  }
+
+  ProtocolProcessResult receiveClose(uint16_t code, std::string_view reason) {
+    std::string payload(2, '\0');
+    std::memcpy(payload.data(), CloseCodeBytes(code).data(), 2);
+    payload.append(reason);
+    return receiveClose(sv_bytes(payload));
+  }
+
+  // Code and reason of the Close frame sent by the handler, which must be its whole output.
+  [[nodiscard]] ClosePayload sentClose() const {
+    const auto output = handler->getPendingOutput();
+    const auto frame = ParseFrame(output, kNoLimit, false);
+    EXPECT_EQ(frame.status, FrameParseResult::Status::Complete);
+    EXPECT_EQ(frame.header.opcode, Opcode::Close);
+    EXPECT_EQ(frame.bytesConsumed, output.size());
+    return ParseClosePayload(frame.payload);
+  }
+
+  void expectFailedWith(const ProtocolProcessResult& result, CloseCode expectedCode) const {
+    EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
+    EXPECT_EQ(errorCount, 1);
+    EXPECT_EQ(errorCode, expectedCode);
+    EXPECT_EQ(closeCount, 0);
+    const auto sent = sentClose();
+    EXPECT_EQ(sent.code, expectedCode);
+    EXPECT_FALSE(sent.reason.empty());
+  }
+
+  std::unique_ptr<WebSocketHandler> handler;
+  std::string closeReason;
+  int closeCount{0};
+  int errorCount{0};
+  CloseCode closeCode{CloseCode::Normal};
+  CloseCode errorCode{CloseCode::Normal};
+};
+
+class WebSocketInvalidCloseCodeTest : public WebSocketReceivedCloseTest,
+                                      public ::testing::WithParamInterface<uint16_t> {};
+
+class WebSocketValidCloseCodeTest : public WebSocketReceivedCloseTest,
+                                    public ::testing::WithParamInterface<uint16_t> {};
+
+}  // namespace
+
+// Codes that may not be sent fail the connection with 1002 instead of being echoed. An explicit 1005 included.
+TEST_P(WebSocketInvalidCloseCodeTest, FailsTheConnection) {
+  expectFailedWith(receiveClose(GetParam(), "bye"), CloseCode::ProtocolError);
+}
+
+INSTANTIATE_TEST_SUITE_P(WebSocketReceivedClose, WebSocketInvalidCloseCodeTest,
+                         ::testing::Values(0, 999, 1004, 1005, 1006, 1015, 1016, 1100, 2000, 2999, 5000, 65535));
+
+TEST_P(WebSocketValidCloseCodeTest, IsEchoed) {
+  const auto result = receiveClose(GetParam(), "bye");
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
+  EXPECT_EQ(errorCount, 0);
+  EXPECT_EQ(closeCount, 1);
+  EXPECT_EQ(static_cast<uint16_t>(closeCode), GetParam());
+  EXPECT_EQ(closeReason, "bye");
+  const auto sent = sentClose();
+  EXPECT_EQ(static_cast<uint16_t>(sent.code), GetParam());
+  EXPECT_EQ(sent.reason, "bye");
+}
+
+INSTANTIATE_TEST_SUITE_P(WebSocketReceivedClose, WebSocketValidCloseCodeTest,
+                         ::testing::Values(1000, 1001, 1002, 1003, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014, 3000,
+                                           3999, 4000, 4999));
+
+TEST_F(WebSocketReceivedCloseTest, EmptyPayloadIsEchoedWithoutStatusCode) {
+  const auto result = receiveClose(std::span<const std::byte>{});
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
+  EXPECT_EQ(errorCount, 0);
+  EXPECT_EQ(closeCount, 1);
+  EXPECT_EQ(closeCode, CloseCode::NoStatusReceived);
+  const auto output = handler->getPendingOutput();
+  const auto frame = ParseFrame(output, kNoLimit, false);
+  ASSERT_EQ(frame.status, FrameParseResult::Status::Complete);
+  EXPECT_EQ(frame.header.opcode, Opcode::Close);
+  EXPECT_TRUE(frame.payload.empty());
+}
+
+TEST_F(WebSocketReceivedCloseTest, OneBytePayloadFailsTheConnection) {
+  const std::array payload{std::byte{0x03}};
+  expectFailedWith(receiveClose(payload), CloseCode::ProtocolError);
+}
+
+TEST_F(WebSocketReceivedCloseTest, ReasonNotUtf8FailsTheConnection) {
+  expectFailedWith(receiveClose(1000, "bad \xC3\x28"), CloseCode::InvalidPayloadData);
+}
+
+TEST_F(WebSocketReceivedCloseTest, Utf8ReasonIsEchoed) {
+  static constexpr std::string_view kReason = "caf\xC3\xA9 \xE2\x82\xAC \xF0\x9F\x98\x80";
+  (void)receiveClose(1001, kReason);
+  EXPECT_EQ(errorCount, 0);
+  EXPECT_EQ(closeReason, kReason);
+  EXPECT_EQ(sentClose().reason, kReason);
+}
+
+// The peer answers our Close with an invalid one: the connection fails without a second Close frame.
+TEST_F(WebSocketReceivedCloseTest, InvalidCloseAnsweringOurs) {
+  ASSERT_TRUE(handler->sendClose(CloseCode::GoingAway, "bye"));
+  handler->onOutputWritten(handler->getPendingOutput().size());
+
+  const auto result = receiveClose(1006, {});
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
+  EXPECT_EQ(errorCount, 1);
+  EXPECT_EQ(errorCode, CloseCode::ProtocolError);
+  EXPECT_EQ(closeCount, 0);
+  EXPECT_FALSE(handler->hasPendingOutput());
+}
+
+// While the server drains, the sweep closes the connection with Going Away, once, then gives up after closeTimeout.
+TEST_F(WebSocketReceivedCloseTest, DrainSendsGoingAwayThenTimesOut) {
+  const auto now = std::chrono::steady_clock::now();
+  EXPECT_TRUE(handler->onSweep(now, false));
+  EXPECT_FALSE(handler->hasPendingOutput());
+
+  EXPECT_TRUE(handler->onSweep(now, true));
+  EXPECT_EQ(sentClose().code, CloseCode::GoingAway);
+  handler->onOutputWritten(handler->getPendingOutput().size());
+  EXPECT_TRUE(handler->onSweep(now, true));
+  EXPECT_FALSE(handler->hasPendingOutput());  // a single Close frame
+
+  EXPECT_FALSE(handler->onSweep(handler->closeInitiatedAt() + handler->config().closeTimeout, true));
+}
+
+// An application closing with a code reserved for APIs sends a Close frame without status code (RFC 6455 §7.4.1).
+TEST_F(WebSocketReceivedCloseTest, SendCloseWithReservedCodeHasNoStatusCode) {
+  ASSERT_TRUE(handler->sendClose(CloseCode::AbnormalClosure, "gone"));
+  const auto output = handler->getPendingOutput();
+  const auto frame = ParseFrame(output, kNoLimit, false);
+  ASSERT_EQ(frame.status, FrameParseResult::Status::Complete);
+  EXPECT_EQ(frame.header.opcode, Opcode::Close);
+  EXPECT_TRUE(frame.payload.empty());
+}
+
+// ============================================================================
 // Message size limit tests
 // ============================================================================
 
@@ -657,6 +829,32 @@ TEST_F(WebSocketHandlerTest, ClientSideMasksOutgoingFrames) {
   // Second byte should have mask bit set
   auto byte1 = static_cast<uint8_t>(output[1]);
   EXPECT_TRUE((byte1 & 0x80U) != 0);  // MASK bit should be set
+}
+
+// The masking keys come from the secure generator of the system, by batches of 64: more frames than a batch get
+// distinct keys (the odds of a collision among 200 random 32-bit keys are below 1e-5), and are unmasked correctly.
+TEST_F(WebSocketHandlerTest, ClientMaskingKeysAreRandom) {
+  WebSocketConfig config;
+  config.isServerSide = false;
+  WebSocketHandler clientHandler(config, WebSocketCallbacks());
+
+  static constexpr std::size_t kNbFrames = 200;
+  vector<MaskingKey> keys;
+  for (std::size_t idx = 0; idx < kNbFrames; ++idx) {
+    const std::string text = "message " + std::to_string(idx);
+    ASSERT_TRUE(clientHandler.sendText(text));
+    const auto output = clientHandler.getPendingOutput();
+    const auto frame = ParseFrame(output, kNoLimit, /*isServerSide=*/true);
+    ASSERT_EQ(frame.status, FrameParseResult::Status::Complete);
+    ASSERT_TRUE(frame.header.masked);
+    vector<std::byte> payload(frame.payload.begin(), frame.payload.end());
+    ApplyMask(payload, frame.header.maskingKey);
+    EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(payload.data()), payload.size()), text);
+    keys.push_back(frame.header.maskingKey);
+    clientHandler.onOutputWritten(output.size());
+  }
+  std::ranges::sort(keys);
+  EXPECT_EQ(std::ranges::unique(keys).begin(), keys.end());
 }
 
 TEST_F(WebSocketHandlerTest, ServerSideDoesNotMaskOutgoing) {
@@ -1610,6 +1808,43 @@ TEST_F(WebSocketHandlerTest, CompressedFragmentedMessage) {
 
   EXPECT_EQ(result.action, ProtocolProcessResult::Action::Continue);
   EXPECT_EQ(receivedMessage, original);
+}
+
+// RSV1 tells whether a message is compressed on its first fragment only: set on a continuation frame, it fails the
+// connection (RFC 7692 §6.1) instead of being ignored.
+TEST_F(WebSocketHandlerTest, CompressedFragmentedMessageWithRsv1OnContinuation) {
+  WebSocketConfig config;
+  config.isServerSide = false;
+  const DeflateNegotiatedParams deflateParams{
+      .serverMaxWindowBits = 15,
+      .clientMaxWindowBits = 15,
+      .serverNoContextTakeover = false,
+      .clientNoContextTakeover = false,
+  };
+  int messageCount = 0;
+  CloseCode errorCode{CloseCode::Normal};
+  WebSocketCallbacks callbacks;
+  callbacks.onMessage = [&messageCount](std::span<const std::byte>, bool) { ++messageCount; };
+  callbacks.onError = [&errorCode](CloseCode code, std::string_view) { errorCode = code; };
+  auto compressHandler = std::make_unique<WebSocketHandler>(config, std::move(callbacks), deflateParams);
+
+  DeflateContext ctx(deflateParams, DeflateConfig(), false);
+  RawBytes compressed;
+  ASSERT_EQ(ctx.compress(sv_bytes("Hello, fragmented compressed world!"), compressed), nullptr);
+  const std::size_t half = compressed.size() / 2;
+
+  RawBytes frames;
+  frames.push_back(std::byte{0x41});  // FIN=0, RSV1=1, opcode=Text
+  frames.push_back(std::byte{static_cast<uint8_t>(half)});
+  frames.append(compressed.data(), half);
+  frames.push_back(std::byte{0xC0});  // FIN=1, RSV1=1, opcode=Continuation
+  frames.push_back(std::byte{static_cast<uint8_t>(compressed.size() - half)});
+  frames.append(compressed.data() + half, compressed.size() - half);
+
+  const auto result = compressHandler->processInput(buf_bytes(frames));
+  EXPECT_EQ(result.action, ProtocolProcessResult::Action::Close);
+  EXPECT_EQ(errorCode, CloseCode::ProtocolError);
+  EXPECT_EQ(messageCount, 0);
 }
 
 #endif  // AERONET_ENABLE_ZLIB

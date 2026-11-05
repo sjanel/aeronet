@@ -106,6 +106,10 @@ class WebSocketHandler final : public IProtocolHandler {
 
   bool drainOutputBuffer(HttpMessageData& dest) override;
 
+  /// While the server drains, closes the connection with Going Away (1001), then waits for the peer's Close frame, for
+  /// closeTimeout at most. Returns false once it elapsed.
+  [[nodiscard]] bool onSweep(std::chrono::steady_clock::time_point now, bool draining) override;
+
   // WebSocket-specific API
 
   /// Set or update callbacks.
@@ -162,12 +166,10 @@ class WebSocketHandler final : public IProtocolHandler {
   [[nodiscard]] std::chrono::steady_clock::time_point closeInitiatedAt() const noexcept { return _closeInitiatedAt; }
 
   /// Check if the close handshake has timed out.
-  /// Returns true if we've been waiting for a close response longer than closeTimeout.
-  [[nodiscard]] bool hasCloseTimedOut() const noexcept {
-    if (_closeState != CloseState::CloseSent) {
-      return false;
-    }
-    return (std::chrono::steady_clock::now() - _closeInitiatedAt) > _config.closeTimeout;
+  /// Returns true if we've been waiting for a close response for closeTimeout at 'now'.
+  [[nodiscard]] bool hasCloseTimedOut(
+      std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) const noexcept {
+    return _closeState == CloseState::CloseSent && now >= _closeInitiatedAt + _config.closeTimeout;
   }
 
   /// Force close the connection after timeout (call after hasCloseTimedOut() returns true).
@@ -203,6 +205,9 @@ class WebSocketHandler final : public IProtocolHandler {
     Closed,         // Close handshake complete
   };
 
+  /// Masking keys of the next frames sent on the client side (defined in the source file).
+  struct MaskingKeys;
+
   /// State for message reassembly from fragments.
   struct MessageState {
     RawBytes buffer;              // Accumulated payload from fragments
@@ -223,8 +228,14 @@ class WebSocketHandler final : public IProtocolHandler {
   /// Complete a message (called when FIN=1 after fragment reassembly or decompression).
   ProtocolProcessResult completeMessage();
 
+  /// Fail the WebSocket connection (RFC 6455 §7.1.7): report the error to onError, then send a Close frame with code.
+  void failConnection(CloseCode code, std::string_view message);
+
   /// Queue a frame for sending.
   void queueFrame(Opcode opcode, std::span<const std::byte> payload, bool fin = true);
+
+  /// Masking key of the next frame sent on the client side, from the secure generator of the system (RFC 6455 §5.3).
+  MaskingKey nextMaskingKey();
 
   /// Send a data message with optional compression.
   bool sendData(Opcode opcode, std::span<const std::byte> payload);
@@ -251,7 +262,8 @@ class WebSocketHandler final : public IProtocolHandler {
   std::span<const std::byte> _unbufferedPayload;
   MessageState _message;     // Current message being assembled
   RawBytes _compressBuffer;  // Output of the compression / decompression (may hold _unbufferedPayload)
-  uint64_t _rngState{0};     // splitmix64 state for masking key generation
+  // Masking keys of the frames sent on the client side, allocated with the first one (none on the server side).
+  std::unique_ptr<MaskingKeys> _maskingKeys;
   CloseCode _closeCode{CloseCode::Normal};
   CloseState _closeState{CloseState::Open};
   bool _messageCompressed{false};  // True if current message was received with RSV1 set

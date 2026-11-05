@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
 #include <limits>
 #include <memory>
 #include <numeric>
@@ -722,6 +723,98 @@ TEST_F(WebSocketFrameTest, ParseClosePayloadSingleByte) {
   std::array<std::byte, 1> payload = {std::byte{0x00}};
   auto closePayload = ParseClosePayload(payload);
   EXPECT_EQ(closePayload.code, CloseCode::ProtocolError);
+  EXPECT_NE(closePayload.pErrorMessage, nullptr);
+}
+
+TEST_F(WebSocketFrameTest, ParseClosePayloadValidCodesAndReasons) {
+  for (const uint16_t code : std::initializer_list<uint16_t>{1000, 1003, 1007, 1012, 1014, 3000, 4999}) {
+    std::string payload{static_cast<char>(code >> 8U), static_cast<char>(code & 0xFFU)};
+    payload.append("ok");
+    const auto closePayload = ParseClosePayload(sv_bytes(payload));
+    EXPECT_EQ(closePayload.pErrorMessage, nullptr) << code;
+    EXPECT_EQ(static_cast<uint16_t>(closePayload.code), code);
+    EXPECT_EQ(closePayload.reason, "ok");
+  }
+  EXPECT_EQ(ParseClosePayload({}).pErrorMessage, nullptr);
+}
+
+// RFC 6455 §7.4: codes that may not be sent, an explicit 1005 included (an empty payload means no status code).
+TEST_F(WebSocketFrameTest, ParseClosePayloadInvalidCode) {
+  for (const uint16_t code : std::initializer_list<uint16_t>{0, 999, 1004, 1005, 1006, 1015, 1016, 2999, 5000, 65535}) {
+    const std::array payload{static_cast<std::byte>(code >> 8U), static_cast<std::byte>(code & 0xFFU)};
+    const auto closePayload = ParseClosePayload(payload);
+    EXPECT_EQ(closePayload.code, CloseCode::ProtocolError) << code;
+    EXPECT_NE(closePayload.pErrorMessage, nullptr) << code;
+    EXPECT_TRUE(closePayload.reason.empty());
+  }
+}
+
+TEST_F(WebSocketFrameTest, ParseClosePayloadReasonNotUtf8) {
+  // Invalid continuation byte, then a truncated 3-byte sequence
+  for (const std::string_view reason : {std::string_view("\x03\xE8\xC3\x28"), std::string_view("\x03\xE8\xE2\x82")}) {
+    const auto closePayload = ParseClosePayload(sv_bytes(reason));
+    EXPECT_EQ(closePayload.code, CloseCode::InvalidPayloadData);
+    EXPECT_NE(closePayload.pErrorMessage, nullptr);
+    EXPECT_TRUE(closePayload.reason.empty());
+  }
+  const auto closePayload =
+      ParseClosePayload(sv_bytes("\x03\xE8"
+                                 "caf\xC3\xA9 \xE2\x82\xAC \xF0\x9F\x98\x80"));
+  EXPECT_EQ(closePayload.pErrorMessage, nullptr);
+  EXPECT_EQ(closePayload.code, CloseCode::Normal);
+  EXPECT_EQ(closePayload.reason, "caf\xC3\xA9 \xE2\x82\xAC \xF0\x9F\x98\x80");
+}
+
+// Codes reserved for APIs (1005, 1006, 1015) or not assigned are never sent: the frame has no status code.
+TEST_F(WebSocketFrameTest, BuildCloseFrameCodeThatMayNotBeSent) {
+  for (const uint16_t code : std::initializer_list<uint16_t>{0, 999, 1004, 1005, 1006, 1015, 2000, 5000}) {
+    RawBytes frame;
+    BuildCloseFrame(frame, static_cast<CloseCode>(code), "reason");
+    const auto result = ParseFrame(buf_bytes(frame), kNoLimit, false);
+    ASSERT_EQ(result.status, FrameParseResult::Status::Complete);
+    EXPECT_EQ(result.header.opcode, Opcode::Close);
+    EXPECT_TRUE(result.payload.empty()) << code;
+  }
+}
+
+// A reason longer than 123 bytes is truncated before the code point that does not fit, keeping it valid UTF-8.
+TEST_F(WebSocketFrameTest, BuildCloseFrameReasonTruncatedOnCodePointBoundary) {
+  struct Case {
+    std::string_view codePoint;
+    std::size_t expectedReasonLen;
+  };
+  // 123 = 61 * 2 + 1 = 41 * 3 = 30 * 4 + 3
+  for (const Case& testCase : {Case{"\xC3\xA9", 122}, Case{"\xE2\x82\xAC", 123}, Case{"\xF0\x9F\x98\x80", 120}}) {
+    std::string reason;
+    while (reason.size() < 200) {
+      reason.append(testCase.codePoint);
+    }
+    RawBytes frame;
+    BuildCloseFrame(frame, CloseCode::GoingAway, reason);
+    const auto result = ParseFrame(buf_bytes(frame), kNoLimit, false);
+    ASSERT_EQ(result.status, FrameParseResult::Status::Complete);
+    const auto closePayload = ParseClosePayload(result.payload);
+    EXPECT_EQ(closePayload.pErrorMessage, nullptr);
+    EXPECT_EQ(closePayload.code, CloseCode::GoingAway);
+    EXPECT_EQ(closePayload.reason, std::string_view(reason).substr(0, testCase.expectedReasonLen));
+  }
+  // 122 bytes, then a 2-byte code point that does not fit: it is dropped whole.
+  const std::string asciiPrefix(122, 'a');
+  BuildCloseFrame(buffer, CloseCode::Normal, asciiPrefix + "\xC3\xA9");
+  const auto result = ParseFrame(buf_bytes(buffer), kNoLimit, false);
+  ASSERT_EQ(result.status, FrameParseResult::Status::Complete);
+  const auto closePayload = ParseClosePayload(result.payload);
+  EXPECT_EQ(closePayload.pErrorMessage, nullptr);
+  EXPECT_EQ(closePayload.reason, asciiPrefix);
+}
+
+// An invalid reason made of continuation bytes only does not make the truncation underflow.
+TEST_F(WebSocketFrameTest, BuildCloseFrameReasonOfContinuationBytesTruncatedToNothing) {
+  const std::string reason(200, '\x80');
+  BuildCloseFrame(buffer, CloseCode::Normal, reason);
+  const auto result = ParseFrame(buf_bytes(buffer), kNoLimit, false);
+  ASSERT_EQ(result.status, FrameParseResult::Status::Complete);
+  EXPECT_EQ(result.payload.size(), 2U);
 }
 
 TEST_F(WebSocketFrameTest, BuildMediumLengthFrame) {
@@ -887,6 +980,12 @@ TEST_F(WebSocketFrameTest, IsValidWireCloseCode) {
   EXPECT_FALSE(IsValidWireCloseCode(static_cast<uint16_t>(9999)));
   EXPECT_FALSE(IsValidWireCloseCode(static_cast<uint16_t>(999)));
   EXPECT_TRUE(IsValidWireCloseCode(static_cast<uint16_t>(3500)));
+  // 1012 - 1014 are registered by IANA, 1004, 1005, 1006 and 1015 may not be sent
+  for (uint32_t code = 0; code <= 0xFFFFU; ++code) {
+    const bool expected = (code >= 1000 && code <= 1014 && code != 1004 && code != 1005 && code != 1006) ||
+                          (code >= 3000 && code <= 4999);
+    EXPECT_EQ(IsValidWireCloseCode(static_cast<uint16_t>(code)), expected) << code;
+  }
 }
 
 // ============================================================================
@@ -940,6 +1039,16 @@ TEST_F(WebSocketFrameTest, ParseRSV1OnControlFrame) {
   auto result = ParseFrame(frame, kNoLimit, false, true);
   EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
   EXPECT_STREQ(result.pErrorMessage, "RSV1 bit must not be set on control frames");
+}
+
+TEST_F(WebSocketFrameTest, ParseRSV1OnContinuationFrame) {
+  // FIN=1, RSV1=1, opcode=Continuation, then MASK=0, length=0
+  const std::array frame{std::byte{0xC0}, std::byte{0x00}};
+
+  // allowRsv1 == true but RSV1 is only set on the first fragment of a compressed message (RFC 7692 §6.1)
+  const auto result = ParseFrame(frame, kNoLimit, false, true);
+  EXPECT_EQ(result.status, FrameParseResult::Status::ProtocolError);
+  EXPECT_STREQ(result.pErrorMessage, "RSV1 bit must not be set on continuation frames");
 }
 
 TEST_F(WebSocketFrameTest, ParseRSV2BitSet) {

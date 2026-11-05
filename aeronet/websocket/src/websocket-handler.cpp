@@ -1,6 +1,7 @@
 #include "aeronet/websocket-handler.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
@@ -14,6 +15,7 @@
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/secure-random.hpp"
 #include "aeronet/vector.hpp"
 #include "aeronet/websocket-config.hpp"
 #include "aeronet/websocket-constants.hpp"
@@ -38,18 +40,22 @@ bool IsWithin(std::span<const std::byte> part, std::span<const std::byte> whole)
 
 }  // namespace
 
+// The masking keys must be unpredictable: a key guessed from the previous ones lets a script choose the bytes that an
+// intermediary sees on the wire (RFC 6455 §5.3, §10.3). They are drawn from the secure generator of the system, by
+// batches: one system call per kNbKeys frames.
+struct WebSocketHandler::MaskingKeys {
+  static constexpr uint32_t kNbKeys = 64;
+
+  std::array<MaskingKey, kNbKeys> keys;
+  uint32_t nextPos{kNbKeys};
+};
+
 WebSocketHandler::WebSocketHandler(WebSocketConfig config, WebSocketCallbacks callbacks,
                                    DeflateNegotiatedParams deflateParams)
     : _config(std::move(config)), _callbacks(std::move(callbacks)) {
   _config.validate();
   if (deflateParams.hasValue()) {
     enableCompression(deflateParams);
-  }
-  if (!_config.isServerSide) {
-    // Seed splitmix64 from time + object address: no syscall, adequate per-connection uniqueness.
-    // Masking is not a security mechanism (RFC 6455 §10.3 — proxy cache poisoning prevention only).
-    _rngState = static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()) ^
-                reinterpret_cast<uintptr_t>(this);
   }
 }
 
@@ -96,19 +102,13 @@ ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> 
 
     if (frameResult.status == FrameParseResult::Status::ProtocolError) {
       // Protocol violation - close with error
-      if (_callbacks.onError) {
-        _callbacks.onError(CloseCode::ProtocolError, frameResult.pErrorMessage);
-      }
-      sendClose(CloseCode::ProtocolError, frameResult.pErrorMessage);
+      failConnection(CloseCode::ProtocolError, frameResult.pErrorMessage);
       result.action = ProtocolProcessResult::Action::Close;
       break;
     }
 
     if (frameResult.status == FrameParseResult::Status::PayloadTooLarge) {
-      if (_callbacks.onError) {
-        _callbacks.onError(CloseCode::MessageTooBig, "Frame payload too large");
-      }
-      sendClose(CloseCode::MessageTooBig, "Frame payload too large");
+      failConnection(CloseCode::MessageTooBig, "Frame payload too large");
       result.action = ProtocolProcessResult::Action::Close;
       break;
     }
@@ -157,20 +157,14 @@ ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& heade
   if (header.opcode == Opcode::Continuation) {
     // Continuation frame - must be in a fragmented message
     if (!_message.inProgress) {
-      if (_callbacks.onError) {
-        _callbacks.onError(CloseCode::ProtocolError, "Unexpected continuation frame");
-      }
-      sendClose(CloseCode::ProtocolError, "Unexpected continuation frame");
+      failConnection(CloseCode::ProtocolError, "Unexpected continuation frame");
       result.action = ProtocolProcessResult::Action::Close;
       return result;
     }
   } else {
     // Text or Binary - must NOT be in a fragmented message
     if (_message.inProgress) {
-      if (_callbacks.onError) {
-        _callbacks.onError(CloseCode::ProtocolError, "Expected continuation frame");
-      }
-      sendClose(CloseCode::ProtocolError, "Expected continuation frame");
+      failConnection(CloseCode::ProtocolError, "Expected continuation frame");
       result.action = ProtocolProcessResult::Action::Close;
       return result;
     }
@@ -184,10 +178,7 @@ ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& heade
     // With permessage-deflate, RSV1 tells whether the message is compressed (only allowed when negotiated).
     if (header.fin && !header.rsv1) {
       if (payload.size() > _config.maxMessageSize) {
-        if (_callbacks.onError) {
-          _callbacks.onError(CloseCode::MessageTooBig, "Message too large");
-        }
-        sendClose(CloseCode::MessageTooBig, "Message too large");
+        failConnection(CloseCode::MessageTooBig, "Message too large");
         result.action = ProtocolProcessResult::Action::Close;
         return result;
       }
@@ -198,10 +189,7 @@ ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& heade
         const bool isValidUtf8 =
             header.masked ? UnmaskAndValidateUtf8(mutablePayload, header.maskingKey) : IsValidUtf8(payload);
         if (!isValidUtf8) {
-          if (_callbacks.onError) {
-            _callbacks.onError(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
-          }
-          sendClose(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
+          failConnection(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
           result.action = ProtocolProcessResult::Action::Close;
           return result;
         }
@@ -230,10 +218,7 @@ ProtocolProcessResult WebSocketHandler::handleDataFrame(const FrameHeader& heade
   // Check message size limit (fragmented / compressed path)
   const std::size_t newSize = _message.buffer.size() + payload.size();
   if (newSize > _config.maxMessageSize) {
-    if (_callbacks.onError) {
-      _callbacks.onError(CloseCode::MessageTooBig, "Message too large");
-    }
-    sendClose(CloseCode::MessageTooBig, "Message too large");
+    failConnection(CloseCode::MessageTooBig, "Message too large");
     result.action = ProtocolProcessResult::Action::Close;
     _message.inProgress = false;
     _message.buffer.clear();
@@ -285,6 +270,12 @@ ProtocolProcessResult WebSocketHandler::handleControlFrame(const FrameHeader& he
       // Opcode::Close
       assert(header.opcode == Opcode::Close);
       const auto closeInfo = ParseClosePayload(payload);
+      if (closeInfo.pErrorMessage != nullptr) {
+        // Invalid Close frame (code that may not be sent, reason that is not UTF-8...): not echoed
+        failConnection(closeInfo.code, closeInfo.pErrorMessage);
+        result.action = ProtocolProcessResult::Action::Close;
+        break;
+      }
 
       if (_closeState == CloseState::Open) {
         // Peer initiated close - respond with Close. Both Close frames are then exchanged: a server closes the TCP
@@ -324,10 +315,7 @@ ProtocolProcessResult WebSocketHandler::completeMessage() {
     _compressBuffer.clear();
     const char* errMsg = _deflateContext->decompress(_message.buffer, _compressBuffer, _config.maxMessageSize);
     if (errMsg != nullptr) {
-      if (_callbacks.onError) {
-        _callbacks.onError(CloseCode::InvalidPayloadData, "Decompression failed");
-      }
-      sendClose(CloseCode::InvalidPayloadData, "Decompression failed");
+      failConnection(CloseCode::InvalidPayloadData, "Decompression failed");
       result.action = ProtocolProcessResult::Action::Close;
       _message.inProgress = false;
       _message.buffer.clear();
@@ -342,10 +330,7 @@ ProtocolProcessResult WebSocketHandler::completeMessage() {
 
   // For text messages, validate UTF-8
   if (_message.opcode == Opcode::Text && !IsValidUtf8(messageData)) {
-    if (_callbacks.onError) {
-      _callbacks.onError(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
-    }
-    sendClose(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
+    failConnection(CloseCode::InvalidPayloadData, "Invalid UTF-8 in text message");
     result.action = ProtocolProcessResult::Action::Close;
     _message.inProgress = false;
     _message.buffer.clear();
@@ -435,25 +420,22 @@ bool WebSocketHandler::drainOutputBuffer(HttpMessageData& dest) {
   return true;
 }
 
-namespace {
-
-/// Generate a random masking key (splitmix64, client-side only).
-constexpr MaskingKey GenerateMaskingKey(uint64_t& rngState) noexcept {
-  // splitmix64: 8-byte state, adequate for non-cryptographic masking keys (RFC 6455 §10.3)
-  rngState += 0x9e3779b97f4a7c15ULL;
-  uint64_t val = rngState;
-  val = (val ^ (val >> 30U)) * 0xbf58476d1ce4e5b9ULL;
-  val = (val ^ (val >> 27U)) * 0x94d049bb133111ebULL;
-  val ^= (val >> 31U);
-  return static_cast<MaskingKey>(val);
+MaskingKey WebSocketHandler::nextMaskingKey() {
+  if (!_maskingKeys) {
+    _maskingKeys = std::make_unique<MaskingKeys>();
+  }
+  MaskingKeys& pool = *_maskingKeys;
+  if (pool.nextPos == MaskingKeys::kNbKeys) {
+    FillSecureRandomBytes(std::as_writable_bytes(std::span(pool.keys)));
+    pool.nextPos = 0;
+  }
+  return pool.keys[pool.nextPos++];
 }
-
-}  // namespace
 
 void WebSocketHandler::queueFrame(Opcode opcode, std::span<const std::byte> payload, bool fin) {
   appendUnbufferedPayload();
   const bool shouldMask = !_config.isServerSide;
-  const MaskingKey mask = shouldMask ? GenerateMaskingKey(_rngState) : MaskingKey{};
+  const MaskingKey mask = shouldMask ? nextMaskingKey() : MaskingKey{};
   BuildFrame(_outputBuffer, opcode, payload, fin, shouldMask, mask, false);
 }
 
@@ -470,7 +452,7 @@ bool WebSocketHandler::sendData(Opcode opcode, std::span<const std::byte> payloa
     const char* errMsg = _deflateContext->compress(payload, _compressBuffer);
     if (errMsg == nullptr && _compressBuffer.size() < payload.size()) {
       const bool shouldMask = !_config.isServerSide;
-      const MaskingKey mask = shouldMask ? GenerateMaskingKey(_rngState) : MaskingKey{};
+      const MaskingKey mask = shouldMask ? nextMaskingKey() : MaskingKey{};
       if (_compressBuffer.size() < kMinUnbufferedPayloadSize) {
         BuildFrame(_outputBuffer, opcode, _compressBuffer, true, shouldMask, mask, true);
       } else {
@@ -526,6 +508,13 @@ bool WebSocketHandler::sendPong(std::span<const std::byte> payload) {
   return true;
 }
 
+void WebSocketHandler::failConnection(CloseCode code, std::string_view message) {
+  if (_callbacks.onError) {
+    _callbacks.onError(code, message);
+  }
+  sendClose(code, message);
+}
+
 bool WebSocketHandler::sendClose(CloseCode code, std::string_view reason) {
   if (_closeState == CloseState::CloseSent || _closeState == CloseState::Closed) {
     return false;
@@ -533,7 +522,7 @@ bool WebSocketHandler::sendClose(CloseCode code, std::string_view reason) {
 
   appendUnbufferedPayload();
   const bool shouldMask = !_config.isServerSide;
-  const MaskingKey mask = shouldMask ? GenerateMaskingKey(_rngState) : MaskingKey{};
+  const MaskingKey mask = shouldMask ? nextMaskingKey() : MaskingKey{};
   BuildCloseFrame(_outputBuffer, code, reason, shouldMask, mask);
 
   if (_closeState == CloseState::Open) {
@@ -559,9 +548,19 @@ std::chrono::steady_clock::time_point WebSocketHandler::nextTimeoutCheck(
   return next;
 }
 
+bool WebSocketHandler::onSweep(std::chrono::steady_clock::time_point now, bool draining) {
+  // A drain closes the connection like the server's shutdown would (RFC 6455 §7.4.1), instead of the abnormal closure
+  // of its deadline. Once the peer answered, or closeTimeout later, the connection is closed: the drain may then end
+  // before its deadline.
+  if (draining && _closeState == CloseState::Open) {
+    sendClose(CloseCode::GoingAway, "Server shutting down");
+  }
+  return !hasCloseTimedOut(now);
+}
+
 WebSocketHandler::Timeout WebSocketHandler::checkTimeouts(std::chrono::steady_clock::time_point now,
                                                           std::chrono::steady_clock::time_point lastActivity) {
-  if (_closeState == CloseState::CloseSent && now >= _closeInitiatedAt + _config.closeTimeout) {
+  if (hasCloseTimedOut(now)) {
     return Timeout::Close;
   }
   if (_config.idleTimeout.count() > 0) {

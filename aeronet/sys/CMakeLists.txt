@@ -15,7 +15,7 @@ target_link_libraries(aeronet_sys
 )
 
 if(WIN32)
-    target_link_libraries(aeronet_sys PUBLIC ws2_32 mswsock)
+    target_link_libraries(aeronet_sys PUBLIC ws2_32 mswsock bcrypt)
 endif()
 
 target_include_directories(aeronet_sys
@@ -42,6 +42,14 @@ AeronetAddUnitTest(
 AeronetAddUnitTest(
     file-sendfile_test
     test/file-sendfile_test.cpp
+    LIBRARIES
+    aeronet_basic_test_support
+)
+
+# The secure random generator of the operating system (getrandom() failures emulated on Linux)
+AeronetAddUnitTest(
+    secure-random_test
+    test/secure-random_test.cpp
     LIBRARIES
     aeronet_basic_test_support
 )
