@@ -12,6 +12,7 @@
 #include <string>
 #include <string_view>
 
+#include "aeronet/http-constants.hpp"
 #include "aeronet/http-status-code.hpp"
 
 namespace aeronet {
@@ -37,6 +38,24 @@ enum class ProtoFormat : std::uint8_t {
 // Returns the encoding of a protobuf body with this Content-Type value (empty if the message has none).
 // Media types and parameter names are case-insensitive.
 [[nodiscard]] ProtoFormat ProtoFormatOf(std::string_view contentType) noexcept;
+
+// Chooses the encoding of a protobuf response from the Accept header value of the request (RFC 9110 §12.5.1), empty if
+// the request has none: the binary encoding, or ProtoJSON if 'jsonSupported', whichever has the highest quality ('q').
+// The media types of an encoding are those of ProtoFormatOf(), aliases included. The quality of an encoding is the one
+// of the most specific media range that matches it: a media type with parameters, then without, then 'application/*',
+// then '*/*'. A media type with a parameter that ProtoFormatOf() rejects ('version=2') matches no encoding.
+// A tie goes to the binary encoding, as does an empty value. Returns Unsupported when neither encoding is acceptable:
+// none is listed, or with a quality of 0.
+[[nodiscard]] ProtoFormat NegotiateProtoFormat(std::string_view accept, bool jsonSupported) noexcept;
+
+// What HttpRequestView::makeProtoResponse() sends when the Accept header of the request lists no media type of a
+// supported encoding (see NegotiateProtoFormat()).
+enum class ProtoNotAcceptablePolicy : std::uint8_t {
+  // The binary encoding: a server may disregard the Accept header (RFC 9110 §12.5.1).
+  SendBinary,
+  // 406 Not Acceptable, with a text/plain body listing the supported media types (RFC 9110 §15.5.7).
+  Reject,
+};
 
 enum class ProtoParseErrc : std::uint8_t {
   UnsupportedMediaType,   // the Content-Type is not one of a protobuf encoding supported for the message
@@ -74,6 +93,32 @@ namespace internal {
 // and for an unsupported media type an Accept header listing the supported ones (RFC 9110 §15.5.16).
 [[nodiscard]] HttpResponse ProtoParseErrorResponse(const HttpRequestView& request, ProtoParseError&& error,
                                                    bool jsonSupported);
+
+// The encoding of the response of makeProtoResponse().
+struct ProtoResponseEncoding {
+  ProtoFormat format;  // Unsupported for a 406 response
+  // Whether the encoding depends on the Accept header of the request ('Vary: Accept'): not for a message without
+  // ProtoJSON with the policy SendBinary, always binary.
+  bool varyAccept;
+};
+
+// The encoding of the response of makeProtoResponse() to 'request', for a message with ProtoJSON if 'jsonSupported'.
+[[nodiscard]] ProtoResponseEncoding ProtoResponseEncodingFor(const HttpRequestView& request, bool jsonSupported,
+                                                             ProtoNotAcceptablePolicy policy) noexcept;
+
+// The Content-Type of a response body in this encoding (Binary or Json).
+[[nodiscard]] constexpr std::string_view ProtoContentType(ProtoFormat format) noexcept {
+  return format == ProtoFormat::Json ? http::ContentTypeApplicationProtobufJson : http::ContentTypeApplicationProtobuf;
+}
+
+// The response of makeProtoResponse() before its body, of 'bodySize' bytes in 'encoding' (Binary: inline, Json:
+// captured), with a 'Vary: Accept' header if it varies: its buffer has room for the body headers, and for the body
+// itself if inline, so that setting it does not reallocate.
+[[nodiscard]] HttpResponse ProtoResponseHead(const HttpRequestView& request, http::StatusCode statusCode,
+                                             std::size_t bodySize, ProtoResponseEncoding encoding);
+
+// The 406 Not Acceptable response of makeProtoResponse(), with the policy ProtoNotAcceptablePolicy::Reject.
+[[nodiscard]] HttpResponse ProtoNotAcceptableResponse(const HttpRequestView& request, bool jsonSupported);
 
 [[noreturn]] void ThrowProtoTooLarge(std::size_t size);
 

@@ -1004,8 +1004,7 @@ bool HttpMessage::Options::directCompressionPossible(std::size_t bodySize,
 
   assert(!contentType.empty());
 
-  return compressionConfig.contentTypeAllowList.empty() ||
-         compressionConfig.contentTypeAllowList.containsCI(contentType);
+  return compressionConfig.isContentTypeAllowed(contentType);
 }
 
 #endif

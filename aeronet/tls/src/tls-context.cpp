@@ -449,9 +449,9 @@ TlsContext::TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> 
 #endif
   }
 
-  const auto alpnProtocols = cfg.alpnProtocols();
+  const TLSConfig::StringViewRange alpnProtocols = cfg.alpnProtocols();
   const std::size_t wireLen = std::ranges::fold_left(
-      alpnProtocols, std::size_t{0}, [](std::size_t sum, const auto& proto) { return sum + 1UL + proto.size(); });
+      alpnProtocols, std::size_t{0}, [](std::size_t sum, std::string_view proto) { return sum + 1UL + proto.size(); });
   if (wireLen != 0) {
     _alpnData = AlpnData{RawBytes32{wireLen}, cfg.alpnMustMatch};
 

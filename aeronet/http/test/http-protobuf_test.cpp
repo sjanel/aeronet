@@ -11,10 +11,17 @@
 
 #include "aeronet-test-required.pb.h"
 #include "aeronet-test.pb.h"
+#include "aeronet/compression-config.hpp"
+#include "aeronet/concatenated-headers.hpp"
+#include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-helpers.hpp"
 #include "aeronet/http-protobuf-common.hpp"
+#include "aeronet/http-request-view-test-access.hpp"
+#include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/raw-chars.hpp"
 
 #ifndef AERONET_PROTOBUF_LITE
 #include <google/protobuf/any.pb.h>
@@ -29,12 +36,7 @@ using aeronet_proto_test::Item;
 using aeronet_proto_test::Order;
 using aeronet_proto_test::Tree;
 
-constexpr bool kJsonSupported =
-#ifdef AERONET_PROTOBUF_LITE
-    false;
-#else
-    true;
-#endif
+constexpr bool kJsonSupported = internal::kProtoJsonSupported<Order>;
 
 Order MakeOrder() {
   Order order;
@@ -162,10 +164,145 @@ TEST(ProtoFormatOf, CharsetParameter) {
   EXPECT_EQ(ProtoFormatOf("application/protobuf; charset=iso-8859-1"), ProtoFormat::Binary);
 }
 
+TEST(ProtoFormatOf, QuotedSemicolonDoesNotSplitTheParameters) {
+  EXPECT_EQ(ProtoFormatOf(R"(application/protobuf; x="a;version=2")"), ProtoFormat::Binary);
+  EXPECT_EQ(ProtoFormatOf(R"(application/protobuf; x="a\";version=2")"), ProtoFormat::Binary);
+}
+
 TEST(ProtoFormatOf, OtherParametersAreIgnored) {
   EXPECT_EQ(ProtoFormatOf("application/protobuf; proto=aeronet_proto_test.Order"), ProtoFormat::Binary);
   EXPECT_EQ(ProtoFormatOf("application/protobuf; novalue; ;; x=y"), ProtoFormat::Binary);
   EXPECT_EQ(ProtoFormatOf("application/json; x=\"a b\"; encoding=json"), ProtoFormat::Json);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// NegotiateProtoFormat
+// ---------------------------------------------------------------------------------------------------------------------
+
+TEST(NegotiateProtoFormat, NoAcceptIsBinary) {
+  EXPECT_EQ(NegotiateProtoFormat("", true), ProtoFormat::Binary);
+  EXPECT_EQ(NegotiateProtoFormat("", false), ProtoFormat::Binary);
+}
+
+TEST(NegotiateProtoFormat, MediaTypesOfEachEncoding) {
+  for (std::string_view accept : {"application/protobuf", "application/x-protobuf", "application/x-protobuffer",
+                                  "application/vnd.google.protobuf", "application/proto", "application/octet-stream",
+                                  "APPLICATION/PROTOBUF", " application/protobuf ;"}) {
+    EXPECT_EQ(NegotiateProtoFormat(accept, true), ProtoFormat::Binary) << accept;
+    EXPECT_EQ(NegotiateProtoFormat(accept, false), ProtoFormat::Binary) << accept;
+  }
+  for (std::string_view accept : {"application/protobuf+json", "application/x-protobuf+json", "application/json",
+                                  "Application/JSON", "application/protobuf+json; charset=utf-8"}) {
+    EXPECT_EQ(NegotiateProtoFormat(accept, true), ProtoFormat::Json) << accept;
+    // ProtoJSON cannot be sent: nothing acceptable.
+    EXPECT_EQ(NegotiateProtoFormat(accept, false), ProtoFormat::Unsupported) << accept;
+  }
+}
+
+TEST(NegotiateProtoFormat, NoProtobufMediaTypeIsUnsupported) {
+  for (std::string_view accept : {"text/html", "text/*", "image/png, text/plain;q=0.5", ",", " , ", "application/xml",
+                                  "application/protobufs", "application/grpc", "text/*;q=1"}) {
+    EXPECT_EQ(NegotiateProtoFormat(accept, true), ProtoFormat::Unsupported) << accept;
+  }
+}
+
+TEST(NegotiateProtoFormat, WildcardsPreferBinary) {
+  for (std::string_view accept : {"*/*", "application/*", "Application/*", "text/html, */*;q=0.8",
+                                  "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}) {
+    EXPECT_EQ(NegotiateProtoFormat(accept, true), ProtoFormat::Binary) << accept;
+    EXPECT_EQ(NegotiateProtoFormat(accept, false), ProtoFormat::Binary) << accept;
+  }
+}
+
+TEST(NegotiateProtoFormat, HighestQualityWins) {
+  EXPECT_EQ(NegotiateProtoFormat("application/protobuf;q=0.5, application/json", true), ProtoFormat::Json);
+  EXPECT_EQ(NegotiateProtoFormat("application/json, application/protobuf;q=0.5", true), ProtoFormat::Json);
+  EXPECT_EQ(NegotiateProtoFormat("application/json;q=0.4, application/protobuf;q=0.5", true), ProtoFormat::Binary);
+  EXPECT_EQ(NegotiateProtoFormat("application/json;Q=0.9, application/protobuf; q=0.8", true), ProtoFormat::Json);
+  // Without ProtoJSON, a lower quality binary encoding is still acceptable.
+  EXPECT_EQ(NegotiateProtoFormat("application/protobuf;q=0.5, application/json", false), ProtoFormat::Binary);
+  // The ProtoJSON media type is more specific than the wildcard.
+  EXPECT_EQ(NegotiateProtoFormat("*/*;q=0.1, application/protobuf+json", true), ProtoFormat::Json);
+}
+
+TEST(NegotiateProtoFormat, TieGoesToBinary) {
+  EXPECT_EQ(NegotiateProtoFormat("application/json, application/protobuf", true), ProtoFormat::Binary);
+  EXPECT_EQ(NegotiateProtoFormat("application/protobuf+json;q=0.7, application/x-protobuf;q=0.7", true),
+            ProtoFormat::Binary);
+}
+
+TEST(NegotiateProtoFormat, ZeroQualityExcludes) {
+  EXPECT_EQ(NegotiateProtoFormat("application/protobuf;q=0", true), ProtoFormat::Unsupported);
+  EXPECT_EQ(NegotiateProtoFormat("application/protobuf;q=0, application/json;q=0.1", true), ProtoFormat::Json);
+  EXPECT_EQ(NegotiateProtoFormat("application/protobuf;q=0, application/json;q=0.1", false), ProtoFormat::Unsupported);
+  EXPECT_EQ(NegotiateProtoFormat("*/*;q=0", true), ProtoFormat::Unsupported);
+  EXPECT_EQ(NegotiateProtoFormat("application/protobuf;q=invalid", true), ProtoFormat::Unsupported);
+  // The most specific range decides, whatever the wildcards say.
+  EXPECT_EQ(NegotiateProtoFormat("*/*, application/protobuf;q=0", true), ProtoFormat::Json);
+  EXPECT_EQ(NegotiateProtoFormat("*/*, application/protobuf;q=0", false), ProtoFormat::Unsupported);
+  EXPECT_EQ(NegotiateProtoFormat("application/*;q=0, application/json", true), ProtoFormat::Json);
+  EXPECT_EQ(NegotiateProtoFormat("*/*;q=0, application/*", true), ProtoFormat::Binary);
+}
+
+TEST(NegotiateProtoFormat, SameRangeTwiceTakesTheBestQuality) {
+  EXPECT_EQ(
+      NegotiateProtoFormat("application/protobuf;q=0.2, application/json;q=0.5, application/x-protobuf;q=0.9", true),
+      ProtoFormat::Binary);
+  EXPECT_EQ(NegotiateProtoFormat("application/protobuf;q=0, application/protobuf;q=0.1", true), ProtoFormat::Binary);
+}
+
+TEST(NegotiateProtoFormat, MediaTypeWithParametersIsMoreSpecific) {
+  EXPECT_EQ(
+      NegotiateProtoFormat("application/protobuf;version=1;q=0, application/protobuf, application/json;q=0.5", true),
+      ProtoFormat::Json);
+  EXPECT_EQ(NegotiateProtoFormat("application/protobuf;q=0, application/protobuf;encoding=binary", true),
+            ProtoFormat::Binary);
+  // Unknown parameters are accepted, as by ProtoFormatOf().
+  EXPECT_EQ(NegotiateProtoFormat("application/protobuf; proto=aeronet_proto_test.Order; novalue", true),
+            ProtoFormat::Binary);
+}
+
+// A parameter that ProtoFormatOf() rejects makes the media type match no encoding: the client accepts something else.
+TEST(NegotiateProtoFormat, RejectedParameterMatchesNothing) {
+  EXPECT_EQ(NegotiateProtoFormat("application/protobuf;version=2", true), ProtoFormat::Unsupported);
+  EXPECT_EQ(NegotiateProtoFormat("application/protobuf;encoding=json", true), ProtoFormat::Unsupported);
+  EXPECT_EQ(NegotiateProtoFormat("application/protobuf+json;charset=latin1", true), ProtoFormat::Unsupported);
+  EXPECT_EQ(NegotiateProtoFormat("application/protobuf;version=2, application/json;q=0.3", true), ProtoFormat::Json);
+  // Not an exclusion either.
+  EXPECT_EQ(NegotiateProtoFormat("application/protobuf;version=2;q=0, */*", true), ProtoFormat::Binary);
+}
+
+TEST(NegotiateProtoFormat, ParametersOfWildcardsAndAfterTheWeightAreIgnored) {
+  EXPECT_EQ(NegotiateProtoFormat("*/*;version=2", true), ProtoFormat::Binary);
+  EXPECT_EQ(NegotiateProtoFormat("application/*; charset=latin1; q=0.5", true), ProtoFormat::Binary);
+  EXPECT_EQ(NegotiateProtoFormat("application/protobuf;q=0.5;version=2", true), ProtoFormat::Binary);
+  EXPECT_EQ(NegotiateProtoFormat("application/protobuf;q=0.5;version=2, application/json;q=0.6", true),
+            ProtoFormat::Json);
+}
+
+// The encoding of makeProtoResponse() for a request without Accept header (with one: the integration tests). A message
+// without ProtoJSON is binary without negotiation, as it can only be refused with the Reject policy: only then does
+// the response not vary with the Accept header.
+TEST(ProtoResponseEncodingFor, WithoutAccept) {
+  const HttpRequestView request = test::HttpRequestViewTestAccess::Make();
+  for (bool jsonSupported : {false, true}) {
+    for (ProtoNotAcceptablePolicy policy : {ProtoNotAcceptablePolicy::SendBinary, ProtoNotAcceptablePolicy::Reject}) {
+      const internal::ProtoResponseEncoding encoding =
+          internal::ProtoResponseEncodingFor(request, jsonSupported, policy);
+      EXPECT_EQ(encoding.format, ProtoFormat::Binary);
+      EXPECT_EQ(encoding.varyAccept, jsonSupported || policy == ProtoNotAcceptablePolicy::Reject);
+    }
+  }
+}
+
+TEST(NegotiateProtoFormat, QuotedCommaDoesNotSplitTheRanges) {
+  EXPECT_EQ(NegotiateProtoFormat(R"(application/protobuf;x="a, application/json";q=0.5, text/plain)", true),
+            ProtoFormat::Binary);
+}
+
+TEST(NegotiateProtoFormat, QuotedSemicolonDoesNotSplitTheParameters) {
+  EXPECT_EQ(NegotiateProtoFormat(R"(application/protobuf;x="a;q=0", application/json;q=0.5)", true),
+            ProtoFormat::Binary);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -496,5 +633,74 @@ TEST(HttpResponseProto, BodyProtoJsonFailure) {
   EXPECT_EQ(response.bodyInMemory(), "kept");
 }
 #endif
+
+// ---------------------------------------------------------------------------------------------------------------------
+// HttpRequestView::makeProtoResponse
+// ---------------------------------------------------------------------------------------------------------------------
+
+namespace {
+
+// A request parsed from its head, with the global headers and the compression state of a server. Not to be copied:
+// the request refers to the other fields.
+struct ParsedRequest {
+  ParsedRequest(std::string_view method, std::string_view extraHeaders)
+      : inBuffer(BuildRawHttp11(method, "/order", extraHeaders)) {
+    globalHeaders.append("server: aeronet");
+    status = test::HttpRequestViewTestAccess::ParseHead(request, inBuffer, globalHeaders, compressionState);
+  }
+
+  CompressionConfig compressionConfig;
+  CompressionState compressionState{compressionConfig};
+  ConcatenatedHeaders globalHeaders;
+  RawChars inBuffer;
+  HttpRequestView request{test::HttpRequestViewTestAccess::Make()};
+  http::StatusCode status{};
+};
+
+}  // namespace
+
+// makeProtoResponse() builds its response in a single allocation: the buffer reserved by ProtoResponseHead() for the
+// headers and the body (embedded when captured, or for HEAD) does not grow when the body is set, in each encoding, for
+// GET and HEAD, from an empty to a large body.
+TEST(MakeProtoResponse, SingleAllocation) {
+  struct Case {
+    std::string_view method;
+    std::string_view extraHeaders;
+    ProtoFormat format;
+  };
+  static constexpr Case kCases[] = {
+      {http::GET, "", ProtoFormat::Binary},
+      {http::GET, "Accept: application/protobuf\r\n", ProtoFormat::Binary},
+      {http::HEAD, "Accept: application/protobuf\r\n", ProtoFormat::Binary},
+#ifndef AERONET_PROTOBUF_LITE
+      {http::GET, "Accept: application/json\r\n", ProtoFormat::Json},
+      {http::HEAD, "Accept: application/json\r\n", ProtoFormat::Json},
+#endif
+  };
+  Order large = MakeOrder();
+  large.set_payload(std::string(256UL * 1024UL, 'p'));
+  for (const Order& order : {Order{}, MakeOrder(), large}) {
+    for (const Case& testCase : kCases) {
+      const ParsedRequest parsed(testCase.method, testCase.extraHeaders);
+      ASSERT_EQ(parsed.status, http::StatusCodeOK);
+      std::size_t bodySize = internal::ProtoEncodedSize(order);
+#ifndef AERONET_PROTOBUF_LITE
+      if (testCase.format == ProtoFormat::Json) {
+        bodySize = internal::ProtoToJson(order).size();
+      }
+#endif
+      const internal::ProtoResponseEncoding encoding =
+          internal::ProtoResponseEncodingFor(parsed.request, kJsonSupported, ProtoNotAcceptablePolicy::SendBinary);
+      ASSERT_EQ(encoding.format, testCase.format);
+      const HttpResponse head = internal::ProtoResponseHead(parsed.request, http::StatusCodeOK, bodySize, encoding);
+      const HttpResponse response = parsed.request.makeProtoResponse(order);
+      EXPECT_EQ(response.capacityInlined(), head.capacityInlined())
+          << testCase.method << ' ' << testCase.extraHeaders << "body of " << bodySize << " bytes";
+      if (bodySize != 0) {
+        EXPECT_EQ(response.headerValueOrEmpty(http::ContentType), internal::ProtoContentType(testCase.format));
+      }
+    }
+  }
+}
 
 }  // namespace aeronet

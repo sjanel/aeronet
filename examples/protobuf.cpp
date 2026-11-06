@@ -1,8 +1,8 @@
 // Protocol Buffers bodies: POST /orders takes an Order, in the binary encoding or as ProtoJSON, and answers a Receipt
-// in the encoding of the request.
+// in the encoding that the Accept header prefers (binary for '*/*').
 //
 //   aeronet-protobuf [port]
-//   curl -H 'content-type: application/json' \
+//   curl -H 'content-type: application/json' -H 'accept: application/json' \
 //        -d '{"customer":"jdoe","items":[{"sku":"BOOK-1","quantity":2,"unitPrice":12.5}]}' http://localhost:8080/orders
 //   -> {"orderId":"1","nbItems":2,"total":25}
 #include <aeronet/aeronet-server.hpp>
@@ -52,14 +52,9 @@ int main(int argc, char** argv) {
     }
     receipt.set_total(total);
 
-    // Compressed when the client accepts a content coding and the body is large enough.
-    HttpResponse response = req.makeResponse(http::StatusCodeCreated);
-    if (ProtoFormatOf(req.headerValueOrEmpty(http::ContentType)) == ProtoFormat::Json) {
-      response.bodyProtoJson(receipt);
-    } else {
-      response.bodyProto(receipt);
-    }
-    return response;
+    // Binary or ProtoJSON according to the Accept header, with 'Vary: Accept'. Compressed when the client accepts a
+    // content coding and the body is large enough.
+    return req.makeProtoResponse(http::StatusCodeCreated, receipt);
   });
 
   try {

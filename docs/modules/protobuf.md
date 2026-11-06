@@ -4,6 +4,7 @@ With the `AERONET_ENABLE_PROTOBUF` CMake option (`ON` by default when aeronet is
 
 - `bodyProto(msg)` serializes a message into the body of a response (server) or of a request (client), in the binary encoding,
 - `bodyAsProto<T>()` parses the body of a request (server) or of a response (client), in the binary encoding or in ProtoJSON, according to its `Content-Type`,
+- `makeProtoResponse(msg)` makes a response in the encoding that the `Accept` header of the request prefers, binary or ProtoJSON,
 - the bodies are compressed and decompressed like any other body: a protobuf response is compressed when the client accepts a coding, a compressed request body is decoded before the handler parses it.
 
 The support is header-only: the aeronet libraries do not use protobuf, so they do not depend on its version. The messages are serialized and parsed by the protobuf runtime of your program, the one your generated code is built for. protobuf is never downloaded: install it (`libprotobuf-dev protobuf-compiler` on Debian / Ubuntu), or turn the option `OFF`. Every version from 3.21 is supported.
@@ -135,13 +136,83 @@ router.setPath(http::Method::POST, "/echo-json", [](const HttpRequestView& reque
 
 It is the [ProtoJSON format](https://protobuf.dev/programming-guides/json/) of protobuf, with its default options: field names in lower camel case (the parser also accepts the names of the `.proto` file), 64-bit integers as strings, enumerations by name, and the fields at their default value omitted. A field the message does not have is an error, while the binary parser keeps unknown fields. The body is serialized into a `std::string`, captured without copy.
 
-The format of the response is chosen by the handler: the server does not negotiate it with the `Accept` header of the request.
+`bodyProto()` and `bodyProtoJson()` send the encoding chosen by the handler. To let the client choose, see [Content negotiation](#content-negotiation).
+
+## Content negotiation
+
+`HttpRequestView::makeProtoResponse(msg)` makes a response whose body is `msg`, in the encoding that the `Accept` header of the request prefers: binary (`application/protobuf`), or ProtoJSON (`application/protobuf+json; charset=utf-8`) for a message of the full runtime. One handler then serves protobuf clients and browsers:
+
+```cpp
+#include <aeronet/http-protobuf.hpp>
+#include <google/protobuf/struct.pb.h>
+
+#include <utility>
+
+Router router;
+router.setPath(http::Method::POST, "/orders", [](const HttpRequestView& request) {
+  auto order = request.bodyAsProto<google::protobuf::Struct>();  // binary or ProtoJSON, per Content-Type
+  if (!order) {
+    return std::move(order.error());
+  }
+  (*order->mutable_fields())["status"].set_string_value("received");
+  return request.makeProtoResponse(http::StatusCodeCreated, *order);  // binary or ProtoJSON, per Accept
+});
+```
+
+The negotiation (`NegotiateProtoFormat()`) follows RFC 9110 §12.5.1:
+
+| `Accept` | Response |
+| --- | --- |
+| absent, `*/*`, `application/*`, `application/protobuf` | binary |
+| `application/json`, `application/protobuf+json` | ProtoJSON |
+| `application/protobuf;q=0.5, application/json` | ProtoJSON: the highest quality wins |
+| `application/json, application/protobuf` | binary: a tie goes to the binary encoding |
+| `*/*, application/protobuf;q=0` | ProtoJSON: the most specific range decides |
+| `text/html`, `application/protobuf;version=2` | none acceptable: binary, or `406` (see below) |
+
+- The media types of an encoding are the ones that the parsers recognize ([Media types](#media-types)), aliases included: `Accept: application/x-protobuf` selects the binary encoding. The response always has the canonical media type of its encoding, which RFC 9996 requires for ProtoJSON.
+- The quality of an encoding is the one of the most specific range that matches it: a media type with parameters, then without, then `application/*`, then `*/*`. A quality of `0` excludes it.
+- A media type with a parameter that the parsers reject (`version=2`, `encoding=json` for the binary type, a `charset` other than `utf-8` for ProtoJSON) matches no encoding: the client asks for something the server cannot send.
+
+The response has a `Vary: Accept` header, so that caches keep one response per encoding (`Vary: accept, accept-encoding` once compressed). A message of the lite runtime has no ProtoJSON: its encoding does not depend on `Accept`, and the response has no `Vary: Accept`.
+
+When the `Accept` header lists no media type of an encoding that can be sent, the response is binary, as RFC 9110 allows a server to disregard the header. With `ProtoNotAcceptablePolicy::Reject` as last argument, the response is `406 Not Acceptable` instead, with a `text/plain` body listing the supported media types:
+
+```cpp
+#include <aeronet/http-protobuf.hpp>
+#include <google/protobuf/struct.pb.h>
+
+Router router;
+router.setPath(http::Method::GET, "/status", [](const HttpRequestView& request) {
+  google::protobuf::Struct status;
+  (*status.mutable_fields())["healthy"].set_bool_value(true);
+  return request.makeProtoResponse(status, ProtoNotAcceptablePolicy::Reject);  // 406 for Accept: text/html
+});
+```
+
+The message is built before `makeProtoResponse()` decides. To answer `406` before building an expensive message, call `NegotiateProtoFormat(request.headerValueOrEmpty(http::Accept), true)` first (`false` for a message without ProtoJSON): it returns `ProtoFormat::Unsupported` when nothing is acceptable.
+
+`makeProtoResponse()` reserves the response buffer once, for its headers and the binary encoding, then serializes the message into it, like `bodyProto()`. It throws like `bodyProto()` and `bodyProtoJson()`.
 
 ## Compression
 
-A protobuf response is compressed when it is finalized, like any other inline body (see [Compression](../guides/compression.md)): with the coding negotiated from `Accept-Encoding`, above `CompressionConfig::minBytes`, and only if it shrinks enough. The binary encoding is already compact: it compresses much less than JSON, often not below the default `maxCompressRatio` of `0.6` for small messages. A message whose fields are mostly numbers is often left uncompressed, while text and repeated values compress well. Measure your messages before lowering `maxCompressRatio` or `minBytes`.
+A protobuf response is compressed when it is finalized, like any other inline body (see [Compression](../guides/compression.md)): with the coding negotiated from `Accept-Encoding`, above `CompressionConfig::minBytes`, and only if it shrinks enough (`maxCompressRatio`, `0.6` by default). The binary encoding is already compact, and compresses much less than JSON. Sizes compressed with the default levels of zstd (3) and gzip (6), for orders of the [test messages](../../aeronet/test_support/protobuf/aeronet-test.proto.in):
 
-`contentTypeAllowList` compares the whole `Content-Type` value: list `application/protobuf` (and `application/protobuf+json; charset=utf-8` for ProtoJSON) to compress protobuf bodies when it is set.
+| Order | Binary | zstd | gzip | ProtoJSON | zstd | gzip |
+| --- | --- | --- | --- | --- | --- | --- |
+| 10 items | 251 B | 75% | 72% | 559 B | 43% | 41% |
+| 100 items | 2.5 KB | 30% | 30% | 5.1 KB | 12% | 17% |
+| 1000 items | 26 KB | 20% | 23% | 52 KB | 8% | 15% |
+| 100 items, random SKUs, prices and quantities | 2.7 KB | 80% | 82% | | | |
+| 1000 items, random SKUs, prices and quantities | 27 KB | 76% | 78% | | | |
+
+Text and repeated values compress well, while identifiers, hashes and measurements, close to random, do not: such messages are compressed for nothing at each response, the result being discarded above `maxCompressRatio`. Recommended settings for a protobuf API:
+
+- Keep `minBytes` at its default of 1 KiB or more: smaller messages gain a few dozen bytes at best.
+- If its messages are mostly numbers, either give up compressing the binary encoding with `contentTypeAllowList` (listing `application/protobuf+json` and the text types, without `application/protobuf`), or accept smaller gains with a `maxCompressRatio` of `0.8` to `0.9`, so that the CPU spent compressing is not wasted.
+- Measure your own messages: compress a few typical bodies with `zstd -3` and `gzip -6`.
+
+`contentTypeAllowList` compares media types without their parameters: list `application/protobuf`, and `application/protobuf+json` for ProtoJSON, to compress protobuf bodies when it is set.
 
 Request bodies are decompressed by the server before the handler runs (see [Request body decompression](../guides/compression.md#request-body-decompression)), and by the client for responses: `bodyAsProto()` always sees the decoded body.
 
@@ -160,4 +231,5 @@ Request bodies are decompressed by the server before the handler runs (see [Requ
 ## Tests
 
 - Media types, parsing, errors, serialization of responses: [http-protobuf_test.cpp](../../aeronet/http/test/http-protobuf_test.cpp).
-- Server and `HttpClient` over HTTP/1.1 and HTTP/2, ProtoJSON, compressed requests and responses, async handlers, `HEAD`: [http-protobuf-integration_test.cpp](../../tests/http-protobuf-integration_test.cpp).
+- `Accept` negotiation (`NegotiateProtoFormat()`), and the single allocation of `makeProtoResponse()` (`MakeProtoResponse.SingleAllocation`): [http-protobuf_test.cpp](../../aeronet/http/test/http-protobuf_test.cpp).
+- Server and `HttpClient` over HTTP/1.1 and HTTP/2, ProtoJSON, compressed requests and responses, async handlers, `HEAD`, `makeProtoResponse()` (encodings, `406`, `Vary`): [http-protobuf-integration_test.cpp](../../tests/http-protobuf-integration_test.cpp).

@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <system_error>
 
+#include "aeronet/header-value-parameters.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
 #include "aeronet/vector.hpp"
@@ -41,29 +42,6 @@ constexpr std::string_view kClientMaxWindowBits = "client_max_window_bits";
 constexpr bool IsValidWindowBits(uint8_t bits) noexcept { return 8 <= bits && bits <= 15; }
 
 #ifdef AERONET_ENABLE_ZLIB
-// Parse a single extension parameter (name=value or just name)
-struct ExtensionParam {
-  // False for a parameter without '=', whose value has no data. A value given with '=' may be empty (invalid).
-  [[nodiscard]] bool hasValue() const noexcept { return value.data() != nullptr; }
-
-  std::string_view name;
-  std::string_view value;
-};
-
-[[nodiscard]] ExtensionParam ParseExtensionParam(std::string_view param) {
-  const auto eqPos = param.find('=');
-  if (eqPos == std::string_view::npos) {
-    return {TrimOws(param), std::string_view{}};
-  }
-  std::string_view name = TrimOws(param.substr(0, eqPos));
-  std::string_view value = TrimOws(param.substr(eqPos + 1));
-  // Remove quotes if present
-  if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
-    value = value.substr(1, value.size() - 2);
-  }
-  return {name, value};
-}
-
 // Smallest LZ77 window zlib can compress raw DEFLATE data with: a 256 bytes window (8 bits) is not supported. With 9
 // bits, zlib limits the match distances to 512 - 262 = 250 bytes: its output is valid for a 256 bytes window.
 constexpr uint8_t kMinDeflateWindowBits = 9;
@@ -150,7 +128,8 @@ DeflateNegotiatedParams ParseDeflateOffer([[maybe_unused]] std::string_view exte
   for (;;) {
     const auto nextSemi = extensionOffer.find(';', pos);
     const auto paramEnd = (nextSemi == std::string_view::npos) ? extensionOffer.size() : nextSemi;
-    const auto param = ParseExtensionParam(extensionOffer.substr(pos, paramEnd - pos));
+    // A parameter without value (no '=') is valid in an extension offer (RFC 6455 §9.1).
+    const http::HeaderParameter param = http::ParseHeaderParameter(extensionOffer.substr(pos, paramEnd - pos));
 
     bool valid = false;
     if (CaseInsensitiveEqual(param.name, kServerNoContextTakeover)) {

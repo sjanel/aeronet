@@ -273,12 +273,12 @@ TEST(AcceptEncodingNegotiationTest, InvalidQParsesAsZero) {
   EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=abc, deflate;q=0.4").encoding, Encoding::deflate);
 }
 
-TEST(AcceptEncodingNegotiationTest, QGreaterThanOneClamped) {
+TEST(AcceptEncodingNegotiationTest, QGreaterThanOneIsZero) {
   auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
-  EXPECT_EQ(sel.negotiateAcceptEncoding("deflate;q=5, gzip;q=0.9").encoding, Encoding::deflate);
+  EXPECT_EQ(sel.negotiateAcceptEncoding("deflate;q=5, gzip;q=0.9").encoding, Encoding::gzip);
 }
 
-TEST(AcceptEncodingNegotiationTest, NegativeQClampedToZero) {
+TEST(AcceptEncodingNegotiationTest, NegativeQIsZero) {
   auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
   EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=-1, deflate;q=0.3").encoding, Encoding::deflate);
 }
@@ -417,17 +417,25 @@ TEST(AcceptEncodingNegotiationTest, ParseQTrailingWhitespaceAndCut) {
 }
 
 TEST(AcceptEncodingNegotiationTest, ParseQInvalidFromCharsReturnsZero) {
-  // Non-numeric q should parse as 0 (std::from_chars failure)
+  // Non-numeric q should parse as 0
   auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
 
   EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=0.8a, deflate;q=0.4").encoding, kDefaultEncodingDeflateEnabled);
 }
 
-TEST(AcceptEncodingNegotiationTest, ParseQNegativeAndGreaterThanOneClamped) {
-  // Negative q clamped to 0, >1 clamped to 1
+TEST(AcceptEncodingNegotiationTest, ParseQOutsideTheGrammarIsZero) {
+  // A q outside the grammar of RFC 9110 §12.4.2 (negative, above 1, more than 3 decimals, exponent, inf) is 0
   auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
-  // gzip negative -> 0, deflate >1 -> clamped to 1 -> deflate chosen
-  EXPECT_EQ(sel.negotiateAcceptEncoding("gzip;q=-0.5, deflate;q=2.0").encoding, kDefaultEncodingDeflateEnabled);
+  for (std::string_view invalidQ : {"-0.5", "2.0", "1.5", "0.8000", "1e0", "inf"}) {
+    const std::string acceptEncoding = std::string("gzip;q=") + std::string(invalidQ) + ", deflate;q=0.3";
+    EXPECT_EQ(sel.negotiateAcceptEncoding(acceptEncoding).encoding, kDefaultEncodingDeflateEnabled) << invalidQ;
+  }
+}
+
+TEST(AcceptEncodingNegotiationTest, QuotedSemicolonDoesNotEndTheParameter) {
+  // 'q=0' is in the quoted value of 'x': gzip keeps the default weight
+  auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
+  EXPECT_EQ(sel.negotiateAcceptEncoding(R"(gzip;x="a;q=0", deflate;q=0.5)").encoding, kDefaultEncodingGzipEnabled);
 }
 
 TEST(AcceptEncodingNegotiationTest, ParseQCutOnFirstSpaceAfterValue) {

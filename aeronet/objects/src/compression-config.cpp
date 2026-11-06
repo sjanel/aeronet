@@ -3,9 +3,13 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <string_view>
 #include <type_traits>
 
 #include "aeronet/encoding.hpp"
+#include "aeronet/header-value-parameters.hpp"
+#include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/string-trim.hpp"
 
 #ifdef AERONET_ENABLE_ZSTD
 #include <zstd.h>
@@ -14,6 +18,17 @@
 #endif
 
 namespace aeronet {
+
+bool CompressionConfig::allowListContainsMediaTypeOf(std::string_view contentType) const noexcept {
+  const std::string_view mediaType = http::ValueWithoutParameters(contentType);
+  return std::ranges::any_of(contentTypeAllowList, [mediaType](std::string_view entry) {
+    // The media type of the entry is its first mediaType.size() characters if only whitespace or parameters follow
+    // them: the parameters of an entry are only looked for when these characters match.
+    entry = TrimOws(entry);
+    return entry.size() >= mediaType.size() && CaseInsensitiveEqual(entry.substr(0, mediaType.size()), mediaType) &&
+           http::ValueWithoutParameters(entry.substr(mediaType.size())).empty();
+  });
+}
 
 void CompressionConfig::validate() const {
   if (!std::isfinite(maxCompressRatio)) {

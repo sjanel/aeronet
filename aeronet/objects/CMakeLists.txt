@@ -92,6 +92,20 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    quality-value_test
+    test/quality-value_test.cpp
+    LIBRARIES
+    aeronet_objects
+)
+
+AeronetAddUnitTest(
+    header-value-parameters_test
+    test/header-value-parameters_test.cpp
+    LIBRARIES
+    aeronet_objects
+)
+
+AeronetAddUnitTest(
     connect-target_test
     test/connect-target_test.cpp
     LIBRARIES

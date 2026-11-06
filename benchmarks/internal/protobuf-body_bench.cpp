@@ -3,10 +3,12 @@
 //   bodyProto(msg)                      serialized straight into the response buffer (aeronet)
 //   body(msg.SerializeAsString(), ...)  serialized into a std::string, captured without copy
 //   body(std::string_view(scratch))     serialized into a reused scratch std::string, copied into the response
+// And the cost of choosing the encoding of a response from the Accept header (NegotiateProtoFormat, makeProtoResponse).
 #include <benchmark/benchmark.h>
 
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <string>
 #include <string_view>
 
@@ -95,9 +97,30 @@ void ProtoArgs(benchmark::Benchmark* bench) {
   }
 }
 
+// Accept values of protobuf clients, curl, a JavaScript fetch() of ProtoJSON and a browser.
+constexpr std::string_view kAcceptValues[] = {
+    "application/protobuf",
+    "*/*",
+    "application/json",
+    "application/protobuf;q=0.5, application/json",
+    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+};
+
+void BM_NegotiateProtoFormat(benchmark::State& state) {
+  const std::string_view accept = kAcceptValues[static_cast<std::size_t>(state.range(0))];
+  for ([[maybe_unused]] auto iter : state) {
+    std::string_view value = accept;
+    benchmark::DoNotOptimize(value);
+    benchmark::DoNotOptimize(NegotiateProtoFormat(value, true));
+  }
+  state.SetLabel(std::string(accept));
+  state.SetItemsProcessed(state.iterations());
+}
+
 }  // namespace
 
 BENCHMARK(BM_ProtoResponse)->Apply(ProtoArgs);
+BENCHMARK(BM_NegotiateProtoFormat)->DenseRange(0, static_cast<int64_t>(std::size(kAcceptValues)) - 1);
 
 }  // namespace aeronet
 

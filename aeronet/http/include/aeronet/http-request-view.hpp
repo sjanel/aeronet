@@ -37,6 +37,10 @@
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/tracing/tracer.hpp"
 
+#ifdef AERONET_ENABLE_PROTOBUF
+#include "aeronet/http-protobuf-common.hpp"
+#endif
+
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include <cassert>
 
@@ -686,6 +690,25 @@ class HttpRequestView {
   /// Same as bodyAsProto<T>(), but parses into 'msg' (for instance allocated on an Arena), which is replaced.
   template <class T>
   [[nodiscard]] std::expected<void, HttpResponse> bodyAsProto(T& msg) const;
+
+  /// Same as makeProtoResponse(http::StatusCodeOK, msg, policy).
+  template <class T>
+  [[nodiscard]] HttpResponse makeProtoResponse(
+      const T& msg, ProtoNotAcceptablePolicy policy = ProtoNotAcceptablePolicy::SendBinary) const {
+    return makeProtoResponse(http::StatusCodeOK, msg, policy);
+  }
+
+  /// Makes a response with the protobuf message 'msg' as body, in the encoding that the Accept header of the request
+  /// prefers (see NegotiateProtoFormat()): binary (application/protobuf), or ProtoJSON (application/protobuf+json;
+  /// charset=utf-8) for a message of the full runtime. The response has a 'Vary: Accept' header, unless its encoding
+  /// cannot depend on the Accept header (a message without ProtoJSON, and the SendBinary policy).
+  /// When the Accept header lists no supported media type, 'policy' decides: the binary encoding, or 406 Not
+  /// Acceptable. Throws like bodyProto() and bodyProtoJson(). Definition lives in <aeronet/http-protobuf.hpp> (include
+  /// it to use this method), which includes protobuf.
+  template <class T>
+  [[nodiscard]] HttpResponse makeProtoResponse(
+      http::StatusCode statusCode, const T& msg,
+      ProtoNotAcceptablePolicy policy = ProtoNotAcceptablePolicy::SendBinary) const;
 #endif
 
   // Returns the best encoding that can be used for the response based on the

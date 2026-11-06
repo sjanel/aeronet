@@ -405,6 +405,11 @@ inline std::size_t MinEncodeChunkAllocSize([[maybe_unused]] Encoding encoding) {
 
 }  // namespace
 
+bool HttpCodec::IsContentTypeAllowed(const CompressionConfig& compressionConfig, const HttpMessage& msg) noexcept {
+  return compressionConfig.contentTypeAllowList.empty() ||
+         compressionConfig.allowListContainsMediaTypeOf(msg.headerValueOrEmpty(http::ContentType));
+}
+
 CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionState, Encoding encoding,
                                                   HttpMessage& msg) {
   if (msg.hasContentEncoding()) {
@@ -418,11 +423,8 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
     return CompressResponseResult::Uncompressed;
   }
 
-  if (!compressionConfig.contentTypeAllowList.empty()) {
-    const std::string_view contentType = msg.headerValueOrEmpty(http::ContentType);
-    if (!compressionConfig.contentTypeAllowList.containsCI(contentType)) {
-      return CompressResponseResult::Uncompressed;
-    }
+  if (!IsContentTypeAllowed(compressionConfig, msg)) {
+    return CompressResponseResult::Uncompressed;
   }
 
   // Sanity check: Content-Type header must be present to consider compression.

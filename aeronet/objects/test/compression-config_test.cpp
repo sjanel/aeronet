@@ -5,6 +5,7 @@
 #include <bit>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 #include <type_traits>
 
 #include "aeronet/encoding.hpp"
@@ -136,5 +137,56 @@ TEST(CompressionConfigTest, BrotliInvalidWindowThrows) {
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 #endif
+
+TEST(CompressionConfigTest, EmptyAllowListAllowsEveryContentType) {
+  const CompressionConfig config;
+  EXPECT_TRUE(config.isContentTypeAllowed("image/png"));
+  EXPECT_TRUE(config.isContentTypeAllowed(""));
+}
+
+TEST(CompressionConfigTest, AllowListComparesMediaTypesOnly) {
+  CompressionConfig config;
+  config.contentTypeAllowList.append("text/html");
+  config.contentTypeAllowList.append(" Application/JSON ; charset=utf-8");
+  for (std::string_view contentType : {
+           "text/html",
+           "TEXT/HTML",
+           "text/html; charset=utf-8",
+           " text/html ;charset=utf-8",
+           "text/html;",
+           "application/json",
+           "application/json; charset=latin1",
+           "application/json;q=1;x=y",
+       }) {
+    EXPECT_TRUE(config.isContentTypeAllowed(contentType)) << contentType;
+  }
+  for (std::string_view contentType : {
+           "text/htm",
+           "text/html2",
+           "text/plain; charset=utf-8",
+           "application/json+x",
+           "image/png",
+           "",
+           "; text/html",
+           "text /html",
+       }) {
+    EXPECT_FALSE(config.isContentTypeAllowed(contentType)) << contentType;
+  }
+}
+
+// The whole media type of an entry must match: what follows the characters compared is only whitespace or parameters.
+TEST(CompressionConfigTest, AllowListEntriesMatchOnTheirWholeMediaType) {
+  CompressionConfig config;
+  config.contentTypeAllowList.append("text/htmlx");
+  config.contentTypeAllowList.append("text");
+  config.contentTypeAllowList.append("image/svg+xml \t; x=\"a;b\"");
+  for (std::string_view contentType :
+       {"text/htmlx", "TEXT", "text; charset=utf-8", "image/svg+xml", "Image/SVG+XML;"}) {
+    EXPECT_TRUE(config.isContentTypeAllowed(contentType)) << contentType;
+  }
+  for (std::string_view contentType : {"text/html", "text/htm", "tex", "image/svg", "image/svg+xml2", "x"}) {
+    EXPECT_FALSE(config.isContentTypeAllowed(contentType)) << contentType;
+  }
+}
 
 }  // namespace aeronet

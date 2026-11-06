@@ -89,6 +89,11 @@ class HttpCodec {
   static CompressResponseResult TryCompressBody(CompressionState& compressionState, Encoding encoding,
                                                 HttpMessage& msg);
 
+  // Whether the body of 'msg' is eligible for compression for its Content-Type (see
+  // CompressionConfig::isContentTypeAllowed()), only looked up when the allowlist is not empty (the default).
+  [[nodiscard]] static bool IsContentTypeAllowed(const CompressionConfig& compressionConfig,
+                                                 const HttpMessage& msg) noexcept;
+
   /// Decompress request body for fixed-length requests (so they cannot contain any trailers).
   static RequestDecompressionResult MaybeDecompressRequestBody(DecompressionState& decompressionState,
                                                                const DecompressionConfig& decompressionConfig,

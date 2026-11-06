@@ -38,7 +38,7 @@ config.withCompression(std::move(compression));
 | --- | --- | --- |
 | `minBytes` | 1024 | Bodies smaller than this are sent uncompressed. `std::numeric_limits<std::size_t>::max()` disables compression. |
 | `maxCompressRatio` | 0.6 | The compressed body is kept only if its size is at most this fraction of the original (at least 40% smaller by default). The compression stops as soon as its output exceeds this size. |
-| `contentTypeAllowList` | empty: every type | Content types eligible for compression, compared case-insensitively. |
+| `contentTypeAllowList` | empty: every type | Media types eligible for compression, compared case-insensitively and without their parameters: `text/html` matches `Content-Type: text/html; charset=utf-8`. |
 | `preferredFormats` | empty | Codings preferred by the server, used to break ties (see below). |
 | `addVaryAcceptEncodingHeader` | `true` | Add `Vary: Accept-Encoding` to compressed responses. |
 | `defaultDirectCompressionMode` | `Auto` | See [Direct compression](#direct-compression). |
@@ -50,7 +50,7 @@ Already compressed content, such as images, video, or archives, gains nothing: r
 
 ### Negotiation
 
-The `Accept-Encoding` header lists the codings a client accepts, with optional quality values (`q`, from 0 to 1, default 1). The server picks the compiled coding with the highest quality; `gzip;q=0.5, br;q=0.9` selects `br`. A quality of 0 excludes a coding, and `*` stands for every coding not listed.
+The `Accept-Encoding` header lists the codings a client accepts, with optional quality values (`q`, from 0 to 1 with up to 3 decimals, default 1). A quality outside this grammar (RFC 9110 §12.4.2), such as `q=2`, `q=0.0001` or `q=inf`, counts as 0. The server picks the compiled coding with the highest quality; `gzip;q=0.5, br;q=0.9` selects `br`. A quality of 0 excludes a coding, and `*` stands for every coding not listed.
 
 When several codings share the best quality, the server preference decides: the codings of `preferredFormats` in their order, then the other compiled codings in the default order, `zstd`, `br`, `gzip`, `deflate`, and finally the uncompressed form (`identity`). With `preferredFormats` set to `gzip` only, `Accept-Encoding: br, gzip` selects `gzip`, while `Accept-Encoding: br` still selects `br`.
 
@@ -72,7 +72,7 @@ A streaming handler answering a `HEAD` request takes the same decision as for a 
 
 ### Streaming responses
 
-For a response written with `HttpResponseWriter`, the server holds the headers and buffers the body until it reaches `minBytes`. It then decides once: either it starts a streaming encoder, adds `Content-Encoding`, and compresses each chunk as it is written, reusing one output buffer for the whole response, or the response ends before the threshold and is sent uncompressed with accurate headers.
+For a response written with `HttpResponseWriter`, the server holds the headers and buffers the body until it reaches `minBytes`. It then decides once: either it starts a streaming encoder, adds `Content-Encoding`, and compresses each chunk as it is written, reusing one output buffer for the whole response, or the response ends before the threshold and is sent uncompressed with accurate headers. A content type outside `contentTypeAllowList` when the threshold is reached is sent uncompressed as well, from the buffered bytes on.
 
 The output of one write is sent at once. brotli (from quality 4) and zstd write theirs in bursts, brotli once for several input blocks and zstd once per block of 128 KiB, which can exceed the output buffer on incompressible data: the buffer then grows, and keeps that capacity for the next writes of the response.
 
@@ -160,7 +160,7 @@ The decoded body is limited by `maxDecompressedBytes`, not by `maxBodyBytes`, wh
 - `HEAD` responses carrying the headers of the compressed `GET` ones (`HttpCompression.HeadCarriesTheHeadersOfTheGet`, `HttpCompression.StreamingHeadCarriesTheHeadersOfTheGetWithoutContentLength`): [tests/http-compression_test.cpp](../../tests/http-compression_test.cpp); over HTTP/2: [tests/http2-core_test.cpp](../../tests/http2-core_test.cpp) and [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp).
 - Request decompression, stacked codings, limits, and errors: [tests/http-request-decompression_test.cpp](../../tests/http-request-decompression_test.cpp).
 - Lower-casing of the received codings: [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp) (HTTP/1.1) and [hpack_test.cpp](../../aeronet/http2/test/hpack_test.cpp) (HTTP/2).
-- `Accept-Encoding` parsing and selection: [accept-encoding-negotiation_test.cpp](../../aeronet/objects/test/accept-encoding-negotiation_test.cpp).
+- `Accept-Encoding` parsing and selection: [accept-encoding-negotiation_test.cpp](../../aeronet/objects/test/accept-encoding-negotiation_test.cpp), quality values: [quality-value_test.cpp](../../aeronet/objects/test/quality-value_test.cpp).
 - Bodies of a few compression chunks, and a compressed body filling the `maxCompressRatio` budget exactly or exceeding it by one byte (`HttpCodecCompression.TryCompressBodyOfAFewChunksUsesTheWholeBudget`, `HttpCodecCompression.TryCompressBodyStreamingBudgetBoundary`): [http-codec_test.cpp](../../aeronet/http/test/http-codec_test.cpp); request bodies compressed by `HttpClient` (`HttpClientCompressionE2E.CompressesMidSizeModeratelyCompressibleRequestBody`): [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp).
 - Large incompressible bodies, whose brotli and zstd output comes in bursts larger than the room of one write, streamed, set with `bodyAppend()` and with `bodyInlineAppend()`, over HTTP/1.1 and HTTP/2 (`ProtocolParityFastBrotli.LargeIncompressibleBodiesAreCompressedWhole`): [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp); request bodies directly compressed by `HttpClient` (`HttpClientCompressionE2E.LargeIncompressibleDirectlyCompressedRequestBody`): [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp), and restored after a const finalization (`HttpRequestTest.LargeIncompressibleDirectlyCompressedBody`): [http-request_test.cpp](../../aeronet/client/test/http-request_test.cpp); encoders reading part of their input only (`BrotliEncoderDecoderTest.IncompressibleChunksWithMinEncodeChunkCapacity`, `ZstdEncoderDecoderTest.LargeIncompressibleChunkWithMinEncodeChunkCapacity`, `*.EncodeChunkWithoutEnoughOutputRoom`).
 - Codecs: [zlib-encoder-decoder_test.cpp](../../aeronet/objects/test/zlib-encoder-decoder_test.cpp), [zstd-encoder-decoder_test.cpp](../../aeronet/objects/test/zstd-encoder-decoder_test.cpp), [brotli-encoder-decoder_test.cpp](../../aeronet/objects/test/brotli-encoder-decoder_test.cpp).
