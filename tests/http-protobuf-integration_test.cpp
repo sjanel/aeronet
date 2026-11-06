@@ -34,6 +34,10 @@
 #include "aeronet/request-task.hpp"
 #endif
 
+#ifndef AERONET_PROTOBUF_LITE
+#include <google/protobuf/util/json_util.h>
+#endif
+
 namespace aeronet {
 namespace {
 
@@ -41,12 +45,7 @@ using aeronet_proto_test::Credentials;
 using aeronet_proto_test::Order;
 using aeronet_proto_test::OrderAck;
 
-constexpr bool kJsonSupported =
-#ifdef AERONET_PROTOBUF_LITE
-    false;
-#else
-    true;
-#endif
+constexpr bool kJsonSupported = internal::kProtoJsonSupported<Order>;
 
 // A compression codec compiled in this build (Encoding::none if there is none).
 constexpr Encoding kCodec = [] {
@@ -131,6 +130,18 @@ class HttpProtobuf : public ::testing::TestWithParam<HttpVersionMode> {
       return req.makeResponse().bodyProtoJson(MakeAck(req, *order));
     });
 #endif
+    // The encoding of the response negotiated from the Accept header.
+    ts.router().setPath(http::Method::GET, "/negotiated",
+                        [](const HttpRequestView& req) { return req.makeProtoResponse(MakeOrder()); });
+    ts.router().setPath(http::Method::GET, "/negotiated-large",
+                        [](const HttpRequestView& req) { return req.makeProtoResponse(MakeOrder(kLargePayloadSize)); });
+    ts.router().setPath(http::Method::POST, "/negotiated-strict", [](const HttpRequestView& req) {
+      auto order = req.bodyAsProto<Order>();
+      if (!order) {
+        return std::move(order.error());
+      }
+      return req.makeProtoResponse(http::StatusCodeCreated, MakeAck(req, *order), ProtoNotAcceptablePolicy::Reject);
+    });
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
     ts.router().setPath(http::Method::POST, "/async-orders", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
       [[maybe_unused]] const std::string_view body = co_await req.bodyAwaitable();
@@ -176,6 +187,15 @@ class HttpProtobuf : public ::testing::TestWithParam<HttpVersionMode> {
       throw std::runtime_error(ack.error().message);
     }
     return std::move(*ack);
+  }
+
+  // Gets 'target' with this Accept header (none if empty).
+  [[nodiscard]] HttpResponse getWithAccept(std::string_view target, std::string_view accept) {
+    return send(http::Method::GET, target, [accept](auto& req) {
+      if (!accept.empty()) {
+        req.headerAddLine(http::Accept, accept);
+      }
+    });
   }
 
   test::TestServer ts;
@@ -342,6 +362,95 @@ TEST_P(HttpProtobuf, AsyncHandler) {
 }
 #endif
 
+TEST_P(HttpProtobuf, NegotiatedBinary) {
+  for (std::string_view accept : {"", "application/protobuf", "*/*", "application/x-protobuf",
+                                  "application/json;q=0.5, application/protobuf", "text/html, */*;q=0.1"}) {
+    const HttpResponse resp = getWithAccept("/negotiated", accept);
+    ASSERT_EQ(resp.status(), http::StatusCodeOK) << accept;
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), http::ContentTypeApplicationProtobuf) << accept;
+    // Without ProtoJSON, the response is the same whatever the Accept header.
+    EXPECT_EQ(resp.headerValueOrEmpty(http::Vary), kJsonSupported ? http::Accept : std::string_view{}) << accept;
+    Order order;
+    ASSERT_TRUE(resp.bodyAsProto(order).has_value()) << accept;
+    EXPECT_EQ(order.payload(), MakeOrder().payload());
+  }
+}
+
+TEST_P(HttpProtobuf, NegotiatedJson) {
+  for (std::string_view accept :
+       {"application/json", "application/protobuf+json; charset=utf-8",
+        "application/protobuf;q=0.5, application/x-protobuf+json;q=0.9", "*/*, application/protobuf;q=0"}) {
+    const HttpResponse resp = getWithAccept("/negotiated", accept);
+    ASSERT_EQ(resp.status(), http::StatusCodeOK) << accept;
+    // Without ProtoJSON, nothing acceptable: the binary encoding by default.
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType),
+              kJsonSupported ? http::ContentTypeApplicationProtobufJson : http::ContentTypeApplicationProtobuf)
+        << accept;
+    Order order;
+    ASSERT_TRUE(resp.bodyAsProto(order).has_value()) << accept;
+    EXPECT_EQ(order.id(), 42U);
+    EXPECT_EQ(order.items_size(), 3);
+  }
+}
+
+// Nothing acceptable: the binary encoding by default, 406 with the Reject policy.
+TEST_P(HttpProtobuf, NegotiatedNotAcceptable) {
+  HttpResponse resp = getWithAccept("/negotiated", "text/html");
+  ASSERT_EQ(resp.status(), http::StatusCodeOK);
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), http::ContentTypeApplicationProtobuf);
+  EXPECT_TRUE(resp.bodyAsProto<Order>().has_value());
+
+  for (std::string_view accept : {"text/html", "application/protobuf;q=0", "application/protobuf;version=2"}) {
+    resp = send(http::Method::POST, "/negotiated-strict", [accept](auto& req) {
+      req.headerAddLine(http::Accept, accept);
+      req.bodyProto(MakeOrder());
+    });
+    EXPECT_EQ(resp.status(), http::StatusCodeNotAcceptable) << accept;
+    EXPECT_EQ(resp.headerValueOrEmpty(http::Vary), http::Accept) << accept;
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), http::ContentTypeTextPlain) << accept;
+    EXPECT_EQ(resp.bodyInMemory(),
+              kJsonSupported ? "No acceptable media type for the protobuf response, available: application/protobuf, "
+                               "application/protobuf+json"
+                             : "No acceptable media type for the protobuf response, available: application/protobuf")
+        << accept;
+  }
+
+  // An acceptable media type: the status of the handler.
+  resp = send(http::Method::POST, "/negotiated-strict", [](auto& req) {
+    req.headerAddLine(http::Accept, "application/protobuf");
+    req.bodyProto(MakeOrder());
+  });
+  ASSERT_EQ(resp.status(), http::StatusCodeCreated) << resp.bodyInMemory();
+  // The response depends on the Accept header, even without ProtoJSON: it may be a 406.
+  EXPECT_EQ(resp.headerValueOrEmpty(http::Vary), http::Accept);
+  const auto ack = resp.bodyAsProto<OrderAck>();
+  ASSERT_TRUE(ack.has_value()) << ack.error().message;
+  EXPECT_EQ(ack->order_id(), 42U);
+}
+
+// Vary lists both headers when the negotiated response is compressed.
+TEST_P(HttpProtobuf, NegotiatedCompressedResponse) {
+  if constexpr (kCodec == Encoding::none) {
+    GTEST_SKIP() << "no compression codec in this build";
+  }
+  const Order expected = MakeOrder(kLargePayloadSize);
+  for (std::string_view accept : {"application/protobuf", "application/json"}) {
+    HttpClientConfig cfg = MakeClientConfig();
+    cfg.withDecompression(false).withDefaultAcceptEncoding(GetEncodingStr(kCodec));
+    const HttpResponse resp = send(std::move(cfg), http::Method::GET, "/negotiated-large",
+                                   [accept](auto& req) { req.headerAddLine(http::Accept, accept); });
+    ASSERT_EQ(resp.status(), http::StatusCodeOK) << accept;
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(kCodec)) << accept;
+    EXPECT_EQ(resp.headerValueOrEmpty(http::Vary),
+              kJsonSupported ? std::string_view{"accept, accept-encoding"} : http::AcceptEncoding)
+        << accept;
+    const RawChars decoded = test::Decompress(kCodec, resp.bodyInMemory());
+    Order order;
+    ASSERT_TRUE(ParseProto(decoded, order, resp.headerValueOrEmpty(http::ContentType)).has_value()) << accept;
+    EXPECT_EQ(order.payload(), expected.payload());
+  }
+}
+
 // The response to HEAD announces the size of the encoding, without body.
 TEST(HttpProtobufHead, ContentLengthOfTheEncoding) {
   test::TestServer ts(HttpServerConfig{});
@@ -358,6 +467,35 @@ TEST(HttpProtobufHead, ContentLengthOfTheEncoding) {
   EXPECT_EQ(test::getHeader(resp, "content-length"), std::to_string(order.ByteSizeLong()));
   EXPECT_EQ(test::getHeader(resp, "content-type"), http::ContentTypeApplicationProtobuf);
   EXPECT_TRUE(resp.body.empty());
+}
+
+// HEAD gets the headers of the negotiated GET response, Content-Length included.
+TEST(HttpProtobufHead, NegotiatedContentLength) {
+  test::TestServer ts(HttpServerConfig{});
+  const Order order = MakeOrder(1000);
+  // Captured by value: see ContentLengthOfTheEncoding.
+  ts.router().setPath(http::Method::GET, "/order",
+                      [order](const HttpRequestView& req) { return req.makeProtoResponse(order); });
+  test::RequestOptions opts;
+  opts.method = "HEAD";
+  opts.target = "/order";
+  auto resp = test::parseResponseOrThrow(test::requestOrThrow(ts.port(), opts));
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  EXPECT_EQ(test::getHeader(resp, "content-length"), std::to_string(order.ByteSizeLong()));
+  EXPECT_EQ(test::getHeader(resp, "content-type"), http::ContentTypeApplicationProtobuf);
+  EXPECT_TRUE(resp.body.empty());
+
+#ifndef AERONET_PROTOBUF_LITE
+  std::string json;
+  ASSERT_TRUE(google::protobuf::util::MessageToJsonString(order, &json).ok());
+  opts.headers.emplace_back("Accept", "application/json");
+  resp = test::parseResponseOrThrow(test::requestOrThrow(ts.port(), opts));
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  EXPECT_EQ(test::getHeader(resp, "content-length"), std::to_string(json.size()));
+  EXPECT_EQ(test::getHeader(resp, "content-type"), http::ContentTypeApplicationProtobufJson);
+  EXPECT_EQ(test::getHeader(resp, "vary"), std::string_view(http::Accept));
+  EXPECT_TRUE(resp.body.empty());
+#endif
 }
 
 std::string ProtocolName(const ::testing::TestParamInfo<HttpVersionMode>& info) {

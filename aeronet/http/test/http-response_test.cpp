@@ -4860,6 +4860,30 @@ TEST_F(HttpResponseTest, Body_ContentTypeInAllowList_CompressesBody) {
   }
 }
 
+// The allowlist compares media types, without their parameters, on both sides.
+TEST_F(HttpResponseTest, Body_ContentTypeAllowListIgnoresParameters) {
+  compressionConfig.contentTypeAllowList.append("text/html");
+  compressionConfig.contentTypeAllowList.append("application/json; charset=utf-8");
+
+  const std::string body(2048, '{');
+  for (Encoding enc : test::SupportedEncodings()) {
+    for (std::string_view contentType :
+         {"text/html; charset=utf-8", "Text/HTML;level=1", "application/json", "application/json;charset=latin1"}) {
+      HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+      resp.body(body, contentType);
+      FinalizeCompressedBody(resp);
+
+      EXPECT_TRUE(IsAutomaticDirectCompression(resp)) << contentType;
+      EXPECT_LT(resp.bodyInMemoryLength(), body.size()) << contentType;
+      EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc)) << contentType;
+    }
+    HttpResponse resp = makePrepared(PreparedOptions{.expectedEncoding = enc});
+    resp.body(body, "text/htmlx; charset=utf-8");
+    EXPECT_FALSE(IsAutomaticDirectCompression(resp));
+    EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentEncoding).empty());
+  }
+}
+
 // Test: On mode bypasses content type allow list check
 TEST_F(HttpResponseTest, Body_OnMode_BypassesContentTypeAllowList) {
   compressionConfig.contentTypeAllowList.append("text/html");

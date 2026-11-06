@@ -80,6 +80,18 @@ using aeronet::GetEncodingStr;
 using aeronet::IsEncodingEnabled;
 using aeronet::kNbContentEncodings;
 
+#ifdef AERONET_ENABLE_PROTOBUF
+// ── Protocol Buffers (the templates are defined in <aeronet/http-protobuf.hpp>) ──
+
+using aeronet::kProtoMaxBodySize;
+using aeronet::NegotiateProtoFormat;
+using aeronet::ProtoFormat;
+using aeronet::ProtoFormatOf;
+using aeronet::ProtoNotAcceptablePolicy;
+using aeronet::ProtoParseErrc;
+using aeronet::ProtoParseError;
+#endif
+
 // ── Stats / metrics ────────────────────────────────────────────────────────
 
 using aeronet::DogStatsD;

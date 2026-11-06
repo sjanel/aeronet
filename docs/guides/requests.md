@@ -195,7 +195,7 @@ Each part exposes its `name`, an optional `filename` and `contentType`, its `val
 | `maxHeadersPerPart` | 32 | Maximum number of header lines in a part. |
 | `maxPartSizeBytes` | 32 MiB | Maximum size of a part's content; 0 disables the check. |
 
-A malformed body (missing boundary, part without `Content-Disposition`, exceeded limit) leaves the form invalid, with a reason and no parts: the parser never throws. Quoted boundaries and the simple RFC 5987 form of `filename*=` are supported. The whole body is buffered first, so `maxBodyBytes` bounds the size of an upload.
+A malformed body (missing boundary, part without `Content-Disposition`, exceeded limit) leaves the form invalid, with a reason and no parts: the parser never throws. Quoted boundaries and parameter values, which may contain `;` (`filename="report; v2.txt"`), and the simple RFC 5987 form of `filename*=` are supported. The whole body is buffered first, so `maxBodyBytes` bounds the size of an upload.
 
 ## Expectations
 

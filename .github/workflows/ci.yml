@@ -526,7 +526,7 @@ jobs:
           run_server_and_curl websocket-echo "http://127.0.0.1:18086/" -- \
             "${EXAMPLE_DIR}/aeronet-websocket-echo" 18086
 
-          run_server_and_curl protobuf "http://127.0.0.1:18087/orders" -H 'content-type: application/json' \
+          run_server_and_curl protobuf "http://127.0.0.1:18087/orders" -H 'content-type: application/json' -H 'accept: application/json' \
             -d '{"customer":"jdoe","items":[{"sku":"BOOK-1","quantity":2,"unitPrice":12.5}]}' -- \
             "${EXAMPLE_DIR}/aeronet-protobuf" 18087
 

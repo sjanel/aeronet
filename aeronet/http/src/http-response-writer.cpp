@@ -182,6 +182,10 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
     return false;
   }
 
+  // The data buffered until the compression threshold, once handed over to the encoder or the transport: it is
+  // released when this write returns, and end() has nothing left to emit, whatever the path taken below.
+  RawChars bufferedData;
+
   // Threshold-based lazy activation using generic Encoder abstraction.
   // We purposefully delay header emission until we either (a) activate compression and have compressed bytes
   // to send or (b) decide to emit identity data (on end()). This allows us to include the Content-Encoding header
@@ -200,11 +204,17 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
         // Still below threshold; do not emit headers/body yet.
         return true;
       }
-      data = _preCompressBuffer;
+      bufferedData = std::move(_preCompressBuffer);
+      data = bufferedData;
     }
 
-    // Threshold reached exactly or exceeded: activate encoder.
-    _activeEncoderCtx = _pCompressionState->makeContext(_encoding);
+    // Threshold reached exactly or exceeded: activate the encoder, unless the content type is not eligible, the data
+    // being then sent as is, from this write on.
+    if (HttpCodec::IsContentTypeAllowed(*_pCompressionConfig, _fixedResponse)) {
+      _activeEncoderCtx = _pCompressionState->makeContext(_encoding);
+    } else {
+      _encoding = Encoding::none;
+    }
   }
 
   ensureHeadersSent();

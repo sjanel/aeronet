@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <string_view>
 
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/direct-compression-mode.hpp"
@@ -29,6 +30,16 @@ struct CompressionConfig {
   [[nodiscard]] std::size_t maxCompressedBytes(std::size_t uncompressedBytes) const {
     return static_cast<std::size_t>(std::ceil(static_cast<double>(uncompressedBytes) * maxCompressRatio));
   }
+
+  // Whether a body with this Content-Type value is eligible for compression: 'contentTypeAllowList' is empty, or lists
+  // its media type. For the Content-Type of a message, HttpCodec::IsContentTypeAllowed() only looks it up when the
+  // allowlist is not empty.
+  [[nodiscard]] bool isContentTypeAllowed(std::string_view contentType) const noexcept {
+    return contentTypeAllowList.empty() || allowListContainsMediaTypeOf(contentType);
+  }
+
+  // Whether 'contentTypeAllowList' lists the media type of this Content-Type value (see contentTypeAllowList).
+  [[nodiscard]] bool allowListContainsMediaTypeOf(std::string_view contentType) const noexcept;
 
   // Server-side preference order used to break ties during Accept-Encoding negotiation.
   //
@@ -166,6 +177,9 @@ struct CompressionConfig {
   // Optional allow-list of content types eligible for compression.
   //
   // If empty, all content types are considered eligible.
+  //
+  // Media types are compared case-insensitively, without their parameters: 'text/html' matches the Content-Type
+  // 'text/html; charset=utf-8'. The parameters of an entry are ignored as well.
   //
   // It is recommended to restrict this list when serving a mix of compressible (e.g., JSON, HTML) and non-compressible
   // content (e.g., JPEG, MP4) to avoid unnecessary CPU usage.

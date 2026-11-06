@@ -387,6 +387,49 @@ TEST(HttpCompression, StreamingBrotliLargeIncompressibleEnd) {
   EXPECT_EQ(std::string_view(decompressed), std::string_view(payload));
 }
 
+// The writer compresses a streamed body only if the allowlist lists its media type, compared without parameters.
+TEST(HttpCompression, StreamingContentTypeAllowList) {
+  const auto codecs = test::SupportedEncodings();
+  if (codecs.empty()) {
+    GTEST_SKIP();
+  }
+  const Encoding encoding = codecs.front();
+  HttpServerConfig cfg;
+  cfg.compression.minBytes = 64;
+  cfg.compression.preferredFormats = {encoding};
+  cfg.compression.contentTypeAllowList.append("text/html");
+  test::TestServer localTs(std::move(cfg));
+  const std::string part1(40, 'a');  // buffered: below minBytes
+  const std::string part2(80, 'b');  // reaches minBytes: the writer decides
+  const std::string part3(50, 'c');  // after the decision
+  for (std::string_view contentType : {"text/html; charset=utf-8", "image/png"}) {
+    localTs.router().setPath(http::Method::GET, std::format("/{}", contentType.substr(0, 4)),
+                             [part1, part2, part3, contentType](const HttpRequestView&, HttpResponseWriter& writer) {
+                               writer.contentType(contentType);
+                               writer.writeBody(part1);
+                               writer.writeBody(part2);
+                               writer.writeBody(part3);
+                               writer.end();
+                             });
+  }
+  const std::string expected = part1 + part2 + part3;
+  const std::string_view acceptEncoding = GetEncodingStr(encoding);
+
+  auto resp = test::simpleGet(localTs.port(), "/text", {{"Accept-Encoding", acceptEncoding}});
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  const auto it = resp.headers.find(http::ContentEncoding.get());
+  ASSERT_NE(it, resp.headers.end());
+  EXPECT_EQ(it->second, acceptEncoding);
+  EXPECT_EQ(std::string_view(test::Decompress(encoding, resp.plainBody)), expected);
+
+  // Not listed: the buffered part then the next ones are sent as is, once each.
+  resp = test::simpleGet(localTs.port(), "/imag", {{"Accept-Encoding", acceptEncoding}});
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  EXPECT_FALSE(resp.headers.contains(http::ContentEncoding.get()));
+  EXPECT_FALSE(resp.headers.contains(http::Vary.get()));
+  EXPECT_EQ(resp.plainBody, expected);
+}
+
 TEST(HttpCompression, BelowThresholdIdentity) {
   if constexpr (!brotliEnabled()) {
     GTEST_SKIP();

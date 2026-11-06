@@ -188,6 +188,33 @@ TEST(HttpCodecCompression, ContentTypeAllowListBlocksCompression) {
 #endif
 }
 
+// The allowlist compares the media type of the Content-Type, without its parameters.
+TEST(HttpCodecCompression, ContentTypeAllowListIgnoresParameters) {
+  CompressionConfig cfg;
+  cfg.minBytes = 16U;
+  cfg.contentTypeAllowList.append("text/plain");
+  cfg.contentTypeAllowList.append("application/protobuf+json; charset=utf-8");
+  const std::string body(4096, 'A');
+
+  for (Encoding enc : test::SupportedEncodings()) {
+    cfg.preferredFormats.assign(1U, enc);
+    CompressionState state(cfg);
+    for (std::string_view contentType : {"text/plain; charset=utf-8", "TEXT/PLAIN ;format=flowed",
+                                         "application/protobuf+json", "application/protobuf+json; charset=utf-8"}) {
+      HttpResponse resp(http::StatusCodeOK);
+      resp.body(body, contentType);
+      EXPECT_EQ(HttpCodec::TryCompressBody(state, enc, resp), CompressResponseResult::Compressed) << contentType;
+      EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), GetEncodingStr(enc)) << contentType;
+    }
+    for (std::string_view contentType : {"text/plainx", "text/html; charset=utf-8", "application/protobuf"}) {
+      HttpResponse resp(http::StatusCodeOK);
+      resp.body(body, contentType);
+      EXPECT_EQ(HttpCodec::TryCompressBody(state, enc, resp), CompressResponseResult::Uncompressed) << contentType;
+      EXPECT_FALSE(resp.hasHeader(http::ContentEncoding)) << contentType;
+    }
+  }
+}
+
 TEST(HttpCodecCompression, VaryHeaderAddedWhenConfigured) {
   static constexpr std::uint32_t bodySz = 48UL << 10U;
 

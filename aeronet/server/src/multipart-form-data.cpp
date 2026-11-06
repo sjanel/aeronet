@@ -8,6 +8,7 @@
 #include <span>
 #include <string_view>
 
+#include "aeronet/header-value-parameters.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
@@ -35,62 +36,44 @@ ContentDispositionInfo ParseContentDisposition(std::string_view headerValue) {
     return ret;
   }
 
-  std::string_view type;
+  http::HeaderParametersIterator parameters(headerValue);
+  const std::string_view type = parameters.firstElement();
+  if (type.empty()) {
+    ret.invalidReason = "multipart part invalid Content-Disposition parameter";
+    return ret;
+  }
 
-  bool firstToken = true;
-  do {
-    auto semicolon = headerValue.find(';');
-    std::string_view token = semicolon == std::string_view::npos ? headerValue : headerValue.substr(0, semicolon);
-    token = TrimOws(token);
-    if (token.empty()) {
-      // Empty token (e.g., consecutive semicolons) is malformed
+  while (parameters.hasNext()) {
+    const http::HeaderParameter parameter = parameters.next();
+    if (!parameter.hasValue()) {
+      // An empty parameter (consecutive semicolons) or one without '=' is malformed
       ret.invalidReason = "multipart part invalid Content-Disposition parameter";
       return ret;
     }
-
-    if (firstToken) {
-      type = token;
-    } else {
-      auto eq = token.find('=');
-      if (eq != std::string_view::npos) {
-        std::string_view key = TrimOws(token.substr(0, eq));
-        std::string_view value = TrimOws(token.substr(eq + 1));
-
-        value = StripQuotes(value);
-        if (CaseInsensitiveEqual(key, "name")) {
-          ret.name = value;
-        } else if (CaseInsensitiveEqual(key, "filename")) {
-          ret.filename = value;
-          ret.hasFilename = true;
-        } else if (CaseInsensitiveEqual(key, "filename*")) {
-          // RFC 5987 style: charset'lang'value. We only support the simplest utf-8''value case.
-          auto firstTick = value.find('\'');
-          if (firstTick == std::string_view::npos) {
-            ret.invalidReason = "multipart part invalid Content-Disposition filename* parameter";
-            return ret;
-          }
-
-          auto secondTick = value.find('\'', firstTick + 1);
-          // If the pattern isn't charset'lang'value (i.e., both ticks present and payload after), it's malformed.
-          if (secondTick == std::string_view::npos || secondTick + 1 >= value.size()) {
-            ret.invalidReason = "multipart part invalid Content-Disposition filename* parameter";
-            return ret;
-          }
-          ret.filename = value.substr(secondTick + 1);
-          ret.hasFilename = true;
-        }
-      } else {
-        ret.invalidReason = "multipart part invalid Content-Disposition parameter";
+    if (CaseInsensitiveEqual(parameter.name, "name")) {
+      ret.name = parameter.value;
+    } else if (CaseInsensitiveEqual(parameter.name, "filename")) {
+      ret.filename = parameter.value;
+      ret.hasFilename = true;
+    } else if (CaseInsensitiveEqual(parameter.name, "filename*")) {
+      // RFC 5987 style: charset'lang'value. We only support the simplest utf-8''value case.
+      const std::string_view value = parameter.value;
+      auto firstTick = value.find('\'');
+      if (firstTick == std::string_view::npos) {
+        ret.invalidReason = "multipart part invalid Content-Disposition filename* parameter";
         return ret;
       }
-    }
 
-    if (semicolon == std::string_view::npos) {
-      break;
+      auto secondTick = value.find('\'', firstTick + 1);
+      // If the pattern isn't charset'lang'value (i.e., both ticks present and payload after), it's malformed.
+      if (secondTick == std::string_view::npos || secondTick + 1 >= value.size()) {
+        ret.invalidReason = "multipart part invalid Content-Disposition filename* parameter";
+        return ret;
+      }
+      ret.filename = value.substr(secondTick + 1);
+      ret.hasFilename = true;
     }
-    headerValue.remove_prefix(semicolon + 1);
-    firstToken = false;
-  } while (!headerValue.empty());
+  }
 
   if (!CaseInsensitiveEqual(type, "form-data")) {
     ret.invalidReason = "multipart part must have Content-Disposition: form-data";
@@ -101,39 +84,15 @@ ContentDispositionInfo ParseContentDisposition(std::string_view headerValue) {
 }
 
 std::string_view ExtractBoundary(std::string_view contentType) {
-  if (contentType.empty()) {
+  http::HeaderParametersIterator parameters(contentType);
+  if (!CaseInsensitiveEqual(parameters.firstElement(), kMultipartMediaType)) {
     return {};
   }
-
-  auto semicolon = contentType.find(';');
-  auto typeToken = semicolon == std::string_view::npos ? contentType : contentType.substr(0, semicolon);
-  if (!CaseInsensitiveEqual(TrimOws(typeToken), kMultipartMediaType)) {
-    return {};
-  }
-
-  if (semicolon == std::string_view::npos) {
-    return {};
-  }
-  auto params = contentType.substr(semicolon + 1);
-
-  while (!params.empty()) {
-    if (params.front() == ';') {
-      params.remove_prefix(1);
+  while (parameters.hasNext()) {
+    const http::HeaderParameter parameter = parameters.next();
+    if (parameter.hasValue() && CaseInsensitiveEqual(parameter.name, "boundary")) {
+      return parameter.value;
     }
-    auto next = params.find(';');
-    auto chunk = next == std::string_view::npos ? params : params.substr(0, next);
-    auto eq = chunk.find('=');
-    if (eq != std::string_view::npos) {
-      auto key = TrimOws(chunk.substr(0, eq));
-      auto value = TrimOws(chunk.substr(eq + 1));
-      if (CaseInsensitiveEqual(key, "boundary")) {
-        return StripQuotes(value);
-      }
-    }
-    if (next == std::string_view::npos) {
-      break;
-    }
-    params.remove_prefix(next + 1);
   }
   return {};
 }

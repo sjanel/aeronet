@@ -139,6 +139,26 @@ TEST(MultipartFormDataTest, FilenameStarParameterIsHandled) {
   EXPECT_EQ(part.contentType, "application/octet-stream");
 }
 
+// A ';' in a quoted string does not end its parameter: neither in Content-Disposition, nor in the boundary.
+TEST(MultipartFormDataTest, QuotedSemicolonInParameterValue) {
+  const std::string body = BuildBody({
+      "--a;b\r\n",
+      "Content-Disposition: form-data; name=\"up;load\"; filename=\"report; v2.txt\"\r\n",
+      "\r\n",
+      "payload\r\n",
+      "--a;b--\r\n",
+  });
+
+  auto form = MultipartFormData("multipart/form-data; boundary=\"a;b\"", body);
+  ASSERT_TRUE(form.valid()) << form.invalidReason();
+  ASSERT_EQ(form.parts().size(), 1);
+  const auto& part = form.parts()[0];
+  EXPECT_EQ(part.name, "up;load");
+  ASSERT_TRUE(part.hasFilename());
+  EXPECT_EQ(part.filename, "report; v2.txt");
+  EXPECT_EQ(part.value, "payload");
+}
+
 TEST(MultipartFormDataTest, MissingBoundaryMakesFormInvalid) {
   MultipartFormData form("multipart/form-data", "");
   ExpectInvalid(form, "multipart/form-data boundary missing");
