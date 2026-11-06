@@ -1,88 +1,35 @@
 #pragma once
 
-#include <cstddef>
 #include <string_view>
-
-#include "aeronet/is-header-whitespace.hpp"
 
 namespace aeronet::http {
 
-// Helper to iterate Content-Encoding header values in reverse order.
+// Helper to iterate the comma separated tokens of a header value (Content-Encoding, Connection, Vary...) in reverse
+// order.
 // Given header value should be trimmed on the extremities before use.
-// The tokens returned by the iterator are trimmed as well.
+// The tokens returned by the iterator are trimmed as well. A comma inside a quoted string does not separate tokens.
 // The iterator will also yield empty tokens if there are consecutive separators or a leading separator.
 // Usage:
-//  http::HeaderValueReverseTokensIterator<','> it(headerValue);
+//  http::HeaderValueReverseTokensIterator it(headerValue);
 //  while (it.hasNext()) {
 //    std::string_view token = it.next();
 //    ...
 //  }
-template <char Sep>
 class HeaderValueReverseTokensIterator {
  public:
-  explicit HeaderValueReverseTokensIterator(std::string_view trimmedHeaderValue)
+  explicit HeaderValueReverseTokensIterator(std::string_view trimmedHeaderValue) noexcept
       : _first(trimmedHeaderValue.data()),
         _last(trimmedHeaderValue.data() + trimmedHeaderValue.size()),
-        _emitLeadingEmpty(!trimmedHeaderValue.empty() && trimmedHeaderValue.front() == Sep) {}
+        _emitLeadingEmpty(!trimmedHeaderValue.empty() && trimmedHeaderValue.front() == kSep) {}
 
   [[nodiscard]] bool hasNext() const noexcept { return _first < _last || _emitLeadingEmpty; }
 
-  std::string_view next() {
-    // Final leading empty field
-    if (_first == _last) {
-      _emitLeadingEmpty = false;
-      return {};
-    }
-
-    const char* pos = _last - 1;
-    const char* tokenEnd = _last;
-
-    bool inQuotes = false;
-
-    while (pos >= _first) {
-      char ch = *pos;
-
-      if (ch == '"') {
-        // Check if escaped (count backslashes before)
-        const char* prev = pos - 1;
-        size_t backslashes = 0;
-        while (prev >= _first && *prev == '\\') {
-          ++backslashes;
-          --prev;
-        }
-        if ((backslashes & 1U) == 0U) {
-          inQuotes = !inQuotes;
-        }
-      } else if (!inQuotes && ch == Sep) {
-        break;
-      }
-
-      --pos;
-    }
-
-    const char* tokenBegin = pos + 1;
-
-    // Trim OWS inside token bounds (fast, bounded)
-    while (tokenBegin < tokenEnd && IsHeaderWhitespace(*tokenBegin)) {
-      ++tokenBegin;
-    }
-    while (tokenBegin < tokenEnd && IsHeaderWhitespace(*(tokenEnd - 1))) {
-      --tokenEnd;
-    }
-
-    // Consume separator + OWS
-    if (pos >= _first) {
-      --pos;  // skip Sep
-      while (pos >= _first && IsHeaderWhitespace(*pos)) {
-        --pos;
-      }
-    }
-
-    _last = pos + 1;
-    return {tokenBegin, tokenEnd};
-  }
+  // Returns the next token, starting from the last one, and consumes it. Should only be called if hasNext() is true.
+  std::string_view next() noexcept;
 
  private:
+  static constexpr char kSep = ',';
+
   const char* _first;
   const char* _last;
   bool _emitLeadingEmpty;

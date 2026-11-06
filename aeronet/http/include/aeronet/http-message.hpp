@@ -98,6 +98,8 @@ class HttpMessage {
     other._opts.resetHasEmbeddedPayload();
   }
 
+  // Reuses the buffer of this message when its capacity is enough.
+  // Basic exception guarantee: if an allocation fails, this message is left empty, as if it had been moved from.
   HttpMessage& operator=(const HttpMessage& other);
 
   HttpMessage& operator=(HttpMessage&& other) noexcept {
@@ -1203,6 +1205,11 @@ class HttpMessage {
       destroyEmbeddedPayloadUnchecked();
     }
   }
+
+  // Makes this message a copy of 'other': message bytes, and embedded payload (copied, not inlined: a file, a static
+  // view or a HEAD size cannot be). Preconditions: no embedded payload, and empty _data (capacity is reused).
+  // If an allocation fails, nothing was modified: _data is still empty.
+  void copyFrom(const HttpMessage& other);
 
   // Precondition: _opts.hasEmbeddedPayload().
   void destroyEmbeddedPayloadUnchecked() noexcept;

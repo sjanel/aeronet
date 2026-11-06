@@ -109,14 +109,14 @@ TEST(HttpHeader, SelfCopyAssignment) {
 
 TEST(HttpHeader, ReverseIteratorEmpty) {
   std::string_view headerValue;
-  http::HeaderValueReverseTokensIterator<','> it(headerValue);
+  http::HeaderValueReverseTokensIterator it(headerValue);
 
   EXPECT_FALSE(it.hasNext());
 }
 
 TEST(HttpHeader, ReverseIteratorSingleValue) {
   std::string_view headerValue = "singleValue";
-  http::HeaderValueReverseTokensIterator<','> it(headerValue);
+  http::HeaderValueReverseTokensIterator it(headerValue);
 
   ASSERT_TRUE(it.hasNext());
   EXPECT_EQ(it.next(), "singleValue");
@@ -126,7 +126,7 @@ TEST(HttpHeader, ReverseIteratorSingleValue) {
 
 TEST(HttpHeader, ReverseIteratorTwoValuesNoSpaces) {
   std::string_view headerValue = "gzip,deflate";
-  http::HeaderValueReverseTokensIterator<','> it(headerValue);
+  http::HeaderValueReverseTokensIterator it(headerValue);
 
   ASSERT_TRUE(it.hasNext());
   EXPECT_EQ(it.next(), "deflate");
@@ -138,7 +138,7 @@ TEST(HttpHeader, ReverseIteratorTwoValuesNoSpaces) {
 
 TEST(HttpHeader, ReverseIteratorMultipleWithSpacesAndEmpty) {
   std::string_view headerValue = "gzip, deflate , br ,  ,  identity";
-  http::HeaderValueReverseTokensIterator<','> it(headerValue);
+  http::HeaderValueReverseTokensIterator it(headerValue);
 
   ASSERT_TRUE(it.hasNext());
   EXPECT_EQ(it.next(), "identity");
@@ -156,7 +156,7 @@ TEST(HttpHeader, ReverseIteratorMultipleWithSpacesAndEmpty) {
 
 TEST(HttpHeader, ReverseIteratorEmptyOnSides1) {
   std::string_view headerValue = ", value1 ,\tvalue2 ,";
-  http::HeaderValueReverseTokensIterator<','> it(headerValue);
+  http::HeaderValueReverseTokensIterator it(headerValue);
 
   ASSERT_TRUE(it.hasNext());
   EXPECT_EQ(it.next(), "");
@@ -172,7 +172,7 @@ TEST(HttpHeader, ReverseIteratorEmptyOnSides1) {
 
 TEST(HttpHeader, ReverseIteratorEmptyOnSides2) {
   std::string_view headerValue = ", ,, , value2 ,";
-  http::HeaderValueReverseTokensIterator<','> it(headerValue);
+  http::HeaderValueReverseTokensIterator it(headerValue);
 
   ASSERT_TRUE(it.hasNext());
   EXPECT_EQ(it.next(), "");
@@ -192,7 +192,7 @@ TEST(HttpHeader, ReverseIteratorEmptyOnSides2) {
 
 TEST(HttpHeader, ReverseIteratorWithQuotedValues) {
   std::string_view headerValue = R"(gzip, ," ","quoted, value")";
-  http::HeaderValueReverseTokensIterator<','> it(headerValue);
+  http::HeaderValueReverseTokensIterator it(headerValue);
 
   ASSERT_TRUE(it.hasNext());
   EXPECT_EQ(it.next(), R"("quoted, value")");
@@ -208,7 +208,7 @@ TEST(HttpHeader, ReverseIteratorWithQuotedValues) {
 
 TEST(HttpHeader, ReverseIteratorWithEscapedQuotes) {
   std::string_view headerValue = R"hdr("\"gzip", "value with \"escaped\" quotes", "deflate\"")hdr";
-  http::HeaderValueReverseTokensIterator<','> it(headerValue);
+  http::HeaderValueReverseTokensIterator it(headerValue);
 
   ASSERT_TRUE(it.hasNext());
   EXPECT_EQ(it.next(), "\"deflate\\\"\"");

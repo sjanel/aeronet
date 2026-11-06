@@ -188,6 +188,7 @@ AeronetAddUnitTest(
 AeronetAddUnitTest(
     http-header_test
     src/http-header.cpp
+    src/http-header-value-reverse-tokens-iterator.cpp
     test/http-header_test.cpp
     LIBRARIES
     aeronet_tech

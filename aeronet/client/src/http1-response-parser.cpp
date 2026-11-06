@@ -12,6 +12,7 @@
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
+#include "aeronet/http-header-value-reverse-tokens-iterator.hpp"
 #include "aeronet/http-message.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -33,20 +34,16 @@ namespace {
 // Scan a (possibly comma-separated) Connection token list, flagging the close / keep-alive directives.
 // Connection is defined as a list of options (e.g. "close, foo" / "keep-alive, Upgrade"), so each token
 // must be matched individually rather than comparing the whole value. Flags are only ever set, never
-// cleared, so directives accumulate across repeated Connection header lines.
-constexpr void ScanConnectionTokens(std::string_view value, bool& closeSeen, bool& keepAliveSeen) {
-  while (!value.empty()) {
-    const auto comma = value.find(',');
-    const std::string_view token = TrimOws(value.substr(0, comma));
+// cleared, so directives accumulate across repeated Connection header lines (and the tokens can be visited in any
+// order). The value must be trimmed on its extremities.
+void ScanConnectionTokens(std::string_view trimmedValue, bool& closeSeen, bool& keepAliveSeen) {
+  for (http::HeaderValueReverseTokensIterator it(trimmedValue); it.hasNext();) {
+    const std::string_view token = it.next();
     if (CaseInsensitiveEqual(token, http::close)) {
       closeSeen = true;
     } else if (CaseInsensitiveEqual(token, http::keepalive)) {
       keepAliveSeen = true;
     }
-    if (comma == std::string_view::npos) {
-      break;
-    }
-    value.remove_prefix(comma + 1);
   }
 }
 

@@ -136,7 +136,7 @@ bool HttpRequestView::hasExpectContinue() const noexcept {
 bool HttpRequestView::clientKeepsAliveForHttp1() const {
   // Connection is a list of connection options (RFC 9110 §7.6.1): the close option wins wherever it is.
   bool keepAliveSeen = false;
-  for (http::HeaderValueReverseTokensIterator<','> it(headerValueOrEmpty(http::Connection)); it.hasNext();) {
+  for (http::HeaderValueReverseTokensIterator it(headerValueOrEmpty(http::Connection)); it.hasNext();) {
     const std::string_view option = it.next();
     if (CaseInsensitiveEqual(option, http::close)) {
       return false;

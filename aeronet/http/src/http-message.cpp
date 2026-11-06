@@ -95,7 +95,7 @@ namespace {
 constexpr std::string_view kVaryValueSep = ", ";
 
 bool VaryContainsAcceptEncodingToken(std::string_view value) {
-  for (http::HeaderValueReverseTokensIterator<','> it(value); it.hasNext();) {
+  for (http::HeaderValueReverseTokensIterator it(value); it.hasNext();) {
     const std::string_view token = it.next();
     if (token == "*" || CaseInsensitiveEqual(token, http::AcceptEncoding)) {
       return true;
@@ -107,8 +107,8 @@ bool VaryContainsAcceptEncodingToken(std::string_view value) {
 
 struct HeaderSearchResult {
   // if nullptr, not found. It's different from valueBegin == valueEnd, which means found but empty value.
-  const char* valueBegin = nullptr;
-  const char* valueEnd = nullptr;
+  const char* pValueBeg = nullptr;
+  const char* pValueEnd = nullptr;
 };
 
 // Performs a linear search for the header 'key' in the headers block defined by flatHeaders.
@@ -160,8 +160,8 @@ constexpr HeaderSearchResult HeadersReverseLinearSearch(std::string_view flatHea
     const std::size_t valuePos = lineStart + key.size();
 
     if (flatHeaders.substr(lineStart).starts_with(key) && flatHeaders.substr(valuePos).starts_with(http::HeaderSep)) {
-      const char* valueBegin = flatHeaders.data() + valuePos + http::HeaderSep.size();
-      return {valueBegin, flatHeaders.data() + lineEnd};
+      const char* pValueBeg = flatHeaders.data() + valuePos + http::HeaderSep.size();
+      return {pValueBeg, flatHeaders.data() + lineEnd};
     }
 
     if (previousEnd == std::string_view::npos) {
@@ -173,34 +173,42 @@ constexpr HeaderSearchResult HeadersReverseLinearSearch(std::string_view flatHea
 
 }  // namespace
 
-HttpMessage::HttpMessage(const HttpMessage& other)
-    : _data(other.wireDataSize() + (other._opts.hasEmbeddedPayload() ? EmbeddedPayload::kMaxFootprint : 0UL)),
-      _posBitmap(other._posBitmap),
-      _opts(other._opts) {
-  _opts.resetHasEmbeddedPayload();
-
-  _data.unchecked_append(other._data.data(), other.wireDataSize());
-  if (other._opts.hasEmbeddedPayload()) {
-    EmbeddedPayload::EmplaceNoRealloc(_data, *other.getHttpPayload());
-    _opts.setHasEmbeddedPayload();  // last: the bit means "object constructed"
-  }
-}
+HttpMessage::HttpMessage(const HttpMessage& other) { copyFrom(other); }
 
 HttpMessage& HttpMessage::operator=(const HttpMessage& other) {
-  if (this == &other) {
-    return *this;
+  if (this != &other) [[likely]] {
+    // Our payload lives in our buffer: it must go before the buffer is reused. From here, an allocation failure leaves
+    // this message empty (as moved from), which is a valid state.
+    destroyEmbeddedPayload();
+    _data.clear();
+    copyFrom(other);
   }
-  if (!_opts.hasEmbeddedPayload() && !other._opts.hasEmbeddedPayload()) {
-    // Fast path: plain bytes on both sides, RawChars can reuse its capacity.
-    _data = other._data;
-    _posBitmap = other._posBitmap;
-    _opts = other._opts;
-    return *this;
-  }
-  // Slow path: copy-and-swap semantics (strong exception guarantee)
-  HttpMessage tmp(other);
-  *this = std::move(tmp);
   return *this;
+}
+
+void HttpMessage::copyFrom(const HttpMessage& other) {
+  assert(_data.empty() && !_opts.hasEmbeddedPayload());
+
+  const std::size_t wireSize = other.wireDataSize();
+  const bool hasPayload = other._opts.hasEmbeddedPayload();
+  const std::size_t neededCapacity = wireSize + (hasPayload ? EmbeddedPayload::kMaxFootprint : 0UL);
+
+  if (_data.capacity() < neededCapacity) {
+    // No content to keep: a new block avoids the copy that a realloc would make. The old one is freed once allocated.
+    _data = RawChars(neededCapacity);
+  }
+
+  if (hasPayload) {
+    // The only step left that can throw, done before modifying anything.
+    HttpPayload payloadCopy(*other.getHttpPayload());
+    _data.unchecked_append(other._data.data(), wireSize);
+    EmbeddedPayload::EmplaceNoRealloc(_data, std::move(payloadCopy));
+  } else {
+    _data.unchecked_append(other._data.data(), wireSize);
+  }
+
+  _posBitmap = other._posBitmap;
+  _opts = other._opts;  // its embedded payload bit is set if and only if the payload was just installed
 }
 
 void HttpMessage::headerImpl(LowerAsciiKey key, std::string_view value) {
@@ -543,7 +551,7 @@ std::string_view HttpMessage::bodyInMemory() const noexcept {
 }
 
 bool HttpMessage::hasTrailer(LowerAsciiKey key) const noexcept {
-  return HeadersLinearSearch(trailersFlatView(), key).valueBegin != nullptr;
+  return HeadersLinearSearch(trailersFlatView(), key).pValueBeg != nullptr;
 }
 
 std::optional<std::string_view> HttpMessage::trailerValue(LowerAsciiKey key) const noexcept {
@@ -555,7 +563,7 @@ std::optional<std::string_view> HttpMessage::trailerValue(LowerAsciiKey key) con
 }
 
 bool HttpMessage::hasHeader(LowerAsciiKey key) const noexcept {
-  return HeadersLinearSearch(headersFlatView(), key).valueBegin != nullptr;
+  return HeadersLinearSearch(headersFlatView(), key).pValueBeg != nullptr;
 }
 
 std::optional<std::string_view> HttpMessage::headerValue(LowerAsciiKey key) const noexcept {

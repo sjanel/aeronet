@@ -3708,7 +3708,171 @@ TEST_F(HttpResponseTest, EmbeddedPayloadSurvivesHeadEditsCopiesAndMoves) {
   }
 }
 
+TEST_F(HttpResponseTest, CopyAssignmentBetweenAllBodyKinds) {
+  test::ScopedTempDir tmpDir;
+  static constexpr std::string_view kFileContent = "file content";
+  test::ScopedTempFile tmp(tmpDir, kFileContent);
+
+  const std::string longBody(200, 'L');
+
+  struct BodyCase {
+    std::function<void(HttpResponse&)> setBody;
+    std::string_view expectedBody;
+    bool isFile;
+  };
+
+  // No body, inline body, then every external payload kind: short (SSO) and long std::string, static view, vector,
+  // file.
+  const BodyCase cases[] = {
+      {[](HttpResponse&) {}, "", false},
+      {[](HttpResponse& resp) { resp.body("inline"); }, "inline", false},
+      {[](HttpResponse& resp) { resp.body(std::string("short")); }, "short", false},
+      {[&longBody](HttpResponse& resp) { resp.body(std::string(longBody)); }, longBody, false},
+      {[](HttpResponse& resp) { resp.bodyStatic("static body"); }, "static body", false},
+      {[](HttpResponse& resp) { resp.body(std::vector<char>{'v', 'e', 'c'}); }, "vec", false},
+      {[&tmp](HttpResponse& resp) { resp.file(File(tmp.filePath().string())); }, kFileContent, true},
+  };
+
+  // The head differs in size from a case to another, to cover every alignment of the embedded payload.
+  const auto makeResponse = [](const BodyCase& bodyCase, std::size_t idx) {
+    HttpResponse resp(http::StatusCodeOK);
+    resp.header("x-id", std::string(idx * 5U + 1U, 'a'));
+    bodyCase.setBody(resp);
+    return resp;
+  };
+
+  const auto checkResponse = [](const HttpResponse& resp, const BodyCase& bodyCase, std::size_t idx) {
+    EXPECT_EQ(resp.headerValueOrEmpty("x-id"), std::string(idx * 5U + 1U, 'a'));
+    EXPECT_EQ(resp.hasBody(), !bodyCase.expectedBody.empty());
+    EXPECT_EQ(resp.hasBodyFile(), bodyCase.isFile);
+    EXPECT_EQ(resp.bodyLength(), bodyCase.expectedBody.size());
+    if (!bodyCase.isFile) {
+      EXPECT_EQ(resp.bodyInMemory(), bodyCase.expectedBody);
+    }
+  };
+
+  for (std::size_t srcIdx = 0; srcIdx < std::size(cases); ++srcIdx) {
+    for (std::size_t dstIdx = 0; dstIdx < std::size(cases); ++dstIdx) {
+      const BodyCase& srcCase = cases[srcIdx];
+      const BodyCase& dstCase = cases[dstIdx];
+
+      const HttpResponse src = makeResponse(srcCase, srcIdx);
+      HttpResponse dst = makeResponse(dstCase, dstIdx);
+      checkResponse(dst, dstCase, dstIdx);
+
+      dst = src;
+      checkResponse(dst, srcCase, srcIdx);
+      checkResponse(src, srcCase, srcIdx);
+
+      // The copy is independent from its source.
+      dst.header("x-after", "1");
+      EXPECT_FALSE(src.hasHeader("x-after"));
+      checkResponse(src, srcCase, srcIdx);
+
+      // And it can be sent: the payload is at its place in the finalized message.
+      HttpMessageData prepared = finalizePrepared(std::move(dst));
+      EXPECT_TRUE(prepared.firstBuffer().contains("x-after: 1"));
+      if (srcCase.isFile) {
+        ASSERT_NE(prepared.getIfFilePayload(), nullptr);
+        EXPECT_EQ(prepared.getIfFilePayload()->length, srcCase.expectedBody.size());
+      } else {
+        std::string wire(prepared.firstBuffer());
+        wire.append(prepared.secondBuffer());
+        EXPECT_TRUE(wire.ends_with(srcCase.expectedBody));
+      }
+    }
+  }
+}
+
+TEST_F(HttpResponseTest, CopyAssignmentReusesTheBufferOfTheDestination) {
+  HttpResponse smallResp(http::StatusCodeNotFound);
+  smallResp.body(std::string(100, 's'));
+
+  for (bool dstHasPayload : {false, true}) {
+    HttpResponse dst(http::StatusCodeOK);
+    if (dstHasPayload) {
+      dst.body(std::string(50, 'd'));
+    }
+    dst.reserve(dst.sizeInlined() + 4096U);
+    const std::size_t capacity = dst.capacityInlined();
+
+    // Enough capacity: the buffer stays, whether the source has a payload or not.
+    dst = smallResp;
+    EXPECT_EQ(dst.capacityInlined(), capacity);
+    EXPECT_EQ(dst.status(), http::StatusCodeNotFound);
+    EXPECT_EQ(dst.bodyInMemory(), std::string(100, 's'));
+
+    const HttpResponse noPayload(http::StatusCodeAccepted);
+    dst = noPayload;
+    EXPECT_EQ(dst.capacityInlined(), capacity);
+    EXPECT_EQ(dst.status(), http::StatusCodeAccepted);
+    EXPECT_FALSE(dst.hasBody());
+
+    // Not enough capacity: the buffer grows to hold the source.
+    HttpResponse largeResp(http::StatusCodeCreated);
+    largeResp.header("x-big", std::string(capacity * 2U, 'b'));
+    largeResp.body(std::string(100, 'B'));
+    dst = largeResp;
+    EXPECT_GE(dst.capacityInlined(), largeResp.sizeInlined());
+    EXPECT_EQ(dst.status(), http::StatusCodeCreated);
+    EXPECT_EQ(dst.headerValueOrEmpty("x-big"), largeResp.headerValueOrEmpty("x-big"));
+    EXPECT_EQ(dst.bodyInMemory(), std::string(100, 'B'));
+  }
+}
+
 #if AERONET_WANT_MALLOC_OVERRIDES
+TEST_F(HttpResponseTest, CopyAssignmentAllocationFailureLeavesDestinationEmpty) {
+  const std::string body(200, 'x');
+  HttpResponse src(http::StatusCodeOK);
+  src.header("x-big", std::string(1000, 'b'));
+  src.body(std::string(body));
+
+  const auto checkSrcCopy = [&src, &body](const HttpResponse& copy) {
+    EXPECT_EQ(copy.status(), http::StatusCodeOK);
+    EXPECT_EQ(copy.headerValueOrEmpty("x-big"), src.headerValueOrEmpty("x-big"));
+    EXPECT_EQ(copy.bodyInMemory(), body);
+  };
+
+  for (bool dstHasPayload : {false, true}) {
+    for (bool enoughCapacity : {false, true}) {
+      HttpResponse dst(http::StatusCodeNotFound);
+      if (dstHasPayload) {
+        dst.body(std::string(50, 'd'));
+      }
+      if (enoughCapacity) {
+        // The buffer is reused: the copy of the payload is what fails.
+        dst.reserve(dst.sizeInlined() + 4096U);
+      }
+
+      test::FailNextMalloc();
+      EXPECT_THROW(dst = src, std::bad_alloc);
+      test::ResetToSysMalloc();
+
+      // Left as if moved from: it can be destroyed, assigned again, and used.
+      EXPECT_TRUE(dst.empty());
+      checkSrcCopy(src);
+
+      dst = src;
+      checkSrcCopy(dst);
+    }
+  }
+}
+
+TEST_F(HttpResponseTest, CopyConstructionAllocationFailure) {
+  HttpResponse src(http::StatusCodeOK);
+  src.body(std::string(200, 'x'));
+
+  // The buffer of the copy, then the copy of the payload.
+  for (int successfulAllocs : {0, 1}) {
+    test::FailNextMalloc(successfulAllocs, 1);
+    EXPECT_THROW(HttpResponse copy(src), std::bad_alloc);
+    test::ResetToSysMalloc();
+  }
+
+  const HttpResponse copy(src);
+  EXPECT_EQ(copy.bodyInMemory(), std::string(200, 'x'));
+}
+
 TEST_F(HttpResponseTest, HeadEditAllocationFailureKeepsEmbeddedPayload) {
   const std::string longBody(100, 'x');
   for (bool staticBody : {false, true}) {
@@ -4154,7 +4318,7 @@ TEST_F(HttpResponseTest, Body_Accepted_CompressesBody) {
             EXPECT_EQ(resp.headerValueOrEmpty(http::Vary), "*");
           } else {
             int count = 0;
-            for (http::HeaderValueReverseTokensIterator<','> it(resp.headerValueOrEmpty(http::Vary)); it.hasNext();) {
+            for (http::HeaderValueReverseTokensIterator it(resp.headerValueOrEmpty(http::Vary)); it.hasNext();) {
               if (CaseInsensitiveEqual(it.next(), http::AcceptEncoding)) {
                 ++count;
               }

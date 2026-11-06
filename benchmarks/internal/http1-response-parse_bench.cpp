@@ -111,6 +111,37 @@ void BM_ResponseHeadScan(benchmark::State& state) {
 }
 BENCHMARK(BM_ResponseHeadScan)->Args({32UL, 64UL});
 
+// Connection header values of typical responses, indexed by the benchmark argument (0: no Connection header).
+constexpr std::string_view kConnectionValues[]{
+    "", "keep-alive", "close", "keep-alive, Upgrade", "Upgrade, foo, bar, baz, keep-alive",
+};
+
+// Parses a small bodyless response with the usual headers and a Connection header (or none), to measure the cost of
+// the connection-option scan within a whole head parse.
+void BM_ResponseConnectionHeader(benchmark::State& state) {
+  std::string response =
+      "HTTP/1.1 200 OK\r\nDate: Thu, 05 Nov 2026 10:00:00 GMT\r\nServer: aeronet\r\nContent-Type: text/plain\r\n"
+      "Content-Length: 0\r\n";
+  const std::string_view connection = kConnectionValues[static_cast<std::size_t>(state.range(0))];
+  if (!connection.empty()) {
+    response.append("Connection: ");
+    response.append(connection);
+    response.append(http::CRLF);
+  }
+  response.append(http::CRLF);
+  RawChars bodyBuf;
+  for (auto _ : state) {
+    HttpResponse resp;
+    Http1ResponseParser parser(bodyBuf);
+    parser.reset(false);
+    auto st = parser.parse(response, false, resp, kMaxResponseBytes);
+    benchmark::DoNotOptimize(st);
+    benchmark::DoNotOptimize(parser.keepAlive());
+  }
+  state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(response.size()));
+}
+BENCHMARK(BM_ResponseConnectionHeader)->DenseRange(0, 4);
+
 // Counts the delivered body bytes.
 class CountingSink final : public ResponseBodySink {
  public:
