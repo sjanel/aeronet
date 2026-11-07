@@ -762,11 +762,12 @@ void DecodedHeaders::clear() noexcept {
 }
 
 HpackDecoder::HpackDecoder(uint32_t maxDynamicTableSize, uint32_t maxHeaderListSize,
-                           bool mergeAllowedForUnknownRequestHeaders) noexcept
+                           bool mergeAllowedForUnknownRequestHeaders, Messages messages) noexcept
     : _dynamicTable(maxDynamicTableSize),
       _maxHeaderListSize(maxHeaderListSize),
       _dynamicTableSizeLimit(maxDynamicTableSize),
-      _mergeAllowedForUnknownRequestHeaders(mergeAllowedForUnknownRequestHeaders) {}
+      _mergeAllowedForUnknownRequestHeaders(mergeAllowedForUnknownRequestHeaders),
+      _messages(messages) {}
 
 void HpackDecoder::setMaxDynamicTableSize(uint32_t maxSize) {
   _dynamicTableSizeLimit = maxSize;
@@ -1106,8 +1107,11 @@ HpackDecoder::DecodeResult::Error HpackDecoder::storeHeader(std::string_view nam
   const auto [it, inserted] = _decodedHeaders.headers.try_emplace(stableString(name, nameSource), storedValue);
 
   if (!inserted) {
-    // Header already exists: same rules as for HTTP/1.1 (see http::MergeHeaderInPlace()).
-    const char mergeSep = http::ReqHeaderValueSeparator(it->first, _mergeAllowedForUnknownRequestHeaders);
+    // Header already exists: same rules as for HTTP/1.1 (see http::MergeHeaderInPlace()), except for the Set-Cookie
+    // fields of a response, which the client splits back.
+    const char mergeSep = _messages == Messages::Responses && it->first == http::SetCookie
+                              ? DecodedHeaders::kSetCookieSeparator
+                              : http::ReqHeaderValueSeparator(it->first, _mergeAllowedForUnknownRequestHeaders);
     if (mergeSep == '\0') {
       return DecodeResult::Error::DuplicateHeaderForbiddenToMerge;
     }

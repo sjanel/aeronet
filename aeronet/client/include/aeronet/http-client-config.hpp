@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -147,6 +148,30 @@ class HttpClientConfig {
     http::MethodBmp methods{http::Method::GET | http::Method::HEAD};
   };
   RequestCache cache;
+
+  // --- Cookies (RFC 6265bis) ---
+  //
+  // Opt-in (disabled by default): the cookies set by the responses (Set-Cookie headers, those of the followed redirects
+  // included) are stored in the CookieJar of the client (see HttpClient::cookieJar()), and sent back in the Cookie
+  // header of the next requests whose URL they match. A Cookie header of the request (or of globalHeaders) is kept,
+  // the cookies of the jar being added to it.
+  struct Cookies {
+    // The number of cookies that RFC 6265 §6.1 asks a user agent to hold at least.
+    static constexpr std::uint32_t kDefaultMaxCookies = 3000;
+
+    // The limit of Chrome.
+    static constexpr std::uint32_t kDefaultMaxCookiesPerDomain = 180;
+
+    // Whether the cookies are stored and sent. A zero maxCookies keeps them off (opt-in).
+    [[nodiscard]] bool enabled() const noexcept { return maxCookies != 0; }
+
+    // Maximum number of stored cookies. 0 (the default) disables the cookies.
+    std::uint32_t maxCookies{0};
+
+    // Maximum number of cookies per registrable domain (example.com for www.example.com). Must be > 0 when enabled.
+    std::uint32_t maxCookiesPerDomain{kDefaultMaxCookiesPerDomain};
+  };
+  Cookies cookies;
 
   bool followRedirects{true};
   bool keepAlive{true};
@@ -307,6 +332,17 @@ class HttpClientConfig {
     cache.maxRequestSize = maxRequestSize;
     return *this;
   }
+
+  // Store at most 'maxCookies' cookies set by the responses, sent back with the next requests (see `cookies`). 0
+  // disables the cookies.
+  HttpClientConfig& withCookies(std::uint32_t maxCookies = Cookies::kDefaultMaxCookies) {
+    cookies.maxCookies = maxCookies;
+    return *this;
+  }
+
+  // Deleted: withCookies(true) would store a single cookie. Use withCookies() to enable, withCookies(0) to disable.
+  template <std::same_as<bool> Bool>
+  HttpClientConfig& withCookies(Bool) = delete;
 
   // Select which HTTP version(s) the client may speak (Auto / Http1_1 / Http2).
   HttpClientConfig& withHttpVersion(HttpVersionMode mode) {

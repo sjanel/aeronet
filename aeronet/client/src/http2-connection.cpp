@@ -365,6 +365,19 @@ class Http2ClientEngine : private EventSink {
         continue;
       }
 
+      if (name == http::SetCookie) {
+        // Each Set-Cookie field stays a line of its own (see DecodedHeaders::kSetCookieSeparator).
+        for (std::string_view cookies = value;;) {
+          const std::size_t separatorPos = cookies.find(DecodedHeaders::kSetCookieSeparator);
+          ::aeronet::internal::HttpResponseAccess::HeaderAddLineUnchecked(*_resp, http::SetCookie,
+                                                                          cookies.substr(0, separatorPos));
+          if (separatorPos == std::string_view::npos) {
+            break;
+          }
+          cookies.remove_prefix(separatorPos + 1);
+        }
+        continue;
+      }
       ::aeronet::internal::HttpResponseAccess::HeaderAddLineUnchecked(*_resp, LowerAsciiKey{name}, value);
     }
     if (endStream) {
@@ -557,9 +570,10 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
 
   // The global headers of the configuration are already part of the request (see HttpClient::makeRequest()): they
   // are not added again, so that a header removed from the request (Authorization on a redirect to another origin,
-  // for instance) is not sent.
-  const auto headersErr = conn.sendRequestHeaders(streamId, method, isTlsRequest, target, authority,
-                                                  HeadersView(req.headersFlatView()), endStreamSent);
+  // for instance) is not sent. The cookies of the jar are sent besides the Cookie header of the request, if any.
+  const auto headersErr =
+      conn.sendRequestHeaders(streamId, method, isTlsRequest, target, authority, HeadersView(req.headersFlatView()),
+                              endStreamSent, client.requestCookies());
   if (headersErr != http2::ErrorCode::NoError) {
     log::error("HTTP/2 client: cannot open stream {} to {} ({})", streamId, req.originKey(), ErrorCodeName(headersErr));
     engine.endExchange();

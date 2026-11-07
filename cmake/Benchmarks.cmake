@@ -233,6 +233,10 @@ set_target_properties(aeronet-bench-internal-chunk-size-line PROPERTIES FOLDER "
 AeronetAddProjectBenchmark(aeronet-bench-internal-search-crlf ${AERONET_BENCH_INTERNAL_SEARCH_CRLF} LIBRARIES aeronet_tech)
 set_target_properties(aeronet-bench-internal-search-crlf PROPERTIES FOLDER "benchmarks/internal")
 
+AeronetAddProjectBenchmark(aeronet-bench-internal-timestring ${AERONET_BENCH_ROOT}/internal/timestring_bench.cpp
+                           LIBRARIES aeronet_tech)
+set_target_properties(aeronet-bench-internal-timestring PROPERTIES FOLDER "benchmarks/internal")
+
 AeronetAddProjectBenchmark(aeronet-bench-internal-string-equal-ignore-case ${AERONET_BENCH_INTERNAL_STRING_EQUAL} LIBRARIES aeronet_objects)
 set_target_properties(aeronet-bench-internal-string-equal-ignore-case PROPERTIES FOLDER "benchmarks/internal")
 
@@ -293,6 +297,10 @@ if(AERONET_ENABLE_HTTP_CLIENT)
   AeronetAddProjectBenchmark(aeronet-bench-internal-http1-response-parse ${AERONET_BENCH_INTERNAL_HTTP1_RESPONSE_PARSE} LIBRARIES aeronet_client)
   target_include_directories(aeronet-bench-internal-http1-response-parse PRIVATE ${CMAKE_SOURCE_DIR}/aeronet/client/src)
   set_target_properties(aeronet-bench-internal-http1-response-parse PROPERTIES FOLDER "benchmarks/internal")
+
+  AeronetAddProjectBenchmark(aeronet-bench-internal-cookie-jar ${AERONET_BENCH_ROOT}/internal/cookie-jar_bench.cpp
+                             LIBRARIES aeronet_client)
+  set_target_properties(aeronet-bench-internal-cookie-jar PROPERTIES FOLDER "benchmarks/internal")
 
   set(AERONET_BENCH_INTERNAL_RESPONSE_STREAMER ${AERONET_BENCH_ROOT}/internal/response-streamer_bench.cpp)
   AeronetAddProjectBenchmark(aeronet-bench-internal-response-streamer ${AERONET_BENCH_INTERNAL_RESPONSE_STREAMER}

@@ -226,7 +226,8 @@ Http2Connection::Http2Connection(const Http2Config& config, bool isServer, traci
       // Until the peer acknowledges our SETTINGS, its encoder may still use the initial table size: a smaller
       // headerTableSize is applied on the acknowledgement.
       _hpackDecoder(std::max(config.headerTableSize, kDefaultHeaderTableSize), config.maxHeaderListSize,
-                    config.mergeUnknownRequestHeaders),
+                    config.mergeUnknownRequestHeaders,
+                    isServer ? HpackDecoder::Messages::Requests : HpackDecoder::Messages::Responses),
       _pTelemetryContext(telemetryContext != nullptr && telemetryContext->enabled() ? telemetryContext : nullptr),
       _isServer(isServer) {}
 
@@ -597,14 +598,14 @@ std::size_t EstimateHpackSize(std::size_t headersViewSize, const ConcatenatedHea
 
 ErrorCode Http2Connection::sendRequestHeaders(uint32_t streamId, http::Method method, bool isTlsRequest,
                                               std::string_view target, std::string_view authority,
-                                              HeadersView headersView, bool endStream,
-                                              const ConcatenatedHeaders* pGlobalHeaders) {
+                                              HeadersView headersView, bool endStream, std::string_view cookies) {
   const ErrorCode err = prepareSendHeaders(streamId, endStream);
   if (err != ErrorCode::NoError) {
     return err;
   }
 
-  _outputBuffer.ensureAvailableCapacityExponential(EstimateHpackSize(headersView.size(), pGlobalHeaders, 24UL));
+  _outputBuffer.ensureAvailableCapacityExponential(
+      EstimateHpackSize(headersView.size() + cookies.size(), nullptr, 24UL));
 
   // Make the header block be written after the frame header
   _outputBuffer.addSize(FrameHeader::kSize);
@@ -623,9 +624,20 @@ ErrorCode Http2Connection::sendRequestHeaders(uint32_t streamId, http::Method me
     headerListSize += _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderPath, target);
   }
 
+  // One field per cookie-pair: each is indexed (or, when short enough to be guessed, never indexed) on its own, so that
+  // the unchanged cookies of the next requests are sent as indexes.
+  while (!cookies.empty()) {
+    const std::size_t separatorPos = cookies.find(http::CookiePairSep);
+    const std::string_view cookie = cookies.substr(0, separatorPos);
+    headerListSize +=
+        _hpackEncoder.encode(_outputBuffer, http::Cookie, cookie, HpackEncoder::IndexingModeOf(http::Cookie, cookie));
+    cookies = separatorPos == std::string_view::npos ? std::string_view{}
+                                                     : cookies.substr(separatorPos + http::CookiePairSep.size());
+  }
+
   // Encode headers
   encodeHeaders(streamId, target.empty() ? http::StatusCode{} : http::MagicForHttpRequest, headersView, endStream,
-                oldSize, pGlobalHeaders, headerListSize);
+                oldSize, nullptr, headerListSize);
 
   return err;
 }

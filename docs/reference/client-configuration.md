@@ -40,7 +40,7 @@ With Glaze, the configuration can also be loaded from the `client` section of a 
 
 An idle pooled connection older than `keepAliveTimeout` is closed when its origin is requested again, and by a sweep over all origins that runs at most once per `keepAliveTimeout`, when a request completes. A client talking to many origins (a crawler, a webhook dispatcher) thus does not keep the sockets, TLS sessions and HTTP/2 state of the origins it stopped requesting. The client has no background thread, so nothing is swept while it makes no requests: call `clearIdleConnections()` before a long pause to close every pooled connection.
 
-The request, response and decompression scratch buffers keep the capacity of the largest exchange so far, so that later requests do not allocate again. A single large exchange would thus pin its allocation for the lifetime of the client. `releaseUnusedMemory()` is meant to be called periodically to keep this memory bounded: it shrinks the scratch buffers gradually rather than freeing them (each call at most halves a mostly unused buffer, down to a small floor), so a client that keeps exchanging similar payloads does not reallocate them on every period. It also closes the expired idle connections and drops the expired cached responses. Valid pooled connections and fresh cache entries are kept, and responses already returned are not affected. To drop every pooled connection or cached response at once, use `clearIdleConnections()` / `clearResponseCache()`:
+The request, response and decompression scratch buffers keep the capacity of the largest exchange so far, so that later requests do not allocate again. A single large exchange would thus pin its allocation for the lifetime of the client. `releaseUnusedMemory()` is meant to be called periodically to keep this memory bounded: it shrinks the scratch buffers gradually rather than freeing them (each call at most halves a mostly unused buffer, down to a small floor), so a client that keeps exchanging similar payloads does not reallocate them on every period. It also closes the expired idle connections, drops the expired cached responses and removes the expired cookies. Valid pooled connections and fresh cache entries are kept, and responses already returned are not affected. To drop every pooled connection or cached response at once, use `clearIdleConnections()` / `clearResponseCache()`:
 
 ```cpp
 aeronet::HttpClient client;
@@ -65,7 +65,16 @@ config.withCache(15s)
     .withCacheMethods(aeronet::http::Method::GET | aeronet::http::Method::HEAD);
 ```
 
-It stores only successful 2xx responses from the selected safe methods (GET, HEAD, and optionally OPTIONS). Entries are keyed by method, URL, headers, and body; they do not share different authorization headers. This is a TTL cache, not an HTTP-cache implementation: it deliberately does not interpret `Cache-Control`, ETags, `Vary`, `Age`, or revalidation. A zero TTL disables it, while `Duration::max()` never expires entries. The cache is owned by one `HttpClient` and follows its single-threaded assumption.
+It stores only successful 2xx responses from the selected safe methods (GET, HEAD, and optionally OPTIONS). Entries are keyed by method, URL, headers, body, and the cookies of the jar sent with the request; they do not share different authorization headers or cookies. This is a TTL cache, not an HTTP-cache implementation: it deliberately does not interpret `Cache-Control`, ETags, `Vary`, `Age`, or revalidation. A zero TTL disables it, while `Duration::max()` never expires entries. The cache is owned by one `HttpClient` and follows its single-threaded assumption.
+
+## Cookies
+
+Cookies are opt-in: see [Cookies](../modules/http-client.md#cookies) for the rules of the jar.
+
+| Setting | Default | Behavior |
+| --- | --- | --- |
+| `cookies.maxCookies` / `withCookies()` | 0 | Maximum number of stored cookies. 0 disables the cookies: the `Set-Cookie` headers are not stored and no `Cookie` header is added. `withCookies()` sets 3000, the number of cookies RFC 6265 §6.1 asks a user agent to hold at least. |
+| `cookies.maxCookiesPerDomain` | 180 | Maximum number of cookies per registrable domain (`example.com` for `www.example.com`), the limit of Chrome. Must be > 0 when the cookies are enabled. |
 
 ## Retries
 

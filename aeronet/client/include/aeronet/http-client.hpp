@@ -16,6 +16,7 @@
 #include "aeronet/client-connection.hpp"
 #include "aeronet/client-protocol.hpp"
 #include "aeronet/connection.hpp"
+#include "aeronet/cookie-jar.hpp"
 #include "aeronet/event-loop.hpp"
 #include "aeronet/event.hpp"
 #include "aeronet/flat-hash-map.hpp"
@@ -111,13 +112,14 @@ class HttpClient {
   // client instead.
   HttpClient(HttpClient&& rhs) noexcept;
 
-  // Duplicates a HttpClient from another instance's configuration.
+  // Duplicates a HttpClient from another instance's configuration, without its connections, cached responses and
+  // cookies.
   HttpClient(const HttpClient& rhs);
 
   // Move-assigns the client, see the move constructor.
   HttpClient& operator=(HttpClient&& rhs) noexcept;
 
-  // Assigns a HttpClient from another instance's configuration.
+  // Assigns a HttpClient from another instance's configuration, see the copy constructor.
   HttpClient& operator=(const HttpClient& rhs);
 
   ~HttpClient();
@@ -308,12 +310,18 @@ class HttpClient {
   // when the cache is disabled. See HttpClientConfig::cache.
   void clearResponseCache() noexcept { _cache.clear(); }
 
+  // The cookies of the client: those set by the responses, sent back with the next requests, when
+  // HttpClientConfig::cookies is enabled (the jar is unused otherwise). Cookies can also be added
+  // (CookieJar::setCookie()), listed (CookieJar::forEach()) or removed (CookieJar::clear()) through it.
+  [[nodiscard]] CookieJar& cookieJar() noexcept { return _cookieJar; }
+  [[nodiscard]] const CookieJar& cookieJar() const noexcept { return _cookieJar; }
+
   // Trim the memory the client only keeps for reuse, so that a long-running client does not slowly grow forever.
   // Closes the idle pooled connections older than keepAliveTimeout (and erases the per-origin pool entries left
-  // empty), drops the expired cached responses, and shrinks the request / response / decompression scratch buffers,
-  // which otherwise keep the capacity of the largest exchange so far. The buffers are not freed: each call at most
-  // halves a mostly unused one, so the next requests do not allocate from scratch. Still valid pooled connections and
-  // fresh cache entries are kept. Meant to be called periodically (e.g. from a maintenance timer); use
+  // empty), drops the expired cached responses and cookies, and shrinks the request / response / decompression scratch
+  // buffers, which otherwise keep the capacity of the largest exchange so far. The buffers are not freed: each call at
+  // most halves a mostly unused one, so the next requests do not allocate from scratch. Still valid pooled connections
+  // and fresh cache entries are kept. Meant to be called periodically (e.g. from a maintenance timer); use
   // clearIdleConnections() / clearResponseCache() to drop everything.
   void releaseUnusedMemory();
 
@@ -342,22 +350,24 @@ class HttpClient {
   HttpClientResult requestProcess(HttpRequest&& req, ResponseBodySink* sink);
 
   // Run a request end to end (URL parse + redirect following), bypassing the response cache. request() wraps
-  // this with the cache lookup/store when caching is enabled and the request is eligible.
-  HttpClientResult requestUncached(HttpRequest&& req);
+  // this with the cache lookup/store when caching is enabled and the request is eligible, giving `pCacheKey`: when it
+  // views the request (see buildCacheKey()), a followed redirect first copies it into _cacheKeyScratch.
+  HttpClientResult requestUncached(HttpRequest&& req, std::string_view* pCacheKey = nullptr);
 
   // Perform a single (non-redirect) exchange against an absolute URL, returning the HttpResponse or an
   // HttpClientErrc on transport failure. Redirect rewrites are already applied to `req` by requestUncached.
   // `redirectFollowed` tells whether a redirect response would be followed (so is never given to a sink).
-  HttpClientResult performExchange(HttpRequest& req, bool redirectFollowed);
+  // `crossSite` tells whether a followed redirect changed the site (scheme or host), for the SameSite cookies.
+  HttpClientResult performExchange(HttpRequest& req, bool redirectFollowed, bool crossSite);
 
   // --- Built-in response cache (see HttpClientConfig::cache) ---
   // Whether `req` is eligible for caching (cache enabled and its method is in cache.methods).
   [[nodiscard]] bool cacheEligible(const HttpRequest& req) const noexcept;
 
-  // Build the cache key (method + url + headers + body) into the reusable _cacheKeyScratch buffer and return
-  // a view of it. Requests fully stored in _data return that buffer directly, avoiding a copy. A file body whose
-  // descriptor cannot be statted has no usable key, so caching is bypassed. The view stays valid until the next
-  // buildCacheKey call (requestUncached never touches it).
+  // Build the cache key (method + url + headers + body + cookies of the jar) into the reusable _cacheKeyScratch buffer
+  // and return a view of it. Requests fully stored in _data return that buffer directly, avoiding a copy: a redirect
+  // rewriting the request copies it then (see requestUncached()). A file body whose descriptor cannot be statted has
+  // no usable key, so caching is bypassed. The view stays valid until the next buildCacheKey call.
   std::string_view buildCacheKey(const HttpRequest& req);
 
   // Return the cached response for `key` if present and still fresh, else nullptr (a miss or a stale entry).
@@ -459,6 +469,10 @@ class HttpClient {
 
   [[nodiscard]] RawChars& bodyBuffer() noexcept { return _reqBodyScratch; }
 
+  // The cookies of the jar for the current exchange (cookie-pairs separated by "; "), empty when there is none or when
+  // the jar is not used: the protocol engines add them to the Cookie header of the request.
+  [[nodiscard]] std::string_view requestCookies() const noexcept { return _cookieJar.requestCookies(); }
+
   // Draw a uniform value in [0, 1) from the backoff jitter PRNG (a tiny xorshift; quality is irrelevant
   // here, only spread). Only consulted when RetryConfig::jitter > 0, so a jitter-free client is fully
   // deterministic. Defined in http-client.cpp.
@@ -503,6 +517,9 @@ class HttpClient {
 
   // reused buffer to build lookup keys without per-request allocation
   RawChars32 _cacheKeyScratch;
+
+  // Cookies set by the responses, used when HttpClientConfig::cookies is enabled.
+  CookieJar _cookieJar;
 
   // Dual-role request / response-body scratch: one allocation shared between two exchange phases that are never live at
   // once. Phase 1 holds the outgoing request (HTTP/1.1 head, HTTP/2 header block, or proxy CONNECT line); once it is

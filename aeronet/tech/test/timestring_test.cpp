@@ -412,4 +412,61 @@ TEST(TimeStringRFC7231Test, RejectsNonGMTTimezone) {
   }
 }
 
+TEST(TimeStringRFC7231Test, RejectsLookalikeLetterTokens) {
+  // Tokens whose digit-style value (100 * c0 + 10 * c1 + c2) is the one of the expected token, which the parser once
+  // compared: "Svd" for "Sun", "Npl" for "Nov", "GNJ" for "GMT".
+  EXPECT_EQ(TryParseTimeRFC7231("Svd, 06 Nov 1994 08:49:37 GMT"), kInvalidTimePoint);
+  EXPECT_EQ(TryParseTimeRFC7231("Sun, 06 Npl 1994 08:49:37 GMT"), kInvalidTimePoint);
+  EXPECT_EQ(TryParseTimeRFC7231("Sun, 06 Nov 1994 08:49:37 GNJ"), kInvalidTimePoint);
+  // Month and weekday names are case-sensitive (RFC 9110 §5.6.7).
+  EXPECT_EQ(TryParseTimeRFC7231("Sun, 06 nov 1994 08:49:37 GMT"), kInvalidTimePoint);
+  EXPECT_EQ(TryParseTimeRFC7231("SUN, 06 Nov 1994 08:49:37 GMT"), kInvalidTimePoint);
+}
+
+TEST(TimeStringAbbreviationsTest, MonthOfAbbreviation) {
+  static_assert(MonthOfAbbreviation("Jan") == 1U);
+  static_assert(MonthOfAbbreviation("Dec") == 12U);
+  for (unsigned monthNumber = 1; monthNumber <= 12; ++monthNumber) {
+    const SysTimePoint tp = sys_days{year{2026} / month{monthNumber} / 1};
+    char buf[RFC7231DateStrLen];
+    TimeToStringRFC7231(tp, buf);
+    EXPECT_EQ(MonthOfAbbreviation(buf + 8), monthNumber) << std::string_view(buf, sizeof(buf));
+  }
+  for (const char* token : {"jan", "JAN", "Jbd", "Npl", "Foo", "Ja\0"}) {
+    EXPECT_EQ(MonthOfAbbreviation(token), 0U) << token;
+  }
+}
+
+TEST(TimeStringAbbreviationsTest, WeekdayOfAbbreviation) {
+  static_assert(WeekdayOfAbbreviation("Sun") == 0U);
+  static_assert(WeekdayOfAbbreviation("Sat") == 6U);
+  for (unsigned dayNumber = 1; dayNumber <= 7; ++dayNumber) {
+    const SysTimePoint tp = sys_days{year{2026} / November / day{dayNumber}};
+    char buf[RFC7231DateStrLen];
+    TimeToStringRFC7231(tp, buf);
+    EXPECT_EQ(WeekdayOfAbbreviation(buf), weekday{sys_days{year{2026} / November / day{dayNumber}}}.c_encoding())
+        << std::string_view(buf, sizeof(buf));
+  }
+  for (const char* token : {"Jan", "sun", "SUN", "Svd", "Sum", "\xFF\xFF\xFF"}) {
+    EXPECT_EQ(WeekdayOfAbbreviation(token), 7U) << token;
+  }
+}
+
+TEST(TimeStringAbbreviationsTest, OnlyTheAbbreviationsMatch) {
+  // Every 3 letters (and some other bytes) that hash to a used slot are compared to the abbreviation of the slot.
+  unsigned nbMonths = 0;
+  unsigned nbWeekdays = 0;
+  for (unsigned ch0 = 0x20; ch0 < 0x80; ++ch0) {
+    for (unsigned ch1 = 0x20; ch1 < 0x80; ++ch1) {
+      for (unsigned ch2 = 0x20; ch2 < 0x80; ++ch2) {
+        const char token[]{static_cast<char>(ch0), static_cast<char>(ch1), static_cast<char>(ch2)};
+        nbMonths += MonthOfAbbreviation(token) != 0U ? 1U : 0U;
+        nbWeekdays += WeekdayOfAbbreviation(token) != 7U ? 1U : 0U;
+      }
+    }
+  }
+  EXPECT_EQ(nbMonths, 12U);
+  EXPECT_EQ(nbWeekdays, 7U);
+}
+
 }  // namespace aeronet

@@ -161,11 +161,8 @@ constexpr char* InitData(http::Method method, bool hasNonTlsProxy, bool hostIsIp
 
   *pData++ = ' ';
 
-  static constexpr std::string_view kHostPrefix =
-      JoinStringView_v<http::HTTP11Sv, http::CRLF, http::Host, http::HeaderSep>;
-
   // Host Header
-  pData = AppendFixed<kHostPrefix>(pData);
+  pData = AppendFixed<JoinStringView_v<http::HTTP11Sv, http::CRLF, http::Host, http::HeaderSep>>(pData);
 
   if (hostIsIpv6) {
     *pData++ = '[';
@@ -380,11 +377,14 @@ HttpRequest::RedirectOutcome HttpRequest::resolveRedirect(std::string_view locat
     if (isTlsRequest() && !res.isTls) {
       return RedirectOutcome::Downgrade;
     }
-    const bool sameOrigin = res.isTls == isTlsRequest() && res.port == port() && CaseInsensitiveEqual(res.host, host());
+    RedirectOutcome outcome = RedirectOutcome::CrossSite;
+    if (res.isTls == isTlsRequest() && CaseInsensitiveEqual(res.host, host())) {
+      outcome = res.port == port() ? RedirectOutcome::SameOrigin : RedirectOutcome::SameSite;
+    }
     if (setNewUrl(res) != nullptr) {
       return RedirectOutcome::Invalid;
     }
-    return sameOrigin ? RedirectOutcome::SameOrigin : RedirectOutcome::CrossOrigin;
+    return outcome;
   }
 
   // Strip fragment from the relative reference.

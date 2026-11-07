@@ -218,11 +218,52 @@ Redirects (`301`, `302`, `303`, `307`, `308`) are followed by default, up to `ma
 
 A redirect never weakens the protection of the request:
 
-- **Credentials stay with their origin.** When the redirect leads to another origin (scheme, host, or port), the `Authorization` and `Cookie` headers are removed from the request, including those coming from `globalHeaders`. Other headers are kept. A redirect within the same origin keeps every header.
+- **Credentials stay with their origin.** When the redirect leads to another origin (scheme, host, or port), the `Authorization` and `Cookie` headers are removed from the request, including those coming from `globalHeaders`. Other headers are kept. A redirect within the same origin keeps every header. With [cookies](#cookies) enabled, the cookies of the jar are chosen again for each URL of the chain.
 - **No downgrade to cleartext.** A redirect from HTTPS to HTTP is not followed: the `3xx` response is returned, and a warning is logged. A redirect from HTTP to HTTPS is followed.
 
 !!! note
     Only `Authorization` and `Cookie` are recognized as credentials. If an API key travels in another header (`X-Api-Key`...), disable `followRedirects` for requests that carry it and handle the redirects yourself.
+
+## Cookies
+
+Cookies are opt-in. `withCookies()` makes the client store the cookies set by the `Set-Cookie` headers of the responses, those of followed redirects and of retried statuses included, and send them back in the `Cookie` header of the next requests whose URL they match, as browsers do (RFC 6265bis). A login session then carries over redirect chains and the next requests:
+
+```cpp
+#include <aeronet/http-client.hpp>
+
+HttpClientConfig config;
+config.withCookies();  // at most 3000 cookies, 180 per registrable domain
+HttpClient client(config);
+const HttpClientResult login = client.post("https://shop.example.com/login", "user=alice", "application/x-www-form-urlencoded");
+const HttpClientResult orders = client.get("https://shop.example.com/orders");  // sends the cookies set by the login
+```
+
+`withCookies(n)` sets the maximum number of cookies (`cookies.maxCookies`, 0 disables them), and `cookies.maxCookiesPerDomain` the maximum per registrable domain (`example.com` for `www.example.com`). Above a limit, the expired cookies are removed, then the least recently used ones, a tenth of the limit at once.
+
+The rules are those of a browser navigating:
+
+- **Matching.** A cookie goes to the host that set it, or, with a `Domain` attribute, to that domain and its subdomains, whatever the port. It goes to the paths under its `Path` (by default, the directory of the URL that set it), until its `Max-Age` or `Expires` (at most 400 days). The cookies with the longest paths come first in the header.
+- **Secure cookies.** A `Secure` cookie is only accepted from, and sent to, `https` URLs and loopback hosts (`localhost`, `127.0.0.1`, `::1`), as in browsers. An `http` URL cannot replace or shadow it, and the `__Secure-` and `__Host-` name prefixes are enforced.
+- **SameSite.** After a redirect to another site (another scheme or host), `SameSite=Strict` cookies are withheld, and so are `SameSite=Lax` ones unless the method is safe (`GET`, `HEAD`, `OPTIONS`, `TRACE`). A shop behind a waiting room that redirects back to it thus gets its `Lax` cookies, not its `Strict` ones. A cookie without the attribute is sent like `SameSite=None`.
+- **Domains.** A `Domain` attribute must match the host and not be a public suffix. Without the public suffix list, top-level domains (`com`) and country-code second-level domains (`co.uk`, `ne.jp`) are recognized, but private suffixes such as `github.io` are not.
+- **Cookie header of the request.** A `Cookie` header set on the request, or in `globalHeaders`, is kept, the cookies of the jar being added to it: on the same line over HTTP/1.1, as separate fields over HTTP/2, so that the unchanged cookies of the next requests compress to a few bytes.
+- **Response cache.** The cookies sent with a request are part of its [cache](#response-cache) key.
+
+`cookieJar()` gives the `CookieJar` of the client (`<aeronet/cookie-jar.hpp>`, included by `<aeronet/http-client.hpp>`): `setCookie(url, value)` adds a cookie as if `url` had set it (`false` when it refuses it, as the jar would refuse it from a response), `cookieHeader(url)` tells what a request to `url` would send, without marking the cookies as sent, `forEach()` lists the cookies and `clear()` removes them. `releaseUnusedMemory()` removes the expired ones. The cookies move with the client, but a copy of the client starts without any. They live in memory only.
+
+```cpp
+#include <aeronet/http-client.hpp>
+
+#include <string>
+
+HttpClientConfig config;
+config.withCookies();
+HttpClient client(config);
+if (!client.cookieJar().setCookie("https://shop.example.com/", "session=copied-from-a-browser; Secure; HttpOnly")) {
+  // refused: malformed, or not acceptable from this URL
+}
+const std::string sent = client.cookieJar().cookieHeader("https://shop.example.com/cart");  // "session=copied-from-a-browser"
+```
 
 ## Retries
 
@@ -283,7 +324,7 @@ The client counts retries, redirects, and request compression outcomes (`aeronet
 - The client is synchronous: one exchange at a time per client, and one stream at a time per HTTP/2 connection. A coroutine API integrated with a server event loop is on the [roadmap](../ROADMAP.md).
 - A running request cannot be cancelled from another thread; it ends with its timeouts, or when its `ResponseBodySink` stops it.
 - Request bodies are sent from memory or from a file: there is no callback to produce them while they are sent.
-- There is no cookie storage.
+- Cookies live in memory only (no import or export of a `cookies.txt` file), and the public suffix list is not used (see [Cookies](#cookies)).
 - Only cleartext HTTP proxies are supported, without proxy authentication.
 
 ## Tests
@@ -297,3 +338,4 @@ The client counts retries, redirects, and request compression outcomes (`aeronet
 - Configuration and retry policy: [http-client-config_test.cpp](../../aeronet/client/test/http-client-config_test.cpp) and [retry-config_test.cpp](../../aeronet/client/test/retry-config_test.cpp).
 - Configuration files: [client-config-loader_test.cpp](../../aeronet/client/test/client-config-loader_test.cpp).
 - Response decompression and `Accept-Encoding`: [client-accept-encoding_test.cpp](../../aeronet/client/test/client-accept-encoding_test.cpp).
+- Cookies: the rules of the jar (parsing, `Expires` dates, domain and path matching, `Secure` and name prefixes, order, eviction) in [cookie-jar_test.cpp](../../aeronet/client/test/cookie-jar_test.cpp); storage and sending over HTTP/1.1 and HTTP/2, redirect chains across sites, retries, the response cache and the `Cookie` header of the request in [http-client-cookies_test.cpp](../../aeronet/client/test/http-client-cookies_test.cpp); a request through a forward proxy in `HttpClientProxyE2ETest.CookiesUseThePathOfTheAbsoluteFormTarget` of [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp). The repeated `Set-Cookie` fields of an HTTP/2 response: `HttpClientHttp2E2ETest.RepeatedSetCookieFieldsStaySeparate` in [http-client-http2-e2e_test.cpp](../../aeronet/client/test/http-client-http2-e2e_test.cpp) and `HpackDecoder.DuplicateSetCookieOfResponsesMergesWithLineFeed` in [hpack_test.cpp](../../aeronet/http2/test/hpack_test.cpp).
