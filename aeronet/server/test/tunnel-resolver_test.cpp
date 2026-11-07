@@ -79,6 +79,7 @@ TEST(TunnelResolverTest, ResolvesHostNamesAndNotifies) {
   EXPECT_FALSE(IsSignaled(wakeupFd));
 
   resolver.resolve(std::make_shared<PendingTunnel>("localhost", 80, NativeHandle{1}, 0U, 0U, kNoDeadline));
+  // On POSIX, the getaddrinfo override fails it without querying the DNS (stalled over 10 s on a macOS CI runner).
   resolver.resolve(
       std::make_shared<PendingTunnel>("no-such-host.example.invalid", 80, NativeHandle{2}, 0U, 0U, kNoDeadline));
 
@@ -97,6 +98,21 @@ TEST(TunnelResolverTest, ResolvesHostNamesAndNotifies) {
 }
 
 #ifdef AERONET_POSIX
+// The names the getaddrinfo override fails without querying the DNS.
+TEST(TunnelResolverTest, GetAddrInfoOverrideRecognizesInvalidTldHosts) {
+  EXPECT_TRUE(test::IsInvalidTldHost("invalid"));
+  EXPECT_TRUE(test::IsInvalidTldHost("invalid."));
+  EXPECT_TRUE(test::IsInvalidTldHost("no-such-host.example.invalid"));
+  EXPECT_TRUE(test::IsInvalidTldHost("No-Such-Host.INVALID."));
+  EXPECT_FALSE(test::IsInvalidTldHost(""));
+  EXPECT_FALSE(test::IsInvalidTldHost("."));
+  EXPECT_FALSE(test::IsInvalidTldHost("localhost"));
+  EXPECT_FALSE(test::IsInvalidTldHost("notinvalid"));
+  EXPECT_FALSE(test::IsInvalidTldHost("host.notinvalid"));
+  EXPECT_FALSE(test::IsInvalidTldHost("host.invalid.example"));
+  EXPECT_FALSE(test::IsInvalidTldHost("host.invalid.."));
+}
+
 TEST(TunnelResolverTest, MoreResolutionsThanThreads) {
   EventFd wakeupFd;
   TunnelResolver resolver(wakeupFd);
