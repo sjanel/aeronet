@@ -16,7 +16,7 @@ The core build is intentionally modular. Enable optional capabilities at CMake c
 - `AERONET_ENABLE_ASYNC_HANDLERS` for coroutine handlers.
 - `AERONET_ENABLE_HTTP_CLIENT` for the synchronous client and connection pool.
 - `AERONET_ENABLE_HTTP_SERVER` for the `HttpServer`
-- `AERONET_ENABLE_OPENTELEMETRY` for traces/metrics, `AERONET_ENABLE_GLAZE` for JSON/YAML configuration, `AERONET_ENABLE_PROTOBUF` for Protocol Buffers bodies, and `AERONET_ENABLE_JWT` for JWT/JWKS. JWT is available only when both OpenSSL and Glaze are enabled.
+- `AERONET_ENABLE_OPENTELEMETRY` for traces/metrics, `AERONET_ENABLE_GLAZE` for JSON/YAML configuration, `AERONET_ENABLE_PROTOBUF` for Protocol Buffers bodies, `AERONET_ENABLE_HTML` for HTML parsing with CSS selectors, and `AERONET_ENABLE_JWT` for JWT/JWKS. JWT is available only when both OpenSSL and Glaze are enabled.
 
 Set `AERONET_ENABLE_HTTP_CLIENT`to `OFF` if you need only the server, or `AERONET_ENABLE_HTTP_SERVER` to `OFF` if you need only the client to minimize the code to be compiled.
 
@@ -43,6 +43,7 @@ What is implemented, what is optional (*flag*: enabled by a CMake option), and w
 | WebSocket (*flag*) | RFC 6455, text / binary frames, ping / pong, close handshake | [WebSocket](../protocols/websocket.md) |
 | HTTP client (*flag*) | Synchronous HTTP/1.1 and HTTP/2, keep-alive pool, redirects, automatic (de)compression, HTTPS, streamed response bodies | [HTTP client](../modules/http-client.md) |
 | JWT (*flag*) | RFC 7519 sign / verify, HS / RS / ES / PS / EdDSA, JWK / JWKS by `kid`, rejects `alg: none` | [JWT](../modules/jwt.md) |
+| HTML parsing (*flag*) | WHATWG HTML parser (lexbor), CSS selector queries, encoding sniffing, JSON state embedded by scripts | [HTML parsing](../modules/html.md) |
 | Observability | Logging (spdlog optional, ISO 8601 UTC timestamps), per-request metrics callback (alpha), OpenTelemetry traces and metrics (experimental, *flag*), outbound statistics (bytes queued, immediate vs flush writes, high-water marks) | [Observability](../operations/observability.md), [Performance](../operations/performance.md) |
 | Event loop | Edge-triggered epoll loop, one thread per `SingleHttpServer`, `writev` scatter-gather for header and body | [Performance and tuning](../operations/performance.md) |
 | Scaling | `SO_REUSEPORT` multi-reactor scaling, `MultiHttpServer` orchestrating N reactors on N threads | [Servers and lifecycle](../guides/server-lifecycle.md#threading-model) |

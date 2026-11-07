@@ -45,6 +45,7 @@ aeronet is deliberately modular. CMake options select code and dependencies at c
 | `AERONET_ENABLE_PROTOBUF` | top-level | Protocol Buffers bodies, binary and ProtoJSON, for the server and the client (see [Protocol Buffers](../modules/protobuf.md)). Header-only: the aeronet libraries do not use protobuf, the code including `<aeronet/http-protobuf.hpp>` links it | protobuf (libprotobuf, protoc), found with `find_package` and never fetched: it must be installed |
 | `AERONET_PROTOBUF_RUNTIME` | `full` | protobuf runtime linked with `AERONET_ENABLE_PROTOBUF`: `full` (libprotobuf) or `lite` (libprotobuf-lite, for messages generated with `option optimize_for = LITE_RUNTIME`) | A program must not link both runtimes: `lite` cannot be combined with `AERONET_ENABLE_OPENTELEMETRY` |
 | `AERONET_ENABLE_JWT` | ON only with OpenSSL + Glaze | JWS-profile JWT and JWKS support | Forced OFF unless both prerequisites are ON |
+| `AERONET_ENABLE_HTML` | top-level | HTML parsing and CSS selectors: `HtmlDocument`, `HtmlElement`, `CssSelector` (see [HTML parsing](../modules/html.md)) | lexbor: an installed 3.x is used (Release builds, vcpkg, Conan), otherwise it is downloaded and built as a static library |
 
 ## Recipes
 
@@ -58,7 +59,7 @@ cmake -S . -B build -G Ninja -D CMAKE_BUILD_TYPE=Release \
   -D AERONET_ENABLE_ZLIB=OFF -D AERONET_ENABLE_ZSTD=OFF \
   -D AERONET_ENABLE_BROTLI=OFF -D AERONET_ENABLE_SPDLOG=OFF \
   -D AERONET_ENABLE_GLAZE=OFF -D AERONET_ENABLE_OPENTELEMETRY=OFF \
-  -D AERONET_ENABLE_PROTOBUF=OFF
+  -D AERONET_ENABLE_PROTOBUF=OFF -D AERONET_ENABLE_HTML=OFF
 cmake --build build --parallel
 ```
 
@@ -104,7 +105,8 @@ cmake -S . -B build -G Ninja -D CMAKE_BUILD_TYPE=Debug \
   -D AERONET_ENABLE_HTTP_CLIENT=ON -D AERONET_ENABLE_OPENSSL=ON \
   -D AERONET_ENABLE_ZLIB=ON -D AERONET_ENABLE_ZSTD=ON \
   -D AERONET_ENABLE_BROTLI=ON -D AERONET_ENABLE_SPDLOG=ON \
-  -D AERONET_ENABLE_OPENTELEMETRY=ON -D AERONET_ENABLE_PROTOBUF=ON
+  -D AERONET_ENABLE_OPENTELEMETRY=ON -D AERONET_ENABLE_PROTOBUF=ON \
+  -D AERONET_ENABLE_HTML=ON
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
@@ -137,11 +139,11 @@ aeronet 1.8.0-dev
   tls: OpenSSL 3.0.13 30 Jan 2024
   logging: spdlog 1.15.0
   opentelemetry: 1.30.0
-  features: http-server, http-client, http2, websocket, async-handlers
+  features: http-server, http-client, http2, websocket, async-handlers, html
   compression: zlib-ng 2.2.4, zstd 1.5.6, brotli 1.1.0
 ```
 
-A disabled dependency prints `disabled` (`tls: disabled`, `opentelemetry: disabled`...), `logging` is `in-house` without spdlog, `protobuf` is the version of the protobuf C++ runtime headers (`5.29.3` for protobuf v29.3) followed by ` (lite)` with `AERONET_PROTOBUF_RUNTIME=lite`, and the `features` line lists only the enabled flags among HTTP server, HTTP client, HTTP/2, WebSocket and async handlers (`none` when all are off). The dependencies that have their own line (TLS, glaze, protobuf, spdlog, OpenTelemetry, compression codecs) are not repeated there. Tests: [version_test.cpp](../../aeronet/version/test/version_test.cpp).
+A disabled dependency prints `disabled` (`tls: disabled`, `opentelemetry: disabled`...), `logging` is `in-house` without spdlog, `protobuf` is the version of the protobuf C++ runtime headers (`5.29.3` for protobuf v29.3) followed by ` (lite)` with `AERONET_PROTOBUF_RUNTIME=lite`, and the `features` line lists only the enabled flags among HTTP server, HTTP client, HTTP/2, WebSocket, async handlers and HTML parsing (`none` when all are off). The dependencies that have their own line (TLS, glaze, protobuf, spdlog, OpenTelemetry, compression codecs) are not repeated there. Tests: [version_test.cpp](../../aeronet/version/test/version_test.cpp).
 
 ## Public headers and configuration files
 

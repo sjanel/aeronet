@@ -29,3 +29,7 @@
 #ifdef AERONET_ENABLE_HTTP_CLIENT
 #include "aeronet/aeronet-client.hpp"  // IWYU pragma: export
 #endif
+
+#ifdef AERONET_ENABLE_HTML
+#include "aeronet/aeronet-html.hpp"  // IWYU pragma: export
+#endif

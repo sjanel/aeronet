@@ -1,10 +1,11 @@
 // Protocol Buffers bodies: POST /orders takes an Order, in the binary encoding or as ProtoJSON, and answers a Receipt
 // in the encoding that the Accept header prefers (binary for '*/*').
-//
-//   aeronet-protobuf [port]
-//   curl -H 'content-type: application/json' -H 'accept: application/json' \
-//        -d '{"customer":"jdoe","items":[{"sku":"BOOK-1","quantity":2,"unitPrice":12.5}]}' http://localhost:8080/orders
-//   -> {"orderId":"1","nbItems":2,"total":25}
+/*
+   aeronet-protobuf [port]
+   curl -H 'content-type: application/json' -H 'accept: application/json' \
+        -d '{"customer":"jdoe","items":[{"sku":"BOOK-1","quantity":2,"unitPrice":12.5}]}' http://localhost:[port]/orders
+   -> {"orderId":"1","nbItems":2,"total":25}
+*/
 #include <aeronet/aeronet-server.hpp>
 #include <aeronet/http-protobuf.hpp>
 #include <charconv>
@@ -21,7 +22,7 @@
 using namespace aeronet;
 
 int main(int argc, char** argv) {
-  uint16_t port = 8080;
+  uint16_t port = 0;
   if (argc > 1) {
     const std::string_view arg1(argv[1]);
     const auto [ptr, errc] = std::from_chars(arg1.data(), arg1.data() + arg1.size(), port);

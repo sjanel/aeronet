@@ -28,7 +28,7 @@ endif()
 # handlers, ...) add no dependency: they are not passed, so they keep their default (ON).
 # vcpkg feature names are lowercase, and IN_LIST is case-sensitive.
 set(AERONET_FEATURE_OPTS)
-foreach(f openssl spdlog brotli zlib zstd opentelemetry glaze protobuf)
+foreach(f openssl spdlog brotli zlib zstd opentelemetry glaze protobuf html)
     string(TOUPPER ${f} _F)
     if("${f}" IN_LIST FEATURES)
         list(APPEND AERONET_FEATURE_OPTS -D AERONET_ENABLE_${_F}=ON)

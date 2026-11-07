@@ -103,6 +103,7 @@ using aeronet::SignalHandler;
 using aeronet::brotliEnabled;
 using aeronet::fullVersionStringView;
 using aeronet::fullVersionWithRuntime;
+using aeronet::htmlEnabled;
 using aeronet::http2Enabled;
 using aeronet::MajorMinorVersion;
 using aeronet::openSslEnabled;
@@ -164,6 +165,18 @@ using aeronet::SysTimePoint;
 #ifdef AERONET_ENABLE_WEBSOCKET
 using aeronet::WebSocketEndpoint;
 using aeronet::WebSocketHandlerFactory;
+#endif
+
+// ── HTML parsing and CSS selectors (when enabled) ──────────────────────────
+
+#ifdef AERONET_ENABLE_HTML
+using aeronet::CssSelector;
+using aeronet::HtmlAttribute;
+using aeronet::HtmlAttributes;
+using aeronet::HtmlChildren;
+using aeronet::HtmlDocument;
+using aeronet::HtmlElement;
+using aeronet::HtmlParentNode;
 #endif
 
 // ── JSON serialization (when glaze enabled) ────────────────────────────────

@@ -19,6 +19,7 @@ This document centralizes how to build, install, and consume **aeronet**.
 | OpenSSL (opt) | 1.1.1 / 3.x | For TLS (HTTPS) support |
 | spdlog (opt) | 1.11+ | Logging; header-only usage |
 | glaze (opt) | 8.4+ | JSON / YAML support (`AERONET_ENABLE_GLAZE`); 9.0.0 when fetched |
+| lexbor (opt) | 3.0+ | HTML parsing (`AERONET_ENABLE_HTML`); 3.0.1 when fetched |
 | protobuf (opt) | 3.21+ | Protocol Buffers support (`AERONET_ENABLE_PROTOBUF`), also required by OpenTelemetry; never fetched, install it (`libprotobuf-dev protobuf-compiler` on Debian / Ubuntu) |
 | GoogleTest (tests) | 1.13+ | Auto-fetched if missing |
 
@@ -83,7 +84,7 @@ cmake -S . -B build-plain -G Ninja -D CMAKE_BUILD_TYPE=Release \
   -D AERONET_ENABLE_ZLIB=OFF -D AERONET_ENABLE_ZSTD=OFF \
   -D AERONET_ENABLE_BROTLI=OFF -D AERONET_ENABLE_SPDLOG=OFF \
   -D AERONET_ENABLE_GLAZE=OFF -D AERONET_ENABLE_OPENTELEMETRY=OFF \
-  -D AERONET_ENABLE_PROTOBUF=OFF
+  -D AERONET_ENABLE_PROTOBUF=OFF -D AERONET_ENABLE_HTML=OFF
 cmake --build build-plain --parallel
 ```
 
@@ -104,7 +105,7 @@ cmake -S . -B build-shared -G Ninja -D CMAKE_BUILD_TYPE=Release \
   -D AERONET_ENABLE_ZLIB=OFF -D AERONET_ENABLE_ZSTD=OFF \
   -D AERONET_ENABLE_BROTLI=OFF -D AERONET_ENABLE_SPDLOG=OFF \
   -D AERONET_ENABLE_GLAZE=OFF -D AERONET_ENABLE_OPENTELEMETRY=OFF \
-  -D AERONET_ENABLE_PROTOBUF=OFF
+  -D AERONET_ENABLE_PROTOBUF=OFF -D AERONET_ENABLE_HTML=OFF
 cmake --build build-shared --parallel
 ```
 
@@ -268,6 +269,7 @@ Available Conan options map:
   | `with_opentelemetry` | Enable OpenTelemetry instrumentation (pulls opentelemetry-cpp & protobuf) | `AERONET_ENABLE_OPENTELEMETRY` |
   | `with_glaze` | Enable glaze JSON support | `AERONET_ENABLE_GLAZE` |
   | `with_protobuf` | Enable Protocol Buffers support (pulls protobuf) | `AERONET_ENABLE_PROTOBUF` |
+  | `with_html` | Enable HTML parsing and CSS selectors (pulls lexbor) | `AERONET_ENABLE_HTML` |
 
 ### vcpkg (Overlay Port)
 
@@ -299,7 +301,7 @@ Then install with:
 VCPKG_OVERLAY_PORTS=./ports vcpkg install --triplet x64-linux
 ```
 
-The features with a dependency are opt-in: `openssl`, `spdlog`, `brotli`, `zlib` (zlib-ng), `zstd`, `opentelemetry` (opentelemetry-cpp with its OTLP HTTP exporter, see [opentelemetry-cpp ABI](../operations/observability.md#opentelemetry-cpp-abi)), `glaze` and `protobuf`. The features without one (HTTP/2, WebSocket, ...) keep their default (`ON`).
+The features with a dependency are opt-in: `openssl`, `spdlog`, `brotli`, `zlib` (zlib-ng), `zstd`, `opentelemetry` (opentelemetry-cpp with its OTLP HTTP exporter, see [opentelemetry-cpp ABI](../operations/observability.md#opentelemetry-cpp-abi)), `glaze`, `protobuf` and `html` (lexbor). The features without one (HTTP/2, WebSocket, ...) keep their default (`ON`).
 
 ```bash
 # Minimal (no external dependency)

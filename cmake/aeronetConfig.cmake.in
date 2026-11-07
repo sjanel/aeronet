@@ -15,6 +15,8 @@ set(AERONET_WITH_WEBSOCKET "@AERONET_ENABLE_WEBSOCKET@")
 set(AERONET_WITH_GLAZE "@AERONET_ENABLE_GLAZE@")
 set(AERONET_WITH_PROTOBUF "@AERONET_ENABLE_PROTOBUF@")
 set(AERONET_PROTOBUF_TARGET "@AERONET_PROTOBUF_TARGET@")
+set(AERONET_WITH_HTML "@AERONET_ENABLE_HTML@")
+set(AERONET_LEXBOR_PACKAGE "@AERONET_LEXBOR_PACKAGE@")
 
 if(AERONET_WITH_OPENSSL)
 	if(NOT TARGET OpenSSL::SSL)
@@ -63,6 +65,13 @@ endif()
 # aeronet was built with a brotli package (vcpkg) rather than building brotli itself.
 if(AERONET_WITH_BROTLI AND AERONET_BROTLI_PACKAGE)
 	find_dependency(${AERONET_BROTLI_PACKAGE} CONFIG REQUIRED)
+endif()
+
+# aeronet was built with a lexbor package rather than building lexbor itself (then installed with aeronet).
+if(AERONET_WITH_HTML AND AERONET_LEXBOR_PACKAGE)
+	if(NOT (TARGET lexbor::lexbor_static OR TARGET lexbor::lexbor))
+		find_dependency(${AERONET_LEXBOR_PACKAGE} @AERONET_LEXBOR_MIN_VERSION@ CONFIG REQUIRED)
+	endif()
 endif()
 
 # An installed aeronet was built with an installed opentelemetry-cpp (with a downloaded one, aeronetTargets is not

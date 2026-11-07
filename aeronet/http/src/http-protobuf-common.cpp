@@ -30,7 +30,7 @@ namespace {
 
 // application/protobuf and its deprecated aliases (RFC 9996 §7.1), the Google and Connect names, and the generic binary
 // type.
-constexpr std::string_view kBinaryMediaTypes[] = {
+constexpr std::string_view kBinaryMediaTypes[]{
     http::ContentTypeApplicationProtobuf, "application/x-protobuf", "application/x-protobuffer",
     "application/vnd.google.protobuf",    "application/proto",      http::ContentTypeApplicationOctetStream,
 };
@@ -40,7 +40,7 @@ constexpr std::string_view kProtoJsonMediaType = "application/protobuf+json";
 static_assert(http::ContentTypeApplicationProtobufJson.starts_with(kProtoJsonMediaType));
 
 // application/protobuf+json and its deprecated alias (RFC 9996 §7.2), and the generic JSON type.
-constexpr std::string_view kJsonMediaTypes[] = {
+constexpr std::string_view kJsonMediaTypes[]{
     kProtoJsonMediaType,
     "application/x-protobuf+json",
     http::ContentTypeApplicationJson,

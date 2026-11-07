@@ -39,6 +39,7 @@ class AeronetConan(ConanFile):
         "with_opentelemetry": [True, False],
         "with_glaze": [True, False],
         "with_protobuf": [True, False],
+        "with_html": [True, False],
     }
     default_options = {
         "shared": False,
@@ -52,6 +53,7 @@ class AeronetConan(ConanFile):
         "with_opentelemetry": False,
         "with_glaze": False,
         "with_protobuf": False,
+        "with_html": False,
     }
     exports_sources = (
         "CMakeLists.txt",
@@ -121,6 +123,7 @@ class AeronetConan(ConanFile):
         tc.variables["AERONET_ENABLE_PROTOBUF"] = (
             "ON" if self.options.with_protobuf else "OFF"
         )
+        tc.variables["AERONET_ENABLE_HTML"] = "ON" if self.options.with_html else "OFF"
         # Force OFF for tests/examples in package context
         tc.variables["AERONET_BUILD_TESTS"] = "OFF"
         tc.variables["AERONET_BUILD_BENCHMARKS"] = "OFF"
@@ -169,6 +172,8 @@ class AeronetConan(ConanFile):
             self.requires("protobuf/[~5.27]", **consumer_traits)
         if self.options.with_glaze:
             self.requires("glaze/7.0.2")
+        if self.options.with_html:
+            self.requires("lexbor/[~3.0]")
 
     def package(self):
         cm = CMake(self)
@@ -190,6 +195,9 @@ class AeronetConan(ConanFile):
             "aeronet_objects",
             "aeronet_sys",
         ]
+        if self.options.with_html:
+            # Before aeronet_tech, which it uses (static link order)
+            self.cpp_info.libs.insert(1, "aeronet_html")
         if self.options.with_openssl:
             # TLS module built separately
             self.cpp_info.libs.append("aeronet_tls")
@@ -217,3 +225,5 @@ class AeronetConan(ConanFile):
             self.cpp_info.requires.append("protobuf::protobuf")
         if self.options.with_glaze:
             self.cpp_info.requires.append("glaze::glaze")
+        if self.options.with_html:
+            self.cpp_info.requires.append("lexbor::lexbor")

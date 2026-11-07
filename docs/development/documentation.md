@@ -11,7 +11,7 @@ Keep links to repository source files relative, so they work when the Markdown i
 | `getting-started/` | First steps: overview, first server. |
 | `guides/` | Server workflows: routing, handlers, middleware, bodies, deployment. |
 | `protocols/` | One page per protocol: TLS, HTTP/2, WebSocket, CONNECT. |
-| `modules/` | One page per optional module: HTTP client, JWT, JSON and configuration files, Protocol Buffers. |
+| `modules/` | One page per optional module: HTTP client, JWT, JSON and configuration files, Protocol Buffers, HTML parsing. |
 | `reference/` | Exhaustive lists: build options, configuration fields, HTTP/1.1 conformance. |
 | `operations/` | Running in production: observability, health probes, Kubernetes, benchmarks. |
 | `development/` | Contributing: documentation, testing, server architecture. |
