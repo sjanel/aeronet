@@ -48,6 +48,10 @@
     "protobuf": {
       "description": "Enable Protocol Buffers support",
       "dependencies": ["protobuf"]
+    },
+    "html": {
+      "description": "Enable HTML parsing and CSS selectors (HtmlDocument)",
+      "dependencies": ["lexbor"]
     }
   }
 }

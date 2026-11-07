@@ -197,6 +197,12 @@ if(AERONET_ENABLE_PROTOBUF)
   set_target_properties(aeronet-bench-internal-protobuf-body PROPERTIES FOLDER "benchmarks/internal")
 endif()
 
+if(AERONET_ENABLE_HTML)
+  AeronetAddProjectBenchmark(aeronet-bench-internal-html-document ${AERONET_BENCH_ROOT}/internal/html-document_bench.cpp
+                             LIBRARIES aeronet_html)
+  set_target_properties(aeronet-bench-internal-html-document PROPERTIES FOLDER "benchmarks/internal")
+endif()
+
 AeronetAddProjectBenchmark(aeronet-bench-internal-http-message-construct ${AERONET_BENCH_INTERNAL_HTTP_MESSAGE_CONSTRUCT}
                            LIBRARIES aeronet_http)
 if(AERONET_ENABLE_HTTP_CLIENT)

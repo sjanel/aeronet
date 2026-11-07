@@ -55,6 +55,7 @@ FLAGS = [
     "AERONET_BUILD_BENCHMARKS",
     "AERONET_UNITY_BUILD",
     "AERONET_ENABLE_PROTOBUF",
+    "AERONET_ENABLE_HTML",
 ]
 
 STRENGTH = 5           # size of the option subsets whose ON/OFF assignments are covered

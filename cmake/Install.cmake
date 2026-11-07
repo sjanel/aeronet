@@ -17,7 +17,8 @@ configure_file(
 
 # Library modules (aeronet/<module>/include, target aeronet_<module>): always built, then the ones of enabled features.
 set(_aeronet_modules http tech objects sys version)
-foreach(_pair IN ITEMS HTTP2:http2 HTTP_CLIENT:client HTTP_SERVER:server WEBSOCKET:websocket JWT:jwt OPENSSL:tls)
+foreach(_pair IN ITEMS HTTP2:http2 HTTP_CLIENT:client HTTP_SERVER:server WEBSOCKET:websocket JWT:jwt OPENSSL:tls
+                      HTML:html)
   string(REPLACE ":" ";" _pair "${_pair}")
   list(GET _pair 0 _feature)
   list(GET _pair 1 _module)
@@ -49,6 +50,11 @@ if(AERONET_ENABLE_BROTLI AND NOT AERONET_BROTLI_PACKAGE)
       install(TARGETS ${_brotli_target} EXPORT aeronetTargets ARCHIVE DESTINATION lib LIBRARY DESTINATION lib)
     endif()
   endforeach()
+endif()
+
+# Same for a lexbor built with aeronet (static, linked by aeronet_html). A lexbor package is found by aeronetConfig.cmake.
+if(AERONET_ENABLE_HTML AND NOT AERONET_LEXBOR_PACKAGE)
+  install(TARGETS ${AERONET_LEXBOR_TARGET} EXPORT aeronetTargets ARCHIVE DESTINATION lib LIBRARY DESTINATION lib)
 endif()
 
 # amc is header-only, and the public headers of aeronet include it. The install rules of a downloaded amc do not run,

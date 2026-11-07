@@ -19,6 +19,7 @@ target_compile_features(aeronet_module PUBLIC cxx_std_23)
 # Explicitly set include directories for angle bracket includes
 target_include_directories(aeronet_module PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/aeronet/client/include>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/aeronet/html/include>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/aeronet/http/include>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/aeronet/http2/include>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/aeronet/jwt/include>

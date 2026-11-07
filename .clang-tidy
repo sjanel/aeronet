@@ -29,8 +29,10 @@ CheckOptions:
   # implementation headers of the standard library and glibc (bits/chrono.h for the literals, bits/types/sigset_t.h...).
   # protobuf moves its symbols between headers across versions (util/json_util.h only re-exports json/json.h since
   # protobuf 22, its statuses are absl ones), so that no include list is right for all the supported versions.
+  # lexbor neither: its typedefs are declared in one header (lexbor/dom/interface.h) and its structs, inline functions
+  # and macros in others (lexbor/dom/interfaces/*.h).
   - key: misc-include-cleaner.IgnoreHeaders
-    value: "glaze/.*;openssl/.*;bits/.*;google/protobuf/.*;absl/.*"
+    value: "glaze/.*;openssl/.*;bits/.*;google/protobuf/.*;absl/.*;lexbor/.*"
   - key: modernize-use-equals-default.IgnoreMacros
     value: "0"
   - key: modernize-use-auto.MinTypeNameLength

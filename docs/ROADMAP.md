@@ -121,7 +121,106 @@ is tracked in the [performance optimization backlog](#performance-optimization-b
 - **Unify the request buffer with the wire bytes**: teach `HttpMessage` a request-line first-line mode so the client builds the request directly in the buffer it writes, with zero reassembly (today request fields are copied once into the send buffer).
 - **Cancellation from another thread** of an in-flight client exchange (a `ResponseBodySink` can already stop a transfer, and `inactivityTimeout` bounds a stalled one).
 - **Client-side telemetry**: surface pool hit/miss, retry counts, cache hits/misses, redirect hops and decompression stats through the same `TelemetryContext` infrastructure the server already uses (the client currently emits none).
+- **Cookie jar** (RFC 6265): store `Set-Cookie` per origin and send `Cookie` back (domain/path matching, `Secure`, `HttpOnly`, expiry, `SameSite`), opt-in in `HttpClientConfig`. Today a redirect chain or a multi-request flow loses session cookies unless the caller copies them by hand. Prerequisite of the [JavaScript pages](#html-parsing-and-javascript-pages-aeronet_enable_html-aeronet_enable_js) phases.
 - **Reverse-proxy / forwarding** building on the client (see the reverse-proxy item below).
+
+#### HTML parsing and JavaScript pages (`AERONET_ENABLE_HTML`, `AERONET_ENABLE_JS`)
+
+Status: **phase 1 delivered** ([HTML parsing](modules/html.md)), JavaScript not started
+([#738](https://github.com/sjanel/aeronet/issues/738)). Goal: let the client read pages whose content is produced or
+completed by JavaScript, e.g. `page.querySelectorAll("table tr")` after a `navigate()`.
+
+**The JS engine is the small part.** Embedding one is a few C files; the DOM, the script loading rules, the event
+loop and the Web APIs (`fetch`, XHR, timers, `location`, storage, observers...) are most of the work, and that
+surface is never complete: Lightpanda, a funded headless browser built on V8, still describes its Web API coverage
+as partial. On the other hand many "JavaScript pages" do not need JS at all: they are rendered on the server, or
+they embed their data as JSON that the page scripts turn into markup.
+
+Worked example, the [Kraken withdrawal fees page](https://support.kraken.com/articles/360000767986-cryptocurrency-withdrawal-fees-and-minimums)
+(checked 2026-11-06): the served HTML (4 MB) has no `<table>`, and the page loads 51 external scripts (2.8 MB of
+JS: React, code-split chunks, consent and analytics). The rows are in an inline script
+`window.__INITIAL_PROPS__ = {...}` (a TanStack Query dehydrated state): its `WITHDRAWAL_METHODS_SUBSCRIBER` query
+holds 799 entries with `asset_name`, `asset`, `fee`, `min_amount` and the network, from which React builds the
+table. Phase 1 reads them without running any script. The fees are recomputed between requests, so values copied
+from a screenshot are not found later by `grep`.
+
+Dependencies (C libraries, kept out of the public headers):
+
+- **lexbor** (Apache-2.0, C99, CMake, vcpkg and Conan): WHATWG HTML parser, DOM, CSS selectors, encodings and URL
+  parser, also the HTML5 parser of PHP 8.4. Version 3.0 adds per-element mutation callbacks (insertion, removal,
+  attribute change), the hook for scripts inserted at runtime and `MutationObserver`; each node has a `user`
+  pointer to cache its JS wrapper (the one of the document node holds the query engine of `HtmlDocument`).
+- **QuickJS-ng** (MIT, ES2023+, CMake, MSVC, vcpkg): not in Conan Center, which only has Bellard's QuickJS -
+  either contribute a recipe or support both behind a thin layer (their C APIs are close). No `Intl` (the
+  project says it will likely never have it, so i18n libraries need stubs), no WebAssembly, interpreter speed.
+  V8, SpiderMonkey and JavaScriptCore are rejected for binary size and build complexity; Duktape, MuJS and
+  JerryScript cannot parse modern bundles (ES5).
+
+Phases:
+
+1. **HTML** - delivered, see [HTML parsing](modules/html.md): `HtmlDocument` (encoding sniffing, read-only DOM),
+   CSS selector queries (as text or compiled `CssSelector`), and `assignedJson()` for the state embedded by
+   server-rendered pages. Still open: DOM mutation and serialization of a modified tree (needed by phase 3 anyway).
+   The fragment parsing behind `innerHTML` and `insertAdjacentHTML` must get the same nesting limits as the document
+   parsing (`aeronet/html/src/html-parse.cpp`).
+2. **Client cookie jar** (see the HTTP client items above), needed by any multi-request navigation and by
+   `document.cookie`.
+3. **JS core** (`AERONET_ENABLE_JS`, requires `AERONET_ENABLE_HTML` and `AERONET_ENABLE_HTTP_CLIENT`, OFF by
+   default), module `aeronet/web`: `WebClient::navigate(url, options)` returning a `std::expected`, the same
+   `Element` API as phase 1, and `evaluate()`.
+   - One QuickJS runtime per page over the lexbor document; the page owns every node and frees them together,
+     so node lifetime does not depend on the JS garbage collector.
+   - Scripts run in document order with `defer` semantics after a full parse (`document.write` during parsing
+     is limited).
+   - Event loop: one task, then the microtasks (`JS_ExecutePendingJob`). Timers use a virtual clock: they fire
+     in order without sleeping, with caps on far timers and on `setInterval` runs.
+   - `fetch` and XHR go through the page's `HttpClient` (synchronous XHR comes for free).
+   - `navigate()` returns on network idle (no request in flight, no timer due), on a matching selector, or when
+     the time budget runs out (QuickJS interrupt handler).
+4. **Single-page app compatibility**: ES modules and `import()`, scripts inserted at runtime (webpack chunk
+   loading) through the lexbor mutation callbacks, `MutationObserver`, stubs (`Intl`, `matchMedia`,
+   `getComputedStyle`, `IntersectionObserver` reporting everything visible, layout sizes of 0),
+   `waitForSelector()`, then clicks and form input.
+5. **Optional, independent**: a driver for full-fidelity browsers (Chrome, Lightpanda) over CDP (JSON over
+   WebSocket). Little aeronet code, but it needs a WebSocket client, which aeronet does not have.
+
+```cpp
+// Phase 1 - no JS (delivered)
+auto resp = client.get(url);
+aeronet::HtmlDocument doc(resp->bodyInMemory(), resp->headerValueOrEmpty(aeronet::http::ContentType));
+for (aeronet::HtmlElement row : doc.querySelectorAll("table tr")) {
+  std::string text = row.textContent();
+}
+std::string_view state = doc.assignedJson("window.__INITIAL_PROPS__");  // parse with glaze
+
+// Phase 3 - with JS
+aeronet::WebClient web;
+auto page = web.navigate(url, {.until = aeronet::LoadState::NetworkIdle, .timeout = std::chrono::seconds{10}});
+if (page) {
+  auto rows = page->querySelectorAll("table tr");
+}
+```
+
+Scope: server-rendered pages with JS on top, and single-page apps (React, Vue, Svelte, webpack) that only need the
+DOM, `fetch` / XHR and timers. Out of scope: rendering and layout, anti-bot challenges (they fingerprint canvas,
+WebGL and timing), WebAssembly, workers, iframes, canvas, media.
+
+Performance: the synchronous client fetches the subresources one at a time (51 sequential exchanges in the example
+above); the coroutine client with HTTP/2 multiplexing (above) is the fix. Measure the QuickJS-ng compile and run
+time of real bundles before committing to phase 3.
+
+Security: `navigate()` runs remote code in the host process, and QuickJS-ng had memory-safety CVEs in 2025-2026
+(typed arrays, `Atomics`, iterator helpers). Never link `quickjs-libc` (no file or OS access); set memory and stack
+limits and a CPU budget; add a network policy (allowed origins, request and byte caps); leave out
+`SharedArrayBuffer` and `Atomics`; pin the engine version, fuzz the bindings and run the JS tests in the ASAN CI
+legs. Document that untrusted sites belong in an unprivileged process; an out-of-process sandbox (seccomp,
+landlock) can come later.
+
+Tests: pages served by aeronet's own `HttpServer` (a webpack-style chunk loader, a vendored production React build
+rendering a table), so CI needs no internet.
+
+Open decisions: whether this scope is enough or the CDP driver should come first, the Conan strategy for the
+engine, and in-process only versus a sandbox from the start.
 
 #### Server-Sent Events (SSE) convenience layer
 

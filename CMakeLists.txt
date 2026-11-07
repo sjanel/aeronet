@@ -84,6 +84,7 @@ option(AERONET_ENABLE_ZSTD "Enable usage of Zstandard for zstd codec support" ${
 option(AERONET_ENABLE_OPENTELEMETRY "Enable OpenTelemetry C++ integration" ${PROJECT_IS_TOP_LEVEL})
 option(AERONET_ENABLE_GLAZE "Enable glaze library for JSON serialization" ${PROJECT_IS_TOP_LEVEL})
 option(AERONET_ENABLE_PROTOBUF "Enable Protocol Buffers support" ${PROJECT_IS_TOP_LEVEL})
+option(AERONET_ENABLE_HTML "Enable HTML parsing and CSS selectors (HtmlDocument, with lexbor)" ${PROJECT_IS_TOP_LEVEL})
 
 # JWT (JWS) reuses the OpenSSL crypto and the glaze JSON parser, and adds no dependency: on whenever both are, else off.
 include(CMakeDependentOption)

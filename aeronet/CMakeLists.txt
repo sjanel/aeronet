@@ -4,6 +4,10 @@ endif()
 
 add_subdirectory(http)
 
+if(AERONET_ENABLE_HTML)
+  add_subdirectory(html)
+endif()
+
 if(AERONET_ENABLE_HTTP2)
   add_subdirectory(http2)
 endif()

@@ -14,4 +14,8 @@ if(AERONET_ENABLE_HTTP_CLIENT)
     target_link_libraries(aeronet INTERFACE aeronet_client)
 endif()
 
+if(AERONET_ENABLE_HTML)
+    target_link_libraries(aeronet INTERFACE aeronet_html)
+endif()
+
 add_library(aeronet::aeronet ALIAS aeronet)

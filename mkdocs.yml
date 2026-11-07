@@ -105,6 +105,7 @@ nav:
       - JWT: modules/jwt.md
       - JSON, YAML, and configuration files: modules/json-and-config-files.md
       - Protocol Buffers: modules/protobuf.md
+      - HTML parsing: modules/html.md
   - Reference:
       - Build configuration: reference/configuration.md
       - Server configuration: reference/server-configuration.md

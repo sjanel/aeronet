@@ -39,6 +39,8 @@ DEPENDENCY_LIBRARY_PATTERNS = [
     # dependencies, whose names change between versions, and the link group makes their order irrelevant.
     # No fallback flag: OpenTelemetry may be disabled.
     ("libopentelemetry_*.a", None),
+    # lexbor (HTML module), static when downloaded. No fallback flag: the HTML module may be disabled.
+    ("liblexbor*.a", None),
 ]
 
 SYSTEM_LINK_FLAGS = [
@@ -247,6 +249,7 @@ def fallback_include_dirs() -> List[str]:
         "aeronet",
         "aeronet/client/include",
         "aeronet/http/include",
+        "aeronet/html/include",
         "aeronet/http2/include",
         "aeronet/jwt/include",
         "aeronet/main/include",
@@ -541,41 +544,28 @@ def locate_libraries(build_dir: Path) -> List[str]:
         except subprocess.CalledProcessError:
             print("cmake --build failed; continuing with what we have", file=sys.stderr)
 
-    # The HTTP client lives in a standalone library (aeronet_client) that is NOT a dependency of the
-    # main `aeronet` target, so building only `aeronet` (or an examples-only tree that never references
-    # the client) never produces libaeronet_client.a. README and documentation snippets use HttpClient, so make a
-    # best-effort attempt to build the client library too. This is a no-op when the target is already
-    # built, and is tolerated when the target is absent (e.g. AERONET_ENABLE_HTTP_CLIENT=OFF).
-    try:
-        subprocess.run(
-            ["cmake", "--build", ".", "--target", "aeronet_client", "--parallel"],
+    # The HTTP client (aeronet_client), JWT (aeronet_jwt) and HTML (aeronet_html) modules are standalone libraries that
+    # the server does not depend on, so building only the server (or an examples-only tree that never references them)
+    # never produces their archives. README and documentation snippets use them, so make a best-effort attempt to build
+    # them too. This is a no-op when a target is already built, and is tolerated when it is absent (its feature
+    # disabled: AERONET_ENABLE_HTTP_CLIENT, AERONET_ENABLE_JWT, AERONET_ENABLE_HTML).
+    # The output of a failed build is printed: a compile or clang-tidy error would otherwise only show up later as
+    # undefined references of the snippets using the module.
+    for target in ("aeronet_client", "aeronet_jwt", "aeronet_html"):
+        result = subprocess.run(
+            ["cmake", "--build", ".", "--target", target, "--parallel"],
             cwd=str(build_dir),
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
         )
-    except subprocess.CalledProcessError:
-        print(
-            "cmake --build for aeronet_client failed or target absent; continuing",
-            file=sys.stderr,
-        )
-
-    # The JWT module (aeronet_jwt) is likewise a standalone library that is not a dependency of the
-    # main `aeronet` target, so build it best-effort for the README and documentation JWT snippets. No-op when
-    # already built, tolerated when absent (AERONET_ENABLE_JWT=OFF).
-    try:
-        subprocess.run(
-            ["cmake", "--build", ".", "--target", "aeronet_jwt", "--parallel"],
-            cwd=str(build_dir),
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except subprocess.CalledProcessError:
-        print(
-            "cmake --build for aeronet_jwt failed or target absent; continuing",
-            file=sys.stderr,
-        )
+        if result.returncode != 0:
+            print(
+                f"cmake --build for {target} failed or target absent; continuing. Its output:\n"
+                + "\n".join(result.stdout.splitlines()[-50:]),
+                file=sys.stderr,
+            )
 
     libs: List[str] = []
     primary_path = build_dir / "aeronet" / "main" / "libaeronet.a"
@@ -1171,10 +1161,15 @@ def main() -> None:
         )
 
     include_dirs.extend(gather_user_include_dirs(args.include))
-    # The HTTP client and JWT modules have public include trees that are not pulled in by the
+    # The HTTP client, JWT and HTML modules have public include trees that are not pulled in by the
     # target metadata (a server program); add them explicitly so documentation snippets using
-    # <aeronet/http-client.hpp> or <aeronet/jwt.hpp> compile (the matching libraries are linked via rglob).
-    for module_include in (Path("aeronet/client/include"), Path("aeronet/jwt/include")):
+    # <aeronet/http-client.hpp>, <aeronet/jwt.hpp> or <aeronet/html-document.hpp> compile (the matching libraries are
+    # linked via rglob).
+    for module_include in (
+        Path("aeronet/client/include"),
+        Path("aeronet/jwt/include"),
+        Path("aeronet/html/include"),
+    ):
         if module_include.is_dir():
             include_dirs.append(str(module_include.resolve()))
     include_dirs = dedupe_preserve(include_dirs)

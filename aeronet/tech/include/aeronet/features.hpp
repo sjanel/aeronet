@@ -62,6 +62,12 @@ constexpr bool protobufEnabled() { return true; }
 constexpr bool protobufEnabled() { return false; }
 #endif
 
+#ifdef AERONET_ENABLE_HTML
+constexpr bool htmlEnabled() { return true; }
+#else
+constexpr bool htmlEnabled() { return false; }
+#endif
+
 #ifdef AERONET_ENABLE_WEBSOCKET
 constexpr bool webSocketEnabled() { return true; }
 #else

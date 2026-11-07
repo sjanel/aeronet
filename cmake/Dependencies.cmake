@@ -425,6 +425,42 @@ if(AERONET_ENABLE_PROTOBUF)
   message(STATUS "[aeronet] protobuf ${Protobuf_VERSION} (${AERONET_PROTOBUF_RUNTIME} runtime)")
 endif()
 
+# lexbor (HTML parser, DOM, CSS selectors, encodings). Its CMake package (system, vcpkg, Conan) names the library
+# lexbor::lexbor_static, or lexbor::lexbor when shared; the lexbor build, downloaded otherwise, lexbor_static.
+# AERONET_LEXBOR_TARGET is the target linked by aeronet_html, AERONET_LEXBOR_PACKAGE the package that the consumers of
+# aeronet look for (empty when lexbor is built and installed with aeronet).
+# A lexbor package must be 3.x (its version file requires the same major version): 2.x lacks functions that
+# aeronet_html calls, and such a package is skipped for the download.
+set(AERONET_LEXBOR_MIN_VERSION 3.0)
+if(AERONET_ENABLE_HTML)
+  aeronet_system_packages_allowed(_lexbor_allow_system)
+  if(_lexbor_allow_system)
+    find_package(lexbor ${AERONET_LEXBOR_MIN_VERSION} CONFIG QUIET)
+  endif()
+  if(TARGET lexbor::lexbor_static)
+    set(AERONET_LEXBOR_TARGET lexbor::lexbor_static)
+  elseif(TARGET lexbor::lexbor)
+    set(AERONET_LEXBOR_TARGET lexbor::lexbor)
+  endif()
+  if(AERONET_LEXBOR_TARGET)
+    set(AERONET_LEXBOR_PACKAGE lexbor)
+  else()
+    set(LEXBOR_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+    set(LEXBOR_BUILD_STATIC ON CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+      lexbor
+      URL https://github.com/lexbor/lexbor/archive/refs/tags/v3.0.1.tar.gz
+      URL_HASH SHA256=08ce3d18efdd09b8b3488779b97509f83cc181e09a5a4cd8162ac08d77266600
+      DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+      EXCLUDE_FROM_ALL
+      # Its headers, included by the sources of aeronet_html, are not compiled with the warnings of aeronet.
+      SYSTEM
+    )
+    list(APPEND AeronetFetchContentPackagesToMakeAvailable lexbor)
+    set(AERONET_LEXBOR_TARGET lexbor_static)
+  endif()
+endif()
+
 # Make fetch content available
 if(AeronetFetchContentPackagesToMakeAvailable)
   message(STATUS "Configuring packages ${AeronetFetchContentPackagesToMakeAvailable}")

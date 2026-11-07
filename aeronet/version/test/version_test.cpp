@@ -67,6 +67,7 @@ TEST(AeronetVersion, Version) {
   EXPECT_EQ(lines[6].contains("http2"), http2Enabled());
   EXPECT_EQ(lines[6].contains("websocket"), webSocketEnabled());
   EXPECT_EQ(lines[6].contains("async-handlers"), asyncHandlersEnabled());
+  EXPECT_EQ(lines[6].contains("html"), htmlEnabled());
   // Compression line should list enabled codecs separated by comma+space in deterministic order
   // Order enforced in version.hpp join logic: zlib, zstd, brotli (if present)
   if constexpr (zlibEnabled()) {
