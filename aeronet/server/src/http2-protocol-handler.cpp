@@ -398,7 +398,7 @@ void Http2ProtocolHandler::onHeadersDecoded(uint32_t streamId, DecodedHeaders& d
 
   // Automatic HTTP -> HTTPS redirect of the requests of a plaintext listener (h2c), as for HTTP/1.1.
   if (_pCtx->config.httpsRedirect.enabled()) {
-    answerHttpsRedirect(it, endStream);
+    answerHttpsRedirect(it);
     return;
   }
 
@@ -436,7 +436,7 @@ void Http2ProtocolHandler::onHeadersDecoded(uint32_t streamId, DecodedHeaders& d
 void Http2ProtocolHandler::onData(uint32_t streamId, std::span<const std::byte> data, bool endStream) {
   const auto it = _streams.find(streamId);
   if (it == _streams.end()) [[unlikely]] {
-    log::warn("HTTP/2 DATA frame for unknown stream {}", streamId);
+    log::debug("HTTP/2 DATA frame for unknown stream {}", streamId);
     return;
   }
 
@@ -466,7 +466,7 @@ void Http2ProtocolHandler::onData(uint32_t streamId, std::span<const std::byte> 
   }
 
   if (!state.hasRequest()) [[unlikely]] {
-    log::warn("HTTP/2 DATA frame for stream {} with no active request", streamId);
+    log::debug("HTTP/2 DATA frame for stream {} with no active request", streamId);
     return;
   }
 
@@ -494,20 +494,17 @@ void Http2ProtocolHandler::onData(uint32_t streamId, std::span<const std::byte> 
 }
 
 void Http2ProtocolHandler::rejectTooLargeBody(StreamsMap::iterator it) {
-  const uint32_t streamId = it->first;
   HttpRequestView& req = it->second.request->request;
   (void)sendResponse(req, req.makeResponse(http::StatusCodePayloadTooLarge));
   onRequestCompleted(req, http::StatusCodePayloadTooLarge);
   // A response without body is never deferred: the stream entry is released.
   assert(!it->second.pending);
   releaseStreamAfterResponse(it);
-  // The response is complete while the client still sends the request: ask it to stop, without error (RFC 9113 §8.1).
-  _connection.sendRstStream(streamId, ErrorCode::NoError);
 }
 
 void Http2ProtocolHandler::rejectMalformedRequest(uint32_t streamId, std::string_view reason) {
-  log::warn("Malformed HTTP/2 request on stream {}: {}", streamId, reason);
-  _connection.sendRstStream(streamId, ErrorCode::ProtocolError);
+  log::debug("Malformed HTTP/2 request on stream {}: {}", streamId, reason);
+  _connection.resetMalformedStream(streamId);
 }
 
 void Http2ProtocolHandler::finalizeRequestBodyAndDispatch(StreamsMap::iterator it) {
@@ -546,24 +543,28 @@ void Http2ProtocolHandler::onTrailersReceived(StreamsMap::iterator it, DecodedHe
   const uint32_t streamId = it->first;
   StreamState& state = it->second;
 
-  // Trailers are only meaningful for a stream still aggregating a normal (non-CONNECT) request, and a
-  // trailing HEADERS block MUST carry END_STREAM (RFC 9113 §8.1). Anything else is a protocol error: a
-  // second HEADERS block on a tunnel stream, on a stream whose request was already dispatched, or one that
-  // fails to close the stream. sendRstStream fires onStreamReset, which erases the stream entry (and cleans
-  // up any tunnel); the follow-up erase-by-key is a harmless no-op that keeps the intent explicit.
-  // No need to add a || state.tunnelUpstreamFd != kInvalidHandle because for successfull CONNECT request,
-  // state.hasRequest() == false.
-  assert(state.tunnelUpstreamFd == kInvalidHandle || !state.hasRequest());
-  if (!state.hasRequest() || !endStream) {
-    _connection.sendRstStream(streamId, ErrorCode::ProtocolError);
-    _streams.erase(streamId);
+  // Trailers are only meaningful for a stream still aggregating a normal request. A reset closes the stream:
+  // onStreamClosed() erases its entry and cleans up any tunnel.
+
+  // A CONNECT has no content, thus no trailers: while its target is resolved, or on its established tunnel.
+  if (state.tunnelPending || state.tunnelUpstreamFd != kInvalidHandle) {
+    rejectMalformedRequest(streamId, "header block on a CONNECT stream");
     return;
   }
 
-  // Pseudo-header fields are forbidden in trailers (RFC 9113 §8.1).
-  if (trailers.hasPseudoHeaders()) {
+  // The request was released: its response is complete, the end of its body waiting for flow-control credit.
+  if (!state.hasRequest()) {
     _connection.sendRstStream(streamId, ErrorCode::ProtocolError);
-    _streams.erase(streamId);
+    return;
+  }
+
+  // A trailing HEADERS block must end the stream, and cannot carry pseudo-header fields (RFC 9113 §8.1).
+  if (!endStream) {
+    rejectMalformedRequest(streamId, "trailers not ending the stream");
+    return;
+  }
+  if (trailers.hasPseudoHeaders()) {
+    rejectMalformedRequest(streamId, "pseudo-header field in trailers");
     return;
   }
 
@@ -675,15 +676,29 @@ void Http2ProtocolHandler::releaseStreamAfterResponse(StreamsMap::iterator it) {
   assert(it != _streams.end());
   recycleRequest(it->second.request);
   if (it->second.pending) {
+    // The rest of the response waits for flow control: the stream is closed once it is sent (flushPendingSends()).
     it->second.requestDeadline = {};
   } else {
     const uint32_t streamId = it->first;
     _streams.erase(it);
+    closeAnsweredStream(streamId);
+  }
+}
 
-    // Sending END_STREAM transitions a half-closed-remote stream to Closed, but send-path closure is finalized
-    // explicitly so callbacks cannot invalidate protocol-handler iterators mid-send. At this point our state has
-    // already been released, so close accounting and the callback are safe.
-    _connection.finalizeSendClosedStream(streamId);
+void Http2ProtocolHandler::closeAnsweredStream(uint32_t streamId) {
+  // Sending END_STREAM transitions a half-closed-remote stream to Closed, but send-path closure is finalized
+  // explicitly so callbacks cannot invalidate protocol-handler iterators mid-send. At this point our state has
+  // already been released, so close accounting and the callback are safe.
+  if (_connection.finalizeSendClosedStream(streamId)) [[likely]] {
+    return;
+  }
+
+  // The stream of a response is known to the connection until closed.
+  const Http2Stream* pStream = _connection.getStream(streamId);
+  assert(pStream != nullptr);
+  if (pStream->canReceive()) {
+    // The response is complete while the client still sends its request: ask it to stop, without error (RFC 9113 §8.1).
+    _connection.sendRstStream(streamId, ErrorCode::NoError);
   }
 }
 
@@ -806,7 +821,7 @@ void Http2ProtocolHandler::flushPendingSends() {
     // The deferred body completed outside frame processing (from onOutputWritten): finalize the stream's
     // connection-level lifecycle (active-stream accounting + retention). Our per-stream state is
     // already erased, so the stream-closed callback finds nothing to re-enter.
-    _connection.finalizeSendClosedStream(streamId);
+    closeAnsweredStream(streamId);
   }
 }
 
@@ -1085,8 +1100,7 @@ void Http2ProtocolHandler::finalizeAndSendResponse(StreamsMap::iterator it, Http
   releaseStreamAfterResponse(it);
 }
 
-void Http2ProtocolHandler::answerHttpsRedirect(StreamsMap::iterator it, bool endStream) {
-  const uint32_t streamId = it->first;
+void Http2ProtocolHandler::answerHttpsRedirect(StreamsMap::iterator it) {
   HttpRequestView& request = it->second.request->request;
 
   // Like for HTTP/1.1: bypasses routing, the request middleware and the body.
@@ -1104,10 +1118,6 @@ void Http2ProtocolHandler::answerHttpsRedirect(StreamsMap::iterator it, bool end
   assert(err == ErrorCode::NoError && "sendResponse cannot fail for a small redirect response");
   onRequestCompleted(request, status);
   releaseStreamAfterResponse(it);
-  if (!endStream) {
-    // The response is complete while the client may still send the body: ask it to stop, without error (RFC 9113 §8.1).
-    _connection.sendRstStream(streamId, ErrorCode::NoError);
-  }
 }
 
 // ============================

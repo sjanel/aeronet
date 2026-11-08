@@ -306,11 +306,16 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   void setupCallbacks() { _connection.setEventSink(this); }
 
   void onHeadersDecoded(uint32_t streamId, DecodedHeaders& decodedHeaders, bool endStream) override;
+
   void onData(uint32_t streamId, std::span<const std::byte> data, bool endStream) override;
+
   void onStreamReset([[maybe_unused]] uint32_t streamId, [[maybe_unused]] ErrorCode errorCode) override {}
+
   void onStreamClosed(uint32_t streamId) override;
+
   void onGoAway([[maybe_unused]] uint32_t lastStreamId, [[maybe_unused]] ErrorCode errorCode,
                 [[maybe_unused]] std::string_view debugData) override {}
+
   void onWindowUpdate(uint32_t streamId, [[maybe_unused]] uint32_t increment) override;
 
   /// Send a graceful GOAWAY (NO_ERROR), for a drain of the server: the client opens its next streams on another
@@ -372,6 +377,10 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   /// Release request state after a response, retaining it only while deferred output remains.
   void releaseStreamAfterResponse(StreamsMap::iterator it);
 
+  /// Close the stream of a response sent whole, whose state is released: a client still sending its request is asked
+  /// to stop with RST_STREAM(NO_ERROR) (RFC 9113 §8.1).
+  void closeAnsweredStream(uint32_t streamId);
+
   /// Call the streaming handler of the route of the request of a stream.
   void handleStreamingRequest(StreamsMap::iterator it, const Router::RoutingResult& routingResult);
 
@@ -380,7 +389,7 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
 
   /// Answer the request of a stream with its redirect to https (see HttpServerConfig::httpsRedirect), before its body
   /// is received: the stream is then reset (NO_ERROR) if the client did not end it.
-  void answerHttpsRedirect(StreamsMap::iterator it, bool endStream);
+  void answerHttpsRedirect(StreamsMap::iterator it);
 
   /// Apply the CORS policy of the route to the response to the request of a stream, finalize and send it, then release
   /// the stream.

@@ -259,6 +259,10 @@ class Http2Connection {
   /// @param errorCode Error code for the reset
   void sendRstStream(uint32_t streamId, ErrorCode errorCode);
 
+  /// Reset a stream carrying a malformed message with PROTOCOL_ERROR, counted by the
+  /// aeronet.http2.streams.rejected_malformed metric.
+  void resetMalformedStream(uint32_t streamId);
+
   /// Send PING frame.
   void sendPing(PingFrame pingFrame);
 
@@ -283,7 +287,8 @@ class Http2Connection {
   /// accounted as active (eventually exhausting the peer's concurrency budget) and is never pruned.
   /// Invokes the stream-closed callback, so the caller must have released its own per-stream state
   /// first. No-op when the stream does not exist or is not closed.
-  void finalizeSendClosedStream(uint32_t streamId);
+  /// @return true if the stream is closed
+  bool finalizeSendClosedStream(uint32_t streamId);
 
   // ============================
   // Settings

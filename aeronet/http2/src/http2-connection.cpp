@@ -759,6 +759,13 @@ void Http2Connection::sendRstStream(uint32_t streamId, ErrorCode errorCode) {
   }
 }
 
+void Http2Connection::resetMalformedStream(uint32_t streamId) {
+  if (_pTelemetryContext != nullptr) {
+    _pTelemetryContext->counterAdd("aeronet.http2.streams.rejected_malformed");
+  }
+  sendRstStream(streamId, ErrorCode::ProtocolError);
+}
+
 void Http2Connection::holdStreamRecvWindow(uint32_t streamId) noexcept {
   Http2Stream* pStream = getStream(streamId);
   if (pStream != nullptr) {
@@ -779,11 +786,13 @@ void Http2Connection::releaseStreamRecvWindow(uint32_t streamId) {
   }
 }
 
-void Http2Connection::finalizeSendClosedStream(uint32_t streamId) {
+bool Http2Connection::finalizeSendClosedStream(uint32_t streamId) {
   const auto it = _streams.find(streamId);
-  if (it != _streams.end() && it->second.isClosed()) {
-    closeStream(it);
+  if (it == _streams.end() || !it->second.isClosed()) {
+    return false;
   }
+  closeStream(it);
+  return true;
 }
 
 void Http2Connection::sendWindowUpdate(uint32_t streamId, uint32_t increment) {
@@ -1544,7 +1553,8 @@ Http2Connection::ProcessResult Http2Connection::processFieldBlock(StreamsMap::it
       return streamError(streamId, decodeErr, ErrorMsg::HeaderListTooLarge);
     }
     if (decodeErr == ErrorCode::ProtocolError) {
-      return streamError(streamId, decodeErr, ErrorMsg::MalformedFieldSection);
+      resetMalformedStream(streamId);
+      return ProcessResult{ProcessResult::Action::OutputReady, decodeErr, ErrorMsg::MalformedFieldSection};
     }
     return connectionError(decodeErr, ErrorMsg::HPACKDecodingFailed);
   }

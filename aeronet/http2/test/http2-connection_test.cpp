@@ -450,13 +450,17 @@ TEST(Http2Connection, SequentialExchangesReleaseActiveStreamsOnBothSides) {
     ASSERT_EQ(client.sendHeaders(streamId, http::StatusCode{}, HeadersView(reqHeaders), true), ErrorCode::NoError);
     pump();
 
+    // Still open, or never opened: nothing to finalize.
+    EXPECT_FALSE(server.finalizeSendClosedStream(streamId));
+    EXPECT_FALSE(server.finalizeSendClosedStream(streamId + 1000U));
+
     ASSERT_EQ(server.sendHeaders(streamId, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
     const std::array<std::byte, 4> body{std::byte{'b'}, std::byte{'o'}, std::byte{'d'}, std::byte{'y'}};
     ASSERT_EQ(server.sendData(streamId, body, true), ErrorCode::NoError);
     // The server stream reached Closed through the send path, outside frame processing: its lifecycle
     // must be finalized explicitly (the server's protocol handler does this for deferred completions).
     EXPECT_EQ(server.activeStreamCount(), 1U);
-    server.finalizeSendClosedStream(streamId);
+    EXPECT_TRUE(server.finalizeSendClosedStream(streamId));
     pump();
 
     EXPECT_EQ(client.activeStreamCount(), 0U) << "client leaks streams after exchange on stream " << streamId;
