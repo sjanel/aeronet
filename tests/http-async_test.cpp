@@ -189,6 +189,40 @@ TEST(HttpAsyncHandlers, ContentLengthBodySurvivesBytesReceivedWhileSuspended) {
   EXPECT_TRUE(resp.ends_with("other:1048576")) << resp.substr(0, 512);
 }
 
+#ifdef AERONET_ENABLE_ZLIB
+// The trailers of a compressed body decompressing to nothing are in the buffer of their connection, like those of any
+// other body: they survive what other connections do while the handler is suspended (here a merged duplicate header
+// writing in the temporary buffer shared by the connections).
+TEST(HttpAsyncHandlers, TrailersOfBodyDecompressedToNothingSurviveOtherConnections) {
+  std::atomic_bool started{false};
+  std::atomic_bool allow{false};
+  ts.resetRouterAndGet().setPath(http::Method::POST, "/first", [&](HttpRequestView& req) -> RequestTask<HttpResponse> {
+    const std::string_view body = co_await req.bodyAwaitable();
+    co_await req.deferWork([&] {
+      started.store(true, std::memory_order_release);
+      WaitFor(allow);
+    });
+    co_return HttpResponse(std::format("[{}|{}]", body, req.trailerValueOrEmpty("x-sig")));
+  });
+  ts.router().setPath(http::Method::GET, "/other", [](const HttpRequestView&) { return HttpResponse("other"); });
+
+  static constexpr std::string_view kGzipOfNothing("\x1f\x8b\x08\0\0\0\0\0\0\x03\x03\0\0\0\0\0\0\0\0\0", 20);
+  test::ClientConnection client(ts.port());
+  test::sendAll(client.fd(), std::format("POST /first HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n"
+                                         "Content-Encoding: gzip\r\nConnection: close\r\n\r\n"
+                                         "{:x}\r\n{}\r\n0\r\nx-sig: secret-value\r\n\r\n",
+                                         kGzipOfNothing.size(), kGzipOfNothing));
+  ASSERT_TRUE(WaitFor(started));
+  const std::string other = test::sendAndCollect(ts.port(),
+                                                 "GET /other HTTP/1.1\r\nHost: h\r\nConnection: close\r\n"
+                                                 "X-Dup: v1\r\nX-Dup: ZZZZZZZZZZZZZZZZ\r\n\r\n");
+  EXPECT_TRUE(other.ends_with("other")) << other;
+  allow.store(true, std::memory_order_release);
+  const std::string resp = test::recvUntilClosed(client.fd());
+  EXPECT_TRUE(resp.ends_with("[|secret-value]")) << resp.substr(0, 512);
+}
+#endif
+
 // An async handler request pipelined behind a served one, from the same input: its views (here into its body, taken
 // before suspending) survive the bytes received while it is suspended, and the requests around it are served once.
 TEST(HttpAsyncHandlers, PipelinedBodyViewsSurviveBytesReceivedWhileSuspended) {

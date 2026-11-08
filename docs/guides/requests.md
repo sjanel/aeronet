@@ -38,7 +38,7 @@ When a header appears several times, the server combines the occurrences while p
 
 Rejecting duplicate singleton, `content-length` and `host` fields closes classic request smuggling vectors, where two intermediaries pick different occurrences: keeping the last `authorization`, `content-type` or `range` could differ from a proxy in front keeping the first (RFC 9110 §5.3 lets a recipient reject them). Over HTTP/2, the stream is reset with `PROTOCOL_ERROR` (malformed request, RFC 9113 §8.1.1). For the other fields, an empty occurrence does not add a separator. To reject, rather than merge, duplicates of unknown fields that your application treats as singletons, set `HttpServerConfig::mergeUnknownRequestHeaders` to `false`.
 
-Tests: `DuplicateSingletonHeadersProduce400` in [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp), `DuplicateSingletonTrailersRejected` in [http-core_test.cpp](../../tests/http-core_test.cpp), `DuplicateSingletonHeaderIsRejected` in [hpack_test.cpp](../../aeronet/http2/test/hpack_test.cpp), and the table in [mergeable-headers_test.cpp](../../aeronet/objects/test/mergeable-headers_test.cpp).
+Tests: `DuplicateSingletonHeadersProduce400` in [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp), `InvalidTrailersAreRejected` in [http-core_test.cpp](../../tests/http-core_test.cpp), `DuplicateSingletonHeaderIsRejected` in [hpack_test.cpp](../../aeronet/http2/test/hpack_test.cpp), and the table in [mergeable-headers_test.cpp](../../aeronet/objects/test/mergeable-headers_test.cpp).
 
 ### Header values
 
@@ -161,6 +161,10 @@ router.setPath(http::Method::PUT, "/objects/{key}", [](const HttpRequestView& re
 ```
 
 Fields that would change how the message is framed, routed, or authenticated are forbidden in trailers, and a request carrying one is rejected with `400`: `authorization`, `proxy-authorization`, `proxy-authenticate`, `www-authenticate`, `transfer-encoding`, `content-length`, `content-range`, `content-encoding`, `content-type`, `host`, `cache-control`, `expect`, `max-forwards`, `pragma`, `range`, `te`, `trailer`, `set-cookie`, and `cookie`.
+
+A repeated trailer follows the rules of a [repeated header](#header-names): it is merged, or the request is rejected.
+
+Tests: `ValidTrailersAreParsed` and `InvalidTrailersAreRejected` in [http-core_test.cpp](../../tests/http-core_test.cpp), `DuplicateTrailersOfCompressedBody` in [http-request-decompression_test.cpp](../../tests/http-request-decompression_test.cpp), and `TrailersOfBodyDecompressedToNothingSurviveOtherConnections` in [http-async_test.cpp](../../tests/http-async_test.cpp).
 
 ### Forms and file uploads
 

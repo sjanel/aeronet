@@ -38,6 +38,13 @@
 
 namespace aeronet::test {
 
+namespace {
+
+// How often the echo thread looks at its stop flag: the upper bound of the time spent destroying an EchoServer.
+constexpr auto kStopCheckPeriod = std::chrono::milliseconds{10};
+
+}  // namespace
+
 EchoServer::EchoServer(BaseFd sock, uint16_t pt, std::shared_ptr<std::atomic<bool>> sf, std::thread thr)
     : listenSocket(std::move(sock)), port(pt), stopFlag(std::move(sf)), echoThread(std::move(thr)) {}
 
@@ -45,10 +52,10 @@ EchoServer::~EchoServer() {
   if (stopFlag) {
     stopFlag->store(true, std::memory_order_release);
   }
-  // Do NOT close listenSocket here — the raw fd captured by the echo thread could be
-  // reused by the OS after close, causing accept() on a wrong socket.  The accept timeout
-  // (250 ms) + stop flag is sufficient to wake the thread.  The listenSocket destructor
-  // runs after the thread is joined, so the fd stays valid until then.
+  // Do NOT close listenSocket here - the raw fd captured by the echo thread could be
+  // reused by the OS after close, causing accept() on a wrong socket. The echo thread checks
+  // the stop flag every kStopCheckPeriod. The listenSocket destructor runs after the thread
+  // is joined, so the fd stays valid until then.
   if (echoThread.joinable()) {
     echoThread.join();
   }
@@ -93,7 +100,7 @@ EchoServer StartEchoServer(int family) {
 
   // Set a timeout on the listening socket so accept() doesn't block indefinitely.
   // This allows the echo thread to check the stop flag periodically.
-  setRecvTimeout(listenSock.fd(), std::chrono::milliseconds{250});
+  setRecvTimeout(listenSock.fd(), kStopCheckPeriod);
 
   auto stopFlag = std::make_shared<std::atomic<bool>>(false);
 
@@ -112,7 +119,7 @@ EchoServer StartEchoServer(int family) {
         FD_SET(static_cast<SOCKET>(fd), &readSet);
         timeval tv{};
         tv.tv_sec = 0;
-        tv.tv_usec = 250 * 1000;
+        tv.tv_usec = static_cast<decltype(tv.tv_usec)>(std::chrono::microseconds{kStopCheckPeriod}.count());
         int ret = ::select(0, &readSet, nullptr, nullptr, &tv);
         if (ret > 0) {
           readable = true;
@@ -127,7 +134,7 @@ EchoServer StartEchoServer(int family) {
         pfd.fd = fd;
         pfd.events = POLLIN;  // NOLINT(misc-include-cleaner)
         // NOLINTNEXTLINE(misc-include-cleaner)
-        int ret = ::poll(&pfd, 1, 250);
+        int ret = ::poll(&pfd, 1, static_cast<int>(kStopCheckPeriod.count()));
         if (ret > 0) {
           readable = true;
         } else if (ret == 0) {
@@ -177,7 +184,7 @@ EchoServer StartEchoServer(int family) {
         return;  // unexpected error — exit gracefully instead of throwing
       }
       // Break out after a bounded idle period with no traffic.
-      setRecvTimeout(clientFd.fd(), std::chrono::milliseconds{250});
+      setRecvTimeout(clientFd.fd(), kStopCheckPeriod);
       const auto maxIdle = std::chrono::seconds{3};
       auto idleDeadline = std::chrono::steady_clock::now() + maxIdle;
       char buf[16384];

@@ -977,70 +977,34 @@ TEST_F(RouterTest, EscapedLiteralOnlyRouteSupportsMultipleRegistrations) {
   EXPECT_NE((allowed & static_cast<http::MethodBmp>(http::Method::POST)), 0U);
 }
 
-TEST_F(RouterTest, MixedEscapedBracesAndNamedParams) {
-  router.setPath(http::Method::GET, "/mix/{{}}/{id}/{{end}}", OkHandler);
+TEST_F(RouterTest, EscapedBracesAroundASingleParam) {
+  struct Case {
+    std::string_view pattern;
+    std::string_view path;
+    std::string_view key;
+  };
+  static constexpr Case kCases[]{
+      {"/mix/{{}}/{id}/{{end}}", "/mix/{}/42/{end}", "id"},
+      {"/mix/{{}}/{}/{{end}}", "/mix/{}/42/{end}", "0"},
+      {"/mix/a}}{id}/end", "/mix/a}42/end", "id"},
+      // A constrained param followed by an escaped literal '}'.
+      {"/mix/{id:[0-9]+}}}/end", "/mix/42}/end", "id"},
+      // After {id}, the literal part 'a' gets the escaped close brace appended.
+      {"/mix/{id}a}}/end", "/mix/42a}/end", "id"},
+      // The segment starts with an escaped close brace, before any literal or param part exists.
+      {"/mix/}}{id}/end", "/mix/}42/end", "id"},
+  };
+  for (const Case& tc : kCases) {
+    SCOPED_TRACE(tc.pattern);
+    Router localRouter;
+    localRouter.setPath(http::Method::GET, tc.pattern, OkHandler);
 
-  auto res = router.match(http::Method::GET, "/mix/{}/42/{end}");
-  ASSERT_NE(res.requestHandler(), nullptr);
-  ASSERT_EQ(res.pathParams().size(), 1U);
-  EXPECT_EQ(res.pathParams()[0].key, "id");
-  EXPECT_EQ(res.pathParams()[0].value, "42");
-}
-
-TEST_F(RouterTest, MixedEscapedBracesAndUnnamedParams) {
-  router.setPath(http::Method::GET, "/mix/{{}}/{}/{{end}}", OkHandler);
-
-  auto res = router.match(http::Method::GET, "/mix/{}/value/{end}");
-  ASSERT_NE(res.requestHandler(), nullptr);
-  ASSERT_EQ(res.pathParams().size(), 1U);
-  EXPECT_EQ(res.pathParams()[0].key, "0");
-  EXPECT_EQ(res.pathParams()[0].value, "value");
-}
-
-TEST_F(RouterTest, EscapedCloseBraceBeforeParamInSameSegment) {
-  router.setPath(http::Method::GET, "/mix/a}}{id}/end", OkHandler);
-
-  auto res = router.match(http::Method::GET, "/mix/a}42/end");
-  ASSERT_NE(res.requestHandler(), nullptr);
-  ASSERT_EQ(res.pathParams().size(), 1U);
-  EXPECT_EQ(res.pathParams()[0].key, "id");
-  EXPECT_EQ(res.pathParams()[0].value, "42");
-}
-
-TEST_F(RouterTest, EscapedCloseBraceAfterConstrainedParamInSameSegment) {
-  // Segment shape is "{param-with-constraint}}}" => constrained param followed by escaped literal '}'.
-  // This is parsed by insertChild paramSegment loop and should exercise the kEscapedCloseBrace branch.
-  router.setPath(http::Method::GET, "/mix/{id:[0-9]+}}}/end", OkHandler);
-
-  auto res = router.match(http::Method::GET, "/mix/42}/end");
-  ASSERT_NE(res.requestHandler(), nullptr);
-  ASSERT_EQ(res.pathParams().size(), 1U);
-  EXPECT_EQ(res.pathParams()[0].key, "id");
-  EXPECT_EQ(res.pathParams()[0].value, "42");
-}
-
-TEST_F(RouterTest, EscapedCloseBraceAppendsToExistingLiteralPart) {
-  // Segment shape is "{id}a}}": after parsing {id}, we build a literal part with 'a',
-  // then the escaped close brace should append to that same literal part.
-  router.setPath(http::Method::GET, "/mix/{id}a}}/end", OkHandler);
-
-  auto res = router.match(http::Method::GET, "/mix/42a}/end");
-  ASSERT_NE(res.requestHandler(), nullptr);
-  ASSERT_EQ(res.pathParams().size(), 1U);
-  EXPECT_EQ(res.pathParams()[0].key, "id");
-  EXPECT_EQ(res.pathParams()[0].value, "42");
-}
-
-TEST_F(RouterTest, EscapedCloseBraceCreatesLiteralWhenNoPreviousPart) {
-  // Segment starts with escaped close brace before any literal/param part exists.
-  // This should exercise the short-circuit path where !paramParts.empty() is false.
-  router.setPath(http::Method::GET, "/mix/}}{id}/end", OkHandler);
-
-  auto res = router.match(http::Method::GET, "/mix/}42/end");
-  ASSERT_NE(res.requestHandler(), nullptr);
-  ASSERT_EQ(res.pathParams().size(), 1U);
-  EXPECT_EQ(res.pathParams()[0].key, "id");
-  EXPECT_EQ(res.pathParams()[0].value, "42");
+    auto res = localRouter.match(http::Method::GET, tc.path);
+    ASSERT_NE(res.requestHandler(), nullptr);
+    ASSERT_EQ(res.pathParams().size(), 1U);
+    EXPECT_EQ(res.pathParams()[0].key, tc.key);
+    EXPECT_EQ(res.pathParams()[0].value, "42");
+  }
 }
 
 TEST_F(RouterTest, MixedNamedAndUnnamedParamsDisallowed) {
@@ -1257,24 +1221,29 @@ TEST_F(RouterTest, AsteriskWithPatternIsNotWildcard) {
   EXPECT_NE(res.requestHandler(), nullptr);
 }
 
-TEST_F(RouterTest, AsteriskPartOfPatternName) {
-  // Double asterisks with param in a pattern route
-  router.setPath(http::Method::GET, "/pattern/{pa**rt}/end", OkHandler);
-  auto res = router.match(http::Method::GET, "/pattern/pa*rt/end");
-  EXPECT_NE(res.requestHandler(), nullptr);
-  ASSERT_EQ(res.pathParams().size(), 1U);
-  EXPECT_EQ(res.pathParams()[0].key, "pa**rt");
-  EXPECT_EQ(res.pathParams()[0].value, "pa*rt");
-}
+TEST_F(RouterTest, AsterisksInParamNamesAreNotWildcards) {
+  struct Case {
+    std::string_view pattern;
+    std::string_view path;
+    std::string_view key;
+    std::string_view value;
+  };
+  static constexpr Case kCases[]{
+      {"/pattern/{pa**rt}/end", "/pattern/pa*rt/end", "pa**rt", "pa*rt"},
+      {"/pattern/{*}/end", "/pattern/salut/end", "*", "salut"},
+      {"/items/{id*}/detail", "/items/xyz/detail", "id*", "xyz"},
+  };
+  for (const Case& tc : kCases) {
+    SCOPED_TRACE(tc.pattern);
+    Router localRouter;
+    EXPECT_NO_THROW(localRouter.setPath(http::Method::GET, tc.pattern, OkHandler));
 
-TEST_F(RouterTest, ParamNameIsAsteriskOnly) {
-  // Double asterisks with param in a pattern route
-  router.setPath(http::Method::GET, "/pattern/{*}/end", OkHandler);
-  auto res = router.match(http::Method::GET, "/pattern/salut/end");
-  EXPECT_NE(res.requestHandler(), nullptr);
-  ASSERT_EQ(res.pathParams().size(), 1U);
-  EXPECT_EQ(res.pathParams()[0].key, "*");
-  EXPECT_EQ(res.pathParams()[0].value, "salut");
+    auto res = localRouter.match(http::Method::GET, tc.path);
+    ASSERT_NE(res.requestHandler(), nullptr);
+    ASSERT_EQ(res.pathParams().size(), 1U);
+    EXPECT_EQ(res.pathParams()[0].key, tc.key);
+    EXPECT_EQ(res.pathParams()[0].value, tc.value);
+  }
 }
 
 TEST_F(RouterTest, WildcardConflictAndTerminalRules) {
@@ -1325,16 +1294,6 @@ TEST_F(RouterTest, StaticPrefixWithoutWildcardReturnsNoHandlerOnMismatch) {
   auto res = router.match(http::Method::GET, "/files/qux");
   EXPECT_EQ(res.requestHandler(), nullptr);
   EXPECT_FALSE(res.methodNotAllowed());
-}
-
-TEST_F(RouterTest, AsteriskAllowedInParamName) {
-  // Parameter names may include '*' characters and should not be treated as wildcards
-  EXPECT_NO_THROW(router.setPath(http::Method::GET, "/items/{id*}/detail", OkHandler));
-  auto res = router.match(http::Method::GET, "/items/xyz/detail");
-  ASSERT_NE(res.requestHandler(), nullptr);
-  ASSERT_EQ(res.pathParams().size(), 1U);
-  EXPECT_EQ(res.pathParams()[0].key, "id*");
-  EXPECT_EQ(res.pathParams()[0].value, "xyz");
 }
 
 TEST_F(RouterTest, AllowedMethodsAndGlobalFallback) {
@@ -2242,18 +2201,32 @@ TEST_F(RouterTest, ClampConfigsFollowGlobalLimitChanges) {
 
 // --- Route Constraint Integration Tests ---
 
-TEST_F(RouterTest, ConstraintBasicNumericParam) {
-  router.setPath(http::Method::GET, "/users/{id:[0-9]+}", OkHandler);
+TEST_F(RouterTest, ConstrainedParam) {
+  struct Case {
+    std::string_view pattern;
+    std::string_view matchingPath;
+    std::string_view key;
+    std::string_view value;
+    std::string_view rejectedPath;
+  };
+  static constexpr Case kCases[]{
+      {"/users/{id:[0-9]+}", "/users/123", "id", "123", "/users/abc"},
+      {"/kv/{pair:[a-z]+:[0-9]+}", "/kv/abc:123", "pair", "abc:123", "/kv/abc-123"},
+      {"/v/{:[0-9]+}", "/v/42", "0", "42", "/v/abc"},
+  };
+  for (const Case& tc : kCases) {
+    SCOPED_TRACE(tc.pattern);
+    Router localRouter;
+    localRouter.setPath(http::Method::GET, tc.pattern, OkHandler);
 
-  auto res = router.match(http::Method::GET, "/users/123");
-  ASSERT_NE(res.requestHandler(), nullptr);
-  ASSERT_EQ(res.pathParams().size(), 1U);
-  EXPECT_EQ(res.pathParams()[0].key, "id");
-  EXPECT_EQ(res.pathParams()[0].value, "123");
+    auto res = localRouter.match(http::Method::GET, tc.matchingPath);
+    ASSERT_NE(res.requestHandler(), nullptr);
+    ASSERT_EQ(res.pathParams().size(), 1U);
+    EXPECT_EQ(res.pathParams()[0].key, tc.key);
+    EXPECT_EQ(res.pathParams()[0].value, tc.value);
 
-  // Non-numeric should not match
-  auto res2 = router.match(http::Method::GET, "/users/abc");
-  EXPECT_EQ(res2.requestHandler(), nullptr);
+    EXPECT_EQ(localRouter.match(http::Method::GET, tc.rejectedPath).requestHandler(), nullptr);
+  }
 }
 
 TEST_F(RouterTest, ConstraintMultipleParamChildrenDifferentConstraints) {
@@ -2350,19 +2323,6 @@ TEST_F(RouterTest, ConstraintUUIDPattern) {
   EXPECT_EQ(res2.requestHandler(), nullptr);
 }
 
-TEST_F(RouterTest, ConstraintPatternCanContainAdditionalColon) {
-  router.setPath(http::Method::GET, "/kv/{pair:[a-z]+:[0-9]+}", OkHandler);
-
-  auto res = router.match(http::Method::GET, "/kv/abc:123");
-  ASSERT_NE(res.requestHandler(), nullptr);
-  ASSERT_EQ(res.pathParams().size(), 1U);
-  EXPECT_EQ(res.pathParams()[0].key, "pair");
-  EXPECT_EQ(res.pathParams()[0].value, "abc:123");
-
-  auto res2 = router.match(http::Method::GET, "/kv/abc-123");
-  EXPECT_EQ(res2.requestHandler(), nullptr);
-}
-
 TEST_F(RouterTest, ConstraintFailureInMixedSegmentReturnsNoMatch) {
   router.setPath(http::Method::GET, "/mix/pre{id:[0-9]+}post", OkHandler);
 
@@ -2421,18 +2381,6 @@ TEST_F(RouterTest, ConstraintParamThenCatchAllSameNode) {
   auto nestedCatchAll = router.match(http::Method::GET, "/mix/alpha/beta");
   ASSERT_NE(nestedCatchAll.requestHandler(), nullptr);
   EXPECT_EQ((*nestedCatchAll.requestHandler())(dummyReq()).status(), http::StatusCodeAccepted);
-}
-
-TEST_F(RouterTest, ConstraintUnnamedParam) {
-  router.setPath(http::Method::GET, "/v/{:[0-9]+}", OkHandler);
-
-  auto res = router.match(http::Method::GET, "/v/42");
-  ASSERT_NE(res.requestHandler(), nullptr);
-  ASSERT_EQ(res.pathParams().size(), 1U);
-  EXPECT_EQ(res.pathParams()[0].value, "42");
-
-  auto res2 = router.match(http::Method::GET, "/v/abc");
-  EXPECT_EQ(res2.requestHandler(), nullptr);
 }
 
 TEST_F(RouterTest, ConstraintWithSubsequentPathSegments) {

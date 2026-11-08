@@ -234,6 +234,29 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeChunkedBody(ConnectionIt cn
     request._body = {bodyAndTrailers.data(), bodyLen};
   }
 
+  // The trailers are parsed here, once they are at their final place: the decompression above moves them, and merging
+  // their duplicates in place leaves bytes behind them that must not be parsed again.
+  assert(request._trailers.empty());  // emptied with the head of the request
+  char* const pTrailersEnd = bodyAndTrailers.end();
+  char* pTrailerLine = pTrailersEnd - state.pendingRequest.trailerLen;
+  while (pTrailerLine < pTrailersEnd) {
+    char* pLineEnd = SearchCRLF(pTrailerLine, pTrailersEnd);
+    assert(pLineEnd != pTrailersEnd && pLineEnd[1] == '\n');  // guaranteed by the validation of decodeTrailers
+
+    const auto [name, value] = http::ParseHeaderLineTrimValue(pTrailerLine, pLineEnd);
+    auto [it, inserted] = request._trailers.emplace(name, value);
+
+    // Same in-place merge as for the headers of the request.
+    if (!inserted &&
+        !http::MergeHeaderInPlace(request._trailers, it, value, _pCtx->sharedBuffers.buf, bodyAndTrailers.data(),
+                                  pTrailerLine, _pCtx->config.mergeUnknownRequestHeaders)) {
+      emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Invalid trailer headers");
+      return BodyDecodeStatus::Error;
+    }
+
+    pTrailerLine = pLineEnd + http::CRLF.size();
+  }
+
   consumedBytes = pos;
   return BodyDecodeStatus::Ready;
 }
@@ -253,10 +276,9 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeTrailers(ConnectionIt cnxIt
     return BodyDecodeStatus::Ready;
   }
 
-  // Parse trailer headers - copy raw trailer data to bodyAndTrailers buffer
   std::size_t trailerEndPos;  // Track end position for later
 
-  // First pass: validate trailers and find the end position
+  // Validate trailers and find the end position
   std::size_t tempPos = pos;
   while (true) {
     const auto lineEndIt = SearchCRLF(pInputBeg + tempPos, pLast);
@@ -310,45 +332,13 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeTrailers(ConnectionIt cnxIt
     tempPos = static_cast<std::size_t>(lineEndIt - pInputBeg) + http::CRLF.size();
   }
 
-  // Copy all trailer data at once to avoid reallocation during parsing
+  // Copy all trailer data at once, behind the body (parsed by decodeChunkedBody, once the body is decoded)
   const std::size_t trailerLen = trailerEndPos - pos - http::CRLF.size();  // Exclude final CRLF
   bodyAndTrailers.append(pTrailerStart, trailerLen);
   state.pendingRequest.trailerLen = SafeCast<uint32_t>(trailerLen);
 
-  // Second pass: parse trailers from copied data in bodyAndTrailers
-  char* pTrailerDataEnd = bodyAndTrailers.data() + bodyAndTrailers.size();
-  char* pTrailerDataBeg = pTrailerDataEnd - trailerLen;
-
-  if (!parseHeadersUnchecked(state.request._trailers, bodyAndTrailers.data(), pTrailerDataBeg, pTrailerDataEnd)) {
-    emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Invalid trailer headers");
-    return BodyDecodeStatus::Error;
-  }
-
   pos = trailerEndPos;
   return BodyDecodeStatus::Ready;
-}
-
-bool Http1Pipeline::parseHeadersUnchecked(SvToSvMap& headersMap, char* bufferBeg, char* first, char* last) {
-  headersMap.clear();
-  while (first < last) {
-    // Find line end
-    char* pLineEnd = SearchCRLF(first, last);
-    assert(pLineEnd != last && pLineEnd[1] == '\n');  // guaranteed by the validating pass that built this buffer
-
-    // No check is made on header line format here
-    auto [headerName, headerValue] = http::ParseHeaderLineTrimValue(first, pLineEnd);
-
-    auto [it, inserted] = headersMap.emplace(headerName, headerValue);
-
-    // Store trailer using the in-place merge helper so semantics/pointer updates match request parsing.
-    if (!inserted && !http::MergeHeaderInPlace(headersMap, it, headerValue, _pCtx->sharedBuffers.buf, bufferBeg, first,
-                                               _pCtx->config.mergeUnknownRequestHeaders)) {
-      return false;
-    }
-
-    first = pLineEnd + http::CRLF.size();
-  }
-  return true;
 }
 
 }  // namespace aeronet::internal

@@ -351,3 +351,115 @@ Acceptance Criteria
 - Protocol correctness under simulated faults: no state corruption, proper error propagation, and graceful teardown.
 - No resource leaks (sockets, memory) in faulted runs.
 - Deterministic unit tests reproduce failures locally with a seed and do not rely on privileged resources.
+
+## Test suite reduction and speed
+
+Status: a first pass was done on 2026-11-08 (6024 -> 5888 tests, about 1,600 lines less, full `ctest -j12` from 11.4 s to 9.3 s, no covered line lost). Nothing below is implemented yet. Numbers are from that date, in a Debug build under `ctest -j12`. The slowest binaries are then `http-core_test` (9.2 s), `http-client-core_test` (7.3 s) and `http-client-tls-e2e_test` (5.6 s).
+
+Goals
+
+- Every test binary well under 10 s in Debug.
+- Each behaviour tested once, at the layer where it is cheapest, plus one integration scenario proving the wiring.
+- No loss of coverage, nor of asserted behaviour.
+
+Rules for a reduction pass
+
+- Prefer merging into a table over deleting: tests going through the same code often assert different values (parsers, formatters, validators). Delete only literal repeats and tests whose assertions are a subset of another test.
+- Compare line and branch coverage per file before and after (lcov export of the coverage build): totals can hide a line lost here and gained there. The usual loss is an rvalue overload, when a merge keeps only the lvalue call.
+- A few branches differing between two runs is noise (timing-dependent paths, `compare_exchange_weak`): run twice before investigating.
+- The docs link to tests by name: search `docs/` for each removed name.
+- Merged tests on a shared server keep its config and route leaks: run the whole binary, not only the merged test.
+- Do not shorten the timings of tests tuned for loaded CI runners without a deterministic replacement.
+
+### Finding candidates
+
+- **Near-duplicate bodies**: extract every test body, replace the literals by placeholders and cluster by Jaccard similarity of 4-token shingles (threshold 0.8). Result: 398 clusters, 1336 tests, 16,373 lines.
+- **Per-test edge coverage**: a throwaway tree built with `-O0 -g1 -fsanitize-coverage=edge,inline-bool-flag,pc-table` and a gtest listener linked in each test executable, resetting the flags in `OnTestStart` and dumping them in `OnTestEnd`, gives the library edges reached by each test (about 5 minutes in RAM). Edges are needed because source-based coverage regions can be differences of counters, which makes per-test subsets wrong. Pitfalls: the allowlist needs `fun:*` on top of its `src:` lines; `-z defs` must be dropped so that the shared libraries can reference the callbacks defined by the executable; a module is identified with `dladdr` on its flags, not on its first PC (an interposed comdat function points to another module); only the edges of library sources count (symbolize the function entries).
+- 3904 of 6023 tests had no edge of their own at the first measurement. That only ranks candidates: combine it with the clusters and read the assertions.
+
+### Remaining duplicated tests
+
+| Test file | Lines in clusters | What to merge |
+| --- | --- | --- |
+| `http2-protocol-handler_test.cpp` | 1633 | `StreamingHandler*` single-request variants, file payloads (`LargeFilePayloadFlowControlledSending`, `FilePayloadExactlyFillsInitialWindow`), CORS (`*WithCorsApplied`, `*MiddlewareShortCircuitWithCors`, `CorsPreflight*`), `Options*` / `TraceReturns405InHttp2`, `PerRouteMaxHeaderBytes*` and `PerRouteMaxBodyBytes*` pairs, `RequestTrailers*Rejected`, `*Http2Disable*Returns404`. Keep the `AsyncHandler*DeferWork*` tests, which have many unique edges. |
+| `tests/http-core_test.cpp` | 664 | `HttpResponseWriterFailures` (`FileAfterWriteBody`, `WriteBodyWithFileActive`, `ContentLength*`, `ModifyAfterHeadersSent`), `HttpStreaming.SendFile*`, `HttpCorsDetailed.Preflight*`, `HttpCorsIntegration.Streaming*`, `HttpStreamingHeadContentLength.*`, `HttpHeaderTimeout.Emits408*`, `HttpRateLimit.*` pairs. |
+| `router_test.cpp` | 576 | `CatchAll*`, `Overwrite*`, `AllowedMethods*`, `ConstraintUnconstrainedFallback*`, patterns that must throw (`*Throws`, `*Disallowed`). |
+| `http-client-core_test.cpp` | 537 | `FollowsRedirect`, `FollowsMovedPermanently`, `FollowsTemporaryRedirect`, `FollowsPermanentRedirect`, `StatusRetry*`, `HttpClientTrailerE2ETest.*`. |
+| `upgrade-handler_test.cpp` | 523 | `ValidateWebSocketUpgrade_*`: a table for extensions and deflate offers, one for subprotocols, one for rejected requests. |
+| `hpack_test.cpp` | 505 | The 21 decoding scenarios around invalid fields (`Rejects*`, `DuplicateIndexedHeaderForbidden`...), `EncodeNeverIndexed_*` / `EncodeWithoutIndexing_*`. |
+| `http2-connection_test.cpp` | 407 | The frame validation family (`*IsFrameSizeError`, `*IsProtocolError`, `*IsFlowControlError`): a table of frame bytes and expected error. `PriorityChain*`. |
+| `http-request-view_test.cpp` | 403 | `MergeConsecutiveHeaders*` / `MergeNonConsecutiveHeaders*`, the requests rejected on parsing, `MakeResponse*`. |
+| `static-file-handler_test.cpp` | 390 | `MultiRange*` (17 tests), `Conditional*`. |
+| `multipart-form-data_test.cpp` | 371 | The 24 rejected or accepted bodies: a table of body and expected outcome. |
+| `server-config-loader_test.cpp` | 362 | `RouterCorsPolicy*`, `*SaveConfig{Yaml,Json,Yml}`, `Duration*RoundTrip`, field mapping tests with identical edges. |
+| `tls-ticket-key-store_test.cpp` | 345 | `ProcessTicketFailsWhen*`, `LoadStaticKeys*`. |
+| `route-constraint_test.cpp` | 341 | The 33 regex and quantifier cases, the 9 malformed patterns. |
+| `tests/http-compression_test.cpp` | 335 | `DirectCompression_*`, negotiation results (`GzipChosenWhenHigherPreference`, `QValuesAffectSelection`...). |
+| `websocket-handler_test.cpp` | 310 | `Utf8*`, reserved opcodes, `*MessageTooLarge`, masked pings. |
+| `http-request_test.cpp` (client) | 309 | `ResolveRedirect*`: a table of base, location and result. |
+| `http-response_test.cpp` | 309 | `SendFilePayloadOffsetLength*`, `SendFileHead*`, `Body_OnMode_Bypasses*`, `Body_BelowMinBytes_NoDirectCompression` / `Body_OffMode_NoCompression`. |
+| `websocket-frame_test.cpp` | 307 | `Parse*` rejections, `HeaderSize*`. |
+| `http1-response-parser_test.cpp` | 300 | Rejected responses, `Connection` token lists. |
+| `tests/http2-core_test.cpp` | 294 | The 13 `Http2Streaming.*` single-handler tests. |
+| `tests/http-routing_test.cpp` | 279 | `AsyncHandler*WithBodyNotReady`, `AsyncReadBodyBeforeBody*`. |
+| `tests/http-additional_test.cpp` | 275 | `HandlerCanEmit*`, `EpollCtlMod*`, `EpollRdhup*` / `EpollHup*`. |
+| `tests/http-errors_test.cpp` | 263 | Tables already, whose drivers can be shared. |
+| `timestring_test.cpp` | 244 | Rejected dates and the formatting cases (identical edges, the values matter). |
+| `websocket-deflate_test.cpp` | 227 | `ParseDeflateOffer_*`, `BuildDeflateResponse_*`. |
+
+Other kinds of duplication:
+
+- **Across files** (19 clusters, 766 lines):
+  - `brotli-`, `zstd-` and `zlib-encoder-decoder_test.cpp` repeat the same scenarios per codec: typed tests.
+  - `http-client-core_test.cpp` and `http-client-http2-e2e_test.cpp`: scenarios parameterized on the protocol. `http-client-integration_test.cpp` also repeats basic ones.
+  - Header key and value validation in `http-client-config_test.cpp` and `http-server-config_test.cpp`.
+  - "Default config is valid" tests, repeated per config object.
+  - TLS version parsing in `tls-config_test.cpp` and `server-config-loader_test.cpp`.
+- **Across layers**: behaviours tested in full in both a unit and an integration test can keep one integration scenario: Range and conditional requests (`HttpRangeStatic`, `HttpRangeMulti` and `static-file-handler_test.cpp`), CORS (`HttpCorsDetailed`, `cors-policy_test.cpp` and the HTTP/2 handler tests), HTTPS redirect, request parsing errors.
+- **HTTP/1.1 and HTTP/2 pairs**: behaviours tested separately in `http-core_test` and `http2-core_test` can move to the scenarios of `tests/http-protocol-parity_test.cpp`, which run on both protocols.
+- **Identical edges, values that matter**: `websocket-compress_test.cpp` (groups of 13 and 9 tests), `tchars_test.cpp`, `base64_test.cpp`, `mergeable-headers_test.cpp`, `file-sendfile_test.cpp`: tables, without dropping cases.
+
+### Repeated boilerplate
+
+- `http2-protocol-handler_test.cpp`: 168 `Http2ProtocolLoopback` setups, 222 `pumpClientToServer()` calls, 38 identical default routes and 22 hand-built pseudo-header blocks. A helper that sends a list of pseudo-headers and pumps both ways would shorten most tests.
+- `RequestOptions` + `requestOrThrow` + `parseResponseOrThrow` (74 uses in `http-core_test`, 20 in `http-routing_test`): one helper returning the parsed response.
+- `ClientConnection` + `sendAll` + `recvUntilClosed` (86 connections in `http-core_test`, 77 in `http-additional_test`, 33 in `http-errors_test`): `test::sendAndCollect` when the socket is not used afterwards. The first pass only rewrote the 30 exact matches.
+- `StaticFileHandlerTest`: the sequence of `buildReqWithHeaders`, `setHead` and handler call, in each test.
+- One convention for table tests: `SCOPED_TRACE` loops are lighter, `TEST_P` (used in 7 files only) can filter and report each case.
+
+### Slow tests
+
+Dead waits, safe to remove:
+
+- `test::recvWithTimeout` does not stop at an EOF received before a complete head: it spins until its timeout. It should return on `recv() == 0`.
+- 81 calls use its default 500 ms timeout without an expected size (20 in `http-core_test`, 18 in `http-errors_test`, 11 in `websocket-integration_test`): each one not reaching a complete response waits the whole timeout.
+- `recvWithTimeout(fd, 1000ms)` before a `WaitForPeerClose`, whatever is received: `HttpResponseDispatchErrors.QueueDataTransportError`, `HttpResponseDispatchErrors.FlushOutboundTransportError`, `Http1WriterTransport.WriteBodyReturnsFalseAfterTransportError` (1 s each). `RecvUntilEnd` gives the data and the end in one call. Same for `HttpTlsNegative.PlainHttpToTlsPortRejected` (0.5 s).
+- Private servers on the default `pollInterval` of 500 ms, whose stop waits for a whole poll: six tests of `http-server-lifecycle_test` sit at exactly 0.5 s, `HttpServerMove.MoveAfterCompressingKeepsCompressing` (three servers) at 1.5 s, and probably `HttpTlsMoveAlpn.*`. Use `withPollInterval` unless the poll interval is what is tested.
+- Plateaus not explained yet: 0.25 s (`HttpRouting.AsyncHandlerThrowsWithBodyNotReady`, `HttpRouting.AsyncHandlerNonStdExceptionWithBodyNotReady`, `HttpClientTlsE2ETest.GetOverTlsWithoutVerification`, `HttpClientTlsErrorTest.PartialClientCertificateFileConfigurationIsIgnored`, `HttpClientMtlsTest.RejectsClientWithoutCert`, `Http2ConnectTest.WildcardAllowlistAllowsTarget`) and 0.5 s (`Http2ConnectTest.DnsFailureReturns502`).
+
+Waits for a negative outcome:
+
+- `TunnelResolverTest.CancelDropsQueuedResolutions` (1.5 s) waits its whole 1500 ms bound for resolutions that must never complete: wait for the last resolution in progress instead. To check as well: `TunnelResolverTest.DestructionDoesNotWaitForResolutionsInProgress` (1.25 s).
+
+Waits for real time, needing an injectable clock or a sub-second interval:
+
+- `HttpTlsHandshakeCallback.RefillsRateLimitAfterInterval` (1.8 s, whole-second token bucket).
+- `TlsTicketKeyStoreTest.RotateExceedsMaxKeysPopsBack` (1.1 s) and `HttpTlsSessionTickets.AutoRotationRefreshesPrimaryKeyAndRejectsUnknown` (1 s), rotation intervals in whole seconds.
+- `HttpDate.ChangesAcrossSecondBoundary` (up to 1 s).
+
+Real work, to reduce:
+
+- `TlsContextTest.EveryAllocationFailureDuringConstructionThrowsCleanly` (4.1 s, the slowest test): one context construction per allocation, with a smaller certificate set for example.
+- `HttpCodecCompression.TryCompressResponseStressWithDifferentScenarios` (1.7 s): seven nested dimensions, pairwise combinations would do.
+- `WebSocketUtf8.EveryLeadWithBoundaryContinuations`, `RandomMutations` and `EveryBytePair` (2.9 s together): exhaustive, a smaller sample in Debug.
+- Payload sizes of `ProtocolParityFastBrotli.LargeIncompressibleBodiesAreCompressedWhole` (0.8 s twice), `HttpClientSinkE2ETest.ContentCodedBodiesAreDecodedAsTheyArrive` (0.7 s) and `HttpClientCompressionE2E.LargeIncompressibleDirectlyCompressedRequestBody` (0.6 s).
+
+Tuned to real timing, to leave alone without deterministic hooks: `ZerocopyMode.*`, `HttpBackpressure.*`, `HttpKeepAlive.*` (most of the remaining time of `http-core_test`), `HttpConnectDefaultConfig.SlowResolutionDoesNotBlockTheEventLoop`, `WebSocketTimeouts.PongsKeepIdleConnectionOpen`, `HttpClientErrorE2ETest.InactivityTimeoutLetsASteadySlowResponseComplete`, `Http2Core.PingKeepAliveClosesTheConnectionOfADeadPeer`.
+
+### Test infrastructure
+
+- **Commit the tools**: the near-duplicate clustering and the per-test edge coverage, in `scripts/`, so that each pass does not have to rebuild them.
+- **Duration budget in CI**: from the gtest JSON output (`GTEST_OUTPUT`), warn when a binary exceeds 10 s in Debug.
+- **Test isolation**: the binaries sharing one server leak config and routes between tests (71 config updates on the shared server of `http-core_test` alone), so `--gtest_shuffle` and `--gtest_repeat` fail spuriously. `ScopedConfigUpdate`, or a reset of config and routes in a fixture `SetUp`, would remove the dependency on test order.
+- **Sharding**: once isolated, the largest binaries can run in several processes (`GTEST_TOTAL_SHARDS`): the longest binary sets the wall time under `ctest -j`.
+- **Split the largest files by theme**: `http2-protocol-handler_test.cpp` (7047 lines), `tests/http-core_test.cpp` (6559), `http-response_test.cpp` (5914), `http-client-core_test.cpp` (5221), `http2-connection_test.cpp` (4521). Each file is one translation unit recompiled at each edit.

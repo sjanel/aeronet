@@ -27,6 +27,7 @@
 #include <initializer_list>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -225,11 +226,8 @@ TEST(HttpHeadersCustom, ForwardsSingleAndMultipleCustomHeaders) {
     resp.body("B");
     return resp;
   });
-  test::ClientConnection cc(ts.port());
-  NativeHandle fd = cc.fd();
-  std::string req = "GET /h HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
+  std::string resp =
+      test::sendAndCollect(ts.port(), "GET /h HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 201 Created"));
   ASSERT_TRUE(resp.contains("x-one: 1"));
   ASSERT_TRUE(resp.contains("x-two: two"));
@@ -244,11 +242,8 @@ TEST(HttpHeadersCustom, LocationHeaderAllowed) {
     resp.location("/new").body("");
     return resp;
   });
-  test::ClientConnection cc(ts.port());
-  NativeHandle fd = cc.fd();
-  std::string req = "GET /h HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
+  std::string resp =
+      test::sendAndCollect(ts.port(), "GET /h HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 302 Found"));
   ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Location, "/new")));
 }
@@ -263,11 +258,8 @@ TEST(HttpHeadersCustom, LowercaseReplacementKeepsSingleLine) {
     resp.body("b");
     return resp;
   });
-  test::ClientConnection cc(ts.port());
-  NativeHandle fd = cc.fd();
-  std::string req = "GET /h HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
-  test::sendAll(fd, req);
-  std::string responseText = test::recvUntilClosed(fd);
+  std::string responseText =
+      test::sendAndCollect(ts.port(), "GET /h HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
   ASSERT_TRUE(responseText.contains("x-case: three")) << responseText;
   EXPECT_FALSE(responseText.contains("X-Case:")) << responseText;
   EXPECT_EQ(responseText.find("x-case: three"), responseText.rfind("x-case: three")) << responseText;
@@ -1290,9 +1282,8 @@ TEST(HttpKeepAlive10, DefaultCloseWithoutHeader) {
   // Second request should not yield another response (connection closed). We attempt to read after sending.
   std::string_view req2 = "GET /h2 HTTP/1.0\r\nhost: x\r\n\r\n";
   test::sendAll(fd, req2);
-  // Expect no data (connection should be closed) -- use test helper which waits briefly
-  auto n2 = test::recvWithTimeout(fd);
-  EXPECT_TRUE(n2.empty());
+  // Expect no data (connection should be closed)
+  EXPECT_TRUE(test::recvWithTimeout(fd, std::chrono::milliseconds{50}).empty());
 }
 
 TEST(HttpKeepAlive10, OptInWithHeader) {
@@ -2853,22 +2844,17 @@ TEST(HttpTrailers, BasicTrailer) {
     return req.makeResponse("OK");
   });
 
-  test::ClientConnection sock(port);
-  NativeHandle fd = sock.fd();
-
-  std::string req =
-      "POST /trailer HTTP/1.1\r\n"
-      "host: example.com\r\n"
-      "transfer-encoding: chunked\r\n"
-      "connection: close\r\n"
-      "\r\n"
-      "4\r\nWiki\r\n"
-      "5\r\npedia\r\n"
-      "0\r\n"
-      "x-checksum: abc123\r\n"
-      "\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
+  std::string resp = test::sendAndCollect(port,
+                                          "POST /trailer HTTP/1.1\r\n"
+                                          "host: example.com\r\n"
+                                          "transfer-encoding: chunked\r\n"
+                                          "connection: close\r\n"
+                                          "\r\n"
+                                          "4\r\nWiki\r\n"
+                                          "5\r\npedia\r\n"
+                                          "0\r\n"
+                                          "x-checksum: abc123\r\n"
+                                          "\r\n");
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
 }
 
@@ -2899,23 +2885,18 @@ TEST(HttpTrailers, MultipleTrailers) {
     return req.makeResponse("OK");
   });
 
-  test::ClientConnection sock(port);
-  NativeHandle fd = sock.fd();
-
-  std::string req =
-      "POST /multi HTTP/1.1\r\n"
-      "host: example.com\r\n"
-      "transfer-encoding: chunked\r\n"
-      "connection: close\r\n"
-      "\r\n"
-      "4\r\ntest\r\n"
-      "0\r\n"
-      "x-checksum: xyz789\r\n"
-      "x-timestamp: 2025-10-20T12:00:00Z\r\n"
-      "x-custom-trailer: value123\r\n"
-      "\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
+  std::string resp = test::sendAndCollect(port,
+                                          "POST /multi HTTP/1.1\r\n"
+                                          "host: example.com\r\n"
+                                          "transfer-encoding: chunked\r\n"
+                                          "connection: close\r\n"
+                                          "\r\n"
+                                          "4\r\ntest\r\n"
+                                          "0\r\n"
+                                          "x-checksum: xyz789\r\n"
+                                          "x-timestamp: 2025-10-20T12:00:00Z\r\n"
+                                          "x-custom-trailer: value123\r\n"
+                                          "\r\n");
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
 }
 
@@ -2959,142 +2940,83 @@ TEST(HttpTrailers, TrailersDoNotLeakAcrossKeepAliveRequests) {
   EXPECT_TRUE(second.contains("trailers=0")) << second;  // must NOT inherit the first request's trailer
 }
 
-// Empty trailers (just zero chunk and terminating CRLF)
-TEST(HttpTrailers, NoTrailers) {
-  ts.router().setDefault([](const HttpRequestView& req) {
-    EXPECT_EQ(req.body(), "data");
-    EXPECT_TRUE(req.trailers().empty());
-    return req.makeResponse("OK");
-  });
+namespace {
 
-  test::ClientConnection sock(port);
-  NativeHandle fd = sock.fd();
-
-  std::string req =
-      "POST /notrailer HTTP/1.1\r\n"
-      "host: example.com\r\n"
-      "transfer-encoding: chunked\r\n"
-      "connection: close\r\n"
-      "\r\n"
-      "4\r\ndata\r\n"
-      "0\r\n"
-      "\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
+// A chunked POST whose only chunk is 'test', followed by the given trailer lines.
+std::string SendChunkedRequestWithTrailers(std::string_view trailerLines) {
+  return test::sendAndCollect(port, std::format("POST /trailers HTTP/1.1\r\nhost: example.com\r\n"
+                                                "transfer-encoding: chunked\r\nconnection: close\r\n\r\n"
+                                                "4\r\ntest\r\n0\r\n{}\r\n",
+                                                trailerLines));
 }
 
-// Trailer with whitespace trimming
-TEST(HttpTrailers, TrailerWhitespaceTrim) {
+}  // namespace
+
+TEST(HttpTrailers, RequestsWithoutTrailers) {
   ts.router().setDefault([](const HttpRequestView& req) {
-    auto trailer = req.trailers().find("x-data");
-    EXPECT_NE(trailer, req.trailers().end());
-    if (trailer != req.trailers().end()) {
-      EXPECT_EQ(trailer->second, "trimmed");  // should be trimmed
+    return req.makeResponse(std::format("{}|trailers={}", req.body(), req.trailers().size()));
+  });
+
+  for (const std::string_view raw :
+       {std::string_view("POST /t HTTP/1.1\r\nhost: e\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n"
+                         "4\r\ntest\r\n0\r\n\r\n"),
+        std::string_view("POST /t HTTP/1.1\r\nhost: e\r\ncontent-length: 4\r\nconnection: close\r\n\r\ntest")}) {
+    const std::string resp = test::sendAndCollect(port, raw);
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+    EXPECT_TRUE(resp.ends_with("test|trailers=0")) << resp;
+  }
+}
+
+TEST(HttpTrailers, ValidTrailersAreParsed) {
+  ts.router().setDefault([](const HttpRequestView& req) {
+    // All the trailers, in a stable order: the bytes left behind a merged duplicate must not add any.
+    const std::map<std::string_view, std::string_view> sortedTrailers(req.trailers().begin(), req.trailers().end());
+    std::string out;
+    for (const auto& [name, value] : sortedTrailers) {
+      out.append(name).append("=").append(value).append(";");
     }
-    return req.makeResponse("OK");
+    if (req.trailerValue("x-checksum")) {
+      out.append("found");
+    }
+    return req.makeResponse(out);
   });
 
-  test::ClientConnection sock(port);
-  NativeHandle fd = sock.fd();
-
-  std::string req =
-      "POST /trim HTTP/1.1\r\n"
-      "host: example.com\r\n"
-      "transfer-encoding: chunked\r\n"
-      "connection: close\r\n"
-      "\r\n"
-      "2\r\nhi\r\n"
-      "0\r\n"
-      "x-data:   trimmed  \r\n"
-      "\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
+  struct Case {
+    std::string_view trailerLines;
+    std::string_view expected;
+  };
+  static constexpr Case kCases[]{
+      {"x-data:   trimmed  \r\n", "x-data=trimmed;"},
+      {"X-Empty:\r\n", "x-empty=;"},
+      {"x-checksum: test123\r\n", "x-checksum=test123;found"},
+      {"accept: text/html\r\naccept: application/json\r\n", "accept=text/html,application/json;"},  // list merge
+      {"accept: a\r\nx-data: 1\r\naccept: b\r\nx-checksum: 2\r\n", "accept=a,b;x-checksum=2;x-data=1;found"},
+      // The end of a merged duplicate is not a line of its own, even when it looks like a (forbidden) trailer.
+      {"accept: a\r\naccept:   host:evil\r\n", "accept=a,host:evil;"},
+  };
+  for (const Case& tc : kCases) {
+    SCOPED_TRACE(tc.trailerLines);
+    const std::string resp = SendChunkedRequestWithTrailers(tc.trailerLines);
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+    EXPECT_TRUE(resp.ends_with(std::format("\r\n\r\n{}", tc.expected))) << resp;
+  }
 }
 
-// Forbidden trailer: Transfer-Encoding
-TEST(HttpTrailers, ForbiddenTrailerTransferEncoding) {
-  ts.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("FAIL"); });
-
-  test::ClientConnection sock(port);
-  NativeHandle fd = sock.fd();
-
-  std::string req =
-      "POST /forbidden HTTP/1.1\r\n"
-      "host: example.com\r\n"
-      "transfer-encoding: chunked\r\n"
-      "\r\n"
-      "4\r\ntest\r\n"
-      "0\r\n"
-      "transfer-encoding: chunked\r\n"
-      "\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400"));
-}
-
-// Forbidden trailer: Content-Length
-TEST(HttpTrailers, ForbiddenTrailerContentLength) {
-  ts.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("FAIL"); });
-
-  test::ClientConnection sock(port);
-  NativeHandle fd = sock.fd();
-
-  std::string req =
-      "POST /forbidden HTTP/1.1\r\n"
-      "host: example.com\r\n"
-      "transfer-encoding: chunked\r\n"
-      "\r\n"
-      "4\r\ntest\r\n"
-      "0\r\n"
-      "content-length: 100\r\n"
-      "\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400"));
-}
-
-// Forbidden trailer: Host
-TEST(HttpTrailers, ForbiddenTrailerHost) {
-  ts.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("FAIL"); });
-
-  test::ClientConnection sock(port);
-  NativeHandle fd = sock.fd();
-
-  std::string req =
-      "POST /forbidden HTTP/1.1\r\n"
-      "host: example.com\r\n"
-      "transfer-encoding: chunked\r\n"
-      "\r\n"
-      "4\r\ntest\r\n"
-      "0\r\n"
-      "host: evil.com\r\n"
-      "\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400"));
-}
-
-// Forbidden trailer: Authorization
-TEST(HttpTrailers, ForbiddenTrailerAuthorization) {
+TEST(HttpTrailers, InvalidTrailersAreRejected) {
   ts.resetRouterAndGet().setDefault([](const HttpRequestView& req) { return req.makeResponse("FAIL"); });
 
-  test::ClientConnection sock(port);
-  NativeHandle fd = sock.fd();
-
-  std::string req =
-      "POST /forbidden HTTP/1.1\r\n"
-      "host: example.com\r\n"
-      "transfer-encoding: chunked\r\n"
-      "\r\n"
-      "4\r\ntest\r\n"
-      "0\r\n"
-      "authorization: Bearer token123\r\n"
-      "\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400"));
+  for (const std::string_view trailerLines :
+       {// Forbidden in a trailer section.
+        "transfer-encoding: chunked\r\n", "content-length: 100\r\n", "host: evil.com\r\n",
+        "authorization: Bearer token123\r\n",
+        // Not a field line.
+        "MalformedTrailer\r\n",
+        // A singleton field: keeping one of them could differ from the one a proxy in front keeps.
+        "from: a@example.com\r\nfrom: b@example.com\r\n"}) {
+    SCOPED_TRACE(trailerLines);
+    const std::string resp = SendChunkedRequestWithTrailers(trailerLines);
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
+  }
 }
 
 // Trailer size exceeds limit
@@ -3126,119 +3048,6 @@ TEST(HttpTrailers, TrailerSizeLimit) {
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 431"));
 }
 
-// Trailer with empty value
-TEST(HttpTrailers, TrailerEmptyValue) {
-  ts.router().setDefault([](const HttpRequestView& req) {
-    auto trailer = req.trailers().find("x-empty");
-    EXPECT_NE(trailer, req.trailers().end());
-    if (trailer != req.trailers().end()) {
-      EXPECT_TRUE(trailer->second.empty());
-    }
-    return req.makeResponse("OK");
-  });
-
-  test::ClientConnection sock(port);
-  NativeHandle fd = sock.fd();
-
-  std::string req =
-      "POST /empty HTTP/1.1\r\n"
-      "host: example.com\r\n"
-      "transfer-encoding: chunked\r\n"
-      "connection: close\r\n"
-      "\r\n"
-      "4\r\ntest\r\n"
-      "0\r\n"
-      "X-Empty:\r\n"
-      "\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
-}
-
-// Case-insensitive trailer lookup
-TEST(HttpTrailers, TrailerCaseInsensitive) {
-  ts.router().setDefault([](const HttpRequestView& req) {
-    // Should be able to find with different case
-    auto lower = req.trailerValue("x-checksum");
-
-    EXPECT_TRUE(lower);
-
-    EXPECT_EQ(lower.value_or(""), "test123");
-    return HttpResponse("OK");
-  });
-
-  test::ClientConnection sock(port);
-  NativeHandle fd = sock.fd();
-
-  std::string req =
-      "POST /case HTTP/1.1\r\n"
-      "host: example.com\r\n"
-      "transfer-encoding: chunked\r\n"
-      "connection: close\r\n"
-      "\r\n"
-      "4\r\ntest\r\n"
-      "0\r\n"
-      "x-checksum: test123\r\n"
-      "\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
-}
-
-// Duplicate trailers that should be merged using list semantics (comma)
-TEST(HttpTrailers, DuplicateMergeTrailers) {
-  ts.router().setDefault([](const HttpRequestView& req) {
-    // Accept header should be merged with a comma separator
-    auto it = req.trailers().find("accept");
-    EXPECT_NE(it, req.trailers().end());
-    if (it != req.trailers().end()) {
-      EXPECT_EQ(it->second, "text/html,application/json");
-    }
-    return HttpResponse("OK");
-  });
-
-  test::ClientConnection sock(port);
-  NativeHandle fd = sock.fd();
-
-  std::string req =
-      "POST /dupmerge HTTP/1.1\r\n"
-      "host: example.com\r\n"
-      "transfer-encoding: chunked\r\n"
-      "connection: close\r\n"
-      "\r\n"
-      "4\r\ntest\r\n"
-      "0\r\n"
-      "accept: text/html\r\n"
-      "accept: application/json\r\n"
-      "\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
-}
-
-// Duplicate singleton trailers are rejected: keeping one of them could differ from the one a proxy in front keeps
-TEST(HttpTrailers, DuplicateSingletonTrailersRejected) {
-  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("FAIL"); });
-
-  test::ClientConnection sock(port);
-  NativeHandle fd = sock.fd();
-
-  std::string req =
-      "POST /dupsingleton HTTP/1.1\r\n"
-      "host: example.com\r\n"
-      "transfer-encoding: chunked\r\n"
-      "connection: close\r\n"
-      "\r\n"
-      "4\r\ntest\r\n"
-      "0\r\n"
-      "from: a@example.com\r\n"
-      "from: b@example.com\r\n"
-      "\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400"));
-}
-
 // Unknown header duplicates when mergeUnknownRequestHeaders is disabled -> should be rejected
 TEST(HttpTrailers, UnknownHeaderNoMergeTrailers) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMergeUnknownRequestHeaders(false); });
@@ -3246,66 +3055,17 @@ TEST(HttpTrailers, UnknownHeaderNoMergeTrailers) {
   // "Handler should not be called when unknown-header duplicates are forbidden"
   ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("FAIL"); });
 
-  test::ClientConnection sock(port);
-  NativeHandle fd = sock.fd();
-
-  std::string req =
-      "POST /unknownnomerge HTTP/1.1\r\n"
-      "host: example.com\r\n"
-      "transfer-encoding: chunked\r\n"
-      "\r\n"
-      "4\r\ntest\r\n"
-      "0\r\n"
-      "x-experimental: a\r\n"
-      "x-experimental: b\r\n"
-      "\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
+  std::string resp = test::sendAndCollect(port,
+                                          "POST /unknownnomerge HTTP/1.1\r\n"
+                                          "host: example.com\r\n"
+                                          "transfer-encoding: chunked\r\n"
+                                          "\r\n"
+                                          "4\r\ntest\r\n"
+                                          "0\r\n"
+                                          "x-experimental: a\r\n"
+                                          "x-experimental: b\r\n"
+                                          "\r\n");
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 400"));
-}
-
-// Malformed trailer (no colon)
-TEST(HttpTrailers, MalformedTrailerNoColon) {
-  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("FAIL"); });
-
-  test::ClientConnection sock(port);
-  NativeHandle fd = sock.fd();
-
-  std::string req =
-      "POST /malformed HTTP/1.1\r\n"
-      "host: example.com\r\n"
-      "transfer-encoding: chunked\r\n"
-      "\r\n"
-      "4\r\ntest\r\n"
-      "0\r\n"
-      "MalformedTrailer\r\n"
-      "\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.starts_with("HTTP/1.1 400"));
-}
-
-// Non-chunked request should have empty trailers
-TEST(HttpTrailers, NonChunkedNoTrailers) {
-  ts.router().setDefault([](const HttpRequestView& req) {
-    EXPECT_EQ(req.body(), "test");
-    EXPECT_TRUE(req.trailers().empty());
-    return HttpResponse("OK");
-  });
-
-  test::ClientConnection sock(port);
-  NativeHandle fd = sock.fd();
-
-  std::string req =
-      "POST /fixed HTTP/1.1\r\n"
-      "host: example.com\r\n"
-      "content-length: 4\r\n"
-      "connection: close\r\n"
-      "\r\n"
-      "test";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
-  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
 }
 
 // Test streaming response with trailers
@@ -3367,55 +3127,23 @@ TEST(HttpResponseWriterTrailers, BasicStreamingTrailer) {
   }
 }
 
-// Test multiple trailers
-TEST(HttpResponseWriterTrailers, MultipleTrailers) {
+TEST(HttpResponseWriterTrailers, MultipleTrailersIncludingEmptyValue) {
   ts.router().setDefault([](const HttpRequestView&, HttpResponseWriter& writer) {
-    writer.status(200);
+    writer.status(http::StatusCodeOK);
     writer.writeBody("data");
     writer.trailerAddLine("x-checksum", "xyz789");
     writer.trailerAddLine("x-timestamp", "2025-10-20T12:00:00Z");
+    writer.trailerAddLine("x-empty", "");
     writer.trailerAddLine("x-custom", "value");
     writer.end();
   });
 
-  test::ClientConnection sock(port);
-  NativeHandle fd = sock.fd();
+  const std::string resp = test::sendAndCollect(port, "GET /multi HTTP/1.1\r\nhost: e\r\nconnection: close\r\n\r\n");
 
-  std::string req =
-      "GET /multi HTTP/1.1\r\n"
-      "host: example.com\r\n"
-      "connection: close\r\n"
-      "\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
-
-  EXPECT_TRUE(resp.contains("x-checksum: xyz789"));
-  EXPECT_TRUE(resp.contains("x-timestamp: 2025-10-20T12:00:00Z"));
-  EXPECT_TRUE(resp.contains("x-custom: value"));
-}
-
-// Test trailer with empty value
-TEST(HttpResponseWriterTrailers, EmptyValue) {
-  ts.router().setDefault([](const HttpRequestView&, HttpResponseWriter& writer) {
-    writer.status(http::StatusCodeOK);
-    writer.writeBody("test");
-    writer.trailerAddLine("x-empty", "");
-    writer.end();
-  });
-
-  test::ClientConnection sock(port);
-  NativeHandle fd = sock.fd();
-
-  std::string req =
-      "GET /empty HTTP/1.1\r\n"
-      "host: example.com\r\n"
-      "connection: close\r\n"
-      "\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
-
-  // Empty value should still create the header line
-  EXPECT_TRUE(resp.contains("x-empty:"));
+  EXPECT_TRUE(resp.contains("x-checksum: xyz789")) << resp;
+  EXPECT_TRUE(resp.contains("x-timestamp: 2025-10-20T12:00:00Z")) << resp;
+  EXPECT_TRUE(resp.contains("x-empty:")) << resp;  // an empty value still creates the header line
+  EXPECT_TRUE(resp.contains("x-custom: value")) << resp;
 }
 
 // Test trailer added after end() is ignored
@@ -3427,48 +3155,26 @@ TEST(HttpResponseWriterTrailers, AfterEndIgnored) {
     writer.trailerAddLine("x-late", "ignored");  // Should be ignored
   });
 
-  test::ClientConnection sock(port);
-  NativeHandle fd = sock.fd();
+  const std::string resp = test::sendAndCollect(port, "GET /late HTTP/1.1\r\nhost: e\r\nconnection: close\r\n\r\n");
 
-  std::string req =
-      "GET /late HTTP/1.1\r\n"
-      "host: example.com\r\n"
-      "connection: close\r\n"
-      "\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
-
-  // Late trailer should NOT appear
-  EXPECT_FALSE(resp.contains("x-late"));
+  EXPECT_FALSE(resp.contains("x-late")) << resp;
 }
 
 // Test trailers ignored for fixed-length responses
 TEST(HttpResponseWriterTrailers, IgnoredForFixedLength) {
   ts.router().setDefault([](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
-    writer.contentLength(4);  // Fixed length
+    writer.contentLength(4);
     writer.writeBody("test");
     writer.trailerAddLine("x-ignored", "value");  // Should be ignored
     writer.end();
   });
 
-  test::ClientConnection sock(port);
-  NativeHandle fd = sock.fd();
+  const std::string resp = test::sendAndCollect(port, "GET /fixed HTTP/1.1\r\nhost: e\r\nconnection: close\r\n\r\n");
 
-  std::string req =
-      "GET /fixed HTTP/1.1\r\n"
-      "host: example.com\r\n"
-      "connection: close\r\n"
-      "\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
-
-  // Should use Content-Length, not chunked
-  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, "4")));
-  EXPECT_FALSE(resp.contains(http::TransferEncoding));
-
-  // Trailer should NOT appear
-  EXPECT_FALSE(resp.contains("x-ignored"));
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, "4"))) << resp;
+  EXPECT_FALSE(resp.contains(http::TransferEncoding)) << resp;
+  EXPECT_FALSE(resp.contains("x-ignored")) << resp;
 }
 
 TEST(HttpStats, BasicCountersIncrement) {
@@ -4060,35 +3766,7 @@ TEST_F(HttpCorsIntegration, PerRouteCorsPolicyOverridesDefault_ActualAndPrefligh
   EXPECT_EQ(originIt->second, "https://per.example");
 }
 
-TEST(HttpCorsDetailed, PreflightWithCredentialsEmitsMirroredOriginAndCredentials) {
-  CorsPolicy policy = MakePolicy();
-  policy.allowCredentials(true);
-  RouterConfig routerCfg;
-  routerCfg.withDefaultCorsPolicy(std::move(policy));
-
-  ts.router() = Router{routerCfg};
-
-  ts.router().setPath(http::Method::GET, "/data", [](const HttpRequestView&) { return HttpResponse("ok"); });
-
-  test::RequestOptions opt;
-  opt.method = "OPTIONS";
-  opt.target = "/data";
-  opt.headers = {{"Origin", "https://app.example"}, {"Access-Control-Request-Method", "GET"}};
-
-  auto raw = test::requestOrThrow(ts.port(), opt);
-  auto parsed = test::parseResponseOrThrow(raw);
-  EXPECT_EQ(parsed.statusCode, http::StatusCodeNoContent);
-
-  auto originIt = parsed.headers.find(http::AccessControlAllowOrigin.get());
-  ASSERT_NE(originIt, parsed.headers.end());
-  EXPECT_EQ(originIt->second, "https://app.example");
-
-  auto credIt = parsed.headers.find(http::AccessControlAllowCredentials.get());
-  ASSERT_NE(credIt, parsed.headers.end());
-  EXPECT_EQ(credIt->second, "true");
-}
-
-TEST(HttpCorsDetailed, ActualRequestWithCredentialsEmitsCredentials) {
+TEST(HttpCorsDetailed, RequestsWithCredentialsEmitMirroredOriginAndCredentials) {
   CorsPolicy policy = MakePolicy();
   policy.allowCredentials(true);
   RouterConfig routerCfg;
@@ -4097,22 +3775,21 @@ TEST(HttpCorsDetailed, ActualRequestWithCredentialsEmitsCredentials) {
   ts.router() = Router{routerCfg};
   ts.router().setPath(http::Method::GET, "/data", [](const HttpRequestView&) { return HttpResponse("ok"); });
 
-  test::RequestOptions opt;
-  opt.method = "GET";
-  opt.target = "/data";
-  opt.headers = {{"Origin", "https://app.example"}};
+  for (const bool preflight : {true, false}) {
+    SCOPED_TRACE(preflight);
+    test::RequestOptions opt;
+    opt.method = preflight ? "OPTIONS" : "GET";
+    opt.target = "/data";
+    opt.headers = {{"Origin", "https://app.example"}};
+    if (preflight) {
+      opt.headers.emplace_back("Access-Control-Request-Method", "GET");
+    }
 
-  auto raw = test::requestOrThrow(ts.port(), opt);
-  auto parsed = test::parseResponseOrThrow(raw);
-  EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
-
-  auto originIt = parsed.headers.find(http::AccessControlAllowOrigin.get());
-  ASSERT_NE(originIt, parsed.headers.end());
-  EXPECT_EQ(originIt->second, "https://app.example");
-
-  auto credIt = parsed.headers.find(http::AccessControlAllowCredentials.get());
-  ASSERT_NE(credIt, parsed.headers.end());
-  EXPECT_EQ(credIt->second, "true");
+    const auto parsed = test::parseResponseOrThrow(test::requestOrThrow(ts.port(), opt));
+    EXPECT_EQ(parsed.statusCode, preflight ? http::StatusCodeNoContent : http::StatusCodeOK);
+    EXPECT_EQ(test::getHeader(parsed, http::AccessControlAllowOrigin.get()), "https://app.example");
+    EXPECT_EQ(test::getHeader(parsed, http::AccessControlAllowCredentials.get()), "true");
+  }
 }
 
 // A received Origin may contain obs-text, which cannot be mirrored in the response: it is denied, and the server keeps
@@ -4379,74 +4056,46 @@ TEST(HttpCorsDetailed, OptionsWithoutAcrMethodTreatedAsSimpleCors) {
   EXPECT_EQ(originIt->second, "https://app.example");
 }
 
-TEST(HttpsRedirectIntegration, BasicGetRedirectStandardPort) {
-  ts.resetConfigAndPostUpdate(
-      [](HttpServerConfig& cfg) { cfg.withHttpsRedirect(443, http::StatusCodeMovedPermanently); });
+TEST(HttpsRedirectIntegration, RedirectsToHttps) {
   // A handler that must NOT be reached (redirect bypasses routing).
   ts.router().setPath(http::Method::GET, "/path",
                       [](const HttpRequestView& req) { return req.makeResponse(http::StatusCodeOK, "handler"); });
 
-  test::RequestOptions opt;
-  opt.target = "/path";
-  opt.host = "example.com:80";
-  auto resp = test::parseResponseOrThrow(test::requestOrThrow(port, opt));
+  struct Case {
+    uint16_t httpsPort;
+    http::StatusCode status;
+    std::string_view method;
+    std::string_view target;
+    std::string_view host;
+    std::string_view body;
+    std::string_view location;
+  };
+  static constexpr Case kCases[]{
+      {443, http::StatusCodeMovedPermanently, "GET", "/path", "example.com:80", "", "https://example.com/path"},
+      {8443, http::StatusCodeMovedPermanently, "GET", "/secure", "example.com", "", "https://example.com:8443/secure"},
+      {443, http::StatusCodeMovedPermanently, "GET", "/search?q=foo&lang=en", "example.com", "",
+       "https://example.com/search?q=foo&lang=en"},
+      {443, http::StatusCodePermanentRedirect, "GET", "/", "host.test", "", "https://host.test/"},
+      {443, http::StatusCodeMovedPermanently, "POST", "/submit", "example.com", "payload=1234",
+       "https://example.com/submit"},
+      {8443, http::StatusCodeMovedPermanently, "GET", "/a", "[::1]:80", "", "https://[::1]:8443/a"},
+      {443, http::StatusCodeMovedPermanently, "HEAD", "/x", "example.com", "", "https://example.com/x"},
+  };
+  for (const Case& tc : kCases) {
+    SCOPED_TRACE(tc.location);
+    ts.resetConfigAndPostUpdate([&tc](HttpServerConfig& cfg) { cfg.withHttpsRedirect(tc.httpsPort, tc.status); });
+    test::RequestOptions opt;
+    opt.method = tc.method;
+    opt.target = tc.target;
+    opt.host = tc.host;
+    opt.body = tc.body;
+    const auto resp = test::parseResponseOrThrow(test::requestOrThrow(port, opt));
 
-  EXPECT_EQ(resp.statusCode, http::StatusCodeMovedPermanently);
-  EXPECT_EQ(test::getHeader(resp, "location"), "https://example.com/path");
-  EXPECT_EQ(test::toLower(test::getHeader(resp, "connection")), "close");
-}
-
-TEST(HttpsRedirectIntegration, NonStandardPortAppended) {
-  ts.resetConfigAndPostUpdate(
-      [](HttpServerConfig& cfg) { cfg.withHttpsRedirect(8443, http::StatusCodeMovedPermanently); });
-
-  test::RequestOptions opt;
-  opt.target = "/secure";
-  opt.host = "example.com";
-  auto resp = test::parseResponseOrThrow(test::requestOrThrow(port, opt));
-
-  EXPECT_EQ(resp.statusCode, http::StatusCodeMovedPermanently);
-  EXPECT_EQ(test::getHeader(resp, "location"), "https://example.com:8443/secure");
-}
-
-TEST(HttpsRedirectIntegration, PreservesQueryString) {
-  ts.resetConfigAndPostUpdate(
-      [](HttpServerConfig& cfg) { cfg.withHttpsRedirect(443, http::StatusCodeMovedPermanently); });
-
-  test::RequestOptions opt;
-  opt.target = "/search?q=foo&lang=en";
-  opt.host = "example.com";
-  auto resp = test::parseResponseOrThrow(test::requestOrThrow(port, opt));
-
-  EXPECT_EQ(resp.statusCode, http::StatusCodeMovedPermanently);
-  EXPECT_EQ(test::getHeader(resp, "location"), "https://example.com/search?q=foo&lang=en");
-}
-
-TEST(HttpsRedirectIntegration, CustomStatusCode308) {
-  ts.resetConfigAndPostUpdate(
-      [](HttpServerConfig& cfg) { cfg.withHttpsRedirect(443, http::StatusCodePermanentRedirect); });
-  test::RequestOptions opt;
-  opt.target = "/";
-  opt.host = "host.test";
-  auto resp = test::parseResponseOrThrow(test::requestOrThrow(port, opt));
-
-  EXPECT_EQ(resp.statusCode, http::StatusCodePermanentRedirect);
-  EXPECT_EQ(test::getHeader(resp, "location"), "https://host.test/");
-}
-
-TEST(HttpsRedirectIntegration, PostWithBodyIsRedirected) {
-  ts.resetConfigAndPostUpdate(
-      [](HttpServerConfig& cfg) { cfg.withHttpsRedirect(443, http::StatusCodeMovedPermanently); });
-
-  test::RequestOptions opt;
-  opt.method = "POST";
-  opt.target = "/submit";
-  opt.host = "example.com";
-  opt.body = "payload=1234";
-  auto resp = test::parseResponseOrThrow(test::requestOrThrow(port, opt));
-
-  EXPECT_EQ(resp.statusCode, http::StatusCodeMovedPermanently);
-  EXPECT_EQ(test::getHeader(resp, "location"), "https://example.com/submit");
+    EXPECT_EQ(resp.statusCode, tc.status);
+    EXPECT_EQ(test::getHeader(resp, "location"), tc.location);
+    EXPECT_EQ(test::toLower(test::getHeader(resp, "connection")), "close");
+    EXPECT_TRUE(resp.body.empty() || tc.method != "HEAD");
+  }
 }
 
 TEST(HttpsRedirectIntegration, MissingHostReturns400) {
@@ -4474,33 +4123,6 @@ TEST(HttpsRedirectIntegration, InvalidHostReturns400) {
     EXPECT_EQ(resp.statusCode, http::StatusCodeBadRequest) << host;
     EXPECT_EQ(test::getHeader(resp, "location"), "") << host;
   }
-}
-
-TEST(HttpsRedirectIntegration, IPv6HostPreservedWithBrackets) {
-  ts.resetConfigAndPostUpdate(
-      [](HttpServerConfig& cfg) { cfg.withHttpsRedirect(8443, http::StatusCodeMovedPermanently); });
-
-  test::RequestOptions opt;
-  opt.target = "/a";
-  opt.host = "[::1]:80";
-  auto resp = test::parseResponseOrThrow(test::requestOrThrow(port, opt));
-
-  EXPECT_EQ(resp.statusCode, http::StatusCodeMovedPermanently);
-  EXPECT_EQ(test::getHeader(resp, "location"), "https://[::1]:8443/a");
-}
-
-TEST(HttpsRedirectIntegration, HeadRequestRedirectedWithoutBody) {
-  ts.resetConfigAndPostUpdate(
-      [](HttpServerConfig& cfg) { cfg.withHttpsRedirect(443, http::StatusCodeMovedPermanently); });
-  test::RequestOptions opt;
-  opt.method = "HEAD";
-  opt.target = "/x";
-  opt.host = "example.com";
-  auto resp = test::parseResponseOrThrow(test::requestOrThrow(port, opt));
-
-  EXPECT_EQ(resp.statusCode, http::StatusCodeMovedPermanently);
-  EXPECT_EQ(test::getHeader(resp, "location"), "https://example.com/x");
-  EXPECT_TRUE(resp.body.empty());
 }
 
 TEST(HttpsRedirectIntegration, EmitsRequestMetrics) {
@@ -5293,7 +4915,7 @@ TEST(StreamingKeepAlive, HeadRequestReuse) {
 
   std::string hreq = "HEAD / HTTP/1.1\r\nhost: x\r\nconnection: keep-alive\r\n\r\n";
   test::sendAll(fd, hreq);
-  auto hr = test::recvWithTimeout(fd);
+  auto hr = test::recvWithTimeout(fd, std::chrono::milliseconds{200});
   // Ensure no body appears after header terminator.
   auto pos = hr.find(http::DoubleCRLF);
   ASSERT_NE(pos, std::string::npos);
@@ -5602,12 +5224,8 @@ TEST(HttpStreaming, CustomContentTypeAndEncoding) {
     writer.writeBody(payload.substr(40));
     writer.end();
   });
-  test::ClientConnection cc(port);
-  auto fd = cc.fd();
-  std::string req =
-      "GET /h HTTP/1.1\r\nhost: x\r\naccept-encoding: gzip\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
+  std::string resp = test::sendAndCollect(
+      port, "GET /h HTTP/1.1\r\nhost: x\r\naccept-encoding: gzip\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
   // Ensure the managed headers appear once with their normalized names.
   ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentType, "text/xml"))) << resp;
   ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentEncoding, "identity"))) << resp;
@@ -6083,86 +5701,32 @@ TEST(HttpStreaming, ChunkedRequestWithExpect100Continue) {
 }
 
 #if defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZSTD)
-// Test chunked request with malformed Content-Encoding header.
-// When decompression is enabled, a malformed Content-Encoding (e.g., empty token)
-// should be rejected with 400 Bad Request during chunked body decoding.
-TEST(HttpStreaming, ChunkedRequestWithMalformedContentEncodingRejects400) {
+// Chunked requests rejected with 400 during their body decoding (decompression enabled).
+TEST(HttpStreaming, MalformedChunkedRequestsAreRejectedWith400) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.enableKeepAlive = false;
     cfg.decompression = {};  // Enable decompression with defaults
   });
-
-  ts.router().setPath(http::Method::POST, "/chunked-bad-encoding",
+  ts.router().setPath(http::Method::POST, "/chunked-malformed",
                       [](const HttpRequestView& req) { return HttpResponse(req.body()); });
 
-  test::ClientConnection cnx(port);
-  auto fd = cnx.fd();
-
-  // Send chunked request with malformed Content-Encoding (double comma = empty token)
-  std::string req =
-      "POST /chunked-bad-encoding HTTP/1.1\r\n"
-      "host: test\r\n"
-      "transfer-encoding: chunked\r\n"
-      "content-encoding: identity,,identity\r\n"
-      "connection: close\r\n\r\n"
-      "3\r\nabc\r\n"
-      "0\r\n\r\n";
-  test::sendAll(fd, req);
-
-  std::string resp = test::recvUntilClosed(fd);
-  EXPECT_TRUE(resp.starts_with("HTTP/1.1 400"))
-      << "Expected 400 Bad Request for malformed Content-Encoding, got: " << resp;
-}
-
-// Test chunked request with empty Content-Encoding header value.
-TEST(HttpStreaming, ChunkedRequestWithEmptyContentEncodingRejects400) {
-  ts.postConfigUpdate([](HttpServerConfig& cfg) {
-    cfg.enableKeepAlive = false;
-    cfg.decompression = {};  // Enable decompression with defaults
-  });
-
-  ts.router().setPath(http::Method::POST, "/chunked-empty-encoding",
-                      [](const HttpRequestView& req) { return HttpResponse(req.body()); });
-
-  test::ClientConnection cnx(port);
-  auto fd = cnx.fd();
-
-  // Send chunked request with empty Content-Encoding header value
-  std::string req =
-      "POST /chunked-empty-encoding HTTP/1.1\r\n"
-      "host: test\r\n"
-      "transfer-encoding: chunked\r\n"
-      "content-encoding: \r\n"
-      "connection: close\r\n\r\n"
-      "3\r\nxyz\r\n"
-      "0\r\n\r\n";
-  test::sendAll(fd, req);
-
-  std::string resp = test::recvUntilClosed(fd);
-  EXPECT_TRUE(resp.starts_with("HTTP/1.1 400")) << "Expected 400 Bad Request for empty Content-Encoding, got: " << resp;
-}
-
-TEST(HttpStreaming, ChunkedRequestMalformedCRLF) {
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.enableKeepAlive = false; });
-
-  ts.router().setPath(http::Method::POST, "/chunked-malformed-crlf",
-                      [](const HttpRequestView& req) { return HttpResponse(req.body()); });
-
-  test::ClientConnection cnx(port);
-  auto fd = cnx.fd();
-
-  // Send chunked request with malformed CRLF after chunk data
-  std::string req =
-      "POST /chunked-malformed-crlf HTTP/1.1\r\n"
-      "host: test\r\n"
-      "transfer-encoding: chunked\r\n"
-      "connection: close\r\n\r\n"
-      "3\r\nabc\n\n"  // Malformed CRLF here
-      "0\r\n\r\n";
-  test::sendAll(fd, req);
-
-  std::string resp = test::recvUntilClosed(fd);
-  EXPECT_TRUE(resp.starts_with("HTTP/1.1 400")) << "Expected 400 Bad Request for malformed CRLF, got: " << resp;
+  struct Case {
+    std::string_view headers;
+    std::string_view chunks;
+  };
+  static constexpr Case kCases[]{
+      {"content-encoding: identity,,identity\r\n", "3\r\nabc\r\n0\r\n\r\n"},  // empty coding token
+      {"content-encoding: \r\n", "3\r\nxyz\r\n0\r\n\r\n"},                    // empty Content-Encoding value
+      {"", "3\r\nabc\n\n0\r\n\r\n"},                                          // malformed CRLF after the chunk data
+  };
+  for (const Case& tc : kCases) {
+    SCOPED_TRACE(tc.headers);
+    const std::string resp =
+        test::sendAndCollect(port, std::format("POST /chunked-malformed HTTP/1.1\r\nhost: test\r\n"
+                                               "transfer-encoding: chunked\r\n{}connection: close\r\n\r\n{}",
+                                               tc.headers, tc.chunks));
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
+  }
 }
 
 TEST(HttpStreaming, EmptyContentTypeIsForbidden) {
@@ -6247,41 +5811,58 @@ TEST(HttpRangeStatic, ServeCompleteFile) {
   EXPECT_FALSE(getHeader(parsed, http::LastModified).empty());
 }
 
-TEST(HttpRangeStatic, SingleRangePartialContent) {
+TEST(HttpRangeStatic, RangeAndConditionalRequests) {
   test::ScopedTempDir tmpDir;
   test::ScopedTempFile tmp(tmpDir, "abcdefghij");
-  const std::string fileName = tmp.filename();
-
   ts.router().setDefault(StaticFileHandler(tmp.dirPath()));
 
+  struct Case {
+    std::string_view headerName;
+    std::string_view headerValue;
+    http::StatusCode status;
+    std::string_view contentRange;
+    std::string_view body;
+  };
+  static constexpr Case kCases[]{
+      {"Range", "bytes=0-3", http::StatusCodePartialContent, "bytes 0-3/10", "abcd"},
+      // Coalesced to a single range.
+      {"Range", "bytes=0-1,2-3", http::StatusCodePartialContent, "bytes 0-3/10", "abcd"},
+      {"Range", "bytes=0-5, 3-9", http::StatusCodePartialContent, "bytes 0-9/10", "abcdefghij"},
+      // Only the first range is satisfiable.
+      {"Range", "bytes=0-3, 100-200", http::StatusCodePartialContent, "bytes 0-3/10", "abcd"},
+      {"Range", "bytes=100-200", http::StatusCodeRangeNotSatisfiable, "bytes */10", ""},
+      {"Range", "bytes=abc-4", http::StatusCodeRangeNotSatisfiable, "", ""},
+      {"Range", "bytes=-0", http::StatusCodeRangeNotSatisfiable, "", ""},
+      // Invalid dates are ignored.
+      {"If-Modified-Since", "Not a date", http::StatusCodeOK, "", "abcdefghij"},
+      {"If-Unmodified-Since", "garbage-date", http::StatusCodeOK, "", "abcdefghij"},
+  };
+  for (const Case& tc : kCases) {
+    SCOPED_TRACE(::testing::Message() << tc.headerName << ": " << tc.headerValue);
+    test::RequestOptions opt;
+    opt.method = "GET";
+    opt.target = "/" + tmp.filename();
+    opt.headers.emplace_back(tc.headerName, tc.headerValue);
+
+    const auto parsed = test::parseResponseOrThrow(test::requestOrThrow(ts.port(), opt));
+    EXPECT_EQ(parsed.statusCode, tc.status);
+    if (!tc.contentRange.empty()) {
+      EXPECT_EQ(getHeader(parsed, http::ContentRange), tc.contentRange);
+    }
+    if (!tc.body.empty()) {
+      EXPECT_EQ(parsed.body, tc.body);
+    }
+  }
+
+  // If-Range not matching: full body.
   test::RequestOptions opt;
   opt.method = "GET";
-  opt.target = "/" + fileName;
+  opt.target = "/" + tmp.filename();
   opt.headers.emplace_back("Range", "bytes=0-3");
-
-  const auto raw = test::requestOrThrow(ts.port(), opt);
-  const auto parsed = test::parseResponseOrThrow(raw);
-  EXPECT_EQ(parsed.statusCode, http::StatusCodePartialContent);
-  EXPECT_EQ(parsed.body, "abcd");
-  EXPECT_EQ(getHeader(parsed, http::ContentRange), "bytes 0-3/10");
-}
-
-TEST(HttpRangeStatic, UnsatisfiableRange) {
-  test::ScopedTempDir tmpDir;
-  test::ScopedTempFile tmp(tmpDir, "abcdefghij");
-  const std::string fileName = tmp.filename();
-
-  ts.router().setDefault(StaticFileHandler(tmp.dirPath()));
-
-  test::RequestOptions opt;
-  opt.method = "GET";
-  opt.target = "/" + fileName;
-  opt.headers.emplace_back("Range", "bytes=100-200");
-
-  const auto raw = test::requestOrThrow(ts.port(), opt);
-  const auto parsed = test::parseResponseOrThrow(raw);
-  EXPECT_EQ(parsed.statusCode, http::StatusCodeRangeNotSatisfiable);
-  EXPECT_EQ(getHeader(parsed, http::ContentRange), "bytes */10");
+  opt.headers.emplace_back("If-Range", "\"mismatch\"");
+  const auto parsed = test::parseResponseOrThrow(test::requestOrThrow(ts.port(), opt));
+  EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
+  EXPECT_EQ(parsed.body, "abcdefghij");
 }
 
 TEST(HttpRangeStatic, IfNoneMatchReturns304) {
@@ -6308,87 +5889,6 @@ TEST(HttpRangeStatic, IfNoneMatchReturns304) {
   const auto parsed = test::parseResponseOrThrow(raw);
   EXPECT_EQ(parsed.statusCode, http::StatusCodeNotModified);
   EXPECT_TRUE(parsed.body.empty());
-}
-
-TEST(HttpRangeStatic, IfRangeMismatchFallsBackToFullBody) {
-  test::ScopedTempDir tmpDir;
-  test::ScopedTempFile tmp(tmpDir, "abcdefghij");
-  const std::string fileName = tmp.filename();
-
-  ts.router().setDefault(StaticFileHandler(tmp.dirPath()));
-
-  test::RequestOptions opt;
-  opt.method = "GET";
-  opt.target = "/" + fileName;
-  opt.headers.emplace_back("Range", "bytes=0-3");
-  opt.headers.emplace_back("If-Range", "\"mismatch\"");
-
-  const auto raw = test::requestOrThrow(ts.port(), opt);
-  const auto parsed = test::parseResponseOrThrow(raw);
-  EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
-  EXPECT_EQ(parsed.body, "abcdefghij");
-}
-
-TEST(HttpRangeInvalid, BadRangeSyntax) {
-  test::ScopedTempDir tmpDir;
-  test::ScopedTempFile tmp(tmpDir, "0123456789");
-  const std::string fileName = tmp.filename();
-
-  ts.router().setDefault(StaticFileHandler(tmp.dirPath()));
-
-  test::RequestOptions opt;
-  opt.method = "GET";
-  opt.target = "/" + fileName;
-
-  // Non-numeric start
-  opt.headers.clear();
-  opt.headers.emplace_back("Range", "bytes=abc-4");
-  auto raw = test::requestOrThrow(ts.port(), opt);
-  auto parsed = test::parseResponseOrThrow(raw);
-  EXPECT_EQ(parsed.statusCode, http::StatusCodeRangeNotSatisfiable);
-
-  // Multiple adjacent ranges → now coalesced to single valid range (bytes 0-3)
-  opt.headers.clear();
-  opt.headers.emplace_back("Range", "bytes=0-1,2-3");
-  raw = test::requestOrThrow(ts.port(), opt);
-  parsed = test::parseResponseOrThrow(raw);
-  EXPECT_EQ(parsed.statusCode, http::StatusCodePartialContent);
-  EXPECT_EQ(getHeader(parsed, http::ContentRange), "bytes 0-3/10");
-  EXPECT_EQ(parsed.body, "0123");
-
-  // Suffix zero is invalid (bytes=-0)
-  opt.headers.clear();
-  opt.headers.emplace_back("Range", "bytes=-0");
-  raw = test::requestOrThrow(ts.port(), opt);
-  parsed = test::parseResponseOrThrow(raw);
-  EXPECT_EQ(parsed.statusCode, http::StatusCodeRangeNotSatisfiable);
-}
-
-TEST(HttpRangeInvalid, ConditionalInvalidDates) {
-  test::ScopedTempDir tmpDir;
-  test::ScopedTempFile tmp(tmpDir, "hello world");
-  const std::string fileName = tmp.filename();
-
-  ts.router().setDefault(StaticFileHandler(tmp.dirPath()));
-
-  test::RequestOptions opt;
-  opt.method = "GET";
-  opt.target = "/" + fileName;
-
-  // If-Modified-Since with an invalid date should be ignored -> full body returned
-  opt.headers.clear();
-  opt.headers.emplace_back("If-Modified-Since", "Not a date");
-  auto raw = test::requestOrThrow(ts.port(), opt);
-  auto parsed = test::parseResponseOrThrow(raw);
-  EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
-  EXPECT_EQ(parsed.body, "hello world");
-
-  // If-Unmodified-Since invalid date should be ignored (no 412)
-  opt.headers.clear();
-  opt.headers.emplace_back("If-Unmodified-Since", "garbage-date");
-  raw = test::requestOrThrow(ts.port(), opt);
-  parsed = test::parseResponseOrThrow(raw);
-  EXPECT_EQ(parsed.statusCode, http::StatusCodeOK);
 }
 
 TEST(HttpRangeInvalid, IfMatchPreconditionFailed) {
@@ -6588,45 +6088,6 @@ TEST(HttpRangeMulti, MultiRangeBodyPartsMatchFileContent) {
   EXPECT_EQ(parts[0].body, "The");
   EXPECT_EQ(parts[1].body, "brown");
   EXPECT_EQ(parts[2].body, "lazy dog");
-}
-
-TEST(HttpRangeMulti, MultiRangeCoalescedResponse) {
-  test::ScopedTempDir tmpDir;
-  test::ScopedTempFile tmp(tmpDir, "abcdefghij");
-  const std::string fileName = tmp.filename();
-
-  ts.router().setDefault(StaticFileHandler(tmp.dirPath()));
-
-  test::RequestOptions opt;
-  opt.method = "GET";
-  opt.target = "/" + fileName;
-  opt.headers.emplace_back("Range", "bytes=0-5, 3-9");  // overlapping → coalesced to 0-9
-
-  const auto raw = test::requestOrThrow(ts.port(), opt);
-  const auto parsed = test::parseResponseOrThrow(raw);
-  EXPECT_EQ(parsed.statusCode, http::StatusCodePartialContent);
-  // Coalesced to single range → simple Content-Range
-  EXPECT_EQ(getHeader(parsed, http::ContentRange), "bytes 0-9/10");
-  EXPECT_EQ(parsed.body, "abcdefghij");
-}
-
-TEST(HttpRangeMulti, MultiRangeSingleSatisfiable) {
-  test::ScopedTempDir tmpDir;
-  test::ScopedTempFile tmp(tmpDir, "abcdefghij");
-  const std::string fileName = tmp.filename();
-
-  ts.router().setDefault(StaticFileHandler(tmp.dirPath()));
-
-  test::RequestOptions opt;
-  opt.method = "GET";
-  opt.target = "/" + fileName;
-  opt.headers.emplace_back("Range", "bytes=0-3, 100-200");  // second unsatisfiable
-
-  const auto raw = test::requestOrThrow(ts.port(), opt);
-  const auto parsed = test::parseResponseOrThrow(raw);
-  EXPECT_EQ(parsed.statusCode, http::StatusCodePartialContent);
-  EXPECT_EQ(getHeader(parsed, http::ContentRange), "bytes 0-3/10");
-  EXPECT_EQ(parsed.body, "abcd");
 }
 
 TEST(HttpRangeMulti, MultiRangeIfRangeInteraction) {

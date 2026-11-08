@@ -231,16 +231,12 @@ TEST(HttpCompression, CapturedBodyWithTrailers) {
     return respObj;
   });
 
-  test::ClientConnection sock(ts.port());
-  NativeHandle fd = sock.fd();
-  std::string req =
-      "GET /captured-trailers HTTP/1.1\r\n"
-      "host: example.com\r\n"
-      "connection: close\r\n"
-      "accept-encoding: *\r\n"
-      "\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
+  std::string resp = test::sendAndCollect(ts.port(),
+                                          "GET /captured-trailers HTTP/1.1\r\n"
+                                          "host: example.com\r\n"
+                                          "connection: close\r\n"
+                                          "accept-encoding: *\r\n"
+                                          "\r\n");
   EXPECT_TRUE(resp.contains("x-checksum: cksum"));
   EXPECT_TRUE(resp.contains("x-extra: val"));
 }
@@ -268,16 +264,12 @@ TEST(HttpCompression, InlineBodyWithTrailers) {
     return respObj;
   });
 
-  test::ClientConnection sock(ts.port());
-  NativeHandle fd = sock.fd();
-  std::string req =
-      "GET /inline-trailers HTTP/1.1\r\n"
-      "host: example.com\r\n"
-      "connection: close\r\n"
-      "accept-encoding: *\r\n"
-      "\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
+  std::string resp = test::sendAndCollect(ts.port(),
+                                          "GET /inline-trailers HTTP/1.1\r\n"
+                                          "host: example.com\r\n"
+                                          "connection: close\r\n"
+                                          "accept-encoding: *\r\n"
+                                          "\r\n");
   EXPECT_TRUE(resp.contains("x-inline: ok"));
 }
 
@@ -1218,16 +1210,12 @@ TEST(HttpCompression, DirectCompression_WithTrailers) {
     return resp;
   });
 
-  test::ClientConnection sock(ts.port());
-  NativeHandle fd = sock.fd();
-  std::string req =
-      "GET /dc-trailers HTTP/1.1\r\n"
-      "host: example.com\r\n"
-      "connection: close\r\n"
-      "accept-encoding: gzip\r\n"
-      "\r\n";
-  test::sendAll(fd, req);
-  std::string rawResp = test::recvUntilClosed(fd);
+  std::string rawResp = test::sendAndCollect(ts.port(),
+                                             "GET /dc-trailers HTTP/1.1\r\n"
+                                             "host: example.com\r\n"
+                                             "connection: close\r\n"
+                                             "accept-encoding: gzip\r\n"
+                                             "\r\n");
   EXPECT_TRUE(rawResp.contains("x-checksum: abc123"));
 }
 
