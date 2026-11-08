@@ -762,6 +762,30 @@ TEST(HpackDecoder, DuplicateCookieMergesWithSemicolon) {
   EXPECT_EQ(it->second, "one;two");
 }
 
+// Repeated Set-Cookie fields of a response cannot be joined with commas, which their Expires dates hold: the decoder of
+// a client joins them with a line feed, which no field value can hold, for the client to split them back.
+TEST(HpackDecoder, DuplicateSetCookieOfResponsesMergesWithLineFeed) {
+  static constexpr uint8_t encoded[]{
+      0x40, 0x0a, 's',  'e',  't', '-', 'c', 'o', 'o', 'k', 'i', 'e', 0x07, 'a', '=',  '1', ',', ' ',
+      'x',  'y',  0x40, 0x0a, 's', 'e', 't', '-', 'c', 'o', 'o', 'k', 'i',  'e', 0x03, 'b', '=', '2',
+  };
+
+  HpackDecoder responseDecoder(4096, std::numeric_limits<uint32_t>::max(), true, HpackDecoder::Messages::Responses);
+  auto result = responseDecoder.decode(AsBytes(encoded));
+  ASSERT_TRUE(result.isSuccess());
+  auto it = result.decodedHeaders.headers.find("set-cookie");
+  ASSERT_NE(it, result.decodedHeaders.headers.end());
+  EXPECT_EQ(it->second, "a=1, xy\nb=2");
+
+  // The decoder of a server keeps the rules of the requests.
+  auto requestDecoder = CreateHpackDecoder();
+  auto requestResult = requestDecoder.decode(AsBytes(encoded));
+  ASSERT_TRUE(requestResult.isSuccess());
+  it = requestResult.decodedHeaders.headers.find("set-cookie");
+  ASSERT_NE(it, requestResult.decodedHeaders.headers.end());
+  EXPECT_EQ(it->second, "a=1, xy,b=2");
+}
+
 TEST(HpackDecoder, ContentEncodingValueIsLowerCased) {
   auto decoder = CreateHpackDecoder();
 

@@ -319,9 +319,10 @@ static void BM_ToChars_MultiField(benchmark::State& state) {
   std::size_t idx = 0;
   for (auto _ : state) {
     char* p = buf;
-    p = std::to_chars(p, buf + 128, ids[idx]).ptr;
+    // The bounds leave room for the separators, as to_chars returns its 'last' argument when out of space.
+    p = std::to_chars(p, buf + 126, ids[idx]).ptr;
     *p++ = ',';
-    p = std::to_chars(p, buf + 128, lengths[idx]).ptr;
+    p = std::to_chars(p, buf + 127, lengths[idx]).ptr;
     *p++ = ',';
     p = std::to_chars(p, buf + 128, ports[idx]).ptr;
     benchmark::DoNotOptimize(buf);

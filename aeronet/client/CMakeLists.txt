@@ -62,6 +62,13 @@ if(AERONET_ENABLE_GLAZE)
 endif()
 
 AeronetAddUnitTest(
+    cookie-jar_test
+    test/cookie-jar_test.cpp
+    LIBRARIES
+    aeronet_client
+)
+
+AeronetAddUnitTest(
     client-protocol_test
     test/client-protocol_test.cpp
     LIBRARIES
@@ -93,6 +100,17 @@ AeronetAddUnitTest(
     LIBRARIES
     aeronet_client
 )
+
+if(AERONET_ENABLE_HTTP_SERVER)
+    AeronetAddUnitTest(
+        http-client-cookies_test
+        test/http-client-cookies_test.cpp
+        LIBRARIES
+        aeronet_client
+        aeronet
+        aeronet_test_support
+    )
+endif()
 
 # Native HTTP/2 client engine: h2c prior knowledge over plain http, Auto/Http1_1/Http2 version modes,
 # flow control both ways, pooling; plus ALPN negotiation over TLS when OpenSSL is enabled.

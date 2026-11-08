@@ -73,53 +73,28 @@ constexpr void tolower(char* buf, std::size_t len) {
 // Apply tolower from 'from' to 'to' for len bytes.
 // from and to buffers should be at least of size 'len'.
 constexpr void tolower_n(const char* from, std::size_t len, char* AERONET_RESTRICT to) {
-  std::size_t pos = 0;
-  static constexpr std::size_t kAlign = alignof(std::uint64_t);
-
   if consteval {
-    for (; pos < len; ++pos) {
+    for (std::size_t pos = 0; pos < len; ++pos) {
       to[pos] = tolower(from[pos]);
     }
     return;
   }
 
-  /*
-   * Why no AVX2/NEON here?
-   * Because they require contiguous aligned loads/stores of both input and output.
-   * Without a temporary buffer, you cannot safely vectorize cross-buffer.
-   */
-
-  // Align both pointers if they share the same relative misalignment
-  const auto fromMisalign = reinterpret_cast<std::uintptr_t>(from) % kAlign;
-  const auto toMisalign = reinterpret_cast<std::uintptr_t>(to) % kAlign;
-
-  if (fromMisalign == toMisalign && fromMisalign != 0) {
-    const auto head = std::min(len, static_cast<std::size_t>(kAlign - fromMisalign));
-    for (; pos < head; ++pos) {
-      to[pos] = tolower(from[pos]);
-    }
+  // 8 bytes at a time, whatever the alignment of the buffers. std::copy_n and not std::memcpy for the store: with
+  // _FORTIFY_SOURCE (on by default with Ubuntu's GCC), a memcpy into a stack buffer stays a library call once inlined.
+  for (std::size_t nbWords = len / sizeof(uint64_t); nbWords != 0; --nbWords) {
+    uint64_t val;
+    std::memcpy(&val, from, sizeof(val));
+    val = AsciiLowerMask(val);
+    std::copy_n(reinterpret_cast<const char*>(&val), sizeof(val), to);
+    from += sizeof(val);
+    to += sizeof(val);
   }
 
-  // 8-byte fast path
-  if (fromMisalign == toMisalign) {
-    // Both aligned: direct reinterpret_cast (fastest)
-    for (; pos + 8 <= len; pos += 8) {
-      const auto* in = reinterpret_cast<const uint64_t*>(from + pos);
-      auto* out = reinterpret_cast<uint64_t*>(to + pos);
-      *out = AsciiLowerMask(*in);
-    }
-  } else {
-    // Misaligned: use memcpy (still much better than scalar)
-    for (; pos + 8 <= len; pos += 8) {
-      uint64_t val;
-      std::memcpy(&val, from + pos, sizeof(uint64_t));
-      val = AsciiLowerMask(val);
-      std::memcpy(to + pos, &val, sizeof(uint64_t));
-    }
-  }
-
-  // tail
-  for (; pos < len; ++pos) {
+  // A computed count, for GCC to know that it is below 8: otherwise it vectorizes this loop, and warns about the
+  // 16-byte stores of that dead code when the destination is a small array.
+  const std::size_t tailLen = len % sizeof(uint64_t);
+  for (std::size_t pos = 0; pos < tailLen; ++pos) {
     to[pos] = tolower(from[pos]);
   }
 }

@@ -67,6 +67,11 @@ inline constexpr MethodBmp kIdempotentMethods =
 
 constexpr bool IsIdempotent(Method method) noexcept { return IsMethodSet(kIdempotentMethods, method); }
 
+// Read-only methods (RFC 9110 §9.2.1). The client sends SameSite=Lax cookies on a cross-site redirect only with them.
+inline constexpr MethodBmp kSafeMethods = Method::GET | Method::HEAD | Method::OPTIONS | Method::TRACE;
+
+constexpr bool IsSafe(Method method) noexcept { return IsMethodSet(kSafeMethods, method); }
+
 constexpr bool IsMethodIdxSet(MethodBmp mask, MethodIdx methodIdx) { return (mask & (1U << methodIdx)) != 0U; }
 
 constexpr MethodIdx MethodToIdx(Method method) {

@@ -1,10 +1,7 @@
 #include "aeronet/timestring.hpp"
 
-#include <algorithm>
-#include <array>
 #include <chrono>
 #include <cstddef>
-#include <cstdint>
 #include <string_view>
 
 #include "aeronet/cctype.hpp"
@@ -21,10 +18,6 @@ SysTimePoint TryParseTimeRFC7231(const char* begPtr, const char* endPtr) {
   }
   while (endPtr > begPtr && isspace(*(endPtr - 1))) {
     --endPtr;
-  }
-
-  if (begPtr >= endPtr) {
-    return ret;
   }
 
   const std::size_t len = static_cast<std::size_t>(endPtr - begPtr);
@@ -44,19 +37,13 @@ SysTimePoint TryParseTimeRFC7231(const char* begPtr, const char* endPtr) {
     return ret;
   }
 
-  static constexpr uint16_t kGMTRep = read3("GMT");
-
-  if (read3(ptr + 26) != kGMTRep) {
+  // The letters are compared exactly (read3() is for digits only: "Npl" would read as "Nov").
+  if (std::string_view(ptr + 26, 3U) != "GMT") {
     return ret;
   }
 
-  static constexpr uint16_t kMonthsRep[]{
-      read3("Jan"), read3("Feb"), read3("Mar"), read3("Apr"), read3("May"), read3("Jun"),
-      read3("Jul"), read3("Aug"), read3("Sep"), read3("Oct"), read3("Nov"), read3("Dec"),
-  };
-
-  const auto monthIt = std::ranges::find(kMonthsRep, read3(ptr + 8));
-  if (monthIt == std::end(kMonthsRep)) {
+  const unsigned month = MonthOfAbbreviation(ptr + 8);
+  if (month == 0) {
     return ret;
   }
 
@@ -70,27 +57,15 @@ SysTimePoint TryParseTimeRFC7231(const char* begPtr, const char* endPtr) {
     return ret;
   }
 
-  const std::chrono::year yearField{yearValue};
-  // monthIt is a 0-based index into kMonths (0 == Jan). std::chrono::month is 1-based, so add 1.
-  const std::chrono::month monthField{static_cast<unsigned>(monthIt - std::begin(kMonthsRep)) + 1};
-  const std::chrono::day dayField{static_cast<unsigned>(dayValue)};
-  const std::chrono::year_month_day ymd{yearField, monthField, dayField};
-  // Verify the weekday token (e.g. "Sun") matches the resolved date
-  static constexpr uint16_t kWeekdays[]{
-      read3("Sun"), read3("Mon"), read3("Tue"), read3("Wed"), read3("Thu"), read3("Fri"), read3("Sat"),
-  };
-  const auto weekdayIt = std::ranges::find(kWeekdays, read3(ptr));
-  if (weekdayIt == std::end(kWeekdays)) {
-    return ret;
-  }
+  const std::chrono::year_month_day ymd{std::chrono::year{yearValue}, std::chrono::month{month},
+                                        std::chrono::day{static_cast<unsigned>(dayValue)}};
   if (!ymd.ok()) {
     return ret;
   }
 
   const std::chrono::sys_days dayPoint{ymd};
-  // ensure weekday token matches the computed weekday for the date
-  const std::chrono::weekday wd{dayPoint};
-  if (static_cast<unsigned>(weekdayIt - std::begin(kWeekdays)) != wd.c_encoding()) {
+  // The weekday token (e.g. "Sun") must be the weekday of the date: an unknown one has the index 7, never equal.
+  if (WeekdayOfAbbreviation(ptr) != std::chrono::weekday{dayPoint}.c_encoding()) {
     return ret;
   }
 

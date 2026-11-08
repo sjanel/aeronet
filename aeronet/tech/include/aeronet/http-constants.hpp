@@ -111,6 +111,8 @@ inline constexpr LowerAsciiKey PseudoHeaderProtocol = ":protocol";
 #endif
 
 inline constexpr std::string_view HeaderSep = ": ";
+// Separator of the cookie-pairs of a Cookie header (RFC 6265bis §5.8.3).
+inline constexpr std::string_view CookiePairSep = "; ";
 inline constexpr std::string_view CRLF = "\r\n";
 inline constexpr std::string_view DoubleCRLF = "\r\n\r\n";
 inline constexpr std::string_view EndChunk = "0\r\n\r\n";

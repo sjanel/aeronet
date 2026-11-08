@@ -110,6 +110,10 @@ struct DecodedHeaders {
   /// First block of a storage: enough for the decoded headers of most requests.
   static constexpr Storage::size_type kStorageInitialCapacity = 512U;
 
+  /// Separator of the repeated Set-Cookie fields of a response, which commas cannot join, as its Expires dates have
+  /// some (RFC 9110 §5.3): a line feed, which no field value can hold (RFC 9113 §8.2.1).
+  static constexpr char kSetCookieSeparator = '\n';
+
   /// Tell whether the block has the given pseudo-header field.
   [[nodiscard]] bool hasPseudoHeader(PseudoHeader pseudoHeader) const noexcept {
     return (pseudoHeadersMask & PseudoHeaderBit(pseudoHeader)) != 0;
@@ -144,13 +148,17 @@ struct DecodedHeaders {
 /// The decoder maintains state (dynamic table) that persists across header blocks.
 class HpackDecoder {
  public:
+  /// The messages whose header blocks a decoder reads: requests on the server side, responses on the client side.
+  enum class Messages : uint8_t { Requests, Responses };
+
   /// Create a decoder with the specified maximum dynamic table size, also the limit of the Dynamic Table Size Updates
   /// of the encoder (see setMaxDynamicTableSize()).
   /// The fields of a header list larger than maxHeaderListSize (sum of the sizes of the names and values of its fields,
   /// plus 32 bytes per field, RFC 7541 §4.1) are not stored: its decoding fails with HeaderListTooLarge, without taking
   /// more memory than this limit, whatever the number of references to the dynamic table in its block.
-  HpackDecoder(uint32_t maxDynamicTableSize, uint32_t maxHeaderListSize,
-               bool mergeAllowedForUnknownRequestHeaders) noexcept;
+  /// The repeated set-cookie fields of Messages::Responses are joined with DecodedHeaders::kSetCookieSeparator.
+  HpackDecoder(uint32_t maxDynamicTableSize, uint32_t maxHeaderListSize, bool mergeAllowedForUnknownRequestHeaders,
+               Messages messages = Messages::Requests) noexcept;
 
   /// Decode result for a single header block.
   struct DecodeResult {
@@ -263,6 +271,7 @@ class HpackDecoder {
   uint32_t _maxHeaderListSize;
   uint32_t _dynamicTableSizeLimit;
   bool _mergeAllowedForUnknownRequestHeaders{true};
+  Messages _messages{Messages::Requests};
 };
 
 /// HPACK encoder for compressing HTTP/2 header blocks (RFC 7541).

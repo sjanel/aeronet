@@ -4,14 +4,14 @@
 
 - **Security Hardening Audit**:
   - TLS fingerprinting hardening (avoid leaking version/cipher info in edge cases)
-  - Fuzzing harness integration (libFuzzer + AFL)
+  - Fuzzing harness integration (libFuzzer + AFL), first for the HTTP/1.1 and HTTP/2 parsers
 
 ## Medium priority
 
 - **Pluggable logging sink API (non-access logs)** - spdlog backend supports custom sinks/formatters; an aeronet-native sink registration API is not yet exposed.
 - **Enhanced parser diagnostics** (byte offset in parse errors for better debugging)
 - **Manage TE header in the client**: currently the TE header is reserved in the framework, so it cannot be sent. It could be a good idea to have a flag in the config to allow sending TE headers in the client with trailers essentially (because trailers are natively supported by aeronet). If `TE: trailers` is sent, in HTTP/1.1 we also need to add `Connection: TE`.
-- **Protocol Buffers, next steps** (the binary and ProtoJSON bodies, and the choice of their encoding from `Accept`, are [delivered](modules/protobuf.md)):
+- **Protocol Buffers, next steps** (after the [delivered](modules/protobuf.md) bodies and `Accept` negotiation):
   - ProtoJSON options (`ignore_unknown_fields`, printing the fields at their default value) and deterministic binary serialization, behind an aeronet options struct (a server-wide `ProtobufConfig`, loadable from configuration files), since their names differ between protobuf versions;
   - streaming: length-delimited message streams over `HttpResponseWriter` and `readBody()`;
   - Connect unary (a plain `POST` with `application/proto`), then gRPC unary over HTTP/2 (5-byte message framing, `grpc-status` trailers, `grpc-encoding`, `grpc-timeout`).
@@ -46,13 +46,11 @@ proven faster. They are ordered by expected leverage, not by unverified percenta
 #### Benchmark ideas
 
 Existing `hpack_bench`, `http2_flow_control_bench` and WebSocket mask benchmarks cover basic steady-state operations, so
-extend them instead of duplicating them. The WebSocket large-frame SIMD masking gap previously listed here is complete.
+extend them instead of duplicating them.
 
 | Benchmark gap | Decision it must support |
 | --- | --- |
 | Stream randomized lookup, frame processing and prune churn through 10 K streams | Stream map/cache and hot/cold split |
-| Client identity/chunked/compressed responses from 0 B through 100 MiB | Response-buffer ownership transfer |
-| Static-file cache hit/miss/thrash at capacities 64 through 4,096 | O(1) or amortized eviction policy |
 | Response-size syscall counts, plain + TLS | TCP cork threshold |
 | Header lookup/mutation with 4 through 32 fields | Flat scan versus compact/lazy indexing |
 | JWT decode/verify with 1 through 1,000 JWKs | `kid` index and base64url decode strategy |
@@ -63,9 +61,8 @@ extend them instead of duplicating them. The WebSocket large-frame SIMD masking 
 ## Long-term / Nice-to-have
 
 - **HTTP/3 / QUIC** - a separate transport layer (future major feature); scoped as a research spike below before any commitment.
-- **Fuzz Harness Integration** - libFuzzer targets for HTTP/1.1 and HTTP/2 parsing
 - **Per-SNI mTLS Policies** - Different client cert requirements per SNI hostname
-- **Advanced Metrics** - ~~Histogram/percentile latency buckets~~ ✔ (implemented via `TelemetryContext::histogram()` + `TelemetryConfig::addHistogramBuckets()`); per-route stats not yet implemented
+- **Per-route metrics** - request counts and latency per route
 
 ### HTTP/3 / QUIC - research spike
 
@@ -100,33 +97,22 @@ The following features are inspired by capabilities that make frameworks like **
 
 #### HTTP Client (`AERONET_ENABLE_HTTP_CLIENT`)
 
-Status: **Delivered** (`aeronet/client`, enabled by default). The synchronous `aeronet::HttpClient` speaks **HTTP/1.1 and HTTP/2** natively over aeronet's own non-blocking transport + event loop, with HTTPS via the shared `TlsTransport`, per-origin keep-alive pooling, redirect following, a retry + exponential-backoff policy, transparent response decompression / request compression, cleartext forward-proxy (`CONNECT` tunneling), and an opt-in time-based response cache for idempotent requests. Every request returns an `HttpClientResult` (`std::expected<HttpResponse, HttpClientErrc>`) - value-based errors, no throwing on the request path. See the [HTTP client guide](modules/http-client.md) for the full surface.
-
-Example:
-
-```cpp
-aeronet::HttpClient client;
-auto result = client.get("https://api.example.com/data");
-if (result && result->status() == 200) {
-  std::string_view body = result->bodyInMemory();
-}
-```
-
-Still planned:
-
-Client performance work from the repository-wide audit (response-buffer ownership, receive sizing, and DNS/TLS reuse)
-is tracked in the [performance optimization backlog](#performance-optimization-backlog) above.
+Delivered, see the [HTTP client guide](modules/http-client.md). Still planned (receive sizing and DNS/TLS reuse are in
+the [performance optimization backlog](#performance-optimization-backlog)):
 
 - **Coroutine-friendly API** (`co_await client.get(...)`) integrated with a *running* server event loop, so handlers can issue upstream calls without blocking. This is also what unlocks **true HTTP/2 multiplexing** in the client: the native HTTP/2 engine has landed, but the synchronous model runs one stream at a time per connection.
 - **Unify the request buffer with the wire bytes**: teach `HttpMessage` a request-line first-line mode so the client builds the request directly in the buffer it writes, with zero reassembly (today request fields are copied once into the send buffer).
 - **Cancellation from another thread** of an in-flight client exchange (a `ResponseBodySink` can already stop a transfer, and `inactivityTimeout` bounds a stalled one).
 - **Client-side telemetry**: surface pool hit/miss, retry counts, cache hits/misses, redirect hops and decompression stats through the same `TelemetryContext` infrastructure the server already uses (the client currently emits none).
-- **Cookie jar** (RFC 6265): store `Set-Cookie` per origin and send `Cookie` back (domain/path matching, `Secure`, `HttpOnly`, expiry, `SameSite`), opt-in in `HttpClientConfig`. Today a redirect chain or a multi-request flow loses session cookies unless the caller copies them by hand. Prerequisite of the [JavaScript pages](#html-parsing-and-javascript-pages-aeronet_enable_html-aeronet_enable_js) phases.
+- **Cookies, next steps** (after the [delivered](modules/http-client.md#cookies) in-memory jar):
+  - import and export of the Netscape `cookies.txt` format (curl, wget, yt-dlp, browser extensions), so that a long-running client keeps its session across restarts and can start from the cookies of a browser;
+  - the public suffix list, behind the heuristic of `RegistrableDomain()` (`aeronet/client/src/cookie-jar.cpp`): an optional libpsl (vcpkg, Conan, Linux systems) for exact registrable domains (`github.io`), and same-site checks on registrable domains instead of hosts.
 - **Reverse-proxy / forwarding** building on the client (see the reverse-proxy item below).
 
 #### HTML parsing and JavaScript pages (`AERONET_ENABLE_HTML`, `AERONET_ENABLE_JS`)
 
-Status: **phase 1 delivered** ([HTML parsing](modules/html.md)), JavaScript not started
+Status: [HTML parsing](modules/html.md) (phase 1) and the [client cookies](modules/http-client.md#cookies) (phase 2)
+delivered, JavaScript not started
 ([#738](https://github.com/sjanel/aeronet/issues/738)). Goal: let the client read pages whose content is produced or
 completed by JavaScript, e.g. `page.querySelectorAll("table tr")` after a `navigate()`.
 
@@ -134,22 +120,39 @@ completed by JavaScript, e.g. `page.querySelectorAll("table tr")` after a `navig
 loop and the Web APIs (`fetch`, XHR, timers, `location`, storage, observers...) are most of the work, and that
 surface is never complete: Lightpanda, a funded headless browser built on V8, still describes its Web API coverage
 as partial. On the other hand many "JavaScript pages" do not need JS at all: they are rendered on the server, or
-they embed their data as JSON that the page scripts turn into markup.
+they embed their data as JSON that the page scripts turn into markup, which phase 1 reads (the
+[Kraken withdrawal fees page](https://support.kraken.com/articles/360000767986-cryptocurrency-withdrawal-fees-and-minimums)
+of #738 has no `<table>`: its 799 rows are in `window.__INITIAL_PROPS__`, behind 51 scripts).
 
-Worked example, the [Kraken withdrawal fees page](https://support.kraken.com/articles/360000767986-cryptocurrency-withdrawal-fees-and-minimums)
-(checked 2026-11-06): the served HTML (4 MB) has no `<table>`, and the page loads 51 external scripts (2.8 MB of
-JS: React, code-split chunks, consent and analytics). The rows are in an inline script
-`window.__INITIAL_PROPS__ = {...}` (a TanStack Query dehydrated state): its `WITHDRAWAL_METHODS_SUBSCRIBER` query
-holds 799 entries with `asset_name`, `asset`, `fee`, `min_amount` and the network, from which React builds the
-table. Phase 1 reads them without running any script. The fees are recomputed between requests, so values copied
-from a screenshot are not found later by `grep`.
+Worked example, a [Nintendo Store product page](https://store.nintendo.com/fr-fr/manette-pro-nintendo-switch2-edition-40e-anniversaire-de-the-legend-of-zelda-support-dexposition-000000000010019437)
+watched for its stock (steps 1-3 checked on 2026-11-07, step 4 from a headless Chromium dump of 2026-11-02). Its
+data needs no JS, but reaching it does: the store is behind a Queue-it waiting room that sends every new visitor
+through a script.
+
+1. A request without cookies is answered `307` to `nintendostoreuk.queue-it.net`.
+2. That page (2.4 KB) has one inline script: it checks `navigator.cookieEnabled` and `document.cookie`, then sets
+   `document.location.href` to a relative URL carrying a signed timestamp. Its `<noscript>` says "The site requires
+   JavaScript".
+3. When no queue is running, that URL answers `302` back to the product page, with a signed `queueittoken` in the
+   query and in a `Queue-it-token` cookie (3 minutes, `SameSite=None`).
+4. The product page (1.25 MB, Next.js) holds the stock state in `<script id="__NEXT_DATA__" type="application/json">`
+   (1 MB): `props.pageProps.product.inventory.orderable`, `c_availabilityModel.type` (`"OutOfStock"`), the price.
+   Its ~25 scripts (Next.js chunks, consent, account SDK, analytics) are not needed. Searching the HTML for
+   "rupture de stock" finds it whatever the stock: the words are in the translations of `__NEXT_DATA__`.
+
+What it needs, in the phases below: a cookie jar across sites (phase 2, delivered: steps 1 to 3 already keep and send
+the cookies of both sites), script navigation, parsing in scripting mode, and a selector checked before the scripts
+of each document run (phase 3). When a queue is running, step 3 is
+a real waiting room (it polls Queue-it, and may ask for a CAPTCHA or a proof of work): out of scope like the other
+anti-bot challenges, the client does not try to skip it, `navigate()` ends at its budget on the queue-it.net
+document.
 
 Dependencies (C libraries, kept out of the public headers):
 
-- **lexbor** (Apache-2.0, C99, CMake, vcpkg and Conan): WHATWG HTML parser, DOM, CSS selectors, encodings and URL
-  parser, also the HTML5 parser of PHP 8.4. Version 3.0 adds per-element mutation callbacks (insertion, removal,
-  attribute change), the hook for scripts inserted at runtime and `MutationObserver`; each node has a `user`
-  pointer to cache its JS wrapper (the one of the document node holds the query engine of `HtmlDocument`).
+- **lexbor** (Apache-2.0, already used by phase 1): its per-element mutation callbacks (insertion, removal,
+  attribute change) are the hook for scripts inserted at runtime and `MutationObserver`; each node has a `user`
+  pointer to cache its JS wrapper (the one of the document node holds the query engine of `HtmlDocument`); a
+  document can be parsed in scripting mode (`lxb_html_document_scripting_set`).
 - **QuickJS-ng** (MIT, ES2023+, CMake, MSVC, vcpkg): not in Conan Center, which only has Bellard's QuickJS -
   either contribute a recipe or support both behind a thin layer (their C APIs are close). No `Intl` (the
   project says it will likely never have it, so i18n libraries need stubs), no WebAssembly, interpreter speed.
@@ -158,25 +161,31 @@ Dependencies (C libraries, kept out of the public headers):
 
 Phases:
 
-1. **HTML** - delivered, see [HTML parsing](modules/html.md): `HtmlDocument` (encoding sniffing, read-only DOM),
-   CSS selector queries (as text or compiled `CssSelector`), and `assignedJson()` for the state embedded by
-   server-rendered pages. Still open: DOM mutation and serialization of a modified tree (needed by phase 3 anyway).
+1. **HTML** - delivered. Still open: DOM mutation and serialization of a modified tree (needed by phase 3 anyway).
    The fragment parsing behind `innerHTML` and `insertAdjacentHTML` must get the same nesting limits as the document
    parsing (`aeronet/html/src/html-parse.cpp`).
-2. **Client cookie jar** (see the HTTP client items above), needed by any multi-request navigation and by
-   `document.cookie`.
+2. **Client cookie jar** - delivered, see [Cookies](modules/http-client.md#cookies): RFC 6265bis storage and
+   retrieval, `SameSite` along redirect chains across sites, merged with the `Cookie` header of the request.
 3. **JS core** (`AERONET_ENABLE_JS`, requires `AERONET_ENABLE_HTML` and `AERONET_ENABLE_HTTP_CLIENT`, OFF by
    default), module `aeronet/web`: `WebClient::navigate(url, options)` returning a `std::expected`, the same
    `Element` API as phase 1, and `evaluate()`.
    - One QuickJS runtime per page over the lexbor document; the page owns every node and frees them together,
      so node lifetime does not depend on the JS garbage collector.
+   - Documents are parsed in scripting mode, as browsers with JS do: `<noscript>` content is text, not markup.
    - Scripts run in document order with `defer` semantics after a full parse (`document.write` during parsing
      is limited).
+   - Script navigation (`location.href`, `location.assign()` / `replace()`, `<meta http-equiv="refresh">`) drops
+     the page and its runtime and loads the new URL, resolved against the document URL; the hops count toward a
+     limit, like redirects.
    - Event loop: one task, then the microtasks (`JS_ExecutePendingJob`). Timers use a virtual clock: they fire
      in order without sleeping, with caps on far timers and on `setInterval` runs.
-   - `fetch` and XHR go through the page's `HttpClient` (synchronous XHR comes for free).
+   - `fetch` and XHR go through the page's `HttpClient` (synchronous XHR comes for free). `navigator` has
+     `cookieEnabled`, `userAgent` and `language`. `document.cookie` reads and writes the jar of the client as a
+     non-HTTP API (`HttpOnly` cookies hidden and kept, RFC 6265bis §5.7), and the subresources of a page are
+     requests of its site: their `SameSite` context comes from the page, not from a redirect chain.
    - `navigate()` returns on network idle (no request in flight, no timer due), on a matching selector, or when
-     the time budget runs out (QuickJS interrupt handler).
+     the time budget runs out (QuickJS interrupt handler). The selector is checked when a document is parsed,
+     before its scripts run: data served in the HTML costs no script run.
 4. **Single-page app compatibility**: ES modules and `import()`, scripts inserted at runtime (webpack chunk
    loading) through the lexbor mutation callbacks, `MutationObserver`, stubs (`Intl`, `matchMedia`,
    `getComputedStyle`, `IntersectionObserver` reporting everything visible, layout sizes of 0),
@@ -185,19 +194,18 @@ Phases:
    WebSocket). Little aeronet code, but it needs a WebSocket client, which aeronet does not have.
 
 ```cpp
-// Phase 1 - no JS (delivered)
-auto resp = client.get(url);
-aeronet::HtmlDocument doc(resp->bodyInMemory(), resp->headerValueOrEmpty(aeronet::http::ContentType));
-for (aeronet::HtmlElement row : doc.querySelectorAll("table tr")) {
-  std::string text = row.textContent();
-}
-std::string_view state = doc.assignedJson("window.__INITIAL_PROPS__");  // parse with glaze
+aeronet::WebClient web;  // its cookie jar outlives navigate()
 
-// Phase 3 - with JS
-aeronet::WebClient web;
+// A single-page app: run the scripts until the network is idle.
 auto page = web.navigate(url, {.until = aeronet::LoadState::NetworkIdle, .timeout = std::chrono::seconds{10}});
 if (page) {
   auto rows = page->querySelectorAll("table tr");
+}
+
+// The Nintendo Store page above: 4 exchanges and the waiting-room script, none of the product page scripts.
+auto product = web.navigate(nintendoUrl, {.untilSelector = "script#__NEXT_DATA__", .timeout = std::chrono::seconds{10}});
+if (product) {
+  std::string nextData = product->querySelector("script#__NEXT_DATA__").textContent();  // parse with glaze
 }
 ```
 
@@ -205,8 +213,8 @@ Scope: server-rendered pages with JS on top, and single-page apps (React, Vue, S
 DOM, `fetch` / XHR and timers. Out of scope: rendering and layout, anti-bot challenges (they fingerprint canvas,
 WebGL and timing), WebAssembly, workers, iframes, canvas, media.
 
-Performance: the synchronous client fetches the subresources one at a time (51 sequential exchanges in the example
-above); the coroutine client with HTTP/2 multiplexing (above) is the fix. Measure the QuickJS-ng compile and run
+Performance: the synchronous client fetches the subresources one at a time (51 sequential exchanges for the Kraken
+page); the coroutine client with HTTP/2 multiplexing (above) is the fix. Measure the QuickJS-ng compile and run
 time of real bundles before committing to phase 3.
 
 Security: `navigate()` runs remote code in the host process, and QuickJS-ng had memory-safety CVEs in 2025-2026
@@ -216,8 +224,8 @@ limits and a CPU budget; add a network policy (allowed origins, request and byte
 legs. Document that untrusted sites belong in an unprivileged process; an out-of-process sandbox (seccomp,
 landlock) can come later.
 
-Tests: pages served by aeronet's own `HttpServer` (a webpack-style chunk loader, a vendored production React build
-rendering a table), so CI needs no internet.
+Tests: pages served by aeronet's own `HttpServer` (a cookie check and script redirect across two origins, a
+webpack-style chunk loader, a vendored production React build rendering a table), so CI needs no internet.
 
 Open decisions: whether this scope is enough or the CDP driver should come first, the Conan strategy for the
 engine, and in-process only versus a sandbox from the start.
@@ -247,7 +255,7 @@ In-memory LRU cache keyed by method + path + `Vary` headers. Respects `Cache-Con
 
 #### Content negotiation (Accept header)
 
-Parse `Accept` header q-values to select response content type (JSON, YAML, XML, plain text). Return `406 Not Acceptable` when no format matches. Currently only `Accept-Encoding` is negotiated; `Accept` (media type) is left to user code. Frameworks like Spring, Rails, Phoenix, and ASP.NET handle this transparently.
+Parse `Accept` header q-values to select response content type (JSON, YAML, XML, plain text). Return `406 Not Acceptable` when no format matches. Apart from `Accept-Encoding`, and from `makeProtoResponse()` choosing between binary protobuf and ProtoJSON, `Accept` (media type) is left to user code. Frameworks like Spring, Rails, Phoenix, and ASP.NET handle this transparently.
 
 ```cpp
 router.setPath(http::Method::GET, "/data", [](const HttpRequestView& req) {
@@ -272,16 +280,9 @@ router.setPath(http::Method::GET, "/admin", adminHandler).accessPolicy(std::move
 
 #### Authentication helpers (Basic / Bearer / JWT)
 
-**JWT (JWS profile) delivered** (`aeronet/jwt`, `AERONET_ENABLE_JWT`): the full JWS algorithm suite
-(HMAC `HS*`, RSA `RS*`/`PS*`, ECDSA `ES*`, `EdDSA`), claim validation (`exp`/`nbf`/`iat`/`iss`/`aud`/`sub`
-with leeway + injectable clock), JWK/JWKS parsing with `kid` selection, and the mandatory security posture
-(reject `alg:none`, family-based anti-confusion, constant-time HMAC, signature-before-claims). No dedicated
-opt-in flag (`cmake_dependent_option`, ON whenever OpenSSL + Glaze are present); JWE out of scope. See
-the [JWT guide](modules/jwt.md) and `aeronet/jwt/test/`.
-
-Still planned: a server-side **middleware** that parses the `Authorization` header (Basic credentials or
-Bearer tokens) and wires the JWT verifier into a pluggable validator interface; plus a client-side
-**JWKS-fetch + cache** helper building on the HTTP client.
+[JWT verification](modules/jwt.md) is delivered. Still planned: a server-side **middleware** that parses the
+`Authorization` header (Basic credentials or Bearer tokens) and wires the JWT verifier into a pluggable validator
+interface; plus a client-side **JWKS-fetch + cache** helper building on the HTTP client.
 
 #### Reverse proxy / HTTP forwarding mode
 
@@ -295,11 +296,6 @@ Deliver chunked request bodies to handlers as they arrive instead of buffering t
 
 Process multipart/form-data uploads part-by-part as data arrives, rather than buffering the entire payload. Critical for large file uploads where the full body does not fit in memory. Currently documented as a limitation in the [requests guide](guides/requests.md#forms-and-file-uploads). Popular in Multer (Node.js), Actix-multipart, Spring `StreamingMultipartResolver`, and Go `multipart.Reader`.
 
-#### Per-route body size limits
-
-Status: **Delivered in `1.3.0`** - per-route `maxBodyBytes` / `maxHeaderBytes` overrides on `PathHandlerEntry`
-and `RouteGroup`, enforced across HTTP/1.1 (sync + async) and HTTP/2 with `413` / `431`.
-
 #### Graceful config reload via signal (SIGHUP)
 
 Reload the JSON/YAML config file on `SIGHUP` without restarting the server. Apply mutable config changes (timeouts, limits, compression settings, TLS certs) hot. Pairs with the existing Glaze config loader and `postConfigUpdate()`. Nginx, HAProxy, Caddy, and systemd-based services all support `SIGHUP`-driven reload.
@@ -312,11 +308,6 @@ Built-in topic-based broadcast for WebSocket connections. `WsRoom` / `WsTopic` a
 
 Compute a weak or strong ETag from the response body (e.g. hash) and handle `If-None-Match` / `304 Not Modified` for dynamic endpoints, not just static files. Reduces bandwidth for API responses that rarely change. Express (`etag` by default), Rails, ASP.NET, and Spring all auto-generate ETags for regular responses.
 
-### TLS enhancements (future)
-
-- Per-SNI mTLS policies
-- (Stretch) Exploring QUIC/HTTP/3 (would likely be a separate transport layer, so only mention if strategic)
-
 ## Realistic Network Testing
 
 Goals
@@ -324,14 +315,7 @@ Goals
 - Improve confidence that aeronet behaves correctly under latency, jitter, packet loss, reordering, partial delivery, and connection resets.
 - Catch protocol-level bugs (HTTP/1.1 and HTTP/2), TLS handshake fragility, flow-control and resource-leak issues that do not appear on a perfect local loopback.
 
-Approach and Components
-
-- ✅ **Deterministic simulated-network unit tests (DONE)**:
-  - `TestPipe` + `TestTransport`: in-memory transport with `FaultPolicy` for deterministic partial reads/writes, EAGAIN, and connection resets.
-  - `FaultInjectingTransport`: decorator wrapping real transports for integration tests with the full event loop.
-  - Transport test hook (`g_transportDecorator`): compile-time gated (`AERONET_ENABLE_TEST_HOOKS`) global atomic that decorates transports at accept time.
-  - 26 unit tests + 11 integration tests covering partial delivery, EAGAIN, resets, combined faults, pipelining.
-  - Already found and fixed a latent HTTP/1.1 parser bug (header boundary off-by-one).
+Approach and Components (beyond the existing `TestTransport` / `FaultInjectingTransport` tests)
 
 - Proxy-based user-space fault injection (medium priority):
   - Integrate Toxiproxy or a small custom proxy harness for tests that exercise full binaries without requiring NET_ADMIN privileges.
@@ -349,20 +333,14 @@ Test Design & Best Practices
 - For integration tests, capture detailed artifacts on failures: pcap, logs, and deterministic seeds used by the test harness.
 - Expose test-time configuration hooks (shorter timeouts, deterministic timers) so tests run quickly and reliably.
 
-CI Policy
-
-- PRs: run all deterministic unit tests (including `TestTransport` simulated-network tests) and integration fault-injection tests.
-- Nightly: run proxy-based and `tc netem` integration suites; mark these jobs non-blocking for PRs.
+CI Policy: deterministic and fault-injection tests run on PRs; proxy-based and `tc netem` suites run nightly, non-blocking for PRs.
 
 Milestones
 
-1. ✅ Add `TestTransport` abstraction and deterministic unit tests covering partial I/O, EAGAIN, and resets.
-2. ✅ Add `FaultInjectingTransport` + global hook for integration tests with real sockets.
-3. ✅ Integration tests for HTTP/1.1 under faults (partial reads/writes, resets, pipelining).
-4. Add HTTP/2 direct protocol tests using `TestTransport` + `processInput()` for frame-level fault injection.
-5. Add simple Toxiproxy-based harness and a handful of end-to-end tests (connection cut, high latency, truncated responses).
-6. Add `ip netns` + `tc netem` scripts in `tests/e2e/` and integrate nightly CI job.
-7. Collect failure artifacts (pcap + logs) and add tooling to reproduce failing scenarios locally with the same netem parameters.
+1. Add HTTP/2 direct protocol tests using `TestTransport` + `processInput()` for frame-level fault injection.
+2. Add simple Toxiproxy-based harness and a handful of end-to-end tests (connection cut, high latency, truncated responses).
+3. Add `ip netns` + `tc netem` scripts in `tests/e2e/` and integrate nightly CI job.
+4. Collect failure artifacts (pcap + logs) and add tooling to reproduce failing scenarios locally with the same netem parameters.
 
 Known Limitations
 
@@ -373,8 +351,3 @@ Acceptance Criteria
 - Protocol correctness under simulated faults: no state corruption, proper error propagation, and graceful teardown.
 - No resource leaks (sockets, memory) in faulted runs.
 - Deterministic unit tests reproduce failures locally with a seed and do not rely on privileged resources.
-
-Notes
-
-- The transport test hook is compile-time gated (`#ifdef AERONET_ENABLE_TEST_HOOKS`) - zero cost in production builds.
-- Proxy-based tests are useful when privileged operations are not available in CI.

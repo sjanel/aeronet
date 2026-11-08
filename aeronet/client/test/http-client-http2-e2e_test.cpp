@@ -121,6 +121,11 @@ test::TestServer CreateTestServer() {
     Observe(req);
     return req.makeResponse(http::StatusCodeOK, "world", "text/plain");
   });
+  routerProxy.setPath(http::Method::GET, "/set-cookies", [](const HttpRequestView& req) {
+    return req.makeResponse("set")
+        .headerAddLine(http::SetCookie, "a=1; Expires=Wed, 09 Jun 2027 10:18:14 GMT")
+        .headerAddLine(http::SetCookie, "b=2");
+  });
   routerProxy.setPath(http::Method::HEAD, "/hello", [](const HttpRequestView& req) {
     Observe(req);
     return req.makeResponse(http::StatusCodeOK, "world", "text/plain");
@@ -820,6 +825,23 @@ TEST(HttpClientHttp2E2ETest, PriorKnowledgeSimpleGet) {
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), "world");
   EXPECT_TRUE(lastSeenHttp2.load(std::memory_order_relaxed));
+}
+
+// Repeated Set-Cookie fields stay separate lines, as over HTTP/1.1: commas cannot join them.
+TEST(HttpClientHttp2E2ETest, RepeatedSetCookieFieldsStaySeparate) {
+  HttpClient client = MakeHttp2Client();
+  auto resp = client.get(Url("/set-cookies")).value();
+  EXPECT_TRUE(lastSeenHttp2.load());
+  std::vector<std::string_view> setCookies;
+  for (const auto& [name, value] : resp.headers()) {
+    if (name == http::SetCookie) {
+      setCookies.push_back(value);
+    }
+  }
+  std::ranges::sort(setCookies);
+  ASSERT_EQ(setCookies.size(), 2U);
+  EXPECT_EQ(setCookies[0], "a=1; Expires=Wed, 09 Jun 2027 10:18:14 GMT");
+  EXPECT_EQ(setCookies[1], "b=2");
 }
 
 TEST(HttpClientHttp2E2ETest, AutoModeStaysHttp11OnCleartext) {

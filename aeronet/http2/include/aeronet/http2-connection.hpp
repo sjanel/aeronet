@@ -218,10 +218,11 @@ class Http2Connection {
 
   /// Encode and send headers for a request.
   /// Use magic value empty target to indicate trailers.
+  /// @param cookies Cookie-pairs separated by "; " (the cookies of a jar), each sent as a cookie field of its own
+  /// (RFC 9113 §8.2.3), besides any cookie field of headersView.
   [[nodiscard]] ErrorCode sendRequestHeaders(uint32_t streamId, http::Method method, bool isTlsRequest,
                                              std::string_view target, std::string_view authority,
-                                             HeadersView headersView, bool endStream,
-                                             const ConcatenatedHeaders* pGlobalHeaders = nullptr);
+                                             HeadersView headersView, bool endStream, std::string_view cookies = {});
 
   /// Send HEADERS frame to start a new request/response.
   /// @param streamId Stream ID (must be valid for new stream creation)

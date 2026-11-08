@@ -69,6 +69,10 @@ void HttpClientConfig::validate() const {
     }
   }
 
+  if (cookies.enabled() && cookies.maxCookiesPerDomain == 0) {
+    throw std::invalid_argument("cookies.maxCookiesPerDomain must be > 0 when cookies are enabled");
+  }
+
   decompression.validate();
   if (requestCompression.enabled()) {
     requestCompression.codec.validate();

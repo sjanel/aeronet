@@ -36,6 +36,7 @@
 #include "aeronet/client-protocol.hpp"
 #include "aeronet/close-native-handle.hpp"
 #include "aeronet/compression-test-helpers.hpp"
+#include "aeronet/cookie-jar.hpp"
 #include "aeronet/direct-compression-mode.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/file.hpp"
@@ -1722,6 +1723,15 @@ class HttpClientCacheE2ETest : public ::testing::Test {
       _echoHits.fetch_add(1, std::memory_order_relaxed);
       return req.makeResponse(http::StatusCodeOK, req.body(), "application/test");
     });
+    // Redirects to /a, the second one to a URL long enough for the request buffer to grow.
+    router.setPath(http::Method::GET, "/to-a", [this](const HttpRequestView& req) {
+      _redirectHits.fetch_add(1, std::memory_order_relaxed);
+      return req.makeResponse(http::StatusCodeFound).headerAddLine(http::Location, "/a");
+    });
+    router.setPath(http::Method::GET, "/to-a-long", [this](const HttpRequestView& req) {
+      _redirectHits.fetch_add(1, std::memory_order_relaxed);
+      return req.makeResponse(http::StatusCodeFound).headerAddLine(http::Location, "/a?pad=" + std::string(1024, 'x'));
+    });
   }
 
   [[nodiscard]] static std::string Url(std::string_view path) {
@@ -1733,6 +1743,7 @@ class HttpClientCacheE2ETest : public ::testing::Test {
   std::atomic<int> _aHits{0};
   std::atomic<int> _bHits{0};
   std::atomic<int> _echoHits{0};
+  std::atomic<int> _redirectHits{0};
 };
 
 }  // namespace
@@ -1750,6 +1761,25 @@ TEST_F(HttpClientCacheE2ETest, CachesRepeatedGetWithinTtl) {
   EXPECT_EQ(client.get(Url("/counter")).value().bodyInMemory(), "1");  // served from cache
   EXPECT_EQ(client.get(Url("/counter")).value().bodyInMemory(), "1");
   EXPECT_EQ(_counterHits.load(), 1);
+}
+
+// The response of a request that followed a redirect is stored under the key of the request made, not under the one of
+// the request rewritten by the redirect: the next requests to the first URL are served from the cache.
+TEST_F(HttpClientCacheE2ETest, RedirectedRequestIsCachedUnderItsOwnKey) {
+  HttpClient client(HttpClientConfig{}.withCache(std::chrono::seconds{30}));
+  for (const std::string_view path : {"/to-a", "/to-a-long"}) {
+    for (int idx = 0; idx < 3; ++idx) {
+      const auto result = client.get(Url(path));
+      ASSERT_TRUE(result) << path << ' ' << ErrcToStr(result.error());
+      EXPECT_EQ(result->bodyInMemory(), "a") << path;
+    }
+  }
+  EXPECT_EQ(_redirectHits.load(), 2);
+  EXPECT_EQ(_aHits.load(), 2);
+  EXPECT_EQ(HttpClientTest::CacheEntries(client), 2U);
+  // The target of the redirects has no entry of its own.
+  EXPECT_EQ(client.get(Url("/a")).value().bodyInMemory(), "a");
+  EXPECT_EQ(_aHits.load(), 3);
 }
 
 TEST_F(HttpClientCacheE2ETest, RefetchesAfterTtlExpiry) {
@@ -2560,6 +2590,11 @@ class TinyProxy {
     const std::scoped_lock lock(_mtx);
     return _capturedHead;
   }
+  // The head of the last request received, captured before its response is sent.
+  [[nodiscard]] std::string lastCapturedHead() {
+    const std::scoped_lock lock(_mtx);
+    return _lastCapturedHead;
+  }
 
  private:
   void acceptLoop() {
@@ -2628,6 +2663,7 @@ class TinyProxy {
     if (_capturedHead.empty()) {
       _capturedHead = head;
     }
+    _lastCapturedHead = head;
   }
 
   std::string _httpResponse;
@@ -2638,6 +2674,7 @@ class TinyProxy {
   vector<std::thread> _workers;
   std::mutex _mtx;
   std::string _capturedHead;
+  std::string _lastCapturedHead;
   std::atomic<bool> _stop{false};
   std::atomic<int> _connectCount{0};
   NativeHandle _listenFd{kInvalidHandle};
@@ -2666,6 +2703,35 @@ TEST(HttpClientProxyE2ETest, HttpOriginUsesAbsoluteFormRequestTarget) {
   EXPECT_TRUE(head.starts_with("GET http://origin.invalid:1234/path?x=1 HTTP/1.1\r\n")) << head;
   EXPECT_NE(head.find("host: origin.invalid:1234\r\n"), std::string::npos) << head;
   EXPECT_EQ(proxy.connectCount(), 0);  // plain http never issues CONNECT
+}
+
+// The cookies of a request sent to a proxy are those of the path of its absolute-form target.
+TEST(HttpClientProxyE2ETest, CookiesUseThePathOfTheAbsoluteFormTarget) {
+  TinyProxy proxy("HTTP/1.1 200 OK\r\nset-cookie: p=1\r\ncontent-length: 2\r\n\r\nok");
+  HttpClientConfig cfg;
+  cfg.withProxy(ProxyUrl(proxy.port())).withCookies();
+  HttpClient client(cfg);
+
+  const auto result = client.get("http://origin.invalid:1234/dir/page?x=/a/b");
+  ASSERT_TRUE(result) << ErrcToStr(result.error());
+  ASSERT_EQ(client.cookieJar().size(), 1U);
+  client.cookieJar().forEach([](const Cookie& cookie) {
+    EXPECT_EQ(cookie.domain, "origin.invalid");
+    EXPECT_EQ(cookie.path, "/dir");  // the default path: the directory of the request path
+  });
+  EXPECT_EQ(client.cookieJar().cookieHeader("http://origin.invalid:1234/dir/other"), "p=1");
+  // The next request through the proxy carries it.
+  const auto second = client.get("http://origin.invalid:1234/dir/next");
+  ASSERT_TRUE(second) << ErrcToStr(second.error());
+  std::string head = proxy.lastCapturedHead();
+  EXPECT_TRUE(head.starts_with("GET http://origin.invalid:1234/dir/next HTTP/1.1\r\n")) << head;
+  EXPECT_TRUE(head.contains("\r\ncookie: p=1\r\n")) << head;
+  // A target without path has the path "/": the slashes of its query are not those of a path.
+  const auto third = client.get("http://origin.invalid:1234?x=/dir/a");
+  ASSERT_TRUE(third) << ErrcToStr(third.error());
+  head = proxy.lastCapturedHead();
+  EXPECT_TRUE(head.starts_with("GET http://origin.invalid:1234?x=/dir/a HTTP/1.1\r\n")) << head;
+  EXPECT_FALSE(head.contains("\r\ncookie:")) << head;
 }
 
 // The absolute-form target spells out a default port too ("http://host:80/..."), and keep-alive reuse works
@@ -3620,6 +3686,42 @@ TEST(HttpClientRawServerTest, ExpectationFailedRepeatsTheRequestWithoutExpectati
     EXPECT_FALSE(entries[1].contains("expect:")) << entries[1];
     EXPECT_TRUE(entries[1].ends_with(kBody)) << entries[1];
   }
+}
+
+// The response of a cached request repeated without its expectation after a 417 is stored under the key of the request
+// made, Expect header included: the same request is then served from the cache.
+TEST(HttpClientRawServerTest, ExpectationFailedResponseIsCachedUnderTheKeyOfTheRequest) {
+  static constexpr std::string_view kBody = "payload";
+  ReceivedLog received;
+  {
+    RawServer server([&received](NativeHandle fd, int) {
+      std::string request = test::RecvHead(fd);
+      if (request.contains("\r\nexpect:")) {
+        SendAll(fd, "HTTP/1.1 417 Expectation Failed\r\ncontent-length: 0\r\n\r\n");
+        received.add(std::move(request));
+        test::RecvUntilEnd(fd);  // until the client closes the connection
+        return;
+      }
+      RecvBody(fd, request, kBody.size());
+      received.add(std::move(request));
+      SendAll(fd, kOkResponse);
+      test::RecvUntilEnd(fd);
+    });
+    HttpClientConfig cfg;
+    cfg.expectContinueTimeout = std::chrono::seconds{20};
+    cfg.withCache(std::chrono::seconds{30});
+    HttpClient client(cfg);
+    for (int idx = 0; idx < 2; ++idx) {
+      auto req = client.makeRequest(http::Method::GET, MakeUrl(server.port()));
+      req.headerAddLine(http::Expect, http::h100_continue).body(kBody);
+      const auto result = client.request(std::move(req));
+      ASSERT_TRUE(result) << idx << ' ' << ErrcToStr(result.error());
+      EXPECT_EQ(result->bodyInMemory(), "ok") << idx;
+    }
+    EXPECT_EQ(HttpClientTest::CacheEntries(client), 1U);
+  }
+  // The 417 and the repeated request of the first request only.
+  EXPECT_EQ(received.entries().size(), 2U);
 }
 
 // A redirect turning the request into a body-less GET drops its 100-continue expectation, which a request without

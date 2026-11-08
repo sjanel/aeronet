@@ -109,7 +109,8 @@ class HttpRequestTest : public ::testing::Test {
   // Tell whether the redirect to 'location' was followed (the request now points to it).
   static bool ResolveRedirect(HttpRequest& req, std::string_view location) {
     const auto outcome = req.resolveRedirect(location);
-    return outcome == RedirectOutcome::SameOrigin || outcome == RedirectOutcome::CrossOrigin;
+    return outcome == RedirectOutcome::SameOrigin || outcome == RedirectOutcome::SameSite ||
+           outcome == RedirectOutcome::CrossSite;
   }
 
   // Checks that 'req' is identical to 'expected' (a copy taken before a rejected update).
@@ -1138,16 +1139,17 @@ TEST_F(HttpRequestTest, ResolveRedirectReportsOriginChanges) {
     EXPECT_EQ(ResolveRedirectOutcome(req, "https://example.com/z"), SameOrigin);
     EXPECT_EQ(ResolveRedirectOutcome(req, "https://EXAMPLE.com:443/z"), SameOrigin);
     EXPECT_EQ(ResolveRedirectOutcome(req, "//example.com/z"), SameOrigin);
-    EXPECT_EQ(ResolveRedirectOutcome(req, "https://example.com:8443/z"), CrossOrigin);
+    EXPECT_EQ(ResolveRedirectOutcome(req, "https://example.com:8443/z"), SameSite);
     EXPECT_EQ(req.originKey(), "https://example.com:8443");
-    EXPECT_EQ(ResolveRedirectOutcome(req, "https://other.com/z"), CrossOrigin);
-    EXPECT_EQ(ResolveRedirectOutcome(req, "//sub.other.com/z"), CrossOrigin);
+    EXPECT_EQ(ResolveRedirectOutcome(req, "https://EXAMPLE.com:8443/z"), SameOrigin);
+    EXPECT_EQ(ResolveRedirectOutcome(req, "https://other.com/z"), CrossSite);
+    EXPECT_EQ(ResolveRedirectOutcome(req, "//sub.other.com/z"), CrossSite);
     EXPECT_EQ(req.originKey(), "https://sub.other.com:443");
   }
   {
-    // An upgrade to https changes the origin too.
+    // An upgrade to https changes the site too (schemeful same-site).
     auto req = makeRequest(http::Method::GET, "http://example.com/x");
-    EXPECT_EQ(ResolveRedirectOutcome(req, "https://example.com/x"), CrossOrigin);
+    EXPECT_EQ(ResolveRedirectOutcome(req, "https://example.com/x"), CrossSite);
     EXPECT_EQ(req.originKey(), "https://example.com:443");
   }
 }

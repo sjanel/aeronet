@@ -19,6 +19,7 @@
 #include "aeronet/client-connection.hpp"
 #include "aeronet/client-protocol.hpp"
 #include "aeronet/connection.hpp"
+#include "aeronet/cookie-jar.hpp"
 #include "aeronet/decimal-writer.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/event-loop.hpp"
@@ -143,6 +144,15 @@ internal::UrlParseResult FinalizeProxyUrl(HttpClientConfig& config) {
   return res;
 }
 
+// How a request relates to its redirect chain for the SameSite cookies: HttpClient requests are navigations.
+internal::CookieSiteContext CookieSiteContextOf(bool crossSite, http::Method method) noexcept {
+  if (!crossSite) {
+    return internal::CookieSiteContext::SameSite;
+  }
+  return http::IsSafe(method) ? internal::CookieSiteContext::CrossSiteSafe
+                              : internal::CookieSiteContext::CrossSiteUnsafe;
+}
+
 // Flushes a telemetry context when destroyed.
 class FlushTelemetryOnExit {
  public:
@@ -182,6 +192,10 @@ HttpClient::HttpClient(HttpClientConfig config)
   // HTTP version selection (Http2 requires a build with AERONET_ENABLE_HTTP2) and HTTP/2 settings.
   _config.validate();
 
+  if (_config.cookies.enabled()) {
+    _cookieJar = CookieJar(_config.cookies.maxCookies, _config.cookies.maxCookiesPerDomain);
+  }
+
   FinalizeConfig(_config);
 
   const auto proxyRes = FinalizeProxyUrl(_config);
@@ -202,6 +216,7 @@ HttpClient::HttpClient(HttpClient&& rhs) noexcept
       _idle(std::move(rhs._idle)),
       _cache(std::move(rhs._cache)),
       _cacheKeyScratch(std::move(rhs._cacheKeyScratch)),
+      _cookieJar(std::move(rhs._cookieJar)),
       _reqBodyScratch(std::move(rhs._reqBodyScratch)),
       _responseBuffer(std::move(rhs._responseBuffer)),
 // _streamer only holds state during a request: default-constructed.
@@ -233,6 +248,7 @@ HttpClient& HttpClient::operator=(HttpClient&& rhs) noexcept {
     _idle = std::move(rhs._idle);
     _cache = std::move(rhs._cache);
     _cacheKeyScratch = std::move(rhs._cacheKeyScratch);
+    _cookieJar = std::move(rhs._cookieJar);
     _reqBodyScratch = std::move(rhs._reqBodyScratch);
     _responseBuffer = std::move(rhs._responseBuffer);
     _streamer = internal::ResponseStreamer{};  // only holds state during a request
@@ -282,13 +298,18 @@ HttpClientResult HttpClient::requestProcess(HttpRequest&& req, ResponseBodySink*
 
   std::string_view cacheKey;
   if (isCacheEligible) {
+    if (_config.cookies.enabled()) {
+      // The cookies sent with the request distinguish its response, like its headers do. A cached response sends none:
+      // they are not marked as sent.
+      _cookieJar.prepareCacheKeyCookies(req, SysClock::now());
+    }
     cacheKey = buildCacheKey(req);
     const HttpResponse* pCachedHttpResponse = cacheLookupFresh(cacheKey);
     if (pCachedHttpResponse != nullptr) {
       return HttpResponse(*pCachedHttpResponse);
     }
   }
-  HttpClientResult result = requestUncached(std::move(req));
+  HttpClientResult result = requestUncached(std::move(req), isCacheEligible ? &cacheKey : nullptr);
   // Cache only genuine 2xx responses; transport errors and non-success statuses are never stored.
   // Both HTTP/1.1 (Http1ResponseParser::decideFraming(), gated on _statusCode >= 200) and HTTP/2 (interim HEADERS are
   // consumed before a final response completes the exchange) guarantee a completed exchange never surfaces status() <
@@ -390,6 +411,7 @@ void HttpClient::releaseUnusedMemory() {
   _idle.shrink_to_fit();
   pruneExpiredCache(now, EjectType::OnlyExpired);
   _cache.shrink_to_fit();
+  _cookieJar.removeExpired(SysClock::now());
   // Shrink rather than free the scratch buffers: RawChars::shrink_to_fit() halves a mostly unused buffer, so periodic
   // calls bound the high-water capacity of a long-running client while keeping room for the next exchanges.
   _cacheKeyScratch.shrink_to_fit();
@@ -805,7 +827,7 @@ class HttpClient::UnregisterOnUnwind {
   int _uncaughtExceptions;
 };
 
-HttpClientResult HttpClient::performExchange(HttpRequest& req, bool redirectFollowed) {
+HttpClientResult HttpClient::performExchange(HttpRequest& req, bool redirectFollowed, bool crossSite) {
 #ifdef AERONET_LINUX
   // TLS (OpenSSL writes on the socket itself) and file bodies (sendfile()) may raise SIGPIPE if the server resets the
   // connection, terminating the process by default: keep it pending in this thread during the exchange, then discard
@@ -857,6 +879,10 @@ HttpClientResult HttpClient::performExchange(HttpRequest& req, bool redirectFoll
       // A response this loop would retry for its status is never given to a sink.
       _streamer.beginExchange(redirectFollowed, canBackoff(), req.expectsContinue());
     }
+    if (_config.cookies.enabled()) {
+      // Each attempt sends the cookies of the jar at this time: a retried response may have set some.
+      _cookieJar.prepareRequestCookies(req, CookieSiteContextOf(crossSite, req.method()), SysClock::now());
+    }
 
     // Drive the connection to a full exchange: finish the (TLS) connect, ensure a protocol engine, then hand
     // it the connection. `requestSent` flips to true as soon as any request byte is written, even when the
@@ -875,6 +901,10 @@ HttpClientResult HttpClient::performExchange(HttpRequest& req, bool redirectFoll
     }
 
     if (result) {
+      if (_config.cookies.enabled()) {
+        // Every response sets its cookies: those of redirects and of retried statuses too.
+        _cookieJar.storeResponseCookies(req, *result, SysClock::now());
+      }
       // Such responses are buffered by the streamer, never delivered to a sink (see beginExchange above).
       if (result->status() == http::StatusCodeExpectationFailed && req.expectsContinue()) {
         // RFC 9110 §10.1.1: a 417 only tells that a server along the way does not support expectations (such as an
@@ -924,9 +954,22 @@ bool HttpClient::cacheEligible(const HttpRequest& req) const noexcept {
 }
 
 std::string_view HttpClient::buildCacheKey(const HttpRequest& req) {
-  if (req.hasNoExternalPayload()) {
+  // The cookies of the jar sent with the request (see requestProcess) end the key, followed by their size so that no
+  // other request has the same key.
+  const std::string_view cookies = _cookieJar.requestCookies();
+  const auto appendNumber = [](auto value, char* pData) {
+    std::memcpy(pData, reinterpret_cast<const char*>(&value), sizeof(value));
+    return pData + sizeof(value);
+  };
+  const auto appendCookies = [cookies, &appendNumber](char* pData) {
+    return cookies.empty() ? pData : appendNumber(static_cast<uint32_t>(cookies.size()), Append(cookies, pData));
+  };
+  const std::size_t cookiesKeySize = cookies.empty() ? 0 : cookies.size() + sizeof(uint32_t);
+
+  if (req.hasNoExternalPayload() && cookies.empty() && !req.expectsContinue()) {
     // Optim - all data of the request is in the first buffer, so we can use it directly as the cache key without
-    // copying.
+    // copying. A followed redirect, which rewrites the request, copies it then (see requestUncached()). A request
+    // expecting 100-continue, whose Expect header a 417 response removes (see performExchange()), is copied now.
     return req._data;
   }
 
@@ -941,16 +984,20 @@ std::string_view HttpClient::buildCacheKey(const HttpRequest& req) {
   if (filePayload == nullptr) {
     const std::string_view bodyInMemory = req.bodyInMemory();
     const std::string_view trailers = req.trailersFlatView();
+    // An inlined body and its trailers are part of the wire data.
+    const bool external = !req.hasNoExternalPayload();
 
-    _cacheKeyScratch.reserve(wireSize + bodyInMemory.size() + trailers.size());
+    _cacheKeyScratch.reserve(wireSize + (external ? bodyInMemory.size() + trailers.size() : 0) + cookiesKeySize);
 
     char* pData = _cacheKeyScratch.data();
 
     pData = Append(req._data.data(), wireSize, pData);
-    pData = Append(bodyInMemory, pData);
-    pData = Append(trailers, pData);
+    if (external) {
+      pData = Append(bodyInMemory, pData);
+      pData = Append(trailers, pData);
+    }
 
-    _cacheKeyScratch.setEnd(pData);
+    _cacheKeyScratch.setEnd(appendCookies(pData));
 
     return _cacheKeyScratch;
   }
@@ -962,13 +1009,8 @@ std::string_view HttpClient::buildCacheKey(const HttpRequest& req) {
   // their contents.
   const auto lastModifiedCount = file.lastModified().time_since_epoch().count();
 
-  const auto appendNumber = [](auto value, char* pData) {
-    std::memcpy(pData, reinterpret_cast<const char*>(&value), sizeof(value));
-    return pData + sizeof(value);
-  };
-
   _cacheKeyScratch.reserve(File::kIdentitySize + sizeof(filePayload->offset) + sizeof(filePayload->length) +
-                           sizeof(lastModifiedCount) + sizeof(fileSz) + wireSize);
+                           sizeof(lastModifiedCount) + sizeof(fileSz) + wireSize + cookiesKeySize);
 
   char* pData = _cacheKeyScratch.data();
 
@@ -980,7 +1022,7 @@ std::string_view HttpClient::buildCacheKey(const HttpRequest& req) {
   pData = appendNumber(fileSz, pData);
   pData = Append(req._data.data(), wireSize, pData);
 
-  _cacheKeyScratch.setEnd(pData);
+  _cacheKeyScratch.setEnd(appendCookies(pData));
 
   return _cacheKeyScratch;
 }
@@ -1047,13 +1089,14 @@ void HttpClient::cacheStore(std::string_view key, HttpResponse resp) {
   }
 }
 
-HttpClientResult HttpClient::requestUncached(HttpRequest&& req) {
+HttpClientResult HttpClient::requestUncached(HttpRequest&& req, std::string_view* pCacheKey) {
   uint32_t redirectsLeft = _config.maxRedirects;
+  bool crossSite = false;  // a followed redirect changed the scheme or the host
 
   while (true) {
     // performExchange owns the (idempotent-safe) transparent retry of a stale pooled connection; any
     // failure it surfaces here is terminal.
-    HttpClientResult result = performExchange(req, _config.followRedirects && redirectsLeft != 0);
+    HttpClientResult result = performExchange(req, _config.followRedirects && redirectsLeft != 0, crossSite);
     if (!result) {
       return result;
     }
@@ -1075,6 +1118,12 @@ HttpClientResult HttpClient::requestUncached(HttpRequest&& req) {
                               ((code == http::StatusCodeMovedPermanently || code == http::StatusCodeFound) &&
                                method != http::Method::GET && method != http::Method::HEAD);
 
+    if (pCacheKey != nullptr && pCacheKey->data() == req._data.data()) {
+      // The cache key is the request itself (see buildCacheKey()), which the redirect rewrites in place: the response
+      // is stored under a copy of it, the key of the request made by the caller.
+      _cacheKeyScratch.assign(*pCacheKey);
+      *pCacheKey = _cacheKeyScratch;
+    }
     HttpRequest::RedirectOutcome outcome = req.resolveRedirect(location);
 
     switch (outcome) {
@@ -1084,8 +1133,12 @@ HttpClientResult HttpClient::requestUncached(HttpRequest&& req) {
         // Following it would send the request, and receive its response, in clear over the network.
         log::warn("Not following the redirect of {} to the cleartext URL '{}'", req.originKey(), location);
         return result;
-      case HttpRequest::RedirectOutcome::CrossOrigin:
-        // Credentials are meant for the origin the request was made for, not for an origin chosen by a redirect.
+      case HttpRequest::RedirectOutcome::CrossSite:
+        crossSite = true;
+        [[fallthrough]];
+      case HttpRequest::RedirectOutcome::SameSite:
+        // Credentials are meant for the origin the request was made for, not for an origin chosen by a redirect. The
+        // cookies of the jar are chosen again for each URL.
         req.headerRemoveAllLines(http::Authorization).headerRemoveAllLines(http::Cookie);
         break;
       default:

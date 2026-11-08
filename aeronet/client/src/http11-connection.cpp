@@ -71,23 +71,13 @@ class ClientConnection::Http11RequestWriter {
     // head ends at the first blank line, as no header line holds a CRLF.
     std::size_t headEnd = chunkedReq.has_value() ? wire.find(http::DoubleCRLF) : req.headEndForHttp11();
     assert(wire.substr(headEnd).starts_with(http::DoubleCRLF));
-    if (!chunkedReq.has_value() && !config.keepAlive && !req.hasHeader(http::Connection)) {
-      // RFC 9112 section 9.6: a client that does not keep its connections alive MUST send the "close" connection
-      // option. It also lets the server close first, so that the TIME_WAIT state lands on its side instead of piling
-      // up on the client ephemeral ports. The request itself stays protocol-neutral, because a retry or redirect may
-      // select HTTP/2, which forbids the Connection header: the header line is only spliced into the wire head (and
-      // inline body), built in the client's request scratch buffer, idle until the response phase. The captured body,
-      // if any, is still written straight from the request.
-      static constexpr std::string_view kConnectionCloseLine =
-          JoinStringView_v<http::CRLF, http::Connection, http::HeaderSep, http::close>;
-      RawChars& head = _client.bodyBuffer();
-      head.reserve(wire.size() + kConnectionCloseLine.size());
-      char* pData = Append(wire.substr(0, headEnd), head.data());
-      pData = AppendFixed<kConnectionCloseLine>(pData);
-      pData = Append(wire.substr(headEnd), pData);
-      head.setEnd(pData);
-      wire = head;
-      headEnd += kConnectionCloseLine.size();
+    // RFC 9112 section 9.6: a client that does not keep its connections alive MUST send the "close" connection option.
+    // It also lets the server close first, so that the TIME_WAIT state lands on its side instead of piling up on the
+    // client ephemeral ports. The serialization of the chunked copy already writes it.
+    const bool addClose = !chunkedReq.has_value() && !config.keepAlive && !req.hasHeader(http::Connection);
+    const std::string_view cookies = _client.requestCookies();
+    if (addClose || !cookies.empty()) {
+      headEnd = spliceHeadLines(wire, headEnd, cookies, addClose);
     }
     // A body with trailers is in memory, never a file: when captured, it holds the chunked framing and the trailers.
     const std::string_view body = wireReq.hasBodyCaptured() ? wireReq.capturedPayloadForHttp11() : std::string_view{};
@@ -113,6 +103,47 @@ class ClientConnection::Http11RequestWriter {
   [[nodiscard]] bool writeFailed() const noexcept { return _writeFailed; }
 
  private:
+  // Copies 'wire' (the head, then the inline body if any) into the request scratch buffer of the client, idle until the
+  // response phase, with 'cookies' added to the Cookie header line (a request has a single one, RFC 6265bis §5.8.3),
+  // or in a new one, and with the "close" connection option when 'addClose' is set. The request itself stays
+  // protocol-neutral, because a retry or redirect may select HTTP/2, which sends the cookies apart and forbids the
+  // Connection header. The captured body, if any, is still written straight from the request. Points 'wire' to the
+  // copy and returns its head end.
+  std::size_t spliceHeadLines(std::string_view& wire, std::size_t headEnd, std::string_view cookies, bool addClose) {
+    static constexpr std::string_view kConnectionCloseLine =
+        JoinStringView_v<http::CRLF, http::Connection, http::HeaderSep, http::close>;
+    static constexpr std::string_view kCookieLinePrefix = JoinStringView_v<http::CRLF, http::Cookie, http::HeaderSep>;
+
+    // Where the cookies go: at the end of the Cookie line of the request, else in a new line at the end of the head.
+    std::size_t cookiesPos = headEnd;
+    std::string_view cookiesPrefix = kCookieLinePrefix;
+    if (!cookies.empty()) {
+      const std::string_view head = wire.substr(0, headEnd);
+      if (const std::size_t cookieLinePos = head.find(kCookieLinePrefix); cookieLinePos != std::string_view::npos) {
+        const std::size_t valuePos = cookieLinePos + kCookieLinePrefix.size();
+        cookiesPos = std::min(head.find(http::CRLF, valuePos), headEnd);
+        cookiesPrefix = cookiesPos == valuePos ? std::string_view{} : http::CookiePairSep;
+      }
+    }
+    const std::size_t cookiesSize = cookies.empty() ? 0 : cookiesPrefix.size() + cookies.size();
+    const std::size_t closeSize = addClose ? kConnectionCloseLine.size() : 0;
+
+    RawChars& out = _client.bodyBuffer();
+    out.reserve(wire.size() + cookiesSize + closeSize);
+    char* pData = Append(wire.substr(0, cookiesPos), out.data());
+    if (!cookies.empty()) {
+      pData = Append(cookiesPrefix, pData);
+      pData = Append(cookies, pData);
+    }
+    pData = Append(wire.substr(cookiesPos, headEnd - cookiesPos), pData);
+    if (addClose) {
+      pData = AppendFixed<kConnectionCloseLine>(pData);
+    }
+    out.setEnd(Append(wire.substr(headEnd), pData));
+    wire = out;
+    return headEnd + cookiesSize + closeSize;
+  }
+
   // What a step of the writing tells about the rest of the request.
   enum class Step : uint8_t {
     Continue,    // the writing goes on

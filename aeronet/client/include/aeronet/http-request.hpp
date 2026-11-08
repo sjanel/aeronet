@@ -768,10 +768,11 @@ class HttpRequest final : public HttpMessage {
   const char* setNewUrl(const internal::UrlParseResult& res);
 
   enum class RedirectOutcome : uint8_t {
-    Invalid,      // malformed or too long location, the request is unchanged
-    Downgrade,    // redirect from https to cleartext http, refused: the request is unchanged
-    SameOrigin,   // target replaced, same scheme, host and port
-    CrossOrigin,  // URL replaced by one of another origin (scheme, host or port)
+    Invalid,     // malformed or too long location, the request is unchanged
+    Downgrade,   // redirect from https to cleartext http, refused: the request is unchanged
+    SameOrigin,  // target replaced, same scheme, host and port
+    SameSite,    // URL replaced by one of another port, same scheme and host: another origin of the same site
+    CrossSite,   // URL replaced by one of another scheme or host (the site of the cookie rules, see CookieJar)
   };
 
   // Point this request to the 'location' of a redirect response (absolute URL, network-path or relative reference).
