@@ -499,7 +499,11 @@ TEST(HttpProtobufHead, NegotiatedContentLength) {
 }
 
 std::string ProtocolName(const ::testing::TestParamInfo<HttpVersionMode>& info) {
+#ifdef AERONET_ENABLE_HTTP2
   return {info.param == HttpVersionMode::Http2 ? "Http2" : "Http1"};
+#else
+  return {"Http1"};
+#endif
 }
 
 #ifdef AERONET_ENABLE_HTTP2

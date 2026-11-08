@@ -4275,7 +4275,7 @@ TEST(HttpClientSinkE2ETest, ContentCodedBodiesAreDecodedAsTheyArrive) {
 // A content coding cut short is reported as malformed (the framing itself is complete), after the sink received the
 // head and the decodable part of the body.
 TEST(HttpClientSinkE2ETest, TruncatedContentCodingIsMalformed) {
-  const RawChars mixed = test::MakeMixedPayload(300000, 200000);
+  const RawChars mixed = test::MakeMixedPayload(60000, 40000);
   const std::string_view payload{mixed};
   for (const Encoding enc : test::SupportedEncodings()) {
     const RawChars encoded = test::Compress(enc, payload);

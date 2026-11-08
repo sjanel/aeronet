@@ -12,7 +12,6 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/connection-storage.hpp"
 #include "aeronet/router.hpp"
-#include "aeronet/sv-to-sv-map.hpp"
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include "aeronet/async-handler-state.hpp"
@@ -154,11 +153,10 @@ class Http1Pipeline {
   BodyDecodeStatus decodeChunkedBody(ConnectionIt cnxIt, std::span<char> input, std::size_t maxBodyBytes,
                                      std::size_t& consumedBytes);
 
-  // Decodes the trailers of a chunked body, starting at pos in 'input' (after the last chunk): copies them to the body
-  // and trailers buffer of the connection, and parses them. Sets pos after the blank line ending them once Ready.
+  // Decodes the trailers of a chunked body, starting at pos in 'input' (after the last chunk): validates them and
+  // copies them to the body and trailers buffer of the connection. Sets pos after the blank line ending them once
+  // Ready.
   BodyDecodeStatus decodeTrailers(ConnectionIt cnxIt, std::span<char> input, std::size_t& pos);
-
-  bool parseHeadersUnchecked(SvToSvMap& headersMap, char* bufferBeg, char* first, char* last);
 
   bool maybeDecompressRequestBody(ConnectionIt cnxIt, bool usePerConnectionBodyStorage);
 

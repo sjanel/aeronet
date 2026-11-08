@@ -563,7 +563,11 @@ TEST_P(ProtocolParityHttpsRedirect, PlaintextRequestsAreRedirected) {
 }
 
 std::string ProtocolName(const ::testing::TestParamInfo<HttpVersionMode>& info) {
+#ifdef AERONET_ENABLE_HTTP2
   return {info.param == HttpVersionMode::Http2 ? "Http2" : "Http1"};
+#else
+  return {"Http1"};
+#endif
 }
 
 INSTANTIATE_TEST_SUITE_P(Protocols, ProtocolParity, ::testing::Values(HttpVersionMode::Http1_1, HttpVersionMode::Http2),

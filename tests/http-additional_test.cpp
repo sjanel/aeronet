@@ -432,14 +432,10 @@ TEST(Http1HigherMinorVersion, StreamingHandlerCanBePicked) {
 TEST(HttpPipeline, TwoRequestsBackToBack) {
   ts.router().setDefault(
       [](const HttpRequestView& req) { return HttpResponse(std::string("E:") + std::string(req.path())); });
-  test::ClientConnection clientConnection(ts.port());
-  NativeHandle fd = clientConnection.fd();
-  ASSERT_GE(fd, 0);
-  std::string combo =
+  std::string resp = test::sendAndCollect(
+      ts.port(),
       "GET /a HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\n\r\nGET /b HTTP/1.1\r\nhost: x\r\ncontent-length: "
-      "0\r\nconnection: close\r\n\r\n";
-  test::sendAll(fd, combo);
-  std::string resp = test::recvUntilClosed(fd);
+      "0\r\nconnection: close\r\n\r\n");
   ASSERT_TRUE(resp.contains("E:/a"));
   ASSERT_TRUE(resp.contains("E:/b"));
 }
@@ -691,12 +687,9 @@ TEST(HttpSplitRequest, ChunkedBodyReceivedInSeveralReads) {
 
 TEST(HttpExpect, ZeroLengthNo100) {
   ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("Z"); });
-  test::ClientConnection clientConnection(ts.port());
-  NativeHandle fd = clientConnection.fd();
-  std::string headers =
-      "POST /z HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nexpect: 100-continue\r\nconnection: close\r\n\r\n";
-  test::sendAll(fd, headers);
-  std::string resp = test::recvUntilClosed(fd);
+  std::string resp = test::sendAndCollect(
+      ts.port(),
+      "POST /z HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nexpect: 100-continue\r\nconnection: close\r\n\r\n");
   ASSERT_FALSE(resp.contains("100 Continue"));
   ASSERT_TRUE(resp.contains('Z'));
 }
@@ -721,13 +714,10 @@ TEST(HttpExpect, EmptyTokensInExpectHeader) {
 TEST(HttpExpect, UnknownExpectTokenReturns417) {
   ts.server.setExpectationHandler({});
   ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("never"); });
-  test::ClientConnection clientConnection(ts.port());
-  NativeHandle fd = clientConnection.fd();
-  std::string headers =
+  std::string resp = test::sendAndCollect(
+      ts.port(),
       "POST /unk HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\nexpect: unknown-token\r\nconnection: close\r\n\r\n"
-      "hello";
-  test::sendAll(fd, headers);
-  std::string resp = test::recvUntilClosed(fd);
+      "hello");
   EXPECT_TRUE(resp.contains("417")) << resp;
 }
 
@@ -812,24 +802,18 @@ TEST(HttpMaxRequests, CloseAfterLimit) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxRequestsPerConnection(2); });
   // parser error callback intentionally left empty in tests
   ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("Q"); });
-  test::ClientConnection clientConnection(ts.port());
-  NativeHandle fd = clientConnection.fd();
-  std::string reqs =
+  std::string resp = test::sendAndCollect(
+      ts.port(),
       "GET /1 HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\n\r\nGET /2 HTTP/1.1\r\nhost: x\r\ncontent-length: "
-      "0\r\n\r\nGET /3 HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\n\r\n";
-  test::sendAll(fd, reqs);
-  std::string resp = test::recvUntilClosed(fd);
+      "0\r\n\r\nGET /3 HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\n\r\n");
   ASSERT_EQ(2, test::countOccurrences(resp, "HTTP/1.1 200"));
   ASSERT_EQ(2, test::countOccurrences(resp, "Q"));
 }
 
 TEST(HttpPipeline, SecondMalformedAfterSuccess) {
   ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
-  test::ClientConnection clientConnection(ts.port());
-  NativeHandle fd = clientConnection.fd();
-  std::string piped = "GET /good HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\n\r\nBADSECONDREQUEST\r\n\r\n";
-  test::sendAll(fd, piped);
-  std::string resp = test::recvUntilClosed(fd);
+  std::string resp = test::sendAndCollect(
+      ts.port(), "GET /good HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\n\r\nBADSECONDREQUEST\r\n\r\n");
   ASSERT_TRUE(resp.contains("OK"));
   ASSERT_TRUE(resp.contains("400"));
 }
@@ -837,11 +821,8 @@ TEST(HttpPipeline, SecondMalformedAfterSuccess) {
 TEST(HttpContentLength, ExplicitTooLarge413) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withMaxBodyBytes(10); });
   ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("R"); });
-  test::ClientConnection clientConnection(ts.port());
-  NativeHandle fd = clientConnection.fd();
-  std::string req = "POST /big HTTP/1.1\r\nhost: x\r\ncontent-length: 20\r\nconnection: close\r\n\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
+  std::string resp = test::sendAndCollect(
+      ts.port(), "POST /big HTTP/1.1\r\nhost: x\r\ncontent-length: 20\r\nconnection: close\r\n\r\n");
   ASSERT_TRUE(resp.contains("413"));
 }
 
@@ -984,11 +965,7 @@ TEST(HttpContentLength, GlobalHeaders) {
     respObj.body("R");
     return respObj;
   });
-  test::ClientConnection clientConnection(ts.port());
-  NativeHandle fd = clientConnection.fd();
-  std::string req = "POST /big HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
+  std::string resp = test::sendAndCollect(ts.port(), "POST /big HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n");
   EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("x-global", "gvalue")));
   EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("x-another", "anothervalue")));
   EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("x-custom", "original")));
@@ -1011,11 +988,8 @@ TEST(HttpMakeResponse, PrefillsGlobalHeadersHttp11) {
     return resp;
   });
 
-  test::ClientConnection clientConnection(ts.port());
-  NativeHandle fd = clientConnection.fd();
-  std::string req = "GET /make-response HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n";
-  test::sendAll(fd, req);
-  const std::string resp = test::recvUntilClosed(fd);
+  const std::string resp =
+      test::sendAndCollect(ts.port(), "GET /make-response HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n");
 
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 202"));
   EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("x-global", "gvalue")));
@@ -1031,11 +1005,8 @@ TEST(HttpBasic, LargePayload) {
     cfg.withMaxOutboundBufferBytes(1UL << 25U);  // 32 MiB
   });
   ts.router().setDefault([&largeBody](const HttpRequestView&) { return HttpResponse(largeBody); });
-  test::ClientConnection clientConnection(ts.port());
-  NativeHandle fd = clientConnection.fd();
-  std::string req = "GET /good HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
+  std::string resp = test::sendAndCollect(
+      ts.port(), "GET /good HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
   EXPECT_TRUE(resp.contains(largeBody));
 }
@@ -1132,12 +1103,8 @@ TEST(HttpBasic, ManyHeadersResponse) {
     respObj.body("Response with many headers");
     return respObj;
   });
-  test::ClientConnection clientConnection(ts.port());
-  NativeHandle fd = clientConnection.fd();
-
-  std::string req = "GET /test HTTP/1.1\r\nhost: localhost\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
+  std::string resp = test::sendAndCollect(
+      ts.port(), "GET /test HTTP/1.1\r\nhost: localhost\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200"));
   EXPECT_TRUE(resp.contains("Response with many headers"));
 
@@ -1153,13 +1120,9 @@ TEST(HttpBasic, ManyHeadersResponse) {
 TEST(HttpExpectation, UnknownExpectationReturns417) {
   ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("X"); });
 
-  test::ClientConnection clientConnection(ts.port());
-  NativeHandle fd = clientConnection.fd();
-  ASSERT_GE(fd, 0);
-  std::string req =
-      "POST /x HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nexpect: custom-token\r\nconnection: close\r\n\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
+  std::string resp = test::sendAndCollect(
+      ts.port(),
+      "POST /x HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nexpect: custom-token\r\nconnection: close\r\n\r\n");
   ASSERT_TRUE(resp.contains("417")) << resp;
 }
 
@@ -1193,14 +1156,10 @@ TEST(HttpExpectation, HandlerCanEmit100Continue) {
 
   ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
-  test::ClientConnection clientConnection(ts.port());
-  NativeHandle fd = clientConnection.fd();
-  ASSERT_GE(fd, 0);
-  std::string req =
+  std::string resp = test::sendAndCollect(
+      ts.port(),
       "POST /x HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\nexpect: 100-continue-custom\r\nconnection: "
-      "close\r\n\r\nHELLO";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
+      "close\r\n\r\nHELLO");
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 100 Continue")) << resp;
   ASSERT_TRUE(resp.contains("200")) << resp;
 }
@@ -1220,13 +1179,9 @@ TEST(HttpExpectation, HandlerCanEmit102Interim) {
 
   ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
-  test::ClientConnection clientConnection(ts.port());
-  NativeHandle fd = clientConnection.fd();
-  ASSERT_GE(fd, 0);
-  std::string req =
-      "POST /x HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\nexpect: 102-processing\r\nconnection: close\r\n\r\nHELLO";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
+  std::string resp = test::sendAndCollect(
+      ts.port(),
+      "POST /x HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\nexpect: 102-processing\r\nconnection: close\r\n\r\nHELLO");
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 102 Processing")) << resp;
   ASSERT_TRUE(resp.contains("200")) << resp;
 }
@@ -1246,13 +1201,9 @@ TEST(HttpExpectation, HandlerCanEmitArbitraryInterimStatus) {
 
   ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
 
-  test::ClientConnection clientConnection(ts.port());
-  NativeHandle fd = clientConnection.fd();
-  ASSERT_GE(fd, 0);
-  std::string req =
-      "POST /x HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\nexpect: 103-early-hints\r\nconnection: close\r\n\r\nHELLO";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
+  std::string resp = test::sendAndCollect(
+      ts.port(),
+      "POST /x HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\nexpect: 103-early-hints\r\nconnection: close\r\n\r\nHELLO");
   // Status line without reason phrase, but with the space before it (RFC 9112 §4), then the empty line.
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 103 \r\n\r\nHTTP/1.1 200")) << resp;
 }
@@ -1360,13 +1311,9 @@ TEST(HttpExpectation, HandlerFinalResponseSkipsBody) {
 
   ts.router().setDefault([](const HttpRequestView&) { return HttpResponse("SHOULD NOT SEE"); });
 
-  test::ClientConnection clientConnection(ts.port());
-  NativeHandle fd = clientConnection.fd();
-  ASSERT_GE(fd, 0);
-  std::string req =
-      "POST /x HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\nexpect: auth-check\r\nconnection: close\r\n\r\nHELLO";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
+  std::string resp = test::sendAndCollect(
+      ts.port(),
+      "POST /x HTTP/1.1\r\nhost: x\r\ncontent-length: 5\r\nexpect: auth-check\r\nconnection: close\r\n\r\nHELLO");
   ASSERT_TRUE(resp.contains("403")) << resp;
   ASSERT_TRUE(resp.contains("nope")) << resp;
   ASSERT_FALSE(resp.contains("SHOULD NOT SEE")) << resp;
@@ -1450,25 +1397,17 @@ TEST(HttpChunked, DecodeBasic) {
         .body(std::string("LEN=") + std::to_string(req.body().size()) + ":" + std::string(req.body()));
   });
 
-  test::ClientConnection sock(ts.port());
-  NativeHandle fd = sock.fd();
-
-  std::string req =
-      "POST /c HTTP/1.1\r\nhost: x\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n"
-      "4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
+  std::string resp =
+      test::sendAndCollect(ts.port(),
+                           "POST /c HTTP/1.1\r\nhost: x\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n"
+                           "4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n");
   ASSERT_TRUE(resp.contains("LEN=9:Wikipedia"));
 }
 
 TEST(HttpHead, NoBodyReturned) {
   ts.resetRouterAndGet().setDefault(
       [](const HttpRequestView& req) { return HttpResponse(std::string("DATA-") + std::string(req.path())); });
-  test::ClientConnection cnx(ts.port());
-  NativeHandle fd = cnx.fd();
-  std::string req = "HEAD /head HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
+  std::string resp = test::sendAndCollect(ts.port(), "HEAD /head HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n");
   // Should have Content-Length header referencing length of would-be body (which is 10: DATA-/head)
   ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, "10")));
   // And not actually contain DATA-/head bytes after header terminator
@@ -1878,11 +1817,7 @@ TEST(SingleHttpServer, SynchronousRouterUpdateExceptionRethrown) {
 // Test request handler exception in normal handler
 TEST(SingleHttpServer, RequestHandlerStdException) {
   ts.router().setDefault([](const HttpRequestView&) -> HttpResponse { throw std::runtime_error("Handler error"); });
-  test::ClientConnection clientConnection(ts.port());
-  NativeHandle fd = clientConnection.fd();
-  std::string req = "GET /test HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
+  std::string resp = test::sendAndCollect(ts.port(), "GET /test HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n");
   ASSERT_TRUE(resp.contains("500")) << resp;
   EXPECT_FALSE(resp.contains("Handler error")) << resp;
 }
@@ -1891,11 +1826,7 @@ TEST(SingleHttpServer, RequestHandlerStdException) {
 TEST(SingleHttpServer, RequestHandlerNonStdException) {
   // NOLINTNEXTLINE(bugprone-std-exception-baseclass)
   ts.router().setDefault([](const HttpRequestView&) -> HttpResponse { throw 42; });
-  test::ClientConnection clientConnection(ts.port());
-  NativeHandle fd = clientConnection.fd();
-  std::string req = "GET /test HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
+  std::string resp = test::sendAndCollect(ts.port(), "GET /test HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n");
   ASSERT_TRUE(resp.contains("500")) << resp;
   EXPECT_FALSE(resp.contains("Unknown error")) << resp;
 }
@@ -2036,13 +1967,10 @@ TEST(SingleHttpServer, KeepAliveTimeoutNotTiedToPollInterval) {
 // Test request decompression when Content-Encoding is identity (no decompression needed)
 TEST(SingleHttpServer, RequestBodyIdentityEncodingNoDecompression) {
   ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
-  test::ClientConnection clientConnection(ts.port());
-  NativeHandle fd = clientConnection.fd();
-  std::string req =
+  std::string resp = test::sendAndCollect(
+      ts.port(),
       "POST /test HTTP/1.1\r\nhost: x\r\ncontent-encoding: identity\r\ncontent-length: 4\r\nconnection: "
-      "close\r\n\r\ntest";
-  test::sendAll(fd, req);
-  std::string resp = test::recvUntilClosed(fd);
+      "close\r\n\r\ntest");
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
   ASSERT_TRUE(resp.contains("test")) << resp;
 }

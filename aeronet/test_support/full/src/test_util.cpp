@@ -17,7 +17,6 @@
 #include <cstdint>
 #include <cstring>
 #include <exception>
-#include <future>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -985,14 +984,7 @@ bool AttemptConnect(uint16_t port) {
 }
 
 bool WaitForPeerClose(NativeHandle fd, std::chrono::milliseconds timeout) {
-  // Use recvUntilClosed via an async future so we can time out waiting for remote close.
-  auto fut = std::async(std::launch::async, [fd] { return recvUntilClosed(fd); });
-  if (fut.wait_for(timeout) == std::future_status::ready) {
-    // peer closed and we received final data
-    fut.get();
-    return true;
-  }
-  return false;
+  return RecvUntilEnd(fd, timeout).end != ReceivedUntilEnd::End::TimedOut;
 }
 
 bool WaitForListenerClosed(uint16_t port, std::chrono::milliseconds timeout) {

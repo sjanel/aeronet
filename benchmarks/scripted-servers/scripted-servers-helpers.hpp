@@ -1,19 +1,20 @@
 #pragma once
 
 #include <algorithm>
-#include <array>
-#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
-#include <optional>
 #include <random>
 #include <string>
 #include <string_view>
 #include <thread>
 
+#include "aeronet/toupperlower.hpp"
+
 #ifdef AERONET_ENABLE_ZLIB
+#include <optional>
+
 #include "aeronet/zlib-gateway.hpp"
 #endif
 
@@ -76,7 +77,7 @@ inline std::string BuildJson(std::size_t itemCount) {
   std::string json = "{\"items\":[";
   for (std::size_t itemPos = 0; itemPos < itemCount; ++itemPos) {
     if (itemPos > 0) {
-      json += ",";
+      json += ',';
     }
     json.append(R"({{"id":)");
     json += std::to_string(itemPos);
@@ -84,7 +85,7 @@ inline std::string BuildJson(std::size_t itemCount) {
     json += std::to_string(itemPos);
     json += R"(","value":)";
     json += std::to_string(itemPos * 100);
-    json += "}";
+    json += '}';
   }
   json += "]}";
   return json;
@@ -94,11 +95,11 @@ inline bool ContainsTokenInsensitive(std::string_view haystack, std::string_view
   if (needle.empty()) {
     return false;
   }
-  auto lower = [](unsigned char ch) { return static_cast<unsigned char>(std::tolower(ch)); };
+  auto lower = [](char ch) { return tolower(ch); };
   for (std::size_t pos = 0; pos + needle.size() <= haystack.size(); ++pos) {
     bool match = true;
     for (std::size_t idx = 0; idx < needle.size(); ++idx) {
-      if (lower(static_cast<unsigned char>(haystack[pos + idx])) != lower(static_cast<unsigned char>(needle[idx]))) {
+      if (lower(haystack[pos + idx]) != lower(needle[idx])) {
         match = false;
         break;
       }
@@ -147,18 +148,18 @@ inline std::optional<std::string> GzipDecompress(std::string_view input) {
   ZSetInput(stream, input.data(), static_cast<uint32_t>(input.size()));
 
   std::string output;
-  std::array<char, 8192> buffer{};
+  char buffer[8192];
   int ret = Z_OK;
   while (ret == Z_OK) {
-    ZSetOutput(stream, buffer.data(), buffer.size());
+    ZSetOutput(stream, buffer, sizeof(buffer));
     ret = ZInflate(stream, Z_NO_FLUSH);
     if (ret != Z_OK && ret != Z_STREAM_END) {
       ZInflateEnd(stream);
       return std::nullopt;
     }
-    const auto produced = buffer.size() - stream.avail_out;
+    const auto produced = sizeof(buffer) - stream.avail_out;
     if (produced > 0) {
-      output.append(buffer.data(), produced);
+      output.append(buffer, produced);
     }
   }
 

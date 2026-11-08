@@ -194,13 +194,17 @@ TEST(HttpCodecCompression, ContentTypeAllowListIgnoresParameters) {
   cfg.minBytes = 16U;
   cfg.contentTypeAllowList.append("text/plain");
   cfg.contentTypeAllowList.append("application/protobuf+json; charset=utf-8");
-  const std::string body(4096, 'A');
+  const std::string body(4096UL, 'A');
 
   for (Encoding enc : test::SupportedEncodings()) {
     cfg.preferredFormats.assign(1U, enc);
     CompressionState state(cfg);
-    for (std::string_view contentType : {"text/plain; charset=utf-8", "TEXT/PLAIN ;format=flowed",
-                                         "application/protobuf+json", "application/protobuf+json; charset=utf-8"}) {
+    for (std::string_view contentType : {
+             "text/plain; charset=utf-8",
+             "TEXT/PLAIN ;format=flowed",
+             "application/protobuf+json",
+             "application/protobuf+json; charset=utf-8",
+         }) {
       HttpResponse resp(http::StatusCodeOK);
       resp.body(body, contentType);
       EXPECT_EQ(HttpCodec::TryCompressBody(state, enc, resp), CompressResponseResult::Compressed) << contentType;
@@ -702,7 +706,7 @@ TEST(HttpCodecCompression, TryCompressBodyStreamingBudgetBoundary) {
 }
 
 TEST(HttpCodecCompression, TryCompressResponseStressWithDifferentScenarios) {
-  static constexpr std::uint32_t bodySz = 24U << 10U;
+  static constexpr std::uint32_t bodySz = 12U << 10U;
 
   const std::string compressibleBody = test::MakePatternedPayload(bodySz);
   const auto incompressibleBody = test::MakeRandomPayload(bodySz);

@@ -483,9 +483,9 @@ TEST_F(WebSocketTest, LargeFrameSplitAcrossReadsIsEchoedIntact) {
   }
 }
 
-#ifdef AERONET_ENABLE_ZLIB
-
 namespace {
+
+#ifdef AERONET_ENABLE_ZLIB
 
 // Masked client frame carrying arbitrary payload bytes (rsv1: permessage-deflate compressed message).
 vector<std::byte> BuildClientFrame(std::string_view payload, Opcode opcode, bool rsv1) {
@@ -512,6 +512,7 @@ vector<std::byte> BuildClientFrame(std::string_view payload, Opcode opcode, bool
   }
   return frame;
 }
+#endif
 
 // Receives the HTTP response head of an upgrade request (up to the empty line).
 std::string ReceiveResponseHead(NativeHandle fd, std::chrono::milliseconds timeout) {
@@ -525,6 +526,8 @@ std::string ReceiveResponseHead(NativeHandle fd, std::chrono::milliseconds timeo
 }
 
 }  // namespace
+
+#ifdef AERONET_ENABLE_ZLIB
 
 // permessage-deflate interoperability with a standard client (raw DEFLATE payloads, RFC 7692), for an endpoint whose
 // factory does not configure compression itself: the server enables it on the handler, keeping its callbacks.

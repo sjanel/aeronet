@@ -451,6 +451,41 @@ TEST(HttpRequestDecompression, ChunkedEmptyBodyWithContentEncoding) {
   }
 }
 
+// The trailers of a compressed body, moved behind the decompressed body, are parsed once: the merge of a duplicate
+// leaves nothing behind it, and a duplicate that cannot be merged is rejected. Also for a body decompressing to
+// nothing.
+TEST(HttpRequestDecompression, DuplicateTrailersOfCompressedBody) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
+  ts.router().setDefault([](const HttpRequestView& req) {
+    return HttpResponse(
+        std::format("[{}|{}|{}]", req.body(), req.trailers().size(), req.trailerValueOrEmpty("accept")));
+  });
+
+  for (const Encoding enc : test::SupportedEncodings()) {
+    SCOPED_TRACE(GetEncodingStr(enc));
+    for (const std::string_view plain : {"", "HelloCompressedWorld"}) {
+      SCOPED_TRACE(plain);
+      const auto comp = test::Compress(enc, plain);
+      ASSERT_FALSE(comp.empty());  // an empty chunk would be the last one
+      const auto send = [&](std::string_view trailerLines) {
+        std::string req = "POST /dup HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\nContent-Encoding: ";
+        req.append(GetEncodingStr(enc));
+        req.append(std::format("\r\nConnection: close\r\n\r\n{:x}\r\n", comp.size()));
+        req.append(comp);
+        req.append(std::format("\r\n0\r\n{}\r\n", trailerLines));
+        return test::sendAndCollect(ts.port(), req);
+      };
+
+      std::string resp = send("accept: text/html\r\naccept: application/json\r\n");
+      ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+      EXPECT_TRUE(resp.ends_with(std::format("[{}|1|text/html,application/json]", plain))) << resp;
+
+      resp = send("from: a@example.com\r\nfrom: b@example.com\r\n");
+      EXPECT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
+    }
+  }
+}
+
 TEST(HttpRequestDecompression, ExpansionRatioGuard) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     cfg.decompression = {};

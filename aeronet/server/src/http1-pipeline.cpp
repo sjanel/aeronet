@@ -260,8 +260,8 @@ bool Http1Pipeline::serveRequests(ConnectionIt cnxIt) {
 
     ctx.maintenance.trackBodyReception(state, bodyReady);
     if (bodyReady) {
-      const bool usePerConnectionBodyStorage = state.pendingRequest.trailerLen != 0;
-      if (!request._body.empty() && !maybeDecompressRequestBody(cnxIt, usePerConnectionBodyStorage)) {
+      static constexpr bool kUsePerConnectionBodyStorage = false;
+      if (!request._body.empty() && !maybeDecompressRequestBody(cnxIt, kUsePerConnectionBodyStorage)) {
         break;
       }
       state.installAggregatedBodyBridge();
@@ -631,9 +631,6 @@ bool Http1Pipeline::maybeDecompressRequestBody(ConnectionIt cnxIt, bool usePerCo
   ConnectionState& state = ctx.connections.connectionState(cnxIt);
   HttpRequestView& request = state.request;
 
-  const uint32_t trailerLen = state.pendingRequest.trailerLen;
-  usePerConnectionBodyStorage = usePerConnectionBodyStorage || trailerLen != 0;
-
   RawChars& decompressedBuffer =
       usePerConnectionBodyStorage ? state.bodyAndTrailersBuffer : ctx.sharedBuffers.decompressedBody;
 
@@ -643,15 +640,6 @@ bool Http1Pipeline::maybeDecompressRequestBody(ConnectionIt cnxIt, bool usePerCo
   if (res.message != nullptr) {
     emitSimpleError(cnxIt, res.status, res.message);
     return false;
-  }
-
-  // Parse trailers if present
-  if (trailerLen != 0) {
-    auto* buf = decompressedBuffer.data();
-    auto* end = buf + decompressedBuffer.size();
-    [[maybe_unused]] const bool isSuccess = parseHeadersUnchecked(request._trailers, buf, end - trailerLen, end);
-    // trailers should have been validated in decodeChunkedBody
-    assert(isSuccess);
   }
 
   return true;

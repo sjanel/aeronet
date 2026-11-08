@@ -348,10 +348,12 @@ TEST_F(HttpConnectDefaultConfig, PartialWriteForwardsRemainingBytes) {
   test::EventLoopHookGuard guard;
   test::FailAllEpollCtlMod(EACCES);
   try {
-    test::sendAll(fd, payload, std::chrono::milliseconds{5000});
+    // Backpressure, hence the failing epoll_ctl MOD, is reached well before this timeout: it only ends the send once
+    // the server stopped reading.
+    test::sendAll(fd, payload, 500ms);
     // Get out of the recv as soon as we receive some data to decrease the unit test time, but don't assert anything
     // here
-    test::recvWithTimeout(fd, std::chrono::milliseconds{500}, 16UL);
+    test::recvWithTimeout(fd, 100ms, 16UL);
   } catch (const std::exception& ex) {
     // The server may close the tunnel when epoll_ctl MOD fails (requestDrainAndClose),
     // causing sendAll to hit ECONNRESET/timeout. This is acceptable degradation behavior;

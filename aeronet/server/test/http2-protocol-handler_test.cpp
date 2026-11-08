@@ -971,112 +971,37 @@ TEST(Http2ProtocolHandler, CapturedBodyWaitingForCreditReleasedOnStreamReset) {
   EXPECT_EQ(loop.receivedData(1).size(), kDefaultInitialWindowSize);
 }
 
-TEST(Http2ProtocolHandler, ConnectMalformedTargetReturns400) {
-  Router router;
-  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
+TEST(Http2ProtocolHandler, ConnectMalformedTargetsReturn400) {
+  // Authority-form requires a host and a numeric port (a service name is not handed to the resolver).
+  for (const std::string_view authority : {"example.com", "example.com:", ":443", "example.com:https"}) {
+    SCOPED_TRACE(authority);
+    Router router;
+    router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
 
-  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
-  loop.connect();
+    Http2ProtocolLoopback loop(router, WithTunnelBridge{});
+    loop.connect();
 
-  // A tunnel bridge that should never be called.
-  bool setupCalled = false;
-  MockTunnelBridge& bridge = *loop.tunnelBridge;
-  bridge.onSetup = [&](uint32_t, std::string_view, uint16_t) -> NativeHandle {
-    setupCalled = true;
-    return kInvalidHandle;
-  };
+    // The tunnel bridge must never be reached.
+    bool setupCalled = false;
+    MockTunnelBridge& bridge = *loop.tunnelBridge;
+    bridge.onSetup = [&](uint32_t, std::string_view, uint16_t) -> NativeHandle {
+      setupCalled = true;
+      return kInvalidHandle;
+    };
 
-  // Target without port separator → 400.
-  RawChars conn;
-  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
-  conn.append(MakeHttp1HeaderLine(":authority", "example.com"));
-  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), true);
-  ASSERT_EQ(ok, ErrorCode::NoError);
+    RawChars conn;
+    conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+    conn.append(MakeHttp1HeaderLine(":authority", authority));
+    const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), true);
+    ASSERT_EQ(ok, ErrorCode::NoError);
 
-  loop.pumpClientToServer();
-  loop.pumpServerToClient();
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
 
-  ASSERT_FALSE(loop.clientHeaders.empty());
-  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "400");
-  EXPECT_FALSE(setupCalled);
-}
-
-TEST(Http2ProtocolHandler, ConnectMalformedTargetEmptyPort) {
-  Router router;
-  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
-
-  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
-  loop.connect();
-
-  MockTunnelBridge& bridge = *loop.tunnelBridge;
-  bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kInvalidHandle; };
-
-  // Target with empty port → 400.
-  RawChars conn;
-  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
-  conn.append(MakeHttp1HeaderLine(":authority", "example.com:"));
-  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), true);
-  ASSERT_EQ(ok, ErrorCode::NoError);
-
-  loop.pumpClientToServer();
-  loop.pumpServerToClient();
-
-  ASSERT_FALSE(loop.clientHeaders.empty());
-  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "400");
-}
-
-TEST(Http2ProtocolHandler, ConnectMalformedTargetEmptyHost) {
-  Router router;
-  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
-
-  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
-  loop.connect();
-
-  MockTunnelBridge& bridge = *loop.tunnelBridge;
-  bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kInvalidHandle; };
-
-  // Target with empty host → 400.
-  RawChars conn;
-  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
-  conn.append(MakeHttp1HeaderLine(":authority", ":443"));
-  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), true);
-  ASSERT_EQ(ok, ErrorCode::NoError);
-
-  loop.pumpClientToServer();
-  loop.pumpServerToClient();
-
-  ASSERT_FALSE(loop.clientHeaders.empty());
-  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "400");
-}
-
-TEST(Http2ProtocolHandler, ConnectNonNumericPortReturns400) {
-  Router router;
-  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
-
-  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
-  loop.connect();
-
-  // The tunnel bridge must never be reached: a non-numeric port is rejected before resolution.
-  bool setupCalled = false;
-  MockTunnelBridge& bridge = *loop.tunnelBridge;
-  bridge.onSetup = [&](uint32_t, std::string_view, uint16_t) -> NativeHandle {
-    setupCalled = true;
-    return kInvalidHandle;
-  };
-
-  // authority-form requires a numeric port; a service name → 400 (not handed to the resolver).
-  RawChars conn;
-  conn.append(MakeHttp1HeaderLine(":method", "CONNECT"));
-  conn.append(MakeHttp1HeaderLine(":authority", "example.com:https"));
-  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(conn), true);
-  ASSERT_EQ(ok, ErrorCode::NoError);
-
-  loop.pumpClientToServer();
-  loop.pumpServerToClient();
-
-  ASSERT_FALSE(loop.clientHeaders.empty());
-  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "400");
-  EXPECT_FALSE(setupCalled);
+    ASSERT_FALSE(loop.clientHeaders.empty());
+    EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "400");
+    EXPECT_FALSE(setupCalled);
+  }
 }
 
 TEST(Http2ProtocolHandler, ConnectContentLengthIsNotChecked) {
