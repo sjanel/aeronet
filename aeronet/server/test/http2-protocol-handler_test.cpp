@@ -6183,6 +6183,56 @@ TEST(Http2ProtocolHandler, SweepAsyncTimeoutSends408) {
   EXPECT_EQ(loop.streamResets.back().second, ErrorCode::Cancel);
 }
 
+// The 408 of a timed-out async stream is rejected when the pending output is at its limit (a client that sends PINGs
+// and never reads their ACKs): the rejection answers 503 from the request, then owned by the task of the stream.
+TEST(Http2ProtocolHandler, SweepAsyncTimeoutAtPendingOutputLimitSends503) {
+  using namespace std::chrono_literals;
+  Router router;
+  router
+      .setPath(http::Method::GET, "/async-slow",
+               [](HttpRequestView& req) -> RequestTask<HttpResponse> {
+                 const int result = co_await req.deferWork([] { return 1; });
+                 co_return HttpResponse(200, std::to_string(result));
+               })
+      .timeout(1ms);
+
+  static constexpr uint32_t kMaxOutboundBufferBytes = 1024;
+  Http2ProtocolLoopback loop(router, kMaxOutboundBufferBytes);
+  AsyncResumeRecorder resumes(loop);
+  loop.connect();
+
+  RawChars hdrs = MakeGetHeaders("/async-slow");
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+  loop.pumpClientToServer();
+
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  while (resumes.nbPosts() == 0) {
+    ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "async callback did not fire in time";
+    std::this_thread::sleep_for(1ms);
+  }
+
+  // The server queues one PING ACK per PING, and stops reading at the output limit.
+  static constexpr int kNbPings = 128;
+  for (int pingPos = 0; pingPos < kNbPings; ++pingPos) {
+    loop.client.sendPing(PingFrame{});
+  }
+  const auto pings = DrainPendingOutput(loop.client, 128);
+  const auto res = loop.handler.processInput(pings);
+  ASSERT_LT(res.bytesConsumed, pings.size());
+  ASSERT_GE(loop.handler.pendingOutputSize(), kMaxOutboundBufferBytes);
+
+  // The deadline of stream 1 expires: its 408 does not fit in the pending output.
+  EXPECT_TRUE(loop.handler.onSweep(std::chrono::steady_clock::now() + 10s, false));
+  loop.pumpServerToClient();
+
+  const auto resp = std::ranges::find(loop.clientHeaders, 1U, &HeaderEvent::streamId);
+  ASSERT_NE(resp, loop.clientHeaders.end());
+  EXPECT_EQ(GetHeaderValue(*resp, ":status"), "503");
+  ASSERT_FALSE(loop.streamResets.empty());
+  EXPECT_EQ(loop.streamResets.back(), std::make_pair(1U, ErrorCode::Cancel));
+  EXPECT_FALSE(loop.handler.resumeAsyncTaskByHandle(resumes.handle()));
+}
+
 TEST(Http2ProtocolHandler, SweepKeepsTheTaskOfATimedOutStreamUntilItsWorkCompletes) {
   using namespace std::chrono_literals;
   // The work of the handler runs until released: it is still running when its stream times out.

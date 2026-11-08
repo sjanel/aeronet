@@ -532,7 +532,9 @@ int main() {
 
 A per-route timeout answers `408 Request Timeout` and closes the connection (HTTP/1.1) or resets the stream (HTTP/2) when the handler takes too long. The work function keeps running until it returns, and can still read the request and its body (its result is then discarded, the coroutine not being resumed): pair the route timeout with a timeout in the blocking call itself, so that threads do not pile up behind a stuck backend.
 
-Tests: `TimedOutHandlerIsAbandonedWhileItsClientStaysConnected`, `BodyOfTimedOutHandlerStaysValidForItsDeferredWork` and `TimeoutWhileWaitingForBodyReleasesTheCoroutine` in [http-async_test.cpp](../../tests/http-async_test.cpp).
+Over HTTP/2, when the output of the connection already holds `maxOutboundBufferBytes` (a client that stopped reading), the `408` does not fit: like any response in that case, it is replaced by `503 Service Unavailable`, then the stream is reset.
+
+Tests: `TimedOutHandlerIsAbandonedWhileItsClientStaysConnected`, `BodyOfTimedOutHandlerStaysValidForItsDeferredWork` and `TimeoutWhileWaitingForBodyReleasesTheCoroutine` in [http-async_test.cpp](../../tests/http-async_test.cpp), `SweepAsyncTimeoutAtPendingOutputLimitSends503` in [http2-protocol-handler_test.cpp](../../aeronet/server/test/http2-protocol-handler_test.cpp).
 
 ```cpp
 #include <chrono>

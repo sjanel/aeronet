@@ -396,7 +396,7 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   void onRequestCompleted(HttpRequestView& request, http::StatusCode status);
 
   /// Send an HTTP response on a stream.
-  ErrorCode sendResponse(uint32_t streamId, HttpResponse response, bool isHeadMethod);
+  ErrorCode sendResponse(HttpRequestView& request, HttpResponse response);
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   /// Start an async handler for a stream. Its response is already sent if it completed synchronously, otherwise it will
@@ -419,7 +419,7 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   Http2Connection _connection;
 
   /// Requests of closed streams, reused by the next ones (see recycleRequest()).
-  vector<StreamRequestPtr> _recycledRequests;
+  vector<StreamRequestPtr> _recycledRequests;  // TODO: StreamRequestPtr could be trivially relocatable
 
   /// Pool for PendingWork allocations (avoids repeated heap alloc/free cycles).
   ObjectPool<PendingWork> _pendingWorkPool;
