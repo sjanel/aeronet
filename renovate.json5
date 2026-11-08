@@ -101,12 +101,12 @@
         "/^cmake\\/Dependencies\\.cmake$/"
       ],
       "matchStrings": [
-        "(?<indentation>[ \\t]*)URL https://github\\.com/facebook/zstd/releases/download/v(?<currentValue>[^\\s/]+)/zstd-[^\\s/]+\\.tar\\.gz"
+        "(?<indentation>[ \\t]*)URL https://github\\.com/meta/zstd/archive/refs/tags/v(?<currentValue>[^\\s/]+)\\.tar\\.gz"
       ],
-      "depNameTemplate": "facebook/zstd",
-      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "meta/zstd",
+      "datasourceTemplate": "github-tags",
       "versioningTemplate": "semver",
-      "autoReplaceStringTemplate": "{{{indentation}}}URL https://github.com/facebook/zstd/releases/download/v{{{newValue}}}/zstd-{{{newValue}}}.tar.gz"
+      "autoReplaceStringTemplate": "{{{indentation}}}URL https://github.com/meta/zstd/archive/refs/tags/v{{{newValue}}}.tar.gz"
     },
     {
       "customType": "regex",
