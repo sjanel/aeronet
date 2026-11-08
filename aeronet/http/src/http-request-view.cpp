@@ -79,11 +79,14 @@ std::string_view HttpRequestView::body() const {
   if (_bodyAccessMode == BodyAccessMode::Streaming) {
     throw std::logic_error("Cannot call body() after readBody() on the same request");
   }
-  // Not the cleanest, but it should appear as const from the caller.
-  HttpRequestView& self = *const_cast<HttpRequestView*>(this);
-  self._bodyAccessMode = BodyAccessMode::Aggregated;
-  if (self._pBodyAccessBridge != nullptr && self._pBodyAccessBridge->aggregate != nullptr) {
-    self._body = self._pBodyAccessBridge->aggregate(self, self._pBodyAccessContext);
+  // Without a bridge, the body of an async handler is still being received: nothing is selected, it stays awaitable.
+  if (_pBodyAccessBridge != nullptr) {
+    // Not the cleanest, but it should appear as const from the caller.
+    HttpRequestView& self = *const_cast<HttpRequestView*>(this);
+    self._bodyAccessMode = BodyAccessMode::Aggregated;
+    if (self._pBodyAccessBridge->aggregate != nullptr) {
+      self._body = self._pBodyAccessBridge->aggregate(self, self._pBodyAccessContext);
+    }
   }
   return _body;
 }
@@ -91,6 +94,11 @@ std::string_view HttpRequestView::body() const {
 std::string_view HttpRequestView::readBody(std::size_t maxBytes) {
   if (_bodyAccessMode == BodyAccessMode::Aggregated) {
     throw std::logic_error("Cannot call readBody() after body() on the same request");
+  }
+  // An async handler can run before its body is received: only the awaitables can wait for it. Checked first so that
+  // the handler can still choose how to read the body after catching this.
+  if (_pBodyAccessBridge == nullptr) {
+    throw std::logic_error("Cannot call readBody() before the body is received: co_await readBodyAsync() instead");
   }
   _bodyAccessMode = BodyAccessMode::Streaming;
   _activeStreamingChunk = _pBodyAccessBridge->readChunk(*this, _pBodyAccessContext, maxBytes);
@@ -782,7 +790,7 @@ bool HttpRequestView::hasMoreBody() const {
   }
   if (_pBodyAccessBridge == nullptr) {
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-    // An async handler started before its body was received: the server installs the aggregated bridge once it is.
+    // An async handler started before its body was readable: the server installs the aggregated bridge once it is.
     // Meanwhile, the request has more body, so that loops using hasMoreBody() and readBodyAsync() suspend correctly.
     return _pAsyncAwait != nullptr && _pAsyncAwait->needsBody;
 #else

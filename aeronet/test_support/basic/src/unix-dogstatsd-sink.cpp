@@ -59,7 +59,7 @@ UnixDogstatsdSink::UnixDogstatsdSink() : _fd(UnixSocket::Type::Datagram) {
 }
 
 UnixDogstatsdSink& UnixDogstatsdSink::operator=(UnixDogstatsdSink&& other) noexcept {
-  if (this != &other) {
+  if (this != &other) [[likely]] {
     closeAndUnlink();
     _fd = std::move(other._fd);
     _path = std::move(other._path);

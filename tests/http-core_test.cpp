@@ -2688,8 +2688,8 @@ int AcceptedSendBufferSize(std::string_view path) {
   }
   sockaddr_in client{};
   sockaddr_in server{};
-  socklen_t clientLen = sizeof(client);// NOLINT(misc-include-cleaner)
-  socklen_t serverLen = sizeof(server);// NOLINT(misc-include-cleaner)
+  socklen_t clientLen = sizeof(client);  // NOLINT(misc-include-cleaner)
+  socklen_t serverLen = sizeof(server);  // NOLINT(misc-include-cleaner)
   if (::getsockname(sock.fd(), reinterpret_cast<sockaddr*>(&client), &clientLen) != 0 ||
       ::getpeername(sock.fd(), reinterpret_cast<sockaddr*>(&server), &serverLen) != 0) {
     return -1;
@@ -2697,8 +2697,8 @@ int AcceptedSendBufferSize(std::string_view path) {
   for (int fd = 0; fd < 4096; ++fd) {
     sockaddr_in local{};
     sockaddr_in peer{};
-    socklen_t localLen = sizeof(local);// NOLINT(misc-include-cleaner)
-    socklen_t peerLen = sizeof(peer);// NOLINT(misc-include-cleaner)
+    socklen_t localLen = sizeof(local);  // NOLINT(misc-include-cleaner)
+    socklen_t peerLen = sizeof(peer);    // NOLINT(misc-include-cleaner)
     if (fd != sock.fd() && ::getsockname(fd, reinterpret_cast<sockaddr*>(&local), &localLen) == 0 &&
         ::getpeername(fd, reinterpret_cast<sockaddr*>(&peer), &peerLen) == 0 && local.sin_family == AF_INET &&
         local.sin_port == server.sin_port && peer.sin_port == client.sin_port) {
@@ -2957,10 +2957,11 @@ TEST(HttpTrailers, RequestsWithoutTrailers) {
     return req.makeResponse(std::format("{}|trailers={}", req.body(), req.trailers().size()));
   });
 
-  for (const std::string_view raw :
-       {std::string_view("POST /t HTTP/1.1\r\nhost: e\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n"
-                         "4\r\ntest\r\n0\r\n\r\n"),
-        std::string_view("POST /t HTTP/1.1\r\nhost: e\r\ncontent-length: 4\r\nconnection: close\r\n\r\ntest")}) {
+  for (const std::string_view raw : {
+           std::string_view("POST /t HTTP/1.1\r\nhost: e\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n"
+                            "4\r\ntest\r\n0\r\n\r\n"),
+           std::string_view("POST /t HTTP/1.1\r\nhost: e\r\ncontent-length: 4\r\nconnection: close\r\n\r\ntest"),
+       }) {
     const std::string resp = test::sendAndCollect(port, raw);
     EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
     EXPECT_TRUE(resp.ends_with("test|trailers=0")) << resp;
@@ -3005,14 +3006,17 @@ TEST(HttpTrailers, ValidTrailersAreParsed) {
 TEST(HttpTrailers, InvalidTrailersAreRejected) {
   ts.resetRouterAndGet().setDefault([](const HttpRequestView& req) { return req.makeResponse("FAIL"); });
 
-  for (const std::string_view trailerLines :
-       {// Forbidden in a trailer section.
-        "transfer-encoding: chunked\r\n", "content-length: 100\r\n", "host: evil.com\r\n",
-        "authorization: Bearer token123\r\n",
-        // Not a field line.
-        "MalformedTrailer\r\n",
-        // A singleton field: keeping one of them could differ from the one a proxy in front keeps.
-        "from: a@example.com\r\nfrom: b@example.com\r\n"}) {
+  for (const std::string_view trailerLines : {
+           // Forbidden in a trailer section.
+           "transfer-encoding: chunked\r\n",
+           "content-length: 100\r\n",
+           "host: evil.com\r\n",
+           "authorization: Bearer token123\r\n",
+           // Not a field line.
+           "MalformedTrailer\r\n",
+           // A singleton field: keeping one of them could differ from the one a proxy in front keeps.
+           "from: a@example.com\r\nfrom: b@example.com\r\n",
+       }) {
     SCOPED_TRACE(trailerLines);
     const std::string resp = SendChunkedRequestWithTrailers(trailerLines);
     EXPECT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
@@ -4073,11 +4077,25 @@ TEST(HttpsRedirectIntegration, RedirectsToHttps) {
   static constexpr Case kCases[]{
       {443, http::StatusCodeMovedPermanently, "GET", "/path", "example.com:80", "", "https://example.com/path"},
       {8443, http::StatusCodeMovedPermanently, "GET", "/secure", "example.com", "", "https://example.com:8443/secure"},
-      {443, http::StatusCodeMovedPermanently, "GET", "/search?q=foo&lang=en", "example.com", "",
-       "https://example.com/search?q=foo&lang=en"},
+      {
+          443,
+          http::StatusCodeMovedPermanently,
+          "GET",
+          "/search?q=foo&lang=en",
+          "example.com",
+          "",
+          "https://example.com/search?q=foo&lang=en",
+      },
       {443, http::StatusCodePermanentRedirect, "GET", "/", "host.test", "", "https://host.test/"},
-      {443, http::StatusCodeMovedPermanently, "POST", "/submit", "example.com", "payload=1234",
-       "https://example.com/submit"},
+      {
+          443,
+          http::StatusCodeMovedPermanently,
+          "POST",
+          "/submit",
+          "example.com",
+          "payload=1234",
+          "https://example.com/submit",
+      },
       {8443, http::StatusCodeMovedPermanently, "GET", "/a", "[::1]:80", "", "https://[::1]:8443/a"},
       {443, http::StatusCodeMovedPermanently, "HEAD", "/x", "example.com", "", "https://example.com/x"},
   };

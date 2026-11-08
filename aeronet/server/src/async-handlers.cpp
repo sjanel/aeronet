@@ -127,37 +127,21 @@ bool Http1Pipeline::dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyncRe
   RequestTask<HttpResponse> requestTask = RequestPipeline::CallAsyncHandler(*handler, request);
 
   if (!requestTask.valid()) {
-    static constexpr std::string_view kMessage = "Async handler inactive";
-    if (bodyReady) {
-      HttpResponse resp(http::StatusCodeInternalServerError, kMessage);
-      ctx.requestPipeline().applyResponseMiddleware(request, resp, responseMiddleware, false);
-      finalizeAndSendResponse(cnxIt, std::move(resp), pCorsPolicy);
-    } else {
-      emitSimpleError(cnxIt, http::StatusCodeInternalServerError, kMessage);
-    }
-
+    HttpResponse resp(http::StatusCodeInternalServerError, "Async handler inactive");
+    ctx.requestPipeline().applyResponseMiddleware(request, resp, responseMiddleware, false);
+    // Answered before its body is received: the connection closes, the rest of the body not being read.
+    finalizeAndSendResponse(cnxIt, std::move(resp), pCorsPolicy, !bodyReady);
     return false;
   }
 
   auto& asyncState = state.ensureAsyncState(ctx.connections.asyncHandlerStatePool());
-  const std::string_view bodyView = state.request._body;
-  bool usesSharedDecompressedBody = false;
-  if (bodyReady && !bodyView.empty()) {
-    const char* sharedBeg = ctx.sharedBuffers.decompressedBody.data();
-    const char* sharedEnd = sharedBeg + ctx.sharedBuffers.decompressedBody.size();
-    const char* bodyBeg = bodyView.data();
-    const char* bodyEnd = bodyBeg + bodyView.size();
-
-    usesSharedDecompressedBody = sharedBeg <= bodyBeg && bodyEnd <= sharedEnd;
-  }
 
   asyncState.task.start(std::move(requestTask), handler, pCorsPolicy, responseMiddleware,
                         ctx.asyncResumePoster(cnxIt->fd(), state.generation));
   asyncState.task.await.needsBody = !bodyReady;
+  asyncState.bodyReceived = bodyReady;
   asyncState.active = true;
-  asyncState.usesSharedDecompressedBody = usesSharedDecompressedBody;
   asyncState.isChunked = isChunked;
-  asyncState.consumedBytes = bodyReady ? consumedBytes : 0;
   asyncState.maxBodyBytes = perRouteMaxBodyBytes;
   asyncState.pendingResponse = internal::HttpResponseAccess::MakeUnallocated();
   state.pendingRequest.continueExpected = found100Continue && !bodyReady;
@@ -166,10 +150,10 @@ bool Http1Pipeline::dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyncRe
   request.pinHeadStorage(asyncState.headBuffer);
   asyncState.task.bind(request);
 
-  ctx.maintenance.refreshKeepAliveDeadline(cnxIt);
   resumeAsyncHandler(cnxIt);
   if (asyncState.active) {
-    // Completes later: the router may be updated meanwhile.
+    // Completes later, erasing the request then. The router may be updated meanwhile.
+    asyncState.consumedBytes = bodyReady ? consumedBytes : 0;
     asyncState.task.routeMayHaveChanged = true;
   }
 
@@ -185,15 +169,56 @@ void Http1Pipeline::resumeAsyncHandler(ConnectionIt cnxIt) {
     return;
   }
 
+  if (async.bodyReceived && async.task.await.needsBody && !finishAsyncBody(cnxIt, async)) {
+    return;
+  }
+
   if (async.task.run()) {
     onAsyncHandlerCompleted(cnxIt);
   } else if (state.pendingRequest.continueExpected &&
              async.task.await.reason == AsyncAwaitState::Reason::WaitingForBody) {
     state.pendingRequest.continueExpected = false;
     queue100Continue(cnxIt);
-  } else if (async.usesSharedDecompressedBody && !pinAsyncSharedBodyToConnectionStorage(state)) {
-    state.requestDrainAndClose();
+  } else if (RawChars& sharedBody = _pCtx->sharedBuffers.decompressedBody;
+             state.request._body.data() == sharedBody.data() && !sharedBody.empty()) {
+    // Suspended with its decompressed body at the start of the shared buffer, followed by its updated Content-Length
+    // (hence not empty, even for an empty body), that the next compressed request of any connection would overwrite.
+    // Its connection takes the buffer over: the bytes do not move, so the views of the handler stay valid, even if its
+    // deferred work is already reading them. The shared buffer gets the previous capacity of the connection, grown
+    // again by the next compressed request: as fast as copying the body out (DeferredGzipPost in
+    // http1-pipeline_bench.cpp), and a suspended handler holds its body either way. reclaimMemoryFromOversizedBuffers()
+    // shrinks it once released.
+    assert(state.pendingRequest.trailerLen == 0);  // the buffer of the connection holds nothing of this request
+    sharedBody.swap(state.bodyAndTrailersBuffer);
   }
+
+  if (async.active) {
+    // It may have just started waiting for its body, or stopped: the timers of its client follow. They restart now, the
+    // client not being responsible for the time spent by the deferred work.
+    state.lastActivity = std::chrono::steady_clock::now();
+    _pCtx->maintenance.refreshKeepAliveDeadline(cnxIt);
+    _pCtx->maintenance.trackBodyReception(state, async.isWorking());
+  }
+}
+
+bool Http1Pipeline::finishAsyncBody(ConnectionIt cnxIt, AsyncHandlerState& async) {
+  // The request is modified below: never while deferred work may read it.
+  assert(!async.task.isAwaitingCallback());
+  ConnectionState& state = _pCtx->connections.connectionState(cnxIt);
+  HttpRequestView& request = state.request;
+  if (!async.isChunked) {
+    // The request starts the input buffer, where its body is received.
+    const std::size_t headSize = request.headSpanSize();
+    request._body = std::string_view(state.inBuffer.data() + headSize, async.consumedBytes - headSize);
+  }
+  const bool finished = async.isChunked ? finishDeferredChunkedBody(cnxIt) : maybeDecompressRequestBody(cnxIt, true);
+  if (!finished) {
+    AbandonAsyncHandler(async);
+    return false;
+  }
+  state.installAggregatedBodyBridge();
+  async.task.await.needsBody = false;
+  return true;
 }
 
 void Http1Pipeline::AbandonAsyncHandler(AsyncHandlerState& async) noexcept {
@@ -213,11 +238,12 @@ void Http1Pipeline::handleAsyncBodyProgress(ConnectionIt cnxIt) {
   AsyncHandlerState& async = *asyncState;
   assert(async.active);
 
-  if (async.task.await.needsBody) {
+  if (!async.bodyReceived) {
     std::size_t consumedBytes = 0;
     // The request starts the input buffer, where its body is received.
+    static constexpr bool kDeferBody = true;
     const BodyDecodeStatus status =
-        decodeBodyIfReady(cnxIt, state.inBuffer, async.isChunked, async.maxBodyBytes, consumedBytes);
+        decodeBodyIfReady(cnxIt, state.inBuffer, async.isChunked, async.maxBodyBytes, consumedBytes, kDeferBody);
     if (status == BodyDecodeStatus::Error) {
       AbandonAsyncHandler(async);
       return;
@@ -226,15 +252,12 @@ void Http1Pipeline::handleAsyncBodyProgress(ConnectionIt cnxIt) {
       return;
     }
 
-    async.task.await.needsBody = false;
+    async.bodyReceived = true;
     async.consumedBytes = consumedBytes;
-    if (!state.request._body.empty() && !maybeDecompressRequestBody(cnxIt, true)) {
-      AbandonAsyncHandler(async);
-      return;
-    }
-    state.installAggregatedBodyBridge();
     _pCtx->maintenance.trackBodyReception(state, true);
 
+    // resumeAsyncHandler() makes the body readable: not while deferred work may read the request, and not at all once
+    // the handler answered.
     if (async.task.await.reason == AsyncAwaitState::Reason::WaitingForBody) {
       resumeAsyncHandler(cnxIt);
       return;
@@ -246,39 +269,11 @@ void Http1Pipeline::handleAsyncBodyProgress(ConnectionIt cnxIt) {
   }
 }
 
-bool Http1Pipeline::pinAsyncSharedBodyToConnectionStorage(ConnectionState& state) const {
-  auto* asyncState = state.pAsyncState();
-  if (asyncState == nullptr) {
-    return true;
-  }
-  auto& async = *asyncState;
-  if (!async.usesSharedDecompressedBody) {
-    return true;
-  }
-
-  const std::string_view body = state.request._body;
-
-  // Async shared-body pinning expects request body to reference shared decompressed storage
-  [[maybe_unused]] const RawChars& sharedBody = _pCtx->sharedBuffers.decompressedBody;
-  assert(body.empty() ||
-         (sharedBody.data() <= body.data() && body.data() + body.size() <= sharedBody.data() + sharedBody.size()));
-
-  state.bodyAndTrailersBuffer.assign(body.data(), body.size());
-  state.request._body = std::string_view(state.bodyAndTrailersBuffer.data(), body.size());
-
-  if (state.request._pBodyAccessBridge != nullptr) {
-    state.bodyStreamContext.body = state.request._body;
-  }
-
-  async.usesSharedDecompressedBody = false;
-  return true;
-}
-
 void Http1Pipeline::onAsyncHandlerCompleted(ConnectionIt cnxIt) {
   ConnectionState& state = _pCtx->connections.connectionState(cnxIt);
   AsyncHandlerState& async = *state.pAsyncState();
   async.pendingResponse = async.task.takeResponse(state.request);
-  if (!async.task.await.needsBody) {
+  if (async.bodyReceived) {
     tryFlushPendingAsyncResponse(cnxIt);
   } else if (state.pendingRequest.continueExpected) {
     // Its client may wait for 100 Continue, not sent as the handler did not wait for the body: it is answered right
@@ -293,8 +288,10 @@ void Http1Pipeline::tryFlushPendingAsyncResponse(ConnectionIt cnxIt, bool close)
   ConnectionState& state = ctx.connections.connectionState(cnxIt);
   AsyncHandlerState& async = *state.pAsyncState();
 
-  assert(close || !async.task.await.needsBody);
+  assert(close || async.bodyReceived);
   assert(!async.pendingResponse.empty());
+  // Answered: its response middleware must not expect a body that will never be readable.
+  async.task.await.needsBody = false;
 
   const CorsPolicy* pCorsPolicy =
       async.task.applyResponseMiddleware(ctx.requestPipeline(), state.request, async.pendingResponse);
@@ -364,21 +361,23 @@ void SingleHttpServer::processAsyncCallbacks() {
           // a slow synchronous handler does (HTTP/1 goes through tryFlushPendingAsyncResponse instead).
           _ctx.maintenance.restartKeepAliveIdleWindow(cb.connectionFd);
         }
-        continue;
-      }
+      } else
 #endif
-      // The coroutine frame is kept until its deferred work completes: a coroutine created meanwhile cannot have the
-      // same address, the handle identifies it.
-      auto* asyncState = state.pAsyncState();
-      if (asyncState != nullptr && asyncState->task.runs(cb.handle)) {
-        if (asyncState->active) {
-          _ctx.http1.resumeAsyncHandler(it);
-          if (!asyncState->active) {
-            resumeInputAfterAsyncHandler(cb.connectionFd);
+      {
+        // The coroutine frame is kept until its deferred work completes: a coroutine created meanwhile cannot have
+        // the same address, the handle identifies it.
+        auto* asyncState = state.pAsyncState();
+        if (asyncState != nullptr && asyncState->task.runs(cb.handle)) {
+          asyncState->task.onWorkCompleted();
+          if (asyncState->active) {
+            _ctx.http1.resumeAsyncHandler(it);
+            if (!asyncState->active) {
+              resumeInputAfterAsyncHandler(cb.connectionFd);
+            }
+          } else {
+            // Abandoned (its connection is closing) while the work was running.
+            asyncState->clear();
           }
-        } else {
-          // Abandoned (its connection is closing) while the work was running.
-          asyncState->clear();
         }
       }
       // Close connection immediately if response was sent and drain-and-close is pending.

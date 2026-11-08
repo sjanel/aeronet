@@ -11,6 +11,7 @@
 - **Pluggable logging sink API (non-access logs)** - spdlog backend supports custom sinks/formatters; an aeronet-native sink registration API is not yet exposed.
 - **Enhanced parser diagnostics** (byte offset in parse errors for better debugging)
 - **Manage TE header in the client**: currently the TE header is reserved in the framework, so it cannot be sent. It could be a good idea to have a flag in the config to allow sending TE headers in the client with trailers essentially (because trailers are natively supported by aeronet). If `TE: trailers` is sent, in HTTP/1.1 we also need to add `Connection: TE`.
+- **Thread pool for `deferWork()`**: each call creates an OS thread (see [Limitations](guides/async-handlers.md#limitations)). A bounded pool would reuse them, cap their number and provide backpressure when the work piles up.
 - **Protocol Buffers, next steps** (after the [delivered](modules/protobuf.md) bodies and `Accept` negotiation):
   - ProtoJSON options (`ignore_unknown_fields`, printing the fields at their default value) and deterministic binary serialization, behind an aeronet options struct (a server-wide `ProtobufConfig`, loadable from configuration files), since their names differ between protobuf versions;
   - streaming: length-delimited message streams over `HttpResponseWriter` and `readBody()`;

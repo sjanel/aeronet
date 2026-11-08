@@ -183,6 +183,7 @@ struct Http2Config {
 
   /// SETTINGS_MAX_CONCURRENT_STREAMS (0x3): Maximum concurrent streams per connection.
   /// A reasonable default balancing parallelism and resource usage.
+  /// A stream closed while the deferred work of its async handler runs keeps counting until the work completes.
   /// Default: 100.
   uint32_t maxConcurrentStreams{100};
 

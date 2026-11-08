@@ -770,7 +770,9 @@ RequestDecompressionResult HttpCodec::MaybeDecompressRequestBody(DecompressionSt
     return {};
   }
 
-  const std::size_t compressedSize = request.body().size();
+  // Not body(), which would commit the handler to the aggregated access.
+  std::string_view src = request._body;
+  const std::size_t compressedSize = src.size();
   if (compressedSize > decompressionConfig.maxCompressedBytes) {
     return {.status = http::StatusCodePayloadTooLarge, .message = "Payload too large"};
   }
@@ -780,8 +782,6 @@ RequestDecompressionResult HttpCodec::MaybeDecompressRequestBody(DecompressionSt
     // Strict RFC compliance: empty Content-Encoding header is malformed.
     return {.status = http::StatusCodeBadRequest, .message = "Malformed Content-Encoding"};
   }
-
-  std::string_view src = request.body();
 
   RequestDecompressionResult res = DualBufferDecodeLoop(
       decompressionState,

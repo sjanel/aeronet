@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <utility>
 
 #include "aeronet/async-await-state.hpp"
 #include "aeronet/async-resume-poster.hpp"
@@ -46,6 +47,10 @@ struct AsyncHandlerTask {
     return coroutine.valid() && await.reason == AsyncAwaitState::Reason::WaitingForCallback;
   }
 
+  // Records the completion of the deferred work that the coroutine waits for: it no longer uses the coroutine frame and
+  // the request. Only its completion callback knows it.
+  void onWorkCompleted() noexcept { await.reason = AsyncAwaitState::Reason::None; }
+
   // Tells whether this task runs the coroutine of 'handle'.
   [[nodiscard]] bool runs(std::coroutine_handle<> handle) const noexcept {
     return coroutine.valid() && coroutine.coroutineAddress() == handle.address();
@@ -85,12 +90,20 @@ struct AsyncHandlerTask {
 struct AsyncHandlerState {
   // Tells whether the connection input must be left untouched: the whole request of the running handler was received
   // (the input buffer holds its body), or the request was abandoned while deferred work may still use it.
-  [[nodiscard]] bool holdsInput() const noexcept { return active ? !task.await.needsBody : task.coroutine.valid(); }
+  [[nodiscard]] bool holdsInput() const noexcept { return active ? bodyReceived : task.coroutine.valid(); }
 
-  // Resets this state, destroying the coroutine frame first: it may still use the handler.
+  // Tells whether the running handler needs nothing from its client to progress, its deferred work included. Otherwise
+  // it only waits for the rest of its body (the handler may even have completed), which the client may never send.
+  [[nodiscard]] bool isWorking() const noexcept { return active && (bodyReceived || task.isAwaitingCallback()); }
+
+  // Resets this state, destroying the coroutine frame first: it may still use the handler. The capacity of the buffer
+  // of the request head is kept for the next request of the connection.
   void clear() noexcept {
     task.reset();
+    RawChars keptHeadBuffer = std::move(headBuffer);
     *this = {};
+    keptHeadBuffer.clear();
+    headBuffer = std::move(keptHeadBuffer);
   }
 
   // stable storage for the current request head when async body progress is needed
@@ -101,8 +114,9 @@ struct AsyncHandlerState {
   std::size_t maxBodyBytes = static_cast<std::size_t>(-1);
   HttpResponse pendingResponse = internal::HttpResponseAccess::MakeUnallocated();
   bool active{false};
-  bool usesSharedDecompressedBody{false};
   bool isChunked{false};
+  // The whole body of the request is in the connection, even if not readable yet (see AsyncAwaitState::needsBody).
+  bool bodyReceived{false};
 };
 
 using AsyncHandlerStatePool = ObjectPool<AsyncHandlerState>;

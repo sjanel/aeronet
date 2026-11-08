@@ -16,8 +16,10 @@ struct SharedBuffers {
     sv.shrink_to_fit();
   }
 
-  RawChars buf;               // can be used for any kind of temporary buffer
-  RawChars decompressedBody;  // shared body buffer for non-async request decompression
+  RawChars buf;  // can be used for any kind of temporary buffer
+  // Decompressed body of the request being served. The connection of an async handler that suspends takes it over (see
+  // Http1Pipeline::resumeAsyncHandler()).
+  RawChars decompressedBody;
   // Two mutually exclusive uses: the request trailers preserved during the decompression of a chunked body, and the
   // head of the HTTP/1 TRACE request being served, as received (see CopyTraceEcho()), only echoed without body.
   RawChars32 trailersOrTraceEcho;

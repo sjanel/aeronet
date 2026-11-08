@@ -18,7 +18,8 @@ struct AsyncAwaitState {
 
   AsyncResumePoster resumePoster;
   Reason reason{Reason::None};
-  // The request body is still being received (HTTP/1.1): the body awaitables suspend until it is complete.
+  // The request body cannot be read yet (HTTP/1.1): it is still being received, or was received during deferred work,
+  // whose completion it waits for. The body awaitables suspend until then. Not modified while deferred work runs.
   bool needsBody{false};
 };
 

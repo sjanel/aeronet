@@ -114,14 +114,14 @@ router.setPath(http::Method::GET, "/users/{id}", [](const HttpRequestView& req) 
 
 Data that must outlive the handler, stored in a cache, captured by a callback, or sent to another thread, must be copied first: `std::string(view)`.
 
-- **Async handlers** keep their request valid across suspensions: when a handler suspends, the server moves the request head into a buffer pinned for that request, and does not read the next request of the connection until the handler completes. See [Async handlers](async-handlers.md#lifetime-and-thread-safety-rules).
+- **Async handlers** keep their request valid across suspensions: when a handler is dispatched, the server copies the request head into a buffer pinned for that request, and does not read the next request of the connection until the handler completes. See [Async handlers](async-handlers.md#lifetime-and-thread-safety-rules).
 - **Responses** may be built from request views with `body(std::string_view)`, which copies its argument. `bodyStatic()` references its argument without copying: never pass it request data.
 
 ## Bodies
 
 `body()` returns the complete body. Before calling a synchronous or streaming handler, the server receives the whole body, removes chunked framing, and decodes it when it is compressed (see [Request body decompression](compression.md#request-body-decompression)). Async handlers can start before the body has arrived and wait for it with `co_await req.bodyAwaitable()`.
 
-`readBody(maxBytes)` and `hasMoreBody()` read the same body in successive slices, for code written for incremental consumption. `body()` and `readBody()` cannot be mixed on the same request.
+`readBody(maxBytes)` and `hasMoreBody()` read the same body in successive slices, for code written for incremental consumption. `body()` and `readBody()` cannot be mixed on the same request. In an async handler, which can start before the body has arrived, use `co_await req.readBodyAsync()`: `readBody()` throws `std::logic_error` until the body is received, and `body()` is empty.
 
 ### Limits and timeouts
 

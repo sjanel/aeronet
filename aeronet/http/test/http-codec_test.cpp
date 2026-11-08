@@ -1246,9 +1246,7 @@ TEST(HttpCodecDecompression, MaybeDecompressRequestBody_StreamingThresholdWithou
     ASSERT_GT(written, 0UL);
     compressedOut.setSize(static_cast<RawChars::size_type>(written));
   }
-  cs.installAggregatedBodyBridge();
-  cs.bodyStreamContext.body = compressedOut;
-  cs.bodyStreamContext.offset = 0;
+  test::HttpRequestViewTestAccess::SetBody(req, compressedOut);
 
   RawChars tmpBuf;
   DecompressionState decompressionState;
@@ -1261,6 +1259,32 @@ TEST(HttpCodecDecompression, MaybeDecompressRequestBody_StreamingThresholdWithou
       HttpCodec::MaybeDecompressRequestBody(decompressionState, cfg, req, cs.bodyAndTrailersBuffer, tmpBuf);
   EXPECT_TRUE(res.status == http::StatusCodeOK || res.status == http::StatusCodeBadRequest ||
               res.status == http::StatusCodeUnsupportedMediaType || res.status == http::StatusCodePayloadTooLarge);
+}
+
+// The handler chooses how to read the decompressed body: decompressing it must not select the aggregated access.
+TEST(HttpCodecDecompression, MaybeDecompressRequestBody_LeavesTheBodyAccessUndecided) {
+  DecompressionConfig cfg;
+  cfg.enable = true;
+
+  ConnectionState cs;
+  HttpRequestView& req = cs.request;
+  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip");
+
+  const RawChars compressed = test::Compress(Encoding::gzip, "small payload");
+  test::HttpRequestViewTestAccess::SetBody(req, compressed);
+
+  RawChars tmpBuf;
+  DecompressionState decompressionState;
+  const auto res =
+      HttpCodec::MaybeDecompressRequestBody(decompressionState, cfg, req, cs.bodyAndTrailersBuffer, tmpBuf);
+  ASSERT_EQ(res.status, http::StatusCodeOK);
+  EXPECT_FALSE(req.isBodyReady());
+
+  cs.installAggregatedBodyBridge();
+  EXPECT_TRUE(req.hasMoreBody());
+  EXPECT_EQ(req.readBody(5), "small");
+  EXPECT_EQ(req.readBody(), " payload");
+  EXPECT_FALSE(req.hasMoreBody());
 }
 #endif
 

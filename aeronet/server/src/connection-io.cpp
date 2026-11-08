@@ -538,6 +538,13 @@ bool ConnectionIo::startLingeringClose(ConnectionIt cnxIt) {
       state.protocolHandler != nullptr || state.isTunneling() || ctx.config.lingeringCloseTimeout.count() == 0) {
     return false;
   }
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  // The input buffer, reused to discard the input, holds the request that its handler or its deferred work may still
+  // read: closed right away instead, the request being kept until the work completes.
+  if (const auto* asyncState = state.pAsyncState(); asyncState != nullptr && asyncState->holdsInput()) {
+    return false;
+  }
+#endif
   const NativeHandle fd = cnxIt->fd();
 #ifdef AERONET_ENABLE_OPENSSL
   // Its close_notify alert ends the TLS stream before the TCP one.

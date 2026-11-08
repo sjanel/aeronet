@@ -485,6 +485,28 @@ TEST_P(ProtocolParity, AsyncHandlerExceptionAnswers500ThroughResponseMiddleware)
   // The server still serves requests.
   EXPECT_EQ(send(http::Method::GET, "/missing").status(), http::StatusCodeNotFound);
 }
+
+#ifdef AERONET_ENABLE_ZLIB
+TEST_P(ProtocolParity, AsyncHandlerReadsACompressedBodyInChunks) {
+  ts.router().setPath(http::Method::POST, "/chunks", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
+    std::string received;
+    while (req.hasMoreBody()) {
+      const std::string_view chunk = co_await req.readBodyAsync(64);
+      received.append(chunk);
+    }
+    co_return HttpResponse(std::move(received));
+  });
+
+  const std::string payload(300, 'z');
+  const RawChars compressed = test::Compress(Encoding::gzip, payload);
+  const auto resp = send(http::Method::POST, "/chunks", [&compressed](auto& req) {
+    req.contentEncoding("gzip");
+    req.body(std::string_view(compressed));
+  });
+  EXPECT_EQ(resp.status(), http::StatusCodeOK);
+  EXPECT_EQ(resp.bodyInMemory(), payload);
+}
+#endif
 #endif
 
 TEST_P(ProtocolParity, CorsPreflight) {
@@ -562,7 +584,7 @@ TEST_P(ProtocolParityHttpsRedirect, PlaintextRequestsAreRedirected) {
   EXPECT_EQ(handlerCalls.load(), 0);
 }
 
-std::string ProtocolName(const ::testing::TestParamInfo<HttpVersionMode>& info) {
+std::string ProtocolName([[maybe_unused]] const ::testing::TestParamInfo<HttpVersionMode>& info) {
 #ifdef AERONET_ENABLE_HTTP2
   return {info.param == HttpVersionMode::Http2 ? "Http2" : "Http1"};
 #else

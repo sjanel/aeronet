@@ -1,4 +1,5 @@
 #include <aeronet/aeronet-server.hpp>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -8,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -60,6 +62,16 @@ bool SimulateDatabaseUpdate(int userId, std::string_view newEmail) {
   it->second.email = std::string(newEmail);
   return true;
 }
+
+// The id comes from the client: it may not be a number.
+std::optional<int> ParseUserId(std::string_view idStr) {
+  int id = 0;
+  const auto [ptr, err] = std::from_chars(idStr.data(), idStr.data() + idStr.size(), id);
+  if (err != std::errc() || ptr != idStr.data() + idStr.size()) {
+    return std::nullopt;
+  }
+  return id;
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -75,7 +87,7 @@ int main(int argc, char** argv) {
   try {
     router.setDefault([](const HttpRequestView&) { return HttpResponse(404, "Not found\n"); });
 
-    // GET /async — minimal deferWork demonstration for CI smoke test
+    // GET /async - minimal deferWork demonstration for CI smoke test
     router.setPath(http::Method::GET, "/async", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
       std::string pathCopy{req.path()};
       std::string body = co_await req.deferWork([path = std::move(pathCopy)] {
@@ -86,16 +98,18 @@ int main(int argc, char** argv) {
       co_return HttpResponse(200).body(std::move(body));
     });
 
-    // GET /users/{id} — async handler fetching user with deferWork()
+    // GET /users/{id} - async handler fetching user with deferWork()
     // Demonstrates how to run blocking work on a background thread without blocking the event loop.
     // The coroutine suspends, the work runs on a separate thread, then the coroutine resumes.
     router.setPath(http::Method::GET, "/users/{id}", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
-      auto idStr = req.pathParams().find("id")->second;
-      int id = std::stoi(std::string(idStr));
+      const std::optional<int> id = ParseUserId(req.pathParams().find("id")->second);
+      if (!id) {
+        co_return HttpResponse(400, "Invalid user id\n");
+      }
 
       // co_await deferWork(): runs the lambda on a background thread, returns the result.
       // The event loop is free to handle other requests while waiting.
-      std::optional<User> user = co_await req.deferWork([id] { return SimulateDatabaseLookup(id); });
+      std::optional<User> user = co_await req.deferWork([id = *id] { return SimulateDatabaseLookup(id); });
 
       if (!user) {
         co_return HttpResponse(404, "User not found\n");
@@ -106,19 +120,21 @@ int main(int argc, char** argv) {
       co_return HttpResponse(200).body(std::move(response));
     });
 
-    // POST /users/{id}/email — async handler updating user email
+    // POST /users/{id}/email - async handler updating user email
     // Demonstrates combining co_await bodyAwaitable() and co_await deferWork().
     // First, we asynchronously read the request body, then we defer the blocking DB update.
     router.setPath(http::Method::POST, "/users/{id}/email", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
-      auto idStr = req.pathParams().find("id")->second;
-      int id = std::stoi(std::string(idStr));
+      const std::optional<int> id = ParseUserId(req.pathParams().find("id")->second);
+      if (!id) {
+        co_return HttpResponse(400, "Invalid user id\n");
+      }
 
       // co_await body: server resumes coroutine when body is fully received
       std::string_view newEmail = co_await req.bodyAwaitable();
 
       // co_await deferWork(): run the blocking DB update on a background thread
-      bool updated =
-          co_await req.deferWork([id, email = std::string(newEmail)] { return SimulateDatabaseUpdate(id, email); });
+      bool updated = co_await req.deferWork(
+          [id = *id, email = std::string(newEmail)] { return SimulateDatabaseUpdate(id, email); });
 
       if (!updated) {
         co_return HttpResponse(404, "User not found\n");
@@ -127,7 +143,7 @@ int main(int argc, char** argv) {
       co_return HttpResponse("Email updated successfully\n");
     });
 
-    // GET /health — sync handler for comparison
+    // GET /health - sync handler for comparison
     router.setPath(http::Method::GET, "/health", [](const HttpRequestView&) { return HttpResponse("OK\n"); });
 
     SingleHttpServer server(HttpServerConfig{}.withPort(port), std::move(router));

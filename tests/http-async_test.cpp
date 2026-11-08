@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <format>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -21,12 +22,20 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/middleware.hpp"
+#include "aeronet/native-handle.hpp"
 #include "aeronet/request-metrics.hpp"
 #include "aeronet/request-task.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
+#include "aeronet/zerocopy-mode.hpp"
+
+#ifdef AERONET_ENABLE_ZLIB
+#include "aeronet/compression-test-helpers.hpp"
+#include "aeronet/encoding.hpp"
+#include "aeronet/raw-chars.hpp"
+#endif
 
 #if defined(AERONET_ENABLE_HTTP2) && defined(AERONET_ENABLE_OPENSSL)
 #include "aeronet/http2-frame-types.hpp"
@@ -53,20 +62,25 @@ bool WaitFor(const std::atomic_bool& flag, std::chrono::milliseconds timeout = 5
   return true;
 }
 
-// Sets a flag when destroyed: tells when the coroutine frame holding it is destroyed.
+// Sets a flag when destroyed (after 'destructionTime'): tells when the coroutine frame holding it is destroyed.
 class DestructionFlag {
  public:
-  explicit DestructionFlag(std::atomic_bool& flag) noexcept : _flag(&flag) {}
+  explicit DestructionFlag(std::atomic_bool& flag, std::chrono::milliseconds destructionTime = {}) noexcept
+      : _flag(&flag), _destructionTime(destructionTime) {}
 
   DestructionFlag(const DestructionFlag&) = delete;
   DestructionFlag(DestructionFlag&&) noexcept = delete;
   DestructionFlag& operator=(const DestructionFlag&) = delete;
   DestructionFlag& operator=(DestructionFlag&&) noexcept = delete;
 
-  ~DestructionFlag() { _flag->store(true, std::memory_order_release); }
+  ~DestructionFlag() {
+    std::this_thread::sleep_for(_destructionTime);
+    _flag->store(true, std::memory_order_release);
+  }
 
  private:
   std::atomic_bool* _flag;
+  std::chrono::milliseconds _destructionTime;
 };
 
 std::string PostHead(std::string_view target, std::size_t contentLength, std::string_view extraHeaders = {}) {
@@ -74,6 +88,123 @@ std::string PostHead(std::string_view target, std::size_t contentLength, std::st
   head.append(target).append(" HTTP/1.1\r\nHost: x\r\n").append(extraHeaders);
   head.append("Content-Length: ").append(std::to_string(contentLength)).append("\r\n\r\n");
   return head;
+}
+
+// Sends the head of 'request', then the rest of it once its handler raised 'dispatched', and returns the response (the
+// request must close its connection).
+std::string SendBodyAfterDispatch(uint16_t port, std::string_view request, std::atomic_bool& dispatched) {
+  static constexpr std::string_view kEndOfHead = "\r\n\r\n";
+  const std::size_t headSize = request.find(kEndOfHead) + kEndOfHead.size();
+  dispatched.store(false, std::memory_order_release);
+  test::ClientConnection client(port);
+  test::sendAll(client.fd(), request.substr(0, headSize));
+  EXPECT_TRUE(WaitFor(dispatched));
+  test::sendAll(client.fd(), request.substr(headSize));
+  return test::recvUntilClosed(client.fd(), std::chrono::seconds{3});
+}
+
+constexpr auto kShortTimeout = 300ms;
+
+HttpServerConfig ShortKeepAliveConfig() {
+  HttpServerConfig cfg;
+  cfg.withKeepAliveTimeout(kShortTimeout);
+  return cfg;
+}
+
+HttpServerConfig ShortBodyReadConfig() {
+  HttpServerConfig cfg;
+  cfg.withBodyReadTimeout(kShortTimeout);
+  return cfg;
+}
+
+// The tests below send within kShortTimeout of the restart of a timer, which a loaded CI runner can miss: its sleeps
+// overshoot by up to a second on macOS. Such an attempt proves nothing: it is retried, a few times at most.
+constexpr int kMaxSendInTimeAttempts = 3;
+
+// Sends 'data' unless kShortTimeout elapsed since 'since' (the earliest time the timer may have restarted), and tells
+// whether it was all sent in time. A late client is not sent to: the server may have closed its connection.
+bool SendInTime(NativeHandle fd, std::string_view data, std::chrono::steady_clock::time_point since) {
+  const auto deadline = since + kShortTimeout;
+  if (std::chrono::steady_clock::now() >= deadline) {
+    return false;
+  }
+  test::sendAll(fd, data);
+  return std::chrono::steady_clock::now() < deadline;
+}
+
+void SkipAsNeverSentInTime() {
+  GTEST_SKIP() << "the client never sent in time in " << kMaxSendInTimeAttempts << " attempts (loaded machine)";
+}
+
+// Uploads a body byte after byte for longer than kShortTimeout, each byte coming well within it, and expects its echo.
+void ExpectUploadMakingProgressIsServed(HttpServerConfig cfg) {
+  test::TestServer server(std::move(cfg));
+  server.router().setPath(http::Method::POST, "/upload", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
+    co_return HttpResponse(co_await req.bodyAwaitable());
+  });
+
+  static constexpr std::string_view kBody = "abcdef";
+  for (int attempt = 0; attempt < kMaxSendInTimeAttempts; ++attempt) {
+    test::ClientConnection client(server.port());
+    auto lastSendStart = std::chrono::steady_clock::now();
+    test::sendAll(client.fd(), PostHead("/upload", kBody.size(), "Connection: close\r\n"));
+    bool inTime = true;
+    for (std::size_t pos = 0; inTime && pos < kBody.size(); ++pos) {
+      std::this_thread::sleep_for(kShortTimeout / 3);
+      const auto sendStart = std::chrono::steady_clock::now();
+      inTime = SendInTime(client.fd(), kBody.substr(pos, 1), lastSendStart);
+      lastSendStart = sendStart;
+    }
+    if (inTime) {
+      const std::string resp = test::recvUntilClosed(client.fd(), std::chrono::seconds{3});
+      EXPECT_TRUE(resp.ends_with(std::format("\r\n\r\n{}", kBody))) << resp;
+      return;
+    }
+  }
+  SkipAsNeverSentInTime();
+}
+
+// Deferred work is not idleness, and the client gets a whole window once the handler waits for its body: it may have
+// been waiting for 100 Continue, only sent then.
+void ExpectDeferredWorkIsNotIdleness(HttpServerConfig cfg) {
+  // Before the server, which waits for the deferred work when destroyed.
+  std::atomic_bool started{false};
+  std::atomic_bool allow{false};
+  std::atomic_bool workDone{false};
+  // Atomic: written by the handler of the next attempt, without synchronization with the reads of the previous one.
+  std::atomic<std::chrono::steady_clock::time_point> workEnd;
+  test::TestServer server(std::move(cfg));
+  server.router().setPath(http::Method::POST, "/upload", [&](HttpRequestView& req) -> RequestTask<HttpResponse> {
+    co_await req.deferWork([&] {
+      started.store(true, std::memory_order_release);
+      WaitFor(allow);
+    });
+    workEnd.store(std::chrono::steady_clock::now(), std::memory_order_relaxed);
+    workDone.store(true, std::memory_order_release);
+    co_return HttpResponse(co_await req.bodyAwaitable());
+  });
+
+  for (int attempt = 0; attempt < kMaxSendInTimeAttempts; ++attempt) {
+    // The handler of the previous attempt no longer uses them.
+    started.store(false, std::memory_order_relaxed);
+    allow.store(false, std::memory_order_relaxed);
+    workDone.store(false, std::memory_order_relaxed);
+    test::ClientConnection client(server.port());
+    test::sendAll(client.fd(), PostHead("/upload", 5, "Connection: close\r\n"));
+    ASSERT_TRUE(WaitFor(started));
+    std::this_thread::sleep_for(2 * kShortTimeout);
+    allow.store(true, std::memory_order_release);
+    ASSERT_TRUE(WaitFor(workDone));
+    // Long enough for a sweep to close the connection if the window had ended during the work.
+    std::this_thread::sleep_for(kShortTimeout / 3);
+    // The window restarts once the handler waits for its body, after the end of the work.
+    if (SendInTime(client.fd(), "hello", workEnd.load(std::memory_order_relaxed))) {
+      const std::string resp = test::recvUntilClosed(client.fd(), std::chrono::seconds{3});
+      EXPECT_TRUE(resp.ends_with("\r\n\r\nhello")) << resp;
+      return;
+    }
+  }
+  SkipAsNeverSentInTime();
 }
 
 }  // namespace
@@ -221,6 +352,128 @@ TEST(HttpAsyncHandlers, TrailersOfBodyDecompressedToNothingSurviveOtherConnectio
   const std::string resp = test::recvUntilClosed(client.fd());
   EXPECT_TRUE(resp.ends_with("[|secret-value]")) << resp.substr(0, 512);
 }
+
+namespace {
+
+// A POST request whose body is 'payload' compressed with gzip 'nbStages' times.
+std::string GzipPost(std::string_view target, std::string_view payload, int nbStages,
+                     std::string_view extraHeaders = {}) {
+  RawChars body = test::Compress(Encoding::gzip, payload);
+  std::string encodings("gzip");
+  for (int stage = 1; stage < nbStages; ++stage) {
+    body = test::Compress(Encoding::gzip, body);
+    encodings.append(", gzip");
+  }
+  std::string request =
+      PostHead(target, body.size(), std::format("{}Content-Encoding: {}\r\n", extraHeaders, encodings));
+  request.append(std::string_view(body));
+  return request;
+}
+
+}  // namespace
+
+// The body decompressed for an async handler and its updated Content-Length are at the start of the buffer shared by
+// the connections: the connection takes it over when the handler suspends, so that they survive the compressed uploads
+// of other connections, including the views taken before its first suspension (a fixed-length body received with its
+// head), and later suspensions do not give it back. One stage ends in the temporary buffer swapped with the shared one,
+// two stages end directly in the latter. A body decompressing to nothing still has its Content-Length there.
+TEST(HttpAsyncHandlers, DecompressedBodySurvivesCompressedUploadsOfOtherConnections) {
+  std::atomic_bool started{false};
+  std::atomic_bool allow{false};
+  ts.resetRouterAndGet().setPath(http::Method::POST, "/hold", [&](HttpRequestView& req) -> RequestTask<HttpResponse> {
+    const std::string_view body = co_await req.bodyAwaitable();
+    const std::string_view contentLength = req.headerValueOrEmpty(http::ContentLength);
+    for (int suspension = 0; suspension < 2; ++suspension) {
+      co_await req.deferWork([&] {
+        started.store(true, std::memory_order_release);
+        WaitFor(allow);
+        allow.store(false, std::memory_order_release);
+      });
+    }
+    co_return HttpResponse(std::format("[{}|{}]", contentLength, body));
+  });
+  ts.router().setPath(http::Method::POST, "/other", [](const HttpRequestView& req) {
+    return HttpResponse(std::format("other:{}", req.body().size()));
+  });
+
+  for (const std::string& held : {std::string(9000, 'A'), std::string()}) {
+    for (const int nbStages : {1, 2}) {
+      started.store(false, std::memory_order_release);
+      test::ClientConnection client(ts.port());
+      test::sendAll(client.fd(), GzipPost("/hold", held, nbStages, "Connection: close\r\n"));
+      for (int suspension = 0; suspension < 2; ++suspension) {
+        ASSERT_TRUE(WaitFor(started));
+        started.store(false, std::memory_order_release);
+        // Two uploads: the decompression of each of them swaps the two buffers shared by the connections.
+        for (const char letter : {'B', 'C'}) {
+          const std::string other = test::sendAndCollect(
+              ts.port(), GzipPost("/other", std::string(9800, letter), 1, "Connection: close\r\n"));
+          EXPECT_TRUE(other.ends_with("other:9800")) << other.substr(0, 512);
+        }
+        allow.store(true, std::memory_order_release);
+      }
+      const std::string resp = test::recvUntilClosed(client.fd());
+      EXPECT_TRUE(resp.ends_with(std::format("[{}|{}]", held.size(), held)))
+          << held.size() << " bytes, " << nbStages << " stage(s): " << resp.substr(0, 512);
+    }
+  }
+}
+
+// Decompressing a body used to select the aggregated access for the handler: a hasMoreBody() loop read nothing, and
+// readBodyAsync() threw. Whether the body is received with its head or after the dispatch of the handler.
+TEST(HttpAsyncHandlers, CompressedBodyCanBeReadInChunks) {
+  std::atomic_bool dispatched{false};
+  ts.resetRouterAndGet().setPath(http::Method::POST, "/loop",
+                                 [&dispatched](HttpRequestView& req) -> RequestTask<HttpResponse> {
+                                   dispatched.store(true, std::memory_order_release);
+                                   std::string received;
+                                   while (req.hasMoreBody()) {
+                                     const std::string_view chunk = co_await req.readBodyAsync(64);
+                                     received.append(chunk);
+                                   }
+                                   co_return HttpResponse(std::move(received));
+                                 });
+  ts.router().setPath(http::Method::POST, "/direct", [&dispatched](HttpRequestView& req) -> RequestTask<HttpResponse> {
+    dispatched.store(true, std::memory_order_release);
+    co_return HttpResponse(co_await req.readBodyAsync(5));
+  });
+
+  const std::string payload = std::string(150, 'a') + std::string(150, 'b');
+  for (const auto& [target, expected] : {std::pair<std::string_view, std::string_view>{"/loop", payload},
+                                         std::pair<std::string_view, std::string_view>{"/direct", "aaaaa"}}) {
+    const std::string request = GzipPost(target, payload, 1, "Connection: close\r\n");
+    const std::string atOnce = test::sendAndCollect(ts.port(), request);
+    EXPECT_TRUE(atOnce.ends_with(std::format("\r\n\r\n{}", expected))) << target << ": " << atOnce.substr(0, 512);
+    const std::string inTwoParts = SendBodyAfterDispatch(ts.port(), request, dispatched);
+    EXPECT_TRUE(inTwoParts.ends_with(std::format("\r\n\r\n{}", expected)))
+        << target << ": " << inTwoParts.substr(0, 512);
+  }
+}
+
+// The requests pipelined on a connection take turns in its decompression buffer: each one reads its own body and its
+// own Content-Length, whatever the size and the number of stages of the previous one.
+TEST(HttpAsyncHandlers, PipelinedCompressedRequestsReadTheirOwnBodies) {
+  ts.resetRouterAndGet().setPath(http::Method::POST, "/async", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
+    const std::string_view body = co_await req.bodyAwaitable();
+    co_await req.deferWork([] {});
+    co_return HttpResponse(std::format("[{}|{}]", req.headerValueOrEmpty(http::ContentLength), body));
+  });
+  ts.router().setPath(http::Method::POST, "/sync", [](const HttpRequestView& req) {
+    return HttpResponse(std::format("[{}|{}]", req.headerValueOrEmpty(http::ContentLength), req.body()));
+  });
+
+  const std::string longBody(300, 'a');
+  const std::string shortBody(20, 'b');
+  test::ClientConnection client(ts.port());
+  test::sendAll(client.fd(), GzipPost("/async", longBody, 1) + GzipPost("/async", shortBody, 2) +
+                                 GzipPost("/sync", "sync", 1) + GzipPost("/async", "last", 2, "Connection: close\r\n"));
+  const std::string resp = test::recvUntilClosed(client.fd());
+  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 200"), 4) << resp.substr(0, 1024);
+  EXPECT_TRUE(resp.contains(std::format("[300|{}]", longBody))) << resp.substr(0, 1024);
+  EXPECT_TRUE(resp.contains(std::format("[20|{}]", shortBody))) << resp.substr(0, 1024);
+  EXPECT_TRUE(resp.contains("[4|sync]")) << resp.substr(0, 1024);
+  EXPECT_TRUE(resp.ends_with("[4|last]")) << resp.substr(0, 1024);
+}
 #endif
 
 // An async handler request pipelined behind a served one, from the same input: its views (here into its body, taken
@@ -314,6 +567,29 @@ TEST(HttpAsyncHandlers, ChunkedBodyReceivedInSeveralReadsAfterDispatch) {
 }
 
 // Requests pipelined behind an async handler were only served when new bytes arrived.
+// Handlers completing right away are consumed at once with the requests pipelined around them, including one that
+// suspends: its completion then erases what was served before it.
+TEST(HttpAsyncHandlers, PipelinedRequestsCompletingRightAwayAroundADeferredOne) {
+  ts.resetRouterAndGet().setPath(http::Method::POST, "/now", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
+    co_return HttpResponse(co_await req.bodyAwaitable());
+  });
+  ts.router().setPath(http::Method::POST, "/later", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
+    const std::string_view body = co_await req.bodyAwaitable();
+    co_await req.deferWork([] {});
+    co_return HttpResponse(body);
+  });
+
+  const std::string requests = PostHead("/now", 2) + "aa" + PostHead("/now", 2) + "bb" + PostHead("/later", 2) + "cc" +
+                               PostHead("/now", 2, "Connection: close\r\n") + "dd";
+  const std::string resp = test::sendAndCollect(ts.port(), requests);
+  EXPECT_EQ(test::countOccurrences(resp, http::HTTP11SPSv), 4) << resp;
+  std::size_t pos = 0;
+  for (const std::string_view body : {"\r\n\r\naa", "\r\n\r\nbb", "\r\n\r\ncc", "\r\n\r\ndd"}) {
+    pos = resp.find(body, pos);
+    ASSERT_NE(pos, std::string::npos) << body << " in " << resp;
+  }
+}
+
 TEST(HttpAsyncHandlers, PipelinedRequestAfterImmediatelyCompletingAsyncHandler) {
   ts.resetRouterAndGet().setPath(http::Method::GET, "/async", [](HttpRequestView&) -> RequestTask<HttpResponse> {
     co_return HttpResponse("async-done");
@@ -531,6 +807,155 @@ TEST(HttpAsyncHandlers, CoroutineFrameOutlivesItsClosedConnectionUntilWorkComple
   EXPECT_TRUE(frameAliveAtWorkEnd.load());
 }
 
+// A request timing out while its deferred work runs is abandoned, even if its client keeps its socket open until the
+// work ends: its coroutine is not resumed, and it no longer answers on (nor erases the input of) a closing connection.
+// Its body may be complete or not.
+TEST(HttpAsyncHandlers, TimedOutHandlerIsAbandonedWhileItsClientStaysConnected) {
+  std::atomic_bool started{false};
+  std::atomic_bool allow{false};
+  std::atomic_bool resumed{false};
+  std::atomic_bool frameDestroyed{false};
+  ts.resetRouterAndGet()
+      .setPath(http::Method::GET | http::Method::POST, "/slow",
+               [&](HttpRequestView& req) -> RequestTask<HttpResponse> {
+                 DestructionFlag guard(frameDestroyed);
+                 co_await req.deferWork([&] {
+                   started.store(true, std::memory_order_release);
+                   WaitFor(allow);
+                 });
+                 resumed.store(true, std::memory_order_release);
+                 co_return HttpResponse("done");
+               })
+      .timeout(50ms);
+
+  for (const std::string& request :
+       {std::string("GET /slow HTTP/1.1\r\nHost: x\r\n\r\n"), PostHead("/slow", 10) + "abc"}) {
+    started.store(false, std::memory_order_release);
+    allow.store(false, std::memory_order_release);
+    frameDestroyed.store(false, std::memory_order_release);
+
+    test::ClientConnection client(ts.port());
+    test::sendAll(client.fd(), request);
+    ASSERT_TRUE(WaitFor(started));
+    const std::string resp = test::recvUntilClosed(client.fd(), std::chrono::seconds{3});
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 408")) << resp;
+    EXPECT_FALSE(frameDestroyed.load());
+
+    allow.store(true, std::memory_order_release);
+    EXPECT_TRUE(WaitFor(frameDestroyed));
+    EXPECT_FALSE(resumed.load());
+    EXPECT_TRUE(test::simpleGet(ts.port(), "/unknown").starts_with("HTTP/1.1 404"));
+  }
+}
+
+// The deferred work of a request that timed out can still read its body: the input buffer holding it is not reused for
+// the input of other connections.
+TEST(HttpAsyncHandlers, BodyOfTimedOutHandlerStaysValidForItsDeferredWork) {
+  static constexpr std::size_t kBodySize = 4096;
+  std::atomic_bool started{false};
+  std::atomic_bool allow{false};
+  std::atomic_bool bodyIntact{false};
+  std::atomic_bool frameDestroyed{false};
+  ts.resetRouterAndGet()
+      .setPath(http::Method::POST, "/slow",
+               [&](HttpRequestView& req) -> RequestTask<HttpResponse> {
+                 DestructionFlag guard(frameDestroyed);
+                 const std::string_view body = co_await req.bodyAwaitable();
+                 co_await req.deferWork([&started, &allow, &bodyIntact, body] {
+                   started.store(true, std::memory_order_release);
+                   WaitFor(allow);
+                   bodyIntact.store(body == std::string(kBodySize, 'A'));
+                 });
+                 co_return HttpResponse("done");
+               })
+      .timeout(50ms);
+  ts.router().setPath(http::Method::POST, "/other", [](const HttpRequestView& req) {
+    return HttpResponse(std::format("other:{}", req.body().size()));
+  });
+
+  test::ClientConnection client(ts.port());
+  test::sendAll(client.fd(), PostHead("/slow", kBodySize) + std::string(kBodySize, 'A'));
+  ASSERT_TRUE(WaitFor(started));
+  const std::string resp = test::recvUntilClosed(client.fd(), std::chrono::seconds{3});
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 408")) << resp;
+
+  // The input of these connections is read into the input buffer of the event loop.
+  for (const char letter : {'B', 'C'}) {
+    const std::string other = test::sendAndCollect(
+        ts.port(), PostHead("/other", kBodySize, "Connection: close\r\n") + std::string(kBodySize, letter));
+    EXPECT_TRUE(other.ends_with(std::format("other:{}", kBodySize))) << other.substr(0, 512);
+  }
+
+  allow.store(true, std::memory_order_release);
+  EXPECT_TRUE(WaitFor(frameDestroyed));
+  EXPECT_TRUE(bodyIntact.load());
+}
+
+#ifdef AERONET_ENABLE_ZLIB
+// Likewise for a decompressed body: its connection took over the shared buffer holding it when the handler suspended,
+// and keeps it until the deferred work completes, even once closed.
+TEST(HttpAsyncHandlers, DecompressedBodyOfTimedOutHandlerStaysValidForItsDeferredWork) {
+  static constexpr std::size_t kBodySize = 9000;
+  std::atomic_bool started{false};
+  std::atomic_bool allow{false};
+  std::atomic_bool bodyRead{false};
+  std::atomic_bool bodyIntact{false};
+  ts.resetRouterAndGet()
+      .setPath(http::Method::POST, "/slow",
+               [&](HttpRequestView& req) -> RequestTask<HttpResponse> {
+                 const std::string_view body = co_await req.bodyAwaitable();
+                 co_await req.deferWork([&started, &allow, &bodyRead, &bodyIntact, body] {
+                   started.store(true, std::memory_order_release);
+                   WaitFor(allow);
+                   bodyIntact.store(body == std::string(kBodySize, 'A'));
+                   bodyRead.store(true, std::memory_order_release);
+                 });
+                 co_return HttpResponse("done");
+               })
+      .timeout(50ms);
+  ts.router().setPath(http::Method::POST, "/other", [](const HttpRequestView& req) {
+    return HttpResponse(std::format("other:{}", req.body().size()));
+  });
+
+  test::ClientConnection client(ts.port());
+  test::sendAll(client.fd(), GzipPost("/slow", std::string(kBodySize, 'A'), 1));
+  ASSERT_TRUE(WaitFor(started));
+  const std::string resp = test::recvUntilClosed(client.fd(), std::chrono::seconds{3});
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 408")) << resp;
+
+  for (const char letter : {'B', 'C'}) {
+    const std::string other =
+        test::sendAndCollect(ts.port(), GzipPost("/other", std::string(9800, letter), 1, "Connection: close\r\n"));
+    EXPECT_TRUE(other.ends_with("other:9800")) << other.substr(0, 512);
+  }
+
+  allow.store(true, std::memory_order_release);
+  ASSERT_TRUE(WaitFor(bodyRead));
+  EXPECT_TRUE(bodyIntact.load());
+}
+#endif
+
+// A request timing out while its handler waits for the rest of its body has nothing left running: its coroutine is
+// released right away, and its connection can linger, unread bytes of the body being likely.
+TEST(HttpAsyncHandlers, TimeoutWhileWaitingForBodyReleasesTheCoroutine) {
+  std::atomic_bool frameDestroyed{false};
+  ts.resetRouterAndGet()
+      .setPath(http::Method::POST, "/upload",
+               [&](HttpRequestView& req) -> RequestTask<HttpResponse> {
+                 DestructionFlag guard(frameDestroyed);
+                 const std::string_view body = co_await req.bodyAwaitable();
+                 co_return HttpResponse(body);
+               })
+      .timeout(50ms);
+
+  test::ClientConnection client(ts.port());
+  test::sendAll(client.fd(), PostHead("/upload", 10) + "abc");
+  const std::string resp = test::recvUntilClosed(client.fd(), std::chrono::seconds{3});
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 408")) << resp;
+  // Well before the end of the lingering close (5 s), the client keeping its socket open.
+  EXPECT_TRUE(WaitFor(frameDestroyed, 2000ms));
+}
+
 // Same when the request is abandoned because of an invalid body received while the work runs.
 TEST(HttpAsyncHandlers, CoroutineFrameOfAbandonedRequestOutlivesItsWork) {
   std::atomic_bool started{false};
@@ -597,6 +1022,136 @@ TEST(HttpAsyncHandlers, UndecodableBodyReceivedAfterDispatchIsRejected) {
   const std::string resp = test::recvUntilClosed(client.fd(), std::chrono::seconds{3});
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 4")) << resp;
   EXPECT_TRUE(WaitFor(frameDestroyed));
+}
+
+namespace {
+
+// What follows the head of a body made of 'data', sent with a Content-Length or chunked with an optional trailer line.
+struct AsyncUpload {
+  std::string head;
+  std::string body;
+};
+
+AsyncUpload FixedLengthGzipUpload(std::string_view data) {
+  return {PostHead("/upload", data.size(), "Content-Encoding: gzip\r\nConnection: close\r\n"), std::string(data)};
+}
+
+AsyncUpload ChunkedGzipUpload(std::string_view data, std::string_view trailerLine) {
+  return {
+      "POST /upload HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nContent-Encoding: gzip\r\nConnection: "
+      "close\r\n\r\n",
+      std::format("{:x}\r\n{}\r\n0\r\n{}\r\n", data.size(), data, trailerLine)};
+}
+
+}  // namespace
+
+// The decompression of a body updates the headers of its request: it waits for the end of the deferred work, which may
+// read them.
+TEST(HttpAsyncHandlers, DeferredWorkReadsHeadersUnchangedByTheArrivalOfTheBody) {
+  std::atomic_bool started{false};
+  std::atomic_bool allow{false};
+  std::atomic_bool headerStable{false};
+  ts.resetRouterAndGet().setPath(http::Method::POST, "/upload", [&](HttpRequestView& req) -> RequestTask<HttpResponse> {
+    co_await req.deferWork([&] {
+      const std::string before(req.headerValueOrEmpty(http::ContentEncoding));
+      started.store(true, std::memory_order_release);
+      WaitFor(allow);
+      headerStable.store(before == "gzip" && req.headerValueOrEmpty(http::ContentEncoding) == "gzip",
+                         std::memory_order_release);
+    });
+    const std::string_view body = co_await req.bodyAwaitable();
+    co_return HttpResponse(std::format("[{}|{}|{}]", req.headerValueOrEmpty(http::ContentEncoding), body,
+                                       req.trailerValueOrEmpty("x-sig")));
+  });
+
+  const std::string payload(200, 'p');
+  const RawChars compressed = test::Compress(Encoding::gzip, payload);
+  const std::string_view compressedView(compressed);
+  const auto expectStableHeaders = [&](const AsyncUpload& upload, std::string_view trailer) {
+    started.store(false, std::memory_order_release);
+    allow.store(false, std::memory_order_release);
+    headerStable.store(false, std::memory_order_release);
+    test::ClientConnection client(ts.port());
+    test::sendAll(client.fd(), upload.head);
+    ASSERT_TRUE(WaitFor(started));
+    test::sendAll(client.fd(), upload.body);
+    // Long enough for the server to receive the whole body while the work runs.
+    std::this_thread::sleep_for(50ms);
+    allow.store(true, std::memory_order_release);
+    const std::string resp = test::recvUntilClosed(client.fd(), std::chrono::seconds{3});
+    EXPECT_TRUE(resp.ends_with(std::format("[|{}|{}]", payload, trailer))) << resp.substr(0, 512);
+    EXPECT_TRUE(headerStable.load(std::memory_order_acquire));
+  };
+
+  expectStableHeaders(FixedLengthGzipUpload(compressedView), "");
+  expectStableHeaders(ChunkedGzipUpload(compressedView, ""), "");
+  expectStableHeaders(ChunkedGzipUpload(compressedView, "x-sig: value\r\n"), "value");
+}
+
+// A body received during the deferred work is decompressed once it ends: a failure then answers instead of resuming
+// the handler, and releases its coroutine.
+TEST(HttpAsyncHandlers, UndecodableBodyReceivedDuringDeferredWorkIsRejectedOnceItEnds) {
+  std::atomic_bool started{false};
+  std::atomic_bool allow{false};
+  std::atomic_bool resumed{false};
+  std::atomic_bool frameDestroyed{false};
+  ts.resetRouterAndGet().setPath(http::Method::POST, "/upload", [&](HttpRequestView& req) -> RequestTask<HttpResponse> {
+    DestructionFlag guard(frameDestroyed);
+    co_await req.deferWork([&] {
+      started.store(true, std::memory_order_release);
+      WaitFor(allow);
+    });
+    resumed.store(true, std::memory_order_release);
+    co_return HttpResponse(co_await req.bodyAwaitable());
+  });
+
+  for (const AsyncUpload& upload : {FixedLengthGzipUpload("notgzipped"), ChunkedGzipUpload("notgzipped", "")}) {
+    started.store(false, std::memory_order_release);
+    allow.store(false, std::memory_order_release);
+    frameDestroyed.store(false, std::memory_order_release);
+    test::ClientConnection client(ts.port());
+    test::sendAll(client.fd(), upload.head);
+    ASSERT_TRUE(WaitFor(started));
+    test::sendAll(client.fd(), upload.body);
+    std::this_thread::sleep_for(50ms);
+    EXPECT_FALSE(frameDestroyed.load(std::memory_order_acquire));
+    allow.store(true, std::memory_order_release);
+    const std::string resp = test::recvUntilClosed(client.fd(), std::chrono::seconds{3});
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 4")) << resp;
+    EXPECT_TRUE(WaitFor(frameDestroyed));
+  }
+  EXPECT_FALSE(resumed.load(std::memory_order_acquire));
+}
+
+// Nothing to decompress for a compressed chunked body without any chunk.
+TEST(HttpAsyncHandlers, EmptyCompressedChunkedBodyReceivedAfterDispatch) {
+  std::atomic_bool dispatched{false};
+  ts.resetRouterAndGet().setPath(http::Method::POST, "/upload",
+                                 [&dispatched](HttpRequestView& req) -> RequestTask<HttpResponse> {
+                                   dispatched.store(true, std::memory_order_release);
+                                   const std::string_view body = co_await req.bodyAwaitable();
+                                   co_return HttpResponse(std::format("[{}]", body));
+                                 });
+
+  const std::string request = ChunkedGzipUpload("", "").head + "0\r\n\r\n";
+  const std::string resp = SendBodyAfterDispatch(ts.port(), request, dispatched);
+  EXPECT_TRUE(resp.ends_with("\r\n\r\n[]")) << resp;
+}
+
+// Once its handler answered, a body is only drained: it is not decompressed, so that a corrupted one changes nothing.
+TEST(HttpAsyncHandlers, BodyOfAnAnsweredRequestIsNotDecompressed) {
+  std::atomic_bool dispatched{false};
+  ts.resetRouterAndGet().setPath(http::Method::POST, "/upload",
+                                 [&dispatched](HttpRequestView&) -> RequestTask<HttpResponse> {
+                                   dispatched.store(true, std::memory_order_release);
+                                   co_return HttpResponse("early");
+                                 });
+
+  for (const AsyncUpload& upload : {FixedLengthGzipUpload("notgzipped"), ChunkedGzipUpload("notgzipped", "")}) {
+    const std::string resp = SendBodyAfterDispatch(ts.port(), upload.head + upload.body, dispatched);
+    EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+    EXPECT_TRUE(resp.ends_with("\r\n\r\nearly")) << resp;
+  }
 }
 #endif
 
@@ -720,6 +1275,226 @@ TEST(HttpAsyncHandlers, StreamedBodyIsCountedInRequestMetrics) {
   EXPECT_EQ(bytesIn.load(), 5U);
 }
 
+// hasMoreBody() is true while the body is being received, but only readBodyAsync() can wait for it: readBody()
+// dereferenced a null pointer.
+TEST(HttpAsyncHandlers, ReadBodyBeforeTheBodyIsReceivedThrows) {
+  std::atomic_bool dispatched{false};
+  ts.resetRouterAndGet().setPath(http::Method::POST, "/uncaught",
+                                 [&dispatched](HttpRequestView& req) -> RequestTask<HttpResponse> {
+                                   dispatched.store(true, std::memory_order_release);
+                                   co_return HttpResponse(req.readBody());
+                                 });
+  // A failed readBody() does not commit the request to the streaming style: the handler can still wait for its body.
+  ts.router().setPath(http::Method::POST, "/caught", [&dispatched](HttpRequestView& req) -> RequestTask<HttpResponse> {
+    dispatched.store(true, std::memory_order_release);
+    const bool moreBodyAnnounced = req.hasMoreBody();
+    bool threw = false;
+    try {
+      (void)req.readBody();
+    } catch (const std::logic_error&) {
+      threw = true;
+    }
+    const std::string_view body = co_await req.bodyAwaitable();
+    co_return HttpResponse(moreBodyAnnounced && threw ? body : std::string_view("unexpected"));
+  });
+
+  const auto postInTwoParts = [&dispatched](std::string_view target) {
+    return SendBodyAfterDispatch(ts.port(), PostHead(target, 5, "Connection: close\r\n") + "hello", dispatched);
+  };
+
+  const std::string uncaught = postInTwoParts("/uncaught");
+  EXPECT_TRUE(uncaught.starts_with("HTTP/1.1 500")) << uncaught;
+  const std::string caught = postInTwoParts("/caught");
+  EXPECT_TRUE(caught.ends_with("\r\n\r\nhello")) << caught;
+}
+
+// body() is empty until the body is received, but must not hide it: it used to make the body awaitables complete right
+// away, with an empty body.
+TEST(HttpAsyncHandlers, BodyCalledBeforeTheBodyIsReceivedDoesNotLoseIt) {
+  std::atomic_bool dispatched{false};
+  ts.resetRouterAndGet().setPath(http::Method::POST, "/aggregated",
+                                 [&dispatched](HttpRequestView& req) -> RequestTask<HttpResponse> {
+                                   const bool nothingYet = req.body().empty() && req.hasMoreBody();
+                                   dispatched.store(true, std::memory_order_release);
+                                   const std::string_view body = co_await req.bodyAwaitable();
+                                   co_return HttpResponse(nothingYet ? body : std::string_view("unexpected"));
+                                 });
+  ts.router().setPath(http::Method::POST, "/streamed",
+                      [&dispatched](HttpRequestView& req) -> RequestTask<HttpResponse> {
+                        (void)req.body();
+                        dispatched.store(true, std::memory_order_release);
+                        co_return HttpResponse(co_await req.readBodyAsync());
+                      });
+  ts.router()
+      .setPath(http::Method::POST, "/middleware",
+               [&dispatched](HttpRequestView& req) -> RequestTask<HttpResponse> {
+                 dispatched.store(true, std::memory_order_release);
+                 co_return HttpResponse(co_await req.bodyAwaitable());
+               })
+      .before([](HttpRequestView& req) {
+        (void)req.body();
+        return MiddlewareResult::Continue();
+      });
+
+  for (const std::string_view target : {"/aggregated", "/streamed", "/middleware"}) {
+    const std::string resp =
+        SendBodyAfterDispatch(ts.port(), PostHead(target, 5, "Connection: close\r\n") + "hello", dispatched);
+    EXPECT_TRUE(resp.ends_with("\r\n\r\nhello")) << target << ": " << resp;
+  }
+}
+
+// The event loop leaves the request alone while deferred work runs: a body received meanwhile only shows up once the
+// work ends, right before the coroutine resumes.
+TEST(HttpAsyncHandlers, RequestStaysUnchangedDuringDeferredWorkWhileItsBodyArrives) {
+  std::atomic_bool started{false};
+  std::atomic_bool allow{false};
+  std::atomic_bool stable{false};
+  ts.resetRouterAndGet().setPath(http::Method::POST, "/upload", [&](HttpRequestView& req) -> RequestTask<HttpResponse> {
+    co_await req.deferWork([&] {
+      const auto bodyNotReadable = [&req] {
+        return req.hasMoreBody() && !req.isBodyReady() && req.body().empty() && req.trailers().empty();
+      };
+      const bool notReadableBefore = bodyNotReadable();
+      started.store(true, std::memory_order_release);
+      WaitFor(allow);
+      stable.store(notReadableBefore && bodyNotReadable(), std::memory_order_release);
+    });
+    const bool moreBody = req.hasMoreBody();
+    const std::string_view body = co_await req.bodyAwaitable();
+    co_return HttpResponse(std::format("[{}|{}|{}]", moreBody, body, req.trailerValueOrEmpty("x-sig")));
+  });
+
+  const auto expectBodyAfterTheWork = [&](std::string_view head, std::string_view body, std::string_view expected) {
+    started.store(false, std::memory_order_release);
+    allow.store(false, std::memory_order_release);
+    stable.store(false, std::memory_order_release);
+    test::ClientConnection client(ts.port());
+    test::sendAll(client.fd(), head);
+    ASSERT_TRUE(WaitFor(started));
+    test::sendAll(client.fd(), body);
+    // Long enough for the server to receive the whole body while the work runs.
+    std::this_thread::sleep_for(50ms);
+    allow.store(true, std::memory_order_release);
+    const std::string resp = test::recvUntilClosed(client.fd(), std::chrono::seconds{3});
+    EXPECT_TRUE(resp.ends_with(expected)) << resp;
+    EXPECT_TRUE(stable.load(std::memory_order_acquire));
+  };
+
+  expectBodyAfterTheWork(PostHead("/upload", 5, "Connection: close\r\n"), "hello", "[true|hello|]");
+  expectBodyAfterTheWork("POST /upload HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                         "5\r\nhello\r\n0\r\nx-sig: value\r\n\r\n", "[true|hello|value]");
+}
+
+// The captures of the work are destroyed before its completion is posted: they may refer to objects that the end of the
+// handler (or of the server) destroys.
+TEST(HttpAsyncHandlers, WorkCapturesAreDestroyedBeforeTheHandlerResumes) {
+  std::atomic_bool captureDestroyed{false};
+  std::atomic_bool destroyedAtResume{false};
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/work", [&](HttpRequestView& req) -> RequestTask<HttpResponse> {
+    co_await req.deferWork([guard = std::make_unique<DestructionFlag>(captureDestroyed, 50ms)] {});
+    destroyedAtResume.store(captureDestroyed.load(std::memory_order_acquire), std::memory_order_release);
+    co_return HttpResponse("done");
+  });
+
+  const std::string resp =
+      test::sendAndCollect(ts.port(), "GET /work HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+  EXPECT_TRUE(resp.ends_with("\r\n\r\ndone")) << resp;
+  EXPECT_TRUE(destroyedAtResume.load(std::memory_order_acquire));
+}
+
+// An answer before the body goes through the pipeline like any response: it is not an error of the parser.
+TEST(HttpAsyncHandlers, HandlerThrowingWhenCalledBeforeItsBodyGoesThroughThePipeline) {
+  std::atomic<int> nbParserErrors{0};
+  std::atomic<int> metricsStatus{0};
+  test::TestServer server{HttpServerConfig{}};
+  server.server.setParserErrorCallback([&nbParserErrors](http::StatusCode) { nbParserErrors.fetch_add(1); });
+  server.server.setMetricsCallback(
+      [&metricsStatus](const RequestMetrics& metrics) { metricsStatus.store(metrics.status); });
+  server.router().addResponseMiddleware(
+      [](const HttpRequestView&, HttpResponse& response) { response.headerAddLine("x-post", "1"); });
+  server.router().setPath(http::Method::POST, "/throw",
+                          [](HttpRequestView&) -> RequestTask<HttpResponse> { throw std::runtime_error("boom"); });
+
+  test::ClientConnection client(server.port());
+  test::sendAll(client.fd(), PostHead("/throw", 10) + "abc");
+  const std::string resp = test::recvUntilClosed(client.fd(), std::chrono::seconds{3});
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 500")) << resp;
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine("x-post", "1"))) << resp;
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << resp;
+  EXPECT_EQ(nbParserErrors.load(), 0);
+  EXPECT_EQ(metricsStatus.load(), 500);
+}
+
+// keepAliveTimeout bounds a stalled upload as on a synchronous route, whether the handler awaits the body or already
+// completed (it is then answered once its body is received).
+TEST(HttpAsyncHandlers, StalledUploadIsClosedByTheKeepAliveTimeout) {
+  std::atomic_bool frameDestroyed{false};
+  test::TestServer server(ShortKeepAliveConfig());
+  server.router().setPath(http::Method::POST, "/awaits",
+                          [&frameDestroyed](HttpRequestView& req) -> RequestTask<HttpResponse> {
+                            DestructionFlag guard(frameDestroyed);
+                            co_return HttpResponse(co_await req.bodyAwaitable());
+                          });
+  server.router().setPath(http::Method::POST, "/completes",
+                          [](HttpRequestView&) -> RequestTask<HttpResponse> { co_return HttpResponse("early"); });
+
+  for (const std::string_view target : {"/awaits", "/completes"}) {
+    test::ClientConnection client(server.port());
+    test::sendAll(client.fd(), PostHead(target, 10) + "abc");
+    EXPECT_TRUE(test::WaitForPeerClose(client.fd(), 5000ms)) << target;
+  }
+  EXPECT_TRUE(WaitFor(frameDestroyed, 2000ms));
+}
+
+// Only a client that stops sending is idle.
+TEST(HttpAsyncHandlers, UploadMakingProgressIsNotClosedByTheKeepAliveTimeout) {
+  ExpectUploadMakingProgressIsServed(ShortKeepAliveConfig());
+}
+
+// bodyReadTimeout resets whenever body bytes are received, as for a synchronous route.
+TEST(HttpAsyncHandlers, UploadMakingProgressIsNotClosedByTheBodyReadTimeout) {
+  ExpectUploadMakingProgressIsServed(ShortBodyReadConfig());
+}
+
+TEST(HttpAsyncHandlers, KeepAliveTimeoutDoesNotCountTheDeferredWork) {
+  ExpectDeferredWorkIsNotIdleness(ShortKeepAliveConfig());
+}
+
+TEST(HttpAsyncHandlers, BodyReadTimeoutDoesNotCountTheDeferredWork) {
+  ExpectDeferredWorkIsNotIdleness(ShortBodyReadConfig());
+}
+
+#ifdef AERONET_LINUX
+// A zerocopy send arms the deadline of its connection to watch its completion, whatever the next request does: once
+// completed, the deadline must not close the connection of a handler that works.
+TEST(HttpAsyncHandlers, CompletedZerocopySendDoesNotExposeDeferredWorkToTheKeepAliveTimeout) {
+  // Before the server, which waits for the deferred work when destroyed.
+  std::atomic_bool started{false};
+  std::atomic_bool allow{false};
+  HttpServerConfig cfg = ShortKeepAliveConfig();
+  cfg.withZerocopyMode(ZerocopyMode::Enabled).withZerocopyMinBytes(1024U);
+  test::TestServer server(std::move(cfg));
+  server.router().setPath(http::Method::GET, "/large",
+                          [](const HttpRequestView&) { return HttpResponse(std::string(64UL * 1024UL, 'x')); });
+  server.router().setPath(http::Method::GET, "/work", [&](HttpRequestView& req) -> RequestTask<HttpResponse> {
+    co_await req.deferWork([&] {
+      started.store(true, std::memory_order_release);
+      WaitFor(allow);
+    });
+    co_return HttpResponse("done");
+  });
+
+  test::ClientConnection client(server.port());
+  test::sendAll(client.fd(),
+                "GET /large HTTP/1.1\r\nHost: x\r\n\r\nGET /work HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+  ASSERT_TRUE(WaitFor(started));
+  std::this_thread::sleep_for(3 * kShortTimeout);
+  allow.store(true, std::memory_order_release);
+  const std::string resp = test::recvUntilClosed(client.fd(), std::chrono::seconds{3});
+  EXPECT_TRUE(resp.ends_with("\r\n\r\ndone")) << resp.size() << " bytes received";
+}
+#endif
+
 #if defined(AERONET_ENABLE_HTTP2) && defined(AERONET_ENABLE_OPENSSL)
 
 namespace {
@@ -814,6 +1589,53 @@ TEST(Http2AsyncHandlers, CoroutineFrameOutlivesItsClosedConnectionUntilWorkCompl
   EXPECT_TRUE(frameAliveAtWorkEnd.load());
 }
 
+// A stream opened then reset at once frees its slot while its deferred work runs: maxConcurrentStreams did not bound
+// the threads of a connection.
+TEST(Http2AsyncHandlers, WorkOfResetStreamsCountsAgainstMaxConcurrentStreams) {
+  static constexpr int kMaxConcurrentStreams = 10;
+  // Before the server, which waits for the deferred work when destroyed.
+  std::atomic_bool allow{false};
+  std::atomic<int> nbDispatched{0};
+
+  test::TlsHttp2TestServer server;
+  server.server.postConfigUpdate(
+      [](HttpServerConfig& cfg) { cfg.http2.maxConcurrentStreams = static_cast<uint32_t>(kMaxConcurrentStreams); });
+  server.server.resetRouterAndGet().setPath(http::Method::GET, "/slow",
+                                            [&](HttpRequestView& req) -> RequestTask<HttpResponse> {
+                                              nbDispatched.fetch_add(1, std::memory_order_relaxed);
+                                              co_await req.deferWork([&allow] { WaitFor(allow); });
+                                              co_return HttpResponse("done");
+                                            });
+  server.server.router().setPath(http::Method::GET, "/fast",
+                                 [](const HttpRequestView&) { return HttpResponse("fast"); });
+
+  test::TlsHttp2Client client(server.port());
+  ASSERT_TRUE(client.isConnected());
+  for (int streamPos = 0; streamPos < 3 * kMaxConcurrentStreams; ++streamPos) {
+    const uint32_t streamId = client.sendAsyncRequest("GET", "/slow");
+    ASSERT_NE(streamId, 0U);
+    client.connection().sendRstStream(streamId, http2::ErrorCode::Cancel);
+  }
+
+  // Flushes the last RST_STREAM. No slot is left: this stream is refused, like the last /slow ones.
+  const auto refused = client.waitAndGetResponse(client.sendAsyncRequest("GET", "/fast"), 5000ms);
+  ASSERT_TRUE(refused.has_value());
+  EXPECT_EQ(refused->statusCode, 0);
+  EXPECT_EQ(nbDispatched.load(std::memory_order_relaxed), kMaxConcurrentStreams);
+
+  // The slots come back once the work completes.
+  allow.store(true, std::memory_order_release);
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  test::TlsHttp2Client::Response resp;
+  while (resp.statusCode != 200 && std::chrono::steady_clock::now() < deadline) {
+    resp = client.waitAndGetResponse(client.sendAsyncRequest("GET", "/fast"), 5000ms)
+               .value_or(test::TlsHttp2Client::Response{});
+    std::this_thread::sleep_for(1ms);
+  }
+  EXPECT_EQ(resp.statusCode, 200);
+  EXPECT_EQ(resp.body, "fast");
+}
+
 // The HTTP/2 body is fully received before dispatch: it can be read with readBody() / readBodyAsync() as well.
 TEST(Http2AsyncHandlers, BodyCanBeStreamed) {
   ts2.server.resetRouterAndGet().setPath(http::Method::POST, "/collect",
@@ -844,6 +1666,62 @@ TEST(Http2AsyncHandlers, BodyCanBeStreamed) {
   resp = client.post("/first-chunk", "hello http2 body");
   EXPECT_EQ(resp.statusCode, 200);
   EXPECT_EQ(resp.body, "hello");
+}
+
+// A request answered by its route timeout is a completed request.
+TEST(Http2AsyncHandlers, TimedOutHandlerIsCountedInTheRequestMetrics) {
+  // Before the server, which waits for the deferred work when destroyed.
+  std::atomic_bool allow{false};
+  std::atomic<int> metricsStatus{0};
+  test::TlsHttp2TestServer server;
+  server.server.server.setMetricsCallback(
+      [&metricsStatus](const RequestMetrics& metrics) { metricsStatus.store(metrics.status); });
+  server.server.resetRouterAndGet()
+      .setPath(http::Method::GET, "/slow",
+               [&allow](HttpRequestView& req) -> RequestTask<HttpResponse> {
+                 co_await req.deferWork([&allow] { WaitFor(allow); });
+                 co_return HttpResponse("late");
+               })
+      .timeout(50ms);
+
+  test::TlsHttp2Client client(server.port());
+  ASSERT_TRUE(client.isConnected());
+  const auto resp = client.get("/slow");
+  allow.store(true, std::memory_order_release);
+  EXPECT_EQ(resp.statusCode, 408);
+  const auto deadline = std::chrono::steady_clock::now() + 2s;
+  while (metricsStatus.load() == 0 && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(1ms);
+  }
+  EXPECT_EQ(metricsStatus.load(), 408);
+}
+
+// The last response after a GOAWAY closes the connection right away when it comes from deferred work, like over
+// HTTP/1.1: without waiting for the next sweep, that can be far away (a maintenance timer does not always exist).
+TEST(Http2AsyncHandlers, LastDeferredResponseAfterGoAwayClosesTheConnectionRightAway) {
+  test::TlsHttp2TestServer server;
+  server.server.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.withPollInterval(10s);
+    cfg.http2.maxStreamsPerConnection = 1;
+  });
+  server.server.resetRouterAndGet().setPath(http::Method::GET, "/work",
+                                            [](HttpRequestView& req) -> RequestTask<HttpResponse> {
+                                              co_await req.deferWork([] { std::this_thread::sleep_for(20ms); });
+                                              co_return HttpResponse("done");
+                                            });
+
+  test::TlsHttp2Client client(server.port());
+  ASSERT_TRUE(client.isConnected());
+  const auto resp = client.get("/work");
+  EXPECT_EQ(resp.statusCode, 200);
+  EXPECT_EQ(resp.body, "done");
+  // The socket of the client is non-blocking: each call returns at once while the connection is open.
+  const auto deadline = std::chrono::steady_clock::now() + 3s;
+  bool closed = false;
+  while (!closed && std::chrono::steady_clock::now() < deadline) {
+    closed = test::WaitForPeerClose(client.fd(), 100ms);
+  }
+  EXPECT_TRUE(closed);
 }
 
 // HTTP/2 requests were not attached to their connection: the accessors below (used by request metrics and access logs
