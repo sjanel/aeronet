@@ -46,9 +46,9 @@ class AcceptHookGuard : public test::QueueResetGuard<test::ActionQueue<AcceptAct
 
 }  // namespace
 
-// NOLINTNEXTLINE(bugprone-reserved-identifier,readability-inconsistent-declaration-parameter-name)
+// NOLINTNEXTLINE(bugprone-reserved-identifier,readability-inconsistent-declaration-parameter-name,misc-include-cleaner)
 extern "C" int accept4(int __fd, struct sockaddr* __addr, socklen_t* __addr_len, int __flags) {
-  using AcceptFn = int (*)(int, struct sockaddr*, socklen_t*, int);
+  using AcceptFn = int (*)(int, struct sockaddr*, socklen_t*, int);  // NOLINT(misc-include-cleaner)
   static AcceptFn real_accept4 = reinterpret_cast<AcceptFn>(dlsym(RTLD_NEXT, "accept4"));
   if (real_accept4 == nullptr) {
     std::abort();

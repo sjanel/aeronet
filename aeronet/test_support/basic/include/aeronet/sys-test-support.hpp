@@ -795,16 +795,16 @@ inline void PushEpollWaitAction(EpollWaitAction action) { g_epoll_wait_actions.p
 
 #ifdef AERONET_POSIX
 using SocketFn = int (*)(int, int, int);
-using SetsockoptFn = int (*)(int, int, int, const void*, socklen_t);
-using BindFn = int (*)(int, const struct sockaddr*, socklen_t);
+using SetsockoptFn = int (*)(int, int, int, const void*, socklen_t);  // NOLINT(misc-include-cleaner)
+using BindFn = int (*)(int, const struct sockaddr*, socklen_t);       // NOLINT(misc-include-cleaner)
 using ListenFn = int (*)(int, int);
-using AcceptFn = int (*)(int, struct sockaddr*, socklen_t*);
-using GetsocknameFn = int (*)(int, struct sockaddr*, socklen_t*);
+using AcceptFn = int (*)(int, struct sockaddr*, socklen_t*);       // NOLINT(misc-include-cleaner)
+using GetsocknameFn = int (*)(int, struct sockaddr*, socklen_t*);  // NOLINT(misc-include-cleaner)
 using ShutdownFn = int (*)(int, int);
 using SendFn = ssize_t (*)(int, const void*, size_t, int);
 using RecvFn = ssize_t (*)(int, void*, size_t, int);
 #if AERONET_WANT_SYS_OVERRIDES
-using Accept4Fn = int (*)(int, struct sockaddr*, socklen_t*, int);
+using Accept4Fn = int (*)(int, struct sockaddr*, socklen_t*, int);  // NOLINT(misc-include-cleaner)
 using EpollCtlFn = int (*)(int, int, int, struct epoll_event*);
 using EpollCreateFn = int (*)(int);
 using EpollWaitFn = int (*)(int, struct epoll_event*, int, int);
@@ -999,7 +999,7 @@ inline bool IsInvalidTldHost(std::string_view host) {
 }
 
 #ifdef AERONET_POSIX
-using ConnectFn = int (*)(int, const struct sockaddr*, socklen_t);
+using ConnectFn = int (*)(int, const struct sockaddr*, socklen_t);  // NOLINT(misc-include-cleaner)
 
 inline ConnectFn ResolveRealConnect() {
   // Thread-safe initialization: the hooks are called from the server event loops and the test threads.
@@ -1359,8 +1359,8 @@ extern "C" __attribute__((no_sanitize("address"))) int socket(int domain, int ty
   return real(domain, type, protocol);
 }
 
-// NOLINTNEXTLINE
 extern "C" __attribute__((no_sanitize("address"))) int setsockopt(int sockfd, int level, int optname,
+                                                                  // NOLINTNEXTLINE(misc-include-cleaner)
                                                                   const void* optval, socklen_t optlen) {
   auto act = aeronet::test::g_setsockopt_actions.pop();
   if (act) {
@@ -1375,8 +1375,8 @@ extern "C" __attribute__((no_sanitize("address"))) int setsockopt(int sockfd, in
   return real(sockfd, level, optname, optval, optlen);
 }
 
-// NOLINTNEXTLINE
 extern "C" __attribute__((no_sanitize("address"))) int bind(int sockfd, const struct sockaddr* addr,
+                                                            // NOLINTNEXTLINE(misc-include-cleaner)
                                                             socklen_t addrlen) {
   auto act = aeronet::test::g_bind_actions.pop();
   if (act) {
@@ -1477,8 +1477,8 @@ extern "C" __attribute__((no_sanitize("address"))) int accept4(int sockfd, struc
 }
 #endif  // AERONET_WANT_SYS_OVERRIDES
 
-// NOLINTNEXTLINE
 extern "C" __attribute__((no_sanitize("address"))) int connect(int sockfd, const struct sockaddr* addr,
+                                                               // NOLINTNEXTLINE(misc-include-cleaner)
                                                                socklen_t addrlen) {
   auto act = aeronet::test::g_connect_actions.pop();
   if (act) {
@@ -1526,8 +1526,8 @@ extern "C" __attribute__((no_sanitize("address"))) int getaddrinfo(const char* n
   return real(node, service, hints, res);
 }
 
-// NOLINTNEXTLINE
 extern "C" __attribute__((no_sanitize("address"))) int getsockname(int sockfd, struct sockaddr* addr,
+                                                                   // NOLINTNEXTLINE(misc-include-cleaner)
                                                                    socklen_t* addrlen) {
   auto act = aeronet::test::g_getsockname_actions.pop();
   if (act) {
@@ -1542,7 +1542,6 @@ extern "C" __attribute__((no_sanitize("address"))) int getsockname(int sockfd, s
   return real(sockfd, addr, addrlen);
 }
 
-// NOLINTNEXTLINE
 extern "C" __attribute__((no_sanitize("address"))) int shutdown(int sockfd, int how) {
   auto act = aeronet::test::g_shutdown_actions.pop();
   if (act) {
@@ -1658,6 +1657,7 @@ extern "C" __attribute__((no_sanitize("address"))) ssize_t recvmsg(int fd, struc
   if ((flags & MSG_ERRQUEUE) != 0) {
     if (auto notification = ::aeronet::test::g_errqueue_notifications.pop(fd)) {
       if (!notification->controlMessage ||
+          // NOLINTNEXTLINE(misc-include-cleaner)
           msg->msg_controllen < static_cast<socklen_t>(CMSG_LEN(sizeof(struct sock_extended_err)))) {
         msg->msg_controllen = 0;
         return 0;

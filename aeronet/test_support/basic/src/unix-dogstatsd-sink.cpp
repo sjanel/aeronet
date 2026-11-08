@@ -50,6 +50,7 @@ UnixDogstatsdSink::UnixDogstatsdSink() : _fd(UnixSocket::Type::Datagram) {
   sockaddr_un addr{};
   addr.sun_family = AF_UNIX;
   std::strncpy(addr.sun_path, _path.c_str(), sizeof(addr.sun_path) - 1);
+  // NOLINTNEXTLINE(misc-include-cleaner)
   const socklen_t addrlen = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + _path.size() + 1);
   if (::bind(_fd.fd(), reinterpret_cast<sockaddr*>(&addr), addrlen) != 0) {
     auto err = LastSystemError();

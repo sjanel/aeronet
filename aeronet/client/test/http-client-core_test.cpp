@@ -2431,7 +2431,7 @@ bool WaitReadable(NativeHandle fd, int timeoutMs) {
 // that thread stopped (kInvalidHandle on failure: the thread then only stops at its next poll timeout).
 NativeHandle ConnectToListener(NativeHandle listenFd) {
   sockaddr_storage addr{};
-  socklen_t len = sizeof(addr);
+  socklen_t len = sizeof(addr);  // NOLINT(misc-include-cleaner)
   if (::getsockname(listenFd, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
     return kInvalidHandle;
   }
@@ -2560,7 +2560,7 @@ class TinyProxy {
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     addr.sin_port = 0;
     EXPECT_EQ(::bind(_listenFd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)), 0);
-    socklen_t len = sizeof(addr);
+    socklen_t len = sizeof(addr);  // NOLINT(misc-include-cleaner)
     EXPECT_EQ(::getsockname(_listenFd, reinterpret_cast<sockaddr*>(&addr), &len), 0);
     _port = ntohs(addr.sin_port);
     EXPECT_EQ(::listen(_listenFd, 8), 0);
@@ -3018,7 +3018,7 @@ class RawServer {
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     addr.sin_port = 0;
     EXPECT_EQ(::bind(_listenFd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)), 0);
-    socklen_t len = sizeof(addr);
+    socklen_t len = sizeof(addr);  // NOLINT(misc-include-cleaner)
     EXPECT_EQ(::getsockname(_listenFd, reinterpret_cast<sockaddr*>(&addr), &len), 0);
     _port = ntohs(addr.sin_port);
     EXPECT_EQ(::listen(_listenFd, 8), 0);
@@ -3042,7 +3042,7 @@ class RawServer {
       _listenFd = kInvalidHandle;
       return;
     }
-    socklen_t len = sizeof(addr);
+    socklen_t len = sizeof(addr);  // NOLINT(misc-include-cleaner)
     if (::getsockname(_listenFd, reinterpret_cast<sockaddr*>(&addr), &len) != 0 || ::listen(_listenFd, 8) != 0) {
       CloseNativeHandle(_listenFd);
       _listenFd = kInvalidHandle;

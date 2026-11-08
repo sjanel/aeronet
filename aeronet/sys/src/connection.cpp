@@ -23,7 +23,7 @@ namespace aeronet {
 
 namespace {
 NativeHandle ComputeConnectionFd(NativeHandle socketFd, sockaddr_storage& peerAddress) {
-  socklen_t in_len = sizeof(peerAddress);
+  socklen_t in_len = sizeof(peerAddress);  // NOLINT(misc-include-cleaner)
 
   peerAddress = {};
 

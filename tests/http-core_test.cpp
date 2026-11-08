@@ -2688,8 +2688,8 @@ int AcceptedSendBufferSize(std::string_view path) {
   }
   sockaddr_in client{};
   sockaddr_in server{};
-  socklen_t clientLen = sizeof(client);
-  socklen_t serverLen = sizeof(server);
+  socklen_t clientLen = sizeof(client);// NOLINT(misc-include-cleaner)
+  socklen_t serverLen = sizeof(server);// NOLINT(misc-include-cleaner)
   if (::getsockname(sock.fd(), reinterpret_cast<sockaddr*>(&client), &clientLen) != 0 ||
       ::getpeername(sock.fd(), reinterpret_cast<sockaddr*>(&server), &serverLen) != 0) {
     return -1;
@@ -2697,8 +2697,8 @@ int AcceptedSendBufferSize(std::string_view path) {
   for (int fd = 0; fd < 4096; ++fd) {
     sockaddr_in local{};
     sockaddr_in peer{};
-    socklen_t localLen = sizeof(local);
-    socklen_t peerLen = sizeof(peer);
+    socklen_t localLen = sizeof(local);// NOLINT(misc-include-cleaner)
+    socklen_t peerLen = sizeof(peer);// NOLINT(misc-include-cleaner)
     if (fd != sock.fd() && ::getsockname(fd, reinterpret_cast<sockaddr*>(&local), &localLen) == 0 &&
         ::getpeername(fd, reinterpret_cast<sockaddr*>(&peer), &peerLen) == 0 && local.sin_family == AF_INET &&
         local.sin_port == server.sin_port && peer.sin_port == client.sin_port) {

@@ -108,6 +108,7 @@ All notable changes to aeronet are documented in this file.
 ### Others
 
 - **Bumped zlib from 1.3.2 to 1.4** (downloaded when building with `AERONET_ENABLE_ZLIBNG=OFF`). Its breaking changes do not affect aeronet, and its security fixes concern functions or settings that aeronet does not use (gzip file I/O, `inflateSync()`, `inflatePrime()`, `inflateGetDictionary()` on a stream initialized without window size). The Conan recipe keeps `zlib/[~1.3]` until ConanCenter provides 1.4.
+- **Bumped amc from 2.7.0 to 2.8.1** (header-only, installed with aeronet when downloaded by its build). Throughput, memory use and compile times are unchanged. An allocation failure in `shrink_to_fit()` of an `aeronet::vector`, as in the periodic trimming of the server and in `HttpClient::releaseUnusedMemory()`, now throws `std::bad_alloc` instead of terminating the process.
 
 ## [1.7.0] - 2026-10-26
 

@@ -363,8 +363,14 @@ TEST_P(HttpProtobuf, AsyncHandler) {
 #endif
 
 TEST_P(HttpProtobuf, NegotiatedBinary) {
-  for (std::string_view accept : {"", "application/protobuf", "*/*", "application/x-protobuf",
-                                  "application/json;q=0.5, application/protobuf", "text/html, */*;q=0.1"}) {
+  for (std::string_view accept : {
+           "",
+           "application/protobuf",
+           "*/*",
+           "application/x-protobuf",
+           "application/json;q=0.5, application/protobuf",
+           "text/html, */*;q=0.1",
+       }) {
     const HttpResponse resp = getWithAccept("/negotiated", accept);
     ASSERT_EQ(resp.status(), http::StatusCodeOK) << accept;
     EXPECT_EQ(resp.headerValueOrEmpty(http::ContentType), http::ContentTypeApplicationProtobuf) << accept;
@@ -377,9 +383,12 @@ TEST_P(HttpProtobuf, NegotiatedBinary) {
 }
 
 TEST_P(HttpProtobuf, NegotiatedJson) {
-  for (std::string_view accept :
-       {"application/json", "application/protobuf+json; charset=utf-8",
-        "application/protobuf;q=0.5, application/x-protobuf+json;q=0.9", "*/*, application/protobuf;q=0"}) {
+  for (std::string_view accept : {
+           "application/json",
+           "application/protobuf+json; charset=utf-8",
+           "application/protobuf;q=0.5, application/x-protobuf+json;q=0.9",
+           "*/*, application/protobuf;q=0",
+       }) {
     const HttpResponse resp = getWithAccept("/negotiated", accept);
     ASSERT_EQ(resp.status(), http::StatusCodeOK) << accept;
     // Without ProtoJSON, nothing acceptable: the binary encoding by default.

@@ -59,7 +59,7 @@ struct PollAction {
 
 struct TestAddrEntry {
   sockaddr_storage storage{};
-  socklen_t addrlen{0};
+  socklen_t addrlen{0};  // NOLINT(misc-include-cleaner)
   int family{AF_INET};
   int sockType{SOCK_STREAM};
   int protocol{0};
@@ -103,7 +103,7 @@ struct TestAddrEntry {
   addr.sin_port = 0;
   [[maybe_unused]] const int bindRc = ::bind(probe.fd(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
   assert(bindRc == 0);
-  socklen_t len = sizeof(addr);
+  socklen_t len = sizeof(addr);  // NOLINT(misc-include-cleaner)
   [[maybe_unused]] const int nameRc = ::getsockname(probe.fd(), reinterpret_cast<sockaddr*>(&addr), &len);
   assert(nameRc == 0);
   return ntohs(addr.sin_port);
@@ -303,8 +303,8 @@ int socket(int _domain, int _type, int _protocol) {
   return fd;
 }
 
-int connect(int _fd, const sockaddr* _addr, socklen_t _len) {
-  using ConnectFn = int (*)(int, const sockaddr*, socklen_t);
+int connect(int _fd, const sockaddr* _addr, socklen_t _len) {  // NOLINT(misc-include-cleaner)
+  using ConnectFn = int (*)(int, const sockaddr*, socklen_t);  // NOLINT(misc-include-cleaner)
   static ConnectFn real_connect = reinterpret_cast<ConnectFn>(dlsym(RTLD_NEXT, "connect"));
   if (real_connect == nullptr) {
     std::abort();
@@ -613,7 +613,7 @@ TEST(TcpConnectorTest, BlockingFallbackTriesNextAddressOnRefusal) {
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   addr.sin_port = 0;
   ASSERT_EQ(::bind(listener.fd(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)), 0);
-  socklen_t len = sizeof(addr);
+  socklen_t len = sizeof(addr);  // NOLINT(misc-include-cleaner)
   ASSERT_EQ(::getsockname(listener.fd(), reinterpret_cast<sockaddr*>(&addr), &len), 0);
   ASSERT_EQ(::listen(listener.fd(), 16), 0);
   const uint16_t port = ntohs(addr.sin_port);

@@ -73,7 +73,7 @@ EchoServer StartEchoServer(int family) {
     ThrowSystemError("Error from ::socket");
   }
   sockaddr_storage addr{};
-  socklen_t alen;
+  socklen_t alen;  // NOLINT(misc-include-cleaner)
   if (family == AF_INET6) {
     auto& addr6 = reinterpret_cast<sockaddr_in6&>(addr);
     addr6.sin6_family = AF_INET6;
