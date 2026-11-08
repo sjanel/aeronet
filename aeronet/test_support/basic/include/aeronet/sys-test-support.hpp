@@ -49,6 +49,7 @@
 #include <utility>
 
 #include "aeronet/memory-utils-sv.hpp"
+#include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/system-error-message.hpp"
 #include "aeronet/vector.hpp"
 
@@ -983,6 +984,20 @@ struct GetAddrInfoDelayGuard {
   ~GetAddrInfoDelayGuard() { g_getaddrinfo_delay_ms.store(0, std::memory_order_release); }
 };
 
+// Tells whether 'host' is under the special-use "invalid" top-level domain (RFC 6761 section 6.4), which never
+// resolves. The fully qualified form (one trailing dot) is accepted, and the comparison ignores case.
+inline bool IsInvalidTldHost(std::string_view host) {
+  static constexpr std::string_view kInvalidTld = "invalid";
+  if (host.ends_with('.')) {
+    host.remove_suffix(1U);
+  }
+  if (host.size() < kInvalidTld.size() ||
+      !CaseInsensitiveEqual(host.substr(host.size() - kInvalidTld.size()), kInvalidTld)) {
+    return false;
+  }
+  return host.size() == kInvalidTld.size() || host[host.size() - kInvalidTld.size() - 1U] == '.';
+}
+
 #ifdef AERONET_POSIX
 using ConnectFn = int (*)(int, const struct sockaddr*, socklen_t);
 
@@ -1494,6 +1509,11 @@ extern "C" __attribute__((no_sanitize("address"))) int getaddrinfo(const char* n
   const int delayMs = aeronet::test::g_getaddrinfo_delay_ms.load(std::memory_order_acquire);
   if (delayMs > 0) {
     std::this_thread::sleep_for(std::chrono::milliseconds{delayMs});
+  }
+  // RFC 6761 section 6.4: resolution libraries should answer "invalid" names negatively right away. The system ones
+  // may still query the DNS, which can stall for tens of seconds on CI runners.
+  if (node != nullptr && aeronet::test::IsInvalidTldHost(node)) {
+    return EAI_NONAME;
   }
   using GetaddrinfoFn = int (*)(const char*, const char*, const struct addrinfo*, struct addrinfo**);
 #ifdef AERONET_LINUX
