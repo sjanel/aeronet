@@ -87,7 +87,7 @@ struct Ipv4Endpoint {
 
 bool GetIpv4SockName(int fd, Ipv4Endpoint& out) {
   sockaddr_in addr{};
-  socklen_t len = sizeof(addr);
+  socklen_t len = sizeof(addr);  // NOLINT(misc-include-cleaner)
   if (::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
     return false;
   }
@@ -101,7 +101,7 @@ bool GetIpv4SockName(int fd, Ipv4Endpoint& out) {
 
 bool GetIpv4PeerName(int fd, Ipv4Endpoint& out) {
   sockaddr_in addr{};
-  socklen_t len = sizeof(addr);
+  socklen_t len = sizeof(addr);  // NOLINT(misc-include-cleaner)
   if (::getpeername(fd, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
     return false;
   }

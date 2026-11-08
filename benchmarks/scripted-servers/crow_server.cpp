@@ -43,9 +43,9 @@ void EnableTcpNoDelayOnListener(uint16_t port) {
       continue;
     }
     int listening = 0;
-    socklen_t optLen = sizeof(listening);
+    socklen_t optLen = sizeof(listening);  // NOLINT(misc-include-cleaner)
     sockaddr_storage addr{};
-    socklen_t addrLen = sizeof(addr);
+    socklen_t addrLen = sizeof(addr);  // NOLINT(misc-include-cleaner)
     if (::getsockopt(fd, SOL_SOCKET, SO_ACCEPTCONN, &listening, &optLen) != 0 || listening == 0 ||
         ::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &addrLen) != 0) {
       continue;

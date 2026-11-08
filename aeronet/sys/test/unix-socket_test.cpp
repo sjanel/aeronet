@@ -223,7 +223,7 @@ TEST_F(UnixSocketTest, SendStreamSucceeds) {
   // accept() succeeds immediately; the payload is already buffered on the
   // accepted socket, so a non-blocking recv() returns it.
   struct sockaddr_un clientAddr{};
-  socklen_t len = sizeof(clientAddr);
+  socklen_t len = sizeof(clientAddr);  // NOLINT(misc-include-cleaner)
   int acceptedFd = ::accept(server.fd(), reinterpret_cast<sockaddr*>(&clientAddr), &len);
   ASSERT_GE(acceptedFd, 0);
   char buf[16]{};

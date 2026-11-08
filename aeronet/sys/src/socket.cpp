@@ -119,7 +119,7 @@ void Socket::bindAndListen(bool reusePort, uint16_t& port) {
   }
   if (port == 0) {
     sockaddr_in actual{};
-    socklen_t alen = sizeof(actual);
+    socklen_t alen = sizeof(actual);  // NOLINT(misc-include-cleaner)
     if (::getsockname(fd, reinterpret_cast<sockaddr*>(&actual), &alen) == -1) {
       ThrowSystemError("getsockname failed");
     }

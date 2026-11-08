@@ -413,7 +413,7 @@ class Worker {
     }
     if (conn.state == ConnState::Connecting) {
       int err = 0;
-      socklen_t len = sizeof(err);
+      socklen_t len = sizeof(err);  // NOLINT(misc-include-cleaner)
       if ((mask & (EPOLLERR | EPOLLHUP)) != 0 || ::getsockopt(conn.fd, SOL_SOCKET, SO_ERROR, &err, &len) != 0 ||
           err != 0) {
         fail(idx);

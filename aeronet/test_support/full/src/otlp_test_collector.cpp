@@ -132,7 +132,7 @@ OtlpTestCollector::OtlpTestCollector() : _listen(Socket::Type::Stream) {
     ThrowSystemError("listen OTLP collector socket");
   }
   sockaddr_in actual{};
-  socklen_t len = sizeof(actual);
+  socklen_t len = sizeof(actual);  // NOLINT(misc-include-cleaner)
   if (::getsockname(_listen.fd(), reinterpret_cast<sockaddr*>(&actual), &len) != 0) {
     ThrowSystemError("getsockname for OTLP collector");
   }

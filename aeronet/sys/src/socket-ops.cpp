@@ -145,7 +145,7 @@ bool SetTcpCork([[maybe_unused]] NativeHandle fd, [[maybe_unused]] bool enable) 
 
 int GetSocketError(NativeHandle fd) noexcept {
   int err = 0;
-  socklen_t len = sizeof(err);
+  socklen_t len = sizeof(err);  // NOLINT(misc-include-cleaner)
 #ifdef AERONET_WINDOWS
   if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&err), &len) == -1) {
     return LastSystemError();
@@ -242,12 +242,12 @@ bool IsPeerClosed(NativeHandle fd) noexcept {
 }
 
 bool GetLocalAddress(NativeHandle fd, sockaddr_storage& addr) noexcept {
-  socklen_t len = sizeof(addr);
+  socklen_t len = sizeof(addr);  // NOLINT(misc-include-cleaner)
   return ::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len) == 0;
 }
 
 bool GetPeerAddress(NativeHandle fd, sockaddr_storage& addr) noexcept {
-  socklen_t len = sizeof(addr);
+  socklen_t len = sizeof(addr);  // NOLINT(misc-include-cleaner)
   return ::getpeername(fd, reinterpret_cast<sockaddr*>(&addr), &len) == 0;
 }
 
@@ -269,9 +269,11 @@ uint8_t FormatAddress(const sockaddr_storage& addr, char* buf, uint8_t bufLen) n
   const char* result = nullptr;
   if (addr.ss_family == AF_INET) {
     const auto* in = reinterpret_cast<const sockaddr_in*>(&addr);
+    // NOLINTNEXTLINE(misc-include-cleaner)
     result = ::inet_ntop(AF_INET, &in->sin_addr, buf, static_cast<socklen_t>(bufLen));
   } else if (addr.ss_family == AF_INET6) {
     const auto* in6 = reinterpret_cast<const sockaddr_in6*>(&addr);
+    // NOLINTNEXTLINE(misc-include-cleaner)
     result = ::inet_ntop(AF_INET6, &in6->sin6_addr, buf, static_cast<socklen_t>(bufLen));
   }
   if (result == nullptr) {

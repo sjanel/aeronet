@@ -72,6 +72,7 @@ int UnixSocket::connect(std::string_view path) noexcept {
   sockaddr_un addr{};
   addr.sun_family = AF_UNIX;
   Copy(path, addr.sun_path);
+  // NOLINTNEXTLINE(misc-include-cleaner)
   const auto addrlen = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + path.size() + 1);
   return ::connect(_baseFd.fd(), reinterpret_cast<sockaddr*>(&addr), addrlen);
 }
