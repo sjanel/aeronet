@@ -122,7 +122,8 @@ class Http2Connection {
   /// Whether this endpoint sent a GOAWAY (see initiateGoAway()) and all the streams it still served are closed: the
   /// connection has nothing left to do once its output is written.
   [[nodiscard]] bool goAwayCompleted() const noexcept {
-    return _state == ConnectionState::GoAwaySent && _activeStreamCount == 0;
+    return (_state == ConnectionState::GoAwaySent || _state == ConnectionState::GoAwayReceived) &&
+           _activeStreamCount == 0;
   }
 
   /// Run the timers of the connection, to be called periodically.

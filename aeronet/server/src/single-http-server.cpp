@@ -813,7 +813,7 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
                                          pState->inBuffer.size());
 
     // Process input through the protocol handler.
-    const auto result = handler.processInput(inputData);
+    const ProtocolProcessResult result = handler.processInput(inputData);
 
     // processInput may insert new elements in connections.
     cnxIt = connections.iterator(clientFd);

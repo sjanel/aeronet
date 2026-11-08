@@ -140,7 +140,7 @@ Http2ProtocolHandler::Http2ProtocolHandler(Http2ProtocolHandler&&) noexcept = de
 Http2ProtocolHandler& Http2ProtocolHandler::operator=(Http2ProtocolHandler&&) noexcept = default;
 
 ProtocolProcessResult Http2ProtocolHandler::processInput(std::span<const std::byte> data) {
-  auto result = _connection.processInput(data, _pCtx->config.maxOutboundBufferBytes);
+  Http2Connection::ProcessResult result = _connection.processInput(data, _pCtx->config.maxOutboundBufferBytes);
 
   // If the client granted more flow control (WINDOW_UPDATE), try to continue any pending sends.
   // Only do this when we don't already have pending output to avoid unbounded buffering.
@@ -167,7 +167,12 @@ ProtocolProcessResult Http2ProtocolHandler::processInput(std::span<const std::by
                  ConvertProcessResultErrorMsgToSv(result.errorMsg));
       break;
     case Http2Connection::ProcessResult::Action::GoAway:
-      output.action = ProtocolProcessResult::Action::Close;
+      if (result.errorCode != ErrorCode::NoError || _connection.goAwayCompleted()) {
+        output.action = ProtocolProcessResult::Action::Close;
+      } else {
+        output.action = _connection.hasPendingOutput() ? ProtocolProcessResult::Action::ResponseReady
+                                                       : ProtocolProcessResult::Action::Continue;
+      }
       break;
     default:
       assert(result.action == Http2Connection::ProcessResult::Action::Closed);
@@ -277,7 +282,7 @@ void Http2ProtocolHandler::onHeadersDecoded(uint32_t streamId, DecodedHeaders& d
   // according to the request form. :authority is optional for ordinary requests because a target URI can legitimately
   // have no authority component; CONNECT is the exception and requires it instead of :scheme/:path.
   for (std::size_t pseudoHeaderIdx = 0; pseudoHeaderIdx < std::size(kPseudoHeaderNames); ++pseudoHeaderIdx) {
-    const auto pseudoHeader = static_cast<PseudoHeader>(pseudoHeaderIdx);
+    const PseudoHeader pseudoHeader = static_cast<PseudoHeader>(pseudoHeaderIdx);
     if (decodedHeaders.hasPseudoHeader(pseudoHeader) && decodedHeaders.pseudoHeader(pseudoHeader).empty()) {
       // There is no possible valid HTTP/2 request with an empty pseudo-header field value, so this is a protocol error.
       rejectMalformedRequest(streamId, "empty pseudo-header field value");

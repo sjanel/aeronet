@@ -1328,7 +1328,7 @@ Http2Connection::ProcessResult Http2Connection::handleGoAwayFrame(std::span<cons
     _pSink->onGoAway(frame.lastStreamId, frame.errorCode, debugData);
   }
 
-  return ProcessResult{ProcessResult::Action::GoAway};
+  return ProcessResult{ProcessResult::Action::GoAway, frame.errorCode, ErrorMsg::NoError};
 }
 
 Http2Connection::ProcessResult Http2Connection::handleWindowUpdateFrame(FrameHeader header,
