@@ -155,14 +155,14 @@ enum class FrameParseResult : uint8_t {
   FrameSizeError,
   ProtocolError,
   InvalidPadding,
-  InvalidDependency,
 };
 
 /// Parse a DATA frame payload.
 [[nodiscard]] FrameParseResult ParseDataFrame(FrameHeader header, std::span<const std::byte> payload,
                                               DataFrame& out) noexcept;
 
-/// Parse a HEADERS frame payload. streamDependency is only set when the PRIORITY flag is.
+/// Parse a HEADERS frame payload. streamDependency is only set when the PRIORITY flag is. A stream depending on itself
+/// is left to the caller: its field block must be decoded all the same.
 [[nodiscard]] FrameParseResult ParseHeadersFrame(FrameHeader header, std::span<const std::byte> payload,
                                                  HeadersFrame& out, uint32_t& streamDependency) noexcept;
 

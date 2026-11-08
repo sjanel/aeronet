@@ -1039,9 +1039,6 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
     if (parseResult == FrameParseResult::InvalidPadding) {
       return connectionError(ErrorCode::ProtocolError, ErrorMsg::InvalidPaddingInHEADERSFrame);
     }
-    if (parseResult == FrameParseResult::InvalidDependency) {
-      return streamError(streamId, ErrorCode::ProtocolError, ErrorMsg::StreamDependsOnItself);
-    }
     return connectionError(ErrorCode::FrameSizeError, ErrorMsg::InvalidHEADERSFrame);
   }
 
@@ -1080,8 +1077,16 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
 
   // Handle priority if present
   if (header.hasFlag(FrameFlags::HeadersPriority)) {
-    const uint32_t effectiveDependency = priorityDepthExceeded(streamDependency) ? 0U : streamDependency;
-    it->second.setPriority(effectiveDependency, frame.weightMinusOne, frame.exclusive);
+    if (streamDependency != streamId) [[likely]] {
+      const uint32_t effectiveDependency = priorityDepthExceeded(streamDependency) ? 0U : streamDependency;
+      it->second.setPriority(effectiveDependency, frame.weightMinusOne, frame.exclusive);
+    } else if (!it->second.isClosed()) {
+      // A stream cannot depend on itself: a stream error (RFC 7540 §5.3.1), on the stream that this frame opened if
+      // needed, a RST_STREAM being forbidden on an idle one (RFC 9113 §6.4). As for a refused stream, its field block
+      // is decoded below, which keeps the HPACK dynamic table in sync (§4.3).
+      sendRstStream(streamId, ErrorCode::ProtocolError);
+      assert(it == _streams.find(streamId));
+    }
   }
 
   const std::span<const std::byte> headerBlockFragment = frame.headerBlockFragment();
@@ -1142,16 +1147,23 @@ Http2Connection::ProcessResult Http2Connection::handlePriorityFrame(FrameHeader 
   }
 
   PriorityFrame frame = ParsePriorityFrame(payload);
-
-  if (frame.streamDependency == streamId) {
-    return streamError(streamId, ErrorCode::ProtocolError, ErrorMsg::StreamDependsOnItself);
-  }
+  const bool selfDependent = frame.streamDependency == streamId;
 
   Http2Stream* pStream = getStream(streamId);
   if (pStream != nullptr) {
-    const uint32_t effectiveDependency = priorityDepthExceeded(frame.streamDependency) ? 0U : frame.streamDependency;
-    pStream->setPriority(effectiveDependency, frame.weightMinusOne, frame.exclusive);
+    if (!selfDependent) {
+      const uint32_t effectiveDependency = priorityDepthExceeded(frame.streamDependency) ? 0U : frame.streamDependency;
+      pStream->setPriority(effectiveDependency, frame.weightMinusOne, frame.exclusive);
+    } else if (!pStream->isClosed()) {
+      return streamError(streamId, ErrorCode::ProtocolError, ErrorMsg::StreamDependsOnItself);
+    }
   } else {
+    // A stream cannot depend on itself (RFC 7540 §5.3.1). RST_STREAM is forbidden on an idle stream (RFC 9113 §6.4),
+    // which a PRIORITY frame does not open (§6.3): this stream error can only be a connection error there (§5.4.1).
+    if (selfDependent && isIdleStream(streamId)) [[unlikely]] {
+      return connectionError(ErrorCode::ProtocolError, ErrorMsg::StreamDependsOnItself);
+    }
+
     // Security hardening: rate-limit PRIORITY frames on non-existent streams to
     // prevent a flood of cheap PRIORITY frames from starving real request processing.
     ++_idlePriorityFrameCount;

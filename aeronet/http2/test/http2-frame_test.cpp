@@ -272,6 +272,27 @@ TEST(Http2Frame, ParseHeadersFrameWithPaddingAndExclusivePriority) {
   EXPECT_EQ(frame.headerBlockFragmentSize, 2U);
 }
 
+// A stream depending on itself does not stop the parsing: the field block must be located to be decoded all the same.
+TEST(Http2Frame, ParseHeadersFrameDependingOnItselfLocatesTheFieldBlock) {
+  const std::byte payload[]{
+      std::byte{0x01},                                                     // pad length
+      std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x07},  // stream dependency 7
+      std::byte{0x0F},                                                     // weight
+      std::byte{0x82}, std::byte{0x86},                                    // header block
+      std::byte{0x00},                                                     // padding
+  };
+
+  const FrameHeader header(sizeof(payload), FrameType::Headers,
+                           static_cast<uint8_t>(FrameFlags::HeadersPadded | FrameFlags::HeadersPriority), 7);
+
+  HeadersFrame frame;
+  uint32_t streamDependency{};
+  ASSERT_EQ(ParseHeadersFrame(header, payload, frame, streamDependency), FrameParseResult::Ok);
+  EXPECT_EQ(streamDependency, 7U);
+  EXPECT_EQ(frame.pHeaderBlockFragment, payload + 6);
+  EXPECT_EQ(frame.headerBlockFragmentSize, 2U);
+}
+
 TEST(Http2Frame, ParseHeadersFrameEmptyPayloadWithPaddedFlag) {
   // Empty payload but HeadersPadded flag set -> FrameSizeError
   std::span<const std::byte> payload = std::span<const std::byte>{};

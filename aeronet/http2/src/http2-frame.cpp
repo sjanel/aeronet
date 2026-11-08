@@ -83,9 +83,6 @@ FrameParseResult ParseHeadersFrame(FrameHeader header, std::span<const std::byte
     }
 
     PriorityFrame frame = ParsePriorityFrame(payload.subspan(offset, 5U));
-    if (header.streamId() == frame.streamDependency) {
-      return FrameParseResult::InvalidDependency;
-    }
     out.exclusive = frame.exclusive;
     streamDependency = frame.streamDependency;
     out.weightMinusOne = frame.weightMinusOne;
