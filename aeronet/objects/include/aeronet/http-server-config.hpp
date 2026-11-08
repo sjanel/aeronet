@@ -258,9 +258,10 @@ struct HttpServerConfig {
   // of 0 disables this protective timeout. Default: disabled.
   std::chrono::milliseconds headerReadTimeout{std::chrono::milliseconds{0}};
 
-  // Maximum time spent waiting for additional body bytes once a handler blocks on HttpRequestView::body() or
-  // HttpRequestView::readBody(). Applies after headers are parsed and guards against slowloris-style uploads.
-  // The timer resets whenever progress is made (bytes consumed). A value of 0 disables the timeout.
+  // Maximum time without receiving body bytes while the body of an HTTP/1.1 request is awaited: by the server before
+  // calling a synchronous handler, or by an async handler (its deferred work does not count). If exceeded, the server
+  // answers 408 Request Timeout and closes the connection: this guards against slowloris-style uploads. The timer
+  // resets whenever body bytes are received. A value of 0 disables the timeout. Default: disabled.
   std::chrono::milliseconds bodyReadTimeout{std::chrono::milliseconds{0}};
 
   // Maximum duration of the lingering close of an HTTP/1.1 connection closed while its client may still be sending (a

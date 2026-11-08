@@ -65,7 +65,7 @@ Request trailers (a trailing `HEADERS` block after the body, RFC 9113 §8.1) are
 | Feature | Status | Notes |
 | --- | --- | --- |
 | HPACK | Supported | Static and dynamic tables, Huffman coding. The fields whose value differs in most messages (`content-length`, `etag`, `last-modified`, `location`, `set-cookie`, `age`, `if-modified-since`, `if-none-match`) are sent without indexing, like nghttp2 does: each would otherwise be a dynamic table insertion evicting the fields that repeat. Credentials (`authorization`, `proxy-authorization`, and `cookie` values shorter than 20 bytes) are sent as never-indexed literals (RFC 7541 §7.1.3), so that an attacker able to add its own guesses to the requests of a client cannot recognize the right one by its compressed size, and so that intermediaries do not index them either. |
-| Stream multiplexing | Supported | Up to `maxConcurrentStreams` concurrent streams per connection. A stream beyond it is reset with `REFUSED_STREAM`, which tells the client that it can retry the request, while the connection and its other streams go on (RFC 9113 §5.1.2). |
+| Stream multiplexing | Supported | Up to `maxConcurrentStreams` concurrent streams per connection. A stream beyond it is reset with `REFUSED_STREAM`, which tells the client that it can retry the request, while the connection and its other streams go on (RFC 9113 §5.1.2). A stream closed while the deferred work of its [async handler](../guides/async-handlers.md#http2) runs keeps counting until the work completes. |
 | Flow control | Supported | Connection and stream windows, see below. |
 | PRIORITY frames | Supported | Optional (`enablePriority`), with a bounded dependency tree (`maxPriorityTreeDepth`). |
 | Request and response trailers | Supported | |

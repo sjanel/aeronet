@@ -6248,6 +6248,142 @@ TEST(Http2ProtocolHandler, SweepKeepsTheTaskOfATimedOutStreamUntilItsWorkComplet
   EXPECT_EQ(loop.receivedData(1), body);
 }
 
+TEST(Http2ProtocolHandler, OrphanedAsyncTasksCountAgainstMaxConcurrentStreams) {
+  using namespace std::chrono_literals;
+  // The work of the handler runs until released: it outlives the resets of its streams.
+  static std::atomic<bool> releaseWork;
+  static std::atomic<int> nbHandlerCalls;
+  releaseWork.store(false, std::memory_order_relaxed);
+  nbHandlerCalls.store(0, std::memory_order_relaxed);
+
+  Router router;
+  router.setPath(http::Method::GET, "/async-slow", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
+    nbHandlerCalls.fetch_add(1, std::memory_order_relaxed);
+    const int result = co_await req.deferWork([] {
+      while (!releaseWork.load(std::memory_order_acquire)) {
+        std::this_thread::sleep_for(1ms);
+      }
+      return 1;
+    });
+    co_return HttpResponse(200, std::to_string(result));
+  });
+  router.setPath(http::Method::GET, "/sync", [](const HttpRequestView&) { return HttpResponse(200, "ok"); });
+
+  static constexpr uint32_t kMaxConcurrentStreams = 3;
+  Http2ProtocolLoopback loop(router, Http2ProtocolLoopback::kDefaultBufferBytes,
+                             Http2ProtocolLoopback::kDefaultBufferBytes, kDefaultInitialWindowSize,
+                             kMaxConcurrentStreams);
+  AsyncResumeRecorder resumes(loop);
+  loop.connect();
+
+  const RawChars slowHeaders = MakeGetHeaders("/async-slow");
+  const RawChars syncHeaders = MakeGetHeaders("/sync");
+  const auto openStream = [&loop](uint32_t streamId, const RawChars& headers) {
+    ASSERT_EQ(loop.client.sendHeaders(streamId, http::StatusCode{}, HeadersView(headers), true), ErrorCode::NoError);
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
+  };
+  const auto resetStream = [&loop](uint32_t streamId) {
+    loop.client.sendRstStream(streamId, ErrorCode::Cancel);
+    loop.pumpClientToServer();
+  };
+  const auto wasRefused = [&loop](uint32_t streamId) {
+    const std::pair<uint32_t, ErrorCode> refused(streamId, ErrorCode::RefusedStream);
+    return std::ranges::find(loop.streamResets, refused) != loop.streamResets.end();
+  };
+
+  // The work of two reset streams still runs, in two of the three slots.
+  openStream(1, slowHeaders);
+  openStream(3, slowHeaders);
+  resetStream(1);
+  resetStream(3);
+
+  // The last slot is still available...
+  openStream(5, slowHeaders);
+  EXPECT_EQ(nbHandlerCalls.load(std::memory_order_relaxed), 3);
+  EXPECT_FALSE(wasRefused(5));
+
+  // ... but not a fourth one, while the connection only has two open streams.
+  openStream(7, slowHeaders);
+  EXPECT_EQ(nbHandlerCalls.load(std::memory_order_relaxed), 3);
+  EXPECT_TRUE(wasRefused(7));
+
+  // A stream reset while its work runs keeps its slot, and the limit applies to every route.
+  resetStream(5);
+  openStream(9, syncHeaders);
+  EXPECT_TRUE(wasRefused(9));
+
+  // The slot of a task comes back when the completion of its work is processed.
+  releaseWork.store(true, std::memory_order_release);
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  while (resumes.nbPosts() < 3) {
+    ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "async callbacks did not fire in time";
+    std::this_thread::sleep_for(1ms);
+  }
+  EXPECT_FALSE(loop.handler.resumeAsyncTaskByHandle(resumes.handle()));
+  openStream(11, syncHeaders);
+  const auto resp = std::ranges::find(loop.clientHeaders, 11U, &HeaderEvent::streamId);
+  ASSERT_NE(resp, loop.clientHeaders.end());
+  EXPECT_EQ(GetHeaderValue(*resp, ":status"), "200");
+  EXPECT_FALSE(wasRefused(11));
+}
+
+#if defined(AERONET_POSIX) && defined(AERONET_ENABLE_ASYNC_HANDLERS)
+TEST(Http2ProtocolHandler, RefusalBecauseOfOrphanedAsyncTasksIsCounted) {
+  using namespace std::chrono_literals;
+  static std::atomic<bool> releaseWork;
+  releaseWork.store(false, std::memory_order_relaxed);
+
+  test::UnixDogstatsdSink sink;
+  TelemetryConfig cfg;
+  cfg.dogStatsDEnabled = true;
+  cfg.withDogStatsdSocketPath(sink.path());
+  vector<std::string> messages;
+  test::SendCaptureGuard sendCapture(messages);
+
+  Router router;
+  router.setPath(http::Method::GET, "/async-slow", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
+    co_await req.deferWork([] {
+      while (!releaseWork.load(std::memory_order_acquire)) {
+        std::this_thread::sleep_for(1ms);
+      }
+    });
+    co_return HttpResponse(200);
+  });
+
+  Http2ProtocolLoopback loop(router, Http2ProtocolLoopback::kDefaultBufferBytes,
+                             Http2ProtocolLoopback::kDefaultBufferBytes, kDefaultInitialWindowSize, 1U, {}, cfg);
+  AsyncResumeRecorder resumes(loop);
+  loop.connect();
+
+  const RawChars headers = MakeGetHeaders("/async-slow");
+  const auto openStream = [&loop, &headers](uint32_t streamId) {
+    ASSERT_EQ(loop.client.sendHeaders(streamId, http::StatusCode{}, HeadersView(headers), true), ErrorCode::NoError);
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
+  };
+
+  // The work of the reset stream still runs in the only slot: the next stream is refused.
+  openStream(1);
+  loop.client.sendRstStream(1, ErrorCode::Cancel);
+  loop.pumpClientToServer();
+  openStream(3);
+
+  loop.ctx.telemetry.flush();
+  EXPECT_TRUE(std::ranges::any_of(messages, [](const std::string& message) {
+    return message.contains("aeronet.http2.streams.rejected_orphaned_async_tasks:1|c");
+  }));
+
+  releaseWork.store(true, std::memory_order_release);
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  while (resumes.nbPosts() < 1) {
+    ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "async callback did not fire in time";
+    std::this_thread::sleep_for(1ms);
+  }
+  EXPECT_FALSE(loop.handler.resumeAsyncTaskByHandle(resumes.handle()));
+}
+#endif
+
 TEST(Http2ProtocolHandler, SweepNoExpiryDoesNothing) {
   Router router;
   using namespace std::chrono_literals;

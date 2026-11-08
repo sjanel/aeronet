@@ -423,6 +423,12 @@ void ConnectionState::reclaimMemoryFromOversizedBuffers() {
     if (!tunnelResolving) {
       inBuffer.shrink_to_fit();
     }
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+    // headBuffer: its capacity is kept across the requests of the connection, and bounded by maxHeaderBytes.
+    if (asyncState) {
+      asyncState->headBuffer.shrink_to_fit();
+    }
+#endif
   }
 
   // outQueue: released once empty, as the common case does not use it.

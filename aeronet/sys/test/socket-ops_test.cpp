@@ -123,7 +123,7 @@ TEST_F(SocketOpsTest, SetAbortiveCloseSetsZeroLinger) {
   ASSERT_GE(fd, 0);
   EXPECT_TRUE(SetAbortiveClose(fd));
   linger lingerOpt{};
-  socklen_t len = sizeof(lingerOpt);
+  socklen_t len = sizeof(lingerOpt);  // NOLINT(misc-include-cleaner)
   // NOLINTNEXTLINE(misc-include-cleaner) sys/socket.h is the correct header for SOL_SOCKET and SO_LINGER
   ASSERT_EQ(::getsockopt(fd, SOL_SOCKET, SO_LINGER, &lingerOpt, &len), 0);
   EXPECT_NE(lingerOpt.l_onoff, 0);
@@ -414,7 +414,7 @@ TEST_F(SocketOpsTest, SetTcpCorkVerifyKernelState) {
 
   EXPECT_TRUE(SetTcpCork(fd, true));
   int val = 0;
-  socklen_t len = sizeof(val);
+  socklen_t len = sizeof(val);  // NOLINT(misc-include-cleaner)
   ASSERT_EQ(0, ::getsockopt(fd, IPPROTO_TCP, TCP_CORK, &val, &len));
   EXPECT_EQ(1, val);
 
@@ -432,13 +432,13 @@ TEST_F(SocketOpsTest, TcpCorkGuardCorksAndUncorks) {
   {
     TcpCorkGuard guard(fd);
     int val = 0;
-    socklen_t len = sizeof(val);
+    socklen_t len = sizeof(val);  // NOLINT(misc-include-cleaner)
     ASSERT_EQ(0, ::getsockopt(fd, IPPROTO_TCP, TCP_CORK, &val, &len));
     EXPECT_EQ(1, val);
   }  // guard destroyed, socket should be uncorked
 
   int val = 0;
-  socklen_t len = sizeof(val);
+  socklen_t len = sizeof(val);  // NOLINT(misc-include-cleaner)
   ASSERT_EQ(0, ::getsockopt(fd, IPPROTO_TCP, TCP_CORK, &val, &len));
   EXPECT_EQ(0, val);
 

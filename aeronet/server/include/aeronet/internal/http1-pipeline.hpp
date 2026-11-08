@@ -77,6 +77,9 @@ class Http1Pipeline {
   // Tells whether the given HTTP/1 connection must stop reading because of its async handler (and records it).
   static bool PauseReadingDuringAsyncHandler(ConnectionState& state) noexcept;
 
+  // Gives up the request of an async handler, its connection closing.
+  static void AbandonAsyncHandler(AsyncHandlerState& async) noexcept;
+
   // Resumes the coroutine of the async handler of the connection, then sends its response if it completed.
   void resumeAsyncHandler(ConnectionIt cnxIt);
 #endif
@@ -141,23 +144,33 @@ class Http1Pipeline {
   LoopAction serveStreamingRequest(ConnectionIt cnxIt, const Router::RoutingResult& routingResult);
 
   // Decodes the body of the current request, whose head starts 'input' (the input buffer from the request on).
-  // Sets consumedBytes to the bytes of the request (head, body and trailers) once Ready.
+  // Sets consumedBytes to the bytes of the request (head, body and trailers) once Ready. With deferBody, the body is
+  // only validated, the request staying untouched: finishAsyncBody() sets it later.
   BodyDecodeStatus decodeBodyIfReady(ConnectionIt cnxIt, std::span<char> input, bool isChunked,
-                                     std::size_t maxBodyBytes, std::size_t& consumedBytes);
+                                     std::size_t maxBodyBytes, std::size_t& consumedBytes, bool deferBody = false);
   BodyDecodeStatus decodeFixedLengthBody(ConnectionIt cnxIt, std::span<const char> input, std::size_t maxBodyBytes,
-                                         std::size_t& consumedBytes);
+                                         std::size_t& consumedBytes, bool deferBody);
   // Decodes the chunks of the body of the current request received since its last decoding, up to its end (trailers
   // included). A body received in several reads is decoded once: the progress of its decoding is kept in the
   // connection until the request ends (see ConnectionState::PendingHttp1Request), each read decoding the chunks
   // received since the previous one.
   BodyDecodeStatus decodeChunkedBody(ConnectionIt cnxIt, std::span<char> input, std::size_t maxBodyBytes,
-                                     std::size_t& consumedBytes);
+                                     std::size_t& consumedBytes, bool deferBody);
+
+  // Sets the body of a chunked request fully decoded, decompressed from compressedChunks unless empty, then parses its
+  // trailers, at their final place.
+  BodyDecodeStatus finishChunkedBody(ConnectionIt cnxIt, std::span<const std::string_view> compressedChunks,
+                                     std::size_t compressedSize);
 
   // Decodes the trailers of a chunked body, starting at pos in 'input' (after the last chunk): validates them and
   // copies them to the body and trailers buffer of the connection. Sets pos after the blank line ending them once
   // Ready.
   BodyDecodeStatus decodeTrailers(ConnectionIt cnxIt, std::span<char> input, std::size_t& pos);
 
+  // Decompresses the body of the current request, if compressed. The body and its updated Content-Length are then in
+  // the buffer of the connection with usePerConnectionBodyStorage, otherwise in the buffer shared by the connections,
+  // overwritten by the next compressed request of any of them: resumeAsyncHandler() makes the connection of a suspended
+  // handler take it over.
   bool maybeDecompressRequestBody(ConnectionIt cnxIt, bool usePerConnectionBodyStorage);
 
   // Handle Expect header tokens other than the built-in 100-continue, whose presence (in an HTTP/1.1 request) sets
@@ -183,23 +196,28 @@ class Http1Pipeline {
 #endif
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  // Gives up the request of an async handler, its connection closing.
-  static void AbandonAsyncHandler(AsyncHandlerState& async) noexcept;
-
   // Returns true if the handler was dispatched (it may have completed already), false if it returned an invalid task.
   // With bodyReady, consumedBytes is the size of the input buffer up to the end of the request (the requests served
-  // before it included): erased once the handler completed, the input buffer not moving meanwhile. Without, and with
-  // found100Continue, 100 Continue is sent once the handler waits for the body.
+  // before it included): erased once the handler completed if it suspends, the input buffer not moving meanwhile (the
+  // caller consumes it otherwise, along with the requests pipelined around it). Without, and with found100Continue,
+  // 100 Continue is sent once the handler waits for the body.
   bool dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyncRequestHandler& handler, bool bodyReady,
                             bool isChunked, bool found100Continue, std::size_t consumedBytes,
                             const CorsPolicy* pCorsPolicy, std::span<const ResponseMiddleware> responseMiddleware,
                             std::size_t perRouteMaxBodyBytes);
   void handleAsyncBodyProgress(ConnectionIt cnxIt);
   void onAsyncHandlerCompleted(ConnectionIt cnxIt);
+  // Makes readable the body received after the dispatch of the async handler, decompressing it if needed: done once its
+  // deferred work is over, so that the server never modifies a request that the work may read. On failure, the request
+  // is answered with an error and the handler released, without being resumed: returns false.
+  bool finishAsyncBody(ConnectionIt cnxIt, AsyncHandlerState& async);
+
+  // The part of finishAsyncBody() specific to a chunked body, validated by decodeBodyIfReady().
+  bool finishDeferredChunkedBody(ConnectionIt cnxIt);
+
   // Sends the response of the completed async handler. With 'close', before its body is received: the connection then
   // closes.
   void tryFlushPendingAsyncResponse(ConnectionIt cnxIt, bool close = false);
-  bool pinAsyncSharedBodyToConnectionStorage(ConnectionState& state) const;
 #endif
 
   ServerContext* _pCtx;

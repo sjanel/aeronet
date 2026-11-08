@@ -59,18 +59,18 @@ void CollectChunks(std::span<const char> input, std::size_t pos, vector<std::str
 
 Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeBodyIfReady(ConnectionIt cnxIt, std::span<char> input,
                                                                  bool isChunked, std::size_t maxBodyBytes,
-                                                                 std::size_t& consumedBytes) {
+                                                                 std::size_t& consumedBytes, bool deferBody) {
   consumedBytes = 0;
   if (isChunked) {
-    return decodeChunkedBody(cnxIt, input, maxBodyBytes, consumedBytes);
+    return decodeChunkedBody(cnxIt, input, maxBodyBytes, consumedBytes, deferBody);
   }
   // For fixed-length, non-chunked HTTP/1.1 requests there are no trailers per RFC 7230 §4.1.2
-  return decodeFixedLengthBody(cnxIt, input, maxBodyBytes, consumedBytes);
+  return decodeFixedLengthBody(cnxIt, input, maxBodyBytes, consumedBytes, deferBody);
 }
 
 Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeFixedLengthBody(ConnectionIt cnxIt, std::span<const char> input,
                                                                      std::size_t maxBodyBytes,
-                                                                     std::size_t& consumedBytes) {
+                                                                     std::size_t& consumedBytes, bool deferBody) {
   ConnectionState& state = _pCtx->connections.connectionState(cnxIt);
   HttpRequestView& request = state.request;
   // Fixed-length (non-chunked) requests never carry trailers (RFC 7230 section 4.1.2), and the trailers of a previous
@@ -101,13 +101,16 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeFixedLengthBody(ConnectionI
   if (input.size() - headerEnd < declaredContentLen) {
     return BodyDecodeStatus::NeedMore;  // need more bytes
   }
-  request._body = {input.data() + headerEnd, declaredContentLen};
+  if (!deferBody) {
+    request._body = {input.data() + headerEnd, declaredContentLen};
+  }
   consumedBytes = headerEnd + declaredContentLen;
   return BodyDecodeStatus::Ready;
 }
 
 Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeChunkedBody(ConnectionIt cnxIt, std::span<char> input,
-                                                                 std::size_t maxBodyBytes, std::size_t& consumedBytes) {
+                                                                 std::size_t maxBodyBytes, std::size_t& consumedBytes,
+                                                                 bool deferBody) {
   ConnectionState& state = _pCtx->connections.connectionState(cnxIt);
   HttpRequestView& request = state.request;
   ConnectionState::ChunkedBodyProgress& progress = state.pendingRequest.chunkedBody;
@@ -202,11 +205,41 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeChunkedBody(ConnectionIt cn
     progress = {.pos = pos, .bodySize = bodySize};
   }
 
-  if (decompressFromChunks && bodySize != 0) {
-    if (resumed) {
-      compressedChunks.clear();
-      CollectChunks(input, request.headSpanSize(), compressedChunks);
-    }
+  consumedBytes = pos;
+  if (deferBody) {
+    return BodyDecodeStatus::Ready;
+  }
+  if (decompressFromChunks && bodySize != 0 && resumed) {
+    compressedChunks.clear();
+    CollectChunks(input, request.headSpanSize(), compressedChunks);
+  }
+  return finishChunkedBody(cnxIt, compressedChunks, bodySize);
+}
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+bool Http1Pipeline::finishDeferredChunkedBody(ConnectionIt cnxIt) {
+  ConnectionState& state = _pCtx->connections.connectionState(cnxIt);
+  const HttpRequestView& request = state.request;
+  const std::size_t compressedSize = state.pendingRequest.chunkedBody.bodySize;
+  vector<std::string_view>& compressedChunks = _pCtx->sharedBuffers.sv;
+  compressedChunks.clear();
+  if (compressedSize != 0 &&
+      HttpCodec::WillDecompress(_pCtx->config.decompression, request.headers()) == http::StatusCodeOK) {
+    // The request starts the input buffer, where its body is received.
+    CollectChunks(state.inBuffer, request.headSpanSize(), compressedChunks);
+  }
+  return finishChunkedBody(cnxIt, compressedChunks, compressedSize) == BodyDecodeStatus::Ready;
+}
+#endif
+
+Http1Pipeline::BodyDecodeStatus Http1Pipeline::finishChunkedBody(ConnectionIt cnxIt,
+                                                                 std::span<const std::string_view> compressedChunks,
+                                                                 std::size_t compressedSize) {
+  ConnectionState& state = _pCtx->connections.connectionState(cnxIt);
+  HttpRequestView& request = state.request;
+  RawChars& bodyAndTrailers = state.bodyAndTrailersBuffer;
+
+  if (!compressedChunks.empty()) {
     // Perform direct decompression from the input chunks to bodyAndTrailersBuffer
     // Save trailers if present (they were appended to bodyAndTrailers with trailerLen = 0)
     // In direct decompression mode, bodyAndTrailers only contains trailers (no body chunks were copied)
@@ -214,7 +247,7 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeChunkedBody(ConnectionIt cn
 
     const auto res =
         HttpCodec::DecompressChunkedBody(_pCtx->decompressionState, _pCtx->config.decompression, request,
-                                         compressedChunks, bodySize, bodyAndTrailers, _pCtx->sharedBuffers.buf);
+                                         compressedChunks, compressedSize, bodyAndTrailers, _pCtx->sharedBuffers.buf);
     if (res.message != nullptr) {
       emitSimpleError(cnxIt, res.status, res.message);
       return BodyDecodeStatus::Error;
@@ -257,7 +290,6 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeChunkedBody(ConnectionIt cn
     pTrailerLine = pLineEnd + http::CRLF.size();
   }
 
-  consumedBytes = pos;
   return BodyDecodeStatus::Ready;
 }
 

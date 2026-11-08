@@ -99,6 +99,11 @@ TlsHttp2Client::TlsHttp2Client(uint16_t port, Http2Config config)
     }
   });
 
+  // A reset stream gets no (more) response: the one received so far is final, with a status code of 0 if it has none.
+  _connectionSink.onStreamResetFn = ([this](uint32_t streamId, [[maybe_unused]] http2::ErrorCode errorCode) {
+    _streamResponses[streamId].complete = true;
+  });
+
   // Send client connection preface (magic string + SETTINGS)
   _http2Connection->sendClientPreface();
   if (!flushConnectionOutput()) {

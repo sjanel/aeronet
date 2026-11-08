@@ -267,4 +267,16 @@ TEST(RequestTaskExtras, ReleaseReturnsHandle_VoidAndDestroy) {
   }
   EXPECT_EQ(alive->load(std::memory_order_relaxed), 0);
 }
+TEST(RequestTask, ResultDoesNotNeedDefaultConstruction) {
+  struct NoDefaultConstructor {
+    explicit NoDefaultConstructor(int val) : value(val) {}
+
+    int value;
+  };
+
+  auto makeTask = []() -> RequestTask<NoDefaultConstructor> { co_return NoDefaultConstructor(42); };
+  RequestTask<NoDefaultConstructor> task = makeTask();
+  EXPECT_EQ(task.runSynchronously().value, 42);
+}
+
 }  // namespace aeronet

@@ -260,6 +260,7 @@ bool Http1Pipeline::serveRequests(ConnectionIt cnxIt) {
 
     ctx.maintenance.trackBodyReception(state, bodyReady);
     if (bodyReady) {
+      // Async handlers included: the connection takes the shared buffer over if the handler suspends.
       static constexpr bool kUsePerConnectionBodyStorage = false;
       if (!request._body.empty() && !maybeDecompressRequestBody(cnxIt, kUsePerConnectionBodyStorage)) {
         break;
@@ -329,18 +330,17 @@ bool Http1Pipeline::serveRequests(ConnectionIt cnxIt) {
     if (dispatchAsyncHandler(cnxIt, routingResult.sharedAsyncRequestHandler(), bodyReady, isChunked, found100Continue,
                              consumedInput.nbBytes + consumedBytes, pCorsPolicy, routingResult.postMiddlewareRange(),
                              routingResult.pathConfig().maxBodyBytes)) {
-      // The request bytes are consumed by the async handler completion (already done if it completed right away).
-      // With its body, along with the requests served before it: the input buffer, where its body is, must not move
-      // until then. Without, it starts the input buffer once this call returns (its head was copied), its body being
-      // received behind it.
-      requestFinalizationRAII.consumedBytes = 0;
-      if (bodyReady) {
-        consumedInput.nbBytes = 0;
-      }
       if (state.pAsyncState()->active) {
+        // The request bytes are consumed by the async handler completion. With its body, along with the requests served
+        // before it: the input buffer, where its body is, must not move until then. Without, it starts the input buffer
+        // once this call returns (its head was copied), its body being received behind it.
+        requestFinalizationRAII.consumedBytes = 0;
+        if (bodyReady) {
+          consumedInput.nbBytes = 0;
+        }
         return state.isAnyCloseRequested() || PauseReadingDuringAsyncHandler(state);
       }
-      // Completed synchronously: serve the next pipelined request.
+      // Completed right away: consumed at once with the requests pipelined around it. Serve the next one.
     }
 #endif
   } while (!state.isAnyCloseRequested());

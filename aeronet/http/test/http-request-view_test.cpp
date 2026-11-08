@@ -1836,6 +1836,19 @@ TEST_F(HttpRequestViewTest, ReadBodyAfterBodyThrows) {
   EXPECT_THROW({ (void)req.readBody(); }, std::logic_error);
 }
 
+TEST_F(HttpRequestViewTest, ReadBodyBeforeTheBodyIsReceivedThrows) {
+  auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  // No bridge is installed until the body is received.
+  EXPECT_FALSE(req.isBodyReady());
+  EXPECT_THROW({ (void)req.readBody(); }, std::logic_error);
+
+  // The failure did not select the streaming style.
+  installAggregateBridge();
+  EXPECT_EQ(req.body(), "full-body");
+}
+
 TEST_F(HttpRequestViewTest, HasMoreBodyShouldBeFalseByDefault) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
@@ -1888,13 +1901,18 @@ TEST_F(HttpRequestViewTest, BodyWithAggregateBridgeReturnsFullBody) {
   EXPECT_TRUE(req.isBodyReady());
 }
 
-TEST_F(HttpRequestViewTest, BodyShouldBeReadyIfBodyCalled) {
+// An async handler can call body() before its body is received: the body stays awaitable, and readable in any style.
+TEST_F(HttpRequestViewTest, BodyBeforeTheBodyIsReceivedSelectsNothing) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1"));
   ASSERT_EQ(st, http::StatusCodeOK);
 
   EXPECT_FALSE(req.isBodyReady());
-  [[maybe_unused]] auto full = req.body();
+  EXPECT_TRUE(req.body().empty());
+  EXPECT_FALSE(req.isBodyReady());
+
+  installStreamingBridge();
   EXPECT_TRUE(req.isBodyReady());
+  EXPECT_EQ(req.readBody(64), "chunk-data");
 }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS

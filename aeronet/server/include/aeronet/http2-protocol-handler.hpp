@@ -399,10 +399,9 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   ErrorCode sendResponse(uint32_t streamId, HttpResponse response, bool isHeadMethod);
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  /// Start an async handler for a stream. Returns true if the handler was started
-  /// asynchronously (response will be sent later), false if it completed synchronously
-  /// (response already sent).
-  bool startAsyncHandler(StreamsMap::iterator it, const Router::RoutingResult& routingResult);
+  /// Start an async handler for a stream. Its response is already sent if it completed synchronously, otherwise it will
+  /// be sent when resumeAsyncTask() completes it.
+  void startAsyncHandler(StreamsMap::iterator it, const Router::RoutingResult& routingResult);
 
   /// Resume a pending async task's coroutine after suspension.
   void resumeAsyncTask(uint32_t streamId);

@@ -523,6 +523,45 @@ TEST(ConnectionStateBufferTest, ShrinkToFitOnEmptyBuffersYieldsZeroCapacity) {
 #endif
 }
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+// The next request of the connection reuses the buffer of the request head: no allocation per request.
+TEST(AsyncHandlerStateTest, ClearKeepsTheCapacityOfTheHeadBuffer) {
+  AsyncHandlerState state;
+  state.headBuffer.assign("GET / HTTP/1.1\r\n\r\n");
+  const auto capacity = state.headBuffer.capacity();
+  state.active = true;
+  state.isChunked = true;
+  state.consumedBytes = 18;
+
+  state.clear();
+
+  EXPECT_TRUE(state.headBuffer.empty());
+  EXPECT_EQ(state.headBuffer.capacity(), capacity);
+  EXPECT_FALSE(state.active);
+  EXPECT_FALSE(state.isChunked);
+  EXPECT_EQ(state.consumedBytes, 0U);
+}
+
+// A long-lived connection does not keep the capacity of its largest request head forever.
+TEST(AsyncHandlerStateTest, ReclaimShrinksTheHeadBufferOnceNoHandlerUsesIt) {
+  // Declared first: the state releases its async state to the pool when destroyed.
+  AsyncHandlerStatePool pool;
+  ConnectionState state;
+  AsyncHandlerState& async = state.ensureAsyncState(pool);
+  async.headBuffer.reserve(64UL * 1024UL);
+  const auto capacity = async.headBuffer.capacity();
+
+  // The views of the request of a running handler point there.
+  async.active = true;
+  state.reclaimMemoryFromOversizedBuffers();
+  EXPECT_EQ(async.headBuffer.capacity(), capacity);
+
+  async.active = false;
+  state.reclaimMemoryFromOversizedBuffers();
+  EXPECT_LT(async.headBuffer.capacity(), capacity);
+}
+#endif
+
 TEST(ConnectionStateBridgeTest, InstallAggregatedBodyBridgeMakesBodyAvailable) {
   ConnectionState state;
 

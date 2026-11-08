@@ -74,7 +74,7 @@ struct HttpRequestViewTestAccess;
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 // Logs (at error level) a failure to post an async callback back to the event loop.
-// Defined in http-request.cpp so the logging dependency stays out of this widely-included header.
+// Defined in http-request-view.cpp so the logging dependency stays out of this widely-included header.
 void LogAsyncCallbackPostFailure(const char* what) noexcept;
 #endif
 
@@ -151,16 +151,21 @@ class HttpRequestView {
 
     bool await_suspend(std::coroutine_handle<> handle) noexcept {
       try {
-        std::thread([handle, work = std::move(_work), state = _state, resumePoster = _resumePoster] mutable {
+        std::thread([handle, work = std::optional<WorkFn>(std::move(_work)), state = _state,
+                     resumePoster = _resumePoster] mutable {
           try {
             if constexpr (std::is_void_v<Result>) {
-              work();
+              (*work)();
             } else {
-              state->result.emplace(work());
+              state->result.emplace((*work)());
             }
           } catch (...) {
             state->exception = std::current_exception();
           }
+          // Its captures are destroyed before the completion is posted: once it is, the handler can complete and the
+          // server stop, destroying what they may refer to (a connection pool for instance). Reset instead of moved to
+          // a local: a const capture is copied by a move, the original then living until the end of this thread.
+          work.reset();
           // Hand the result over to the event loop before resuming it: the awaitable keeps it alive until the coroutine
           // consumed it, so that it (and a captured exception) is always destroyed by the event loop thread, never by
           // this one concurrently with its use.
@@ -169,7 +174,7 @@ class HttpRequestView {
             resumePoster(handle);
           } catch (const std::exception& ex) {
             // Only fails on memory exhaustion: the coroutine is then never resumed.
-            // Logging is delegated to a non-template free function (defined in http-request.cpp) so the
+            // Logging is delegated to a non-template free function (defined in http-request-view.cpp) so the
             // (heavy) logging dependency stays out of this widely-included header.
             LogAsyncCallbackPostFailure(ex.what());
           }
@@ -387,13 +392,14 @@ class HttpRequestView {
     return {_pDecodedQueryParams, _decodedQueryParamsLength};
   }
 
-  // Get the (already received) body of the request.
+  // Get the (already received) body of the request. An async handler can run before its body is received: it is then
+  // empty, and co_await bodyAwaitable() waits for it.
   // Throws if readBody() was previously called on this request.
   [[nodiscard]] std::string_view body() const;
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  // Awaitable helper returning the fully buffered body. Currently completes synchronously but exposes an
-  // awaitable interface so coroutine-based handlers can share the same API surface as future streaming support.
+  // Awaitable returning the whole body of the request. Over HTTP/1.1, an async handler runs as soon as the head of its
+  // request is received: the coroutine then suspends until its body is.
   [[nodiscard]] BodyAggregateAwaitable bodyAwaitable() { return BodyAggregateAwaitable(*this); }
 
   // Defer work to a background thread and resume in the server's event loop when complete.
@@ -421,8 +427,8 @@ class HttpRequestView {
     return DeferredWorkAwaitable<Result, Fn>(*this, std::forward<WorkFn>(work));
   }
 
-  // Awaitable helper for streaming body reads. Suspends cooperatively once real async body pipelines are wired; for
-  // now it completes synchronously while providing a coroutine-friendly API surface.
+  // Awaitable returning the next chunk of the body of the request (at most maxBytes). The server buffers the body: the
+  // coroutine suspends until all of it is received (see bodyAwaitable()), the next chunks then being returned at once.
   [[nodiscard]] BodyChunkAwaitable readBodyAsync(std::size_t maxBytes = kDefaultReadBodyChunk) {
     return {*this, maxBytes};
   }
@@ -436,13 +442,13 @@ class HttpRequestView {
   // fully consumed and subsequent calls will continue returning empty.
   // Preconditions:
   //   - hasMoreBody() must be true, otherwise behavior is undefined
-  //   - body() must not have been called prior.
+  //   - body() must not have been called prior (throws std::logic_error otherwise).
+  //   - The body must be received (throws std::logic_error otherwise). This only concerns an async handler running
+  //     before its body arrived, for which hasMoreBody() is true: co_await readBodyAsync() waits for it.
   [[nodiscard]] std::string_view readBody(std::size_t maxBytes = kDefaultReadBodyChunk);
 
   // Indicates whether the body is ready to be read (either fully buffered or streaming bridge established).
-  [[nodiscard]] bool isBodyReady() const noexcept {
-    return _pBodyAccessBridge != nullptr || _bodyAccessMode == BodyAccessMode::Aggregated;
-  }
+  [[nodiscard]] bool isBodyReady() const noexcept { return _pBodyAccessBridge != nullptr; }
 
   // Returns a map-like view over trailer headers received after a chunked body (RFC 7230 §4.1.2).
   // Characteristics:

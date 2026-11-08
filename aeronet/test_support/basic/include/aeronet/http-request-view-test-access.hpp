@@ -18,6 +18,9 @@ struct HttpRequestViewTestAccess {
 
   [[nodiscard]] static HttpRequestView Make() { return {}; }
 
+  // Sets the body as received from the transport, before its decompression and its bridge.
+  static void SetBody(HttpRequestView& request, std::string_view body) noexcept { request._body = body; }
+
   // Parses a copy of 'input', received at once, as the head of the first request of a connection. Returns the status of
   // HttpRequestView::initTrySetHead(): kStatusNeedMoreData if the head is not complete yet.
   [[nodiscard]] static http::StatusCode ParseHead(std::string_view input, uint32_t maxHeaderBytes) {

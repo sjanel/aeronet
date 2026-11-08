@@ -3,6 +3,7 @@
 #include <concepts>
 #include <coroutine>
 #include <exception>
+#include <optional>
 #include <type_traits>
 #include <utility>
 
@@ -40,7 +41,7 @@ class RequestTask {
     std::suspend_always initial_suspend() noexcept { return {}; }
     std::suspend_always final_suspend() noexcept { return {}; }
 
-    void return_value(T value) noexcept(std::is_nothrow_move_constructible_v<T>) { _value = std::move(value); }
+    void return_value(T value) noexcept(std::is_nothrow_move_constructible_v<T>) { _value.emplace(std::move(value)); }
 
     template <class Awaitable>
     Awaitable&& await_transform(Awaitable&& awaitable) noexcept {
@@ -49,15 +50,16 @@ class RequestTask {
 
     void unhandled_exception() noexcept { _exception = std::current_exception(); }
 
-    T&& consume_result() {
+    T&& consumeResult() {
       if (_exception) {
         std::rethrow_exception(_exception);
       }
-      return std::move(_value);
+      return std::move(*_value);
     }
 
     std::exception_ptr _exception;
-    T _value{};
+    // std::optional: T does not need to be default constructible, and its default construction may be costly.
+    std::optional<T> _value;
   };
 
   RequestTask() noexcept = default;
@@ -93,7 +95,7 @@ class RequestTask {
     while (_coro && !_coro.done()) {
       _coro.resume();
     }
-    return std::move(_coro.promise().consume_result());
+    return std::move(_coro.promise().consumeResult());
   }
 
   void reset() noexcept {
@@ -132,7 +134,7 @@ class RequestTask<void> {
     }
     void unhandled_exception() noexcept { _exception = std::current_exception(); }
 
-    void rethrow_if_needed() const {
+    void rethrowIfNeeded() const {
       if (_exception) {
         std::rethrow_exception(_exception);
       }
@@ -175,7 +177,7 @@ class RequestTask<void> {
       _coro.resume();
     }
     if (_coro) {
-      _coro.promise().rethrow_if_needed();
+      _coro.promise().rethrowIfNeeded();
     }
   }
 

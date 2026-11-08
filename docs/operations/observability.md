@@ -153,6 +153,7 @@ Detailed HTTP/2 metrics are emitted automatically for server connections wheneve
 | `aeronet.http2.streams.opened` | Counter | streams | `initiator` | Streams admitted by the connection. `initiator` is `local` or `remote`. |
 | `aeronet.http2.streams.closed` | Counter | streams | `initiator`, `error.type` | Streams closed normally or by reset. `error.type` uses HTTP/2 names such as `NO_ERROR` and `CANCEL`. |
 | `aeronet.http2.streams.active` | Histogram | streams | none | Active stream count on a connection after every open or close transition. This is a per-connection distribution, not a server-wide gauge. |
+| `aeronet.http2.streams.rejected_orphaned_async_tasks` | Counter | streams | none | Streams refused with `REFUSED_STREAM` because the deferred work of closed streams still counts against `maxConcurrentStreams`. |
 | `aeronet.http2.stream.requests` | Counter | requests | `http.request.method`, `http.response.status_code` | Completed server request streams. |
 | `aeronet.http2.stream.duration` | Histogram | milliseconds | `http.request.method`, `http.response.status_code` | Time from the decoded request head to response completion. |
 | `aeronet.http2.stream.request.body.bytes` | Histogram | bytes | `http.request.method`, `http.response.status_code` | Decoded request body size for each completed stream. |

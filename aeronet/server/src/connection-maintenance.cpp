@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <string_view>
 
+#include "aeronet/compiler-config.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
@@ -26,7 +27,27 @@
 #include "aeronet/websocket-handler.hpp"
 #endif
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include "aeronet/internal/http1-pipeline.hpp"
+#endif
+
 namespace aeronet::internal {
+
+namespace {
+
+// Tells whether the async handler of the connection is working, which suspends its idle timer. A handler that only
+// waits for the rest of its body does not, as for a synchronous route: a stalled upload would hold it forever
+// otherwise.
+AERONET_ALWAYS_INLINE bool AsyncHandlerWorking([[maybe_unused]] const ConnectionState& state) noexcept {
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  const auto* asyncState = state.pAsyncState();
+  return asyncState != nullptr && asyncState->isWorking();
+#else
+  return false;
+#endif
+}
+
+}  // namespace
 
 void ConnectionMaintenance::refreshKeepAliveDeadline(ConnectionIt cnxIt) {
   ServerContext& ctx = *_pCtx;
@@ -45,13 +66,7 @@ void ConnectionMaintenance::refreshKeepAliveDeadline(ConnectionIt cnxIt) {
     return;
   }
   // A CONNECT waiting for its target resolution has a deadline of its own (TunnelManager::expirePendingTunnels()).
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  const auto* asyncState = state.pAsyncState();
-  bool asyncHandlerActive = asyncState != nullptr && asyncState->active;
-  if (!config.enableKeepAlive || state.isTunneling() || state.tunnelResolving || asyncHandlerActive) {
-#else
-  if (!config.enableKeepAlive || state.isTunneling() || state.tunnelResolving) {
-#endif
+  if (!config.enableKeepAlive || state.isTunneling() || state.tunnelResolving || AsyncHandlerWorking(state)) {
 #ifdef AERONET_LINUX
     // Still watched while its zerocopy sends are in flight (see watchZerocopySends()).
     if (state.hasZerocopySendsInFlight()) {
@@ -135,7 +150,9 @@ bool ConnectionMaintenance::closeExpiredKeepAliveConnections() {
       continue;
     }
 #endif
-    if (!config.enableKeepAlive || state.isTunneling() || state.tunnelResolving) {
+    // A handler still working gets here when the deadline was armed to watch a zerocopy send since completed: its
+    // completion arms it again.
+    if (!config.enableKeepAlive || state.isTunneling() || state.tunnelResolving || AsyncHandlerWorking(state)) {
       continue;
     }
 
@@ -424,6 +441,12 @@ bool ConnectionMaintenance::closeIfTimedOut(ConnectionIt cnxIt, std::chrono::ste
   }
   log::debug("sweepIdleConnections: fd # {} closed for {} timeout", fd, timeout);
   ctx.http1.emitSimpleError(cnxIt, http::StatusCodeRequestTimeout, {});
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  // Answered: the handler must not answer again when it completes.
+  if (auto* asyncState = state.pAsyncState(); asyncState != nullptr) {
+    Http1Pipeline::AbandonAsyncHandler(*asyncState);
+  }
+#endif
   ctx.io.closeConnection(cnxIt);
   ctx.telemetry.counterAdd(counter);
   return true;

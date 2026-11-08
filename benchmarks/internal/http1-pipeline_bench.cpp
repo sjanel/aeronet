@@ -5,6 +5,11 @@
 // Throughput of the upload of a chunked request body received by many reads: each iteration writes a request whose
 // chunks are each in their own write, then receives its response. The time must be linear in the size of the body, as
 // the chunks received by the previous reads are not decoded again.
+//
+// The same pipelined requests through an async handler: one that completes right away, whose time per request must not
+// depend on the size of the batch either, and one suspending on deferred work (a thread per request). With a compressed
+// body received with its head, the connection of the suspended handler takes over the buffer of the decompression
+// (shared by the connections), that the next compressed request grows again.
 #include <benchmark/benchmark.h>
 
 #include <atomic>
@@ -19,6 +24,7 @@
 #include <thread>
 #include <utility>
 
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
@@ -26,6 +32,16 @@
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/test_util.hpp"
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include "aeronet/request-task.hpp"
+#endif
+
+#ifdef AERONET_ENABLE_ZLIB
+#include "aeronet/compression-test-helpers.hpp"
+#include "aeronet/encoding.hpp"
+#include "aeronet/raw-chars.hpp"
+#endif
 
 #ifdef AERONET_WINDOWS
 #include <winsock2.h>
@@ -42,6 +58,10 @@ using namespace std::chrono_literals;
 constexpr std::string_view kGet = "GET /pipelined HTTP/1.1\r\nHost: localhost\r\nUser-Agent: bench\r\n\r\n";
 constexpr std::string_view kPost =
     "POST /pipelined HTTP/1.1\r\nHost: localhost\r\nContent-Length: 16\r\n\r\n0123456789abcdef";
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+constexpr std::string_view kAsyncGet = "GET /async HTTP/1.1\r\nHost: localhost\r\nUser-Agent: bench\r\n\r\n";
+constexpr std::string_view kDeferredGet = "GET /deferred HTTP/1.1\r\nHost: localhost\r\nUser-Agent: bench\r\n\r\n";
+#endif
 
 class PipelineFixture : public benchmark::Fixture {
  protected:
@@ -57,6 +77,19 @@ class PipelineFixture : public benchmark::Fixture {
     }
     server = std::make_unique<SingleHttpServer>(std::move(config));
     server->router().setDefault([](const HttpRequestView&) { return HttpResponse("OK"); });
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+    server->router().setPath(http::Method::GET, "/async",
+                             [](HttpRequestView&) -> RequestTask<HttpResponse> { co_return HttpResponse("OK"); });
+    server->router().setPath(http::Method::GET, "/deferred", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
+      co_await req.deferWork([]{});
+      co_return HttpResponse("OK");
+    });
+    server->router().setPath(http::Method::POST, "/deferred", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
+      benchmark::DoNotOptimize(co_await req.bodyAwaitable());
+      co_await req.deferWork([]{});
+      co_return HttpResponse("OK");
+    });
+#endif
     loopThread =
         std::jthread([this] { server->runUntil([this] { return stopFlag.load(std::memory_order_relaxed); }); });
     client = std::make_unique<test::ClientConnection>(server->port());
@@ -170,6 +203,37 @@ BENCHMARK_REGISTER_F(PipelineFixture, PipelinedGet)
     ->ArgsProduct({{1, 8, 64, 512, 4096}, {0, 1}})
     ->ArgNames({"batch", "nodelay"})
     ->UseRealTime();
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+BENCHMARK_DEFINE_F(PipelineFixture, PipelinedAsyncGet)(benchmark::State& state) { run(state, kAsyncGet); }
+BENCHMARK_REGISTER_F(PipelineFixture, PipelinedAsyncGet)
+    ->ArgsProduct({{1, 8, 64, 512, 4096}, {1}})
+    ->ArgNames({"batch", "nodelay"})
+    ->UseRealTime();
+
+BENCHMARK_DEFINE_F(PipelineFixture, PipelinedDeferredGet)(benchmark::State& state) { run(state, kDeferredGet); }
+BENCHMARK_REGISTER_F(PipelineFixture, PipelinedDeferredGet)
+    ->ArgsProduct({{1, 8}, {1}})
+    ->ArgNames({"batch", "nodelay"})
+    ->UseRealTime();
+#endif
+
+#if defined(AERONET_ENABLE_ASYNC_HANDLERS) && defined(AERONET_ENABLE_ZLIB)
+BENCHMARK_DEFINE_F(PipelineFixture, DeferredGzipPost)(benchmark::State& state) {
+  // Argument 2: the size of the decompressed body in KiB.
+  const RawChars body =
+      test::Compress(Encoding::gzip, test::MakePatternedPayload(static_cast<std::size_t>(state.range(2)) << 10U));
+  std::string request =
+      std::format("POST /deferred HTTP/1.1\r\nHost: localhost\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n\r\n",
+                  body.size());
+  request.append(std::string_view(body));
+  run(state, request);
+}
+BENCHMARK_REGISTER_F(PipelineFixture, DeferredGzipPost)
+    ->ArgsProduct({{1}, {1}, {16, 256, 1024}})
+    ->ArgNames({"batch", "nodelay", "kib"})
+    ->UseRealTime();
+#endif
 
 BENCHMARK_DEFINE_F(PipelineFixture, PipelinedPostWithBody)(benchmark::State& state) { run(state, kPost); }
 BENCHMARK_REGISTER_F(PipelineFixture, PipelinedPostWithBody)

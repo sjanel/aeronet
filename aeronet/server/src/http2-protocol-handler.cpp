@@ -246,6 +246,19 @@ void Http2ProtocolHandler::onHeadersDecoded(uint32_t streamId, DecodedHeaders& d
     _pCtx->telemetry.counterAdd("aeronet.http2.responses.rejected_outbound_limit");
     return;
   }
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  // A stream closed while its deferred work runs frees its slot in the connection, but its thread, its coroutine frame
+  // and its request live until the work completes: without this, opening then resetting streams would not be bounded.
+  if (_connection.activeStreamCount() + _orphanedAsyncTasks.size() > _connection.localSettings().maxConcurrentStreams)
+      [[unlikely]] {
+    log::debug("Rejecting HTTP/2 stream {}: {} async task(s) of closed streams still running", streamId,
+               _orphanedAsyncTasks.size());
+    _streams.erase(it);
+    _connection.sendRstStream(streamId, ErrorCode::RefusedStream);
+    _pCtx->telemetry.counterAdd("aeronet.http2.streams.rejected_orphaned_async_tasks");
+    return;
+  }
+#endif
   StreamState& state = it->second;
   state.request = acquireRequest();
   StreamRequest& streamReq = *state.request;
@@ -1057,8 +1070,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
     return;
   }
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  // Returns false when the handler completed synchronously, its response being already sent.
-  (void)startAsyncHandler(it, routingResult);
+  startAsyncHandler(it, routingResult);
 #endif
 }
 
@@ -1433,7 +1445,7 @@ ErrorCode Http2ProtocolHandler::sendResponse(uint32_t streamId, HttpResponse res
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 
-bool Http2ProtocolHandler::startAsyncHandler(StreamsMap::iterator it, const Router::RoutingResult& routingResult) {
+void Http2ProtocolHandler::startAsyncHandler(StreamsMap::iterator it, const Router::RoutingResult& routingResult) {
   const uint32_t streamId = it->first;
   StreamState& state = it->second;
 
@@ -1457,7 +1469,7 @@ bool Http2ProtocolHandler::startAsyncHandler(StreamsMap::iterator it, const Rout
     HttpResponse response = restoredReq.makeResponse(http::StatusCodeInternalServerError, "Async handler inactive");
     _pCtx->requestPipeline().applyResponseMiddleware(restoredReq, response, routingResult.postMiddlewareRange(), false);
     finalizeAndSendResponse(it, std::move(response), routingResult.corsPolicy());
-    return false;
+    return;
   }
 
   pendingRef.task.start(std::move(requestTask), routingResult.sharedAsyncRequestHandler(), routingResult.corsPolicy(),
@@ -1471,11 +1483,10 @@ bool Http2ProtocolHandler::startAsyncHandler(StreamsMap::iterator it, const Rout
     log::debug("HTTP/2 async handler suspended on stream {}", streamId);
     // Completes later: the router may be updated meanwhile.
     pendingRef.task.routeMayHaveChanged = true;
-    return true;
+    return;
   }
 
   onAsyncTaskCompleted(streamId);
-  return false;
 }
 
 void Http2ProtocolHandler::resumeAsyncTask(uint32_t streamId) {
@@ -1634,6 +1645,7 @@ bool Http2ProtocolHandler::onSweep(std::chrono::steady_clock::time_point now, bo
       assert(err == ErrorCode::NoError);
       // The 408 has no body: it does not wait for flow-control credit (which the reset below would never let come).
       assert(!streamState.hasPendingSend());
+      onRequestCompleted(request, http::StatusCodeRequestTimeout);
 
       // Erase from our map before sendRstStream, because sendRstStream triggers
       // the onStreamClosed callback which also erases from _streams — doing both

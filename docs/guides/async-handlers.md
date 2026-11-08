@@ -102,7 +102,7 @@ router.setDefault(
 
 A handler may also return immediately with `co_return`, without awaiting anything: it then completes during its dispatch, like a synchronous handler (at a slightly higher cost, see [Performance](#performance)).
 
-An exception escaping the coroutine (from its body, or rethrown by `co_await`) produces a `500 Internal Server Error`, exactly like a throwing synchronous handler.
+An exception escaping the coroutine (from its body, or rethrown by `co_await`) produces a `500 Internal Server Error`, exactly like a throwing synchronous handler. So does a function returning a `RequestTask` that throws when called, through the response middleware and the metrics, even before its body arrived (test: `HandlerThrowingWhenCalledBeforeItsBodyGoesThroughThePipeline` in [http-async_test.cpp](../../tests/http-async_test.cpp)).
 
 ## How a request flows
 
@@ -122,7 +122,9 @@ While a handler runs with its whole request received, the server does not read t
 
 1. Each stream is independent: a suspended handler never delays the other streams of the connection.
 2. The handler is dispatched **once the whole request body is received** (`END_STREAM`): `bodyAwaitable()` and `readBodyAsync()` complete right away, and the per-route body limit is checked before the dispatch.
-3. A stream reset by the client (`RST_STREAM`) or by a route timeout does not interrupt the running work: the coroutine is destroyed once its work completes, without being resumed.
+3. A stream reset by the client (`RST_STREAM`) or by a route timeout does not interrupt the running work: the coroutine is destroyed once its work completes, without being resumed. Until then, it keeps counting against `maxConcurrentStreams`, like an open stream: above this limit, the new streams of the connection are refused with `REFUSED_STREAM`, whatever their route, so that opening then resetting streams cannot start threads without limit.
+
+Tests: `WorkOfResetStreamsCountsAgainstMaxConcurrentStreams`, `TimedOutHandlerIsCountedInTheRequestMetrics` and `LastDeferredResponseAfterGoAwayClosesTheConnectionRightAway` in [http-async_test.cpp](../../tests/http-async_test.cpp), `OrphanedAsyncTasksCountAgainstMaxConcurrentStreams` in [http2-protocol-handler_test.cpp](../../aeronet/server/test/http2-protocol-handler_test.cpp).
 
 ### Summary
 
@@ -132,7 +134,7 @@ While a handler runs with its whole request received, the server does not read t
 | Concurrency on one connection | One request at a time (pipelined requests are served in order) | One handler per stream, all in parallel |
 | Client disconnects while work runs | Noticed after the handler completes (or by the route timeout) | `RST_STREAM`: the stream is closed, the work completes in the background |
 | Route timeout expires | `408 Request Timeout`, then the connection is closed | `408 Request Timeout`, then `RST_STREAM` |
-| Keep-alive idle timeout | Does not apply while the handler runs | Does not apply to a connection with active streams |
+| Keep-alive idle timeout | Does not apply while the handler works (deferred work included), applies while it only waits for the rest of its body | Does not apply to a connection with active streams |
 
 ## Awaitables
 
@@ -164,9 +166,13 @@ router.setPath(http::Method::POST, "/checksum", [](HttpRequestView& req) -> Requ
 });
 ```
 
-- The body is buffered by the server (decompressed if needed, de-chunked), within the `maxBodyBytes` limits of the server and of the route. `readBodyAsync()` gives a chunked access to it; it does not stream the upload from the socket.
+- The body is buffered by the server (decompressed if needed, de-chunked), within the `maxBodyBytes` limits of the server and of the route. `readBodyAsync()` gives a chunked access to it; it does not stream the upload from the socket. Tests: `CompressedBodyCanBeReadInChunks` in [http-async_test.cpp](../../tests/http-async_test.cpp), `AsyncHandlerReadsACompressedBodyInChunks` in [http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp).
 - A request is read either with `bodyAwaitable()` / `body()`, or with `readBodyAsync()` / `readBody()`: once one style was used, the other one throws `std::logic_error`.
+- `readBody()` cannot wait: while the body is being received (over HTTP/1.1, the handler starts before it), `hasMoreBody()` is true and `readBody()` throws `std::logic_error`, which answers `500` if the handler does not catch it. `co_await req.readBodyAsync()` waits for the body. Tests: `ReadBodyBeforeTheBodyIsReceivedThrows` in [http-async_test.cpp](../../tests/http-async_test.cpp) and [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp).
+- `body()` cannot wait either: until the body is received, it is empty, in the handler as in a request middleware. It selects no reading style then, so the body can still be awaited with `bodyAwaitable()` or `readBodyAsync()`. Tests: `BodyCalledBeforeTheBodyIsReceivedDoesNotLoseIt` in [http-async_test.cpp](../../tests/http-async_test.cpp), `BodyBeforeTheBodyIsReceivedSelectsNothing` in [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp).
+- A client that stops sending its body is closed after `keepAliveTimeout` without receiving anything from it, as on a synchronous route, whether the handler awaits the body or already completed. With `bodyReadTimeout`, it is answered `408` instead when that timeout is the shorter one. Deferred work counts for neither: their timers stop while it runs, and a full window starts once it ends. Tests: `StalledUploadIsClosedByTheKeepAliveTimeout`, `UploadMakingProgressIsNotClosedByTheKeepAliveTimeout`, `UploadMakingProgressIsNotClosedByTheBodyReadTimeout`, `KeepAliveTimeoutDoesNotCountTheDeferredWork`, `BodyReadTimeoutDoesNotCountTheDeferredWork` and `CompletedZerocopySendDoesNotExposeDeferredWorkToTheKeepAliveTimeout` in [http-async_test.cpp](../../tests/http-async_test.cpp).
 - Trailers (chunked requests, HTTP/2) are available through `req.trailers()` once the body was awaited.
+- A handler answering without waiting for its body is answered once the body is received, without decompressing it: a corrupted body changes nothing. Response middleware and metrics then see no body. Test: `BodyOfAnAnsweredRequestIsNotDecompressed` in [http-async_test.cpp](../../tests/http-async_test.cpp).
 - `Expect: 100-continue` is answered with `100 Continue` once the handler waits for the body, so that a handler answering from the head alone (after `deferWork()` for instance) does not make the client send it.
 
 ### Running blocking work with deferWork()
@@ -271,18 +277,21 @@ A work function runs on its own thread, concurrently with the event loop and wit
 
 | In a work function | Safe? |
 | --- | --- |
-| Read the request head: `path()`, `method()`, headers, query and path parameters | Yes: the server does not modify them while the coroutine is suspended |
+| Read the request head: `path()`, `method()`, headers, query and path parameters | Yes: the server does not modify them while the work runs. A body received meanwhile is decompressed once the work ends, which then updates its `Content-Encoding` and `Content-Length` headers |
 | Read the body obtained with `co_await req.bodyAwaitable()` **before** calling `deferWork()` | Yes |
 | Read or write local variables of the coroutine (captured by reference) | Yes: the coroutine is suspended until the work completes |
-| Call `req.body()`, `readBody()`, or await anything on the request | No: await the body in the coroutine first, then pass it to the work |
-| Build the `HttpResponse` | Prefer the coroutine, after `co_await` |
+| Call `req.body()`, `readBody()`, `hasMoreBody()`, `trailers()`, or await anything on the request | No: await the body in the coroutine first, then pass it to the work. The server does not modify the request while the work runs: a body received meanwhile only becomes readable once it ends |
+| Call `req.makeResponse()` | No: the response may use the compression state of the event loop thread. Call it in the coroutine, after `co_await` |
+| Build a plain `HttpResponse` | Yes: it uses no state of the event loop |
 | Use application state shared with other requests | Only with synchronization (mutex, atomics, thread-safe pool) |
 | Use the router, the server, or `HttpServerConfig` | No |
 | Keep `string_view`s of the request after the handler completes | No: copy what must outlive the request |
 
+Tests: `DeferredWorkReadsHeadersUnchangedByTheArrivalOfTheBody`, `RequestStaysUnchangedDuringDeferredWorkWhileItsBodyArrives` and `UndecodableBodyReceivedDuringDeferredWorkIsRejectedOnceItEnds` in [http-async_test.cpp](../../tests/http-async_test.cpp).
+
 ### Application state
 
-Work functions of different requests run in parallel: any state they share must be thread-safe. Objects used by work functions must also outlive the server, since the server waits for running work in its destructor: declare them before the server.
+Work functions of different requests run in parallel: any state they share must be thread-safe. Objects used by work functions must also outlive the server, since the server waits for running work in its destructor: declare them before the server. The captures of a work function are destroyed before its handler resumes, so they cannot outlive the response or the server (test: `WorkCapturesAreDestroyedBeforeTheHandlerResumes` in [http-async_test.cpp](../../tests/http-async_test.cpp)).
 
 ```cpp
 #include <charconv>
@@ -349,7 +358,9 @@ int main() {
 
 ### Process an upload off the event loop
 
-The body stays valid while the coroutine is suspended: the work function can read it in place, without a copy.
+The body stays valid while the coroutine is suspended, whether it was compressed or not: the work function can read it in place, without a copy.
+
+Tests: `DecompressedBodySurvivesCompressedUploadsOfOtherConnections`, `PipelinedCompressedRequestsReadTheirOwnBodies` and `DecompressedBodyOfTimedOutHandlerStaysValidForItsDeferredWork` in [http-async_test.cpp](../../tests/http-async_test.cpp).
 
 ```cpp
 #include <string>
@@ -519,7 +530,9 @@ int main() {
 
 ### Time out slow requests
 
-A per-route timeout answers `408 Request Timeout` and closes the connection (HTTP/1.1) or resets the stream (HTTP/2) when the handler takes too long. The work function keeps running until it returns (its result is then discarded): pair the route timeout with a timeout in the blocking call itself, so that threads do not pile up behind a stuck backend.
+A per-route timeout answers `408 Request Timeout` and closes the connection (HTTP/1.1) or resets the stream (HTTP/2) when the handler takes too long. The work function keeps running until it returns, and can still read the request and its body (its result is then discarded, the coroutine not being resumed): pair the route timeout with a timeout in the blocking call itself, so that threads do not pile up behind a stuck backend.
+
+Tests: `TimedOutHandlerIsAbandonedWhileItsClientStaysConnected`, `BodyOfTimedOutHandlerStaysValidForItsDeferredWork` and `TimeoutWhileWaitingForBodyReleasesTheCoroutine` in [http-async_test.cpp](../../tests/http-async_test.cpp).
 
 ```cpp
 #include <chrono>
@@ -612,7 +625,7 @@ int main() {
 
 | Step | Cost |
 | --- | --- |
-| Dispatching an async handler | One allocation for the coroutine frame (its size depends on the local variables), a copy of the request head, and a reference count increment on the handler |
+| Dispatching an async handler | One allocation for the coroutine frame (its size depends on the local variables), a copy of the request head in a buffer reused by the next requests of the connection, and a reference count increment on the handler. A handler completing right away makes 3 allocations per request against 2 for a synchronous one |
 | `co_await` of the body, already received | Nothing: it completes without suspending |
 | `co_await req.deferWork(work)` | One OS thread created (by the event loop thread) and detached, a few small allocations (result state, thread start), one wake-up of the event loop, one resumption |
 | Waiting | Nothing on the event loop: a suspended handler costs memory only (its frame, its connection buffers, and the stack of its background thread) |
@@ -673,3 +686,4 @@ Indicative measurements of a single event loop thread (one `SingleHttpServer`, r
 - Request views and their lifetime: [Memory management and string_view safety](requests.md#lifetime-of-request-data).
 - Route options (timeouts, limits): [Routing and requests](routing.md) and the [server configuration reference](../reference/server-configuration.md).
 - Runnable example: [examples/async-handlers.cpp](../../examples/async-handlers.cpp).
+- Tests: [http-async_test.cpp](../../tests/http-async_test.cpp) (`PipelinedRequestsCompletingRightAwayAroundADeferredOne` among them), [http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp), [http-routing_test.cpp](../../tests/http-routing_test.cpp), [request-task_test.cpp](../../aeronet/objects/test/request-task_test.cpp). Benchmarks: `PipelinedAsyncGet` and `PipelinedDeferredGet` in [http1-pipeline_bench.cpp](../../benchmarks/internal/http1-pipeline_bench.cpp).
