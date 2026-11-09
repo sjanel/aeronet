@@ -267,7 +267,7 @@ class Http2Connection {
 
   /// Send WINDOW_UPDATE frame.
   /// @param streamId Stream ID (0 for connection-level)
-  /// @param increment Window size increment
+  /// @param increment Window size increment, not 0 (a PROTOCOL_ERROR for the peer, RFC 9113 §6.9)
   void sendWindowUpdate(uint32_t streamId, uint32_t increment);
 
   /// Stop replenishing the receive window of a stream: the peer can then send at most the credit it has left, until
@@ -448,8 +448,8 @@ class Http2Connection {
   // Give back the credit of a stream able to receive, once half of it was consumed.
   void replenishStreamRecvWindow(Http2Stream& stream);
 
-  // The receive window of a stream opened now.
-  [[nodiscard]] uint32_t newStreamRecvWindow() const noexcept;
+  // The receive window of the stream 'streamId', opened now.
+  [[nodiscard]] uint32_t newStreamRecvWindow(uint32_t streamId) const noexcept;
 
   // The peer acknowledged our SETTINGS: a smaller initial window size now applies to the streams it may have used
   // the default window on.

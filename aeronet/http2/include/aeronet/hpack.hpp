@@ -347,7 +347,7 @@ class HpackEncoder {
   HpackDynamicTable _dynamicTable;
   flat_hash_map<std::size_t, uint64_t> _dynamicIndex;
   // The table sizes set since the previous header block. Any size being possible, none is pending while the smallest
-  // one is above the last one.
+  // one is above the last one: encode() resets both, to kNoPendingTableSize and 0, once they are signaled.
   uint32_t _smallestPendingTableSize{kNoPendingTableSize};
   uint32_t _lastPendingTableSize{0};
   uint64_t _newestDynamicSerial{0U};

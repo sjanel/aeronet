@@ -2684,6 +2684,37 @@ TEST(Http2Connection, SmallerInitialWindowAppliesFromSettingsAck) {
   EXPECT_EQ(resets, 1);
 }
 
+// The SETTINGS of an endpoint precede the HEADERS of the streams it opens, so the peer has applied them when it sees
+// these streams: their window is the configured one at once. Starting at 65535 bytes, a download would stall as soon as
+// the peer has used the window it knows, until the peer acknowledges the SETTINGS.
+TEST(Http2Connection, SmallerInitialWindowAppliesAtOnceOnLocallyOpenedStreams) {
+  Http2Config config;
+  config.initialWindowSize = 1024;
+  Http2Connection client(config, false);
+  RecordingEventSink clientSink(client);
+  clientSink.onDataFn = ([](uint32_t, std::span<const std::byte>, bool) {});
+  client.sendClientPreface();
+  (void)DrainPendingOutput(client);
+  FeedConnection(client, SerializeFrame(FrameHeader(0, FrameType::Settings, FrameFlags::None, 0), {}));
+  (void)DrainPendingOutput(client);
+
+  ASSERT_EQ(client.sendRequestHeaders(1, http::Method::GET, true, "/", "example.com", HeadersView{}, true),
+            ErrorCode::NoError);
+  (void)DrainPendingOutput(client);
+  ASSERT_NE(client.getStream(1), nullptr);
+  EXPECT_EQ(client.getStream(1)->recvWindow(), 1024);
+
+  // Half of the window consumed gives the server credit, without any acknowledgement.
+  FeedDataFrame(client, 1, 512);
+  EXPECT_EQ(WindowUpdateIncrements(DrainPendingOutput(client), 1), vector<uint32_t>{512U});
+  EXPECT_EQ(client.getStream(1)->recvWindow(), 1024);
+
+  // Nothing to reduce when it comes.
+  AcknowledgeSettings(client);
+  EXPECT_EQ(client.getStream(1)->recvWindow(), 1024);
+  EXPECT_FALSE(client.hasPendingOutput());
+}
+
 TEST(Http2Connection, CreditGrantedBeforeSettingsAckKeepsWindowsInSync) {
   Http2Config config;
   config.initialWindowSize = 32768;
@@ -3722,6 +3753,27 @@ TEST(Http2Connection, DataFrameExceedsStreamRecvWindow) {
   ASSERT_GE(out.size(), FrameHeader::kSize);
   const auto outHeader = ParseFrameHeader(out);
   EXPECT_EQ(outHeader.type(), FrameType::RstStream);
+}
+
+// A DATA frame refused by the window of its stream is discarded, but it consumed connection-level credit: never given
+// back, it would end up stalling the other streams of the connection.
+TEST(Http2Connection, StreamFlowControlErrorGivesBackConnectionCredit) {
+  Http2Config config;
+  config.initialWindowSize = 65535;
+  config.connectionWindowSize = 100000;
+  config.maxFrameSize = 100000;
+  Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  int resets = 0;
+  connSink.onStreamResetFn = ([&resets](uint32_t, ErrorCode) { ++resets; });
+  OpenClientStream(conn, 1);
+
+  FeedDataFrame(conn, 1, 66000);
+
+  EXPECT_EQ(resets, 1);
+  EXPECT_EQ(conn.connectionRecvWindow(), 100000);
+  EXPECT_EQ(WindowUpdateIncrements(DrainPendingOutput(conn), 0), vector<uint32_t>{66000U});
 }
 
 TEST(Http2Connection, DataFrameOnHalfClosedRemoteIsStreamError) {

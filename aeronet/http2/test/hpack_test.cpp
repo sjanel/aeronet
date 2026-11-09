@@ -2,7 +2,6 @@
 
 #include <gtest/gtest.h>
 
-#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -1803,15 +1802,18 @@ TEST(HpackEncoder, SizesSetBetweenTwoBlocksSignalTheSmallestThenTheLast) {
       Case{{kLargest, 1024U, kLargest}, {1024U, kLargest}},
   };
 
+  // Compared as vectors, whose bytes gtest prints when they differ.
+  const auto bytesOf = [](const RawBytes& block) { return vector<std::byte>(block.begin(), block.end()); };
+
   // The block of a single indexed field, starting with the given updates.
-  const auto expectedBlock = [](const vector<uint32_t>& updates) {
+  const auto expectedBlock = [&bytesOf](const vector<uint32_t>& updates) {
     RawBytes block;
     HpackEncoder encoder;
     for (const uint32_t size : updates) {
       encoder.encodeDynamicTableSizeUpdate(block, size);
     }
     block.push_back(std::byte{0x82});  // :method: GET
-    return block;
+    return bytesOf(block);
   };
 
   for (std::size_t idx = 0; idx < cases.size(); ++idx) {
@@ -1824,18 +1826,18 @@ TEST(HpackEncoder, SizesSetBetweenTwoBlocksSignalTheSmallestThenTheLast) {
 
     RawBytes output;
     encoder.encode(output, ":method", "GET");
-    EXPECT_TRUE(std::ranges::equal(output, expectedBlock(updates)));
+    EXPECT_EQ(bytesOf(output), expectedBlock(updates));
     EXPECT_EQ(encoder.dynamicTable().maxSizeBytes(), sizes.back());
 
     // The sizes of the previous interval are forgotten once signaled.
     output.clear();
     encoder.encode(output, ":method", "GET");
-    EXPECT_TRUE(std::ranges::equal(output, expectedBlock({})));
+    EXPECT_EQ(bytesOf(output), expectedBlock({}));
 
     output.clear();
     encoder.setMaxDynamicTableSize(512U);
     encoder.encode(output, ":method", "GET");
-    EXPECT_TRUE(std::ranges::equal(output, expectedBlock({512U})));
+    EXPECT_EQ(bytesOf(output), expectedBlock({512U}));
     EXPECT_EQ(encoder.dynamicTable().maxSizeBytes(), 512U);
   }
 }

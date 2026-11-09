@@ -568,7 +568,7 @@ void Http2Connection::pruneClosedStreams() {
 
 ErrorCode Http2Connection::prepareSendHeaders(uint32_t streamId, bool endStream) {
   auto [it, inserted] =
-      _streams.try_emplace(streamId, streamId, _peerSettings.initialWindowSize, newStreamRecvWindow());
+      _streams.try_emplace(streamId, streamId, _peerSettings.initialWindowSize, newStreamRecvWindow(streamId));
   if (inserted) {
     // Created new stream
     if (!canCreateStreams()) {
@@ -813,11 +813,13 @@ void Http2Connection::replenishStreamRecvWindow(Http2Stream& stream) {
   }
 }
 
-uint32_t Http2Connection::newStreamRecvWindow() const noexcept {
-  // Until it receives our SETTINGS, the peer may use the default window (RFC 9113 §6.9.3). A larger window accepts it
-  // from the start, whereas a smaller one has to wait for the acknowledgement of the SETTINGS.
-  return _settingsAcked ? _localSettings.initialWindowSize
-                        : std::max(_localSettings.initialWindowSize, kDefaultInitialWindowSize);
+uint32_t Http2Connection::newStreamRecvWindow(uint32_t streamId) const noexcept {
+  // Until it receives our SETTINGS, the peer may use the default window (RFC 9113 §6.9.3) on the streams it opens. A
+  // larger window accepts it from the start, whereas a smaller one has to wait for the acknowledgement of the SETTINGS.
+  // The streams we open follow our SETTINGS on the wire: the peer has applied them when it sees these streams.
+  return _settingsAcked || !isPeerStream(streamId)
+             ? _localSettings.initialWindowSize
+             : std::max(_localSettings.initialWindowSize, kDefaultInitialWindowSize);
 }
 
 void Http2Connection::applyAcknowledgedSettings() {
@@ -829,6 +831,9 @@ void Http2Connection::applyAcknowledgedSettings() {
   if (_localSettings.initialWindowSize < kDefaultInitialWindowSize) {
     const uint32_t reduction = kDefaultInitialWindowSize - _localSettings.initialWindowSize;
     for (auto& [id, stream] : _streams) {
+      if (!isPeerStream(id)) {
+        continue;  // Started from the configured window (see newStreamRecvWindow())
+      }
       // As the peer did on receiving the SETTINGS (RFC 9113 §6.9.2). The window of a stream it already sent more than
       // the new size on is negative: without credit from us, it could not send anything anymore.
       stream.reduceRecvWindow(reduction);
@@ -1033,6 +1038,7 @@ Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader head
   }
 
   if (!it->second.consumeRecvWindow(static_cast<uint32_t>(payloadSize))) {
+    replenishConnectionRecvWindow();  // The discarded frame still consumed connection-level credit.
     return streamError(streamId, ErrorCode::FlowControlError, ErrorMsg::StreamFlowControlExceeded);
   }
 
@@ -1096,7 +1102,7 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
 
   // Get or create stream
   auto [it, inserted] =
-      _streams.try_emplace(streamId, streamId, _peerSettings.initialWindowSize, newStreamRecvWindow());
+      _streams.try_emplace(streamId, streamId, _peerSettings.initialWindowSize, newStreamRecvWindow(streamId));
   if (inserted) {
     // Only a client opens streams with HEADERS (a server would push them, which is disabled), with odd and increasing
     // ids, and not after the GOAWAY of this endpoint.
