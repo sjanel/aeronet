@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -1776,6 +1777,144 @@ TEST(HpackEncoder, SetMaxDynamicTableSizeSignalsOnlyAChange) {
   ASSERT_EQ(output.size(), 4U);  // 0x3f 0xe1 0x07 (1024), then 0x82
   EXPECT_EQ(static_cast<uint8_t>(output[0]), 0x3FU);
   EXPECT_EQ(encoder.dynamicTable().maxSizeBytes(), 1024U);
+}
+
+// RFC 7541 §4.2: the sizes set between two header blocks are signaled by at most two updates, the smallest one then the
+// last one.
+TEST(HpackEncoder, SizesSetBetweenTwoBlocksSignalTheSmallestThenTheLast) {
+  static constexpr uint32_t kLargest = std::numeric_limits<uint32_t>::max();
+
+  struct Case {
+    vector<uint32_t> sizes;
+    vector<uint32_t> updates;
+  };
+  const std::array cases{
+      Case{{0U, 4096U}, {0U, 4096U}},               // Back to the size of the table
+      Case{{1024U, 0U, 2048U}, {0U, 2048U}},        // The smallest one is in the middle
+      Case{{1024U, 8192U, 2048U}, {1024U, 2048U}},  // Neither the first nor the last set size is lost
+      Case{{6000U, 8192U}, {6000U, 8192U}},         // Only increases: the smallest one is still signaled
+      Case{{2048U, 1024U}, {1024U}},                // Decreases: the smallest one is the last one
+      Case{{0U, 0U}, {0U}},                         // The empty table, the value of no pending last size
+      Case{{1024U}, {1024U}},                       // A single change
+      Case{{8192U, 4096U}, {4096U}},                // A reverted change is still a change
+      Case{{4096U}, {}},                            // No change
+      Case{{kLargest}, {kLargest}},                 // The value of no pending smallest size
+      Case{{0U, kLargest}, {0U, kLargest}},         // Largest possible difference
+      Case{{kLargest, 1024U, kLargest}, {1024U, kLargest}},
+  };
+
+  // The block of a single indexed field, starting with the given updates.
+  const auto expectedBlock = [](const vector<uint32_t>& updates) {
+    RawBytes block;
+    HpackEncoder encoder;
+    for (const uint32_t size : updates) {
+      encoder.encodeDynamicTableSizeUpdate(block, size);
+    }
+    block.push_back(std::byte{0x82});  // :method: GET
+    return block;
+  };
+
+  for (std::size_t idx = 0; idx < cases.size(); ++idx) {
+    SCOPED_TRACE(idx);
+    const auto& [sizes, updates] = cases[idx];
+    HpackEncoder encoder;
+    for (const uint32_t size : sizes) {
+      encoder.setMaxDynamicTableSize(size);
+    }
+
+    RawBytes output;
+    encoder.encode(output, ":method", "GET");
+    EXPECT_TRUE(std::ranges::equal(output, expectedBlock(updates)));
+    EXPECT_EQ(encoder.dynamicTable().maxSizeBytes(), sizes.back());
+
+    // The sizes of the previous interval are forgotten once signaled.
+    output.clear();
+    encoder.encode(output, ":method", "GET");
+    EXPECT_TRUE(std::ranges::equal(output, expectedBlock({})));
+
+    output.clear();
+    encoder.setMaxDynamicTableSize(512U);
+    encoder.encode(output, ":method", "GET");
+    EXPECT_TRUE(std::ranges::equal(output, expectedBlock({512U})));
+    EXPECT_EQ(encoder.dynamicTable().maxSizeBytes(), 512U);
+  }
+}
+
+// A decoder reduces its table as soon as a smaller limit applies (HpackDecoder::setMaxDynamicTableSize()): the encoder
+// has to evict the same entries, even when the size is raised again before its next block.
+TEST(HpackEncoder, SizeRaisedBeforeTheNextBlockStaysInSyncWithTheDecoder) {
+  HpackEncoder encoder;
+  auto decoder = CreateHpackDecoder();
+  const auto setSizes = [&](uint32_t smallest) {
+    for (const uint32_t size : {smallest, 4096U}) {
+      encoder.setMaxDynamicTableSize(size);
+      decoder.setMaxDynamicTableSize(size);
+    }
+  };
+
+  RawBytes block;
+  encoder.encode(block, "x-a", "value");
+  encoder.encode(block, "x-b", "value");
+  encoder.encode(block, "x-c", "value");
+  ASSERT_TRUE(decoder.decode(block).isSuccess());
+
+  // Each entry takes 40 bytes: only the two newest ones fit.
+  setSizes(80U);
+  EXPECT_EQ(decoder.dynamicTable().entryCount(), 2U);
+  block.clear();
+  encoder.encode(block, "x-c", "value");
+  encoder.encode(block, "x-a", "value");  // No longer in the table: not a reference to it
+  {
+    const auto result = decoder.decode(block);
+    ASSERT_TRUE(result.isSuccess());
+    EXPECT_EQ(result.decodedHeaders.headers.at("x-c"), "value");
+    EXPECT_EQ(result.decodedHeaders.headers.at("x-a"), "value");
+  }
+  EXPECT_EQ(encoder.dynamicTable().entryCount(), 3U);
+  EXPECT_EQ(decoder.dynamicTable().entryCount(), 3U);
+  EXPECT_EQ(decoder.dynamicTable().maxSizeBytes(), 4096U);
+
+  // The table cleared, then restored.
+  setSizes(0U);
+  EXPECT_EQ(decoder.dynamicTable().entryCount(), 0U);
+  block.clear();
+  encoder.encode(block, "x-a", "value");
+  {
+    const auto result = decoder.decode(block);
+    ASSERT_TRUE(result.isSuccess());
+    EXPECT_EQ(result.decodedHeaders.headers.at("x-a"), "value");
+  }
+  EXPECT_EQ(encoder.dynamicTable().entryCount(), 1U);
+  EXPECT_EQ(decoder.dynamicTable().entryCount(), 1U);
+  EXPECT_EQ(decoder.dynamicTable().maxSizeBytes(), 4096U);
+}
+
+TEST(HpackEncoder, LargeDynamicTableIndexFollowsTheSmallestSize) {
+  HpackEncoder encoder(65536);
+  RawBytes output;
+  const std::string value(64U, 'v');
+  for (std::size_t idx = 0; idx < 500U; ++idx) {
+    encoder.encode(output, "x-resize-" + std::to_string(idx), value);
+  }
+
+  encoder.setMaxDynamicTableSize(16384U);
+  encoder.setMaxDynamicTableSize(65536U);
+  encoder.encode(output, ":method", "GET");
+  EXPECT_EQ(encoder.dynamicTable().maxSizeBytes(), 65536U);
+  auto result = encoder.findHeader("x-resize-499", value);
+  EXPECT_EQ(result.match, HpackLookupResult::Match::Full);
+  EXPECT_EQ(result.index, 62U);
+  result = encoder.findHeader("x-resize-0", value);
+  EXPECT_EQ(result.match, HpackLookupResult::Match::None);
+
+  // Below the number of entries of the index.
+  encoder.setMaxDynamicTableSize(1024U);
+  encoder.setMaxDynamicTableSize(65536U);
+  encoder.encode(output, ":method", "GET");
+  EXPECT_LE(encoder.dynamicTable().currentSizeBytes(), 1024U);
+  result = encoder.findHeader("x-resize-499", value);
+  EXPECT_EQ(result.match, HpackLookupResult::Match::Full);
+  EXPECT_EQ(result.index, 62U);
 }
 
 TEST(HpackEncoder, EncodeNeverIndexed_WithStaticName) {

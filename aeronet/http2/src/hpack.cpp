@@ -1407,10 +1407,15 @@ HpackEncoder::IndexingMode HpackEncoder::IndexingModeOf(std::string_view name, s
 }
 
 uint64_t HpackEncoder::encode(RawBytes& output, std::string_view name, std::string_view value, IndexingMode mode) {
-  // Check for pending table size update
-  if (_hasPendingTableSizeUpdate) {
-    encodeDynamicTableSizeUpdate(output, _pendingTableSizeUpdate);
-    _hasPendingTableSizeUpdate = false;
+  if (hasPendingTableSizeUpdate()) {
+    // The smallest size first: the decoder may already have evicted down to it, so this table has to as well, even if
+    // the size was raised again since (RFC 7541 §4.2).
+    if (_smallestPendingTableSize != _lastPendingTableSize) {
+      encodeDynamicTableSizeUpdate(output, _smallestPendingTableSize);
+    }
+    encodeDynamicTableSizeUpdate(output, _lastPendingTableSize);
+    _smallestPendingTableSize = kNoPendingTableSize;
+    _lastPendingTableSize = 0;
   }
 
   // Compute the size of the header field as it would be represented in the HPACK dynamic table (32 bytes of overhead)
@@ -1471,11 +1476,11 @@ void HpackEncoder::encodeDynamicTableSizeUpdate(RawBytes& output, uint32_t newSi
 }
 
 void HpackEncoder::setMaxDynamicTableSize(uint32_t maxSize) {
-  if (!_hasPendingTableSizeUpdate && maxSize == _dynamicTable.maxSizeBytes()) {
+  if (!hasPendingTableSizeUpdate() && maxSize == _dynamicTable.maxSizeBytes()) {
     return;  // Nothing to signal
   }
-  _pendingTableSizeUpdate = maxSize;
-  _hasPendingTableSizeUpdate = true;
+  _smallestPendingTableSize = std::min(_smallestPendingTableSize, maxSize);
+  _lastPendingTableSize = maxSize;
 }
 
 HpackLookupResult HpackEncoder::findHeader(std::string_view name, std::string_view value) {

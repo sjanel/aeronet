@@ -3637,6 +3637,63 @@ TEST(Http2Connection, LargerPeerHeaderTableSizeSendsNoSizeUpdate) {
   EXPECT_EQ(Http2ConnectionTest::EncoderDynamicTable(conn).maxSizeBytes(), kDefaultHeaderTableSize);
 }
 
+// A peer advertising 0 then 4096 may have cleared its table as soon as the first value was acknowledged: the next block
+// has to clear the table of the encoder too, before restoring its size (RFC 7541 §4.2).
+TEST(Http2Connection, HeaderTableSizeChangedTwiceSignalsTheSmallestThenTheLast) {
+  Http2Config config;
+  Http2Connection conn(config, true);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  HpackDecoder peerDecoder(kDefaultHeaderTableSize, std::numeric_limits<uint32_t>::max(), true,
+                           HpackDecoder::Messages::Responses);
+
+  RawChars headers;
+  headers.append(MakeHttp1HeaderLine("x-custom", "value"));
+  uint32_t streamId = 1;
+  const auto sendResponse = [&] {
+    EXPECT_EQ(conn.sendHeaders(streamId, http::StatusCodeOK, HeadersView(headers), true), ErrorCode::NoError);
+    streamId += 2U;
+    return DecodeFirstHeadersFromOutput(DrainPendingOutput(conn)).headerBlockBytes;
+  };
+  const auto feedSettings = [&](std::span<const SettingsEntry> entries) {
+    RawBytes settings;
+    WriteSettingsFrame(settings, entries);
+    FeedConnection(conn, settings);
+    (void)DrainPendingOutput(conn);
+  };
+  const auto expectTableRestored = [&] {
+    peerDecoder.setMaxDynamicTableSize(0U);
+    peerDecoder.setMaxDynamicTableSize(kDefaultHeaderTableSize);
+    const auto block = sendResponse();
+    ASSERT_GE(block.size(), 4U);
+    EXPECT_EQ(static_cast<uint8_t>(block[0]), 0x20U);  // 0
+    EXPECT_EQ(static_cast<uint8_t>(block[1]), 0x3FU);  // 4096 on 3 bytes
+    EXPECT_EQ(static_cast<uint8_t>(block[2]), 0xE1U);
+    EXPECT_EQ(static_cast<uint8_t>(block[3]), 0x1FU);
+    const auto result = peerDecoder.decode(block);
+    ASSERT_TRUE(result.isSuccess());
+    EXPECT_EQ(result.decodedHeaders.headers.at("x-custom"), "value");
+  };
+
+  ASSERT_TRUE(peerDecoder.decode(sendResponse()).isSuccess());
+  EXPECT_EQ(peerDecoder.dynamicTable().entryCount(), 1U);
+
+  // In two SETTINGS frames.
+  const std::array cleared{SettingsEntry{SettingsParameter::HeaderTableSize, 0U}};
+  const std::array restored{SettingsEntry{SettingsParameter::HeaderTableSize, kDefaultHeaderTableSize}};
+  feedSettings(cleared);
+  feedSettings(restored);
+  expectTableRestored();
+
+  // In a single one.
+  const std::array clearedAndRestored{SettingsEntry{SettingsParameter::HeaderTableSize, 0U},
+                                      SettingsEntry{SettingsParameter::HeaderTableSize, kDefaultHeaderTableSize}};
+  feedSettings(clearedAndRestored);
+  expectTableRestored();
+
+  EXPECT_EQ(Http2ConnectionTest::EncoderDynamicTable(conn).maxSizeBytes(), kDefaultHeaderTableSize);
+  EXPECT_EQ(Http2ConnectionTest::EncoderDynamicTable(conn).entryCount(), peerDecoder.dynamicTable().entryCount());
+}
+
 TEST(Http2Connection, DataFrameExceedsStreamRecvWindow) {
   Http2Config config;
   config.initialWindowSize = 65535;
