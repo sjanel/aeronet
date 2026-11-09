@@ -140,6 +140,8 @@ struct DecodedHeaders {
   // Total size of the names and values of the fields as received (duplicates not merged), pseudo-headers included.
   std::size_t namesAndValuesSize{0};
   uint8_t pseudoHeadersMask{0};
+  // Whether the block of a response holds a connection-specific field (RFC 9113 §8.2.2).
+  bool hasConnectionSpecificField{false};
 };
 
 /// HPACK decoder for decompressing HTTP/2 header blocks (RFC 7541).
@@ -157,8 +159,9 @@ class HpackDecoder {
   /// plus 32 bytes per field, RFC 7541 §4.1) are not stored: its decoding fails with HeaderListTooLarge, without taking
   /// more memory than this limit, whatever the number of references to the dynamic table in its block.
   /// The repeated set-cookie fields of Messages::Responses are joined with DecodedHeaders::kSetCookieSeparator.
-  /// A connection-specific field of Messages::Requests fails the decoding with ConnectionSpecificField (RFC 9113
-  /// §8.2.2). Those of a response are left to the client, which reports it as malformed.
+  /// A connection-specific field (RFC 9113 §8.2.2) fails the decoding of Messages::Requests with
+  /// ConnectionSpecificField. In Messages::Responses, it sets DecodedHeaders::hasConnectionSpecificField: the client
+  /// reports the response as malformed itself, the failure of a stream being its own to tell.
   HpackDecoder(uint32_t maxDynamicTableSize, uint32_t maxHeaderListSize, bool mergeAllowedForUnknownRequestHeaders,
                Messages messages = Messages::Requests) noexcept;
 

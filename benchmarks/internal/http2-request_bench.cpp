@@ -72,6 +72,7 @@ class Http2RequestBench {
  public:
   explicit Http2RequestBench(std::size_t nbRegularFields)
       : _ctx(HttpServerConfig{}, Router{}), _handler(_ctx, _connectionState, kInvalidHandle) {
+    _ctx.config.validate();
     _ctx.router.setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK, "ok"); });
     _ctx.dateHeader.refreshIfNeeded(std::chrono::steady_clock::now());
 

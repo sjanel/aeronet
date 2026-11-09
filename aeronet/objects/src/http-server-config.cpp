@@ -24,7 +24,9 @@
 #include "aeronet/zerocopy-mode.hpp"
 
 #ifdef AERONET_ENABLE_HTTP2
+#include "aeronet/http-headers-view.hpp"
 #include "aeronet/http2-config.hpp"
+#include "aeronet/reserved-headers.hpp"
 #endif
 
 namespace aeronet {
@@ -377,6 +379,15 @@ void HttpServerConfig::validate() {
   }
 
   Validate(globalHeaders, HeaderType::Response);
+
+#ifdef AERONET_ENABLE_HTTP2
+  _http2GlobalHeaders.clear();
+  for (const auto [name, value] : HeadersView(globalHeaders.fullStringWithLastSep())) {
+    if (!http::IsConnectionSpecificField(name, value)) {
+      _http2GlobalHeaders.appendAsHttp1Header(name, value);
+    }
+  }
+#endif
 
   telemetry.validate();
   tls.validate();

@@ -377,9 +377,10 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   /// Release request state after a response, retaining it only while deferred output remains.
   void releaseStreamAfterResponse(StreamsMap::iterator it);
 
-  /// Close the stream of a response sent whole, whose state is released: a client still sending its request is asked
-  /// to stop with RST_STREAM(NO_ERROR) (RFC 9113 §8.1).
-  void closeAnsweredStream(uint32_t streamId);
+  /// Erase the state of a stream whose response is sent whole, and close the stream: a client still sending its request
+  /// is asked to stop with RST_STREAM(NO_ERROR) (RFC 9113 §8.1).
+  /// @return The iterator following the erased entry
+  StreamsMap::iterator closeAnsweredStream(StreamsMap::iterator it);
 
   /// Call the streaming handler of the route of the request of a stream.
   void handleStreamingRequest(StreamsMap::iterator it, const Router::RoutingResult& routingResult);

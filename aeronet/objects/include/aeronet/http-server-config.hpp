@@ -361,6 +361,12 @@ struct HttpServerConfig {
   // Validates and (possibly) finalize config. Throws std::invalid_argument if it is not valid.
   void validate();
 
+#ifdef AERONET_ENABLE_HTTP2
+  // The global headers of the HTTP/2 responses: globalHeaders without its connection-specific fields, which would make
+  // a response malformed (RFC 9113 §8.2.2). Computed by validate(), once instead of for each response.
+  [[nodiscard]] const ConcatenatedHeaders& http2GlobalHeaders() const noexcept { return _http2GlobalHeaders; }
+#endif
+
   // Check whether the per-event fairness budget has been reached, given the bytes read during the event (plus the bytes
   // written while serving them, when the event serves its input between reads).
   [[nodiscard]] bool fairnessBudgetExhausted(std::size_t bytesThisEvent) const {
@@ -607,6 +613,10 @@ struct HttpServerConfig {
 
   // Enable or disable HTTP/2 globally (shorthand for http2.enable = on)
   HttpServerConfig& enableHttp2(bool on = true);
+
+  // Internal storage of http2GlobalHeaders(). Public only so that HttpServerConfig stays an aggregate, whose members
+  // glaze reflects (see glaze-internal-members.hpp).
+  ConcatenatedHeaders _http2GlobalHeaders;
 #endif
 
  private:

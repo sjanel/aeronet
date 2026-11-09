@@ -553,12 +553,6 @@ void Http2ProtocolHandler::onTrailersReceived(StreamsMap::iterator it, DecodedHe
     return;
   }
 
-  // The request was released: its response is complete, the end of its body waiting for flow-control credit.
-  if (!state.hasRequest()) {
-    _connection.sendRstStream(streamId, ErrorCode::ProtocolError);
-    return;
-  }
-
   // A trailing HEADERS block must end the stream, and cannot carry pseudo-header fields (RFC 9113 §8.1).
   if (!endStream) {
     rejectMalformedRequest(streamId, "trailers not ending the stream");
@@ -566,6 +560,12 @@ void Http2ProtocolHandler::onTrailersReceived(StreamsMap::iterator it, DecodedHe
   }
   if (trailers.hasPseudoHeaders()) {
     rejectMalformedRequest(streamId, "pseudo-header field in trailers");
+    return;
+  }
+
+  // The request was released: its response is complete, the end of its body waiting for flow-control credit. Its
+  // trailers are ignored, like its DATA frames.
+  if (!state.hasRequest()) {
     return;
   }
 
@@ -680,18 +680,18 @@ void Http2ProtocolHandler::releaseStreamAfterResponse(StreamsMap::iterator it) {
     // The rest of the response waits for flow control: the stream is closed once it is sent (flushPendingSends()).
     it->second.requestDeadline = {};
   } else {
-    const uint32_t streamId = it->first;
-    _streams.erase(it);
-    closeAnsweredStream(streamId);
+    closeAnsweredStream(it);
   }
 }
 
-void Http2ProtocolHandler::closeAnsweredStream(uint32_t streamId) {
+Http2ProtocolHandler::StreamsMap::iterator Http2ProtocolHandler::closeAnsweredStream(StreamsMap::iterator it) {
+  const uint32_t streamId = it->first;
   // Sending END_STREAM transitions a half-closed-remote stream to Closed, but send-path closure is finalized
-  // explicitly so callbacks cannot invalidate protocol-handler iterators mid-send. At this point our state has
-  // already been released, so close accounting and the callback are safe.
+  // explicitly so callbacks cannot invalidate protocol-handler iterators mid-send. Our state is released first: the
+  // stream-closed callback then finds nothing to erase, which keeps the returned iterator valid.
+  const StreamsMap::iterator nextIt = _streams.erase(it);
   if (_connection.finalizeSendClosedStream(streamId)) [[likely]] {
-    return;
+    return nextIt;
   }
 
   // The stream of a response is known to the connection until closed.
@@ -701,6 +701,7 @@ void Http2ProtocolHandler::closeAnsweredStream(uint32_t streamId) {
     // The response is complete while the client still sends its request: ask it to stop, without error (RFC 9113 §8.1).
     _connection.sendRstStream(streamId, ErrorCode::NoError);
   }
+  return nextIt;
 }
 
 std::size_t Http2ProtocolHandler::fileReadBudget(std::size_t nbFileSends) const noexcept {
@@ -817,12 +818,9 @@ void Http2ProtocolHandler::flushPendingSends() {
     // directly, bypassing the deferred-send machinery entirely.
     assert(!state.hasRequest() && state.tunnelUpstreamFd == kInvalidHandle);
 
-    // If the stream has no other active state, remove the entry entirely.
-    it = _streams.erase(it);
-    // The deferred body completed outside frame processing (from onOutputWritten): finalize the stream's
-    // connection-level lifecycle (active-stream accounting + retention). Our per-stream state is
-    // already erased, so the stream-closed callback finds nothing to re-enter.
-    closeAnsweredStream(streamId);
+    // The deferred body completed outside frame processing (from onOutputWritten): the stream has no other active
+    // state, finalize its connection-level lifecycle (active-stream accounting + retention).
+    it = closeAnsweredStream(it);
   }
 }
 
@@ -1310,7 +1308,7 @@ bool Http2ProtocolHandler::responseExceedsPendingLimits(uint32_t streamId, const
   // Raw header bytes are a conservative proxy for HPACK output and also account for the already-computed
   // response storage that exists until sendResponse returns. Global headers are encoded separately.
   const std::size_t globalHeadersSize =
-      response._opts.isPrepared() ? 0 : _pCtx->config.globalHeaders.fullStringWithLastSep().size();
+      response._opts.isPrepared() ? 0 : _pCtx->config.http2GlobalHeaders().fullSizeWithLastSep();
   if (!consumeBudget(FrameHeader::kSize) || !consumeBudget(response.headersFlatViewWithDate().size()) ||
       !consumeBudget(globalHeadersSize)) {
     return true;
@@ -1345,7 +1343,8 @@ ErrorCode Http2ProtocolHandler::sendResponse(HttpRequestView& request, HttpRespo
   // Finalize Date header
   CopyCRLFDateHeader(_pCtx->dateHeader.data(), response._data.data() + response.dateHeaderStartPos());
 
-  const ConcatenatedHeaders* pGlobalHeaders = response._opts.isPrepared() ? nullptr : &_pCtx->config.globalHeaders;
+  const ConcatenatedHeaders* pGlobalHeaders =
+      response._opts.isPrepared() ? nullptr : &_pCtx->config.http2GlobalHeaders();
 
   // The trailers and body views stay valid once the response storage is released (see releaseMessageData()), as long
   // as the released storage lives.
@@ -1637,15 +1636,11 @@ bool Http2ProtocolHandler::onSweep(std::chrono::steady_clock::time_point now, bo
       orphanAsyncTask(streamState);
 #endif
       sendInMemoryResponse(request, std::move(response));
-      // The 408 has no body: it does not wait for flow-control credit (which the reset below would never let come).
+      // The 408 has no body: it does not wait for flow-control credit, and it ends the stream.
       assert(!streamState.hasPendingSend());
       onRequestCompleted(request, http::StatusCodeRequestTimeout);
 
-      // Erase from our map before sendRstStream, because sendRstStream triggers
-      // the onStreamClosed callback which also erases from _streams — doing both
-      // would double-erase and invalidate the iterator.
-      it = _streams.erase(it);
-      _connection.sendRstStream(streamId, ErrorCode::Cancel);
+      it = closeAnsweredStream(it);
     } else {
       ++it;
     }

@@ -47,6 +47,28 @@ TEST(HttpServerConfigTest, NoGlobalHeadersIsValidAndShouldNotAddDefaultOnes) {
   EXPECT_TRUE(config.globalHeaders.empty());
 }
 
+#ifdef AERONET_ENABLE_HTTP2
+// HTTP/1.1 responses keep them, while they would make an HTTP/2 response malformed (RFC 9113 §8.2.2).
+TEST(HttpServerConfigTest, Http2GlobalHeadersHaveNoConnectionSpecificField) {
+  HttpServerConfig config;
+  config.withGlobalHeaders({});
+  config.addGlobalHeader(http::Header{"Keep-Alive", "timeout=5"});
+  config.addGlobalHeader(http::Header{"X-Kept", "1"});
+  config.addGlobalHeader(http::Header{"Proxy-Connection", "keep-alive"});
+  config.validate();
+
+  EXPECT_EQ(config.globalHeaders.nbConcatenatedStrings(), 3U);
+  EXPECT_EQ(config.http2GlobalHeaders(), (ConcatenatedHeaders{{"x-kept: 1"}}));
+
+  // Computed again by each validation, as a configuration update can change the global headers.
+  config.withGlobalHeaders({});
+  config.addGlobalHeader(http::Header{"Keep-Alive", "timeout=5"});
+  config.validate();
+
+  EXPECT_TRUE(config.http2GlobalHeaders().empty());
+}
+#endif
+
 TEST(HttpServerConfigTest, AddGlobalHeader) {
   HttpServerConfig config;
   config.addGlobalHeader(http::Header{"X-Test", "value"});

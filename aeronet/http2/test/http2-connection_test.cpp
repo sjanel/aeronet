@@ -550,7 +550,7 @@ TEST(Http2Connection, SendHeadersDropsConnectionSpecificFields) {
   RawChars head;
   head.append(MakeHttp1HeaderLine("proxy-connection", "keep-alive"));
   head.append(MakeHttp1HeaderLine("x-kept", "1"));
-  const ConcatenatedHeaders globalHeaders{"keep-alive: timeout=5", "x-global: 1"};
+  const ConcatenatedHeaders globalHeaders{{"x-global: 1"}};
   ASSERT_EQ(server.sendHeaders(1, http::StatusCodeOK, HeadersView(head), false, &globalHeaders), ErrorCode::NoError);
 
   // Trailers holding nothing else still end the stream.
@@ -2424,6 +2424,7 @@ TEST(Http2Connection, WindowUpdateZeroIncrementOnStreamSendsRstStream) {
   Http2Connection conn(config, true);
   RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
+  OpenClientStream(conn, 1);
 
   std::array<std::byte, 4> payload = {std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}};
   const FrameHeader header(static_cast<uint32_t>(payload.size()), FrameType::WindowUpdate, FrameFlags::None, 1);
@@ -2443,6 +2444,39 @@ TEST(Http2Connection, WindowUpdateZeroIncrementOnStreamSendsRstStream) {
   const auto payloadView = out.subspan(FrameHeader::kSize, outHeader.length());
   ASSERT_EQ(ParseRstStreamFrame(payloadView, rst), FrameParseResult::Ok);
   EXPECT_EQ(rst.errorCode, ErrorCode::ProtocolError);
+}
+
+// RFC 9113 §5.1: no frame can be sent on a closed stream, so even an increment that is a stream error on an open stream
+// is ignored. The stream may still be known to the connection, or already forgotten.
+TEST(Http2Connection, WindowUpdateOnClosedStreamIsIgnored) {
+  static constexpr uint32_t kSkippedStream = 1;
+  static constexpr uint32_t kClosedStream = 3;
+  for (const uint32_t increment : {0U, 100U, kMaxWindowSize}) {
+    Http2Config config;
+    Http2Connection conn(config, true);
+    RecordingEventSink connSink(conn);
+    int nbWindowUpdates = 0;
+    connSink.onWindowUpdateFn = [&nbWindowUpdates](uint32_t, uint32_t) { ++nbWindowUpdates; };
+    AdvanceToOpenAndDrainSettingsAck(conn);
+    OpenClientStream(conn, kClosedStream);
+    conn.sendRstStream(kClosedStream, ErrorCode::Cancel);
+    (void)DrainPendingOutput(conn);
+    ASSERT_EQ(conn.getStream(kSkippedStream), nullptr);
+    ASSERT_NE(conn.getStream(kClosedStream), nullptr);
+    ASSERT_TRUE(conn.getStream(kClosedStream)->isClosed());
+
+    for (const uint32_t streamId : {kSkippedStream, kClosedStream}) {
+      RawBytes frame;
+      WriteWindowUpdateFrame(frame, streamId, increment);
+
+      const auto res = conn.processInput(frame);
+
+      EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Continue) << streamId << " " << increment;
+      EXPECT_FALSE(conn.hasPendingOutput()) << streamId << " " << increment;
+    }
+    EXPECT_EQ(nbWindowUpdates, 0);
+    EXPECT_TRUE(conn.isOpen());
+  }
 }
 
 TEST(Http2Connection, WindowUpdateStreamOverflowSendsRstStream) {
@@ -3505,6 +3539,15 @@ TEST(Http2Connection, FramesOnIdleStreamsAreConnectionErrors) {
           [](uint32_t streamId) {
             RawBytes frame;
             WriteWindowUpdateFrame(frame, streamId, 100);
+            return frame;
+          },
+          ErrorMsg::WINDOW_UPDATEOnIdleStream,
+      },
+      // A zero increment is a stream error, which cannot be reported on a stream that does not exist yet.
+      FrameCase{
+          [](uint32_t streamId) {
+            RawBytes frame;
+            WriteWindowUpdateFrame(frame, streamId, 0);
             return frame;
           },
           ErrorMsg::WINDOW_UPDATEOnIdleStream,

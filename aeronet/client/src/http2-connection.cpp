@@ -41,7 +41,6 @@
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
-#include "aeronet/reserved-headers.hpp"
 #include "aeronet/response-body-sink.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/timedef.hpp"
@@ -302,9 +301,7 @@ class Http2ClientEngine : private EventSink {
       return;  // foreign stream (push is disabled) or an exchange already detached: ignore
     }
     // RFC 9113 §8.2.2, in any of the field sections of the response.
-    if (std::ranges::any_of(decodedHeaders.headers, [](const auto& field) {
-          return http::IsConnectionSpecificField(field.first, field.second);
-        })) {
+    if (decodedHeaders.hasConnectionSpecificField) {
       log::error("HTTP/2 client: response field section on stream {} with a connection-specific field", streamId);
       setFailure(Failure::Malformed);
       return;

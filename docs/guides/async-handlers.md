@@ -122,7 +122,7 @@ While a handler runs with its whole request received, the server does not read t
 
 1. Each stream is independent: a suspended handler never delays the other streams of the connection.
 2. The handler is dispatched **once the whole request body is received** (`END_STREAM`): `bodyAwaitable()` and `readBodyAsync()` complete right away, and the per-route body limit is checked before the dispatch.
-3. A stream reset by the client (`RST_STREAM`) or by a route timeout does not interrupt the running work: the coroutine is destroyed once its work completes, without being resumed. Until then, it keeps counting against `maxConcurrentStreams`, like an open stream: above this limit, the new streams of the connection are refused with `REFUSED_STREAM`, whatever their route, so that opening then resetting streams cannot start threads without limit.
+3. A stream reset by the client (`RST_STREAM`) or answered by a route timeout does not interrupt the running work: the coroutine is destroyed once its work completes, without being resumed. Until then, it keeps counting against `maxConcurrentStreams`, like an open stream: above this limit, the new streams of the connection are refused with `REFUSED_STREAM`, whatever their route, so that opening then resetting streams cannot start threads without limit.
 
 Tests: `WorkOfResetStreamsCountsAgainstMaxConcurrentStreams`, `TimedOutHandlerIsCountedInTheRequestMetrics` and `LastDeferredResponseAfterGoAwayClosesTheConnectionRightAway` in [http-async_test.cpp](../../tests/http-async_test.cpp), `OrphanedAsyncTasksCountAgainstMaxConcurrentStreams` in [http2-protocol-handler_test.cpp](../../aeronet/server/test/http2-protocol-handler_test.cpp).
 
@@ -133,7 +133,7 @@ Tests: `WorkOfResetStreamsCountsAgainstMaxConcurrentStreams`, `TimedOutHandlerIs
 | Dispatch | As soon as the head is parsed | Once the whole body is received |
 | Concurrency on one connection | One request at a time (pipelined requests are served in order) | One handler per stream, all in parallel |
 | Client disconnects while work runs | Noticed after the handler completes (or by the route timeout) | `RST_STREAM`: the stream is closed, the work completes in the background |
-| Route timeout expires | `408 Request Timeout`, then the connection is closed | `408 Request Timeout`, then `RST_STREAM` |
+| Route timeout expires | `408 Request Timeout`, then the connection is closed | `408 Request Timeout`, which ends the stream |
 | Keep-alive idle timeout | Does not apply while the handler works (deferred work included), applies while it only waits for the rest of its body | Does not apply to a connection with active streams |
 
 ## Awaitables
@@ -530,9 +530,9 @@ int main() {
 
 ### Time out slow requests
 
-A per-route timeout answers `408 Request Timeout` and closes the connection (HTTP/1.1) or resets the stream (HTTP/2) when the handler takes too long. The work function keeps running until it returns, and can still read the request and its body (its result is then discarded, the coroutine not being resumed): pair the route timeout with a timeout in the blocking call itself, so that threads do not pile up behind a stuck backend.
+A per-route timeout answers `408 Request Timeout` and closes the connection (HTTP/1.1) or ends the stream (HTTP/2) when the handler takes too long. The work function keeps running until it returns, and can still read the request and its body (its result is then discarded, the coroutine not being resumed): pair the route timeout with a timeout in the blocking call itself, so that threads do not pile up behind a stuck backend.
 
-Over HTTP/2, when the output of the connection already holds `maxOutboundBufferBytes` (a client that stopped reading), the `408` does not fit: like any response in that case, it is replaced by `503 Service Unavailable`, then the stream is reset.
+Over HTTP/2, when the output of the connection already holds `maxOutboundBufferBytes` (a client that stopped reading), the `408` does not fit: like any response in that case, it is replaced by `503 Service Unavailable`, which ends the stream as well.
 
 Tests: `TimedOutHandlerIsAbandonedWhileItsClientStaysConnected`, `BodyOfTimedOutHandlerStaysValidForItsDeferredWork` and `TimeoutWhileWaitingForBodyReleasesTheCoroutine` in [http-async_test.cpp](../../tests/http-async_test.cpp), `SweepAsyncTimeoutAtPendingOutputLimitSends503` in [http2-protocol-handler_test.cpp](../../aeronet/server/test/http2-protocol-handler_test.cpp).
 

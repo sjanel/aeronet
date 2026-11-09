@@ -760,6 +760,7 @@ void DecodedHeaders::clear() noexcept {
   std::ranges::fill(pseudoHeaders, std::string_view());
   namesAndValuesSize = 0;
   pseudoHeadersMask = 0;
+  hasConnectionSpecificField = false;
 }
 
 HpackDecoder::HpackDecoder(uint32_t maxDynamicTableSize, uint32_t maxHeaderListSize,
@@ -1088,9 +1089,13 @@ HpackDecoder::DecodeResult::Error HpackDecoder::storeHeader(std::string_view nam
     return DecodeResult::Error::MalformedFieldValue;
   }
 
-  // A handler forwarding such a request to an HTTP/1.1 backend would open a request smuggling path (transfer-encoding).
-  if (_messages == Messages::Requests && http::IsConnectionSpecificField(name, value)) [[unlikely]] {
-    return DecodeResult::Error::ConnectionSpecificField;
+  if (http::IsConnectionSpecificField(name, value)) [[unlikely]] {
+    // A handler forwarding such a request to an HTTP/1.1 backend would open a request smuggling path
+    // (transfer-encoding).
+    if (_messages == Messages::Requests) {
+      return DecodeResult::Error::ConnectionSpecificField;
+    }
+    _decodedHeaders.hasConnectionSpecificField = true;
   }
 
   const bool isContentEncoding = name == http::ContentEncoding;

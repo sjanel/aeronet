@@ -119,8 +119,9 @@ class Http2Connection {
     return _state == ConnectionState::Open || (!_isServer && _state == ConnectionState::AwaitingSettings);
   }
 
-  /// Whether this endpoint sent a GOAWAY (see initiateGoAway()) and all the streams it still served are closed: the
-  /// connection has nothing left to do once its output is written.
+  /// Whether a GOAWAY was sent (see initiateGoAway()) or received, and no stream is open: the connection has nothing
+  /// left to do once its output is written. A GOAWAY of the client does not forbid it to open more streams (RFC 9113
+  /// §6.8): one arriving while another is open is served, later ones are lost with the connection.
   [[nodiscard]] bool goAwayCompleted() const noexcept {
     return (_state == ConnectionState::GoAwaySent || _state == ConnectionState::GoAwayReceived) &&
            _activeStreamCount == 0;
@@ -230,6 +231,8 @@ class Http2Connection {
   /// @param statusCode HTTP status code (for responses). Can be 0 to avoid sending a pseudo-header.
   /// @param headers Headers to send
   /// @param endStream True to set END_STREAM flag
+  /// @param pGlobalHeaders Headers to send unless present in `headers`. They must not hold any connection-specific
+  ///                       field (see HttpServerConfig::http2GlobalHeaders()).
   /// @return ErrorCode if the operation failed, NoError otherwise
   [[nodiscard]] ErrorCode sendHeaders(uint32_t streamId, http::StatusCode statusCode, HeadersView headersView,
                                       bool endStream, const ConcatenatedHeaders* pGlobalHeaders = nullptr);
@@ -462,8 +465,12 @@ class Http2Connection {
   // HPACK
   // ============================
 
-  void encodeHeaders(uint32_t streamId, http::StatusCode statusCode, HeadersView headersView, bool endStream,
-                     std::size_t oldSize, const ConcatenatedHeaders* pGlobalHeaders, uint64_t headerListSize);
+  // Reserve the output of a header block, and return the position of the block, after the room of its frame header.
+  [[nodiscard]] std::size_t beginHeaderBlock(std::size_t plainHeadersSize, std::size_t pseudoHeadersReserve);
+
+  // Frame the header block written in the output from 'blockPos' (see beginHeaderBlock()): one HEADERS frame, followed
+  // by CONTINUATION frames when it is larger than the maximum frame size of the peer.
+  void finishHeaderBlock(uint32_t streamId, bool endStream, std::size_t blockPos, uint64_t headerListSize);
 
   /// Decode an HPACK header block and deliver decoded headers via `setOnHeadersDecoded`.
   /// Returns `CompressionError` for invalid HPACK and `ProtocolError` for malformed fields.

@@ -932,13 +932,24 @@ TEST(HpackDecoder, ConnectionSpecificRequestFieldsAreRejectedFromTheTables) {
   EXPECT_EQ(decoder.decode(AsBytes(reference)).error, HpackDecoder::DecodeResult::Error::ConnectionSpecificField);
 }
 
-TEST(HpackDecoder, ConnectionSpecificFieldsOfResponsesAreNotRejected) {
+// The client reports such a response as malformed: the decoder only tells it, for the block that holds the field.
+TEST(HpackDecoder, ConnectionSpecificFieldsOfResponsesAreRecorded) {
   for (std::string_view name : {"connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te"}) {
     HpackDecoder decoder(4096, std::numeric_limits<uint32_t>::max(), true, HpackDecoder::Messages::Responses);
-    const RawBytes encoded = EncodeLiteralField(name, "value");
 
-    EXPECT_TRUE(decoder.decode(encoded).isSuccess()) << name;
+    const auto result = decoder.decode(EncodeLiteralField(name, "value"));
+
+    ASSERT_TRUE(result.isSuccess()) << name;
+    EXPECT_TRUE(result.decodedHeaders.hasConnectionSpecificField) << name;
+
+    const auto nextResult = decoder.decode(EncodeLiteralField("x-field", "value"));
+
+    ASSERT_TRUE(nextResult.isSuccess()) << name;
+    EXPECT_FALSE(nextResult.decodedHeaders.hasConnectionSpecificField) << name;
   }
+
+  HpackDecoder decoder(4096, std::numeric_limits<uint32_t>::max(), true, HpackDecoder::Messages::Responses);
+  EXPECT_FALSE(decoder.decode(EncodeLiteralField("te", "trailers")).decodedHeaders.hasConnectionSpecificField);
 }
 
 TEST(HpackDecoder, DuplicateWithEmptyValueAddsNoSeparator) {
