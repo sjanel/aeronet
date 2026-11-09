@@ -21,15 +21,17 @@ class EventSink {
 
   /// A header block was decoded on a stream. The sink may take its headers over (see DecodedHeaders): they are only
   /// valid until the next header block is decoded otherwise.
-  virtual void onHeadersDecoded([[maybe_unused]] uint32_t streamId, [[maybe_unused]] DecodedHeaders& decodedHeaders,
-                                bool /*endStream*/) = 0;
-  virtual void onData([[maybe_unused]] uint32_t streamId, [[maybe_unused]] std::span<const std::byte> data,
-                      [[maybe_unused]] bool endStream) = 0;
-  virtual void onStreamReset([[maybe_unused]] uint32_t streamId, [[maybe_unused]] ErrorCode errorCode) = 0;
-  virtual void onStreamClosed([[maybe_unused]] uint32_t streamId) = 0;
-  virtual void onGoAway([[maybe_unused]] uint32_t lastStreamId, [[maybe_unused]] ErrorCode errorCode,
-                        [[maybe_unused]] std::string_view debugData) = 0;
-  virtual void onWindowUpdate([[maybe_unused]] uint32_t streamId, [[maybe_unused]] uint32_t increment) = 0;
+  virtual void onHeadersDecoded(uint32_t streamId, DecodedHeaders& decodedHeaders, bool endStream) = 0;
+
+  virtual void onData(uint32_t streamId, std::span<const std::byte> data, bool endStream) = 0;
+
+  virtual void onStreamReset(uint32_t streamId, ErrorCode errorCode) = 0;
+
+  virtual void onStreamClosed(uint32_t streamId) = 0;
+
+  virtual void onGoAway(uint32_t lastStreamId, ErrorCode errorCode, std::string_view debugData) = 0;
+
+  virtual void onWindowUpdate(uint32_t streamId, uint32_t increment) = 0;
 };
 
 }  // namespace aeronet::http2

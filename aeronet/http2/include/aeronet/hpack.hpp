@@ -140,6 +140,8 @@ struct DecodedHeaders {
   // Total size of the names and values of the fields as received (duplicates not merged), pseudo-headers included.
   std::size_t namesAndValuesSize{0};
   uint8_t pseudoHeadersMask{0};
+  // Whether the block of a response holds a connection-specific field (RFC 9113 §8.2.2).
+  bool hasConnectionSpecificField{false};
 };
 
 /// HPACK decoder for decompressing HTTP/2 header blocks (RFC 7541).
@@ -157,6 +159,9 @@ class HpackDecoder {
   /// plus 32 bytes per field, RFC 7541 §4.1) are not stored: its decoding fails with HeaderListTooLarge, without taking
   /// more memory than this limit, whatever the number of references to the dynamic table in its block.
   /// The repeated set-cookie fields of Messages::Responses are joined with DecodedHeaders::kSetCookieSeparator.
+  /// A connection-specific field (RFC 9113 §8.2.2) fails the decoding of Messages::Requests with
+  /// ConnectionSpecificField. In Messages::Responses, it sets DecodedHeaders::hasConnectionSpecificField: the client
+  /// reports the response as malformed itself, the failure of a stream being its own to tell.
   HpackDecoder(uint32_t maxDynamicTableSize, uint32_t maxHeaderListSize, bool mergeAllowedForUnknownRequestHeaders,
                Messages messages = Messages::Requests) noexcept;
 
@@ -172,6 +177,7 @@ class HpackDecoder {
       MalformedFieldName,
       MalformedFieldValue,
       DuplicateHeaderForbiddenToMerge,
+      ConnectionSpecificField,
       HeaderListTooLarge,
 
       // Compression errors (RFC 7541 §6.1, §6.2, §6.3)
@@ -311,8 +317,9 @@ class HpackEncoder {
   /// Encode a dynamic table size update.
   void encodeDynamicTableSizeUpdate(RawBytes& output, uint32_t newSize);
 
-  /// Set the maximum dynamic table size (at most the SETTINGS_HEADER_TABLE_SIZE of the peer for HTTP/2), signaled by a
-  /// Dynamic Table Size Update at the beginning of the next header block, unless it does not change.
+  /// Set the maximum dynamic table size (at most the SETTINGS_HEADER_TABLE_SIZE of the peer for HTTP/2), signaled by
+  /// Dynamic Table Size Updates at the beginning of the next header block, unless it does not change: the smallest size
+  /// set since the previous block if it differs from the last one (RFC 7541 §4.2), then the last one.
   void setMaxDynamicTableSize(uint32_t maxSize);
 
   /// Get the current dynamic table for inspection.
@@ -323,6 +330,12 @@ class HpackEncoder {
 
  private:
   friend struct HpackEncoderTestAccess;
+
+  static constexpr uint32_t kNoPendingTableSize = ~0U;
+
+  [[nodiscard]] bool hasPendingTableSizeUpdate() const noexcept {
+    return _smallestPendingTableSize <= _lastPendingTableSize;
+  }
 
   void addToDynamicIndex(std::string_view name, std::string_view value);
   [[nodiscard]] static std::size_t dynamicFullHash(std::size_t nameHash, std::string_view value) noexcept;
@@ -336,8 +349,10 @@ class HpackEncoder {
 
   HpackDynamicTable _dynamicTable;
   flat_hash_map<std::size_t, uint64_t> _dynamicIndex;
-  uint32_t _pendingTableSizeUpdate{};
-  bool _hasPendingTableSizeUpdate{false};
+  // The table sizes set since the previous header block. Any size being possible, none is pending while the smallest
+  // one is above the last one: encode() resets both, to kNoPendingTableSize and 0, once they are signaled.
+  uint32_t _smallestPendingTableSize{kNoPendingTableSize};
+  uint32_t _lastPendingTableSize{0};
   uint64_t _newestDynamicSerial{0U};
 };
 

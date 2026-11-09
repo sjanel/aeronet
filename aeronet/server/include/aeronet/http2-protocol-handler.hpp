@@ -306,11 +306,16 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   void setupCallbacks() { _connection.setEventSink(this); }
 
   void onHeadersDecoded(uint32_t streamId, DecodedHeaders& decodedHeaders, bool endStream) override;
+
   void onData(uint32_t streamId, std::span<const std::byte> data, bool endStream) override;
+
   void onStreamReset([[maybe_unused]] uint32_t streamId, [[maybe_unused]] ErrorCode errorCode) override {}
+
   void onStreamClosed(uint32_t streamId) override;
+
   void onGoAway([[maybe_unused]] uint32_t lastStreamId, [[maybe_unused]] ErrorCode errorCode,
                 [[maybe_unused]] std::string_view debugData) override {}
+
   void onWindowUpdate(uint32_t streamId, [[maybe_unused]] uint32_t increment) override;
 
   /// Send a graceful GOAWAY (NO_ERROR), for a drain of the server: the client opens its next streams on another
@@ -372,6 +377,11 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   /// Release request state after a response, retaining it only while deferred output remains.
   void releaseStreamAfterResponse(StreamsMap::iterator it);
 
+  /// Erase the state of a stream whose response is sent whole, and close the stream: a client still sending its request
+  /// is asked to stop with RST_STREAM(NO_ERROR) (RFC 9113 §8.1).
+  /// @return The iterator following the erased entry
+  StreamsMap::iterator closeAnsweredStream(StreamsMap::iterator it);
+
   /// Call the streaming handler of the route of the request of a stream.
   void handleStreamingRequest(StreamsMap::iterator it, const Router::RoutingResult& routingResult);
 
@@ -380,7 +390,7 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
 
   /// Answer the request of a stream with its redirect to https (see HttpServerConfig::httpsRedirect), before its body
   /// is received: the stream is then reset (NO_ERROR) if the client did not end it.
-  void answerHttpsRedirect(StreamsMap::iterator it, bool endStream);
+  void answerHttpsRedirect(StreamsMap::iterator it);
 
   /// Apply the CORS policy of the route to the response to the request of a stream, finalize and send it, then release
   /// the stream.
@@ -396,7 +406,10 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   void onRequestCompleted(HttpRequestView& request, http::StatusCode status);
 
   /// Send an HTTP response on a stream.
-  ErrorCode sendResponse(uint32_t streamId, HttpResponse response, bool isHeadMethod);
+  ErrorCode sendResponse(HttpRequestView& request, HttpResponse&& response);
+
+  /// Send a response built in memory by the server, which cannot fail (only reading a file payload can).
+  void sendInMemoryResponse(HttpRequestView& request, HttpResponse&& response);
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   /// Start an async handler for a stream. Its response is already sent if it completed synchronously, otherwise it will
@@ -419,7 +432,7 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   Http2Connection _connection;
 
   /// Requests of closed streams, reused by the next ones (see recycleRequest()).
-  vector<StreamRequestPtr> _recycledRequests;
+  vector<StreamRequestPtr> _recycledRequests;  // TODO: StreamRequestPtr could be trivially relocatable
 
   /// Pool for PendingWork allocations (avoids repeated heap alloc/free cycles).
   ObjectPool<PendingWork> _pendingWorkPool;

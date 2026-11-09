@@ -7,6 +7,7 @@ namespace aeronet::http2 {
 enum class ErrorMsg : uint8_t {
   NoError,
   InvalidConnectionPreface,
+  ExpectedSETTINGSFrame,
   FrameExceedsMaximumSize,
   ExpectedCONTINUATIONFrame,
   UnexpectedPUSH_PROMISE,

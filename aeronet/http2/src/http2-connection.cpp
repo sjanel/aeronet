@@ -28,6 +28,7 @@
 #include "aeronet/metric-label.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/reserved-headers.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/vector.hpp"
@@ -229,7 +230,9 @@ Http2Connection::Http2Connection(const Http2Config& config, bool isServer, traci
                     config.mergeUnknownRequestHeaders,
                     isServer ? HpackDecoder::Messages::Requests : HpackDecoder::Messages::Responses),
       _pTelemetryContext(telemetryContext != nullptr && telemetryContext->enabled() ? telemetryContext : nullptr),
-      _isServer(isServer) {}
+      _isServer(isServer) {
+  assert(config.connectionWindowSize >= kDefaultInitialWindowSize);  // checked by Http2Config::validate()
+}
 
 void Http2Connection::recordFrame(bool sent, FrameType type, uint64_t payloadBytes, uint64_t count) const noexcept {
   if (_pTelemetryContext == nullptr) {
@@ -303,6 +306,13 @@ bool Http2Connection::priorityDepthExceeded(uint32_t id) const noexcept {
   return false;
 }
 
+void Http2Connection::recordPriority(Http2Stream& stream, uint32_t streamDependency, uint8_t weightMinusOne,
+                                     bool exclusive) const noexcept {
+  if (_localSettings.enablePriority) {
+    stream.setPriority(priorityDepthExceeded(streamDependency) ? 0U : streamDependency, weightMinusOne, exclusive);
+  }
+}
+
 // ============================
 // Connection lifecycle
 // ============================
@@ -318,6 +328,15 @@ Http2Connection::ProcessResult Http2Connection::processInput(std::span<const std
       return processPreface(data);
 
     case ConnectionState::AwaitingSettings:
+      // The connection preface of the peer goes on with a SETTINGS frame, before any other one (RFC 9113 §3.4). A
+      // GOAWAY of this endpoint (a drain) leaves this state: the connection then has no stream to serve and closes at
+      // once.
+      if (data.size() >= FrameHeader::kSize) {
+        const FrameHeader header = ParseFrameHeader(data);
+        if (header.type() != FrameType::Settings || header.hasFlag(FrameFlags::SettingsAck)) [[unlikely]] {
+          return connectionError(ErrorCode::ProtocolError, ErrorMsg::ExpectedSETTINGSFrame);
+        }
+      }
       [[fallthrough]];
     case ConnectionState::Open:
       [[fallthrough]];
@@ -447,9 +466,13 @@ void Http2Connection::initiateGoAway(ErrorCode errorCode, ErrorMsg msg) {
     return;
   }
 
+  writeGoAway(errorCode, msg);
+  _state = ConnectionState::GoAwaySent;
+}
+
+void Http2Connection::writeGoAway(ErrorCode errorCode, ErrorMsg msg) {
   WriteGoAwayFrame(_outputBuffer, _lastPeerStreamId, errorCode, msg);
   recordFrame(true, FrameType::GoAway, 8U + ConvertProcessResultErrorMsgToSv(msg).size());
-  _state = ConnectionState::GoAwaySent;
 }
 
 Http2Connection::ProcessResult Http2Connection::checkTimeouts(std::chrono::steady_clock::time_point now,
@@ -524,7 +547,7 @@ void Http2Connection::closeStream(StreamsMap::iterator it, ErrorCode errorCode) 
     return;
   }
 
-  const auto streamId = it->first;
+  const uint32_t streamId = it->first;
 
   log::debug("Stream {} is now closed with error code {}", streamId, static_cast<uint32_t>(errorCode));
   if (errorCode != ErrorCode::NoError) {
@@ -565,7 +588,7 @@ void Http2Connection::pruneClosedStreams() {
 
 ErrorCode Http2Connection::prepareSendHeaders(uint32_t streamId, bool endStream) {
   auto [it, inserted] =
-      _streams.try_emplace(streamId, streamId, _peerSettings.initialWindowSize, _localSettings.initialWindowSize);
+      _streams.try_emplace(streamId, streamId, _peerSettings.initialWindowSize, newStreamRecvWindow(streamId));
   if (inserted) {
     // Created new stream
     if (!canCreateStreams()) {
@@ -586,13 +609,20 @@ ErrorCode Http2Connection::prepareSendHeaders(uint32_t streamId, bool endStream)
 }
 
 namespace {
-std::size_t EstimateHpackSize(std::size_t headersViewSize, const ConcatenatedHeaders* pGlobalHeaders,
-                              uint8_t pseudoHeaderReserve) {
-  const std::size_t plainHeadersSize =
-      headersViewSize + (pGlobalHeaders != nullptr
-                             ? (pGlobalHeaders->fullSizeWithLastSep() - http::HeaderSep.size() - http::CRLF.size())
-                             : 0);
-  return FrameHeader::kSize + pseudoHeaderReserve + ((plainHeadersSize * 2) / 3);
+// Encode a regular field of a message and return its size in the header list. A connection-specific field, which may
+// be set on a message for HTTP/1.1, is dropped: it would make an HTTP/2 message malformed (RFC 9113 §8.2.2).
+uint64_t EncodeRegularField(HpackEncoder& encoder, RawBytes& output, std::string_view name, std::string_view value) {
+  // All header names should be normalized to lower-case at this step.
+  assert(std::ranges::all_of(name, [](char ch) { return ch < 'A' || ch > 'Z'; }));
+
+  // RFC 9113 §8.2.1: an HTTP/2 field value must not carry leading/trailing OWS (unlike HTTP/1.1, where it is
+  // tolerated). HttpMessage / HttpResponse guarantees that values are always trimmed.
+  assert(value == TrimOws(value));
+
+  if (http::IsConnectionSpecificField(name, value)) [[unlikely]] {
+    return 0;
+  }
+  return encoder.encode(output, name, value, HpackEncoder::IndexingModeOf(name, value));
 }
 }  // namespace
 
@@ -604,13 +634,7 @@ ErrorCode Http2Connection::sendRequestHeaders(uint32_t streamId, http::Method me
     return err;
   }
 
-  _outputBuffer.ensureAvailableCapacityExponential(
-      EstimateHpackSize(headersView.size() + cookies.size(), nullptr, 24UL));
-
-  // Make the header block be written after the frame header
-  _outputBuffer.addSize(FrameHeader::kSize);
-
-  const auto oldSize = _outputBuffer.size();
+  const std::size_t blockPos = beginHeaderBlock(headersView.size() + cookies.size(), 24UL);
 
   uint64_t headerListSize = 0;
   if (!target.empty()) {
@@ -635,11 +659,16 @@ ErrorCode Http2Connection::sendRequestHeaders(uint32_t streamId, http::Method me
                                                      : cookies.substr(separatorPos + http::CookiePairSep.size());
   }
 
-  // Encode headers
-  encodeHeaders(streamId, target.empty() ? http::StatusCode{} : http::MagicForHttpRequest, headersView, endStream,
-                oldSize, nullptr, headerListSize);
+  // The Host header is sent as :authority.
+  for (const auto [name, value] : headersView) {
+    if (name != http::Host) {
+      headerListSize += EncodeRegularField(_hpackEncoder, _outputBuffer, name, value);
+    }
+  }
 
-  return err;
+  finishHeaderBlock(streamId, endStream, blockPos, headerListSize);
+
+  return ErrorCode::NoError;
 }
 
 ErrorCode Http2Connection::sendHeaders(uint32_t streamId, http::StatusCode statusCode, HeadersView headersView,
@@ -649,16 +678,45 @@ ErrorCode Http2Connection::sendHeaders(uint32_t streamId, http::StatusCode statu
     return err;
   }
 
-  _outputBuffer.ensureAvailableCapacityExponential(EstimateHpackSize(headersView.size(), pGlobalHeaders, 4UL));
+  const std::size_t blockPos = beginHeaderBlock(
+      headersView.size() + (pGlobalHeaders != nullptr ? pGlobalHeaders->fullSizeWithLastSep() : 0), 4UL);
 
-  // Make the header block be written after the frame header
-  _outputBuffer.addSize(FrameHeader::kSize);
-  const auto oldSize = _outputBuffer.size();
+  assert(statusCode == 0 || (statusCode >= 100 && statusCode <= 999));
 
-  // Encode headers
-  encodeHeaders(streamId, statusCode, headersView, endStream, oldSize, pGlobalHeaders, 0);
+  uint64_t headerListSize = 0;
+  if (statusCode >= 100) {
+    // Encode :status pseudo-header first if present
+    char statusBuf[3];
+    writeStatusCode(statusBuf, statusCode);
+    const std::string_view statusStr(statusBuf, sizeof(statusBuf));
+    headerListSize += _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderStatus, statusStr);
+  }
 
-  return err;
+  for (const auto [name, value] : headersView) {
+    headerListSize += EncodeRegularField(_hpackEncoder, _outputBuffer, name, value);
+  }
+
+  if (pGlobalHeaders != nullptr) {
+    for (const auto [headerName, headerValue] : HeadersView(pGlobalHeaders->fullStringWithLastSep())) {
+      // Global header names should have been validated in the config.
+      assert(std::ranges::all_of(headerName, [](char ch) { return ch < 'A' || ch > 'Z'; }));
+      assert(!http::IsConnectionSpecificField(headerName, headerValue));
+      // Skip if already present in request-specific headers. We can use case sensitive search because global headers
+      // are already lower-cased in the config, and request-specific headers are lower-cased above.
+      std::string_view headerNameWithColon(headerName.data(), headerName.size() + http::HeaderSep.size());
+      if (headersView.containsCaseSensitive(headerNameWithColon)) {
+        continue;
+      }
+
+      // The same in each response: always indexed.
+      assert(headerValue == TrimOws(headerValue));
+      headerListSize += _hpackEncoder.encode(_outputBuffer, headerName, headerValue);
+    }
+  }
+
+  finishHeaderBlock(streamId, endStream, blockPos, headerListSize);
+
+  return ErrorCode::NoError;
 }
 
 ErrorCode Http2Connection::prepareSendData(uint32_t streamId, std::size_t dataSize, bool endStream) {
@@ -759,6 +817,13 @@ void Http2Connection::sendRstStream(uint32_t streamId, ErrorCode errorCode) {
   }
 }
 
+void Http2Connection::resetMalformedStream(uint32_t streamId) {
+  if (_pTelemetryContext != nullptr) {
+    _pTelemetryContext->counterAdd("aeronet.http2.streams.rejected_malformed");
+  }
+  sendRstStream(streamId, ErrorCode::ProtocolError);
+}
+
 void Http2Connection::holdStreamRecvWindow(uint32_t streamId) noexcept {
   Http2Stream* pStream = getStream(streamId);
   if (pStream != nullptr) {
@@ -772,21 +837,58 @@ void Http2Connection::releaseStreamRecvWindow(uint32_t streamId) {
     return;
   }
   pStream->holdRecvWindow(false);
-  // Same threshold as the replenishment on reception (handleDataFrame()): above it, the next DATA frame replenishes it.
-  const int32_t initialStreamWindow = static_cast<int32_t>(_localSettings.initialWindowSize);
-  if (pStream->canReceive() && pStream->recvWindow() <= ReplenishThreshold(_localSettings.initialWindowSize)) {
-    sendWindowUpdate(streamId, static_cast<uint32_t>(initialStreamWindow - pStream->recvWindow()));
+  replenishStreamRecvWindow(*pStream);  // above the threshold, the next DATA frame replenishes it
+}
+
+void Http2Connection::replenishStreamRecvWindow(Http2Stream& stream) {
+  const uint32_t windowSize = _localSettings.initialWindowSize;
+  if (stream.canReceive() && stream.recvWindow() <= ReplenishThreshold(windowSize)) {
+    sendWindowUpdate(stream.id(), static_cast<uint32_t>(static_cast<int32_t>(windowSize) - stream.recvWindow()));
   }
 }
 
-void Http2Connection::finalizeSendClosedStream(uint32_t streamId) {
-  const auto it = _streams.find(streamId);
-  if (it != _streams.end() && it->second.isClosed()) {
-    closeStream(it);
+uint32_t Http2Connection::newStreamRecvWindow(uint32_t streamId) const noexcept {
+  // Until it receives our SETTINGS, the peer may use the default window (RFC 9113 §6.9.3) on the streams it opens. A
+  // larger window accepts it from the start, whereas a smaller one has to wait for the acknowledgement of the SETTINGS.
+  // The streams we open follow our SETTINGS on the wire: the peer has applied them when it sees these streams.
+  return _settingsAcked || !isPeerStream(streamId)
+             ? _localSettings.initialWindowSize
+             : std::max(_localSettings.initialWindowSize, kDefaultInitialWindowSize);
+}
+
+void Http2Connection::applyAcknowledgedSettings() {
+  if (_settingsAcked) {
+    return;
   }
+  _settingsAcked = true;
+
+  if (_localSettings.initialWindowSize < kDefaultInitialWindowSize) {
+    const uint32_t reduction = kDefaultInitialWindowSize - _localSettings.initialWindowSize;
+    for (auto& [id, stream] : _streams) {
+      if (!isPeerStream(id)) {
+        continue;  // Started from the configured window (see newStreamRecvWindow())
+      }
+      // As the peer did on receiving the SETTINGS (RFC 9113 §6.9.2). The window of a stream it already sent more than
+      // the new size on is negative: without credit from us, it could not send anything anymore.
+      stream.reduceRecvWindow(reduction);
+      if (!stream.recvWindowHeld()) {
+        replenishStreamRecvWindow(stream);
+      }
+    }
+  }
+}
+
+bool Http2Connection::finalizeSendClosedStream(uint32_t streamId) {
+  const auto it = _streams.find(streamId);
+  if (it == _streams.end() || !it->second.isClosed()) {
+    return false;
+  }
+  closeStream(it);
+  return true;
 }
 
 void Http2Connection::sendWindowUpdate(uint32_t streamId, uint32_t increment) {
+  assert(increment != 0);  // a PROTOCOL_ERROR for the peer (RFC 9113 §6.9)
   WriteWindowUpdateFrame(_outputBuffer, streamId, increment);
   recordFrame(true, FrameType::WindowUpdate, sizeof(uint32_t));
 
@@ -970,6 +1072,7 @@ Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader head
   }
 
   if (!it->second.consumeRecvWindow(static_cast<uint32_t>(payloadSize))) {
+    replenishConnectionRecvWindow();  // The discarded frame still consumed connection-level credit.
     return streamError(streamId, ErrorCode::FlowControlError, ErrorMsg::StreamFlowControlExceeded);
   }
 
@@ -992,10 +1095,8 @@ Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader head
     // that the callback reset, but connection-level credit is retained for later streams on the same connection.
     if (payloadSize > 0) {
       Http2Stream& stream = it->second;
-      const int32_t initialStreamWindow = static_cast<int32_t>(_localSettings.initialWindowSize);
-      if (!endStream && !stream.recvWindowHeld() && stream.canReceive() &&
-          stream.recvWindow() <= ReplenishThreshold(_localSettings.initialWindowSize)) {
-        sendWindowUpdate(streamId, static_cast<uint32_t>(initialStreamWindow - stream.recvWindow()));
+      if (!endStream && !stream.recvWindowHeld()) {
+        replenishStreamRecvWindow(stream);
       }
 
       replenishConnectionRecvWindow();
@@ -1030,15 +1131,12 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
     if (parseResult == FrameParseResult::InvalidPadding) {
       return connectionError(ErrorCode::ProtocolError, ErrorMsg::InvalidPaddingInHEADERSFrame);
     }
-    if (parseResult == FrameParseResult::InvalidDependency) {
-      return streamError(streamId, ErrorCode::ProtocolError, ErrorMsg::StreamDependsOnItself);
-    }
     return connectionError(ErrorCode::FrameSizeError, ErrorMsg::InvalidHEADERSFrame);
   }
 
   // Get or create stream
   auto [it, inserted] =
-      _streams.try_emplace(streamId, streamId, _peerSettings.initialWindowSize, _localSettings.initialWindowSize);
+      _streams.try_emplace(streamId, streamId, _peerSettings.initialWindowSize, newStreamRecvWindow(streamId));
   if (inserted) {
     // Only a client opens streams with HEADERS (a server would push them, which is disabled), with odd and increasing
     // ids, and not after the GOAWAY of this endpoint.
@@ -1071,8 +1169,15 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
 
   // Handle priority if present
   if (header.hasFlag(FrameFlags::HeadersPriority)) {
-    const uint32_t effectiveDependency = priorityDepthExceeded(streamDependency) ? 0U : streamDependency;
-    it->second.setPriority(effectiveDependency, frame.weightMinusOne, frame.exclusive);
+    if (streamDependency != streamId) [[likely]] {
+      recordPriority(it->second, streamDependency, frame.weightMinusOne, frame.exclusive);
+    } else if (!it->second.isClosed()) {
+      // A stream cannot depend on itself: a stream error (RFC 7540 §5.3.1), on the stream that this frame opened if
+      // needed, a RST_STREAM being forbidden on an idle one (RFC 9113 §6.4). As for a refused stream, its field block
+      // is decoded below, which keeps the HPACK dynamic table in sync (§4.3).
+      sendRstStream(streamId, ErrorCode::ProtocolError);
+      assert(it == _streams.find(streamId));
+    }
   }
 
   const std::span<const std::byte> headerBlockFragment = frame.headerBlockFragment();
@@ -1133,16 +1238,22 @@ Http2Connection::ProcessResult Http2Connection::handlePriorityFrame(FrameHeader 
   }
 
   PriorityFrame frame = ParsePriorityFrame(payload);
-
-  if (frame.streamDependency == streamId) {
-    return streamError(streamId, ErrorCode::ProtocolError, ErrorMsg::StreamDependsOnItself);
-  }
+  const bool selfDependent = frame.streamDependency == streamId;
 
   Http2Stream* pStream = getStream(streamId);
   if (pStream != nullptr) {
-    const uint32_t effectiveDependency = priorityDepthExceeded(frame.streamDependency) ? 0U : frame.streamDependency;
-    pStream->setPriority(effectiveDependency, frame.weightMinusOne, frame.exclusive);
+    if (!selfDependent) {
+      recordPriority(*pStream, frame.streamDependency, frame.weightMinusOne, frame.exclusive);
+    } else if (!pStream->isClosed()) {
+      return streamError(streamId, ErrorCode::ProtocolError, ErrorMsg::StreamDependsOnItself);
+    }
   } else {
+    // A stream cannot depend on itself (RFC 7540 §5.3.1). RST_STREAM is forbidden on an idle stream (RFC 9113 §6.4),
+    // which a PRIORITY frame does not open (§6.3): this stream error can only be a connection error there (§5.4.1).
+    if (selfDependent && isIdleStream(streamId)) [[unlikely]] {
+      return connectionError(ErrorCode::ProtocolError, ErrorMsg::StreamDependsOnItself);
+    }
+
     // Security hardening: rate-limit PRIORITY frames on non-existent streams to
     // prevent a flood of cheap PRIORITY frames from starving real request processing.
     ++_idlePriorityFrameCount;
@@ -1200,11 +1311,10 @@ Http2Connection::ProcessResult Http2Connection::handleSettingsFrame(FrameHeader 
     if (!payload.empty()) {
       return connectionError(ErrorCode::FrameSizeError, ErrorMsg::InvalidSETTINGSFrame);
     }
-    if (_state == ConnectionState::AwaitingSettings) {
-      _state = ConnectionState::Open;
-    }
+    assert(_state != ConnectionState::AwaitingSettings);  // rejected as a first frame by processInput()
     _hpackDecoder.setMaxDynamicTableSize(_localSettings.headerTableSize);
     _settingsAckDeadline = {};
+    applyAcknowledgedSettings();
     return ProcessResult{ProcessResult::Action::Continue};
   }
 
@@ -1328,7 +1438,7 @@ Http2Connection::ProcessResult Http2Connection::handleGoAwayFrame(std::span<cons
     _pSink->onGoAway(frame.lastStreamId, frame.errorCode, debugData);
   }
 
-  return ProcessResult{ProcessResult::Action::GoAway};
+  return ProcessResult{ProcessResult::Action::GoAway, frame.errorCode, ErrorMsg::NoError};
 }
 
 Http2Connection::ProcessResult Http2Connection::handleWindowUpdateFrame(FrameHeader header,
@@ -1340,31 +1450,31 @@ Http2Connection::ProcessResult Http2Connection::handleWindowUpdateFrame(FrameHea
   }
 
   const uint32_t streamId = header.streamId();
-  if (frame.windowSizeIncrement == 0) {
-    if (streamId == 0) {
+  if (streamId == 0) {
+    if (frame.windowSizeIncrement == 0) {
       return connectionError(ErrorCode::ProtocolError, ErrorMsg::ZeroWINDOW_UPDATEIncrementOnConnection);
     }
-    return streamError(streamId, ErrorCode::ProtocolError, ErrorMsg::ZeroWINDOW_UPDATEIncrement);
-  }
-
-  if (streamId == 0) {
-    // Connection-level
     const int64_t newWindow = static_cast<int64_t>(_connectionSendWindow) + frame.windowSizeIncrement;
     if (std::cmp_greater(newWindow, kMaxWindowSize)) {
       return connectionError(ErrorCode::FlowControlError, ErrorMsg::ConnectionWindowOverflow);
     }
     _connectionSendWindow = static_cast<int32_t>(newWindow);
   } else {
-    // Stream-level
     Http2Stream* pStream = getStream(streamId);
-    if (pStream != nullptr) {
-      ErrorCode err = pStream->increaseSendWindow(frame.windowSizeIncrement);
-      if (err != ErrorCode::NoError) {
-        return streamError(streamId, err, ErrorMsg::StreamWindowOverflow);
+    if (pStream == nullptr || pStream->isClosed()) [[unlikely]] {
+      // RFC 9113 §5.1, whatever its increment: a connection error on an idle stream, ignored on a closed one, on which
+      // no frame can be sent to report an invalid increment.
+      if (pStream == nullptr && isIdleStream(streamId)) {
+        return connectionError(ErrorCode::ProtocolError, ErrorMsg::WINDOW_UPDATEOnIdleStream);
       }
-    } else if (isIdleStream(streamId)) [[unlikely]] {
-      // RFC 9113 §5.1: WINDOW_UPDATE on an idle stream is a connection error. On a closed stream, it is ignored.
-      return connectionError(ErrorCode::ProtocolError, ErrorMsg::WINDOW_UPDATEOnIdleStream);
+      return ProcessResult{ProcessResult::Action::Continue};
+    }
+    if (frame.windowSizeIncrement == 0) {
+      return streamError(streamId, ErrorCode::ProtocolError, ErrorMsg::ZeroWINDOW_UPDATEIncrement);
+    }
+    const ErrorCode err = pStream->increaseSendWindow(frame.windowSizeIncrement);
+    if (err != ErrorCode::NoError) {
+      return streamError(streamId, err, ErrorMsg::StreamWindowOverflow);
     }
   }
 
@@ -1419,60 +1529,18 @@ Http2Connection::ProcessResult Http2Connection::handleContinuationFrame(FrameHea
 // HPACK
 // ============================
 
-void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCode, HeadersView headersView,
-                                    bool endStream, std::size_t oldSize, const ConcatenatedHeaders* pGlobalHeaders,
-                                    uint64_t headerListSize) {
-  assert(statusCode == 0 || statusCode == http::MagicForHttpRequest || (statusCode >= 100 && statusCode <= 999));
+std::size_t Http2Connection::beginHeaderBlock(std::size_t plainHeadersSize, std::size_t pseudoHeadersReserve) {
+  _outputBuffer.ensureAvailableCapacityExponential(FrameHeader::kSize + pseudoHeadersReserve +
+                                                   ((plainHeadersSize * 2) / 3));
+  // The frame header needs the size of the block: it is written last, before it (see finishHeaderBlock()).
+  _outputBuffer.addSize(FrameHeader::kSize);
+  return _outputBuffer.size();
+}
 
-  auto headersFirst = headersView.begin();
-  auto headersLast = headersView.end();
-
-  if (statusCode == http::MagicForHttpRequest) {
-    // For requests, skip the Host header (we use :authority instead)
-    assert(headersFirst != headersLast && (*headersFirst).name == http::Host);
-    ++headersFirst;
-  } else if (statusCode >= 100) {
-    // Encode :status pseudo-header first if present
-    char statusBuf[3];
-    writeStatusCode(statusBuf, statusCode);
-    const std::string_view statusStr(statusBuf, sizeof(statusBuf));
-    headerListSize += _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderStatus, statusStr);
-  }
-
-  for (; headersFirst != headersLast; ++headersFirst) {
-    const auto [name, value] = *headersFirst;
-
-    // All header names should be normalized to lower-case at this step.
-    assert(std::ranges::all_of(name, [](char ch) { return ch < 'A' || ch > 'Z'; }));
-
-    // RFC 9113 §8.2.1: an HTTP/2 field value must not carry leading/trailing OWS (unlike HTTP/1.1, where it is
-    // tolerated). HttpMessage / HttpResponse guarantees that values are always trimmed.
-    assert(value == TrimOws(value));
-
-    headerListSize += _hpackEncoder.encode(_outputBuffer, name, value, HpackEncoder::IndexingModeOf(name, value));
-  }
-
-  if (pGlobalHeaders != nullptr) {
-    const std::string_view concatenatedGlobalHeaders = pGlobalHeaders->fullStringWithLastSep();
-    for (const auto [headerName, headerValue] : HeadersView(concatenatedGlobalHeaders)) {
-      // Global header names should have been validated in the config.
-      assert(std::ranges::all_of(headerName, [](char ch) { return ch < 'A' || ch > 'Z'; }));
-      // Skip if already present in request-specific headers. We can use case sensitive search because global headers
-      // are already lower-cased in the config, and request-specific headers are lower-cased above.
-      std::string_view headerNameWithColon(headerName.data(), headerName.size() + http::HeaderSep.size());
-      if (headersView.containsCaseSensitive(headerNameWithColon)) {
-        // Skip if already present in request-specific headers
-        continue;
-      }
-
-      // The same in each response: always indexed.
-      assert(headerValue == TrimOws(headerValue));
-      headerListSize += _hpackEncoder.encode(_outputBuffer, headerName, headerValue);
-    }
-  }
-
-  const uint32_t headerBlockSize = static_cast<uint32_t>(_outputBuffer.size() - oldSize);
-  const auto outputSizeBeforeHeaders = oldSize - FrameHeader::kSize;
+void Http2Connection::finishHeaderBlock(uint32_t streamId, bool endStream, std::size_t blockPos,
+                                        uint64_t headerListSize) {
+  const uint32_t headerBlockSize = static_cast<uint32_t>(_outputBuffer.size() - blockPos);
+  const auto outputSizeBeforeHeaders = blockPos - FrameHeader::kSize;
   recordHpack(true, headerBlockSize, headerListSize);
 
   // Check if we need to split into CONTINUATION frames
@@ -1492,7 +1560,7 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
   if (outputSizeBeforeHeaders == 0) {
     // Transfer the allocation intact and interleave frame headers with views over the
     // original HPACK bytes.
-    const std::span<const std::byte> headerBlock(_outputBuffer.data() + oldSize, headerBlockSize);
+    const std::span<const std::byte> headerBlock(_outputBuffer.data() + blockPos, headerBlockSize);
     HttpMessageData owner = OwnerOf(std::move(_outputBuffer));
     _outputBuffer = {};
     _outputWritePos = 0;
@@ -1500,7 +1568,7 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
   } else {
     // Keep the earlier frames of the output buffer ahead of this oversized header block, which is copied out of it (the
     // buffer may move as it grows). Oversized fields are rare.
-    RawBytes owner(std::span<const std::byte>(_outputBuffer.data() + oldSize, headerBlockSize));
+    RawBytes owner(std::span<const std::byte>(_outputBuffer.data() + blockPos, headerBlockSize));
     _outputBuffer.setSize(outputSizeBeforeHeaders);
     const std::span<const std::byte> headerBlock(owner.data(), owner.size());
     queueOutputBlock(OwnerOf(std::move(owner)), headerBlock, streamId, endStream, true);
@@ -1544,7 +1612,8 @@ Http2Connection::ProcessResult Http2Connection::processFieldBlock(StreamsMap::it
       return streamError(streamId, decodeErr, ErrorMsg::HeaderListTooLarge);
     }
     if (decodeErr == ErrorCode::ProtocolError) {
-      return streamError(streamId, decodeErr, ErrorMsg::MalformedFieldSection);
+      resetMalformedStream(streamId);
+      return ProcessResult{ProcessResult::Action::OutputReady, decodeErr, ErrorMsg::MalformedFieldSection};
     }
     return connectionError(decodeErr, ErrorMsg::HPACKDecodingFailed);
   }
@@ -1622,7 +1691,11 @@ void Http2Connection::sendSettingsAck() {
 // ============================
 
 Http2Connection::ProcessResult Http2Connection::connectionError(ErrorCode code, ErrorMsg msg) {
-  initiateGoAway(code, msg);
+  // Also after a graceful GOAWAY, whose NO_ERROR does not tell why the connection closes (RFC 9113 §5.4.1): an endpoint
+  // may send several of them (§6.8), and _lastPeerStreamId no longer increases after the first one.
+  if (_state != ConnectionState::Closed) {
+    writeGoAway(code, msg);
+  }
   _state = ConnectionState::Closed;
 
   return ProcessResult{ProcessResult::Action::Error, code, msg};

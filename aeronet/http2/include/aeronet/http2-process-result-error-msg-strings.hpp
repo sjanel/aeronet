@@ -12,6 +12,8 @@ constexpr std::string_view ConvertProcessResultErrorMsgToSv(ErrorMsg msg) {
       return "No Error";
     case ErrorMsg::InvalidConnectionPreface:
       return "Invalid Connection Preface";
+    case ErrorMsg::ExpectedSETTINGSFrame:
+      return "Expected SETTINGS Frame";
     case ErrorMsg::FrameExceedsMaximumSize:
       return "Frame Exceeds Maximum Size";
     case ErrorMsg::ExpectedCONTINUATIONFrame:

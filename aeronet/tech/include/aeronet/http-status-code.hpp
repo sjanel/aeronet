@@ -75,8 +75,6 @@ inline constexpr StatusCode StatusCodeLoopDetected = 508;
 inline constexpr StatusCode StatusCodeNotExtended = 510;
 inline constexpr StatusCode StatusCodeNetworkAuthenticationRequired = 511;
 
-inline constexpr StatusCode MagicForHttpRequest = -1;
-
 // Whether a response with this status code may carry content. 1xx, 204 and 304 responses always end at the empty line
 // after their header section: no body, no Content-Length (1xx, 204) nor Transfer-Encoding (RFC 9110 §6.4.1 and §8.6,
 // RFC 9112 §6.1 and §6.3).

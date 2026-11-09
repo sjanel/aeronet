@@ -112,12 +112,12 @@ HTTP/2 requires `AERONET_ENABLE_HTTP2=ON`; `Http2Config::enable` defaults to tru
 | `enablePush` | false | Deprecated, no effect: server push is not supported and `SETTINGS_ENABLE_PUSH` is always advertised as 0. Kept so existing code and configuration files still compile and load. |
 | `enableH2c` | true | Accept prior-knowledge cleartext HTTP/2 (client sends the connection preface directly). |
 | `enableH2cUpgrade` | false | Deprecated, no effect: kept so existing code and configuration files still compile and load. |
-| `enablePriority`, `maxPriorityTreeDepth` | true, 256 | PRIORITY processing and dependency-tree resource cap. |
+| `enablePriority`, `maxPriorityTreeDepth` | true, 256 | Record the priorities of the client on its streams, without changing the order of the responses (their frames are validated either way), and dependency-tree resource cap. |
 | `mergeUnknownRequestHeaders` | true | Comma-merge unknown duplicate headers for HTTP/2. |
 | `headerTableSize` | 4096 | `SETTINGS_HEADER_TABLE_SIZE`, the limit of both HPACK dynamic tables of a connection: a dynamic table size update of the peer above it is a `COMPRESSION_ERROR`, and the encoder keeps at most the smaller of it and the value advertised by the peer. A value below 4096 applies to the decoder once the peer acknowledges the `SETTINGS`. At most 65536. |
 | `maxConcurrentStreams` | 100 | `SETTINGS_MAX_CONCURRENT_STREAMS`. |
-| `initialWindowSize` | 1 MiB | Per-stream receive window (`SETTINGS_INITIAL_WINDOW_SIZE`). The RFC 9113 default of 65,535 bytes caps a transfer on one stream to about 64 KiB per round trip. |
-| `connectionWindowSize` | 1 MiB | Connection-level receive window. |
+| `initialWindowSize` | 1 MiB | Per-stream receive window (`SETTINGS_INITIAL_WINDOW_SIZE`). The RFC 9113 default of 65,535 bytes caps a transfer on one stream to about 64 KiB per round trip. At least 1; a value below 65,535 applies [once the peer has acknowledged it](../protocols/http2.md#flow-control-and-memory). |
+| `connectionWindowSize` | 1 MiB | Connection-level receive window. At least 65,535 bytes, the size it starts from on every connection. |
 | `maxFrameSize` | 16,384 | Frame payload limit; valid range 16,384 through 16,777,215. |
 | `maxHeaderListSize` | 8192 | Decoded header-list ceiling, advertised to the peer and enforced: a larger header block resets its stream with `ENHANCE_YOUR_CALM`, and its fields beyond the limit are not stored while decoded. |
 | `settingsTimeout` | 5 s | Deadline for the acknowledgement of the server `SETTINGS`, after which the connection is closed with `SETTINGS_TIMEOUT`; 0 disables it. |

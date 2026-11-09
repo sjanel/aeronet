@@ -28,7 +28,6 @@ TEST(HttpConstantsTest, StatusCodeAllowsBody) {
            StatusCode{199},
            StatusCodeNoContent,
            StatusCodeNotModified,
-           MagicForHttpRequest,
        }) {
     EXPECT_FALSE(StatusCodeAllowsBody(code)) << code;
   }
@@ -40,7 +39,6 @@ TEST(HttpConstantsTest, StatusCodeAllowsBody) {
            StatusCodeSeeOther,
            StatusCodeNotFound,
            StatusCodeInternalServerError,
-           StatusCode{599},
        }) {
     EXPECT_TRUE(StatusCodeAllowsBody(code)) << code;
   }

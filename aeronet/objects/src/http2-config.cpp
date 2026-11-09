@@ -10,14 +10,15 @@ void Http2Config::validate() const {
     throw std::invalid_argument("Http2Config: maxFrameSize must be between 16384 and 16777215");
   }
 
-  // SETTINGS_INITIAL_WINDOW_SIZE must not exceed 2^31-1 (RFC 9113 §6.5.2)
-  if (initialWindowSize > 2147483647) {
-    throw std::invalid_argument("Http2Config: initialWindowSize must not exceed 2147483647");
+  // SETTINGS_INITIAL_WINDOW_SIZE must not exceed 2^31-1 (RFC 9113 §6.5.2). A window is only replenished up to this
+  // size: with 0, a stream could never receive any DATA.
+  if (initialWindowSize == 0 || initialWindowSize > 2147483647) {
+    throw std::invalid_argument("Http2Config: initialWindowSize must be between 1 and 2147483647");
   }
 
-  // Connection window size should be reasonable
-  if (connectionWindowSize > 2147483647) {
-    throw std::invalid_argument("Http2Config: connectionWindowSize must not exceed 2147483647");
+  // The connection window starts at 65535 bytes for both endpoints and no frame can reduce it (RFC 9113 §6.9.2).
+  if (connectionWindowSize < 65535 || connectionWindowSize > 2147483647) {
+    throw std::invalid_argument("Http2Config: connectionWindowSize must be between 65535 and 2147483647");
   }
 
   // Header table size should be reasonable (0 is valid - disables dynamic table)

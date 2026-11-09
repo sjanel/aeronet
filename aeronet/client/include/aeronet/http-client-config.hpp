@@ -107,8 +107,7 @@ class HttpClientConfig {
   RetryConfig retry;
 
   // HTTP/2 SETTINGS / limits used by the native HTTP/2 engine, mirroring HttpServerConfig::http2 (the
-  // server-only knobs -- enableH2c, enableH2cUpgrade, enablePriority -- and the deprecated enablePush are ignored
-  // here).
+  // server-only knobs -- enableH2c, enableH2cUpgrade -- and the deprecated enablePush are ignored here).
   // Only consulted when a connection actually speaks HTTP/2 (see `httpVersion`) and requires a build with
   // AERONET_ENABLE_HTTP2.
   Http2Config http2;

@@ -112,6 +112,14 @@ namespace {
   return preface;
 }
 
+// Feed a server connection with what a client starts with: the preface, then its SETTINGS (RFC 9113 §3.4).
+void FeedPrefaceAndSettings(Http2Connection& server) {
+  (void)server.processInput(MakePreface());
+  RawBytes settings;
+  WriteSettingsFrame(settings, {});
+  (void)server.processInput(AsSpan(settings));
+}
+
 struct ParsedFrame {
   FrameHeader header;
   std::span<const std::byte> payload;
@@ -589,7 +597,7 @@ namespace {
 // An h2c client connection over a socket, driven by hand: the test decides when it reads, and therefore when it answers
 // the SETTINGS and PING frames of the server.
 struct ManualH2cClient {
-  explicit ManualH2cClient(uint16_t port) : cnx(port) {
+  explicit ManualH2cClient(uint16_t port, const Http2Config& config = Http2Config{}) : cnx(port), client(config, false) {
     client.sendClientPreface();
     writePending();
   }
@@ -635,7 +643,7 @@ struct ManualH2cClient {
   }
 
   test::ClientConnection cnx;
-  Http2Connection client{Http2Config(), false};
+  Http2Connection client;
   RecordingEventSink sink{client};
   // Make sure that the server processed the frames sent so far: it answers a PING after them.
   void roundTrip() {
@@ -794,7 +802,95 @@ TEST(Http2Core, DrainSendsAGoAwayAndClosesTheConnectionsOnceTheirStreamsAreAnswe
   EXPECT_TRUE(test::WaitForPeerClose(busy.cnx.fd(), std::chrono::milliseconds{2000}));
 }
 
+TEST(Http2Core, ClientGracefulGoAwayStillSendsTheBodiesHeldByFlowControl) {
+  // A GOAWAY (NO_ERROR) only stops new streams (RFC 9113 §6.8): the client still reads its open streams, here a body
+  // held back by its flow control. The WINDOW_UPDATE releasing it comes right behind the GOAWAY, in the same write.
+  static constexpr uint32_t kWindowSize = 1024;
+  static constexpr std::size_t kBodySize = 4UL * kWindowSize;
+  test::TestServer server(
+      HttpServerConfig{}.withHttp2(Http2Config{}.withEnableH2c(true)).withPollInterval(std::chrono::milliseconds{5}));
+  server.router().setPath(http::Method::GET, "/large", [](const HttpRequestView& req) {
+    return req.makeResponse(std::string(kBodySize, 'x'));
+  });
+
+  ManualH2cClient h2(server.port(), Http2Config{}.withInitialWindowSize(kWindowSize));
+  std::size_t nbBodyBytes = 0;
+  bool bodyEnded = false;
+  h2.sink.onDataFn = [&nbBodyBytes, &bodyEnded](uint32_t, std::span<const std::byte> data, bool endStream) {
+    nbBodyBytes += data.size();
+    bodyEnded |= endStream;
+  };
+  h2.receive(std::chrono::milliseconds{1000});
+  h2.sendRequest(1, http::Method::GET, "/large", true);
+  // No WINDOW_UPDATE for stream 1 until released: the server sends its first window, then waits for credit.
+  h2.client.holdStreamRecvWindow(1);
+  const auto windowDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+  while (nbBodyBytes < kWindowSize && std::chrono::steady_clock::now() < windowDeadline) {
+    h2.receive(std::chrono::milliseconds{10});
+  }
+  ASSERT_EQ(nbBodyBytes, kWindowSize);
+  ASSERT_FALSE(bodyEnded);
+
+  h2.client.initiateGoAway(ErrorCode::NoError);
+  h2.client.releaseStreamRecvWindow(1);
+  h2.writePending();
+
+  const auto bodyDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+  while (!bodyEnded && std::chrono::steady_clock::now() < bodyDeadline) {
+    h2.receive(std::chrono::milliseconds{10});
+  }
+  EXPECT_TRUE(bodyEnded);
+  EXPECT_EQ(nbBodyBytes, kBodySize);
+  // Its last stream answered, the connection closes.
+  EXPECT_TRUE(test::WaitForPeerClose(h2.cnx.fd(), std::chrono::milliseconds{2000}));
+}
+
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
+TEST(Http2Core, ClientGracefulGoAwayStillAnswersTheRunningAsyncHandlers) {
+  // A client shutting down gracefully (Go's ClientConn.Shutdown) sends a GOAWAY (NO_ERROR), then waits for the
+  // responses of its open streams (RFC 9113 §6.8), here one of an async handler still running.
+  static std::atomic<bool> releaseWork;
+  releaseWork.store(false, std::memory_order_relaxed);
+  test::TestServer server(
+      HttpServerConfig{}.withHttp2(Http2Config{}.withEnableH2c(true)).withPollInterval(std::chrono::milliseconds{5}));
+  server.router().setPath(http::Method::GET, "/slow", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
+    const int value = co_await req.deferWork([] {
+      while (!releaseWork.load(std::memory_order_acquire)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+      }
+      return 1;
+    });
+    co_return req.makeResponse(std::to_string(value));
+  });
+
+  ManualH2cClient h2(server.port());
+  std::string status;
+  h2.sink.onHeadersDecodedFn = [&status](uint32_t, const SvToSvMap& headers, bool) {
+    if (const auto it = headers.find(":status"); it != headers.end()) {
+      status.assign(it->second);
+    }
+  };
+  h2.receive(std::chrono::milliseconds{1000});
+  h2.sendRequest(1, http::Method::GET, "/slow", true);
+  // The server started the handler of stream 1.
+  h2.roundTrip();
+
+  // The GOAWAY goes out with the PING of the round trip, right behind it: its ACK tells that the server processed the
+  // GOAWAY, and kept reading.
+  h2.client.initiateGoAway(ErrorCode::NoError);
+  h2.roundTrip();
+  releaseWork.store(true, std::memory_order_release);
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+  while (status.empty() && std::chrono::steady_clock::now() < deadline) {
+    h2.receive(std::chrono::milliseconds{10});
+  }
+  EXPECT_EQ(status, "200");
+  // Its last stream answered, the connection closes.
+  EXPECT_TRUE(test::WaitForPeerClose(h2.cnx.fd(), std::chrono::milliseconds{2000}));
+}
+
+
 TEST(Http2Core, PerRouteTimeoutResponseIsSentWithoutWaitingForAnEvent) {
   // The 408 answering a stream whose per-route timeout elapsed is queued by the periodic maintenance, which sends it:
   // the connection may receive no event meanwhile, here its handler waiting for deferred work.
@@ -1083,12 +1179,7 @@ TEST(Http2Core, ContinuationFrameOnWrongStreamIsProtocolError) {
   Http2Connection conn(cfg, true);
 
   // Establish preface and complete SETTINGS handshake.
-  auto preface = MakePreface();
-  (void)conn.processInput(preface);
-  // Server sends SETTINGS after preface; we need to send SETTINGS ACK to transition to Open.
-  RawBytes settingsAck;
-  WriteSettingsAckFrame(settingsAck);
-  (void)conn.processInput(AsSpan(settingsAck));
+  FeedPrefaceAndSettings(conn);
 
   // Start a HEADERS frame that requires continuation (END_HEADERS not set).
   RawBytes buf;
@@ -1115,12 +1206,7 @@ TEST(Http2Core, MissingContinuationThenOtherFrameIsProtocolError) {
   Http2Config cfg;
   Http2Connection conn(cfg, true);
 
-  auto preface = MakePreface();
-  (void)conn.processInput(preface);
-  // Complete SETTINGS handshake.
-  RawBytes settingsAck;
-  WriteSettingsAckFrame(settingsAck);
-  (void)conn.processInput(AsSpan(settingsAck));
+  FeedPrefaceAndSettings(conn);
 
   // HEADERS without END_HEADERS.
   RawBytes headers;
@@ -1256,8 +1342,7 @@ TEST(Http2Core, DataOnStreamZeroIsProtocolError) {
   Http2Config cfg;
   Http2Connection conn(cfg, true);
 
-  auto preface = MakePreface();
-  (void)conn.processInput(preface);
+  FeedPrefaceAndSettings(conn);
 
   RawBytes data;
   std::array<std::byte, 1> payload{std::byte{'x'}};
@@ -1272,8 +1357,7 @@ TEST(Http2Core, HeadersOnStreamZeroIsProtocolError) {
   Http2Config cfg;
   Http2Connection conn(cfg, true);
 
-  auto preface = MakePreface();
-  (void)conn.processInput(preface);
+  FeedPrefaceAndSettings(conn);
 
   RawBytes headers;
   std::array<std::byte, 1> hb = {std::byte{0x82}};
@@ -1289,8 +1373,7 @@ TEST(Http2Core, UnexpectedContinuationIsProtocolError) {
   Http2Config cfg;
   Http2Connection conn(cfg, true);
 
-  auto preface = MakePreface();
-  (void)conn.processInput(preface);
+  FeedPrefaceAndSettings(conn);
 
   RawBytes cont;
   std::array<std::byte, 1> hb = {std::byte{0x82}};
@@ -1306,8 +1389,7 @@ TEST(Http2Core, WindowUpdateWithZeroIncrementIsProtocolError) {
   Http2Config cfg;
   Http2Connection conn(cfg, true);
 
-  auto preface = MakePreface();
-  (void)conn.processInput(preface);
+  FeedPrefaceAndSettings(conn);
 
   RawBytes wu;
   WriteWindowUpdateFrame(wu, 0, 0);
@@ -1381,10 +1463,9 @@ TEST(Http2Core, PingRequestProducesPingAck) {
   Http2Config cfg;
   Http2Connection conn(cfg, true);
 
-  auto preface = MakePreface();
-  (void)conn.processInput(preface);
+  FeedPrefaceAndSettings(conn);
 
-  // Server sends SETTINGS after receiving preface; drain that output first.
+  // The server answers with its SETTINGS and an acknowledgement; drain that output first.
   auto initialOut = conn.getPendingOutput();
   conn.onOutputWritten(initialOut.size());
 
@@ -1415,8 +1496,7 @@ TEST(Http2Core, PingOnNonZeroStreamIsProtocolError) {
   Http2Config cfg;
   Http2Connection conn(cfg, true);
 
-  auto preface = MakePreface();
-  (void)conn.processInput(preface);
+  FeedPrefaceAndSettings(conn);
 
   RawBytes ping;
   // Build a ping frame but override stream id by writing header manually.
@@ -1617,8 +1697,7 @@ TEST(Http2Core, ReceiverRejectsFrameLargerThanLocalMaxFrameSize) {
   cfg.maxFrameSize = 16384;
   Http2Connection conn(cfg, true);
 
-  auto preface = MakePreface();
-  (void)conn.processInput(preface);
+  FeedPrefaceAndSettings(conn);
 
   // Create a frame header that advertises a too-large payload.
   // We do not need to provide the full payload: connection checks the size first.
@@ -1728,8 +1807,7 @@ TEST(Http2Core, SettingsAckOnNonZeroStreamIsProtocolError) {
   Http2Config cfg;
   Http2Connection conn(cfg, true);
 
-  auto preface = MakePreface();
-  (void)conn.processInput(preface);
+  FeedPrefaceAndSettings(conn);
 
   // Create SETTINGS ACK by writing a SETTINGS frame then mutating header.
   RawBytes settingsAck;
@@ -1744,7 +1822,7 @@ TEST(Http2Core, SettingsAckOnNonZeroStreamIsProtocolError) {
   EXPECT_EQ(res.errorCode, ErrorCode::ProtocolError);
 }
 
-TEST(Http2Core, SettingsAckTransitionsAwaitingSettingsToOpen) {
+TEST(Http2Core, SettingsFrameTransitionsAwaitingSettingsToOpen) {
   Http2Config cfg;
   Http2Connection server(cfg, true);
   RecordingEventSink serverSink(server);
@@ -1754,11 +1832,11 @@ TEST(Http2Core, SettingsAckTransitionsAwaitingSettingsToOpen) {
   ASSERT_EQ(resPreface.action, Http2Connection::ProcessResult::Action::OutputReady);
   ASSERT_EQ(server.state(), ConnectionState::AwaitingSettings);
 
-  RawBytes settingsAck;
-  WriteSettingsAckFrame(settingsAck);
+  RawBytes settings;
+  WriteSettingsFrame(settings, {});
 
-  auto resAck = server.processInput(AsSpan(settingsAck));
-  ASSERT_NE(resAck.action, Http2Connection::ProcessResult::Action::Error);
+  auto resSettings = server.processInput(AsSpan(settings));
+  ASSERT_NE(resSettings.action, Http2Connection::ProcessResult::Action::Error);
   EXPECT_EQ(server.state(), ConnectionState::Open);
 }
 
@@ -1794,8 +1872,7 @@ TEST(Http2Core, RstStreamFrameOnStreamZeroIsProtocolError) {
   Http2Config cfg;
   Http2Connection conn(cfg, true);
 
-  auto preface = MakePreface();
-  (void)conn.processInput(preface);
+  FeedPrefaceAndSettings(conn);
 
   RawBytes rst;
   WriteRstStreamFrame(rst, 0, ErrorCode::Cancel);

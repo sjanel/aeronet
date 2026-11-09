@@ -119,10 +119,12 @@ class Http2Connection {
     return _state == ConnectionState::Open || (!_isServer && _state == ConnectionState::AwaitingSettings);
   }
 
-  /// Whether this endpoint sent a GOAWAY (see initiateGoAway()) and all the streams it still served are closed: the
-  /// connection has nothing left to do once its output is written.
+  /// Whether a GOAWAY was sent (see initiateGoAway()) or received, and no stream is open: the connection has nothing
+  /// left to do once its output is written. A GOAWAY of the client does not forbid it to open more streams (RFC 9113
+  /// §6.8): one arriving while another is open is served, later ones are lost with the connection.
   [[nodiscard]] bool goAwayCompleted() const noexcept {
-    return _state == ConnectionState::GoAwaySent && _activeStreamCount == 0;
+    return (_state == ConnectionState::GoAwaySent || _state == ConnectionState::GoAwayReceived) &&
+           _activeStreamCount == 0;
   }
 
   /// Run the timers of the connection, to be called periodically.
@@ -216,7 +218,7 @@ class Http2Connection {
 
   ErrorCode prepareSendHeaders(uint32_t streamId, bool endStream);
 
-  /// Encode and send headers for a request.
+  /// Encode and send headers for a request, without its connection-specific fields (RFC 9113 §8.2.2).
   /// Use magic value empty target to indicate trailers.
   /// @param cookies Cookie-pairs separated by "; " (the cookies of a jar), each sent as a cookie field of its own
   /// (RFC 9113 §8.2.3), besides any cookie field of headersView.
@@ -224,12 +226,13 @@ class Http2Connection {
                                              std::string_view target, std::string_view authority,
                                              HeadersView headersView, bool endStream, std::string_view cookies = {});
 
-  /// Send HEADERS frame to start a new request/response.
+  /// Send HEADERS frame to start a new request/response, without its connection-specific fields (RFC 9113 §8.2.2).
   /// @param streamId Stream ID (must be valid for new stream creation)
-  /// @param statusCode HTTP status code (for responses). Can be 0 to avoid sending a pseudo-header, 1 as magic value to
-  /// indicate a request.
+  /// @param statusCode HTTP status code (for responses). Can be 0 to avoid sending a pseudo-header.
   /// @param headers Headers to send
   /// @param endStream True to set END_STREAM flag
+  /// @param pGlobalHeaders Headers to send unless present in `headers`. They must not hold any connection-specific
+  ///                       field (see HttpServerConfig::http2GlobalHeaders()).
   /// @return ErrorCode if the operation failed, NoError otherwise
   [[nodiscard]] ErrorCode sendHeaders(uint32_t streamId, http::StatusCode statusCode, HeadersView headersView,
                                       bool endStream, const ConcatenatedHeaders* pGlobalHeaders = nullptr);
@@ -258,12 +261,16 @@ class Http2Connection {
   /// @param errorCode Error code for the reset
   void sendRstStream(uint32_t streamId, ErrorCode errorCode);
 
+  /// Reset a stream carrying a malformed message with PROTOCOL_ERROR, counted by the
+  /// aeronet.http2.streams.rejected_malformed metric.
+  void resetMalformedStream(uint32_t streamId);
+
   /// Send PING frame.
   void sendPing(PingFrame pingFrame);
 
   /// Send WINDOW_UPDATE frame.
   /// @param streamId Stream ID (0 for connection-level)
-  /// @param increment Window size increment
+  /// @param increment Window size increment, not 0 (a PROTOCOL_ERROR for the peer, RFC 9113 §6.9)
   void sendWindowUpdate(uint32_t streamId, uint32_t increment);
 
   /// Stop replenishing the receive window of a stream: the peer can then send at most the credit it has left, until
@@ -282,7 +289,8 @@ class Http2Connection {
   /// accounted as active (eventually exhausting the peer's concurrency budget) and is never pruned.
   /// Invokes the stream-closed callback, so the caller must have released its own per-stream state
   /// first. No-op when the stream does not exist or is not closed.
-  void finalizeSendClosedStream(uint32_t streamId);
+  /// @return true if the stream is closed
+  bool finalizeSendClosedStream(uint32_t streamId);
 
   // ============================
   // Settings
@@ -440,6 +448,16 @@ class Http2Connection {
   /// Give back the connection-level credit once half of it was consumed (see handleDataFrame()).
   void replenishConnectionRecvWindow();
 
+  // Give back the credit of a stream able to receive, once half of it was consumed.
+  void replenishStreamRecvWindow(Http2Stream& stream);
+
+  // The receive window of the stream 'streamId', opened now.
+  [[nodiscard]] uint32_t newStreamRecvWindow(uint32_t streamId) const noexcept;
+
+  // The peer acknowledged our SETTINGS: a smaller initial window size now applies to the streams it may have used
+  // the default window on.
+  void applyAcknowledgedSettings();
+
   // Erase the oldest closed streams beyond the retention limit. Moves the entries of _streams.
   void pruneClosedStreams();
 
@@ -447,8 +465,12 @@ class Http2Connection {
   // HPACK
   // ============================
 
-  void encodeHeaders(uint32_t streamId, http::StatusCode statusCode, HeadersView headersView, bool endStream,
-                     std::size_t oldSize, const ConcatenatedHeaders* pGlobalHeaders, uint64_t headerListSize);
+  // Reserve the output of a header block, and return the position of the block, after the room of its frame header.
+  [[nodiscard]] std::size_t beginHeaderBlock(std::size_t plainHeadersSize, std::size_t pseudoHeadersReserve);
+
+  // Frame the header block written in the output from 'blockPos' (see beginHeaderBlock()): one HEADERS frame, followed
+  // by CONTINUATION frames when it is larger than the maximum frame size of the peer.
+  void finishHeaderBlock(uint32_t streamId, bool endStream, std::size_t blockPos, uint64_t headerListSize);
 
   /// Decode an HPACK header block and deliver decoded headers via `setOnHeadersDecoded`.
   /// Returns `CompressionError` for invalid HPACK and `ProtocolError` for malformed fields.
@@ -491,9 +513,14 @@ class Http2Connection {
 
   [[nodiscard]] bool priorityDepthExceeded(uint32_t id) const noexcept;
 
+  void recordPriority(Http2Stream& stream, uint32_t streamDependency, uint8_t weightMinusOne,
+                      bool exclusive) const noexcept;
+
   // ============================
   // Error handling
   // ============================
+
+  void writeGoAway(ErrorCode errorCode, ErrorMsg msg);
 
   ProcessResult connectionError(ErrorCode code, ErrorMsg msg);
   ProcessResult streamError(uint32_t streamId, ErrorCode code, ErrorMsg msg);
@@ -548,6 +575,7 @@ class Http2Connection {
   ConnectionState _state{ConnectionState::AwaitingPreface};
 
   bool _settingsSent{false};
+  bool _settingsAcked{false};
   bool _isServer;
   bool _expectingContinuation{false};
   bool _headerBlockEndStream{false};

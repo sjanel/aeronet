@@ -21,6 +21,7 @@
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/mergeable-headers.hpp"
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/reserved-headers.hpp"
 #include "aeronet/toupperlower.hpp"
 #include "http2-header-is-valid.hpp"
 
@@ -759,6 +760,7 @@ void DecodedHeaders::clear() noexcept {
   std::ranges::fill(pseudoHeaders, std::string_view());
   namesAndValuesSize = 0;
   pseudoHeadersMask = 0;
+  hasConnectionSpecificField = false;
 }
 
 HpackDecoder::HpackDecoder(uint32_t maxDynamicTableSize, uint32_t maxHeaderListSize,
@@ -1087,6 +1089,15 @@ HpackDecoder::DecodeResult::Error HpackDecoder::storeHeader(std::string_view nam
     return DecodeResult::Error::MalformedFieldValue;
   }
 
+  if (http::IsConnectionSpecificField(name, value)) [[unlikely]] {
+    // A handler forwarding such a request to an HTTP/1.1 backend would open a request smuggling path
+    // (transfer-encoding).
+    if (_messages == Messages::Requests) {
+      return DecodeResult::Error::ConnectionSpecificField;
+    }
+    _decodedHeaders.hasConnectionSpecificField = true;
+  }
+
   const bool isContentEncoding = name == http::ContentEncoding;
   if (isContentEncoding) {
     // Content codings are case-insensitive (RFC 9110 §8.4.1): their value is lower-cased once stored. It is always
@@ -1401,10 +1412,15 @@ HpackEncoder::IndexingMode HpackEncoder::IndexingModeOf(std::string_view name, s
 }
 
 uint64_t HpackEncoder::encode(RawBytes& output, std::string_view name, std::string_view value, IndexingMode mode) {
-  // Check for pending table size update
-  if (_hasPendingTableSizeUpdate) {
-    encodeDynamicTableSizeUpdate(output, _pendingTableSizeUpdate);
-    _hasPendingTableSizeUpdate = false;
+  if (hasPendingTableSizeUpdate()) {
+    // The smallest size first: the decoder may already have evicted down to it, so this table has to as well, even if
+    // the size was raised again since (RFC 7541 §4.2).
+    if (_smallestPendingTableSize != _lastPendingTableSize) {
+      encodeDynamicTableSizeUpdate(output, _smallestPendingTableSize);
+    }
+    encodeDynamicTableSizeUpdate(output, _lastPendingTableSize);
+    _smallestPendingTableSize = kNoPendingTableSize;
+    _lastPendingTableSize = 0;
   }
 
   // Compute the size of the header field as it would be represented in the HPACK dynamic table (32 bytes of overhead)
@@ -1465,11 +1481,11 @@ void HpackEncoder::encodeDynamicTableSizeUpdate(RawBytes& output, uint32_t newSi
 }
 
 void HpackEncoder::setMaxDynamicTableSize(uint32_t maxSize) {
-  if (!_hasPendingTableSizeUpdate && maxSize == _dynamicTable.maxSizeBytes()) {
+  if (!hasPendingTableSizeUpdate() && maxSize == _dynamicTable.maxSizeBytes()) {
     return;  // Nothing to signal
   }
-  _pendingTableSizeUpdate = maxSize;
-  _hasPendingTableSizeUpdate = true;
+  _smallestPendingTableSize = std::min(_smallestPendingTableSize, maxSize);
+  _lastPendingTableSize = maxSize;
 }
 
 HpackLookupResult HpackEncoder::findHeader(std::string_view name, std::string_view value) {

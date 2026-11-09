@@ -144,9 +144,10 @@ struct Http2Config {
   /// Default: false.
   bool enableH2cUpgrade{false};
 
-  /// Enable HTTP/2 priority handling (PRIORITY frames and stream dependencies).
-  /// When disabled, PRIORITY frames are acknowledged but not processed.
-  /// Default: true (principle of least surprise).
+  /// Whether to record on the streams the priorities of the peer (PRIORITY frames and priority fields of HEADERS
+  /// frames), within maxPriorityTreeDepth. They do not change the order of the responses: when disabled, these frames
+  /// are still validated, only this bookkeeping is skipped.
+  /// Default: true.
   bool enablePriority{true};
 
   /// Whether to merge multiple header values for unknown request headers.
@@ -190,6 +191,8 @@ struct Http2Config {
   /// SETTINGS_INITIAL_WINDOW_SIZE (0x4): Initial flow control window size for streams.
   /// The peer sends at most this many bytes on a stream before receiving credit: with the RFC 9113 default (65535
   /// bytes), a single upload (server) or download (client) would be capped to about 64 KiB per round trip.
+  /// Must be at least 1. A value below 65535 applies once the peer has acknowledged it: until then, the peer may use
+  /// the default window on the streams it opens.
   /// Default: 1 MiB.
   uint32_t initialWindowSize{1U << 20U};
 
@@ -209,6 +212,7 @@ struct Http2Config {
 
   /// Initial connection-level flow control window size.
   /// The server will send WINDOW_UPDATE to adjust this upon connection establishment.
+  /// Must be at least 65535: the window starts there on every connection, and no frame can reduce it.
   /// Default: 1MB (good for high-throughput scenarios).
   uint32_t connectionWindowSize{1U << 20U};
 

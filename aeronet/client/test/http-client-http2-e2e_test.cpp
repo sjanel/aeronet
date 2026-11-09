@@ -31,10 +31,12 @@
 #include "aeronet/fault-injecting-transport.hpp"
 #include "aeronet/fault-policy.hpp"
 #include "aeronet/file.hpp"
+#include "aeronet/hpack.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client-error.hpp"
 #include "aeronet/http-client.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header-view.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-message.hpp"
 #include "aeronet/http-method.hpp"
@@ -210,15 +212,14 @@ class ScriptedHttp2Transport final : public TransportBackend<ScriptedHttp2Transp
     WriteReadReady,
     WriteWriteReady,
     ReadWriteReady,
+    RespondWithField,
   };
 
   explicit ScriptedHttp2Transport(Action action) : _action(action) {
     if (action != Action::RstStream && action != Action::GoAway) {
       return;
     }
-    RawBytes settings;
-    http2::WriteSettingsFrame(settings, std::span<const http2::SettingsEntry>{});
-    _reads.emplace_back(reinterpret_cast<const char*>(settings.data()), settings.size());
+    addSettings();
 
     RawBytes fault;
     if (action == Action::RstStream) {
@@ -226,7 +227,25 @@ class ScriptedHttp2Transport final : public TransportBackend<ScriptedHttp2Transp
     } else {
       http2::WriteGoAwayFrame(fault, 0, http2::ErrorCode::NoError, http2::ErrorMsg::NoError);
     }
-    _reads.emplace_back(reinterpret_cast<const char*>(fault.data()), fault.size());
+    addRead(fault);
+  }
+
+  // A response holding a hand-encoded field in its head, or else in its trailers, as Http2Connection drops the
+  // connection-specific ones. Literals without indexing leave the HPACK dynamic table of the client untouched.
+  ScriptedHttp2Transport(std::string_view fieldName, std::string_view fieldValue, bool inTrailers)
+      : _action(Action::RespondWithField) {
+    addSettings();
+
+    http2::HpackEncoder encoder(4096);
+    static constexpr auto kLiteral = http2::HpackEncoder::IndexingMode::WithoutIndexing;
+    RawBytes head;
+    encoder.encode(head, http::PseudoHeaderStatus, "200", kLiteral);
+    RawBytes trailers;
+    encoder.encode(inTrailers ? trailers : head, fieldName, fieldValue, kLiteral);
+    addHeadersFrame(head, !inTrailers);
+    if (inTrailers) {
+      addHeadersFrame(trailers, true);
+    }
   }
 
   TransportResult read(char* buf, std::size_t len) {
@@ -265,6 +284,24 @@ class ScriptedHttp2Transport final : public TransportBackend<ScriptedHttp2Transp
   [[nodiscard]] std::string_view written() const noexcept { return _written; }
 
  private:
+  void addRead(const RawBytes& frames) {
+    _reads.emplace_back(reinterpret_cast<const char*>(frames.data()), frames.size());
+  }
+
+  void addSettings() {
+    RawBytes settings;
+    http2::WriteSettingsFrame(settings, std::span<const http2::SettingsEntry>{});
+    addRead(settings);
+  }
+
+  void addHeadersFrame(const RawBytes& block, bool endStream) {
+    RawBytes frame;
+    http2::WriteFrame(frame, http2::FrameType::Headers, http2::ComputeHeaderFrameFlags(endStream, true), 1,
+                      static_cast<uint32_t>(block.size()));
+    frame.unchecked_append(block);
+    addRead(frame);
+  }
+
   Action _action;
   std::vector<std::string> _reads;
   std::size_t _nextRead{0};
@@ -566,6 +603,43 @@ TEST(HttpClientHttp2TransportTest, MissingAndInvalidStatusAreMalformedResponses)
     EXPECT_EQ(result.error(), HttpClientErrc::malformedResponse);
     EXPECT_TRUE(requestSent);
     EXPECT_TRUE(connection.keepAlive());  // the malformed response only concerns its stream
+  }
+}
+
+// RFC 9113 §8.2.2, in the head of a response as well as in its trailers.
+TEST(HttpClientHttp2TransportTest, ConnectionSpecificFieldsAreMalformedResponses) {
+  HttpClientConfig config;
+  config.withHttpVersion(HttpVersionMode::Http2);
+  HttpClient client(config);
+  HttpRequest req = MakeFinalizedHttp2Request(client);
+
+  static constexpr http::HeaderView kFields[]{
+      {"connection", "close"},          {"keep-alive", "timeout=5"}, {"proxy-connection", "keep-alive"},
+      {"transfer-encoding", "chunked"}, {"upgrade", "websocket"},    {"te", "gzip"},
+  };
+
+  for (const bool inTrailers : {false, true}) {
+    for (const http::HeaderView& field : kFields) {
+      ScriptedHttp2Transport transport(field.name, field.value, inTrailers);
+      internal::ClientConnection connection(config);
+      bool requestSent = false;
+
+      auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
+
+      ASSERT_FALSE(result) << field.name;
+      EXPECT_EQ(result.error(), HttpClientErrc::malformedResponse) << field.name;
+      EXPECT_TRUE(connection.keepAlive()) << field.name;  // the malformed response only concerns its stream
+    }
+
+    // The one exception of §8.2.2.
+    ScriptedHttp2Transport transport("te", "trailers", inTrailers);
+    internal::ClientConnection connection(config);
+    bool requestSent = false;
+
+    auto result = connection.exchange(client, transport, kInvalidHandle, req, SteadyClock::now(), requestSent);
+
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->status(), http::StatusCodeOK);
   }
 }
 
@@ -1369,6 +1443,7 @@ TEST(HttpClientHttp2E2ETest, UserFramingHeadersRespected) {
   req.header("host", "override-authority.test")
       .header("user-agent", "custom-agent/1.0")
       .header("accept-encoding", "identity")
+      .header("connection", "close")
       .header("keep-alive", "timeout=5")
       .header("proxy-connection", "keep-alive")
       .body("payload", "text/plain");

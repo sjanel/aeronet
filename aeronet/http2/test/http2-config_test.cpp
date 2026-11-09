@@ -165,8 +165,19 @@ TEST(Http2Config, ValidateInitialWindowSizeTooLarge) {
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
+TEST(Http2Config, ValidateZeroInitialWindowSize) {
+  Http2Config config = Http2Config{}.withInitialWindowSize(0);  // no DATA could ever be received
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
 TEST(Http2Config, ValidateConnectionWindowSizeTooLarge) {
   Http2Config config = Http2Config{}.withConnectionWindowSize(2147483648U);  // 2^31
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
+TEST(Http2Config, ValidateConnectionWindowSizeTooSmall) {
+  // Starts at 65535 bytes on every connection, and no frame can reduce it (RFC 9113 §6.9.2).
+  Http2Config config = Http2Config{}.withConnectionWindowSize(65534);
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
@@ -204,8 +215,20 @@ TEST(Http2Config, BoundaryMaxFrameSize) {
 }
 
 TEST(Http2Config, BoundaryInitialWindowSize) {
-  // Test boundary at 2^31-1
+  // Test both boundaries
+  Http2Config minConfig = Http2Config{}.withInitialWindowSize(1);
   Http2Config maxConfig = Http2Config{}.withInitialWindowSize(2147483647);
+
+  EXPECT_NO_THROW(minConfig.validate());
+  EXPECT_NO_THROW(maxConfig.validate());
+}
+
+TEST(Http2Config, BoundaryConnectionWindowSize) {
+  // Test both boundaries
+  Http2Config minConfig = Http2Config{}.withConnectionWindowSize(65535);
+  Http2Config maxConfig = Http2Config{}.withConnectionWindowSize(2147483647);
+
+  EXPECT_NO_THROW(minConfig.validate());
   EXPECT_NO_THROW(maxConfig.validate());
 }
 

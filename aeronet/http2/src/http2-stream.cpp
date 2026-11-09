@@ -126,7 +126,8 @@ bool Http2Stream::consumeSendWindow(std::size_t bytes) noexcept {
 }
 
 bool Http2Stream::consumeRecvWindow(uint32_t bytes) noexcept {
-  if (std::cmp_less(_recvWindow, bytes)) {
+  // An empty DATA frame may end the stream even without available window (RFC 9113 §6.9.1), which can be negative.
+  if (std::cmp_less(_recvWindow, bytes) && bytes != 0) {
     return false;
   }
   _recvWindow -= static_cast<int32_t>(bytes);

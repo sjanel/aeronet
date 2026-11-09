@@ -25,7 +25,9 @@
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/file.hpp"
+#include "aeronet/hpack.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header-view.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
@@ -203,6 +205,7 @@ HttpServerConfig MakeLoopServerConfig(uint32_t maxOutboundBufferBytes, const Htt
   config.maxOutboundBufferBytes = maxOutboundBufferBytes;
   config.http2 = http2Config;
   config.telemetry = std::move(telemetryConfig);
+  config.validate();
   return config;
 }
 
@@ -1744,6 +1747,35 @@ TEST(Http2ProtocolHandler, ConnectPendingResolutionHoldsClientCredit) {
   }
 }
 
+// A CONNECT has no trailers: a header block on its stream, while its target is resolved or on its established tunnel,
+// resets the stream instead of dispatching the CONNECT again.
+TEST(Http2ProtocolHandler, HeaderBlockOnAConnectStreamIsMalformed) {
+  for (const bool resolveInBackground : {true, false}) {
+    SCOPED_TRACE(resolveInBackground);
+    Router router;
+    router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
+    Http2ProtocolLoopback loop(router, WithTunnelBridge{});
+    loop.connect();
+
+    MockTunnelBridge& bridge = *loop.tunnelBridge;
+    bridge.resolveInBackground = resolveInBackground;
+    bridge.onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return 42; };
+    OpenConnectStream(loop, 1);
+    ASSERT_EQ(loop.handler.isTunnelPending(1), resolveInBackground);
+    ASSERT_EQ(loop.handler.isTunnelStream(1), !resolveInBackground);
+
+    RawChars trailers;
+    trailers.append(MakeHttp1HeaderLine("x-checksum", "abc"));
+    ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(trailers), true), ErrorCode::NoError);
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
+
+    EXPECT_FALSE(loop.handler.isTunnelPending(1));
+    EXPECT_FALSE(loop.handler.isTunnelStream(1));
+    EXPECT_EQ(loop.streamResets, (vector<std::pair<uint32_t, ErrorCode>>{{1U, ErrorCode::ProtocolError}}));
+  }
+}
+
 // A plaintext listener redirecting to https answers every request with the redirect, as over HTTP/1.1: from the
 // :authority, else from the Host header, without receiving the body (the stream is then reset without error).
 TEST(Http2ProtocolHandler, HttpsRedirectAnswersBeforeRouting) {
@@ -1900,6 +1932,230 @@ TEST(Http2ProtocolHandler, DeclaredContentLengthAboveMaxBodyBytesIsRefusedBefore
     streamId += 2;
   }
   EXPECT_EQ(nbHandlerCalls, 1);
+}
+
+namespace {
+
+// A request that the server answers from its headers alone, before the end of its body.
+struct EarlyAnswerCase {
+  std::string_view description;
+  std::string_view method;
+  std::string_view authority;
+  std::string_view path;  // empty for a CONNECT, which has no :scheme and :path
+  std::string_view acceptEncoding;
+  std::string_view status;
+  bool resolveInBackground;  // the CONNECT target is resolved in the background, and found unreachable
+};
+
+constexpr EarlyAnswerCase kEarlyAnswerCases[]{
+    {"unknown method", "BREW", "example.com", "/upload", "", "501", false},
+    {"undecodable :path", "POST", "example.com", "/up%ZZload", "", "400", false},
+    {"invalid :authority", "POST", "evil.example/x", "/upload", "", "400", false},
+    {
+        "no acceptable content-coding",
+        "POST",
+        "example.com",
+        "/upload",
+        "hypothetical-encoding, identity;q=0",
+        "406",
+        false,
+    },
+    {"malformed CONNECT target", "CONNECT", "example.com:https", "", "", "400", false},
+    {"CONNECT target not allowed", "CONNECT", "blocked.example.com:443", "", "", "403", false},
+    {"unreachable CONNECT target", "CONNECT", "example.com:443", "", "", "502", false},
+    {"unreachable CONNECT target resolved in the background", "CONNECT", "example.com:443", "", "", "502", true},
+};
+
+// Opens stream 1 with the request headers of 'testCase', without END_STREAM (its body follows), and lets the server
+// answer them. The answer stays in the output of the server.
+void SendRequestHeadersAnsweredEarly(Http2ProtocolLoopback& loop, const EarlyAnswerCase& testCase) {
+  RawChars headers;
+  headers.append(MakeHttp1HeaderLine(":method", testCase.method));
+  headers.append(MakeHttp1HeaderLine(":authority", testCase.authority));
+  if (!testCase.path.empty()) {
+    headers.append(MakeHttp1HeaderLine(":scheme", "https"));
+    headers.append(MakeHttp1HeaderLine(":path", testCase.path));
+  }
+  if (!testCase.acceptEncoding.empty()) {
+    headers.append(MakeHttp1HeaderLine("accept-encoding", testCase.acceptEncoding));
+  }
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(headers), false), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  if (testCase.resolveInBackground) {
+    ASSERT_TRUE(loop.handler.isTunnelPending(1));
+    loop.handler.onTunnelResolved(1, kInvalidHandle);
+  }
+}
+
+// Initial window of the clients granting no credit for response bodies until their WINDOW_UPDATE.
+constexpr uint32_t kNoCreditClientWindow = 0;
+
+// Opens stream 1 with a request answered early, on a loop whose client granted no credit for response bodies: the body
+// of the answer waits for it.
+void AnswerEarlyWithoutCredit(Http2ProtocolLoopback& loop) {
+  loop.connect();
+
+  const EarlyAnswerCase& unknownMethod = kEarlyAnswerCases[0];
+  ASSERT_EQ(unknownMethod.status, "501");
+  SendRequestHeadersAnsweredEarly(loop, unknownMethod);
+  loop.pumpServerToClient();
+
+  ASSERT_EQ(loop.clientHeaders.size(), 1U);
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.front(), ":status"), "501");
+  EXPECT_FALSE(loop.clientHeaders.front().endStream);
+  EXPECT_TRUE(loop.clientData.empty());
+  EXPECT_TRUE(loop.streamResets.empty());
+}
+
+}  // namespace
+
+// A response sent before the end of the request completes the exchange: the server then resets the stream with
+// NO_ERROR, so that the client stops sending a body that nobody reads (RFC 9113 §8.1), as for a 413 or a redirect.
+TEST(Http2ProtocolHandler, EarlyAnswerResetsStreamWithoutErrorSoThatClientStopsSending) {
+  for (const EarlyAnswerCase& testCase : kEarlyAnswerCases) {
+    SCOPED_TRACE(testCase.description);
+    Router router;
+    bool handlerCalled = false;
+    router.setDefault([&handlerCalled](const HttpRequestView&) {
+      handlerCalled = true;
+      return HttpResponse(200);
+    });
+    Http2ProtocolLoopback loop(router, WithTunnelBridge{});
+    loop.tunnelBridge->resolveInBackground = testCase.resolveInBackground;
+    loop.connect();
+
+    SendRequestHeadersAnsweredEarly(loop, testCase);
+    loop.pumpServerToClient();
+
+    ASSERT_EQ(loop.clientHeaders.size(), 1U);
+    EXPECT_EQ(GetHeaderValue(loop.clientHeaders.front(), ":status"), testCase.status);
+    EXPECT_FALSE(handlerCalled);
+    EXPECT_EQ(loop.streamResets, (vector<std::pair<uint32_t, ErrorCode>>{{1U, ErrorCode::NoError}}));
+
+    // The stream is closed for the client: the rest of the body is not sent.
+    const std::string chunk(1024UL, 'b');
+    EXPECT_EQ(loop.client.sendData(1, std::as_bytes(std::span<const char>(chunk.data(), chunk.size())), false),
+              ErrorCode::StreamClosed);
+  }
+}
+
+// The client sends the rest of its request before it receives the early answer: the server ignores these frames, on a
+// stream it reset (RFC 9113 §5.1). They do not reach the handler as DATA of an unknown stream, and the trailers are not
+// taken for a new request (without :method, which would reset the stream with PROTOCOL_ERROR).
+TEST(Http2ProtocolHandler, RequestFramesSentBeforeEarlyAnswerIsReceivedAreIgnored) {
+  for (const EarlyAnswerCase& testCase : kEarlyAnswerCases) {
+    SCOPED_TRACE(testCase.description);
+    Router router;
+    bool handlerCalled = false;
+    router.setDefault([&handlerCalled](const HttpRequestView&) {
+      handlerCalled = true;
+      return HttpResponse(200);
+    });
+    Http2ProtocolLoopback loop(router, WithTunnelBridge{});
+    loop.tunnelBridge->resolveInBackground = testCase.resolveInBackground;
+    loop.connect();
+
+    SendRequestHeadersAnsweredEarly(loop, testCase);
+
+    // The client did not read the answer yet: it sends the rest of its request.
+    const std::string chunk(1024, 'b');
+    EXPECT_EQ(loop.client.sendData(1, std::as_bytes(std::span<const char>(chunk.data(), chunk.size())), false),
+              ErrorCode::NoError);
+    if (testCase.path.empty()) {
+      // The client ends its side of the tunnel.
+      EXPECT_EQ(loop.client.sendData(1, std::span<const std::byte>{}, true), ErrorCode::NoError);
+    } else {
+      RawChars trailers;
+      trailers.append(MakeHttp1HeaderLine("x-checksum", "abc"));
+      EXPECT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(trailers), true), ErrorCode::NoError);
+    }
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
+
+    ASSERT_EQ(loop.clientHeaders.size(), 1U);
+    EXPECT_EQ(GetHeaderValue(loop.clientHeaders.front(), ":status"), testCase.status);
+    EXPECT_FALSE(handlerCalled);
+    EXPECT_EQ(loop.streamResets, (vector<std::pair<uint32_t, ErrorCode>>{{1U, ErrorCode::NoError}}));
+  }
+}
+
+// The reset of a stream answered early waits for the part of the response body held by flow control: it goes out after
+// the last DATA frame, instead of cutting the response.
+TEST(Http2ProtocolHandler, EarlyAnswerWaitingForCreditResetsStreamAfterItsBody) {
+  Router router;
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
+  Http2ProtocolLoopback loop(router, Http2ProtocolLoopback::kDefaultBufferBytes,
+                             Http2ProtocolLoopback::kDefaultBufferBytes, kNoCreditClientWindow);
+  AnswerEarlyWithoutCredit(loop);
+
+  loop.client.sendWindowUpdate(1, 1024);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  EXPECT_EQ(loop.receivedData(1), "Unsupported HTTP method");
+  ASSERT_FALSE(loop.clientData.empty());
+  EXPECT_TRUE(loop.clientData.back().endStream);
+  EXPECT_EQ(loop.streamResets, (vector<std::pair<uint32_t, ErrorCode>>{{1U, ErrorCode::NoError}}));
+  EXPECT_EQ(loop.handler.connection().activeStreamCount(), 0U);
+}
+
+// Valid trailers end the request of a stream whose response waits for credit: they are ignored like its DATA frames,
+// the response goes on, and the stream needs no reset once it is sent.
+TEST(Http2ProtocolHandler, EarlyAnswerWaitingForCreditIgnoresValidTrailers) {
+  Router router;
+  bool handlerCalled = false;
+  router.setDefault([&handlerCalled](const HttpRequestView&) {
+    handlerCalled = true;
+    return HttpResponse(200);
+  });
+  Http2ProtocolLoopback loop(router, Http2ProtocolLoopback::kDefaultBufferBytes,
+                             Http2ProtocolLoopback::kDefaultBufferBytes, kNoCreditClientWindow);
+  AnswerEarlyWithoutCredit(loop);
+
+  RawChars trailers;
+  trailers.append(MakeHttp1HeaderLine("x-checksum", "abc"));
+  EXPECT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(trailers), true), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+  EXPECT_FALSE(handlerCalled);
+  EXPECT_TRUE(loop.streamResets.empty());
+  EXPECT_EQ(loop.handler.connection().activeStreamCount(), 1U);
+
+  loop.client.sendWindowUpdate(1, 1024);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  EXPECT_EQ(loop.receivedData(1), "Unsupported HTTP method");
+  ASSERT_FALSE(loop.clientData.empty());
+  EXPECT_TRUE(loop.clientData.back().endStream);
+  EXPECT_TRUE(loop.streamResets.empty());
+  EXPECT_EQ(loop.handler.connection().activeStreamCount(), 0U);
+}
+
+// Malformed trailers (RFC 9113 §8.1) still reset the stream, along with the rest of its response.
+TEST(Http2ProtocolHandler, EarlyAnswerWaitingForCreditResetsStreamOnMalformedTrailers) {
+  struct Case {
+    std::string_view name;
+    bool endStream;
+  };
+  for (const Case& testCase : {Case{"x-checksum", false}, Case{":path", true}}) {
+    SCOPED_TRACE(testCase.name);
+    Router router;
+    Http2ProtocolLoopback loop(router, Http2ProtocolLoopback::kDefaultBufferBytes,
+                               Http2ProtocolLoopback::kDefaultBufferBytes, kNoCreditClientWindow);
+    AnswerEarlyWithoutCredit(loop);
+
+    RawChars trailers;
+    trailers.append(MakeHttp1HeaderLine(testCase.name, "abc"));
+    EXPECT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(trailers), testCase.endStream),
+              ErrorCode::NoError);
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
+
+    EXPECT_TRUE(loop.clientData.empty());
+    EXPECT_EQ(loop.streamResets, (vector<std::pair<uint32_t, ErrorCode>>{{1U, ErrorCode::ProtocolError}}));
+    EXPECT_EQ(loop.handler.connection().activeStreamCount(), 0U);
+  }
 }
 
 TEST(Http2ProtocolHandler, DeclaredContentLengthBodiesAreReceivedWhole) {
@@ -2754,6 +3010,96 @@ TEST(Http2ProtocolHandler, RejectsMalformedRequestPseudoHeaderSets) {
     EXPECT_EQ(loop.streamResets[static_cast<uint32_t>(i)].first, cases[static_cast<uint32_t>(i)].streamId);
     EXPECT_EQ(loop.streamResets[static_cast<uint32_t>(i)].second, ErrorCode::ProtocolError);
   }
+}
+
+namespace {
+
+// A HEADERS frame of fields encoded by hand, as Http2Connection drops the connection-specific ones. Literals without
+// indexing leave the HPACK dynamic tables of the connection untouched.
+[[nodiscard]] RawBytes MakeRawHeadersFrame(uint32_t streamId, HeadersView fields, bool endStream) {
+  HpackEncoder encoder(4096);
+  RawBytes block;
+  for (const auto [name, value] : fields) {
+    encoder.encode(block, name, value, HpackEncoder::IndexingMode::WithoutIndexing);
+  }
+  RawBytes frame;
+  WriteFrame(frame, FrameType::Headers, ComputeHeaderFrameFlags(endStream, true), streamId,
+             static_cast<uint32_t>(block.size()));
+  frame.unchecked_append(block);
+  return frame;
+}
+
+// The RST_STREAM frames pending on the server, read here as the client does not know the streams of hand-made frames.
+[[nodiscard]] vector<std::pair<uint32_t, ErrorCode>> DrainStreamResets(Http2ProtocolLoopback& loop) {
+  const auto output = DrainPendingOutput(loop.handler, 128);
+  vector<std::pair<uint32_t, ErrorCode>> resets;
+  std::span<const std::byte> remaining(output);
+  while (!remaining.empty()) {
+    const FrameHeader header = ParseFrameHeader(remaining);
+    if (header.type() == FrameType::RstStream) {
+      RstStreamFrame reset;
+      EXPECT_EQ(ParseRstStreamFrame(remaining.subspan(FrameHeader::kSize, header.length()), reset),
+                FrameParseResult::Ok);
+      resets.emplace_back(header.streamId(), reset.errorCode);
+    }
+    remaining = remaining.subspan(FrameHeader::kSize + header.length());
+  }
+  return resets;
+}
+
+}  // namespace
+
+TEST(Http2ProtocolHandler, ConnectionSpecificFieldsMakeTheRequestMalformed) {
+  Router router;
+  int handlerCalls = 0;
+  std::string teValue;
+  router.setDefault([&handlerCalls, &teValue](const HttpRequestView& req) {
+    ++handlerCalls;
+    teValue.assign(req.headerValueOrEmpty(http::TE));
+    return req.makeResponse(200);
+  });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  static constexpr http::HeaderView kFields[]{
+      {"connection", "close"},          {"keep-alive", "timeout=5"}, {"proxy-connection", "keep-alive"},
+      {"transfer-encoding", "chunked"}, {"upgrade", "websocket"},    {"te", "gzip"},
+  };
+
+  vector<std::pair<uint32_t, ErrorCode>> expectedResets;
+  uint32_t streamId = 1;
+  for (const http::HeaderView& field : kFields) {
+    RawChars headers = MakeGetHeaders("/");
+    headers.append(MakeHttp1HeaderLine(field.name, field.value));
+    loop.feedHandler(MakeRawHeadersFrame(streamId, HeadersView(headers), true));
+    expectedResets.emplace_back(streamId, ErrorCode::ProtocolError);
+    streamId += 2;
+  }
+
+  // The trailers are part of the message.
+  const RawChars openRequest = MakeGetHeaders("/");
+  loop.feedHandler(MakeRawHeadersFrame(streamId, HeadersView(openRequest), false));
+  RawChars trailers;
+  trailers.append(MakeHttp1HeaderLine("transfer-encoding", "chunked"));
+  loop.feedHandler(MakeRawHeadersFrame(streamId, HeadersView(trailers), true));
+  expectedResets.emplace_back(streamId, ErrorCode::ProtocolError);
+  streamId += 2;
+
+  EXPECT_EQ(handlerCalls, 0);
+  EXPECT_EQ(DrainStreamResets(loop), expectedResets);
+
+  // Only these streams are affected: the HPACK state stays in sync, and te: trailers is allowed.
+  RawChars allowed = MakeGetHeaders("/");
+  allowed.append(MakeHttp1HeaderLine("te", "trailers"));
+  ASSERT_EQ(loop.client.sendHeaders(streamId, http::StatusCode{}, HeadersView(allowed), true), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  EXPECT_EQ(handlerCalls, 1);
+  EXPECT_EQ(teValue, "trailers");
+  EXPECT_TRUE(loop.streamResets.empty());
 }
 
 TEST(Http2ProtocolHandler, AuthorityIsOptionalForOrdinaryRequest) {
@@ -4012,6 +4358,7 @@ TEST(Http2ProtocolHandler, GlobalHeadersIncludedInResponse) {
 
   Http2ProtocolLoopback loop(router);
   loop.serverConfig.globalHeaders.append("x-global-test: present");
+  loop.serverConfig.validate();
   loop.connect();
 
   RawChars hdrs;
@@ -4027,6 +4374,28 @@ TEST(Http2ProtocolHandler, GlobalHeadersIncludedInResponse) {
   ASSERT_FALSE(loop.clientHeaders.empty());
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], ":status"), "200");
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], "x-global-test"), "present");
+}
+
+// They are valid global headers for HTTP/1.1, but would make an HTTP/2 response malformed (RFC 9113 §8.2.2).
+TEST(Http2ProtocolHandler, ConnectionSpecificGlobalHeadersAreNotSent) {
+  Router router;
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200, "ok"); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.serverConfig.globalHeaders.append("keep-alive: timeout=5");
+  loop.serverConfig.globalHeaders.append("x-global-test: present");
+  loop.serverConfig.validate();
+  loop.connect();
+
+  const RawChars hdrs = MakeGetHeaders("/");
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  ASSERT_FALSE(loop.clientHeaders.empty());
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], ":status"), "200");
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], "x-global-test"), "present");
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], "keep-alive"), "");
 }
 
 // ============== Streaming Handler Encoding Negotiation ==============
@@ -5797,6 +6166,68 @@ TEST(Http2ProtocolHandler, EmitsDetailedLabeledMetrics) {
   EXPECT_TRUE(
       contains("aeronet.http2.stream.request.body.bytes:0|h", "http.request.method:GET,http.response.status_code:200"));
 }
+
+TEST(Http2ProtocolHandler, CountsMalformedRequests) {
+  test::UnixDogstatsdSink sink;
+  TelemetryConfig cfg;
+  cfg.dogStatsDEnabled = true;
+  cfg.withDogStatsdSocketPath(sink.path());
+
+  vector<std::string> messages;
+  test::SendCaptureGuard sendCapture(messages);
+
+  Router router;
+  router.setDefault([](const HttpRequestView& req) { return req.makeResponse(200); });
+
+  // The client grants no credit for response bodies: the 501 of stream 1 keeps waiting for it.
+  static constexpr uint32_t kClientWindow = 0;
+  Http2ProtocolLoopback loop(router, Http2ProtocolLoopback::kDefaultBufferBytes,
+                             Http2ProtocolLoopback::kDefaultBufferBytes, kClientWindow, 0, {}, cfg);
+  loop.connect();
+
+  // Valid trailers on a stream answered early are ignored: they are not a malformed request.
+  SendRequestHeadersAnsweredEarly(loop, kEarlyAnswerCases[0]);
+  RawChars trailers;
+  trailers.append(MakeHttp1HeaderLine("x-checksum", "abc"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(trailers), true), ErrorCode::NoError);
+
+  // Refused by the handler: no :method, then a content-length that is not a number.
+  RawChars noMethod;
+  noMethod.append(MakeHttp1HeaderLine(":scheme", "https"));
+  noMethod.append(MakeHttp1HeaderLine(":path", "/"));
+  ASSERT_EQ(loop.client.sendHeaders(3, http::StatusCode{}, HeadersView(noMethod), true), ErrorCode::NoError);
+  RawChars badContentLength = MakeGetHeaders("/");
+  badContentLength.append(MakeHttp1HeaderLine("content-length", "1x"));
+  ASSERT_EQ(loop.client.sendHeaders(5, http::StatusCode{}, HeadersView(badContentLength), false), ErrorCode::NoError);
+
+  // Refused by the connection, while decoding the field section.
+  RawChars undefinedPseudoHeader = MakeGetHeaders("/");
+  undefinedPseudoHeader.append(MakeHttp1HeaderLine(":unknown", "value"));
+  ASSERT_EQ(loop.client.sendHeaders(7, http::StatusCode{}, HeadersView(undefinedPseudoHeader), true),
+            ErrorCode::NoError);
+
+  // Trailers not ending the stream, then with a pseudo-header field.
+  const RawChars openRequest = MakeGetHeaders("/");
+  ASSERT_EQ(loop.client.sendHeaders(9, http::StatusCode{}, HeadersView(openRequest), false), ErrorCode::NoError);
+  ASSERT_EQ(loop.client.sendHeaders(9, http::StatusCode{}, HeadersView(trailers), false), ErrorCode::NoError);
+  ASSERT_EQ(loop.client.sendHeaders(11, http::StatusCode{}, HeadersView(openRequest), false), ErrorCode::NoError);
+  RawChars pseudoHeaderTrailers;
+  pseudoHeaderTrailers.append(MakeHttp1HeaderLine(":path", "/"));
+  ASSERT_EQ(loop.client.sendHeaders(11, http::StatusCode{}, HeadersView(pseudoHeaderTrailers), true),
+            ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  EXPECT_EQ(loop.streamResets, (vector<std::pair<uint32_t, ErrorCode>>{{3U, ErrorCode::ProtocolError},
+                                                                       {5U, ErrorCode::ProtocolError},
+                                                                       {7U, ErrorCode::ProtocolError},
+                                                                       {9U, ErrorCode::ProtocolError},
+                                                                       {11U, ErrorCode::ProtocolError}}));
+  loop.ctx.telemetry.flush();
+  ASSERT_EQ(messages.size(), 1U);
+  EXPECT_TRUE(messages.front().contains("aeronet.http2.streams.rejected_malformed:5|c"));
+}
 #endif
 
 #ifdef AERONET_ENABLE_OPENTELEMETRY
@@ -5930,7 +6361,8 @@ TEST(Http2WriterTransport, IsAliveReturnsTrueForOpenStream) {
   // Establish connection
   client.sendClientPreface();
   auto clientOut = client.getPendingOutput();
-  (void)server.processInput(clientOut);
+  const auto prefaceResult = server.processInput(clientOut);
+  (void)server.processInput(clientOut.subspan(prefaceResult.bytesConsumed));  // the SETTINGS of the client
   client.onOutputWritten(clientOut.size());
 
   auto serverOut = server.getPendingOutput();
@@ -5952,6 +6384,9 @@ TEST(Http2WriterTransport, IsAliveReturnsTrueForOpenStream) {
   clientOut = client.getPendingOutput();
   (void)server.processInput(clientOut);
   client.onOutputWritten(clientOut.size());
+
+  EXPECT_EQ(server.state(), ConnectionState::Open);
+  EXPECT_NE(server.getStream(1), nullptr);
 }
 
 // ============== Per-route maxHeaderBytes Tests ==============
@@ -6072,7 +6507,7 @@ TEST(Http2ProtocolHandler, PerRouteMaxBodyBytesAllowsSmaller) {
 
 // The GOAWAY that the sweep of a drain sends (once) lets the open streams complete: the connection is closed once they
 // are answered, and the streams the client opens meanwhile are ignored. A connection whose client preface was not
-// received yet is closed right away.
+// received yet is closed right away, as is, after its GOAWAY, one that did not receive the first frame of its client.
 TEST(Http2ProtocolHandler, DrainSweepClosesTheConnectionOnceItsStreamsAreAnswered) {
   Router router;
   router.setPath(http::Method::POST, "/upload",
@@ -6082,6 +6517,13 @@ TEST(Http2ProtocolHandler, DrainSweepClosesTheConnectionOnceItsStreamsAreAnswere
   EXPECT_TRUE(loop.handler.onSweep(std::chrono::steady_clock::now(), true));
   EXPECT_FALSE(loop.handler.hasPendingOutput());
   EXPECT_TRUE(loop.state.isDrainCloseRequested());
+
+  Http2ProtocolLoopback prefaceLoop(router);
+  prefaceLoop.feedHandler(std::as_bytes(std::span<const char>(kConnectionPreface)));
+  ASSERT_EQ(prefaceLoop.handler.connection().state(), ConnectionState::AwaitingSettings);
+  EXPECT_TRUE(prefaceLoop.handler.onSweep(std::chrono::steady_clock::now(), true));
+  EXPECT_EQ(prefaceLoop.handler.connection().state(), ConnectionState::GoAwaySent);
+  EXPECT_TRUE(prefaceLoop.state.isDrainCloseRequested());
 
   Http2ProtocolLoopback openLoop(router);
   openLoop.connect();
@@ -6176,11 +6618,62 @@ TEST(Http2ProtocolHandler, SweepAsyncTimeoutSends408) {
   EXPECT_TRUE(loop.handler.onSweep(farFuture, false));
   loop.pumpServerToClient();
 
-  // Expect 408 status and a RST_STREAM
+  // The 408 ends the stream: no RST_STREAM may follow it on the closed stream (RFC 9113 §5.1).
   ASSERT_FALSE(loop.clientHeaders.empty());
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "408");
-  EXPECT_FALSE(loop.streamResets.empty());
-  EXPECT_EQ(loop.streamResets.back().second, ErrorCode::Cancel);
+  EXPECT_TRUE(loop.clientHeaders.back().endStream);
+  EXPECT_TRUE(loop.streamResets.empty());
+  EXPECT_EQ(loop.handler.connection().activeStreamCount(), 0U);
+}
+
+// The 408 of a timed-out async stream is rejected when the pending output is at its limit (a client that sends PINGs
+// and never reads their ACKs): the rejection answers 503 from the request, then owned by the task of the stream.
+TEST(Http2ProtocolHandler, SweepAsyncTimeoutAtPendingOutputLimitSends503) {
+  using namespace std::chrono_literals;
+  Router router;
+  router
+      .setPath(http::Method::GET, "/async-slow",
+               [](HttpRequestView& req) -> RequestTask<HttpResponse> {
+                 const int result = co_await req.deferWork([] { return 1; });
+                 co_return HttpResponse(200, std::to_string(result));
+               })
+      .timeout(1ms);
+
+  static constexpr uint32_t kMaxOutboundBufferBytes = 1024;
+  Http2ProtocolLoopback loop(router, kMaxOutboundBufferBytes);
+  AsyncResumeRecorder resumes(loop);
+  loop.connect();
+
+  RawChars hdrs = MakeGetHeaders("/async-slow");
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+  loop.pumpClientToServer();
+
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  while (resumes.nbPosts() == 0) {
+    ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "async callback did not fire in time";
+    std::this_thread::sleep_for(1ms);
+  }
+
+  // The server queues one PING ACK per PING, and stops reading at the output limit.
+  static constexpr int kNbPings = 128;
+  for (int pingPos = 0; pingPos < kNbPings; ++pingPos) {
+    loop.client.sendPing(PingFrame{});
+  }
+  const auto pings = DrainPendingOutput(loop.client, 128);
+  const auto res = loop.handler.processInput(pings);
+  ASSERT_LT(res.bytesConsumed, pings.size());
+  ASSERT_GE(loop.handler.pendingOutputSize(), kMaxOutboundBufferBytes);
+
+  // The deadline of stream 1 expires: its 408 does not fit in the pending output.
+  EXPECT_TRUE(loop.handler.onSweep(std::chrono::steady_clock::now() + 10s, false));
+  loop.pumpServerToClient();
+
+  const auto resp = std::ranges::find(loop.clientHeaders, 1U, &HeaderEvent::streamId);
+  ASSERT_NE(resp, loop.clientHeaders.end());
+  EXPECT_EQ(GetHeaderValue(*resp, ":status"), "503");
+  EXPECT_TRUE(resp->endStream);
+  EXPECT_TRUE(loop.streamResets.empty());
+  EXPECT_FALSE(loop.handler.resumeAsyncTaskByHandle(resumes.handle()));
 }
 
 TEST(Http2ProtocolHandler, SweepKeepsTheTaskOfATimedOutStreamUntilItsWorkCompletes) {
@@ -6220,15 +6713,14 @@ TEST(Http2ProtocolHandler, SweepKeepsTheTaskOfATimedOutStreamUntilItsWorkComplet
   ASSERT_EQ(loop.handler.connection().getStream(1)->sendWindow(), 0);
   EXPECT_TRUE(loop.handler.hasAsyncWorkInFlight());
 
-  // Stream 3 times out while its work runs: answered 408 (without credit), then reset.
+  // Stream 3 times out while its work runs: answered 408, without credit.
   EXPECT_TRUE(loop.handler.onSweep(std::chrono::steady_clock::now() + 10s, false));
   loop.pumpServerToClient();
   const auto resp = std::ranges::find(loop.clientHeaders, 3U, &HeaderEvent::streamId);
   ASSERT_NE(resp, loop.clientHeaders.end());
   EXPECT_EQ(GetHeaderValue(*resp, ":status"), "408");
-  ASSERT_FALSE(loop.streamResets.empty());
-  EXPECT_EQ(loop.streamResets.back().first, 3U);
-  EXPECT_EQ(loop.streamResets.back().second, ErrorCode::Cancel);
+  EXPECT_TRUE(resp->endStream);
+  EXPECT_TRUE(loop.streamResets.empty());
 
   // Its task is kept for the work, then destroyed when the work completes.
   EXPECT_TRUE(loop.handler.hasAsyncWorkInFlight());
@@ -6624,53 +7116,6 @@ TEST(Http2ProtocolHandler, DataFrameOnStreamWithReleasedRequestIsIgnored) {
   EXPECT_TRUE(handlerCalled);
 }
 
-TEST(Http2ProtocolHandler, TrailingHeadersOnStreamWithReleasedRequestRejected) {
-  Router router;
-  bool handlerCalled = false;
-  router.setDefault([&handlerCalled](const HttpRequestView& req) {
-    handlerCalled = true;
-    return req.makeResponse(http::StatusCodeOK);
-  });
-
-  // Zero client window: the (non-empty) 501 response body can't be framed at all, so it's fully deferred -
-  // the stream survives in _streams (holding the deferred send) even though releaseStreamAfterResponse()
-  // already reset its HttpRequestView to {} once the deferred send was recorded.
-  static constexpr uint32_t kClientWindow = 0;
-  Http2ProtocolLoopback loop(router, 4U << 20U, 4U << 20U, kClientWindow);
-  loop.connect();
-
-  // Unsupported method → rejected with a 501 purely from the headers, before any body is read. Sent with
-  // endStream=false, as if the client still intended to follow up with a request body/trailers.
-  RawChars hdrs;
-  hdrs.append(MakeHttp1HeaderLine(":method", "BREW"));
-  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
-  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
-  hdrs.append(MakeHttp1HeaderLine(":path", "/whatever"));
-  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), false), ErrorCode::NoError);
-
-  loop.pumpClientToServer();
-  loop.pumpServerToClient();
-
-  ASSERT_FALSE(loop.clientHeaders.empty());
-  EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "501");
-
-  // The client's original HEADERS had endStream=false, so it's entitled to still send a trailing, well-formed
-  // HEADERS block (no pseudo-headers, END_STREAM set). But the server already released the request object
-  // before this arrived: onTrailersReceived's `!state.hasRequest()` check should catch it and reject with
-  // RST_STREAM(ProtocolError), never reaching the router.
-  RawChars trailers;
-  trailers.append(MakeHttp1HeaderLine("x-checksum", "abc123"));
-  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(trailers), true), ErrorCode::NoError);
-
-  loop.pumpClientToServer();
-  loop.pumpServerToClient();
-
-  EXPECT_FALSE(handlerCalled);
-  ASSERT_FALSE(loop.streamResets.empty());
-  EXPECT_EQ(loop.streamResets.back().first, 1U);
-  EXPECT_EQ(loop.streamResets.back().second, ErrorCode::ProtocolError);
-}
-
 TEST(Http2ProtocolHandler, ConnectionWindowAloneStallsFileSendWhileStreamWindowRemains) {
   test::ScopedTempDir tmpDir;
   // Comfortably bigger than any plausible default connection-level window.
@@ -6773,6 +7218,47 @@ TEST(Http2ProtocolHandler, FilePayloadShortReadReturnsInternalErrorAndResetsStre
   ASSERT_FALSE(loop.streamResets.empty());
   EXPECT_EQ(loop.streamResets.back().first, 1U);
   EXPECT_EQ(loop.streamResets.back().second, ErrorCode::InternalError);
+}
+
+// The file shrinks between the size read by file() and the reads of sendResponse(): the HEADERS frame is already sent,
+// without END_STREAM, and the announced body will never be complete.
+TEST(Http2ProtocolHandler, FilePayloadShortReadDuringFirstSendResetsStream) {
+  for (const auto shrunkSize : {0UL, 100UL}) {
+    SCOPED_TRACE(shrunkSize);
+    test::ScopedTempDir tmpDir;
+    test::ScopedTempFile tmpFile(tmpDir, std::string(1000U, 'Q'));
+
+    Router router;
+    const auto filePath = tmpFile.filePath().string();
+    router.setPath(http::Method::GET, "/shrinking", [&filePath, shrunkSize](const HttpRequestView&) {
+      HttpResponse response = HttpResponse(200).file(File(filePath), "application/octet-stream");
+      std::filesystem::resize_file(filePath, shrunkSize);
+      return response;
+    });
+
+    Http2ProtocolLoopback loop(router);
+    loop.connect();
+
+    RawChars hdrs = MakeGetHeaders("/shrinking");
+    ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
+
+    ASSERT_EQ(loop.clientHeaders.size(), 1U);
+    EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "200");
+    EXPECT_FALSE(loop.clientHeaders.back().endStream);
+    EXPECT_EQ(loop.receivedData(1).size(), shrunkSize);
+
+    // The client learns that the response is incomplete, instead of waiting for the end of the stream.
+    const decltype(loop.streamResets) expectedResets{{1U, ErrorCode::InternalError}};
+    EXPECT_EQ(loop.streamResets, expectedResets);
+
+    // The stream does not stay active forever, which would prevent a GOAWAY from completing.
+    EXPECT_EQ(loop.handler.connection().activeStreamCount(), 0U);
+    loop.handler.connection().initiateGoAway();
+    EXPECT_TRUE(loop.handler.connection().goAwayCompleted());
+  }
 }
 
 TEST(Http2ProtocolHandler, RequestTrailersWithoutBodyDispatchesEmptyBody) {
@@ -6941,7 +7427,7 @@ TEST(Http2ProtocolHandler, AsyncCompletionRejectedWhenTunnelBacklogAlreadyOverLi
     co_return HttpResponse(200, std::to_string(result));
   });
 
-  static constexpr uint32_t kMaxOutboundBufferBytes = 200;  // tiny cap; default 65535 flow-control windows untouched
+  static constexpr uint32_t kMaxOutboundBufferBytes = 1024;  // the lowest cap; flow-control windows untouched
   Http2ProtocolLoopback loop(router, WithTunnelBridge{}, kMaxOutboundBufferBytes);
 
   AsyncResumeRecorder resumes(loop);
@@ -6974,7 +7460,7 @@ TEST(Http2ProtocolHandler, AsyncCompletionRejectedWhenTunnelBacklogAlreadyOverLi
 
   // Inject tunnel data DIRECTLY - bypassing processInput's per-frame outputHighWaterMark
   // throttle entirely - to push pendingOutputSize() well past the tiny cap, undrained.
-  const std::string payload(150, 'T');
+  const std::string payload(300, 'T');
   for (int i = 0; i < 5; ++i) {
     ASSERT_EQ(loop.handler.injectTunnelData(1, std::as_bytes(std::span<const char>(payload.data(), payload.size()))),
               ErrorCode::NoError);
