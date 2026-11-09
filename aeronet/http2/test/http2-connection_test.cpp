@@ -2466,8 +2466,9 @@ TEST(Http2Connection, DataFrameWithInvalidPaddingIsProtocolError) {
 
 TEST(Http2Connection, DataFrameExceedsConnectionRecvWindow) {
   Http2Config config;
-  // Use a small connection window to make the test feasible.
-  config.connectionWindowSize = 100;
+  // The smallest connection window, with frames allowed to exceed it at once.
+  config.connectionWindowSize = kDefaultInitialWindowSize;
+  config.maxFrameSize = kDefaultInitialWindowSize + 1U;
   Http2Connection conn(config, true);
   RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
@@ -2481,9 +2482,9 @@ TEST(Http2Connection, DataFrameExceedsConnectionRecvWindow) {
     conn.onOutputWritten(conn.getPendingOutput().size());
   }
 
-  // Send a DATA frame larger than the connection recv window (100 bytes).
+  // Send a DATA frame larger than the connection recv window.
   // We need to construct a raw frame because the peer doesn't know our window.
-  vector<std::byte> payload(200, std::byte{0x42});
+  vector<std::byte> payload(kDefaultInitialWindowSize + 1U, std::byte{0x42});
   const FrameHeader header(static_cast<uint32_t>(payload.size()), FrameType::Data, FrameFlags::None, 1);
 
   auto bytes = SerializeFrame(header, payload);
@@ -2641,6 +2642,132 @@ TEST(Http2Connection, HeldStreamRecvWindowIsReplenishedOnRelease) {
   (void)DrainPendingOutput(conn);
   conn.releaseStreamRecvWindow(1);
   EXPECT_TRUE(WindowUpdateIncrements(DrainPendingOutput(conn), 1).empty());
+}
+
+// A client may send the default 65535 bytes on a stream before it receives our SETTINGS (RFC 9113 §6.9.3): a smaller
+// initial window only applies from their acknowledgement, adjusting the open streams as the client does (§6.9.2).
+TEST(Http2Connection, SmallerInitialWindowAppliesFromSettingsAck) {
+  Http2Config config;
+  config.initialWindowSize = 1024;
+  Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  connSink.onDataFn = ([](uint32_t, std::span<const std::byte>, bool) {});
+  int resets = 0;
+  connSink.onStreamResetFn = ([&resets](uint32_t, ErrorCode) { ++resets; });
+
+  OpenClientStream(conn, 1);
+  EXPECT_EQ(conn.getStream(1)->recvWindow(), 65535);
+
+  // Far above the configured window, but within the one the client can assume for now.
+  for (int frame = 0; frame < 3; ++frame) {
+    FeedDataFrame(conn, 1, 16384);
+  }
+  EXPECT_EQ(resets, 0);
+  EXPECT_EQ(conn.getStream(1)->recvWindow(), 16383);
+  EXPECT_TRUE(WindowUpdateIncrements(DrainPendingOutput(conn), 1).empty());
+
+  // The window of the client is now negative (-48128 bytes): it gets the credit to resume right away.
+  AcknowledgeSettings(conn);
+  EXPECT_EQ(WindowUpdateIncrements(DrainPendingOutput(conn), 1), vector<uint32_t>{49152U});
+  EXPECT_EQ(conn.getStream(1)->recvWindow(), 1024);
+
+  // Applied only once.
+  AcknowledgeSettings(conn);
+  EXPECT_FALSE(conn.hasPendingOutput());
+  EXPECT_EQ(conn.getStream(1)->recvWindow(), 1024);
+
+  // A stream opened from now on starts from the configured window, which is enforced.
+  OpenClientStream(conn, 3);
+  EXPECT_EQ(conn.getStream(3)->recvWindow(), 1024);
+  FeedDataFrame(conn, 3, 1025);
+  EXPECT_EQ(resets, 1);
+}
+
+TEST(Http2Connection, CreditGrantedBeforeSettingsAckKeepsWindowsInSync) {
+  Http2Config config;
+  config.initialWindowSize = 32768;
+  Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  connSink.onDataFn = ([](uint32_t, std::span<const std::byte>, bool) {});
+
+  OpenClientStream(conn, 1);
+  for (int frame = 0; frame < 3; ++frame) {
+    FeedDataFrame(conn, 1, 16384);
+  }
+
+  // Half of the configured window is reached before the acknowledgement.
+  EXPECT_EQ(WindowUpdateIncrements(DrainPendingOutput(conn), 1), vector<uint32_t>{16385U});
+  EXPECT_EQ(conn.getStream(1)->recvWindow(), 32768);
+
+  AcknowledgeSettings(conn);
+  EXPECT_EQ(WindowUpdateIncrements(DrainPendingOutput(conn), 1), vector<uint32_t>{32767U});
+  EXPECT_EQ(conn.getStream(1)->recvWindow(), 32768);
+}
+
+TEST(Http2Connection, SmallerInitialWindowLeavesEnoughCreditUntouched) {
+  Http2Config config;
+  config.initialWindowSize = 40000;
+  Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  connSink.onDataFn = ([](uint32_t, std::span<const std::byte>, bool) {});
+
+  OpenClientStream(conn, 1);
+  FeedDataFrame(conn, 1, 1000);
+
+  AcknowledgeSettings(conn);
+  EXPECT_TRUE(WindowUpdateIncrements(DrainPendingOutput(conn), 1).empty());
+  EXPECT_EQ(conn.getStream(1)->recvWindow(), 39000);
+}
+
+TEST(Http2Connection, HeldStreamWaitsForReleaseWhenSmallerInitialWindowApplies) {
+  Http2Config config;
+  config.initialWindowSize = 1024;
+  Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  connSink.onDataFn = ([](uint32_t, std::span<const std::byte>, bool) {});
+
+  OpenClientStream(conn, 1);
+  OpenClientStream(conn, 3);
+  conn.holdStreamRecvWindow(1);
+  conn.holdStreamRecvWindow(3);
+  FeedDataFrame(conn, 1, 16384);
+  FeedDataFrame(conn, 3, 16384);
+
+  AcknowledgeSettings(conn);
+  const auto output = DrainPendingOutput(conn);
+  EXPECT_TRUE(WindowUpdateIncrements(output, 1).empty());
+  EXPECT_TRUE(WindowUpdateIncrements(output, 3).empty());
+  EXPECT_EQ(conn.getStream(1)->recvWindow(), -15360);
+
+  // A negative window still accepts an empty DATA frame ending the stream (RFC 9113 §6.9.1).
+  FeedConnection(conn, SerializeFrame(FrameHeader(0, FrameType::Data, FrameFlags::DataEndStream, 3), {}));
+  EXPECT_FALSE(conn.getStream(3)->canReceive());
+  EXPECT_FALSE(conn.getStream(3)->resetSent());
+
+  conn.releaseStreamRecvWindow(1);
+  EXPECT_EQ(WindowUpdateIncrements(DrainPendingOutput(conn), 1), vector<uint32_t>{16384U});
+  EXPECT_EQ(conn.getStream(1)->recvWindow(), 1024);
+}
+
+TEST(Http2Connection, LargerInitialWindowIsNotAdjustedBySettingsAck) {
+  Http2Config config;  // 1 MiB by default
+  Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+
+  OpenClientStream(conn, 1);
+  EXPECT_EQ(conn.getStream(1)->recvWindow(), 1 << 20);
+
+  AcknowledgeSettings(conn);
+  EXPECT_FALSE(conn.hasPendingOutput());
+  EXPECT_EQ(conn.getStream(1)->recvWindow(), 1 << 20);
+
+  OpenClientStream(conn, 3);
+  EXPECT_EQ(conn.getStream(3)->recvWindow(), 1 << 20);
 }
 
 TEST(Http2Connection, PeerInitialWindowOnlyControlsNewStreamSendWindow) {

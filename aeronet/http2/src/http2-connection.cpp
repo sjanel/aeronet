@@ -230,7 +230,9 @@ Http2Connection::Http2Connection(const Http2Config& config, bool isServer, traci
                     config.mergeUnknownRequestHeaders,
                     isServer ? HpackDecoder::Messages::Requests : HpackDecoder::Messages::Responses),
       _pTelemetryContext(telemetryContext != nullptr && telemetryContext->enabled() ? telemetryContext : nullptr),
-      _isServer(isServer) {}
+      _isServer(isServer) {
+  assert(config.connectionWindowSize >= kDefaultInitialWindowSize);  // checked by Http2Config::validate()
+}
 
 void Http2Connection::recordFrame(bool sent, FrameType type, uint64_t payloadBytes, uint64_t count) const noexcept {
   if (_pTelemetryContext == nullptr) {
@@ -566,7 +568,7 @@ void Http2Connection::pruneClosedStreams() {
 
 ErrorCode Http2Connection::prepareSendHeaders(uint32_t streamId, bool endStream) {
   auto [it, inserted] =
-      _streams.try_emplace(streamId, streamId, _peerSettings.initialWindowSize, _localSettings.initialWindowSize);
+      _streams.try_emplace(streamId, streamId, _peerSettings.initialWindowSize, newStreamRecvWindow());
   if (inserted) {
     // Created new stream
     if (!canCreateStreams()) {
@@ -801,10 +803,39 @@ void Http2Connection::releaseStreamRecvWindow(uint32_t streamId) {
     return;
   }
   pStream->holdRecvWindow(false);
-  // Same threshold as the replenishment on reception (handleDataFrame()): above it, the next DATA frame replenishes it.
-  const int32_t initialStreamWindow = static_cast<int32_t>(_localSettings.initialWindowSize);
-  if (pStream->canReceive() && pStream->recvWindow() <= ReplenishThreshold(_localSettings.initialWindowSize)) {
-    sendWindowUpdate(streamId, static_cast<uint32_t>(initialStreamWindow - pStream->recvWindow()));
+  replenishStreamRecvWindow(*pStream);  // above the threshold, the next DATA frame replenishes it
+}
+
+void Http2Connection::replenishStreamRecvWindow(Http2Stream& stream) {
+  const uint32_t windowSize = _localSettings.initialWindowSize;
+  if (stream.canReceive() && stream.recvWindow() <= ReplenishThreshold(windowSize)) {
+    sendWindowUpdate(stream.id(), static_cast<uint32_t>(static_cast<int32_t>(windowSize) - stream.recvWindow()));
+  }
+}
+
+uint32_t Http2Connection::newStreamRecvWindow() const noexcept {
+  // Until it receives our SETTINGS, the peer may use the default window (RFC 9113 §6.9.3). A larger window accepts it
+  // from the start, whereas a smaller one has to wait for the acknowledgement of the SETTINGS.
+  return _settingsAcked ? _localSettings.initialWindowSize
+                        : std::max(_localSettings.initialWindowSize, kDefaultInitialWindowSize);
+}
+
+void Http2Connection::applyAcknowledgedSettings() {
+  if (_settingsAcked) {
+    return;
+  }
+  _settingsAcked = true;
+
+  if (_localSettings.initialWindowSize < kDefaultInitialWindowSize) {
+    const uint32_t reduction = kDefaultInitialWindowSize - _localSettings.initialWindowSize;
+    for (auto& [id, stream] : _streams) {
+      // As the peer did on receiving the SETTINGS (RFC 9113 §6.9.2). The window of a stream it already sent more than
+      // the new size on is negative: without credit from us, it could not send anything anymore.
+      stream.reduceRecvWindow(reduction);
+      if (!stream.recvWindowHeld()) {
+        replenishStreamRecvWindow(stream);
+      }
+    }
   }
 }
 
@@ -818,6 +849,7 @@ bool Http2Connection::finalizeSendClosedStream(uint32_t streamId) {
 }
 
 void Http2Connection::sendWindowUpdate(uint32_t streamId, uint32_t increment) {
+  assert(increment != 0);  // a PROTOCOL_ERROR for the peer (RFC 9113 §6.9)
   WriteWindowUpdateFrame(_outputBuffer, streamId, increment);
   recordFrame(true, FrameType::WindowUpdate, sizeof(uint32_t));
 
@@ -1023,10 +1055,8 @@ Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader head
     // that the callback reset, but connection-level credit is retained for later streams on the same connection.
     if (payloadSize > 0) {
       Http2Stream& stream = it->second;
-      const int32_t initialStreamWindow = static_cast<int32_t>(_localSettings.initialWindowSize);
-      if (!endStream && !stream.recvWindowHeld() && stream.canReceive() &&
-          stream.recvWindow() <= ReplenishThreshold(_localSettings.initialWindowSize)) {
-        sendWindowUpdate(streamId, static_cast<uint32_t>(initialStreamWindow - stream.recvWindow()));
+      if (!endStream && !stream.recvWindowHeld()) {
+        replenishStreamRecvWindow(stream);
       }
 
       replenishConnectionRecvWindow();
@@ -1066,7 +1096,7 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
 
   // Get or create stream
   auto [it, inserted] =
-      _streams.try_emplace(streamId, streamId, _peerSettings.initialWindowSize, _localSettings.initialWindowSize);
+      _streams.try_emplace(streamId, streamId, _peerSettings.initialWindowSize, newStreamRecvWindow());
   if (inserted) {
     // Only a client opens streams with HEADERS (a server would push them, which is disabled), with odd and increasing
     // ids, and not after the GOAWAY of this endpoint.
@@ -1248,6 +1278,7 @@ Http2Connection::ProcessResult Http2Connection::handleSettingsFrame(FrameHeader 
     }
     _hpackDecoder.setMaxDynamicTableSize(_localSettings.headerTableSize);
     _settingsAckDeadline = {};
+    applyAcknowledgedSettings();
     return ProcessResult{ProcessResult::Action::Continue};
   }
 

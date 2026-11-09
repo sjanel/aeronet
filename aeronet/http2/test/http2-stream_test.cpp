@@ -296,6 +296,18 @@ TEST(Http2Stream, ConsumeRecvWindow) {
   EXPECT_FALSE(stream.consumeRecvWindow(1));  // No more window
 }
 
+TEST(Http2Stream, ReduceRecvWindowCanMakeItNegative) {
+  Http2Stream stream(1, 1000);
+
+  stream.reduceRecvWindow(1500);
+  EXPECT_EQ(stream.recvWindow(), -500);
+
+  // Only an empty DATA frame fits (RFC 9113 §6.9.1).
+  EXPECT_TRUE(stream.consumeRecvWindow(0));
+  EXPECT_FALSE(stream.consumeRecvWindow(1));
+  EXPECT_EQ(stream.recvWindow(), -500);
+}
+
 TEST(Http2Stream, IncreaseSendWindow) {
   Http2Stream stream(1, 1000);
   EXPECT_TRUE(stream.consumeSendWindow(500));  // Window = 500

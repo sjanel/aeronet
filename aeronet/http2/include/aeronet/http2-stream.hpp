@@ -106,8 +106,12 @@ class Http2Stream {
 
   /// Consume bytes from the receive window (when receiving DATA).
   /// @param bytes Number of bytes to consume
-  /// @return True if there was sufficient window, false otherwise
+  /// @return True if there was sufficient window (always for 0 bytes, even with a negative window), false otherwise
   [[nodiscard]] bool consumeRecvWindow(uint32_t bytes) noexcept;
+
+  /// Reduce the receive window when the peer acknowledges a smaller initial window size, which can make it negative
+  /// (RFC 9113 §6.9.2).
+  void reduceRecvWindow(uint32_t bytes) noexcept { _recvWindow -= static_cast<int32_t>(bytes); }
 
   /// Increase the send window (from WINDOW_UPDATE).
   /// @param increment Window size increment

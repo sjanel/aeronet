@@ -445,6 +445,16 @@ class Http2Connection {
   /// Give back the connection-level credit once half of it was consumed (see handleDataFrame()).
   void replenishConnectionRecvWindow();
 
+  // Give back the credit of a stream able to receive, once half of it was consumed.
+  void replenishStreamRecvWindow(Http2Stream& stream);
+
+  // The receive window of a stream opened now.
+  [[nodiscard]] uint32_t newStreamRecvWindow() const noexcept;
+
+  // The peer acknowledged our SETTINGS: a smaller initial window size now applies to the streams it may have used
+  // the default window on.
+  void applyAcknowledgedSettings();
+
   // Erase the oldest closed streams beyond the retention limit. Moves the entries of _streams.
   void pruneClosedStreams();
 
@@ -553,6 +563,7 @@ class Http2Connection {
   ConnectionState _state{ConnectionState::AwaitingPreface};
 
   bool _settingsSent{false};
+  bool _settingsAcked{false};
   bool _isServer;
   bool _expectingContinuation{false};
   bool _headerBlockEndStream{false};
