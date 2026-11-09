@@ -6272,7 +6272,8 @@ TEST(Http2WriterTransport, IsAliveReturnsTrueForOpenStream) {
   // Establish connection
   client.sendClientPreface();
   auto clientOut = client.getPendingOutput();
-  (void)server.processInput(clientOut);
+  const auto prefaceResult = server.processInput(clientOut);
+  (void)server.processInput(clientOut.subspan(prefaceResult.bytesConsumed));  // the SETTINGS of the client
   client.onOutputWritten(clientOut.size());
 
   auto serverOut = server.getPendingOutput();
@@ -6294,6 +6295,9 @@ TEST(Http2WriterTransport, IsAliveReturnsTrueForOpenStream) {
   clientOut = client.getPendingOutput();
   (void)server.processInput(clientOut);
   client.onOutputWritten(clientOut.size());
+
+  EXPECT_EQ(server.state(), ConnectionState::Open);
+  EXPECT_NE(server.getStream(1), nullptr);
 }
 
 // ============== Per-route maxHeaderBytes Tests ==============
@@ -6414,7 +6418,7 @@ TEST(Http2ProtocolHandler, PerRouteMaxBodyBytesAllowsSmaller) {
 
 // The GOAWAY that the sweep of a drain sends (once) lets the open streams complete: the connection is closed once they
 // are answered, and the streams the client opens meanwhile are ignored. A connection whose client preface was not
-// received yet is closed right away.
+// received yet is closed right away, as is, after its GOAWAY, one that did not receive the first frame of its client.
 TEST(Http2ProtocolHandler, DrainSweepClosesTheConnectionOnceItsStreamsAreAnswered) {
   Router router;
   router.setPath(http::Method::POST, "/upload",
@@ -6424,6 +6428,13 @@ TEST(Http2ProtocolHandler, DrainSweepClosesTheConnectionOnceItsStreamsAreAnswere
   EXPECT_TRUE(loop.handler.onSweep(std::chrono::steady_clock::now(), true));
   EXPECT_FALSE(loop.handler.hasPendingOutput());
   EXPECT_TRUE(loop.state.isDrainCloseRequested());
+
+  Http2ProtocolLoopback prefaceLoop(router);
+  prefaceLoop.feedHandler(std::as_bytes(std::span<const char>(kConnectionPreface)));
+  ASSERT_EQ(prefaceLoop.handler.connection().state(), ConnectionState::AwaitingSettings);
+  EXPECT_TRUE(prefaceLoop.handler.onSweep(std::chrono::steady_clock::now(), true));
+  EXPECT_EQ(prefaceLoop.handler.connection().state(), ConnectionState::GoAwaySent);
+  EXPECT_TRUE(prefaceLoop.state.isDrainCloseRequested());
 
   Http2ProtocolLoopback openLoop(router);
   openLoop.connect();

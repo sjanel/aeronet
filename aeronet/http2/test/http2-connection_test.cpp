@@ -1162,8 +1162,7 @@ TEST(Http2Connection, ResponseHeadersIncludeDateWhenBodyFollows) {
   ASSERT_TRUE(client.hasPendingOutput());
   {
     const auto out = client.getPendingOutput();
-    auto res = server.processInput(out);
-    ASSERT_NE(res.action, Http2Connection::ProcessResult::Action::Error);
+    FeedConnection(server, out);  // the preface, then the SETTINGS of the client
     client.onOutputWritten(out.size());
   }
 
@@ -1485,9 +1484,140 @@ TEST(Http2Connection, DoubleGoAwayIgnored) {
   EXPECT_EQ(conn.getPendingOutput().size(), outputSize);
 }
 
+// The NO_ERROR of a graceful GOAWAY does not tell the peer why its connection closes: a connection error sends its own
+// GOAWAY after it (RFC 9113 §5.4.1, §6.8), with the same last stream.
+TEST(Http2Connection, ConnectionErrorAfterAGracefulGoAwaySendsItsErrorCode) {
+  Http2Config config;
+  Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  OpenClientStream(conn, 1);
+
+  conn.initiateGoAway(ErrorCode::NoError, ErrorMsg::ServerDraining);
+  const auto gracefulOutput = DrainPendingOutput(conn);
+  EXPECT_EQ(ParseSingleGoAway(gracefulOutput).errorCode, ErrorCode::NoError);
+
+  constexpr std::array<std::byte, 8> pingPayload{};
+  const auto pingOnStream = SerializeFrame(FrameHeader(8U, FrameType::Ping, FrameFlags::None, 1), pingPayload);
+  const auto res = conn.processInput(pingOnStream);
+  EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
+  EXPECT_EQ(res.errorCode, ErrorCode::ProtocolError);
+  EXPECT_EQ(conn.state(), ConnectionState::Closed);
+
+  const auto errorOutput = DrainPendingOutput(conn);
+  const GoAwayFrame goAway = ParseSingleGoAway(errorOutput);
+  EXPECT_EQ(goAway.errorCode, ErrorCode::ProtocolError);
+  EXPECT_EQ(goAway.lastStreamId, 1U);
+}
+
 // ============================
 // Settings Tests
 // ============================
+
+// The connection preface of a client goes on with a SETTINGS frame (RFC 9113 §3.4): no other frame can come first.
+TEST(Http2Connection, FirstFrameAfterThePrefaceMustBeSettings) {
+  constexpr std::array<std::byte, 8> pingPayload{};
+  const std::array firstFrames{
+      StaticGetRequestFrame(1),
+      SerializeFrame(FrameHeader(8U, FrameType::Ping, FrameFlags::None, 0), pingPayload),
+      SerializeFrame(FrameHeader(0, FrameType::Settings, FrameFlags::SettingsAck, 0), {}),
+  };
+
+  for (const auto& firstFrame : firstFrames) {
+    Http2Config config;
+    Http2Connection conn(config, true);
+    RecordingEventSink connSink(conn);
+    AdvanceToAwaitingSettingsAndDrainSettings(conn);
+
+    const auto res = conn.processInput(firstFrame);
+    EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
+    EXPECT_EQ(res.errorCode, ErrorCode::ProtocolError);
+    EXPECT_EQ(res.errorMsg, ErrorMsg::ExpectedSETTINGSFrame);
+    EXPECT_EQ(conn.state(), ConnectionState::Closed);
+    EXPECT_EQ(conn.getStream(1), nullptr);
+
+    const auto output = DrainPendingOutput(conn);
+    EXPECT_EQ(ParseSingleGoAway(output).errorCode, ErrorCode::ProtocolError);
+  }
+}
+
+// The type of the first frame is known with its whole header only, and its payload may come in a later read. The frames
+// behind it do not have to wait for another read.
+TEST(Http2Connection, FirstSettingsFrameMayBeSplitAndFollowedByARequest) {
+  Http2Config config;
+  Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
+  AdvanceToAwaitingSettingsAndDrainSettings(conn);
+
+  RawBytes input;
+  const std::array settingsEntries{
+      SettingsEntry{SettingsParameter::MaxConcurrentStreams, 10U},
+  };
+  WriteSettingsFrame(input, settingsEntries);
+  const auto request = StaticGetRequestFrame(1);
+  input.append(request.data(), request.size());
+  const std::span<const std::byte> inputSpan(input.data(), input.size());
+
+  for (const std::size_t size : {FrameHeader::kSize - 1U, FrameHeader::kSize}) {
+    const auto res = conn.processInput(inputSpan.first(size));
+    EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Continue);
+    EXPECT_EQ(res.bytesConsumed, 0U);
+    EXPECT_EQ(conn.state(), ConnectionState::AwaitingSettings);
+  }
+
+  FeedConnection(conn, inputSpan);
+  EXPECT_EQ(conn.state(), ConnectionState::Open);
+  EXPECT_NE(conn.getStream(1), nullptr);
+}
+
+// A drain can reach a connection between the preface and the first frame of its client. The connection has no stream:
+// its GOAWAY tells that no request was processed, it closes at once, and a request still reaching it is not served.
+TEST(Http2Connection, GoAwayBeforeTheFirstFrameOfTheClientServesNoRequest) {
+  Http2Config config;
+  Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
+  AdvanceToAwaitingSettingsAndDrainSettings(conn);
+
+  conn.initiateGoAway(ErrorCode::NoError, ErrorMsg::ServerDraining);
+  EXPECT_EQ(conn.state(), ConnectionState::GoAwaySent);
+  EXPECT_TRUE(conn.goAwayCompleted());
+  const auto output = DrainPendingOutput(conn);
+  const GoAwayFrame goAway = ParseSingleGoAway(output);
+  EXPECT_EQ(goAway.errorCode, ErrorCode::NoError);
+  EXPECT_EQ(goAway.lastStreamId, 0U);
+
+  FeedConnection(conn, StaticGetRequestFrame(1));
+  EXPECT_EQ(conn.getStream(1), nullptr);
+  EXPECT_EQ(conn.lastPeerStreamId(), 0U);
+  EXPECT_FALSE(conn.hasPendingOutput());
+}
+
+// The preface of a server is a SETTINGS frame too, which must be the first frame it sends (RFC 9113 §3.4): a GOAWAY
+// cannot come before it either, its error code and debug data being lost.
+TEST(Http2Connection, ClientRejectsAFirstFrameOtherThanSettings) {
+  const auto settingsAck = SerializeFrame(FrameHeader(0, FrameType::Settings, FrameFlags::SettingsAck, 0), {});
+  RawBytes goAway;
+  WriteGoAwayFrame(goAway, 0, ErrorCode::EnhanceYourCalm, ErrorMsg::NoError);
+  const std::array<std::span<const std::byte>, 2> firstFrames{
+      std::span<const std::byte>(settingsAck),
+      std::span<const std::byte>(goAway.data(), goAway.size()),
+  };
+
+  for (const std::span<const std::byte> firstFrame : firstFrames) {
+    Http2Config config;
+    Http2Connection conn(config, false);
+    RecordingEventSink connSink(conn);
+    conn.sendClientPreface();
+    (void)DrainPendingOutput(conn);
+    ASSERT_EQ(conn.state(), ConnectionState::AwaitingSettings);
+
+    const auto res = conn.processInput(firstFrame);
+    EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
+    EXPECT_EQ(res.errorCode, ErrorCode::ProtocolError);
+    EXPECT_EQ(res.errorMsg, ErrorMsg::ExpectedSETTINGSFrame);
+    EXPECT_EQ(conn.state(), ConnectionState::Closed);
+  }
+}
 
 TEST(Http2Connection, LocalSettings) {
   Http2Config config;
@@ -1811,8 +1941,7 @@ TEST(Http2Connection, ClientRejectsPushPromise) {
   Http2Config config;
   Http2Connection client(config, false);
   RecordingEventSink clientSink(client);
-  client.sendClientPreface();
-  (void)DrainPendingOutput(client);
+  AdvanceClientToOpen(client);
 
   // Promised stream id 2 on stream 1, with an empty header block.
   const std::array payload{std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x02}};
@@ -1923,7 +2052,7 @@ TEST(Http2Connection, SettingsFrameEmptyAckIsAcceptedAndNoResponseSent) {
   Http2Config config;
   Http2Connection conn(config, true);
   RecordingEventSink connSink(conn);
-  AdvanceToAwaitingSettingsAndDrainSettings(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
 
   const FrameHeader header(0, FrameType::Settings, FrameFlags::SettingsAck, 0);
 
@@ -1940,7 +2069,7 @@ TEST(Http2Connection, SettingsAckFrameWithPayloadIsFrameSizeError) {
   Http2Config config;
   Http2Connection conn(config, true);
   RecordingEventSink connSink(conn);
-  AdvanceToAwaitingSettingsAndDrainSettings(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
 
   std::array payload{
       std::byte{0x00}, std::byte{0x01}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x01},
@@ -2013,7 +2142,7 @@ TEST(Http2Connection, PingFrameOnNonZeroStreamIsProtocolError) {
   Http2Config config;
   Http2Connection conn(config, true);
   RecordingEventSink connSink(conn);
-  AdvanceToAwaitingSettingsAndDrainSettings(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
 
   constexpr std::array payload{
       std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4}, std::byte{5}, std::byte{6}, std::byte{7}, std::byte{8},
@@ -2030,7 +2159,7 @@ TEST(Http2Connection, PingFrameInvalidLengthIsFrameSizeError) {
   Http2Config config;
   Http2Connection conn(config, true);
   RecordingEventSink connSink(conn);
-  AdvanceToAwaitingSettingsAndDrainSettings(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
 
   constexpr std::array payload{
       std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4}, std::byte{5}, std::byte{6}, std::byte{7},
@@ -2047,7 +2176,7 @@ TEST(Http2Connection, PingAckFrameIsAcceptedAndNoResponseSent) {
   Http2Config config;
   Http2Connection conn(config, true);
   RecordingEventSink connSink(conn);
-  AdvanceToAwaitingSettingsAndDrainSettings(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
 
   std::array payload{
       std::byte{0xAA}, std::byte{0xBB}, std::byte{0xCC}, std::byte{0xDD},
@@ -2068,7 +2197,7 @@ TEST(Http2Connection, GoAwayFrameInvalidLengthIsFrameSizeError) {
   Http2Config config;
   Http2Connection conn(config, true);
   RecordingEventSink connSink(conn);
-  AdvanceToAwaitingSettingsAndDrainSettings(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
 
   const std::byte payload[]{
       std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0},
@@ -2085,7 +2214,7 @@ TEST(Http2Connection, GoAwayFrameOnNonZeroStreamIsProtocolError) {
   Http2Config config;
   Http2Connection conn(config, true);
   RecordingEventSink connSink(conn);
-  AdvanceToAwaitingSettingsAndDrainSettings(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
 
   // Minimal valid GOAWAY payload is 8 bytes (last-stream-id + error-code) optionally with debug data
   std::array payload{
@@ -2104,7 +2233,7 @@ TEST(Http2Connection, WindowUpdateInvalidLengthIsFrameSizeError) {
   Http2Config config;
   Http2Connection conn(config, true);
   RecordingEventSink connSink(conn);
-  AdvanceToAwaitingSettingsAndDrainSettings(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
 
   std::array<std::byte, 3> payload = {std::byte{0}, std::byte{0}, std::byte{1}};
   const FrameHeader header(static_cast<uint32_t>(payload.size()), FrameType::WindowUpdate, FrameFlags::None, 0);
@@ -2119,7 +2248,7 @@ TEST(Http2Connection, WindowUpdateConnectionOverflowIsFlowControlError) {
   Http2Config config;
   Http2Connection conn(config, true);
   RecordingEventSink connSink(conn);
-  AdvanceToAwaitingSettingsAndDrainSettings(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
 
   // WINDOW_UPDATE payload is 4 bytes. Use increment 0x7FFFFFFF to cause newWindow > 0x7FFFFFFF
   const uint32_t increment = 0x7FFFFFFFU;
@@ -2294,7 +2423,7 @@ TEST(Http2Connection, WindowUpdateZeroIncrementOnStreamSendsRstStream) {
   Http2Config config;
   Http2Connection conn(config, true);
   RecordingEventSink connSink(conn);
-  AdvanceToAwaitingSettingsAndDrainSettings(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
 
   std::array<std::byte, 4> payload = {std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}};
   const FrameHeader header(static_cast<uint32_t>(payload.size()), FrameType::WindowUpdate, FrameFlags::None, 1);
@@ -2379,7 +2508,7 @@ TEST(Http2Connection, UnexpectedContinuationFrameIsProtocolError) {
   Http2Config config;
   Http2Connection conn(config, true);
   RecordingEventSink connSink(conn);
-  AdvanceToAwaitingSettingsAndDrainSettings(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
 
   std::array<std::byte, 1> payload = {std::byte{0x00}};
   const FrameHeader header(static_cast<uint32_t>(payload.size()), FrameType::Continuation, FrameFlags::None, 1);
@@ -2404,7 +2533,7 @@ TEST(Http2Connection, UnexpectedPushPromiseIsProtocolError) {
   Http2Config config;
   Http2Connection conn(config, true);
   RecordingEventSink connSink(conn);
-  AdvanceToAwaitingSettingsAndDrainSettings(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
 
   std::array<std::byte, 4> payload = {std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x01}};
   const FrameHeader header(static_cast<uint32_t>(payload.size()), FrameType::PushPromise, FrameFlags::None, 1);
@@ -3465,6 +3594,11 @@ TEST(Http2Connection, UnacknowledgedSettingsTimeOut) {
   const auto output = DrainPendingOutput(conn);
   EXPECT_EQ(ParseSingleGoAway(output).errorCode, ErrorCode::SettingsTimeout);
 
+  // A later sweep on the closed connection sends nothing more.
+  EXPECT_EQ(conn.checkTimeouts(std::chrono::steady_clock::now() + 200ms, sentTp).action,
+            Http2Connection::ProcessResult::Action::Error);
+  EXPECT_FALSE(conn.hasPendingOutput());
+
   // Acknowledged, or without timeout, they never time out.
   for (const auto settingsTimeout : {100ms, 0ms}) {
     config.settingsTimeout = settingsTimeout;
@@ -4470,6 +4604,39 @@ TEST(Http2Connection, PriorityFrameFloodOnIdleStreamsIsEnhanceYourCalm) {
 // ============================
 // PRIORITY tree depth limiting
 // ============================
+
+// Http2Config::enablePriority only controls the bookkeeping of the priorities: their frames are still validated.
+TEST(Http2Connection, DisabledPriorityIsValidatedButNotRecorded) {
+  Http2Config config;
+  config.enablePriority = false;
+  Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+
+  const auto expectDefaultPriority = [&conn]() {
+    const Http2Stream* pStream = conn.getStream(1);
+    ASSERT_NE(pStream, nullptr);
+    EXPECT_EQ(pStream->streamDependency(), 0U);
+    EXPECT_EQ(pStream->weight(), 16U);
+    EXPECT_FALSE(pStream->isExclusive());
+  };
+
+  RawBytes headers;
+  WriteHeadersFrameWithPriority(headers, 1, kStaticGetRequest, 0, 55, true, false, true);
+  FeedConnection(conn, std::span<const std::byte>(headers.data(), headers.size()));
+  expectDefaultPriority();
+
+  RawBytes priority;
+  WritePriorityFrame(priority, 1, 3, 55, true);
+  FeedConnection(conn, std::span<const std::byte>(priority.data(), priority.size()));
+  expectDefaultPriority();
+
+  RawBytes selfDependency;
+  WritePriorityFrame(selfDependency, 1, 1, 16, false);
+  (void)conn.processInput(std::span<const std::byte>(selfDependency.data(), selfDependency.size()));
+  const auto output = DrainPendingOutput(conn);
+  EXPECT_EQ(ParseSingleFrame(output).header.type(), FrameType::RstStream);
+}
 
 TEST(Http2Connection, PriorityChainWithinDepthLimitIsNotClamped) {
   Http2Config config;

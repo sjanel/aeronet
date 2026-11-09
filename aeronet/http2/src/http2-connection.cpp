@@ -306,6 +306,13 @@ bool Http2Connection::priorityDepthExceeded(uint32_t id) const noexcept {
   return false;
 }
 
+void Http2Connection::recordPriority(Http2Stream& stream, uint32_t streamDependency, uint8_t weightMinusOne,
+                                     bool exclusive) const noexcept {
+  if (_localSettings.enablePriority) {
+    stream.setPriority(priorityDepthExceeded(streamDependency) ? 0U : streamDependency, weightMinusOne, exclusive);
+  }
+}
+
 // ============================
 // Connection lifecycle
 // ============================
@@ -321,6 +328,15 @@ Http2Connection::ProcessResult Http2Connection::processInput(std::span<const std
       return processPreface(data);
 
     case ConnectionState::AwaitingSettings:
+      // The connection preface of the peer goes on with a SETTINGS frame, before any other one (RFC 9113 §3.4). A
+      // GOAWAY of this endpoint (a drain) leaves this state: the connection then has no stream to serve and closes at
+      // once.
+      if (data.size() >= FrameHeader::kSize) {
+        const FrameHeader header = ParseFrameHeader(data);
+        if (header.type() != FrameType::Settings || header.hasFlag(FrameFlags::SettingsAck)) [[unlikely]] {
+          return connectionError(ErrorCode::ProtocolError, ErrorMsg::ExpectedSETTINGSFrame);
+        }
+      }
       [[fallthrough]];
     case ConnectionState::Open:
       [[fallthrough]];
@@ -450,9 +466,13 @@ void Http2Connection::initiateGoAway(ErrorCode errorCode, ErrorMsg msg) {
     return;
   }
 
+  writeGoAway(errorCode, msg);
+  _state = ConnectionState::GoAwaySent;
+}
+
+void Http2Connection::writeGoAway(ErrorCode errorCode, ErrorMsg msg) {
   WriteGoAwayFrame(_outputBuffer, _lastPeerStreamId, errorCode, msg);
   recordFrame(true, FrameType::GoAway, 8U + ConvertProcessResultErrorMsgToSv(msg).size());
-  _state = ConnectionState::GoAwaySent;
 }
 
 Http2Connection::ProcessResult Http2Connection::checkTimeouts(std::chrono::steady_clock::time_point now,
@@ -1136,8 +1156,7 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
   // Handle priority if present
   if (header.hasFlag(FrameFlags::HeadersPriority)) {
     if (streamDependency != streamId) [[likely]] {
-      const uint32_t effectiveDependency = priorityDepthExceeded(streamDependency) ? 0U : streamDependency;
-      it->second.setPriority(effectiveDependency, frame.weightMinusOne, frame.exclusive);
+      recordPriority(it->second, streamDependency, frame.weightMinusOne, frame.exclusive);
     } else if (!it->second.isClosed()) {
       // A stream cannot depend on itself: a stream error (RFC 7540 §5.3.1), on the stream that this frame opened if
       // needed, a RST_STREAM being forbidden on an idle one (RFC 9113 §6.4). As for a refused stream, its field block
@@ -1210,8 +1229,7 @@ Http2Connection::ProcessResult Http2Connection::handlePriorityFrame(FrameHeader 
   Http2Stream* pStream = getStream(streamId);
   if (pStream != nullptr) {
     if (!selfDependent) {
-      const uint32_t effectiveDependency = priorityDepthExceeded(frame.streamDependency) ? 0U : frame.streamDependency;
-      pStream->setPriority(effectiveDependency, frame.weightMinusOne, frame.exclusive);
+      recordPriority(*pStream, frame.streamDependency, frame.weightMinusOne, frame.exclusive);
     } else if (!pStream->isClosed()) {
       return streamError(streamId, ErrorCode::ProtocolError, ErrorMsg::StreamDependsOnItself);
     }
@@ -1279,9 +1297,7 @@ Http2Connection::ProcessResult Http2Connection::handleSettingsFrame(FrameHeader 
     if (!payload.empty()) {
       return connectionError(ErrorCode::FrameSizeError, ErrorMsg::InvalidSETTINGSFrame);
     }
-    if (_state == ConnectionState::AwaitingSettings) {
-      _state = ConnectionState::Open;
-    }
+    assert(_state != ConnectionState::AwaitingSettings);  // rejected as a first frame by processInput()
     _hpackDecoder.setMaxDynamicTableSize(_localSettings.headerTableSize);
     _settingsAckDeadline = {};
     applyAcknowledgedSettings();
@@ -1688,7 +1704,11 @@ void Http2Connection::sendSettingsAck() {
 // ============================
 
 Http2Connection::ProcessResult Http2Connection::connectionError(ErrorCode code, ErrorMsg msg) {
-  initiateGoAway(code, msg);
+  // Also after a graceful GOAWAY, whose NO_ERROR does not tell why the connection closes (RFC 9113 §5.4.1): an endpoint
+  // may send several of them (§6.8), and _lastPeerStreamId no longer increases after the first one.
+  if (_state != ConnectionState::Closed) {
+    writeGoAway(code, msg);
+  }
   _state = ConnectionState::Closed;
 
   return ProcessResult{ProcessResult::Action::Error, code, msg};

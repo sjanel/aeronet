@@ -112,6 +112,14 @@ namespace {
   return preface;
 }
 
+// Feed a server connection with what a client starts with: the preface, then its SETTINGS (RFC 9113 §3.4).
+void FeedPrefaceAndSettings(Http2Connection& server) {
+  (void)server.processInput(MakePreface());
+  RawBytes settings;
+  WriteSettingsFrame(settings, {});
+  (void)server.processInput(AsSpan(settings));
+}
+
 struct ParsedFrame {
   FrameHeader header;
   std::span<const std::byte> payload;
@@ -1171,12 +1179,7 @@ TEST(Http2Core, ContinuationFrameOnWrongStreamIsProtocolError) {
   Http2Connection conn(cfg, true);
 
   // Establish preface and complete SETTINGS handshake.
-  auto preface = MakePreface();
-  (void)conn.processInput(preface);
-  // Server sends SETTINGS after preface; we need to send SETTINGS ACK to transition to Open.
-  RawBytes settingsAck;
-  WriteSettingsAckFrame(settingsAck);
-  (void)conn.processInput(AsSpan(settingsAck));
+  FeedPrefaceAndSettings(conn);
 
   // Start a HEADERS frame that requires continuation (END_HEADERS not set).
   RawBytes buf;
@@ -1203,12 +1206,7 @@ TEST(Http2Core, MissingContinuationThenOtherFrameIsProtocolError) {
   Http2Config cfg;
   Http2Connection conn(cfg, true);
 
-  auto preface = MakePreface();
-  (void)conn.processInput(preface);
-  // Complete SETTINGS handshake.
-  RawBytes settingsAck;
-  WriteSettingsAckFrame(settingsAck);
-  (void)conn.processInput(AsSpan(settingsAck));
+  FeedPrefaceAndSettings(conn);
 
   // HEADERS without END_HEADERS.
   RawBytes headers;
@@ -1344,8 +1342,7 @@ TEST(Http2Core, DataOnStreamZeroIsProtocolError) {
   Http2Config cfg;
   Http2Connection conn(cfg, true);
 
-  auto preface = MakePreface();
-  (void)conn.processInput(preface);
+  FeedPrefaceAndSettings(conn);
 
   RawBytes data;
   std::array<std::byte, 1> payload{std::byte{'x'}};
@@ -1360,8 +1357,7 @@ TEST(Http2Core, HeadersOnStreamZeroIsProtocolError) {
   Http2Config cfg;
   Http2Connection conn(cfg, true);
 
-  auto preface = MakePreface();
-  (void)conn.processInput(preface);
+  FeedPrefaceAndSettings(conn);
 
   RawBytes headers;
   std::array<std::byte, 1> hb = {std::byte{0x82}};
@@ -1377,8 +1373,7 @@ TEST(Http2Core, UnexpectedContinuationIsProtocolError) {
   Http2Config cfg;
   Http2Connection conn(cfg, true);
 
-  auto preface = MakePreface();
-  (void)conn.processInput(preface);
+  FeedPrefaceAndSettings(conn);
 
   RawBytes cont;
   std::array<std::byte, 1> hb = {std::byte{0x82}};
@@ -1394,8 +1389,7 @@ TEST(Http2Core, WindowUpdateWithZeroIncrementIsProtocolError) {
   Http2Config cfg;
   Http2Connection conn(cfg, true);
 
-  auto preface = MakePreface();
-  (void)conn.processInput(preface);
+  FeedPrefaceAndSettings(conn);
 
   RawBytes wu;
   WriteWindowUpdateFrame(wu, 0, 0);
@@ -1469,10 +1463,9 @@ TEST(Http2Core, PingRequestProducesPingAck) {
   Http2Config cfg;
   Http2Connection conn(cfg, true);
 
-  auto preface = MakePreface();
-  (void)conn.processInput(preface);
+  FeedPrefaceAndSettings(conn);
 
-  // Server sends SETTINGS after receiving preface; drain that output first.
+  // The server answers with its SETTINGS and an acknowledgement; drain that output first.
   auto initialOut = conn.getPendingOutput();
   conn.onOutputWritten(initialOut.size());
 
@@ -1503,8 +1496,7 @@ TEST(Http2Core, PingOnNonZeroStreamIsProtocolError) {
   Http2Config cfg;
   Http2Connection conn(cfg, true);
 
-  auto preface = MakePreface();
-  (void)conn.processInput(preface);
+  FeedPrefaceAndSettings(conn);
 
   RawBytes ping;
   // Build a ping frame but override stream id by writing header manually.
@@ -1705,8 +1697,7 @@ TEST(Http2Core, ReceiverRejectsFrameLargerThanLocalMaxFrameSize) {
   cfg.maxFrameSize = 16384;
   Http2Connection conn(cfg, true);
 
-  auto preface = MakePreface();
-  (void)conn.processInput(preface);
+  FeedPrefaceAndSettings(conn);
 
   // Create a frame header that advertises a too-large payload.
   // We do not need to provide the full payload: connection checks the size first.
@@ -1816,8 +1807,7 @@ TEST(Http2Core, SettingsAckOnNonZeroStreamIsProtocolError) {
   Http2Config cfg;
   Http2Connection conn(cfg, true);
 
-  auto preface = MakePreface();
-  (void)conn.processInput(preface);
+  FeedPrefaceAndSettings(conn);
 
   // Create SETTINGS ACK by writing a SETTINGS frame then mutating header.
   RawBytes settingsAck;
@@ -1832,7 +1822,7 @@ TEST(Http2Core, SettingsAckOnNonZeroStreamIsProtocolError) {
   EXPECT_EQ(res.errorCode, ErrorCode::ProtocolError);
 }
 
-TEST(Http2Core, SettingsAckTransitionsAwaitingSettingsToOpen) {
+TEST(Http2Core, SettingsFrameTransitionsAwaitingSettingsToOpen) {
   Http2Config cfg;
   Http2Connection server(cfg, true);
   RecordingEventSink serverSink(server);
@@ -1842,11 +1832,11 @@ TEST(Http2Core, SettingsAckTransitionsAwaitingSettingsToOpen) {
   ASSERT_EQ(resPreface.action, Http2Connection::ProcessResult::Action::OutputReady);
   ASSERT_EQ(server.state(), ConnectionState::AwaitingSettings);
 
-  RawBytes settingsAck;
-  WriteSettingsAckFrame(settingsAck);
+  RawBytes settings;
+  WriteSettingsFrame(settings, {});
 
-  auto resAck = server.processInput(AsSpan(settingsAck));
-  ASSERT_NE(resAck.action, Http2Connection::ProcessResult::Action::Error);
+  auto resSettings = server.processInput(AsSpan(settings));
+  ASSERT_NE(resSettings.action, Http2Connection::ProcessResult::Action::Error);
   EXPECT_EQ(server.state(), ConnectionState::Open);
 }
 
@@ -1882,8 +1872,7 @@ TEST(Http2Core, RstStreamFrameOnStreamZeroIsProtocolError) {
   Http2Config cfg;
   Http2Connection conn(cfg, true);
 
-  auto preface = MakePreface();
-  (void)conn.processInput(preface);
+  FeedPrefaceAndSettings(conn);
 
   RawBytes rst;
   WriteRstStreamFrame(rst, 0, ErrorCode::Cancel);

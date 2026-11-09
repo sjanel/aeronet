@@ -144,9 +144,10 @@ struct Http2Config {
   /// Default: false.
   bool enableH2cUpgrade{false};
 
-  /// Enable HTTP/2 priority handling (PRIORITY frames and stream dependencies).
-  /// When disabled, PRIORITY frames are acknowledged but not processed.
-  /// Default: true (principle of least surprise).
+  /// Whether to record on the streams the priorities of the peer (PRIORITY frames and priority fields of HEADERS
+  /// frames), within maxPriorityTreeDepth. They do not change the order of the responses: when disabled, these frames
+  /// are still validated, only this bookkeeping is skipped.
+  /// Default: true.
   bool enablePriority{true};
 
   /// Whether to merge multiple header values for unknown request headers.

@@ -112,7 +112,7 @@ HTTP/2 requires `AERONET_ENABLE_HTTP2=ON`; `Http2Config::enable` defaults to tru
 | `enablePush` | false | Deprecated, no effect: server push is not supported and `SETTINGS_ENABLE_PUSH` is always advertised as 0. Kept so existing code and configuration files still compile and load. |
 | `enableH2c` | true | Accept prior-knowledge cleartext HTTP/2 (client sends the connection preface directly). |
 | `enableH2cUpgrade` | false | Deprecated, no effect: kept so existing code and configuration files still compile and load. |
-| `enablePriority`, `maxPriorityTreeDepth` | true, 256 | PRIORITY processing and dependency-tree resource cap. |
+| `enablePriority`, `maxPriorityTreeDepth` | true, 256 | Record the priorities of the client on its streams, without changing the order of the responses (their frames are validated either way), and dependency-tree resource cap. |
 | `mergeUnknownRequestHeaders` | true | Comma-merge unknown duplicate headers for HTTP/2. |
 | `headerTableSize` | 4096 | `SETTINGS_HEADER_TABLE_SIZE`, the limit of both HPACK dynamic tables of a connection: a dynamic table size update of the peer above it is a `COMPRESSION_ERROR`, and the encoder keeps at most the smaller of it and the value advertised by the peer. A value below 4096 applies to the decoder once the peer acknowledges the `SETTINGS`. At most 65536. |
 | `maxConcurrentStreams` | 100 | `SETTINGS_MAX_CONCURRENT_STREAMS`. |

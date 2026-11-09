@@ -506,9 +506,14 @@ class Http2Connection {
 
   [[nodiscard]] bool priorityDepthExceeded(uint32_t id) const noexcept;
 
+  void recordPriority(Http2Stream& stream, uint32_t streamDependency, uint8_t weightMinusOne,
+                      bool exclusive) const noexcept;
+
   // ============================
   // Error handling
   // ============================
+
+  void writeGoAway(ErrorCode errorCode, ErrorMsg msg);
 
   ProcessResult connectionError(ErrorCode code, ErrorMsg msg);
   ProcessResult streamError(uint32_t streamId, ErrorCode code, ErrorMsg msg);
