@@ -25,7 +25,9 @@
 #include "aeronet/connection-state.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/file.hpp"
+#include "aeronet/hpack.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header-view.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
@@ -2941,6 +2943,96 @@ TEST(Http2ProtocolHandler, RejectsMalformedRequestPseudoHeaderSets) {
     EXPECT_EQ(loop.streamResets[static_cast<uint32_t>(i)].first, cases[static_cast<uint32_t>(i)].streamId);
     EXPECT_EQ(loop.streamResets[static_cast<uint32_t>(i)].second, ErrorCode::ProtocolError);
   }
+}
+
+namespace {
+
+// A HEADERS frame of fields encoded by hand, as Http2Connection drops the connection-specific ones. Literals without
+// indexing leave the HPACK dynamic tables of the connection untouched.
+[[nodiscard]] RawBytes MakeRawHeadersFrame(uint32_t streamId, HeadersView fields, bool endStream) {
+  HpackEncoder encoder(4096);
+  RawBytes block;
+  for (const auto [name, value] : fields) {
+    encoder.encode(block, name, value, HpackEncoder::IndexingMode::WithoutIndexing);
+  }
+  RawBytes frame;
+  WriteFrame(frame, FrameType::Headers, ComputeHeaderFrameFlags(endStream, true), streamId,
+             static_cast<uint32_t>(block.size()));
+  frame.unchecked_append(block);
+  return frame;
+}
+
+// The RST_STREAM frames pending on the server, read here as the client does not know the streams of hand-made frames.
+[[nodiscard]] vector<std::pair<uint32_t, ErrorCode>> DrainStreamResets(Http2ProtocolLoopback& loop) {
+  const auto output = DrainPendingOutput(loop.handler, 128);
+  vector<std::pair<uint32_t, ErrorCode>> resets;
+  std::span<const std::byte> remaining(output);
+  while (!remaining.empty()) {
+    const FrameHeader header = ParseFrameHeader(remaining);
+    if (header.type() == FrameType::RstStream) {
+      RstStreamFrame reset;
+      EXPECT_EQ(ParseRstStreamFrame(remaining.subspan(FrameHeader::kSize, header.length()), reset),
+                FrameParseResult::Ok);
+      resets.emplace_back(header.streamId(), reset.errorCode);
+    }
+    remaining = remaining.subspan(FrameHeader::kSize + header.length());
+  }
+  return resets;
+}
+
+}  // namespace
+
+TEST(Http2ProtocolHandler, ConnectionSpecificFieldsMakeTheRequestMalformed) {
+  Router router;
+  int handlerCalls = 0;
+  std::string teValue;
+  router.setDefault([&handlerCalls, &teValue](const HttpRequestView& req) {
+    ++handlerCalls;
+    teValue.assign(req.headerValueOrEmpty(http::TE));
+    return req.makeResponse(200);
+  });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  static constexpr http::HeaderView kFields[]{
+      {"connection", "close"},          {"keep-alive", "timeout=5"}, {"proxy-connection", "keep-alive"},
+      {"transfer-encoding", "chunked"}, {"upgrade", "websocket"},    {"te", "gzip"},
+  };
+
+  vector<std::pair<uint32_t, ErrorCode>> expectedResets;
+  uint32_t streamId = 1;
+  for (const http::HeaderView& field : kFields) {
+    RawChars headers = MakeGetHeaders("/");
+    headers.append(MakeHttp1HeaderLine(field.name, field.value));
+    loop.feedHandler(MakeRawHeadersFrame(streamId, HeadersView(headers), true));
+    expectedResets.emplace_back(streamId, ErrorCode::ProtocolError);
+    streamId += 2;
+  }
+
+  // The trailers are part of the message.
+  const RawChars openRequest = MakeGetHeaders("/");
+  loop.feedHandler(MakeRawHeadersFrame(streamId, HeadersView(openRequest), false));
+  RawChars trailers;
+  trailers.append(MakeHttp1HeaderLine("transfer-encoding", "chunked"));
+  loop.feedHandler(MakeRawHeadersFrame(streamId, HeadersView(trailers), true));
+  expectedResets.emplace_back(streamId, ErrorCode::ProtocolError);
+  streamId += 2;
+
+  EXPECT_EQ(handlerCalls, 0);
+  EXPECT_EQ(DrainStreamResets(loop), expectedResets);
+
+  // Only these streams are affected: the HPACK state stays in sync, and te: trailers is allowed.
+  RawChars allowed = MakeGetHeaders("/");
+  allowed.append(MakeHttp1HeaderLine("te", "trailers"));
+  ASSERT_EQ(loop.client.sendHeaders(streamId, http::StatusCode{}, HeadersView(allowed), true), ErrorCode::NoError);
+
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  EXPECT_EQ(handlerCalls, 1);
+  EXPECT_EQ(teValue, "trailers");
+  EXPECT_TRUE(loop.streamResets.empty());
 }
 
 TEST(Http2ProtocolHandler, AuthorityIsOptionalForOrdinaryRequest) {

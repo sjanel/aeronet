@@ -41,6 +41,7 @@
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/reserved-headers.hpp"
 #include "aeronet/response-body-sink.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/timedef.hpp"
@@ -78,7 +79,7 @@ class Http2ClientEngine : private EventSink {
   enum class Failure : uint8_t {
     None,
     TooBig,         // response exceeded HttpClientConfig::maxResponseBytes
-    Malformed,      // missing/invalid :status pseudo-header, invalid content-length or body not matching it
+    Malformed,      // invalid :status or content-length, body not matching it, connection-specific field
     StreamReset,    // peer sent RST_STREAM for our stream
     StreamRefused,  // peer sent GOAWAY with lastStreamId below our stream (request not processed)
     Sink,           // delivery to the ResponseBodySink failed (see ResponseStreamer::error())
@@ -299,6 +300,14 @@ class Http2ClientEngine : private EventSink {
   void onHeadersDecoded(uint32_t streamId, DecodedHeaders& decodedHeaders, bool endStream) override {
     if (streamId != _streamId || _resp == nullptr) {
       return;  // foreign stream (push is disabled) or an exchange already detached: ignore
+    }
+    // RFC 9113 §8.2.2, in any of the field sections of the response.
+    if (std::ranges::any_of(decodedHeaders.headers, [](const auto& field) {
+          return http::IsConnectionSpecificField(field.first, field.second);
+        })) {
+      log::error("HTTP/2 client: response field section on stream {} with a connection-specific field", streamId);
+      setFailure(Failure::Malformed);
+      return;
     }
     bool finalHead = false;  // this block is the head of the final response (not an interim one, nor trailers)
     if (!_finalHeadersSeen) {

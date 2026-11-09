@@ -157,6 +157,8 @@ class HpackDecoder {
   /// plus 32 bytes per field, RFC 7541 §4.1) are not stored: its decoding fails with HeaderListTooLarge, without taking
   /// more memory than this limit, whatever the number of references to the dynamic table in its block.
   /// The repeated set-cookie fields of Messages::Responses are joined with DecodedHeaders::kSetCookieSeparator.
+  /// A connection-specific field of Messages::Requests fails the decoding with ConnectionSpecificField (RFC 9113
+  /// §8.2.2). Those of a response are left to the client, which reports it as malformed.
   HpackDecoder(uint32_t maxDynamicTableSize, uint32_t maxHeaderListSize, bool mergeAllowedForUnknownRequestHeaders,
                Messages messages = Messages::Requests) noexcept;
 
@@ -172,6 +174,7 @@ class HpackDecoder {
       MalformedFieldName,
       MalformedFieldValue,
       DuplicateHeaderForbiddenToMerge,
+      ConnectionSpecificField,
       HeaderListTooLarge,
 
       // Compression errors (RFC 7541 §6.1, §6.2, §6.3)

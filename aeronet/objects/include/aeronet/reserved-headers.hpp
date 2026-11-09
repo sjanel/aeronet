@@ -1,9 +1,11 @@
 #pragma once
 
 #include <algorithm>
+#include <string_view>
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/lower-ascii-key.hpp"
+#include "aeronet/toupperlower.hpp"
 
 namespace aeronet::http {
 
@@ -72,6 +74,30 @@ constexpr bool IsForbiddenTrailerHeader(LowerAsciiKey trailerName) noexcept {
 
   return std::ranges::any_of(kForbiddenTrailers,
                              [trailerName](LowerAsciiKey candidate) { return trailerName == candidate; });
+}
+
+// RFC 9113 §8.2.2: a connection-specific field makes an HTTP/2 message malformed. TE is the exception when its value is
+// "trailers", case-insensitive like any literal of the field grammar (RFC 9110 §10.1.4). 'name' must be in lower case.
+// Plain comparison loop to keep <immintrin.h> out of the HPACK decoder. Most names do not have the length of any of
+// these fields.
+constexpr bool IsConnectionSpecificField(std::string_view name, std::string_view value) noexcept {
+  static constexpr std::string_view kProxyConnection = "proxy-connection";
+  static constexpr std::string_view kTrailers = "trailers";
+  switch (name.size()) {
+    case http::TE.size():
+      return name == http::TE &&
+             !std::ranges::equal(value, kTrailers, [](char lhs, char rhs) { return tolower(lhs) == rhs; });
+    case http::Upgrade.size():
+      return name == http::Upgrade;
+    case http::Connection.size():  // also the size of keep-alive
+      return name == http::Connection || name == http::keepalive;
+    case kProxyConnection.size():
+      return name == kProxyConnection;
+    case http::TransferEncoding.size():
+      return name == http::TransferEncoding;
+    default:
+      return false;
+  }
 }
 
 }  // namespace aeronet::http

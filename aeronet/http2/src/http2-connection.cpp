@@ -28,6 +28,7 @@
 #include "aeronet/metric-label.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/reserved-headers.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/vector.hpp"
@@ -594,6 +595,22 @@ std::size_t EstimateHpackSize(std::size_t headersViewSize, const ConcatenatedHea
                              : 0);
   return FrameHeader::kSize + pseudoHeaderReserve + ((plainHeadersSize * 2) / 3);
 }
+
+// Encode a regular field of a message and return its size in the header list. A connection-specific field, which may
+// be set on a message for HTTP/1.1, is dropped: it would make an HTTP/2 message malformed (RFC 9113 §8.2.2).
+uint64_t EncodeRegularField(HpackEncoder& encoder, RawBytes& output, std::string_view name, std::string_view value) {
+  // All header names should be normalized to lower-case at this step.
+  assert(std::ranges::all_of(name, [](char ch) { return ch < 'A' || ch > 'Z'; }));
+
+  // RFC 9113 §8.2.1: an HTTP/2 field value must not carry leading/trailing OWS (unlike HTTP/1.1, where it is
+  // tolerated). HttpMessage / HttpResponse guarantees that values are always trimmed.
+  assert(value == TrimOws(value));
+
+  if (http::IsConnectionSpecificField(name, value)) [[unlikely]] {
+    return 0;
+  }
+  return encoder.encode(output, name, value, HpackEncoder::IndexingModeOf(name, value));
+}
 }  // namespace
 
 ErrorCode Http2Connection::sendRequestHeaders(uint32_t streamId, http::Method method, bool isTlsRequest,
@@ -635,9 +652,14 @@ ErrorCode Http2Connection::sendRequestHeaders(uint32_t streamId, http::Method me
                                                      : cookies.substr(separatorPos + http::CookiePairSep.size());
   }
 
-  // Encode headers
-  encodeHeaders(streamId, target.empty() ? http::StatusCode{} : http::MagicForHttpRequest, headersView, endStream,
-                oldSize, nullptr, headerListSize);
+  // The Host header is sent as :authority.
+  for (const auto [name, value] : headersView) {
+    if (name != http::Host) {
+      headerListSize += EncodeRegularField(_hpackEncoder, _outputBuffer, name, value);
+    }
+  }
+
+  encodeHeaders(streamId, http::StatusCode{}, HeadersView{}, endStream, oldSize, nullptr, headerListSize);
 
   return err;
 }
@@ -1443,16 +1465,9 @@ Http2Connection::ProcessResult Http2Connection::handleContinuationFrame(FrameHea
 void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCode, HeadersView headersView,
                                     bool endStream, std::size_t oldSize, const ConcatenatedHeaders* pGlobalHeaders,
                                     uint64_t headerListSize) {
-  assert(statusCode == 0 || statusCode == http::MagicForHttpRequest || (statusCode >= 100 && statusCode <= 999));
+  assert(statusCode == 0 || (statusCode >= 100 && statusCode <= 999));
 
-  auto headersFirst = headersView.begin();
-  auto headersLast = headersView.end();
-
-  if (statusCode == http::MagicForHttpRequest) {
-    // For requests, skip the Host header (we use :authority instead)
-    assert(headersFirst != headersLast && (*headersFirst).name == http::Host);
-    ++headersFirst;
-  } else if (statusCode >= 100) {
+  if (statusCode >= 100) {
     // Encode :status pseudo-header first if present
     char statusBuf[3];
     writeStatusCode(statusBuf, statusCode);
@@ -1460,17 +1475,8 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
     headerListSize += _hpackEncoder.encode(_outputBuffer, http::PseudoHeaderStatus, statusStr);
   }
 
-  for (; headersFirst != headersLast; ++headersFirst) {
-    const auto [name, value] = *headersFirst;
-
-    // All header names should be normalized to lower-case at this step.
-    assert(std::ranges::all_of(name, [](char ch) { return ch < 'A' || ch > 'Z'; }));
-
-    // RFC 9113 §8.2.1: an HTTP/2 field value must not carry leading/trailing OWS (unlike HTTP/1.1, where it is
-    // tolerated). HttpMessage / HttpResponse guarantees that values are always trimmed.
-    assert(value == TrimOws(value));
-
-    headerListSize += _hpackEncoder.encode(_outputBuffer, name, value, HpackEncoder::IndexingModeOf(name, value));
+  for (const auto [name, value] : headersView) {
+    headerListSize += EncodeRegularField(_hpackEncoder, _outputBuffer, name, value);
   }
 
   if (pGlobalHeaders != nullptr) {
@@ -1481,8 +1487,9 @@ void Http2Connection::encodeHeaders(uint32_t streamId, http::StatusCode statusCo
       // Skip if already present in request-specific headers. We can use case sensitive search because global headers
       // are already lower-cased in the config, and request-specific headers are lower-cased above.
       std::string_view headerNameWithColon(headerName.data(), headerName.size() + http::HeaderSep.size());
-      if (headersView.containsCaseSensitive(headerNameWithColon)) {
-        // Skip if already present in request-specific headers
+      if (http::IsConnectionSpecificField(headerName, headerValue) ||
+          headersView.containsCaseSensitive(headerNameWithColon)) {
+        // Skip if connection-specific (see EncodeRegularField) or already present in request-specific headers
         continue;
       }
 

@@ -23,6 +23,7 @@
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-message-data.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-config.hpp"
@@ -466,6 +467,101 @@ TEST(Http2Connection, SequentialExchangesReleaseActiveStreamsOnBothSides) {
     EXPECT_EQ(client.activeStreamCount(), 0U) << "client leaks streams after exchange on stream " << streamId;
     EXPECT_EQ(server.activeStreamCount(), 0U) << "server leaks streams after exchange on stream " << streamId;
   }
+}
+
+// HttpRequest accepts the connection-specific fields for HTTP/1.1. Sent over HTTP/2, they would make the message
+// malformed (RFC 9113 §8.2.2): the server would reset the stream instead of delivering its field blocks.
+TEST(Http2Connection, SendRequestHeadersDropsConnectionSpecificFields) {
+  Http2Config config;
+  Http2Connection server(config, true);
+  Http2Connection client(config, false);
+  RecordingEventSink serverSink(server);
+
+  int fieldBlocks = 0;
+  serverSink.onHeadersDecodedFn = [&fieldBlocks](uint32_t, const SvToSvMap& headers, bool endStream) {
+    ++fieldBlocks;
+    if (endStream) {
+      EXPECT_EQ(headers.size(), 1U);
+      EXPECT_TRUE(headers.contains("x-trailer"));
+    } else {
+      EXPECT_EQ(headers.size(), 6U);  // the 4 pseudo-header fields, te and x-kept
+      EXPECT_TRUE(headers.contains("te"));
+      EXPECT_TRUE(headers.contains("x-kept"));
+    }
+  };
+
+  client.sendClientPreface();
+  PumpOutput(client, server);
+  PumpOutput(server, client);
+  PumpOutput(client, server);
+  ASSERT_TRUE(server.isOpen());
+
+  RawChars head;
+  head.append(MakeHttp1HeaderLine("host", "example.com"));
+  head.append(MakeHttp1HeaderLine("connection", "close"));
+  head.append(MakeHttp1HeaderLine("keep-alive", "timeout=5"));
+  head.append(MakeHttp1HeaderLine("proxy-connection", "keep-alive"));
+  head.append(MakeHttp1HeaderLine("transfer-encoding", "chunked"));
+  head.append(MakeHttp1HeaderLine("upgrade", "websocket"));
+  head.append(MakeHttp1HeaderLine("te", "trailers"));
+  head.append(MakeHttp1HeaderLine("x-kept", "1"));
+  ASSERT_EQ(client.sendRequestHeaders(1, http::Method::POST, true, "/upload", "example.com", HeadersView(head), false),
+            ErrorCode::NoError);
+
+  RawChars trailers;
+  trailers.append(MakeHttp1HeaderLine("connection", "close"));
+  trailers.append(MakeHttp1HeaderLine("te", "gzip"));
+  trailers.append(MakeHttp1HeaderLine("x-trailer", "t"));
+  ASSERT_EQ(client.sendRequestHeaders(1, http::Method::POST, true, {}, {}, HeadersView(trailers), true),
+            ErrorCode::NoError);
+
+  PumpOutput(client, server);
+  EXPECT_EQ(fieldBlocks, 2);
+}
+
+// Not reserved or forbidden in the trailers, these fields may be set for HTTP/1.1. Sent over HTTP/2, they would make
+// the response malformed (RFC 9113 §8.2.2).
+TEST(Http2Connection, SendHeadersDropsConnectionSpecificFields) {
+  Http2Config config;
+  Http2Connection server(config, true);
+  Http2Connection client(config, false);
+  RecordingEventSink clientSink(client);
+
+  int fieldBlocks = 0;
+  clientSink.onHeadersDecodedFn = [&fieldBlocks](uint32_t, const SvToSvMap& headers, bool endStream) {
+    ++fieldBlocks;
+    if (endStream) {
+      EXPECT_TRUE(headers.empty());
+    } else {
+      EXPECT_EQ(headers.size(), 3U);  // :status, x-kept and x-global
+      EXPECT_TRUE(headers.contains("x-kept"));
+      EXPECT_TRUE(headers.contains("x-global"));
+    }
+  };
+
+  client.sendClientPreface();
+  PumpOutput(client, server);
+  PumpOutput(server, client);
+  PumpOutput(client, server);
+  ASSERT_EQ(client.sendRequestHeaders(1, http::Method::GET, true, "/", "example.com", HeadersView{}, true),
+            ErrorCode::NoError);
+  PumpOutput(client, server);
+
+  RawChars head;
+  head.append(MakeHttp1HeaderLine("proxy-connection", "keep-alive"));
+  head.append(MakeHttp1HeaderLine("x-kept", "1"));
+  const ConcatenatedHeaders globalHeaders{"keep-alive: timeout=5", "x-global: 1"};
+  ASSERT_EQ(server.sendHeaders(1, http::StatusCodeOK, HeadersView(head), false, &globalHeaders), ErrorCode::NoError);
+
+  // Trailers holding nothing else still end the stream.
+  RawChars trailers;
+  trailers.append(MakeHttp1HeaderLine("connection", "close"));
+  trailers.append(MakeHttp1HeaderLine("upgrade", "websocket"));
+  ASSERT_EQ(server.sendHeaders(1, http::StatusCode{}, HeadersView(trailers), true), ErrorCode::NoError);
+
+  PumpOutput(server, client);
+  EXPECT_EQ(fieldBlocks, 2);
+  EXPECT_TRUE(client.isOpen());
 }
 
 TEST(Http2Connection, ServerCannotCreateStreamBeforeSettings) {

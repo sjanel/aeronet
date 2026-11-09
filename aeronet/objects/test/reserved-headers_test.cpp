@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <string>
+#include <string_view>
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/lower-ascii-key.hpp"
@@ -17,6 +18,23 @@ TEST(ReservedHeadersTest, ReservedResponseHeaderBasic) {
   EXPECT_TRUE(IsReservedResponseHeader("te"));
   EXPECT_TRUE(IsReservedResponseHeader("trailer"));
   EXPECT_TRUE(IsReservedResponseHeader("upgrade"));
+}
+
+TEST(ReservedHeadersTest, ConnectionSpecificFields) {
+  for (std::string_view name : {"connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"}) {
+    EXPECT_TRUE(IsConnectionSpecificField(name, "value")) << name;
+    EXPECT_TRUE(IsConnectionSpecificField(name, "")) << name;
+  }
+  for (std::string_view value : {"", "gzip", "trailer", "trailerz", "trailers, gzip"}) {
+    EXPECT_TRUE(IsConnectionSpecificField("te", value)) << value;
+  }
+  for (std::string_view value : {"trailers", "TrAiLeRs"}) {
+    EXPECT_FALSE(IsConnectionSpecificField("te", value)) << value;
+  }
+  // Fields with the length of a connection-specific one.
+  for (std::string_view name : {"tf", "referer", "set-cookie", "content-encoding", "transfer-encodinh"}) {
+    EXPECT_FALSE(IsConnectionSpecificField(name, "value")) << name;
+  }
 }
 
 TEST(ReservedHeadersTest, ReservedResponseHeaderRejectsUnknowns) {

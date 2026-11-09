@@ -304,6 +304,33 @@ TEST_P(ProtocolParity, StreamingResponseGoesThroughResponseMiddlewareAndCors) {
   EXPECT_EQ(resp.headerValueOrEmpty(http::AccessControlAllowOrigin), kAllowedOrigin);
 }
 
+// keep-alive and proxy-connection are not reserved: a handler may set them for HTTP/1.1, whereas they would make an
+// HTTP/2 response malformed (RFC 9113 §8.2.2), which HttpClient rejects.
+TEST_P(ProtocolParity, ConnectionSpecificResponseFieldsAreOnlySentOverHttp1) {
+  ts.router().setPath(http::Method::GET, "/normal", [](const HttpRequestView& req) {
+    return req.makeResponse(200)
+        .headerAddLine("keep-alive", "timeout=5")
+        .headerAddLine("proxy-connection", "keep-alive")
+        .headerAddLine("x-kept", "1");
+  });
+  ts.router().setPath(http::Method::GET, "/streaming", [](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.headerAddLine("keep-alive", "timeout=5");
+    writer.headerAddLine("proxy-connection", "keep-alive");
+    writer.headerAddLine("x-kept", "1");
+    writer.writeBody("body");
+    writer.end();
+  });
+
+  const bool overHttp1 = GetParam() == HttpVersionMode::Http1_1;
+  for (const std::string_view target : {"/normal", "/streaming"}) {
+    const auto resp = send(http::Method::GET, target);
+    EXPECT_EQ(resp.status(), http::StatusCodeOK) << target;
+    EXPECT_EQ(resp.headerValueOrEmpty("x-kept"), "1") << target;
+    EXPECT_EQ(resp.headerValueOrEmpty("keep-alive"), overHttp1 ? "timeout=5" : "") << target;
+    EXPECT_EQ(resp.headerValueOrEmpty("proxy-connection"), overHttp1 ? "keep-alive" : "") << target;
+  }
+}
+
 #ifdef AERONET_ENABLE_ZLIB
 // A HEAD response carries the headers of the GET one (RFC 9110 §9.3.2), compression included. The client keeps no
 // Content-Type nor Content-Length without a body: their values are checked on the wire by the tests of each protocol.

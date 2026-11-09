@@ -67,6 +67,8 @@ Convenience helpers remain allowed: `contentType()` on the streaming writer, and
 
 All other headers (custom application, caching, CORS, ...) may be set freely. Values are forwarded unchanged, while field names are normalized to lower case. Lower-case field names are valid in HTTP/1.x and mandatory in HTTP/2; the API intentionally does not preserve cosmetic HTTP/1.x capitalization. This rule lives in a single helper, `http::IsReservedResponseHeader`.
 
+`keep-alive` and `proxy-connection` are not reserved, as an HTTP/1.1 response may carry them, but they are [dropped over HTTP/2](../protocols/http2.md#handlers), where they would make the response malformed.
+
 ### Global headers
 
 `HttpServerConfig::globalHeaders` are added to every response of the server, including the error responses the server generates itself (`400`, `404`, `413`, ...). A global header never overrides a header of the same name set by the handler. A [reserved header](#reserved-headers) cannot be a global header, nor can `location`, whose value is specific to each response (and which the server sets itself on its redirects): `HttpServerConfig::validate()` throws `std::invalid_argument`. It contains `server: aeronet` by default:

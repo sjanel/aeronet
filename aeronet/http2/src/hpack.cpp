@@ -21,6 +21,7 @@
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/mergeable-headers.hpp"
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/reserved-headers.hpp"
 #include "aeronet/toupperlower.hpp"
 #include "http2-header-is-valid.hpp"
 
@@ -1085,6 +1086,11 @@ HpackDecoder::DecodeResult::Error HpackDecoder::storeHeader(std::string_view nam
 
   if (valueSource != Source::StaticTable && !IsValidHTTP2HeaderValue(value)) {
     return DecodeResult::Error::MalformedFieldValue;
+  }
+
+  // A handler forwarding such a request to an HTTP/1.1 backend would open a request smuggling path (transfer-encoding).
+  if (_messages == Messages::Requests && http::IsConnectionSpecificField(name, value)) [[unlikely]] {
+    return DecodeResult::Error::ConnectionSpecificField;
   }
 
   const bool isContentEncoding = name == http::ContentEncoding;

@@ -860,6 +860,87 @@ TEST(HpackDecoder, DuplicateSingletonHeaderIsRejected) {
   }
 }
 
+namespace {
+
+RawBytes EncodeLiteralField(std::string_view name, std::string_view value) {
+  HpackEncoder encoder(4096);
+  RawBytes encoded;
+  encoder.encode(encoded, name, value, HpackEncoder::IndexingMode::WithoutIndexing);
+  return encoded;
+}
+
+}  // namespace
+
+// RFC 9113 §8.2.2: the request is malformed, which does not concern the compression state of the connection.
+TEST(HpackDecoder, ConnectionSpecificRequestFieldsAreRejected) {
+  for (std::string_view name : {"connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"}) {
+    for (std::string_view value : {"close", ""}) {
+      auto decoder = CreateHpackDecoder();
+      const RawBytes encoded = EncodeLiteralField(name, value);
+
+      const auto result = decoder.decode(encoded);
+
+      EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::ConnectionSpecificField) << name << ": " << value;
+      EXPECT_FALSE(result.isCompressionError()) << name;
+    }
+  }
+}
+
+TEST(HpackDecoder, TeRequestFieldOnlyAcceptsTrailers) {
+  for (std::string_view value : {"trailers", "Trailers", "TRAILERS"}) {
+    auto decoder = CreateHpackDecoder();
+    const RawBytes encoded = EncodeLiteralField("te", value);
+
+    const auto result = decoder.decode(encoded);
+
+    ASSERT_TRUE(result.isSuccess()) << value;
+    EXPECT_EQ(result.decodedHeaders.headers.find("te")->second, value);
+  }
+  for (std::string_view value : {"", "gzip", "trailer", "trailerz", "trailers,gzip", "trailers, deflate;q=0.5"}) {
+    auto decoder = CreateHpackDecoder();
+    const RawBytes encoded = EncodeLiteralField("te", value);
+
+    EXPECT_EQ(decoder.decode(encoded).error, HpackDecoder::DecodeResult::Error::ConnectionSpecificField) << value;
+  }
+}
+
+TEST(HpackDecoder, FieldsWithTheLengthOfAConnectionSpecificOneAreAccepted) {
+  for (std::string_view name : {"tf", "referer", "user-agent", "proxy-connectiom", "transfer-encodinh"}) {
+    auto decoder = CreateHpackDecoder();
+    const RawBytes encoded = EncodeLiteralField(name, "value");
+
+    EXPECT_TRUE(decoder.decode(encoded).isSuccess()) << name;
+  }
+}
+
+TEST(HpackDecoder, ConnectionSpecificRequestFieldsAreRejectedFromTheTables) {
+  {
+    auto decoder = CreateHpackDecoder();
+    static constexpr uint8_t indexed[]{0xB9};  // transfer-encoding: (empty), index 57 of the static table
+    EXPECT_EQ(decoder.decode(AsBytes(indexed)).error, HpackDecoder::DecodeResult::Error::ConnectionSpecificField);
+  }
+
+  auto decoder = CreateHpackDecoder();
+  // transfer-encoding: chunked, with incremental indexing and a name from the static table
+  static constexpr uint8_t literal[]{0x79, 0x07, 'c', 'h', 'u', 'n', 'k', 'e', 'd'};
+  EXPECT_EQ(decoder.decode(AsBytes(literal)).error, HpackDecoder::DecodeResult::Error::ConnectionSpecificField);
+
+  // The dynamic table is updated all the same (RFC 9113 §4.3), and a reference to this entry is rejected as well.
+  ASSERT_EQ(decoder.dynamicTable().entryCount(), 1U);
+  EXPECT_EQ(decoder.dynamicTable()[0].name(), "transfer-encoding");
+  static constexpr uint8_t reference[]{0xBE};  // index 62: the dynamic table entry
+  EXPECT_EQ(decoder.decode(AsBytes(reference)).error, HpackDecoder::DecodeResult::Error::ConnectionSpecificField);
+}
+
+TEST(HpackDecoder, ConnectionSpecificFieldsOfResponsesAreNotRejected) {
+  for (std::string_view name : {"connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te"}) {
+    HpackDecoder decoder(4096, std::numeric_limits<uint32_t>::max(), true, HpackDecoder::Messages::Responses);
+    const RawBytes encoded = EncodeLiteralField(name, "value");
+
+    EXPECT_TRUE(decoder.decode(encoded).isSuccess()) << name;
+  }
+}
+
 TEST(HpackDecoder, DuplicateWithEmptyValueAddsNoSeparator) {
   auto decoder = CreateHpackDecoder();
 
