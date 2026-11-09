@@ -308,7 +308,7 @@ void Http2ProtocolHandler::onHeadersDecoded(uint32_t streamId, DecodedHeaders& d
   if (parsedMethod == http::kMethodInvalid) {
     // Unknown extension methods are syntactically valid but unsupported by aeronet.
     log::debug("Unknown HTTP method received: {}", methodValue);
-    (void)sendResponse(req, req.makeResponse(http::StatusCodeNotImplemented, "Unsupported HTTP method"));
+    sendInMemoryResponse(req, req.makeResponse(http::StatusCodeNotImplemented, "Unsupported HTTP method"));
     releaseStreamAfterResponse(it);
     return;
   }
@@ -344,7 +344,7 @@ void Http2ProtocolHandler::onHeadersDecoded(uint32_t streamId, DecodedHeaders& d
     // in the storage now owned by the request (never in the static table), so in-place decoding is safe.
     char* pPath = const_cast<char*>(pathValue.data());
     if (!req.decodePath(pPath, pPath + pathValue.size())) {
-      (void)sendResponse(
+      sendInMemoryResponse(
           req, req.makeResponse(
                    http::StatusCodeBadRequest,
                    "Invalid :path header - unable to decode percent-encoded characters or path is not valid UTF-8"));
@@ -358,7 +358,7 @@ void Http2ProtocolHandler::onHeadersDecoded(uint32_t streamId, DecodedHeaders& d
   // Host header field, which a request may send instead (RFC 9113 §8.3.1).
   if (!http::IsValidHostFieldValue(authorityValue) ||
       !http::IsValidHostFieldValue(req.headerValueOrEmpty(http::Host))) {
-    (void)sendResponse(req, req.makeResponse(http::StatusCodeBadRequest, "Invalid :authority or Host header"));
+    sendInMemoryResponse(req, req.makeResponse(http::StatusCodeBadRequest, "Invalid :authority or Host header"));
     releaseStreamAfterResponse(it);
     return;
   }
@@ -407,7 +407,8 @@ void Http2ProtocolHandler::onHeadersDecoded(uint32_t streamId, DecodedHeaders& d
   // If the client explicitly forbids identity (identity;q=0) and we have no acceptable
   // alternative encodings to offer, emit a 406 per RFC 9110 Section 12.5.3 guidance.
   if (reject) {
-    (void)sendResponse(req, req.makeResponse(http::StatusCodeNotAcceptable, "No acceptable content-coding available"));
+    sendInMemoryResponse(req,
+                         req.makeResponse(http::StatusCodeNotAcceptable, "No acceptable content-coding available"));
     req.end(http::StatusCodeNotAcceptable);
     releaseStreamAfterResponse(it);
     return;
@@ -495,7 +496,7 @@ void Http2ProtocolHandler::onData(uint32_t streamId, std::span<const std::byte> 
 
 void Http2ProtocolHandler::rejectTooLargeBody(StreamsMap::iterator it) {
   HttpRequestView& req = it->second.request->request;
-  (void)sendResponse(req, req.makeResponse(http::StatusCodePayloadTooLarge));
+  sendInMemoryResponse(req, req.makeResponse(http::StatusCodePayloadTooLarge));
   onRequestCompleted(req, http::StatusCodePayloadTooLarge);
   // A response without body is never deferred: the stream entry is released.
   assert(!it->second.pending);
@@ -527,7 +528,7 @@ void Http2ProtocolHandler::finalizeRequestBodyAndDispatch(StreamsMap::iterator i
     const auto res = HttpCodec::MaybeDecompressRequestBody(_pCtx->decompressionState, _pCtx->config.decompression, req,
                                                            streamReq.bodyBuffer, _pCtx->sharedBuffers.buf);
     if (res.message != nullptr) {
-      (void)sendResponse(req, req.makeResponse(res.status, res.message));
+      sendInMemoryResponse(req, req.makeResponse(res.status, res.message));
       releaseStreamAfterResponse(it);
       return;
     }
@@ -733,7 +734,7 @@ ErrorCode Http2ProtocolHandler::sendPendingFileBody(uint32_t streamId, FilePaylo
       break;  // wait for WINDOW_UPDATE
     }
 
-    const auto windowLimit = static_cast<std::size_t>(std::min(streamWin, connWin));
+    const std::size_t windowLimit = static_cast<std::size_t>(std::min(streamWin, connWin));
     const std::size_t chunkSize = std::min({pending.length, windowLimit, kMaxReadSize, maxBytes});
 
     // All min() inputs are > 0: pending.length and maxBytes (loop condition), windowLimit (checked > 0).
@@ -1002,8 +1003,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
 
   // Check path-specific HTTP/2 config
   if (routingResult.pathConfig().http2Enable == PathEntryConfig::Http2Enable::Disable) {
-    [[maybe_unused]] ErrorCode err = sendResponse(req, req.makeResponse(http::StatusCodeNotFound));
-    assert(err == ErrorCode::NoError && "sendResponse cannot fail for empty 404 response");
+    sendInMemoryResponse(req, req.makeResponse(http::StatusCodeNotFound));
     onRequestCompleted(req, http::StatusCodeNotFound);
     releaseStreamAfterResponse(it);
     return;
@@ -1011,8 +1011,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
 
   // Per-route request head size limit (already clamped against the global one, see Router::clampConfigs())
   if (req.headSpanSize() > routingResult.pathConfig().maxHeaderBytes) {
-    [[maybe_unused]] ErrorCode err = sendResponse(req, req.makeResponse(http::StatusCodeRequestHeaderFieldsTooLarge));
-    assert(err == ErrorCode::NoError);
+    sendInMemoryResponse(req, req.makeResponse(http::StatusCodeRequestHeaderFieldsTooLarge));
     onRequestCompleted(req, http::StatusCodeRequestHeaderFieldsTooLarge);
     releaseStreamAfterResponse(it);
     return;
@@ -1020,8 +1019,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
 
   // Per-route body size limit (already clamped against the global one, see Router::clampConfigs())
   if (req._body.size() > routingResult.pathConfig().maxBodyBytes) {
-    [[maybe_unused]] ErrorCode err = sendResponse(req, req.makeResponse(http::StatusCodePayloadTooLarge));
-    assert(err == ErrorCode::NoError);
+    sendInMemoryResponse(req, req.makeResponse(http::StatusCodePayloadTooLarge));
     onRequestCompleted(req, http::StatusCodePayloadTooLarge);
     releaseStreamAfterResponse(it);
     return;
@@ -1091,13 +1089,15 @@ void Http2ProtocolHandler::finalizeAndSendResponse(StreamsMap::iterator it, Http
 
   const http::StatusCode status = response.status();
   const ErrorCode err = sendResponse(req, std::move(response));
-  if (err != ErrorCode::NoError) [[unlikely]] {
-    log::error("HTTP/2 failed to send response on stream {}: {}", streamId, ErrorCodeName(err));
+  onRequestCompleted(req, err == ErrorCode::NoError ? status : http::StatusCodeInternalServerError);
+  if (err == ErrorCode::NoError) [[likely]] {
+    releaseStreamAfterResponse(it);
+  } else {
+    log::warn("HTTP/2 failed to send response on stream {}: {}", streamId, ErrorCodeName(err));
+
+    _streams.erase(it);
+    _connection.sendRstStream(streamId, err);
   }
-
-  onRequestCompleted(req, status);
-
-  releaseStreamAfterResponse(it);
 }
 
 void Http2ProtocolHandler::answerHttpsRedirect(StreamsMap::iterator it) {
@@ -1114,8 +1114,7 @@ void Http2ProtocolHandler::answerHttpsRedirect(StreamsMap::iterator it) {
     response = request.makeResponse(http::StatusCodeBadRequest, "Missing Host header for HTTPS redirect");
   }
   const http::StatusCode status = response.status();
-  [[maybe_unused]] const ErrorCode err = sendResponse(request, std::move(response));
-  assert(err == ErrorCode::NoError && "sendResponse cannot fail for a small redirect response");
+  sendInMemoryResponse(request, std::move(response));
   onRequestCompleted(request, status);
   releaseStreamAfterResponse(it);
 }
@@ -1131,14 +1130,14 @@ void Http2ProtocolHandler::handleConnectRequest(uint32_t streamId, HttpRequestVi
   const ConnectTarget target(request.authority());
   if (target.invalid()) {
     log::warn("HTTP/2 CONNECT stream {} malformed target: {}", streamId, request.authority());
-    (void)sendResponse(request, request.makeResponse(http::StatusCodeBadRequest, "Malformed CONNECT target"));
+    sendInMemoryResponse(request, request.makeResponse(http::StatusCodeBadRequest, "Malformed CONNECT target"));
     return;
   }
 
   // CONNECT is disabled unless the target is explicitly allowlisted or unrestricted access was requested with "*".
   if (!_pCtx->config.connectTargetAllowed(target.host)) {
     log::info("HTTP/2 CONNECT stream {} target {} not in allowlist", streamId, request.authority());
-    (void)sendResponse(request, request.makeResponse(http::StatusCodeForbidden, "CONNECT target not allowed"));
+    sendInMemoryResponse(request, request.makeResponse(http::StatusCodeForbidden, "CONNECT target not allowed"));
     return;
   }
 
@@ -1161,14 +1160,14 @@ void Http2ProtocolHandler::handleConnectRequest(uint32_t streamId, HttpRequestVi
       break;
     case ITunnelBridge::TunnelSetup::Status::Overloaded:
       log::warn("HTTP/2 CONNECT stream {} refused: too many targets being resolved", streamId);
-      (void)sendResponse(
+      sendInMemoryResponse(
           request, request.makeResponse(http::StatusCodeServiceUnavailable, "Too many CONNECT targets being resolved"));
       break;
     default:
       assert(setup.status == ITunnelBridge::TunnelSetup::Status::Failed);
       log::warn("HTTP/2 CONNECT stream {} failed to connect to {}", streamId, request.authority());
-      (void)sendResponse(request,
-                         request.makeResponse(http::StatusCodeBadGateway, "Unable to connect to CONNECT target"));
+      sendInMemoryResponse(request,
+                           request.makeResponse(http::StatusCodeBadGateway, "Unable to connect to CONNECT target"));
       break;
   }
 }
@@ -1223,7 +1222,7 @@ void Http2ProtocolHandler::failPendingTunnel(uint32_t streamId, http::StatusCode
   assert(it != _streams.end() && it->second.tunnelPending);
   it->second.tunnelPending = false;
   HttpRequestView& req = it->second.request->request;
-  (void)sendResponse(req, req.makeResponse(statusCode, reason));
+  sendInMemoryResponse(req, req.makeResponse(statusCode, reason));
   releaseStreamAfterResponse(_streams.find(streamId));
 }
 
@@ -1327,7 +1326,7 @@ bool Http2ProtocolHandler::responseExceedsPendingLimits(uint32_t streamId, const
   return !trailers.empty() && (!consumeBudget(trailers.size()) || !consumeBudget(FrameHeader::kSize));
 }
 
-ErrorCode Http2ProtocolHandler::sendResponse(HttpRequestView& request, HttpResponse response) {
+ErrorCode Http2ProtocolHandler::sendResponse(HttpRequestView& request, HttpResponse&& response) {
   const bool isHeadMethod = request.method() == http::Method::HEAD;
   const uint32_t streamId = request.streamId();
   if (responseExceedsPendingLimits(streamId, response, isHeadMethod)) {
@@ -1433,6 +1432,11 @@ ErrorCode Http2ProtocolHandler::sendResponse(HttpRequestView& request, HttpRespo
   }
 
   return err;
+}
+
+void Http2ProtocolHandler::sendInMemoryResponse(HttpRequestView& request, HttpResponse&& response) {
+  [[maybe_unused]] const ErrorCode err = sendResponse(request, std::move(response));
+  assert(err == ErrorCode::NoError && "only reading a file payload can fail");
 }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
@@ -1632,8 +1636,7 @@ bool Http2ProtocolHandler::onSweep(std::chrono::steady_clock::time_point now, bo
       // of the stream before answering, so that nothing the response stores in the stream can destroy them.
       orphanAsyncTask(streamState);
 #endif
-      [[maybe_unused]] const ErrorCode err = sendResponse(request, std::move(response));
-      assert(err == ErrorCode::NoError);
+      sendInMemoryResponse(request, std::move(response));
       // The 408 has no body: it does not wait for flow-control credit (which the reset below would never let come).
       assert(!streamState.hasPendingSend());
       onRequestCompleted(request, http::StatusCodeRequestTimeout);

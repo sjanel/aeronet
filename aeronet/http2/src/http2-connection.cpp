@@ -547,7 +547,7 @@ void Http2Connection::closeStream(StreamsMap::iterator it, ErrorCode errorCode) 
     return;
   }
 
-  const auto streamId = it->first;
+  const uint32_t streamId = it->first;
 
   log::debug("Stream {} is now closed with error code {}", streamId, static_cast<uint32_t>(errorCode));
   if (errorCode != ErrorCode::NoError) {

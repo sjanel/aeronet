@@ -7178,6 +7178,47 @@ TEST(Http2ProtocolHandler, FilePayloadShortReadReturnsInternalErrorAndResetsStre
   EXPECT_EQ(loop.streamResets.back().second, ErrorCode::InternalError);
 }
 
+// The file shrinks between the size read by file() and the reads of sendResponse(): the HEADERS frame is already sent,
+// without END_STREAM, and the announced body will never be complete.
+TEST(Http2ProtocolHandler, FilePayloadShortReadDuringFirstSendResetsStream) {
+  for (const auto shrunkSize : {0UL, 100UL}) {
+    SCOPED_TRACE(shrunkSize);
+    test::ScopedTempDir tmpDir;
+    test::ScopedTempFile tmpFile(tmpDir, std::string(1000U, 'Q'));
+
+    Router router;
+    const auto filePath = tmpFile.filePath().string();
+    router.setPath(http::Method::GET, "/shrinking", [&filePath, shrunkSize](const HttpRequestView&) {
+      HttpResponse response = HttpResponse(200).file(File(filePath), "application/octet-stream");
+      std::filesystem::resize_file(filePath, shrunkSize);
+      return response;
+    });
+
+    Http2ProtocolLoopback loop(router);
+    loop.connect();
+
+    RawChars hdrs = MakeGetHeaders("/shrinking");
+    ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
+
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
+
+    ASSERT_EQ(loop.clientHeaders.size(), 1U);
+    EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "200");
+    EXPECT_FALSE(loop.clientHeaders.back().endStream);
+    EXPECT_EQ(loop.receivedData(1).size(), shrunkSize);
+
+    // The client learns that the response is incomplete, instead of waiting for the end of the stream.
+    const decltype(loop.streamResets) expectedResets{{1U, ErrorCode::InternalError}};
+    EXPECT_EQ(loop.streamResets, expectedResets);
+
+    // The stream does not stay active forever, which would prevent a GOAWAY from completing.
+    EXPECT_EQ(loop.handler.connection().activeStreamCount(), 0U);
+    loop.handler.connection().initiateGoAway();
+    EXPECT_TRUE(loop.handler.connection().goAwayCompleted());
+  }
+}
+
 TEST(Http2ProtocolHandler, RequestTrailersWithoutBodyDispatchesEmptyBody) {
   Router router;
   std::string seenBody = "unset";

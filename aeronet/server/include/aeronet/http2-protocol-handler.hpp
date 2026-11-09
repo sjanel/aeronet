@@ -405,7 +405,10 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   void onRequestCompleted(HttpRequestView& request, http::StatusCode status);
 
   /// Send an HTTP response on a stream.
-  ErrorCode sendResponse(HttpRequestView& request, HttpResponse response);
+  ErrorCode sendResponse(HttpRequestView& request, HttpResponse&& response);
+
+  /// Send a response built in memory by the server, which cannot fail (only reading a file payload can).
+  void sendInMemoryResponse(HttpRequestView& request, HttpResponse&& response);
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   /// Start an async handler for a stream. Its response is already sent if it completed synchronously, otherwise it will

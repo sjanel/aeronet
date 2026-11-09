@@ -820,14 +820,14 @@ bool Http1Pipeline::handleExpectHeader(ConnectionIt cnxIt, std::string_view expe
 
           break;
         }
-        case ExpectationResultKind::FinalResponse: {
+        case ExpectationResultKind::FinalResponse:
           // Send the provided final response immediately and skip body processing. The client may send the body that
           // the request announces anyway (it is not required to wait for the response), which could not be told apart
           // from the next request: the connection then closes after the response.
           finalizeAndSendResponse(cnxIt, std::move(expectationResult.finalResponse), pCorsPolicy,
                                   AnnouncesBody(request));
           return true;
-        }
+
         default:
           assert(expectationResult.kind == ExpectationResultKind::Continue);
           break;

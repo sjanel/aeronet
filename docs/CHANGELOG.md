@@ -6,6 +6,7 @@ All notable changes to aeronet are documented in this file.
 
 ### Fixed
 
+- **A file failing at the start of an HTTP/2 response resets its stream**: when a file shrank after `file()` or could not be read within the first flow-control window, the client waited forever for the rest of the response and the stream stayed active, preventing a `GOAWAY` from completing. The stream is now reset with `INTERNAL_ERROR`, as it already was for later reads.
 - **The first frame of an HTTP/2 connection must be `SETTINGS`**: any other frame sent after the connection preface was accepted, a request being served, while RFC 9113 §3.4 makes it a connection error. The connection now closes with `PROTOCOL_ERROR` (server and `HttpClient`). See [Request validation](protocols/http2.md#request-validation).
 - **A connection error after a graceful HTTP/2 `GOAWAY` tells its cause**: during a drain, or once `maxStreamsPerConnection` was reached, the peer only received the `NO_ERROR` of the first `GOAWAY` before its connection closed. A second `GOAWAY` now carries the error code. See [Connection lifetime](protocols/http2.md#connection-lifetime).
 - **`Http2Config::enablePriority` is honored**: it was never read. When false, the priorities of `PRIORITY` and `HEADERS` frames are no longer recorded on the streams, these frames being still validated. See [Protocol support](protocols/http2.md#protocol-support).
