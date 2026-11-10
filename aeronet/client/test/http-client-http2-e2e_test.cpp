@@ -60,11 +60,13 @@
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
+#include "aeronet/test_util.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/toupperlower.hpp"
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
 #include "collecting-body-sink.hpp"
+#include "first-read-recording-transport.hpp"
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include "aeronet/http-response.hpp"
@@ -122,6 +124,11 @@ test::TestServer CreateTestServer() {
   auto routerProxy = testServer.router();
   routerProxy.setPath(http::Method::GET, "/hello", [](const HttpRequestView& req) {
     Observe(req);
+    return req.makeResponse(http::StatusCodeOK, "world", "text/plain");
+  });
+  // Late enough that a read right after the request surely finds nothing.
+  routerProxy.setPath(http::Method::GET, "/delayed-hello", [](const HttpRequestView& req) {
+    std::this_thread::sleep_for(std::chrono::milliseconds{10});
     return req.makeResponse(http::StatusCodeOK, "world", "text/plain");
   });
   routerProxy.setPath(http::Method::GET, "/set-cookies", [](const HttpRequestView& req) {
@@ -278,6 +285,10 @@ class ScriptedHttp2Transport final : public TransportBackend<ScriptedHttp2Transp
         return {data.size(), TransportHint::None};
     }
   }
+
+  // A read always returns at once (a scripted frame, then the closing of the connection, or the scripted readiness),
+  // like one of bytes decrypted by TLS: no readiness of the socket signals it.
+  static bool hasPendingReadData() noexcept { return true; }
 
   [[nodiscard]] std::size_t bytesWritten() const noexcept { return _written.size(); }
 
@@ -533,6 +544,28 @@ TEST(HttpClientHttp2TransportTest, PeerResetAndGoAwayAbortCurrentExchange) {
     // A stream reset by the server leaves the connection usable, unlike a GOAWAY.
     EXPECT_EQ(connection.keepAlive(), action == ScriptedHttp2Transport::Action::RstStream);
   }
+}
+
+// The response takes a round trip at least: the client waits for it instead of trying a read first, which would fail
+// with EAGAIN (a wasted system call per exchange).
+TEST(HttpClientHttp2TransportTest, FirstReadWaitsForTheResponse) {
+  HttpClientConfig config;
+  config.withHttpVersion(HttpVersionMode::Http2);
+  HttpClient client(config);
+  auto req = client.makeRequest(http::Method::GET, Url("/delayed-hello"));
+  HttpRequestTest::Finalize(req);
+  test::ClientConnection socket(port);
+  ASSERT_TRUE(SetNonBlocking(socket.fd()));
+  test::FirstReadRecordingTransport transport(socket.fd());
+  internal::ClientConnection connection(config);
+  bool requestSent = false;
+
+  auto result = connection.exchange(client, transport, socket.fd(), req, SteadyClock::now() + std::chrono::seconds{5},
+                                    requestSent);
+
+  ASSERT_TRUE(result) << ErrcToStr(result.error());
+  EXPECT_EQ(result->bodyInMemory(), "world");
+  EXPECT_EQ(transport.wouldBlockReadsBeforeData(), 0U);
 }
 
 TEST(HttpClientHttp2TransportTest, WriteFailureAndReadinessTimeoutBeforeSending) {
