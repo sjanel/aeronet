@@ -69,6 +69,7 @@
 #include "aeronet/unix-dogstatsd-sink.hpp"
 #include "aeronet/vector.hpp"
 #include "collecting-body-sink.hpp"
+#include "first-read-recording-transport.hpp"
 #include "http-client-test-access.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
@@ -142,6 +143,9 @@ class ScriptedHttp11Transport final : public TransportBackend<ScriptedHttp11Tran
     }
   }
 
+  // The scripted response is held in memory, like bytes decrypted by TLS: no readiness of the socket signals it.
+  [[nodiscard]] bool hasPendingReadData() const noexcept { return _responseOffset < kScriptedResponse.size(); }
+
   [[nodiscard]] std::string_view written() const noexcept { return _written; }
   [[nodiscard]] std::size_t singleWriteCalls() const noexcept { return _singleWriteCalls; }
 
@@ -182,6 +186,11 @@ test::TestServer CreateTestServer() {
   auto routerProxy = testServer.router();
   routerProxy.setPath(http::Method::GET | http::Method::POST, "/reflect", ReflectRequestHeaders);
   routerProxy.setPath(http::Method::GET, "/hello", [](const HttpRequestView& req) {
+    return req.makeResponse(http::StatusCodeOK, "world", "text/plain");
+  });
+  // Late enough that a read right after the request surely finds nothing.
+  routerProxy.setPath(http::Method::GET, "/delayed-hello", [](const HttpRequestView& req) {
+    std::this_thread::sleep_for(std::chrono::milliseconds{10});
     return req.makeResponse(http::StatusCodeOK, "world", "text/plain");
   });
   routerProxy.setPath(http::Method::GET, "/headers", [](const HttpRequestView& req) {
@@ -505,6 +514,26 @@ TEST_F(HttpClientE2ETest, Http11PartialScatterWriteContinuesWithBodyOnly) {
   EXPECT_TRUE(requestSent);
   EXPECT_EQ(transport.singleWriteCalls(), 1U);
   EXPECT_TRUE(transport.written().ends_with(payload));
+}
+
+// The response takes a round trip at least: the client waits for it instead of trying a read first, which would fail
+// with EAGAIN (a wasted system call per exchange).
+TEST_F(HttpClientE2ETest, Http11FirstReadWaitsForTheResponse) {
+  HttpClient client;
+  auto req = client.makeRequest(http::Method::GET, Url("/delayed-hello"));
+  HttpRequestTest::Finalize(req);
+  test::ClientConnection socket(ts.port());
+  ASSERT_TRUE(SetNonBlocking(socket.fd()));
+  test::FirstReadRecordingTransport transport(socket.fd());
+  internal::ClientConnection connection(internal::ClientConnection::Type::Http11);
+  bool requestSent = false;
+
+  auto result = connection.exchange(client, transport, socket.fd(), req, SteadyClock::now() + std::chrono::seconds{5},
+                                    requestSent);
+
+  ASSERT_TRUE(result) << ErrcToStr(result.error());
+  EXPECT_EQ(result->bodyInMemory(), "world");
+  EXPECT_EQ(transport.wouldBlockReadsBeforeData(), 0U);
 }
 
 TEST_F(HttpClientE2ETest, Http11WriteErrorBeforeAnyBytesLeavesRequestUnsent) {
@@ -977,14 +1006,15 @@ class ScriptedSendfileTransport final : public TransportBackend<ScriptedSendfile
   explicit ScriptedSendfileTransport(Mode mode) : _mode(mode) {}
 
   TransportResult read(char* buf, std::size_t len) {
-    switch (_mode) {
-      case Mode::Error:
-        return {0, TransportHint::ReadReady};
-      case Mode::ErrorAfterResponse:
-        return ServeScriptedResponse(kScriptedEarlyRejection, _responseOffset, buf, len);
-      default:
-        return ServeScriptedResponse(kScriptedResponse, _responseOffset, buf, len);
+    if (_mode == Mode::Error) {
+      return {0, TransportHint::ReadReady};
     }
+    return ServeScriptedResponse(response(), _responseOffset, buf, len);
+  }
+
+  // The scripted response is held in memory, like bytes decrypted by TLS: no readiness of the socket signals it.
+  [[nodiscard]] bool hasPendingReadData() const noexcept {
+    return _mode != Mode::Error && _responseOffset < response().size();
   }
 
   static TransportResult write(std::string_view data) { return {data.size(), TransportHint::None}; }
@@ -1014,6 +1044,10 @@ class ScriptedSendfileTransport final : public TransportBackend<ScriptedSendfile
   [[nodiscard]] std::size_t sendFileCalls() const noexcept { return _sendFileCalls; }
 
  private:
+  [[nodiscard]] std::string_view response() const noexcept {
+    return _mode == Mode::ErrorAfterResponse ? kScriptedEarlyRejection : kScriptedResponse;
+  }
+
   Mode _mode;
   std::size_t _responseOffset{0};
   std::size_t _sendFileCalls{0};

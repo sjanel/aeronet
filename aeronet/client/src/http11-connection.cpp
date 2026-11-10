@@ -376,6 +376,15 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
   bool eof = writer.eof();
   const auto minReadChunkBytes = config.minReadChunkBytes;
 
+  // The response takes a round trip at least: when nothing was received while the request was written, a read would
+  // mostly fail with EAGAIN before a wait (a wasted system call per exchange), so the wait comes first. It is
+  // level-triggered, so it returns at once if the response is already there, but it does not see the bytes that TLS
+  // already holds: they are read first. After an interrupted write, what was received is read without waiting.
+  if (responseBuffer.empty() && !writer.interrupted() && !transport.hasPendingReadData() &&
+      !client.waitExchangeIo(fd, EventIn, ioDeadline)) {
+    return std::unexpected(HttpClientErrc::timeout);
+  }
+
   HttpResponse resp;
   // The response bytes received while the request was written are parsed before any read.
   for (bool read = responseBuffer.empty();; read = true) {

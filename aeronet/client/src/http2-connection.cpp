@@ -15,6 +15,7 @@
 #include <system_error>
 
 #include "aeronet/client-connection.hpp"
+#include "aeronet/event.hpp"
 #include "aeronet/file-payload.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/hpack.hpp"
@@ -254,8 +255,11 @@ class Http2ClientEngine : private EventSink {
   // partial frame) stay in the engine's input buffer so nothing is lost across calls -- or exchanges, on
   // a pooled connection. Bytes already buffered are re-processed before reading: processInput stops
   // early at a GOAWAY frame, so complete frames may still be waiting behind it from a previous call.
+  // With `awaitInput` (the answer to the bytes just written is expected, which takes a round trip at least), the first
+  // read waits for the socket to become readable instead of failing with EAGAIN most of the time, unless TLS already
+  // holds bytes that the (level-triggered) readiness of the socket does not signal.
   [[nodiscard]] HttpClientErrc readAndProcess(HttpClient& client, Transport& transport, NativeHandle fd,
-                                              SteadyClock::time_point deadline) {
+                                              SteadyClock::time_point deadline, bool awaitInput) {
     for (;;) {
       if (!_inBuf.empty()) {
         const auto processed = _conn.processInput(std::as_bytes(std::span<const char>(_inBuf.data(), _inBuf.size())));
@@ -274,6 +278,12 @@ class Http2ClientEngine : private EventSink {
           return HttpClientErrc::noError;
         }
         // Only a partial frame is buffered: fall through and read more.
+      }
+      if (awaitInput) {
+        awaitInput = false;
+        if (!transport.hasPendingReadData() && !client.waitExchangeIo(fd, EventIn, deadline)) {
+          return HttpClientErrc::timeout;
+        }
       }
       const TransportResult res = aeronet::internal::ReadAppend(transport, _inBuf, _minReadChunkBytes);
       if (res.bytesProcessed > 0) {
@@ -599,7 +609,7 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
     const std::size_t window = engine.sendWindow(streamId);
     if (window == 0) {
       // Flow-control stall: pump the connection until the server grants more window.
-      ioRes = engine.readAndProcess(client, transport, fd, ioDeadline);
+      ioRes = engine.readAndProcess(client, transport, fd, ioDeadline, /*awaitInput=*/false);
       continue;
     }
     const std::size_t chunkSize = std::min({
@@ -659,14 +669,17 @@ HttpClientResult ClientConnection::exchangeForHttp2(HttpClient& client, Transpor
     ioRes = engine.flushOutput(client, transport, fd, ioDeadline, requestSent);
   }
 
-  // Await the response: pump frames until it is fully received (or the exchange fails).
-  while (ioRes == HttpClientErrc::noError && engine.failure() == http2::internal::Http2ClientEngine::Failure::None &&
-         !engine.responseComplete()) {
+  // Await the response: pump frames until it is fully received (or the exchange fails). Its first bytes take a round
+  // trip at least: the first read waits for them.
+  for (bool awaitInput = true;
+       ioRes == HttpClientErrc::noError && engine.failure() == http2::internal::Http2ClientEngine::Failure::None &&
+       !engine.responseComplete();
+       awaitInput = false) {
     // Flush housekeeping frames first (WINDOW_UPDATE for received DATA, SETTINGS ack) so a server
     // streaming a large response is never stalled on flow control.
     ioRes = engine.flushOutput(client, transport, fd, ioDeadline, requestSent);
     if (ioRes == HttpClientErrc::noError) {
-      ioRes = engine.readAndProcess(client, transport, fd, ioDeadline);
+      ioRes = engine.readAndProcess(client, transport, fd, ioDeadline, awaitInput);
     }
   }
 
