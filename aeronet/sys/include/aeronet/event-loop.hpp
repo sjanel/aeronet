@@ -85,7 +85,7 @@ class EventLoop {
   ~EventLoop();
 
   // Register fd with given events.
-  // On error, throws std::system_error.
+  // On error, throws std::system_error carrying the error of the registration.
   void addOrThrow(EventFd event);
 
   // Register fd with given events.
@@ -124,6 +124,11 @@ class EventLoop {
   void updatePollTimeoutPolicy(PollTimeoutPolicy timeoutPolicy) { _timeout = AdaptivePollTimeout(timeoutPolicy); }
 
  private:
+  // Registers fd with given events. Returns 0 on success, otherwise the system error code of the failure (logged):
+  // captured before the logging, which may overwrite the last error, and on macOS read from the kevent() receipt,
+  // errno being left untouched by a successful kevent() call.
+  [[nodiscard]] int registerFd(EventFd event);
+
   uint32_t _nbAllocatedEvents = 0;
   AdaptivePollTimeout _timeout;
   BaseFd _baseFd;

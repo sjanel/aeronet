@@ -71,6 +71,8 @@ Both return immediately: the server stops asynchronously. `isDraining()` reports
 
 A handler may call `stop()` on its own server: the event loops exit once the handler returns. A thread cannot join itself, so a `MultiHttpServer` started with `start()` joins its threads at the next `stop()` called from another thread, or in its destructor, and `isRunning()` stays `true` until then. `run()` returns as usual.
 
+An event loop whose poll fails (`epoll_wait()`, `kevent()` or `WSAPoll()` failing with another error than an interruption by a signal) cannot serve its connections anymore: it logs the error, counts it in `aeronet.events.errors`, and stops its server right away, as `stop()` does.
+
 ### Signals
 
 `SignalHandler::Enable(maxDrain)` installs `SIGINT` and `SIGTERM` handlers for the whole process: on a signal, every running server starts `beginDrain(maxDrain)` at its next loop iteration. This is what container orchestrators expect: Kubernetes sends `SIGTERM` and waits `terminationGracePeriodSeconds` before killing the process, so set `maxDrain` below that period.
@@ -172,6 +174,7 @@ Keep the default unless several processes must share a port. With `SO_REUSEPORT`
 ## Tests
 
 - Lifecycle, restart, copy, drain, signals, and configuration updates: [tests/http-server-lifecycle_test.cpp](../../tests/http-server-lifecycle_test.cpp).
+- Stop on a failing poll: `ConnectionManagerErrors.PersistentPollFailureStopsTheServer` in [tests/http-errors_test.cpp](../../tests/http-errors_test.cpp).
 - `MultiHttpServer`: [tests/multi-http-server_test.cpp](../../tests/multi-http-server_test.cpp).
 - Keep-alive and `Connection` semantics: [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
 - Lingering close: the `HttpLingeringClose` tests of [tests/http-core_test.cpp](../../tests/http-core_test.cpp), over TLS in [tests/http-tls-io_test.cpp](../../tests/http-tls-io_test.cpp), and the failure to shut down a connection in [tests/http-errors_test.cpp](../../tests/http-errors_test.cpp).

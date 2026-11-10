@@ -85,7 +85,9 @@ EventBmp KqueueFilterToEventBmp(const struct kevent& kev) {
 // replaces the previous one instead of adding to it.
 // EV_RECEIPT returns one result per change, so an invalid target descriptor is not confused with a closed kqueue
 // descriptor.
-bool RegisterKqueueFilters(int kqueueFd, EventLoop::EventFd event, bool replace) {
+// Returns 0 on success, otherwise the error code of the failure (logged): a failed filter is reported in its receipt,
+// kevent() itself succeeding without setting errno.
+int RegisterKqueueFilters(int kqueueFd, EventLoop::EventFd event, bool replace) {
   unsigned short addFlags = EV_ADD | EV_ENABLE | EV_RECEIPT;
   if (event.eventBmp & EventEt) {
     addFlags |= EV_CLEAR;
@@ -118,12 +120,12 @@ bool RegisterKqueueFilters(int kqueueFd, EventLoop::EventFd event, bool replace)
     const auto err = LastSystemError();
     log::error("kevent {} syscall failed (kqueue fd # {}, fd # {}, events=0x{:x}, err={}, msg={})", opName, kqueueFd,
                event.fd, event.eventBmp, err, SystemErrorMessage(err));
-    return false;
+    return err;
   }
   if (nbReceipts != nchanges) [[unlikely]] {
     log::error("kevent {} returned {} receipts for {} filters (kqueue fd # {}, fd # {}, events=0x{:x})", opName,
                nbReceipts, nchanges, kqueueFd, event.fd, event.eventBmp);
-    return false;
+    return EIO;
   }
   for (int receiptIdx = 0; receiptIdx < nbReceipts; ++receiptIdx) {
     const auto& receipt = receipts[receiptIdx];
@@ -136,9 +138,9 @@ bool RegisterKqueueFilters(int kqueueFd, EventLoop::EventFd event, bool replace)
     const auto err = static_cast<int>(receipt.data);
     log::error("kevent {} failed (kqueue fd # {}, fd # {}, filter={}, events=0x{:x}, err={}, msg={})", opName, kqueueFd,
                event.fd, receipt.filter, event.eventBmp, err, SystemErrorMessage(err));
-    return false;
+    return err;
   }
-  return true;
+  return 0;
 }
 #endif  // AERONET_MACOS
 
@@ -275,23 +277,25 @@ EventLoop::~EventLoop() {
 // ---- add / mod / del ----
 
 void EventLoop::addOrThrow(EventFd event) {
-  if (!add(event)) [[unlikely]] {
-    ThrowSystemError("epoll_ctl ADD failed (fd # {}, events=0x{:x})", event.fd, event.eventBmp);
+  if (const int err = registerFd(event); err != 0) [[unlikely]] {
+    ThrowSystemError(err, "event loop registration failed (fd # {}, events=0x{:x})", event.fd, event.eventBmp);
   }
 }
 
-bool EventLoop::add(EventFd event) {
+bool EventLoop::add(EventFd event) { return registerFd(event) == 0; }
+
+int EventLoop::registerFd(EventFd event) {
 #ifdef AERONET_LINUX
   epoll_event ev{event.eventBmp, epoll_data_t{.fd = event.fd}};
   if (::epoll_ctl(_baseFd.fd(), EPOLL_CTL_ADD, event.fd, &ev) != 0) [[unlikely]] {
     const auto err = LastSystemError();
     log::error("epoll_ctl ADD failed (fd # {}, events=0x{:x}, err={}, msg={})", event.fd, event.eventBmp, err,
                SystemErrorMessage(err));
-    return false;
+    return err;
   }
 #elifdef AERONET_MACOS
-  if (!RegisterKqueueFilters(_baseFd.fd(), event, false)) {
-    return false;
+  if (const int err = RegisterKqueueFilters(_baseFd.fd(), event, false); err != 0) {
+    return err;
   }
 #elifdef AERONET_WINDOWS
   // Grow both buffers if the registration array is full.
@@ -300,13 +304,13 @@ bool EventLoop::add(EventFd event) {
     void* newPollFds = std::realloc(_pPollFds, static_cast<std::size_t>(newCap) * sizeof(WSAPOLLFD));
     if (newPollFds == nullptr) {
       log::error("Failed to grow WSAPoll fd array from {} to {}", _nbAllocatedEvents, newCap);
-      return false;
+      return error::kNoBufferSpace;
     }
     _pPollFds = newPollFds;
     void* newEvents = std::realloc(_pEvents, static_cast<std::size_t>(newCap) * NativeEventSize());
     if (newEvents == nullptr) {
       log::error("Failed to grow WSAPoll event buffer from {} to {}", _nbAllocatedEvents, newCap);
-      return false;
+      return error::kNoBufferSpace;
     }
     _pEvents = newEvents;
     _nbAllocatedEvents = newCap;
@@ -317,7 +321,7 @@ bool EventLoop::add(EventFd event) {
   pollFds[_nbRegistered].revents = 0;
   ++_nbRegistered;
 #endif
-  return true;
+  return 0;
 }
 
 bool EventLoop::mod(EventFd event) {
@@ -337,7 +341,7 @@ bool EventLoop::mod(EventFd event) {
   }
   return true;
 #elifdef AERONET_MACOS
-  return RegisterKqueueFilters(_baseFd.fd(), event, true);
+  return RegisterKqueueFilters(_baseFd.fd(), event, true) == 0;
 #elifdef AERONET_WINDOWS
   auto* pollFds = static_cast<WSAPOLLFD*>(_pPollFds);
   for (uint32_t idx = 0; idx < _nbRegistered; ++idx) {

@@ -112,12 +112,12 @@ void SetPipeNonBlockingCloExec(NativeHandle pipeRd, NativeHandle pipeWr) noexcep
 }
 #endif
 
-bool SetTcpNoDelay(NativeHandle fd) noexcept {
-  static constexpr int kEnable = 1;
+bool SetTcpNoDelay(NativeHandle fd, bool enable) noexcept {
+  const int val = enable ? 1 : 0;
 #ifdef AERONET_WINDOWS
-  return ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&kEnable), sizeof(kEnable)) == 0;
+  return ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&val), sizeof(val)) == 0;
 #else
-  return ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &kEnable, sizeof(kEnable)) == 0;
+  return ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &val, sizeof(val)) == 0;
 #endif
 }
 

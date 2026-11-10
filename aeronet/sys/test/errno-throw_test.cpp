@@ -26,6 +26,19 @@ TEST(ErrnoThrow, ThrowsSystemErrorWithWSAError) {
     FAIL() << "Expected std::system_error, but caught different exception";
   }
 }
+
+TEST(ErrnoThrow, ThrowsSystemErrorWithGivenWSAError) {
+  try {
+    WSASetLastError(WSAECONNREFUSED);  // overwritten since the error was captured
+    ThrowSystemError(WSAETIMEDOUT, "Test error with code {}", 7);
+  } catch (const std::system_error& e) {
+    EXPECT_EQ(e.code().value(), WSAETIMEDOUT);
+    EXPECT_EQ(e.code().category(), std::system_category());
+    EXPECT_NE(std::string(e.what()).find("Test error with code 7"), std::string::npos);
+  } catch (...) {
+    FAIL() << "Expected std::system_error, but caught different exception";
+  }
+}
 #else
 TEST(ErrnoThrow, ThrowsSystemErrorWithErrno) {
   try {
@@ -38,6 +51,20 @@ TEST(ErrnoThrow, ThrowsSystemErrorWithErrno) {
     EXPECT_EQ(e.code().value(), ENOENT);
     EXPECT_EQ(e.code().category(), std::generic_category());
     EXPECT_EQ(e.what(), std::string("Test error with code 42: No such file or directory"));
+  } catch (...) {
+    FAIL() << "Expected std::system_error, but caught different exception";
+  }
+}
+
+TEST(ErrnoThrow, ThrowsSystemErrorWithGivenError) {
+  try {
+    errno = ENOENT;  // overwritten since the error was captured
+    ThrowSystemError(EBADF, "Test error with code {}", 7);
+    FAIL() << "Expected std::system_error to be thrown";
+  } catch (const std::system_error& e) {
+    EXPECT_EQ(e.code().value(), EBADF);
+    EXPECT_EQ(e.code().category(), std::generic_category());
+    EXPECT_EQ(e.what(), std::string("Test error with code 7: Bad file descriptor"));
   } catch (...) {
     FAIL() << "Expected std::system_error, but caught different exception";
   }

@@ -1,11 +1,15 @@
 // Portable (Linux, macOS, Windows) checks of the interest set semantics of EventLoop over a real TCP connection:
-// mod() replaces the previous interest set, as epoll_ctl(EPOLL_CTL_MOD) does, on every backend.
+// mod() replaces the previous interest set, as epoll_ctl(EPOLL_CTL_MOD) does, on every backend. Also the errors of a
+// failed registration.
 
 #include <gtest/gtest.h>
 
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <span>
+#include <string_view>
+#include <system_error>
 
 #include "aeronet/adaptive-poll-timeout.hpp"
 #include "aeronet/connection.hpp"
@@ -118,6 +122,19 @@ TEST_F(EventLoopInterestTest, EdgeTriggeredWriteInterestReportsWritableSocketAtE
 
     ASSERT_TRUE(_loop.mod(EventLoop::EventFd{clientFd(), EventIn | EventEt}));
     EXPECT_EQ(PollOnce(_loop, clientFd()), 0U);
+  }
+}
+
+// The exception of a failed registration carries the error of the registration, whatever errno holds: kevent() reports
+// the error of a filter in its receipt without setting errno (macOS).
+TEST_F(EventLoopInterestTest, AddOrThrowCarriesTheRegistrationError) {  // WSAPoll accepts any registration
+  errno = 0;
+  try {
+    _loop.addOrThrow(EventLoop::EventFd{-1, EventIn});
+    FAIL() << "the registration of an invalid descriptor should throw";
+  } catch (const std::system_error& ex) {
+    EXPECT_EQ(ex.code().value(), EBADF);
+    EXPECT_TRUE(std::string_view(ex.what()).starts_with("event loop registration failed")) << ex.what();
   }
 }
 #endif

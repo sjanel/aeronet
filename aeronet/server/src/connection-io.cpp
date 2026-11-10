@@ -443,9 +443,11 @@ void ConnectionIo::flushFilePayload(ConnectionIt cnxIt) {
         // Continue loop to send more
         break;
       case ConnectionState::FileResult::Code::WouldBlock:
-        if (res.enableWritable && !state.waitingWritable) {
+        if (!state.waitingWritable) {
           // The helper reports WouldBlock; enable writable interest so we can resume later.
-          enableWritableInterest(cnxIt);
+          if (!enableWritableInterest(cnxIt)) {
+            return;
+          }
 
           // Edge-triggered epoll fix: immediately retry ONCE after enabling writable interest.
           // If the socket became writable between sendfile() returning EAGAIN and epoll_ctl(),

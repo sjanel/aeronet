@@ -241,7 +241,7 @@ TEST(ConnectionStateSendfileTest, KernelSendfileWouldBlock) {
   bool sawWouldBlock = false;
   for (int i = 0; i < 32; ++i) {
     auto res = state.transportFile(sv[0], /*tlsFlow=*/false);
-    if (res.code == ConnectionState::FileResult::Code::WouldBlock && res.enableWritable) {
+    if (res.code == ConnectionState::FileResult::Code::WouldBlock) {
       sawWouldBlock = true;
       break;
     }
@@ -259,7 +259,9 @@ TEST(ConnectionStateSendfileTest, KernelSendfileWouldBlock) {
 
 // overrides enabled via macro at file top
 
-TEST(ConnectionStateSendfileTest, KernelSendfileEintrReturnsWouldBlockWithoutEnableWritable) {
+// An interrupted sendfile is retried at once: reported as WouldBlock, it would wait for a writable event that does not
+// come when the socket has room.
+TEST(ConnectionStateSendfileTest, KernelSendfileEintrIsRetried) {
   int sv[2];
   ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
   BaseFd raii[]{BaseFd(sv[0]), BaseFd(sv[1])};
@@ -272,18 +274,22 @@ TEST(ConnectionStateSendfileTest, KernelSendfileEintrReturnsWouldBlockWithoutEna
   state.fileSend.filePayload = FilePayload(File(tmp.filePath().string()), 0, content.size());
   state.fileSendActive = true;
 
-  // Force sendfile to report error::kInterrupted once for sv[0]
-  test::SetSendfileActions(sv[0], {IoAction{-1, error::kInterrupted}});
+  // Interrupted twice, then the real sendfile.
+  test::SetSendfileActions(sv[0], {IoAction{-1, error::kInterrupted}, IoAction{-1, error::kInterrupted}});
 
-  auto res = state.transportFile(sv[0], /*tlsFlow=*/false);
-  EXPECT_EQ(res.code, ConnectionState::FileResult::Code::WouldBlock);
-  // error::kInterrupted should NOT request writable readiness
-  EXPECT_FALSE(res.enableWritable);
-  // Still active because we haven't transferred anything yet
-  EXPECT_TRUE(state.fileSendActive);
+  const auto res = state.transportFile(sv[0], /*tlsFlow=*/false);
+  EXPECT_EQ(res.code, ConnectionState::FileResult::Code::Sent);
+  EXPECT_EQ(res.bytesDone, content.size());
+  EXPECT_FALSE(state.fileSendActive);
+
+  std::string got(content.size(), '\0');
+  const auto nbRead = read(sv[1], got.data(), got.size());
+  ASSERT_GE(nbRead, 0);
+  EXPECT_EQ(static_cast<std::size_t>(nbRead), got.size());
+  EXPECT_EQ(got, content);
 }
 
-TEST(ConnectionStateSendfileTest, TlsPreadEintrSetsWouldBlockWhenRemainingPositive) {
+TEST(ConnectionStateSendfileTest, TlsPreadEintrIsRetried) {
   int sv[2];
   ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
   BaseFd raii[]{BaseFd(sv[0]), BaseFd(sv[1])};
@@ -296,18 +302,18 @@ TEST(ConnectionStateSendfileTest, TlsPreadEintrSetsWouldBlockWhenRemainingPositi
   state.fileSend.filePayload = FilePayload(File(tmp.filePath().string()), 0, content.size());
   state.fileSendActive = true;
 
-  // Force pread on the file path to return error::kInterrupted once
   test::SetPreadPathActions(tmp.filePath().string(), {IoAction{-1, error::kInterrupted}});
 
-  auto res = state.transportFile(sv[0], /*tlsFlow=*/true);
-  // error::kInterrupted with remaining > 0 maps to WouldBlock (retry later) in TLS path
-  EXPECT_EQ(res.code, ConnectionState::FileResult::Code::WouldBlock);
-  // In TLS path, initial enableWritable is true from the FileResult ctor
-  EXPECT_TRUE(res.enableWritable);
+  const auto res = state.transportFile(sv[0], /*tlsFlow=*/true);
+  EXPECT_EQ(res.code, ConnectionState::FileResult::Code::Read);
+  EXPECT_EQ(res.bytesDone, content.size());
+  EXPECT_EQ(std::string_view(state.tunnelOrFileBuffer.data(), state.tunnelOrFileBuffer.size()), content);
+  EXPECT_EQ(state.fileSend.filePayload.length, 0U);
+  // The bytes read are still to be written.
   EXPECT_TRUE(state.fileSendActive);
 }
 
-TEST(ConnectionStateSendfileTest, TlsPreadEintrWithNoRemainingDoesNotSetWouldBlock) {
+TEST(ConnectionStateSendfileTest, TlsPreadEintrWithNoRemainingEndsTheFileSend) {
   int sv[2];
   ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
   BaseFd raii[]{BaseFd(sv[0]), BaseFd(sv[1])};
@@ -320,15 +326,13 @@ TEST(ConnectionStateSendfileTest, TlsPreadEintrWithNoRemainingDoesNotSetWouldBlo
   state.fileSend.filePayload = FilePayload(File(tmp.filePath().string()), 0, 0);
   state.fileSendActive = true;
 
-  // Force pread error::kInterrupted; since remaining == 0, code should not flip to WouldBlock per branch
   test::SetPreadPathActions(tmp.filePath().string(), {IoAction{-1, error::kInterrupted}});
 
-  auto res = state.transportFile(sv[0], /*tlsFlow=*/true);
-  EXPECT_NE(res.code, ConnectionState::FileResult::Code::WouldBlock);
-  // It should stay as the initial TLS Read code with 0 bytes
+  const auto res = state.transportFile(sv[0], /*tlsFlow=*/true);
+  EXPECT_EQ(res.code, ConnectionState::FileResult::Code::Read);
   EXPECT_EQ(res.bytesDone, 0U);
-  // Because we returned early on error::kInterrupted, active is not cleared here
-  EXPECT_TRUE(state.fileSendActive);
+  // Nothing read, nothing left to read.
+  EXPECT_FALSE(state.fileSendActive);
 }
 
 TEST(ConnectionStateSendfileTest, TlsPreadZeroKeepsActiveWhenRemainingPositive) {
@@ -426,7 +430,6 @@ TEST(ConnectionStateSendfileTest, KernelSendfileZeroBytesWouldBlock) {
 
   const auto res = state.transportFile(sv[0], /*tlsFlow=*/false);
   EXPECT_EQ(res.code, ConnectionState::FileResult::Code::WouldBlock);
-  EXPECT_TRUE(res.enableWritable);
 }
 
 TEST(ConnectionStateSendfileTest, TlsSendfileEmptyBufferClearsActive) {

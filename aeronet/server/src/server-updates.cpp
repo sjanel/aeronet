@@ -337,6 +337,9 @@ void SingleHttpServer::applyPendingUpdates() {
     _ctx.compressionState.selector = EncodingSelector(_ctx.config.compression);
     _ctx.eventLoop.updatePollTimeoutPolicy(internal::MakePollTimeoutPolicy(_ctx.config));
     updateMaintenanceTimer();
+#ifdef AERONET_LINUX
+    syncListenerTcpNoDelay();
+#endif
     _ctx.maintenance.rebuildKeepAliveDeadlines();
     registerBuiltInProbes();
     needsClamp = true;

@@ -220,6 +220,9 @@ SingleHttpServer::SingleHttpServer(SingleHttpServer&& other)
     : _ctx(MovableContext(other)),
       _callbacksUpdates(std::move(other._callbacksUpdates)),
       _hasCallbacksUpdates(other._hasCallbacksUpdates.exchange(false, std::memory_order_relaxed)),
+#ifdef AERONET_LINUX
+      _listenerTcpNoDelay(std::exchange(other._listenerTcpNoDelay, false)),
+#endif
       _listenSocket(std::move(other._listenSocket)),
 #ifdef AERONET_LINUX
       _portReservation(std::move(other._portReservation)),
@@ -259,6 +262,9 @@ SingleHttpServer& SingleHttpServer::operator=(SingleHttpServer&& other) {
     _callbacksUpdates = std::move(other._callbacksUpdates);
     _hasCallbacksUpdates.store(other._hasCallbacksUpdates.exchange(false, std::memory_order_relaxed),
                                std::memory_order_relaxed);
+#ifdef AERONET_LINUX
+    _listenerTcpNoDelay = std::exchange(other._listenerTcpNoDelay, false);
+#endif
     _listenSocket = std::move(other._listenSocket);
 #ifdef AERONET_LINUX
     _portReservation = std::move(other._portReservation);
@@ -334,6 +340,9 @@ void SingleHttpServer::initListener(NativeHandle listenFd) {
 #ifdef AERONET_MACOS
     }
 #endif
+#ifdef AERONET_LINUX
+    _listenerTcpNoDelay = false;  // a new socket
+#endif
     _ctx.eventLoop = EventLoop(internal::MakePollTimeoutPolicy(_ctx.config));
   }
 
@@ -354,6 +363,8 @@ void SingleHttpServer::initListener(NativeHandle listenFd) {
     if (!_ctx.io.zerocopySupported() && _ctx.config.zerocopyMode == ZerocopyMode::Enabled) {
       log::warn("MSG_ZEROCOPY is not supported (SO_ZEROCOPY failed): the responses are copied");
     }
+    // Inherited as well: set before it listens, so that no connection waiting to be accepted misses it.
+    syncListenerTcpNoDelay();
 #endif
     _listenSocket.bindAndListen(_ctx.config.reusePort, _ctx.config.port);
     listenFd = _listenSocket.fd();

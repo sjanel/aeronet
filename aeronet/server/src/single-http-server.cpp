@@ -81,8 +81,12 @@ void SingleHttpServer::eventLoop() {
   bool maintenanceTick = false;
 
   if (events.data() == nullptr) [[unlikely]] {
+    // Unrecoverable poll failure (logged by EventLoop::poll()): the server stops, right away in the maintenance below.
+    // Waiting for a later maintenance tick would spin on a poll that keeps failing without waiting.
     _ctx.telemetry.counterAdd("aeronet.events.errors", 1);
+    log::error("Event loop poll failed: stopping the server");
     _ctx.lifecycle.exchangeStopping();
+    maintenanceTick = true;
   } else if (!events.empty()) {
     // Read before the batch: the wakeup below may close the listener, whose event already polled in this batch must
     // then not be taken for the event of a connection.
@@ -299,6 +303,23 @@ void SingleHttpServer::updateMaintenanceTimer() {
   _maintenanceTimer.armPeriodic(minTimeout);
 }
 
+#ifdef AERONET_LINUX
+void SingleHttpServer::syncListenerTcpNoDelay() {
+  const bool enable = _ctx.config.tcpNoDelay == TcpNoDelayMode::Enabled;
+  // A closed listener is synced by initListener() once created again.
+  if (enable == _listenerTcpNoDelay || !_listenSocket) {
+    return;
+  }
+  if (SetTcpNoDelay(_listenSocket.fd(), enable)) [[likely]] {
+    _listenerTcpNoDelay = enable;
+  } else {
+    const auto err = LastSystemError();
+    log::error("setsockopt(TCP_NODELAY, {}) failed for listener fd # {} err={}", enable, _listenSocket.fd(), err);
+    _ctx.telemetry.counterAdd("aeronet.connections.errors.tcp_nodelay_failed", 1UL);
+  }
+}
+#endif
+
 void SingleHttpServer::closeListener() noexcept {
   if (_listenSocket) {
 #ifndef AERONET_WINDOWS
@@ -419,6 +440,10 @@ void SingleHttpServer::acceptNewConnections() {
       break;
     }
     const auto cnxFd = cnx.fd();
+#ifdef AERONET_LINUX
+    // Inherited from the listener (see syncListenerTcpNoDelay()): no setsockopt() per connection.
+    const bool tcpNoDelayActive = _listenerTcpNoDelay;
+#else
     bool tcpNoDelayActive = false;
     if (config.tcpNoDelay == TcpNoDelayMode::Enabled) {
       if (SetTcpNoDelay(cnxFd)) [[likely]] {
@@ -429,6 +454,9 @@ void SingleHttpServer::acceptNewConnections() {
         _ctx.telemetry.counterAdd("aeronet.connections.errors.tcp_nodelay_failed", 1UL);
       }
     }
+#endif
+    // Not inherited from the listener like TCP_NODELAY: a socket whose SO_SNDBUF is set no longer returns to the
+    // automatic tuning (Linux), which a configuration update back to 0 needs for the connections accepted after it.
     if (config.socketSendBufferBytes != 0 && !SetSendBufferSize(cnxFd, static_cast<int>(config.socketSendBufferBytes)))
         [[unlikely]] {
       const auto err = LastSystemError();

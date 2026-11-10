@@ -451,6 +451,12 @@ class SingleHttpServer {
 
   void updateMaintenanceTimer();
 
+#ifdef AERONET_LINUX
+  // Sets (or clears) TCP_NODELAY on the listener as configured (tcpNoDelay Enabled): the accepted sockets inherit it,
+  // which saves a setsockopt() per connection.
+  void syncListenerTcpNoDelay();
+#endif
+
   void closeListener() noexcept;
 
   // Closes the listener and all the connections, at the end of a run.
@@ -562,6 +568,11 @@ class SingleHttpServer {
   // Callback changes queued by submitCallbacksUpdate() (protected by _ctx.updates.lock).
   vector<std::function<void(internal::ServerCallbacks&)>> _callbacksUpdates;
   std::atomic<bool> _hasCallbacksUpdates{false};
+
+#ifdef AERONET_LINUX
+  // Whether TCP_NODELAY is set on _listenSocket, inherited by the accepted sockets (see syncListenerTcpNoDelay()).
+  bool _listenerTcpNoDelay{false};
+#endif
 
   Socket _listenSocket;
 #ifdef AERONET_LINUX
