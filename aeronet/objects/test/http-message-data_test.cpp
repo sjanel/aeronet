@@ -3,7 +3,6 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
-#include <amc/type_traits.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -14,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/amc-type-traits.hpp"
 #include "aeronet/file-payload.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-payload.hpp"

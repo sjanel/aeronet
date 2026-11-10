@@ -1,6 +1,5 @@
 #pragma once
 
-#include <amc/type_traits.hpp>
 #include <cassert>
 #include <concepts>
 #include <cstddef>
@@ -10,6 +9,8 @@
 #include <iterator>
 #include <string_view>
 #include <type_traits>
+
+#include "aeronet/amc-type-traits.hpp"
 
 #ifdef AERONET_ENABLE_GLAZE
 #include <string>

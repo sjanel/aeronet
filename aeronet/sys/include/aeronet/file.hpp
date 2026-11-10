@@ -1,6 +1,5 @@
 #pragma once
 
-#include <amc/type_traits.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -8,6 +7,7 @@
 #include <string>
 #include <string_view>
 
+#include "aeronet/amc-type-traits.hpp"
 #include "aeronet/base-fd.hpp"
 #include "aeronet/mime-mappings.hpp"
 #include "aeronet/native-handle.hpp"

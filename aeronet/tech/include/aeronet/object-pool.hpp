@@ -387,6 +387,8 @@ class PoolPtr {
 
   explicit operator bool() const noexcept { return _pObj != nullptr; }
 
+  using trivially_relocatable = std::true_type;
+
  private:
   ObjectPool<T, SizeType>* _pPool{nullptr};
   T* _pObj{nullptr};

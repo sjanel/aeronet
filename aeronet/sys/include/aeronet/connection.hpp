@@ -6,8 +6,7 @@
 #include <sys/socket.h>
 #endif
 
-#include <amc/type_traits.hpp>
-
+#include "aeronet/amc-type-traits.hpp"
 #include "aeronet/base-fd.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/socket.hpp"

@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <system_error>
 
+#include "aeronet/amc-type-traits.hpp"
 #include "aeronet/header-value-parameters.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
@@ -216,6 +217,8 @@ struct SharedDeflateStreams::Impl {
     std::unique_ptr<WebSocketCompressor> compressor;
     int8_t level;
     uint8_t windowBits;
+
+    using trivially_relocatable = amc::is_trivially_relocatable<decltype(compressor)>::type;
   };
 
   WebSocketCompressor& compressor(int8_t level, uint8_t windowBits) {

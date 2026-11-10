@@ -11,6 +11,7 @@
 #include <string>
 #include <utility>
 
+#include "aeronet/amc-type-traits.hpp"
 #include "aeronet/asan-poison.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/vector.hpp"
@@ -730,6 +731,33 @@ TEST(PoolPtrTest, MultipleAllocateAndRelease) {
   EXPECT_EQ(*pp1, 1);
   EXPECT_EQ(*pp3, 3);
   EXPECT_EQ(*pp4, 4);
+}
+
+static_assert(amc::is_trivially_relocatable_v<PoolPtr<std::string>>);
+
+TEST(PoolPtrTest, VectorRelocationReleasesEachObjectOnce) {
+  static constexpr int kNbElements = 1000;
+  ObjectPool<std::string> pool;
+  {
+    vector<PoolPtr<std::string>> pointers;
+    for (int value = 0; value < kNbElements; ++value) {
+      pointers.push_back(pool.allocateAndConstructPoolPtr(std::to_string(value)));
+    }
+    EXPECT_EQ(pool.size(), static_cast<ObjectPool<std::string>::size_type>(kNbElements));
+
+    pointers.erase(pointers.begin(), pointers.begin() + 10);
+    pointers.insert(pointers.begin() + 1, pool.allocateAndConstructPoolPtr("inserted"));
+    EXPECT_EQ(pool.size(), static_cast<ObjectPool<std::string>::size_type>(kNbElements - 9));
+    EXPECT_EQ(*pointers[0], "10");
+    EXPECT_EQ(*pointers[1], "inserted");
+    EXPECT_EQ(*pointers[2], "11");
+    EXPECT_EQ(*pointers.back(), std::to_string(kNbElements - 1));
+
+    PoolPtr<std::string> last = pointers.pop_back_val();
+    last.reset();
+    EXPECT_EQ(pool.size(), static_cast<ObjectPool<std::string>::size_type>(kNbElements - 10));
+  }
+  EXPECT_EQ(pool.size(), 0U);
 }
 
 }  // namespace aeronet

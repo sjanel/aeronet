@@ -1,7 +1,6 @@
 #pragma once
 
-#include <amc/type_traits.hpp>
-
+#include "aeronet/amc-type-traits.hpp"
 #include "aeronet/native-handle.hpp"
 
 #ifdef AERONET_WINDOWS

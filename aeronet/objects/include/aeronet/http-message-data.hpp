@@ -1,6 +1,5 @@
 #pragma once
 
-#include <amc/type_traits.hpp>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -8,6 +7,7 @@
 #include <type_traits>
 #include <utility>
 
+#include "aeronet/amc-type-traits.hpp"
 #include "aeronet/embedded-payload.hpp"
 #include "aeronet/file-payload.hpp"
 #include "aeronet/http-payload.hpp"

@@ -1,6 +1,5 @@
 #pragma once
 
-#include <amc/type_traits.hpp>
 #include <array>
 #include <cassert>
 #include <chrono>
@@ -12,6 +11,7 @@
 #include <type_traits>
 #include <utility>
 
+#include "aeronet/amc-type-traits.hpp"
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/hpack.hpp"

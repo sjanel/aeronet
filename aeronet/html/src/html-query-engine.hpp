@@ -5,7 +5,9 @@
 #include <lexbor/selectors/selectors.h>
 
 #include <string_view>
+#include <type_traits>
 
+#include "aeronet/amc-type-traits.hpp"
 #include "aeronet/vector.hpp"
 #include "lexbor-utils.hpp"
 
@@ -62,7 +64,12 @@ class HtmlQueryEngine {
   struct Level {
     SelectorMatcherPtr matcher;
     CssMemoryPtr memory;  // created by the first query of the level with a selector given as text
+
+    using trivially_relocatable = std::bool_constant<amc::is_trivially_relocatable_v<SelectorMatcherPtr> &&
+                                                     amc::is_trivially_relocatable_v<CssMemoryPtr>>;
   };
+
+  static_assert(amc::is_trivially_relocatable_v<Level>);
 
   vector<Level> _levels;
   CssParserPtr _pParser;           // created by the first query with a selector given as text

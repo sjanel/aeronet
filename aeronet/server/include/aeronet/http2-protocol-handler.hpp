@@ -9,6 +9,7 @@
 #include <string_view>
 #include <variant>
 
+#include "aeronet/amc-type-traits.hpp"
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/file-payload.hpp"
 #include "aeronet/file.hpp"
@@ -238,6 +239,9 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
 
   using StreamRequestPtr = std::unique_ptr<StreamRequest>;
 
+  // Moved by memcpy in _recycledRequests (see amc-type-traits.hpp).
+  static_assert(amc::is_trivially_relocatable_v<StreamRequestPtr>);
+
   struct PendingFileSend {
     FilePayload filePayload;
   };
@@ -432,7 +436,7 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   Http2Connection _connection;
 
   /// Requests of closed streams, reused by the next ones (see recycleRequest()).
-  vector<StreamRequestPtr> _recycledRequests;  // TODO: StreamRequestPtr could be trivially relocatable
+  vector<StreamRequestPtr> _recycledRequests;
 
   /// Pool for PendingWork allocations (avoids repeated heap alloc/free cycles).
   ObjectPool<PendingWork> _pendingWorkPool;

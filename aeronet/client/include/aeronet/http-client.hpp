@@ -1,6 +1,5 @@
 #pragma once
 
-#include <amc/type_traits.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -12,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/amc-type-traits.hpp"
 #include "aeronet/city-hash.hpp"
 #include "aeronet/client-connection.hpp"
 #include "aeronet/client-protocol.hpp"
