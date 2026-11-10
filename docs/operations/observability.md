@@ -4,7 +4,7 @@
 
 ## Logging
 
-aeronet logs through `<aeronet/log.hpp>`. With `AERONET_ENABLE_SPDLOG`, `aeronet::log` is spdlog, with its sinks and formatting. Without it, a small built-in logger with the same calls writes to standard output, with ISO 8601 UTC timestamps at millisecond precision. Levels are `trace`, `debug`, `info`, `warn`, `error`, and `critical`:
+aeronet logs through `<aeronet/log.hpp>`. With `AERONET_ENABLE_SPDLOG`, `aeronet::log` is spdlog, with its sinks and formatting. Without it, a small built-in logger with the same calls writes to standard output, with ISO 8601 UTC timestamps at millisecond precision, each line in a single write: the lines logged by concurrent threads do not interleave. Levels are `trace`, `debug`, `info`, `warn`, `error`, and `critical`:
 
 ```cpp
 #include <aeronet/log.hpp>
@@ -13,7 +13,7 @@ log::set_level(log::level::warn);  // runtime level, process-wide
 log::info("server listening on {}", 8080);
 ```
 
-The library logs failures with their context (connection, file, OpenSSL reason) at `error` or `warn`, lifecycle events at `info`, and per-request details at `debug` and below, which are compiled in but filtered by the level. Keep `info` or `warn` in production.
+The library logs failures with their context (connection, file, OpenSSL reason) at `error` or `warn`, lifecycle events at `info`, and per-request details at `debug` and below, which are compiled in but filtered by the level. Keep `info` or `warn` in production. Tests: [log_test.cpp](../../aeronet/tech/test/log_test.cpp).
 
 ### Access log
 

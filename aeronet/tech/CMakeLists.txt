@@ -119,6 +119,13 @@ if(AERONET_ENABLE_GLAZE)
 endif()
 
 AeronetAddUnitTest(
+    log_test
+    test/log_test.cpp
+    LIBRARIES
+    aeronet_basic_test_support
+)
+
+AeronetAddUnitTest(
     lower-ascii-key_test
     test/lower-ascii-key_test.cpp
 )
