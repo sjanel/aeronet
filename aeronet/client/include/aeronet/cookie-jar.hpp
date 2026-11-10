@@ -1,12 +1,12 @@
 #pragma once
 
-#include <amc/type_traits.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <string>
 #include <string_view>
 
+#include "aeronet/amc-type-traits.hpp"
 #include "aeronet/city-hash.hpp"
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/http-client-config.hpp"

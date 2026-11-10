@@ -10,6 +10,7 @@
 #include <string_view>
 #include <utility>
 
+#include "aeronet/amc-type-traits.hpp"
 #include "aeronet/concatenated-strings.hpp"
 #include "aeronet/major-minor-version.hpp"
 #include "aeronet/static-concatenated-strings.hpp"
@@ -98,6 +99,10 @@ class TLSConfig {
 
     // Secure: scrubs the private key when it is replaced, copied over or destroyed.
     StaticConcatenatedStrings<kNbStrings, uint32_t, true> _strings;
+
+   public:
+    // The strings are on the heap: relocating the object leaves no key bytes behind.
+    using trivially_relocatable = amc::is_trivially_relocatable<decltype(_strings)>::type;
   };
 
   // The private keys and session ticket keys are scrubbed by their storage.

@@ -1,12 +1,12 @@
 #pragma once
 
-#include <amc/type_traits.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string_view>
 #include <type_traits>
 
+#include "aeronet/amc-type-traits.hpp"
 #include "aeronet/object-array-pool.hpp"
 #include "aeronet/small-vector.hpp"
 #include "aeronet/vector.hpp"
@@ -93,7 +93,8 @@ class RouteConstraint {
   std::unique_ptr<RegexImpl> _regexImpl;
 
  public:
-  using trivially_relocatable = std::bool_constant<amc::is_trivially_relocatable<FastPattern>::value>;
+  using trivially_relocatable = std::bool_constant<amc::is_trivially_relocatable_v<FastPattern> &&
+                                                   amc::is_trivially_relocatable_v<decltype(_regexImpl)>>;
 };
 
 }  // namespace aeronet

@@ -1,6 +1,5 @@
 #pragma once
 
-#include <amc/type_traits.hpp>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -12,6 +11,7 @@
 #include <variant>
 #include <vector>
 
+#include "aeronet/amc-type-traits.hpp"
 #include "aeronet/file-payload.hpp"
 #include "aeronet/raw-chars.hpp"
 
@@ -191,6 +191,10 @@ class HttpPayload {
   static_assert(amc::is_trivially_relocatable_v<FilePayload>);
   static_assert(amc::is_trivially_relocatable_v<RawChars>);
   static_assert(amc::is_trivially_relocatable_v<RawCharsSuffix>);
+  // Holds only with the std::unique_ptr trait of aeronet/amc-type-traits.hpp, which must be included before any use of
+  // amc::is_trivially_relocatable on standard types.
+  static_assert(amc::is_trivially_relocatable_v<CharBuffer>);
+  static_assert(amc::is_trivially_relocatable_v<BytesBuffer>);
 
   // Tells whether the ACTIVE alternative can be relocated with a plain memcpy (without move + destroy).
   [[nodiscard]] bool isTriviallyRelocatable() const noexcept {

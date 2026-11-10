@@ -32,6 +32,13 @@ if(AERONET_ENABLE_PROTOBUF)
 endif()
 
 AeronetAddUnitTest(
+    amc-type-traits_test
+    test/amc-type-traits_test.cpp
+    LIBRARIES
+    aeronet_tech
+)
+
+AeronetAddUnitTest(
     base64_test
     test/base64_test.cpp
     LIBRARIES

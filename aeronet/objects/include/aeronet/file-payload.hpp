@@ -1,8 +1,8 @@
 #pragma once
 
-#include <amc/type_traits.hpp>
 #include <cstddef>
 
+#include "aeronet/amc-type-traits.hpp"
 #include "aeronet/file.hpp"
 
 namespace aeronet {
