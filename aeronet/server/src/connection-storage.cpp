@@ -29,20 +29,20 @@ void ConnectionStorage::recycleOrRelease(ConnectionIt cnxIt, uint32_t maxCachedC
 void ConnectionStorage::recycleOrRelease(ConnectionIt cnxIt, uint32_t maxCachedConnections) {
 #endif
 #ifdef AERONET_WINDOWS
-  auto* pConnectionState = cnxIt._it->second;
+  ConnectionState* pConnectionState = cnxIt._it->second;
 #else
   const auto connectionIdx = ConnectionItToIdx(cnxIt);
-  auto* pConnectionState = _activeConnectionStates[connectionIdx];
+  ConnectionState* pConnectionState = _activeConnectionStates[connectionIdx];
 #endif
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   // Deferred work still running may use the request and the coroutine frame: keep them until it completes.
   const bool keepForAsyncWork = pConnectionState->hasAsyncWorkInFlight();
   if (keepForAsyncWork) {
-    if (auto* asyncState = pConnectionState->asyncState.get(); asyncState != nullptr) {
+    if (AsyncHandlerState* asyncState = pConnectionState->asyncState.get(); asyncState != nullptr) {
       asyncState->active = false;
       asyncState->pendingResponse = internal::HttpResponseAccess::MakeUnallocated();
     }
-  } else if (auto* asyncState = pConnectionState->asyncState.get(); asyncState != nullptr) {
+  } else if (AsyncHandlerState* asyncState = pConnectionState->asyncState.get(); asyncState != nullptr) {
     asyncState->clear();
     pConnectionState->asyncState.reset();
   }
@@ -57,7 +57,7 @@ void ConnectionStorage::recycleOrRelease(ConnectionIt cnxIt, uint32_t maxCachedC
       --handshakesInFlight;
     }
 
-    if (auto* tlsTr = pConnectionState->transport.get<TlsTransport>()) {
+    if (TlsTransport* tlsTr = pConnectionState->transport.get<TlsTransport>()) {
       tlsTr->shutdown();
     }
   }

@@ -28,7 +28,7 @@ Tests: [http-core_test.cpp](../../tests/http-core_test.cpp) (`DeferredReadDoesNo
 | `minReadChunkBytes` | 4 KiB | Initial and smallest read size of a connection. The read size doubles after each read filling it, up to 256 KiB (`HttpServerConfig::kMaxReadChunkBytes`), and halves after a read filling less than a quarter of it: small requests are read in small reads, into little memory, while uploads are read in large reads. |
 | `maxAcceptBatchSize` | 64 | Connections accepted per loop iteration, so that bursts do not starve open connections. `0` is unlimited. |
 | `pollInterval`, `pollIntervalMinFactor`, `pollIntervalMaxFactor` | 500 ms, 1.0, 1.0 | Longest sleep of an idle loop: bounds how fast `stop()` and predicates are noticed. Timeouts do not depend on it. Factors let saturated loops poll faster and idle loops back off. |
-| `tcpNoDelay` | `Auto` | `TCP_NODELAY` on TLS and HTTP/2 connections, where small records would otherwise stall on Nagle's algorithm combined with delayed acknowledgments. `Enabled` or `Disabled` force it. |
+| `tcpNoDelay` | `Auto` | `TCP_NODELAY` on TLS and HTTP/2 connections, where small records would otherwise stall on Nagle's algorithm combined with delayed acknowledgments. `Enabled` or `Disabled` force it. On Linux, `Enabled` sets it once on the listening socket, whose accepted connections inherit it, rather than with a `setsockopt()` per connection; a configuration update applies to the connections accepted after it (tests: `SocketOpsTest.AcceptedSocketsInheritTcpNoDelayOfTheListener` in [socket-ops_test.cpp](../../aeronet/sys/test/socket-ops_test.cpp), `ConnectionManager.AcceptedSocketsGetTcpNoDelayFromTheListener` in [http-errors_test.cpp](../../tests/http-errors_test.cpp)). |
 | `zerocopyMode`, `zerocopyMinBytes` | `Opportunistic`, 128 KiB | [`MSG_ZEROCOPY`](#msg_zerocopy) for the response writes of at least `zerocopyMinBytes` of plaintext HTTP/1.1 connections. Below about 10 KiB, pinning pages costs more than copying. |
 | `maxZerocopyPendingBytes` | 4 MiB | Response bytes a connection may retain until the completion of their zerocopy sends; beyond it, its writes are copied until completions release some. |
 | `maxOutboundBufferBytes` | 4 MiB | Response data queued for a connection that reads slowly. Beyond it, an HTTP/1.1 connection is closed once flushed, and HTTP/2 stops reading frames. |
@@ -36,6 +36,8 @@ Tests: [http-core_test.cpp](../../tests/http-core_test.cpp) (`DeferredReadDoesNo
 | `minCapturedBodySize` | 1 KiB | Owned response bodies smaller than this are copied next to the head. |
 
 On Linux, a write to a connection reset by the peer fails with `EPIPE` instead of raising `SIGPIPE`, whose default action kills the process: plaintext writes use `MSG_NOSIGNAL`, and event-loop threads block `SIGPIPE` while they run, for the writes that cannot pass a flag (`sendfile()`, OpenSSL). The process-wide `SIGPIPE` disposition is left untouched; threads created from an event-loop thread inherit the blocked signal.
+
+A signal handler installed without `SA_RESTART` may interrupt (`EINTR`) the `sendfile()` of a file response, or the `pread()` of one sent through user-space TLS, whose read of the file can block (on a network file system for instance): the call is retried right away, as the socket writes are. Tests: `ConnectionStateSendfileTest.*EintrIsRetried` in [connection-state_test.cpp](../../aeronet/server/test/connection-state_test.cpp), `HttpResponseDispatchErrors.SendfileInterruptedIsRetried` in [http-errors_test.cpp](../../tests/http-errors_test.cpp).
 
 ## MSG_ZEROCOPY
 

@@ -47,9 +47,10 @@ bool SetNoSigPipe(NativeHandle fd) noexcept;
 void SetPipeNonBlockingCloExec(NativeHandle pipeRd, NativeHandle pipeWr) noexcept;
 #endif
 
-// Enable TCP_NODELAY (disable Nagle's algorithm) on a TCP socket.
+// Enable (or, with enable false, disable) TCP_NODELAY on a TCP socket: Nagle's algorithm is then disabled.
+// On Linux, the sockets accepted by a listener inherit its TCP_NODELAY.
 // Returns true on success.
-bool SetTcpNoDelay(NativeHandle fd) noexcept;
+bool SetTcpNoDelay(NativeHandle fd, bool enable = true) noexcept;
 
 // Set the size of the kernel send buffer of a socket (SO_SNDBUF), which disables its automatic tuning on Linux.
 // Returns true on success.

@@ -1,4 +1,7 @@
 #include <gtest/gtest.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
 
 #include <algorithm>
 #include <atomic>
@@ -32,11 +35,13 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/multi-http-server.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/system-error.hpp"
+#include "aeronet/tcp-no-delay-mode.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
@@ -329,26 +334,102 @@ TEST(HttpParserErrors, ErrorResponseToGetAfterHeadHasBody) {
 // Connection I/O and maintenance error paths
 // =============================================================================
 
-// Test TCP_NODELAY failure path
-// This exercises the setsockopt failure path when tcpNoDelay is enabled
+namespace {
+
+// Whether the server side of a new connection to 'serverPort' has TCP_NODELAY, read once a request was served on it
+// (the connection is kept alive: its accepted socket is still open).
+bool AcceptedSocketHasTcpNoDelay(uint16_t serverPort) {
+  test::ClientConnection client(serverPort);
+  test::sendAll(client.fd(), SimpleGetRequest("/nodelay", http::keepalive));
+  const std::string resp = test::recvWithTimeout(client.fd(), 2000ms);
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  int value = 0;
+  socklen_t len = sizeof(value);
+  EXPECT_EQ(
+      ::getsockopt(test::g_last_accepted_fd.load(std::memory_order_acquire), IPPROTO_TCP, TCP_NODELAY, &value, &len),
+      0);
+  return value != 0;
+}
+
+// A configuration update applies TCP_NODELAY to the listener after the batch of updates holding it: a second one is
+// applied once the listener was updated.
+void PostTcpNoDelayMode(test::TestServer& server, TcpNoDelayMode mode) {
+  server.postConfigUpdate([mode](HttpServerConfig& cfg) { cfg.withTcpNoDelayMode(mode); });
+  server.postConfigUpdate([](HttpServerConfig&) {});
+}
+
+}  // namespace
+
+// The accepted sockets inherit TCP_NODELAY from the listener (no setsockopt per connection): it follows the
+// configuration updates for the connections accepted after them.
+TEST(ConnectionManager, AcceptedSocketsGetTcpNoDelayFromTheListener) {
+  test::TestServer localTs(HttpServerConfig{}.withTcpNoDelay());
+  localTs.router().setDefault([](const HttpRequestView& req) { return req.makeResponse(http::StatusCodeOK); });
+  EXPECT_TRUE(AcceptedSocketHasTcpNoDelay(localTs.port()));
+
+  PostTcpNoDelayMode(localTs, TcpNoDelayMode::Auto);
+  EXPECT_FALSE(AcceptedSocketHasTcpNoDelay(localTs.port()));
+
+  PostTcpNoDelayMode(localTs, TcpNoDelayMode::Enabled);
+  EXPECT_TRUE(AcceptedSocketHasTcpNoDelay(localTs.port()));
+}
+
+// A stopped one-thread MultiHttpServer applies the configuration updates posted meanwhile before its worker creates its
+// listener again: the new listener gets TCP_NODELAY, without a setsockopt() on the closed one.
+TEST(ConnectionManager, TcpNoDelayUpdatedWhileStoppedAppliesToTheNewListener) {
+  test::QueueResetGuard<decltype(test::g_setsockopt_fd_actions)> guard(test::g_setsockopt_fd_actions);
+  MultiHttpServer server(HttpServerConfig{}.withNbThreads(1));
+  server.router().setDefault([](const HttpRequestView& req) { return req.makeResponse(http::StatusCodeOK); });
+  server.start();
+  server.stop();
+
+  server.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withTcpNoDelay(); });
+  // Would be played by a setsockopt() on the closed listener (its descriptor is invalid).
+  test::g_setsockopt_fd_actions.push(kInvalidHandle, {-1, EBADF});
+  server.start();
+  EXPECT_EQ(test::g_setsockopt_fd_actions.size(kInvalidHandle), 1U);
+  EXPECT_TRUE(AcceptedSocketHasTcpNoDelay(server.port()));
+}
+
+// A listener whose TCP_NODELAY cannot be set still serves its connections, with Nagle's algorithm. The next
+// configuration update tries again.
 TEST(ConnectionManagerErrors, TcpNoDelayFailure) {
   test::QueueResetGuard<decltype(test::g_setsockopt_actions)> guard(test::g_setsockopt_actions);
-
-  // We need to allow the listen socket setup to succeed, then fail on connection setsockopt
-  // The listen socket setup calls setsockopt for SO_REUSEADDR (and possibly SO_REUSEPORT)
-  // so we need to let those succeed first. We'll use an approach where we start the server first,
-  // then inject failures for subsequent setsockopt calls.
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withTcpNoDelay(); });
   ts.router().setDefault([](const HttpRequestView& req) { return req.makeResponse(http::StatusCodeOK); });
 
-  // Now inject setsockopt failures for the next connection's TCP_NODELAY call
-  // We push multiple failures to ensure one catches the TCP_NODELAY call
+  // The server is idle: the next setsockopt is the one of its listener, when it applies the update. Posted alone:
+  // TestServer::postConfigUpdate() adds a second update, whose batch could already try again (and succeed).
   test::PushSetsockoptAction({-1, EPERM});
-  test::PushSetsockoptAction({-1, EPERM});
+  ts.server.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withTcpNoDelay(); });
+  for (int attempt = 0; attempt < 500 && !test::g_setsockopt_actions.empty(); ++attempt) {
+    std::this_thread::sleep_for(10ms);
+  }
+  EXPECT_TRUE(test::g_setsockopt_actions.empty()) << "the listener was not updated within 5 s";
+  EXPECT_FALSE(AcceptedSocketHasTcpNoDelay(ts.port()));
 
-  // Make a request - server should still serve despite TCP_NODELAY failure
-  auto resp = test::simpleGet(ts.port(), "/nodelay-fail");
-  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  PostTcpNoDelayMode(ts, TcpNoDelayMode::Enabled);
+  EXPECT_TRUE(AcceptedSocketHasTcpNoDelay(ts.port()));
+
+  PostTcpNoDelayMode(ts, TcpNoDelayMode::Auto);
+}
+
+// An event loop whose poll fails for good stops the server at once, instead of spinning on the failing poll until one
+// succeeds (SingleHttpServer::eventLoop()).
+TEST(ConnectionManagerErrors, PersistentPollFailureStopsTheServer) {
+  test::EventLoopHookGuard hookGuard;
+  SingleHttpServer server(HttpServerConfig{});
+  int nbPredicateCalls = 0;
+  std::jthread loopThread([&server, &nbPredicateCalls] {
+    // Only the polls of this server fail: the one of the shared server of this binary keeps running.
+    test::g_epoll_wait_thread.store(std::this_thread::get_id(), std::memory_order_release);
+    test::SetEpollWaitActions({test::WaitError(EBADF)});
+    // Ends a spinning loop.
+    server.runUntil([&nbPredicateCalls] { return ++nbPredicateCalls > 1000; });
+  });
+  loopThread.join();
+  // Called before the start, then before the iteration whose poll fails.
+  EXPECT_EQ(nbPredicateCalls, 2);
+  EXPECT_FALSE(server.isRunning());
 }
 
 #ifdef AERONET_LINUX
@@ -705,6 +786,37 @@ TEST(HttpResponseDispatchErrors, SendfileWouldBlockWithRetry) {
 
   auto resp = test::recvWithTimeout(client.fd(), 5000ms);
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+}
+
+// An interrupted sendfile is retried at once (ConnectionState::transportFile()): the connection does not wait for its
+// socket to be writable, no event coming for the file left alone in its output.
+TEST(HttpResponseDispatchErrors, SendfileInterruptedIsRetried) {
+  test::QueueResetGuard<decltype(test::g_sendfile_actions)> guard(test::g_sendfile_actions);
+  test::QueueResetGuard<decltype(test::g_on_accept_install_actions)> guardOnAccept(test::g_on_accept_install_actions);
+
+  const std::string payload(32UL * 1024, 'I');
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, payload);
+
+  ts.router().setDefault([path = tmp.filePath().string()](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeOK);
+    writer.file(File(path));
+    writer.end();
+  });
+
+  // The first sendfile of the connection is interrupted, the next ones are real.
+  test::g_on_accept_install_actions.push(test::AcceptInstallActions{
+      .writeActions = {},
+      .writevActions = {},
+      .sendfileActions = {{-1, error::kInterrupted}},
+  });
+
+  test::ClientConnection client(ts.port());
+  test::sendAll(client.fd(), SimpleGetRequest("/sendfile-eintr"));
+
+  const std::string resp = test::recvWithTimeout(client.fd(), 5000ms);
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp.substr(0, 128);
+  EXPECT_TRUE(resp.ends_with(payload)) << resp.size();
 }
 
 // =============================================================================

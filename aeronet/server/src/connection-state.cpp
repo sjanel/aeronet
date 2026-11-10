@@ -137,60 +137,49 @@ ConnectionState::FileResult ConnectionState::transportFile(NativeHandle clientFd
   const std::size_t chunkLimit = tlsFlow ? kTlsReadChunk : kSendfileChunk;
   const std::size_t maxBytes = std::min(fileSend.filePayload.length, chunkLimit);
 
-  int64_t result;
   if (tlsFlow) {
     tunnelOrFileBuffer.ensureAvailableCapacityExponential(maxBytes);
-    result =
-        ReadOffset(fileSend.filePayload.file.fd(), tunnelOrFileBuffer.data(), maxBytes, fileSend.filePayload.offset);
-  } else {
-    result =
-        Sendfile(clientFd, static_cast<int>(fileSend.filePayload.file.fd()), fileSend.filePayload.offset, maxBytes);
   }
-  FileResult res{static_cast<std::size_t>(result), tlsFlow ? FileResult::Code::Read : FileResult::Code::Sent, tlsFlow};
+  int64_t result;
+  do {
+    if (tlsFlow) {
+      result =
+          ReadOffset(fileSend.filePayload.file.fd(), tunnelOrFileBuffer.data(), maxBytes, fileSend.filePayload.offset);
+    } else {
+      result =
+          Sendfile(clientFd, static_cast<int>(fileSend.filePayload.file.fd()), fileSend.filePayload.offset, maxBytes);
+    }
+    // Interrupted by a signal before transferring anything: retried at once. Waiting for the next writable event
+    // instead would stall the transfer of a file left alone in the output, its socket having room (no event comes).
+  } while (result == -1 && LastSystemError() == error::kInterrupted);
+  FileResult res{static_cast<std::size_t>(result), tlsFlow ? FileResult::Code::Read : FileResult::Code::Sent};
 
   if (result == -1) [[unlikely]] {
     res.bytesDone = 0;
-#ifdef AERONET_POSIX
+    // LastSystemError() is errno on POSIX and WSAGetLastError() on Windows (the same slot as GetLastError(), which
+    // ReadFile and the Sendfile failure paths set).
     const int errnoVal = LastSystemError();
-    switch (errnoVal) {
-      case error::kWouldBlock:
-        res.enableWritable = true;
-        [[fallthrough]];
-      case error::kInterrupted:
-        if (!tlsFlow || fileSend.filePayload.length != 0) {
-          res.code = FileResult::Code::WouldBlock;
-        }
-        return res;
-      default:
-        res.code = FileResult::Code::Error;
-        // ECONNRESET / error::kBrokenPipe / ECONNABORTED are normal peer-close events (client closed before
-        // transfer finished). Downgrade to debug to avoid flooding logs during high concurrency.
-        if ((errnoVal == error::kConnectionReset || errnoVal == error::kBrokenPipe ||
-             errnoVal == error::kConnectionAborted)) {
-          log::debug("{} peer closed during {} sendfile fd # {} err={} msg={}", tlsFlow ? "pread" : "sendfile",
-                     tlsFlow ? "TLS" : "plain", clientFd, errnoVal, SystemErrorMessage(errnoVal));
-        } else {
-          log::error("{} failed during {} sendfile fd # {} err={} msg={}", tlsFlow ? "pread" : "sendfile",
-                     tlsFlow ? "TLS" : "plain", clientFd, errnoVal, SystemErrorMessage(errnoVal));
-        }
-        // The output queued behind the file must not follow its truncated body, read as the rest of it.
-        clearBuffers();
-        return res;
-    }
-#elifdef AERONET_WINDOWS
-    const int errVal = static_cast<int>(::GetLastError());
-    if (errVal == error::kWouldBlock) {
-      res.enableWritable = true;
+    if (errnoVal == error::kWouldBlock) {
+      // The TLS path is only entered with bytes left to read (ConnectionIo checks it), and a failed read leaves the
+      // length untouched.
+      assert(!tlsFlow || fileSend.filePayload.length != 0);
       res.code = FileResult::Code::WouldBlock;
       return res;
     }
     res.code = FileResult::Code::Error;
-    log::error("{} failed during {} sendfile fd # {} err={}", tlsFlow ? "ReadFile" : "TransmitFile",
-               tlsFlow ? "TLS" : "plain", clientFd, errVal);
+    // ECONNRESET / error::kBrokenPipe / ECONNABORTED are normal peer-close events (client closed before
+    // transfer finished). Downgrade to debug to avoid flooding logs during high concurrency.
+    if ((errnoVal == error::kConnectionReset || errnoVal == error::kBrokenPipe ||
+         errnoVal == error::kConnectionAborted)) {
+      log::debug("{} peer closed during {} sendfile fd # {} err={} msg={}", tlsFlow ? "pread" : "sendfile",
+                 tlsFlow ? "TLS" : "plain", clientFd, errnoVal, SystemErrorMessage(errnoVal));
+    } else {
+      log::error("{} failed during {} sendfile fd # {} err={} msg={}", tlsFlow ? "pread" : "sendfile",
+                 tlsFlow ? "TLS" : "plain", clientFd, errnoVal, SystemErrorMessage(errnoVal));
+    }
     // The output queued behind the file must not follow its truncated body, read as the rest of it.
     clearBuffers();
     return res;
-#endif
   }
   if (tlsFlow) {
     tunnelOrFileBuffer.setSize(res.bytesDone);
@@ -210,7 +199,6 @@ ConnectionState::FileResult ConnectionState::transportFile(NativeHandle clientFd
       // sendfile() returning 0 with a non-blocking socket typically means the socket would block.
       // Treat it as WouldBlock to enable writable interest and wait for the socket to be ready.
       res.code = FileResult::Code::WouldBlock;
-      res.enableWritable = true;
     }
     if (fileSend.filePayload.length == 0) {
       fileSendActive = false;

@@ -116,13 +116,11 @@ struct ConnectionState : public ConnectionInfo {
 
   // Result of a kernel sendfile operation performed on this connection's fileSend state.
   struct FileResult {
+    // WouldBlock: the socket is full, the caller should enable writable interest. An interrupted syscall is retried.
     enum class Code : uint8_t { Read, Sent, WouldBlock, Error };
 
     std::size_t bytesDone{0};
     Code code{Code::Sent};
-    // When code == WouldBlock, indicates the caller should enable writable interest
-    // (true for error::kWouldBlock, false for error::kInterrupted).
-    bool enableWritable{false};
   };
 
   // if tls is false:

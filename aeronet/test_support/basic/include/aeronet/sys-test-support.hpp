@@ -27,6 +27,8 @@
 #include <linux/memfd.h>
 #include <sys/epoll.h>
 #include <sys/syscall.h>
+
+#include <thread>
 #endif
 
 #include <algorithm>
@@ -591,6 +593,8 @@ using IoAction = std::pair<int64_t, int>;
 namespace aeronet::test {
 inline ActionQueue<SyscallAction> g_socket_actions;
 inline ActionQueue<SyscallAction> g_setsockopt_actions;
+// The setsockopt actions of one descriptor (played before g_setsockopt_actions), whatever the other calls in between.
+inline KeyedActionQueue<int, SyscallAction> g_setsockopt_fd_actions;
 inline ActionQueue<SyscallAction> g_bind_actions;
 inline ActionQueue<SyscallAction> g_listen_actions;
 inline ActionQueue<SyscallAction> g_accept_actions;
@@ -676,6 +680,10 @@ inline ActionQueue<EpollWaitAction> g_epoll_wait_actions;
 inline std::mutex g_epoll_wait_default_action_mutex;
 inline std::optional<EpollWaitAction> g_epoll_wait_default_action;  // guarded by g_epoll_wait_default_action_mutex
 
+// When set, only the epoll_wait calls of this thread play the actions: the other event loops of the process (the
+// shared server of a test binary) poll for real. Reset by ResetEpollHooks().
+inline std::atomic<std::thread::id> g_epoll_wait_thread;
+
 // Helper to fail all epoll_ctl MOD operations with a specific error
 inline void FailAllEpollCtlMod(int err) {
   g_epoll_ctl_mod_fail.store(true, std::memory_order_release);
@@ -756,6 +764,7 @@ inline std::size_t GetEpollCtlModFailCount() { return g_epoll_ctl_mod_fail_count
 inline void ResetSocketActions() {
   g_socket_actions.reset();
   g_setsockopt_actions.reset();
+  g_setsockopt_fd_actions.reset();
   g_bind_actions.reset();
   g_listen_actions.reset();
   g_accept_actions.reset();
@@ -896,6 +905,7 @@ inline EpollWaitFn ResolveRealEpollWait() {
 inline void ResetEpollHooks() {
   test::g_epoll_create_actions.reset();
   test::g_epoll_wait_actions.reset();
+  test::g_epoll_wait_thread.store(std::thread::id{}, std::memory_order_release);
   {
     std::scoped_lock lock(test::g_epoll_wait_default_action_mutex);
     test::g_epoll_wait_default_action.reset();
@@ -1362,7 +1372,10 @@ extern "C" __attribute__((no_sanitize("address"))) int socket(int domain, int ty
 extern "C" __attribute__((no_sanitize("address"))) int setsockopt(int sockfd, int level, int optname,
                                                                   // NOLINTNEXTLINE(misc-include-cleaner)
                                                                   const void* optval, socklen_t optlen) {
-  auto act = aeronet::test::g_setsockopt_actions.pop();
+  auto act = aeronet::test::g_setsockopt_fd_actions.pop(sockfd);
+  if (!act) {
+    act = aeronet::test::g_setsockopt_actions.pop();
+  }
   if (act) {
     auto [ret, err] = *act;
     if (ret >= 0) {
@@ -1600,6 +1613,10 @@ extern "C" __attribute__((no_sanitize("address"))) int epoll_create1(int flags) 
 // NOLINTNEXTLINE
 extern "C" __attribute__((no_sanitize("address"))) int epoll_wait(int epfd, struct epoll_event* events, int maxevents,
                                                                   int timeout) {
+  const std::thread::id hookedThread = aeronet::test::g_epoll_wait_thread.load(std::memory_order_acquire);
+  if (hookedThread != std::thread::id{} && hookedThread != std::this_thread::get_id()) {
+    return aeronet::test::ResolveRealEpollWait()(epfd, events, maxevents, timeout);
+  }
   auto action = aeronet::test::g_epoll_wait_actions.pop();
   const auto applyAction = [&](const aeronet::test::EpollWaitAction& act) -> int {
     if (act.kind == aeronet::test::EpollWaitAction::Kind::Error) {

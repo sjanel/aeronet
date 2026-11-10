@@ -117,6 +117,49 @@ TEST_F(SocketOpsTest, SetTcpNoDelaySucceeds) {
 
 TEST_F(SocketOpsTest, SetTcpNoDelayFailsOnBadFd) { EXPECT_FALSE(SetTcpNoDelay(-1)); }
 
+namespace {
+int TcpNoDelayOf(NativeHandle fd) {
+  int value = -1;
+  socklen_t len = sizeof(value);
+  EXPECT_EQ(::getsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &value, &len), 0);
+  return value;
+}
+}  // namespace
+
+TEST_F(SocketOpsTest, SetTcpNoDelayCanBeCleared) {
+  BaseFd fd(CreateTestSocket());
+  ASSERT_TRUE(SetTcpNoDelay(fd.fd()));
+  EXPECT_NE(TcpNoDelayOf(fd.fd()), 0);
+  ASSERT_TRUE(SetTcpNoDelay(fd.fd(), false));
+  EXPECT_EQ(TcpNoDelayOf(fd.fd()), 0);
+}
+
+// The server relies on it to set TCP_NODELAY once on its listener rather than on each accepted socket (Linux).
+TEST_F(SocketOpsTest, AcceptedSocketsInheritTcpNoDelayOfTheListener) {
+  BaseFd listener(CreateTestSocket());
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  ASSERT_EQ(::bind(listener.fd(), reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)), 0);
+  ASSERT_EQ(::listen(listener.fd(), 4), 0);
+  socklen_t addrLen = sizeof(addr);
+  ASSERT_EQ(::getsockname(listener.fd(), reinterpret_cast<sockaddr*>(&addr), &addrLen), 0);
+
+  const auto acceptedTcpNoDelay = [&listener, &addr] {
+    BaseFd client(CreateTestSocket());
+    EXPECT_EQ(::connect(client.fd(), reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)), 0);
+    BaseFd accepted(::accept(listener.fd(), nullptr, nullptr));
+    EXPECT_GE(accepted.fd(), 0);
+    return TcpNoDelayOf(accepted.fd());
+  };
+
+  EXPECT_EQ(acceptedTcpNoDelay(), 0);
+  ASSERT_TRUE(SetTcpNoDelay(listener.fd()));
+  EXPECT_NE(acceptedTcpNoDelay(), 0);
+  ASSERT_TRUE(SetTcpNoDelay(listener.fd(), false));
+  EXPECT_EQ(acceptedTcpNoDelay(), 0);
+}
+
 #ifdef AERONET_POSIX
 TEST_F(SocketOpsTest, SetAbortiveCloseSetsZeroLinger) {
   NativeHandle fd = CreateTestSocket();
