@@ -412,9 +412,10 @@ class Http2ClientEngine : private EventSink {
   }
 
   // END_STREAM received: the response is complete, with a body of the announced content-length (RFC 9113 §8.1.1).
+  // Once the exchange failed (a sink that stopped the transfer, for instance), the body is no longer counted.
   void endResponse(uint32_t streamId) {
     _responseComplete = true;
-    if (_contentLength != ResponseBodyInfo::kUnknownSize && _bodyBytes != _contentLength) {
+    if (_failure == Failure::None && _contentLength != ResponseBodyInfo::kUnknownSize && _bodyBytes != _contentLength) {
       log::error("HTTP/2 client: response body on stream {} has {} bytes instead of its content-length {}", streamId,
                  _bodyBytes, _contentLength);
       setFailure(Failure::Malformed);

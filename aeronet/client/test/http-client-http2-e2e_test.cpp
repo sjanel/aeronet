@@ -50,6 +50,7 @@
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/http2-process-result-error-msg.hpp"
 #include "aeronet/http2-test-helpers.hpp"
+#include "aeronet/log-capture.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -1393,6 +1394,29 @@ TEST(HttpClientHttp2E2ETest, SinkAbortKeepsTheConnection) {
     EXPECT_TRUE(big->bodyInMemory() == MakeLargeBody()) << idx;
   }
   EXPECT_EQ(StreamIdOfNextRequest(client), "13");
+}
+
+// A sink refusing the head of a small response, received whole (HEADERS then DATA with END_STREAM, in the same read):
+// once the transfer is aborted, the body is no longer counted, which is not reported as a body shorter than its
+// content-length. The stream ended normally: the connection is kept.
+TEST(HttpClientHttp2E2ETest, SinkRefusingAWholeResponseLogsNoError) {
+  HttpClientConfig cfg;
+  cfg.withHttpVersion(HttpVersionMode::Http2).withDecompression(false);
+  HttpClient client(cfg);
+  EXPECT_EQ(StreamIdOfNextRequest(client), "1");
+
+  test::CollectingBodySink refuseHead;
+  refuseHead.acceptHead = false;
+  test::LogCapture capture;
+  auto result = client.get(Url("/hello"), refuseHead);  // stream 3
+  const std::string logs = capture.take();
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::aborted);
+  EXPECT_EQ(refuseHead.headCalls, 1U);
+  EXPECT_EQ(refuseHead.bodyCalls, 0U);
+  EXPECT_FALSE(logs.contains("content-length")) << logs;
+
+  EXPECT_EQ(StreamIdOfNextRequest(client), "5");
 }
 
 // A response larger than maxResponseBytes only fails its stream too.

@@ -11,11 +11,14 @@
 #include <spdlog/common.h>  // IWYU pragma: export
 #include <spdlog/spdlog.h>  // IWYU pragma: export
 #else
+#include <cstddef>
+#include <cstdio>
 #include <format>
-#include <iostream>
-#include <ostream>
+#include <iterator>
+#include <string>
 #include <string_view>
 
+#include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
 #endif
@@ -52,10 +55,44 @@ inline level::level_enum get_level() { return current_level(); }
 
 namespace detail {
 
-inline void emit_prefix(const char* lvlTag) {
-  char timeBuf[25];
-  *TimeToStringISO8601UTCWithMs(SysClock::now(), timeBuf) = '\0';
-  std::cout << '[' << timeBuf << "] [" << lvlTag << "] ";
+// A line '[time] [level] ', with room for the message of 'messageSize' bytes and the final new line.
+inline std::string StartLine(level::level_enum lvl, std::size_t messageSize) {
+  static constexpr std::string_view kTimeLevelSeparator = "] [";
+  static constexpr std::string_view kLevelMessageSeparator = "] ";
+  const std::string_view levelName = kLevelNames[lvl];
+
+  std::string line;
+  line.reserve(1U + ISO8601UTCWithMsStrLen + kTimeLevelSeparator.size() + levelName.size() +
+               kLevelMessageSeparator.size() + messageSize + 1U);
+  line.push_back('[');
+  char timeBuf[ISO8601UTCWithMsStrLen];
+  line.append(timeBuf, TimeToStringISO8601UTCWithMs(SysClock::now(), timeBuf));
+  line.append(kTimeLevelSeparator);
+  line.append(levelName);
+  line.append(kLevelMessageSeparator);
+  return line;
+}
+
+// Writes the line with a single call, which the C library serializes with the other writes to stdout: the lines logged
+// by concurrent threads do not interleave.
+inline void EndLine(std::string& line) {
+  line.push_back('\n');
+  // A line that cannot be written (stdout closed or full) has nowhere else to go.
+  static_cast<void>(std::fwrite(line.data(), 1, line.size(), stdout));
+}
+
+// Logs 'message' as is.
+inline void WriteLine(level::level_enum lvl, std::string_view message) {
+  std::string line = StartLine(lvl, message.size());
+  line.append(message);
+  EndLine(line);
+}
+
+// Logs 'fmt' formatted with 'args'. Not a template: the call sites share its code.
+inline void WriteLine(level::level_enum lvl, std::string_view fmt, std::format_args args) {
+  std::string line = StartLine(lvl, fmt.size());
+  std::vformat_to(std::back_inserter(line), fmt, args);
+  EndLine(line);
 }
 
 }  // namespace detail
@@ -63,11 +100,10 @@ inline void emit_prefix(const char* lvlTag) {
 template <typename... Args>
 void log(level::level_enum level, std::string_view fmt, Args&&... args) {
   if (static_cast<int>(get_level()) <= static_cast<int>(level)) {
-    detail::emit_prefix(kLevelNames[static_cast<int>(level)]);
     if constexpr (sizeof...(Args) == 0) {
-      std::cout << fmt << '\n';
+      detail::WriteLine(level, fmt);
     } else {
-      std::cout << std::vformat(fmt, std::make_format_args(args...)) << '\n';
+      detail::WriteLine(level, fmt, std::make_format_args(args...));
     }
   }
 }
