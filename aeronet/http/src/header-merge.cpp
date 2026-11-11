@@ -11,9 +11,8 @@
 
 namespace aeronet::http {
 
-bool MergeHeaderInPlace(SvToSvMap& map, SvToSvMap::iterator it, std::string_view value, RawChars& tmp,
-                        const char* bufferBase, const char* currentLineStart,
-                        bool mergeAllowedForUnknownRequestHeaders) {
+bool MergeHeaderInPlace(SvToSvMap& map, SvToSvMap::iterator it, std::string_view newValue, RawChars& tmp,
+                        char* pBufferBase, const char* pCurrentLine, bool mergeAllowedForUnknownRequestHeaders) {
   // We have a duplicated header. We will append the duplicated value encountered now to the first key value pair
   // inplace in memory. Plan: use the tmp buffer to copy duplicate value there. In the examples
   // below, \r\n have been replaced by [] for readability (and they keep their true size). * marks 'garbage' memory
@@ -34,11 +33,11 @@ bool MergeHeaderInPlace(SvToSvMap& map, SvToSvMap::iterator it, std::string_view
 
   if (it->second.empty()) {
     // the first value is empty - we keep the last value in the map
-    it->second = value;
+    it->second = newValue;
     return true;
   }
 
-  if (value.empty()) {
+  if (newValue.empty()) {
     // second value is empty - we do nothing and just move on to the next headers, the first value is sufficient.
     return true;
   }
@@ -46,31 +45,33 @@ bool MergeHeaderInPlace(SvToSvMap& map, SvToSvMap::iterator it, std::string_view
   // Both non empty - we actually do the merge
 
   // Compute sizes
-  static constexpr std::size_t szSep = sizeof(mergeSep);
-  const std::size_t szToMove = static_cast<std::size_t>(value.size()) + szSep;
+  static constexpr std::size_t szSep = sizeof(mergeSep);  // 1
+  const std::size_t szToMove = newValue.size() + szSep;
 
   // Step 1 - use tmp as temp data to keep value
-  tmp.assign(value);
+  tmp.assign(newValue);
 
   // Step 2 - move existing suffix to the right to make room for new data
-  char* firstValueFirst = const_cast<char*>(bufferBase) + (it->second.data() - bufferBase);
-  char* firstValueLast = firstValueFirst + it->second.size();
+  char* pFirstValueBeg = pBufferBase + (it->second.data() - pBufferBase);
+  char* pFirstValueEnd = pFirstValueBeg + it->second.size();
 
-  std::memmove(firstValueLast + szToMove, firstValueLast, static_cast<std::size_t>(currentLineStart - firstValueLast));
+  std::memmove(pFirstValueEnd + szToMove, pFirstValueEnd, static_cast<std::size_t>(pCurrentLine - pFirstValueEnd));
+
+  // Step 3 - finally insert separator and copy tmp into the gap
+  *pFirstValueEnd = mergeSep;
+  Copy(tmp, pFirstValueEnd + szSep);
 
   // Update all pointers in map that are after firstValueLast
   for (auto& [key, val] : map) {
-    if (key.data() > firstValueLast) {
+    if (key.data() > pFirstValueEnd) {
       key = std::string_view(key.data() + szToMove, key.size());
+    }
+    if (val.data() > pFirstValueEnd) {
       val = std::string_view(val.data() + szToMove, val.size());
     }
   }
 
-  // Step 3 - finally copy tmp into the gap and insert separator
-  Copy(tmp, firstValueLast + szSep);
-  *firstValueLast = mergeSep;
-
-  it->second = std::string_view(firstValueFirst, firstValueLast + szToMove);
+  it->second = std::string_view(pFirstValueBeg, pFirstValueEnd + szToMove);
   return true;
 }
 

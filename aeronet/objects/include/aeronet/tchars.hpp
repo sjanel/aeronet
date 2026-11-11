@@ -4,7 +4,7 @@
 
 namespace aeronet {
 
-/// RFC 7230: tchar = "!" / "#" / "$" / "%" / "&" / "'" / "*"
+/// RFC 9110 §5.6.2: tchar = "!" / "#" / "$" / "%" / "&" / "'" / "*"
 ///                  / "+" / "-" / "." / "^" / "_" / "`" / "|" / "~"
 ///                  / DIGIT / ALPHA
 constexpr bool is_tchar(unsigned char uc) noexcept {

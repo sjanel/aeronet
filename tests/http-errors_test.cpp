@@ -1425,9 +1425,9 @@ TEST(HttpGardenRequestLine, MalformedRequestLinesAreRejected) {
       // server #9: '\n' allowed as separating whitespace in a request line.
       {"server #9", "GET /\nHTTP/1.1\r\nHost: a\r\n\r\n", http::StatusCodeBadRequest},
       // server #6: HTTP methods interpreted as their longest valid prefix.
-      {"server #6", "G=\":<>(e),[T];?\" /get HTTP/1.1\r\nHost: a\r\n\r\n", http::StatusCodeNotImplemented},
+      {"server #6", "G=\":<>(e),[T];?\" /get HTTP/1.1\r\nHost: a\r\n\r\n", http::StatusCodeBadRequest},
       // server #40: HTTP methods and versions not validated.
-      {"server #40", "\x00 / HTTP/............0596.7407.\r\nHost: a\r\n\r\n"sv, http::StatusCodeNotImplemented},
+      {"server #40", "\x00 / HTTP/............0596.7407.\r\nHost: a\r\n\r\n"sv, http::StatusCodeBadRequest},
       // server #12: a request without Host must get a 400 response, not a silent close.
       {"server #12", "GET / HTTP/1.1\r\n\r\n", http::StatusCodeBadRequest},
   });
