@@ -1,8 +1,9 @@
 #!/bin/bash
-# Runs a command until it succeeds, at most max_attempts times.
+# Runs a command until it succeeds, at most RETRY_ATTEMPTS times (default 10). Lower it for a command that
+# also compiles, so that a build error is not repeated 10 times.
 # If RETRY_TIMEOUT is set (in seconds), each attempt is killed after that delay, so that a stalled
 # download (FetchContent, git clone...) is retried instead of freezing the job.
-max_attempts=10
+max_attempts=${RETRY_ATTEMPTS:-10}
 delay=2
 attempt=1
 exitCode=0
@@ -17,7 +18,7 @@ do
   fi
   exitCode=$?
 
-  if [[ $exitCode == 0 ]]
+  if [[ $exitCode == 0 ]] || (( attempt == max_attempts ))
   then
     break
   fi
