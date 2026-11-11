@@ -68,7 +68,7 @@ aeronet::HttpServerConfig config;
 config.withTlsAlpnProtocols({"h2", "http/1.1"});
 ```
 
-The server selects the first protocol of its own list that the client also offered. With `withTlsAlpnMustMatch(true)`, the handshake fails (`no_application_protocol` alert) when the client offers none of them, or offers no protocol at all, and the `tlsAlpnStrictMismatches` statistic is incremented. Without strict mode, the connection continues without ALPN and uses HTTP/1.1. Offering `"h2"` commits the client to HTTP/2: `validate()` rejects it when HTTP/2 is disabled (`http2.enable = false`, or a build without `AERONET_ENABLE_HTTP2`).
+The server selects the first protocol of its own list that the client also offered. With `withTlsAlpnMustMatch(true)`, the handshake fails (`no_application_protocol` alert) when the client offers none of them, or offers no protocol at all, and the `tlsAlpnStrictMismatches` statistic is incremented. Without strict mode, the connection continues without ALPN and uses HTTP/1.1. Offering `"h2"` commits the client to HTTP/2: `validate()` rejects it when HTTP/2 is disabled (`http2.enable = false`, or a build without `AERONET_ENABLE_HTTP2`). It always rejects `"h2c"`, which names HTTP/2 over cleartext TCP and must not be selected through ALPN (RFC 9113 §3.2).
 
 Handlers can read the negotiated parameters of their connection with `HttpRequestView::alpnProtocol()`, `tlsVersion()`, and `tlsCipher()`, and the subject of the verified client certificate with `tlsPeerSubject()` (see [Mutual TLS](#mutual-tls)). They return empty views on a plaintext connection. The same values feed the [TLS statistics](#observability).
 

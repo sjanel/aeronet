@@ -77,14 +77,7 @@ class Http2Stream {
   [[nodiscard]] ErrorCode onRecvData(bool endStream) noexcept;
 
   /// Transition state when sending RST_STREAM.
-  void onSendRstStream() noexcept {
-    _state = StreamState::Closed;
-    _resetSent = true;
-  }
-
-  /// Whether this endpoint reset the stream: the frames the peer sent before receiving the RST_STREAM are then ignored
-  /// (RFC 9113 §5.1).
-  [[nodiscard]] bool resetSent() const noexcept { return _resetSent; }
+  void onSendRstStream() noexcept { _state = StreamState::Closed; }
 
   /// Transition state when receiving RST_STREAM.
   void onRecvRstStream() noexcept { _state = StreamState::Closed; }
@@ -182,7 +175,6 @@ class Http2Stream {
   bool _exclusive{false};
   bool _closedNotified{false};
   bool _recvWindowHeld{false};
-  bool _resetSent{false};
 };
 
 }  // namespace aeronet::http2

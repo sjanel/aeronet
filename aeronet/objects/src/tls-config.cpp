@@ -105,6 +105,10 @@ void TLSConfig::validate() {
                           [](std::string_view proto) { return std::cmp_less(kMaxAlpnProtocolLength, proto.size()); })) {
     throw std::invalid_argument("ALPN protocol entry exceeds maximum length");
   }
+  // "h2c" names HTTP/2 over cleartext TCP: a server must not select it through ALPN (RFC 9113 §3.2).
+  if (std::ranges::any_of(alpnProtocols, [](std::string_view proto) { return proto == "h2c"; })) {
+    throw std::invalid_argument(R"(ALPN protocol "h2c" cannot be negotiated over TLS, use "h2")");
+  }
 
   if (sessionTickets.maxKeys == 0) {
     throw std::invalid_argument("Session ticket maxKeys must be greater than zero");

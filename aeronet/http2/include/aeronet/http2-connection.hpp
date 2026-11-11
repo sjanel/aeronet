@@ -257,7 +257,9 @@ class Http2Connection {
                                                                 bool endStream);
 
   /// Send RST_STREAM frame.
-  /// @param streamId Stream ID
+  /// A stream already closed (by the END_STREAM of both endpoints) is not reset, no frame other than PRIORITY being
+  /// sent on a closed stream (RFC 9113 §5.1): its closing is only finalized, as by finalizeSendClosedStream().
+  /// @param streamId Stream ID, of a stream known to the connection (getStream() is not null)
   /// @param errorCode Error code for the reset
   void sendRstStream(uint32_t streamId, ErrorCode errorCode);
 
@@ -434,8 +436,14 @@ class Http2Connection {
 
   // Whether a stream absent from _streams was never opened (idle, RFC 9113 §5.1): its id is above the last one opened
   // by its initiator. A lower one was closed, then pruned, or skipped by its initiator (implicitly closed, §5.1.1).
+  // After the GOAWAY of this endpoint, a stream of the peer above its last stream id is not idle but ignored (§6.8):
+  // the peer may have opened it before receiving the GOAWAY, and its frames are discarded instead of failing the
+  // connection.
   [[nodiscard]] bool isIdleStream(uint32_t streamId) const noexcept {
-    return streamId > (isPeerStream(streamId) ? _lastPeerStreamId : _lastLocalStreamId);
+    if (isPeerStream(streamId)) {
+      return streamId > _lastPeerStreamId && _state != ConnectionState::GoAwaySent;
+    }
+    return streamId > _lastLocalStreamId;
   }
 
   // Whether a stream absent from _streams was opened, then pruned (see pruneClosedStreams()). All the streams are
@@ -476,9 +484,9 @@ class Http2Connection {
   /// Returns `CompressionError` for invalid HPACK and `ProtocolError` for malformed fields.
   ErrorCode decodeAndEmitHeaders(uint32_t streamId, std::span<const std::byte> headerBlock, bool endStream);
 
-  // Ignore the field block of a stream this endpoint reset, like any frame on it (RFC 9113 §5.1), after decoding it:
-  // the HPACK decoding state is shared by the whole connection (RFC 9113 §4.3). Only a compression error fails the
-  // connection.
+  // Ignore the field block of a closed stream (reset by this endpoint for instance), like any frame on it (RFC 9113
+  // §5.1), after decoding it: the HPACK decoding state is shared by the whole connection (RFC 9113 §4.3). Only a
+  // compression error fails the connection.
   ProcessResult discardFieldBlock(std::span<const std::byte> headerBlock);
 
   // Process the complete field block of a HEADERS frame (and of its CONTINUATION frames) on the stream `it`: decoded
@@ -546,7 +554,8 @@ class Http2Connection {
   uint32_t _lastLocalStreamId{0};
   uint32_t _maxPrunedStreamId{0};
 
-  // Security hardening: counter for PRIORITY frames on non-existent streams (flood mitigation)
+  // Security hardening: PRIORITY frames on non-existent streams since the last stream opened by the peer (flood
+  // mitigation)
   uint32_t _idlePriorityFrameCount{0};
 
   // Flow control

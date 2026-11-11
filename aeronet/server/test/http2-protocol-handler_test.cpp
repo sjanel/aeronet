@@ -402,6 +402,22 @@ class Http2ProtocolLoopback {
   vector<std::pair<uint32_t, ErrorCode>> streamResets;
 };
 
+// The RST_STREAM frames of `output`, as sent on the wire: the receiving connection ignores a late one, on a stream that
+// it closed already.
+[[nodiscard]] vector<std::pair<uint32_t, ErrorCode>> StreamResetsOf(std::span<const std::byte> output) {
+  vector<std::pair<uint32_t, ErrorCode>> resets;
+  while (!output.empty()) {
+    const FrameHeader header = ParseFrameHeader(output);
+    if (header.type() == FrameType::RstStream) {
+      RstStreamFrame reset;
+      EXPECT_EQ(ParseRstStreamFrame(output.subspan(FrameHeader::kSize, header.length()), reset), FrameParseResult::Ok);
+      resets.emplace_back(header.streamId(), reset.errorCode);
+    }
+    output = output.subspan(FrameHeader::kSize + header.length());
+  }
+  return resets;
+}
+
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 // Reads the coroutine resumptions posted to the server context of a loopback by the deferred work of its async
 // handlers (which the event loop of a server would process).
@@ -1406,15 +1422,19 @@ TEST(Http2ProtocolHandler, ConnectTunnelConnectFailedSendsRstStream) {
 
   // Async connect failed → handler sends RST_STREAM with CONNECT_ERROR.
   loop.handler.tunnelConnectFailed(1);
-  loop.handler.tunnelConnectFailed(42);  // should do nothing
+  // A stream unknown to the handler is not reset: never opened (a RST_STREAM on an idle stream is a connection error
+  // for the client, RFC 9113 §6.4), or closed already.
+  loop.handler.tunnelConnectFailed(42);
+  loop.handler.tunnelConnectFailed(1);
   EXPECT_FALSE(loop.handler.isTunnelStream(1));
 
   loop.pumpServerToClient();
 
-  // Client should receive RST_STREAM with CONNECT_ERROR.
-  ASSERT_FALSE(loop.streamResets.empty());
+  // Client should receive RST_STREAM with CONNECT_ERROR, once.
+  ASSERT_EQ(loop.streamResets.size(), 1U);
   EXPECT_EQ(loop.streamResets.back().first, 1U);
   EXPECT_EQ(loop.streamResets.back().second, ErrorCode::ConnectError);
+  EXPECT_TRUE(loop.client.isOpen());
 }
 
 TEST(Http2ProtocolHandler, ConnectTunnelStreamResetCleanupsTunnel) {
@@ -2070,12 +2090,18 @@ TEST(Http2ProtocolHandler, RequestFramesSentBeforeEarlyAnswerIsReceivedAreIgnore
       EXPECT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(trailers), true), ErrorCode::NoError);
     }
     loop.pumpClientToServer();
-    loop.pumpServerToClient();
+
+    // A single reset: the late frames are not answered with another one. The client, whose stream the answer closes,
+    // then ignores it (RFC 9113 §5.1).
+    const auto serverOutput = DrainPendingOutput(loop.handler, 128);
+    EXPECT_EQ(StreamResetsOf(serverOutput), (vector<std::pair<uint32_t, ErrorCode>>{{1U, ErrorCode::NoError}}));
+    Http2ProtocolLoopback::feedConn(loop.client, serverOutput);
 
     ASSERT_EQ(loop.clientHeaders.size(), 1U);
     EXPECT_EQ(GetHeaderValue(loop.clientHeaders.front(), ":status"), testCase.status);
     EXPECT_FALSE(handlerCalled);
-    EXPECT_EQ(loop.streamResets, (vector<std::pair<uint32_t, ErrorCode>>{{1U, ErrorCode::NoError}}));
+    EXPECT_TRUE(loop.streamResets.empty());
+    EXPECT_TRUE(loop.client.isOpen());
   }
 }
 
@@ -3031,20 +3057,7 @@ namespace {
 
 // The RST_STREAM frames pending on the server, read here as the client does not know the streams of hand-made frames.
 [[nodiscard]] vector<std::pair<uint32_t, ErrorCode>> DrainStreamResets(Http2ProtocolLoopback& loop) {
-  const auto output = DrainPendingOutput(loop.handler, 128);
-  vector<std::pair<uint32_t, ErrorCode>> resets;
-  std::span<const std::byte> remaining(output);
-  while (!remaining.empty()) {
-    const FrameHeader header = ParseFrameHeader(remaining);
-    if (header.type() == FrameType::RstStream) {
-      RstStreamFrame reset;
-      EXPECT_EQ(ParseRstStreamFrame(remaining.subspan(FrameHeader::kSize, header.length()), reset),
-                FrameParseResult::Ok);
-      resets.emplace_back(header.streamId(), reset.errorCode);
-    }
-    remaining = remaining.subspan(FrameHeader::kSize + header.length());
-  }
-  return resets;
+  return StreamResetsOf(DrainPendingOutput(loop.handler, 128));
 }
 
 }  // namespace
@@ -7664,6 +7677,51 @@ TEST(Http2ProtocolHandler, RecycledRequestReleasesItsLargeBuffers) {
   post(9, 10);
   get(11, 2);
   EXPECT_EQ(ResponseStatus(loop, 11), "200");
+}
+
+// ============== RFC 9113 audit ==============
+
+// RFC 9113 §6.8: a request with a body that the client sent before receiving the GOAWAY of a drain is ignored, and
+// retried by the client on another connection. Its DATA frames, which follow its HEADERS frame, must not fail the
+// connection: the streams opened before the GOAWAY are still to be answered.
+TEST(Http2ProtocolHandlerRfc9113Audit, DrainGoAwayStillAnswersItsStreamsWhenAnUploadWasInFlight) {
+  Router router;
+  router.setPath(http::Method::POST, "/upload",
+                 [](const HttpRequestView& req) { return HttpResponse(200, req.body()); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+  RawChars headers;
+  headers.append(MakeHttp1HeaderLine(":method", "POST"));
+  headers.append(MakeHttp1HeaderLine(":scheme", "https"));
+  headers.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  headers.append(MakeHttp1HeaderLine(":path", "/upload"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(headers), false), ErrorCode::NoError);
+  loop.pumpClientToServer();
+
+  // A second upload, whole, still in flight when the server sends its GOAWAY.
+  static constexpr std::array kBody{std::byte{'d'}, std::byte{'a'}, std::byte{'t'}, std::byte{'a'}};
+  ASSERT_EQ(loop.client.sendHeaders(3, http::StatusCode{}, HeadersView(headers), false), ErrorCode::NoError);
+  ASSERT_EQ(loop.client.sendData(3, kBody, true), ErrorCode::NoError);
+  const auto inFlight = DrainPendingOutput(loop.client, 128);
+
+  EXPECT_TRUE(loop.handler.onSweep(std::chrono::steady_clock::now(), true));
+  loop.pumpServerToClient();
+  ASSERT_EQ(loop.client.state(), ConnectionState::GoAwayReceived);
+
+  loop.feedHandler(inFlight);
+  EXPECT_EQ(loop.handler.connection().state(), ConnectionState::GoAwaySent);
+  EXPECT_FALSE(loop.handler.hasPendingOutput());
+
+  // The stream opened before the GOAWAY is answered, then the connection closes.
+  ASSERT_EQ(loop.client.sendData(1, kBody, true), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+  ASSERT_EQ(loop.clientHeaders.size(), 1U);
+  EXPECT_EQ(loop.clientHeaders[0].streamId, 1U);
+  EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], ":status"), "200");
+  EXPECT_EQ(loop.receivedData(1), "data");
+  EXPECT_TRUE(loop.state.isDrainCloseRequested());
 }
 
 }  // namespace aeronet::http2

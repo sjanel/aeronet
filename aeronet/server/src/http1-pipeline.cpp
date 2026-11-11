@@ -692,9 +692,8 @@ bool Http1Pipeline::rejectIncompleteHead(ConnectionIt cnxIt) {
     // If we reach here, the header delimiter was not found and the buffer exceeds the header limit.
     // The end of the request line itself was not found when none of the head was parsed, unless the input only holds
     // empty lines waiting for it: its request-target is too long (RFC 9112 §3).
-    const bool isRequestLineIncomplete =
-        state.pendingRequest.headParseState == HttpRequestView::HeadParseState::None &&
-        LeadingEmptyLinesSize(std::string_view(state.inBuffer.data(), state.inBuffer.size())) != kWaitForRequestLine;
+    const bool isRequestLineIncomplete = state.pendingRequest.headParseState == HttpRequestView::HeadParseState::None &&
+                                         LeadingEmptyLinesSize(state.inBuffer) != kWaitForRequestLine;
     emitSimpleError(
         cnxIt, isRequestLineIncomplete ? http::StatusCodeURITooLong : http::StatusCodeRequestHeaderFieldsTooLarge, {});
     return true;

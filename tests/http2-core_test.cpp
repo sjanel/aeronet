@@ -50,6 +50,7 @@
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/test_server_http2_tls_fixture.hpp"
+#include "aeronet/test_tls_client.hpp"
 #include "aeronet/test_tls_http2_client.hpp"
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timestring.hpp"
@@ -420,6 +421,28 @@ TEST(Http2Core, H2cPriorKnowledgeInvalidPrefaceFallsBackToHttp1) {
       << response;
 }
 
+// Bytes starting like the connection preface, but diverging from it before its end, are an HTTP/1.1 request, answered
+// at once: the server does not wait for the 24 bytes of a preface that a shorter request never sends (RFC 9113 §3.4).
+TEST(Http2Core, H2cPriorKnowledgeShortNonPrefaceIsAnsweredAsHttp1) {
+  h2ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
+    cfg.http2.enable = true;
+    cfg.http2.withEnableH2c(true);
+  });
+
+  test::ClientConnection client(h2ts.port());
+  ASSERT_NE(client.fd(), -1);
+
+  static constexpr std::string_view kRequest = "PRI * HTTP/1.1\r\n\r\n";
+  ASSERT_LT(kRequest.size(), http2::kConnectionPreface.size());
+  test::sendAll(client.fd(), kRequest);
+
+  const std::string response = test::recvWithTimeout(client.fd(), std::chrono::milliseconds{5000});
+  ASSERT_FALSE(response.empty());
+  const auto parsed = test::parseResponseOrThrow(response);
+  EXPECT_TRUE(parsed.statusCode == http::StatusCodeBadRequest || parsed.statusCode == http::StatusCodeNotImplemented)
+      << response;
+}
+
 TEST(Http2Core, H2cPriorKnowledgeValidPrefaceSwitchesToHttp2) {
   h2ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
     cfg.http2.enable = true;
@@ -428,9 +451,6 @@ TEST(Http2Core, H2cPriorKnowledgeValidPrefaceSwitchesToHttp2) {
 
   ASSERT_TRUE(h2ts.server.config().http2.enable);
   ASSERT_TRUE(h2ts.server.config().http2.enableH2c);
-
-  test::ClientConnection client(h2ts.port());
-  ASSERT_NE(client.fd(), -1);
 
   auto preface = MakePreface();
   Http2Config clientCfg;
@@ -444,17 +464,29 @@ TEST(Http2Core, H2cPriorKnowledgeValidPrefaceSwitchesToHttp2) {
   for (auto byteVal : AsSpan(settings)) {
     raw.push_back(static_cast<char>(byteVal));
   }
-  test::sendAll(client.fd(), raw);
 
-  const std::string response = test::recvWithTimeout(client.fd(), std::chrono::milliseconds{5000}, FrameHeader::kSize);
-  ASSERT_FALSE(response.empty());
-  EXPECT_FALSE(response.starts_with("HTTP/1.1")) << response;
+  // Whole, or split after "PRI * HTTP": the server, reading the beginning of the preface alone, waits for the rest.
+  for (const std::size_t firstPartSize : {raw.size(), std::size_t{10}}) {
+    SCOPED_TRACE(firstPartSize);
+    test::ClientConnection client(h2ts.port());
+    ASSERT_NE(client.fd(), -1);
+    test::sendAll(client.fd(), std::string_view(raw).substr(0, firstPartSize));
+    if (firstPartSize < raw.size()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds{20});
+      test::sendAll(client.fd(), std::string_view(raw).substr(firstPartSize));
+    }
 
-  std::span<const std::byte> responseBytes(reinterpret_cast<const std::byte*>(response.data()), response.size());
-  const auto frames = ParseFrames(responseBytes);
-  ASSERT_FALSE(frames.empty());
-  EXPECT_EQ(frames[0].header.type(), FrameType::Settings);
-  EXPECT_EQ(frames[0].header.streamId(), 0U);
+    const std::string response =
+        test::recvWithTimeout(client.fd(), std::chrono::milliseconds{5000}, FrameHeader::kSize);
+    ASSERT_FALSE(response.empty());
+    EXPECT_FALSE(response.starts_with("HTTP/1.1")) << response;
+
+    std::span<const std::byte> responseBytes(reinterpret_cast<const std::byte*>(response.data()), response.size());
+    const auto frames = ParseFrames(responseBytes);
+    ASSERT_FALSE(frames.empty());
+    EXPECT_EQ(frames[0].header.type(), FrameType::Settings);
+    EXPECT_EQ(frames[0].header.streamId(), 0U);
+  }
 }
 
 TEST(Http2Core, H2cPriorKnowledgeConnectionOutlivesHeaderReadTimeout) {
@@ -2912,6 +2944,21 @@ std::string DumpResponseHeaders(const test::TlsHttp2Client::Response& response) 
   return out;
 }
 }  // namespace
+
+// HTTP/2 over TLS is only spoken once ALPN selected "h2" (RFC 9113 §3.3): a client that negotiated no protocol, even
+// sending the HTTP/2 connection preface, is talking HTTP/1.1, and is answered so.
+TEST(TlsHttp2Client, PrefaceWithoutAlpnIsAnsweredAsHttp1) {
+  ts.setDefault([](const HttpRequestView& req) { return req.makeResponse("unexpected"); });
+
+  test::TlsClient client(ts.port());
+  ASSERT_TRUE(client.handshakeOk());
+  EXPECT_TRUE(client.negotiatedAlpn().empty());
+  ASSERT_TRUE(client.writeAll(http2::kConnectionPreface));
+
+  const std::string response = client.readAll();
+  EXPECT_TRUE(response.starts_with("HTTP/1.1 ")) << response;
+  EXPECT_FALSE(response.contains("unexpected")) << response;
+}
 
 TEST(TlsHttp2Client, BasicGetRequest) {
   // Create TLS server with HTTP/2 support

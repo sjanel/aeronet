@@ -27,8 +27,10 @@
 #include "aeronet/http-payload.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http2-config.hpp"
+#include "aeronet/http2-error-code-name.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
+#include "aeronet/http2-process-result-error-msg-strings.hpp"
 #include "aeronet/http2-process-result-error-msg.hpp"
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/http2-test-helpers.hpp"
@@ -1397,7 +1399,7 @@ TEST(Http2Connection, DuplicateRstStreamDoesNotDoubleCloseAccounting) {
   EXPECT_EQ(closedCount, 1U);
   EXPECT_EQ(resetCount, 1U);
 
-  // Duplicate RST_STREAM on an already closed (but retained) stream must not re-close.
+  // Duplicate RST_STREAM on an already closed (but retained) stream is ignored: neither closed nor reset again.
   {
     auto bytes = SerializeFrame(header, payload);
     auto res = conn.processInput(bytes);
@@ -1406,7 +1408,7 @@ TEST(Http2Connection, DuplicateRstStreamDoesNotDoubleCloseAccounting) {
 
   EXPECT_EQ(conn.activeStreamCount(), 0U);
   EXPECT_EQ(closedCount, 1U);
-  EXPECT_EQ(resetCount, 2U);
+  EXPECT_EQ(resetCount, 1U);
 }
 
 TEST(Http2Connection, ClosedStreamsArePrunedFromMapAfterRetentionLimit) {
@@ -1757,10 +1759,8 @@ TEST(Http2Connection, SendRstStream) {
   Http2Config config;
   Http2Connection conn(config, true);
   RecordingEventSink connSink(conn);
-
-  auto preface = MakePreface();
-  (void)conn.processInput(std::span<const std::byte>(preface.data(), preface.size()));
-  conn.onOutputWritten(conn.getPendingOutput().size());
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  OpenClientStream(conn, 1);
 
   conn.sendRstStream(1, ErrorCode::Cancel);
 
@@ -2939,8 +2939,7 @@ TEST(Http2Connection, HeldStreamWaitsForReleaseWhenSmallerInitialWindowApplies) 
 
   // A negative window still accepts an empty DATA frame ending the stream (RFC 9113 §6.9.1).
   FeedConnection(conn, SerializeFrame(FrameHeader(0, FrameType::Data, FrameFlags::DataEndStream, 3), {}));
-  EXPECT_FALSE(conn.getStream(3)->canReceive());
-  EXPECT_FALSE(conn.getStream(3)->resetSent());
+  EXPECT_EQ(conn.getStream(3)->state(), StreamState::HalfClosedRemote);
 
   conn.releaseStreamRecvWindow(1);
   EXPECT_EQ(WindowUpdateIncrements(DrainPendingOutput(conn), 1), vector<uint32_t>{16384U});
@@ -3166,6 +3165,100 @@ TEST(Http2Connection, FramesOnAStreamThisEndpointResetAreIgnored) {
   FeedConnection(conn, HeadersFrame(3, next, FrameFlags::HeadersEndHeaders | FrameFlags::HeadersEndStream));
   EXPECT_EQ(headerStreams, (vector<uint32_t>{1, 3}));
   EXPECT_EQ(lateValue, "late-value");
+}
+
+// A stream closed by the END_STREAM of both endpoints, still retained, is like a stream this endpoint reset: no frame
+// other than PRIORITY can be sent on it (RFC 9113 §5.1), so the frames a misbehaving peer goes on sending are ignored,
+// none answered with a RST_STREAM. Its field blocks are still decoded, and its RST_STREAM does not reach the sink: the
+// stream closed without a reset.
+TEST(Http2Connection, FramesOnAStreamClosedByBothEndpointsAreIgnored) {
+  Http2Config config;
+  Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  vector<uint32_t> headerStreams;
+  std::string lateValue;
+  int dataFrames = 0;
+  int resets = 0;
+  int closes = 0;
+  connSink.onHeadersDecodedFn = [&](uint32_t streamId, const SvToSvMap& headers, bool) {
+    headerStreams.push_back(streamId);
+    if (const auto it = headers.find("x-late"); it != headers.end()) {
+      lateValue.assign(it->second);
+    }
+  };
+  connSink.onDataFn = [&](uint32_t, std::span<const std::byte>, bool) { ++dataFrames; };
+  connSink.onStreamResetFn = [&](uint32_t, ErrorCode) { ++resets; };
+  connSink.onStreamClosedFn = [&](uint32_t) { ++closes; };
+
+  // A complete request, answered.
+  HpackEncoder encoder(config.headerTableSize);
+  const RawBytes request = EncodeFieldBlock(
+      encoder, {{":method", "GET"}, {":scheme", "https"}, {":authority", "example.com"}, {":path", "/"}});
+  FeedConnection(conn, HeadersFrame(1, request, FrameFlags::HeadersEndHeaders | FrameFlags::HeadersEndStream));
+  ASSERT_EQ(conn.sendHeaders(1, http::StatusCodeOK, HeadersView{}, true), ErrorCode::NoError);
+  ASSERT_TRUE(conn.finalizeSendClosedStream(1));
+  (void)DrainPendingOutput(conn);
+  ASSERT_EQ(closes, 1);
+
+  // DATA, trailers and a RST_STREAM on the closed stream.
+  static constexpr std::array kBody{std::byte{'b'}, std::byte{'o'}, std::byte{'d'}, std::byte{'y'}};
+  FeedConnection(conn, SerializeFrame(FrameHeader(4, FrameType::Data, FrameFlags::DataEndStream, 1), kBody));
+  const RawBytes trailers = EncodeFieldBlock(encoder, {{"x-late", "late-value"}});
+  FeedConnection(conn, HeadersFrame(1, trailers, FrameFlags::HeadersEndHeaders | FrameFlags::HeadersEndStream));
+  RawBytes peerReset;
+  WriteRstStreamFrame(peerReset, 1, ErrorCode::Cancel);
+  FeedConnection(conn, peerReset);
+  EXPECT_FALSE(conn.hasPendingOutput());
+  EXPECT_TRUE(conn.isOpen());
+  EXPECT_EQ(headerStreams, vector<uint32_t>{1});
+  EXPECT_EQ(dataFrames, 0);
+  EXPECT_EQ(resets, 0);
+  EXPECT_EQ(closes, 1);
+  EXPECT_EQ(conn.getStream(1)->errorCode(), ErrorCode::NoError);
+
+  // The next request refers to the ignored trailers by their dynamic table index: decoded only if they were.
+  const RawBytes next = EncodeFieldBlock(encoder, {
+                                                      {":method", "GET"},
+                                                      {":scheme", "https"},
+                                                      {":authority", "example.com"},
+                                                      {":path", "/"},
+                                                      {"x-late", "late-value"},
+                                                  });
+  FeedConnection(conn, HeadersFrame(3, next, FrameFlags::HeadersEndHeaders | FrameFlags::HeadersEndStream));
+  EXPECT_EQ(headerStreams, (vector<uint32_t>{1, 3}));
+  EXPECT_EQ(lateValue, "late-value");
+}
+
+// A stream already closed is not reset: no frame other than PRIORITY is sent on a closed stream (RFC 9113 §5.1). One
+// closed through the send path is finalized (as by finalizeSendClosedStream()), and the sink is told that it closed,
+// once, but never that it was reset.
+TEST(Http2Connection, ResetOfAClosedStreamOnlyFinalizesIt) {
+  Http2Config config;
+  Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  int resets = 0;
+  vector<uint32_t> closedStreams;
+  connSink.onStreamResetFn = [&](uint32_t, ErrorCode) { ++resets; };
+  connSink.onStreamClosedFn = [&](uint32_t streamId) { closedStreams.push_back(streamId); };
+
+  // A complete request, whose response ends the stream outside frame processing: closed, not finalized yet.
+  FeedConnection(conn,
+                 HeadersFrame(1, kStaticGetRequest, FrameFlags::HeadersEndHeaders | FrameFlags::HeadersEndStream));
+  ASSERT_EQ(conn.sendHeaders(1, http::StatusCodeOK, HeadersView{}, true), ErrorCode::NoError);
+  (void)DrainPendingOutput(conn);
+  ASSERT_TRUE(conn.getStream(1)->isClosed());
+  ASSERT_EQ(conn.activeStreamCount(), 1U);
+
+  for (int idx = 0; idx < 2; ++idx) {
+    conn.sendRstStream(1, ErrorCode::Cancel);
+    EXPECT_FALSE(conn.hasPendingOutput());
+    EXPECT_EQ(conn.activeStreamCount(), 0U);
+    EXPECT_EQ(closedStreams, vector<uint32_t>{1U});
+    EXPECT_EQ(resets, 0);
+    EXPECT_EQ(conn.getStream(1)->errorCode(), ErrorCode::NoError);
+  }
 }
 
 // A field block that cannot be decompressed fails the connection, even on a stream this endpoint reset: the HPACK
@@ -4644,6 +4737,36 @@ TEST(Http2Connection, PriorityFrameFloodOnIdleStreamsIsEnhanceYourCalm) {
   }
 }
 
+// The cap counts the PRIORITY frames on non-existent streams since the last stream the client opened: a long-lived
+// connection whose client now and then reprioritizes its forgotten streams never reaches it, only a flood between two
+// requests does.
+TEST(Http2Connection, PriorityFramesOnUnknownStreamsAreCountedSinceTheLastOpenedStream) {
+  static constexpr uint32_t kMaxPriorityFrames = 10000;
+  Http2Config config;
+  Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+
+  // PRIORITY frames on idle streams, above the ones the client opens below.
+  RawBytes priorities;
+  for (uint32_t idx = 0; idx < kMaxPriorityFrames; ++idx) {
+    WritePriorityFrame(priorities, 1001U + (2U * idx), 0, 16, false);
+  }
+  for (const uint32_t streamId : {1U, 3U, 5U}) {
+    FeedConnection(conn, priorities);
+    ASSERT_TRUE(conn.isOpen());
+    OpenClientStream(conn, streamId);
+  }
+  FeedConnection(conn, priorities);
+  ASSERT_TRUE(conn.isOpen());
+
+  RawBytes oneMore;
+  WritePriorityFrame(oneMore, 999, 0, 16, false);
+  const auto res = conn.processInput(oneMore);
+  EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
+  EXPECT_EQ(res.errorCode, ErrorCode::EnhanceYourCalm);
+}
+
 // ============================
 // PRIORITY tree depth limiting
 // ============================
@@ -5272,6 +5395,396 @@ TEST(Http2Connection, ContinuationCompletionWithEndStreamClosesStream) {
   const auto* stream = conn.getStream(1);
   ASSERT_NE(stream, nullptr);
   EXPECT_TRUE(stream->isClosed());
+}
+
+// ============================
+// RFC 9113 audit (sections 3.4, 4, 5, 6 and 7)
+// ============================
+
+constexpr std::array kAuditFourBytes{std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}};
+constexpr std::array kAuditEightBytes{std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4},
+                                      std::byte{5}, std::byte{6}, std::byte{7}, std::byte{8}};
+
+// A frame type that RFC 9113 does not define, as an extension would send.
+constexpr FrameType kAuditUnknownFrameType = std::bit_cast<FrameType>(uint8_t{0x20});
+
+// The frame rules of RFC 9113 whose violation is a connection error, on a server with stream 1 open: the error code
+// of each, reported by a GOAWAY naming the last stream of the client.
+TEST(Http2ConnectionRfc9113Audit, FramesBreakingAFrameRuleAreConnectionErrors) {
+  struct RuleCase {
+    std::string_view rule;
+    vector<std::byte> (*makeInput)();
+    ErrorCode errorCode;
+    ErrorMsg errorMsg;
+  };
+  const std::array ruleCases{
+      RuleCase{"6.1 DATA on stream 0",
+               [] { return SerializeFrame(FrameHeader(4, FrameType::Data, FrameFlags::None, 0), kAuditFourBytes); },
+               ErrorCode::ProtocolError, ErrorMsg::DATAFrameOnStreamZero},
+      RuleCase{"6.2 HEADERS on stream 0",
+               [] { return HeadersFrame(0, kStaticGetRequest, FrameFlags::HeadersEndHeaders); },
+               ErrorCode::ProtocolError, ErrorMsg::HEADERSFrameOnStreamZero},
+      RuleCase{"6.2 HEADERS too short for its priority fields",
+               [] {
+                 return SerializeFrame(
+                     FrameHeader(4, FrameType::Headers, FrameFlags::HeadersEndHeaders | FrameFlags::HeadersPriority, 3),
+                     kAuditFourBytes);
+               },
+               ErrorCode::FrameSizeError, ErrorMsg::InvalidHEADERSFrame},
+      RuleCase{
+          "6.4 RST_STREAM on stream 0",
+          [] { return SerializeFrame(FrameHeader(4, FrameType::RstStream, FrameFlags::None, 0), kAuditFourBytes); },
+          ErrorCode::ProtocolError, ErrorMsg::RST_STREAMFrameOnStreamZero},
+      RuleCase{
+          "6.9 WINDOW_UPDATE of 0 on the connection",
+          [] { return SerializeFrame(FrameHeader(4, FrameType::WindowUpdate, FrameFlags::None, 0), kAuditFourBytes); },
+          ErrorCode::ProtocolError, ErrorMsg::ZeroWINDOW_UPDATEIncrementOnConnection},
+      RuleCase{"6.10 CONTINUATION without a field block", [] { return LastContinuationFrame(1, kStaticGetRequest); },
+               ErrorCode::ProtocolError, ErrorMsg::UnexpectedCONTINUATIONFrame},
+      // Rejected from its frame header, before its payload is received.
+      RuleCase{"4.2 frame above SETTINGS_MAX_FRAME_SIZE",
+               [] { return SerializeFrame(FrameHeader(16385, FrameType::Data, FrameFlags::None, 1), {}); },
+               ErrorCode::FrameSizeError, ErrorMsg::FrameExceedsMaximumSize},
+  };
+
+  for (const RuleCase& ruleCase : ruleCases) {
+    SCOPED_TRACE(ruleCase.rule);
+    Http2Config config;
+    ASSERT_EQ(config.maxFrameSize, 16384U);
+    Http2Connection conn(config, true);
+    RecordingEventSink connSink(conn);
+    AdvanceToOpenAndDrainSettingsAck(conn);
+    OpenClientStream(conn, 1);
+
+    const auto res = conn.processInput(ruleCase.makeInput());
+    EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
+    EXPECT_EQ(res.errorCode, ruleCase.errorCode);
+    EXPECT_EQ(res.errorMsg, ruleCase.errorMsg);
+    EXPECT_EQ(conn.state(), ConnectionState::Closed);
+
+    const auto output = DrainPendingOutput(conn);
+    const GoAwayFrame goAway = ParseSingleGoAway(output);
+    EXPECT_EQ(goAway.errorCode, ruleCase.errorCode);
+    EXPECT_EQ(goAway.lastStreamId, 1U);
+  }
+}
+
+// RFC 9113 §4.3, §5.5, §6.2 and §6.10: a field block is a contiguous sequence of frames. Between a HEADERS frame
+// without END_HEADERS and the last CONTINUATION frame of its stream, any other frame is a connection error
+// (PROTOCOL_ERROR): of another stream or of the same one, of the connection, of an unknown type, or a CONTINUATION of
+// another stream.
+TEST(Http2ConnectionRfc9113Audit, OnlyContinuationOfItsStreamFollowsAnUnfinishedFieldBlock) {
+  struct NextFrame {
+    std::string_view name;
+    vector<std::byte> (*make)();
+    ErrorMsg errorMsg;
+  };
+  const std::array nextFrames{
+      NextFrame{"DATA of another stream",
+                [] { return SerializeFrame(FrameHeader(4, FrameType::Data, FrameFlags::None, 1), kAuditFourBytes); },
+                ErrorMsg::ExpectedCONTINUATIONFrame},
+      NextFrame{"HEADERS of the same stream",
+                [] { return HeadersFrame(3, kStaticGetRequest, FrameFlags::HeadersEndHeaders); },
+                ErrorMsg::ExpectedCONTINUATIONFrame},
+      NextFrame{"PING",
+                [] { return SerializeFrame(FrameHeader(8, FrameType::Ping, FrameFlags::None, 0), kAuditEightBytes); },
+                ErrorMsg::ExpectedCONTINUATIONFrame},
+      NextFrame{
+          "frame of an unknown type",
+          [] { return SerializeFrame(FrameHeader(4, kAuditUnknownFrameType, FrameFlags::None, 0), kAuditFourBytes); },
+          ErrorMsg::ExpectedCONTINUATIONFrame},
+      NextFrame{"CONTINUATION of another stream", [] { return LastContinuationFrame(1, {}); },
+                ErrorMsg::CONTINUATIONOnWrongStream},
+      NextFrame{"CONTINUATION of stream 0", [] { return LastContinuationFrame(0, {}); },
+                ErrorMsg::CONTINUATIONOnWrongStream},
+  };
+
+  for (const NextFrame& nextFrame : nextFrames) {
+    SCOPED_TRACE(nextFrame.name);
+    Http2Config config;
+    Http2Connection conn(config, true);
+    RecordingEventSink connSink(conn);
+    AdvanceToOpenAndDrainSettingsAck(conn);
+    OpenClientStream(conn, 1);
+    FeedConnection(conn, HeadersFrame(3, std::span<const std::byte>(kStaticGetRequest).first(1), FrameFlags::None));
+
+    const auto res = conn.processInput(nextFrame.make());
+    EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
+    EXPECT_EQ(res.errorCode, ErrorCode::ProtocolError);
+    EXPECT_EQ(res.errorMsg, nextFrame.errorMsg);
+  }
+}
+
+// RFC 9113 §4.1: the reserved bit of a stream identifier, and the flags without semantics for a frame type, are
+// ignored. §6.9: so is the reserved bit of a window size increment. §6.7: a PING is answered with its payload.
+TEST(Http2ConnectionRfc9113Audit, ReservedBitsAndUndefinedFlagsAreIgnored) {
+  Http2Config config;
+  Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  OpenClientStream(conn, 1);
+
+  // PING with every flag but ACK, and the reserved bit of its stream identifier.
+  auto ping = SerializeFrame(FrameHeader(8, FrameType::Ping, uint8_t{0xFE}, 0), kAuditEightBytes);
+  ping[5] |= std::byte{0x80};
+  FeedConnection(conn, ping);
+  {
+    const auto output = DrainPendingOutput(conn);
+    const SingleFrame pong = ParseSingleFrame(output);
+    EXPECT_EQ(pong.header.type(), FrameType::Ping);
+    EXPECT_EQ(pong.header.flags(), FrameFlags::PingAck);
+    EXPECT_EQ(pong.header.streamId(), 0U);
+    EXPECT_TRUE(std::ranges::equal(pong.payload, kAuditEightBytes));
+  }
+
+  // DATA with every flag but END_STREAM and PADDED.
+  std::string received;
+  bool ended = false;
+  connSink.onDataFn = [&](uint32_t streamId, std::span<const std::byte> data, bool endStream) {
+    EXPECT_EQ(streamId, 1U);
+    received.append(reinterpret_cast<const char*>(data.data()), data.size());
+    ended = ended || endStream;
+  };
+  static constexpr std::array kData{std::byte{'d'}, std::byte{'a'}, std::byte{'t'}, std::byte{'a'}};
+  FeedConnection(conn, SerializeFrame(FrameHeader(4, FrameType::Data, uint8_t{0xF6}, 1), kData));
+  EXPECT_EQ(received, "data");
+  EXPECT_FALSE(ended);
+
+  // WINDOW_UPDATE with every flag, and the reserved bit of its increment (5).
+  ASSERT_NE(conn.getStream(1), nullptr);
+  const int32_t sendWindow = conn.getStream(1)->sendWindow();
+  static constexpr std::array kIncrement{std::byte{0x80}, std::byte{0}, std::byte{0}, std::byte{5}};
+  FeedConnection(conn, SerializeFrame(FrameHeader(4, FrameType::WindowUpdate, uint8_t{0xFF}, 1), kIncrement));
+  EXPECT_EQ(conn.getStream(1)->sendWindow(), sendWindow + 5);
+  EXPECT_FALSE(conn.hasPendingOutput());
+
+  // SETTINGS with every flag but ACK: acknowledged.
+  FeedConnection(conn, SerializeFrame(FrameHeader(0, FrameType::Settings, uint8_t{0xFE}, 0), {}));
+  {
+    const auto output = DrainPendingOutput(conn);
+    const SingleFrame ack = ParseSingleFrame(output);
+    EXPECT_EQ(ack.header.type(), FrameType::Settings);
+    EXPECT_EQ(ack.header.flags(), FrameFlags::SettingsAck);
+    EXPECT_EQ(ack.header.length(), 0U);
+  }
+
+  // A field block in a HEADERS frame with every flag without semantics for it, then CONTINUATION frames with every flag
+  // (but END_HEADERS for the first one): their END_STREAM, PADDED and PRIORITY bits mean nothing there.
+  vector<uint32_t> requestStreams;
+  bool requestEnded = false;
+  connSink.onHeadersDecodedFn = [&](uint32_t streamId, const SvToSvMap&, bool endStream) {
+    requestStreams.push_back(streamId);
+    requestEnded = endStream;
+  };
+  const std::span<const std::byte> request(kStaticGetRequest);
+  FeedConnection(conn, HeadersFrame(3, request.first(1), uint8_t{0xD2}));
+  FeedConnection(conn,
+                 SerializeFrame(FrameHeader(1, FrameType::Continuation, uint8_t{0xFB}, 3), request.subspan(1, 1)));
+  FeedConnection(conn, SerializeFrame(FrameHeader(1, FrameType::Continuation, uint8_t{0xFF}, 3), request.subspan(2)));
+  EXPECT_EQ(requestStreams, vector<uint32_t>{3});
+  EXPECT_FALSE(requestEnded);
+  ASSERT_NE(conn.getStream(3), nullptr);
+  EXPECT_EQ(conn.getStream(3)->state(), StreamState::Open);
+
+  // RST_STREAM with every flag: closes the stream, and is not answered (§5.4.2).
+  static constexpr std::array kCancel{std::byte{0}, std::byte{0}, std::byte{0}, std::byte{8}};
+  FeedConnection(conn, SerializeFrame(FrameHeader(4, FrameType::RstStream, uint8_t{0xFF}, 3), kCancel));
+  ASSERT_NE(conn.getStream(3), nullptr);
+  EXPECT_TRUE(conn.getStream(3)->isClosed());
+  EXPECT_EQ(conn.getStream(3)->errorCode(), ErrorCode::Cancel);
+  EXPECT_FALSE(conn.hasPendingOutput());
+  EXPECT_TRUE(conn.isOpen());
+}
+
+// RFC 9113 §6.1 and §6.9.1: the whole payload of a DATA frame is flow-controlled, with its Pad Length and Padding.
+TEST(Http2ConnectionRfc9113Audit, PaddingOfDataCountsAgainstBothWindows) {
+  Http2Config config;
+  Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  OpenClientStream(conn, 1);
+  std::string received;
+  connSink.onDataFn = [&](uint32_t, std::span<const std::byte> data, bool) {
+    received.append(reinterpret_cast<const char*>(data.data()), data.size());
+  };
+  const int32_t connectionWindow = conn.connectionRecvWindow();
+  ASSERT_NE(conn.getStream(1), nullptr);
+  const int32_t streamWindow = conn.getStream(1)->recvWindow();
+
+  // Pad Length (100), 4 bytes of data, 100 bytes of padding.
+  vector<std::byte> payload(static_cast<vector<std::byte>::size_type>(105), std::byte{0});
+  payload[0] = std::byte{100};
+  payload[1] = std::byte{'d'};
+  payload[2] = std::byte{'a'};
+  payload[3] = std::byte{'t'};
+  payload[4] = std::byte{'a'};
+  FeedConnection(conn, SerializeFrame(FrameHeader(105, FrameType::Data, FrameFlags::DataPadded, 1), payload));
+  EXPECT_EQ(received, "data");
+  EXPECT_EQ(conn.connectionRecvWindow(), connectionWindow - 105);
+  EXPECT_EQ(conn.getStream(1)->recvWindow(), streamWindow - 105);
+}
+
+// RFC 9113 §7: an unknown error code triggers no special behavior. A RST_STREAM carrying one closes only its stream,
+// and a GOAWAY carrying one is reported as is, like any error code other than NO_ERROR.
+TEST(Http2ConnectionRfc9113Audit, UnknownErrorCodesTriggerNoSpecialBehavior) {
+  static constexpr auto kUnknownErrorCode = static_cast<ErrorCode>(0xBEEFU);
+  EXPECT_EQ(ErrorCodeName(kUnknownErrorCode), "UNKNOWN_ERROR");
+
+  Http2Config config;
+  Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
+  vector<std::pair<uint32_t, ErrorCode>> resets;
+  connSink.onStreamResetFn = [&resets](uint32_t streamId, ErrorCode code) { resets.emplace_back(streamId, code); };
+  ErrorCode goAwayCode = ErrorCode::NoError;
+  connSink.onGoAwayFn = [&goAwayCode](uint32_t, ErrorCode code, std::string_view) { goAwayCode = code; };
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  OpenClientStream(conn, 1);
+  OpenClientStream(conn, 3);
+
+  RawBytes reset;
+  WriteRstStreamFrame(reset, 1, kUnknownErrorCode);
+  FeedConnection(conn, reset);
+  EXPECT_EQ(resets, (vector<std::pair<uint32_t, ErrorCode>>{{1U, kUnknownErrorCode}}));
+  EXPECT_TRUE(conn.getStream(1)->isClosed());
+  EXPECT_FALSE(conn.getStream(3)->isClosed());
+  EXPECT_TRUE(conn.isOpen());
+  EXPECT_FALSE(conn.hasPendingOutput());
+
+  RawBytes goAway;
+  WriteGoAwayFrame(goAway, 0, kUnknownErrorCode, ErrorMsg::NoError);
+  const auto res = conn.processInput(goAway);
+  EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::GoAway);
+  EXPECT_EQ(res.errorCode, kUnknownErrorCode);
+  EXPECT_EQ(goAwayCode, kUnknownErrorCode);
+  EXPECT_EQ(conn.state(), ConnectionState::GoAwayReceived);
+}
+
+// A frame on a stream of the client, for the cases below.
+struct AuditStreamFrame {
+  std::string_view name;
+  RawBytes (*make)(uint32_t streamId);
+};
+
+// RFC 9113 §6.8: after its GOAWAY, an endpoint can discard the frames of the streams above the last stream it named,
+// which the peer opened before receiving the GOAWAY. Such a stream is not idle for the peer: once its HEADERS frame is
+// ignored, its DATA, RST_STREAM (the request is cancelled) and WINDOW_UPDATE frames must not fail the connection, which
+// still has to answer the streams up to the last one (here stream 1).
+TEST(Http2ConnectionRfc9113Audit, FramesOfAStreamIgnoredAfterGoAwayAreNotConnectionErrors) {
+  const std::array frames{
+      AuditStreamFrame{"DATA",
+                       [](uint32_t streamId) {
+                         const auto frame = SerializeFrame(
+                             FrameHeader(4, FrameType::Data, FrameFlags::DataEndStream, streamId), kAuditFourBytes);
+                         return RawBytes(std::span<const std::byte>(frame));
+                       }},
+      AuditStreamFrame{"RST_STREAM",
+                       [](uint32_t streamId) {
+                         RawBytes frame;
+                         WriteRstStreamFrame(frame, streamId, ErrorCode::Cancel);
+                         return frame;
+                       }},
+      AuditStreamFrame{"WINDOW_UPDATE",
+                       [](uint32_t streamId) {
+                         RawBytes frame;
+                         WriteWindowUpdateFrame(frame, streamId, 100);
+                         return frame;
+                       }},
+  };
+
+  for (const AuditStreamFrame& frame : frames) {
+    SCOPED_TRACE(frame.name);
+    Http2Config config;
+    Http2Connection conn(config, true);
+    RecordingEventSink connSink(conn);
+    AdvanceToOpenAndDrainSettingsAck(conn);
+    OpenClientStream(conn, 1);
+    conn.initiateGoAway(ErrorCode::NoError);
+    (void)DrainPendingOutput(conn);
+
+    // A request with a body, sent by the client before it received the GOAWAY: its HEADERS frame is ignored.
+    FeedConnection(conn, StaticGetRequestFrame(3));
+    ASSERT_EQ(conn.getStream(3), nullptr);
+
+    const auto res = conn.processInput(frame.make(3));
+    EXPECT_NE(res.action, Http2Connection::ProcessResult::Action::Error)
+        << ErrorCodeName(res.errorCode) << ": " << ConvertProcessResultErrorMsgToSv(res.errorMsg);
+    EXPECT_EQ(conn.state(), ConnectionState::GoAwaySent);
+    EXPECT_FALSE(conn.hasPendingOutput());
+  }
+}
+
+// RFC 9113 §6.8: the DATA frames of a stream ignored after a GOAWAY MUST be counted toward the connection flow-control
+// window. Their credit is given back, like for the other discarded DATA frames: the streams still served need it.
+TEST(Http2ConnectionRfc9113Audit, DataOfAStreamIgnoredAfterGoAwayCountsTowardTheConnectionWindow) {
+  Http2Config config;
+  config.connectionWindowSize = 100000;
+  config.maxFrameSize = 40000;
+  Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  OpenClientStream(conn, 1);
+  conn.initiateGoAway(ErrorCode::NoError);
+  (void)DrainPendingOutput(conn);
+  FeedConnection(conn, StaticGetRequestFrame(3));
+
+  const vector<std::byte> payload(static_cast<vector<std::byte>::size_type>(30000), std::byte{0x42});
+  const auto dataFrame = SerializeFrame(FrameHeader(30000, FrameType::Data, FrameFlags::None, 3), payload);
+  for (const int32_t expectedWindow : {70000, 100000}) {
+    const auto res = conn.processInput(dataFrame);
+    ASSERT_NE(res.action, Http2Connection::ProcessResult::Action::Error)
+        << ErrorCodeName(res.errorCode) << ": " << ConvertProcessResultErrorMsgToSv(res.errorMsg);
+    EXPECT_EQ(conn.connectionRecvWindow(), expectedWindow);
+  }
+  EXPECT_EQ(WindowUpdateIncrements(DrainPendingOutput(conn), 0), vector<uint32_t>{60000U});
+}
+
+// RFC 9113 §6.9.2: a change of SETTINGS_INITIAL_WINDOW_SIZE adjusts the flow-control windows that the receiver
+// maintains, and is a connection error when one of them exceeds 2^31-1. A stream that the peer reset has no window
+// anymore: the peer, which knows it is closed, may raise the setting whatever credit it had granted on it.
+TEST(Http2ConnectionRfc9113Audit, InitialWindowSizeIncreaseIgnoresTheStreamsThePeerClosed) {
+  Http2Config config;
+  Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  OpenClientStream(conn, 1);
+
+  RawBytes update;
+  WriteWindowUpdateFrame(update, 1, kMaxWindowSize - kDefaultInitialWindowSize);
+  FeedConnection(conn, update);
+  ASSERT_NE(conn.getStream(1), nullptr);
+  ASSERT_EQ(conn.getStream(1)->sendWindow(), static_cast<int32_t>(kMaxWindowSize));
+  RawBytes reset;
+  WriteRstStreamFrame(reset, 1, ErrorCode::Cancel);
+  FeedConnection(conn, reset);
+  ASSERT_NE(conn.getStream(1), nullptr);
+  ASSERT_TRUE(conn.getStream(1)->isClosed());
+  OpenClientStream(conn, 3);
+
+  // SETTINGS_INITIAL_WINDOW_SIZE (0x04) = 65536, one more than the default.
+  static constexpr std::array kEntry{std::byte{0}, std::byte{4}, std::byte{0},
+                                     std::byte{1}, std::byte{0}, std::byte{0}};
+  const auto res = conn.processInput(SerializeFrame(FrameHeader(6, FrameType::Settings, FrameFlags::None, 0), kEntry));
+  EXPECT_NE(res.action, Http2Connection::ProcessResult::Action::Error)
+      << ErrorCodeName(res.errorCode) << ": " << ConvertProcessResultErrorMsgToSv(res.errorMsg);
+  EXPECT_TRUE(conn.isOpen());
+  EXPECT_EQ(conn.peerSettings().initialWindowSize, 65536U);
+  ASSERT_NE(conn.getStream(3), nullptr);
+  EXPECT_EQ(conn.getStream(3)->sendWindow(), 65536);
+}
+
+// RFC 9113 §3.4: an invalid connection preface is a connection error (PROTOCOL_ERROR). Bytes that cannot start the
+// preface are invalid at once: here an HTTP/1.1 request, shorter than the preface, after which the client waits.
+TEST(Http2ConnectionRfc9113Audit, PrefaceIsRejectedAtItsFirstInvalidByte) {
+  Http2Config config;
+  Http2Connection conn(config, true);
+  RecordingEventSink connSink(conn);
+
+  static constexpr std::string_view kHttp1Request = "GET / HTTP/1.1\r\n\r\n";
+  ASSERT_LT(kHttp1Request.size(), kConnectionPreface.size());
+  const auto res = conn.processInput(std::as_bytes(std::span<const char>(kHttp1Request)));
+  EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
+  EXPECT_EQ(res.errorCode, ErrorCode::ProtocolError);
+  EXPECT_EQ(conn.state(), ConnectionState::Closed);
 }
 
 }  // namespace
