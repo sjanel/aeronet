@@ -46,7 +46,7 @@ class Http1Pipeline {
   // Serves the HTTP/1.1 requests in the input buffer of the connection, then writes their responses not written yet.
   // The responses to the requests followed by others are batched (see ConnectionIo::batchOutputOf()). The bytes
   // following an upgrade request are left in the input buffer, for the new protocol.
-  // Returns true if the connection should stop reading (or close).
+  // Returns true if the connection should stop reading (or close), its output waiting for the socket included.
   bool processRequests(ConnectionIt cnxIt);
 
   // Whether the connection of this HTTP/1.x request stays open after its response: false when the client asked to close
@@ -88,6 +88,7 @@ class Http1Pipeline {
   enum class BodyDecodeStatus : uint8_t { Ready, NeedMore, Error };
 
   // The loop of processRequests().
+  // Returns true if reading should stop (connection closed or paused, output waiting for the socket), false otherwise.
   bool serveRequests(ConnectionIt cnxIt);
 
   // The steps of serveRequests() on the current request of the connection (state), inlined into it (they run for each

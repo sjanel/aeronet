@@ -533,10 +533,9 @@ bool SingleHttpServer::finalizeTlsHandshakeIfReady([[maybe_unused]] NativeHandle
 }
 
 SingleHttpServer::CloseStatus SingleHttpServer::handleWritableClient(ConnectionIt cnxIt) {
-  ConnectionState& state = _ctx.connections.connectionState(cnxIt);
-
-  const auto fd = cnxIt->fd();
-  if (state.isTunneling() && _ctx.tunnels->handleWritable(cnxIt) == CloseStatus::Close) {
+  const NativeHandle fd = cnxIt->fd();
+  if (_ctx.connections.connectionState(cnxIt).isTunneling() &&
+      _ctx.tunnels->handleWritable(cnxIt) == CloseStatus::Close) {
     return CloseStatus::Close;
   }
   _ctx.io.flushOutbound(cnxIt);
@@ -544,14 +543,13 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleWritableClient(ConnectionI
   // Once EPOLLOUT drained the output, resume the input left by its backpressure directly: edge-triggered polling may
   // not deliver another read event.
   processBufferedInput(fd);
-  ConnectionState* pState = _ctx.connections.pConnectionState(fd);
-  assert(pState != nullptr);  // the input processing only requests closes
+  ConnectionState& state = _ctx.connections.connectionState(fd);
   // The records that the TLS transport read ahead while the input processing was stopped are not reported by the
   // kernel either.
-  if (!pState->hasPendingOutput() && !pState->isAnyCloseRequested() && pState->transport.hasPendingReadData()) {
-    _ctx.io.deferInput(fd, *pState);
+  if (!state.hasPendingOutput() && !state.isAnyCloseRequested() && state.transport.hasPendingReadData()) {
+    _ctx.io.deferInput(fd, state);
   }
-  return pState->canCloseConnectionForDrain() ? CloseStatus::Close : CloseStatus::Keep;
+  return state.canCloseConnectionForDrain() ? CloseStatus::Close : CloseStatus::Keep;
 }
 
 void SingleHttpServer::processBufferedInput(NativeHandle fd) {
@@ -610,13 +608,14 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
   // Pending output can legitimately be non-empty when we get EPOLLIN.
   // This happens with partial writes and very commonly with TLS (SSL_read/handshake progress
   // can generate outbound records that must be written before further progress).
-  // Opportunistically flush here; if still blocked on write, yield and wait for EPOLLOUT.
-  if (pCnx->hasPendingOutput()) {
+  // Opportunistically flush here; if still blocked on write, yield and wait for EPOLLOUT: the input is read once the
+  // output drained, edge-triggered polling not reporting it again.
+  if (pCnx->hasPendingOutputOrFile()) {
     _ctx.io.flushOutbound(cnxIt);
-    if (pCnx->hasPendingOutput()) {
-      if (!pCnx->waitingWritable) {
-        _ctx.io.enableWritableInterest(cnxIt);
-      }
+    if (pCnx->hasPendingOutputOrFile()) {
+      // The flush waits for the writable event (a failure to register it drops the output).
+      assert(pCnx->waitingWritable);
+      pCnx->inputBlockedByOutput = true;
       return CloseStatus::Keep;
     }
   }
@@ -681,6 +680,10 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
 #ifdef AERONET_ENABLE_OPENSSL
       _ctx.tls.reportInterruptedHandshake(*pCnx, fd);
 #endif
+      // The reading stops while the output waits for the socket: the end of the input of a client half-closing its
+      // connection right after its requests is only read once their responses are written. (The TLS handshake that this
+      // read completed may have queued the HTTP/2 server preface, dropped with the connection.)
+      assert(pCnx->outQueue.empty() && !pCnx->isSendingFile());
       pCnx->eofReceived = true;
       // An orderly EOF only tells that the peer stopped sending: while the kernel still sends with zerocopy, close once
       // these sends completed instead of aborting them (see ConnectionIo::closeConnection()).
@@ -703,6 +706,15 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
         (pCnx->transport.isPlain() || (pCnx->transport.isTls() && !pCnx->transport.hasPendingReadData()));
 
     if (processConnectionInput(cnxIt)) {
+      // Stopped by output waiting for the socket, the input processing recorded the input it left in the input buffer
+      // or in the transport. Edge-triggered polling does not report the input left in the socket either: read it once
+      // the output drained.
+      if (!drained) {
+        ConnectionState& state = connections.connectionState(fd);
+        if (state.hasPendingOutputOrFile()) {
+          state.inputBlockedByOutput = true;
+        }
+      }
       break;
     }
 
@@ -730,7 +742,7 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
     // The head of the current HTTP/1.1 request may still be incomplete after this read: bound its size and its
     // reception time.
     if (pCnx->parsingHeaders && _ctx.http1.rejectIncompleteHead(cnxIt)) {
-      return CloseStatus::Close;
+      break;  // closed once its error response is written
     }
 
     if (drained) {
@@ -795,7 +807,7 @@ bool SingleHttpServer::processProtocolHandlerInput(ConnectionIt cnxIt) {
     const NativeHandle fd = cnxIt->fd();
     const bool closeRequested = processSpecialProtocolHandler(cnxIt);
     // A callback may have started the close handshake, whose timeout can come before the armed deadline.
-    _ctx.maintenance.refreshWebSocketDeadline(fd, *_ctx.connections.pConnectionState(fd));
+    _ctx.maintenance.refreshWebSocketDeadline(fd, _ctx.connections.connectionState(fd));
     return closeRequested;
   }
 #endif
@@ -826,7 +838,7 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
 
   ConnectionState* pState = connections.pConnectionState(clientFd);
   assert(pState != nullptr);
-  auto& handler = *pState->protocolHandler;
+  IProtocolHandler& handler = *pState->protocolHandler;
 
   // Process input in a loop until no more bytes can be consumed.
   // This is important for HTTP/2 where the client may send multiple frames
@@ -872,7 +884,7 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
           if (hasAccumulatedOutput) {
             _ctx.io.flushOutbound(cnxIt);
           }
-          return StopReadingIfOutputBlocked(*pState);
+          return pState->stopReadingIfOutputBlocked();
         }
         break;
 
@@ -905,16 +917,7 @@ bool SingleHttpServer::processSpecialProtocolHandler(ConnectionIt cnxIt) {
     _ctx.io.flushOutbound(cnxIt);
   }
 
-  return StopReadingIfOutputBlocked(*pState);
-}
-
-bool SingleHttpServer::StopReadingIfOutputBlocked(ConnectionState& state) {
-  // A blocked output transport is also a signal to stop this readable-event loop. This keeps additional
-  // HTTP/2 frames in the socket while the peer is not draining responses. The kernel reports them again once the output
-  // drained, but not the frames already in the input buffer or in the records read ahead by the TLS transport.
-  const bool outputBlocked = state.hasPendingOutput();
-  state.inputBlockedByOutput = outputBlocked && (!state.inBuffer.empty() || state.transport.hasPendingReadData());
-  return state.isAnyCloseRequested() || outputBlocked;
+  return pState->stopReadingIfOutputBlocked();
 }
 
 }  // namespace aeronet

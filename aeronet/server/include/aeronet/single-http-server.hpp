@@ -519,9 +519,6 @@ class SingleHttpServer {
   // Returns true if the connection should be closed.
   bool processSpecialProtocolHandler(ConnectionIt cnxIt);
 
-  // Tells whether the protocol handler input processing must stop: close requested, or output blocked.
-  static bool StopReadingIfOutputBlocked(ConnectionState& state);
-
   // Serves the input already in the input buffer of a connection whose output is not blocked: the complete requests
   // (HTTP/2 frames) left by the output backpressure or the fairness budget, that no event reports.
   void processBufferedInput(NativeHandle fd);

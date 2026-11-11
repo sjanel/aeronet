@@ -125,6 +125,9 @@ bool SetAbortiveClose(NativeHandle fd) noexcept;
 [[nodiscard]] int64_t SendQueueBytes(NativeHandle fd) noexcept;
 #endif
 
+// Bytes received on a socket and not read yet (FIONREAD), or -1 on error (errno is set).
+[[nodiscard]] int64_t ReceiveQueueBytes(NativeHandle fd) noexcept;
+
 // Read from a given offset without changing the file pointer (pread semantics).
 // Returns the number of bytes read, or -1 on error (errno is set).
 int64_t ReadOffset(NativeHandle fd, void* buffer, std::size_t len, std::size_t offset) noexcept;

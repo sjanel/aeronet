@@ -153,7 +153,7 @@ void ConnectionIo::queueData(ConnectionIt cnxIt, HttpMessageData httpResponseDat
     return;
   }
 
-  if (state.hasPendingOutput() || state.isSendingFile()) {
+  if (state.hasPendingOutputOrFile()) {
     // Previous output still waits for the socket to become writable: queue this data (its file payload included)
     // after it.
     const bool merged = state.queueOutput(std::move(httpResponseData));
@@ -333,7 +333,7 @@ void ConnectionIo::flushOutbound(ConnectionIt cnxIt) {
 void ConnectionIo::resumeInputIfOutputDrained(NativeHandle fd, ConnectionState& state) {
   // Whatever drained the output (a writable event, a flush before reading, the maintenance retry of a missed writable
   // event), no read event reports the input left by its backpressure.
-  if (state.inputBlockedByOutput && !state.hasPendingOutput() && !state.isSendingFile()) {
+  if (state.inputBlockedByOutput && !state.hasPendingOutputOrFile()) {
     state.inputBlockedByOutput = false;
     if (!state.isAnyCloseRequested()) {
       deferInput(fd, state);
@@ -537,21 +537,27 @@ void ConnectionIo::closeConnection(ConnectionIt cnxIt) {
 bool ConnectionIo::startLingeringClose(ConnectionIt cnxIt) {
   ServerContext& ctx = *_pCtx;
   ConnectionState& state = ctx.connections.connectionState(cnxIt);
-  // The request answered last starts the input buffer until it is entirely read: an empty one (the common case) leaves
-  // nothing to wait for. A connection still waiting for writable events (a TLS read wanting to write) closes right
-  // away: a level-triggered poller (Windows) would keep reporting it writable while it lingers.
-  if (state.inBuffer.empty() || !state.canCloseConnectionForDrain() || state.waitingWritable || state.eofReceived ||
+  // A connection still waiting for writable events (a TLS read wanting to write) closes right away: a level-triggered
+  // poller (Windows) would keep reporting it writable while it lingers.
+  if (!state.canCloseConnectionForDrain() || state.waitingWritable || state.eofReceived ||
       state.protocolHandler != nullptr || state.isTunneling() || ctx.config.lingeringCloseTimeout.count() == 0) {
     return false;
   }
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   // The input buffer, reused to discard the input, holds the request that its handler or its deferred work may still
   // read: closed right away instead, the request being kept until the work completes.
-  if (const AsyncHandlerState* asyncState = state.pAsyncState(); asyncState != nullptr && asyncState->holdsInput()) {
+  if (const AsyncHandlerState* pAsyncHandlerState = state.pAsyncHandlerState();
+      pAsyncHandlerState != nullptr && pAsyncHandlerState->holdsInput()) {
     return false;
   }
 #endif
   const NativeHandle fd = cnxIt->fd();
+  // Lingers on unread input: the request answered last starts the input buffer until it is entirely read, and the
+  // socket may hold more (requests pipelined behind the response, the reading stopping with it). Without any, the
+  // common case, nothing is to wait for. The receive queue is checked last, on drain closes only (a syscall).
+  if (state.inBuffer.empty() && ReceiveQueueBytes(fd) <= 0) {
+    return false;
+  }
 #ifdef AERONET_ENABLE_OPENSSL
   // Its close_notify alert ends the TLS stream before the TCP one.
   if (TlsTransport* pTlsTransport = state.transport.get<TlsTransport>(); pTlsTransport != nullptr) {

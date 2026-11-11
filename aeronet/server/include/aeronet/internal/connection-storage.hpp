@@ -170,14 +170,6 @@ class ConnectionStorage {
 #endif
   }
 
-  ConnectionState& connectionState(ConnectionIt cnxIt) noexcept {
-#ifdef AERONET_WINDOWS
-    return *cnxIt._it->second;
-#else
-    return *_activeConnectionStates[ConnectionItToIdx(cnxIt)];
-#endif
-  }
-
   ConnectionState* pConnectionState(ConnectionIt cnxIt) noexcept {
 #ifdef AERONET_WINDOWS
     return cnxIt._it->second;
@@ -193,6 +185,18 @@ class ConnectionStorage {
 #else
     return _activeConnectionStates[static_cast<ConnectionIdx>(fd - 1)];
 #endif
+  }
+
+  ConnectionState& connectionState(ConnectionIt cnxIt) noexcept {
+    ConnectionState* pState = pConnectionState(cnxIt);
+    assert(pState != nullptr);
+    return *pState;
+  }
+
+  ConnectionState& connectionState(NativeHandle fd) noexcept {
+    ConnectionState* pState = pConnectionState(fd);
+    assert(pState != nullptr);
+    return *pState;
   }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS

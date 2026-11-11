@@ -528,4 +528,15 @@ void ConnectionState::clearBuffers() {
   requestDrainAndClose();
 }
 
+bool ConnectionState::stopReadingIfOutputBlocked() {
+  // A blocked output is also a signal to stop the readable-event loop: the requests (HTTP/2 frames) read meanwhile
+  // would only pile up while the peer does not read the responses, and the end of the input would be read before they
+  // are written. No read event reports the input already in the input buffer or in the records read ahead by the TLS
+  // transport: it is resumed once the output drained (see internal::ConnectionIo::resumeInputIfOutputDrained()), like
+  // the input left in the socket (see SingleHttpServer::handleReadableClient()).
+  const bool outputBlocked = hasPendingOutputOrFile();
+  inputBlockedByOutput = outputBlocked && (!inBuffer.empty() || transport.hasPendingReadData());
+  return isAnyCloseRequested() || outputBlocked;
+}
+
 }  // namespace aeronet

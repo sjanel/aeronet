@@ -105,7 +105,7 @@ const CorsPolicy* AsyncHandlerTask::applyResponseMiddleware(const RequestPipelin
 namespace internal {
 
 bool Http1Pipeline::PauseReadingDuringAsyncHandler(ConnectionState& state) noexcept {
-  const AsyncHandlerState* asyncState = state.pAsyncState();
+  const AsyncHandlerState* asyncState = state.pAsyncHandlerState();
   if (asyncState == nullptr || !asyncState->holdsInput()) {
     return false;
   }
@@ -134,7 +134,7 @@ bool Http1Pipeline::dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyncRe
     return false;
   }
 
-  auto& asyncState = state.ensureAsyncState(ctx.connections.asyncHandlerStatePool());
+  AsyncHandlerState& asyncState = state.ensureAsyncState(ctx.connections.asyncHandlerStatePool());
 
   asyncState.task.start(std::move(requestTask), handler, pCorsPolicy, responseMiddleware,
                         ctx.asyncResumePoster(cnxIt->fd(), state.generation));
@@ -162,21 +162,20 @@ bool Http1Pipeline::dispatchAsyncHandler(ConnectionIt cnxIt, const SharedAsyncRe
 
 void Http1Pipeline::resumeAsyncHandler(ConnectionIt cnxIt) {
   ConnectionState& state = _pCtx->connections.connectionState(cnxIt);
-  auto* asyncState = state.pAsyncState();
-  assert(asyncState != nullptr);
-  auto& async = *asyncState;
-  if (!async.active || !async.task.coroutine.valid()) {
+  AsyncHandlerState& asyncHandlerState = state.asyncHandlerState();
+  if (!asyncHandlerState.active || !asyncHandlerState.task.coroutine.valid()) {
     return;
   }
 
-  if (async.bodyReceived && async.task.await.needsBody && !finishAsyncBody(cnxIt, async)) {
+  if (asyncHandlerState.bodyReceived && asyncHandlerState.task.await.needsBody &&
+      !finishAsyncBody(cnxIt, asyncHandlerState)) {
     return;
   }
 
-  if (async.task.run()) {
+  if (asyncHandlerState.task.run()) {
     onAsyncHandlerCompleted(cnxIt);
   } else if (state.pendingRequest.continueExpected &&
-             async.task.await.reason == AsyncAwaitState::Reason::WaitingForBody) {
+             asyncHandlerState.task.await.reason == AsyncAwaitState::Reason::WaitingForBody) {
     state.pendingRequest.continueExpected = false;
     queue100Continue(cnxIt);
   } else if (RawChars& sharedBody = _pCtx->sharedBuffers.decompressedBody;
@@ -192,12 +191,12 @@ void Http1Pipeline::resumeAsyncHandler(ConnectionIt cnxIt) {
     sharedBody.swap(state.bodyAndTrailersBuffer);
   }
 
-  if (async.active) {
+  if (asyncHandlerState.active) {
     // It may have just started waiting for its body, or stopped: the timers of its client follow. They restart now, the
     // client not being responsible for the time spent by the deferred work.
     state.lastActivity = std::chrono::steady_clock::now();
     _pCtx->maintenance.refreshKeepAliveDeadline(cnxIt);
-    _pCtx->maintenance.trackBodyReception(state, async.isWorking());
+    _pCtx->maintenance.trackBodyReception(state, asyncHandlerState.isWorking());
   }
 }
 
@@ -209,7 +208,7 @@ bool Http1Pipeline::finishAsyncBody(ConnectionIt cnxIt, AsyncHandlerState& async
   if (!async.isChunked) {
     // The request starts the input buffer, where its body is received.
     const std::size_t headSize = request.headSpanSize();
-    request._body = std::string_view(state.inBuffer.data() + headSize, async.consumedBytes - headSize);
+    request._body = {state.inBuffer.data() + headSize, async.consumedBytes - headSize};
   }
   const bool finished = async.isChunked ? finishDeferredChunkedBody(cnxIt) : maybeDecompressRequestBody(cnxIt, true);
   if (!finished) {
@@ -233,9 +232,7 @@ void Http1Pipeline::AbandonAsyncHandler(AsyncHandlerState& async) noexcept {
 
 void Http1Pipeline::handleAsyncBodyProgress(ConnectionIt cnxIt) {
   ConnectionState& state = _pCtx->connections.connectionState(cnxIt);
-  AsyncHandlerState* asyncState = state.pAsyncState();
-  assert(asyncState != nullptr);
-  AsyncHandlerState& async = *asyncState;
+  AsyncHandlerState& async = state.asyncHandlerState();
   assert(async.active);
 
   if (!async.bodyReceived) {
@@ -271,7 +268,7 @@ void Http1Pipeline::handleAsyncBodyProgress(ConnectionIt cnxIt) {
 
 void Http1Pipeline::onAsyncHandlerCompleted(ConnectionIt cnxIt) {
   ConnectionState& state = _pCtx->connections.connectionState(cnxIt);
-  AsyncHandlerState& async = *state.pAsyncState();
+  AsyncHandlerState& async = state.asyncHandlerState();
   async.pendingResponse = async.task.takeResponse(state.request);
   if (async.bodyReceived) {
     tryFlushPendingAsyncResponse(cnxIt);
@@ -286,7 +283,7 @@ void Http1Pipeline::onAsyncHandlerCompleted(ConnectionIt cnxIt) {
 void Http1Pipeline::tryFlushPendingAsyncResponse(ConnectionIt cnxIt, bool close) {
   ServerContext& ctx = *_pCtx;
   ConnectionState& state = ctx.connections.connectionState(cnxIt);
-  AsyncHandlerState& async = *state.pAsyncState();
+  AsyncHandlerState& async = state.asyncHandlerState();
 
   assert(close || async.bodyReceived);
   assert(!async.pendingResponse.empty());
@@ -366,7 +363,7 @@ void SingleHttpServer::processAsyncCallbacks() {
       {
         // The coroutine frame is kept until its deferred work completes: a coroutine created meanwhile cannot have
         // the same address, the handle identifies it.
-        auto* asyncState = state.pAsyncState();
+        AsyncHandlerState* asyncState = state.pAsyncHandlerState();
         if (asyncState != nullptr && asyncState->task.runs(cb.handle)) {
           asyncState->task.onWorkCompleted();
           if (asyncState->active) {

@@ -153,6 +153,8 @@ HTTP/1.1 connections are persistent by default: a client sends several requests 
 
 The server closes a connection right away, without waiting for the next request, after a protocol error (malformed request, conflicting framing headers, a limit exceeded): the parser state cannot be trusted anymore, so it never reads further requests from that connection.
 
+While a response waits for the socket (a client reading slowly), the server stops reading its connection: the requests pipelined behind it wait unparsed, in the socket or in the input buffer, and are served once the response is written, without counting toward `maxHeaderBytes` or `headerReadTimeout` meanwhile. A client may also half-close its connection right after its requests (as `nc -N`, HTTP/1.0 style clients or health checks do): the server reads the end of the input once their responses are written, then closes the connection.
+
 ### Lingering close
 
 A client may still be sending when its connection closes after a response: the body of a request answered before it was read (`413` for a too large body, another error status, the [HTTPS redirect](../protocols/tls.md#http-to-https-redirect)), or requests pipelined behind the response. Closing a socket with unread input resets the connection, and the reset can destroy the response before the client reads it: Windows discards the data received but not read yet. As RFC 9112 §9.6 recommends, the server closes such a connection in stages:
@@ -160,7 +162,7 @@ A client may still be sending when its connection closes after a response: the b
 1. Once the response is written, it shuts down its side of the connection (after a `close_notify` alert over TLS): the client receives the response, then the end of the stream.
 2. It reads and discards the input until the client closes the connection, at most for `lingeringCloseTimeout`, then closes it.
 
-A connection whose input was entirely read, the common case, is closed right away, `Connection: close` included. HTTP/2 and WebSocket connections and CONNECT tunnels are not concerned. A lingering connection is still open: a [drain](#stopping) waits for it, while `stop()` closes it right away. The `aeronet.connections.lingering_closes` counter counts the lingering closes, and `aeronet.connections.closed_for_lingering_close_timeout` those ended by the timeout (see [Observability](../operations/observability.md#built-in-instrumentation)).
+A connection without unread input, the common case, is closed right away, `Connection: close` included. The input still in the socket counts too (the requests pipelined behind the response, never read, as the reading stops with it): the server checks the receive queue of the socket before such a close. Input arriving between that check and the close still resets the connection. HTTP/2 and WebSocket connections and CONNECT tunnels are not concerned. A lingering connection is still open: a [drain](#stopping) waits for it, while `stop()` closes it right away. The `aeronet.connections.lingering_closes` counter counts the lingering closes, and `aeronet.connections.closed_for_lingering_close_timeout` those ended by the timeout (see [Observability](../operations/observability.md#built-in-instrumentation)).
 
 ## Port reuse
 
@@ -177,4 +179,5 @@ Keep the default unless several processes must share a port. With `SO_REUSEPORT`
 - Stop on a failing poll: `ConnectionManagerErrors.PersistentPollFailureStopsTheServer` in [tests/http-errors_test.cpp](../../tests/http-errors_test.cpp).
 - `MultiHttpServer`: [tests/multi-http-server_test.cpp](../../tests/multi-http-server_test.cpp).
 - Keep-alive and `Connection` semantics: [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
+- Pipelined requests and half-close behind a response waiting for the socket: the `HttpBackpressure` tests of [tests/http-core_test.cpp](../../tests/http-core_test.cpp) (`PipelinedRequestsBehindBlockedOutputAreNotAnOversizedHead`, `PipelinedRequestsBehindBlockedOutputAreNotTimedOut`, `HalfCloseRightAfterTheRequestStillGetsTheWholeResponse`, `HalfCloseRightAfterPipelinedRequestsStillGetsAllTheirResponses`, `HalfCloseWhileTheResponseWaitsForTheSocketStillGetsTheWholeResponse`).
 - Lingering close: the `HttpLingeringClose` tests of [tests/http-core_test.cpp](../../tests/http-core_test.cpp), over TLS in [tests/http-tls-io_test.cpp](../../tests/http-tls-io_test.cpp), and the failure to shut down a connection in [tests/http-errors_test.cpp](../../tests/http-errors_test.cpp).

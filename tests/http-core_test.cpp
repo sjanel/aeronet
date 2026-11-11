@@ -49,6 +49,7 @@
 #include "aeronet/encoding.hpp"
 #include "aeronet/features.hpp"
 #include "aeronet/file.hpp"
+#include "aeronet/heap-usage.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
@@ -1012,6 +1013,32 @@ TEST(HttpBodylessStatus, FileAndCompressedBodiesAreDroppedToo) {
 
 namespace {
 
+// Receive buffer sizes for slow reader tests. The minimal one (raised to the kernel minimum), set before connecting,
+// keeps the advertised window small: a few KiB of response then stay in the server send queue, still referencing the
+// server buffers. Switching to the large one afterwards quickly delivers the rest.
+// Some kernels (Linux 7.0) then deliver MSG_ZEROCOPY sends by a few hundred bytes per delayed ACK or retransmission
+// timeout, even once the buffer is enlarged. The tests queueing large zerocopy responses rather fix the server send
+// buffer (kSmallSendBufferBytes), the client receiving with the large buffer from the start: the server socket fills
+// all the same, the kernel automatic tuning no longer growing its send buffer to the size of the response.
+constexpr int kMinimalReceiveBufferSize = 1;
+constexpr int kLargeReceiveBufferSize = 65536;
+constexpr std::uint32_t kSmallSendBufferBytes = 64U << 10U;
+
+// The route of the handler of test::EventLoopBlocker in the tests below.
+constexpr std::string_view kBlockLoopPath = "/block-loop";
+
+// Runs 'sendWhileBlocked' while the event loop of the server listening on 'serverPort' is blocked in the handler of
+// 'blocker' (registered at kBlockLoopPath), then checks the response to the blocking request: the server reads all the
+// bytes sent there in a single readable event.
+void SendWhileEventLoopBlocked(uint16_t serverPort, test::EventLoopBlocker& blocker,
+                               const std::function<void()>& sendWhileBlocked) {
+  test::ClientConnection blockerCnx(serverPort);
+  test::sendAll(blockerCnx.fd(),
+                std::format("GET {} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", kBlockLoopPath));
+  blocker.runWhileBlocked(sendWhileBlocked);
+  EXPECT_TRUE(test::recvUntilClosed(blockerCnx.fd()).ends_with("blocked"));
+}
+
 // A server answering 413 right after the head of a request announcing a larger body than its maxBodyBytes: the client
 // may still be sending this body.
 HttpServerConfig MakeEarlyResponseConfig() {
@@ -1125,6 +1152,45 @@ TEST(HttpLingeringClose, DisabledClosesRightAway) {
   test::sendAll(cnx.fd(), TooLargeRequestHead(64UL << 10U));
   EXPECT_TRUE(test::recvUntilClosed(cnx.fd()).starts_with("HTTP/1.1 413"));
 
+  EXPECT_TRUE(test::DrainEndsWithin(server.server, 3s));
+}
+
+// The input of a connection closing after a response may still be in the socket rather than in its input buffer: here
+// the read ending the request answered with Connection: close stops exactly at its end (a whole read of
+// minReadChunkBytes), the next pipelined request staying in the socket. The connection lingers all the same: closed
+// right away, the kernel would reset it, discarding the end of the response still in the socket send queue (the client
+// window is small).
+TEST(HttpLingeringClose, RequestsLeftInTheSocketBehindAClosingResponse) {
+  HttpServerConfig cfg;
+  cfg.withZerocopyMode(ZerocopyMode::Disabled);
+  cfg.withSocketSendBufferBytes(512U << 10U);  // the whole response fits in the socket send queue
+  test::TestServer server(std::move(cfg));
+  const std::string big(256UL << 10U, 'r');
+  test::EventLoopBlocker blocker;
+  auto router = server.router();
+  router.setPath(http::Method::GET, kBlockLoopPath, blocker.handler());
+  router.setPath(http::Method::GET, "/s", [](const HttpRequestView& req) { return req.makeResponse("ok"); });
+  router.setPath(http::Method::GET, "/big", [big](const HttpRequestView& req) { return req.makeResponse(big); });
+
+  test::ClientConnection cnx(server.port(), 500ms, kMinimalReceiveBufferSize);
+  const NativeHandle fd = cnx.fd();
+  test::sendAll(fd, "GET /s HTTP/1.1\r\nHost: x\r\n\r\n");  // accepted before the event loop blocks
+  ASSERT_TRUE(test::recvWithTimeout(fd, 2s).ends_with("ok"));
+
+  static constexpr std::string_view kHeadStart = "GET /big HTTP/1.1\r\nHost: x\r\nConnection: close\r\nX-Pad: ";
+  std::string closingRequest(kHeadStart);
+  closingRequest.append(HttpServerConfig{}.minReadChunkBytes - kHeadStart.size() - http::DoubleCRLF.size(), 'p');
+  closingRequest.append(http::DoubleCRLF);
+  ASSERT_EQ(closingRequest.size(), HttpServerConfig{}.minReadChunkBytes);
+  SendWhileEventLoopBlocked(server.port(), blocker,
+                            [&] { test::sendAll(fd, closingRequest + "GET /s HTTP/1.1\r\nHost: x\r\n\r\n"); });
+  std::this_thread::sleep_for(100ms);  // the server wrote the response, then closed
+  test::SetReceiveBufferSize(fd, kLargeReceiveBufferSize);
+  const test::ReceivedUntilEnd received = test::RecvUntilEnd(fd, 5s);
+  EXPECT_TRUE(received.data.ends_with(big)) << "received " << received.data.size() << " bytes";
+  EXPECT_EQ(received.end, test::ReceivedUntilEnd::End::Closed);
+
+  ASSERT_TRUE(ShutdownWrite(fd));
   EXPECT_TRUE(test::DrainEndsWithin(server.server, 3s));
 }
 
@@ -1982,17 +2048,6 @@ TEST(ZerocopyMode, StressConcurrentLargePayloads) {
 }
 
 namespace {
-// Receive buffer sizes for slow reader tests. The minimal one (raised to the kernel minimum), set before connecting,
-// keeps the advertised window small: a few KiB of response then stay in the server send queue, still referencing the
-// server buffers. Switching to the large one afterwards quickly delivers the rest.
-// Some kernels (Linux 7.0) then deliver MSG_ZEROCOPY sends by a few hundred bytes per delayed ACK or retransmission
-// timeout, even once the buffer is enlarged. The tests queueing large zerocopy responses rather fix the server send
-// buffer (kSmallSendBufferBytes), the client receiving with the large buffer from the start: the server socket fills
-// all the same, the kernel automatic tuning no longer growing its send buffer to the size of the response.
-constexpr int kMinimalReceiveBufferSize = 1;
-constexpr int kLargeReceiveBufferSize = 65536;
-constexpr std::uint32_t kSmallSendBufferBytes = 64U << 10U;
-
 // Expects the server to reset the connection of a client reading nothing from it (reading would make its zerocopy sends
 // progress): waits for the reset without reading, then checks that only a part of the payload was received before it.
 // The client only notices the reset when it sends something (the reset of its zero window is not acceptable): here the
@@ -2663,6 +2718,194 @@ TEST(HttpBackpressure, PipelinedFileResponsesBehindBufferedResponseAreIntact) {
       rest.remove_prefix(expectedBody.size());
     }
     EXPECT_TRUE(rest.empty()) << rest.size() << " unexpected bytes";
+  }
+}
+
+namespace {
+
+// A configuration whose responses quickly wait for the socket: a send buffer of a few KiB, without zerocopy.
+HttpServerConfig BlockingOutputConfig() {
+  HttpServerConfig cfg;
+  cfg.withZerocopyMode(ZerocopyMode::Disabled);
+  cfg.withSocketSendBufferBytes(4096);
+  return cfg;
+}
+
+constexpr std::string_view kSmallRequest = "GET /s HTTP/1.1\r\nHost: x\r\n\r\n";
+
+// The routes of the tests below: the blocking one of 'blocker', '/s' answering "ok", '/body' answering 'body' and
+// '/file' answering the content of 'filePath' (if any).
+void AddBlockingOutputRoutes(test::TestServer& server, test::EventLoopBlocker& blocker, const std::string& body,
+                             std::string_view filePath = {}) {
+  auto router = server.router();
+  router.setPath(http::Method::GET, kBlockLoopPath, blocker.handler());
+  router.setPath(http::Method::GET, "/s", [](const HttpRequestView& req) { return req.makeResponse("ok"); });
+  router.setPath(http::Method::GET, "/body", [body](const HttpRequestView& req) { return req.makeResponse(body); });
+  if (!filePath.empty()) {
+    router.setPath(http::Method::GET, "/file", [path = std::string(filePath)](const HttpRequestView&) {
+      return HttpResponse(http::StatusCodeOK).file(File(path));
+    });
+  }
+}
+
+// Connects a client with a minimal receive buffer (or 'receiveBufferSize'), with a first exchange: the server accepts
+// the connection before its event loop blocks.
+test::ClientConnection ConnectSlowReader(uint16_t serverPort, int receiveBufferSize = kMinimalReceiveBufferSize) {
+  test::ClientConnection cnx(serverPort, 500ms, receiveBufferSize);
+  test::sendAll(cnx.fd(), kSmallRequest);
+  EXPECT_TRUE(test::recvWithTimeout(cnx.fd(), 2s).ends_with("ok"));
+  return cnx;
+}
+
+// Pipelined requests for '/body', then 'nbSmallRequests' for '/s', the last one closing the connection.
+std::string BodyThenSmallRequests(int nbSmallRequests) {
+  std::string requests = "GET /body HTTP/1.1\r\nHost: x\r\n\r\n";
+  for (int requestPos = 1; requestPos < nbSmallRequests; ++requestPos) {
+    requests += kSmallRequest;
+  }
+  requests += "GET /s HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+  return requests;
+}
+
+// Sends 'requests' while the event loop of 'server' is blocked, lets it serve them (its output blocking), then reads
+// until the connection closes: checks that all the responses come, the first one with 'body', without parser error.
+void ExpectAllResponsesBehindBlockedOutput(test::TestServer& server, test::EventLoopBlocker& blocker, NativeHandle fd,
+                                           const std::string& requests, const std::string& body,
+                                           std::chrono::milliseconds blockedOutputDuration) {
+  std::atomic<int> parserError{0};
+  server.server.setParserErrorCallback([&parserError](http::StatusCode status) { parserError.store(status); });
+  SendWhileEventLoopBlocked(server.port(), blocker, [fd, &requests] { test::sendAll(fd, requests); });
+  std::this_thread::sleep_for(blockedOutputDuration);  // the server served the event, its output blocked
+  test::SetReceiveBufferSize(fd, kLargeReceiveBufferSize);
+
+  const test::ReceivedUntilEnd received = test::RecvUntilEnd(fd, 5s);
+  server.server.setParserErrorCallback({});
+  EXPECT_EQ(parserError.load(), 0);
+  EXPECT_EQ(received.end, test::ReceivedUntilEnd::End::Closed);
+  EXPECT_TRUE(received.data.contains(body))
+      << "first response truncated: received " << received.data.size() << " bytes";
+  EXPECT_EQ(test::countOccurrences(received.data, "HTTP/1.1 200"), test::countOccurrences(requests, "GET "));
+}
+
+}  // namespace
+
+// Requests pipelined behind a response waiting for the socket are complete requests, only left unparsed by the output
+// backpressure, which also stops the reading. Here they are more than one read (minReadChunkBytes) and more than
+// maxHeaderBytes: read on, they would start the header read timer, then be taken for an incomplete head larger than
+// maxHeaderBytes (414), the connection closing before the pending response is written.
+TEST(HttpBackpressure, PipelinedRequestsBehindBlockedOutputAreNotAnOversizedHead) {
+  test::EventLoopBlocker blocker;
+  // The response blocks after a few KiB, far from the fairness budget (128 KiB): the read loop does not stop for it.
+  test::TestServer server(BlockingOutputConfig());
+  const std::string body(256UL << 10U, 'b');
+  AddBlockingOutputRoutes(server, blocker, body);
+
+  const test::ClientConnection cnx = ConnectSlowReader(server.port(), 4096);
+  const std::string requests = BodyThenSmallRequests(600);  // ~20 KiB
+  ASSERT_GT(requests.size(), 2 * HttpServerConfig{}.maxHeaderBytes);
+  ExpectAllResponsesBehindBlockedOutput(server, blocker, cnx.fd(), requests, body, 100ms);
+}
+
+// Same with a header read timeout: read on, the requests left unparsed behind a response waiting for the socket would
+// start the header read timer, then be answered 408 once it expired, the connection closing before the pending
+// response is written.
+TEST(HttpBackpressure, PipelinedRequestsBehindBlockedOutputAreNotTimedOut) {
+  static constexpr std::chrono::milliseconds kHeaderReadTimeout{100};
+  test::EventLoopBlocker blocker;
+  HttpServerConfig cfg = BlockingOutputConfig();
+  cfg.withHeaderReadTimeout(kHeaderReadTimeout);
+  test::TestServer server(std::move(cfg));
+  const std::string body(256UL << 10U, 'b');
+  AddBlockingOutputRoutes(server, blocker, body);
+
+  const test::ClientConnection cnx = ConnectSlowReader(server.port(), 4096);
+  const std::string requests = BodyThenSmallRequests(200);  // ~6 KiB
+  ASSERT_GT(requests.size(), HttpServerConfig{}.minReadChunkBytes);
+  ASSERT_LT(requests.size(), HttpServerConfig{}.maxHeaderBytes);  // not the 414 of the test above
+  ExpectAllResponsesBehindBlockedOutput(server, blocker, cnx.fd(), requests, body, 5 * kHeaderReadTimeout);
+}
+
+// A client may half-close its connection right after its request (HTTP/1.0 style clients, `nc -N`, some health
+// checks): the end of its input must not cut the response short. Here the server reads the request with the end of the
+// input in the same readable event (flagged RDHUP), and the response, buffered or a file, does not fit in the socket
+// buffers: the reading stops while it waits for the socket, the end of the input being read once it is written.
+// ZerocopyMode.HalfClosingClientReceivesWholeResponse covers zerocopy sends.
+TEST(HttpBackpressure, HalfCloseRightAfterTheRequestStillGetsTheWholeResponse) {
+  const std::string body(1UL << 20U, 'h');
+  test::ScopedTempDir tmpDir;
+  const test::ScopedTempFile file(tmpDir, body);
+  test::EventLoopBlocker blocker;
+  test::TestServer server(BlockingOutputConfig());
+  AddBlockingOutputRoutes(server, blocker, body, file.filePath().string());
+
+  for (const std::string_view target : {"/body", "/file"}) {
+    SCOPED_TRACE(target);
+    const test::ClientConnection cnx = ConnectSlowReader(server.port());
+    const NativeHandle fd = cnx.fd();
+    SendWhileEventLoopBlocked(server.port(), blocker, [fd, target] {
+      test::sendAll(fd, std::format("GET {} HTTP/1.1\r\nHost: x\r\n\r\n", target));
+      ASSERT_TRUE(ShutdownWrite(fd));
+    });
+    std::this_thread::sleep_for(100ms);  // the server served the event
+    test::SetReceiveBufferSize(fd, kLargeReceiveBufferSize);
+    const test::ReceivedUntilEnd received = test::RecvUntilEnd(fd, 5s);
+    EXPECT_TRUE(received.data.ends_with(body)) << "received " << received.data.size() << " bytes";
+    EXPECT_EQ(received.end, test::ReceivedUntilEnd::End::Closed);
+  }
+}
+
+// Same for small pipelined requests: their responses are batched, then written at once, a write that blocks. Here the
+// input ends with an incomplete request (that the client gives up), so that the batch is written after the requests
+// were served, the end of the input still to read.
+TEST(HttpBackpressure, HalfCloseRightAfterPipelinedRequestsStillGetsAllTheirResponses) {
+  static constexpr int kNbRequests = 20;
+  test::EventLoopBlocker blocker;
+  test::TestServer server(BlockingOutputConfig());
+  // 20 responses: more than the socket buffers, less than the largest batch (64 KiB).
+  const std::string body(2048, 'm');
+  AddBlockingOutputRoutes(server, blocker, body);
+
+  const test::ClientConnection cnx = ConnectSlowReader(server.port());
+  const NativeHandle fd = cnx.fd();
+  std::string requests;
+  for (int requestPos = 0; requestPos < kNbRequests; ++requestPos) {
+    requests += "GET /body HTTP/1.1\r\nHost: x\r\n\r\n";
+  }
+  requests += "GET /body HTTP/1.1\r\nHo";
+  SendWhileEventLoopBlocked(server.port(), blocker, [fd, &requests] {
+    test::sendAll(fd, requests);
+    ASSERT_TRUE(ShutdownWrite(fd));
+  });
+  std::this_thread::sleep_for(100ms);  // the server served the event
+  test::SetReceiveBufferSize(fd, kLargeReceiveBufferSize);
+  const test::ReceivedUntilEnd received = test::RecvUntilEnd(fd, 5s);
+  EXPECT_EQ(test::countOccurrences(received.data, "HTTP/1.1 200"), kNbRequests);
+  EXPECT_TRUE(received.data.ends_with(body)) << "received " << received.data.size() << " bytes";
+  EXPECT_EQ(received.end, test::ReceivedUntilEnd::End::Closed);
+}
+
+// A client half-closing its connection while its response waits for the socket: the end of its input, reported by a
+// later readable event, is only read once the response is written, whether it is buffered or a file.
+TEST(HttpBackpressure, HalfCloseWhileTheResponseWaitsForTheSocketStillGetsTheWholeResponse) {
+  const std::string body(1UL << 20U, 'w');
+  test::ScopedTempDir tmpDir;
+  const test::ScopedTempFile file(tmpDir, body);
+  test::EventLoopBlocker blocker;
+  test::TestServer server(BlockingOutputConfig());
+  AddBlockingOutputRoutes(server, blocker, body, file.filePath().string());
+
+  for (const std::string_view target : {"/body", "/file"}) {
+    SCOPED_TRACE(target);
+    test::ClientConnection cnx(server.port(), 500ms, kMinimalReceiveBufferSize);
+    const NativeHandle fd = cnx.fd();
+    test::sendAll(fd, std::format("GET {} HTTP/1.1\r\nHost: x\r\n\r\n", target));
+    std::this_thread::sleep_for(100ms);  // the response now waits for the socket
+    ASSERT_TRUE(ShutdownWrite(fd));
+    std::this_thread::sleep_for(100ms);  // the server handled the readable event of the half-close
+    test::SetReceiveBufferSize(fd, kLargeReceiveBufferSize);
+    const test::ReceivedUntilEnd received = test::RecvUntilEnd(fd, 5s);
+    EXPECT_TRUE(received.data.ends_with(body)) << "received " << received.data.size() << " bytes";
+    EXPECT_EQ(received.end, test::ReceivedUntilEnd::End::Closed);
   }
 }
 
@@ -6581,6 +6824,184 @@ TEST(HttpRateLimit, StoreExceptionsFailClosedWithRetryAfterAndBody) {
   EXPECT_TRUE(response.starts_with("HTTP/1.1 429")) << response;
   EXPECT_TRUE(response.contains("retry-after: 1")) << response;
   EXPECT_TRUE(response.contains("slow down")) << response;
+}
+
+// ============================
+// HTTP/1.1 connection lifecycle review (reproductions)
+// ============================
+// The DISABLED_ tests reproduce findings not fixed yet: they fail until their fix enables them (timers: the first two,
+// resources of a closed or idle connection: the last two).
+
+// keepAliveTimeout closes a connection whose client stopped reading a buffered response (no event during a whole
+// timeout). A client that stops reading a file response must not hold its connection (and the open file) forever.
+TEST(HttpLifecycleReview, DISABLED_StalledReaderOfFileResponseIsClosedLikeForBufferedResponse) {
+  HttpServerConfig cfg;
+  cfg.withZerocopyMode(ZerocopyMode::Disabled);
+  cfg.withKeepAliveTimeout(200ms);
+  cfg.withSocketSendBufferBytes(4096);
+  test::TestServer localTs(std::move(cfg));
+  const std::string body(4UL << 20U, 'f');
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile file(tmpDir, body);
+  auto router = localTs.router();
+  router.setPath(http::Method::GET, "/buffered",
+                 [&body](const HttpRequestView& req) { return req.makeResponse(body); });
+  router.setPath(http::Method::GET, "/file", [path = file.filePath().string()](const HttpRequestView&) {
+    return HttpResponse(http::StatusCodeOK).file(File(path));
+  });
+
+  for (const std::string_view target : {"/buffered", "/file"}) {
+    SCOPED_TRACE(target);
+    test::ClientConnection stalled(localTs.port(), 500ms, kMinimalReceiveBufferSize);
+    test::sendAll(stalled.fd(), std::format("GET {} HTTP/1.1\r\nHost: x\r\n\r\n", target));
+    // Reads nothing for 10 keepAliveTimeouts.
+    std::this_thread::sleep_for(2s);
+    test::SetReceiveBufferSize(stalled.fd(), kLargeReceiveBufferSize);
+    // Closed by the server during the stall: the rest of the response was dropped. Kept open: the whole response comes
+    // once the client reads again.
+    const test::ReceivedUntilEnd received = test::RecvUntilEnd(stalled.fd(), 1s);
+    EXPECT_LT(received.data.size(), body.size())
+        << "connection kept through 10 keepAliveTimeouts without reading: the whole response came afterwards";
+  }
+}
+
+// keepAliveTimeout is the idle time after a response, but its deadline is only pushed back by the poll events of the
+// connection. A client reading a large buffered response slowly but steadily produces few writable events: Linux
+// reports one once a third of the send buffer drained, and the maintenance retry refilling the socket in between
+// prevents even those. The connection is then closed in the middle of the response, which it truncates, although data
+// flows all the time (file sends are exempt from the deadline for this very reason, see
+// closeExpiredKeepAliveConnections()).
+TEST(HttpLifecycleReview, DISABLED_SteadySlowReaderOfBufferedResponseIsNotClosedAsIdle) {
+  static constexpr std::size_t kReadSize = 8UL << 10U;
+  HttpServerConfig cfg;
+  cfg.withZerocopyMode(ZerocopyMode::Disabled);
+  cfg.withKeepAliveTimeout(300ms);
+  cfg.withSocketSendBufferBytes(512U << 10U);
+  test::TestServer localTs(std::move(cfg));
+  const std::string big(1UL << 20U, 'r');
+  localTs.router().setDefault([&big](const HttpRequestView& req) { return req.makeResponse(big); });
+
+  test::ClientConnection cnx(localTs.port(), 500ms, static_cast<int>(kReadSize));
+  const NativeHandle fd = cnx.fd();
+  test::sendAll(fd, "GET /slow HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+  // About 400 KB/s, never pausing for more than 20 ms: ~2.5 s for the whole response.
+  test::setRecvTimeout(fd, 2s);
+  std::string received;
+  for (;;) {
+    const int64_t nbRead = test::RecvAppend(fd, received, kReadSize);
+    if (nbRead <= 0) {
+      break;
+    }
+    std::this_thread::sleep_for(20ms);
+  }
+  EXPECT_TRUE(received.ends_with(big)) << "received " << received.size() << " bytes";
+}
+
+// A closed connection whose state is cached for reuse keeps its resources until reused: reset() only runs then (or the
+// state is destroyed after an hour in the cache). A connection closed during a file response keeps the file open: a
+// deleted or rotated file keeps its disk space, and its descriptor counts against RLIMIT_NOFILE.
+TEST(HttpLifecycleReview, DISABLED_ClosedConnectionDoesNotKeepItsFileOpen) {
+  HttpServerConfig cfg;
+  cfg.withZerocopyMode(ZerocopyMode::Disabled);
+  cfg.withSocketSendBufferBytes(4096);
+  test::TestServer localTs(std::move(cfg));  // caches 1 closed connection state (see test::TestServer)
+  const std::string body(4UL << 20U, 'f');
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile file(tmpDir, body);
+  const std::filesystem::path& filePath = file.filePath();
+  localTs.router().setDefault(
+      [path = filePath.string()](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK).file(File(path)); });
+  const auto isFileOpen = [&filePath] {
+    for (const auto& entry : std::filesystem::directory_iterator("/proc/self/fd")) {
+      std::error_code ec;
+      if (std::filesystem::read_symlink(entry.path(), ec) == filePath) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  {
+    test::ClientConnection cnx(localTs.port(), 500ms, kMinimalReceiveBufferSize);
+    test::sendAll(cnx.fd(), "GET /file HTTP/1.1\r\nHost: x\r\n\r\n");
+    std::this_thread::sleep_for(100ms);
+    ASSERT_TRUE(isFileOpen());
+    ASSERT_TRUE(SetAbortiveClose(cnx.fd()));  // the client goes away in the middle of the file
+  }
+  // The drain ends once the server has no connection left: the connection is closed.
+  ASSERT_TRUE(test::DrainEndsWithin(localTs.server, 2s));
+  EXPECT_FALSE(isFileOpen()) << "the file of a closed connection is still open";
+}
+
+// The decoded chunks of a chunked body are kept in ConnectionState::bodyAndTrailersBuffer, cleared when the next
+// chunked body starts. Its capacity is only reclaimed by reclaimMemoryFromOversizedBuffers(), called by the full
+// maintenance sweep, which a plain HTTP/1.1 server without header / body read timeouts never runs: the buffer stays
+// with the idle connection, then with its cached state once closed (up to an hour), then with the next connection
+// reusing that state (reset() halves it at most once).
+TEST(HttpLifecycleReview, DISABLED_LargeChunkedUploadMemoryIsReleasedOnceServed) {
+  static constexpr std::size_t kChunkSize = 1UL << 20U;
+  static constexpr std::size_t kNbChunks = 64;  // 64 MiB: more than the largest glibc mmap threshold (32 MiB)
+  static constexpr std::size_t kBodySize = kChunkSize * kNbChunks;
+  test::TestServer localTs(HttpServerConfig{});
+  localTs.router().setPath(http::Method::POST, "/upload", [](const HttpRequestView& req) {
+    return req.makeResponse(std::format("got {}", req.body().size()));
+  });
+
+  test::ClientConnection cnx(localTs.port());
+  const NativeHandle fd = cnx.fd();
+  std::this_thread::sleep_for(100ms);
+  const std::optional<std::size_t> baselineOpt = test::AllocatedHeapBytes();
+  if (!baselineOpt) {
+    GTEST_SKIP() << "no allocator statistics on this platform";
+  }
+  const std::size_t baseline = *baselineOpt;
+
+  test::sendAll(fd, "POST /upload HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n");
+  const std::string chunk = std::format("{:x}\r\n{}\r\n", kChunkSize, std::string(kChunkSize, 'c'));
+  for (std::size_t chunkPos = 0; chunkPos < kNbChunks; ++chunkPos) {
+    test::sendAll(fd, chunk, 5s);
+  }
+  test::sendAll(fd, "0\r\n\r\n");
+  ASSERT_TRUE(test::recvWithTimeout(fd, 5s).ends_with(std::format("got {}", kBodySize)));
+
+  // Hundreds of maintenance ticks (1 ms poll interval).
+  std::this_thread::sleep_for(500ms);
+  const std::size_t whileIdle = test::AllocatedHeapBytes().value();
+  EXPECT_LT(whileIdle, baseline + (kBodySize / 4))
+      << "idle keep-alive connection retains " << ((whileIdle - baseline) >> 20U) << " MiB";
+
+  cnx.close();
+  std::this_thread::sleep_for(500ms);
+  const std::size_t afterClose = test::AllocatedHeapBytes().value();
+  EXPECT_LT(afterClose, baseline + (kBodySize / 4))
+      << "closed connection (cached state) retains " << ((afterClose - baseline) >> 20U) << " MiB";
+}
+
+// The relative timestamps of a request (bodyLastActivityMs, requestDeadlineMs) are milliseconds since headerStartTp, in
+// 32 bits. A request pipelined behind another one in the same read has no headerStartTp (reset when the previous
+// response was sent): they are then milliseconds since the steady_clock epoch (the boot on Linux), which no longer fit
+// in 32 bits once the host is up for 49.7 days. This test passes on a host up for less, and fails when run in a time
+// namespace shifting CLOCK_MONOTONIC: unshare -Urf --time --monotonic 4320000 tests/http-core_test --gtest_filter=...
+TEST(HttpLifecycleReview, BodyReadTimeoutOfPipelinedRequestDoesNotDependOnUptime) {
+  HttpServerConfig cfg;
+  cfg.withBodyReadTimeout(2s);
+  test::TestServer localTs(std::move(cfg));
+  auto router = localTs.router();
+  router.setPath(http::Method::GET, "/s", [](const HttpRequestView& req) { return req.makeResponse("ok"); });
+  router.setPath(http::Method::POST, "/upload",
+                 [](const HttpRequestView& req) { return req.makeResponse(std::format("got {}", req.body())); });
+
+  test::ClientConnection cnx(localTs.port());
+  const NativeHandle fd = cnx.fd();
+  // Received in a single read: the head of the POST is parsed right after the GET is answered.
+  test::sendAll(fd,
+                "GET /s HTTP/1.1\r\nHost: x\r\n\r\n"
+                "POST /upload HTTP/1.1\r\nHost: x\r\nConnection: close\r\nContent-Length: 10\r\n\r\n01234");
+  std::this_thread::sleep_for(300ms);  // well within bodyReadTimeout
+  test::sendAll(fd, "56789");
+  const std::string resp = test::recvUntilClosed(fd, 3s);
+  EXPECT_FALSE(resp.contains("HTTP/1.1 408")) << resp;
+  EXPECT_TRUE(resp.ends_with("got 0123456789")) << resp;
 }
 
 }  // namespace aeronet

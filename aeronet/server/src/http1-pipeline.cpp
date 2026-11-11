@@ -152,6 +152,13 @@ bool Http1Pipeline::processRequests(ConnectionIt cnxIt) {
   if (state.hasPendingOutput() && !state.waitingWritable) {
     ctx.io.flushOutbound(cnxIt);
   }
+  // Output waiting for the socket stops the reading (always true then): the response that stopped serving the
+  // requests, or the batched ones that did not fit in the socket. Reading on would start the header read timer of the
+  // requests left unparsed behind it, and take them for an oversized head once they exceed maxHeaderBytes, or read the
+  // end of the input before the responses are written.
+  if (state.hasPendingOutputOrFile()) [[unlikely]] {
+    return state.stopReadingIfOutputBlocked();
+  }
   return stopReading;
 }
 
@@ -163,11 +170,12 @@ bool Http1Pipeline::serveRequests(ConnectionIt cnxIt) {
     // target resolution and the tunnel bytes behind it...) must not be served.
     return true;
   }
-  const auto cnxFd = cnxIt->fd();
+  const NativeHandle cnxFd = cnxIt->fd();
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  if (auto* asyncState = state.pAsyncState(); asyncState != nullptr && asyncState->active) {
+  if (auto* pAsyncHandlerState = state.pAsyncHandlerState();
+      pAsyncHandlerState != nullptr && pAsyncHandlerState->active) {
     handleAsyncBodyProgress(cnxIt);
-    if (asyncState->active || state.isAnyCloseRequested()) {
+    if (pAsyncHandlerState->active || state.isAnyCloseRequested()) {
       return state.isAnyCloseRequested() || PauseReadingDuringAsyncHandler(state);
     }
     // The handler completed: serve the requests pipelined behind it.
@@ -188,9 +196,9 @@ bool Http1Pipeline::serveRequests(ConnectionIt cnxIt) {
     // Do not parse the next pipelined request while a file is being sent, or while output waits for the socket: the
     // previous response hasn't been fully written yet, and the responses to the requests pipelined behind it would only
     // accumulate in the connection (the output batched by this call, not written yet, does not wait for the socket).
+    // The reading stops too, recording the input left behind (see processRequests()).
     if (state.isSendingFile() || (state.waitingWritable && state.hasPendingOutput())) {
-      state.inputBlockedByOutput = !input.empty();
-      break;
+      return true;
     }
     if (!input.empty() && input.front() == '\r') [[unlikely]] {
       // A head received in part, or waiting for its body, starts with its method: these are empty lines before a
@@ -337,7 +345,7 @@ bool Http1Pipeline::serveRequests(ConnectionIt cnxIt) {
     if (dispatchAsyncHandler(cnxIt, routingResult.sharedAsyncRequestHandler(), bodyReady, isChunked, found100Continue,
                              consumedInput.nbBytes + consumedBytes, pCorsPolicy, routingResult.postMiddlewareRange(),
                              routingResult.pathConfig().maxBodyBytes)) {
-      if (state.pAsyncState()->active) {
+      if (state.pAsyncHandlerState()->active) {
         // The request bytes are consumed by the async handler completion. With its body, along with the requests served
         // before it: the input buffer, where its body is, must not move until then. Without, it starts the input buffer
         // once this call returns (its head was copied), its body being received behind it.
@@ -685,6 +693,9 @@ void Http1Pipeline::endRequest(ConnectionState& state, http::StatusCode status) 
 bool Http1Pipeline::rejectIncompleteHead(ConnectionIt cnxIt) {
   ServerContext& ctx = *_pCtx;
   const ConnectionState& state = ctx.connections.connectionState(cnxIt);
+  // The reading stops while the output waits for the socket (see processRequests()): the requests read behind it, left
+  // unparsed, are never taken for an incomplete head, and the error response does not queue behind another one.
+  assert(!state.hasPendingOutputOrFile());
   if (!state.protocolHandler && state.parsingHeaders && state.inBuffer.size() > ctx.config.maxHeaderBytes) {
     // Safety cap: prevent unbounded buffer growth while headers are still being received.
     // Checked after the input processing so that a single read delivering headers + body together
@@ -830,11 +841,12 @@ bool Http1Pipeline::handleExpectHeader(ConnectionIt cnxIt, std::string_view expe
               static constexpr std::string_view kEmptyReasonDoubleCRLF = " \r\n\r\n";
 
               RawChars buf(http::HTTP11SPSv.size() + 3U + kEmptyReasonDoubleCRLF.size());
-              buf.setSize(buf.capacity());
 
-              char* insertPtr = AppendFixed<http::HTTP11SPSv>(buf.data());
-              insertPtr = writeStatusCode(insertPtr, status);
-              CopyFixed<kEmptyReasonDoubleCRLF>(insertPtr);
+              char* pData = AppendFixed<http::HTTP11SPSv>(buf.data());
+              pData = writeStatusCode(pData, status);
+              pData = AppendFixed<kEmptyReasonDoubleCRLF>(pData);
+
+              buf.setEnd(pData);
 
               ctx.io.queueData(cnxIt, HttpMessageData(std::move(buf)));
               break;

@@ -28,6 +28,7 @@
 #endif
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include "aeronet/async-handler-state.hpp"
 #include "aeronet/internal/http1-pipeline.hpp"
 #endif
 
@@ -40,7 +41,7 @@ namespace {
 // otherwise.
 AERONET_ALWAYS_INLINE bool AsyncHandlerWorking([[maybe_unused]] const ConnectionState& state) noexcept {
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  const auto* asyncState = state.pAsyncState();
+  const AsyncHandlerState* asyncState = state.pAsyncHandlerState();
   return asyncState != nullptr && asyncState->isWorking();
 #else
   return false;
@@ -205,8 +206,8 @@ bool ConnectionMaintenance::watchZerocopySends(ConnectionIt cnxIt) {
   }
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  const auto* asyncState = state.pAsyncState();
-  const bool asyncHandlerActive = asyncState != nullptr && asyncState->active;
+  const AsyncHandlerState* pAsyncHandlerState = state.pAsyncHandlerState();
+  const bool asyncHandlerActive = pAsyncHandlerState != nullptr && pAsyncHandlerState->active;
 #else
   static constexpr bool asyncHandlerActive = false;
 #endif
@@ -443,7 +444,7 @@ bool ConnectionMaintenance::closeIfTimedOut(ConnectionIt cnxIt, std::chrono::ste
   ctx.http1.emitSimpleError(cnxIt, http::StatusCodeRequestTimeout, {});
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   // Answered: the handler must not answer again when it completes.
-  if (auto* asyncState = state.pAsyncState(); asyncState != nullptr) {
+  if (auto* asyncState = state.pAsyncHandlerState(); asyncState != nullptr) {
     Http1Pipeline::AbandonAsyncHandler(*asyncState);
   }
 #endif
