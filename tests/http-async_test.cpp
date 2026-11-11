@@ -439,8 +439,10 @@ TEST(HttpAsyncHandlers, CompressedBodyCanBeReadInChunks) {
   });
 
   const std::string payload = std::string(150, 'a') + std::string(150, 'b');
-  for (const auto& [target, expected] : {std::pair<std::string_view, std::string_view>{"/loop", payload},
-                                         std::pair<std::string_view, std::string_view>{"/direct", "aaaaa"}}) {
+  for (const auto& [target, expected] : {
+           std::pair<std::string_view, std::string_view>{"/loop", payload},
+           std::pair<std::string_view, std::string_view>{"/direct", "aaaaa"},
+       }) {
     const std::string request = GzipPost(target, payload, 1, "Connection: close\r\n");
     const std::string atOnce = test::sendAndCollect(ts.port(), request);
     EXPECT_TRUE(atOnce.ends_with(std::format("\r\n\r\n{}", expected))) << target << ": " << atOnce.substr(0, 512);
@@ -1040,7 +1042,8 @@ AsyncUpload ChunkedGzipUpload(std::string_view data, std::string_view trailerLin
   return {
       "POST /upload HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nContent-Encoding: gzip\r\nConnection: "
       "close\r\n\r\n",
-      std::format("{:x}\r\n{}\r\n0\r\n{}\r\n", data.size(), data, trailerLine)};
+      std::format("{:x}\r\n{}\r\n0\r\n{}\r\n", data.size(), data, trailerLine),
+  };
 }
 
 }  // namespace
@@ -1402,14 +1405,18 @@ TEST(HttpAsyncHandlers, WorkCapturesAreDestroyedBeforeTheHandlerResumes) {
   EXPECT_TRUE(destroyedAtResume.load(std::memory_order_acquire));
 }
 
-// An answer before the body goes through the pipeline like any response: it is not an error of the parser.
+// An answer before the body goes through the pipeline like any response: it is not an error of the parser. Its metrics
+// count no body bytes, none being read (its head only announces their number).
 TEST(HttpAsyncHandlers, HandlerThrowingWhenCalledBeforeItsBodyGoesThroughThePipeline) {
   std::atomic<int> nbParserErrors{0};
   std::atomic<int> metricsStatus{0};
+  std::atomic<std::size_t> metricsBytesIn{1};
   test::TestServer server{HttpServerConfig{}};
   server.server.setParserErrorCallback([&nbParserErrors](http::StatusCode) { nbParserErrors.fetch_add(1); });
-  server.server.setMetricsCallback(
-      [&metricsStatus](const RequestMetrics& metrics) { metricsStatus.store(metrics.status); });
+  server.server.setMetricsCallback([&metricsStatus, &metricsBytesIn](const RequestMetrics& metrics) {
+    metricsStatus.store(metrics.status);
+    metricsBytesIn.store(metrics.bytesIn);
+  });
   server.router().addResponseMiddleware(
       [](const HttpRequestView&, HttpResponse& response) { response.headerAddLine("x-post", "1"); });
   server.router().setPath(http::Method::POST, "/throw",
@@ -1423,6 +1430,7 @@ TEST(HttpAsyncHandlers, HandlerThrowingWhenCalledBeforeItsBodyGoesThroughThePipe
   EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Connection, http::close))) << resp;
   EXPECT_EQ(nbParserErrors.load(), 0);
   EXPECT_EQ(metricsStatus.load(), 500);
+  EXPECT_EQ(metricsBytesIn.load(), 0U);
 }
 
 // keepAliveTimeout bounds a stalled upload as on a synchronous route, whether the handler awaits the body or already

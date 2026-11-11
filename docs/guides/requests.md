@@ -36,9 +36,9 @@ When a header appears several times, the server combines the occurrences while p
 | Framing and routing fields | rejected with `400 Bad Request` | `content-length`, `host`, `content-md5`, `content-transfer-encoding`, `http2-settings`, `upgrade-insecure-requests` |
 | Unknown fields | joined with `,` | custom `x-...` headers |
 
-Rejecting duplicate singleton, `content-length` and `host` fields closes classic request smuggling vectors, where two intermediaries pick different occurrences: keeping the last `authorization`, `content-type` or `range` could differ from a proxy in front keeping the first (RFC 9110 §5.3 lets a recipient reject them). Over HTTP/2, the stream is reset with `PROTOCOL_ERROR` (malformed request, RFC 9113 §8.1.1). For the other fields, an empty occurrence does not add a separator. To reject, rather than merge, duplicates of unknown fields that your application treats as singletons, set `HttpServerConfig::mergeUnknownRequestHeaders` to `false`.
+Rejecting duplicate singleton, `content-length` and `host` fields closes classic request smuggling vectors, where two intermediaries pick different occurrences: keeping the last `authorization`, `content-type` or `range` could differ from a proxy in front keeping the first (RFC 9110 §5.3 lets a recipient reject them). Over HTTP/2, the stream is reset with `PROTOCOL_ERROR` (malformed request, RFC 9113 §8.1.1). For the other fields, an empty occurrence does not add a separator, and the values are combined in the order of their lines, whatever other repeated fields lie between them. To reject, rather than merge, duplicates of unknown fields that your application treats as singletons, set `HttpServerConfig::mergeUnknownRequestHeaders` to `false`.
 
-Tests: `DuplicateSingletonHeadersProduce400` in [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp), `InvalidTrailersAreRejected` in [http-core_test.cpp](../../tests/http-core_test.cpp), `DuplicateSingletonHeaderIsRejected` in [hpack_test.cpp](../../aeronet/http2/test/hpack_test.cpp), and the table in [mergeable-headers_test.cpp](../../aeronet/objects/test/mergeable-headers_test.cpp).
+Tests: `DuplicateSingletonHeadersProduce400`, `MergeKeepsValueOfFieldWhoseFirstOccurrenceWasEmpty*` and `AuditRepeatedFieldsAreCombinedInOrder` in [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp), `HttpParserAudit.RepeatedTrailersAreCombinedInOrder` in [http-parser_test.cpp](../../aeronet/server/test/http-parser_test.cpp), `InvalidTrailersAreRejected` in [http-core_test.cpp](../../tests/http-core_test.cpp), `DuplicateSingletonHeaderIsRejected` in [hpack_test.cpp](../../aeronet/http2/test/hpack_test.cpp), and the table in [mergeable-headers_test.cpp](../../aeronet/objects/test/mergeable-headers_test.cpp).
 
 ### Header values
 
@@ -50,7 +50,7 @@ The header values aeronet sends are stricter: visible ASCII characters, spaces a
 
 The request line and the header lines end with CRLF. RFC 9112 §2.2 lets a server accept a bare LF as line terminator, which aeronet does not: a line left without CRLF that holds a bare LF can never be completed, and is answered `400 Bad Request` as soon as received, instead of waiting for a timeout (`headerReadTimeout`, then `keepAliveTimeout`). The same holds for the lines of a chunked body (see [Chunked bodies and trailers](#chunked-bodies-and-trailers)) and for `TRACE` requests. A CR whose LF is received in the next read is waited for, while a bare CR, followed by anything but LF, is answered `400` as soon as the byte following it is received, `TRACE` requests included. A request head received at once is not scanned any further for this: the check only runs when a line is incomplete.
 
-Tests: `BareLf*` and `CrLfSplitBetweenReadsIsNotABareLf` in [http-parser_test.cpp](../../aeronet/server/test/http-parser_test.cpp), `BareLfIn*` in [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp), `CanStillBeValidLines*` in [search-crlf_test.cpp](../../aeronet/tech/test/search-crlf_test.cpp), `HeadWithABareLfDoesNotWait` and `HeadWithABareCrDoesNotWait` in [trace-echo_test.cpp](../../aeronet/server/test/trace-echo_test.cpp), `TraceWithBareLfLineEndingsIsRejectedWithoutWaiting` in [http-core_test.cpp](../../tests/http-core_test.cpp).
+Tests: `BareLf*`, `ShortInputThatCannotStartARequestIsRejectedWithoutWaiting` and `CrLfSplitBetweenReadsIsNotABareLf` in [http-parser_test.cpp](../../aeronet/server/test/http-parser_test.cpp), `BareLfIn*` in [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp), `CanStillBeValidLines*` in [search-crlf_test.cpp](../../aeronet/tech/test/search-crlf_test.cpp), `HeadWithABareLfDoesNotWait` and `HeadWithABareCrDoesNotWait` in [trace-echo_test.cpp](../../aeronet/server/test/trace-echo_test.cpp), `TraceWithBareLfLineEndingsIsRejectedWithoutWaiting` in [http-core_test.cpp](../../tests/http-core_test.cpp).
 
 ### Query parameters
 
@@ -76,15 +76,19 @@ router.setPath(http::Method::GET, "/search", [](const HttpRequestView& req) {
 
 The path is decoded once too. A request target with an invalid escape, a decoded NUL byte (`%00`), an encoded slash (`%2F` or `%2f`), or control characters is rejected with `400 Bad Request`. An encoded slash is not equivalent to a path separator (RFC 3986 §6.2.2.2): decoded before routing, `/a%2Fb` would reach the route `/a/b`, so it is refused instead (as Tomcat and Spring Security do by default). An application that needs a `/` in a value should send it in the query string, where `%2F` is decoded as usual, or in the body.
 
+Other escapes are decoded to their byte, control characters included: `%0D%0A` gives a CR LF in `path()` or in a query value (a multi-line form field sent with `GET`, for instance). Re-encode a decoded value before copying it into a URL, a header or a request to another server. aeronet does so for the `Location` of its own redirects (trailing slash, HTTPS, static directories), and a response header value holding CR or LF throws `std::invalid_argument` (see [Header values](#header-values)).
+
 Tests: `EncodedSlashInPathIsRejected` in [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp), `EncodedSlashInPath400` in [http-core_test.cpp](../../tests/http-core_test.cpp) and `EncodedSlashInPathReturns400` (HTTP/2) in [http2-protocol-handler_test.cpp](../../aeronet/server/test/http2-protocol-handler_test.cpp).
 
 ### Request target forms
 
 An HTTP/1.1 request target is accepted in the four forms of RFC 9112 §3.2: origin-form (`/path?query`, the usual one), absolute-form (`GET http://example.com/path?query HTTP/1.1`), authority-form (`CONNECT` only, see [CONNECT](../protocols/connect.md)) and asterisk-form (`OPTIONS *` only). Any other target is rejected with `400 Bad Request`.
 
+A fragment is not part of a request target (RFC 9112 §3.2.1, RFC 9110 §7.1): a target holding a `#`, in its path or its query, in origin-form or absolute-form, is rejected with `400 Bad Request` rather than routed with it (`/a#b` as the path `/a#b`) or without it, as a peer stripping it would. An escaped `%23` is decoded as usual.
+
 With an absolute-form target, `path()` and the query parameters are the ones of its path and query: the request is routed as if it had been sent in origin-form, an empty path being `/`. The host is taken from the target, not from the `Host` header field (RFC 9112 §3.3): `authority()` and `headerValueOrEmpty("host")` both return its host and optional port, without userinfo, whatever the value of `Host`. This holds for the [HTTP to HTTPS redirect](../protocols/tls.md#http-to-https-redirect) and the WebSocket origin check too. The scheme of the target is not used, and an HTTP/1.1 request still needs exactly one valid `Host` header field. A target without authority (`mailto:a@b`, `http:/path`), with a fragment or control characters, or whose host and port, after the userinfo, are not a valid `Host` value (see below, the host cannot be empty here) is rejected with `400 Bad Request`.
 
-Tests: `AbsoluteForm*` in [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp), and `AbsoluteFormTargetIsRoutedByItsPathAndHost` in [http-errors_test.cpp](../../tests/http-errors_test.cpp).
+Tests: `AbsoluteForm*` in [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp), `AbsoluteFormTargetIsRoutedByItsPathAndHost` and `HttpAudit.RequestTargetsNotOfTheFormOfTheirMethodAreRejected` in [http-errors_test.cpp](../../tests/http-errors_test.cpp).
 
 ### Host header field
 
@@ -123,6 +127,12 @@ Data that must outlive the handler, stored in a cache, captured by a callback, o
 
 `readBody(maxBytes)` and `hasMoreBody()` read the same body in successive slices, for code written for incremental consumption. `body()` and `readBody()` cannot be mixed on the same request. In an async handler, which can start before the body has arrived, use `co_await req.readBodyAsync()`: `readBody()` throws `std::logic_error` until the body is received, and `body()` is empty.
 
+### Content-Length
+
+A `Content-Length` must be a single decimal number (RFC 9110 §8.6). An empty value, a list (even of identical values, which RFC 9110 lets a recipient accept), a sign, inner spaces or a number beyond 64 bits are rejected with `400 Bad Request`, and the connection closes (RFC 9112 §6.3). The value is checked as soon as the head is parsed, before any response given from the head alone (a `406 Not Acceptable`, the final response of an [expectation handler](../reference/http-conformance.md#expect)), so the bytes following the head are never served as another request. A valid value above `maxBodyBytes` is answered `413`, see below.
+
+Tests: `HttpAudit.ContentLengthListsAndSignsAreRejected`, `HttpAudit.EmptyContentLengthIsRejectedWhenAnsweredWith406` and `HttpAudit.EmptyContentLengthIsRejectedWhenAnsweredByTheExpectationHandler` in [http-errors_test.cpp](../../tests/http-errors_test.cpp).
+
 ### Limits and timeouts
 
 | Setting | Default | When exceeded |
@@ -140,11 +150,12 @@ HTTP/1.1 clients may send a body without knowing its size, with `Transfer-Encodi
 
 - Chunk sizes are strict hexadecimal numbers. Empty sizes, prefixes such as `0x`, `+`, or `-`, whitespace (except before the `;` of a chunk extension), and bare CR or LF characters are rejected with `400 Bad Request`, and every framing error closes the connection, so that the following bytes are never parsed as another request. A chunk-size line is rejected at its first invalid byte, without waiting for its end, and so is a bare LF ending the data of a chunk, the body or a trailer line: the answer comes as soon as it is received, not once a timeout expires.
 - Chunk extensions (`4;name=value`, or `4 ; name=value`: spaces and tabs are allowed around the semicolon) are validated and ignored. A chunk-size line (extensions and CRLF included) longer than `maxHeaderBytes` is rejected with `400`, whether or not its end was received: a line without end is not buffered further.
-- The decoded body counts toward `maxBodyBytes` (`413` beyond it, as soon as a chunk size announces the excess, from the digit making it too large, without waiting for its data; so are sizes overflowing 64 bits), and the trailer section toward `maxHeaderBytes` (`431`, whether or not the end of its last line was received).
+- The decoded body counts toward `maxBodyBytes` (`413` beyond it, as soon as a chunk size announces the excess, from the digit making it too large, without waiting for its data; so are sizes overflowing 64 bits), and the trailer lines, with their CRLF, toward `maxHeaderBytes` (`431`, whether or not the end of their last line was received). The requests pipelined behind do not count.
+- A body is accepted or rejected, and decoded to the same body and trailers, whether it is received at once, in two parts cut anywhere, or byte by byte: the limits above included.
 - A body received in several reads is decoded once: each read decodes the chunks received since the previous one, so the time spent is linear in the size of the body.
 - `Transfer-Encoding` on an HTTP/1.0 request, together with `Content-Length`, or whose final coding is not `chunked` (RFC 9112 §6.3), is rejected with `400`. Other transfer codings before `chunked` (`gzip, chunked`) are not supported: `501 Not Implemented`.
 
-Tests: the `HttpParserChunked*` tests of [http-parser_test.cpp](../../aeronet/server/test/http-parser_test.cpp), and the chunk-size line syntax and limits in [chunk-size-line_test.cpp](../../aeronet/objects/test/chunk-size-line_test.cpp).
+Tests: the `HttpParserChunked*` and `HttpParserAudit` tests of [http-parser_test.cpp](../../aeronet/server/test/http-parser_test.cpp), and the chunk-size line syntax and limits in [chunk-size-line_test.cpp](../../aeronet/objects/test/chunk-size-line_test.cpp).
 
 Trailers are header fields sent after the last chunk, typically a checksum or a signature computed while sending the body. They are exposed by `trailers()`, with lower-case names and trimmed values, identically for HTTP/1.1 chunked requests and HTTP/2 requests:
 
@@ -160,11 +171,16 @@ router.setPath(http::Method::PUT, "/objects/{key}", [](const HttpRequestView& re
 });
 ```
 
-Fields that would change how the message is framed, routed, or authenticated are forbidden in trailers, and a request carrying one is rejected with `400`: `authorization`, `proxy-authorization`, `proxy-authenticate`, `www-authenticate`, `transfer-encoding`, `content-length`, `content-range`, `content-encoding`, `content-type`, `host`, `cache-control`, `expect`, `max-forwards`, `pragma`, `range`, `te`, `trailer`, `set-cookie`, and `cookie`.
+Fields needed before the content is received (RFC 9110 §6.5.1), that would change how the message is framed, routed, authenticated or processed, are forbidden in trailers, and a request carrying one is rejected with `400`:
+
+- framing, routing and connection: `transfer-encoding`, `content-length`, `host`, `connection`, `upgrade`, `trailer`, `te`;
+- authentication: `authorization`, `proxy-authorization`, `proxy-authenticate`, `www-authenticate`, `cookie`, `set-cookie`;
+- request controls and conditionals: `expect`, `max-forwards`, `range`, `if-match`, `if-none-match`, `if-modified-since`, `if-unmodified-since`, `if-range`;
+- caching and content: `cache-control`, `expires`, `pragma`, `vary`, `content-encoding`, `content-range`, `content-type`.
 
 A repeated trailer follows the rules of a [repeated header](#header-names): it is merged, or the request is rejected.
 
-Tests: `ValidTrailersAreParsed` and `InvalidTrailersAreRejected` in [http-core_test.cpp](../../tests/http-core_test.cpp), `DuplicateTrailersOfCompressedBody` in [http-request-decompression_test.cpp](../../tests/http-request-decompression_test.cpp), and `TrailersOfBodyDecompressedToNothingSurviveOtherConnections` in [http-async_test.cpp](../../tests/http-async_test.cpp).
+Tests: `ValidTrailersAreParsed` and `InvalidTrailersAreRejected` in [http-core_test.cpp](../../tests/http-core_test.cpp), the list in [reserved-headers_test.cpp](../../aeronet/objects/test/reserved-headers_test.cpp), `DuplicateTrailersOfCompressedBody` in [http-request-decompression_test.cpp](../../tests/http-request-decompression_test.cpp), and `TrailersOfBodyDecompressedToNothingSurviveOtherConnections` in [http-async_test.cpp](../../tests/http-async_test.cpp).
 
 ### Forms and file uploads
 

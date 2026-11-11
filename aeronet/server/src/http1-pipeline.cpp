@@ -1,12 +1,14 @@
 #include "aeronet/internal/http1-pipeline.hpp"
 
 #include <cassert>
+#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <span>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 #include "aeronet/compiler-config.hpp"
@@ -31,10 +33,12 @@
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router.hpp"
+#include "aeronet/search-crlf.hpp"
 #include "aeronet/server-callbacks.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
+#include "aeronet/string-view-size-only-sentinel.hpp"
 #include "aeronet/transfer-coding.hpp"
 #include "http-error-build.hpp"
 #include "http1-writer-transport.hpp"
@@ -120,12 +124,6 @@ constexpr bool CloseIfBodyPending(bool bodyReady) noexcept { return !bodyReady; 
 }
 #endif
 
-// Whether the request announces a body: chunked, or with a Content-Length other than 0.
-bool AnnouncesBody(const HttpRequestView& request) {
-  return request.headerValue(http::TransferEncoding).has_value() ||
-         request.headerValueOrEmpty(http::ContentLength).find_first_not_of('0') != std::string_view::npos;
-}
-
 // Whether the request upgrades its connection to the WebSocket endpoint of its route. The Upgrade header of an HTTP/1.0
 // request is ignored (RFC 9110 §7.8): it is served like any GET.
 AERONET_ALWAYS_INLINE bool IsWebSocketUpgrade([[maybe_unused]] const HttpRequestView& request,
@@ -205,8 +203,15 @@ bool Http1Pipeline::serveRequests(ConnectionIt cnxIt) {
       consumedInput.nbBytes += emptyLinesSize;
       input = input.subspan(emptyLinesSize);
     }
-    // If we don't have enough bytes for the minimum request line, wait for more data
+    // If we don't have enough bytes for the minimum request line, wait for more data, unless they can no longer start
+    // one (a bare CR or LF): answered right away, like the start of a longer head, not once a timeout expires. The
+    // input is empty when all of it was served.
     if (input.size() < http::kHttpReqLineMinLen) {
+      if (!input.empty() && !CanStillBeValidLines(input.data(), input.data() + input.size())) [[unlikely]] {
+        ++state.requestsServed;
+        ++ctx.stats.totalRequestsServed;
+        emitSimpleError(cnxIt, http::StatusCodeBadRequest);
+      }
       break;
     }
     // The batched responses count as written: they will be.
@@ -230,10 +235,11 @@ bool Http1Pipeline::serveRequests(ConnectionIt cnxIt) {
 
     // Route matching
     const Router::RoutingResult routingResult = ctx.router.match(request.method(), request.path());
-    const CorsPolicy* pCorsPolicy = routingResult.corsPolicy();
     if (!applyRouteLimits(cnxIt, state, routingResult)) {
       break;
     }
+
+    const CorsPolicy* pCorsPolicy = routingResult.corsPolicy();
 
     // Handle Expect header tokens beyond the built-in 100-continue.
     // RFC: if any expectation token is not understood and not handled, respond 417.
@@ -297,7 +303,8 @@ bool Http1Pipeline::serveRequests(ConnectionIt cnxIt) {
     // Handle OPTIONS and TRACE per RFC 7231 §4.3
     // processSpecialMethods may insert an upstream connection and updates cnxIt if insertion invalidates it.
     // However, no need to update state because the pointer stays valid.
-    const auto action = processSpecialMethods(cnxIt, consumedInput.nbBytes + consumedBytes, pCorsPolicy, bodyReady);
+    const LoopAction action =
+        processSpecialMethods(cnxIt, consumedInput.nbBytes + consumedBytes, pCorsPolicy, bodyReady);
     if (action == LoopAction::SwitchProtocol) {
       if (state.tunnelResolving) {
         // The CONNECT request is answered once its target is resolved: the input buffer, where the request views point
@@ -407,7 +414,24 @@ AERONET_ALWAYS_INLINE Http1Pipeline::LoopAction Http1Pipeline::readHead(Connecti
     return LoopAction::Break;
   }
 
-  if (const auto optTransferEncoding = request.headerValue(http::TransferEncoding)) {
+  // Parse content-length. We are strict here - even if transfer encoding is present, we reject for empty or invalid
+  // content-length header value.
+  if (const auto optContentLength = request.headerValue(http::ContentLength)) {
+    std::string_view lenViewAll = *optContentLength;
+    std::size_t declaredContentLen;
+    const auto [ptr, err] =
+        std::from_chars(lenViewAll.data(), lenViewAll.data() + lenViewAll.size(), declaredContentLen);
+    if (err != std::errc() || ptr != lenViewAll.data() + lenViewAll.size()) {
+      emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Invalid Content-Length");
+      return LoopAction::Break;
+    }
+    request._body = SvSizeOnlyView(declaredContentLen);
+  } else {
+    request._body = std::string_view{};
+  }
+
+  const auto optTransferEncoding = request.headerValue(http::TransferEncoding);
+  if (optTransferEncoding) {
     if (!acceptChunkedTransferEncoding(cnxIt, *optTransferEncoding)) {
       return LoopAction::Break;
     }
@@ -426,7 +450,7 @@ AERONET_ALWAYS_INLINE Http1Pipeline::LoopAction Http1Pipeline::readHead(Connecti
     // read and could not be told apart from the next request.
     finalizeAndSendResponse(
         cnxIt, request.makeResponse(http::StatusCodeNotAcceptable, "No acceptable content-coding available"), nullptr,
-        AnnouncesBody(request));
+        optTransferEncoding.has_value() || !request._body.empty());
     return LoopAction::Continue;
   }
 
@@ -775,7 +799,7 @@ bool Http1Pipeline::handleExpectHeader(ConnectionIt cnxIt, std::string_view expe
       return true;
     }
     try {
-      auto expectationResult = ctx.callbacks.expectation(request, token);
+      ExpectationResult expectationResult = ctx.callbacks.expectation(request, token);
       switch (expectationResult.kind) {
         case ExpectationResultKind::Reject:
           emitSimpleError(cnxIt, http::StatusCodeExpectationFailed, {});
@@ -825,7 +849,7 @@ bool Http1Pipeline::handleExpectHeader(ConnectionIt cnxIt, std::string_view expe
           // the request announces anyway (it is not required to wait for the response), which could not be told apart
           // from the next request: the connection then closes after the response.
           finalizeAndSendResponse(cnxIt, std::move(expectationResult.finalResponse), pCorsPolicy,
-                                  AnnouncesBody(request));
+                                  request.hasHeader(http::TransferEncoding) || !request._body.empty());
           return true;
 
         default:
@@ -851,6 +875,11 @@ Http1Pipeline::LoopAction Http1Pipeline::processSpecialMethods(ConnectionIt& cnx
   ConnectionState& state = ctx.connections.connectionState(cnxIt);
   HttpRequestView& request = state.request;
 
+  // CONNECT requires protocol-specific handling (TCP tunnel setup)
+  if (request.method() == http::Method::CONNECT) {
+    return TunnelManager::Of(ctx).startHttp1Tunnel(cnxIt, requestEnd);
+  }
+
   // Handle OPTIONS and TRACE via shared protocol-agnostic code
   if (request.method() == http::Method::OPTIONS || request.method() == http::Method::TRACE) {
     const SpecialMethodConfig config{
@@ -864,7 +893,7 @@ Http1Pipeline::LoopAction Http1Pipeline::processSpecialMethods(ConnectionIt& cnx
       // A client must not send content in a TRACE request (RFC 9110 §9.3.8). Without, the request is served right after
       // its head is parsed, and has no chunked body whose trailers would overwrite the copy of its head: no other
       // request, TRACE or chunked, was served meanwhile.
-      if (AnnouncesBody(request)) {
+      if (request.hasHeader(http::TransferEncoding) || !request._body.empty()) {
         emitSimpleError(cnxIt, http::StatusCodeBadRequest, "TRACE request with content");
         return LoopAction::Break;
       }
@@ -877,12 +906,6 @@ Http1Pipeline::LoopAction Http1Pipeline::processSpecialMethods(ConnectionIt& cnx
       return LoopAction::Continue;
     }
     // Not handled (e.g., not a preflight), fall through to normal processing
-    return LoopAction::Nothing;
-  }
-
-  // CONNECT requires protocol-specific handling (TCP tunnel setup)
-  if (request.method() == http::Method::CONNECT) {
-    return TunnelManager::Of(ctx).startHttp1Tunnel(cnxIt, requestEnd);
   }
 
   return LoopAction::Nothing;

@@ -11,6 +11,7 @@
 #include "aeronet/request-metrics.hpp"
 #include "aeronet/router.hpp"
 #include "aeronet/string-trim.hpp"
+#include "aeronet/string-view-size-only-sentinel.hpp"
 #include "tunnel-manager.hpp"  // IWYU pragma: keep (destruction of ServerContext::tunnels)
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
@@ -156,7 +157,8 @@ void ServerContext::emitRequestMetrics(const HttpRequestView& request, http::Sta
       request.path(),
       clientIp,
       request.headerValueOrEmpty("user-agent"),
-      request._body.size(),
+      // A request answered before its body is received only holds its Content-Length: none of it was read.
+      IsSvSizeOnlyView(request._body) ? 0 : request._body.size(),
       0,
       connections.now - request.reqStart(),
   };

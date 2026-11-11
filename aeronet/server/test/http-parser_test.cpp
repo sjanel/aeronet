@@ -112,6 +112,17 @@ TEST(HttpParserRequestHead, BareLfLineEndingsAreRejectedWithoutWaiting) {
   }
 }
 
+// Same for fewer bytes than the shortest request line, otherwise waited for: a bare CR or LF cannot start a request.
+TEST(HttpParserRequestHead, ShortInputThatCannotStartARequestIsRejectedWithoutWaiting) {
+  InstallEchoHandler();
+  for (const std::string_view raw : {"\n", "\n\n", "GET /\n", "\r\n\n", "\rX", "GET\r\r"}) {
+    SCOPED_TRACE(raw);
+    const std::string resp = SendAndCollectPromptly(raw);
+    ASSERT_TRUE(resp.starts_with("HTTP/1.1 400")) << resp;
+    EXPECT_EQ(test::countOccurrences(resp, http::HTTP11SPSv), 1) << resp;
+  }
+}
+
 // The line being received, not the ones parsed by the previous reads, is the one a bare LF is looked for in.
 TEST(HttpParserRequestHead, BareLfInTheRestOfAHeadReceivedInSeveralReadsIsRejected) {
   InstallEchoHandler();
@@ -911,6 +922,170 @@ TEST(HttpParserChunkedLimits, BodyLimitAppliesToChunksOfSeveralReads) {
       SendInParts(port, kChunkedHead, "5\r\nhello\r\n5\r\nworld\r\n1\r\n!\r\n0\r\n\r\n", 6, 3ms);
   ASSERT_TRUE(overLimit.starts_with("HTTP/1.1 413")) << overLimit;
   ts.resetConfig();
+}
+
+// =============================================================================
+// Audit: the decoding of a body must not depend on how its bytes are split across reads
+// =============================================================================
+
+namespace {
+
+// Status code of a raw response, 0 if there is none.
+int StatusOf(std::string_view resp) {
+  return resp.size() >= 12 && resp.starts_with("HTTP/1.1 ") ? std::stoi(std::string(resp.substr(9, 3))) : 0;
+}
+
+// Body of a raw response.
+std::string_view BodyOf(std::string_view resp) {
+  const std::size_t pos = resp.find(http::DoubleCRLF);
+  return pos == std::string_view::npos ? std::string_view{} : resp.substr(pos + http::DoubleCRLF.size());
+}
+
+}  // namespace
+
+// Each chunked body, valid or not, is sent at once, then in two parts cut at every offset, then byte by byte: it must
+// be accepted or rejected the same way, and decoded to the same body and trailers.
+TEST(HttpParserAudit, ChunkedBodyDecodingDoesNotDependOnReads) {
+  ts.router().setDefault([](const HttpRequestView& req) {
+    return req.makeResponse(
+        std::format("b=[{}];x=[{}];y=[{}]", req.body(), req.trailerValueOrEmpty("x"), req.trailerValueOrEmpty("y")));
+  });
+  using namespace std::string_view_literals;
+  static constexpr std::string_view kBodies[]{
+      // valid
+      "5\r\nhello\r\n0\r\n\r\n",
+      "5;ext=1\r\nhello\r\n0;x\r\n\r\n",
+      "5 ;a=\"b c\"\r\nhello\r\n0\r\n\r\n",
+      "005\r\nhello\r\n000\r\n\r\n",
+      "A\r\n0123456789\r\na\r\n0123456789\r\n0\r\n\r\n",
+      "3\r\nabc\r\n0\r\nX: v\r\nY: w\r\n\r\n",
+      "3\r\nabc\r\n0\r\nX: v\r\nY: w\r\nX: z\r\n\r\n",
+      "3\r\nabc\r\n0\r\nX:\r\nY: w\r\nX: z\r\nY: q\r\n\r\n",
+      "0\r\n\r\n",
+      "1\r\n\r\r\n1\r\n\n\r\n0\r\n\r\n",
+      "2\r\n\r\n\r\n0\r\n\r\n",
+      // invalid
+      "5\nhello\r\n0\r\n\r\n",
+      "5\r\nhello\n0\r\n\r\n",
+      "5\r\nhelloX\r\n0\r\n\r\n",
+      "5\r\nhello\r\n0\n\r\n",
+      "5\r\nhello\r\n0\r\n\n",
+      "5\r\nhello\r\n0\r\nX: v\n\r\n",
+      "5\r\nhello\r\n0\r\nX: v\r\n\n",
+      " 5\r\nhello\r\n0\r\n\r\n",
+      "5 \r\nhello\r\n0\r\n\r\n",
+      "0x5\r\nhello\r\n0\r\n\r\n",
+      "+5\r\nhello\r\n0\r\n\r\n",
+      "5;a\rb\r\nhello\r\n0\r\n\r\n",
+      "5;a\x01\r\nhello\r\n0\r\n\r\n",
+      "\r\n5\r\nhello\r\n0\r\n\r\n",
+      "FFFFFFFFFFFFFFFFF\r\nhello\r\n0\r\n\r\n",
+      "5\r\nhello\r\n0\r\nHost: x\r\n\r\n",
+      "5\r\nhello\r\n0\r\nContent-Length: 3\r\n\r\n",
+      "5\r\nhello\r\n0\r\nBad Name: x\r\n\r\n",
+      "5\r\nhello\r\n0\r\nX: a\rb\r\n\r\n",
+      "5\r\nhello\r\n0\r\n\rX\r\n",
+  };
+
+  std::size_t nbMismatches = 0;
+  for (const std::string_view body : kBodies) {
+    const std::string whole = test::sendAndCollect(port, std::string(kChunkedHead) + std::string(body));
+    const int wholeStatus = StatusOf(whole);
+    ASSERT_NE(wholeStatus, 0) << body;
+
+    const auto compare = [&](const std::string& resp, std::string_view how, std::size_t cut) {
+      const int status = StatusOf(resp);
+      const bool same = wholeStatus == http::StatusCodeOK ? status == wholeStatus && BodyOf(resp) == BodyOf(whole)
+                                                          : status == wholeStatus;
+      if (!same && ++nbMismatches <= 8) {
+        ADD_FAILURE() << how << " (cut " << cut << "): [" << status << " " << BodyOf(resp) << "] instead of ["
+                      << wholeStatus << " " << BodyOf(whole) << "] for the body:\n"
+                      << body;
+      }
+    };
+
+    for (std::size_t cut = 1; cut < body.size(); ++cut) {
+      compare(SendSplit(port, kChunkedHead, body.substr(0, cut), body.substr(cut), 3ms), "two parts", cut);
+    }
+    compare(SendInParts(port, kChunkedHead, body, 1, 1ms), "byte by byte", 0);
+  }
+  EXPECT_EQ(nbMismatches, 0U);
+}
+
+// The size limit of the trailers must not depend on how they are received: here, trailer lines taking exactly
+// maxHeaderBytes are accepted at once, but refused when the read ends between the CR and the LF of the empty line.
+TEST(HttpParserAudit, TrailerSizeLimitDoesNotDependOnReads) {
+  static constexpr std::size_t kMaxHeaderBytes = 128;  // the minimum accepted value
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) { cfg.withMaxHeaderBytes(kMaxHeaderBytes); });
+  InstallEchoHandler();
+
+  for (const std::size_t trailersSize : {kMaxHeaderBytes - 1, kMaxHeaderBytes, kMaxHeaderBytes + 1}) {
+    SCOPED_TRACE(trailersSize);
+    // "X: " + value + CRLF
+    const std::string trailers = "X: " + std::string(trailersSize - 5, 'v') + "\r\n";
+    ASSERT_EQ(trailers.size(), trailersSize);
+    const std::string chunked = "3\r\nfoo\r\n0\r\n" + trailers + "\r\n";
+
+    const int wholeStatus = StatusOf(SendInParts(port, kChunkedHead, chunked, chunked.size()));
+    // Everything but the last LF, then the last LF.
+    const int splitStatus = StatusOf(
+        SendSplit(port, kChunkedHead, chunked.substr(0, chunked.size() - 1), chunked.substr(chunked.size() - 1)));
+    EXPECT_EQ(splitStatus, wholeStatus);
+    const int byteByByteStatus = StatusOf(SendInParts(port, kChunkedHead, chunked, 1, 1ms));
+    EXPECT_EQ(byteByByteStatus, wholeStatus);
+  }
+  ts.resetConfig();
+}
+
+// Only the trailers count toward their limit: not the requests pipelined behind them, received in the same read.
+TEST(HttpParserAudit, TrailerSizeLimitIgnoresThePipelinedRequests) {
+  static constexpr std::size_t kMaxHeaderBytes = 128;  // the minimum accepted value
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) { cfg.withMaxHeaderBytes(kMaxHeaderBytes); });
+  InstallEchoHandler();
+
+  const std::string pipelinedBody(2 * kMaxHeaderBytes, 'p');
+  const std::string resp = test::sendAndCollect(
+      port, std::format("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nfoo\r\n0\r\nX: v\r\n\r\n"
+                        "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        pipelinedBody.size(), pipelinedBody));
+  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 200"), 2) << resp;
+  EXPECT_TRUE(resp.ends_with(pipelinedBody)) << resp;
+  ts.resetConfig();
+}
+
+// Same for the size limit of the head.
+TEST(HttpParserAudit, HeadSizeLimitDoesNotDependOnReads) {
+  static constexpr std::size_t kMaxHeaderBytes = 128;  // the minimum accepted value
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) { cfg.withMaxHeaderBytes(kMaxHeaderBytes); });
+  InstallEchoHandler();
+
+  static constexpr std::string_view kStart = "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\nX-Pad: ";
+  for (std::size_t headSize = kMaxHeaderBytes - 2; headSize <= kMaxHeaderBytes + 3; ++headSize) {
+    SCOPED_TRACE(headSize);
+    const std::string head = std::string(kStart) + std::string(headSize - kStart.size() - 4, 'p') + "\r\n\r\n";
+    ASSERT_EQ(head.size(), headSize);
+
+    const int wholeStatus = StatusOf(SendInParts(port, head, {}, 1));
+    for (const std::size_t lastPartSize : {1U, 2U, 3U}) {
+      SCOPED_TRACE(lastPartSize);
+      const int splitStatus = StatusOf(
+          SendSplit(port, {}, head.substr(0, head.size() - lastPartSize), head.substr(head.size() - lastPartSize)));
+      EXPECT_EQ(splitStatus, wholeStatus);
+    }
+  }
+  ts.resetConfig();
+}
+
+// Trailers are merged like the header fields: same defect as
+// HttpRequestViewTest.MergeKeepsValueOfFieldWhoseFirstOccurrenceWasEmpty.
+TEST(HttpParserAudit, RepeatedTrailersAreCombinedInOrder) {
+  ts.router().setDefault([](const HttpRequestView& req) {
+    return req.makeResponse(std::format("x=[{}];y=[{}]", req.trailerValueOrEmpty("x"), req.trailerValueOrEmpty("y")));
+  });
+  const std::string resp =
+      test::sendAndCollect(port, std::string(kChunkedHead) + "3\r\nabc\r\n0\r\nX:\r\nY: w\r\nX: z\r\nY: q\r\n\r\n");
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_EQ(BodyOf(resp), "x=[z];y=[w,q]");
 }
 
 }  // namespace aeronet

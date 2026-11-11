@@ -37,20 +37,20 @@ constexpr bool IsReservedOrForbiddenRequestHeader(LowerAsciiKey name) noexcept {
   return std::ranges::any_of(kHeaders, [name](LowerAsciiKey candidate) { return name == candidate; });
 }
 
-// RFC 7230 §4.1.2: Certain headers MUST NOT appear in trailers (chunked transfer encoding).
-// This function checks if a header name is forbidden in trailer context.
-// Forbidden trailer headers include:
-//   - Transfer-Encoding, Content-Length, Host (message framing and routing)
+// RFC 9110 §6.5.1: the fields needed before the content is received cannot be processed in trailers. This function
+// checks if a header name is forbidden in trailer context:
+//   - Transfer-Encoding, Content-Length, Host, Connection, Upgrade (message framing, routing and connection)
 //   - Trailer itself (no recursion)
 //   - Cache-Control, Expires, Pragma, Vary (caching directives need to be known early)
-//   - Authorization, Set-Cookie, Cookie (security/authentication must be in head)
+//   - Authorization, Proxy-Authorization, WWW-Authenticate, Proxy-Authenticate, Set-Cookie, Cookie (authentication)
 //   - Content-Encoding, Content-Type, Content-Range (content metadata)
-//   - Expect, Range, If-* conditionals, TE (request control headers)
+//   - Expect, Max-Forwards, Range, If-* conditionals, TE (request controls and conditionals)
 // This is a conservative list for safety and correctness.
 constexpr bool IsForbiddenTrailerHeader(LowerAsciiKey trailerName) noexcept {
   static constexpr LowerAsciiKey kForbiddenTrailers[]{
       "authorization",
       "cache-control",
+      "connection",
       "content-encoding",
       http::ContentLength,
       "content-range",
@@ -62,14 +62,20 @@ constexpr bool IsForbiddenTrailerHeader(LowerAsciiKey trailerName) noexcept {
       "if-match",
       "if-modified-since",
       "if-none-match",
+      "if-range",
       "if-unmodified-since",
+      "max-forwards",
       "pragma",
+      "proxy-authenticate",
+      "proxy-authorization",
       "range",
       "set-cookie",
       "te",
       "trailer",
       "transfer-encoding",
+      "upgrade",
       "vary",
+      "www-authenticate",
   };
 
   return std::ranges::any_of(kForbiddenTrailers,

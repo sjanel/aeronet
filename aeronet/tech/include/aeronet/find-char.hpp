@@ -12,7 +12,7 @@ namespace aeronet {
 template <class CharT>
 [[nodiscard]] CharT* FindChar(CharT* first, CharT* last, char ch) noexcept {
   static_assert(sizeof(CharT) == 1, "FindChar only works on byte ranges");
-  auto* pos = static_cast<CharT*>(std::memchr(first, ch, static_cast<std::size_t>(last - first)));
+  CharT* pos = static_cast<CharT*>(std::memchr(first, ch, static_cast<std::size_t>(last - first)));
   return pos == nullptr ? last : pos;
 }
 
