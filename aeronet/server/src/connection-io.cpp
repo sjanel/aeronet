@@ -35,6 +35,10 @@
 #include "aeronet/tls-transport.hpp"
 #endif
 
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include "aeronet/async-handler-state.hpp"
+#endif
+
 namespace aeronet::internal {
 
 namespace {
@@ -543,14 +547,14 @@ bool ConnectionIo::startLingeringClose(ConnectionIt cnxIt) {
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
   // The input buffer, reused to discard the input, holds the request that its handler or its deferred work may still
   // read: closed right away instead, the request being kept until the work completes.
-  if (const auto* asyncState = state.pAsyncState(); asyncState != nullptr && asyncState->holdsInput()) {
+  if (const AsyncHandlerState* asyncState = state.pAsyncState(); asyncState != nullptr && asyncState->holdsInput()) {
     return false;
   }
 #endif
   const NativeHandle fd = cnxIt->fd();
 #ifdef AERONET_ENABLE_OPENSSL
   // Its close_notify alert ends the TLS stream before the TCP one.
-  if (auto* pTlsTransport = state.transport.get<TlsTransport>(); pTlsTransport != nullptr) {
+  if (TlsTransport* pTlsTransport = state.transport.get<TlsTransport>(); pTlsTransport != nullptr) {
     pTlsTransport->shutdown();
   }
 #endif

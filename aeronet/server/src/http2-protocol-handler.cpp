@@ -163,7 +163,8 @@ ProtocolProcessResult Http2ProtocolHandler::processInput(std::span<const std::by
       break;
     case Http2Connection::ProcessResult::Action::Error:
       output.action = ProtocolProcessResult::Action::CloseImmediate;
-      log::error("HTTP/2 protocol error: {} ({})", ErrorCodeName(result.errorCode),
+      // A connection error caused by the input of the peer: not logged above debug level, as any client can cause it.
+      log::debug("HTTP/2 protocol error: {} ({})", ErrorCodeName(result.errorCode),
                  ConvertProcessResultErrorMsgToSv(result.errorMsg));
       break;
     case Http2Connection::ProcessResult::Action::GoAway:
@@ -1250,7 +1251,10 @@ void Http2ProtocolHandler::closeTunnelByUpstreamFd(NativeHandle upstreamFd) {
 
 void Http2ProtocolHandler::tunnelConnectFailed(uint32_t streamId) {
   auto streamIt = _streams.find(streamId);
-  if (streamIt != _streams.end() && streamIt->second.tunnelUpstreamFd != kInvalidHandle) {
+  if (streamIt == _streams.end()) {
+    return;  // closed meanwhile: there is nothing left to reset
+  }
+  if (streamIt->second.tunnelUpstreamFd != kInvalidHandle) {
     _tunnelUpstreams.erase(streamIt->second.tunnelUpstreamFd);
     streamIt->second.tunnelUpstreamFd = kInvalidHandle;
   }

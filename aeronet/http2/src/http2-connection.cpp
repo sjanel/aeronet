@@ -55,9 +55,10 @@ constexpr int32_t ReplenishThreshold(uint32_t windowSize) noexcept { return stat
 // memory growth from a CONTINUATION flood attack.
 constexpr std::size_t kMaxHeaderBlockAccumulationSize = 256UL * 1024;
 
-// Security hardening: cap PRIORITY frames received on non-existent streams
-// to prevent an attacker from flooding cheap PRIORITY frames that starve
-// real request processing. ENHANCE_YOUR_CALM is sent when exceeded.
+// Security hardening: cap the PRIORITY frames received on non-existent streams since the last stream opened by the
+// peer, to prevent an attacker from flooding cheap PRIORITY frames that starve real request processing.
+// ENHANCE_YOUR_CALM is sent when exceeded. A client reprioritizing its forgotten streams now and then on a long-lived
+// connection never reaches it.
 constexpr uint32_t kMaxIdlePriorityFrames = 10000U;
 
 constexpr uint32_t kMinMaxFrameSize = 16384;     // Minimum allowed SETTINGS_MAX_FRAME_SIZE
@@ -590,7 +591,9 @@ ErrorCode Http2Connection::prepareSendHeaders(uint32_t streamId, bool endStream)
   auto [it, inserted] =
       _streams.try_emplace(streamId, streamId, _peerSettings.initialWindowSize, newStreamRecvWindow(streamId));
   if (inserted) {
-    // Created new stream
+    // Created new stream. A stream once closed, then forgotten, is never opened again (RFC 9113 §5.1.1): a response is
+    // sent on a stream of the peer that is still known.
+    assert(streamId > (isPeerStream(streamId) ? _lastPeerStreamId : _lastLocalStreamId));
     if (!canCreateStreams()) {
       _streams.erase(it);
       return ErrorCode::RefusedStream;
@@ -802,18 +805,25 @@ ErrorCode Http2Connection::sendData(uint32_t streamId, RawBytes&& owner, std::si
 }
 
 void Http2Connection::sendRstStream(uint32_t streamId, ErrorCode errorCode) {
-  WriteRstStreamFrame(_outputBuffer, streamId, errorCode);
+  // A stream is reset while it is known: once closed, then forgotten, no frame other than PRIORITY can be sent on it
+  // (RFC 9113 §5.1).
+  const auto it = _streams.find(streamId);
+  assert(it != _streams.end());
+  if (it->second.isClosed()) [[unlikely]] {
+    // Closed through the send path (END_STREAM sent while half-closed remote), or reset already: nothing to reset, and
+    // the sink is told only once that the stream closed.
+    closeStream(it);
+    return;
+  }
 
+  WriteRstStreamFrame(_outputBuffer, streamId, errorCode);
   recordFrame(true, FrameType::RstStream, sizeof(uint32_t));
 
-  const auto it = _streams.find(streamId);
-  if (it != _streams.end()) {
-    it->second.onSendRstStream();
-    it->second.setErrorCode(errorCode);
-    closeStream(it, errorCode);
-    if (_pSink != nullptr) {
-      _pSink->onStreamReset(streamId, errorCode);
-    }
+  it->second.onSendRstStream();
+  it->second.setErrorCode(errorCode);
+  closeStream(it, errorCode);
+  if (_pSink != nullptr) {
+    _pSink->onStreamReset(streamId, errorCode);
   }
 }
 
@@ -914,14 +924,15 @@ void Http2Connection::sendWindowUpdate(uint32_t streamId, uint32_t increment) {
 
 Http2Connection::ProcessResult Http2Connection::processPreface(std::span<const std::byte> data) {
   if (_isServer) {
-    // Server expects client preface
-    if (data.size() < kConnectionPrefaceLength) {
-      return ProcessResult{ProcessResult::Action::Continue};
-    }
-    // Compare against the connection preface string
-    std::string_view dataView(reinterpret_cast<const char*>(data.data()), kConnectionPrefaceLength);
-    if (dataView != kConnectionPreface) [[unlikely]] {
+    // The client preface is rejected at its first invalid byte (RFC 9113 §3.4), without waiting for the rest of it: a
+    // client sending something else, shorter, may wait for an answer.
+    const std::string_view dataView(reinterpret_cast<const char*>(data.data()),
+                                    std::min(data.size(), kConnectionPrefaceLength));
+    if (!kConnectionPreface.starts_with(dataView)) [[unlikely]] {
       return connectionError(ErrorCode::ProtocolError, ErrorMsg::InvalidConnectionPreface);
+    }
+    if (dataView.size() < kConnectionPrefaceLength) {
+      return ProcessResult{ProcessResult::Action::Continue};
     }
 
     _state = ConnectionState::AwaitingSettings;
@@ -1021,8 +1032,9 @@ Http2Connection::ProcessResult Http2Connection::processFrame(FrameHeader header,
     case FrameType::Continuation:
       return handleContinuationFrame(header, payload);
     default:
-      // Unknown frame types are ignored (RFC 9113 §4.1)
-      log::warn("Ignoring unknown frame type {}", static_cast<uint32_t>(header.type()));
+      // Unknown frame types are ignored (RFC 9113 §4.1), like the extensions that clients send (PRIORITY_UPDATE of
+      // RFC 9218 for instance): not logged above debug level, as any client can send them.
+      log::debug("Ignoring unknown frame type {}", static_cast<uint32_t>(header.type()));
       return ProcessResult{ProcessResult::Action::Continue};
   }
 }
@@ -1064,8 +1076,9 @@ Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader head
 
   if (!it->second.canReceive()) {
     replenishConnectionRecvWindow();
-    if (it->second.resetSent()) {
-      // Sent before the peer received our RST_STREAM: ignored (RFC 9113 §5.1).
+    if (it->second.isClosed()) {
+      // Sent before the peer received our RST_STREAM, or after the stream closed: ignored, no frame other than PRIORITY
+      // being sent on a closed stream (RFC 9113 §5.1).
       return ProcessResult{ProcessResult::Action::Continue};
     }
     return streamError(streamId, ErrorCode::StreamClosed, ErrorMsg::DATAOnClosedStream);
@@ -1149,6 +1162,7 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
     ++_activeStreamCount;
     recordStreamOpened(false);
     _lastPeerStreamId = streamId;
+    _idlePriorityFrameCount = 0;
 
     // The last stream of the budget of the connection (Http2Config::maxStreamsPerConnection): a graceful GOAWAY makes
     // the client open its next streams on another connection, this one closing once its streams are served (see
@@ -1287,14 +1301,17 @@ Http2Connection::ProcessResult Http2Connection::handleRstStreamFrame(FrameHeader
     }
     return ProcessResult{ProcessResult::Action::Continue};
   }
-  // A stream this endpoint reset is already closed: the peer's own RST_STREAM is ignored (RFC 9113 §5.1).
-  if (!it->second.resetSent()) {
-    it->second.onRecvRstStream();
-    it->second.setErrorCode(frame.errorCode);
-    closeStream(it, frame.errorCode);
-    if (_pSink != nullptr) {
-      _pSink->onStreamReset(streamId, frame.errorCode);
-    }
+  if (it->second.isClosed()) {
+    // Reset by this endpoint, or closed by the END_STREAM of both: the RST_STREAM the peer sent meanwhile is ignored
+    // (RFC 9113 §5.1). The closing of a stream closed through the send path is notified, without a reset.
+    closeStream(it);
+    return ProcessResult{ProcessResult::Action::Continue};
+  }
+  it->second.onRecvRstStream();
+  it->second.setErrorCode(frame.errorCode);
+  closeStream(it, frame.errorCode);
+  if (_pSink != nullptr) {
+    _pSink->onStreamReset(streamId, frame.errorCode);
   }
 
   return ProcessResult{ProcessResult::Action::Continue};
@@ -1375,9 +1392,13 @@ Http2Connection::ProcessResult Http2Connection::handleSettingsFrame(FrameHeader 
     }
   }
 
-  // A single pass over the streams, regardless of the number of occurrences in the frame.
+  // A single pass over the streams, regardless of the number of occurrences in the frame. A closed stream, retained for
+  // its late frames, has no window anymore (RFC 9113 §6.9.2): whatever credit the peer granted on it cannot overflow.
   if (newInitialWindowSize != kUnsetWindowSizeValue) {
     for (auto& [id, stream] : _streams) {
+      if (stream.isClosed()) {
+        continue;
+      }
       ErrorCode err = stream.updateInitialWindowSize(newInitialWindowSize);
       if (err != ErrorCode::NoError) {
         return connectionError(err, ErrorMsg::WindowSizeUpdateOverflow);
@@ -1590,7 +1611,7 @@ Http2Connection::ProcessResult Http2Connection::discardFieldBlock(std::span<cons
 Http2Connection::ProcessResult Http2Connection::processFieldBlock(StreamsMap::iterator it,
                                                                   std::span<const std::byte> headerBlock,
                                                                   bool endStream) {
-  if (it->second.resetSent()) {
+  if (it->second.isClosed()) {
     return discardFieldBlock(headerBlock);
   }
 

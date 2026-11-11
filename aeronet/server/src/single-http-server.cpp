@@ -637,7 +637,7 @@ SingleHttpServer::CloseStatus SingleHttpServer::handleReadableClient(ConnectionI
   // response, so a client pipelining such requests (an HTTP/2 client keeping several streams busy, say) would otherwise
   // keep the event loop on its connection, while the other ones wait, until it has sent a whole budget of requests.
   const uint64_t bytesWrittenAtEventStart = _ctx.totalBytesWritten();
-  const auto fd = cnxIt->fd();
+  const NativeHandle fd = cnxIt->fd();
 
   // Without pending input, the connection reads into the input buffer of the event loop rather than into its own:
   // HTTP/2 or WebSocket messages of tens of kilobytes on many connections would otherwise be received in cold memory,
@@ -769,18 +769,18 @@ bool SingleHttpServer::processConnectionInput(ConnectionIt cnxIt) {
     std::string_view bufView(state.inBuffer);
     // Check if buffer starts with "PRI " (first 4 chars of HTTP/2 preface)
     if (bufView.starts_with("PRI ")) {
-      // Wait for full preface if we don't have enough data
-      if (bufView.size() < http2::kConnectionPreface.size()) {
-        return false;  // Need more data
-      }
-      // Verify full preface
-      if (bufView.starts_with(http2::kConnectionPreface)) {
+      // The preface, or its beginning: wait for the rest of it. Other bytes are an HTTP/1.1 request, answered at once
+      // (RFC 9113 §3.4), whatever its length.
+      if (http2::kConnectionPreface.starts_with(bufView.substr(0, http2::kConnectionPreface.size()))) {
+        if (bufView.size() < http2::kConnectionPreface.size()) {
+          return false;  // Need more data
+        }
         // Switch to the HTTP/2 protocol handler, which waits for the client preface before sending SETTINGS.
         installHttp2Handler(cnxIt->fd(), state, false);
         return processSpecialProtocolHandler(cnxIt);
       }
-      log::error("Invalid HTTP/2 preface, falling back to HTTP/1.1");
-      // Invalid preface - continue with HTTP/1.1 (will likely fail with 400)
+      // Not logged above debug level, as any client can send it.
+      log::debug("Invalid HTTP/2 preface, falling back to HTTP/1.1");
     }
   }
 #endif

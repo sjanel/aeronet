@@ -419,6 +419,20 @@ TEST(TLSConfigTest, AlpnProtocolEntriesNonEmptyAndWithinLimit) {
   EXPECT_NO_THROW(cfg.validate());
 }
 
+// "h2c" is HTTP/2 over cleartext TCP: a server must not select it through ALPN (RFC 9113 §3.2).
+TEST(TLSConfigTest, AlpnH2cIsRejected) {
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(kDummyCertPem);
+  cfg.withKeyPem(kDummyKeyPem);
+
+  cfg.withTlsAlpnProtocols(std::initializer_list<std::string_view>{"h2", "h2c", "http/1.1"});
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+
+  cfg.withTlsAlpnProtocols(std::initializer_list<std::string_view>{"h2", "http/1.1"});
+  EXPECT_NO_THROW(cfg.validate());
+}
+
 TEST(TLSConfigTest, MinMaxVersionValidation) {
   TLSConfig cfg;
   cfg.enabled = true;

@@ -82,7 +82,7 @@ TLS requires `AERONET_ENABLE_OPENSSL=ON`. The convenience server methods enable 
 | `withCertPem()` / `withKeyPem()` | empty | In-memory PEM credentials, same format. Exclusive with the file settings: `validate()` rejects a configuration setting both. Encrypted private keys are rejected. |
 | `withTlsMinVersion()` / `withTlsMaxVersion()` | TLS 1.2 / unset | Protocol bounds; accepted server strings are `TLS1.2` and `TLS1.3`. TLS 1.2 is enforced when the minimum is not explicitly set. A maximum below the minimum is rejected. |
 | `withCipherList()` / `withTlsCipherPolicy()` | empty / Default | OpenSSL TLS 1.2 ciphers or a `Default`, `Modern`, `Compatibility`, or `Legacy` policy. A cipher list requires the `Default` policy. |
-| `withTlsAlpnProtocols()` | empty | Ordered ALPN preference list. Use `{ "h2", "http/1.1" }` for TLS HTTP/2; `"h2"` is rejected when HTTP/2 is disabled. |
+| `withTlsAlpnProtocols()` | empty | Ordered ALPN preference list. Use `{ "h2", "http/1.1" }` for TLS HTTP/2; `"h2"` is rejected when HTTP/2 is disabled, `"h2c"` always. |
 | `alpnMustMatch` | false | Fail a handshake with no ALPN overlap, including a client offering no protocol at all. |
 | `requestClientCert`, `requireClientCert` | false | Request a certificate, or require and verify one for strict mTLS. Requiring implies requesting. |
 | `withTlsTrustedClientCert()` | empty | Add a PEM trust anchor/leaf (or a bundle of them) for client-certificate validation. Their names are sent in the certificate request. |
