@@ -167,6 +167,15 @@ class HttpRequestViewTest : public ::testing::Test {
     return ret;
   }
 
+  // Attempts to parse the head received so far, without receiving more of it.
+  http::StatusCode parseReceived() {
+    auto ret = req.initTrySetHead(inBuffer, headParseState, headTmpBuffer, 4096U, true, nullptr);
+    if (ret == http::StatusCodeOK) {
+      req.finalizeBeforeHandlerCall({});
+    }
+    return ret;
+  }
+
   // Resumes the request whose head was parsed before its body was received, as the server does once more of its body
   // is received.
   void resumeHeadWaitingForBody() {
@@ -1702,6 +1711,34 @@ TEST_F(HttpRequestViewTest, MergeNonConsecutiveHeadersBothEmpty) {
   EXPECT_TRUE(req.headerValue("h").has_value());
 }
 
+// Audit finding: a field whose first occurrence is empty takes the value of its next occurrence, on a later line than
+// its name. The merge of another field, whose first value lies between both, moves that line without moving the value.
+TEST_F(HttpRequestViewTest, MergeKeepsValueOfFieldWhoseFirstOccurrenceWasEmpty) {
+  const http::StatusCode st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
+                                              "X-A:\r\n"
+                                              "X-B: 1\r\n"
+                                              "X-A: foo\r\n"
+                                              "X-B: 2\r\n"));
+  ASSERT_EQ(st, http::StatusCodeOK);
+
+  EXPECT_EQ(req.headerValueOrEmpty("x-b"), "1,2");
+  EXPECT_EQ(req.headerValueOrEmpty("x-a"), "foo");
+}
+
+// Same, the head being received line by line: the parsed result must not depend on the reads.
+TEST_F(HttpRequestViewTest, MergeKeepsValueOfFieldWhoseFirstOccurrenceWasEmptyLineByLine) {
+  ASSERT_EQ(receiveAndParse("GET /p HTTP/1.1\r\n"), kNeedMoreData);
+  ASSERT_EQ(receiveAndParse("Host: h\r\n"), kNeedMoreData);
+  ASSERT_EQ(receiveAndParse("X-A:\r\n"), kNeedMoreData);
+  ASSERT_EQ(receiveAndParse("X-B: 1\r\n"), kNeedMoreData);
+  ASSERT_EQ(receiveAndParse("X-A: foo\r\n"), kNeedMoreData);
+  ASSERT_EQ(receiveAndParse("X-B: 2\r\n"), kNeedMoreData);
+  ASSERT_EQ(receiveAndParse("\r\n"), http::StatusCodeOK);
+
+  EXPECT_EQ(req.headerValueOrEmpty("x-b"), "1,2");
+  EXPECT_EQ(req.headerValueOrEmpty("x-a"), "foo");
+}
+
 TEST_F(HttpRequestViewTest, MergeMultipleCookies) {
   auto st = reqSet(BuildRaw("GET", "/p", "HTTP/1.1",
                             "X-Test: Value\r\n"
@@ -2940,5 +2977,193 @@ TEST_F(HttpRequestViewTest, BodyAsYamlReturnsBadRequestOnParseError) {
   EXPECT_EQ(result.error().status(), http::StatusCodeBadRequest);
 }
 #endif  // AERONET_ENABLE_GLAZE
+
+// =============================================================================
+// Audit: differential checks of the parsing of a head
+// =============================================================================
+
+namespace {
+
+// A head made of a valid request line and Host, then fields of a few names, repeated, some of them empty, with random
+// optional whitespace around their values. 'expected' receives the value a recipient combining the non-empty values of
+// a name in their order gets (RFC 9110 §5.3), with the separator aeronet documents for it.
+std::string HeadWithRepeatedFields(FuzzRng& rng, std::vector<std::pair<std::string, std::string>>& expected) {
+  struct Field {
+    std::string_view name;
+    std::string_view lowerName;
+    char sep;
+  };
+  static constexpr Field kFields[]{
+      {"X-A", "x-a", ','},
+      {"X-B", "x-b", ','},
+      {"Accept", "accept", ','},
+      {"Cookie", "cookie", ';'},
+      {"User-Agent", "user-agent", ' '},
+  };
+  static constexpr std::string_view kValues[]{"", "", "1", "foo", "a=b", "some longer value", "x y"};
+  static constexpr std::string_view kBlanks[]{"", " ", "\t", "  "};
+
+  std::string head = "GET /p HTTP/1.1\r\nHost: h\r\n";
+  expected.clear();
+  expected.emplace_back("host", "h");
+  std::string values[std::size(kFields)];
+  bool seen[std::size(kFields)]{};
+  const std::size_t nbLines = rng.range(2, 9);
+  for (std::size_t line = 0; line < nbLines; ++line) {
+    const std::size_t fieldPos = rng.range(0, std::size(kFields));
+    const std::string_view value = kValues[rng.range(0, std::size(kValues))];
+    head.append(kFields[fieldPos].name).append(":").append(kBlanks[rng.range(0, std::size(kBlanks))]);
+    head.append(value).append(kBlanks[rng.range(0, std::size(kBlanks))]).append("\r\n");
+    seen[fieldPos] = true;
+    if (!value.empty()) {
+      if (!values[fieldPos].empty()) {
+        values[fieldPos].push_back(kFields[fieldPos].sep);
+      }
+      values[fieldPos].append(value);
+    }
+  }
+  head.append("\r\n");
+  for (std::size_t fieldPos = 0; fieldPos < std::size(kFields); ++fieldPos) {
+    if (seen[fieldPos]) {
+      expected.emplace_back(kFields[fieldPos].lowerName, values[fieldPos]);
+    }
+  }
+  std::ranges::sort(expected);
+  return head;
+}
+
+// Heads, valid or not, whose parsing is compared between the ways of receiving them.
+constexpr std::string_view kAuditHeads[]{
+    "GET / HTTP/1.1\r\nHost: h\r\n\r\n",
+    "GET /a%20b?x=%41&y=+ HTTP/1.1\r\nHost: h\r\nX-A: 1\r\nX-A: 2\r\n\r\n",
+    "GET http://user@example.com:8080/p?q=1 HTTP/1.1\r\nHost: other\r\nX-A:\r\nX-B: 1\r\nX-A: foo\r\nX-B: 2\r\n\r\n",
+    "OPTIONS * HTTP/1.1\r\nHost: h\r\n\r\n",
+    "POST /p HTTP/1.0\r\nContent-Length: 3\r\n\r\nabc",
+    "GET /p HTTP/1.1\r\nHost: h\r\nCookie: a=1\r\nUser-Agent: x\r\nCookie: b=2\r\nUser-Agent: y\r\n\r\nGET /next",
+    // malformed lines
+    "GET  / HTTP/1.1\r\nHost: h\r\n\r\n",
+    "GET / HTTP/1.1 \r\nHost: h\r\n\r\n",
+    "GET /\tx HTTP/1.1\r\nHost: h\r\n\r\n",
+    "GE\nT / HTTP/1.1\r\nHost: h\r\n\r\n",
+    "GET /a\nb HTTP/1.1\r\nHost: h\r\n\r\n",
+    "GET / HTTP/1.1\nHost: h\r\n\r\n",
+    "GET / HTTP/1.1\r\nHost: h\n\r\n",
+    "GET / HTTP/1.1\r\nHost: h\r\n\n",
+    "GET / HTTP/1.1\r\nHost: h\r\nX-A: a\rb\r\n\r\n",
+    "GET / HTTP/1.1\r\nHost: h\r\n\rX-A: a\r\n\r\n",
+    "GET / HTTP/1.1\r\rHost: h\r\n\r\n",
+    "GET / HTTP/1.1\r\nHost: h\r\nX-A : 1\r\n\r\n",
+    "GET / HTTP/1.1\r\nHost: h\r\n X-A: 1\r\n\r\n",
+    "GET / HTTP/1.1\r\nHost: h\r\nHost: h\r\n\r\n",
+    "GET / HTTP/1.1\r\nHost: h\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\n",
+    "GET / HTTP/1.1\r\nX-A: 1\r\n\r\n",
+    "UNKNOWNMETHOD / HTTP/1.1\r\nHost: h\r\n\r\n",
+    "GET / HTTP/2.0\r\nHost: h\r\n\r\n",
+    "GET /abcdefghijklmnop\r\nHost: h\r\n\r\n",
+};
+
+}  // namespace
+
+// The value of each field must be the combination of the non-empty values of its lines, in their order.
+TEST_F(HttpRequestViewTest, AuditRepeatedFieldsAreCombinedInOrder) {
+  std::vector<std::pair<std::string, std::string>> expected;
+  std::size_t nbWrongHeads = 0;
+  for (uint64_t seed = 0; seed < 2000; ++seed) {
+    FuzzRng rng(seed + 7000000);
+    const std::string head = HeadWithRepeatedFields(rng, expected);
+    ASSERT_EQ(reqSet(RawChars(head)), http::StatusCodeOK) << head;
+    const HeadSnapshot parsed = snapshot();
+    if (parsed.headers != expected) {
+      if (++nbWrongHeads <= 3) {
+        std::string got;
+        for (const auto& [name, value] : parsed.headers) {
+          got.append(name).append("=[").append(value).append("] ");
+        }
+        ADD_FAILURE() << "seed " << seed << ", head:\n" << head << "parsed as: " << got;
+      }
+    }
+  }
+  EXPECT_EQ(nbWrongHeads, 0U) << "heads whose fields are not the combination of their lines, out of 2000";
+}
+
+// A head must be accepted or rejected, and parsed, the same way whether it is received at once, in two parts cut at any
+// offset, or byte by byte.
+TEST_F(HttpRequestViewTest, AuditHeadParsingDoesNotDependOnReads) {
+  struct Outcome {
+    bool operator==(const Outcome&) const = default;
+
+    http::StatusCode status{};
+    HeadSnapshot head;
+  };
+
+  // Parses 'input' received as the given parts, as the server does: after each read, once the minimal request line is
+  // received, until the head is complete or rejected.
+  const auto parse = [this](std::string_view input, std::span<const std::size_t> cuts) {
+    inBuffer.clear();
+    headParseState = HeadParseState::None;
+    Outcome outcome{kNeedMoreData, {}};
+    std::size_t pos = 0;
+    for (std::size_t partPos = 0; partPos <= cuts.size() && outcome.status == kNeedMoreData; ++partPos) {
+      const std::size_t end = partPos == cuts.size() ? input.size() : cuts[partPos];
+      receive(input.substr(pos, end - pos));
+      pos = end;
+      if (inBuffer.size() >= http::kHttpReqLineMinLen) {
+        outcome.status = parseReceived();
+      }
+    }
+    if (outcome.status == http::StatusCodeOK) {
+      outcome.head = snapshot();
+    }
+    return outcome;
+  };
+
+  std::vector<std::string> heads(std::begin(kAuditHeads), std::end(kAuditHeads));
+  std::vector<std::pair<std::string, std::string>> unused;
+  for (uint64_t seed = 0; seed < 150; ++seed) {
+    FuzzRng rng(seed + 8000000);
+    heads.push_back(HeadWithRepeatedFields(rng, unused));
+    const RawChars semiValid = SemiValidRequest(rng);
+    heads.emplace_back(semiValid.data(), semiValid.size());
+  }
+
+  std::size_t nbDecisionMismatches = 0;
+  std::size_t nbStatusMismatches = 0;
+  std::vector<std::size_t> cuts;
+  for (const std::string& head : heads) {
+    const Outcome whole = parse(head, {});
+    const bool wholeAccepted = whole.status == http::StatusCodeOK;
+
+    const auto compare = [&](const Outcome& split, std::string_view how, std::size_t cut) {
+      const bool splitAccepted = split.status == http::StatusCodeOK;
+      const bool wholePending = whole.status == kNeedMoreData;
+      const bool splitPending = split.status == kNeedMoreData;
+      if (wholeAccepted != splitAccepted || wholePending != splitPending || (wholeAccepted && whole != split)) {
+        if (++nbDecisionMismatches <= 5) {
+          ADD_FAILURE() << how << " (cut " << cut << "): status " << split.status << " instead of " << whole.status
+                        << " for the head:\n"
+                        << head;
+        }
+      } else if (whole.status != split.status) {
+        if (++nbStatusMismatches <= 5) {
+          ADD_FAILURE() << how << " (cut " << cut << "): rejected with " << split.status << " instead of "
+                        << whole.status << " for the head:\n"
+                        << head;
+        }
+      }
+    };
+
+    for (std::size_t cut = 1; cut < head.size(); ++cut) {
+      cuts.assign(1, cut);
+      compare(parse(head, cuts), "two parts", cut);
+    }
+    cuts.clear();
+    for (std::size_t cut = 1; cut < head.size(); ++cut) {
+      cuts.push_back(cut);
+    }
+    compare(parse(head, cuts), "byte by byte", 0);
+  }
+  EXPECT_EQ(nbDecisionMismatches, 0U) << "accept / reject decision or parsed head depending on the reads";
+  EXPECT_EQ(nbStatusMismatches, 0U) << "status of a rejected head depending on the reads";
+}
 
 }  // namespace aeronet

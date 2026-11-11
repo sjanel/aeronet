@@ -37,6 +37,7 @@
 #include "aeronet/search-crlf.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
+#include "aeronet/tchars.hpp"
 #include "aeronet/template-constants.hpp"
 #include "aeronet/tolower-str.hpp"
 #include "aeronet/tracing/tracer.hpp"
@@ -367,7 +368,19 @@ AERONET_NOINLINE bool MoveAuthorityFirst(char* pFirst, char* pLast, MovedAbsolut
 // Sets the host of the request to the authority of its absolute-form request-target, whatever its Host header field.
 // Out of line: rare, and an insertion in the map of headers would be inlined in the parsing of every request head.
 AERONET_NOINLINE SvToSvMap::iterator SetHost(SvToSvMap& headers, std::string_view authority) {
-  return headers.insert_or_assign(std::string_view(http::Host), authority).first;
+  return headers.insert_or_assign(http::Host, authority).first;
+}
+
+// Status for a request line whose method is not one we implement.
+// 501 only if the method is a valid token AND the rest of the line has no control byte
+// (bare LF/CR, NUL, HT...), so the answer matches what a split read would give.
+AERONET_NOINLINE http::StatusCode UnknownMethodStatus(const char* pFirst, const char* pSep,
+                                                      const char* pLineLast) noexcept {
+  const bool validToken = pFirst != pSep && std::all_of(pFirst, pSep, [](char ch) { return is_tchar(ch); });
+  if (!validToken || std::any_of(pSep, pLineLast, url::IsControlChar)) {
+    return http::StatusCodeBadRequest;
+  }
+  return http::StatusCodeNotImplemented;
 }
 
 }  // namespace
@@ -401,7 +414,7 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, HeadP
       // Not complete yet, or with a bare CR: waited for only if more input can still make it valid.
       return CanStillBeValidLines(pFirst, pLast) ? kStatusNeedMoreData : http::StatusCodeBadRequest;
     }
-    if (std::cmp_less(pLineLast - pFirst, http::kHttpReqLineMinLen - http::CRLF.size())) {
+    if (static_cast<std::size_t>(pLineLast - pFirst) < http::kHttpReqLineMinLen - http::CRLF.size()) [[unlikely]] {
       return http::StatusCodeBadRequest;
     }
     // RFC 9112 §3: a request-target longer than the server wishes to parse is answered 414. The request line, made
@@ -411,15 +424,19 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, HeadP
       return http::StatusCodeURITooLong;
     }
 
-    static_assert(http::kHttpReqLineMinLen - http::CRLF.size() >= 8);
-
     uint64_t start;
+
+    static_assert(http::kHttpReqLineMinLen - http::CRLF.size() >= sizeof(start));
+
     std::memcpy(&start, pFirst, sizeof(start));
 
     const uint64_t spaceMask = SwarFindByte(start, ' ');
-    if (spaceMask == 0) {
-      char* realSep = std::find(pFirst + 8, pLineLast, ' ');
-      return realSep == pLineLast ? http::StatusCodeBadRequest : http::StatusCodeNotImplemented;
+    if (spaceMask == 0) [[unlikely]] {
+      const char* pSep = std::find(pFirst + 8, pLineLast, ' ');
+      if (pSep == pLineLast) {
+        return http::StatusCodeBadRequest;
+      }
+      return UnknownMethodStatus(pFirst, pSep, pLineLast);
     }
 
     const auto methodLen = LeadingMatchIndex(spaceMask);
@@ -431,8 +448,8 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, HeadP
     const uint64_t candidate = start & FirstNBytesMask(methodLen);
 
     const auto methodIt = std::ranges::find(kMethodCodes.codes, candidate);
-    if (methodIt == std::end(kMethodCodes.codes)) {
-      return http::StatusCodeNotImplemented;
+    if (methodIt == std::end(kMethodCodes.codes)) [[unlikely]] {
+      return UnknownMethodStatus(pFirst, pFirst + methodLen, pLineLast);
     }
     _method = http::MethodFromIdx(static_cast<http::MethodIdx>(methodIt - std::begin(kMethodCodes.codes)));
 
@@ -519,7 +536,7 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, HeadP
       tolower(pFirst + (valueView.data() - pFirst), valueView.size());
     }
 
-    auto [insertedIt, inserted] = _headers.emplace(nameView, valueView);
+    const auto [insertedIt, inserted] = _headers.emplace(nameView, valueView);
     // Store header using in-place merge helper (headers live inside connection buffer).
     if (!inserted && !http::MergeHeaderInPlace(_headers, insertedIt, valueView, tmpBuffer, inBuffer.data(), pFirst,
                                                mergeAllowedForUnknownRequestHeaders)) {
