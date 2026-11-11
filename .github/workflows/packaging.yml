@@ -29,19 +29,33 @@ jobs:
           ./scripts/ci-apt-install.sh build-essential python3-pip ninja-build cmake pkg-config git
           pipx install conan
           conan --version
-          
-      - name: Install all dependencies with features
-        run: ./scripts/ci-apt-install.sh libssl-dev libcurl4-openssl-dev
-        if: ${{ matrix.features == 'ON' }}
 
+      # No system openssl or curl: Conan builds its own, and system libraries would hide a dependency missing from the
+      # recipe.
       - name: Conan profile detect
         run: |
           conan profile detect --force
 
+      # Conan Center has no C++23 binaries: every dependency is built from source. Both features jobs build the same
+      # (static) dependencies, so they share a cache, saved with 'conan cache save' without aeronet. The key is only
+      # known after the build (see the pack step): restore the most recent one.
+      - name: Restore Conan dependencies
+        id: conan-cache-restore
+        if: ${{ matrix.features == 'ON' }}
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/conan-deps.tgz
+          key: conan-deps-
+          restore-keys: conan-deps-
+
       - name: Create package
         run: |
+          if [ -f ~/conan-deps.tgz ]; then
+            conan cache restore ~/conan-deps.tgz
+          fi
           VERSION=$(cat VERSION)
-          conan create . --name aeronet --version "$VERSION" \
+          # --update checks Conan Center for newer versions and revisions, that the restored cache would hide.
+          conan create . --name aeronet --version "$VERSION" --update --format=json \
             -o aeronet/*:shared=${{ matrix.shared == 'ON' && 'True' || 'False' }} \
             -o aeronet/*:with_openssl=${{ matrix.features == 'ON' && 'True' || 'False' }} \
             -o aeronet/*:with_spdlog=${{ matrix.features == 'ON' && 'True' || 'False' }} \
@@ -52,7 +66,34 @@ jobs:
             -o aeronet/*:with_html=${{ matrix.features == 'ON' && 'True' || 'False' }} \
             -s build_type=Release \
             -s compiler.cppstd=23 \
-            --build=missing
+            --build=missing > conan-graph.json
+
+      - name: Pack Conan dependencies
+        id: conan-cache-pack
+        if: ${{ matrix.features == 'ON' }}
+        run: |
+          # The packages of the graph in the local cache, without aeronet: stale restored packages are dropped.
+          conan list --graph=conan-graph.json --format=json \
+            | jq -S '{"Local Cache": .["Local Cache"] | with_entries(select(.key | startswith("aeronet/") | not))}' \
+            > conan-deps.json
+          # The key hashes their references and revisions, not their timestamps (a restore resets them): it changes
+          # only when a dependency was rebuilt or updated.
+          REFS=$(jq -r '.["Local Cache"] | to_entries[] | .key as $ref | .value.revisions | to_entries[]
+            | .key as $rrev | (.value.packages // {}) | to_entries[] | .key as $pid | .value.revisions | keys[]
+            | "\($ref)#\($rrev):\($pid)#\(.)"' conan-deps.json | sort)
+          KEY="conan-deps-$(sha256sum <<< "$REFS" | cut -c1-16)"
+          if [ "$KEY" != "${{ steps.conan-cache-restore.outputs.cache-matched-key }}" ]; then
+            conan cache save --list=conan-deps.json --file="$HOME/conan-deps.tgz"
+            ls -l ~/conan-deps.tgz
+            echo "key=$KEY" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save Conan dependencies
+        if: ${{ steps.conan-cache-pack.outputs.key != '' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ~/conan-deps.tgz
+          key: ${{ steps.conan-cache-pack.outputs.key }}
 
   vcpkg:
     name: vcpkg Overlay Build (${{ matrix.features == 'ON' && 'features' || 'minimal' }})
@@ -61,17 +102,24 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        features: [ON, OFF]
+        include:
+          # The job with dependencies builds release only: it halves every port build (protobuf: 11 min for both
+          # configurations). It is the host triplet too, else protobuf is also built for x64-linux, for its protoc.
+          # The minimal job keeps the default triplet, to cover the Debug configuration of the installed package.
+          - features: ON
+            triplet: x64-linux-release
+            spec: aeronet[openssl,spdlog,brotli,zlib,zstd,opentelemetry,protobuf,html]
+          - features: OFF
+            triplet: x64-linux
+            spec: aeronet
     steps:
       - uses: actions/checkout@v7
 
+      # No system openssl or curl: vcpkg builds its own, and system libraries would hide a dependency missing from
+      # the port.
       - name: Install prerequisites
         run: |
           ./scripts/ci-apt-install.sh build-essential ninja-build cmake pkg-config git
-
-      - name: Install all dependencies with features
-        run: ./scripts/ci-apt-install.sh libssl-dev libcurl4-openssl-dev
-        if: ${{ matrix.features == 'ON' }}
 
       - name: Verify vcpkg port version matches VERSION
         run: |
@@ -90,20 +138,60 @@ jobs:
           ./scripts/retry.sh git clone https://github.com/microsoft/vcpkg.git
           ./scripts/retry.sh ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
 
+      # Binary cache of the dependencies. vcpkg names each archive after the ABI hash of its package (port files,
+      # dependencies, triplet, compiler), so a port updated in vcpkg is rebuilt, and the others are restored. The
+      # cache key is only known after the install (see the prune step): restore the most recent one.
+      - name: Restore vcpkg binary cache
+        id: vcpkg-cache-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/vcpkg-bin
+          key: vcpkg-bin-${{ matrix.triplet }}-${{ matrix.features }}-
+          restore-keys: vcpkg-bin-${{ matrix.triplet }}-${{ matrix.features }}-
+
       - name: vcpkg install aeronet
         env:
           VCPKG_FEATURE_FLAGS: dependencygraph
+          # Retries cover a download hiccup: a compile error must not be repeated 10 times.
+          RETRY_ATTEMPTS: 2
         run: |
-          if [ "${{ matrix.features }}" = "OFF" ]; then
-            ./scripts/retry.sh ./vcpkg/vcpkg install aeronet --overlay-ports=./ports --triplet x64-linux
-          else
-            ./scripts/retry.sh ./vcpkg/vcpkg install aeronet[openssl,spdlog,brotli,zlib,zstd,opentelemetry,protobuf,html] --overlay-ports=./ports --triplet x64-linux
+          mkdir -p ~/.cache/vcpkg-bin
+          # --editable disables the binary cache for aeronet only: its ABI hash covers the port files, not the
+          # repository sources, so a cached aeronet would hide the changes under test.
+          ./scripts/retry.sh ./vcpkg/vcpkg install '${{ matrix.spec }}' --editable --overlay-ports=./ports \
+            --triplet ${{ matrix.triplet }} --host-triplet ${{ matrix.triplet }} \
+            --binarysource="clear;files,$HOME/.cache/vcpkg-bin,readwrite"
+
+      - name: Prune vcpkg binary cache
+        id: vcpkg-cache-prune
+        if: ${{ !cancelled() }}
+        run: |
+          # Keep only the archives of the installed packages, so that an updated port replaces its archive instead of
+          # growing the cache. The key hashes their ABIs: it changes only when a dependency was rebuilt. Also runs
+          # when the aeronet build failed, to keep the dependencies built by this run.
+          ABIS=$(cat vcpkg/installed/vcpkg/status vcpkg/installed/vcpkg/updates/* 2>/dev/null | sed -nE 's/^Abi: (.+)$/\1/p' | sort -u)
+          if [ -z "$ABIS" ]; then
+            echo "::notice ::No ABI hash in the vcpkg status database, binary cache not saved"
+            exit 0
           fi
+          find ~/.cache/vcpkg-bin -name '*.zip' | while read -r ARCHIVE; do
+            grep -qxF "$(basename "$ARCHIVE" .zip)" <<< "$ABIS" || rm -v "$ARCHIVE"
+          done
+          du -sh ~/.cache/vcpkg-bin
+          echo "key=vcpkg-bin-${{ matrix.triplet }}-${{ matrix.features }}-$(sha256sum <<< "$ABIS" | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - name: Save vcpkg binary cache
+        if: ${{ !cancelled() && steps.vcpkg-cache-prune.outputs.key != '' && steps.vcpkg-cache-prune.outputs.key != steps.vcpkg-cache-restore.outputs.cache-matched-key }}
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/vcpkg-bin
+          key: ${{ steps.vcpkg-cache-prune.outputs.key }}
 
       - name: Build simple consumer
         run: |
           ./scripts/retry.sh cmake -S examples/consumer-cmake -B consumer-test/build -G Ninja \
             -D CMAKE_TOOLCHAIN_FILE=${GITHUB_WORKSPACE}/vcpkg/scripts/buildsystems/vcpkg.cmake \
+            -D VCPKG_TARGET_TRIPLET=${{ matrix.triplet }} \
             -D CMAKE_BUILD_TYPE=Release
           cmake --build consumer-test/build -j
           ls -l consumer-test/build || true
