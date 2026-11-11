@@ -148,8 +148,9 @@ class Http1Pipeline {
   // only validated, the request staying untouched: finishAsyncBody() sets it later.
   BodyDecodeStatus decodeBodyIfReady(ConnectionIt cnxIt, std::span<char> input, bool isChunked,
                                      std::size_t maxBodyBytes, std::size_t& consumedBytes, bool deferBody = false);
-  BodyDecodeStatus decodeFixedLengthBody(ConnectionIt cnxIt, std::span<const char> input, std::size_t maxBodyBytes,
-                                         std::size_t& consumedBytes, bool deferBody);
+  AERONET_ALWAYS_INLINE BodyDecodeStatus decodeFixedLengthBody(ConnectionIt cnxIt, std::span<const char> input,
+                                                               std::size_t maxBodyBytes, std::size_t& consumedBytes,
+                                                               bool deferBody);
   // Decodes the chunks of the body of the current request received since its last decoding, up to its end (trailers
   // included). A body received in several reads is decoded once: the progress of its decoding is kept in the
   // connection until the request ends (see ConnectionState::PendingHttp1Request), each read decoding the chunks

@@ -14,6 +14,7 @@
 #include "aeronet/amc-type-traits.hpp"
 #include "aeronet/file-payload.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/string-view-size-only-sentinel.hpp"
 
 namespace aeronet {
 
@@ -105,7 +106,7 @@ class HttpPayload {
   // Used only for HEAD responses where only the size matters.
   [[nodiscard]] constexpr bool isSizeOnly() const noexcept {
     if (auto sv = std::get_if<std::string_view>(&_data)) {
-      return sv->data() == &kSizeOnlySentinel;
+      return IsSvSizeOnlyView(*sv);
     }
     return false;
   }
@@ -168,9 +169,6 @@ class HttpPayload {
   void reset() noexcept { _data = std::monostate{}; }
 
   void shrink_to_fit();
-
-  // Sentinel for HEAD responses where only the body size is tracked (data is never sent).
-  static constexpr char kSizeOnlySentinel{};
 
  private:
   friend class EmbeddedPayload;

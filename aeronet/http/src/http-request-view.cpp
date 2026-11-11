@@ -36,6 +36,7 @@
 #include "aeronet/safe-cast.hpp"
 #include "aeronet/search-crlf.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/string-view-size-only-sentinel.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/tchars.hpp"
 #include "aeronet/template-constants.hpp"
@@ -81,13 +82,15 @@ std::string_view HttpRequestView::body() const {
     throw std::logic_error("Cannot call body() after readBody() on the same request");
   }
   // Without a bridge, the body of an async handler is still being received: nothing is selected, it stays awaitable.
-  if (_pBodyAccessBridge != nullptr) {
-    // Not the cleanest, but it should appear as const from the caller.
-    HttpRequestView& self = *const_cast<HttpRequestView*>(this);
-    self._bodyAccessMode = BodyAccessMode::Aggregated;
-    if (self._pBodyAccessBridge->aggregate != nullptr) {
-      self._body = self._pBodyAccessBridge->aggregate(self, self._pBodyAccessContext);
-    }
+  // Its view then only holds its Content-Length (a size-only view, not readable), still needed to receive it.
+  if (_pBodyAccessBridge == nullptr) {
+    return IsSvSizeOnlyView(_body) ? std::string_view{} : _body;
+  }
+  // Not the cleanest, but it should appear as const from the caller.
+  HttpRequestView& self = *const_cast<HttpRequestView*>(this);
+  self._bodyAccessMode = BodyAccessMode::Aggregated;
+  if (self._pBodyAccessBridge->aggregate != nullptr) {
+    self._body = self._pBodyAccessBridge->aggregate(self, self._pBodyAccessContext);
   }
   return _body;
 }
@@ -221,10 +224,35 @@ constexpr uint64_t FirstNBytesMask(uint8_t sz) noexcept {
 constexpr uint64_t kLoBits = 0x0101010101010101ULL;
 constexpr uint64_t kHiBits = 0x8080808080808080ULL;
 
-// 0x80 set in every byte lane of `word` that equals `needle`, 0 elsewhere.
-constexpr uint64_t SwarFindByte(uint64_t word, uint8_t needle) {
+// 0x80 set in every byte lane of `word` that equals `needle`, 0 elsewhere. A lane never carries into the next one: the
+// sum of its low 7 bits and 0x7F sets its high bit when they are not all 0.
+constexpr uint64_t SwarFindByteExact(uint64_t word, uint8_t needle) {
+  constexpr uint64_t kLow7Bits = ~kHiBits;
+  const uint64_t diff = word ^ (kLoBits * needle);
+  return ~(((diff & kLow7Bits) + kLow7Bits) | diff | kLow7Bits);
+}
+
+// Like SwarFindByteExact(), in 3 operations instead of 5, but only its least significant marked lane is exact: the
+// borrow of a matching lane also marks the lanes of 'needle ^ 0x01' right above it ('!' for a space).
+constexpr uint64_t SwarFindByteBorrowing(uint64_t word, uint8_t needle) {
   const uint64_t diff = word ^ (kLoBits * needle);
   return (diff - kLoBits) & ~diff & kHiBits;
+}
+
+// A '!' in the lane above a space: marked by the borrowing variant only.
+static_assert(SwarFindByteBorrowing(0x2120U, ' ') == 0x8080U);
+static_assert(SwarFindByteExact(0x2120U, ' ') == 0x80U);
+static_assert(SwarFindByteExact(0x2021202120212021U, ' ') == 0x8000800080008000U);
+
+// 0x80 set in the byte lane of the first byte of `word` in memory that equals `needle` (see LeadingMatchIndex()), and
+// possibly in later ones. On little-endian, the first byte is the least significant lane: the borrowing variant is
+// exact there. On big-endian, it is the most significant one, that the borrowing variant could mark wrongly.
+constexpr uint64_t SwarFindByte(uint64_t word, uint8_t needle) {
+  if constexpr (kLE) {
+    return SwarFindByteBorrowing(word, needle);
+  } else {
+    return SwarFindByteExact(word, needle);
+  }
 }
 
 struct MethodCodes {
@@ -283,26 +311,27 @@ enum class RequestTargetForm : uint8_t {
 
 // Only the form is checked here; the content is validated later (path decoding, CONNECT target parsing,
 // MoveAuthorityFirst).
-constexpr RequestTargetForm ClassifyRequestTarget(std::string_view target, http::Method method) noexcept {
-  if (target.empty()) {
+constexpr RequestTargetForm ClassifyRequestTarget(const char* pTargetBeg, const char* pTargetEnd,
+                                                  http::Method method) noexcept {
+  if (pTargetBeg == pTargetEnd) {
     return RequestTargetForm::Invalid;
   }
-  if (target.front() == '/') {
+  if (*pTargetBeg == '/') {
     return RequestTargetForm::AsPath;  // origin-form
   }
   if (method == http::Method::CONNECT) {
     return RequestTargetForm::AsPath;  // authority-form
   }
-  if (target == "*") {
+  if (*pTargetBeg == '*' && pTargetEnd - pTargetBeg == 1) {
     // asterisk-form
     return method == http::Method::OPTIONS ? RequestTargetForm::AsPath : RequestTargetForm::Invalid;
   }
   // absolute-form, starting with scheme ":" where scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
-  if (!IsAsciiAlpha(target.front())) {
+  if (!IsAsciiAlpha(*pTargetBeg)) {
     return RequestTargetForm::Invalid;
   }
-  const auto pSchemeEnd = std::find_if_not(target.begin() + 1, target.end(), url::IsSchemeChar);
-  return pSchemeEnd != target.end() && *pSchemeEnd == ':' ? RequestTargetForm::Absolute : RequestTargetForm::Invalid;
+  const auto pSchemeEnd = std::find_if_not(pTargetBeg + 1, pTargetEnd, url::IsSchemeChar);
+  return pSchemeEnd != pTargetEnd && *pSchemeEnd == ':' ? RequestTargetForm::Absolute : RequestTargetForm::Invalid;
 }
 
 // Where MoveAuthorityFirst() left the parts of an absolute-form request-target.
@@ -376,7 +405,8 @@ AERONET_NOINLINE SvToSvMap::iterator SetHost(SvToSvMap& headers, std::string_vie
 // (bare LF/CR, NUL, HT...), so the answer matches what a split read would give.
 AERONET_NOINLINE http::StatusCode UnknownMethodStatus(const char* pFirst, const char* pSep,
                                                       const char* pLineLast) noexcept {
-  const bool validToken = pFirst != pSep && std::all_of(pFirst, pSep, [](char ch) { return is_tchar(ch); });
+  assert(pFirst != pSep);
+  const bool validToken = std::all_of(pFirst, pSep, [](char ch) { return is_tchar(ch); });
   if (!validToken || std::any_of(pSep, pLineLast, url::IsControlChar)) {
     return http::StatusCodeBadRequest;
   }
@@ -459,7 +489,7 @@ http::StatusCode HttpRequestView::initTrySetHead(std::span<char> inBuffer, HeadP
     pFirst = pNextSep + 1;
     pNextSep = FindChar(pFirst, pLineLast, ' ');
 
-    const RequestTargetForm targetForm = ClassifyRequestTarget(std::string_view(pFirst, pNextSep), _method);
+    const RequestTargetForm targetForm = ClassifyRequestTarget(pFirst, pNextSep, _method);
     if (targetForm == RequestTargetForm::Invalid) {
       return http::StatusCodeBadRequest;
     }
@@ -846,7 +876,7 @@ HttpResponse::Options HttpRequestView::makeResponseOptions() const noexcept {
 }
 
 bool HttpRequestView::decodePath(char* pathStart, char* pathEnd) {
-  if (std::any_of(pathStart, pathEnd, url::IsControlChar)) {
+  if (std::any_of(pathStart, pathEnd, url::IsControlOrHash)) {
     return false;
   }
   char* questionMark = FindChar(pathStart, pathEnd, '?');

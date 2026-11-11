@@ -10,11 +10,12 @@ namespace detail {
 
 // Classes of the bytes of a URI (RFC 3986), as bits of a single table: a rule made of several classes is tested with
 // the union of their bits, in a single lookup.
-inline constexpr unsigned kUnreserved = 1U << 0U;    // ALPHA / DIGIT / "-" / "." / "_" / "~" (§2.3)
-inline constexpr unsigned kSubDelim = 1U << 1U;      // "!" / "$" / "&" / "'" / "(" / ")" / "*" / "+" / "," / ";" / "="
-inline constexpr unsigned kPathGenDelim = 1U << 2U;  // ":" / "@" (in a pchar) and "/" (between segments) (§3.3)
-inline constexpr unsigned kScheme = 1U << 3U;        // ALPHA / DIGIT / "+" / "-" / "." (§3.1)
-inline constexpr unsigned kControl = 1U << 4U;       // CTL: %x00-1F / %x7F (RFC 5234 Appendix B.1)
+inline constexpr unsigned kUnreserved = 1U << 0U;     // ALPHA / DIGIT / "-" / "." / "_" / "~" (§2.3)
+inline constexpr unsigned kSubDelim = 1U << 1U;       // "!" / "$" / "&" / "'" / "(" / ")" / "*" / "+" / "," / ";" / "="
+inline constexpr unsigned kPathGenDelim = 1U << 2U;   // ":" / "@" (in a pchar) and "/" (between segments) (§3.3)
+inline constexpr unsigned kScheme = 1U << 3U;         // ALPHA / DIGIT / "+" / "-" / "." (§3.1)
+inline constexpr unsigned kControl = 1U << 4U;        // CTL: %x00-1F / %x7F (RFC 5234 Appendix B.1)
+inline constexpr unsigned kControlOrHash = 1U << 5U;  // CTL or "#"
 
 // Returns true if 'ch' is in one of the classes of 'classMask'.
 constexpr bool IsOfClass(char ch, unsigned classMask) noexcept {
@@ -22,22 +23,24 @@ constexpr bool IsOfClass(char ch, unsigned classMask) noexcept {
     std::uint8_t data[256];
   };
   static constexpr auto kCharClasses = [] {
-    constexpr std::string_view kUnreservedSymbols = "-._~";
-    constexpr std::string_view kSubDelims = "!$&'()*+,;=";
-    constexpr std::string_view kPathGenDelims = ":@/";
-    constexpr std::string_view kSchemeSymbols = "+-.";
+    static constexpr std::string_view kUnreservedSymbols = "-._~";
+    static constexpr std::string_view kSubDelims = "!$&'()*+,;=";
+    static constexpr std::string_view kPathGenDelims = ":@/";
+    static constexpr std::string_view kSchemeSymbols = "+-.";
     ClassTable table;
     for (std::size_t byte = 0; byte < sizeof(table.data); ++byte) {
       const char ch = static_cast<char>(byte);
       const bool isAlnum = (byte >= 'A' && byte <= 'Z') || (byte >= 'a' && byte <= 'z') || (byte >= '0' && byte <= '9');
+
       table.data[byte] = static_cast<std::uint8_t>(
           (isAlnum || kUnreservedSymbols.contains(ch) ? kUnreserved : 0U) | (kSubDelims.contains(ch) ? kSubDelim : 0U) |
           (kPathGenDelims.contains(ch) ? kPathGenDelim : 0U) | (isAlnum || kSchemeSymbols.contains(ch) ? kScheme : 0U) |
-          (byte < 0x20U || byte == 0x7FU ? kControl : 0U));
+          (byte < 0x20U || byte == 0x7FU ? kControl : 0U) |
+          (byte < 0x20U || byte == 0x7FU || byte == '#' ? kControlOrHash : 0U));
     }
     return table;
   }();
-  return (kCharClasses.data[static_cast<unsigned char>(ch)] & classMask) != 0;
+  return (kCharClasses.data[static_cast<unsigned char>(ch)] & classMask) != 0U;
 }
 
 }  // namespace detail
@@ -68,5 +71,9 @@ inline constexpr auto IsSchemeChar = [](char ch) noexcept { return detail::IsOfC
 // Control characters (CTL: %x00-1F / %x7F), never allowed in a URI (RFC 3986 §2). A bare LF in particular could end the
 // request line for lenient parsers.
 inline constexpr auto IsControlChar = [](char ch) noexcept { return detail::IsOfClass(ch, detail::kControl); };
+
+// Control characters or a literal '#' (fragment delimiter). Neither is allowed in an HTTP request-target.
+// A pct-encoded %23 is not affected, since validation occurs before percent-decoding.
+inline constexpr auto IsControlOrHash = [](char ch) noexcept { return detail::IsOfClass(ch, detail::kControlOrHash); };
 
 }  // namespace aeronet::url

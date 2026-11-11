@@ -627,6 +627,38 @@ TEST_F(StaticFileHandlerTest, DirectoryListingRedirectsWithoutSlash) {
   EXPECT_EQ(resp.headerValueOrEmpty(http::Location), "/assets/");
 }
 
+// The request path is percent-decoded: the Location re-encodes it, the name of a directory being able to hold bytes
+// that would make it another URI ('?', '%', ' '), or inject header lines (CR, LF, forbidden in Windows file names).
+TEST_F(StaticFileHandlerTest, DirectoryRedirectLocationIsReEncoded) {
+  struct Case {
+    std::string_view dirName;
+    std::string_view encodedName;
+  };
+  static constexpr Case kCases[]{
+      {"a b%c", "a%20b%25c"},
+#ifndef AERONET_WINDOWS
+      {"q?x\r\nset-cookie: y=1", "q%3Fx%0D%0Aset-cookie:%20y=1"},
+#endif
+  };
+  StaticFileConfig cfg;
+  cfg.enableDirectoryIndex = true;
+  cfg.withDefaultIndex("");
+  StaticFileHandler handler(tmpDir.dirPath(), std::move(cfg));
+
+  for (const auto& [dirName, encodedName] : kCases) {
+    SCOPED_TRACE(encodedName);
+    std::filesystem::create_directory(tmpDir.dirPath() / dirName);
+    buildReq(encodedName);
+    ASSERT_EQ(setHead(), http::StatusCodeOK);
+    HttpResponse resp = handler(req);
+
+    EXPECT_EQ(resp.status(), http::StatusCodeMovedPermanently);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::Location), std::format("/{}/", encodedName));
+    EXPECT_FALSE(resp.hasHeader("set-cookie"));
+    EXPECT_EQ(resp.headerValueOrEmpty(http::CacheControl), "no-cache");
+  }
+}
+
 TEST_F(StaticFileHandlerTest, DirectoryListingHonorsHiddenFilesFlag) {
   const auto dirPath = tmpDir.dirPath() / "assets";
   std::filesystem::create_directories(dirPath);

@@ -57,6 +57,11 @@ TEST(ForbiddenTrailersTest, ForbiddenTrailerBasic) {
   EXPECT_TRUE(IsForbiddenTrailerHeader("te"));
   EXPECT_TRUE(IsForbiddenTrailerHeader("set-cookie"));
   EXPECT_TRUE(IsForbiddenTrailerHeader("authorization"));
+  // RFC 9110 §6.5.1: authentication, request controls and conditionals, connection-specific fields.
+  for (const std::string_view name : {"proxy-authorization", "proxy-authenticate", "www-authenticate", "if-range",
+                                      "max-forwards", "connection", "upgrade"}) {
+    EXPECT_TRUE(IsForbiddenTrailerHeader(LowerAsciiKey{name})) << name;
+  }
 }
 
 TEST(ForbiddenTrailersTest, ForbiddenTrailerRejectsUnknowns) {

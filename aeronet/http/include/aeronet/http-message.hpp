@@ -35,6 +35,7 @@
 #include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/string-trim.hpp"
+#include "aeronet/string-view-size-only-sentinel.hpp"
 #include "aeronet/time-constants.hpp"
 
 namespace aeronet {
@@ -735,7 +736,7 @@ class HttpMessage {
     // A size-only payload must never be empty: an embedded payload implies that the body headers are present.
     assert(size != 0);
     // Use a non-null sentinel so MSVC debug mode doesn't assert on string_view(nullptr, size).
-    setEmbeddedPayload(HttpPayload(std::string_view(&HttpPayload::kSizeOnlySentinel, size)));
+    setEmbeddedPayload(HttpPayload(SvSizeOnlyView(size)));
   }
 
   // Adds the header line 'key: value' without any check: at the end of the headers, or just before the body headers

@@ -1131,18 +1131,17 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
     static constexpr std::string_view kNoCache = "no-cache";
     if (!requestedTrailingSlash) {
       static constexpr std::string_view kMovedPermanentlyBody = "Moved Permanently\n";
+      static constexpr bool kAddSlash = true;
 
-      const std::size_t appendSlash = requestedTrailingSlash ? 0UL : 1UL;
+      // The path is percent-decoded: re-encoded so that the Location is a valid URI reference, the name of the
+      // directory being able to hold any byte ('?', '%', CR, LF...), which could otherwise inject header lines.
       const std::size_t additionalSize =
-          http::HeaderSize(http::Location.size(), requestPath.size() + appendSlash) +
+          internal::HttpResponseAccess::LocationHeaderSize(requestPath, kAddSlash) +
           http::HeaderSize(http::CacheControl.size(), kNoCache.size()) +               // "no-cache"
           http::HeaderSize(http::ContentLength.size(), kMovedPermanentlyBody.size());  // "Moved Permanently\n"
 
       resp = request.makeResponse(additionalSize, http::StatusCodeMovedPermanently);
-      internal::HttpResponseAccess::HeaderAddLineUnchecked(resp, http::Location, requestPath);
-      if (appendSlash != 0) {
-        resp.headerAppendValue(http::Location, "/", "");
-      }
+      internal::HttpResponseAccess::HeaderAddLocationUnchecked(resp, requestPath, kAddSlash);
       internal::HttpResponseAccess::HeaderAddLineUnchecked(resp, http::CacheControl, kNoCache);
       resp.body(kMovedPermanentlyBody);
 

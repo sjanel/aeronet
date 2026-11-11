@@ -3012,6 +3012,8 @@ TEST(HttpTrailers, InvalidTrailersAreRejected) {
            "content-length: 100\r\n",
            "host: evil.com\r\n",
            "authorization: Bearer token123\r\n",
+           "proxy-authorization: Basic YTpi\r\n",
+           "connection: close\r\n",
            // Not a field line.
            "MalformedTrailer\r\n",
            // A singleton field: keeping one of them could differ from the one a proxy in front keeps.
@@ -3448,7 +3450,10 @@ TEST(HttpOptionsTrace, TraceWithContentIsRejected) {
     EXPECT_TRUE(raw.starts_with("HTTP/1.1 400")) << raw;
     EXPECT_FALSE(raw.contains("TRACE /c")) << raw;
   }
+}
 
+TEST(HttpOptionsTrace, TraceWithZeroContentLengthHeaderIsAccepted) {
+  EnableTrace();
   // A Content-Length of 0 announces no content.
   static constexpr std::string_view kNoContent =
       "TRACE /c HTTP/1.1\r\nHost: h\r\nContent-Length: 00\r\nConnection: close\r\n\r\n";

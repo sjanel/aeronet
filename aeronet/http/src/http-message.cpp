@@ -44,6 +44,7 @@
 #include "aeronet/static-string-view-helpers.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
+#include "aeronet/string-view-size-only-sentinel.hpp"
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
 #include "aeronet/encoder-result.hpp"
@@ -448,7 +449,7 @@ void HttpMessage::bodyAppendImpl(std::string_view body, std::string_view content
     // A HEAD body is never inlined: it is always the size-only payload, currently extracted by the guard.
     HttpPayload* pPayload = headGrowthManager.extractedPayload();
     assert(pPayload->isSizeOnly());
-    *pPayload = HttpPayload(std::string_view(&HttpPayload::kSizeOnlySentinel, newBodyLen));
+    *pPayload = HttpPayload(SvSizeOnlyView(newBodyLen));
   } else if (capturedBody) {
     headGrowthManager.extractedPayload()->append(body);
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)

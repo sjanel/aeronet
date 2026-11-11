@@ -18,9 +18,9 @@ namespace aeronet::http {
 AERONET_ALWAYS_INLINE HeaderView ParseHeaderLineTrimValue(const char* lineStart, const char* lineLast) {
   const char* pColon = FindChar(lineStart, lineLast, ':');
   if (pColon == lineLast) [[unlikely]] {
-    return HeaderView{};
+    return {};
   }
-  return HeaderView{std::string_view(lineStart, pColon), TrimOws(std::string_view(pColon + 1, lineLast))};
+  return {std::string_view(lineStart, pColon), TrimOws(std::string_view(pColon + 1, lineLast))};
 }
 
 }  // namespace aeronet::http

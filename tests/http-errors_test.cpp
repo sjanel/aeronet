@@ -1983,3 +1983,111 @@ TEST(HttpGardenPipelining, ExtraByteAfterChunkedBody) {
   const std::string resp = test::sendAndCollect(port, "GET / HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n");
   EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
 }
+
+// =============================================================================
+// Audit of the HTTP/1.1 request parsing
+// =============================================================================
+
+// RFC 9112 §6.3: a request without Transfer-Encoding and with an invalid Content-Length has an invalid framing: the
+// server answers 400 and closes the connection. An empty Content-Length is answered so by the body decoding (see
+// "server #16" above), but not by the answers given from the head alone, before the body is decoded: the connection
+// persists, and the bytes that follow the head are served as another request.
+TEST(HttpAudit, EmptyContentLengthIsRejectedWhenAnsweredWith406) {
+  ExpectSingleResponses({
+      {
+          "406",
+          "GET / HTTP/1.1\r\nHost: a\r\nAccept-Encoding: identity;q=0, *;q=0\r\nContent-Length: \r\n\r\n"
+          "GET /second HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+  });
+}
+
+TEST(HttpAudit, EmptyContentLengthIsRejectedWhenAnsweredByTheExpectationHandler) {
+  ts.server.setExpectationHandler([](const HttpRequestView& req, std::string_view /*token*/) {
+    SingleHttpServer::ExpectationResult result;
+    result.kind = SingleHttpServer::ExpectationResultKind::FinalResponse;
+    result.finalResponse = req.makeResponse(http::StatusCodeForbidden);
+    return result;
+  });
+  ExpectSingleResponses({
+      {
+          "expectation final response",
+          "GET / HTTP/1.1\r\nHost: a\r\nExpect: x-audit\r\nContent-Length: \r\n\r\n"
+          "GET /second HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+  });
+  ts.server.setExpectationHandler({});
+}
+
+// RFC 9112 §3.2.1: origin-form = absolute-path [ "?" query ], without fragment (RFC 9110 §7.1: the target URI excludes
+// it). RFC 9112 §3.2.6: CONNECT only takes the authority-form.
+TEST(HttpAudit, RequestTargetsNotOfTheFormOfTheirMethodAreRejected) {
+  ExpectSingleResponses({
+      {
+          "fragment in origin-form",
+          "GET /a#b HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      {
+          "fragment after query",
+          "GET /a?x=1#b HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      {
+          "fragment in absolute-form path",
+          "GET http://a/p#b HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      {
+          "CONNECT origin-form",
+          "CONNECT /a HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      {
+          "CONNECT absolute-form",
+          "CONNECT http://a/ HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n",
+          http::StatusCodeBadRequest,
+      },
+      {"GET asterisk-form", "GET * HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n", http::StatusCodeBadRequest},
+      {"GET authority-form", "GET a:80 HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n", http::StatusCodeBadRequest},
+      {"empty target", "GET  HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n", http::StatusCodeBadRequest},
+  });
+}
+
+// RFC 9110 §8.6 lets a recipient take a list of identical Content-Length values as one: aeronet rejects every list,
+// in a single field like in repeated ones, and every value that is not 1*DIGIT fitting 64 bits. None of these was
+// covered. All pass: they pin the behavior down.
+TEST(HttpAudit, ContentLengthListsAndSignsAreRejected) {
+  ExpectSingleResponses({
+      {"identical list", "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 5, 5\r\n\r\nhello", http::StatusCodeBadRequest},
+      {
+          "identical list without space",
+          "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 5,5\r\n\r\nhello",
+          http::StatusCodeBadRequest,
+      },
+      {
+          "differing list",
+          "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 5, 6\r\n\r\nhello!",
+          http::StatusCodeBadRequest,
+      },
+      {"plus sign", "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: +5\r\n\r\nhello", http::StatusCodeBadRequest},
+      {
+          "inner space",
+          "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 1 0\r\n\r\n0123456789",
+          http::StatusCodeBadRequest,
+      },
+      {"hex digits", "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: a\r\n\r\n0123456789", http::StatusCodeBadRequest},
+      {
+          "2^64",
+          "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 18446744073709551616\r\n\r\nhello",
+          http::StatusCodeBadRequest,
+      },
+      {
+          "2^63",
+          "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 9223372036854775808\r\n\r\nhello",
+          http::StatusCodePayloadTooLarge,
+      },
+  });
+}

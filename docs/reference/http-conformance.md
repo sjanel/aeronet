@@ -7,18 +7,21 @@ This page lists the HTTP/1.1 behaviors aeronet implements ([RFC 9110](https://ww
 | Behavior | Status |
 | --- | --- |
 | Request line parsing (method, target, version). A request line too long for `maxHeaderBytes`, with the empty line ending the head, is answered `414 URI Too Long` (RFC 9112 §3), whether or not its end was received | Supported |
+| Request target in a form its method allows (RFC 9112 §3.2): authority-form for `CONNECT` only, asterisk-form for `OPTIONS` only. A fragment (`#`) is rejected (`400`) in every form, not being part of a request target (RFC 9112 §3.2.1) ([details](../guides/requests.md#request-target-forms)) | Supported |
 | An encoded slash (`%2F`) in the path is rejected (`400`) instead of being decoded and routed as a path separator (RFC 3986 §6.2.2.2), like a decoded NUL (`%00`) ([details](../guides/requests.md#query-parameters)) | Supported |
 | Empty lines (CRLF) received before a request line ignored (RFC 9112 §2.2), as some clients send one after the body of a `POST` request. Until a request line follows them, they count toward `maxHeaderBytes` (`431` beyond it) | Supported |
 | Header fields, looked up case-insensitively. Obsolete line folding is not accepted. | Supported |
 | Header field values with `obs-text` (bytes `0x80`-`0xFF`, RFC 9110 §5.5), kept as is. Other control characters than HTAB are rejected (`400`) ([details](../guides/requests.md#header-values)) | Supported |
-| Method tokens are case-sensitive (RFC 9110 §9.1): `GET` is a method, `get` is an unknown method answered `501` | Supported |
+| Method tokens are case-sensitive (RFC 9110 §9.1): `GET` is a method, `get` is an unknown method answered `501`. A method with a character other than a `tchar` (RFC 9110 §5.6.2), such as a control byte, makes the request line malformed: `400`, whether the line is received at once or in several reads | Supported |
 | A bare CR in a request head is rejected (`400`) as soon as the byte following it is received | Supported |
 | A bare LF (line ending without CR) in a request head, a chunk-size line or a trailer is rejected (`400`) as soon as received, instead of waiting for a CRLF that cannot follow. RFC 9112 §2.2 allows a server to accept it, aeronet does not | Supported |
 | Multiple `Content-Length` header fields are rejected (`400`) as per RFC 9110 §5.3 & §8.6 | Supported |
+| A `Content-Length` other than a single decimal number fitting 64 bits (empty, a list even of identical values, a sign, inner spaces) is rejected (`400`) and closes the connection (RFC 9112 §6.3). It is checked right after the head is parsed, so also when the request is answered from its head alone (`406`, final response of an expectation handler) ([details](../guides/requests.md#content-length)) | Supported |
 | `Content-Length` and `Transfer-Encoding` together are rejected (`400`), as is `Transfer-Encoding` on an HTTP/1.0 request | Supported |
 | `Transfer-Encoding` whose final coding is not `chunked` rejected (`400`), the body length being undetermined (RFC 9112 §6.3). Codings before a final `chunked`, such as `gzip, chunked`, are not supported (`501`, RFC 9112 §6.1). The connection is closed after both | Supported |
 | Pipelined requests, processed one after the other | Supported |
-| Duplicate request headers merged or rejected depending on the header: singleton fields such as `authorization`, `content-type` and `range` are rejected with `400` (RFC 9110 §5.3) ([details](../guides/requests.md#header-names)) | Supported |
+| A request is accepted or rejected, and parsed, the same way whether it is received at once, in two parts cut anywhere, or byte by byte: head, chunked body, trailers, and their size limits | Supported |
+| Duplicate request headers merged or rejected depending on the header: singleton fields such as `authorization`, `content-type` and `range` are rejected with `400` (RFC 9110 §5.3). The merged values are combined in the order of their lines ([details](../guides/requests.md#header-names)) | Supported |
 | Optional stricter policy failing on unknown duplicate headers | Not implemented |
 
 ## Connections
@@ -44,7 +47,7 @@ This page lists the HTTP/1.1 behaviors aeronet implements ([RFC 9110](https://ww
 | --- | --- |
 | `Content-Length` bodies, bounded by `maxBodyBytes` | Supported |
 | Chunked transfer coding, with chunk extensions and trailers ([details](../guides/requests.md#chunked-bodies-and-trailers)) | Supported |
-| Request trailers carrying forbidden fields rejected | Supported |
+| Request trailers carrying fields needed before the content (RFC 9110 §6.5.1) rejected ([details](../guides/requests.md#chunked-bodies-and-trailers)) | Supported |
 | Trailers exposed by `HttpRequestView::trailers()`, identically for HTTP/1.1 and HTTP/2 | Supported |
 | Request body decompression (`Content-Encoding`: gzip, deflate, br, zstd, stacked codings), with size and ratio limits ([details](../guides/compression.md#request-body-decompression)) | Supported, opt-in |
 | `multipart/form-data` parsing helpers ([details](../guides/requests.md#forms-and-file-uploads)) | Supported |
@@ -70,7 +73,7 @@ The server answers these errors itself, before or instead of calling a handler:
 
 | Status | Cause |
 | --- | --- |
-| `400 Bad Request` | Malformed request, conflicting framing headers, `Transfer-Encoding` on HTTP/1.0 or whose final coding is not `chunked`, invalid `CONNECT` target, failed WebSocket handshake. |
+| `400 Bad Request` | Malformed request (a method with other characters than `tchar`, a request target with a fragment...), invalid `Content-Length`, conflicting framing headers, `Transfer-Encoding` on HTTP/1.0 or whose final coding is not `chunked`, invalid `CONNECT` target, failed WebSocket handshake. |
 | `403 Forbidden` | `CONNECT` target not in the allowlist, request denied by a CORS policy. |
 | `404 Not Found` | No route matches the path. |
 | `405 Method Not Allowed` | The path exists but not for this method, with an `Allow` header listing the methods registered on its route. Also `TRACE` when disabled (see [TRACE](#trace)). |
@@ -81,7 +84,7 @@ The server answers these errors itself, before or instead of calling a handler:
 | `417 Expectation Failed` | `Expect` token other than `100-continue` without expectation handler. |
 | `431 Request Header Fields Too Large` | Request head larger than `maxHeaderBytes`, its request line fitting it. |
 | `500 Internal Server Error` | Handler exception, or an invalid interim status returned by an expectation handler. |
-| `501 Not Implemented` | Unknown method, or transfer codings before a final `chunked` (`Transfer-Encoding: gzip, chunked`). |
+| `501 Not Implemented` | Unknown, well-formed method, or transfer codings before a final `chunked` (`Transfer-Encoding: gzip, chunked`). |
 | `502 Bad Gateway` | `CONNECT` target unreachable. |
 | `505 HTTP Version Not Supported` | Well-formed version of a major version other than 1, such as `HTTP/2.0`. A higher minor version, such as `HTTP/1.3`, is processed and answered as HTTP/1.1 (RFC 9110 §6.2). Any other version token, such as `http/1.1` (the name is case-sensitive) or `HTTP/1.10`, is a `400`. |
 
@@ -126,7 +129,7 @@ Other expectation tokens go to the expectation handler, when one is installed. W
 | --- | --- |
 | `Continue` | Process the request normally. |
 | `Interim` | Send the informational response `interimStatus` (a `1xx` status other than `101`, such as `102` or `103`), then continue. `100` and `102` have their reason phrase, the other statuses none (`HTTP/1.1 103 `). It is not sent to an HTTP/1.0 client, whose request continues without it. |
-| `FinalResponse` | Send `finalResponse` and skip the body and the handler. When the request announces a body (`Content-Length` other than 0, or `Transfer-Encoding`), the response carries `Connection: close` and the connection closes: the client may send the body anyway, which could not be told apart from the next request. Otherwise the requests pipelined behind it are served. |
+| `FinalResponse` | Send `finalResponse` and skip the body and the handler. When the request announces a body (`Content-Length` other than 0, or `Transfer-Encoding`), the response carries `Connection: close` and the connection closes: the client may send the body anyway, which could not be told apart from the next request. Otherwise the requests pipelined behind it are served. A request with an invalid `Content-Length` is answered `400` before the handler is called. |
 | `Reject` | Answer `417 Expectation Failed`. |
 
 ```cpp
@@ -151,6 +154,7 @@ The handler runs on the event-loop thread, so it must be fast. An `Interim` resu
 
 - Error statuses and version handling: [tests/http-errors_test.cpp](../../tests/http-errors_test.cpp), including the error responses to `HEAD` requests without body (`HttpParserErrors.ErrorResponsesToHeadHaveNoBody` and `HttpParserErrors.ErrorResponseToGetAfterHeadHasBody`).
 - Keep-alive, pipelining, empty bodies: [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
+- Audit of the request parsing: the `HttpAudit` tests in [tests/http-errors_test.cpp](../../tests/http-errors_test.cpp) (`Content-Length` values, fragments and target forms), the `HttpParserAudit` tests in [http-parser_test.cpp](../../aeronet/server/test/http-parser_test.cpp) (chunked bodies, trailers and size limits not depending on the reads, repeated trailers), and `AuditRepeatedFieldsAreCombinedInOrder`, `AuditHeadParsingDoesNotDependOnReads` and `MergeKeepsValueOfFieldWhoseFirstOccurrenceWasEmpty*` in [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp).
 - `Expect`, `OPTIONS`, `TRACE`, and other protocol details: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp), including the final statuses known from the head sent without `100 Continue` (`HttpExpectContinue` tests), HTTP/1.0 clients (`Http10` tests and `HttpExpectation.NoInterimResponseToHttp10Client`), the status line of an interim response without reason phrase (`HttpExpectation.HandlerCanEmitArbitraryInterimStatus`) and the invalid interim statuses (`HttpExpectation.ExpectationHandlerErrors`).
 - Empty lines before a request line, pipelined or received apart from it, limited by `maxHeaderBytes`: `HttpEmptyLinesBeforeRequestLine` tests in [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
 - `TRACE` echo as received, without sensitive fields, for heads received in several reads, up to `maxHeaderBytes`, and rejected with content: `HttpOptionsTrace` tests in [tests/http-core_test.cpp](../../tests/http-core_test.cpp), and the copy of the head in [aeronet/server/test/trace-echo_test.cpp](../../aeronet/server/test/trace-echo_test.cpp).

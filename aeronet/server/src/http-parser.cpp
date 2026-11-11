@@ -1,13 +1,12 @@
 #include <cassert>
-#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <span>
 #include <string_view>
-#include <system_error>
 
 #include "aeronet/chunk-size-line.hpp"
+#include "aeronet/compiler-config.hpp"
 #include "aeronet/connection-state.hpp"
 #include "aeronet/header-line-parse.hpp"
 #include "aeronet/header-merge.hpp"
@@ -23,6 +22,7 @@
 #include "aeronet/reserved-headers.hpp"
 #include "aeronet/safe-cast.hpp"
 #include "aeronet/search-crlf.hpp"
+#include "aeronet/string-view-size-only-sentinel.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/tolower-str.hpp"
 #include "aeronet/vector.hpp"
@@ -68,30 +68,26 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeBodyIfReady(ConnectionIt cn
   return decodeFixedLengthBody(cnxIt, input, maxBodyBytes, consumedBytes, deferBody);
 }
 
-Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeFixedLengthBody(ConnectionIt cnxIt, std::span<const char> input,
-                                                                     std::size_t maxBodyBytes,
-                                                                     std::size_t& consumedBytes, bool deferBody) {
+AERONET_ALWAYS_INLINE Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeFixedLengthBody(ConnectionIt cnxIt,
+                                                                                           std::span<const char> input,
+                                                                                           std::size_t maxBodyBytes,
+                                                                                           std::size_t& consumedBytes,
+                                                                                           bool deferBody) {
   ConnectionState& state = _pCtx->connections.connectionState(cnxIt);
   HttpRequestView& request = state.request;
   // Fixed-length (non-chunked) requests never carry trailers (RFC 7230 section 4.1.2), and the trailers of a previous
   // chunked request on this (keep-alive) connection were forgotten when it ended.
   assert(state.pendingRequest.trailerLen == 0);
-  auto optContentLength = request.headerValue(http::ContentLength);
+
+  const bool hasContentLength = IsSvSizeOnlyView(request._body);
   const std::size_t headerEnd = request.headSpanSize();
-  if (!optContentLength) {
+  if (!hasContentLength) {
     // No Content-Length and not chunked: treat as no body (common for GET/HEAD). Ready immediately.
-    request._body = std::string_view{};
     consumedBytes = headerEnd;
     return BodyDecodeStatus::Ready;
   }
-  std::string_view lenViewAll = *optContentLength;
   // Note: in HTTP/1.1, trailers are not allowed for non-chunked bodies.
-  std::size_t declaredContentLen = 0;
-  auto [ptr, err] = std::from_chars(lenViewAll.data(), lenViewAll.data() + lenViewAll.size(), declaredContentLen);
-  if (err != std::errc() || ptr != lenViewAll.data() + lenViewAll.size()) {
-    emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Invalid Content-Length");
-    return BodyDecodeStatus::Error;
-  }
+  const std::size_t declaredContentLen = request._body.size();
   if (maxBodyBytes < declaredContentLen) {
     emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, {});
     return BodyDecodeStatus::Error;
@@ -312,31 +308,34 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeTrailers(ConnectionIt cnxIt
 
   // Validate trailers and find the end position
   std::size_t tempPos = pos;
+  const std::size_t maxTrailerSize = _pCtx->config.maxHeaderBytes;
   while (true) {
-    const auto lineEndIt = SearchCRLF(pInputBeg + tempPos, pLast);
+    // The trailer lines count toward maxHeaderBytes with their CRLF, the final empty line does not. Only the bytes
+    // before the current line are counted: the input may hold the requests pipelined behind this one.
+    char* const pLineStart = pInputBeg + tempPos;
+    if (pLineStart > pTrailerStart + maxTrailerSize) {
+      emitSimpleError(cnxIt, http::StatusCodeRequestHeaderFieldsTooLarge);
+      return BodyDecodeStatus::Error;
+    }
+
+    const auto lineEndIt = SearchCRLF(pLineStart, pLast);
     if (lineEndIt == pLast || lineEndIt[1] != '\n') {
       // Not complete yet, or with a bare CR: waited for only if more input can still make it valid.
-      if (!CanStillBeValidLines(pInputBeg + tempPos, pLast)) {
+      if (!CanStillBeValidLines(pLineStart, pLast)) {
         emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed trailer line");
         return BodyDecodeStatus::Error;
       }
       // The trailers are bounded whether their line ends are received or not: a client could otherwise make the server
-      // buffer (and parse again at each read) a trailer line without end, without limit.
-      const std::size_t receivedTrailerSize = static_cast<std::size_t>(pLast - pTrailerStart);
-      if (receivedTrailerSize > _pCtx->config.maxHeaderBytes) {
+      // buffer (and parse again at each read) a trailer line without end, without limit. The received bytes of the
+      // current line count, unless they are the CR of the final empty line: the limit does not depend on the reads.
+      const bool finalLineStarted = pLast - pLineStart == 1 && *pLineStart == '\r';
+      if (!finalLineStarted && pLast > pTrailerStart + maxTrailerSize) {
         emitSimpleError(cnxIt, http::StatusCodeRequestHeaderFieldsTooLarge);
         return BodyDecodeStatus::Error;
       }
       return BodyDecodeStatus::NeedMore;
     }
-    // Check total trailer size limit
-    const std::size_t trailerSize = static_cast<std::size_t>((pInputBeg + tempPos) - pTrailerStart);
-    if (trailerSize > _pCtx->config.maxHeaderBytes) {
-      emitSimpleError(cnxIt, http::StatusCodeRequestHeaderFieldsTooLarge);
-      return BodyDecodeStatus::Error;
-    }
 
-    char* pLineStart = pInputBeg + tempPos;
     char* pLineLast = lineEndIt;
 
     // Detect blank line (end of trailers)

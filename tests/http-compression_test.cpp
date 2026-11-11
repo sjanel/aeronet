@@ -20,7 +20,6 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
-#include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
@@ -289,7 +288,7 @@ TEST(HttpCompression, IdentityForbiddenNoAlternativesReturns406) {
 }
 
 // A 406 is not a framing error: the connection persists (RFC 9112 §9.3), and the many requests pipelined behind it are
-// served.
+// served. A Content-Length of 0 announces no body: the connection persists as well.
 TEST(HttpCompression, NotAcceptableKeepsConnectionAlive) {
   ts.router().setDefault([](const HttpRequestView& req) { return req.makeResponse("hello"); });
   static constexpr int kNbRounds = 100;
@@ -297,15 +296,16 @@ TEST(HttpCompression, NotAcceptableKeepsConnectionAlive) {
   for (int round = 0; round < kNbRounds; ++round) {
     requests.append("GET /a HTTP/1.1\r\nHost: x\r\nAccept-Encoding: identity;q=0\r\n\r\n");
     requests.append("HEAD /b HTTP/1.1\r\nHost: x\r\nAccept-Encoding: *;q=0\r\n\r\n");
-    requests.append("GET /c HTTP/1.1\r\nHost: x\r\nAccept-Encoding: identity\r\n\r\n");
+    requests.append("POST /c HTTP/1.1\r\nHost: x\r\nAccept-Encoding: identity;q=0\r\nContent-Length: 0\r\n\r\n");
+    requests.append("GET /d HTTP/1.1\r\nHost: x\r\nAccept-Encoding: identity\r\n\r\n");
   }
-  requests.append("GET /d HTTP/1.1\r\nHost: x\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n");
+  requests.append("GET /e HTTP/1.1\r\nHost: x\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n");
 
   const std::string resp = test::sendAndCollect(ts.port(), requests);
-  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 406"), 2 * kNbRounds);
+  EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 406"), 3 * kNbRounds);
   EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 200"), kNbRounds + 1);
   // The response to HEAD has no body.
-  EXPECT_EQ(test::countOccurrences(resp, "No acceptable content-coding available"), kNbRounds);
+  EXPECT_EQ(test::countOccurrences(resp, "No acceptable content-coding available"), 2 * kNbRounds);
   EXPECT_EQ(test::countOccurrences(resp, MakeHttp1HeaderLine(http::Connection, http::close)), 1);
   EXPECT_TRUE(resp.ends_with("hello"));
 }
