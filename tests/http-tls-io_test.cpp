@@ -171,6 +171,44 @@ TEST(HttpTlsLingeringClose, EarlyResponseIsFollowedByCloseNotify) {
   EXPECT_TRUE(test::DrainEndsWithin(server.http(), 3s));
 }
 
+// The requests pipelined behind a response closing the connection may still be in the socket when it closes, the read
+// ending that request stopping exactly at its end (a whole read of minReadChunkBytes), and the transport reading ahead
+// less than the requests behind it: the connection lingers all the same (see the HttpLingeringClose tests). Closed
+// right away, the kernel would reset it, discarding the end of the response still in the socket send queue.
+TEST(HttpTlsLingeringClose, RequestsLeftInTheSocketBehindAClosingResponse) {
+  const std::string big(256UL << 10U, 'r');
+  test::EventLoopBlocker blocker;
+  test::TlsTestServer server({}, [](HttpServerConfig& cfg) {
+    cfg.withSocketSendBufferBytes(512U << 10U);  // the whole response fits in the socket send queue
+  });
+  server.router().setPath(http::Method::GET, "/block-loop", blocker.handler());
+  server.router().setPath(http::Method::GET, "/big",
+                          [big](const HttpRequestView& req) { return req.makeResponse(big); });
+
+  test::TlsClient blockerClient(server.port());
+  test::TlsClient client(server.port());
+  ASSERT_TRUE(blockerClient.handshakeOk() && client.handshakeOk());
+  static constexpr std::string_view kHeadStart = "GET /big HTTP/1.1\r\nHost: x\r\nConnection: close\r\nX-Pad: ";
+  std::string requests(kHeadStart);
+  requests.append(HttpServerConfig{}.minReadChunkBytes - kHeadStart.size() - http::DoubleCRLF.size(), 'p');
+  requests.append(http::DoubleCRLF);
+  ASSERT_EQ(requests.size(), HttpServerConfig{}.minReadChunkBytes);
+  // Several times the records that the transport reads ahead.
+  while (requests.size() < (64UL << 10U)) {
+    requests.append("GET /big HTTP/1.1\r\nHost: x\r\n\r\n");
+  }
+  ASSERT_TRUE(blockerClient.writeAll("GET /block-loop HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"));
+  blocker.runWhileBlocked([&client, &requests] { ASSERT_TRUE(client.writeAll(requests)); });
+  EXPECT_TRUE(blockerClient.readAll().ends_with("blocked"));
+
+  std::this_thread::sleep_for(100ms);  // the server wrote the response, then closed
+  std::string response = client.drainedDuringWrite() + client.readAll();
+  response += client.readAll();  // up to the close_notify alert
+  EXPECT_TRUE(response.ends_with(big)) << "received " << response.size() << " bytes";
+  const auto shutdownState = static_cast<unsigned>(::SSL_get_shutdown(client.sslHandle()));
+  EXPECT_NE(shutdownState & static_cast<unsigned>(SSL_RECEIVED_SHUTDOWN), 0U);
+}
+
 TEST(HttpOptionsTraceTls, TraceDisabledOnTlsPolicyRejectsTlsTrace) {
   // Use TlsTestServer and set TracePolicy to EnabledPlainOnly (reject TRACE over TLS)
   ts.server.postConfigUpdate(

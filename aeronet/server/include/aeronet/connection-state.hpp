@@ -31,6 +31,8 @@
 #endif
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
+#include <cassert>
+
 #include "aeronet/async-handler-state.hpp"
 #include "aeronet/object-pool.hpp"
 #endif
@@ -63,6 +65,10 @@ struct ConnectionState : public ConnectionInfo {
   [[nodiscard]] bool hasPendingOutput() const noexcept {
     return !outQueue.empty() || (protocolHandler != nullptr && protocolHandler->hasPendingOutput());
   }
+
+  // Tells whether output is still to write: buffered output, or a file being sent. Once flushed, it waits for the
+  // socket.
+  [[nodiscard]] bool hasPendingOutputOrFile() const noexcept { return hasPendingOutput() || isSendingFile(); }
 
   // Size of the HTTP/1 output not written yet (the files to send excluded).
   [[nodiscard]] std::size_t bufferedOutputBytes() const noexcept { return outQueue.bytes(); }
@@ -244,6 +250,10 @@ struct ConnectionState : public ConnectionInfo {
     pendingRequest = {};
   }
 
+  // Tells whether the input processing must stop, once the output was flushed: close requested, or output waiting for
+  // the socket. In the latter case, records whether it leaves input behind (see inputBlockedByOutput).
+  [[nodiscard]] bool stopReadingIfOutputBlocked();
+
   // Connection close lifecycle: a drain close may linger before the close (see isLingering()).
   enum class CloseMode : uint8_t { None, DrainThenClose, Linger };
 
@@ -286,8 +296,8 @@ struct ConnectionState : public ConnectionInfo {
   // True while the connection waits for its input to be resumed (see internal::ConnectionIo::deferInput()).
   bool inputDeferred : 1 {false};
 
-  // True when the input processing stopped on output backpressure, leaving input in inBuffer or in the transport: no
-  // read event reports it, so it is resumed once the output drained, whatever drained it (see
+  // True when the input processing stopped on output backpressure, leaving input in inBuffer, in the transport or in
+  // the socket: no read event reports it, so it is resumed once the output drained, whatever drained it (see
   // internal::ConnectionIo::flushOutbound()).
   bool inputBlockedByOutput : 1 {false};
 
@@ -336,9 +346,11 @@ struct ConnectionState : public ConnectionInfo {
   ZerocopyBuffers zerocopyBuffers;
 #endif
   Transport transport;  // set after accept (plain or TLS)
+  // Time of the last event of the connection, or of the last write of its HTTP/1 output (the client reading it).
   std::chrono::steady_clock::time_point lastActivity;
   // Start of the header read timer of the current HTTP/1.1 request: the accept of the connection for its first request,
-  // the first bytes of the next ones (see internal::ConnectionMaintenance::startHeaderReadTimer()).
+  // the first bytes of the next ones, or the answer of the previous one for a request pipelined behind it (see
+  // internal::ConnectionMaintenance::startHeaderReadTimer()).
   // Kept alive for the full request lifecycle as the reference point for bodyLastActivityMs / requestDeadlineMs.
   // Epoch means inactive (no request in progress).
   std::chrono::steady_clock::time_point headerStartTp;
@@ -388,7 +400,13 @@ struct ConnectionState : public ConnectionInfo {
   std::unique_ptr<IProtocolHandler> protocolHandler;
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-  [[nodiscard]] AsyncHandlerState* pAsyncState() const noexcept { return asyncState.get(); }
+  [[nodiscard]] AsyncHandlerState* pAsyncHandlerState() const noexcept { return asyncState.get(); }
+
+  [[nodiscard]] AsyncHandlerState& asyncHandlerState() const noexcept {
+    AsyncHandlerState* pAsyncHandlerState = asyncState.get();
+    assert(pAsyncHandlerState != nullptr);
+    return *pAsyncHandlerState;
+  }
 
   // Tells whether deferred work (deferWork()) is still running for a coroutine of this connection: its frame and its
   // request must then be kept until the work completes, even if the connection is closed.

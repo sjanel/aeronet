@@ -4,9 +4,11 @@
 
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <string_view>
+#include <thread>
 
 #define AERONET_WANT_SOCKET_OVERRIDES
 
@@ -187,6 +189,41 @@ TEST_F(SocketOpsTest, SendQueueBytesOfIdleSocketIsZero) {
 
 TEST_F(SocketOpsTest, SendQueueBytesFailsOnBadFd) { EXPECT_EQ(SendQueueBytes(-1), -1); }
 #endif
+
+TEST_F(SocketOpsTest, ReceiveQueueBytesOfIdleSocketIsZero) {
+  BaseFd fd(CreateTestSocket());
+  EXPECT_EQ(ReceiveQueueBytes(fd.fd()), 0);
+}
+
+TEST_F(SocketOpsTest, ReceiveQueueBytesCountsTheBytesNotReadYet) {
+  BaseFd listener(CreateTestSocket());
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  ASSERT_EQ(::bind(listener.fd(), reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)), 0);
+  ASSERT_EQ(::listen(listener.fd(), 1), 0);
+  socklen_t addrLen = sizeof(addr);
+  ASSERT_EQ(::getsockname(listener.fd(), reinterpret_cast<sockaddr*>(&addr), &addrLen), 0);
+  BaseFd client(CreateTestSocket());
+  ASSERT_EQ(::connect(client.fd(), reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)), 0);
+  BaseFd accepted(::accept(listener.fd(), nullptr, nullptr));
+  ASSERT_GE(accepted.fd(), 0);
+  EXPECT_EQ(ReceiveQueueBytes(accepted.fd()), 0);
+
+  static constexpr std::string_view kData = "12345";
+  ASSERT_EQ(SafeSend(client.fd(), kData.data(), kData.size()), static_cast<int64_t>(kData.size()));
+  // Loopback delivery may be asynchronous.
+  for (int attempt = 0; attempt < 1000 && ReceiveQueueBytes(accepted.fd()) == 0; ++attempt) {
+    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+  }
+  EXPECT_EQ(ReceiveQueueBytes(accepted.fd()), static_cast<int64_t>(kData.size()));
+
+  std::array<char, kData.size()> received{};
+  ASSERT_EQ(::recv(accepted.fd(), received.data(), received.size(), 0), static_cast<ssize_t>(received.size()));
+  EXPECT_EQ(ReceiveQueueBytes(accepted.fd()), 0);
+}
+
+TEST_F(SocketOpsTest, ReceiveQueueBytesFailsOnBadFd) { EXPECT_EQ(ReceiveQueueBytes(kInvalidHandle), -1); }
 
 TEST_F(SocketOpsTest, GetSocketErrorReturnsZeroForGoodSocket) {
   NativeHandle fd = CreateTestSocket();

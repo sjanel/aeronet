@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -7,6 +8,7 @@
 #include <utility>
 
 #include "aeronet/http-server-config.hpp"
+#include "aeronet/path-handlers.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/router-update-proxy.hpp"
 #include "aeronet/router.hpp"
@@ -65,6 +67,23 @@ class TestServer {
 };
 
 void LogScopedConfigUpdateDestructorError();
+
+// Blocks the event loop of a server in the handler of a route while a client sends, so that its next poll reports all
+// the bytes sent meanwhile in a single event, already in the receive queue of the server (a half-close included).
+// Usage: register handler() on a route, send a request for it, call runWhileBlocked(), then read its response.
+class EventLoopBlocker {
+ public:
+  // The handler of the blocking route: it returns once runWhileBlocked() sent its bytes. Its response is "blocked".
+  [[nodiscard]] RequestHandler handler();
+
+  // Waits until the event loop is in handler() (throws after 10 s), calls 'sendWhileBlocked', then releases the event
+  // loop, returning once the handler returned. Can be called again for another request of the blocking route.
+  void runWhileBlocked(const std::function<void()>& sendWhileBlocked);
+
+ private:
+  std::atomic<bool> _inHandler{false};
+  std::atomic<bool> _released{false};
+};
 
 // Generic RAII scope guard for temporarily changing an HttpServerConfig field via
 // TestServer::postConfigUpdate(). Captures the previous value on construction and

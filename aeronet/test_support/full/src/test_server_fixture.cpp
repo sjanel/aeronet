@@ -11,9 +11,12 @@
 #include <thread>
 #include <utility>
 
+#include "aeronet/http-request-view.hpp"
+#include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/log-noexcept.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/path-handlers.hpp"
 #include "aeronet/router-config.hpp"
 #include "aeronet/router-update-proxy.hpp"
 #include "aeronet/router.hpp"
@@ -193,6 +196,40 @@ void TestServer::resetRouter(std::function<void(Router&)> initializer) {
 
 void LogScopedConfigUpdateDestructorError() {
   log::error("Failed to restore HttpServerConfig field in ScopedConfigUpdate destructor");
+}
+
+RequestHandler EventLoopBlocker::handler() {
+  return [this](const HttpRequestView&) {
+    _inHandler.store(true);
+    while (!_released.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
+    _inHandler.store(false);
+    return HttpResponse("blocked");
+  };
+}
+
+void EventLoopBlocker::runWhileBlocked(const std::function<void()>& sendWhileBlocked) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+  while (!_inHandler.load()) {
+    if (std::chrono::steady_clock::now() >= deadline) {
+      throw std::runtime_error("EventLoopBlocker: the request of the blocking route did not reach its handler");
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+  }
+  try {
+    sendWhileBlocked();
+  } catch (...) {
+    _released.store(true);  // the server could not stop otherwise
+    throw;
+  }
+  // Loopback delivery may be asynchronous (macOS): let the kernel queue the bytes before the event loop polls again.
+  std::this_thread::sleep_for(std::chrono::milliseconds{20});
+  _released.store(true);
+  while (_inHandler.load()) {
+    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+  }
+  _released.store(false);
 }
 
 }  // namespace aeronet::test

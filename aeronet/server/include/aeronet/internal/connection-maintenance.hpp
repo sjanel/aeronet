@@ -67,9 +67,12 @@ class ConnectionMaintenance {
   }
 
   // Records bytes received at 'now' on the connection: the first bytes of the request following a response start its
-  // header read timer (the timer of the first request started at the accept), and bytes of a body being received
-  // update its reception progress.
+  // header read timer (the timer of the first request started at the accept, the one of a request pipelined behind
+  // another one once the latter is answered), and bytes of a body being received update its reception progress.
   void trackReceivedBytes(ConnectionState& state, std::chrono::steady_clock::time_point now) noexcept {
+    // The head of a request whose body is awaited was received: its start is the reference of its relative timestamps
+    // (unless it was answered before its body, the connection then closing).
+    assert(!state.waitingForBody || state.headerStartTp.time_since_epoch().count() != 0 || state.isAnyCloseRequested());
     if (state.headerStartTp.time_since_epoch().count() == 0) {
       startHeaderReadTimer(state);
     }
@@ -87,11 +90,15 @@ class ConnectionMaintenance {
     }
   }
 
-  void trackRequestDeadline(ConnectionState& state, uint32_t deadlineMs) noexcept {
-    if (state.requestDeadlineMs == ConnectionState::kInactiveRelativeMs) {
-      ++_sweepState.requestDeadlineConnections;
-    }
-    state.requestDeadlineMs = deadlineMs;
+  // Arms the per-route deadline of the HTTP/1.1 request being served, 'requestTimeout' after its start (out of line:
+  // only for the routes with a timeout).
+  void trackRequestDeadline(ConnectionState& state, std::chrono::milliseconds requestTimeout) noexcept;
+
+  // The HTTP/1.1 request is answered (or turned into a tunnel): clears its per-route deadline and its start, so that
+  // the next request starts its own timers (see trackReceivedBytes() and Http1Pipeline::serveRequests()).
+  void endRequestTimers(ConnectionState& state) noexcept {
+    clearRequestDeadline(state);
+    state.headerStartTp = {};
   }
 
   // Track the reception of the body of the current HTTP/1.1 request for the body read timeout. A received body (or a

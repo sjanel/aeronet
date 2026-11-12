@@ -16,12 +16,12 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
 #ifdef AERONET_LINUX
 #include <linux/sockios.h>
-#include <sys/ioctl.h>
 #endif
 
 #endif
@@ -338,6 +338,21 @@ int64_t SendQueueBytes(NativeHandle fd) noexcept {
   return queuedBytes;
 }
 #endif
+
+int64_t ReceiveQueueBytes(NativeHandle fd) noexcept {
+#ifdef AERONET_WINDOWS
+  u_long queuedBytes = 0;
+  const bool failed = ::ioctlsocket(fd, FIONREAD, &queuedBytes) != 0;
+#elifdef AERONET_LINUX
+  int queuedBytes = 0;
+  // SIOCINQ is FIONREAD, named for sockets.
+  const bool failed = ::ioctl(fd, SIOCINQ, &queuedBytes) == -1;
+#else
+  int queuedBytes = 0;
+  const bool failed = ::ioctl(fd, FIONREAD, &queuedBytes) == -1;
+#endif
+  return failed ? -1 : static_cast<int64_t>(queuedBytes);
+}
 
 int64_t ReadOffset(NativeHandle fd, void* buffer, std::size_t len, std::size_t offset) noexcept {
 #ifdef AERONET_POSIX

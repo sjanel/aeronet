@@ -120,8 +120,7 @@ TunnelManager::LoopAction TunnelManager::startHttp1Tunnel(ConnectionIt& cnxIt, s
 void TunnelManager::establishHttp1Tunnel(ConnectionIt cnxIt, NativeHandle upstreamFd) {
   ConnectionState& state = _ctx.connections.connectionState(cnxIt);
 
-  _ctx.maintenance.clearRequestDeadline(state);
-  state.headerStartTp = {};
+  _ctx.maintenance.endRequestTimers(state);
 
   // A 2xx response to CONNECT has no content: the tunneled bytes directly follow its head (RFC 9110 §9.3.6).
   _ctx.io.queueData(cnxIt, HttpMessageData(BuildTunnelEstablished(_ctx.config.globalHeaders, _ctx.dateHeader.data())));
@@ -649,7 +648,7 @@ ITunnelBridge::TunnelSetup TunnelManager::startH2Tunnel(NativeHandle clientFd, u
 
 void TunnelManager::completeH2Tunnel(const PendingTunnel& pending) {
   auto* h2Handler = static_cast<http2::Http2ProtocolHandler*>(
-      _ctx.connections.pConnectionState(pending.clientFd)->protocolHandler.get());
+      _ctx.connections.connectionState(pending.clientFd).protocolHandler.get());
   if (!h2Handler->isTunnelPending(pending.streamId)) {
     return;  // the stream was reset or closed meanwhile
   }
@@ -660,7 +659,7 @@ void TunnelManager::completeH2Tunnel(const PendingTunnel& pending) {
     log::warn("HTTP/2 CONNECT stream {} failed to connect to {}:{}", pending.streamId, pending.host(), pending.port);
   }
   // The connection insertion may have moved the client connection state.
-  ConnectionState& clientState = *_ctx.connections.pConnectionState(pending.clientFd);
+  ConnectionState& clientState = _ctx.connections.connectionState(pending.clientFd);
   static_cast<http2::Http2ProtocolHandler*>(clientState.protocolHandler.get())
       ->onTunnelResolved(pending.streamId, upstreamFd);
   _ctx.io.flushOutbound(_ctx.connections.iterator(pending.clientFd));
