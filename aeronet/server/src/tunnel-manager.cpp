@@ -120,8 +120,7 @@ TunnelManager::LoopAction TunnelManager::startHttp1Tunnel(ConnectionIt& cnxIt, s
 void TunnelManager::establishHttp1Tunnel(ConnectionIt cnxIt, NativeHandle upstreamFd) {
   ConnectionState& state = _ctx.connections.connectionState(cnxIt);
 
-  _ctx.maintenance.clearRequestDeadline(state);
-  state.headerStartTp = {};
+  _ctx.maintenance.endRequestTimers(state);
 
   // A 2xx response to CONNECT has no content: the tunneled bytes directly follow its head (RFC 9110 §9.3.6).
   _ctx.io.queueData(cnxIt, HttpMessageData(BuildTunnelEstablished(_ctx.config.globalHeaders, _ctx.dateHeader.data())));

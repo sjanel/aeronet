@@ -44,8 +44,9 @@ class ConnectionIo {
   void queueData(ConnectionIt cnxIt, HttpMessageData httpResponseData);
 
   // Writes the pending output of the connection: its HTTP/1 output (with its file payloads), then the output of its
-  // protocol handler, until the socket would block.
-  void flushOutbound(ConnectionIt cnxIt);
+  // protocol handler, until the socket would block. Returns true if some HTTP/1 output was written: its client reads,
+  // which counts as activity (see ConnectionState::lastActivity).
+  bool flushOutbound(ConnectionIt cnxIt);
 
   // The connection of the HTTP/1.1 request followed by other requests in its input buffer, while they are served
   // (nullptr otherwise): queueData() does not write their responses right away, but keeps them to write them

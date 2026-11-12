@@ -48,6 +48,13 @@ AERONET_ALWAYS_INLINE bool AsyncHandlerWorking([[maybe_unused]] const Connection
 #endif
 }
 
+// Tells whether HTTP/1 output (a response, its file) is still to write: it waits for its client to read it. Then
+// keepAliveTimeout bounds the time without any write progress, whether keep-alive is enabled or not (see
+// closeExpiredKeepAliveConnections()).
+AERONET_ALWAYS_INLINE bool HasPendingHttp1Output(const ConnectionState& state) noexcept {
+  return !state.outQueue.empty() || state.isSendingFile();
+}
+
 }  // namespace
 
 void ConnectionMaintenance::refreshKeepAliveDeadline(ConnectionIt cnxIt) {
@@ -67,7 +74,8 @@ void ConnectionMaintenance::refreshKeepAliveDeadline(ConnectionIt cnxIt) {
     return;
   }
   // A CONNECT waiting for its target resolution has a deadline of its own (TunnelManager::expirePendingTunnels()).
-  if (!config.enableKeepAlive || state.isTunneling() || state.tunnelResolving || AsyncHandlerWorking(state)) {
+  if (state.isTunneling() || state.tunnelResolving || AsyncHandlerWorking(state) ||
+      (!config.enableKeepAlive && !HasPendingHttp1Output(state))) {
 #ifdef AERONET_LINUX
     // Still watched while its zerocopy sends are in flight (see watchZerocopySends()).
     if (state.hasZerocopySendsInFlight()) {
@@ -93,9 +101,6 @@ void ConnectionMaintenance::armDeadlineIfUnset(ConnectionState& state, NativeHan
 
 void ConnectionMaintenance::restartKeepAliveIdleWindow(NativeHandle fd, std::chrono::steady_clock::time_point workEnd) {
   ServerContext& ctx = *_pCtx;
-  if (!ctx.config.enableKeepAlive) {
-    return;
-  }
   const auto cnxIt = ctx.connections.iterator(fd);
   if (!IsValid(ctx.connections, cnxIt)) {
     return;
@@ -103,9 +108,10 @@ void ConnectionMaintenance::restartKeepAliveIdleWindow(NativeHandle fd, std::chr
   ConnectionState& state = ctx.connections.connectionState(cnxIt);
   // The deadline armed when the request was read is stale as soon as serving it took longer than
   // keepAliveTimeout - a multi-second database query in a synchronous handler is enough. keepAliveTimeout
-  // bounds idleness *between* requests (see HttpServerConfig::keepAliveTimeout), so restart the idle window
-  // from the instant the work completed. Without this the next maintenance sweep would close the connection
-  // right after the response was produced, before the peer had any chance to read it.
+  // bounds idleness *between* requests, and the time a response waits for its client without progress (see
+  // HttpServerConfig::keepAliveTimeout), so restart the idle window from the instant the work completed, keep-alive
+  // enabled or not. Without this the next maintenance sweep would close the connection right after the response was
+  // produced, before the peer had any chance to read it.
   if (state.lastActivity + ctx.config.keepAliveTimeout > workEnd) {
     return;  // served well within the idle window: the armed deadline is still valid
   }
@@ -153,7 +159,11 @@ bool ConnectionMaintenance::closeExpiredKeepAliveConnections() {
 #endif
     // A handler still working gets here when the deadline was armed to watch a zerocopy send since completed: its
     // completion arms it again.
-    if (!config.enableKeepAlive || state.isTunneling() || state.tunnelResolving || AsyncHandlerWorking(state)) {
+    if (state.isTunneling() || state.tunnelResolving || AsyncHandlerWorking(state)) {
+      continue;
+    }
+    const bool outputPending = HasPendingHttp1Output(state);
+    if (!config.enableKeepAlive && !outputPending) {
       continue;
     }
 
@@ -166,16 +176,27 @@ bool ConnectionMaintenance::closeExpiredKeepAliveConnections() {
       continue;
     }
 
-    // File sends are exempt because their progress is driven by this very sweep (flushFilePayload retries
-    // above), which does not refresh lastActivity.
-    if (state.isSendingFile()) {
-      _deadlines.upsert(state, expired.fd, now + config.keepAliveTimeout);
-      continue;
-    }
-
+    // The writes of the HTTP/1 output count as activity (see ConnectionIo::flushOutbound()).
     const auto currentExpiry = state.lastActivity + config.keepAliveTimeout;
     if (currentExpiry > now) {
       _deadlines.upsert(state, expired.fd, currentExpiry);
+      continue;
+    }
+
+    if (outputPending) {
+      // The writes retried by the sweeps may not have refreshed the last activity in time: a sweep runs this check
+      // before its own retry (a tick period of keepAliveTimeout would always find it expired), and a sweep retries at
+      // most kMaxFlushRetriesPerSweep connections. Retry once more: a client still reading is kept. Not with a
+      // keepAliveTimeout of 0: re-armed at now, the deadline would come back in this very loop for as long as the
+      // writes progress.
+      if (config.keepAliveTimeout.count() != 0 && ctx.io.flushOutbound(cnxIt)) {
+        _deadlines.upsert(state, expired.fd, now + config.keepAliveTimeout);
+        continue;
+      }
+      log::debug("sweepIdleConnections: fd # {} closed for its stalled output", expired.fd);
+      ctx.io.closeConnection(cnxIt);
+      ctx.telemetry.counterAdd("aeronet.connections.closed_for_stalled_output");
+      closedAny = true;
       continue;
     }
 
@@ -261,6 +282,8 @@ void ConnectionMaintenance::updateBodyReception(ConnectionState& state, bool bod
     }
     return;
   }
+  // The body of a request whose head was received: its start is the reference of its relative timestamps.
+  assert(state.headerStartTp.time_since_epoch().count() != 0);
   if (_pCtx->config.bodyReadTimeout.count() == 0) {
     return;
   }
@@ -270,6 +293,19 @@ void ConnectionMaintenance::updateBodyReception(ConnectionState& state, bool bod
   }
   state.bodyLastActivityMs = static_cast<uint32_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(state.lastActivity - state.headerStartTp).count());
+}
+
+void ConnectionMaintenance::trackRequestDeadline(ConnectionState& state,
+                                                 std::chrono::milliseconds requestTimeout) noexcept {
+  if (state.requestDeadlineMs == ConnectionState::kInactiveRelativeMs) {
+    ++_sweepState.requestDeadlineConnections;
+  }
+  // Set again each time the request is served with more of its body: counted from its start, the largest timeout
+  // (PathEntryConfig::kMaxRequestTimeout) no longer fits in 32 bits once some time elapsed. Capped to about 49.7 days.
+  const auto deadline =
+      std::chrono::duration_cast<std::chrono::milliseconds>(state.lastActivity - state.headerStartTp) + requestTimeout;
+  state.requestDeadlineMs = static_cast<uint32_t>(
+      std::clamp<std::chrono::milliseconds::rep>(deadline.count(), 0, ConnectionState::kInactiveRelativeMs - 1));
 }
 
 void ConnectionMaintenance::forgetConnectionMaintenance(ConnectionState& state) noexcept {

@@ -211,6 +211,12 @@ bool Http1Pipeline::serveRequests(ConnectionIt cnxIt) {
       consumedInput.nbBytes += emptyLinesSize;
       input = input.subspan(emptyLinesSize);
     }
+    // A request pipelined behind the one answered (received in the same read) starts its header read timer now: its
+    // start is also the reference of its relative timestamps (body reception, route deadline). Not while output waits
+    // for the socket (above): its client is not responsible for that time.
+    if (!input.empty() && state.headerStartTp.time_since_epoch().count() == 0) {
+      ctx.maintenance.startHeaderReadTimer(state);
+    }
     // If we don't have enough bytes for the minimum request line, wait for more data, unless they can no longer start
     // one (a bare CR or LF): answered right away, like the start of a longer head, not once a timeout expires. The
     // input is empty when all of it was served.
@@ -467,13 +473,11 @@ AERONET_ALWAYS_INLINE Http1Pipeline::LoopAction Http1Pipeline::readHead(Connecti
 
 AERONET_ALWAYS_INLINE bool Http1Pipeline::applyRouteLimits(ConnectionIt cnxIt, ConnectionState& state,
                                                            const Router::RoutingResult& routingResult) {
+  // The start of the request is the reference of its relative timestamps (see ConnectionState::headerStartTp).
+  assert(state.headerStartTp.time_since_epoch().count() != 0);
   // Arm per-route request deadline for sweep enforcement (async/streaming handlers).
   if (routingResult.pathConfig().requestTimeout != std::chrono::milliseconds::max()) {
-    _pCtx->maintenance.trackRequestDeadline(
-        state,
-        static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                  state.lastActivity - state.headerStartTp + routingResult.pathConfig().requestTimeout)
-                                  .count()));
+    _pCtx->maintenance.trackRequestDeadline(state, routingResult.pathConfig().requestTimeout);
   }
 
   // `Upgrade: h2c` (HTTP/1.1 -> cleartext HTTP/2) is deliberately not honored: RFC 9113 §3.1 deprecated that
@@ -764,8 +768,7 @@ void Http1Pipeline::emitHttpsRedirect(ConnectionIt cnxIt) {
   HttpResponse resp(statusCode);
   resp.location(urlBuf);
 
-  ctx.maintenance.clearRequestDeadline(state);
-  state.headerStartTp = {};
+  ctx.maintenance.endRequestTimers(state);
 
   // Force connection close: the redirected client reconnects over TLS, and closing avoids any
   // request-body framing concerns since the body is intentionally not consumed.
@@ -931,10 +934,8 @@ void Http1Pipeline::finalizeAndSendResponse(ConnectionIt cnxIt, HttpResponse&& r
     (void)pCorsPolicy->applyToResponse(request, resp);
   }
 
-  // Clear per-route request deadline and headerStartTp now that a response is being sent.
-  // Resetting headerStartTp to epoch lets the first bytes of the next keep-alive request start its header read timer.
-  ctx.maintenance.clearRequestDeadline(state);
-  state.headerStartTp = {};
+  // The timers of the next request start with its first bytes, or right away for a request pipelined behind this one.
+  ctx.maintenance.endRequestTimers(state);
 
   request.prefinalizeHttpResponse(resp, ctx.telemetry);
 

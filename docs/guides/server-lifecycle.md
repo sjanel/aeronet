@@ -146,7 +146,7 @@ HTTP/1.1 connections are persistent by default: a client sends several requests 
 | Setting | Default | Effect |
 | --- | --- | --- |
 | `enableKeepAlive` (`withKeepAliveMode()`) | `true` | `false` closes every connection after its response. |
-| `keepAliveTimeout` | 5 s | An idle connection is closed after this duration. Also applies to WebSocket connections, see [Closing connections](../protocols/websocket.md#closing-connections). |
+| `keepAliveTimeout` | 5 s | An idle connection is closed after this duration, and so is a connection whose response made no progress for that long (see below). Also applies to WebSocket connections, see [Closing connections](../protocols/websocket.md#closing-connections). |
 | `maxRequestsPerConnection` | 100,000 | The response to the last allowed request carries `Connection: close`. |
 | `maxAcceptBatchSize` | 64 | New connections accepted per loop iteration, so that a connection burst does not starve the existing ones; `0` is unlimited. |
 | `lingeringCloseTimeout` (`withLingeringCloseTimeout()`) | 5 s | Maximum duration of a [lingering close](#lingering-close); `0` closes the connection right away. |
@@ -154,6 +154,8 @@ HTTP/1.1 connections are persistent by default: a client sends several requests 
 The server closes a connection right away, without waiting for the next request, after a protocol error (malformed request, conflicting framing headers, a limit exceeded): the parser state cannot be trusted anymore, so it never reads further requests from that connection.
 
 While a response waits for the socket (a client reading slowly), the server stops reading its connection: the requests pipelined behind it wait unparsed, in the socket or in the input buffer, and are served once the response is written, without counting toward `maxHeaderBytes` or `headerReadTimeout` meanwhile. A client may also half-close its connection right after its requests (as `nc -N`, HTTP/1.0 style clients or health checks do): the server reads the end of the input once their responses are written, then closes the connection.
+
+`keepAliveTimeout` bounds that wait: a client reading the response, even slowly, keeps its connection, each write counting as activity, but once the response, buffered or a file, made no progress for `keepAliveTimeout`, the connection is closed and the rest of the response dropped. This also holds with `enableKeepAlive` set to `false`, so that a client that never reads its response cannot hold its connection, its output and its open file forever. The `aeronet.connections.closed_for_stalled_output` counter counts these closes (see [Observability](../operations/observability.md#built-in-instrumentation)).
 
 ### Lingering close
 
@@ -179,5 +181,6 @@ Keep the default unless several processes must share a port. With `SO_REUSEPORT`
 - Stop on a failing poll: `ConnectionManagerErrors.PersistentPollFailureStopsTheServer` in [tests/http-errors_test.cpp](../../tests/http-errors_test.cpp).
 - `MultiHttpServer`: [tests/multi-http-server_test.cpp](../../tests/multi-http-server_test.cpp).
 - Keep-alive and `Connection` semantics: [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
+- `keepAliveTimeout` of a response waiting for its client: `HttpKeepAlive.StalledReaderIsClosedAfterKeepAliveTimeout` (buffered and file responses, keep-alive enabled or not) and `HttpKeepAlive.SteadySlowReaderIsNotClosedAsIdle` in [tests/http-core_test.cpp](../../tests/http-core_test.cpp), run on Linux only: they rely on how its loopback sockets apply flow control with small buffers.
 - Pipelined requests and half-close behind a response waiting for the socket: the `HttpBackpressure` tests of [tests/http-core_test.cpp](../../tests/http-core_test.cpp) (`PipelinedRequestsBehindBlockedOutputAreNotAnOversizedHead`, `PipelinedRequestsBehindBlockedOutputAreNotTimedOut`, `HalfCloseRightAfterTheRequestStillGetsTheWholeResponse`, `HalfCloseRightAfterPipelinedRequestsStillGetsAllTheirResponses`, `HalfCloseWhileTheResponseWaitsForTheSocketStillGetsTheWholeResponse`).
 - Lingering close: the `HttpLingeringClose` tests of [tests/http-core_test.cpp](../../tests/http-core_test.cpp), over TLS in [tests/http-tls-io_test.cpp](../../tests/http-tls-io_test.cpp), and the failure to shut down a connection in [tests/http-errors_test.cpp](../../tests/http-errors_test.cpp).

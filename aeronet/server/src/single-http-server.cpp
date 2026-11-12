@@ -349,10 +349,8 @@ bool SingleHttpServer::isServerInternalFd(NativeHandle fd) const noexcept {
 
 void SingleHttpServer::restartKeepAliveIdleWindows(std::span<const EventLoop::EventFd> events,
                                                    std::chrono::steady_clock::time_point batchStart) {
+  // Keep-alive enabled or not: keepAliveTimeout also bounds the time a response waits for its client without progress.
   const HttpServerConfig& config = _ctx.config;
-  if (!config.enableKeepAlive) {
-    return;
-  }
   const auto workEnd = std::chrono::steady_clock::now();
   if (batchStart + config.keepAliveTimeout > workEnd) {
     return;  // the whole batch was served well within the idle window: no armed deadline can be stale

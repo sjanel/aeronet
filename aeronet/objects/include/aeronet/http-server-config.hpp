@@ -247,15 +247,18 @@ struct HttpServerConfig {
   // ===========================================
 
   // Idle timeout for keep-alive connections (duration to wait for next request after previous response is fully
-  // sent). Once exceeded the server proactively closes the connection.
+  // sent). Once exceeded the server proactively closes the connection. It also bounds the time an HTTP/1.1 response
+  // (buffered or a file) waits for a client that stopped reading it, keep-alive enabled or not: the connection is
+  // closed after keepAliveTimeout without any write progress. A client reading slowly but steadily is never closed.
   // Default: 5000 ms.
   std::chrono::milliseconds keepAliveTimeout{std::chrono::milliseconds{5000}};
 
   // Maximum duration allowed to fully receive the HTTP/1.1 request headers (request line + headers + CRLFCRLF),
   // from the accept for the first request of a connection (TLS handshake included), from the moment its first byte is
-  // read for the next ones. If exceeded before the header terminator is observed the server closes the connection and
-  // emits a 408 Request Timeout. HTTP/2 and WebSocket connections and CONNECT tunnels are not concerned. A value
-  // of 0 disables this protective timeout. Default: disabled.
+  // read for the next ones (from the answer of the previous one for a request received with it, pipelined). If exceeded
+  // before the header terminator is observed the server closes the connection and emits a 408 Request Timeout. HTTP/2
+  // and WebSocket connections and CONNECT tunnels are not concerned. A value of 0 disables this protective timeout.
+  // Default: disabled.
   std::chrono::milliseconds headerReadTimeout{std::chrono::milliseconds{0}};
 
   // Maximum time without receiving body bytes while the body of an HTTP/1.1 request is awaited: by the server before

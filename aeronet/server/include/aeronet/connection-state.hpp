@@ -346,9 +346,11 @@ struct ConnectionState : public ConnectionInfo {
   ZerocopyBuffers zerocopyBuffers;
 #endif
   Transport transport;  // set after accept (plain or TLS)
+  // Time of the last event of the connection, or of the last write of its HTTP/1 output (the client reading it).
   std::chrono::steady_clock::time_point lastActivity;
   // Start of the header read timer of the current HTTP/1.1 request: the accept of the connection for its first request,
-  // the first bytes of the next ones (see internal::ConnectionMaintenance::startHeaderReadTimer()).
+  // the first bytes of the next ones, or the answer of the previous one for a request pipelined behind it (see
+  // internal::ConnectionMaintenance::startHeaderReadTimer()).
   // Kept alive for the full request lifecycle as the reference point for bodyLastActivityMs / requestDeadlineMs.
   // Epoch means inactive (no request in progress).
   std::chrono::steady_clock::time_point headerStartTp;
