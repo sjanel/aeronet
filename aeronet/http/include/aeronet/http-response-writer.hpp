@@ -78,22 +78,23 @@ class HttpResponseWriter {
   //   non-HEAD requests (allowing indefinite / unknown-length streaming), and HEAD responses carry no Content-Length
   //   (the length of the GET response is not known). An HTTP/1.0 client does not understand chunked encoding: its
   //   response body is then delimited by the close of the connection instead.
-  // - Call only if you know the exact number of body bytes that will be sent (the on-the-wire size). This means:
-  //     * If you rely on aeronet's automatic compression (no user provided Content-Encoding and compression
-  //       is enabled), you SHOULD NOT call contentLength() because the final compressed size is not known
-  //       ahead of time. Use chunked mode instead. (If you do call it, you must supply the compressed size
-  //       you will ultimately produce; aeronet does not recalculate or adjust it.)
-  //     * If you supply your own Content-Encoding (manual compression or identity) you may set the length
-  //       of that encoded payload exactly.
+  // - Call only if you know the exact number of body bytes that you will write. With your own Content-Encoding, it is
+  //   the length of that encoded payload.
+  // - Automatic compression (compression enabled, no Content-Encoding set by you) is decided from the declared
+  //   length, without buffering: below CompressionConfig::minBytes, or for a content type that is not compressed, the
+  //   response is sent with this Content-Length. Otherwise, the length of the compressed body is not known when the
+  //   headers are sent: the declared length is dropped and the response is chunked, as without contentLength(). A
+  //   HEAD response takes the same decision, whatever the handler writes for it.
   // - Precondition (only if you decide to use it): call before any body data is written (i.e. before the first
   //   write()) and before headers are sent. If you never call contentLength(), chunked mode is automatically used.
-  //   Calls made after write(), end(), or once headers have been flushed are ignored (a debug log is emitted) and
+  //   Calls made after write(), end(), or once headers have been flushed are ignored (a warning is logged) and
   //   the response continues in chunked mode (or without Content-Length for HEAD).
   // - Passing 0 is allowed and results in an empty fixed-length body (no chunked framing).
   // - The library does not (yet) enforce that the number of bytes written matches len; a mismatch is a protocol
   //   error and may confuse clients (too few bytes => truncated response; too many bytes => bytes interpreted
   //   as the start of the next message / connection corruption). Future versions may add debug assertions.
-  // - Once set, the writer will NOT emit a Transfer-Encoding header and will not switch back to chunked.
+  // - Once set, the writer will NOT emit a Transfer-Encoding header and will not switch back to chunked, unless the
+  //   body is compressed (see above).
   void contentLength(std::size_t len);
 
   // Backpressure-aware body write. Returns true if accepted (queued or immediately written). Returns
@@ -180,7 +181,8 @@ class HttpResponseWriter {
   //
   // HEAD requests:
   // - You should still call end(); the headers of the GET response (declared Content-Length if any, Content-Encoding
-  //   if the written bytes reach the compression threshold) are sent, but the body is neither compressed nor sent.
+  //   if the declared length or else the written bytes reach the compression threshold) are sent, but the body is
+  //   neither compressed nor sent.
   //
   // Ordering & network I/O:
   // - After end() returns, all response bytes have been enqueued to the server's outgoing queue; they may still be
@@ -215,6 +217,9 @@ class HttpResponseWriter {
                      std::string_view globalHeadersStr, HttpMessage::Options opts);
 
   void ensureHeadersSent();
+
+  // Starts the encoder of the negotiated encoding, unless the content type is not compressed.
+  void startCompressionIfAllowed();
 
   // Called when the status code forbids any content: discards what could have been accumulated for the body.
   void dropContent();

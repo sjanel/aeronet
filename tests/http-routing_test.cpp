@@ -318,6 +318,30 @@ TEST_F(HttpTrailingSlash, RedirectLocationOfLongPath) {
   EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Location, "/users/" + encoded))) << resp;
 }
 
+// The Location of the trailing slash redirect is the request path. A path starting with "//" (an empty first segment
+// matches a route starting with a parameter) would make it a network-path reference (RFC 3986 §4.2), which a client
+// resolves against the scheme only, the redirect leaving the site: "/." before it keeps the same path on this origin.
+TEST_F(HttpTrailingSlash, RedirectLocationIsNotANetworkPathReference) {
+  setTrailingSlash(RouterConfig::TrailingSlashPolicy::Redirect);
+  ts.router().setPath(http::Method::GET, "/{first}/{second}",
+                      [](const HttpRequestView&) { return HttpResponse("two"); });
+  ts.router().setPath(http::Method::GET, "/dirs/{first}/{second}/",
+                      [](const HttpRequestView&) { return HttpResponse("dir"); });
+
+  std::string resp = rawRequest(ts.port(), "//evil.example/");
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 301")) << resp;
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Location, "/.//evil.example"))) << resp;
+
+  // The client removes the dot segment (RFC 3986 §5.2.4) and requests the path without the trailing slash.
+  resp = rawRequest(ts.port(), "//evil.example");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+
+  // Only a leading "//" is affected.
+  resp = rawRequest(ts.port(), "/dirs//b");
+  ASSERT_TRUE(resp.starts_with("HTTP/1.1 301")) << resp;
+  EXPECT_TRUE(resp.contains(MakeHttp1HeaderLine(http::Location, "/dirs//b/"))) << resp;
+}
+
 TEST_F(HttpTrailingSlash, RootPathNotRedirected) {
   setTrailingSlash(RouterConfig::TrailingSlashPolicy::Redirect);
   auto resp = rawRequest(ts.port(), "/");  // no handlers => 404 but not 301

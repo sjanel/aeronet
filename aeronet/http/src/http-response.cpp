@@ -212,9 +212,25 @@ HttpMessageData HttpResponse::finalizeForHttp1(const char* cachedDateHeader, htt
   return releaseMessageData();
 }
 
+namespace {
+
+// A Location starting with "//" is a network-path reference (RFC 3986 §4.2): a client takes its first segment for
+// another authority, the redirect leaving the site ("//evil.example" from the request path "//evil.example/"). "/."
+// before it makes it an absolute path on this origin, resolved to the same path (dot-segment removal, RFC 3986
+// §5.2.4), as URL serializers do.
+constexpr std::string_view kDotSegmentPrefix = "/.";
+
+// Whether the Location value, 'location' followed by '/' if 'addSlash', starts with "//".
+constexpr bool IsNetworkPathReference(std::string_view location, bool addSlash) {
+  return location.starts_with("//") || (addSlash && location == "/");
+}
+
+}  // namespace
+
 std::size_t HttpResponse::LocationHeaderSize(std::string_view location, bool addSlash) {
   return http::HeaderSize(http::Location.size(),
-                          URLEncodedSize(location, url::IsPathChar) + static_cast<std::size_t>(addSlash));
+                          (IsNetworkPathReference(location, addSlash) ? kDotSegmentPrefix.size() : 0UL) +
+                              URLEncodedSize(location, url::IsPathChar) + static_cast<std::size_t>(addSlash));
 }
 
 void HttpResponse::headerAddLocationUnchecked(std::string_view location, bool addSlash) {
@@ -231,6 +247,9 @@ void HttpResponse::headerAddLocationUnchecked(std::string_view location, bool ad
   pData = AppendFixed<http::Location>(pData);
   pData = AppendFixed<http::HeaderSep>(pData);
 
+  if (IsNetworkPathReference(location, addSlash)) {
+    pData = AppendFixed<kDotSegmentPrefix>(pData);
+  }
   pData = URLEncode(location, url::IsPathChar, pData);
   if (addSlash) {
     *pData++ = '/';

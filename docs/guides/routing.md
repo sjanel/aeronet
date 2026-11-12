@@ -104,6 +104,8 @@ Router router(routerConfig);
 
 Use `Strict` for APIs where the two forms mean different resources, `Redirect` to enforce canonical public URLs, and `Normalize` to accept both without duplicate registrations.
 
+The `Location` of a redirect is the request path, percent-encoded. A path starting with `//` (`//evil.example/` matches a route starting with a parameter) would make it a reference to another host (RFC 3986 §4.2): it starts with `/.` instead (`Location: /.//evil.example`), which a client resolves to the same path on this origin (RFC 3986 §5.2.4).
+
 ## Dispatch precedence
 
 A path can have synchronous and streaming handlers for different methods (for instance a streaming `GET` and a synchronous `POST`), but a given method of a path has only one handler: registering a streaming handler for a method that already has a synchronous one throws `std::logic_error`. For a request, the server picks, in this order:
@@ -177,4 +179,4 @@ An update is applied by the event loop at its next iteration (immediately when t
 
 - Patterns, constraints, wildcard, escapes, trailing slashes, and precedence: [router_test.cpp](../../aeronet/http/test/router_test.cpp).
 - Per-route limits capped by the server limits, and following their changes: `ClampConfigs*` in [router_test.cpp](../../aeronet/http/test/router_test.cpp), `GlobalLimitsUpdateAppliesToRoutes` and `RouteLimitAboveGlobalLimitIsCapped` in [tests/http-routing_test.cpp](../../tests/http-routing_test.cpp).
-- End-to-end routing, `404` / `405`, and trailing slash redirects: [tests/http-routing_test.cpp](../../tests/http-routing_test.cpp), and over HTTP/1.1 and HTTP/2: [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp).
+- End-to-end routing, `404` / `405`, and trailing slash redirects, their `Location` included (`HttpTrailingSlash.RedirectLocation*`): [tests/http-routing_test.cpp](../../tests/http-routing_test.cpp), and over HTTP/1.1 and HTTP/2: [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp).

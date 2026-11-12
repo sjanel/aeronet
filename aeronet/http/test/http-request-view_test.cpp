@@ -2625,6 +2625,15 @@ TEST_F(HttpRequestViewTest, HeaderAddLocationUnchecked) {
       {"/100%/b?c#d", true, "/100%25/b%3Fc%23d/"},
       {"/caf\xC3\xA9", false, "/caf%C3%A9"},
       {"/a:b@c!$&'()*+,;=~._-", true, "/a:b@c!$&'()*+,;=~._-/"},
+      // A value starting with "//" would name another host (RFC 3986 §4.2): "/." keeps the same path on this origin.
+      {"//evil.example", false, "/.//evil.example"},
+      {"//evil.example/a", true, "/.//evil.example/a/"},
+      {"//", false, "/.//"},
+      {"/", true, "/.//"},
+      {"/", false, "/"},
+      {"/a//b", true, "/a//b/"},
+      // A backslash, which browsers take for a slash in http(s) URLs, is encoded.
+      {"/\\evil.example", false, "/%5Cevil.example"},
   };
 
   for (const auto& [location, addSlash, expected] : kCases) {

@@ -1646,4 +1646,164 @@ TEST(HttpCompression, StreamingHeadCarriesTheHeadersOfTheGetWithoutContentLength
   EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), payload + payload);
 }
 
+// RFC 9110 §8.6 / RFC 9112 §6.2: Content-Length is the number of octets sent. A length declared with contentLength() is
+// the one of the body written by the handler: the compression threshold is checked against it, the response keeps it
+// when the body is sent as is, and is chunked when the body is compressed, as its encoded length is not known when the
+// head is sent. A HEAD response takes the same decision as the GET one, whether its handler writes the body or not.
+TEST(HttpCompression, StreamedDeclaredLengthIsTheLengthOfTheBytesSent) {
+  ConfigureHeadCompression();
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.compression.contentTypeAllowList.append("text/plain"); });
+
+  struct DeclaredLengthCase {
+    std::string_view target;
+    std::string_view contentType;
+    std::size_t length;
+    bool writeForHead;
+    bool compressed;
+  };
+  static constexpr DeclaredLengthCase kCases[] = {
+      {"/declared/compressed", http::ContentTypeTextPlain, 4096, true, true},
+      {"/declared/compressed-silent-head", http::ContentTypeTextPlain, 4096, false, true},
+      {"/declared/at-threshold", http::ContentTypeTextPlain, kHeadMinBytes, true, true},
+      {"/declared/below-threshold", http::ContentTypeTextPlain, kHeadMinBytes - 1, true, false},
+      {"/declared/below-threshold-silent-head", http::ContentTypeTextPlain, kHeadMinBytes - 1, false, false},
+      {"/declared/not-allowed", "image/png", 4096, false, false},
+  };
+  static constexpr auto kGetHead = http::Method::GET | http::Method::HEAD;
+  for (const DeclaredLengthCase& tc : kCases) {
+    ts.router().setPath(
+        kGetHead, tc.target,
+        [tc, payload = test::MakePatternedPayload(tc.length)](const HttpRequestView& req, HttpResponseWriter& writer) {
+          writer.contentType(tc.contentType);
+          writer.contentLength(payload.size());
+          if (tc.writeForHead || req.method() != http::Method::HEAD) {
+            const std::string_view view(payload);
+            writer.writeBody(view.substr(0, view.size() / 2));
+            writer.writeBody(view.substr(view.size() / 2));
+          }
+          writer.end();
+        });
+  }
+
+  for (const DeclaredLengthCase& tc : kCases) {
+    SCOPED_TRACE(tc.target);
+    const std::string payload = test::MakePatternedPayload(tc.length);
+    const std::string declared = std::to_string(tc.length);
+
+    const test::ParsedResponse identity = Fetch("GET", tc.target, "");
+    EXPECT_EQ(test::getHeader(identity, http::ContentLength), declared) << identity.headersRaw;
+    EXPECT_FALSE(identity.chunked) << identity.headersRaw;
+    EXPECT_EQ(identity.body, payload);
+
+    const test::ParsedResponse get = Fetch("GET", tc.target, "gzip");
+    const test::ParsedResponse head = Fetch("HEAD", tc.target, "gzip");
+    ASSERT_EQ(get.statusCode, http::StatusCodeOK);
+    ASSERT_EQ(head.statusCode, http::StatusCodeOK);
+    if (tc.compressed) {
+      EXPECT_TRUE(get.chunked) << get.headersRaw;
+      EXPECT_FALSE(get.headers.contains(http::ContentLength.get())) << get.headersRaw;
+      EXPECT_EQ(test::getHeader(get, http::ContentEncoding), "gzip") << get.headersRaw;
+      const RawChars decompressed = test::Decompress(Encoding::gzip, get.body);
+      EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), payload);
+      EXPECT_FALSE(head.headers.contains(http::ContentLength.get())) << head.headersRaw;
+    } else {
+      EXPECT_FALSE(get.chunked) << get.headersRaw;
+      EXPECT_EQ(test::getHeader(get, http::ContentLength), declared) << get.headersRaw;
+      EXPECT_EQ(test::getHeader(get, http::ContentEncoding), "") << get.headersRaw;
+      EXPECT_EQ(get.body, payload);
+      EXPECT_EQ(test::getHeader(head, http::ContentLength), declared) << head.headersRaw;
+    }
+    for (std::string_view name : {http::ContentType.get(), http::ContentEncoding.get(), http::Vary.get()}) {
+      EXPECT_EQ(test::getHeader(head, name), test::getHeader(get, name)) << name << '\n' << head.headersRaw;
+    }
+    EXPECT_FALSE(head.headers.contains(http::TransferEncoding.get())) << head.headersRaw;
+    EXPECT_TRUE(head.body.empty()) << head.body.size();
+  }
+
+  // An HTTP/1.0 client does not understand chunked encoding: the compressed body ends with the connection.
+  const test::ParsedResponse http10 = Fetch("GET", "/declared/compressed", "gzip", "HTTP/1.0");
+  ASSERT_EQ(http10.statusCode, http::StatusCodeOK);
+  EXPECT_FALSE(http10.headers.contains(http::ContentLength.get())) << http10.headersRaw;
+  EXPECT_FALSE(http10.headers.contains(http::TransferEncoding.get())) << http10.headersRaw;
+  EXPECT_EQ(test::getHeader(http10, http::Connection), "close") << http10.headersRaw;
+  EXPECT_EQ(test::getHeader(http10, http::ContentEncoding), "gzip") << http10.headersRaw;
+  const RawChars decompressed10 = test::Decompress(Encoding::gzip, http10.body);
+  EXPECT_EQ(std::string_view(decompressed10.data(), decompressed10.size()), test::MakePatternedPayload(4096));
+
+  // A handler setting its own Content-Encoding declares the length of the encoded body: it is sent as is.
+  const RawChars encoded = test::Compress(Encoding::gzip, test::MakePatternedPayload(4096));
+  ts.router().setPath(
+      http::Method::GET, "/declared/own-encoding",
+      [encoded = std::string(encoded.data(), encoded.size())](const HttpRequestView&, HttpResponseWriter& writer) {
+        writer.contentType(http::ContentTypeTextPlain);
+        writer.contentEncoding("gzip");
+        writer.contentLength(encoded.size());
+        writer.writeBody(encoded);
+        writer.end();
+      });
+  const test::ParsedResponse own = Fetch("GET", "/declared/own-encoding", "gzip");
+  ASSERT_EQ(own.statusCode, http::StatusCodeOK);
+  EXPECT_FALSE(own.chunked) << own.headersRaw;
+  EXPECT_EQ(test::getHeader(own, http::ContentLength), std::to_string(encoded.size())) << own.headersRaw;
+  EXPECT_EQ(test::getHeader(own, http::ContentEncoding), "gzip") << own.headersRaw;
+  EXPECT_EQ(own.body, std::string_view(encoded.data(), encoded.size()));
+}
+
+// The compressed response to a streaming handler declaring its length is framed by its chunks: on a persistent
+// connection, the next response follows its last chunk.
+TEST(HttpCompression, StreamedDeclaredLengthCompressedKeepsTheConnectionInSync) {
+  ConfigureHeadCompression();
+  const std::string payload = test::MakePatternedPayload(4096);
+  ts.router().setPath(http::Method::GET, "/declared/keep-alive",
+                      [payload](const HttpRequestView&, HttpResponseWriter& writer) {
+                        writer.contentType(http::ContentTypeTextPlain);
+                        writer.contentLength(payload.size());
+                        writer.writeBody(payload);
+                        writer.end();
+                      });
+  ts.router().setPath(http::Method::GET, "/declared/next", [](const HttpRequestView&) { return HttpResponse("next"); });
+
+  test::ClientConnection cnx(ts.port());
+  test::sendAll(cnx.fd(),
+                "GET /declared/keep-alive HTTP/1.1\r\nhost: x\r\naccept-encoding: gzip\r\n\r\n"
+                "GET /declared/next HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n");
+  const std::string raw = test::recvUntilClosed(cnx.fd());
+
+  static constexpr std::string_view kLastChunk = "\r\n0\r\n\r\n";
+  const std::size_t firstEnd = raw.find(kLastChunk);
+  ASSERT_NE(firstEnd, std::string::npos) << raw.substr(0, 200);
+  const std::size_t secondBeg = firstEnd + kLastChunk.size();
+  const test::ParsedResponse first = test::parseResponseOrThrow(std::string_view(raw).substr(0, secondBeg));
+  EXPECT_EQ(test::getHeader(first, http::ContentEncoding), "gzip") << first.headersRaw;
+  EXPECT_FALSE(first.headers.contains(http::ContentLength.get())) << first.headersRaw;
+  const RawChars decompressed = test::Decompress(Encoding::gzip, first.body);
+  EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), payload);
+
+  const test::ParsedResponse second = test::parseResponseOrThrow(std::string_view(raw).substr(secondBeg));
+  EXPECT_EQ(second.statusCode, http::StatusCodeOK);
+  EXPECT_EQ(second.body, "next");
+}
+
+// contentLength() after a write is ignored, also when the written bytes are still buffered below the compression
+// threshold: the response is chunked, as when they were sent.
+TEST(HttpCompression, StreamedContentLengthAfterABufferedWriteIsIgnored) {
+  ConfigureHeadCompression();
+  ts.router().setPath(http::Method::GET, "/declared/late", [](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.contentType(http::ContentTypeTextPlain);
+    writer.writeBody("abc");  // buffered, below the compression threshold
+    writer.contentLength(6);
+    writer.writeBody("def");
+    writer.end();
+  });
+  for (std::string_view acceptEncoding : {"gzip", ""}) {
+    SCOPED_TRACE(acceptEncoding);
+    const test::ParsedResponse resp = Fetch("GET", "/declared/late", acceptEncoding);
+    ASSERT_EQ(resp.statusCode, http::StatusCodeOK);
+    EXPECT_TRUE(resp.chunked) << resp.headersRaw;
+    EXPECT_FALSE(resp.headers.contains(http::ContentLength.get())) << resp.headersRaw;
+    EXPECT_EQ(test::getHeader(resp, http::ContentEncoding), "") << resp.headersRaw;
+    EXPECT_EQ(resp.body, "abcdef");
+  }
+}
+
 #endif  // AERONET_ENABLE_ZLIB

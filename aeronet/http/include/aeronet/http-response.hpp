@@ -962,11 +962,13 @@ class HttpResponse final : public HttpMessage {
   }
 
   // Size of the line added by headerAddLocationUnchecked(): a Location header with the percent-encoded 'location',
-  // followed by a '/' if 'addSlash'.
+  // followed by a '/' if 'addSlash' (and preceded by "/." if it would start with "//").
   [[nodiscard]] static std::size_t LocationHeaderSize(std::string_view location, bool addSlash);
 
   // Adds a Location header with the percent-encoded 'location', followed by a '/' if 'addSlash'. 'location' is the raw
-  // (percent-decoded) target: only its encoded form is written, so it needs no trimming nor validation.
+  // (percent-decoded) target: only its encoded form is written, so it needs no trimming nor validation. A value that
+  // would start with "//", which a client reads as another host (RFC 3986 §4.2), starts with "/." instead: the same
+  // path on this origin.
   // The response must be freshly made, without body nor Location header, and its capacity must be large enough
   // for LocationHeaderSize(location, addSlash) more bytes: nothing is checked.
   void headerAddLocationUnchecked(std::string_view location, bool addSlash);
