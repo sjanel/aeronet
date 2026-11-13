@@ -90,14 +90,18 @@ void HttpResponseWriter::contentType(std::string_view ct) {
 }
 
 void HttpResponseWriter::contentLength(std::size_t len) {
-  if (_state != State::Opened) {
+  // Body bytes buffered below the compression threshold count as written: the call comes too late, as once they are
+  // sent.
+  if (_state != State::Opened || !_preCompressBuffer.empty()) {
     std::string_view reason;
     if (_state == State::Failed) {
       reason = "writer-failed";
     } else if (_state == State::HeadersSent) {
       reason = "headers-already-sent";
+    } else if (_state == State::Opened) {
+      reason = "body-already-written";
     } else {
-      reason = "unknown";
+      reason = "already-ended";
     }
     log::warn("Streaming: contentLength ignored {} requestedLen={} reason={}", _transport->logId(), len, reason);
     return;
@@ -112,6 +116,15 @@ void HttpResponseWriter::ensureHeadersSent() {
 
   if (!http::StatusCodeAllowsBody(_statusCode)) {
     dropContent();
+  } else if (_declaredLength != 0 && _encoding != Encoding::none && !_fixedResponse._opts.hasContentEncoding()) {
+    // The declared length is the one of the body written by the handler: the threshold is checked against it, without
+    // buffering, and the same decision is taken for a HEAD request, whatever the handler writes for it.
+    assert(_activeEncoderCtx == nullptr && _preCompressBuffer.empty());
+    if (_declaredLength >= _pCompressionConfig->minBytes) {
+      startCompressionIfAllowed();
+    } else {
+      _encoding = Encoding::none;
+    }
   }
 
   // Compute needed header size and reserve capacity in the fixed response buffer to have at most 1 allocation.
@@ -144,6 +157,17 @@ void HttpResponseWriter::ensureHeadersSent() {
     log::error("Streaming: failed to emit headers {}", _transport->logId());
   } else {
     _state = State::HeadersSent;
+  }
+}
+
+void HttpResponseWriter::startCompressionIfAllowed() {
+  if (HttpCodec::IsContentTypeAllowed(*_pCompressionConfig, _fixedResponse)) {
+    _activeEncoderCtx = _pCompressionState->makeContext(_encoding);
+    // The length of the encoded body is not known when the head is sent (RFC 9110 §8.6): a declared length, the one
+    // of the body before its encoding, is dropped, and the response is chunked (close-delimited for HTTP/1.0).
+    _declaredLength = 0;
+  } else {
+    _encoding = Encoding::none;
   }
 }
 
@@ -190,7 +214,9 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
   // We purposefully delay header emission until we either (a) activate compression and have compressed bytes
   // to send or (b) decide to emit identity data (on end()). This allows us to include the Content-Encoding header
   // reliably when compression triggers mid-stream.
-  if (_encoding != Encoding::none && _activeEncoderCtx == nullptr &&
+  // A declared length gives the size of the body at once: the decision is taken when the head is sent, see
+  // ensureHeadersSent().
+  if (_encoding != Encoding::none && _activeEncoderCtx == nullptr && _declaredLength == 0 &&
       _preCompressBuffer.size() < _pCompressionConfig->minBytes && !_fixedResponse._opts.hasContentEncoding()) {
     // Accumulate data into the pre-compression buffer up to minBytes. Always buffer the entire incoming data until
     // we cross the threshold (or end() is called).
@@ -210,11 +236,7 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
 
     // Threshold reached exactly or exceeded: activate the encoder, unless the content type is not eligible, the data
     // being then sent as is, from this write on.
-    if (HttpCodec::IsContentTypeAllowed(*_pCompressionConfig, _fixedResponse)) {
-      _activeEncoderCtx = _pCompressionState->makeContext(_encoding);
-    } else {
-      _encoding = Encoding::none;
-    }
+    startCompressionIfAllowed();
   }
 
   ensureHeadersSent();
@@ -350,8 +372,9 @@ void HttpResponseWriter::end() {
 
   _state = State::Ended;
 #ifndef NDEBUG
-  // Debug-only protocol correctness check: if a fixed Content-Length was declared, assert body byte count match.
-  if (!_noContent && _declaredLength != 0 && (_activeEncoderCtx == nullptr || _encoding == Encoding::none)) {
+  // Debug-only protocol correctness check: if a fixed Content-Length was declared, assert body byte count match (a
+  // compressed body has none).
+  if (!_noContent && _declaredLength != 0) {
     assert(_bytesWritten == _declaredLength && "Declared Content-Length does not match bytes written");
   }
 #endif

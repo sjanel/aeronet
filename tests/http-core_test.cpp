@@ -5371,8 +5371,9 @@ TEST(HttpStreamingHeadContentLength, StreamingLateContentLengthIgnoredStaysChunk
 }
 
 #ifdef AERONET_ENABLE_ZLIB
-TEST(HttpStreamingHeadContentLength, StreamingContentLengthWithAutoCompressionDiscouragedButHonored) {
-  // We intentionally (mis)use contentLength with auto compression; library will not adjust size.
+// The declared length is the one of the body written by the handler: the compressed body, whose length is not known
+// when the head is sent, is chunked instead (RFC 9110 §8.6).
+TEST(HttpStreamingHeadContentLength, StreamingContentLengthWithAutoCompressionIsChunked) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
     CompressionConfig compCfg;
     compCfg.minBytes = 1;
@@ -5380,34 +5381,23 @@ TEST(HttpStreamingHeadContentLength, StreamingContentLengthWithAutoCompressionDi
   });
   static constexpr std::string_view kBody =
       "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";  // 64 'A'
-  const std::size_t originalSize = kBody.size();
-  ts.router().setDefault([&](const HttpRequestView&, HttpResponseWriter& writer) {
+  ts.router().setDefault([](const HttpRequestView&, HttpResponseWriter& writer) {
     writer.status(http::StatusCodeOK);
-    writer.contentLength(originalSize);  // declares uncompressed length
+    writer.contentLength(kBody.size());  // declares uncompressed length
     writer.writeBody(kBody.substr(0, 10));
     writer.writeBody(kBody.substr(10));
     writer.end();
   });
   std::string resp;
   rawWith("GET", "accept-encoding: gzip\r\n", resp);
-  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
-  // We expect a fixed-length header present.
-  ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentLength, std::to_string(originalSize))));
-  // Compression should have activated producing a gzip header (1F 8B in hex) and Content-Encoding header.
-  ASSERT_TRUE(resp.contains(MakeHttp1HeaderLine(http::ContentEncoding, "gzip")));
-  // Body should not be chunked.
-  ASSERT_FALSE(resp.contains(MakeHttp1HeaderLine(http::TransferEncoding, "chunked")));
-  // Extract body (after double CRLF) and verify it differs from original (compressed) and starts with gzip magic.
-  auto pos = resp.find(http::DoubleCRLF);
-  ASSERT_NE(pos, std::string::npos);
-  auto body = resp.substr(pos + 4);
-  ASSERT_FALSE(body.empty());
-  ASSERT_NE(body.find(std::string(kBody)), 0U) << "Body unexpectedly identical (compression not applied)";
-  ASSERT_GE(body.size(), 2U);
-  unsigned char b0 = static_cast<unsigned char>(body[0]);
-  unsigned char b1 = static_cast<unsigned char>(body[1]);
-  ASSERT_EQ(b0, 0x1f);  // gzip magic
-  ASSERT_EQ(b1, 0x8b);
+  const test::ParsedResponse parsed = test::parseResponseOrThrow(resp);
+  ASSERT_EQ(parsed.statusCode, http::StatusCodeOK);
+  EXPECT_FALSE(parsed.headers.contains(http::ContentLength.get())) << parsed.headersRaw;
+  EXPECT_TRUE(parsed.chunked) << parsed.headersRaw;
+  EXPECT_EQ(test::getHeader(parsed, http::ContentEncoding), "gzip") << parsed.headersRaw;
+  ASSERT_GE(parsed.body.size(), 2U);
+  EXPECT_EQ(static_cast<unsigned char>(parsed.body[0]), 0x1f);  // gzip magic
+  EXPECT_EQ(static_cast<unsigned char>(parsed.body[1]), 0x8b);
 }
 #endif
 

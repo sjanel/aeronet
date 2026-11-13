@@ -659,6 +659,24 @@ TEST_F(StaticFileHandlerTest, DirectoryRedirectLocationIsReEncoded) {
   }
 }
 
+// Empty segments are skipped when resolving the path: "//assets" is the directory "assets", whose redirect keeps the
+// path but must not start with "//", which a client takes for another host (RFC 3986 §4.2).
+TEST_F(StaticFileHandlerTest, DirectoryRedirectLocationIsNotANetworkPathReference) {
+  std::filesystem::create_directory(tmpDir.dirPath() / "assets");
+
+  StaticFileConfig cfg;
+  cfg.enableDirectoryIndex = true;
+  cfg.withDefaultIndex("");
+  StaticFileHandler handler(tmpDir.dirPath(), std::move(cfg));
+
+  buildReq("/assets");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+
+  EXPECT_EQ(resp.status(), http::StatusCodeMovedPermanently);
+  EXPECT_EQ(resp.headerValueOrEmpty(http::Location), "/.//assets/");
+}
+
 TEST_F(StaticFileHandlerTest, DirectoryListingHonorsHiddenFilesFlag) {
   const auto dirPath = tmpDir.dirPath() / "assets";
   std::filesystem::create_directories(dirPath);

@@ -34,7 +34,7 @@ The handler resolves the **whole request path** under its root directory: with r
 - The hidden-file rule also applies to the resolved path: a link to a dotfile (or into a hidden directory) inside the root is answered `404`, and so is a Windows short name such as `/GIT~1/config` for `/.git/config`. Only the part below the root counts: the root directory itself may be hidden.
 - The path is resolved after the file was opened, so the server also checks that the resolved path designates the opened file (same device and inode, or volume and file index on Windows). Otherwise a link retargeted between the two steps could let a file outside of the root be served under the check of a file inside it.
 - Only regular files and directories are served: a FIFO, a socket or a device file is answered `404`.
-- A directory is served through its index file (`index.html` by default, see `withDefaultIndex()`), when it has one. Otherwise, it is answered `404`, unless `enableDirectoryIndex` is set: the handler then redirects `/dir` to `/dir/` (its `Location` re-encoding the decoded path, whatever bytes the name of the directory holds), and lists the directory as an HTML page.
+- A directory is served through its index file (`index.html` by default, see `withDefaultIndex()`), when it has one. Otherwise, it is answered `404`, unless `enableDirectoryIndex` is set: the handler then redirects `/dir` to `/dir/` (its `Location` re-encoding the decoded path, whatever bytes the name of the directory holds, and starting with `/.` for a path starting with `//`, which a client would take for another host), and lists the directory as an HTML page.
 - Only `GET` and `HEAD` are served; other methods receive `405 Method Not Allowed`.
 
 !!! tip
@@ -113,5 +113,5 @@ Multipart range responses are assembled in memory, so two limits protect the ser
 
 ## Tests
 
-- Path resolution, hidden files, symbolic links, ranges, multipart assembly, conditionals, and header cache: [static-file-handler_test.cpp](../../aeronet/server/test/static-file-handler_test.cpp).
+- Path resolution, hidden files, symbolic links, ranges, multipart assembly, conditionals, and header cache: [static-file-handler_test.cpp](../../aeronet/server/test/static-file-handler_test.cpp); the `Location` of the directory redirect (`DirectoryRedirectLocation*`) as well.
 - End to end, including multi-range responses and `If-Range`: [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
