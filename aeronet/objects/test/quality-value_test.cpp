@@ -55,6 +55,18 @@ TEST(ParseQualityValue, InvalidIsZero) {
   }
 }
 
+// TryParseQualityValue tells an invalid value from 0.
+TEST(TryParseQualityValue, InvalidIsTheSentinel) {
+  for (std::string_view value : {"", "abc", "1.001", "2", "0.0001", "1.0000", "-0", "+0.5", "inf", "0.5x"}) {
+    EXPECT_EQ(TryParseQualityValue(value), kInvalidQualityValue) << value;
+  }
+  for (std::string_view value : {"0", "0.", "0.000"}) {
+    EXPECT_EQ(TryParseQualityValue(value), 0) << value;
+  }
+  EXPECT_EQ(TryParseQualityValue("0.5;x"), 500);
+  EXPECT_EQ(TryParseQualityValue("1.000"), kQualityValueMax);
+}
+
 TEST(ParseQualityValue, TrailingPartsIgnored) {
   EXPECT_EQ(ParseQualityValue("0.5 "), 500);
   EXPECT_EQ(ParseQualityValue("0.5\t"), 500);

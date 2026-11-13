@@ -644,22 +644,28 @@ void HttpRequestView::rebaseHeadViews(const char* newBase) noexcept {
 }
 
 void HttpRequestView::prefinalizeHttpResponse(HttpResponse& response, tracing::TelemetryContext& telemetryContext) {
-  if (response.hasBodyHeaders() && !http::StatusCodeAllowsBody(response.status())) {
+  const http::StatusCode status = response.status();
+  if (response.hasBodyHeaders() && !http::StatusCodeAllowsBody(status)) {
     // 1xx, 204 and 304 responses end at the empty line after their headers: a body set by the handler would be read by
     // the client as the start of the next response, and its Content-Length is forbidden (RFC 9110 §8.6). This also
-    // holds for HEAD, whose Content-Length would otherwise announce the body of the dropped GET.
+    // holds for HEAD, whose Content-Length would otherwise announce the body of the dropped GET. A 205 has no content
+    // either (RFC 9110 §15.3.6): its HTTP/1.1 finalization gives it a Content-Length of 0.
     response.removeBodyAndItsHeaders();
     return;
   }
   // A HEAD response goes through the same steps as the GET one, compression included: it carries the same headers (RFC
   // 9110 §9.3.2), its body being dropped when it is sent.
-  if (response.status() == http::StatusCodeNotFound && !response.hasBody()) {
+  if (status == http::StatusCodeNotFound && !response.hasBody()) {
     response.bodyStatic(k404NotFoundTemplate2, http::ContentTypeTextHtml);
   }
 
   const Encoding encoding = responsePossibleEncoding();
 
-  if (response.hasBodyInMemory() && encoding != Encoding::none) {
+  if (response._opts.isAutomaticDirectCompression()) {
+    // Compressed while the handler set it: the ETag may have been set after the body.
+    response.weakenStrongETag();
+  } else if (response.hasBodyInMemory() && encoding != Encoding::none && status != http::StatusCodePartialContent) {
+    // The Content-Range of a 206 describes the bytes of the content sent (RFC 9110 §14.4): it is never encoded.
     const CompressResponseResult result = HttpCodec::TryCompressBody(*_pCompressionState, encoding, response);
 
     switch (result) {

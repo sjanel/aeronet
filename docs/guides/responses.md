@@ -49,11 +49,11 @@ For the best performance, fill a response in order: status and reason, then head
 | `headerValueOrEmpty(name)`, `headers()` | Scans existing headers | Read headers back. |
 | `location(url)` | Scans existing headers | Set `Location`, for redirects. |
 
-Some headers belong to the server and must not be set by handlers: `content-type` (set by the body setters), `content-length` (computed), `transfer-encoding`, `connection`, `date`, `te`, `trailer`, and `upgrade`. Setting `content-type` or `content-length` with a header method throws `std::invalid_argument`; setting the others is undefined behavior. `content-encoding` cannot be changed once a body is set (`std::logic_error`): set it before the body, see [Send your own encoding](compression.md#send-your-own-encoding).
+Some headers belong to the server and cannot be set by handlers: `content-type` (set by the body setters), `content-length` (computed), `transfer-encoding`, `connection`, `date`, `te`, `trailer`, and `upgrade`. Setting one with a header method throws `std::invalid_argument`, see [Reserved headers](#reserved-headers). `content-encoding` cannot be changed once a body is set (`std::logic_error`): set it before the body, see [Send your own encoding](compression.md#send-your-own-encoding).
 
 ### Reserved headers
 
-The library reserves a small set of response headers that handlers cannot set directly on an `HttpResponse` (fixed responses) or on an `HttpResponseWriter` (streaming), because aeronet manages them itself, or a user-supplied value would be ambiguous or contradict what is actually sent. Attempting to set one asserts in debug builds, and is ignored in release builds for streaming responses:
+The library reserves a small set of response headers that handlers cannot set directly on an `HttpResponse` (fixed responses) or on an `HttpResponseWriter` (streaming), because aeronet manages them itself, or a user-supplied value would be ambiguous or contradict what is actually sent: a `transfer-encoding` next to the `content-length` of the body, or a second framing, which RFC 9112 §6.1 forbids. `headerAddLine()`, `header()` and `headerAppendValue()` throw `std::invalid_argument` for them, in every build, and leave the response unchanged, as do the constructors taking concatenated headers (`HttpResponse(capacity, status, "name: value\r\n...", body)`). A `content-encoding` given to those constructors disables the automatic compression, as with `headerAddLine()`. A name built at runtime must be in lower case: `LowerAsciiKey` only asserts it in debug builds, and the setters throw `std::invalid_argument` for an upper-case one in release builds:
 
 - `date` - generated once per second and injected automatically.
 - `content-length` - computed from the body (fixed responses) or set through `contentLength()` (streaming). This prevents inconsistencies between the declared and the actual size.
@@ -71,7 +71,7 @@ All other headers (custom application, caching, CORS, ...) may be set freely. Va
 
 ### Global headers
 
-`HttpServerConfig::globalHeaders` are added to every response of the server, including the error responses the server generates itself (`400`, `404`, `413`, ...). A global header never overrides a header of the same name set by the handler. A [reserved header](#reserved-headers) cannot be a global header, nor can `location`, whose value is specific to each response (and which the server sets itself on its redirects): `HttpServerConfig::validate()` throws `std::invalid_argument`. It contains `server: aeronet` by default:
+`HttpServerConfig::globalHeaders` are added to every response of the server, including the error responses the server generates itself (`400`, `404`, `413`, ...). A global header never overrides a header of the same name set by the handler. A [reserved header](#reserved-headers) cannot be a global header, nor can `location`, whose value is specific to each response (and which the server sets itself on its redirects), nor `content-encoding`, which describes the body of each response: `HttpServerConfig::validate()` throws `std::invalid_argument`. It contains `server: aeronet` by default:
 
 ```cpp
 HttpServerConfig config;
@@ -129,6 +129,8 @@ The response body is buffered: its size is known, and it is sent with `Content-L
 
 `1xx`, `204 No Content` and `304 Not Modified` responses end at the empty line after their headers (RFC 9112 §6.3), and `204` and `1xx` forbid `Content-Length` and `Transfer-Encoding` (RFC 9110 §8.6, RFC 9112 §6.1). The server therefore drops the body, the trailers, and the `Content-Type`, `Content-Length` and `Content-Encoding` headers a handler set on such a response, over HTTP/1.1 and HTTP/2 alike, for `HEAD` requests too: a body sent anyway would be read by the client as the start of the next response of the connection. The same holds for [streaming handlers](streaming-responses.md#how-it-works): what they write after setting such a status is discarded. Other headers (`ETag`, `Cache-Control`, ...) are kept.
 
+`205 Reset Content` carries no content either (RFC 9110 §15.3.6), and is handled the same way, except that its message body is framed like any other: the HTTP/1.1 response has a `Content-Length` of `0` (none for `HEAD`).
+
 ## Operation costs
 
 The methods that build an `HttpResponse` edit a single contiguous buffer holding the status line, the headers, and the inline body, so their cost depends on how much has to move:
@@ -172,7 +174,7 @@ router.setPath(http::Method::GET, "/data", [](const HttpRequestView& req) {
 });
 ```
 
-Adding a trailer before the body throws `std::logic_error`. Over HTTP/1.1, trailers require chunked encoding: the server converts the response to `Transfer-Encoding: chunked` when it is finalized, and announces the trailer names in a `trailer` header, unless `HttpServerConfig::addTrailerHeader` is `false`. An HTTP/1.0 client does not understand chunked encoding (RFC 9112 §6.1): its response drops the trailers and keeps its `Content-Length`, without `trailer` header, for `HEAD` too. Over HTTP/2, trailers are sent as a final `HEADERS` frame. Trailer names are not validated: do not send fields that frame, route, or authenticate messages (`content-length`, `content-type`, `transfer-encoding`, `host`, `authorization`, `set-cookie`, ...), which clients and intermediaries reject or misinterpret.
+Adding a trailer before the body throws `std::logic_error`. Over HTTP/1.1, trailers require chunked encoding: the server converts the response to `Transfer-Encoding: chunked` when it is finalized, and announces the trailer names in a `trailer` header, unless `HttpServerConfig::addTrailerHeader` is `false`. An HTTP/1.0 client does not understand chunked encoding (RFC 9112 §6.1): its response drops the trailers and keeps its `Content-Length`, without `trailer` header, for `HEAD` too. Over HTTP/2, trailers are sent as a final `HEADERS` frame. The fields that frame, route, or authenticate messages, or describe their content (`content-length`, `content-type`, `transfer-encoding`, `host`, `authorization`, `set-cookie`, ..., `http::IsForbiddenTrailerHeader`), cannot be trailers (RFC 9110 §6.5.1): `trailerAddLine()` throws `std::invalid_argument` for them, on `HttpResponse`, `HttpResponseWriter` and the `HttpRequest` of the client, in every build.
 
 ## Errors
 
@@ -181,7 +183,8 @@ An exception escaping a handler is caught by the server, logged with its message
 ## Tests
 
 - Response building, headers, bodies, and trailers: [http-response_test.cpp](../../aeronet/http/test/http-response_test.cpp).
+- Reserved headers refused by every header setter, names of the same length accepted, and the `trailer` header of a `HEAD` response (`HttpResponseTest.ReservedHeaders*`, `HttpResponseTest.NamesOfTheLengthOfAReservedHeaderAreAccepted`, `HttpResponseTest.TrailerHeaderOfAHeadResponseCannotBeModified`), by the concatenated headers constructors (`HttpResponseTest.ConcatenatedHeadersConstructorRejectsReservedHeaders`, `HttpResponseTest.ContentEncodingOfConcatenatedHeadersDisablesCompression`), forbidden trailers and upper-case names (`HttpResponseTest.ForbiddenTrailersAreRejected`, `HttpResponseTest.UpperCaseDynamicNamesAreRejectedInRelease`): [http-response_test.cpp](../../aeronet/http/test/http-response_test.cpp); by the streaming writer, chunked and with `contentLength()` (`HttpStreaming.ReservedHeadersAreRejected`): [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
 - `makeResponse()`, including moved bodies and `HEAD` requests: [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp).
 - End-to-end responses, keep-alive, and empty bodies: [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
-- Body dropped on `1xx`, `204` and `304`: `HttpBodylessStatus` tests of [tests/http-core_test.cpp](../../tests/http-core_test.cpp) (raw HTTP/1.1 connection), [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp) (HTTP/1.1 and HTTP/2), and `Prefinalize` tests of [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp).
+- Body dropped on `1xx`, `204`, `205` and `304`: `HttpBodylessStatus` tests (`HttpBodylessStatus.ResetContentHasAnEmptyBody` for `205`) of [tests/http-core_test.cpp](../../tests/http-core_test.cpp) (raw HTTP/1.1 connection), [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp) (HTTP/1.1 and HTTP/2), and `Prefinalize` tests of [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp).
 - Handlers that throw: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp), [tests/http-routing_test.cpp](../../tests/http-routing_test.cpp) (async handlers), and [http2-protocol-handler_test.cpp](../../aeronet/server/test/http2-protocol-handler_test.cpp) (HTTP/2).

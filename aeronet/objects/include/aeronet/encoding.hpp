@@ -30,6 +30,10 @@ constexpr std::string_view GetEncodingStr(Encoding enc) {
   return kEncodingStrs[static_cast<std::underlying_type_t<Encoding>>(enc)];
 }
 
+// Whether a received content coding (in lower case) is gzip: a recipient SHOULD consider "x-gzip" equivalent to "gzip"
+// (RFC 9110 §8.4.1.3).
+constexpr bool IsGzipCoding(std::string_view coding) noexcept { return coding == http::gzip || coding == http::xgzip; }
+
 // Check if encoding is enabled in this build.
 constexpr bool IsEncodingEnabled(Encoding enc) {
   static constexpr bool kEncodingEnabled[]{

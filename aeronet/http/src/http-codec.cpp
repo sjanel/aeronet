@@ -72,38 +72,85 @@ struct VaryResult {
   std::size_t valueLast;
 };
 
-// Returns:
-// - 0: no Vary header exists
-// - npos: Vary already covers Accept-Encoding (either explicitly or via '*')
-// - otherwise: insertion offset (from resp._data.data()) at the end of the Vary value,
-//   suitable for inserting either ", Accept-Encoding" or "Accept-Encoding".
-[[nodiscard]] VaryResult VaryContainsAcceptEncoding(const HttpMessage& msg, const char* pData) {
-  VaryResult res{.valueFirst = kNoVaryHeader, .valueLast = kNoVaryHeader};
+// The headers of a response that its compression updates.
+struct CompressionHeaders {
+  // valueFirst is:
+  // - kNoVaryHeader: no Vary header exists
+  // - kVaryAcceptEncodingNotNeeded: Vary already covers Accept-Encoding (either explicitly or via '*'), or is not added
+  // - otherwise: [valueFirst, valueLast) is the Vary value (offsets from the start of the message), Accept-Encoding
+  //   being inserted at its end.
+  VaryResult vary;
+  // Offset of the value of a strong ETag, which the compression makes weak (RFC 9110 §8.8.3.3), or 0.
+  std::size_t strongETagPos;
+};
+
+// Scans the headers once for the first Vary and ETag headers (a response is supposed to have one of each at most).
+[[nodiscard]] CompressionHeaders ScanCompressionHeaders(const HttpMessage& msg, const char* pData, bool addVary) {
+  CompressionHeaders res{.vary = {.valueFirst = kNoVaryHeader, .valueLast = kNoVaryHeader}, .strongETagPos = 0};
+  if (!addVary) {
+    res.vary.valueFirst = res.vary.valueLast = kVaryAcceptEncodingNotNeeded;
+  }
+  bool varySeen = !addVary;
+  bool etagSeen = false;
 
   for (const auto& hdr : msg.headers()) {
-    if (hdr.name != http::Vary) {
+    if (hdr.name == http::ETag) {
+      if (!etagSeen) {
+        etagSeen = true;
+        // A strong entity-tag is a quoted string, a weak one starts with W/.
+        if (hdr.value.starts_with('"')) {
+          res.strongETagPos = static_cast<std::size_t>(hdr.value.data() - pData);
+        }
+      }
       continue;
     }
+    if (varySeen || hdr.name != http::Vary) {
+      continue;
+    }
+    varySeen = true;
 
     // Response headers are guaranteed to be trimmed on the extreme sides.
     // We can therefore use the reverse CSV iterator (order doesn't matter).
     const std::string_view value = hdr.value;
+    bool covered = false;
     for (http::HeaderValueReverseTokensIterator it(value); it.hasNext();) {
       const std::string_view token = it.next();
       if (token == "*" || CaseInsensitiveEqual(token, http::AcceptEncoding)) {
-        res.valueFirst = kVaryAcceptEncodingNotNeeded;
-        return res;
+        covered = true;
+        break;
       }
     }
-
-    res.valueFirst = static_cast<std::size_t>(value.data() - pData);
-    res.valueLast = static_cast<std::size_t>(res.valueFirst + value.size());
-
-    // Heuristic - we suppose that there will not be multiple Vary headers in the response.
-    break;
+    if (covered) {
+      res.vary.valueFirst = res.vary.valueLast = kVaryAcceptEncodingNotNeeded;
+    } else {
+      res.vary.valueFirst = static_cast<std::size_t>(value.data() - pData);
+      res.vary.valueLast = static_cast<std::size_t>(res.vary.valueFirst + value.size());
+    }
   }
 
   return res;
+}
+
+// A string to insert at an offset of a message.
+struct HeadInsertion {
+  std::size_t pos;
+  std::string_view str;
+};
+
+// Inserts each string at its offset in [pData, pData + endPos), the bytes after it moving forward by the size of the
+// strings inserted before them. The insertions are sorted by decreasing offset, and the buffer has room for them all.
+void InsertInHead(char* pData, std::size_t endPos, std::span<const HeadInsertion> insertions) {
+  std::size_t shift = 0;
+  for (const HeadInsertion& insertion : insertions) {
+    shift += insertion.str.size();
+  }
+  for (const auto& [pos, str] : insertions) {
+    assert(pos <= endPos);
+    std::memmove(pData + pos + shift, pData + pos, endPos - pos);
+    shift -= str.size();
+    Copy(str, pData + pos + shift);
+    endPos = pos;
+  }
 }
 
 inline std::string_view FinalizeDecompressedBody(SvToSvMap& headersMap, SvToSvMap::iterator encodingHeaderIt,
@@ -136,11 +183,39 @@ inline std::string_view FinalizeDecompressedBody(SvToSvMap& headersMap, SvToSvMa
   return body;
 }
 
+// Each coding of a Content-Encoding list is a decoding pass over the whole body, and real messages carry one. A longer
+// list is refused before decoding anything: curl bounds the codings of a response to 5 too (CVE-2023-23916). Counted
+// from the separators: identity counts, as for curl, and so do empty elements, ignored otherwise (RFC 9110 §5.6.1.2:
+// "a reasonable number" of them).
+constexpr std::size_t kMaxContentCodings = 5;
+
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
 constexpr RequestDecompressionResult kDecompressedSizeTooLarge{
     .status = http::StatusCodePayloadTooLarge,
     .message = "Decompressed size too large",
 };
+
+constexpr RequestDecompressionResult kExpansionTooLarge{
+    .status = http::StatusCodePayloadTooLarge,
+    .message = "Decompression expansion too large",
+};
+
+// The number of bytes that each decoding stage may produce, and the error reported beyond.
+struct DecodeLimit {
+  std::size_t maxPlainBytes;
+  const RequestDecompressionResult* pExceeded;
+};
+
+// maxDecompressedBytes, or less when maxExpansionRatio times the compressed size of the body is smaller. The decoders
+// stop as soon as they exceed it, so that a compression bomb is refused before it is inflated.
+DecodeLimit ComputeDecodeLimit(const DecompressionConfig& cfg, std::size_t compressedSize) noexcept {
+  const double ratioBound = cfg.maxExpansionRatio * static_cast<double>(compressedSize);
+  // Compared in double: the product may not be representable as a std::size_t.
+  if (ratioBound < static_cast<double>(cfg.maxDecompressedBytes)) {
+    return {.maxPlainBytes = static_cast<std::size_t>(ratioBound), .pExceeded = &kExpansionTooLarge};
+  }
+  return {.maxPlainBytes = cfg.maxDecompressedBytes, .pExceeded = &kDecompressedSizeTooLarge};
+}
 #endif
 
 inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] DecompressionState& decompressionState,
@@ -151,7 +226,12 @@ inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] Decompre
                                                        RawChars& bodyAndTrailersBuffer, RawChars& tmpBuffer) {
   // Codings are compared exactly: the parsers lower-case received Content-Encoding values.
   assert(!LowerAsciiKey::ContainsUpperAscii(contentEncoding));
+  if (std::cmp_greater_equal(std::ranges::count(contentEncoding, ','), kMaxContentCodings)) [[unlikely]] {
+    return {.status = http::StatusCodeUnsupportedMediaType, .message = "Too many Content-Encoding codings"};
+  }
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+  // The ratio is the one of the whole body: every stage has the same limit.
+  const DecodeLimit limit = ComputeDecodeLimit(decompressionConfig, compressedSize);
   RawChars* dst = &tmpBuffer;
   bool stageOk{};
 #endif
@@ -162,52 +242,44 @@ inline RequestDecompressionResult DualBufferDecodeLoop([[maybe_unused]] Decompre
   // For the first stage, we read from chunks. For subsequent stages, we read from the previous output buffer.
   for (http::HeaderValueReverseTokensIterator encIt(contentEncoding); encIt.hasNext();) {
     std::string_view encoding = encIt.next();
-    if (encoding.empty()) {
-      return {.status = http::StatusCodeBadRequest, .message = "Malformed Content-Encoding"};
-    }
-
-    if (encoding == http::identity) {
+    // A recipient MUST ignore the empty elements of a list (RFC 9110 §5.6.1.2).
+    if (encoding.empty() || encoding == http::identity) {
       continue;
 #ifdef AERONET_ENABLE_ZLIB
       // NOLINTNEXTLINE(readability-else-after-return)
-    } else if (encoding == http::gzip) {
+    } else if (IsGzipCoding(encoding)) {
       ZlibDecoder& decoder = decompressionState.zlibDecoder;
       decoder.setVariant(ZlibVariant::gzip);
-      stageOk = runDecoder(decoder, *dst);
+      stageOk = runDecoder(decoder, *dst, limit.maxPlainBytes);
     } else if (encoding == http::deflate) {
       ZlibDecoder& decoder = decompressionState.zlibDecoder;
       decoder.setVariant(ZlibVariant::deflate);
-      stageOk = runDecoder(decoder, *dst);
+      stageOk = runDecoder(decoder, *dst, limit.maxPlainBytes);
 #endif
 #ifdef AERONET_ENABLE_ZSTD
     } else if (encoding == http::zstd) {
-      stageOk = runDecoder(decompressionState.zstdDecoder, *dst);
+      stageOk = runDecoder(decompressionState.zstdDecoder, *dst, limit.maxPlainBytes);
       // decompressFull() rejects a frame declaring a too large size without decoding it.
-      if (!stageOk && ZstdDecoder::DeclaresMoreThan(src, decompressionConfig.maxDecompressedBytes)) {
-        return kDecompressedSizeTooLarge;
+      if (!stageOk && ZstdDecoder::DeclaresMoreThan(src, limit.maxPlainBytes)) {
+        return *limit.pExceeded;
       }
 #endif
 #ifdef AERONET_ENABLE_BROTLI
     } else if (encoding == http::br) {
-      stageOk = runDecoder(decompressionState.brotliDecoder, *dst);
+      stageOk = runDecoder(decompressionState.brotliDecoder, *dst, limit.maxPlainBytes);
 #endif
     } else {
       return {.status = http::StatusCodeUnsupportedMediaType, .message = "Unsupported Content-Encoding"};
     }
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
     if (!stageOk) {
-      // A decoder exceeding maxDecompressedBytes fails with more bytes decoded.
-      if (dst->size() > decompressionConfig.maxDecompressedBytes) {
-        return kDecompressedSizeTooLarge;
+      // A decoder exceeding its limit fails with more bytes decoded.
+      if (dst->size() > limit.maxPlainBytes) {
+        return *limit.pExceeded;
       }
       return {.status = http::StatusCodeBadRequest, .message = "Decompression failed"};
     }
-
-    assert(compressedSize > 0);
-    const double ratio = static_cast<double>(dst->size()) / static_cast<double>(compressedSize);
-    if (ratio > decompressionConfig.maxExpansionRatio) {
-      return {.status = http::StatusCodePayloadTooLarge, .message = "Decompression expansion too large"};
-    }
+    assert(dst->size() <= limit.maxPlainBytes);
 
     decompressStatus = http::StatusCodeOK;
 
@@ -243,13 +315,13 @@ inline bool UseStreamingDecompression(const SvToSvMap& headersMap, std::size_t s
 // Decode a single contiguous compressed `src` with one decoder, either in one-shot mode or, when
 // `useStreaming` is set, by feeding fixed-size chunks into a streaming context (bounded intermediate
 // memory for large payloads). Appends the decompressed bytes to `dst` (cleared first). Returns false on
-// decoder error or when a configured size cap is exceeded. Shared by the inbound (server) request
+// decoder error or when more than maxPlainBytes are decoded. Shared by the inbound (server) request
 // decompression and the outbound (client) response decompression so both stay in lock-step.
 bool DecodeContiguous(auto& decoder, std::string_view src, bool useStreaming, const DecompressionConfig& cfg,
-                      RawChars& dst) {
+                      std::size_t maxPlainBytes, RawChars& dst) {
   dst.clear();
   if (!useStreaming) {
-    return decoder.decompressFull(src, cfg.maxDecompressedBytes, cfg.decoderChunkSize, dst);
+    return decoder.decompressFull(src, maxPlainBytes, cfg.decoderChunkSize, dst);
   }
   auto* ctx = decoder.makeContext();
   // The decompress body function cannot be called without body.
@@ -259,9 +331,8 @@ bool DecodeContiguous(auto& decoder, std::string_view src, bool useStreaming, co
     const std::size_t chunkLen = std::min<std::size_t>(cfg.decoderChunkSize, remaining);
     const std::string_view chunk(src.data() + processed, chunkLen);
     processed += chunkLen;
-    // maxDecompressedBytes bounds the whole decoded body: each chunk gets what the previous ones left.
-    if (!ctx->decompressChunk(chunk, processed == src.size(), cfg.maxDecompressedBytes - dst.size(),
-                              cfg.decoderChunkSize, dst)) {
+    // maxPlainBytes bounds the whole decoded body: each chunk gets what the previous ones left.
+    if (!ctx->decompressChunk(chunk, processed == src.size(), maxPlainBytes - dst.size(), cfg.decoderChunkSize, dst)) {
       return false;
     }
   }
@@ -369,6 +440,8 @@ namespace {
 constexpr std::string_view kCRLFVaryAcceptEncodingLine =
     JoinStringView_v<http::CRLF, http::Vary, http::HeaderSep, http::AcceptEncoding>;
 
+constexpr std::string_view kVarySepAcceptEncoding = JoinStringView_v<kVaryHeaderValueSep, http::AcceptEncoding>;
+
 std::size_t ComputeAdditionalVaryLength(bool needVaryAcceptEncoding, bool addVaryHeaderLine, bool hasVaryHeader) {
   if (!needVaryAcceptEncoding) {
     return 0UL;
@@ -442,10 +515,10 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
   const auto trailersSz = msg.trailersSize();
 
   const char* pData = msg._data.data();
-  const VaryResult varyResult =
-      compressionConfig.addVaryAcceptEncodingHeader
-          ? VaryContainsAcceptEncoding(msg, pData)
-          : VaryResult{.valueFirst = kVaryAcceptEncodingNotNeeded, .valueLast = kVaryAcceptEncodingNotNeeded};
+  const CompressionHeaders compressionHeaders =
+      ScanCompressionHeaders(msg, pData, compressionConfig.addVaryAcceptEncodingHeader);
+  const VaryResult& varyResult = compressionHeaders.vary;
+  const std::size_t etagShift = compressionHeaders.strongETagPos == 0 ? 0UL : http::WeakETagPrefix.size();
   const bool hasVaryHeader = varyResult.valueFirst != varyResult.valueLast;
   const bool needVaryAcceptEncoding = !varyResult.notNeeded();
   const bool addVaryHeaderLine = varyResult.absent();
@@ -475,7 +548,7 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
   static_assert(http::HeaderSize(http::ContentEncoding.size(), 1U) >= std::numeric_limits<std::size_t>::digits10 + 1,
                 "headersShift cannot be negative for below logic");
 
-  std::size_t headersShift = additionalVaryLen + contentEncodingHeaderLineSz;
+  std::size_t headersShift = additionalVaryLen + contentEncodingHeaderLineSz + etagShift;
 
   if (sendContentLengthHeader) {
     const std::size_t contentLengthLineLen = http::HeaderSize(http::ContentLength.size(), ndigits(bodySz));
@@ -735,19 +808,28 @@ CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionS
 
   // Write '\r\nVary: Accept-Encoding' if needed.
   if (addVaryHeaderLine) {
-    CopyFixed<kCRLFVaryAcceptEncodingLine>(pOut - kCRLFVaryAcceptEncodingLine.size());
-  } else if (needVaryAcceptEncoding) {
-    // We are in the case of an existing Vary header without Accept-Encoding, we will append ", Accept-Encoding" to it.
-    // The insertion point is guaranteed to be before the Content-Type line because of the heuristic in
-    // VaryContainsAcceptEncoding.
-    pOut = msg._data.data() + varyResult.valueLast;
-    const std::size_t tailLen = contentTypeLinePos - varyResult.valueLast;
-    std::memmove(pOut + additionalVaryLen, pOut, tailLen);
-    if (varyResult.valueLast != varyResult.valueFirst) {
-      pOut = AppendFixed<kVaryHeaderValueSep>(pOut);
-    }
-    CopyFixed<http::AcceptEncoding>(pOut);
+    pOut -= kCRLFVaryAcceptEncodingLine.size();
+    CopyFixed<kCRLFVaryAcceptEncodingLine>(pOut);
   }
+
+  // The headers before the Content-Type line get the values inserted in them: ', Accept-Encoding' (or
+  // 'Accept-Encoding' for an empty value) appended to an existing Vary header without Accept-Encoding, and the weak
+  // prefix of a strong ETag. Both are before the Content-Type line, the body headers being the last ones.
+  HeadInsertion insertions[2];
+  std::size_t nbInsertions = 0;
+  if (needVaryAcceptEncoding && !addVaryHeaderLine) {
+    const std::string_view varyInsertion =
+        hasVaryHeader ? kVarySepAcceptEncoding : kVarySepAcceptEncoding.substr(kVaryHeaderValueSep.size());
+    insertions[nbInsertions++] = {.pos = varyResult.valueLast, .str = varyInsertion};
+  }
+  if (etagShift != 0) {
+    insertions[nbInsertions++] = {.pos = compressionHeaders.strongETagPos, .str = http::WeakETagPrefix};
+    if (nbInsertions == 2 && insertions[0].pos < insertions[1].pos) {
+      std::swap(insertions[0], insertions[1]);
+    }
+  }
+  assert(pOut == msg._data.data() + contentTypeLinePos + (addVaryHeaderLine ? 0UL : additionalVaryLen) + etagShift);
+  InsertInHead(msg._data.data(), contentTypeLinePos, std::span<const HeadInsertion>(insertions, nbInsertions));
 
   // Finalize response metadata to reflect compression
   msg._data.setSize(newBodyStartPos + totalCompSize + trailersSz);
@@ -777,18 +859,12 @@ RequestDecompressionResult HttpCodec::MaybeDecompressRequestBody(DecompressionSt
     return {.status = http::StatusCodePayloadTooLarge, .message = "Payload too large"};
   }
 
-  const std::string_view encodingStr = encodingHeaderIt->second;
-  if (encodingStr.empty()) {
-    // Strict RFC compliance: empty Content-Encoding header is malformed.
-    return {.status = http::StatusCodeBadRequest, .message = "Malformed Content-Encoding"};
-  }
-
   RequestDecompressionResult res = DualBufferDecodeLoop(
       decompressionState,
       [useStreamingDecode =
            UseStreamingDecompression(headersMap, decompressionConfig.streamingDecompressionThresholdBytes),
-       &src, &decompressionConfig](auto& decoder, RawChars& dst) {
-        return DecodeContiguous(decoder, src, useStreamingDecode, decompressionConfig, dst);
+       &src, &decompressionConfig](auto& decoder, RawChars& dst, std::size_t maxPlainBytes) {
+        return DecodeContiguous(decoder, src, useStreamingDecode, decompressionConfig, maxPlainBytes, dst);
       },
       decompressionConfig, src, encodingHeaderIt->second, compressedSize, bodyAndTrailersBuffer, tmpBuffer);
 
@@ -806,42 +882,26 @@ RequestDecompressionResult HttpCodec::MaybeDecompressRequestBody(DecompressionSt
   return {};
 }
 
-http::StatusCode HttpCodec::WillDecompress(const DecompressionConfig& decompressionConfig,
-                                           const SvToSvMap& headersMap) {
+bool HttpCodec::WillDecompress(const DecompressionConfig& decompressionConfig, const SvToSvMap& headersMap) {
   if (!decompressionConfig.enable) {
-    return http::StatusCodeNotModified;
+    return false;
   }
   const auto encodingHeaderIt = headersMap.find(http::ContentEncoding);
   if (encodingHeaderIt == headersMap.end()) {
-    return http::StatusCodeNotModified;
+    return false;
   }
   const std::string_view encodingStr = encodingHeaderIt->second;
-  if (encodingStr.empty()) {
-    return http::StatusCodeBadRequest;
-  }
   // Codings are compared exactly: the parsers lower-case received Content-Encoding values.
   assert(!LowerAsciiKey::ContainsUpperAscii(encodingStr));
 
-  bool foundNonIdentity = false;
-
-  // Parse the encoding string to check for non-identity encodings
-  http::HeaderValueReverseTokensIterator encIt(encodingStr);
-  assert(encIt.hasNext());
-  do {
-    std::string_view encoding = encIt.next();
-    if (encoding.empty()) {
-      return http::StatusCodeBadRequest;
+  // Empty elements are ignored, as identity.
+  for (http::HeaderValueReverseTokensIterator encIt(encodingStr); encIt.hasNext();) {
+    const std::string_view encoding = encIt.next();
+    if (!encoding.empty() && encoding != http::identity) {
+      return true;
     }
-    if (!foundNonIdentity && encoding != http::identity) {
-      foundNonIdentity = true;
-    }
-  } while (encIt.hasNext());
-
-  if (foundNonIdentity) {
-    return http::StatusCodeOK;
   }
-  // Only identity
-  return http::StatusCodeNotModified;
+  return false;
 }
 
 RequestDecompressionResult HttpCodec::DecompressChunkedBody(DecompressionState& decompressionState,
@@ -861,9 +921,8 @@ RequestDecompressionResult HttpCodec::DecompressChunkedBody(DecompressionState& 
 
   RequestDecompressionResult res = DualBufferDecodeLoop(
       decompressionState,
-      [&src, compressedChunks, maxPlainBytes = decompressionConfig.maxDecompressedBytes,
-       decoderChunkSize = decompressionConfig.decoderChunkSize,
-       firstStage = true](auto& decoder, RawChars& dst) mutable {
+      [&src, compressedChunks, decoderChunkSize = decompressionConfig.decoderChunkSize, firstStage = true](
+          auto& decoder, RawChars& dst, std::size_t maxPlainBytes) mutable {
         dst.clear();
 
         if (firstStage) {
@@ -900,10 +959,6 @@ RequestDecompressionResult HttpCodec::DecompressFullBody(DecompressionState& dec
   // Default: nothing decoded yet (identity / pass-through result is the input itself).
   outDecompressed = compressedBody;
 
-  if (contentEncoding.empty()) {
-    // Strict RFC compliance: empty Content-Encoding header is malformed.
-    return {.status = http::StatusCodeBadRequest, .message = "Malformed Content-Encoding"};
-  }
   if (compressedBody.size() > decompressionConfig.maxCompressedBytes) {
     return {.status = http::StatusCodePayloadTooLarge, .message = "Payload too large"};
   }
@@ -913,8 +968,8 @@ RequestDecompressionResult HttpCodec::DecompressFullBody(DecompressionState& dec
 
   RequestDecompressionResult res = DualBufferDecodeLoop(
       decompressionState,
-      [useStreaming, &src, &decompressionConfig](auto& decoder, RawChars& dst) {
-        return DecodeContiguous(decoder, src, useStreaming, decompressionConfig, dst);
+      [useStreaming, &src, &decompressionConfig](auto& decoder, RawChars& dst, std::size_t maxPlainBytes) {
+        return DecodeContiguous(decoder, src, useStreaming, decompressionConfig, maxPlainBytes, dst);
       },
       decompressionConfig, src, contentEncoding, compressedBody.size(), outBuffer, tmpBuffer);
 

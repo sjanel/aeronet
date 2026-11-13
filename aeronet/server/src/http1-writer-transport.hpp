@@ -15,6 +15,7 @@
 #include "aeronet/decimal-writer.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-message-data.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-request-dispatch.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
@@ -44,7 +45,8 @@ class Http1WriterTransport final : public IWriterTransport {
   bool emitHeaders(HttpResponse& response, const HttpRequestView& request, std::size_t declaredLength,
                    bool isHead) override {
     // 1xx, 204 and 304 responses end at the empty line after their headers: neither Transfer-Encoding nor
-    // Content-Length may frame a body (RFC 9112 §6.1 and §6.3, RFC 9110 §8.6).
+    // Content-Length may frame a body (RFC 9112 §6.1 and §6.3, RFC 9110 §8.6). A 205 has no content either, framed by a
+    // Content-Length of 0 below.
     const bool bodyAllowed = http::StatusCodeAllowsBody(response.status());
     const bool unknownLength = bodyAllowed && !isHead && (declaredLength == 0) && !response.hasBodyFile();
     // An HTTP/1.0 client does not understand chunked encoding (RFC 9112 §6.1): a body of unknown length is delimited by
@@ -76,6 +78,11 @@ class Http1WriterTransport final : public IWriterTransport {
       std::string_view declaredLenStr(declaredLenBuf,
                                       WriteUInt(declaredLenBuf, declaredLength, declaredLengthIntegralLen));
       response.headerAddLineUnchecked(http::ContentLength, declaredLenStr);
+    } else if (response.status() == http::StatusCodeResetContent && request.method() != http::Method::HEAD) {
+      // Unlike a 204, a 205 does not end at its headers: the empty body is framed (RFC 9110 §15.3.6), as for a buffered
+      // response. The writer has dropped what the handler wrote.
+      response.reserve(response.sizeInlined() + http::HeaderSize(http::ContentLength.size(), 1U));
+      response.headerAddLineUnchecked(http::ContentLength, "0");
     }
 
     _ctx.requestPipeline().prepareStreamingHead(request, response, _routeResponseMiddleware, _pCorsPolicy);

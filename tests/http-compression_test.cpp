@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -1803,6 +1805,146 @@ TEST(HttpCompression, StreamedContentLengthAfterABufferedWriteIsIgnored) {
     EXPECT_FALSE(resp.headers.contains(http::ContentLength.get())) << resp.headersRaw;
     EXPECT_EQ(test::getHeader(resp, http::ContentEncoding), "") << resp.headersRaw;
     EXPECT_EQ(resp.body, "abcdef");
+  }
+}
+
+// RFC 9110 §14.4 and §15.3.7: the Content-Range of a 206 describes the bytes of the content sent. A 206 built by a
+// handler is never compressed, whatever the path: compressed when finalized (inline or captured body), directly while
+// its body is set, or streamed, with or without a declared length. A 200 with the same body is compressed.
+TEST(HttpCompression, PartialContentIsNotCompressed) {
+  ConfigureHeadCompression();
+  static constexpr std::string_view kContentRange = "bytes 0-4095/100000";
+  const std::string payload = test::MakePatternedPayload(4096);
+  auto router = ts.router();
+  router.setPath(http::Method::GET, "/partial/inline", [payload](const HttpRequestView&) {
+    HttpResponse resp(http::StatusCodePartialContent);
+    resp.headerAddLine("content-range", kContentRange);
+    resp.body(std::string_view(payload));
+    return resp;
+  });
+  router.setPath(http::Method::GET, "/partial/captured", [payload](const HttpRequestView&) {
+    HttpResponse resp(http::StatusCodePartialContent);
+    resp.headerAddLine("content-range", kContentRange);
+    resp.body(std::string(payload));
+    return resp;
+  });
+  router.setPath(http::Method::GET, "/partial/direct", [payload](const HttpRequestView& req) {
+    HttpResponse resp = req.makeResponse(http::StatusCodePartialContent);
+    resp.headerAddLine("content-range", kContentRange);
+    resp.body(std::string_view(payload), http::ContentTypeTextPlain);
+    return resp;
+  });
+  router.setPath(http::Method::GET, "/partial/direct-status-first", [payload](const HttpRequestView& req) {
+    HttpResponse resp = req.makeResponse();
+    resp.status(http::StatusCodePartialContent).headerAddLine("content-range", kContentRange);
+    resp.bodyAppend(std::string_view(payload).substr(0, 2048), http::ContentTypeTextPlain);
+    resp.bodyAppend(std::string_view(payload).substr(2048));
+    return resp;
+  });
+  router.setPath(http::Method::GET, "/partial/streamed", [payload](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodePartialContent);
+    writer.headerAddLine("content-range", kContentRange);
+    writer.writeBody(payload);
+    writer.end();
+  });
+  router.setPath(http::Method::GET, "/partial/streamed-declared",
+                 [payload](const HttpRequestView&, HttpResponseWriter& writer) {
+                   writer.status(http::StatusCodePartialContent);
+                   writer.headerAddLine("content-range", kContentRange);
+                   writer.contentLength(payload.size());
+                   writer.writeBody(payload);
+                   writer.end();
+                 });
+  router.setPath(http::Method::GET, "/partial/control",
+                 [payload](const HttpRequestView& req) { return req.makeResponse(std::string_view(payload)); });
+
+  for (std::string_view target : {"/partial/inline", "/partial/captured", "/partial/direct",
+                                  "/partial/direct-status-first", "/partial/streamed", "/partial/streamed-declared"}) {
+    SCOPED_TRACE(target);
+    const test::ParsedResponse resp = Fetch("GET", target, "gzip");
+    EXPECT_EQ(resp.statusCode, http::StatusCodePartialContent);
+    EXPECT_EQ(test::getHeader(resp, http::ContentEncoding), "") << resp.headersRaw;
+    EXPECT_EQ(test::getHeader(resp, "content-range"), kContentRange) << resp.headersRaw;
+    EXPECT_EQ(resp.body, payload);
+  }
+  const test::ParsedResponse control = Fetch("GET", "/partial/control", "gzip");
+  EXPECT_EQ(control.statusCode, http::StatusCodeOK);
+  EXPECT_EQ(test::getHeader(control, http::ContentEncoding), "gzip") << control.headersRaw;
+
+  // A body compressed while it was set cannot become the content of a 206: the handler fails.
+  router.setPath(http::Method::GET, "/partial/direct-status-after", [payload](const HttpRequestView& req) {
+    HttpResponse resp = req.makeResponse();
+    resp.body(std::string_view(payload), http::ContentTypeTextPlain);
+    resp.status(http::StatusCodePartialContent);
+    return resp;
+  });
+  EXPECT_EQ(Fetch("GET", "/partial/direct-status-after", "gzip").statusCode, http::StatusCodeInternalServerError);
+}
+
+// RFC 9110 §8.8.3.3: "a strong entity tag for a content-encoded representation has to be distinct from the entity tag
+// of an unencoded representation". A strong ETag of a response compressed by the server becomes weak, which
+// If-None-Match (weak comparison) still matches, whatever the path and when the ETag is set relative to the body. The
+// HEAD response carries the ETag of the GET one, and the uncompressed response keeps the strong ETag.
+TEST(HttpCompression, CompressionWeakensAStrongETag) {
+  ConfigureHeadCompression();
+  static constexpr std::string_view kStrongETag = "\"v1\"";
+  static constexpr std::string_view kWeakETag = "W/\"v1\"";
+  const std::string payload = test::MakePatternedPayload(4096);
+  auto router = ts.router();
+  static constexpr auto kGetHead = http::Method::GET | http::Method::HEAD;
+  router.setPath(kGetHead, "/etag/finalized", [payload](const HttpRequestView&) {
+    HttpResponse resp(payload);
+    resp.headerAddLine(http::ETag, kStrongETag);
+    return resp;
+  });
+  router.setPath(kGetHead, "/etag/direct-before-body", [payload](const HttpRequestView& req) {
+    HttpResponse resp = req.makeResponse();
+    resp.headerAddLine(http::ETag, kStrongETag);
+    resp.body(std::string_view(payload), http::ContentTypeTextPlain);
+    return resp;
+  });
+  router.setPath(kGetHead, "/etag/direct-after-body", [payload](const HttpRequestView& req) {
+    HttpResponse resp = req.makeResponse();
+    resp.body(std::string_view(payload), http::ContentTypeTextPlain);
+    resp.headerAddLine(http::ETag, kStrongETag);
+    return resp;
+  });
+  router.setPath(kGetHead, "/etag/made-with-body", [payload](const HttpRequestView& req) {
+    HttpResponse resp = req.makeResponse(std::string_view(payload));
+    resp.headerAddLine(http::ETag, kStrongETag);
+    return resp;
+  });
+  router.setPath(kGetHead, "/etag/streamed", [payload](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.headerAddLine(http::ETag, kStrongETag);
+    writer.writeBody(payload);
+    writer.end();
+  });
+  router.setPath(kGetHead, "/etag/streamed-declared", [payload](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.headerAddLine(http::ETag, kStrongETag);
+    writer.contentLength(payload.size());
+    writer.writeBody(payload);
+    writer.end();
+  });
+  router.setPath(kGetHead, "/etag/weak", [payload](const HttpRequestView&) {
+    HttpResponse resp(payload);
+    resp.headerAddLine(http::ETag, kWeakETag);
+    return resp;
+  });
+
+  for (std::string_view target : {"/etag/finalized", "/etag/direct-before-body", "/etag/direct-after-body",
+                                  "/etag/made-with-body", "/etag/streamed", "/etag/streamed-declared", "/etag/weak"}) {
+    SCOPED_TRACE(target);
+    for (std::string_view method : {"GET", "HEAD"}) {
+      const test::ParsedResponse compressed = Fetch(method, target, "gzip");
+      EXPECT_EQ(compressed.statusCode, http::StatusCodeOK);
+      EXPECT_EQ(test::getHeader(compressed, http::ContentEncoding), "gzip") << method << '\n' << compressed.headersRaw;
+      EXPECT_EQ(test::getHeader(compressed, http::ETag), kWeakETag) << method << '\n' << compressed.headersRaw;
+    }
+    const test::ParsedResponse identity = Fetch("GET", target, "");
+    EXPECT_EQ(test::getHeader(identity, http::ContentEncoding), "") << identity.headersRaw;
+    EXPECT_EQ(test::getHeader(identity, http::ETag), target == "/etag/weak" ? kWeakETag : kStrongETag)
+        << identity.headersRaw;
+    EXPECT_EQ(identity.body, payload);
   }
 }
 

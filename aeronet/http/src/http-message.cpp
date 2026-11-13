@@ -9,10 +9,12 @@
 #include <limits>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <utility>
 
 #include "aeronet/char-hexadecimal-converter.hpp"
+#include "aeronet/compiler-config.hpp"
 #include "aeronet/compression-config.hpp"
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/decimal-writer.hpp"
@@ -64,20 +66,31 @@ constexpr std::string_view TrimmedValidHeaderValue(std::string_view value) {
   return value;
 }
 
-constexpr void CheckContentTypeLengthEncoding(LowerAsciiKey headerName, bool hasBody) {
+[[noreturn]] void ThrowReservedResponseHeader(std::string_view headerName) {
+  throw std::invalid_argument(
+      std::string("reserved response header '").append(headerName).append("' cannot be set: aeronet manages it"));
+}
+
+// Refuses the header names that a request or a response sets through the library only: content-type (set with the
+// body) and content-length, and for a response the other reserved headers (framing, connection management, date,
+// http::IsReservedResponseHeader): a value set by the handler would contradict what the server writes (RFC 9112 §6.1,
+// §9.6). Throws std::invalid_argument for them, and std::logic_error for a change of content-encoding once a body is
+// set.
+AERONET_ALWAYS_INLINE void CheckSettableHeader(LowerAsciiKey headerName, bool isRequest, bool hasBody) {
   // Fast path: most headers don't start with 'c'
-  if (headerName.data()[0] != 'c') {
-    return;
+  if (headerName.data()[0] == 'c') {
+    if (hasBody && headerName == http::ContentEncoding) [[unlikely]] {
+      throw std::logic_error("content-encoding cannot be changed with body already set");
+    }
+    if (headerName == http::ContentType) [[unlikely]] {
+      throw std::invalid_argument("content-type header should be set with the body");
+    }
+    if (headerName == http::ContentLength) [[unlikely]] {
+      throw std::invalid_argument("content-length header should be set with the body");
+    }
   }
-  if (hasBody && headerName == http::ContentEncoding) [[unlikely]] {
-    throw std::logic_error("content-encoding cannot be changed with body already set");
-  }
-  // Second fast path: check exact length (Content-Type is 12 chars, Content-Length is 14 chars)
-  if (headerName == http::ContentType) [[unlikely]] {
-    throw std::invalid_argument("content-type header should be set with the body");
-  }
-  if (headerName == http::ContentLength) [[unlikely]] {
-    throw std::invalid_argument("content-length header should be set with the body");
+  if (!isRequest && http::IsReservedResponseHeader(headerName)) [[unlikely]] {
+    ThrowReservedResponseHeader(headerName);
   }
 }
 
@@ -220,7 +233,7 @@ void HttpMessage::headerImpl(LowerAsciiKey key, std::string_view value) {
   }
 
   value = TrimmedValidHeaderValue(value);
-  CheckContentTypeLengthEncoding(key, hasBodyHeaders());
+  CheckSettableHeader(key, _opts.isHttpRequest(), hasBodyHeaders());
 
   overrideHeaderUnchecked(first, last, value);
 }
@@ -256,7 +269,8 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
   // A HEAD message stores no body, so there is nothing to compress: a response to a HEAD request is only made one when
   // no content coding was negotiated (see HttpRequestView::makeResponseOptions()).
   const bool tryCompression = setInlineBody && (!hasContentEncoding() || hadDirectCompression) &&
-                              _opts.directCompressionPossible(newBodySize, contentTypeValue);
+                              _opts.directCompressionPossible(newBodySize, contentTypeValue) &&
+                              !isPartialContentResponse();
   const bool addEncodingHeaders = tryCompression && !hasContentEncoding();
 
   // invariant: if we had direct compression, we must have had content encoding, because it's forbidden to remove
@@ -589,16 +603,16 @@ void HttpMessage::reserve(std::size_t capacity) {
 }
 
 void HttpMessage::headerAddLineImpl(LowerAsciiKey key, std::string_view value) {
-  assert(_opts.isHttpRequest() || key != http::Date);
   assert(!_opts.isHttpRequest() || key != http::Server);
-  if (!http::IsValidHeaderName(key)) [[unlikely]] {
-    throw std::invalid_argument("HTTP header name is invalid");
+  // In lower case too: an upper-case name, only asserted by LowerAsciiKey, would escape the reserved names checks.
+  if (!http::IsValidLowerCaseHeaderName(key)) [[unlikely]] {
+    throw std::invalid_argument("HTTP header name is invalid (a token, in lower case)");
   }
   if (_opts.isHttpRequest() && http::IsReservedOrForbiddenRequestHeader(key)) [[unlikely]] {
     throw std::invalid_argument("Cannot add reserved or forbidden header to HTTP request");
   }
   value = TrimmedValidHeaderValue(value);
-  CheckContentTypeLengthEncoding(key, hasBodyHeaders());
+  CheckSettableHeader(key, _opts.isHttpRequest(), hasBodyHeaders());
 
   headerAddLineUnchecked(key, value);
 
@@ -661,7 +675,7 @@ void HttpMessage::headerAppendValueImpl(LowerAsciiKey key, std::string_view valu
     return;
   }
 
-  CheckContentTypeLengthEncoding(key, hasBodyHeaders());
+  CheckSettableHeader(key, _opts.isHttpRequest(), hasBodyHeaders());
 
   value = TrimOws(value);
   if (value.empty()) {
@@ -677,8 +691,12 @@ void HttpMessage::headerAppendValueImpl(LowerAsciiKey key, std::string_view valu
     throw std::invalid_argument("HTTP header value separator is invalid");
   }
 
+  appendHeaderValueUnchecked(last, value, sep);
+}
+
+void HttpMessage::appendHeaderValueUnchecked(const char* valueLast, std::string_view value, std::string_view sep) {
   const std::size_t extraLen = sep.size() + value.size();
-  const std::size_t insertOffset = static_cast<std::size_t>(last - _data.data());
+  const std::size_t insertOffset = static_cast<std::size_t>(valueLast - _data.data());
 
   HeadGrowthManager headGrowthManager(*this, static_cast<int64_t>(extraLen));
 
@@ -705,6 +723,18 @@ void HttpMessage::eraseHeaderLine(std::string_view key, const char* valueFirst, 
   std::memmove(_data.data() + destPos, _data.data() + lineEndPos, _data.size() - lineEndPos);
   _data.setSize(_data.size() - lineSize);
   adjustBodyStartNoCheck(bodyShift);
+}
+
+void HttpMessage::weakenStrongETag() {
+  const auto [first, last] = HeadersLinearSearch(headersFlatView(), http::ETag);
+  // A strong entity-tag is an opaque-tag (a quoted string), a weak one starts with W/ (RFC 9110 §8.8.3).
+  if (first != last && *first == '"') {
+    appendHeaderValueUnchecked(first, http::WeakETagPrefix, {});
+  }
+}
+
+bool HttpMessage::isPartialContentResponse() const noexcept {
+  return !_opts.isHttpRequest() && std::memcmp(_data.data() + http::HTTP11SPSv.size(), "206", http::StatusCodeLen) == 0;
 }
 
 void HttpMessage::removeContentEncodingHeaders() {
@@ -891,9 +921,13 @@ void HttpMessage::finalizeHeadersAndBody() {
 }
 
 void HttpMessage::trailerAddLineImpl(LowerAsciiKey name, std::string_view value) {
-  assert(!http::IsForbiddenTrailerHeader(name));
-  if (!http::IsValidHeaderName(name)) [[unlikely]] {
-    throw std::invalid_argument("Invalid trailer header name");
+  if (!http::IsValidLowerCaseHeaderName(name)) [[unlikely]] {
+    throw std::invalid_argument("Invalid trailer header name (a token, in lower case)");
+  }
+  // RFC 9110 §6.5.1: a sender MUST NOT generate a trailer field that framing, routing, authentication or the content
+  // metadata need before the content.
+  if (http::IsForbiddenTrailerHeader(name)) [[unlikely]] {
+    throw std::invalid_argument("This field is not allowed in trailers");
   }
   value = TrimOws(value);
   if (!http::IsValidHeaderValue(value)) [[unlikely]] {
@@ -935,7 +969,13 @@ void HttpMessage::trailerAddLineImpl(LowerAsciiKey name, std::string_view value)
     // transfer-encoding. We add the Trailer header if the option is set. Indeed, if isHead is true here, then
     // necessarily the isAddTrailerHeader option is known as well.
     if (_opts.isAddTrailerHeader()) {
-      headerAppendValueImpl(http::Trailer, name, kTrailerValueSep);
+      // Not headerAppendValueImpl(), which refuses the reserved headers: the name is already validated.
+      const auto [first, last] = HeadersLinearSearch(headersFlatView(), http::Trailer);
+      if (first == nullptr) {
+        headerAddLineUnchecked(http::Trailer, name);
+      } else {
+        appendHeaderValueUnchecked(last, name, kTrailerValueSep);
+      }
     }
     return;
   }

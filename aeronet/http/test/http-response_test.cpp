@@ -149,6 +149,8 @@ class HttpResponseTest : public ::testing::Test {
 #endif
   }
 
+  static void WeakenStrongETag(HttpResponse& resp) { resp.weakenStrongETag(); }
+
   static bool IsAutomaticDirectCompression([[maybe_unused]] const HttpResponse& resp) {
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
     return resp._opts.isAutomaticDirectCompression();
@@ -5910,5 +5912,200 @@ TEST_F(HttpResponseTest, TrailersAutoChunkedBodySizeEdgeCases) {
     EXPECT_TRUE(result.contains("\r\n0\r\n")) << "Missing last-chunk for size " << sz;
   }
 }
+
+// RFC 9112 §6.1, §9.6: the server writes the framing (Content-Length, or Transfer-Encoding: chunked) and the connection
+// management headers. A value set by a handler would send two framings, or contradict the server (a second Connection,
+// Date or Trailer): every header setter refuses the reserved headers, in every build, with or without a body, and
+// leaves the response unchanged.
+TEST_F(HttpResponseTest, ReservedHeadersAreRejected) {
+  static constexpr std::string_view kReserved[]{"connection", "content-length", "content-type",      "date",
+                                                "te",         "trailer",        "transfer-encoding", "upgrade"};
+  for (const bool withBody : {false, true}) {
+    HttpResponse resp(http::StatusCodeOK);
+    if (withBody) {
+      resp.body("hello");
+    }
+    for (const std::string_view name : kReserved) {
+      const LowerAsciiKey key{name};
+      EXPECT_THROW(resp.headerAddLine(key, "chunked"), std::invalid_argument) << name;
+      EXPECT_THROW(resp.headerAddLine(key, 5), std::invalid_argument) << name;
+      EXPECT_THROW(resp.header(key, "chunked"), std::invalid_argument) << name;
+      EXPECT_THROW(resp.headerAppendValue(key, "chunked"), std::invalid_argument) << name;
+      EXPECT_THROW(HttpResponse("hello").headerAddLine(key, "chunked"), std::invalid_argument) << name;
+    }
+    const std::string full = concatenated(std::move(resp));  // kKeepAlive is false: the server closes
+    EXPECT_FALSE(full.contains("chunked")) << full;
+    EXPECT_EQ(CountSubstr(full, "\r\nconnection: "), 1U) << full;
+    EXPECT_EQ(CountSubstr(full, "\r\ndate: "), 1U) << full;
+    EXPECT_EQ(CountSubstr(full, "\r\ncontent-length: "), 1U) << full;
+  }
+}
+
+TEST_F(HttpResponseTest, ReservedHeaderErrorNamesTheHeader) {
+  HttpResponse resp("hello");
+  try {
+    resp.headerAddLine(http::TransferEncoding, http::chunked);
+    FAIL() << "transfer-encoding accepted";
+  } catch (const std::invalid_argument& ex) {
+    EXPECT_TRUE(std::string_view(ex.what()).contains("'transfer-encoding'")) << ex.what();
+  }
+}
+
+// The reserved headers are compared by length first: the names of the same length as one of them are set normally.
+TEST_F(HttpResponseTest, NamesOfTheLengthOfAReservedHeaderAreAccepted) {
+  static constexpr std::string_view kNotReserved[]{
+      "tk",         "etag",         "vary",        "warning",        "refresh",          "keep-alive",
+      "set-cookie", "x-request-id", "x-trace-ids", "accept-charset", "if-modified-since"};
+  HttpResponse resp("hello");
+  for (const std::string_view name : kNotReserved) {
+    const LowerAsciiKey key{name};
+    resp.headerAddLine(key, "1");
+    resp.header(key, "2");
+    resp.headerAppendValue(key, "3");
+  }
+  for (const std::string_view name : kNotReserved) {
+    EXPECT_EQ(resp.headerValueOrEmpty(LowerAsciiKey{name}), "2, 3") << name;
+  }
+}
+
+// The trailer header that the server adds itself to a HEAD response with trailers cannot be modified either: it keeps
+// announcing the trailer names.
+TEST_F(HttpResponseTest, TrailerHeaderOfAHeadResponseCannotBeModified) {
+  HttpResponse resp = makePrepared(PreparedOptions{.head = true, .addTrailerHeader = true});
+  resp.body("hello");
+  resp.trailerAddLine("x-sig", "1");
+  ASSERT_EQ(resp.headerValueOrEmpty(http::Trailer), "x-sig");
+  EXPECT_THROW(resp.header(http::Trailer, "x-other"), std::invalid_argument);
+  EXPECT_THROW(resp.headerAppendValue(http::Trailer, "x-other"), std::invalid_argument);
+  EXPECT_THROW(resp.headerAddLine(http::Trailer, "x-other"), std::invalid_argument);
+  resp.trailerAddLine("x-sig-2", "2");
+  EXPECT_EQ(resp.headerValueOrEmpty(http::Trailer), "x-sig, x-sig-2");
+  EXPECT_EQ(CountSubstr(resp.headersFlatView(), http::Trailer), 1U);
+}
+
+// The concatenated headers of the public constructors follow the rules of headerAddLine(): a reserved name would be
+// sent twice (two Content-Length fields with different values, RFC 9110 §8.6) or contradict the server.
+TEST_F(HttpResponseTest, ConcatenatedHeadersConstructorRejectsReservedHeaders) {
+  for (const std::string_view name :
+       {"connection", "content-length", "content-type", "date", "te", "trailer", "transfer-encoding", "upgrade"}) {
+    const std::string headers = std::string("x-before: 1\r\n").append(name).append(": 3\r\n");
+    EXPECT_THROW(HttpResponse(0, http::StatusCodeOK, headers, "hello world"), std::invalid_argument) << name;
+    EXPECT_THROW(HttpResponse(0, http::StatusCodeOK, headers), std::invalid_argument) << name;
+  }
+
+  const std::string full =
+      concatenated(HttpResponse(0, http::StatusCodeOK, "x-before: 1\r\ncontent-language: en\r\n", "hello world"));
+  EXPECT_TRUE(full.contains("\r\nx-before: 1\r\ncontent-language: en\r\n")) << full;
+  EXPECT_EQ(CountSubstr(full, "\r\ncontent-length: "), 1U) << full;
+}
+
+// As with headerAddLine(), a content-encoding given to the constructor disables the automatic compression
+// (docs/guides/compression.md): the body is not compressed a second time, under a second content-encoding.
+TEST_F(HttpResponseTest, ContentEncodingOfConcatenatedHeadersDisablesCompression) {
+  HttpResponse resp(0, http::StatusCodeOK, "x-before: 1\r\ncontent-encoding: gzip\r\n", std::string(4096, 'a'));
+  EXPECT_TRUE(resp.hasContentEncoding());
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+  EXPECT_EQ(HttpCodec::TryCompressBody(compressionState, test::SupportedEncodings().front(), resp),
+            CompressResponseResult::Uncompressed);
+#endif
+  // Like a content-encoding set before the body, it cannot be changed once the body is set.
+  EXPECT_THROW(resp.header(http::ContentEncoding, "br"), std::logic_error);
+  const std::string full = concatenated(std::move(resp));
+  EXPECT_EQ(CountSubstr(full, "\r\ncontent-encoding: "), 1U) << full.substr(0, full.find(http::DoubleCRLF));
+  EXPECT_TRUE(full.ends_with(std::string(4096, 'a')));
+
+  HttpResponse noEncoding(0, http::StatusCodeOK, "x-before: 1\r\n", "hello");
+  EXPECT_FALSE(noEncoding.hasContentEncoding());
+}
+
+// RFC 9110 §6.5.1: a sender MUST NOT generate a trailer field that framing, routing, authentication or the content
+// metadata need before the content (http::IsForbiddenTrailerHeader). Refused in every build, the response unchanged.
+TEST_F(HttpResponseTest, ForbiddenTrailersAreRejected) {
+  for (const std::string_view name :
+       {"content-length", "transfer-encoding", "set-cookie", "content-type", "authorization", "trailer", "host"}) {
+    HttpResponse resp("hello");
+    EXPECT_THROW(resp.trailerAddLine(LowerAsciiKey{name}, "0"), std::invalid_argument) << name;
+    resp.trailerAddLine("x-checksum", "1");
+    const std::string full = concatenated(std::move(resp));
+    EXPECT_TRUE(full.ends_with("\r\n0\r\nx-checksum: 1\r\n\r\n")) << full;
+    EXPECT_FALSE(full.contains(std::string("\r\n").append(name).append(": 0\r\n"))) << full;
+  }
+}
+
+#ifdef NDEBUG
+// LowerAsciiKey only asserts that a dynamic name is in lower case (Debug builds): the setters refuse an upper-case one
+// in a Release build, which would escape the reserved names checks (Content-Length next to content-length).
+TEST_F(HttpResponseTest, UpperCaseDynamicNamesAreRejectedInRelease) {
+  for (const std::string_view name : {"Content-Length", "Transfer-Encoding", "X-Custom"}) {
+    HttpResponse resp("hello");
+    const LowerAsciiKey key{name};
+    EXPECT_THROW(resp.headerAddLine(key, "3"), std::invalid_argument) << name;
+    EXPECT_THROW(resp.header(key, "3"), std::invalid_argument) << name;
+    EXPECT_THROW(resp.headerAppendValue(key, "3"), std::invalid_argument) << name;
+    EXPECT_THROW(resp.trailerAddLine(key, "3"), std::invalid_argument) << name;
+    const std::string full = concatenated(std::move(resp));
+    EXPECT_FALSE(full.contains(std::string("\r\n").append(name).append(": "))) << full;
+  }
+}
+#endif
+
+// A strong ETag becomes weak for a content encoded by the server (RFC 9110 §8.8.3.3), whatever the body; a weak one, an
+// empty one or none are kept as they are.
+TEST_F(HttpResponseTest, WeakenStrongETag) {
+  for (bool capturedBody : {false, true}) {
+    HttpResponse resp(http::StatusCodeOK);
+    resp.headerAddLine("x-before", "1").headerAddLine(http::ETag, "\"v1\"").headerAddLine("x-after", "2");
+    if (capturedBody) {
+      resp.body(std::string(64, 'a'));
+    } else {
+      resp.body(std::string_view("inline body"));
+    }
+    resp.trailerAddLine("x-trailer", "t");
+    WeakenStrongETag(resp);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ETag), "W/\"v1\"");
+    EXPECT_EQ(resp.headerValueOrEmpty("x-before"), "1");
+    EXPECT_EQ(resp.headerValueOrEmpty("x-after"), "2");
+    EXPECT_EQ(resp.bodyInMemory(), capturedBody ? std::string(64, 'a') : std::string("inline body"));
+    EXPECT_EQ(resp.trailerValueOrEmpty("x-trailer"), "t");
+    WeakenStrongETag(resp);  // weak already
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ETag), "W/\"v1\"");
+  }
+  HttpResponse noETag("body");
+  WeakenStrongETag(noETag);
+  EXPECT_FALSE(noETag.hasHeader(http::ETag));
+  HttpResponse emptyETag("body");
+  emptyETag.headerAddLine(http::ETag, "");
+  WeakenStrongETag(emptyETag);
+  EXPECT_EQ(emptyETag.headerValueOrEmpty(http::ETag), "");
+}
+
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+// The Content-Range of a 206 describes the bytes of the content sent (RFC 9110 §14.4): its body is never compressed
+// while it is set, and the status of a body compressed so cannot become 206.
+TEST_F(HttpResponseTest, PartialContentIsNeverCompressedDirectly) {
+  static constexpr std::string_view kBody = "partial partial partial partial partial partial";
+  for (Encoding enc : test::SupportedEncodings()) {
+    HttpResponse partial = makePrepared(PreparedOptions{.expectedEncoding = enc}, http::StatusCodePartialContent);
+    partial.directCompressionMode(DirectCompressionMode::On);
+    partial.body(kBody, http::ContentTypeTextPlain);
+    EXPECT_FALSE(IsAutomaticDirectCompression(partial));
+    EXPECT_FALSE(partial.hasHeader(http::ContentEncoding));
+    EXPECT_EQ(partial.bodyInMemory(), kBody);
+
+    HttpResponse compressed = makePrepared(PreparedOptions{.expectedEncoding = enc});
+    compressed.directCompressionMode(DirectCompressionMode::On);
+    compressed.body(kBody, http::ContentTypeTextPlain);
+    ASSERT_TRUE(IsAutomaticDirectCompression(compressed));
+    EXPECT_THROW(compressed.status(http::StatusCodePartialContent), std::logic_error);
+    EXPECT_EQ(compressed.status(), http::StatusCodeOK);
+    compressed.status(http::StatusCodeCreated);
+    EXPECT_EQ(compressed.status(), http::StatusCodeCreated);
+  }
+  // Without direct compression, the status is free.
+  HttpResponse resp(http::StatusCodeOK, "body");
+  resp.status(http::StatusCodePartialContent);
+  EXPECT_EQ(resp.status(), http::StatusCodePartialContent);
+}
+#endif
 
 }  // namespace aeronet

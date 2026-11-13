@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -241,6 +242,28 @@ TEST(HttpRequestDecompression, TripleCompressionWithSpaces) {
   }
 }
 
+// At most 5 codings are decoded, identity included (curl bounds the codings of a response the same way,
+// CVE-2023-23916): a longer list is answered 415 without being decoded.
+TEST(HttpRequestDecompression, AtMostFiveStackedCodings) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
+  ts.resetRouterAndGet().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
+  for (const Encoding enc : test::SupportedEncodings()) {
+    RawChars body = test::Compress(enc, "stacked");
+    std::string contentEncoding(GetEncodingStr(enc));
+    for (int coding = 1; coding < 5; ++coding) {
+      body = test::Compress(enc, std::string_view(body));
+      contentEncoding.append(", ").append(GetEncodingStr(enc));
+    }
+    auto resp = RawPost(ts.port(), "/stacked", {{"Content-Encoding", contentEncoding}}, body);
+    EXPECT_EQ(resp.status, http::StatusCodeOK) << contentEncoding;
+    EXPECT_EQ(resp.body, "stacked") << contentEncoding;
+
+    contentEncoding.insert(0, "identity, ");
+    resp = RawPost(ts.port(), "/stacked", {{"Content-Encoding", contentEncoding}}, body);
+    EXPECT_EQ(resp.status, http::StatusCodeUnsupportedMediaType) << contentEncoding;
+  }
+}
+
 TEST(HttpRequestDecompression, SingleUnknownCodingRejected) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
   ts.resetRouterAndGet().setDefault([]([[maybe_unused]] const HttpRequestView& req) { return HttpResponse("U"); });
@@ -269,23 +292,57 @@ TEST(HttpRequestDecompression, UnknownCodingRejectedInChain) {
   }
 }
 
-TEST(HttpRequestDecompression, EmptyTokenRejected) {
-  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
-  std::string body = "xyz";
-#if defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZSTD)
-  static constexpr http::StatusCode kExpectedStatus = http::StatusCodeBadRequest;
-#else
-  static constexpr http::StatusCode kExpectedStatus = http::StatusCodeOK;  // decompression disabled, pass-through
-#endif
-  auto resp = RawPost(ts.port(), "/e", {{"Content-Encoding", "identity,,identity"}}, body);
-  EXPECT_EQ(resp.status, kExpectedStatus);
-  resp = RawPost(ts.port(), "/e", {{"Content-Encoding", "identity,,"}}, body);
-  EXPECT_EQ(resp.status, kExpectedStatus);
-  resp = RawPost(ts.port(), "/e", {{"Content-Encoding", ","}}, body);
-  EXPECT_EQ(resp.status, kExpectedStatus);
-  resp = RawPost(ts.port(), "/e", {{"Content-Encoding", ""}}, body);
-  EXPECT_EQ(resp.status, kExpectedStatus);
+namespace {
+// Posts 'body' with a chunked framing, in chunks of 3 bytes.
+std::string ChunkedPost(std::string_view contentEncoding, std::string_view body) {
+  std::string req = std::format(
+      "POST /e HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\nContent-Encoding: {}\r\nConnection: close\r\n\r\n",
+      contentEncoding);
+  for (std::size_t pos = 0; pos < body.size(); pos += 3) {
+    const std::string_view chunk = body.substr(pos, 3);
+    req.append(std::format("{:x}\r\n", chunk.size())).append(chunk).append("\r\n");
+  }
+  req.append("0\r\n\r\n");
+  return test::sendAndCollect(ts.port(), req);
 }
+}  // namespace
+
+// RFC 9110 §5.6.1.2: a recipient MUST ignore a reasonable number of empty list elements (they count towards the limit
+// of 5 codings). A Content-Encoding without any coding is identity: the body is passed as received.
+TEST(HttpRequestDecompression, EmptyElementsAreIgnored) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
+  ts.resetRouterAndGet().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
+  static constexpr std::string_view kBody = "xyz";
+  for (std::string_view contentEncoding : {"identity,,identity", "identity,,", ",", ""}) {
+    SCOPED_TRACE(contentEncoding);
+    auto resp = RawPost(ts.port(), "/e", {{"Content-Encoding", contentEncoding}}, kBody);
+    EXPECT_EQ(resp.status, http::StatusCodeOK);
+    EXPECT_EQ(resp.body, kBody);
+    EXPECT_TRUE(ChunkedPost(contentEncoding, kBody).ends_with("\r\n\r\nxyz"));
+  }
+  for (const Encoding enc : test::SupportedEncodings()) {
+    const RawChars compressed = test::Compress(enc, "decoded body");
+    const std::string contentEncoding = std::format(", {},,", GetEncodingStr(enc));
+    SCOPED_TRACE(contentEncoding);
+    auto resp = RawPost(ts.port(), "/e", {{"Content-Encoding", contentEncoding}}, compressed);
+    EXPECT_EQ(resp.status, http::StatusCodeOK);
+    EXPECT_EQ(resp.body, "decoded body");
+    EXPECT_TRUE(ChunkedPost(contentEncoding, compressed).ends_with("\r\n\r\ndecoded body"));
+  }
+}
+
+#ifdef AERONET_ENABLE_ZLIB
+// RFC 9110 §8.4.1.3: "A recipient SHOULD consider "x-gzip" to be equivalent to "gzip"".
+TEST(HttpRequestDecompression, XGzipIsDecodedAsGzip) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
+  ts.resetRouterAndGet().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
+  const RawChars compressed = test::Compress(Encoding::gzip, "decoded body");
+  auto resp = RawPost(ts.port(), "/e", {{"Content-Encoding", "x-gzip"}}, compressed);
+  EXPECT_EQ(resp.status, http::StatusCodeOK);
+  EXPECT_EQ(resp.body, "decoded body");
+  EXPECT_TRUE(ChunkedPost("X-Gzip", compressed).ends_with("\r\n\r\ndecoded body"));
+}
+#endif
 
 TEST(HttpRequestDecompression, DisabledFeaturePassThrough) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {

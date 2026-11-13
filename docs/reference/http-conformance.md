@@ -49,7 +49,7 @@ This page lists the HTTP/1.1 behaviors aeronet implements ([RFC 9110](https://ww
 | Chunked transfer coding, with chunk extensions and trailers ([details](../guides/requests.md#chunked-bodies-and-trailers)) | Supported |
 | Request trailers carrying fields needed before the content (RFC 9110 §6.5.1) rejected ([details](../guides/requests.md#chunked-bodies-and-trailers)) | Supported |
 | Trailers exposed by `HttpRequestView::trailers()`, identically for HTTP/1.1 and HTTP/2 | Supported |
-| Request body decompression (`Content-Encoding`: gzip, deflate, br, zstd, stacked codings), with size and ratio limits ([details](../guides/compression.md#request-body-decompression)) | Supported, opt-in |
+| Request body decompression (`Content-Encoding`: gzip, deflate, br, zstd, stacked codings, `x-gzip` as gzip, empty elements ignored), with size and ratio limits ([details](../guides/compression.md#request-body-decompression)) | Supported, opt-in |
 | `multipart/form-data` parsing helpers ([details](../guides/requests.md#forms-and-file-uploads)) | Supported |
 | `Expect: 100-continue`, and custom expectations through a handler (see below) | Supported |
 
@@ -60,10 +60,12 @@ This page lists the HTTP/1.1 behaviors aeronet implements ([RFC 9110](https://ww
 | `Date`, `Content-Length`, `Connection`, `Transfer-Encoding`, `Trailer`, `TE`, and `Upgrade` response headers managed by the server ([details](../guides/responses.md#status-and-headers)) | Supported |
 | `Content-Length: 0` on empty responses, except for `1xx`, `204`, `304`, `HEAD`, file, streaming, and direct-compression responses | Supported |
 | `1xx`, `204`, `304` responses ending at the empty line after their headers: body, trailers and `Content-Length` / `Transfer-Encoding` dropped ([details](../guides/responses.md#statuses-without-content)) | Supported |
+| `205` responses without content, with `Content-Length: 0` ([details](../guides/responses.md#statuses-without-content)) | Supported |
 | `HEAD` answered by the `GET` handler, without body, with the `GET` headers and length, compression included ([details](../guides/compression.md#head-requests)) | Supported |
 | Chunked streaming responses, with trailers | Supported |
 | Buffered responses with trailers, sent chunked (to an HTTP/1.1 client, see [Trailers](../guides/responses.md#trailers)) | Supported |
 | Response compression (gzip, deflate, br, zstd) negotiated from `Accept-Encoding` with q-values ([details](../guides/compression.md)) | Supported |
+| Strong `ETag` of a compressed response made weak, `206` responses never compressed ([details](../guides/compression.md#what-is-not-compressed)) | Supported |
 | `406 Not Acceptable` when the client refuses `identity` and no offered coding is available | Supported |
 | Range and conditional requests for files ([details](../guides/static-files.md)) | Supported |
 
@@ -80,7 +82,7 @@ The server answers these errors itself, before or instead of calling a handler:
 | `406 Not Acceptable` | No acceptable content coding. Over HTTP/1.1, the connection persists, unless the request announces a body, which is not read ([details](../guides/compression.md#negotiation)). |
 | `413 Payload Too Large` | Body larger than `maxBodyBytes`. |
 | `414 URI Too Long` | Request line, with the empty line ending the head, larger than `maxHeaderBytes` (the request target is too long). |
-| `415 Unsupported Media Type` | Unsupported `Content-Encoding` on a request body, when decompression is enabled. |
+| `415 Unsupported Media Type` | Unsupported `Content-Encoding` on a request body, or more than 5 stacked codings, when decompression is enabled. |
 | `417 Expectation Failed` | `Expect` token other than `100-continue` without expectation handler. |
 | `431 Request Header Fields Too Large` | Request head larger than `maxHeaderBytes`, its request line fitting it. |
 | `500 Internal Server Error` | Handler exception, or an invalid interim status returned by an expectation handler. |

@@ -38,6 +38,12 @@ void ValidateResponseHeader(LowerAsciiKey headerName) {
   if (headerName == http::Location) {
     throw std::invalid_argument("attempt to set location as a global header: its value is specific to each response");
   }
+  // Describes the body of each response: a global one would claim an encoding for the bodies the server writes itself
+  // (errors), and not disable the automatic compression, which would add a second content-encoding.
+  if (headerName == http::ContentEncoding) {
+    throw std::invalid_argument(
+        "attempt to set content-encoding as a global header: it describes the body of each response");
+  }
 }
 
 }  // namespace

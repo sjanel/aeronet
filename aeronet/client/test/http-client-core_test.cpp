@@ -4412,6 +4412,61 @@ TEST(HttpClientSinkE2ETest, DecompressionLimitsApplyToStreamedBodies) {
   }
 }
 
+// maxExpansionRatio stops the decoding of a streamed bomb at its limit: a read of a few KiB is not inflated to the 4
+// MiB it holds before the ratio is checked.
+TEST(HttpClientSinkE2ETest, ExpansionRatioStopsTheDecodingOfAStreamedBomb) {
+  static constexpr std::size_t kPlainSize = 4UL << 20U;
+  const std::string zeroes(kPlainSize, '\0');
+  HttpClientConfig cfg;
+  cfg.decompression.maxExpansionRatio = 10.0;
+  cfg.decompression.maxDecompressedBytes = 1UL << 30U;
+  for (const Encoding enc : test::SupportedEncodings()) {
+    const RawChars encoded = test::Compress(enc, zeroes);
+    ASSERT_LT(encoded.size(), cfg.decompression.decoderChunkSize) << GetEncodingStr(enc);
+    RawServer server([&](NativeHandle fd, int) {
+      test::RecvHead(fd);
+      SendAll(fd, EncodedResponse(GetEncodingStr(enc), std::string_view(encoded)));
+    });
+    HttpClient client(cfg);
+    test::CollectingBodySink sink;
+    auto result = client.get(MakeUrl(server.port()), sink);
+    ASSERT_FALSE(result) << GetEncodingStr(enc);
+    EXPECT_EQ(result.error(), HttpClientErrc::responseTooLarge) << GetEncodingStr(enc);
+    // While the body arrives, the ratio is the one of at least one decoder chunk of input.
+    const auto allowed =
+        static_cast<std::size_t>(cfg.decompression.maxExpansionRatio * cfg.decompression.decoderChunkSize);
+    EXPECT_LT(HttpClientTest::ScratchCapacity(client), 2 * allowed) << GetEncodingStr(enc);
+  }
+}
+
+#ifdef AERONET_ENABLE_ZLIB
+// RFC 9110 §8.4.1.3: x-gzip is gzip for a recipient, and the empty elements of a Content-Encoding list are ignored
+// (RFC 9110 §5.6.1.2), for a body streamed to a sink (a single coding) and a buffered one.
+TEST(HttpClientSinkE2ETest, XGzipAndEmptyCodingElementsAreDecoded) {
+  const std::string payload = test::MakePatternedPayload(50000);
+  const RawChars gzipped = test::Compress(Encoding::gzip, payload);
+  const RawChars deflated = test::Compress(Encoding::deflate, payload);
+  for (std::string_view contentEncoding : {"x-gzip", "X-Gzip", ", x-gzip,", "gzip,,identity", ",deflate"}) {
+    SCOPED_TRACE(contentEncoding);
+    const std::string_view encoded(contentEncoding.contains("deflate") ? deflated : gzipped);
+    RawServer server([&](NativeHandle fd, int) {
+      test::RecvHead(fd);
+      SendAll(fd, EncodedResponse(contentEncoding, encoded));
+    });
+    HttpClient client;
+    test::CollectingBodySink sink;
+    auto result = client.get(MakeUrl(server.port()), sink);
+    ASSERT_TRUE(result) << ErrcToStr(result.error());
+    EXPECT_TRUE(sink.body == payload);
+    EXPECT_TRUE(sink.contentEncoding.empty());
+
+    result = client.get(MakeUrl(server.port()));
+    ASSERT_TRUE(result) << ErrcToStr(result.error());
+    EXPECT_TRUE(result->bodyInMemory() == payload);
+  }
+}
+#endif
+
 // Stacked content codings are buffered and decoded whole, then delivered in one piece.
 TEST(HttpClientSinkE2ETest, StackedContentCodingsAreBufferedThenDelivered) {
   if (test::SupportedEncodings().empty()) {

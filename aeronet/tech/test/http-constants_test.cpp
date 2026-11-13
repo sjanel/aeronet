@@ -27,13 +27,13 @@ TEST(HttpConstantsTest, StatusCodeAllowsBody) {
            StatusCodeEarlyHints,
            StatusCode{199},
            StatusCodeNoContent,
+           StatusCodeResetContent,
            StatusCodeNotModified,
        }) {
     EXPECT_FALSE(StatusCodeAllowsBody(code)) << code;
   }
   for (StatusCode code : {
            StatusCodeOK,
-           StatusCodeResetContent,
            StatusCodePartialContent,
            StatusCodeMovedPermanently,
            StatusCodeSeeOther,

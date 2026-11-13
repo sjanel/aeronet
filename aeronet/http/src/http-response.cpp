@@ -20,7 +20,9 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
 #include "aeronet/log.hpp"
+#include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/memory-utils-sv.hpp"
+#include "aeronet/reserved-headers.hpp"
 #include "aeronet/search-crlf.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/string-trim.hpp"
@@ -55,9 +57,14 @@ constexpr void InitData(char* data) {
   data[HttpResponse::kReasonBeg] = '\n';  // marker for 'no reason'
 }
 
-constexpr void CheckConcatenatedHeaders(std::string_view concatenatedHeaders) {
+// Checks the headers given to the public constructors, with the same rules as headerAddLine(): their syntax, and the
+// names that aeronet manages (http::IsReservedResponseHeader), which would be sent twice or contradict the server
+// (RFC 9110 §8.6: a second Content-Length). Returns whether they have a content-encoding, which disables the automatic
+// compression.
+[[nodiscard]] constexpr bool CheckConcatenatedHeaders(std::string_view concatenatedHeaders) {
   const char* first = concatenatedHeaders.data();
   const char* last = first + concatenatedHeaders.size();
+  bool hasContentEncoding = false;
 
   while (first < last) {
     const char* headerNameEnd = std::search(first, last, http::HeaderSep.begin(), http::HeaderSep.end());
@@ -66,11 +73,15 @@ constexpr void CheckConcatenatedHeaders(std::string_view concatenatedHeaders) {
     }
 
     std::string_view headerName(first, headerNameEnd);
-    if (!http::IsValidHeaderName(headerName)) {
-      throw std::invalid_argument("Invalid header name in concatenated headers");
+    if (!http::IsValidLowerCaseHeaderName(headerName)) {
+      throw std::invalid_argument("Invalid header name (a token, in lower case) in concatenated headers");
     }
-    if (std::ranges::any_of(headerName, [](char ch) { return ch >= 'A' && ch <= 'Z'; })) {
-      throw std::invalid_argument("Header names should be normalized to lower case in concatenated headers");
+    const LowerAsciiKey key(headerName);
+    if (http::IsReservedResponseHeader(key)) {
+      throw std::invalid_argument("Reserved response header in concatenated headers: aeronet manages it");
+    }
+    if (key == http::ContentEncoding) {
+      hasContentEncoding = true;
     }
     first += headerName.size() + http::HeaderSep.size();
 
@@ -92,14 +103,15 @@ constexpr void CheckConcatenatedHeaders(std::string_view concatenatedHeaders) {
 
     first = pEndLine + http::CRLF.size();
   }
+  return hasContentEncoding;
 }
 
 }  // namespace
 
 void HttpResponse::initHeadInline(http::StatusCode code, std::string_view concatenatedHeaders, std::size_t bodySize,
                                   std::string_view contentType) {
-  if (!concatenatedHeaders.empty() && !_opts.isPrepared()) {
-    CheckConcatenatedHeaders(concatenatedHeaders);
+  if (!concatenatedHeaders.empty() && !_opts.isPrepared() && CheckConcatenatedHeaders(concatenatedHeaders)) {
+    _opts.setHasContentEncoding();
   }
   char* const pFirst = _data.data();
   InitData(pFirst);
@@ -156,6 +168,11 @@ http::StatusCode HttpResponse::status() const noexcept {
 HttpResponse& HttpResponse::status(http::StatusCode statusCode) & {
   if (statusCode < 100 || statusCode > 999) [[unlikely]] {
     throw std::invalid_argument("Invalid HTTP status code, should be 3 digits");
+  }
+  // The content of a 206 is never encoded by the server (see isPartialContentResponse()): a body compressed while it
+  // was set cannot be decoded back.
+  if (statusCode == http::StatusCodePartialContent && _opts.isAutomaticDirectCompression()) [[unlikely]] {
+    throw std::logic_error("A 206 response is never compressed: set its status before its body");
   }
   writeStatusCode(_data.data() + kStatusCodeBeg, statusCode);
   return *this;

@@ -342,10 +342,9 @@ class HttpResponse final : public HttpMessage {
   // compile time through LowerAsciiKey.
   // No scan over existing headers. Prefer this when duplicates are OK or when constructing headers once.
   // Header name and value must be valid per HTTP specifications.
-  // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
-  // Attempting to set 'Content-Type' and 'Content-Length' headers with this method will throw std::invalid_argument.
+  // A reserved header (for which IsReservedResponseHeader is true) throws std::invalid_argument: aeronet manages it.
   //  - Content-Type should be set along with the body methods
-  //  - Content-Length is managed by the library and should not be set manually.
+  //  - Content-Length, Transfer-Encoding, Connection, Date, Trailer, Upgrade and TE are written by the server.
   // Similarly, 'Content-Encoding' header cannot be changed while a body is already set. Doing so will throw
   // std::logic_error.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
@@ -377,7 +376,7 @@ class HttpResponse final : public HttpMessage {
   // will produce:
   //   "accept: text/html"
   //   "accept: text/html, application/json"
-  // Same rules as headerAddLine() for 'Content-Type', 'Content-Length' and 'Content-Encoding'.
+  // Same rules as headerAddLine() for the reserved headers and 'Content-Encoding'.
   HttpResponse& headerAppendValue(LowerAsciiKey key, std::string_view value, std::string_view sep = ", ") & {
     headerAppendValueImpl(key, value, sep);
     return *this;
@@ -402,7 +401,7 @@ class HttpResponse final : public HttpMessage {
   // Add or replace first header 'key' with 'value'.
   // Performs a case-sensitive linear scan (slower than headerAddLine()) over normalized lower-case header names.
   // The header name and value must be valid per HTTP specifications, otherwise std::invalid_argument is thrown.
-  // As for 'headerAddLine()', do not insert any reserved header.
+  // As for 'headerAddLine()', a reserved header throws std::invalid_argument.
   HttpResponse& header(LowerAsciiKey key, std::string_view value) & {
     headerImpl(key, value);
     return *this;
@@ -852,9 +851,8 @@ class HttpResponse final : public HttpMessage {
   // Trailer semantics (per RFC 7230 §4.1.2):
   //   - Trailers are sent after the message body in chunked transfer encoding.
   //   - Certain headers MUST NOT appear as trailers (e.g., Transfer-Encoding, Content-Length,
-  //     Host, Cache-Control, Authorization, Cookie, Set-Cookie). Use of forbidden trailer
-  //     headers is undefined behavior (no validation is performed here for performance;
-  //     validation may be added in debug builds).
+  //     Host, Cache-Control, Authorization, Cookie, Set-Cookie). A forbidden trailer (RFC 9110 §6.5.1,
+  //     http::IsForbiddenTrailerHeader) throws std::invalid_argument.
   //   - Typical use: computed metadata available only after body generation (checksums,
   //     signatures, etc.).
   //   - Adding trailers for HTTP/1.1 has an additional transformation cost of the response.

@@ -77,9 +77,11 @@ inline constexpr StatusCode StatusCodeNetworkAuthenticationRequired = 511;
 
 // Whether a response with this status code may carry content. 1xx, 204 and 304 responses always end at the empty line
 // after their header section: no body, no Content-Length (1xx, 204) nor Transfer-Encoding (RFC 9110 §6.4.1 and §8.6,
-// RFC 9112 §6.1 and §6.3).
+// RFC 9112 §6.1 and §6.3). A 205 has no content either (RFC 9110 §15.3.6), but its message body is framed as usual:
+// HTTP/1.1 sends it with a Content-Length of 0.
 [[nodiscard]] constexpr bool StatusCodeAllowsBody(StatusCode code) noexcept {
-  return code >= StatusCodeOK && code != StatusCodeNoContent && code != StatusCodeNotModified;
+  return code >= StatusCodeOK && code != StatusCodeNoContent && code != StatusCodeResetContent &&
+         code != StatusCodeNotModified;
 }
 
 }  // namespace aeronet::http

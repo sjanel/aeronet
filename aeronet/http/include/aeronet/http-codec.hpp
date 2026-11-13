@@ -13,7 +13,6 @@
 #include "aeronet/http-codec-result.hpp"
 #include "aeronet/http-message.hpp"
 #include "aeronet/http-request-view.hpp"
-#include "aeronet/http-status-code.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 
@@ -104,10 +103,9 @@ class HttpCodec {
   /// This can be called before body decoding to determine the optimal path.
   /// As for the other decompression functions, the Content-Encoding value must be lower-case (as normalized by the
   /// request parsers).
-  /// Returns http::StatusCodeOK if decompression will be applied,
-  /// http::StatusCodeNotModified if no decompression is needed,
-  /// or http::StatusCodeBadRequest if the request contains invalid encoding.
-  static http::StatusCode WillDecompress(const DecompressionConfig& decompressionConfig, const SvToSvMap& headersMap);
+  /// Returns true if decompression will be applied: its Content-Encoding has a coding other than identity (empty
+  /// elements are ignored).
+  static bool WillDecompress(const DecompressionConfig& decompressionConfig, const SvToSvMap& headersMap);
 
   /// Decompress chunked body directly from source chunks (avoids intermediate copy).
   /// The chunks span points to non-contiguous compressed data (from chunked transfer).

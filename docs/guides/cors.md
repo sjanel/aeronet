@@ -42,9 +42,9 @@ A default-constructed `CorsPolicy` is inactive; calling any setter activates it,
 | --- | --- |
 | `allowOrigin(origin)` | Add an allowed origin, compared case-insensitively. Repeat for several. |
 | `allowAnyOrigin()` | Allow every origin (`Access-Control-Allow-Origin: *`). |
-| `allowCredentials(bool)` | Allow cookies and HTTP authentication (`Access-Control-Allow-Credentials: true`). The request origin is then echoed instead of `*`, as browsers require. With `allowAnyOrigin()`, an origin with other bytes than visible ASCII characters, spaces and tabs, which is not a valid origin and cannot be echoed, is denied (`403`). |
+| `allowCredentials(bool)` | Allow cookies and HTTP authentication (`Access-Control-Allow-Credentials: true`). The request origin is then echoed instead of `*`, as browsers require. With `allowAnyOrigin()`, an origin with other bytes than visible ASCII characters, spaces and tabs, which is not a valid origin and cannot be echoed, is denied (`403`), and so is the opaque origin `null`, which any site can make a browser send (sandboxed iframe, `data:` URL): `allowOrigin("null")` grants it explicitly. |
 | `allowMethods(methods)` | Methods allowed cross-origin, `GET`, `HEAD`, and `POST` by default. A preflight only succeeds for methods both allowed by the policy and registered on the route. |
-| `allowRequestHeader(name)`, `allowAnyRequestHeaders()` | Request headers that pages may send, beyond the CORS-safelisted ones. |
+| `allowRequestHeader(name)`, `allowAnyRequestHeaders()` | Request headers that pages may send, beyond the CORS-safelisted ones. With `allowAnyRequestHeaders()`, a preflight is answered `Access-Control-Allow-Headers: *`, plus `authorization` when it is requested, as the wildcard never covers it. With credentials, browsers read `*` as a header named `*`: the requested names are sent back instead. A requested name that is not a valid header name is denied (`403`). |
 | `exposeHeader(name)` | Response headers that page scripts may read, beyond the CORS-safelisted ones. |
 | `maxAge(duration)` | How long browsers may cache a preflight result (`Access-Control-Max-Age`). |
 | `allowPrivateNetwork(bool)` | Answer Private Network Access preflights (`Access-Control-Allow-Private-Network: true`), for public pages calling a server on a private network. |
@@ -59,15 +59,16 @@ A default-constructed `CorsPolicy` is inactive; calling any setter activates it,
 | Origin not allowed, or requested headers not allowed | `403 Forbidden` |
 | Method not allowed | `405 Method Not Allowed`, with an `Allow` header |
 
-**Actual requests.** For a request carrying an allowed `Origin`, the server adds `Access-Control-Allow-Origin`, `Access-Control-Allow-Credentials`, and `Access-Control-Expose-Headers` as configured, to buffered and streaming responses alike, after the response middleware ran. A request whose `Origin` is not allowed is answered `403 Forbidden`, without calling the handler. Requests without `Origin` (same-origin requests, non-browser clients) are not affected by CORS.
+**Actual requests.** For a request carrying an allowed `Origin`, the server adds `Access-Control-Allow-Origin`, `Access-Control-Allow-Credentials`, and `Access-Control-Expose-Headers` as configured, to buffered and streaming responses alike, after the response middleware ran. A request whose `Origin` is not allowed is answered `403 Forbidden`, without calling the handler. Requests without `Origin` (same-origin requests, non-browser clients) are not denied, and their responses are cacheable like the others (see below).
 
-**Caching.** When the response depends on the request origin (an allow-list, or credentials), the server adds `Origin` to the `Vary` header, so that caches do not serve the response of one origin to another.
+**Caching.** A cache may serve a response to a request of another origin, or to a request without `Origin` (Fetch, "CORS protocol and HTTP caches"). When `Access-Control-Allow-Origin` depends on the request origin (an allow-list, or credentials), the server adds `Origin` to the `Vary` header of every response of the route, including the responses to requests without `Origin` and the `403` of a denied origin: a cache does not serve the response of one origin, or a response without CORS headers, to another origin. With `allowAnyOrigin()` and without credentials, `Access-Control-Allow-Origin: *` (and `Access-Control-Expose-Headers`) is sent to the requests without `Origin` too: the response does not depend on the origin, and does not vary on it. A `Vary: *` set by the handler is left as is.
 
 !!! note
     CORS protects users' browsers, not the server: any non-browser client can call the API regardless of the policy. Authenticate and authorize requests independently of CORS. Avoid `allowAnyOrigin()` together with `allowCredentials(true)` on routes that rely on cookies: it lets every website act on behalf of a logged-in user.
 
 ## Tests
 
-- Policy evaluation, preflights, origins, methods, and headers: [cors-policy_test.cpp](../../aeronet/http/test/cors-policy_test.cpp).
+- Policy evaluation, preflights, origins, methods, and headers: [cors-policy_test.cpp](../../aeronet/http/test/cors-policy_test.cpp), the `null` origin denied to `allowAnyOrigin()` with credentials (`CorsPolicyTest.AnyOriginWithCredentialsDoesNotGrantTheNullOrigin`), `Vary: Origin` and `*` for requests without `Origin` (`CorsPolicyTest.ResponseToRequestWithoutOriginVariesOnOrigin`, `CorsPolicyTest.AnyOriginResponseToRequestWithoutOriginCarriesTheCorsHeaders`, `CorsPolicyTest.OnlyResponsesDependingOnTheOriginVaryOnIt`), `allowAnyRequestHeaders()` and `authorization` or credentials (`CorsPolicyTest.AnyRequestHeaders*`).
+- `Vary: Origin` for requests without `Origin`, buffered and streamed, over HTTP/1.1 and HTTP/2: `ProtocolParity.CorsResponseToRequestWithoutOriginVariesOnOrigin` in [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp).
 - End to end, including streaming responses and route precedence: [tests/http-routing_test.cpp](../../tests/http-routing_test.cpp) and [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
 - Denied origins not running any kind of handler, over HTTP/1.1 and HTTP/2: [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp).
