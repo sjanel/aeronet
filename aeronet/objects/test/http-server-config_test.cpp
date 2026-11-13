@@ -179,6 +179,23 @@ TEST(HttpServerConfigTest, LocationAsGlobalHeaderErrorMentionsTheHeader) {
   }
 }
 
+// Content-Encoding describes the body of each response: a global one would also be on the error bodies of the server,
+// and would not disable the automatic compression (a second content-encoding).
+TEST(HttpServerConfigTest, ContentEncodingAsGlobalHeaderShouldThrow) {
+  for (std::string_view name : {"content-encoding", "Content-Encoding"}) {
+    SCOPED_TRACE(name);
+    HttpServerConfig config;
+    config.addGlobalHeader(http::Header{"X-Before", "1"});
+    config.addGlobalHeader(http::Header{name, "gzip"});
+    try {
+      config.validate();
+      FAIL() << "validate() should throw for a global content-encoding header";
+    } catch (const std::invalid_argument& ex) {
+      EXPECT_TRUE(std::string_view(ex.what()).contains("content-encoding")) << ex.what();
+    }
+  }
+}
+
 // Only the exact name is rejected.
 TEST(HttpServerConfigTest, HeadersWithLocationInTheirNameAreValidGlobalHeaders) {
   HttpServerConfig config;

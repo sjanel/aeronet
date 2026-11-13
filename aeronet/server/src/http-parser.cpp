@@ -113,12 +113,7 @@ Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeChunkedBody(ConnectionIt cn
   RawChars& bodyAndTrailers = state.bodyAndTrailersBuffer;
 
   // Check if we should use direct decompression (avoids copying compressed chunks to bodyAndTrailers)
-  const http::StatusCode decompressCode = HttpCodec::WillDecompress(_pCtx->config.decompression, request.headers());
-  if (decompressCode == http::StatusCodeBadRequest) {
-    emitSimpleError(cnxIt, http::StatusCodeBadRequest, "Malformed Content-Encoding");
-    return BodyDecodeStatus::Error;
-  }
-  const bool decompressFromChunks = decompressCode == http::StatusCodeOK;
+  const bool decompressFromChunks = HttpCodec::WillDecompress(_pCtx->config.decompression, request.headers());
 
   // The chunks decoded by the previous reads of this body are not decoded again: this one continues where the last one
   // stopped, at the size line of the first chunk not complete.
@@ -219,8 +214,7 @@ bool Http1Pipeline::finishDeferredChunkedBody(ConnectionIt cnxIt) {
   const std::size_t compressedSize = state.pendingRequest.chunkedBody.bodySize;
   vector<std::string_view>& compressedChunks = _pCtx->sharedBuffers.sv;
   compressedChunks.clear();
-  if (compressedSize != 0 &&
-      HttpCodec::WillDecompress(_pCtx->config.decompression, request.headers()) == http::StatusCodeOK) {
+  if (compressedSize != 0 && HttpCodec::WillDecompress(_pCtx->config.decompression, request.headers())) {
     // The request starts the input buffer, where its body is received.
     CollectChunks(state.inBuffer, request.headSpanSize(), compressedChunks);
   }

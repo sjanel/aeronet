@@ -16,6 +16,7 @@ namespace detail {
 inline constexpr std::uint8_t kReceivedValueChar = 1U << 0U;  // HTAB, SP, VCHAR and obs-text
 inline constexpr std::uint8_t kValueChar = 1U << 1U;          // HTAB, SP and VCHAR: what aeronet sends
 inline constexpr std::uint8_t kNameChar = 1U << 2U;           // tchar (a field-name is a token)
+inline constexpr std::uint8_t kLowerNameChar = 1U << 3U;      // tchar other than 'A'-'Z': a name as aeronet stores it
 
 // Returns true if every byte of 'str' is of class 'classBit'.
 // Branchless (the classes of all the bytes are AND-ed) as header fields are almost always valid.
@@ -27,9 +28,10 @@ constexpr bool AllCharsOfClass(std::string_view str, std::uint8_t classBit) noex
     ClassTable table;
     for (std::size_t ch = 0; ch < sizeof(table.data); ++ch) {
       const bool isValueChar = ch == '\t' || (ch >= 0x20 && ch <= 0x7E);
+      const bool isNameChar = is_tchar(static_cast<unsigned char>(ch));
       table.data[ch] = static_cast<std::uint8_t>((isValueChar || ch >= 0x80 ? kReceivedValueChar : 0U) |
-                                                 (isValueChar ? kValueChar : 0U) |
-                                                 (is_tchar(static_cast<unsigned char>(ch)) ? kNameChar : 0U));
+                                                 (isValueChar ? kValueChar : 0U) | (isNameChar ? kNameChar : 0U) |
+                                                 (isNameChar && (ch < 'A' || ch > 'Z') ? kLowerNameChar : 0U));
     }
     return table;
   }();
@@ -47,6 +49,12 @@ constexpr bool AllCharsOfClass(std::string_view str, std::uint8_t classBit) noex
 // empty).
 constexpr bool IsValidHeaderName(std::string_view name) noexcept {
   return !name.empty() && detail::AllCharsOfClass(name, detail::kNameChar);
+}
+
+// Same as IsValidHeaderName, also refusing the upper-case letters: the names of the headers set through the API, which
+// are stored and compared in lower case (LowerAsciiKey only asserts it, in debug builds). Same cost.
+constexpr bool IsValidLowerCaseHeaderName(std::string_view name) noexcept {
+  return !name.empty() && detail::AllCharsOfClass(name, detail::kLowerNameChar);
 }
 
 // Returns true if the header value only contains visible US-ASCII characters, SP and HTAB: what aeronet sends

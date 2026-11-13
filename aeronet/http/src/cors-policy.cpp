@@ -17,6 +17,13 @@
 namespace aeronet {
 namespace {
 
+// The serialization of an opaque origin (RFC 6454 §6.2).
+constexpr std::string_view kNullOrigin = "null";
+
+// The wildcard of Access-Control-Allow-Headers, and with the name it never covers (Fetch, CORS-preflight fetch).
+constexpr std::string_view kAnyRequestHeader = "*";
+constexpr std::string_view kAnyRequestHeaderAndAuthorization = "*, authorization";
+
 std::string_view NextCsvToken(std::string_view& csv) {
   const auto commaPos = csv.find(',');
   const std::string_view token = commaPos == std::string_view::npos ? csv : csv.substr(0, commaPos);
@@ -36,6 +43,23 @@ bool ListContainsToken(std::string_view list, std::string_view token) {
     }
   }
   return false;
+}
+
+// Adds Origin to the Vary header of a response that depends on the Origin of its request, unless it is listed already
+// or the Vary value is '*' (RFC 9110 §12.5.5).
+void AddVaryOrigin(HttpResponse& response) {
+  const auto optVary = response.headerValue(http::Vary);
+  if (!optVary) {
+    response.headerAddLine(http::Vary, http::Origin);
+    return;
+  }
+  for (std::string_view vary = *optVary; !vary.empty();) {
+    const std::string_view part = NextCsvToken(vary);
+    if (part == "*" || CaseInsensitiveEqual(part, http::Origin)) {
+      return;
+    }
+  }
+  response.headerAppendValue(http::Vary, http::Origin);
 }
 
 }  // namespace
@@ -79,7 +103,7 @@ CorsPolicy& CorsPolicy::allowMethods(http::MethodBmp methods) {
 CorsPolicy& CorsPolicy::allowAnyRequestHeaders() {
   _active = true;
   _allowedRequestHeaders.clear();
-  _allowedRequestHeaders.append("*");
+  _allowedRequestHeaders.append(kAnyRequestHeader);
   return *this;
 }
 
@@ -120,34 +144,51 @@ bool CorsPolicy::originAllowed(std::string_view origin) const noexcept {
   if (_originMode == OriginMode::Enumerated) {
     return _allowedOrigins.containsCI(origin);
   }
+  if (!_allowCredentials) {
+    return true;
+  }
   // With credentials, the origin is mirrored in the response instead of '*': a received origin with bytes that aeronet
   // does not send (obs-text, or control characters over HTTP/2) is not a serialized origin (RFC 6454 §6.2), it cannot
-  // be allowed.
-  return !_allowCredentials || http::IsValidHeaderValue(origin);
+  // be allowed. Neither is the opaque origin "null" (RFC 6454 §7.3), which any site can make a browser send (sandboxed
+  // iframe, data: URL, redirect across origins): granting it a credentialed response would let every site read it.
+  // An allow-list may still list it explicitly.
+  return http::IsValidHeaderValue(origin) && !CaseInsensitiveEqual(origin, kNullOrigin);
 }
 
-[[nodiscard]] CorsPolicy::ApplyStatus CorsPolicy::wouldApply(const HttpRequestView& request) const noexcept {
+CorsPolicy::ApplyStatus CorsPolicy::originStatus(std::string_view origin) const noexcept {
+  if (origin.empty()) {
+    return ApplyStatus::NotCors;
+  }
+  return originAllowed(origin) ? ApplyStatus::Applied : ApplyStatus::OriginDenied;
+}
+
+CorsPolicy::ApplyStatus CorsPolicy::wouldApply(const HttpRequestView& request) const noexcept {
+  if (!_active || isPreflightRequest(request)) {
+    return ApplyStatus::NotCors;
+  }
+  return originStatus(request.headerValueOrEmpty(http::Origin));
+}
+
+CorsPolicy::ApplyStatus CorsPolicy::applyToResponse(const HttpRequestView& request, HttpResponse& response) const {
   if (!_active || isPreflightRequest(request)) {
     return ApplyStatus::NotCors;
   }
   const std::string_view origin = request.headerValueOrEmpty(http::Origin);
-  if (origin.empty()) {
-    return ApplyStatus::NotCors;
-  }
-  if (!originAllowed(origin)) {
-    return ApplyStatus::OriginDenied;
-  }
-  return ApplyStatus::Applied;
-}
-
-CorsPolicy::ApplyStatus CorsPolicy::applyToResponse(const HttpRequestView& request, HttpResponse& response) const {
-  const ApplyStatus applyStatus = wouldApply(request);
+  const ApplyStatus applyStatus = originStatus(origin);
 
   if (applyStatus == ApplyStatus::Applied) {
-    applyResponseHeaders(response, request.headerValueOrEmpty(http::Origin));
+    applyResponseHeaders(response, origin);
   } else if (applyStatus == ApplyStatus::OriginDenied) {
     response.status(http::StatusCodeForbidden);
     response.body("Forbidden by CORS policy");
+    AddVaryOrigin(response);
+  } else if (mirrorsOrigin()) {
+    // No Origin. Fetch, "CORS protocol and HTTP caches": a cache may serve this response to a later CORS request. Its
+    // CORS headers depend on the origin: it varies on Origin.
+    AddVaryOrigin(response);
+  } else {
+    // No Origin, and the CORS headers do not depend on it ('*'): they are sent, so that the response is the same.
+    applyResponseHeaders(response, {});
   }
 
   return applyStatus;
@@ -175,18 +216,12 @@ CorsPolicy::PreflightResult CorsPolicy::handlePreflight(const HttpRequestView& r
     return result;
   }
 
-  // Distinguish between header absence and an explicitly-present empty value.
-  // If the header is present but trims to empty, treat it as an empty list (i.e. no requested headers).
-  // Only validate/deny when there are actual requested header tokens.
-  std::string_view requestedHeaders;
-  bool requestedHeadersPresent = false;
-  if (const auto requestedHeadersOpt = request.headerValue(http::AccessControlRequestHeaders); requestedHeadersOpt) {
-    requestedHeadersPresent = true;
-    requestedHeaders = TrimOws(*requestedHeadersOpt);
-    if (!requestedHeaders.empty() && !requestHeadersAllowed(requestedHeaders)) {
-      result.status = PreflightResult::Status::HeadersDenied;
-      return result;
-    }
+  // An absent header, or one that trims to empty, is an empty list (no requested headers): only actual requested header
+  // tokens are validated.
+  const std::string_view requestedHeaders = TrimOws(request.headerValueOrEmpty(http::AccessControlRequestHeaders));
+  if (!requestedHeaders.empty() && !requestHeadersAllowed(requestedHeaders)) {
+    result.status = PreflightResult::Status::HeadersDenied;
+    return result;
   }
 
   result.response = request.makeResponse(http::StatusCodeNoContent);
@@ -199,13 +234,22 @@ CorsPolicy::PreflightResult CorsPolicy::handlePreflight(const HttpRequestView& r
   response.header(http::AccessControlAllowMethods,
                   std::string_view(acamValues, http::AppendMethodList(effectiveMethods, acamValues)));
 
-  // Only send Access-Control-Allow-Headers when the server allows any header (`*`),
-  // or when the client explicitly requested non-empty headers and they passed validation.
-  if (_allowedRequestHeaders.fullString() == "*") {
-    response.header(http::AccessControlAllowHeaders, "*");
-  } else if (requestedHeadersPresent && !requestedHeaders.empty()) {
-    // At this point, requestHeadersAllowed() has already been checked for non-empty lists,
-    // so it's safe to emit the server's allowed list (which must be non-empty) when present.
+  // Only send Access-Control-Allow-Headers when the server allows any header, or when the client requested headers,
+  // which passed validation.
+  if (allowsAnyRequestHeader()) {
+    // Fetch, CORS-preflight fetch: '*' never covers Authorization, and is a header named '*' for a request with
+    // credentials. With credentials, the requested names are listed (they are all tokens, see requestHeadersAllowed()).
+    if (_allowCredentials) {
+      if (!requestedHeaders.empty()) {
+        response.header(http::AccessControlAllowHeaders, requestedHeaders);
+      }
+    } else if (ListContainsToken(requestedHeaders, http::Authorization)) {
+      response.header(http::AccessControlAllowHeaders, kAnyRequestHeaderAndAuthorization);
+    } else {
+      response.header(http::AccessControlAllowHeaders, kAnyRequestHeader);
+    }
+  } else if (!requestedHeaders.empty()) {
+    // The configured list (non-empty, as requestHeadersAllowed() passed): requested names are never reflected.
     response.header(http::AccessControlAllowHeaders, _allowedRequestHeaders.fullString());
   }
 
@@ -248,10 +292,8 @@ bool CorsPolicy::methodAllowed(std::string_view methodToken, http::MethodBmp rou
 }
 
 bool CorsPolicy::requestHeadersAllowed(std::string_view headerList) const {
-  if (_allowedRequestHeaders.fullString() == "*") {
-    return true;
-  }
-  if (_allowedRequestHeaders.empty()) {
+  const bool anyRequestHeader = allowsAnyRequestHeader();
+  if (!anyRequestHeader && _allowedRequestHeaders.empty()) {
     return false;
   }
   do {
@@ -259,8 +301,9 @@ bool CorsPolicy::requestHeadersAllowed(std::string_view headerList) const {
     if (token.empty()) {
       continue;
     }
-    // Header names are case-insensitive, and browsers send them lower-cased in Access-Control-Request-Headers.
-    if (!_allowedRequestHeaders.containsCI(token)) {
+    // Any header name, which is a token: the list may then be sent back. Header names are case-insensitive, and
+    // browsers send them lower-cased in Access-Control-Request-Headers.
+    if (anyRequestHeader ? !http::IsValidHeaderName(token) : !_allowedRequestHeaders.containsCI(token)) {
       return false;
     }
   } while (!headerList.empty());
@@ -268,17 +311,9 @@ bool CorsPolicy::requestHeadersAllowed(std::string_view headerList) const {
 }
 
 void CorsPolicy::applyResponseHeaders(HttpResponse& response, std::string_view origin) const {
-  const bool mirrorOrigin = _originMode == OriginMode::Enumerated || _allowCredentials;
-  if (mirrorOrigin) {
+  if (mirrorsOrigin()) {
     response.header(http::AccessControlAllowOrigin, origin);
-    const auto optVary = response.headerValue(http::Vary);
-    if (optVary) {
-      if (!ListContainsToken(*optVary, http::Origin)) {
-        response.headerAppendValue(http::Vary, http::Origin);
-      }
-    } else {
-      response.headerAddLine(http::Vary, http::Origin);
-    }
+    AddVaryOrigin(response);
   } else {
     response.header(http::AccessControlAllowOrigin, "*");
   }

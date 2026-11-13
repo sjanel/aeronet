@@ -303,8 +303,8 @@ class HttpMessage {
   // compile time through LowerAsciiKey.
   // No scan over existing headers. Prefer this when duplicates are OK or when constructing headers once.
   // Header name and value must be valid per HTTP specifications.
-  // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
-  // Attempting to set 'Content-Type' and 'Content-Length' headers with this method will throw std::invalid_argument.
+  // A reserved header throws std::invalid_argument: for a response, any header for which IsReservedResponseHeader is
+  // true, for a request, any header for which IsReservedOrForbiddenRequestHeader is true.
   //  - Content-Type should be set along with the body methods
   //  - Content-Length is managed by the library and should not be set manually.
   // Similarly, 'Content-Encoding' header cannot be changed while a body is already set. Doing so will throw
@@ -324,7 +324,8 @@ class HttpMessage {
   // will produce:
   //   "accept: text/html"
   //   "accept: text/html, application/json"
-  // Same rules as headerAddLineImpl() for 'Content-Type', 'Content-Length' and 'Content-Encoding'.
+  // Same rules as headerAddLineImpl() for 'Content-Type', 'Content-Length', 'Content-Encoding' and the reserved
+  // response headers.
   void headerAppendValueImpl(LowerAsciiKey key, std::string_view value, std::string_view sep = ", ");
 
   // Convenient overload appending a numeric value.
@@ -335,7 +336,7 @@ class HttpMessage {
   // Add or replace first header 'key' with 'value'.
   // Performs a case-sensitive linear scan (slower than headerAddLine()) over normalized lower-case header names.
   // The header name and value must be valid per HTTP specifications.
-  // As for 'headerAddLine()', do not insert any reserved header.
+  // As for 'headerAddLine()', a reserved response header throws std::invalid_argument.
   void headerImpl(LowerAsciiKey key, std::string_view value);
 
   // Convenient overload setting a header to a numeric value.
@@ -746,6 +747,9 @@ class HttpMessage {
   // Warning: this method should only be called if the header already exists.
   void overrideHeaderUnchecked(const char* oldValueFirst, const char* oldValueLast, std::string_view newValue);
 
+  // Appends 'sep' then 'value' to the existing header value ending at 'valueLast', without any check.
+  void appendHeaderValueUnchecked(const char* valueLast, std::string_view value, std::string_view sep);
+
   void setCapturedPayload(auto payload) {
     if (payload.empty()) {
       destroyEmbeddedPayload();
@@ -1152,6 +1156,15 @@ class HttpMessage {
   // states and removes the 'accept-encoding' Vary value if aeronet adds it. Unlike headerRemoveLineImpl(), allowed
   // while the body headers are present: for internal use when the body is replaced or removed.
   void removeContentEncodingHeaders();
+
+  // Makes a strong ETag weak, for a content encoded by the server: a strong entity tag identifies the bytes of the
+  // representation, which differ once encoded (RFC 9110 §8.8.3.3). The weak comparison of If-None-Match still matches
+  // the tag set by the handler.
+  void weakenStrongETag();
+
+  // Whether this message is a 206 response, whose content is never encoded by the server: its Content-Range describes
+  // the bytes sent (RFC 9110 §14.4).
+  [[nodiscard]] bool isPartialContentResponse() const noexcept;
 
   // Add Content-Type and Content-Length headers for a new body, erasing any existing body and its headers if needed.
   // Returns a pointer to the position where the body should be written (immediately after the CRLFCRLF sequence).

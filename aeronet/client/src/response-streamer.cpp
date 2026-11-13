@@ -34,11 +34,12 @@ namespace aeronet::internal {
 
 namespace {
 
-// Whether `coding` (a single token of a Content-Encoding value) can be decoded by this build.
+// Whether `coding` (a single token of a Content-Encoding value) can be decoded by this build. An empty element is
+// ignored (RFC 9110 §5.6.1.2).
 bool IsSupportedCoding(std::string_view coding) noexcept {
-  return coding == http::identity
+  return coding.empty() || coding == http::identity
 #ifdef AERONET_ENABLE_ZLIB
-         || coding == http::gzip || coding == http::deflate
+         || IsGzipCoding(coding) || coding == http::deflate
 #endif
 #ifdef AERONET_ENABLE_ZSTD
          || coding == http::zstd
@@ -89,7 +90,7 @@ ResponseStreamer::Coding ResponseStreamer::selectDecoder(std::string_view conten
     return Coding::Streamed;
   }
 #ifdef AERONET_ENABLE_ZLIB
-  const bool isGzip = contentEncoding == http::gzip;
+  const bool isGzip = IsGzipCoding(contentEncoding);
   if (isGzip || contentEncoding == http::deflate) {
     ZlibDecoder& decoder = _pCodec->decompressionState.zlibDecoder;
     decoder.setVariant(isGzip ? ZlibVariant::gzip : ZlibVariant::deflate);
@@ -166,9 +167,21 @@ bool ResponseStreamer::deliver(std::string_view data) {
 bool ResponseStreamer::decode(std::string_view chunk, bool finalChunk) {
   const DecompressionConfig& cfg = _pConfig->decompression;
   RawChars& out = _pCodec->decompressOut;
+  // The expansion ratio is that of the whole body, as for a buffered one. While the body arrives, it is checked
+  // against at least one decoder chunk of input, so that a very compressible start (zeroes) does not fail a body whose
+  // overall ratio is fine.
+  const std::size_t compressedBytes = _compressedBytes + chunk.size();
+  const std::size_t ratioBase =
+      finalChunk ? compressedBytes : std::max<std::size_t>(compressedBytes, cfg.decoderChunkSize);
+  const double ratioBound = static_cast<double>(ratioBase) * cfg.maxExpansionRatio;
+  // The decoders stop at the smaller limit, so that a bomb is not inflated by a single call before being refused.
+  const std::size_t maxDecodedBytes = ratioBound < static_cast<double>(cfg.maxDecompressedBytes)
+                                          ? static_cast<std::size_t>(ratioBound)
+                                          : cfg.maxDecompressedBytes;
   // A zero limit means none for the decoders: always leave them at least one byte of budget.
   // Unused when no decoder is compiled in.
-  [[maybe_unused]] const std::size_t budget = std::max<std::size_t>(cfg.maxDecompressedBytes - _decodedBytes, 1);
+  [[maybe_unused]] const std::size_t budget =
+      maxDecodedBytes > _decodedBytes ? std::max<std::size_t>(maxDecodedBytes - _decodedBytes, 1) : 1;
   const std::size_t sizeBefore = out.size();
   bool decoded = false;
   switch (_encoding) {
@@ -195,19 +208,13 @@ bool ResponseStreamer::decode(std::string_view chunk, bool finalChunk) {
 #endif
       break;
   }
-  _compressedBytes += chunk.size();
+  _compressedBytes = compressedBytes;
   _decodedBytes += out.size() - sizeBefore;
-  // The expansion ratio is that of the whole body, as for a buffered one. While the body arrives, it is checked
-  // against at least one decoder chunk of input, so that a very compressible start (zeroes) does not fail a body whose
-  // overall ratio is fine.
-  const std::size_t ratioBase =
-      finalChunk ? _compressedBytes : std::max<std::size_t>(_compressedBytes, cfg.decoderChunkSize);
   // The decoders fail on corrupt input as when reaching their budget: being within one decoder chunk of the limit
   // tells the latter (like for a buffered body). An empty chunk decodes nothing, so it can only fail on a truncated
   // stream.
 
-  if (_decodedBytes > cfg.maxDecompressedBytes ||
-      static_cast<double>(_decodedBytes) > static_cast<double>(ratioBase) * cfg.maxExpansionRatio ||
+  if (_decodedBytes > cfg.maxDecompressedBytes || static_cast<double>(_decodedBytes) > ratioBound ||
       (!decoded && !chunk.empty() && _decodedBytes + cfg.decoderChunkSize > cfg.maxDecompressedBytes)) {
     log::error("HTTP client: streamed {} response body exceeds the decompression limits ({} bytes decoded from {})",
                GetEncodingStr(_encoding), _decodedBytes, _compressedBytes);

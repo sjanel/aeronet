@@ -26,6 +26,21 @@ TEST(HttpHeader, IsValidHeaderName) {
   }
 }
 
+// The names of the headers set through the API: the tchar other than the upper-case letters, at the same cost.
+TEST(HttpHeader, IsValidLowerCaseHeaderName) {
+  EXPECT_TRUE(IsValidLowerCaseHeaderName("content-type"));
+  EXPECT_FALSE(IsValidLowerCaseHeaderName("Content-Type"));
+  EXPECT_FALSE(IsValidLowerCaseHeaderName("content-typE"));
+  EXPECT_FALSE(IsValidLowerCaseHeaderName(""));
+  for (unsigned int byte = 0; byte < 256U; ++byte) {
+    const char ch = static_cast<char>(byte);
+    const bool expected = IsValidHeaderName(std::string_view(&ch, 1)) && (byte < 'A' || byte > 'Z');
+    EXPECT_EQ(IsValidLowerCaseHeaderName(std::string_view(&ch, 1)), expected) << byte;
+    const char name[] = {'x', ch, 'y'};
+    EXPECT_EQ(IsValidLowerCaseHeaderName(std::string_view(name, sizeof(name))), expected) << byte;
+  }
+}
+
 TEST(HttpHeader, IsValidHeaderValue) {
   EXPECT_TRUE(IsValidHeaderValue("This is a valid header value."));
   EXPECT_TRUE(IsValidHeaderValue("Value with\ttab character."));

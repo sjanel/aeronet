@@ -304,6 +304,61 @@ TEST_P(ProtocolParity, StreamingResponseGoesThroughResponseMiddlewareAndCors) {
   EXPECT_EQ(resp.headerValueOrEmpty(http::AccessControlAllowOrigin), kAllowedOrigin);
 }
 
+// The response to a request without Origin varies on Origin when the CORS headers depend on it (Fetch, "CORS protocol
+// and HTTP caches"), buffered or streamed; a denied origin too.
+TEST_P(ProtocolParity, CorsResponseToRequestWithoutOriginVariesOnOrigin) {
+  ts.router()
+      .setPath(http::Method::GET, "/cors-vary", [](const HttpRequestView&) { return HttpResponse("buffered"); })
+      .cors(MakeCorsPolicy());
+  ts.router()
+      .setPath(http::Method::GET, "/cors-vary-stream",
+               [](const HttpRequestView&, HttpResponseWriter& writer) {
+                 writer.writeBody("streamed");
+                 writer.end();
+               })
+      .cors(MakeCorsPolicy());
+  for (std::string_view target : {"/cors-vary", "/cors-vary-stream"}) {
+    SCOPED_TRACE(target);
+    const auto resp = send(http::Method::GET, target);
+    EXPECT_EQ(resp.status(), http::StatusCodeOK);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::Vary), http::Origin);
+    EXPECT_FALSE(resp.headerValue(http::AccessControlAllowOrigin).has_value());
+
+    const auto denied =
+        send(http::Method::GET, target, [](auto& req) { req.headerAddLine(http::Origin, kDeniedOrigin); });
+    EXPECT_EQ(denied.status(), http::StatusCodeForbidden);
+    EXPECT_EQ(denied.headerValueOrEmpty(http::Vary), http::Origin);
+  }
+}
+
+// A 205 has no content (RFC 9110 §15.3.6), whatever the handler set: no body, no trailers, no Content-Type, and a
+// Content-Length of 0 if any.
+TEST_P(ProtocolParity, ResetContentDropsTheBody) {
+  ts.router().setPath(http::Method::GET, "/buffered205", [](const HttpRequestView&) {
+    HttpResponse resp(http::StatusCodeResetContent, "BODY-OF-RESPONSE");
+    resp.trailerAddLine("x-trailer", "t").headerAddLine("x-custom", "kept");
+    return resp;
+  });
+  ts.router().setPath(http::Method::GET, "/streamed205", [](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.status(http::StatusCodeResetContent);
+    writer.headerAddLine("x-custom", "kept");
+    writer.writeBody("STREAMED-BODY-OF-RESPONSE");
+    writer.trailerAddLine("x-trailer", "t");
+    writer.end();
+  });
+  for (std::string_view target : {"/buffered205", "/streamed205"}) {
+    SCOPED_TRACE(target);
+    const auto resp = send(http::Method::GET, target);
+    EXPECT_EQ(resp.status(), http::StatusCodeResetContent);
+    EXPECT_TRUE(resp.bodyInMemory().empty());
+    EXPECT_EQ(resp.trailersSize(), 0U);
+    EXPECT_EQ(resp.headerValueOrEmpty("x-custom"), "kept");
+    EXPECT_EQ(resp.headerValue(http::ContentLength).value_or("0"), "0");
+    EXPECT_FALSE(resp.headerValue(http::TransferEncoding).has_value());
+    EXPECT_FALSE(resp.headerValue(http::ContentType).has_value());
+  }
+}
+
 // keep-alive and proxy-connection are not reserved: a handler may set them for HTTP/1.1, whereas they would make an
 // HTTP/2 response malformed (RFC 9113 §8.2.2), which HttpClient rejects.
 TEST_P(ProtocolParity, ConnectionSpecificResponseFieldsAreOnlySentOverHttp1) {
@@ -329,6 +384,45 @@ TEST_P(ProtocolParity, ConnectionSpecificResponseFieldsAreOnlySentOverHttp1) {
     EXPECT_EQ(resp.headerValueOrEmpty("keep-alive"), overHttp1 ? "timeout=5" : "") << target;
     EXPECT_EQ(resp.headerValueOrEmpty("proxy-connection"), overHttp1 ? "keep-alive" : "") << target;
   }
+}
+
+// A streamed body that does not match its declared Content-Length (RFC 9110 §8.6) fails its writer. A shorter body is
+// never taken for a complete response: the HTTP/1.1 connection closes before the declared length, the HTTP/2 stream is
+// reset. Beyond the declared length, only the declared bytes are sent: complete over HTTP/1.1 (the connection then
+// closes), reset over HTTP/2.
+TEST_P(ProtocolParity, StreamedBodyNotMatchingItsDeclaredLengthFails) {
+  ts.router().setPath(http::Method::GET, "/short", [](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.contentLength(5);
+    writer.writeBody("hel");
+    writer.end();
+  });
+  ts.router().setPath(http::Method::GET, "/beyond", [](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.contentLength(5);
+    writer.writeBody("hello world");
+    writer.end();
+  });
+  ts.router().setPath(http::Method::GET, "/exact", [](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.contentLength(5);
+    writer.writeBody("hel");
+    writer.writeBody("lo");
+    writer.end();
+  });
+
+  // A client per request: the HTTP/1.1 connection closes without being announced (the head was already sent), and its
+  // close may come after the check of a pooled connection that a next request would make.
+  EXPECT_FALSE(MakeClient().get(url("/short")));
+
+  const auto beyond = MakeClient().get(url("/beyond"));
+  if (GetParam() == HttpVersionMode::Http1_1) {
+    ASSERT_TRUE(beyond);
+    EXPECT_EQ(beyond->bodyInMemory(), "hello");
+  } else {
+    EXPECT_FALSE(beyond);
+  }
+
+  const auto exact = MakeClient().get(url("/exact"));
+  ASSERT_TRUE(exact);
+  EXPECT_EQ(exact->bodyInMemory(), "hello");
 }
 
 #ifdef AERONET_ENABLE_ZLIB
@@ -365,6 +459,63 @@ TEST_P(ProtocolParity, HeadCarriesTheHeadersOfTheCompressedGet) {
     EXPECT_EQ(head->headerValueOrEmpty(http::ContentEncoding), "gzip");
     EXPECT_EQ(head->headerValueOrEmpty(http::Vary), get->headerValueOrEmpty(http::Vary));
     EXPECT_TRUE(head->bodyInMemory().empty());
+  }
+}
+#endif
+
+#ifdef AERONET_ENABLE_ZLIB
+// The content of a 206 is never compressed (RFC 9110 §14.4), and a strong ETag of a compressed response becomes weak
+// (RFC 9110 §8.8.3.3), buffered, directly compressed or streamed.
+TEST_P(ProtocolParity, CompressionKeeps206AndWeakensStrongETags) {
+  const std::string payload(4000, 'a');
+  ts.router().setPath(http::Method::GET, "/partial", [payload](const HttpRequestView&) {
+    HttpResponse resp(http::StatusCodePartialContent);
+    resp.headerAddLine("content-range", "bytes 0-3999/8000").body(std::string_view(payload));
+    return resp;
+  });
+  ts.router().setPath(http::Method::GET, "/partial-stream",
+                      [payload](const HttpRequestView&, HttpResponseWriter& writer) {
+                        writer.status(http::StatusCodePartialContent);
+                        writer.headerAddLine("content-range", "bytes 0-3999/8000");
+                        writer.writeBody(payload);
+                        writer.end();
+                      });
+  ts.router().setPath(http::Method::GET, "/etag", [payload](const HttpRequestView&) {
+    HttpResponse resp(payload);
+    resp.headerAddLine(http::ETag, "\"v1\"");
+    return resp;
+  });
+  ts.router().setPath(http::Method::GET, "/etag-direct", [payload](const HttpRequestView& req) {
+    auto resp = req.makeResponse();
+    resp.body(std::string_view(payload));  // direct compression
+    resp.headerAddLine(http::ETag, "\"v1\"");
+    return resp;
+  });
+  ts.router().setPath(http::Method::GET, "/etag-stream", [payload](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.headerAddLine(http::ETag, "\"v1\"");
+    writer.writeBody(payload);
+    writer.end();
+  });
+
+  // Without automatic decompression, the client keeps the headers and the body as received.
+  HttpClientConfig cfg;
+  cfg.withHttpVersion(GetParam());
+  cfg.withDecompression(false).withDefaultAcceptEncoding("gzip");
+  HttpClient client(std::move(cfg));
+  for (std::string_view target : {"/partial", "/partial-stream"}) {
+    SCOPED_TRACE(target);
+    const auto resp = client.request(client.makeRequest(http::Method::GET, url(target)));
+    ASSERT_TRUE(resp.has_value());
+    EXPECT_EQ(resp->status(), http::StatusCodePartialContent);
+    EXPECT_EQ(resp->headerValueOrEmpty(http::ContentEncoding), "");
+    EXPECT_EQ(resp->bodyInMemory(), payload);
+  }
+  for (std::string_view target : {"/etag", "/etag-direct", "/etag-stream"}) {
+    SCOPED_TRACE(target);
+    const auto resp = client.request(client.makeRequest(http::Method::GET, url(target)));
+    ASSERT_TRUE(resp.has_value());
+    EXPECT_EQ(resp->headerValueOrEmpty(http::ContentEncoding), "gzip");
+    EXPECT_EQ(resp->headerValueOrEmpty(http::ETag), "W/\"v1\"");
   }
 }
 #endif

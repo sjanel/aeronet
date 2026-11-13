@@ -666,9 +666,8 @@ class HttpRequest final : public HttpMessage {
   // Trailer semantics (per RFC 7230 §4.1.2):
   //   - Trailers are sent after the message body in chunked transfer encoding.
   //   - Certain headers MUST NOT appear as trailers (e.g., Transfer-Encoding, Content-Length,
-  //     Host, Cache-Control, Authorization, Cookie, Set-Cookie). Use of forbidden trailer
-  //     headers is undefined behavior (no validation is performed here for performance;
-  //     validation may be added in debug builds).
+  //     Host, Cache-Control, Authorization, Cookie, Set-Cookie). A forbidden trailer (RFC 9110 §6.5.1,
+  //     http::IsForbiddenTrailerHeader) throws std::invalid_argument.
   //   - Typical use: computed metadata available only after body generation (checksums,
   //     signatures, etc.).
   //   - Adding trailers for HTTP/1.1 has an additional transformation cost of the response.

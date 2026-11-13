@@ -129,6 +129,7 @@ inline constexpr std::size_t kHttpReqLineMinLen = GET.size() + http::StatusCodeL
 // Compression
 inline constexpr std::string_view identity = "identity";
 inline constexpr std::string_view gzip = "gzip";
+inline constexpr std::string_view xgzip = "x-gzip";  // equivalent to gzip for a recipient (RFC 9110 §8.4.1.3)
 inline constexpr std::string_view deflate = "deflate";
 inline constexpr std::string_view br = "br";      // RFC 7932 (Brotli)
 inline constexpr std::string_view zstd = "zstd";  // RFC 8878
@@ -138,6 +139,7 @@ inline constexpr std::string_view keepalive = "keep-alive";
 inline constexpr std::string_view close = "close";
 inline constexpr std::string_view chunked = "chunked";
 inline constexpr std::string_view h100_continue = "100-continue";  // value of Expect header
+inline constexpr std::string_view WeakETagPrefix = "W/";           // weak entity tag (RFC 9110 §8.8.3)
 
 // Preformatted interim response line
 inline constexpr std::string_view HTTP11_100_CONTINUE = "HTTP/1.1 100 Continue\r\n\r\n";

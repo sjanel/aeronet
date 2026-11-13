@@ -58,7 +58,9 @@ class CorsPolicy {
   // Override the method allow-list used during preflight checks (defaults to GET, HEAD, POST).
   CorsPolicy& allowMethods(http::MethodBmp methods);
 
-  // Allow any request header (Access-Control-Allow-Headers: *).
+  // Allow any request header. A preflight is answered with 'Access-Control-Allow-Headers: *', and 'authorization' when
+  // requested, which the wildcard does not cover. With credentials, '*' is a header name for the browser: the
+  // requested names are listed instead.
   CorsPolicy& allowAnyRequestHeaders();
 
   // Add the provided request header to the allowed list (tokens are case-insensitive).
@@ -80,7 +82,10 @@ class CorsPolicy {
   // Determine if CORS headers would be applied to a normal (non-preflight) response.
   [[nodiscard]] ApplyStatus wouldApply(const HttpRequestView& request) const noexcept;
 
-  // Apply CORS headers to a normal (non-preflight) response if the request is a CORS request.
+  // Apply CORS headers to a normal (non-preflight) response if the request is a CORS request. The response to a request
+  // without Origin gets 'Access-Control-Allow-Origin: *' when any origin is allowed without credentials, and
+  // 'Vary: Origin' otherwise, as its CORS headers would depend on the origin: a cache cannot serve it to a CORS
+  // request.
   [[nodiscard]] ApplyStatus applyToResponse(const HttpRequestView& request, HttpResponse& response) const;
 
   // Handle a preflight CORS request and produce the appropriate response.
@@ -95,11 +100,21 @@ class CorsPolicy {
 
   [[nodiscard]] bool originAllowed(std::string_view origin) const noexcept;
 
+  // The status of a request that is not a preflight, from its Origin (empty when absent).
+  [[nodiscard]] ApplyStatus originStatus(std::string_view origin) const noexcept;
+
   [[nodiscard]] bool methodAllowed(std::string_view methodToken, http::MethodBmp routeMethods) const noexcept;
 
   [[nodiscard]] bool requestHeadersAllowed(std::string_view headerList) const;
 
   void applyResponseHeaders(HttpResponse& response, std::string_view origin) const;
+
+  // Whether Access-Control-Allow-Origin is the origin of the request (instead of '*'): the responses vary on Origin.
+  [[nodiscard]] bool mirrorsOrigin() const noexcept {
+    return _originMode == OriginMode::Enumerated || _allowCredentials;
+  }
+
+  [[nodiscard]] bool allowsAnyRequestHeader() const noexcept { return _allowedRequestHeaders.fullString() == "*"; }
 
   [[nodiscard]] http::MethodBmp effectiveAllowedMethods(http::MethodBmp routeMethods) const noexcept {
     return _allowedMethods & routeMethods;

@@ -51,7 +51,8 @@ class HttpResponseWriter {
   // Append a header line (duplicates allowed, fastest path). The name must be lower-case; literals are checked at
   // compile time through LowerAsciiKey.
   // No scan over existing headers. Prefer this when duplicates are OK or when constructing headers once.
-  // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
+  // A reserved header (for which IsReservedResponseHeader is true) throws std::invalid_argument: the writer sets the
+  // framing (contentLength(), chunked), contentType() the Content-Type, and the server the other ones.
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   void headerAddLine(LowerAsciiKey name, std::string_view value);
 
@@ -59,8 +60,7 @@ class HttpResponseWriter {
   // Performs a case-sensitive linear scan (slower than headerAddLine()) over normalized lower-case header names.
   // If not found, falls back to headerAddLine(). Use only when you must guarantee uniqueness; otherwise prefer
   // headerAddLine().
-  // Do not insert any reserved header (for which IsReservedResponseHeader is true), doing so is undefined behavior.
-  // Throws std::invalid_argument if the header name or value is invalid.
+  // Throws std::invalid_argument if the header name or value is invalid, or for a reserved header (as headerAddLine).
   // If the data to be inserted references internal instance memory, the behavior is undefined.
   void header(LowerAsciiKey name, std::string_view value);
 
@@ -90,9 +90,10 @@ class HttpResponseWriter {
   //   Calls made after write(), end(), or once headers have been flushed are ignored (a warning is logged) and
   //   the response continues in chunked mode (or without Content-Length for HEAD).
   // - Passing 0 is allowed and results in an empty fixed-length body (no chunked framing).
-  // - The library does not (yet) enforce that the number of bytes written matches len; a mismatch is a protocol
-  //   error and may confuse clients (too few bytes => truncated response; too many bytes => bytes interpreted
-  //   as the start of the next message / connection corruption). Future versions may add debug assertions.
+  // - The number of bytes written must be len (RFC 9110 §8.6), which the writer enforces: a write beyond it sends the
+  //   bytes still due only, drops the rest and returns false, and end() after fewer bytes sends nothing more. Both
+  //   fail the writer: the connection is closed after the bytes sent (HTTP/1.1), the stream reset (HTTP/2), so that the
+  //   client neither reads extra bytes as the next response nor waits for missing ones.
   // - Once set, the writer will NOT emit a Transfer-Encoding header and will not switch back to chunked, unless the
   //   body is compressed (see above).
   void contentLength(std::size_t len);
@@ -136,9 +137,9 @@ class HttpResponseWriter {
   //   - trailerAddLine() must be called BEFORE end() is called.
   //
   // Trailer semantics (per RFC 7230 §4.1.2):
-  //   - Certain headers MUST NOT appear as trailers (e.g., Transfer-Encoding, Content-Length,
-  //     Host, Authorization, Cookie, Set-Cookie). No validation is performed here for performance;
-  //     sending forbidden trailers is undefined behavior.
+  //   - Certain headers MUST NOT appear as trailers (RFC 9110 §6.5.1: Transfer-Encoding, Content-Length, Host,
+  //     Authorization, Cookie, Set-Cookie...): they throw std::invalid_argument (http::IsForbiddenTrailerHeader), as an
+  //     invalid name or value does.
   //   - Typical use: metadata computed during response generation (checksums, signatures, timings).
   //
   // Usage example:
@@ -175,9 +176,8 @@ class HttpResponseWriter {
   //   the encoder finalization bytes plus the last chunk (if chunked).
   //
   // Content-Length interaction:
-  // - When a fixed Content-Length was declared via contentLength(), end() does NOT verify that the total number of
-  //   body bytes written matches the declared length (no padding or truncation is performed). Mismatches are a
-  //   protocol error at the application layer and may lead to client confusion; future versions may add debug checks.
+  // - When a fixed Content-Length was declared via contentLength(), end() after fewer body bytes fails the writer (no
+  //   padding is performed): the connection is closed (HTTP/1.1), the stream reset (HTTP/2). See contentLength().
   //
   // HEAD requests:
   // - You should still call end(); the headers of the GET response (declared Content-Length if any, Content-Encoding
@@ -227,13 +227,17 @@ class HttpResponseWriter {
   // Tells whether nothing was sent yet (the head is sent with the first body bytes past the compression threshold).
   [[nodiscard]] bool headersPending() const noexcept { return _state == State::Opened; }
 
+  // Sends the part of 'data' still due for the declared Content-Length, drops the rest and fails the writer.
+  bool writeBeyondDeclaredLength(std::string_view data);
+
   // Combine transient booleans into a single state machine to reduce memory and make transitions explicit.
   enum class State : std::uint8_t { Opened, HeadersSent, Ended, Failed };
 
   IWriterTransport* _transport;
   const HttpRequestView* _request;
-  bool _noContent;      // HEAD request, or a status code without content (1xx, 204, 304): the body is never sent
-  bool _isFile{false};  // the file payload is moved out of _fixedResponse when headers are emitted
+  bool _noContent;           // HEAD request, or a status code without content (1xx, 204, 304): the body is never sent
+  bool _isFile{false};       // the file payload is moved out of _fixedResponse when headers are emitted
+  bool _fixedLength{false};  // headers sent with the declared Content-Length of a body written by writeBody()
   State _state{State::Opened};
   Encoding _encoding;
   // needed along with fixedResponse because once headers emitted, the buffer will be empty, and it is impossible to
@@ -243,10 +247,8 @@ class HttpResponseWriter {
   // Internal fixed HttpResponse used solely for header accumulation and status/reason/body placeholder.
   // We never finalize until ensureHeadersSent(); body remains empty (streaming chunks / writes follow separately).
   HttpResponse _fixedResponse;
+  // Declared Content-Length (0: none) until the headers are sent, then the number of body bytes still due.
   std::size_t _declaredLength{0};
-#ifndef NDEBUG
-  std::size_t _bytesWritten{0};
-#endif
   EncoderContext* _activeEncoderCtx{nullptr};    // streaming context (owned by compression state)
   RawChars _preCompressBuffer;                   // threshold buffering before activation
   RawChars _compressedBuffer;                    // reusable output buffer for compression (never freed between chunks)

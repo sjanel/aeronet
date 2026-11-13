@@ -23,6 +23,7 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/reserved-headers.hpp"
 #include "aeronet/string-trim.hpp"
 #include "aeronet/writer-transport.hpp"
 
@@ -135,7 +136,9 @@ void HttpResponseWriter::ensureHeadersSent() {
   const bool addVary = isCompressionActive && _pCompressionConfig->addVaryAcceptEncodingHeader;
 
   if (addContentEncoding) {
-    neededSize += http::HeaderSize(http::ContentEncoding.size(), GetEncodingStr(_encoding).size());
+    // The prefix of a weakened ETag included, without searching for it.
+    neededSize +=
+        http::HeaderSize(http::ContentEncoding.size(), GetEncodingStr(_encoding).size()) + http::WeakETagPrefix.size();
   }
   if (addVary) {
     neededSize += http::HeaderSize(http::Vary.size(), http::AcceptEncoding.size());
@@ -147,6 +150,7 @@ void HttpResponseWriter::ensureHeadersSent() {
   if (addContentEncoding) {
     _fixedResponse.headerAddLineUnchecked(http::ContentEncoding, GetEncodingStr(_encoding));
     _fixedResponse._opts.setHasContentEncoding();
+    _fixedResponse.weakenStrongETag();
   }
   if (addVary) {
     _fixedResponse.headerAppendValue(http::Vary, http::AcceptEncoding);
@@ -157,11 +161,15 @@ void HttpResponseWriter::ensureHeadersSent() {
     log::error("Streaming: failed to emit headers {}", _transport->logId());
   } else {
     _state = State::HeadersSent;
+    // From now on, _declaredLength counts the body bytes still due (a file is sent by the transport).
+    _fixedLength = _declaredLength != 0 && !_noContent && !_isFile;
   }
 }
 
 void HttpResponseWriter::startCompressionIfAllowed() {
-  if (HttpCodec::IsContentTypeAllowed(*_pCompressionConfig, _fixedResponse)) {
+  // The Content-Range of a 206 describes the bytes of the content sent (RFC 9110 §14.4): it is never encoded.
+  if (_statusCode != http::StatusCodePartialContent &&
+      HttpCodec::IsContentTypeAllowed(*_pCompressionConfig, _fixedResponse)) {
     _activeEncoderCtx = _pCompressionState->makeContext(_encoding);
     // The length of the encoded body is not known when the head is sent (RFC 9110 §8.6): a declared length, the one
     // of the body before its encoding, is dropped, and the response is chunked (close-delimited for HTTP/1.0).
@@ -172,9 +180,9 @@ void HttpResponseWriter::startCompressionIfAllowed() {
 }
 
 void HttpResponseWriter::dropContent() {
-  // 1xx, 204 and 304 responses end at the empty line after their headers (RFC 9110 §6.4.1): whatever the handler
-  // writes from now on is dropped, as for a HEAD request. The head carries no Content-Type, Content-Encoding,
-  // Content-Length nor Transfer-Encoding, and no trailers.
+  // 1xx, 204, 205 and 304 responses have no content (RFC 9110 §6.4.1, §15.3.6): whatever the handler writes from now
+  // on is dropped, as for a HEAD request. The head carries no Content-Type, Content-Encoding nor Transfer-Encoding, and
+  // no trailers. Only the HTTP/1.1 head of a 205 has a Content-Length, of 0 (see the transport).
   _noContent = true;
   _encoding = Encoding::none;
   _activeEncoderCtx = nullptr;
@@ -272,20 +280,43 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
     data = _compressedBuffer;
   }
 
+  if (_fixedLength) {
+    // Identity body (a compressed one has no declared length).
+    if (data.size() > _declaredLength) [[unlikely]] {
+      return writeBeyondDeclaredLength(data);
+    }
+    _declaredLength -= data.size();
+  }
   if (!_transport->emitData(data)) {
     _state = State::Failed;
     log::error("Streaming: failed emitting data {} size={}", _transport->logId(), data.size());
     return false;
   }
-#ifndef NDEBUG
-  _bytesWritten += data.size();
-#endif
   return true;
 }
 
+bool HttpResponseWriter::writeBeyondDeclaredLength(std::string_view data) {
+  // RFC 9110 §8.6: the bytes beyond the declared Content-Length would be read by the client as the start of the next
+  // response of the connection. Only the declared ones are sent, and the writer fails: the connection is closed after
+  // them (HTTP/1.1), the stream reset (HTTP/2).
+  log::error("Streaming: write of {} bytes exceeds the declared Content-Length by {} {}, the excess is dropped",
+             data.size(), data.size() - _declaredLength, _transport->logId());
+  const std::string_view due = data.substr(0, _declaredLength);
+  _declaredLength = 0;
+  _state = State::Failed;
+  if (!due.empty() && !_transport->emitData(due)) {
+    log::error("Streaming: failed emitting data {} size={}", _transport->logId(), due.size());
+  }
+  return false;
+}
+
 void HttpResponseWriter::trailerAddLine(LowerAsciiKey name, std::string_view value) {
-  if (!http::IsValidHeaderName(name)) [[unlikely]] {
-    throw std::invalid_argument("Invalid HTTP header name");
+  if (!http::IsValidLowerCaseHeaderName(name)) [[unlikely]] {
+    throw std::invalid_argument("Invalid trailer header name (a token, in lower case)");
+  }
+  // RFC 9110 §6.5.1, as for HttpResponse::trailerAddLine().
+  if (http::IsForbiddenTrailerHeader(name)) [[unlikely]] {
+    throw std::invalid_argument("This field is not allowed in trailers");
   }
   value = TrimOws(value);
   if (!http::IsValidHeaderValue(value)) [[unlikely]] {
@@ -364,6 +395,16 @@ void HttpResponseWriter::end() {
     _preCompressBuffer.clear();
   }
 
+  if (_fixedLength && _declaredLength != 0) [[unlikely]] {
+    // A body shorter than its declared Content-Length: the client would wait for the rest, or read the next response of
+    // the connection as such. The writer fails, so that the connection is closed after what was sent (HTTP/1.1), the
+    // stream reset (HTTP/2): the client knows that the response is incomplete.
+    log::error("Streaming: body ended {} bytes short of the declared Content-Length {}", _declaredLength,
+               _transport->logId());
+    _state = State::Failed;
+    return;
+  }
+
   if (!_transport->emitEnd(std::move(_trailers))) {
     _state = State::Failed;
     log::error("Streaming: failed emitting end {}", _transport->logId());
@@ -371,13 +412,6 @@ void HttpResponseWriter::end() {
   }
 
   _state = State::Ended;
-#ifndef NDEBUG
-  // Debug-only protocol correctness check: if a fixed Content-Length was declared, assert body byte count match (a
-  // compressed body has none).
-  if (!_noContent && _declaredLength != 0) {
-    assert(_bytesWritten == _declaredLength && "Declared Content-Length does not match bytes written");
-  }
-#endif
 }
 
 bool HttpResponseWriter::file(File file, std::uint64_t offset, std::uint64_t length, std::string_view contentType) {
@@ -385,7 +419,6 @@ bool HttpResponseWriter::file(File file, std::uint64_t offset, std::uint64_t len
     log::warn("Streaming: file ignored {} reason=writer-not-open", _transport->logId());
     return false;
   }
-  assert(_bytesWritten == 0);
   if (_declaredLength != 0) {
     log::warn("Streaming: file overriding previously declared Content-Length {}", _transport->logId());
     _declaredLength = 0;

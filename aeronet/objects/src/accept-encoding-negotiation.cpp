@@ -24,12 +24,13 @@ namespace {
 
 using EncodingInt = std::underlying_type_t<Encoding>;
 
-// The weight of an element of Accept-Encoding, from its remaining parameters: its 'q' parameter, 1 by default.
+// The weight of an element of Accept-Encoding, from its remaining parameters: its 'q' parameter, 1 by default, or
+// http::kInvalidQualityValue.
 http::QualityValue ParseQ(http::HeaderParametersIterator& parameters) noexcept {
   while (parameters.hasNext()) {
     const http::HeaderParameter parameter = parameters.next();
     if (parameter.hasValue() && CaseInsensitiveEqual(parameter.name, "q")) {
-      return http::ParseQualityValue(parameter.value);
+      return http::TryParseQualityValue(parameter.value);
     }
   }
   return http::kQualityValueMax;
@@ -113,7 +114,16 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiate(std::string_view 
     }
     http::HeaderParametersIterator parameters(element);
     const std::string_view name = parameters.firstElement();
-    const http::QualityValue quality = ParseQ(parameters);
+    http::QualityValue quality = ParseQ(parameters);
+    if (quality == http::kInvalidQualityValue) {
+      // An invalid weight counts as 0 for a coding, which is then not selected. For identity or the wildcard, it would
+      // make the identity unacceptable, and the request answered 406, while RFC 9110 §12.5.3 only refuses when it is
+      // "indicated as unacceptable": their element is ignored.
+      if (name == "*" || CaseInsensitiveEqual(name, http::identity)) {
+        continue;
+      }
+      quality = 0;
+    }
     if (name == "*") {
       sawWildcard = true;
       wildcardQ = quality;

@@ -50,7 +50,7 @@ Already compressed content, such as images, video, or archives, gains nothing: r
 
 ### Negotiation
 
-The `Accept-Encoding` header lists the codings a client accepts, with optional quality values (`q`, from 0 to 1 with up to 3 decimals, default 1). A quality outside this grammar (RFC 9110 §12.4.2), such as `q=2`, `q=0.0001` or `q=inf`, counts as 0. The server picks the compiled coding with the highest quality; `gzip;q=0.5, br;q=0.9` selects `br`. A quality of 0 excludes a coding, and `*` stands for every coding not listed.
+The `Accept-Encoding` header lists the codings a client accepts, with optional quality values (`q`, from 0 to 1 with up to 3 decimals, default 1). A quality outside this grammar (RFC 9110 §12.4.2), such as `q=2`, `q=0.0001` or `q=inf`, counts as 0 for a coding. On `identity` or `*`, such an element is ignored instead: a malformed weight does not indicate that the uncompressed form is unacceptable, which would answer every request of the client `406` (RFC 9110 §12.5.3). The server picks the compiled coding with the highest quality; `gzip;q=0.5, br;q=0.9` selects `br`. A quality of 0 excludes a coding, and `*` stands for every coding not listed.
 
 When several codings share the best quality, the server preference decides: the codings of `preferredFormats` in their order, then the other compiled codings in the default order, `zstd`, `br`, `gzip`, `deflate`, and finally the uncompressed form (`identity`). With `preferredFormats` set to `gzip` only, `Accept-Encoding: br, gzip` selects `gzip`, while `Accept-Encoding: br` still selects `br`.
 
@@ -62,7 +62,12 @@ Each event loop remembers the result for the last `Accept-Encoding` value it neg
 
 - Bodies smaller than `minBytes`, of a content type outside `contentTypeAllowList`, or that do not shrink enough. Compact binary encodings often do not, such as small [Protocol Buffers](../modules/protobuf.md#compression) messages.
 - Responses that already have a `Content-Encoding` header (see [Send your own encoding](#send-your-own-encoding)).
+- `206 Partial Content` responses: their `Content-Range` describes the bytes of the content sent (RFC 9110 §14.4), which compression would change. This holds for buffered, directly compressed and streamed responses. As [direct compression](#direct-compression) compresses a body while it is set, set the `206` status before the body: `status(206)` on a body compressed this way throws `std::logic_error`.
 - File bodies (`HttpResponse::file()`, the static file handler), which are sent with `sendfile()` or read from disk as they are. Store pre-compressed variants of large static assets if they need compression.
+
+### Entity tags
+
+A strong `ETag` identifies the exact bytes of a representation, and a compressed representation has other bytes than the uncompressed one: it needs another strong tag (RFC 9110 §8.8.3.3). When the server compresses a response carrying a strong `ETag`, it makes it weak (`"v1"` becomes `W/"v1"`), whatever the path (compressed when finalized, directly, or streamed) and whether the handler set the `ETag` before or after the body. A weak `ETag` is kept as is. `If-None-Match` uses the weak comparison, so `W/"v1"` still matches `"v1"`: a handler answering `304 Not Modified` should compare the tags it receives this way, ignoring a `W/` prefix. Range requests (`If-Range`) need a strong tag, which `206` responses keep, as they are never compressed.
 
 ### HEAD requests
 
@@ -121,7 +126,7 @@ router.setPath(http::Method::GET, "/data", [&gzippedPayload](const HttpRequestVi
 
 ## Request body decompression
 
-When a codec is compiled in, request bodies with a `Content-Encoding` header are decoded before the handler runs: the handler sees the decoded body, and the `Content-Encoding` header is removed. Stacked codings (`Content-Encoding: gzip, zstd`) are decoded in reverse order, the last coding first, and `identity` is skipped.
+When a codec is compiled in, request bodies with a `Content-Encoding` header are decoded before the handler runs: the handler sees the decoded body, and the `Content-Encoding` header is removed. Stacked codings (`Content-Encoding: gzip, zstd`) are decoded in reverse order, the last coding first, and `identity` is skipped, as are empty list elements (`gzip,,zstd`, RFC 9110 §5.6.1.2): an empty `Content-Encoding` leaves the body as received. `x-gzip` is decoded as `gzip` (RFC 9110 §8.4.1.3), also by `HttpClient`. Each coding is a decoding pass over the whole body: at most 5 codings are accepted, `identity` and empty elements included, as curl does for responses (CVE-2023-23916). A longer list is answered `415` without decoding anything.
 
 Codings are case-insensitive: the server lower-cases the received `Content-Encoding` value when it parses the request (over HTTP/1.1 and HTTP/2), so a handler reads `gzip` for `GZip`, also when decompression is disabled.
 
@@ -142,14 +147,13 @@ config.withRequestDecompression(decompression);
 | `enable` | `true` when a codec is compiled | `false` passes encoded bodies to handlers unchanged, with their `Content-Encoding`. |
 | `maxCompressedBytes` | 128 MiB | Largest compressed body the server attempts to decode. |
 | `maxDecompressedBytes` | 4 GiB | Largest decoded body. Lower it to what your handlers accept. |
-| `maxExpansionRatio` | 1000 | Largest ratio of decoded to compressed size, checked after each coding of a stack. |
+| `maxExpansionRatio` | 1000 | Largest ratio of decoded to compressed size. Each coding of a stack may decode up to this ratio times the size of the body as received: the decoders stop as soon as they exceed it (or `maxDecompressedBytes`), so a bomb is refused before it is inflated. |
 | `streamingDecompressionThresholdBytes` | 16 MiB | From this `Content-Length`, decode with streaming decoders instead of materializing each stage of a stack. |
 | `decoderChunkSize` | 32 KiB | Granularity of the output buffer growth. |
 
 | Request | Response |
 | --- | --- |
-| Unknown or not compiled coding | `415 Unsupported Media Type` |
-| Empty coding in the list (`gzip,,deflate`) | `400 Bad Request` |
+| Unknown or not compiled coding, more than 5 codings | `415 Unsupported Media Type` |
 | Corrupt compressed data | `400 Bad Request` |
 | A size or ratio limit exceeded | `413 Payload Too Large` |
 
@@ -161,9 +165,11 @@ The decoded body is limited by `maxDecompressedBytes`, not by `maxBodyBytes`, wh
 - `406` keeping the HTTP/1.1 connection open, unless the request announces a body (`HttpCompression.NotAcceptableKeepsConnectionAlive`, `HttpCompression.NotAcceptableWithBodyClosesConnection`): [tests/http-compression_test.cpp](../../tests/http-compression_test.cpp).
 - `HEAD` responses carrying the headers of the compressed `GET` ones (`HttpCompression.HeadCarriesTheHeadersOfTheGet`, `HttpCompression.StreamingHeadCarriesTheHeadersOfTheGetWithoutContentLength`): [tests/http-compression_test.cpp](../../tests/http-compression_test.cpp); over HTTP/2: [tests/http2-core_test.cpp](../../tests/http2-core_test.cpp) and [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp).
 - Streaming handlers declaring their length with `contentLength()`: kept below `minBytes` and for content types not compressed, dropped for a chunked compressed body, over HTTP/1.1 and HTTP/1.0, on a persistent connection, for `HEAD` (`HttpCompression.StreamedDeclaredLength*`, `HttpCompression.StreamedContentLengthAfterABufferedWriteIsIgnored`): [tests/http-compression_test.cpp](../../tests/http-compression_test.cpp).
-- Request decompression, stacked codings, limits, and errors: [tests/http-request-decompression_test.cpp](../../tests/http-request-decompression_test.cpp).
+- Request decompression, stacked codings, limits, and errors: [tests/http-request-decompression_test.cpp](../../tests/http-request-decompression_test.cpp), at most 5 codings (`HttpRequestDecompression.AtMostFiveStackedCodings`), empty elements ignored and `x-gzip` (`HttpRequestDecompression.EmptyElementsAreIgnored`, `HttpRequestDecompression.XGzipIsDecodedAsGzip`, `HttpCodecFullBody.XGzipIsGzip`, `HttpCodecDecompression.WillDecompressIgnoresEmptyElements` in [http-codec_test.cpp](../../aeronet/http/test/http-codec_test.cpp)), by `HttpClient` (`HttpClientSinkE2ETest.XGzipAndEmptyCodingElementsAreDecoded` in [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp)).
+- `206` responses never compressed and strong `ETag` made weak, on every compression path (`HttpCompression.PartialContentIsNotCompressed`, `HttpCompression.CompressionWeakensAStrongETag`): [tests/http-compression_test.cpp](../../tests/http-compression_test.cpp), over HTTP/1.1 and HTTP/2 (`ProtocolParity.CompressionKeeps206AndWeakensStrongETags`): [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp); the `ETag` next to a `Vary` updated in the same pass (`HttpCodecCompression.CompressionWeakensAStrongETag`): [http-codec_test.cpp](../../aeronet/http/test/http-codec_test.cpp); `PartialContentIsNeverCompressedDirectly`, `WeakenStrongETag`: [http-response_test.cpp](../../aeronet/http/test/http-response_test.cpp).
+- `maxExpansionRatio` stopping the decoding of a bomb before it is inflated, in one shot and streaming decoding, for a chunked body, and its exact boundary (`HttpCodecFullBody.ExpansionRatio*`, `HttpCodecDecompression.DecompressChunkedBody_ExpansionRatioStopsTheDecodingEarly`), stacked codings bound (`*.AtMostFiveStackedCodings`): [http-codec_test.cpp](../../aeronet/http/test/http-codec_test.cpp).
 - Lower-casing of the received codings: [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp) (HTTP/1.1) and [hpack_test.cpp](../../aeronet/http2/test/hpack_test.cpp) (HTTP/2).
-- `Accept-Encoding` parsing and selection: [accept-encoding-negotiation_test.cpp](../../aeronet/objects/test/accept-encoding-negotiation_test.cpp), quality values: [quality-value_test.cpp](../../aeronet/objects/test/quality-value_test.cpp).
+- `Accept-Encoding` parsing and selection: [accept-encoding-negotiation_test.cpp](../../aeronet/objects/test/accept-encoding-negotiation_test.cpp), an invalid weight of `identity` or `*` not answered `406` (`AcceptEncodingNegotiationTest.InvalidWeightOfIdentityOrWildcardIsNotARejection`), quality values: [quality-value_test.cpp](../../aeronet/objects/test/quality-value_test.cpp).
 - Bodies of a few compression chunks, and a compressed body filling the `maxCompressRatio` budget exactly or exceeding it by one byte (`HttpCodecCompression.TryCompressBodyOfAFewChunksUsesTheWholeBudget`, `HttpCodecCompression.TryCompressBodyStreamingBudgetBoundary`): [http-codec_test.cpp](../../aeronet/http/test/http-codec_test.cpp); request bodies compressed by `HttpClient` (`HttpClientCompressionE2E.CompressesMidSizeModeratelyCompressibleRequestBody`): [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp).
 - Large incompressible bodies, whose brotli and zstd output comes in bursts larger than the room of one write, streamed, set with `bodyAppend()` and with `bodyInlineAppend()`, over HTTP/1.1 and HTTP/2 (`ProtocolParityFastBrotli.LargeIncompressibleBodiesAreCompressedWhole`): [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp); request bodies directly compressed by `HttpClient` (`HttpClientCompressionE2E.LargeIncompressibleDirectlyCompressedRequestBody`): [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp), and restored after a const finalization (`HttpRequestTest.LargeIncompressibleDirectlyCompressedBody`): [http-request_test.cpp](../../aeronet/client/test/http-request_test.cpp); encoders reading part of their input only (`BrotliEncoderDecoderTest.IncompressibleChunksWithMinEncodeChunkCapacity`, `ZstdEncoderDecoderTest.LargeIncompressibleChunkWithMinEncodeChunkCapacity`, `*.EncodeChunkWithoutEnoughOutputRoom`).
 - Codecs: [zlib-encoder-decoder_test.cpp](../../aeronet/objects/test/zlib-encoder-decoder_test.cpp), [zstd-encoder-decoder_test.cpp](../../aeronet/objects/test/zstd-encoder-decoder_test.cpp), [brotli-encoder-decoder_test.cpp](../../aeronet/objects/test/brotli-encoder-decoder_test.cpp).

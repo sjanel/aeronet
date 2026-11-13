@@ -58,6 +58,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/multi-http-server.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/path-handler-entry.hpp"
@@ -78,6 +79,7 @@
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
+#include "aeronet/timestring.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/unix-dogstatsd-sink.hpp"
 #include "aeronet/vector.hpp"
@@ -972,6 +974,65 @@ TEST(HttpBodylessStatus, InformationalStatusEndsAtTheHeaders) {
   RegisterBodylessStatusRoutes(199);
   ts.router().setPath(http::Method::GET, "/after", [](const HttpRequestView&) { return HttpResponse("after"); });
   ExpectBodylessStatusEndsAtHeaders("GET", 199);
+}
+
+// RFC 9110 §15.3.6: "a server MUST NOT generate content in a 205 response". Unlike a 204, its message body is framed:
+// HTTP/1.1 sends a Content-Length of 0 (none for HEAD, as for any HEAD response without body). Whatever the handler
+// sets is dropped: body, trailers, file, a compressed body, a declared length.
+TEST(HttpBodylessStatus, ResetContentHasAnEmptyBody) {
+  RegisterBodylessStatusRoutes(http::StatusCodeResetContent);
+  auto router = ts.router();
+  router.setPath(http::Method::GET | http::Method::HEAD, "/streamed-chunked205",
+                 [](const HttpRequestView&, HttpResponseWriter& writer) {
+                   writer.status(http::StatusCodeResetContent);
+                   writer.headerAddLine("x-custom", "kept");
+                   writer.writeBody(std::string(64UL << 10U, 'z'));
+                   writer.end();
+                 });
+  router.setPath(http::Method::GET | http::Method::HEAD, "/streamed-file205",
+                 [](const HttpRequestView&, HttpResponseWriter& writer) {
+                   writer.status(http::StatusCodeResetContent);
+                   writer.headerAddLine("x-custom", "kept");
+                   EXPECT_TRUE(writer.file(File(__FILE__)));
+                   writer.end();
+                 });
+  router.setPath(http::Method::GET | http::Method::HEAD, "/buffered-big205", [](const HttpRequestView& req) {
+    HttpResponse resp = req.makeResponse(http::StatusCodeResetContent);
+    resp.headerAddLine("x-custom", "kept");
+    resp.body(std::string(64UL << 10U, 'z'), http::ContentTypeTextPlain);
+    return resp;
+  });
+  router.setPath(http::Method::GET, "/after", [](const HttpRequestView&) { return HttpResponse("after"); });
+
+  for (std::string_view method : {"GET", "HEAD"}) {
+    for (std::string_view target :
+         {"/buffered205", "/streamed205", "/streamed-chunked205", "/streamed-file205", "/buffered-big205"}) {
+      SCOPED_TRACE(std::format("{} {}", method, target));
+      const std::string request =
+          std::format("{} {} HTTP/1.1\r\nhost: x\r\naccept-encoding: gzip\r\n\r\n", method, target);
+      test::ClientConnection cnx(port);
+      test::sendAll(cnx.fd(), request + request + "GET /after HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n");
+      const std::string resp = test::recvUntilClosed(cnx.fd());
+
+      const std::size_t afterPos = resp.find("HTTP/1.1 200");
+      ASSERT_NE(afterPos, std::string::npos) << resp;
+      const std::string_view resetResponses = std::string_view(resp).substr(0, afterPos);
+      EXPECT_EQ(test::countOccurrences(resetResponses, "HTTP/1.1 205 "), 2) << resp;
+      EXPECT_EQ(test::countOccurrences(resetResponses, MakeHttp1HeaderLine("x-custom", "kept")), 2) << resp;
+      EXPECT_EQ(test::countOccurrences(resetResponses, MakeHttp1HeaderLine(http::ContentLength, "0")),
+                method == "GET" ? 2 : 0)
+          << resp;
+      EXPECT_EQ(test::countOccurrences(resetResponses, http::ContentLength), method == "GET" ? 2 : 0) << resp;
+      EXPECT_FALSE(resetResponses.contains(http::TransferEncoding)) << resp;
+      EXPECT_FALSE(resetResponses.contains(http::ContentType)) << resp;
+      EXPECT_FALSE(resetResponses.contains(http::ContentEncoding)) << resp;
+      EXPECT_FALSE(resetResponses.contains("BODY-OF-")) << resp;
+      EXPECT_FALSE(resetResponses.contains("zzz")) << resp;
+      EXPECT_FALSE(resetResponses.contains("x-trailer")) << resp;
+      EXPECT_TRUE(resetResponses.ends_with(http::DoubleCRLF)) << resp;
+      EXPECT_TRUE(resp.ends_with("after")) << resp;
+    }
+  }
 }
 
 TEST(HttpBodylessStatus, FileAndCompressedBodiesAreDroppedToo) {
@@ -2619,6 +2680,37 @@ TEST(HttpBackpressure, StreamingWriterReportsOverflowForStalledReader) {
   // The output beyond the limit is refused: a few chunks only, not the 1000 of the handler.
   EXPECT_GE(acceptedChunks.load(), 0) << "the streaming handler did not return";
   EXPECT_LT(acceptedChunks.load(), kMaxChunks);
+}
+
+// A write beyond the declared Content-Length sends the bytes still due only
+// (HttpStreaming.BodyBeyondItsDeclaredLengthIsCut). When the output limit refuses them too, the write fails all the
+// same.
+TEST(HttpBackpressure, WriteBeyondTheDeclaredLengthToAStalledReaderFails) {
+  static constexpr uint32_t kMaxOutboundBufferBytes = 256U << 10U;
+  ts.resetConfigAndPostUpdate([](HttpServerConfig& cfg) {
+    cfg.withZerocopyMode(ZerocopyMode::Disabled);
+    cfg.withMaxOutboundBufferBytes(kMaxOutboundBufferBytes);
+    cfg.withSocketSendBufferBytes(kSmallSendBufferBytes);  // the kernel does not absorb the first write
+  });
+  static constexpr std::size_t kDeclaredLength = 1UL << 20U;
+  std::atomic<int> accepted{-1};
+  ts.resetRouterAndGet().setPath(http::Method::GET, "/beyond-stalled",
+                                 [&accepted](const HttpRequestView&, HttpResponseWriter& writer) {
+                                   writer.contentLength(kDeclaredLength);
+                                   // Leaves output waiting for the socket, beyond which the limit applies.
+                                   const std::string half(kDeclaredLength / 2U, 'a');
+                                   writer.writeBody(half);
+                                   accepted.store(writer.writeBody(half + 'b') ? 1 : 0);
+                                   writer.end();
+                                 });
+
+  test::ClientConnection stalled(ts.port(), 500ms, kMinimalReceiveBufferSize);
+  test::sendAll(stalled.fd(), "GET /beyond-stalled HTTP/1.1\r\nhost: h\r\n\r\n");
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+  while (accepted.load() < 0 && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds{5});
+  }
+  EXPECT_EQ(accepted.load(), 0);
 }
 
 // With zerocopy, appending to an output buffer whose start was already sent with MSG_ZEROCOPY (here the chunks of a
@@ -4537,6 +4629,118 @@ TEST(HttpStreaming, HttpHeaderValuesAreTrimmed) {
   EXPECT_TRUE(resp.contains("x-also-trimmed: another-trim\r\n"));
 }
 
+// RFC 9112 §6.1: the writer sets the framing itself, chunked or with contentLength(). A reserved header set by the
+// handler would add a second framing (Transfer-Encoding with Content-Length, two Transfer-Encoding lines) or contradict
+// the server: the header setters refuse them, and the response keeps the framing of the writer.
+TEST(HttpStreaming, ReservedHeadersAreRejected) {
+  ts.resetConfig();
+  ts.resetRouterAndGet().setDefault([](const HttpRequestView& req, HttpResponseWriter& writer) {
+    if (req.path() == "/declared") {
+      writer.contentLength(5);
+    }
+    for (const std::string_view name :
+         {"connection", "content-length", "content-type", "date", "te", "trailer", "transfer-encoding", "upgrade"}) {
+      EXPECT_THROW(writer.headerAddLine(LowerAsciiKey{name}, "gzip"), std::invalid_argument) << name;
+      EXPECT_THROW(writer.header(LowerAsciiKey{name}, "gzip"), std::invalid_argument) << name;
+    }
+    writer.writeBody("hello");
+    writer.end();
+  });
+
+  std::string resp = BlockingFetch("GET", "/chunked");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_EQ(test::countOccurrences(resp, "\r\ntransfer-encoding: "), 1) << resp;
+  EXPECT_FALSE(resp.contains("\r\ncontent-length: ")) << resp;
+  EXPECT_EQ(test::countOccurrences(resp, "\r\nconnection: "), 1) << resp;
+  EXPECT_FALSE(resp.contains("gzip")) << resp;
+
+  resp = BlockingFetch("GET", "/declared");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_FALSE(resp.contains("\r\ntransfer-encoding: ")) << resp;
+  EXPECT_TRUE(resp.contains("\r\ncontent-length: 5\r\n")) << resp;
+  EXPECT_TRUE(resp.ends_with("\r\n\r\nhello")) << resp;
+  EXPECT_FALSE(resp.contains("gzip")) << resp;
+}
+
+// RFC 9110 §6.5.1, as for a buffered response (HttpResponseTest.ForbiddenTrailersAreRejected): refused in every build.
+TEST(HttpStreaming, ForbiddenTrailersAreRejected) {
+  ts.resetConfig();
+  ts.resetRouterAndGet().setDefault([](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.writeBody("hello");
+    for (const std::string_view name : {"content-length", "transfer-encoding", "set-cookie", "trailer"}) {
+      EXPECT_THROW(writer.trailerAddLine(LowerAsciiKey{name}, "0"), std::invalid_argument) << name;
+    }
+    writer.trailerAddLine("x-checksum", "1");
+    writer.end();
+  });
+  const std::string resp = BlockingFetch("GET", "/trailers");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.ends_with("\r\n0\r\nx-checksum: 1\r\n\r\n")) << resp;
+}
+
+namespace {
+// Sends a keep-alive GET and returns what the server sent until it closed the connection.
+std::string FetchUntilClosed(std::string_view target) {
+  test::ClientConnection sock(port);
+  test::sendAll(sock.fd(), std::format("GET {} HTTP/1.1\r\nHost: h\r\n\r\n", target));
+  return test::recvUntilClosed(sock.fd());
+}
+}  // namespace
+
+// RFC 9110 §8.6: the bytes written beyond the declared Content-Length would be read by the client as the start of the
+// next response of the connection. Only the declared ones are sent, the write fails, and the server closes the
+// (persistent) connection after them.
+TEST(HttpStreaming, BodyBeyondItsDeclaredLengthIsCut) {
+  ts.resetConfig();
+  ts.resetRouterAndGet().setDefault([](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.contentLength(5);
+    EXPECT_TRUE(writer.writeBody("hel"));
+    EXPECT_FALSE(writer.writeBody("loHTTP/1.1 200 OK\r\ncontent-length: 6\r\n\r\nforged"));
+    EXPECT_TRUE(writer.failed());
+    EXPECT_FALSE(writer.writeBody("more"));
+    writer.end();
+  });
+  const std::string resp = FetchUntilClosed("/beyond");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.contains("\r\ncontent-length: 5\r\n")) << resp;
+  EXPECT_TRUE(resp.ends_with("\r\n\r\nhello")) << resp;
+
+  // Exactly the declared length in one write, then more: nothing more is sent.
+  ts.resetRouterAndGet().setDefault([](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.contentLength(5);
+    EXPECT_TRUE(writer.writeBody("hello"));
+    EXPECT_FALSE(writer.writeBody("x"));
+    writer.end();
+  });
+  EXPECT_TRUE(FetchUntilClosed("/exact-then-more").ends_with("\r\n\r\nhello"));
+}
+
+// A body shorter than its declared Content-Length: the client would wait for the missing bytes, or take the next
+// response for them. The writer fails at end(), and the server closes the connection after the bytes sent, so that the
+// client knows that the response is incomplete. The next connections are served normally.
+TEST(HttpStreaming, BodyShorterThanItsDeclaredLengthClosesTheConnection) {
+  ts.resetConfig();
+  ts.resetRouterAndGet().setDefault([](const HttpRequestView& req, HttpResponseWriter& writer) {
+    if (req.path() == "/short") {
+      writer.contentLength(5);
+      EXPECT_TRUE(writer.writeBody("hel"));
+      writer.end();
+      EXPECT_TRUE(writer.failed());
+    } else {
+      writer.contentLength(2);
+      writer.writeBody("ok");
+      writer.end();
+      EXPECT_FALSE(writer.failed());
+    }
+  });
+  const std::string resp = FetchUntilClosed("/short");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.contains("\r\ncontent-length: 5\r\n")) << resp;
+  EXPECT_TRUE(resp.ends_with("\r\n\r\nhel")) << resp;
+
+  EXPECT_TRUE(BlockingFetch("GET", "/complete").ends_with("\r\n\r\nok"));
+}
+
 TEST(HttpStreaming, SendFileFixedLengthPlain) {
   constexpr std::string_view kPayload = "static sendfile response body";
   test::ScopedTempDir tmpDir;
@@ -5968,13 +6172,14 @@ TEST(HttpStreaming, MalformedChunkedRequestsAreRejectedWith400) {
                       [](const HttpRequestView& req) { return HttpResponse(req.body()); });
 
   struct Case {
-    std::string_view headers;
+    std::string headers;
     std::string_view chunks;
   };
-  static constexpr Case kCases[]{
-      {"content-encoding: identity,,identity\r\n", "3\r\nabc\r\n0\r\n\r\n"},  // empty coding token
-      {"content-encoding: \r\n", "3\r\nxyz\r\n0\r\n\r\n"},                    // empty Content-Encoding value
-      {"", "3\r\nabc\n\n0\r\n\r\n"},                                          // malformed CRLF after the chunk data
+  const Case kCases[]{
+      // corrupt coded data
+      {std::format("content-encoding: {}\r\n", GetEncodingStr(test::SupportedEncodings().front())),
+       "3\r\nabc\r\n0\r\n\r\n"},
+      {"", "3\r\nabc\n\n0\r\n\r\n"},  // malformed CRLF after the chunk data
   };
   for (const Case& tc : kCases) {
     SCOPED_TRACE(tc.headers);

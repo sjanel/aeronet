@@ -385,8 +385,9 @@ TEST_F(HttpRequestViewTest, PrefinalizeCompressionExceedsMaxRatioIncrementsMetri
 }
 #endif
 
-// 1xx, 204 and 304 responses end at the empty line after their headers (RFC 9112 §6.3): the body set by a handler, its
-// headers and its trailers are dropped before the response is serialized, for HTTP/1.1 and HTTP/2 alike.
+// 1xx, 204 and 304 responses end at the empty line after their headers (RFC 9112 §6.3), and a 205 has no content
+// either (RFC 9110 §15.3.6): the body set by a handler, its headers and its trailers are dropped before the response is
+// serialized, for HTTP/1.1 and HTTP/2 alike.
 TEST_F(HttpRequestViewTest, PrefinalizeDropsBodyOfStatusesWithoutContent) {
   static constexpr std::string_view kBigBody =
       "a body long enough not to be inlined, whatever the minimum size of the captured bodies";
@@ -394,7 +395,8 @@ TEST_F(HttpRequestViewTest, PrefinalizeDropsBodyOfStatusesWithoutContent) {
 
   for (std::string_view method : {"GET", "HEAD"}) {
     ASSERT_EQ(reqSet(BuildRaw(method, "/test", "HTTP/1.1")), http::StatusCodeOK);
-    for (http::StatusCode status : {http::StatusCodeNoContent, http::StatusCodeNotModified, http::StatusCode{199}}) {
+    for (http::StatusCode status : {http::StatusCodeNoContent, http::StatusCodeResetContent,
+                                    http::StatusCodeNotModified, http::StatusCode{199}}) {
       for (bool captured : {false, true}) {
         SCOPED_TRACE(std::format("{} {} captured={}", method, status, captured));
         HttpResponse resp(status);
@@ -430,7 +432,7 @@ TEST_F(HttpRequestViewTest, PrefinalizeKeepsBodyOfStatusesWithContent) {
 
   for (http::StatusCode status : {
            http::StatusCodeOK,
-           http::StatusCodeResetContent,
+           http::StatusCodePartialContent,
            http::StatusCodeNotFound,
            http::StatusCodeInternalServerError,
        }) {

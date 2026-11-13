@@ -2,11 +2,13 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <bit>
 #include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <limits>
 #include <span>
 #include <string>
@@ -104,17 +106,25 @@ constexpr std::string_view kVaryHeaderContent[]{
 constexpr LowerAsciiKey kTrailerName = "x-trailer";
 constexpr std::string_view kTrailerValue = "Some trailer value that should be preserved";
 
+// Where MakeResponse() sets an ETag, relative to the Vary header and the body.
+enum class ETagCase : std::uint8_t { None, BeforeVary, AfterVary, AfterBody, Weak };
+
+constexpr std::string_view kStrongETag = "\"v1\"";
+constexpr std::string_view kWeakETag = "W/\"v1\"";
+
 }  // namespace
 
 class HttpResponseTest {
  public:
   static HttpResponse MakeResponse(std::string_view varyContent, bool capturedBody, bool addTrailer,
-                                   std::string_view body, [[maybe_unused]] bool sendContentLengthHeader = true) {
+                                   std::string_view body, [[maybe_unused]] bool sendContentLengthHeader = true,
+                                   ETagCase etagCase = ETagCase::None) {
     const bool hasVaryContent = varyContent.data() != nullptr;
     const auto additionalSize =
         (static_cast<std::size_t>(!capturedBody) * HttpResponse::BodySize(body.size())) +
         (static_cast<std::size_t>(addTrailer) * http::HeaderSize(kTrailerName.size(), kTrailerValue.size())) +
-        (static_cast<std::size_t>(hasVaryContent) * http::HeaderSize(http::Vary.size(), varyContent.size()));
+        (static_cast<std::size_t>(hasVaryContent) * http::HeaderSize(http::Vary.size(), varyContent.size())) +
+        (static_cast<std::size_t>(etagCase != ETagCase::None) * http::HeaderSize(http::ETag.size(), kWeakETag.size()));
     HttpResponse resp(additionalSize, http::StatusCodeOK);
 #ifdef AERONET_ENABLE_HTTP2
     if (!sendContentLengthHeader) {
@@ -124,13 +134,22 @@ class HttpResponseTest {
     // Hack to have a correct CRLF at the end of status line (we are not calling finalizeForHttp1 here in this test,
     // it's a private method).
     CopyFixed<http::CRLF>(const_cast<char*>(resp.reason().data()));
+    if (etagCase == ETagCase::BeforeVary || etagCase == ETagCase::Weak) {
+      resp.headerAddLine(http::ETag, etagCase == ETagCase::Weak ? kWeakETag : kStrongETag);
+    }
     if (hasVaryContent) {
       resp.headerAddLine(http::Vary, varyContent);
+    }
+    if (etagCase == ETagCase::AfterVary) {
+      resp.headerAddLine(http::ETag, kStrongETag);
     }
     if (capturedBody) {
       resp.body(std::string(body));
     } else {
       resp.body(body);
+    }
+    if (etagCase == ETagCase::AfterBody) {
+      resp.headerAddLine(http::ETag, kStrongETag);
     }
     if (addTrailer) {
       resp.trailerAddLine(kTrailerName, kTrailerValue);
@@ -297,6 +316,85 @@ TEST(HttpCodecCompression, VaryHeaderAddedWhenConfigured) {
     }
   }
 }
+
+#ifdef AERONET_ENABLE_ZLIB
+// RFC 9110 §8.8.3.3: "a strong entity tag for a content-encoded representation has to be distinct from the entity tag
+// of an unencoded representation". The compression makes a strong ETag weak (a weak one is kept), wherever it is
+// relative to a Vary header, which may get Accept-Encoding in the same pass, for inline and captured bodies, with
+// trailers, and whatever the width of the Content-Length.
+TEST(HttpCodecCompression, CompressionWeakensAStrongETag) {
+  const std::string body = test::MakePatternedPayload(4096);
+  static constexpr std::string_view kVaryContents[]{std::string_view(), "", "origin", "accept-encoding", "*"};
+
+  for (bool useLeadingZeroes : {true, false}) {
+    CompressionConfig cfg;
+    cfg.minBytes = 16U;
+    cfg.useLeadingZeroesInContentLength = useLeadingZeroes;
+    CompressionState state(cfg);
+    for (ETagCase etagCase :
+         {ETagCase::None, ETagCase::BeforeVary, ETagCase::AfterVary, ETagCase::AfterBody, ETagCase::Weak}) {
+      for (std::string_view varyContent : kVaryContents) {
+        for (bool capturedBody : {false, true}) {
+          for (bool addTrailer : {false, true}) {
+            // Without Content-Length for HTTP/2 (Http2Config::sendContentLengthHeader).
+            const bool sendContentLengthHeader = !http2Enabled() || addTrailer;
+            SCOPED_TRACE(std::format("leadingZeroes={} etag={} vary={} captured={} trailer={}", useLeadingZeroes,
+                                     static_cast<int>(etagCase), varyContent.data() == nullptr ? "none" : varyContent,
+                                     capturedBody, addTrailer));
+            HttpResponse resp = HttpResponseTest::MakeResponse(varyContent, capturedBody, addTrailer, body,
+                                                               sendContentLengthHeader, etagCase);
+            ASSERT_EQ(HttpCodec::TryCompressBody(state, Encoding::gzip, resp), CompressResponseResult::Compressed);
+
+            EXPECT_EQ(resp.headerValueOrEmpty(http::ETag), etagCase == ETagCase::None ? "" : kWeakETag);
+            EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), http::gzip);
+            const std::string_view vary = resp.headerValueOrEmpty(http::Vary);
+            if (varyContent == "origin") {
+              EXPECT_EQ(vary, "origin, accept-encoding");
+            } else if (varyContent.empty()) {
+              EXPECT_EQ(vary, http::AcceptEncoding);
+            } else {
+              EXPECT_EQ(vary, varyContent);
+            }
+            if (sendContentLengthHeader) {
+              EXPECT_EQ(ParseContentLength(resp.headerValueOrEmpty(http::ContentLength)), resp.bodyInMemoryLength());
+            } else {
+              EXPECT_FALSE(resp.hasHeader(http::ContentLength));
+            }
+            EXPECT_EQ(std::string_view(test::Decompress(Encoding::gzip, resp.bodyInMemory())), body);
+            EXPECT_EQ(resp.trailerValueOrEmpty(kTrailerName), addTrailer ? kTrailerValue : "");
+          }
+        }
+      }
+    }
+  }
+}
+
+// A response has one ETag at most: with several, only the first one is considered, as by the other paths.
+TEST(HttpCodecCompression, CompressionOnlyWeakensTheFirstETag) {
+  CompressionConfig cfg;
+  cfg.minBytes = 16U;
+  CompressionState state(cfg);
+  HttpResponse resp(http::StatusCodeOK);
+  resp.headerAddLine(http::ETag, kStrongETag).headerAddLine(http::ETag, "\"v2\"");
+  resp.body(test::MakePatternedPayload(4096));
+  ASSERT_EQ(HttpCodec::TryCompressBody(state, Encoding::gzip, resp), CompressResponseResult::Compressed);
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ETag), kWeakETag);
+  EXPECT_TRUE(resp.headersFlatView().contains("etag: \"v2\"")) << resp.headersFlatView();
+}
+
+// A compression aborted (the body does not shrink enough) leaves the ETag as set by the handler.
+TEST(HttpCodecCompression, AbortedCompressionKeepsTheStrongETag) {
+  CompressionConfig cfg;
+  cfg.minBytes = 16U;
+  cfg.maxCompressRatio = 0.001F;  // 4 bytes for 4 KiB
+  CompressionState state(cfg);
+  HttpResponse resp = HttpResponseTest::MakeResponse("origin", false, false, test::MakePatternedPayload(4096), true,
+                                                     ETagCase::AfterVary);
+  ASSERT_EQ(HttpCodec::TryCompressBody(state, Encoding::gzip, resp), CompressResponseResult::ExceedsMaxRatio);
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ETag), kStrongETag);
+  EXPECT_EQ(resp.headerValueOrEmpty(http::Vary), "origin");
+}
+#endif
 
 TEST(HttpCodecCompression, VaryHeaderNotAddedWhenDisabled) {
   CompressionConfig cfg;
@@ -806,127 +904,66 @@ TEST(HttpCodecCompression, TryCompressResponseStressWithDifferentScenarios) {
   }
 }
 
-TEST(HttpCodecDecompression, WillDecompress_DisabledReturnsNotModified) {
+namespace {
+bool WillDecompress(bool enable, std::string_view contentEncoding) {
   DecompressionConfig cfg;
-  cfg.enable = false;
-
+  cfg.enable = enable;
   HttpRequestView req = test::HttpRequestViewTestAccess::Make();
-  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip");
-
-  const auto code = HttpCodec::WillDecompress(cfg, req.headers());
-  EXPECT_EQ(code, http::StatusCodeNotModified);
+  if (contentEncoding.data() != nullptr) {
+    const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, contentEncoding);
+  }
+  return HttpCodec::WillDecompress(cfg, req.headers());
 }
+}  // namespace
 
-TEST(HttpCodecDecompression, WillDecompress_NoHeaderReturnsNotModified) {
-  DecompressionConfig cfg;
-  cfg.enable = true;
-
-  HttpRequestView req = test::HttpRequestViewTestAccess::Make();
-
-  const auto code = HttpCodec::WillDecompress(cfg, req.headers());
-  EXPECT_EQ(code, http::StatusCodeNotModified);
-}
-
-TEST(HttpCodecDecompression, WillDecompress_EmptyHeaderReturnsBadRequest) {
-  DecompressionConfig cfg;
-  cfg.enable = true;
-
-  HttpRequestView req = test::HttpRequestViewTestAccess::Make();
-  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "");
-
-  const auto code = HttpCodec::WillDecompress(cfg, req.headers());
-  EXPECT_EQ(code, http::StatusCodeBadRequest);
-}
-
-TEST(HttpCodecDecompression, WillDecompress_OnlyIdentityReturnsNotModified) {
-  DecompressionConfig cfg;
-  cfg.enable = true;
-
-  HttpRequestView req = test::HttpRequestViewTestAccess::Make();
-  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "identity");
-
-  const auto code = HttpCodec::WillDecompress(cfg, req.headers());
-  EXPECT_EQ(code, http::StatusCodeNotModified);
-}
-
-TEST(HttpCodecDecompression, WillDecompress_NonIdentityReturnsOK) {
-  DecompressionConfig cfg;
-  cfg.enable = true;
-
-  HttpRequestView req = test::HttpRequestViewTestAccess::Make();
-  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip");
-
-  const auto code = HttpCodec::WillDecompress(cfg, req.headers());
-  EXPECT_EQ(code, http::StatusCodeOK);
-}
-
-TEST(HttpCodecDecompression, WillDecompress_MalformedDoubleCommaReturnsBadRequest) {
-  DecompressionConfig cfg;
-  cfg.enable = true;
-
-  HttpRequestView req = test::HttpRequestViewTestAccess::Make();
-  // double comma (possibly with spaces) between tokens should be treated as malformed
-  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip,,deflate");
-
-  const auto code = HttpCodec::WillDecompress(cfg, req.headers());
-  EXPECT_EQ(code, http::StatusCodeBadRequest);
-}
-
-TEST(HttpCodecDecompression, WillDecompress_SeveralIdentityValuesReturnsNotModified) {
-  DecompressionConfig cfg;
-  cfg.enable = true;
-
-  HttpRequestView req = test::HttpRequestViewTestAccess::Make();
+TEST(HttpCodecDecompression, WillDecompressOnlyForACodingOtherThanIdentity) {
+  EXPECT_FALSE(WillDecompress(false, "gzip"));  // disabled
+  EXPECT_FALSE(WillDecompress(true, {}));       // no Content-Encoding
+  EXPECT_FALSE(WillDecompress(true, "identity"));
   // Content-Encoding values are lower-cased by the request parsers (see the HttpRequestView and HPACK tests).
-  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "identity, identity,identity");
-
-  const auto code = HttpCodec::WillDecompress(cfg, req.headers());
-  EXPECT_EQ(code, http::StatusCodeNotModified);
+  EXPECT_FALSE(WillDecompress(true, "identity, identity,identity"));
+  EXPECT_TRUE(WillDecompress(true, "gzip"));
+  EXPECT_TRUE(WillDecompress(true, "gzip ,  deflate"));  // OWS around the commas
+  EXPECT_TRUE(WillDecompress(true, "identity, br"));
 }
 
-TEST(HttpCodecDecompression, WillDecompress_OWSAndSpacesAreHandled) {
+// RFC 9110 §5.6.1.2: a recipient MUST ignore a reasonable number of empty list elements. An empty list is no coding.
+TEST(HttpCodecDecompression, WillDecompressIgnoresEmptyElements) {
+  EXPECT_FALSE(WillDecompress(true, ""));
+  EXPECT_FALSE(WillDecompress(true, ","));
+  EXPECT_FALSE(WillDecompress(true, "identity,,identity"));
+  EXPECT_TRUE(WillDecompress(true, "gzip,,deflate"));
+  EXPECT_TRUE(WillDecompress(true, ", ,gzip"));
+}
+
+TEST(HttpCodecDecompression, DecompressChunkedBody_EmptyElementsAreIgnored) {
   DecompressionConfig cfg;
   cfg.enable = true;
 
   HttpRequestView req = test::HttpRequestViewTestAccess::Make();
-  // leading/trailing spaces and OWS around commas should be tolerated and parsed
-  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip ,  deflate");
+  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, ",gzip,,deflate,");
 
-  const auto code = HttpCodec::WillDecompress(cfg, req.headers());
-  EXPECT_EQ(code, http::StatusCodeOK);  // gzip/deflate are non-identity
-}
-
-TEST(HttpCodecDecompression, WillDecompress_IdentityMixedWithOtherEncodings) {
-  DecompressionConfig cfg;
-  cfg.enable = true;
-
-  HttpRequestView req = test::HttpRequestViewTestAccess::Make();
-  // identity present but not alone; should result in OK because a non-identity is present
-  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "identity, br");
-
-  const auto code = HttpCodec::WillDecompress(cfg, req.headers());
-  EXPECT_EQ(code, http::StatusCodeOK);
-}
-
-TEST(HttpCodecDecompression, DecompressChunkedBody_MalformedEncodingReturnsBadRequest) {
-  DecompressionConfig cfg;
-  cfg.enable = true;
-
-  HttpRequestView req = test::HttpRequestViewTestAccess::Make();
-  // malformed double-comma should be treated as malformed by the decoder iterator
-  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, "gzip,,deflate");
-
-  constexpr std::string_view chunksArr[]{"dummy"};
-  std::span<const std::string_view> chunks(chunksArr, 1);
+#ifdef AERONET_ENABLE_ZLIB
+  const RawChars compressed =
+      test::Compress(Encoding::deflate, std::string_view(test::Compress(Encoding::gzip, "stacked")));
+  const std::string_view chunksArr[]{std::string_view(compressed).substr(0, 3), std::string_view(compressed).substr(3)};
+#else
+  const std::string_view chunksArr[]{"dummy"};
+#endif
 
   RawChars bodyBuf;
   RawChars tmpBuf;
   DecompressionState decompressionState;
 
+  std::size_t compressedSize = 0;
+  for (std::string_view chunk : chunksArr) {
+    compressedSize += chunk.size();
+  }
   const auto res =
-      HttpCodec::DecompressChunkedBody(decompressionState, cfg, req, chunks, /*compressedSize=*/1, bodyBuf, tmpBuf);
+      HttpCodec::DecompressChunkedBody(decompressionState, cfg, req, chunksArr, compressedSize, bodyBuf, tmpBuf);
 #ifdef AERONET_ENABLE_ZLIB
-  EXPECT_EQ(res.status, http::StatusCodeBadRequest);
+  EXPECT_EQ(res.status, http::StatusCodeOK);
+  EXPECT_EQ(req.body(), "stacked");
 #else
   EXPECT_EQ(res.status, http::StatusCodeUnsupportedMediaType);
 #endif
@@ -1339,9 +1376,13 @@ TEST(HttpCodecFullBody, DecompressIdentityAndEmptyAndUnknown) {
   EXPECT_EQ(identityRes.status, http::StatusCodeOK);
   EXPECT_EQ(decoded, "hello");
 
-  // empty Content-Encoding => malformed.
-  const auto emptyRes = HttpCodec::DecompressFullBody(state, cfg, "", "hello", out, tmp, decoded);
-  EXPECT_EQ(emptyRes.status, http::StatusCodeBadRequest);
+  // empty Content-Encoding (an empty list), or empty elements: ignored (RFC 9110 §5.6.1.2), body returned verbatim.
+  for (std::string_view contentEncoding : {"", ",", "identity,,identity", " , identity"}) {
+    decoded = {};
+    const auto emptyRes = HttpCodec::DecompressFullBody(state, cfg, contentEncoding, "hello", out, tmp, decoded);
+    EXPECT_EQ(emptyRes.status, http::StatusCodeOK) << contentEncoding;
+    EXPECT_EQ(decoded, "hello") << contentEncoding;
+  }
 
   // unknown coding => unsupported.
   const auto unknownRes = HttpCodec::DecompressFullBody(state, cfg, "made-up", "hello", out, tmp, decoded);
@@ -1472,6 +1513,167 @@ TEST(HttpCodecDecompression, DecompressChunkedBody_DecompressedSizeLimit) {
     encStr += ", " + encStr;
     expectLimit(std::span<const std::string_view>(&outerView, 1), outer.size(), encStr, patterned);
   }
+}
+
+// maxExpansionRatio bounds the bytes that each stage may decode, as maxDecompressedBytes does: a compression bomb is
+// refused once it decoded the allowed bytes, not after being inflated entirely. 4 MiB of zeroes compress to a few KiB.
+TEST(HttpCodecFullBody, ExpansionRatioStopsTheDecodingBeforeTheWholeBodyIsInflated) {
+  static constexpr std::size_t kPlainSize = 4UL << 20U;
+  const std::string zeroes(kPlainSize, '\0');
+  for (const Encoding enc : test::SupportedEncodings()) {
+    const RawChars compressed = test::Compress(enc, zeroes);
+    // Far beyond the ratio of 10: about 1000 for zlib-ng, 230 for the classic zlib of Alpine.
+    ASSERT_LT(compressed.size(), kPlainSize / 100U) << GetEncodingStr(enc);
+    for (const std::size_t streamingThreshold : {std::size_t{1}, std::numeric_limits<std::size_t>::max()}) {
+      DecompressionState state;
+      DecompressionConfig cfg;
+      cfg.maxExpansionRatio = 10.0;
+      cfg.maxDecompressedBytes = 1UL << 30U;
+      cfg.streamingDecompressionThresholdBytes = streamingThreshold;
+      RawChars out;
+      RawChars tmp;
+      std::string_view decoded;
+      const auto res = HttpCodec::DecompressFullBody(state, cfg, GetEncodingStr(enc), std::string_view(compressed), out,
+                                                     tmp, decoded);
+      EXPECT_EQ(res.status, http::StatusCodePayloadTooLarge) << GetEncodingStr(enc);
+      EXPECT_EQ(std::string_view(res.message), "Decompression expansion too large") << GetEncodingStr(enc);
+
+      const auto allowed = static_cast<std::size_t>(cfg.maxExpansionRatio * static_cast<double>(compressed.size()));
+      EXPECT_LE(std::max(out.capacity(), tmp.capacity()), allowed + 1U)
+          << GetEncodingStr(enc) << " threshold " << streamingThreshold;
+    }
+  }
+}
+
+// The decoded size may reach maxExpansionRatio times the compressed size, not more. The message tells which limit is
+// exceeded. zstd declares the decoded size in its frame: its one shot decode is refused without decoding.
+TEST(HttpCodecFullBody, ExpansionRatioBoundary) {
+  const std::string payload = test::MakePatternedPayload(64UL * 1024UL);
+  for (const Encoding enc : test::SupportedEncodings()) {
+    const RawChars compressed = test::Compress(enc, payload);
+    const auto compressedSize = static_cast<double>(compressed.size());
+    for (const std::size_t streamingThreshold : {std::size_t{1}, std::numeric_limits<std::size_t>::max()}) {
+      DecompressionState state;
+      DecompressionConfig cfg;
+      cfg.decoderChunkSize = 4096;
+      cfg.streamingDecompressionThresholdBytes = streamingThreshold;
+      RawChars out;
+      RawChars tmp;
+      std::string_view decoded;
+      const auto decode = [&] {
+        return HttpCodec::DecompressFullBody(state, cfg, GetEncodingStr(enc), std::string_view(compressed), out, tmp,
+                                             decoded);
+      };
+
+      // Half a byte away from the boundary, on each side: the product is not exact in floating point.
+      cfg.maxExpansionRatio = (static_cast<double>(payload.size()) + 0.5) / compressedSize;
+      auto res = decode();
+      EXPECT_EQ(res.status, http::StatusCodeOK) << GetEncodingStr(enc) << " threshold " << streamingThreshold;
+      EXPECT_EQ(decoded, payload) << GetEncodingStr(enc) << " threshold " << streamingThreshold;
+
+      cfg.maxExpansionRatio = (static_cast<double>(payload.size()) - 0.5) / compressedSize;
+      res = decode();
+      EXPECT_EQ(res.status, http::StatusCodePayloadTooLarge)
+          << GetEncodingStr(enc) << " threshold " << streamingThreshold;
+      EXPECT_EQ(std::string_view(res.message), "Decompression expansion too large")
+          << GetEncodingStr(enc) << " threshold " << streamingThreshold;
+
+      // The absolute limit is the smaller one.
+      cfg.maxExpansionRatio = 1e9;
+      cfg.maxDecompressedBytes = payload.size() - 1U;
+      res = decode();
+      EXPECT_EQ(res.status, http::StatusCodePayloadTooLarge)
+          << GetEncodingStr(enc) << " threshold " << streamingThreshold;
+      EXPECT_EQ(std::string_view(res.message), "Decompressed size too large")
+          << GetEncodingStr(enc) << " threshold " << streamingThreshold;
+    }
+  }
+}
+
+// The ratio of a chunked body is the one of all its chunks, and it stops the decoding of the first chunks already.
+TEST(HttpCodecDecompression, DecompressChunkedBody_ExpansionRatioStopsTheDecodingEarly) {
+  static constexpr std::size_t kPlainSize = 4UL << 20U;
+  const std::string zeroes(kPlainSize, '\0');
+  for (const Encoding enc : test::SupportedEncodings()) {
+    const RawChars compressed = test::Compress(enc, zeroes);
+    vector<std::string_view> chunks;
+    for (std::size_t off = 0; off < compressed.size(); off += 100) {
+      chunks.push_back(std::string_view(compressed).substr(off, 100));
+    }
+    DecompressionConfig cfg;
+    cfg.maxExpansionRatio = 10.0;
+    HttpRequestView req = test::HttpRequestViewTestAccess::Make();
+    const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, GetEncodingStr(enc));
+    RawChars bodyBuf;
+    RawChars tmpBuf;
+    DecompressionState decompressionState;
+    const auto res =
+        HttpCodec::DecompressChunkedBody(decompressionState, cfg, req, chunks, compressed.size(), bodyBuf, tmpBuf);
+    EXPECT_EQ(res.status, http::StatusCodePayloadTooLarge) << GetEncodingStr(enc);
+    const auto allowed = static_cast<std::size_t>(cfg.maxExpansionRatio * static_cast<double>(compressed.size()));
+    EXPECT_LE(std::max(bodyBuf.capacity(), tmpBuf.capacity()), allowed + 1U) << GetEncodingStr(enc);
+  }
+}
+
+// Each coding is a decoding pass over the body: at most 5 are decoded (as curl does, CVE-2023-23916), identity
+// included. A longer list is refused before decoding anything.
+TEST(HttpCodecFullBody, AtMostFiveStackedCodings) {
+  const Encoding enc = test::SupportedEncodings().front();
+  const std::string_view encStr = GetEncodingStr(enc);
+  RawChars body = test::Compress(enc, "hello");
+  std::string contentEncoding(encStr);
+  for (int coding = 1; coding < 5; ++coding) {
+    body = test::Compress(enc, std::string_view(body));
+    contentEncoding.append(", ").append(encStr);
+  }
+
+  DecompressionState state;
+  DecompressionConfig cfg;
+  RawChars out;
+  RawChars tmp;
+  std::string_view decoded;
+  auto res = HttpCodec::DecompressFullBody(state, cfg, contentEncoding, std::string_view(body), out, tmp, decoded);
+  EXPECT_EQ(res.status, http::StatusCodeOK) << contentEncoding;
+  EXPECT_EQ(decoded, "hello");
+
+  for (std::string_view sixCodings : {std::string_view{"identity, "}, std::string_view{"identity,"}}) {
+    const std::string tooMany = std::string(sixCodings) + contentEncoding;
+    RawChars freshOut;
+    RawChars freshTmp;
+    res = HttpCodec::DecompressFullBody(state, cfg, tooMany, std::string_view(body), freshOut, freshTmp, decoded);
+    EXPECT_EQ(res.status, http::StatusCodeUnsupportedMediaType) << tooMany;
+    EXPECT_EQ(std::string_view(res.message), "Too many Content-Encoding codings");
+    EXPECT_EQ(freshOut.capacity() + freshTmp.capacity(), 0U) << "nothing is decoded";
+  }
+
+  // Far beyond: 64 real codings.
+  for (int coding = 5; coding < 64; ++coding) {
+    body = test::Compress(enc, std::string_view(body));
+    contentEncoding.append(", ").append(encStr);
+  }
+  res = HttpCodec::DecompressFullBody(state, cfg, contentEncoding, std::string_view(body), out, tmp, decoded);
+  EXPECT_EQ(res.status, http::StatusCodeUnsupportedMediaType);
+}
+
+TEST(HttpCodecDecompression, DecompressChunkedBody_AtMostFiveStackedCodings) {
+  const Encoding enc = test::SupportedEncodings().front();
+  const std::string_view encStr = GetEncodingStr(enc);
+  RawChars body = test::Compress(enc, "hello");
+  std::string contentEncoding(encStr);
+  for (int coding = 1; coding < 6; ++coding) {
+    body = test::Compress(enc, std::string_view(body));
+    contentEncoding.append(",").append(encStr);
+  }
+  const std::string_view bodyView(body);
+  DecompressionConfig cfg;
+  HttpRequestView req = test::HttpRequestViewTestAccess::Make();
+  const_cast<SvToSvMap&>(req.headers()).insert_or_assign(http::ContentEncoding, contentEncoding);
+  RawChars bodyBuf;
+  RawChars tmpBuf;
+  DecompressionState decompressionState;
+  const auto res = HttpCodec::DecompressChunkedBody(
+      decompressionState, cfg, req, std::span<const std::string_view>(&bodyView, 1), body.size(), bodyBuf, tmpBuf);
+  EXPECT_EQ(res.status, http::StatusCodeUnsupportedMediaType);
 }
 
 #endif
@@ -1712,6 +1914,26 @@ TEST(HttpCodecCompression, UseLeadingZeroesDisabled_NoNeedToMemmove) {
   EXPECT_EQ(std::string_view(out), std::string_view(body));
 }
 
+#endif  // AERONET_ENABLE_ZLIB
+
+#ifdef AERONET_ENABLE_ZLIB
+// RFC 9110 §8.4.1.3: "A recipient SHOULD consider "x-gzip" to be equivalent to "gzip"", alone, stacked and next to
+// empty elements.
+TEST(HttpCodecFullBody, XGzipIsGzip) {
+  const RawChars compressed = test::Compress(Encoding::gzip, "hello");
+  const RawChars stacked = test::Compress(Encoding::deflate, std::string_view(compressed));
+  DecompressionState state;
+  DecompressionConfig cfg;
+  RawChars out;
+  RawChars tmp;
+  std::string_view decoded;
+  auto res = HttpCodec::DecompressFullBody(state, cfg, "x-gzip", std::string_view(compressed), out, tmp, decoded);
+  EXPECT_EQ(res.status, http::StatusCodeOK);
+  EXPECT_EQ(decoded, "hello");
+  res = HttpCodec::DecompressFullBody(state, cfg, "x-gzip,, deflate", std::string_view(stacked), out, tmp, decoded);
+  EXPECT_EQ(res.status, http::StatusCodeOK);
+  EXPECT_EQ(decoded, "hello");
+}
 #endif  // AERONET_ENABLE_ZLIB
 
 }  // namespace aeronet

@@ -651,4 +651,34 @@ TEST(AcceptEncodingNegotiationTest, ConfiguredPreferenceOrderCoversExactlyTheEna
   EXPECT_TRUE(exhausted.reject);
 }
 
+#ifdef AERONET_ENABLE_ZLIB
+// A weight that is not a valid qvalue counts as 0 for a coding, which is then not selected. On "identity" or "*", it
+// would turn into a 406 for every request of the client, while RFC 9110 §12.5.3 only refuses when identity is
+// "indicated as unacceptable", which a malformed weight does not do: their element is ignored.
+TEST(AcceptEncodingNegotiationTest, InvalidWeightOfIdentityOrWildcardIsNotARejection) {
+  struct Case {
+    std::string_view acceptEncoding;
+    Encoding encoding;
+  };
+  static constexpr Case kCases[]{
+      {"identity;q=1.0001", Encoding::none},
+      {"*;q=1.0001", Encoding::none},
+      {"identity;q=2", Encoding::none},
+      {"*;q=1.5, gzip;q=0", Encoding::none},
+      {"IDENTITY;q=-1, deflate", Encoding::deflate},
+      {"gzip;q=2, deflate;q=0.5", Encoding::deflate},  // the invalid weight of a coding counts as 0
+      {"gzip;q=2", Encoding::none},
+      {"*;q=x, deflate;q=0.1", Encoding::deflate},
+  };
+  for (const Case& testCase : kCases) {
+    auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
+    const auto result = sel.negotiateAcceptEncoding(testCase.acceptEncoding);
+    EXPECT_FALSE(result.reject) << testCase.acceptEncoding;
+    EXPECT_EQ(result.encoding, testCase.encoding) << testCase.acceptEncoding;
+  }
+  // A valid 0 still rejects.
+  EXPECT_TRUE(MakeSelector({Encoding::gzip}).negotiateAcceptEncoding("gzip;q=2, identity;q=0").reject);
+}
+#endif
+
 }  // namespace aeronet

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <string_view>
 
+#include "aeronet/compiler-config.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/toupperlower.hpp"
@@ -20,12 +21,29 @@ namespace aeronet::http {
 // Example:
 //     static_assert(!aeronet::http::IsReservedResponseHeader("x-my-header")); // OK
 //     static_assert(!aeronet::http::IsReservedResponseHeader("content-length")); // Not OK
-constexpr bool IsReservedResponseHeader(LowerAsciiKey name) noexcept {
-  static constexpr LowerAsciiKey kHeaders[]{
-      http::Connection, http::ContentLength, http::ContentType,      http::Date,
-      http::TE,         http::Trailer,       http::TransferEncoding, http::Upgrade,
-  };
-  return std::ranges::any_of(kHeaders, [name](LowerAsciiKey candidate) { return name == candidate; });
+// Checked on each header set by a handler: one comparison at most for most names, dispatched on the length. The names
+// are compared as std::string_view of a length known in each case, which compiles to a few fixed-size loads.
+AERONET_ALWAYS_INLINE constexpr bool IsReservedResponseHeader(LowerAsciiKey name) noexcept {
+  static_assert(http::Trailer.size() == http::Upgrade.size());
+  const std::string_view sv = name;
+  switch (sv.size()) {
+    case http::TE.size():
+      return sv == http::TE.get();
+    case http::Date.size():
+      return sv == http::Date.get();
+    case http::Trailer.size():
+      return sv == http::Trailer.get() || sv == http::Upgrade.get();
+    case http::Connection.size():
+      return sv == http::Connection.get();
+    case http::ContentType.size():
+      return sv == http::ContentType.get();
+    case http::ContentLength.size():
+      return sv == http::ContentLength.get();
+    case http::TransferEncoding.size():
+      return sv == http::TransferEncoding.get();
+    default:
+      return false;
+  }
 }
 
 // Same as IsReservedResponseHeader but for request headers.
@@ -78,8 +96,9 @@ constexpr bool IsForbiddenTrailerHeader(LowerAsciiKey trailerName) noexcept {
       "www-authenticate",
   };
 
-  return std::ranges::any_of(kForbiddenTrailers,
-                             [trailerName](LowerAsciiKey candidate) { return trailerName == candidate; });
+  // Compared as std::string_view: the lengths first, inline (the defaulted LowerAsciiKey comparison may not be).
+  const std::string_view name = trailerName;
+  return std::ranges::any_of(kForbiddenTrailers, [name](LowerAsciiKey candidate) { return name == candidate.get(); });
 }
 
 // RFC 9113 §8.2.2: a connection-specific field makes an HTTP/2 message malformed. TE is the exception when its value is
