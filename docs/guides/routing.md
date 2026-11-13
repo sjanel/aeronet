@@ -33,7 +33,7 @@ All handlers of a server run on its event-loop thread: a handler that blocks del
 - `setDefault(handler)` registers a fallback for requests that match no path. A streaming fallback can be registered next to a synchronous one; see [Dispatch precedence](#dispatch-precedence).
 - A request whose path matches no route, without fallback, receives `404 Not Found`. A request whose path exists but not for its method receives `405 Method Not Allowed`, with an `Allow` header listing the methods registered on the path, like `Router::allowedMethods()`.
 - `HEAD` requests use the `GET` handler when no `HEAD` handler is registered; the server sends the headers without the body.
-- `OPTIONS` (CORS preflight, `OPTIONS *`), `TRACE`, and `CONNECT` are handled by the server, see [HTTP/1.1 conformance](../reference/http-conformance.md#configurable-behaviors).
+- `OPTIONS` (CORS preflight, `OPTIONS *`), `TRACE`, and `CONNECT` are handled by the server, see [HTTP/1.1 conformance](../reference/http-conformance.md#configurable-behaviors). The `Allow` header of `OPTIONS *` lists the methods of `Router::supportedMethods()` (registered on at least one route, or all of them with a fallback), `TRACE` only when it is echoed.
 
 `setPath()` returns the route entry, to attach per-route options (see [Per-route options](#per-route-options)).
 

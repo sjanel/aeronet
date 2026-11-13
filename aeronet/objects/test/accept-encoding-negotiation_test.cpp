@@ -681,4 +681,66 @@ TEST(AcceptEncodingNegotiationTest, InvalidWeightOfIdentityOrWildcardIsNotARejec
 }
 #endif
 
+#ifdef AERONET_ENABLE_ZLIB
+// Audit of the negotiation against RFC 9110 §12.5.3 (Accept-Encoding) and §12.4.2 (weights), with gzip and deflate
+// preferred so that the expected coding does not depend on the other compiled codecs.
+TEST(AcceptEncodingNegotiationTest, AuditEdgeCases) {
+  struct Case {
+    std::string_view acceptEncoding;
+    Encoding encoding;
+    bool reject;
+  };
+  static constexpr Case kCases[]{
+      // q=0 in its three spellings excludes a coding, identity stays acceptable
+      {"gzip;q=0, deflate;q=0.000", Encoding::none, false},
+      {"gzip;q=0., deflate;q=0.0", Encoding::none, false},
+      // "1" with up to three zeroes
+      {"deflate;q=1.000, gzip;q=0.999", Encoding::deflate, false},
+      {"deflate;q=1., gzip;q=0.999", Encoding::deflate, false},
+      // OWS around ';' (weight = OWS ";" OWS "q=" qvalue)
+      {"gzip ; q=0.5, deflate\t;\tq=0.6", Encoding::deflate, false},
+      {" gzip;q=0 , deflate ", Encoding::deflate, false},
+      // case-insensitive codings and parameter name
+      {"GZIP;Q=0, DEFLATE;Q=0.5", Encoding::deflate, false},
+      {"IDENTITY;Q=0, GZIP;Q=0, deflate;q=0, zstd;q=0, br;q=0", Encoding::none, true},
+      // identity;q=0
+      {"identity;q=0", Encoding::none, true},
+      {"identity;q=0.000", Encoding::none, true},
+      {"identity;q=0, gzip;q=0.5", Encoding::gzip, false},
+      {"identity;q=0, *;q=0", Encoding::none, true},
+      // *;q=0
+      {"*;q=0", Encoding::none, true},
+      {"*;q=0, identity", Encoding::none, false},
+      {"*;q=0, identity;q=0.001", Encoding::none, false},
+      {"*;q=0, gzip", Encoding::gzip, false},
+      {"*;q=0, gzip;q=0", Encoding::none, true},
+      // identity preferred by the client
+      {"gzip;q=0.5, identity", Encoding::none, false},
+      {"gzip;q=0.5, deflate;q=0.4, identity;q=0.6", Encoding::none, false},
+      // unknown codings only: identity
+      {"compress, x-gzip", Encoding::none, false},
+      {"compress, identity;q=0", Encoding::none, true},
+      // first q parameter wins, others ignored
+      {"gzip;q=0.5;q=0, deflate;q=0.4", Encoding::gzip, false},
+  };
+  for (const Case& testCase : kCases) {
+    auto sel = MakeSelector({Encoding::gzip, Encoding::deflate});
+    const auto result = sel.negotiateAcceptEncoding(testCase.acceptEncoding);
+    EXPECT_EQ(result.encoding, testCase.encoding) << testCase.acceptEncoding;
+    EXPECT_EQ(result.reject, testCase.reject) << testCase.acceptEncoding;
+  }
+}
+
+// The same coding listed twice takes its highest weight, but the wildcard listed twice takes the weight of its first
+// occurrence: the result of "*;q=0, *" differs from the one of "*, *;q=0".
+TEST(AcceptEncodingNegotiationTest, AuditDuplicateWildcardDoesNotDependOnOrder) {
+  EXPECT_EQ(MakeSelector({Encoding::gzip, Encoding::deflate}).negotiateAcceptEncoding("gzip;q=0, gzip").encoding,
+            MakeSelector({Encoding::gzip, Encoding::deflate}).negotiateAcceptEncoding("gzip, gzip;q=0").encoding);
+  const auto first = MakeSelector({Encoding::gzip, Encoding::deflate}).negotiateAcceptEncoding("*;q=0, *");
+  const auto second = MakeSelector({Encoding::gzip, Encoding::deflate}).negotiateAcceptEncoding("*, *;q=0");
+  EXPECT_EQ(first.encoding, second.encoding);
+  EXPECT_EQ(first.reject, second.reject);
+}
+#endif
+
 }  // namespace aeronet

@@ -38,6 +38,7 @@ HttpResponseWriter::HttpResponseWriter(IWriterTransport& transport, const HttpRe
       _encoding(encoding),
       // 64UL for Transfer-Encoding: chunked, Content-Length and other headers
       _fixedResponse(64UL, http::StatusCodeOK, globalHeadersStr, std::string_view{}, std::string_view{}, opts),
+      _declaredLength(IWriterTransport::kNoDeclaredLength),
       _pCompressionConfig(&compressionConfig),
       _pCompressionState(&compressionState) {
   _fixedResponse.headerAddLineUnchecked(http::ContentType, http::ContentTypeApplicationOctetStream);
@@ -110,16 +111,18 @@ void HttpResponseWriter::contentLength(std::size_t len) {
   _declaredLength = len;
 }
 
-void HttpResponseWriter::ensureHeadersSent() {
+void HttpResponseWriter::ensureHeadersSent(bool bodyWritten) {
   if (_state != State::Opened) {
     return;
   }
 
   if (!http::StatusCodeAllowsBody(_statusCode)) {
     dropContent();
-  } else if (_declaredLength != 0 && _encoding != Encoding::none && !_fixedResponse._opts.hasContentEncoding()) {
+  } else if (_declaredLength != IWriterTransport::kNoDeclaredLength && _encoding != Encoding::none &&
+             !_fixedResponse._opts.hasContentEncoding()) {
     // The declared length is the one of the body written by the handler: the threshold is checked against it, without
-    // buffering, and the same decision is taken for a HEAD request, whatever the handler writes for it.
+    // buffering, and the same decision is taken for a HEAD request, whatever the handler writes for it. An empty body
+    // (0) is never compressed, minBytes being at least 1.
     assert(_activeEncoderCtx == nullptr && _preCompressBuffer.empty());
     if (_declaredLength >= _pCompressionConfig->minBytes) {
       startCompressionIfAllowed();
@@ -133,7 +136,8 @@ void HttpResponseWriter::ensureHeadersSent() {
 
   const bool isCompressionActive = _activeEncoderCtx != nullptr;
   const bool addContentEncoding = isCompressionActive && !_fixedResponse._opts.hasContentEncoding();
-  const bool addVary = isCompressionActive && _pCompressionConfig->addVaryAcceptEncodingHeader;
+  const bool addVary =
+      _pCompressionConfig->addVaryAcceptEncodingHeader && (isCompressionActive || identityVariantVaries(bodyWritten));
 
   if (addContentEncoding) {
     // The prefix of a weakened ETag included, without searching for it.
@@ -153,7 +157,7 @@ void HttpResponseWriter::ensureHeadersSent() {
     _fixedResponse.weakenStrongETag();
   }
   if (addVary) {
-    _fixedResponse.headerAppendValue(http::Vary, http::AcceptEncoding);
+    _fixedResponse.headerAppendValueIfAbsent(http::Vary, http::AcceptEncoding);
   }
 
   if (!_transport->emitHeaders(_fixedResponse, *_request, _declaredLength, _noContent)) {
@@ -162,8 +166,24 @@ void HttpResponseWriter::ensureHeadersSent() {
   } else {
     _state = State::HeadersSent;
     // From now on, _declaredLength counts the body bytes still due (a file is sent by the transport).
-    _fixedLength = _declaredLength != 0 && !_noContent && !_isFile;
+    _fixedLength = _declaredLength != IWriterTransport::kNoDeclaredLength && !_noContent && !_isFile;
   }
+}
+
+bool HttpResponseWriter::identityVariantVaries([[maybe_unused]] bool bodyWritten) const {
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+  if (!_pCompressionConfig->addVaryAcceptEncodingToUncompressed ||
+      _request->responsePossibleEncoding() != Encoding::none || _isFile || _fixedResponse._opts.hasContentEncoding() ||
+      _statusCode == http::StatusCodePartialContent || !http::StatusCodeAllowsBody(_statusCode)) {
+    return false;
+  }
+  const bool largeEnough = _declaredLength != IWriterTransport::kNoDeclaredLength
+                               ? _declaredLength >= _pCompressionConfig->minBytes
+                               : bodyWritten;
+  return largeEnough && HttpCodec::IsContentTypeAllowed(*_pCompressionConfig, _fixedResponse);
+#else
+  return false;
+#endif
 }
 
 void HttpResponseWriter::startCompressionIfAllowed() {
@@ -173,7 +193,7 @@ void HttpResponseWriter::startCompressionIfAllowed() {
     _activeEncoderCtx = _pCompressionState->makeContext(_encoding);
     // The length of the encoded body is not known when the head is sent (RFC 9110 §8.6): a declared length, the one
     // of the body before its encoding, is dropped, and the response is chunked (close-delimited for HTTP/1.0).
-    _declaredLength = 0;
+    _declaredLength = IWriterTransport::kNoDeclaredLength;
   } else {
     _encoding = Encoding::none;
   }
@@ -188,7 +208,7 @@ void HttpResponseWriter::dropContent() {
   _activeEncoderCtx = nullptr;
   _preCompressBuffer.clear();
   _trailers.clear();
-  _declaredLength = 0;
+  _declaredLength = IWriterTransport::kNoDeclaredLength;
   if (_isFile) {
     // The file comes with its body headers.
     _fixedResponse.body(std::string_view{});
@@ -224,7 +244,8 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
   // reliably when compression triggers mid-stream.
   // A declared length gives the size of the body at once: the decision is taken when the head is sent, see
   // ensureHeadersSent().
-  if (_encoding != Encoding::none && _activeEncoderCtx == nullptr && _declaredLength == 0 &&
+  if (_encoding != Encoding::none && _activeEncoderCtx == nullptr &&
+      _declaredLength == IWriterTransport::kNoDeclaredLength &&
       _preCompressBuffer.size() < _pCompressionConfig->minBytes && !_fixedResponse._opts.hasContentEncoding()) {
     // Accumulate data into the pre-compression buffer up to minBytes. Always buffer the entire incoming data until
     // we cross the threshold (or end() is called).
@@ -247,7 +268,7 @@ bool HttpResponseWriter::writeBody(std::string_view data) {
     startCompressionIfAllowed();
   }
 
-  ensureHeadersSent();
+  ensureHeadersSent(true);
   if (_state == State::Failed) {
     return false;
   }
@@ -349,7 +370,7 @@ void HttpResponseWriter::end() {
   }
   // If compression was delayed and threshold reached earlier, write() already emitted headers and compressed data.
   // Otherwise we may still have buffered identity bytes (below threshold case) - emit headers now then flush.
-  ensureHeadersSent();
+  ensureHeadersSent(false);
   if (_state == State::Failed) {
     return;
   }
@@ -419,9 +440,8 @@ bool HttpResponseWriter::file(File file, std::uint64_t offset, std::uint64_t len
     log::warn("Streaming: file ignored {} reason=writer-not-open", _transport->logId());
     return false;
   }
-  if (_declaredLength != 0) {
+  if (_declaredLength != IWriterTransport::kNoDeclaredLength) {
     log::warn("Streaming: file overriding previously declared Content-Length {}", _transport->logId());
-    _declaredLength = 0;
   }
   _encoding = Encoding::none;
   _activeEncoderCtx = nullptr;

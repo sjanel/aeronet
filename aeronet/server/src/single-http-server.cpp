@@ -68,10 +68,10 @@ void SingleHttpServer::eventLoop() {
   // the poll then only collects the events already ready, without waiting.
   const auto events = _ctx.eventLoop.poll(!_ctx.io.hasDeferredInputs());
 
-  // Update cached now time
+  // Update cached now time. The Date header is not derived from it: each response reads its own second (see
+  // internal::DateHeaderCache), the handlers run after this point and may block.
   const auto now = std::chrono::steady_clock::now();
   _ctx.connections.now = now;
-  _ctx.dateHeader.refreshIfNeeded(now);
 
   // Publish the loop heartbeat (see internal::Lifecycle::loopHeartbeat): a single relaxed store of the 'now' we just
   // read. A dedicated probe listener (MultiHttpServer, see BuiltinProbesConfig::dedicatedPort) reads it to tell a loop

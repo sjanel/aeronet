@@ -36,6 +36,7 @@
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/string-trim.hpp"
+#include "aeronet/supported-accept-encoding.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 #include "aeronet/toupperlower.hpp"
@@ -307,6 +308,43 @@ std::string ChunkedPost(std::string_view contentEncoding, std::string_view body)
 }
 }  // namespace
 
+#if defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZSTD)
+// RFC 9110 §12.5.3: "servers that fail a request due to an unsupported content coding ought to respond with a 415
+// status and include an Accept-Encoding header field in that response", so that the client can tell the refused
+// coding from a refused media type, and retry with a supported one. The other errors of the decoding do not list them.
+TEST(HttpRequestDecompression, UnsupportedCodingAnswerListsTheSupportedOnes) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.decompression = {}; });
+  ts.resetRouterAndGet().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
+  const std::string acceptEncodingLine =
+      std::format("\r\n{}: {}\r\n", std::string_view(http::AcceptEncoding), internal::kSupportedAcceptEncoding);
+
+  const auto expectListed = [&acceptEncodingLine](std::string_view contentEncoding, std::string_view body) {
+    SCOPED_TRACE(contentEncoding);
+    const auto resp = RawPost(ts.port(), "/u", {{"Content-Encoding", contentEncoding}}, body);
+    EXPECT_EQ(resp.status, http::StatusCodeUnsupportedMediaType);
+    EXPECT_TRUE(resp.headersRaw.contains(acceptEncodingLine)) << resp.headersRaw;
+    const std::string chunked = ChunkedPost(contentEncoding, body);
+    EXPECT_TRUE(chunked.starts_with("HTTP/1.1 415 ")) << chunked;
+    EXPECT_TRUE(chunked.contains(acceptEncodingLine)) << chunked;
+  };
+
+  expectListed("snappy", "abc");
+  for (const Encoding enc : test::SupportedEncodings()) {
+    const RawChars compressed = test::Compress(enc, "abc");
+    // Refused after the decoding of the last coding applied.
+    expectListed(std::format("snappy, {}", GetEncodingStr(enc)), compressed);
+    // More codings than decoded.
+    expectListed(std::format("identity, identity, identity, identity, identity, {}", GetEncodingStr(enc)), compressed);
+
+    // A body failing to decode is not a refused coding.
+    const std::string_view corrupted = std::string_view(compressed).substr(0, compressed.size() / 2);
+    const auto resp = RawPost(ts.port(), "/u", {{"Content-Encoding", GetEncodingStr(enc)}}, corrupted);
+    EXPECT_EQ(resp.status, http::StatusCodeBadRequest) << GetEncodingStr(enc);
+    EXPECT_FALSE(resp.headersRaw.contains(std::string_view(http::AcceptEncoding))) << resp.headersRaw;
+  }
+}
+#endif
+
 // RFC 9110 §5.6.1.2: a recipient MUST ignore a reasonable number of empty list elements (they count towards the limit
 // of 5 codings). A Content-Encoding without any coding is identity: the body is passed as received.
 TEST(HttpRequestDecompression, EmptyElementsAreIgnored) {
@@ -380,6 +418,50 @@ TEST(HttpRequestDecompression, MaxCompressedBytesExceededEarlyReturn) {
     resp = RawPost(ts.port(), "/nowok", {{"Content-Encoding", GetEncodingStr(enc)}}, comp);
     EXPECT_EQ(resp.status, http::StatusCodeOK);
     EXPECT_EQ(resp.body, plain);
+  }
+}
+
+// The compressed size of a body with Content-Length is known from its head: above maxCompressedBytes, it is refused
+// before it is received (as for a chunked body, refused from the size line of the chunk exceeding it), instead of
+// buffered up to maxBodyBytes and then refused. Also when its client waits for 100 Continue, which is not sent.
+TEST(HttpRequestDecompression, MaxCompressedBytesOfAContentLengthBodyIsCheckedFromTheHead) {
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
+  const std::string plain = test::MakePatternedPayload(1000);
+
+  for (const Encoding enc : test::SupportedEncodings()) {
+    const RawChars comp = test::Compress(enc, plain);
+    ts.postConfigUpdate([&comp](HttpServerConfig& cfg) {
+      cfg.decompression = {};
+      cfg.decompression.maxCompressedBytes = comp.size();
+    });
+
+    // Only the head is sent: the answer cannot wait for the body.
+    for (const std::string_view expect : {"", "Expect: 100-continue\r\n"}) {
+      for (const std::string_view coding : {GetEncodingStr(enc), std::string_view("identity, gzip")}) {
+        test::ClientConnection cnx(ts.port());
+        test::sendAll(cnx.fd(), std::format("POST /head HTTP/1.1\r\nHost: h\r\nContent-Encoding: {}\r\n{}"
+                                            "Content-Length: {}\r\n\r\n",
+                                            coding, expect, comp.size() + 1U));
+        const std::string resp = test::recvWithTimeout(cnx.fd(), std::chrono::milliseconds{2000});
+        EXPECT_TRUE(resp.starts_with("HTTP/1.1 413")) << coding << " '" << expect << "': " << resp;
+      }
+    }
+
+    // At the limit: received and decompressed.
+    auto resp = RawPost(ts.port(), "/limit", {{"Content-Encoding", GetEncodingStr(enc)}}, comp);
+    EXPECT_EQ(resp.status, http::StatusCodeOK) << GetEncodingStr(enc);
+    EXPECT_EQ(resp.body, plain) << GetEncodingStr(enc);
+
+    // Above it, a body without coding to decode is not bounded by it.
+    const std::string larger(comp.size() + 1U, 'L');
+    for (const std::string_view coding : {std::string_view("identity"), std::string_view(", identity")}) {
+      resp = RawPost(ts.port(), "/identity", {{"Content-Encoding", coding}}, larger);
+      EXPECT_EQ(resp.status, http::StatusCodeOK) << coding;
+      EXPECT_EQ(resp.body, larger) << coding;
+    }
+    resp = RawPost(ts.port(), "/none", {}, larger);
+    EXPECT_EQ(resp.status, http::StatusCodeOK);
+    EXPECT_EQ(resp.body, larger);
   }
 }
 

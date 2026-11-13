@@ -92,6 +92,13 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    supported-accept-encoding_test
+    test/supported-accept-encoding_test.cpp
+    LIBRARIES
+    aeronet_objects
+)
+
+AeronetAddUnitTest(
     quality-value_test
     test/quality-value_test.cpp
     LIBRARIES

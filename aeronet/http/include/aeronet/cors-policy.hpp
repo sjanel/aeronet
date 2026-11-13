@@ -89,9 +89,8 @@ class CorsPolicy {
   [[nodiscard]] ApplyStatus applyToResponse(const HttpRequestView& request, HttpResponse& response) const;
 
   // Handle a preflight CORS request and produce the appropriate response.
-  [[nodiscard]] PreflightResult handlePreflight(
-      const HttpRequestView& request,
-      http::MethodBmp routeMethods = static_cast<http::MethodBmp>((1U << http::kNbMethods) - 1U)) const;
+  [[nodiscard]] PreflightResult handlePreflight(const HttpRequestView& request,
+                                                http::MethodBmp routeMethods = http::kAllMethods) const;
 
  private:
   enum class OriginMode : std::uint8_t { Any, Enumerated };

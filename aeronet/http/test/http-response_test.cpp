@@ -74,6 +74,7 @@ class HttpResponseTest : public ::testing::Test {
   struct PreparedOptions {
     bool head = false;
     bool addVaryAcceptEncoding = false;
+    bool varyAcceptEncodingListed = false;  // decided by HttpRequestView::makeResponse() for a body set at construction
     bool addTrailerHeader = false;
     bool close = false;
     bool sendContentLengthHeader = true;
@@ -126,6 +127,9 @@ class HttpResponseTest : public ::testing::Test {
     }
     if (opts.addVaryAcceptEncoding) {
       httpMessageOpts.addVaryAcceptEncoding();
+    }
+    if (opts.varyAcceptEncodingListed) {
+      httpMessageOpts.setVaryAcceptEncodingListed();
     }
     if (opts.addTrailerHeader) {
       httpMessageOpts.addTrailerHeader();
@@ -760,6 +764,51 @@ TEST_F(HttpResponseTest, AppendHeaderValueCreatesHeaderWhenMissing) {
   auto resp = HttpResponse(http::StatusCodeOK, "OK").headerAppendValue("x-missing", "v1");
   auto full = concatenated(std::move(resp));
   EXPECT_TRUE(full.contains("x-missing: v1\r\n")) << full;
+}
+
+TEST_F(HttpResponseTest, HeaderAppendValueIfAbsent) {
+  struct Case {
+    std::string_view name;
+    std::string_view existing;
+    std::string_view value;
+    std::string_view expected;
+  };
+  static constexpr Case kCases[]{
+      {"vary", "origin", "accept-encoding", "origin, accept-encoding"},
+      {"vary", "accept-encoding", "accept-encoding", "accept-encoding"},
+      {"vary", "Origin, Accept-Encoding", "accept-encoding", "Origin, Accept-Encoding"},
+      {"vary", "accept-encoding,origin", " Origin\t", "accept-encoding,origin"},
+      {"vary", "accept-encoding-x, x-accept-encoding", "accept-encoding",
+       "accept-encoding-x, x-accept-encoding, accept-encoding"},
+      {"vary", "*", "accept-encoding", "*"},
+      {"x-list", "*", "a", "*, a"},                  // '*' has every element for vary only
+      {"x-list", R"("a, b")", "b", R"("a, b", b)"},  // a comma in a quoted string does not separate elements
+      {"x-list", "a", "", "a"},                      // nothing to append
+  };
+  for (const Case& tc : kCases) {
+    SCOPED_TRACE(::testing::Message() << tc.name << ": '" << tc.existing << "' + '" << tc.value << "'");
+    const LowerAsciiKey key{tc.name};
+    HttpResponse resp(http::StatusCodeOK);
+    resp.headerAddLine(key, tc.existing);
+    resp.body("hello");
+
+    resp.headerAppendValueIfAbsent(key, tc.value);
+
+    EXPECT_EQ(resp.headerValueOrEmpty(key), tc.expected);
+    EXPECT_EQ(resp.bodyInMemory(), "hello");
+  }
+}
+
+// The list of a header is the one of all its lines (RFC 9110 §5.3): an element of any line is present. A missing header
+// is added, and a new element goes to the first line, as with headerAppendValue().
+TEST_F(HttpResponseTest, HeaderAppendValueIfAbsentLooksAtAllTheLinesOfTheHeader) {
+  HttpResponse resp = HttpResponse(http::StatusCodeOK).headerAppendValueIfAbsent(http::Vary, http::Origin);
+  resp.headerAddLine(http::Vary, http::AcceptEncoding);
+
+  resp.headerAppendValueIfAbsent(http::Vary, "Accept-Encoding").headerAppendValueIfAbsent(http::Vary, "user-agent");
+
+  const auto full = concatenated(std::move(resp));
+  EXPECT_TRUE(full.contains("\r\nvary: origin, user-agent\r\nvary: accept-encoding\r\n")) << full;
 }
 
 TEST_F(HttpResponseTest, SetSameReason) {
@@ -2280,6 +2329,9 @@ TEST_F(HttpResponseTest, HeaderValueMethodsCannotChangeContentTypeAndLength) {
 
   EXPECT_THROW(resp.headerAppendValue(http::ContentLength, "6"), std::invalid_argument);
   EXPECT_THROW(resp.headerAppendValue(http::ContentType, "x/y"), std::invalid_argument);
+  // Even with a value they already have.
+  EXPECT_THROW(resp.headerAppendValueIfAbsent(http::ContentLength, "5"), std::invalid_argument);
+  EXPECT_THROW(resp.headerAppendValueIfAbsent(http::ContentType, http::ContentTypeTextPlain), std::invalid_argument);
   resp.headerRemoveValue(http::ContentType, http::ContentTypeTextPlain);
   resp.headerRemoveValue(http::ContentLength, "5");
   resp.headerAddLine("x-b", "2");
@@ -2299,6 +2351,7 @@ TEST_F(HttpResponseTest, HeaderValueMethodsCannotChangeContentEncodingWithBody) 
   resp.body(std::string("captured"));
 
   EXPECT_THROW(resp.headerAppendValue(http::ContentEncoding, "br"), std::logic_error);
+  EXPECT_THROW(resp.headerAppendValueIfAbsent(http::ContentEncoding, "gzip"), std::logic_error);
   EXPECT_THROW(resp.headerRemoveValue(http::ContentEncoding, "gzip"), std::logic_error);
   EXPECT_EQ(resp.headerValueOrEmpty(http::ContentEncoding), "gzip");
   EXPECT_EQ(resp.bodyInMemory(), "captured");
@@ -5931,6 +5984,7 @@ TEST_F(HttpResponseTest, ReservedHeadersAreRejected) {
       EXPECT_THROW(resp.headerAddLine(key, 5), std::invalid_argument) << name;
       EXPECT_THROW(resp.header(key, "chunked"), std::invalid_argument) << name;
       EXPECT_THROW(resp.headerAppendValue(key, "chunked"), std::invalid_argument) << name;
+      EXPECT_THROW(resp.headerAppendValueIfAbsent(key, "chunked"), std::invalid_argument) << name;
       EXPECT_THROW(HttpResponse("hello").headerAddLine(key, "chunked"), std::invalid_argument) << name;
     }
     const std::string full = concatenated(std::move(resp));  // kKeepAlive is false: the server closes
@@ -5977,6 +6031,7 @@ TEST_F(HttpResponseTest, TrailerHeaderOfAHeadResponseCannotBeModified) {
   ASSERT_EQ(resp.headerValueOrEmpty(http::Trailer), "x-sig");
   EXPECT_THROW(resp.header(http::Trailer, "x-other"), std::invalid_argument);
   EXPECT_THROW(resp.headerAppendValue(http::Trailer, "x-other"), std::invalid_argument);
+  EXPECT_THROW(resp.headerAppendValueIfAbsent(http::Trailer, "x-sig"), std::invalid_argument);
   EXPECT_THROW(resp.headerAddLine(http::Trailer, "x-other"), std::invalid_argument);
   resp.trailerAddLine("x-sig-2", "2");
   EXPECT_EQ(resp.headerValueOrEmpty(http::Trailer), "x-sig, x-sig-2");
@@ -6078,6 +6133,102 @@ TEST_F(HttpResponseTest, WeakenStrongETag) {
   WeakenStrongETag(emptyETag);
   EXPECT_EQ(emptyETag.headerValueOrEmpty(http::ETag), "");
 }
+
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+// RFC 9110 §12.5.5: a response made for a client accepting no coding, whose body would be compressed for a client
+// accepting one, is selected with Accept-Encoding too. With addVaryAcceptEncodingToUncompressed (which the
+// AddVaryAcceptEncoding option includes then, see HttpRequestView::makeResponseOptions()), its Vary line is written
+// with the body headers, in the room reserved for them: the buffer is not reallocated.
+TEST_F(HttpResponseTest, IdentityVariantVariesOnAcceptEncoding) {
+  compressionConfig.minBytes = 16;
+  const std::string body(32, 'a');
+  const PreparedOptions identity{.addVaryAcceptEncoding = true};
+  static constexpr std::size_t kVaryLineSize = http::HeaderSize(http::Vary.size(), http::AcceptEncoding.size());
+
+  // Body set by the constructor (makeResponse(body), which decides), inline or captured, also for HEAD.
+  for (const bool head : {false, true}) {
+    HttpResponse resp =
+        makePrepared(PreparedOptions{.head = head, .addVaryAcceptEncoding = true, .varyAcceptEncodingListed = true},
+                     http::StatusCodeOK, body);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::Vary), http::AcceptEncoding) << head;
+    EXPECT_EQ(resp.bodyLength(), body.size());
+  }
+  const PreparedOptions listed{.addVaryAcceptEncoding = true, .varyAcceptEncodingListed = true};
+  HttpResponse inlineBody = makePrepared(listed, http::StatusCodeOK, body);
+  EXPECT_EQ(inlineBody.capacityInlined(), inlineBody.sizeInlined());
+  EXPECT_TRUE(
+      concatenated(std::move(inlineBody)).contains("\r\nvary: accept-encoding\r\ncontent-type: text/plain\r\n"));
+  EXPECT_EQ(makePreparedCaptured(listed, http::StatusCodeOK, body).headerValueOrEmpty(http::Vary),
+            http::AcceptEncoding);
+  // Nothing to write without a body.
+  EXPECT_FALSE(makePrepared(listed).hasHeader(http::Vary));
+
+  // Body set later, in the room of HttpResponse::BodySize() and of the Vary line (see HttpRequestView::makeResponse()).
+  HttpResponse later =
+      makePrepared(identity, http::StatusCodeOK, "", HttpResponse::BodySize(body.size()) + kVaryLineSize);
+  const std::size_t capacity = later.capacityInlined();
+  later.body(body);
+  EXPECT_EQ(later.headerValueOrEmpty(http::Vary), http::AcceptEncoding);
+  EXPECT_EQ(later.capacityInlined(), capacity);
+  later.body(std::string(64, 'b'));  // replaced: listed once
+  EXPECT_EQ(later.headerValueOrEmpty(http::Vary), http::AcceptEncoding);
+
+  // Replacing a small body, with a Vary of the handler.
+  HttpResponse replaced = makePrepared(identity);
+  replaced.headerAddLine(http::Vary, http::Origin);
+  replaced.body("small");
+  EXPECT_EQ(replaced.headerValueOrEmpty(http::Vary), http::Origin);
+  replaced.body(body);
+  EXPECT_EQ(replaced.headerValueOrEmpty(http::Vary), "origin, accept-encoding");
+  EXPECT_EQ(replaced.bodyInMemory(), body);
+  HttpResponse replacedNoVary = makePrepared(identity);
+  replacedNoVary.body("small");
+  replacedNoVary.body(std::string(body));
+  EXPECT_EQ(replacedNoVary.headerValueOrEmpty(http::Vary), http::AcceptEncoding);
+  EXPECT_EQ(replacedNoVary.bodyInMemory(), body);
+
+  // A Vary of the handler covering Accept-Encoding already.
+  for (std::string_view vary : {"*", "Accept-Encoding"}) {
+    HttpResponse resp = makePrepared(identity);
+    resp.headerAddLine(http::Vary, vary);
+    resp.body(body);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::Vary), vary);
+  }
+
+  // A body compressed directly whatever its size.
+  HttpResponse forced = makePrepared(identity);
+  forced.directCompressionMode(DirectCompressionMode::On);
+  forced.body("small");
+  EXPECT_EQ(forced.headerValueOrEmpty(http::Vary), http::AcceptEncoding);
+}
+
+// The responses that are not compressed for any client do not vary on Accept-Encoding.
+TEST_F(HttpResponseTest, IdentityVariantOfAnUncompressedResponseDoesNotVary) {
+  compressionConfig.minBytes = 16;
+  compressionConfig.contentTypeAllowList.append("text/plain");
+  const std::string body(32, 'a');
+  const PreparedOptions identity{.addVaryAcceptEncoding = true};
+
+  HttpResponse notAllowed = makePrepared(identity);
+  notAllowed.body(body, http::ContentTypeApplicationOctetStream);
+  EXPECT_FALSE(notAllowed.hasHeader(http::Vary));
+
+  HttpResponse encoded = makePrepared(identity);
+  encoded.headerAddLine(http::ContentEncoding, "identity");
+  encoded.body(body);
+  EXPECT_FALSE(encoded.hasHeader(http::Vary));
+
+  HttpResponse partial = makePrepared(identity, http::StatusCodePartialContent);
+  partial.body(body);
+  EXPECT_FALSE(partial.hasHeader(http::Vary));
+
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, body);
+  HttpResponse fileBody = makePrepared(identity);
+  fileBody.file(File(tmp.filePath().string()), http::ContentTypeTextPlain);
+  EXPECT_FALSE(fileBody.hasHeader(http::Vary));
+}
+#endif
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
 // The Content-Range of a 206 describes the bytes of the content sent (RFC 9110 §14.4): its body is never compressed

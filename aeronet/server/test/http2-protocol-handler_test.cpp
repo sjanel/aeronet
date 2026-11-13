@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <ctime>
 #include <filesystem>
 #include <functional>
 #include <iterator>
@@ -42,6 +43,7 @@
 #include "aeronet/http2-frame.hpp"
 #include "aeronet/http2-stream.hpp"
 #include "aeronet/http2-test-helpers.hpp"
+#include "aeronet/internal/date-header-cache.hpp"
 #include "aeronet/internal/server-context.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
@@ -58,7 +60,6 @@
 #endif
 #include "aeronet/telemetry-config.hpp"
 #include "aeronet/temp-file.hpp"
-#include "aeronet/timedef.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/tunnel-bridge.hpp"
 #include "aeronet/unix-dogstatsd-sink.hpp"
@@ -75,12 +76,14 @@ namespace {
 
 constexpr const char* const kCachedDate = "Sun, 06 Nov 1994 08:49:37 GMT";
 
+// The wall clock of the tests: kCachedDate, in seconds since the epoch.
+std::time_t CachedDateSeconds(std::time_t* /*unused*/) { return 784111777; }
+
 // The server context of the handlers of the tests, whose Date header is kCachedDate.
 struct TestServerContext : ::aeronet::internal::ServerContext {
   explicit TestServerContext(HttpServerConfig config = HttpServerConfig(), Router router = Router())
       : ServerContext(std::move(config), std::move(router)) {
-    static constexpr std::chrono::seconds kCachedDateSinceEpoch{784111777};
-    dateHeader.refreshIfNeeded(std::chrono::steady_clock::now(), [] { return SysTimePoint(kCachedDateSinceEpoch); });
+    dateHeader = ::aeronet::internal::DateHeaderCache(&CachedDateSeconds);
   }
 };
 
@@ -1954,6 +1957,74 @@ TEST(Http2ProtocolHandler, DeclaredContentLengthAboveMaxBodyBytesIsRefusedBefore
   EXPECT_EQ(nbHandlerCalls, 1);
 }
 
+// The limit of the compressed size of a body to decompress bounds it as the server limit does: from its declared
+// content-length, before it is received, else from the DATA frame exceeding it. A body without coding to decode is not
+// bounded by it.
+TEST(Http2ProtocolHandler, MaxCompressedBytesRefusesABodyToDecompressBeforeItIsReceived) {
+  Router router;
+  int nbHandlerCalls = 0;
+  router.setDefault([&nbHandlerCalls](const HttpRequestView&) {
+    ++nbHandlerCalls;
+    return HttpResponse(200);
+  });
+
+  Http2ProtocolLoopback loop(router);
+  loop.serverConfig.decompression.enable = true;
+  loop.serverConfig.decompression.maxCompressedBytes = 1000;
+  loop.connect();
+
+  const auto sendHead = [&loop](uint32_t streamId, std::string_view contentEncoding, std::string_view contentLength) {
+    RawChars headers;
+    headers.append(MakeHttp1HeaderLine(":method", "POST"));
+    headers.append(MakeHttp1HeaderLine(":scheme", "https"));
+    headers.append(MakeHttp1HeaderLine(":authority", "example.com"));
+    headers.append(MakeHttp1HeaderLine(":path", "/upload"));
+    headers.append(MakeHttp1HeaderLine("content-encoding", contentEncoding));
+    if (!contentLength.empty()) {
+      headers.append(MakeHttp1HeaderLine("content-length", contentLength));
+    }
+    ASSERT_EQ(loop.client.sendHeaders(streamId, http::StatusCode{}, HeadersView(headers), false), ErrorCode::NoError);
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
+  };
+  const auto sendData = [&loop](uint32_t streamId, std::size_t size, bool endStream) {
+    const std::string data(size, 'd');
+    ASSERT_EQ(loop.client.sendData(streamId, std::as_bytes(std::span<const char>(data.data(), data.size())), endStream),
+              ErrorCode::NoError);
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
+  };
+  const auto expectRefused = [&loop](uint32_t streamId) {
+    ASSERT_FALSE(loop.clientHeaders.empty()) << streamId;
+    EXPECT_EQ(loop.clientHeaders.back().streamId, streamId);
+    EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "413") << streamId;
+    ASSERT_FALSE(loop.streamResets.empty()) << streamId;
+    EXPECT_EQ(loop.streamResets.back(), std::make_pair(streamId, ErrorCode::NoError));
+  };
+
+  // Declared above it: refused from the headers.
+  sendHead(1, "gzip", "1001");
+  expectRefused(1);
+
+  // Without content-length: received up to it, refused from the DATA frame exceeding it.
+  sendHead(3, "identity, gzip", "");
+  sendData(3, 1000, false);
+  EXPECT_EQ(loop.clientHeaders.size(), 1U);
+  sendData(3, 1, false);
+  expectRefused(3);
+  EXPECT_EQ(nbHandlerCalls, 0);
+
+  uint32_t streamId = 5;
+  for (const std::string_view contentLength : {"1001", ""}) {
+    sendHead(streamId, "identity", contentLength);
+    sendData(streamId, 1001, true);
+    EXPECT_EQ(loop.clientHeaders.back().streamId, streamId);
+    EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "200") << contentLength;
+    streamId += 2;
+  }
+  EXPECT_EQ(nbHandlerCalls, 2);
+}
+
 namespace {
 
 // A request that the server answers from its headers alone, before the end of its body.
@@ -3166,32 +3237,41 @@ TEST(Http2ProtocolHandler, UndefinedRequestPseudoHeaderResetsStream) {
 
 // ============== HTTP/2 Special Methods Tests ==============
 
+// OPTIONS * lists the methods of the router as a whole: of all its routes, or all of them with a default handler.
 TEST(Http2ProtocolHandler, OptionsStarReturnsAllowedMethods) {
   Router router;
-  // Need a default handler for OPTIONS * to return all methods
-  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
   router.setPath(http::Method::GET, "/a", [](const HttpRequestView&) { return HttpResponse(200); });
   router.setPath(http::Method::POST, "/b", [](const HttpRequestView&) { return HttpResponse(201); });
+  router.setPath(http::Method::TRACE, "/b", [](const HttpRequestView&) { return HttpResponse(200); });
 
   Http2ProtocolLoopback loop(router);
+  // TRACE is never echoed over HTTP/2, whatever the policy: it is not listed.
+  loop.serverConfig.traceMethodPolicy = HttpServerConfig::TraceMethodPolicy::EnabledPlainAndTLS;
   loop.connect();
 
-  RawChars hdrs;
-  hdrs.append(MakeHttp1HeaderLine(":method", "OPTIONS"));
-  hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
-  hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
-  hdrs.append(MakeHttp1HeaderLine(":path", "*"));
-  const auto ok = loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(hdrs), true);
-  ASSERT_EQ(ok, ErrorCode::NoError);
+  const auto optionsStarAllow = [&loop](uint32_t streamId) {
+    RawChars hdrs;
+    hdrs.append(MakeHttp1HeaderLine(":method", "OPTIONS"));
+    hdrs.append(MakeHttp1HeaderLine(":scheme", "https"));
+    hdrs.append(MakeHttp1HeaderLine(":authority", "example.com"));
+    hdrs.append(MakeHttp1HeaderLine(":path", "*"));
+    EXPECT_EQ(loop.client.sendHeaders(streamId, http::StatusCode{}, HeadersView(hdrs), true), ErrorCode::NoError);
 
-  loop.pumpClientToServer();
-  loop.pumpServerToClient();
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
 
-  ASSERT_FALSE(loop.clientHeaders.empty());
-  const auto& resp = loop.clientHeaders.back();
-  EXPECT_EQ(GetHeaderValue(resp, ":status"), "200");
-  // With a default handler, all methods should be allowed
-  EXPECT_EQ(GetHeaderValue(resp, "allow"), "GET, POST, PUT, DELETE, HEAD, OPTIONS, PATCH, CONNECT, TRACE");
+    if (loop.clientHeaders.empty()) {
+      ADD_FAILURE() << "no response to OPTIONS *";
+      return std::string{};
+    }
+    EXPECT_EQ(GetHeaderValue(loop.clientHeaders.back(), ":status"), "200");
+    return GetHeaderValue(loop.clientHeaders.back(), "allow");
+  };
+
+  EXPECT_EQ(optionsStarAllow(1), "GET, POST");
+
+  loop.ctx.router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
+  EXPECT_EQ(optionsStarAllow(3), "GET, POST, PUT, DELETE, HEAD, OPTIONS, PATCH, CONNECT");
 }
 
 TEST(Http2ProtocolHandler, OptionsPathWithoutHandlerReturns405) {

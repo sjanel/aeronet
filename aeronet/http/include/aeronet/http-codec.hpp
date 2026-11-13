@@ -13,7 +13,9 @@
 #include "aeronet/http-codec-result.hpp"
 #include "aeronet/http-message.hpp"
 #include "aeronet/http-request-view.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/string-trim.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 
 #ifdef AERONET_ENABLE_BROTLI
@@ -93,7 +95,28 @@ class HttpCodec {
   [[nodiscard]] static bool IsContentTypeAllowed(const CompressionConfig& compressionConfig,
                                                  const HttpMessage& msg) noexcept;
 
+  // Whether the body in memory of 'msg' is compressed for a peer accepting a coding, provided that it shrinks enough
+  // (see TryCompressBody()): 'msg' has no Content-Encoding, and a body of at least minBytes of an allowed Content-Type.
+  // Whether a body of 'bodySize' bytes of type 'contentType', set when a response with status 'statusCode' is made, is
+  // compressed for a peer accepting a coding when the response is finalized, provided that it shrinks enough: sent
+  // uncompressed to a client accepting no coding, the response varies on Accept-Encoding too (RFC 9110 §12.5.5).
+  [[nodiscard]] static bool IsCompressible(const CompressionConfig& compressionConfig, http::StatusCode statusCode,
+                                           std::size_t bodySize, std::string_view contentType) noexcept {
+    return bodySize != 0 && bodySize >= compressionConfig.minBytes && statusCode != http::StatusCodePartialContent &&
+           compressionConfig.isContentTypeAllowed(TrimOws(contentType));
+  }
+
+  // Inline: checked for every response sent uncompressed, which is usually too small (see
+  // HttpRequestView::prefinalizeHttpResponse()).
+  [[nodiscard]] static bool IsCompressible(const CompressionConfig& compressionConfig,
+                                           const HttpMessage& msg) noexcept {
+    return !msg.hasContentEncoding() && msg.bodyInMemoryLength() >= compressionConfig.minBytes &&
+           IsContentTypeAllowed(compressionConfig, msg);
+  }
+
   /// Decompress request body for fixed-length requests (so they cannot contain any trailers).
+  /// As for DecompressChunkedBody, maxCompressedBytes is not checked here: the protocols bound a body to decompress
+  /// (WillDecompress) by it while it is received, from its declared length when known.
   static RequestDecompressionResult MaybeDecompressRequestBody(DecompressionState& decompressionState,
                                                                const DecompressionConfig& decompressionConfig,
                                                                HttpRequestView& request,

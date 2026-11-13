@@ -33,7 +33,8 @@ struct SpecialMethodConfig {
 /// Process special HTTP methods (OPTIONS, TRACE) in a protocol-agnostic way.
 ///
 /// This function handles:
-/// - OPTIONS: Returns Allow header with supported methods, handles CORS preflight
+/// - OPTIONS: answers OPTIONS * with an Allow header listing Router::supportedMethods(), TRACE only when the config
+///   echoes it, and handles CORS preflight
 /// - TRACE: Echoes traceEcho if the policy allows it and it is not empty, answers 405 otherwise
 ///
 /// Note: CONNECT is NOT handled here as it requires protocol-specific tunnel setup.

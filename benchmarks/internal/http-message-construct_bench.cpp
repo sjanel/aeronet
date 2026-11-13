@@ -20,6 +20,12 @@
 #include "aeronet/http-request.hpp"
 #endif
 
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+#include "aeronet/compression-config.hpp"
+#include "aeronet/encoding.hpp"
+#include "aeronet/http-codec.hpp"
+#endif
+
 namespace aeronet {
 
 namespace {
@@ -44,6 +50,22 @@ class HttpResponseTest {
             http::ContentTypeTextPlain,
             PreparedOptions()};
   }
+
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+  // makeResponse(body) for a client accepting no coding, with addVaryAcceptEncodingToUncompressed: a body that would be
+  // compressed for a client accepting one starts with a Vary line.
+  static HttpResponse MakeIdentityResponse(std::string_view body, CompressionState& compressionState) {
+    // The decision of HttpRequestView::makeResponseOptions(status, bodySize, contentType), included in the timing.
+    HttpMessage::Options opts(compressionState, Encoding::none);
+    opts.setPrepared();
+    opts.addVaryAcceptEncoding();
+    if (HttpCodec::IsCompressible(*compressionState.pCompressionConfig, http::StatusCodeOK, body.size(),
+                                  http::ContentTypeTextPlain)) {
+      opts.setVaryAcceptEncodingListed();
+    }
+    return {0, http::StatusCodeOK, kServerGlobalHeaders, body, http::ContentTypeTextPlain, opts};
+  }
+#endif
 
  private:
   // Options of a response made by HttpRequestView::makeResponse() for a GET request, without compression.
@@ -124,6 +146,19 @@ void BM_ResponsePreparedCopiedBody(benchmark::State& state) {
   }
 }
 
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+// makeResponse(body) for a client accepting no coding, with addVaryAcceptEncodingToUncompressed (minBytes: 1024).
+void BM_ResponsePreparedIdentityBody(benchmark::State& state) {
+  const std::string body = MakeBody(state);
+  const CompressionConfig compressionConfig;
+  CompressionState compressionState(compressionConfig);
+  for ([[maybe_unused]] auto iter : state) {
+    HttpResponse resp = HttpResponseTest::MakeIdentityResponse(std::string_view(body), compressionState);
+    benchmark::DoNotOptimize(&resp);
+  }
+}
+#endif
+
 // The handler builds a std::string body (included in the timing), then sets it with body(std::string&&).
 void BM_ResponseMovedBodySetter(benchmark::State& state) {
   const std::string body = MakeBody(state);
@@ -203,6 +238,9 @@ BENCHMARK(BM_ResponseStatusOnly);
 BENCHMARK(BM_ResponseCopiedBody)->Apply(BodySizes);
 // No body: makeResponse(statusCode).
 BENCHMARK(BM_ResponsePreparedCopiedBody)->Arg(0)->Apply(BodySizes);
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+BENCHMARK(BM_ResponsePreparedIdentityBody)->Apply(BodySizes);
+#endif
 BENCHMARK(BM_ResponseMovedBodySetter)->Apply(BodySizes);
 BENCHMARK(BM_ResponseMovedBodyConstructor)->Apply(BodySizes);
 BENCHMARK(BM_ResponsePreparedMovedBody)->Apply(BodySizes);

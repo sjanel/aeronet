@@ -111,8 +111,11 @@ HttpResponse ProcessSpecialMethods(const HttpRequestView& request, Router& route
 
   if (request.method() == http::Method::OPTIONS) {
     if (request.path() == "*") {
-      // OPTIONS * request (target="*") should return an Allow header listing supported methods.
-      result = MakeAllowResponse(request, http::StatusCodeOK, router.allowedMethods("*"));
+      // OPTIONS * applies to the server as a whole (RFC 9110 §9.3.7): its Allow header lists the methods of the router.
+      // TRACE is answered here, never by a handler: it is supported only when it is echoed.
+      static constexpr auto kTrace = static_cast<unsigned>(http::Method::TRACE);
+      const unsigned methods = (router.supportedMethods() & ~kTrace) | (config.traceEnabled() ? kTrace : 0U);
+      result = MakeAllowResponse(request, http::StatusCodeOK, static_cast<http::MethodBmp>(methods));
       return result;
     }
 

@@ -110,35 +110,51 @@ std::string_view HttpRequestView::readBody(std::size_t maxBytes) {
 }
 
 HttpResponse HttpRequestView::makeResponse(std::size_t additionalCapacity, http::StatusCode statusCode) const {
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+  if (additionalCapacity != 0 && _addVaryAcceptEncoding && _responsePossibleEncoding == Encoding::none &&
+      _pCompressionState->pCompressionConfig->addVaryAcceptEncodingToUncompressed) {
+    // Room reserved for a body: its body headers may start with a Vary line for a client accepting no coding (see
+    // HttpMessage::Options::identityVariantVaries()), which the capacity given for HttpResponse::BodySize() lacks.
+    additionalCapacity += http::HeaderSize(http::Vary.size(), http::AcceptEncoding.size());
+  }
+#endif
   return {additionalCapacity, statusCode, _pGlobalHeaders->fullStringWithLastSep(),
           std::string_view{}, {},         makeResponseOptions()};
 }
 
 HttpResponse HttpRequestView::makeResponse(std::string_view body, std::string_view contentType) const {
-  return {0UL, http::StatusCodeOK, _pGlobalHeaders->fullStringWithLastSep(), body, contentType, makeResponseOptions()};
+  return {0UL,  http::StatusCodeOK, _pGlobalHeaders->fullStringWithLastSep(),
+          body, contentType,        makeResponseOptions(http::StatusCodeOK, body.size(), contentType)};
 }
 
 HttpResponse HttpRequestView::makeResponse(http::StatusCode statusCode, std::string_view body,
                                            std::string_view contentType) const {
-  return {0UL, statusCode, _pGlobalHeaders->fullStringWithLastSep(), body, contentType, makeResponseOptions()};
+  return {0UL,  statusCode,  _pGlobalHeaders->fullStringWithLastSep(),
+          body, contentType, makeResponseOptions(statusCode, body.size(), contentType)};
 }
 
 HttpResponse HttpRequestView::makeResponse(std::span<const std::byte> body, std::string_view contentType) const {
   std::string_view asBody(reinterpret_cast<const char*>(body.data()), body.size());
   return {0UL,    http::StatusCodeOK, _pGlobalHeaders->fullStringWithLastSep(),
-          asBody, contentType,        makeResponseOptions()};
+          asBody, contentType,        makeResponseOptions(http::StatusCodeOK, asBody.size(), contentType)};
 }
 
 HttpResponse HttpRequestView::makeResponse(http::StatusCode statusCode, std::span<const std::byte> body,
                                            std::string_view contentType) const {
   std::string_view asBody(reinterpret_cast<const char*>(body.data()), body.size());
-  return {0UL, statusCode, _pGlobalHeaders->fullStringWithLastSep(), asBody, contentType, makeResponseOptions()};
+  return {0UL,    statusCode,  _pGlobalHeaders->fullStringWithLastSep(),
+          asBody, contentType, makeResponseOptions(statusCode, asBody.size(), contentType)};
 }
 
 HttpResponse HttpRequestView::makeCapturedResponse(http::StatusCode statusCode, HttpPayload body,
                                                    std::string_view contentType) const {
-  return {0UL,         statusCode,           _pGlobalHeaders->fullStringWithLastSep(), std::move(body),
-          contentType, makeResponseOptions()};
+  const std::size_t bodySize = body.size();
+  return {0UL,
+          statusCode,
+          _pGlobalHeaders->fullStringWithLastSep(),
+          std::move(body),
+          contentType,
+          makeResponseOptions(statusCode, bodySize, contentType)};
 }
 
 bool HttpRequestView::hasExpectContinue() const noexcept {
@@ -664,16 +680,21 @@ void HttpRequestView::prefinalizeHttpResponse(HttpResponse& response, tracing::T
   if (response._opts.isAutomaticDirectCompression()) {
     // Compressed while the handler set it: the ETag may have been set after the body.
     response.weakenStrongETag();
-  } else if (response.hasBodyInMemory() && encoding != Encoding::none && status != http::StatusCodePartialContent) {
-    // The Content-Range of a 206 describes the bytes of the content sent (RFC 9110 §14.4): it is never encoded.
+    return;
+  }
+  // The Content-Range of a 206 describes the bytes of the content sent (RFC 9110 §14.4): it is never encoded.
+  if (!response.hasBodyInMemory() || status == http::StatusCodePartialContent) {
+    return;
+  }
+  if (encoding != Encoding::none) {
     const CompressResponseResult result = HttpCodec::TryCompressBody(*_pCompressionState, encoding, response);
 
     switch (result) {
       case CompressResponseResult::Uncompressed:
-        break;
+        return;
       case CompressResponseResult::Compressed:
         telemetryContext.counterAdd("aeronet.http_responses.compression.total", 1);
-        break;
+        return;
       case CompressResponseResult::ExceedsMaxRatio:
         telemetryContext.counterAdd("aeronet.http_responses.compression.exceeds_max_ratio_total", 1);
         break;
@@ -683,6 +704,19 @@ void HttpRequestView::prefinalizeHttpResponse(HttpResponse& response, tracing::T
         break;
     }
   }
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+  if (!_addVaryAcceptEncoding || !_pCompressionState->pCompressionConfig->addVaryAcceptEncodingToUncompressed) {
+    return;
+  }
+  // Sent uncompressed (compression not shrinking it enough or failing, or no coding accepted), but compressed for a
+  // client accepting a coding: the response is selected with Accept-Encoding too (RFC 9110 §12.5.5). The responses made
+  // with makeResponse() for a client accepting no coding usually have the Vary line already, written with their body
+  // headers.
+  if (encoding != Encoding::none || (!response._opts.isVaryAcceptEncodingListed() &&
+                                     HttpCodec::IsCompressible(*_pCompressionState->pCompressionConfig, response))) {
+    response.headerAppendValueIfAbsent(http::Vary, http::AcceptEncoding);
+  }
+#endif
 }
 
 void HttpRequestView::finalizeBeforeHandlerCall(std::span<const PathParamCapture> pathParams) {
@@ -853,11 +887,28 @@ bool HttpRequestView::hasMoreBody() const {
   return _pBodyAccessBridge->hasMore(*this, _pBodyAccessContext);
 }
 
+HttpResponse::Options HttpRequestView::makeResponseOptions(
+    [[maybe_unused]] http::StatusCode statusCode, [[maybe_unused]] std::size_t bodySize,
+    [[maybe_unused]] std::string_view contentType) const noexcept {
+  HttpResponse::Options opts = makeResponseOptions();
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+  // For a client accepting no coding, a body compressed for a client accepting one: its Vary line is written with its
+  // body headers (see addVaryAcceptEncodingToUncompressed, which the AddVaryAcceptEncoding option includes then).
+  if (opts.isAddVaryAcceptEncoding() && _responsePossibleEncoding == Encoding::none &&
+      HttpCodec::IsCompressible(*_pCompressionState->pCompressionConfig, statusCode, bodySize, contentType)) {
+    opts.setVaryAcceptEncodingListed();
+  }
+#endif
+  return opts;
+}
+
 HttpResponse::Options HttpRequestView::makeResponseOptions() const noexcept {
   assert(_pCompressionState != nullptr);
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
   HttpResponse::Options opts(*_pCompressionState, _responsePossibleEncoding);
-  if (_addVaryAcceptEncoding) {
+  // For a client accepting no coding, only used for the bodies that would be compressed for a client accepting one.
+  if (_addVaryAcceptEncoding && (_responsePossibleEncoding != Encoding::none ||
+                                 _pCompressionState->pCompressionConfig->addVaryAcceptEncodingToUncompressed)) {
     opts.addVaryAcceptEncoding();
   }
 #else

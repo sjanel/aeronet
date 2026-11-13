@@ -14,6 +14,7 @@
 #include "aeronet/direct-compression-mode.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/features.hpp"
+#include "aeronet/file.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-method.hpp"
@@ -23,6 +24,7 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 
@@ -1403,6 +1405,25 @@ namespace {
 
 constexpr std::size_t kHeadMinBytes = 64;
 
+// Enables CompressionConfig::addVaryAcceptEncodingToUncompressed while alive: the server is shared by the tests.
+class VaryUncompressedGuard {
+ public:
+  VaryUncompressedGuard() { Set(true); }
+
+  VaryUncompressedGuard(const VaryUncompressedGuard&) = delete;
+  VaryUncompressedGuard(VaryUncompressedGuard&&) = delete;
+  VaryUncompressedGuard& operator=(const VaryUncompressedGuard&) = delete;
+  VaryUncompressedGuard& operator=(VaryUncompressedGuard&&) = delete;
+
+  ~VaryUncompressedGuard() { Set(false); }
+
+ private:
+  static void Set(bool enabled) {
+    ts.postConfigUpdate(
+        [enabled](HttpServerConfig& cfg) { cfg.compression.addVaryAcceptEncodingToUncompressed = enabled; });
+  }
+};
+
 void ConfigureHeadCompression(bool useLeadingZeroes = true) {
   ts.postConfigUpdate([useLeadingZeroes](HttpServerConfig& cfg) {
     cfg.compression.minBytes = kHeadMinBytes;
@@ -1948,4 +1969,368 @@ TEST(HttpCompression, CompressionWeakensAStrongETag) {
   }
 }
 
+// RFC 9110 §12.5.5: a response compressed by the server lists Accept-Encoding in its Vary once, after the field names
+// of the Vary of the handler (compared case-insensitively), and not after '*', whatever the path.
+TEST(HttpCompression, VaryListsAcceptEncodingOnce) {
+  ConfigureHeadCompression();
+  struct Case {
+    std::string_view handlerVary;  // no Vary header if empty
+    std::string_view expected;
+  };
+  static constexpr Case kCases[]{
+      {"", "accept-encoding"},
+      {"accept-encoding", "accept-encoding"},
+      {"Origin, Accept-Encoding", "Origin, Accept-Encoding"},
+      {"origin", "origin, accept-encoding"},
+      {"accept-encoding-x", "accept-encoding-x, accept-encoding"},
+      {"*", "*"},
+  };
+  const std::string payload = test::MakePatternedPayload(4096);
+  auto router = ts.router();
+  for (const Case& tc : kCases) {
+    SCOPED_TRACE(tc.handlerVary);
+    const std::string vary(tc.handlerVary);
+    router.setPath(http::Method::GET, "/vary/finalized", [payload, vary](const HttpRequestView&) {
+      HttpResponse resp(payload);
+      if (!vary.empty()) {
+        resp.headerAddLine(http::Vary, vary);
+      }
+      return resp;
+    });
+    router.setPath(http::Method::GET, "/vary/direct", [payload, vary](const HttpRequestView& req) {
+      HttpResponse resp = req.makeResponse();
+      if (!vary.empty()) {
+        resp.headerAddLine(http::Vary, vary);
+      }
+      resp.body(std::string_view(payload), http::ContentTypeTextPlain);
+      return resp;
+    });
+    router.setPath(http::Method::GET, "/vary/streamed",
+                   [payload, vary](const HttpRequestView&, HttpResponseWriter& writer) {
+                     if (!vary.empty()) {
+                       writer.headerAddLine(http::Vary, vary);
+                     }
+                     writer.writeBody(payload);
+                     writer.end();
+                   });
+    router.setPath(http::Method::GET, "/vary/streamed-declared",
+                   [payload, vary](const HttpRequestView&, HttpResponseWriter& writer) {
+                     if (!vary.empty()) {
+                       writer.headerAddLine(http::Vary, vary);
+                     }
+                     writer.contentLength(payload.size());
+                     writer.writeBody(payload);
+                     writer.end();
+                   });
+
+    for (std::string_view target : {"/vary/finalized", "/vary/direct", "/vary/streamed", "/vary/streamed-declared"}) {
+      const test::ParsedResponse resp = Fetch("GET", target, "gzip");
+      EXPECT_EQ(test::getHeader(resp, http::ContentEncoding), "gzip") << target << '\n' << resp.headersRaw;
+      EXPECT_EQ(test::getHeader(resp, http::Vary), tc.expected) << target << '\n' << resp.headersRaw;
+    }
+  }
+}
+
+// RFC 9110 §12.5.5: the uncompressed response of a resource compressed for the clients accepting a coding is selected
+// with Accept-Encoding too: with addVaryAcceptEncodingToUncompressed, it varies on it, or a cache holding it serves it
+// to every client. Whatever the way the handler builds it, buffered or streamed, for GET and HEAD, and for a body that
+// does not shrink enough.
+TEST(HttpCompression, IdentityVariantOfACompressedResourceVariesToo) {
+  ConfigureHeadCompression();
+  const VaryUncompressedGuard varyUncompressed;
+  const std::string payload = test::MakePatternedPayload(4096);
+  static constexpr auto kGetHead = http::Method::GET | http::Method::HEAD;
+  auto router = ts.router();
+  router.setPath(kGetHead, "/identity/finalized", [payload](const HttpRequestView&) { return HttpResponse(payload); });
+  router.setPath(kGetHead, "/identity/made-with-body",
+                 [payload](const HttpRequestView& req) { return req.makeResponse(std::string_view(payload)); });
+  router.setPath(kGetHead, "/identity/made-captured",
+                 [payload](const HttpRequestView& req) { return req.makeResponse(std::string(payload)); });
+  router.setPath(kGetHead, "/identity/body-reserved", [payload](const HttpRequestView& req) {
+    HttpResponse resp = req.makeResponse(HttpResponse::BodySize(payload.size()), http::StatusCodeOK);
+    resp.body(std::string_view(payload));
+    return resp;
+  });
+  router.setPath(kGetHead, "/identity/appended", [payload](const HttpRequestView& req) {
+    // Below minBytes when the body headers are written.
+    HttpResponse resp = req.makeResponse();
+    resp.bodyAppend(std::string_view(payload).substr(0, 10));
+    resp.bodyAppend(std::string_view(payload).substr(10));
+    return resp;
+  });
+  router.setPath(kGetHead, "/identity/streamed", [payload](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.writeBody(payload);
+    writer.end();
+  });
+  router.setPath(kGetHead, "/identity/streamed-declared",
+                 [payload](const HttpRequestView&, HttpResponseWriter& writer) {
+                   writer.contentLength(payload.size());
+                   writer.writeBody(payload);
+                   writer.end();
+                 });
+
+  for (std::string_view target :
+       {"/identity/finalized", "/identity/made-with-body", "/identity/made-captured", "/identity/body-reserved",
+        "/identity/appended", "/identity/streamed", "/identity/streamed-declared"}) {
+    SCOPED_TRACE(target);
+    for (std::string_view method : {"GET", "HEAD"}) {
+      const test::ParsedResponse compressed = Fetch(method, target, "gzip");
+      EXPECT_EQ(test::getHeader(compressed, http::ContentEncoding), "gzip") << method << '\n' << compressed.headersRaw;
+      EXPECT_EQ(test::getHeader(compressed, http::Vary), http::AcceptEncoding.get()) << method << '\n'
+                                                                                     << compressed.headersRaw;
+      for (std::string_view acceptEncoding : {"", "identity", "unknown-coding"}) {
+        const test::ParsedResponse identity = Fetch(method, target, acceptEncoding);
+        EXPECT_EQ(identity.statusCode, http::StatusCodeOK);
+        EXPECT_EQ(test::getHeader(identity, http::ContentEncoding), "") << method << '\n' << identity.headersRaw;
+        EXPECT_EQ(test::getHeader(identity, http::Vary), http::AcceptEncoding.get())
+            << method << ' ' << acceptEncoding << '\n'
+            << identity.headersRaw;
+        EXPECT_EQ(identity.body, method == "GET" ? payload : "");
+      }
+    }
+  }
+
+  // Compressed, but not shrinking enough: sent uncompressed, it varies like the compressed responses of the resource.
+  const RawChars random = test::MakeRandomPayload(4096);
+  router.setPath(http::Method::GET, "/identity/incompressible",
+                 [random](const HttpRequestView&) { return HttpResponse(std::string_view(random)); });
+  const test::ParsedResponse incompressible = Fetch("GET", "/identity/incompressible", "gzip");
+  EXPECT_EQ(test::getHeader(incompressible, http::ContentEncoding), "") << incompressible.headersRaw;
+  EXPECT_EQ(test::getHeader(incompressible, http::Vary), http::AcceptEncoding.get()) << incompressible.headersRaw;
+  EXPECT_EQ(incompressible.body, std::string_view(random));
+}
+
+// With addVaryAcceptEncodingToUncompressed, the responses that the server never compresses still do not vary on
+// Accept-Encoding: too small (a streamed body of a declared length too), of a content type not compressed, a 206, with
+// a Content-Encoding of the handler, or a file. Nor any response with addVaryAcceptEncodingHeader disabled.
+TEST(HttpCompression, IdentityVariantOfAnUncompressedResourceDoesNotVary) {
+  ConfigureHeadCompression();
+  const VaryUncompressedGuard varyUncompressed;
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.compression.contentTypeAllowList.append("text/plain"); });
+  const std::string payload = test::MakePatternedPayload(4096);
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, payload);
+  auto router = ts.router();
+  router.setPath(http::Method::GET, "/novary/small",
+                 [](const HttpRequestView& req) { return req.makeResponse("tiny"); });
+  router.setPath(http::Method::GET, "/novary/small-streamed", [](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.contentLength(4);
+    writer.writeBody("tiny");
+    writer.end();
+  });
+  router.setPath(http::Method::GET, "/novary/not-allowed", [payload](const HttpRequestView& req) {
+    return req.makeResponse(std::string_view(payload), http::ContentTypeApplicationOctetStream);
+  });
+  router.setPath(http::Method::GET, "/novary/not-allowed-streamed",
+                 [payload](const HttpRequestView&, HttpResponseWriter& writer) {
+                   writer.contentType(http::ContentTypeApplicationOctetStream);
+                   writer.writeBody(payload);
+                   writer.end();
+                 });
+  router.setPath(http::Method::GET, "/novary/partial", [payload](const HttpRequestView& req) {
+    return req.makeResponse(http::StatusCodePartialContent, std::string_view(payload));
+  });
+  router.setPath(http::Method::GET, "/novary/partial-streamed",
+                 [payload](const HttpRequestView&, HttpResponseWriter& writer) {
+                   writer.status(http::StatusCodePartialContent);
+                   writer.writeBody(payload);
+                   writer.end();
+                 });
+  router.setPath(http::Method::GET, "/novary/encoded", [payload](const HttpRequestView& req) {
+    HttpResponse resp = req.makeResponse();
+    resp.headerAddLine(http::ContentEncoding, "identity");
+    resp.body(std::string_view(payload));
+    return resp;
+  });
+  router.setPath(http::Method::GET, "/novary/encoded-streamed",
+                 [payload](const HttpRequestView&, HttpResponseWriter& writer) {
+                   writer.headerAddLine(http::ContentEncoding, "identity");
+                   writer.writeBody(payload);
+                   writer.end();
+                 });
+  const std::string filePath = tmp.filePath().string();
+  router.setPath(http::Method::GET, "/novary/file", [filePath](const HttpRequestView& req) {
+    HttpResponse resp = req.makeResponse();
+    resp.file(File(filePath), http::ContentTypeTextPlain);
+    return resp;
+  });
+  router.setPath(http::Method::GET, "/novary/file-streamed",
+                 [filePath](const HttpRequestView&, HttpResponseWriter& writer) {
+                   writer.file(File(filePath), 0, 0, http::ContentTypeTextPlain);
+                   writer.end();
+                 });
+
+  static constexpr std::string_view kTargets[]{
+      "/novary/small",   "/novary/small-streamed",   "/novary/not-allowed", "/novary/not-allowed-streamed",
+      "/novary/partial", "/novary/partial-streamed", "/novary/encoded",     "/novary/encoded-streamed",
+      "/novary/file",    "/novary/file-streamed"};
+  for (std::string_view target : kTargets) {
+    for (std::string_view acceptEncoding : {"", "gzip"}) {
+      const test::ParsedResponse resp = Fetch("GET", target, acceptEncoding);
+      EXPECT_FALSE(resp.headers.contains(http::Vary.get())) << target << ' ' << acceptEncoding << '\n'
+                                                            << resp.headersRaw;
+    }
+  }
+
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.compression.contentTypeAllowList.clear();
+    cfg.compression.addVaryAcceptEncodingHeader = false;
+  });
+  router.setPath(http::Method::GET, "/novary/disabled",
+                 [payload](const HttpRequestView& req) { return req.makeResponse(std::string_view(payload)); });
+  router.setPath(http::Method::GET, "/novary/disabled-finalized",
+                 [payload](const HttpRequestView&) { return HttpResponse(payload); });
+  router.setPath(http::Method::GET, "/novary/disabled-streamed",
+                 [payload](const HttpRequestView&, HttpResponseWriter& writer) {
+                   writer.writeBody(payload);
+                   writer.end();
+                 });
+  for (std::string_view target : {"/novary/disabled", "/novary/disabled-finalized", "/novary/disabled-streamed"}) {
+    for (std::string_view acceptEncoding : {"", "gzip"}) {
+      const test::ParsedResponse resp = Fetch("GET", target, acceptEncoding);
+      EXPECT_EQ(test::getHeader(resp, http::ContentEncoding), acceptEncoding) << target << '\n' << resp.headersRaw;
+      EXPECT_FALSE(resp.headers.contains(http::Vary.get())) << target << ' ' << acceptEncoding << '\n'
+                                                            << resp.headersRaw;
+    }
+  }
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.compression.addVaryAcceptEncodingHeader = true; });
+}
+
+// By default (addVaryAcceptEncodingToUncompressed off), only the compressed responses vary on Accept-Encoding: the
+// uncompressed ones save the line, whether no coding is accepted or the compression does not shrink the body enough.
+TEST(HttpCompression, UncompressedResponsesDoNotVaryByDefault) {
+  ConfigureHeadCompression();
+  const std::string payload = test::MakePatternedPayload(4096);
+  auto router = ts.router();
+  router.setPath(http::Method::GET, "/default/finalized",
+                 [payload](const HttpRequestView&) { return HttpResponse(payload); });
+  router.setPath(http::Method::GET, "/default/made-with-body",
+                 [payload](const HttpRequestView& req) { return req.makeResponse(std::string_view(payload)); });
+  router.setPath(http::Method::GET, "/default/body-reserved", [payload](const HttpRequestView& req) {
+    HttpResponse resp = req.makeResponse(HttpResponse::BodySize(payload.size()), http::StatusCodeOK);
+    resp.body(std::string_view(payload));
+    return resp;
+  });
+  router.setPath(http::Method::GET, "/default/streamed", [payload](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.writeBody(payload);
+    writer.end();
+  });
+  for (std::string_view target :
+       {"/default/finalized", "/default/made-with-body", "/default/body-reserved", "/default/streamed"}) {
+    const test::ParsedResponse compressed = Fetch("GET", target, "gzip");
+    EXPECT_EQ(test::getHeader(compressed, http::Vary), http::AcceptEncoding.get()) << target << '\n'
+                                                                                   << compressed.headersRaw;
+    const test::ParsedResponse identity = Fetch("GET", target, "");
+    EXPECT_FALSE(identity.headers.contains(http::Vary.get())) << target << '\n' << identity.headersRaw;
+    EXPECT_EQ(identity.body, payload);
+  }
+
+  const RawChars random = test::MakeRandomPayload(4096);
+  router.setPath(http::Method::GET, "/default/incompressible",
+                 [random](const HttpRequestView&) { return HttpResponse(std::string_view(random)); });
+  const test::ParsedResponse incompressible = Fetch("GET", "/default/incompressible", "gzip");
+  EXPECT_EQ(test::getHeader(incompressible, http::ContentEncoding), "") << incompressible.headersRaw;
+  EXPECT_FALSE(incompressible.headers.contains(http::Vary.get())) << incompressible.headersRaw;
+}
+
+#endif  // AERONET_ENABLE_ZLIB
+
+#ifdef AERONET_ENABLE_ZLIB
+// ---------------------------------------------------------------------------------------------------------------------
+// Audit of the response compression against RFC 9110. Each test states the required behavior, and fails while its
+// finding is open.
+// ---------------------------------------------------------------------------------------------------------------------
+
+namespace {
+struct AuditRawResponse {
+  std::string head;
+  std::string body;  // as received (not de-chunked)
+};
+
+std::string_view AuditHeader(const AuditRawResponse& resp, std::string_view name) {
+  const std::string needle = std::format("\r\n{}: ", name);
+  const auto pos = resp.head.find(needle);
+  if (pos == std::string::npos) {
+    return {};
+  }
+  const auto valueBeg = pos + needle.size();
+  return std::string_view(resp.head).substr(valueBeg, resp.head.find(http::CRLF, valueBeg) - valueBeg);
+}
+
+void AuditResetCompression() {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.compression = {};
+    cfg.compression.minBytes = 64;
+    cfg.compression.preferredFormats = {Encoding::gzip};
+  });
+}
+}  // namespace
+
+#endif  // AERONET_ENABLE_ZLIB
+
+#ifdef AERONET_ENABLE_ZLIB
+// Checked and correct: trailers with a compressed body (compressed when finalized, directly, or streamed), to an
+// HTTP/1.1 and an HTTP/1.0 client.
+TEST(HttpCompressionAudit, TrailersWithCompressionAreFramedCorrectly) {
+  AuditResetCompression();
+  const std::string payload(4096, 'a');
+  ts.router().setPath(http::Method::GET, "/audit-trailers-final", [payload](const HttpRequestView&) {
+    HttpResponse resp(payload);
+    resp.trailerAddLine("x-checksum", "abc");
+    return resp;
+  });
+  ts.router().setPath(http::Method::GET, "/audit-trailers-captured", [payload](const HttpRequestView&) {
+    HttpResponse resp{std::string(payload)};
+    resp.trailerAddLine("x-checksum", "abc");
+    return resp;
+  });
+  ts.router().setPath(http::Method::GET, "/audit-trailers-direct", [payload](const HttpRequestView& req) {
+    HttpResponse resp = req.makeResponse(payload);
+    resp.trailerAddLine("x-checksum", "abc");
+    return resp;
+  });
+  ts.router().setPath(http::Method::GET, "/audit-trailers-stream",
+                      [payload](const HttpRequestView&, HttpResponseWriter& writer) {
+                        writer.contentType("text/plain");
+                        writer.writeBody(payload);
+                        writer.trailerAddLine("x-checksum", "abc");
+                        writer.end();
+                      });
+  for (std::string_view target :
+       {"/audit-trailers-final", "/audit-trailers-captured", "/audit-trailers-direct", "/audit-trailers-stream"}) {
+    SCOPED_TRACE(target);
+    const std::string raw = test::sendAndCollect(
+        ts.port(),
+        std::format("GET {} HTTP/1.1\r\nHost: h\r\nConnection: close\r\nAccept-Encoding: gzip\r\n\r\n", target));
+    const auto resp = test::parseResponseOrThrow(raw);
+    EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+    EXPECT_TRUE(resp.chunked) << resp.headersRaw;
+    EXPECT_FALSE(resp.headersRaw.contains("content-length")) << resp.headersRaw;
+    EXPECT_TRUE(resp.headersRaw.contains("content-encoding: gzip")) << resp.headersRaw;
+    EXPECT_TRUE(raw.ends_with("\r\n0\r\nx-checksum: abc\r\n\r\n"))
+        << raw.substr(raw.size() - std::min<std::size_t>(raw.size(), 60));
+    const RawChars decompressed = test::Decompress(Encoding::gzip, resp.plainBody.empty() ? resp.body : resp.plainBody);
+    EXPECT_EQ(std::string_view(decompressed.data(), decompressed.size()), payload);
+
+    // HTTP/1.0: no chunked coding, the trailers are dropped and the length is the one of the bytes sent.
+    const AuditRawResponse http10 = [target] {
+      const std::string raw10 = test::sendAndCollect(
+          ts.port(), std::format("GET {} HTTP/1.0\r\nHost: h\r\nAccept-Encoding: gzip\r\n\r\n", target));
+      const auto headEnd = raw10.find(http::DoubleCRLF);
+      return AuditRawResponse{raw10.substr(0, headEnd + http::CRLF.size()),
+                              raw10.substr(headEnd + http::DoubleCRLF.size())};
+    }();
+    EXPECT_EQ(AuditHeader(http10, http::TransferEncoding), "") << http10.head;
+    EXPECT_EQ(AuditHeader(http10, http::ContentEncoding), "gzip") << http10.head;
+    EXPECT_FALSE(http10.body.contains("x-checksum"));
+    const std::string_view declared = AuditHeader(http10, http::ContentLength);
+    if (!declared.empty()) {
+      std::size_t declaredLen = 0;
+      std::from_chars(declared.data(), declared.data() + declared.size(), declaredLen);
+      EXPECT_EQ(declaredLen, http10.body.size()) << http10.head;
+    }
+    const RawChars decompressed10 = test::Decompress(Encoding::gzip, http10.body);
+    EXPECT_EQ(std::string_view(decompressed10.data(), decompressed10.size()), payload);
+  }
+}
 #endif  // AERONET_ENABLE_ZLIB

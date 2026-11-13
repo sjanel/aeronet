@@ -69,7 +69,8 @@ Router::Router(const Router& other)
 #endif
       _streamingHandler(other._streamingHandler),
       _globalPreMiddleware(other._globalPreMiddleware),
-      _globalPostMiddleware(other._globalPostMiddleware) {
+      _globalPostMiddleware(other._globalPostMiddleware),
+      _routesMethodBmp(other._routesMethodBmp) {
   cloneNodesFrom(other);
 }
 
@@ -83,6 +84,7 @@ Router& Router::operator=(const Router& other) {
     _streamingHandler = other._streamingHandler;
     _globalPreMiddleware = other._globalPreMiddleware;
     _globalPostMiddleware = other._globalPostMiddleware;
+    _routesMethodBmp = other._routesMethodBmp;
 
     cloneNodesFrom(other);
   }
@@ -157,7 +159,10 @@ PathHandlerEntry& Router::setPath(http::Method method, std::string_view path, As
 
 #ifdef AERONET_ENABLE_WEBSOCKET
 PathHandlerEntry& Router::setWebSocket(std::string_view path, WebSocketEndpoint endpoint) {
-  return setPathInternal({}, path, std::move(endpoint));
+  PathHandlerEntry& entry = setPathInternal({}, path, std::move(endpoint));
+  // An endpoint is reached by its upgrade request, a GET, which only supportedMethods() reports (no handler).
+  _routesMethodBmp |= static_cast<http::MethodBmp>(http::Method::GET);
+  return entry;
 }
 #endif
 
@@ -840,45 +845,53 @@ PathHandlerEntry& Router::setPathInternal(http::MethodBmp methods, std::string_v
     pEntry = &pNode->handlers;
   }
 
-  std::visit(
-      [pEntry, methods, path](auto&& handler) {
-        using T = std::decay_t<decltype(handler)>;
-        if constexpr (std::is_same_v<T, RequestHandler>) {
-          if (!handler) {
-            throw std::invalid_argument("Cannot set empty RequestHandler");
-          }
-          if ((pEntry->_normalMethodBmp & methods) != 0) {
-            log::warn("Overwriting existing path handler for {}", path);
-          }
-          pEntry->assignNormalHandler(methods, std::forward<decltype(handler)>(handler));
-        } else if constexpr (std::is_same_v<T, StreamingHandler>) {
-          if (!handler) {
-            throw std::invalid_argument("Cannot set empty StreamingHandler");
-          }
-          if ((pEntry->_streamingMethodBmp & methods) != 0) {
-            log::warn("Overwriting existing streaming path handler for {}", path);
-          }
-          pEntry->assignStreamingHandler(methods, std::forward<decltype(handler)>(handler));
+  try {
+    std::visit(
+        [pEntry, methods, path](auto&& handler) {
+          using T = std::decay_t<decltype(handler)>;
+          if constexpr (std::is_same_v<T, RequestHandler>) {
+            if (!handler) {
+              throw std::invalid_argument("Cannot set empty RequestHandler");
+            }
+            if ((pEntry->_normalMethodBmp & methods) != 0) {
+              log::warn("Overwriting existing path handler for {}", path);
+            }
+            pEntry->assignNormalHandler(methods, std::forward<decltype(handler)>(handler));
+          } else if constexpr (std::is_same_v<T, StreamingHandler>) {
+            if (!handler) {
+              throw std::invalid_argument("Cannot set empty StreamingHandler");
+            }
+            if ((pEntry->_streamingMethodBmp & methods) != 0) {
+              log::warn("Overwriting existing streaming path handler for {}", path);
+            }
+            pEntry->assignStreamingHandler(methods, std::forward<decltype(handler)>(handler));
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
-        } else if constexpr (std::is_same_v<T, AsyncRequestHandler>) {
-          if (!handler) {
-            throw std::invalid_argument("Cannot set empty AsyncRequestHandler");
-          }
-          if ((pEntry->_asyncMethodBmp & methods) != 0) {
-            log::warn("Overwriting existing async path handler for {}", path);
-          }
-          pEntry->assignAsyncHandler(methods, std::forward<decltype(handler)>(handler));
+          } else if constexpr (std::is_same_v<T, AsyncRequestHandler>) {
+            if (!handler) {
+              throw std::invalid_argument("Cannot set empty AsyncRequestHandler");
+            }
+            if ((pEntry->_asyncMethodBmp & methods) != 0) {
+              log::warn("Overwriting existing async path handler for {}", path);
+            }
+            pEntry->assignAsyncHandler(methods, std::forward<decltype(handler)>(handler));
 #endif
 #ifdef AERONET_ENABLE_WEBSOCKET
-        } else if constexpr (std::is_same_v<T, WebSocketEndpoint>) {
-          pEntry->assignWebSocketEndpoint(std::forward<decltype(handler)>(handler));
+          } else if constexpr (std::is_same_v<T, WebSocketEndpoint>) {
+            pEntry->assignWebSocketEndpoint(std::forward<decltype(handler)>(handler));
 #endif
-        } else {
-          static_assert(false, "Non-exhaustive visitor!");
-        }
-      },
-      std::move(handlerVariant));
+          } else {
+            static_assert(false, "Non-exhaustive visitor!");
+          }
+        },
+        std::move(handlerVariant));
+  } catch (...) {
+    // A handler of another kind already registered for a method is detected method by method: the methods before it
+    // are registered.
+    _routesMethodBmp |= pEntry->handlerMethodBmp();
+    throw;
+  }
 
+  _routesMethodBmp |= methods;
   return *pEntry;
 }
 
@@ -1242,15 +1255,7 @@ http::MethodBmp Router::allowedMethods(std::string_view path) {
     return pMatchedNode->handlers.handlerMethodBmp();
   }
 
-  if (_streamingHandler || _handler
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-      || _asyncHandler
-#endif
-  ) {
-    static constexpr http::MethodBmp kAllMethods = (1U << http::kNbMethods) - 1U;
-    return kAllMethods;
-  }
-  return 0U;
+  return hasDefaultHandler() ? http::kAllMethods : http::MethodBmp{};
 }
 
 const PathHandlerEntry* Router::computePathHandlerEntry(const RadixNode& matchedNode, bool pathHasTrailingSlash,
@@ -1478,6 +1483,7 @@ void Router::clear() noexcept {
   _literalRouteEntries.clear();
   _charStorage.clear();
   _pRootNode = nullptr;
+  _routesMethodBmp = {};
 }
 
 std::string_view Router::unescapeAndAllocate(std::string_view input) {

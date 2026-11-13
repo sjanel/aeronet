@@ -1,43 +1,46 @@
 #pragma once
 
-#include <chrono>
+#include <ctime>
+#include <limits>
 
+#include "aeronet/compiler-config.hpp"
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
 
 namespace aeronet::internal {
 
-// Single-reactor cache for the fixed-width HTTP Date header. The cache is refreshed lazily at wall-clock second
-// boundaries, using the event loop's existing monotonic timestamp to avoid a system-clock read on every response.
+// Single-reactor cache for the fixed-width HTTP Date header. Each response reads the wall clock in whole seconds
+// (std::time: a load from the vDSO data page on Linux, about 1 ns) and the date is formatted only when the second
+// changed. The Date of a response is thus the second of its generation (RFC 9110 §6.6.1), also after a slow handler,
+// and the date of the start of an event loop iteration is never reused for the responses built later in it.
 class DateHeaderCache {
  public:
-  void refreshIfNeeded(SteadyClock::time_point steadyNow) {
-    refreshIfNeeded(steadyNow, [] { return SysClock::now(); });
-  }
+  // The wall clock in whole seconds since the epoch, with the signature of std::time. Tests inject a fixed clock.
+  using WallSecondsFn = std::time_t (*)(std::time_t*);
 
-  template <typename WallNowFn>
-  void refreshIfNeeded(SteadyClock::time_point steadyNow, WallNowFn&& wallNowFn) {
-    if (steadyNow < _refreshAt) {
-      return;
-    }
+  DateHeaderCache() noexcept = default;
 
-    const SysTimePoint wallNow = wallNowFn();
-    const auto wallSecond = std::chrono::floor<std::chrono::seconds>(wallNow);
-    TimeToStringRFC7231(wallSecond, _header);
+  explicit DateHeaderCache(WallSecondsFn wallSeconds) noexcept : _wallSeconds(wallSeconds) {}
 
-    // Align the next refresh to the wall-clock boundary. Refreshing at steadyNow + 1s would let a cache initialized
-    // near the end of a wall second remain one full second behind for almost the entire following second.
-    const auto untilNextSecond = std::chrono::seconds{1} - (wallNow - wallSecond);
-    _refreshAt = steadyNow + std::chrono::ceil<SteadyClock::duration>(untilNextSecond);
-  }
-
-  // Returns a pointer to the date buffer.
+  // Returns the Date header value of the current second.
   // It's not null terminated, and the length is RFC7231DateStrLen.
-  [[nodiscard]] const char* data() const noexcept { return _header; }
+  [[nodiscard]] const char* current() noexcept {
+    const std::time_t second = _wallSeconds(nullptr);
+    if (second != _second) [[unlikely]] {
+      refresh(second);
+    }
+    return _header;
+  }
 
  private:
-  SteadyClock::time_point _refreshAt{SteadyClock::time_point::min()};
+  AERONET_NOINLINE void refresh(std::time_t second) noexcept {
+    _second = second;
+    TimeToStringRFC7231(SysClock::from_time_t(second), _header);
+  }
+
+  WallSecondsFn _wallSeconds{&std::time};
+  std::time_t _second{std::numeric_limits<std::time_t>::min()};
   char _header[RFC7231DateStrLen]{};
 };
 

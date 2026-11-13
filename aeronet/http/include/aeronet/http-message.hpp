@@ -69,7 +69,7 @@ class HttpMessage {
  private:
   enum class Check : std::uint8_t { Yes, No };
 
-  enum class BodySetContext : std::uint8_t { Inline, Captured };
+  enum class BodySetContext : std::uint8_t { Inline, Captured, File };
 
  public:
   // Returns the size needed to store a body with given length and optional content type header.
@@ -332,6 +332,12 @@ class HttpMessage {
   void headerAppendValueImpl(LowerAsciiKey key, std::integral auto value, std::string_view sep = ", ") {
     headerAppendValueImpl(key, IntegralCharBuffer<decltype(value)>(value), sep);
   }
+
+  // Same as headerAppendValueImpl(key, value, ", "), unless the comma-separated list of the header (all its lines)
+  // already has the element 'value', compared case-insensitively - it is meant for lists of tokens and field names
+  // (Vary, Connection, Cache-Control...). For 'vary', the wildcard '*' already has every element (RFC 9110 §12.5.5).
+  // 'value' is a single element. Same rules as headerAppendValueImpl() for the reserved headers.
+  void headerAppendValueIfAbsentImpl(LowerAsciiKey key, std::string_view value);
 
   // Add or replace first header 'key' with 'value'.
   // Performs a case-sensitive linear scan (slower than headerAddLine()) over normalized lower-case header names.
@@ -819,6 +825,10 @@ class HttpMessage {
     static constexpr BmpType HasProxy = 1U << 9U;
     static constexpr BmpType DoNotSendContentLengthHeader = 1U << 10U;
     static constexpr BmpType HasEmbeddedPayload = 1U << 11U;
+    // The Vary header lists accept-encoding: the server wrote it with the body headers of a response to a client
+    // accepting no coding, or found it there (see identityVariantVaries()). Set by HttpRequestView::makeResponse() for
+    // a body given to the constructor, which then writes the line (see HttpResponse::IdentityVaryLineSize()).
+    static constexpr BmpType VaryAcceptEncodingListed = 1U << 12U;
 
     Options() noexcept = default;
 
@@ -838,6 +848,10 @@ class HttpMessage {
 
     [[nodiscard]] constexpr bool hasContentEncoding() const noexcept {
       return (_optionsBitmap & HasContentEncoding) != 0;
+    }
+
+    [[nodiscard]] constexpr bool isVaryAcceptEncodingListed() const noexcept {
+      return (_optionsBitmap & VaryAcceptEncodingListed) != 0;
     }
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
@@ -886,6 +900,8 @@ class HttpMessage {
 
     constexpr void setHasContentEncoding() noexcept { _optionsBitmap |= HasContentEncoding; }
 
+    constexpr void setVaryAcceptEncodingListed() noexcept { _optionsBitmap |= VaryAcceptEncodingListed; }
+
     constexpr void resetHasContentEncoding() noexcept { _optionsBitmap &= static_cast<BmpType>(~HasContentEncoding); }
 
     constexpr void setAutomaticDirectCompression() noexcept { _optionsBitmap |= AutomaticDirectCompression; }
@@ -921,7 +937,22 @@ class HttpMessage {
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
     [[nodiscard]] bool directCompressionPossible(std::size_t bodySize,
-                                                 std::string_view contentType = {}) const noexcept;
+                                                 std::string_view contentType = {}) const noexcept {
+      return directCompressionPossible() && wouldCompress(bodySize, contentType, true);
+    }
+
+    // Whether a body of 'bodySize' bytes of type 'contentType' (checked) set with these options, made for a client
+    // accepting no coding, would be compressed for a client accepting one ('inlineBody': possibly directly): the
+    // response is selected with Accept-Encoding too, and varies on it (RFC 9110 §12.5.5).
+    [[nodiscard]] bool identityVariantVaries(std::size_t bodySize, std::string_view contentType,
+                                             bool inlineBody) const noexcept {
+      return isAddVaryAcceptEncoding() && _pickedEncoding == Encoding::none &&
+             wouldCompress(bodySize, contentType, inlineBody);
+    }
+#else
+    [[nodiscard]] static constexpr bool identityVariantVaries(std::size_t, std::string_view, bool) noexcept {
+      return false;
+    }
 #endif
 
    private:
@@ -931,6 +962,13 @@ class HttpMessage {
 #endif
     friend class HttpResponse;
     friend class HttpCodec;
+
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+    // Whether a body of 'bodySize' bytes of type 'contentType' is compressed for a client accepting a coding, directly
+    // ('inlineBody' only, whatever its size with DirectCompressionMode::On) or when the response is finalized.
+    [[nodiscard]] bool wouldCompress(std::size_t bodySize, std::string_view contentType,
+                                     bool inlineBody) const noexcept;
+#endif
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
     CompressionState* _pCompressionState{nullptr};

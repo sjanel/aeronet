@@ -398,6 +398,21 @@ class HttpResponse final : public HttpMessage {
     return std::move(headerAppendValue(key, value, sep));
   }
 
+  // Same as headerAppendValue(key, value, ", "), unless the comma-separated list of the header (all its lines) already
+  // has the element 'value', compared case-insensitively - it is meant for lists of tokens and field names (Vary,
+  // Connection, Cache-Control...). For 'vary', the wildcard '*' already has every element (RFC 9110 §12.5.5).
+  // Example: on 'vary: Origin, Accept-Encoding', headerAppendValueIfAbsent("vary", "accept-encoding") does nothing.
+  // 'value' is a single element. Same rules as headerAppendValue() for the reserved headers.
+  HttpResponse& headerAppendValueIfAbsent(LowerAsciiKey key, std::string_view value) & {
+    headerAppendValueIfAbsentImpl(key, value);
+    return *this;
+  }
+
+  // Rvalue overload of headerAppendValueIfAbsent.
+  HttpResponse&& headerAppendValueIfAbsent(LowerAsciiKey key, std::string_view value) && {
+    return std::move(headerAppendValueIfAbsent(key, value));
+  }
+
   // Add or replace first header 'key' with 'value'.
   // Performs a case-sensitive linear scan (slower than headerAddLine()) over normalized lower-case header names.
   // The header name and value must be valid per HTTP specifications, otherwise std::invalid_argument is thrown.
@@ -916,6 +931,24 @@ class HttpResponse final : public HttpMessage {
                 : NeededBodyHeadersSize(bodySize, CheckContentType(contentType).size(), sendContentLengthHeader));
   }
 
+  // Same as above for a response made with 'opts', whose body headers may start with a Vary line (see
+  // IdentityVaryLineSize()).
+  static constexpr std::size_t HeadCapacity(std::string_view concatenatedHeaders, std::size_t bodySize,
+                                            std::string_view& contentType, const Options& opts) {
+    return HeadCapacity(concatenatedHeaders, bodySize, contentType, opts.sendContentLengthHeader()) +
+           IdentityVaryLineSize(opts, bodySize);
+  }
+
+  // Size of the 'vary: accept-encoding' line written before the body headers of a body of 'bodySize' bytes, 0 if none:
+  // the options of a response made by HttpRequestView::makeResponse() for a client accepting no coding, with a body
+  // that would be compressed for a client accepting one, have VaryAcceptEncodingListed set (decided once there, where
+  // the compression configuration is at hand).
+  static constexpr std::size_t IdentityVaryLineSize(const Options& opts, std::size_t bodySize) noexcept {
+    return bodySize != 0 && opts.isVaryAcceptEncodingListed()
+               ? http::HeaderSize(http::Vary.size(), http::AcceptEncoding.size())
+               : 0;
+  }
+
   // Private constructor to avoid allocating memory for the data buffer when not needed immediately.
   // Use with care! All setters currently take the assumption that the internal buffer is allocated.
   explicit constexpr HttpResponse([[maybe_unused]] Check check) noexcept : HttpMessage(check) {}
@@ -923,7 +956,7 @@ class HttpResponse final : public HttpMessage {
   // Private constructor bypassing checks for internal use only.
   HttpResponse(std::size_t additionalCapacity, http::StatusCode code, std::string_view concatenatedHeaders,
                std::string_view body, std::string_view contentType, Options opts)
-      : HttpMessage(HeadCapacity(concatenatedHeaders, body.size(), contentType, opts.sendContentLengthHeader()) +
+      : HttpMessage(HeadCapacity(concatenatedHeaders, body.size(), contentType, opts) +
                         (opts.isHeadMethod() ? EmbeddedPayload::kMaxFootprint : body.size()) + additionalCapacity,
                     opts) {
     initHead(code, concatenatedHeaders, body.size(), contentType);

@@ -25,6 +25,7 @@
 #include "aeronet/reserved-headers.hpp"
 #include "aeronet/search-crlf.hpp"
 #include "aeronet/simple-charconv.hpp"
+#include "aeronet/static-string-view-helpers.hpp"
 #include "aeronet/string-trim.hpp"
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
@@ -106,6 +107,9 @@ constexpr void InitData(char* data) {
   return hasContentEncoding;
 }
 
+constexpr std::string_view kVaryAcceptEncodingCRLF =
+    JoinStringView_v<http::Vary, http::HeaderSep, http::AcceptEncoding, http::CRLF>;
+
 }  // namespace
 
 void HttpResponse::initHeadInline(http::StatusCode code, std::string_view concatenatedHeaders, std::size_t bodySize,
@@ -127,6 +131,10 @@ void HttpResponse::initHeadInline(http::StatusCode code, std::string_view concat
     pData = AppendFixed<http::DoubleCRLF>(pData);
   } else {
     pData = AppendFixed<http::CRLF>(pData);
+    // Room reserved by HeadCapacity().
+    if (IdentityVaryLineSize(_opts, bodySize) != 0) {
+      pData = AppendFixed<kVaryAcceptEncodingCRLF>(pData);
+    }
     if (_opts.sendContentLengthHeader()) {
       pData = WriteContentTypeContentLengthDoubleCRLF(contentType, bodySize, pData);
     } else {
@@ -150,8 +158,8 @@ HttpResponse::HttpResponse(std::size_t additionalCapacity, http::StatusCode code
 
 HttpResponse::HttpResponse(std::size_t additionalCapacity, http::StatusCode code, std::string_view concatenatedHeaders,
                            HttpPayload body, std::string_view contentType, Options opts)
-    : HttpMessage(HeadCapacity(concatenatedHeaders, body.size(), contentType, opts.sendContentLengthHeader()) +
-                      EmbeddedPayload::kMaxFootprint + additionalCapacity,
+    : HttpMessage(HeadCapacity(concatenatedHeaders, body.size(), contentType, opts) + EmbeddedPayload::kMaxFootprint +
+                      additionalCapacity,
                   opts) {
   const std::size_t bodySize = body.size();
   initHead(code, concatenatedHeaders, bodySize, contentType);

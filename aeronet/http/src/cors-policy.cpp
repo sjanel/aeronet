@@ -45,23 +45,6 @@ bool ListContainsToken(std::string_view list, std::string_view token) {
   return false;
 }
 
-// Adds Origin to the Vary header of a response that depends on the Origin of its request, unless it is listed already
-// or the Vary value is '*' (RFC 9110 §12.5.5).
-void AddVaryOrigin(HttpResponse& response) {
-  const auto optVary = response.headerValue(http::Vary);
-  if (!optVary) {
-    response.headerAddLine(http::Vary, http::Origin);
-    return;
-  }
-  for (std::string_view vary = *optVary; !vary.empty();) {
-    const std::string_view part = NextCsvToken(vary);
-    if (part == "*" || CaseInsensitiveEqual(part, http::Origin)) {
-      return;
-    }
-  }
-  response.headerAppendValue(http::Vary, http::Origin);
-}
-
 }  // namespace
 
 CorsPolicy& CorsPolicy::allowAnyOrigin() {
@@ -181,11 +164,11 @@ CorsPolicy::ApplyStatus CorsPolicy::applyToResponse(const HttpRequestView& reque
   } else if (applyStatus == ApplyStatus::OriginDenied) {
     response.status(http::StatusCodeForbidden);
     response.body("Forbidden by CORS policy");
-    AddVaryOrigin(response);
+    response.headerAppendValueIfAbsent(http::Vary, http::Origin);
   } else if (mirrorsOrigin()) {
     // No Origin. Fetch, "CORS protocol and HTTP caches": a cache may serve this response to a later CORS request. Its
     // CORS headers depend on the origin: it varies on Origin.
-    AddVaryOrigin(response);
+    response.headerAppendValueIfAbsent(http::Vary, http::Origin);
   } else {
     // No Origin, and the CORS headers do not depend on it ('*'): they are sent, so that the response is the same.
     applyResponseHeaders(response, {});
@@ -313,7 +296,7 @@ bool CorsPolicy::requestHeadersAllowed(std::string_view headerList) const {
 void CorsPolicy::applyResponseHeaders(HttpResponse& response, std::string_view origin) const {
   if (mirrorsOrigin()) {
     response.header(http::AccessControlAllowOrigin, origin);
-    AddVaryOrigin(response);
+    response.headerAppendValueIfAbsent(http::Vary, http::Origin);
   } else {
     response.header(http::AccessControlAllowOrigin, "*");
   }

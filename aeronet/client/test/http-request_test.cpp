@@ -565,6 +565,21 @@ TEST_F(HttpRequestTest, LvalueFluentSetters) {
   EXPECT_EQ(req.target(), "/p");
 }
 
+TEST_F(HttpRequestTest, HeaderAppendValueIfAbsent) {
+  auto req = makeRequest(http::Method::GET, "http://h/p");
+  req.headerAppendValueIfAbsent("cache-control", "no-cache").headerAppendValueIfAbsent("cache-control", "No-Cache");
+  req = std::move(req).headerAppendValueIfAbsent("cache-control", "no-store");
+  EXPECT_EQ(req.headerValueOrEmpty("cache-control"), "no-cache, no-store");
+
+  // '*' has every element for vary only.
+  req.headerAddLine("x-list", "*");
+  req.headerAppendValueIfAbsent("x-list", "a");
+  EXPECT_EQ(req.headerValueOrEmpty("x-list"), "*, a");
+
+  req.body("payload");
+  EXPECT_THROW(req.headerAppendValueIfAbsent(http::ContentLength, "7"), std::invalid_argument);
+}
+
 // Replacing an existing header validates the new value, as adding one does: CR or LF would inject header lines. The
 // user may replace the Host header, but not with an invalid value.
 TEST_F(HttpRequestTest, HeaderReplaceRejectsInvalidValue) {

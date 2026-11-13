@@ -80,9 +80,9 @@ The server answers these errors itself, before or instead of calling a handler:
 | `404 Not Found` | No route matches the path. |
 | `405 Method Not Allowed` | The path exists but not for this method, with an `Allow` header listing the methods registered on its route. Also `TRACE` when disabled (see [TRACE](#trace)). |
 | `406 Not Acceptable` | No acceptable content coding. Over HTTP/1.1, the connection persists, unless the request announces a body, which is not read ([details](../guides/compression.md#negotiation)). |
-| `413 Payload Too Large` | Body larger than `maxBodyBytes`. |
+| `413 Payload Too Large` | Body larger than `maxBodyBytes`, or a body to decompress larger than `maxCompressedBytes` (from its declared length when it has one), or a decoding limit exceeded. |
 | `414 URI Too Long` | Request line, with the empty line ending the head, larger than `maxHeaderBytes` (the request target is too long). |
-| `415 Unsupported Media Type` | Unsupported `Content-Encoding` on a request body, or more than 5 stacked codings, when decompression is enabled. |
+| `415 Unsupported Media Type` | Unsupported `Content-Encoding` on a request body, or more than 5 stacked codings, when decompression is enabled. Its `Accept-Encoding` header lists the codings the server decodes (RFC 9110 §12.5.3). |
 | `417 Expectation Failed` | `Expect` token other than `100-continue` without expectation handler. |
 | `431 Request Header Fields Too Large` | Request head larger than `maxHeaderBytes`, its request line fitting it. |
 | `500 Internal Server Error` | Handler exception, or an invalid interim status returned by an expectation handler. |
@@ -98,7 +98,7 @@ aeronet does not validate the `Content-Type` of request bodies: a `415` based on
 
 ### OPTIONS
 
-`OPTIONS *` is answered `200` with an `Allow` header listing the methods the router supports. `OPTIONS` on a path is a CORS preflight when the route has a CORS policy, and is routed like any other method otherwise.
+`OPTIONS *` applies to the server as a whole (RFC 9110 §9.3.7): it is answered `200` with an `Allow` header listing the methods registered on at least one route (`GET` for a WebSocket endpoint), or every method with a default handler. `TRACE`, which the server answers itself, is listed only when it is echoed (see [TRACE](#trace)), so never over HTTP/2. The router updates this list as routes are registered (`Router::supportedMethods()`), so a request does not look the routes up. `OPTIONS` on a path is a CORS preflight when the route has a CORS policy, and is routed like any other method otherwise.
 
 ### TRACE
 
@@ -160,6 +160,7 @@ The handler runs on the event-loop thread, so it must be fast. An `Interim` resu
 - `Expect`, `OPTIONS`, `TRACE`, and other protocol details: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp), including the final statuses known from the head sent without `100 Continue` (`HttpExpectContinue` tests), HTTP/1.0 clients (`Http10` tests and `HttpExpectation.NoInterimResponseToHttp10Client`), the status line of an interim response without reason phrase (`HttpExpectation.HandlerCanEmitArbitraryInterimStatus`) and the invalid interim statuses (`HttpExpectation.ExpectationHandlerErrors`).
 - Empty lines before a request line, pipelined or received apart from it, limited by `maxHeaderBytes`: `HttpEmptyLinesBeforeRequestLine` tests in [tests/http-core_test.cpp](../../tests/http-core_test.cpp).
 - `TRACE` echo as received, without sensitive fields, for heads received in several reads, up to `maxHeaderBytes`, and rejected with content: `HttpOptionsTrace` tests in [tests/http-core_test.cpp](../../tests/http-core_test.cpp), and the copy of the head in [aeronet/server/test/trace-echo_test.cpp](../../aeronet/server/test/trace-echo_test.cpp).
+- `Allow` header of `OPTIONS *`: `HttpOptionsTrace.OptionsStar*` in [tests/http-core_test.cpp](../../tests/http-core_test.cpp), the `HttpOptionsTraceTls` tests in [tests/http-tls-io_test.cpp](../../tests/http-tls-io_test.cpp), `Http2ProtocolHandler.OptionsStarReturnsAllowedMethods` in [http2-protocol-handler_test.cpp](../../aeronet/server/test/http2-protocol-handler_test.cpp), and `RouterTest.SupportedMethods*` in [router_test.cpp](../../aeronet/http/test/router_test.cpp).
 - `Allow` header of the `405` responses, over HTTP/1.1 and HTTP/2: `MethodNotAllowedListsTheMethodsOfTheRoute`, `DisabledTraceListsTheMethodsOfTheRoute` and `CorsPreflightOfAMethodOfNoHandlerIsAnswered405WithAllow` in [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp).
 - Trailers dropped for HTTP/1.0: `TrailersDroppedForHttp10` and `TrailersOfDirectCompressionDroppedForHttp10` in [http-response_test.cpp](../../aeronet/http/test/http-response_test.cpp).
 - `HTTP/1.1` status line and `Connection` header of the responses to HTTP/1.0 requests: `HttpResponseTest.StatusLineIsHttp11WhateverTheRequestVersion` in [http-response_test.cpp](../../aeronet/http/test/http-response_test.cpp), `Http10.AnsweredWithHttp11StatusLine` in [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp) and the `HttpKeepAlive10` tests in [tests/http-core_test.cpp](../../tests/http-core_test.cpp).

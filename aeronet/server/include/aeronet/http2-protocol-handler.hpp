@@ -353,6 +353,10 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   /// Release the request of a stream (if any), kept for the next streams up to Http2Config::maxRecycledRequests.
   void recycleRequest(StreamRequestPtr& pRequest);
 
+  /// Tells whether a body of 'bodySize' bytes of 'request' exceeds the server limit, or the limit of the compressed
+  /// size of a body to decompress.
+  [[nodiscard]] bool exceedsBodyLimits(const HttpRequestView& request, std::size_t bodySize) const;
+
   /// Answer 413 to a request whose body exceeds the server limit, while the client is still sending it, then reset the
   /// stream (NO_ERROR) so that the client stops sending it.
   void rejectTooLargeBody(StreamsMap::iterator it);
