@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <limits>
 #include <span>
@@ -545,6 +546,206 @@ void BM_HpackEncodeResponsesWithVaryingFields(benchmark::State& state) {
   state.SetItemsProcessed(state.iterations());
 }
 BENCHMARK(BM_HpackEncodeResponsesWithVaryingFields)->Arg(0)->Arg(1);
+
+// Same responses with a date field, encoded with the indexing mode of HpackEncoder::IndexingModeOf(), by an encoder
+// whose dynamic table holds the date values of the previous seconds: the steady state of a long-lived connection, as
+// date is indexed and changes each second (4096 bytes hold about 60 of them).
+// Arg: number of seconds since the fields that repeat were last added to the table, that is the number of date values
+// to go through before finding them (they are added again once evicted, about once a minute).
+void BM_HpackEncodeResponsesFullDynamicTable(benchmark::State& state) {
+  static constexpr std::size_t kNbResponses = 1024;
+  static constexpr int kNbFillerDates = 100;
+  const int nbNewerDates = static_cast<int>(state.range(0));
+  const auto dateOf = [](int second) {
+    std::string date = "Mon, 12 Oct 2026 08:10:00 GMT";
+    date[20] = static_cast<char>('1' + (second / 60));
+    date[23] = static_cast<char>('0' + ((second % 60) / 10));
+    date[24] = static_cast<char>('0' + (second % 10));
+    return date;
+  };
+  // The date of the responses is the last one added to the table.
+  const std::string currentDate = dateOf(kNbFillerDates + nbNewerDates - 1);
+
+  std::deque<std::string> values;  // stable addresses
+  std::array<std::array<http::HeaderView, 10>, kNbResponses> responses;
+  for (std::size_t responseIdx = 0; responseIdx < kNbResponses; ++responseIdx) {
+    const std::string_view length = values.emplace_back(std::to_string(1000 + (responseIdx * 37U)));
+    const std::string_view etag = values.emplace_back("\"" + std::to_string(responseIdx * 7919U) + "-5f3c9a2b\"");
+    responses[responseIdx] = {{
+        {":status", "200"},
+        {"date", currentDate},
+        {"content-type", "application/json"},
+        {"content-length", length},
+        {"etag", etag},
+        {"last-modified", "Mon, 12 Oct 2026 07:00:00 GMT"},
+        {"cache-control", "public, max-age=3600"},
+        {"server", "aeronet"},
+        {"x-frame-options", "DENY"},
+        {"strict-transport-security", "max-age=31536000; includeSubDomains"},
+    }};
+  }
+
+  HpackEncoder encoder;
+  RawBytes out;
+  int second = 0;
+  for (; second < kNbFillerDates; ++second) {
+    encoder.encode(out, "date", dateOf(second));
+  }
+  for (const auto& [name, value] : responses[0]) {
+    if (name != "date") {
+      encoder.encode(out, name, value, HpackEncoder::IndexingModeOf(name, value));
+    }
+  }
+  for (; second < kNbFillerDates + nbNewerDates; ++second) {
+    encoder.encode(out, "date", dateOf(second));
+  }
+  state.counters["dyn_entries"] = static_cast<double>(encoder.dynamicTable().entryCount());
+
+  std::size_t responseIdx = 0;
+  std::size_t totalBytes = 0;
+  for ([[maybe_unused]] auto iter : state) {
+    out.clear();
+    for (const auto& [name, value] : responses[responseIdx++ % kNbResponses]) {
+      encoder.encode(out, name, value, HpackEncoder::IndexingModeOf(name, value));
+    }
+    totalBytes += out.size();
+    benchmark::DoNotOptimize(out.data());
+  }
+  state.counters["bytes_per_response"] =
+      benchmark::Counter(static_cast<double>(totalBytes), benchmark::Counter::kAvgIterations);
+  state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_HpackEncodeResponsesFullDynamicTable)->Arg(0)->Arg(25)->Arg(50)->ArgName("newer_dates");
+
+// Stateful encode of successive responses carrying many indexed fields whose value differs in each of them, as the
+// 'headers' scenario of the scripted-servers benchmarks (/headers?count=50&size=128): the dynamic table only holds the
+// last fields added, so that each field of a response is looked up in vain in the whole table, then added to it.
+// Args: number of such fields per response, size of their values.
+void BM_HpackEncodeResponsesOverflowingDynamicTable(benchmark::State& state) {
+  const auto nbFields = static_cast<std::size_t>(state.range(0));
+  const auto valueSize = static_cast<std::size_t>(state.range(1));
+  // Enough values for the fields of many responses: the table never holds a value again when it is encoded.
+  static constexpr std::size_t kNbValues = 4096;
+
+  std::deque<std::string> names;
+  for (std::size_t fieldIdx = 0; fieldIdx < nbFields; ++fieldIdx) {
+    names.push_back("x-bench-header-" + std::to_string(fieldIdx));
+  }
+  static constexpr std::string_view kAlphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  std::string values(kNbValues * valueSize, '\0');
+  uint64_t rng = 0x9E3779B97F4A7C15ULL;
+  for (char& ch : values) {
+    rng ^= rng << 13U;
+    rng ^= rng >> 7U;
+    rng ^= rng << 17U;
+    ch = kAlphabet[rng % kAlphabet.size()];
+  }
+
+  HpackEncoder encoder;
+  RawBytes out;
+  std::size_t valueIdx = 0;
+  const auto encodeField = [&](std::string_view name, std::string_view value) {
+    encoder.encode(out, name, value, HpackEncoder::IndexingModeOf(name, value));
+  };
+  for ([[maybe_unused]] auto iter : state) {
+    out.clear();
+    encodeField(":status", "200");
+    encodeField("date", "Sat, 14 Nov 2026 18:28:42 GMT");
+    for (const std::string& name : names) {
+      encodeField(name, std::string_view(values.data() + (valueIdx * valueSize), valueSize));
+      valueIdx = (valueIdx + 1U) % kNbValues;
+    }
+    encodeField("content-type", "text/plain");
+    encodeField("content-length", "19");
+    benchmark::DoNotOptimize(out.data());
+  }
+  state.counters["dyn_entries"] = static_cast<double>(encoder.dynamicTable().entryCount());
+  state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_HpackEncodeResponsesOverflowingDynamicTable)
+    ->ArgsProduct({{10, 50}, {16, 128}})
+    ->ArgNames({"fields", "value_size"});
+
+// ---------------------------------------------------------------------------
+// String literals: Huffman coding throughput, against raw strings
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// 'size' bytes of header text (letters, digits and punctuation, as in a user-agent or a cookie).
+std::string HeaderText(std::size_t size) {
+  static constexpr std::string_view kText =
+      "Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0; session=7f3a9c2e5b1d4f6a8e0c; "
+      "theme=dark; lang=en-US,en;q=0.5 ";
+  std::string text;
+  while (text.size() < size) {
+    text.append(kText.substr(0, size - text.size()));
+  }
+  return text;
+}
+
+// A literal field without indexing, with a new name: its value as a Huffman string (what HpackEncoder emits for text)
+// or as a raw one.
+RawBytes EncodeLiteralField(std::string_view name, std::string_view value, bool huffman) {
+  RawBytes block;
+  if (huffman) {
+    HpackEncoder encoder;
+    encoder.encode(block, name, value, HpackEncoder::IndexingMode::WithoutIndexing);
+    return block;
+  }
+  const auto appendRawString = [&block](std::string_view str) {
+    // Integer with a 7-bit prefix (RFC 7541 §5.1), the Huffman bit unset.
+    std::size_t length = str.size();
+    if (length < 127U) {
+      block.push_back(static_cast<std::byte>(length));
+    } else {
+      block.push_back(std::byte{127});
+      for (length -= 127U; length >= 128U; length >>= 7U) {
+        block.push_back(static_cast<std::byte>((length & 0x7FU) | 0x80U));
+      }
+      block.push_back(static_cast<std::byte>(length));
+    }
+    block.append(reinterpret_cast<const std::byte*>(str.data()), str.size());
+  };
+  block.push_back(std::byte{0});  // literal without indexing, new name
+  appendRawString(name);
+  appendRawString(value);
+  return block;
+}
+
+}  // namespace
+
+// Encode a field whose value is 'size' bytes of text, not indexed: the length of the Huffman string, then its bits.
+void BM_HpackHuffmanEncode(benchmark::State& state) {
+  const std::string value = HeaderText(static_cast<std::size_t>(state.range(0)));
+  HpackEncoder encoder;
+  RawBytes out;
+  for ([[maybe_unused]] auto iter : state) {
+    out.clear();
+    encoder.encode(out, "x-bench", value, HpackEncoder::IndexingMode::WithoutIndexing);
+    benchmark::DoNotOptimize(out.data());
+  }
+  state.counters["encoded_size"] = static_cast<double>(out.size());
+  state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(value.size()));
+}
+BENCHMARK(BM_HpackHuffmanEncode)->Arg(16)->Arg(64)->Arg(256)->Arg(4096);
+
+// Decode a field whose value is 'size' bytes of text, as a Huffman string or as a raw one: the difference is the cost
+// of the Huffman decoding, the rest (validation, storage, header map) being common.
+void BM_HpackDecodeLiteral(benchmark::State& state) {
+  const std::string value = HeaderText(static_cast<std::size_t>(state.range(0)));
+  const RawBytes block = EncodeLiteralField("x-bench", value, state.range(1) != 0);
+  auto decoder = CreateHpackDecoder();
+  for ([[maybe_unused]] auto iter : state) {
+    auto result = decoder.decode(AsBytes(block));
+    benchmark::DoNotOptimize(result);
+  }
+  if (decoder.decode(AsBytes(block)).decodedHeaders.headers.find("x-bench")->second != value) {
+    state.SkipWithError("the decoded value differs");
+  }
+  state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(value.size()));
+}
+BENCHMARK(BM_HpackDecodeLiteral)->ArgsProduct({{16, 64, 256, 4096}, {0, 1}})->ArgNames({"size", "huffman"});
 
 // ---------------------------------------------------------------------------
 // findHeader benchmark (the identified bottleneck)

@@ -73,11 +73,6 @@ Header::Header(const Header& rhs)
   }
 }
 
-Header::Header(Header&& rhs) noexcept
-    : _pData(std::exchange(rhs._pData, nullptr)),
-      _nameLength(std::exchange(rhs._nameLength, 0)),
-      _valueLength(std::exchange(rhs._valueLength, 0)) {}
-
 Header& Header::operator=(const Header& rhs) {
   if (this != &rhs) [[likely]] {
     const auto newSize = rhs.size();
@@ -94,17 +89,5 @@ Header& Header::operator=(const Header& rhs) {
   }
   return *this;
 }
-
-Header& Header::operator=(Header&& rhs) noexcept {
-  if (this != &rhs) [[likely]] {
-    std::free(_pData);
-    _pData = std::exchange(rhs._pData, nullptr);
-    _nameLength = std::exchange(rhs._nameLength, 0);
-    _valueLength = std::exchange(rhs._valueLength, 0);
-  }
-  return *this;
-}
-
-Header::~Header() { std::free(_pData); }
 
 }  // namespace aeronet::http

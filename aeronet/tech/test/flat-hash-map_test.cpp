@@ -131,6 +131,40 @@ TEST(flat_hash_map, erase_and_clear) {
   EXPECT_TRUE(map1.empty());
 }
 
+// A map of trivially destructible values is cleared block by block: every element is gone, the buckets are kept, and
+// the map works as a new one.
+TEST(flat_hash_map, clear_trivially_destructible_values_keeps_buckets) {
+  flat_hash_map<int, int> map;
+  map.clear();  // no bucket yet
+  EXPECT_TRUE(map.empty());
+  for (int key = 0; key < 100; ++key) {
+    map.emplace(key, key * 2);
+  }
+  for (int key = 0; key < 100; key += 3) {
+    map.erase(key);
+  }
+  const auto bucketCount = map.bucket_count();
+  map.clear();
+  EXPECT_TRUE(map.empty());
+  EXPECT_EQ(map.bucket_count(), bucketCount);
+  EXPECT_EQ(map.begin(), map.end());
+  for (int key = 0; key < 100; ++key) {
+    EXPECT_FALSE(map.contains(key));
+  }
+  map.clear();  // already empty
+  EXPECT_TRUE(map.empty());
+
+  for (int key = 0; key < 100; ++key) {
+    EXPECT_TRUE(map.emplace(key, key + 1).second);
+  }
+  EXPECT_EQ(map.size(), 100U);
+  EXPECT_EQ(map.bucket_count(), bucketCount);
+  for (int key = 0; key < 100; ++key) {
+    ASSERT_TRUE(map.contains(key));
+    EXPECT_EQ(map.find(key)->second, key + 1);
+  }
+}
+
 namespace {
 
 struct ProgrammableHash {
@@ -293,6 +327,49 @@ TEST(flat_hash_map, try_emplace_inserts_and_returns_iterator_bool) {
   EXPECT_FALSE(inserted2);
   EXPECT_EQ(it2, it);
   EXPECT_EQ(map.at("alpha"), 10);
+}
+
+TEST(flat_hash_map, try_emplace_hashed_behaves_like_try_emplace) {
+  using HashedMap = flat_hash_map<std::string_view, int, CityHash>;
+  static constexpr std::string_view kKeys[]{"alpha", "beta", "gamma", "delta", "a-much-longer-key-than-the-others", ""};
+
+  HashedMap map;
+  HashedMap reference;
+  // Enough keys to make the map grow several times.
+  std::string storage[512];
+  int value = 0;
+  for (std::string& key : storage) {
+    key = std::string(kKeys[static_cast<std::size_t>(value) % std::size(kKeys)]) + std::to_string(value);
+    const auto [it, inserted] = map.try_emplace_hashed(CityHash{}(key), key, value);
+    EXPECT_TRUE(inserted);
+    EXPECT_EQ(it->first, key);
+    EXPECT_EQ(it->second, value);
+    reference.try_emplace(key, value);
+    ++value;
+  }
+  EXPECT_EQ(map, reference);
+
+  // The keys are found by the lookups that hash them, and are not inserted twice.
+  for (const std::string& key : storage) {
+    const auto found = map.find(key);
+    ASSERT_NE(found, map.end());
+    const auto [it, inserted] = map.try_emplace_hashed(CityHash{}(key), key, -1);
+    EXPECT_FALSE(inserted);
+    EXPECT_EQ(it, found);
+    EXPECT_NE(it->second, -1);
+  }
+  EXPECT_EQ(map.size(), std::size(storage));
+}
+
+TEST(flat_hash_map, try_emplace_hashed_constructs_mapped_from_multiple_args) {
+  flat_hash_map<std::string_view, std::string_view, CityHash> map;
+  static constexpr std::string_view kValue = "value and more";
+
+  const auto [it, inserted] = map.try_emplace_hashed(CityHash{}("key"), "key", kValue.data(), 5U);
+
+  EXPECT_TRUE(inserted);
+  EXPECT_EQ(it->second, "value");
+  EXPECT_EQ(map.at("key"), "value");
 }
 
 TEST(flat_hash_map, try_emplace_constructs_mapped_from_multiple_args) {

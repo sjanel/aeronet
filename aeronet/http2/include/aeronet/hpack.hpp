@@ -1,9 +1,11 @@
 #pragma once
 
+#include <amc/type_traits.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string_view>
+#include <type_traits>
 
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/http-constants.hpp"
@@ -36,13 +38,18 @@ class HpackDynamicTable {
   /// Add a new entry to the front of the table.
   /// May trigger eviction of old entries if the new entry doesn't fit.
   /// Returns true if the entry was added, false if it's too large for the table.
-  bool add(std::string_view name, std::string_view value);
+  /// 'tag' is a value of the caller kept with the entry (see tag()).
+  bool add(std::string_view name, std::string_view value, std::size_t tag = 0);
 
   /// Get entry at the specified dynamic table index (0 = most recent).
   /// Index must be lower than entryCount().
   [[nodiscard]] const http::Header& operator[](uint32_t index) const noexcept {
-    return _entries[_entries.size() - 1U - index];
+    return _entries[_entries.size() - 1U - index].header;
   }
+
+  /// Get the tag given to the entry at the specified dynamic table index (0 = most recent) when it was added.
+  /// Index must be lower than entryCount().
+  [[nodiscard]] std::size_t tag(uint32_t index) const noexcept { return _entries[_entries.size() - 1U - index].tag; }
 
   /// Get the number of entries in the dynamic table.
   [[nodiscard]] std::size_t entryCount() const noexcept { return _entries.size() - _firstLive; }
@@ -69,9 +76,16 @@ class HpackDynamicTable {
   //
   // Storing it this way makes add() an amortised push_back and evict() a cursor bump. Keeping the RFC order in memory
   // instead would mean inserting at the front, which relocates every live entry on every single add.
-  // Only the 16-byte Header handles move; the name/value buffers they point at never do, so string_views handed out by
-  // the decoder stay valid across add(), evict() and compact().
-  vector<http::Header> _entries;
+  // Only the 16-byte Header handles move (with their tag); the name/value buffers they point at never do, so
+  // string_views handed out by the decoder stay valid across add(), evict() and compact().
+  struct Entry {
+    using trivially_relocatable = amc::is_trivially_relocatable<http::Header>::type;
+
+    http::Header header;
+    std::size_t tag;
+  };
+
+  vector<Entry> _entries;
   std::size_t _currentSizeBytes{0};
   uint32_t _maxSizeBytes;
   decltype(_entries)::size_type _firstLive{0};
@@ -237,6 +251,8 @@ class HpackDecoder {
 
   struct IndexedField {
     http::HeaderView header;  // Empty name if the index is out of bounds
+    // The hash of the name if the field is a plain field of the dynamic table (see storePlainField()), 0 otherwise.
+    std::size_t plainNameHash{0};
     Source source{Source::Transient};
   };
 
@@ -256,8 +272,20 @@ class HpackDecoder {
   [[nodiscard]] std::string_view stableString(std::string_view str, Source source);
 
   // Store a decoded header field into the decoded headers.
+  // plainNameHash is, if not 0, the hash of the name of a plain field of the dynamic table (see storePlainField()),
+  // whose name is thus a valid regular one. It is set to the hash of the name if the stored field is itself a plain
+  // one, and to 0 otherwise.
   DecodeResult::Error storeHeader(std::string_view name, Source nameSource, std::string_view value, Source valueSource,
-                                  bool& seenRegularHeader);
+                                  bool& seenRegularHeader, std::size_t& plainNameHash);
+
+  // Store a plain field of the dynamic table: a regular field that storeHeader() accepted with this name and this
+  // value when it was added to the table, and that is stored as received (it is not connection-specific, and has no
+  // content coding to lower-case). What storeHeader() checks on a field only depends on its name and its value: these
+  // checks are not made again each time the field is referenced, and neither is the hash of its name computed again.
+  DecodeResult::Error storePlainField(std::string_view name, std::string_view value, std::size_t nameHash);
+
+  // Merge a value of a field with the ones already decoded for it (same rules as for HTTP/1.1).
+  DecodeResult::Error mergeRepeatedField(SvToSvMap::iterator it, std::string_view storedValue);
 
   // Join the values of the repeated fields recorded in _deferredJoins to their first one, once the block is decoded.
   void joinRepeatedFields();
@@ -325,8 +353,9 @@ class HpackEncoder {
   /// Get the current dynamic table for inspection.
   [[nodiscard]] const HpackDynamicTable& dynamicTable() const noexcept { return _dynamicTable; }
 
-  /// Find a header in the static and dynamic tables.
-  [[nodiscard]] HpackLookupResult findHeader(std::string_view name, std::string_view value);
+  /// Find a header in the static and dynamic tables, for a field encoded with the given indexing mode.
+  [[nodiscard]] HpackLookupResult findHeader(std::string_view name, std::string_view value,
+                                             IndexingMode mode = IndexingMode::Indexed);
 
  private:
   friend struct HpackEncoderTestAccess;
@@ -347,6 +376,25 @@ class HpackEncoder {
   void rebuildDynamicIndex();
   void resetDynamicIndex();
 
+  // Number of slots (16) of the memo of the fields last found in the dynamic table, as a number of bits.
+  static constexpr uint32_t kFoundMemoBits = 4;
+
+  // The two slots of the memo where a field may be: the same slot twice for 1 field out of 16.
+  struct FoundMemoSlots {
+    uint32_t first;
+    uint32_t second;
+  };
+
+  // The slots of a field: cheap to compute, from what differs most between the fields of a message.
+  [[nodiscard]] static FoundMemoSlots FoundMemoSlotsOf(std::string_view name, std::string_view value) noexcept;
+
+  // The index in the dynamic table of the entry of a slot of the memo if it holds this field, its entry count if not.
+  [[nodiscard]] uint32_t foundMemoIndex(uint32_t slot, std::string_view name, std::string_view value) const noexcept;
+
+  // Remember that a field is at this index of the dynamic table, in one of its two slots: one whose entry was evicted
+  // if any, so that two fields sharing a slot do not replace each other in turn.
+  void rememberFound(FoundMemoSlots slots, uint32_t idx) noexcept;
+
   HpackDynamicTable _dynamicTable;
   flat_hash_map<std::size_t, uint64_t> _dynamicIndex;
   // The table sizes set since the previous header block. Any size being possible, none is pending while the smallest
@@ -354,6 +402,12 @@ class HpackEncoder {
   uint32_t _smallestPendingTableSize{kNoPendingTableSize};
   uint32_t _lastPendingTableSize{0};
   uint64_t _newestDynamicSerial{0U};
+  // Where the fields last found in the dynamic table are: the messages of a connection repeat the same fields, which
+  // are found again without scanning the table (it holds, before them, the values that changed since they were added,
+  // as the date of each second). Each slot is the value of _nbAdded when its entry was the newest one of the table
+  // (the entry is checked before use: a slot may refer to an evicted or to another entry).
+  uint32_t _foundMemo[1U << kFoundMemoBits]{};
+  uint32_t _nbAdded{0};  // Number of entries added to the dynamic table, modulo 2^32
 };
 
 }  // namespace aeronet::http2

@@ -3,6 +3,7 @@
 // and connection-level flow control processing.
 #include <benchmark/benchmark.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -10,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <random>
 #include <span>
 #include <string>
 #include <string_view>
@@ -31,6 +33,7 @@
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
+#include "aeronet/vector.hpp"
 
 namespace aeronet::http2 {
 namespace {
@@ -495,38 +498,6 @@ class AnsweringSink final : public EventSink {
   Http2Connection& _connection;
 };
 
-// The server side of an open connection with an AnsweringSink, fed with frames as a client would send them.
-class SinkConnectionBench {
- public:
-  SinkConnectionBench()
-      : _connection(Http2Config{}.withMaxStreamsPerConnection(std::numeric_limits<uint32_t>::max()), true),
-        _sink(_connection) {
-    RawBytes setup;
-    setup.append(reinterpret_cast<const std::byte*>(kConnectionPreface.data()), kConnectionPreface.size());
-    WriteSettingsFrame(setup, {});
-    WriteSettingsAckFrame(setup);
-    feed(setup);
-  }
-
-  // Process all of 'input' (whole frames), then write all the output.
-  void feed(std::span<const std::byte> input) {
-    while (!input.empty()) {
-      const auto result = _connection.processInput(input);
-      if (result.bytesConsumed == 0 || result.action == Http2Connection::ProcessResult::Action::Error ||
-          result.action == Http2Connection::ProcessResult::Action::GoAway) {
-        std::fprintf(stderr, "HTTP/2 connection stopped processing (action %d)\n", static_cast<int>(result.action));
-        std::abort();
-      }
-      input = input.subspan(result.bytesConsumed);
-    }
-    _connection.onOutputWritten(_connection.pendingOutputSize());
-  }
-
- private:
-  Http2Connection _connection;
-  AnsweringSink _sink;
-};
-
 // The fields of a small GET request: the first block indexes them in the dynamic table, the next ones refer to them.
 struct RequestFieldBlocks {
   RequestFieldBlocks() {
@@ -548,16 +519,88 @@ void WriteHeadersFrame(std::byte* pFrame, std::size_t blockSize, uint32_t stream
                                        ComputeHeaderFrameFlags(endStream, true), streamId));
 }
 
-// 'batch' requests per input, each in a new stream (HEADERS with END_STREAM) answered and closed from the callback.
-void BM_ConnectionSinkAnsweredStreams(benchmark::State& state) {
-  const auto batch = static_cast<uint32_t>(state.range(0));
-  SinkConnectionBench bench;
-  const RequestFieldBlocks blocks;
+// The server side of an open connection with an AnsweringSink, fed with frames as a client would send them.
+// 'nbActiveStreams' streams (ids 1, 3, 5...) are opened first by a request without END_STREAM, and stay open.
+class SinkConnectionBench {
+ public:
+  explicit SinkConnectionBench(uint32_t nbActiveStreams = 0)
+      : _connection(Http2Config{}
+                        .withMaxConcurrentStreams(std::numeric_limits<uint32_t>::max())
+                        .withMaxStreamsPerConnection(std::numeric_limits<uint32_t>::max()),
+                    true),
+        _sink(_connection),
+        _nbActiveStreams(nbActiveStreams) {
+    RawBytes setup;
+    setup.append(reinterpret_cast<const std::byte*>(kConnectionPreface.data()), kConnectionPreface.size());
+    WriteSettingsFrame(setup, {});
+    WriteSettingsAckFrame(setup);
+    feed(setup);
+
+    RawBytes input;
+    for (uint32_t idx = 0; idx < nbActiveStreams; ++idx) {
+      const RawBytes& block = idx == 0 ? _blocks.first : _blocks.next;
+      const std::size_t framePos = input.size();
+      input.ensureAvailableCapacityExponential(FrameHeader::kSize + block.size());
+      input.addSize(FrameHeader::kSize);
+      input.unchecked_append(block);
+      WriteHeadersFrame(input.data() + framePos, block.size(), firstFreeStreamId(), false);
+      ++_nbOpenedStreams;
+    }
+    feed(input);
+    checkActiveStreams();
+  }
+
+  // Process all of 'input' (whole frames), then write all the output.
+  void feed(std::span<const std::byte> input) {
+    while (!input.empty()) {
+      const auto result = _connection.processInput(input);
+      if (result.bytesConsumed == 0 || result.action == Http2Connection::ProcessResult::Action::Error ||
+          result.action == Http2Connection::ProcessResult::Action::GoAway) {
+        std::fprintf(stderr, "HTTP/2 connection stopped processing (action %d)\n", static_cast<int>(result.action));
+        std::abort();
+      }
+      input = input.subspan(result.bytesConsumed);
+    }
+    _connection.onOutputWritten(_connection.pendingOutputSize());
+  }
+
+  // Abort if a stream opened by the constructor was closed (a window overflow for instance): the benchmark would
+  // go on with frames that are ignored, and report the cost of ignoring them.
+  void checkActiveStreams() const {
+    if (_connection.activeStreamCount() != _nbActiveStreams) {
+      std::fprintf(stderr, "HTTP/2 connection has %u active streams instead of %u\n", _connection.activeStreamCount(),
+                   _nbActiveStreams);
+      std::abort();
+    }
+  }
+
+  [[nodiscard]] Http2Connection& connection() noexcept { return _connection; }
+
+  [[nodiscard]] const RequestFieldBlocks& blocks() const noexcept { return _blocks; }
+
+  // The lowest stream id above the ones opened by the constructor.
+  [[nodiscard]] uint32_t firstFreeStreamId() const noexcept { return 1U + (2U * _nbOpenedStreams); }
+
+ private:
+  Http2Connection _connection;
+  AnsweringSink _sink;
+  RequestFieldBlocks _blocks;
+  uint32_t _nbActiveStreams;
+  uint32_t _nbOpenedStreams{0};
+};
+
+// 'batch' requests per input, each in a new stream (HEADERS with END_STREAM) answered and closed from the callback,
+// on a connection with 'nbActiveStreams' other streams that stay open.
+void RunAnsweredStreams(benchmark::State& state, uint32_t batch, uint32_t nbActiveStreams) {
+  SinkConnectionBench bench(nbActiveStreams);
+  const RequestFieldBlocks& blocks = bench.blocks();
+  uint32_t streamId = bench.firstFreeStreamId();
 
   RawBytes input(FrameHeader::kSize + blocks.first.size());
   input.addSize(FrameHeader::kSize);
   input.unchecked_append(blocks.first);
-  WriteHeadersFrame(input.data(), blocks.first.size(), 1U, true);
+  WriteHeadersFrame(input.data(), blocks.first.size(), streamId, true);
+  streamId += 2U;
   bench.feed(input);
 
   const std::size_t frameSize = FrameHeader::kSize + blocks.next.size();
@@ -568,7 +611,6 @@ void BM_ConnectionSinkAnsweredStreams(benchmark::State& state) {
     input.unchecked_append(blocks.next);
   }
 
-  uint32_t streamId = 3;
   for ([[maybe_unused]] auto iter : state) {
     for (uint32_t idx = 0; idx < batch; ++idx) {
       WriteHeadersFrame(input.data() + (idx * frameSize), blocks.next.size(), streamId, true);
@@ -576,7 +618,12 @@ void BM_ConnectionSinkAnsweredStreams(benchmark::State& state) {
     }
     bench.feed(input);
   }
+  bench.checkActiveStreams();
   state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * batch);
+}
+
+void BM_ConnectionSinkAnsweredStreams(benchmark::State& state) {
+  RunAnsweredStreams(state, static_cast<uint32_t>(state.range(0)), 0U);
 }
 BENCHMARK(BM_ConnectionSinkAnsweredStreams)->Arg(1)->Arg(16);
 
@@ -584,16 +631,9 @@ BENCHMARK(BM_ConnectionSinkAnsweredStreams)->Arg(1)->Arg(16);
 void BM_ConnectionSinkDataFrames(benchmark::State& state) {
   const auto batch = static_cast<uint32_t>(state.range(0));
   constexpr uint32_t kPayloadSize = 128;
-  SinkConnectionBench bench;
-  const RequestFieldBlocks blocks;
+  SinkConnectionBench bench(1U);
 
-  RawBytes input(FrameHeader::kSize + blocks.first.size());
-  input.addSize(FrameHeader::kSize);
-  input.unchecked_append(blocks.first);
-  WriteHeadersFrame(input.data(), blocks.first.size(), 1U, false);
-  bench.feed(input);
-
-  input.clear();
+  RawBytes input;
   for (uint32_t idx = 0; idx < batch; ++idx) {
     std::byte* pData = PrepareDataFrameGetStartPtr(input, 1U, kPayloadSize, false);
     std::memset(pData, 'D', kPayloadSize);
@@ -602,9 +642,312 @@ void BM_ConnectionSinkDataFrames(benchmark::State& state) {
   for ([[maybe_unused]] auto iter : state) {
     bench.feed(input);
   }
+  bench.checkActiveStreams();
   state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * batch);
 }
 BENCHMARK(BM_ConnectionSinkDataFrames)->Arg(1)->Arg(16);
+
+// A request body received as DATA frames of the given payload size on one stream: the cost per frame, and the
+// WINDOW_UPDATE frames (stream and connection) sent back per MiB received.
+void BM_ConnectionReceiveBody(benchmark::State& state) {
+  const auto payloadSize = static_cast<uint32_t>(state.range(0));
+  constexpr uint32_t kBatch = 16;
+  SinkConnectionBench bench(1U);
+  Http2Connection& connection = bench.connection();
+
+  RawBytes input;
+  for (uint32_t idx = 0; idx < kBatch; ++idx) {
+    std::byte* pData = PrepareDataFrameGetStartPtr(input, 1U, payloadSize, false);
+    std::memset(pData, 'D', payloadSize);
+  }
+
+  uint64_t nbWindowUpdates = 0;
+  for ([[maybe_unused]] auto iter : state) {
+    std::span<const std::byte> remaining(input);
+    while (!remaining.empty()) {
+      const auto result = connection.processInput(remaining);
+      remaining = remaining.subspan(result.bytesConsumed);
+    }
+    // The output is only made of WINDOW_UPDATE frames, of the same size.
+    nbWindowUpdates += connection.pendingOutputSize() / (FrameHeader::kSize + sizeof(uint32_t));
+    connection.onOutputWritten(connection.pendingOutputSize());
+  }
+  bench.checkActiveStreams();
+  const auto nbBytes = static_cast<double>(state.iterations()) * kBatch * payloadSize;
+  state.counters["window_updates_per_MiB"] = static_cast<double>(nbWindowUpdates) * (1024.0 * 1024.0) / nbBytes;
+  state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * kBatch);
+  state.SetBytesProcessed(static_cast<int64_t>(nbBytes));
+}
+BENCHMARK(BM_ConnectionReceiveBody)->Arg(1024)->Arg(16384);
+
+// ---------------------------------------------------------------------------
+// Connection with many active streams: randomized lookup, DATA and WINDOW_UPDATE processing, close and prune churn
+// ---------------------------------------------------------------------------
+
+// Random ids among the first 'nbStreams' streams of a client (1, 3, 5...), cycled. The sequence is long enough for
+// the branch predictor not to learn it, and is the same in all the runs.
+class RandomStreamIds {
+ public:
+  explicit RandomStreamIds(uint32_t nbStreams) : _ids(kNbIds) {
+    std::mt19937 gen(20261114U);
+    for (uint32_t& id : _ids) {
+      id = 1U + (2U * (static_cast<uint32_t>(gen()) % nbStreams));
+    }
+  }
+
+  [[nodiscard]] uint32_t next() noexcept { return _ids[_pos++ & (kNbIds - 1U)]; }
+
+ private:
+  static constexpr uint32_t kNbIds = 1U << 16U;
+
+  vector<uint32_t> _ids;
+  uint32_t _pos{0};
+};
+
+constexpr uint32_t kStreamFramesBatch = 64;
+
+// Lookup of a random stream among 'active' ones, 'burst' times in a row: a request looks its stream up several times
+// (HEADERS received, response HEADERS and DATA sent, closing), frames of distinct streams being interleaved.
+void BM_ConnectionStreamLookup(benchmark::State& state) {
+  const auto nbActiveStreams = static_cast<uint32_t>(state.range(0));
+  const auto burst = static_cast<uint32_t>(state.range(1));
+  SinkConnectionBench bench(nbActiveStreams);
+  RandomStreamIds ids(nbActiveStreams);
+  Http2Connection& connection = bench.connection();
+
+  for ([[maybe_unused]] auto iter : state) {
+    uint32_t streamId = ids.next();
+    for (uint32_t idx = 0; idx < burst; ++idx) {
+      benchmark::DoNotOptimize(streamId);
+      Http2Stream* pStream = connection.getStream(streamId);
+      benchmark::DoNotOptimize(pStream);
+    }
+  }
+  state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * burst);
+}
+BENCHMARK(BM_ConnectionStreamLookup)->ArgsProduct({{1, 100, 1000, 10000}, {1, 8}})->ArgNames({"active", "burst"});
+
+// Batches of DATA frames, each on a random stream among 'active' ones, delivered to the sink. Their stream ids are
+// written before each batch (timed: a store per frame).
+void BM_ConnectionStreamDataFrames(benchmark::State& state) {
+  const auto nbActiveStreams = static_cast<uint32_t>(state.range(0));
+  constexpr uint32_t kPayloadSize = 16;
+  constexpr std::size_t kFrameSize = FrameHeader::kSize + kPayloadSize;
+  SinkConnectionBench bench(nbActiveStreams);
+  RandomStreamIds ids(nbActiveStreams);
+
+  RawBytes input;
+  for (uint32_t idx = 0; idx < kStreamFramesBatch; ++idx) {
+    std::byte* pData = PrepareDataFrameGetStartPtr(input, 1U, kPayloadSize, false);
+    std::memset(pData, 'D', kPayloadSize);
+  }
+
+  for ([[maybe_unused]] auto iter : state) {
+    for (uint32_t idx = 0; idx < kStreamFramesBatch; ++idx) {
+      WriteFrameHeader(input.data() + (idx * kFrameSize),
+                       FrameHeader(kPayloadSize, FrameType::Data, FrameFlags::None, ids.next()));
+    }
+    bench.feed(input);
+  }
+  bench.checkActiveStreams();
+  state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * kStreamFramesBatch);
+}
+BENCHMARK(BM_ConnectionStreamDataFrames)->Arg(1)->Arg(100)->Arg(1000)->Arg(10000)->ArgName("active");
+
+// Batches of WINDOW_UPDATE frames, each on a random stream among 'active' ones.
+void BM_ConnectionStreamWindowUpdates(benchmark::State& state) {
+  const auto nbActiveStreams = static_cast<uint32_t>(state.range(0));
+  constexpr std::size_t kFrameSize = FrameHeader::kSize + sizeof(uint32_t);
+  SinkConnectionBench bench(nbActiveStreams);
+  RandomStreamIds ids(nbActiveStreams);
+
+  // The smallest increment: a stream accepts 2^31 - 65536 of them before its send window overflows (which closes it,
+  // see checkActiveStreams()).
+  RawBytes input;
+  for (uint32_t idx = 0; idx < kStreamFramesBatch; ++idx) {
+    WriteWindowUpdateFrame(input, 1U, 1U);
+  }
+
+  for ([[maybe_unused]] auto iter : state) {
+    for (uint32_t idx = 0; idx < kStreamFramesBatch; ++idx) {
+      WriteFrameHeader(input.data() + (idx * kFrameSize),
+                       FrameHeader(sizeof(uint32_t), FrameType::WindowUpdate, FrameFlags::None, ids.next()));
+    }
+    bench.feed(input);
+  }
+  bench.checkActiveStreams();
+  state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * kStreamFramesBatch);
+}
+BENCHMARK(BM_ConnectionStreamWindowUpdates)->Arg(1)->Arg(100)->Arg(1000)->Arg(10000)->ArgName("active");
+
+// Streams opened, answered, closed then pruned (16 requests per input) beside 'active' streams that stay open.
+void BM_ConnectionStreamChurn(benchmark::State& state) {
+  RunAnsweredStreams(state, 16U, static_cast<uint32_t>(state.range(0)));
+}
+BENCHMARK(BM_ConnectionStreamChurn)->Arg(1)->Arg(100)->Arg(1000)->Arg(10000)->ArgName("active");
+
+// ---------------------------------------------------------------------------
+// Stream table candidates: the flat hash map of Http2Connection, with a cache of the last stream, or a dense table
+// ---------------------------------------------------------------------------
+
+// The table of Http2Connection.
+class FlatMapStreamTable {
+ public:
+  [[nodiscard]] Http2Stream* find(uint32_t streamId) noexcept {
+    const auto it = _streams.find(streamId);
+    return it == _streams.end() ? nullptr : &it->second;
+  }
+
+  Http2Stream& open(uint32_t streamId) {
+    return _streams.try_emplace(streamId, streamId, kDefaultInitialWindowSize).first->second;
+  }
+
+  void erase(uint32_t streamId) { _streams.erase(streamId); }
+
+ private:
+  flat_hash_map<uint32_t, Http2Stream> _streams;
+};
+
+// The same, remembering the last stream found or opened: the entries move when another one is inserted or erased,
+// which forgets it.
+class CachedFlatMapStreamTable {
+ public:
+  [[nodiscard]] Http2Stream* find(uint32_t streamId) noexcept {
+    if (streamId == _lastStreamId) {
+      return _pLastStream;
+    }
+    const auto it = _streams.find(streamId);
+    if (it == _streams.end()) {
+      return nullptr;
+    }
+    _lastStreamId = streamId;
+    _pLastStream = &it->second;
+    return _pLastStream;
+  }
+
+  Http2Stream& open(uint32_t streamId) {
+    _pLastStream = &_streams.try_emplace(streamId, streamId, kDefaultInitialWindowSize).first->second;
+    _lastStreamId = streamId;
+    return *_pLastStream;
+  }
+
+  void erase(uint32_t streamId) {
+    _streams.erase(streamId);
+    _lastStreamId = 0;
+  }
+
+ private:
+  flat_hash_map<uint32_t, Http2Stream> _streams;
+  Http2Stream* _pLastStream{nullptr};
+  uint32_t _lastStreamId{0};  // 0 is not the id of a stream
+};
+
+// A dense table: the streams sorted by id in one array. The ids of a peer increase, so a stream is opened at the
+// end; erasing one moves the streams opened after it.
+class SortedVectorStreamTable {
+ public:
+  [[nodiscard]] Http2Stream* find(uint32_t streamId) noexcept {
+    const auto it = std::ranges::lower_bound(_streams, streamId, {}, &Http2Stream::id);
+    return it == _streams.end() || it->id() != streamId ? nullptr : &*it;
+  }
+
+  Http2Stream& open(uint32_t streamId) { return _streams.emplace_back(streamId, kDefaultInitialWindowSize); }
+
+  void erase(uint32_t streamId) {
+    const auto it = std::ranges::lower_bound(_streams, streamId, {}, &Http2Stream::id);
+    if (it != _streams.end() && it->id() == streamId) {
+      _streams.erase(it);
+    }
+  }
+
+ private:
+  vector<Http2Stream> _streams;
+};
+
+// Lookup of a random stream among 'active' ones, 'burst' times in a row.
+template <class StreamTable>
+void BM_StreamTableLookup(benchmark::State& state) {
+  const auto nbActiveStreams = static_cast<uint32_t>(state.range(0));
+  const auto burst = static_cast<uint32_t>(state.range(1));
+  StreamTable table;
+  for (uint32_t idx = 0; idx < nbActiveStreams; ++idx) {
+    table.open(1U + (2U * idx));
+  }
+  RandomStreamIds ids(nbActiveStreams);
+
+  for ([[maybe_unused]] auto iter : state) {
+    uint32_t streamId = ids.next();
+    for (uint32_t idx = 0; idx < burst; ++idx) {
+      benchmark::DoNotOptimize(streamId);
+      Http2Stream* pStream = table.find(streamId);
+      benchmark::DoNotOptimize(pStream);
+    }
+  }
+  state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * burst);
+}
+
+// The stream table operations of a request answered at once, beside 'active' streams that stay open: its stream is
+// opened, looked up 5 times (the response HEADERS and DATA, the window checks, the closing), and the stream closed
+// 16 requests earlier is looked up and erased (see Http2Connection::pruneClosedStreams()).
+template <class StreamTable>
+void BM_StreamTableRequest(benchmark::State& state) {
+  const auto nbActiveStreams = static_cast<uint32_t>(state.range(0));
+  constexpr uint32_t kNbLookups = 5;
+  constexpr uint32_t kNbRetainedClosedStreams = 16;
+  StreamTable table;
+  uint32_t streamId = 1;
+  for (uint32_t idx = 0; idx < nbActiveStreams + kNbRetainedClosedStreams; ++idx) {
+    table.open(streamId);
+    streamId += 2U;
+  }
+  uint32_t prunedStreamId = 1U + (2U * nbActiveStreams);
+
+  for ([[maybe_unused]] auto iter : state) {
+    Http2Stream* pStream = &table.open(streamId);
+    benchmark::DoNotOptimize(pStream);
+    for (uint32_t idx = 0; idx < kNbLookups; ++idx) {
+      benchmark::DoNotOptimize(streamId);
+      pStream = table.find(streamId);
+      benchmark::DoNotOptimize(pStream);
+    }
+    benchmark::DoNotOptimize(prunedStreamId);
+    pStream = table.find(prunedStreamId);
+    benchmark::DoNotOptimize(pStream);
+    table.erase(prunedStreamId);
+    streamId += 2U;
+    prunedStreamId += 2U;
+  }
+  state.SetItemsProcessed(static_cast<int64_t>(state.iterations()));
+}
+
+BENCHMARK_TEMPLATE(BM_StreamTableLookup, FlatMapStreamTable)
+    ->ArgsProduct({{1, 100, 1000, 10000}, {1, 8}})
+    ->ArgNames({"active", "burst"});
+BENCHMARK_TEMPLATE(BM_StreamTableLookup, CachedFlatMapStreamTable)
+    ->ArgsProduct({{1, 100, 1000, 10000}, {1, 8}})
+    ->ArgNames({"active", "burst"});
+BENCHMARK_TEMPLATE(BM_StreamTableLookup, SortedVectorStreamTable)
+    ->ArgsProduct({{1, 100, 1000, 10000}, {1, 8}})
+    ->ArgNames({"active", "burst"});
+
+BENCHMARK_TEMPLATE(BM_StreamTableRequest, FlatMapStreamTable)
+    ->Arg(1)
+    ->Arg(100)
+    ->Arg(1000)
+    ->Arg(10000)
+    ->ArgName("active");
+BENCHMARK_TEMPLATE(BM_StreamTableRequest, CachedFlatMapStreamTable)
+    ->Arg(1)
+    ->Arg(100)
+    ->Arg(1000)
+    ->Arg(10000)
+    ->ArgName("active");
+BENCHMARK_TEMPLATE(BM_StreamTableRequest, SortedVectorStreamTable)
+    ->Arg(1)
+    ->Arg(100)
+    ->Arg(1000)
+    ->Arg(10000)
+    ->ArgName("active");
 
 }  // namespace
 }  // namespace aeronet::http2

@@ -64,10 +64,9 @@ constexpr uint32_t kMaxIdlePriorityFrames = 10000U;
 constexpr uint32_t kMinMaxFrameSize = 16384;     // Minimum allowed SETTINGS_MAX_FRAME_SIZE
 constexpr uint32_t kMaxMaxFrameSize = 16777215;  // Maximum allowed SETTINGS_MAX_FRAME_SIZE
 
-// Copying a tiny body beside its frame header lets one transport write cover a batch of
+// Copying a small body beside its frame header lets one transport write cover a batch of
 // responses. Larger bodies keep their owned allocation and gather-write without a copy.
-// TODO: make this configurable?
-constexpr uint32_t kMaxInlineDataFrameCopySize = 256;
+constexpr uint32_t kMaxInlineDataFrameCopySize = 1024;
 
 // Minimum number of written blocks at the front of the output queue before they are erased (see onOutputWritten()).
 constexpr uint32_t kMinWrittenOutputBlocksToCompact = 16;

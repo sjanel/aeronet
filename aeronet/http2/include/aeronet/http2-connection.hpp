@@ -174,6 +174,15 @@ class Http2Connection {
   /// Discard all queued output without changing protocol or flow-control state.
   void discardPendingOutput() noexcept;
 
+  /// Halve the capacity of the output buffer when it is mostly unused and no output is pending (see
+  /// RawBytes::shrink_to_fit()): it keeps the capacity of its largest batch of frames otherwise, small DATA payloads
+  /// being copied in it. Called periodically, like the reclaim of the other connection buffers.
+  void reclaimOutputBufferMemory() noexcept {
+    if (!hasPendingOutput()) {
+      _outputBuffer.shrink_to_fit();
+    }
+  }
+
   /// Initiate graceful shutdown by sending GOAWAY.
   /// @param errorCode Error code to include in GOAWAY (default: NO_ERROR)
   /// @param debugData Optional debug data string

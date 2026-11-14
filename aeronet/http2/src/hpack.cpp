@@ -24,6 +24,7 @@
 #include "aeronet/reserved-headers.hpp"
 #include "aeronet/toupperlower.hpp"
 #include "http2-header-is-valid.hpp"
+#include "http2-read-write.hpp"
 
 namespace aeronet::http2 {
 
@@ -609,7 +610,7 @@ std::span<const http::HeaderView> GetHpackStaticTable() noexcept { return kStati
 // HpackDynamicTable
 // ============================
 
-bool HpackDynamicTable::add(std::string_view name, std::string_view value) {
+bool HpackDynamicTable::add(std::string_view name, std::string_view value, std::size_t tag) {
   const std::size_t entrySize = name.size() + value.size() + kHpackOverhead;
 
   if (_maxSizeBytes < _currentSizeBytes + entrySize) {
@@ -630,11 +631,11 @@ bool HpackDynamicTable::add(std::string_view name, std::string_view value) {
     } while (_maxSizeBytes < _currentSizeBytes + entrySize);
 
     // Add the entry after the eviction(s).
-    _entries.push_back(std::move(newEntry));
+    _entries.emplace_back(std::move(newEntry), tag);
   } else {
     // Fast path (no eviction), construct then noexcept-move into the vector. Using push_back (noexcept move) instead of
     // emplace_back avoids exception-handling code around the malloc inside the constructor, producing tighter codegen.
-    _entries.push_back(http::Header(name, value));
+    _entries.push_back(Entry{http::Header(name, value), tag});
   }
 
   _currentSizeBytes += entrySize;
@@ -661,7 +662,7 @@ http::Header HpackDynamicTable::evict() {
   assert(_firstLive < _entries.size());
 
   // The oldest entry sits at the cursor; retiring it is a move plus a cursor bump.
-  http::Header evictedEntry = std::move(_entries[_firstLive]);
+  http::Header evictedEntry = std::move(_entries[_firstLive].header);
   _currentSizeBytes -= evictedEntry.size() + kHpackOverhead;
   ++_firstLive;
 
@@ -798,10 +799,14 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
 
   // The fields beyond the header list size limit are not stored, the block being refused: storing them could take far
   // more memory than the block itself, each of its bytes possibly referencing a large field of the dynamic table.
-  const auto storeField = [&](std::string_view name, Source nameSource, std::string_view value, Source valueSource) {
+  // plainNameHash: see storeHeader(). It is set to 0 for a field that is not stored, which is not checked.
+  const auto storeField = [&](std::string_view name, Source nameSource, std::string_view value, Source valueSource,
+                              std::size_t& plainNameHash) {
     res.headerListSize += name.size() + value.size() + kHpackOverhead;
     if (res.headerListSize <= _maxHeaderListSize) {
-      recordFieldError(storeHeader(name, nameSource, value, valueSource, seenRegularHeader));
+      recordFieldError(storeHeader(name, nameSource, value, valueSource, seenRegularHeader, plainNameHash));
+    } else {
+      plainNameHash = 0;
     }
   };
 
@@ -822,13 +827,22 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
         return res;
       }
 
-      const auto [header, source] = lookupIndex(indexResult.index);
+      auto [header, plainNameHash, source] = lookupIndex(indexResult.index);
       if (header.name.empty()) {
         res.error = DecodeResult::Error::IndexOutOfBoundsInIndexedHeaderField;
         return res;
       }
 
-      storeField(header.name, source, header.value, source);
+      if (plainNameHash != 0) {
+        // The common case on an established connection: a field that the peer sent before, and indexed.
+        res.headerListSize += header.name.size() + header.value.size() + kHpackOverhead;
+        if (res.headerListSize <= _maxHeaderListSize) {
+          seenRegularHeader = true;
+          recordFieldError(storePlainField(header.name, header.value, plainNameHash));
+        }
+      } else {
+        storeField(header.name, source, header.value, source, plainNameHash);
+      }
 
     } else if ((firstByte & 0xE0U) == 0x20U) {
       // Dynamic Table Size Update (RFC 7541 §6.3) - Format: 001xxxxx
@@ -866,6 +880,7 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
 
       std::string_view name;
       Source nameSource;
+      std::size_t plainNameHash = 0;
       if (indexResult.index == 0) {
         // New literal name
         const auto nameResult = decodeString(data.subspan(pos));
@@ -878,13 +893,14 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
         nameSource = nameResult.source;
       } else {
         // Indexed name
-        const auto [header, source] = lookupIndex(indexResult.index);
-        if (header.name.empty()) {
+        const IndexedField indexedField = lookupIndex(indexResult.index);
+        if (indexedField.header.name.empty()) {
           res.error = DecodeResult::Error::IndexOutOfBoundsForHeaderName;
           return res;
         }
-        name = header.name;
-        nameSource = source;
+        name = indexedField.header.name;
+        nameSource = indexedField.source;
+        plainNameHash = indexedField.plainNameHash;
       }
 
       const auto valueResult = decodeString(data.subspan(pos));
@@ -894,13 +910,14 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
       }
       pos += valueResult.consumed;
 
-      storeField(name, nameSource, valueResult.str, valueResult.source);
+      storeField(name, nameSource, valueResult.str, valueResult.source, plainNameHash);
 
       if (withIndexing) {
         // The name may point into an entry that add() evicts, even into the oldest one whose buffer it reuses for the
         // new entry: add() supports it. Dynamic table must be updated even in case of header validation issue - cf. RFC
-        // 9113 §4.3.
-        _dynamicTable.add(name, valueResult.str);
+        // 9113 §4.3. The entry is tagged with the hash of its name if it is a plain field (see storePlainField()), and
+        // with 0 otherwise.
+        _dynamicTable.add(name, valueResult.str, plainNameHash);
       }
     }
   }
@@ -945,23 +962,51 @@ std::string_view HpackDecoder::decodeHuffman(std::span<const std::byte> data) {
   // Max decoded length for N input bytes: at most floor(8*N/5) symbols.
   const auto maxLen = (data.size() * 8U) / 5;
   DecodedHeaders::Storage& storage = _decodedHeaders.storage;
-  char* buf = storage.allocateAndDefaultConstruct(maxLen);
-  std::size_t sz = 0;
+  char* const buf = storage.allocateAndDefaultConstruct(maxLen);
+  char* out = buf;
 
-  // Bit buffer: accumulates bits for decoding (MSB-aligned)
-  // Bits are stored left-aligned: new bytes go at position (64 - 8 - bitsInBuffer)
+  const std::byte* pIn = data.data();
+  const std::byte* const pEnd = pIn + data.size();
+
+  // Bit buffer: accumulates bits for decoding, MSB-aligned. The bits below the bitsInBuffer counted ones are either 0
+  // or the next bits of the input (left there by the bulk refill), so OR-ing an input byte at its position is
+  // idempotent.
   uint64_t bitBuffer = 0;
   uint32_t bitsInBuffer = 0;
-  std::size_t byteIdx = 0;
+
+  // Fast path, while 8 input bytes can be loaded at once: a branchless refill to at least 56 bits, then decode while
+  // the longest code (30 bits) is present, so that no padding mask nor bit count check is on the dependency chain.
+  while (pEnd - pIn >= 8) {
+    bitBuffer |= Read64BE(pIn) >> bitsInBuffer;
+    pIn += (63U - bitsInBuffer) >> 3U;
+    bitsInBuffer |= 56U;
+    do {
+      const auto& entry = kHuffmanDecodeTable[static_cast<std::size_t>(bitBuffer >> (64U - kHuffmanLevel1Bits))];
+      uint32_t symbol = entry.symbol;
+      uint32_t bitLength = entry.bitsUsed;
+      if (bitLength == 0) [[unlikely]] {
+        const auto canonical = DecodeHuffmanCanonical(bitBuffer);
+        if (canonical.symbol == 256) {
+          storage.shrinkLastAllocated(buf, 0);
+          return {};  // EOS must not appear in the data (RFC 7541 §5.2)
+        }
+        symbol = canonical.symbol;
+        bitLength = canonical.bitLength;
+      }
+      *out++ = static_cast<char>(symbol);
+      bitBuffer <<= bitLength;
+      bitsInBuffer -= bitLength;
+    } while (bitsInBuffer >= 30U);
+  }
 
   while (true) {
     // Refill bit buffer - pack bytes from MSB side.
     // Stopping at 55 caps bitsInBuffer at 63, which keeps the padding shift below the width of the type while still
     // guaranteeing the 30 bits the longest code needs.
-    while (bitsInBuffer <= 55U && byteIdx < data.size()) {
-      bitBuffer |= static_cast<uint64_t>(static_cast<uint8_t>(data[byteIdx])) << (56U - bitsInBuffer);
+    while (bitsInBuffer <= 55U && pIn != pEnd) {
+      bitBuffer |= static_cast<uint64_t>(static_cast<uint8_t>(*pIn)) << (56U - bitsInBuffer);
       bitsInBuffer += 8U;
-      ++byteIdx;
+      ++pIn;
     }
 
     if (bitsInBuffer == 0) {
@@ -996,8 +1041,8 @@ std::string_view HpackDecoder::decodeHuffman(std::span<const std::byte> data) {
     }
 
     assert(symbol < 256);
-    assert(sz < maxLen);
-    buf[sz++] = static_cast<char>(symbol);
+    assert(out < buf + maxLen);
+    *out++ = static_cast<char>(symbol);
 
     bitBuffer <<= bitLength;
     bitsInBuffer -= bitLength;
@@ -1019,6 +1064,7 @@ std::string_view HpackDecoder::decodeHuffman(std::span<const std::byte> data) {
   }
 
   // The decoded string stays in the storage, the decoded headers pointing to it: give back the unused part.
+  const auto sz = static_cast<std::size_t>(out - buf);
   storage.shrinkLastAllocated(buf, sz);
   return {buf, sz};
 }
@@ -1028,7 +1074,7 @@ HpackDecoder::IndexedField HpackDecoder::lookupIndex(uint32_t index) const {
 
   // Static table: indices 1-61
   if (index <= std::size(kStaticTable)) {
-    return {kStaticTable[index - 1U], Source::StaticTable};
+    return {kStaticTable[index - 1U], 0, Source::StaticTable};
   }
 
   // Dynamic table: indices 62+. Its entries may be evicted while the decoded headers are still in use.
@@ -1037,7 +1083,7 @@ HpackDecoder::IndexedField HpackDecoder::lookupIndex(uint32_t index) const {
     return {};
   }
   const auto& entry = _dynamicTable[dynamicIndex];
-  return {{entry.name(), entry.value()}, Source::Transient};
+  return {{entry.name(), entry.value()}, _dynamicTable.tag(dynamicIndex), Source::Transient};
 }
 
 std::string_view HpackDecoder::stableString(std::string_view str, Source source) {
@@ -1051,12 +1097,17 @@ std::string_view HpackDecoder::stableString(std::string_view str, Source source)
 
 HpackDecoder::DecodeResult::Error HpackDecoder::storeHeader(std::string_view name, Source nameSource,
                                                             std::string_view value, Source valueSource,
-                                                            bool& seenRegularHeader) {
-  // The fields of the static table are valid.
-  if (nameSource != Source::StaticTable && !IsValidHTTP2HeaderName(name)) {
+                                                            bool& seenRegularHeader, std::size_t& plainNameHash) {
+  // The hash of the name when it is already known: the name is then the one of a plain field.
+  const std::size_t knownNameHash = plainNameHash;
+  plainNameHash = 0;
+
+  // The fields of the static table are valid, like the names of the plain fields.
+  if (nameSource != Source::StaticTable && knownNameHash == 0 && !IsValidHTTP2HeaderName(name)) {
     return DecodeResult::Error::MalformedFieldName;
   }
   assert(IsValidHTTP2HeaderName(name));
+  assert(knownNameHash == 0 || (name.front() != ':' && knownNameHash == CityHash{}(name)));
 
   if (name.front() == ':') {  // pseudo header
     if (seenRegularHeader) {
@@ -1089,6 +1140,7 @@ HpackDecoder::DecodeResult::Error HpackDecoder::storeHeader(std::string_view nam
     return DecodeResult::Error::MalformedFieldValue;
   }
 
+  bool isPlainField = true;
   if (http::IsConnectionSpecificField(name, value)) [[unlikely]] {
     // A handler forwarding such a request to an HTTP/1.1 backend would open a request smuggling path
     // (transfer-encoding).
@@ -1096,6 +1148,7 @@ HpackDecoder::DecodeResult::Error HpackDecoder::storeHeader(std::string_view nam
       return DecodeResult::Error::ConnectionSpecificField;
     }
     _decodedHeaders.hasConnectionSpecificField = true;
+    isPlainField = false;
   }
 
   const bool isContentEncoding = name == http::ContentEncoding;
@@ -1104,41 +1157,81 @@ HpackDecoder::DecodeResult::Error HpackDecoder::storeHeader(std::string_view nam
     // copied for this, as a decoded Huffman string may also be added to the dynamic table, which keeps the received
     // value.
     valueSource = Source::Transient;
+    isPlainField = false;
   }
+  // The name is hashed where it is, before its copy to the storage: a load from bytes that were just copied waits for
+  // them.
+  const std::size_t nameHash = knownNameHash != 0 ? knownNameHash : CityHash{}(name);
   const std::string_view storedValue = stableString(value, valueSource);
   if (isContentEncoding) {
     // A plain loop is enough for these few bytes (the vectorized tolower() of tolower-str.hpp would bring
     // <immintrin.h> into this file).
     char* pValue = const_cast<char*>(storedValue.data());
-    for (char* pEndValue = pValue + storedValue.size(); pValue != pEndValue; ++pValue) {
-      *pValue = tolower(*pValue);
-    }
+    std::transform(pValue, pValue + storedValue.size(), pValue, [](char ch) { return tolower(ch); });
   }
 
-  const auto [it, inserted] = _decodedHeaders.headers.try_emplace(stableString(name, nameSource), storedValue);
-
-  if (!inserted) {
-    // Header already exists: same rules as for HTTP/1.1 (see http::MergeHeaderInPlace()), except for the Set-Cookie
-    // fields of a response, which the client splits back.
-    const char mergeSep = _messages == Messages::Responses && it->first == http::SetCookie
-                              ? DecodedHeaders::kSetCookieSeparator
-                              : http::ReqHeaderValueSeparator(it->first, _mergeAllowedForUnknownRequestHeaders);
-    if (mergeSep == '\0') {
-      return DecodeResult::Error::DuplicateHeaderForbiddenToMerge;
-    }
-
-    if (it->second.empty()) {
-      // The first value is empty: keep the last one
-      it->second = storedValue;
-    } else if (!storedValue.empty()) {
-      // Joined once the whole block is decoded: joining each value as it comes would copy the previous ones again each
-      // time, a quadratic cost for a block repeating a field.
-      _deferredJoins.push_back(
-          DeferredJoin{it->first, storedValue, static_cast<uint32_t>(_deferredJoins.size()), mergeSep});
+  const auto [it, inserted] =
+      _decodedHeaders.headers.try_emplace_hashed(nameHash, stableString(name, nameSource), storedValue);
+  if (!inserted) [[unlikely]] {
+    const DecodeResult::Error err = mergeRepeatedField(it, storedValue);
+    if (err != DecodeResult::Error::None) {
+      return err;
     }
   }
 
   _decodedHeaders.namesAndValuesSize += name.size() + value.size();
+  if (isPlainField) {
+    plainNameHash = nameHash;
+  }
+  return DecodeResult::Error::None;
+}
+
+HpackDecoder::DecodeResult::Error HpackDecoder::storePlainField(std::string_view name, std::string_view value,
+                                                                std::size_t nameHash) {
+  assert(IsValidHTTP2HeaderName(name) && name.front() != ':' && IsValidHTTP2HeaderValue(value));
+  assert(!http::IsConnectionSpecificField(name, value) && name != http::ContentEncoding);
+  assert(nameHash == CityHash{}(name));
+
+  // The entry of the dynamic table may be evicted while the decoded headers are in use: its name and its value are
+  // copied to the storage, in one allocation.
+  char* pName = _decodedHeaders.storage.allocateAndDefaultConstruct(name.size() + value.size());
+  char* pValue = Append(name, pName);
+  Copy(value, pValue);
+  const std::string_view storedValue(pValue, value.size());
+
+  const auto [it, inserted] =
+      _decodedHeaders.headers.try_emplace_hashed(nameHash, std::string_view(pName, name.size()), storedValue);
+  if (!inserted) [[unlikely]] {
+    const DecodeResult::Error err = mergeRepeatedField(it, storedValue);
+    if (err != DecodeResult::Error::None) {
+      return err;
+    }
+  }
+
+  _decodedHeaders.namesAndValuesSize += name.size() + value.size();
+  return DecodeResult::Error::None;
+}
+
+HpackDecoder::DecodeResult::Error HpackDecoder::mergeRepeatedField(SvToSvMap::iterator it,
+                                                                   std::string_view storedValue) {
+  // Header already exists: same rules as for HTTP/1.1 (see http::MergeHeaderInPlace()), except for the Set-Cookie
+  // fields of a response, which the client splits back.
+  const char mergeSep = _messages == Messages::Responses && it->first == http::SetCookie
+                            ? DecodedHeaders::kSetCookieSeparator
+                            : http::ReqHeaderValueSeparator(it->first, _mergeAllowedForUnknownRequestHeaders);
+  if (mergeSep == '\0') {
+    return DecodeResult::Error::DuplicateHeaderForbiddenToMerge;
+  }
+
+  if (it->second.empty()) {
+    // The first value is empty: keep the last one
+    it->second = storedValue;
+  } else if (!storedValue.empty()) {
+    // Joined once the whole block is decoded: joining each value as it comes would copy the previous ones again each
+    // time, a quadratic cost for a block repeating a field.
+    _deferredJoins.push_back(
+        DeferredJoin{it->first, storedValue, static_cast<uint32_t>(_deferredJoins.size()), mergeSep});
+  }
   return DecodeResult::Error::None;
 }
 
@@ -1182,6 +1275,10 @@ namespace {
 
 constexpr std::size_t kDynamicIndexMinEntries = 128U;
 
+// Number of entries of the dynamic table of an encoder, from the newest one, that a lookup scans before trying the
+// entry where the field was last found.
+constexpr uint32_t kNbNewestEntriesScannedFirst = 4U;
+
 [[nodiscard]] uint32_t HpackDynamicTableIndex(std::size_t tableIdx) noexcept {
   return static_cast<uint32_t>(std::size(kStaticTable) + 1U + tableIdx);
 }
@@ -1190,7 +1287,7 @@ constexpr std::size_t kDynamicIndexMinEntries = 128U;
                                                         std::string_view value) {
   HpackLookupResult result;
   for (std::size_t tableIdx = 0; tableIdx < table.entryCount(); ++tableIdx) {
-    const auto& entry = table[static_cast<uint32_t>(tableIdx)];
+    const http::Header& entry = table[static_cast<uint32_t>(tableIdx)];
     if (entry.name() != name) {
       continue;
     }
@@ -1427,7 +1524,7 @@ uint64_t HpackEncoder::encode(RawBytes& output, std::string_view name, std::stri
   const auto headerFieldSize = name.size() + value.size() + 32U;
 
   // Try to find in tables
-  const auto lookup = findHeader(name, value);
+  const auto lookup = findHeader(name, value, mode);
 
   if (lookup.match == HpackLookupResult::Match::Full) {
     // Indexed Header Field (RFC 7541 §6.1)
@@ -1443,6 +1540,7 @@ uint64_t HpackEncoder::encode(RawBytes& output, std::string_view name, std::stri
 
     // Add to dynamic table. Large tables get a lazy encoder-only index once a linear scan becomes expensive.
     const bool added = _dynamicTable.add(name, value);
+    _nbAdded += static_cast<uint32_t>(added);
     if (!_dynamicIndex.empty()) {
       if (added) {
         addToDynamicIndex(name, value);
@@ -1488,7 +1586,34 @@ void HpackEncoder::setMaxDynamicTableSize(uint32_t maxSize) {
   _lastPendingTableSize = maxSize;
 }
 
-HpackLookupResult HpackEncoder::findHeader(std::string_view name, std::string_view value) {
+HpackEncoder::FoundMemoSlots HpackEncoder::FoundMemoSlotsOf(std::string_view name, std::string_view value) noexcept {
+  const uint32_t firstChar = name.empty() ? 0U : static_cast<uint8_t>(name.front());
+  const uint32_t lastChar = name.empty() ? 0U : static_cast<uint8_t>(name.back());
+  const uint32_t mix = (static_cast<uint32_t>(name.size()) * 0x9E3779B1U) ^
+                       (static_cast<uint32_t>(value.size()) * 0x27D4EB2FU) ^ (firstChar * 0x85EBCA6BU) ^
+                       (lastChar * 0xC2B2AE35U);
+  return {mix >> (32U - kFoundMemoBits), (mix >> (32U - (2U * kFoundMemoBits))) & ((1U << kFoundMemoBits) - 1U)};
+}
+
+uint32_t HpackEncoder::foundMemoIndex(uint32_t slot, std::string_view name, std::string_view value) const noexcept {
+  const uint32_t idx = _nbAdded - _foundMemo[slot];
+  const auto entryCount = static_cast<uint32_t>(_dynamicTable.entryCount());
+  if (idx < entryCount) {
+    const http::Header& entry = _dynamicTable[idx];
+    if (entry.name() == name && entry.value() == value) {
+      return idx;
+    }
+  }
+  return entryCount;
+}
+
+void HpackEncoder::rememberFound(FoundMemoSlots slots, uint32_t idx) noexcept {
+  const bool firstInUse = _nbAdded - _foundMemo[slots.first] < _dynamicTable.entryCount();
+  const bool secondInUse = _nbAdded - _foundMemo[slots.second] < _dynamicTable.entryCount();
+  _foundMemo[firstInUse && !secondInUse ? slots.second : slots.first] = _nbAdded - idx;
+}
+
+HpackLookupResult HpackEncoder::findHeader(std::string_view name, std::string_view value, IndexingMode mode) {
   assert(std::ranges::none_of(name, [](char ch) { return ch >= 'A' && ch <= 'Z'; }));
 
   HpackLookupResult result;
@@ -1514,9 +1639,52 @@ HpackLookupResult HpackEncoder::findHeader(std::string_view name, std::string_vi
     }
   }
 
+  // A field that is not indexed, with a name of the static table, is encoded with that name index: the dynamic table,
+  // filled by this encoder only, holds it only if an earlier field of that name was indexed, which is rare enough (a
+  // global header named like it) not to scan the whole table for each of them.
+  if (mode != IndexingMode::Indexed && result.match == HpackLookupResult::Match::NameOnly) {
+    return result;
+  }
+
+  const auto entryCount = static_cast<uint32_t>(_dynamicTable.entryCount());
+  uint32_t idx = 0;
+  // Look for the field in the entries from idx to endIdx (excluded), the recently added ones first. Returns true if
+  // found, idx being its entry.
+  const auto scanEntries = [&](uint32_t endIdx) {
+    for (; idx < endIdx; ++idx) {
+      const http::Header& entry = _dynamicTable[idx];
+      if (entry.name() == name) {
+        result.index = HpackDynamicTableIndex(idx);
+        if (entry.value() == value) {
+          result.match = HpackLookupResult::Match::Full;
+          return true;
+        }
+        result.match = HpackLookupResult::Match::NameOnly;
+      }
+    }
+    return false;
+  };
+
+  // Small dynamic tables are faster and smaller as a contiguous linear scan. Its newest entries first: all of them on
+  // a new connection, and the field values that just changed (the date of the second).
+  if (_dynamicIndex.empty() && (scanEntries(std::min(entryCount, kNbNewestEntriesScannedFirst)) || idx == entryCount)) {
+    return result;
+  }
+
+  // Then the entry where this field was last found, the messages of a connection repeating their fields, whatever the
+  // number of entries added since. The table never holds two entries with the same name and value (a field found is
+  // not added), so that this entry is the one the lookups below would find.
+  const FoundMemoSlots memoSlots = FoundMemoSlotsOf(name, value);
+  for (const uint32_t slot : {memoSlots.first, memoSlots.second}) {
+    if (const uint32_t memoIdx = foundMemoIndex(slot, name, value); memoIdx != entryCount) {
+      return {HpackLookupResult::Match::Full, HpackDynamicTableIndex(memoIdx)};
+    }
+  }
+
   if (!_dynamicIndex.empty()) {
     const auto indexed = findDynamicHeaderIndexed(name, value);
     if (indexed.match == HpackLookupResult::Match::Full) {
+      rememberFound(memoSlots, indexed.index - HpackDynamicTableIndex(0));
       return indexed;
     }
     if (indexed.match == HpackLookupResult::Match::NameOnly) {
@@ -1525,19 +1693,9 @@ HpackLookupResult HpackEncoder::findHeader(std::string_view name, std::string_vi
     return result;
   }
 
-  // Small dynamic tables are faster and smaller as a contiguous linear scan. Recently added entries are checked first.
-  for (uint32_t idx = 0; idx < _dynamicTable.entryCount(); ++idx) {
-    const auto& entry = _dynamicTable[idx];
-    if (entry.name() == name) {
-      result.index = static_cast<uint32_t>(std::size(kStaticTable)) + 1U + idx;
-      if (entry.value() == value) {
-        result.match = HpackLookupResult::Match::Full;
-        return result;
-      }
-      result.match = HpackLookupResult::Match::NameOnly;
-    }
+  if (scanEntries(entryCount)) {
+    rememberFound(memoSlots, idx);
   }
-
   return result;
 }
 

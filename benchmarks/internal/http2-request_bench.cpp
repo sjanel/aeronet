@@ -8,7 +8,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <span>
+#include <string>
 #include <string_view>
 
 #include "aeronet/connection-state.hpp"
@@ -69,10 +71,14 @@ constexpr std::array<http::HeaderView, 24> kRegularFields{{
 // The server side of an HTTP/2 connection, fed with HEADERS frames as a client would send them.
 class Http2RequestBench {
  public:
-  explicit Http2RequestBench(std::size_t nbRegularFields)
-      : _ctx(HttpServerConfig{}, Router{}), _handler(_ctx, _connectionState, kInvalidHandle) {
+  explicit Http2RequestBench(std::size_t nbRegularFields, std::size_t responseBodySize = 2)
+      : _ctx(MakeConfig(), Router{}),
+        _handler(_ctx, _connectionState, kInvalidHandle),
+        _responseBody(responseBodySize, 'x') {
     _ctx.config.validate();
-    _ctx.router.setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK, "ok"); });
+    _ctx.router.setDefault([body = std::string_view(_responseBody)](const HttpRequestView&) {
+      return HttpResponse(http::StatusCodeOK, body);
+    });
 
     // Connection preface and SETTINGS exchange.
     RawBytes setup;
@@ -109,7 +115,21 @@ class Http2RequestBench {
     WriteFrameHeader(_frame.data(), FrameHeader(static_cast<uint32_t>(_frame.size() - FrameHeader::kSize),
                                                 FrameType::Headers, ComputeHeaderFrameFlags(true, true), _streamId));
     _streamId += 2;
-    feed(_frame);
+    if (feed(_frame) < _responseBody.size()) [[unlikely]] {
+      // The benchmark would go on, reporting the cost of requests that are only decoded, or refused.
+      std::fprintf(stderr, "HTTP/2 request on stream %u was not answered\n", _streamId - 2U);
+      std::abort();
+    }
+
+    // Give back the connection credit taken by the response bodies, as a client reading them does: once it is used
+    // up (after 2 GiB of bodies), the responses wait for it and the next streams are refused.
+    _usedConnectionCredit += _responseBody.size();
+    if (_usedConnectionCredit >= kConnectionCreditStep) [[unlikely]] {
+      _creditFrame.clear();
+      WriteWindowUpdateFrame(_creditFrame, 0, static_cast<uint32_t>(_usedConnectionCredit));
+      _usedConnectionCredit = 0;
+      feed(_creditFrame);
+    }
   }
 
  private:
@@ -120,7 +140,16 @@ class Http2RequestBench {
     return frame;
   }
 
-  void feed(std::span<const std::byte> input) {
+  // The streams of a connection are not limited: a benchmark opens millions of them, and the requests received after
+  // the GOAWAY sent at the limit (Http2Config::maxStreamsPerConnection) are not served.
+  [[nodiscard]] static HttpServerConfig MakeConfig() {
+    HttpServerConfig config;
+    config.http2.withMaxStreamsPerConnection(std::numeric_limits<uint32_t>::max());
+    return config;
+  }
+
+  // Process 'input', then write the whole output at once, as a socket taking all of it. Returns the output size.
+  std::size_t feed(std::span<const std::byte> input) {
     while (!input.empty()) {
       const auto res = _handler.processInput(input);
       if (res.bytesConsumed == 0 || res.action == ProtocolProcessResult::Action::Close ||
@@ -131,7 +160,7 @@ class Http2RequestBench {
       }
       input = input.subspan(res.bytesConsumed);
     }
-    // Write the whole output at once, as a socket taking all of it.
+    std::size_t outputSize = 0;
     while (_handler.hasPendingOutput()) {
       _handler.getPendingOutputFragments(_fragments);
       std::size_t nbBytes = 0;
@@ -139,14 +168,22 @@ class Http2RequestBench {
         nbBytes += fragment.size();
       }
       _handler.onOutputWritten(nbBytes);
+      outputSize += nbBytes;
     }
+    return outputSize;
   }
+
+  // Connection credit granted again at once (a quarter of the largest window).
+  static constexpr std::size_t kConnectionCreditStep = 1UL << 29U;
 
   ::aeronet::internal::ServerContext _ctx;
   ::aeronet::ConnectionState _connectionState;
   Http2ProtocolHandler _handler;
+  std::string _responseBody;
   vector<std::string_view> _fragments;
   RawBytes _frame;
+  RawBytes _creditFrame;
+  std::size_t _usedConnectionCredit{0};
   uint32_t _streamId{1};
 };
 
@@ -159,6 +196,19 @@ void BM_Http2GetRequest(benchmark::State& state) {
   state.SetItemsProcessed(state.iterations());
 }
 BENCHMARK(BM_Http2GetRequest)->Arg(1)->Arg(12)->Arg(24);
+
+// One GET request per stream, answered with a body of the given size: copied beside its frame header in the output
+// of the connection when small, queued with its storage otherwise (see Http2Connection::sendData()).
+void BM_Http2GetResponseBody(benchmark::State& state) {
+  const auto bodySize = static_cast<std::size_t>(state.range(0));
+  Http2RequestBench bench(1, bodySize);
+  for ([[maybe_unused]] auto iter : state) {
+    bench.sendRequest();
+  }
+  state.SetItemsProcessed(state.iterations());
+  state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(bodySize));
+}
+BENCHMARK(BM_Http2GetResponseBody)->Arg(16)->Arg(256)->Arg(1024)->Arg(4096)->Arg(16384);
 
 }  // namespace
 }  // namespace aeronet::http2
