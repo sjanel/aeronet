@@ -28,6 +28,7 @@
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
 #include "aeronet/http-header-value-reverse-tokens-iterator.hpp"
+#include "aeronet/http-header-view.hpp"
 #include "aeronet/http-headers-view.hpp"
 #include "aeronet/http-message-common.hpp"
 #include "aeronet/http-message-data.hpp"
@@ -107,17 +108,19 @@ namespace {
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
 constexpr std::string_view kVaryValueSep = ", ";
+#endif
 
-bool VaryContainsAcceptEncodingToken(std::string_view value) {
-  for (http::HeaderValueReverseTokensIterator it(value); it.hasNext();) {
+// Whether the comma-separated list 'list' (trimmed) has the element 'element' (case-insensitive), or, when
+// 'wildcardMatches', the element '*'.
+bool ListHasElement(std::string_view list, std::string_view element, bool wildcardMatches) {
+  for (http::HeaderValueReverseTokensIterator it(list); it.hasNext();) {
     const std::string_view token = it.next();
-    if (token == "*" || CaseInsensitiveEqual(token, http::AcceptEncoding)) {
+    if ((wildcardMatches && token == "*") || CaseInsensitiveEqual(token, element)) {
       return true;
     }
   }
   return false;
 }
-#endif
 
 struct HeaderSearchResult {
   // if nullptr, not found. It's different from valueBegin == valueEnd, which means found but empty value.
@@ -279,19 +282,26 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
 
   const bool removeEncodingHeaders = hadDirectCompression && !tryCompression;
 
+  // A body that would be compressed for a client accepting a coding (never a file): the response to a client accepting
+  // none is selected with Accept-Encoding too, and varies on it (RFC 9110 §12.5.5).
+  const bool identityVaries =
+      context != BodySetContext::File &&
+      _opts.identityVariantVaries(newBodySize, contentTypeValue, context == BodySetContext::Inline) &&
+      !_opts.isVaryAcceptEncodingListed() && !hasContentEncoding() && !isPartialContentResponse();
+
   bool addVaryHeader = false;
   bool appendVaryValue = false;
   if (addEncodingHeaders) {
     neededNewSize += http::HeaderSize(http::ContentEncoding.size(), GetEncodingStr(_opts._pickedEncoding).size());
-    if (_opts.isAddVaryAcceptEncoding()) {
-      const auto [varyFirst, varyLast] = HeadersLinearSearch(headersFlatView(), http::Vary);
-      if (varyFirst == nullptr) {
-        addVaryHeader = true;
-        neededNewSize += http::HeaderSize(http::Vary.size(), http::AcceptEncoding.size());
-      } else if (!VaryContainsAcceptEncodingToken(std::string_view(varyFirst, varyLast))) {
-        appendVaryValue = true;
-        neededNewSize += http::AcceptEncoding.size() + kVaryValueSep.size();
-      }
+  }
+  if ((addEncodingHeaders && _opts.isAddVaryAcceptEncoding()) || identityVaries) {
+    const auto [varyFirst, varyLast] = HeadersLinearSearch(headersFlatView(), http::Vary);
+    if (varyFirst == nullptr) {
+      addVaryHeader = true;
+      neededNewSize += http::HeaderSize(http::Vary.size(), http::AcceptEncoding.size());
+    } else if (!ListHasElement(std::string_view(varyFirst, varyLast), http::AcceptEncoding, true)) {
+      appendVaryValue = true;
+      neededNewSize += http::AcceptEncoding.size() + kVaryValueSep.size();
     }
   }
   // do not remove the space taken by content encoding and vary headers when removing content encoding to keep code
@@ -326,12 +336,12 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
     // No body headers yet: the encoding headers are appended, before the body headers written below.
     assert(!removeEncodingHeaders);  // only a previous direct compression has encoding headers to remove
+    if (addVaryHeader) {
+      headerAddLineUnchecked(http::Vary, http::AcceptEncoding);
+    } else if (appendVaryValue) {
+      headerAppendValueImpl(http::Vary, http::AcceptEncoding, kVaryValueSep);
+    }
     if (addEncodingHeaders) {
-      if (addVaryHeader) {
-        headerAddLineUnchecked(http::Vary, http::AcceptEncoding);
-      } else if (appendVaryValue) {
-        headerAppendValueImpl(http::Vary, http::AcceptEncoding, kVaryValueSep);
-      }
       headerAddLineUnchecked(http::ContentEncoding, GetEncodingStr(_opts._pickedEncoding));
     }
 #endif
@@ -360,10 +370,10 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
     // headers stay last).
     pData = getContentTypeHeaderLinePtr();
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+    if (addVaryHeader) {
+      pData = WriteCRLFHeader(http::Vary, http::AcceptEncoding, pData);
+    }
     if (addEncodingHeaders) {
-      if (addVaryHeader) {
-        pData = WriteCRLFHeader(http::Vary, http::AcceptEncoding, pData);
-      }
       pData = WriteCRLFHeader(http::ContentEncoding, GetEncodingStr(_opts._pickedEncoding), pData);
     }
 #endif
@@ -373,6 +383,9 @@ void HttpMessage::setBodyHeaders(std::string_view contentTypeValue, std::size_t 
   if (addEncodingHeaders) {
     _opts.setHasContentEncoding();
     _opts.setAutomaticDirectCompression();
+  }
+  if (identityVaries) {
+    _opts.setVaryAcceptEncodingListed();
   }
 #endif
   if (_opts.sendContentLengthHeader()) {
@@ -531,7 +544,7 @@ void HttpMessage::fileImpl(File fileObj, std::size_t offset, std::size_t length,
   // If file is empty, we emit on purpose Content-Length: 0 and no body.
   // This is to distinguish an empty file response from a response with no body at all.
   // This is valid per HTTP semantics.
-  setBodyHeaders(contentType, std::max(static_cast<std::size_t>(1), resolvedLength), BodySetContext::Captured);
+  setBodyHeaders(contentType, std::max(static_cast<std::size_t>(1), resolvedLength), BodySetContext::File);
   if (resolvedLength == 0 && _opts.sendContentLengthHeader()) {
     // we need to reset the '1' char to the real 0 size of the empty file that was written above
     *getLastHeaderValuePtr() = '0';
@@ -692,6 +705,20 @@ void HttpMessage::headerAppendValueImpl(LowerAsciiKey key, std::string_view valu
   }
 
   appendHeaderValueUnchecked(last, value, sep);
+}
+
+void HttpMessage::headerAppendValueIfAbsentImpl(LowerAsciiKey key, std::string_view value) {
+  // A reserved header throws even when it already has the value.
+  CheckSettableHeader(key, _opts.isHttpRequest(), hasBodyHeaders());
+  value = TrimOws(value);
+  // A list split over several lines is a single list (RFC 9110 §5.3).
+  const bool wildcardMatches = key == http::Vary;
+  for (const http::HeaderView header : headers()) {
+    if (header.name == key && ListHasElement(header.value, value, wildcardMatches)) {
+      return;
+    }
+  }
+  headerAppendValueImpl(key, value);
 }
 
 void HttpMessage::appendHeaderValueUnchecked(const char* valueLast, std::string_view value, std::string_view sep) {
@@ -1030,14 +1057,12 @@ HttpMessage::Options::Options(CompressionState& compressionState, Encoding expec
       _pickedEncoding(expectedEncoding),
       _directCompressionMode(compressionState.pCompressionConfig->defaultDirectCompressionMode) {}
 
-bool HttpMessage::Options::directCompressionPossible(std::size_t bodySize,
-                                                     std::string_view contentType) const noexcept {
-  if (!directCompressionPossible()) {
-    return false;
-  }
-  if (_directCompressionMode == DirectCompressionMode::On) {
+bool HttpMessage::Options::wouldCompress(std::size_t bodySize, std::string_view contentType,
+                                         bool inlineBody) const noexcept {
+  if (inlineBody && _directCompressionMode == DirectCompressionMode::On) {
     return true;
   }
+  assert(_pCompressionState != nullptr);
   const CompressionConfig& compressionConfig = *_pCompressionState->pCompressionConfig;
   if (bodySize < compressionConfig.minBytes) {
     return false;

@@ -216,7 +216,14 @@ class HttpResponseWriter {
                      const CompressionConfig& compressionConfig, CompressionState& compressionState,
                      std::string_view globalHeadersStr, HttpMessage::Options opts);
 
-  void ensureHeadersSent();
+  // Sends the head, when not sent yet. 'bodyWritten': called by a write of body bytes.
+  void ensureHeadersSent(bool bodyWritten);
+
+  // Whether the response, made for a client accepting no coding, would be compressed for a client accepting one (see
+  // writeBody()): it is selected with Accept-Encoding too, and varies on it with addVaryAcceptEncodingToUncompressed
+  // (RFC 9110 §12.5.5). Without a declared
+  // length, the size of a body being written is not known: it counts as large enough.
+  [[nodiscard]] bool identityVariantVaries(bool bodyWritten) const;
 
   // Starts the encoder of the negotiated encoding, unless the content type is not compressed.
   void startCompressionIfAllowed();
@@ -247,8 +254,9 @@ class HttpResponseWriter {
   // Internal fixed HttpResponse used solely for header accumulation and status/reason/body placeholder.
   // We never finalize until ensureHeadersSent(); body remains empty (streaming chunks / writes follow separately).
   HttpResponse _fixedResponse;
-  // Declared Content-Length (0: none) until the headers are sent, then the number of body bytes still due.
-  std::size_t _declaredLength{0};
+  // Declared Content-Length (IWriterTransport::kNoDeclaredLength: none, 0 is an empty body) until the headers are sent,
+  // then the number of body bytes still due.
+  std::size_t _declaredLength;
   EncoderContext* _activeEncoderCtx{nullptr};    // streaming context (owned by compression state)
   RawChars _preCompressBuffer;                   // threshold buffering before activation
   RawChars _compressedBuffer;                    // reusable output buffer for compression (never freed between chunks)

@@ -730,7 +730,7 @@ void Http1Pipeline::emitSimpleError(ConnectionIt cnxIt, http::StatusCode statusC
   // parsed yet is the one of the previous request, if any: the errors answering such a request have no body anyway.
   const bool isHeadMethod = ctx.connections.connectionState(cnxIt).request.method() == http::Method::HEAD;
   ctx.io.queueData(cnxIt, HttpMessageData(BuildSimpleError(statusCode, ctx.config.globalHeaders, body,
-                                                           ctx.dateHeader.data(), isHeadMethod)));
+                                                           ctx.dateHeader.current(), isHeadMethod)));
 
   if (ctx.callbacks.parserErr) {
     // Swallow exceptions from user callback to avoid destabilizing the server
@@ -778,7 +778,7 @@ void Http1Pipeline::emitHttpsRedirect(ConnectionIt cnxIt) {
     opts.setHeadMethod();
   }
 
-  ctx.io.queueData(cnxIt, resp.finalizeForHttp1(ctx.dateHeader.data(), request.version(), opts,
+  ctx.io.queueData(cnxIt, resp.finalizeForHttp1(ctx.dateHeader.current(), request.version(), opts,
                                                 &ctx.config.globalHeaders, ctx.config.minCapturedBodySize));
 
   state.requestDrainAndClose();
@@ -955,7 +955,7 @@ void Http1Pipeline::finalizeAndSendResponse(ConnectionIt cnxIt, HttpResponse&& r
     opts.setHeadMethod();
   }
 
-  ctx.io.queueData(cnxIt, resp.finalizeForHttp1(ctx.dateHeader.data(), request.version(), opts,
+  ctx.io.queueData(cnxIt, resp.finalizeForHttp1(ctx.dateHeader.current(), request.version(), opts,
                                                 &ctx.config.globalHeaders, ctx.config.minCapturedBodySize));
 
   if (!keepAlive) {

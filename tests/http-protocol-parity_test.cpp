@@ -31,7 +31,12 @@
 #include "aeronet/middleware.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router-config.hpp"
+#include "aeronet/supported-accept-encoding.hpp"
 #include "aeronet/test_server_fixture.hpp"
+#include "aeronet/test_util.hpp"
+#include "aeronet/time-constants.hpp"
+#include "aeronet/timedef.hpp"
+#include "aeronet/timestring.hpp"
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include "aeronet/request-task.hpp"
@@ -407,6 +412,16 @@ TEST_P(ProtocolParity, StreamedBodyNotMatchingItsDeclaredLengthFails) {
     writer.writeBody("lo");
     writer.end();
   });
+  // 0 is a declared length (an empty body), not the absence of one.
+  ts.router().setPath(http::Method::GET, "/empty", [](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.contentLength(0);
+    writer.end();
+  });
+  ts.router().setPath(http::Method::GET, "/empty-beyond", [](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.contentLength(0);
+    writer.writeBody("x");
+    writer.end();
+  });
 
   // A client per request: the HTTP/1.1 connection closes without being announced (the head was already sent), and its
   // close may come after the check of a pooled connection that a next request would make.
@@ -423,6 +438,43 @@ TEST_P(ProtocolParity, StreamedBodyNotMatchingItsDeclaredLengthFails) {
   const auto exact = MakeClient().get(url("/exact"));
   ASSERT_TRUE(exact);
   EXPECT_EQ(exact->bodyInMemory(), "hello");
+
+  const auto emptyBeyond = MakeClient().get(url("/empty-beyond"));
+  if (GetParam() == HttpVersionMode::Http1_1) {
+    ASSERT_TRUE(emptyBeyond);
+    EXPECT_TRUE(emptyBeyond->bodyInMemory().empty()) << emptyBeyond->bodyInMemory();
+  } else {
+    EXPECT_FALSE(emptyBeyond);
+  }
+
+  const auto empty = MakeClient().get(url("/empty"));
+  ASSERT_TRUE(empty);
+  EXPECT_EQ(empty->status(), http::StatusCodeOK);
+  EXPECT_TRUE(empty->bodyInMemory().empty()) << empty->bodyInMemory();
+}
+
+// RFC 9110 §6.6.1: the Date of a response is the second of its generation, also after a slow handler, for a buffered
+// response and for the headers of a streamed one.
+TEST_P(ProtocolParity, DateIsTheSecondOfTheGenerationOfTheResponse) {
+  ts.router().setPath(http::Method::GET, "/slow",
+                      [](const HttpRequestView&) { return HttpResponse(test::SleepIntoNextSecond()); });
+  ts.router().setPath(http::Method::GET, "/slow-stream", [](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.writeBody(test::SleepIntoNextSecond());
+    writer.end();
+  });
+
+  for (std::string_view target : {"/slow", "/slow-stream"}) {
+    SCOPED_TRACE(target);
+    const auto resp = send(http::Method::GET, target);
+    const SysTimePoint received = SysClock::now();
+    ASSERT_EQ(resp.status(), http::StatusCodeOK);
+    const SysTimePoint generated = TryParseTimeRFC7231(resp.bodyInMemory());
+    ASSERT_NE(generated, kInvalidTimePoint) << resp.bodyInMemory();
+    const std::string_view dateValue = resp.headerValueOrEmpty(http::Date);
+    const SysTimePoint date = TryParseTimeRFC7231(dateValue);
+    EXPECT_GE(date, generated) << dateValue << " generated " << resp.bodyInMemory();
+    EXPECT_LE(date, received) << dateValue;
+  }
 }
 
 #ifdef AERONET_ENABLE_ZLIB
@@ -518,6 +570,41 @@ TEST_P(ProtocolParity, CompressionKeeps206AndWeakensStrongETags) {
     EXPECT_EQ(resp->headerValueOrEmpty(http::ETag), "W/\"v1\"");
   }
 }
+
+// RFC 9110 §12.5.5: with addVaryAcceptEncodingToUncompressed, the uncompressed response of a resource compressed for
+// the clients accepting a coding varies on Accept-Encoding too, buffered, made with makeResponse(), with its body set
+// later, or streamed.
+TEST_P(ProtocolParity, IdentityVariantVariesOnAcceptEncoding) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) { cfg.compression.addVaryAcceptEncodingToUncompressed = true; });
+  const std::string payload(4000, 'a');
+  auto router = ts.router();
+  router.setPath(http::Method::GET, "/identity", [payload](const HttpRequestView&) { return HttpResponse(payload); });
+  router.setPath(http::Method::GET, "/identity-made",
+                 [payload](const HttpRequestView& req) { return req.makeResponse(std::string_view(payload)); });
+  router.setPath(http::Method::GET, "/identity-body", [payload](const HttpRequestView& req) {
+    auto resp = req.makeResponse();
+    resp.body(std::string_view(payload));
+    return resp;
+  });
+  router.setPath(http::Method::GET, "/identity-stream", [payload](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.writeBody(payload);
+    writer.end();
+  });
+
+  HttpClientConfig cfg;
+  cfg.withHttpVersion(GetParam());
+  cfg.withDecompression(false).withDefaultAcceptEncoding("identity");
+  HttpClient client(std::move(cfg));
+  for (std::string_view target : {"/identity", "/identity-made", "/identity-body", "/identity-stream"}) {
+    SCOPED_TRACE(target);
+    const auto resp = client.request(client.makeRequest(http::Method::GET, url(target)));
+    ASSERT_TRUE(resp.has_value());
+    EXPECT_EQ(resp->status(), http::StatusCodeOK);
+    EXPECT_EQ(resp->headerValueOrEmpty(http::ContentEncoding), "");
+    EXPECT_EQ(resp->headerValueOrEmpty(http::Vary), http::AcceptEncoding);
+    EXPECT_EQ(resp->bodyInMemory(), payload);
+  }
+}
 #endif
 
 #if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
@@ -592,6 +679,29 @@ TEST_P(ProtocolParityFastBrotli, LargeIncompressibleBodiesAreCompressedWhole) {
       EXPECT_EQ(std::string_view(test::Decompress(encoding, resp->bodyInMemory())), std::string_view(payload));
     }
   }
+}
+#endif
+
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+// RFC 9110 §12.5.3: a body refused for its content coding is answered 415 with an Accept-Encoding listing the codings
+// that the server decodes. A body failing to decode is not refused for its coding.
+TEST_P(ProtocolParity, UnsupportedContentCodingAnswerListsTheDecodedOnes) {
+  ts.router().setDefault([](const HttpRequestView& req) { return HttpResponse(req.body()); });
+  auto resp = send(http::Method::POST, "/coding", [](auto& req) {
+    req.contentEncoding("snappy");
+    req.body(std::string_view("abc"));
+  });
+  EXPECT_EQ(resp.status(), http::StatusCodeUnsupportedMediaType);
+  EXPECT_EQ(resp.headerValueOrEmpty(http::AcceptEncoding), internal::kSupportedAcceptEncoding);
+
+  const Encoding encoding = test::SupportedEncodings().front();
+  const RawChars compressed = test::Compress(encoding, "abc");
+  resp = send(http::Method::POST, "/coding", [encoding, &compressed](auto& req) {
+    req.contentEncoding(GetEncodingStr(encoding));
+    req.body(std::string_view(compressed).substr(0, compressed.size() / 2));
+  });
+  EXPECT_EQ(resp.status(), http::StatusCodeBadRequest);
+  EXPECT_FALSE(resp.hasHeader(http::AcceptEncoding));
 }
 #endif
 

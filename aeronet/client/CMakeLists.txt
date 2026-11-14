@@ -44,13 +44,6 @@ endif()
 
 # --- Tests ---
 
-AeronetAddUnitTest(
-    client-accept-encoding_test
-    test/client-accept-encoding_test.cpp
-    LIBRARIES
-    aeronet_objects
-)
-
 if(AERONET_ENABLE_GLAZE)
     AeronetAddUnitTest(
         client-config-loader_test

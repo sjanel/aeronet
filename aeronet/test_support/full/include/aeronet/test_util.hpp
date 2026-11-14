@@ -134,6 +134,10 @@ ParsedResponse simpleGet(uint16_t port, std::string_view target,
 
 std::string toLower(std::string input);
 
+// A slow request handler: sleeps into the next wall-clock second, 50 ms past its start (more than the tick of a coarse
+// wall clock), and returns that second as an HTTP date (RFC 7231 IMF-fixdate).
+std::string SleepIntoNextSecond();
+
 #ifdef AERONET_LINUX
 // Whether a plain socket (without SO_REUSEADDR nor SO_REUSEPORT) can bind the given port, as an unrelated process
 // would.

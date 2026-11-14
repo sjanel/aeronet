@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string_view>
 
 #include "aeronet/http-request-view.hpp"
@@ -23,6 +24,10 @@ class HttpRequestView;
 /// to the streaming handler invocation scope.
 class IWriterTransport {
  public:
+  /// The declaredLength of a body whose length is not known when the headers are sent (chunked or close-delimited).
+  /// 0 is a declared length: an empty body.
+  static constexpr std::size_t kNoDeclaredLength = std::numeric_limits<std::size_t>::max();
+
   virtual ~IWriterTransport() = default;
 
   /// Emit the response headers to the peer.
@@ -30,7 +35,7 @@ class IWriterTransport {
   /// @param response  The HttpResponse containing accumulated headers/status.
   ///                  The transport may mutate it (e.g. add protocol-specific headers).
   /// @param request   The originating request (needed for middleware / CORS).
-  /// @param declaredLength  The declared Content-Length (0 = chunked/unknown).
+  /// @param declaredLength  The declared Content-Length, kNoDeclaredLength if none (chunked/unknown).
   /// @param isHead    Whether no content will be sent: HEAD request, or a status code without content (1xx, 204, 304).
   /// @return true on success, false if the connection/stream is dead.
   virtual bool emitHeaders(HttpResponse& response, const HttpRequestView& request, std::size_t declaredLength,

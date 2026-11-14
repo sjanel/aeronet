@@ -138,7 +138,7 @@ Tests: `HttpAudit.ContentLengthListsAndSignsAreRejected`, `HttpAudit.EmptyConten
 | Setting | Default | When exceeded |
 | --- | --- | --- |
 | `maxHeaderBytes` | 8 KiB | `431 Request Header Fields Too Large`, includes request trailers. A request line too long for it, whose request target is too long, is answered `414 URI Too Long` (RFC 9112 §3) instead, whether or not its end was received. |
-| `maxBodyBytes` | 256 MiB | `413 Payload Too Large`, before the body is read when a `Content-Length` announces it (the connection then closes after a [lingering close](server-lifecycle.md#lingering-close)). |
+| `maxBodyBytes` | 256 MiB | `413 Payload Too Large`, before the body is read when a `Content-Length` announces it (the connection then closes after a [lingering close](server-lifecycle.md#lingering-close)). The same holds for the [`maxCompressedBytes`](compression.md#request-body-decompression) of a body to decompress. |
 | `headerReadTimeout` | disabled | `408 Request Timeout` and connection closed: protects against clients sending their head byte by byte (Slowloris). Counted from the accept for the first request of a connection, from its first byte for the next ones, and from the answer of the previous request for a request received with it (pipelined). |
 | `bodyReadTimeout` | disabled | `408 Request Timeout` and connection closed when the body stops arriving. |
 

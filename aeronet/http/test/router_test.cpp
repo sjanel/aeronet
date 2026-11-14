@@ -1347,6 +1347,74 @@ TEST_F(RouterTest, AllowedMethodsGlobalAsyncFallback) {
 }
 #endif
 
+// The methods of the router as a whole, listed by the Allow header of OPTIONS *: the union of the methods of its
+// routes, literal or not, whatever the kind of their handler.
+TEST_F(RouterTest, SupportedMethodsAreTheMethodsOfAllTheRoutes) {
+  EXPECT_EQ(router.supportedMethods(), 0U);
+
+  router.setPath(http::Method::GET | http::Method::POST, "/literal", OkHandler);
+  router.setPath(http::Method::PATCH, "/items/{id}", [](const HttpRequestView&, HttpResponseWriter&) {});
+  router.setPath(http::Method::TRACE, "/files/*", OkHandler);
+  static constexpr http::MethodBmp kRoutesMethods =
+      http::Method::GET | http::Method::POST | http::Method::PATCH | http::Method::TRACE;
+  EXPECT_EQ(router.supportedMethods(), kRoutesMethods);
+
+  // Replacing the handler of a method keeps it, an empty handler registers nothing.
+  router.setPath(http::Method::GET, "/literal", AcceptedHandler);
+  EXPECT_THROW(router.setPath(http::Method::DELETE, "/other", RequestHandler{}), std::invalid_argument);
+  EXPECT_THROW(router.setPath(http::Method::PUT, "/other/{id}", StreamingHandler{}), std::invalid_argument);
+  EXPECT_EQ(router.supportedMethods(), kRoutesMethods);
+
+  // A handler of another kind is detected method by method: DELETE is registered before the conflict on PATCH.
+  EXPECT_THROW(router.setPath(http::Method::DELETE | http::Method::PATCH, "/items/{id}", OkHandler), std::logic_error);
+  ASSERT_EQ(router.allowedMethods("/items/42"), http::Method::DELETE | http::Method::PATCH);
+  static constexpr http::MethodBmp kAllRoutesMethods = kRoutesMethods | http::Method::DELETE;
+  EXPECT_EQ(router.supportedMethods(), kAllRoutesMethods);
+
+  const Router copy(router);
+  EXPECT_EQ(copy.supportedMethods(), kAllRoutesMethods);
+  Router assigned;
+  assigned.setPath(http::Method::PUT, "/put", OkHandler);
+  assigned = router;
+  EXPECT_EQ(assigned.supportedMethods(), kAllRoutesMethods);
+
+  router.clear();
+  EXPECT_EQ(router.supportedMethods(), 0U);
+  router.setPath(http::Method::HEAD, "/head", OkHandler);
+  EXPECT_EQ(router.supportedMethods(), static_cast<http::MethodBmp>(http::Method::HEAD));
+  EXPECT_EQ(copy.supportedMethods(), kAllRoutesMethods);
+}
+
+// A default handler answers every method on every path.
+TEST_F(RouterTest, SupportedMethodsWithADefaultHandlerAreAllTheMethods) {
+  router.setPath(http::Method::GET, "/literal", OkHandler);
+
+  router.setDefault(OkHandler);
+  EXPECT_EQ(router.supportedMethods(), http::kAllMethods);
+  router.setDefault([](const HttpRequestView&, HttpResponseWriter&) {});
+  EXPECT_EQ(router.supportedMethods(), http::kAllMethods);
+  router.setDefault(StreamingHandler{});
+  EXPECT_EQ(router.supportedMethods(), static_cast<http::MethodBmp>(http::Method::GET));
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+  router.setDefault(
+      AsyncRequestHandler([](HttpRequestView&) -> RequestTask<HttpResponse> { co_return HttpResponse(204); }));
+  EXPECT_EQ(router.supportedMethods(), http::kAllMethods);
+  router.setDefault(AsyncRequestHandler{});
+  EXPECT_EQ(router.supportedMethods(), static_cast<http::MethodBmp>(http::Method::GET));
+#endif
+}
+
+#ifdef AERONET_ENABLE_WEBSOCKET
+// A WebSocket endpoint is reached by a GET (its upgrade request), which supportedMethods() counts. Its path has no
+// handler: allowedMethods() reports no method.
+TEST_F(RouterTest, SupportedMethodsOfAWebSocketEndpointAreGet) {
+  router.setWebSocket("/ws", WebSocketEndpoint{});
+  EXPECT_EQ(router.supportedMethods(), static_cast<http::MethodBmp>(http::Method::GET));
+  EXPECT_EQ(router.allowedMethods("/ws"), 0U);
+}
+#endif
+
 TEST_F(RouterTest, TrailingSlashEdgeCases) {
   // Normalize should accept both
   cfg.withTrailingSlashPolicy(RouterConfig::TrailingSlashPolicy::Normalize);

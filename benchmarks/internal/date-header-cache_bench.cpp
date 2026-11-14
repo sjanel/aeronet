@@ -1,6 +1,5 @@
 #include <benchmark/benchmark.h>
 
-#include <chrono>
 #include <cstdint>
 
 #include "aeronet/header-write.hpp"
@@ -27,13 +26,14 @@ void BM_SystemClockAndFormat(benchmark::State& state) {
   state.SetBytesProcessed(state.iterations() * static_cast<int64_t>(kCRLFDateHeaderLen));
 }
 
+// The copy of the formatted date alone: the cost of a response before the Date of each response read its second.
 void BM_CachedCopy(benchmark::State& state) {
   internal::DateHeaderCache cache;
-  cache.refreshIfNeeded(SteadyClock::now());
+  const char* header = cache.current();
   char out[kCRLFDateHeaderLen];
 
   for (auto _ : state) {
-    CopyCRLFDateHeader(cache.data(), out);
+    CopyCRLFDateHeader(header, out);
     benchmark::DoNotOptimize(out);
     benchmark::ClobberMemory();
   }
@@ -41,15 +41,13 @@ void BM_CachedCopy(benchmark::State& state) {
   state.SetBytesProcessed(state.iterations() * static_cast<int64_t>(kCRLFDateHeaderLen));
 }
 
-void BM_CacheHitAndCopy(benchmark::State& state) {
+// What each response pays: a read of the wall clock in whole seconds, and the copy of the date of that second.
+void BM_CurrentAndCopy(benchmark::State& state) {
   internal::DateHeaderCache cache;
-  const auto steadyNow = SteadyClock::now();
-  cache.refreshIfNeeded(steadyNow);
   char out[kCRLFDateHeaderLen];
 
   for (auto _ : state) {
-    cache.refreshIfNeeded(steadyNow);
-    CopyCRLFDateHeader(cache.data(), out);
+    CopyCRLFDateHeader(cache.current(), out);
     benchmark::DoNotOptimize(out);
     benchmark::ClobberMemory();
   }
@@ -59,7 +57,7 @@ void BM_CacheHitAndCopy(benchmark::State& state) {
 
 BENCHMARK(BM_SystemClockAndFormat)->Unit(benchmark::kNanosecond);
 BENCHMARK(BM_CachedCopy)->Unit(benchmark::kNanosecond);
-BENCHMARK(BM_CacheHitAndCopy)->Unit(benchmark::kNanosecond);
+BENCHMARK(BM_CurrentAndCopy)->Unit(benchmark::kNanosecond);
 
 }  // namespace
 }  // namespace aeronet

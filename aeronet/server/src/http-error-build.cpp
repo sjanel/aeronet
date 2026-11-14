@@ -12,6 +12,8 @@
 #include "aeronet/nchars.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/simple-charconv.hpp"
+#include "aeronet/static-string-view-helpers.hpp"
+#include "aeronet/supported-accept-encoding.hpp"
 #include "aeronet/time-constants.hpp"
 
 namespace aeronet {
@@ -28,9 +30,17 @@ RawChars BuildSimpleError(http::StatusCode status, const ConcatenatedHeaders& gl
 
   static constexpr std::string_view kConnectionCloseStr = "\r\nconnection: close\r\n";
 
+  // The server answers 415 only to a request whose content codings it does not decode: it lists the ones it does, so
+  // that the client can tell a refused coding from a refused media type, and retry with a supported one (RFC 9110
+  // §12.5.3).
+  static constexpr std::string_view kAcceptEncodingLine =
+      JoinStringView_v<http::AcceptEncoding, http::HeaderSep, internal::kSupportedAcceptEncoding, http::CRLF>;
+  const bool listCodings = status == http::StatusCodeUnsupportedMediaType;
+
   // Exact allocation size
   RawChars out(http::HTTP11SPSv.size() + kStatusLen + 1UL + reason.size() +
-               http::HeaderSize(http::Date.size(), RFC7231DateStrLen) + kConnectionCloseStr.size() + globalHeadersSize +
+               http::HeaderSize(http::Date.size(), RFC7231DateStrLen) + kConnectionCloseStr.size() +
+               (listCodings ? kAcceptEncodingLine.size() : 0UL) + globalHeadersSize +
                http::HeaderSize(http::ContentLength.size(), nbCharsBodyLen) +
                http::HeaderSize(http::ContentType.size(), http::ContentTypeTextPlain.size()) + http::CRLF.size() +
                content.size());
@@ -49,6 +59,10 @@ RawChars BuildSimpleError(http::StatusCode status, const ConcatenatedHeaders& gl
 
   // connection: close
   pData = AppendFixed<kConnectionCloseStr>(pData);
+
+  if (listCodings) {
+    pData = AppendFixed<kAcceptEncodingLine>(pData);
+  }
 
   // Append global headers
   pData = Append(globalHeaders.fullStringWithLastSep(), pData);

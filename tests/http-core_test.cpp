@@ -79,6 +79,8 @@
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
+#include "aeronet/time-constants.hpp"
+#include "aeronet/timedef.hpp"
 #include "aeronet/timestring.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/unix-dogstatsd-sink.hpp"
@@ -1337,6 +1339,37 @@ TEST(HttpDate, StableWithinSameSecond) {
 
   ASSERT_GE(pairs, 1) << "Too much drift across second boundaries: '" << anchorDate << "' '" << s2 << "' '" << s3
                       << "'";
+}
+
+// RFC 9110 §6.6.1: Date is "the best available approximation of the date and time of message generation". The response
+// of a slow handler, and the one of the request pipelined after it (served in the same event loop iteration), carry the
+// second of their generation, not the one of the start of the iteration.
+TEST(HttpDate, IsTheSecondOfTheGenerationOfTheResponse) {
+  ts.router().setPath(http::Method::GET, "/date-slow",
+                      [](const HttpRequestView&) { return HttpResponse(test::SleepIntoNextSecond()); });
+  ts.router().setPath(http::Method::GET, "/date-next", [](const HttpRequestView&) { return HttpResponse("next"); });
+
+  const std::string raw = test::sendAndCollect(port,
+                                               "GET /date-slow HTTP/1.1\r\nHost: h\r\n\r\n"
+                                               "GET /date-next HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n");
+  const SysTimePoint received = SysClock::now();
+  const std::size_t nextPos = raw.find("HTTP/1.1 ", 1);
+  ASSERT_NE(nextPos, std::string::npos) << raw;
+  const auto slow = test::parseResponseOrThrow(std::string_view(raw).substr(0, nextPos));
+  const auto next = test::parseResponseOrThrow(std::string_view(raw).substr(nextPos));
+  ASSERT_EQ(slow.statusCode, http::StatusCodeOK);
+  ASSERT_EQ(next.statusCode, http::StatusCodeOK);
+  EXPECT_EQ(next.body, "next");
+
+  const SysTimePoint generated = TryParseTimeRFC7231(slow.body);
+  ASSERT_NE(generated, kInvalidTimePoint) << slow.body;
+  for (const auto* pResp : {&slow, &next}) {
+    const auto dateIt = pResp->headers.find(http::Date.get());
+    ASSERT_NE(dateIt, pResp->headers.end());
+    const SysTimePoint date = TryParseTimeRFC7231(dateIt->second);
+    EXPECT_GE(date, generated) << dateIt->second << " generated " << slow.body;
+    EXPECT_LE(date, received) << dateIt->second;
+  }
 }
 
 TEST(HttpDate, ChangesAcrossSecondBoundary) {
@@ -3572,14 +3605,69 @@ TEST(ServerStatsJson, ContainsAllScalarFields) {
   ASSERT_FALSE(json.contains(",}")) << "Trailing comma present in JSON: " << json;
 }
 
-TEST(HttpOptionsTrace, OptionsStarReturnsAllow) {
-  ts.router().setDefault([](const HttpRequestView&) { return HttpResponse(200); });
+namespace {
 
-  auto resp =
-      test::requestOrThrow(port, test::RequestOptions{.method = "OPTIONS", .target = "*", .body = "", .headers = {}});
-  ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
-  ASSERT_TRUE(
-      resp.contains(MakeHttp1HeaderLine(http::Allow, "GET, POST, PUT, DELETE, HEAD, OPTIONS, PATCH, CONNECT, TRACE")));
+// The Allow header of the answer to OPTIONS *, which must be 200.
+std::string OptionsStarAllow() {
+  auto resp = test::parseResponseOrThrow(
+      test::sendAndCollect(port, "OPTIONS * HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n"));
+  EXPECT_EQ(resp.statusCode, http::StatusCodeOK);
+  const auto allowIt = resp.headers.find(std::string(http::Allow));
+  if (allowIt == resp.headers.end()) {
+    ADD_FAILURE() << "OPTIONS * answered without Allow header";
+    return {};
+  }
+  return allowIt->second;
+}
+
+void SetTracePolicy(HttpServerConfig::TraceMethodPolicy policy) {
+  ts.resetConfigAndPostUpdate([policy](HttpServerConfig& cfg) { cfg.withTracePolicy(policy); });
+}
+
+}  // namespace
+
+// OPTIONS * applies to the server as a whole (RFC 9110 §9.3.7): its Allow header lists the methods of all the routes,
+// whatever their path. TRACE is answered by the server, never by a handler: listed only when it is echoed.
+TEST(HttpOptionsTrace, OptionsStarListsTheMethodsOfAllTheRoutes) {
+  SetTracePolicy(HttpServerConfig::TraceMethodPolicy::Disabled);
+  ts.resetRouterAndGet();
+  EXPECT_EQ(OptionsStarAllow(), "");  // no method: empty (RFC 9110 §10.2.1)
+
+  ts.router().setPath(http::Method::GET | http::Method::POST, "/a",
+                      [](const HttpRequestView&) { return HttpResponse("ok"); });
+  ts.router().setPath(http::Method::PATCH, "/items/{id}", [](const HttpRequestView&, HttpResponseWriter& writer) {
+    writer.writeBody("ok");
+    writer.end();
+  });
+  ts.router().setPath(http::Method::TRACE, "/a", [](const HttpRequestView&) { return HttpResponse("trace"); });
+  EXPECT_EQ(OptionsStarAllow(), "GET, POST, PATCH");
+
+  SetTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainOnly);
+  EXPECT_EQ(OptionsStarAllow(), "GET, POST, PATCH, TRACE");
+
+  // Echoed, TRACE is supported without any route.
+  ts.resetRouterAndGet();
+  EXPECT_EQ(OptionsStarAllow(), "TRACE");
+
+  SetTracePolicy(HttpServerConfig::TraceMethodPolicy::Disabled);
+}
+
+// A default handler answers every method, but TRACE, answered 405 while it is disabled.
+TEST(HttpOptionsTrace, OptionsStarWithADefaultHandler) {
+  SetTracePolicy(HttpServerConfig::TraceMethodPolicy::Disabled);
+  ts.resetRouterAndGet().setDefault([](const HttpRequestView&) { return HttpResponse(200); });
+  EXPECT_EQ(OptionsStarAllow(), "GET, POST, PUT, DELETE, HEAD, OPTIONS, PATCH, CONNECT");
+  auto trace =
+      test::requestOrThrow(port, test::RequestOptions{.method = "TRACE", .target = "/x", .body = "", .headers = {}});
+  EXPECT_TRUE(trace.starts_with("HTTP/1.1 405")) << trace;
+
+  SetTracePolicy(HttpServerConfig::TraceMethodPolicy::EnabledPlainAndTLS);
+  EXPECT_EQ(OptionsStarAllow(), "GET, POST, PUT, DELETE, HEAD, OPTIONS, PATCH, CONNECT, TRACE");
+  trace =
+      test::requestOrThrow(port, test::RequestOptions{.method = "TRACE", .target = "/x", .body = "", .headers = {}});
+  EXPECT_TRUE(trace.starts_with("HTTP/1.1 200")) << trace;
+
+  SetTracePolicy(HttpServerConfig::TraceMethodPolicy::Disabled);
 }
 
 TEST(HttpOptionsTrace, TraceEchoWhenEnabled) {
@@ -5604,6 +5692,58 @@ TEST(HttpStreamingHeadContentLength, StreamingContentLengthWithAutoCompressionIs
   EXPECT_EQ(static_cast<unsigned char>(parsed.body[1]), 0x8b);
 }
 #endif
+
+// contentLength(0) declares an empty body, framed by a Content-Length of 0 (RFC 9110 §8.6), not chunked as without a
+// declared length: for GET, HEAD and an HTTP/1.0 client, on a connection that persists. A write is beyond the declared
+// length: it fails the writer, and the server closes the connection with nothing more sent.
+TEST(HttpStreaming, DeclaredLengthOfZeroIsAnEmptyBody) {
+  ts.resetConfig();
+  ts.resetRouterAndGet().setDefault([](const HttpRequestView& req, HttpResponseWriter& writer) {
+    writer.contentLength(0);
+    if (req.path() == "/write") {
+      EXPECT_FALSE(writer.writeBody("x"));
+      EXPECT_TRUE(writer.failed());
+    }
+    writer.end();
+    EXPECT_EQ(writer.failed(), req.path() == "/write");
+  });
+
+  {
+    test::ClientConnection sock(port);
+    test::sendAll(sock.fd(),
+                  "GET /empty HTTP/1.1\r\nHost: h\r\n\r\n"
+                  "HEAD /empty HTTP/1.1\r\nHost: h\r\n\r\n"
+                  "GET /empty HTTP/1.0\r\nHost: h\r\nConnection: keep-alive\r\n\r\n"
+                  "GET /last HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n");
+    const std::string resp = test::recvUntilClosed(sock.fd());
+    EXPECT_EQ(test::countOccurrences(resp, "HTTP/1.1 200 "), 4) << resp;
+    EXPECT_EQ(test::countOccurrences(resp, "\r\ncontent-length: 0\r\n"), 4) << resp;
+    EXPECT_FALSE(resp.contains("\r\ntransfer-encoding: ")) << resp;
+    EXPECT_TRUE(resp.ends_with(http::DoubleCRLF)) << resp;
+  }
+
+  const std::string resp = FetchUntilClosed("/write");
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  EXPECT_TRUE(resp.contains("\r\ncontent-length: 0\r\n")) << resp;
+  EXPECT_FALSE(resp.contains("\r\ntransfer-encoding: ")) << resp;
+  EXPECT_TRUE(resp.ends_with(http::DoubleCRLF)) << resp;
+
+#ifdef AERONET_ENABLE_ZLIB
+  // An empty body is never compressed: compression needs at least minBytes, which is at least 1.
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    CompressionConfig compCfg;
+    compCfg.minBytes = 1;
+    cfg.withCompression(std::move(compCfg));
+  });
+  std::string compressed;
+  rawWith("GET", "accept-encoding: gzip\r\n", compressed);
+  EXPECT_TRUE(compressed.starts_with("HTTP/1.1 200")) << compressed;
+  EXPECT_TRUE(compressed.contains("\r\ncontent-length: 0\r\n")) << compressed;
+  EXPECT_FALSE(compressed.contains("\r\ntransfer-encoding: ")) << compressed;
+  EXPECT_FALSE(compressed.contains("\r\ncontent-encoding: ")) << compressed;
+  ts.resetConfig();
+#endif
+}
 
 TEST(StreamingBackpressure, LargeBodyQueues) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {

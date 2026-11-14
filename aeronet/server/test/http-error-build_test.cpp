@@ -3,12 +3,15 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <format>
 #include <string>
+#include <string_view>
 
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-helpers.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/supported-accept-encoding.hpp"
 
 using namespace aeronet;
 
@@ -112,4 +115,23 @@ TEST(HttpErrorBuildTest, ResponseToHeadHasTheHeadersOfGetWithoutBody) {
     EXPECT_TRUE(head.ends_with(http::DoubleCRLF)) << head;
     EXPECT_EQ(std::string(head) + body, std::string_view(getResp));
   }
+}
+
+TEST(HttpErrorBuildTest, UnsupportedMediaTypeListsTheDecodedCodings) {
+  // RFC 9110 §12.5.3: the server answers 415 only to a body with a content coding that it does not decode.
+  ConcatenatedHeaders gh;
+  gh.append("X-Test: foo");
+  for (const bool isHeadMethod : {false, true}) {
+    const auto data =
+        BuildSimpleError(http::StatusCodeUnsupportedMediaType, gh, "Unsupported", pDateHeader, isHeadMethod);
+    const std::string expected = std::format(
+        "HTTP/1.1 415 Unsupported Media Type\r\ndate: {}\r\nconnection: close\r\naccept-encoding: {}\r\n"
+        "X-Test: foo\r\ncontent-type: text/plain\r\ncontent-length: 11\r\n\r\n{}",
+        pDateHeader, internal::kSupportedAcceptEncoding, isHeadMethod ? "" : "Unsupported");
+    EXPECT_EQ(std::string_view(data), expected);
+  }
+
+  // The other errors do not.
+  const auto data = BuildSimpleError(http::StatusCodeBadRequest, gh, "Bad", pDateHeader);
+  EXPECT_FALSE(std::string_view(data).contains(std::string_view(http::AcceptEncoding))) << std::string_view(data);
 }

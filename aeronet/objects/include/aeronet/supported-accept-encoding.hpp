@@ -8,10 +8,10 @@
 
 namespace aeronet::internal {
 
-// Comma-separated list of the content codings this build can decode, in aeronet's preference order.
-// Advertised as the default Accept-Encoding when response decompression is enabled and the user did not
-// set an explicit value. Built once at compile time from the codecs compiled in. Shared by the HTTP/1.1
-// and HTTP/2 client request builders.
+// Comma-separated list of the content codings this build can decode, built once at compile time from the codecs
+// compiled in. The client advertises it as its default Accept-Encoding when response decompression is enabled and the
+// user did not set an explicit value. The server lists it in the Accept-Encoding of its 415 answers to a request whose
+// content codings it does not decode (RFC 9110 §12.5.3).
 namespace details {
 
 inline constexpr std::array<Encoding,

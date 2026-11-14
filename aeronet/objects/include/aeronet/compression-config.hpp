@@ -54,6 +54,13 @@ struct CompressionConfig {
   // If true, adds/merges a Vary: Accept-Encoding header whenever compression is applied.
   bool addVaryAcceptEncodingHeader{true};
 
+  // With addVaryAcceptEncodingHeader, also adds it to the responses sent uncompressed that would be compressed for a
+  // client accepting a coding (no coding accepted, or a compression not shrinking the body enough), as RFC 9110 §12.5.5
+  // recommends: a shared cache holding such a response then serves it to the clients accepting no coding only. Off by
+  // default (as nginx 'gzip_vary'): without it, such a cache may serve the uncompressed response to every client, which
+  // is correct but not compressed, and the uncompressed responses save a 24-byte header line.
+  bool addVaryAcceptEncodingToUncompressed{false};
+
   struct Zlib {
 #ifdef AERONET_ENABLE_ZLIB
     static constexpr int8_t kDefaultLevel = Z_DEFAULT_COMPRESSION;

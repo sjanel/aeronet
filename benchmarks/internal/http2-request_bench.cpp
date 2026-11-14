@@ -4,7 +4,6 @@
 #include <benchmark/benchmark.h>
 
 #include <array>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -74,7 +73,6 @@ class Http2RequestBench {
       : _ctx(HttpServerConfig{}, Router{}), _handler(_ctx, _connectionState, kInvalidHandle) {
     _ctx.config.validate();
     _ctx.router.setDefault([](const HttpRequestView&) { return HttpResponse(http::StatusCodeOK, "ok"); });
-    _ctx.dateHeader.refreshIfNeeded(std::chrono::steady_clock::now());
 
     // Connection preface and SETTINGS exchange.
     RawBytes setup;

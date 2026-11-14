@@ -126,7 +126,7 @@ EncodingSelector::NegotiatedResult EncodingSelector::negotiate(std::string_view 
     }
     if (name == "*") {
       sawWildcard = true;
-      wildcardQ = quality;
+      wildcardQ = std::max(wildcardQ, quality);
       continue;
     }
     for (std::size_t pos = 0; pos < kSupportedEncodings.size(); ++pos) {

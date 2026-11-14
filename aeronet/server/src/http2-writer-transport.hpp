@@ -18,6 +18,7 @@
 #include "aeronet/http2-error-code-name.hpp"
 #include "aeronet/http2-frame-types.hpp"
 #include "aeronet/http2-frame.hpp"
+#include "aeronet/internal/date-header-cache.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router.hpp"
@@ -33,15 +34,15 @@ namespace aeronet::http2 {
 /// pending-send maps for deferred flushing.
 class Http2WriterTransport final : public IWriterTransport {
  public:
-  /// The pipeline and the routing result of the request must outlive the transport.
+  /// The pipeline, the routing result of the request and the Date header cache must outlive the transport.
   Http2WriterTransport(Http2Connection& connection, uint32_t streamId, const RequestPipeline& pipeline,
-                       const Router::RoutingResult& routingResult, const char* cachedDateHeader,
+                       const Router::RoutingResult& routingResult, ::aeronet::internal::DateHeaderCache& dateHeader,
                        std::size_t existingDeferredBytes, uint32_t maxConnectionPendingBytes,
                        uint32_t maxStreamPendingBytes)
       : _pConnection(&connection),
         _pPipeline(&pipeline),
         _pRoutingResult(&routingResult),
-        _pCachedDateHeader(cachedDateHeader),
+        _pDateHeader(&dateHeader),
         _existingDeferredBytes(existingDeferredBytes),
         _maxConnectionPendingBytes(maxConnectionPendingBytes),
         _maxStreamPendingBytes(maxStreamPendingBytes),
@@ -56,8 +57,8 @@ class Http2WriterTransport final : public IWriterTransport {
 
     response.finalizeHeadersAndBody();
 
-    // Finalize Date header (same as sendResponse path).
-    CopyCRLFDateHeader(_pCachedDateHeader, response._data.data() + response.dateHeaderStartPos());
+    // Finalize Date header (same as sendResponse path), at the time the headers are emitted.
+    CopyCRLFDateHeader(_pDateHeader->current(), response._data.data() + response.dateHeaderStartPos());
 
     const std::size_t headerBytes = FrameHeader::kSize + response.headersFlatViewWithDate().size();
     if (headerBytes > _maxConnectionPendingBytes || !hasConnectionCapacity(headerBytes)) {
@@ -241,7 +242,7 @@ class Http2WriterTransport final : public IWriterTransport {
   Http2Connection* _pConnection;
   const RequestPipeline* _pPipeline;
   const Router::RoutingResult* _pRoutingResult;
-  const char* _pCachedDateHeader;
+  ::aeronet::internal::DateHeaderCache* _pDateHeader;
   std::size_t _existingDeferredBytes;
   uint32_t _maxConnectionPendingBytes;
   uint32_t _maxStreamPendingBytes;

@@ -37,7 +37,9 @@
 #include "aeronet/socket.hpp"
 #include "aeronet/system-error-message.hpp"
 #include "aeronet/system-error.hpp"
+#include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
+#include "aeronet/timestring.hpp"
 #include "aeronet/tolower-str.hpp"
 #include "aeronet/toupperlower.hpp"
 #include "aeronet/vector.hpp"
@@ -573,6 +575,14 @@ std::string toLower(std::string input) {
   tolower(input.data(), input.size());
 
   return input;
+}
+
+std::string SleepIntoNextSecond() {
+  const SysTimePoint target = std::chrono::floor<std::chrono::seconds>(SysClock::now()) + 1050ms;
+  std::this_thread::sleep_until(target);
+  std::string date(RFC7231DateStrLen, '\0');
+  TimeToStringRFC7231(target, date.data());
+  return date;
 }
 
 // Very small HTTP/1.1 response parser (not resilient to all malformed cases, just for test consumption)

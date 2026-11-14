@@ -56,6 +56,9 @@ constexpr MethodBmp operator|(Method lhs, MethodBmp rhs) noexcept {
 static_assert(kNbMethods <= sizeof(MethodBmp) * 8,
               "MethodBmp type too small to hold all methods; increase size or change type");
 
+// The bitmap of all the methods.
+inline constexpr MethodBmp kAllMethods = static_cast<MethodBmp>((1U << kNbMethods) - 1U);
+
 // Check if a method is allowed by mask.
 constexpr bool IsMethodSet(MethodBmp mask, Method method) { return (mask & static_cast<MethodBmp>(method)) != 0U; }
 

@@ -567,7 +567,9 @@ class HttpRequestView {
     return makeResponse(0UL, statusCode);
   }
 
-  // Same as makeResponse(statusCode) but with additional capacity for the internal buffer.
+  // Same as makeResponse(statusCode) but with additional capacity for the internal buffer. A non-zero capacity also
+  // gets the room of the 'vary: accept-encoding' line that a body may need for a client accepting no coding (see
+  // CompressionConfig::addVaryAcceptEncodingToUncompressed).
   [[nodiscard]] HttpResponse makeResponse(std::size_t additionalCapacity, http::StatusCode statusCode) const;
 
   // Same as makeResponse(200) but also sets the body and content type.
@@ -819,6 +821,11 @@ class HttpRequestView {
 #endif
 
   [[nodiscard]] HttpResponse::Options makeResponseOptions() const noexcept;
+
+  // Same as makeResponseOptions(), for a response made with a body of 'bodySize' bytes of type 'contentType' (see
+  // HttpResponse::IdentityVaryLineSize()).
+  [[nodiscard]] HttpResponse::Options makeResponseOptions(http::StatusCode statusCode, std::size_t bodySize,
+                                                          std::string_view contentType) const noexcept;
 
   [[nodiscard]] HttpResponse makeCapturedResponse(http::StatusCode statusCode, HttpPayload body,
                                                   std::string_view contentType) const;

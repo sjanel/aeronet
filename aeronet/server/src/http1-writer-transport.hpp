@@ -48,7 +48,8 @@ class Http1WriterTransport final : public IWriterTransport {
     // Content-Length may frame a body (RFC 9112 §6.1 and §6.3, RFC 9110 §8.6). A 205 has no content either, framed by a
     // Content-Length of 0 below.
     const bool bodyAllowed = http::StatusCodeAllowsBody(response.status());
-    const bool unknownLength = bodyAllowed && !isHead && (declaredLength == 0) && !response.hasBodyFile();
+    const bool hasDeclaredLength = declaredLength != kNoDeclaredLength;
+    const bool unknownLength = bodyAllowed && !isHead && !hasDeclaredLength && !response.hasBodyFile();
     // An HTTP/1.0 client does not understand chunked encoding (RFC 9112 §6.1): a body of unknown length is delimited by
     // the close of the connection instead (RFC 9112 §6.3), and its trailers are dropped.
     const bool closeDelimited = unknownLength && request.version() == http::HTTP_1_0;
@@ -63,13 +64,14 @@ class Http1WriterTransport final : public IWriterTransport {
     }
 
     // Transfer-Encoding or Content-Length header. Without a declared length, the GET response is chunked: the HEAD one
-    // has no Content-Length, as the length is not known (RFC 9110 §8.6).
+    // has no Content-Length, as the length is not known (RFC 9110 §8.6). A declared length of 0 is an empty body with
+    // a Content-Length of 0.
     if (chunked) {
       const std::size_t needed = http::HeaderSize(http::TransferEncoding.size(), http::chunked.size());
 
       response.reserve(response.sizeInlined() + needed);
       response.headerAddLineUnchecked(http::TransferEncoding, http::chunked);
-    } else if (bodyAllowed && !response.hasBodyFile() && declaredLength != 0) {
+    } else if (bodyAllowed && !response.hasBodyFile() && hasDeclaredLength) {
       const auto declaredLengthIntegralLen = ndigits(declaredLength);
       const std::size_t needed = http::HeaderSize(http::ContentLength.size(), declaredLengthIntegralLen);
 
@@ -93,7 +95,7 @@ class Http1WriterTransport final : public IWriterTransport {
     response._opts.setStreamingBody();
 
     auto cnxIt = _ctx.connections.iterator(_fd);
-    _ctx.io.queueData(cnxIt, response.finalizeForHttp1(_ctx.dateHeader.data(), request.version(), response._opts,
+    _ctx.io.queueData(cnxIt, response.finalizeForHttp1(_ctx.dateHeader.current(), request.version(), response._opts,
                                                        nullptr, _ctx.config.minCapturedBodySize));
     ConnectionState& cnx = _ctx.connections.connectionState(cnxIt);
     if (cnx.isAnyCloseRequested()) {

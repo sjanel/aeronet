@@ -318,6 +318,14 @@ class Router {
   //  - If no match and no global handler, returns an empty bitmap (0).
   [[nodiscard]] http::MethodBmp allowedMethods(std::string_view path);
 
+  // Return a bitmap of the methods of the router as a whole, which the Allow header of `OPTIONS *` lists: all the
+  // methods with a global handler, otherwise the methods registered on at least one route, and GET for a WebSocket
+  // endpoint. Like `allowedMethods`, it does not synthesize HEAD from GET. Constant time: it is kept up to date by the
+  // registrations.
+  [[nodiscard]] http::MethodBmp supportedMethods() const noexcept {
+    return hasDefaultHandler() ? http::kAllMethods : _routesMethodBmp;
+  }
+
   // Clear all registered routes and handlers from the router.
   // The configuration stays unchanged.
   void clear() noexcept;
@@ -461,6 +469,14 @@ class Router {
 
   [[nodiscard]] RoutingResult makeDefaultResult() const;
 
+  [[nodiscard]] bool hasDefaultHandler() const noexcept {
+    return _handler || _streamingHandler
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+           || _asyncHandler
+#endif
+        ;
+  }
+
   AERONET_NOINLINE RoutingResult matchNonLiteral(http::Method method, std::string_view path, bool pathHasTrailingSlash);
 
   void cloneNodesFrom(const Router& other);
@@ -501,6 +517,10 @@ class Router {
   vector<PathParamCapture> _pathParamCaptureBuffer;
   vector<std::string_view> _matchStateBuffer;
   vector<uint32_t> _uint32VectorBuffer;  // for passing to RouteConstraint matching without per-call allocations
+
+  // The union of the methods registered on the routes (see supportedMethods()). Methods are never unregistered, only
+  // all of them by clear().
+  http::MethodBmp _routesMethodBmp{};
 };
 
 }  // namespace aeronet

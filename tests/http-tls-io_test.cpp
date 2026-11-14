@@ -209,6 +209,18 @@ TEST(HttpTlsLingeringClose, RequestsLeftInTheSocketBehindAClosingResponse) {
   EXPECT_NE(shutdownState & static_cast<unsigned>(SSL_RECEIVED_SHUTDOWN), 0U);
 }
 
+namespace {
+// The answer to an OPTIONS * request sent over TLS.
+std::string OptionsStarOverTls() {
+  test::TlsClient client(port);
+  EXPECT_TRUE(client.handshakeOk());
+  EXPECT_TRUE(client.writeAll("OPTIONS * HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"));
+  std::string raw = client.readAll();
+  EXPECT_TRUE(raw.starts_with("HTTP/1.1 200")) << raw;
+  return raw;
+}
+}  // namespace
+
 TEST(HttpOptionsTraceTls, TraceDisabledOnTlsPolicyRejectsTlsTrace) {
   // Use TlsTestServer and set TracePolicy to EnabledPlainOnly (reject TRACE over TLS)
   ts.server.postConfigUpdate(
@@ -223,6 +235,10 @@ TEST(HttpOptionsTraceTls, TraceDisabledOnTlsPolicyRejectsTlsTrace) {
   client.writeAll("TRACE /test HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
   auto raw = client.readAll();
   ASSERT_TRUE(raw.contains("405")) << raw;
+
+  // Not echoed over TLS, TRACE is not listed by OPTIONS *.
+  EXPECT_TRUE(OptionsStarOverTls().contains(
+      MakeHttp1HeaderLine(http::Allow, "GET, POST, PUT, DELETE, HEAD, OPTIONS, PATCH, CONNECT")));
 }
 
 TEST(HttpOptionsTraceTls, TraceEnabledOnTlsAllowsTlsTrace) {
@@ -237,6 +253,9 @@ TEST(HttpOptionsTraceTls, TraceEnabledOnTlsAllowsTlsTrace) {
   client.writeAll("TRACE /test HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
   auto raw = client.readAll();
   ASSERT_TRUE(raw.contains("200")) << raw;
+
+  EXPECT_TRUE(OptionsStarOverTls().contains(
+      MakeHttp1HeaderLine(http::Allow, "GET, POST, PUT, DELETE, HEAD, OPTIONS, PATCH, CONNECT, TRACE")));
 }
 
 TEST(HttpTlsStreaming, ChunkedSimpleTls) {

@@ -60,6 +60,7 @@
 #include "aeronet/safe-cast.hpp"
 #include "aeronet/simple-charconv.hpp"
 #include "aeronet/small-vector.hpp"
+#include "aeronet/supported-accept-encoding.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/tchars.hpp"
 #include "aeronet/tracing/tracer.hpp"
@@ -380,7 +381,7 @@ void Http2ProtocolHandler::onHeadersDecoded(uint32_t streamId, DecodedHeaders& d
       rejectMalformedRequest(streamId, "invalid content-length");
       return;
     } else {
-      declaredBodyTooLarge = declaredBodyLength > _pCtx->config.maxBodyBytes;
+      declaredBodyTooLarge = exceedsBodyLimits(req, declaredBodyLength);
     }
     if (endStream && (declaredBodyTooLarge || declaredBodyLength != 0)) {
       rejectMalformedRequest(streamId, "non-zero content-length on a request without content");
@@ -476,7 +477,7 @@ void Http2ProtocolHandler::onData(uint32_t streamId, std::span<const std::byte> 
 
   // The body is bounded while it is received, by the server limit: the route limit, which cannot exceed it, is
   // checked once the request is routed.
-  if (streamReq.bodyBuffer.size() + data.size() > _pCtx->config.maxBodyBytes) {
+  if (exceedsBodyLimits(streamReq.request, streamReq.bodyBuffer.size() + data.size())) {
     rejectTooLargeBody(it);
     return;
   }
@@ -493,6 +494,13 @@ void Http2ProtocolHandler::onData(uint32_t streamId, std::span<const std::byte> 
   if (endStream) {
     finalizeRequestBodyAndDispatch(it);
   }
+}
+
+bool Http2ProtocolHandler::exceedsBodyLimits(const HttpRequestView& request, std::size_t bodySize) const {
+  // The headers are only looked up for a body above the limit of the compressed size.
+  return bodySize > _pCtx->config.maxBodyBytes ||
+         (bodySize > _pCtx->config.decompression.maxCompressedBytes &&
+          HttpCodec::WillDecompress(_pCtx->config.decompression, request.headers()));
 }
 
 void Http2ProtocolHandler::rejectTooLargeBody(StreamsMap::iterator it) {
@@ -529,7 +537,12 @@ void Http2ProtocolHandler::finalizeRequestBodyAndDispatch(StreamsMap::iterator i
     const auto res = HttpCodec::MaybeDecompressRequestBody(_pCtx->decompressionState, _pCtx->config.decompression, req,
                                                            streamReq.bodyBuffer, _pCtx->sharedBuffers.buf);
     if (res.message != nullptr) {
-      sendInMemoryResponse(req, req.makeResponse(res.status, res.message));
+      HttpResponse resp = req.makeResponse(res.status, res.message);
+      if (res.status == http::StatusCodeUnsupportedMediaType) {
+        // Lists the decoded codings, as the HTTP/1 error does (RFC 9110 §12.5.3).
+        resp.headerAddLine(http::AcceptEncoding, internal::kSupportedAcceptEncoding);
+      }
+      sendInMemoryResponse(req, std::move(resp));
       releaseStreamAfterResponse(it);
       return;
     }
@@ -889,7 +902,7 @@ void Http2ProtocolHandler::handleStreamingRequest(StreamsMap::iterator it, const
 
   // Create H2 transport and writer
   const RequestPipeline requestPipeline = _pCtx->requestPipeline();
-  Http2WriterTransport transport(_connection, streamId, requestPipeline, routingResult, _pCtx->dateHeader.data(),
+  Http2WriterTransport transport(_connection, streamId, requestPipeline, routingResult, _pCtx->dateHeader,
                                  _deferredOutputBytes, _pCtx->config.maxOutboundBufferBytes,
                                  _connection.localSettings().maxStreamPendingBytes);
 
@@ -1031,14 +1044,10 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
 
   // Handle OPTIONS and TRACE via shared protocol-agnostic code
   if (req.method() == http::Method::OPTIONS || req.method() == http::Method::TRACE) {
-    const SpecialMethodConfig config{
-        .tracePolicy = _pCtx->config.traceMethodPolicy,
-        // From the connection: the :scheme pseudo-header is chosen by the client.
-        .isTls = !req.tlsVersion().empty(),
-    };
-    // Note: For HTTP/2, TRACE cannot echo raw request data (no wire format available)
-    // So we pass empty requestData, which will result in 405 Method Not Allowed
-    HttpResponse result = ProcessSpecialMethods(req, _pCtx->router, config, routingResult.corsPolicy(), {});
+    // TRACE is never echoed over HTTP/2, whatever the policy: the request has no wire format to echo. The default
+    // configuration (TRACE disabled) answers it 405, and does not list it in the Allow header of OPTIONS *.
+    static constexpr SpecialMethodConfig kConfig{};
+    HttpResponse result = ProcessSpecialMethods(req, _pCtx->router, kConfig, routingResult.corsPolicy(), {});
     if (!result.empty()) {
       finalizeAndSendResponse(it, std::move(result), routingResult.corsPolicy());
       return;
@@ -1345,7 +1354,7 @@ ErrorCode Http2ProtocolHandler::sendResponse(HttpRequestView& request, HttpRespo
   FilePayload* pFilePayload = response.filePayloadPtr();
 
   // Finalize Date header
-  CopyCRLFDateHeader(_pCtx->dateHeader.data(), response._data.data() + response.dateHeaderStartPos());
+  CopyCRLFDateHeader(_pCtx->dateHeader.current(), response._data.data() + response.dateHeaderStartPos());
 
   const ConcatenatedHeaders* pGlobalHeaders =
       response._opts.isPrepared() ? nullptr : &_pCtx->config.http2GlobalHeaders();

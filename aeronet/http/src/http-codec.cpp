@@ -485,20 +485,12 @@ bool HttpCodec::IsContentTypeAllowed(const CompressionConfig& compressionConfig,
 
 CompressResponseResult HttpCodec::TryCompressBody(CompressionState& compressionState, Encoding encoding,
                                                   HttpMessage& msg) {
-  if (msg.hasContentEncoding()) {
+  const CompressionConfig& compressionConfig = *compressionState.pCompressionConfig;
+  if (!IsCompressible(compressionConfig, msg)) {
     return CompressResponseResult::Uncompressed;
   }
 
   const std::size_t bodySz = msg.bodyInMemoryLength();
-  const CompressionConfig& compressionConfig = *compressionState.pCompressionConfig;
-
-  if (bodySz < compressionConfig.minBytes) {
-    return CompressResponseResult::Uncompressed;
-  }
-
-  if (!IsContentTypeAllowed(compressionConfig, msg)) {
-    return CompressResponseResult::Uncompressed;
-  }
 
   // Sanity check: Content-Type header must be present to consider compression.
   // Normally handled by HttpResponse automatically when user adds a body.
@@ -855,9 +847,6 @@ RequestDecompressionResult HttpCodec::MaybeDecompressRequestBody(DecompressionSt
   // Not body(), which would commit the handler to the aggregated access.
   std::string_view src = request._body;
   const std::size_t compressedSize = src.size();
-  if (compressedSize > decompressionConfig.maxCompressedBytes) {
-    return {.status = http::StatusCodePayloadTooLarge, .message = "Payload too large"};
-  }
 
   RequestDecompressionResult res = DualBufferDecodeLoop(
       decompressionState,

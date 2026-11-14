@@ -88,7 +88,11 @@ AERONET_ALWAYS_INLINE Http1Pipeline::BodyDecodeStatus Http1Pipeline::decodeFixed
   }
   // Note: in HTTP/1.1, trailers are not allowed for non-chunked bodies.
   const std::size_t declaredContentLen = request._body.size();
-  if (maxBodyBytes < declaredContentLen) {
+  // A body exceeding its limits is refused from its head, before it is received: for a body to decompress, the limit of
+  // its compressed size too.
+  if (maxBodyBytes < declaredContentLen || (_pCtx->config.decompression.maxCompressedBytes < declaredContentLen &&
+                                            HttpCodec::WillDecompress(_pCtx->config.decompression, request.headers())))
+      [[unlikely]] {
     emitSimpleError(cnxIt, http::StatusCodePayloadTooLarge, {});
     return BodyDecodeStatus::Error;
   }

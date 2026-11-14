@@ -228,6 +228,22 @@ class HttpRequest final : public HttpMessage {
     return std::move(headerAppendValue(key, value, sep));
   }
 
+  // Same as headerAppendValue(key, value, ", "), unless the comma-separated list of the header (all its lines) already
+  // has the element 'value', compared case-insensitively - it is meant for lists of tokens and field names
+  // (Connection, Cache-Control, Accept-Encoding...).
+  // Example: on 'cache-control: No-Cache, no-store', headerAppendValueIfAbsent("cache-control", "no-cache") does
+  // nothing. 'value' is a single element. Same rules as headerAppendValue() for 'Content-Type', 'Content-Length' and
+  // 'Content-Encoding'.
+  HttpRequest& headerAppendValueIfAbsent(LowerAsciiKey key, std::string_view value) & {
+    headerAppendValueIfAbsentImpl(key, value);
+    return *this;
+  }
+
+  // Rvalue overload of headerAppendValueIfAbsent.
+  HttpRequest&& headerAppendValueIfAbsent(LowerAsciiKey key, std::string_view value) && {
+    return std::move(headerAppendValueIfAbsent(key, value));
+  }
+
   // Add or replace first header 'key' with 'value'.
   // Performs a case-sensitive linear scan (slower than headerAddLine()) over normalized lower-case header names.
   // The header name and value must be valid per HTTP specifications, otherwise std::invalid_argument is thrown.
