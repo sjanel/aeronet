@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -15,6 +16,7 @@
 
 #include "aeronet/city-hash.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header-view.hpp"
 #include "aeronet/is-header-whitespace.hpp"
 #include "aeronet/raw-bytes.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
@@ -2377,6 +2379,726 @@ TEST(HpackHuffman, RoundTripsMixedLengthStrings) {
   };
   for (auto value : kValues) {
     EXPECT_EQ(HuffmanRoundTrip(value), value) << "value " << value;
+  }
+}
+
+// The decoder reads 8 input bytes at a time while at least 8 are left, then byte per byte: these tests put the symbol
+// under test at every bit position of strings long enough for both phases.
+namespace {
+
+// The bits of a Huffman string, written MSB first.
+class HuffmanBitWriter {
+ public:
+  void append(uint32_t code, uint32_t nbBits) {
+    for (uint32_t bit = nbBits; bit != 0; --bit) {
+      appendBit(((code >> (bit - 1U)) & 1U) != 0);
+    }
+  }
+
+  void appendRepeated(uint32_t code, uint32_t nbBits, std::size_t count) {
+    for (std::size_t idx = 0; idx < count; ++idx) {
+      append(code, nbBits);
+    }
+  }
+
+  // Number of bits needed to complete the last byte.
+  [[nodiscard]] uint32_t nbMissingBits() const noexcept { return static_cast<uint32_t>((8U - (_nbBits % 8U)) % 8U); }
+
+  // Complete the last byte with 1s, as the EOS prefix a valid string ends with.
+  [[nodiscard]] vector<uint8_t> finish() {
+    append(0xFFU, nbMissingBits());
+    return _bytes;
+  }
+
+ private:
+  void appendBit(bool set) {
+    if (_nbBits % 8U == 0) {
+      _bytes.push_back(0);
+    }
+    if (set) {
+      _bytes.back() = static_cast<uint8_t>(_bytes.back() | (0x80U >> (_nbBits % 8U)));
+    }
+    ++_nbBits;
+  }
+
+  vector<uint8_t> _bytes;
+  std::size_t _nbBits{0};
+};
+
+// RFC 7541 Appendix B.
+constexpr uint32_t kHuffmanCodeA = 0x3;  // 'a', 5 bits
+constexpr uint32_t kHuffmanCodeABits = 5;
+constexpr uint32_t kHuffmanCodeEos = 0x3fffffff;
+constexpr uint32_t kHuffmanCodeEosBits = 30;
+
+// A literal field without indexing named "x", its value being the given string (Huffman-encoded or not).
+vector<uint8_t> LiteralFieldX(std::span<const uint8_t> valueBytes, bool huffman) {
+  vector<uint8_t> block{0x00, 0x01, 'x'};
+  // The string length, with a 7-bit prefix (RFC 7541 §5.1) after the Huffman bit.
+  const uint8_t huffmanBit = huffman ? 0x80 : 0x00;
+  std::size_t length = valueBytes.size();
+  if (length < 127U) {
+    block.push_back(static_cast<uint8_t>(huffmanBit | length));
+  } else {
+    block.push_back(static_cast<uint8_t>(huffmanBit | 0x7FU));
+    for (length -= 127U; length >= 128U; length >>= 7U) {
+      block.push_back(static_cast<uint8_t>((length & 0x7FU) | 0x80U));
+    }
+    block.push_back(static_cast<uint8_t>(length));
+  }
+  for (const uint8_t byte : valueBytes) {
+    block.push_back(byte);
+  }
+  return block;
+}
+
+vector<uint8_t> LiteralFieldX(std::string_view value) {
+  return LiteralFieldX(std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(value.data()), value.size()), false);
+}
+
+}  // namespace
+
+TEST(HpackHuffman, DecodesLongRunsAtEveryPaddingRemainder) {
+  for (std::size_t nbSymbols = 1; nbSymbols <= 120; ++nbSymbols) {
+    HuffmanBitWriter writer;
+    writer.appendRepeated(kHuffmanCodeA, kHuffmanCodeABits, nbSymbols);
+    const auto block = LiteralFieldX(writer.finish(), true);
+    auto decoder = CreateHpackDecoder();
+    const auto result = decoder.decode(AsBytes(block));
+    ASSERT_TRUE(result.isSuccess()) << nbSymbols << " symbols";
+    EXPECT_EQ(result.decodedHeaders.headers.find("x")->second, std::string(nbSymbols, 'a')) << nbSymbols << " symbols";
+  }
+}
+
+TEST(HpackHuffman, RejectsEosAtAnyPosition) {
+  for (std::size_t nbBefore = 0; nbBefore <= 40; ++nbBefore) {
+    HuffmanBitWriter writer;
+    writer.appendRepeated(kHuffmanCodeA, kHuffmanCodeABits, nbBefore);
+    writer.append(kHuffmanCodeEos, kHuffmanCodeEosBits);
+    writer.appendRepeated(kHuffmanCodeA, kHuffmanCodeABits, 12);
+    const auto block = LiteralFieldX(writer.finish(), true);
+    auto decoder = CreateHpackDecoder();
+    const auto result = decoder.decode(AsBytes(block));
+    EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::FailedToDecodeLiteralHeaderValue)
+        << nbBefore << " symbols before EOS";
+  }
+}
+
+TEST(HpackHuffman, RejectsPaddingNotMadeOfOnesAfterAnyLength) {
+  for (std::size_t nbSymbols = 1; nbSymbols <= 120; ++nbSymbols) {
+    HuffmanBitWriter writer;
+    writer.appendRepeated(kHuffmanCodeA, kHuffmanCodeABits, nbSymbols);
+    const uint32_t nbPaddingBits = writer.nbMissingBits();
+    if (nbPaddingBits == 0) {
+      continue;
+    }
+    // 1s then a 0: no code is made of 1s then a single 0 in 7 bits or less, so it can only be read as padding.
+    writer.append((1U << nbPaddingBits) - 2U, nbPaddingBits);
+    const auto block = LiteralFieldX(writer.finish(), true);
+    auto decoder = CreateHpackDecoder();
+    const auto result = decoder.decode(AsBytes(block));
+    EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::FailedToDecodeLiteralHeaderValue)
+        << nbSymbols << " symbols";
+  }
+}
+
+TEST(HpackHuffman, RejectsAWholeByteOfPaddingAfterAnyLength) {
+  for (std::size_t nbSymbols = 0; nbSymbols <= 120; ++nbSymbols) {
+    HuffmanBitWriter writer;
+    writer.appendRepeated(kHuffmanCodeA, kHuffmanCodeABits, nbSymbols);
+    const uint32_t nbPaddingBits = 8U + writer.nbMissingBits();
+    writer.append((1U << nbPaddingBits) - 1U, nbPaddingBits);
+    const auto block = LiteralFieldX(writer.finish(), true);
+    auto decoder = CreateHpackDecoder();
+    const auto result = decoder.decode(AsBytes(block));
+    EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::FailedToDecodeLiteralHeaderValue)
+        << nbSymbols << " symbols";
+  }
+}
+
+TEST(HpackHuffman, RoundTripsLongCodesAtEveryBitPosition) {
+  // 0xFF has a 26-bit code, 0x01 a 23-bit one, '!' a 10-bit one: all decoded by the tier-2 path.
+  for (const char rare : {'\xff', '\x01', '!'}) {
+    for (std::size_t pos = 1; pos < 47; ++pos) {
+      std::string value(48, 'a');
+      value[pos] = rare;
+      EXPECT_EQ(HuffmanRoundTrip(value), value)
+          << "byte " << static_cast<int>(static_cast<uint8_t>(rare)) << " at " << pos;
+    }
+  }
+}
+
+TEST(HpackHuffman, RoundTripsRandomTextOfEveryLength) {
+  std::mt19937 rng(42);  // NOLINT(cert-msc32-c,cert-msc51-cpp)
+  static constexpr std::string_view kCommon = "abcdefghijklmnopqrstuvwxyz0123456789-_./=;,";
+  std::uniform_int_distribution<std::size_t> commonDist(0, kCommon.size() - 1U);
+  std::uniform_int_distribution<int> byteDist(1, 255);
+  std::uniform_int_distribution<int> pickDist(0, 9);
+  for (std::size_t len = 1; len <= 300; ++len) {
+    std::string value(len, 'a');
+    // Inner characters only: a value cannot start or end with whitespace.
+    for (std::size_t pos = 1; pos + 1 < len; ++pos) {
+      char ch = kCommon[commonDist(rng)];
+      if (pickDist(rng) == 0) {
+        ch = static_cast<char>(byteDist(rng));
+        if (ch == '\r' || ch == '\n') {
+          ch = 'z';
+        }
+      }
+      value[pos] = ch;
+    }
+    EXPECT_EQ(HuffmanRoundTrip(value), value) << "length " << len;
+  }
+}
+
+// The value validation tests 8 bytes at a time: a forbidden byte is found at any position, and the bytes allowed close
+// to the forbidden ones are accepted at any position.
+TEST(HpackDecoder, RejectsNulCrLfAtAnyPositionOfTheValue) {
+  for (std::size_t len = 1; len <= 40; ++len) {
+    for (std::size_t pos = 0; pos < len; ++pos) {
+      for (const uint8_t forbidden : {uint8_t{0x00}, uint8_t{'\n'}, uint8_t{'\r'}}) {
+        std::string value(len, 'v');
+        value[pos] = static_cast<char>(forbidden);
+        const auto block = LiteralFieldX(value);
+        auto decoder = CreateHpackDecoder();
+        EXPECT_EQ(decoder.decode(AsBytes(block)).error, HpackDecoder::DecodeResult::Error::MalformedFieldValue)
+            << "byte " << static_cast<int>(forbidden) << " at " << pos << " of " << len;
+      }
+    }
+  }
+}
+
+TEST(HpackDecoder, AcceptsOtherControlAndHighBytesAtAnyPositionOfTheValue) {
+  for (std::size_t len = 1; len <= 40; ++len) {
+    for (std::size_t pos = 0; pos < len; ++pos) {
+      for (const uint8_t allowed : {uint8_t{0x01}, uint8_t{'\t'}, uint8_t{0x0B}, uint8_t{0x0C}, uint8_t{0x0E},
+                                    uint8_t{0x7F}, uint8_t{0x80}, uint8_t{0xFF}}) {
+        if (allowed == '\t' && (pos == 0 || pos + 1 == len)) {
+          continue;  // leading or trailing whitespace
+        }
+        std::string value(len, 'v');
+        value[pos] = static_cast<char>(allowed);
+        const auto block = LiteralFieldX(value);
+        auto decoder = CreateHpackDecoder();
+        const auto result = decoder.decode(AsBytes(block));
+        ASSERT_TRUE(result.isSuccess()) << "byte " << static_cast<int>(allowed) << " at " << pos << " of " << len;
+        EXPECT_EQ(result.decodedHeaders.headers.find("x")->second, value);
+      }
+    }
+  }
+}
+
+// A field that is not indexed is encoded with the index of its static name, even when the dynamic table holds the same
+// field (indexed by an earlier one): the dynamic table is not scanned for it.
+TEST(HpackEncoder, FieldWithoutIndexingUsesItsStaticNameIndex) {
+  HpackEncoder encoder(4096);
+  RawBytes indexed;
+  encoder.encode(indexed, "content-length", "10");
+  ASSERT_EQ(encoder.dynamicTable().entryCount(), 1U);
+
+  const auto fullMatch = encoder.findHeader("content-length", "10");
+  EXPECT_EQ(fullMatch.match, HpackLookupResult::Match::Full);
+  EXPECT_EQ(fullMatch.index, 62U);
+  for (const auto mode : {HpackEncoder::IndexingMode::WithoutIndexing, HpackEncoder::IndexingMode::NeverIndexed}) {
+    const auto lookup = encoder.findHeader("content-length", "10", mode);
+    EXPECT_EQ(lookup.match, HpackLookupResult::Match::NameOnly);
+    EXPECT_EQ(lookup.index, 28U);
+  }
+
+  RawBytes encoded;
+  encoder.encode(encoded, "content-length", "10", HpackEncoder::IndexingMode::WithoutIndexing);
+  // Literal without indexing, name index 28 on a 4-bit prefix (15 + 13), raw value "10".
+  static constexpr uint8_t kExpected[]{0x0F, 0x0D, 0x02, '1', '0'};
+  ASSERT_EQ(encoded.size(), std::size(kExpected));
+  EXPECT_EQ(std::memcmp(encoded.data(), kExpected, std::size(kExpected)), 0);
+
+  auto decoder = CreateHpackDecoder();
+  const auto first = decoder.decode(indexed);
+  ASSERT_TRUE(first.isSuccess());
+  const auto second = decoder.decode(encoded);
+  ASSERT_TRUE(second.isSuccess());
+  EXPECT_EQ(second.decodedHeaders.headers.find("content-length")->second, "10");
+}
+
+// ============================
+// Plain fields of the dynamic table: stored without checking them again
+// ============================
+
+TEST(HpackDynamicTable, KeepsTheTagOfEachEntry) {
+  // Room for 3 entries of 2 + 2 + 32 bytes.
+  HpackDynamicTable table(108);
+  ASSERT_TRUE(table.add("n0", "v0"));
+  EXPECT_EQ(table.tag(0), 0U);
+
+  // Evictions and the reclaiming of the evicted entries keep each tag with its entry.
+  for (std::size_t idx = 1; idx < 64; ++idx) {
+    const std::string name = "n" + std::to_string(idx % 10);
+    const std::string value = "v" + std::to_string(idx % 10);
+    ASSERT_TRUE(table.add(name, value, idx));
+    const std::size_t nbEntries = std::min<std::size_t>(idx + 1U, 3U);
+    ASSERT_EQ(table.entryCount(), nbEntries);
+    for (std::size_t tableIdx = 0; tableIdx < nbEntries; ++tableIdx) {
+      const std::size_t entryIdx = idx - tableIdx;
+      EXPECT_EQ(table.tag(static_cast<uint32_t>(tableIdx)), entryIdx);
+      EXPECT_EQ(table[static_cast<uint32_t>(tableIdx)].name(), "n" + std::to_string(entryIdx % 10));
+    }
+  }
+
+  table.setMaxSize(40);
+  ASSERT_EQ(table.entryCount(), 1U);
+  EXPECT_EQ(table.tag(0), 63U);
+}
+
+// A block referencing the fields of the dynamic table decodes like the block that added them.
+TEST(HpackDecoder, IndexedFieldsDecodeLikeTheirLiterals) {
+  static constexpr http::HeaderView kFields[]{
+      {"user-agent", "Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0"},
+      {"accept", "*/*"},
+      {"x", ""},
+      {"x-custom-field-with-a-long-name", "v"},
+      {"cookie", "session=7f3a9c2e5b1d4f6a8e0c; theme=dark"},
+      {"x-binary", "\x01\x7f\xff value"},
+      {"te", "trailers"},
+  };
+  auto decoder = CreateHpackDecoder();
+  HpackEncoder encoder(4096);
+
+  std::size_t namesAndValuesSize = 0;
+  for (const http::HeaderView& field : kFields) {
+    namesAndValuesSize += field.name.size() + field.value.size();
+  }
+
+  // The first block adds the fields to the dynamic table, the next ones reference them.
+  for (int blockIdx = 0; blockIdx < 4; ++blockIdx) {
+    RawBytes block;
+    for (const http::HeaderView& field : kFields) {
+      encoder.encode(block, field.name, field.value);
+    }
+    if (blockIdx != 0) {
+      ASSERT_EQ(block.size(), std::size(kFields));  // one byte per indexed field
+    }
+
+    const auto result = decoder.decode(block);
+
+    ASSERT_TRUE(result.isSuccess()) << blockIdx;
+    EXPECT_EQ(result.headerListSize, namesAndValuesSize + (32U * std::size(kFields)));
+    EXPECT_EQ(result.decodedHeaders.namesAndValuesSize, namesAndValuesSize);
+    ASSERT_EQ(result.decodedHeaders.headers.size(), std::size(kFields));
+    for (const http::HeaderView& field : kFields) {
+      // Found by a lookup hashing its name: the field was stored with the same hash.
+      const auto it = result.decodedHeaders.headers.find(field.name);
+      ASSERT_NE(it, result.decodedHeaders.headers.end()) << field.name;
+      EXPECT_EQ(it->second, field.value);
+      // The dynamic table entry may be evicted while the decoded headers are in use: they do not point to it.
+      for (uint32_t tableIdx = 0; tableIdx < decoder.dynamicTable().entryCount(); ++tableIdx) {
+        EXPECT_NE(it->first.data(), decoder.dynamicTable()[tableIdx].name().data());
+        EXPECT_NE(it->second.data(), decoder.dynamicTable()[tableIdx].value().data());
+      }
+    }
+  }
+}
+
+TEST(HpackDecoder, RepeatedIndexedFieldsAreMerged) {
+  auto decoder = CreateHpackDecoder();
+  HpackEncoder encoder(4096);
+  RawBytes block;
+  encoder.encode(block, "accept", "text/html");
+  encoder.encode(block, "cookie", "a=1; session=0123456789abcdef");
+  encoder.encode(block, "x-empty", "");
+  ASSERT_TRUE(decoder.decode(block).isSuccess());
+
+  // Indexes 64 (accept), 63 (cookie) and 62 (x-empty), each twice, then a literal accept.
+  static constexpr uint8_t references[]{0xC0, 0xBF, 0xBE, 0xC0, 0xBF, 0xBE, 0x53, 0x03, '*', '/', '*'};
+
+  const auto result = decoder.decode(AsBytes(references));
+
+  ASSERT_TRUE(result.isSuccess());
+  ASSERT_EQ(result.decodedHeaders.headers.size(), 3U);
+  EXPECT_EQ(result.decodedHeaders.headers.at("accept"), "text/html,text/html,*/*");
+  EXPECT_EQ(result.decodedHeaders.headers.at("cookie"), "a=1; session=0123456789abcdef;a=1; session=0123456789abcdef");
+  EXPECT_EQ(result.decodedHeaders.headers.at("x-empty"), "");
+  EXPECT_EQ(result.decodedHeaders.namesAndValuesSize,
+            (2U * (std::string_view("accepttext/html").size() + std::string_view("x-empty").size() +
+                   std::string_view("cookiea=1; session=0123456789abcdef").size())) +
+                std::string_view("accept*/*").size());
+}
+
+TEST(HpackDecoder, RepeatedIndexedSingletonFieldIsRejected) {
+  auto decoder = CreateHpackDecoder();
+  HpackEncoder encoder(4096);
+  RawBytes block;
+  encoder.encode(block, "content-length", "12");
+  ASSERT_TRUE(decoder.decode(block).isSuccess());
+
+  static constexpr uint8_t once[]{0xBE};
+  const auto single = decoder.decode(AsBytes(once));
+  ASSERT_TRUE(single.isSuccess());
+  EXPECT_EQ(single.decodedHeaders.headers.at("content-length"), "12");
+
+  static constexpr uint8_t twice[]{0xBE, 0xBE};
+  EXPECT_EQ(decoder.decode(AsBytes(twice)).error, HpackDecoder::DecodeResult::Error::DuplicateHeaderForbiddenToMerge);
+
+  // The set-cookie fields of a response are joined with a line feed.
+  HpackDecoder responseDecoder(4096, std::numeric_limits<uint32_t>::max(), true, HpackDecoder::Messages::Responses);
+  HpackEncoder responseEncoder(4096);
+  RawBytes responseBlock;
+  responseEncoder.encode(responseBlock, "set-cookie", "a=1; Expires=Wed, 21 Oct 2026 07:28:00 GMT");
+  ASSERT_TRUE(responseDecoder.decode(responseBlock).isSuccess());
+  const auto cookies = responseDecoder.decode(AsBytes(twice));
+  ASSERT_TRUE(cookies.isSuccess());
+  EXPECT_EQ(cookies.decodedHeaders.headers.at("set-cookie"),
+            "a=1; Expires=Wed, 21 Oct 2026 07:28:00 GMT\na=1; Expires=Wed, 21 Oct 2026 07:28:00 GMT");
+}
+
+// A pseudo-header field cannot follow a regular field, whichever way this one is stored.
+TEST(HpackDecoder, PseudoHeaderAfterAnIndexedRegularFieldIsRejected) {
+  auto decoder = CreateHpackDecoder();
+  HpackEncoder encoder(4096);
+  RawBytes block;
+  encoder.encode(block, ":path", "/some/path");
+  encoder.encode(block, "x-field", "value");
+  ASSERT_TRUE(decoder.decode(block).isSuccess());
+
+  static constexpr uint8_t inOrder[]{0x82, 0xBF, 0xBE};  // :method: GET, :path (63), x-field (62)
+  const auto result = decoder.decode(AsBytes(inOrder));
+  ASSERT_TRUE(result.isSuccess());
+  EXPECT_EQ(result.decodedHeaders.pseudoHeader(PseudoHeader::Path), "/some/path");
+  EXPECT_EQ(result.decodedHeaders.headers.at("x-field"), "value");
+
+  for (const uint8_t pseudoHeaderIndex : {uint8_t{0x82}, uint8_t{0xBF}}) {
+    const uint8_t outOfOrder[]{0xBE, pseudoHeaderIndex};
+    EXPECT_EQ(decoder.decode(AsBytes(outOfOrder)).error,
+              HpackDecoder::DecodeResult::Error::PseudoHeaderFieldAfterRegularField);
+  }
+}
+
+// The fields of the dynamic table that are not stored as received, or that are refused, are checked each time.
+TEST(HpackDecoder, EachReferenceToAFieldThatIsNotPlainIsChecked) {
+  auto decoder = CreateHpackDecoder();
+  HpackEncoder encoder(4096);
+  RawBytes block;
+  encoder.encode(block, "x-bad-value", "line\nfeed");
+  ASSERT_EQ(decoder.decode(block).error, HpackDecoder::DecodeResult::Error::MalformedFieldValue);
+  block.clear();
+  encoder.encode(block, "content-encoding", "GZip");
+  ASSERT_TRUE(decoder.decode(block).isSuccess());
+  block.clear();
+  encoder.encode(block, "te", "trailers");
+  encoder.encode(block, "x-good", "value");
+  ASSERT_TRUE(decoder.decode(block).isSuccess());
+
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    static constexpr uint8_t badValue[]{0xC1};  // index 65
+    EXPECT_EQ(decoder.decode(AsBytes(badValue)).error, HpackDecoder::DecodeResult::Error::MalformedFieldValue);
+
+    static constexpr uint8_t contentEncoding[]{0xC0, 0xBE};  // indexes 64 and 62
+    const auto result = decoder.decode(AsBytes(contentEncoding));
+    ASSERT_TRUE(result.isSuccess());
+    EXPECT_EQ(result.decodedHeaders.headers.at("content-encoding"), "gzip");
+    EXPECT_EQ(result.decodedHeaders.headers.at("x-good"), "value");
+    EXPECT_EQ(decoder.dynamicTable()[2].value(), "GZip");
+  }
+
+  // The name of a plain field is known to be valid, not the value given to it by another field.
+  static constexpr uint8_t teGzip[]{0x0F, 0x30, 0x04, 'g', 'z', 'i', 'p'};  // te (index 63): gzip, without indexing
+  EXPECT_EQ(decoder.decode(AsBytes(teGzip)).error, HpackDecoder::DecodeResult::Error::ConnectionSpecificField);
+  static constexpr uint8_t goodWithNul[]{0x7E, 0x03, 'a', 0x00, 'b'};  // x-good (index 62): a NUL b, indexed
+  EXPECT_EQ(decoder.decode(AsBytes(goodWithNul)).error, HpackDecoder::DecodeResult::Error::MalformedFieldValue);
+  static constexpr uint8_t newEntry[]{0xBE};  // index 62: the entry just added
+  EXPECT_EQ(decoder.decode(AsBytes(newEntry)).error, HpackDecoder::DecodeResult::Error::MalformedFieldValue);
+
+  // A valid value with the name of a plain field makes another plain field.
+  static constexpr uint8_t goodOther[]{0x7F, 0x00, 0x05, 'o', 't', 'h', 'e', 'r'};  // x-good (index 63): other, indexed
+  const auto literal = decoder.decode(AsBytes(goodOther));
+  ASSERT_TRUE(literal.isSuccess());
+  EXPECT_EQ(literal.decodedHeaders.headers.at("x-good"), "other");
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    const auto reference = decoder.decode(AsBytes(newEntry));
+    ASSERT_TRUE(reference.isSuccess());
+    EXPECT_EQ(reference.decodedHeaders.headers.at("x-good"), "other");
+  }
+}
+
+TEST(HpackDecoder, EachReferenceToAConnectionSpecificFieldOfAResponseIsRecorded) {
+  HpackDecoder decoder(4096, std::numeric_limits<uint32_t>::max(), true, HpackDecoder::Messages::Responses);
+  HpackEncoder encoder(4096);
+  RawBytes block;
+  encoder.encode(block, "connection", "close");
+  encoder.encode(block, "x-field", "value");
+  ASSERT_TRUE(decoder.decode(block).decodedHeaders.hasConnectionSpecificField);
+
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    static constexpr uint8_t plainField[]{0xBE};
+    const auto plainResult = decoder.decode(AsBytes(plainField));
+    ASSERT_TRUE(plainResult.isSuccess());
+    EXPECT_FALSE(plainResult.decodedHeaders.hasConnectionSpecificField);
+
+    static constexpr uint8_t bothFields[]{0xBE, 0xBF};
+    const auto result = decoder.decode(AsBytes(bothFields));
+    ASSERT_TRUE(result.isSuccess());
+    EXPECT_TRUE(result.decodedHeaders.hasConnectionSpecificField);
+    EXPECT_EQ(result.decodedHeaders.headers.at("connection"), "close");
+  }
+}
+
+// A field beyond the header list size limit is added to the dynamic table without being checked: it is checked when
+// a later block references it.
+TEST(HpackDecoder, FieldAddedBeyondTheHeaderListLimitIsCheckedWhenReferenced) {
+  static constexpr uint32_t kMaxHeaderListSize = 100;
+  HpackDecoder decoder(4096, kMaxHeaderListSize, true);
+  HpackEncoder encoder(4096);
+  RawBytes block;
+  encoder.encode(block, "x-large", std::string(kMaxHeaderListSize, 'v'), HpackEncoder::IndexingMode::WithoutIndexing);
+  encoder.encode(block, "x-bad", "line\nfeed");
+  encoder.encode(block, "x-good", "value");
+
+  ASSERT_EQ(decoder.decode(block).error, HpackDecoder::DecodeResult::Error::HeaderListTooLarge);
+  ASSERT_EQ(decoder.dynamicTable().entryCount(), 2U);
+
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    static constexpr uint8_t bad[]{0xBF};
+    EXPECT_EQ(decoder.decode(AsBytes(bad)).error, HpackDecoder::DecodeResult::Error::MalformedFieldValue);
+
+    static constexpr uint8_t good[]{0xBE};
+    const auto result = decoder.decode(AsBytes(good));
+    ASSERT_TRUE(result.isSuccess());
+    EXPECT_EQ(result.decodedHeaders.headers.at("x-good"), "value");
+  }
+
+  // Indexed plain fields count in the header list size, and are not stored beyond its limit.
+  HpackDecoder smallDecoder(4096, kMaxHeaderListSize, true);
+  block.clear();
+  HpackEncoder smallEncoder(4096);
+  smallEncoder.encode(block, "x-plain", "0123456789");  // 7 + 10 + 32 bytes
+  ASSERT_TRUE(smallDecoder.decode(block).isSuccess());
+  static constexpr uint8_t twice[]{0xBE, 0xBE};
+  const auto withinLimit = smallDecoder.decode(AsBytes(twice));
+  ASSERT_TRUE(withinLimit.isSuccess());
+  EXPECT_EQ(withinLimit.headerListSize, 98U);
+  EXPECT_EQ(withinLimit.decodedHeaders.headers.at("x-plain"), "0123456789,0123456789");
+  static constexpr uint8_t thrice[]{0xBE, 0xBE, 0xBE};
+  const auto beyondLimit = smallDecoder.decode(AsBytes(thrice));
+  EXPECT_EQ(beyondLimit.error, HpackDecoder::DecodeResult::Error::HeaderListTooLarge);
+  EXPECT_EQ(beyondLimit.headerListSize, 147U);
+  EXPECT_EQ(beyondLimit.decodedHeaders.namesAndValuesSize, 34U);
+}
+
+// The decoder remembers which entries of its dynamic table are plain fields: this must follow their evictions.
+TEST(HpackDecoder, PlainFieldsAreRememberedThroughEvictions) {
+  // Room for 4 entries of 5 + 5 + 32 bytes.
+  HpackDecoder decoder(168, std::numeric_limits<uint32_t>::max(), true);
+  HpackEncoder encoder(168);
+  static constexpr std::size_t kNbEntries = 4;
+
+  const auto isValid = [](std::size_t idx) { return idx % 3U != 1U; };
+  const auto nameOf = [](std::size_t idx) { return "x-" + std::to_string(100 + idx); };
+  const auto valueOf = [&isValid](std::size_t idx) {
+    return (isValid(idx) ? "v-" : "v\n") + std::to_string(100 + idx);
+  };
+
+  for (std::size_t idx = 0; idx < 100; ++idx) {
+    RawBytes block;
+    encoder.encode(block, nameOf(idx), valueOf(idx));
+    ASSERT_EQ(decoder.decode(block).isSuccess(), isValid(idx)) << idx;
+    ASSERT_EQ(decoder.dynamicTable().entryCount(), std::min(idx + 1U, kNbEntries));
+
+    // Each entry of the table is referenced twice: the valid ones are decoded, the other ones refused.
+    for (std::size_t tableIdx = 0; tableIdx < decoder.dynamicTable().entryCount(); ++tableIdx) {
+      const std::size_t entryIdx = idx - tableIdx;
+      const uint8_t reference[]{static_cast<uint8_t>(0x80U | (62U + tableIdx))};
+      for (int attempt = 0; attempt < 2; ++attempt) {
+        const auto result = decoder.decode(AsBytes(reference));
+        if (isValid(entryIdx)) {
+          ASSERT_TRUE(result.isSuccess()) << idx << " " << tableIdx;
+          ASSERT_EQ(result.decodedHeaders.headers.size(), 1U);
+          const std::string name = nameOf(entryIdx);
+          const auto it = result.decodedHeaders.headers.find(std::string_view(name));
+          ASSERT_NE(it, result.decodedHeaders.headers.end()) << idx << " " << tableIdx;
+          EXPECT_EQ(it->second, valueOf(entryIdx));
+        } else {
+          EXPECT_EQ(result.error, HpackDecoder::DecodeResult::Error::MalformedFieldValue) << idx << " " << tableIdx;
+        }
+      }
+    }
+  }
+}
+
+// ============================
+// Fields found again in the dynamic table of the encoder without scanning it
+// ============================
+
+namespace {
+
+// Decode 'block' and check that it holds exactly these fields.
+void ExpectDecodesTo(HpackDecoder& decoder, const RawBytes& block, std::span<const http::HeaderView> fields) {
+  const auto result = decoder.decode(block);
+  ASSERT_TRUE(result.isSuccess());
+  ASSERT_EQ(result.decodedHeaders.headers.size(), fields.size());
+  for (const http::HeaderView& field : fields) {
+    const auto it = result.decodedHeaders.headers.find(field.name);
+    ASSERT_NE(it, result.decodedHeaders.headers.end()) << field.name;
+    EXPECT_EQ(it->second, field.value) << field.name;
+  }
+}
+
+}  // namespace
+
+// The steady state of a long-lived connection: the fields of each message are in the dynamic table, after the values
+// that changed since they were added.
+TEST(HpackEncoder, FieldsDeepInTheDynamicTableAreFoundAgain) {
+  static constexpr http::HeaderView kFields[]{
+      {"content-type", "application/json"},
+      {"cache-control", "public, max-age=3600"},
+      {"server", "aeronet"},
+      {"x-frame-options", "DENY"},
+      {"strict-transport-security", "max-age=31536000; includeSubDomains"},
+  };
+  HpackEncoder encoder(4096);
+  auto decoder = CreateHpackDecoder();
+  RawBytes block;
+  for (const http::HeaderView& field : kFields) {
+    encoder.encode(block, field.name, field.value);
+  }
+  ExpectDecodesTo(decoder, block, kFields);
+
+  for (uint32_t second = 0; second < 40; ++second) {
+    // A new date each second, added before the fields above.
+    const std::string date = "Mon, 12 Oct 2026 08:45:" + std::to_string(10U + second) + " GMT";
+    block.clear();
+    encoder.encode(block, "date", date);
+    const http::HeaderView dateField[]{{"date", date}};
+    ExpectDecodesTo(decoder, block, dateField);
+
+    for (int message = 0; message < 2; ++message) {
+      block.clear();
+      uint32_t expectedIndex = 62U + second + static_cast<uint32_t>(std::size(kFields));
+      for (const http::HeaderView& field : kFields) {
+        const auto lookup = encoder.findHeader(field.name, field.value);
+        EXPECT_EQ(lookup.match, HpackLookupResult::Match::Full);
+        EXPECT_EQ(lookup.index, expectedIndex);
+        --expectedIndex;
+        encoder.encode(block, field.name, field.value);
+      }
+      EXPECT_EQ(encoder.findHeader("date", date).index, 62U);
+      EXPECT_EQ(encoder.findHeader("server", "other").match, HpackLookupResult::Match::NameOnly);
+      EXPECT_EQ(encoder.findHeader("x-other", "aeronet").match, HpackLookupResult::Match::None);
+      ASSERT_EQ(encoder.dynamicTable().entryCount(), std::size(kFields) + second + 1U);
+      ExpectDecodesTo(decoder, block, kFields);
+    }
+  }
+}
+
+// More fields than the encoder remembers the position of, some of them sharing their slots: all are found.
+TEST(HpackEncoder, ManyRepeatedFieldsAreAllFound) {
+  static constexpr std::size_t kNbFields = 60;
+  std::string names[kNbFields];
+  std::string values[kNbFields];
+  http::HeaderView fields[kNbFields];
+  for (std::size_t idx = 0; idx < kNbFields; ++idx) {
+    names[idx] = "x-" + std::to_string(idx % 7U) + std::string(idx % 5U, 'n') + std::to_string(idx);
+    values[idx] = std::string(idx % 3U, 'v');
+    fields[idx] = {names[idx], values[idx]};
+  }
+
+  HpackEncoder encoder(8192);
+  HpackDecoder decoder(8192, std::numeric_limits<uint32_t>::max(), true);
+  for (int message = 0; message < 4; ++message) {
+    RawBytes block;
+    for (const http::HeaderView& field : fields) {
+      encoder.encode(block, field.name, field.value);
+    }
+    if (message != 0) {
+      // Each field is encoded as its index (62 to 121) on one byte, no entry being added.
+      EXPECT_EQ(block.size(), kNbFields);
+    }
+    ASSERT_EQ(encoder.dynamicTable().entryCount(), kNbFields);
+    ExpectDecodesTo(decoder, block, fields);
+  }
+}
+
+// A field is not found where it was once its entry is evicted, or after the table was emptied.
+TEST(HpackEncoder, EvictedFieldsAreNotFoundAgain) {
+  // Room for 3 entries of 3 + 1 + 32 bytes.
+  HpackEncoder encoder(108);
+  HpackDecoder decoder(108, std::numeric_limits<uint32_t>::max(), true);
+  static constexpr http::HeaderView kFields[]{{"x-a", "1"}, {"x-b", "2"}, {"x-c", "3"}, {"x-d", "4"}, {"x-e", "5"}};
+
+  // Each of the 5 fields in turn: the table holds the last 3 of them.
+  for (std::size_t step = 0; step < 100; ++step) {
+    const http::HeaderView field = kFields[step % std::size(kFields)];
+    for (std::size_t age = 0; age < std::size(kFields); ++age) {
+      const http::HeaderView older = kFields[(step + std::size(kFields) - 1U - age) % std::size(kFields)];
+      const auto lookup = encoder.findHeader(older.name, older.value);
+      if (age < std::min<std::size_t>(step, 3U)) {
+        EXPECT_EQ(lookup.match, HpackLookupResult::Match::Full) << step << " " << age;
+        EXPECT_EQ(lookup.index, 62U + age) << step << " " << age;
+      } else {
+        EXPECT_EQ(lookup.match, HpackLookupResult::Match::None) << step << " " << age;
+      }
+    }
+    RawBytes block;
+    encoder.encode(block, field.name, field.value);
+    const http::HeaderView expected[]{field};
+    ExpectDecodesTo(decoder, block, expected);
+  }
+
+  // An entry larger than the table empties it (RFC 7541 §4.4).
+  ASSERT_EQ(encoder.findHeader("x-e", "5").match, HpackLookupResult::Match::Full);
+  RawBytes block;
+  const std::string largeValue(200, 'v');
+  encoder.encode(block, "x-large", largeValue);
+  ASSERT_EQ(encoder.dynamicTable().entryCount(), 0U);
+  const http::HeaderView large[]{{"x-large", largeValue}};
+  ExpectDecodesTo(decoder, block, large);
+  for (const http::HeaderView& field : kFields) {
+    EXPECT_EQ(encoder.findHeader(field.name, field.value).match, HpackLookupResult::Match::None);
+  }
+
+  // Added again, a field is found at its new position, and no more once a smaller table size evicted it.
+  block.clear();
+  encoder.encode(block, "x-e", "5");
+  encoder.encode(block, "x-a", "1");
+  EXPECT_EQ(encoder.findHeader("x-e", "5").index, 63U);
+  EXPECT_EQ(encoder.findHeader("x-a", "1").index, 62U);
+  const http::HeaderView both[]{{"x-e", "5"}, {"x-a", "1"}};
+  ExpectDecodesTo(decoder, block, both);
+
+  // The smaller size is signaled at the beginning of the next block.
+  block.clear();
+  encoder.setMaxDynamicTableSize(40);
+  encoder.encode(block, "x-a", "1");
+  EXPECT_EQ(encoder.findHeader("x-e", "5").match, HpackLookupResult::Match::None);
+  EXPECT_EQ(encoder.findHeader("x-a", "1").index, 62U);
+  const http::HeaderView last[]{{"x-a", "1"}};
+  ExpectDecodesTo(decoder, block, last);
+}
+
+// Random messages from a few fields, through tables of several sizes: the decoder gets what was encoded, whichever
+// way each field is found.
+TEST(HpackRoundTrip, RandomRepeatedFieldsThroughSmallAndLargeTables) {
+  static constexpr std::string_view kNames[]{"x-a", "x-b", "x-cc", "x-dd", "accept", "x-custom-name", "y", "x-z"};
+  static constexpr std::string_view kValues[]{"", "1", "22", "value", "a longer value than the other ones", "v-6"};
+  std::mt19937 rng(20261114);
+
+  for (const uint32_t tableSize : {0U, 64U, 150U, 400U, 4096U}) {
+    HpackEncoder encoder(tableSize);
+    HpackDecoder decoder(tableSize, std::numeric_limits<uint32_t>::max(), true);
+    for (int message = 0; message < 500; ++message) {
+      RawBytes block;
+      // One value per name in a message: the repeated fields of a block are merged by the decoder.
+      http::HeaderView fields[std::size(kNames)];
+      std::size_t nbFields = 0;
+      for (const std::string_view name : kNames) {
+        if (rng() % 4U != 0U) {
+          fields[nbFields] = {name, kValues[rng() % std::size(kValues)]};
+          encoder.encode(block, fields[nbFields].name, fields[nbFields].value);
+          ++nbFields;
+        }
+      }
+      ASSERT_NO_FATAL_FAILURE(ExpectDecodesTo(decoder, block, std::span<const http::HeaderView>(fields, nbFields)))
+          << tableSize << " " << message;
+      ASSERT_EQ(encoder.dynamicTable().entryCount(), decoder.dynamicTable().entryCount());
+    }
   }
 }
 

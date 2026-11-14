@@ -2,8 +2,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 
 namespace aeronet::http {
 
@@ -29,11 +31,25 @@ class Header {
 
   // Header supports both move and copy semantics.
   Header(const Header&);
-  Header(Header&& rhs) noexcept;
-  Header& operator=(const Header&);
-  Header& operator=(Header&& rhs) noexcept;
 
-  ~Header();
+  Header(Header&& rhs) noexcept
+      : _pData(std::exchange(rhs._pData, nullptr)),
+        _nameLength(std::exchange(rhs._nameLength, 0)),
+        _valueLength(std::exchange(rhs._valueLength, 0)) {}
+
+  Header& operator=(const Header&);
+
+  Header& operator=(Header&& rhs) noexcept {
+    if (this != &rhs) [[likely]] {
+      std::free(_pData);
+      _pData = std::exchange(rhs._pData, nullptr);
+      _nameLength = std::exchange(rhs._nameLength, 0);
+      _valueLength = std::exchange(rhs._valueLength, 0);
+    }
+    return *this;
+  }
+
+  ~Header() { std::free(_pData); }
 
   // Returns true if the header is empty (no name/value).
   [[nodiscard]] bool empty() const noexcept { return _pData == nullptr; }

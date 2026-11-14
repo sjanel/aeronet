@@ -539,8 +539,13 @@ protected:
     template<typename Key, typename... Args>
     std::pair<iterator, bool> emplace_no_key(const Key & key, Args &&... args)
     {
+        return emplace_no_key_hashed(hash_object(key), key, std::forward<Args>(args)...);
+    }
+    // 'index' is the hash of the key, as hash_object(key) computes it.
+    template<typename Key, typename... Args>
+    std::pair<iterator, bool> emplace_no_key_hashed(size_t index, const Key & key, Args &&... args)
+    {
         const size_t nb_slots_minus_one = this->num_slots_minus_one;
-        size_t index = hash_object(key);
         BlockPointer pBlock = this->entries;
         index = hash_policy.index_for_hash(index, nb_slots_minus_one);
         bool first = true;
@@ -750,7 +755,8 @@ public:
 
     void clear()
     {
-        if (!num_slots_minus_one)
+        // An empty table has only empty control bytes (erase() resets them): nothing to scan.
+        if (num_elements == 0)
             return;
         size_t num_slots = num_slots_minus_one + 1;
         size_t num_blocks = num_slots / BlockSize;
@@ -758,12 +764,19 @@ public:
             ++num_blocks;
         for (BlockPointer it = entries, end = it + num_blocks; it != end; ++it)
         {
-            for (int i = 0; i < BlockSize; ++i)
+            if constexpr (std::is_trivially_destructible_v<value_type>)
             {
-                if (it->control_bytes[i] != Constants::magic_for_empty)
+                it->fill_control_bytes(Constants::magic_for_empty);
+            }
+            else
+            {
+                for (int i = 0; i < BlockSize; ++i)
                 {
-                    AllocatorTraits::destroy(*this, std::addressof(it->data[i]));
-                    it->control_bytes[i] = Constants::magic_for_empty;
+                    if (it->control_bytes[i] != Constants::magic_for_empty)
+                    {
+                        AllocatorTraits::destroy(*this, std::addressof(it->data[i]));
+                        it->control_bytes[i] = Constants::magic_for_empty;
+                    }
                 }
             }
         }
@@ -1316,6 +1329,17 @@ public:
                                     std::piecewise_construct,
                                     std::forward_as_tuple(key),
                                     std::forward_as_tuple(std::forward<Args>(args)...));
+    }
+
+    // Same as try_emplace(key, args...), for a caller that already knows the hash of the key: 'hash' must be the value
+    // the hasher of the map returns for 'key'.
+    template<typename... Args>
+    std::pair<typename Table::iterator, bool> try_emplace_hashed(size_t hash, const key_type & key, Args &&... args)
+    {
+        return this->emplace_no_key_hashed(hash, key,
+                                           std::piecewise_construct,
+                                           std::forward_as_tuple(key),
+                                           std::forward_as_tuple(std::forward<Args>(args)...));
     }
 
     template<typename... Args>

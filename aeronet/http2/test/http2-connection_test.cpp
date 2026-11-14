@@ -54,6 +54,10 @@ class Http2ConnectionTest {
     return connection._outputBuffer.size();
   }
 
+  [[nodiscard]] static std::size_t OutputBufferCapacity(const Http2Connection& connection) noexcept {
+    return connection._outputBuffer.capacity();
+  }
+
   [[nodiscard]] static const HpackDynamicTable& EncoderDynamicTable(const Http2Connection& connection) noexcept {
     return connection._hpackEncoder.dynamicTable();
   }
@@ -691,7 +695,8 @@ TEST(Http2Connection, OutputQueueStaysBoundedWhenNeverFullyDrained) {
 
   constexpr std::size_t kNbSteps = 2000;
   constexpr std::size_t kInlineSize = 100;  // copied in the output buffer, beside its frame header
-  constexpr std::size_t kBlockSize = 512;  // above the inline copy size: each such DATA payload is its own output block
+  // Above the inline copy size: each such DATA payload is its own output block.
+  constexpr std::size_t kBlockSize = 2048;
   RawBytes windowUpdates;
   WriteWindowUpdateFrame(windowUpdates, 0, static_cast<uint32_t>(kNbSteps * (kInlineSize + kBlockSize)));
   WriteWindowUpdateFrame(windowUpdates, 1, static_cast<uint32_t>(kNbSteps * (kInlineSize + kBlockSize)));
@@ -753,6 +758,68 @@ TEST(Http2Connection, OutputQueueStaysBoundedWhenNeverFullyDrained) {
   EXPECT_EQ(payload, expectedPayload);
 }
 
+// DATA payloads of up to 1024 bytes are copied beside their frame header in the output buffer, larger ones are queued
+// in their own block.
+TEST(Http2Connection, SmallDataPayloadsAreCopiedInTheOutputBuffer) {
+  Http2Config config;
+  Http2Connection connection(config, true);
+  AdvanceToOpenAndDrainSettingsAck(connection);
+
+  vector<std::string_view> fragments;
+  for (const std::size_t payloadSize : {1U, 1024U, 1025U}) {
+    ASSERT_EQ(connection.sendHeaders(1, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
+    (void)DrainPendingOutput(connection);
+    const std::string payload(payloadSize, 'p');
+    ASSERT_EQ(connection.sendData(1, std::as_bytes(std::span(payload)), false), ErrorCode::NoError);
+    connection.getPendingOutputFragments(fragments);
+    EXPECT_EQ(Http2ConnectionTest::NbOutputBlocks(connection), payloadSize <= 1024U ? 0U : 1U);
+    std::string output;
+    for (const std::string_view fragment : fragments) {
+      output.append(fragment);
+    }
+    ASSERT_EQ(output.size(), FrameHeader::kSize + payloadSize);
+    EXPECT_EQ(output.substr(FrameHeader::kSize), payload);
+    connection.onOutputWritten(connection.pendingOutputSize());
+    EXPECT_FALSE(connection.hasPendingOutput());
+  }
+}
+
+// The output buffer keeps the capacity of its largest batch of frames: the periodic reclaim halves it while it is
+// mostly unused, never while output is pending.
+TEST(Http2Connection, ReclaimOutputBufferMemoryHalvesItsCapacityOnceWritten) {
+  Http2Config config;
+  Http2Connection connection(config, true);
+  AdvanceToOpenAndDrainSettingsAck(connection);
+
+  static constexpr uint32_t kNbStreams = 60;
+  const std::string payload(1024, 'p');
+  for (uint32_t streamId = 1; streamId < 2U * kNbStreams; streamId += 2) {
+    ASSERT_EQ(connection.sendHeaders(streamId, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
+    ASSERT_EQ(connection.sendData(streamId, std::as_bytes(std::span(payload)), true), ErrorCode::NoError);
+  }
+  EXPECT_EQ(Http2ConnectionTest::NbOutputBlocks(connection), 0U);
+  const std::size_t peakCapacity = Http2ConnectionTest::OutputBufferCapacity(connection);
+  ASSERT_GE(peakCapacity, kNbStreams * payload.size());
+
+  // Nothing is reclaimed while output is pending.
+  connection.onOutputWritten(connection.pendingOutputSize() - 1U);
+  connection.reclaimOutputBufferMemory();
+  EXPECT_EQ(Http2ConnectionTest::OutputBufferCapacity(connection), peakCapacity);
+
+  connection.onOutputWritten(1U);
+  EXPECT_FALSE(connection.hasPendingOutput());
+  std::size_t capacity = peakCapacity;
+  for (int sweep = 0; sweep < 3; ++sweep) {
+    connection.reclaimOutputBufferMemory();
+    EXPECT_EQ(Http2ConnectionTest::OutputBufferCapacity(connection), capacity / 2U);
+    capacity /= 2U;
+  }
+
+  // The buffer still serves the next frames.
+  ASSERT_EQ(connection.sendHeaders(2U * kNbStreams + 1U, http::StatusCodeOK, HeadersView{}, true), ErrorCode::NoError);
+  EXPECT_TRUE(connection.hasPendingOutput());
+}
+
 // Owned DATA does not take over the output buffer: the frames queued after it are written in the same buffer, whose
 // allocation is reused by the next responses once the output is written.
 TEST(Http2Connection, OutputBufferIsKeptAcrossOwnedDataBlocks) {
@@ -760,7 +827,7 @@ TEST(Http2Connection, OutputBufferIsKeptAcrossOwnedDataBlocks) {
   Http2Connection connection(config, true);
   AdvanceToOpenAndDrainSettingsAck(connection);
 
-  constexpr std::size_t kPayloadSize = 1024;  // above the inline copy size: each payload is its own output block
+  constexpr std::size_t kPayloadSize = 2048;  // above the inline copy size: each payload is its own output block
   vector<std::string_view> fragments;
   const char* pOutputBuffer = nullptr;
   for (uint32_t streamId = 1; streamId < 12; streamId += 4) {
@@ -1072,7 +1139,8 @@ TEST(Http2Connection, GatherFragmentsExposeEntireOutputQueue) {
   (void)DrainPendingOutput(connection);
 
   constexpr std::size_t kBlockCount = 40;
-  constexpr std::size_t kPayloadSize = 512;
+  // Above the inline copy size (each payload is its own output block), all of them within the default stream window.
+  constexpr std::size_t kPayloadSize = 1536;
   for (std::size_t blockIndex = 0; blockIndex < kBlockCount; ++blockIndex) {
     RawBytes owner(kPayloadSize);
     owner.setSize(kPayloadSize);

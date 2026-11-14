@@ -1659,6 +1659,8 @@ bool Http2ProtocolHandler::onSweep(std::chrono::steady_clock::time_point now, bo
     }
   }
 
+  _connection.reclaimOutputBufferMemory();
+
   const auto result = _connection.checkTimeouts(now, _pConnectionState->lastActivity);
   if (result.action == Http2Connection::ProcessResult::Action::Error) [[unlikely]] {
     log::debug("HTTP/2 connection fd # {} closed: {}", _fd, ConvertProcessResultErrorMsgToSv(result.errorMsg));
