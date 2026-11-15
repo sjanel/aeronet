@@ -29,7 +29,6 @@ struct TlsPeerCertificateView {
 
 using TlsRevocationCallback = TlsRevocationStatus (*)(TlsPeerCertificateView certificate, void* userContext) noexcept;
 
-// TODO: could be moved to aeronet_tls.
 class TLSConfig {
  public:
   using StringViewRange = std::ranges::subrange<ConcatenatedStrings32::iterator>;

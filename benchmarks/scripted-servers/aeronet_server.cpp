@@ -105,6 +105,7 @@ int main(int argc, char* argv[]) {
 
   // Configure TLS if enabled
   if (benchCfg.tlsEnabled) {
+#ifdef AERONET_ENABLE_OPENSSL
     if (benchCfg.certFile.empty() || benchCfg.keyFile.empty()) {
       std::cerr << "Error: --tls requires both --cert and --key\n";
       return 1;
@@ -114,6 +115,10 @@ int main(int argc, char* argv[]) {
       config.withTlsAlpnProtocols({"h2", "http/1.1"});
     }
     std::cout << "TLS enabled with cert=" << benchCfg.certFile << " key=" << benchCfg.keyFile << "\n";
+#else
+    std::cerr << "Error: --tls requires aeronet built with OpenSSL (AERONET_ENABLE_OPENSSL=ON)\n";
+    return 1;
+#endif
   }
 
   RouterConfig routerConfig;

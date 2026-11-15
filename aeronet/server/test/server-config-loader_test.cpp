@@ -36,8 +36,11 @@
 #include "aeronet/router.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
-#include "aeronet/tls-config.hpp"
 #include "aeronet/zerocopy-mode.hpp"
+
+#ifdef AERONET_ENABLE_OPENSSL
+#include "aeronet/tls-config.hpp"
+#endif
 
 namespace aeronet {
 
@@ -162,9 +165,34 @@ TEST(ConfigLoaderTest, TraceMethodPolicyEnum) {
   EXPECT_EQ(config.server.traceMethodPolicy, HttpServerConfig::TraceMethodPolicy::EnabledPlainOnly);
 }
 
+TEST(ConfigLoaderTest, HttpsRedirectFields) {
+  auto config = detail::ParseConfigString(R"({
+    "server": {
+      "httpsRedirect": {
+        "targetPort": 8443,
+        "statusCode": 308
+      }
+    }
+  })",
+                                          ConfigFormat::json);
+  EXPECT_TRUE(config.server.httpsRedirect.enabled());
+  EXPECT_EQ(config.server.httpsRedirect.targetPort, 8443);
+  EXPECT_EQ(config.server.httpsRedirect.statusCode, http::StatusCodePermanentRedirect);
+  EXPECT_NO_THROW(config.server.validate());
+}
+
+TEST(ConfigLoaderTest, HttpsRedirectDefaults) {
+  auto config = detail::ParseConfigString("{}", ConfigFormat::json);
+  EXPECT_FALSE(config.server.httpsRedirect.enabled());
+  EXPECT_EQ(config.server.httpsRedirect.targetPort, 0);
+  EXPECT_EQ(config.server.httpsRedirect.statusCode, http::StatusCodeMovedPermanently);
+}
+
 // ============================================================================
-// TLS configuration (only in debug because keyLogFile is used)
+// TLS configuration
 // ============================================================================
+#ifdef AERONET_ENABLE_OPENSSL
+// Only in debug builds, which accept keyLogFile.
 #ifndef NDEBUG
 TEST(ConfigLoaderTest, TlsBasicFields) {
   auto config = detail::ParseConfigString(R"({
@@ -235,29 +263,6 @@ TEST(ConfigLoaderTest, TlsPemFields) {
   EXPECT_EQ(config.server.tls.certPem(), "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----");
   EXPECT_EQ(config.server.tls.keyPem(), "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----");
   EXPECT_EQ(config.server.tls.cipherList(), "TLS_AES_256_GCM_SHA384");
-}
-
-TEST(ConfigLoaderTest, HttpsRedirectFields) {
-  auto config = detail::ParseConfigString(R"({
-    "server": {
-      "httpsRedirect": {
-        "targetPort": 8443,
-        "statusCode": 308
-      }
-    }
-  })",
-                                          ConfigFormat::json);
-  EXPECT_TRUE(config.server.httpsRedirect.enabled());
-  EXPECT_EQ(config.server.httpsRedirect.targetPort, 8443);
-  EXPECT_EQ(config.server.httpsRedirect.statusCode, http::StatusCodePermanentRedirect);
-  EXPECT_NO_THROW(config.server.validate());
-}
-
-TEST(ConfigLoaderTest, HttpsRedirectDefaults) {
-  auto config = detail::ParseConfigString("{}", ConfigFormat::json);
-  EXPECT_FALSE(config.server.httpsRedirect.enabled());
-  EXPECT_EQ(config.server.httpsRedirect.targetPort, 0);
-  EXPECT_EQ(config.server.httpsRedirect.statusCode, http::StatusCodeMovedPermanently);
 }
 
 TEST(ConfigLoaderTest, TlsSessionTickets) {
@@ -341,6 +346,62 @@ TEST(ConfigLoaderTest, TlsSniCertificates) {
   EXPECT_EQ(sniCerts[1].certPem(), "pem-cert");
   EXPECT_EQ(sniCerts[1].keyPem(), "pem-key");
 }
+
+// chrono::seconds as a string
+TEST(ConfigLoaderTest, TlsSessionTicketLifetimeAsString) {
+  auto config =
+      detail::ParseConfigString(R"({"server":{"tls":{"sessionTickets":{"lifetime":"2h"}}}})", ConfigFormat::json);
+  EXPECT_EQ(config.server.tls.sessionTickets.lifetime, std::chrono::seconds{7200});
+}
+
+// MajorMinorVersion round-trip (exercises to<Format> non-empty)
+TEST(ConfigLoaderTest, TlsVersionRoundTrip) {
+  auto config = detail::ParseConfigString(R"({
+    "server": {
+      "tls": {
+        "minVersion": "1.2",
+        "maxVersion": "1.3"
+      }
+    }
+  })",
+                                          ConfigFormat::json);
+
+  ASSERT_TRUE(config.server.tls.minVersion.isValid());
+  ASSERT_TRUE(config.server.tls.maxVersion.isValid());
+
+  // Serialize and re-parse to exercise to<Format, MajorMinorVersion> with non-empty value
+  auto json = detail::SerializeConfig(config, ConfigFormat::json);
+  EXPECT_TRUE(json.contains("1.2"));
+  EXPECT_TRUE(json.contains("1.3"));
+
+  auto reloaded = detail::ParseConfigString(json, ConfigFormat::json);
+  EXPECT_TRUE(reloaded.server.tls.minVersion.isValid());
+  EXPECT_EQ(reloaded.server.tls.minVersion.major(), 1);
+  EXPECT_EQ(reloaded.server.tls.minVersion.minor(), 2);
+  EXPECT_TRUE(reloaded.server.tls.maxVersion.isValid());
+  EXPECT_EQ(reloaded.server.tls.maxVersion.major(), 1);
+  EXPECT_EQ(reloaded.server.tls.maxVersion.minor(), 3);
+}
+
+// The code-only members of TLSConfig are not configuration keys.
+TEST(ConfigLoaderTest, TlsCodeOnlyMembersAreNotSerialized) {
+  TopLevelConfig config;
+  config.server.tls.withTlsRevocationCallback(
+      [](TlsPeerCertificateView, void*) noexcept { return TlsRevocationStatus::NoOpinion; });
+  const auto json = detail::SerializeConfig(config, ConfigFormat::json);
+  EXPECT_FALSE(json.contains("revocationCallback")) << json;
+  EXPECT_FALSE(json.contains("revocationUserContext")) << json;
+  EXPECT_TRUE(json.contains(R"("alpnProtocols":[])")) << json;
+}
+#else
+// Without OpenSSL, a TLS section is an unknown key: the configuration is rejected rather than served in clear text.
+TEST(ConfigLoaderTest, TlsSectionIsRejectedWithoutOpenSsl) {
+  EXPECT_THROW(detail::ParseConfigString(R"({"server":{"tls":{"enabled":true}}})", ConfigFormat::json),
+               std::runtime_error);
+  EXPECT_THROW(detail::ParseConfigString("server:\n  tls:\n    enabled: false\n", ConfigFormat::yaml),
+               std::runtime_error);
+}
+#endif  // AERONET_ENABLE_OPENSSL
 
 // ============================================================================
 // HTTP/2 configuration
@@ -719,9 +780,6 @@ TEST(ConfigLoaderTest, JsonRoundTrip) {
   original.server.port = 9090;
   original.server.nbThreads = 8;
   original.server.keepAliveTimeout = std::chrono::milliseconds{10000};
-  original.server.tls.enabled = true;
-  original.server.tls.withCertFile("/test/cert.pem");
-  original.server.tls.withKeyFile("/test/key.pem");
   original.server.builtinProbes.enabled = true;
   original.server.builtinProbes.withLivenessPath("/health");
   original.router.trailingSlashPolicy = RouterConfig::TrailingSlashPolicy::Strict;
@@ -733,9 +791,6 @@ TEST(ConfigLoaderTest, JsonRoundTrip) {
   EXPECT_EQ(loaded.server.port, 9090U);
   EXPECT_EQ(loaded.server.nbThreads, 8U);
   EXPECT_EQ(loaded.server.keepAliveTimeout, std::chrono::milliseconds{10000});
-  EXPECT_TRUE(loaded.server.tls.enabled);
-  EXPECT_EQ(loaded.server.tls.certFile(), "/test/cert.pem");
-  EXPECT_EQ(loaded.server.tls.keyFile(), "/test/key.pem");
   EXPECT_TRUE(loaded.server.builtinProbes.enabled);
   EXPECT_EQ(loaded.server.builtinProbes.livenessPath(), "/health");
   EXPECT_EQ(loaded.router.trailingSlashPolicy, RouterConfig::TrailingSlashPolicy::Strict);
@@ -750,37 +805,35 @@ TEST(ConfigLoaderTest, YamlBasic) {
       "  port: 3000\n"
       "  nbThreads: 2\n"
       "  keepAliveTimeout: 5s\n"
-      "  tls:\n"
+      "  builtinProbes:\n"
       "    enabled: true\n"
-      "    certFile: /etc/tls/cert.pem\n"
-      "    keyFile: /etc/tls/key.pem\n"
+      "    livenessPath: /healthz\n"
       "router:\n"
       "  trailingSlashPolicy: normalize\n",
       ConfigFormat::yaml);
   EXPECT_EQ(config.server.port, 3000U);
   EXPECT_EQ(config.server.nbThreads, 2U);
   EXPECT_EQ(config.server.keepAliveTimeout, std::chrono::milliseconds{5000});
-  EXPECT_TRUE(config.server.tls.enabled);
-  EXPECT_EQ(config.server.tls.certFile(), "/etc/tls/cert.pem");
-  EXPECT_EQ(config.server.tls.keyFile(), "/etc/tls/key.pem");
+  EXPECT_TRUE(config.server.builtinProbes.enabled);
+  EXPECT_EQ(config.server.builtinProbes.livenessPath(), "/healthz");
   EXPECT_EQ(config.router.trailingSlashPolicy, RouterConfig::TrailingSlashPolicy::Normalize);
 }
 
 TEST(ConfigLoaderTest, YamlRoundTrip) {
   TopLevelConfig original;
   original.server.port = 4433;
-  original.server.tls.enabled = true;
-  original.server.tls.withCertFile("/tls/cert");
-  original.server.tls.withKeyFile("/tls/key");
+  original.server.nbThreads = 3;
+  original.server.builtinProbes.enabled = true;
+  original.server.builtinProbes.withLivenessPath("/health");
 
   auto yaml = detail::SerializeConfig(original, ConfigFormat::yaml);
   EXPECT_FALSE(yaml.empty());
 
   auto loaded = detail::ParseConfigString(yaml, ConfigFormat::yaml);
   EXPECT_EQ(loaded.server.port, 4433U);
-  EXPECT_TRUE(loaded.server.tls.enabled);
-  EXPECT_EQ(loaded.server.tls.certFile(), "/tls/cert");
-  EXPECT_EQ(loaded.server.tls.keyFile(), "/tls/key");
+  EXPECT_EQ(loaded.server.nbThreads, 3U);
+  EXPECT_TRUE(loaded.server.builtinProbes.enabled);
+  EXPECT_EQ(loaded.server.builtinProbes.livenessPath(), "/health");
 }
 
 // ============================================================================
@@ -1058,11 +1111,13 @@ TEST(ConfigLoaderTest, KubernetesStyleYaml) {
       "server:\n"
       "  port: 8080\n"
       "  nbThreads: 0\n"
+#ifdef AERONET_ENABLE_OPENSSL
       "  tls:\n"
       "    enabled: true\n"
       "    certFile: /etc/tls/tls.crt\n"
       "    keyFile: /etc/tls/tls.key\n"
       "    cipherPolicy: modern\n"
+#endif
       "  builtinProbes:\n"
       "    enabled: true\n"
       "    livenessPath: /healthz\n"
@@ -1082,9 +1137,11 @@ TEST(ConfigLoaderTest, KubernetesStyleYaml) {
       "    minBytes: 1024\n",
       ConfigFormat::yaml);
   EXPECT_EQ(config.server.port, 8080U);
+#ifdef AERONET_ENABLE_OPENSSL
   EXPECT_TRUE(config.server.tls.enabled);
   EXPECT_EQ(config.server.tls.certFile(), "/etc/tls/tls.crt");
   EXPECT_EQ(config.server.tls.cipherPolicy, TLSConfig::CipherPolicy::Modern);
+#endif
   EXPECT_TRUE(config.server.builtinProbes.enabled);
   EXPECT_EQ(config.server.builtinProbes.livenessPath(), "/healthz");
 #if defined(AERONET_ENABLE_BROTLI) && defined(AERONET_ENABLE_ZSTD) && defined(AERONET_ENABLE_ZLIB)
@@ -1409,15 +1466,6 @@ TEST(ConfigLoaderTest, DurationUnknownUnit) {
 }
 
 // ============================================================================
-// Coverage: chrono::seconds as string from JSON
-// ============================================================================
-TEST(ConfigLoaderTest, TlsSessionTicketLifetimeAsString) {
-  auto config =
-      detail::ParseConfigString(R"({"server":{"tls":{"sessionTickets":{"lifetime":"2h"}}}})", ConfigFormat::json);
-  EXPECT_EQ(config.server.tls.sessionTickets.lifetime, std::chrono::seconds{7200});
-}
-
-// ============================================================================
 // Coverage: TelemetryConfig round-trip (exercises getter lambdas)
 // ============================================================================
 TEST(ConfigLoaderTest, TelemetryConfigRoundTrip) {
@@ -1472,37 +1520,6 @@ TEST(ConfigLoaderTest, DurationWithTabWhitespace) {
 TEST(ConfigLoaderTest, DurationSpaceBetweenNumberAndUnit) {
   auto config = detail::ParseConfigString(R"({"server":{"keepAliveTimeout":"1 h"}})", ConfigFormat::json);
   EXPECT_EQ(config.server.keepAliveTimeout, std::chrono::milliseconds{3600000});
-}
-
-// ============================================================================
-// Coverage: TLS MajorMinorVersion round-trip (exercises to<Format> non-empty)
-// ============================================================================
-TEST(ConfigLoaderTest, TlsVersionRoundTrip) {
-  auto config = detail::ParseConfigString(R"({
-    "server": {
-      "tls": {
-        "minVersion": "1.2",
-        "maxVersion": "1.3"
-      }
-    }
-  })",
-                                          ConfigFormat::json);
-
-  ASSERT_TRUE(config.server.tls.minVersion.isValid());
-  ASSERT_TRUE(config.server.tls.maxVersion.isValid());
-
-  // Serialize and re-parse to exercise to<Format, MajorMinorVersion> with non-empty value
-  auto json = detail::SerializeConfig(config, ConfigFormat::json);
-  EXPECT_TRUE(json.contains("1.2"));
-  EXPECT_TRUE(json.contains("1.3"));
-
-  auto reloaded = detail::ParseConfigString(json, ConfigFormat::json);
-  EXPECT_TRUE(reloaded.server.tls.minVersion.isValid());
-  EXPECT_EQ(reloaded.server.tls.minVersion.major(), 1);
-  EXPECT_EQ(reloaded.server.tls.minVersion.minor(), 2);
-  EXPECT_TRUE(reloaded.server.tls.maxVersion.isValid());
-  EXPECT_EQ(reloaded.server.tls.maxVersion.major(), 1);
-  EXPECT_EQ(reloaded.server.tls.maxVersion.minor(), 3);
 }
 
 // ============================================================================
@@ -1610,43 +1627,6 @@ TEST(ConfigLoaderTest, DurationHumanReadableYamlRoundTrip) {
   EXPECT_EQ(reloaded.server.keepAliveTimeout, config.server.keepAliveTimeout);
 }
 
-TEST(ConfigLoaderTest, TlsVersionYamlAcceptsShortFormDirect) {
-  TLSConfig::Version version;
-
-  auto error = glz::read<glz::opts{.format = glz::YAML}>(version, R"("1.3")");
-  ASSERT_FALSE(bool(error));
-
-  EXPECT_TRUE(version.isValid());
-  EXPECT_EQ(version.major(), 1);
-  EXPECT_EQ(version.minor(), 3);
-}
-
-TEST(ConfigLoaderTest, TlsVersionYamlAcceptsFullFormDirect) {
-  TLSConfig::Version version;
-
-  auto error = glz::read<glz::opts{.format = glz::YAML}>(version, R"("TLS1.2")");
-  ASSERT_FALSE(bool(error));
-
-  EXPECT_TRUE(version.isValid());
-  EXPECT_EQ(version.major(), 1);
-  EXPECT_EQ(version.minor(), 2);
-}
-
-TEST(ConfigLoaderTest, TlsVersionYamlRejectsInvalidFullFormDirect) {
-  TLSConfig::Version version;
-
-  auto error = glz::read<glz::opts{.format = glz::YAML}>(version, R"("TLS1.10")");
-
-  EXPECT_TRUE(bool(error));
-}
-
-TEST(ConfigLoaderTest, TlsVersionYamlSerializesValidVersionDirect) {
-  auto yaml = glz::write<glz::opts{.format = glz::YAML}>(TLSConfig::Version{1, 3});
-  ASSERT_TRUE(yaml);
-
-  EXPECT_TRUE(yaml.value().contains("1.3"));
-}
-
 // ============================================================================
 // Field coverage
 // ============================================================================
@@ -1676,6 +1656,7 @@ TopLevelConfig MakeNonDefaultTopLevelConfig() {
   server.headerReadTimeout = 2s;
   server.bodyReadTimeout = 3s;
 
+#ifdef AERONET_ENABLE_OPENSSL
   auto& tls = server.tls;
   tls.withCertFile("/tls/cert.pem")
       .withKeyFile("/tls/key.pem")
@@ -1697,6 +1678,7 @@ TopLevelConfig MakeNonDefaultTopLevelConfig() {
   tls.maxVersion = TLSConfig::TLS_1_3;
   tls.handshakeTimeout = 3s;
   tls.sessionTickets.lifetime = 2h;
+#endif
 
   auto& telemetry = server.telemetry;
   telemetry.withEndpoint("http://collector:4318")
@@ -1756,7 +1738,9 @@ TEST(ConfigLoaderTest, NonDefaultConfigRoundTrips) {
     detail::ReadConfig(loaded, detail::SerializeConfig(original, format), format);
     EXPECT_EQ(detail::SerializeConfig(loaded, ConfigFormat::json), json);
     // Compared field by field, private members included.
+#ifdef AERONET_ENABLE_OPENSSL
     EXPECT_EQ(loaded.server.tls, original.server.tls);
+#endif
     EXPECT_EQ(loaded.server.telemetry, original.server.telemetry);
     EXPECT_EQ(loaded.server.connectAllowlist, original.server.connectAllowlist);
     EXPECT_EQ(loaded.server.globalHeaders, original.server.globalHeaders);
@@ -1765,17 +1749,11 @@ TEST(ConfigLoaderTest, NonDefaultConfigRoundTrips) {
   }
 }
 
-// The code-only and internal members are not configuration keys.
+// The internal members are not configuration keys.
 TEST(ConfigLoaderTest, InternalMembersAreNotSerialized) {
-  TopLevelConfig config;
-  config.server.tls.withTlsRevocationCallback(
-      [](TlsPeerCertificateView, void*) noexcept { return TlsRevocationStatus::NoOpinion; });
-  const auto json = detail::SerializeConfig(config, ConfigFormat::json);
+  const auto json = detail::SerializeConfig(TopLevelConfig{}, ConfigFormat::json);
   EXPECT_FALSE(json.contains(R"("_)")) << json;
-  EXPECT_FALSE(json.contains("revocationCallback")) << json;
-  EXPECT_FALSE(json.contains("revocationUserContext")) << json;
   EXPECT_TRUE(json.contains(R"("connectAllowlist":[])")) << json;
-  EXPECT_TRUE(json.contains(R"("alpnProtocols":[])")) << json;
 }
 
 }  // namespace aeronet

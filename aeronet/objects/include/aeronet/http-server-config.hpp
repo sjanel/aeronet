@@ -2,14 +2,10 @@
 
 #include <cassert>
 #include <chrono>
-#include <concepts>
 #include <cstddef>
 #include <cstdint>
-#include <initializer_list>
-#include <ranges>
 #include <span>
 #include <string_view>
-#include <utility>
 
 #include "aeronet/access-log-config.hpp"
 #include "aeronet/builtin-probes-config.hpp"
@@ -22,10 +18,18 @@
 #include "aeronet/zerocopy-mode.hpp"
 #include "compression-config.hpp"
 #include "decompression-config.hpp"
-#include "tls-config.hpp"
 
 #ifdef AERONET_ENABLE_HTTP2
 #include "aeronet/http2-config.hpp"
+#endif
+
+#ifdef AERONET_ENABLE_OPENSSL
+#include <concepts>
+#include <initializer_list>
+#include <ranges>
+#include <utility>
+
+#include "aeronet/tls-config.hpp"
 #endif
 
 namespace aeronet {
@@ -274,10 +278,12 @@ struct HttpServerConfig {
   // disables the lingering close. Default: 5000 ms.
   std::chrono::milliseconds lingeringCloseTimeout{std::chrono::milliseconds{5000}};
 
+#ifdef AERONET_ENABLE_OPENSSL
   // =================
   // TLS configuration
   // =================
   TLSConfig tls;
+#endif
 
 #ifdef AERONET_ENABLE_HTTP2
   // ===========================================
@@ -502,6 +508,7 @@ struct HttpServerConfig {
     return *this;
   }
 
+#ifdef AERONET_ENABLE_OPENSSL
   HttpServerConfig& withTlsCertKey(std::string_view certFile, std::string_view keyFile);
 
   HttpServerConfig& withTlsCipherList(std::string_view cipherList);
@@ -567,6 +574,7 @@ struct HttpServerConfig {
 
   // Disable TLS entirely
   HttpServerConfig& withoutTls();
+#endif
 
   // Enable automatic HTTP -> HTTPS redirect on this (plaintext) listener.
   //   targetHttpsPort: HTTPS port advertised in the redirect URL (443 is omitted from the URL). 0 disables it.
@@ -622,8 +630,10 @@ struct HttpServerConfig {
   ConcatenatedHeaders _http2GlobalHeaders;
 #endif
 
+#ifdef AERONET_ENABLE_OPENSSL
  private:
   TLSConfig& ensureTls();
+#endif
 };
 
 }  // namespace aeronet

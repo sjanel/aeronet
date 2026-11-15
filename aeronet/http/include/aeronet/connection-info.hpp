@@ -4,7 +4,10 @@
 #include <string_view>
 
 #include "aeronet/socket-ops.hpp"
+
+#ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-info.hpp"
+#endif
 
 namespace aeronet {
 
@@ -14,7 +17,9 @@ struct ConnectionInfo {
   // Best-effort client address string captured from the peer socket address (empty if it is not an IP address).
   [[nodiscard]] std::string_view clientAddress() const noexcept { return {clientAddressBuffer, clientAddressLength}; }
 
+#ifdef AERONET_ENABLE_OPENSSL
   TLSInfo tlsInfo;
+#endif
   uint32_t requestsServed{0};
   char clientAddressBuffer[kFormattedAddressCapacity];
   uint8_t clientAddressLength{0};

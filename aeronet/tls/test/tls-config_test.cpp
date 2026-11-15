@@ -717,6 +717,45 @@ TEST(HttpServerConfigTest, AlpnH2RequiresHttp2) {
   EXPECT_NO_THROW(cfg.validate());
 }
 
+TEST(HttpServerConfigTest, WithTlsKtlsModeEnablesTls) {
+  HttpServerConfig config;
+  config.withTlsKtlsMode(TLSConfig::KtlsMode::Enabled);
+  EXPECT_TRUE(config.tls.enabled);
+  EXPECT_EQ(config.tls.ktlsMode, TLSConfig::KtlsMode::Enabled);
+}
+
+TEST(HttpServerConfigTest, WithTlsCipherListEnablesTls) {
+  HttpServerConfig config;
+  config.withTlsCipherList("ECDHE-RSA-AES128-GCM-SHA256");
+  EXPECT_TRUE(config.tls.enabled);
+  EXPECT_EQ(config.tls.cipherList(), "ECDHE-RSA-AES128-GCM-SHA256");
+}
+
+TEST(HttpServerConfigTest, WithoutTlsShouldDisableTls) {
+  HttpServerConfig config;
+  config.withTlsAlpnProtocols({"http/1.1"});
+  EXPECT_TRUE(config.tls.enabled);
+  config.withoutTls();
+  EXPECT_FALSE(config.tls.enabled);
+}
+
+TEST(HttpServerConfigTest, HttpsRedirectRejectsCombinationWithTls) {
+  HttpServerConfig config;
+  config.withHttpsRedirect().withTlsCertKeyMemory(kDummyCertPem, kDummyKeyPem);
+  try {
+    config.validate();
+    FAIL() << "validate() should throw for httpsRedirect on a TLS listener";
+  } catch (const std::invalid_argument& ex) {
+    EXPECT_TRUE(std::string_view(ex.what()).contains("httpsRedirect")) << ex.what();
+  }
+
+  // Each of them alone is valid.
+  config.withoutTls();
+  EXPECT_NO_THROW(config.validate());
+  config.withTlsCertKeyMemory(kDummyCertPem, kDummyKeyPem).withHttpsRedirect(0);
+  EXPECT_NO_THROW(config.validate());
+}
+
 TEST(TlsConfigTest, WithTlsHandshakeConcurrencyLimitSetsValue) {
   TLSConfig cfg;
   cfg.enabled = true;

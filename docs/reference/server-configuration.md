@@ -73,7 +73,7 @@ HTTP CONNECT tunnelling is fail-closed: its allowlist is empty by default. Set e
 
 ## TLS configuration
 
-TLS requires `AERONET_ENABLE_OPENSSL=ON`. The convenience server methods enable TLS as needed; advanced fields are on `config.tls`.
+TLS requires `AERONET_ENABLE_OPENSSL=ON`: without it, `HttpServerConfig` has neither the `tls` field nor the `withTls*()` methods, and a configuration file with a `tls` section is rejected. The convenience server methods enable TLS as needed; advanced fields are on `config.tls`.
 
 | `TLSConfig` setting | Default | Use |
 | --- | --- | --- |

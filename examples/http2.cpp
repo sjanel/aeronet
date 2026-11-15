@@ -108,6 +108,7 @@ int main(int argc, char** argv) {
 
     // Configure TLS if requested
     if (useTls) {
+#ifdef AERONET_ENABLE_OPENSSL
       // Use provided cert/key paths, or defaults
       if (certPath.empty()) {
         certPath = "server.crt";
@@ -116,6 +117,10 @@ int main(int argc, char** argv) {
         keyPath = "server.key";
       }
       config.withTlsCertKey(certPath, keyPath).withTlsAlpnProtocols({"h2", "http/1.1"});  // Prefer HTTP/2 via ALPN
+#else
+      std::cerr << "TLS requested, but aeronet was built without OpenSSL (AERONET_ENABLE_OPENSSL=OFF)\n";
+      return EXIT_FAILURE;
+#endif
     }
 
     SingleHttpServer server(std::move(config), std::move(router));

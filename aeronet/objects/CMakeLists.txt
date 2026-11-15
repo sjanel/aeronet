@@ -31,6 +31,11 @@ target_link_libraries(aeronet_objects
     PUBLIC aeronet_tech aeronet_sys
 )
 
+# The TLS configuration of HttpServerConfig (TLSConfig) belongs to aeronet_tls.
+if(AERONET_ENABLE_OPENSSL)
+    target_link_libraries(aeronet_objects PUBLIC aeronet_tls)
+endif()
+
 if(AERONET_ENABLE_ZLIB)
     if (AERONET_ENABLE_ZLIBNG)
         target_link_libraries(aeronet_objects
@@ -335,13 +340,6 @@ AeronetAddUnitTest(
     LIBRARIES
     aeronet_objects
     aeronet_basic_test_support
-)
-
-AeronetAddUnitTest(
-    tls-config_test
-    test/tls-config_test.cpp
-    LIBRARIES
-    aeronet_objects
 )
 
 AeronetAddUnitTest(

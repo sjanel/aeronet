@@ -847,6 +847,7 @@ void HttpRequestView::end(http::StatusCode respStatusCode) noexcept {
   }
 }
 
+#ifdef AERONET_ENABLE_OPENSSL
 std::string_view HttpRequestView::alpnProtocol() const noexcept {
   assert(_pConnectionInfo != nullptr);
   return _pConnectionInfo->tlsInfo.selectedAlpn();
@@ -866,6 +867,16 @@ std::string_view HttpRequestView::tlsPeerSubject() const noexcept {
   assert(_pConnectionInfo != nullptr);
   return _pConnectionInfo->tlsInfo.peerSubject();
 }
+#else
+// Without OpenSSL, no connection is TLS.
+std::string_view HttpRequestView::alpnProtocol() const noexcept { return {}; }
+
+std::string_view HttpRequestView::tlsCipher() const noexcept { return {}; }
+
+std::string_view HttpRequestView::tlsVersion() const noexcept { return {}; }
+
+std::string_view HttpRequestView::tlsPeerSubject() const noexcept { return {}; }
+#endif
 
 std::string_view HttpRequestView::clientAddress() const noexcept {
   assert(_pConnectionInfo != nullptr);

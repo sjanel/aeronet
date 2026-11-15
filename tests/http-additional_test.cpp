@@ -2013,6 +2013,7 @@ TEST(SingleHttpServer, RouterUpdateUnknownExceptionNoCompletion) {
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
 }
 
+#ifdef AERONET_ENABLE_OPENSSL
 // Test TLS config modification attempt at runtime (should be ignored)
 TEST(SingleHttpServer, TLSConfigModificationIgnored) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
@@ -2028,6 +2029,7 @@ TEST(SingleHttpServer, TLSConfigModificationIgnored) {
   std::string resp = test::recvUntilClosed(fd);
   ASSERT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
 }
+#endif
 
 // Test telemetry config modification attempt at runtime (should be ignored)
 TEST(SingleHttpServer, TelemetryConfigModificationIgnored) {

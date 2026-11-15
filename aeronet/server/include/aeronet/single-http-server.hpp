@@ -535,10 +535,12 @@ class SingleHttpServer {
   [[nodiscard]] bool isServerInternalFd(NativeHandle fd) const noexcept;
 
 #ifdef AERONET_ENABLE_HTTP2
+#ifdef AERONET_ENABLE_OPENSSL
   // Sets up HTTP/2 protocol handler for a connection after ALPN "h2" negotiation.
   // Initializes the protocol handler, sends the server preface (SETTINGS frame),
   // installs CONNECT tunnel bridge, and flushes output.
   void setupHttp2Connection(NativeHandle clientFd, TcpNoDelayMode tcpNoDelayMode, ConnectionState& state);
+#endif
 
   // Installs the HTTP/2 protocol handler of a connection (ALPN "h2" or h2c prior knowledge), with its CONNECT tunnel
   // bridge and its callbacks.

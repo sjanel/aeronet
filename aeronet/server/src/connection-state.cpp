@@ -314,8 +314,8 @@ void ConnectionState::reset() {
   zerocopyStopOnCopy = false;
 #endif
   outQueueFrontZerocopySent = false;
-  tlsInfo = {};
 #ifdef AERONET_ENABLE_OPENSSL
+  tlsInfo = {};
   tlsHandshakeObserver = {};
   tlsHandshakeEventEmitted = false;
   tlsContextKeepAlive.reset();
