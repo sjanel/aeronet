@@ -135,6 +135,8 @@ ConnectionState::FileResult ConnectionState::transportFile(NativeHandle clientFd
   static constexpr std::size_t kTlsReadChunk = 128UL << 10U;  // 128 KiB
 
   const std::size_t chunkLimit = tlsFlow ? kTlsReadChunk : kSendfileChunk;
+  // Only called with bytes left to send (see ConnectionIo::flushFilePayload()).
+  assert(fileSend.filePayload.length != 0);
   const std::size_t maxBytes = std::min(fileSend.filePayload.length, chunkLimit);
 
   if (tlsFlow) {
@@ -181,25 +183,26 @@ ConnectionState::FileResult ConnectionState::transportFile(NativeHandle clientFd
     clearBuffers();
     return res;
   }
+  if (result == 0) [[unlikely]] {
+    // The end of the file before the length announced by the response: the file shrank since its size was read. No
+    // retry would progress (it would spin over TLS, and wait for a writable event that never comes with sendfile()):
+    // the connection is closed after the bytes sent, which the client reads as an incomplete body (RFC 9112 §8).
+    log::warn("File shorter than its response: {} bytes still due at offset {}, closing connection fd # {}",
+              fileSend.filePayload.length, fileSend.filePayload.offset, clientFd);
+    res.code = FileResult::Code::Error;
+    clearBuffers();
+    return res;
+  }
   if (tlsFlow) {
     tunnelOrFileBuffer.setSize(res.bytesDone);
 
-    // Update file send offsets according to bytes read.
+    // Update file send offsets according to bytes read. The send ends once these bytes are written (see
+    // ConnectionIo::flushUserSpaceTlsBuffer()).
     fileSend.filePayload.offset += res.bytesDone;
     fileSend.filePayload.length -= res.bytesDone;
-
-    if (tunnelOrFileBuffer.empty() && fileSend.filePayload.length == 0) {
-      fileSendActive = false;
-    }
   } else {
-    // Successful transfer: update state based on the modified offset
-    if (result > 0) {
-      fileSend.filePayload.length -= static_cast<std::size_t>(result);
-    } else {  // 0
-      // sendfile() returning 0 with a non-blocking socket typically means the socket would block.
-      // Treat it as WouldBlock to enable writable interest and wait for the socket to be ready.
-      res.code = FileResult::Code::WouldBlock;
-    }
+    // Successful transfer (Sendfile() updated the offset). A full socket is reported as -1 (would block), not 0.
+    fileSend.filePayload.length -= static_cast<std::size_t>(result);
     if (fileSend.filePayload.length == 0) {
       fileSendActive = false;
       tunnelOrFileBuffer.clear();

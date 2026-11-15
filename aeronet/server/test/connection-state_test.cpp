@@ -313,29 +313,9 @@ TEST(ConnectionStateSendfileTest, TlsPreadEintrIsRetried) {
   EXPECT_TRUE(state.fileSendActive);
 }
 
-TEST(ConnectionStateSendfileTest, TlsPreadEintrWithNoRemainingEndsTheFileSend) {
-  int sv[2];
-  ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd raii[]{BaseFd(sv[0]), BaseFd(sv[1])};
-
-  // Empty file => remaining == 0
-  test::ScopedTempDir tmpDir;
-  ScopedTempFile tmp(tmpDir, std::string());
-
-  ConnectionState state;
-  state.fileSend.filePayload = FilePayload(File(tmp.filePath().string()), 0, 0);
-  state.fileSendActive = true;
-
-  test::SetPreadPathActions(tmp.filePath().string(), {IoAction{-1, error::kInterrupted}});
-
-  const auto res = state.transportFile(sv[0], /*tlsFlow=*/true);
-  EXPECT_EQ(res.code, ConnectionState::FileResult::Code::Read);
-  EXPECT_EQ(res.bytesDone, 0U);
-  // Nothing read, nothing left to read.
-  EXPECT_FALSE(state.fileSendActive);
-}
-
-TEST(ConnectionStateSendfileTest, TlsPreadZeroKeepsActiveWhenRemainingPositive) {
+// The end of the file before the length of its response (a file truncated since its size was read): the read can never
+// progress, the connection closes instead of reading again forever.
+TEST(ConnectionStateSendfileTest, TlsPreadEndOfFileBeforeLengthCloses) {
   int sv[2];
   ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
   BaseFd raii[]{BaseFd(sv[0]), BaseFd(sv[1])};
@@ -347,17 +327,18 @@ TEST(ConnectionStateSendfileTest, TlsPreadZeroKeepsActiveWhenRemainingPositive) 
   ConnectionState state;
   state.fileSend.filePayload = FilePayload(File(tmp.filePath().string()), 0, content.size());
   state.fileSendActive = true;
+  EXPECT_FALSE(state.queueOutput(test::MakeMessageData(16, 'q')));
 
-  // Simulate pread returning 0 bytes (e.g., unexpected EOF) while remaining > 0
+  // pread returning 0 bytes (end of file) while bytes remain
   test::SetPreadPathActions(tmp.filePath().string(), {IoAction{0, 0}});
 
-  auto res = state.transportFile(sv[0], /*tlsFlow=*/true);
+  const auto res = state.transportFile(sv[0], /*tlsFlow=*/true);
 
-  // transportFile should return with 0 bytes read and fileSend should remain active
+  EXPECT_EQ(res.code, ConnectionState::FileResult::Code::Error);
   EXPECT_EQ(res.bytesDone, 0U);
-  EXPECT_TRUE(state.tunnelOrFileBuffer.empty());
-  EXPECT_TRUE(state.fileSend.filePayload.length > 0);
-  EXPECT_TRUE(state.fileSendActive);
+  EXPECT_FALSE(state.fileSendActive);
+  EXPECT_FALSE(state.hasPendingOutput());
+  EXPECT_TRUE(state.isAnyCloseRequested());
 }
 
 TEST(ConnectionStateSendfileTest, TlsSendfileLargeChunks) {
@@ -416,45 +397,35 @@ TEST(ConnectionStateSendfileTest, TlsSendfileLargeChunks) {
   EXPECT_EQ(totalRead, totalSize);
 }
 
-TEST(ConnectionStateSendfileTest, KernelSendfileZeroBytesWouldBlock) {
-  int sv[2];
-  ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd raii[]{BaseFd(sv[0]), BaseFd(sv[1])};
+// sendfile() returns 0 at the end of the file (a full socket is -1, would block): a file shorter than the length of its
+// response (truncated since its size was read) closes the connection instead of waiting for a writable event that never
+// comes. Over TLS, the read of the file ends the same way.
+TEST(ConnectionStateSendfileTest, EndOfFileBeforeLengthCloses) {
+  for (const bool tlsFlow : {false, true}) {
+    SCOPED_TRACE(tlsFlow ? "TLS" : "sendfile");
+    int sv[2];
+    ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
+    BaseFd raii[]{BaseFd(sv[0]), BaseFd(sv[1])};
 
-  ConnectionState state;
-  // Create an empty file to ensure sendfile has nothing to send
-  test::ScopedTempDir tmpDir;
-  test::ScopedTempFile tmp(tmpDir, std::string());
-  state.fileSend.filePayload = FilePayload(File(tmp.filePath().string()), 0, 0);
-  state.fileSendActive = true;
+    ConnectionState state;
+    test::ScopedTempDir tmpDir;
+    test::ScopedTempFile tmp(tmpDir, std::string(16, 'S'));
+    // 16 bytes in the file, 32 announced.
+    state.fileSend.filePayload = FilePayload(File(tmp.filePath().string()), 0, 32);
+    state.fileSendActive = true;
 
-  const auto res = state.transportFile(sv[0], /*tlsFlow=*/false);
-  EXPECT_EQ(res.code, ConnectionState::FileResult::Code::WouldBlock);
-}
+    auto res = state.transportFile(sv[0], tlsFlow);
+    ASSERT_NE(res.code, ConnectionState::FileResult::Code::Error);
+    EXPECT_EQ(res.bytesDone, 16U);
+    state.tunnelOrFileBuffer.clear();  // written (TLS)
 
-TEST(ConnectionStateSendfileTest, TlsSendfileEmptyBufferClearsActive) {
-  int sv[2];
-  ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), 0);
-  BaseFd raii[]{BaseFd(sv[0]), BaseFd(sv[1])};
-
-  ConnectionState state;
-  // Empty file to ensure pread returns 0 and no tunnel buffer is filled
-  test::ScopedTempDir tmpDir;
-  test::ScopedTempFile tmp(tmpDir, std::string());
-
-  state.fileSend.filePayload = FilePayload(File(tmp.filePath().string()), 0, 0);
-
-  state.fileSendActive = true;
-
-  // Call transportFile in TLS mode which uses pread into tunnelOrFileBuffer
-  const auto res = state.transportFile(sv[0], /*tlsFlow=*/true);
-
-  EXPECT_EQ(res.bytesDone, 0U);
-  EXPECT_EQ(res.code, ConnectionState::FileResult::Code::Read);
-
-  // After calling with empty file, tunnelOrFileBuffer should be empty and fileSendActive false
-  EXPECT_EQ(state.tunnelOrFileBuffer.empty(), true);
-  EXPECT_FALSE(state.fileSendActive);
+    res = state.transportFile(sv[0], tlsFlow);
+    EXPECT_EQ(res.code, ConnectionState::FileResult::Code::Error);
+    EXPECT_EQ(res.bytesDone, 0U);
+    EXPECT_EQ(state.fileSend.filePayload.length, 16U);
+    EXPECT_FALSE(state.isSendingFile());
+    EXPECT_TRUE(state.isAnyCloseRequested());
+  }
 }
 
 TEST(ConnectionStateBufferTest, ShrinkToFitReducesNonEmptyBuffers) {

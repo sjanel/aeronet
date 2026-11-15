@@ -64,7 +64,7 @@ Each event loop remembers the result for the last `Accept-Encoding` value it neg
 - Bodies smaller than `minBytes`, of a content type outside `contentTypeAllowList`, or that do not shrink enough. Compact binary encodings often do not, such as small [Protocol Buffers](../modules/protobuf.md#compression) messages.
 - Responses that already have a `Content-Encoding` header (see [Send your own encoding](#send-your-own-encoding)).
 - `206 Partial Content` responses: their `Content-Range` describes the bytes of the content sent (RFC 9110 §14.4), which compression would change. This holds for buffered, directly compressed and streamed responses. As [direct compression](#direct-compression) compresses a body while it is set, set the `206` status before the body: `status(206)` on a body compressed this way throws `std::logic_error`.
-- File bodies (`HttpResponse::file()`, the static file handler), which are sent with `sendfile()` or read from disk as they are. Store pre-compressed variants of large static assets if they need compression.
+- File bodies (`HttpResponse::file()`, and the files of the static file handler over its `inlineFileThresholdBytes`, 128 KiB by default), which are sent with `sendfile()` or read from disk as they are. Smaller static files are read into memory, and compressed like other bodies (see [Static files](static-files.md#transfers)). Store pre-compressed variants of large static assets if they need compression.
 
 ### Vary
 
@@ -81,7 +81,7 @@ A response made with `HttpRequestView::makeResponse()` writes this line with its
 
 ### Entity tags
 
-A strong `ETag` identifies the exact bytes of a representation, and a compressed representation has other bytes than the uncompressed one: it needs another strong tag (RFC 9110 §8.8.3.3). When the server compresses a response carrying a strong `ETag`, it makes it weak (`"v1"` becomes `W/"v1"`), whatever the path (compressed when finalized, directly, or streamed) and whether the handler set the `ETag` before or after the body. A weak `ETag` is kept as is. `If-None-Match` uses the weak comparison, so `W/"v1"` still matches `"v1"`: a handler answering `304 Not Modified` should compare the tags it receives this way, ignoring a `W/` prefix. Range requests (`If-Range`) need a strong tag, which `206` responses keep, as they are never compressed.
+A strong `ETag` identifies the exact bytes of a representation, and a compressed representation has other bytes than the uncompressed one: it needs another strong tag (RFC 9110 §8.8.3.3). When the server compresses a response carrying a strong `ETag`, it makes it weak (`"v1"` becomes `W/"v1"`), whatever the path (compressed when finalized, directly, or streamed) and whether the handler set the `ETag` before or after the body. A weak `ETag` is kept as is. `If-None-Match` uses the weak comparison, so `W/"v1"` still matches `"v1"`: a handler answering `304 Not Modified` should compare the tags it receives this way, ignoring a `W/` prefix. Its `304` carries the `ETag` and `Vary` of the `200` it stands for (RFC 9110 §15.4.5), which depend on the compression of that `200`: `HttpRequestView::bodyCompressionOutlook(bodySize, contentType)` tells whether the server would compress such a body for the request (the `ETag` is then weak) and list `Accept-Encoding` in its `Vary`, as the [static file handler](static-files.md#caching-and-conditional-requests) does. Range requests (`If-Range`) need a strong tag, which `206` responses keep, as they are never compressed.
 
 ### HEAD requests
 

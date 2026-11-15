@@ -56,8 +56,8 @@ class File {
   // If duplication fails, the resulting File behaves like a failed open: operator bool() is false, size() is
   // kError, lastModified() is the invalid sentinel.
   File(const File& rhs);
-  File& operator=(const File& rhs);
   File(File&&) noexcept = default;
+  File& operator=(const File& rhs);
   File& operator=(File&&) noexcept = default;
 
   ~File() = default;
@@ -68,9 +68,15 @@ class File {
   // Return the file size in bytes, at the time of opening.
   [[nodiscard]] std::size_t size() const noexcept { return _fileSize; }
 
-  // Return the last modification time captured from the same fstat() performed at open time.
+  // Return the last modification time captured from the same fstat() performed at open time, clamped to the range of
+  // SysTimePoint (see SaturatedSysTimePoint()).
   // Returns kInvalidTimePoint if the metadata could not be obtained (in which case the File is also closed).
   [[nodiscard]] SysTimePoint lastModified() const noexcept { return _mtime; }
+
+  // Tell whether the opened descriptor is a regular file (not a directory, a FIFO, a device...), from the same fstat()
+  // performed at open time. A read-only File is opened without blocking (O_NONBLOCK on POSIX), so that a path replaced
+  // by a FIFO after its type was checked is detected here, instead of blocking the opening.
+  [[nodiscard]] bool isRegularFile() const noexcept { return _isRegularFile; }
 
   // Writes file's current descriptor identity and metadata to pData, returning the pointer past the last written byte.
   // pData must point to a buffer of at least kIdentitySize bytes.
@@ -104,6 +110,7 @@ class File {
 
   BaseFd _fd;
   MIMETypeIdx _mimeMappingIdx = kUnknownMIMEMappingIdx;
+  bool _isRegularFile{false};  // in the padding before _identity
   Identity _identity;
   std::size_t _fileSize{kError};
   SysTimePoint _mtime{kInvalidTimePoint};

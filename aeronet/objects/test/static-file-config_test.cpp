@@ -4,6 +4,12 @@
 
 #include <stdexcept>
 
+#include "aeronet/http-server-config.hpp"
+
+#ifdef AERONET_ENABLE_HTTP2
+#include "aeronet/http2-config.hpp"
+#endif
+
 #ifdef AERONET_ENABLE_GLAZE
 #include <glaze/glaze.hpp>
 #include <glaze/yaml.hpp>
@@ -39,6 +45,28 @@ TEST(StaticFileConfigTest, ValidateDefaultIndex) {
 
   cfg.withDefaultIndex("another\\index.html");
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
+}
+
+// The bodies the handler builds in memory stay under the output limits of a connection (else 503 over HTTP/2).
+TEST(StaticFileConfigTest, ValidateInMemoryBodyLimits) {
+  StaticFileConfig cfg;
+  cfg.withMaxMultipartBodySize(StaticFileConfig::kMaxInMemoryBodyBytes)
+      .withInlineFileThresholdBytes(StaticFileConfig::kMaxInMemoryBodyBytes);
+  EXPECT_NO_THROW(cfg.validate());
+
+  cfg.withMaxMultipartBodySize(StaticFileConfig::kMaxInMemoryBodyBytes + 1);
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+
+  cfg.withMaxMultipartBodySize(0).withInlineFileThresholdBytes(StaticFileConfig::kMaxInMemoryBodyBytes + 1);
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+}
+
+// kMaxInMemoryBodyBytes is half of the default output limits of a connection.
+TEST(StaticFileConfigTest, InMemoryBodyLimitFitsDefaultServerLimits) {
+  EXPECT_LE(2 * StaticFileConfig::kMaxInMemoryBodyBytes, HttpServerConfig{}.maxOutboundBufferBytes);
+#ifdef AERONET_ENABLE_HTTP2
+  EXPECT_LE(2 * StaticFileConfig::kMaxInMemoryBodyBytes, Http2Config{}.maxStreamPendingBytes);
+#endif
 }
 
 #ifdef AERONET_ENABLE_GLAZE

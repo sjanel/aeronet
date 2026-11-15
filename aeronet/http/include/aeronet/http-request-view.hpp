@@ -723,6 +723,18 @@ class HttpRequestView {
   // Accept-Encoding header of the request and the server compression configuration.
   [[nodiscard]] Encoding responsePossibleEncoding() const noexcept { return _responsePossibleEncoding; }
 
+  /// How the server would treat a body in memory of 'bodySize' bytes of type 'contentType' in a 200 response to this
+  /// request (see the compression guide).
+  struct BodyCompressionOutlook {
+    bool compressed{false};          // compressed (provided it shrinks enough): a strong ETag of it is made weak
+    bool varyAcceptEncoding{false};  // Accept-Encoding listed in its Vary
+  };
+
+  /// For a handler answering 304 (Not Modified) instead of such a 200: RFC 9110 §15.4.5 asks the 304 to carry the ETag
+  /// and the Vary of the 200 it stands for, which depend on its compression.
+  [[nodiscard]] BodyCompressionOutlook bodyCompressionOutlook(std::size_t bodySize,
+                                                              std::string_view contentType) const noexcept;
+
  private:
   friend class HttpRequestViewTest;
   friend class StaticFileHandlerTest;

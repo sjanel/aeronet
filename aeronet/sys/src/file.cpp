@@ -12,7 +12,6 @@
 #endif
 
 #include <cerrno>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -29,6 +28,7 @@
 #include "aeronet/mime-mappings.hpp"
 #include "aeronet/system-error-message.hpp"
 #include "aeronet/system-error.hpp"
+#include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 
 namespace aeronet {
@@ -38,7 +38,9 @@ namespace {
 inline int Flags(File::OpenMode mode) {
   if (mode == File::OpenMode::ReadOnly) {
 #ifdef AERONET_POSIX
-    return O_RDONLY | O_CLOEXEC;
+    // O_NONBLOCK has no effect on regular files, but the opening of a FIFO (or of some devices) no longer blocks until
+    // a writer comes, when a path checked to be a regular file was replaced in between (see File::isRegularFile()).
+    return O_RDONLY | O_CLOEXEC | O_NONBLOCK;
 #elifdef AERONET_WINDOWS
     return _O_RDONLY | _O_BINARY;
 #endif
@@ -81,14 +83,15 @@ inline BaseFd CreateFileBaseFd(const char* path, File::OpenMode mode) {
 #endif
 }
 
-// Stat the descriptor once, filling both size and last-modification time. On failure the descriptor is
+// Stat the descriptor once, filling size, last-modification time, identity and type. On failure the descriptor is
 // closed, the size is set to File::kError and the mtime is left at the kInvalidTimePoint sentinel.
-inline void StatFile(BaseFd& fd, std::size_t& sizeOut, SysTimePoint& mtimeOut, auto& identity) {
+inline void StatFile(BaseFd& fd, std::size_t& sizeOut, SysTimePoint& mtimeOut, auto& identity, bool& isRegularOut) {
 #ifdef AERONET_POSIX
   struct stat st{};
   if (fd && ::fstat(fd.fd(), &st) == 0) {
     identity.device = static_cast<uint64_t>(st.st_dev);
     identity.inode = static_cast<uint64_t>(st.st_ino);
+    isRegularOut = S_ISREG(st.st_mode);
     sizeOut = static_cast<std::size_t>(st.st_size);
     // POSIX names the modification-time timespec `st_mtim`; Apple/BSD name it `st_mtimespec`.
 #ifdef AERONET_MACOS
@@ -96,8 +99,8 @@ inline void StatFile(BaseFd& fd, std::size_t& sizeOut, SysTimePoint& mtimeOut, a
 #else
     const auto& mtimespec = st.st_mtim;
 #endif
-    mtimeOut = SysTimePoint{std::chrono::duration_cast<SysDuration>(std::chrono::seconds{mtimespec.tv_sec} +
-                                                                    std::chrono::nanoseconds{mtimespec.tv_nsec})};
+    mtimeOut = SaturatedSysTimePoint(static_cast<std::int64_t>(mtimespec.tv_sec),
+                                     static_cast<std::int64_t>(mtimespec.tv_nsec));
     return;
   }
 #elifdef AERONET_WINDOWS
@@ -107,15 +110,24 @@ inline void StatFile(BaseFd& fd, std::size_t& sizeOut, SysTimePoint& mtimeOut, a
     if (GetFileInformationByHandle(handle, &info)) {
       identity.device = static_cast<uint64_t>(info.dwVolumeSerialNumber);
       identity.inode = (static_cast<uint64_t>(info.nFileIndexHigh) << 32) | info.nFileIndexLow;
+      isRegularOut = ::GetFileType(handle) == FILE_TYPE_DISK &&
+                     (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_DEVICE)) == 0;
       sizeOut = static_cast<std::size_t>((static_cast<uint64_t>(info.nFileSizeHigh) << 32) | info.nFileSizeLow);
 
       ULARGE_INTEGER uli{};
       uli.LowPart = info.ftLastWriteTime.dwLowDateTime;
       uli.HighPart = info.ftLastWriteTime.dwHighDateTime;
       constexpr uint64_t kFileTimeToUnixEpoch100ns = 116444736000000000ULL;
-      using Ticks100ns = std::chrono::duration<int64_t, std::ratio<1, 10'000'000> >;
-      mtimeOut = SysTimePoint{std::chrono::duration_cast<SysDuration>(
-          Ticks100ns{static_cast<int64_t>(uli.QuadPart - kFileTimeToUnixEpoch100ns)})};
+      constexpr int64_t kTicksPerSecond = 10'000'000;
+      // Whole seconds rounded down (the sub-second part is non-negative), then saturated to the SysTimePoint range.
+      const int64_t ticks = static_cast<int64_t>(uli.QuadPart - kFileTimeToUnixEpoch100ns);
+      int64_t secondsSinceEpoch = ticks / kTicksPerSecond;
+      int64_t subSecondTicks = ticks % kTicksPerSecond;
+      if (subSecondTicks < 0) {
+        subSecondTicks += kTicksPerSecond;
+        --secondsSinceEpoch;
+      }
+      mtimeOut = SaturatedSysTimePoint(secondsSinceEpoch, subSecondTicks * 100);
       return;
     }
   }
@@ -163,17 +175,18 @@ inline BaseFd DuplicateFileBaseFd(const BaseFd& src) {
 
 File::File(std::string_view path, OpenMode mode)
     : _fd(CreateFileBaseFd(path, mode)), _mimeMappingIdx(DetermineMIMETypeIdx(path)) {
-  StatFile(_fd, _fileSize, _mtime, _identity);
+  StatFile(_fd, _fileSize, _mtime, _identity, _isRegularFile);
 }
 
 File::File(const char* path, OpenMode mode)
     : _fd(CreateFileBaseFd(path, mode)), _mimeMappingIdx(DetermineMIMETypeIdx(path)) {
-  StatFile(_fd, _fileSize, _mtime, _identity);
+  StatFile(_fd, _fileSize, _mtime, _identity, _isRegularFile);
 }
 
 File::File(const File& rhs)
     : _fd(DuplicateFileBaseFd(rhs._fd)),
       _mimeMappingIdx(rhs._mimeMappingIdx),
+      _isRegularFile(rhs._isRegularFile),
       _identity(rhs._identity),
       _fileSize(_fd ? rhs._fileSize : kError),
       _mtime(_fd ? rhs._mtime : SysTimePoint::max()) {}
@@ -182,6 +195,7 @@ File& File::operator=(const File& rhs) {
   if (this != &rhs) {
     BaseFd newFd = DuplicateFileBaseFd(rhs._fd);
     _mimeMappingIdx = rhs._mimeMappingIdx;
+    _isRegularFile = rhs._isRegularFile;
     _identity = rhs._identity;
     _fileSize = newFd ? rhs._fileSize : kError;
     _mtime = newFd ? rhs._mtime : SysTimePoint::max();

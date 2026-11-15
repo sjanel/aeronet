@@ -34,7 +34,9 @@ class StaticFileHandler {
   [[nodiscard]] HttpResponse operator()(const HttpRequestView& request) const;
 
  private:
-  enum class ResolveResult : uint8_t { NotFound, RegularFile, Directory };
+  // DirectoryRedirect: a directory requested without its trailing slash, served (index file or listing) once
+  // redirected.
+  enum class ResolveResult : uint8_t { NotFound, RegularFile, Directory, DirectoryRedirect };
 
   // Maximum size of a strong ETag value ("<hex-size>-<hex-nanos>"), quotes included.
   static constexpr std::size_t kMaxHexChars = sizeof(std::uint64_t) * 2;
@@ -61,8 +63,9 @@ class StaticFileHandler {
   // Tell whether the real path of 'path' (symbolic links and Windows short names resolved) may be served: the root
   // directory or below it, without hidden segment below the root unless showHiddenFiles. 'pFile', when not null, is
   // the file opened from 'path': the real path must still designate it, so that a symbolic link retargeted after the
-  // opening cannot make the check validate another file.
-  [[nodiscard]] bool isRealPathServable(const std::filesystem::path& path, const File* pFile) const;
+  // opening cannot make the check validate another file. A refusal is logged when 'logRefusal'.
+  [[nodiscard]] bool isRealPathServable(const std::filesystem::path& path, const File* pFile,
+                                        bool logRefusal = true) const;
 
   // Format the per-file header fragments (ETag, Last-Modified, Content-Type) for 'file' into 'out'.
   void buildHeaderMeta(std::string_view filePath, const File& file, CachedFileHeaders& out) const;

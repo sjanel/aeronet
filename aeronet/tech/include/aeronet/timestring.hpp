@@ -185,12 +185,14 @@ constexpr auto TimeToStringRFC7231(SysTimePoint tp, auto out) {
   return out + sizeof(kSkeleton);
 }
 
-// Parse a string representation of a given time point in RFC7231 IMF-fixdate format with maximum performance and
-// return a time_point. If parsing fails, returns kInvalidTimePoint.
+// Parse an HTTP-date (RFC 9110 §5.6.7), surrounding whitespace ignored, and return its time point: IMF-fixdate
+// ("Sun, 06 Nov 1994 08:49:37 GMT"), as well as the obsolete rfc850-date ("Sunday, 06-Nov-94 08:49:37 GMT", a two-digit
+// year more than 50 years in the future being taken in the past century) and asctime-date ("Sun Nov  6 08:49:37
+// 1994") that a recipient must accept. A date beyond the range of SysTimePoint is clamped to it (see
+// SaturatedSysTimePoint()). If parsing fails, returns kInvalidTimePoint.
 SysTimePoint TryParseTimeRFC7231(const char* begPtr, const char* endPtr);
 
-// Parse a string representation of a given time point in RFC7231 IMF-fixdate format with maximum performance and
-// return a time_point. If parsing fails, returns kInvalidTimePoint.
+// Parse an HTTP-date (see above). If parsing fails, returns kInvalidTimePoint.
 inline SysTimePoint TryParseTimeRFC7231(std::string_view value) {
   return TryParseTimeRFC7231(value.data(), value.data() + value.size());
 }

@@ -47,9 +47,11 @@ class MajorMinorVersion {
   template <std::uint8_t Major>
   [[nodiscard]] static constexpr MajorMinorVersion OfMajor(const char* pStr, std::size_t len) noexcept {
     static_assert(Major >= 1U && Major <= 9U);
-    constexpr std::string_view kHead = kMajorHead<Major>;
-    if (len == kStrLen && std::string_view(pStr, kHead.size()) == kHead) {
-      return {Major, DigitValue(pStr[kHead.size()])};
+    // "<Prefix><Major>." (e.g. "HTTP/1."): a version string of major version Major, without its minor version.
+    static constexpr std::string_view kMajorHead =
+        JoinStringView_v<kPrefix, CharToStringView_v<static_cast<char>('0' + Major)>, CharToStringView_v<'.'>>;
+    if (len == kStrLen && std::string_view(pStr, kMajorHead.size()) == kMajorHead) {
+      return {Major, DigitValue(pStr[kMajorHead.size()])};
     }
     return {};
   }
@@ -88,11 +90,6 @@ class MajorMinorVersion {
  private:
   // Value of a digit character, or a value above 9 if ch is not a digit.
   static constexpr std::uint8_t DigitValue(char ch) noexcept { return static_cast<std::uint8_t>(ch - '0'); }
-
-  // "<Prefix><Major>." (e.g. "HTTP/1."): a version string of major version Major, without its minor version.
-  template <std::uint8_t Major>
-  static constexpr std::string_view kMajorHead =
-      JoinStringView_v<kPrefix, CharToStringView_v<static_cast<char>('0' + Major)>, CharToStringView_v<'.'>>;
 
   std::uint8_t _data{};
 };

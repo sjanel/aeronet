@@ -15,6 +15,14 @@ namespace aeronet {
 /// Configuration knobs for StaticFileHandler (serving filesystem trees).
 class StaticFileConfig {
  public:
+  /// Upper bound of maxMultipartBodySize and inlineFileThresholdBytes, the bodies that the handler builds in memory:
+  /// half of the default output limits of a connection (HttpServerConfig::maxOutboundBufferBytes, and
+  /// Http2Config::maxStreamPendingBytes for an HTTP/2 stream), so that such a response fits them along with the output
+  /// of other streams. A response over these limits is answered 503 over HTTP/2, and closes the HTTP/1.1 connection
+  /// after it: lowering them below twice the values used here brings that back.
+  static constexpr std::size_t kMaxInMemoryBodyBytes = 2UL << 20U;
+
+  /// Throws std::invalid_argument for an invalid configuration (a field over kMaxInMemoryBodyBytes, among others).
   void validate() const;
 
   /// Name of the file served when the target path resolves to a directory.
@@ -71,10 +79,10 @@ class StaticFileConfig {
     return *this;
   }
 
-  /// Safety cap on the total size of an assembled multipart/byteranges response body.
-  /// If the assembled body would exceed this limit the server falls back to a 200 full-body response.
-  /// Default: 32 MiB.
-  std::size_t maxMultipartBodySize{32ULL * 1024ULL * 1024ULL};
+  /// Safety cap on the total size of an assembled multipart/byteranges response body, at most kMaxInMemoryBodyBytes.
+  /// If the assembled body would exceed this limit the server falls back to a 200 full-body response, sent from the
+  /// file. Default: 1 MiB.
+  std::size_t maxMultipartBodySize{1UL << 20U};
 
   /// Maximum number of distinct files whose formatted response headers (Content-Type, ETag, Last-Modified)
   /// are cached to avoid recomputing them on every request for the same, unchanged file. Each cached entry is
@@ -117,9 +125,9 @@ class StaticFileConfig {
   std::function<std::string(const std::filesystem::path& directory, std::span<const std::filesystem::directory_entry>)>
       directoryIndexRenderer;
 
-  /// Files smaller than this threshold are read into the response body (inline) rather than being served via
-  /// the zero-copy transport path (sendfile in Linux).
-  /// Set to 0 to disable the optimization, or set to max to always read files into memory.
+  /// Files up to this size are read into the response body (inline), which the server may compress, rather than
+  /// being served via the zero-copy transport path (sendfile in Linux). At most kMaxInMemoryBodyBytes.
+  /// Set to 0 to disable the optimization (empty files are still read into the response).
   /// Default: 128 KiB.
   std::size_t inlineFileThresholdBytes = 128UL * 1024;
 
