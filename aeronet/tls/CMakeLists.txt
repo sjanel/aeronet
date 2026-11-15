@@ -14,14 +14,21 @@ target_include_directories(aeronet_tls
 find_package(OpenSSL REQUIRED)
 
 # Link against OpenSSL::SSL and OpenSSL::Crypto (imported by find_package) and base tech lib for utils.
+# aeronet_tls does not depend on aeronet_objects: the latter links it, for the TLS configuration of HttpServerConfig.
 target_link_libraries(aeronet_tls
     PUBLIC
         OpenSSL::SSL
         OpenSSL::Crypto
     PUBLIC
         aeronet_sys
-        aeronet_objects
         aeronet_tech
+)
+
+AeronetAddUnitTest(
+    tls-config_test
+    test/tls-config_test.cpp
+    LIBRARIES
+    aeronet_objects
 )
 
 # TLS unit tests use socketpair(AF_UNIX) and/or dlsym/RTLD_NEXT overrides — Linux only.
@@ -48,7 +55,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         src/tls-ticket-key-store.cpp
         test/tls-ticket-key-store_test.cpp
         LIBRARIES
-        aeronet_objects
+        aeronet_tech
         OpenSSL::SSL
         OpenSSL::Crypto
     )

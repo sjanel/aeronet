@@ -775,7 +775,7 @@ bool SingleHttpServer::processConnectionInput(ConnectionIt cnxIt) {
   // h2c prior knowledge only applies to non-TLS (plaintext) connections
 #ifdef AERONET_ENABLE_HTTP2
   const HttpServerConfig& config = _ctx.config;
-  if (config.http2.enable && config.http2.enableH2c && !config.tls.enabled) {
+  if (config.http2.enable && config.http2.enableH2c && !state.transport.isTls()) {
     std::string_view bufView(state.inBuffer);
     // Check if buffer starts with "PRI " (first 4 chars of HTTP/2 preface)
     if (bufView.starts_with("PRI ")) {

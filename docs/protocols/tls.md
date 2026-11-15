@@ -1,6 +1,6 @@
 # TLS
 
-aeronet terminates TLS with OpenSSL 3 or 4. The `AERONET_ENABLE_OPENSSL` CMake option builds the TLS transport; it defaults to `ON` when aeronet is the top-level project, and must be enabled explicitly when aeronet is consumed as a dependency. When it is `OFF`, the core stays free of OpenSSL headers and libraries.
+aeronet terminates TLS with OpenSSL 3 or 4. The `AERONET_ENABLE_OPENSSL` CMake option builds the TLS transport; it defaults to `ON` when aeronet is the top-level project, and must be enabled explicitly when aeronet is consumed as a dependency. When it is `OFF`, the core stays free of OpenSSL headers and libraries, and `HttpServerConfig` has no TLS settings: the `tls` field and the `withTls*()` methods do not exist, and a configuration file with a `tls` section fails to load ([TlsSectionIsRejectedWithoutOpenSsl](../../aeronet/server/test/server-config-loader_test.cpp)), so that a listener meant for HTTPS cannot be served in clear text. `HttpRequestView::tlsVersion()` and the other TLS getters stay available and return an empty string.
 
 Each server owns its `SSL_CTX` and its TLS policy: there is no process-global mutable TLS state, so two servers in one process can use different certificates, versions, and client-certificate rules. Handshakes run on the non-blocking event loop, so certificate processing, callbacks, and application-provided revocation checks run on the handshake path and must not block.
 
@@ -490,6 +490,6 @@ The [production configuration guide](../guides/production-configuration.md) cove
 - Resumed mTLS sessions and `tlsPeerSubject()`, handlers leaving OpenSSL errors, and a server handshake flight larger than the socket buffers: [tests/http-tls-handshake_test.cpp](../../tests/http-tls-handshake_test.cpp).
 - Client certificate chains and server name indication of the HTTP client: [http-client-tls-e2e_test.cpp](../../aeronet/client/test/http-client-tls-e2e_test.cpp).
 - Session ticket key store and rotation: [tls-ticket-key-store_test.cpp](../../aeronet/tls/test/tls-ticket-key-store_test.cpp).
-- Configuration validation and key scrubbing: [tls-config_test.cpp](../../aeronet/objects/test/tls-config_test.cpp).
+- Configuration validation and key scrubbing: [tls-config_test.cpp](../../aeronet/tls/test/tls-config_test.cpp).
 
 Tests generate ephemeral self-signed certificates and pass them in memory with `withTlsCertKeyMemory()`, which avoids depending on files.

@@ -25,6 +25,7 @@ void SingleHttpServer::installHttp2Handler(NativeHandle clientFd, ConnectionStat
   _ctx.maintenance.stopHeaderReadTimer(state);
 }
 
+#ifdef AERONET_ENABLE_OPENSSL
 void SingleHttpServer::setupHttp2Connection(NativeHandle clientFd, TcpNoDelayMode tcpNoDelayMode,
                                             ConnectionState& state) {
   // The server must send SETTINGS immediately for TLS ALPN "h2".
@@ -45,5 +46,6 @@ void SingleHttpServer::setupHttp2Connection(NativeHandle clientFd, TcpNoDelayMod
 
   // The queued server preface is flushed by the caller through the protocol gather path.
 }
+#endif
 
 }  // namespace aeronet

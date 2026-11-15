@@ -20,7 +20,6 @@
 #include "aeronet/safe-cast.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
 #include "aeronet/telemetry-config.hpp"
-#include "aeronet/tls-config.hpp"
 #include "aeronet/zerocopy-mode.hpp"
 
 #ifdef AERONET_ENABLE_HTTP2
@@ -29,12 +28,37 @@
 #include "aeronet/reserved-headers.hpp"
 #endif
 
+#ifdef AERONET_ENABLE_OPENSSL
+#include "aeronet/tls-config.hpp"
+#endif
+
 namespace aeronet {
 
-TLSConfig& HttpServerConfig::ensureTls() {
-  tls.enabled = true;
-  return tls;
+#ifdef AERONET_ENABLE_OPENSSL
+namespace {
+
+// Validates the TLS configuration and its interactions with the rest of the configuration.
+void ValidateTls(HttpServerConfig& config) {
+  config.tls.validate();
+  if (!config.tls.enabled) {
+    return;
+  }
+  if (config.httpsRedirect.enabled()) {
+    throw std::invalid_argument("httpsRedirect cannot be enabled together with TLS on the same listener");
+  }
+#ifdef AERONET_ENABLE_HTTP2
+  if (config.http2.enable) {
+    return;
+  }
+#endif
+  // Selecting "h2" (http2::kAlpnH2) commits the client to HTTP/2: the server must be able to speak it.
+  if (std::ranges::any_of(config.tls.alpnProtocols(), [](std::string_view proto) { return proto == "h2"; })) {
+    throw std::invalid_argument("TLS ALPN protocols offer \"h2\" but HTTP/2 is disabled");
+  }
 }
+
+}  // namespace
+#endif
 
 HttpServerConfig& HttpServerConfig::withNbThreads(uint32_t threads) {
   this->nbThreads = SafeCast<decltype(this->nbThreads)>(threads);
@@ -147,6 +171,12 @@ HttpServerConfig& HttpServerConfig::withLingeringCloseTimeout(std::chrono::milli
   return *this;
 }
 
+#ifdef AERONET_ENABLE_OPENSSL
+TLSConfig& HttpServerConfig::ensureTls() {
+  tls.enabled = true;
+  return tls;
+}
+
 HttpServerConfig& HttpServerConfig::withTlsCertKey(std::string_view certFile, std::string_view keyFile) {
   auto& tlsCfg = ensureTls();
   tlsCfg.withCertPem({});
@@ -243,6 +273,7 @@ HttpServerConfig& HttpServerConfig::withoutTls() {
   tls.enabled = false;
   return *this;
 }
+#endif
 
 HttpServerConfig& HttpServerConfig::withHttpsRedirect(std::uint16_t targetHttpsPort, http::StatusCode statusCode) {
   httpsRedirect.targetPort = targetHttpsPort;
@@ -390,12 +421,11 @@ void HttpServerConfig::validate() {
 #endif
 
   telemetry.validate();
-  tls.validate();
+#ifdef AERONET_ENABLE_OPENSSL
+  ValidateTls(*this);
+#endif
 
   if (httpsRedirect.enabled()) {
-    if (tls.enabled) {
-      throw std::invalid_argument("httpsRedirect cannot be enabled together with TLS on the same listener");
-    }
     switch (httpsRedirect.statusCode) {
       case http::StatusCodeMovedPermanently:
         [[fallthrough]];
@@ -423,15 +453,7 @@ void HttpServerConfig::validate() {
 
 #ifdef AERONET_ENABLE_HTTP2
   http2.validate();
-  const bool http2Enabled = http2.enable;
-#else
-  static constexpr bool http2Enabled = false;
 #endif
-  // Selecting "h2" (http2::kAlpnH2) commits the client to HTTP/2: the server must be able to speak it.
-  if (tls.enabled && !http2Enabled &&
-      std::ranges::any_of(tls.alpnProtocols(), [](std::string_view proto) { return proto == "h2"; })) {
-    throw std::invalid_argument("TLS ALPN protocols offer \"h2\" but HTTP/2 is disabled");
-  }
 
   // Validate some header/body limits
   if (std::cmp_less(maxHeaderBytes, 128)) {

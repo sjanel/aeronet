@@ -415,7 +415,6 @@ Other kinds of duplication:
   - `http-client-core_test.cpp` and `http-client-http2-e2e_test.cpp`: scenarios parameterized on the protocol. `http-client-integration_test.cpp` also repeats basic ones.
   - Header key and value validation in `http-client-config_test.cpp` and `http-server-config_test.cpp`.
   - "Default config is valid" tests, repeated per config object.
-  - TLS version parsing in `tls-config_test.cpp` and `server-config-loader_test.cpp`.
 - **Across layers**: behaviours tested in full in both a unit and an integration test can keep one integration scenario: Range and conditional requests (`HttpRangeStatic`, `HttpRangeMulti` and `static-file-handler_test.cpp`), CORS (`HttpCorsDetailed`, `cors-policy_test.cpp` and the HTTP/2 handler tests), HTTPS redirect, request parsing errors.
 - **HTTP/1.1 and HTTP/2 pairs**: behaviours tested separately in `http-core_test` and `http2-core_test` can move to the scenarios of `tests/http-protocol-parity_test.cpp`, which run on both protocols.
 - **Identical edges, values that matter**: `websocket-compress_test.cpp` (groups of 13 and 9 tests), `tchars_test.cpp`, `base64_test.cpp`, `mergeable-headers_test.cpp`, `file-sendfile_test.cpp`: tables, without dropping cases.

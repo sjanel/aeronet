@@ -12,8 +12,11 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/tcp-no-delay-mode-glaze.hpp"  // IWYU pragma: export
 #include "aeronet/telemetry-config-glaze.hpp"   // IWYU pragma: export
-#include "aeronet/tls-config-glaze.hpp"         // IWYU pragma: export
 #include "aeronet/zerocopy-mode-glaze.hpp"      // IWYU pragma: export
+
+#ifdef AERONET_ENABLE_OPENSSL
+#include "aeronet/tls-config-glaze.hpp"  // IWYU pragma: export
+#endif
 
 // glaze reflects all the members of HttpServerConfig, so that a new field is serialized automatically: only its
 // internal members (see glaze-internal-members.hpp) need an entry.

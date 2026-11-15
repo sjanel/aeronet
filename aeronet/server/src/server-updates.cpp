@@ -28,10 +28,10 @@
 #include "aeronet/router.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/telemetry-config.hpp"
-#include "aeronet/tls-config.hpp"
 #include "aeronet/vector.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
+#include "aeronet/tls-config.hpp"
 #include "aeronet/tls-context.hpp"
 #include "aeronet/tls-handshake-callback.hpp"
 #endif

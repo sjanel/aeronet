@@ -16,7 +16,6 @@
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
-#include "aeronet/tls-config.hpp"
 #include "aeronet/zerocopy-mode.hpp"
 
 #ifdef AERONET_ENABLE_HTTP2
@@ -340,13 +339,6 @@ TEST(HttpServerConfig, AdaptReadSizeShift) {
   EXPECT_EQ(cfg.adaptReadSizeShift(0, HttpServerConfig::kMaxReadChunkBytes, HttpServerConfig::kMaxReadChunkBytes), 0U);
 }
 
-TEST(HttpServerConfigTest, WithTlsKtlsModeEnablesTls) {
-  HttpServerConfig config;
-  config.withTlsKtlsMode(TLSConfig::KtlsMode::Enabled);
-  EXPECT_TRUE(config.tls.enabled);
-  EXPECT_EQ(config.tls.ktlsMode, TLSConfig::KtlsMode::Enabled);
-}
-
 TEST(HttpServerConfigTest, InvalidKeepAliveTimeoutThrows) {
   HttpServerConfig config;
   config.withKeepAliveTimeout(std::chrono::milliseconds{-1});
@@ -415,14 +407,6 @@ TEST(HttpServerConfigTest, TooSmallOutboundBufferBytesThrows) {
   HttpServerConfig config;
   config.withMaxOutboundBufferBytes(64);  // less than minimum of 1kB
   EXPECT_THROW(config.validate(), std::invalid_argument);
-}
-
-TEST(HttpServerConfigTest, WithoutTlsShouldDisableTls) {
-  HttpServerConfig config;
-  config.withTlsAlpnProtocols({"http/1.1"});
-  EXPECT_TRUE(config.tls.enabled);
-  config.withoutTls();
-  EXPECT_FALSE(config.tls.enabled);
 }
 
 TEST(HttpServerConfigTest, TooLargePollIntervalValueThrows) {
@@ -663,21 +647,6 @@ TEST(HttpServerConfigTest, HttpsRedirectRejectsNonRedirectStatus) {
   config.withHttpsRedirect(443, http::StatusCodeOK);
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
-
-TEST(HttpServerConfigTest, HttpsRedirectRejectsCombinationWithTls) {
-  HttpServerConfig config;
-  config.withHttpsRedirect();
-  config.tls.enabled = true;
-  EXPECT_THROW(config.validate(), std::invalid_argument);
-}
-
-#ifdef AERONET_ENABLE_OPENSSL
-TEST(HttpServerConfigTest, InvalidCipherListThrows) {
-  HttpServerConfig cfg;
-  cfg.withTlsCipherList("THIS-IS-NOT-A-REAL-CIPHER");  // matches no cipher -> SSL_CTX_set_cipher_list fails
-  EXPECT_THROW(cfg.validate(), std::invalid_argument);
-}
-#endif
 
 TEST(HttpServerConfigTest, ConnectAllowListCannotContainStarWithOtherHosts) {
   HttpServerConfig config;
