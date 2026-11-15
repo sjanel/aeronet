@@ -5,7 +5,6 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <span>
 #include <string_view>
 #include <type_traits>
@@ -128,8 +127,8 @@ class Http2Connection {
   }
 
   /// Run the timers of the connection, to be called periodically.
-  /// - The SETTINGS of this endpoint must be acknowledged within Http2Config::settingsTimeout of their sending: a
-  ///   connection error SETTINGS_TIMEOUT otherwise (RFC 9113 §6.5.3).
+  /// - The SETTINGS of this endpoint must be acknowledged within Http2Config::settingsTimeout of the first call after
+  ///   their sending: a connection error SETTINGS_TIMEOUT otherwise (RFC 9113 §6.5.3).
   /// - While streams are open, a PING is sent once nothing happened on the connection for Http2Config::pingInterval,
   ///   and must be acknowledged within pingTimeout. An idle connection is not pinged: its keep-alive timeout applies.
   /// @param now The current time
@@ -554,9 +553,11 @@ class Http2Connection {
 
   // Stream management
   StreamsMap _streams;
-  std::deque<uint32_t> _closedStreamsFifo;
+  // The closed streams retained in _streams for their late frames, oldest first (see pruneClosedStreams()).
+  vector<uint32_t> _closedStreamsFifo;
 
-  // Timers (see checkTimeouts()), the epoch when not running.
+  // Timers (see checkTimeouts()), the epoch when not running. The SETTINGS one is started by the first check after the
+  // SETTINGS were sent, and no longer checked once they are acknowledged.
   std::chrono::steady_clock::time_point _settingsAckDeadline;
   std::chrono::steady_clock::time_point _pingAckDeadline;
 

@@ -30,7 +30,7 @@ TEST(Http2Config, DefaultValues) {
 
   // Timeout defaults
   EXPECT_EQ(config.settingsTimeout, std::chrono::milliseconds{5000});
-  EXPECT_EQ(config.pingInterval, std::chrono::milliseconds{0});
+  EXPECT_EQ(config.pingInterval, std::chrono::milliseconds{30000});
   EXPECT_EQ(config.pingTimeout, std::chrono::milliseconds{10000});
   EXPECT_EQ(config.streamIdleTimeout, std::chrono::milliseconds{60000});
 
@@ -205,6 +205,24 @@ TEST(Http2Config, ValidateZeroMaxPriorityTreeDepth) {
 TEST(Http2Config, ValidateZeroMaxStreamPendingBytes) {
   Http2Config config = Http2Config{}.withMaxStreamPendingBytes(0);
   EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
+// No timer is disabled with 0, which would make it expire at once: they must be positive, and
+// std::chrono::milliseconds::max() never expires.
+TEST(Http2Config, ValidateTimersArePositive) {
+  using SetTimer = Http2Config& (Http2Config::*)(std::chrono::milliseconds);
+  for (const SetTimer setTimer : {&Http2Config::withSettingsTimeout, &Http2Config::withPingInterval,
+                                  &Http2Config::withPingTimeout, &Http2Config::withStreamIdleTimeout}) {
+    for (const std::chrono::milliseconds invalid :
+         {std::chrono::milliseconds{0}, std::chrono::milliseconds{-1}, std::chrono::milliseconds::min()}) {
+      Http2Config config;
+      EXPECT_THROW((config.*setTimer)(invalid).validate(), std::invalid_argument);
+    }
+    for (const std::chrono::milliseconds valid : {std::chrono::milliseconds{1}, std::chrono::milliseconds::max()}) {
+      Http2Config config;
+      EXPECT_NO_THROW((config.*setTimer)(valid).validate());
+    }
+  }
 }
 
 // ============================

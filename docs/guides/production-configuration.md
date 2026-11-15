@@ -46,8 +46,6 @@ aeronet::Http2Config http2;
 http2.withMaxConcurrentStreams(128)
     .withMaxStreamPendingBytes(2U << 20U)
     .withConnectionWindowSize(1U << 20U)
-    .withPingInterval(30s)
-    .withPingTimeout(10s)
     .withEnableH2c(false);
 
 aeronet::HttpServerConfig config;

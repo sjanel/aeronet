@@ -3779,41 +3779,91 @@ TEST(Http2Connection, MaxStreamsPerConnectionSendsAGracefulGoAway) {
   EXPECT_TRUE(conn.goAwayCompleted());
 }
 
-// The SETTINGS of this endpoint must be acknowledged within settingsTimeout of their sending: a connection error
-// SETTINGS_TIMEOUT otherwise (RFC 9113 §6.5.3).
+// The SETTINGS of this endpoint must be acknowledged within settingsTimeout of the first check after their sending: a
+// connection error SETTINGS_TIMEOUT otherwise (RFC 9113 §6.5.3).
 TEST(Http2Connection, UnacknowledgedSettingsTimeOut) {
   using namespace std::chrono_literals;
+  using Action = Http2Connection::ProcessResult::Action;
   Http2Config config;
   config.settingsTimeout = 100ms;
   Http2Connection conn(config, true);
   RecordingEventSink connSink(conn);
-  const auto sentTp = std::chrono::steady_clock::now();
+  const auto start = std::chrono::steady_clock::now();
+  EXPECT_EQ(conn.checkTimeouts(start, start).action, Action::Continue);  // not sent yet: no wait started
   AdvanceToOpenAndDrainSettingsAck(conn);  // the SETTINGS of the client, without acknowledging those of the server
 
-  EXPECT_EQ(conn.checkTimeouts(sentTp, sentTp).action, Http2Connection::ProcessResult::Action::Continue);
-  const auto res = conn.checkTimeouts(std::chrono::steady_clock::now() + 100ms, sentTp);
-  EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
+  // The first check after their sending starts the wait.
+  EXPECT_EQ(conn.checkTimeouts(start + 1s, start).action, Action::Continue);
+  EXPECT_EQ(conn.checkTimeouts(start + 1099ms, start).action, Action::Continue);
+  const auto res = conn.checkTimeouts(start + 1100ms, start);
+  EXPECT_EQ(res.action, Action::Error);
   EXPECT_EQ(res.errorCode, ErrorCode::SettingsTimeout);
   EXPECT_EQ(res.errorMsg, ErrorMsg::SETTINGSTimeout);
   const auto output = DrainPendingOutput(conn);
   EXPECT_EQ(ParseSingleGoAway(output).errorCode, ErrorCode::SettingsTimeout);
 
   // A later sweep on the closed connection sends nothing more.
-  EXPECT_EQ(conn.checkTimeouts(std::chrono::steady_clock::now() + 200ms, sentTp).action,
-            Http2Connection::ProcessResult::Action::Error);
+  EXPECT_EQ(conn.checkTimeouts(start + 1200ms, start).action, Action::Error);
   EXPECT_FALSE(conn.hasPendingOutput());
 
-  // Acknowledged, or without timeout, they never time out.
-  for (const auto settingsTimeout : {100ms, 0ms}) {
-    config.settingsTimeout = settingsTimeout;
+  // Acknowledged, once their wait started or before, they never time out.
+  for (const bool waitStarted : {true, false}) {
     Http2Connection otherConn(config, true);
     RecordingEventSink otherSink(otherConn);
     AdvanceToOpenAndDrainSettingsAck(otherConn);
-    if (settingsTimeout.count() != 0) {
-      AcknowledgeSettings(otherConn);
+    if (waitStarted) {
+      EXPECT_EQ(otherConn.checkTimeouts(start, start).action, Action::Continue);
     }
-    const auto later = std::chrono::steady_clock::now() + 1h;
-    EXPECT_EQ(otherConn.checkTimeouts(later, later).action, Http2Connection::ProcessResult::Action::Continue);
+    AcknowledgeSettings(otherConn);
+    EXPECT_EQ(otherConn.checkTimeouts(start + 1h, start + 1h).action, Action::Continue);
+  }
+}
+
+// No timer can be disabled with 0 (Http2Config::validate() rejects it): std::chrono::milliseconds::max(), or any value
+// beyond the range of the clock, never expires.
+TEST(Http2Connection, TimeoutsBeyondTheRangeOfTheClockNeverExpire) {
+  using namespace std::chrono_literals;
+  using Action = Http2Connection::ProcessResult::Action;
+  const auto start = std::chrono::steady_clock::now();
+  // Representable: 'start' is the time since boot (or since an epoch close to it).
+  const auto muchLater =
+      start + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::years{200});
+  for (const std::chrono::milliseconds timeout :
+       {std::chrono::milliseconds::max(), std::chrono::milliseconds{std::chrono::years{1000}}}) {
+    // The SETTINGS are never acknowledged.
+    Http2Config config;
+    config.settingsTimeout = timeout;
+    Http2Connection settingsConn(config, true);
+    RecordingEventSink settingsSink(settingsConn);
+    AdvanceToOpenAndDrainSettingsAck(settingsConn);
+    EXPECT_EQ(settingsConn.checkTimeouts(start, start).action, Action::Continue);
+    EXPECT_EQ(settingsConn.checkTimeouts(muchLater, start).action, Action::Continue);
+
+    // A connection with an open stream is never pinged.
+    config = Http2Config{};
+    config.pingInterval = timeout;
+    Http2Connection silentConn(config, true);
+    RecordingEventSink silentSink(silentConn);
+    AdvanceToOpenAndDrainSettingsAck(silentConn);
+    AcknowledgeSettings(silentConn);
+    OpenClientStream(silentConn, 1);
+    EXPECT_EQ(silentConn.checkTimeouts(muchLater, start).action, Action::Continue);
+    EXPECT_FALSE(silentConn.hasPendingOutput());
+
+    // A PING is never acknowledged: no second PING, and the connection stays open.
+    config = Http2Config{};
+    config.pingInterval = 1s;
+    config.pingTimeout = timeout;
+    Http2Connection pingConn(config, true);
+    RecordingEventSink pingSink(pingConn);
+    AdvanceToOpenAndDrainSettingsAck(pingConn);
+    AcknowledgeSettings(pingConn);
+    OpenClientStream(pingConn, 1);
+    EXPECT_EQ(pingConn.checkTimeouts(start + 1s, start).action, Action::OutputReady);
+    const auto pingOutput = DrainPendingOutput(pingConn);
+    EXPECT_EQ(ParseSingleFrame(pingOutput).header.type(), FrameType::Ping);
+    EXPECT_EQ(pingConn.checkTimeouts(muchLater, start).action, Action::Continue);
+    EXPECT_FALSE(pingConn.hasPendingOutput());
   }
 }
 

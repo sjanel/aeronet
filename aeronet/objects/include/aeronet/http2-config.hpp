@@ -67,16 +67,19 @@ struct Http2Config {
     return *this;
   }
 
+  /// See settingsTimeout. std::chrono::milliseconds::max() means no timeout.
   Http2Config& withSettingsTimeout(std::chrono::milliseconds timeout) {
     settingsTimeout = timeout;
     return *this;
   }
 
+  /// See pingInterval. std::chrono::milliseconds::max() means no PING.
   Http2Config& withPingInterval(std::chrono::milliseconds interval) {
     pingInterval = interval;
     return *this;
   }
 
+  /// See pingTimeout. std::chrono::milliseconds::max() means no timeout.
   Http2Config& withPingTimeout(std::chrono::milliseconds timeout) {
     pingTimeout = timeout;
     return *this;
@@ -232,20 +235,25 @@ struct Http2Config {
   // Timeouts and limits
   // ============================
 
-  /// Timeout for receiving SETTINGS ACK after sending our SETTINGS frame.
-  /// If no ACK is received within this duration, connection is closed with SETTINGS_TIMEOUT.
+  /// Server only: time the client has to acknowledge the SETTINGS of the server, after which the connection is closed
+  /// with SETTINGS_TIMEOUT (RFC 9113 §6.5.3). Checked by the periodic maintenance, which starts the wait at its first
+  /// pass after the SETTINGS were sent (at most HttpServerConfig::pollInterval later).
+  /// Must be positive. std::chrono::milliseconds::max() means no timeout.
   /// Default: 5 seconds.
-  std::chrono::milliseconds settingsTimeout{std::chrono::milliseconds{5000}};
+  std::chrono::milliseconds settingsTimeout{std::chrono::seconds{5}};
 
-  /// Timeout for PING/PONG keepalive mechanism.
-  /// If enabled (interval > 0), server sends PING frames to detect dead connections.
-  /// Default: 0 (disabled).
-  std::chrono::milliseconds pingInterval{std::chrono::milliseconds{0}};
+  /// Server only: time without any activity on a connection whose streams are open after which the server sends it a
+  /// PING, to detect a client that disappeared (see pingTimeout). Such a connection is never idle:
+  /// HttpServerConfig::keepAliveTimeout does not apply to it. A connection without open stream is not pinged.
+  /// Must be positive. std::chrono::milliseconds::max() means no PING.
+  /// Default: 30 seconds.
+  std::chrono::milliseconds pingInterval{std::chrono::seconds{30}};
 
-  /// Maximum time to wait for PING response before considering connection dead.
-  /// Only meaningful when pingInterval > 0.
+  /// Server only: time the client has to acknowledge a PING sent after pingInterval, after which the connection is
+  /// closed.
+  /// Must be positive. std::chrono::milliseconds::max() means no timeout.
   /// Default: 10 seconds.
-  std::chrono::milliseconds pingTimeout{std::chrono::milliseconds{10000}};
+  std::chrono::milliseconds pingTimeout{std::chrono::seconds{10}};
 
   /// Server only: time a stream may wait for the client without progress. A request whose body stalls that long is
   /// answered 408 Request Timeout, then its stream is reset with NO_ERROR; a response waiting that long for
@@ -253,7 +261,8 @@ struct Http2Config {
   /// restarts the wait of a request body, each DATA frame sent restarts the wait of a response: the frames of other
   /// streams, or PING frames, do not. A connection with open streams is never idle (HttpServerConfig::keepAliveTimeout
   /// does not apply to it): this bounds the time a client keeps the memory of its streams without using it. CONNECT
-  /// tunnels and streams whose handler runs are not concerned. std::chrono::milliseconds::max() means no timeout.
+  /// tunnels and streams whose handler runs are not concerned.
+  /// Must be positive. std::chrono::milliseconds::max() means no timeout.
   /// Default: 60 seconds.
   std::chrono::milliseconds streamIdleTimeout{std::chrono::seconds{60}};
 
