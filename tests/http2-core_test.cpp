@@ -1880,14 +1880,14 @@ TEST(Http2Core, GoAwayCallbackIsInvoked) {
   h2.connect(true);
 
   RawBytes go;
-  WriteGoAwayFrame(go, 0, ErrorCode::EnhanceYourCalm, ErrorMsg::TooManyPRIORITYFramesOnIdleStreams);
+  WriteGoAwayFrame(go, 0, ErrorCode::EnhanceYourCalm, ErrorMsg::TooManyPRIORITYFrames);
 
   auto res = h2.client.processInput(AsSpan(go));
   ASSERT_NE(res.action, Http2Connection::ProcessResult::Action::Error);
 
   ASSERT_EQ(h2.clientGoAway.size(), 1U);
   EXPECT_EQ(h2.clientGoAway[0].errorCode, ErrorCode::EnhanceYourCalm);
-  EXPECT_EQ(h2.clientGoAway[0].debug, "Too Many PRIORITY Frames On Idle Streams");
+  EXPECT_EQ(h2.clientGoAway[0].debug, "Too Many PRIORITY Frames");
 }
 
 TEST(Http2Core, WindowUpdateIncreasesConnectionRecvWindow) {

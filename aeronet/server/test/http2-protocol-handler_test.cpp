@@ -310,8 +310,10 @@ class Http2ProtocolLoopback {
   }
 
   void feedHandler(std::span<const std::byte> bytes) {
-    // As the event loop does before handing a read to the handler (the request start time of its streams).
-    state.lastActivity = std::chrono::steady_clock::now();
+    // As the event loop does before handing a read to the handler (the request start time of its streams, and the
+    // time from which they wait for the client).
+    ctx.connections.now = std::chrono::steady_clock::now() + clockAdvance;
+    state.lastActivity = ctx.connections.now;
     std::size_t safetyIters = 0;
     while (!bytes.empty()) {
       ++safetyIters;
@@ -403,6 +405,10 @@ class Http2ProtocolLoopback {
   vector<HeaderEvent> clientHeaders;
   vector<DataEvent> clientData;
   vector<std::pair<uint32_t, ErrorCode>> streamResets;
+
+  // Added to the time of the reads of the server (see feedHandler()): the input fed after raising it arrives that much
+  // later.
+  std::chrono::steady_clock::duration clockAdvance{};
 };
 
 // The RST_STREAM frames of `output`, as sent on the wire: the receiving connection ignores a late one, on a stream that
@@ -7928,5 +7934,272 @@ TEST(Http2ProtocolHandler, EarlyAnswersDoNotCountTowardMaxResetStreams) {
     return reset.second == ErrorCode::NoError;
   }));
 }
+
+// ============== Streams waiting for the client (Http2Config::streamIdleTimeout) ==============
+
+// Sends the headers of a POST to /upload on stream 1, and the start of its body, which never ends.
+void StartUploadThatStalls(Http2ProtocolLoopback& loop) {
+  RawChars headers;
+  headers.append(MakeHttp1HeaderLine(":method", "POST"));
+  headers.append(MakeHttp1HeaderLine(":scheme", "https"));
+  headers.append(MakeHttp1HeaderLine(":authority", "example.com"));
+  headers.append(MakeHttp1HeaderLine(":path", "/upload"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(headers), false), ErrorCode::NoError);
+  static constexpr std::string_view kBodyStart = "start of a body that never ends";
+  ASSERT_EQ(loop.client.sendData(1, std::as_bytes(std::span<const char>(kBodyStart)), false), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+  ASSERT_EQ(loop.handler.connection().activeStreamCount(), 1U);
+}
+
+// Whether the stream `streamId` was answered 408 then reset with NO_ERROR, which stops its request body (RFC 9113
+// §8.1).
+[[nodiscard]] bool WasAnswered408AndReset(const Http2ProtocolLoopback& loop, uint32_t streamId) {
+  const std::pair<uint32_t, ErrorCode> reset(streamId, ErrorCode::NoError);
+  return std::ranges::any_of(loop.clientHeaders,
+                             [streamId](const HeaderEvent& ev) {
+                               return ev.streamId == streamId && ev.endStream && GetHeaderValue(ev, ":status") == "408";
+                             }) &&
+         std::ranges::find(loop.streamResets, reset) != loop.streamResets.end();
+}
+
+// Whether the stream `streamId` was reset with CANCEL.
+[[nodiscard]] bool WasCancelled(const Http2ProtocolLoopback& loop, uint32_t streamId) {
+  const std::pair<uint32_t, ErrorCode> reset(streamId, ErrorCode::Cancel);
+  return std::ranges::find(loop.streamResets, reset) != loop.streamResets.end();
+}
+
+constexpr std::chrono::milliseconds kDefaultStreamIdleTimeout = std::chrono::seconds{60};
+
+// A stream whose request body never completes was kept, with the part of the body received, as long as the connection
+// lived: the connection is not idle (keepAliveTimeout does not apply to it), HttpServerConfig::bodyReadTimeout only
+// watches HTTP/1.1 bodies, and the per-route request timeout starts once the body is received. A client answering
+// PING frames kept it forever. It is answered 408 once it waited streamIdleTimeout.
+TEST(Http2ProtocolHandler, StreamWhoseRequestBodyStallsIsEventuallyClosed) {
+  Router router;
+  bool handlerCalled = false;
+  router.setDefault([&handlerCalled](const HttpRequestView&) {
+    handlerCalled = true;
+    return HttpResponse(200);
+  });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+  StartUploadThatStalls(loop);
+  const auto lastProgress = loop.ctx.connections.now;
+
+  EXPECT_TRUE(loop.handler.onSweep(lastProgress + kDefaultStreamIdleTimeout, false));
+  EXPECT_EQ(loop.handler.connection().activeStreamCount(), 1U);
+
+  EXPECT_TRUE(loop.handler.onSweep(lastProgress + kDefaultStreamIdleTimeout + std::chrono::milliseconds{1}, false));
+  loop.pumpServerToClient();
+  EXPECT_TRUE(WasAnswered408AndReset(loop, 1));
+  EXPECT_FALSE(loop.handler.hasRequestsInProgress());
+  EXPECT_FALSE(handlerCalled);
+}
+
+// Each DATA frame received with data restarts the wait of a request body. Neither PING frames, nor DATA frames without
+// data, nor the frames of other streams do.
+TEST(Http2ProtocolHandler, RequestBodyProgressRestartsTheIdleTimeOfItsStream) {
+  using namespace std::chrono_literals;
+  Router router;
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+  StartUploadThatStalls(loop);
+
+  loop.clockAdvance = 50s;
+  static constexpr std::string_view kMoreBody = "more";
+  ASSERT_EQ(loop.client.sendData(1, std::as_bytes(std::span<const char>(kMoreBody)), false), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  const auto lastProgress = loop.ctx.connections.now;
+
+  loop.clockAdvance = 100s;
+  loop.client.sendPing(PingFrame{});
+  ASSERT_EQ(loop.client.sendData(1, std::span<const std::byte>{}, false), ErrorCode::NoError);
+  const RawChars getHeaders = MakeGetHeaders("/");
+  ASSERT_EQ(loop.client.sendHeaders(3, http::StatusCode{}, HeadersView(getHeaders), true), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+
+  EXPECT_TRUE(loop.handler.onSweep(lastProgress + kDefaultStreamIdleTimeout, false));
+  loop.pumpServerToClient();
+  EXPECT_FALSE(WasAnswered408AndReset(loop, 1));
+  EXPECT_EQ(loop.handler.connection().activeStreamCount(), 1U);
+
+  EXPECT_TRUE(loop.handler.onSweep(lastProgress + kDefaultStreamIdleTimeout + 1ms, false));
+  loop.pumpServerToClient();
+  EXPECT_TRUE(WasAnswered408AndReset(loop, 1));
+  EXPECT_FALSE(loop.handler.hasRequestsInProgress());
+}
+
+// So was a stream whose response waits for flow-control credit that the client never grants: the rest of its body (up
+// to maxStreamPendingBytes per stream, maxOutboundBufferBytes per connection) was kept as long as the connection lived.
+// It is reset with CANCEL once it waited streamIdleTimeout, its memory released.
+TEST(Http2ProtocolHandler, ResponseWaitingForCreditIsEventuallyReleased) {
+  const std::string body = MakePatternedBody(100000);
+
+  Router router;
+  router.setPath(http::Method::GET, "/string",
+                 [&body](const HttpRequestView&) { return HttpResponse(200, std::string(body)); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars headers = MakeGetHeaders("/string");
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(headers), true), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+  // The client read what its initial window allowed, and does not send the credit for the rest.
+  ASSERT_EQ(loop.receivedData(1).size(), kDefaultInitialWindowSize);
+  ASSERT_EQ(loop.handler.connection().activeStreamCount(), 1U);
+  const auto lastProgress = loop.ctx.connections.now;
+
+  EXPECT_TRUE(loop.handler.onSweep(lastProgress + kDefaultStreamIdleTimeout, false));
+  EXPECT_EQ(loop.handler.connection().activeStreamCount(), 1U);
+
+  EXPECT_TRUE(loop.handler.onSweep(lastProgress + kDefaultStreamIdleTimeout + std::chrono::milliseconds{1}, false));
+  loop.pumpServerToClient();
+  EXPECT_TRUE(WasCancelled(loop, 1));
+  EXPECT_FALSE(loop.handler.hasRequestsInProgress());
+  EXPECT_EQ(loop.handler.pendingOutputSize(), 0U);
+}
+
+// Each DATA frame sent restarts the wait of a response, whether its credit was granted on the stream or was already
+// there. Neither PING frames nor connection-level credit without stream credit do.
+TEST(Http2ProtocolHandler, ResponseProgressRestartsTheIdleTimeOfItsStream) {
+  using namespace std::chrono_literals;
+  const std::string body = MakePatternedBody(100000);
+
+  Router router;
+  router.setPath(http::Method::GET, "/string",
+                 [&body](const HttpRequestView&) { return HttpResponse(200, std::string(body)); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  RawChars headers = MakeGetHeaders("/string");
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(headers), true), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+  ASSERT_EQ(loop.receivedData(1).size(), kDefaultInitialWindowSize);
+  // The client gives back the credit it consumed by itself: only the credit below is granted.
+  loop.client.discardPendingOutput();
+
+  loop.clockAdvance = 50s;
+  loop.client.sendWindowUpdate(1, 1000);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+  ASSERT_EQ(loop.receivedData(1).size(), kDefaultInitialWindowSize + 1000U);
+  const auto lastProgress = loop.ctx.connections.now;
+
+  loop.clockAdvance = 100s;
+  loop.client.sendPing(PingFrame{});
+  loop.client.sendWindowUpdate(0, 1000);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+  ASSERT_EQ(loop.receivedData(1).size(), kDefaultInitialWindowSize + 1000U);
+
+  EXPECT_TRUE(loop.handler.onSweep(lastProgress + kDefaultStreamIdleTimeout, false));
+  loop.pumpServerToClient();
+  EXPECT_FALSE(WasCancelled(loop, 1));
+
+  EXPECT_TRUE(loop.handler.onSweep(lastProgress + kDefaultStreamIdleTimeout + 1ms, false));
+  loop.pumpServerToClient();
+  EXPECT_TRUE(WasCancelled(loop, 1));
+  EXPECT_FALSE(loop.handler.hasRequestsInProgress());
+}
+
+// std::chrono::milliseconds::max() keeps the streams waiting for the client as long as the connection lives.
+TEST(Http2ProtocolHandler, StreamIdleTimeoutAtTheMaximumValueDisablesIt) {
+  const std::string body = MakePatternedBody(100000);
+
+  Router router;
+  router.setPath(http::Method::GET, "/string",
+                 [&body](const HttpRequestView&) { return HttpResponse(200, std::string(body)); });
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
+
+  Http2ProtocolLoopback loop(router);
+  loop.serverConfig.http2.withStreamIdleTimeout(std::chrono::milliseconds::max());
+  loop.connect();
+  StartUploadThatStalls(loop);
+  RawChars headers = MakeGetHeaders("/string");
+  ASSERT_EQ(loop.client.sendHeaders(3, http::StatusCode{}, HeadersView(headers), true), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+  ASSERT_EQ(loop.handler.connection().activeStreamCount(), 2U);
+
+  EXPECT_TRUE(loop.handler.onSweep(loop.ctx.connections.now + std::chrono::hours(24), false));
+  loop.pumpServerToClient();
+  EXPECT_EQ(loop.handler.connection().activeStreamCount(), 2U);
+  EXPECT_TRUE(loop.streamResets.empty());
+}
+
+// A CONNECT tunnel waits for both of its ends as long as they want: it is not concerned.
+TEST(Http2ProtocolHandler, StreamIdleTimeoutDoesNotCloseTunnels) {
+  Router router;
+  Http2ProtocolLoopback loop(router, WithTunnelBridge{});
+  loop.connect();
+  constexpr NativeHandle kFakeUpstreamFd = 42;
+  loop.tunnelBridge->onSetup = [](uint32_t, std::string_view, uint16_t) -> NativeHandle { return kFakeUpstreamFd; };
+
+  RawChars connect;
+  connect.append(MakeHttp1HeaderLine(":method", "CONNECT"));
+  connect.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
+  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(connect), false), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  loop.pumpServerToClient();
+  ASSERT_TRUE(loop.handler.isTunnelStream(1));
+
+  EXPECT_TRUE(loop.handler.onSweep(loop.ctx.connections.now + std::chrono::hours(24), false));
+  loop.pumpServerToClient();
+  EXPECT_TRUE(loop.handler.isTunnelStream(1));
+  EXPECT_TRUE(loop.streamResets.empty());
+}
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+// Once its body is received, a request no longer waits for the client: its handler may run as long as its route
+// allows (no per-route request timeout here), whatever streamIdleTimeout.
+TEST(Http2ProtocolHandler, StreamIdleTimeoutDoesNotApplyToRunningHandlers) {
+  using namespace std::chrono_literals;
+  static std::atomic<bool> releaseWork;
+  releaseWork.store(false, std::memory_order_relaxed);
+
+  Router router;
+  router.setDefault([](HttpRequestView& req) -> RequestTask<HttpResponse> {
+    const int result = co_await req.deferWork([] {
+      while (!releaseWork.load(std::memory_order_acquire)) {
+        std::this_thread::sleep_for(1ms);
+      }
+      return 1;
+    });
+    co_return HttpResponse(200, std::to_string(result));
+  });
+
+  Http2ProtocolLoopback loop(router);
+  AsyncResumeRecorder resumes(loop);
+  loop.connect();
+  StartUploadThatStalls(loop);
+  static constexpr std::string_view kBodyEnd = "end";
+  ASSERT_EQ(loop.client.sendData(1, std::as_bytes(std::span<const char>(kBodyEnd)), true), ErrorCode::NoError);
+  loop.pumpClientToServer();
+  ASSERT_TRUE(loop.handler.hasRequestsInProgress());
+
+  EXPECT_TRUE(loop.handler.onSweep(loop.ctx.connections.now + std::chrono::hours(24), false));
+  loop.pumpServerToClient();
+  EXPECT_TRUE(loop.clientHeaders.empty());
+  EXPECT_TRUE(loop.streamResets.empty());
+  EXPECT_TRUE(loop.handler.hasRequestsInProgress());
+
+  // The work must complete before the handler, which owns its coroutine, is destroyed.
+  releaseWork.store(true, std::memory_order_release);
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  while (resumes.nbPosts() == 0) {
+    ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "async callback did not fire in time";
+    std::this_thread::sleep_for(1ms);
+  }
+}
+#endif
 
 }  // namespace aeronet::http2

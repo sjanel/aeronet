@@ -423,6 +423,7 @@ TEST(ConfigLoaderTest, Http2Config) {
         "settingsTimeout": "3s",
         "pingInterval": "30s",
         "pingTimeout": "5s",
+        "streamIdleTimeout": "2m",
         "maxStreamsPerConnection": 1000,
         "maxResetStreams": 500,
         "maxStreamPendingBytes": 1048576,
@@ -447,6 +448,7 @@ TEST(ConfigLoaderTest, Http2Config) {
   EXPECT_EQ(config.server.http2.settingsTimeout, std::chrono::milliseconds{3000});
   EXPECT_EQ(config.server.http2.pingInterval, std::chrono::milliseconds{30000});
   EXPECT_EQ(config.server.http2.pingTimeout, std::chrono::milliseconds{5000});
+  EXPECT_EQ(config.server.http2.streamIdleTimeout, std::chrono::minutes{2});
   EXPECT_EQ(config.server.http2.maxStreamsPerConnection, 1000U);
   EXPECT_EQ(config.server.http2.maxResetStreams, 500U);
   EXPECT_EQ(config.server.http2.maxStreamPendingBytes, 1048576U);

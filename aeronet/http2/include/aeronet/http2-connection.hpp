@@ -528,10 +528,13 @@ class Http2Connection {
 
   void recordStreamClosed(uint32_t streamId, ErrorCode errorCode) const noexcept;
 
-  [[nodiscard]] bool priorityDepthExceeded(uint32_t id) const noexcept;
+  // Record the priority of `stream` (unless Http2Config::enablePriority is false), on the root beyond
+  // maxPriorityTreeDepth, a dependency on one of its descendants first moving that descendant (RFC 7540 §5.3.3).
+  void recordPriority(Http2Stream& stream, uint32_t streamDependency, uint8_t weightMinusOne, bool exclusive) noexcept;
 
-  void recordPriority(Http2Stream& stream, uint32_t streamDependency, uint8_t weightMinusOne,
-                      bool exclusive) const noexcept;
+  // Count a received DATA, HEADERS or CONTINUATION frame, empty if it carries neither bytes nor any of its END flags.
+  // Returns whether the empty frames received in a row exceed their bound (see kMaxConsecutiveEmptyFrames).
+  [[nodiscard]] bool isEmptyFrameFlood(bool emptyFrame) noexcept;
 
   // ============================
   // Error handling
@@ -563,9 +566,8 @@ class Http2Connection {
   uint32_t _lastLocalStreamId{0};
   uint32_t _maxPrunedStreamId{0};
 
-  // Security hardening: PRIORITY frames on non-existent streams since the last stream opened by the peer (flood
-  // mitigation)
-  uint32_t _idlePriorityFrameCount{0};
+  // Security hardening: PRIORITY frames since the last stream opened by the peer (flood mitigation)
+  uint32_t _priorityFrameCount{0};
 
   // Security hardening: the streams opened by the peer, and those of them ended by a reset (see
   // Http2Config::maxResetStreams). At most 2^30 streams of the peer fit in the 31-bit stream identifiers.
@@ -596,6 +598,9 @@ class Http2Connection {
   tracing::TelemetryContext* _pTelemetryContext;
 
   ConnectionState _state{ConnectionState::AwaitingPreface};
+
+  // Security hardening: the DATA, HEADERS and CONTINUATION frames received in a row without bytes nor END flag.
+  uint8_t _nbConsecutiveEmptyFrames{0};
 
   bool _settingsSent{false};
   bool _settingsAcked{false};

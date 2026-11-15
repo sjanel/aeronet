@@ -429,11 +429,15 @@ void Http2ProtocolHandler::onHeadersDecoded(uint32_t streamId, DecodedHeaders& d
   // by the connection receive window: a client declaring a large body without sending it allocates no more.
   if (declaredBodyTooLarge) {
     rejectTooLargeBody(it);
-  } else if (declaredBodyLength != StreamRequest::kUnknownBodyLength) {
+    return;
+  }
+  if (declaredBodyLength != StreamRequest::kUnknownBodyLength) {
     streamReq.declaredBodyLength = declaredBodyLength;
     streamReq.bodyBuffer.reserve(
         std::min(declaredBodyLength, static_cast<std::size_t>(_connection.localSettings().connectionWindowSize)));
   }
+  // The body is awaited from the client.
+  it->second.deadline = streamIdleDeadline();
 }
 
 void Http2ProtocolHandler::onData(uint32_t streamId, std::span<const std::byte> data, bool endStream) {
@@ -493,6 +497,8 @@ void Http2ProtocolHandler::onData(uint32_t streamId, std::span<const std::byte> 
   // final DATA frame; the body is then finalized and dispatched from onTrailersReceived.
   if (endStream) {
     finalizeRequestBodyAndDispatch(it);
+  } else if (!data.empty()) {
+    state.deadline = streamIdleDeadline();
   }
 }
 
@@ -691,8 +697,9 @@ void Http2ProtocolHandler::releaseStreamAfterResponse(StreamsMap::iterator it) {
   assert(it != _streams.end());
   recycleRequest(it->second.request);
   if (it->second.pending) {
-    // The rest of the response waits for flow control: the stream is closed once it is sent (flushPendingSends()).
-    it->second.requestDeadline = {};
+    // The rest of the response waits for the client (flow-control credit, or the reads of the output): the stream is
+    // closed once it is sent (flushPendingSends()).
+    it->second.deadline = streamIdleDeadline();
   } else {
     closeAnsweredStream(it);
   }
@@ -803,10 +810,12 @@ void Http2ProtocolHandler::flushPendingSends() {
     assert(_connection.getStream(streamId) != nullptr && "pending send references a dead stream");
 
     bool sent;
+    bool progressed;
     if (PendingFileSend* pFileSend = state.fileSend(); pFileSend != nullptr) {
       // File + trailers is unreachable via the public HttpResponse API (trailerAddLine
       // requires an in-memory body, which file() clears), so endStreamAfterBody is always true.
       constexpr bool endStreamAfterBody = true;
+      const std::size_t lengthBefore = pFileSend->filePayload.length;
       const ErrorCode err = sendPendingFileBody(streamId, pFileSend->filePayload, endStreamAfterBody, fileReadShare);
       if (err != ErrorCode::NoError) [[unlikely]] {
         --_nbPendingSends;
@@ -815,10 +824,18 @@ void Http2ProtocolHandler::flushPendingSends() {
         continue;
       }
       sent = pFileSend->filePayload.length == 0;
+      progressed = pFileSend->filePayload.length != lengthBefore;
     } else {
-      sent = sendPendingStreamingBody(streamId, *state.streamingSend());
+      PendingStreamingSend& pending = *state.streamingSend();
+      const std::size_t sizeBefore = pending.body.size();
+      sent = sendPendingStreamingBody(streamId, pending);
+      progressed = pending.body.size() != sizeBefore;
     }
     if (!sent) {
+      // A flush follows any input, a PING for instance: only the bytes sent on the stream restart its idle time.
+      if (progressed) {
+        state.deadline = streamIdleDeadline();
+      }
       ++it;
       continue;
     }
@@ -1037,10 +1054,11 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
     return;
   }
 
-  // Arm per-route request deadline for sweep enforcement (async/streaming handlers).
-  if (routingResult.pathConfig().requestTimeout != std::chrono::milliseconds::max()) {
-    it->second.requestDeadline = req.reqStart() + routingResult.pathConfig().requestTimeout;
-  }
+  // Arm per-route request deadline for sweep enforcement (async/streaming handlers). The client is no longer waited
+  // for: this also ends the idle time of a request body.
+  const std::chrono::milliseconds requestTimeout = routingResult.pathConfig().requestTimeout;
+  it->second.deadline = requestTimeout != std::chrono::milliseconds::max() ? req.reqStart() + requestTimeout
+                                                                           : std::chrono::steady_clock::time_point{};
 
   // Handle OPTIONS and TRACE via shared protocol-agnostic code
   if (req.method() == http::Method::OPTIONS || req.method() == http::Method::TRACE) {
@@ -1622,6 +1640,15 @@ void Http2ProtocolHandler::initiateGoAway() {
   requestCloseIfGoAwayCompleted();
 }
 
+std::chrono::steady_clock::time_point Http2ProtocolHandler::streamIdleDeadline() const noexcept {
+  const std::chrono::milliseconds timeout = _pCtx->config.http2.streamIdleTimeout;
+  if (timeout == std::chrono::milliseconds::max()) {
+    return {};
+  }
+  // The time of the event loop iteration: no clock read per DATA frame.
+  return _pCtx->connections.now + timeout;
+}
+
 bool Http2ProtocolHandler::onSweep(std::chrono::steady_clock::time_point now, bool draining) {
   // A drain ends HTTP/2 connections like the HTTP/1.1 ones, once their current requests are answered: a graceful GOAWAY
   // makes their clients open their next streams elsewhere.
@@ -1630,33 +1657,49 @@ bool Http2ProtocolHandler::onSweep(std::chrono::steady_clock::time_point now, bo
   }
   for (auto it = _streams.begin(); it != _streams.end();) {
     auto& streamState = it->second;
-    if (streamState.requestDeadline.time_since_epoch().count() != 0 && streamState.requestDeadline < now) {
-      const uint32_t streamId = it->first;
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-      // The request of an async handler is owned by its task.
-      auto* pAsync = streamState.asyncTask();
-      HttpRequestView& request = pAsync != nullptr ? pAsync->streamRequest->request : streamState.request->request;
-#else
-      HttpRequestView& request = streamState.request->request;
-#endif
-      HttpResponse response = request.makeResponse(http::StatusCodeRequestTimeout);
-
-      log::debug("HTTP/2 stream {} timed out (per-route request deadline exceeded)", streamId);
-
-#ifdef AERONET_ENABLE_ASYNC_HANDLERS
-      // The deferred work of the task may still be running, using its coroutine frame and its request: keep them out
-      // of the stream before answering, so that nothing the response stores in the stream can destroy them.
-      orphanAsyncTask(streamState);
-#endif
-      sendInMemoryResponse(request, std::move(response));
-      // The 408 has no body: it does not wait for flow-control credit, and it ends the stream.
-      assert(!streamState.hasPendingSend());
-      onRequestCompleted(request, http::StatusCodeRequestTimeout);
-
-      it = closeAnsweredStream(it);
-    } else {
+    if (streamState.deadline.time_since_epoch().count() == 0 || now <= streamState.deadline) {
       ++it;
+      continue;
     }
+    const uint32_t streamId = it->first;
+    if (streamState.hasPendingSend()) {
+      // The rest of the response waited for the client without progress for streamIdleTimeout: its memory is released.
+      log::debug("HTTP/2 stream {} reset: its response made no progress for streamIdleTimeout", streamId);
+      _pCtx->telemetry.counterAdd("aeronet.http2.streams.closed_for_idle_timeout");
+      releasePendingSend(streamState);
+      it = _streams.erase(it);
+      _connection.sendRstStream(streamId, ErrorCode::Cancel);
+      continue;
+    }
+
+    // A request body stalled for streamIdleTimeout (the stream still has its request), or a handler exceeding the
+    // per-route request timeout (the request is owned by its async task).
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+    auto* pAsync = streamState.asyncTask();
+    HttpRequestView& request = pAsync != nullptr ? pAsync->streamRequest->request : streamState.request->request;
+#else
+    HttpRequestView& request = streamState.request->request;
+#endif
+    if (streamState.hasRequest()) {
+      log::debug("HTTP/2 stream {} timed out (request body stalled for streamIdleTimeout)", streamId);
+      _pCtx->telemetry.counterAdd("aeronet.http2.streams.closed_for_idle_timeout");
+    } else {
+      log::debug("HTTP/2 stream {} timed out (per-route request deadline exceeded)", streamId);
+    }
+    HttpResponse response = request.makeResponse(http::StatusCodeRequestTimeout);
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+    // The deferred work of the task may still be running, using its coroutine frame and its request: keep them out of
+    // the stream before answering, so that nothing the response stores in the stream can destroy them.
+    orphanAsyncTask(streamState);
+#endif
+    sendInMemoryResponse(request, std::move(response));
+    // The 408 has no body: it does not wait for flow-control credit, and it ends the stream (a request body still
+    // received is then stopped with a NO_ERROR reset, see closeAnsweredStream()).
+    assert(!streamState.hasPendingSend());
+    onRequestCompleted(request, http::StatusCodeRequestTimeout);
+
+    it = closeAnsweredStream(it);
   }
 
   _connection.reclaimOutputBufferMemory();

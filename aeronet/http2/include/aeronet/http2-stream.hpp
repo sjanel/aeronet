@@ -142,6 +142,9 @@ class Http2Stream {
   /// Check if this stream has exclusive dependency.
   [[nodiscard]] bool isExclusive() const noexcept { return _exclusive; }
 
+  /// Move this stream under another one, keeping its weight.
+  void setStreamDependency(uint32_t streamDependency) noexcept { _streamDependency = streamDependency; }
+
   /// Update priority information.
   void setPriority(uint32_t streamDependency, uint8_t weightMinusOne, bool exclusive) noexcept {
     _streamDependency = streamDependency;

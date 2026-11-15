@@ -4977,40 +4977,57 @@ TEST(Http2Connection, PriorityViaHeadersFrameExceedingDepthLimitIsClampedToRoot)
   EXPECT_EQ(conn.getStream(5)->streamDependency(), 0U);
 }
 
-TEST(Http2Connection, PriorityDependencyCycleTerminatesAndClampsInsteadOfLooping) {
-  Http2Config config;
-  config.maxPriorityTreeDepth = 5;
-  Http2Connection conn(config, true);
+// A stream made to depend on one of its descendants: that descendant is first moved to the former parent of the stream,
+// keeping its weight (RFC 7540 §5.3.3). Recorded as is, the dependency would make a cycle, which the walk of every
+// later dependency on it would go round up to maxPriorityTreeDepth.
+TEST(Http2Connection, PriorityDependencyOnADescendantMovesItToTheFormerParent) {
+  Http2Connection conn(Http2Config(), true);
   RecordingEventSink connSink(conn);
   AdvanceToOpenAndDrainSettingsAck(conn);
-
-  for (uint32_t streamId : {1U, 3U, 5U}) {
-    ASSERT_EQ(conn.sendHeaders(streamId, http::StatusCodeOK, HeadersView{}, false), ErrorCode::NoError);
-  }
-  if (conn.hasPendingOutput()) {
-    conn.onOutputWritten(conn.getPendingOutput().size());
+  for (const uint32_t streamId : {1U, 3U, 5U, 7U}) {
+    OpenClientStream(conn, streamId);
   }
 
-  const auto sendPriority = [&](uint32_t streamId, uint32_t dependency) {
-    RawBytes buf;
-    WritePriorityFrame(buf, streamId, dependency, 16, false);
-    auto span = std::span<const std::byte>(buf.data(), buf.size());
-    ASSERT_NE(conn.processInput(span).action, Http2Connection::ProcessResult::Action::Error);
-  };
+  // 5 -> 3 -> 1 -> 7 -> root.
+  RawBytes priorities;
+  WritePriorityFrame(priorities, 1, 7, 15, false);
+  WritePriorityFrame(priorities, 3, 1, 15, false);
+  WritePriorityFrame(priorities, 5, 3, 99, false);
+  FeedConnection(conn, priorities);
+  ASSERT_EQ(conn.getStream(5)->streamDependency(), 3U);
 
-  // 3 depends on 1 (fine), then 1 is re-parented onto 3 -- forming a 1<->3 cycle.
-  // Neither update is illegal in isolation (only literal self-dependency is
-  // rejected outright), so the cycle is allowed to form.
-  sendPriority(3, 1);
-  sendPriority(1, 3);
+  // 1 -> 5, 5 descending from 1: 5 is first moved under 7, the former parent of 1.
+  RawBytes priority;
+  WritePriorityFrame(priority, 1, 5, 31, false);
+  FeedConnection(conn, priority);
+  ASSERT_TRUE(conn.isOpen());
 
-  // Attach a third stream to the cyclic pair. Without the depth cap this
-  // ancestor walk spins between 1 and 3 forever; with it, the walk gives up
-  // once maxPriorityTreeDepth is exceeded and the new stream is clamped.
-  sendPriority(5, 1);
+  EXPECT_EQ(conn.getStream(5)->streamDependency(), 7U);
+  EXPECT_EQ(conn.getStream(5)->weight(), 100U);
+  EXPECT_EQ(conn.getStream(1)->streamDependency(), 5U);
+  EXPECT_EQ(conn.getStream(1)->weight(), 32U);
+  EXPECT_EQ(conn.getStream(3)->streamDependency(), 1U);
+  EXPECT_EQ(conn.getStream(7)->streamDependency(), 0U);
+}
 
-  EXPECT_EQ(conn.getStream(5)->streamDependency(), 0U);
-  EXPECT_TRUE(conn.isOpen());
+// A dependency on a stream that the connection does not know (idle, or forgotten) is recorded: the walk up the
+// dependency chain ends there.
+TEST(Http2Connection, PriorityDependencyOnAnUnknownStreamIsRecorded) {
+  Http2Connection conn(Http2Config(), true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  OpenClientStream(conn, 1);
+  OpenClientStream(conn, 3);
+
+  // 3 -> 1 -> 101, an idle stream.
+  RawBytes priorities;
+  WritePriorityFrame(priorities, 1, 101, 15, false);
+  WritePriorityFrame(priorities, 3, 1, 15, false);
+  FeedConnection(conn, priorities);
+  ASSERT_TRUE(conn.isOpen());
+
+  EXPECT_EQ(conn.getStream(1)->streamDependency(), 101U);
+  EXPECT_EQ(conn.getStream(3)->streamDependency(), 1U);
 }
 
 // ============================
@@ -6096,6 +6113,172 @@ TEST(Http2Connection, MaxResetStreamsDoesNotApplyToClients) {
     (void)DrainPendingOutput(client);
   }
   EXPECT_TRUE(client.isOpen());
+}
+
+// Feeds `frame` `nbFrames` times to the server `conn`, and returns the error code of the connection error it caused
+// (NO_ERROR if none), and the number of frames fed until then.
+struct RepeatedFrameResult {
+  ErrorCode errorCode;
+  uint32_t nbFrames;
+};
+
+[[nodiscard]] RepeatedFrameResult FeedRepeatedFrame(Http2Connection& conn, std::span<const std::byte> frame,
+                                                    uint32_t nbFrames) {
+  RepeatedFrameResult res{ErrorCode::NoError, 0};
+  while (res.nbFrames < nbFrames && res.errorCode == ErrorCode::NoError) {
+    res.errorCode = FeedUntilConnectionError(conn, frame);
+    ++res.nbFrames;
+  }
+  return res;
+}
+
+// The DATA and CONTINUATION frames carrying neither bytes nor their END flag that a connection accepts in a row.
+constexpr uint32_t kMaxConsecutiveEmptyFramesForTest = 16U;
+
+// Many frames: unbounded, a connection would accept them all.
+constexpr uint32_t kManyFrames = 100000U;
+
+// "Empty Frames Flood" (CVE-2019-9518): a header block may go on with any number of CONTINUATION frames without
+// payload, which never reach the limit of the accumulated header block bytes (256 KiB), and keep the stream of the
+// block open as long as they come. A HEADERS frame without payload nor END flag counts as well.
+TEST(Http2Connection, EmptyContinuationFramesAreBounded) {
+  const auto staticGetRequestStart = SerializeFrame(
+      FrameHeader(static_cast<uint32_t>(kStaticGetRequest.size()), FrameType::Headers, FrameFlags::None, 1),
+      kStaticGetRequest);
+  const auto emptyHeaders = SerializeFrame(FrameHeader(0, FrameType::Headers, FrameFlags::None, 1), {});
+  for (const bool emptyFirstFrame : {false, true}) {
+    SCOPED_TRACE(emptyFirstFrame ? "empty HEADERS frame" : "HEADERS frame with a field block fragment");
+    Http2Connection conn(Http2Config(), true);
+    RecordingEventSink connSink(conn);
+    AdvanceToOpenAndDrainSettingsAck(conn);
+    FeedConnection(conn, emptyFirstFrame ? emptyHeaders : staticGetRequestStart);
+
+    const auto emptyContinuation = SerializeFrame(FrameHeader(0, FrameType::Continuation, FrameFlags::None, 1), {});
+    const RepeatedFrameResult res = FeedRepeatedFrame(conn, emptyContinuation, kManyFrames);
+
+    EXPECT_EQ(res.errorCode, ErrorCode::EnhanceYourCalm)
+        << res.nbFrames << " empty CONTINUATION frames in one header block";
+    EXPECT_EQ(res.nbFrames, kMaxConsecutiveEmptyFramesForTest + (emptyFirstFrame ? 0U : 1U));
+    EXPECT_EQ(conn.state(), ConnectionState::Closed);
+  }
+}
+
+// So may a request body, with DATA frames carrying neither data nor END_STREAM: they consume no flow-control credit, or
+// only that of their padding, which is given back.
+TEST(Http2Connection, EmptyDataFramesAreBounded) {
+  const std::array padding{std::byte{4}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}};
+  const auto emptyData = SerializeFrame(FrameHeader(0, FrameType::Data, FrameFlags::None, 1), {});
+  const auto paddingOnlyData = SerializeFrame(
+      FrameHeader(static_cast<uint32_t>(padding.size()), FrameType::Data, FrameFlags::DataPadded, 1), padding);
+  for (const auto& frame : {emptyData, paddingOnlyData}) {
+    SCOPED_TRACE(frame.size() == FrameHeader::kSize ? "empty" : "padding only");
+    Http2Connection conn(Http2Config(), true);
+    RecordingEventSink connSink(conn);
+    AdvanceToOpenAndDrainSettingsAck(conn);
+    OpenClientStream(conn, 1);
+
+    const RepeatedFrameResult res = FeedRepeatedFrame(conn, frame, kManyFrames);
+
+    EXPECT_EQ(res.errorCode, ErrorCode::EnhanceYourCalm) << res.nbFrames << " DATA frames without data on one stream";
+    EXPECT_EQ(res.nbFrames, kMaxConsecutiveEmptyFramesForTest + 1U);
+    EXPECT_EQ(conn.state(), ConnectionState::Closed);
+  }
+}
+
+// The empty frames are counted in a row, across the DATA, HEADERS and CONTINUATION frames of all streams: a DATA frame
+// carrying data, a HEADERS frame carrying a field block fragment, an empty DATA frame with END_STREAM or an empty
+// CONTINUATION frame with END_HEADERS restarts the count, unlike the frames of other types.
+TEST(Http2Connection, FramesMakingProgressRestartTheCountOfEmptyFrames) {
+  Http2Connection conn(Http2Config(), true);
+  RecordingEventSink connSink(conn);
+  uint32_t nbStreamResets = 0;
+  connSink.onStreamResetFn = [&nbStreamResets](uint32_t, ErrorCode) { ++nbStreamResets; };
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  OpenClientStream(conn, 1);
+
+  const auto emptyData = SerializeFrame(FrameHeader(0, FrameType::Data, FrameFlags::None, 1), {});
+  const auto feedEmptyFramesUpToTheBound = [&conn](std::span<const std::byte> frame) {
+    const RepeatedFrameResult res = FeedRepeatedFrame(conn, frame, kMaxConsecutiveEmptyFramesForTest);
+    ASSERT_EQ(res.errorCode, ErrorCode::NoError) << "after " << res.nbFrames << " empty frames";
+  };
+  const auto feedProgress = [&conn](std::span<const std::byte> frame) {
+    ASSERT_EQ(FeedUntilConnectionError(conn, frame), ErrorCode::NoError);
+  };
+
+  feedEmptyFramesUpToTheBound(emptyData);
+  const std::array oneByte{std::byte{'a'}};
+  feedProgress(SerializeFrame(FrameHeader(1, FrameType::Data, FrameFlags::None, 1), oneByte));
+
+  feedEmptyFramesUpToTheBound(emptyData);
+  feedProgress(SerializeFrame(
+      FrameHeader(static_cast<uint32_t>(kStaticGetRequest.size()), FrameType::Headers, FrameFlags::None, 3),
+      kStaticGetRequest));
+
+  feedEmptyFramesUpToTheBound(SerializeFrame(FrameHeader(0, FrameType::Continuation, FrameFlags::None, 3), {}));
+  feedProgress(SerializeFrame(FrameHeader(0, FrameType::Continuation, FrameFlags::ContinuationEndHeaders, 3), {}));
+  ASSERT_NE(conn.getStream(3), nullptr);
+
+  const auto emptyDataOnStream3 = SerializeFrame(FrameHeader(0, FrameType::Data, FrameFlags::None, 3), {});
+  feedEmptyFramesUpToTheBound(emptyDataOnStream3);
+  feedProgress(SerializeFrame(FrameHeader(0, FrameType::Data, FrameFlags::DataEndStream, 1), {}));
+
+  feedEmptyFramesUpToTheBound(emptyDataOnStream3);
+  const std::array<std::byte, 8> pingData{};
+  feedProgress(SerializeFrame(FrameHeader(8, FrameType::Ping, FrameFlags::None, 0), pingData));
+  EXPECT_EQ(nbStreamResets, 0U);
+  EXPECT_EQ(FeedUntilConnectionError(conn, emptyDataOnStream3), ErrorCode::EnhanceYourCalm);
+}
+
+// A HEADERS frame without field block fragment nor END flag counts as well, whatever the frames before it.
+TEST(Http2Connection, EmptyHeadersFramesCountAmongTheEmptyFrames) {
+  Http2Connection conn(Http2Config(), true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  OpenClientStream(conn, 1);
+
+  const auto emptyData = SerializeFrame(FrameHeader(0, FrameType::Data, FrameFlags::None, 1), {});
+  ASSERT_EQ(FeedRepeatedFrame(conn, emptyData, kMaxConsecutiveEmptyFramesForTest).errorCode, ErrorCode::NoError);
+  EXPECT_EQ(FeedUntilConnectionError(conn, SerializeFrame(FrameHeader(0, FrameType::Headers, FrameFlags::None, 3), {})),
+            ErrorCode::EnhanceYourCalm);
+}
+
+// Two streams depending on each other (RFC 7540 §5.3.3 moves the first one to the former parent of the second instead)
+// would make a cycle that the depth check of every later dependency on them walks up to maxPriorityTreeDepth.
+TEST(Http2Connection, PriorityDependencyCycleIsNotRecorded) {
+  Http2Connection conn(Http2Config(), true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  OpenClientStream(conn, 1);
+  OpenClientStream(conn, 3);
+
+  RawBytes priorities;
+  WritePriorityFrame(priorities, 1, 3, 16, false);
+  WritePriorityFrame(priorities, 3, 1, 16, false);
+  FeedConnection(conn, priorities);
+  ASSERT_TRUE(conn.isOpen());
+
+  // The root (stream 0) is reached from stream 3 through stream 1.
+  EXPECT_EQ(conn.getStream(3)->streamDependency(), 1U);
+  EXPECT_EQ(conn.getStream(1)->streamDependency(), 0U);
+}
+
+// The limit of PRIORITY frames only counted the ones on streams that the connection does not know, whereas the ones on
+// its open streams cost more: each walks the dependency chain of its stream. All of them count now.
+TEST(Http2Connection, PriorityFramesOnOpenStreamsAreBounded) {
+  static constexpr uint32_t kMaxPriorityFrames = 10000;
+  Http2Connection conn(Http2Config(), true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  OpenClientStream(conn, 1);
+  OpenClientStream(conn, 3);
+
+  RawBytes priority;
+  WritePriorityFrame(priority, 1, 3, 16, false);
+  const RepeatedFrameResult res = FeedRepeatedFrame(conn, priority, kManyFrames);
+
+  EXPECT_EQ(res.errorCode, ErrorCode::EnhanceYourCalm) << res.nbFrames << " PRIORITY frames on an open stream";
+  EXPECT_EQ(res.nbFrames, kMaxPriorityFrames + 1U);
+  EXPECT_EQ(conn.state(), ConnectionState::Closed);
 }
 
 }  // namespace
