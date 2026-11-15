@@ -30,6 +30,8 @@ constexpr std::string_view ConvertProcessResultErrorMsgToSv(ErrorMsg msg) {
       return "DATA On Closed Stream";
     case ErrorMsg::DATAOnIdleStream:
       return "DATA On Idle Stream";
+    case ErrorMsg::TooManyEmptyFrames:
+      return "Too Many Empty Frames";
     case ErrorMsg::ConnectionFlowControlExceeded:
       return "Connection Flow Control Exceeded";
     case ErrorMsg::HEADERSFrameOnStreamZero:
@@ -62,8 +64,8 @@ constexpr std::string_view ConvertProcessResultErrorMsgToSv(ErrorMsg msg) {
       return "PRIORITY Frame On Stream Zero";
     case ErrorMsg::InvalidPRIORITYFrame:
       return "Invalid PRIORITY Frame";
-    case ErrorMsg::TooManyPRIORITYFramesOnIdleStreams:
-      return "Too Many PRIORITY Frames On Idle Streams";
+    case ErrorMsg::TooManyPRIORITYFrames:
+      return "Too Many PRIORITY Frames";
     case ErrorMsg::RST_STREAMFrameOnStreamZero:
       return "RST_STREAM Frame On Stream Zero";
     case ErrorMsg::InvalidRST_STREAMFrame:

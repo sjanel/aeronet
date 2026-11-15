@@ -55,11 +55,18 @@ constexpr int32_t ReplenishThreshold(uint32_t windowSize) noexcept { return stat
 // memory growth from a CONTINUATION flood attack.
 constexpr std::size_t kMaxHeaderBlockAccumulationSize = 256UL * 1024;
 
-// Security hardening: cap the PRIORITY frames received on non-existent streams since the last stream opened by the
-// peer, to prevent an attacker from flooding cheap PRIORITY frames that starve real request processing.
-// ENHANCE_YOUR_CALM is sent when exceeded. A client reprioritizing its forgotten streams now and then on a long-lived
-// connection never reaches it.
-constexpr uint32_t kMaxIdlePriorityFrames = 10000U;
+// Security hardening: cap the PRIORITY frames received since the last stream opened by the peer, to prevent an attacker
+// from flooding cheap PRIORITY frames that starve real request processing: each one on a known stream walks its
+// dependency chain (see recordPriority()). ENHANCE_YOUR_CALM is sent when exceeded. A client reprioritizing its streams
+// now and then on a long-lived connection never reaches it.
+constexpr uint32_t kMaxPriorityFrames = 10000U;
+
+// Security hardening ("Empty Frames Flood", CVE-2019-9518): a DATA frame carrying no data, or a HEADERS or CONTINUATION
+// frame carrying no field block fragment, without any of its END flags, makes no progress. The flow-control windows and
+// the bound of the header block bytes do not limit them: more than this many in a row is a connection error with
+// ENHANCE_YOUR_CALM. A frame of these types carrying bytes or an END flag restarts the count, frames of other types do
+// not change it.
+constexpr uint8_t kMaxConsecutiveEmptyFrames = 16U;
 
 // Whether a reset of a stream of the peer by this endpoint counts toward Http2Config::maxResetStreams: not the NO_ERROR
 // reset that ends a request answered before its end (RFC 9113 §8.1), nor a failure of this endpoint or of the target of
@@ -297,28 +304,47 @@ void Http2Connection::recordStreamClosed(uint32_t streamId, ErrorCode errorCode)
   _pTelemetryContext->histogram("aeronet.http2.streams.active", static_cast<double>(_activeStreamCount));
 }
 
-// Returns true if walking up from `parentId` toward the root would exceed
-// maxPriorityTreeDepth (or never terminates, i.e. a cycle).
-bool Http2Connection::priorityDepthExceeded(uint32_t id) const noexcept {
-  uint32_t depth = 0;
-  while (id != 0) {
-    if (++depth > _localSettings.maxPriorityTreeDepth) {
-      return true;
-    }
-    const auto it = _streams.find(id);
-    if (it == _streams.end()) {
-      break;  // ancestor not tracked (idle/pruned) -> chain ends here
-    }
-    id = it->second.streamDependency();  // needs this accessor on Http2Stream
+void Http2Connection::recordPriority(Http2Stream& stream, uint32_t streamDependency, uint8_t weightMinusOne,
+                                     bool exclusive) noexcept {
+  // A stream depending on itself is a stream error, handled by the callers.
+  assert(streamDependency != stream.id());
+  if (!_localSettings.enablePriority) {
+    return;
   }
-  return false;
+  // Walk up from the new parent toward the root, within maxPriorityTreeDepth: a deeper dependency is recorded on the
+  // root. The walk meeting the stream itself means that the new parent descends from it: the new parent is first moved
+  // to the former parent of the stream (RFC 7540 §5.3.3), so that the dependencies never make a cycle, which every
+  // later walk through it would go round up to the depth limit.
+  Http2Stream* pNewParent = nullptr;
+  uint32_t depth = 0;
+  for (uint32_t ancestorId = streamDependency; ancestorId != 0;) {
+    if (ancestorId == stream.id()) {
+      assert(pNewParent != nullptr);
+      pNewParent->setStreamDependency(stream.streamDependency());
+      break;
+    }
+    if (++depth > _localSettings.maxPriorityTreeDepth) {
+      streamDependency = 0;
+      break;
+    }
+    const auto it = _streams.find(ancestorId);
+    if (it == _streams.end()) {
+      break;  // ancestor not tracked (idle or forgotten): the chain ends here
+    }
+    if (pNewParent == nullptr) {
+      pNewParent = &it->second;
+    }
+    ancestorId = it->second.streamDependency();
+  }
+  stream.setPriority(streamDependency, weightMinusOne, exclusive);
 }
 
-void Http2Connection::recordPriority(Http2Stream& stream, uint32_t streamDependency, uint8_t weightMinusOne,
-                                     bool exclusive) const noexcept {
-  if (_localSettings.enablePriority) {
-    stream.setPriority(priorityDepthExceeded(streamDependency) ? 0U : streamDependency, weightMinusOne, exclusive);
+bool Http2Connection::isEmptyFrameFlood(bool emptyFrame) noexcept {
+  if (!emptyFrame) [[likely]] {
+    _nbConsecutiveEmptyFrames = 0;
+    return false;
   }
+  return ++_nbConsecutiveEmptyFrames > kMaxConsecutiveEmptyFrames;
 }
 
 // ============================
@@ -1065,6 +1091,11 @@ Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader head
     return connectionError(ErrorCode::FrameSizeError, ErrorMsg::InvalidDATAFrame);
   }
 
+  const bool endStream = header.hasFlag(FrameFlags::DataEndStream);
+  if (isEmptyFrameFlood(frame.data.empty() && !endStream)) [[unlikely]] {
+    return connectionError(ErrorCode::EnhanceYourCalm, ErrorMsg::TooManyEmptyFrames);
+  }
+
   // Flow control: count full payload including padding
   int32_t payloadSize = static_cast<int32_t>(payload.size());
 
@@ -1098,8 +1129,6 @@ Http2Connection::ProcessResult Http2Connection::handleDataFrame(FrameHeader head
     replenishConnectionRecvWindow();  // The discarded frame still consumed connection-level credit.
     return streamError(streamId, ErrorCode::FlowControlError, ErrorMsg::StreamFlowControlExceeded);
   }
-
-  const bool endStream = header.hasFlag(FrameFlags::DataEndStream);
 
   // canReceive() above already ensures the stream is Open or HalfClosedLocal,
   // which are exactly the states onRecvData() handles — so this cannot fail.
@@ -1157,6 +1186,11 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
     return connectionError(ErrorCode::FrameSizeError, ErrorMsg::InvalidHEADERSFrame);
   }
 
+  if (isEmptyFrameFlood(frame.headerBlockFragment().empty() &&
+                        !header.hasFlag(FrameFlags::HeadersEndHeaders | FrameFlags::HeadersEndStream))) [[unlikely]] {
+    return connectionError(ErrorCode::EnhanceYourCalm, ErrorMsg::TooManyEmptyFrames);
+  }
+
   // Get or create stream
   auto [it, inserted] =
       _streams.try_emplace(streamId, streamId, _peerSettings.initialWindowSize, newStreamRecvWindow(streamId));
@@ -1181,7 +1215,7 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
     ++_activeStreamCount;
     recordStreamOpened(false);
     _lastPeerStreamId = streamId;
-    _idlePriorityFrameCount = 0;
+    _priorityFrameCount = 0;
 
     // The last stream of the budget of the connection (Http2Config::maxStreamsPerConnection): a graceful GOAWAY makes
     // the client open its next streams on another connection, this one closing once its streams are served (see
@@ -1270,6 +1304,10 @@ Http2Connection::ProcessResult Http2Connection::handlePriorityFrame(FrameHeader 
     return connectionError(ErrorCode::FrameSizeError, ErrorMsg::InvalidPRIORITYFrame);
   }
 
+  if (++_priorityFrameCount > kMaxPriorityFrames) [[unlikely]] {
+    return connectionError(ErrorCode::EnhanceYourCalm, ErrorMsg::TooManyPRIORITYFrames);
+  }
+
   PriorityFrame frame = ParsePriorityFrame(payload);
   const bool selfDependent = frame.streamDependency == streamId;
 
@@ -1285,13 +1323,6 @@ Http2Connection::ProcessResult Http2Connection::handlePriorityFrame(FrameHeader 
     // which a PRIORITY frame does not open (§6.3): this stream error can only be a connection error there (§5.4.1).
     if (selfDependent && isIdleStream(streamId)) [[unlikely]] {
       return connectionError(ErrorCode::ProtocolError, ErrorMsg::StreamDependsOnItself);
-    }
-
-    // Security hardening: rate-limit PRIORITY frames on non-existent streams to
-    // prevent a flood of cheap PRIORITY frames from starving real request processing.
-    ++_idlePriorityFrameCount;
-    if (_idlePriorityFrameCount > kMaxIdlePriorityFrames) [[unlikely]] {
-      return connectionError(ErrorCode::EnhanceYourCalm, ErrorMsg::TooManyPRIORITYFramesOnIdleStreams);
     }
   }
   // PRIORITY can be sent for idle streams (pre-allocation)
@@ -1540,6 +1571,10 @@ Http2Connection::ProcessResult Http2Connection::handleContinuationFrame(FrameHea
 
   ContinuationFrame frame;
   ParseContinuationFrame(header, payload, frame);
+
+  if (isEmptyFrameFlood(frame.headerBlockFragment.empty() && !frame.endHeaders)) [[unlikely]] {
+    return connectionError(ErrorCode::EnhanceYourCalm, ErrorMsg::TooManyEmptyFrames);
+  }
 
   // Security hardening (CVE-2024-27316): enforce a bound on the total accumulated
   // header block size to prevent CONTINUATION flood attacks that grow memory unboundedly.

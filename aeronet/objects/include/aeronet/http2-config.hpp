@@ -82,6 +82,12 @@ struct Http2Config {
     return *this;
   }
 
+  /// See streamIdleTimeout. std::chrono::milliseconds::max() means no timeout.
+  Http2Config& withStreamIdleTimeout(std::chrono::milliseconds timeout) {
+    streamIdleTimeout = timeout;
+    return *this;
+  }
+
   Http2Config& withMaxStreamsPerConnection(uint32_t maxStreams) {
     maxStreamsPerConnection = maxStreams;
     return *this;
@@ -240,6 +246,16 @@ struct Http2Config {
   /// Only meaningful when pingInterval > 0.
   /// Default: 10 seconds.
   std::chrono::milliseconds pingTimeout{std::chrono::milliseconds{10000}};
+
+  /// Server only: time a stream may wait for the client without progress. A request whose body stalls that long is
+  /// answered 408 Request Timeout, then its stream is reset with NO_ERROR; a response waiting that long for
+  /// flow-control credit, or for the client to read it, is reset with CANCEL. Each DATA frame received with data
+  /// restarts the wait of a request body, each DATA frame sent restarts the wait of a response: the frames of other
+  /// streams, or PING frames, do not. A connection with open streams is never idle (HttpServerConfig::keepAliveTimeout
+  /// does not apply to it): this bounds the time a client keeps the memory of its streams without using it. CONNECT
+  /// tunnels and streams whose handler runs are not concerned. std::chrono::milliseconds::max() means no timeout.
+  /// Default: 60 seconds.
+  std::chrono::milliseconds streamIdleTimeout{std::chrono::seconds{60}};
 
   /// Maximum response payload bytes retained for one stream while peer flow-control windows are exhausted.
   /// A fixed or streaming response that would retain more is rejected instead of being kept until WINDOW_UPDATE.

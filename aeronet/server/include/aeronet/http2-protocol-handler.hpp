@@ -301,8 +301,10 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
     /// request.bodyBuffer, and tunnelPendingEndStream tells whether the client already ended its side.
     bool tunnelPending{false};
     bool tunnelPendingEndStream{false};
-    /// Per-route handler deadline. Epoch means no per-route deadline active.
-    std::chrono::steady_clock::time_point requestDeadline;
+    /// The deadline of the stream, the epoch when none (swept by onSweep()): while its request body is received, or
+    /// while the rest of its response waits for the client, the end of its idle time (Http2Config::streamIdleTimeout,
+    /// see streamIdleDeadline()); while its handler runs, its per-route request deadline.
+    std::chrono::steady_clock::time_point deadline;
   };
 
   using StreamsMap = flat_hash_map<uint32_t, StreamState>;
@@ -330,6 +332,10 @@ class Http2ProtocolHandler final : public IProtocolHandler, private EventSink {
   /// Once the streams served after a GOAWAY of the connection are closed, the connection closes when its output is
   /// written.
   void requestCloseIfGoAwayCompleted();
+
+  /// The end of the idle time of a stream waiting for the client from now (see Http2Config::streamIdleTimeout), the
+  /// epoch without timeout.
+  [[nodiscard]] std::chrono::steady_clock::time_point streamIdleDeadline() const noexcept;
 
   [[nodiscard]] std::size_t retainedOutboundBytes() const noexcept {
     return _connection.pendingOutputSize() + _deferredOutputBytes;

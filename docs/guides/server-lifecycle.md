@@ -157,6 +157,8 @@ While a response waits for the socket (a client reading slowly), the server stop
 
 `keepAliveTimeout` bounds that wait: a client reading the response, even slowly, keeps its connection, each write counting as activity, but once the response, buffered or a file, made no progress for `keepAliveTimeout`, the connection is closed and the rest of the response dropped. This also holds with `enableKeepAlive` set to `false`, so that a client that never reads its response cannot hold its connection, its output and its open file forever. The `aeronet.connections.closed_for_stalled_output` counter counts these closes (see [Observability](../operations/observability.md#built-in-instrumentation)).
 
+An HTTP/2 connection with open streams is not closed by `keepAliveTimeout`, as its streams are independent: each stream waiting for its client, for the rest of its request body or for the client to read its response, is closed after `Http2Config::streamIdleTimeout` without progress instead (see [Connection lifetime](../protocols/http2.md#connection-lifetime)).
+
 ### Lingering close
 
 A client may still be sending when its connection closes after a response: the body of a request answered before it was read (`413` for a too large body, another error status, the [HTTPS redirect](../protocols/tls.md#http-to-https-redirect)), or requests pipelined behind the response. Closing a socket with unread input resets the connection, and the reset can destroy the response before the client reads it: Windows discards the data received but not read yet. As RFC 9112 §9.6 recommends, the server closes such a connection in stages:

@@ -32,6 +32,7 @@ TEST(Http2Config, DefaultValues) {
   EXPECT_EQ(config.settingsTimeout, std::chrono::milliseconds{5000});
   EXPECT_EQ(config.pingInterval, std::chrono::milliseconds{0});
   EXPECT_EQ(config.pingTimeout, std::chrono::milliseconds{10000});
+  EXPECT_EQ(config.streamIdleTimeout, std::chrono::milliseconds{60000});
 
   // Other defaults
   EXPECT_EQ(config.maxStreamsPerConnection, 1000000U);
@@ -75,6 +76,7 @@ TEST(Http2Config, BuilderPatternConnection) {
                            .withSettingsTimeout(std::chrono::milliseconds{10000})
                            .withPingInterval(std::chrono::milliseconds{30000})
                            .withPingTimeout(std::chrono::milliseconds{5000})
+                           .withStreamIdleTimeout(std::chrono::milliseconds{120000})
                            .withMaxStreamsPerConnection(1000)
                            .withMaxResetStreams(500)
                            .withMaxStreamPendingBytes(2UL << 20U);
@@ -83,6 +85,7 @@ TEST(Http2Config, BuilderPatternConnection) {
   EXPECT_EQ(config.settingsTimeout, std::chrono::milliseconds{10000});
   EXPECT_EQ(config.pingInterval, std::chrono::milliseconds{30000});
   EXPECT_EQ(config.pingTimeout, std::chrono::milliseconds{5000});
+  EXPECT_EQ(config.streamIdleTimeout, std::chrono::milliseconds{120000});
   EXPECT_EQ(config.maxStreamsPerConnection, 1000U);
   EXPECT_EQ(config.maxResetStreams, 500U);
   EXPECT_EQ(config.maxStreamPendingBytes, 2U << 20U);
