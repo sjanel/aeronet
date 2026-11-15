@@ -2,11 +2,16 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
+#include <format>
+#include <limits>
 #include <string>
 #include <string_view>
 
+#include "aeronet/cctype.hpp"
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/vector.hpp"
@@ -467,6 +472,107 @@ TEST(TimeStringAbbreviationsTest, OnlyTheAbbreviationsMatch) {
   }
   EXPECT_EQ(nbMonths, 12U);
   EXPECT_EQ(nbWeekdays, 7U);
+}
+
+// RFC 9110 §5.6.7: a recipient accepts the obsolete rfc850-date and asctime-date formats.
+TEST(TimeStringRFC7231Test, ParsesObsoleteFormats) {
+  const SysTimePoint expected = sys_days{year{1994} / 11 / 6} + hours{8} + minutes{49} + seconds{37};
+  EXPECT_EQ(TryParseTimeRFC7231("Sunday, 06-Nov-94 08:49:37 GMT"), expected);
+  EXPECT_EQ(TryParseTimeRFC7231(" Sunday, 06-Nov-94 08:49:37 GMT\t"), expected);
+  EXPECT_EQ(TryParseTimeRFC7231("Sun Nov  6 08:49:37 1994"), expected);
+  const SysTimePoint expected16 = sys_days{year{1994} / 11 / 16} + hours{8} + minutes{49} + seconds{37};
+  EXPECT_EQ(TryParseTimeRFC7231("Wednesday, 16-Nov-94 08:49:37 GMT"), expected16);
+  EXPECT_EQ(TryParseTimeRFC7231("Wed Nov 16 08:49:37 1994"), expected16);
+}
+
+// RFC 9110 §5.6.7: a two-digit year more than 50 years in the future is in the past century.
+TEST(TimeStringRFC7231Test, Rfc850TwoDigitYear) {
+  static constexpr std::array<std::string_view, 7> kDayNames{
+      "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+  };
+  const int currentYear = static_cast<int>(year_month_day{floor<days>(SysClock::now())}.year());
+  for (const int yearOffset : {-30, 0, 20, 50, 51, 70}) {
+    const int expectedYear = currentYear + yearOffset - (yearOffset > 50 ? 100 : 0);
+    const sys_days day{year{expectedYear} / 3 / 1};
+    const std::string date =
+        std::format("{}, 01-Mar-{:02} 00:00:00 GMT", kDayNames[weekday{day}.c_encoding()], expectedYear % 100);
+    SCOPED_TRACE(date);
+    EXPECT_EQ(TryParseTimeRFC7231(date), SysTimePoint{day});
+  }
+}
+
+TEST(TimeStringRFC7231Test, RejectsMalformedObsoleteFormats) {
+  for (std::string_view date : {
+           "Sunday, 06-Nov-94 08:49:37 UTC",   // not GMT
+           "Sundae, 06-Nov-94 08:49:37 GMT",   // unknown day name
+           "Monday, 06-Nov-94 08:49:37 GMT",   // wrong day of the week
+           "Sun, 06-Nov-94 08:49:37 GMT   x",  // abbreviated day name, garbage
+           "Sunday, 06 Nov 94 08:49:37 GMT",   // separators
+           "Sunday, 0x-Nov-94 08:49:37 GMT",   // digits
+           "Sunday, 00-Nov-94 08:49:37 GMT",   // day 0
+           "Sunday, 06-Nvo-94 08:49:37 GMT",   // month
+           "Sunday, 06-Nov-94 24:49:37 GMT",   // hour
+           "Sunday, 06-Nov-94 08:60:37 GMT",   // minute
+           "Sunday, 06-Nov-94 08:49:61 GMT",   // second
+           "Sunday, 06-Nov-94 08:49:37 GXT",   // GMT
+           "Sunday, 06-Nov-94 08:49:37 GMX",   // GMT
+           "Sun, 06 Nov 1994 08:49:37 GXT",    // GMT of IMF-fixdate
+           "Sun, 06 Nov 1994 08:49:37 GMX",    // GMT of IMF-fixdate
+           "Sun,Nov  6 08:49:37 1994",         // separators
+           "Sun Nov x6 08:49:37 1994",         // digits
+           "Sun Nov  6 08:49:37 19x4",         // year digits
+           "Sun Nov  0 08:49:37 1994",         // day 0
+           "Mon Nov  6 08:49:37 1994",         // wrong day of the week
+           "Sun Nov 31 08:49:37 1994",         // no such day
+           "Sunday, 06-Nov-94 08:49:37",       // length of no format
+       }) {
+    SCOPED_TRACE(date);
+    EXPECT_EQ(TryParseTimeRFC7231(date), kInvalidTimePoint);
+  }
+}
+
+// Every separator and digit of the obsolete formats is checked: changing any of them makes the date invalid.
+TEST(TimeStringRFC7231Test, RejectsEachMalformedCharOfObsoleteFormats) {
+  for (std::string_view valid : {"Sunday, 06-Nov-94 08:49:37 GMT", "Wed Nov 16 08:49:37 1994"}) {
+    ASSERT_NE(TryParseTimeRFC7231(valid), kInvalidTimePoint);
+    for (std::size_t pos = 0; pos < valid.size(); ++pos) {
+      const char orig = valid[pos];
+      if (orig != ',' && orig != ' ' && orig != '-' && orig != ':' && isdigit(orig) == 0) {
+        continue;  // letters: day names, months and GMT are covered by RejectsMalformedObsoleteFormats
+      }
+      std::string mutated(valid);
+      mutated[pos] = 'x';
+      SCOPED_TRACE(mutated);
+      EXPECT_EQ(TryParseTimeRFC7231(mutated), kInvalidTimePoint);
+    }
+  }
+  // An unknown day name, and a length between the rfc850-date ones and no format.
+  EXPECT_EQ(TryParseTimeRFC7231("Xyzday, 06-Nov-94 08:49:37 GMT"), kInvalidTimePoint);
+  EXPECT_EQ(TryParseTimeRFC7231("Sunday, 06-Nov-94 08:49:37 GMT 08:49"), kInvalidTimePoint);
+}
+
+// A date beyond the range of SysTimePoint (nanoseconds: 1678 to 2262) saturates instead of overflowing.
+TEST(TimeStringRFC7231Test, DatesBeyondClockRangeSaturate) {
+  const SysTimePoint maxDate = TryParseTimeRFC7231("Fri, 31 Dec 9999 23:59:59 GMT");
+  const SysTimePoint minDate = TryParseTimeRFC7231("Sat, 01 Jan 0000 00:00:00 GMT");
+  ASSERT_NE(maxDate, kInvalidTimePoint);
+  ASSERT_NE(minDate, kInvalidTimePoint);
+  EXPECT_GT(maxDate, SysTimePoint{sys_days{year{2262} / 1 / 1}});
+  EXPECT_LT(minDate, SysTimePoint{sys_days{year{1678} / 1 / 1}});
+}
+
+TEST(SaturatedSysTimePointTest, ClampsToTheClockRange) {
+  EXPECT_EQ(SaturatedSysTimePoint(0), SysTimePoint{});
+  // Sub-second parts in multiples of 100 ns, the tick of system_clock on Windows.
+  EXPECT_EQ(SaturatedSysTimePoint(-1, 999'999'900), SysTimePoint{} - duration_cast<SysDuration>(nanoseconds{100}));
+  EXPECT_EQ(SaturatedSysTimePoint(1'700'000'000, 500),
+            SysTimePoint{seconds{1'700'000'000}} + duration_cast<SysDuration>(nanoseconds{500}));
+  const SysTimePoint maxPoint = SaturatedSysTimePoint(std::numeric_limits<std::int64_t>::max(), 999'999'999);
+  const SysTimePoint minPoint = SaturatedSysTimePoint(std::numeric_limits<std::int64_t>::min());
+  EXPECT_NE(maxPoint, kInvalidTimePoint);
+  EXPECT_GT(maxPoint, SysTimePoint::max() - seconds{2});
+  EXPECT_LT(minPoint, SysTimePoint::min() + seconds{1});
+  static_assert(SaturatedSysTimePoint(1) == SysTimePoint{seconds{1}});
 }
 
 }  // namespace aeronet

@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <format>
 #include <mutex>
 #include <optional>
@@ -31,7 +32,9 @@
 #include "aeronet/middleware.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/router-config.hpp"
+#include "aeronet/static-file-handler.hpp"
 #include "aeronet/supported-accept-encoding.hpp"
+#include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
 #include "aeronet/time-constants.hpp"
@@ -870,6 +873,53 @@ TEST_P(ProtocolParityHttpsRedirect, PlaintextRequestsAreRedirected) {
   const auto post = send(http::Method::POST, "/page", [](auto& req) { req.body(std::string(256UL * 1024UL, 'b')); });
   EXPECT_EQ(post.status(), http::StatusCodeMovedPermanently);
   EXPECT_EQ(handlerCalls.load(), 0);
+}
+
+// A multipart/byteranges body is assembled in memory, up to maxMultipartBodySize (1 MiB by default): under it, a
+// multi-range request is answered 206 over both protocols; over it, with the whole file (200), sent from the file.
+// Before, a body over the HTTP/2 stream limit (maxStreamPendingBytes) was answered 503.
+TEST_P(ProtocolParity, MultiRangeOfLargeFile) {
+  static constexpr std::size_t kFileSize = 8UL << 20U;
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, std::string(kFileSize, 'r'));
+  ts.router().setDefault(StaticFileHandler(tmp.dirPath()));
+
+  auto resp = send(http::Method::GET, "/" + tmp.filename(),
+                   [](auto& req) { req.headerAddLine(http::Range, "bytes=0-299999,4000000-4299999"); });
+  EXPECT_EQ(resp.status(), http::StatusCodePartialContent);
+  EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentType).starts_with("multipart/byteranges"));
+
+  resp = send(http::Method::GET, "/" + tmp.filename(),
+              [](auto& req) { req.headerAddLine(http::Range, "bytes=0-2999999,4000000-6999999"); });
+  EXPECT_EQ(resp.status(), http::StatusCodeOK);
+  EXPECT_EQ(resp.bodyInMemory().size(), kFileSize);
+}
+
+// A file that shrinks after the size of its response was announced cannot complete it. Over HTTP/2 its stream is reset
+// (a response shorter than its content-length is malformed, RFC 9113 §8.1.1) and the connection keeps serving.
+// HTTP/1.1: HttpRangeStatic.FileTruncatedAfterItsSizeWasReadClosesTheConnection in http-core_test.cpp.
+TEST_P(ProtocolParity, TruncatedFileResetsTheHttp2Stream) {
+  if (GetParam() != HttpVersionMode::Http2) {
+    GTEST_SKIP();
+  }
+  static constexpr std::size_t kFileSize = 1UL << 20U;
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, std::string(kFileSize, 'f'));
+  const std::filesystem::path filePath = tmp.filePath();
+  StaticFileConfig staticConfig;
+  staticConfig.contentTypeResolver = [filePath](std::string_view) {
+    std::filesystem::resize_file(filePath, 0);
+    return std::string_view{};
+  };
+  ts.router().setPath(http::Method::GET, "/ping", [](const HttpRequestView&) { return HttpResponse("pong"); });
+  ts.router().setDefault(StaticFileHandler(tmp.dirPath(), std::move(staticConfig)));
+
+  HttpClient client = MakeClient();
+  auto truncated = client.request(client.makeRequest(http::Method::GET, url("/" + tmp.filename())));
+  EXPECT_FALSE(truncated.has_value());
+  auto ping = client.request(client.makeRequest(http::Method::GET, url("/ping")));
+  ASSERT_TRUE(ping.has_value());
+  EXPECT_EQ(ping->bodyInMemory(), "pong");
 }
 
 std::string ProtocolName([[maybe_unused]] const ::testing::TestParamInfo<HttpVersionMode>& info) {

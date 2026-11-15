@@ -16,6 +16,5 @@ target_link_libraries(aeronet_basic_test_support
 
 if(AERONET_ENABLE_OPENSSL)
     find_package(OpenSSL REQUIRED)
-    target_link_libraries(aeronet_basic_test_support PUBLIC OpenSSL::Crypto)
-    target_link_libraries(aeronet_basic_test_support PUBLIC aeronet_tls)
+    target_link_libraries(aeronet_basic_test_support PUBLIC OpenSSL::Crypto aeronet_tls)
 endif()

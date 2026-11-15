@@ -251,9 +251,8 @@ endif()
 
 AeronetAddUnitTest(
     static-file-handler_test
-    src/static-file-handler.cpp
     test/static-file-handler_test.cpp
     LIBRARIES
-    aeronet_http
+    aeronet_server
     aeronet_test_support
 )

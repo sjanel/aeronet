@@ -5,7 +5,9 @@
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <format>
+#include <fstream>
 #include <string>
 #include <string_view>
 
@@ -24,6 +26,7 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/raw-chars.hpp"
+#include "aeronet/static-file-handler.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
@@ -2332,5 +2335,70 @@ TEST(HttpCompressionAudit, TrailersWithCompressionAreFramedCorrectly) {
     const RawChars decompressed10 = test::Decompress(Encoding::gzip, http10.body);
     EXPECT_EQ(std::string_view(decompressed10.data(), decompressed10.size()), payload);
   }
+}
+#endif  // AERONET_ENABLE_ZLIB
+
+#ifdef AERONET_ENABLE_ZLIB
+// A small static file is read into the response (inlineFileThresholdBytes): the server compresses it, and makes its
+// strong ETag weak. The client sends that weak ETag back in If-None-Match, which uses the weak comparison (RFC 9110
+// §13.1.2): the resource did not change, the answer is 304.
+TEST(HttpCompression, CompressedStaticFileRevalidatesWithItsWeakETag) {
+  if constexpr (!zlibEnabled()) {
+    GTEST_SKIP();
+  }
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.compression.minBytes = 32;
+    cfg.compression.preferredFormats = {Encoding::gzip};
+  });
+  test::ScopedTempDir tmpDir;
+  const auto filePath = tmpDir.dirPath() / "page.html";
+  {
+    std::ofstream ofs(filePath);
+    for (int lineIdx = 0; lineIdx < 100; ++lineIdx) {
+      ofs << "<p>static page line " << lineIdx << "</p>\n";
+    }
+  }
+  ts.router().setDefault(StaticFileHandler(tmpDir.dirPath()));
+
+  const auto first = test::simpleGet(ts.port(), "/page.html", {{"Accept-Encoding", "gzip"}});
+  ASSERT_EQ(first.statusCode, http::StatusCodeOK);
+  EXPECT_EQ(test::getHeader(first, http::ContentEncoding), "gzip");
+  const std::string etag = test::getHeader(first, http::ETag);
+  ASSERT_TRUE(etag.starts_with("W/\"")) << etag;
+
+  const auto revalidation =
+      test::simpleGet(ts.port(), "/page.html", {{"Accept-Encoding", "gzip"}, {"If-None-Match", etag}});
+  EXPECT_EQ(revalidation.statusCode, http::StatusCodeNotModified);
+}
+
+// RFC 9110 §15.4.5: a 304 carries the ETag and Vary that a 200 to the same request would have carried: here the weak
+// ETag and the Vary of the compressed response. A cache (RFC 9111 §4.3.4) only freshens the stored responses whose
+// validator the 304 names.
+TEST(HttpCompression, NotModifiedOfCompressedStaticFileCarriesItsValidators) {
+  ts.postConfigUpdate([](HttpServerConfig& cfg) {
+    cfg.compression.minBytes = 32;
+    cfg.compression.preferredFormats = {Encoding::gzip};
+  });
+  test::ScopedTempDir tmpDir;
+  const auto filePath = tmpDir.dirPath() / "page.html";
+  {
+    std::ofstream ofs(filePath);
+    for (int lineIdx = 0; lineIdx < 100; ++lineIdx) {
+      ofs << "<p>static page line " << lineIdx << "</p>\n";
+    }
+  }
+  ts.router().setDefault(StaticFileHandler(tmpDir.dirPath()));
+
+  const auto first = test::simpleGet(ts.port(), "/page.html", {{"Accept-Encoding", "gzip"}});
+  ASSERT_EQ(test::getHeader(first, http::ContentEncoding), "gzip");
+  const std::string etag = test::getHeader(first, http::ETag);
+  ASSERT_TRUE(etag.starts_with("W/")) << etag;
+  const std::string strongEtag = etag.substr(2);
+
+  const auto revalidation =
+      test::simpleGet(ts.port(), "/page.html", {{"Accept-Encoding", "gzip"}, {"If-None-Match", strongEtag}});
+  ASSERT_EQ(revalidation.statusCode, http::StatusCodeNotModified);
+  EXPECT_EQ(test::getHeader(revalidation, http::ETag), etag);
+  EXPECT_EQ(test::getHeader(revalidation, http::Vary), test::getHeader(first, http::Vary));
 }
 #endif  // AERONET_ENABLE_ZLIB

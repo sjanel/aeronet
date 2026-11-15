@@ -8,8 +8,15 @@
 #include <gtest/gtest.h>
 
 #ifdef AERONET_POSIX
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
+
+#ifdef AERONET_LINUX
+#include <dlfcn.h>
+
+#include <cstdarg>
 #endif
 
 #include <algorithm>
@@ -17,6 +24,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <format>
@@ -26,15 +34,19 @@
 #include <span>
 #include <sstream>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <type_traits>
 #include <utility>
 
 #include "aeronet/compression-config.hpp"
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/connection-state.hpp"
+#include "aeronet/encoding.hpp"
+#include "aeronet/features.hpp"
 #include "aeronet/file-sys-test-support.hpp"
 #include "aeronet/file.hpp"
 #include "aeronet/http-codec.hpp"
@@ -46,9 +58,38 @@
 #include "aeronet/static-file-config.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/temp-file.hpp"
+#include "aeronet/test_util.hpp"
 #include "aeronet/time-constants.hpp"
 #include "aeronet/timedef.hpp"
 #include "aeronet/vector.hpp"
+
+#ifdef AERONET_LINUX
+namespace {
+// Path of a file that the next open() replaces with a FIFO before opening it: a file swapped by another process between
+// the check of its type and its opening.
+std::atomic<const char*> gReplaceWithFifoBeforeOpen{nullptr};
+}  // namespace
+
+// Interposes open(): libaeronet_sys (File) calls it through the PLT.
+extern "C" int open(const char* path, int flags, ...) {
+  mode_t mode = 0;
+  if ((flags & (O_CREAT | O_TMPFILE)) != 0) {
+    va_list args;
+    va_start(args, flags);
+    mode = va_arg(args, mode_t);
+    va_end(args);
+  }
+  const char* pFifoPath = gReplaceWithFifoBeforeOpen.load();
+  if (pFifoPath != nullptr && std::strcmp(pFifoPath, path) == 0) {
+    gReplaceWithFifoBeforeOpen.store(nullptr);
+    ::unlink(path);
+    ::mkfifo(path, 0600);
+  }
+  using OpenFn = int (*)(const char*, int, ...);
+  static const auto realOpen = reinterpret_cast<OpenFn>(::dlsym(RTLD_NEXT, "open"));
+  return realOpen(path, flags, mode);
+}
+#endif
 
 namespace aeronet {
 
@@ -102,6 +143,12 @@ class StaticFileHandlerTest : public ::testing::Test {
   auto setHead() {
     HttpRequestView::HeadParseState headParseState = HttpRequestView::HeadParseState::None;  // a new request
     return req.initTrySetHead(cs.inBuffer, headParseState, tmpBuffer, 4096U, true, nullptr);
+  }
+
+  // The coding negotiated by the request pipeline (which these tests do not run), and addVaryAcceptEncodingHeader.
+  void setNegotiatedEncoding(Encoding encoding, bool addVaryAcceptEncoding = true) {
+    req._responsePossibleEncoding = encoding;
+    req._addVaryAcceptEncoding = addVaryAcceptEncoding;
   }
 
   // Test-only accessors for the private header cache (the fixture is a friend of StaticFileHandler).
@@ -306,6 +353,19 @@ TEST_F(StaticFileHandlerTest, DefaultIndexServedWhenDirectoryRequested) {
   EXPECT_EQ(resp.bodySize(), fileContent.size());
 }
 
+// An index "file" that is a directory is not served, nor is a file requested as a directory (with a trailing slash).
+TEST_F(StaticFileHandlerTest, IndexAndFileOfTheWrongType) {
+  std::filesystem::create_directories(tmpDir.dirPath() / "pages" / "index.html");
+  std::ofstream(tmpDir.dirPath() / "file.txt") << "content";
+  StaticFileHandler handler(tmpDir.dirPath());
+
+  for (std::string_view path : {"pages/", "file.txt/"}) {
+    buildReq(path);
+    ASSERT_EQ(setHead(), http::StatusCodeOK);
+    EXPECT_EQ(handler(req).status(), http::StatusCodeNotFound) << path;
+  }
+}
+
 TEST_F(StaticFileHandlerTest, DirectoryIndexDisabledReturnsNotFound) {
   const auto dirPath = tmpDir.dirPath() / "assets";
   std::filesystem::create_directory(dirPath);
@@ -420,7 +480,7 @@ TEST_F(StaticFileHandlerTest, DirectoryListingEscapesAndFormatsSizes) {
     ASSERT_EQ(resp.status(), http::StatusCodeOK);
 
     const std::string_view body = resp.bodyInMemory();
-    if (maxEntriesToList < 4U) {
+    if (maxEntriesToList < 3U) {
       EXPECT_EQ(resp.headerValueOrEmpty(http::XDirectoryListingTruncated), "1");
       EXPECT_TRUE(body.contains(std::format("Listing truncated after {} entries.", maxEntriesToList)));
     } else {
@@ -433,9 +493,10 @@ TEST_F(StaticFileHandlerTest, DirectoryListingEscapesAndFormatsSizes) {
     EXPECT_EQ(body.contains("1.5 KiB"), maxEntriesToList >= 1U);
     EXPECT_EQ(body.contains("b-rounding.bin"), maxEntriesToList >= 2U);
     EXPECT_EQ(body.contains("10 KiB"), maxEntriesToList >= 2U);
-    EXPECT_EQ(body.contains("c-dangling"), maxEntriesToList >= 3U);
-    EXPECT_EQ(body.contains("d-large.bin"), maxEntriesToList >= 4U);
-    EXPECT_EQ(body.contains("24 KiB"), maxEntriesToList >= 4U);
+    // A dangling link is answered 404: not listed.
+    EXPECT_FALSE(body.contains("c-dangling"));
+    EXPECT_EQ(body.contains("d-large.bin"), maxEntriesToList >= 3U);
+    EXPECT_EQ(body.contains("24 KiB"), maxEntriesToList >= 3U);
   }
 }
 
@@ -564,6 +625,40 @@ TEST_F(StaticFileHandlerTest, DirectoryListingFailsWhenDirectoryUnreadable) {
   HttpResponse resp = handler(req);
   EXPECT_EQ(resp.status(), http::StatusCodeInternalServerError);
   std::filesystem::permissions(dirPath, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+}
+
+// Entries whose metadata cannot be read are still listed, without size or date: a FIFO (no size), and the entries of a
+// directory that can be read but not searched (no status at all).
+TEST_F(StaticFileHandlerTest, DirectoryListingOfEntriesWithoutMetadata) {
+  if (geteuid() == 0) {
+    GTEST_SKIP() << "Running as root: permissions are not enforced";
+  }
+  const auto dirPath = tmpDir.dirPath() / "special";
+  std::filesystem::create_directory(dirPath);
+  ASSERT_EQ(::mkfifo((dirPath / "a-fifo").c_str(), 0600), 0);
+  writeFileWithSize(dirPath / "b-file.bin", 1536);
+
+  StaticFileConfig cfg;
+  cfg.enableDirectoryIndex = true;
+  StaticFileHandler handler(tmpDir.dirPath(), cfg);
+
+  buildReq("special/");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  ASSERT_EQ(resp.status(), http::StatusCodeOK);
+  EXPECT_TRUE(resp.bodyInMemory().contains(R"(<a href="a-fifo">a-fifo</a></td><td class="size">-</td>)"))
+      << resp.bodyInMemory();
+  EXPECT_TRUE(resp.bodyInMemory().contains("1.5 KiB"));
+
+  // Readable, not searchable: the names are listed, without metadata.
+  std::filesystem::permissions(dirPath, std::filesystem::perms::owner_read, std::filesystem::perm_options::replace);
+  buildReq("special/");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  resp = handler(req);
+  std::filesystem::permissions(dirPath, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+  ASSERT_EQ(resp.status(), http::StatusCodeOK);
+  EXPECT_TRUE(resp.bodyInMemory().contains("b-file.bin"));
+  EXPECT_FALSE(resp.bodyInMemory().contains("1.5 KiB"));
 }
 #endif
 
@@ -1127,7 +1222,10 @@ TEST_F(StaticFileHandlerTest, RangeInvalidFormsReturnErrors) {
   }
 }
 
-TEST_F(StaticFileHandlerTest, RangeRequestsOnEmptyFileAreUnsatisfiable) {
+// RFC 9110 §14.1.2: an int-range of an empty representation is unsatisfiable, a non-zero suffix-range is satisfiable
+// (the whole, empty, representation): no Content-Range can describe it, the Range is ignored (§14.2) and the empty file
+// is answered 200, not 416.
+TEST_F(StaticFileHandlerTest, RangeRequestsOnEmptyFile) {
   const auto filePath1 = tmpDir.dirPath() / "empty.bin";
   {
     std::ofstream ofs(filePath1);
@@ -1135,12 +1233,30 @@ TEST_F(StaticFileHandlerTest, RangeRequestsOnEmptyFileAreUnsatisfiable) {
 
   StaticFileHandler handler(tmpDir.dirPath());
 
-  buildReqWithHeaders(filePath1.filename().string(), "Range: bytes=-1");
-  EXPECT_EQ(setHead(), http::StatusCodeOK);
-  HttpResponse resp = handler(req);
-  EXPECT_EQ(resp.status(), http::StatusCodeRangeNotSatisfiable);
-  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentRange), "bytes */0");
-  EXPECT_EQ(resp.bodyInMemory(), "Range Not Satisfiable\n");
+  for (std::string_view range : {"Range: bytes=0-", "Range: bytes=-0", "Range: bytes=0-0, 5-"}) {
+    SCOPED_TRACE(range);
+    buildReqWithHeaders(filePath1.filename().string(), range);
+    ASSERT_EQ(setHead(), http::StatusCodeOK);
+    const HttpResponse resp = handler(req);
+    EXPECT_EQ(resp.status(), http::StatusCodeRangeNotSatisfiable);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentRange), "bytes */0");
+    EXPECT_EQ(resp.bodyInMemory(), "Range Not Satisfiable\n");
+  }
+
+  for (std::string_view range : {"Range: bytes=-1", "Range: bytes=0-, -5"}) {
+    SCOPED_TRACE(range);
+    buildReqWithHeaders(filePath1.filename().string(), range);
+    ASSERT_EQ(setHead(), http::StatusCodeOK);
+    const HttpResponse resp = handler(req);
+    EXPECT_EQ(resp.status(), http::StatusCodeOK);
+    EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentRange).empty());
+    EXPECT_EQ(resp.bodySize(), 0U);
+  }
+
+  // A syntax error still makes the whole Range invalid.
+  buildReqWithHeaders(filePath1.filename().string(), "Range: bytes=-1, x");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  EXPECT_EQ(handler(req).status(), http::StatusCodeRangeNotSatisfiable);
 }
 
 TEST_F(StaticFileHandlerTest, IfRangeHonorsEtagsAndDates) {
@@ -2123,5 +2239,495 @@ TEST_F(StaticFileHandlerTest, SmallFileReadAtFailure) {
   EXPECT_EQ(resp.bodyInMemory(), "File read error\n");
 }
 #endif
+
+// ---------------------------------------------------------------------------
+// Conditional requests (RFC 9110 §13) against modification times with a sub-second part, as file systems store them.
+// ---------------------------------------------------------------------------
+namespace {
+
+// 2026-01-01 12:00:00 UTC (a Thursday).
+constexpr SysTimePoint kWholeSecondTime{
+    std::chrono::sys_seconds{std::chrono::sys_days{std::chrono::year{2026} / std::chrono::January / 1}} +
+    std::chrono::hours{12}};
+
+void SetModificationTime(const std::filesystem::path& path, SysTimePoint tp) {
+  std::filesystem::last_write_time(path, std::chrono::clock_cast<std::chrono::file_clock>(tp));
+}
+
+}  // namespace
+
+// RFC 9110 §13.1.3: If-Modified-Since is false (304) when the last modification date is earlier than or equal to the
+// date given. A client echoes the Last-Modified value, which has the one-second resolution of an HTTP-date, while the
+// file system stores the modification time with a sub-second part.
+TEST_F(StaticFileHandlerTest, IfModifiedSinceEqualToLastModifiedIsNotModified) {
+  test::ScopedTempFile tmpFile(tmpDir, "Hello");
+  SetModificationTime(tmpFile.filePath(), kWholeSecondTime + std::chrono::milliseconds{500});
+  StaticFileHandler handler(tmpDir.dirPath());
+
+  buildReq(tmpFile.filename());
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  const std::string lastModified(handler(req).headerValueOrEmpty(http::LastModified));
+  ASSERT_EQ(lastModified, "Thu, 01 Jan 2026 12:00:00 GMT");
+
+  buildReqWithHeaders(tmpFile.filename(), std::format("If-Modified-Since: {}", lastModified));
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  EXPECT_EQ(handler(req).status(), http::StatusCodeNotModified);
+
+  // One second earlier: modified since.
+  buildReqWithHeaders(tmpFile.filename(), "If-Modified-Since: Thu, 01 Jan 2026 11:59:59 GMT");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  EXPECT_EQ(handler(req).status(), http::StatusCodeOK);
+}
+
+// RFC 9110 §13.1.4: If-Unmodified-Since is true when the last modification date is earlier than or equal to the date
+// given: echoing Last-Modified must not fail with 412.
+TEST_F(StaticFileHandlerTest, IfUnmodifiedSinceEqualToLastModifiedSucceeds) {
+  test::ScopedTempFile tmpFile(tmpDir, "Hello");
+  SetModificationTime(tmpFile.filePath(), kWholeSecondTime + std::chrono::milliseconds{500});
+  StaticFileHandler handler(tmpDir.dirPath());
+
+  buildReqWithHeaders(tmpFile.filename(), "If-Unmodified-Since: Thu, 01 Jan 2026 12:00:00 GMT");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  EXPECT_EQ(handler(req).status(), http::StatusCodeOK);
+
+  buildReqWithHeaders(tmpFile.filename(), "If-Unmodified-Since: Thu, 01 Jan 2026 11:59:59 GMT");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  EXPECT_EQ(handler(req).status(), http::StatusCodePreconditionFailed);
+}
+
+// RFC 9110 §13.1.5: an If-Range date exactly matching Last-Modified is true: the range is served.
+TEST_F(StaticFileHandlerTest, IfRangeDateEqualToLastModifiedServesTheRange) {
+  test::ScopedTempFile tmpFile(tmpDir, "0123456789");
+  SetModificationTime(tmpFile.filePath(), kWholeSecondTime + std::chrono::milliseconds{500});
+  StaticFileHandler handler(tmpDir.dirPath());
+
+  buildReqWithHeaders(tmpFile.filename(), "Range: bytes=0-1\r\nIf-Range: Thu, 01 Jan 2026 12:00:00 GMT");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  const HttpResponse resp = handler(req);
+  EXPECT_EQ(resp.status(), http::StatusCodePartialContent);
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentRange), "bytes 0-1/10");
+}
+
+// RFC 9110 §13.1.5: an If-Range date is true only when it exactly matches Last-Modified. Neither an earlier date (the
+// file changed) nor a later one (the file was replaced by an older version, a rollback keeping modification times)
+// serves a range of another representation.
+TEST_F(StaticFileHandlerTest, IfRangeDateOtherThanLastModifiedIsFalse) {
+  test::ScopedTempFile tmpFile(tmpDir, "0123456789");
+  SetModificationTime(tmpFile.filePath(), kWholeSecondTime);
+  StaticFileHandler handler(tmpDir.dirPath());
+
+  for (std::string_view ifRange : {"Thu, 01 Jan 2026 13:00:00 GMT", "Thu, 01 Jan 2026 11:59:59 GMT", "W/\"x\""}) {
+    SCOPED_TRACE(ifRange);
+    buildReqWithHeaders(tmpFile.filename(), std::format("Range: bytes=0-1\r\nIf-Range: {}", ifRange));
+    ASSERT_EQ(setHead(), http::StatusCodeOK);
+    const HttpResponse resp = handler(req);
+    EXPECT_EQ(resp.status(), http::StatusCodeOK);
+    EXPECT_TRUE(resp.headerValueOrEmpty(http::ContentRange).empty());
+  }
+}
+
+// RFC 9110 §13.1.2: If-None-Match uses the weak comparison: W/"x" matches "x". The server itself sends W/"x" when it
+// compresses the response (see the compression guide). If-Match keeps the strong comparison.
+TEST_F(StaticFileHandlerTest, IfNoneMatchUsesWeakComparison) {
+  test::ScopedTempFile tmpFile(tmpDir, "Hello");
+  StaticFileHandler handler(tmpDir.dirPath());
+
+  buildReq(tmpFile.filename());
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  const std::string etag(handler(req).headerValueOrEmpty(http::ETag));
+  ASSERT_TRUE(etag.starts_with('"'));
+
+  buildReqWithHeaders(tmpFile.filename(), std::format("If-None-Match: \"other\", W/{}", etag));
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  EXPECT_EQ(handler(req).status(), http::StatusCodeNotModified);
+
+  buildReqWithHeaders(tmpFile.filename(), std::format("If-Match: W/{}", etag));
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  EXPECT_EQ(handler(req).status(), http::StatusCodePreconditionFailed);
+}
+
+// If-None-Match lists that do not match: a single tag, a weak one, an empty element at the end.
+TEST_F(StaticFileHandlerTest, IfNoneMatchNotMatching) {
+  test::ScopedTempFile tmpFile(tmpDir, "Hello");
+  StaticFileHandler handler(tmpDir.dirPath());
+
+  for (std::string_view ifNoneMatch : {R"(If-None-Match: "other")", R"(If-None-Match: W/"other")",
+                                       R"(If-None-Match: "other",)", R"(If-None-Match: W/)"}) {
+    SCOPED_TRACE(ifNoneMatch);
+    buildReqWithHeaders(tmpFile.filename(), ifNoneMatch);
+    ASSERT_EQ(setHead(), http::StatusCodeOK);
+    EXPECT_EQ(handler(req).status(), http::StatusCodeOK);
+  }
+}
+
+// RFC 9110 §13.1.4 and §13.2.2 step 2: If-Unmodified-Since is ignored when the request has If-Match.
+TEST_F(StaticFileHandlerTest, IfUnmodifiedSinceIgnoredWhenIfMatchIsPresent) {
+  test::ScopedTempFile tmpFile(tmpDir, "Hello");
+  StaticFileHandler handler(tmpDir.dirPath());
+
+  buildReq(tmpFile.filename());
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  const std::string etag(handler(req).headerValueOrEmpty(http::ETag));
+
+  buildReqWithHeaders(tmpFile.filename(),
+                      std::format("If-Match: {}\r\nIf-Unmodified-Since: Sat, 01 Jan 2000 00:00:00 GMT", etag));
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  EXPECT_EQ(handler(req).status(), http::StatusCodeOK);
+}
+
+// RFC 9110 §13.1.4: an If-Unmodified-Since that is not a valid HTTP-date is ignored, and the evaluation goes on with
+// If-None-Match (§13.2.2 step 3), or If-Modified-Since.
+TEST_F(StaticFileHandlerTest, InvalidIfUnmodifiedSinceStillEvaluatesTheOtherPreconditions) {
+  test::ScopedTempFile tmpFile(tmpDir, "Hello");
+  StaticFileHandler handler(tmpDir.dirPath());
+
+  buildReq(tmpFile.filename());
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  const std::string etag(handler(req).headerValueOrEmpty(http::ETag));
+
+  buildReqWithHeaders(tmpFile.filename(), std::format("If-Unmodified-Since: not a date\r\nIf-None-Match: {}", etag));
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  EXPECT_EQ(handler(req).status(), http::StatusCodeNotModified);
+
+  buildReqWithHeaders(tmpFile.filename(),
+                      "If-Unmodified-Since: not a date\r\nIf-Modified-Since: Thu, 31 Dec 2099 23:59:59 GMT");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  EXPECT_EQ(handler(req).status(), http::StatusCodeNotModified);
+}
+
+// RFC 9110 §5.6.7: a recipient parsing a timestamp in a field must accept the three HTTP-date formats.
+TEST_F(StaticFileHandlerTest, ObsoleteHttpDateFormatsAreAccepted) {
+  test::ScopedTempFile tmpFile(tmpDir, "Hello");
+  SetModificationTime(tmpFile.filePath(), kWholeSecondTime);
+  StaticFileHandler handler(tmpDir.dirPath());
+
+  // 2027-01-01 00:00:00 GMT, a Friday, later than the modification time.
+  for (std::string_view date :
+       {"Fri, 01 Jan 2027 00:00:00 GMT", "Friday, 01-Jan-27 00:00:00 GMT", "Fri Jan  1 00:00:00 2027"}) {
+    SCOPED_TRACE(date);
+    buildReqWithHeaders(tmpFile.filename(), std::format("If-Modified-Since: {}", date));
+    ASSERT_EQ(setHead(), http::StatusCodeOK);
+    EXPECT_EQ(handler(req).status(), http::StatusCodeNotModified);
+  }
+}
+
+// RFC 9110 §14.1.1: first-pos, last-pos and suffix-length are 1*DIGIT, without maximum. A last-pos beyond the length
+// means the end of the representation (§14.1.2), and a suffix-length beyond it the whole representation.
+TEST_F(StaticFileHandlerTest, RangeBoundsBeyond64BitsAreValid) {
+  test::ScopedTempFile tmpFile(tmpDir, "0123456789");
+  StaticFileHandler handler(tmpDir.dirPath());
+
+  for (std::string_view range : {"Range: bytes=0-18446744073709551615", "Range: bytes=0-99999999999999999999",
+                                 "Range: bytes=-99999999999999999999", "Range: bytes=4-18446744073709551614"}) {
+    SCOPED_TRACE(range);
+    buildReqWithHeaders(tmpFile.filename(), range);
+    ASSERT_EQ(setHead(), http::StatusCodeOK);
+    const HttpResponse resp = handler(req);
+    EXPECT_EQ(resp.status(), http::StatusCodePartialContent);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ContentRange), range.ends_with('4') ? "bytes 4-9/10" : "bytes 0-9/10");
+  }
+
+  // A first-pos that large is past the end; digits followed by another char are still invalid.
+  for (std::string_view range : {"Range: bytes=99999999999999999999-", "Range: bytes=0-99999999999999999999x"}) {
+    SCOPED_TRACE(range);
+    buildReqWithHeaders(tmpFile.filename(), range);
+    ASSERT_EQ(setHead(), http::StatusCodeOK);
+    const HttpResponse resp = handler(req);
+    EXPECT_EQ(resp.status(), http::StatusCodeRangeNotSatisfiable);
+    EXPECT_EQ(resp.bodyInMemory(), range.ends_with('x') ? "Invalid Range\n" : "Range Not Satisfiable\n");
+  }
+}
+
+#ifdef AERONET_POSIX
+// A modification time beyond the range of the system clock (nanoseconds: 1678 to 2262) is clamped to it, instead of
+// overflowing into a date of the past.
+TEST_F(StaticFileHandlerTest, ModificationTimeBeyondClockRangeIsClamped) {
+  test::ScopedTempFile tmpFile(tmpDir, "Hello");
+  const std::chrono::sys_seconds year2300{std::chrono::sys_days{std::chrono::year{2300} / std::chrono::January / 1}};
+  const struct timespec times[2]{{year2300.time_since_epoch().count(), 0}, {year2300.time_since_epoch().count(), 0}};
+  ASSERT_EQ(::utimensat(AT_FDCWD, tmpFile.filePath().c_str(), times, 0), 0);
+  StaticFileHandler handler(tmpDir.dirPath());
+
+  buildReq(tmpFile.filename());
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  const HttpResponse resp = handler(req);
+  if constexpr (std::is_same_v<SysDuration, std::chrono::nanoseconds>) {
+    EXPECT_EQ(resp.headerValueOrEmpty(http::LastModified), "Fri, 11 Apr 2262 23:47:15 GMT");
+  } else {
+    EXPECT_EQ(resp.headerValueOrEmpty(http::LastModified), "Mon, 01 Jan 2300 00:00:00 GMT");
+  }
+}
+#endif
+
+// A listing truncated to maxEntriesToList keeps the first entries in the listing order, whatever the order of the
+// directory, without sorting each new entry into the kept ones (which cost the number of entries times the limit, on
+// the event loop thread): listing a quarter of the entries does not cost more than listing all of them.
+TEST_F(StaticFileHandlerTest, TruncatedListingKeepsTheFirstEntriesAtLinearCost) {
+  static constexpr std::size_t kNbFiles = 6000;
+  static constexpr std::size_t kLimit = kNbFiles / 4;
+  const auto dir = tmpDir.dirPath() / "big";
+  std::filesystem::create_directory(dir);
+  for (std::size_t fileIdx = 0; fileIdx < kNbFiles; ++fileIdx) {
+    std::ofstream{dir / std::format("f{:05}", fileIdx)};
+  }
+  std::filesystem::create_directory(dir / "z-subdir");  // directories first
+  const auto timeListing = [this](std::size_t maxEntries, std::string& body) {
+    StaticFileConfig cfg;
+    cfg.enableDirectoryIndex = true;
+    cfg.maxEntriesToList = maxEntries;
+    StaticFileHandler handler(tmpDir.dirPath(), std::move(cfg));
+    buildReq("big/");
+    EXPECT_EQ(setHead(), http::StatusCodeOK);
+    const auto start = std::chrono::steady_clock::now();
+    const HttpResponse resp = handler(req);
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    EXPECT_EQ(resp.status(), http::StatusCodeOK);
+    body.assign(resp.bodyInMemory());
+    return std::chrono::duration_cast<std::chrono::milliseconds>(elapsed);
+  };
+  std::string body;
+  (void)timeListing(kNbFiles + 1, body);  // warms the directory entry cache
+  const auto fullListing = timeListing(kNbFiles + 1, body);
+  EXPECT_FALSE(body.contains("Listing truncated"));
+  const auto truncatedListing = timeListing(kLimit, body);
+  EXPECT_LT(truncatedListing, (2 * fullListing) + std::chrono::milliseconds{100});
+
+  EXPECT_TRUE(body.contains(std::format("Listing truncated after {} entries.", kLimit)));
+  EXPECT_LT(body.find("z-subdir"), body.find("f00000"));
+  EXPECT_TRUE(body.contains(std::format("f{:05}", kLimit - 2)));
+  EXPECT_FALSE(body.contains(std::format("f{:05}", kLimit - 1)));
+  EXPECT_EQ(test::countOccurrences(body, "<tr><td class=\"name\">"), static_cast<int>(kLimit) + 1);  // with ".."
+}
+
+#ifdef AERONET_LINUX
+// Only regular files are served, as opening a FIFO blocks until a writer opens it (the event loop with it). The type is
+// checked on the path before the opening: a regular file replaced by a FIFO in between (by a process writing in the
+// root) is opened without blocking, and found not to be a regular file on its descriptor.
+TEST_F(StaticFileHandlerTest, FileReplacedByFifoBeforeOpeningIsNotServed) {
+  test::ScopedTempFile tmpFile(tmpDir, "Hello");
+  StaticFileHandler handler(tmpDir.dirPath());
+  const std::string path = tmpFile.filePath().string();
+  buildReq(tmpFile.filename());
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+
+  gReplaceWithFifoBeforeOpen.store(path.c_str());
+  // Unblocks a reader stuck in open() after 2 s, so that the test ends if it blocks.
+  std::jthread writer([&path](const std::stop_token& stopToken) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (!stopToken.stop_requested() && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    const int fd = ::open(path.c_str(), O_WRONLY | O_NONBLOCK);
+    if (fd != -1) {
+      ::close(fd);
+    }
+  });
+  const auto start = std::chrono::steady_clock::now();
+  const HttpResponse resp = handler(req);
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  gReplaceWithFifoBeforeOpen.store(nullptr);
+  EXPECT_LT(elapsed, std::chrono::seconds{1});
+  EXPECT_EQ(resp.status(), http::StatusCodeNotFound);
+}
+#endif
+
+// A symbolic link answered 404 (leading outside of the root, to a hidden name, or dangling) is left out of the listing
+// of its directory, which does not describe its target. A link inside of the root is listed as its target: a link to a
+// directory as a directory.
+TEST_F(StaticFileHandlerTest, ListingLeavesOutLinksAnswered404) {
+  const auto root = tmpDir.dirPath() / "root";
+  const auto outside = tmpDir.dirPath() / "outside";
+  std::filesystem::create_directories(root / "real-dir");
+  std::filesystem::create_directories(outside);
+  writeFileWithSize(outside / "secret.bin", 3584);  // 3.5 KiB
+  writeFileWithSize(root / ".hidden.bin", 1536);    // 1.5 KiB
+  writeFileWithSize(root / "inside.bin", 2560);     // 2.5 KiB
+  std::error_code ec;
+  std::filesystem::create_symlink(outside / "secret.bin", root / "link-outside.bin", ec);
+  if (ec) {
+    GTEST_SKIP() << "Symlink creation requires elevated privileges: " << ec.message();
+  }
+  std::filesystem::create_symlink(root / ".hidden.bin", root / "link-hidden.bin");
+  std::filesystem::create_symlink(root / "inside.bin", root / "link-inside.bin");
+  std::filesystem::create_directory_symlink(root / "real-dir", root / "link-dir");
+  StaticFileConfig cfg;
+  cfg.enableDirectoryIndex = true;
+  StaticFileHandler handler(root, std::move(cfg));
+
+  for (std::string_view path : {"link-outside.bin", "link-hidden.bin"}) {
+    buildReq(path);
+    ASSERT_EQ(setHead(), http::StatusCodeOK);
+    EXPECT_EQ(handler(req).status(), http::StatusCodeNotFound) << path;
+  }
+
+  buildReq("");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  const HttpResponse listing = handler(req);
+  ASSERT_EQ(listing.status(), http::StatusCodeOK);
+  const std::string_view body = listing.bodyInMemory();
+  EXPECT_FALSE(body.contains("link-outside.bin")) << body;
+  EXPECT_FALSE(body.contains("3.5 KiB")) << body;
+  EXPECT_FALSE(body.contains("link-hidden.bin")) << body;
+  EXPECT_FALSE(body.contains("1.5 KiB")) << body;
+  EXPECT_EQ(test::countOccurrences(body, "2.5 KiB"), 2);  // inside.bin and link-inside.bin
+  EXPECT_TRUE(body.contains(R"(<a href="link-dir/" class="dir">)")) << body;
+}
+
+// Offsets and lengths above 4 GiB (a sparse file): single range, suffix range and multipart parts read with pread().
+TEST_F(StaticFileHandlerTest, RangesBeyond4GiB) {
+  static constexpr std::uint64_t kFileSize = (5ULL << 30U) + 7U;
+  static constexpr std::uint64_t kMarkerOffset = (4ULL << 30U) + 10U;
+  const auto filePath = tmpDir.dirPath() / "sparse.bin";
+  {
+    std::ofstream ofs(filePath, std::ios::binary);
+  }
+  std::filesystem::resize_file(filePath, kFileSize);
+  {
+    std::fstream ofs(filePath, std::ios::binary | std::ios::in | std::ios::out);
+    ofs.seekp(static_cast<std::streamoff>(kMarkerOffset));
+    ofs << "ABC";
+  }
+  StaticFileHandler handler(tmpDir.dirPath());
+
+  buildReqWithHeaders("sparse.bin", std::format("Range: bytes={}-{}", kMarkerOffset, kMarkerOffset + 2));
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  EXPECT_EQ(resp.status(), http::StatusCodePartialContent);
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentRange),
+            std::format("bytes {}-{}/{}", kMarkerOffset, kMarkerOffset + 2, kFileSize));
+  ASSERT_NE(resp.file(), nullptr);
+
+  buildReqWithHeaders("sparse.bin", "Range: bytes=-3");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  resp = handler(req);
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ContentRange),
+            std::format("bytes {}-{}/{}", kFileSize - 3, kFileSize - 1, kFileSize));
+
+  buildReqWithHeaders("sparse.bin", std::format("Range: bytes=0-1,{}-{}", kMarkerOffset, kMarkerOffset + 2));
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  resp = handler(req);
+  ASSERT_EQ(resp.status(), http::StatusCodePartialContent);
+  const auto parts = ParseMultipartByteranges(resp.headerValueOrEmpty(http::ContentType), resp.bodyInMemory());
+  ASSERT_EQ(parts.size(), 2U);
+  EXPECT_EQ(parts[1].contentRange, std::format("bytes {}-{}/{}", kMarkerOffset, kMarkerOffset + 2, kFileSize));
+  EXPECT_EQ(parts[1].body, "ABC");
+}
+
+// The index file of a directory requested without its trailing slash is not served at that URL, where the relative
+// references of the page would resolve against the parent directory (RFC 3986 §5.2: "style.css" in /docs/index.html
+// served as /docs resolves to /style.css): the path is redirected to the URL with the slash, as for a listing. A
+// directory answered 404 once redirected (a link leading outside of the root) is not redirected.
+TEST_F(StaticFileHandlerTest, IndexOfDirectoryWithoutTrailingSlashRedirects) {
+  const auto root = tmpDir.dirPath() / "root";
+  const auto dirPath = root / "docs";
+  std::filesystem::create_directories(dirPath);
+  std::ofstream(dirPath / "index.html") << R"(<link rel="stylesheet" href="style.css">)";
+  const auto outside = tmpDir.dirPath() / "outside";
+  std::filesystem::create_directories(outside);
+  std::ofstream(outside / "index.html") << "outside";
+  StaticFileHandler handler(root);
+
+  buildReq("docs");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  HttpResponse resp = handler(req);
+  EXPECT_EQ(resp.status(), http::StatusCodeMovedPermanently);
+  EXPECT_EQ(resp.headerValueOrEmpty(http::Location), "/docs/");
+
+  buildReq("docs/");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  resp = handler(req);
+  EXPECT_EQ(resp.status(), http::StatusCodeOK);
+
+  std::error_code ec;
+  std::filesystem::create_directory_symlink(outside, root / "link-outside", ec);
+  if (ec) {
+    GTEST_SKIP() << "Symlink creation requires elevated privileges: " << ec.message();
+  }
+  for (std::string_view path : {"link-outside", "link-outside/"}) {
+    buildReq(path);
+    ASSERT_EQ(setHead(), http::StatusCodeOK);
+    EXPECT_EQ(handler(req).status(), http::StatusCodeNotFound) << path;
+  }
+}
+
+// RFC 9110 §15.4.5: a 304 carries the ETag and Vary of the 200 it stands for. A file read into the response is
+// compressed for a client accepting a coding, its ETag made weak and Accept-Encoding listed in its Vary; a file sent
+// from the disk (over inlineFileThresholdBytes) or of a type not compressed keeps its strong ETag without Vary.
+TEST_F(StaticFileHandlerTest, NotModifiedCarriesTheValidatorsOfTheCompressedResponse) {
+  if constexpr (!zlibEnabled()) {
+    GTEST_SKIP();
+  }
+  compressionConfig.minBytes = 32;
+  compressionConfig.contentTypeAllowList.append("text/html");
+  const auto writeText = [this](std::string_view name) {
+    std::ofstream ofs(tmpDir.dirPath() / name);
+    for (int lineIdx = 0; lineIdx < 100; ++lineIdx) {
+      ofs << "<p>static page line " << lineIdx << "</p>\n";
+    }
+  };
+  writeText("page.html");
+  writeText("page.bin");  // application/octet-stream, not in the allow list
+  StaticFileConfig cfg;
+  cfg.withInlineFileThresholdBytes(4096);
+  StaticFileHandler handler(tmpDir.dirPath(), cfg);
+
+  buildReq("page.html");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  const std::string etag(handler(req).headerValueOrEmpty(http::ETag));
+  ASSERT_TRUE(etag.starts_with('"'));
+  buildReq("page.bin");
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  const std::string binEtag(handler(req).headerValueOrEmpty(http::ETag));
+
+  struct Case {
+    std::string_view file;
+    std::string_view acceptEncoding;
+    bool varyUncompressed;
+    bool weak;
+    bool vary;
+  };
+  static constexpr Case kCases[]{
+      {"page.html", "gzip", false, true, true},
+      {"page.html", "identity", false, false, false},
+      {"page.html", "identity", true, false, true},  // addVaryAcceptEncodingToUncompressed
+      {"page.bin", "gzip", false, false, false},
+  };
+  for (const Case& tc : kCases) {
+    SCOPED_TRACE(std::format("{} {} {}", tc.file, tc.acceptEncoding, tc.varyUncompressed));
+    compressionConfig.addVaryAcceptEncodingToUncompressed = tc.varyUncompressed;
+    const std::string& fileEtag = tc.file == "page.html" ? etag : binEtag;
+    buildReqWithHeaders(tc.file,
+                        std::format("Accept-Encoding: {}\r\nIf-None-Match: W/{}", tc.acceptEncoding, fileEtag));
+    ASSERT_EQ(setHead(), http::StatusCodeOK);
+    setNegotiatedEncoding(tc.acceptEncoding == "gzip" ? Encoding::gzip : Encoding::none);
+    const HttpResponse resp = handler(req);
+    EXPECT_EQ(resp.status(), http::StatusCodeNotModified);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ETag), tc.weak ? std::format("W/{}", fileEtag) : fileEtag);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::Vary), tc.vary ? "accept-encoding" : "");
+  }
+
+  // Without addVaryAcceptEncodingHeader: compressed, no Vary.
+  buildReqWithHeaders("page.html", std::format("Accept-Encoding: gzip\r\nIf-None-Match: {}", etag));
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  setNegotiatedEncoding(Encoding::gzip, /*addVaryAcceptEncoding=*/false);
+  {
+    const HttpResponse resp = handler(req);
+    EXPECT_EQ(resp.status(), http::StatusCodeNotModified);
+    EXPECT_EQ(resp.headerValueOrEmpty(http::ETag), std::format("W/{}", etag));
+    EXPECT_TRUE(resp.headerValueOrEmpty(http::Vary).empty());
+  }
+
+  // Over inlineFileThresholdBytes: sent from the file, never compressed.
+  compressionConfig.addVaryAcceptEncodingToUncompressed = false;
+  cfg.withInlineFileThresholdBytes(16);
+  StaticFileHandler fileHandler(tmpDir.dirPath(), cfg);
+  buildReqWithHeaders("page.html", std::format("Accept-Encoding: gzip\r\nIf-None-Match: {}", etag));
+  ASSERT_EQ(setHead(), http::StatusCodeOK);
+  setNegotiatedEncoding(Encoding::gzip);
+  const HttpResponse resp = fileHandler(req);
+  EXPECT_EQ(resp.status(), http::StatusCodeNotModified);
+  EXPECT_EQ(resp.headerValueOrEmpty(http::ETag), etag);
+  EXPECT_TRUE(resp.headerValueOrEmpty(http::Vary).empty());
+}
 
 }  // namespace aeronet

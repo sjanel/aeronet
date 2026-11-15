@@ -7499,4 +7499,61 @@ TEST(HttpLifecycleReview, DISABLED_LargeChunkedUploadMemoryIsReleasedOnceServed)
       << "closed connection (cached state) retains " << ((afterClose - baseline) >> 20U) << " MiB";
 }
 
+// A file that shrinks after the size of its response was announced cannot complete it: the server closes the connection
+// (RFC 9112 §8), the client then knowing the response is incomplete, instead of leaving it open until the keep-alive
+// timeout. The content type resolver, called after the file was opened and its size read, truncates it: a deterministic
+// stand-in for a concurrent truncation.
+TEST(HttpRangeStatic, FileTruncatedAfterItsSizeWasReadClosesTheConnection) {
+  static constexpr std::size_t kFileSize = 1UL << 20U;  // over inlineFileThresholdBytes: sent with sendfile()
+  test::TestServer localTs(HttpServerConfig{}.withKeepAliveTimeout(std::chrono::seconds{20}));
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, std::string(kFileSize, 'f'));
+  const std::filesystem::path filePath = tmp.filePath();
+
+  StaticFileConfig staticConfig;
+  staticConfig.contentTypeResolver = [filePath](std::string_view) {
+    std::filesystem::resize_file(filePath, 0);
+    return std::string_view{};
+  };
+  localTs.router().setDefault(StaticFileHandler(tmp.dirPath(), std::move(staticConfig)));
+
+  test::ClientConnection cnx(localTs.port());
+  test::sendAll(cnx.fd(), std::format("GET /{} HTTP/1.1\r\nHost: x\r\n\r\n", tmp.filename()));
+  const auto start = std::chrono::steady_clock::now();
+  const test::ReceivedUntilEnd received = test::RecvUntilEnd(cnx.fd(), std::chrono::seconds{3});
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  EXPECT_TRUE(received.data.starts_with("HTTP/1.1 200")) << received.data;
+  EXPECT_NE(received.end, test::ReceivedUntilEnd::End::TimedOut)
+      << "connection still open " << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()
+      << " ms after the response head";
+}
+
+// A range above 4 GiB of a sparse file, sent with sendfile() at an offset that does not fit 32 bits.
+TEST(HttpRangeStatic, RangeBeyond4GiBIsSentFromTheRightOffset) {
+  static constexpr std::uint64_t kFileSize = (5ULL << 30U) + 7U;
+  static constexpr std::uint64_t kMarkerOffset = (4ULL << 30U) + 10U;
+  test::ScopedTempDir tmpDir;
+  const auto filePath = tmpDir.dirPath() / "sparse.bin";
+  {
+    std::ofstream ofs(filePath, std::ios::binary);
+  }
+  std::filesystem::resize_file(filePath, kFileSize);
+  {
+    std::fstream ofs(filePath, std::ios::binary | std::ios::in | std::ios::out);
+    ofs.seekp(static_cast<std::streamoff>(kMarkerOffset));
+    ofs << "ABC";
+  }
+  test::TestServer localTs;
+  localTs.router().setDefault(StaticFileHandler(tmpDir.dirPath()));
+
+  test::RequestOptions opt;
+  opt.method = "GET";
+  opt.target = "/sparse.bin";
+  const std::string range = std::format("bytes={}-{}", kMarkerOffset - 1, kMarkerOffset + 3);
+  opt.headers.emplace_back("Range", range);
+  const auto parsed = test::parseResponseOrThrow(test::requestOrThrow(localTs.port(), opt));
+  EXPECT_EQ(parsed.statusCode, http::StatusCodePartialContent);
+  EXPECT_EQ(parsed.body, std::string_view("\0ABC\0", 5));
+}
+
 }  // namespace aeronet

@@ -992,4 +992,51 @@ TEST(HttpTlsKtlsZerocopy, TlsResponsesAreNeverSentWithZerocopy) {
 }
 #endif
 #endif
+
+// A file that shrinks after the size of its response was announced cannot complete it: the connection is closed (RFC
+// 9112 §8), and the event loop keeps serving the other connections (it read the end of the file again forever). The
+// content type resolver, called after the file was opened and its size read, truncates it: a deterministic stand-in for
+// a concurrent truncation (a log rotated with copytruncate, a deployment rewriting a file in place).
+TEST(HttpTlsStaticFile, FileTruncatedAfterItsSizeWasReadClosesTheConnection) {
+  static constexpr std::size_t kFileSize = 1UL << 20U;  // over inlineFileThresholdBytes: sent from the file
+  test::TlsTestServer localTs({"http/1.1"},
+                              [](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Disabled); });
+  test::ScopedTempDir tmpDir;
+  test::ScopedTempFile tmp(tmpDir, std::string(kFileSize, 'f'));
+  const std::filesystem::path filePath = tmp.filePath();
+
+  StaticFileConfig staticConfig;
+  staticConfig.contentTypeResolver = [filePath](std::string_view) {
+    std::filesystem::resize_file(filePath, 0);
+    return std::string_view{};
+  };
+  localTs.setDefault(StaticFileHandler(tmp.dirPath(), std::move(staticConfig)));
+  localTs.router().setPath(http::Method::GET, "/ping", [](const HttpRequestView&) { return HttpResponse("pong"); });
+
+  test::TlsClient client(localTs.port());
+  ASSERT_TRUE(client.handshakeOk());
+  ASSERT_TRUE(client.writeAll(std::format("GET /{} HTTP/1.1\r\nHost: x\r\n\r\n", tmp.filename())));
+
+  // Another connection to the same server.
+  std::atomic<bool> pinged{false};
+  std::jthread pinger([&localTs, &pinged] {
+    test::TlsClient other(localTs.port());
+    pinged.store(other.handshakeOk() && other.get("/ping", {}).contains("pong"));
+  });
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  while (!pinged.load() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(10ms);
+  }
+  const bool servedWhileTruncated = pinged.load();
+  // The file gets its size back: a server stuck on it would complete the response, so that the test can end.
+  std::filesystem::resize_file(filePath, kFileSize);
+  EXPECT_TRUE(servedWhileTruncated) << "the event loop stopped serving the other connections";
+
+  // The truncated response: its head, then the end of the connection.
+  const std::string received = client.readAll();
+  EXPECT_TRUE(received.starts_with("HTTP/1.1 200")) << received.substr(0, 64);
+  EXPECT_TRUE(received.contains("Content-Length: 1048576") || received.contains("content-length: 1048576"));
+  EXPECT_LT(received.size(), kFileSize);
+}
+
 }  // namespace aeronet

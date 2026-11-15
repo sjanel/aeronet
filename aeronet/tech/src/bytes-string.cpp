@@ -1,102 +1,68 @@
 #include "aeronet/bytes-string.hpp"
 
+#include <bit>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <string_view>
 
 #include "aeronet/decimal-writer.hpp"
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/ndigits.hpp"
-#include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
 
-void AddFormattedSize(std::uintmax_t size, RawChars& out) {
-  static constexpr std::string_view units[]{"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"};
+namespace {
 
-  // Find the largest unit where the value is < 1024 (binary units, 1024^n)
-  std::size_t unitIdx = 0;
-  std::uintmax_t divisor = 1;
-  // Grow divisor but avoid overflow: use division to check whether next multiply would exceed size.
-  for (; unitIdx + 1U < std::size(units) && divisor <= size / 1024ULL; ++unitIdx) {
-    divisor *= 1024ULL;
-  }
+constexpr std::string_view kUnits[]{"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"};
 
-  // small helper: append integer value and the unit (with leading space)
-  const auto appendIntAndUnit = [&out](std::uintmax_t value, std::string_view unit) {
-    const auto nDigitsValue = ndigits(value);
-    out.ensureAvailableCapacityExponential(1U + unit.size() + nDigitsValue);
-    char* ptr = out.data() + out.size();
+constexpr std::uint32_t kNoDecimal = 10U;
 
-    ptr = WriteUInt(ptr, value, nDigitsValue);
-    *ptr++ = ' ';
-    ptr = Append(unit, ptr);
+// The displayed value of a size: "intPart unit", or "intPart.decimal unit" when 'decimal' is not kNoDecimal.
+struct DisplayedSize {
+  std::uintmax_t intPart;
+  std::uint32_t decimal;
+  std::uint32_t unitIdx;
+};
 
-    out.setEnd(ptr);
-  };
-
-  // Bytes: print integer bytes
+DisplayedSize ComputeDisplayedSize(std::uintmax_t size) {
+  // The largest unit in which the value is at least 1: a unit is 10 bits, and the 64 bits of a size end in EiB.
+  const auto unitIdx = static_cast<std::uint32_t>((static_cast<unsigned>(std::bit_width(size | 1U)) - 1U) / 10U);
   if (unitIdx == 0U) {
-    appendIntAndUnit(size, units[unitIdx]);
-    return;
+    return {size, kNoDecimal, 0U};
   }
-
-  // For units >= KB, follow existing formatting rules: if the numeric value is < 10, print one
-  // decimal place (rounded). Otherwise print an integer (rounded).
-  // For typical sizes where size <= max/10 we can use the original fast path which uses
-  // integer arithmetic without overflow. For very large sizes (size > max/10) use a
-  // separate branch that avoids multiplications that could overflow.
-  static constexpr std::uintmax_t kMaxDiv10 = std::numeric_limits<std::uintmax_t>::max() / 10U;
-
-  if (size < divisor * 10U) {
-    const std::uintmax_t intPart = size / divisor;
-    const std::uintmax_t rem = size % divisor;
-    // frac10 = round(rem * 10 / divisor)
-    const std::uintmax_t frac10 = ((rem * 10U) + (divisor / 2U)) / divisor;
-    std::uintmax_t finalInt = intPart;
-    std::uintmax_t finalFrac = frac10;
-    if (frac10 >= 10U) {
-      // carry into integer part (e.g. 9.96 -> rounds to 10.0)
-      finalInt = intPart + 1U;
-      finalFrac = 0U;
-    }
-    // If carry produced a value >= 10 we should print integer form (no decimal) per rules
-    if (finalInt >= 10U) {
-      appendIntAndUnit(finalInt, units[unitIdx]);
-      return;
-    }
-
-    // print one decimal: int.frac unit
-    const auto nDigitsFinalInt = ndigits(finalInt);
-    const auto nDigitsFinalFrac = ndigits(finalFrac);
-    out.ensureAvailableCapacityExponential(1U + nDigitsFinalInt + nDigitsFinalFrac + 1U + units[unitIdx].size());
-
-    char* ptr = out.data() + out.size();
-
-    ptr = WriteUInt(ptr, finalInt, nDigitsFinalInt);
-    *ptr++ = '.';
-    ptr = WriteUInt(ptr, finalFrac, nDigitsFinalFrac);
-    *ptr++ = ' ';
-    ptr = Append(units[unitIdx], ptr);
-
-    out.setEnd(ptr);
-
-    return;
+  const std::uint32_t shift = 10U * unitIdx;
+  const std::uintmax_t intPart = size >> shift;
+  if (intPart >= 10U) {
+    // No decimal, rounded half up.
+    return {intPart + ((size >> (shift - 1U)) & 1U), kNoDecimal, unitIdx};
   }
-
-  if (size <= kMaxDiv10) {
-    // Print integer with rounding (safe because size <= max/10)
-    const std::uintmax_t rounded = (size + (divisor / 2U)) / divisor;
-    appendIntAndUnit(rounded, units[unitIdx]);
-  } else {
-    // Integer rounding for large values: safe because we avoid adding divisor to size.
-    std::uintmax_t rounded = size / divisor;
-    if (size % divisor >= divisor / 2U) {
-      ++rounded;
-    }
-    appendIntAndUnit(rounded, units[unitIdx]);
+  // One decimal, rounded half up. The remainder is below 2^60: 10 times it plus a half unit fits 64 bits.
+  const std::uintmax_t rem = size & ((std::uintmax_t{1} << shift) - 1U);
+  const auto decimal = static_cast<std::uint32_t>(((rem * 10U) + (std::uintmax_t{1} << (shift - 1U))) >> shift);
+  if (decimal == 10U) {
+    // Carry into the integer part: 1.96 is displayed "2.0", 9.96 "10" (no decimal from 10).
+    return {intPart + 1U, intPart + 1U == 10U ? kNoDecimal : 0U, unitIdx};
   }
+  return {intPart, decimal, unitIdx};
+}
+
+}  // namespace
+
+char* WriteFormattedSize(std::uintmax_t size, char* out) {
+  const DisplayedSize displayed = ComputeDisplayedSize(size);
+  out = WriteUInt(out, displayed.intPart, ndigits(displayed.intPart));
+  if (displayed.decimal != kNoDecimal) {
+    *out++ = '.';
+    *out++ = static_cast<char>('0' + displayed.decimal);
+  }
+  *out++ = ' ';
+  return Append(kUnits[displayed.unitIdx], out);
+}
+
+std::size_t FormattedSizeLen(std::uintmax_t size) {
+  const DisplayedSize displayed = ComputeDisplayedSize(size);
+  return ndigits(displayed.intPart) + (displayed.decimal == kNoDecimal ? 0U : 2U) + 1U +
+         kUnits[displayed.unitIdx].size();
 }
 
 }  // namespace aeronet

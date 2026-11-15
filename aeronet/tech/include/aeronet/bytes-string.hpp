@@ -1,8 +1,7 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
-
-#include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
 
@@ -18,8 +17,13 @@ namespace aeronet {
 //      512       -> "512 B"
 //      1536      -> "1.5 KiB"   (1536 / 1024 == 1.5)
 //      1048576   -> "1.0 MiB"   (1024*1024 -> value is 1.0, one decimal is shown)
-//      12345678  -> "11.8 MiB"  (approx; displays one decimal when < 10, otherwise no fractional)
+//      12345678  -> "12 MiB"    (11.77 rounded: no decimal when >= 10)
 //  - A single space separates the number and the unit (e.g. "1.5 KiB").
-void AddFormattedSize(std::uintmax_t size, RawChars& out);
+// The size is written at 'out', which must have room for FormattedSizeLen(size) chars. Returns the pointer past the
+// last written char.
+char* WriteFormattedSize(std::uintmax_t size, char* out);
+
+// Return the number of chars that WriteFormattedSize(size, out) writes.
+[[nodiscard]] std::size_t FormattedSizeLen(std::uintmax_t size);
 
 }  // namespace aeronet

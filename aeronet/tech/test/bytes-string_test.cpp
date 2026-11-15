@@ -2,19 +2,20 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <string>
-
-#include "aeronet/raw-chars.hpp"
 
 namespace aeronet {
 
 namespace {
 std::string FormatSize(std::uintmax_t size) {
-  RawChars out(16);
-  AddFormattedSize(size, out);
-  return {out.data(), out.size()};
+  std::array<char, 16> buf;
+  const auto len = static_cast<std::size_t>(WriteFormattedSize(size, buf.data()) - buf.data());
+  EXPECT_EQ(len, FormattedSizeLen(size));
+  return {buf.data(), len};
 }
 }  // namespace
 
@@ -39,6 +40,15 @@ TEST(BytesStringTest, KiBWithFraction) {
   const std::uintmax_t ninePointNineSix = (10ULL * 1024ULL) - ((1024ULL * 4ULL) / 100ULL);
   // Ensure we get 10 KiB for a value slightly less than 10*1024 when rounding carries
   EXPECT_EQ(FormatSize(ninePointNineSix), "10 KiB");
+  // Rounding carry below 10 keeps the decimal: 1.96 KiB -> 2.0 KiB
+  EXPECT_EQ(FormatSize(2007), "2.0 KiB");
+  // Half up rounding, with and without decimal
+  EXPECT_EQ(FormatSize(1024 + 51), "1.0 KiB");
+  EXPECT_EQ(FormatSize(1024 + 52), "1.1 KiB");
+  EXPECT_EQ(FormatSize((10 * 1024) + 511), "10 KiB");
+  EXPECT_EQ(FormatSize((10 * 1024) + 512), "11 KiB");
+  // Just below the next unit
+  EXPECT_EQ(FormatSize((1024 * 1024) - 1), "1024 KiB");
 }
 
 TEST(BytesStringTest, MiBFormatting) {

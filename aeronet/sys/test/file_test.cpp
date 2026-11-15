@@ -4,6 +4,11 @@
 
 #include <gtest/gtest.h>
 
+#ifdef AERONET_POSIX
+#include <fcntl.h>
+#include <sys/stat.h>
+#endif
+
 #include <bit>
 #include <cerrno>
 #include <chrono>
@@ -342,5 +347,47 @@ TEST(FileTest, CopyAssignmentLeavesDestinationClosedWhenDupFails) {
   EXPECT_EQ(destinationObj.size(), File::kError);
   EXPECT_EQ(LoadAllContent(sourceObj), "source-content");
 }
+
+TEST(FileTest, IsRegularFile) {
+  ScopedTempDir tmpDir;
+  ScopedTempFile tmpFile(tmpDir, "content");
+  const File regular(tmpFile.filePath().string());
+  ASSERT_TRUE(static_cast<bool>(regular));
+  EXPECT_TRUE(regular.isRegularFile());
+  EXPECT_TRUE(File(regular).isRegularFile());  // copied
+
+  const File directory(tmpDir.dirPath().string());
+  if (directory) {  // a directory cannot be opened on Windows
+    EXPECT_FALSE(directory.isRegularFile());
+  }
+  EXPECT_FALSE(File{}.isRegularFile());
+}
+
+#ifdef AERONET_POSIX
+// A FIFO without writer is opened without blocking (O_NONBLOCK), and is not a regular file.
+TEST(FileTest, FifoIsOpenedWithoutBlocking) {
+  ScopedTempDir tmpDir;
+  const auto fifoPath = tmpDir.dirPath() / "fifo";
+  ASSERT_EQ(::mkfifo(fifoPath.c_str(), 0600), 0);
+  const File fifo(fifoPath.string());
+  ASSERT_TRUE(static_cast<bool>(fifo));
+  EXPECT_FALSE(fifo.isRegularFile());
+}
+
+// A modification time beyond the range of SysTimePoint (nanoseconds: 1678 to 2262) is clamped, not overflowed.
+TEST(FileTest, ModificationTimeBeyondClockRangeIsClamped) {
+  ScopedTempDir tmpDir;
+  ScopedTempFile tmpFile(tmpDir, "content");
+  const std::chrono::sys_seconds year2300{std::chrono::sys_days{std::chrono::year{2300} / std::chrono::January / 1}};
+  const struct timespec times[2]{{year2300.time_since_epoch().count(), 500},
+                                 {year2300.time_since_epoch().count(), 500}};
+  ASSERT_EQ(::utimensat(AT_FDCWD, tmpFile.filePath().c_str(), times, 0), 0);
+  const File file(tmpFile.filePath().string());
+  EXPECT_EQ(file.lastModified(), SaturatedSysTimePoint(year2300.time_since_epoch().count(), 500));
+  EXPECT_GT(file.lastModified(),
+            SysTimePoint{std::chrono::sys_days{std::chrono::year{2262} / std::chrono::January / 1}});
+  EXPECT_NE(file.lastModified(), kInvalidTimePoint);
+}
+#endif
 
 }  // namespace aeronet

@@ -105,46 +105,64 @@ bool HasHiddenSegment(std::basic_string_view<CharT> relativePath) {
   return false;
 }
 
-void AppendHtmlEscaped(std::string_view requestPath, RawChars& out) {
-  for (char ch : requestPath) {
-    switch (ch) {
-      case '&':
-        out.append("&amp;");
-        break;
-      case '<':
-        out.append("&lt;");
-        break;
-      case '>':
-        out.append("&gt;");
-        break;
-      case '"':
-        out.append("&quot;");
-        break;
-      case '\'':
-        out.append("&#39;");
-        break;
-      default:
-        out.push_back(ch);
-        break;
+// The HTML escape sequence of a character, empty when it is written as is.
+constexpr std::string_view HtmlEscapeSequence(char ch) {
+  switch (ch) {
+    case '&':
+      return "&amp;";
+    case '<':
+      return "&lt;";
+    case '>':
+      return "&gt;";
+    case '"':
+      return "&quot;";
+    case '\'':
+      return "&#39;";
+    default:
+      return {};
+  }
+}
+
+// The number of chars that WriteHtmlEscaped(str, out) writes.
+std::size_t HtmlEscapedSize(std::string_view str) {
+  std::size_t size = str.size();
+  for (char ch : str) {
+    const std::string_view escapeSequence = HtmlEscapeSequence(ch);
+    if (!escapeSequence.empty()) {
+      size += escapeSequence.size() - 1U;
     }
   }
+  return size;
 }
 
-void FormatLastModified(SysTimePoint tp, RawChars& buf) {
-  if (tp == kInvalidTimePoint) {
-    buf.push_back('-');
-  } else {
-    buf.ensureAvailableCapacityExponential(RFC7231DateStrLen);
-    TimeToStringRFC7231(tp, buf.data() + buf.size());
-    buf.addSize(RFC7231DateStrLen);
+char* WriteHtmlEscaped(std::string_view str, char* pData) {
+  for (char ch : str) {
+    const std::string_view escapeSequence = HtmlEscapeSequence(ch);
+    if (escapeSequence.empty()) {
+      *pData++ = ch;
+    } else {
+      pData = Append(escapeSequence, pData);
+    }
   }
+  return pData;
 }
 
-void DefaultDirectoryListingCss(std::string_view customCss, RawChars& buf) {
-  if (!customCss.empty()) {
-    buf.append(customCss);
-  } else {
-    buf.append(R"CSS(
+// The parts of the default directory listing around the request path, the CSS and the entries.
+constexpr std::string_view kListingHead =
+    "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Index of ";
+constexpr std::string_view kListingTitleEnd = "</title>\n<style>";
+constexpr std::string_view kListingStyleEnd = "</style>\n</head>\n<body>\n<h1>Index of ";
+constexpr std::string_view kListingTableStart =
+    "</h1>\n<table>\n<thead><tr><th>Name</th><th class=\"size\">Size</th><th class=\"modified\">Last "
+    "Modified</th></tr></thead>\n<tbody>\n"
+    "<tr><td class=\"name\"><a href=\"../\" class=\"dir\">..</a></td><td class=\"size\">-</td><td "
+    "class=\"modified\">-</td></tr>\n";
+constexpr std::string_view kListingTableEnd = "</tbody>\n</table>\n";
+constexpr std::string_view kListingTruncatedStart = "<p id=\"truncated\">Listing truncated after ";
+constexpr std::string_view kListingTruncatedEnd = " entries.</p>\n";
+constexpr std::string_view kListingFooter = "<footer>Served by aeronet</footer>\n</body>\n</html>\n";
+
+constexpr std::string_view kDefaultDirectoryListingCss = R"CSS(
 body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:2rem;}
 table{border-collapse:collapse;width:100%;max-width:960px;}
 th,td{padding:0.3rem 0.6rem;text-align:left;border-bottom:1px solid #e0e0e0;}
@@ -154,9 +172,14 @@ h1{font-size:1.4rem;margin-bottom:1rem;}
 #truncated{margin-top:1rem;color:#b24e00;}
 footer{margin-top:2rem;font-size:0.85rem;color:#666;}
 a.dir::after{content:"/";}
-)CSS");
-  }
-}
+)CSS";
+
+// The markup of the row of an entry around its name, its size and its modification time.
+constexpr std::string_view kEntryRowStart = R"(<tr><td class="name"><a href=")";
+constexpr std::string_view kEntryDirClass = R"( class="dir")";
+constexpr std::string_view kEntrySizeStart = R"(</a></td><td class="size">)";
+constexpr std::string_view kEntryModifiedStart = R"(</td><td class="modified">)";
+constexpr std::string_view kEntryRowEnd = "</td></tr>\n";
 
 struct DirectoryListingEntry {
   std::string name;
@@ -167,70 +190,85 @@ struct DirectoryListingEntry {
   SysTimePoint lastModified{kInvalidTimePoint};
 };
 
+// The number of chars that WriteListingRow(entry, out) writes.
+std::size_t ListingRowSize(const DirectoryListingEntry& entry) {
+  std::size_t size = kEntryRowStart.size() + URLEncodedSize(entry.name, url::IsUnreserved) + 2U /* '"' and '>' */ +
+                     HtmlEscapedSize(entry.name) + kEntrySizeStart.size() + kEntryModifiedStart.size() +
+                     kEntryRowEnd.size();
+  if (entry.isDirectory) {
+    size += 1U /* '/' */ + kEntryDirClass.size();
+  }
+  size += entry.fileSizeKnown ? FormattedSizeLen(entry.sizeBytes) : 1U;
+  size += entry.lastModified == kInvalidTimePoint ? 1U : RFC7231DateStrLen;
+  return size;
+}
+
+char* WriteListingRow(const DirectoryListingEntry& entry, char* pData) {
+  pData = Append(kEntryRowStart, pData);
+  pData = URLEncode(entry.name, url::IsUnreserved, pData);
+  if (entry.isDirectory) {
+    *pData++ = '/';  // the link of a directory ends with '/'
+  }
+  *pData++ = '"';
+  if (entry.isDirectory) {
+    pData = Append(kEntryDirClass, pData);
+  }
+  *pData++ = '>';
+  pData = WriteHtmlEscaped(entry.name, pData);
+  pData = Append(kEntrySizeStart, pData);
+  if (entry.fileSizeKnown) {
+    pData = WriteFormattedSize(entry.sizeBytes, pData);
+  } else {
+    *pData++ = '-';
+  }
+  pData = Append(kEntryModifiedStart, pData);
+  if (entry.lastModified == kInvalidTimePoint) {
+    *pData++ = '-';
+  } else {
+    pData = TimeToStringRFC7231(entry.lastModified, pData);
+  }
+  return Append(kEntryRowEnd, pData);
+}
+
 RawChars RenderDefaultDirectoryListing(std::string_view requestPath, std::span<const DirectoryListingEntry> entries,
                                        bool truncated, std::string_view customCss) {
-  RawChars body(2048U);
+  const std::string_view css = customCss.empty() ? kDefaultDirectoryListingCss : customCss;
+  const std::size_t escapedPathSize = HtmlEscapedSize(requestPath);
+  const auto nDigitsEntries = ndigits(entries.size());
 
-  body.unchecked_append("<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Index of ");
-  AppendHtmlEscaped(requestPath, body);
-  body.append("</title>\n<style>");
-
-  DefaultDirectoryListingCss(customCss, body);
-
-  body.append("</style>\n</head>\n<body>\n<h1>Index of ");
-  AppendHtmlEscaped(requestPath, body);
-  body.append(
-      "</h1>\n<table>\n<thead><tr><th>Name</th><th class=\"size\">Size</th><th class=\"modified\">Last "
-      "Modified</th></tr></thead>\n<tbody>\n");
-
-  body.append(
-      "<tr><td class=\"name\"><a href=\"../\" class=\"dir\">..</a></td><td class=\"size\">-</td><td "
-      "class=\"modified\">-</td></tr>\n");
-
+  // The body is allocated once, at its exact size.
+  std::size_t bodySize = kListingHead.size() + escapedPathSize + kListingTitleEnd.size() + css.size() +
+                         kListingStyleEnd.size() + escapedPathSize + kListingTableStart.size() +
+                         kListingTableEnd.size() + kListingFooter.size();
   for (const auto& entry : entries) {
-    const bool isDir = entry.isDirectory;
-    const auto encodedSz = URLEncodedSize(entry.name, url::IsUnreserved);
-
-    body.append(R"(<tr><td class="name"><a href=")");
-
-    body.ensureAvailableCapacityExponential(encodedSz);
-    URLEncode(entry.name, url::IsUnreserved, body.data() + body.size());
-    body.addSize(encodedSz);
-
-    if (isDir) {
-      // ensure href ends with '/'
-      body.push_back('/');
-    }
-    body.push_back('"');
-    if (isDir) {
-      body.append(" class=\"dir\"");
-    }
-    body.push_back('>');
-    AppendHtmlEscaped(entry.name, body);
-
-    body.append("</a></td><td class=\"size\">");
-    if (entry.fileSizeKnown) {
-      AddFormattedSize(entry.sizeBytes, body);
-    } else {
-      body.push_back('-');
-    }
-    body.append("</td><td class=\"modified\">");
-    FormatLastModified(entry.lastModified, body);
-    body.append("</td></tr>\n");
+    bodySize += ListingRowSize(entry);
   }
-
-  body.append("</tbody>\n</table>\n");
   if (truncated) {
-    body.append("<p id=\"truncated\">Listing truncated after ");
-
-    const auto nDigitsEntries = ndigits(entries.size());
-    body.ensureAvailableCapacityExponential(nDigitsEntries);
-    [[maybe_unused]] auto ptr = WriteUInt(body.data() + body.size(), entries.size(), nDigitsEntries);
-    assert(ptr == body.data() + body.size() + nDigitsEntries);
-    body.addSize(nDigitsEntries);
-    body.append(" entries.</p>\n");
+    bodySize += kListingTruncatedStart.size() + nDigitsEntries + kListingTruncatedEnd.size();
   }
-  body.append("<footer>Served by aeronet</footer>\n</body>\n</html>\n");
+
+  RawChars body(bodySize);
+  char* pData = body.data();
+  pData = Append(kListingHead, pData);
+  pData = WriteHtmlEscaped(requestPath, pData);
+  pData = Append(kListingTitleEnd, pData);
+  pData = Append(css, pData);
+  pData = Append(kListingStyleEnd, pData);
+  pData = WriteHtmlEscaped(requestPath, pData);
+  pData = Append(kListingTableStart, pData);
+  for (const auto& entry : entries) {
+    pData = WriteListingRow(entry, pData);
+  }
+  pData = Append(kListingTableEnd, pData);
+  if (truncated) {
+    pData = Append(kListingTruncatedStart, pData);
+    pData = WriteUInt(pData, entries.size(), nDigitsEntries);
+    pData = Append(kListingTruncatedEnd, pData);
+  }
+  pData = Append(kListingFooter, pData);
+
+  assert(pData == body.data() + bodySize);
+  body.setSize(bodySize);
   return body;
 }
 
@@ -240,8 +278,21 @@ struct DirectoryListingResult {
   bool isValid{false};
 };
 
+// Listing order: directories first, then by name.
+bool ListedBefore(bool lhsIsDirectory, std::string_view lhsName, bool rhsIsDirectory, std::string_view rhsName) {
+  if (lhsIsDirectory != rhsIsDirectory) {
+    return lhsIsDirectory;
+  }
+  return lhsName < rhsName;
+}
+
+// Collect the entries of 'directory' to list, in the listing order: the first config.maxEntriesToList ones. A symbolic
+// link is listed, and described by its target, only when 'isLinkServable' accepts it: a link answered 404 (leading
+// outside of the root, or to a hidden name) is left out like a hidden file, its target not being described.
+template <class IsLinkServable>
 [[nodiscard]] DirectoryListingResult CollectDirectoryListing(const std::filesystem::path& directory,
-                                                             const StaticFileConfig& config) {
+                                                             const StaticFileConfig& config,
+                                                             IsLinkServable isLinkServable) {
   const std::size_t limit = config.maxEntriesToList;
 
   DirectoryListingResult result;
@@ -253,13 +304,13 @@ struct DirectoryListingResult {
   }
 
   const auto comp = [](const DirectoryListingEntry& lhs, const DirectoryListingEntry& rhs) {
-    // Directories first
-    if (lhs.isDirectory != rhs.isDirectory) {
-      return lhs.isDirectory;
-    }
-    return lhs.name < rhs.name;
+    return ListedBefore(lhs.isDirectory, lhs.name, rhs.isDirectory, rhs.name);
   };
 
+  // The order of exploration depends on the file system: the kept entries are the first ones in the listing order,
+  // whatever it is. Once 'limit' entries are kept, they form a max-heap whose front is the last one: an entry listed
+  // before it replaces it in O(log(limit)), any other one is dropped before its metadata is read.
+  bool isHeap = false;
   for (const std::filesystem::directory_iterator end; it != end;) {
     std::filesystem::directory_entry current = *it;
     it.increment(ec);
@@ -273,25 +324,41 @@ struct DirectoryListingResult {
       continue;
     }
 
-    DirectoryListingEntry& info = result.entries.emplace_back(std::move(name));
-
     std::error_code stepEc;
-    const auto entryStatus = current.symlink_status(stepEc);
+    // The type of the entry itself, usually known from the directory read without system call.
+    std::filesystem::file_status entryStatus = current.symlink_status(stepEc);
+    if (!stepEc && std::filesystem::is_symlink(entryStatus)) {
+      if (!isLinkServable(current.path())) {
+        continue;
+      }
+      entryStatus = current.status(stepEc);  // of its target, inside of the root
+    }
     if (stepEc) {
       log::error("Failed to get status for directory entry '{}': {}", PathString(current.path()).c_str(),
                  stepEc.message());
-    } else {
-      if (std::filesystem::is_directory(entryStatus)) {
-        info.isDirectory = true;
+    }
+    const bool isDirectory = !stepEc && std::filesystem::is_directory(entryStatus);
+
+    if (result.entries.size() == limit) {
+      result.truncated = true;
+      if (limit == 0 ||
+          !ListedBefore(isDirectory, name, result.entries.front().isDirectory, result.entries.front().name)) {
+        continue;
+      }
+      std::ranges::pop_heap(result.entries, comp);
+      result.entries.pop_back();
+    }
+
+    DirectoryListingEntry& info = result.entries.emplace_back(std::move(name));
+    info.isDirectory = isDirectory;
+    if (!stepEc && !isDirectory) {
+      const auto fileSize = current.file_size(stepEc);
+      if (stepEc) {
+        log::error("Failed to get size for directory entry '{}': {}", PathString(current.path()).c_str(),
+                   stepEc.message());
       } else {
-        const auto fileSize = current.file_size(stepEc);
-        if (stepEc) {
-          log::error("Failed to get size for directory entry '{}': {}", PathString(current.path()).c_str(),
-                     stepEc.message());
-        } else {
-          info.fileSizeKnown = true;
-          info.sizeBytes = fileSize;
-        }
+        info.fileSizeKnown = true;
+        info.sizeBytes = fileSize;
       }
     }
 
@@ -305,30 +372,20 @@ struct DirectoryListingResult {
 
     info.entry = std::move(current);
 
-    // Order of directory exploration is file system dependent.
-    // So we start to keep an up to date ordered list of elements once it reaches the limit so that the list stays
-    // consistent across file systems.
-    if (result.entries.size() == limit) {
-      std::ranges::sort(result.entries, comp);
-    } else if (result.entries.size() > limit) {
-      // we have a container of limit + 1 elements, with the last one maybe unsorted.
-      // We need to find the correct insert place of last element, and rotate the elements to keep the vector sorted.
-      auto lb = std::ranges::lower_bound(result.entries.begin(), result.entries.end() - 1, result.entries.back(), comp);
-      // We need to rotate +1 (to the right) the range [lb, end)] - that's a rotate!
-      std::rotate(lb, result.entries.end() - 1, result.entries.end());
-      result.entries.pop_back();
-
-      result.truncated = true;
+    if (isHeap) {
+      std::ranges::push_heap(result.entries, comp);
+    } else if (result.entries.size() == limit) {
+      std::ranges::make_heap(result.entries, comp);
+      isHeap = true;
     }
   }
 
   result.isValid = true;
-
-  if (result.entries.size() < limit) {
-    // If it is at the limit, it's already sorted.
+  if (isHeap) {
+    std::ranges::sort_heap(result.entries, comp);
+  } else {
     std::ranges::sort(result.entries, comp);
   }
-
   return result;
 }
 
@@ -379,7 +436,9 @@ std::uint8_t MakeStrongEtag(std::uint64_t fileSize, SysTimePoint lastModified, c
 }
 
 struct RangeSelection {
-  enum class State : std::uint8_t { None, Valid, Invalid, Unsatisfiable };
+  // EmptyRepresentation: the only satisfiable range of an empty representation (a suffix range), which no
+  // Content-Range can describe.
+  enum class State : std::uint8_t { None, Valid, Invalid, Unsatisfiable, EmptyRepresentation };
 
   std::size_t offset{0};
   std::size_t length{0};
@@ -396,7 +455,11 @@ struct MultiRangeResult {
 };
 
 constexpr std::size_t kInvalidSize = std::numeric_limits<std::size_t>::max();
+// Larger than any file: what a number beyond the range of std::size_t stands for.
+constexpr std::size_t kSaturatedSize = kInvalidSize - 1U;
 
+// The value of a 1*DIGIT position or length, kInvalidSize when 'token' is not one. RFC 9110 §14.1.1 sets no maximum:
+// a value beyond the range of std::size_t saturates (to kSaturatedSize).
 std::size_t ParseSize(std::string_view token) {
   assert(token == TrimOws(token));
   if (token.empty()) {
@@ -406,8 +469,12 @@ std::size_t ParseSize(std::string_view token) {
   const auto first = token.data();
   const auto last = first + token.size();
   const auto [ptr, ec] = std::from_chars(first, last, value);
-  if (ec != std::errc{} || ptr != last) {
-    return kInvalidSize;
+  if (ptr != last) {
+    return kInvalidSize;  // not only digits (a non-digit first char leaves ptr at first)
+  }
+  // Only digits: an error can only be a value out of range.
+  if (ec != std::errc{} || value == kInvalidSize) {
+    return kSaturatedSize;
   }
   return value;
 }
@@ -441,8 +508,13 @@ RangeSelection ParseSingleRangeSpec(std::string_view spec, std::size_t fileSize)
       result.state = RangeSelection::State::Invalid;
       return result;
     }
-    if (suffixLen == 0 || fileSize == 0) {
+    if (suffixLen == 0) {
       result.state = RangeSelection::State::Unsatisfiable;
+      return result;
+    }
+    if (fileSize == 0) {
+      // RFC 9110 §14.1.2: satisfiable, the whole (empty) representation.
+      result.state = RangeSelection::State::EmptyRepresentation;
       return result;
     }
     const std::uint64_t len = std::min<std::uint64_t>(suffixLen, fileSize);
@@ -519,6 +591,8 @@ void SortAndCoalesceRanges(vector<RangeSelection>& ranges) {
 // Unsatisfiable individual sub-ranges are silently dropped (RFC 9110 §14.1.1).
 // If ALL sub-ranges are unsatisfiable, the result is Unsatisfiable.
 // Any syntactically invalid sub-range makes the whole request Invalid.
+// A satisfiable range of an empty representation cannot be described by a Content-Range: the Range is then ignored
+// (None), as RFC 9110 §14.2 allows when the selected representation has no content.
 MultiRangeResult ParseRanges(std::string_view raw, std::size_t fileSize, std::uint8_t maxRanges) {
   MultiRangeResult result;
   raw = TrimOws(raw);
@@ -541,6 +615,7 @@ MultiRangeResult ParseRanges(std::string_view raw, std::size_t fileSize, std::ui
   vector<RangeSelection> satisfiable;
   std::size_t rangeCount = 0;
   std::uint8_t emptyRangeCount = 0;
+  bool satisfiableByEmptyRepresentation = false;
   static constexpr std::uint8_t kMaxIgnoredEmptyRangeSpecs = 16;
   do {
     auto commaPos = raw.find(',');
@@ -567,6 +642,8 @@ MultiRangeResult ParseRanges(std::string_view raw, std::size_t fileSize, std::ui
         assert(rangeCount - 1 <= std::numeric_limits<std::uint32_t>::max());
         sel.order = static_cast<std::uint32_t>(rangeCount - 1);
         satisfiable.push_back(sel);
+      } else if (sel.state == RangeSelection::State::EmptyRepresentation) {
+        satisfiableByEmptyRepresentation = true;
       }
       // Unsatisfiable sub-ranges are silently dropped (RFC 9110 §14.1.1)
     }
@@ -581,7 +658,9 @@ MultiRangeResult ParseRanges(std::string_view raw, std::size_t fileSize, std::ui
     return result;
   }
   if (satisfiable.empty()) {
-    result.kind = MultiRangeResult::Kind::Unsatisfiable;
+    if (!satisfiableByEmptyRepresentation) {
+      result.kind = MultiRangeResult::Kind::Unsatisfiable;
+    }
     return result;
   }
 
@@ -596,30 +675,28 @@ MultiRangeResult ParseRanges(std::string_view raw, std::size_t fileSize, std::ui
   return result;
 }
 
-bool EtagTokenMatches(std::string_view token, std::string_view etag) {
+enum class EtagComparison : std::uint8_t { Strong, Weak };
+
+// Whether a member of an If-Match or If-None-Match list designates 'etag', the strong entity tag of the file (quotes
+// included). The weak comparison (If-None-Match, RFC 9110 §13.1.2) ignores a W/ prefix. In the strong one (If-Match,
+// §13.1.1), a weak tag never matches: it never equals 'etag', which starts with a quote.
+bool EtagTokenMatches(std::string_view token, std::string_view etag, EtagComparison comparison) {
   token = TrimOws(token);
-  if (token.empty()) {
-    return false;
-  }
   // "*" matches any current entity tag (RFC 9110 §13.1.1).
   if (token == "*") {
     return true;
   }
-  if (token.size() > 2 && token.starts_with("W/")) {
-    return false;  // weak comparison fails for strong validator
+  if (comparison == EtagComparison::Weak && token.starts_with(http::WeakETagPrefix)) {
+    token.remove_prefix(http::WeakETagPrefix.size());
   }
   return token == etag;
 }
 
-bool EtagListMatches(std::string_view headerValue, std::string_view etag) {
-  headerValue = TrimOws(headerValue);
-  if (headerValue == "*") {
-    return true;
-  }
+bool EtagListMatches(std::string_view headerValue, std::string_view etag, EtagComparison comparison) {
   while (!headerValue.empty()) {
     const auto commaPos = headerValue.find(',');
     const auto token = commaPos == std::string_view::npos ? headerValue : headerValue.substr(0, commaPos);
-    if (EtagTokenMatches(token, etag)) {
+    if (EtagTokenMatches(token, etag, comparison)) {
       return true;
     }
     if (commaPos == std::string_view::npos) {
@@ -630,89 +707,58 @@ bool EtagListMatches(std::string_view headerValue, std::string_view etag) {
   return false;
 }
 
-struct ConditionalOutcome {
-  enum class Kind : std::uint8_t { None, NotModified, PreconditionFailed };
+// Last-Modified has the one-second resolution of an HTTP-date, while 'lastModified' keeps the sub-second part of the
+// file system: compared with a date, the validator is 'lastModified' truncated to the second (the value the client
+// received). 'date' being a whole second, floor(lastModified) <= date is lastModified < date + 1 s, without division.
+constexpr bool ModifiedNoLaterThan(SysTimePoint lastModified, SysTimePoint date) {
+  return lastModified < date + std::chrono::seconds{1};
+}
 
-  Kind kind{Kind::None};
-  bool rangeAllowed{true};
-  http::StatusCode status{http::StatusCodeOK};
-};
+enum class ConditionalOutcome : std::uint8_t { None, NotModified, PreconditionFailed };
 
+// Evaluate the preconditions in the order of RFC 9110 §13.2.2 (steps 1 to 4, If-Range being evaluated with the Range).
+// 'etag' is the strong entity tag of the file, 'lastModified' its modification time.
 ConditionalOutcome EvaluateConditionals(const HttpRequestView& request, std::string_view etag,
                                         SysTimePoint lastModified) {
-  ConditionalOutcome outcome;
+  assert(!etag.empty() && lastModified != kInvalidTimePoint);
 
-  if (etag.empty()) {
-    return outcome;
-  }
-
-  if (auto ifMatch = request.headerValue(http::IfMatch); ifMatch.has_value() && !EtagListMatches(*ifMatch, etag)) {
-    outcome.kind = ConditionalOutcome::Kind::PreconditionFailed;
-    outcome.status = http::StatusCodePreconditionFailed;
-    outcome.rangeAllowed = false;
-    return outcome;
-  }
-
-  if (auto ifUnmodified = request.headerValue(http::IfUnmodifiedSince); ifUnmodified.has_value()) {
-    if (lastModified == kInvalidTimePoint) {
-      return outcome;
+  if (auto ifMatch = request.headerValue(http::IfMatch); ifMatch.has_value()) {
+    if (!EtagListMatches(*ifMatch, etag, EtagComparison::Strong)) {
+      return ConditionalOutcome::PreconditionFailed;
     }
+  } else if (auto ifUnmodified = request.headerValue(http::IfUnmodifiedSince); ifUnmodified.has_value()) {
+    // Ignored with If-Match, or when not a valid HTTP-date (§13.1.4).
     const auto parsed = TryParseTimeRFC7231(*ifUnmodified);
-    if (parsed == kInvalidTimePoint) {
-      return outcome;
-    }
-    if (lastModified > parsed) {
-      outcome.kind = ConditionalOutcome::Kind::PreconditionFailed;
-      outcome.status = http::StatusCodePreconditionFailed;
-      outcome.rangeAllowed = false;
-      return outcome;
+    if (parsed != kInvalidTimePoint && !ModifiedNoLaterThan(lastModified, parsed)) {
+      return ConditionalOutcome::PreconditionFailed;
     }
   }
 
   if (auto ifNoneMatch = request.headerValue(http::IfNoneMatch); ifNoneMatch.has_value()) {
-    if (EtagListMatches(*ifNoneMatch, etag)) {
-      outcome.rangeAllowed = false;
-      outcome.kind = ConditionalOutcome::Kind::NotModified;
-      outcome.status = http::StatusCodeNotModified;
-    }
-    return outcome;
+    // If-Modified-Since is ignored with If-None-Match (§13.1.3).
+    return EtagListMatches(*ifNoneMatch, etag, EtagComparison::Weak) ? ConditionalOutcome::NotModified
+                                                                     : ConditionalOutcome::None;
   }
 
   if (auto ifModified = request.headerValue(http::IfModifiedSince); ifModified.has_value()) {
-    if (lastModified == kInvalidTimePoint) {
-      return outcome;
-    }
     const auto parsed = TryParseTimeRFC7231(*ifModified);
-    if (parsed == kInvalidTimePoint) {
-      return outcome;
-    }
-    if (lastModified <= parsed) {
-      outcome.kind = ConditionalOutcome::Kind::NotModified;
-      outcome.status = http::StatusCodeNotModified;
-      outcome.rangeAllowed = false;
-      return outcome;
+    if (parsed != kInvalidTimePoint && ModifiedNoLaterThan(lastModified, parsed)) {
+      return ConditionalOutcome::NotModified;
     }
   }
 
-  return outcome;
+  return ConditionalOutcome::None;
 }
 
+// RFC 9110 §13.1.5: the If-Range validator must exactly match the current one, entity tag (strong comparison: a weak
+// tag never matches) or date (the Last-Modified value, at its one-second resolution).
 bool IfRangeAllowsPartial(std::string_view value, std::string_view etag, SysTimePoint lastModified) {
   value = TrimOws(value);
-  if (value.empty()) {
-    return false;
-  }
-  if (value.front() == '"') {
+  if (value.starts_with('"')) {
     return value == etag;
   }
-  if (value.starts_with("W/")) {
-    return false;
-  }
   const auto parsed = TryParseTimeRFC7231(value);
-  if (parsed == kInvalidTimePoint || lastModified == kInvalidTimePoint) {
-    return false;
-  }
-  return lastModified <= parsed;
+  return parsed != kInvalidTimePoint && parsed <= lastModified && ModifiedNoLaterThan(lastModified, parsed);
 }
 
 constexpr std::string_view kBytesPrefixStr = "bytes ";
@@ -957,11 +1003,19 @@ StaticFileHandler::ResolveResult StaticFileHandler::resolveTarget(const HttpRequ
     return ResolveResult::NotFound;
   }
   if (std::filesystem::is_directory(status)) {
+    // A directory is served (its index file, or its listing) at the URL ending with a slash, against which the relative
+    // references of the page resolve (RFC 3986 §5.2): '/dir' is redirected to '/dir/' first.
+    if (!requestedTrailingSlash && _config.enableDirectoryIndex) {
+      return ResolveResult::DirectoryRedirect;
+    }
     if (!_config.defaultIndex().empty()) {
       std::filesystem::path indexPath = resolvedPath / _config.defaultIndex();
       std::error_code indexEc;
       const auto indexStatus = std::filesystem::status(indexPath, indexEc);
       if (!indexEc && std::filesystem::is_regular_file(indexStatus)) {
+        if (!requestedTrailingSlash) {
+          return ResolveResult::DirectoryRedirect;
+        }
         resolvedPath = std::move(indexPath);
         return ResolveResult::RegularFile;
       }
@@ -969,38 +1023,43 @@ StaticFileHandler::ResolveResult StaticFileHandler::resolveTarget(const HttpRequ
     return _config.enableDirectoryIndex ? ResolveResult::Directory : ResolveResult::NotFound;
   }
 
-  // Only regular files are served: opening a FIFO or a device could block the event loop.
+  // Only regular files are served: opening a FIFO or a device could block the event loop. The opened file is checked
+  // again (File::isRegularFile()): the path may be replaced in between.
   return requestedTrailingSlash || !std::filesystem::is_regular_file(status) ? ResolveResult::NotFound
                                                                              : ResolveResult::RegularFile;
 }
 
-bool StaticFileHandler::isRealPathServable(const std::filesystem::path& path, const File* pFile) const {
+bool StaticFileHandler::isRealPathServable(const std::filesystem::path& path, const File* pFile,
+                                           bool logRefusal) const {
   std::error_code ec;
   const auto canonicalPath = std::filesystem::canonical(path, ec);
   if (ec) {
-    log::error("Unable to resolve '{}': {}", PathString(path).c_str(), ec.message());
+    if (logRefusal) {
+      log::error("Unable to resolve '{}': {}", PathString(path).c_str(), ec.message());
+    }
     return false;
   }
   const auto& rootStr = _root.native();
   const auto& pathStr = canonicalPath.native();
-  if (!pathStr.starts_with(rootStr)) {
-    log::warn("Refusing to serve '{}': it resolves outside of the root directory", PathString(path).c_str());
-    return false;
-  }
   // '/srv/www' contains '/srv/www/a' but not '/srv/www2'.
   static constexpr auto kSep = std::filesystem::path::preferred_separator;
-  if (pathStr.size() != rootStr.size() && rootStr.back() != kSep && pathStr[rootStr.size()] != kSep) {
-    log::warn("Refusing to serve '{}': it resolves outside of the root directory", PathString(path).c_str());
+  if (!pathStr.starts_with(rootStr) ||
+      (pathStr.size() != rootStr.size() && rootStr.back() != kSep && pathStr[rootStr.size()] != kSep)) {
+    if (logRefusal) {
+      log::warn("Refusing to serve '{}': it resolves outside of the root directory", PathString(path).c_str());
+    }
     return false;
   }
   // The requested segments were checked, but the real path can reveal a hidden name that they did not show: a link to
   // a dotfile, or a Windows short name (GIT~1 for .git). The root directory itself may be hidden.
   if (!_config.showHiddenFiles && HasHiddenSegment(std::basic_string_view(pathStr).substr(rootStr.size()))) {
-    log::debug("Refusing to serve '{}': it resolves to a hidden file", PathString(path).c_str());
+    if (logRefusal) {
+      log::debug("Refusing to serve '{}': it resolves to a hidden file", PathString(path).c_str());
+    }
     return false;
   }
   // The file was opened before its path was resolved here: a link retargeted meanwhile would make this check validate
-  // another file than the one served.
+  // another file than the one served. Listings check links without opening them.
   if (pFile != nullptr && !pFile->isAtPath(PathString(canonicalPath).c_str())) {
     log::warn("Refusing to serve '{}': it changed while being opened", PathString(path).c_str());
     return false;
@@ -1112,7 +1171,6 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
   }
 
   const std::string_view requestPath = request.path();
-  const bool requestedTrailingSlash = requestPath.back() == '/';
 
   std::filesystem::path targetPath;
   const auto resolveResult = resolveTarget(request, targetPath);
@@ -1122,14 +1180,15 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
   }
 
   // resolveTarget already validated the target via status; no need to stat again.
-  if (resolveResult == ResolveResult::Directory) {
-    if (!_config.enableDirectoryIndex || !isRealPathServable(targetPath, nullptr)) {
+  if (resolveResult == ResolveResult::Directory || resolveResult == ResolveResult::DirectoryRedirect) {
+    // The redirect does not reveal a directory that would be answered 404 once redirected.
+    if (!isRealPathServable(targetPath, nullptr)) {
       resp = request.makeResponse(http::StatusCodeNotFound);
       return resp;
     }
 
     static constexpr std::string_view kNoCache = "no-cache";
-    if (!requestedTrailingSlash) {
+    if (resolveResult == ResolveResult::DirectoryRedirect) {
       static constexpr std::string_view kMovedPermanentlyBody = "Moved Permanently\n";
       static constexpr bool kAddSlash = true;
 
@@ -1148,7 +1207,10 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
       return resp;
     }
 
-    auto listing = CollectDirectoryListing(targetPath, _config);
+    assert(_config.enableDirectoryIndex);
+    auto listing = CollectDirectoryListing(targetPath, _config, [this](const std::filesystem::path& linkPath) {
+      return isRealPathServable(linkPath, nullptr, /*logRefusal=*/false);
+    });
     if (!listing.isValid) {
       resp = request.makeResponse(http::StatusCodeInternalServerError);
       return resp;
@@ -1188,6 +1250,11 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
     resp = request.makeResponse(http::StatusCodeServiceUnavailable, "Unable to open file\n");
     return resp;
   }
+  // Replaced since resolveTarget() checked its type (by a FIFO, opened without blocking, or a device).
+  if (!file.isRegularFile()) {
+    resp = request.makeResponse(http::StatusCodeNotFound);
+    return resp;
+  }
 
   const std::size_t fileSize = file.size();
 
@@ -1213,34 +1280,47 @@ HttpResponse StaticFileHandler::operator()(const HttpRequestView& request) const
 
   const std::size_t additionalCapacity = 96UL + (useSmallFilesOptimization ? HttpResponse::BodySize(fileSize) : 0UL);
 
+  const ConditionalOutcome conditionalOutcome =
+      _config.enableConditional ? EvaluateConditionals(request, etagView, lastModified) : ConditionalOutcome::None;
+
   resp = request.makeResponse(additionalCapacity, http::StatusCodeNotFound);
 
   resp.headerAddLine(http::AcceptRanges, _config.enableRange ? kBytes : "none");
+
+  // A 304 carries the ETag and the Vary of the 200 it stands for (RFC 9110 §15.4.5): the server compresses a file read
+  // into the response like any body in memory, making its ETag weak.
+  HttpRequestView::BodyCompressionOutlook notModifiedOutlook;
+  if (conditionalOutcome == ConditionalOutcome::NotModified && useSmallFilesOptimization) {
+    notModifiedOutlook = request.bodyCompressionOutlook(fileSize, contentTypeForFile);
+  }
   if (_config.addEtag) {
     // ETag is always formatted when addEtag is set (a valid File guarantees a valid modification time).
-    resp.headerAddLine(http::ETag, etagView);
+    if (notModifiedOutlook.compressed) {
+      char weakEtag[http::WeakETagPrefix.size() + kMaxEtagSize];
+      char* pEnd = Append(etagView, Append(http::WeakETagPrefix, weakEtag));
+      resp.headerAddLine(http::ETag, std::string_view(weakEtag, pEnd));
+    } else {
+      resp.headerAddLine(http::ETag, etagView);
+    }
   }
   if (_config.addLastModified) {
     resp.headerAddLine(http::LastModified, std::string_view(meta.lastModifiedStr, RFC7231DateStrLen));
   }
 
-  ConditionalOutcome conditionalOutcome;
-  if (_config.enableConditional) {
-    conditionalOutcome = EvaluateConditionals(request, etagView, lastModified);
-    if (conditionalOutcome.kind == ConditionalOutcome::Kind::PreconditionFailed) {
-      resp.status(conditionalOutcome.status);
-      resp.body("Precondition Failed\n");
-      return resp;
+  if (conditionalOutcome == ConditionalOutcome::NotModified) {
+    if (notModifiedOutlook.varyAcceptEncoding) {
+      resp.headerAddLine(http::Vary, http::AcceptEncoding);
     }
-    if (conditionalOutcome.kind == ConditionalOutcome::Kind::NotModified) {
-      resp.status(http::StatusCodeNotModified);
-      return resp;
-    }
+    resp.status(http::StatusCodeNotModified);
+    return resp;
+  }
+  if (conditionalOutcome == ConditionalOutcome::PreconditionFailed) {
+    resp.status(http::StatusCodePreconditionFailed);
+    resp.body("Precondition Failed\n");
+    return resp;
   }
 
-  const bool allowRanges =
-      request.method() == http::Method::GET && _config.enableRange && conditionalOutcome.rangeAllowed;
-  if (allowRanges) {
+  if (request.method() == http::Method::GET && _config.enableRange) {
     if (auto rangeHeaderVal = request.headerValue(http::Range); rangeHeaderVal.has_value()) {
       bool allowed = true;
       if (auto ifRange = request.headerValue(http::IfRange); ifRange.has_value()) {

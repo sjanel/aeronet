@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "aeronet/compiler-config.hpp"
+#include "aeronet/compression-config.hpp"
 #include "aeronet/connection-info.hpp"
 #include "aeronet/encoding.hpp"
 #include "aeronet/find-char.hpp"
@@ -900,6 +901,21 @@ HttpResponse::Options HttpRequestView::makeResponseOptions(
   }
 #endif
   return opts;
+}
+
+HttpRequestView::BodyCompressionOutlook HttpRequestView::bodyCompressionOutlook(
+    [[maybe_unused]] std::size_t bodySize, [[maybe_unused]] std::string_view contentType) const noexcept {
+  BodyCompressionOutlook outlook;
+#if defined(AERONET_ENABLE_BROTLI) || defined(AERONET_ENABLE_ZLIB) || defined(AERONET_ENABLE_ZSTD)
+  // The decisions of prefinalizeHttpResponse() for a 200 with this body in memory.
+  const CompressionConfig& compressionConfig = *_pCompressionState->pCompressionConfig;
+  if (HttpCodec::IsCompressible(compressionConfig, http::StatusCodeOK, bodySize, contentType)) {
+    outlook.compressed = _responsePossibleEncoding != Encoding::none;
+    outlook.varyAcceptEncoding =
+        _addVaryAcceptEncoding && (outlook.compressed || compressionConfig.addVaryAcceptEncodingToUncompressed);
+  }
+#endif
+  return outlook;
 }
 
 HttpResponse::Options HttpRequestView::makeResponseOptions() const noexcept {
