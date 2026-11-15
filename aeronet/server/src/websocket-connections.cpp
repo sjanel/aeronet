@@ -36,8 +36,13 @@ Http1Pipeline::LoopAction Http1Pipeline::processWebSocketUpgrade(ConnectionIt cn
     return LoopAction::Continue;
   }
   ServerContext& ctx = *_pCtx;
-  upgrade::WebSocketAcceptResult accept = upgrade::AcceptWebSocketUpgrade(
-      request, request.headers(), *routingResult.webSocketEndpoint(), ctx.webSocketDeflateStreams);
+  upgrade::WebSocketAcceptResult accept =
+      upgrade::AcceptWebSocketUpgrade(request, request.headers(), *routingResult.webSocketEndpoint()
+#ifdef AERONET_ENABLE_ZLIB
+                                                                      ,
+                                      ctx.webSocketDeflateStreams
+#endif
+      );
   switch (accept.status) {
     case upgrade::WebSocketAcceptResult::Status::Accepted:
       break;

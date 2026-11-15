@@ -36,10 +36,12 @@ TEST(WebSocketConfigTest, LargestLimitsApproximateNoLimit) {
   EXPECT_NO_THROW(config.validate());
 }
 
+#ifdef AERONET_ENABLE_ZLIB
 TEST(WebSocketConfigTest, InvalidDeflateConfigIsInvalid) {
   WebSocketConfig config;
   config.deflateConfig.compressionLevel = 10;
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
+#endif
 
 }  // namespace aeronet::websocket

@@ -4,7 +4,10 @@
 #include <string_view>
 
 #include "aeronet/concatenated-strings.hpp"
+
+#ifdef AERONET_ENABLE_ZLIB
 #include "aeronet/websocket-deflate.hpp"
+#endif
 
 namespace aeronet {
 
@@ -18,8 +21,10 @@ struct WebSocketUpgradeConfig {
   /// If empty, no subprotocol negotiation is performed.
   const ConcatenatedStrings& supportedProtocols;
 
+#ifdef AERONET_ENABLE_ZLIB
   /// Deflate configuration (used when enableCompression is true).
   websocket::DeflateConfig deflateConfig;
+#endif
 };
 
 /// Validate the format of a Sec-WebSocket-Key.

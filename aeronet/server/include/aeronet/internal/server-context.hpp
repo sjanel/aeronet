@@ -38,7 +38,7 @@
 #include "aeronet/tls-handshake-callback.hpp"
 #endif
 
-#ifdef AERONET_ENABLE_WEBSOCKET
+#if defined(AERONET_ENABLE_WEBSOCKET) && defined(AERONET_ENABLE_ZLIB)
 #include "aeronet/websocket-shared-deflate-streams.hpp"
 #endif
 
@@ -133,7 +133,7 @@ struct ServerContext {
   HttpServerConfig config;
   CompressionState compressionState;
   DecompressionState decompressionState;
-#ifdef AERONET_ENABLE_WEBSOCKET
+#if defined(AERONET_ENABLE_WEBSOCKET) && defined(AERONET_ENABLE_ZLIB)
   // permessage-deflate streams of the WebSocket connections, for the directions negotiated without context takeover.
   // Declared before the connections, whose handlers use them.
   websocket::SharedDeflateStreams webSocketDeflateStreams;

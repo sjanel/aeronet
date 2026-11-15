@@ -11,7 +11,9 @@ void WebSocketConfig::validate() const {
   if (maxFrameSize == 0) {
     throw std::invalid_argument("WebSocketConfig: maxFrameSize must be greater than 0");
   }
+#ifdef AERONET_ENABLE_ZLIB
   deflateConfig.validate();
+#endif
 }
 
 }  // namespace aeronet::websocket

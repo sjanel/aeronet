@@ -4,7 +4,10 @@
 #include <cstddef>
 
 #include "aeronet/websocket-constants.hpp"
+
+#ifdef AERONET_ENABLE_ZLIB
 #include "aeronet/websocket-deflate.hpp"
+#endif
 
 namespace aeronet::websocket {
 
@@ -29,8 +32,10 @@ struct WebSocketConfig {
   /// It replaces HttpServerConfig::keepAliveTimeout, which does not apply to upgraded connections.
   std::chrono::milliseconds idleTimeout{std::chrono::seconds{60}};
 
+#ifdef AERONET_ENABLE_ZLIB
   /// Deflate configuration (optional, for permessage-deflate extension).
   DeflateConfig deflateConfig;
+#endif
 
   /// Whether this is the server side (affects masking validation).
   bool isServerSide{true};

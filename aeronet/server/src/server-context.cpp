@@ -66,7 +66,7 @@ ServerContext::ServerContext(ServerContext&& other) noexcept
       config(std::move(other.config)),
       compressionState(std::move(other.compressionState)),
       decompressionState(std::move(other.decompressionState)),
-#ifdef AERONET_ENABLE_WEBSOCKET
+#if defined(AERONET_ENABLE_WEBSOCKET) && defined(AERONET_ENABLE_ZLIB)
       webSocketDeflateStreams(std::move(other.webSocketDeflateStreams)),
 #endif
       eventLoop(std::move(other.eventLoop)),
@@ -98,7 +98,7 @@ ServerContext& ServerContext::operator=(ServerContext&& other) noexcept {
     compressionState.pCompressionConfig = &config.compression;
 
     decompressionState = std::move(other.decompressionState);
-#ifdef AERONET_ENABLE_WEBSOCKET
+#if defined(AERONET_ENABLE_WEBSOCKET) && defined(AERONET_ENABLE_ZLIB)
     webSocketDeflateStreams = std::move(other.webSocketDeflateStreams);
 #endif
     eventLoop = std::move(other.eventLoop);
@@ -133,7 +133,7 @@ void ServerContext::emitRequestMetrics(const HttpRequestView& request, http::Sta
   std::string_view clientIp = "-";
 
   if (config.accessLog.useForwardedFor) {
-    const auto xff = request.headerValueOrEmpty("x-forwarded-for");
+    const std::string_view xff = request.headerValueOrEmpty("x-forwarded-for");
     if (!xff.empty()) {
       // Use the first (leftmost) IP from X-Forwarded-For
       const auto comma = xff.find(',');

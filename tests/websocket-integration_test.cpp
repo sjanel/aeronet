@@ -38,12 +38,12 @@
 #include "aeronet/vector.hpp"
 #include "aeronet/websocket-config.hpp"
 #include "aeronet/websocket-constants.hpp"
-#include "aeronet/websocket-deflate-context.hpp"
-#include "aeronet/websocket-deflate.hpp"
 #include "aeronet/websocket-endpoint.hpp"
 #include "aeronet/websocket-frame.hpp"
 #include "aeronet/websocket-handler.hpp"
 #ifdef AERONET_ENABLE_ZLIB
+#include "aeronet/websocket-deflate-context.hpp"
+#include "aeronet/websocket-deflate.hpp"
 #include "aeronet/zlib-gateway.hpp"
 #endif
 
@@ -1267,6 +1267,35 @@ TEST_F(WebSocketTest, CompressedConnectionsOfAServerThread) {
           << "client " << idx << " round " << round;
     }
   }
+}
+
+#else
+
+// Without zlib, a permessage-deflate offer is ignored: the handshake succeeds without the extension, messages are
+// exchanged uncompressed, and a compressed one (RSV1) is a protocol error.
+TEST_F(WebSocketTest, DeflateOfferIsIgnoredWithoutZlib) {
+  ts.postRouterUpdate([](Router& router) { router.setWebSocket("/echo", EchoEndpoint(WebSocketConfig{})); });
+
+  test::ClientConnection conn(ts.port());
+  test::sendAll(conn.fd(), BuildUpgradeRequestWithHeaders(
+                               "/echo", "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n"));
+  const std::string head = ReceiveResponseHead(conn.fd(), 1000ms);
+  ASSERT_TRUE(head.starts_with("HTTP/1.1 101")) << head;
+  EXPECT_FALSE(head.contains("permessage-deflate")) << head;
+
+  SendFrame(conn.fd(), BuildClientTextFrame("not compressed"));
+  const auto echo = ReceiveServerFrame(conn.fd(), 2000ms);
+  ASSERT_TRUE(echo.has_value());
+  EXPECT_EQ(PayloadToString(echo.value_or(ServerFrame{}).payload), "not compressed");
+
+  vector<std::byte> compressedFrame = BuildClientTextFrame("compressed");
+  compressedFrame[0] |= std::byte{0x40};  // RSV1
+  SendFrame(conn.fd(), compressedFrame);
+  const auto close = ReceiveServerFrame(conn.fd(), 2000ms);
+  ASSERT_TRUE(close.has_value());
+  const auto val = close.value_or(ServerFrame{});
+  EXPECT_EQ(val.opcode, Opcode::Close);
+  EXPECT_EQ(ParseClosePayload(val.payload).code, CloseCode::ProtocolError);
 }
 
 #endif

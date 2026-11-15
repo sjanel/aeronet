@@ -184,6 +184,7 @@ TEST(WebSocketEndpointTest, WithFullConfig_EmptyProtocols) {
 // Combined usage tests
 // ============================================================================
 
+#ifdef AERONET_ENABLE_ZLIB
 TEST(WebSocketEndpointTest, CombinedUsage_WithCompressionEnabled) {
   websocket::WebSocketConfig config;
 
@@ -198,6 +199,7 @@ TEST(WebSocketEndpointTest, CombinedUsage_WithCompressionEnabled) {
   EXPECT_EQ(endpoint.supportedProtocols.nbConcatenatedStrings(), 1);
   EXPECT_TRUE(static_cast<bool>(endpoint.factory));
 }
+#endif
 
 }  // namespace
 }  // namespace aeronet

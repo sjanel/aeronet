@@ -1,5 +1,6 @@
 #include "aeronet/websocket-deflate.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
@@ -8,26 +9,21 @@
 #include <span>
 #include <stdexcept>
 #include <string_view>
-
-#include "aeronet/decimal-writer.hpp"
-#include "aeronet/memory-utils-sv.hpp"
-#include "aeronet/ndigits.hpp"
-#include "aeronet/raw-bytes.hpp"
-#include "aeronet/websocket-deflate-context.hpp"
-#include "aeronet/websocket-shared-deflate-streams.hpp"
-
-#ifdef AERONET_ENABLE_ZLIB
-#include <algorithm>
 #include <system_error>
 
 #include "aeronet/amc-type-traits.hpp"
+#include "aeronet/decimal-writer.hpp"
 #include "aeronet/header-value-parameters.hpp"
+#include "aeronet/memory-utils-sv.hpp"
+#include "aeronet/ndigits.hpp"
+#include "aeronet/raw-bytes.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
 #include "aeronet/vector.hpp"
 #include "aeronet/websocket-compress.hpp"
+#include "aeronet/websocket-deflate-context.hpp"
+#include "aeronet/websocket-shared-deflate-streams.hpp"
 #include "aeronet/zlib-stream-raii.hpp"
-#endif
 
 namespace aeronet::websocket {
 
@@ -42,7 +38,6 @@ constexpr std::string_view kClientMaxWindowBits = "client_max_window_bits";
 // LZ77 window sizes allowed by RFC 7692: 2^8 to 2^15 bytes.
 constexpr bool IsValidWindowBits(uint8_t bits) noexcept { return 8 <= bits && bits <= 15; }
 
-#ifdef AERONET_ENABLE_ZLIB
 // Smallest LZ77 window zlib can compress raw DEFLATE data with: a 256 bytes window (8 bits) is not supported. With 9
 // bits, zlib limits the match distances to 512 - 262 = 250 bytes: its output is valid for a 256 bytes window.
 constexpr uint8_t kMinDeflateWindowBits = 9;
@@ -61,18 +56,12 @@ constexpr uint8_t DeflateWindowBits(DeflateNegotiatedParams params, bool isServe
   }
   return bits;
 }
-#endif
 
 constexpr std::string_view kSemicolonSpace = "; ";
 
 }  // namespace
 
 void DeflateConfig::validate() const {
-#ifndef AERONET_ENABLE_ZLIB
-  if (enabled) {
-    throw std::invalid_argument("DeflateConfig: Compression enabled but AERONET_ENABLE_ZLIB is not defined");
-  }
-#endif
   if (compressionLevel < 0 || compressionLevel > 9) {
     throw std::invalid_argument("DeflateConfig: compressionLevel must be between 0 and 9");
   }
@@ -87,10 +76,8 @@ void DeflateConfig::validate() const {
   }
 }
 
-DeflateNegotiatedParams ParseDeflateOffer([[maybe_unused]] std::string_view extensionOffer,
-                                          [[maybe_unused]] const DeflateConfig& serverConfig) {
+DeflateNegotiatedParams ParseDeflateOffer(std::string_view extensionOffer, const DeflateConfig& serverConfig) {
   DeflateNegotiatedParams params;
-#ifdef AERONET_ENABLE_ZLIB
   // First token should be the extension name
   const auto semiPos = extensionOffer.find(';');
   std::string_view extensionName = TrimOws(extensionOffer.substr(0, semiPos));
@@ -163,7 +150,6 @@ DeflateNegotiatedParams ParseDeflateOffer([[maybe_unused]] std::string_view exte
     }
     pos = nextSemi + 1;
   }
-#endif
   return params;
 }
 
@@ -212,7 +198,6 @@ char* BuildDeflateResponse(DeflateNegotiatedParams params, char* pData) {
 }
 
 struct SharedDeflateStreams::Impl {
-#ifdef AERONET_ENABLE_ZLIB
   struct Compressor {
     std::unique_ptr<WebSocketCompressor> compressor;
     int8_t level;
@@ -238,7 +223,6 @@ struct SharedDeflateStreams::Impl {
   // Without context takeover, the window only holds the message being decompressed: the largest one decompresses the
   // data of any peer, whatever its negotiated window.
   WebSocketDecompressor decompressor{ZStreamRAII::kMaxWindowBits};
-#endif
 };
 
 SharedDeflateStreams::SharedDeflateStreams() noexcept = default;
@@ -246,7 +230,6 @@ SharedDeflateStreams::SharedDeflateStreams(SharedDeflateStreams&&) noexcept = de
 SharedDeflateStreams& SharedDeflateStreams::operator=(SharedDeflateStreams&&) noexcept = default;
 SharedDeflateStreams::~SharedDeflateStreams() = default;
 
-#ifdef AERONET_ENABLE_ZLIB
 // A direction without context takeover uses the shared stream if any, its own one staying without zlib state.
 DeflateContext::DeflateContext(DeflateNegotiatedParams params, const DeflateConfig& config, bool isServerSide,
                                SharedDeflateStreams* sharedStreams)
@@ -269,31 +252,14 @@ DeflateContext::DeflateContext(DeflateNegotiatedParams params, const DeflateConf
     }
   }
 }
-#else
-DeflateContext::DeflateContext([[maybe_unused]] DeflateNegotiatedParams params, const DeflateConfig& config,
-                               [[maybe_unused]] bool isServerSide, [[maybe_unused]] SharedDeflateStreams* sharedStreams)
-    : _minCompressSize(config.minCompressSize) {}
-#endif
 
-// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
-const char* DeflateContext::compress([[maybe_unused]] std::span<const std::byte> input,
-                                     [[maybe_unused]] RawBytes& output) {
-#ifdef AERONET_ENABLE_ZLIB
+const char* DeflateContext::compress(std::span<const std::byte> input, RawBytes& output) {
   return _compressor->compress(input, output, _deflateNoContextTakeover);
-#else
-  return "zlib not enabled in build";
-#endif
 }
 
-// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
-const char* DeflateContext::decompress([[maybe_unused]] std::span<const std::byte> input,
-                                       [[maybe_unused]] RawBytes& output,
-                                       [[maybe_unused]] std::size_t maxDecompressedSize) {
-#ifdef AERONET_ENABLE_ZLIB
+const char* DeflateContext::decompress(std::span<const std::byte> input, RawBytes& output,
+                                       std::size_t maxDecompressedSize) {
   return _decompressor->decompress(input, output, maxDecompressedSize, _inflateNoContextTakeover);
-#else
-  return "zlib not enabled in build";
-#endif
 }
 
 }  // namespace aeronet::websocket

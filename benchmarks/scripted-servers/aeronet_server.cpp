@@ -403,7 +403,9 @@ int main(int argc, char* argv[]) {
 
   {
     websocket::WebSocketConfig noDeflate;
+#ifdef AERONET_ENABLE_ZLIB
     noDeflate.deflateConfig.enabled = false;
+#endif
     auto ep = WebSocketEndpoint::WithFactory(makeEchoFactory(noDeflate));
     ep.config = noDeflate;
     router.setWebSocket("/ws-uncompressed", std::move(ep));
@@ -412,6 +414,7 @@ int main(int argc, char* argv[]) {
   // ============================================================
   // WebSocket: /ws-compressed - Echo with permessage-deflate
   // ============================================================
+#ifdef AERONET_ENABLE_ZLIB
   {
     websocket::WebSocketConfig withDeflate;
     withDeflate.deflateConfig.enabled = true;
@@ -420,6 +423,10 @@ int main(int argc, char* argv[]) {
     router.setWebSocket("/ws-compressed", std::move(ep));
   }
   std::cout << "WebSocket echo endpoints registered at /ws-uncompressed and /ws-compressed\n";
+#else
+  std::cout
+      << "WebSocket echo endpoint registered at /ws-uncompressed (no /ws-compressed without AERONET_ENABLE_ZLIB)\n";
+#endif
 #endif
 
   std::cout << "aeronet benchmark server starting on port " << benchCfg.port << " with " << benchCfg.numThreads
