@@ -95,6 +95,17 @@ static_assert(kMaxInlineDataFrameCopySize <= kMinMaxFrameSize);
 // Hands over the allocation of 'buf' (not its bytes) to an output block.
 HttpMessageData OwnerOf(RawBytes&& buf) noexcept { return HttpMessageData(RawChars(std::move(buf))); }
 
+// 'start' + 'timeout', saturated: a timeout beyond the range of the clock (std::chrono::milliseconds::max() for
+// instance) never expires.
+std::chrono::steady_clock::time_point DeadlineAfter(std::chrono::steady_clock::time_point start,
+                                                    std::chrono::milliseconds timeout) noexcept {
+  using TimePoint = std::chrono::steady_clock::time_point;
+  if (timeout >= std::chrono::duration_cast<std::chrono::milliseconds>(TimePoint::max() - start)) {
+    return TimePoint::max();
+  }
+  return start + timeout;
+}
+
 }  // namespace
 
 // ============================
@@ -512,17 +523,21 @@ void Http2Connection::writeGoAway(ErrorCode errorCode, ErrorMsg msg) {
 Http2Connection::ProcessResult Http2Connection::checkTimeouts(std::chrono::steady_clock::time_point now,
                                                               std::chrono::steady_clock::time_point lastActivity) {
   using TimePoint = std::chrono::steady_clock::time_point;
-  if (_settingsAckDeadline != TimePoint{} && now >= _settingsAckDeadline) {
-    return connectionError(ErrorCode::SettingsTimeout, ErrorMsg::SETTINGSTimeout);
+  if (_settingsSent && !_settingsAcked) {
+    if (_settingsAckDeadline == TimePoint{}) {
+      // The first check since the SETTINGS were sent starts their wait: no clock read to send them.
+      _settingsAckDeadline = DeadlineAfter(now, _localSettings.settingsTimeout);
+    } else if (now >= _settingsAckDeadline) {
+      return connectionError(ErrorCode::SettingsTimeout, ErrorMsg::SETTINGSTimeout);
+    }
   }
   if (_pingAckDeadline != TimePoint{}) {
     if (now >= _pingAckDeadline) {
       return connectionError(ErrorCode::NoError, ErrorMsg::PINGTimeout);
     }
-  } else if (_localSettings.pingInterval.count() > 0 && _activeStreamCount != 0 &&
-             now - lastActivity >= _localSettings.pingInterval) {
+  } else if (_activeStreamCount != 0 && now >= DeadlineAfter(lastActivity, _localSettings.pingInterval)) {
     sendPing(PingFrame{});
-    _pingAckDeadline = now + _localSettings.pingTimeout;
+    _pingAckDeadline = DeadlineAfter(now, _localSettings.pingTimeout);
     return ProcessResult{ProcessResult::Action::OutputReady};
   }
   return ProcessResult{ProcessResult::Action::Continue};
@@ -605,15 +620,19 @@ void Http2Connection::closeStream(StreamsMap::iterator it, ErrorCode errorCode) 
 }
 
 void Http2Connection::pruneClosedStreams() {
-  while (_closedStreamsFifo.size() > kClosedStreamsMaxRetained) {
-    const auto streamId = _closedStreamsFifo.front();
-    _closedStreamsFifo.pop_front();
-
-    const auto it = _streams.find(streamId);
+  if (_closedStreamsFifo.size() <= kClosedStreamsMaxRetained) {
+    return;
+  }
+  // The oldest ones are erased at once: a single move of the retained ones, whatever the number of streams closed
+  // while a frame was processed.
+  const auto pruneEnd = _closedStreamsFifo.end() - kClosedStreamsMaxRetained;
+  for (auto pos = _closedStreamsFifo.begin(); pos != pruneEnd; ++pos) {
+    const auto it = _streams.find(*pos);
     assert(it != _streams.end() && it->second.isClosed());
     _streams.erase(it);
-    _maxPrunedStreamId = std::max(_maxPrunedStreamId, streamId);
+    _maxPrunedStreamId = std::max(_maxPrunedStreamId, *pos);
   }
+  _closedStreamsFifo.erase(_closedStreamsFifo.begin(), pruneEnd);
 }
 
 // ============================
@@ -1383,7 +1402,6 @@ Http2Connection::ProcessResult Http2Connection::handleSettingsFrame(FrameHeader 
     }
     assert(_state != ConnectionState::AwaitingSettings);  // rejected as a first frame by processInput()
     _hpackDecoder.setMaxDynamicTableSize(_localSettings.headerTableSize);
-    _settingsAckDeadline = {};
     applyAcknowledgedSettings();
     return ProcessResult{ProcessResult::Action::Continue};
   }
@@ -1747,9 +1765,6 @@ void Http2Connection::sendSettings() {
   WriteSettingsFrame(_outputBuffer, entries);
   recordFrame(true, FrameType::Settings, std::size(entries) * 6U);
   _settingsSent = true;
-  if (_localSettings.settingsTimeout.count() > 0) {
-    _settingsAckDeadline = std::chrono::steady_clock::now() + _localSettings.settingsTimeout;
-  }
 
   // Also send connection-level WINDOW_UPDATE if needed
   if (_localSettings.connectionWindowSize > kDefaultInitialWindowSize) {

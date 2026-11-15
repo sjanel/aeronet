@@ -1,8 +1,20 @@
 #include "aeronet/http2-config.hpp"
 
+#include <chrono>
 #include <stdexcept>
 
 namespace aeronet {
+
+namespace {
+
+// 0 would make a timer expire at once: no value disables it, std::chrono::milliseconds::max() never expires.
+void CheckPositive(std::chrono::milliseconds duration, const char* errorMessage) {
+  if (duration.count() <= 0) {
+    throw std::invalid_argument(errorMessage);
+  }
+}
+
+}  // namespace
 
 void Http2Config::validate() const {
   // SETTINGS_MAX_FRAME_SIZE must be between 16384 and 16777215 (RFC 9113 §6.5.2)
@@ -43,6 +55,11 @@ void Http2Config::validate() const {
   if (maxStreamPendingBytes == 0) {
     throw std::invalid_argument("Http2Config: maxStreamPendingBytes must be greater than 0");
   }
+
+  CheckPositive(settingsTimeout, "Http2Config: settingsTimeout must be positive");
+  CheckPositive(pingInterval, "Http2Config: pingInterval must be positive");
+  CheckPositive(pingTimeout, "Http2Config: pingTimeout must be positive");
+  CheckPositive(streamIdleTimeout, "Http2Config: streamIdleTimeout must be positive");
 }
 
 }  // namespace aeronet

@@ -6,7 +6,6 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -39,12 +38,12 @@ PendingTunnel::PendingTunnel(std::string_view targetHost, uint16_t targetPort, N
 struct TunnelResolver::Shared {
   std::mutex mutex;
   std::condition_variable condition;
-  std::deque<std::shared_ptr<PendingTunnel>> queue;
+  vector<std::shared_ptr<PendingTunnel>> queue;
   vector<std::shared_ptr<PendingTunnel>> resolved;
   const EventFd* pWakeupFd{nullptr};
-  std::atomic<bool> hasResolved{false};
   uint32_t nbThreads{0};
   uint32_t nbIdleThreads{0};
+  std::atomic<bool> hasResolved{false};
   bool stopped{false};
 };
 
@@ -115,7 +114,8 @@ void TunnelResolver::ResolveLoop(const std::shared_ptr<Shared>& shared) {
       break;
     }
     std::shared_ptr<PendingTunnel> pending = std::move(shared->queue.front());
-    shared->queue.pop_front();
+    // At most TunnelManager::kMaxPendingTunnels entries, relocated by a memmove: nothing next to a resolution.
+    shared->queue.erase(shared->queue.begin());
     lock.unlock();
 
     // The host buffer has a writable null terminator after the host, as required by ResolveTCP().
