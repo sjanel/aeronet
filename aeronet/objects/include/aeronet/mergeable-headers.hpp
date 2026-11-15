@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstddef>
 #include <functional>
 #include <iterator>
 #include <string_view>
@@ -16,9 +17,10 @@ namespace aeronet::http {
 // therefore perform ASCII-lowercasing or case-insensitive comparison before
 // encoding/decoding when interacting with HTTP/2.
 //
-// Policy indicators:
+// Policy indicators (see MergeSeparatorSize() and AppendMergeSeparator() for the bytes written between two values):
 //   ','  -> list-style merge (append comma + new non-empty value)
-//   ';'  -> Cookie multi-line merge (semicolon join) per RFC 6265 §5.4
+//   ';'  -> Cookie multi-line merge, joined with "; " like the cookie-pairs of a single field (RFC 6265 §4.2.1), as
+//           RFC 9113 §8.2.3 requires for the cookie fields of an HTTP/2 field block
 //   ' '  -> space join (User-Agent tokens)
 //   '\0'-> Disallow merge: a duplicate is an error, answered 400 Bad Request (singleton fields, RFC 9110 §5.3).
 //         Keeping one occurrence instead would let a proxy in front that keeps another one disagree with us.
@@ -34,7 +36,7 @@ constexpr char ReqHeaderValueSeparator(std::string_view headerNameLowerCase,
   // Table sorted case-sensitively (ASCII) to allow binary search.
   // Separators:
   //   ',' : list headers (ABNF 1#element)
-  //   ';' : Cookie concatenation (caller may later insert space after ';')
+  //   ';' : Cookie concatenation (followed by a space)
   //   ' ' : space join (User-Agent)
   //   '\0': duplicate forbidden (Authorization, Content-Length, Host, Range, ...)
   static constexpr Entry kEntries[]{
@@ -101,6 +103,19 @@ constexpr char ReqHeaderValueSeparator(std::string_view headerNameLowerCase,
   // Risk: A truly singleton semantic custom header would now be merged instead of rejected; callers handling
   // security-sensitive custom fields should special-case them before calling this helper.
   return mergeAllowedForUnknownRequestHeaders ? ',' : '\0';
+}
+
+// Number of bytes written between two merged values for a policy indicator (other than '\0'): 2 for the "; " of the
+// cookie, 1 otherwise.
+constexpr std::size_t MergeSeparatorSize(char mergeSep) noexcept { return mergeSep == ';' ? CookiePairSep.size() : 1U; }
+
+// Write the separator of a policy indicator (other than '\0') at pOut, returning the position after it.
+constexpr char* AppendMergeSeparator(char mergeSep, char* pOut) noexcept {
+  *pOut++ = mergeSep;
+  if (mergeSep == ';') {
+    *pOut++ = ' ';
+  }
+  return pOut;
 }
 
 }  // namespace aeronet::http

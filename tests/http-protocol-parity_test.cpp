@@ -214,6 +214,29 @@ TEST_P(ProtocolParity, RequestMiddlewareSeesPathAndQueryParameters) {
   EXPECT_EQ(seen, "42|abc");
 }
 
+// The cookies of a request reach the handler as one value, their cookie-pairs separated by "; " as in a single cookie
+// field (RFC 6265 §4.2.1): repeated cookie fields are joined that way (RFC 9113 §8.2.3), including the fields in which
+// the HTTP/2 client sends the cookies of its jar one by one, where the HTTP/1.1 client sends them in one line.
+TEST_P(ProtocolParity, CookiesAreJoinedWithSemicolonAndSpace) {
+  ts.router().setPath(http::Method::GET, "/cookies", [](const HttpRequestView& req) {
+    return HttpResponse(std::string(req.headerValueOrEmpty(http::Cookie)));
+  });
+  const auto resp = send(http::Method::GET, "/cookies", [](auto& request) {
+    request.headerAddLine(http::Cookie, "a=1").headerAddLine(http::Cookie, "b=2");
+  });
+  EXPECT_EQ(resp.status(), http::StatusCodeOK);
+  EXPECT_EQ(resp.bodyInMemory(), "a=1; b=2");
+
+  HttpClientConfig cfg;
+  cfg.withHttpVersion(GetParam()).withCookies();
+  HttpClient client(std::move(cfg));
+  ASSERT_TRUE(client.cookieJar().setCookie(url("/"), "c=3"));
+  ASSERT_TRUE(client.cookieJar().setCookie(url("/"), "d=4"));
+  const auto jarResp = client.get(url("/cookies"));
+  ASSERT_TRUE(jarResp);
+  EXPECT_EQ(jarResp->bodyInMemory(), "c=3; d=4");
+}
+
 TEST_P(ProtocolParity, ShortCircuitGoesThroughResponseMiddleware) {
   std::atomic<int> handlerCalls{0};
   ts.router().addRequestMiddleware([](HttpRequestView&) {
@@ -905,7 +928,7 @@ TEST_P(ProtocolParity, TruncatedFileResetsTheHttp2Stream) {
   static constexpr std::size_t kFileSize = 1UL << 20U;
   test::ScopedTempDir tmpDir;
   test::ScopedTempFile tmp(tmpDir, std::string(kFileSize, 'f'));
-  const std::filesystem::path filePath = tmp.filePath();
+  const std::filesystem::path& filePath = tmp.filePath();
   StaticFileConfig staticConfig;
   staticConfig.contentTypeResolver = [filePath](std::string_view) {
     std::filesystem::resize_file(filePath, 0);

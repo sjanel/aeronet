@@ -171,8 +171,11 @@ class HpackDecoder {
   /// of the encoder (see setMaxDynamicTableSize()).
   /// The fields of a header list larger than maxHeaderListSize (sum of the sizes of the names and values of its fields,
   /// plus 32 bytes per field, RFC 7541 §4.1) are not stored: its decoding fails with HeaderListTooLarge, without taking
-  /// more memory than this limit, whatever the number of references to the dynamic table in its block.
-  /// The repeated set-cookie fields of Messages::Responses are joined with DecodedHeaders::kSetCookieSeparator.
+  /// more memory than this limit, whatever the number of references to the dynamic table in its block, besides the
+  /// Huffman string being decoded (8/5 of its encoded size at most), and leaving the storage of the decoded headers no
+  /// larger than it found it.
+  /// The repeated cookie fields are joined with "; " (RFC 9113 §8.2.3), and the repeated set-cookie fields of
+  /// Messages::Responses with DecodedHeaders::kSetCookieSeparator.
   /// A connection-specific field (RFC 9113 §8.2.2) fails the decoding of Messages::Requests with
   /// ConnectionSpecificField. In Messages::Responses, it sets DecodedHeaders::hasConnectionSpecificField: the client
   /// reports the response as malformed itself, the failure of a stream being its own to tell.
@@ -250,7 +253,9 @@ class HpackDecoder {
   };
 
   struct IndexedField {
-    http::HeaderView header;  // Empty name if the index is out of bounds
+    // A null name if the index is out of bounds. An entry of the dynamic table may have an empty name (a malformed
+    // field, added all the same, RFC 9113 §4.3), but never a null one (see http::Header::empty()).
+    http::HeaderView header;
     // The hash of the name if the field is a plain field of the dynamic table (see storePlainField()), 0 otherwise.
     std::size_t plainNameHash{0};
     Source source{Source::Transient};
@@ -295,7 +300,7 @@ class HpackDecoder {
     std::string_view name;  // The name of the field in the decoded headers (the same view for all its values)
     std::string_view value;
     uint32_t order;  // Position among the deferred joins: the order of the values of a field
-    char separator;
+    char separator;  // A policy indicator of http::ReqHeaderValueSeparator(), or DecodedHeaders::kSetCookieSeparator
   };
 
   HpackDynamicTable _dynamicTable;
@@ -354,6 +359,7 @@ class HpackEncoder {
   [[nodiscard]] const HpackDynamicTable& dynamicTable() const noexcept { return _dynamicTable; }
 
   /// Find a header in the static and dynamic tables, for a field encoded with the given indexing mode.
+  /// Prerequisites: name should be lower cased, non-empty and value already trimmed.
   [[nodiscard]] HpackLookupResult findHeader(std::string_view name, std::string_view value,
                                              IndexingMode mode = IndexingMode::Indexed);
 

@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <map>
+#include <random>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -10,7 +11,6 @@
 
 #ifndef NDEBUG
 #include <cstdint>
-#include <random>
 #endif
 
 namespace aeronet {
@@ -101,8 +101,6 @@ TEST(LowerAsciiKeyTest, CharactersJustOutsideUppercaseRangeDoNotAssert) {
   EXPECT_EQ(key.get(), sv);
 }
 
-#ifndef NDEBUG
-
 TEST(LowerAsciiKeyDeathTest, ConstructFromDynamicUppercaseStringViewAssertsInDebug) {
   // NOLINTNEXTLINE(bugprone-random-generator-seed)
   std::mt19937_64 gen{47};
@@ -114,15 +112,21 @@ TEST(LowerAsciiKeyDeathTest, ConstructFromDynamicUppercaseStringViewAssertsInDeb
     ii = static_cast<char>(lowerCase(gen));
   }
 
+  EXPECT_FALSE(LowerAsciiKey::ContainsUpperAscii(str));
+
   LowerAsciiKey key(str);  // OK
+
+  // testing ch < 'A'
+  str.back() = 'A' - 1;
+  EXPECT_FALSE(LowerAsciiKey::ContainsUpperAscii(str));
 
   // Now inject an upper-case letter and verify that the assert() fires.
   str.back() = static_cast<char>(upperCase(gen));
-
+  EXPECT_TRUE(LowerAsciiKey::ContainsUpperAscii(str));
+#ifndef NDEBUG
   EXPECT_DEATH({ LowerAsciiKey{str}; }, "lower-case already");
-}
-
 #endif  // NDEBUG
+}
 
 // ---------------------------------------------------------------------------
 // Accessors: get() / empty() / data() / size()

@@ -902,7 +902,8 @@ bool Http2ProtocolHandler::sendPendingStreamingBody(uint32_t streamId, PendingSt
     HeadersView tv(std::string_view{pending.trailersData.data(), pending.trailersData.size()});
     // sendHeaders cannot fail: stream is valid (asserted) and in correct state
     // (we just successfully sent DATA on it).
-    [[maybe_unused]] const auto sendErr = _connection.sendHeaders(streamId, http::StatusCode{}, tv, /*endStream=*/true);
+    [[maybe_unused]] const ErrorCode sendErr =
+        _connection.sendHeaders(streamId, http::StatusCode{}, tv, /*endStream=*/true);
     assert(sendErr == ErrorCode::NoError && "sendHeaders failed for trailers on a valid stream");
     assert(trailersSize <= _deferredOutputBytes);
     _deferredOutputBytes -= trailersSize;

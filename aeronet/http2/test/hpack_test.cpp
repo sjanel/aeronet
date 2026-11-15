@@ -4,10 +4,13 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <limits>
+#include <memory>
 #include <random>
 #include <span>
 #include <string>
@@ -749,7 +752,7 @@ TEST(HpackDecoder, DuplicateHeaderMergesWithComma) {
 TEST(HpackDecoder, DuplicateCookieMergesWithSemicolon) {
   auto decoder = CreateHpackDecoder();
 
-  // Two Cookie headers should be merged with ';'
+  // Two Cookie headers are joined with "; " (RFC 9113 §8.2.3)
   static constexpr uint8_t encoded[]{
       0x40, 0x06, 'c', 'o', 'o', 'k', 'i', 'e', 0x03, 'o', 'n', 'e',
       0x40, 0x06, 'c', 'o', 'o', 'k', 'i', 'e', 0x03, 't', 'w', 'o',
@@ -761,7 +764,7 @@ TEST(HpackDecoder, DuplicateCookieMergesWithSemicolon) {
   ASSERT_EQ(result.decodedHeaders.headers.size(), 1U);
   const auto it = result.decodedHeaders.headers.find("cookie");
   ASSERT_NE(it, result.decodedHeaders.headers.end());
-  EXPECT_EQ(it->second, "one;two");
+  EXPECT_EQ(it->second, "one; two");
 }
 
 // Repeated Set-Cookie fields of a response cannot be joined with commas, which their Expires dates hold: the decoder of
@@ -1130,7 +1133,7 @@ TEST(HpackDecoder, RepeatedFieldsAreJoinedInOrder) {
   ASSERT_TRUE(result.isSuccess());
   ASSERT_EQ(result.decodedHeaders.headers.size(), 3U);
   EXPECT_EQ(result.decodedHeaders.headers.at("x-list"), "1,2,3");
-  EXPECT_EQ(result.decodedHeaders.headers.at("cookie"), "a=1;b=2");
+  EXPECT_EQ(result.decodedHeaders.headers.at("cookie"), "a=1; b=2");
   EXPECT_EQ(result.decodedHeaders.headers.at("accept"), "text/html,*/*");
 }
 
@@ -2529,7 +2532,7 @@ TEST(HpackHuffman, RoundTripsLongCodesAtEveryBitPosition) {
 }
 
 TEST(HpackHuffman, RoundTripsRandomTextOfEveryLength) {
-  std::mt19937 rng(42);  // NOLINT(cert-msc32-c,cert-msc51-cpp)
+  std::mt19937 rng(42);  // NOLINT(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
   static constexpr std::string_view kCommon = "abcdefghijklmnopqrstuvwxyz0123456789-_./=;,";
   std::uniform_int_distribution<std::size_t> commonDist(0, kCommon.size() - 1U);
   std::uniform_int_distribution<int> byteDist(1, 255);
@@ -2571,8 +2574,16 @@ TEST(HpackDecoder, RejectsNulCrLfAtAnyPositionOfTheValue) {
 TEST(HpackDecoder, AcceptsOtherControlAndHighBytesAtAnyPositionOfTheValue) {
   for (std::size_t len = 1; len <= 40; ++len) {
     for (std::size_t pos = 0; pos < len; ++pos) {
-      for (const uint8_t allowed : {uint8_t{0x01}, uint8_t{'\t'}, uint8_t{0x0B}, uint8_t{0x0C}, uint8_t{0x0E},
-                                    uint8_t{0x7F}, uint8_t{0x80}, uint8_t{0xFF}}) {
+      for (const uint8_t allowed : {
+               uint8_t{0x01},
+               uint8_t{'\t'},
+               uint8_t{0x0B},
+               uint8_t{0x0C},
+               uint8_t{0x0E},
+               uint8_t{0x7F},
+               uint8_t{0x80},
+               uint8_t{0xFF},
+           }) {
         if (allowed == '\t' && (pos == 0 || pos + 1 == len)) {
           continue;  // leading or trailing whitespace
         }
@@ -2715,7 +2726,7 @@ TEST(HpackDecoder, RepeatedIndexedFieldsAreMerged) {
   ASSERT_TRUE(result.isSuccess());
   ASSERT_EQ(result.decodedHeaders.headers.size(), 3U);
   EXPECT_EQ(result.decodedHeaders.headers.at("accept"), "text/html,text/html,*/*");
-  EXPECT_EQ(result.decodedHeaders.headers.at("cookie"), "a=1; session=0123456789abcdef;a=1; session=0123456789abcdef");
+  EXPECT_EQ(result.decodedHeaders.headers.at("cookie"), "a=1; session=0123456789abcdef; a=1; session=0123456789abcdef");
   EXPECT_EQ(result.decodedHeaders.headers.at("x-empty"), "");
   EXPECT_EQ(result.decodedHeaders.namesAndValuesSize,
             (2U * (std::string_view("accepttext/html").size() + std::string_view("x-empty").size() +
@@ -3078,7 +3089,7 @@ TEST(HpackEncoder, EvictedFieldsAreNotFoundAgain) {
 TEST(HpackRoundTrip, RandomRepeatedFieldsThroughSmallAndLargeTables) {
   static constexpr std::string_view kNames[]{"x-a", "x-b", "x-cc", "x-dd", "accept", "x-custom-name", "y", "x-z"};
   static constexpr std::string_view kValues[]{"", "1", "22", "value", "a longer value than the other ones", "v-6"};
-  std::mt19937 rng(20261114);
+  std::mt19937 rng(20261114);  // NOLINT(bugprone-random-generator-seed)
 
   for (const uint32_t tableSize : {0U, 64U, 150U, 400U, 4096U}) {
     HpackEncoder encoder(tableSize);
@@ -3099,6 +3110,1593 @@ TEST(HpackRoundTrip, RandomRepeatedFieldsThroughSmallAndLargeTables) {
           << tableSize << " " << message;
       ASSERT_EQ(encoder.dynamicTable().entryCount(), decoder.dynamicTable().entryCount());
     }
+  }
+}
+
+// ============================
+// RFC 7541 and RFC 9113 §8.2 audit (2026-11-16)
+// ============================
+// Suite HpackAppendixC: the examples of RFC 7541 Appendix C, as test vectors.
+// Suite HpackAudit: the requirements checked by the audit, and the fixes of its findings
+// (CookieFieldsAreJoinedWithSemicolonAndSpace, ReferenceToAnEntryWithAnEmptyNameIsAMalformedFieldNotACompressionError,
+// HuffmanLiteralsBeyondTheHeaderListLimitAreNotStored, EncoderKeepsTheStaticIndexOfANameAlsoInTheDynamicTable,
+// EncoderEvictionBelowTheLookupIndexThreshold).
+
+namespace {
+
+using AuditError = HpackDecoder::DecodeResult::Error;
+
+// The bytes of a hex dump without spaces, as the RFC prints its examples.
+vector<uint8_t> FromHex(std::string_view hex) {
+  const auto nibble = [](char ch) { return static_cast<uint32_t>(ch <= '9' ? ch - '0' : ch - 'a' + 10); };
+  vector<uint8_t> bytes;
+  for (std::size_t pos = 0; pos + 1U < hex.size(); pos += 2U) {
+    bytes.push_back(static_cast<uint8_t>((nibble(hex[pos]) << 4U) | nibble(hex[pos + 1U])));
+  }
+  return bytes;
+}
+
+// Check that a block was decoded to exactly these fields, pseudo-header fields included.
+void ExpectFields(const HpackDecoder::DecodeResult& result, std::span<const http::HeaderView> fields) {
+  ASSERT_TRUE(result.isSuccess()) << static_cast<int>(result.error);
+  const DecodedHeaders& decoded = result.decodedHeaders;
+  EXPECT_EQ(decoded.headers.size() + static_cast<std::size_t>(std::popcount(decoded.pseudoHeadersMask)), fields.size());
+  for (const http::HeaderView& field : fields) {
+    if (field.name.front() == ':') {
+      const auto pseudoHeaderIdx =
+          static_cast<std::size_t>(std::ranges::find(kPseudoHeaderNames, field.name) - kPseudoHeaderNames);
+      ASSERT_LT(pseudoHeaderIdx, std::size(kPseudoHeaderNames)) << field.name;
+      EXPECT_TRUE(decoded.hasPseudoHeader(static_cast<PseudoHeader>(pseudoHeaderIdx))) << field.name;
+      EXPECT_EQ(decoded.pseudoHeader(static_cast<PseudoHeader>(pseudoHeaderIdx)), field.value) << field.name;
+    } else {
+      const auto it = decoded.headers.find(field.name);
+      ASSERT_NE(it, decoded.headers.end()) << field.name;
+      EXPECT_EQ(it->second, field.value) << field.name;
+    }
+  }
+}
+
+// Check the entries of a dynamic table, the newest one first as the RFC numbers them, and its size.
+void ExpectDynamicTable(const HpackDynamicTable& table, std::span<const http::HeaderView> entries,
+                        std::size_t sizeBytes) {
+  ASSERT_EQ(table.entryCount(), entries.size());
+  for (std::size_t idx = 0; idx < entries.size(); ++idx) {
+    EXPECT_EQ(table[static_cast<uint32_t>(idx)].name(), entries[idx].name) << idx;
+    EXPECT_EQ(table[static_cast<uint32_t>(idx)].value(), entries[idx].value) << idx;
+  }
+  EXPECT_EQ(table.currentSizeBytes(), sizeBytes);
+}
+
+// A message of an example of RFC 7541 Appendix C: its encoded block, its fields, and the dynamic table after it.
+struct AppendixCMessage {
+  std::string_view hex;
+  std::span<const http::HeaderView> fields;
+  std::span<const http::HeaderView> table;
+  std::size_t tableSize;
+};
+
+void ExpectDecodesAppendixC(HpackDecoder& decoder, std::span<const AppendixCMessage> messages) {
+  for (const AppendixCMessage& message : messages) {
+    const vector<uint8_t> block = FromHex(message.hex);
+    const auto result = decoder.decode(AsBytes(block));
+    ASSERT_NO_FATAL_FAILURE(ExpectFields(result, message.fields)) << message.hex;
+    ASSERT_NO_FATAL_FAILURE(ExpectDynamicTable(decoder.dynamicTable(), message.table, message.tableSize))
+        << message.hex;
+  }
+}
+
+// The fields and dynamic tables of the request examples (C.3 and C.4).
+constexpr http::HeaderView kRequest1[]{
+    {":method", "GET"},
+    {":scheme", "http"},
+    {":path", "/"},
+    {":authority", "www.example.com"},
+};
+constexpr http::HeaderView kRequest2[]{
+    {":method", "GET"},
+    {":scheme", "http"},
+    {":path", "/"},
+    {":authority", "www.example.com"},
+    {"cache-control", "no-cache"},
+};
+constexpr http::HeaderView kRequest3[]{
+    {":method", "GET"},
+    {":scheme", "https"},
+    {":path", "/index.html"},
+    {":authority", "www.example.com"},
+    {"custom-key", "custom-value"},
+};
+constexpr http::HeaderView kRequestTable1[]{{":authority", "www.example.com"}};
+constexpr http::HeaderView kRequestTable2[]{
+    {"cache-control", "no-cache"},
+    {":authority", "www.example.com"},
+};
+constexpr http::HeaderView kRequestTable3[]{
+    {"custom-key", "custom-value"},
+    {"cache-control", "no-cache"},
+    {":authority", "www.example.com"},
+};
+
+// The fields and dynamic tables of the response examples (C.5 and C.6), with a dynamic table of 256 bytes.
+constexpr std::string_view kExampleSetCookie = "foo=ASDJKHQKBZXOQWEOPIUAXQWEOIU; max-age=3600; version=1";
+constexpr http::HeaderView kResponse1[]{
+    {":status", "302"},
+    {"cache-control", "private"},
+    {"date", "Mon, 21 Oct 2013 20:13:21 GMT"},
+    {"location", "https://www.example.com"},
+};
+constexpr http::HeaderView kResponse2[]{
+    {":status", "307"},
+    {"cache-control", "private"},
+    {"date", "Mon, 21 Oct 2013 20:13:21 GMT"},
+    {"location", "https://www.example.com"},
+};
+constexpr http::HeaderView kResponse3[]{
+    {":status", "200"},
+    {"cache-control", "private"},
+    {"date", "Mon, 21 Oct 2013 20:13:22 GMT"},
+    {"location", "https://www.example.com"},
+    {"content-encoding", "gzip"},
+    {"set-cookie", kExampleSetCookie},
+};
+constexpr http::HeaderView kResponseTable1[]{
+    {"location", "https://www.example.com"},
+    {"date", "Mon, 21 Oct 2013 20:13:21 GMT"},
+    {"cache-control", "private"},
+    {":status", "302"},
+};
+constexpr http::HeaderView kResponseTable2[]{
+    {":status", "307"},
+    {"location", "https://www.example.com"},
+    {"date", "Mon, 21 Oct 2013 20:13:21 GMT"},
+    {"cache-control", "private"},
+};
+constexpr http::HeaderView kResponseTable3[]{
+    {"set-cookie", kExampleSetCookie},
+    {"content-encoding", "gzip"},
+    {"date", "Mon, 21 Oct 2013 20:13:22 GMT"},
+};
+
+constexpr uint32_t kResponseExamplesTableSize = 256;
+
+// C.4.1 to C.4.3.
+constexpr std::string_view kRequestsWithHuffmanHex[]{
+    "828684418cf1e3c2e5f23a6ba0ab90f4ff",
+    "828684be5886a8eb10649cbf",
+    "828785bf408825a849e95ba97d7f8925a849e95bb8e8b4bf",
+};
+
+// C.5.1 to C.5.3.
+constexpr std::string_view kResponsesWithoutHuffmanHex[]{
+    "4803333032580770726976617465611d4d6f6e2c203231204f637420323031332032303a31333a323120474d546e1768747470733a"
+    "2f2f7777772e6578616d706c652e636f6d",
+    "4803333037c1c0bf",
+    "88c1611d4d6f6e2c203231204f637420323031332032303a31333a323220474d54c05a04677a69707738666f6f3d4153444a4b4851"
+    "4b425a584f5157454f50495541585157454f49553b206d61782d6167653d333630303b2076657273696f6e3d31",
+};
+
+// C.6.1 to C.6.3.
+constexpr std::string_view kResponsesWithHuffmanHex[]{
+    "488264025885aec3771a4b6196d07abe941054d444a8200595040b8166e082a62d1bff6e919d29ad171863c78f0b97c8e9ae82ae43d3",
+    "4883640effc1c0bf",
+    "88c16196d07abe941054d444a8200595040b8166e084a62d1bffc05a839bd9ab77ad94e7821dd7f2e6c7b335dfdfcd5b3960d5af2708"
+    "7f3672c1ab270fb5291f9587316065c003ed4ee5b1063d5007",
+};
+
+}  // namespace
+
+// C.1: the integer examples, read as dynamic table size updates (5-bit prefix) and as an index (C.1.3).
+TEST(HpackAppendixC, IntegerExamples) {
+  HpackDecoder decoder(4096, std::numeric_limits<uint32_t>::max(), true);
+  static constexpr uint8_t ten[]{0x2A};  // C.1.1: 10 fits in the prefix
+  ASSERT_TRUE(decoder.decode(AsBytes(ten)).isSuccess());
+  EXPECT_EQ(decoder.dynamicTable().maxSizeBytes(), 10U);
+
+  static constexpr uint8_t leet[]{0x3F, 0x9A, 0x0A};  // C.1.2: 1337 = 31 + 26 + 10 * 128
+  ASSERT_TRUE(decoder.decode(AsBytes(leet)).isSuccess());
+  EXPECT_EQ(decoder.dynamicTable().maxSizeBytes(), 1337U);
+
+  RawBytes encoded;
+  HpackEncoder encoder(4096);
+  encoder.encodeDynamicTableSizeUpdate(encoded, 10);
+  encoder.encodeDynamicTableSizeUpdate(encoded, 1337);
+  static constexpr std::byte expected[]{std::byte{0x2A}, std::byte{0x3F}, std::byte{0x9A}, std::byte{0x0A}};
+  ASSERT_EQ(encoded.size(), std::size(expected));
+  EXPECT_EQ(std::memcmp(encoded.data(), expected, std::size(expected)), 0);
+
+  // C.1.3: 42 starting at an octet boundary is how the length of a 42-byte string would be written with a 7-bit prefix:
+  // here, the index 42 (if-range) of an indexed field.
+  static constexpr uint8_t fortyTwo[]{0x80 | 42};
+  const auto result = decoder.decode(AsBytes(fortyTwo));
+  ASSERT_TRUE(result.isSuccess());
+  EXPECT_TRUE(result.decodedHeaders.headers.contains("if-range"));
+}
+
+// C.2.1 to C.2.4: one test vector per field representation.
+TEST(HpackAppendixC, HeaderFieldRepresentationExamples) {
+  static constexpr http::HeaderView kCustom[]{{"custom-key", "custom-header"}};
+  static constexpr http::HeaderView kPath[]{{":path", "/sample/path"}};
+  static constexpr http::HeaderView kPassword[]{{"password", "secret"}};
+  static constexpr http::HeaderView kMethod[]{{":method", "GET"}};
+  for (const AppendixCMessage& message : {
+           AppendixCMessage{"400a637573746f6d2d6b65790d637573746f6d2d686561646572", kCustom, kCustom, 55},  // C.2.1
+           AppendixCMessage{"040c2f73616d706c652f70617468", kPath, {}, 0},                                  // C.2.2
+           AppendixCMessage{"100870617373776f726406736563726574", kPassword, {}, 0},                        // C.2.3
+           AppendixCMessage{"82", kMethod, {}, 0},                                                          // C.2.4
+       }) {
+    auto decoder = CreateHpackDecoder();
+    ASSERT_NO_FATAL_FAILURE(ExpectDecodesAppendixC(decoder, std::span<const AppendixCMessage>(&message, 1U)));
+  }
+}
+
+// C.3.1 to C.3.3: three requests on one connection, without Huffman coding.
+TEST(HpackAppendixC, RequestExamplesWithoutHuffmanCoding) {
+  static constexpr AppendixCMessage kMessages[]{
+      {"828684410f7777772e6578616d706c652e636f6d", kRequest1, kRequestTable1, 57},
+      {"828684be58086e6f2d6361636865", kRequest2, kRequestTable2, 110},
+      {"828785bf400a637573746f6d2d6b65790c637573746f6d2d76616c7565", kRequest3, kRequestTable3, 164},
+  };
+  auto decoder = CreateHpackDecoder();
+  ExpectDecodesAppendixC(decoder, kMessages);
+}
+
+// C.4.1 to C.4.3: the same requests, with Huffman coding.
+TEST(HpackAppendixC, RequestExamplesWithHuffmanCoding) {
+  static constexpr AppendixCMessage kMessages[]{
+      {kRequestsWithHuffmanHex[0], kRequest1, kRequestTable1, 57},
+      {kRequestsWithHuffmanHex[1], kRequest2, kRequestTable2, 110},
+      {kRequestsWithHuffmanHex[2], kRequest3, kRequestTable3, 164},
+  };
+  auto decoder = CreateHpackDecoder();
+  ExpectDecodesAppendixC(decoder, kMessages);
+}
+
+// C.5.1 to C.5.3: three responses on one connection whose dynamic table is limited to 256 bytes, which evicts entries,
+// without Huffman coding.
+TEST(HpackAppendixC, ResponseExamplesWithoutHuffmanCoding) {
+  static constexpr AppendixCMessage kMessages[]{
+      {kResponsesWithoutHuffmanHex[0], kResponse1, kResponseTable1, 222},
+      {kResponsesWithoutHuffmanHex[1], kResponse2, kResponseTable2, 222},
+      {kResponsesWithoutHuffmanHex[2], kResponse3, kResponseTable3, 215},
+  };
+  HpackDecoder decoder(kResponseExamplesTableSize, std::numeric_limits<uint32_t>::max(), true,
+                       HpackDecoder::Messages::Responses);
+  ExpectDecodesAppendixC(decoder, kMessages);
+}
+
+// C.6.1 to C.6.3: the same responses, with Huffman coding.
+TEST(HpackAppendixC, ResponseExamplesWithHuffmanCoding) {
+  static constexpr AppendixCMessage kMessages[]{
+      {kResponsesWithHuffmanHex[0], kResponse1, kResponseTable1, 222},
+      {kResponsesWithHuffmanHex[1], kResponse2, kResponseTable2, 222},
+      {kResponsesWithHuffmanHex[2], kResponse3, kResponseTable3, 215},
+  };
+  HpackDecoder decoder(kResponseExamplesTableSize, std::numeric_limits<uint32_t>::max(), true,
+                       HpackDecoder::Messages::Responses);
+  ExpectDecodesAppendixC(decoder, kMessages);
+}
+
+namespace {
+
+// Encode the messages of an example with every field indexed, as the encoder of the RFC does, and check the bytes.
+void ExpectEncodesAppendixC(HpackEncoder& encoder, std::span<const std::span<const http::HeaderView>> messages,
+                            std::span<const std::string_view> expectedHex) {
+  ASSERT_EQ(messages.size(), expectedHex.size());
+  for (std::size_t idx = 0; idx < messages.size(); ++idx) {
+    RawBytes block;
+    for (const http::HeaderView& field : messages[idx]) {
+      encoder.encode(block, field.name, field.value, HpackEncoder::IndexingMode::Indexed);
+    }
+    const vector<uint8_t> expected = FromHex(expectedHex[idx]);
+    ASSERT_EQ(block.size(), expected.size()) << idx;
+    EXPECT_EQ(std::memcmp(block.data(), expected.data(), expected.size()), 0) << idx;
+  }
+}
+
+}  // namespace
+
+// C.4: the encoder makes the choices of the one of the RFC (Huffman coding when shorter, lowest matching index), so it
+// writes the same bytes.
+TEST(HpackAppendixC, EncoderWritesTheRequestExamplesWithHuffmanCoding) {
+  static constexpr std::span<const http::HeaderView> kMessages[]{kRequest1, kRequest2, kRequest3};
+  HpackEncoder encoder(4096);
+  ASSERT_NO_FATAL_FAILURE(ExpectEncodesAppendixC(encoder, kMessages, kRequestsWithHuffmanHex));
+  ExpectDynamicTable(encoder.dynamicTable(), kRequestTable3, 164);
+}
+
+// C.6.1: the first response, before the dynamic table holds any of the names (see
+// HpackAudit.EncoderKeepsTheStaticIndexOfANameAlsoInTheDynamicTable for the next ones).
+TEST(HpackAppendixC, EncoderWritesTheFirstResponseExampleWithHuffmanCoding) {
+  static constexpr std::span<const http::HeaderView> kMessages[]{kResponse1};
+  HpackEncoder encoder(kResponseExamplesTableSize);
+  ASSERT_NO_FATAL_FAILURE(
+      ExpectEncodesAppendixC(encoder, kMessages, std::span<const std::string_view>(kResponsesWithHuffmanHex, 1U)));
+  ExpectDynamicTable(encoder.dynamicTable(), kResponseTable1, 222);
+}
+
+// C.6: the three responses leave the dynamic table of the encoder as in the RFC, with its evictions.
+TEST(HpackAppendixC, EncoderEvictsLikeTheResponseExamples) {
+  static constexpr AppendixCMessage kMessages[]{
+      {{}, kResponse1, kResponseTable1, 222},
+      {{}, kResponse2, kResponseTable2, 222},
+      {{}, kResponse3, kResponseTable3, 215},
+  };
+  HpackEncoder encoder(kResponseExamplesTableSize);
+  HpackDecoder decoder(kResponseExamplesTableSize, std::numeric_limits<uint32_t>::max(), true,
+                       HpackDecoder::Messages::Responses);
+  for (const AppendixCMessage& message : kMessages) {
+    RawBytes block;
+    for (const http::HeaderView& field : message.fields) {
+      encoder.encode(block, field.name, field.value, HpackEncoder::IndexingMode::Indexed);
+    }
+    ASSERT_NO_FATAL_FAILURE(ExpectDynamicTable(encoder.dynamicTable(), message.table, message.tableSize));
+    const auto result = decoder.decode(block);
+    ASSERT_NO_FATAL_FAILURE(ExpectFields(result, message.fields));
+    ASSERT_NO_FATAL_FAILURE(ExpectDynamicTable(decoder.dynamicTable(), message.table, message.tableSize));
+  }
+}
+
+// ---- Integers (RFC 7541 §5.1)
+
+// An integer may be written with more continuation bytes than needed (zero groups): the decoder accepts 8 of them, and
+// fails without reading the others beyond, so that a run of 0x80 bytes costs nothing.
+TEST(HpackAudit, IntegerContinuationBytesAreBounded) {
+  for (uint32_t nbZeroGroups = 0; nbZeroGroups < 12U; ++nbZeroGroups) {
+    HpackDecoder decoder(4096, std::numeric_limits<uint32_t>::max(), true);
+    vector<uint8_t> block{0x3F};  // dynamic table size update, prefix full: 31 + ...
+    block.insert(block.end(), nbZeroGroups, uint8_t{0x80});
+    block.push_back(0x00);
+    const auto result = decoder.decode(AsBytes(block));
+    if (nbZeroGroups < 8U) {
+      EXPECT_TRUE(result.isSuccess()) << nbZeroGroups;
+      EXPECT_EQ(decoder.dynamicTable().maxSizeBytes(), 31U) << nbZeroGroups;
+    } else {
+      EXPECT_EQ(result.error, AuditError::FailedToDecodeDynamicTableSizeUpdate) << nbZeroGroups;
+      EXPECT_EQ(decoder.dynamicTable().maxSizeBytes(), 4096U) << nbZeroGroups;
+    }
+  }
+
+  // The same in each position of an integer: index, name index, string length.
+  static constexpr uint32_t kRunSize = 200000;
+  struct Case {
+    uint8_t firstByte;
+    AuditError expected;
+  };
+  for (const Case& testCase : {
+           Case{0xFF, AuditError::FailedToDecodeIndexedHeaderFieldIndex},
+           Case{0x7F, AuditError::FailedToDecodeLiteralHeaderIndex},
+           Case{0x0F, AuditError::FailedToDecodeLiteralHeaderIndex},
+           Case{0x1F, AuditError::FailedToDecodeLiteralHeaderIndex},
+           Case{0x3F, AuditError::FailedToDecodeDynamicTableSizeUpdate},
+       }) {
+    auto decoder = CreateHpackDecoder();
+    vector<uint8_t> block{testCase.firstByte};
+    block.insert(block.end(), kRunSize, uint8_t{0x80});
+    block.push_back(0x00);
+    const auto result = decoder.decode(AsBytes(block));
+    EXPECT_EQ(result.error, testCase.expected) << static_cast<int>(testCase.firstByte);
+    EXPECT_TRUE(result.isCompressionError());
+  }
+  auto decoder = CreateHpackDecoder();
+  vector<uint8_t> block{0x00, 0x7F};  // literal field without indexing, new name, whose length never ends
+  block.insert(block.end(), kRunSize, uint8_t{0x80});
+  block.push_back(0x00);
+  EXPECT_EQ(decoder.decode(AsBytes(block)).error, AuditError::FailedToDecodeLiteralHeaderName);
+
+  // An integer whose last byte is missing, at each length.
+  for (uint32_t nbContinuationBytes = 0; nbContinuationBytes < 10U; ++nbContinuationBytes) {
+    vector<uint8_t> truncated{0xFF};
+    truncated.insert(truncated.end(), nbContinuationBytes, uint8_t{0xFF});
+    EXPECT_EQ(decoder.decode(AsBytes(truncated)).error, AuditError::FailedToDecodeIndexedHeaderFieldIndex);
+  }
+}
+
+// ---- Strings (RFC 7541 §5.2)
+
+// An empty Huffman string is valid, in a name (a malformed field for HTTP, not a compression error) and in a value.
+TEST(HpackAudit, EmptyHuffmanStringsAreDecoded) {
+  auto decoder = CreateHpackDecoder();
+  static constexpr uint8_t emptyValue[]{0x00, 0x01, 'x', 0x80};
+  const auto result = decoder.decode(AsBytes(emptyValue));
+  ASSERT_TRUE(result.isSuccess());
+  EXPECT_EQ(result.decodedHeaders.headers.at("x"), "");
+
+  static constexpr uint8_t emptyName[]{0x00, 0x80, 0x01, 'v'};
+  const auto nameResult = decoder.decode(AsBytes(emptyName));
+  EXPECT_EQ(nameResult.error, AuditError::MalformedFieldName);
+  EXPECT_FALSE(nameResult.isCompressionError());
+}
+
+// A Huffman string declares the length of its encoded bytes: a string cut by the end of the block, or whose last
+// symbol misses bits, is an error, and the bytes after the declared length belong to the next field.
+TEST(HpackAudit, HuffmanStringLengthIsTheOneOfItsEncodedBytes) {
+  auto decoder = CreateHpackDecoder();
+  // "custom-key" (8 bytes) and "custom-value" (9 bytes), as in C.4.3, in a field without indexing, then the index 16
+  // (accept-encoding).
+  const vector<uint8_t> block = FromHex("008825a849e95ba97d7f8925a849e95bb8e8b4bf90");
+  const auto result = decoder.decode(AsBytes(block));
+  ASSERT_TRUE(result.isSuccess());
+  EXPECT_EQ(result.decodedHeaders.headers.at("custom-key"), "custom-value");
+  EXPECT_EQ(result.decodedHeaders.headers.at("accept-encoding"), "gzip, deflate");
+
+  // Each strict prefix of the field is an error: a truncated integer, name or value.
+  for (std::size_t size = 1; size + 1U < block.size(); ++size) {
+    const auto truncated = decoder.decode(AsBytes(std::span<const uint8_t>(block.data(), size)));
+    EXPECT_TRUE(truncated.isCompressionError()) << size;
+  }
+
+  // A declared length one byte shorter cuts the last symbol: its 2 bits left (00) are not a padding of 1s.
+  vector<uint8_t> shorter = block;
+  shorter[10] = 0x88;
+  EXPECT_EQ(decoder.decode(AsBytes(shorter)).error, AuditError::FailedToDecodeLiteralHeaderValue);
+}
+
+// ---- Indexes (RFC 7541 §2.3.3, §6.1, §6.2)
+
+TEST(HpackAudit, IndexesAtTheBoundaryOfTheStaticAndDynamicTables) {
+  auto decoder = CreateHpackDecoder();
+
+  static constexpr uint8_t zero[]{0x80};
+  EXPECT_EQ(decoder.decode(AsBytes(zero)).error, AuditError::InvalidIndexZeroInIndexedHeaderField);
+
+  static constexpr uint8_t last[]{0x80 | 61};
+  const auto lastResult = decoder.decode(AsBytes(last));
+  ASSERT_TRUE(lastResult.isSuccess());
+  EXPECT_EQ(lastResult.decodedHeaders.headers.at("www-authenticate"), "");
+
+  // 62 is the first entry of the dynamic table, empty for now: as an index and as a name index of each literal form.
+  static constexpr uint8_t first[]{0x80 | 62};
+  EXPECT_EQ(decoder.decode(AsBytes(first)).error, AuditError::IndexOutOfBoundsInIndexedHeaderField);
+  for (const uint8_t flags : {uint8_t{0x40}, uint8_t{0x00}, uint8_t{0x10}}) {
+    vector<uint8_t> block;
+    AppendInteger(block, flags, flags == 0x40 ? 6 : 4, 62);
+    block.push_back(0x01);
+    block.push_back('v');
+    const auto result = decoder.decode(AsBytes(block));
+    EXPECT_EQ(result.error, AuditError::IndexOutOfBoundsForHeaderName) << static_cast<int>(flags);
+    EXPECT_TRUE(result.isCompressionError());
+    EXPECT_EQ(decoder.dynamicTable().entryCount(), 0U);
+  }
+
+  // Name index 61 (www-authenticate), the last of the static table, with indexing: it becomes the entry 62.
+  static constexpr uint8_t literal[]{0x40 | 61, 0x01, 'v'};
+  const auto literalResult = decoder.decode(AsBytes(literal));
+  ASSERT_TRUE(literalResult.isSuccess());
+  EXPECT_EQ(literalResult.decodedHeaders.headers.at("www-authenticate"), "v");
+
+  const auto firstResult = decoder.decode(AsBytes(first));
+  ASSERT_TRUE(firstResult.isSuccess());
+  EXPECT_EQ(firstResult.decodedHeaders.headers.at("www-authenticate"), "v");
+
+  static constexpr uint8_t second[]{0x80 | 63};
+  EXPECT_EQ(decoder.decode(AsBytes(second)).error, AuditError::IndexOutOfBoundsInIndexedHeaderField);
+
+  // The name of the entry 62 in each literal form: only the one with indexing adds an entry.
+  std::size_t expectedEntryCount = 1;
+  for (const uint8_t flags : {uint8_t{0x00}, uint8_t{0x10}, uint8_t{0x40}}) {
+    vector<uint8_t> block;
+    AppendInteger(block, flags, flags == 0x40 ? 6 : 4, 62);
+    block.push_back(0x02);
+    block.push_back('w');
+    block.push_back(static_cast<uint8_t>('0' + (flags >> 4U)));
+    const auto result = decoder.decode(AsBytes(block));
+    ASSERT_TRUE(result.isSuccess()) << static_cast<int>(flags);
+    EXPECT_EQ(result.decodedHeaders.headers.at("www-authenticate").front(), 'w');
+    expectedEntryCount += flags == 0x40 ? 1U : 0U;
+    EXPECT_EQ(decoder.dynamicTable().entryCount(), expectedEntryCount);
+  }
+  EXPECT_EQ(decoder.dynamicTable()[0].value(), "w4");
+  EXPECT_EQ(decoder.dynamicTable()[1].value(), "v");
+}
+
+// ---- Dynamic table (RFC 7541 §4)
+
+// §4.4: an entry larger than the table empties it, which is not an error. Its name is here the one of an entry that
+// this empties: the decoded field keeps it.
+TEST(HpackAudit, EntryLargerThanTheTableEmptiesItWithoutError) {
+  HpackDecoder decoder(100, std::numeric_limits<uint32_t>::max(), true);
+  static constexpr uint8_t small[]{0x40, 0x03, 'x', '-', 'a', 0x01, 'b'};
+  ASSERT_TRUE(decoder.decode(AsBytes(small)).isSuccess());
+  ASSERT_EQ(decoder.dynamicTable().entryCount(), 1U);
+  EXPECT_EQ(decoder.dynamicTable().currentSizeBytes(), 36U);
+
+  // 3 + 66 + 32 = 101 bytes: one more than the table.
+  vector<uint8_t> block{0x7E, 66};
+  block.insert(block.end(), 66U, uint8_t{'v'});
+  block.push_back(0x90);  // then accept-encoding: the block goes on
+  const auto result = decoder.decode(AsBytes(block));
+  ASSERT_TRUE(result.isSuccess());
+  EXPECT_EQ(result.decodedHeaders.headers.at("x-a"), std::string(66, 'v'));
+  EXPECT_EQ(result.decodedHeaders.headers.at("accept-encoding"), "gzip, deflate");
+  EXPECT_EQ(decoder.dynamicTable().entryCount(), 0U);
+  EXPECT_EQ(decoder.dynamicTable().currentSizeBytes(), 0U);
+
+  // An entry of exactly the size of the table is kept: 3 + 65 + 32.
+  vector<uint8_t> exact{0x40, 0x03, 'x', '-', 'a', 65};
+  exact.insert(exact.end(), 65U, uint8_t{'v'});
+  ASSERT_TRUE(decoder.decode(AsBytes(exact)).isSuccess());
+  EXPECT_EQ(decoder.dynamicTable().entryCount(), 1U);
+  EXPECT_EQ(decoder.dynamicTable().currentSizeBytes(), 100U);
+}
+
+// §4.2, §6.3: several size updates may start a block (the smallest size then the last one, or more); none may follow a
+// field, even a field that is malformed or beyond the header list size limit; the limit is the advertised one.
+TEST(HpackAudit, DynamicTableSizeUpdatesOnlyStartABlock) {
+  HpackDecoder decoder(4096, 100, true);
+  static constexpr uint8_t fill[]{0x40, 0x03, 'x', '-', 'a', 0x01, 'b', 0x40, 0x03, 'x', '-', 'b', 0x01, 'c'};
+  ASSERT_TRUE(decoder.decode(AsBytes(fill)).isSuccess());
+  ASSERT_EQ(decoder.dynamicTable().entryCount(), 2U);
+
+  // 36, which evicts the oldest entry, 0, 4096 (31 + 4065), then the fields.
+  static constexpr uint8_t updates[]{0x3F, 0x05, 0x20, 0x3F, 0xE1, 0x1F, 0x82, 0x40, 0x03, 'x', '-', 'c', 0x01, 'd'};
+  const auto result = decoder.decode(AsBytes(std::span<const uint8_t>(updates, 2U)));
+  ASSERT_TRUE(result.isSuccess());
+  ASSERT_EQ(decoder.dynamicTable().entryCount(), 1U);
+  EXPECT_EQ(decoder.dynamicTable()[0].name(), "x-b");
+
+  ASSERT_TRUE(decoder.decode(AsBytes(updates)).isSuccess());
+  EXPECT_EQ(decoder.dynamicTable().maxSizeBytes(), 4096U);
+  ASSERT_EQ(decoder.dynamicTable().entryCount(), 1U);
+  EXPECT_EQ(decoder.dynamicTable()[0].name(), "x-c");
+
+  // After a field of each kind.
+  static constexpr uint8_t afterIndexed[]{0x82, 0x20};
+  static constexpr uint8_t afterLiteral[]{0x00, 0x01, 'x', 0x01, 'v', 0x20};
+  static constexpr uint8_t afterMalformed[]{0x00, 0x01, 'X', 0x01, 'v', 0x20};
+  static constexpr uint8_t afterDynamic[]{0xBE, 0x20};
+  const std::span<const uint8_t> blocks[]{afterIndexed, afterLiteral, afterMalformed, afterDynamic};
+  for (const std::span<const uint8_t> block : blocks) {
+    EXPECT_EQ(decoder.decode(AsBytes(block)).error, AuditError::DynamicTableSizeUpdateAfterField);
+    EXPECT_EQ(decoder.dynamicTable().maxSizeBytes(), 4096U);
+  }
+  // After a field beyond the header list size limit (100 bytes), which is not stored.
+  vector<uint8_t> beyond{0x00, 0x01, 'x', 100};
+  beyond.insert(beyond.end(), 100U, uint8_t{'v'});
+  beyond.push_back(0x20);
+  EXPECT_EQ(decoder.decode(AsBytes(beyond)).error, AuditError::DynamicTableSizeUpdateAfterField);
+
+  // The limit: 4096 is accepted, 4097 is not, and the table is unchanged.
+  static constexpr uint8_t above[]{0x3F, 0xE2, 0x1F};
+  EXPECT_EQ(decoder.decode(AsBytes(above)).error, AuditError::DynamicTableSizeUpdateAboveLimit);
+  EXPECT_EQ(decoder.dynamicTable().maxSizeBytes(), 4096U);
+  EXPECT_EQ(decoder.dynamicTable().entryCount(), 1U);
+}
+
+// ---- Lifetime of the decoded fields
+
+// The fields of a block that reference the dynamic table keep their bytes when later fields of the same block evict
+// their entries, overwrite them (the buffer of the oldest entry is reused for the new one) or empty the table.
+TEST(HpackAudit, DecodedFieldsOutliveTheEntriesEvictedByTheirBlock) {
+  // Room for two entries of 4 + 30 + 32 = 66 bytes.
+  HpackDecoder decoder(140, std::numeric_limits<uint32_t>::max(), true);
+  const std::string firstValue(30, 'a');
+  const std::string secondValue(30, 'b');
+  vector<uint8_t> fill;
+  const http::HeaderView entries[]{{"x-01", firstValue}, {"x-02", secondValue}};
+  for (const auto& [name, value] : entries) {
+    fill.push_back(0x40);
+    fill.push_back(static_cast<uint8_t>(name.size()));
+    fill.insert(fill.end(), name.begin(), name.end());
+    fill.push_back(static_cast<uint8_t>(value.size()));
+    fill.insert(fill.end(), value.begin(), value.end());
+  }
+  ASSERT_TRUE(decoder.decode(AsBytes(fill)).isSuccess());
+  ASSERT_EQ(decoder.dynamicTable().entryCount(), 2U);
+
+  // Both entries by index (63 is the oldest, x-01), then literals with indexing, all with the name of the newest entry
+  // (62), which add() reads while it evicts:
+  //  - 60 bytes: evicts x-01, whose buffer is reused, then x-02 itself, the entry of the name
+  //  - 40 bytes: evicts the only entry, the one of the name, whose buffer is large enough for the new one
+  //  - 90 bytes: the same with a buffer to enlarge
+  //  - 120 bytes: an entry larger than the table, which empties it
+  vector<uint8_t> block{0xBF, 0xBE};
+  const std::string values[]{std::string(60, 'c'), std::string(40, 'd'), std::string(90, 'f'), std::string(120, 'e')};
+  for (const std::string& value : values) {
+    block.push_back(0x40 | 62);
+    block.push_back(static_cast<uint8_t>(value.size()));
+    block.insert(block.end(), value.begin(), value.end());
+  }
+  // The block is freed before the decoded fields are read: none points into it either.
+  auto ownedBlock = std::make_unique<uint8_t[]>(block.size());
+  std::memcpy(ownedBlock.get(), block.data(), block.size());
+  const auto result = decoder.decode(AsBytes(std::span<const uint8_t>(ownedBlock.get(), block.size())));
+  ownedBlock.reset();
+  std::ranges::fill(block, uint8_t{0});
+
+  ASSERT_TRUE(result.isSuccess());
+  EXPECT_EQ(decoder.dynamicTable().entryCount(), 0U);
+  ASSERT_EQ(result.decodedHeaders.headers.size(), 2U);
+  EXPECT_EQ(result.decodedHeaders.headers.at("x-01"), firstValue);
+  EXPECT_EQ(result.decodedHeaders.headers.at("x-02"),
+            secondValue + "," + values[0] + "," + values[1] + "," + values[2] + "," + values[3]);
+  EXPECT_EQ(result.headerListSize, (2U * 66U) + 96U + 76U + 126U + 156U);
+}
+
+// The same for the pseudo-header fields, which are kept apart from the regular ones, and for the fields taken over by
+// an owner (swap of the map and of the storage) before the table and the storage of the decoder are used again.
+TEST(HpackAudit, PseudoHeadersAndTakenOverFieldsOutliveTheTableAndTheInput) {
+  HpackDecoder decoder(200, std::numeric_limits<uint32_t>::max(), true);
+  const std::string authority = "an-authority-of-forty-bytes.example.com";
+  vector<uint8_t> fill{0x41, static_cast<uint8_t>(authority.size())};  // literal with indexing, name :authority
+  fill.insert(fill.end(), authority.begin(), authority.end());
+  ASSERT_TRUE(decoder.decode(AsBytes(fill)).isSuccess());
+
+  SvToSvMap ownedHeaders;
+  DecodedHeaders::Storage ownedStorage{DecodedHeaders::kStorageInitialCapacity};
+  std::string_view ownedAuthority;
+  std::string_view ownedMethod;
+  {
+    // :method GET (static), :authority of the dynamic table, then a field emptying the table and one from the block.
+    vector<uint8_t> block{0x82, 0xBE, 0x40, 0x01, 'x', 0x7F, 0x49};  // value of 127 + 73 = 200 bytes
+    block.insert(block.end(), 200U, uint8_t{'v'});
+    static constexpr uint8_t kRawField[]{0x00, 0x01, 'y', 0x03, 'r', 'a', 'w'};
+    block.insert(block.end(), std::begin(kRawField), std::end(kRawField));
+    const auto result = decoder.decode(AsBytes(block));
+    ASSERT_TRUE(result.isSuccess());
+    EXPECT_EQ(decoder.dynamicTable().entryCount(), 0U);
+    ownedAuthority = result.decodedHeaders.pseudoHeader(PseudoHeader::Authority);
+    ownedMethod = result.decodedHeaders.pseudoHeader(PseudoHeader::Method);
+    ownedHeaders.swap(result.decodedHeaders.headers);
+    ownedStorage.swap(result.decodedHeaders.storage);
+    std::ranges::fill(block, uint8_t{0});
+  }
+
+  // Other blocks, with other bytes at the same places of the table and of the storage of the decoder.
+  for (int iter = 0; iter < 4; ++iter) {
+    vector<uint8_t> other{0x41, static_cast<uint8_t>(authority.size())};
+    other.insert(other.end(), static_cast<uint32_t>(authority.size()), static_cast<uint8_t>('0' + iter));
+    static constexpr uint8_t kOtherFields[]{0x40, 0x01, 'x', 0x03, 'z', 'z', 'z', 0x00, 0x01, 'y', 0x03, 'z', 'z', 'z'};
+    other.insert(other.end(), std::begin(kOtherFields), std::end(kOtherFields));
+    ASSERT_TRUE(decoder.decode(AsBytes(other)).isSuccess());
+  }
+
+  EXPECT_EQ(ownedAuthority, authority);
+  EXPECT_EQ(ownedMethod, "GET");
+  ASSERT_EQ(ownedHeaders.size(), 2U);
+  EXPECT_EQ(ownedHeaders.at("x"), std::string(200, 'v'));
+  EXPECT_EQ(ownedHeaders.at("y"), "raw");
+}
+
+// ---- Header list size (RFC 9113 §6.5.2: names + values + 32 bytes per field, as received)
+
+TEST(HpackAudit, HeaderListSizeCountsEachFieldAsReceived) {
+  // :method GET (7 + 3 + 32), accept-encoding "gzip, deflate" twice (15 + 13 + 32 each), then "x: " (1 + 0 + 32).
+  static constexpr uint8_t block[]{0x82, 0x90, 0x90, 0x00, 0x01, 'x', 0x00};
+  static constexpr uint32_t kSize = 42U + 60U + 60U + 33U;
+
+  HpackDecoder exact(4096, kSize, true);
+  const auto result = exact.decode(AsBytes(block));
+  ASSERT_TRUE(result.isSuccess());
+  EXPECT_EQ(result.headerListSize, kSize);
+  EXPECT_EQ(result.decodedHeaders.namesAndValuesSize, kSize - (4U * 32U));
+  // The joined value takes one byte for its separator, which the limit does not count.
+  EXPECT_EQ(result.decodedHeaders.headers.at("accept-encoding"), "gzip, deflate,gzip, deflate");
+
+  HpackDecoder below(4096, kSize - 1U, true);
+  const auto refused = below.decode(AsBytes(block));
+  EXPECT_EQ(refused.error, AuditError::HeaderListTooLarge);
+  EXPECT_FALSE(refused.isCompressionError());
+  EXPECT_EQ(refused.headerListSize, kSize);  // the whole block is decoded
+  EXPECT_FALSE(refused.decodedHeaders.headers.contains("x"));
+
+  // Beyond the limit, the block is still decoded for its effects on the dynamic table, and its encoding errors stay
+  // compression errors.
+  static constexpr uint8_t withEntry[]{0x82, 0x90, 0x90, 0x40, 0x01, 'x', 0x01, 'v'};
+  HpackDecoder small(4096, 50, true);
+  EXPECT_EQ(small.decode(AsBytes(withEntry)).error, AuditError::HeaderListTooLarge);
+  EXPECT_EQ(small.dynamicTable().entryCount(), 1U);
+  static constexpr uint8_t withBadIndex[]{0x82, 0x90, 0x90, 0xC0};
+  const auto badIndex = small.decode(AsBytes(withBadIndex));
+  EXPECT_EQ(badIndex.error, AuditError::IndexOutOfBoundsInIndexedHeaderField);
+  EXPECT_TRUE(badIndex.isCompressionError());
+}
+
+// ---- Field validity at decode time (RFC 9113 §8.2, §8.3)
+
+TEST(HpackAudit, FieldNamesAndValuesAreValidatedAtDecodeTime) {
+  struct Case {
+    std::string_view name;
+    std::string_view value;
+    AuditError expected;
+  };
+  RawBytes block;
+  using namespace std::string_view_literals;
+  for (const Case& testCase : {
+           // §8.2.1: names are lower-case tokens.
+           Case{"x-a", "v", AuditError::None},
+           Case{"X-a", "v", AuditError::MalformedFieldName},
+           Case{"x-A", "v", AuditError::MalformedFieldName},
+           Case{"", "v", AuditError::MalformedFieldName},
+           Case{"x a", "v", AuditError::MalformedFieldName},
+           Case{"x:a", "v", AuditError::MalformedFieldName},
+           Case{"x\x7f", "v", AuditError::MalformedFieldName},
+           Case{"x\x80", "v", AuditError::MalformedFieldName},
+           Case{"x\xff", "v", AuditError::MalformedFieldName},
+           Case{"x\0a"sv, "v", AuditError::MalformedFieldName},
+           Case{"x\ta", "v", AuditError::MalformedFieldName},
+           // §8.3: only the defined pseudo-header fields, in lower case.
+           Case{":method", "GET", AuditError::None},
+           Case{":Method", "GET", AuditError::UndefinedPseudoHeaderField},
+           Case{":", "v", AuditError::UndefinedPseudoHeaderField},
+           Case{":unknown", "v", AuditError::UndefinedPseudoHeaderField},
+           Case{":path ", "/", AuditError::UndefinedPseudoHeaderField},
+           // §8.2.1: values without NUL, CR, LF, nor leading or trailing SP / HTAB. The other bytes are allowed.
+           Case{"x-a", "", AuditError::None},
+           Case{"x-a", "a b\tc", AuditError::None},
+           Case{"x-a", "\x01\x7f\x80\xff", AuditError::None},
+           Case{"x-a", " ", AuditError::MalformedFieldValue},
+           Case{"x-a", "\t", AuditError::MalformedFieldValue},
+           Case{"x-a", " v", AuditError::MalformedFieldValue},
+           Case{"x-a", "v\t", AuditError::MalformedFieldValue},
+           Case{"x-a", "a\rb", AuditError::MalformedFieldValue},
+           Case{"x-a", "a\nb", AuditError::MalformedFieldValue},
+           Case{"x-a", "a\0b"sv, AuditError::MalformedFieldValue},
+           Case{":path", "/a\nb", AuditError::MalformedFieldValue},
+           Case{":authority", " host", AuditError::MalformedFieldValue},
+           // §8.2.2: connection-specific fields, TE excepted with the value "trailers".
+           Case{"connection", "close", AuditError::ConnectionSpecificField},
+           Case{"keep-alive", "timeout=5", AuditError::ConnectionSpecificField},
+           Case{"proxy-connection", "keep-alive", AuditError::ConnectionSpecificField},
+           Case{"transfer-encoding", "chunked", AuditError::ConnectionSpecificField},
+           Case{"upgrade", "h2c", AuditError::ConnectionSpecificField},
+           Case{"te", "trailers", AuditError::None},
+           Case{"te", "TRAILERS", AuditError::None},
+           Case{"te", "gzip", AuditError::ConnectionSpecificField},
+           Case{"te", "trailers, gzip", AuditError::ConnectionSpecificField},
+           Case{"te", "", AuditError::ConnectionSpecificField},
+       }) {
+    // As a literal with raw strings, as a literal with Huffman strings (the encoder chooses), then from the table.
+    for (const bool withEncoder : {false, true}) {
+      HpackDecoder decoder = CreateHpackDecoder();
+      block.clear();
+      if (withEncoder) {
+        HpackEncoder encoder(4096);
+        if (testCase.name.empty() ||
+            std::ranges::any_of(testCase.name, [](char ch) { return ch >= 'A' && ch <= 'Z'; })) {
+          // the encoder asserts on empty and upper-case names
+          continue;
+        }
+        encoder.encode(block, testCase.name, testCase.value);
+      } else {
+        block.push_back(std::byte{0x40U});
+        block.push_back(static_cast<std::byte>(testCase.name.size()));
+        block.append(reinterpret_cast<const std::byte*>(testCase.name.data()), testCase.name.size());
+        block.push_back(static_cast<std::byte>(testCase.value.size()));
+        block.append(reinterpret_cast<const std::byte*>(testCase.value.data()), testCase.value.size());
+      }
+      const auto result = decoder.decode(block);
+      EXPECT_EQ(result.error, testCase.expected) << testCase.name << ": " << testCase.value << " " << withEncoder;
+      EXPECT_FALSE(result.isCompressionError());
+      if (decoder.dynamicTable().entryCount() == 1U && !testCase.name.empty()) {
+        // The field is in the dynamic table whatever its validity (RFC 9113 §4.3): each reference gets the same answer.
+        static constexpr uint8_t indexed[]{0xBEU};
+        EXPECT_EQ(decoder.decode(AsBytes(indexed)).error, testCase.expected) << testCase.name;
+        EXPECT_EQ(decoder.decode(AsBytes(indexed)).error, testCase.expected) << testCase.name;
+      }
+    }
+  }
+}
+
+TEST(HpackAudit, PseudoHeaderOrderAndDuplicates) {
+  struct Case {
+    std::string_view hex;
+    AuditError expected;
+  };
+  for (const Case& testCase : {
+           Case{"828486410168", AuditError::None},  // :method GET, :path /, :scheme http, :authority h (literal)
+           Case{"8284", AuditError::None},
+           Case{"8282", AuditError::DuplicatePseudoHeaderField},          // :method GET twice
+           Case{"8283", AuditError::DuplicatePseudoHeaderField},          // :method GET then :method POST
+           Case{"9082", AuditError::PseudoHeaderFieldAfterRegularField},  // accept-encoding then :method
+           Case{"829084", AuditError::PseudoHeaderFieldAfterRegularField},
+           Case{"88", AuditError::None},  // :status 200: defined, its context is checked by the owner of the message
+       }) {
+    auto decoder = CreateHpackDecoder();
+    const vector<uint8_t> block = FromHex(testCase.hex);
+    const auto result = decoder.decode(AsBytes(block));
+    EXPECT_EQ(result.error, testCase.expected) << testCase.hex;
+  }
+}
+
+// RFC 9113 §8.2.3: the cookie fields of a field block are concatenated with the two bytes "; " (0x3b, 0x20) before
+// they reach a context that is not HTTP/2, like the handlers of a server. HttpClient sends one field per cookie-pair.
+TEST(HpackAudit, CookieFieldsAreJoinedWithSemicolonAndSpace) {
+  auto decoder = CreateHpackDecoder();
+  // Three literal fields with the name index 32 (cookie).
+  static constexpr uint8_t block[]{0x60, 0x03, 'a', '=', 'b', 0x60, 0x03, 'c', '=', 'd', 0x60, 0x03, 'e', '=', 'f'};
+  const auto result = decoder.decode(AsBytes(block));
+  ASSERT_TRUE(result.isSuccess());
+  EXPECT_EQ(result.decodedHeaders.headers.at("cookie"), "a=b; c=d; e=f");
+}
+
+// An empty name is a valid HPACK string and a malformed HTTP field (RFC 9113 §8.2.1): its field block is decoded, and
+// its stream reset. A reference to the entry that such a field added to the dynamic table is the same malformed field,
+// not an invalid index (RFC 7541 §2.3.3: an error only for an index beyond both tables).
+TEST(HpackAudit, ReferenceToAnEntryWithAnEmptyNameIsAMalformedFieldNotACompressionError) {
+  auto decoder = CreateHpackDecoder();
+  static constexpr uint8_t literal[]{0x40, 0x00, 0x01, 'v'};
+  const auto literalResult = decoder.decode(AsBytes(literal));
+  EXPECT_EQ(literalResult.error, AuditError::MalformedFieldName);
+  EXPECT_FALSE(literalResult.isCompressionError());
+  ASSERT_EQ(decoder.dynamicTable().entryCount(), 1U);
+  EXPECT_EQ(decoder.dynamicTable().currentSizeBytes(), 33U);
+
+  static constexpr uint8_t indexed[]{0xBE};
+  const auto indexedResult = decoder.decode(AsBytes(indexed));
+  EXPECT_EQ(indexedResult.error, AuditError::MalformedFieldName);
+  EXPECT_FALSE(indexedResult.isCompressionError());
+
+  // As the name of a literal field without indexing (4-bit prefix: 15 + 47).
+  static constexpr uint8_t named[]{0x0F, 0x2F, 0x01, 'w'};
+  const auto namedResult = decoder.decode(AsBytes(named));
+  EXPECT_EQ(namedResult.error, AuditError::MalformedFieldName);
+  EXPECT_FALSE(namedResult.isCompressionError());
+}
+
+// The fields of a header list beyond the limit are decoded and not stored (docs/protocols/http2.md): this holds for
+// raw strings and for references to the tables, and has to for Huffman strings, which are decoded into the storage of
+// the decoded headers.
+TEST(HpackAudit, HuffmanLiteralsBeyondTheHeaderListLimitAreNotStored) {
+  static constexpr uint32_t kMaxHeaderListSize = 1024;
+  static constexpr std::size_t kNbFields = 64;
+  static constexpr std::size_t kValueSize = 4000;
+
+  // Raw strings: 64 fields "x: 000...0" of 4000 bytes.
+  {
+    HpackDecoder decoder(4096, kMaxHeaderListSize, true);
+    vector<uint8_t> block;
+    for (std::size_t idx = 0; idx < kNbFields; ++idx) {
+      const vector<uint8_t> field = LiteralFieldX(std::string(kValueSize, '0'));
+      block.insert(block.end(), field.begin(), field.end());
+    }
+    const auto result = decoder.decode(AsBytes(block));
+    EXPECT_EQ(result.error, AuditError::HeaderListTooLarge);
+    EXPECT_EQ(result.headerListSize, kNbFields * (1U + kValueSize + 32U));
+    EXPECT_LE(result.decodedHeaders.storage.capacity(), 8U * kMaxHeaderListSize);
+  }
+
+  // The same fields with Huffman strings: '0' is the code 00000, so 4000 of them are 2500 zero bytes.
+  HpackDecoder decoder(4096, kMaxHeaderListSize, true);
+  const vector<uint8_t> huffmanValue(kValueSize * 5U / 8U, uint8_t{0});
+  vector<uint8_t> block;
+  for (std::size_t idx = 0; idx < kNbFields; ++idx) {
+    const vector<uint8_t> field = LiteralFieldX(huffmanValue, true);
+    block.insert(block.end(), field.begin(), field.end());
+  }
+  ASSERT_LT(block.size(), 256U << 10U);  // within the bound of a header block
+  const auto result = decoder.decode(AsBytes(block));
+  EXPECT_EQ(result.error, AuditError::HeaderListTooLarge);
+  EXPECT_EQ(result.headerListSize, kNbFields * (1U + kValueSize + 32U));
+  EXPECT_LE(result.decodedHeaders.storage.capacity(), 8U * kMaxHeaderListSize);
+
+  // The decoder keeps its storage for the next blocks of the connection.
+  static constexpr uint8_t next[]{0x82};
+  const auto nextResult = decoder.decode(AsBytes(next));
+  ASSERT_TRUE(nextResult.isSuccess());
+  EXPECT_LE(nextResult.decodedHeaders.storage.capacity(), 8U * kMaxHeaderListSize);
+}
+
+namespace {
+
+// A string literal made of '0' characters: Huffman-coded, 8 of them are 5 zero bytes ('0' is the code 00000).
+struct Zeros {
+  std::size_t nbChars;  // A multiple of 8 when Huffman-coded
+  bool huffman;
+};
+
+// Append a literal field with a new name (RFC 7541 §6.2), its name and value made of '0'.
+void AppendZerosField(vector<uint8_t>& out, Zeros name, Zeros value, bool withIndexing = false) {
+  out.push_back(withIndexing ? uint8_t{0x40} : uint8_t{0x00});
+  for (const Zeros str : {name, value}) {
+    const auto nbBytes = static_cast<vector<uint8_t>::size_type>(str.huffman ? str.nbChars * 5U / 8U : str.nbChars);
+    AppendInteger(out, str.huffman ? uint8_t{0x80} : uint8_t{0x00}, 7, nbBytes);
+    out.insert(out.end(), nbBytes, str.huffman ? uint8_t{0} : uint8_t{'0'});
+  }
+}
+
+}  // namespace
+
+// The Huffman strings of a field beyond the limit are given back to the storage of the decoded headers once the field
+// is decoded (and added to the dynamic table), whichever of its name and value are Huffman-coded: the next fields reuse
+// their bytes. A refused block that made the storage grow releases it.
+TEST(HpackAudit, HuffmanStringsBeyondTheHeaderListLimitAreGivenBack) {
+  static constexpr uint32_t kMaxHeaderListSize = 64;
+  static constexpr Zeros kHuffman96{96, true};
+  static constexpr Zeros kRaw96{96, false};
+  HpackDecoder decoder(4096, kMaxHeaderListSize, true);
+
+  // A field within the limit, decoded into the first block of the storage.
+  vector<uint8_t> accepted;
+  AppendZerosField(accepted, {8, true}, {8, true});
+  ASSERT_TRUE(decoder.decode(AsBytes(accepted)).isSuccess());
+
+  // 150 fields of 96 + 96 bytes beyond the limit (28 KiB if they were kept), Huffman-coded in name and value, in name
+  // only, and in value only, then a field added to the dynamic table.
+  vector<uint8_t> block;
+  for (int idx = 0; idx < 50; ++idx) {
+    AppendZerosField(block, kHuffman96, kHuffman96);
+    AppendZerosField(block, kHuffman96, kRaw96);
+    AppendZerosField(block, kRaw96, kHuffman96);
+  }
+  AppendZerosField(block, {8, true}, {16, true}, true);
+  const auto refused = decoder.decode(AsBytes(block));
+  EXPECT_EQ(refused.error, AuditError::HeaderListTooLarge);
+  EXPECT_EQ(refused.headerListSize, (150U * (96U + 96U + 32U)) + 8U + 16U + 32U);
+  EXPECT_EQ(refused.decodedHeaders.storage.capacity(), DecodedHeaders::kStorageInitialCapacity);
+
+  // The entry was added before its strings were given back.
+  static constexpr uint8_t reference[]{0xBE};
+  const auto referenced = decoder.decode(AsBytes(reference));
+  ASSERT_TRUE(referenced.isSuccess());
+  EXPECT_EQ(referenced.decodedHeaders.headers.at("00000000"), "0000000000000000");
+
+  // A Huffman name taking most of the first block of the storage, then a Huffman value that does not fit next to it
+  // (400 + 200 > 512 bytes): the value takes a new block and is given back alone, the next field reusing that block.
+  block.clear();
+  AppendZerosField(block, {400, true}, {200, true});
+  AppendZerosField(block, kHuffman96, kHuffman96);
+  const auto grown = decoder.decode(AsBytes(block));
+  EXPECT_EQ(grown.error, AuditError::HeaderListTooLarge);
+  EXPECT_EQ(grown.decodedHeaders.storage.capacity(), 0U);  // released
+  EXPECT_TRUE(grown.decodedHeaders.headers.empty());
+
+  const auto next = decoder.decode(AsBytes(accepted));
+  ASSERT_TRUE(next.isSuccess());
+  EXPECT_EQ(next.decodedHeaders.headers.at("00000000"), "00000000");
+}
+
+// Not an RFC requirement, a compression loss: a literal field whose name is in the static table is written with the
+// index of that name in the dynamic table when another value of the field is there, which takes one byte more from
+// the second entry of the dynamic table on (an index of 63 and more does not fit in the 6-bit prefix), where the
+// static index takes one. The responses of C.6.2 and C.6.3 show it (":status: 307" after ":status: 302", then "date").
+TEST(HpackAudit, EncoderKeepsTheStaticIndexOfANameAlsoInTheDynamicTable) {
+  static constexpr std::span<const http::HeaderView> kMessages[]{kResponse1, kResponse2, kResponse3};
+  // The second response is the one of C.5.2: "307" takes 3 bytes with and without Huffman coding, which the encoder
+  // only uses when shorter.
+  static constexpr std::string_view kExpectedHex[]{
+      kResponsesWithHuffmanHex[0],
+      "4803333037c1c0bf",
+      kResponsesWithHuffmanHex[2],
+  };
+  HpackEncoder encoder(kResponseExamplesTableSize);
+  for (std::size_t idx = 0; idx < std::size(kMessages); ++idx) {
+    RawBytes block;
+    for (const http::HeaderView& field : kMessages[idx]) {
+      encoder.encode(block, field.name, field.value, HpackEncoder::IndexingMode::Indexed);
+    }
+    const vector<uint8_t> expected = FromHex(kExpectedHex[idx]);
+    EXPECT_EQ(block.size(), expected.size()) << idx;
+    EXPECT_EQ(std::string_view(reinterpret_cast<const char*>(block.data()), block.size()),
+              std::string_view(reinterpret_cast<const char*>(expected.data()), expected.size()))
+        << idx;
+  }
+}
+
+// The lookup index of a large dynamic table (built at 128 entries, so for a table above 4096 bytes) is kept in sync by
+// encode(), also when a field evicts enough entries to leave fewer than 128 of them (it asserted there).
+TEST(HpackAudit, EncoderEvictionBelowTheLookupIndexThreshold) {
+  HpackEncoder encoder(8192);
+  HpackDecoder decoder(8192, std::numeric_limits<uint32_t>::max(), true);
+  RawBytes block;
+  for (int idx = 0; idx < 200; ++idx) {
+    encoder.encode(block, "x-" + std::to_string(idx), "v");  // 200 entries of 36 to 38 bytes
+  }
+  ASSERT_TRUE(decoder.decode(block).isSuccess());
+  ASSERT_EQ(encoder.dynamicTable().entryCount(), 200U);
+
+  block.clear();
+  const std::string large(6000, 'v');
+  encoder.encode(block, "x-large", large);  // evicts about 160 entries
+  EXPECT_LT(encoder.dynamicTable().entryCount(), 128U);
+  const auto result = decoder.decode(block);
+  ASSERT_TRUE(result.isSuccess());
+  EXPECT_EQ(result.decodedHeaders.headers.at("x-large"), large);
+  EXPECT_EQ(encoder.dynamicTable().entryCount(), decoder.dynamicTable().entryCount());
+
+  // The encoder still finds the entries that are left.
+  block.clear();
+  encoder.encode(block, "x-199", "v");
+  EXPECT_EQ(block.size(), 1U);
+  ASSERT_TRUE(decoder.decode(block).isSuccess());
+}
+
+// ---- The encoder, read by a decoder model written from RFC 7541 alone
+
+namespace {
+
+// RFC 7541 Appendix B, generated from the text of the RFC: the code and its number of bits for each symbol, EOS last.
+struct RfcHuffmanCode {
+  uint32_t code;
+  uint8_t nbBits;
+};
+
+constexpr RfcHuffmanCode kRfcHuffmanCodes[]{
+    {0x1ff8, 13},    {0x7fffd8, 23},   {0xfffffe2, 28}, {0xfffffe3, 28}, {0xfffffe4, 28},  {0xfffffe5, 28},
+    {0xfffffe6, 28}, {0xfffffe7, 28},  {0xfffffe8, 28}, {0xffffea, 24},  {0x3ffffffc, 30}, {0xfffffe9, 28},
+    {0xfffffea, 28}, {0x3ffffffd, 30}, {0xfffffeb, 28}, {0xfffffec, 28}, {0xfffffed, 28},  {0xfffffee, 28},
+    {0xfffffef, 28}, {0xffffff0, 28},  {0xffffff1, 28}, {0xffffff2, 28}, {0x3ffffffe, 30}, {0xffffff3, 28},
+    {0xffffff4, 28}, {0xffffff5, 28},  {0xffffff6, 28}, {0xffffff7, 28}, {0xffffff8, 28},  {0xffffff9, 28},
+    {0xffffffa, 28}, {0xffffffb, 28},  {0x14, 6},       {0x3f8, 10},     {0x3f9, 10},      {0xffa, 12},
+    {0x1ff9, 13},    {0x15, 6},        {0xf8, 8},       {0x7fa, 11},     {0x3fa, 10},      {0x3fb, 10},
+    {0xf9, 8},       {0x7fb, 11},      {0xfa, 8},       {0x16, 6},       {0x17, 6},        {0x18, 6},
+    {0x0, 5},        {0x1, 5},         {0x2, 5},        {0x19, 6},       {0x1a, 6},        {0x1b, 6},
+    {0x1c, 6},       {0x1d, 6},        {0x1e, 6},       {0x1f, 6},       {0x5c, 7},        {0xfb, 8},
+    {0x7ffc, 15},    {0x20, 6},        {0xffb, 12},     {0x3fc, 10},     {0x1ffa, 13},     {0x21, 6},
+    {0x5d, 7},       {0x5e, 7},        {0x5f, 7},       {0x60, 7},       {0x61, 7},        {0x62, 7},
+    {0x63, 7},       {0x64, 7},        {0x65, 7},       {0x66, 7},       {0x67, 7},        {0x68, 7},
+    {0x69, 7},       {0x6a, 7},        {0x6b, 7},       {0x6c, 7},       {0x6d, 7},        {0x6e, 7},
+    {0x6f, 7},       {0x70, 7},        {0x71, 7},       {0x72, 7},       {0xfc, 8},        {0x73, 7},
+    {0xfd, 8},       {0x1ffb, 13},     {0x7fff0, 19},   {0x1ffc, 13},    {0x3ffc, 14},     {0x22, 6},
+    {0x7ffd, 15},    {0x3, 5},         {0x23, 6},       {0x4, 5},        {0x24, 6},        {0x5, 5},
+    {0x25, 6},       {0x26, 6},        {0x27, 6},       {0x6, 5},        {0x74, 7},        {0x75, 7},
+    {0x28, 6},       {0x29, 6},        {0x2a, 6},       {0x7, 5},        {0x2b, 6},        {0x76, 7},
+    {0x2c, 6},       {0x8, 5},         {0x9, 5},        {0x2d, 6},       {0x77, 7},        {0x78, 7},
+    {0x79, 7},       {0x7a, 7},        {0x7b, 7},       {0x7ffe, 15},    {0x7fc, 11},      {0x3ffd, 14},
+    {0x1ffd, 13},    {0xffffffc, 28},  {0xfffe6, 20},   {0x3fffd2, 22},  {0xfffe7, 20},    {0xfffe8, 20},
+    {0x3fffd3, 22},  {0x3fffd4, 22},   {0x3fffd5, 22},  {0x7fffd9, 23},  {0x3fffd6, 22},   {0x7fffda, 23},
+    {0x7fffdb, 23},  {0x7fffdc, 23},   {0x7fffdd, 23},  {0x7fffde, 23},  {0xffffeb, 24},   {0x7fffdf, 23},
+    {0xffffec, 24},  {0xffffed, 24},   {0x3fffd7, 22},  {0x7fffe0, 23},  {0xffffee, 24},   {0x7fffe1, 23},
+    {0x7fffe2, 23},  {0x7fffe3, 23},   {0x7fffe4, 23},  {0x1fffdc, 21},  {0x3fffd8, 22},   {0x7fffe5, 23},
+    {0x3fffd9, 22},  {0x7fffe6, 23},   {0x7fffe7, 23},  {0xffffef, 24},  {0x3fffda, 22},   {0x1fffdd, 21},
+    {0xfffe9, 20},   {0x3fffdb, 22},   {0x3fffdc, 22},  {0x7fffe8, 23},  {0x7fffe9, 23},   {0x1fffde, 21},
+    {0x7fffea, 23},  {0x3fffdd, 22},   {0x3fffde, 22},  {0xfffff0, 24},  {0x1fffdf, 21},   {0x3fffdf, 22},
+    {0x7fffeb, 23},  {0x7fffec, 23},   {0x1fffe0, 21},  {0x1fffe1, 21},  {0x3fffe0, 22},   {0x1fffe2, 21},
+    {0x7fffed, 23},  {0x3fffe1, 22},   {0x7fffee, 23},  {0x7fffef, 23},  {0xfffea, 20},    {0x3fffe2, 22},
+    {0x3fffe3, 22},  {0x3fffe4, 22},   {0x7ffff0, 23},  {0x3fffe5, 22},  {0x3fffe6, 22},   {0x7ffff1, 23},
+    {0x3ffffe0, 26}, {0x3ffffe1, 26},  {0xfffeb, 20},   {0x7fff1, 19},   {0x3fffe7, 22},   {0x7ffff2, 23},
+    {0x3fffe8, 22},  {0x1ffffec, 25},  {0x3ffffe2, 26}, {0x3ffffe3, 26}, {0x3ffffe4, 26},  {0x7ffffde, 27},
+    {0x7ffffdf, 27}, {0x3ffffe5, 26},  {0xfffff1, 24},  {0x1ffffed, 25}, {0x7fff2, 19},    {0x1fffe3, 21},
+    {0x3ffffe6, 26}, {0x7ffffe0, 27},  {0x7ffffe1, 27}, {0x3ffffe7, 26}, {0x7ffffe2, 27},  {0xfffff2, 24},
+    {0x1fffe4, 21},  {0x1fffe5, 21},   {0x3ffffe8, 26}, {0x3ffffe9, 26}, {0xffffffd, 28},  {0x7ffffe3, 27},
+    {0x7ffffe4, 27}, {0x7ffffe5, 27},  {0xfffec, 20},   {0xfffff3, 24},  {0xfffed, 20},    {0x1fffe6, 21},
+    {0x3fffe9, 22},  {0x1fffe7, 21},   {0x1fffe8, 21},  {0x7ffff3, 23},  {0x3fffea, 22},   {0x3fffeb, 22},
+    {0x1ffffee, 25}, {0x1ffffef, 25},  {0xfffff4, 24},  {0xfffff5, 24},  {0x3ffffea, 26},  {0x7ffff4, 23},
+    {0x3ffffeb, 26}, {0x7ffffe6, 27},  {0x3ffffec, 26}, {0x3ffffed, 26}, {0x7ffffe7, 27},  {0x7ffffe8, 27},
+    {0x7ffffe9, 27}, {0x7ffffea, 27},  {0x7ffffeb, 27}, {0xffffffe, 28}, {0x7ffffec, 27},  {0x7ffffed, 27},
+    {0x7ffffee, 27}, {0x7ffffef, 27},  {0x7fffff0, 27}, {0x3ffffee, 26}, {0x3fffffff, 30},
+};
+static_assert(std::size(kRfcHuffmanCodes) == 257U);
+
+// RFC 7541 Appendix A, generated from the text of the RFC.
+constexpr http::HeaderView kRfcStaticTable[]{
+    {":authority", ""},
+    {":method", "GET"},
+    {":method", "POST"},
+    {":path", "/"},
+    {":path", "/index.html"},
+    {":scheme", "http"},
+    {":scheme", "https"},
+    {":status", "200"},
+    {":status", "204"},
+    {":status", "206"},
+    {":status", "304"},
+    {":status", "400"},
+    {":status", "404"},
+    {":status", "500"},
+    {"accept-charset", ""},
+    {"accept-encoding", "gzip, deflate"},
+    {"accept-language", ""},
+    {"accept-ranges", ""},
+    {"accept", ""},
+    {"access-control-allow-origin", ""},
+    {"age", ""},
+    {"allow", ""},
+    {"authorization", ""},
+    {"cache-control", ""},
+    {"content-disposition", ""},
+    {"content-encoding", ""},
+    {"content-language", ""},
+    {"content-length", ""},
+    {"content-location", ""},
+    {"content-range", ""},
+    {"content-type", ""},
+    {"cookie", ""},
+    {"date", ""},
+    {"etag", ""},
+    {"expect", ""},
+    {"expires", ""},
+    {"from", ""},
+    {"host", ""},
+    {"if-match", ""},
+    {"if-modified-since", ""},
+    {"if-none-match", ""},
+    {"if-range", ""},
+    {"if-unmodified-since", ""},
+    {"last-modified", ""},
+    {"link", ""},
+    {"location", ""},
+    {"max-forwards", ""},
+    {"proxy-authenticate", ""},
+    {"proxy-authorization", ""},
+    {"range", ""},
+    {"referer", ""},
+    {"refresh", ""},
+    {"retry-after", ""},
+    {"server", ""},
+    {"set-cookie", ""},
+    {"strict-transport-security", ""},
+    {"transfer-encoding", ""},
+    {"user-agent", ""},
+    {"vary", ""},
+    {"via", ""},
+    {"www-authenticate", ""},
+};
+static_assert(std::size(kRfcStaticTable) == 61U);
+
+// A field decoded by the model, with the representation it came in.
+struct ModelField {
+  enum class Representation : uint8_t { Indexed, WithIndexing, WithoutIndexing, NeverIndexed };
+
+  std::string name;
+  std::string value;
+  Representation representation;
+  uint64_t nameIndex;  // 0 for a literal name
+};
+
+// An HPACK decoder following the text of RFC 7541 and sharing nothing with the library: Huffman strings decoded bit
+// by bit from the table of the RFC, the dynamic table as a deque of strings, no HTTP validation. It also checks what
+// §4.2 requires from an encoder when the maximum size of the table changes between two blocks.
+class ModelHpackDecoder {
+ public:
+  explicit ModelHpackDecoder(std::size_t maxTableSize) : _maxTableSize(maxTableSize), _limit(maxTableSize) {
+    // The code as a binary tree: a node per prefix of a code, the symbol at its leaf.
+    _nodes.emplace_back();
+    for (std::size_t symbol = 0; symbol < std::size(kRfcHuffmanCodes); ++symbol) {
+      uint32_t node = 0;
+      for (uint32_t bit = kRfcHuffmanCodes[symbol].nbBits; bit != 0; --bit) {
+        const std::size_t side = (kRfcHuffmanCodes[symbol].code >> (bit - 1U)) & 1U;
+        if (_nodes[node].next[side] == 0) {
+          _nodes[node].next[side] = static_cast<uint32_t>(_nodes.size());
+          _nodes.emplace_back();
+        }
+        node = _nodes[node].next[side];
+      }
+      _nodes[node].symbol = static_cast<int32_t>(symbol);
+    }
+  }
+
+  // A new SETTINGS_HEADER_TABLE_SIZE was acknowledged.
+  void setLimit(std::size_t limit) {
+    _limit = limit;
+    _smallestLimit = std::min(_smallestLimit, limit);
+  }
+
+  // Decode a block. Returns false on a decoding error, or if the encoder did not signal a reduced table size.
+  [[nodiscard]] bool decode(std::span<const std::byte> block, vector<ModelField>& fields) {
+    _data = block;
+    _pos = 0;
+    fields.clear();
+    bool fieldSeen = false;
+    std::size_t smallestUpdate = std::numeric_limits<std::size_t>::max();
+    while (_pos < _data.size()) {
+      const uint8_t firstByte = byteAt(_pos);
+      if ((firstByte & 0xE0U) == 0x20U) {
+        uint64_t size;
+        if (fieldSeen || !readInteger(5, size) || size > _limit) {
+          return false;
+        }
+        smallestUpdate = std::min(smallestUpdate, static_cast<std::size_t>(size));
+        _maxTableSize = static_cast<std::size_t>(size);
+        evict(0);
+        continue;
+      }
+      if (!fieldSeen) {
+        fieldSeen = true;
+        // §4.2: a table size reduced since the last block must have been signaled by now, with its smallest value.
+        if (_smallestLimit < _maxTableSizeAtLastBlock && smallestUpdate > _smallestLimit) {
+          return false;
+        }
+        if (_maxTableSize > _limit) {
+          return false;
+        }
+      }
+      ModelField field;
+      if ((firstByte & 0x80U) != 0) {
+        uint64_t index;
+        if (!readInteger(7, index) || index == 0 || !lookup(index, field.name, &field.value)) {
+          return false;
+        }
+        field.representation = ModelField::Representation::Indexed;
+        field.nameIndex = index;
+      } else {
+        const bool withIndexing = (firstByte & 0xC0U) == 0x40U;
+        if (withIndexing) {
+          field.representation = ModelField::Representation::WithIndexing;
+        } else if ((firstByte & 0xF0U) == 0x10U) {
+          field.representation = ModelField::Representation::NeverIndexed;
+        } else {
+          field.representation = ModelField::Representation::WithoutIndexing;
+        }
+        if (!readInteger(withIndexing ? 6 : 4, field.nameIndex)) {
+          return false;
+        }
+        if (field.nameIndex == 0 ? !readString(field.name) : !lookup(field.nameIndex, field.name, nullptr)) {
+          return false;
+        }
+        if (!readString(field.value)) {
+          return false;
+        }
+        if (withIndexing) {
+          // §4.4: evict until the entry fits, an entry larger than the table emptying it.
+          const std::size_t entrySize = field.name.size() + field.value.size() + 32U;
+          evict(entrySize);
+          if (entrySize <= _maxTableSize) {
+            _entries.emplace_front(field.name, field.value);
+            _tableSize += entrySize;
+          }
+        }
+      }
+      fields.push_back(std::move(field));
+    }
+    if (fieldSeen) {
+      _maxTableSizeAtLastBlock = _maxTableSize;
+      _smallestLimit = _limit;
+    }
+    return true;
+  }
+
+  [[nodiscard]] const std::deque<std::pair<std::string, std::string>>& entries() const noexcept { return _entries; }
+  [[nodiscard]] std::size_t tableSize() const noexcept { return _tableSize; }
+  [[nodiscard]] std::size_t maxTableSize() const noexcept { return _maxTableSize; }
+
+ private:
+  struct HuffmanNode {
+    uint32_t next[2]{};  // 0 (the root, never a child): no code with this prefix
+    int32_t symbol{-1};
+  };
+
+  [[nodiscard]] uint8_t byteAt(std::size_t pos) const { return static_cast<uint8_t>(_data[pos]); }
+
+  // §5.1, with the pseudocode of the RFC.
+  bool readInteger(uint32_t prefixBits, uint64_t& value) {
+    const uint64_t prefixMax = (uint64_t{1} << prefixBits) - 1U;
+    value = byteAt(_pos++) & prefixMax;
+    if (value < prefixMax) {
+      return true;
+    }
+    for (uint32_t shift = 0; shift < 56U; shift += 7U) {
+      if (_pos == _data.size()) {
+        return false;
+      }
+      const uint8_t byte = byteAt(_pos++);
+      value += static_cast<uint64_t>(byte & 0x7FU) << shift;
+      if ((byte & 0x80U) == 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // §5.2.
+  bool readString(std::string& str) {
+    if (_pos == _data.size()) {
+      return false;
+    }
+    const bool huffman = (byteAt(_pos) & 0x80U) != 0;
+    uint64_t length;
+    if (!readInteger(7, length) || length > _data.size() - _pos) {
+      return false;
+    }
+    const std::size_t end = _pos + static_cast<std::size_t>(length);
+    if (!huffman) {
+      str.assign(reinterpret_cast<const char*>(_data.data()) + _pos, static_cast<std::size_t>(length));
+      _pos = end;
+      return true;
+    }
+    uint32_t node = 0;
+    uint32_t nbBits = 0;  // of the symbol being read
+    bool onlyOnes = true;
+    for (; _pos < end; ++_pos) {
+      for (uint32_t bit = 8; bit != 0; --bit) {
+        const std::size_t side = (byteAt(_pos) >> (bit - 1U)) & 1U;
+        node = _nodes[node].next[side];
+        if (node == 0) {
+          return false;  // not a code
+        }
+        ++nbBits;
+        onlyOnes = onlyOnes && side == 1U;
+        if (_nodes[node].symbol >= 0) {
+          if (_nodes[node].symbol == 256) {
+            return false;  // EOS in the string
+          }
+          str.push_back(static_cast<char>(_nodes[node].symbol));
+          node = 0;
+          nbBits = 0;
+          onlyOnes = true;
+        }
+      }
+    }
+    // A padding of less than 8 bits, the most significant bits of EOS (1s).
+    return nbBits < 8U && onlyOnes;
+  }
+
+  // §2.3.3.
+  bool lookup(uint64_t index, std::string& name, std::string* pValue) const {
+    if (index <= std::size(kRfcStaticTable)) {
+      name = kRfcStaticTable[index - 1U].name;
+      if (pValue != nullptr) {
+        *pValue = kRfcStaticTable[index - 1U].value;
+      }
+      return true;
+    }
+    index -= std::size(kRfcStaticTable) + 1U;
+    if (index >= _entries.size()) {
+      return false;
+    }
+    name = _entries[static_cast<std::size_t>(index)].first;
+    if (pValue != nullptr) {
+      *pValue = _entries[static_cast<std::size_t>(index)].second;
+    }
+    return true;
+  }
+
+  // §4.3, §4.4: evict the oldest entries until 'room' more bytes fit.
+  void evict(std::size_t room) {
+    while (!_entries.empty() && _tableSize + room > _maxTableSize) {
+      _tableSize -= _entries.back().first.size() + _entries.back().second.size() + 32U;
+      _entries.pop_back();
+    }
+  }
+
+  vector<HuffmanNode> _nodes;
+  std::deque<std::pair<std::string, std::string>> _entries;
+  std::span<const std::byte> _data;
+  std::size_t _pos{0};
+  std::size_t _tableSize{0};
+  std::size_t _maxTableSize;
+  std::size_t _maxTableSizeAtLastBlock{_maxTableSize};
+  std::size_t _limit;
+  std::size_t _smallestLimit{_limit};
+};
+
+void ExpectSameTable(const HpackDynamicTable& table, const ModelHpackDecoder& model) {
+  ASSERT_EQ(table.entryCount(), model.entries().size());
+  ASSERT_EQ(table.currentSizeBytes(), model.tableSize());
+  ASSERT_EQ(table.maxSizeBytes(), model.maxTableSize());
+  for (std::size_t idx = 0; idx < model.entries().size(); ++idx) {
+    ASSERT_EQ(table[static_cast<uint32_t>(idx)].name(), model.entries()[idx].first) << idx;
+    ASSERT_EQ(table[static_cast<uint32_t>(idx)].value(), model.entries()[idx].second) << idx;
+  }
+}
+
+}  // namespace
+
+// The model decodes the examples of the RFC: it is a decoder of its own.
+TEST(HpackAudit, ModelDecoderDecodesAppendixC) {
+  ModelHpackDecoder requests(4096);
+  vector<ModelField> fields;
+  const std::span<const http::HeaderView> kRequests[]{kRequest1, kRequest2, kRequest3};
+  for (std::size_t idx = 0; idx < std::size(kRequests); ++idx) {
+    const vector<uint8_t> block = FromHex(kRequestsWithHuffmanHex[idx]);
+    ASSERT_TRUE(requests.decode(AsBytes(block), fields));
+    ASSERT_EQ(fields.size(), kRequests[idx].size());
+    for (uint32_t fieldIdx = 0; fieldIdx < fields.size(); ++fieldIdx) {
+      EXPECT_EQ(fields[fieldIdx].name, kRequests[idx][fieldIdx].name);
+      EXPECT_EQ(fields[fieldIdx].value, kRequests[idx][fieldIdx].value);
+    }
+  }
+  EXPECT_EQ(requests.tableSize(), 164U);
+
+  ModelHpackDecoder responses(kResponseExamplesTableSize);
+  const std::span<const http::HeaderView> kResponses[]{kResponse1, kResponse2, kResponse3};
+  for (std::size_t idx = 0; idx < std::size(kResponses); ++idx) {
+    const vector<uint8_t> block = FromHex(kResponsesWithHuffmanHex[idx]);
+    ASSERT_TRUE(responses.decode(AsBytes(block), fields));
+    ASSERT_EQ(fields.size(), kResponses[idx].size());
+    for (uint32_t fieldIdx = 0; fieldIdx < fields.size(); ++fieldIdx) {
+      EXPECT_EQ(fields[fieldIdx].name, kResponses[idx][fieldIdx].name);
+      EXPECT_EQ(fields[fieldIdx].value, kResponses[idx][fieldIdx].value);
+    }
+  }
+  EXPECT_EQ(responses.tableSize(), 215U);
+  EXPECT_EQ(responses.entries().front().second, kExampleSetCookie);
+}
+
+// Random messages, with the indexing mode of each field as the connection chooses it or a random one, and table sizes
+// changing between the blocks (up to three times in a row): the model decodes each block to the encoded fields, and
+// the dynamic tables of the encoder, of the model and of the decoder of the library hold the same entries after each.
+TEST(HpackAudit, EncoderBlocksAreDecodedByTheModelUnderTableSizeChanges) {
+  static constexpr std::string_view kNames[]{
+      ":status",
+      ":path",
+      "accept",
+      "cache-control",
+      "content-type",
+      "content-length",
+      "cookie",
+      "etag",
+      "set-cookie",
+      "authorization",
+      "date",
+      "location",
+      "x-a",
+      "x-bb",
+      "x-ccc",
+      "y",
+      "last-modified",
+      "expires",
+      "user-agent",
+      "via",
+      "x-request-id",
+      "age",
+      "x-a-custom-name-longer-than-the-others",
+  };
+  static constexpr std::string_view kRepeatedValues[]{
+      "",
+      "0",
+      "200",
+      "text/html",
+      "max-age=3600",
+      "gzip, deflate",
+      "a value that repeats in most of the messages of a connection",
+  };
+  static constexpr uint32_t kTableSizes[]{0, 32, 33, 64, 100, 300, 1000, 4096, 9000, 30000};
+  using Mode = HpackEncoder::IndexingMode;
+
+  std::mt19937 rng(7541);  // NOLINT(bugprone-random-generator-seed)
+  const auto randomValue = [&rng]() {
+    std::string value;
+    switch (rng() % 8U) {
+      case 0:
+      case 1:
+      case 2:
+        value = kRepeatedValues[rng() % std::size(kRepeatedValues)];
+        break;
+      case 3:  // text, shorter with Huffman coding
+        value.resize(1U + (rng() % 60U));
+        std::ranges::generate(value, [&rng] { return static_cast<char>('a' + (rng() % 26U)); });
+        break;
+      case 4:  // any byte allowed in a value, longer with Huffman coding
+        value.resize(1U + (rng() % 40U));
+        std::ranges::generate(value, [&rng] {
+          char ch;
+          do {
+            ch = static_cast<char>(rng() % 256U);
+          } while (ch == '\0' || ch == '\r' || ch == '\n' || ch == ' ' || ch == '\t');
+          return ch;
+        });
+        break;
+      case 5:  // larger than the small tables
+        value.assign(200U + (rng() % 1000U), static_cast<char>('a' + (rng() % 26U)));
+        break;
+      default:
+        value = std::to_string(rng());
+        break;
+    }
+    return value;
+  };
+
+  uint32_t tableSize = 4096;
+  HpackEncoder encoder(tableSize);
+  ModelHpackDecoder model(tableSize);
+  HpackDecoder decoder(tableSize, std::numeric_limits<uint32_t>::max(), true, HpackDecoder::Messages::Responses);
+  vector<ModelField> decodedFields;
+  std::size_t nbEvictingBlocks = 0;
+  std::size_t nbSizeUpdates = 0;
+
+  for (int message = 0; message < 3000; ++message) {
+    if (rng() % 6U == 0) {
+      for (uint32_t nbChanges = 1U + (rng() % 3U); nbChanges != 0; --nbChanges) {
+        tableSize = kTableSizes[rng() % std::size(kTableSizes)];
+        encoder.setMaxDynamicTableSize(tableSize);
+        model.setLimit(tableSize);
+        decoder.setMaxDynamicTableSize(tableSize);
+      }
+    }
+
+    struct Field {
+      std::string_view name;
+      std::string value;
+      Mode mode;
+    };
+    vector<Field> fields;
+    RawBytes block;
+    for (const std::string_view name : kNames) {
+      if (rng() % 3U == 0) {
+        continue;
+      }
+      fields.push_back(Field{name, randomValue(), Mode::Indexed});
+      Field& field = fields.back();
+      field.mode = rng() % 4U == 0 ? static_cast<Mode>(rng() % 3U) : HpackEncoder::IndexingModeOf(name, field.value);
+      const std::size_t sizeBefore = block.size();
+      EXPECT_EQ(encoder.encode(block, field.name, field.value, field.mode), name.size() + field.value.size() + 32U);
+      nbSizeUpdates += fields.size() == 1U && (static_cast<uint8_t>(block[sizeBefore]) & 0xE0U) == 0x20U ? 1U : 0U;
+    }
+    const std::size_t entryCountBefore = model.entries().size();
+
+    ASSERT_TRUE(model.decode(block, decodedFields)) << message;
+    ASSERT_EQ(decodedFields.size(), fields.size()) << message;
+    for (uint32_t idx = 0; idx < fields.size(); ++idx) {
+      ASSERT_EQ(decodedFields[idx].name, fields[idx].name) << message;
+      ASSERT_EQ(decodedFields[idx].value, fields[idx].value) << message << " " << fields[idx].name;
+      // The representation follows the mode: only a field found whole in a table is an index.
+      const auto representation = decodedFields[idx].representation;
+      if (representation != ModelField::Representation::Indexed) {
+        ASSERT_EQ(static_cast<int>(representation), 1 + static_cast<int>(fields[idx].mode)) << fields[idx].name;
+      }
+    }
+    ASSERT_NO_FATAL_FAILURE(ExpectSameTable(encoder.dynamicTable(), model)) << message;
+    nbEvictingBlocks += model.entries().size() < entryCountBefore ? 1U : 0U;
+
+    // The decoder of the library reads the same fields, and keeps the same table.
+    const auto result = decoder.decode(block);
+    ASSERT_TRUE(result.isSuccess()) << message << " " << static_cast<int>(result.error);
+    ASSERT_EQ(result.decodedHeaders.headers.size() +
+                  static_cast<std::size_t>(std::popcount(result.decodedHeaders.pseudoHeadersMask)),
+              fields.size());
+    for (const Field& field : fields) {
+      if (field.name == ":status") {
+        ASSERT_EQ(result.decodedHeaders.pseudoHeader(PseudoHeader::Status), field.value);
+      } else if (field.name == ":path") {
+        ASSERT_EQ(result.decodedHeaders.pseudoHeader(PseudoHeader::Path), field.value);
+      } else {
+        ASSERT_EQ(result.decodedHeaders.headers.at(field.name), field.value) << field.name;
+      }
+    }
+    ASSERT_NO_FATAL_FAILURE(ExpectSameTable(decoder.dynamicTable(), model)) << message;
+  }
+  // The run went through evictions and size updates.
+  EXPECT_GT(nbEvictingBlocks, 100U);
+  EXPECT_GT(nbSizeUpdates, 50U);
+}
+
+// The indexing policy of docs/protocols/http2.md, seen by the model: credentials come as never-indexed literals and
+// the fields that change in each message as literals without indexing, both with the static index of their name, and
+// none of them enters the dynamic table. The other fields are indexed.
+TEST(HpackAudit, IndexingPolicyAsSeenByTheModel) {
+  using Representation = ModelField::Representation;
+  struct Case {
+    std::string_view name;
+    std::string_view value;
+    Representation expected;
+    uint64_t staticNameIndex;
+  };
+  static constexpr Case kCases[]{
+      {"authorization", "Bearer abcdefghijklmnopqrstuvwxyz0123456789", Representation::NeverIndexed, 23},
+      {"proxy-authorization", "Basic dXNlcjpwYXNzd29yZA==", Representation::NeverIndexed, 49},
+      {"cookie", "id=0123456789abcdef", Representation::NeverIndexed, 32},   // 19 bytes
+      {"cookie", "id=0123456789abcdefg", Representation::WithIndexing, 32},  // 20 bytes
+      {"content-length", "1234", Representation::WithoutIndexing, 28},
+      {"etag", "\"abc\"", Representation::WithoutIndexing, 34},
+      {"last-modified", "Mon, 21 Oct 2013 20:13:21 GMT", Representation::WithoutIndexing, 44},
+      {"location", "https://www.example.com", Representation::WithoutIndexing, 46},
+      {"set-cookie", "id=1; Secure", Representation::WithoutIndexing, 55},
+      {"age", "12", Representation::WithoutIndexing, 21},
+      {"if-modified-since", "Mon, 21 Oct 2013 20:13:21 GMT", Representation::WithoutIndexing, 40},
+      {"if-none-match", "\"abc\"", Representation::WithoutIndexing, 41},
+      {"content-type", "text/html", Representation::WithIndexing, 31},
+      {"date", "Mon, 21 Oct 2013 20:13:21 GMT", Representation::WithIndexing, 33},
+      {"x-custom", "value", Representation::WithIndexing, 0},
+  };
+
+  HpackEncoder encoder(4096);
+  ModelHpackDecoder model(4096);
+  vector<ModelField> fields;
+  // Three messages: the fields that are not indexed are sent the same way each time.
+  for (int message = 0; message < 3; ++message) {
+    RawBytes block;
+    for (const Case& testCase : kCases) {
+      encoder.encode(block, testCase.name, testCase.value, HpackEncoder::IndexingModeOf(testCase.name, testCase.value));
+    }
+    ASSERT_TRUE(model.decode(block, fields));
+    ASSERT_EQ(fields.size(), std::size(kCases));
+    for (uint32_t idx = 0; idx < std::size(kCases); ++idx) {
+      const Case& testCase = kCases[idx];
+      EXPECT_EQ(fields[idx].name, testCase.name);
+      EXPECT_EQ(fields[idx].value, testCase.value);
+      const bool indexedOnce = testCase.expected == Representation::WithIndexing;
+      EXPECT_EQ(fields[idx].representation, indexedOnce && message != 0 ? Representation::Indexed : testCase.expected)
+          << testCase.name << " " << message;
+      if (!indexedOnce) {
+        EXPECT_EQ(fields[idx].nameIndex, testCase.staticNameIndex) << testCase.name;
+      }
+    }
+    // The four indexed fields only.
+    ASSERT_EQ(model.entries().size(), 4U);
+    for (const auto& [name, value] : model.entries()) {
+      EXPECT_TRUE(name == "cookie" || name == "content-type" || name == "date" || name == "x-custom") << name;
+    }
+    ASSERT_NO_FATAL_FAILURE(ExpectSameTable(encoder.dynamicTable(), model));
   }
 }
 
