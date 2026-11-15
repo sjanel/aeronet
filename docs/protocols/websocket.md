@@ -2,7 +2,7 @@
 
 aeronet implements the WebSocket protocol ([RFC 6455](https://www.rfc-editor.org/rfc/rfc6455)) on top of its HTTP/1.1 server: a route accepts the `Upgrade: websocket` handshake, then the connection carries full-duplex text and binary messages, ping/pong heartbeats, and a close handshake. The optional `permessage-deflate` extension ([RFC 7692](https://www.rfc-editor.org/rfc/rfc7692)) compresses messages.
 
-WebSocket support is enabled by the `AERONET_ENABLE_WEBSOCKET` CMake option, which defaults to `ON` whenever the server is built. Compression additionally requires zlib (`AERONET_ENABLE_ZLIB`).
+WebSocket support is enabled by the `AERONET_ENABLE_WEBSOCKET` CMake option, which defaults to `ON` whenever the server is built. Compression additionally requires zlib (`AERONET_ENABLE_ZLIB`): without it, the compression API is not compiled (see [Compression](#compression-permessage-deflate)).
 
 ## A first endpoint
 
@@ -141,7 +141,7 @@ router.setWebSocket("/ws", WebSocketEndpoint::WithCallbacks(websocket::WebSocket
 | `idleTimeout` | 60 s | A connection on which nothing was received for this long is closed. `0` disables it. See [Idle connections](#idle-connections). |
 | `autoPing` | `true` | Send a Ping after half of `idleTimeout` without received data, so that live peers are never closed. |
 | `closeTimeout` | 5 s | Time to wait for the peer's Close frame after sending one, before closing the connection. See [Closing connections](#closing-connections). |
-| `deflateConfig` | see below | `permessage-deflate` settings. |
+| `deflateConfig` | see below | `permessage-deflate` settings, with zlib only. |
 
 ```cpp
 #include <chrono>
@@ -172,7 +172,7 @@ router.setWebSocket("/feed", WebSocketEndpoint::WithConfigAndCallbacks(config, w
 
 | `DeflateConfig` field | Default | Meaning |
 | --- | --- | --- |
-| `enabled` | `true` with zlib | Negotiate the extension when the client offers it. |
+| `enabled` | `true` | Negotiate the extension when the client offers it. |
 | `compressionLevel` | 6 | zlib level, 0 to 9. |
 | `serverMaxWindowBits` | 15 | LZ77 window of the server's compressor, 8 to 15 (2^N bytes). |
 | `clientMaxWindowBits` | 15 | LZ77 window of the client's compressor, 8 to 15. Only applied to clients offering `client_max_window_bits`. |
@@ -187,6 +187,8 @@ A direction negotiated with context takeover (the default) continues the same DE
 A peer may end a message with a final DEFLATE block (RFC 7692 §7.2.3.4), which ends its DEFLATE stream: the server then starts a new one for the next message, keeping the sliding window with context takeover so that this message can still refer to the previous ones. Data after the final block fails the connection with `InvalidPayloadData` (1007), like any message that fails to decompress, and so does truncated data: with the 4 trailing bytes appended, the data of a message must end on a block boundary (RFC 7692 §7.2.2), and a message cut in the middle of a block is rejected instead of being delivered in part. An empty payload with RSV1 is an empty message, which zlib otherwise compresses to the byte `0x00`. RSV1, which marks a compressed message, is only allowed on its first fragment: set on a continuation frame, it fails the connection with `ProtocolError` (1002), as on a control frame (RFC 7692 §6.1).
 
 When a factory returns a handler without compression and the client negotiated it, the server enables it on that handler (`WebSocketHandler::enableCompression()`), keeps its callbacks, and gives it the streams shared by its server thread.
+
+Compression requires `AERONET_ENABLE_ZLIB`. Without it, `WebSocketConfig::deflateConfig`, `DeflateConfig`, `SharedDeflateStreams`, `WebSocketHandler::enableCompression()`, `hasCompression()` and the `DeflateNegotiatedParams` argument of its constructor are not declared, each connection is 40 bytes smaller, and the server ignores the `permessage-deflate` offers of the clients: the handshake succeeds without the extension, and the messages are exchanged uncompressed ([DeflateOfferIsIgnoredWithoutZlib](../../tests/websocket-integration_test.cpp)). A frame with RSV1 then fails the connection with `ProtocolError` (1002).
 
 ## Closing connections
 
@@ -236,7 +238,7 @@ The timeouts are checked by the server's maintenance timer, so they are accurate
 
 ## Tests
 
-- Handshake (ignored in HTTP/1.0: `UpgradeIgnoredInHttp10`, `Upgrade` listing other protocols: `UpgradeListingOtherProtocols`), `426` to a `GET` without upgrade (`GetWithoutUpgradeIsAnsweredUpgradeRequired`, and `404` over HTTP/2: `WebSocketEndpointWithoutUpgrade` in [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp)), middleware, origin checks, factory refusal, messaging, large echoes (also when the client does not read), compression interoperability and connections sharing the streams of a server thread, close handshake, idle and close timeouts, and drains (`WebSocketDrain`) against a real socket: [tests/websocket-integration_test.cpp](../../tests/websocket-integration_test.cpp).
+- Handshake (ignored in HTTP/1.0: `UpgradeIgnoredInHttp10`, `Upgrade` listing other protocols: `UpgradeListingOtherProtocols`), `426` to a `GET` without upgrade (`GetWithoutUpgradeIsAnsweredUpgradeRequired`, and `404` over HTTP/2: `WebSocketEndpointWithoutUpgrade` in [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp)), middleware, origin checks, factory refusal, messaging, large echoes (also when the client does not read), compression interoperability and connections sharing the streams of a server thread, offers ignored without zlib (`DeflateOfferIsIgnoredWithoutZlib`), close handshake, idle and close timeouts, and drains (`WebSocketDrain`) against a real socket: [tests/websocket-integration_test.cpp](../../tests/websocket-integration_test.cpp).
 - Frame parsing, masking, SIMD unmasking and masked copies of every size, Close frame payloads (codes that may be sent, reasons truncated on a code point boundary): [websocket-frame_test.cpp](../../aeronet/websocket/test/websocket-frame_test.cpp).
 - Message reassembly, control frames, close handshake, validation of received Close frames (`WebSocketReceivedCloseTest`, `WebSocketInvalidCloseCodeTest`, `WebSocketValidCloseCodeTest`), split frames, payloads sent from the input or the compression buffer (`WebSocketInputPayloadTest`), masked messages and fragments of every size (`WebSocketMaskedPayloadTest`), UTF-8 validated fragment by fragment (`InvalidUtf8FailsWithItsFragment`, `CodePointsSplitBetweenFragments`), compressed messages beyond `maxMessageSize` (`CompressedMessageDecompressingBeyondMaxMessageSize`), timeout computation, the Going Away of a drain, and client masking keys (`ClientMaskingKeysAreRandom`): [websocket-handler_test.cpp](../../aeronet/websocket/test/websocket-handler_test.cpp).
 - UTF-8 validation by each kernel (scalar, SSSE3, AVX2, NEON) and its variant unmasking the data in the same pass, against a reference validator, for every byte pair and every sample at every block offset, and the validation of fragments ending in the middle of a code point (`WebSocketUtf8Prefix`): [websocket-utf8_test.cpp](../../aeronet/websocket/test/websocket-utf8_test.cpp).

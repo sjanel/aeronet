@@ -3,26 +3,22 @@
 #include <gtest/gtest.h>
 
 #include <cctype>
-#include <cstring>
-#include <stdexcept>
-#include <string_view>
-
-#include "aeronet/ndigits.hpp"
-#include "aeronet/raw-chars.hpp"
-
-#ifdef AERONET_ENABLE_ZLIB
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <span>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "aeronet/compression-test-helpers.hpp"
+#include "aeronet/ndigits.hpp"
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/websocket-deflate-context.hpp"
-#endif
 
 namespace aeronet::websocket {
 namespace {
@@ -36,19 +32,17 @@ RawChars BuildDeflateResponse(const DeflateNegotiatedParams& params) {
   return response;
 }
 
-#ifdef AERONET_ENABLE_ZLIB
 std::span<const std::byte> sv_bytes(std::string_view sv) noexcept {
   return std::as_bytes(std::span<const char>(sv.data(), sv.size()));
 }
 
 std::span<const std::byte> buf_bytes(const RawBytes& buf) noexcept { return {buf.data(), buf.size()}; }
-#endif
+
 }  // namespace
 
 TEST(WebSocketDeflateTest, DeflateConfigValidation) {
   DeflateConfig config;
 
-#ifdef AERONET_ENABLE_ZLIB
   // By default, config should be valid
   EXPECT_TRUE(config.enabled);
   EXPECT_NO_THROW(config.validate());
@@ -82,13 +76,6 @@ TEST(WebSocketDeflateTest, DeflateConfigValidation) {
   EXPECT_THROW(config.validate(), std::invalid_argument);
   config.minCompressSize = 512UL;
   EXPECT_NO_THROW(config.validate());
-#else
-  EXPECT_FALSE(config.enabled);
-  // If zlib is not enabled, validation should not throw regardless of config values
-  EXPECT_NO_THROW(config.validate());
-  config.enabled = true;
-  EXPECT_THROW(config.validate(), std::invalid_argument);
-#endif
 }
 
 // ============================================================================
@@ -99,60 +86,43 @@ TEST(WebSocketDeflateTest, ParseDeflateOffer_Basic) {
   DeflateConfig serverConfig;
   auto result = ParseDeflateOffer("permessage-deflate", serverConfig);
 
-#ifdef AERONET_ENABLE_ZLIB
   ASSERT_TRUE(result.hasValue());
   EXPECT_EQ(result.serverMaxWindowBits, 15);
   EXPECT_EQ(result.clientMaxWindowBits, 15);
   EXPECT_FALSE(result.serverNoContextTakeover);
   EXPECT_FALSE(result.clientNoContextTakeover);
-#else
-  EXPECT_FALSE(result.hasValue());
-#endif
 }
 
 TEST(WebSocketDeflateTest, ParseDeflateOffer_ServerNoContextTakeover) {
   DeflateConfig serverConfig;
   auto result = ParseDeflateOffer("permessage-deflate; server_no_context_takeover", serverConfig);
 
-#ifdef AERONET_ENABLE_ZLIB
   ASSERT_TRUE(result.hasValue());
   EXPECT_TRUE(result.serverNoContextTakeover);
   EXPECT_FALSE(result.clientNoContextTakeover);
-#else
-  EXPECT_FALSE(result.hasValue());
-#endif
 }
 
 TEST(WebSocketDeflateTest, ParseDeflateOffer_ClientNoContextTakeover) {
   DeflateConfig serverConfig;
   auto result = ParseDeflateOffer("permessage-deflate; client_no_context_takeover", serverConfig);
 
-#ifdef AERONET_ENABLE_ZLIB
   ASSERT_TRUE(result.hasValue());
   EXPECT_FALSE(result.serverNoContextTakeover);
   EXPECT_TRUE(result.clientNoContextTakeover);
-#else
-  EXPECT_FALSE(result.hasValue());
-#endif
 }
 
 TEST(WebSocketDeflateTest, ParseDeflateOffer_ServerMaxWindowBits) {
   DeflateConfig serverConfig;
   auto result = ParseDeflateOffer("permessage-deflate; server_max_window_bits=10", serverConfig);
 
-#ifdef AERONET_ENABLE_ZLIB
   ASSERT_TRUE(result.hasValue());
   EXPECT_EQ(result.serverMaxWindowBits, 10);
-#else
-  EXPECT_FALSE(result.hasValue());
-#endif
 }
 
 // The server compresses with 9 bits when asked for 8, which zlib does not support (see CompressDecompress_WindowBits8).
 TEST(WebSocketDeflateTest, ParseDeflateOffer_WindowBits8IsAccepted) {
   DeflateConfig serverConfig;
   auto result = ParseDeflateOffer("permessage-deflate; server_max_window_bits=8", serverConfig);
-#ifdef AERONET_ENABLE_ZLIB
   ASSERT_TRUE(result.hasValue());
   const auto params = result;
   EXPECT_EQ(params.serverMaxWindowBits, 8);
@@ -163,21 +133,14 @@ TEST(WebSocketDeflateTest, ParseDeflateOffer_WindowBits8IsAccepted) {
 
                 .clientMaxWindowBits,
             8);
-#else
-  EXPECT_FALSE(result.hasValue());
-#endif
 }
 
 TEST(WebSocketDeflateTest, ParseDeflateOffer_ClientMaxWindowBits) {
   DeflateConfig serverConfig;
   auto result = ParseDeflateOffer("permessage-deflate; client_max_window_bits=12", serverConfig);
 
-#ifdef AERONET_ENABLE_ZLIB
   ASSERT_TRUE(result.hasValue());
   EXPECT_EQ(result.clientMaxWindowBits, 12);
-#else
-  EXPECT_FALSE(result.hasValue());
-#endif
 }
 
 TEST(WebSocketDeflateTest, ParseDeflateOffer_ClientMaxWindowBitsInvalid) {
@@ -230,15 +193,11 @@ TEST(WebSocketDeflateTest, ParseDeflateOffer_AllParameters) {
       "client_max_window_bits=10",
       serverConfig);
 
-#ifdef AERONET_ENABLE_ZLIB
   ASSERT_TRUE(result.hasValue());
   EXPECT_TRUE(result.serverNoContextTakeover);
   EXPECT_TRUE(result.clientNoContextTakeover);
   EXPECT_EQ(result.serverMaxWindowBits, 9);
   EXPECT_EQ(result.clientMaxWindowBits, 10);
-#else
-  EXPECT_FALSE(result.hasValue());
-#endif
 }
 
 TEST(WebSocketDeflateTest, ParseDeflateOffer_ClientMaxWindowBitsNoValue) {
@@ -246,13 +205,9 @@ TEST(WebSocketDeflateTest, ParseDeflateOffer_ClientMaxWindowBitsNoValue) {
   DeflateConfig serverConfig;
   auto result = ParseDeflateOffer("permessage-deflate; client_max_window_bits", serverConfig);
 
-#ifdef AERONET_ENABLE_ZLIB
   ASSERT_TRUE(result.hasValue());
   // Server can set the value, defaults to server's configured max
   EXPECT_EQ(result.clientMaxWindowBits, 15);
-#else
-  EXPECT_FALSE(result.hasValue());
-#endif
 }
 
 TEST(WebSocketDeflateTest, ParseDeflateOffer_ServerMaxWindowBitsNoValue) {
@@ -266,12 +221,8 @@ TEST(WebSocketDeflateTest, ParseDeflateOffer_QuotedValue) {
   DeflateConfig serverConfig;
   auto result = ParseDeflateOffer("permessage-deflate; server_max_window_bits=\"10\"", serverConfig);
 
-#ifdef AERONET_ENABLE_ZLIB
   ASSERT_TRUE(result.hasValue());
   EXPECT_EQ(result.serverMaxWindowBits, 10);
-#else
-  EXPECT_FALSE(result.hasValue());
-#endif
 }
 
 TEST(WebSocketDeflateTest, ParseDeflateOffer_QuotedValueMissingEndQuote) {
@@ -316,15 +267,11 @@ TEST(WebSocketDeflateTest, ParseDeflateOffer_EveryParameterOnce) {
       "permessage-deflate; server_no_context_takeover; client_no_context_takeover; server_max_window_bits=10; "
       "client_max_window_bits=9",
       serverConfig);
-#ifdef AERONET_ENABLE_ZLIB
   ASSERT_TRUE(result.hasValue());
   EXPECT_TRUE(result.serverNoContextTakeover);
   EXPECT_TRUE(result.clientNoContextTakeover);
   EXPECT_EQ(result.serverMaxWindowBits, 10);
   EXPECT_EQ(result.clientMaxWindowBits, 9);
-#else
-  EXPECT_FALSE(result.hasValue());
-#endif
 }
 
 TEST(WebSocketDeflateTest, ParseDeflateOffer_WindowBitsClampedToServerConfig) {
@@ -332,24 +279,16 @@ TEST(WebSocketDeflateTest, ParseDeflateOffer_WindowBitsClampedToServerConfig) {
   serverConfig.serverMaxWindowBits = 10;  // Server only supports up to 10
   auto result = ParseDeflateOffer("permessage-deflate; server_max_window_bits=15", serverConfig);
 
-#ifdef AERONET_ENABLE_ZLIB
   ASSERT_TRUE(result.hasValue());
   // Client requested 15 but server only supports 10, so clamped to 10
   EXPECT_EQ(result.serverMaxWindowBits, 10);
-#else
-  EXPECT_FALSE(result.hasValue());
-#endif
 }
 
 TEST(WebSocketDeflateTest, ParseDeflateOffer_WhitespaceInParams) {
   DeflateConfig serverConfig;
   auto result = ParseDeflateOffer("permessage-deflate ;  server_max_window_bits = 10 ", serverConfig);
 
-#ifdef AERONET_ENABLE_ZLIB
   EXPECT_EQ(result.serverMaxWindowBits, 10);
-#else
-  EXPECT_FALSE(result.hasValue());
-#endif
 }
 
 TEST(WebSocketDeflateTest, ParseDeflateOffer_MaxWindowBitsNoEqualsSignDeclined) {
@@ -378,22 +317,14 @@ TEST(WebSocketDeflateTest, ParseDeflateOffer_CaseInsensitiveExtensionName) {
   DeflateConfig serverConfig;
   auto result = ParseDeflateOffer("PERMESSAGE-DEFLATE", serverConfig);
 
-#ifdef AERONET_ENABLE_ZLIB
   ASSERT_TRUE(result.hasValue());
-#else
-  EXPECT_FALSE(result.hasValue());
-#endif
 }
 
 TEST(WebSocketDeflateTest, ParseDeflateOffer_CaseInsensitiveParams) {
   DeflateConfig serverConfig;
   auto result = ParseDeflateOffer("permessage-deflate; SERVER_NO_CONTEXT_TAKEOVER", serverConfig);
 
-#ifdef AERONET_ENABLE_ZLIB
   EXPECT_TRUE(result.serverNoContextTakeover);
-#else
-  EXPECT_FALSE(result.hasValue());
-#endif
 }
 
 // ============================================================================
@@ -486,18 +417,13 @@ TEST(WebSocketDeflateTest, ParseDeflateOffer_ClientWindowIsOnlyLimitedWhenOffere
   // 7692 section 7.1.2.2).
   for (std::string_view offer : {"permessage-deflate", "permessage-deflate; server_no_context_takeover"}) {
     auto result = ParseDeflateOffer(offer, serverConfig);
-#ifdef AERONET_ENABLE_ZLIB
     ASSERT_TRUE(result.hasValue()) << offer;
     const auto params = result;
     EXPECT_EQ(params.clientMaxWindowBits, 15) << offer;
     const RawChars response = BuildDeflateResponse(params);
     EXPECT_FALSE(std::string_view(response.data(), response.size()).contains("client_max_window_bits")) << offer;
-#else
-    EXPECT_FALSE(result.hasValue());
-#endif
   }
 
-#ifdef AERONET_ENABLE_ZLIB
   // Offered: limited to the configured window, or to the offered one if smaller.
   EXPECT_EQ(ParseDeflateOffer("permessage-deflate; client_max_window_bits", serverConfig)
 
@@ -511,14 +437,12 @@ TEST(WebSocketDeflateTest, ParseDeflateOffer_ClientWindowIsOnlyLimitedWhenOffere
 
                 .clientMaxWindowBits,
             9);
-#endif
 }
 
 // ============================================================================
 // DeflateContext compress/decompress tests
 // ============================================================================
 
-#ifdef AERONET_ENABLE_ZLIB
 TEST(WebSocketDeflateTest, CompressDecompress_RoundTrip) {
   DeflateNegotiatedParams params;
   DeflateConfig config;
@@ -988,7 +912,5 @@ TEST(WebSocketSharedDeflateStreamsTest, StreamsStayValidWhenMoved) {
   EXPECT_EQ(RoundTrip(assignedServer, client, message), message);
   EXPECT_EQ(RoundTrip(client, assignedServer, message), message);
 }
-
-#endif  // AERONET_ENABLE_ZLIB
 
 }  // namespace aeronet::websocket

@@ -12,16 +12,20 @@
 #include "aeronet/http-header-value-reverse-tokens-iterator.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
-#include "aeronet/ndigits.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
+#include "aeronet/websocket-config.hpp"
 #include "aeronet/websocket-constants.hpp"
-#include "aeronet/websocket-deflate.hpp"
 #include "aeronet/websocket-endpoint.hpp"
 #include "aeronet/websocket-handler.hpp"
 #include "aeronet/websocket-upgrade.hpp"
+
+#ifdef AERONET_ENABLE_ZLIB
+#include "aeronet/ndigits.hpp"
+#include "aeronet/websocket-deflate.hpp"
+#endif
 
 namespace aeronet {
 
@@ -123,12 +127,12 @@ UpgradeValidationResult ValidateWebSocketUpgrade(const SvToSvMap& headers, const
     result.selectedProtocol = NegotiateSubprotocol(it->second, config.supportedProtocols);
   }
 
+#ifdef AERONET_ENABLE_ZLIB
   // Parse Sec-WebSocket-Extensions and negotiate permessage-deflate
   it = headers.find(websocket::SecWebSocketExtensions);
   if (it != headers.end() && !it->second.empty()) {
     // Negotiate permessage-deflate if compression is enabled
     if (config.deflateConfig.enabled) {
-#ifdef AERONET_ENABLE_ZLIB
       // The first acceptable offer, in the client's order of preference (RFC 7692 §5): read from the end of the list,
       // it is the last one found (a client sends a few offers at most).
       for (http::HeaderValueReverseTokensIterator offers(it->second); offers.hasNext();) {
@@ -138,13 +142,9 @@ UpgradeValidationResult ValidateWebSocketUpgrade(const SvToSvMap& headers, const
           result.deflateParams = params;
         }
       }
-#else
-      // Zlib support not compiled in; cannot negotiate compression
-      result.pErrorMessage = "permessage-deflate requested but zlib support is not enabled";
-      return result;
-#endif
     }
   }
+#endif
 
   result.targetProtocol = ProtocolType::WebSocket;
   return result;
@@ -207,17 +207,16 @@ std::size_t ComputeWebSocketUpgradeResponseSize(const UpgradeValidationResult& v
   if (!validationResult.selectedProtocol.empty()) {
     responseSz += http::HeaderSize(websocket::SecWebSocketProtocol.size(), validationResult.selectedProtocol.size());
   }
+#ifdef AERONET_ENABLE_ZLIB
   if (validationResult.deflateParams.hasValue()) {
     const auto& params = validationResult.deflateParams;
     const auto valueSize =
         ComputeDeflateResponseSize(params, ndigits(params.serverMaxWindowBits), ndigits(params.clientMaxWindowBits));
 
-    responseSz +=
-        websocket::SecWebSocketExtensions.size() + http::HeaderSep.size() + valueSize + http::DoubleCRLF.size();
-  } else {
-    responseSz += http::CRLF.size();
+    responseSz += websocket::SecWebSocketExtensions.size() + http::HeaderSep.size() + valueSize + http::CRLF.size();
   }
-  return responseSz;
+#endif
+  return responseSz + http::CRLF.size();
 }
 
 // Build raw HTTP response: "HTTP/1.1 101 Switching Protocols\r\n" + headers + "\r\n"
@@ -236,26 +235,32 @@ void BuildWebSocketUpgradeResponse(const UpgradeValidationResult& validationResu
     pData = WriteHeaderCRLF(websocket::SecWebSocketProtocol, validationResult.selectedProtocol, pData);
   }
 
+#ifdef AERONET_ENABLE_ZLIB
   // Include negotiated extensions
   if (validationResult.deflateParams.hasValue()) {
-    const auto& params = validationResult.deflateParams;
-
     pData = AppendFixed<websocket::SecWebSocketExtensions>(pData);
     pData = AppendFixed<http::HeaderSep>(pData);
-
-    pData = websocket::BuildDeflateResponse(params, pData);
-
-    CopyFixed<http::DoubleCRLF>(pData);
-  } else {
-    CopyFixed<http::CRLF>(pData);
+    pData = websocket::BuildDeflateResponse(validationResult.deflateParams, pData);
+    pData = AppendFixed<http::CRLF>(pData);
   }
+#endif
+
+  CopyFixed<http::CRLF>(pData);
 }
 
 WebSocketAcceptResult AcceptWebSocketUpgrade(const HttpRequestView& request, const SvToSvMap& requestHeaders,
-                                             const WebSocketEndpoint& endpoint,
-                                             websocket::SharedDeflateStreams& sharedStreams) {
+                                             const WebSocketEndpoint& endpoint
+#ifdef AERONET_ENABLE_ZLIB
+                                             ,
+                                             websocket::SharedDeflateStreams& sharedStreams
+#endif
+) {
   WebSocketAcceptResult result;
+#ifdef AERONET_ENABLE_ZLIB
   const WebSocketUpgradeConfig upgradeConfig{endpoint.supportedProtocols, endpoint.config.deflateConfig};
+#else
+  const WebSocketUpgradeConfig upgradeConfig{endpoint.supportedProtocols};
+#endif
   const UpgradeValidationResult validation = ValidateWebSocketUpgrade(requestHeaders, upgradeConfig);
   if (!validation.valid()) {
     result.pErrorMessage = validation.pErrorMessage;
@@ -281,14 +286,16 @@ WebSocketAcceptResult AcceptWebSocketUpgrade(const HttpRequestView& request, con
       return result;
     }
   } else {
-    auto config = endpoint.config;
+    websocket::WebSocketConfig config = endpoint.config;
     config.isServerSide = true;
     result.handler = std::make_unique<websocket::WebSocketHandler>(std::move(config));
   }
+#ifdef AERONET_ENABLE_ZLIB
   if (!result.handler->hasCompression() && validation.deflateParams.hasValue()) {
     // Compression was negotiated but the handler (from the factory, which keeps its callbacks) was created without it.
     result.handler->enableCompression(validation.deflateParams, &sharedStreams);
   }
+#endif
 
   const std::size_t responseSize = ComputeWebSocketUpgradeResponseSize(validation);
   result.response.ensureAvailableCapacity(responseSize);

@@ -14,11 +14,7 @@ struct DeflateConfig {
 
   /// Whether to enable permessage-deflate compression (RFC 7692).
   /// If true and the client offers permessage-deflate, it will be negotiated.
-#ifdef AERONET_ENABLE_ZLIB
   bool enabled{true};
-#else
-  bool enabled{false};
-#endif
 
   /// Compression level (0 = no compression, 9 = best compression).
   /// Default is 6 (balanced speed/compression).

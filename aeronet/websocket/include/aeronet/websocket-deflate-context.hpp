@@ -6,11 +6,8 @@
 #include <span>
 
 #include "aeronet/raw-bytes.hpp"
-#include "aeronet/websocket-deflate.hpp"
-
-#ifdef AERONET_ENABLE_ZLIB
 #include "aeronet/websocket-compress.hpp"
-#endif
+#include "aeronet/websocket-deflate.hpp"
 
 namespace aeronet::websocket {
 
@@ -55,7 +52,6 @@ class DeflateContext {
   }
 
  private:
-#ifdef AERONET_ENABLE_ZLIB
   // Window bits and context takeover: own parameters when compressing, the peer's when decompressing.
   WebSocketCompressor _ownCompressor;
   WebSocketDecompressor _ownDecompressor;
@@ -63,7 +59,6 @@ class DeflateContext {
   WebSocketDecompressor* _decompressor;
   bool _deflateNoContextTakeover;
   bool _inflateNoContextTakeover;
-#endif
   uint32_t _minCompressSize{0};
 };
 

@@ -2,6 +2,7 @@ aux_source_directory(src AERONET_WEBSOCKET_SRC_LIST)
 
 if(NOT AERONET_ENABLE_ZLIB)
     list(REMOVE_ITEM AERONET_WEBSOCKET_SRC_LIST src/websocket-compress.cpp)
+    list(REMOVE_ITEM AERONET_WEBSOCKET_SRC_LIST src/websocket-deflate.cpp)
 endif()
 
 AeronetAddProjectLibrary(aeronet_websocket
@@ -56,6 +57,14 @@ if(AERONET_ENABLE_ZLIB)
         LIBRARIES
         aeronet_websocket
     )
+
+    AeronetAddUnitTest(
+        websocket-deflate_test
+        test/websocket-deflate_test.cpp
+        LIBRARIES
+        aeronet_websocket
+        aeronet_test_support
+    )
 endif()
 
 AeronetAddUnitTest(
@@ -63,14 +72,6 @@ AeronetAddUnitTest(
     test/websocket-config_test.cpp
     LIBRARIES
     aeronet_websocket
-)
-
-AeronetAddUnitTest(
-    websocket-deflate_test
-    test/websocket-deflate_test.cpp
-    LIBRARIES
-    aeronet_websocket
-    aeronet_test_support
 )
 
 AeronetAddUnitTest(

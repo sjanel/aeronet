@@ -8,8 +8,11 @@
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
-#include "aeronet/websocket-deflate.hpp"
 #include "aeronet/websocket-upgrade.hpp"
+
+#ifdef AERONET_ENABLE_ZLIB
+#include "aeronet/websocket-deflate.hpp"
+#endif
 
 namespace aeronet {
 
@@ -28,8 +31,10 @@ struct UpgradeValidationResult {
 
   B64EncodedSha1 secWebSocketAccept;  // Computed Sec-WebSocket-Accept value
 
+#ifdef AERONET_ENABLE_ZLIB
   // Negotiated WebSocket permessage-deflate parameters (if compression was negotiated)
   websocket::DeflateNegotiatedParams deflateParams;
+#endif
 
   // Set with pErrorMessage when Sec-WebSocket-Version is missing or not 13: the response announces the supported
   // version (RFC 6455 §4.4).
@@ -125,8 +130,12 @@ struct WebSocketAcceptResult {
 ///                       directions negotiated without context takeover. They must outlive the handler.
 [[nodiscard]] WebSocketAcceptResult AcceptWebSocketUpgrade(const HttpRequestView& request,
                                                            const SvToSvMap& requestHeaders,
-                                                           const WebSocketEndpoint& endpoint,
-                                                           websocket::SharedDeflateStreams& sharedStreams);
+                                                           const WebSocketEndpoint& endpoint
+#ifdef AERONET_ENABLE_ZLIB
+                                                           ,
+                                                           websocket::SharedDeflateStreams& sharedStreams
+#endif
+);
 
 }  // namespace upgrade
 

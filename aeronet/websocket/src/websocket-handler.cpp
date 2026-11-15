@@ -19,10 +19,13 @@
 #include "aeronet/vector.hpp"
 #include "aeronet/websocket-config.hpp"
 #include "aeronet/websocket-constants.hpp"
-#include "aeronet/websocket-deflate-context.hpp"
-#include "aeronet/websocket-deflate.hpp"
 #include "aeronet/websocket-frame.hpp"
 #include "aeronet/websocket-utf8.hpp"
+
+#ifdef AERONET_ENABLE_ZLIB
+#include "aeronet/websocket-deflate-context.hpp"
+#include "aeronet/websocket-deflate.hpp"
+#endif
 
 namespace aeronet::websocket {
 
@@ -50,32 +53,44 @@ struct WebSocketHandler::MaskingKeys {
   uint32_t nextPos{kNbKeys};
 };
 
-WebSocketHandler::WebSocketHandler(WebSocketConfig config, WebSocketCallbacks callbacks,
-                                   DeflateNegotiatedParams deflateParams)
+WebSocketHandler::WebSocketHandler(WebSocketConfig config, WebSocketCallbacks callbacks
+#ifdef AERONET_ENABLE_ZLIB
+                                   ,
+                                   DeflateNegotiatedParams deflateParams
+#endif
+                                   )
     : _config(std::move(config)), _callbacks(std::move(callbacks)) {
   _config.validate();
+#ifdef AERONET_ENABLE_ZLIB
   if (deflateParams.hasValue()) {
     enableCompression(deflateParams);
   }
+#endif
 }
-
-WebSocketHandler::~WebSocketHandler() = default;
 
 WebSocketHandler::WebSocketHandler(WebSocketHandler&&) noexcept = default;
 WebSocketHandler& WebSocketHandler::operator=(WebSocketHandler&&) noexcept = default;
 
+WebSocketHandler::~WebSocketHandler() = default;
+
 void WebSocketHandler::setCallbacks(WebSocketCallbacks callbacks) { _callbacks = std::move(callbacks); }
 
+#ifdef AERONET_ENABLE_ZLIB
 void WebSocketHandler::enableCompression(DeflateNegotiatedParams deflateParams, SharedDeflateStreams* sharedStreams) {
   _deflateContext =
       std::make_unique<DeflateContext>(deflateParams, _config.deflateConfig, _config.isServerSide, sharedStreams);
 }
+#endif
 
 ProtocolProcessResult WebSocketHandler::processInput(std::span<const std::byte> data) {
   // Only complete frames are consumed. The bytes of a trailing incomplete frame are left to the caller, which passes
   // them again, followed by the next received bytes, at the next call (they are not copied here).
   ProtocolProcessResult result;
+#ifdef AERONET_ENABLE_ZLIB
   const bool allowRsv1 = (_deflateContext != nullptr);
+#else
+  constexpr bool allowRsv1 = false;
+#endif
 
   // While the frames are processed, sendData() sends the large payloads found in the input from there.
   struct InputScope {
@@ -329,6 +344,7 @@ ProtocolProcessResult WebSocketHandler::handleControlFrame(const FrameHeader& he
 ProtocolProcessResult WebSocketHandler::completeMessage() {
   ProtocolProcessResult result;
 
+#ifdef AERONET_ENABLE_ZLIB
   // Decompress if message was compressed
   if (_messageCompressed && _deflateContext) {
     // The compressed payload of a message sent earlier may still wait in the compression buffer, written to below.
@@ -354,6 +370,8 @@ ProtocolProcessResult WebSocketHandler::completeMessage() {
     // onMessage sends (an echo of this one would otherwise be compressed into its own memory).
     _message.buffer.swap(_compressBuffer);
   }
+#endif
+
   const std::span<const std::byte> messageData = _message.buffer;
 
   // A decompressed text message is validated whole (an uncompressed one was, fragment by fragment)
@@ -412,7 +430,12 @@ void WebSocketHandler::appendUnbufferedPayload() {
 }
 
 bool WebSocketHandler::unbufferedPayloadInInput() const noexcept {
+#ifdef AERONET_ENABLE_ZLIB
   return !_unbufferedPayload.empty() && !IsWithin(_unbufferedPayload, _compressBuffer);
+#else
+  // Without compression buffer, a payload sent from where it is can only be in the processed input.
+  return !_unbufferedPayload.empty();
+#endif
 }
 
 void WebSocketHandler::releaseInput() {
@@ -478,6 +501,7 @@ bool WebSocketHandler::sendData(Opcode opcode, std::span<const std::byte> payloa
     return false;
   }
 
+#ifdef AERONET_ENABLE_ZLIB
   // Try to compress if compression is enabled and payload is large enough
   if (_deflateContext && !_deflateContext->shouldSkipCompression(payload.size())) {
     // The previous payload sent from where it is may be in the compression buffer (and is queued first anyway).
@@ -500,6 +524,7 @@ bool WebSocketHandler::sendData(Opcode opcode, std::span<const std::byte> payloa
       return true;
     }
   }
+#endif
 
   // A large payload received in the processed input (an echo) is sent from there, without copying it: only its frame
   // header is buffered. Masked frames (client side) need their own copy of the payload.

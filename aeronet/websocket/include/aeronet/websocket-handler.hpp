@@ -14,12 +14,17 @@
 #include "aeronet/vector.hpp"
 #include "aeronet/websocket-config.hpp"
 #include "aeronet/websocket-constants.hpp"
-#include "aeronet/websocket-deflate.hpp"
 #include "aeronet/websocket-frame.hpp"
+
+#ifdef AERONET_ENABLE_ZLIB
+#include "aeronet/websocket-deflate.hpp"
+#endif
 
 namespace aeronet::websocket {
 
+#ifdef AERONET_ENABLE_ZLIB
 class DeflateContext;
+#endif
 
 /// Callbacks for WebSocket events.
 /// All callbacks are invoked on the event loop thread.
@@ -71,8 +76,12 @@ class WebSocketHandler final : public IProtocolHandler {
   /// @param callbacks  Event callbacks (can be set later via setCallbacks)
   /// @param deflateParams Optional negotiated deflate parameters for compression
   explicit WebSocketHandler(WebSocketConfig config = WebSocketConfig(),
-                            WebSocketCallbacks callbacks = WebSocketCallbacks(),
-                            DeflateNegotiatedParams deflateParams = DeflateNegotiatedParams{});
+                            WebSocketCallbacks callbacks = WebSocketCallbacks()
+#ifdef AERONET_ENABLE_ZLIB
+                                ,
+                            DeflateNegotiatedParams deflateParams = DeflateNegotiatedParams()
+#endif
+  );
 
   // Non-copyable, movable
   WebSocketHandler(const WebSocketHandler&) = delete;
@@ -151,6 +160,7 @@ class WebSocketHandler final : public IProtocolHandler {
   /// Get current configuration.
   [[nodiscard]] const WebSocketConfig& config() const noexcept { return _config; }
 
+#ifdef AERONET_ENABLE_ZLIB
   /// Check if compression is enabled.
   [[nodiscard]] bool hasCompression() const noexcept { return _deflateContext != nullptr; }
 
@@ -159,6 +169,7 @@ class WebSocketHandler final : public IProtocolHandler {
   /// The directions negotiated without context takeover use sharedStreams if not null (the streams of the event loop
   /// serving the connection, which must outlive this handler) instead of streams of their own.
   void enableCompression(DeflateNegotiatedParams deflateParams, SharedDeflateStreams* sharedStreams = nullptr);
+#endif
 
   /// Get the time when close was initiated (for timeout tracking).
   /// Returns a zero duration if not in closing state.
@@ -249,7 +260,9 @@ class WebSocketHandler final : public IProtocolHandler {
 
   WebSocketConfig _config;
   WebSocketCallbacks _callbacks;
-  std::unique_ptr<DeflateContext> _deflateContext;          // Compression context (null if not negotiated)
+#ifdef AERONET_ENABLE_ZLIB
+  std::unique_ptr<DeflateContext> _deflateContext;  // Compression context (null if not negotiated)
+#endif
   std::chrono::steady_clock::time_point _closeInitiatedAt;  // Time when close was initiated
   std::chrono::steady_clock::time_point _idlePingSentAt;    // Time of the last Ping sent by checkTimeouts()
   RawBytes _outputBuffer;                                   // Pending output data
@@ -261,8 +274,10 @@ class WebSocketHandler final : public IProtocolHandler {
   // _compressBuffer (a large compressed message), copied before this buffer is written again. Copied to _outputBuffer
   // before anything else is queued.
   std::span<const std::byte> _unbufferedPayload;
-  MessageState _message;     // Current message being assembled
+  MessageState _message;  // Current message being assembled
+#ifdef AERONET_ENABLE_ZLIB
   RawBytes _compressBuffer;  // Output of the compression / decompression (may hold _unbufferedPayload)
+#endif
   // Masking keys of the frames sent on the client side, allocated with the first one (none on the server side).
   std::unique_ptr<MaskingKeys> _maskingKeys;
   CloseCode _closeCode{CloseCode::Normal};
