@@ -61,6 +61,14 @@ constexpr std::size_t kMaxHeaderBlockAccumulationSize = 256UL * 1024;
 // connection never reaches it.
 constexpr uint32_t kMaxIdlePriorityFrames = 10000U;
 
+// Whether a reset of a stream of the peer by this endpoint counts toward Http2Config::maxResetStreams: not the NO_ERROR
+// reset that ends a request answered before its end (RFC 9113 §8.1), nor a failure of this endpoint or of the target of
+// a CONNECT tunnel, which the peer did not cause.
+constexpr bool IsResetForAnErrorOfThePeer(ErrorCode errorCode) noexcept {
+  return errorCode != ErrorCode::NoError && errorCode != ErrorCode::InternalError &&
+         errorCode != ErrorCode::ConnectError;
+}
+
 constexpr uint32_t kMinMaxFrameSize = 16384;     // Minimum allowed SETTINGS_MAX_FRAME_SIZE
 constexpr uint32_t kMaxMaxFrameSize = 16777215;  // Maximum allowed SETTINGS_MAX_FRAME_SIZE
 
@@ -817,6 +825,9 @@ void Http2Connection::sendRstStream(uint32_t streamId, ErrorCode errorCode) {
 
   WriteRstStreamFrame(_outputBuffer, streamId, errorCode);
   recordFrame(true, FrameType::RstStream, sizeof(uint32_t));
+  if (isPeerStream(streamId) && IsResetForAnErrorOfThePeer(errorCode)) {
+    ++_nbPeerStreamsReset;
+  }
 
   it->second.onSendRstStream();
   it->second.setErrorCode(errorCode);
@@ -1158,6 +1169,15 @@ Http2Connection::ProcessResult Http2Connection::handleHeadersFrame(FrameHeader h
       return handleHeadersOnUnknownStream(header, frame);
     }
 
+    // Checked when the peer opens a stream, which a churning peer keeps doing: this covers the resets made by its
+    // frames and those made by a handler outside frame processing (see Http2Config::maxResetStreams).
+    if (_nbPeerStreamsReset >= _localSettings.maxResetStreams && 2U * _nbPeerStreamsReset > _nbPeerStreamsOpened)
+        [[unlikely]] {
+      _streams.erase(it);
+      return connectionError(ErrorCode::EnhanceYourCalm, ErrorMsg::TooManyResetStreams);
+    }
+    ++_nbPeerStreamsOpened;
+
     ++_activeStreamCount;
     recordStreamOpened(false);
     _lastPeerStreamId = streamId;
@@ -1305,6 +1325,9 @@ Http2Connection::ProcessResult Http2Connection::handleRstStreamFrame(FrameHeader
     // (RFC 9113 §5.1). The closing of a stream closed through the send path is notified, without a reset.
     closeStream(it);
     return ProcessResult{ProcessResult::Action::Continue};
+  }
+  if (isPeerStream(streamId)) {
+    ++_nbPeerStreamsReset;
   }
   it->second.onRecvRstStream();
   it->second.setErrorCode(frame.errorCode);

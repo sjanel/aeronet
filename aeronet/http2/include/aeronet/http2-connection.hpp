@@ -567,6 +567,11 @@ class Http2Connection {
   // mitigation)
   uint32_t _idlePriorityFrameCount{0};
 
+  // Security hardening: the streams opened by the peer, and those of them ended by a reset (see
+  // Http2Config::maxResetStreams). At most 2^30 streams of the peer fit in the 31-bit stream identifiers.
+  uint32_t _nbPeerStreamsOpened{0};
+  uint32_t _nbPeerStreamsReset{0};
+
   // Flow control
   int32_t _connectionSendWindow;
   int32_t _connectionRecvWindow;
