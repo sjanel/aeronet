@@ -2057,9 +2057,10 @@ constexpr EarlyAnswerCase kEarlyAnswerCases[]{
     {"unreachable CONNECT target resolved in the background", "CONNECT", "example.com:443", "", "", "502", true},
 };
 
-// Opens stream 1 with the request headers of 'testCase', without END_STREAM (its body follows), and lets the server
-// answer them. The answer stays in the output of the server.
-void SendRequestHeadersAnsweredEarly(Http2ProtocolLoopback& loop, const EarlyAnswerCase& testCase) {
+// Opens stream 'streamId' with the request headers of 'testCase', without END_STREAM (its body follows), and lets the
+// server answer them. The answer stays in the output of the server.
+void SendRequestHeadersAnsweredEarly(Http2ProtocolLoopback& loop, const EarlyAnswerCase& testCase,
+                                     uint32_t streamId = 1) {
   RawChars headers;
   headers.append(MakeHttp1HeaderLine(":method", testCase.method));
   headers.append(MakeHttp1HeaderLine(":authority", testCase.authority));
@@ -2070,11 +2071,11 @@ void SendRequestHeadersAnsweredEarly(Http2ProtocolLoopback& loop, const EarlyAns
   if (!testCase.acceptEncoding.empty()) {
     headers.append(MakeHttp1HeaderLine("accept-encoding", testCase.acceptEncoding));
   }
-  ASSERT_EQ(loop.client.sendHeaders(1, http::StatusCode{}, HeadersView(headers), false), ErrorCode::NoError);
+  ASSERT_EQ(loop.client.sendHeaders(streamId, http::StatusCode{}, HeadersView(headers), false), ErrorCode::NoError);
   loop.pumpClientToServer();
   if (testCase.resolveInBackground) {
-    ASSERT_TRUE(loop.handler.isTunnelPending(1));
-    loop.handler.onTunnelResolved(1, kInvalidHandle);
+    ASSERT_TRUE(loop.handler.isTunnelPending(streamId));
+    loop.handler.onTunnelResolved(streamId, kInvalidHandle);
   }
 }
 
@@ -7802,6 +7803,130 @@ TEST(Http2ProtocolHandlerRfc9113Audit, DrainGoAwayStillAnswersItsStreamsWhenAnUp
   EXPECT_EQ(GetHeaderValue(loop.clientHeaders[0], ":status"), "200");
   EXPECT_EQ(loop.receivedData(1), "data");
   EXPECT_TRUE(loop.state.isDrainCloseRequested());
+}
+
+// ============== Bounds on abusive peers ==============
+
+#ifdef AERONET_ENABLE_ASYNC_HANDLERS
+// "MadeYouReset" (CVE-2025-8671): a stream that the server resets for an error of the client, while the deferred work
+// of its async handler runs, keeps its slot until the work completes, like a stream reset by the client (see
+// OrphanedAsyncTasksCountAgainstMaxConcurrentStreams).
+TEST(Http2ProtocolHandler, StreamsResetForPeerErrorsKeepTheSlotOfTheirRunningAsyncWork) {
+  using namespace std::chrono_literals;
+  static std::atomic<bool> releaseWork;
+  static std::atomic<int> nbHandlerCalls;
+  releaseWork.store(false, std::memory_order_relaxed);
+  nbHandlerCalls.store(0, std::memory_order_relaxed);
+
+  Router router;
+  router.setPath(http::Method::GET, "/async-slow", [](HttpRequestView& req) -> RequestTask<HttpResponse> {
+    nbHandlerCalls.fetch_add(1, std::memory_order_relaxed);
+    const int result = co_await req.deferWork([] {
+      while (!releaseWork.load(std::memory_order_acquire)) {
+        std::this_thread::sleep_for(1ms);
+      }
+      return 1;
+    });
+    co_return HttpResponse(200, std::to_string(result));
+  });
+
+  static constexpr uint32_t kMaxConcurrentStreams = 2;
+  Http2ProtocolLoopback loop(router, Http2ProtocolLoopback::kDefaultBufferBytes,
+                             Http2ProtocolLoopback::kDefaultBufferBytes, kDefaultInitialWindowSize,
+                             kMaxConcurrentStreams);
+  AsyncResumeRecorder resumes(loop);
+  loop.connect();
+
+  const RawChars slowHeaders = MakeGetHeaders("/async-slow");
+  const auto openStream = [&loop, &slowHeaders](uint32_t streamId) {
+    ASSERT_EQ(loop.client.sendHeaders(streamId, http::StatusCode{}, HeadersView(slowHeaders), true),
+              ErrorCode::NoError);
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
+  };
+  // A WINDOW_UPDATE whose increment is 0 is a stream error (RFC 9113 §6.9): the server resets the stream.
+  const auto makeServerResetStream = [&loop](uint32_t streamId) {
+    RawBytes windowUpdate;
+    WriteWindowUpdateFrame(windowUpdate, streamId, 0);
+    loop.feedHandler(windowUpdate);
+    loop.pumpServerToClient();
+    const std::pair<uint32_t, ErrorCode> reset(streamId, ErrorCode::ProtocolError);
+    EXPECT_NE(std::ranges::find(loop.streamResets, reset), loop.streamResets.end());
+  };
+  const auto wasRefused = [&loop](uint32_t streamId) {
+    const std::pair<uint32_t, ErrorCode> refused(streamId, ErrorCode::RefusedStream);
+    return std::ranges::find(loop.streamResets, refused) != loop.streamResets.end();
+  };
+
+  // The work of the two streams still runs once the server has reset them: no stream is open, but none can be opened.
+  openStream(1);
+  openStream(3);
+  makeServerResetStream(1);
+  makeServerResetStream(3);
+  EXPECT_EQ(loop.handler.connection().activeStreamCount(), 0U);
+
+  openStream(5);
+  EXPECT_EQ(nbHandlerCalls.load(std::memory_order_relaxed), 2);
+  EXPECT_TRUE(wasRefused(5));
+
+  // The work must complete before the handler, which owns its coroutines, is destroyed.
+  releaseWork.store(true, std::memory_order_release);
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  while (resumes.nbPosts() < 2) {
+    ASSERT_LT(std::chrono::steady_clock::now(), deadline) << "async callbacks did not fire in time";
+    std::this_thread::sleep_for(1ms);
+  }
+}
+#endif
+
+// More streams than the default Http2Config::maxResetStreams, all of them reset: counted, these resets would close the
+// connection.
+constexpr uint32_t kMoreStreamsThanMaxResetStreams = Http2Config{}.maxResetStreams + 100U;
+
+// A handler answers a request in the HEADERS frame that completes it, before the RST_STREAM that the client sent right
+// after is read: the client resets a stream closed by both endpoints, which is ignored and not counted toward
+// Http2Config::maxResetStreams. Such resets buy the client nothing over a plain request flood.
+TEST(Http2ProtocolHandler, ResetsOfStreamsAlreadyAnsweredDoNotCloseTheConnection) {
+  Router router;
+  uint32_t nbHandlerCalls = 0;
+  router.setDefault([&nbHandlerCalls](const HttpRequestView&) {
+    ++nbHandlerCalls;
+    return HttpResponse(200, "ok");
+  });
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  const RawChars headers = MakeGetHeaders("/");
+  for (uint32_t idx = 0; idx < kMoreStreamsThanMaxResetStreams; ++idx) {
+    const uint32_t streamId = 1U + (2U * idx);
+    ASSERT_EQ(loop.client.sendHeaders(streamId, http::StatusCode{}, HeadersView(headers), true), ErrorCode::NoError);
+    loop.client.sendRstStream(streamId, ErrorCode::Cancel);
+    loop.pumpClientToServer();
+    loop.pumpServerToClient();
+    ASSERT_TRUE(loop.handler.connection().isOpen()) << "stream " << streamId;
+  }
+  EXPECT_EQ(nbHandlerCalls, kMoreStreamsThanMaxResetStreams);
+}
+
+// Neither is the NO_ERROR reset that ends a request answered before its end (RFC 9113 §8.1).
+TEST(Http2ProtocolHandler, EarlyAnswersDoNotCountTowardMaxResetStreams) {
+  Router router;
+  router.setDefault([](const HttpRequestView&) { return HttpResponse(200); });
+  Http2ProtocolLoopback loop(router);
+  loop.connect();
+
+  const EarlyAnswerCase& unknownMethod = kEarlyAnswerCases[0];
+  ASSERT_EQ(unknownMethod.status, "501");
+  for (uint32_t idx = 0; idx < kMoreStreamsThanMaxResetStreams; ++idx) {
+    const uint32_t streamId = 1U + (2U * idx);
+    SendRequestHeadersAnsweredEarly(loop, unknownMethod, streamId);
+    loop.pumpServerToClient();
+    ASSERT_TRUE(loop.handler.connection().isOpen()) << "stream " << streamId;
+  }
+  EXPECT_EQ(loop.streamResets.size(), kMoreStreamsThanMaxResetStreams);
+  EXPECT_TRUE(std::ranges::all_of(loop.streamResets, [](const std::pair<uint32_t, ErrorCode>& reset) {
+    return reset.second == ErrorCode::NoError;
+  }));
 }
 
 }  // namespace aeronet::http2

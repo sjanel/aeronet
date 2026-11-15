@@ -5855,5 +5855,248 @@ TEST(Http2ConnectionRfc9113Audit, PrefaceIsRejectedAtItsFirstInvalidByte) {
   EXPECT_EQ(conn.state(), ConnectionState::Closed);
 }
 
+// ============== Bounds on abusive peers ==============
+// These tests feed small frame sequences, and stop at the first connection error.
+
+// Feeds `frames` to the server `conn`, whose output is read by the peer, and returns the error code of the connection
+// error they caused (NO_ERROR if none).
+[[nodiscard]] ErrorCode FeedUntilConnectionError(Http2Connection& conn, std::span<const std::byte> frames) {
+  while (!frames.empty()) {
+    const auto res = conn.processInput(frames);
+    (void)DrainPendingOutput(conn);
+    if (res.action == Http2Connection::ProcessResult::Action::Error) {
+      return res.errorCode;
+    }
+    if (res.bytesConsumed == 0) {
+      ADD_FAILURE() << "No progress feeding HTTP/2 connection";
+      break;
+    }
+    frames = frames.subspan(res.bytesConsumed);
+  }
+  return ErrorCode::NoError;
+}
+
+// "Rapid Reset" (CVE-2023-44487): a client resetting each stream right after opening it never has more than one open
+// stream, so maxConcurrentStreams does not bound it, and the request of each stream is served all the same. Only
+// maxStreamsPerConnection (1,000,000 by default) would end such a connection: Http2Config::maxResetStreams closes it
+// with ENHANCE_YOUR_CALM (RFC 9113 §10.5) long before.
+TEST(Http2Connection, StreamsResetByThePeerAsSoonAsOpenedAreBounded) {
+  Http2Connection conn(Http2Config(), true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+
+  static constexpr uint32_t kNbStreams = 5000;
+  ErrorCode errorCode = ErrorCode::NoError;
+  uint32_t nbStreamsReset = 0;
+  for (; nbStreamsReset < kNbStreams && errorCode == ErrorCode::NoError; ++nbStreamsReset) {
+    const uint32_t streamId = 1U + (2U * nbStreamsReset);
+    RawBytes frames(StaticGetRequestFrame(streamId));
+    WriteRstStreamFrame(frames, streamId, ErrorCode::Cancel);
+    errorCode = FeedUntilConnectionError(conn, frames);
+  }
+
+  EXPECT_EQ(errorCode, ErrorCode::EnhanceYourCalm) << nbStreamsReset << " streams opened then reset by the peer";
+  EXPECT_EQ(conn.state(), ConnectionState::Closed);
+}
+
+// "MadeYouReset" (CVE-2025-8671): the same churn without any RST_STREAM from the client, which makes the server reset
+// each stream instead, here with a WINDOW_UPDATE whose increment is 0 (a stream error, RFC 9113 §6.9). The streams that
+// this endpoint resets for an error of the peer count toward the same bound.
+TEST(Http2Connection, StreamsResetForTheErrorsOfThePeerAreBounded) {
+  Http2Connection conn(Http2Config(), true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+
+  static constexpr uint32_t kNbStreams = 5000;
+  ErrorCode errorCode = ErrorCode::NoError;
+  uint32_t nbStreamsReset = 0;
+  for (; nbStreamsReset < kNbStreams && errorCode == ErrorCode::NoError; ++nbStreamsReset) {
+    const uint32_t streamId = 1U + (2U * nbStreamsReset);
+    RawBytes frames(StaticGetRequestFrame(streamId));
+    WriteWindowUpdateFrame(frames, streamId, 0);
+    errorCode = FeedUntilConnectionError(conn, frames);
+  }
+
+  EXPECT_EQ(errorCode, ErrorCode::EnhanceYourCalm) << nbStreamsReset << " streams reset for an error of the peer";
+  EXPECT_EQ(conn.state(), ConnectionState::Closed);
+}
+
+// Opens the stream `streamId` of the client on the server `conn`, then resets it from the client, and returns the error
+// code of the connection error this caused (NO_ERROR if none).
+[[nodiscard]] ErrorCode OpenAndResetClientStream(Http2Connection& conn, uint32_t streamId) {
+  RawBytes frames(StaticGetRequestFrame(streamId));
+  WriteRstStreamFrame(frames, streamId, ErrorCode::Cancel);
+  return FeedUntilConnectionError(conn, frames);
+}
+
+// Opens the stream `streamId` of the client on the server `conn` with a complete request, and answers it: the stream is
+// closed by both endpoints.
+void OpenAndAnswerClientStream(Http2Connection& conn, uint32_t streamId) {
+  FeedConnection(conn,
+                 SerializeFrame(FrameHeader(static_cast<uint32_t>(kStaticGetRequest.size()), FrameType::Headers,
+                                            FrameFlags::HeadersEndHeaders | FrameFlags::HeadersEndStream, streamId),
+                                kStaticGetRequest));
+  ASSERT_EQ(conn.sendHeaders(streamId, http::StatusCodeOK, HeadersView{}, true), ErrorCode::NoError);
+  ASSERT_TRUE(conn.finalizeSendClosedStream(streamId));
+  (void)DrainPendingOutput(conn);
+}
+
+// The bound applies when the client opens a stream: the one opened once maxResetStreams streams were reset (all of them
+// here) is not processed, and the GOAWAY names the last stream that was.
+TEST(Http2Connection, MaxResetStreamsClosesTheConnectionAtTheNextStreamOpened) {
+  static constexpr uint32_t kMaxResetStreams = 4;
+  Http2Connection conn(Http2Config().withMaxResetStreams(kMaxResetStreams), true);
+  RecordingEventSink connSink(conn);
+  uint32_t nbRequests = 0;
+  connSink.onHeadersDecodedFn = [&nbRequests](uint32_t, const SvToSvMap&, bool) { ++nbRequests; };
+  AdvanceToOpenAndDrainSettingsAck(conn);
+
+  uint32_t streamId = 1;
+  for (; streamId < 2U * kMaxResetStreams; streamId += 2U) {
+    ASSERT_EQ(OpenAndResetClientStream(conn, streamId), ErrorCode::NoError) << "stream " << streamId;
+  }
+  EXPECT_EQ(nbRequests, kMaxResetStreams);
+
+  const auto res = conn.processInput(StaticGetRequestFrame(streamId));
+  EXPECT_EQ(res.action, Http2Connection::ProcessResult::Action::Error);
+  EXPECT_EQ(res.errorCode, ErrorCode::EnhanceYourCalm);
+  EXPECT_EQ(res.errorMsg, ErrorMsg::TooManyResetStreams);
+  EXPECT_EQ(conn.state(), ConnectionState::Closed);
+  EXPECT_EQ(nbRequests, kMaxResetStreams);
+  EXPECT_EQ(conn.getStream(streamId), nullptr);
+
+  const auto output = DrainPendingOutput(conn);
+  const GoAwayFrame goAway = ParseSingleGoAway(output);
+  EXPECT_EQ(goAway.errorCode, ErrorCode::EnhanceYourCalm);
+  EXPECT_EQ(goAway.lastStreamId, streamId - 2U);
+}
+
+// The bound is a ratio: a client answered on as many streams as it resets keeps its connection, whatever its number of
+// resets. The connection closes once its resets are more than half of its streams.
+TEST(Http2Connection, MaxResetStreamsOnlyClosesConnectionsResettingMostOfTheirStreams) {
+  static constexpr uint32_t kMaxResetStreams = 4;
+  static constexpr uint32_t kNbPairs = 100;
+  Http2Connection conn(Http2Config().withMaxResetStreams(kMaxResetStreams), true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+
+  uint32_t streamId = 1;
+  for (uint32_t pairIdx = 0; pairIdx < kNbPairs; ++pairIdx, streamId += 4U) {
+    OpenAndAnswerClientStream(conn, streamId);
+    ASSERT_EQ(OpenAndResetClientStream(conn, streamId + 2U), ErrorCode::NoError) << "pair " << pairIdx;
+  }
+  EXPECT_TRUE(conn.isOpen());
+
+  // 101 streams reset out of 201.
+  ASSERT_EQ(OpenAndResetClientStream(conn, streamId), ErrorCode::NoError);
+  EXPECT_EQ(FeedUntilConnectionError(conn, StaticGetRequestFrame(streamId + 2U)), ErrorCode::EnhanceYourCalm);
+}
+
+// The resets of the server for an error of the client count, whatever sends them: the connection itself, or the handler
+// of the requests (a stream refused, a malformed request, a response exceeding its pending bytes).
+TEST(Http2Connection, MaxResetStreamsCountsTheResetsOfTheServerForAnErrorOfTheClient) {
+  for (const ErrorCode errorCode :
+       {ErrorCode::ProtocolError, ErrorCode::RefusedStream, ErrorCode::EnhanceYourCalm, ErrorCode::StreamClosed}) {
+    SCOPED_TRACE(ErrorCodeName(errorCode));
+    Http2Connection conn(Http2Config().withMaxResetStreams(1), true);
+    RecordingEventSink connSink(conn);
+    AdvanceToOpenAndDrainSettingsAck(conn);
+    OpenClientStream(conn, 1);
+    conn.sendRstStream(1, errorCode);
+    (void)DrainPendingOutput(conn);
+    EXPECT_EQ(FeedUntilConnectionError(conn, StaticGetRequestFrame(3)), ErrorCode::EnhanceYourCalm);
+  }
+}
+
+// Not counted: the resets of the server that the client did not cause (the NO_ERROR reset ending a request answered
+// before its end, a failure of the server or of a CONNECT target), and the reset by the client of a stream already
+// answered. Counted, any of them would close these connections at their second stream.
+TEST(Http2Connection, MaxResetStreamsIgnoresTheResetsTheClientDidNotCause) {
+  static constexpr uint32_t kNbStreams = 8;
+  for (const ErrorCode errorCode : {ErrorCode::NoError, ErrorCode::InternalError, ErrorCode::ConnectError}) {
+    SCOPED_TRACE(ErrorCodeName(errorCode));
+    Http2Connection conn(Http2Config().withMaxResetStreams(1), true);
+    RecordingEventSink connSink(conn);
+    AdvanceToOpenAndDrainSettingsAck(conn);
+    for (uint32_t idx = 0; idx < kNbStreams; ++idx) {
+      const uint32_t streamId = 1U + (2U * idx);
+      OpenClientStream(conn, streamId);
+      ASSERT_TRUE(conn.isOpen()) << "stream " << streamId;
+      conn.sendRstStream(streamId, errorCode);
+      (void)DrainPendingOutput(conn);
+    }
+    EXPECT_TRUE(conn.isOpen());
+  }
+
+  SCOPED_TRACE("reset by the client once answered");
+  Http2Connection conn(Http2Config().withMaxResetStreams(1), true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+  for (uint32_t idx = 0; idx < kNbStreams; ++idx) {
+    const uint32_t streamId = 1U + (2U * idx);
+    OpenAndAnswerClientStream(conn, streamId);
+    RawBytes reset;
+    WriteRstStreamFrame(reset, streamId, ErrorCode::Cancel);
+    ASSERT_EQ(FeedUntilConnectionError(conn, reset), ErrorCode::NoError) << "stream " << streamId;
+  }
+  EXPECT_TRUE(conn.isOpen());
+}
+
+// A stream reset by the server, then by the client, which sent its RST_STREAM before receiving the one of the server,
+// counts once: counted twice, the third stream would close the connection.
+TEST(Http2Connection, MaxResetStreamsCountsAStreamResetByBothEndpointsOnce) {
+  static constexpr uint32_t kMaxResetStreams = 4;
+  Http2Connection conn(Http2Config().withMaxResetStreams(kMaxResetStreams), true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+
+  uint32_t streamId = 1;
+  for (; streamId < 2U * kMaxResetStreams; streamId += 2U) {
+    RawBytes frames(StaticGetRequestFrame(streamId));
+    WriteWindowUpdateFrame(frames, streamId, 0);  // reset by the server with PROTOCOL_ERROR
+    WriteRstStreamFrame(frames, streamId, ErrorCode::Cancel);
+    ASSERT_EQ(FeedUntilConnectionError(conn, frames), ErrorCode::NoError) << "stream " << streamId;
+  }
+  EXPECT_EQ(FeedUntilConnectionError(conn, StaticGetRequestFrame(streamId)), ErrorCode::EnhanceYourCalm);
+}
+
+TEST(Http2Connection, MaxResetStreamsAtTheMaximumValueDisablesTheBound) {
+  static constexpr uint32_t kNbStreams = 2000;  // twice the default bound
+  Http2Connection conn(Http2Config().withMaxResetStreams(std::numeric_limits<uint32_t>::max()), true);
+  RecordingEventSink connSink(conn);
+  AdvanceToOpenAndDrainSettingsAck(conn);
+
+  for (uint32_t idx = 0; idx < kNbStreams; ++idx) {
+    ASSERT_EQ(OpenAndResetClientStream(conn, 1U + (2U * idx)), ErrorCode::NoError) << "stream " << 1U + (2U * idx);
+  }
+  EXPECT_TRUE(conn.isOpen());
+}
+
+// A client opens its streams itself: the resets of its streams, by itself or by its server, are no churn of a peer.
+TEST(Http2Connection, MaxResetStreamsDoesNotApplyToClients) {
+  static constexpr uint32_t kNbStreams = 8;
+  Http2Connection client(Http2Config().withMaxResetStreams(1), false);
+  RecordingEventSink clientSink(client);
+  AdvanceClientToOpen(client);
+  RawChars request;
+  request.append(MakeHttp1HeaderLine(":method", "GET"));
+  request.append(MakeHttp1HeaderLine(":path", "/"));
+
+  for (uint32_t idx = 0; idx < kNbStreams; ++idx) {
+    const uint32_t streamId = 1U + (2U * idx);
+    ASSERT_EQ(client.sendHeaders(streamId, http::StatusCode{}, HeadersView(request), false), ErrorCode::NoError)
+        << "stream " << streamId;
+    if (idx % 2U == 0) {
+      client.sendRstStream(streamId, ErrorCode::Cancel);
+    } else {
+      RawBytes reset;
+      WriteRstStreamFrame(reset, streamId, ErrorCode::RefusedStream);
+      FeedConnection(client, reset);
+    }
+    (void)DrainPendingOutput(client);
+  }
+  EXPECT_TRUE(client.isOpen());
+}
+
 }  // namespace
 }  // namespace aeronet::http2

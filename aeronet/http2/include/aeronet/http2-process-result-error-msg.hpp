@@ -36,6 +36,7 @@ enum class ErrorMsg : uint8_t {
   RST_STREAMFrameOnStreamZero,
   InvalidRST_STREAMFrame,
   RST_STREAMOnIdleStream,
+  TooManyResetStreams,
   SETTINGSFrameOnNonZeroStream,
   InvalidSETTINGSFrame,
   InvalidENABLE_PUSHValue,

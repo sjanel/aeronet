@@ -70,6 +70,8 @@ constexpr std::string_view ConvertProcessResultErrorMsgToSv(ErrorMsg msg) {
       return "Invalid RST_STREAM Frame";
     case ErrorMsg::RST_STREAMOnIdleStream:
       return "RST_STREAM On Idle Stream";
+    case ErrorMsg::TooManyResetStreams:
+      return "Too Many Reset Streams";
     case ErrorMsg::SETTINGSFrameOnNonZeroStream:
       return "SETTINGS Frame On Non Zero Stream";
     case ErrorMsg::InvalidSETTINGSFrame:

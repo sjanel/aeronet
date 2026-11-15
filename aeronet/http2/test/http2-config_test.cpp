@@ -35,6 +35,7 @@ TEST(Http2Config, DefaultValues) {
 
   // Other defaults
   EXPECT_EQ(config.maxStreamsPerConnection, 1000000U);
+  EXPECT_EQ(config.maxResetStreams, 1000U);
   EXPECT_EQ(config.maxStreamPendingBytes, 4U << 20U);
   EXPECT_TRUE(config.enableH2c);
   EXPECT_FALSE(config.enableH2cUpgrade);  // deprecated, ignored
@@ -75,6 +76,7 @@ TEST(Http2Config, BuilderPatternConnection) {
                            .withPingInterval(std::chrono::milliseconds{30000})
                            .withPingTimeout(std::chrono::milliseconds{5000})
                            .withMaxStreamsPerConnection(1000)
+                           .withMaxResetStreams(500)
                            .withMaxStreamPendingBytes(2UL << 20U);
 
   EXPECT_EQ(config.connectionWindowSize, 2U << 20U);
@@ -82,6 +84,7 @@ TEST(Http2Config, BuilderPatternConnection) {
   EXPECT_EQ(config.pingInterval, std::chrono::milliseconds{30000});
   EXPECT_EQ(config.pingTimeout, std::chrono::milliseconds{5000});
   EXPECT_EQ(config.maxStreamsPerConnection, 1000U);
+  EXPECT_EQ(config.maxResetStreams, 500U);
   EXPECT_EQ(config.maxStreamPendingBytes, 2U << 20U);
 }
 

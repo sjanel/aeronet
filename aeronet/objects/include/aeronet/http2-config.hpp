@@ -87,6 +87,12 @@ struct Http2Config {
     return *this;
   }
 
+  /// See maxResetStreams. std::numeric_limits<uint32_t>::max() means no limit.
+  Http2Config& withMaxResetStreams(uint32_t maxResets) {
+    maxResetStreams = maxResets;
+    return *this;
+  }
+
   Http2Config& withMaxStreamPendingBytes(uint32_t maxPending) {
     maxStreamPendingBytes = maxPending;
     return *this;
@@ -245,6 +251,19 @@ struct Http2Config {
   /// After this limit, the connection will be gracefully closed with GOAWAY.
   /// Default: 1,000,000 streams.
   uint32_t maxStreamsPerConnection{1000000};
+
+  /// Server only: number of streams of the client ended by a reset from which the connection is closed with
+  /// ENHANCE_YOUR_CALM (RFC 9113 §10.5), once they are more than half of the streams it opened. A client resetting each
+  /// stream as soon as it opens it ("Rapid Reset", CVE-2023-44487), or making the server reset it ("MadeYouReset",
+  /// CVE-2025-8671), never has many open streams: maxConcurrentStreams does not bound it, and only
+  /// maxStreamsPerConnection ends its connection.
+  /// Counted: the RST_STREAM frames of the client on its open streams, and the resets of the server for an error of
+  /// the client (a malformed request, a stream refused, a flow-control error...), a stream counting once. Not counted:
+  /// the NO_ERROR reset ending a request answered before its end (RFC 9113 §8.1), the resets for a failure of the
+  /// server (INTERNAL_ERROR) or of a CONNECT target (CONNECT_ERROR), and a reset of a stream already answered.
+  /// std::numeric_limits<uint32_t>::max() means no limit: a connection has at most 2^30 streams of the client.
+  /// Default: 1000.
+  uint32_t maxResetStreams{1000};
 
   // ============================
   // Priority (RFC 9218 / RFC 9113 §5.3)
