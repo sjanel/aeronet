@@ -7,14 +7,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <functional>
+#include <cstring>
 #include <limits>
-#include <numeric>
 #include <span>
 #include <string_view>
 #include <utility>
 
 #include "aeronet/city-hash.hpp"
+#include "aeronet/compiler-config.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-view.hpp"
 #include "aeronet/http-header.hpp"
@@ -197,13 +197,6 @@ constexpr auto kStaticNameHashTable = [] {
 // kStaticNameHashMultiplier that is collision-free again (any odd 32-bit constant can be searched for).
 static_assert(kStaticNameHashTable.perfect,
               "kStaticNameHashMultiplier is no longer a perfect hash over the static table names");
-
-// Huffman decoding table (RFC 7541 Appendix B)
-// This is a simplified representation - each entry contains the symbol and the number of bits
-struct HuffmanEntry {
-  uint8_t symbol;
-  uint8_t bitLength;
-};
 
 // Huffman encoding table (symbol -> code, length)
 struct HuffmanCode {
@@ -473,48 +466,82 @@ constexpr HuffmanCode kHuffmanCodes[]{
 };
 
 // ============================
-// Optimized Huffman Decode Tables
+// Huffman decoding
 // ============================
-// Decoding works on a 64-bit MSB-aligned bit window and has two tiers:
-// - Tier 1: a direct-mapped table indexed by the top 8 bits. Covers every code of 5..8 bits, which is 74 of the 257
-//   symbols but well over 99% of the bytes in real header text (all lowercase letters, digits and common
-//   punctuation). One load, no branching on bit length.
-// - Tier 2: canonical decoding for the 9..30 bit codes, see kHuffmanLevels below.
+// Decoding works on a 64-bit bit window, most significant bit first, and has two tiers:
+// - Tier 1: the codes of 5 to 8 bits, which is 74 of the 257 symbols but well over 99% of the bytes of real header
+//   text (all lowercase letters, digits and common punctuation). The window is shifted by the length of each decoded
+//   code, so that this length is what the decoding of a symbol waits for from the previous one: it is computed from
+//   the 5 top bits of the window, without any memory access. The symbol itself is read apart, in a table of 256 bytes
+//   indexed by the top byte of the window.
+// - Tier 2: canonical decoding for the 10..30 bit codes, see kHuffmanLevels below.
 //
-// 8 bits is the exact useful width: RFC 7541 has no 9-bit code, so a 9-bit table would cover the same symbols with
-// twice the footprint. 256 entries keep the table at 1 KB, which matters because a busy server touches it from every
-// connection.
+// The window is kept complemented. The zeros that a shift brings in are then 1s of the input, like the bits of the
+// EOS padding that ends a string (RFC 7541 §5.2): the end of the input needs no bit count check per symbol, as it
+// reads as the beginning of a code longer than 8 bits (all of them start with at least seven 1s), and leaves tier 1 the
+// same way.
 
-// Tier 1 table entry.
-struct HuffmanDecodeEntry {
-  uint16_t symbol;   // Decoded symbol (0-255); meaningless when bitsUsed == 0
-  uint8_t bitsUsed;  // Number of bits consumed, or 0 when the code is longer than the tier-1 window
+constexpr uint32_t kHuffmanMinBits = 5;       // Shortest code
+constexpr uint32_t kHuffmanMaxShortBits = 8;  // Longest code of tier 1
+constexpr uint32_t kHuffmanMaxBits = 30;      // Longest code (EOS)
+constexpr uint32_t kHuffmanEosSymbol = 256;
+
+// Tier 1, indexed by complemented bits of the window.
+struct HuffmanShortCodes {
+  // The symbol of the code of at most 8 bits that a window starts with, by the complement of its top byte.
+  uint8_t symbols[256];
+  // The length of such a code beyond kHuffmanMinBits, by the complement of the 5 top bits of the window: 2 bits each.
+  uint64_t extraBits;
+  // The largest complemented top byte of the windows starting with a code longer than 8 bits.
+  uint8_t maxLongTop;
+  // Whether the Huffman code has the properties that this representation relies on.
+  bool valid;
 };
 
-constexpr std::size_t kHuffmanLevel1Bits = 8;
-constexpr std::size_t kHuffmanLevel1Size = 1ULL << kHuffmanLevel1Bits;
+constexpr HuffmanShortCodes kHuffmanShortCodes = [] {
+  HuffmanShortCodes ret{};
 
-constexpr auto kHuffmanDecodeTable = [] {
-  std::array<HuffmanDecodeEntry, kHuffmanLevel1Size> table;
-
-  // Entries left at bitsUsed == 0 mean "code is longer than the window, fall through to tier 2".
-  std::ranges::fill(table, HuffmanDecodeEntry{0, 0});
-
+  // The length of the short code that each top byte starts with, 0 if it starts with a longer one.
+  uint8_t lengths[256]{};
   for (std::size_t sym = 0; sym < std::size(kHuffmanCodes); ++sym) {
     const auto [code, bitLen] = kHuffmanCodes[sym];
-    if (bitLen > kHuffmanLevel1Bits) {
+    if (bitLen > kHuffmanMaxShortBits) {
       continue;
     }
-    // The window is left-aligned, so one code owns every index sharing its top bitLen bits.
-    const std::size_t shift = kHuffmanLevel1Bits - bitLen;
-    const std::size_t baseIdx = static_cast<std::size_t>(code) << shift;
-    for (std::size_t iter = 0, numEntries = 1ULL << shift; iter < numEntries; ++iter) {
-      table[baseIdx + iter] = {static_cast<uint16_t>(sym), bitLen};
+    // The window is left-aligned, so one code owns every top byte sharing its bitLen top bits.
+    const std::size_t shift = kHuffmanMaxShortBits - bitLen;
+    const std::size_t firstTop = static_cast<std::size_t>(code) << shift;
+    for (std::size_t top = firstTop; top < firstTop + (std::size_t{1} << shift); ++top) {
+      lengths[top] = bitLen;
+      ret.symbols[top ^ 0xFFU] = static_cast<uint8_t>(sym);
     }
   }
 
-  return table;
+  // The top bytes starting with a longer code are the largest ones.
+  std::size_t firstLongTop = 0;
+  while (firstLongTop < 256 && lengths[firstLongTop] != 0) {
+    ++firstLongTop;
+  }
+  ret.valid = firstLongTop != 0 && firstLongTop < 256;
+  ret.maxLongTop = static_cast<uint8_t>(firstLongTop ^ 0xFFU);
+
+  for (std::size_t top = 0; top < 256; ++top) {
+    const std::size_t extraBitsPos = 2U * ((top >> 3U) ^ 31U);
+    if (top >= firstLongTop) {
+      ret.valid = ret.valid && lengths[top] == 0;
+    } else if ((top & 7U) == 0) {
+      ret.valid = ret.valid && lengths[top] >= kHuffmanMinBits;
+      ret.extraBits |= static_cast<uint64_t>(lengths[top] - kHuffmanMinBits) << extraBitsPos;
+    } else {
+      // The 5 top bits of the window give the length of a short code.
+      ret.valid = ret.valid && lengths[top] == kHuffmanMinBits + ((ret.extraBits >> extraBitsPos) & 3U);
+    }
+  }
+
+  return ret;
 }();
+
+static_assert(kHuffmanShortCodes.valid, "the tier 1 of the Huffman decoding does not fit the Huffman code");
 
 // ---- Tier 2: canonical decoding
 //
@@ -579,7 +606,7 @@ constexpr auto kHuffmanLevels = [] {
   return ret;
 }();
 
-/// Decode one symbol of 9..30 bits from an MSB-aligned bit window.
+/// Decode one symbol of 10..30 bits from an MSB-aligned bit window (not complemented).
 /// Every 64-bit window maps to exactly one symbol, so this always succeeds; invalid input is detected by the caller
 /// (a code longer than the bits actually available, or EOS appearing in the data).
 struct HuffmanCanonicalResult {
@@ -599,6 +626,97 @@ constexpr HuffmanCanonicalResult DecodeHuffmanCanonical(uint64_t window) noexcep
       return {kHuffmanSymbols[level.symbolIndex + (code - level.firstCode)], level.bitLength};
     }
     ++idx;
+  }
+}
+
+/// Decode a Huffman string (RFC 7541 §5.2) to 'out', which has room for one symbol per kHuffmanMinBits bits of 'data',
+/// plus one. Returns the end of the decoded string, or nullptr if 'data' is not a valid Huffman string.
+char* DecodeHuffman(std::span<const std::byte> data, char* out) noexcept {
+  // Number of short codes that the bits of a refilled window hold at least.
+  static constexpr uint32_t kNbShortCodesPerRefill = 56U / kHuffmanMaxShortBits;
+
+  const std::byte* pIn = data.data();
+  const std::byte* const pEnd = pIn + data.size();
+
+  // The complement of the bits to decode, MSB-aligned. The nbBits first ones are counted as read from the input (the
+  // bytes before pIn). The bits below them are either the complement of the next bits of the input, left there by a
+  // refill (OR-ing them again at the same position changes nothing), or 0: the complement of the padding.
+  uint64_t window = 0;
+  // A malformed string may end within a code, read partly in the padding: the count then wraps around.
+  uint32_t nbBits = 0;
+
+  if (data.size() < sizeof(uint64_t)) {
+    if (data.empty()) {
+      return out;
+    }
+    // The whole string fits in the window. Its 1 to 7 bytes are read from overlapping loads instead of a loop.
+    const std::size_t size = data.size();
+    const uint64_t bytes = size >= sizeof(uint32_t)
+                               ? (static_cast<uint64_t>(Read32BE(pIn)) << 32U) |
+                                     (static_cast<uint64_t>(Read32BE(pEnd - sizeof(uint32_t))) << (64U - (8U * size)))
+                               : (static_cast<uint64_t>(pIn[0]) << 56U) |
+                                     (static_cast<uint64_t>(pIn[size / 2]) << (56U - (8U * (size / 2)))) |
+                                     (static_cast<uint64_t>(pEnd[-1]) << (64U - (8U * size)));
+    nbBits = static_cast<uint32_t>(8U * size);
+    window = ~bytes & (~uint64_t{0} << (64U - nbBits));
+    pIn = pEnd;
+  }
+
+  while (true) {
+    // Refill the window to at least 56 bits, unless the whole input is in it. A string is at least 8 bytes long here if
+    // some of its bytes are still to read: its last ones are taken from its last 8 bytes.
+    const auto nbBytesLeft = static_cast<std::size_t>(pEnd - pIn);
+    if (nbBytesLeft >= sizeof(uint64_t)) {
+      assert(nbBits <= 63U);
+      window |= ~Read64BE(pIn) >> nbBits;
+      pIn += (63U - nbBits) >> 3U;
+      nbBits |= 56U;
+    } else if (nbBytesLeft != 0) {
+      assert(nbBits <= 63U);
+      window |= (~Read64BE(pEnd - sizeof(uint64_t)) << (64U - (8U * nbBytesLeft))) >> nbBits;
+      const uint32_t nbBytesRead = std::min(static_cast<uint32_t>(nbBytesLeft), (63U - nbBits) >> 3U);
+      pIn += nbBytesRead;
+      nbBits += 8U * nbBytesRead;
+    }
+
+    // Tier 1: a fixed number of short codes, whose only way out is a top byte starting with a longer code, which the
+    // end of the input looks like.
+    uint32_t nbShortCodesLeft = kNbShortCodesPerRefill;
+    do {
+      const auto top = static_cast<std::size_t>(window >> 56U);
+      if (top <= kHuffmanShortCodes.maxLongTop) [[unlikely]] {
+        break;
+      }
+      *out++ = static_cast<char>(kHuffmanShortCodes.symbols[top]);
+      const uint64_t extraBits = (kHuffmanShortCodes.extraBits >> ((window >> 58U) & 62U)) & 3U;
+      window = (window << kHuffmanMinBits) << extraBits;
+      nbBits -= kHuffmanMinBits + static_cast<uint32_t>(extraBits);
+    } while (--nbShortCodesLeft != 0);
+
+    if (nbShortCodesLeft == 0) {
+      continue;
+    }
+
+    // Tier 2: a longer code, or the end of the input.
+    if (nbBits < kHuffmanMaxBits && pIn != pEnd) {
+      continue;  // The window may not hold the whole code yet
+    }
+    if (nbBits < 8U) {
+      // The whole input is in the window, less than a byte of it being left: the padding, which is the beginning of
+      // EOS (1s only) as it is the one of a long code.
+      return out;
+    }
+    // EOS is a decoding error (RFC 7541 §5.2). The window being all 1s past the end of the input, it is also what the
+    // other malformed strings read as: a padding of 8 bits or more, and what follows a code that the input ends within
+    // (its bits were counted beyond the ones of the input: the count wrapped around).
+    const auto [symbol, bitLength] = DecodeHuffmanCanonical(~window);
+    assert(nbBits <= 63U || symbol == kHuffmanEosSymbol);
+    if (symbol == kHuffmanEosSymbol) {
+      return nullptr;
+    }
+    *out++ = static_cast<char>(symbol);
+    window <<= bitLength;
+    nbBits -= bitLength;
   }
 }
 
@@ -641,6 +759,20 @@ bool HpackDynamicTable::add(std::string_view name, std::string_view value, std::
   _currentSizeBytes += entrySize;
 
   return true;
+}
+
+uint32_t HpackDynamicTable::findTag(uint32_t index, uint32_t endIndex, std::size_t tag,
+                                    std::size_t mask) const noexcept {
+  assert(index <= endIndex && endIndex <= entryCount());
+  const Entry* const pEntriesEnd = _entries.data() + _entries.size();
+  const Entry* const pFirst = pEntriesEnd - endIndex;
+  for (const Entry* pEntry = pEntriesEnd - index; pEntry != pFirst;) {
+    --pEntry;
+    if (((pEntry->tag ^ tag) & mask) == 0) {
+      return static_cast<uint32_t>(pEntriesEnd - 1 - pEntry);
+    }
+  }
+  return endIndex;
 }
 
 void HpackDynamicTable::setMaxSize(uint32_t maxSize) {
@@ -985,112 +1117,19 @@ HpackDecoder::DecodedString HpackDecoder::decodeString(std::span<const std::byte
 }
 
 std::string_view HpackDecoder::decodeHuffman(std::span<const std::byte> data) {
-  // Max decoded length for N input bytes: at most floor(8*N/5) symbols.
-  const auto maxLen = (data.size() * 8U) / 5;
+  // At most one symbol per kHuffmanMinBits bits, plus the one that a malformed string may end with (see DecodeHuffman).
+  const auto maxLen = ((data.size() * 8U) / kHuffmanMinBits) + 1U;
   DecodedHeaders::Storage& storage = _decodedHeaders.storage;
   char* const buf = storage.allocateAndDefaultConstruct(maxLen);
-  char* out = buf;
-
-  const std::byte* pIn = data.data();
-  const std::byte* const pEnd = pIn + data.size();
-
-  // Bit buffer: accumulates bits for decoding, MSB-aligned. The bits below the bitsInBuffer counted ones are either 0
-  // or the next bits of the input (left there by the bulk refill), so OR-ing an input byte at its position is
-  // idempotent.
-  uint64_t bitBuffer = 0;
-  uint32_t bitsInBuffer = 0;
-
-  // Fast path, while 8 input bytes can be loaded at once: a branchless refill to at least 56 bits, then decode while
-  // the longest code (30 bits) is present, so that no padding mask nor bit count check is on the dependency chain.
-  while (pEnd - pIn >= 8) {
-    bitBuffer |= Read64BE(pIn) >> bitsInBuffer;
-    pIn += (63U - bitsInBuffer) >> 3U;
-    bitsInBuffer |= 56U;
-    do {
-      const auto& entry = kHuffmanDecodeTable[static_cast<std::size_t>(bitBuffer >> (64U - kHuffmanLevel1Bits))];
-      uint32_t symbol = entry.symbol;
-      uint32_t bitLength = entry.bitsUsed;
-      if (bitLength == 0) [[unlikely]] {
-        const auto canonical = DecodeHuffmanCanonical(bitBuffer);
-        if (canonical.symbol == 256) {
-          storage.shrinkLastAllocated(buf, 0);
-          return {};  // EOS must not appear in the data (RFC 7541 §5.2)
-        }
-        symbol = canonical.symbol;
-        bitLength = canonical.bitLength;
-      }
-      *out++ = static_cast<char>(symbol);
-      bitBuffer <<= bitLength;
-      bitsInBuffer -= bitLength;
-    } while (bitsInBuffer >= 30U);
-  }
-
-  while (true) {
-    // Refill bit buffer - pack bytes from MSB side.
-    // Stopping at 55 caps bitsInBuffer at 63, which keeps the padding shift below the width of the type while still
-    // guaranteeing the 30 bits the longest code needs.
-    while (bitsInBuffer <= 55U && pIn != pEnd) {
-      bitBuffer |= static_cast<uint64_t>(static_cast<uint8_t>(*pIn)) << (56U - bitsInBuffer);
-      bitsInBuffer += 8U;
-      ++pIn;
-    }
-
-    if (bitsInBuffer == 0) {
-      break;
-    }
-
-    // Set every bit past the real ones, so a lookup never depends on how many bits are left. A valid stream is padded
-    // with the EOS prefix (all 1s), so this reproduces exactly what the encoder wrote and lets the tier-1 table serve
-    // the final symbol of the string. Without it the tail of *every* string would fall through to the slow path.
-    const uint64_t window = bitBuffer | (~uint64_t{0} >> bitsInBuffer);
-
-    const auto& entry = kHuffmanDecodeTable[static_cast<std::size_t>(window >> (64U - kHuffmanLevel1Bits))];
-    uint16_t symbol = entry.symbol;
-    uint8_t bitLength = entry.bitsUsed;
-
-    if (bitLength == 0) {
-      // Code is longer than the tier-1 window: decode canonically.
-      const auto canonical = DecodeHuffmanCanonical(window);
-      symbol = canonical.symbol;
-      bitLength = canonical.bitLength;
-    }
-
-    // Must come before the EOS test: trailing padding is all 1s, which is the EOS prefix, so a tail of padding always
-    // "decodes" to EOS. Only a code that fits in the bits actually present is a real symbol.
-    if (bitsInBuffer < bitLength) {
-      break;  // What is left is padding; validated below.
-    }
-
-    if (symbol == 256) [[unlikely]] {
-      storage.shrinkLastAllocated(buf, 0);
-      return {};  // EOS must not appear in the data (RFC 7541 §5.2)
-    }
-
-    assert(symbol < 256);
-    assert(out < buf + maxLen);
-    *out++ = static_cast<char>(symbol);
-
-    bitBuffer <<= bitLength;
-    bitsInBuffer -= bitLength;
-  }
-
-  // Validate remaining bits are EOS padding (all 1s, less than 8 bits)
-  if (bitsInBuffer != 0) {
-    if (bitsInBuffer > 7) {
-      storage.shrinkLastAllocated(buf, 0);
-      return {};  // Too many leftover bits
-    }
-    // Check that remaining bits are all 1s (EOS prefix)
-    const auto remainingBits = static_cast<uint8_t>(bitBuffer >> (64U - bitsInBuffer));
-    const uint8_t expectedPadding = static_cast<uint8_t>((1U << bitsInBuffer) - 1);
-    if (remainingBits != expectedPadding) {
-      storage.shrinkLastAllocated(buf, 0);
-      return {};  // Invalid padding
-    }
+  const char* const end = DecodeHuffman(data, buf);
+  if (end == nullptr) {
+    storage.shrinkLastAllocated(buf, 0);
+    return {};
   }
 
   // The decoded string stays in the storage, the decoded headers pointing to it: give back the unused part.
-  const auto sz = static_cast<std::size_t>(out - buf);
+  const auto sz = static_cast<std::size_t>(end - buf);
+  assert(sz < maxLen);
   storage.shrinkLastAllocated(buf, sz);
   return {buf, sz};
 }
@@ -1304,6 +1343,42 @@ constexpr std::size_t kDynamicIndexMinEntries = 128U;
 // entry where the field was last found.
 constexpr uint32_t kNbNewestEntriesScannedFirst = 4U;
 
+template <class T>
+[[nodiscard]] T LoadNative(const char* pData) noexcept {
+  T ret;
+  std::memcpy(&ret, pData, sizeof(T));
+  return ret;
+}
+
+// 32 bits from the size and the first and last 8 bytes of a string (all its bytes if it is shorter): what differs
+// between the names, and between the values of a name, in the dynamic table of an encoder (dates, identifiers...).
+[[nodiscard]] uint32_t StringFingerprint(std::string_view str) noexcept {
+  const char* const pData = str.data();
+  const std::size_t size = str.size();
+  uint64_t edges = 0;
+  if (size >= sizeof(uint64_t)) {
+    edges = LoadNative<uint64_t>(pData) ^ std::rotl(LoadNative<uint64_t>(pData + size - sizeof(uint64_t)), 32);
+  } else if (size >= sizeof(uint32_t)) {
+    edges = LoadNative<uint32_t>(pData) |
+            (static_cast<uint64_t>(LoadNative<uint32_t>(pData + size - sizeof(uint32_t))) << 32U);
+  } else if (size != 0) {
+    edges = static_cast<uint64_t>(static_cast<uint8_t>(pData[0])) |
+            (static_cast<uint64_t>(static_cast<uint8_t>(pData[size / 2U])) << 8U) |
+            (static_cast<uint64_t>(static_cast<uint8_t>(pData[size - 1])) << 16U);
+  }
+  // The high half of the product depends on every bit of its factor.
+  return static_cast<uint32_t>(((edges ^ size) * 0x9E3779B97F4A7C15ULL) >> 32U);
+}
+
+// The fingerprint of a field, kept as the tag of its entry in the dynamic table of an encoder: a lookup compares the
+// strings of the entries whose tag has the half of the name of the field only. Its high half is the one of the name.
+// Out of line, as its two call sites would otherwise grow the lookup of the fields that repeat.
+[[nodiscard]] AERONET_NOINLINE std::size_t FieldFingerprint(std::string_view name, std::string_view value) noexcept {
+  return (static_cast<std::size_t>(StringFingerprint(name)) << 32U) | StringFingerprint(value);
+}
+
+constexpr std::size_t kNameFingerprintMask = ~std::size_t{0} << 32U;
+
 [[nodiscard]] uint32_t HpackDynamicTableIndex(std::size_t tableIdx) noexcept {
   return static_cast<uint32_t>(std::size(kStaticTable) + 1U + tableIdx);
 }
@@ -1408,6 +1483,35 @@ void HpackEncoder::resetDynamicIndex() {
 
 namespace {
 
+// Number of bytes of an integer representation (RFC 7541 §5.1).
+constexpr std::size_t IntegerSize(uint64_t value, uint8_t prefixBits) noexcept {
+  const uint64_t maxPrefix = (uint64_t{1} << prefixBits) - 1U;
+  if (value < maxPrefix) {
+    return 1U;
+  }
+  value -= maxPrefix;
+  // 1 byte per 7 bits, minimum 1 byte
+  return 1U + (value < 128U ? 1U : (static_cast<std::size_t>(std::bit_width(value)) + 6U) / 7);
+}
+
+// Write an integer representation (RFC 7541 §5.1) at pData, which has room for the IntegerSize() bytes of it.
+// Returns the end of the integer.
+std::byte* WriteInteger(std::byte* pData, uint64_t value, uint8_t prefixBits, uint8_t prefixMask) noexcept {
+  const uint8_t maxPrefix = static_cast<uint8_t>((1U << prefixBits) - 1U);
+
+  if (value < maxPrefix) {
+    *pData++ = static_cast<std::byte>(prefixMask | static_cast<uint8_t>(value));
+    return pData;
+  }
+
+  *pData++ = static_cast<std::byte>(prefixMask | maxPrefix);
+  for (value -= maxPrefix; value >= 128U; value >>= 7U) {
+    *pData++ = static_cast<std::byte>((value & 0x7FU) | 0x80U);
+  }
+  *pData++ = static_cast<std::byte>(value);
+  return pData;
+}
+
 void EncodeInteger(RawBytes& output, uint64_t value, uint8_t prefixBits, uint8_t prefixMask) {
   const uint8_t maxPrefix = static_cast<uint8_t>((1U << prefixBits) - 1U);
 
@@ -1416,70 +1520,104 @@ void EncodeInteger(RawBytes& output, uint64_t value, uint8_t prefixBits, uint8_t
     return;
   }
 
-  value -= maxPrefix;
+  output.ensureAvailableCapacityExponential(IntegerSize(value, prefixBits));
+  output.setEnd(WriteInteger(output.data() + output.size(), value, prefixBits, prefixMask));
+}
 
-  // Bytes needed to varint-encode `value`: 1 byte per 7 bits, minimum 1 byte
-  // (this matches exactly what the while-loop below produces).
-  const std::size_t continuationBytes = value < 128U ? 1U : (static_cast<std::size_t>(std::bit_width(value)) + 6U) / 7;
+/// Write the Huffman encoding (RFC 7541 §5.2) of 'str' at 'out' if it is shorter than 'str'.
+/// 'out' has room for 8 bytes more than the size of 'str'.
+/// Returns the size of the Huffman string, 0 if it is not shorter than 'str' ('out' then holds no usable data).
+std::size_t EncodeHuffmanIfShorter(std::string_view str, std::byte* out) noexcept {
+  // Number of symbols encoded at once, and the number of bits of their codes up to which they are: with the 7 pending
+  // bits at most, they fit in 64 bits.
+  static constexpr std::ptrdiff_t kNbSymbolsAtOnce = 4;
+  static constexpr uint32_t kMaxBitsAtOnce = 56;
 
-  output.ensureAvailableCapacityExponential(1U + continuationBytes);
+  const char* pStr = str.data();
+  const char* const pStrEnd = pStr + str.size();
+  std::byte* pOut = out;
+  // The Huffman string is not shorter once its whole bytes reach this limit.
+  const std::byte* const pOutLimit = out + str.size();
 
-  std::byte* pData = output.data() + output.size();
+  // The bits of the codes, the nbPendingBits last ones (0 to 7 between two writes) being not written yet.
+  uint64_t bits = 0;
+  uint32_t nbPendingBits = 0;
 
-  *pData++ = static_cast<std::byte>(prefixMask | maxPrefix);
+  // Write the pending bits, at least kHuffmanMinBits of them. 8 bytes are always written, of which only the whole bytes
+  // of pending bits are kept: there is no branch depending on the lengths of the codes.
+  // Returns whether the Huffman string may still be shorter.
+  const auto writePendingBits = [&] {
+    Write64BE(pOut, bits << (64U - nbPendingBits));
+    pOut += nbPendingBits >> 3U;
+    nbPendingBits &= 7U;
+    return pOut < pOutLimit;
+  };
 
-  while (value >= 128U) {
-    *pData++ = static_cast<std::byte>((value & 0x7FU) | 0x80U);
-    value >>= 7U;
+  // Four symbols at once while their codes are not too long (the ones of header text never are): their bits are
+  // gathered apart from the pending ones, which the next symbols only wait for through one shift.
+  while (pStrEnd - pStr >= kNbSymbolsAtOnce) {
+    const HuffmanCode code1 = kHuffmanCodes[static_cast<uint8_t>(pStr[0])];
+    const HuffmanCode code2 = kHuffmanCodes[static_cast<uint8_t>(pStr[1])];
+    const HuffmanCode code3 = kHuffmanCodes[static_cast<uint8_t>(pStr[2])];
+    const HuffmanCode code4 = kHuffmanCodes[static_cast<uint8_t>(pStr[3])];
+    const uint32_t nbBits12 = uint32_t{code1.bitLength} + code2.bitLength;
+    const uint32_t nbBits34 = uint32_t{code3.bitLength} + code4.bitLength;
+    const uint32_t nbBits = nbBits12 + nbBits34;
+    if (nbBits > kMaxBitsAtOnce) [[unlikely]] {
+      break;
+    }
+    pStr += kNbSymbolsAtOnce;
+    const uint64_t bits12 = (uint64_t{code1.code} << code2.bitLength) | code2.code;
+    const uint64_t bits34 = (uint64_t{code3.code} << code4.bitLength) | code4.code;
+    bits = (bits << nbBits) | (bits12 << nbBits34) | bits34;
+    nbPendingBits += nbBits;
+    if (!writePendingBits()) [[unlikely]] {
+      return 0;
+    }
   }
-  *pData++ = static_cast<std::byte>(value);
 
-  output.setEnd(pData);
+  // The last symbols, and the ones of a string holding long codes
+  for (; pStr != pStrEnd; ++pStr) {
+    const HuffmanCode code = kHuffmanCodes[static_cast<uint8_t>(*pStr)];
+    bits = (bits << code.bitLength) | code.code;
+    nbPendingBits += code.bitLength;
+    if (!writePendingBits()) [[unlikely]] {
+      return 0;
+    }
+  }
+
+  if (nbPendingBits != 0) {
+    // Pad with the beginning of EOS (all 1s)
+    *pOut++ = static_cast<std::byte>((bits << (8U - nbPendingBits)) | (0xFFU >> nbPendingBits));
+    if (pOut == pOutLimit) {
+      return 0;
+    }
+  }
+  return static_cast<std::size_t>(pOut - out);
 }
 
-std::size_t HuffmanEncodedLength(std::string_view str) noexcept {
-  return std::transform_reduce(str.begin(), str.end(), std::size_t{7}, std::plus<>{},
-                               [](uint8_t ch) { return kHuffmanCodes[ch].bitLength; }) /
-         8;
-}
-
+// Encode a string literal (RFC 7541 §5.2): as a Huffman string if it is shorter, as a raw one otherwise.
 void EncodeString(RawBytes& output, std::string_view str) {
-  const std::size_t encodedLen = HuffmanEncodedLength(str);
-  if (encodedLen < str.size()) {
-    // Huffman encoding is more efficient.
+  // The length of a Huffman string is only known once encoded: it is encoded after the room of its longest possible
+  // length prefix, the one of the raw string.
+  const std::size_t rawPrefixSize = IntegerSize(str.size(), 7);
+  output.ensureAvailableCapacityExponential(rawPrefixSize + str.size() + sizeof(uint64_t));
 
-    /// Encode 'str' with the RFC 7541 Huffman code. 'encodedLen' must be HuffmanEncodedLength(str): the caller already
-    /// needs it to decide between Huffman and raw, so it is passed in rather than walking the string a second time.
-    EncodeInteger(output, encodedLen, 7, 0x80);
-    uint64_t currentCode = 0;
-    uint8_t currentBits = 0;
+  std::byte* const pPrefix = output.data() + output.size();
+  std::byte* pString = pPrefix + rawPrefixSize;
 
-    assert(encodedLen == HuffmanEncodedLength(str));
-    output.ensureAvailableCapacityExponential(encodedLen);
-
-    std::byte* pData = output.data() + output.size();
-
-    for (char ch : str) {
-      const auto code = kHuffmanCodes[static_cast<uint8_t>(ch)];
-
-      currentCode = (currentCode << code.bitLength) | code.code;
-      currentBits += code.bitLength;
-      while (currentBits >= 8U) {
-        currentBits -= static_cast<uint8_t>(8U);
-        *pData++ = static_cast<std::byte>((currentCode >> currentBits) & 0xFFU);
-      }
+  const std::size_t huffmanSize = EncodeHuffmanIfShorter(str, pString);
+  if (huffmanSize != 0) {
+    std::byte* const pHuffman = WriteInteger(pPrefix, huffmanSize, 7, 0x80);
+    if (pHuffman != pString) {
+      // A shorter length prefix than the one of the raw string, whose size is 127 bytes at least
+      std::memmove(pHuffman, pString, huffmanSize);
     }
-
-    // Pad with EOS prefix (all 1s)
-    if (currentBits > 0) {
-      const uint8_t padding = static_cast<uint8_t>((1U << static_cast<uint8_t>(8U - currentBits)) - 1U);
-      *pData++ = static_cast<std::byte>((currentCode << static_cast<uint8_t>(8U - currentBits)) | padding);
-    }
-    output.setEnd(pData);
+    output.setEnd(pHuffman + huffmanSize);
   } else {
-    // Raw string (no Huffman)
-    EncodeInteger(output, str.size(), 7, 0x00);
-    output.append(reinterpret_cast<const std::byte*>(str.data()), str.size());
+    pString = WriteInteger(pPrefix, str.size(), 7, 0x00);
+    Copy(str, reinterpret_cast<char*>(pString));
+    output.setEnd(pString + str.size());
   }
 }
 
@@ -1549,7 +1687,7 @@ uint64_t HpackEncoder::encode(RawBytes& output, std::string_view name, std::stri
   const auto headerFieldSize = name.size() + value.size() + kHpackOverhead;
 
   // Try to find in tables
-  const auto lookup = findHeader(name, value, mode);
+  const auto [lookup, fingerprint] = lookUpField(name, value, mode);
 
   if (lookup.match == HpackLookupResult::Match::Full) {
     // Indexed Header Field (RFC 7541 §6.1)
@@ -1564,7 +1702,7 @@ uint64_t HpackEncoder::encode(RawBytes& output, std::string_view name, std::stri
     EncodeNameValue(output, name, value, lookup, 6, 0x40);
 
     // Add to dynamic table. Large tables get a lazy encoder-only index once a linear scan becomes expensive.
-    const bool added = _dynamicTable.add(name, value);
+    const bool added = _dynamicTable.add(name, value, fingerprint);
     _nbAdded += static_cast<uint32_t>(added);
     if (!_dynamicIndex.empty()) {
       if (added) {
@@ -1639,7 +1777,7 @@ void HpackEncoder::rememberFound(FoundMemoSlots slots, uint32_t idx) noexcept {
   _foundMemo[firstInUse && !secondInUse ? slots.second : slots.first] = _nbAdded - idx;
 }
 
-HpackLookupResult HpackEncoder::findHeader(std::string_view name, std::string_view value, IndexingMode mode) {
+HpackEncoder::FieldLookup HpackEncoder::lookUpField(std::string_view name, std::string_view value, IndexingMode mode) {
   assert(!name.empty());  // header name should be already validated.
   assert(std::ranges::none_of(name, [](char ch) { return ch >= 'A' && ch <= 'Z'; }));
 
@@ -1660,7 +1798,7 @@ HpackLookupResult HpackEncoder::findHeader(std::string_view name, std::string_vi
         if (entry.value == value) {
           result.index = 1U + entryIdx;
           result.match = HpackLookupResult::Match::Full;
-          return result;
+          return {result, 0};
         }
       }
     }
@@ -1670,35 +1808,28 @@ HpackLookupResult HpackEncoder::findHeader(std::string_view name, std::string_vi
   // filled by this encoder only, holds it only if an earlier field of that name was indexed, which is rare enough (a
   // global header named like it) not to scan the whole table for each of them.
   if (mode != IndexingMode::Indexed && result.match == HpackLookupResult::Match::NameOnly) {
-    return result;
+    return {result, 0};
   }
 
   const auto entryCount = static_cast<uint32_t>(_dynamicTable.entryCount());
   uint32_t idx = 0;
-  // Look for the field in the entries from idx to endIdx (excluded), the recently added ones first. Returns true if
-  // found, idx being its entry.
-  // A name match keeps the first index found, the smallest one: a name of the static table keeps its index, which takes
-  // fewer bytes than the ones of the dynamic table from its second entry on (63 and more do not fit in a 6-bit prefix).
-  const auto scanEntries = [&](uint32_t endIdx) {
-    for (; idx < endIdx; ++idx) {
+  // Small dynamic tables are faster as a contiguous linear scan comparing the strings, their sizes first. Its newest
+  // entries first: all of them on a new connection, and the field values that just changed (the date of the second).
+  if (_dynamicIndex.empty()) {
+    for (const uint32_t endIdx = std::min(entryCount, kNbNewestEntriesScannedFirst); idx < endIdx; ++idx) {
       const http::Header& entry = _dynamicTable[idx];
       if (entry.name() == name) {
         if (entry.value() == value) {
-          result = {HpackLookupResult::Match::Full, HpackDynamicTableIndex(idx)};
-          return true;
+          return {{HpackLookupResult::Match::Full, HpackDynamicTableIndex(idx)}, 0};
         }
         if (result.match == HpackLookupResult::Match::None) {
           result = {HpackLookupResult::Match::NameOnly, HpackDynamicTableIndex(idx)};
         }
       }
     }
-    return false;
-  };
-
-  // Small dynamic tables are faster and smaller as a contiguous linear scan. Its newest entries first: all of them on
-  // a new connection, and the field values that just changed (the date of the second).
-  if (_dynamicIndex.empty() && (scanEntries(std::min(entryCount, kNbNewestEntriesScannedFirst)) || idx == entryCount)) {
-    return result;
+    if (idx == entryCount) {
+      return {result, FieldFingerprint(name, value)};
+    }
   }
 
   // Then the entry where this field was last found, the messages of a connection repeating their fields, whatever the
@@ -1707,23 +1838,49 @@ HpackLookupResult HpackEncoder::findHeader(std::string_view name, std::string_vi
   const FoundMemoSlots memoSlots = FoundMemoSlotsOf(name, value);
   for (const uint32_t slot : {memoSlots.first, memoSlots.second}) {
     if (const uint32_t memoIdx = foundMemoIndex(slot, name, value); memoIdx != entryCount) {
-      return {HpackLookupResult::Match::Full, HpackDynamicTableIndex(memoIdx)};
+      return {{HpackLookupResult::Match::Full, HpackDynamicTableIndex(memoIdx)}, 0};
     }
   }
 
+  return lookUpOlderEntries(name, value, result);
+}
+
+HpackEncoder::FieldLookup HpackEncoder::lookUpOlderEntries(std::string_view name, std::string_view value,
+                                                           HpackLookupResult result) {
+  const std::size_t fingerprint = FieldFingerprint(name, value);
+  const FoundMemoSlots memoSlots = FoundMemoSlotsOf(name, value);
   if (!_dynamicIndex.empty()) {
     const auto indexed = findDynamicHeaderIndexed(name, value);
     if (indexed.match == HpackLookupResult::Match::Full) {
       rememberFound(memoSlots, indexed.index - HpackDynamicTableIndex(0));
-      return indexed;
+      return {indexed, fingerprint};
     }
-    return result.match == HpackLookupResult::Match::None ? indexed : result;
+    return {result.match == HpackLookupResult::Match::None ? indexed : result, fingerprint};
   }
 
-  if (scanEntries(entryCount)) {
-    rememberFound(memoSlots, idx);
+  // Compare the strings of an entry only if its tag, the fingerprint of its field, may be the one of this field: while
+  // no entry of the table has this name, the entries whose tag has the half of this name, then the entries whose tag is
+  // the fingerprint of this field.
+  // A name match keeps the first index found, the smallest one: a name of the static table keeps its index, which takes
+  // fewer bytes than the ones of the dynamic table from its second entry on (63 and more do not fit in a 6-bit prefix).
+  // The newest entries were scanned already.
+  const auto entryCount = static_cast<uint32_t>(_dynamicTable.entryCount());
+  for (uint32_t idx = std::min(entryCount, kNbNewestEntriesScannedFirst);; ++idx) {
+    idx =
+        _dynamicTable.findTag(idx, entryCount, fingerprint,
+                              result.match == HpackLookupResult::Match::None ? kNameFingerprintMask : ~std::size_t{0});
+    if (idx == entryCount) {
+      return {result, fingerprint};
+    }
+    const http::Header& entry = _dynamicTable[idx];
+    if (_dynamicTable.tag(idx) == fingerprint && entry.name() == name && entry.value() == value) {
+      rememberFound(memoSlots, idx);
+      return {{HpackLookupResult::Match::Full, HpackDynamicTableIndex(idx)}, fingerprint};
+    }
+    if (result.match == HpackLookupResult::Match::None && entry.name() == name) {
+      result = {HpackLookupResult::Match::NameOnly, HpackDynamicTableIndex(idx)};
+    }
   }
-  return result;
 }
 
 }  // namespace aeronet::http2
