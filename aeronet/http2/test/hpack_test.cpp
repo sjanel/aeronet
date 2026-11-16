@@ -2385,8 +2385,8 @@ TEST(HpackHuffman, RoundTripsMixedLengthStrings) {
   }
 }
 
-// The decoder reads 8 input bytes at a time while at least 8 are left, then byte per byte: these tests put the symbol
-// under test at every bit position of strings long enough for both phases.
+// The decoder reads 8 input bytes at a time while at least 8 are left, then the last ones at once: these tests put the
+// symbol under test at every bit position of strings long enough for both phases.
 namespace {
 
 // The bits of a Huffman string, written MSB first.
@@ -3109,6 +3109,88 @@ TEST(HpackRoundTrip, RandomRepeatedFieldsThroughSmallAndLargeTables) {
       ASSERT_NO_FATAL_FAILURE(ExpectDecodesTo(decoder, block, std::span<const http::HeaderView>(fields, nbFields)))
           << tableSize << " " << message;
       ASSERT_EQ(encoder.dynamicTable().entryCount(), decoder.dynamicTable().entryCount());
+    }
+  }
+}
+
+namespace {
+
+// What a lookup finds by comparing the strings of every entry of the static and dynamic tables.
+HpackLookupResult LookUpByComparingEveryEntry(const HpackDynamicTable& table, std::string_view name,
+                                              std::string_view value) {
+  HpackLookupResult result;
+  const auto staticTable = GetHpackStaticTable();
+  for (uint32_t idx = 0; idx < staticTable.size(); ++idx) {
+    if (staticTable[idx].name == name) {
+      if (staticTable[idx].value == value) {
+        return {HpackLookupResult::Match::Full, idx + 1U};
+      }
+      if (result.match == HpackLookupResult::Match::None) {
+        result = {HpackLookupResult::Match::NameOnly, idx + 1U};
+      }
+    }
+  }
+  for (uint32_t idx = 0; idx < table.entryCount(); ++idx) {
+    if (table[idx].name() == name) {
+      if (table[idx].value() == value) {
+        return {HpackLookupResult::Match::Full, static_cast<uint32_t>(staticTable.size()) + 1U + idx};
+      }
+      if (result.match == HpackLookupResult::Match::None) {
+        result = {HpackLookupResult::Match::NameOnly, static_cast<uint32_t>(staticTable.size()) + 1U + idx};
+      }
+    }
+  }
+  return result;
+}
+
+}  // namespace
+
+// The encoder compares the strings of an entry only if the fingerprint of its field, from the sizes and the first and
+// last 8 bytes of its name and value, is the one of the field looked up. Names and values differing in their middle
+// bytes only have the same fingerprints: a lookup still finds what comparing every entry finds, through small tables,
+// tables whose lookups are indexed (128 entries and more), the newest entries and the remembered ones.
+TEST(HpackEncoder, FieldsWithTheSameFingerprintAreToldApart) {
+  vector<std::string> names;
+  for (const char middle : {'a', 'b', 'c'}) {
+    names.push_back(std::string("x-header") + middle + "-suffix1");
+  }
+  names.emplace_back("x-other");
+  names.emplace_back("content-type");  // in the static table
+  vector<std::string> values;
+  for (int middle = 0; middle < 40; ++middle) {
+    values.push_back("value-12" + std::to_string(1000 + middle) + "-34-tail");
+  }
+  values.emplace_back("value-12-34-tail");  // the same edges, another size
+  std::mt19937 rng(20261116);               // NOLINT(bugprone-random-generator-seed)
+
+  for (const uint32_t tableSize : {300U, 4096U, 16384U}) {
+    HpackEncoder encoder(tableSize);
+    HpackDecoder decoder(tableSize, std::numeric_limits<uint32_t>::max(), true);
+    std::size_t nbFull = 0;
+    std::size_t nbNameOnly = 0;
+    for (int message = 0; message < 1500; ++message) {
+      // One draw per statement: the order of the operands of % is unspecified, the draws would differ per compiler.
+      const std::string& name = names[rng() % names.size()];
+      // A few values more often than the others: some are found again while still in the table.
+      const std::mt19937::result_type valueDraw = rng();
+      const std::size_t nbCandidateValues = rng() % 2U == 0 ? 4U : values.size();
+      const std::string& value = values[static_cast<uint32_t>(valueDraw % nbCandidateValues)];
+      const HpackLookupResult expected = LookUpByComparingEveryEntry(encoder.dynamicTable(), name, value);
+      const HpackLookupResult lookup = encoder.findHeader(name, value);
+      ASSERT_EQ(lookup.match, expected.match) << tableSize << " " << message << " " << name << ": " << value;
+      ASSERT_EQ(lookup.index, expected.index) << tableSize << " " << message << " " << name << ": " << value;
+      nbFull += static_cast<std::size_t>(lookup.match == HpackLookupResult::Match::Full);
+      nbNameOnly += static_cast<std::size_t>(lookup.match == HpackLookupResult::Match::NameOnly);
+
+      RawBytes block;
+      encoder.encode(block, name, value);
+      const http::HeaderView fields[]{{name, value}};
+      ASSERT_NO_FATAL_FAILURE(ExpectDecodesTo(decoder, block, fields)) << tableSize << " " << message;
+    }
+    EXPECT_GT(nbFull, 100U) << tableSize;
+    EXPECT_GT(nbNameOnly, 100U) << tableSize;
+    if (tableSize == 16384U) {
+      EXPECT_GE(encoder.dynamicTable().entryCount(), 128U);
     }
   }
 }
@@ -4556,9 +4638,11 @@ TEST(HpackAudit, EncoderBlocksAreDecodedByTheModelUnderTableSizeChanges) {
           return ch;
         });
         break;
-      case 5:  // larger than the small tables
-        value.assign(200U + (rng() % 1000U), static_cast<char>('a' + (rng() % 26U)));
+      case 5: {  // larger than the small tables - one draw per statement, as function arguments are unsequenced
+        const std::size_t size = 200U + (rng() % 1000U);
+        value.assign(size, static_cast<char>('a' + (rng() % 26U)));
         break;
+      }
       default:
         value = std::to_string(rng());
         break;
@@ -4574,6 +4658,15 @@ TEST(HpackAudit, EncoderBlocksAreDecodedByTheModelUnderTableSizeChanges) {
   std::size_t nbEvictingBlocks = 0;
   std::size_t nbSizeUpdates = 0;
 
+  struct Field {
+    std::string_view name;
+    std::string value;
+    Mode mode;
+  };
+
+  vector<Field> fields;
+  RawBytes block;
+
   for (int message = 0; message < 3000; ++message) {
     if (rng() % 6U == 0) {
       for (uint32_t nbChanges = 1U + (rng() % 3U); nbChanges != 0; --nbChanges) {
@@ -4584,19 +4677,13 @@ TEST(HpackAudit, EncoderBlocksAreDecodedByTheModelUnderTableSizeChanges) {
       }
     }
 
-    struct Field {
-      std::string_view name;
-      std::string value;
-      Mode mode;
-    };
-    vector<Field> fields;
-    RawBytes block;
+    fields.clear();
+    block.clear();
     for (const std::string_view name : kNames) {
       if (rng() % 3U == 0) {
         continue;
       }
-      fields.push_back(Field{name, randomValue(), Mode::Indexed});
-      Field& field = fields.back();
+      Field& field = fields.emplace_back(name, randomValue(), Mode::Indexed);
       field.mode = rng() % 4U == 0 ? static_cast<Mode>(rng() % 3U) : HpackEncoder::IndexingModeOf(name, field.value);
       const std::size_t sizeBefore = block.size();
       EXPECT_EQ(encoder.encode(block, field.name, field.value, field.mode), name.size() + field.value.size() + 32U);
@@ -4610,7 +4697,7 @@ TEST(HpackAudit, EncoderBlocksAreDecodedByTheModelUnderTableSizeChanges) {
       ASSERT_EQ(decodedFields[idx].name, fields[idx].name) << message;
       ASSERT_EQ(decodedFields[idx].value, fields[idx].value) << message << " " << fields[idx].name;
       // The representation follows the mode: only a field found whole in a table is an index.
-      const auto representation = decodedFields[idx].representation;
+      const ModelField::Representation representation = decodedFields[idx].representation;
       if (representation != ModelField::Representation::Indexed) {
         ASSERT_EQ(static_cast<int>(representation), 1 + static_cast<int>(fields[idx].mode)) << fields[idx].name;
       }
@@ -4698,6 +4785,215 @@ TEST(HpackAudit, IndexingPolicyAsSeenByTheModel) {
     }
     ASSERT_NO_FATAL_FAILURE(ExpectSameTable(encoder.dynamicTable(), model));
   }
+}
+
+// ---- The Huffman coding, against the model
+//
+// The decoder reads a string shorter than 8 bytes at once and the others 8 bytes at a time (the last ones from the
+// last 8 bytes of the string), decodes up to 7 short codes after each read, and tells the end of the string from the
+// padding it reads as a long code. The encoder writes 4 symbols at once, and gives up as soon as the Huffman string is
+// not shorter than the raw one. The model reads and writes one bit at a time: they are compared on every small length.
+
+namespace {
+
+// The Huffman string of 'str', from the table of the RFC.
+vector<uint8_t> RfcHuffmanString(std::string_view str) {
+  HuffmanBitWriter writer;
+  for (const char ch : str) {
+    const RfcHuffmanCode code = kRfcHuffmanCodes[static_cast<uint8_t>(ch)];
+    writer.append(code.code, code.nbBits);
+  }
+  return writer.finish();
+}
+
+// Decode a field whose value is the given Huffman string with the decoder and with the model: the same strings are
+// refused, and the same value is decoded from the others.
+void ExpectHuffmanDecodedAsByTheModel(HpackDecoder& decoder, ModelHpackDecoder& model,
+                                      std::span<const uint8_t> huffmanString) {
+  const auto block = LiteralFieldX(huffmanString, true);
+  vector<ModelField> fields;
+  const bool isHuffmanString = model.decode(AsBytes(block), fields);
+  const auto result = decoder.decode(AsBytes(block));
+  if (!isHuffmanString) {
+    ASSERT_EQ(result.error, HpackDecoder::DecodeResult::Error::FailedToDecodeLiteralHeaderValue);
+    return;
+  }
+  ASSERT_EQ(fields.size(), 1U);
+  const std::string_view value = fields[0].value;
+  // A Huffman string may still not be a field value (RFC 9113 §8.2.1).
+  const bool isFieldValue =
+      value.empty() || (!http::IsHeaderWhitespace(value.front()) && !http::IsHeaderWhitespace(value.back()) &&
+                        value.find_first_of(std::string_view("\0\r\n", 3)) == std::string_view::npos);
+  if (!isFieldValue) {
+    ASSERT_EQ(result.error, HpackDecoder::DecodeResult::Error::MalformedFieldValue);
+    return;
+  }
+  ASSERT_TRUE(result.isSuccess());
+  ASSERT_EQ(result.decodedHeaders.headers.find("x")->second, value);
+}
+
+std::string HexOf(std::span<const uint8_t> bytes) {
+  static constexpr char kHexDigits[] = "0123456789abcdef";
+  std::string hex;
+  for (const uint8_t byte : bytes) {
+    hex.push_back(kHexDigits[byte >> 4U]);
+    hex.push_back(kHexDigits[byte & 0x0FU]);
+  }
+  return hex;
+}
+
+// Characters with a code of 5 bits, of 5 to 8 bits (header text), and of 8 bits.
+constexpr std::string_view kFiveBitChars = "012aceiost";
+constexpr std::string_view kShortCodeChars =
+    "012aceiost %-./3456789=A_bdfghlmnpru:BCDEFGHIJKLMNOPQRSTUVWYjkqvwxyz&*,;XZ";
+constexpr std::string_view kEightBitChars = "&*,;XZ";
+
+}  // namespace
+
+TEST(HpackHuffman, EveryStringOfOneAndTwoBytesIsDecodedAsByTheModel) {
+  auto decoder = CreateHpackDecoder();
+  ModelHpackDecoder model(4096);
+  for (uint32_t first = 0; first < 256U; ++first) {
+    const uint8_t oneByte[]{static_cast<uint8_t>(first)};
+    ASSERT_NO_FATAL_FAILURE(ExpectHuffmanDecodedAsByTheModel(decoder, model, oneByte)) << HexOf(oneByte);
+    for (uint32_t second = 0; second < 256U; ++second) {
+      const uint8_t twoBytes[]{static_cast<uint8_t>(first), static_cast<uint8_t>(second)};
+      ASSERT_NO_FATAL_FAILURE(ExpectHuffmanDecodedAsByTheModel(decoder, model, twoBytes)) << HexOf(twoBytes);
+    }
+  }
+}
+
+TEST(HpackHuffman, RandomBytesAreDecodedAsByTheModel) {
+  std::mt19937 rng(7541);  // NOLINT(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
+  auto decoder = CreateHpackDecoder();
+  ModelHpackDecoder model(4096);
+  vector<uint8_t> bytes;
+  for (std::size_t len = 0; len <= 34; ++len) {
+    for (int iter = 0; iter < 1500; ++iter) {
+      bytes.clear();
+      // Bytes with many 1s make long codes and paddings likely.
+      const bool manyOnes = iter % 3 == 0;
+      for (std::size_t pos = 0; pos < len; ++pos) {
+        const auto random = static_cast<uint32_t>(rng());
+        bytes.push_back(static_cast<uint8_t>(manyOnes ? random | (random >> 8U) : random));
+      }
+      ASSERT_NO_FATAL_FAILURE(ExpectHuffmanDecodedAsByTheModel(decoder, model, bytes)) << HexOf(bytes);
+    }
+  }
+}
+
+TEST(HpackHuffman, AlteredHuffmanStringsAreDecodedAsByTheModel) {
+  std::mt19937 rng(9113);  // NOLINT(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
+  auto decoder = CreateHpackDecoder();
+  ModelHpackDecoder model(4096);
+  std::size_t nbValid = 0;
+  for (int iter = 0; iter < 20000; ++iter) {
+    std::string value(rng() % 48U, 'a');
+    // Symbols with long codes in 1 string out of 3.
+    const uint32_t longCodePercent = iter % 3 == 0 ? rng() % 60U : 0U;
+    for (char& ch : value) {
+      ch = rng() % 100U < longCodePercent ? static_cast<char>(rng()) : kShortCodeChars[rng() % kShortCodeChars.size()];
+    }
+    vector<uint8_t> huffmanString = RfcHuffmanString(value);
+    ASSERT_NO_FATAL_FAILURE(ExpectHuffmanDecodedAsByTheModel(decoder, model, huffmanString)) << HexOf(huffmanString);
+    nbValid += decoder.decode(AsBytes(LiteralFieldX(huffmanString, true))).isSuccess() ? 1U : 0U;
+
+    switch (rng() % 6U) {
+      case 0:  // another padding, or another last symbol
+        if (!huffmanString.empty()) {
+          huffmanString.back() = static_cast<uint8_t>(rng());
+        }
+        break;
+      case 1:  // a whole byte of padding
+        huffmanString.push_back(0xFF);
+        break;
+      case 2:  // a string ending within a code
+        if (!huffmanString.empty()) {
+          huffmanString.pop_back();
+        }
+        break;
+      case 3:  // other symbols from some bit on
+        if (!huffmanString.empty()) {
+          huffmanString[rng() % huffmanString.size()] ^= static_cast<uint8_t>(1U << (rng() % 8U));
+        }
+        break;
+      case 4:  // EOS
+        for (uint32_t nbBytes = 1U + (rng() % 4U); nbBytes != 0; --nbBytes) {
+          huffmanString.push_back(0xFF);
+        }
+        break;
+      default:
+        huffmanString.push_back(static_cast<uint8_t>(rng()));
+        break;
+    }
+    ASSERT_NO_FATAL_FAILURE(ExpectHuffmanDecodedAsByTheModel(decoder, model, huffmanString)) << HexOf(huffmanString);
+  }
+  // Most of the strings before alteration are field values: the comparison is not only about refused strings.
+  EXPECT_GT(nbValid, 12000U);
+}
+
+// The string literal written by the encoder is exactly the shortest of the Huffman string of the model and of the raw
+// string, with its length prefix: the one of a Huffman string is shorter than the one of the raw string from 127 and
+// from 255 bytes on.
+TEST(HpackHuffman, EncoderWritesTheShortestOfTheHuffmanAndRawStrings) {
+  std::mt19937 rng(5);  // NOLINT(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
+  enum class Content : uint8_t {
+    FiveBitCodes,     // the shortest Huffman strings
+    HeaderText,       // codes of 5 to 8 bits
+    SomeLongCodes,    // not encoded 4 symbols at once
+    EightBitCodes,    // a Huffman string as long as the raw one
+    AlmostEightBits,  // a Huffman string shorter by 0 to 15 bits than the raw one
+    AnyBytes,         // a Huffman string longer than the raw one
+  };
+  static constexpr Content kContents[]{
+      Content::FiveBitCodes,  Content::HeaderText,      Content::SomeLongCodes,
+      Content::EightBitCodes, Content::AlmostEightBits, Content::AnyBytes,
+  };
+  std::size_t nbHuffman = 0;
+  std::size_t nbRaw = 0;
+  for (std::size_t len = 0; len <= 400; ++len) {
+    for (const Content content : kContents) {
+      std::string value(len, 'a');
+      // Number of the last characters with a code of 7 bits instead of 8.
+      const std::size_t nbSevenBitCodes = rng() % 16U;
+      for (std::size_t pos = 0; pos < len; ++pos) {
+        switch (content) {
+          case Content::FiveBitCodes:
+            value[pos] = kFiveBitChars[rng() % kFiveBitChars.size()];
+            break;
+          case Content::HeaderText:
+            value[pos] = kShortCodeChars[rng() % kShortCodeChars.size()];
+            break;
+          case Content::SomeLongCodes:
+            value[pos] = rng() % 10U == 0 ? static_cast<char>(rng()) : kShortCodeChars[rng() % kShortCodeChars.size()];
+            break;
+          case Content::EightBitCodes:
+            value[pos] = kEightBitChars[rng() % kEightBitChars.size()];
+            break;
+          case Content::AlmostEightBits:
+            value[pos] = pos + nbSevenBitCodes >= len ? 'B' : kEightBitChars[rng() % kEightBitChars.size()];
+            break;
+          case Content::AnyBytes:
+            value[pos] = static_cast<char>(rng());
+            break;
+        }
+      }
+
+      HpackEncoder encoder(4096);
+      RawBytes block;
+      encoder.encode(block, "x", value, HpackEncoder::IndexingMode::WithoutIndexing);
+
+      const vector<uint8_t> huffmanString = RfcHuffmanString(value);
+      const bool huffmanIsShorter = huffmanString.size() < value.size();
+      (huffmanIsShorter ? nbHuffman : nbRaw) += 1U;
+      const vector<uint8_t> expected = huffmanIsShorter ? LiteralFieldX(huffmanString, true) : LiteralFieldX(value);
+      ASSERT_EQ(HexOf(std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(block.data()), block.size())),
+                HexOf(expected))
+          << "length " << len << ", content " << static_cast<int>(content);
+    }
+  }
+  EXPECT_GT(nbHuffman, 1000U);
+  EXPECT_GT(nbRaw, 800U);
 }
 
 }  // namespace aeronet::http2

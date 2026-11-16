@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <deque>
 #include <limits>
+#include <random>
 #include <span>
 #include <string>
 #include <string_view>
@@ -618,8 +619,9 @@ void BM_HpackEncodeResponsesFullDynamicTable(benchmark::State& state) {
 BENCHMARK(BM_HpackEncodeResponsesFullDynamicTable)->Arg(0)->Arg(25)->Arg(50)->ArgName("newer_dates");
 
 // Stateful encode of successive responses carrying many indexed fields whose value differs in each of them, as the
-// 'headers' scenario of the scripted-servers benchmarks (/headers?count=50&size=128): the dynamic table only holds the
-// last fields added, so that each field of a response is looked up in vain in the whole table, then added to it.
+// 'headers' scenario of the scripted-servers benchmarks (/headers?count=50&size=128), or a request identifier
+// (1 field of 36 bytes): the dynamic table only holds the last fields added, so that each field of a response is looked
+// up in vain in the whole table, then added to it.
 // Args: number of such fields per response, size of their values.
 void BM_HpackEncodeResponsesOverflowingDynamicTable(benchmark::State& state) {
   const auto nbFields = static_cast<std::size_t>(state.range(0));
@@ -663,6 +665,7 @@ void BM_HpackEncodeResponsesOverflowingDynamicTable(benchmark::State& state) {
   state.SetItemsProcessed(state.iterations());
 }
 BENCHMARK(BM_HpackEncodeResponsesOverflowingDynamicTable)
+    ->Args({1, 36})
     ->ArgsProduct({{10, 50}, {16, 128}})
     ->ArgNames({"fields", "value_size"});
 
@@ -746,6 +749,96 @@ void BM_HpackDecodeLiteral(benchmark::State& state) {
   state.SetBytesProcessed(static_cast<int64_t>(state.iterations()) * static_cast<int64_t>(value.size()));
 }
 BENCHMARK(BM_HpackDecodeLiteral)->ArgsProduct({{16, 64, 256, 4096}, {0, 1}})->ArgNames({"size", "huffman"});
+
+namespace {
+
+// Number of values of MixedLengthValues(), a power of two: too many for the pattern of their lengths to be learnt.
+constexpr std::size_t kNbMixedLengthValues = 16384;
+
+// Header text of the lengths found in real header blocks, in random order: of the Huffman strings of the requests and
+// responses of github.com/http2jp/hpack-test-case, a third are at most 8 bytes long, half at most 16 and nine tenths
+// at most 32. The fixed sizes above hide what a string costs once decoded or encoded: the branch misprediction at its
+// end, which depends on its length.
+const std::deque<std::string>& MixedLengthValues() {
+  static const std::deque<std::string> kValues = [] {
+    const std::string text = HeaderText(4096);
+    std::mt19937 rng(7541);  // NOLINT(cert-msc32-c,cert-msc51-cpp,bugprone-random-generator-seed)
+    std::deque<std::string> values;
+    for (std::size_t idx = 0; idx < kNbMixedLengthValues; ++idx) {
+      const uint32_t pick = rng() % 100U;
+      std::size_t size;
+      if (pick < 33U) {
+        size = 1U + (rng() % 10U);
+      } else if (pick < 50U) {
+        size = 11U + (rng() % 10U);
+      } else if (pick < 90U) {
+        size = 21U + (rng() % 20U);
+      } else if (pick < 97U) {
+        size = 41U + (rng() % 40U);
+      } else {
+        size = 81U + (rng() % 120U);
+      }
+      std::string& value = values.emplace_back(text.substr(rng() % (text.size() - size), size));
+      // A field value neither starts nor ends with a space.
+      if (value.front() == ' ') {
+        value.front() = 'a';
+      }
+      if (value.back() == ' ') {
+        value.back() = 'a';
+      }
+    }
+    return values;
+  }();
+  return kValues;
+}
+
+}  // namespace
+
+// Encode fields whose values are header text of mixed lengths, not indexed.
+void BM_HpackHuffmanEncodeMixedLengths(benchmark::State& state) {
+  const std::deque<std::string>& values = MixedLengthValues();
+  HpackEncoder encoder;
+  RawBytes out;
+  std::size_t idx = 0;
+  int64_t nbBytes = 0;
+  for ([[maybe_unused]] auto iter : state) {
+    const std::string& value = values[idx++ % kNbMixedLengthValues];
+    out.clear();
+    encoder.encode(out, "x-bench", value, HpackEncoder::IndexingMode::WithoutIndexing);
+    benchmark::DoNotOptimize(out.data());
+    nbBytes += static_cast<int64_t>(value.size());
+  }
+  state.SetBytesProcessed(nbBytes);
+}
+BENCHMARK(BM_HpackHuffmanEncodeMixedLengths);
+
+// Decode fields whose values are header text of mixed lengths, as Huffman strings or as raw ones (see
+// BM_HpackDecodeLiteral).
+void BM_HpackDecodeLiteralMixedLengths(benchmark::State& state) {
+  const std::deque<std::string>& values = MixedLengthValues();
+  // The blocks one after the other, as the fields of header blocks are.
+  RawBytes blocks;
+  std::array<uint32_t, kNbMixedLengthValues + 1U> offsets;
+  for (std::size_t idx = 0; idx < kNbMixedLengthValues; ++idx) {
+    offsets[idx] = static_cast<uint32_t>(blocks.size());
+    const RawBytes block = EncodeLiteralField("x-bench", values[idx], state.range(0) != 0);
+    blocks.append(block.data(), block.size());
+  }
+  offsets[kNbMixedLengthValues] = static_cast<uint32_t>(blocks.size());
+
+  auto decoder = CreateHpackDecoder();
+  std::size_t idx = 0;
+  int64_t nbBytes = 0;
+  for ([[maybe_unused]] auto iter : state) {
+    const std::size_t valueIdx = idx++ % kNbMixedLengthValues;
+    auto result =
+        decoder.decode(AsBytes(blocks).subspan(offsets[valueIdx], offsets[valueIdx + 1U] - offsets[valueIdx]));
+    benchmark::DoNotOptimize(result);
+    nbBytes += static_cast<int64_t>(values[valueIdx].size());
+  }
+  state.SetBytesProcessed(nbBytes);
+}
+BENCHMARK(BM_HpackDecodeLiteralMixedLengths)->Arg(0)->Arg(1)->ArgName("huffman");
 
 // ---------------------------------------------------------------------------
 // findHeader benchmark (the identified bottleneck)

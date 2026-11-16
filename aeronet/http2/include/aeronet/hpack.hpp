@@ -7,6 +7,7 @@
 #include <string_view>
 #include <type_traits>
 
+#include "aeronet/compiler-config.hpp"
 #include "aeronet/flat-hash-map.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-view.hpp"
@@ -50,6 +51,10 @@ class HpackDynamicTable {
   /// Get the tag given to the entry at the specified dynamic table index (0 = most recent) when it was added.
   /// Index must be lower than entryCount().
   [[nodiscard]] std::size_t tag(uint32_t index) const noexcept { return _entries[_entries.size() - 1U - index].tag; }
+
+  /// Get the index of the first entry from 'index' to 'endIndex' (excluded, at most entryCount()), the most recent
+  /// first, whose tag has the bits of 'tag' selected by 'mask', or 'endIndex' if there is none.
+  [[nodiscard]] uint32_t findTag(uint32_t index, uint32_t endIndex, std::size_t tag, std::size_t mask) const noexcept;
 
   /// Get the number of entries in the dynamic table.
   [[nodiscard]] std::size_t entryCount() const noexcept { return _entries.size() - _firstLive; }
@@ -361,12 +366,23 @@ class HpackEncoder {
   /// Find a header in the static and dynamic tables, for a field encoded with the given indexing mode.
   /// Prerequisites: name should be lower cased, non-empty and value already trimmed.
   [[nodiscard]] HpackLookupResult findHeader(std::string_view name, std::string_view value,
-                                             IndexingMode mode = IndexingMode::Indexed);
+                                             IndexingMode mode = IndexingMode::Indexed) {
+    return lookUpField(name, value, mode).result;
+  }
 
  private:
   friend struct HpackEncoderTestAccess;
 
   static constexpr uint32_t kNoPendingTableSize = ~0U;
+
+  struct FieldLookup {
+    HpackLookupResult result;
+    // The fingerprint of the field (see FieldFingerprint() in hpack.cpp), if the dynamic table was looked up: it always
+    // is for a field to add to it, which keeps it as the tag of its entry.
+    std::size_t fingerprint;
+  };
+
+  [[nodiscard]] FieldLookup lookUpField(std::string_view name, std::string_view value, IndexingMode mode);
 
   [[nodiscard]] bool hasPendingTableSizeUpdate() const noexcept {
     return _smallestPendingTableSize <= _lastPendingTableSize;
@@ -400,6 +416,11 @@ class HpackEncoder {
   // Remember that a field is at this index of the dynamic table, in one of its two slots: one whose entry was evicted
   // if any, so that two fields sharing a slot do not replace each other in turn.
   void rememberFound(FoundMemoSlots slots, uint32_t idx) noexcept;
+
+  // The end of the lookup of a field found neither in the newest entries of the dynamic table nor in the memo: the
+  // older entries, 'result' being its match so far. Out of line, the fields that repeat taking the short path.
+  [[nodiscard]] AERONET_NOINLINE FieldLookup lookUpOlderEntries(std::string_view name, std::string_view value,
+                                                                HpackLookupResult result);
 
   HpackDynamicTable _dynamicTable;
   flat_hash_map<std::size_t, uint64_t> _dynamicIndex;
