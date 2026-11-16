@@ -797,17 +797,22 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
 
   bool seenRegularHeader = false;
 
+  // A refused block leaves the storage no larger than it found it (see the end).
+  const DecodedHeaders::Storage::size_type storageCapacity = _decodedHeaders.storage.capacity();
+
   // The fields beyond the header list size limit are not stored, the block being refused: storing them could take far
   // more memory than the block itself, each of its bytes possibly referencing a large field of the dynamic table.
   // plainNameHash: see storeHeader(). It is set to 0 for a field that is not stored, which is not checked.
+  // Returns whether the field is within the limit.
   const auto storeField = [&](std::string_view name, Source nameSource, std::string_view value, Source valueSource,
                               std::size_t& plainNameHash) {
     res.headerListSize += name.size() + value.size() + kHpackOverhead;
     if (res.headerListSize <= _maxHeaderListSize) {
       recordFieldError(storeHeader(name, nameSource, value, valueSource, seenRegularHeader, plainNameHash));
-    } else {
-      plainNameHash = 0;
+      return true;
     }
+    plainNameHash = 0;
+    return false;
   };
 
   while (pos < data.size()) {
@@ -828,7 +833,7 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
       }
 
       auto [header, plainNameHash, source] = lookupIndex(indexResult.index);
-      if (header.name.empty()) {
+      if (header.name.data() == nullptr) {
         res.error = DecodeResult::Error::IndexOutOfBoundsInIndexedHeaderField;
         return res;
       }
@@ -894,7 +899,7 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
       } else {
         // Indexed name
         const IndexedField indexedField = lookupIndex(indexResult.index);
-        if (indexedField.header.name.empty()) {
+        if (indexedField.header.name.data() == nullptr) {
           res.error = DecodeResult::Error::IndexOutOfBoundsForHeaderName;
           return res;
         }
@@ -910,7 +915,7 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
       }
       pos += valueResult.consumed;
 
-      storeField(name, nameSource, valueResult.str, valueResult.source, plainNameHash);
+      const bool stored = storeField(name, nameSource, valueResult.str, valueResult.source, plainNameHash);
 
       if (withIndexing) {
         // The name may point into an entry that add() evicts, even into the oldest one whose buffer it reuses for the
@@ -919,11 +924,32 @@ HpackDecoder::DecodeResult HpackDecoder::decode(std::span<const std::byte> data)
         // with 0 otherwise.
         _dynamicTable.add(name, valueResult.str, plainNameHash);
       }
+
+      if (!stored) {
+        // The decoded Huffman strings of a field beyond the limit are given back to the storage, the table holding its
+        // own copy: the strings of the next fields take their place instead of piling up. The name was decoded right
+        // before the value, unless the value needed a new block of the storage.
+        DecodedHeaders::Storage& storage = _decodedHeaders.storage;
+        if (nameSource == Source::Storage &&
+            (valueResult.source != Source::Storage || valueResult.str.data() == name.data() + name.size())) {
+          // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
+          storage.shrinkLastAllocated(name.data(), 0);
+        } else if (valueResult.source == Source::Storage) {
+          // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
+          storage.shrinkLastAllocated(valueResult.str.data(), 0);
+        }
+      }
     }
   }
 
   if (res.headerListSize > _maxHeaderListSize) {
     recordFieldError(DecodeResult::Error::HeaderListTooLarge);
+    if (_decodedHeaders.storage.capacity() > storageCapacity) {
+      // The longest Huffman string of a field beyond the limit (8/5 of its encoded size once decoded) may have made the
+      // storage grow: its fields being refused, it is released rather than kept for the next blocks.
+      _decodedHeaders.clear();
+      _decodedHeaders.storage = DecodedHeaders::Storage(DecodedHeaders::kStorageInitialCapacity);
+    }
   } else if (res.isSuccess() && !_deferredJoins.empty()) {
     joinRepeatedFields();
   }
@@ -1214,8 +1240,8 @@ HpackDecoder::DecodeResult::Error HpackDecoder::storePlainField(std::string_view
 
 HpackDecoder::DecodeResult::Error HpackDecoder::mergeRepeatedField(SvToSvMap::iterator it,
                                                                    std::string_view storedValue) {
-  // Header already exists: same rules as for HTTP/1.1 (see http::MergeHeaderInPlace()), except for the Set-Cookie
-  // fields of a response, which the client splits back.
+  // Header already exists: same rules as for HTTP/1.1 (see http::MergeHeaderInPlace()), the cookie fields being joined
+  // with "; " (RFC 9113 §8.2.3), except for the Set-Cookie fields of a response, which the client splits back.
   const char mergeSep = _messages == Messages::Responses && it->first == http::SetCookie
                             ? DecodedHeaders::kSetCookieSeparator
                             : http::ReqHeaderValueSeparator(it->first, _mergeAllowedForUnknownRequestHeaders);
@@ -1253,14 +1279,13 @@ void HpackDecoder::joinRepeatedFields() {
     std::string_view& value = _decodedHeaders.headers.find(first->name)->second;
     std::size_t joinedSize = value.size();
     for (auto it = first; it != last; ++it) {
-      joinedSize += 1U + it->value.size();
+      joinedSize += http::MergeSeparatorSize(it->separator) + it->value.size();
     }
 
     char* pJoined = _decodedHeaders.storage.allocateAndDefaultConstruct(joinedSize);
     char* pData = Append(value, pJoined);
     for (auto it = first; it != last; ++it) {
-      *pData++ = it->separator;
-      pData = Append(it->value, pData);
+      pData = Append(it->value, http::AppendMergeSeparator(it->separator, pData));
     }
     value = std::string_view(pJoined, joinedSize);
     first = last;
@@ -1322,7 +1347,8 @@ void HpackEncoder::addToDynamicIndex(std::string_view name, std::string_view val
 }
 
 void HpackEncoder::resizeDynamicIndex() {
-  assert(_dynamicTable.entryCount() >= kDynamicIndexMinEntries);
+  // The table may hold fewer than kDynamicIndexMinEntries entries once the index is built: a large field evicts many of
+  // them. The index is kept, rather than dropped and built again each time the number of entries crosses the threshold.
   if ((_dynamicTable.entryCount() * 4U) + 32U < _dynamicIndex.size()) {
     rebuildDynamicIndex();
   }
@@ -1424,7 +1450,6 @@ void EncodeString(RawBytes& output, std::string_view str) {
 
     /// Encode 'str' with the RFC 7541 Huffman code. 'encodedLen' must be HuffmanEncodedLength(str): the caller already
     /// needs it to decide between Huffman and raw, so it is passed in rather than walking the string a second time.
-
     EncodeInteger(output, encodedLen, 7, 0x80);
     uint64_t currentCode = 0;
     uint8_t currentBits = 0;
@@ -1521,7 +1546,7 @@ uint64_t HpackEncoder::encode(RawBytes& output, std::string_view name, std::stri
   }
 
   // Compute the size of the header field as it would be represented in the HPACK dynamic table (32 bytes of overhead)
-  const auto headerFieldSize = name.size() + value.size() + 32U;
+  const auto headerFieldSize = name.size() + value.size() + kHpackOverhead;
 
   // Try to find in tables
   const auto lookup = findHeader(name, value, mode);
@@ -1587,8 +1612,8 @@ void HpackEncoder::setMaxDynamicTableSize(uint32_t maxSize) {
 }
 
 HpackEncoder::FoundMemoSlots HpackEncoder::FoundMemoSlotsOf(std::string_view name, std::string_view value) noexcept {
-  const uint32_t firstChar = name.empty() ? 0U : static_cast<uint8_t>(name.front());
-  const uint32_t lastChar = name.empty() ? 0U : static_cast<uint8_t>(name.back());
+  const uint32_t firstChar = static_cast<uint8_t>(name.front());
+  const uint32_t lastChar = static_cast<uint8_t>(name.back());
   const uint32_t mix = (static_cast<uint32_t>(name.size()) * 0x9E3779B1U) ^
                        (static_cast<uint32_t>(value.size()) * 0x27D4EB2FU) ^ (firstChar * 0x85EBCA6BU) ^
                        (lastChar * 0xC2B2AE35U);
@@ -1610,10 +1635,12 @@ uint32_t HpackEncoder::foundMemoIndex(uint32_t slot, std::string_view name, std:
 void HpackEncoder::rememberFound(FoundMemoSlots slots, uint32_t idx) noexcept {
   const bool firstInUse = _nbAdded - _foundMemo[slots.first] < _dynamicTable.entryCount();
   const bool secondInUse = _nbAdded - _foundMemo[slots.second] < _dynamicTable.entryCount();
+
   _foundMemo[firstInUse && !secondInUse ? slots.second : slots.first] = _nbAdded - idx;
 }
 
 HpackLookupResult HpackEncoder::findHeader(std::string_view name, std::string_view value, IndexingMode mode) {
+  assert(!name.empty());  // header name should be already validated.
   assert(std::ranges::none_of(name, [](char ch) { return ch >= 'A' && ch <= 'Z'; }));
 
   HpackLookupResult result;
@@ -1650,16 +1677,19 @@ HpackLookupResult HpackEncoder::findHeader(std::string_view name, std::string_vi
   uint32_t idx = 0;
   // Look for the field in the entries from idx to endIdx (excluded), the recently added ones first. Returns true if
   // found, idx being its entry.
+  // A name match keeps the first index found, the smallest one: a name of the static table keeps its index, which takes
+  // fewer bytes than the ones of the dynamic table from its second entry on (63 and more do not fit in a 6-bit prefix).
   const auto scanEntries = [&](uint32_t endIdx) {
     for (; idx < endIdx; ++idx) {
       const http::Header& entry = _dynamicTable[idx];
       if (entry.name() == name) {
-        result.index = HpackDynamicTableIndex(idx);
         if (entry.value() == value) {
-          result.match = HpackLookupResult::Match::Full;
+          result = {HpackLookupResult::Match::Full, HpackDynamicTableIndex(idx)};
           return true;
         }
-        result.match = HpackLookupResult::Match::NameOnly;
+        if (result.match == HpackLookupResult::Match::None) {
+          result = {HpackLookupResult::Match::NameOnly, HpackDynamicTableIndex(idx)};
+        }
       }
     }
     return false;
@@ -1687,10 +1717,7 @@ HpackLookupResult HpackEncoder::findHeader(std::string_view name, std::string_vi
       rememberFound(memoSlots, indexed.index - HpackDynamicTableIndex(0));
       return indexed;
     }
-    if (indexed.match == HpackLookupResult::Match::NameOnly) {
-      result = indexed;
-    }
-    return result;
+    return result.match == HpackLookupResult::Match::None ? indexed : result;
   }
 
   if (scanEntries(entryCount)) {

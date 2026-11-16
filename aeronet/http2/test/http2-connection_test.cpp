@@ -816,7 +816,8 @@ TEST(Http2Connection, ReclaimOutputBufferMemoryHalvesItsCapacityOnceWritten) {
   }
 
   // The buffer still serves the next frames.
-  ASSERT_EQ(connection.sendHeaders(2U * kNbStreams + 1U, http::StatusCodeOK, HeadersView{}, true), ErrorCode::NoError);
+  ASSERT_EQ(connection.sendHeaders((2U * kNbStreams) + 1U, http::StatusCodeOK, HeadersView{}, true),
+            ErrorCode::NoError);
   EXPECT_TRUE(connection.hasPendingOutput());
 }
 
@@ -4104,8 +4105,10 @@ TEST(Http2Connection, HeaderTableSizeChangedTwiceSignalsTheSmallestThenTheLast) 
   expectTableRestored();
 
   // In a single one.
-  const std::array clearedAndRestored{SettingsEntry{SettingsParameter::HeaderTableSize, 0U},
-                                      SettingsEntry{SettingsParameter::HeaderTableSize, kDefaultHeaderTableSize}};
+  const std::array clearedAndRestored{
+      SettingsEntry{SettingsParameter::HeaderTableSize, 0U},
+      SettingsEntry{SettingsParameter::HeaderTableSize, kDefaultHeaderTableSize},
+  };
   feedSettings(clearedAndRestored);
   expectTableRestored();
 
@@ -5537,8 +5540,9 @@ TEST(Http2Connection, ContinuationCompletionWithEndStreamClosesStream) {
 // ============================
 
 constexpr std::array kAuditFourBytes{std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}};
-constexpr std::array kAuditEightBytes{std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4},
-                                      std::byte{5}, std::byte{6}, std::byte{7}, std::byte{8}};
+constexpr std::array kAuditEightBytes{
+    std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4}, std::byte{5}, std::byte{6}, std::byte{7}, std::byte{8},
+};
 
 // A frame type that RFC 9113 does not define, as an extension would send.
 constexpr FrameType kAuditUnknownFrameType = std::bit_cast<FrameType>(uint8_t{0x20});
@@ -5553,33 +5557,53 @@ TEST(Http2ConnectionRfc9113Audit, FramesBreakingAFrameRuleAreConnectionErrors) {
     ErrorMsg errorMsg;
   };
   const std::array ruleCases{
-      RuleCase{"6.1 DATA on stream 0",
-               [] { return SerializeFrame(FrameHeader(4, FrameType::Data, FrameFlags::None, 0), kAuditFourBytes); },
-               ErrorCode::ProtocolError, ErrorMsg::DATAFrameOnStreamZero},
-      RuleCase{"6.2 HEADERS on stream 0",
-               [] { return HeadersFrame(0, kStaticGetRequest, FrameFlags::HeadersEndHeaders); },
-               ErrorCode::ProtocolError, ErrorMsg::HEADERSFrameOnStreamZero},
-      RuleCase{"6.2 HEADERS too short for its priority fields",
-               [] {
-                 return SerializeFrame(
-                     FrameHeader(4, FrameType::Headers, FrameFlags::HeadersEndHeaders | FrameFlags::HeadersPriority, 3),
-                     kAuditFourBytes);
-               },
-               ErrorCode::FrameSizeError, ErrorMsg::InvalidHEADERSFrame},
+      RuleCase{
+          "6.1 DATA on stream 0",
+          [] { return SerializeFrame(FrameHeader(4, FrameType::Data, FrameFlags::None, 0), kAuditFourBytes); },
+          ErrorCode::ProtocolError,
+          ErrorMsg::DATAFrameOnStreamZero,
+      },
+      RuleCase{
+          "6.2 HEADERS on stream 0",
+          [] { return HeadersFrame(0, kStaticGetRequest, FrameFlags::HeadersEndHeaders); },
+          ErrorCode::ProtocolError,
+          ErrorMsg::HEADERSFrameOnStreamZero,
+      },
+      RuleCase{
+          "6.2 HEADERS too short for its priority fields",
+          [] {
+            return SerializeFrame(
+                FrameHeader(4, FrameType::Headers, FrameFlags::HeadersEndHeaders | FrameFlags::HeadersPriority, 3),
+                kAuditFourBytes);
+          },
+          ErrorCode::FrameSizeError,
+          ErrorMsg::InvalidHEADERSFrame,
+      },
       RuleCase{
           "6.4 RST_STREAM on stream 0",
           [] { return SerializeFrame(FrameHeader(4, FrameType::RstStream, FrameFlags::None, 0), kAuditFourBytes); },
-          ErrorCode::ProtocolError, ErrorMsg::RST_STREAMFrameOnStreamZero},
+          ErrorCode::ProtocolError,
+          ErrorMsg::RST_STREAMFrameOnStreamZero,
+      },
       RuleCase{
           "6.9 WINDOW_UPDATE of 0 on the connection",
           [] { return SerializeFrame(FrameHeader(4, FrameType::WindowUpdate, FrameFlags::None, 0), kAuditFourBytes); },
-          ErrorCode::ProtocolError, ErrorMsg::ZeroWINDOW_UPDATEIncrementOnConnection},
-      RuleCase{"6.10 CONTINUATION without a field block", [] { return LastContinuationFrame(1, kStaticGetRequest); },
-               ErrorCode::ProtocolError, ErrorMsg::UnexpectedCONTINUATIONFrame},
+          ErrorCode::ProtocolError,
+          ErrorMsg::ZeroWINDOW_UPDATEIncrementOnConnection,
+      },
+      RuleCase{
+          "6.10 CONTINUATION without a field block",
+          [] { return LastContinuationFrame(1, kStaticGetRequest); },
+          ErrorCode::ProtocolError,
+          ErrorMsg::UnexpectedCONTINUATIONFrame,
+      },
       // Rejected from its frame header, before its payload is received.
-      RuleCase{"4.2 frame above SETTINGS_MAX_FRAME_SIZE",
-               [] { return SerializeFrame(FrameHeader(16385, FrameType::Data, FrameFlags::None, 1), {}); },
-               ErrorCode::FrameSizeError, ErrorMsg::FrameExceedsMaximumSize},
+      RuleCase{
+          "4.2 frame above SETTINGS_MAX_FRAME_SIZE",
+          [] { return SerializeFrame(FrameHeader(16385, FrameType::Data, FrameFlags::None, 1), {}); },
+          ErrorCode::FrameSizeError,
+          ErrorMsg::FrameExceedsMaximumSize,
+      },
   };
 
   for (const RuleCase& ruleCase : ruleCases) {
@@ -5615,23 +5639,36 @@ TEST(Http2ConnectionRfc9113Audit, OnlyContinuationOfItsStreamFollowsAnUnfinished
     ErrorMsg errorMsg;
   };
   const std::array nextFrames{
-      NextFrame{"DATA of another stream",
-                [] { return SerializeFrame(FrameHeader(4, FrameType::Data, FrameFlags::None, 1), kAuditFourBytes); },
-                ErrorMsg::ExpectedCONTINUATIONFrame},
-      NextFrame{"HEADERS of the same stream",
-                [] { return HeadersFrame(3, kStaticGetRequest, FrameFlags::HeadersEndHeaders); },
-                ErrorMsg::ExpectedCONTINUATIONFrame},
-      NextFrame{"PING",
-                [] { return SerializeFrame(FrameHeader(8, FrameType::Ping, FrameFlags::None, 0), kAuditEightBytes); },
-                ErrorMsg::ExpectedCONTINUATIONFrame},
+      NextFrame{
+          "DATA of another stream",
+          [] { return SerializeFrame(FrameHeader(4, FrameType::Data, FrameFlags::None, 1), kAuditFourBytes); },
+          ErrorMsg::ExpectedCONTINUATIONFrame,
+      },
+      NextFrame{
+          "HEADERS of the same stream",
+          [] { return HeadersFrame(3, kStaticGetRequest, FrameFlags::HeadersEndHeaders); },
+          ErrorMsg::ExpectedCONTINUATIONFrame,
+      },
+      NextFrame{
+          "PING",
+          [] { return SerializeFrame(FrameHeader(8, FrameType::Ping, FrameFlags::None, 0), kAuditEightBytes); },
+          ErrorMsg::ExpectedCONTINUATIONFrame,
+      },
       NextFrame{
           "frame of an unknown type",
           [] { return SerializeFrame(FrameHeader(4, kAuditUnknownFrameType, FrameFlags::None, 0), kAuditFourBytes); },
-          ErrorMsg::ExpectedCONTINUATIONFrame},
-      NextFrame{"CONTINUATION of another stream", [] { return LastContinuationFrame(1, {}); },
-                ErrorMsg::CONTINUATIONOnWrongStream},
-      NextFrame{"CONTINUATION of stream 0", [] { return LastContinuationFrame(0, {}); },
-                ErrorMsg::CONTINUATIONOnWrongStream},
+          ErrorMsg::ExpectedCONTINUATIONFrame,
+      },
+      NextFrame{
+          "CONTINUATION of another stream",
+          [] { return LastContinuationFrame(1, {}); },
+          ErrorMsg::CONTINUATIONOnWrongStream,
+      },
+      NextFrame{
+          "CONTINUATION of stream 0",
+          [] { return LastContinuationFrame(0, {}); },
+          ErrorMsg::CONTINUATIONOnWrongStream,
+      },
   };
 
   for (const NextFrame& nextFrame : nextFrames) {
@@ -5806,24 +5843,30 @@ struct AuditStreamFrame {
 // still has to answer the streams up to the last one (here stream 1).
 TEST(Http2ConnectionRfc9113Audit, FramesOfAStreamIgnoredAfterGoAwayAreNotConnectionErrors) {
   const std::array frames{
-      AuditStreamFrame{"DATA",
-                       [](uint32_t streamId) {
-                         const auto frame = SerializeFrame(
-                             FrameHeader(4, FrameType::Data, FrameFlags::DataEndStream, streamId), kAuditFourBytes);
-                         return RawBytes(std::span<const std::byte>(frame));
-                       }},
-      AuditStreamFrame{"RST_STREAM",
-                       [](uint32_t streamId) {
-                         RawBytes frame;
-                         WriteRstStreamFrame(frame, streamId, ErrorCode::Cancel);
-                         return frame;
-                       }},
-      AuditStreamFrame{"WINDOW_UPDATE",
-                       [](uint32_t streamId) {
-                         RawBytes frame;
-                         WriteWindowUpdateFrame(frame, streamId, 100);
-                         return frame;
-                       }},
+      AuditStreamFrame{
+          "DATA",
+          [](uint32_t streamId) {
+            const auto frame =
+                SerializeFrame(FrameHeader(4, FrameType::Data, FrameFlags::DataEndStream, streamId), kAuditFourBytes);
+            return RawBytes(std::span<const std::byte>(frame));
+          },
+      },
+      AuditStreamFrame{
+          "RST_STREAM",
+          [](uint32_t streamId) {
+            RawBytes frame;
+            WriteRstStreamFrame(frame, streamId, ErrorCode::Cancel);
+            return frame;
+          },
+      },
+      AuditStreamFrame{
+          "WINDOW_UPDATE",
+          [](uint32_t streamId) {
+            RawBytes frame;
+            WriteWindowUpdateFrame(frame, streamId, 100);
+            return frame;
+          },
+      },
   };
 
   for (const AuditStreamFrame& frame : frames) {
@@ -5896,8 +5939,9 @@ TEST(Http2ConnectionRfc9113Audit, InitialWindowSizeIncreaseIgnoresTheStreamsTheP
   OpenClientStream(conn, 3);
 
   // SETTINGS_INITIAL_WINDOW_SIZE (0x04) = 65536, one more than the default.
-  static constexpr std::array kEntry{std::byte{0}, std::byte{4}, std::byte{0},
-                                     std::byte{1}, std::byte{0}, std::byte{0}};
+  static constexpr std::array kEntry{
+      std::byte{0}, std::byte{4}, std::byte{0}, std::byte{1}, std::byte{0}, std::byte{0},
+  };
   const auto res = conn.processInput(SerializeFrame(FrameHeader(6, FrameType::Settings, FrameFlags::None, 0), kEntry));
   EXPECT_NE(res.action, Http2Connection::ProcessResult::Action::Error)
       << ErrorCodeName(res.errorCode) << ": " << ConvertProcessResultErrorMsgToSv(res.errorMsg);

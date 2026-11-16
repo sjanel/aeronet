@@ -1755,7 +1755,7 @@ TEST_F(HttpRequestViewTest, MergeMultipleCookies) {
 
   checkHeaders({
       {"x-test", "Value"},
-      {"cookie", "cookie1;cookie2;cookie3;cookie4"},
+      {"cookie", "cookie1; cookie2; cookie3; cookie4"},
       {"x-spaces", "abc"},
       {http::ContentLength, "0"},
   });
@@ -1778,7 +1778,7 @@ TEST_F(HttpRequestViewTest, MergeMultipleHeaders) {
 
   checkHeaders({
       {"x-test", "Value"},
-      {"cookie", "cookie1;cookie2;cookie3;cookie4"},
+      {"cookie", "cookie1; cookie2; cookie3; cookie4"},
       {"x-spaces", "abc,de,fgh"},
       {http::ContentLength, "0"},
   });
@@ -3002,14 +3002,14 @@ std::string HeadWithRepeatedFields(FuzzRng& rng, std::vector<std::pair<std::stri
   struct Field {
     std::string_view name;
     std::string_view lowerName;
-    char sep;
+    std::string_view sep;
   };
   static constexpr Field kFields[]{
-      {"X-A", "x-a", ','},
-      {"X-B", "x-b", ','},
-      {"Accept", "accept", ','},
-      {"Cookie", "cookie", ';'},
-      {"User-Agent", "user-agent", ' '},
+      {"X-A", "x-a", ","},
+      {"X-B", "x-b", ","},
+      {"Accept", "accept", ","},
+      {"Cookie", "cookie", "; "},
+      {"User-Agent", "user-agent", " "},
   };
   static constexpr std::string_view kValues[]{"", "", "1", "foo", "a=b", "some longer value", "x y"};
   static constexpr std::string_view kBlanks[]{"", " ", "\t", "  "};
@@ -3028,7 +3028,7 @@ std::string HeadWithRepeatedFields(FuzzRng& rng, std::vector<std::pair<std::stri
     seen[fieldPos] = true;
     if (!value.empty()) {
       if (!values[fieldPos].empty()) {
-        values[fieldPos].push_back(kFields[fieldPos].sep);
+        values[fieldPos].append(kFields[fieldPos].sep);
       }
       values[fieldPos].append(value);
     }

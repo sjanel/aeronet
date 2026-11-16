@@ -33,8 +33,8 @@
 namespace aeronet {
 namespace {
 
-// The Cookie header received by a server, its cookie-pairs separated by ';' whatever the protocol: the cookies of an
-// HTTP/2 request are separate fields, which the server joins with ';'.
+// The Cookie header received by a server, its cookie-pairs separated by ';' for shorter expectations: they are
+// separated by "; " whatever the protocol, the server joining the separate cookie fields of an HTTP/2 request that way.
 std::string ReceivedCookies(const HttpRequestView& req) {
   std::string cookies(req.headerValueOrEmpty(http::Cookie));
   for (std::size_t pos = cookies.find("; "); pos != std::string::npos; pos = cookies.find("; ", pos)) {

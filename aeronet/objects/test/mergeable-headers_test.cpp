@@ -41,6 +41,18 @@ TEST(MergeableHeaders, CookieIsSemicolon) {
   EXPECT_EQ(';', http::ReqHeaderValueSeparator("cookie", false));
 }
 
+// Cookies are joined with "; " (RFC 9113 §8.2.3), the other fields with their policy indicator alone.
+TEST(MergeableHeaders, MergeSeparators) {
+  static constexpr std::pair<char, std::string_view> kSeparators[]{{';', "; "}, {',', ","}, {' ', " "}, {'\n', "\n"}};
+  for (const auto& [mergeSep, expected] : kSeparators) {
+    std::array<char, 3> buf{'x', 'x', 'x'};
+    EXPECT_EQ(http::MergeSeparatorSize(mergeSep), expected.size());
+    const char* pEnd = http::AppendMergeSeparator(mergeSep, buf.data());
+    EXPECT_EQ(std::string_view(buf.data(), pEnd), expected);
+    EXPECT_EQ(buf[expected.size()], 'x');
+  }
+}
+
 TEST(MergeableHeaders, UserAgentSpaceJoin) {
   EXPECT_EQ(' ', http::ReqHeaderValueSeparator("user-agent", true));
   EXPECT_EQ(' ', http::ReqHeaderValueSeparator("user-agent", false));

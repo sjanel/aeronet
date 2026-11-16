@@ -44,8 +44,10 @@ bool MergeHeaderInPlace(SvToSvMap& map, SvToSvMap::iterator it, std::string_view
 
   // Both non empty - we actually do the merge
 
-  // Compute sizes
-  static constexpr std::size_t szSep = sizeof(mergeSep);  // 1
+  // Compute sizes. The separator is 2 bytes at most ("; " for cookies), which the duplicate line always has room for:
+  // the bytes moved to the right overwrite it, its value being copied first, and the line holds at least its value,
+  // a name and a colon.
+  const std::size_t szSep = MergeSeparatorSize(mergeSep);
   const std::size_t szToMove = newValue.size() + szSep;
 
   // Step 1 - use tmp as temp data to keep value
@@ -58,8 +60,7 @@ bool MergeHeaderInPlace(SvToSvMap& map, SvToSvMap::iterator it, std::string_view
   std::memmove(pFirstValueEnd + szToMove, pFirstValueEnd, static_cast<std::size_t>(pCurrentLine - pFirstValueEnd));
 
   // Step 3 - finally insert separator and copy tmp into the gap
-  *pFirstValueEnd = mergeSep;
-  Copy(tmp, pFirstValueEnd + szSep);
+  Copy(tmp, AppendMergeSeparator(mergeSep, pFirstValueEnd));
 
   // Update all pointers in map that are after firstValueLast
   for (auto& [key, val] : map) {

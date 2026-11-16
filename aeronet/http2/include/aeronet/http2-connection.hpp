@@ -237,7 +237,7 @@ class Http2Connection {
   /// Send HEADERS frame to start a new request/response, without its connection-specific fields (RFC 9113 §8.2.2).
   /// @param streamId Stream ID (must be valid for new stream creation)
   /// @param statusCode HTTP status code (for responses). Can be 0 to avoid sending a pseudo-header.
-  /// @param headers Headers to send
+  /// @param headers Headers to send (already validated)
   /// @param endStream True to set END_STREAM flag
   /// @param pGlobalHeaders Headers to send unless present in `headers`. They must not hold any connection-specific
   ///                       field (see HttpServerConfig::http2GlobalHeaders()).

@@ -672,7 +672,7 @@ uint64_t EncodeRegularField(HpackEncoder& encoder, RawBytes& output, std::string
 
   // RFC 9113 §8.2.1: an HTTP/2 field value must not carry leading/trailing OWS (unlike HTTP/1.1, where it is
   // tolerated). HttpMessage / HttpResponse guarantees that values are always trimmed.
-  assert(value == TrimOws(value));
+  assert(IsOwsTrimmed(value));
 
   if (http::IsConnectionSpecificField(name, value)) [[unlikely]] {
     return 0;
@@ -764,7 +764,7 @@ ErrorCode Http2Connection::sendHeaders(uint32_t streamId, http::StatusCode statu
       }
 
       // The same in each response: always indexed.
-      assert(headerValue == TrimOws(headerValue));
+      assert(IsOwsTrimmed(headerValue));
       headerListSize += _hpackEncoder.encode(_outputBuffer, headerName, headerValue);
     }
   }

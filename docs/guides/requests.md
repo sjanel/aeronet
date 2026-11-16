@@ -30,7 +30,7 @@ When a header appears several times, the server combines the occurrences while p
 | Field | Duplicates are | Examples |
 | --- | --- | --- |
 | List fields | joined with `,` | `accept`, `accept-encoding`, `via`, `te` |
-| `cookie` | joined with `;` | `cookie` |
+| `cookie` | joined with `; `, like the cookie-pairs of a single field (RFC 9113 §8.2.3 over HTTP/2) | `cookie` |
 | `user-agent` | joined with a space | `user-agent` |
 | Singleton fields | rejected with `400 Bad Request` | `authorization`, `proxy-authorization`, `content-type`, `range`, `if-range`, `if-modified-since`, `if-unmodified-since`, `referer`, `from`, `max-forwards` |
 | Framing and routing fields | rejected with `400 Bad Request` | `content-length`, `host`, `content-md5`, `content-transfer-encoding`, `http2-settings`, `upgrade-insecure-requests` |
@@ -38,7 +38,7 @@ When a header appears several times, the server combines the occurrences while p
 
 Rejecting duplicate singleton, `content-length` and `host` fields closes classic request smuggling vectors, where two intermediaries pick different occurrences: keeping the last `authorization`, `content-type` or `range` could differ from a proxy in front keeping the first (RFC 9110 §5.3 lets a recipient reject them). Over HTTP/2, the stream is reset with `PROTOCOL_ERROR` (malformed request, RFC 9113 §8.1.1). For the other fields, an empty occurrence does not add a separator, and the values are combined in the order of their lines, whatever other repeated fields lie between them. To reject, rather than merge, duplicates of unknown fields that your application treats as singletons, set `HttpServerConfig::mergeUnknownRequestHeaders` to `false`.
 
-Tests: `DuplicateSingletonHeadersProduce400`, `MergeKeepsValueOfFieldWhoseFirstOccurrenceWasEmpty*` and `AuditRepeatedFieldsAreCombinedInOrder` in [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp), `HttpParserAudit.RepeatedTrailersAreCombinedInOrder` in [http-parser_test.cpp](../../aeronet/server/test/http-parser_test.cpp), `InvalidTrailersAreRejected` in [http-core_test.cpp](../../tests/http-core_test.cpp), `DuplicateSingletonHeaderIsRejected` in [hpack_test.cpp](../../aeronet/http2/test/hpack_test.cpp), and the table in [mergeable-headers_test.cpp](../../aeronet/objects/test/mergeable-headers_test.cpp).
+Tests: `DuplicateSingletonHeadersProduce400`, `MergeKeepsValueOfFieldWhoseFirstOccurrenceWasEmpty*`, `MergeMultipleCookies` and `AuditRepeatedFieldsAreCombinedInOrder` in [http-request-view_test.cpp](../../aeronet/http/test/http-request-view_test.cpp), `CookiesAreJoinedWithSemicolonAndSpace` in [http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp), `HttpParserAudit.RepeatedTrailersAreCombinedInOrder` in [http-parser_test.cpp](../../aeronet/server/test/http-parser_test.cpp), `InvalidTrailersAreRejected` in [http-core_test.cpp](../../tests/http-core_test.cpp), `DuplicateSingletonHeaderIsRejected` in [hpack_test.cpp](../../aeronet/http2/test/hpack_test.cpp), and the table in [mergeable-headers_test.cpp](../../aeronet/objects/test/mergeable-headers_test.cpp).
 
 ### Header values
 
