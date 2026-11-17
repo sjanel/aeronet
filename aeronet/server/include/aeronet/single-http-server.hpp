@@ -31,10 +31,6 @@
 #include "aeronet/timer-fd.hpp"
 #include "aeronet/vector.hpp"
 
-#ifdef AERONET_ENABLE_HTTP2
-#include "aeronet/tcp-no-delay-mode.hpp"
-#endif
-
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-handshake-callback.hpp"
 #endif
@@ -452,8 +448,8 @@ class SingleHttpServer {
   void updateMaintenanceTimer();
 
 #ifdef AERONET_LINUX
-  // Sets (or clears) TCP_NODELAY on the listener as configured (tcpNoDelay Enabled): the accepted sockets inherit it,
-  // which saves a setsockopt() per connection.
+  // Sets (or clears) TCP_NODELAY on the listener as configured (tcpNoDelay Enabled, or Auto with TLS): the accepted
+  // sockets inherit it, which saves a setsockopt() per connection.
   void syncListenerTcpNoDelay();
 #endif
 
@@ -535,13 +531,6 @@ class SingleHttpServer {
   [[nodiscard]] bool isServerInternalFd(NativeHandle fd) const noexcept;
 
 #ifdef AERONET_ENABLE_HTTP2
-#ifdef AERONET_ENABLE_OPENSSL
-  // Sets up HTTP/2 protocol handler for a connection after ALPN "h2" negotiation.
-  // Initializes the protocol handler, sends the server preface (SETTINGS frame),
-  // installs CONNECT tunnel bridge, and flushes output.
-  void setupHttp2Connection(NativeHandle clientFd, TcpNoDelayMode tcpNoDelayMode, ConnectionState& state);
-#endif
-
   // Installs the HTTP/2 protocol handler of a connection (ALPN "h2" or h2c prior knowledge), with its CONNECT tunnel
   // bridge and its callbacks.
   void installHttp2Handler(NativeHandle clientFd, ConnectionState& state, bool sendServerPrefaceForTls);

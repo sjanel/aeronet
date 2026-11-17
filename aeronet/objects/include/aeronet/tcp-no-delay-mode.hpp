@@ -5,8 +5,10 @@
 namespace aeronet {
 
 enum class TcpNoDelayMode : std::uint8_t {
-  // Auto-detect based on configuration: enabled for TLS and HTTP/2, disabled otherwise, unless explicitly overridden by
-  // user. Each SSL_write produces small TLS records that would otherwise stall on the Nagle + Delayed-ACK interaction.
+  // Enabled when TLS is enabled (HTTP/1.1 and HTTP/2 over TLS), disabled otherwise (cleartext). OpenSSL writes each TLS
+  // record on its own: with Nagle's algorithm, the last partial segment of a record waits for the acknowledgment of the
+  // previous one (up to 40 ms with delayed acknowledgments), for the first response of each connection and for each
+  // response of several records. A cleartext response usually takes a single write (head and body gathered).
   Auto,
 
   // Always disable TCP_NODELAY (enable Nagle).

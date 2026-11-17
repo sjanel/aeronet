@@ -59,6 +59,10 @@
 #include "aeronet/test_tls_client.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tls-handshake-callback.hpp"
+#ifdef AERONET_ENABLE_HTTP2
+#include "aeronet/test_server_http2_tls_fixture.hpp"
+#include "aeronet/test_tls_http2_client.hpp"
+#endif
 #endif
 
 using namespace std::chrono_literals;
@@ -336,13 +340,8 @@ TEST(HttpParserErrors, ErrorResponseToGetAfterHeadHasBody) {
 
 namespace {
 
-// Whether the server side of a new connection to 'serverPort' has TCP_NODELAY, read once a request was served on it
-// (the connection is kept alive: its accepted socket is still open).
-bool AcceptedSocketHasTcpNoDelay(uint16_t serverPort) {
-  test::ClientConnection client(serverPort);
-  test::sendAll(client.fd(), SimpleGetRequest("/nodelay", http::keepalive));
-  const std::string resp = test::recvWithTimeout(client.fd(), 2000ms);
-  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+// Whether the server socket of the last accepted connection, which must still be open, has TCP_NODELAY.
+bool LastAcceptedSocketHasTcpNoDelay() {
   int value = 0;
   socklen_t len = sizeof(value);
   EXPECT_EQ(
@@ -350,6 +349,25 @@ bool AcceptedSocketHasTcpNoDelay(uint16_t serverPort) {
       0);
   return value != 0;
 }
+
+// Whether the server side of a new connection to 'serverPort' has TCP_NODELAY, read once a request was served on it
+// (the connection is kept alive: its accepted socket is still open).
+bool AcceptedSocketHasTcpNoDelay(uint16_t serverPort) {
+  test::ClientConnection client(serverPort);
+  test::sendAll(client.fd(), SimpleGetRequest("/nodelay", http::keepalive));
+  const std::string resp = test::recvWithTimeout(client.fd(), 2000ms);
+  EXPECT_TRUE(resp.starts_with("HTTP/1.1 200")) << resp;
+  return LastAcceptedSocketHasTcpNoDelay();
+}
+
+#ifdef AERONET_ENABLE_OPENSSL
+// Same for a new TLS connection, read once its handshake is done (the server accepted it, the connection is open).
+bool AcceptedTlsSocketHasTcpNoDelay(uint16_t serverPort) {
+  test::TlsClient client(serverPort);
+  EXPECT_TRUE(client.handshakeOk());
+  return LastAcceptedSocketHasTcpNoDelay();
+}
+#endif
 
 // A configuration update applies TCP_NODELAY to the listener after the batch of updates holding it: a second one is
 // applied once the listener was updated.
@@ -373,6 +391,40 @@ TEST(ConnectionManager, AcceptedSocketsGetTcpNoDelayFromTheListener) {
   PostTcpNoDelayMode(localTs, TcpNoDelayMode::Enabled);
   EXPECT_TRUE(AcceptedSocketHasTcpNoDelay(localTs.port()));
 }
+
+#ifdef AERONET_ENABLE_OPENSSL
+// Under the default Auto mode, the TLS connections get TCP_NODELAY from the listener: OpenSSL writes each record on its
+// own, and with Nagle's algorithm the last partial segment of a record waits for the delayed acknowledgment of the
+// previous one (40 ms for the first response of each connection, and for each response of several records). The
+// cleartext connections keep Nagle's algorithm under Auto, also once TLS is disabled by a configuration update.
+TEST(ConnectionManager, TlsConnectionsGetTcpNoDelayUnderAuto) {
+  test::TlsTestServer tlsTs({"http/1.1"});
+  tlsTs.setDefault([](const HttpRequestView& req) { return req.makeResponse(http::StatusCodeOK); });
+  EXPECT_TRUE(AcceptedTlsSocketHasTcpNoDelay(tlsTs.port()));
+
+  PostTcpNoDelayMode(tlsTs.server, TcpNoDelayMode::Disabled);
+  EXPECT_FALSE(AcceptedTlsSocketHasTcpNoDelay(tlsTs.port()));
+
+  PostTcpNoDelayMode(tlsTs.server, TcpNoDelayMode::Auto);
+  EXPECT_TRUE(AcceptedTlsSocketHasTcpNoDelay(tlsTs.port()));
+
+  tlsTs.server.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withoutTls(); });
+  tlsTs.server.postConfigUpdate([](HttpServerConfig&) {});
+  EXPECT_FALSE(AcceptedSocketHasTcpNoDelay(tlsTs.port()));
+}
+
+#ifdef AERONET_ENABLE_HTTP2
+// Also for HTTP/2 over TLS (ALPN "h2"), here with TLS enabled by a configuration update of a cleartext server.
+TEST(ConnectionManager, Http2TlsConnectionsGetTcpNoDelayUnderAuto) {
+  test::TlsHttp2TestServer h2Ts;
+  h2Ts.server.postConfigUpdate([](HttpServerConfig&) {});  // the listener was updated after the batch enabling TLS
+  test::TlsHttp2Client client(h2Ts.port());
+  ASSERT_TRUE(client.isConnected());
+  EXPECT_EQ(client.negotiatedAlpn(), "h2");
+  EXPECT_TRUE(LastAcceptedSocketHasTcpNoDelay());
+}
+#endif
+#endif
 
 // A stopped one-thread MultiHttpServer applies the configuration updates posted meanwhile before its worker creates its
 // listener again: the new listener gets TCP_NODELAY, without a setsockopt() on the closed one.
