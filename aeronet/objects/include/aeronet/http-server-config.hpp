@@ -65,7 +65,7 @@ struct HttpServerConfig {
   // kernel to send data immediately, reducing latency in applications that require low latency and send small packets
   // frequently, such as interactive services or request-response protocols. This favors lower latency over network
   // efficiency, which is good for some use cases but can lead to more network overhead if overused.
-  // Default: Auto
+  // Default: Auto (enabled with TLS, see TcpNoDelayMode).
   TcpNoDelayMode tcpNoDelay{TcpNoDelayMode::Auto};
 
   // ===========================================

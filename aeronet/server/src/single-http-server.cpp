@@ -52,6 +52,21 @@
 
 namespace aeronet {
 
+namespace {
+
+// Whether the accepted sockets get TCP_NODELAY. Auto enables it with TLS: OpenSSL writes each record on its own, so the
+// last partial segment of a record waits, under Nagle's algorithm, for the acknowledgment of the previous one - 40 ms
+// with delayed acknowledgments, for the first response of each connection and for each response of several records.
+bool TcpNoDelayActive(const HttpServerConfig& config) {
+  return config.tcpNoDelay == TcpNoDelayMode::Enabled
+#ifdef AERONET_ENABLE_OPENSSL
+         || (config.tcpNoDelay == TcpNoDelayMode::Auto && config.tls.enabled)
+#endif
+      ;
+}
+
+}  // namespace
+
 // ============================================================================
 // Event loop
 // ============================================================================
@@ -305,7 +320,7 @@ void SingleHttpServer::updateMaintenanceTimer() {
 
 #ifdef AERONET_LINUX
 void SingleHttpServer::syncListenerTcpNoDelay() {
-  const bool enable = _ctx.config.tcpNoDelay == TcpNoDelayMode::Enabled;
+  const bool enable = TcpNoDelayActive(_ctx.config);
   // A closed listener is synced by initListener() once created again.
   if (enable == _listenerTcpNoDelay || !_listenSocket) {
     return;
@@ -443,7 +458,7 @@ void SingleHttpServer::acceptNewConnections() {
     const bool tcpNoDelayActive = _listenerTcpNoDelay;
 #else
     bool tcpNoDelayActive = false;
-    if (config.tcpNoDelay == TcpNoDelayMode::Enabled) {
+    if (TcpNoDelayActive(config)) {
       if (SetTcpNoDelay(cnxFd)) [[likely]] {
         tcpNoDelayActive = true;
       } else {
@@ -522,7 +537,9 @@ bool SingleHttpServer::finalizeTlsHandshakeIfReady([[maybe_unused]] NativeHandle
   _ctx.tls.finalizeHandshake(fd, state);
 #ifdef AERONET_ENABLE_HTTP2
   if (_ctx.config.http2.enable && state.tlsInfo.selectedAlpn() == http2::kAlpnH2) {
-    setupHttp2Connection(fd, _ctx.config.tcpNoDelay, state);
+    // The server sends its SETTINGS right away, flushed by the caller through the protocol gather path. TCP_NODELAY
+    // was set at the accept, as for any TLS connection under the default TcpNoDelayMode::Auto.
+    installHttp2Handler(fd, state, true);
   }
 #endif
 #endif

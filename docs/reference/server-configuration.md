@@ -26,7 +26,7 @@ config.withPort(8080)
 | `nbThreads` / `withNbThreads()` | 0 | Multi-server worker count; 0 selects hardware concurrency (one for `SingleHttpServer`). |
 | `port` / `withPort()` | 0 | TCP listener port; 0 selects an ephemeral port. |
 | `reusePort` / `withReusePort()` | false | Request `SO_REUSEPORT` for independent listeners. |
-| `tcpNoDelay` / `withTcpNoDelay[Mode]()` | Auto | Nagle policy. Auto is the normal low-latency choice. |
+| `tcpNoDelay` / `withTcpNoDelay[Mode]()` | Auto | Nagle policy. Auto sets `TCP_NODELAY` on TLS connections and keeps Nagle's algorithm on cleartext ones; Enabled / Disabled force it. See [Settings](../operations/performance.md#settings). |
 | `enableKeepAlive` / `withKeepAliveMode()` | true | Allow HTTP/1.1 persistent connections. |
 | `keepAliveTimeout` / `withKeepAliveTimeout()` | 5 s | Idle time after a response before a persistent connection is closed. Also closes an HTTP/1.1 connection whose response made no progress for that long (a client that stopped reading it), keep-alive enabled or not: a client reading slowly but steadily is never closed. Also closes an HTTP/1.1 request whose body stalls, async routes included. WebSocket connections have their own [idle timeout](../protocols/websocket.md#idle-connections). Also bounds the [resolution of a CONNECT target](../protocols/connect.md#name-resolution) (`504` beyond). |
 | `maxRequestsPerConnection` | 100,000 | Bound requests served on a persistent connection. |
