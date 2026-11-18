@@ -2736,6 +2736,135 @@ TEST(TlsContextTest, SniNameWithTrailingDotSelectsItsRoute) {
   EXPECT_EQ(commonName, "localhost");
 }
 
+namespace {
+
+// A default certificate for "localhost" with an "api.example.com" route, in strict SNI mode.
+TLSConfig MakeStrictSniConfig() {
+  const auto& certificates = CertKeyCache::Get();
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(certificates.localhost.first)
+      .withKeyPem(certificates.localhost.second)
+      .withTlsSniCertificateMemory("api.example.com", certificates.serverA.first, certificates.serverA.second)
+      .withTlsSniMustMatch();
+  return cfg;
+}
+
+struct SniHandshakeResult {
+  std::string peerCommonName;
+  int clientErrorReason{0};  // reason of the first error of the client, the alert it received on failure
+  bool ok{false};
+  bool strictMismatch{false};  // flagged on the handshake observer of the server
+};
+
+// Handshakes with a client sending 'serverName', or no server name when it is null.
+SniHandshakeResult HandshakeWithSni(TLSConfig cfg, const char* serverName, int maxVersion = TLS1_3_VERSION) {
+  SslTestPair pair(std::move(cfg), {});
+  TlsHandshakeObserver observer;
+  EXPECT_EQ(SetTlsHandshakeObserver(pair.serverSsl.get(), &observer), 1);
+  EXPECT_EQ(::SSL_set_max_proto_version(pair.clientSsl.get(), maxVersion), 1);
+  if (serverName != nullptr) {
+    EXPECT_EQ(::SSL_set_tlsext_host_name(pair.clientSsl.get(), serverName), 1);
+  }
+  SniHandshakeResult result;
+  result.ok = PerformHandshake(pair);
+  result.strictMismatch = observer.sniStrictMismatch;
+  result.clientErrorReason = ERR_GET_REASON(::ERR_peek_error());
+  ::ERR_clear_error();
+  if (result.ok) {
+    result.peerCommonName = PeerCommonName(pair.clientSsl.get());
+  }
+  return result;
+}
+
+}  // namespace
+
+TEST(TlsContextTest, StrictSniServesTheNamesOfTheRoutesAndOfTheDefaultCertificate) {
+  for (int maxVersion : {TLS1_2_VERSION, TLS1_3_VERSION}) {
+    for (const auto& [serverName, commonName] :
+         {std::pair{"api.example.com", "server-a"}, std::pair{"API.example.com.", "server-a"},
+          std::pair{"localhost", "localhost"}, std::pair{"LOCALHOST.", "localhost"}}) {
+      const auto result = HandshakeWithSni(MakeStrictSniConfig(), serverName, maxVersion);
+      EXPECT_TRUE(result.ok) << serverName << ' ' << maxVersion;
+      EXPECT_FALSE(result.strictMismatch) << serverName;
+      EXPECT_EQ(result.peerCommonName, commonName) << serverName;
+    }
+  }
+}
+
+TEST(TlsContextTest, StrictSniRejectsAnUnknownNameWithAnUnrecognizedNameAlert) {
+  // "server-a" is a name of the certificate of the route, not its pattern. "." is empty without its trailing dot.
+  for (int maxVersion : {TLS1_2_VERSION, TLS1_3_VERSION}) {
+    for (const char* serverName : {"unknown.example.com", "example.com", "deep.api.example.com", "server-a", "."}) {
+      const auto result = HandshakeWithSni(MakeStrictSniConfig(), serverName, maxVersion);
+      EXPECT_FALSE(result.ok) << serverName << ' ' << maxVersion;
+      EXPECT_TRUE(result.strictMismatch) << serverName;
+      EXPECT_EQ(result.clientErrorReason, SSL_R_TLSV1_UNRECOGNIZED_NAME) << serverName << ' ' << maxVersion;
+    }
+  }
+
+  // Without strict mode, the default certificate is served.
+  TLSConfig lenient = MakeStrictSniConfig();
+  lenient.withTlsSniMustMatch(false);
+  const auto result = HandshakeWithSni(std::move(lenient), "unknown.example.com");
+  EXPECT_TRUE(result.ok);
+  EXPECT_FALSE(result.strictMismatch);
+  EXPECT_EQ(result.peerCommonName, "localhost");
+}
+
+TEST(TlsContextTest, StrictSniRejectsAClientSendingNoServerName) {
+  // missing_extension only exists in TLS 1.3: OpenSSL sends handshake_failure below (RFC 8446 §9.2).
+  for (const auto& [maxVersion, alertReason] : {std::pair{TLS1_3_VERSION, SSL_R_TLSV13_ALERT_MISSING_EXTENSION},
+                                                std::pair{TLS1_2_VERSION, SSL_R_SSLV3_ALERT_HANDSHAKE_FAILURE}}) {
+    const auto result = HandshakeWithSni(MakeStrictSniConfig(), nullptr, maxVersion);
+    EXPECT_FALSE(result.ok) << maxVersion;
+    EXPECT_TRUE(result.strictMismatch) << maxVersion;
+    EXPECT_EQ(result.clientErrorReason, alertReason) << maxVersion;
+  }
+
+  TLSConfig lenient = MakeStrictSniConfig();
+  lenient.withTlsSniMustMatch(false);
+  const auto result = HandshakeWithSni(std::move(lenient), nullptr);
+  EXPECT_TRUE(result.ok);
+  EXPECT_FALSE(result.strictMismatch);
+  EXPECT_EQ(result.peerCommonName, "localhost");
+}
+
+TEST(TlsContextTest, StrictSniWithoutRoutesOnlyServesTheNamesOfTheDefaultCertificate) {
+  const auto& certificates = CertKeyCache::Get();
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(certificates.localhost.first).withKeyPem(certificates.localhost.second).withTlsSniMustMatch();
+
+  EXPECT_TRUE(HandshakeWithSni(cfg, "localhost").ok);
+  for (const char* serverName : {"other.example.com", static_cast<const char*>(nullptr)}) {
+    const auto result = HandshakeWithSni(cfg, serverName);
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.strictMismatch);
+  }
+
+  // An SSL object without a handshake observer is rejected all the same.
+  SslTestPair unobserved(cfg, {});
+  ASSERT_EQ(::SSL_set_tlsext_host_name(unobserved.clientSsl.get(), "other.example.com"), 1);
+  EXPECT_FALSE(PerformHandshake(unobserved));
+  ::ERR_clear_error();
+}
+
+TEST(TlsContextTest, StrictSniMatchesAWildcardDefaultCertificateOnOneLabel) {
+  const auto certKey = test::MakeEphemeralCertKey("*.example.com", 3600, test::KeyAlgorithm::EcdsaP256);
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withCertPem(certKey.first).withKeyPem(certKey.second).withTlsSniMustMatch();
+
+  EXPECT_TRUE(HandshakeWithSni(cfg, "api.example.com").ok);
+  EXPECT_TRUE(HandshakeWithSni(cfg, "API.EXAMPLE.COM.").ok);
+  for (const char* serverName : {"example.com", "deep.api.example.com", "api.example.org"}) {
+    const auto result = HandshakeWithSni(cfg, serverName);
+    EXPECT_FALSE(result.ok) << serverName;
+    EXPECT_EQ(result.clientErrorReason, SSL_R_TLSV1_UNRECOGNIZED_NAME) << serverName;
+  }
+}
+
 TEST(TlsContextTest, CipherPoliciesServeEcdsaCertificatesOverTls12) {
   const auto ecdsaCertKey = test::MakeEphemeralCertKey("localhost", 3600, test::KeyAlgorithm::EcdsaP256);
   for (auto policy :

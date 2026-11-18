@@ -1236,6 +1236,54 @@ TEST(HttpTlsSniCertificates, WildcardHostCaseInsensitiveMatch) {
   ASSERT_FALSE(missingClient.handshakeOk());
 }
 
+TEST(HttpTlsSniCertificates, StrictModeRejectsUnknownAndMissingNamesAndBucketsTheReason) {
+  // The default certificate of TlsTestServer is issued for "localhost".
+  test::TlsTestServer ts({"http/1.1"}, [](HttpServerConfig& cfg) { cfg.tls.withTlsSniMustMatch(); });
+  std::atomic_int failedEvents{0};
+  ts.server.server.setTlsHandshakeCallback([&failedEvents](const TlsHandshakeEvent& ev) {
+    if (ev.result == TlsHandshakeEvent::Result::Failed && ev.reason == kTlsHandshakeFailureReasonSniStrictMismatch) {
+      ++failedEvents;
+    }
+  });
+  ts.setDefault([](const HttpRequestView&) { return HttpResponse("SNI-STRICT"); });
+
+  test::TlsClient::Options opts;
+  opts.alpn = {"http/1.1"};
+  opts.serverName = "localhost";
+  {
+    test::TlsClient client(ts.port(), opts);
+    ASSERT_TRUE(client.handshakeOk());
+    const auto resp = client.get("/", {});
+    ASSERT_TRUE(resp.starts_with("HTTP/1.1 200"));
+    EXPECT_TRUE(resp.contains("SNI-STRICT"));
+  }
+
+  // An empty server name sends none.
+  for (const char* serverName : {"unknown.example.com", ""}) {
+    opts.serverName = serverName;
+    test::TlsClient client(ts.port(), opts);
+    EXPECT_FALSE(client.handshakeOk()) << serverName;
+  }
+
+  // The server counts a failed handshake once it closed the connection, possibly after the client saw it fail.
+  const auto rejectedCount = [&ts] {
+    const ServerStats stats = ts.stats();
+    for (const auto& [reason, count] : stats.tlsHandshakeFailureReasons) {
+      if (reason == kTlsHandshakeFailureReasonSniStrictMismatch) {
+        return count;
+      }
+    }
+    return uint64_t{0};
+  };
+  const auto deadline = std::chrono::steady_clock::now() + kRejectedCloseTimeout;
+  while ((rejectedCount() < 2U || failedEvents.load() < 2) && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(1ms);
+  }
+  EXPECT_EQ(rejectedCount(), 2U);
+  EXPECT_EQ(failedEvents.load(), 2);
+  EXPECT_EQ(ts.stats().tlsHandshakesSucceeded, 1U);
+}
+
 TEST(HttpTlsNegative, PlainHttpToTlsPortRejected) {
   // perform a raw TCP connect and send cleartext HTTP to a TLS-only port -> should fail handshake quickly.
 

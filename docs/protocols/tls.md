@@ -44,7 +44,7 @@ When no minimum is configured, aeronet still enforces TLS 1.2 as the effective m
 
 ## Certificates and SNI
 
-The main certificate is the fallback when the client sends no SNI name or no mapping matches. Add exact or single label wildcard routes through `TLSConfig`:
+The main certificate is the fallback when the client sends no SNI name or no mapping matches, unless [strict SNI](#strict-sni) rejects these handshakes. Add exact or single label wildcard routes through `TLSConfig`:
 
 ```cpp
 aeronet::HttpServerConfig config;
@@ -56,6 +56,26 @@ config.tls
 ```
 
 Names are normalized to lowercase, and a pattern can only be mapped once. A wildcard such as `*.edge.example.com` matches exactly one non-empty label, such as `api.edge.example.com`; it matches neither the bare `edge.example.com` nor `deep.api.edge.example.com`. A fully qualified name with a trailing dot (`api.example.com.`) selects the same route as without it. Certificate files and in-memory PEM routes may be mixed, and each route also sends its intermediate certificates.
+
+### Strict SNI
+
+By default, the main certificate answers any name, so that a scanner connecting to the IP address of the server, or sending a made-up name, learns the host names of that certificate. With `withTlsSniMustMatch()`, the server only serves the names it holds a certificate for, the patterns of the SNI routes and the DNS subject alternative names of the main certificate, and fails any other handshake:
+
+```cpp
+aeronet::HttpServerConfig config;
+config.withTlsCertKey("/run/tls/example.crt", "/run/tls/example.key");  // example.com, www.example.com
+config.tls.withTlsSniCertificateFiles("api.example.com", "/run/tls/api.crt", "/run/tls/api.key")
+    .withTlsSniMustMatch();
+```
+
+| Client | Strict SNI | Default |
+| --- | --- | --- |
+| Name of an SNI route | Route certificate | Route certificate |
+| Other name of the main certificate (wildcards on one label, never the subject CN) | Main certificate | Main certificate |
+| Unknown name | `unrecognized_name` alert | Main certificate |
+| No name (IP address, old client) | `missing_extension` alert (RFC 8446 §9.2), `handshake_failure` below TLS 1.3 | Main certificate |
+
+A rejected handshake counts in the `sni_strict_mismatch` reason of `tlsHandshakeFailureReasons` (see [Observability](#observability)). Clients connecting by IP address send no name (RFC 6066 forbids IP literals in SNI): keep the default mode on a listener that load balancer or Kubernetes probes reach through `https://<ip>`, or have them send a known name. Tests: `TlsContextTest.StrictSni*` in [tls-components_test.cpp](../../aeronet/tls/test/tls-components_test.cpp), `HttpTlsSniCertificates.StrictModeRejectsUnknownAndMissingNamesAndBucketsTheReason` in [http-tls-handshake_test.cpp](../../tests/http-tls-handshake_test.cpp).
 
 ## Versions, ciphers, and ALPN
 
@@ -330,6 +350,7 @@ The hardening audit distinguishes defaults, aeronet-owned memory, and memory out
 | --- | --- | --- |
 | Protocol | Effective minimum TLS 1.2; TLS 1.3 supported | Applications may set an explicit TLS 1.2/1.3 maximum |
 | Context options | Server cipher preference; no renegotiation where supported; compression disabled by default | OpenSSL and platform capabilities still determine negotiated primitives |
+| Server names | With [strict SNI](#strict-sni), a client sending no name or an unknown one gets an alert, not the main certificate and its host names | Off by default: clients connecting by IP address send no name |
 | In-memory private keys | The strings of a `TLSConfig` (main and per-SNI) and of an `HttpClientConfig` are overwritten before their memory is released or reused: replacement, growth, assignment, destruction. No byte of a replaced key stays in the unused part of a buffer | Caller-owned PEM buffers and allocator/OS copies are not owned by aeronet |
 | Static ticket keys | Temporary by-value input and stored keys are overwritten on growth, clear, copy and move assignment, and destruction | Original caller key objects must be scrubbed by the caller when no longer needed |
 | Runtime ticket keys | One contiguous 48-byte object is cleansed with `OPENSSL_cleanse` on rotation/removal/destruction | Serialized tickets held by clients remain valid within the active key window |
@@ -501,6 +522,7 @@ In a configuration file:
 - Serve the full certificate chain (the leaf certificate, then its intermediate certificates) and verify the private key matches.
 - Keep TLS 1.2 or newer and use an intentional cipher policy.
 - Configure ALPN explicitly when HTTP/2 is enabled.
+- Enable [strict SNI](#strict-sni) on public listeners that only clients using a host name reach.
 - Set handshake timeout and admission limits for exposed listeners.
 - Choose request versus require mTLS deliberately and provide the correct trust anchors.
 - If stapling OCSP, verify certificate binding, signature, authorization, and freshness before publishing each DER
@@ -515,12 +537,12 @@ The [production configuration guide](../guides/production-configuration.md) cove
 
 ## Tests
 
-- Handshakes, mTLS, ALPN, SNI, and hot certificate reload (files rotated in place, symbolic link swap, rejected updates) against a live server: [tests/http-tls-handshake_test.cpp](../../tests/http-tls-handshake_test.cpp), and across `MultiHttpServer` workers: [tests/multi-http-server_test.cpp](../../tests/multi-http-server_test.cpp).
+- Handshakes, mTLS, ALPN, SNI (strict mode included), and hot certificate reload (files rotated in place, symbolic link swap, rejected updates) against a live server: [tests/http-tls-handshake_test.cpp](../../tests/http-tls-handshake_test.cpp), and across `MultiHttpServer` workers: [tests/multi-http-server_test.cpp](../../tests/multi-http-server_test.cpp).
 - Rollback of rejected config updates: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp).
 - HTTP to HTTPS redirect over HTTP/1.1 and h2c: [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp), and over HTTP/2 without `:authority` or host: `HttpsRedirectAnswersBeforeRouting` in [http2-protocol-handler_test.cpp](../../aeronet/server/test/http2-protocol-handler_test.cpp).
 - TLS reads and writes, read-ahead (a body of many records over TLS 1.2, with and without kTLS receive), backpressure, and the release of the buffers of idle connections: [tests/http-tls-io_test.cpp](../../tests/http-tls-io_test.cpp).
 - kTLS modes, their counters and fallbacks: `HttpTlsKtlsMode.*` in [tests/http-tls-io_test.cpp](../../tests/http-tls-io_test.cpp); kTLS off by default: `TlsContextTest.AppliesHardenedContextDefaults` in [tls-components_test.cpp](../../aeronet/tls/test/tls-components_test.cpp).
-- Certificate chains, rejected keys (encrypted, of another algorithm) and certificates (below the OpenSSL security level), every allocation failure of the context construction, trusted certificate bundles, session resumption with client certificates and its session id context, tickets disabled, strict ALPN without any offer, cipher policies, OCSP stapling, CRLs, the revocation callback, key logging, detection of changed input files, OpenSSL errors left by other code, record coalescing, writes of several records, reads after a fatal error, reads stopping after a socket read that drained the socket, the release of the buffers (and their keeping with a record partially received or written, or data not read yet), and kTLS send: [tls-components_test.cpp](../../aeronet/tls/test/tls-components_test.cpp).
+- Certificate chains, rejected keys (encrypted, of another algorithm) and certificates (below the OpenSSL security level), every allocation failure of the context construction, trusted certificate bundles, session resumption with client certificates and its session id context, tickets disabled, strict ALPN without any offer, strict SNI (alerts, names of the main certificate, wildcards), cipher policies, OCSP stapling, CRLs, the revocation callback, key logging, detection of changed input files, OpenSSL errors left by other code, record coalescing, writes of several records, reads after a fatal error, reads stopping after a socket read that drained the socket, the release of the buffers (and their keeping with a record partially received or written, or data not read yet), and kTLS send: [tls-components_test.cpp](../../aeronet/tls/test/tls-components_test.cpp).
 - Resumed mTLS sessions and `tlsPeerSubject()`, handlers leaving OpenSSL errors, and a server handshake flight larger than the socket buffers: [tests/http-tls-handshake_test.cpp](../../tests/http-tls-handshake_test.cpp).
 - Client certificate chains and server name indication of the HTTP client: [http-client-tls-e2e_test.cpp](../../aeronet/client/test/http-client-tls-e2e_test.cpp).
 - Session ticket key store and rotation: [tls-ticket-key-store_test.cpp](../../aeronet/tls/test/tls-ticket-key-store_test.cpp).

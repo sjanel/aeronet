@@ -95,6 +95,7 @@ TLS requires `AERONET_ENABLE_OPENSSL=ON`: without it, `HttpServerConfig` has nei
 | `ktlsMode` | Disabled | `Disabled`, `Opportunistic`, `Enabled` (warn if inactive), or `Required`; Linux/OpenSSL capability dependent. Only pays off for large files, see [Kernel TLS](../protocols/tls.md#kernel-tls-ktls). |
 | `sessionTickets` | disabled, 2 keys, 24 h | Enable ticket rotation, choose lifetime/key slots, or supply static 48-byte keys. Sessions only resume with tickets, accepted for their lifetime. |
 | `withTlsSniCertificateFiles/Memory()` | none | Add exact or wildcard SNI certificate mappings. A pattern can only be mapped once. |
+| `sniMustMatch` (`withTlsSniMustMatch()`) | false | Fail a handshake sending no server name, or one matching neither an SNI mapping nor a DNS name of the main certificate, instead of serving the main certificate. See [Strict SNI](../protocols/tls.md#strict-sni). |
 | `withTlsOcspStapleFile()` | none | Load one successful DER OCSP response into the context cache for the default certificate. No handshake-time fetch is performed. |
 | `TLSConfig::withTlsSniOcspStapleFile()` | none | Associate a DER OCSP response with an existing exact or wildcard SNI certificate mapping. |
 | `withTlsCrlFile(path, checkAll)` | none, false | Load a PEM/DER CRL for inbound client-certificate verification; `checkAll` checks the full verified chain. |

@@ -252,6 +252,13 @@ class TLSConfig {
 
   TLSConfig& clearTlsSniCertificates();
 
+  // Fail the handshake of a client sending no server name, or one matching neither an SNI route nor a DNS subject
+  // alternative name of the default certificate, instead of serving the default certificate.
+  TLSConfig& withTlsSniMustMatch(bool on = true) {
+    sniMustMatch = on;
+    return *this;
+  }
+
   // Set (overwrite) ALPN protocol preference list. Order matters; first matching protocol is selected.
   template <std::ranges::input_range R>
     requires std::convertible_to<std::ranges::range_reference_t<R>, std::string_view>
@@ -327,6 +334,9 @@ class TLSConfig {
   // requestClientCert=true whenever this is set, so enabling require always asks for the certificate.
   bool requireClientCert{false};
   bool alpnMustMatch{false};  // If true and client offers no overlapping ALPN protocol, fail handshake.
+  // If true, fail the handshake of a client sending no server name (missing_extension alert) or an unknown one
+  // (unrecognized_name alert): only the names of the SNI routes and of the default certificate are served.
+  bool sniMustMatch{false};
   bool logHandshake{false};  // If true, emit info log line on TLS handshake completion (ALPN, cipher, version, peer CN)
   bool disableCompression{true};  // Disable TLS-level compression (CRIME mitigation)
   bool crlCheckAll{false};        // Require CRLs for the full verified client chain instead of the leaf only.
