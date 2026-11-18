@@ -383,6 +383,7 @@ server.setTlsHandshakeCallback([](const TlsHandshakeEvent& event) {
 | `tlsAlpnDistribution`, `tlsVersionCounts`, `tlsCipherCounts` | Negotiated protocols, versions, and ciphers. |
 | `tlsHandshakeDurationCount`, `tlsHandshakeDurationTotalNs`, `tlsHandshakeDurationMaxNs` | Handshake duration aggregates. |
 | `ktlsSendEnabledConnections`, `ktlsSendEnableFallbacks`, `ktlsSendForcedShutdowns`, `ktlsSendBytes` | Kernel TLS usage, see below. |
+| `tlsIdleBufferReleases` | Releases of the OpenSSL buffers of idle connections, see [Memory of idle connections](#memory-of-idle-connections). |
 
 ```cpp
 #include <aeronet/log.hpp>
@@ -420,12 +421,33 @@ config.withPort(8443)
 
 The server keeps the number of TLS records and system calls per request close to what plaintext connections need:
 
-- **Reads**: server contexts read ahead, so OpenSSL reads as much ciphertext as the socket holds in one system call, instead of two per record (the 5-byte header, then the body). A short read proves the socket is drained, as with a plaintext socket, so the event loop does not issue an extra read returning `EAGAIN`. A peer `close_notify` or an error that follows data is reported after that data is served.
+- **Reads**: server contexts read ahead, so OpenSSL reads as much ciphertext as the socket holds in one system call, instead of two per record (the 5-byte header, then the body). A socket read returning less than OpenSSL asked for proves the socket is drained, as with a plaintext socket: once the records it brought are decrypted, the transport stops without another read, which would only fail with `EAGAIN`, and the event loop does not read again either. A keep-alive request then takes 2 system calls instead of 3 (one `read()`, one write), as on a plaintext connection (5.6% more requests per second over user-space TLS, 6.9% over kTLS, 3.8% for HTTP/2 over TLS, on loopback with 100 connections). With kTLS receive (Linux; TLS 1.2, and TLS 1.3 from OpenSSL 3.2, when kTLS is enabled), the kernel decrypts the records, and its reads also stop before a record of another type (an alert, a key update): the reads continue until `EAGAIN`. A peer `close_notify` or an error that follows data is reported after that data is served. Tests: `TlsTransportTest.ReadStopsAfterShortSocketReadWithoutEagain` and `ShortSocketReadStopsTheNextReadToo` in [tls-components_test.cpp](../../aeronet/tls/test/tls-components_test.cpp), `HttpTlsReadAhead.LargeBodyOverTls12IsReadWhole` in [tests/http-tls-io_test.cpp](../../tests/http-tls-io_test.cpp).
 - **Writes with user-space TLS**: OpenSSL makes at least one record per `SSL_write`. Rather than encrypting each buffer of a gather write separately, which would make the 9-byte header of each HTTP/2 frame a record and a system call of its own, aeronet encrypts large buffers in place and coalesces small ones with the following buffers into full 16 KiB records. OpenSSL returns once a record is written: the following ones are written until the socket would block, as with a plaintext socket, so that neither the server nor `HttpClient` waits for the socket between the records of a buffer.
 - **Writes with kTLS**: data is written in clear with `send()` / `sendmsg()`, and the kernel builds full records across buffers, so a gather write is a single system call.
 - **Handshakes larger than the socket buffers**: a server flight that does not fit in the socket send buffer (a long certificate chain) resumes when the socket becomes writable.
 - **OpenSSL error queue**: OpenSSL reports any error left on the per-thread error queue as the failure of the next I/O operation of the thread. Code running on the event loop, such as a handler checking a forged signature with OpenSSL, can leave one behind: the transport empties the queue before each TLS I/O operation (one thread-local check when it is empty), so that such an error never closes a healthy connection. aeronet's own OpenSSL code, JWT included, leaves the queue empty.
 - **Fatal errors**: after a fatal read error, such as a peer closing the connection without `close_notify`, every later read of the connection reports the error. OpenSSL reports it once, then fails the reads as if they would block: its caller would wait for the hung-up socket, reported readable at once, in a busy loop until its deadline.
+
+## Memory of idle connections
+
+An established TLS connection holds the read and write buffers of OpenSSL, about 17 KB each (the write buffer is freed when kTLS send is enabled). A connection idle for `idleBufferReleaseDelay` (1 second by default) releases them, and OpenSSL allocates them again for its next request:
+
+```cpp
+HttpServerConfig config;
+config.withTlsCertKey("/run/tls/fullchain.pem", "/run/tls/private.key")
+    .withKeepAliveTimeout(std::chrono::minutes{5})
+    .withTlsIdleBufferReleaseDelay(std::chrono::seconds{1});
+```
+
+Measured on loopback with 10,000 idle HTTP/1.1 connections, the heap of each one goes from 49.6 KB to 16.3 KB with user-space TLS, and from 33.0 KB to 16.3 KB with kTLS send (HTTP/2 over kTLS: 36.4 KB to 19.7 KB). With 100,000 idle connections over user-space TLS, the heap goes from 4.9 GB to 1.6 GB, and the resident memory of the process from 2.6 GB to 1.6 GB. With fewer connections, the resident memory falls less (from 26 KB to 18-19 KB per connection at 10,000): the parts of the buffers that a small request does not touch never were resident, and the freed blocks stay in the allocator for the next allocations. Releasing the buffers after each request instead (`SSL_MODE_RELEASE_BUFFERS`) costs 1.2% of the requests per second; on idle connections only, the cost is not measurable.
+
+- The delay is checked at the maintenance ticks (`pollInterval`, 500 ms by default), with the keep-alive deadlines: an idle connection costs no periodic work, an active one a deadline update per delay.
+- A delay not shorter than `keepAliveTimeout`, `std::chrono::milliseconds::max()` for instance, keeps the buffers: the connection is closed first.
+- Buffers holding data are kept: a record partially received or written, or decrypted data not served yet. This includes a record whose header was read without its body, which OpenSSL versions before 3.0.14, 3.1.6, 3.2.2 and 3.3.1 would free anyway (CVE-2024-4741).
+- HTTP/2 connections with streams in progress, WebSocket connections and tunnels keep them.
+- `ServerStats::tlsIdleBufferReleases` counts the releases.
+
+Tests: `HttpTlsIdleBuffers.*` in [tests/http-tls-io_test.cpp](../../tests/http-tls-io_test.cpp), `TlsTransportTest.ReleaseBuffers*` in [tls-components_test.cpp](../../aeronet/tls/test/tls-components_test.cpp).
 
 ## HTTP to HTTPS redirect
 
@@ -485,8 +507,8 @@ The [production configuration guide](../guides/production-configuration.md) cove
 - Handshakes, mTLS, ALPN, SNI, and hot certificate reload (files rotated in place, symbolic link swap, rejected updates) against a live server: [tests/http-tls-handshake_test.cpp](../../tests/http-tls-handshake_test.cpp), and across `MultiHttpServer` workers: [tests/multi-http-server_test.cpp](../../tests/multi-http-server_test.cpp).
 - Rollback of rejected config updates: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp).
 - HTTP to HTTPS redirect over HTTP/1.1 and h2c: [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp), and over HTTP/2 without `:authority` or host: `HttpsRedirectAnswersBeforeRouting` in [http2-protocol-handler_test.cpp](../../aeronet/server/test/http2-protocol-handler_test.cpp).
-- TLS reads and writes, read-ahead, and backpressure: [tests/http-tls-io_test.cpp](../../tests/http-tls-io_test.cpp).
-- Certificate chains, rejected keys (encrypted, of another algorithm) and certificates (below the OpenSSL security level), every allocation failure of the context construction, trusted certificate bundles, session resumption with client certificates and its session id context, tickets disabled, strict ALPN without any offer, cipher policies, OCSP stapling, CRLs, the revocation callback, key logging, detection of changed input files, OpenSSL errors left by other code, record coalescing, writes of several records, reads after a fatal error, and kTLS send: [tls-components_test.cpp](../../aeronet/tls/test/tls-components_test.cpp).
+- TLS reads and writes, read-ahead (a body of many records over TLS 1.2, with and without kTLS receive), backpressure, and the release of the buffers of idle connections: [tests/http-tls-io_test.cpp](../../tests/http-tls-io_test.cpp).
+- Certificate chains, rejected keys (encrypted, of another algorithm) and certificates (below the OpenSSL security level), every allocation failure of the context construction, trusted certificate bundles, session resumption with client certificates and its session id context, tickets disabled, strict ALPN without any offer, cipher policies, OCSP stapling, CRLs, the revocation callback, key logging, detection of changed input files, OpenSSL errors left by other code, record coalescing, writes of several records, reads after a fatal error, reads stopping after a socket read that drained the socket, the release of the buffers (and their keeping with a record partially received or written, or data not read yet), and kTLS send: [tls-components_test.cpp](../../aeronet/tls/test/tls-components_test.cpp).
 - Resumed mTLS sessions and `tlsPeerSubject()`, handlers leaving OpenSSL errors, and a server handshake flight larger than the socket buffers: [tests/http-tls-handshake_test.cpp](../../tests/http-tls-handshake_test.cpp).
 - Client certificate chains and server name indication of the HTTP client: [http-client-tls-e2e_test.cpp](../../aeronet/client/test/http-client-tls-e2e_test.cpp).
 - Session ticket key store and rotation: [tls-ticket-key-store_test.cpp](../../aeronet/tls/test/tls-ticket-key-store_test.cpp).

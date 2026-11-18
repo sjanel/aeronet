@@ -136,6 +136,11 @@ class ConnectionMaintenance {
 
   bool closeExpiredKeepAliveConnections();
 
+  // Next check of a connection whose deadline elapsed, that is not idle for keepAliveTimeout: at keepAliveExpiry, or
+  // when it is idle for TLSConfig::idleBufferReleaseDelay if it holds TLS buffers. Releases them if it is idle already.
+  [[nodiscard]] std::chrono::steady_clock::time_point nextIdleCheck(
+      ConnectionState& state, std::chrono::steady_clock::time_point keepAliveExpiry);
+
   [[nodiscard]] bool needsFullConnectionMaintenanceSweep() const noexcept;
 
   // Closes the connection if its header read, body read, per-route request or TLS handshake timeout elapsed. Returns

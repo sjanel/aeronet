@@ -320,6 +320,7 @@ void ConnectionState::reset() {
   tlsHandshakeEventEmitted = false;
   tlsContextKeepAlive.reset();
   tlsHandshakeInFlight = false;
+  tlsBuffersReleased = false;
 #endif
   fileSend = {};
   // A connection may close in the middle of a file transfer (peer gone): its next user must not look busy sending it.

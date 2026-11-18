@@ -244,6 +244,11 @@ HttpServerConfig& HttpServerConfig::withTlsHandshakeTimeout(std::chrono::millise
   return *this;
 }
 
+HttpServerConfig& HttpServerConfig::withTlsIdleBufferReleaseDelay(std::chrono::milliseconds delay) {
+  ensureTls().withTlsIdleBufferReleaseDelay(delay);
+  return *this;
+}
+
 HttpServerConfig& HttpServerConfig::withTlsOcspStapleFile(std::string_view derFile) {
   ensureTls().withTlsOcspStapleFile(derFile);
   return *this;

@@ -429,6 +429,7 @@ ServerStats SingleHttpServer::stats() const {
   statsOut.ktlsSendEnableFallbacks = tlsMetrics.ktlsSendEnableFallbacks.load();
   statsOut.ktlsSendForcedShutdowns = tlsMetrics.ktlsSendForcedShutdowns.load();
   statsOut.ktlsSendBytes = tlsMetrics.ktlsSendBytes.load();
+  statsOut.tlsIdleBufferReleases = tlsMetrics.idleBufferReleases.load();
 #endif
   return statsOut;
 }

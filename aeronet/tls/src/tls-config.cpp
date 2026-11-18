@@ -1,6 +1,7 @@
 #include "aeronet/tls-config.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -115,6 +116,9 @@ void TLSConfig::validate() {
   }
   if (!sessionTickets.enabled && !_staticTicketKeys.keys.empty()) {
     throw std::invalid_argument("Session ticket keys configured but tickets disabled");
+  }
+  if (idleBufferReleaseDelay < std::chrono::milliseconds{0}) {
+    throw std::invalid_argument("TLS idleBufferReleaseDelay must be greater than or equal to 0");
   }
   if (handshakeRateLimitPerSecond == 0 && handshakeRateLimitBurst != 0) {
     throw std::invalid_argument("TLS handshake rate limit burst set but rate is zero");

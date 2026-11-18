@@ -320,6 +320,10 @@ struct ConnectionState : public ConnectionInfo {
   // concurrency limits.
   bool tlsHandshakeInFlight : 1 {false};
 
+  // True once the TLS buffers of the idle connection were released, until its next event (see
+  // TLSConfig::idleBufferReleaseDelay and internal::ConnectionMaintenance::refreshKeepAliveDeadline()).
+  bool tlsBuffersReleased : 1 {false};
+
   // Observability / attribution for handshake failures.
   // Populated by OpenSSL callbacks via SSL ex_data (see tls-handshake-observer).
   TlsHandshakeObserver tlsHandshakeObserver;

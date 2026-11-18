@@ -220,6 +220,23 @@ TEST(TLSConfigTest, HandshakeRateLimitBurstWithRate) {
   cfg.validate();
 }
 
+TEST(TLSConfigTest, IdleBufferReleaseDelayValidation) {
+  HttpServerConfig serverCfg;
+  serverCfg.withTlsIdleBufferReleaseDelay(std::chrono::milliseconds{250});
+  TLSConfig& cfg = serverCfg.tls;
+  EXPECT_TRUE(cfg.enabled);
+  EXPECT_EQ(cfg.idleBufferReleaseDelay, std::chrono::milliseconds{250});
+  cfg.withKeyPem(kDummyKeyPem);
+  cfg.withCertPem(kDummyCertPem);
+  cfg.validate();
+  cfg.withTlsIdleBufferReleaseDelay(std::chrono::milliseconds{0});
+  cfg.validate();
+  cfg.withTlsIdleBufferReleaseDelay(std::chrono::milliseconds::max());
+  cfg.validate();
+  cfg.withTlsIdleBufferReleaseDelay(std::chrono::milliseconds{-1});
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+}
+
 TEST(TLSConfigTest, HandshakeRateLimitBurstWithoutRateThrows) {
   TLSConfig cfg;
   cfg.enabled = true;

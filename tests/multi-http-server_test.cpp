@@ -161,6 +161,19 @@ TEST(MultiHttpServer, StatsAggregatesTlsAlpnDistribution) {
       std::ranges::find_if(stats.total.tlsAlpnDistribution, [](const auto& kv) { return kv.first == "http/1.1"; });
   ASSERT_NE(it, stats.total.tlsAlpnDistribution.end());
   EXPECT_GT(it->second, 0U);
+  // Every scalar counter of the total sums the ones of the servers (kTLS counters included), the maxima excepted.
+  EXPECT_GE(stats.total.ktlsSendEnabledConnections + stats.total.ktlsSendEnableFallbacks, 1U);
+  stats.total.for_each_field([&stats](std::string_view name, uint64_t total) {
+    uint64_t expected = 0;
+    for (const ServerStats& serverStats : stats.per) {
+      serverStats.for_each_field([&](std::string_view fieldName, uint64_t value) {
+        if (fieldName == name) {
+          expected = name.starts_with("max") || name.ends_with("MaxNs") ? std::max(expected, value) : expected + value;
+        }
+      });
+    }
+    EXPECT_EQ(total, expected) << name;
+  });
   handle.stop();
   handle.rethrowIfError();
 }

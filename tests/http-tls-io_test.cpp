@@ -1039,4 +1039,101 @@ TEST(HttpTlsStaticFile, FileTruncatedAfterItsSizeWasReadClosesTheConnection) {
   EXPECT_LT(received.size(), kFileSize);
 }
 
+namespace {
+
+// Writes a keep-alive request on the connection of the client and reads its response, ending with bodyEnd.
+std::string KeepAliveExchange(test::TlsClient& client, std::string_view request, std::string_view bodyEnd) {
+  if (!client.writeAll(request)) {
+    return {};
+  }
+  std::string response;
+  const auto deadline = std::chrono::steady_clock::now() + 10s;
+  while (!response.ends_with(bodyEnd) && std::chrono::steady_clock::now() < deadline) {
+    if (client.readSomeInto(response) == 0) {
+      std::this_thread::sleep_for(1ms);
+    }
+  }
+  return response;
+}
+
+// Waits until the server released the TLS buffers of idle connections `count` times.
+bool WaitForIdleBufferReleases(test::TlsTestServer& server, uint64_t count) {
+  const auto deadline = std::chrono::steady_clock::now() + 10s;
+  while (server.stats().tlsIdleBufferReleases < count) {
+    if (std::chrono::steady_clock::now() > deadline) {
+      return false;
+    }
+    std::this_thread::sleep_for(1ms);
+  }
+  return true;
+}
+
+constexpr std::string_view kIdleBodyRequest = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";
+constexpr std::string_view kIdleBody = "idle-body";
+
+}  // namespace
+
+// A keep-alive connection idle for idleBufferReleaseDelay releases the buffers of OpenSSL, allocated again for its next
+// request, and released again once it is idle again. With kTLS send (if available) and without.
+TEST(HttpTlsIdleBuffers, IdleConnectionReleasesItsBuffersAndIsServedAgain) {
+  for (const auto ktlsMode : {TLSConfig::KtlsMode::Disabled, TLSConfig::KtlsMode::Opportunistic}) {
+    test::TlsTestServer localTs({"http/1.1"}, [ktlsMode](HttpServerConfig& cfg) {
+      cfg.withTlsKtlsMode(ktlsMode).withTlsIdleBufferReleaseDelay(30ms);
+    });
+    localTs.setDefault([](const HttpRequestView&) { return HttpResponse(kIdleBody); });
+    test::TlsClient client(localTs.port());
+    ASSERT_TRUE(client.handshakeOk());
+    // Requests closer to each other than the delay: the connection is active when its check comes.
+    for (int requestIdx = 0; requestIdx < 4; ++requestIdx) {
+      EXPECT_TRUE(KeepAliveExchange(client, kIdleBodyRequest, kIdleBody).starts_with("HTTP/1.1 200")) << requestIdx;
+      std::this_thread::sleep_for(10ms);
+    }
+    for (uint64_t releases = 1; releases <= 3; ++releases) {
+      ASSERT_TRUE(WaitForIdleBufferReleases(localTs, releases)) << releases;
+      const std::string response = KeepAliveExchange(client, kIdleBodyRequest, kIdleBody);
+      EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << releases << ": " << response;
+      EXPECT_TRUE(response.ends_with(kIdleBody)) << releases;
+    }
+  }
+}
+
+// The buffers are kept with a delay not shorter than keepAliveTimeout: std::chrono::milliseconds::max() never releases
+// them.
+TEST(HttpTlsIdleBuffers, NotReleasedWithoutAShorterDelayThanKeepAliveTimeout) {
+  for (const auto delay : {std::chrono::milliseconds::max(), std::chrono::milliseconds{5s}}) {
+    test::TlsTestServer localTs({"http/1.1"}, [delay](HttpServerConfig& cfg) {
+      cfg.withKeepAliveTimeout(5s).withTlsIdleBufferReleaseDelay(delay);
+    });
+    localTs.setDefault([](const HttpRequestView&) { return HttpResponse(kIdleBody); });
+    test::TlsClient client(localTs.port());
+    ASSERT_TRUE(client.handshakeOk());
+    EXPECT_TRUE(KeepAliveExchange(client, kIdleBodyRequest, kIdleBody).starts_with("HTTP/1.1 200"));
+    std::this_thread::sleep_for(50ms);  // 50 maintenance ticks
+    EXPECT_EQ(localTs.stats().tlsIdleBufferReleases, 0U);
+    EXPECT_TRUE(KeepAliveExchange(client, kIdleBodyRequest, kIdleBody).ends_with(kIdleBody));
+  }
+}
+
+// A request body of many records read whole over TLS 1.2, with and without kTLS receive (Linux, when kTLS is available:
+// OpenSSL enables it for TLS 1.2), whose reads continue until EAGAIN.
+TEST(HttpTlsReadAhead, LargeBodyOverTls12IsReadWhole) {
+  static constexpr std::size_t kBodySize = 1UL << 20U;
+  for (const auto ktlsMode : {TLSConfig::KtlsMode::Disabled, TLSConfig::KtlsMode::Opportunistic}) {
+    test::TlsTestServer localTs(
+        {"http/1.1"}, [ktlsMode](HttpServerConfig& cfg) { cfg.withTlsKtlsMode(ktlsMode).withTlsMaxVersion("TLS1.2"); });
+    localTs.setDefault(
+        [](const HttpRequestView& req) { return HttpResponse(std::format("size={}", req.body().size())); });
+    test::TlsClient client(localTs.port());
+    ASSERT_TRUE(client.handshakeOk());
+    std::string request = std::format("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n", kBodySize);
+    request.append(kBodySize, 'b');
+    const std::string expectedBody = std::format("size={}", kBodySize);
+    for (int requestIdx = 0; requestIdx < 3; ++requestIdx) {
+      const std::string response = KeepAliveExchange(client, request, expectedBody);
+      EXPECT_TRUE(response.starts_with("HTTP/1.1 200")) << requestIdx << ": " << response.substr(0, 64);
+      EXPECT_TRUE(response.ends_with(expectedBody)) << requestIdx;
+    }
+  }
+}
+
 }  // namespace aeronet

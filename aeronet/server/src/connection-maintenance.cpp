@@ -21,6 +21,7 @@
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-handshake-failure-reasons.hpp"
+#include "aeronet/tls-transport.hpp"
 #endif
 
 #ifdef AERONET_ENABLE_WEBSOCKET
@@ -55,6 +56,18 @@ AERONET_ALWAYS_INLINE bool HasPendingHttp1Output(const ConnectionState& state) n
   return !state.outQueue.empty() || state.isSendingFile();
 }
 
+// Delay after the last activity of a connection at which its deadline checks it: its keep-alive expiry, or the release
+// of its TLS buffers if it comes first.
+std::chrono::milliseconds IdleCheckDelay(const HttpServerConfig& config,
+                                         [[maybe_unused]] const ConnectionState& state) noexcept {
+#ifdef AERONET_ENABLE_OPENSSL
+  if (state.transport.isTls()) {
+    return std::min(config.tls.idleBufferReleaseDelay, config.keepAliveTimeout);
+  }
+#endif
+  return config.keepAliveTimeout;
+}
+
 }  // namespace
 
 void ConnectionMaintenance::refreshKeepAliveDeadline(ConnectionIt cnxIt) {
@@ -86,10 +99,45 @@ void ConnectionMaintenance::refreshKeepAliveDeadline(ConnectionIt cnxIt) {
     _deadlines.remove(state);
     return;
   }
+#ifdef AERONET_ENABLE_OPENSSL
+  if (state.tlsBuffersReleased) [[unlikely]] {
+    // The first event since its TLS buffers were released: OpenSSL allocates them again to serve it. Bring its
+    // deadline forward, to release them once it is idle again.
+    state.tlsBuffersReleased = false;
+    _deadlines.upsert(state, cnxIt->fd(), state.lastActivity + IdleCheckDelay(config, state));
+    return;
+  }
+#endif
   // An armed deadline is never later than lastActivity + keepAliveTimeout: lastActivity only moves forward, and a
   // configuration update rebuilds the queue. Keep it: closeExpiredKeepAliveConnections() re-arms it from lastActivity
-  // when it fires, so that an active connection costs one heap update per keepAliveTimeout instead of one per event.
-  armDeadlineIfUnset(state, cnxIt->fd(), state.lastActivity + config.keepAliveTimeout);
+  // when it fires, so that an active connection costs one heap update per keepAliveTimeout (or per TLS
+  // idleBufferReleaseDelay) instead of one per event.
+  if (!KeepAliveDeadlineQueue::contains(state)) {
+    _deadlines.upsert(state, cnxIt->fd(), state.lastActivity + IdleCheckDelay(config, state));
+  }
+}
+
+std::chrono::steady_clock::time_point ConnectionMaintenance::nextIdleCheck(
+    [[maybe_unused]] ConnectionState& state, std::chrono::steady_clock::time_point keepAliveExpiry) {
+#ifdef AERONET_ENABLE_OPENSSL
+  if (state.transport.isTls() && !state.tlsBuffersReleased) {
+    const HttpServerConfig& config = _pCtx->config;
+    const auto releaseDelay = config.tls.idleBufferReleaseDelay;
+    if (releaseDelay < config.keepAliveTimeout) {
+      const auto releaseAt = state.lastActivity + releaseDelay;
+      if (releaseAt > _pCtx->connections.now) {
+        return releaseAt;  // active since: checked again once idle for releaseDelay
+      }
+      // Idle for releaseDelay. Kept if they hold data (or the handshake is not done): checked again at the keep-alive
+      // expiry.
+      state.tlsBuffersReleased = state.transport.get<TlsTransport>()->releaseBuffers();
+      if (state.tlsBuffersReleased) {
+        ++_pCtx->tls.metrics().idleBufferReleases;
+      }
+    }
+  }
+#endif
+  return keepAliveExpiry;
 }
 
 void ConnectionMaintenance::armDeadlineIfUnset(ConnectionState& state, NativeHandle fd,
@@ -179,7 +227,7 @@ bool ConnectionMaintenance::closeExpiredKeepAliveConnections() {
     // The writes of the HTTP/1 output count as activity (see ConnectionIo::flushOutbound()).
     const auto currentExpiry = state.lastActivity + config.keepAliveTimeout;
     if (currentExpiry > now) {
-      _deadlines.upsert(state, expired.fd, currentExpiry);
+      _deadlines.upsert(state, expired.fd, nextIdleCheck(state, currentExpiry));
       continue;
     }
 

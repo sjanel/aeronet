@@ -31,10 +31,20 @@ class TlsTransport final : public TransportBackend<TlsTransport, TransportKind::
   /// (the gather write rebuilds its records in a stack buffer).
   explicit TlsTransport(SslPtr sslPtr);
 
+  // Not movable: the read BIO of the SSL object points to the transport (see read()).
+  TlsTransport(const TlsTransport&) = delete;
+  TlsTransport(TlsTransport&&) = delete;
+  TlsTransport& operator=(const TlsTransport&) = delete;
+  TlsTransport& operator=(TlsTransport&&) = delete;
+
+  ~TlsTransport() = default;
+
   /// Non-blocking read of decrypted data.
   /// When the SSL object reads ahead (server contexts), records are decrypted until `len` bytes are read or the socket
-  /// would block, like a plain socket read: a short read then drained the socket, unless hasPendingReadData() tells
-  /// otherwise. Without read-ahead, a read returns the data of one TLS record at most.
+  /// is drained, like a plain socket read: a short read then drained the socket, unless hasPendingReadData() tells
+  /// otherwise. The socket is known to be drained without a read failing with EAGAIN once a socket read returned less
+  /// than OpenSSL asked for and every buffered record is decrypted (not with kTLS receive, whose reads also stop before
+  /// a record of another type). Without read-ahead, a read returns the data of one TLS record at most.
   TransportResult read(char* buf, std::size_t len);
 
   /// Write `data` until it is written whole, the socket would block or the write fails, like a socket write. Without
@@ -61,6 +71,12 @@ class TlsTransport final : public TransportBackend<TlsTransport, TransportKind::
 
   // Perform best-effort bidirectional TLS shutdown (non-blocking). Safe to call multiple times.
   void shutdown() noexcept;
+
+  /// Frees the read and write buffers of the SSL object of an idle established connection (about 17 KB each, the write
+  /// buffer being already freed with kTLS send). OpenSSL allocates them again for the next read or write. Returns
+  /// false, keeping them, when they hold data: a record partially received or not decrypted yet, decrypted data not
+  /// read yet, or a record partially written.
+  bool releaseBuffers() noexcept;
 
   [[nodiscard]] SSL* rawSsl() const noexcept { return _ssl.get(); }
 
@@ -94,6 +110,10 @@ class TlsTransport final : public TransportBackend<TlsTransport, TransportKind::
 
   TransportHint handshake(TransportHint want);
 
+  // Once the handshake completed, makes the read BIO record in _socketDrained whether its socket reads drain the
+  // socket (read-ahead SSL objects without kTLS receive only).
+  void trackShortSocketReads();
+
   // Maps a failed SSL_read_ex to the hint of a read returning no data (None for an orderly close).
   [[nodiscard]] TransportHint readFailureHint() const;
 
@@ -103,6 +123,10 @@ class TlsTransport final : public TransportBackend<TlsTransport, TransportKind::
   SslPtr _ssl;
   bool _handshakeDone{false};
   bool _readUntilDrained;
+  // Whether the last socket read of the SSL object returned less than requested, emptying the socket receive queue:
+  // edge-triggered polling reports any byte arriving after it. Set by the read BIO callback (see
+  // trackShortSocketReads()), false without it.
+  bool _socketDrained{false};
   ReadStop _readStop{ReadStop::None};
   KtlsEnableResult _ktlsResult{KtlsEnableResult::Unknown};
 };

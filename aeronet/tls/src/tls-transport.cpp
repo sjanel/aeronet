@@ -5,6 +5,7 @@
 #include <openssl/ssl.h>
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <span>
 #include <string_view>
@@ -32,6 +33,18 @@ inline void ClearStaleOpenSslErrors() noexcept {
   if (::ERR_peek_error() != 0) [[unlikely]] {
     ::ERR_clear_error();
   }
+}
+
+// Callback of the socket BIO of a server SSL object, called around each of its operations: records whether the last
+// socket read returned less than OpenSSL asked for (TlsTransport::_socketDrained, the callback argument).
+// NOLINTNEXTLINE(readability-non-const-parameter): the signature of BIO_callback_fn_ex
+long RecordShortSocketReads(BIO* bio, int oper, const char* /*argp*/, std::size_t len, int /*argi*/, long /*argl*/,
+                            int ret, std::size_t* processed) {  // NOLINT(readability-non-const-parameter)
+  if (oper == (BIO_CB_READ | BIO_CB_RETURN)) {
+    assert(processed != nullptr);
+    *reinterpret_cast<bool*>(::BIO_get_callback_arg(bio)) = ret > 0 && *processed < len;
+  }
+  return ret;
 }
 }  // namespace
 
@@ -83,6 +96,12 @@ TransportResult TlsTransport::read(char* buf, std::size_t len) {
     // handing them in one go to the caller lets it process the input in larger batches.
     std::size_t nbRead;
     while (ret.bytesProcessed < len) {
+      if (_socketDrained && ::SSL_has_pending(_ssl.get()) == 0) {
+        // The last socket read emptied the socket, and every record it brought is decrypted: the next one would only
+        // fail with EAGAIN. Valid across calls: any byte arriving after that read raises a new event.
+        _readStop = ReadStop::Drained;
+        break;
+      }
       if (::SSL_read_ex(_ssl.get(), buf + ret.bytesProcessed, len - ret.bytesProcessed, &nbRead) != 1) {
         // Return the data read so far. What stopped the reads is reported by the next one, unless the socket would
         // block. A fatal error is logged now, to leave the per-thread OpenSSL error queue empty.
@@ -291,6 +310,17 @@ void TlsTransport::shutdown() noexcept {
   ::ERR_clear_error();
 }
 
+bool TlsTransport::releaseBuffers() noexcept {
+  SSL* ssl = _ssl.get();
+  // Only between two records ("RH": reading the header of the next one). OpenSSL before 3.0.14, 3.1.6, 3.2.2 and 3.3.1
+  // frees the read buffer of a record whose header was read but not its body, as nothing is left to read in it
+  // (CVE-2024-4741, a use after free on the next read).
+  if (!_handshakeDone || ::SSL_has_pending(ssl) != 0 || std::string_view(::SSL_rstate_string(ssl)) != "RH") {
+    return false;
+  }
+  return ::SSL_free_buffers(ssl) == 1;
+}
+
 void TlsTransport::logErrorIfAny() const {
   for (auto errVal = ::ERR_get_error(); errVal != 0; errVal = ::ERR_get_error()) {
     char errBuf[256];
@@ -305,6 +335,7 @@ TransportHint TlsTransport::handshake(TransportHint want) {
     const int handshakeRet = ::SSL_do_handshake(_ssl.get());
     if (handshakeRet == 1) {
       _handshakeDone = true;
+      trackShortSocketReads();
     } else {
       const int err = ::SSL_get_error(_ssl.get(), handshakeRet);
       if (isRetry(err)) {
@@ -325,6 +356,22 @@ TransportHint TlsTransport::handshake(TransportHint want) {
     }
   }
   return TransportHint::None;
+}
+
+void TlsTransport::trackShortSocketReads() {
+  if (!_readUntilDrained) {
+    return;
+  }
+  BIO* rbio = ::SSL_get_rbio(_ssl.get());
+  assert(rbio != nullptr);
+  // Not with kTLS receive (TLS 1.2, and TLS 1.3 from OpenSSL 3.2): the kernel decrypts the records, and a read of it
+  // also stops before a record of another type (an alert, a key update) that no new event would report. The reads
+  // then continue until EAGAIN.
+  if (BIO_get_ktls_recv(rbio) != 0) {
+    return;
+  }
+  ::BIO_set_callback_arg(rbio, reinterpret_cast<char*>(&_socketDrained));
+  ::BIO_set_callback_ex(rbio, &RecordShortSocketReads);
 }
 
 KtlsEnableResult TlsTransport::enableKtlsSend() {

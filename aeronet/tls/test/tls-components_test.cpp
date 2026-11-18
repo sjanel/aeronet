@@ -21,6 +21,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cerrno>
@@ -1073,6 +1074,172 @@ TEST(TlsTransportTest, ReadWriteAndRetryHints) {
 
   transport.shutdown();
   transport.shutdown();
+}
+
+namespace {
+
+// Writes data through the client SSL object of the pair, whose socket is blocking.
+void ClientWrite(SslTestPair& pair, std::string_view data) {
+  std::size_t written = 0;
+  ASSERT_EQ(::SSL_write_ex(pair.clientSsl.get(), data.data(), data.size(), &written), 1);
+  ASSERT_EQ(written, data.size());
+}
+
+// Reads the bytes that the server end of the pair has received so far, without decrypting them.
+std::string ReceiveRaw(SslTestPair& pair) {
+  std::string raw(64, '\0');
+  const auto nbRead = ::recv(pair.serverFd.fd(), raw.data(), raw.size(), 0);
+  EXPECT_GT(nbRead, 0);
+  raw.resize(static_cast<std::size_t>(std::max<ssize_t>(nbRead, 0)));
+  return raw;
+}
+
+// Sends raw bytes to the server end of the pair, as the client would.
+void SendRaw(SslTestPair& pair, std::string_view raw) {
+  ASSERT_EQ(::send(pair.clientFd.fd(), raw.data(), raw.size(), 0), static_cast<ssize_t>(raw.size()));
+}
+
+}  // namespace
+
+// The server SSL objects read ahead: the read stops once a socket read returned less than OpenSSL asked for and every
+// record it brought is decrypted, without a socket read failing with EAGAIN (which would leave errno set: OpenSSL
+// clears it before each socket read).
+TEST(TlsTransportTest, ReadStopsAfterShortSocketReadWithoutEagain) {
+  SslTestPair pair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(PerformHandshake(pair));
+  SetNonBlocking(pair.serverFd.fd());
+  TlsTransport transport(std::move(pair.serverSsl));
+
+  // Several records, more than a socket read of OpenSSL: the first ones fill its read buffer.
+  const std::string payload((3 * TlsTransport::kMaxRecordPlainSize) + 100, 'x');
+  ClientWrite(pair, payload);
+  std::string out(payload.size() + 1024, '\0');
+  errno = 0;
+  const auto res = transport.read(out.data(), out.size());
+  EXPECT_EQ(errno, 0);
+  EXPECT_EQ(res.want, TransportHint::None);
+  ASSERT_EQ(res.bytesProcessed, payload.size());
+  EXPECT_EQ(std::string_view(out).substr(0, res.bytesProcessed), payload);
+  EXPECT_FALSE(transport.hasPendingReadData());
+
+  // Nothing left: the next read fails with EAGAIN.
+  const auto again = transport.read(out.data(), out.size());
+  EXPECT_EQ(again.bytesProcessed, 0U);
+  EXPECT_EQ(again.want, TransportHint::ReadReady);
+}
+
+// A read stopped by its buffer, after the socket read that drained the socket: the next read returns the rest of the
+// buffered record and stops there too.
+TEST(TlsTransportTest, ShortSocketReadStopsTheNextReadToo) {
+  SslTestPair pair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(PerformHandshake(pair));
+  SetNonBlocking(pair.serverFd.fd());
+  TlsTransport transport(std::move(pair.serverSsl));
+
+  ClientWrite(pair, "hello world");
+  char buf[16]{};
+  const auto first = transport.read(buf, 4);
+  ASSERT_EQ(first.bytesProcessed, 4U);
+  EXPECT_EQ(std::string_view(buf, 4), "hell");
+  EXPECT_TRUE(transport.hasPendingReadData());
+
+  errno = 0;
+  const auto second = transport.read(buf, sizeof(buf));
+  EXPECT_EQ(errno, 0);
+  EXPECT_EQ(second.want, TransportHint::None);
+  ASSERT_EQ(second.bytesProcessed, 7U);
+  EXPECT_EQ(std::string_view(buf, 7), "o world");
+  EXPECT_FALSE(transport.hasPendingReadData());
+}
+
+TEST(TlsTransportTest, ReleaseBuffersOfIdleConnection) {
+  SslTestPair pair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(PerformHandshake(pair));
+  SetNonBlocking(pair.serverFd.fd());
+  TlsTransport transport(std::move(pair.serverSsl));
+  // The transport has not seen the handshake complete yet.
+  EXPECT_FALSE(transport.releaseBuffers());
+
+  char buf[16]{};
+  ClientWrite(pair, "ping");
+  ASSERT_EQ(transport.read(buf, sizeof(buf)).bytesProcessed, 4U);
+  EXPECT_TRUE(transport.releaseBuffers());
+  EXPECT_TRUE(transport.releaseBuffers());
+
+  // Allocated again by the next read and write.
+  ClientWrite(pair, "again");
+  const auto res = transport.read(buf, sizeof(buf));
+  ASSERT_EQ(res.bytesProcessed, 5U);
+  EXPECT_EQ(std::string_view(buf, 5), "again");
+  ASSERT_TRUE(transport.releaseBuffers());
+  const auto writeRes = transport.write("pong");
+  EXPECT_EQ(writeRes.want, TransportHint::None);
+  EXPECT_EQ(writeRes.bytesProcessed, 4U);
+  char clientBuf[8]{};
+  ASSERT_EQ(::SSL_read(pair.clientSsl.get(), clientBuf, sizeof(clientBuf)), 4);
+  EXPECT_EQ(std::string_view(clientBuf, 4), "pong");
+  EXPECT_TRUE(transport.releaseBuffers());
+}
+
+TEST(TlsTransportTest, ReleaseBuffersKeepsDecryptedDataNotReadYet) {
+  SslTestPair pair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(PerformHandshake(pair));
+  SetNonBlocking(pair.serverFd.fd());
+  TlsTransport transport(std::move(pair.serverSsl));
+
+  ClientWrite(pair, "hello world");
+  char buf[16]{};
+  ASSERT_EQ(transport.read(buf, 4).bytesProcessed, 4U);
+  EXPECT_FALSE(transport.releaseBuffers());
+  ASSERT_EQ(transport.read(buf, sizeof(buf)).bytesProcessed, 7U);
+  EXPECT_EQ(std::string_view(buf, 7), "o world");
+  EXPECT_TRUE(transport.releaseBuffers());
+}
+
+// A record received in pieces: neither its partial header nor its header without its body may be released. OpenSSL
+// before 3.0.14 freed the buffer of the latter (CVE-2024-4741).
+TEST(TlsTransportTest, ReleaseBuffersKeepsPartiallyReceivedRecord) {
+  SslTestPair pair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(PerformHandshake(pair));
+  SetNonBlocking(pair.serverFd.fd());
+  TlsTransport transport(std::move(pair.serverSsl));
+  char buf[16]{};
+  ASSERT_EQ(transport.read(buf, sizeof(buf)).want, TransportHint::ReadReady);  // completes the handshake
+
+  ClientWrite(pair, "hello");
+  const std::string record = ReceiveRaw(pair);
+  static constexpr std::size_t kRecordHeaderSize = 5;
+  ASSERT_GT(record.size(), kRecordHeaderSize);
+
+  SendRaw(pair, std::string_view(record).substr(0, 3));
+  EXPECT_EQ(transport.read(buf, sizeof(buf)).want, TransportHint::ReadReady);
+  EXPECT_FALSE(transport.releaseBuffers());
+
+  SendRaw(pair, std::string_view(record).substr(3, kRecordHeaderSize - 3));
+  EXPECT_EQ(transport.read(buf, sizeof(buf)).want, TransportHint::ReadReady);
+  EXPECT_FALSE(transport.releaseBuffers());
+
+  SendRaw(pair, std::string_view(record).substr(kRecordHeaderSize));
+  const auto res = transport.read(buf, sizeof(buf));
+  ASSERT_EQ(res.bytesProcessed, 5U);
+  EXPECT_EQ(std::string_view(buf, 5), "hello");
+  EXPECT_TRUE(transport.releaseBuffers());
+}
+
+TEST(TlsTransportTest, ReleaseBuffersKeepsPartiallyWrittenRecord) {
+  SslTestPair pair({"http/1.1"}, {"http/1.1"});
+  ASSERT_TRUE(PerformHandshake(pair));
+  SetNonBlocking(pair.serverFd.fd());
+  TlsTransport transport(std::move(pair.serverSsl));
+  char buf[16]{};
+  ASSERT_EQ(transport.read(buf, sizeof(buf)).want, TransportHint::ReadReady);  // completes the handshake
+
+  // More than the socket buffers: the write blocks with a record left in the write buffer of OpenSSL.
+  const std::string payload(8UL << 20U, 'w');
+  const auto res = transport.write(payload);
+  ASSERT_EQ(res.want, TransportHint::WriteReady);
+  ASSERT_LT(res.bytesProcessed, payload.size());
+  EXPECT_FALSE(transport.releaseBuffers());
 }
 
 TEST(TlsTransportTest, HandshakeSyscallWriteFatalSetsError) {
