@@ -609,6 +609,7 @@ TEST(TlsContextTest, AppliesHardenedContextDefaults) {
 
   EXPECT_EQ(::SSL_CTX_get_min_proto_version(raw), TLS1_2_VERSION);
   EXPECT_NE(::SSL_CTX_get_options(raw) & SSL_OP_CIPHER_SERVER_PREFERENCE, 0U);
+  EXPECT_EQ(::SSL_CTX_get_options(raw) & SSL_OP_ENABLE_KTLS, 0U);  // kTLS is opt-in
 #ifdef SSL_OP_NO_RENEGOTIATION
   EXPECT_NE(::SSL_CTX_get_options(raw) & SSL_OP_NO_RENEGOTIATION, 0U);
 #endif

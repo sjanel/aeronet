@@ -43,8 +43,8 @@ class TLSConfig {
   using Version = MajorMinorVersion<kTlsVersionPrefix>;
 
   enum class KtlsMode : std::uint8_t {
-    Disabled,       // Never use kTLS
-    Opportunistic,  // Use kTLS if available (DEFAULT)
+    Disabled,       // Never use kTLS (DEFAULT)
+    Opportunistic,  // Use kTLS if available
     Enabled,        // Same as Opportunistic, but log a warning if kTLS not active
     Required,       // Fail connection if kTLS not active
   };
@@ -332,7 +332,9 @@ class TLSConfig {
   bool crlCheckAll{false};        // Require CRLs for the full verified client chain instead of the leaf only.
   CipherPolicy cipherPolicy{CipherPolicy::Default};
 
-  KtlsMode ktlsMode{KtlsMode::Opportunistic};
+  // Off by default: kTLS send encrypts in-memory responses slower than OpenSSL in user space, and only pays off for
+  // large files sent with sendfile().
+  KtlsMode ktlsMode{KtlsMode::Disabled};
 
   // Optional protocol version bounds (empty => library defaults). Accepted values: "TLS1.2", "TLS1.3".
   Version minVersion;  // If set, enforce minimum TLS protocol version.

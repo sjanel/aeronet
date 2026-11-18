@@ -50,6 +50,7 @@
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/test-tls-helper.hpp"
 #include "aeronet/test_tls_client.hpp"
+#include "aeronet/tls-config.hpp"
 #include "aeronet/tls-handshake-callback.hpp"
 #endif
 
@@ -138,6 +139,8 @@ TEST(MultiHttpServer, StatsAggregatesTlsAlpnDistribution) {
   HttpServerConfig cfg = MakeConfig(1U);
   cfg.withTlsCertKeyMemory(certPem, keyPem);
   cfg.withTlsAlpnProtocols({"http/1.1"});
+  // kTLS is off by default: attempt it, so that the connection counts in one of the kTLS counters checked below.
+  cfg.withTlsKtlsMode(TLSConfig::KtlsMode::Opportunistic);
 
   std::atomic_bool callbackInvoked{false};
 

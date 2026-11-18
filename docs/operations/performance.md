@@ -16,7 +16,7 @@ aeronet is designed to serve requests with few system calls, few allocations, an
 - **Idle TLS connections without OpenSSL buffers.** After `idleBufferReleaseDelay` (1 s) without activity, a TLS connection frees the read and write buffers of OpenSSL, about 17 KB each, allocated again for its next request (see [Memory of idle connections](../protocols/tls.md#memory-of-idle-connections)).
 - **Cheap timers.** Keep-alive deadlines live in a min-heap updated once per `keepAliveTimeout` (or TLS `idleBufferReleaseDelay`) for an active connection, not once per event; timeouts are driven by a timer, independently of traffic.
 
-Large payloads avoid user-space copies: files are sent with `sendfile()` (`TransmitFile` on Windows), large buffers with [`MSG_ZEROCOPY`](#msg_zerocopy) on Linux, and TLS payloads through [kernel TLS](../protocols/tls.md#kernel-tls-ktls) when available. Responses can be [compressed while they are written](../guides/compression.md#direct-compression).
+Large payloads avoid user-space copies: files are sent with `sendfile()` (`TransmitFile` on Windows), large buffers with [`MSG_ZEROCOPY`](#msg_zerocopy) on Linux, and files over TLS with `sendfile()` too when [kernel TLS](../protocols/tls.md#kernel-tls-ktls) is enabled (off by default). Responses can be [compressed while they are written](../guides/compression.md#direct-compression).
 
 Tests: [http-core_test.cpp](../../tests/http-core_test.cpp) (`DeferredReadDoesNotWaitForThePollTimeout`, `PartialRequestsKeepTheirInputWhileOtherConnectionsAreServed`), [event-loop_test.cpp](../../aeronet/sys/test/event-loop_test.cpp) (polls without waiting).
 
