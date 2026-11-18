@@ -475,6 +475,7 @@ TEST(TLSConfigTest, MinMaxVersionValidation) {
 
 TEST(TLSConfigTest, KtlsModeBuildGuard) {
   TLSConfig cfg;
+  EXPECT_EQ(cfg.ktlsMode, TLSConfig::KtlsMode::Disabled);
   cfg.enabled = true;
   cfg.withCertPem(kDummyCertPem);
   cfg.withKeyPem(kDummyKeyPem);

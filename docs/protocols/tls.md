@@ -399,14 +399,25 @@ The [observability guide](../operations/observability.md) covers logs, OpenTelem
 
 ## Kernel TLS (kTLS)
 
-On Linux, kTLS moves the encryption of sent data into the kernel. The server can then send files with `sendfile()` without copying them to user space, and write a response made of several buffers with a single `sendmsg()`. aeronet enables kTLS send per connection after the handshake, when the kernel (the `tls` module), the OpenSSL build, and the negotiated cipher suite support it.
+On Linux, kTLS moves the encryption of sent data into the kernel. The server can then send files with `sendfile()` without copying them to user space, and write a response made of several buffers with a single `sendmsg()`. When it is enabled, aeronet enables kTLS send per connection after the handshake, if the kernel (the `tls` module), the OpenSSL build, and the negotiated cipher suite support it.
 
 | `TLSConfig::KtlsMode` | Behavior |
 | --- | --- |
-| `Opportunistic` (default) | Try once per connection; silently fall back to user-space TLS when unavailable. |
+| `Disabled` (default) | Never try. |
+| `Opportunistic` | Try once per connection; silently fall back to user-space TLS when unavailable. |
 | `Enabled` | Same, and log a warning on fallback. |
 | `Required` | Close the connection when kTLS cannot be enabled. |
-| `Disabled` | Never try. |
+
+kTLS is off by default because the kernel encrypts in-memory responses more slowly than OpenSSL does in user space: only files sent with `sendfile()`, larger than `inlineFileThresholdBytes` (see [Transfers](../guides/static-files.md#transfers)), gain from it. Requests per second with kTLS send against user-space TLS, measured on three GitHub runners (4 vCPU, `tls` module loaded, OpenSSL 3.0.13, TLS 1.3 with AES-256-GCM, HTTP/1.1, 100 connections on loopback):
+
+| Response | Xeon 6975P-C | EPYC 9V45 | EPYC 7763 |
+| --- | ---: | ---: | ---: |
+| 1 KiB in memory | +1.6% | -9.0% | -6.3% |
+| 64 KiB in memory | -22.3% | -49.5% | -21.5% |
+| 1 MiB in memory | -28.3% | -53.6% | -18.0% |
+| 1 MiB file (`sendfile()`) | +37.0% | -5.5% | +91.3% |
+
+Enable it (`Opportunistic`) on a server whose traffic is mostly large files, after measuring it on the target hardware.
 
 ```cpp
 HttpServerConfig config;
@@ -508,6 +519,7 @@ The [production configuration guide](../guides/production-configuration.md) cove
 - Rollback of rejected config updates: [tests/http-additional_test.cpp](../../tests/http-additional_test.cpp).
 - HTTP to HTTPS redirect over HTTP/1.1 and h2c: [tests/http-protocol-parity_test.cpp](../../tests/http-protocol-parity_test.cpp), and over HTTP/2 without `:authority` or host: `HttpsRedirectAnswersBeforeRouting` in [http2-protocol-handler_test.cpp](../../aeronet/server/test/http2-protocol-handler_test.cpp).
 - TLS reads and writes, read-ahead (a body of many records over TLS 1.2, with and without kTLS receive), backpressure, and the release of the buffers of idle connections: [tests/http-tls-io_test.cpp](../../tests/http-tls-io_test.cpp).
+- kTLS modes, their counters and fallbacks: `HttpTlsKtlsMode.*` in [tests/http-tls-io_test.cpp](../../tests/http-tls-io_test.cpp); kTLS off by default: `TlsContextTest.AppliesHardenedContextDefaults` in [tls-components_test.cpp](../../aeronet/tls/test/tls-components_test.cpp).
 - Certificate chains, rejected keys (encrypted, of another algorithm) and certificates (below the OpenSSL security level), every allocation failure of the context construction, trusted certificate bundles, session resumption with client certificates and its session id context, tickets disabled, strict ALPN without any offer, cipher policies, OCSP stapling, CRLs, the revocation callback, key logging, detection of changed input files, OpenSSL errors left by other code, record coalescing, writes of several records, reads after a fatal error, reads stopping after a socket read that drained the socket, the release of the buffers (and their keeping with a record partially received or written, or data not read yet), and kTLS send: [tls-components_test.cpp](../../aeronet/tls/test/tls-components_test.cpp).
 - Resumed mTLS sessions and `tlsPeerSubject()`, handlers leaving OpenSSL errors, and a server handshake flight larger than the socket buffers: [tests/http-tls-handshake_test.cpp](../../tests/http-tls-handshake_test.cpp).
 - Client certificate chains and server name indication of the HTTP client: [http-client-tls-e2e_test.cpp](../../aeronet/client/test/http-client-tls-e2e_test.cpp).

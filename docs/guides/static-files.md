@@ -42,7 +42,7 @@ The handler resolves the **whole request path** under its root directory: with r
 
 ## Transfers
 
-Files larger than `inlineFileThresholdBytes` (128 KiB by default, at most `StaticFileConfig::kMaxInMemoryBodyBytes`, 2 MiB) are sent from the file: with `sendfile()` on plaintext connections, through kernel TLS when [kTLS](../protocols/tls.md#kernel-tls-ktls) is active, and otherwise by reading bounded chunks that are encrypted, or framed as HTTP/2 DATA frames. The file is never loaded entirely in memory, whatever its size. Smaller files are read into the response, which is faster for them.
+Files larger than `inlineFileThresholdBytes` (128 KiB by default, at most `StaticFileConfig::kMaxInMemoryBodyBytes`, 2 MiB) are sent from the file: with `sendfile()` on plaintext connections, through kernel TLS when [kTLS](../protocols/tls.md#kernel-tls-ktls) is enabled (off by default), and otherwise by reading bounded chunks that are encrypted, or framed as HTTP/2 DATA frames. The file is never loaded entirely in memory, whatever its size. Smaller files are read into the response, which is faster for them.
 
 The size of a file is read when it is opened, and announced in the `Content-Length` of its response. A file that shrinks while it is sent (truncated in place, by a log rotation with `copytruncate` for instance) cannot complete it: the server closes the HTTP/1.1 connection after the bytes sent, or resets the HTTP/2 stream, so that the client knows the response is incomplete.
 

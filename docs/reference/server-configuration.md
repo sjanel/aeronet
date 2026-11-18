@@ -92,7 +92,7 @@ TLS requires `AERONET_ENABLE_OPENSSL=ON`: without it, `HttpServerConfig` has nei
 | `withTlsHandshakeRateLimit()` | 0, 0 | Per-second handshake limit and burst cap. |
 | `logHandshake` | false | Log negotiated ALPN, cipher, version, and peer subject. |
 | `disableCompression` | true | Keep TLS-level compression off to mitigate CRIME. |
-| `ktlsMode` | Opportunistic | `Disabled`, `Opportunistic`, `Enabled` (warn if inactive), or `Required`; Linux/OpenSSL capability dependent. |
+| `ktlsMode` | Disabled | `Disabled`, `Opportunistic`, `Enabled` (warn if inactive), or `Required`; Linux/OpenSSL capability dependent. Only pays off for large files, see [Kernel TLS](../protocols/tls.md#kernel-tls-ktls). |
 | `sessionTickets` | disabled, 2 keys, 24 h | Enable ticket rotation, choose lifetime/key slots, or supply static 48-byte keys. Sessions only resume with tickets, accepted for their lifetime. |
 | `withTlsSniCertificateFiles/Memory()` | none | Add exact or wildcard SNI certificate mappings. A pattern can only be mapped once. |
 | `withTlsOcspStapleFile()` | none | Load one successful DER OCSP response into the context cache for the default certificate. No handshake-time fetch is performed. |
