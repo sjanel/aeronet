@@ -5,6 +5,7 @@
 namespace aeronet {
 
 inline constexpr std::string_view kTlsHandshakeFailureReasonAlpnStrictMismatch = "alpn_strict_mismatch";
+inline constexpr std::string_view kTlsHandshakeFailureReasonSniStrictMismatch = "sni_strict_mismatch";
 inline constexpr std::string_view kTlsHandshakeFailureReasonEof = "handshake_eof";
 inline constexpr std::string_view kTlsHandshakeFailureReasonError = "handshake_error";
 inline constexpr std::string_view kTlsHandshakeFailureReasonHandshakeTimeout = "handshake_timeout";

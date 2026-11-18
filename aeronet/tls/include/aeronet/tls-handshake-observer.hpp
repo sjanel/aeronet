@@ -8,7 +8,10 @@ namespace aeronet {
 // Small per-connection observer updated by OpenSSL callbacks via SSL ex_data.
 // Stored in ConnectionState and used to bucket handshake failures.
 struct TlsHandshakeObserver {
-  bool alpnStrictMismatch{false};
+  bool alpnStrictMismatch : 1 {false};
+  // The client sent no server name, or one matching neither an SNI route nor the default certificate, while
+  // TLSConfig::sniMustMatch is set.
+  bool sniStrictMismatch : 1 {false};
 };
 
 // Associate an observer with an SSL object. Safe to call multiple times.

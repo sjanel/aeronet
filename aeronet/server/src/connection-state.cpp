@@ -226,8 +226,9 @@ bool ConnectionState::finalizeAndEmitTlsHandshakeIfNeeded(NativeHandle fd, const
   tlsInfo =
       FinalizeTlsHandshake(ssl, fd, cfg.logHandshake, tlsHandshakeEventEmitted, cb, tlsInfo.handshakeStart, metrics);
 
-  // SelectAlpn should abort the handshake (SSL_TLSEXT_ERR_ALERT_FATAL) before we reach here.
+  // SelectAlpn and SelectSniRoute should abort the handshake (SSL_TLSEXT_ERR_ALERT_FATAL) before we reach here.
   assert(!tlsHandshakeObserver.alpnStrictMismatch && "ALPN strict mismatch should have aborted the handshake earlier");
+  assert(!tlsHandshakeObserver.sniStrictMismatch && "SNI strict mismatch should have aborted the handshake earlier");
 
   const auto ktlsMode = cfg.ktlsMode;
   if (ktlsMode != TLSConfig::KtlsMode::Disabled) {

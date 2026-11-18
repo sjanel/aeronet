@@ -93,6 +93,7 @@ class TlsContext {
     std::unique_ptr<SniRoute[]> routes;
     std::size_t nbRoutes{0};
     ObjectArrayPool<char> charStorage;
+    bool mustMatch{false};  // TLSConfig::sniMustMatch
   };
 
   // SHA-256 digest of the client certificate verification settings (SSL_MAX_SID_CTX_LENGTH bytes).

@@ -10,6 +10,7 @@
 #include <openssl/types.h>     // SSL, SSL_CTX forward declarations
 #include <openssl/x509.h>
 #include <openssl/x509_vfy.h>  // X509_STORE_add_cert
+#include <openssl/x509v3.h>    // X509_check_host
 
 #include <algorithm>
 #include <cassert>
@@ -101,6 +102,16 @@ bool MatchesSniPattern(std::string_view pattern, bool wildcard, std::string_view
   const std::size_t prefixSize = serverName.size() - pattern.size();
   return !serverName.substr(0, prefixSize).contains('.') &&
          CaseInsensitiveEqual(serverName.substr(prefixSize), pattern);
+}
+
+// Fails the handshake of a server name refused by the strict SNI mode, flagging it on the TLS handshake observer of
+// 'ssl' for the server to count it.
+int RejectServerName(SSL* ssl, int* alert, int alertDescription) noexcept {
+  if (auto* obs = GetTlsHandshakeObserver(ssl)) {
+    obs->sniStrictMismatch = true;
+  }
+  *alert = alertDescription;
+  return SSL_TLSEXT_ERR_ALERT_FATAL;
 }
 
 void LoadCertificateAndKey(SSL_CTX* ctx, std::string_view certPem, std::string_view keyPem, const char* certFilePath,
@@ -527,6 +538,9 @@ TlsContext::TlsContext(const TLSConfig& cfg, std::shared_ptr<TlsTicketKeyStore> 
       }
       ++pRoute;
     }
+  }
+  if (!sniCerts.empty() || cfg.sniMustMatch) {
+    _sniRoutes.mustMatch = cfg.sniMustMatch;
     ::SSL_CTX_set_tlsext_servername_arg(ctx, &_sniRoutes);
     ::SSL_CTX_set_tlsext_servername_callback(ctx, &TlsContext::SelectSniRoute);
   }
@@ -770,20 +784,21 @@ int TlsContext::RequireAlpnOffer(SSL* ssl, int* alert, [[maybe_unused]] void* ar
   return SSL_CLIENT_HELLO_ERROR;
 }
 
-int TlsContext::SelectSniRoute(SSL* ssl, [[maybe_unused]] int* alert, void* arg) {
-  auto& routes = *reinterpret_cast<SniRoutes*>(arg);
-  std::span<SniRoute> routeSpan(routes.routes.get(), routes.nbRoutes);
-  assert(arg != nullptr && !routeSpan.empty());
+int TlsContext::SelectSniRoute(SSL* ssl, int* alert, void* arg) {
+  assert(arg != nullptr);
+  const auto& routes = *static_cast<const SniRoutes*>(arg);
   const char* pServerName = ::SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
   if (pServerName == nullptr) {
-    return SSL_TLSEXT_ERR_NOACK;
+    // A server requiring the server_name extension answers its absence with a missing_extension alert (RFC 8446 §9.2),
+    // that OpenSSL turns into a handshake_failure one below TLS 1.3.
+    return routes.mustMatch ? RejectServerName(ssl, alert, SSL_AD_MISSING_EXTENSION) : SSL_TLSEXT_ERR_NOACK;
   }
   std::string_view serverName(pServerName);
   // A fully qualified name ("example.com.") designates the same host.
   if (serverName.ends_with('.')) {
     serverName.remove_suffix(1);
   }
-  for (auto& route : routeSpan) {
+  for (const SniRoute& route : std::span<const SniRoute>(routes.routes.get(), routes.nbRoutes)) {
     if (MatchesSniPattern(route.pattern, route.wildcard, serverName)) {
       auto* nextCtx = reinterpret_cast<SSL_CTX*>(route.ctx.get());
       assert(nextCtx != nullptr);
@@ -793,7 +808,21 @@ int TlsContext::SelectSniRoute(SSL* ssl, [[maybe_unused]] int* alert, void* arg)
       return SSL_TLSEXT_ERR_OK;
     }
   }
-  return SSL_TLSEXT_ERR_NOACK;
+  if (!routes.mustMatch) {
+    return SSL_TLSEXT_ERR_NOACK;
+  }
+  // The default certificate serves the DNS names of its subject alternative names, never its subject CN: modern clients
+  // ignore it, and so does the host name verification of OpenSSL since 4.1. An empty name (the client sent ".") would
+  // make X509_check_host() measure the original string.
+  X509* pDefaultCert = ::SSL_get_certificate(ssl);
+  assert(pDefaultCert != nullptr);
+  static constexpr unsigned int kHostCheckFlags =
+      X509_CHECK_FLAG_NEVER_CHECK_SUBJECT | X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS;
+  if (!serverName.empty() &&
+      ::X509_check_host(pDefaultCert, serverName.data(), serverName.size(), kHostCheckFlags, nullptr) == 1) {
+    return SSL_TLSEXT_ERR_OK;
+  }
+  return RejectServerName(ssl, alert, SSL_AD_UNRECOGNIZED_NAME);
 }
 
 }  // namespace aeronet

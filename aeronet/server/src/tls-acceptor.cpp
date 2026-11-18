@@ -199,6 +199,8 @@ void TlsAcceptor::reportInterruptedHandshake(ConnectionState& state, NativeHandl
     if (state.tlsHandshakeObserver.alpnStrictMismatch) {
       ++_metrics.alpnStrictMismatches;
       reason = kTlsHandshakeFailureReasonAlpnStrictMismatch;
+    } else if (state.tlsHandshakeObserver.sniStrictMismatch) {
+      reason = kTlsHandshakeFailureReasonSniStrictMismatch;
     } else {
       reason = (want == TransportHint::None) ? kTlsHandshakeFailureReasonEof : kTlsHandshakeFailureReasonError;
     }

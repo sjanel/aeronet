@@ -3,7 +3,6 @@
 ## High priority
 
 - **Security Hardening Audit**:
-  - TLS fingerprinting hardening (avoid leaking version/cipher info in edge cases)
   - Fuzzing harness integration (libFuzzer + AFL), first for the HTTP/1.1 and HTTP/2 parsers
 
 ## Medium priority
