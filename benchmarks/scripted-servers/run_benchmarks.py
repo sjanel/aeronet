@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import re
@@ -67,6 +68,50 @@ class MemoryStats:
 
 class BenchmarkError(RuntimeError):
     pass
+
+
+# Maven Central coordinates (group, artifact, version) of the Undertow server classpath, in classpath order.
+UNDERTOW_JARS: Tuple[Tuple[str, str, str], ...] = (
+    ("io.undertow", "undertow-core", "2.4.4.Final"),
+    ("org.jboss.xnio", "xnio-api", "3.8.17.Final"),
+    ("org.jboss.xnio", "xnio-nio", "3.8.17.Final"),
+    ("org.jboss.logging", "jboss-logging", "3.6.3.Final"),
+    ("org.wildfly.common", "wildfly-common", "2.0.1"),
+    ("org.jboss.threads", "jboss-threads", "3.9.2"),
+    ("io.smallrye.common", "smallrye-common-net", "2.19.0"),
+    ("io.smallrye.common", "smallrye-common-cpu", "2.19.0"),
+    ("io.smallrye.common", "smallrye-common-expression", "2.19.0"),
+    ("io.smallrye.common", "smallrye-common-os", "2.19.0"),
+    ("io.smallrye.common", "smallrye-common-ref", "2.19.0"),
+    ("io.smallrye.common", "smallrye-common-constraint", "2.19.0"),
+)
+MAVEN_CENTRAL_URL = "https://repo1.maven.org/maven2"
+
+
+def download_undertow_jars(undertow_dir: Path) -> List[str]:
+    """Download the Undertow jars missing from undertow_dir; return all their file names, in classpath order."""
+    undertow_dir.mkdir(parents=True, exist_ok=True)
+    jars = []
+    for group, artifact, version in UNDERTOW_JARS:
+        jar = f"{artifact}-{version}.jar"
+        jars.append(jar)
+        jar_path = undertow_dir / jar
+        if jar_path.is_file():
+            continue
+        url = f"{MAVEN_CENTRAL_URL}/{group.replace('.', '/')}/{artifact}/{version}/{jar}"
+        print(f"Downloading {jar}...")
+        try:
+            # read() raises IncompleteRead on a truncated body (it checks Content-Length).
+            with urllib.request.urlopen(url, timeout=60) as response:
+                data = response.read()
+        except (OSError, http.client.HTTPException) as exc:
+            # Maven Central throttles shared CI runner IPs: 429 Too Many Requests, or a transient 404.
+            raise BenchmarkError(f"download of {url} failed: {exc}") from exc
+        # Written aside then renamed: an interrupted write never leaves a truncated jar that looks downloaded.
+        part_path = jar_path.with_name(jar + ".part")
+        part_path.write_bytes(data)
+        part_path.replace(jar_path)
+    return jars
 
 
 def _run_wrk(command: Sequence[str]) -> str:
@@ -384,6 +429,9 @@ class BenchmarkRunner:
             return True
         except BenchmarkError as exc:
             print(f"Server '{name}' is not available: {exc}")
+            if os.environ.get("GITHUB_ACTIONS") == "true":
+                # Surfaces it in the run summary: the published results would silently miss this server.
+                print(f"::warning::Server '{name}' skipped: {exc}")
             return False
 
     # --------------------------- Build helpers ----------------------------- #
@@ -446,6 +494,11 @@ class BenchmarkRunner:
         return script_binary
 
     def _ensure_rust_server_built(self) -> Path:
+        # Next to the C++ server binaries when the CI build job built it: no cargo build (crates.io downloads,
+        # about a minute of compilation) in every bench job.
+        prebuilt = self.build_dir / "rust-bench-server"
+        if prebuilt.is_file():
+            return prebuilt
         # Prefer rustup cargo over system cargo (handles newer lockfile formats)
         rustup_cargo = Path.home() / ".cargo" / "bin" / "cargo"
         cargo = str(rustup_cargo) if rustup_cargo.is_file() else shutil.which("cargo")
@@ -495,47 +548,14 @@ class BenchmarkRunner:
                 shutil.copy2(repo_source, source_file)
         if not source_file.is_file():
             raise BenchmarkError("UndertowBenchServer.java not found")
-        jars = [
-            "undertow-core-2.4.2.Final.jar",
-            "xnio-api-3.8.17.Final.jar",
-            "xnio-nio-3.8.17.Final.jar",
-            "jboss-logging-3.6.3.Final.jar",
-            "wildfly-common-2.0.1.jar",
-            "jboss-threads-3.9.2.jar",
-            "smallrye-common-net-2.19.0.jar",
-            "smallrye-common-cpu-2.19.0.jar",
-            "smallrye-common-expression-2.19.0.jar",
-            "smallrye-common-os-2.19.0.jar",
-            "smallrye-common-ref-2.19.0.jar",
-            "smallrye-common-constraint-2.19.0.jar",
-        ]
-        base_url = "https://repo1.maven.org/maven2"
-        jar_urls = {
-            "undertow-core-2.4.2.Final.jar": f"{base_url}/io/undertow/undertow-core/2.4.2.Final/undertow-core-2.4.2.Final.jar",
-            "xnio-api-3.8.17.Final.jar": f"{base_url}/org/jboss/xnio/xnio-api/3.8.17.Final/xnio-api-3.8.17.Final.jar",
-            "xnio-nio-3.8.17.Final.jar": f"{base_url}/org/jboss/xnio/xnio-nio/3.8.17.Final/xnio-nio-3.8.17.Final.jar",
-            "jboss-logging-3.6.3.Final.jar": f"{base_url}/org/jboss/logging/jboss-logging/3.6.3.Final/jboss-logging-3.6.3.Final.jar",
-            "wildfly-common-2.0.1.jar": f"{base_url}/org/wildfly/common/wildfly-common/2.0.1/wildfly-common-2.0.1.jar",
-            "jboss-threads-3.9.2.jar": f"{base_url}/org/jboss/threads/jboss-threads/3.9.2/jboss-threads-3.9.2.jar",
-            "smallrye-common-net-2.19.0.jar": f"{base_url}/io/smallrye/common/smallrye-common-net/2.19.0/smallrye-common-net-2.19.0.jar",
-            "smallrye-common-cpu-2.19.0.jar": f"{base_url}/io/smallrye/common/smallrye-common-cpu/2.19.0/smallrye-common-cpu-2.19.0.jar",
-            "smallrye-common-expression-2.19.0.jar": f"{base_url}/io/smallrye/common/smallrye-common-expression/2.19.0/smallrye-common-expression-2.19.0.jar",
-            "smallrye-common-os-2.19.0.jar": f"{base_url}/io/smallrye/common/smallrye-common-os/2.19.0/smallrye-common-os-2.19.0.jar",
-            "smallrye-common-ref-2.19.0.jar": f"{base_url}/io/smallrye/common/smallrye-common-ref/2.19.0/smallrye-common-ref-2.19.0.jar",
-            "smallrye-common-constraint-2.19.0.jar": f"{base_url}/io/smallrye/common/smallrye-common-constraint/2.19.0/smallrye-common-constraint-2.19.0.jar",
-        }
-        for jar in jars:
-            jar_path = undertow_dir / jar
-            if not jar_path.is_file():
-                url = jar_urls[jar]
-                print(f"Downloading {jar}...")
-                urllib.request.urlretrieve(url, jar_path)
-        classpath = ":".join(["."] + [jar for jar in jars])
+        jars = download_undertow_jars(undertow_dir)
+        classpath = ":".join(["."] + jars)
         class_files = list(undertow_dir.glob("*.class"))
         needs_recompile = not class_files
         if not needs_recompile:
-            source_mtime = source_file.stat().st_mtime
-            needs_recompile = any(source_mtime > class_file.stat().st_mtime for class_file in class_files)
+            # A jar version bump downloads a newer jar: recompile against it too.
+            input_mtime = max(path.stat().st_mtime for path in [source_file, *(undertow_dir / jar for jar in jars)])
+            needs_recompile = any(input_mtime > class_file.stat().st_mtime for class_file in class_files)
         if needs_recompile:
             print("Compiling Undertow benchmark server...")
             try:
@@ -2401,14 +2421,21 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Open each generated perf.data in Hotspot (best with one server/scenario)",
     )
+    parser.add_argument(
+        "--download-undertow-jars",
+        action="store_true",
+        help="Only download the missing Undertow server jars into undertow_server/, then exit",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    runner = BenchmarkRunner(args)
     try:
-        runner.run()
+        if args.download_undertow_jars:
+            download_undertow_jars(Path(__file__).resolve().parent / "undertow_server")
+            return
+        BenchmarkRunner(args).run()
     except BenchmarkError as exc:
         print(f"ERROR: {exc}")
         sys.exit(1)

@@ -87,6 +87,42 @@ jobs:
         run: |
           cmake --build build-pages --parallel
 
+      - name: Build Rust server
+        # Once per run instead of in every bench job (crates.io downloads, about a minute of compilation each):
+        # run_benchmarks.py takes the binary placed next to the C++ server binaries.
+        # Not fatal: the bench jobs then build it themselves, and run without Rust if that fails too.
+        continue-on-error: true
+        run: |
+          RETRY_ATTEMPTS=3 ./scripts/retry.sh cargo build --release \
+            --manifest-path benchmarks/scripted-servers/rust_server/Cargo.toml
+          cp benchmarks/scripted-servers/rust_server/target/release/rust-bench-server \
+            build-pages/benchmarks/scripted-servers/
+
+      # Undertow jars: downloaded here once per run (zero times on a cache hit) and shipped in the build
+      # artifact. When every bench job downloaded them (6 jobs x 12 jars at once), Maven Central throttled the
+      # shared runner IPs: 429 Too Many Requests, or a transient 404.
+      - name: Restore Undertow jars
+        id: undertow-jars-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: benchmarks/scripted-servers/undertow_server/*.jar
+          # The jar list (UNDERTOW_JARS) lives in run_benchmarks.py.
+          key: undertow-jars-${{ hashFiles('benchmarks/scripted-servers/run_benchmarks.py') }}
+
+      - name: Download Undertow jars
+        id: undertow-jars
+        if: steps.undertow-jars-cache.outputs.cache-hit != 'true'
+        # Not fatal: the bench jobs then try the download again, and run without Undertow if it fails too.
+        continue-on-error: true
+        run: ./scripts/retry.sh ./benchmarks/scripted-servers/run_benchmarks.py --download-undertow-jars
+
+      - name: Save Undertow jars
+        if: steps.undertow-jars.outcome == 'success'
+        uses: actions/cache/save@v6
+        with:
+          path: benchmarks/scripted-servers/undertow_server/*.jar
+          key: ${{ steps.undertow-jars-cache.outputs.cache-primary-key }}
+
       - name: Package build output
         run: |
           # Some competitor drivers/servers (drogon + its trantor submodule) are built as
@@ -103,10 +139,15 @@ jobs:
           # Preserve symlinks (run_benchmarks.py etc. are symlinked back into the
           # checked-out source tree by CMake) and executable bits: a plain tar
           # survives actions/upload-artifact intact, unlike zip-based repacking.
+          # The Undertow jars are in the source tree (run_benchmarks.py resolves its symlink there): the bench
+          # jobs extract them at the same place. None when their download failed.
+          shopt -s nullglob
+          undertow_jars=(benchmarks/scripted-servers/undertow_server/*.jar)
           tar -czf bench-build-output.tar.gz \
             build-pages/benchmarks/scripted-servers \
             build-pages/benchmarks/scripted-clients \
-            build-pages/benchmarks/shared-libs
+            build-pages/benchmarks/shared-libs \
+            "${undertow_jars[@]}"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v7

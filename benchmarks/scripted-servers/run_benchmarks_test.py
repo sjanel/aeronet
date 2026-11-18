@@ -76,6 +76,136 @@ class WrkExecutionTest(unittest.TestCase):
         self.assertEqual(raised.exception.returncode, 2)
 
 
+def _jar_response(data: bytes) -> mock.MagicMock:
+    response = mock.MagicMock()
+    response.__enter__.return_value.read.return_value = data
+    return response
+
+
+class UndertowJarsTest(unittest.TestCase):
+    JAR_NAMES = [f"{artifact}-{version}.jar" for _, artifact, version in runner.UNDERTOW_JARS]
+
+    def test_downloads_only_the_missing_jars(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            undertow_dir = Path(tmp) / "undertow_server"
+            undertow_dir.mkdir()
+            (undertow_dir / self.JAR_NAMES[0]).write_bytes(b"present")
+            with mock.patch.object(runner.urllib.request, "urlopen", return_value=_jar_response(b"jar")) as urlopen:
+                with redirect_stdout(io.StringIO()):
+                    jars = runner.download_undertow_jars(undertow_dir)
+
+            self.assertEqual(jars, self.JAR_NAMES)
+            self.assertEqual(urlopen.call_count, len(self.JAR_NAMES) - 1)
+            self.assertEqual(
+                urlopen.call_args_list[0].args[0],
+                "https://repo1.maven.org/maven2/org/jboss/xnio/xnio-api/3.8.17.Final/xnio-api-3.8.17.Final.jar",
+            )
+            self.assertEqual((undertow_dir / self.JAR_NAMES[0]).read_bytes(), b"present")
+            self.assertEqual((undertow_dir / self.JAR_NAMES[-1]).read_bytes(), b"jar")
+            self.assertEqual(sorted(p.name for p in undertow_dir.iterdir()), sorted(self.JAR_NAMES))
+
+            # Everything present: no request at all.
+            with mock.patch.object(runner.urllib.request, "urlopen") as urlopen:
+                self.assertEqual(runner.download_undertow_jars(undertow_dir), self.JAR_NAMES)
+            urlopen.assert_not_called()
+
+    def test_failed_download_is_a_benchmark_error_and_leaves_no_jar(self) -> None:
+        failures = [
+            runner.urllib.error.HTTPError("url", 429, "Too Many Requests", None, None),  # type: ignore[arg-type]
+            runner.urllib.error.URLError("connection reset"),
+            TimeoutError("timed out"),
+        ]
+        for failure in failures:
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                undertow_dir = Path(tmp)
+                with mock.patch.object(runner.urllib.request, "urlopen", side_effect=failure):
+                    with redirect_stdout(io.StringIO()):
+                        with self.assertRaisesRegex(runner.BenchmarkError, f"{self.JAR_NAMES[0]} failed"):
+                            runner.download_undertow_jars(undertow_dir)
+                self.assertEqual(list(undertow_dir.iterdir()), [])
+
+    def test_truncated_body_is_a_benchmark_error(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.side_effect = runner.http.client.IncompleteRead(b"ja", 1)
+        with tempfile.TemporaryDirectory() as tmp:
+            undertow_dir = Path(tmp)
+            with mock.patch.object(runner.urllib.request, "urlopen", return_value=response):
+                with redirect_stdout(io.StringIO()):
+                    with self.assertRaisesRegex(runner.BenchmarkError, "IncompleteRead"):
+                        runner.download_undertow_jars(undertow_dir)
+            self.assertEqual(list(undertow_dir.iterdir()), [])
+
+    def test_unavailable_server_is_a_warning_annotation_on_github_actions(self) -> None:
+        instance = object.__new__(runner.BenchmarkRunner)
+        failure = runner.BenchmarkError("download of url failed: HTTP Error 429: Too Many Requests")
+        for env, annotated in (({"GITHUB_ACTIONS": "true"}, True), ({}, False)):
+            with self.subTest(env=env):
+                output = io.StringIO()
+                with mock.patch.object(instance, "_prepare_server_command", side_effect=failure):
+                    with mock.patch.dict(os.environ, env, clear=True), redirect_stdout(output):
+                        self.assertFalse(instance._server_available("undertow"))
+                self.assertIn("Server 'undertow' is not available: download of url failed", output.getvalue())
+                self.assertEqual("::warning::Server 'undertow' skipped" in output.getvalue(), annotated)
+
+    def test_recompiles_when_a_jar_is_newer_than_the_classes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = object.__new__(runner.BenchmarkRunner)
+            instance.script_dir = instance.repo_script_dir = Path(tmp)
+            undertow_dir = Path(tmp) / "undertow_server"
+            undertow_dir.mkdir()
+            source = undertow_dir / "UndertowBenchServer.java"
+            class_file = undertow_dir / "UndertowBenchServer.class"
+            for path in (source, class_file, *(undertow_dir / jar for jar in self.JAR_NAMES)):
+                path.touch()
+                os.utime(path, (1000, 1000))
+            os.utime(class_file, (2000, 2000))
+
+            def compile_count(newest_jar_mtime: int) -> int:
+                os.utime(undertow_dir / self.JAR_NAMES[0], (newest_jar_mtime, newest_jar_mtime))
+                with mock.patch.object(runner.shutil, "which", side_effect=lambda tool: f"/usr/bin/{tool}"):
+                    with mock.patch.object(runner.subprocess, "run") as run, redirect_stdout(io.StringIO()):
+                        _, classpath = instance._ensure_undertow_server_built()
+                self.assertEqual(classpath, ":".join(["."] + self.JAR_NAMES))
+                return run.call_count
+
+            self.assertEqual(compile_count(1500), 0)
+            self.assertEqual(compile_count(3000), 1)  # a version bump downloaded a newer jar
+
+
+class RustServerTest(unittest.TestCase):
+    def test_prebuilt_binary_skips_cargo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = object.__new__(runner.BenchmarkRunner)
+            instance.build_dir = Path(tmp)
+            prebuilt = Path(tmp) / "rust-bench-server"
+            prebuilt.touch()
+            with mock.patch.object(runner.subprocess, "run") as run:
+                self.assertEqual(instance._ensure_rust_server_built(), prebuilt)
+            run.assert_not_called()
+
+    def test_builds_with_cargo_without_prebuilt_binary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            instance = object.__new__(runner.BenchmarkRunner)
+            instance.build_dir = Path(tmp) / "build"
+            instance.build_dir.mkdir()
+            instance.script_dir = instance.repo_script_dir = Path(tmp)
+            rust_dir = Path(tmp) / "rust_server"
+            rust_dir.mkdir()
+            (rust_dir / "Cargo.toml").touch()
+            binary = rust_dir / "target" / "release" / "rust-bench-server"
+
+            def cargo_build(*_args: object, **_kwargs: object) -> None:
+                binary.parent.mkdir(parents=True)
+                binary.touch()
+
+            with mock.patch.object(runner.Path, "home", return_value=Path(tmp) / "home"):
+                with mock.patch.object(runner.shutil, "which", return_value="/usr/bin/cargo"):
+                    with mock.patch.object(runner.subprocess, "run", side_effect=cargo_build) as run:
+                        with redirect_stdout(io.StringIO()):
+                            self.assertEqual(instance._ensure_rust_server_built(), binary)
+            self.assertEqual(run.call_args.args[0], ["/usr/bin/cargo", "build", "--release"])
+            self.assertEqual(run.call_args.kwargs["cwd"], rust_dir)
+
 
 class CpuListTest(unittest.TestCase):
     def test_round_trip(self) -> None:

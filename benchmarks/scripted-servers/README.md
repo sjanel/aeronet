@@ -377,7 +377,10 @@ go build -o go-bench-server go_server.go
 **Java Undertow server:**
 
 ```bash
-# Download dependencies (one time, see run_benchmarks.py for the exact jar list)
+# Download dependencies (one time, the jar list is UNDERTOW_JARS in run_benchmarks.py)
+cd benchmarks/scripted-servers
+./run_benchmarks.py --download-undertow-jars
+cd undertow_server
 
 # Compile
 # Use a classpath that includes the current directory and all JARs. Some
@@ -414,6 +417,9 @@ cargo build --release
 # Run
 ./target/release/rust-bench-server --port 8086
 ```
+
+`run_benchmarks.py` builds it with cargo, unless a `rust-bench-server` binary sits next to the C++ server binaries:
+the CI build job puts it there, so that the bench jobs do not build it again.
 
 ## Interpreting Results
 
