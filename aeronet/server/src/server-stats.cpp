@@ -75,6 +75,7 @@ constexpr std::string_view kEntryClose = "}";
 constexpr std::string_view kTlsHandshakeDurationCount = R"(,"tlsHandshakeDurationCount":)";
 constexpr std::string_view kTlsHandshakeDurationTotalNs = R"(,"tlsHandshakeDurationTotalNs":)";
 constexpr std::string_view kTlsHandshakeDurationMaxNs = R"(,"tlsHandshakeDurationMaxNs":)";
+constexpr std::string_view kTlsIdleBufferReleases = R"(,"tlsIdleBufferReleases":)";
 
 // Exact size of an entry `{"<label>":"<key>","count":<n>}`.
 std::size_t EntrySize(std::string_view prefix, std::string_view key, std::integral auto count) {
@@ -158,6 +159,7 @@ std::string ServerStats::json_str() const {
   size += kTlsHandshakeDurationCount.size() + nchars(tlsHandshakeDurationCount);
   size += kTlsHandshakeDurationTotalNs.size() + nchars(tlsHandshakeDurationTotalNs);
   size += kTlsHandshakeDurationMaxNs.size() + nchars(tlsHandshakeDurationMaxNs);
+  size += kTlsIdleBufferReleases.size() + nchars(tlsIdleBufferReleases);
 #endif
 
   // ---- Second pass - single allocation, then direct writing  ------------
@@ -231,6 +233,8 @@ std::string ServerStats::json_str() const {
   AppendInt(out, tlsHandshakeDurationTotalNs);
   out.append(kTlsHandshakeDurationMaxNs);
   AppendInt(out, tlsHandshakeDurationMaxNs);
+  out.append(kTlsIdleBufferReleases);
+  AppendInt(out, tlsIdleBufferReleases);
 #endif
 
   out.append(kClose);

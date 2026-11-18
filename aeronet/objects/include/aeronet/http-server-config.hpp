@@ -557,6 +557,10 @@ struct HttpServerConfig {
 
   HttpServerConfig& withTlsHandshakeTimeout(std::chrono::milliseconds timeout);
 
+  // Time without activity after which a TLS connection releases the buffers of OpenSSL (see
+  // TLSConfig::idleBufferReleaseDelay).
+  HttpServerConfig& withTlsIdleBufferReleaseDelay(std::chrono::milliseconds delay);
+
   // Staple a pre-fetched DER OCSP response. It is cached at TLS-context creation; aeronet never fetches it on demand.
   HttpServerConfig& withTlsOcspStapleFile(std::string_view derFile);
 

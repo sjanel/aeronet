@@ -48,6 +48,7 @@ struct ServerStats {
     fun("tlsHandshakeDurationCount", tlsHandshakeDurationCount);
     fun("tlsHandshakeDurationTotalNs", tlsHandshakeDurationTotalNs);
     fun("tlsHandshakeDurationMaxNs", tlsHandshakeDurationMaxNs);
+    fun("tlsIdleBufferReleases", tlsIdleBufferReleases);
 #endif
   }
 
@@ -90,6 +91,8 @@ struct ServerStats {
   uint64_t tlsHandshakeDurationCount{};
   uint64_t tlsHandshakeDurationTotalNs{};
   uint64_t tlsHandshakeDurationMaxNs{};
+  // Releases of the OpenSSL buffers of idle connections (see TLSConfig::idleBufferReleaseDelay).
+  uint64_t tlsIdleBufferReleases{};
 #endif
 };
 

@@ -147,6 +147,11 @@ class TLSConfig {
     return *this;
   }
 
+  TLSConfig& withTlsIdleBufferReleaseDelay(std::chrono::milliseconds delay) {
+    idleBufferReleaseDelay = delay;
+    return *this;
+  }
+
   TLSConfig& withCertFile(std::string_view certFile) {
     _tlsStrings.set(kCertFile, certFile);
     return *this;
@@ -307,6 +312,11 @@ class TLSConfig {
   // Protective timeout for TLS handshakes (time from accept to handshake completion). 0 => disabled.
   // Bounds the time a client can keep a handshake (and its connection) busy, even by trickling bytes.
   std::chrono::milliseconds handshakeTimeout{std::chrono::seconds{10}};
+
+  // Time without activity after which an established connection releases the read and write buffers of OpenSSL (about
+  // 17 KB each), allocated again for its next request. Checked at the maintenance ticks (see
+  // HttpServerConfig::pollInterval). Not released before keepAliveTimeout: std::chrono::milliseconds::max() never does.
+  std::chrono::milliseconds idleBufferReleaseDelay{std::chrono::seconds{1}};
 
   TlsRevocationCallback revocationCallback{nullptr};
   void* revocationUserContext{nullptr};

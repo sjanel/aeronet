@@ -759,6 +759,10 @@ MultiHttpServer::AggregatedStats MultiHttpServer::stats() const {
     agg.total.zerocopyRetainLimitFallbacks += st.zerocopyRetainLimitFallbacks;
     agg.total.zerocopyResetConnections += st.zerocopyResetConnections;
 #ifdef AERONET_ENABLE_OPENSSL
+    agg.total.ktlsSendEnabledConnections += st.ktlsSendEnabledConnections;
+    agg.total.ktlsSendEnableFallbacks += st.ktlsSendEnableFallbacks;
+    agg.total.ktlsSendForcedShutdowns += st.ktlsSendForcedShutdowns;
+    agg.total.ktlsSendBytes += st.ktlsSendBytes;
     agg.total.tlsHandshakesSucceeded += st.tlsHandshakesSucceeded;
     agg.total.tlsClientCertPresent += st.tlsClientCertPresent;
     agg.total.tlsAlpnStrictMismatches += st.tlsAlpnStrictMismatches;
@@ -802,6 +806,7 @@ MultiHttpServer::AggregatedStats MultiHttpServer::stats() const {
     agg.total.tlsHandshakeDurationCount += st.tlsHandshakeDurationCount;
     agg.total.tlsHandshakeDurationTotalNs += st.tlsHandshakeDurationTotalNs;
     agg.total.tlsHandshakeDurationMaxNs = std::max(agg.total.tlsHandshakeDurationMaxNs, st.tlsHandshakeDurationMaxNs);
+    agg.total.tlsIdleBufferReleases += st.tlsIdleBufferReleases;
 #endif
     agg.per.push_back(std::move(st));
   }

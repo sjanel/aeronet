@@ -67,6 +67,7 @@ struct TlsMetricsInternal {
   Counter ktlsSendEnableFallbacks;
   Counter ktlsSendForcedShutdowns;
   Counter ktlsSendBytes;
+  Counter idleBufferReleases;
 };
 
 }  // namespace aeronet

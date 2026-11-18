@@ -87,6 +87,7 @@ TLS requires `AERONET_ENABLE_OPENSSL=ON`: without it, `HttpServerConfig` has nei
 | `requestClientCert`, `requireClientCert` | false | Request a certificate, or require and verify one for strict mTLS. Requiring implies requesting. |
 | `withTlsTrustedClientCert()` | empty | Add a PEM trust anchor/leaf (or a bundle of them) for client-certificate validation. Their names are sent in the certificate request. |
 | `handshakeTimeout` | 10 s | Deadline from accept to TLS handshake completion; 0 disables it. |
+| `idleBufferReleaseDelay` | 1 s | Time without activity after which an established connection releases the read and write buffers of OpenSSL (about 17 KB each), allocated again for its next request. Not shorter than `keepAliveTimeout` (or `max()`): never. See [Memory of idle connections](../protocols/tls.md#memory-of-idle-connections). |
 | `maxConcurrentHandshakes` | 0 | Concurrent handshake cap; 0 is unlimited. |
 | `withTlsHandshakeRateLimit()` | 0, 0 | Per-second handshake limit and burst cap. |
 | `logHandshake` | false | Log negotiated ALPN, cipher, version, and peer subject. |
