@@ -52,3 +52,11 @@ AeronetAddUnitTest(
     aeronet_html
     aeronet_basic_test_support
 )
+
+AeronetAddUnitTest(
+    html-mutation_test
+    test/html-mutation_test.cpp
+    LIBRARIES
+    aeronet_html
+    aeronet_basic_test_support
+)

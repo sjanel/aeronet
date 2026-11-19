@@ -9,12 +9,15 @@
 #include <lexbor/html/token.h>
 #include <lexbor/html/tokenizer.h>
 #include <lexbor/html/tree.h>
+#include <lexbor/ns/const.h>
 #include <lexbor/tag/const.h>
 
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <string_view>
+#include <type_traits>
 
 #include "lexbor-utils.hpp"
 
@@ -28,6 +31,39 @@ struct TreeLimiter {
   lxb_html_tokenizer_token_f treeCallback;  // the tree builder, called for each token
   void* pTreeCallbackCtx;
 };
+
+lxb_html_token_t* LimitTree(lxb_html_tokenizer_t* pTokenizer, lxb_html_token_t* pToken, void* pCtx);
+
+// Places a TreeLimiter between the tokenizer and the tree builder of pParser, for its lifetime: the parser stays with
+// the document, and parses its fragments.
+class TreeLimiterScope {
+ public:
+  explicit TreeLimiterScope(lxb_html_parser_t* pParser) noexcept
+      : _pTokenizer(pParser->tkz),
+        _limiter{pParser->tree, _pTokenizer->callback_token_done, _pTokenizer->callback_token_ctx} {
+    lxb_html_tokenizer_callback_token_done_set(_pTokenizer, &LimitTree, &_limiter);
+  }
+
+  TreeLimiterScope(const TreeLimiterScope&) = delete;
+  TreeLimiterScope& operator=(const TreeLimiterScope&) = delete;
+  TreeLimiterScope(TreeLimiterScope&&) = delete;
+  TreeLimiterScope& operator=(TreeLimiterScope&&) = delete;
+
+  ~TreeLimiterScope() {
+    lxb_html_tokenizer_callback_token_done_set(_pTokenizer, _limiter.treeCallback, _limiter.pTreeCallbackCtx);
+  }
+
+ private:
+  lxb_html_tokenizer_t* _pTokenizer;
+  TreeLimiter _limiter;
+};
+
+// Created by the parsing of the document, kept with it.
+lxb_html_parser_t* Parser(lxb_html_document_t* pDocument) noexcept {
+  auto* pParser = static_cast<lxb_html_parser_t*>(pDocument->dom_document.parser);
+  assert(pParser != nullptr);
+  return pParser;
+}
 
 bool IsStartTag(const lxb_html_token_t& token) noexcept {
   // The token types are int flags.
@@ -83,14 +119,24 @@ lxb_html_token_t* LimitTree(lxb_html_tokenizer_t* pTokenizer, lxb_html_token_t* 
 
 void ParseHtml(lxb_html_document_t* pDocument, std::string_view html) {
   CheckStatus(lxb_html_document_parse_chunk_begin(pDocument));
-  auto* pParser = static_cast<lxb_html_parser_t*>(pDocument->dom_document.parser);
-  lxb_html_tokenizer_t* pTokenizer = pParser->tkz;
-  TreeLimiter limiter{pParser->tree, pTokenizer->callback_token_done, pTokenizer->callback_token_ctx};
-  lxb_html_tokenizer_callback_token_done_set(pTokenizer, &LimitTree, &limiter);
+  const TreeLimiterScope limiter(Parser(pDocument));
   CheckStatus(lxb_html_document_parse_chunk(pDocument, reinterpret_cast<const lxb_char_t*>(html.data()), html.size()));
   CheckStatus(lxb_html_document_parse_chunk_end(pDocument));
-  // The parser stays with the document, the limiter does not.
-  lxb_html_tokenizer_callback_token_done_set(pTokenizer, limiter.treeCallback, limiter.pTreeCallbackCtx);
+}
+
+static_assert(std::is_same_v<lxb_tag_id_t, std::uintptr_t> && std::is_same_v<lxb_ns_id_t, std::uintptr_t>);
+
+// Through the parser of the document, as lxb_html_document_parse_fragment, which takes the context from an element.
+// A failed step destroys the fragment and leaves the parser to be cleaned by the next parsing.
+
+lxb_dom_node_t* ParseHtmlFragment(lxb_html_document_t* pDocument, std::uintptr_t contextTag, std::uintptr_t contextNs,
+                                  std::string_view html) {
+  lxb_html_parser_t* pParser = Parser(pDocument);
+  CheckStatus(lxb_html_parse_fragment_chunk_begin(pParser, pDocument, contextTag, contextNs));
+  const TreeLimiterScope limiter(pParser);
+  CheckStatus(
+      lxb_html_parse_fragment_chunk_process(pParser, reinterpret_cast<const lxb_char_t*>(html.data()), html.size()));
+  return CheckCreated(lxb_html_parse_fragment_chunk_end(pParser));
 }
 
 }  // namespace aeronet::internal

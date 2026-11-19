@@ -7,6 +7,7 @@
 #include <lexbor/css/parser.h>
 #include <lexbor/css/selectors/selector.h>
 #include <lexbor/css/selectors/selectors.h>
+#include <lexbor/css/syntax/tokenizer.h>
 #include <lexbor/selectors/selectors.h>
 
 #include <cstddef>
@@ -23,10 +24,12 @@ void CheckStatus(lxb_status_t status) {
   }
 }
 
-CssParserPtr MakeCssParser() {
-  CssParserPtr pParser(CheckCreated(lxb_css_parser_create()));
-  CheckStatus(lxb_css_parser_init(pParser.get(), nullptr));
-  return pParser;
+CssParser MakeCssParser() {
+  CssParser parser{CssTokenizerPtr(CheckCreated(lxb_css_syntax_tokenizer_create())), CssParserPtr{}};
+  CheckStatus(lxb_css_syntax_tokenizer_init(parser.pTokenizer.get()));
+  parser.pParser.reset(CheckCreated(lxb_css_parser_create()));
+  CheckStatus(lxb_css_parser_init(parser.pParser.get(), parser.pTokenizer.get()));
+  return parser;
 }
 
 CssMemoryPtr MakeCssMemory() {

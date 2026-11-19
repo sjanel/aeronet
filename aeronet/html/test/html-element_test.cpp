@@ -4,7 +4,6 @@
 
 #include <cstddef>
 #include <iterator>
-#include <new>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -14,6 +13,7 @@
 #include "aeronet/html-document.hpp"
 #include "aeronet/sys-test-support.hpp"
 #include "aeronet/vector.hpp"
+#include "html-test-util.hpp"
 
 namespace aeronet {
 
@@ -50,6 +50,24 @@ TEST_F(HtmlElementTest, InvalidElement) {
 TEST_F(HtmlElementTest, TagName) {
   EXPECT_EQ(doc.querySelector("#fees").tagName(), "table");
   EXPECT_EQ(doc.querySelector("TD").tagName(), "td");
+}
+
+TEST(HtmlElement, TagNameOfForeignElements) {
+  // The parser gives SVG elements the case of SVG, MathML elements stay in lower case.
+  const HtmlDocument doc(
+      "<SVG><foreignobject></foreignobject><LinearGradient></LinearGradient><CIRCLE></CIRCLE></SVG>"
+      "<math><MI></MI></math><X-Widget></X-Widget>");
+  const HtmlElement svg = doc.querySelector("svg");
+  EXPECT_EQ(svg.tagName(), "svg");
+  vector<std::string_view> names;
+  for (HtmlElement child : svg.children()) {
+    names.push_back(child.tagName());
+  }
+  EXPECT_EQ(names, (vector<std::string_view>{"foreignObject", "linearGradient", "circle"}));
+  EXPECT_EQ(doc.querySelector("math").firstChild().tagName(), "mi");
+  EXPECT_EQ(doc.querySelector("x-widget").tagName(), "x-widget");
+  // Selectors match them whatever their case.
+  EXPECT_EQ(doc.querySelector("lineargradient").tagName(), "linearGradient");
 }
 
 TEST_F(HtmlElementTest, Attributes) {
@@ -308,27 +326,7 @@ TEST_F(HtmlElementTest, ExceptionFromForEachCallbackIsPropagated) {
 }
 
 #if AERONET_WANT_MALLOC_OVERRIDES
-namespace {
-
-// Fails each allocation of 'operation' in turn, until it needs no more. The document is parsed before, without
-// failure (lexbor crashes on some failed allocations of the parsing, see html-document_test.cpp).
-template <class Operation>
-void ExpectBadAllocOnEachAllocation(std::string_view html, Operation operation) {
-  for (int successfulAllocs = 0;; ++successfulAllocs) {
-    const HtmlDocument doc(html);
-    test::FailNextMalloc(successfulAllocs, 1);
-    try {
-      operation(doc);
-      test::ResetToSysMalloc();
-      return;
-    } catch (const std::bad_alloc&) {
-      test::ResetToSysMalloc();
-    }
-    ASSERT_LT(successfulAllocs, 10000);
-  }
-}
-
-}  // namespace
+using test::ExpectBadAllocOnEachAllocation;
 
 TEST(HtmlElementMemory, QueriesThrowBadAlloc) {
   std::string html = "<ul>";

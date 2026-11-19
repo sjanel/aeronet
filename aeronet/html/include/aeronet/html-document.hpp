@@ -15,9 +15,10 @@ namespace aeronet {
 //     std::string text = row.textContent();
 //   }
 //
-// The document owns all its nodes: the HtmlElement handles and the views they return are valid as long as it lives, and
-// the input bytes can be released after construction. Read-only for now (no DOM mutation).
-// Not thread-safe, even through const methods (see HtmlParentNode).
+// The document owns all its nodes: the HtmlElement handles and the views they return are valid as long as it lives
+// (an attribute value until setAttribute() changes it), and the input bytes can be released after construction. Its
+// tree can be modified through its elements (see HtmlElement). Not thread-safe, even through const methods (see
+// HtmlParentNode).
 class HtmlDocument : public HtmlParentNode {
  public:
   // Parses 'html', decoded following the encoding sniffing algorithm of HTML: a byte order mark, then the charset
@@ -43,10 +44,18 @@ class HtmlDocument : public HtmlParentNode {
   [[nodiscard]] std::string_view encoding() const noexcept;
 
   // The root element (<html>), the <head> element, and the body of the document: its <body> element, or its <frameset>
-  // element for a frameset document (DOM document.body). The parser always creates all three.
+  // element for a frameset document (DOM document.body). The parser always creates all three, they are invalid once
+  // taken out of the tree.
   [[nodiscard]] HtmlElement documentElement() const noexcept;
   [[nodiscard]] HtmlElement head() const noexcept;
   [[nodiscard]] HtmlElement body() const noexcept;
+
+  // A new HTML element named 'localName' (lower-cased), out of the tree: insert it with HtmlElement::appendChild() or
+  // insertAdjacentElement(). Throws std::invalid_argument if 'localName' is not a valid element name (DOM): one that
+  // starts with an ASCII letter and contains no ASCII whitespace, NUL, '/' or '>', or that starts with ':', '_' or a
+  // non-ASCII character followed by ASCII letters and digits, '-', '.', ':', '_' and non-ASCII characters only. Throws
+  // std::bad_alloc on memory exhaustion.
+  [[nodiscard]] HtmlElement createElement(std::string_view localName);
 
   // The JSON object or array literal assigned to 'variable' by an inline <script>, as in
   // "window.__INITIAL_PROPS__ = {...};", the way many server-rendered pages embed the data that their scripts turn into
@@ -55,7 +64,8 @@ class HtmlDocument : public HtmlParentNode {
   // does not match "mydata = {...}". The first matching assignment in document order is returned, from its opening to
   // its closing bracket ({...} or [...], strings skipped), or an empty view when there is none or when it is not
   // closed. The view points into the document, to parse with a JSON library (glaze...). Data in a <script
-  // type="application/json"> element is simply its textContent().
+  // type="application/json"> element is simply its textContent(). Each text node of a script is searched on its own:
+  // an assignment split across text nodes by insertAdjacentText() or insertAdjacentHtml() is not found.
   [[nodiscard]] std::string_view assignedJson(std::string_view variable) const noexcept;
 
  private:

@@ -6,9 +6,9 @@
 #include <lexbor/dom/interfaces/node.h>
 #include <lexbor/encoding/base.h>
 #include <lexbor/html/interfaces/document.h>
+#include <lexbor/ns/const.h>
 #include <lexbor/tag/const.h>
 
-#include <cassert>
 #include <memory>
 #include <string_view>
 #include <utility>
@@ -45,6 +45,18 @@ lxb_html_document_t* AsHtmlDocument(lxb_dom_node_t* pNode) noexcept {
   return reinterpret_cast<lxb_html_document_t*>(pNode);
 }
 
+// The first child element of pParent (can be null) for which pred(child) is true, or null.
+template <class Pred>
+lxb_dom_node_t* FirstChildElement(lxb_dom_node_t* pParent, Pred pred) noexcept {
+  for (lxb_dom_node_t* pChild = pParent == nullptr ? nullptr : pParent->first_child; pChild != nullptr;
+       pChild = pChild->next) {
+    if (pChild->type == LXB_DOM_NODE_TYPE_ELEMENT && pred(*pChild)) {
+      return pChild;
+    }
+  }
+  return nullptr;
+}
+
 void Destroy(lxb_dom_node_t* pNode) noexcept {
   if (pNode != nullptr) {
     internal::HtmlQueryEngine::Destroy(pNode);
@@ -74,27 +86,26 @@ HtmlDocument::~HtmlDocument() { Destroy(_pNode); }
 
 std::string_view HtmlDocument::encoding() const noexcept { return reinterpret_cast<const char*>(_pEncoding->name); }
 
-// The element interfaces start with their node.
+// The root, head and body elements are searched as the DOM defines them: the pointers that lexbor keeps in the
+// document are set by the parser only (and its body is null in a frameset document, the removed <body> when a
+// <frameset> replaced it).
 HtmlElement HtmlDocument::documentElement() const noexcept {
-  return HtmlNodeAccess::Element(
-      reinterpret_cast<lxb_dom_node_t*>(lxb_dom_document_element(&AsHtmlDocument(_pNode)->dom_document)));
+  return HtmlNodeAccess::Element(FirstChildElement(_pNode, [](const lxb_dom_node_t&) { return true; }));
 }
 
+// <head> and <body> are always HTML elements: their start tags leave foreign content (SVG, MathML), in fragments too.
+// <frameset> does not.
 HtmlElement HtmlDocument::head() const noexcept {
   return HtmlNodeAccess::Element(
-      reinterpret_cast<lxb_dom_node_t*>(lxb_html_document_head_element(AsHtmlDocument(_pNode))));
+      FirstChildElement(HtmlNodeAccess::Node(documentElement()),
+                        [](const lxb_dom_node_t& child) { return child.local_name == LXB_TAG_HEAD; }));
 }
 
-// The body of lexbor is null in a frameset document, and is the removed <body> when a <frameset> replaced it.
-// The parser always creates one of them as a child of <html>, where it only inserts HTML elements.
 HtmlElement HtmlDocument::body() const noexcept {
-  lxb_dom_node_t* pChild =
-      reinterpret_cast<lxb_dom_node_t*>(lxb_dom_document_element(&AsHtmlDocument(_pNode)->dom_document))->first_child;
-  while (pChild->local_name != LXB_TAG_BODY && pChild->local_name != LXB_TAG_FRAMESET) {
-    pChild = pChild->next;
-    assert(pChild != nullptr);
-  }
-  return HtmlNodeAccess::Element(pChild);
+  return HtmlNodeAccess::Element(
+      FirstChildElement(HtmlNodeAccess::Node(documentElement()), [](const lxb_dom_node_t& child) {
+        return (child.local_name == LXB_TAG_BODY || child.local_name == LXB_TAG_FRAMESET) && child.ns == LXB_NS_HTML;
+      }));
 }
 
 std::string_view HtmlDocument::assignedJson(std::string_view variable) const noexcept {

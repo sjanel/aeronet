@@ -1,6 +1,6 @@
 # HTML parsing
 
-The HTML module parses HTML documents the way browsers do and queries them with CSS selectors. It is the scraping half of a web client: fetch a page with the [HTTP client](http-client.md), parse it with `HtmlDocument`, read its elements. It runs no JavaScript (see [Pages built by JavaScript](#pages-built-by-javascript)).
+The HTML module parses HTML documents the way browsers do, queries them with CSS selectors and modifies them. It is the scraping half of a web client: fetch a page with the [HTTP client](http-client.md), parse it with `HtmlDocument`, read its elements. It runs no JavaScript (see [Pages built by JavaScript](#pages-built-by-javascript)).
 
 It is built on [lexbor](https://github.com/lexbor/lexbor) (Apache-2.0), a C implementation of the WHATWG HTML parser, of the DOM and of CSS selectors, kept out of the public headers. The `AERONET_ENABLE_HTML` CMake option enables the module: `ON` by default when aeronet is the main project, `OFF` when it is a subproject. An installed lexbor 3.x is used when found (Release builds, vcpkg feature `html`, Conan option `with_html`), otherwise lexbor 3.0.1 is downloaded and built as a static library.
 
@@ -81,7 +81,7 @@ A `forEach()` callback can query the same document (`doc.forEach("tr", ...)` the
 
 | Method | Result |
 | --- | --- |
-| `tagName()` | The local name, in lower case for HTML elements (`"td"`), unlike the upper-case `tagName` of the DOM |
+| `tagName()` | The local name, in lower case for HTML elements (`"td"`), unlike the upper-case `tagName` of the DOM, in the case of SVG for SVG elements (`"foreignObject"`) |
 | `attribute(name)` | The value of an attribute (name matched in lower case), empty when absent |
 | `hasAttribute(name)` | Whether the attribute is present, to tell an absent attribute from an empty one |
 | `attributes()` | A forward range of `HtmlAttribute` (`name`, `value`), in source order |
@@ -92,7 +92,7 @@ A `forEach()` callback can query the same document (`doc.forEach("tr", ...)` the
 | `parent()`, `firstChild()`, `lastChild()`, `nextSibling()`, `previousSibling()` | The neighbor elements (text and comment nodes are skipped), invalid when there is none |
 | `children()` | A forward range of the child elements: `for (HtmlElement cell : row.children())` |
 
-`HtmlDocument` adds `documentElement()`, `head()` and `body()` (the parser always creates them) and `encoding()`. As `document.body` in the DOM, `body()` is the `<frameset>` element of a frameset document.
+`HtmlDocument` adds `documentElement()`, `head()` and `body()` (the parser always creates them, they are invalid once taken out of the tree), `encoding()` and `createElement()` (see [Modifying the tree](#modifying-the-tree)). As `document.body` in the DOM, `body()` is the `<frameset>` element of a frameset document.
 
 The text and attribute values are decoded: `&amp;` is `&`, `&eacute;` is `é` (in UTF-8). The `std::string_view` results point into the document.
 
@@ -119,6 +119,61 @@ doc.querySelector("tr").appendOuterHtml(html);  // appended after the comment
 ```
 
 `textContent(buffer)` does not copy a text that is in a single text node, as in most table cells and links: the view then points into the document, and `buffer` is left untouched. Otherwise the text replaces the contents of `buffer`, which only allocates when it has to grow. Read the returned view, not `buffer`: it stays valid as long as the document lives and `buffer` is not modified, so the next `textContent(buffer)` call can invalidate it. `appendInnerHtml(out)` and `appendOuterHtml(out)` append to `out`, to build a body from several fragments or to reuse one buffer.
+
+## Modifying the tree
+
+```cpp
+#include <aeronet/html-document.hpp>
+
+#include <string>
+
+HtmlDocument doc(R"(<ul id="news"><li class="ad">Buy</li><li>Story</li></ul>)");
+
+// Collected first: a forEach() callback must not change the tree.
+for (HtmlElement ad : doc.querySelectorAll("li.ad")) {
+  ad.remove();
+}
+
+HtmlElement list = doc.querySelector("#news");
+list.setAttribute("data-cleaned", "true");
+list.insertAdjacentHtml(HtmlInsertPosition::BeforeEnd, "<li>Added <b>here</b></li>");
+
+HtmlElement item = doc.createElement("li");
+item.setTextContent("<escaped>");
+list.appendChild(item);
+
+const std::string html = list.outerHtml();
+// <ul id="news" data-cleaned="true"><li>Story</li><li>Added <b>here</b></li><li>&lt;escaped&gt;</li></ul>
+```
+
+| Method | Effect |
+| --- | --- |
+| `setAttribute(name, value)` | Sets an attribute, added after the others if absent (the name is lower-cased for HTML elements) |
+| `removeAttribute(name)` | Removes an attribute, if present |
+| `setTextContent(text)` | Replaces the children by a text node: the text is not parsed (`<` is serialized as `&lt;`) |
+| `setInnerHtml(html)` | Replaces the children by the nodes parsed from `html` (the contents for a `<template>`) |
+| `insertAdjacentHtml(position, html)` | Inserts the nodes parsed from `html` at a position |
+| `insertAdjacentElement(position, element)` | Moves an element of the same document, with its descendants, to a position |
+| `insertAdjacentText(position, text)` | Inserts a text node at a position |
+| `appendChild(element)` | Moves an element after the last child: `insertAdjacentElement(HtmlInsertPosition::BeforeEnd, element)` |
+| `remove()` | Takes the element, with its descendants, out of the tree |
+| `HtmlDocument::createElement(name)` | A new element, out of the tree until inserted |
+
+The positions are those of the DOM `beforebegin`, `afterbegin`, `beforeend` and `afterend`: `HtmlInsertPosition::BeforeBegin` and `AfterEnd` are beside the element, among the children of its parent (they throw `std::invalid_argument` for the root element and for an element out of the tree), `AfterBegin` is in the element before its first child, text included, `BeforeEnd` after its last child.
+
+The markup given to `setInnerHtml()` and `insertAdjacentHtml()` is parsed as the DOM `innerHTML` setter and `insertAdjacentHTML()` parse it: as a fragment, in the context of the element where it goes (the element, or its parent beside it, a `<body>` standing for `<html>`). `<tr>` is a row in a `<tbody>` and is dropped in a `<div>`, the contents of `<textarea>`, `<title>`, `<script>` and `<style>` stay text, `<circle>` is an SVG element in an `<svg>`. A fragment gets the [parsing limits](#parsing-limits) of a document.
+
+No node is freed before its document. An element taken out of the tree, by `remove()` or replaced by `setInnerHtml()` or `setTextContent()`, stays valid: it can still be queried, serialized and inserted again, and the views of its text stay valid. A document modified in a loop therefore grows until it is destroyed. A removed attribute stays in the document too: the views of its name and value stay valid, and the attribute visited by an `attributes()` loop can be removed, the loop going on with the next one (`for (HtmlAttribute attr : link.attributes())`, then `link.removeAttribute(attr.name)` for the names starting with `on`, removes all the event handlers). Only the value of an attribute changed by `setAttribute()` is invalidated.
+
+The queries and serializations see the modified tree, and `documentElement()`, `head()` and `body()` are found as the DOM finds them (the first element child of the document, the first `<head>` and the first `<body>` or `<frameset>` child of `<html>`): they are invalid once removed. A `forEach()` callback can set attributes, not change the tree (a debug build asserts it): collect the elements with `querySelectorAll()` first, as above.
+
+Invalid arguments throw `std::invalid_argument`, before any change:
+
+- an attribute name that the DOM rejects: empty, or with ASCII whitespace, NUL, `/`, `=` or `>`;
+- an element name that the DOM rejects: one must start with an ASCII letter and contain no ASCII whitespace, NUL, `/` or `>`, or start with `:`, `_` or a non-ASCII character followed by ASCII letters and digits, `-`, `.`, `:`, `_` and non-ASCII characters only (`x-widget`, `_x`, `été`);
+- an element of another document, or moved into itself or one of its descendants.
+
+On memory exhaustion (`std::bad_alloc`), `setTextContent()`, `setInnerHtml()` and the insertions leave the tree unchanged; an existing attribute whose new value cannot be allocated is left empty.
 
 ## Encodings
 
@@ -174,13 +229,17 @@ The tree construction of HTML is quadratic on some markup, which a page fetched 
 
 Ordinary pages stay far below both limits. Hostile pages still parse slower than ordinary ones (see [Performance](#performance)), but in proportion to their size.
 
+The fragments parsed by `setInnerHtml()` and `insertAdjacentHtml()` get the same limits, their depth counted from the element where they are inserted: a tree built by successive insertions can be deeper than 512 levels.
+
 ## Threads
 
 An `HtmlDocument` and its elements must not be used from several threads at the same time, even through `const` methods: the queries share the matching engine of the document. Different documents can be used from different threads, as can a `CssSelector`, which is never modified after its compilation.
 
 ## Limitations
 
-- Read-only: there is no DOM mutation (no attribute or node change) for now.
+- Only elements have handles: text and comment nodes are read through `textContent()` and the serializations, written through `setTextContent()`, `insertAdjacentText()` and the HTML methods. The contents of a `<template>` are reached through `innerHtml()` and `setInnerHtml()` only, as they are not children in the DOM.
+- No node is freed before its document (see [Modifying the tree](#modifying-the-tree)).
+- With lexbor 3.0.1, an allocation failure inside lexbor can crash the process at a later allocation: the fixes are on its master branch, not released yet (see the [roadmap](../ROADMAP.md#html-parsing-and-javascript-pages-aeronet_enable_html-aeronet_enable_js)).
 - Elements are nested at most 512 levels deep, and at most 16 misnested formatting elements are recreated: see [Parsing limits](#parsing-limits).
 - No JavaScript and no CSS cascade: `<noscript>` contents are parsed as markup, as by a browser with scripting disabled, and the style of an element is not computed.
 - `assignedJson()` finds literal assignments only, not data passed to function calls (`self.__next_f.push(...)`).
@@ -188,6 +247,7 @@ An `HtmlDocument` and its elements must not be used from several threads at the 
 ## Tests
 
 - [html-document_test.cpp](../../aeronet/html/test/html-document_test.cpp): parsing, document accessors (frameset documents), moves, limits of the tree construction, encodings, `assignedJson()`, memory exhaustion.
-- [html-element_test.cpp](../../aeronet/html/test/html-element_test.cpp): element accessors, text without copy or in a reused buffer (no allocation), serialization appended to a buffer, navigation, queries, nested queries, exceptions from callbacks.
+- [html-element_test.cpp](../../aeronet/html/test/html-element_test.cpp): element accessors (tag names of SVG and MathML elements), text without copy or in a reused buffer (no allocation), serialization appended to a buffer, navigation, queries, nested queries, exceptions from callbacks.
+- [html-mutation_test.cpp](../../aeronet/html/test/html-mutation_test.cpp): attributes (names, escaping, `id` and `class` seen by selectors, foreign elements), text, `setInnerHtml()` and `insertAdjacentHtml()` in their parsing contexts and with the parsing limits, `<template>` contents, element creation and moves, removed root, head and body elements, memory exhaustion.
 - [css-selector_test.cpp](../../aeronet/html/test/css-selector_test.cpp): compilation, invalid selectors, reuse across documents.
 - [assigned-json_test.cpp](../../aeronet/html/test/assigned-json_test.cpp): the search of an assigned JSON literal.
