@@ -53,6 +53,16 @@ AeronetAddUnitTest(
     aeronet_basic_test_support
 )
 
+# Compiled with lexbor (UrlResolver holds its URL parser), not linked to it: aeronet_html has its code.
+AeronetAddUnitTest(
+    html-node-ops_test
+    test/html-node-ops_test.cpp
+    LIBRARIES
+    aeronet_html
+    aeronet_basic_test_support
+    $<COMPILE_ONLY:${AERONET_LEXBOR_TARGET}>
+)
+
 AeronetAddUnitTest(
     html-mutation_test
     test/html-mutation_test.cpp

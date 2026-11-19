@@ -180,6 +180,32 @@ TEST_F(HttpRequestTest, InvalidUrl) {
   EXPECT_THROW(makeRequest(http::Method::GET, "http://host/path with space", {}, "some body"), std::invalid_argument);
 }
 
+// IsValidUrl() tells beforehand whether makeRequest() throws for a URL.
+TEST_F(HttpRequestTest, IsValidUrlMatchesMakeRequest) {
+  const std::string maxHost(std::numeric_limits<uint16_t>::max(), 'h');
+  const std::string tooLongHost = maxHost + 'h';
+  const std::string tooLongTarget(1UL << 24U, 'a');
+  for (const std::string& url :
+       {std::string("http://host"), std::string("https://example.com:8443/a?b=c#frag"),
+        std::string("http://[::1]:8080/"), std::string("HTTP://Host/%2F"), "http://" + maxHost + "/"}) {
+    EXPECT_TRUE(HttpRequest::IsValidUrl(url)) << url.substr(0, 64);
+    EXPECT_NO_THROW(static_cast<void>(makeRequest(http::Method::GET, url))) << url.substr(0, 64);
+  }
+  for (const std::string& url :
+       {std::string(), std::string("invalid-url"), std::string("ftp://host/"), std::string("http://"),
+        std::string("http://user@host/"), std::string("http://host:0/"), std::string("http://host:65536/"),
+        std::string("http://host/a b"), std::string("http://host/%zz"), std::string("http://host/%"),
+        std::string("http://host/\x7F"), "http://" + tooLongHost + "/", "http://host/" + tooLongTarget}) {
+    EXPECT_FALSE(HttpRequest::IsValidUrl(url)) << url.substr(0, 64);
+    EXPECT_THROW(static_cast<void>(makeRequest(http::Method::GET, url)), std::invalid_argument) << url.substr(0, 64);
+  }
+  // A redirect to a too long host is rejected without modifying the request.
+  HttpRequest req = makeRequest(http::Method::GET, "http://host/path");
+  const HttpRequest before = req;
+  EXPECT_EQ(ResolveRedirectOutcome(req, "http://" + tooLongHost + "/"), RedirectOutcome::Invalid);
+  ExpectSameRequest(req, before);
+}
+
 TEST_F(HttpRequestTest, TooBigTarget) {
   std::string bigTarget(1UL << 24U, 'a');
   EXPECT_THROW(makeRequest(http::Method::GET, "http://host/" + bigTarget), std::invalid_argument);

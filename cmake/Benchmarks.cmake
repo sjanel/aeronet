@@ -203,6 +203,16 @@ if(AERONET_ENABLE_HTML)
   set_target_properties(aeronet-bench-internal-html-document PROPERTIES FOLDER "benchmarks/internal")
 endif()
 
+if(AERONET_ENABLE_JS)
+  # The internal classes of aeronet_web, whose headers include quickjs.h and lexbor (compiled with, not linked: the
+  # code of both is in the aeronet libraries).
+  AeronetAddProjectBenchmark(aeronet-bench-internal-web-page ${AERONET_BENCH_ROOT}/internal/web-page_bench.cpp
+                             LIBRARIES aeronet_web $<COMPILE_ONLY:qjs> $<COMPILE_ONLY:${AERONET_LEXBOR_TARGET}>)
+  target_include_directories(aeronet-bench-internal-web-page PRIVATE
+                             ${PROJECT_SOURCE_DIR}/aeronet/web/src ${PROJECT_SOURCE_DIR}/aeronet/html/src)
+  set_target_properties(aeronet-bench-internal-web-page PROPERTIES FOLDER "benchmarks/internal")
+endif()
+
 AeronetAddProjectBenchmark(aeronet-bench-internal-http-message-construct ${AERONET_BENCH_INTERNAL_HTTP_MESSAGE_CONSTRUCT}
                            LIBRARIES aeronet_http)
 if(AERONET_ENABLE_HTTP_CLIENT)

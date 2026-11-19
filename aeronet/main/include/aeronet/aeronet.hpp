@@ -33,3 +33,7 @@
 #ifdef AERONET_ENABLE_HTML
 #include "aeronet/aeronet-html.hpp"  // IWYU pragma: export
 #endif
+
+#ifdef AERONET_ENABLE_JS
+#include "aeronet/aeronet-web.hpp"  // IWYU pragma: export
+#endif

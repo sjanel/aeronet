@@ -395,8 +395,12 @@ TEST_F(HttpRequestViewTest, PrefinalizeDropsBodyOfStatusesWithoutContent) {
 
   for (std::string_view method : {"GET", "HEAD"}) {
     ASSERT_EQ(reqSet(BuildRaw(method, "/test", "HTTP/1.1")), http::StatusCodeOK);
-    for (http::StatusCode status : {http::StatusCodeNoContent, http::StatusCodeResetContent,
-                                    http::StatusCodeNotModified, http::StatusCode{199}}) {
+    for (http::StatusCode status : {
+             http::StatusCodeNoContent,
+             http::StatusCodeResetContent,
+             http::StatusCodeNotModified,
+             http::StatusCode{199},
+         }) {
       for (bool captured : {false, true}) {
         SCOPED_TRACE(std::format("{} {} captured={}", method, status, captured));
         HttpResponse resp(status);

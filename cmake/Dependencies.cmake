@@ -461,6 +461,51 @@ if(AERONET_ENABLE_HTML)
   endif()
 endif()
 
+# QuickJS-ng (JavaScript engine of aeronet_web). Its CMake package (vcpkg) is named qjs, as is its library target, without
+# namespace nor version file. Downloaded otherwise, without its install rules (the library is installed with aeronet)
+# and without quickjs-libc: aeronet never gives scripts its file and OS access. AERONET_QJS_PACKAGE is the package that
+# the consumers of aeronet look for (empty when QuickJS-ng is built and installed with aeronet).
+# The options are cache entries: the CMakeLists of QuickJS-ng requires CMake 3.10, so option() ignores normal variables
+# there (policy CMP0077).
+# Without a version file, the version of a QuickJS-ng package is read from its header: an older one than
+# AERONET_QJS_MIN_VERSION lacks functions that aeronet_web calls (its target cannot be dropped for the download).
+set(AERONET_QJS_MIN_VERSION 0.16)
+if(AERONET_ENABLE_JS)
+  aeronet_system_packages_allowed(_qjs_allow_system)
+  if(_qjs_allow_system)
+    find_package(qjs CONFIG QUIET)
+  endif()
+  if(TARGET qjs)
+    set(AERONET_QJS_PACKAGE qjs)
+    get_target_property(_qjs_include_dirs qjs INTERFACE_INCLUDE_DIRECTORIES)
+    find_file(_qjs_header quickjs.h PATHS ${_qjs_include_dirs} NO_DEFAULT_PATH NO_CACHE)
+    if(_qjs_header)
+      file(STRINGS "${_qjs_header}" _qjs_version_lines REGEX "^#define QJS_VERSION_(MAJOR|MINOR|PATCH) [0-9]+")
+      string(REGEX REPLACE ".*QJS_VERSION_MAJOR ([0-9]+).*QJS_VERSION_MINOR ([0-9]+).*QJS_VERSION_PATCH ([0-9]+).*"
+                           "\\1.\\2.\\3" _qjs_version "${_qjs_version_lines}")
+    endif()
+    if(NOT _qjs_version MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$" OR _qjs_version VERSION_LESS AERONET_QJS_MIN_VERSION)
+      message(FATAL_ERROR "[aeronet] AERONET_ENABLE_JS needs QuickJS-ng >= ${AERONET_QJS_MIN_VERSION}, the qjs package "
+                          "found in ${qjs_DIR} is '${_qjs_version}' (${_qjs_header}): upgrade it, or configure with "
+                          "-DCMAKE_DISABLE_FIND_PACKAGE_qjs=ON to build the downloaded v0.18.0")
+    endif()
+    message(STATUS "[aeronet] QuickJS-ng ${_qjs_version} (qjs package)")
+  else()
+    set(QJS_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+    set(QJS_BUILD_LIBC OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+      quickjs_ng
+      URL https://github.com/quickjs-ng/quickjs/archive/refs/tags/v0.18.0.tar.gz
+      URL_HASH SHA256=28bcd89aa3683fd2a946537e5ce3f11cc46b5cbf3383c7561aaef3df5ff9f1dd
+      DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+      EXCLUDE_FROM_ALL
+      # Its header, included by the sources of aeronet_web, is not compiled with the warnings of aeronet.
+      SYSTEM
+    )
+    list(APPEND AeronetFetchContentPackagesToMakeAvailable quickjs_ng)
+  endif()
+endif()
+
 # Make fetch content available
 if(AeronetFetchContentPackagesToMakeAvailable)
   message(STATUS "Configuring packages ${AeronetFetchContentPackagesToMakeAvailable}")
@@ -497,6 +542,11 @@ if(AeronetFetchContentPackagesToMakeAvailable)
   # its atomics are invisible, and TSan reports races on everything the export thread reads through these spans.
   if(AERONET_ENABLE_TSAN AND opentelemetry_cpp_SOURCE_DIR)
     aeronet_add_options_to_dir_targets("${opentelemetry_cpp_SOURCE_DIR}" ${AERONET_TSAN_OPTIONS})
+  endif()
+
+  # aeronet_web runs remote scripts in the process: the ASAN legs also check the memory accesses of the engine.
+  if(AERONET_ENABLE_ASAN AND quickjs_ng_SOURCE_DIR)
+    aeronet_add_options_to_dir_targets("${quickjs_ng_SOURCE_DIR}" ${AERONET_ASAN_OPTIONS})
   endif()
 
   # glaze populated without its CMakeLists (CMake < 3.31, see above): the same target as glaze's own CMakeLists.

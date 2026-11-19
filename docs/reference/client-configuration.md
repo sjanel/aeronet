@@ -109,3 +109,19 @@ With OpenSSL, the client verifies peer certificate chains and hostnames by defau
 ## Telemetry
 
 `telemetry` is the same `TelemetryConfig` used by the server: set it directly and call `validate()` through client construction. OpenTelemetry must be compiled in for OTLP instrumentation. The [server configuration reference](server-configuration.md#probes-logging-telemetry-and-router-policy) lists its endpoint, sampling, DogStatsD, exporter-header, and histogram controls.
+
+## JavaScript pages
+
+`WebClientConfig` configures a [`WebClient`](../modules/web.md) (with `AERONET_ENABLE_JS=ON`). Its `http` field is the `HttpClientConfig` of the documents and scripts, with the cookies always enabled (the defaults of [Cookies](#cookies) when they are off). The other fields bound what the scripts of a page can do: `std::numeric_limits<T>::max()` means no limit.
+
+| Field | Default | Behavior |
+| --- | --- | --- |
+| `http` | `HttpClientConfig{}` | The HTTP client of the documents and their scripts. |
+| `maxScriptMemory` | 256 MiB | Memory limit of the JavaScript heap of a page, and apart, of the native memory that its scripts make it hold (the DOM content they add, the output of `document.write()`, their timers): an allocation beyond it throws an out of memory error in the script. Must not be 0. Too small a limit for the setup of a page makes `navigate()` throw. |
+| `maxScriptStackSize` | 1 MiB | Native stack used by the scripts: a deeper recursion throws a `RangeError`. Must not be 0, and must stay below the free stack of the thread calling `navigate()` and `evaluate()` (1 MiB for the main thread of a Windows executable, unless linked with `/STACK`). Too small a limit for the setup of a page makes `navigate()` throw. |
+| `maxScriptBytes` | 32 MiB | Total size of the scripts (inline and external) that a document runs: the next ones are skipped, each reported in `uncaughtErrors()`. 0 runs no script. |
+| `maxTimerDelay` | 1 min | Horizon of the virtual clock of the timers: a timer due later than this after the start of its document never runs. Must not be negative. |
+| `maxIntervalRuns` | 100 | Runs of a `setInterval()` callback, after which the interval is cleared. |
+| `maxNavigations` | 20 | Navigations started by the pages (location assignments, `<meta http-equiv="refresh">`) in one `navigate()` call, beyond which it fails with `WebErrc::tooManyNavigations`. HTTP redirects are counted by `http.maxRedirects` instead. |
+
+With Glaze, `<aeronet/web-client-config-glaze.hpp>` makes it readable and writable as JSON or YAML, the `http` field being the [client configuration](../modules/json-and-config-files.md#client-configuration-files).

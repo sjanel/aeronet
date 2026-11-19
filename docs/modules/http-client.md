@@ -60,6 +60,8 @@ request.headerAddLine("x-request-id", "4f1c2a").body(R"({"item":"book","quantity
 const HttpClientResult created = client.request(std::move(request));
 ```
 
+`makeRequest()` throws `std::invalid_argument` for a URL it cannot request: not `http` or `https`, with user info, port 0, a host longer than 65535 bytes, or a request target with a space, a control character, an incomplete percent-escape or beyond the length limit. `HttpRequest::IsValidUrl(url)` tells it beforehand, without exception.
+
 Header names are lower-case, which literals are checked for at compile time. Header values are limited to visible ASCII characters, spaces and tabs: other bytes throw `std::invalid_argument`. The body can be set from a string view (copied), an owned `std::string`, `std::vector` or `std::unique_ptr` buffer (moved, without copy), a static buffer with `bodyStatic()` (referenced, without copy), JSON or YAML serialization with `bodyJson()` / `bodyYaml()` (see [JSON and configuration files](json-and-config-files.md)), or written in place with `bodyInlineSet()`. `makeRequest(method, url, body, type)` sets the body directly, copied or moved the same way: `client.makeRequest(http::Method::POST, url, std::move(json), "application/json")` does not copy `json`. Trailers are added with `trailerAddLine()`, which throws `std::invalid_argument` for the fields forbidden in trailers (RFC 9110 §6.5.1: `content-length`, `host`, `authorization`..., see [Trailers](../guides/responses.md#trailers)).
 
 A body can also come from an open file, which is streamed without being loaded in memory: with `sendfile()` on cleartext HTTP/1.1, by bounded reads encrypted on the fly over TLS, and as DATA frames under flow control over HTTP/2.

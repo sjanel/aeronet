@@ -17,8 +17,14 @@ namespace {
 lxb_css_selector_list_t* CompileSelectorList(std::string_view selector) {
   const internal::CssParser parser = internal::MakeCssParser();
   internal::CssMemoryPtr pMemory = internal::MakeCssMemory();
+
   lxb_css_parser_memory_set(parser.pParser.get(), pMemory.get());
+
   lxb_css_selector_list_t* pList = internal::ParseSelectorList(parser.pParser.get(), selector);
+  if (pList == nullptr) {
+    internal::ThrowInvalidSelector(selector);  // the memory is destroyed with its pointer
+  }
+
   // From now on, the list owns the memory: lxb_css_selector_list_destroy_memory destroys it.
   [[maybe_unused]] const lxb_css_memory_t* pListMemory = pMemory.release();
   assert(pList->memory == pListMemory);
@@ -30,7 +36,7 @@ lxb_css_selector_list_t* CompileSelectorList(std::string_view selector) {
 CssSelector::CssSelector(std::string_view selector) : _pList(CompileSelectorList(selector)) {}
 
 CssSelector& CssSelector::operator=(CssSelector&& other) noexcept {
-  if (this != &other) {
+  if (this != &other) [[likely]] {
     lxb_css_selector_list_destroy_memory(_pList);
     _pList = std::exchange(other._pList, nullptr);
   }

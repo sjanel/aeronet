@@ -22,7 +22,8 @@ class HtmlElement;
 namespace internal {
 struct HtmlNodeAccess;  // gives the implementation access to the lexbor nodes (html-node-access.hpp)
 
-using HtmlElementCallback = void (*)(HtmlElement element, void* pCallback);
+// Called for each element of a search, which goes on while it returns true.
+using HtmlElementCallback = bool (*)(HtmlElement element, void* pCallback);
 }  // namespace internal
 
 // The selector queries of HtmlDocument and HtmlElement (the ParentNode mixin of the DOM). They search the descendants
@@ -73,7 +74,7 @@ class HtmlParentNode {
 
  private:
   template <class Fn>
-  static void CallElementCallback(HtmlElement element, void* pCallback);
+  static bool CallElementCallback(HtmlElement element, void* pCallback);
 
   // The callback is given back to CallElementCallback with its own constness.
   template <class Fn>
@@ -218,9 +219,13 @@ class HtmlElement : public HtmlParentNode {
   // The child elements, as a forward range: for (HtmlElement cell : row.children()) { ... }
   [[nodiscard]] HtmlChildren children() const noexcept;
 
+  // Whether 'name' is a valid attribute name (DOM), as setAttribute() needs: not empty, without ASCII whitespace, NUL,
+  // '/', '=' or '>'.
+  [[nodiscard]] static bool IsValidAttributeName(std::string_view name) noexcept;
+
   // Sets the attribute 'name' to 'value', added after the others if absent. The name is lower-cased for HTML elements.
-  // Throws std::invalid_argument if 'name' is not a valid attribute name (DOM): empty, or containing ASCII whitespace,
-  // NUL, '/', '=' or '>'. Throws std::bad_alloc on memory exhaustion.
+  // Throws std::invalid_argument if 'name' is not a valid attribute name (see IsValidAttributeName()), std::bad_alloc
+  // on memory exhaustion.
   void setAttribute(std::string_view name, std::string_view value);
 
   // Removes the attribute 'name' (matched as by attribute()), if present. It stays in the document: the views of its
@@ -240,8 +245,8 @@ class HtmlElement : public HtmlParentNode {
 
   // Inserts the nodes parsed from 'html' (UTF-8) at 'position' (DOM insertAdjacentHTML), parsed as a fragment in the
   // context of the element for AfterBegin and BeforeEnd, of its parent for BeforeBegin and AfterEnd (<body> instead
-  // of <html>). Throws std::invalid_argument for BeforeBegin and AfterEnd if the element is the root element or has
-  // no parent, std::bad_alloc on memory exhaustion (nothing inserted).
+  // of <html> or of the contents of a <template>). Throws std::invalid_argument for BeforeBegin and AfterEnd if the
+  // element is the root element or has no parent, std::bad_alloc on memory exhaustion (nothing inserted).
   void insertAdjacentHtml(HtmlInsertPosition position, std::string_view html);
 
   // Moves 'element' (valid), with its descendants, at 'position' (DOM insertAdjacentElement). Throws
@@ -322,8 +327,9 @@ inline HtmlChildren HtmlElement::children() const noexcept { return HtmlChildren
 
 // Defined once HtmlElement is complete.
 template <class Fn>
-void HtmlParentNode::CallElementCallback(HtmlElement element, void* pCallback) {
+bool HtmlParentNode::CallElementCallback(HtmlElement element, void* pCallback) {
   (*static_cast<Fn*>(pCallback))(element);
+  return true;
 }
 
 }  // namespace aeronet

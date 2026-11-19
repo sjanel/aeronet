@@ -108,7 +108,7 @@ jobs:
           # The minimal job keeps the default triplet, to cover the Debug configuration of the installed package.
           - features: ON
             triplet: x64-linux-release
-            spec: aeronet[openssl,spdlog,brotli,zlib,zstd,opentelemetry,protobuf,html]
+            spec: aeronet[openssl,spdlog,brotli,zlib,zstd,opentelemetry,protobuf,html,js]
           - features: OFF
             triplet: x64-linux
             spec: aeronet

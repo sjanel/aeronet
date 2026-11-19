@@ -44,6 +44,18 @@ TEST(Cctype, IsSpaceBasic) {
   EXPECT_FALSE(isspace('-'));
 }
 
+TEST(Cctype, IsAsciiWhitespace) {
+  for (const char ch : {' ', '\t', '\n', '\f', '\r'}) {
+    EXPECT_TRUE(IsAsciiWhitespace(ch)) << static_cast<int>(ch);
+  }
+  // The vertical tab is not ASCII whitespace, unlike for isspace.
+  EXPECT_FALSE(IsAsciiWhitespace('\v'));
+  // '\b' and '\x0E' surround the control characters of isspace.
+  for (const char ch : {'\0', '\b', '\x0E', 'a', '0', '-', '\x85', '\xA0'}) {
+    EXPECT_FALSE(IsAsciiWhitespace(ch)) << static_cast<int>(ch);
+  }
+}
+
 TEST(Cctype, EdgeValues) {
   // check just outside ranges
   EXPECT_FALSE(isdigit('0' - 1));

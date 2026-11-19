@@ -36,9 +36,9 @@ class HtmlQueryEngine {
 
     ~Query() { --_engine._depth; }
 
-    // Parses 'selector' into the memory of this query, valid until its end.
-    // Throws std::invalid_argument if it is not a valid selector list.
-    const lxb_css_selector_list_t* parse(std::string_view selector);
+    // Parses 'selector' into the memory of this query, valid until its end. Returns null if it is not a valid selector
+    // list.
+    [[nodiscard]] const lxb_css_selector_list_t* parse(std::string_view selector);
 
     // Calls cb for each element under pRoot matching pList, as lxb_selectors_find.
     lxb_status_t find(lxb_dom_node_t* pRoot, const lxb_css_selector_list_t* pList, lxb_selectors_cb_f cb, void* pCtx) {

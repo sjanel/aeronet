@@ -122,6 +122,7 @@ Hello from aeronet minimal server! You requested /hello
 | JWT (flag) | RFC 7519 JWS sign / verify, JWK / JWKS, rejects `alg:none` | [JWT](docs/modules/jwt.md) |
 | Protocol Buffers (flag) | Binary and ProtoJSON bodies (RFC 9996) for the server and the client, compressed like any body | [Protocol Buffers](docs/modules/protobuf.md) |
 | HTML parsing (flag) | WHATWG HTML parser (lexbor), CSS selector queries, encoding sniffing, JSON state embedded by scripts | [HTML parsing](docs/modules/html.md) |
+| JavaScript pages (flag) | `WebClient`: pages loaded with their scripts (QuickJS-ng), DOM bindings, virtual-clock timers, script navigations, `document.cookie` | [JavaScript pages](docs/modules/web.md) |
 | Observability | OpenTelemetry (experimental), DogStatsD, logging, metrics callback | [Observability](docs/operations/observability.md) |
 | Operations | Kubernetes-style probes, graceful drain, signal handling, runtime config / router updates, JSON / YAML configuration | [Health probes](docs/operations/health-probes.md), [Kubernetes examples](docs/operations/kubernetes.md), [JSON and config files](docs/modules/json-and-config-files.md) |
 | Performance | Edge-triggered reactor, `SO_REUSEPORT` scaling, `writev`, `MSG_ZEROCOPY` | [Performance and tuning](docs/operations/performance.md) |

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -26,7 +27,6 @@
 #include "aeronet/memory-utils-sv.hpp"
 #include "aeronet/ndigits.hpp"
 #include "aeronet/raw-chars.hpp"
-#include "aeronet/safe-cast.hpp"
 #include "aeronet/search-crlf.hpp"
 #include "aeronet/static-string-view-helpers.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
@@ -107,11 +107,27 @@ constexpr void CheckTargetOrThrow(std::string_view target, uint8_t headerPosNbBi
   }
 }
 
+// Length of the origin key "scheme://host:port" of a parsed URL (see InitData()).
+constexpr uint32_t OriginKeyLen(const internal::UrlParseResult& res) noexcept {
+  return static_cast<uint32_t>((res.isTls ? internal::kHttps : internal::kHttp).size() + kSchemeSep.size() +
+                               res.host.size() + 1U + ndigits(res.port));
+}
+
+// The reason why the parsed URL 'res' cannot be requested, nullptr if it can: the checks of HttpRequest::IsValidUrl().
+constexpr const char* CheckUrl(const internal::UrlParseResult& res, uint8_t headerPosNbBits) noexcept {
+  if (res.host.empty()) {
+    return "Invalid URL";
+  }
+  if (res.host.size() > std::numeric_limits<uint16_t>::max()) {
+    return "URL host exceeds maximum length";
+  }
+  return CheckTarget(res.target, headerPosNbBits, OriginKeyLen(res));
+}
+
 // Initial size of the HttpMessage internal buffer, including the status line and DoubleCRLF.
 // GET / HTTP/1.0\r\n\r\n
-constexpr std::size_t HttpRequestInitialSize(http::Method method, bool hasNonTlsProxy, uint8_t headerPosNbBits,
-                                             uint32_t originKeyLen, std::string_view target) {
-  CheckTargetOrThrow(target, headerPosNbBits, originKeyLen);
+constexpr std::size_t HttpRequestInitialSize(http::Method method, bool hasNonTlsProxy, uint32_t originKeyLen,
+                                             std::string_view target) {
   std::size_t sz = http::MethodToStr(method).size() + 1U + target.size();
   if (hasNonTlsProxy) {
     // Absolute-form request-target for a cleartext proxy: "scheme://host:port" (the origin key) + origin-form.
@@ -196,24 +212,23 @@ std::size_t ComputeHostHeaderSize(std::string_view host, bool hostIsIpv6, bool h
 void HttpRequest::initHead(std::size_t extraCapacity, http::Method method, std::string_view url,
                            std::string_view concatenatedHeaders, std::size_t bodySize, std::string_view contentType) {
   const auto res = internal::ParseUrl(url);
-  if (res.host.empty()) {
-    throw std::invalid_argument("Invalid URL");
+  if (const char* pErrorMsg = CheckUrl(res, HttpMessage::kHeaderPosNbBits)) {
+    throw std::invalid_argument(pErrorMsg);
   }
 
   const auto portNbDigits = ndigits(res.port);
   const bool hasNonTlsProxy = _opts.hasProxy() && !res.isTls;
-  const auto schemeLen = static_cast<uint8_t>((res.isTls ? internal::kHttps : internal::kHttp).size());
 
-  _hostLen = SafeCast<decltype(_hostLen)>(res.host.size());
+  _hostLen = static_cast<decltype(_hostLen)>(res.host.size());  // checked by CheckUrl()
   _port = res.port;
-  _originKeyLen = SafeCast<decltype(_originKeyLen)>(schemeLen + kSchemeSep.size() + _hostLen + 1U + portNbDigits);
+  _originKeyLen = OriginKeyLen(res);
 
   const bool hostIsIpv6 = res.host.contains(':');
   const auto hostHeaderSize = ComputeHostHeaderSize(res.host, hostIsIpv6, res.hasNonDefaultPort(), portNbDigits);
 
   const auto neededCapacity =
-      HttpRequestInitialSize(method, hasNonTlsProxy, HttpMessage::kHeaderPosNbBits, _originKeyLen, res.target) +
-      hostHeaderSize + concatenatedHeaders.size() +
+      HttpRequestInitialSize(method, hasNonTlsProxy, _originKeyLen, res.target) + hostHeaderSize +
+      concatenatedHeaders.size() +
       (bodySize == 0 ? 0 : NeededBodyHeadersSize(bodySize, CheckContentType(contentType).size())) + extraCapacity +
       _originKeyLen;
 
@@ -239,6 +254,10 @@ void HttpRequest::initHead(std::size_t extraCapacity, http::Method method, std::
   // would leave bodyStartPos past the data, and every later header mutation derives its insertion pointer from it (see
   // HttpMessage::headerAddLineUnchecked).
   setHeadPositions(headersStartPos, static_cast<uint64_t>(pData - pFirst));
+}
+
+bool HttpRequest::IsValidUrl(std::string_view url) noexcept {
+  return CheckUrl(internal::ParseUrl(url), HttpMessage::kHeaderPosNbBits) == nullptr;
 }
 
 HttpRequest::HttpRequest(std::size_t additionalCapacity, http::Method method, std::string_view url,
@@ -311,17 +330,13 @@ HttpRequest& HttpRequest::target(std::string_view target) & {
 }
 
 const char* HttpRequest::setNewUrl(const internal::UrlParseResult& res) {
-  const auto portNbDigits = ndigits(res.port);
-  const auto schemeLen = static_cast<uint8_t>((res.isTls ? internal::kHttps : internal::kHttp).size());
-  const auto hostLen = SafeCast<decltype(_hostLen)>(res.host.size());
-  const auto originKeyLen =
-      SafeCast<decltype(_originKeyLen)>(schemeLen + kSchemeSep.size() + hostLen + 1U + portNbDigits);
-
   // Validate before modifying anything, so that a rejected URL leaves this request unchanged.
-  const char* pErrorMsg = CheckTarget(res.target, HttpMessage::kHeaderPosNbBits, originKeyLen);
-  if (pErrorMsg != nullptr) {
+  if (const char* pErrorMsg = CheckUrl(res, HttpMessage::kHeaderPosNbBits)) {
     return pErrorMsg;
   }
+  const auto portNbDigits = ndigits(res.port);
+  const auto hostLen = static_cast<decltype(_hostLen)>(res.host.size());  // checked by CheckUrl()
+  const uint32_t originKeyLen = OriginKeyLen(res);
 
   const auto* pHostHeaderEnd = SearchCRLF(
       _data.data() + http::CRLF.size() + headersStartPos() + http::Host.size() + http::HeaderSep.size(), _data.end());

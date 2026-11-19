@@ -681,5 +681,44 @@ TEST_F(CookieJarTest, ForEachListsEveryCookie) {
   EXPECT_EQ(listed[1], "b=2 other.com/ hostOnly httpOnly");
 }
 
+TEST_F(CookieJarTest, DocumentCookieHidesHttpOnlyCookies) {
+  EXPECT_TRUE(set("https://example.com/", "session=s; HttpOnly"));
+  EXPECT_TRUE(set("https://example.com/", "theme=dark"));
+  EXPECT_EQ(jar.documentCookie("https://example.com/page", kNow), "theme=dark");
+  EXPECT_EQ(header("https://example.com/page"), "session=s; theme=dark");
+  EXPECT_EQ(jar.documentCookie("https://other.com/", kNow), "");
+}
+
+TEST_F(CookieJarTest, SetDocumentCookie) {
+  EXPECT_TRUE(jar.setDocumentCookie("https://example.com/dir/page", "a=1", kNow));
+  EXPECT_TRUE(jar.setDocumentCookie("https://example.com/", "b=2; Max-Age=60; SameSite=Lax", kNow));
+  EXPECT_EQ(jar.documentCookie("https://example.com/dir/x", kNow), "a=1; b=2");
+  // The same rules as Set-Cookie headers otherwise: a Secure cookie from an http page is refused.
+  EXPECT_FALSE(jar.setDocumentCookie("http://example.com/", "c=3; Secure", kNow));
+  EXPECT_FALSE(jar.setDocumentCookie("https://example.com/", "", kNow));
+  // A script replaces and deletes its cookies.
+  EXPECT_TRUE(jar.setDocumentCookie("https://example.com/", "b=3", kNow));
+  EXPECT_TRUE(jar.setDocumentCookie("https://example.com/dir/page", "a=; Path=/dir; Max-Age=0", kNow));
+  EXPECT_EQ(jar.documentCookie("https://example.com/dir/x", kNow), "b=3");
+  EXPECT_THROW(static_cast<void>(jar.setDocumentCookie("example.com", "a=1", kNow)), std::invalid_argument);
+  EXPECT_THROW(static_cast<void>(jar.documentCookie("ftp://example.com/", kNow)), std::invalid_argument);
+}
+
+TEST_F(CookieJarTest, ScriptsCannotCreateReplaceOrDeleteHttpOnlyCookies) {
+  EXPECT_FALSE(jar.setDocumentCookie("https://example.com/", "h=1; HttpOnly", kNow));
+  EXPECT_TRUE(jar.empty());
+  EXPECT_TRUE(set("https://example.com/", "session=s; Path=/; HttpOnly"));
+  EXPECT_FALSE(jar.setDocumentCookie("https://example.com/", "session=stolen; Path=/", kNow));
+  EXPECT_FALSE(jar.setDocumentCookie("https://example.com/", "session=; Path=/; Max-Age=0", kNow));
+  EXPECT_EQ(single().value, "s");
+  EXPECT_TRUE(single().httpOnly);
+  // Another path is another cookie.
+  EXPECT_TRUE(jar.setDocumentCookie("https://example.com/dir/", "session=mine; Path=/dir", kNow));
+  EXPECT_EQ(jar.documentCookie("https://example.com/dir/x", kNow), "session=mine");
+  // An HTTP response can still replace it.
+  EXPECT_TRUE(set("https://example.com/", "session=new; Path=/; HttpOnly"));
+  EXPECT_EQ(header("https://example.com/"), "session=new");
+}
+
 }  // namespace
 }  // namespace aeronet

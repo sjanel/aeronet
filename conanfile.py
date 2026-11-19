@@ -124,6 +124,8 @@ class AeronetConan(ConanFile):
             "ON" if self.options.with_protobuf else "OFF"
         )
         tc.variables["AERONET_ENABLE_HTML"] = "ON" if self.options.with_html else "OFF"
+        # QuickJS-ng is not in Conan Center: no JavaScript pages in the Conan package.
+        tc.variables["AERONET_ENABLE_JS"] = "OFF"
         # Force OFF for tests/examples in package context
         tc.variables["AERONET_BUILD_TESTS"] = "OFF"
         tc.variables["AERONET_BUILD_BENCHMARKS"] = "OFF"
