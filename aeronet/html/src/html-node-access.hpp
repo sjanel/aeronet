@@ -1,7 +1,13 @@
 #pragma once
 
 #include <lexbor/css/selectors/selector.h>
+#include <lexbor/dom/interfaces/element.h>
 #include <lexbor/dom/interfaces/node.h>
+#include <lexbor/html/interfaces/template_element.h>
+#include <lexbor/ns/const.h>
+#include <lexbor/tag/const.h>
+
+#include <cassert>
 
 #include "aeronet/css-selector.hpp"
 #include "aeronet/html-element.hpp"
@@ -17,5 +23,25 @@ struct HtmlNodeAccess {
 
   static const lxb_css_selector_list_t* List(const CssSelector& selector) noexcept { return selector._pList; }
 };
+
+// pNode, the node of an HtmlElement on which a method is called: valid.
+inline lxb_dom_node_t* Checked(lxb_dom_node_t* pNode) noexcept {
+  assert(pNode != nullptr && "method called on an invalid HtmlElement");
+  return pNode;
+}
+
+// The element interfaces start with their node.
+inline lxb_dom_element_t* AsElement(lxb_dom_node_t* pNode) noexcept {
+  return reinterpret_cast<lxb_dom_element_t*>(Checked(pNode));
+}
+
+// The node holding the children that innerHTML reads and writes for the element pNode: the contents of a <template>
+// (a document fragment, created with the element), the element itself otherwise.
+inline lxb_dom_node_t* ChildrenParent(lxb_dom_node_t* pNode) noexcept {
+  if (pNode->local_name == LXB_TAG_TEMPLATE && pNode->ns == LXB_NS_HTML) {
+    return &reinterpret_cast<lxb_html_template_element_t*>(pNode)->content->node;
+  }
+  return pNode;
+}
 
 }  // namespace aeronet::internal

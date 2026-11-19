@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <format>
-#include <iterator>
 #include <new>
 #include <string>
 #include <string_view>
@@ -14,6 +13,7 @@
 #include "../src/html-parse.hpp"
 #include "aeronet/html-element.hpp"
 #include "aeronet/sys-test-support.hpp"
+#include "html-test-util.hpp"
 
 namespace aeronet {
 
@@ -25,34 +25,16 @@ using internal::kMaxOpenElements;
 // "été" (summer) in UTF-8.
 constexpr std::string_view kEteUtf8 = "\xC3\xA9t\xC3\xA9";
 
+using test::ChildCount;
+using test::Depth;
+using test::Repeat;
+
 std::string BodyText(const HtmlDocument& doc) { return doc.body().textContent(); }
-
-std::string Repeat(std::string_view text, std::size_t count) {
-  std::string ret;
-  ret.reserve(text.size() * count);
-  for (std::size_t idx = 0; idx < count; ++idx) {
-    ret.append(text);
-  }
-  return ret;
-}
-
-// The number of elements from the root element to 'element', both included.
-std::size_t Depth(HtmlElement element) {
-  std::size_t depth = 0;
-  for (; element; element = element.parent()) {
-    ++depth;
-  }
-  return depth;
-}
 
 std::size_t MaxDepth(const HtmlDocument& doc) {
   std::size_t maxDepth = 0;
   doc.forEach("*", [&maxDepth](HtmlElement element) { maxDepth = std::max(maxDepth, Depth(element)); });
   return maxDepth;
-}
-
-std::size_t ChildCount(HtmlElement element) {
-  return static_cast<std::size_t>(std::ranges::distance(element.children()));
 }
 
 }  // namespace

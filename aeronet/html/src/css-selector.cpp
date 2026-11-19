@@ -15,10 +15,10 @@ namespace {
 
 // The parser only lives for the compilation: the list owns the memory it is allocated in.
 lxb_css_selector_list_t* CompileSelectorList(std::string_view selector) {
-  internal::CssParserPtr pParser = internal::MakeCssParser();
+  const internal::CssParser parser = internal::MakeCssParser();
   internal::CssMemoryPtr pMemory = internal::MakeCssMemory();
-  lxb_css_parser_memory_set(pParser.get(), pMemory.get());
-  lxb_css_selector_list_t* pList = internal::ParseSelectorList(pParser.get(), selector);
+  lxb_css_parser_memory_set(parser.pParser.get(), pMemory.get());
+  lxb_css_selector_list_t* pList = internal::ParseSelectorList(parser.pParser.get(), selector);
   // From now on, the list owns the memory: lxb_css_selector_list_destroy_memory destroys it.
   [[maybe_unused]] const lxb_css_memory_t* pListMemory = pMemory.release();
   assert(pList->memory == pListMemory);

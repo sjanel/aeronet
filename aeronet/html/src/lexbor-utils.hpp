@@ -5,6 +5,7 @@
 #include <lexbor/css/parser.h>
 #include <lexbor/css/selectors/selector.h>
 #include <lexbor/css/selectors/selectors.h>
+#include <lexbor/css/syntax/tokenizer.h>
 #include <lexbor/selectors/selectors.h>
 
 #include <memory>
@@ -23,6 +24,12 @@ T* CheckCreated(T* pObject) {
   return pObject;
 }
 
+struct CssTokenizerDeleter {
+  void operator()(lxb_css_syntax_tokenizer_t* pTokenizer) const noexcept {
+    lxb_css_syntax_tokenizer_destroy(pTokenizer);
+  }
+};
+
 struct CssParserDeleter {
   void operator()(lxb_css_parser_t* pParser) const noexcept { lxb_css_parser_destroy(pParser, true); }
 };
@@ -39,13 +46,21 @@ struct SelectorMatcherDeleter {
   void operator()(lxb_selectors_t* pMatcher) const noexcept { lxb_selectors_destroy(pMatcher, true); }
 };
 
+using CssTokenizerPtr = std::unique_ptr<lxb_css_syntax_tokenizer_t, CssTokenizerDeleter>;
 using CssParserPtr = std::unique_ptr<lxb_css_parser_t, CssParserDeleter>;
 using CssMemoryPtr = std::unique_ptr<lxb_css_memory_t, CssMemoryDeleter>;
 using CssSelectorsPtr = std::unique_ptr<lxb_css_selectors_t, CssSelectorsDeleter>;
 using SelectorMatcherPtr = std::unique_ptr<lxb_selectors_t, SelectorMatcherDeleter>;
 
-// A new CSS parser (with its own tokenizer).
-CssParserPtr MakeCssParser();
+// A CSS parser and its tokenizer, which it uses without owning it: lxb_css_parser_init leaks the tokenizer it creates
+// when it fails after its creation (lexbor 3.0.1, still on master of 2026-11-16).
+struct CssParser {
+  CssTokenizerPtr pTokenizer;  // first: destroyed after the parser
+  CssParserPtr pParser;
+};
+
+// A new CSS parser, with its tokenizer.
+CssParser MakeCssParser();
 
 // A new, small, CSS memory, for the selector lists of a parser.
 CssMemoryPtr MakeCssMemory();

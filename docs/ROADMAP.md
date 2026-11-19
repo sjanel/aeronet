@@ -113,8 +113,9 @@ the [performance optimization backlog](#performance-optimization-backlog)):
 
 #### HTML parsing and JavaScript pages (`AERONET_ENABLE_HTML`, `AERONET_ENABLE_JS`)
 
-Status: [HTML parsing](modules/html.md) (phase 1) and the [client cookies](modules/http-client.md#cookies) (phase 2)
-delivered, JavaScript not started
+Status: [HTML parsing and DOM mutation](modules/html.md) (phase 1) and the
+[client cookies](modules/http-client.md#cookies) (phase 2) delivered, JavaScript not started, its engine measured
+(below)
 ([#738](https://github.com/sjanel/aeronet/issues/738)). Goal: let the client read pages whose content is produced or
 completed by JavaScript, e.g. `page.querySelectorAll("table tr")` after a `navigate()`.
 
@@ -163,9 +164,10 @@ Dependencies (C libraries, kept out of the public headers):
 
 Phases:
 
-1. **HTML** - delivered. Still open: DOM mutation and serialization of a modified tree (needed by phase 3 anyway).
-   The fragment parsing behind `innerHTML` and `insertAdjacentHTML` must get the same nesting limits as the document
-   parsing (`aeronet/html/src/html-parse.cpp`).
+1. **HTML** - delivered, with DOM mutation ([Modifying the tree](modules/html.md#modifying-the-tree)): attributes,
+   text, `setInnerHtml()` and `insertAdjacentHtml()` (fragments parsed with the limits of a document), element
+   creation, moves and removal; no node is freed before its document, which is the node lifetime phase 3 needs. Phase
+   3 will need handles on text and comment nodes, which the C++ API does not expose.
 2. **Client cookie jar** - delivered, see [Cookies](modules/http-client.md#cookies): RFC 6265bis storage and
    retrieval, `SameSite` along redirect chains across sites, merged with the `Cookie` header of the request.
 3. **JS core** (`AERONET_ENABLE_JS`, requires `AERONET_ENABLE_HTML` and `AERONET_ENABLE_HTTP_CLIENT`, OFF by
@@ -216,8 +218,29 @@ DOM, `fetch` / XHR and timers. Out of scope: rendering and layout, anti-bot chal
 WebGL and timing), WebAssembly, workers, iframes, canvas, media.
 
 Performance: the synchronous client fetches the subresources one at a time (51 sequential exchanges for the Kraken
-page); the coroutine client with HTTP/2 multiplexing (above) is the fix. Measure the QuickJS-ng compile and run
-time of real bundles before committing to phase 3.
+page); the coroutine client with HTTP/2 multiplexing (above) is the fix.
+
+QuickJS-ng 0.18.0, measured on 2026-11-19 (Release, clang 23, x86-64 desktop, one core; V8 of Node 24 for
+reference):
+
+- **Size**: about 1.1 MB of code (`libqjs.a`, without `quickjs-libc`).
+- **Compilation**: about 20 MB/s of minified code (bytecode for every function at once, where V8 compiles lazily and
+  is about 5 times faster). The 51 scripts of the Kraken page (2.8 MB) take about 150 ms, its 4.4 MB inline
+  `window.__INITIAL_PROPS__ = {...}` 210 ms more (`assignedJson()` reads it in about 1 ms), React 18 `react-dom`
+  6 ms. All compiled, the Kraken page holds 22 MB of bytecode and objects.
+- **Bytecode cache**: reading back the bytecode (`JS_ReadObject`) is 15 to 70 times faster than compiling (3 ms for
+  the 940 KB main bundle, 3 ms for the inline state): a per-client cache keyed by script URL and content would make
+  repeated `navigate()` of the same site cheap. Only bytecode written by the process itself can be read: it is not
+  validated.
+- **Execution**: React 18 `renderToString` of an 800-row table takes 14 ms, against 8 ms for the first run of V8 (its
+  JIT warm-up), 5 ms for V8 without JIT, under 1 ms for V8 warmed up. Scripts run once per page, so QuickJS-ng is
+  within 2 times of V8 for this use.
+- **DOM bindings**: a native getter or method call (class with an opaque pointer) costs about 40 ns more than an
+  empty loop iteration, twice a JS function call. The interrupt handler of the CPU budget has no measurable cost.
+- **Scripts without a DOM**: with only `window = self = globalThis`, 49 of the 51 Kraken scripts run (webpack chunks
+  registering themselves); its runtime chunk stops at `document`.
+- **API differences with Bellard's QuickJS**: the interrupt handler takes a `JSContext*` in QuickJS-ng, a
+  `JSRuntime*` in QuickJS: a layer over both engines has to adapt such details.
 
 Security: `navigate()` runs remote code in the host process, and QuickJS-ng had memory-safety CVEs in 2025-2026
 (typed arrays, `Atomics`, iterator helpers). Never link `quickjs-libc` (no file or OS access); set memory and stack
@@ -231,6 +254,38 @@ webpack-style chunk loader, a vendored production React build rendering a table)
 
 Open decisions: whether this scope is enough or the CDP driver should come first, the Conan strategy for the
 engine, and in-process only versus a sandbox from the start.
+
+**lexbor release to watch** (checked on 2026-11-19: v3.0.1, tagged on 2026-09-07, is still the latest). These fixes
+are merged on master but in no release:
+
+- the single-byte (and multibyte) decoders that drop a byte when their output buffer is full (#425, commit 826b121);
+- the crash, use-after-free and leaks on allocation failures in document creation and parsing (#448, merged on
+  2026-11-11);
+- after a failed allocation, the next allocation of a memory pool writes through a null pointer (815b8b2a,
+  2026-11-14), as does the HTML tokenizer when its temporary buffer could not grow (#433, 145872a2): with 3.0.1, any
+  allocation failure inside lexbor can crash the process later.
+
+With lexbor master (e609d94), every allocation of the DOM mutations, queries and serializations was failed in turn
+under ASAN on 2026-11-19, lexbor instrumented with its pool poisoning (`LEXBOR_BUILD_WITH_ASAN`): no memory error and,
+once aeronet created the tokenizer of its CSS parsers itself (`MakeCssParser()`), no leak. `lxb_css_parser_init` leaks
+the tokenizer it creates when it fails after its creation, still on master: a fix with its test is ready in a fork,
+to propose upstream (the workaround stays while lexbor versions without it are accepted). The failures were
+injected through `lexbor_memory_setup()`, which works under ASAN, unlike the `malloc` overrides of the tests
+(`sys-test-support.hpp` disables them with sanitizers): the ASAN CI legs never run the memory exhaustion tests. When a
+release contains all of them:
+
+1. bump the FetchContent URL of `cmake/Dependencies.cmake` and `AERONET_LEXBOR_MIN_VERSION` (an older installed
+   lexbor would bring the bugs back), and update the version in [HTML parsing](modules/html.md);
+2. remove the workaround of the decoder in `aeronet/html/src/html-encoding.cpp` (input fed in chunks of 1024 bytes
+   to a 1032-code-point buffer, so that it never fills), then rerun `LargeUndeclaredDocuments` and the encoding
+   tests of `html-document_test.cpp`;
+3. fail every allocation of the `HtmlDocument` construction in `html-document_test.cpp` (today only the first one,
+   `ExpectBadAllocOnAllocation`), and of the parsing in `test::ExpectBadAllocOnEachAllocation`
+   (`aeronet/html/test/html-test-util.hpp`), whose check should also run the operation again after each failure (the
+   pool bug only shows on the next allocation); add a test failing the lexbor allocations through
+   `lexbor_memory_setup()`, so that the ASAN legs run them;
+4. check the lexbor versions of vcpkg (3.0.1) and Conan Center (3.0.0 only, whose `:lexbor-contains()` parsing
+   overflows the heap): a package manager still on an old release keeps the workarounds needed.
 
 #### Server-Sent Events (SSE) convenience layer
 

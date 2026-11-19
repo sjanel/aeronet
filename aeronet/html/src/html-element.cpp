@@ -9,7 +9,6 @@
 #include <lexbor/dom/interfaces/node.h>
 #include <lexbor/html/serialize.h>
 
-#include <cassert>
 #include <cstddef>
 #include <exception>
 #include <string>
@@ -24,16 +23,9 @@ namespace aeronet {
 
 namespace {
 
+using internal::AsElement;
+using internal::Checked;
 using internal::HtmlNodeAccess;
-
-lxb_dom_node_t* Checked(lxb_dom_node_t* pNode) noexcept {
-  assert(pNode != nullptr && "method called on an invalid HtmlElement");
-  return pNode;
-}
-
-lxb_dom_element_t* AsElement(lxb_dom_node_t* pNode) noexcept {
-  return reinterpret_cast<lxb_dom_element_t*>(Checked(pNode));
-}
 
 std::string_view View(const lxb_char_t* pData, std::size_t size) noexcept {
   return {reinterpret_cast<const char*>(pData), size};
@@ -117,9 +109,11 @@ void AppendSerializedNode(lxb_dom_node_t* pNode, std::string& out) {
 
 }  // namespace
 
+// lexbor keeps the lower-cased name as local name, the name adjusted by the parser for SVG elements as qualified name
+// (no element has a prefix: they are only created by the parser and by createElement()).
 std::string_view HtmlElement::tagName() const noexcept {
   std::size_t size = 0;
-  const lxb_char_t* pName = lxb_dom_element_local_name(AsElement(_pNode), &size);
+  const lxb_char_t* pName = lxb_dom_element_qualified_name(AsElement(_pNode), &size);
   return View(pName, size);
 }
 
@@ -145,8 +139,13 @@ HtmlAttribute HtmlAttributes::iterator::operator*() const noexcept {
   return {View(pName, nameSize), View(pValue, valueSize)};
 }
 
+HtmlAttributes::iterator::iterator(lxb_dom_attr_t* pAttr) noexcept
+    : _pAttr(pAttr), _pNext(pAttr == nullptr ? nullptr : pAttr->next) {}
+
+// Through _pNext: removing an attribute (lxb_dom_attr_remove) resets its next pointer.
 HtmlAttributes::iterator& HtmlAttributes::iterator::operator++() noexcept {
-  _pAttr = _pAttr->next;
+  _pAttr = _pNext;
+  _pNext = _pAttr == nullptr ? nullptr : _pAttr->next;
   return *this;
 }
 
@@ -182,17 +181,18 @@ std::string HtmlElement::outerHtml() const {
 }
 
 void HtmlElement::appendInnerHtml(std::string& out) const {
-  AppendSerializedNode<lxb_html_serialize_deep_cb>(Checked(_pNode), out);
+  AppendSerializedNode<lxb_html_serialize_deep_cb>(internal::ChildrenParent(Checked(_pNode)), out);
 }
 
 void HtmlElement::appendOuterHtml(std::string& out) const {
   AppendSerializedNode<lxb_html_serialize_tree_cb>(Checked(_pNode), out);
 }
 
-// The parent of an element is an element, or the document node for the root element.
+// The parent of an element is an element, the document node for the root element, or none out of the tree (the
+// document fragment of a template contents cannot be reached).
 HtmlElement HtmlElement::parent() const noexcept {
   lxb_dom_node_t* pParent = Checked(_pNode)->parent;
-  return HtmlNodeAccess::Element(pParent->type == LXB_DOM_NODE_TYPE_ELEMENT ? pParent : nullptr);
+  return HtmlNodeAccess::Element(pParent != nullptr && pParent->type == LXB_DOM_NODE_TYPE_ELEMENT ? pParent : nullptr);
 }
 
 HtmlElement HtmlElement::firstChild() const noexcept {

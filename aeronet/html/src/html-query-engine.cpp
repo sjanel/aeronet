@@ -23,10 +23,10 @@ HtmlQueryEngine::Query::Query(HtmlQueryEngine& engine, Depth depth) : _engine(en
 }
 
 const lxb_css_selector_list_t* HtmlQueryEngine::Query::parse(std::string_view selector) {
-  if (!_engine._pParser) {
+  if (!_engine._parser.pParser) {
     CssSelectorsPtr pCssSelectors = MakeCssSelectors();
-    _engine._pParser = MakeCssParser();
-    lxb_css_parser_selectors_set(_engine._pParser.get(), pCssSelectors.get());
+    _engine._parser = MakeCssParser();
+    lxb_css_parser_selectors_set(_engine._parser.pParser.get(), pCssSelectors.get());
     _engine._pCssSelectors = std::move(pCssSelectors);
   }
   CssMemoryPtr& pMemory = _engine._levels[_depth].memory;
@@ -36,8 +36,8 @@ const lxb_css_selector_list_t* HtmlQueryEngine::Query::parse(std::string_view se
   } else {
     pMemory = MakeCssMemory();
   }
-  lxb_css_parser_memory_set(_engine._pParser.get(), pMemory.get());
-  return ParseSelectorList(_engine._pParser.get(), selector);
+  lxb_css_parser_memory_set(_engine._parser.pParser.get(), pMemory.get());
+  return ParseSelectorList(_engine._parser.pParser.get(), selector);
 }
 
 HtmlQueryEngine::Query HtmlQueryEngine::StartQuery(lxb_dom_node_t* pNode) {

@@ -2,6 +2,7 @@
 
 #include <concepts>
 #include <cstddef>
+#include <cstdint>
 #include <iterator>
 #include <memory>
 #include <string>
@@ -40,7 +41,9 @@ class HtmlParentNode {
   [[nodiscard]] vector<HtmlElement> querySelectorAll(const CssSelector& selector) const;
 
   // Calls callback(HtmlElement) for each descendant element matching selector, without allocating.
-  // An exception thrown by callback stops the search and is propagated.
+  // An exception thrown by callback stops the search and is propagated. The callback can change attributes, not the
+  // tree (setInnerHtml(), setTextContent(), insertions, remove()...): collect the elements with querySelectorAll()
+  // first.
   template <class Callback>
     requires std::invocable<Callback&, HtmlElement>
   void forEach(std::string_view selector, Callback&& callback) const {
@@ -84,13 +87,15 @@ class HtmlParentNode {
   void forEachMatch(const CssSelector& selector, internal::HtmlElementCallback callback, void* pCallback) const;
 };
 
-// An attribute of an element. Its views point into the document, valid as long as it lives.
+// An attribute of an element. Its views point into the document, valid as long as it lives (the value until
+// setAttribute() changes it), even once the attribute is removed.
 struct HtmlAttribute {
   std::string_view name;
   std::string_view value;
 };
 
-// The attributes of an element, in source order (forward range of HtmlAttribute).
+// The attributes of an element, in source order (forward range of HtmlAttribute). The attribute being visited can be
+// removed: the iteration goes on with the next one.
 class HtmlAttributes {
  public:
   class iterator {
@@ -113,14 +118,16 @@ class HtmlAttributes {
       return ret;
     }
 
-    bool operator==(const iterator&) const noexcept = default;
+    // Two iterators on the same attribute.
+    bool operator==(const iterator& other) const noexcept { return _pAttr == other._pAttr; }
 
    private:
     friend class HtmlAttributes;
 
-    explicit iterator(lxb_dom_attr* pAttr) noexcept : _pAttr(pAttr) {}
+    explicit iterator(lxb_dom_attr* pAttr) noexcept;
 
     lxb_dom_attr* _pAttr{};
+    lxb_dom_attr* _pNext{};  // read on arrival at _pAttr, which can then be removed (unlinked from the next one)
   };
 
   [[nodiscard]] iterator begin() const noexcept { return iterator(_pFirst); }
@@ -138,10 +145,22 @@ class HtmlAttributes {
 
 class HtmlChildren;
 
+// Where insertAdjacentHtml(), insertAdjacentElement() and insertAdjacentText() insert, relative to an element (the
+// "beforebegin", "afterbegin", "beforeend" and "afterend" of the DOM).
+enum class HtmlInsertPosition : std::uint8_t {
+  BeforeBegin,  // before the element, among the children of its parent
+  AfterBegin,   // in the element, before its first child
+  BeforeEnd,    // in the element, after its last child
+  AfterEnd,     // after the element, among the children of its parent
+};
+
 // An element of an HtmlDocument: a non-owning handle (one pointer, cheap to copy), valid as long as its document lives.
 // A default-constructed element, or one returned when no element matches, is invalid: only valid() and comparisons can
 // be called on it.
 // Navigation goes through elements only (no text, comment or document node): parent(), children()...
+// The tree can be modified (attributes, text, children): the queries and serializations see the modified tree. An
+// element taken out of the tree (by remove(), or replaced by setInnerHtml() or setTextContent()) stays in its document
+// until the document is destroyed: handles on it stay valid, and it can be inserted again.
 class HtmlElement : public HtmlParentNode {
  public:
   // An invalid element.
@@ -151,12 +170,14 @@ class HtmlElement : public HtmlParentNode {
 
   explicit operator bool() const noexcept { return valid(); }
 
-  // The local name of the element, in lower case for HTML elements ("div", "tr"), unlike the upper-case tagName of the
-  // DOM. The view points into the document.
+  // The local name of the element (DOM localName): in lower case for HTML elements ("div", "tr"), unlike the
+  // upper-case tagName of the DOM, in the case of SVG for SVG elements ("foreignObject", "linearGradient"). The view
+  // points into the document.
   [[nodiscard]] std::string_view tagName() const noexcept;
 
   // The value of the attribute 'name' (matched in lower case for HTML elements), or an empty view if absent: see
-  // hasAttribute() to tell an absent attribute from an empty one. The view points into the document.
+  // hasAttribute() to tell an absent attribute from an empty one. The view points into the document, until
+  // setAttribute() changes the attribute.
   [[nodiscard]] std::string_view attribute(std::string_view name) const noexcept;
 
   [[nodiscard]] bool hasAttribute(std::string_view name) const noexcept;
@@ -173,7 +194,7 @@ class HtmlElement : public HtmlParentNode {
   // as long as the document lives and 'buffer' is not modified.
   [[nodiscard]] std::string_view textContent(std::string& buffer) const;
 
-  // The HTML serialization of the children of the element (DOM innerHTML).
+  // The HTML serialization of the children of the element (DOM innerHTML), of its contents for a <template>.
   [[nodiscard]] std::string innerHtml() const;
 
   // The HTML serialization of the element and its children (DOM outerHTML).
@@ -183,7 +204,7 @@ class HtmlElement : public HtmlParentNode {
   void appendInnerHtml(std::string& out) const;
   void appendOuterHtml(std::string& out) const;
 
-  // The parent element, invalid for the root element (<html>).
+  // The parent element, invalid for the root element (<html>) and for the top element of a subtree out of the tree.
   [[nodiscard]] HtmlElement parent() const noexcept;
 
   // The first and last child elements, invalid if there are none.
@@ -196,6 +217,48 @@ class HtmlElement : public HtmlParentNode {
 
   // The child elements, as a forward range: for (HtmlElement cell : row.children()) { ... }
   [[nodiscard]] HtmlChildren children() const noexcept;
+
+  // Sets the attribute 'name' to 'value', added after the others if absent. The name is lower-cased for HTML elements.
+  // Throws std::invalid_argument if 'name' is not a valid attribute name (DOM): empty, or containing ASCII whitespace,
+  // NUL, '/', '=' or '>'. Throws std::bad_alloc on memory exhaustion.
+  void setAttribute(std::string_view name, std::string_view value);
+
+  // Removes the attribute 'name' (matched as by attribute()), if present. It stays in the document: the views of its
+  // name and value stay valid, as does an attributes() iteration visiting it.
+  void removeAttribute(std::string_view name);
+
+  // Replaces the children of the element by a text node of 'text' (none if empty), as the DOM textContent setter: the
+  // text is not parsed, "<b>" stays text (serialized as "&lt;b&gt;"). Throws std::bad_alloc on memory exhaustion, the
+  // children being unchanged.
+  void setTextContent(std::string_view text);
+
+  // Replaces the children of the element by the nodes parsed from 'html' (UTF-8), as the DOM innerHTML setter: 'html'
+  // is parsed as a fragment in the context of the element ("<tr>" is a row in a <tbody>, text in a <textarea>), with
+  // the parsing limits of HtmlDocument. Replaces the contents of a <template>. Throws std::bad_alloc on memory
+  // exhaustion, the children being unchanged.
+  void setInnerHtml(std::string_view html);
+
+  // Inserts the nodes parsed from 'html' (UTF-8) at 'position' (DOM insertAdjacentHTML), parsed as a fragment in the
+  // context of the element for AfterBegin and BeforeEnd, of its parent for BeforeBegin and AfterEnd (<body> instead
+  // of <html>). Throws std::invalid_argument for BeforeBegin and AfterEnd if the element is the root element or has
+  // no parent, std::bad_alloc on memory exhaustion (nothing inserted).
+  void insertAdjacentHtml(HtmlInsertPosition position, std::string_view html);
+
+  // Moves 'element' (valid), with its descendants, at 'position' (DOM insertAdjacentElement). Throws
+  // std::invalid_argument if 'element' is of another document, if the element where it would be inserted is 'element'
+  // or one of its descendants, and for BeforeBegin and AfterEnd if this element is the root element or has no parent.
+  void insertAdjacentElement(HtmlInsertPosition position, HtmlElement element);
+
+  // Inserts a text node of 'text' (none if empty) at 'position' (DOM insertAdjacentText). Throws std::invalid_argument
+  // for BeforeBegin and AfterEnd if the element is the root element or has no parent, std::bad_alloc on memory
+  // exhaustion (nothing inserted).
+  void insertAdjacentText(HtmlInsertPosition position, std::string_view text);
+
+  // Moves 'child' after the last child of the element: insertAdjacentElement(HtmlInsertPosition::BeforeEnd, child).
+  void appendChild(HtmlElement child) { insertAdjacentElement(HtmlInsertPosition::BeforeEnd, child); }
+
+  // Takes the element, with its descendants, out of the tree (DOM remove()). It stays valid and can be inserted again.
+  void remove() noexcept;
 
   // Two handles on the same element (or two invalid elements).
   bool operator==(const HtmlElement& other) const noexcept { return _pNode == other._pNode; }

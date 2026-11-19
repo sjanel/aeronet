@@ -1,6 +1,7 @@
 #pragma once
 
 #include <lexbor/css/selectors/selector.h>
+#include <lexbor/dom/interfaces/document.h>
 #include <lexbor/dom/interfaces/node.h>
 #include <lexbor/selectors/selectors.h>
 
@@ -60,6 +61,14 @@ class HtmlQueryEngine {
   // Destroys the engine of the document node pDocumentNode, if it has one.
   static void Destroy(lxb_dom_node_t* pDocumentNode) noexcept;
 
+#ifndef NDEBUG
+  // Whether a query on the document of pNode is running: only a forEach() callback runs during one.
+  static bool Searching(const lxb_dom_node_t* pNode) noexcept {
+    const auto* pEngine = static_cast<const HtmlQueryEngine*>(pNode->owner_document->node.user);
+    return pEngine != nullptr && pEngine->_depth != 0;
+  }
+#endif
+
  private:
   struct Level {
     SelectorMatcherPtr matcher;
@@ -72,8 +81,8 @@ class HtmlQueryEngine {
   static_assert(amc::is_trivially_relocatable_v<Level>);
 
   vector<Level> _levels;
-  CssParserPtr _pParser;           // created by the first query with a selector given as text
-  CssSelectorsPtr _pCssSelectors;  // parsing state of _pParser, kept to not be created by each parse
+  CssParser _parser;               // created by the first query with a selector given as text
+  CssSelectorsPtr _pCssSelectors;  // parsing state of _parser, kept to not be created by each parse
   Depth _depth{};
 };
 
