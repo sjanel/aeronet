@@ -9,6 +9,7 @@
 #include <unistd.h>
 #endif
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <charconv>
@@ -24,6 +25,7 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include "aeronet/access-log-config.hpp"
 #include "aeronet/cors-policy.hpp"
@@ -38,6 +40,7 @@
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/http-version.hpp"
+#include "aeronet/lower-ascii-key.hpp"
 #include "aeronet/middleware.hpp"
 #include "aeronet/native-handle.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -45,9 +48,11 @@
 #include "aeronet/router.hpp"
 #include "aeronet/single-http-server.hpp"
 #include "aeronet/socket-ops.hpp"
+#include "aeronet/stall-tolerant-test-helpers.hpp"
 #include "aeronet/temp-file.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/test_util.hpp"
+#include "aeronet/zerocopy-mode.hpp"
 
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 #include "aeronet/request-task.hpp"
@@ -2427,4 +2432,172 @@ TEST(Http1WriterTransport, WriteBodyReturnsFalseAfterTransportError) {
   // Second write should see the connection marked for close
   EXPECT_FALSE(secondWriteOk);
 }
+#endif  // AERONET_LINUX
+
+// ============================
+// keepAliveTimeout of the output waiting for its client
+// ============================
+
+// These tests observe the server through the flow control of loopback sockets with small buffers, as Linux applies it:
+// a client that does not read blocks the output of the server, a client reading slowly lets it progress at its pace.
+// Other kernels do otherwise, the server code covered being the same: on the macOS CI runners, a client reading 8 KiB
+// every 20 ms (a receive buffer below the 16 KiB loopback MSS) received 850 KB in about 10 s before its connection
+// ended, and on Windows, clients that read nothing for 2 s still received a whole 4 MiB response.
+#ifdef AERONET_LINUX
+
+namespace {
+
+constexpr std::chrono::milliseconds kStallKeepAliveTimeout{200};
+
+// Receive buffer sizes: the minimal one (raised to the kernel minimum), set before connecting, keeps the advertised
+// window small, so that the server output stalls. The large one lets a client then receive the rest quickly.
+constexpr int kMinimalReceiveBufferSize = 1;
+constexpr int kLargeReceiveBufferSize = 65536;
+
+// A server whose responses quickly fill the socket of a client that does not read them.
+HttpServerConfig StalledReaderConfig(bool keepAlive) {
+  HttpServerConfig cfg;
+  cfg.withZerocopyMode(ZerocopyMode::Disabled)
+      .withKeepAliveMode(keepAlive)
+      .withKeepAliveTimeout(kStallKeepAliveTimeout)
+      .withSocketSendBufferBytes(4096);
+  return cfg;
+}
+
+// Answers /buffered with 'body' (kept alive by the caller), and /file with the file at 'filePath'.
+void AddBufferedAndFileRoutes(test::TestServer& server, const std::string& body, std::string filePath) {
+  auto router = server.router();
+  router.setPath(http::Method::GET, "/buffered",
+                 [&body](const HttpRequestView& req) { return req.makeResponse(body); });
+  router.setPath(http::Method::GET, "/file", [path = std::move(filePath)](const HttpRequestView&) {
+    return HttpResponse(http::StatusCodeOK).file(File(path));
+  });
+}
+
+}  // namespace
+
+// keepAliveTimeout also bounds the time a response waits for a client that stopped reading it, whether the response is
+// buffered or a file, and whether keep-alive is enabled or not: after keepAliveTimeout without any write progress, the
+// connection is closed and the rest of the response dropped. Otherwise a client that never reads would hold its
+// connection, with the output of its response and its open file, forever.
+TEST(HttpKeepAlive, StalledReaderIsClosedAfterKeepAliveTimeout) {
+  const std::string body(4UL << 20U, 'f');
+  test::ScopedTempDir tmpDir;
+  const test::ScopedTempFile file(tmpDir, body);
+  test::TestServer keepAliveServer(StalledReaderConfig(true));
+  test::TestServer closeServer(StalledReaderConfig(false));
+
+  struct StalledClient {
+    std::string name;
+    test::ClientConnection cnx;
+  };
+  std::vector<StalledClient> clients;
+  for (test::TestServer* pServer : {&keepAliveServer, &closeServer}) {
+    AddBufferedAndFileRoutes(*pServer, body, file.filePath().string());
+    for (const std::string_view target : {"/buffered", "/file"}) {
+      clients.emplace_back(std::format("keep-alive {}, {}", pServer == &keepAliveServer, target),
+                           test::ClientConnection(pServer->port(), 500ms, kMinimalReceiveBufferSize));
+      test::sendAll(clients.back().cnx.fd(), std::format("GET {} HTTP/1.1\r\nHost: x\r\n\r\n", target));
+    }
+  }
+  // They all read nothing for 10 keepAliveTimeouts.
+  std::this_thread::sleep_for(10 * kStallKeepAliveTimeout);
+
+  for (StalledClient& client : clients) {
+    SCOPED_TRACE(client.name);
+    test::SetReceiveBufferSize(client.cnx.fd(), kLargeReceiveBufferSize);
+    // Closed during the stall: the rest of the response was dropped. Kept open: the whole response comes once the
+    // client reads again.
+    const test::ReceivedUntilEnd received = test::RecvUntilEnd(client.cnx.fd(), 1s);
+    EXPECT_LT(received.data.size(), body.size())
+        << "connection kept through 10 keepAliveTimeouts without reading: the whole response came afterwards";
+    EXPECT_NE(received.end, test::ReceivedUntilEnd::End::TimedOut);
+  }
+}
+
+namespace {
+
+// A client reading the response to 'target' by 'readSize' bytes, pausing for 'pause' after each read.
+struct SlowReader {
+  SlowReader(std::string name, std::string_view target, std::size_t readSize, std::chrono::milliseconds pause,
+             uint16_t port)
+      : name(std::move(name)), target(target), readSize(readSize), pause(pause), port(port) {}
+
+  void run() {
+    test::ClientConnection cnx(port, 500ms, static_cast<int>(readSize));
+    test::sendAll(cnx.fd(), std::format("GET {} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n", target));
+    test::setRecvTimeout(cnx.fd(), 2s);
+    while (test::RecvAppend(cnx.fd(), received, readSize) > 0) {
+      const auto pauseStart = std::chrono::steady_clock::now();
+      std::this_thread::sleep_for(pause);
+      maxPause = std::max(maxPause, std::chrono::steady_clock::now() - pauseStart);
+    }
+  }
+
+  std::string name;
+  std::string_view target;
+  std::size_t readSize;
+  std::chrono::milliseconds pause;
+  uint16_t port;
+  std::string received;
+  // The longest pause actually made: a loaded runner may not schedule the client thread for a while.
+  std::chrono::steady_clock::duration maxPause{};
+};
+
+}  // namespace
+
+// keepAliveTimeout bounds the idleness of a connection, not the duration of a response: a client reading a large
+// response slowly but steadily is never closed, however long the response takes. Such a client produces few writable
+// events (Linux reports one once a third of the send buffer drained, and the maintenance retry of the writes, refilling
+// the socket in between, prevents even those): the writes themselves count as activity. The second server polls once
+// per keepAliveTimeout, and its clients drain much less than a third of its send buffer per tick (no writable event):
+// the deadline then expires at about every tick before the maintenance retry of that tick writes again.
+TEST(HttpKeepAlive, SteadySlowReaderIsNotClosedAsIdle) {
+  const std::string body(1UL << 20U, 'r');
+  const std::string slowTickBody(192UL << 10U, 's');
+  test::ScopedTempDir tmpDir;
+  const test::ScopedTempFile file(tmpDir, body);
+  const test::ScopedTempFile slowTickFile(tmpDir, slowTickBody);
+
+  test::RunStallTolerant([&](std::chrono::milliseconds keepAliveTimeout) -> test::StallOutcome {
+    HttpServerConfig cfg;
+    cfg.withZerocopyMode(ZerocopyMode::Disabled).withKeepAliveTimeout(keepAliveTimeout);
+    test::TestServer server(HttpServerConfig(cfg).withSocketSendBufferBytes(512U << 10U));
+    test::TestServer slowTickServer(HttpServerConfig(cfg).withSocketSendBufferBytes(32U << 10U), RouterConfig(),
+                                    keepAliveTimeout);
+    AddBufferedAndFileRoutes(server, body, file.filePath().string());
+    AddBufferedAndFileRoutes(slowTickServer, slowTickBody, slowTickFile.filePath().string());
+
+    std::vector<SlowReader> readers;
+    for (const std::string_view target : {"/buffered", "/file"}) {
+      // About 400 KB/s: ~2.5 s for the whole response.
+      readers.emplace_back(std::format("{}, polling every ms", target), target, 8UL << 10U, 20ms, server.port());
+      // 10 KiB per tick: ~2 s for the whole response at the first attempt.
+      readers.emplace_back(std::format("{}, polling once per keepAliveTimeout", target), target, 2UL << 10U,
+                           keepAliveTimeout / 5, slowTickServer.port());
+    }
+    {
+      std::vector<std::jthread> threads;
+      threads.reserve(readers.size());
+      for (SlowReader& reader : readers) {
+        threads.emplace_back([&reader] { reader.run(); });
+      }
+    }
+
+    test::StallOutcome outcome{true, false, {}};
+    for (const SlowReader& reader : readers) {
+      const std::string& expected = reader.port == server.port() ? body : slowTickBody;
+      if (!reader.received.ends_with(expected)) {
+        outcome.ok = false;
+        // Paused for about keepAliveTimeout: the server may legitimately have closed the connection.
+        outcome.stalled = outcome.stalled || reader.maxPause > keepAliveTimeout * 4 / 5;
+        outcome.detail += std::format(
+            "{}: received {} bytes (longest pause {} ms, timeout {} ms)\n", reader.name, reader.received.size(),
+            std::chrono::duration_cast<std::chrono::milliseconds>(reader.maxPause).count(), keepAliveTimeout.count());
+      }
+    }
+    return outcome;
+  });
+}
+
 #endif  // AERONET_LINUX
