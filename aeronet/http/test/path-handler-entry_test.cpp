@@ -420,16 +420,12 @@ TEST_F(PathHandlerEntryTest, ChainableTimeoutSetter) {
   static_assert(std::is_same_v<decltype(ref), PathHandlerEntry&>);
 }
 
-TEST_F(PathHandlerEntryTest, ExcessiveTimeoutThrows) {
-  using namespace std::chrono_literals;
-  EXPECT_THROW(router.setPath(http::Method::GET, "/too-long", MakeNormalHandler()).timeout(std::chrono::hours{24 * 50}),
-               std::invalid_argument);
-}
-
-TEST_F(PathHandlerEntryTest, MaxMillisecondsTimeoutDoesNotThrow) {
-  // milliseconds::max() is the sentinel for "no per-route timeout" — must not be rejected.
-  EXPECT_NO_THROW(
-      router.setPath(http::Method::GET, "/max-ok", MakeNormalHandler()).timeout(std::chrono::milliseconds::max()));
+TEST_F(PathHandlerEntryTest, AnyTimeoutIsAccepted) {
+  // Beyond PathEntryConfig::kMaxRequestTimeout, a timeout is capped when its deadline is tracked.
+  router.setPath(http::Method::GET, "/long", MakeNormalHandler()).timeout(std::chrono::hours{24 * 50});
+  router.setPath(http::Method::GET, "/max", MakeNormalHandler()).timeout(std::chrono::milliseconds::max());
+  EXPECT_EQ(router.match(http::Method::GET, "/long").pathConfig().requestTimeout, std::chrono::hours{24 * 50});
+  EXPECT_EQ(router.match(http::Method::GET, "/max").pathConfig().requestTimeout, std::chrono::milliseconds::max());
 }
 
 TEST_F(PathHandlerEntryTest, ChainableMaxBodyBytesSetter) {

@@ -1553,14 +1553,29 @@ TEST(ConfigLoaderTest, DurationSecondsHumanReadableRoundTrip) {
 }
 
 TEST(ConfigLoaderTest, DurationZeroRoundTrip) {
-  auto config = detail::ParseConfigString(R"({"server":{"keepAliveTimeout":"0ms"}})", ConfigFormat::json);
-  EXPECT_EQ(config.server.keepAliveTimeout, std::chrono::milliseconds{0});
+  // A duration whose default is not 0, and that may be 0 (keepAliveTimeout may not).
+  auto config = detail::ParseConfigString(R"({"server":{"lingeringCloseTimeout":"0ms"}})", ConfigFormat::json);
+  EXPECT_EQ(config.server.lingeringCloseTimeout, std::chrono::milliseconds{0});
 
   auto json = detail::SerializeConfig(config, ConfigFormat::json);
   EXPECT_TRUE(json.contains("0ms")) << json;
 
   auto reloaded = detail::ParseConfigString(json, ConfigFormat::json);
-  EXPECT_EQ(reloaded.server.keepAliveTimeout, std::chrono::milliseconds{0});
+  EXPECT_EQ(reloaded.server.lingeringCloseTimeout, std::chrono::milliseconds{0});
+}
+
+// The disabled timeouts (the default of headerReadTimeout and bodyReadTimeout) are written and read back as max().
+TEST(ConfigLoaderTest, DisabledTimeoutsRoundTrip) {
+  for (const auto format : {ConfigFormat::json, ConfigFormat::yaml}) {
+    const auto reloaded = detail::ParseConfigString(detail::SerializeConfig(TopLevelConfig{}, format), format);
+    EXPECT_EQ(reloaded.server.headerReadTimeout, std::chrono::milliseconds::max());
+    EXPECT_EQ(reloaded.server.bodyReadTimeout, std::chrono::milliseconds::max());
+  }
+}
+
+TEST(ConfigLoaderTest, ZeroKeepAliveTimeoutIsRejected) {
+  EXPECT_THROW(detail::ParseConfigString(R"({"server":{"keepAliveTimeout":"0ms"}})", ConfigFormat::json),
+               std::invalid_argument);
 }
 
 TEST(ConfigLoaderTest, DurationSubSecondMillisecondsRoundTrip) {

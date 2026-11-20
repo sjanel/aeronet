@@ -794,7 +794,7 @@ TEST(WebSocketTimeouts, PongsKeepIdleConnectionOpen) {
 TEST(WebSocketTimeouts, CloseTimeoutClosesConnectionWithoutPeerClose) {
   test::TestServer server(TimeoutServerConfig(10s));
   WebSocketConfig config;
-  config.idleTimeout = 0ms;
+  config.idleTimeout = std::chrono::milliseconds::max();
   config.closeTimeout = 200ms;
   server.postRouterUpdate([config](Router& router) { router.setWebSocket("/echo", EchoEndpoint(config)); });
 

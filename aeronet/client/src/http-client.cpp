@@ -388,26 +388,23 @@ void HttpClient::clearIdleConnections() {
 
 void HttpClient::sweepIdleConnections(SteadyClock::time_point now) noexcept {
   const auto timeout = _config.keepAliveTimeout;
-  const bool expires = timeout.count() > 0;
   for (auto it = _idle.begin(); it != _idle.end();) {
     auto& bucket = it->second;
-    if (expires) {
-      // Buckets are LIFO: idleSince grows from front (oldest) to back (freshest), so the expired connections (same
-      // criterion as acquireConnection) form a prefix.
-      const auto firstLive = std::ranges::find_if(
-          bucket, [now, timeout](const ActiveConnection& conn) { return now - conn.idleSince <= timeout; });
-      for (auto connIt = bucket.begin(); connIt != firstLive; ++connIt) {
-        unregisterIfCurrent(connIt->cnx.fd());
-      }
-      bucket.erase(bucket.begin(), firstLive);
+    // Buckets are LIFO: idleSince grows from front (oldest) to back (freshest), so the expired connections (same
+    // criterion as acquireConnection) form a prefix.
+    const auto firstLive = std::ranges::find_if(
+        bucket, [now, timeout](const ActiveConnection& conn) { return now <= DeadlineAfter(conn.idleSince, timeout); });
+    for (auto connIt = bucket.begin(); connIt != firstLive; ++connIt) {
+      unregisterIfCurrent(connIt->cnx.fd());
     }
+    bucket.erase(bucket.begin(), firstLive);
     if (bucket.empty()) {
       it = _idle.erase(it);
     } else {
       ++it;
     }
   }
-  _nextIdleSweep = now + timeout;
+  _nextIdleSweep = DeadlineAfter(now, timeout);
 }
 
 void HttpClient::releaseUnusedMemory() {
@@ -635,8 +632,7 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::acquireC
       auto& bucket = it->second;
       // Bucket is LIFO: back() is the most-recently-released (freshest) connection. If even it has exceeded the idle
       // limit, every older entry has too, so drop the whole bucket and reconnect.
-      if (_config.keepAliveTimeout.count() > 0 &&
-          SteadyClock::now() - bucket.back().idleSince > _config.keepAliveTimeout) {
+      if (SteadyClock::now() > DeadlineAfter(bucket.back().idleSince, _config.keepAliveTimeout)) {
         dropIdleBucket(bucket);
       } else {
         ActiveConnection conn = std::move(bucket.back());
@@ -681,7 +677,7 @@ void HttpClient::releaseConnection(const HttpRequest& req, ActiveConnection&& co
   bucket.emplace_back(std::move(conn));
   // acquireConnection only expires the pooled connections of the requested origin: sweep the other origins too,
   // at most once per keepAliveTimeout. Done after the insertion so that this (fresh) bucket is never erased.
-  if (_config.keepAliveTimeout.count() > 0 && now >= _nextIdleSweep) {
+  if (now >= _nextIdleSweep) {
     sweepIdleConnections(now);
   }
 }

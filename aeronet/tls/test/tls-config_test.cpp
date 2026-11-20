@@ -237,6 +237,19 @@ TEST(TLSConfigTest, IdleBufferReleaseDelayValidation) {
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
 }
 
+TEST(TLSConfigTest, HandshakeTimeoutMustBePositive) {
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withKeyPem(kDummyKeyPem);
+  cfg.withCertPem(kDummyCertPem);
+  cfg.withTlsHandshakeTimeout(std::chrono::milliseconds{0});
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+  cfg.withTlsHandshakeTimeout(std::chrono::milliseconds{-1});
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+  cfg.withTlsHandshakeTimeout(std::chrono::milliseconds::max());  // no handshake timeout
+  EXPECT_NO_THROW(cfg.validate());
+}
+
 TEST(TLSConfigTest, HandshakeRateLimitBurstWithoutRateThrows) {
   TLSConfig cfg;
   cfg.enabled = true;
@@ -781,8 +794,19 @@ TEST(TlsConfigTest, WithTlsHandshakeConcurrencyLimitSetsValue) {
   cfg.withTlsHandshakeConcurrencyLimit(5);
   EXPECT_EQ(cfg.maxConcurrentHandshakes, 5U);
 
+  cfg.withTlsHandshakeConcurrencyLimit(std::numeric_limits<std::uint32_t>::max());
+  EXPECT_EQ(cfg.maxConcurrentHandshakes, std::numeric_limits<std::uint32_t>::max());
+}
+
+TEST(TLSConfigTest, HandshakeConcurrencyLimitMustBePositive) {
+  TLSConfig cfg;
+  cfg.enabled = true;
+  cfg.withKeyPem(kDummyKeyPem);
+  cfg.withCertPem(kDummyCertPem);
+  EXPECT_EQ(cfg.maxConcurrentHandshakes, std::numeric_limits<std::uint32_t>::max());  // no limit by default
+  EXPECT_NO_THROW(cfg.validate());
   cfg.withTlsHandshakeConcurrencyLimit(0);
-  EXPECT_EQ(cfg.maxConcurrentHandshakes, 0U);
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
 }
 
 TEST(TlsConfigTest, WithTlsHandshakeRateLimitSetsValues) {

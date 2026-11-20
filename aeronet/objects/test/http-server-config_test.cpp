@@ -343,6 +343,11 @@ TEST(HttpServerConfigTest, InvalidKeepAliveTimeoutThrows) {
   HttpServerConfig config;
   config.withKeepAliveTimeout(std::chrono::milliseconds{-1});
   EXPECT_THROW(config.validate(), std::invalid_argument);
+  // 0 made the maintenance re-arm the deadline of an HTTP/2 connection with streams in progress at now, forever.
+  config.withKeepAliveTimeout(std::chrono::milliseconds{0});
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+  config.withKeepAliveTimeout(std::chrono::milliseconds{1});
+  EXPECT_NO_THROW(config.validate());
 }
 
 TEST(HttpServerConfigTest, InvalidPollIntervalThrows) {
@@ -355,24 +360,31 @@ TEST(HttpServerConfigTest, InvalidHeaderReadTimeoutThrows) {
   HttpServerConfig config;
   config.withHeaderReadTimeout(std::chrono::milliseconds{-1});
   EXPECT_THROW(config.validate(), std::invalid_argument);
+  config.withHeaderReadTimeout(std::chrono::milliseconds{0});
+  EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
 TEST(HttpServerConfigTest, InvalidBodyReadTimeoutThrows) {
   HttpServerConfig config;
   config.withBodyReadTimeout(std::chrono::milliseconds{-1});
   EXPECT_THROW(config.validate(), std::invalid_argument);
-}
-
-TEST(HttpServerConfigTest, ExcessiveHeaderReadTimeoutThrows) {
-  HttpServerConfig config;
-  config.withHeaderReadTimeout(std::chrono::milliseconds{std::chrono::hours{24 * 50}});  // 50 days > ~49.7 days
+  config.withBodyReadTimeout(std::chrono::milliseconds{0});
   EXPECT_THROW(config.validate(), std::invalid_argument);
 }
 
-TEST(HttpServerConfigTest, ExcessiveBodyReadTimeoutThrows) {
+TEST(HttpServerConfigTest, ReadTimeoutsAreDisabledByDefaultWithMax) {
   HttpServerConfig config;
-  config.withBodyReadTimeout(std::chrono::milliseconds{std::chrono::hours{24 * 50}});
-  EXPECT_THROW(config.validate(), std::invalid_argument);
+  EXPECT_EQ(config.headerReadTimeout, std::chrono::milliseconds::max());
+  EXPECT_EQ(config.bodyReadTimeout, std::chrono::milliseconds::max());
+  EXPECT_NO_THROW(config.validate());
+}
+
+TEST(HttpServerConfigTest, ReadTimeoutsAreNotBounded) {
+  // Their deadlines saturate: any positive value is valid.
+  HttpServerConfig config;
+  config.withHeaderReadTimeout(std::chrono::hours{24 * 50});
+  config.withBodyReadTimeout(std::chrono::milliseconds::max() - std::chrono::milliseconds{1});
+  EXPECT_NO_THROW(config.validate());
 }
 
 TEST(HttpServerConfigTest, InvalidLingeringCloseTimeoutThrows) {
@@ -500,7 +512,9 @@ TEST(HttpServerConfigTest, MaxAcceptBatchSizeShouldNotBeZero) {
   HttpServerConfig config;
   config.withMaxAcceptBatchSize(0);
   EXPECT_EQ(config.maxAcceptBatchSize, 0U);
-  EXPECT_THROW(config.validate(), std::invalid_argument);  // 0 is not a valid value for maxAcceptBatchSize
+  EXPECT_THROW(config.validate(), std::invalid_argument);               // 0 is not a valid value for maxAcceptBatchSize
+  config.withMaxAcceptBatchSize(std::numeric_limits<uint32_t>::max());  // no limit
+  EXPECT_NO_THROW(config.validate());
 }
 
 TEST(HttpServerConfigTest, SocketSendBufferBytesShouldFitInAnInt) {

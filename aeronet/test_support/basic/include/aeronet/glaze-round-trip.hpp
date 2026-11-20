@@ -21,8 +21,12 @@ inline void MutateScalars(glz::generic_u64& value) {  // NOLINT(misc-no-recursio
   } else if (value.is_boolean()) {
     value = !value.get<bool>();
   } else if (value.holds<std::uint64_t>()) {
+    // A field at the maximum of its type (a limit set to max() for no limit) is decremented: it would overflow.
     const auto number = value.get<std::uint64_t>();
-    value = number == std::numeric_limits<std::uint64_t>::max() ? number - 1U : number + 1U;
+    const bool atMax = number == std::numeric_limits<std::uint16_t>::max() ||
+                       number == std::numeric_limits<std::uint32_t>::max() ||
+                       number == std::numeric_limits<std::uint64_t>::max();
+    value = atMax ? number - 1U : number + 1U;
   } else if (value.holds<std::int64_t>()) {
     value = value.get<std::int64_t>() + 1;
   } else if (value.holds<double>()) {

@@ -5866,14 +5866,14 @@ TEST(HttpRouteTimeout, AppliesToPipelinedRequest) {
 }
 
 // The request deadline, in milliseconds since the start of the request in 32 bits, is set again each time the request
-// is served with more of its body: with the largest per-route timeout, it must not wrap to a short one once the body
-// took some time to come.
+// is served with more of its body: with the largest per-route timeout (capped to PathEntryConfig::kMaxRequestTimeout),
+// it must not wrap to a short one once the body took some time to come.
 TEST(HttpRouteTimeout, LargestTimeoutDoesNotExpireWhileTheBodyIsReceived) {
   test::TestServer server(HttpServerConfig{});
   server.router()
       .setPath(http::Method::POST, "/upload",
                [](const HttpRequestView& req) { return req.makeResponse(std::format("got {}", req.body())); })
-      .timeout(PathEntryConfig::kMaxRequestTimeout);
+      .timeout(std::chrono::milliseconds::max() - std::chrono::milliseconds{1});
 
   test::ClientConnection cnx(server.port());
   const NativeHandle fd = cnx.fd();

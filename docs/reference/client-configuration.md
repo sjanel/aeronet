@@ -27,7 +27,7 @@ With Glaze, the configuration can also be loaded from the `client` section of a 
 | `followRedirects`, `maxRedirects` | true, 5 | Follow redirects and bound the chain. |
 | `keepAlive` | true | Reuse compatible HTTP connections. When false, each request uses a fresh connection and HTTP/1.1 requests carry `Connection: close` (RFC 9112 §9.6) unless they set their own `Connection` header, so that the server closes first and keeps the `TIME_WAIT` state. |
 | `expectContinueTimeout` | 1 s | Over HTTP/1.1, maximum wait for the `100 Continue` of a request with a body and `Expect: 100-continue`, before sending the body anyway. 0 sends the body right after the head. Must be >= 0. See [Early responses and `Expect: 100-continue`](../modules/http-client.md#early-responses-and-expect-100-continue). |
-| `keepAliveTimeout` / `withKeepAliveTimeout()` | 30 s | Maximum age of an idle pooled connection; 0 disables expiry. Also the period of the automatic sweep of expired idle connections over all origins. |
+| `keepAliveTimeout` / `withKeepAliveTimeout()` | 30 s | Maximum age of an idle pooled connection, positive; `std::chrono::milliseconds::max()` disables expiry. Also the period of the automatic sweep of expired idle connections over all origins. |
 | `maxIdleConnectionsPerHost` | 8 | Per-origin pool cap. |
 | `httpVersion` / `withHttpVersion()` | Auto | `Auto` uses HTTPS ALPN when available and otherwise HTTP/1.1; `Http1_1` disables HTTP/2; `Http2` requires HTTP/2, including prior-knowledge h2c for plaintext. |
 | `http2` / `withHttp2Config()` | `Http2Config` defaults | Native HTTP/2 settings and flow-control limits. Server-only settings such as h2c, push, `settingsTimeout`, `pingInterval`, `pingTimeout`, `streamIdleTimeout`, and `maxResetStreams` do not affect a client; `maxStreamsPerConnection` bounds the streams of a pooled connection. |
@@ -65,7 +65,7 @@ config.withCache(15s)
     .withCacheMethods(aeronet::http::Method::GET | aeronet::http::Method::HEAD);
 ```
 
-It stores only successful 2xx responses from the selected safe methods (GET, HEAD, and optionally OPTIONS). Entries are keyed by method, URL, headers, body, and the cookies of the jar sent with the request; they do not share different authorization headers or cookies. This is a TTL cache, not an HTTP-cache implementation: it deliberately does not interpret `Cache-Control`, ETags, `Vary`, `Age`, or revalidation. A zero TTL disables it, while `Duration::max()` never expires entries. The cache is owned by one `HttpClient` and follows its single-threaded assumption.
+`withCache()` enables it, with a `refreshPeriod` of 1 minute and 1024 entries unless given. A `maxEntries` of 0, the default of the field, keeps it off: a configuration file enables it with `maxEntries`. `refreshPeriod` must be positive, `std::chrono::milliseconds::max()` never expires an entry. It stores only successful 2xx responses from the selected safe methods (GET, HEAD, and optionally OPTIONS). Entries are keyed by method, URL, headers, body, and the cookies of the jar sent with the request; they do not share different authorization headers or cookies. This is a TTL cache, not an HTTP-cache implementation: it deliberately does not interpret `Cache-Control`, ETags, `Vary`, `Age`, or revalidation. A zero TTL disables it, while `Duration::max()` never expires entries. The cache is owned by one `HttpClient` and follows its single-threaded assumption.
 
 ## Cookies
 

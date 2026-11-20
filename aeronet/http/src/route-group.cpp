@@ -3,7 +3,6 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <stdexcept>
 #include <string_view>
 #include <utility>
 
@@ -44,10 +43,7 @@ RouteGroup& RouteGroup::withMaxBodyBytes(std::size_t bytes) noexcept {
   return *this;
 }
 
-RouteGroup& RouteGroup::withTimeout(std::chrono::milliseconds ms) {
-  if (ms != std::chrono::milliseconds::max() && ms > PathEntryConfig::kMaxRequestTimeout) {
-    throw std::invalid_argument("per-route group timeout exceeds maximum representable duration (~49.7 days)");
-  }
+RouteGroup& RouteGroup::withTimeout(std::chrono::milliseconds ms) noexcept {
   _timeout = ms;
   return *this;
 }

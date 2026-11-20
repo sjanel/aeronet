@@ -168,7 +168,7 @@ When zlib is enabled, the client offers `permessage-deflate` unless `WebSocketCo
 | `maxMessageSize` | 64 MiB | Largest message, after reassembly and decompression: a larger one fails the connection with `MessageTooBig`. |
 | `maxFrameSize` | 16 MiB | Largest frame payload. |
 | `closeTimeout` | 5 s | Wait for the Close frame of the server after ours, and for the closing of the TCP connection after the handshake. |
-| `idleTimeout` | 60 s | See [Idle connections](#idle-connections). `0` disables it. |
+| `idleTimeout` | 60 s | See [Idle connections](#idle-connections). Positive, `std::chrono::milliseconds::max()` disables it. |
 | `autoPing` | `true` | See [Idle connections](#idle-connections). |
 | `deflateConfig` | offered | See [Compression](#compression). |
 

@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstddef>
 #include <limits>
 #include <stdexcept>
@@ -20,6 +21,16 @@ TEST(WebSocketConfigTest, ZeroMaxFrameSizeIsInvalid) {
   WebSocketConfig config;
   config.maxFrameSize = 0;
   EXPECT_THROW(config.validate(), std::invalid_argument);
+}
+
+TEST(WebSocketConfigTest, IdleTimeoutMustBePositive) {
+  WebSocketConfig config;
+  config.idleTimeout = std::chrono::milliseconds{0};
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+  config.idleTimeout = std::chrono::milliseconds{-1};
+  EXPECT_THROW(config.validate(), std::invalid_argument);
+  config.idleTimeout = std::chrono::milliseconds::max();  // no idle timeout
+  EXPECT_NO_THROW(config.validate());
 }
 
 TEST(WebSocketConfigTest, SmallestLimitsAreValid) {

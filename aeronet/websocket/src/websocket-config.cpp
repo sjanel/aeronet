@@ -11,6 +11,10 @@ void WebSocketConfig::validate() const {
   if (maxFrameSize == 0) {
     throw std::invalid_argument("WebSocketConfig: maxFrameSize must be greater than 0");
   }
+  // max() disables it.
+  if (idleTimeout.count() <= 0) {
+    throw std::invalid_argument("WebSocketConfig: idleTimeout must be greater than 0");
+  }
 #ifdef AERONET_ENABLE_ZLIB
   deflateConfig.validate();
 #endif

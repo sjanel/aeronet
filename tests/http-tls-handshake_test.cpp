@@ -407,7 +407,6 @@ TEST(HttpTlsHandshakeCallback, EmitsRejectedEventAndBucketsReasonOnConcurrencyLi
 
 TEST(HttpTlsHandshakeCallback, EmitsRejectedEventAndBucketsReasonOnRateLimit) {
   test::TlsTestServer ts({}, [](HttpServerConfig& cfg) {
-    cfg.tls.maxConcurrentHandshakes = 0;  // avoid interfering with this test
     cfg.tls.handshakeRateLimitPerSecond = 1;
     cfg.tls.handshakeRateLimitBurst = 1;
     cfg.tls.handshakeTimeout = 5s;
@@ -500,7 +499,6 @@ TEST(HttpTlsHandshakeCallback, BucketsReasonWhenSslNewFails) {
 
 TEST(HttpTlsHandshakeCallback, RefillsRateLimitAfterInterval) {
   test::TlsTestServer ts({}, [](HttpServerConfig& cfg) {
-    cfg.tls.maxConcurrentHandshakes = 0;  // avoid concurrency interference
     cfg.tls.handshakeRateLimitPerSecond = 1;
     cfg.tls.handshakeRateLimitBurst = 1;
     cfg.tls.handshakeTimeout = 500ms;

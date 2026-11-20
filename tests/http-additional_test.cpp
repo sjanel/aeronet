@@ -1937,7 +1937,7 @@ TEST(SingleHttpServer, BodyReadTimeoutDisabledWhileBodyIsReceived) {
 
   test::sendAll(fd, "POST /test HTTP/1.1\r\nhost: x\r\ncontent-length: 10\r\n\r\n12345");
   std::this_thread::sleep_for(50ms);  // the head is read, the body awaited
-  server.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withBodyReadTimeout({}); });
+  server.postConfigUpdate([](HttpServerConfig& cfg) { cfg.withBodyReadTimeout(std::chrono::milliseconds::max()); });
 
   test::sendAll(fd, "67890");
   std::string resp = test::recvWithTimeout(fd, 1000ms);

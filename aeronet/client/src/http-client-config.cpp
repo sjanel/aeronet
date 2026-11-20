@@ -36,8 +36,8 @@ void HttpClientConfig::validate() const {
   if (inactivityTimeout <= std::chrono::milliseconds{0}) {
     throw std::invalid_argument("inactivityTimeout must be greater than 0");
   }
-  if (keepAliveTimeout < std::chrono::milliseconds{0}) {
-    throw std::invalid_argument("keepAliveTimeout must be greater than or equal to 0");
+  if (keepAliveTimeout <= std::chrono::milliseconds{0}) {
+    throw std::invalid_argument("keepAliveTimeout must be greater than 0");
   }
   if (expectContinueTimeout < std::chrono::milliseconds{0}) {
     throw std::invalid_argument("expectContinueTimeout must be greater than or equal to 0");
@@ -58,10 +58,11 @@ void HttpClientConfig::validate() const {
     http2.validate();
   }
 #endif
+  // max() never expires an entry.
+  if (cache.refreshPeriod <= Duration::zero()) {
+    throw std::invalid_argument("cache.refreshPeriod must be greater than 0");
+  }
   if (cache.enabled()) {
-    if (cache.maxEntries == 0) {
-      throw std::invalid_argument("cache.maxEntries must be at least 1 when the response cache is enabled");
-    }
     // Only safe methods may be cached: caching an unsafe / non-idempotent method's response is nonsensical.
     static constexpr http::MethodBmp kCacheableMethods = http::Method::GET | http::Method::HEAD | http::Method::OPTIONS;
     if ((cache.methods & static_cast<http::MethodBmp>(~kCacheableMethods)) != 0 || cache.methods == 0) {

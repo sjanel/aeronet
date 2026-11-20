@@ -47,8 +47,8 @@ class RouteGroup {
   /// Set a shared per-route maximum body size applied to all routes in this group.
   RouteGroup& withMaxBodyBytes(std::size_t bytes) noexcept;
 
-  /// Set a shared per-route timeout applied to all routes in this group.
-  RouteGroup& withTimeout(std::chrono::milliseconds ms);
+  /// Set a shared per-route timeout applied to all routes in this group (see PathHandlerEntry::timeout()).
+  RouteGroup& withTimeout(std::chrono::milliseconds ms) noexcept;
 
   /// Set a shared CORS policy applied to all routes in this group.
   RouteGroup& withCors(CorsPolicy policy);

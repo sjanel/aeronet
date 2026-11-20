@@ -30,6 +30,7 @@
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/reserved-headers.hpp"
 #include "aeronet/simple-charconv.hpp"
+#include "aeronet/timedef.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/vector.hpp"
 #include "http2-frame-type-str.hpp"
@@ -94,17 +95,6 @@ static_assert(kMaxInlineDataFrameCopySize <= kMinMaxFrameSize);
 
 // Hands over the allocation of 'buf' (not its bytes) to an output block.
 HttpMessageData OwnerOf(RawBytes&& buf) noexcept { return HttpMessageData(RawChars(std::move(buf))); }
-
-// 'start' + 'timeout', saturated: a timeout beyond the range of the clock (std::chrono::milliseconds::max() for
-// instance) never expires.
-std::chrono::steady_clock::time_point DeadlineAfter(std::chrono::steady_clock::time_point start,
-                                                    std::chrono::milliseconds timeout) noexcept {
-  using TimePoint = std::chrono::steady_clock::time_point;
-  if (timeout >= std::chrono::duration_cast<std::chrono::milliseconds>(TimePoint::max() - start)) {
-    return TimePoint::max();
-  }
-  return start + timeout;
-}
 
 }  // namespace
 

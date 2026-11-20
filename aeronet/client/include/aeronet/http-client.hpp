@@ -431,7 +431,7 @@ class HttpClient {
 
   void releaseConnection(const HttpRequest& req, ActiveConnection&& conn);
 
-  // Drop the idle pooled connections older than keepAliveTimeout (none when it is 0) of every origin, erase the
+  // Drop the idle pooled connections older than keepAliveTimeout (none when it is max()) of every origin, erase the
   // pool entries left empty, and schedule the next automatic sweep. releaseConnection runs it at most once per
   // keepAliveTimeout, so idle connections to origins that are no longer requested do not stay open forever.
   void sweepIdleConnections(SteadyClock::time_point now) noexcept;

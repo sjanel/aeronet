@@ -16,6 +16,7 @@
 #include "aeronet/internal/server-context.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
+#include "aeronet/timedef.hpp"
 #include "aeronet/tls-config.hpp"
 #include "aeronet/tls-context.hpp"
 #include "aeronet/tls-handshake-callback.hpp"
@@ -78,7 +79,7 @@ void TlsAcceptor::reloadChangedFiles() {
 bool TlsAcceptor::admitHandshake(ConnectionState& state, NativeHandle fd) {
   const TLSConfig& tlsConfig = _pCtx->config.tls;
   const TlsHandshakeCallback& handshakeCallback = _pCtx->callbacks.tlsHandshake;
-  if (tlsConfig.maxConcurrentHandshakes != 0 && _handshakesInFlight >= tlsConfig.maxConcurrentHandshakes) [[unlikely]] {
+  if (_handshakesInFlight >= tlsConfig.maxConcurrentHandshakes) [[unlikely]] {
     ++_metrics.handshakesRejectedConcurrency;
     _metrics.incrementMapCount(_metrics.handshakeFailureReasons, kTlsHandshakeFailureReasonRejectedConcurrency);
     EmitTlsHandshakeEvent(state.tlsInfo, handshakeCallback, TlsHandshakeEvent::Result::Rejected, fd,
@@ -221,9 +222,9 @@ void TlsAcceptor::failHandshakeOnce(ConnectionState& state, NativeHandle fd, std
 bool TlsAcceptor::handshakeTimedOut(const ConnectionState& state,
                                     std::chrono::steady_clock::time_point now) const noexcept {
   const TLSConfig& tlsConfig = _pCtx->config.tls;
-  return tlsConfig.handshakeTimeout.count() > 0 && tlsConfig.enabled &&
-         state.tlsInfo.handshakeStart.time_since_epoch().count() != 0 && !state.tlsEstablished &&
-         !state.transport.handshakeDone() && now > state.tlsInfo.handshakeStart + tlsConfig.handshakeTimeout;
+  return tlsConfig.enabled && state.tlsInfo.handshakeStart.time_since_epoch().count() != 0 && !state.tlsEstablished &&
+         !state.transport.handshakeDone() &&
+         now > DeadlineAfter(state.tlsInfo.handshakeStart, tlsConfig.handshakeTimeout);
 }
 
 }  // namespace aeronet::internal

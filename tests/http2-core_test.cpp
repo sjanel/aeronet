@@ -877,56 +877,6 @@ TEST(Http2Core, ClientGracefulGoAwayStillSendsTheBodiesHeldByFlowControl) {
   EXPECT_TRUE(test::WaitForPeerClose(h2.cnx.fd(), std::chrono::milliseconds{2000}));
 }
 
-TEST(Http2Core, ZeroKeepAliveTimeoutKeepsTheResponsesWaitingForCredit) {
-  // Regression: the maintenance re-armed the deadline of a connection with streams in progress at
-  // now + keepAliveTimeout. With a keepAliveTimeout of 0, it came back in the same loop forever: the event loop froze
-  // at the first tick that found a response waiting for flow-control credit.
-  static constexpr auto kPollInterval = std::chrono::milliseconds{5};
-  static constexpr uint32_t kWindowSize = 1024;
-  static constexpr std::size_t kBodySize = 4UL * kWindowSize;
-  test::TestServer server(
-      HttpServerConfig{}.withHttp2(Http2Config{}.withEnableH2c(true)).withPollInterval(kPollInterval));
-  server.router().setPath(http::Method::GET, "/large",
-                          [](const HttpRequestView& req) { return req.makeResponse(std::string(kBodySize, 'x')); });
-
-  ManualH2cClient h2(server.port(), Http2Config{}.withInitialWindowSize(kWindowSize));
-  std::size_t nbBodyBytes = 0;
-  bool bodyEnded = false;
-  h2.sink.onDataFn = [&nbBodyBytes, &bodyEnded](uint32_t, std::span<const std::byte> data, bool endStream) {
-    nbBodyBytes += data.size();
-    bodyEnded |= endStream;
-  };
-  h2.receive(std::chrono::milliseconds{1000});
-  h2.sendRequest(1, http::Method::GET, "/large", true);
-  h2.client.holdStreamRecvWindow(1);
-  const auto windowDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
-  while (nbBodyBytes < kWindowSize && std::chrono::steady_clock::now() < windowDeadline) {
-    h2.receive(std::chrono::milliseconds{10});
-  }
-  ASSERT_EQ(nbBodyBytes, kWindowSize);
-  ASSERT_FALSE(bodyEnded);
-
-  // Only now: a keepAliveTimeout of 0 closes, at the next tick, a connection accepted before its first bytes arrive.
-  server.postConfigUpdate([](HttpServerConfig& cfg) { cfg.keepAliveTimeout = std::chrono::milliseconds{0}; });
-
-  // Several ticks with the response waiting for credit: the event loop still answers, and keeps the connection.
-  for (int tick = 0; tick < 5; ++tick) {
-    std::this_thread::sleep_for(kPollInterval * 2);
-    ASSERT_NO_FATAL_FAILURE(h2.roundTrip());
-  }
-
-  h2.client.releaseStreamRecvWindow(1);
-  h2.writePending();
-  const auto bodyDeadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
-  while (!bodyEnded && std::chrono::steady_clock::now() < bodyDeadline) {
-    h2.receive(std::chrono::milliseconds{10});
-  }
-  EXPECT_TRUE(bodyEnded);
-  EXPECT_EQ(nbBodyBytes, kBodySize);
-  // Its stream answered, the connection is idle: closed at the next tick.
-  EXPECT_TRUE(test::WaitForPeerClose(h2.cnx.fd(), std::chrono::milliseconds{2000}));
-}
-
 #ifdef AERONET_ENABLE_ASYNC_HANDLERS
 TEST(Http2Core, ClientGracefulGoAwayStillAnswersTheRunningAsyncHandlers) {
   // A client shutting down gracefully (Go's ClientConn.Shutdown) sends a GOAWAY (NO_ERROR), then waits for the
