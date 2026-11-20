@@ -39,3 +39,7 @@ add_subdirectory(version)
 if(AERONET_ENABLE_WEBSOCKET)
   add_subdirectory(websocket)
 endif()
+
+if(AERONET_ENABLE_JS)
+  add_subdirectory(web)
+endif()

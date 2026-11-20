@@ -52,6 +52,16 @@
     "html": {
       "description": "Enable HTML parsing and CSS selectors (HtmlDocument)",
       "dependencies": ["lexbor"]
+    },
+    "js": {
+      "description": "Enable JavaScript pages (WebClient, with QuickJS-ng)",
+      "dependencies": [
+        "quickjs-ng",
+        {
+          "name": "aeronet",
+          "features": ["html"]
+        }
+      ]
     }
   }
 }

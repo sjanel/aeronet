@@ -71,6 +71,21 @@ TEST(CssSelector, MoveConstructionAndAssignment) {
   EXPECT_EQ(doc.querySelectorAll(first).size(), 2U);
 }
 
+TEST(CssSelector, EmptyState) {
+  CssSelector selector;
+  EXPECT_TRUE(selector.empty());
+  // An empty selector can be assigned to, and destroyed after a move or as is.
+  selector = CssSelector("td.name");
+  EXPECT_FALSE(selector.empty());
+  const HtmlDocument doc(kTable);
+  EXPECT_EQ(doc.querySelectorAll(selector).size(), 2U);
+  CssSelector moved(std::move(selector));
+  EXPECT_TRUE(selector.empty());  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move) moved-from is empty
+  EXPECT_FALSE(moved.empty());
+  moved = CssSelector();
+  EXPECT_TRUE(moved.empty());
+}
+
 #if AERONET_WANT_MALLOC_OVERRIDES
 TEST(CssSelector, MemoryExhaustionThrowsBadAlloc) {
   // Fails each allocation of the compilation in turn, until it needs no more.

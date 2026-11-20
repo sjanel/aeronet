@@ -201,8 +201,13 @@ struct ListSection {
 
 // Features section fragment: the compile-time flags that have no section of their own.
 inline constexpr ListItem _features[]{
-    {"http-server", httpServerEnabled()}, {"http-client", httpClientEnabled()},       {"http2", http2Enabled()},
-    {"websocket", webSocketEnabled()},    {"async-handlers", asyncHandlersEnabled()}, {"html", htmlEnabled()},
+    {"http-server", httpServerEnabled()},
+    {"http-client", httpClientEnabled()},
+    {"http2", http2Enabled()},
+    {"websocket", webSocketEnabled()},
+    {"async-handlers", asyncHandlersEnabled()},
+    {"html", htmlEnabled()},
+    {"js", jsEnabled()},
 };
 
 inline constexpr std::string_view _sv_features_prefix = "features: ";

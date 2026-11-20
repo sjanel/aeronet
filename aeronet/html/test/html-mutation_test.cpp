@@ -117,11 +117,13 @@ TEST(HtmlMutationAttributes, InvalidNamesThrow) {
   for (std::string_view name : {std::string_view{}, std::string_view{"a b"}, std::string_view{"a\tb"},
                                 std::string_view{"a\fb"}, std::string_view{"a\rb"}, std::string_view{"a/b"},
                                 std::string_view{"a=b"}, std::string_view{"a>b"}, std::string_view{"a\0b", 3}}) {
+    EXPECT_FALSE(HtmlElement::IsValidAttributeName(name)) << name;
     EXPECT_THROW(paragraph.setAttribute(name, "v"), std::invalid_argument) << name;
   }
   EXPECT_TRUE(paragraph.attributes().empty());
   // Valid in the DOM, however unusual: the HTML parser reads them back.
   for (std::string_view name : {"@click", "a\"b", "x:y", "\xC3\xA9t\xC3\xA9", "a\vb"}) {
+    EXPECT_TRUE(HtmlElement::IsValidAttributeName(name)) << name;
     paragraph.setAttribute(name, "v");
     EXPECT_TRUE(paragraph.hasAttribute(name)) << name;
   }
@@ -377,6 +379,7 @@ TEST(HtmlMutationElements, ElementNames) {
   HtmlDocument doc("");
   for (std::string_view name :
        {"x-widget", "a!", "a\"b", ":x", "_x-1.2", ":a_b", "\xC3\xA9t\xC3\xA9", "\xC3\xA9:a-\xE2\x82\xAC"}) {
+    EXPECT_TRUE(HtmlDocument::IsValidElementName(name)) << name;
     EXPECT_EQ(doc.createElement(name).tagName(), name);
   }
   EXPECT_EQ(doc.createElement("My-Widget").tagName(), "my-widget");
@@ -384,6 +387,7 @@ TEST(HtmlMutationElements, ElementNames) {
        {std::string_view{}, std::string_view{"1a"}, std::string_view{"-a"}, std::string_view{"a b"},
         std::string_view{"a/b"}, std::string_view{"a>b"}, std::string_view{"a\nb"}, std::string_view{":a b"},
         std::string_view{"_a!"}, std::string_view{"a\0b", 3}}) {
+    EXPECT_FALSE(HtmlDocument::IsValidElementName(name)) << name;
     EXPECT_THROW(static_cast<void>(doc.createElement(name)), std::invalid_argument) << name;
   }
 }

@@ -704,6 +704,30 @@ TEST_F(HttpClientE2ETest, FollowsRedirect) {
   EXPECT_EQ(resp.bodyInMemory(), "world");
 }
 
+TEST_F(HttpClientE2ETest, RequestUpdatingLeavesTheLastRequestSent) {
+  HttpClient client;
+  HttpRequest req = client.makeRequest(http::Method::GET, Url("/redirect"));
+  const HttpClientResult resp = client.requestUpdating(req);
+  ASSERT_TRUE(resp);
+  EXPECT_EQ(resp->bodyInMemory(), "world");
+  // The URL of the response, after the redirect.
+  EXPECT_EQ(req.target(), "/hello");
+  EXPECT_EQ(req.originKey(), Url(""));
+
+  HttpRequest direct = client.makeRequest(http::Method::GET, Url("/hello"));
+  ASSERT_TRUE(client.requestUpdating(direct));
+  EXPECT_EQ(direct.target(), "/hello");
+}
+
+TEST_F(HttpClientE2ETest, RequestUpdatingBypassesTheResponseCache) {
+  HttpClient client(HttpClientConfig{}.withCache(std::chrono::minutes{1}));
+  // The final response of the redirect is cached under the URL of the request.
+  ASSERT_EQ(client.get(Url("/redirect")).value().bodyInMemory(), "world");
+  HttpRequest req = client.makeRequest(http::Method::GET, Url("/redirect"));
+  ASSERT_TRUE(client.requestUpdating(req));
+  EXPECT_EQ(req.target(), "/hello");
+}
+
 #ifdef AERONET_POSIX
 // The client has no maintenance tick: the counters of a request are sent when it ends.
 TEST_F(HttpClientE2ETest, TelemetryCountersSentAfterEachRequest) {

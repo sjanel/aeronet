@@ -9,7 +9,6 @@
 #include <lexbor/dom/interfaces/document.h>
 #include <lexbor/dom/interfaces/element.h>
 #include <lexbor/dom/interfaces/node.h>
-#include <lexbor/dom/interfaces/text.h>
 #include <lexbor/html/interfaces/document.h>
 #include <lexbor/ns/const.h>
 #include <lexbor/tag/const.h>
@@ -26,6 +25,7 @@
 #include "aeronet/html-element.hpp"
 #include "aeronet/toupperlower.hpp"
 #include "html-node-access.hpp"
+#include "html-node-ops.hpp"
 #include "html-parse.hpp"
 #include "lexbor-utils.hpp"
 
@@ -45,81 +45,28 @@ using internal::HtmlNodeAccess;
 
 const lxb_char_t* Chars(std::string_view str) noexcept { return reinterpret_cast<const lxb_char_t*>(str.data()); }
 
-// The ASCII whitespace of the DOM: no vertical tab.
-constexpr bool IsAsciiWhitespace(char ch) noexcept {
-  return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\f' || ch == '\r';
-}
-
 constexpr bool IsAsciiAlpha(char ch) noexcept { return islower(tolower(ch)); }
 
 constexpr bool IsNonAscii(char ch) noexcept { return static_cast<unsigned char>(ch) >= 0x80; }
-
-// DOM "valid attribute local name".
-constexpr bool IsValidAttributeName(std::string_view name) noexcept {
-  return !name.empty() && std::ranges::none_of(name, [](char ch) {
-    return IsAsciiWhitespace(ch) || ch == '\0' || ch == '/' || ch == '=' || ch == '>';
-  });
-}
-
-// DOM "valid element local name". Each byte of a UTF-8 sequence is non-ASCII, as the code point it encodes.
-constexpr bool IsValidElementName(std::string_view name) noexcept {
-  if (name.empty()) {
-    return false;
-  }
-  if (IsAsciiAlpha(name.front())) {
-    return std::ranges::none_of(name,
-                                [](char ch) { return IsAsciiWhitespace(ch) || ch == '\0' || ch == '/' || ch == '>'; });
-  }
-  if (name.front() != ':' && name.front() != '_' && !IsNonAscii(name.front())) {
-    return false;
-  }
-  return std::ranges::all_of(name.substr(1), [](char ch) {
-    return IsAsciiAlpha(ch) || isdigit(ch) || ch == '-' || ch == '.' || ch == ':' || ch == '_' || IsNonAscii(ch);
-  });
-}
 
 lxb_html_document_t* HtmlDocumentOf(lxb_dom_node_t* pNode) noexcept {
   // The HTML document starts with its DOM document.
   return reinterpret_cast<lxb_html_document_t*>(pNode->owner_document);
 }
 
-// Where the nodes inserted at a position go: before pReference among the children of pParent, or after its last child
-// if pReference is null.
-struct InsertionPoint {
-  lxb_dom_node_t* pParent;
-  lxb_dom_node_t* pReference;
-};
-
-// The parent element of an element, for an insertion beside it. The elements of a template contents, of a document
-// fragment parent, cannot be reached.
-lxb_dom_node_t* SiblingParent(lxb_dom_node_t* pNode) {
-  lxb_dom_node_t* pParent = pNode->parent;
-  if (pParent == nullptr || pParent->type != LXB_DOM_NODE_TYPE_ELEMENT) {
-    throw std::invalid_argument("HtmlInsertPosition::BeforeBegin and AfterEnd need an element with a parent element");
-  }
-  return pParent;
-}
+using internal::InsertionPoint;
 
 InsertionPoint ResolvePosition(lxb_dom_node_t* pNode, HtmlInsertPosition position) {
-  switch (position) {
-    case HtmlInsertPosition::BeforeBegin:
-      return {SiblingParent(pNode), pNode};
-    case HtmlInsertPosition::AfterBegin:
-      return {pNode, pNode->first_child};
-    case HtmlInsertPosition::BeforeEnd:
-      return {pNode, nullptr};
-    default:
-      assert(position == HtmlInsertPosition::AfterEnd);
-      return {SiblingParent(pNode), pNode->next};
+  const InsertionPoint point = internal::AdjacentInsertionPoint(pNode, position);
+  if (!internal::CanInsertAdjacent(point)) {
+    throw std::invalid_argument(
+        "HtmlInsertPosition::BeforeBegin and AfterEnd need an element with a parent, not the root");
   }
+  return point;
 }
 
 void Insert(const InsertionPoint& point, lxb_dom_node_t* pNode) noexcept {
-  if (point.pReference != nullptr) {
-    lxb_dom_node_insert_before(point.pReference, pNode);
-  } else {
-    lxb_dom_node_insert_child(point.pParent, pNode);
-  }
+  internal::InsertNode(point.pParent, pNode, point.pReference);
 }
 
 // Moves the children of pFragmentRoot, the root of a parsed fragment, at 'point', then destroys the root.
@@ -139,11 +86,7 @@ void RemoveChildren(lxb_dom_node_t* pParent) noexcept {
 
 // A text node of 'text' out of the tree, or null if 'text' is empty.
 lxb_dom_node_t* CreateTextNode(lxb_dom_node_t* pNode, std::string_view text) {
-  if (text.empty()) {
-    return nullptr;
-  }
-  return &CheckCreated(lxb_dom_document_create_text_node(pNode->owner_document, Chars(text), text.size()))
-              ->char_data.node;
+  return text.empty() ? nullptr : internal::NewTextNode(pNode, text);
 }
 
 // The tree must not change during a search: a forEach() callback walks it.
@@ -152,6 +95,30 @@ void AssertTreeCanChange([[maybe_unused]] lxb_dom_node_t* pNode) noexcept {
 }
 
 }  // namespace
+
+// DOM "valid element local name". Each byte of a UTF-8 sequence is non-ASCII, as the code point it encodes.
+bool HtmlDocument::IsValidElementName(std::string_view localName) noexcept {
+  if (localName.empty()) {
+    return false;
+  }
+  if (IsAsciiAlpha(localName.front())) {
+    return std::ranges::none_of(localName,
+                                [](char ch) { return IsAsciiWhitespace(ch) || ch == '\0' || ch == '/' || ch == '>'; });
+  }
+  if (localName.front() != ':' && localName.front() != '_' && !IsNonAscii(localName.front())) {
+    return false;
+  }
+  return std::ranges::all_of(localName.substr(1), [](char ch) {
+    return IsAsciiAlpha(ch) || isdigit(ch) || ch == '-' || ch == '.' || ch == ':' || ch == '_' || IsNonAscii(ch);
+  });
+}
+
+// DOM "valid attribute local name".
+bool HtmlElement::IsValidAttributeName(std::string_view name) noexcept {
+  return !name.empty() && std::ranges::none_of(name, [](char ch) {
+    return IsAsciiWhitespace(ch) || ch == '\0' || ch == '/' || ch == '=' || ch == '>';
+  });
+}
 
 HtmlElement HtmlDocument::createElement(std::string_view localName) {
   if (!IsValidElementName(localName)) {
@@ -218,11 +185,13 @@ void HtmlElement::setInnerHtml(std::string_view html) {
 void HtmlElement::insertAdjacentHtml(HtmlInsertPosition position, std::string_view html) {
   AssertTreeCanChange(Checked(_pNode));
   const InsertionPoint point = ResolvePosition(_pNode, position);
-  // The fragment parsing algorithm of insertAdjacentHTML takes a <body> for an <html> context.
+  // The fragment parsing algorithm of insertAdjacentHTML takes a <body> for an <html> context, and for a document
+  // fragment (the contents of a template).
   const lxb_dom_node_t& context = *point.pParent;
-  const bool rootContext = context.local_name == LXB_TAG_HTML && context.ns == LXB_NS_HTML;
-  InsertFragment(internal::ParseHtmlFragment(HtmlDocumentOf(_pNode), rootContext ? LXB_TAG_BODY : context.local_name,
-                                             rootContext ? LXB_NS_HTML : context.ns, html),
+  const bool bodyContext =
+      context.type != LXB_DOM_NODE_TYPE_ELEMENT || (context.local_name == LXB_TAG_HTML && context.ns == LXB_NS_HTML);
+  InsertFragment(internal::ParseHtmlFragment(HtmlDocumentOf(_pNode), bodyContext ? LXB_TAG_BODY : context.local_name,
+                                             bodyContext ? LXB_NS_HTML : context.ns, html),
                  point);
 }
 

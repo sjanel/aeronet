@@ -29,11 +29,14 @@ namespace {
 
 using internal::HtmlNodeAccess;
 
-lxb_dom_node_t* Parse(std::string_view html, std::string_view contentType, const lxb_encoding_data_t*& pEncoding) {
+lxb_dom_node_t* Parse(std::string_view html, std::string_view contentType, bool scripting,
+                      const lxb_encoding_data_t*& pEncoding) {
   RawChars buffer;
   const internal::Utf8Html utf8 = internal::DecodeHtml(html, contentType, buffer);
   std::unique_ptr<lxb_html_document_t, decltype(&lxb_html_document_destroy)> pDocument(
       internal::CheckCreated(lxb_html_document_create()), &lxb_html_document_destroy);
+  // Read by the tree builder for <noscript>, and inherited by the documents of the fragments parsed later.
+  lxb_html_document_scripting_set(pDocument.get(), scripting);
   // The nodes copy their data: the input can be released after parsing.
   internal::ParseHtml(pDocument.get(), utf8.html);
   pEncoding = utf8.pEncoding;
@@ -66,8 +69,11 @@ void Destroy(lxb_dom_node_t* pNode) noexcept {
 
 }  // namespace
 
-HtmlDocument::HtmlDocument(std::string_view html, std::string_view contentType) {
-  _pNode = Parse(html, contentType, _pEncoding);
+HtmlDocument::HtmlDocument(std::string_view html, std::string_view contentType)
+    : HtmlDocument(html, contentType, false) {}
+
+HtmlDocument::HtmlDocument(std::string_view html, std::string_view contentType, bool scripting) {
+  _pNode = Parse(html, contentType, scripting, _pEncoding);
 }
 
 HtmlDocument::HtmlDocument(HtmlDocument&& other) noexcept

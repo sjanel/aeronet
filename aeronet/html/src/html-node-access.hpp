@@ -8,8 +8,10 @@
 #include <lexbor/tag/const.h>
 
 #include <cassert>
+#include <string_view>
 
 #include "aeronet/css-selector.hpp"
+#include "aeronet/html-document.hpp"
 #include "aeronet/html-element.hpp"
 
 namespace aeronet::internal {
@@ -21,7 +23,17 @@ struct HtmlNodeAccess {
 
   static lxb_dom_node_t* Node(const HtmlParentNode& node) noexcept { return node._pNode; }
 
-  static const lxb_css_selector_list_t* List(const CssSelector& selector) noexcept { return selector._pList; }
+  // The compiled list of a selector passed to a query: never an empty one.
+  static const lxb_css_selector_list_t* List(const CssSelector& selector) noexcept {
+    assert(!selector.empty() && "query with an empty (default constructed or moved-from) CssSelector");
+    return selector._pList;
+  }
+
+  // 'html' parsed as HtmlDocument(html, contentType) does, with scripting enabled: the contents of a <noscript> element
+  // are text, as in the browsers that run scripts.
+  static HtmlDocument ParseWithScripting(std::string_view html, std::string_view contentType) {
+    return {html, contentType, true};
+  }
 };
 
 // pNode, the node of an HtmlElement on which a method is called: valid.

@@ -56,6 +56,7 @@ FLAGS = [
     "AERONET_UNITY_BUILD",
     "AERONET_ENABLE_PROTOBUF",
     "AERONET_ENABLE_HTML",
+    "AERONET_ENABLE_JS",
 ]
 
 STRENGTH = 5           # size of the option subsets whose ON/OFF assignments are covered
@@ -74,6 +75,11 @@ def is_valid(cfg):
     # GLAZE are ON. Only generate JWT=ON when it can really be ON.
     if cfg["AERONET_ENABLE_JWT"] and not (
         cfg["AERONET_ENABLE_OPENSSL"] and cfg["AERONET_ENABLE_GLAZE"]
+    ):
+        return False
+    # AERONET_ENABLE_JS is a cmake_dependent_option too: forced OFF unless HTML and HTTP_CLIENT are ON.
+    if cfg["AERONET_ENABLE_JS"] and not (
+        cfg["AERONET_ENABLE_HTML"] and cfg["AERONET_ENABLE_HTTP_CLIENT"]
     ):
         return False
     return True

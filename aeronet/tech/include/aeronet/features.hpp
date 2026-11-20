@@ -68,6 +68,12 @@ constexpr bool htmlEnabled() { return true; }
 constexpr bool htmlEnabled() { return false; }
 #endif
 
+#ifdef AERONET_ENABLE_JS
+constexpr bool jsEnabled() { return true; }
+#else
+constexpr bool jsEnabled() { return false; }
+#endif
+
 #ifdef AERONET_ENABLE_WEBSOCKET
 constexpr bool webSocketEnabled() { return true; }
 #else

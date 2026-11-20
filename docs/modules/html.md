@@ -1,6 +1,6 @@
 # HTML parsing
 
-The HTML module parses HTML documents the way browsers do, queries them with CSS selectors and modifies them. It is the scraping half of a web client: fetch a page with the [HTTP client](http-client.md), parse it with `HtmlDocument`, read its elements. It runs no JavaScript (see [Pages built by JavaScript](#pages-built-by-javascript)).
+The HTML module parses HTML documents the way browsers do, queries them with CSS selectors and modifies them. It is the scraping half of a web client: fetch a page with the [HTTP client](http-client.md), parse it with `HtmlDocument`, read its elements. It runs no JavaScript (see [Pages built by JavaScript](#pages-built-by-javascript)): [JavaScript pages](web.md) do.
 
 It is built on [lexbor](https://github.com/lexbor/lexbor) (Apache-2.0), a C implementation of the WHATWG HTML parser, of the DOM and of CSS selectors, kept out of the public headers. The `AERONET_ENABLE_HTML` CMake option enables the module: `ON` by default when aeronet is the main project, `OFF` when it is a subproject. An installed lexbor 3.x is used when found (Release builds, vcpkg feature `html`, Conan option `with_html`), otherwise lexbor 3.0.1 is downloaded and built as a static library.
 
@@ -71,7 +71,7 @@ doc.forEach(names, [&count](HtmlElement) { ++count; });  // no allocation
 
 Each query takes the selector as text or as a `CssSelector`. A document queries its whole tree (`<html>` included), an element its descendants only, as `Element.querySelectorAll()` of the DOM: the element is not part of its own search, but the selector can match its ancestors (`row.querySelectorAll("table td")` finds the cells of the row). An element matching several selectors of a list (`"td, .name"`) is returned once.
 
-The selectors are those of [Selectors Level 4](https://www.w3.org/TR/selectors-4/) that lexbor implements: type, class, id and attribute selectors (`[a]`, `[a=v]`, `^=`, `$=`, `*=`, `~=`, `|=`, case-insensitive `i`), combinators (descendant, `>`, `+`, `~`), and pseudo-classes such as `:not()`, `:is()`, `:where()`, `:has()`, `:nth-child()`, `:nth-of-type()`, `:first-child`, `:empty`, `:checked`. `:scope` is not supported: `children()` gives the child elements of an element. An invalid selector throws `std::invalid_argument`, at each query when it is given as text, once when a `CssSelector` is compiled.
+The selectors are those of [Selectors Level 4](https://www.w3.org/TR/selectors-4/) that lexbor implements: type, class, id and attribute selectors (`[a]`, `[a=v]`, `^=`, `$=`, `*=`, `~=`, `|=`, case-insensitive `i`), combinators (descendant, `>`, `+`, `~`), and pseudo-classes such as `:not()`, `:is()`, `:where()`, `:has()`, `:nth-child()`, `:nth-of-type()`, `:first-child`, `:empty`, `:checked`. `:scope` is not supported: `children()` gives the child elements of an element. An invalid selector throws `std::invalid_argument`, at each query when it is given as text, once when a `CssSelector` is compiled. A default-constructed (or moved-from) `CssSelector` is `empty()`: a placeholder to assign a compiled one to, which cannot be passed to a query.
 
 A selector given as text is parsed at each query, in a memory that the document reuses: after the first queries, a text query only allocates its result (`querySelectorAll()`). A `CssSelector` skips the parsing and works with any document: compile the selectors used in a loop, or on many documents, once.
 
@@ -169,8 +169,8 @@ The queries and serializations see the modified tree, and `documentElement()`, `
 
 Invalid arguments throw `std::invalid_argument`, before any change:
 
-- an attribute name that the DOM rejects: empty, or with ASCII whitespace, NUL, `/`, `=` or `>`;
-- an element name that the DOM rejects: one must start with an ASCII letter and contain no ASCII whitespace, NUL, `/` or `>`, or start with `:`, `_` or a non-ASCII character followed by ASCII letters and digits, `-`, `.`, `:`, `_` and non-ASCII characters only (`x-widget`, `_x`, `été`);
+- an attribute name that the DOM rejects (`HtmlElement::IsValidAttributeName()` tells it without exception): empty, or with ASCII whitespace, NUL, `/`, `=` or `>`;
+- an element name that the DOM rejects (`HtmlDocument::IsValidElementName()` tells it without exception): one must start with an ASCII letter and contain no ASCII whitespace, NUL, `/` or `>`, or start with `:`, `_` or a non-ASCII character followed by ASCII letters and digits, `-`, `.`, `:`, `_` and non-ASCII characters only (`x-widget`, `_x`, `été`);
 - an element of another document, or moved into itself or one of its descendants.
 
 On memory exhaustion (`std::bad_alloc`), `setTextContent()`, `setInnerHtml()` and the insertions leave the tree unchanged; an existing attribute whose new value cannot be allocated is left empty.
@@ -204,7 +204,7 @@ const std::string_view json = doc.assignedJson("window.__INITIAL_PROPS__");
 
 It searches the inline scripts in document order for an assignment of the given variable to an object or array literal (`variable = {...}` or `[...]`, spaces allowed, comparisons with `==` ignored), and returns the literal from its opening to its matching closing bracket, the brackets in strings being skipped. The variable must not be preceded by an identifier character: `"__INITIAL_PROPS__"` finds `window.__INITIAL_PROPS__ = {...}`, `"data"` does not find `mydata = {...}`. The result is empty when there is no such assignment, or when the first one is not closed. Data in a `<script type="application/json">` element (Next.js `__NEXT_DATA__`) is simply its `textContent()`.
 
-Running the scripts of a page (a JavaScript engine with a DOM and Web APIs) is planned, see the [roadmap](../ROADMAP.md#html-parsing-and-javascript-pages-aeronet_enable_html-aeronet_enable_js).
+When the data is produced or reached through scripts only, [JavaScript pages](web.md) run them: `WebClient::navigate()` loads the page with its scripts, over the same `HtmlDocument`.
 
 ## Performance
 
@@ -241,7 +241,7 @@ An `HtmlDocument` and its elements must not be used from several threads at the 
 - No node is freed before its document (see [Modifying the tree](#modifying-the-tree)).
 - With lexbor 3.0.1, an allocation failure inside lexbor can crash the process at a later allocation: the fixes are on its master branch, not released yet (see the [roadmap](../ROADMAP.md#html-parsing-and-javascript-pages-aeronet_enable_html-aeronet_enable_js)).
 - Elements are nested at most 512 levels deep, and at most 16 misnested formatting elements are recreated: see [Parsing limits](#parsing-limits).
-- No JavaScript and no CSS cascade: `<noscript>` contents are parsed as markup, as by a browser with scripting disabled, and the style of an element is not computed.
+- No JavaScript (see [JavaScript pages](web.md), whose documents are parsed with scripting enabled) and no CSS cascade: `<noscript>` contents are parsed as markup, as by a browser with scripting disabled, and the style of an element is not computed.
 - `assignedJson()` finds literal assignments only, not data passed to function calls (`self.__next_f.push(...)`).
 
 ## Tests
@@ -251,3 +251,4 @@ An `HtmlDocument` and its elements must not be used from several threads at the 
 - [html-mutation_test.cpp](../../aeronet/html/test/html-mutation_test.cpp): attributes (names, escaping, `id` and `class` seen by selectors, foreign elements), text, `setInnerHtml()` and `insertAdjacentHtml()` in their parsing contexts and with the parsing limits, `<template>` contents, element creation and moves, removed root, head and body elements, memory exhaustion.
 - [css-selector_test.cpp](../../aeronet/html/test/css-selector_test.cpp): compilation, invalid selectors, reuse across documents.
 - [assigned-json_test.cpp](../../aeronet/html/test/assigned-json_test.cpp): the search of an assigned JSON literal.
+- [html-node-ops_test.cpp](../../aeronet/html/test/html-node-ops_test.cpp): the URL resolution and the script decoding used by [JavaScript pages](web.md), memory exhaustion.

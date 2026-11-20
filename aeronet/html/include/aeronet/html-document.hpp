@@ -50,11 +50,14 @@ class HtmlDocument : public HtmlParentNode {
   [[nodiscard]] HtmlElement head() const noexcept;
   [[nodiscard]] HtmlElement body() const noexcept;
 
+  // Whether 'localName' is a valid element name (DOM), as createElement() needs: one that starts with an ASCII letter
+  // and contains no ASCII whitespace, NUL, '/' or '>', or that starts with ':', '_' or a non-ASCII character followed
+  // by ASCII letters and digits, '-', '.', ':', '_' and non-ASCII characters only.
+  [[nodiscard]] static bool IsValidElementName(std::string_view localName) noexcept;
+
   // A new HTML element named 'localName' (lower-cased), out of the tree: insert it with HtmlElement::appendChild() or
-  // insertAdjacentElement(). Throws std::invalid_argument if 'localName' is not a valid element name (DOM): one that
-  // starts with an ASCII letter and contains no ASCII whitespace, NUL, '/' or '>', or that starts with ':', '_' or a
-  // non-ASCII character followed by ASCII letters and digits, '-', '.', ':', '_' and non-ASCII characters only. Throws
-  // std::bad_alloc on memory exhaustion.
+  // insertAdjacentElement(). Throws std::invalid_argument if 'localName' is not a valid element name (see
+  // IsValidElementName()), std::bad_alloc on memory exhaustion.
   [[nodiscard]] HtmlElement createElement(std::string_view localName);
 
   // The JSON object or array literal assigned to 'variable' by an inline <script>, as in
@@ -69,7 +72,14 @@ class HtmlDocument : public HtmlParentNode {
   [[nodiscard]] std::string_view assignedJson(std::string_view variable) const noexcept;
 
  private:
-  const lxb_encoding_data* _pEncoding{};
+  friend struct internal::HtmlNodeAccess;
+
+  // Parses 'html' as the public constructor, with scripting enabled when 'scripting' is true, as browsers that run
+  // scripts do: the contents of a <noscript> element are then a text node instead of markup.
+  HtmlDocument(std::string_view html, std::string_view contentType, bool scripting);
+
+  // 'struct': lexbor also has a function of this name, declared before this header in some files.
+  const struct lxb_encoding_data* _pEncoding{};
 };
 
 }  // namespace aeronet

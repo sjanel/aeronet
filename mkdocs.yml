@@ -106,6 +106,7 @@ nav:
       - JSON, YAML, and configuration files: modules/json-and-config-files.md
       - Protocol Buffers: modules/protobuf.md
       - HTML parsing: modules/html.md
+      - JavaScript pages: modules/web.md
   - Reference:
       - Build configuration: reference/configuration.md
       - Server configuration: reference/server-configuration.md

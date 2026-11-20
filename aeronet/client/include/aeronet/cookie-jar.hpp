@@ -102,6 +102,17 @@ class CookieJar {
   // std::invalid_argument for an invalid URL.
   [[nodiscard]] std::string cookieHeader(std::string_view url, SysTimePoint now = SysClock::now()) const;
 
+  // Stores the cookie of 'cookieString' assigned by a script of a document of 'url' to document.cookie: the non-HTTP
+  // API of RFC 6265bis (§5.7), as setCookie() except that a cookie with the HttpOnly attribute is refused, and so is a
+  // cookie replacing or deleting an HttpOnly one (same name, domain and path). Returns false when the cookie is
+  // refused. Throws std::invalid_argument for an invalid URL.
+  [[nodiscard]] bool setDocumentCookie(std::string_view url, std::string_view cookieString,
+                                       SysTimePoint now = SysClock::now());
+
+  // The value of document.cookie for a document of 'url' (the non-HTTP API of RFC 6265bis): cookieHeader(url) without
+  // the HttpOnly cookies, which are hidden from scripts. Throws std::invalid_argument for an invalid URL.
+  [[nodiscard]] std::string documentCookie(std::string_view url, SysTimePoint now = SysClock::now()) const;
+
   // Calls 'callback(const Cookie&)' for each cookie, including the expired ones not removed yet.
   template <class Callback>
   void forEach(Callback&& callback) const {
@@ -166,14 +177,17 @@ class CookieJar {
   // goes after those of a path not shorter, and a replacement keeps its position.
   using Cookies = vector<StoredCookie>;
 
-  // Stores the cookie of 'setCookieValue' received from 'url'. Returns false when it is refused.
-  bool store(internal::CookieRequestUrl url, std::string_view setCookieValue, SysTimePoint now);
+  // Stores the cookie of 'setCookieValue' received from 'url', set by a script (document.cookie) when 'fromScript' is
+  // true. Returns false when it is refused.
+  bool store(internal::CookieRequestUrl url, std::string_view setCookieValue, SysTimePoint now,
+             bool fromScript = false);
 
-  // Appends to 'out' the cookie-pairs of a request to 'url' from 'jar', separated by "; ". A non-const 'jar' marks them
-  // as just sent, for the eviction of the least recently used cookies.
-  template <class Jar>
+  // Appends to 'out' the cookie-pairs of a request to 'url' from 'jar', separated by "; ", without the HttpOnly ones
+  // when kForScript is true (document.cookie), in a single resize_and_overwrite sized for every cookie of the domain.
+  // A non-const 'jar' marks them as just sent, for the eviction of the least recently used cookies.
+  template <bool kForScript = false, class Jar>
   static void AppendCookies(Jar& jar, internal::CookieRequestUrl url, internal::CookieSiteContext context,
-                            SysTimePoint now, RawChars& out);
+                            SysTimePoint now, std::string& out);
 
   // Stores the cookies of the Set-Cookie headers of 'response', received for 'request'.
   void storeResponseCookies(const HttpRequest& request, const HttpResponse& response, SysTimePoint now);
@@ -199,7 +213,9 @@ class CookieJar {
 
   // Cookies by registrable domain (or host, for an IP address or a public suffix such as localhost), lower-case.
   flat_hash_map<RawChars32, Cookies, CityHash, std::equal_to<>> _cookiesByDomain;
-  RawChars _requestCookies;
+  // A std::string rather than RawChars: the public cookieHeader() and documentCookie() return one, built by the same
+  // AppendCookies() without a copy.
+  std::string _requestCookies;
   uint64_t _sequence{0};
   uint32_t _nbCookies{0};
   uint32_t _maxCookies{HttpClientConfig::Cookies::kDefaultMaxCookies};

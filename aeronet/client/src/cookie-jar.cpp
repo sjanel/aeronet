@@ -470,14 +470,26 @@ bool CookieJar::setCookie(std::string_view url, std::string_view setCookieValue,
 }
 
 std::string CookieJar::cookieHeader(std::string_view url, SysTimePoint now) const {
-  RawChars cookies;
+  std::string cookies;
   AppendCookies(*this, ParseRequestUrl(url), internal::CookieSiteContext::SameSite, now, cookies);
-  return std::string(std::string_view(cookies));
+  return cookies;
 }
 
-bool CookieJar::store(internal::CookieRequestUrl url, std::string_view setCookieValue, SysTimePoint now) {
+bool CookieJar::setDocumentCookie(std::string_view url, std::string_view cookieString, SysTimePoint now) {
+  return store(ParseRequestUrl(url), cookieString, now, true);
+}
+
+std::string CookieJar::documentCookie(std::string_view url, SysTimePoint now) const {
+  std::string cookies;
+  AppendCookies<true>(*this, ParseRequestUrl(url), internal::CookieSiteContext::SameSite, now, cookies);
+  return cookies;
+}
+
+bool CookieJar::store(internal::CookieRequestUrl url, std::string_view setCookieValue, SysTimePoint now,
+                      bool fromScript) {
   ParsedSetCookie parsed;
-  if (!ParseSetCookie(setCookieValue, now, parsed)) {
+  // A script cannot create an HttpOnly cookie (RFC 6265bis §5.7 step 11).
+  if (!ParseSetCookie(setCookieValue, now, parsed) || (fromScript && parsed.httpOnly)) {
     return false;
   }
   char hostBuf[kMaxHostSize];
@@ -542,6 +554,10 @@ bool CookieJar::store(internal::CookieRequestUrl url, std::string_view setCookie
     }
     const auto sameCookieIt = FindSameCookie(cookies, hostOnly, parsed.name, domain, path);
     if (sameCookieIt != cookies.end()) {
+      // Nor replace or delete one (RFC 6265bis §5.7 step 23).
+      if (fromScript && sameCookieIt->httpOnly) {
+        return false;
+      }
       if (parsed.expiry <= now) {
         cookies.erase(sameCookieIt);
         --_nbCookies;
@@ -597,9 +613,9 @@ bool CookieJar::store(internal::CookieRequestUrl url, std::string_view setCookie
   return true;
 }
 
-template <class Jar>
+template <bool kForScript, class Jar>
 void CookieJar::AppendCookies(Jar& jar, internal::CookieRequestUrl url, internal::CookieSiteContext context,
-                              SysTimePoint now, RawChars& out) {
+                              SysTimePoint now, std::string& out) {
   static constexpr bool kMarksSent = !std::is_const_v<Jar>;
   if (jar._nbCookies == 0) {
     return;
@@ -613,40 +629,50 @@ void CookieJar::AppendCookies(Jar& jar, internal::CookieRequestUrl url, internal
   if (domainIt == jar._cookiesByDomain.end()) {
     return;
   }
+  // 'cookies' and 'cookie' are const when 'jar' is.
+  auto& cookies = domainIt->second;
+
+  // Bound of the header: every cookie of the domain, each with a separator and a '='. Summing two lengths per cookie
+  // is cheaper than evaluating the match rules twice for the exact size.
+  std::size_t maxSize = 0;
+  for (const StoredCookie& cookie : cookies) {
+    maxSize += http::CookiePairSep.size() + cookie.nameLen + 1U + cookie.valueLen;
+  }
+
   const bool secureUrl = url.https || IsLoopbackHost(host);
-  const std::size_t initialSize = out.size();
   [[maybe_unused]] uint64_t access = 0;
   if constexpr (kMarksSent) {
     access = ++jar._sequence;
   }
-  // The cookies are already in the order of the header: longest paths first, then oldest first. 'cookie' is const
-  // when 'jar' is.
-  for (auto& cookie : domainIt->second) {
-    if (cookie.expiry <= now || (cookie.secure && !secureUrl) || !SameSiteAllows(cookie.sameSite, context) ||
-        !(cookie.hostOnly ? host == cookie.domain() : DomainMatch(host, cookie.domain())) ||
-        !PathMatch(url.path, cookie.path())) {
-      continue;
-    }
 
-    const std::string_view name = cookie.name();
-    const std::string_view value = cookie.value();
+  const std::size_t initialSize = out.size();
+  // The cookies are already in the order of the header: longest paths first, then oldest first.
+  out.resize_and_overwrite(initialSize + maxSize, [&](char* pOut, [[maybe_unused]] std::size_t maxLen) noexcept {
+    char* const pFirst = pOut + initialSize;
+    char* pData = pFirst;
+    for (auto& cookie : cookies) {
+      if (cookie.expiry <= now || (kForScript && cookie.httpOnly) || (cookie.secure && !secureUrl) ||
+          !SameSiteAllows(cookie.sameSite, context) ||
+          !(cookie.hostOnly ? host == cookie.domain() : DomainMatch(host, cookie.domain())) ||
+          !PathMatch(url.path, cookie.path())) {
+        continue;
+      }
+      if (pData != pFirst) {
+        pData = Append(http::CookiePairSep, pData);
+      }
+      if (const std::string_view name = cookie.name(); !name.empty()) {
+        pData = Append(name, pData);
+        *pData++ = '=';
+      }
+      pData = Append(cookie.value(), pData);
 
-    out.ensureAvailableCapacityExponential(http::CookiePairSep.size() + name.size() + 1U + value.size());
-
-    char* pData = out.end();
-    if (out.size() != initialSize) {
-      pData = Append(http::CookiePairSep, pData);
+      if constexpr (kMarksSent) {
+        cookie.lastAccess = access;
+      }
     }
-    if (!name.empty()) {
-      pData = Append(name, pData);
-      *pData++ = '=';
-    }
-    pData = Append(value, pData);
-    out.setEnd(pData);
-    if constexpr (kMarksSent) {
-      cookie.lastAccess = access;
-    }
-  }
+    assert(std::cmp_less_equal(pData - pOut, maxLen));
+    return static_cast<std::size_t>(pData - pOut);
+  });
 }
 
 void CookieJar::storeResponseCookies(const HttpRequest& request, const HttpResponse& response, SysTimePoint now) {

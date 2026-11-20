@@ -17,6 +17,9 @@ struct HtmlNodeAccess;
 // querySelectorAll() or forEach() instead of its text.
 class CssSelector {
  public:
+  // An empty selector: a placeholder that a compiled one can be assigned to, it cannot be passed to the queries.
+  CssSelector() noexcept = default;
+
   // Compiles 'selector', e.g. "table.fees tr > td:first-child, a[href]".
   // Throws std::invalid_argument if it is not a valid selector list, std::bad_alloc on memory exhaustion.
   explicit CssSelector(std::string_view selector);
@@ -24,16 +27,19 @@ class CssSelector {
   CssSelector(const CssSelector&) = delete;
   CssSelector& operator=(const CssSelector&) = delete;
 
-  // The moved-from selector can only be destroyed or assigned to.
+  // The moved-from selector is empty.
   CssSelector(CssSelector&& other) noexcept : _pList(std::exchange(other._pList, nullptr)) {}
   CssSelector& operator=(CssSelector&& other) noexcept;
 
   ~CssSelector();
 
+  // Whether this selector is empty: default constructed or moved from.
+  [[nodiscard]] bool empty() const noexcept { return _pList == nullptr; }
+
  private:
   friend struct internal::HtmlNodeAccess;
 
-  lxb_css_selector_list* _pList;
+  lxb_css_selector_list* _pList{};
 };
 
 }  // namespace aeronet

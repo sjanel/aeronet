@@ -41,6 +41,8 @@ DEPENDENCY_LIBRARY_PATTERNS = [
     ("libopentelemetry_*.a", None),
     # lexbor (HTML module), static when downloaded. No fallback flag: the HTML module may be disabled.
     ("liblexbor*.a", None),
+    # QuickJS-ng (web module), static when downloaded. No fallback flag: the web module may be disabled.
+    ("libqjs.a", None),
 ]
 
 SYSTEM_LINK_FLAGS = [
@@ -259,6 +261,7 @@ def fallback_include_dirs() -> List[str]:
         "aeronet/tech/include",
         "aeronet/tls/include",
         "aeronet/version/include",
+        "aeronet/web/include",
         "aeronet/websocket/include",
     ]
     dirs: List[str] = []
@@ -544,14 +547,14 @@ def locate_libraries(build_dir: Path) -> List[str]:
         except subprocess.CalledProcessError:
             print("cmake --build failed; continuing with what we have", file=sys.stderr)
 
-    # The HTTP client (aeronet_client), JWT (aeronet_jwt) and HTML (aeronet_html) modules are standalone libraries that
-    # the server does not depend on, so building only the server (or an examples-only tree that never references them)
-    # never produces their archives. README and documentation snippets use them, so make a best-effort attempt to build
-    # them too. This is a no-op when a target is already built, and is tolerated when it is absent (its feature
-    # disabled: AERONET_ENABLE_HTTP_CLIENT, AERONET_ENABLE_JWT, AERONET_ENABLE_HTML).
+    # The HTTP client (aeronet_client), JWT (aeronet_jwt), HTML (aeronet_html) and web (aeronet_web) modules are
+    # standalone libraries that the server does not depend on, so building only the server (or an examples-only tree
+    # that never references them) never produces their archives. README and documentation snippets use them, so make a
+    # best-effort attempt to build them too. This is a no-op when a target is already built, and is tolerated when it is absent (its feature
+    # disabled: AERONET_ENABLE_HTTP_CLIENT, AERONET_ENABLE_JWT, AERONET_ENABLE_HTML, AERONET_ENABLE_JS).
     # The output of a failed build is printed: a compile or clang-tidy error would otherwise only show up later as
     # undefined references of the snippets using the module.
-    for target in ("aeronet_client", "aeronet_jwt", "aeronet_html"):
+    for target in ("aeronet_client", "aeronet_jwt", "aeronet_html", "aeronet_web"):
         result = subprocess.run(
             ["cmake", "--build", ".", "--target", target, "--parallel"],
             cwd=str(build_dir),
@@ -1161,14 +1164,15 @@ def main() -> None:
         )
 
     include_dirs.extend(gather_user_include_dirs(args.include))
-    # The HTTP client, JWT and HTML modules have public include trees that are not pulled in by the
+    # The HTTP client, JWT, HTML and web modules have public include trees that are not pulled in by the
     # target metadata (a server program); add them explicitly so documentation snippets using
-    # <aeronet/http-client.hpp>, <aeronet/jwt.hpp> or <aeronet/html-document.hpp> compile (the matching libraries are
-    # linked via rglob).
+    # <aeronet/http-client.hpp>, <aeronet/jwt.hpp>, <aeronet/html-document.hpp> or <aeronet/web-client.hpp> compile
+    # (the matching libraries are linked via rglob).
     for module_include in (
         Path("aeronet/client/include"),
         Path("aeronet/jwt/include"),
         Path("aeronet/html/include"),
+        Path("aeronet/web/include"),
     ):
         if module_include.is_dir():
             include_dirs.append(str(module_include.resolve()))

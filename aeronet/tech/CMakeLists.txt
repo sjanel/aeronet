@@ -39,6 +39,11 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    ascii-whitespace-tokens-iterator_test
+    test/ascii-whitespace-tokens-iterator_test.cpp
+)
+
+AeronetAddUnitTest(
     base64_test
     test/base64_test.cpp
     LIBRARIES

@@ -18,4 +18,8 @@ if(AERONET_ENABLE_HTML)
     target_link_libraries(aeronet INTERFACE aeronet_html)
 endif()
 
+if(AERONET_ENABLE_JS)
+    target_link_libraries(aeronet INTERFACE aeronet_web)
+endif()
+
 add_library(aeronet::aeronet ALIAS aeronet)

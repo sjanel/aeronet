@@ -275,7 +275,7 @@ HttpClient& HttpClient::operator=(const HttpClient& rhs) {
 
 HttpClient::~HttpClient() = default;
 
-HttpClientResult HttpClient::requestProcess(HttpRequest&& req, ResponseBodySink* sink) {
+HttpClientResult HttpClient::requestProcess(HttpRequest&& req, ResponseBodySink* sink, CacheUse cacheUse) {
   // The client has no periodic tick: the counters of a request are exported when it ends.
   const FlushTelemetryOnExit flushTelemetryOnExit(_telemetry);
 
@@ -294,7 +294,7 @@ HttpClientResult HttpClient::requestProcess(HttpRequest&& req, ResponseBodySink*
     return result;
   }
 
-  const bool isCacheEligible = cacheEligible(req);
+  const bool isCacheEligible = cacheUse == CacheUse::IfEligible && cacheEligible(req);
 
   std::string_view cacheKey;
   if (isCacheEligible) {

@@ -10,7 +10,6 @@
 #include <lexbor/html/serialize.h>
 
 #include <cstddef>
-#include <exception>
 #include <string>
 #include <string_view>
 
@@ -80,31 +79,10 @@ void CopyTextNodes(lxb_dom_node_t* pRoot, std::size_t size, std::string& out) {
   });
 }
 
-// An exception cannot cross the C frames of lexbor: the one thrown by an append is rethrown after the serialization.
-struct SerializeContext {
-  std::exception_ptr exception;
-  std::string* pOut;
-};
-
-lxb_status_t AppendSerialized(const lxb_char_t* pData, std::size_t size, void* pContext) noexcept {
-  SerializeContext& context = *static_cast<SerializeContext*>(pContext);
-  try {
-    context.pOut->append(View(pData, size));
-  } catch (...) {
-    context.exception = std::current_exception();
-    return LXB_STATUS_ERROR_MEMORY_ALLOCATION;
-  }
-  return LXB_STATUS_OK;
-}
-
 template <lxb_status_t (*Serialize)(lxb_dom_node_t*, lxb_html_serialize_cb_f, void*)>
 void AppendSerializedNode(lxb_dom_node_t* pNode, std::string& out) {
-  SerializeContext context{{}, &out};
-  const lxb_status_t status = Serialize(pNode, AppendSerialized, &context);
-  if (context.exception) {
-    std::rethrow_exception(context.exception);
-  }
-  internal::CheckStatus(status);
+  internal::SerializationAppender<std::string> appender(out);
+  appender.finish(Serialize(pNode, &internal::SerializationAppender<std::string>::Append, &appender));
 }
 
 }  // namespace

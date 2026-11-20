@@ -50,6 +50,11 @@ struct UrlParseResult;
 // request URL, which is not part of the HTTP request itself, but is used for internal purposes.
 class HttpRequest final : public HttpMessage {
  public:
+  // Whether 'url' can be requested: an absolute http or https URL without user info, with a non-zero port, a host of at
+  // most 65535 bytes and a valid request target (no space nor control character, complete percent-escapes) within the
+  // length limit. HttpClient::makeRequest() throws std::invalid_argument for another one.
+  [[nodiscard]] static bool IsValidUrl(std::string_view url) noexcept;
+
   // --------/
   // GETTERS /
   // --------/

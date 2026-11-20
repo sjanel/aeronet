@@ -127,7 +127,8 @@ class HttpClient {
   // Build a request with the given method and url. The returned HttpRequest is mutable and
   // can be further configured (headers, body, ...). The request is pre-configured based on the client config (e.g.
   // Accept-Encoding, User-Agent, ...).
-  // Throws std::invalid_argument if the url is invalid (e.g. malformed, missing scheme, unsupported scheme, ...).
+  // Throws std::invalid_argument if the url is invalid (e.g. malformed, missing scheme, unsupported scheme, ...): see
+  // HttpRequest::IsValidUrl() to check it beforehand.
   [[nodiscard]] HttpRequest makeRequest(http::Method method, std::string_view url) {
     return {0, method, url, _config.globalHeaders.fullStringWithLastSep(), makeRequestOptions()};
   }
@@ -269,6 +270,15 @@ class HttpClient {
     return requestProcess(std::move(req), &sink);
   }
 
+  // Execute a request as request(HttpRequest&&) does, leaving 'req' as the last request sent: after the redirects
+  // followed, its URL (originKey() and target()) is the final one, the URL of the returned response, and its method and
+  // body are those that the redirects gave it (a 303 turns a POST into a GET). The response cache is not used: a
+  // cached response does not tell the URL it came from.
+  HttpClientResult requestUpdating(HttpRequest& req) {
+    req.HttpMessage::finalizeHeadersAndBody();
+    return requestProcess(std::move(req), nullptr, CacheUse::Bypass);
+  }
+
   // Convenience verbs.
   HttpClientResult get(std::string_view url) { return request(makeRequest(http::Method::GET, url)); }
 
@@ -346,8 +356,10 @@ class HttpClient {
     bool reused{false};                                // taken from the idle pool
   };
 
+  enum class CacheUse : uint8_t { IfEligible, Bypass };
+
   // Run a request, with its final response delivered to `sink` when not null (the cache is then bypassed).
-  HttpClientResult requestProcess(HttpRequest&& req, ResponseBodySink* sink);
+  HttpClientResult requestProcess(HttpRequest&& req, ResponseBodySink* sink, CacheUse cacheUse = CacheUse::IfEligible);
 
   // Run a request end to end (URL parse + redirect following), bypassing the response cache. request() wraps
   // this with the cache lookup/store when caching is enabled and the request is eligible, giving `pCacheKey`: when it

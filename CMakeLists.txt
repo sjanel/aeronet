@@ -90,6 +90,10 @@ option(AERONET_ENABLE_HTML "Enable HTML parsing and CSS selectors (HtmlDocument,
 include(CMakeDependentOption)
 cmake_dependent_option(AERONET_ENABLE_JWT "Enable JWT (JWS) support"
     ON "AERONET_ENABLE_OPENSSL;AERONET_ENABLE_GLAZE" OFF)
+# JavaScript pages (WebClient) run on the HTML parser and the HTTP client, and add QuickJS-ng: like the other features
+# with a dependency, on by default as the main project only, and always off without both.
+cmake_dependent_option(AERONET_ENABLE_JS "Enable JavaScript pages (WebClient, with QuickJS-ng)"
+    ${PROJECT_IS_TOP_LEVEL} "AERONET_ENABLE_HTML;AERONET_ENABLE_HTTP_CLIENT" OFF)
 
 # Dependency variants
 option(AERONET_ENABLE_ZLIBNG "Prefer zlib-ng over zlib when AERONET_ENABLE_ZLIB is ON" ON)

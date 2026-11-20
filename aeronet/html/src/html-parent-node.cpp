@@ -10,6 +10,7 @@
 #include "aeronet/html-element.hpp"
 #include "aeronet/vector.hpp"
 #include "html-node-access.hpp"
+#include "html-node-ops.hpp"
 #include "html-query-engine.hpp"
 #include "lexbor-utils.hpp"
 
@@ -27,7 +28,7 @@ lxb_status_t StoreFirstMatch(lxb_dom_node_t* pNode, [[maybe_unused]] lxb_css_sel
 }
 
 // An exception cannot cross the C frames of lexbor: the one thrown by the callback stops the search, and is rethrown
-// after it.
+// after it. The callback also stops it by returning false.
 struct VisitContext {
   internal::HtmlElementCallback callback;
   void* pCallback;
@@ -38,12 +39,11 @@ lxb_status_t VisitMatch(lxb_dom_node_t* pNode, [[maybe_unused]] lxb_css_selector
                         void* pContext) noexcept {
   VisitContext& context = *static_cast<VisitContext*>(pContext);
   try {
-    context.callback(HtmlNodeAccess::Element(pNode), context.pCallback);
+    return context.callback(HtmlNodeAccess::Element(pNode), context.pCallback) ? LXB_STATUS_OK : LXB_STATUS_STOP;
   } catch (...) {
     context.exception = std::current_exception();
     return LXB_STATUS_STOP;
   }
-  return LXB_STATUS_OK;
 }
 
 HtmlElement FindFirst(HtmlQueryEngine::Query& query, lxb_dom_node_t* pRoot, const lxb_css_selector_list_t* pList) {
@@ -62,8 +62,9 @@ void Visit(HtmlQueryEngine::Query& query, lxb_dom_node_t* pRoot, const lxb_css_s
   internal::CheckStatus(status);
 }
 
-void AppendElement(HtmlElement element, void* pElements) {
+bool AppendElement(HtmlElement element, void* pElements) {
   static_cast<vector<HtmlElement>*>(pElements)->push_back(element);
+  return true;
 }
 
 lxb_dom_node_t* RootNode(const HtmlParentNode& node) noexcept {
@@ -74,10 +75,25 @@ lxb_dom_node_t* RootNode(const HtmlParentNode& node) noexcept {
 
 }  // namespace
 
+bool internal::VisitMatches(lxb_dom_node_t* pRoot, std::string_view selector, HtmlElementCallback callback,
+                            void* pCallback) {
+  HtmlQueryEngine::Query query = HtmlQueryEngine::StartQuery(pRoot);
+  const lxb_css_selector_list_t* pList = query.parse(selector);
+  if (pList == nullptr) {
+    return false;
+  }
+  Visit(query, pRoot, pList, callback, pCallback);
+  return true;
+}
+
 HtmlElement HtmlParentNode::querySelector(std::string_view selector) const {
   lxb_dom_node_t* pRoot = RootNode(*this);
   HtmlQueryEngine::Query query = HtmlQueryEngine::StartQuery(pRoot);
-  return FindFirst(query, pRoot, query.parse(selector));
+  const lxb_css_selector_list_t* pList = query.parse(selector);
+  if (pList == nullptr) {
+    internal::ThrowInvalidSelector(selector);
+  }
+  return FindFirst(query, pRoot, pList);
 }
 
 HtmlElement HtmlParentNode::querySelector(const CssSelector& selector) const {
@@ -100,9 +116,9 @@ vector<HtmlElement> HtmlParentNode::querySelectorAll(const CssSelector& selector
 
 void HtmlParentNode::forEachMatch(std::string_view selector, internal::HtmlElementCallback callback,
                                   void* pCallback) const {
-  lxb_dom_node_t* pRoot = RootNode(*this);
-  HtmlQueryEngine::Query query = HtmlQueryEngine::StartQuery(pRoot);
-  Visit(query, pRoot, query.parse(selector), callback, pCallback);
+  if (!internal::VisitMatches(RootNode(*this), selector, callback, pCallback)) {
+    internal::ThrowInvalidSelector(selector);
+  }
 }
 
 void HtmlParentNode::forEachMatch(const CssSelector& selector, internal::HtmlElementCallback callback,

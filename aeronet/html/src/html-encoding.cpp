@@ -11,12 +11,15 @@
 #include <array>
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <span>
 #include <string_view>
 
 #include "aeronet/header-value-parameters.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
+#include "html-node-ops.hpp"
 #include "lexbor-utils.hpp"
 
 namespace aeronet::internal {
@@ -81,6 +84,23 @@ lxb_status_t Decode(lxb_encoding_decode_t& decode, std::string_view text, Sink s
   return status;
 }
 
+// The size of the ASCII start of 'text', read 8 bytes at a time.
+std::size_t AsciiPrefixSize(std::string_view text) noexcept {
+  static constexpr uint64_t kHighBits = 0x8080808080808080ULL;
+  std::size_t pos = 0;
+  for (; pos + sizeof(uint64_t) <= text.size(); pos += sizeof(uint64_t)) {
+    uint64_t word;
+    std::memcpy(&word, text.data() + pos, sizeof(word));
+    if ((word & kHighBits) != 0) {
+      break;
+    }
+  }
+  while (pos < text.size() && static_cast<unsigned char>(text[pos]) < 0x80U) {
+    ++pos;
+  }
+  return pos;
+}
+
 // Without a replacement code point, the lexbor decoders stop at the first invalid sequence with LXB_STATUS_ERROR.
 bool IsValidUtf8(std::string_view text) {
   DecodeBuffer codepoints;
@@ -132,7 +152,38 @@ void DecodeToUtf8(std::string_view html, const lxb_encoding_data_t* pEncoding, R
   AppendUtf8({codepoints.data(), lxb_encoding_decode_buf_used(&decode)}, out);
 }
 
+// The encoding of the label 'label' (WHATWG Encoding "get an encoding"), or nullptr.
+const lxb_encoding_data_t* EncodingOf(std::string_view label) noexcept {
+  return lxb_encoding_data_by_pre_name(Bytes(label), label.size());
+}
+
 }  // namespace
+
+std::string_view DecodeScript(std::string_view bytes, std::string_view contentType, std::string_view charset,
+                              std::string_view documentEncoding, RawChars& buffer) {
+  const lxb_encoding_data_t* pEncoding;
+  const lxb_encoding_t bomEncoding = lxb_encoding_bom_sniff(Bytes(bytes), bytes.size());
+  if (bomEncoding != LXB_ENCODING_DEFAULT) {
+    bytes.remove_prefix(bomEncoding == LXB_ENCODING_UTF_8 ? 3U : 2U);
+    pEncoding = lxb_encoding_data(bomEncoding);
+  } else {
+    pEncoding = EncodingOf(CharsetParameter(contentType));
+    for (const std::string_view fallback : {charset, documentEncoding}) {
+      if (pEncoding == nullptr) {
+        pEncoding = EncodingOf(fallback);
+      }
+    }
+    if (pEncoding == nullptr) {
+      pEncoding = lxb_encoding_data(LXB_ENCODING_UTF_8);
+    }
+  }
+  // Scripts are mostly ASCII: only the rest of a UTF-8 script is validated by the decoder.
+  if (pEncoding->encoding == LXB_ENCODING_UTF_8 && IsValidUtf8(bytes.substr(AsciiPrefixSize(bytes)))) {
+    return bytes;
+  }
+  DecodeToUtf8(bytes, pEncoding, buffer);
+  return {buffer.data(), buffer.size()};
+}
 
 Utf8Html DecodeHtml(std::string_view html, std::string_view contentType, RawChars& buffer) {
   const lxb_encoding_data_t* pEncoding;

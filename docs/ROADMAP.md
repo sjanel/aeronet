@@ -114,8 +114,8 @@ the [performance optimization backlog](#performance-optimization-backlog)):
 #### HTML parsing and JavaScript pages (`AERONET_ENABLE_HTML`, `AERONET_ENABLE_JS`)
 
 Status: [HTML parsing and DOM mutation](modules/html.md) (phase 1) and the
-[client cookies](modules/http-client.md#cookies) (phase 2) delivered, JavaScript not started, its engine measured
-(below)
+[client cookies](modules/http-client.md#cookies) (phase 2) delivered, phase 3 started: its first part, the
+[page runtime](modules/web.md) without `fetch` and XHR, delivered
 ([#738](https://github.com/sjanel/aeronet/issues/738)). Goal: let the client read pages whose content is produced or
 completed by JavaScript, e.g. `page.querySelectorAll("table tr")` after a `navigate()`.
 
@@ -170,9 +170,19 @@ Phases:
    3 will need handles on text and comment nodes, which the C++ API does not expose.
 2. **Client cookie jar** - delivered, see [Cookies](modules/http-client.md#cookies): RFC 6265bis storage and
    retrieval, `SameSite` along redirect chains across sites, merged with the `Cookie` header of the request.
-3. **JS core** (`AERONET_ENABLE_JS`, requires `AERONET_ENABLE_HTML` and `AERONET_ENABLE_HTTP_CLIENT`, OFF by
-   default), module `aeronet/web`: `WebClient::navigate(url, options)` returning a `std::expected`, the same
-   `Element` API as phase 1, and `evaluate()`.
+3. **JS core** (`AERONET_ENABLE_JS`, requires `AERONET_ENABLE_HTML` and `AERONET_ENABLE_HTTP_CLIENT`), module
+   `aeronet/web`: `WebClient::navigate(url, options)` returning a `std::expected`, the same `Element` API as phase 1,
+   and `evaluate()`. The first part is [delivered](modules/web.md): everything below but `fetch`, XHR and the
+   `SameSite` context of the subresources. Left for the next part:
+   - `fetch` and `XMLHttpRequest` over the `HttpClient` of the page, and `LoadState::NetworkIdle` waiting for the
+     requests in flight, not only for the timers;
+   - the subresources of a page as requests of its site for the cookie jar (a cross-site `<script src>` gets the
+     `SameSite=Strict` cookies of its site today);
+   - a per-client bytecode cache of the page scripts keyed by URL and content (the prelude of the Web APIs is already
+     compiled once per client: 180 us instead of 760 us per page setup);
+   - the fragment of a `Location` header, which `HttpClient` drops (the page keeps the one of the requested URL).
+
+   The design points of the first part:
    - One QuickJS runtime per page over the lexbor document; the page owns every node and frees them together,
      so node lifetime does not depend on the JS garbage collector.
    - Documents are parsed in scripting mode, as browsers with JS do: `<noscript>` content is text, not markup.
@@ -183,13 +193,13 @@ Phases:
      limit, like redirects.
    - Event loop: one task, then the microtasks (`JS_ExecutePendingJob`). Timers use a virtual clock: they fire
      in order without sleeping, with caps on far timers and on `setInterval` runs.
-   - `fetch` and XHR go through the page's `HttpClient` (synchronous XHR comes for free). `navigator` has
-     `cookieEnabled`, `userAgent` and `language`. `document.cookie` reads and writes the jar of the client as a
-     non-HTTP API (`HttpOnly` cookies hidden and kept, RFC 6265bis §5.7), and the subresources of a page are
-     requests of its site: their `SameSite` context comes from the page, not from a redirect chain.
-   - `navigate()` returns on network idle (no request in flight, no timer due), on a matching selector, or when
-     the time budget runs out (QuickJS interrupt handler). The selector is checked when a document is parsed,
-     before its scripts run: data served in the HTML costs no script run.
+   - `navigator` has `cookieEnabled`, `userAgent` and `language`. `document.cookie` reads and writes the jar of
+     the client as a non-HTTP API (`HttpOnly` cookies hidden and kept, RFC 6265bis §5.7).
+   - `navigate()` returns on a load state, on a matching selector, or when the time budget runs out (QuickJS
+     interrupt handler). The selector is checked when a document is parsed, before its scripts run: data served in
+     the HTML costs no script run.
+   - Each node wrapper is cached in the `user` pointer of its lexbor node and kept until the page dies, so that
+     `a === b` holds and the properties that scripts add to nodes stay (React does this).
 4. **Single-page app compatibility**: ES modules and `import()`, scripts inserted at runtime (webpack chunk
    loading) through the lexbor mutation callbacks, `MutationObserver`, stubs (`Intl`, `matchMedia`,
    `getComputedStyle`, `IntersectionObserver` reporting everything visible, layout sizes of 0),
@@ -203,13 +213,13 @@ aeronet::WebClient web;  // its cookie jar outlives navigate()
 // A single-page app: run the scripts until the network is idle.
 auto page = web.navigate(url, {.until = aeronet::LoadState::NetworkIdle, .timeout = std::chrono::seconds{10}});
 if (page) {
-  auto rows = page->querySelectorAll("table tr");
+  auto rows = page->document().querySelectorAll("table tr");
 }
 
 // The Nintendo Store page above: 4 exchanges and the waiting-room script, none of the product page scripts.
 auto product = web.navigate(nintendoUrl, {.untilSelector = "script#__NEXT_DATA__", .timeout = std::chrono::seconds{10}});
 if (product) {
-  std::string nextData = product->querySelector("script#__NEXT_DATA__").textContent();  // parse with glaze
+  std::string nextData = product->document().querySelector("script#__NEXT_DATA__").textContent();  // parse with glaze
 }
 ```
 
@@ -239,8 +249,9 @@ reference):
   empty loop iteration, twice a JS function call. The interrupt handler of the CPU budget has no measurable cost.
 - **Scripts without a DOM**: with only `window = self = globalThis`, 49 of the 51 Kraken scripts run (webpack chunks
   registering themselves); its runtime chunk stops at `document`.
-- **API differences with Bellard's QuickJS**: the interrupt handler takes a `JSContext*` in QuickJS-ng, a
-  `JSRuntime*` in QuickJS: a layer over both engines has to adapt such details.
+- **API differences with Bellard's QuickJS**: the interrupt handler takes a `JSContext*` in QuickJS-ng since 0.17, a
+  `JSRuntime*` before and in QuickJS: aeronet passes a generic lambda, which converts to both (vcpkg has QuickJS-ng
+  0.16.2).
 
 Security: `navigate()` runs remote code in the host process, and QuickJS-ng had memory-safety CVEs in 2025-2026
 (typed arrays, `Atomics`, iterator helpers). Never link `quickjs-libc` (no file or OS access); set memory and stack
@@ -252,8 +263,10 @@ landlock) can come later.
 Tests: pages served by aeronet's own `HttpServer` (a cookie check and script redirect across two origins, a
 webpack-style chunk loader, a vendored production React build rendering a table), so CI needs no internet.
 
-Open decisions: whether this scope is enough or the CDP driver should come first, the Conan strategy for the
-engine, and in-process only versus a sandbox from the start.
+Decisions taken on 2026-11-19: QuickJS-ng in the process before a CDP driver; no JavaScript in the Conan package for
+now (vcpkg and the download only); in the process with limits, a sandbox later; `AERONET_ENABLE_JS` on by default as
+the main project, like the other features with a dependency; `evaluate()` returns JSON text; the Web APIs that need
+no C++ (events, `classList`, `dataset`, `history`...) are a small JavaScript prelude embedded in the library.
 
 **lexbor release to watch** (checked on 2026-11-19: v3.0.1, tagged on 2026-09-07, is still the latest). These fixes
 are merged on master but in no release:

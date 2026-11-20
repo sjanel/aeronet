@@ -111,6 +111,7 @@ jobs:
             -D AERONET_ENABLE_GLAZE=${{ matrix.features }} \
             -D AERONET_ENABLE_PROTOBUF=${{ matrix.features }} \
             -D AERONET_ENABLE_HTML=${{ matrix.features }} \
+            -D AERONET_ENABLE_JS=${{ matrix.features }} \
             -D AERONET_PROTOBUF_RUNTIME=${{ matrix.protobuf || 'full' }} \
             -D AERONET_ENABLE_HTTP2=${{ matrix.features }} \
             -D AERONET_ENABLE_BROTLI=${{ matrix.features }} \
@@ -198,6 +199,7 @@ jobs:
             -D AERONET_ENABLE_GLAZE=${{ matrix.features }} \
             -D AERONET_ENABLE_PROTOBUF=${{ matrix.features }} \
             -D AERONET_ENABLE_HTML=${{ matrix.features }} \
+            -D AERONET_ENABLE_JS=${{ matrix.features }} \
             -D AERONET_ENABLE_HTTP2=${{ matrix.features }} \
             -D AERONET_ENABLE_BROTLI=${{ matrix.features }} \
             -D AERONET_ENABLE_ZLIB=${{ matrix.features }} \
@@ -260,6 +262,7 @@ jobs:
             -D AERONET_ENABLE_GLAZE=ON \
             -D AERONET_ENABLE_PROTOBUF=ON \
             -D AERONET_ENABLE_HTML=ON \
+            -D AERONET_ENABLE_JS=ON \
             -D AERONET_ENABLE_HTTP2=ON \
             -D AERONET_ENABLE_BROTLI=ON \
             -D AERONET_ENABLE_ZLIB=ON \
@@ -413,6 +416,7 @@ jobs:
             -D AERONET_ENABLE_GLAZE=ON \
             -D AERONET_ENABLE_PROTOBUF=ON \
             -D AERONET_ENABLE_HTML=ON \
+            -D AERONET_ENABLE_JS=ON \
             -D AERONET_ENABLE_ZLIB=ON \
             -D AERONET_ENABLE_ZSTD=ON \
             -D AERONET_ENABLE_OPENTELEMETRY=ON \
@@ -430,6 +434,7 @@ jobs:
           cmake --build ${BUILD_DIR} --parallel --target \
           aeronet_client \
           aeronet_html \
+          aeronet_web \
           aeronet_jwt \
           aeronet_server \
           aeronet-async-handlers \
@@ -610,6 +615,7 @@ jobs:
             -D AERONET_ENABLE_GLAZE=ON \
             -D AERONET_ENABLE_PROTOBUF=OFF \
             -D AERONET_ENABLE_HTML=ON \
+            -D AERONET_ENABLE_JS=ON \
             -D AERONET_ENABLE_HTTP2=ON \
             -D AERONET_ENABLE_BROTLI=ON \
             -D AERONET_ENABLE_ZLIB=ON \
@@ -663,6 +669,7 @@ jobs:
             -D AERONET_ENABLE_GLAZE=ON `
             -D AERONET_ENABLE_PROTOBUF=OFF `
             -D AERONET_ENABLE_HTML=ON `
+            -D AERONET_ENABLE_JS=ON `
             -D AERONET_ENABLE_HTTP2=ON `
             -D AERONET_ENABLE_BROTLI=ON `
             -D AERONET_ENABLE_ZLIB=ON `
@@ -726,6 +733,7 @@ jobs:
             -D AERONET_ENABLE_GLAZE=ON \
             -D AERONET_ENABLE_PROTOBUF=ON \
             -D AERONET_ENABLE_HTML=ON \
+            -D AERONET_ENABLE_JS=ON \
             -D AERONET_ENABLE_HTTP2=ON \
             -D AERONET_ENABLE_BROTLI=ON \
             -D AERONET_ENABLE_ZLIB=ON \
