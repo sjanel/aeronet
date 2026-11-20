@@ -218,9 +218,10 @@ bool ConnectionMaintenance::closeExpiredKeepAliveConnections() {
     // keepAliveTimeout applies between requests, after the previous response has completed. An active HTTP/2
     // stream may be waiting for peer flow-control credit and therefore produce no socket events at all; reaping
     // it here would truncate a response at the current window boundary. Recheck periodically until all streams
-    // complete, at which point the last event-refreshed deadline resumes normal idle expiry.
+    // complete, at which point the last event-refreshed deadline resumes normal idle expiry. With a keepAliveTimeout of
+    // 0, at the next sweep: re-armed at now, the deadline would come back in this very loop forever.
     if (state.protocolHandler && state.protocolHandler->hasRequestsInProgress()) {
-      _deadlines.upsert(state, expired.fd, now + config.keepAliveTimeout);
+      _deadlines.upsert(state, expired.fd, now + std::max(config.keepAliveTimeout, std::chrono::milliseconds{1}));
       continue;
     }
 

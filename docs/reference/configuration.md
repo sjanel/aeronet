@@ -134,7 +134,7 @@ std::cout << aeronet::fullVersionWithRuntime() << '\n';
 ```
 
 ```text
-aeronet 1.8.0-dev
+aeronet 1.7.0
   glaze: 8.1.0
   protobuf: 3.21.12
   tls: OpenSSL 3.0.13 30 Jan 2024
