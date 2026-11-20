@@ -82,7 +82,7 @@ Streaming responses, coroutine (async) handlers, routing, middleware and the res
 
 ## Quick Start with provided examples
 
-Minimal server examples for typical use cases (multi-threaded server, TLS, HTTP/2, WebSocket, static files, sendfile, HTTP client, ...) are provided in the [examples](examples) directory.
+Minimal server examples for typical use cases (multi-threaded server, TLS, HTTP/2, WebSocket server and client, static files, sendfile, HTTP client, ...) are provided in the [examples](examples) directory.
 
 ```bash
 cmake -S . -B build -D CMAKE_BUILD_TYPE=Release
@@ -117,7 +117,7 @@ Hello from aeronet minimal server! You requested /hello
 | Async handlers | Coroutines (`RequestTask`), background work off the event loop | [Async handlers](docs/guides/async-handlers.md) |
 | TLS (flag) | ALPN, mTLS, SNI, tickets, OCSP stapling, CRLs, kTLS, HTTP to HTTPS redirect | [TLS](docs/protocols/tls.md) |
 | HTTP/2 (flag) | RFC 9113, HPACK, ALPN h2, h2c, multiplexing | [HTTP/2](docs/protocols/http2.md) |
-| WebSocket (flag) | RFC 6455, permessage-deflate, ping/pong, close handshake | [WebSocket](docs/protocols/websocket.md) |
+| WebSocket (flag) | RFC 6455, permessage-deflate, ping/pong, close handshake, server endpoints and client | [WebSocket](docs/protocols/websocket.md), [WebSocket client](docs/protocols/websocket-client.md) |
 | HTTP client (flag) | HTTP/1.1 + HTTP/2, keep-alive pool, redirects, proxy, streamed bodies, auto (de)compression | [HTTP client](docs/modules/http-client.md) |
 | JWT (flag) | RFC 7519 JWS sign / verify, JWK / JWKS, rejects `alg:none` | [JWT](docs/modules/jwt.md) |
 | Protocol Buffers (flag) | Binary and ProtoJSON bodies (RFC 9996) for the server and the client, compressed like any body | [Protocol Buffers](docs/modules/protobuf.md) |

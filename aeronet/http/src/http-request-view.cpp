@@ -763,11 +763,13 @@ void HttpRequestView::pinHeadStorage(RawChars& headBuffer) {
   }
   // The head is in the input buffer, not necessarily at its start (the requests pipelined before it may precede it).
   const char* oldBase = _pPath - pathOffsetInHead();
+  headBuffer.clear();
   // A single allocation: the views remapped below must not be invalidated by a later reallocation.
   headBuffer.reserve(_headSpanSize + PathParamKeysSize(_pathParams));
   headBuffer.assign(oldBase, _headSpanSize);
 
   rebaseHeadViews(headBuffer.data());
+
   // The views set after the parsing of the head.
   const HeadViewsRemapper remap(reinterpret_cast<std::uintptr_t>(oldBase), _headSpanSize, headBuffer.data());
   remap(_trailers);

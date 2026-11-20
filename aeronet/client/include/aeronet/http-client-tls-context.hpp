@@ -30,8 +30,9 @@ class HttpClientTlsContext {
   // Whether the underlying SSL_CTX has not been built yet.
   [[nodiscard]] bool empty() const noexcept { return pCtx == nullptr; }
 
-  // Build a TLS transport in client connect state, with SNI and (optionally) hostname verification.
-  [[nodiscard]] Transport makeTransport(NativeHandle fd, const char* pHost, bool verify) const;
+  // Build a TLS transport in client connect state, with SNI and (optionally) hostname verification. With http1Only,
+  // ALPN only offers "http/1.1" on this connection, whatever HttpClientConfig::httpVersion (an HTTP/1.1 Upgrade).
+  [[nodiscard]] Transport makeTransport(NativeHandle fd, const char* pHost, bool verify, bool http1Only = false) const;
 
  private:
   void* pCtx{};

@@ -6,6 +6,11 @@ endif()
 if(AERONET_ENABLE_HTTP_CLIENT)
 	AeronetAddProjectExecutable(aeronet-client-minimal client-minimal.cpp)
 	target_link_libraries(aeronet-client-minimal PRIVATE aeronet_client)
+
+	if (AERONET_ENABLE_WEBSOCKET)
+		AeronetAddProjectExecutable(aeronet-websocket-client websocket-client.cpp)
+		target_link_libraries(aeronet-websocket-client PRIVATE aeronet_client)
+	endif()
 endif()
 
 if(AERONET_ENABLE_HTTP_SERVER)

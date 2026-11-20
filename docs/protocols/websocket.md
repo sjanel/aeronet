@@ -2,7 +2,7 @@
 
 aeronet implements the WebSocket protocol ([RFC 6455](https://www.rfc-editor.org/rfc/rfc6455)) on top of its HTTP/1.1 server: a route accepts the `Upgrade: websocket` handshake, then the connection carries full-duplex text and binary messages, ping/pong heartbeats, and a close handshake. The optional `permessage-deflate` extension ([RFC 7692](https://www.rfc-editor.org/rfc/rfc7692)) compresses messages.
 
-WebSocket support is enabled by the `AERONET_ENABLE_WEBSOCKET` CMake option, which defaults to `ON` whenever the server is built. Compression additionally requires zlib (`AERONET_ENABLE_ZLIB`): without it, the compression API is not compiled (see [Compression](#compression-permessage-deflate)).
+WebSocket support is enabled by the `AERONET_ENABLE_WEBSOCKET` CMake option, `ON` by default. This page covers the server endpoints; to connect to WebSocket servers, see [WebSocket client](websocket-client.md). Compression additionally requires zlib (`AERONET_ENABLE_ZLIB`): without it, the compression API is not compiled (see [Compression](#compression-permessage-deflate)).
 
 ## A first endpoint
 
@@ -51,7 +51,7 @@ SingleHttpServer server(HttpServerConfig{}.withPort(8080), std::move(router));
 server.run();
 ```
 
-The handler is destroyed with its connection, so the pointer captured by its own callbacks never dangles. The [WebSocket echo example](../../examples/websocket-echo.cpp) serves a small browser client on top of this pattern.
+The handler is destroyed with its connection, so the pointer captured by its own callbacks never dangles. The [WebSocket echo example](../../examples/websocket-echo.cpp) serves a small browser client on top of this pattern, and answers the [command-line client example](websocket-client.md#command-line-client-example) too.
 
 ## Defining endpoints
 
@@ -234,7 +234,7 @@ The timeouts are checked by the server's maintenance timer, so they are accurate
 - WebSocket runs over HTTP/1.1 only. WebSocket over HTTP/2 (RFC 8441, extended CONNECT) is not supported.
 - Messages can only be sent from the event-loop thread of their connection, from a callback.
 - Messages are delivered whole: there is no streaming API for large messages, which are buffered up to `maxMessageSize`.
-- aeronet provides no WebSocket client.
+- The client side is a separate object, [WebSocketClient](websocket-client.md).
 
 ## Tests
 

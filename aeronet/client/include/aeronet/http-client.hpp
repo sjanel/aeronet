@@ -35,6 +35,7 @@
 #include "aeronet/timedef.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/transport.hpp"
+#include "aeronet/upgraded-connection.hpp"
 #include "aeronet/vector.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
@@ -279,6 +280,23 @@ class HttpClient {
     return requestProcess(std::move(req), nullptr, CacheUse::Bypass);
   }
 
+  // Build a GET request to `url` asking the server to switch the connection to `protocol`, the value of its Upgrade
+  // header (such as "websocket"), for upgrade(). The ws and wss schemes are accepted, as http and https (RFC 6455 §3).
+  // Its target stays in origin-form with a forward proxy, which upgrade() always crosses with a CONNECT tunnel. Headers
+  // can be added to it like to any request, within `additionalCapacity` without reallocation.
+  // Throws std::invalid_argument if the url is invalid, or if `protocol` is empty or not a valid header value.
+  [[nodiscard]] HttpRequest makeUpgradeRequest(std::string_view url, std::string_view protocol,
+                                               std::size_t additionalCapacity = 0) const;
+
+  // Send `req`, made by makeUpgradeRequest(), on a new connection speaking HTTP/1.1 (ALPN only offers "http/1.1" over
+  // TLS), and read its response. On 101 (Switching Protocols), the connection is handed over in
+  // HttpUpgradeResponse::connection, with the first bytes of the new protocol received meanwhile. Any other response is
+  // read whole and returned like a regular one, its connection closed. The connection is never pooled; redirects are
+  // not followed and nothing is retried. The cookies of the jar are sent, and the ones of the response stored, as by
+  // request(). A transport failure (connect, TLS, timeout, malformed response...) is returned as an HttpClientErrc.
+  // `req` is not moved from: it is left as sent, with the cookies of the jar.
+  HttpUpgradeResult upgrade(HttpRequest&& req);
+
   // Convenience verbs.
   HttpClientResult get(std::string_view url) { return request(makeRequest(http::Method::GET, url)); }
 
@@ -398,7 +416,9 @@ class HttpClient {
   // Acquire a connection for the origin: reuse an idle pooled one or establish a fresh one.
   std::expected<ActiveConnection, HttpClientErrc> acquireConnection(const HttpRequest& req);
 
-  std::expected<ActiveConnection, HttpClientErrc> connectNew(const HttpRequest& req);
+  // Establish a fresh connection for `req`. An `upgrade` connection offers only HTTP/1.1 over TLS, and reaches a
+  // cleartext origin through a forward proxy with a CONNECT tunnel too.
+  std::expected<ActiveConnection, HttpClientErrc> connectNew(const HttpRequest& req, bool upgrade = false);
 
   // Whether a forward proxy is configured (see HttpClientConfig::withProxy). When true, connectNew connects
   // to the proxy and, for an https origin, opens a CONNECT tunnel before the TLS handshake.
@@ -419,6 +439,9 @@ class HttpClient {
   // Drive the TLS handshake to completion (the TCP connect is already established by connectNew), then
   // resolve the negotiated application protocol (ALPN for https; HTTP/1.1 otherwise) into conn.protocol.
   HttpClientErrc finishConnect(ActiveConnection& conn, bool isTls, SteadyClock::time_point deadline);
+
+  // Drive the TLS handshake of a fresh connection to completion (nothing for a plain transport).
+  HttpClientErrc finishTlsHandshake(ActiveConnection& conn, SteadyClock::time_point deadline);
 
   // Create conn.proto for conn.protocol if it is not already present (fresh connection). Returns
   // HttpClientErrc::protocolUnsupported when the negotiated protocol has no engine in this build

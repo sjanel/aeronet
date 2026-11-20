@@ -17,6 +17,7 @@
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/response-body-sink.hpp"
 #include "aeronet/toupperlower.hpp"
@@ -295,6 +296,30 @@ TEST(ResponseParserTest, DiscardsInterim100Continue) {
   EXPECT_EQ(st, Http1ResponseParser::Status::Complete);
   EXPECT_EQ(resp.status(), 200);
   EXPECT_EQ(resp.bodyInMemory(), "ok");
+}
+
+TEST(ResponseParserTest, SwitchingProtocolsEndsAnUpgradeRequest) {
+  // The 101 answering an upgrade request is its final response: the bytes after its head belong to the new protocol. An
+  // interim 100 or 103 before it is still discarded.
+  static constexpr std::string_view kHead =
+      "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+      "Connection: Upgrade\r\n\r\n";
+  std::string raw(kHead);
+  raw.append("\x81\x02hi");
+  RawChars bodyBuf;
+  Http1ResponseParser parser(bodyBuf);
+  parser.reset(false, false, true);
+  HttpResponse resp;
+  EXPECT_EQ(parser.parse(raw, false, resp, kMax), Http1ResponseParser::Status::Complete);
+  EXPECT_EQ(resp.status(), http::StatusCodeSwitchingProtocols);
+  EXPECT_EQ(resp.headerValueOrEmpty(http::Upgrade), "websocket");
+  EXPECT_TRUE(resp.bodyInMemory().empty());
+  EXPECT_EQ(parser.consumed(), kHead.size());
+  EXPECT_FALSE(parser.keepAlive());
+
+  // Without upgrade request, a 101 is an interim response like the others: the parser waits for the final one.
+  HttpResponse interim;
+  EXPECT_EQ(parseAll("HTTP/1.1 101 Switching Protocols\r\n\r\n", interim), Http1ResponseParser::Status::NeedMore);
 }
 
 TEST(ResponseParserTest, RejectsGarbageStatusLine) {

@@ -99,6 +99,7 @@ nav:
       - TLS: protocols/tls.md
       - HTTP/2: protocols/http2.md
       - WebSocket: protocols/websocket.md
+      - WebSocket client: protocols/websocket-client.md
       - CONNECT tunneling: protocols/connect.md
   - Modules:
       - HTTP client: modules/http-client.md

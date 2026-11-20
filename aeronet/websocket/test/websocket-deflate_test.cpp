@@ -913,4 +913,93 @@ TEST(WebSocketSharedDeflateStreamsTest, StreamsStayValidWhenMoved) {
   EXPECT_EQ(RoundTrip(client, assignedServer, message), message);
 }
 
+namespace {
+
+std::string BuildDeflateOffer(const DeflateConfig& config) {
+  std::string offer(kMaxDeflateOfferSize, '\0');
+  offer.resize(static_cast<std::size_t>(websocket::BuildDeflateOffer(config, offer.data()) - offer.data()));
+  return offer;
+}
+
+}  // namespace
+
+TEST(WebSocketDeflateTest, BuildDeflateOffer_Default) {
+  EXPECT_EQ(BuildDeflateOffer(DeflateConfig{}), "permessage-deflate; client_max_window_bits");
+}
+
+TEST(WebSocketDeflateTest, BuildDeflateOffer_AllParameters) {
+  DeflateConfig config;
+  config.serverNoContextTakeover = true;
+  config.clientNoContextTakeover = true;
+  config.serverMaxWindowBits = 10;
+  config.clientMaxWindowBits = 9;
+  const std::string offer = BuildDeflateOffer(config);
+  EXPECT_EQ(offer,
+            "permessage-deflate; server_no_context_takeover; client_no_context_takeover; server_max_window_bits=10; "
+            "client_max_window_bits=9");
+  // The offer is a valid one for the server side.
+  const DeflateNegotiatedParams params = ParseDeflateOffer(offer, DeflateConfig{});
+  ASSERT_TRUE(params.hasValue());
+  EXPECT_EQ(params.serverMaxWindowBits, 10);
+  EXPECT_EQ(params.clientMaxWindowBits, 9);
+  config.clientMaxWindowBits = 14;
+  EXPECT_EQ(BuildDeflateOffer(config).size(), kMaxDeflateOfferSize);
+}
+
+struct DeflateResponseCase {
+  std::string_view response;
+  bool valid;
+  uint8_t serverMaxWindowBits;
+  uint8_t clientMaxWindowBits;
+  bool serverNoContextTakeover;
+  bool clientNoContextTakeover;
+};
+
+TEST(WebSocketDeflateTest, ParseDeflateResponse) {
+  DeflateConfig config;  // the default offer: client_max_window_bits without value
+  config.clientMaxWindowBits = 13;
+  static constexpr DeflateResponseCase kCases[]{
+      {"permessage-deflate", true, 15, 13, false, false},
+      {" PerMessage-Deflate ", true, 15, 13, false, false},
+      {"permessage-deflate; server_no_context_takeover", true, 15, 13, true, false},
+      {"permessage-deflate; client_no_context_takeover", true, 15, 13, false, true},
+      {"permessage-deflate; server_max_window_bits=9", true, 9, 13, false, false},
+      {"permessage-deflate; server_max_window_bits=\"12\"", true, 12, 13, false, false},
+      {"permessage-deflate; client_max_window_bits=10", true, 15, 10, false, false},
+      {"permessage-deflate; client_max_window_bits=15", true, 15, 13, false, false},
+      {"permessage-deflate; server_no_context_takeover; client_no_context_takeover; server_max_window_bits=8; "
+       "client_max_window_bits=8",
+       true, 8, 8, true, true},
+      {"x-webkit-deflate-frame", false, 0, 0, false, false},
+      {"permessage-deflate; unknown", false, 0, 0, false, false},
+      {"permessage-deflate; server_no_context_takeover=1", false, 0, 0, false, false},
+      {"permessage-deflate; client_no_context_takeover; client_no_context_takeover", false, 0, 0, false, false},
+      {"permessage-deflate; server_max_window_bits", false, 0, 0, false, false},
+      {"permessage-deflate; server_max_window_bits=7", false, 0, 0, false, false},
+      {"permessage-deflate; server_max_window_bits=09", false, 0, 0, false, false},
+      {"permessage-deflate; client_max_window_bits", false, 0, 0, false, false},
+      {"permessage-deflate; client_max_window_bits=16", false, 0, 0, false, false},
+      {"permessage-deflate; server_max_window_bits=10; server_max_window_bits=10", false, 0, 0, false, false},
+  };
+  for (const DeflateResponseCase& testCase : kCases) {
+    const DeflateNegotiatedParams params = ParseDeflateResponse(testCase.response, config);
+    ASSERT_EQ(params.hasValue(), testCase.valid) << testCase.response;
+    if (testCase.valid) {
+      EXPECT_EQ(params.serverMaxWindowBits, testCase.serverMaxWindowBits) << testCase.response;
+      EXPECT_EQ(params.clientMaxWindowBits, testCase.clientMaxWindowBits) << testCase.response;
+      EXPECT_EQ(params.serverNoContextTakeover, testCase.serverNoContextTakeover) << testCase.response;
+      EXPECT_EQ(params.clientNoContextTakeover, testCase.clientNoContextTakeover) << testCase.response;
+    }
+  }
+}
+
+TEST(WebSocketDeflateTest, ParseDeflateResponse_ServerWindowLargerThanRequested) {
+  DeflateConfig config;
+  config.serverMaxWindowBits = 10;  // offered: server_max_window_bits=10
+  EXPECT_TRUE(ParseDeflateResponse("permessage-deflate; server_max_window_bits=10", config).hasValue());
+  EXPECT_FALSE(ParseDeflateResponse("permessage-deflate; server_max_window_bits=11", config).hasValue());
+  // Without the parameter, the server may use a 32KB window: the client decompresses with one.
+  EXPECT_EQ(ParseDeflateResponse("permessage-deflate", config).serverMaxWindowBits, 15);
+}
+
 }  // namespace aeronet::websocket

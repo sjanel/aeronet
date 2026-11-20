@@ -197,6 +197,101 @@ char* BuildDeflateResponse(DeflateNegotiatedParams params, char* pData) {
   return pData;
 }
 
+char* BuildDeflateOffer(const DeflateConfig& config, char* pData) {
+  pData = AppendFixed<kPermessageDeflate>(pData);
+  if (config.serverNoContextTakeover) {
+    pData = AppendFixed<kSemicolonSpace>(pData);
+    pData = AppendFixed<kServerNoContextTakeover>(pData);
+  }
+  if (config.clientNoContextTakeover) {
+    pData = AppendFixed<kSemicolonSpace>(pData);
+    pData = AppendFixed<kClientNoContextTakeover>(pData);
+  }
+  if (config.serverMaxWindowBits < ZStreamRAII::kMaxWindowBits) {
+    pData = AppendFixed<kSemicolonSpace>(pData);
+    pData = AppendFixed<kServerMaxWindowBits>(pData);
+    *pData++ = '=';
+    pData = WriteUInt(pData, config.serverMaxWindowBits, ndigits(config.serverMaxWindowBits));
+  }
+  // Always offered: the server may then limit the window of the client, which it could not do otherwise (RFC 7692
+  // §7.1.2.2). A value tells the largest window the client will use.
+  pData = AppendFixed<kSemicolonSpace>(pData);
+  pData = AppendFixed<kClientMaxWindowBits>(pData);
+  if (config.clientMaxWindowBits < ZStreamRAII::kMaxWindowBits) {
+    *pData++ = '=';
+    pData = WriteUInt(pData, config.clientMaxWindowBits, ndigits(config.clientMaxWindowBits));
+  }
+  return pData;
+}
+
+// The 4 parameters, the 2 window sizes with a value ("=" and 2 digits at most, below 15).
+static_assert(kPermessageDeflate.size() + (std::size_t{4} * kSemicolonSpace.size()) + kServerNoContextTakeover.size() +
+                  kClientNoContextTakeover.size() + kServerMaxWindowBits.size() + kClientMaxWindowBits.size() +
+                  (std::size_t{2} * 3U) ==
+              kMaxDeflateOfferSize);
+
+bool IsPermessageDeflate(std::string_view extension) {
+  return CaseInsensitiveEqual(http::HeaderParametersIterator(extension).firstElement(), kPermessageDeflate);
+}
+
+DeflateNegotiatedParams ParseDeflateResponse(std::string_view extensionResponse, const DeflateConfig& config) {
+  DeflateNegotiatedParams params;
+  http::HeaderParametersIterator it(extensionResponse);
+  if (!CaseInsensitiveEqual(it.firstElement(), kPermessageDeflate)) {
+    return params;
+  }
+  // Without parameter, both sides use a 32KB window at most, with context takeover: the client compresses with its
+  // configured window, never larger.
+  params.serverMaxWindowBits = ZStreamRAII::kMaxWindowBits;
+  params.clientMaxWindowBits = config.clientMaxWindowBits;
+
+  enum : uint8_t {
+    kSeenServerNoContextTakeover = 1U << 0U,
+    kSeenClientNoContextTakeover = 1U << 1U,
+    kSeenServerMaxWindowBits = 1U << 2U,
+    kSeenClientMaxWindowBits = 1U << 3U,
+  };
+  uint8_t seenParams = 0;
+  while (it.hasNext()) {
+    const http::HeaderParameter param = it.next();
+    uint8_t paramBit;
+    bool valid;
+    if (CaseInsensitiveEqual(param.name, kServerNoContextTakeover)) {
+      // The server may announce it even if it was not requested (RFC 7692 §7.1.1.1).
+      paramBit = kSeenServerNoContextTakeover;
+      valid = !param.hasValue();
+      params.serverNoContextTakeover = true;
+    } else if (CaseInsensitiveEqual(param.name, kClientNoContextTakeover)) {
+      // The server may require it even if it was not offered (RFC 7692 §7.1.1.2).
+      paramBit = kSeenClientNoContextTakeover;
+      valid = !param.hasValue();
+      params.clientNoContextTakeover = true;
+    } else if (CaseInsensitiveEqual(param.name, kServerMaxWindowBits)) {
+      // The window of the server, at most the one requested (RFC 7692 §7.1.2.1): the decompression of the client uses
+      // it.
+      paramBit = kSeenServerMaxWindowBits;
+      const uint8_t bits = param.hasValue() ? ParseWindowBits(param.value) : uint8_t{0};
+      valid = bits != 0 && bits <= config.serverMaxWindowBits;
+      params.serverMaxWindowBits = bits;
+    } else if (CaseInsensitiveEqual(param.name, kClientMaxWindowBits)) {
+      // The largest window the client may use (RFC 7692 §7.1.2.2), a value is required in a response.
+      paramBit = kSeenClientMaxWindowBits;
+      const uint8_t bits = param.hasValue() ? ParseWindowBits(param.value) : uint8_t{0};
+      valid = bits != 0;
+      params.clientMaxWindowBits = std::min(bits, config.clientMaxWindowBits);
+    } else {
+      params.setEmpty();  // unknown parameter
+      return params;
+    }
+    if (!valid || (seenParams & paramBit) != 0) {
+      params.setEmpty();  // invalid value, or repeated parameter
+      return params;
+    }
+    seenParams |= paramBit;
+  }
+  return params;
+}
+
 struct SharedDeflateStreams::Impl {
   struct Compressor {
     std::unique_ptr<WebSocketCompressor> compressor;

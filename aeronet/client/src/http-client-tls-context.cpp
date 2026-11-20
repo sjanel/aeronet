@@ -46,6 +46,9 @@ namespace aeronet::internal {
 
 namespace {
 
+// ALPN "http/1.1" in the wire format of OpenSSL (length-prefixed).
+constexpr unsigned char kAlpnHttp11[]{8, 'h', 't', 't', 'p', '/', '1', '.', '1'};
+
 // Map an aeronet TLSConfig::Version onto the OpenSSL protocol constant (0 == unset / unsupported).
 constexpr int ToOpenSslTlsVersion(TLSConfig::Version ver) {
   if (ver == TLSConfig::TLS_1_2) {
@@ -191,7 +194,6 @@ HttpClientTlsContext::HttpClientTlsContext(const HttpClientConfig& cfg) {
   // format), driven by cfg.httpVersion: "h2" is offered first (preferred) in Auto, alone in Http2, and
   // not at all in Http1_1 or a build without HTTP/2 support. The negotiated protocol is read back from
   // SSL_get0_alpn_selected() in finishConnect(). SSL_CTX_set_alpn_protos returns 0 on success.
-  static constexpr unsigned char kAlpnHttp11[]{8, 'h', 't', 't', 'p', '/', '1', '.', '1'};
 #ifdef AERONET_ENABLE_HTTP2
   static constexpr unsigned char kAlpnH2Http11[]{2, 'h', '2', 8, 'h', 't', 't', 'p', '/', '1', '.', '1'};
   static constexpr unsigned char kAlpnH2[]{2, 'h', '2'};
@@ -256,10 +258,16 @@ HttpClientTlsContext::HttpClientTlsContext(const HttpClientConfig& cfg) {
 }
 
 // Build a TLS transport in client connect state, with SNI and (optionally) hostname verification.
-[[nodiscard]] Transport HttpClientTlsContext::makeTransport(NativeHandle fd, const char* pHost, bool verify) const {
+[[nodiscard]] Transport HttpClientTlsContext::makeTransport(NativeHandle fd, const char* pHost, bool verify,
+                                                            bool http1Only) const {
   TlsTransport::SslPtr ssl(::SSL_new(static_cast<SSL_CTX*>(pCtx)), &::SSL_free);
   if (!ssl) {
     throw HttpClientException("SSL_new failed");
+  }
+  // An upgrade (WebSocket) needs an HTTP/1.1 connection: offering "h2" would let the server select it (RFC 8441 would
+  // then be needed). SSL_set_alpn_protos returns 0 on success.
+  if (http1Only && ::SSL_set_alpn_protos(ssl.get(), kAlpnHttp11, sizeof(kAlpnHttp11)) != 0) {
+    throw HttpClientException("Failed to set TLS ALPN protocols");
   }
   if (::SSL_set_fd(ssl.get(), static_cast<int>(fd)) != 1) {
     throw HttpClientException("SSL_set_fd failed");

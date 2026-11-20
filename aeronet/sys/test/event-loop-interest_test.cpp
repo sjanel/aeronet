@@ -1,6 +1,6 @@
 // Portable (Linux, macOS, Windows) checks of the interest set semantics of EventLoop over a real TCP connection:
 // mod() replaces the previous interest set, as epoll_ctl(EPOLL_CTL_MOD) does, on every backend. Also the errors of a
-// failed registration.
+// failed registration, and the poll of an empty set.
 
 #include <gtest/gtest.h>
 
@@ -107,6 +107,21 @@ TEST_F(EventLoopInterestTest, ModDropsReadInterest) {
 
   ASSERT_TRUE(_loop.mod(EventLoop::EventFd{clientFd(), EventIn}));
   EXPECT_EQ(PollUntilEvent(_loop, clientFd()), EventIn);  // the byte is still unread
+}
+
+// A loop without any descriptor waits its timeout and reports nothing, as epoll_wait and kevent do (WSAPoll rejects an
+// empty set), also once its last descriptor is removed.
+TEST_F(EventLoopInterestTest, PollWithoutDescriptorWaitsTheTimeout) {
+  for (int round = 0; round < 2; ++round) {
+    const auto before = std::chrono::steady_clock::now();
+    const auto events = _loop.poll();
+    EXPECT_GE(std::chrono::steady_clock::now() - before, std::chrono::milliseconds{20});
+    EXPECT_NE(events.data(), nullptr);
+    EXPECT_TRUE(events.empty());
+
+    ASSERT_TRUE(_loop.add(EventLoop::EventFd{clientFd(), EventIn}));
+    _loop.del(clientFd());
+  }
 }
 
 #ifndef AERONET_WINDOWS  // WSAPoll has no edge-triggered mode
