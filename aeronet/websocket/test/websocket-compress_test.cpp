@@ -774,16 +774,16 @@ bool ReferenceRawInflate(std::string_view compressed, std::string& output, int w
   input.append("\x00\x00\xff\xff", 4);
   ZSetInput(stream, input.data(), static_cast<uint32_t>(input.size()));
   output.clear();
-  std::array<char, 256> chunk{};
+  char chunk[256];
   bool ok = true;
   do {
-    ZSetOutput(stream, chunk.data(), chunk.size());
+    ZSetOutput(stream, chunk, static_cast<uint32_t>(sizeof(chunk)));
     const auto ret = ZInflate(stream, Z_SYNC_FLUSH);
     if (ret != Z_OK && ret != Z_STREAM_END && ret != Z_BUF_ERROR) {
       ok = false;
       break;
     }
-    output.append(chunk.data(), chunk.size() - stream.avail_out);
+    output.append(chunk, static_cast<uint32_t>(sizeof(chunk)) - stream.avail_out);
   } while (stream.avail_out == 0);
   ZInflateEnd(stream);
   return ok;

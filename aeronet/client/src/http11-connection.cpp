@@ -20,6 +20,7 @@
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
+#include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/response-streamer.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/memory-utils-sv.hpp"
@@ -129,6 +130,7 @@ class ClientConnection::Http11RequestWriter {
     const std::size_t closeSize = addClose ? kConnectionCloseLine.size() : 0;
 
     RawChars& out = _client.bodyBuffer();
+    out.clear();
     out.reserve(wire.size() + cookiesSize + closeSize);
     char* pData = Append(wire.substr(0, cookiesPos), out.data());
     if (!cookies.empty()) {
@@ -347,7 +349,7 @@ class ClientConnection::Http11RequestWriter {
 
 HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transport& transport, NativeHandle fd,
                                                      HttpRequest& req, SteadyClock::time_point ioDeadline,
-                                                     bool& requestSent) {
+                                                     bool& requestSent, bool upgradeRequest) {
   const HttpClientConfig& config = client.config();
   _keepAlive = false;  // until the response is complete: a failed exchange never leaves the connection reusable
   RawChars& responseBuffer = client.responseBuffer();
@@ -362,7 +364,7 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
   // body is copied. Both paths preserve reuse without making a later request invalidate the returned response.
   ResponseStreamer& streamer = client._streamer;
   Http1ResponseParser parser(client.bodyBuffer());
-  parser.reset(req.method() == http::Method::HEAD, streamer.active());
+  parser.reset(req.method() == http::Method::HEAD, streamer.active(), upgradeRequest);
   if (config.decompression.enable) {
     // Decode Content-Encoding'd response bodies in place at install time (straight from the receive
     // buffer / de-framed chunk buffer, no intermediate copy of the compressed bytes).
@@ -463,6 +465,13 @@ HttpClientResult ClientConnection::exchangeForHttp11(HttpClient& client, Transpo
       streamer.setBufferedBody(parser.bufferedBody(), parser.contentType(responseBuffer));
     }
     break;
+  }
+
+  if (upgradeRequest && resp.status() == http::StatusCodeSwitchingProtocols) {
+    // The connection now speaks the new protocol: the receive buffer keeps the bytes of it received with the head, and
+    // the transport the ones TLS already decrypted (the caller reads them before waiting for the socket).
+    responseBuffer.erase_front(parser.consumed());
+    return resp;
   }
 
   // Bytes still held by the transport (decrypted by TLS but not read yet) were received after the end of the response,

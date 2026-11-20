@@ -12,6 +12,10 @@ if(NOT AERONET_ENABLE_GLAZE)
     list(REMOVE_ITEM AERONET_CLIENT_SRC_LIST src/client-config-loader.cpp)
 endif()
 
+if(NOT AERONET_ENABLE_WEBSOCKET)
+    list(REMOVE_ITEM AERONET_CLIENT_SRC_LIST src/websocket-client.cpp)
+endif()
+
 AeronetAddProjectLibrary(aeronet_client
     ${AERONET_CLIENT_SRC_LIST}
 )
@@ -21,6 +25,12 @@ AeronetAddProjectLibrary(aeronet_client
 target_link_libraries(aeronet_client
     PUBLIC aeronet_http aeronet_sys aeronet_objects aeronet_version
 )
+
+# WebSocket client (WebSocketClient): the frame protocol and handshake helpers shared with the server. PUBLIC, as
+# websocket-client.hpp exposes its configuration and handler.
+if(AERONET_ENABLE_WEBSOCKET)
+    target_link_libraries(aeronet_client PUBLIC aeronet_websocket)
+endif()
 
 # Native HTTP/2 client engine: the HTTP/2 protocol core (HPACK, frames, Http2Connection), shared with the server.
 if(AERONET_ENABLE_HTTP2)
@@ -126,6 +136,18 @@ if(AERONET_ENABLE_HTTP_SERVER AND AERONET_ENABLE_OPENSSL)
         aeronet_client
         aeronet
         aeronet_basic_test_support
+    )
+endif()
+
+# WebSocket client end to end: against WebSocket endpoints of an aeronet server, and scripted raw servers.
+if(AERONET_ENABLE_HTTP_SERVER AND AERONET_ENABLE_WEBSOCKET)
+    AeronetAddUnitTest(
+        websocket-client_test
+        test/websocket-client_test.cpp
+        LIBRARIES
+        aeronet_client
+        aeronet
+        aeronet_test_support
     )
 endif()
 

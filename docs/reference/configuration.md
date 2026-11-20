@@ -31,7 +31,7 @@ aeronet is deliberately modular. CMake options select code and dependencies at c
 | --- | --- | --- | --- |
 | `AERONET_ENABLE_OPENSSL` | top-level | HTTPS, TLS client/server support, ALPN, mTLS, session tickets | OpenSSL |
 | `AERONET_ENABLE_HTTP2` | ON | HTTP/2, HPACK, h2c, and ALPN negotiation | Pair with OpenSSL for HTTP/2 over TLS |
-| `AERONET_ENABLE_WEBSOCKET` | ON | RFC 6455 endpoints | `AERONET_ENABLE_ZLIB` additionally enables permessage-deflate |
+| `AERONET_ENABLE_WEBSOCKET` | ON | RFC 6455 server endpoints, and `WebSocketClient` with the HTTP client | `AERONET_ENABLE_ZLIB` additionally enables permessage-deflate |
 | `AERONET_ENABLE_HTTP_CLIENT` | ON | Synchronous `HttpClient`, pool, proxy, cache, retry | OpenSSL for HTTPS; HTTP/2 option for h2 client |
 | `AERONET_ENABLE_HTTP_SERVER` | ON | Activates `HttpServer` & `SingleHttpServer` servers and handlers | OpenSSL for HTTPS; HTTP/2 option for h2 client |
 | `AERONET_ENABLE_ASYNC_HANDLERS` | ON | Coroutine routing APIs | No external dependency |

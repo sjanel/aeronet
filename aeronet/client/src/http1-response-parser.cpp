@@ -77,7 +77,7 @@ void Http1ResponseParser::InstallBodyStorage(HttpResponse& resp, std::string_vie
   *owner = std::move(replacement);
 }
 
-void Http1ResponseParser::reset(bool headRequest, bool streamHead) noexcept {
+void Http1ResponseParser::reset(bool headRequest, bool streamHead, bool upgradeRequest) noexcept {
   _bodyBuf.clear();
   _pos = 0;
   _bodyStart = 0;
@@ -89,6 +89,7 @@ void Http1ResponseParser::reset(bool headRequest, bool streamHead) noexcept {
   _framing = Framing::None;
   _state = State::StatusLine;
   _headRequest = headRequest;
+  _upgradeRequest = upgradeRequest;
   _streamHead = streamHead;
   _streaming = false;
   _gatheredPiece = false;
@@ -189,10 +190,12 @@ Http1ResponseParser::Status Http1ResponseParser::decideFraming() {
   _bodyStart = _pos;
 
   // 1xx interim responses are discarded (and the parser restarted) in parse() before decideFraming() runs,
-  // so the status is always a final one (>= 200) here: only 204/304 (and a HEAD request) are bodyless.
-  assert(_statusCode >= 200);
+  // so the status is always a final one (>= 200) here, or the 101 ending an upgrade request: only 204/304 (and a HEAD
+  // request) are bodyless, and the 101, after which the connection speaks another protocol.
+  assert(_statusCode >= 200 || isSwitchingProtocols());
   const http::StatusCode code = _statusCode;
-  const bool bodyless = _headRequest || code == http::StatusCodeNoContent || code == http::StatusCodeNotModified;
+  const bool bodyless = _headRequest || code == http::StatusCodeNoContent || code == http::StatusCodeNotModified ||
+                        code == http::StatusCodeSwitchingProtocols;
 
   if (bodyless) {
     _framing = Framing::None;
@@ -459,10 +462,11 @@ Http1ResponseParser::Status Http1ResponseParser::parseResponse(std::span<char> b
 
     // Headers state.
     if (line.empty()) {
-      // End of header block. 1xx interim responses are discarded; restart for the final response.
+      // End of header block. 1xx interim responses are discarded; restart for the final response. The 101 answering an
+      // upgrade request is the final one.
       // status code should have been parsed already.
       assert(_statusCode >= 100 && _statusCode <= 599);
-      if (_statusCode < 200) {
+      if (_statusCode < 200 && !isSwitchingProtocols()) {
         _headerFlags = {};
         _contentTypeLen = 0;
         _state = State::StatusLine;

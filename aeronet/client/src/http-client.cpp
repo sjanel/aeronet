@@ -10,6 +10,7 @@
 #include <exception>
 #include <expected>
 #include <span>
+#include <stdexcept>
 #include <string_view>
 #include <system_error>
 #include <thread>
@@ -32,6 +33,8 @@
 #include "aeronet/http-codec-result.hpp"
 #include "aeronet/http-codec.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-header-is-valid.hpp"
+#include "aeronet/http-message.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
@@ -48,6 +51,7 @@
 #include "aeronet/retry-config.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
+#include "aeronet/string-trim.hpp"
 #include "aeronet/supported-accept-encoding.hpp"
 #include "aeronet/tcp-connector.hpp"
 #include "aeronet/tcp-no-delay-mode.hpp"
@@ -55,6 +59,7 @@
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/transport-result.hpp"
 #include "aeronet/transport.hpp"
+#include "aeronet/upgraded-connection.hpp"
 #include "aeronet/vector.hpp"
 #include "status-line.hpp"
 #include "transport-io.hpp"
@@ -468,7 +473,8 @@ EventBmp HttpClient::waitExchangeEvents(NativeHandle fd, EventBmp interest, Stea
   return waitEvents(fd, interest, deadline);
 }
 
-std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectNew(const HttpRequest& req) {
+std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectNew(const HttpRequest& req,
+                                                                                   bool upgrade) {
   // For https, build (and thereby validate) the shared TLS context up front -- before spending a connect on
   // it. A misconfiguration (bad cipher list, unusable cert/key, ...) is a hard setup error: it throws an
   // HttpClientException deterministically here, independently of whether the origin is even reachable.
@@ -516,7 +522,9 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectN
   // (origin) TLS handshake driven later by finishConnect. The tunnel exchange runs on the raw socket via a
   // throwaway plain transport (no origin bytes can arrive until we speak TLS, so nothing beyond the CONNECT
   // response is consumed); the TLS transport then wraps the same fd and handshakes through the tunnel.
-  if (proxied && isTls) {
+  // An upgraded connection carries another protocol than HTTP after its first response, which a forward proxy would not
+  // relay: a cleartext origin is reached through a tunnel too (RFC 6455 §4.1).
+  if (proxied && (isTls || upgrade)) {
     Transport tunnelTransport(fd);
     if (auto err = establishProxyTunnel(tunnelTransport, fd, req); err != HttpClientErrc::noError) {
       unregisterIfCurrent(fd);  // establishProxyTunnel may have armed the loop on this fd before failing
@@ -526,7 +534,7 @@ std::expected<HttpClient::ActiveConnection, HttpClientErrc> HttpClient::connectN
 #ifdef AERONET_ENABLE_OPENSSL
   if (isTls) {
     // The context is already built above; makeTransport only wraps the freshly connected fd.
-    conn.transport = tlsContext().makeTransport(fd, req.hostCStr().c_str(), _config.tlsVerifyPeer);
+    conn.transport = tlsContext().makeTransport(fd, req.hostCStr().c_str(), _config.tlsVerifyPeer, upgrade);
   } else
 #endif
   {
@@ -549,6 +557,7 @@ HttpClientErrc HttpClient::establishProxyTunnel(Transport& transport, NativeHand
   const std::size_t authorityLen = host.size() + (ipv6 ? 2U : 0U) + 1U + postNbDigits;
 
   RawChars& reqBuffer = _reqBodyScratch;
+  reqBuffer.clear();
   reqBuffer.reserve(kConnect.size() + authorityLen + kConnectMid.size() + authorityLen + http::DoubleCRLF.size());
   const auto appendAuthority = [ipv6, host, port, postNbDigits](char* out) {
     if (ipv6) {
@@ -677,8 +686,7 @@ void HttpClient::releaseConnection(const HttpRequest& req, ActiveConnection&& co
   }
 }
 
-HttpClientErrc HttpClient::finishConnect(ActiveConnection& conn, [[maybe_unused]] bool isTls,
-                                         SteadyClock::time_point deadline) {
+HttpClientErrc HttpClient::finishTlsHandshake(ActiveConnection& conn, SteadyClock::time_point deadline) {
   const NativeHandle fd = conn.cnx.fd();
   // The TCP connect (including multi-address fallback) is already complete here: connectNew() resolves it
   // synchronously via ConnectTCP's blocking fallback. Only the TLS handshake remains.
@@ -694,6 +702,14 @@ HttpClientErrc HttpClient::finishConnect(ActiveConnection& conn, [[maybe_unused]
     if (!waitIo(fd, internal::InterestFor(transportRes.want), deadline)) {
       return HttpClientErrc::timeout;
     }
+  }
+  return HttpClientErrc::noError;
+}
+
+HttpClientErrc HttpClient::finishConnect(ActiveConnection& conn, [[maybe_unused]] bool isTls,
+                                         SteadyClock::time_point deadline) {
+  if (const HttpClientErrc err = finishTlsHandshake(conn, deadline); err != HttpClientErrc::noError) {
+    return err;
   }
   // This is the single point where conn.protocol is decided for a fresh connection; a reused pooled
   // connection keeps the protocol it negotiated originally (re-resolving here is idempotent).
@@ -946,6 +962,98 @@ HttpClientResult HttpClient::performExchange(HttpRequest& req, bool redirectFoll
     }
     return result;  // terminal failure
   }
+}
+
+HttpRequest HttpClient::makeUpgradeRequest(std::string_view url, std::string_view protocol,
+                                           std::size_t additionalCapacity) const {
+  // The WebSocket schemes name the same origins as the HTTP ones (RFC 6455 §3): "ws" + "://..." becomes "http" +
+  // "://...", "wss" + "://..." becomes "http" + "s://...". The copy is only made for them.
+  static constexpr std::string_view kWs = "ws";
+  static constexpr std::string_view kHttp = "http";
+  RawChars httpUrl;
+  if (const std::size_t schemeEnd = url.find(':'); (schemeEnd == 2 || schemeEnd == 3) &&
+                                                   CaseInsensitiveEqual(url.substr(0, kWs.size()), kWs) &&
+                                                   (schemeEnd == 2 || url[2] == 's' || url[2] == 'S')) {
+    httpUrl.reserve(kHttp.size() + url.size() - kWs.size());
+    httpUrl.setEnd(Append(url.substr(kWs.size()), AppendFixed<kHttp>(httpUrl.data())));
+    url = httpUrl;
+  }
+
+  // Unlike makeRequestOptions(): an upgrade request does not close its connection, and is never sent in absolute-form
+  // to a proxy (see connectNew()). It has no body to compress.
+  HttpRequest::Options opts;
+  if (_config.addTrailerHeader) {
+    opts.addTrailerHeader();
+  }
+  opts.setHttpRequest();
+  opts.setPrepared();
+
+  // Added without the checks of headerAddLine(), which refuses Upgrade in requests: validated here, so that no CR or LF
+  // can inject header lines.
+  protocol = TrimOws(protocol);
+  if (protocol.empty() || !http::IsValidHeaderValue(protocol)) [[unlikely]] {
+    throw std::invalid_argument("invalid Upgrade protocol");
+  }
+
+  // The spelling of the browsers, for the servers matching the Connection option case-sensitively.
+  static constexpr std::string_view kUpgradeOption = "Upgrade";
+  const std::size_t upgradeHeadersSize = http::HeaderSize(http::Connection.size(), kUpgradeOption.size()) +
+                                         http::HeaderSize(http::Upgrade.size(), protocol.size());
+  HttpRequest req(upgradeHeadersSize + additionalCapacity, http::Method::GET, url,
+                  _config.globalHeaders.fullStringWithLastSep(), opts);
+  // Upgrade is reserved in requests: only the client sets it, with the Connection option that goes with it.
+  req.headerAddLineUnchecked(http::Connection, kUpgradeOption);
+  req.headerAddLineUnchecked(http::Upgrade, protocol);
+  return req;
+}
+
+HttpUpgradeResult HttpClient::upgrade(HttpRequest&& req) {
+  const FlushTelemetryOnExit flushTelemetryOnExit(_telemetry);
+#ifdef AERONET_LINUX
+  // See performExchange().
+  const SigpipeBlocker sigpipeBlocker(req.isTlsRequest());
+#endif
+  req.HttpMessage::finalizeHeadersAndBody();
+  // No response goes to a sink, the one of a previous request interrupted by an exception included.
+  _streamer.beginRequest(nullptr, _config, _codec);
+
+  std::expected<ActiveConnection, HttpClientErrc> acquired = connectNew(req, true);
+  if (!acquired) {
+    return std::unexpected(acquired.error());
+  }
+  ActiveConnection& conn = *acquired;
+  const NativeHandle fd = conn.cnx.fd();
+  const UnregisterOnUnwind unregisterOnUnwind(*this, fd);
+  if (_config.cookies.enabled()) {
+    _cookieJar.prepareRequestCookies(req, internal::CookieSiteContext::SameSite, SysClock::now());
+  }
+  const auto now = SteadyClock::now();
+  bool requestSent = false;
+  conn.proto = internal::ClientConnection(internal::ClientConnection::Type::Http11);
+  HttpClientResult result = check(finishTlsHandshake(conn, now + _config.connectTimeout)).and_then([&] {
+    return conn.proto.upgradeExchange(*this, conn.transport, fd, req, now + _config.requestTimeout, requestSent);
+  });
+  // The connection leaves the client in any case: closed below, or handed over.
+  unregisterIfCurrent(fd);
+  if (!result) {
+    return std::unexpected(result.error());
+  }
+  if (_config.cookies.enabled()) {
+    _cookieJar.storeResponseCookies(req, *result, SysClock::now());
+  }
+  HttpUpgradeResult upgraded(std::in_place, std::move(*result));
+  if (upgraded->response.status() == http::StatusCodeSwitchingProtocols) {
+    UpgradedConnection& out = upgraded->connection;
+    out.transport = std::move(conn.transport);
+    out.cnx = std::move(conn.cnx);
+    // Usually empty: a server rarely sends data of the new protocol along with its 101 response. The receive buffer
+    // of the client stays with it.
+    if (!_responseBuffer.empty()) {
+      out.received.assign(_responseBuffer.data(), _responseBuffer.size());
+      _responseBuffer.clear();
+    }
+  }
+  return upgraded;
 }
 
 bool HttpClient::cacheEligible(const HttpRequest& req) const noexcept {

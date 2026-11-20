@@ -357,6 +357,13 @@ if(AERONET_ENABLE_WEBSOCKET)
   AeronetAddProjectBenchmark(aeronet-bench-internal-websocket-utf8 ${AERONET_BENCH_INTERNAL_WS_UTF8}
                              LIBRARIES aeronet_websocket aeronet_tech)
   set_target_properties(aeronet-bench-internal-websocket-utf8 PROPERTIES FOLDER "benchmarks/internal")
+
+  # WebSocketClient against a loopback server thread streaming frames (Linux sockets).
+  if(AERONET_ENABLE_HTTP_CLIENT AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    AeronetAddProjectBenchmark(aeronet-bench-internal-websocket-client
+                               ${AERONET_BENCH_ROOT}/internal/websocket-client_bench.cpp LIBRARIES aeronet_client)
+    set_target_properties(aeronet-bench-internal-websocket-client PROPERTIES FOLDER "benchmarks/internal")
+  endif()
 endif()
 
 if(AERONET_ENABLE_HTTP_SERVER)

@@ -315,6 +315,26 @@ Only successful (`2xx`) responses to `GET` and `HEAD` are stored by default. Thi
 
 `withProxy("http://proxy.internal:3128")` sends every request through a cleartext HTTP proxy. A cleartext HTTP request is sent to the proxy with an absolute URL; an HTTPS request first opens a `CONNECT` tunnel to the origin, then performs the TLS handshake with the origin through it. The optional second argument is a CA file to trust an intercepting proxy that re-signs the origin certificates, such as mitmproxy. An HTTPS proxy URL, or a malformed one, throws `HttpClientException`; a proxy that refuses the tunnel yields `proxyError`. Any `2xx` response to the `CONNECT` request opens the tunnel; another status, or a line that is not a status line as described in [Responses](#responses), yields `proxyError`.
 
+## Protocol upgrades
+
+`upgrade()` switches a connection to another protocol (RFC 9110 §7.8), such as WebSocket, which [WebSocketClient](../protocols/websocket-client.md) builds on. `makeUpgradeRequest(url, protocol)` builds a `GET` request with the `Upgrade` and `Connection` headers, to complete with the headers of the protocol; the `ws` and `wss` schemes are accepted, as `http` and `https`. An invalid URL, or a `protocol` that is empty or not a valid header value (a CR or LF would inject header lines), throws `std::invalid_argument`. `upgrade()` sends it on a new connection, never pooled, speaking HTTP/1.1 (over TLS, ALPN only offers `http/1.1`), through a `CONNECT` tunnel with a forward proxy, cleartext origins included. On `101 Switching Protocols`, the connection is handed over:
+
+```cpp
+#include <aeronet/http-client.hpp>
+
+#include <utility>
+
+HttpClient client;
+HttpRequest request = client.makeUpgradeRequest("http://localhost:2375/containers/app/attach", "tcp");
+const HttpUpgradeResult result = client.upgrade(std::move(request));
+if (result && result->connection.valid()) {
+  // result->connection.transport and .cnx speak the new protocol. Its first bytes, received with the 101 response,
+  // are in result->connection.received; TLS may hold more (Transport::hasPendingReadData()).
+}
+```
+
+Any other response is read whole and returned as `result->response`, its connection closed. Redirects are not followed, nothing is retried, and the cookies of the jar are sent and stored as for `request()`. A `101` is the final response of an upgrade request only: `request()` keeps treating it as an interim response.
+
 ## Threads and servers
 
 An `HttpClient` is not thread-safe: it owns its event loop, connection pool, and buffers. Use one client per thread, or protect a shared one with a mutex. A client is cheap to keep: create it once per thread rather than per request, so that its connections are reused.
@@ -340,6 +360,7 @@ The client counts retries, redirects, and request compression outcomes (`aeronet
 - Early responses and `Expect: 100-continue` over HTTP/1.1: the `EarlyRejection`, `EarlySuccess`, `RejectionBeforeAReset` and `ExpectContinue` / `ExpectationFailed` tests of `HttpClientRawServerTest`, `HttpClientE2ETest.BodyLargerThanTheServerAcceptsIsRejectedWith413` (an aeronet server with and without lingering close) and `HttpClientE2ETest.ExpectContinueSendsTheBodyAfter100Continue` in [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp), with the write failures after a response (`FileBody*ReturnsTheResponseAlreadyReceived`). Over TLS, `HttpClientTlsRawServerTest.EarlyRejectionStopsTheUpload`, and a server closing without answer, during the upload (`HttpClientTlsSigpipeTest.ServerClosingDuringTheRequestDoesNotRaiseSigpipe`) or while the client awaits `100 Continue` (`HttpClientTlsRawServerTest.CloseWhileAwaitingContinueFailsTheRequestAtOnce`), in [http-client-tls-e2e_test.cpp](../../aeronet/client/test/http-client-tls-e2e_test.cpp). Classification of the response bytes received during the upload: `ResponseParserTest.PeekEarlyResponse` in [http1-response-parser_test.cpp](../../aeronet/client/test/http1-response-parser_test.cpp).
 - The wait for the response before its first read: `HttpClientE2ETest.Http11FirstReadWaitsForTheResponse` in [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp) and `HttpClientHttp2TransportTest.FirstReadWaitsForTheResponse` in [http-client-http2-e2e_test.cpp](../../aeronet/client/test/http-client-http2-e2e_test.cpp).
 - Forward proxy, including the status line of the `CONNECT` response: the `HttpClientProxyE2ETest` and `HttpClientProxyTlsE2ETest` tests of [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp).
+- Protocol upgrades (`*Upgrade*`: the connection handed over with the bytes received with the `101`, refusals, schemes, invalid protocols, cookies, proxy tunnels): [http-client-core_test.cpp](../../aeronet/client/test/http-client-core_test.cpp), and the `101` in the response parser (`SwitchingProtocolsEndsAnUpgradeRequest`): [http1-response-parser_test.cpp](../../aeronet/client/test/http1-response-parser_test.cpp).
 - HTTP/2, including response body sinks, the connection kept after a stream failure, and connection-specific response fields (`ConnectionSpecificFieldsAreMalformedResponses`): [http-client-http2-e2e_test.cpp](../../aeronet/client/test/http-client-http2-e2e_test.cpp).
 - HTTPS, trust stores, mutual TLS, and redirects to cleartext: [http-client-tls-e2e_test.cpp](../../aeronet/client/test/http-client-tls-e2e_test.cpp).
 - Configuration and retry policy: [http-client-config_test.cpp](../../aeronet/client/test/http-client-config_test.cpp) and [retry-config_test.cpp](../../aeronet/client/test/retry-config_test.cpp).

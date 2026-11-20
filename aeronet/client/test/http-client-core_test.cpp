@@ -71,6 +71,13 @@
 #include "collecting-body-sink.hpp"
 #include "first-read-recording-transport.hpp"
 #include "http-client-test-access.hpp"
+#include "raw-test-server.hpp"
+
+#ifdef AERONET_ENABLE_WEBSOCKET
+#include "aeronet/upgraded-connection.hpp"
+#include "aeronet/websocket-endpoint.hpp"
+#include "aeronet/websocket-upgrade.hpp"
+#endif
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include <fstream>
@@ -80,6 +87,10 @@
 #endif
 
 namespace aeronet {
+
+using test::RawServer;
+using test::StopAcceptThread;
+using test::WaitReadable;
 
 class HttpRequestTest {
  public:
@@ -2468,52 +2479,6 @@ TEST_F(HttpClientTrailerE2ETest, TrailerWithEmptyValue) {
 
 namespace {
 
-// Wait until `fd` is readable (or timeoutMs elapses); poll on POSIX, select on Windows.
-bool WaitReadable(NativeHandle fd, int timeoutMs) {
-#ifdef AERONET_WINDOWS
-  fd_set readSet;
-  FD_ZERO(&readSet);
-  FD_SET(fd, &readSet);
-  timeval tv{};
-  tv.tv_sec = timeoutMs / 1000;
-  tv.tv_usec = (timeoutMs % 1000) * 1000;
-  return ::select(0, &readSet, nullptr, nullptr, &tv) > 0;
-#else
-  pollfd pfd{.fd = fd, .events = POLLIN, .revents = 0};  // NOLINT(misc-include-cleaner)
-  return ::poll(&pfd, 1, timeoutMs) > 0;                 // NOLINT(misc-include-cleaner)
-#endif
-}
-
-// Connects to the loopback listening socket `listenFd`, waking up a thread waiting for it to be readable, so that it
-// notices its stop request right away instead of at its next poll timeout. Returns the connected socket, to close once
-// that thread stopped (kInvalidHandle on failure: the thread then only stops at its next poll timeout).
-NativeHandle ConnectToListener(NativeHandle listenFd) {
-  sockaddr_storage addr{};
-  socklen_t len = sizeof(addr);  // NOLINT(misc-include-cleaner)
-  if (::getsockname(listenFd, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
-    return kInvalidHandle;
-  }
-  const NativeHandle fd = ::socket(addr.ss_family, SOCK_STREAM, 0);
-  if (fd != kInvalidHandle && ::connect(fd, reinterpret_cast<const sockaddr*>(&addr), len) != 0) {
-    CloseNativeHandle(fd);
-    return kInvalidHandle;
-  }
-  return fd;
-}
-
-// Stops `thread`, which accepts the connections of `listenFd` until `stop` is set and checks it after each accept.
-void StopAcceptThread(std::thread& thread, NativeHandle listenFd, std::atomic<bool>& stop) {
-  stop.store(true, std::memory_order_relaxed);
-  if (!thread.joinable()) {
-    return;
-  }
-  const NativeHandle wakeFd = ConnectToListener(listenFd);
-  thread.join();
-  if (wakeFd != kInvalidHandle) {
-    CloseNativeHandle(wakeFd);
-  }
-}
-
 // Read and discard what the client sends until it closes the connection (or `timeoutMs` without data). Closing a socket
 // with unread received bytes would reset the connection, discarding the response the client did not read yet.
 void DrainUntilClosed(NativeHandle fd, int timeoutMs) {
@@ -3026,116 +2991,6 @@ TEST_F(HttpClientProxyTlsE2ETest, Ipv6OriginIsBracketedInConnectAuthority) {
 #endif  // AERONET_ENABLE_OPENSSL
 
 namespace {
-
-// Minimal scriptable raw TCP server bound to an ephemeral loopback port. For each accepted connection
-// it invokes a user handler with the socket fd and a 0-based connection index, then closes the socket.
-class RawServer {
- public:
-  using Handler = std::function<void(NativeHandle fd, int connIndex)>;
-
-  // family is AF_INET (default) or AF_INET6. The IPv6 path fails softly (listening() stays false) so a
-  // test can GTEST_SKIP() on hosts/CI without IPv6 loopback instead of hard-failing.
-  explicit RawServer(Handler handler, int family = AF_INET) : _handler(std::move(handler)) {
-#ifdef AERONET_WINDOWS
-    EnsureWinsockInitialized();
-#endif
-    if (family == AF_INET6) {
-      setupIpv6();
-    } else {
-      setupIpv4();
-    }
-    if (_listenFd != kInvalidHandle) {
-      _thread = std::thread([this] { run(); });
-    }
-  }
-
-  RawServer(const RawServer&) = delete;
-  RawServer& operator=(const RawServer&) = delete;
-  RawServer(RawServer&&) = delete;
-  RawServer& operator=(RawServer&&) = delete;
-
-  ~RawServer() {
-    StopAcceptThread(_thread, _listenFd, _stop);
-    if (_listenFd != kInvalidHandle) {
-      CloseNativeHandle(_listenFd);
-    }
-  }
-
-  [[nodiscard]] uint16_t port() const noexcept { return _port; }
-  [[nodiscard]] bool listening() const noexcept { return _listenFd != kInvalidHandle; }
-
- private:
-  void setupIpv4() {
-    _listenFd = ::socket(AF_INET, SOCK_STREAM, 0);
-    EXPECT_NE(_listenFd, kInvalidHandle);
-    int one = 1;
-    // NOLINTNEXTLINE(misc-include-cleaner)
-    ::setsockopt(_listenFd, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&one), sizeof(one));
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr.sin_port = 0;
-    EXPECT_EQ(::bind(_listenFd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)), 0);
-    socklen_t len = sizeof(addr);  // NOLINT(misc-include-cleaner)
-    EXPECT_EQ(::getsockname(_listenFd, reinterpret_cast<sockaddr*>(&addr), &len), 0);
-    _port = ntohs(addr.sin_port);
-    EXPECT_EQ(::listen(_listenFd, 8), 0);
-  }
-
-  // Soft setup on IPv6 loopback: any failure leaves _listenFd == kInvalidHandle so the test skips.
-  void setupIpv6() {
-    _listenFd = ::socket(AF_INET6, SOCK_STREAM, 0);
-    if (_listenFd == kInvalidHandle) {
-      return;
-    }
-    int one = 1;
-    // NOLINTNEXTLINE(misc-include-cleaner)
-    ::setsockopt(_listenFd, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&one), sizeof(one));
-    sockaddr_in6 addr{};
-    addr.sin6_family = AF_INET6;
-    addr.sin6_addr = in6addr_loopback;
-    addr.sin6_port = 0;
-    if (::bind(_listenFd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-      CloseNativeHandle(_listenFd);
-      _listenFd = kInvalidHandle;
-      return;
-    }
-    socklen_t len = sizeof(addr);  // NOLINT(misc-include-cleaner)
-    if (::getsockname(_listenFd, reinterpret_cast<sockaddr*>(&addr), &len) != 0 || ::listen(_listenFd, 8) != 0) {
-      CloseNativeHandle(_listenFd);
-      _listenFd = kInvalidHandle;
-      return;
-    }
-    _port = ntohs(addr.sin6_port);
-  }
-
-  void run() {
-    int idx = 0;
-    while (!_stop.load(std::memory_order_relaxed)) {
-      if (!WaitReadable(_listenFd, 20)) {
-        continue;  // timeout (re-check the stop flag) or interrupted
-      }
-      const NativeHandle fd = ::accept(_listenFd, nullptr, nullptr);
-      if (fd == kInvalidHandle) {
-        continue;
-      }
-      if (_stop.load(std::memory_order_relaxed)) {  // the wake-up connection of StopAcceptThread
-        CloseNativeHandle(fd);
-        break;
-      }
-      // macOS: a write to a client that gave up (timeout, abort) must fail with EPIPE, not kill the test with SIGPIPE.
-      EXPECT_TRUE(SetNoSigPipe(fd));
-      _handler(fd, idx++);
-      CloseNativeHandle(fd);
-    }
-  }
-
-  Handler _handler;
-  std::thread _thread;
-  std::atomic<bool> _stop{false};
-  NativeHandle _listenFd{kInvalidHandle};
-  uint16_t _port{0};
-};
 
 std::string MakeUrl(uint16_t urlPort, std::string_view path = "/") {
   return "http://127.0.0.1:" + std::to_string(urlPort) + std::string(path);
@@ -5330,5 +5185,143 @@ TEST(HttpClientConfigTest, CacheValidConfigAccepted) {
   EXPECT_NO_THROW(cfg.validate());
   EXPECT_NO_THROW(HttpClient{cfg});
 }
+
+#ifdef AERONET_ENABLE_WEBSOCKET
+namespace {
+
+// The target of HttpClient::upgrade() on the shared server: the connection switches to WebSocket. Set by each test, as
+// other tests reset the routes.
+void AddWebSocketRoute() {
+  ts.postRouterUpdate([](Router& router) { router.setWebSocket("/ws", WebSocketEndpoint{}); });
+}
+
+// An opening WebSocket handshake (RFC 6455 §4.1), with the sample key of §1.3.
+HttpRequest MakeWebSocketUpgrade(HttpClient& client, std::string_view url) {
+  HttpRequest req = client.makeUpgradeRequest(url, "websocket");
+  req.headerAddLine("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==");
+  req.headerAddLine("sec-websocket-version", "13");
+  return req;
+}
+
+// Raw server answering an upgrade request with a 101 response followed by 'after' in the same write.
+std::string RawSwitchingProtocols(std::string_view extraHeaders = {}) {
+  return std::string("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n") +
+         std::string(extraHeaders) + "\r\n";
+}
+
+}  // namespace
+
+TEST_F(HttpClientE2ETest, UpgradeHandsTheConnectionOver) {
+  AddWebSocketRoute();
+  HttpClient client;
+  HttpUpgradeResult result = client.upgrade(MakeWebSocketUpgrade(client, Url("/ws")));
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->response.status(), http::StatusCodeSwitchingProtocols);
+  EXPECT_EQ(result->response.headerValueOrEmpty("sec-websocket-accept"), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+  ASSERT_TRUE(result->connection.valid());
+  EXPECT_TRUE(result->connection.received.empty());
+  EXPECT_TRUE(result->connection.transport.isPlain());
+  // The connection is never pooled: the client goes on with regular requests on other connections.
+  EXPECT_EQ(client.get(Url("/hello")).value().bodyInMemory(), "world");
+}
+
+TEST_F(HttpClientE2ETest, RefusedUpgradeReturnsTheWholeResponse) {
+  HttpClient client;
+  HttpUpgradeResult result = client.upgrade(client.makeUpgradeRequest(Url("/hello"), "websocket"));
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->response.status(), http::StatusCodeOK);
+  EXPECT_EQ(result->response.bodyInMemory(), "world");
+  EXPECT_FALSE(result->connection.valid());
+}
+
+TEST_F(HttpClientE2ETest, UpgradeTransportFailure) {
+  uint16_t closedPort;
+  {
+    const RawServer server([](NativeHandle /*fd*/, int /*connIndex*/) {});
+    closedPort = server.port();
+  }
+  HttpClient client;
+  HttpUpgradeResult result = client.upgrade(client.makeUpgradeRequest(MakeUrl(closedPort, "/ws"), "websocket"));
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::connectFailed);
+}
+
+TEST_F(HttpClientE2ETest, MakeUpgradeRequestMapsTheWebSocketSchemes) {
+  HttpClient client;
+  struct SchemeCase {
+    std::string_view url;
+    std::string_view originKey;
+  };
+  static constexpr SchemeCase kCases[]{
+      {"ws://example.com/feed", "http://example.com:80"},    {"WS://example.com:81/feed", "http://example.com:81"},
+      {"wss://example.com/feed", "https://example.com:443"}, {"wSs://example.com/feed", "https://example.com:443"},
+      {"http://example.com/feed", "http://example.com:80"},  {"https://example.com/feed", "https://example.com:443"},
+  };
+  for (const SchemeCase& testCase : kCases) {
+    const HttpRequest req = client.makeUpgradeRequest(testCase.url, "websocket");
+    EXPECT_EQ(req.originKey(), testCase.originKey) << testCase.url;
+    EXPECT_EQ(req.target(), "/feed") << testCase.url;
+    EXPECT_EQ(req.headerValueOrEmpty(http::Upgrade), "websocket") << testCase.url;
+    EXPECT_EQ(req.headerValueOrEmpty(http::Connection), "Upgrade") << testCase.url;
+  }
+  for (const std::string_view invalid :
+       {"ws:/example.com", "wsx://example.com", "w://example.com", "ftp://example.com"}) {
+    EXPECT_THROW(static_cast<void>(client.makeUpgradeRequest(invalid, "websocket")), std::invalid_argument) << invalid;
+  }
+}
+
+TEST(HttpClientUpgrade, RefusesAnInvalidProtocol) {
+  HttpClient client;
+  // A protocol list, trimmed like any header value.
+  const HttpRequest req = client.makeUpgradeRequest("ws://example.com/feed", " websocket, tcp ");
+  EXPECT_EQ(req.headerValueOrEmpty(http::Upgrade), "websocket, tcp");
+  // No CR or LF that would inject header lines, or a second request.
+  for (const std::string_view invalid :
+       {std::string_view{}, std::string_view{" \t"}, std::string_view{"websocket\r\nX-Evil: 1"},
+        std::string_view{"websocket\n"}, std::string_view{"web\0socket", 10}}) {
+    EXPECT_THROW(static_cast<void>(client.makeUpgradeRequest("ws://example.com/feed", invalid)), std::invalid_argument);
+  }
+}
+
+TEST(HttpClientUpgrade, KeepsTheBytesReceivedWithThe101AndTheCookies) {
+  RawServer server([](NativeHandle fd, int /*connIndex*/) {
+    test::RecvHead(fd);
+    test::sendAll(fd, RawSwitchingProtocols("Set-Cookie: session=abc\r\n") + "first bytes");
+  });
+  HttpClientConfig config;
+  config.withCookies();
+  HttpClient client(config);
+  HttpUpgradeResult result = client.upgrade(client.makeUpgradeRequest(MakeUrl(server.port(), "/ws"), "tcp"));
+  ASSERT_TRUE(result);
+  ASSERT_TRUE(result->connection.valid());
+  EXPECT_EQ(std::string_view(result->connection.received), "first bytes");
+  int nbCookies = 0;
+  client.cookieJar().forEach([&nbCookies](const auto& /*cookie*/) { ++nbCookies; });
+  EXPECT_EQ(nbCookies, 1);
+}
+
+TEST(HttpClientUpgrade, ServerClosingWithoutResponseFails) {
+  RawServer server([](NativeHandle fd, int /*connIndex*/) { test::RecvHead(fd); });
+  HttpClient client;
+  HttpUpgradeResult result = client.upgrade(client.makeUpgradeRequest(MakeUrl(server.port(), "/ws"), "websocket"));
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error(), HttpClientErrc::connectionClosed);
+}
+
+TEST(HttpClientUpgrade, ThroughAProxyUsesAConnectTunnel) {
+  // The upgraded connection of a cleartext origin carries WebSocket frames, that a proxy would not forward.
+  AddWebSocketRoute();
+  TinyProxy proxy;
+  HttpClientConfig cfg;
+  cfg.withProxy(ProxyUrl(proxy.port()));
+  HttpClient client(cfg);
+  HttpUpgradeResult result = client.upgrade(MakeWebSocketUpgrade(client, MakeUrl(port, "/ws")));
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->response.status(), http::StatusCodeSwitchingProtocols);
+  EXPECT_EQ(proxy.connectCount(), 1);
+  // Origin-form target through the tunnel.
+  EXPECT_TRUE(proxy.capturedHead().starts_with("CONNECT 127.0.0.1:")) << proxy.capturedHead();
+}
+#endif  // AERONET_ENABLE_WEBSOCKET
 
 }  // namespace aeronet

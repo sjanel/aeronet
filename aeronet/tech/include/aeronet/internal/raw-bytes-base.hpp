@@ -90,7 +90,7 @@ class RawBytesBase {
   }
 
   // Appends data to the end of the buffer without checking capacity.
-  constexpr void unchecked_append(const_pointer data, uint64_t sz) {
+  void unchecked_append(const_pointer data, uint64_t sz) {
 #ifdef AERONET_ENABLE_ADDITIONAL_MEMORY_CHECKS
     if constexpr (sizeof(size_type) < sizeof(uintmax_t)) {
       assert(static_cast<uintmax_t>(std::numeric_limits<size_type>::max()) >= sz + _size);
@@ -195,7 +195,7 @@ class RawBytesBase {
   }
 
   // Returns the current size of the buffer.
-  [[nodiscard]] constexpr size_type size() const noexcept { return _size; }
+  [[nodiscard]] size_type size() const noexcept { return _size; }
 
   // Returns the current capacity of the buffer.
   [[nodiscard]] size_type capacity() const noexcept { return _capacity; }

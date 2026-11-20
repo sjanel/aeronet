@@ -87,7 +87,16 @@ class ClientConnection {
       return exchangeForHttp2(client, transport, fd, req, ioDeadline, requestSent);
     }
 #endif
-    return exchangeForHttp11(client, transport, fd, req, ioDeadline, requestSent);
+    return exchangeForHttp11(client, transport, fd, req, ioDeadline, requestSent, false);
+  }
+
+  // Perform the HTTP/1.1 exchange of a request asking to switch protocols (see HttpClient::upgrade()), like exchange()
+  // otherwise: a 101 (Switching Protocols) response ends it, the receive buffer of the client then holding the bytes
+  // received after its head, the first ones of the new protocol. The connection is never kept alive.
+  [[nodiscard]] HttpClientResult upgradeExchange(HttpClient& client, Transport& transport, NativeHandle fd,
+                                                 HttpRequest& req, SteadyClock::time_point ioDeadline,
+                                                 bool& requestSent) {
+    return exchangeForHttp11(client, transport, fd, req, ioDeadline, requestSent, true);
   }
 
   template <typename Backend>
@@ -133,7 +142,7 @@ class ClientConnection {
  private:
   [[nodiscard]] HttpClientResult exchangeForHttp11(HttpClient& client, Transport& transport, NativeHandle fd,
                                                    HttpRequest& req, SteadyClock::time_point ioDeadline,
-                                                   bool& requestSent);
+                                                   bool& requestSent, bool upgradeRequest);
 
   // Writes the request of an HTTP/1.1 exchange, watching the connection for an early response (defined in
   // http11-connection.cpp).

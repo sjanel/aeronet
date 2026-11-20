@@ -447,6 +447,7 @@ jobs:
           aeronet-static-file-http2 \
           aeronet-tls-ktls \
           aeronet-tls-session-tickets \
+          aeronet-websocket-client \
           aeronet-websocket-echo \
           aeronet-clang-tidy-headers
 
@@ -536,6 +537,31 @@ jobs:
 
           run_server_and_curl websocket-echo "http://127.0.0.1:18086/" -- \
             "${EXAMPLE_DIR}/aeronet-websocket-echo" 18086
+
+          # The WebSocket client example against the echo example: both messages come back, then a closing handshake
+          # (exit code 0). Retried while the server is not listening yet.
+          echo "::group::example-websocket-client"
+          ws_client_out="${BUILD_DIR}/websocket-client.out"
+          "${EXAMPLE_DIR}/aeronet-websocket-echo" 18088 >"${BUILD_DIR}/websocket-client-server.log" 2>&1 &
+          ws_server_pid=$!
+          ws_client_ok=0
+          for attempt in {1..30}; do
+            if "${EXAMPLE_DIR}/aeronet-websocket-client" --max-messages 2 --duration 5 \
+                ws://127.0.0.1:18088/ws hello '{"symbol":"BTC/USD"}' >"${ws_client_out}"; then
+              ws_client_ok=1
+              break
+            fi
+            sleep 0.5
+          done
+          kill -INT "$ws_server_pid" 2>/dev/null || true
+          wait "$ws_server_pid" || true
+          cat "${ws_client_out}"
+          if [[ $ws_client_ok -ne 1 ]] || ! diff <(printf '%s\n' hello '{"symbol":"BTC/USD"}') "${ws_client_out}"; then
+            echo "--- websocket-client server logs ---" >&2
+            cat "${BUILD_DIR}/websocket-client-server.log" >&2 || true
+            exit 1
+          fi
+          echo "::endgroup::"
 
           run_server_and_curl protobuf "http://127.0.0.1:18087/orders" -H 'content-type: application/json' -H 'accept: application/json' \
             -d '{"customer":"jdoe","items":[{"sku":"BOOK-1","quantity":2,"unitPrice":12.5}]}' -- \

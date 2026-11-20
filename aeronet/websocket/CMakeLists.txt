@@ -68,6 +68,13 @@ if(AERONET_ENABLE_ZLIB)
 endif()
 
 AeronetAddUnitTest(
+    websocket-client-handshake_test
+    test/websocket-client-handshake_test.cpp
+    LIBRARIES
+    aeronet_websocket
+)
+
+AeronetAddUnitTest(
     websocket-config_test
     test/websocket-config_test.cpp
     LIBRARIES

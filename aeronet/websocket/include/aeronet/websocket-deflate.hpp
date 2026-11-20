@@ -74,4 +74,25 @@ std::size_t ComputeDeflateResponseSize(DeflateNegotiatedParams params, uint8_t n
 /// @param pData Output buffer to append the response string to
 char* BuildDeflateResponse(DeflateNegotiatedParams params, char* pData);
 
+/// Largest permessage-deflate offer written by BuildDeflateOffer(), with every parameter.
+inline constexpr std::size_t kMaxDeflateOfferSize = 128;
+
+/// Build the permessage-deflate offer of a client (Sec-WebSocket-Extensions request header value) from its 'config':
+/// server_max_window_bits / client_max_window_bits with a value below 15 bits, the no context takeover parameters set
+/// in it, and client_max_window_bits (without value at 15 bits), which lets the server limit the client window.
+/// Writes at most kMaxDeflateOfferSize bytes at pData, returns the end of the written value.
+char* BuildDeflateOffer(const DeflateConfig& config, char* pData);
+
+/// Tells whether 'extension', an element of a Sec-WebSocket-Extensions value, is permessage-deflate (whatever its
+/// parameters).
+[[nodiscard]] bool IsPermessageDeflate(std::string_view extension);
+
+/// Parse the permessage-deflate element of the Sec-WebSocket-Extensions response of a server, answering the offer
+/// made by BuildDeflateOffer() with 'config' (RFC 7692 §7). Returns the negotiated parameters, from the point of view
+/// of the client: its compression window is the smallest of its configured one and of the one the server allows.
+/// Returns empty parameters when the response does not answer the offer: another extension, an unknown or repeated
+/// parameter, an invalid value, a server window larger than the offered one. The client then fails the connection.
+[[nodiscard]] DeflateNegotiatedParams ParseDeflateResponse(std::string_view extensionResponse,
+                                                           const DeflateConfig& config);
+
 }  // namespace aeronet::websocket

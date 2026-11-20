@@ -8,6 +8,8 @@
 #include <sys/types.h>
 #elifdef AERONET_WINDOWS
 // WSAPoll headers included via winsock2.h
+#include <chrono>
+#include <thread>
 #endif
 
 #include <algorithm>
@@ -427,7 +429,14 @@ std::span<const EventLoop::EventFd> EventLoop::poll(bool wait) {
 
 #elifdef AERONET_WINDOWS
   auto* pollFdsBuf = static_cast<WSAPOLLFD*>(_pPollFds);
-  const int nbReadyFds = ::WSAPoll(pollFdsBuf, _nbRegistered, timeoutMs);
+  int nbReadyFds = 0;
+  if (_nbRegistered == 0) {
+    // WSAPoll fails with WSAEINVAL on an empty set, where epoll_wait and kevent wait the timeout: do the same. Not with
+    // ::Sleep, which may return up to one clock tick (~15.6 ms) early.
+    std::this_thread::sleep_for(std::chrono::milliseconds{timeoutMs});
+  } else {
+    nbReadyFds = ::WSAPoll(pollFdsBuf, _nbRegistered, timeoutMs);
+  }
 
   if (nbReadyFds == SOCKET_ERROR) {
     auto err = LastSystemError();

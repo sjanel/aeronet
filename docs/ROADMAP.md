@@ -110,6 +110,11 @@ the [performance optimization backlog](#performance-optimization-backlog)):
   - import and export of the Netscape `cookies.txt` format (curl, wget, yt-dlp, browser extensions), so that a long-running client keeps its session across restarts and can start from the cookies of a browser;
   - the public suffix list, behind the heuristic of `RegistrableDomain()` (`aeronet/client/src/cookie-jar.cpp`): an optional libpsl (vcpkg, Conan, Linux systems) for exact registrable domains (`github.io`), and same-site checks on registrable domains instead of hosts.
 - **Reverse-proxy / forwarding** building on the client (see the reverse-proxy item below).
+- **WebSocket client, next steps** (after the [delivered](protocols/websocket-client.md) `WebSocketClient`):
+  - automatic reconnection with the backoff fields of `RetryConfig`, `onOpen` running again to replay the subscriptions, and a minimum delay between the connection attempts to a host (some CDNs ban an IP for minutes after about 150 attempts in 10 minutes);
+  - a pull-style `receive(timeout)` for request / response protocols such as CDP;
+  - sends from other threads (an eventfd waking `poll()`), and the event loop handle exposed so that a client can sit inside an outer event loop;
+  - a non-blocking opening handshake, so that a reconnecting connection does not hold the others.
 
 #### HTML parsing and JavaScript pages (`AERONET_ENABLE_HTML`, `AERONET_ENABLE_JS`)
 
@@ -205,7 +210,8 @@ Phases:
    `getComputedStyle`, `IntersectionObserver` reporting everything visible, layout sizes of 0),
    `waitForSelector()`, then clicks and form input.
 5. **Optional, independent**: a driver for full-fidelity browsers (Chrome, Lightpanda) over CDP (JSON over
-   WebSocket). Little aeronet code, but it needs a WebSocket client, which aeronet does not have.
+   WebSocket). Little aeronet code, on top of the [WebSocket client](protocols/websocket-client.md), which needs a
+   pull-style `receive(timeout)` for its request / response exchanges.
 
 ```cpp
 aeronet::WebClient web;  // its cookie jar outlives navigate()

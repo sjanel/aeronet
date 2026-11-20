@@ -73,7 +73,8 @@ option(AERONET_ENABLE_HTTP_SERVER "Enable the HTTP server (HttpServer)" ON)
 # Features without external dependencies: enabled by default, disable them to reduce binary size and compilation time.
 option(AERONET_ENABLE_ASYNC_HANDLERS "Enable asynchronous routing handlers" ${AERONET_ENABLE_HTTP_SERVER})
 option(AERONET_ENABLE_HTTP2 "Enable HTTP/2 (RFC 9113) support" ON)
-option(AERONET_ENABLE_WEBSOCKET "Enable WebSocket support" ${AERONET_ENABLE_HTTP_SERVER})
+# The server and the client both speak WebSocket (endpoints, WebSocketClient): on with either one, which is always on.
+option(AERONET_ENABLE_WEBSOCKET "Enable WebSocket support (server endpoints and WebSocketClient)" ON)
 
 # Features with external dependencies: disabled by default, except as the main project.
 option(AERONET_ENABLE_SPDLOG "Use spdlog library for logging" ${PROJECT_IS_TOP_LEVEL})

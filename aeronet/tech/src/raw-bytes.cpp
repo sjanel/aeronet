@@ -132,6 +132,8 @@ bool RawBytesBase<T, ViewType, SizeType>::operator==(const RawBytesBase& rhs) co
 
 template <class T, class ViewType, class SizeType>
 void RawBytesBase<T, ViewType, SizeType>::reallocUp(uintmax_t newCapacity) {
+  // A smaller capacity would make the copy below overflow the new buffer.
+  assert(newCapacity > _capacity);
   const size_type newCap = SafeCast<size_type>(newCapacity);
   pointer pNewBuf;
   if (kAlwaysGrowIntoNewBuffer || _buf == nullptr || newCap <= kMaxCopiedGrowthCapacity) {

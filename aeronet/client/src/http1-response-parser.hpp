@@ -68,8 +68,10 @@ class Http1ResponseParser {
   // Prepare for a new response. headRequest suppresses body parsing (HEAD has no body). streamHead is for a response
   // going to a sink: parse() then returns HeadComplete once the head of a final response announcing a body is parsed,
   // so that the caller can choose to stream the body (startStreaming()) or keep parsing it in the buffer as usual, and
-  // a body received whole is not installed in the response (see bufferedBody()).
-  void reset(bool headRequest, bool streamHead = false) noexcept;
+  // a body received whole is not installed in the response (see bufferedBody()). upgradeRequest is for a request asking
+  // for a protocol change (Upgrade header): a 101 (Switching Protocols) response then ends the parsing, without body,
+  // the bytes following its head (consumed() onwards) belonging to the new protocol (RFC 9110 §15.2.2).
+  void reset(bool headRequest, bool streamHead = false, bool upgradeRequest = false) noexcept;
 
   // Parse as much as possible. Header names are normalized in-place in `buffer`. On Complete, `resp` is fully
   // populated (without body with streamHead).
@@ -166,6 +168,11 @@ class Http1ResponseParser {
     bool chunked{false};  // the final transfer coding is chunked
   };
 
+  // Whether the head being parsed is the 101 (Switching Protocols) response of an upgrade request: a final response.
+  [[nodiscard]] bool isSwitchingProtocols() const noexcept {
+    return _upgradeRequest && _statusCode == http::StatusCodeSwitchingProtocols;
+  }
+
   Status parseResponse(std::span<char> buffer, bool eof, HttpResponse& resp, std::size_t maxResponseBytes);
   Status decideFraming();
   Status parseBody(std::string_view buffer, bool eof, std::size_t maxResponseBytes);
@@ -213,6 +220,7 @@ class Http1ResponseParser {
   Framing _framing{Framing::None};
   State _state{State::StatusLine};
   bool _headRequest{false};
+  bool _upgradeRequest{false};
   bool _streamHead{false};
   bool _streaming{false};
   bool _gatheredPiece{false};  // the last BodyPiece is the gathered small chunks, in the reassembly buffer

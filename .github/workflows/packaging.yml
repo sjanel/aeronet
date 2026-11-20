@@ -139,15 +139,24 @@ jobs:
           ./scripts/retry.sh ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
 
       # Binary cache of the dependencies. vcpkg names each archive after the ABI hash of its package (port files,
-      # dependencies, triplet, compiler), so a port updated in vcpkg is rebuilt, and the others are restored. The
-      # cache key is only known after the install (see the prune step): restore the most recent one.
+      # dependencies, triplet, compiler, CMake version), so a port updated in vcpkg is rebuilt, and the others are
+      # restored. Two runner image versions can be in rotation at the same time, with different CMake versions: no
+      # archive of one image matches the other one, so the key starts with the image version. A new image version
+      # falls back to the most recent cache of any image. The rest of the key is only known after the install (see
+      # the prune step): restore the most recent one.
+      - name: Compute vcpkg binary cache key prefix
+        id: vcpkg-cache-key
+        run: echo "prefix=vcpkg-bin-${{ matrix.triplet }}-${{ matrix.features }}-${ImageOS:-unknown}-${ImageVersion:-unknown}-" >> "$GITHUB_OUTPUT"
+
       - name: Restore vcpkg binary cache
         id: vcpkg-cache-restore
         uses: actions/cache/restore@v6
         with:
           path: ~/.cache/vcpkg-bin
-          key: vcpkg-bin-${{ matrix.triplet }}-${{ matrix.features }}-
-          restore-keys: vcpkg-bin-${{ matrix.triplet }}-${{ matrix.features }}-
+          key: ${{ steps.vcpkg-cache-key.outputs.prefix }}
+          restore-keys: |
+            ${{ steps.vcpkg-cache-key.outputs.prefix }}
+            vcpkg-bin-${{ matrix.triplet }}-${{ matrix.features }}-
 
       - name: vcpkg install aeronet
         env:
@@ -165,6 +174,9 @@ jobs:
       - name: Prune vcpkg binary cache
         id: vcpkg-cache-prune
         if: ${{ !cancelled() }}
+        env:
+          PREFIX: ${{ steps.vcpkg-cache-key.outputs.prefix }}
+          MATCHED_KEY: ${{ steps.vcpkg-cache-restore.outputs.cache-matched-key }}
         run: |
           # Keep only the archives of the installed packages, so that an updated port replaces its archive instead of
           # growing the cache. The key hashes their ABIs: it changes only when a dependency was rebuilt. Also runs
@@ -178,10 +190,18 @@ jobs:
             grep -qxF "$(basename "$ARCHIVE" .zip)" <<< "$ABIS" || rm -v "$ARCHIVE"
           done
           du -sh ~/.cache/vcpkg-bin
-          echo "key=vcpkg-bin-${{ matrix.triplet }}-${{ matrix.features }}-$(sha256sum <<< "$ABIS" | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          ABI_HASH=$(sha256sum <<< "$ABIS" | cut -c1-16)
+          if [[ "$MATCHED_KEY" == "$PREFIX$ABI_HASH-"* ]]; then
+            echo "::notice ::The restored binary cache already holds these packages, not saved again"
+            exit 0
+          fi
+          # The run id makes the key unique. With the ABI hash alone, a partial cache saved after a failed install
+          # would stay the most recent one forever: the complete set could not be saved again under its existing key,
+          # and every later run would rebuild (and download) the missing ports.
+          echo "key=$PREFIX$ABI_HASH-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
 
       - name: Save vcpkg binary cache
-        if: ${{ !cancelled() && steps.vcpkg-cache-prune.outputs.key != '' && steps.vcpkg-cache-prune.outputs.key != steps.vcpkg-cache-restore.outputs.cache-matched-key }}
+        if: ${{ !cancelled() && steps.vcpkg-cache-prune.outputs.key != '' }}
         uses: actions/cache/save@v6
         with:
           path: ~/.cache/vcpkg-bin
