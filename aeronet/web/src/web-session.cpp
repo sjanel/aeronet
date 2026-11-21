@@ -45,7 +45,7 @@ ScriptCache::Script::Script(std::string_view url, std::string_view code) noexcep
 
 ScriptCache::Entry* ScriptCache::entryOf(const Script& script) noexcept {
   const auto entryIt = std::ranges::find_if(_entries, [&script](const Entry& entry) {
-    return entry.hash == script.hash && entry.size == script.code.size() && std::string_view(entry.url) == script.url;
+    return entry.size == script.code.size() && entry.hash == script.hash && std::string_view(entry.url) == script.url;
   });
   return entryIt == _entries.end() ? nullptr : &*entryIt;
 }

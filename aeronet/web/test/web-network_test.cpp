@@ -22,6 +22,9 @@
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/web-session.hpp"
 #include "aeronet/sys-test-support.hpp"
+#ifdef AERONET_ENABLE_OPENSSL
+#include "aeronet/test_server_tls_fixture.hpp"
+#endif
 #include "aeronet/web-client-config.hpp"
 #include "aeronet/web-client.hpp"
 #include "aeronet/web-page.hpp"
@@ -300,6 +303,8 @@ TEST(WebNetworkTest, FetchErrors) {
       outcome(fetch('/api', { headers: { 'x-a': 'a\nb' } })),
       outcome(fetch('/api', { headers: { 'x-a': 'café' } })),
       outcome(fetch('/api', { method: 'POST', body: 'x', headers: { 'content-type': 'x' } })),
+      outcome(fetch(')" +
+                      closedUrl + R"(', { method: 'PUT' })),
     ]).then(results => { out = results; }))"),
       R"(["TypeError: Failed to fetch","TypeError: Failed to construct 'Request': Invalid URL 'http://[bad'",)"
       R"("TypeError: aeronet: only http and https URLs can be fetched, not 'data:text/plain,x'",)"
@@ -309,7 +314,8 @@ TEST(WebNetworkTest, FetchErrors) {
       R"("TypeError: 'bad method' is not a valid HTTP method","TypeError: 'navigate' is not a valid request mode",)"
       R"("TypeError: 'all' is not a valid credentials mode","TypeError: 'bad name' is not a valid HTTP header name",)"
       R"("TypeError: 'a\nb' is not a valid HTTP header value","TypeError: aeronet: invalid header 'x-a: café'",)"
-      R"("TypeError: aeronet: unsupported Content-Type 'x'"])");
+      R"("TypeError: aeronet: unsupported Content-Type 'x'",)"
+      R"("TypeError: the CORS preflight of the request to another origin failed"])");
 }
 
 TEST(WebNetworkTest, FetchFollowsRedirects) {
@@ -318,6 +324,34 @@ TEST(WebNetworkTest, FetchFollowsRedirects) {
     out = [r.redirected, r.url.endsWith('/api?body=moved'), await r.text()];
   }))"),
             R"([true,true,"moved"])");
+  // A redirect status without Location is a response.
+  EXPECT_EQ(Out(client, R"(fetch('/api?status=302&body=stays').then(async r => {
+    out = [r.status, r.redirected, await r.text()];
+  }))"),
+            R"([302,false,"stays"])");
+}
+
+// With HttpClientConfig::followRedirects off, the scripts get the redirects.
+TEST(WebNetworkTest, RedirectsNotFollowedByTheClient) {
+  WebClientConfig config = Config();
+  config.http.followRedirects = false;
+  WebClient client(config);
+  EXPECT_EQ(Out(client, R"(fetch('/redirect?to=' + encodeURIComponent('/api?body=moved')).then(async r => {
+    out = [r.status, r.redirected, r.headers.get('location')];
+  }))"),
+            R"([302,false,"/api?body=moved"])");
+}
+
+// HEAD requests need no preflight, and send no Origin to their own origin.
+TEST(WebNetworkTest, HeadRequests) {
+  WebClient client(Config());
+  const int preflights = gPreflights.load();
+  EXPECT_EQ(Out(client, "const other = '" + SameSiteUrl("/api?acao=*") + R"(';
+    Promise.all([fetch('/api', { method: 'HEAD' }), fetch(other, { method: 'HEAD' })]).then(async ([own, cross]) => {
+      out = [own.status, await own.text(), cross.status, cross.type];
+    }))"),
+            R"([200,"",200,"cors"])");
+  EXPECT_EQ(gPreflights.load(), preflights);
 }
 
 TEST(WebNetworkTest, AbortController) {
@@ -425,6 +459,21 @@ TEST(WebNetworkTest, NetworkGlobalsAreSetUpOnFirstUse) {
 // --- The page loop ---
 
 // The responses are tasks between the others: after the timers due at once, in the order of the requests.
+#if AERONET_WANT_MALLOC_OVERRIDES
+// The network APIs are compiled on their first use in a client: a compilation that fails (memory exhaustion of the
+// process, the prelude is compiled without the limits of the page) is an error of the script, and the next use
+// compiles them again.
+TEST(WebNetworkTest, FailedCompilationOfTheNetworkApis) {
+  WebClient client(Config());
+  WebPage page = RunScript(client, "");
+  test::FailReallocsOfAtLeast(1024);
+  const auto failed = page.evaluate("typeof fetch");
+  test::ResetToSysRealloc();
+  EXPECT_FALSE(failed);
+  EXPECT_EQ(test::Eval(page, "typeof fetch"), R"("function")");
+}
+#endif
+
 TEST(WebNetworkTest, ResponsesAreTasks) {
   WebClient client(Config());
   WebPage page = test::Navigate(client, test::PageUrl(gServer, R"(<script>log = [];
@@ -594,6 +643,21 @@ TEST(WebNetworkTest, ResponsesBeyondTheMemoryOfTheScripts) {
 // A request already sent is no longer cancelled, also when its callback could not forget it: its signal lost its
 // removeEventListener(), or got one that throws (an exception of the response task, its promise left pending until
 // the abort).
+// A body that the memory of the scripts cannot hold as UTF-8 fails its request, not the page.
+TEST(WebNetworkTest, BodyBeyondTheMemoryOfTheScripts) {
+  WebClientConfig config = Config();
+  config.maxScriptMemory = std::size_t{16} << 20U;
+  WebClient client(config);
+  const int counted = gCounted.load();
+  EXPECT_EQ(Out(client, R"(let big = '\u20ac'.repeat(5 << 20);  // 10 MB as UTF-16, 15 MB as UTF-8
+    fetch('/api?count=1', { method: 'POST', body: big }).then(() => 'sent', e => e.name).then(async outcome => {
+      big = null;
+      out = [outcome, await fetch('/api?body=ok').then(r => r.text())];
+    });)"),
+            R"(["InternalError","ok"])");
+  EXPECT_EQ(gCounted.load(), counted);
+}
+
 TEST(WebNetworkTest, AbortAfterTheResponse) {
   WebClient client(Config());
   WebPage page = RunScript(client, R"(out = [];
@@ -785,11 +849,13 @@ TEST(WebNetworkTest, RedirectsOfTheScripts) {
       statusOf(other + '/redirect?to=' + enc(other + '/api?acao=*')),
       headersOf(other + '/redirect?acao=*&to=' + enc(third + '/api?acao=origin')),
       statusOf(other + '/redirect?acao=*&to=' + enc(third + '/api?acao=' + enc(origin))),
+      headersOf(other + '/redirect?acao=*&to=' + enc(third + '/redirect?acao=*&to=' + enc(third + '/api?acao=*'))),
     ]).then(results => { out = results; }))"),
             R"(["redirected to another origin in the same-origin mode",[")" + origin + R"(",")" + origin +
                 R"x(/"],"the redirect of another origin does not allow the document to follow it (CORS)",)x"
                 R"(["null",")" +
-                origin + R"x(/"],"the response of another origin does not allow the document to read it (CORS)"])x");
+                origin + R"x(/"],"the response of another origin does not allow the document to read it (CORS)",)x" +
+                R"(["null",")" + origin + R"(/"]])");
   EXPECT_EQ(gCounted, 0);
 }
 
@@ -799,7 +865,7 @@ TEST(WebNetworkTest, PreflightsOfTheRedirects) {
   gPreflights = 0;
   gCounted = 0;
   WebClient client(Config());
-  EXPECT_EQ(Out(client, "const other = '" + SameSiteUrl("") + R"(';
+  EXPECT_EQ(Out(client, "const other = '" + SameSiteUrl("") + "'; const third = '" + CrossSiteUrl("") + R"(';
     const enc = encodeURIComponent;
     const put = url => fetch(url, { method: 'PUT' }).then(r => r.json()).then(r => r.method, e => e.message);
     Promise.all([
@@ -807,12 +873,13 @@ TEST(WebNetworkTest, PreflightsOfTheRedirects) {
       put('/api?to=' + enc(other + '/api?count=1&acao=origin')),
       put(other + '/redirect?status=307&to=' + enc(other + '/api?acao=origin&acam=PUT')),
       put(other + '/api?acao=origin&acam=PUT&redirect=303&to=' + enc(other + '/api?acao=origin')),
+      put('/api?to=' + enc(third + '/api?acao=origin&acam=PUT')),
     ]).then(results => { out = results; }))"),
             R"(["PUT","the CORS preflight of the request to another origin failed",)"
-            R"("the CORS preflight of the request to another origin failed","GET"])");
-  // The two preflights of /api of the first two requests, and that of the last one at its first URL: the GET of its
-  // 303 needs none.
-  EXPECT_EQ(gPreflights, 3);
+            R"("the CORS preflight of the request to another origin failed","GET","PUT"])");
+  // The preflights of /api of the first two requests and of the last one (its chain continued after a redirect to
+  // another site), and that of the fourth one at its first URL: the GET of its 303 needs none.
+  EXPECT_EQ(gPreflights, 4);
   EXPECT_EQ(gCounted, 0);
 }
 
@@ -940,7 +1007,11 @@ TEST(WebNetworkTest, SameSiteCookiesOfTheSubresources) {
                                          "<script src='" +
                                          CrossSiteUrl("/cookies.js") +
                                          "' crossorigin></script><script>"
-                                         "const anonymous = window.scriptCookies;"
+                                         "const anonymous = window.scriptCookies;</script>"
+                                         "<script src='" +
+                                         CrossSiteUrl("/cookies.js") +
+                                         "' crossorigin=Use-Credentials></script><script>"
+                                         "const withCredentials = window.scriptCookies;"
                                          "const cookies = init => fetch('" +
                                          crossSiteApi +
                                          "', { credentials: 'include', ...init })"
@@ -955,13 +1026,32 @@ TEST(WebNetworkTest, SameSiteCookiesOfTheSubresources) {
                                          "&cookie=' + encodeURIComponent('xnone=1; SameSite=None'), "
                                          "{ credentials: 'include' })])"
                                          ".then(results => { out = [own, ownReferer, same, anonymous, "
-                                         "results[0], results[1]]; });</script>"));
+                                         "withCredentials, results[0], results[1]]; });</script>"));
   EXPECT_EQ(test::Eval(page, "out"),
             R"(["none=1; plain=1",")" + Url("/") +
-                R"(","strict=1; lax=1; none=1; plain=1","","none=1; plain=1","none=1; plain=1"])");
+                R"(","strict=1; lax=1; none=1; plain=1","","none=1; plain=1","none=1; plain=1","none=1; plain=1"])");
   // A subresource of another site sets no SameSite=Strict or Lax cookie.
   EXPECT_EQ(jar.cookieHeader(CrossSiteUrl("/")), "strict=1; lax=1; none=1; plain=1; xnone=1");
 }
+
+#ifdef AERONET_ENABLE_OPENSSL
+// A document of https sends no Referer to http (strict-origin-when-cross-origin): its scripts, its requests.
+TEST(WebNetworkTest, NoRefererFromHttpsToHttp) {
+  test::TlsTestServer tls;
+  tls.router().setPath(http::Method::GET, "/html", [](const HttpRequestView& req) {
+    return req.makeResponse(req.queryParamValue("src").value_or(""), http::ContentTypeTextHtml);
+  });
+  WebClientConfig config = Config();
+  config.http.tlsVerifyPeer = false;  // self-signed certificate
+  WebClient client(config);
+  const std::string html = "<script src='" + Url("/cookies.js") + "'></script><script>fetch('" + Url("/api?acao=*") +
+                           "').then(r => r.json()).then(e => { out = [window.scriptReferer, e.headers.referer ?? "
+                           "null]; })</script>";
+  WebPage page = test::Navigate(
+      client, "https://127.0.0.1:" + std::to_string(tls.port()) + "/html?src=" + test::PercentEncode(html));
+  EXPECT_EQ(test::Eval(page, "out"), R"(["",null])");
+}
+#endif
 
 // --- Script cache ---
 
@@ -1181,6 +1271,165 @@ TEST(WebNetworkTest, BodiesAreUtf8) {
             R"(","3"])");
 }
 
+// --- Page scripts that change what the prelude uses ---
+
+// The prelude reads the arguments of its natives from objects that page scripts can change (the getters of
+// Request.prototype, Array.prototype.join(), the global Uint8Array, String): the natives check them, and a conversion
+// that runs a script (toString()) cannot change what they read before it.
+
+// The functions of these tests, in the page: 'throwing' cannot become a string, settle(promise) is the status of a
+// response or the error, fetchWith(name, value, url, init) is fetch(url, init) with the getter 'name' of
+// Request.prototype returning 'value'.
+constexpr std::string_view kTamperHelpers = R"(
+  const throwing = { toString() { throw new Error('tampered'); } };
+  const settle = promise => promise.then(r => r.status, e => e.name + ': ' + e.message);
+  const fetchWith = (name, value, url, init) => {
+    const descriptor = Object.getOwnPropertyDescriptor(Request.prototype, name);
+    Object.defineProperty(Request.prototype, name, { get: () => value, configurable: true });
+    try {
+      return fetch(url, init);
+    } finally {
+      Object.defineProperty(Request.prototype, name, descriptor);
+    }
+  };
+)";
+
+TEST(WebNetworkTest, ChangedGettersOfTheRequests) {
+  WebClient client(Config());
+  EXPECT_EQ(Out(client, std::string(kTamperHelpers) + R"(
+    Object.prototype.outOfRange = 3;
+    const results = [
+      settle(fetchWith('method', throwing, '/api')),
+      settle(fetchWith('method', 'CONNECT', '/api')),
+      settle(fetchWith('method', 'TRACE', '/api')),
+      settle(fetchWith('method', 'GET', '/api', { method: 'POST', body: 'x' })),
+      settle(fetchWith('method', 'HEAD', '/api', { method: 'POST', body: 'x' })),
+      settle(fetchWith('url', throwing, '/api')),
+      settle(fetchWith('url', 'http://user@127.0.0.1:1/', '/api')),
+      settle(fetchWith('mode', 'toString', '/api')),
+      settle(fetchWith('mode', 'outOfRange', '/api')),
+      settle(fetchWith('credentials', 'toString', '/api')),
+    ];
+    delete Object.prototype.outOfRange;
+    Promise.all(results).then(r => { out = r; });)"),
+            R"(["Error: tampered","TypeError: aeronet: the HTTP method 'CONNECT' is not supported",)"
+            R"("TypeError: aeronet: the HTTP method 'TRACE' is not supported",)"
+            R"("TypeError: aeronet: a GET request has no body","TypeError: aeronet: a HEAD request has no body",)"
+            R"("Error: tampered",)"
+            R"("TypeError: aeronet: only http and https URLs can be fetched, not 'http://user@127.0.0.1:1/'",)"
+            R"("TypeError: aeronet: invalid mode or credentials of a request",)"
+            R"("TypeError: aeronet: invalid mode or credentials of a request",)"
+            R"("TypeError: aeronet: invalid mode or credentials of a request"])");
+}
+
+// The header lines of a request are converted before its URL is resolved: a conversion that resolves another URL
+// (here to another origin, which does not allow the document to read its responses) does not change where the
+// request goes, nor what the document can read.
+TEST(WebNetworkTest, ChangedHeaderLines) {
+  WebClient client(Config());
+  const std::string ownBody(24, 'o');
+  EXPECT_EQ(Out(client, std::string(kTamperHelpers) + "const own = '" + Url("/api?body=" + ownBody) +
+                            "'; const other = '" + SameSiteUrl("/api?body=") + R"(';
+    // fetch() with the header lines replaced by lines(joined), joined being the real ones.
+    const fetchWithLines = (lines, url, init) => {
+      const join = Array.prototype.join;
+      Array.prototype.join = function (separator) {
+        const joined = join.call(this, separator);
+        if (separator !== '\n') return joined;
+        Array.prototype.join = join;
+        return lines(joined);
+      };
+      try {
+        return fetch(url, init);
+      } finally {
+        Array.prototype.join = join;
+      }
+    };
+    // A URL of the other origin of the same length: the URL resolver overwrites its last result in place.
+    const sameLength = other.padEnd(own.length, 'x');
+    Promise.all([
+      settle(fetchWithLines(() => throwing, '/api')),
+      settle(fetchWithLines(() => 'bad name:x', '/api')),
+      fetchWithLines(() => 'x-no-colon', '/api').then(r => r.json()).then(e => e.headers['x-no-colon'] ?? null),
+      fetchWithLines(joined => ({ toString: () => { new URL(sameLength); return joined; } }), own)
+        .then(r => r.text(), e => e.message),
+    ]).then(r => { out = r; });)"),
+            R"(["Error: tampered","TypeError: aeronet: invalid header 'bad name: x'","",")" + ownBody + R"("])");
+}
+
+// The prelude makes the Uint8Array of the bodies with the global one.
+TEST(WebNetworkTest, ChangedUint8Array) {
+  WebClient client(Config());
+  EXPECT_EQ(Out(client, std::string(kTamperHelpers) + R"(
+    const withFakeUint8Array = run => {
+      const real = Uint8Array;
+      Uint8Array = function () { return { length: 1, byteLength: 1 }; };
+      try {
+        return run();
+      } catch (e) {
+        return e.name;
+      } finally {
+        Uint8Array = real;
+      }
+    };
+    const body = new Uint8Array([65]);
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', '/api?body=abc', false);
+    xhr.send();
+    Promise.all([
+      withFakeUint8Array(() => fetch('/api', { method: 'POST', body })).then(r => r.status, e => e.name),
+      fetch('/api?body=abc').then(r => withFakeUint8Array(() => r.text())).catch(e => e.name),
+      withFakeUint8Array(() => xhr.responseText),
+      xhr.responseText,
+    ]).then(r => { out = r; });)"),
+            R"(["TypeError","TypeError","TypeError","abc"])");
+}
+
+// The strings that the prelude passes through String() or a header getter of XMLHttpRequest.
+TEST(WebNetworkTest, ChangedStringConversions) {
+  WebClient client(Config());
+  EXPECT_EQ(Out(client, std::string(kTamperHelpers) + R"(
+    const messageOf = run => {
+      try {
+        return run();
+      } catch (e) {
+        return e.message;
+      }
+    };
+    // run() with String() returning 'throwing' at its call number 'call'.
+    const withString = (call, run) => {
+      const real = String;
+      let calls = 0;
+      String = value => ++calls === call ? throwing : real(value);
+      try {
+        return messageOf(run);
+      } finally {
+        String = real;
+      }
+    };
+    const encoder = new TextEncoder();
+    const wellFormedThrowing = { isWellFormed: () => true, toString: throwing.toString };
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', '/api?body=abc', false);
+    xhr.send();
+    xhr.getResponseHeader = () => throwing;
+    out = [
+      withString(1, () => new URL('http://a.example/')),
+      withString(2, () => new URL('/a', 'http://a.example/')),
+      messageOf(() => {
+        const real = String;
+        String = () => wellFormedThrowing;
+        try {
+          return encoder.encode('x');
+        } finally {
+          String = real;
+        }
+      }),
+      messageOf(() => xhr.responseText),
+    ];)"),
+            R"(["tampered","tampered","tampered","tampered"])");
+}
+
 // --- The rules of the Fetch Standard ---
 
 TEST(WebNetworkTest, ForbiddenRequestHeaders) {
@@ -1226,6 +1475,7 @@ TEST(WebNetworkTest, CorsSafelistedRequestHeaders) {
   EXPECT_FALSE(IsCorsSafelistedRequestHeader("accept", std::string(129, 'a')));
   EXPECT_TRUE(IsCorsSafelistedRequestHeader("accept-language", "en-US,fr;q=0.9 *"));
   EXPECT_FALSE(IsCorsSafelistedRequestHeader("content-language", "fr_FR"));
+  EXPECT_FALSE(IsCorsSafelistedRequestHeader("accept-language", "fr~"));
   EXPECT_TRUE(IsCorsSafelistedRequestHeader("content-type", "Text/Plain; charset=utf-8"));
   EXPECT_TRUE(IsCorsSafelistedRequestHeader("content-type", "multipart/form-data; boundary=x"));
   EXPECT_TRUE(IsCorsSafelistedRequestHeader("content-type", "application/x-www-form-urlencoded"));
@@ -1234,8 +1484,8 @@ TEST(WebNetworkTest, CorsSafelistedRequestHeaders) {
   for (const std::string_view range : {"bytes=0-", "bytes=5-10", "bytes=007-7", "bytes=0-0"}) {
     EXPECT_TRUE(IsCorsSafelistedRequestHeader("range", range)) << range;
   }
-  for (const std::string_view range :
-       {"bytes=10-5", "bytes=-5", "bytes=a-b", "bytes=5", "items=0-", "bytes=1-2,3-4", "bytes=99-100x"}) {
+  for (const std::string_view range : {"bytes=10-5", "bytes=21-12", "bytes=-5", "bytes=a-b", "bytes=5", "items=0-",
+                                       "bytes=1-2,3-4", "bytes=99-100x"}) {
     EXPECT_FALSE(IsCorsSafelistedRequestHeader("range", range)) << range;
   }
   EXPECT_FALSE(IsCorsSafelistedRequestHeader("x-custom", "x"));
@@ -1270,6 +1520,20 @@ TEST(WebNetworkTest, CorsChecks) {
   EXPECT_TRUE(PreflightAllows(allowed, kOrigin, false, http::Method::POST, ""));
   EXPECT_FALSE(PreflightAllows(allowed, kOrigin, false, http::Method::DELETE, ""));
   EXPECT_FALSE(PreflightAllows(allowed, kOrigin, false, http::Method::PUT, "x-a,x-c"));
+  EXPECT_TRUE(PreflightAllows(allowed, kOrigin, false, http::Method::HEAD, ""));
+  // An informational status is not a success, and the response must pass the CORS check.
+  HttpResponse informational(http::StatusCodeSwitchingProtocols);
+  informational.headerAddLine("access-control-allow-origin", "*");
+  EXPECT_FALSE(PreflightAllows(informational, kOrigin, false, http::Method::GET, ""));
+  EXPECT_FALSE(PreflightAllows(HttpResponse(http::StatusCodeNoContent), kOrigin, false, http::Method::GET, ""));
+  // With credentials, "*" allows no header.
+  HttpResponse withCredentials(http::StatusCodeNoContent);
+  withCredentials.headerAddLine("access-control-allow-origin", kOrigin)
+      .headerAddLine("access-control-allow-credentials", "true")
+      .headerAddLine("access-control-allow-headers", "*");
+  EXPECT_TRUE(PreflightAllows(withCredentials, kOrigin, true, http::Method::GET, ""));
+  EXPECT_FALSE(PreflightAllows(withCredentials, kOrigin, true, http::Method::GET, "x-a"));
+  EXPECT_TRUE(PreflightAllows(withCredentials, kOrigin, false, http::Method::GET, "x-a"));
 }
 
 TEST(WebNetworkTest, ExposedResponseHeaderNames) {

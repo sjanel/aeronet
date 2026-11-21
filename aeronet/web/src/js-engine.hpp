@@ -5,6 +5,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <limits>
 #include <span>
 #include <string>
@@ -94,6 +95,39 @@ JSValue JsSetter(JSContext* pCtx, JSValueConst thisVal, JSValueConst value) noex
   }
 }
 
+// When the allocation of the UTF-8 fails, JS_ToCStringLen() keeps the reference it took to the string it converts
+// (QuickJS-ng 0.16 to 0.18 at least, and its master on 2026-11-21): the string then outlives its runtime. Not assumed
+// of the next versions: a fixed one would free the string twice, an unfixed one leaks it again (caught by
+// FailedConversionsKeepNoString in web-engine_test.cpp).
+inline constexpr bool kToCStringLeaksOnFailure = QJS_VERSION_MAJOR == 0 && QJS_VERSION_MINOR <= 18;
+
+// The UTF-8 of 'str', a string (not a rope), as JS_ToCStringLen() without its leak. Null on memory exhaustion, the
+// exception pending. Free it with JS_FreeCString().
+inline const char* StringToUtf8(JSContext* pCtx, JSValueConst str, std::size_t& size) noexcept {
+  assert(JS_VALUE_GET_TAG(str) == JS_TAG_STRING);
+  const char* pUtf8 = JS_ToCStringLen(pCtx, &size, str);
+  if constexpr (kToCStringLeaksOnFailure) {
+    if (pUtf8 == nullptr) [[unlikely]] {
+      // The only failure for a string, after its reference was taken.
+      JS_FreeValue(pCtx, str);
+    }
+  }
+  return pUtf8;
+}
+
+// StringToUtf8() of String(value), for a value other than a string: JS_ToCStringLen() would leak the string of its
+// own conversion. Null when the conversion throws, the exception pending.
+const char* NonStringToUtf8(JSContext* pCtx, JSValueConst value, std::size_t& size) noexcept;
+
+// The UTF-8 of String(value), as JS_ToCStringLen() without its leak. Null when the conversion throws, the exception
+// pending. Free it with JS_FreeCString().
+inline const char* ToUtf8(JSContext* pCtx, JSValueConst value, std::size_t& size) noexcept {
+  if (JS_VALUE_GET_TAG(value) == JS_TAG_STRING) [[likely]] {
+    return StringToUtf8(pCtx, value, size);
+  }
+  return NonStringToUtf8(pCtx, value, size);
+}
+
 // The string conversion of 'value' (JavaScript String(value)), which fails when it throws: check failed() first, the
 // exception is pending. The conversion of JS_EXCEPTION, the result of a failed call, fails too.
 // A local object: inline, and with its size read through a local variable, it does not escape, so that the compiler
@@ -136,7 +170,7 @@ class JsString {
 
   void convert(JSValueConst value) noexcept {
     std::size_t size = 0;
-    _pStr = JS_IsException(value) ? nullptr : JS_ToCStringLen(_pCtx, &size, value);
+    _pStr = JS_IsException(value) ? nullptr : ToUtf8(_pCtx, value, size);
     _size = _pStr == nullptr ? kFailed : size;
   }
 
@@ -180,6 +214,14 @@ class JsArray {
       return false;
     }
     return true;
+  }
+
+  // Appends 'values' in turn, as push() of each: after a failure, the next ones are freed. release() tells whether the
+  // array failed.
+  void append(std::initializer_list<JSValue> values) noexcept {
+    for (const JSValue value : values) {
+      static_cast<void>(push(value));
+    }
   }
 
   // The array, JS_EXCEPTION if it failed.

@@ -126,7 +126,7 @@ RequestCredentials ScriptCredentials(const HtmlElement& script) noexcept {
 std::string_view RequestUrl(UrlResolver& resolver, const HttpRequest& request, std::string_view fragment) {
   const std::string_view target = request.target();
   assert(!target.contains('#'));  // the HTTP client strips the fragments, of the redirects too
-  if (target.starts_with('/') || target.starts_with('?')) {
+  if (target.starts_with('/')) {  // origin-form, "/" for an empty path
     return resolver.resolve({}, {request.scheme(), "://", request.hostHeaderValue(), target, fragment});
   }
   return resolver.resolve({}, {target, fragment});  // absolute-form, sent to a forward proxy

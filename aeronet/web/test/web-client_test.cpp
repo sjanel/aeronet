@@ -12,6 +12,8 @@
 
 #include "../src/web-url.hpp"
 #include "aeronet/cookie-jar.hpp"
+#include "aeronet/http-client-config.hpp"
+#include "aeronet/http-client.hpp"
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header.hpp"
 #include "aeronet/http-method.hpp"
@@ -767,6 +769,19 @@ TEST(WebClientTest, RedirectsGiveTheFinalUrl) {
   const std::string second = "/redirect?to=" + test::PercentEncode(target);
   WebPage chain = test::Navigate(client, StoreUrl("/redirect?to=" + test::PercentEncode(second + "#first")) + "#asked");
   EXPECT_EQ(chain.url(), StoreUrl(target) + "#first");
+  // A Location without path is requested with the path "/" (no page there).
+  WebPage root = test::Navigate(client, StoreUrl("/redirect?to=" + test::PercentEncode(StoreUrl("?x=1"))));
+  EXPECT_EQ(root.url(), StoreUrl("/?x=1"));
+  EXPECT_EQ(root.status(), http::StatusCodeNotFound);
+}
+
+// The cookie jar of the HTTP client, which the pages need, is enabled with its default limit unless the configuration
+// enables it.
+TEST(WebClientTest, CookieJarOfTheConfiguration) {
+  WebClientConfig config;
+  config.http.withCookies(5);
+  EXPECT_EQ(WebClient(config).httpClient().config().cookies.maxCookies, 5U);
+  EXPECT_EQ(WebClient().httpClient().config().cookies.maxCookies, HttpClientConfig::Cookies::kDefaultMaxCookies);
 }
 
 TEST(WebClientTest, ThroughAForwardProxy) {
@@ -817,6 +832,18 @@ TEST(WebUrlTest, SplitUrl) {
   static_assert(kHostOnly.host == "host" && kHostOnly.pathname.empty());
   EXPECT_EQ(internal::WithoutFragment("http://h/p#f"), "http://h/p");
   // At runtime too.
+  const std::string about = "about:blank";
+  const internal::UrlParts aboutParts = internal::SplitUrl(about);
+  EXPECT_TRUE(aboutParts.host.empty());
+  EXPECT_EQ(aboutParts.pathname, "blank");
+  const std::string ipv6 = "http://[::1]";
+  const internal::UrlParts ipv6Parts = internal::SplitUrl(ipv6);
+  EXPECT_EQ(ipv6Parts.hostname, "[::1]");
+  EXPECT_TRUE(ipv6Parts.port.empty());
+  EXPECT_TRUE(ipv6Parts.pathname.empty());
+  const std::string https = "https://h/";
+  EXPECT_TRUE(internal::IsHttpUrl(https));
+  EXPECT_FALSE(internal::IsHttpUrl(about));
   const std::string url = "http://user@host:81/p?#";
   const internal::UrlParts parts = internal::SplitUrl(url);
   EXPECT_EQ(parts.host, "host:81");

@@ -505,15 +505,20 @@ Phases:
    of its source and debug information (its functions show `[native code]`, as built-ins). Left for later:
    - a larger initial GC threshold of the runtimes (QuickJS-ng starts at 256 KB): it saves 30 us on the first use of
      the network APIs, but lets cyclic garbage grow near `maxScriptMemory`;
-   - the `Origin` header and the CORS checks of the cross-origin redirects of a request (the HTTP client follows
-     them: the final response is checked, with the `Origin` of the first request), `redirect: 'manual'`, a preflight
-     cache;
+   - `redirect: 'manual'` and `'error'` (every redirect is followed, with the rules of the Fetch Standard at each
+     hop), a preflight cache;
    - `Blob`, `FormData`, streams (`Response.body`), and the parallel requests of the coroutine client (below).
    - a fix of QuickJS-ng to propose upstream (unfixed on its master on 2026-11-19): when an allocation fails in a
      destructuring pattern, `js_parse_destructuring_element()` decrements the reference count of label -1 (a segfault,
      or a heap write before the label array of the function), found by the memory-limit sweep of
      `web-network_test.cpp` under UBSan. The prelude is compiled without the memory limit; a page script compiled
      near `maxScriptMemory` can still hit it until a release has the fix (two lines: return when `new_label()` fails).
+   - another fix of QuickJS-ng to propose upstream (unfixed on its master on 2026-11-21): when the allocation of the
+     UTF-8 fails, `JS_ToCStringLen2()` keeps the reference it took to the string it converts, which then outlives its
+     runtime (a 10 MB leak of `BodyBeyondTheMemoryOfTheScripts` under LeakSanitizer). aeronet converts with
+     `ToUtf8()` (`aeronet/web/src/js-engine.hpp`), which releases that reference up to QuickJS-ng 0.18
+     (`kToCStringLeaksOnFailure`): to bound to the versions without the fix once a release has it (one line:
+     `JS_FreeValue(ctx, val)` at its `fail` label).
 
    The design points:
    - One QuickJS runtime per page over the lexbor document; the page owns every node and frees them together,

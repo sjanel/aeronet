@@ -2753,7 +2753,7 @@ TEST(HttpClientProxyE2ETest, CookiesUseThePathOfTheAbsoluteFormTarget) {
   const auto third = client.get("http://origin.invalid:1234?x=/dir/a");
   ASSERT_TRUE(third) << ErrcToStr(third.error());
   head = proxy.lastCapturedHead();
-  EXPECT_TRUE(head.starts_with("GET http://origin.invalid:1234?x=/dir/a HTTP/1.1\r\n")) << head;
+  EXPECT_TRUE(head.starts_with("GET http://origin.invalid:1234/?x=/dir/a HTTP/1.1\r\n")) << head;
   EXPECT_FALSE(head.contains("\r\ncookie:")) << head;
 }
 

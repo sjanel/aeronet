@@ -27,9 +27,9 @@ int32_t RequestQueue::add(Request request, JSValueConst callback) {
   if (!_pMemory->canHold(request.memory)) {
     return 0;
   }
-  // The ids only identify the pending requests: few at a time, they stay unique after a wrap around.
+  // The ids only identify the pending requests: few at a time, they stay unique when they wrap around to 1.
   const int32_t id = _nextId;
-  _nextId = _nextId == std::numeric_limits<int32_t>::max() ? 1 : _nextId + 1;
+  _nextId = (_nextId % std::numeric_limits<int32_t>::max()) + 1;
   const std::size_t memory = request.memory;
   Pending& pending = _pending.emplace_back(std::move(request), id);  // the only step that can throw
   pending.request.callback = JS_DupValue(_pCtx, callback);

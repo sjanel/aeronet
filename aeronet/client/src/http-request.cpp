@@ -91,11 +91,17 @@ constexpr uint32_t MaxTargetLen(uint8_t headerPosNbBits, uint32_t originKeyLen) 
                                originKeyLen);
 }
 
+// The size of the request-target of the parsed 'target': the path of a URL without one is "/" (RFC 9112 section 3.2.1),
+// so that a target parsed as "?query" is written "/?query".
+constexpr std::size_t TargetSize(std::string_view target) noexcept {
+  return target.size() + static_cast<std::size_t>(target.starts_with('?'));
+}
+
 constexpr const char* CheckTarget(std::string_view target, uint8_t headerPosNbBits, uint32_t originKeyLen) {
   if (!IsValidRequestTarget(target)) {
     return "Invalid HTTP request target";
   }
-  if (target.size() > MaxTargetLen(headerPosNbBits, originKeyLen)) {
+  if (TargetSize(target) > MaxTargetLen(headerPosNbBits, originKeyLen)) {
     return "Request target exceeds maximum length";
   }
   return nullptr;
@@ -128,7 +134,7 @@ constexpr const char* CheckUrl(const internal::UrlParseResult& res, uint8_t head
 // GET / HTTP/1.0\r\n\r\n
 constexpr std::size_t HttpRequestInitialSize(http::Method method, bool hasNonTlsProxy, uint32_t originKeyLen,
                                              std::string_view target) {
-  std::size_t sz = http::MethodToStr(method).size() + 1U + target.size();
+  std::size_t sz = http::MethodToStr(method).size() + 1U + TargetSize(target);
   if (hasNonTlsProxy) {
     // Absolute-form request-target for a cleartext proxy: "scheme://host:port" (the origin key) + origin-form.
     sz += originKeyLen;
@@ -166,14 +172,15 @@ constexpr char* InitData(http::Method method, bool hasNonTlsProxy, bool hostIsIp
   if (hasNonTlsProxy) {
     // For a cleartext request sent to a forward proxy, the request-target is the absolute-form URL (RFC 9112 section
     // 3.2.2), spelled with an explicit (normalized) port: the origin key ("scheme://host:port") followed by the
-    // origin-form target (path + optional "?query").
+    // origin-form target.
     pData = Append(originKey, pData);
-    pData = Append(urlParseResult.target, pData);
-  } else {
-    // For a direct request to the origin, the request-target is the origin-form (path + optional "?query") (RFC 9112
-    // section 3.2.1).
-    pData = Append(urlParseResult.target, pData);
   }
+  // For a direct request to the origin, the request-target is the origin-form (path + optional "?query") (RFC 9112
+  // section 3.2.1), "/" for an empty path (see TargetSize()).
+  if (urlParseResult.target.starts_with('?')) {
+    *pData++ = '/';
+  }
+  pData = Append(urlParseResult.target, pData);
 
   *pData++ = ' ';
 
@@ -356,7 +363,7 @@ const char* HttpRequest::setNewUrl(const internal::UrlParseResult& res) {
   const auto hostHeaderSize = ComputeHostHeaderSize(res.host, hostIsIpv6, res.hasNonDefaultPort(), portNbDigits);
 
   const auto newHostHeaderEndPos =
-      _originKeyLen + methodLen + 1U + res.target.size() + 1U + http::HTTP11Sv.size() + hostHeaderSize;
+      _originKeyLen + methodLen + 1U + TargetSize(res.target) + 1U + http::HTTP11Sv.size() + hostHeaderSize;
   const int32_t diffLen = static_cast<int32_t>(newHostHeaderEndPos) - static_cast<int32_t>(oldHostHeaderEndPos);
 
   HeadGrowthManager headGrowthManager(*this, diffLen);
@@ -414,11 +421,11 @@ HttpRequest::RedirectOutcome HttpRequest::resolveRedirect(std::string_view locat
   uint32_t prefixLen;
 
   if (location.starts_with('/')) {
-    // Absolute path: keep origin, replace target.
-    prefixLen = 0;
+    // Absolute path: keep origin, replace target. An absolute-form target (to a cleartext proxy) keeps its origin key.
+    prefixLen = _opts.hasProxy() && !isTlsRequest() ? _originKeyLen : 0U;
   } else if (location.starts_with('?')) {
-    // Keep the whole path and append the new query.
-    prefixLen = static_cast<uint32_t>(oldTargetLen);
+    // Keep the path, replace the query (RFC 3986 section 5.2.2).
+    prefixLen = static_cast<uint32_t>(std::min(oldTarget.find('?'), oldTargetLen));
   } else {
     // Keep only the directory (including the trailing '/').
     std::string_view base = oldTarget;
