@@ -3215,8 +3215,8 @@ vector<ServerMessage> ParseServerFrames(DeflateContext& client, std::string_view
     } else {
       payload.append(frame.payload);
     }
-    messages.push_back(
-        {frame.header.opcode, std::string(reinterpret_cast<const char*>(payload.data()), payload.size())});
+    messages.emplace_back(frame.header.opcode,
+                          std::string(reinterpret_cast<const char*>(payload.data()), payload.size()));
     output.remove_prefix(frame.bytesConsumed);
   }
   return messages;

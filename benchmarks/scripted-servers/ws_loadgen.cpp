@@ -218,14 +218,14 @@ std::vector<Payload> MakePayloads(const Options& opts, bool compressionNegotiate
   };
   switch (opts.mode) {
     case Mode::Ping:
-      payloads.push_back(Payload{std::string{}, {}, kOpPing, false});
+      payloads.emplace_back(std::string(), std::string(), kOpPing);
       break;
     case Mode::Mix:
       add(false, 256);
       add(true, 512);
       break;
     case Mode::Churn:
-      payloads.push_back(Payload{std::string("churn-test"), {}, kOpText, false});
+      payloads.emplace_back(std::string("churn-test"), std::string(), kOpText);
       break;
     case Mode::Echo:
       add(opts.binary, opts.payloadSize);

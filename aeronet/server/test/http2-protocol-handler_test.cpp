@@ -3038,59 +3038,59 @@ TEST(Http2ProtocolHandler, RejectsMalformedRequestPseudoHeaderSets) {
   RawChars missingMethod;
   missingMethod.append(MakeHttp1HeaderLine(":scheme", "https"));
   missingMethod.append(MakeHttp1HeaderLine(":path", "/"));
-  cases.push_back({++streamId, std::move(missingMethod)});
+  cases.emplace_back(++streamId, std::move(missingMethod));
 
   RawChars missingScheme;
   missingScheme.append(MakeHttp1HeaderLine(":method", "GET"));
   missingScheme.append(MakeHttp1HeaderLine(":path", "/"));
-  cases.push_back({streamId += 2, std::move(missingScheme)});
+  cases.emplace_back(streamId += 2, std::move(missingScheme));
 
   RawChars invalidMethod;
   invalidMethod.append(MakeHttp1HeaderLine(":method", "GE T"));
   invalidMethod.append(MakeHttp1HeaderLine(":scheme", "https"));
   invalidMethod.append(MakeHttp1HeaderLine(":path", "/"));
-  cases.push_back({streamId += 2, std::move(invalidMethod)});
+  cases.emplace_back(streamId += 2, std::move(invalidMethod));
 
   RawChars emptyScheme;
   emptyScheme.append(MakeHttp1HeaderLine(":method", "GET"));
   emptyScheme.append(MakeHttp1HeaderLine(":scheme", ""));
   emptyScheme.append(MakeHttp1HeaderLine(":path", "/"));
-  cases.push_back({streamId += 2, std::move(emptyScheme)});
+  cases.emplace_back(streamId += 2, std::move(emptyScheme));
 
   RawChars emptyHttpPath;
   emptyHttpPath.append(MakeHttp1HeaderLine(":method", "GET"));
   emptyHttpPath.append(MakeHttp1HeaderLine(":scheme", "https"));
   emptyHttpPath.append(MakeHttp1HeaderLine(":path", ""));
-  cases.push_back({streamId += 2, std::move(emptyHttpPath)});
+  cases.emplace_back(streamId += 2, std::move(emptyHttpPath));
 
   RawChars missingConnectAuthority;
   missingConnectAuthority.append(MakeHttp1HeaderLine(":method", "CONNECT"));
-  cases.push_back({streamId += 2, std::move(missingConnectAuthority)});
+  cases.emplace_back(streamId += 2, std::move(missingConnectAuthority));
 
   RawChars connectWithScheme;
   connectWithScheme.append(MakeHttp1HeaderLine(":method", "CONNECT"));
   connectWithScheme.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
   connectWithScheme.append(MakeHttp1HeaderLine(":scheme", "https"));
-  cases.push_back({streamId += 2, std::move(connectWithScheme)});
+  cases.emplace_back(streamId += 2, std::move(connectWithScheme));
 
   RawChars connectWithPath;
   connectWithPath.append(MakeHttp1HeaderLine(":method", "CONNECT"));
   connectWithPath.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
   connectWithPath.append(MakeHttp1HeaderLine(":path", "/"));
-  cases.push_back({streamId += 2, std::move(connectWithPath)});
+  cases.emplace_back(streamId += 2, std::move(connectWithPath));
 
   RawChars connectWithEmptyPath;
   connectWithEmptyPath.append(MakeHttp1HeaderLine(":method", "CONNECT"));
   connectWithEmptyPath.append(MakeHttp1HeaderLine(":authority", "example.com:443"));
   connectWithEmptyPath.append(MakeHttp1HeaderLine(":path", ""));
-  cases.push_back({streamId += 2, std::move(connectWithEmptyPath)});
+  cases.emplace_back(streamId += 2, std::move(connectWithEmptyPath));
 
   RawChars responsePseudoHeader;
   responsePseudoHeader.append(MakeHttp1HeaderLine(":method", "GET"));
   responsePseudoHeader.append(MakeHttp1HeaderLine(":scheme", "https"));
   responsePseudoHeader.append(MakeHttp1HeaderLine(":path", "/"));
   responsePseudoHeader.append(MakeHttp1HeaderLine(":status", "200"));
-  cases.push_back({streamId += 2, std::move(responsePseudoHeader)});
+  cases.emplace_back(streamId += 2, std::move(responsePseudoHeader));
 
   RawChars unsupportedExtendedConnect;
   unsupportedExtendedConnect.append(MakeHttp1HeaderLine(":method", "CONNECT"));
@@ -3098,7 +3098,7 @@ TEST(Http2ProtocolHandler, RejectsMalformedRequestPseudoHeaderSets) {
   unsupportedExtendedConnect.append(MakeHttp1HeaderLine(":scheme", "https"));
   unsupportedExtendedConnect.append(MakeHttp1HeaderLine(":authority", "example.com"));
   unsupportedExtendedConnect.append(MakeHttp1HeaderLine(":path", "/chat"));
-  cases.push_back({streamId + 2, std::move(unsupportedExtendedConnect)});
+  cases.emplace_back(streamId + 2, std::move(unsupportedExtendedConnect));
 
   for (const auto& malformedCase : cases) {
     ASSERT_EQ(

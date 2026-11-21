@@ -139,7 +139,7 @@ struct ParsedFrame {
       break;
     }
 
-    frames.push_back(ParsedFrame{header, remaining.subspan(FrameHeader::kSize, header.length())});
+    frames.emplace_back(header, remaining.subspan(FrameHeader::kSize, header.length()));
     offset += frameSize;
   }
 

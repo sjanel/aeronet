@@ -36,7 +36,7 @@ void RejectionTracker::track(JSValueConst promise, JSValueConst reason, bool isH
     return;
   }
   try {
-    _rejections.push_back({JS_UNDEFINED, JS_UNDEFINED});  // the only step that can throw
+    _rejections.emplace_back(JS_UNDEFINED, JS_UNDEFINED);  // the only step that can throw
   } catch (...) {  // std::bad_alloc, or the std::overflow_error of a vector grown past its size type
     _untracked = true;
     return;

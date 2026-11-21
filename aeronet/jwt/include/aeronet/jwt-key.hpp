@@ -1,12 +1,12 @@
 #pragma once
 
+#include <amc/type_traits.hpp>
 #include <cstdint>
 #include <string_view>
 #include <type_traits>
 
 #include "aeronet/jwt-algorithm.hpp"
 #include "aeronet/raw-chars.hpp"
-#include "amc/type_traits.hpp"
 
 namespace aeronet {
 

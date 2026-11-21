@@ -24,7 +24,7 @@ class ZerocopyBuffers {
     // Saturated: no retention limit reaches 4 GiB.
     const auto size = static_cast<std::uint32_t>(
         std::min<std::size_t>(data.retainedSize(), std::numeric_limits<std::uint32_t>::max()));
-    _buffers.push_back(Entry{std::move(data), seqEnd, size});
+    _buffers.emplace_back(std::move(data), seqEnd, size);
   }
 
   // Releases the buffers whose sends completed.

@@ -41,13 +41,13 @@ const KernelVector& Kernels() {
     };
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
     if (HasSsse3()) {
-      kernels.push_back({"ssse3", &detail::IsValidUtf8Ssse3, &detail::UnmaskAndValidateUtf8Ssse3});
+      kernels.emplace_back("ssse3", &detail::IsValidUtf8Ssse3, &detail::UnmaskAndValidateUtf8Ssse3);
     }
     if (HasAvx2()) {
-      kernels.push_back({"avx2", &detail::IsValidUtf8Avx2, &detail::UnmaskAndValidateUtf8Avx2});
+      kernels.emplace_back("avx2", &detail::IsValidUtf8Avx2, &detail::UnmaskAndValidateUtf8Avx2);
     }
 #elif defined(__ARM_NEON) || defined(__ARM_NEON__)
-    kernels.push_back({"neon", &detail::IsValidUtf8Neon, &detail::UnmaskAndValidateUtf8Neon});
+    kernels.emplace_back("neon", &detail::IsValidUtf8Neon, &detail::UnmaskAndValidateUtf8Neon);
 #endif
     return kernels;
   }();

@@ -716,6 +716,15 @@ class HttpRequest final : public HttpMessage {
     return std::move(trailerAddLine(key, value));
   }
 
+  // How HttpClient points a request to the Location of a redirect (see PageRequestContext::onRedirect).
+  enum class RedirectOutcome : uint8_t {
+    Invalid,     // malformed or too long location, the request is unchanged
+    Downgrade,   // redirect from https to cleartext http, refused: the request is unchanged
+    SameOrigin,  // target replaced, same scheme, host and port
+    SameSite,    // URL replaced by one of another port, same scheme and host: another origin of the same site
+    CrossSite,   // URL replaced by one of another scheme or host (the site of the cookie rules, see CookieJar)
+  };
+
  private:
   friend class internal::ClientConnection;
   friend class HttpClient;
@@ -786,14 +795,6 @@ class HttpRequest final : public HttpMessage {
   }
 
   const char* setNewUrl(const internal::UrlParseResult& res);
-
-  enum class RedirectOutcome : uint8_t {
-    Invalid,     // malformed or too long location, the request is unchanged
-    Downgrade,   // redirect from https to cleartext http, refused: the request is unchanged
-    SameOrigin,  // target replaced, same scheme, host and port
-    SameSite,    // URL replaced by one of another port, same scheme and host: another origin of the same site
-    CrossSite,   // URL replaced by one of another scheme or host (the site of the cookie rules, see CookieJar)
-  };
 
   // Point this request to the 'location' of a redirect response (absolute URL, network-path or relative reference).
   RedirectOutcome resolveRedirect(std::string_view location);

@@ -4,6 +4,7 @@
 #include <string_view>
 
 #include "aeronet/raw-chars.hpp"
+#include "web-url.hpp"
 
 namespace aeronet::internal {
 
@@ -23,7 +24,7 @@ class DocumentUrl {
 
   // Whether the serialized URL 'url' has the origin of this one (HTML "can have its URL rewritten": same scheme, host
   // and port, without user information).
-  [[nodiscard]] bool isSameOrigin(std::string_view url) const noexcept;
+  [[nodiscard]] bool isSameOrigin(std::string_view url) const noexcept { return IsOfOrigin(url, origin()); }
 
   // Replaces the URL by 'url' (see the constructor). Throws std::bad_alloc on memory exhaustion.
   void assign(std::string_view url);

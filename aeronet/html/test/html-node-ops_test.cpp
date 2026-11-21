@@ -208,6 +208,29 @@ TEST(HtmlDecodeScriptTest, InvalidUtf8IsReplaced) {
   EXPECT_EQ(Decode("a\xC3", "text/javascript"), "a\xEF\xBF\xBD");
 }
 
+// DecodeUtf8(): UTF-8 only, whatever its byte order mark, which stays.
+TEST(HtmlDecodeScriptTest, DecodeUtf8) {
+  RawChars buffer;
+  constexpr std::string_view kText = "\xEF\xBB\xBF caf\xC3\xA9 and more than 8 bytes";
+  EXPECT_EQ(DecodeUtf8(kText, buffer).data(), kText.data());
+  EXPECT_TRUE(buffer.empty());
+  const std::string_view utf16(
+      "\xFF\xFE"
+      "a\0",
+      4);
+  const std::string_view expected(
+      "\xEF\xBF\xBD\xEF\xBF\xBD"
+      "a\0",
+      8);
+  // Twice: the second decoding overwrites the first one.
+  for (int round = 0; round < 2; ++round) {
+    const std::string_view decoded = DecodeUtf8(utf16, buffer);
+    EXPECT_EQ(decoded, expected);
+    EXPECT_EQ(decoded.data(), buffer.data());
+    EXPECT_EQ(buffer.size(), expected.size());
+  }
+}
+
 TEST(HtmlDecodeScriptTest, EncodingOrder) {
   // 0xA3: '£' in windows-1252, 'Ł' in ISO-8859-2.
   EXPECT_EQ(Decode("\xA3", "text/javascript; charset=windows-1252", "iso-8859-2", "iso-8859-2"), "\xC2\xA3");

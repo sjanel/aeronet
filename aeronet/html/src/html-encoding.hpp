@@ -15,7 +15,8 @@ struct Utf8Html {
 };
 
 // Determines the encoding of 'html' (see HtmlDocument::HtmlDocument) and decodes it to UTF-8: the result is 'html'
-// itself without its byte order mark when it is UTF-8, else 'buffer', where it is decoded.
+// itself without its byte order mark when it is UTF-8, else 'buffer', where it is decoded (its previous contents
+// discarded).
 // Throws std::bad_alloc on memory exhaustion.
 Utf8Html DecodeHtml(std::string_view html, std::string_view contentType, RawChars& buffer);
 

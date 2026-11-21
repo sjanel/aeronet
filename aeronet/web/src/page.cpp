@@ -16,6 +16,7 @@
 #include <initializer_list>
 #include <limits>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -29,26 +30,30 @@
 #include "aeronet/http-client-error.hpp"
 #include "aeronet/http-client.hpp"
 #include "aeronet/http-constants.hpp"
+#include "aeronet/http-method.hpp"
 #include "aeronet/http-request.hpp"
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/web-session.hpp"
 #include "aeronet/log.hpp"
-#include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/timedef.hpp"
+#include "aeronet/web-client-config.hpp"
 #include "aeronet/web-client.hpp"
 #include "aeronet/web-page.hpp"
+#include "cors.hpp"
 #include "html-node-access.hpp"
 #include "html-node-ops.hpp"
 #include "html-tree-walk.hpp"
 #include "js-dom.hpp"
 #include "js-engine.hpp"
+#include "js-network.hpp"
 #include "js-prelude.hpp"
 #include "js-window.hpp"
 #include "memory-budget.hpp"
 #include "rejection-tracker.hpp"
+#include "request-queue.hpp"
 #include "script-queue.hpp"
 #include "timer-queue.hpp"
 #include "uncaught-errors.hpp"
@@ -102,43 +107,30 @@ void ThrowInvalidUrl(JSContext* pCtx, std::string_view input) noexcept {
   JS_ThrowDOMException(pCtx, "SyntaxError", "Invalid URL '%.*s'", static_cast<int>(input.size()), input.data());
 }
 
-struct JsFreeDeleter {
-  void operator()(uint8_t* pData) const noexcept { js_free(pCtx, pData); }
+// The size of the Accept and Referer headers of the request of a script, besides the value of its Referer.
+constexpr std::size_t kScriptHeadersSize = 32;
 
-  JSContext* pCtx;
-};
-
-// The function of the prelude: compiled by the first page of a session, which keeps its bytecode for the next ones.
-// The compilation ignores the stack limit 'maxStackSize' of the page: the parser of QuickJS-ng reports a stack overflow
-// in its lookahead as a bogus syntax error (js_parse_skip_parens_token drops the failure of next_token()), and the
-// prelude, code of aeronet, has a bounded depth. Returns the function, owned, or JS_EXCEPTION with the exception
-// pending.
-JSValue PreludeFunction(JSContext* pCtx, RawBytes& bytecode, std::size_t maxStackSize) {
-  if (bytecode.empty()) {
-    const std::string_view source = PreludeSource();
-    JSRuntime* pRuntime = JS_GetRuntime(pCtx);
-    JS_SetMaxStackSize(pRuntime, 0);  // no limit
-    JsValue compiled(pCtx, JS_Eval(pCtx, source.data(), source.size(), "aeronet:prelude",
-                                   JS_EVAL_FLAG_COMPILE_ONLY));  // of type JS_EVAL_TYPE_GLOBAL, 0
-    JS_SetMaxStackSize(pRuntime, maxStackSize);
-    if (JS_IsException(compiled.get())) {
-      return JS_EXCEPTION;
-    }
-    std::size_t size = 0;
-    const std::unique_ptr<uint8_t, JsFreeDeleter> pData(
-        JS_WriteObject(pCtx, &size, compiled.get(), JS_WRITE_OBJ_BYTECODE), JsFreeDeleter{pCtx});
-    if (!pData) {
-      return JS_EXCEPTION;
-    }
-    bytecode = RawBytes(reinterpret_cast<const std::byte*>(pData.get()), size);
-    return JS_EvalFunction(pCtx, compiled.release());
+// The credentials of the request of a script whose crossorigin attribute is 'crossOrigin' (HTML "CORS settings
+// attribute"): those of a no-cors request without the attribute, "use-credentials" includes them too, any other value
+// (anonymous) only for its own origin.
+RequestCredentials ScriptCredentials(const HtmlElement& script) noexcept {
+  if (!script.hasAttribute("crossorigin")) {
+    return RequestCredentials::Include;
   }
-  const JSValue compiled =
-      JS_ReadObject(pCtx, reinterpret_cast<const uint8_t*>(bytecode.data()), bytecode.size(), JS_READ_OBJ_BYTECODE);
-  return JS_IsException(compiled) ? JS_EXCEPTION : JS_EvalFunction(pCtx, compiled);
+  return CaseInsensitiveEqual(script.attribute("crossorigin"), "use-credentials") ? RequestCredentials::Include
+                                                                                  : RequestCredentials::SameOrigin;
 }
 
 }  // namespace
+
+std::string_view RequestUrl(UrlResolver& resolver, const HttpRequest& request, std::string_view fragment) {
+  const std::string_view target = request.target();
+  assert(!target.contains('#'));  // the HTTP client strips the fragments, of the redirects too
+  if (target.starts_with('/') || target.starts_with('?')) {
+    return resolver.resolve({}, {request.scheme(), "://", request.hostHeaderValue(), target, fragment});
+  }
+  return resolver.resolve({}, {target, fragment});  // absolute-form, sent to a forward proxy
+}
 
 SteadyClock::time_point DeadlineIn(std::chrono::milliseconds timeout) noexcept {
   const SteadyClock::time_point now = SteadyClock::now();
@@ -191,10 +183,12 @@ bool Page::tryInstallBindings() {
     return false;
   }
   const JsValue natives(pCtx, InstallWindow(*this));
-  if (JS_IsException(natives.get())) {
+  if (JS_IsException(natives.get()) || !InstallNetwork(pCtx, natives.get())) {
     return false;
   }
-  const JsValue prelude(pCtx, PreludeFunction(pCtx, session().preludeBytecode, session().config.maxScriptStackSize));
+  const WebClientConfig& config = session().config;
+  const JsValue prelude(pCtx, PreludeFunction(pCtx, PreludeSource(), "aeronet:prelude", session().preludeBytecode,
+                                              JsLimits{config.maxScriptMemory, config.maxScriptStackSize}));
   if (JS_IsException(prelude.get())) {
     return false;
   }
@@ -353,16 +347,25 @@ Page::TaskEnd Page::endTask() {
   return TaskEnd::Continue;
 }
 
-// The timers due at the current time of the virtual clock, as tasks. It does not advance while the document loads.
-Page::TaskEnd Page::runDueTimers() {
-  while (!_timers.empty() && _timers.nextDue() <= _timers.clock()) {
-    if (runNextTimer()) {
-      if (const TaskEnd end = endTask(); end != TaskEnd::Continue) {
-        return end;
+// The clock does not advance while the document loads, and a request takes no time on it: a 0 ms timer runs before the
+// response of a request made before it, as it would with any network.
+Page::TaskEnd Page::runDueTasks() {
+  for (;;) {
+    if (!_timers.empty() && _timers.nextDue() <= _timers.clock()) {
+      if (!runNextTimer()) {
+        continue;
       }
+    } else if (!_requests.empty()) {
+      if (!RunNextRequest(*this)) {
+        reportPendingException("request");
+      }
+    } else {
+      return TaskEnd::Continue;
+    }
+    if (const TaskEnd end = endTask(); end != TaskEnd::Continue) {
+      return end;
     }
   }
-  return TaskEnd::Continue;
 }
 
 void Page::setCode(std::string_view code) {
@@ -386,13 +389,23 @@ std::string_view Page::setCodeFilename(std::string_view filename) {
   return {_code.data() + codeSize + 1U, filename.size()};
 }
 
-bool Page::fetchScript(std::string_view url, std::string_view charset) {
+bool Page::fetchScript(std::string_view url, std::string_view charset, RequestCredentials credentials) {
   // A valid URL that the HTTP client cannot request: not http or https, with user info, port 0, a too long target...
   if (!HttpRequest::IsValidUrl(url)) {
     log::debug("[js {}] script {} not fetched: the HTTP client does not support its URL", this->url(), url);
     return false;
   }
-  const HttpClientResult result = session().http.get(url);
+  HttpClient& http = session().http;
+  const std::string_view referrer = ReferrerOf(this->url(), origin(), url);
+  // With room for its headers: no reallocation.
+  HttpRequest request =
+      http.makeRequest(referrer.size() + kScriptHeadersSize, http::Method::GET, url).header(http::Accept, "*/*");
+  if (!referrer.empty()) {
+    request.headerAddLine("referer", referrer);
+  }
+  // A subresource of the document: the SameSite cookies are those of its site.
+  const HttpClientResult result =
+      http.requestUpdating(request, {.documentUrl = this->url(), .credentials = credentials});
   if (!result) {
     log::debug("[js {}] script {} not fetched: {}", this->url(), url, ErrcToStr(result.error()));
     return false;
@@ -402,7 +415,6 @@ bool Page::fetchScript(std::string_view url, std::string_view charset) {
     return false;
   }
   // Decoded as browsers decode classic scripts: QuickJS-ng only reads UTF-8.
-  _code.clear();
   setCode(DecodeScript(result->bodyInMemory(), result->headerValueOrEmpty(http::ContentType), charset,
                        _document.encoding(), _code));
   return true;
@@ -420,7 +432,7 @@ void Page::runScript(lxb_dom_node_t* pScript) {
     if (!src.empty()) {
       scriptUrl = resolveUrl(src);
     }
-    if (scriptUrl.empty() || !fetchScript(scriptUrl, script.attribute("charset"))) {
+    if (scriptUrl.empty() || !fetchScript(scriptUrl, script.attribute("charset"), ScriptCredentials(script))) {
       dispatchEvent(pScript, "error", false);
       return;
     }
@@ -437,7 +449,7 @@ void Page::runScript(lxb_dom_node_t* pScript) {
   }
 
   _scripts.setCurrent(pScript);
-  const JsValue result = _engine.eval(code, external ? scriptUrl.data() : _url.c_str());
+  const JsValue result = evalScript(code, external ? scriptUrl.data() : _url.c_str());
   if (JS_IsException(result.get())) {
     reportPendingException("script");
   }
@@ -446,6 +458,35 @@ void Page::runScript(lxb_dom_node_t* pScript) {
   if (external) {
     dispatchEvent(pScript, "load", false);
   }
+}
+
+JsValue Page::evalScript(std::string_view code, const char* filename) {
+  ScriptCache& cache = session().scripts;
+  if (!cache.caches(code.size())) {
+    return _engine.eval(code, filename);
+  }
+  JSContext* pCtx = context();
+  const ScriptCache::Script script(filename, code);
+  if (const std::span<const std::byte> bytecode = cache.find(script); !bytecode.empty()) {
+    const JSValue function =
+        JS_ReadObject(pCtx, reinterpret_cast<const uint8_t*>(bytecode.data()), bytecode.size(), JS_READ_OBJ_BYTECODE);
+    return {pCtx, JS_IsException(function) ? JS_EXCEPTION : JS_EvalFunction(pCtx, function)};
+  }
+  // Of type JS_EVAL_TYPE_GLOBAL (0), as _engine.eval().
+  JsValue compiled(pCtx, JS_Eval(pCtx, code.data(), code.size(), filename, JS_EVAL_FLAG_COMPILE_ONLY));
+  if (JS_IsException(compiled.get())) {
+    return compiled;
+  }
+  std::size_t size = 0;
+  const std::unique_ptr<uint8_t, JsFreeDeleter> pBytecode(
+      JS_WriteObject(pCtx, &size, compiled.get(), JS_WRITE_OBJ_BYTECODE), JsFreeDeleter{pCtx});
+  if (pBytecode) {
+    cache.store(script, std::span<const std::byte>(reinterpret_cast<const std::byte*>(pBytecode.get()), size));
+  } else {
+    // Out of memory of the JavaScript heap: the script still runs, its bytecode not cached.
+    JS_FreeValue(pCtx, JS_GetException(pCtx));
+  }
+  return {pCtx, JS_EvalFunction(pCtx, compiled.release())};
 }
 
 void Page::flushDocumentWrite(lxb_dom_node_t* pScript) {
@@ -518,7 +559,7 @@ Page::Outcome Page::run(const CssSelector* pSelector, LoadState until, SteadyClo
     task();
     end = endTask();
     if (end == TaskEnd::Continue) {
-      end = runDueTimers();
+      end = runDueTasks();
     }
     return end == TaskEnd::Continue;
   };
@@ -562,12 +603,15 @@ Page::Outcome Page::run(const CssSelector* pSelector, LoadState until, SteadyClo
   if (until == LoadState::Load) {
     return outcome(TaskEnd::Stop);
   }
-  // The virtual clock jumps to each timer in turn, until the refresh of the document if any.
+  // The virtual clock jumps to each timer in turn, until the refresh of the document if any, with the tasks due then.
   while (!_timers.empty() && (refresh.delay < 0 || _timers.nextDue() < refresh.delay)) {
     if (!runNextTimer()) {
       continue;
     }
     end = endTask();
+    if (end == TaskEnd::Continue) {
+      end = runDueTasks();
+    }
     if (end != TaskEnd::Continue) {
       return outcome(end);
     }

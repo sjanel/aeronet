@@ -52,7 +52,7 @@ class CounterAccumulator {
     const std::string_view name = PopPiece(key);
     while (!key.empty()) {
       const std::string_view labelKey = PopPiece(key);
-      _labels.push_back(MetricLabel{labelKey, PopPiece(key)});
+      _labels.emplace_back(labelKey, PopPiece(key));
     }
     return name;
   }

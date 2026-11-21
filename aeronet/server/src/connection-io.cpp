@@ -659,10 +659,10 @@ void ConnectionIo::releaseConnection(ConnectionIt cnxIt) {
     // read: the connection may be closed out of the event loop (server stop), where the cached time is not updated.
     const auto releaseTime = std::chrono::steady_clock::now() + kZerocopyResetGracePeriod;
     state.zerocopyBuffers.extract([this, releaseTime](HttpMessageData data) {
-      _zerocopy.resetBuffers.push_back(ZerocopyRuntime::ResetBuffer{std::move(data), releaseTime});
+      _zerocopy.resetBuffers.emplace_back(std::move(data), releaseTime);
     });
     if (state.outQueueFrontZerocopySent) {
-      _zerocopy.resetBuffers.push_back(ZerocopyRuntime::ResetBuffer{state.outQueue.pop(), releaseTime});
+      _zerocopy.resetBuffers.emplace_back(state.outQueue.pop(), releaseTime);
       state.outQueueFrontZerocopySent = false;
     }
     ++ctx.stats.zerocopyResetConnections;
