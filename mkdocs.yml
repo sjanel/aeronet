@@ -71,6 +71,7 @@ plugins:
         FEATURES.md: index.md
         INSTALL.md: getting-started/install.md
         kubernetes-examples.md: operations/kubernetes.md
+        development/io-uring-design.md: ROADMAP.md#linux-io_uring-backend-design-study
 
 validation:
   links:
