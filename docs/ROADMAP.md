@@ -436,10 +436,9 @@ the [performance optimization backlog](#performance-optimization-backlog)):
 
 #### HTML parsing and JavaScript pages (`AERONET_ENABLE_HTML`, `AERONET_ENABLE_JS`)
 
-Status: [HTML parsing and DOM mutation](modules/html.md) (phase 1) and the
-[client cookies](modules/http-client.md#cookies) (phase 2) delivered, phase 3 started: its first part, the
-[page runtime](modules/web.md) without `fetch` and XHR, delivered
-([#738](https://github.com/sjanel/aeronet/issues/738)). Goal: let the client read pages whose content is produced or
+Status: [HTML parsing and DOM mutation](modules/html.md) (phase 1), the
+[client cookies](modules/http-client.md#cookies) (phase 2) and the [JS core](modules/web.md) (phase 3, with `fetch`,
+XHR and CORS) delivered ([#738](https://github.com/sjanel/aeronet/issues/738)); phase 4 is next. Goal: let the client read pages whose content is produced or
 completed by JavaScript, e.g. `page.querySelectorAll("table tr")` after a `navigate()`.
 
 **The JS engine is the small part.** Embedding one is a few C files; the DOM, the script loading rules, the event
@@ -494,18 +493,28 @@ Phases:
 2. **Client cookie jar** - delivered, see [Cookies](modules/http-client.md#cookies): RFC 6265bis storage and
    retrieval, `SameSite` along redirect chains across sites, merged with the `Cookie` header of the request.
 3. **JS core** (`AERONET_ENABLE_JS`, requires `AERONET_ENABLE_HTML` and `AERONET_ENABLE_HTTP_CLIENT`), module
-   `aeronet/web`: `WebClient::navigate(url, options)` returning a `std::expected`, the same `Element` API as phase 1,
-   and `evaluate()`. The first part is [delivered](modules/web.md): everything below but `fetch`, XHR and the
-   `SameSite` context of the subresources. Left for the next part:
-   - `fetch` and `XMLHttpRequest` over the `HttpClient` of the page, and `LoadState::NetworkIdle` waiting for the
-     requests in flight, not only for the timers;
-   - the subresources of a page as requests of its site for the cookie jar (a cross-site `<script src>` gets the
-     `SameSite=Strict` cookies of its site today);
-   - a per-client bytecode cache of the page scripts keyed by URL and content (the prelude of the Web APIs is already
-     compiled once per client: 180 us instead of 760 us per page setup);
-   - the fragment of a `Location` header, which `HttpClient` drops (the page keeps the one of the requested URL).
+   `aeronet/web` - [delivered](modules/web.md): `WebClient::navigate(url, options)` returning a `std::expected`, the
+   same `Element` API as phase 1, `evaluate()`, `fetch` and `XMLHttpRequest` over the `HttpClient` of the page (CORS
+   with preflights, credentials modes, Referer, forbidden headers), `LoadState::NetworkIdle` waiting for the requests
+   too, the subresources of a page as requests of its site for the `SameSite` cookies (`PageRequestContext` of
+   `HttpClient::requestUpdating()`), the fragment of the last `Location` with one, `URL`, `URLSearchParams`,
+   `TextEncoder`, `TextDecoder`, and a per-client bytecode cache of the scripts keyed by URL and content (a 250 KB
+   script: 6.1 ms compiled, 1.5 ms read back). The network and text APIs are a second part of the prelude, set up on
+   their first use in a page (215 us), so that the setup of a page stays at 170 us; the prelude bytecode is stripped
+   of its source and debug information (its functions show `[native code]`, as built-ins). Left for later:
+   - a larger initial GC threshold of the runtimes (QuickJS-ng starts at 256 KB): it saves 30 us on the first use of
+     the network APIs, but lets cyclic garbage grow near `maxScriptMemory`;
+   - the `Origin` header and the CORS checks of the cross-origin redirects of a request (the HTTP client follows
+     them: the final response is checked, with the `Origin` of the first request), `redirect: 'manual'`, a preflight
+     cache;
+   - `Blob`, `FormData`, streams (`Response.body`), and the parallel requests of the coroutine client (below).
+   - a fix of QuickJS-ng to propose upstream (unfixed on its master on 2026-11-19): when an allocation fails in a
+     destructuring pattern, `js_parse_destructuring_element()` decrements the reference count of label -1 (a segfault,
+     or a heap write before the label array of the function), found by the memory-limit sweep of
+     `web-network_test.cpp` under UBSan. The prelude is compiled without the memory limit; a page script compiled
+     near `maxScriptMemory` can still hit it until a release has the fix (two lines: return when `new_label()` fails).
 
-   The design points of the first part:
+   The design points:
    - One QuickJS runtime per page over the lexbor document; the page owns every node and frees them together,
      so node lifetime does not depend on the JS garbage collector.
    - Documents are parsed in scripting mode, as browsers with JS do: `<noscript>` content is text, not markup.
@@ -516,6 +525,8 @@ Phases:
      limit, like redirects.
    - Event loop: one task, then the microtasks (`JS_ExecutePendingJob`). Timers use a virtual clock: they fire
      in order without sleeping, with caps on far timers and on `setInterval` runs.
+   - The network takes no time on that clock: the requests of the scripts are sent between the tasks, after the
+     timers due at once, each response a task; a document makes at most `WebClientConfig::maxRequests` of them.
    - `navigator` has `cookieEnabled`, `userAgent` and `language`. `document.cookie` reads and writes the jar of
      the client as a non-HTTP API (`HttpOnly` cookies hidden and kept, RFC 6265bis §5.7).
    - `navigate()` returns on a load state, on a matching selector, or when the time budget runs out (QuickJS

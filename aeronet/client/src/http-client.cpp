@@ -149,13 +149,44 @@ internal::UrlParseResult FinalizeProxyUrl(HttpClientConfig& config) {
   return res;
 }
 
-// How a request relates to its redirect chain for the SameSite cookies: HttpClient requests are navigations.
-internal::CookieSiteContext CookieSiteContextOf(bool crossSite, http::Method method) noexcept {
-  if (!crossSite) {
-    return internal::CookieSiteContext::SameSite;
+// The state of the redirect chain of a request for the cookies: whether it reached another site, or another origin,
+// than that of the document of a subresource (see PageRequestContext), or than the first URL of a navigation.
+struct CookieChain {
+  // The cookies that the next exchange of 'req' sends and stores.
+  [[nodiscard]] internal::CookieSiteContext context(const HttpRequest& req) const noexcept {
+    if (credentials == RequestCredentials::Omit || (credentials == RequestCredentials::SameOrigin && crossOrigin)) {
+      return internal::CookieSiteContext::Omitted;
+    }
+    if (!crossSite) {
+      return internal::CookieSiteContext::SameSite;
+    }
+    if (subresource) {
+      return internal::CookieSiteContext::CrossSiteSubresource;
+    }
+    return http::IsSafe(req.method()) ? internal::CookieSiteContext::CrossSiteSafe
+                                      : internal::CookieSiteContext::CrossSiteUnsafe;
   }
-  return http::IsSafe(method) ? internal::CookieSiteContext::CrossSiteSafe
-                              : internal::CookieSiteContext::CrossSiteUnsafe;
+
+  RequestCredentials credentials{RequestCredentials::Include};
+  bool subresource{false};
+  bool crossSite{false};
+  bool crossOrigin{false};
+};
+
+// The cookie chain of the first exchange of 'req', made in the context 'pPage' (null for a navigation).
+CookieChain FirstCookieChain(const HttpRequest& req, const PageRequestContext* pPage) {
+  CookieChain chain;
+  if (pPage == nullptr) {
+    return chain;
+  }
+  chain.credentials = pPage->credentials;
+  if (!pPage->documentUrl.empty()) {
+    const internal::UrlParseResult document = internal::ParseUrl(pPage->documentUrl);
+    chain.subresource = true;
+    chain.crossSite = document.isTls != req.isTlsRequest() || !CaseInsensitiveEqual(document.host, req.host());
+    chain.crossOrigin = chain.crossSite || document.port != req.port();
+  }
+  return chain;
 }
 
 // Flushes a telemetry context when destroyed.
@@ -280,7 +311,16 @@ HttpClient& HttpClient::operator=(const HttpClient& rhs) {
 
 HttpClient::~HttpClient() = default;
 
-HttpClientResult HttpClient::requestProcess(HttpRequest&& req, ResponseBodySink* sink, CacheUse cacheUse) {
+HttpClientResult HttpClient::requestUpdating(HttpRequest& req, const PageRequestContext& context) {
+  req.HttpMessage::finalizeHeadersAndBody();
+  const FlushTelemetryOnExit flushTelemetryOnExit(_telemetry);
+  maybeCompressBody(req);
+  _streamer.beginRequest(nullptr, _config, _codec);
+  // An rvalue of 'req' itself, not a moved-from copy: the redirects update it in place.
+  return requestUncached(std::move(req), nullptr, &context);
+}
+
+HttpClientResult HttpClient::requestProcess(HttpRequest&& req, ResponseBodySink* sink) {
   // The client has no periodic tick: the counters of a request are exported when it ends.
   const FlushTelemetryOnExit flushTelemetryOnExit(_telemetry);
 
@@ -299,7 +339,7 @@ HttpClientResult HttpClient::requestProcess(HttpRequest&& req, ResponseBodySink*
     return result;
   }
 
-  const bool isCacheEligible = cacheUse == CacheUse::IfEligible && cacheEligible(req);
+  const bool isCacheEligible = cacheEligible(req);
 
   std::string_view cacheKey;
   if (isCacheEligible) {
@@ -839,7 +879,8 @@ class HttpClient::UnregisterOnUnwind {
   int _uncaughtExceptions;
 };
 
-HttpClientResult HttpClient::performExchange(HttpRequest& req, bool redirectFollowed, bool crossSite) {
+HttpClientResult HttpClient::performExchange(HttpRequest& req, bool redirectFollowed,
+                                             internal::CookieSiteContext siteContext) {
 #ifdef AERONET_LINUX
   // TLS (OpenSSL writes on the socket itself) and file bodies (sendfile()) may raise SIGPIPE if the server resets the
   // connection, terminating the process by default: keep it pending in this thread during the exchange, then discard
@@ -893,7 +934,7 @@ HttpClientResult HttpClient::performExchange(HttpRequest& req, bool redirectFoll
     }
     if (_config.cookies.enabled()) {
       // Each attempt sends the cookies of the jar at this time: a retried response may have set some.
-      _cookieJar.prepareRequestCookies(req, CookieSiteContextOf(crossSite, req.method()), SysClock::now());
+      _cookieJar.prepareRequestCookies(req, siteContext, SysClock::now());
     }
 
     // Drive the connection to a full exchange: finish the (TLS) connect, ensure a protocol engine, then hand
@@ -915,7 +956,7 @@ HttpClientResult HttpClient::performExchange(HttpRequest& req, bool redirectFoll
     if (result) {
       if (_config.cookies.enabled()) {
         // Every response sets its cookies: those of redirects and of retried statuses too.
-        _cookieJar.storeResponseCookies(req, *result, SysClock::now());
+        _cookieJar.storeResponseCookies(req, *result, siteContext, SysClock::now());
       }
       // Such responses are buffered by the streamer, never delivered to a sink (see beginExchange above).
       if (result->status() == http::StatusCodeExpectationFailed && req.expectsContinue()) {
@@ -1035,7 +1076,7 @@ HttpUpgradeResult HttpClient::upgrade(HttpRequest&& req) {
     return std::unexpected(result.error());
   }
   if (_config.cookies.enabled()) {
-    _cookieJar.storeResponseCookies(req, *result, SysClock::now());
+    _cookieJar.storeResponseCookies(req, *result, internal::CookieSiteContext::SameSite, SysClock::now());
   }
   HttpUpgradeResult upgraded(std::in_place, std::move(*result));
   if (upgraded->response.status() == http::StatusCodeSwitchingProtocols) {
@@ -1193,14 +1234,16 @@ void HttpClient::cacheStore(std::string_view key, HttpResponse resp) {
   }
 }
 
-HttpClientResult HttpClient::requestUncached(HttpRequest&& req, std::string_view* pCacheKey) {
+HttpClientResult HttpClient::requestUncached(HttpRequest&& req, std::string_view* pCacheKey,
+                                             const PageRequestContext* pPage) {
   uint32_t redirectsLeft = _config.maxRedirects;
-  bool crossSite = false;  // a followed redirect changed the scheme or the host
+  CookieChain cookieChain = FirstCookieChain(req, pPage);
 
   while (true) {
     // performExchange owns the (idempotent-safe) transparent retry of a stale pooled connection; any
     // failure it surfaces here is terminal.
-    HttpClientResult result = performExchange(req, _config.followRedirects && redirectsLeft != 0, crossSite);
+    HttpClientResult result =
+        performExchange(req, _config.followRedirects && redirectsLeft != 0, cookieChain.context(req));
     if (!result) {
       return result;
     }
@@ -1238,9 +1281,10 @@ HttpClientResult HttpClient::requestUncached(HttpRequest&& req, std::string_view
         log::warn("Not following the redirect of {} to the cleartext URL '{}'", req.originKey(), location);
         return result;
       case HttpRequest::RedirectOutcome::CrossSite:
-        crossSite = true;
+        cookieChain.crossSite = true;
         [[fallthrough]];
       case HttpRequest::RedirectOutcome::SameSite:
+        cookieChain.crossOrigin = true;
         // Credentials are meant for the origin the request was made for, not for an origin chosen by a redirect. The
         // cookies of the jar are chosen again for each URL.
         req.headerRemoveAllLines(http::Authorization).headerRemoveAllLines(http::Cookie);
@@ -1248,6 +1292,17 @@ HttpClientResult HttpClient::requestUncached(HttpRequest&& req, std::string_view
       default:
         assert(outcome == HttpRequest::RedirectOutcome::SameOrigin);
         break;
+    }
+
+    if (pPage != nullptr) {
+      // The fragment is never sent: the request drops it, the URL of the page keeps it.
+      if (const std::size_t hashPos = location.find('#');
+          pPage->pFragment != nullptr && hashPos != std::string_view::npos) {
+        pPage->pFragment->assign(location.substr(hashPos));
+      }
+      if (pPage->pRedirects != nullptr) {
+        ++*pPage->pRedirects;
+      }
     }
 
     if (rewriteToGet) {

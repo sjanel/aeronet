@@ -1,13 +1,15 @@
 // Cost of the JavaScript runtime of a WebClient page, without HTTP:
 //   the setup of a page (QuickJS-ng runtime and context, parsing, DOM and window bindings, prelude), with the engine
-//   alone, and for the first page of a WebClient, which compiles the prelude;
+//   alone, for the first page of a WebClient, which compiles the prelude, and with the first use of the network APIs;
 //   a call of a native DOM binding from a script (a getter returning a cached node wrapper), against the same loop
 //   without the call;
 //   the bindings that convert or build strings (storage, tagName, URL reflection, location and history, character
-//   data), the overhead of WebPage::evaluate(), timers run by the page loop, and document.write().
+//   data), the overhead of WebPage::evaluate(), timers run by the page loop, and document.write();
+//   a large inline script compiled at each load, against the same script read back from the script cache.
 #include <benchmark/benchmark.h>
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -58,6 +60,18 @@ void BM_PageSetup(benchmark::State& state) {
   }
 }
 BENCHMARK(BM_PageSetup);
+
+// The setup of a page whose scripts use the network and text APIs (fetch(), URL...): their part of the prelude is read
+// and run on the first use of one of them.
+void BM_PageSetupWithNetworkApi(benchmark::State& state) {
+  internal::WebSession session{WebClientConfig{}};
+  for (auto _ : state) {
+    internal::Page page(session, "https://example.com/", http::StatusCodeOK, kSmallPage, "text/html");
+    auto result = page.evaluate("typeof fetch", std::chrono::seconds{10});
+    benchmark::DoNotOptimize(result);
+  }
+}
+BENCHMARK(BM_PageSetupWithNetworkApi);
 
 constexpr int kLoopIterations = 100000;
 
@@ -141,6 +155,36 @@ BENCHMARK(BM_TimersWithArguments);
 
 void BM_DocumentWrite(benchmark::State& state) { RunPage(state, "document.write('a', 'b', i & 7)"); }
 BENCHMARK(BM_DocumentWrite);
+
+// A page of a large inline script (2000 functions, about 250 KB) loaded with its setup, the script compiled at each
+// load without the script cache of the client, read back from it with.
+void RunLargeScript(benchmark::State& state, std::size_t maxScriptCacheBytes) {
+  WebClientConfig config;
+  config.maxScriptCacheBytes = maxScriptCacheBytes;
+  internal::WebSession session{config};
+  std::string html(kSmallPage);
+  html.append("<script>");
+  for (int fn = 0; fn < 2000; ++fn) {
+    html.append("function f")
+        .append(std::to_string(fn))
+        .append("(a, b) { const c = a * ")
+        .append(std::to_string(fn))
+        .append(" + b; return c > 10 ? [c, a, b].join('-') : { a, b, c, d: `${a}:${b}` }; }\n");
+  }
+  html.append("window.done = typeof f1999;</script>");
+  for (auto _ : state) {
+    internal::Page page(session, "https://example.com/", http::StatusCodeOK, html, "text/html");
+    const internal::Page::Outcome outcome = page.run(nullptr, LoadState::Load, SteadyClock::time_point::max());
+    benchmark::DoNotOptimize(outcome);
+  }
+  state.SetBytesProcessed(state.iterations() * static_cast<int64_t>(html.size()));
+}
+
+void BM_LargeScriptCompiled(benchmark::State& state) { RunLargeScript(state, 0); }
+BENCHMARK(BM_LargeScriptCompiled);
+
+void BM_LargeScriptFromCache(benchmark::State& state) { RunLargeScript(state, std::size_t{64} << 20U); }
+BENCHMARK(BM_LargeScriptFromCache);
 
 }  // namespace
 
