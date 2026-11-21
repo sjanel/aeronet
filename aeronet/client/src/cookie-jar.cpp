@@ -156,11 +156,12 @@ constexpr std::string_view TargetPath(std::string_view target) noexcept {
 // Whether a cookie of this SameSite attribute goes with a request of this context (RFC 6265bis §5.8.3). A cookie
 // without the attribute is sent like SameSite=None, as Firefox and Safari do.
 constexpr bool SameSiteAllows(CookieSameSite sameSite, internal::CookieSiteContext context) noexcept {
+  assert(context != internal::CookieSiteContext::Omitted);
   switch (sameSite) {
     case CookieSameSite::Strict:
       return context == internal::CookieSiteContext::SameSite;
     case CookieSameSite::Lax:
-      return context != internal::CookieSiteContext::CrossSiteUnsafe;
+      return context == internal::CookieSiteContext::SameSite || context == internal::CookieSiteContext::CrossSiteSafe;
     default:
       return true;
   }
@@ -476,7 +477,7 @@ std::string CookieJar::cookieHeader(std::string_view url, SysTimePoint now) cons
 }
 
 bool CookieJar::setDocumentCookie(std::string_view url, std::string_view cookieString, SysTimePoint now) {
-  return store(ParseRequestUrl(url), cookieString, now, true);
+  return store(ParseRequestUrl(url), cookieString, now, Source::Script);
 }
 
 std::string CookieJar::documentCookie(std::string_view url, SysTimePoint now) const {
@@ -486,10 +487,17 @@ std::string CookieJar::documentCookie(std::string_view url, SysTimePoint now) co
 }
 
 bool CookieJar::store(internal::CookieRequestUrl url, std::string_view setCookieValue, SysTimePoint now,
-                      bool fromScript) {
+                      Source source) {
   ParsedSetCookie parsed;
-  // A script cannot create an HttpOnly cookie (RFC 6265bis §5.7 step 11).
-  if (!ParseSetCookie(setCookieValue, now, parsed) || (fromScript && parsed.httpOnly)) {
+  if (!ParseSetCookie(setCookieValue, now, parsed)) {
+    return false;
+  }
+  const bool fromScript = source == Source::Script;
+  // A script cannot create an HttpOnly cookie (RFC 6265bis §5.7 step 11), nor a subresource of another site a
+  // SameSite=Strict or Lax one (step 22).
+  if ((fromScript && parsed.httpOnly) ||
+      (source == Source::CrossSiteResponse && parsed.sameSite != CookieSameSite::None &&
+       parsed.sameSite != CookieSameSite::Default)) {
     return false;
   }
   char hostBuf[kMaxHostSize];
@@ -675,12 +683,18 @@ void CookieJar::AppendCookies(Jar& jar, internal::CookieRequestUrl url, internal
   });
 }
 
-void CookieJar::storeResponseCookies(const HttpRequest& request, const HttpResponse& response, SysTimePoint now) {
+void CookieJar::storeResponseCookies(const HttpRequest& request, const HttpResponse& response,
+                                     internal::CookieSiteContext context, SysTimePoint now) {
+  if (context == internal::CookieSiteContext::Omitted) {
+    return;
+  }
+  const Source source =
+      context == internal::CookieSiteContext::CrossSiteSubresource ? Source::CrossSiteResponse : Source::Response;
   const internal::CookieRequestUrl url = RequestUrlOf(request);
   for (const auto& [name, value] : response.headers()) {
     if (name == http::SetCookie) {
       // A refused cookie is not an error of the exchange: the browsers ignore it silently too.
-      static_cast<void>(store(url, value, now));
+      static_cast<void>(store(url, value, now, source));
     }
   }
 }
@@ -688,7 +702,9 @@ void CookieJar::storeResponseCookies(const HttpRequest& request, const HttpRespo
 void CookieJar::prepareRequestCookies(const HttpRequest& request, internal::CookieSiteContext context,
                                       SysTimePoint now) {
   _requestCookies.clear();
-  AppendCookies(*this, RequestUrlOf(request), context, now, _requestCookies);
+  if (context != internal::CookieSiteContext::Omitted) {
+    AppendCookies(*this, RequestUrlOf(request), context, now, _requestCookies);
+  }
 }
 
 void CookieJar::prepareCacheKeyCookies(const HttpRequest& request, SysTimePoint now) {

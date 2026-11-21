@@ -4,6 +4,7 @@
 
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <span>
 #include <string>
@@ -156,6 +157,42 @@ inline JSValue NewString(JSContext* pCtx, std::string_view str) noexcept {
   return JS_NewStringLen(pCtx, str.data(), str.size());
 }
 
+// A JavaScript array, filled with owned values. Defining its elements runs no script (no setter of Array.prototype),
+// so that the tree cannot change while it is filled. A failure (of its creation, or of an element) makes it failed for
+// good, the exception pending.
+class JsArray {
+ public:
+  explicit JsArray(JSContext* pCtx) noexcept : _array(pCtx, JS_NewArray(pCtx)) {}
+
+  [[nodiscard]] JSContext* context() const noexcept { return _array.context(); }
+
+  // Appends 'value' (owned, freed on failure too), which can be the JS_EXCEPTION of a failed creation. Returns false
+  // when the array failed.
+  [[nodiscard]] bool push(JSValue value) noexcept {
+    JSContext* pCtx = _array.context();
+    if (JS_IsException(_array.get())) {
+      JS_FreeValue(pCtx, value);
+      return false;
+    }
+    // JS_DefinePropertyValueUint32 frees the value on its failure too (an exception has nothing to free).
+    if (JS_IsException(value) || JS_DefinePropertyValueUint32(pCtx, _array.get(), _size++, value, kElementFlags) < 0) {
+      _array = JsValue(pCtx, JS_EXCEPTION);
+      return false;
+    }
+    return true;
+  }
+
+  // The array, JS_EXCEPTION if it failed.
+  JSValue release() noexcept { return _array.release(); }
+
+ private:
+  // The JS_PROP_* flags are distinct bits of signed int macros: added rather than or-ed (bugprone-signed-bitwise).
+  static constexpr int kElementFlags = JS_PROP_CONFIGURABLE + JS_PROP_WRITABLE + JS_PROP_ENUMERABLE;
+
+  JsValue _array;
+  uint32_t _size{};
+};
+
 // Registers in the runtime of pCtx a new class of objects named 'name', without finalizer: their opaque pointers are
 // not owned. Returns its id, 0 (JS_INVALID_CLASS_ID) with an out of memory error thrown on memory exhaustion.
 [[nodiscard]] JSClassID NewClass(JSContext* pCtx, const char* name) noexcept;
@@ -193,6 +230,13 @@ inline void FreeValues(JSContext* pCtx, std::span<const JSValue> values) noexcep
 
 // The text of a thrown value: "Error: message" followed by the stack for an Error, its string conversion otherwise.
 std::string ExceptionText(JSContext* pCtx, JSValueConst exception);
+
+// The deleter of the memory allocated by QuickJS for a context (JS_WriteObject()).
+struct JsFreeDeleter {
+  void operator()(uint8_t* pData) const noexcept { js_free(pCtx, pData); }
+
+  JSContext* pCtx;
+};
 
 // Values owned by this object, freed with their context on destruction.
 class JsValues {

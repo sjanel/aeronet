@@ -161,42 +161,6 @@ class NullableString : public JsString {
   NullableString(JSContext* pCtx, JSValueConst value) noexcept : JsString(pCtx, value, NullIsEmpty{}) {}
 };
 
-// A JavaScript array, filled with owned values. Defining its elements runs no script (no setter of Array.prototype),
-// so that the tree cannot change while it is filled. A failure (of its creation, or of an element) makes it failed for
-// good, the exception pending.
-class JsArray {
- public:
-  explicit JsArray(JSContext* pCtx) noexcept : _array(pCtx, JS_NewArray(pCtx)) {}
-
-  [[nodiscard]] JSContext* context() const noexcept { return _array.context(); }
-
-  // Appends 'value' (owned, freed on failure too), which can be the JS_EXCEPTION of a failed creation. Returns false
-  // when the array failed.
-  [[nodiscard]] bool push(JSValue value) noexcept {
-    JSContext* pCtx = _array.context();
-    if (JS_IsException(_array.get())) {
-      JS_FreeValue(pCtx, value);
-      return false;
-    }
-    // JS_DefinePropertyValueUint32 frees the value on its failure too (an exception has nothing to free).
-    if (JS_IsException(value) || JS_DefinePropertyValueUint32(pCtx, _array.get(), _size++, value, kElementFlags) < 0) {
-      _array = JsValue(pCtx, JS_EXCEPTION);
-      return false;
-    }
-    return true;
-  }
-
-  // The array, JS_EXCEPTION if it failed.
-  JSValue release() noexcept { return _array.release(); }
-
- private:
-  // The JS_PROP_* flags are distinct bits of signed int macros: added rather than or-ed (bugprone-signed-bitwise).
-  static constexpr int kElementFlags = JS_PROP_CONFIGURABLE + JS_PROP_WRITABLE + JS_PROP_ENUMERABLE;
-
-  JsValue _array;
-  uint32_t _size{};
-};
-
 // Upper-case for the HTML elements of an HTML document.
 JSValue TagName(JSContext* pCtx, lxb_dom_node_t* pNode) { return NewString(pCtx, DomTagName(pNode)); }
 

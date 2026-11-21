@@ -10,11 +10,6 @@
 
 namespace aeronet::internal {
 
-bool DocumentUrl::isSameOrigin(std::string_view url) const noexcept {
-  // The authority of a serialized http or https URL is followed by its path.
-  return url.size() > _originSize && url.starts_with(origin()) && url[_originSize] == '/';
-}
-
 void DocumentUrl::assign(std::string_view url) {
   const UrlParts parts = SplitUrl(url);
   assert(parts.host.data() != nullptr);  // an http or https URL has an authority

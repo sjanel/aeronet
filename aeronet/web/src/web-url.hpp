@@ -62,6 +62,13 @@ constexpr bool IsHttpUrl(std::string_view url) noexcept {
   return url.starts_with("http://") || url.starts_with("https://");
 }
 
+// Whether the serialized http or https URL 'url' is of the origin 'origin' (the prefix of a URL without user
+// information, "https://example.com:8443").
+constexpr bool IsOfOrigin(std::string_view url, std::string_view origin) noexcept {
+  // The authority of a serialized http or https URL is followed by its path.
+  return url.size() > origin.size() && url.starts_with(origin) && url[origin.size()] == '/';
+}
+
 // 'url' without its fragment.
 constexpr std::string_view WithoutFragment(std::string_view url) noexcept { return url.substr(0, url.find('#')); }
 

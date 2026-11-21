@@ -7,6 +7,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -24,6 +25,7 @@
 #include "aeronet/http-response.hpp"
 #include "aeronet/http-server-config.hpp"
 #include "aeronet/http-status-code.hpp"
+#include "aeronet/raw-chars.hpp"
 #include "aeronet/retry-config.hpp"
 #include "aeronet/test_server_fixture.hpp"
 #include "aeronet/timedef.hpp"
@@ -124,6 +126,14 @@ test::TestServer MakeStore() {
   store.setPath(http::Method::GET, "/to-same-site", [](const HttpRequestView& req) {
     return Redirect(req, http::StatusCodeFound, QueueSameSiteUrl("/echo"));
   });
+  // Redirects with and without fragment, for the URL of a page (PageRequestContext::pFragment).
+  store.setPath(http::Method::GET, "/to-fragment",
+                [](const HttpRequestView& req) { return Redirect(req, http::StatusCodeFound, "/echo#frag"); });
+  store.setPath(http::Method::GET, "/to-no-fragment",
+                [](const HttpRequestView& req) { return Redirect(req, http::StatusCodeFound, "/echo"); });
+  store.setPath(http::Method::GET, "/to-fragment-then-none", [](const HttpRequestView& req) {
+    return Redirect(req, http::StatusCodeFound, StoreUrl("/to-no-fragment#first"));
+  });
   return server;
 }
 
@@ -138,6 +148,13 @@ test::TestServer MakeQueue() {
   });
   queue.setPath(http::Method::GET, "/echo",
                 [](const HttpRequestView& req) { return req.makeResponse(ReceivedCookies(req)); });
+  queue.setPath(http::Method::GET, "/samesite", [](const HttpRequestView& req) {
+    return req.makeResponse("set")
+        .headerAddLine(http::SetCookie, "qstrict=1; SameSite=Strict")
+        .headerAddLine(http::SetCookie, "qlax=1; SameSite=Lax")
+        .headerAddLine(http::SetCookie, "qnone=1; SameSite=None; Secure")
+        .headerAddLine(http::SetCookie, "qplain=1");
+  });
   return server;
 }
 
@@ -261,6 +278,75 @@ TEST_P(HttpClientCookiesTest, SameSiteCookiesAlongRedirectChains) {
 
   // Another port of the same host is the same site.
   EXPECT_EQ(Get(client, StoreUrl("/to-same-site")), "strict=1;lax=1;none=1;plain=1");
+}
+
+// The requests that a web page makes for a document (HttpClient::requestUpdating() with a PageRequestContext) are
+// subresources: the site of the document decides their SameSite cookies, their credentials mode whether they use the
+// jar at all.
+TEST_P(HttpClientCookiesTest, SubresourcesOfADocument) {
+  HttpClient client(Config());
+  Get(client, StoreUrl("/samesite"));
+  const auto send = [&client](http::Method method, std::string_view url, const PageRequestContext& context) {
+    HttpRequest request =
+        method == http::Method::GET ? client.makeRequest(method, url) : client.makeRequest(method, url, "form");
+    const HttpClientResult result = client.requestUpdating(request, context);
+    if (!result) {
+      ADD_FAILURE() << url << ": " << ErrcToStr(result.error());
+      return std::string();
+    }
+    return std::string(result->bodyInMemory());
+  };
+  const std::string store = StoreUrl("/page");
+  const std::string sameSite = QueueSameSiteUrl("/page");
+  const std::string crossSite = QueueCrossSiteUrl("/page");
+  EXPECT_EQ(send(http::Method::GET, StoreUrl("/echo"), {store}), "strict=1;lax=1;none=1;plain=1");
+  EXPECT_EQ(send(http::Method::GET, StoreUrl("/echo"), {sameSite}), "strict=1;lax=1;none=1;plain=1");
+  // From a document of another site, whatever the method.
+  EXPECT_EQ(send(http::Method::GET, StoreUrl("/echo"), {crossSite}), "none=1;plain=1");
+  EXPECT_EQ(send(http::Method::POST, StoreUrl("/echo"), {crossSite}), "none=1;plain=1");
+  // A redirect through another site makes the request cross-site, also back to the site of the document.
+  EXPECT_EQ(send(http::Method::GET, StoreUrl("/to-queue"), {store}), "none=1;plain=1");
+
+  // The credentials: none, or only for the origin of the document, also along the redirects.
+  EXPECT_EQ(send(http::Method::GET, StoreUrl("/echo"), {.documentUrl = store, .credentials = RequestCredentials::Omit}),
+            "");
+  EXPECT_EQ(
+      send(http::Method::GET, StoreUrl("/echo"), {.documentUrl = store, .credentials = RequestCredentials::SameOrigin}),
+      "strict=1;lax=1;none=1;plain=1");
+  EXPECT_EQ(send(http::Method::GET, StoreUrl("/echo"),
+                 {.documentUrl = sameSite, .credentials = RequestCredentials::SameOrigin}),
+            "");
+  EXPECT_EQ(send(http::Method::GET, StoreUrl("/to-same-site"),
+                 {.documentUrl = store, .credentials = RequestCredentials::SameOrigin}),
+            "");
+
+  // A subresource of another site stores no SameSite=Strict or Lax cookie, and one without credentials none.
+  send(http::Method::GET, QueueCrossSiteUrl("/samesite"), {store});
+  EXPECT_EQ(client.cookieJar().cookieHeader(QueueCrossSiteUrl("/")), "queue=1; qnone=1; qplain=1");
+  send(http::Method::GET, QueueCrossSiteUrl("/samesite"), {crossSite});
+  EXPECT_EQ(client.cookieJar().cookieHeader(QueueCrossSiteUrl("/")), "queue=1; qnone=1; qplain=1; qstrict=1; qlax=1");
+  send(http::Method::GET, StoreUrl("/login"), {.documentUrl = store, .credentials = RequestCredentials::Omit});
+  EXPECT_EQ(Get(client, StoreUrl("/echo")), "strict=1;lax=1;none=1;plain=1");
+}
+
+// The fragment of a page URL: that of the last Location with one (RFC 9110 §10.2.2), else the one of the request. And
+// the number of redirects followed.
+TEST_P(HttpClientCookiesTest, FragmentAndRedirectsOfTheFinalUrl) {
+  HttpClient client(Config());
+  const auto after = [&client](std::string_view url) {
+    RawChars32 fragment("#asked");
+    uint32_t redirects = 0;
+    HttpRequest request = client.makeRequest(http::Method::GET, url);
+    EXPECT_TRUE(client.requestUpdating(request, {.pFragment = &fragment, .pRedirects = &redirects}));
+    return std::string(std::string_view(fragment)) + ' ' + std::to_string(redirects);
+  };
+  EXPECT_EQ(after(StoreUrl("/echo")), "#asked 0");
+  EXPECT_EQ(after(StoreUrl("/to-no-fragment")), "#asked 1");
+  EXPECT_EQ(after(StoreUrl("/to-fragment")), "#frag 1");
+  EXPECT_EQ(after(StoreUrl("/to-fragment-then-none")), "#first 2");
+  // A context without them.
+  HttpRequest request = client.makeRequest(http::Method::GET, StoreUrl("/to-fragment"));
+  EXPECT_EQ(client.requestUpdating(request, {}).value().bodyInMemory(), "");
 }
 
 TEST_P(HttpClientCookiesTest, EachRetrySendsTheCookiesOfTheJar) {
