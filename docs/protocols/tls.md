@@ -371,7 +371,7 @@ config.tls.withTlsHandshakeConcurrencyLimit(1024)  // handshakes in progress at 
     .withTlsHandshakeRateLimit(500, 1000);         // new handshakes per second, burst
 ```
 
-The handshake timeout is 10 seconds by default (0 disables it): it bounds the time a client can keep a handshake, and its connection, busy, even by trickling bytes that would keep it from being idle. A handshake that exceeds the timeout is closed; the connections are only scanned for it while handshakes are in progress. A connection beyond the concurrency or rate limit is closed right after it is accepted, before any OpenSSL object is allocated, and counted in `tlsHandshakesRejectedConcurrency` or `tlsHandshakesRejectedRateLimit`. When the server closes an established TLS connection, it first sends a best-effort, non-blocking `close_notify`.
+The handshake timeout is 10 seconds by default (`std::chrono::milliseconds::max()` disables it, 0 is invalid): it bounds the time a client can keep a handshake, and its connection, busy, even by trickling bytes that would keep it from being idle. A handshake that exceeds the timeout is closed; the connections are only scanned for it while handshakes are in progress. The concurrency limit is off by default (`std::numeric_limits<uint32_t>::max()`, 0 is invalid). A connection beyond the concurrency or rate limit is closed right after it is accepted, before any OpenSSL object is allocated, and counted in `tlsHandshakesRejectedConcurrency` or `tlsHandshakesRejectedRateLimit`. When the server closes an established TLS connection, it first sends a best-effort, non-blocking `close_notify`.
 
 ## Observability
 

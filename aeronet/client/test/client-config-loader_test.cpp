@@ -42,7 +42,7 @@ HttpClientConfig MakeNonDefaultConfig() {
   config.connectTimeout = 2s;
   config.requestTimeout = 45s;
   config.inactivityTimeout = 1500ms;
-  config.keepAliveTimeout = 0ms;
+  config.keepAliveTimeout = 10s;
   config.maxResponseBytes = 1UL << 20U;
   config.maxRedirects = 2;
   config.maxIdleConnectionsPerHost = 3;
@@ -273,6 +273,7 @@ TEST(ClientConfigLoaderTest, YamlKeys) {
       "    retryStatuses: [429]\n"
       "  cache:\n"
       "    refreshPeriod: 1h\n"
+      "    maxEntries: 64\n"
       "    methods: [GET, HEAD]\n"
       "  proxyUrl: proxy.local:3128\n",
       ConfigFormat::yaml);
@@ -284,6 +285,7 @@ TEST(ClientConfigLoaderTest, YamlKeys) {
   EXPECT_EQ(config.retry.maxAttempts, 2U);
   EXPECT_EQ(config.retry.retryStatuses.size(), 1U);
   EXPECT_EQ(config.cache.refreshPeriod, 1h);
+  EXPECT_TRUE(config.cache.enabled());
   EXPECT_EQ(config.cache.methods, http::Method::GET | http::Method::HEAD);
   EXPECT_EQ(config.proxyUrl(), "proxy.local:3128");
 }
@@ -312,16 +314,20 @@ TEST(ClientConfigLoaderTest, CacheMethodsAreNames) {
 
   // An empty list is invalid only when the cache is enabled.
   EXPECT_EQ(LoadClientConfig(R"({"client":{"cache":{"methods":[]}}})", ConfigFormat::json).cache.methods, 0U);
-  EXPECT_THROW(LoadClientConfig(R"({"client":{"cache":{"refreshPeriod":"1s","methods":[]}}})", ConfigFormat::json),
+  EXPECT_THROW(LoadClientConfig(R"({"client":{"cache":{"maxEntries":16,"methods":[]}}})", ConfigFormat::json),
                std::invalid_argument);
   // Not a safe method.
-  EXPECT_THROW(
-      LoadClientConfig(R"({"client":{"cache":{"refreshPeriod":"1s","methods":["POST"]}}})", ConfigFormat::json),
-      std::invalid_argument);
+  EXPECT_THROW(LoadClientConfig(R"({"client":{"cache":{"maxEntries":16,"methods":["POST"]}}})", ConfigFormat::json),
+               std::invalid_argument);
   // Method names are case-sensitive (RFC 9110 §9.1).
   EXPECT_THROW(LoadClientConfig(R"({"client":{"cache":{"methods":["get"]}}})", ConfigFormat::json),
                std::invalid_argument);
   EXPECT_THROW(LoadClientConfig(R"({"client":{"cache":{"methods":["FETCH"]}}})", ConfigFormat::json),
+               std::invalid_argument);
+}
+
+TEST(ClientConfigLoaderTest, ZeroCacheRefreshPeriodIsRejected) {
+  EXPECT_THROW(LoadClientConfig(R"({"client":{"cache":{"refreshPeriod":"0ms"}}})", ConfigFormat::json),
                std::invalid_argument);
 }
 

@@ -5,6 +5,7 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <ranges>
 #include <span>
 #include <string_view>
@@ -316,7 +317,8 @@ class TLSConfig {
     std::chrono::seconds lifetime{std::chrono::hours{24}};
   } sessionTickets;
 
-  // Protective timeout for TLS handshakes (time from accept to handshake completion). 0 => disabled.
+  // Protective timeout for TLS handshakes (time from accept to handshake completion). Must be positive,
+  // std::chrono::milliseconds::max() disables it.
   // Bounds the time a client can keep a handshake (and its connection) busy, even by trickling bytes.
   std::chrono::milliseconds handshakeTimeout{std::chrono::seconds{10}};
 
@@ -350,8 +352,9 @@ class TLSConfig {
   Version minVersion;  // If set, enforce minimum TLS protocol version.
   Version maxVersion;  // If set, enforce maximum TLS protocol version.
 
-  // Maximum number of concurrent TLS handshakes allowed. 0 => unlimited.
-  std::uint32_t maxConcurrentHandshakes{0};
+  // Maximum number of concurrent TLS handshakes allowed: a connection beyond it is closed right after its accept. Must
+  // be positive, std::numeric_limits<std::uint32_t>::max() (the default) for no limit.
+  std::uint32_t maxConcurrentHandshakes{std::numeric_limits<std::uint32_t>::max()};
 
   // TLS handshake rate limiting (to mitigate DoS attacks)
   std::uint32_t handshakeRateLimitPerSecond{0};

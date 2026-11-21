@@ -63,6 +63,7 @@
 #include "aeronet/supported-accept-encoding.hpp"
 #include "aeronet/sv-to-sv-map.hpp"
 #include "aeronet/tchars.hpp"
+#include "aeronet/timedef.hpp"
 #include "aeronet/tracing/tracer.hpp"
 #include "aeronet/tunnel-bridge.hpp"
 #include "aeronet/uri-host.hpp"
@@ -1058,8 +1059,7 @@ void Http2ProtocolHandler::dispatchRequest(StreamsMap::iterator it) {
   // Arm per-route request deadline for sweep enforcement (async/streaming handlers). The client is no longer waited
   // for: this also ends the idle time of a request body.
   const std::chrono::milliseconds requestTimeout = routingResult.pathConfig().requestTimeout;
-  it->second.deadline = requestTimeout != std::chrono::milliseconds::max() ? req.reqStart() + requestTimeout
-                                                                           : std::chrono::steady_clock::time_point{};
+  it->second.deadline = DeadlineAfter(req.reqStart(), requestTimeout);
 
   // Handle OPTIONS and TRACE via shared protocol-agnostic code
   if (req.method() == http::Method::OPTIONS || req.method() == http::Method::TRACE) {
@@ -1642,12 +1642,8 @@ void Http2ProtocolHandler::initiateGoAway() {
 }
 
 std::chrono::steady_clock::time_point Http2ProtocolHandler::streamIdleDeadline() const noexcept {
-  const std::chrono::milliseconds timeout = _pCtx->config.http2.streamIdleTimeout;
-  if (timeout == std::chrono::milliseconds::max()) {
-    return {};
-  }
   // The time of the event loop iteration: no clock read per DATA frame.
-  return _pCtx->connections.now + timeout;
+  return DeadlineAfter(_pCtx->connections.now, _pCtx->config.http2.streamIdleTimeout);
 }
 
 bool Http2ProtocolHandler::onSweep(std::chrono::steady_clock::time_point now, bool draining) {

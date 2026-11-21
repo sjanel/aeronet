@@ -145,10 +145,7 @@ SteadyClock::time_point DeadlineIn(std::chrono::milliseconds timeout) noexcept {
   if (timeout <= std::chrono::milliseconds::zero()) {
     return now;
   }
-  if (timeout >= std::chrono::duration_cast<std::chrono::milliseconds>(SteadyClock::time_point::max() - now)) {
-    return SteadyClock::time_point::max();
-  }
-  return now + timeout;
+  return DeadlineAfter(now, timeout);
 }
 
 bool SelectorWatch::changedAndMatches(const HtmlDocument& document) {

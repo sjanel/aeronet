@@ -148,7 +148,7 @@ HTTP/1.1 connections are persistent by default: a client sends several requests 
 | `enableKeepAlive` (`withKeepAliveMode()`) | `true` | `false` closes every connection after its response. |
 | `keepAliveTimeout` | 5 s | An idle connection is closed after this duration, and so is a connection whose response made no progress for that long (see below). Also applies to WebSocket connections, see [Closing connections](../protocols/websocket.md#closing-connections). |
 | `maxRequestsPerConnection` | 100,000 | The response to the last allowed request carries `Connection: close`. |
-| `maxAcceptBatchSize` | 64 | New connections accepted per loop iteration, so that a connection burst does not starve the existing ones; `0` is unlimited. |
+| `maxAcceptBatchSize` | 64 | New connections accepted per loop iteration, so that a connection burst does not starve the existing ones; `std::numeric_limits<uint32_t>::max()` for no limit. |
 | `lingeringCloseTimeout` (`withLingeringCloseTimeout()`) | 5 s | Maximum duration of a [lingering close](#lingering-close); `0` closes the connection right away. |
 
 The server closes a connection right away, without waiting for the next request, after a protocol error (malformed request, conflicting framing headers, a limit exceeded): the parser state cannot be trusted anymore, so it never reads further requests from that connection.

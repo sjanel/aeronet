@@ -11,6 +11,7 @@
 #include "aeronet/http-message-data.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/raw-bytes.hpp"
+#include "aeronet/timedef.hpp"
 #include "aeronet/vector.hpp"
 #include "aeronet/websocket-config.hpp"
 #include "aeronet/websocket-constants.hpp"
@@ -179,7 +180,7 @@ class WebSocketHandler final : public IProtocolHandler {
   /// Returns true if we've been waiting for a close response for closeTimeout at 'now'.
   [[nodiscard]] bool hasCloseTimedOut(
       std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) const noexcept {
-    return _closeState == CloseState::CloseSent && now >= _closeInitiatedAt + _config.closeTimeout;
+    return _closeState == CloseState::CloseSent && now >= DeadlineAfter(_closeInitiatedAt, _config.closeTimeout);
   }
 
   /// Force close the connection after timeout (call after hasCloseTimedOut() returns true).

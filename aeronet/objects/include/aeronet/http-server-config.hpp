@@ -254,22 +254,23 @@ struct HttpServerConfig {
   // sent). Once exceeded the server proactively closes the connection. It also bounds the time an HTTP/1.1 response
   // (buffered or a file) waits for a client that stopped reading it, keep-alive enabled or not: the connection is
   // closed after keepAliveTimeout without any write progress. A client reading slowly but steadily is never closed.
-  // Default: 5000 ms.
+  // At least 1 ms. Default: 5000 ms.
   std::chrono::milliseconds keepAliveTimeout{std::chrono::milliseconds{5000}};
 
   // Maximum duration allowed to fully receive the HTTP/1.1 request headers (request line + headers + CRLFCRLF),
   // from the accept for the first request of a connection (TLS handshake included), from the moment its first byte is
   // read for the next ones (from the answer of the previous one for a request received with it, pipelined). If exceeded
   // before the header terminator is observed the server closes the connection and emits a 408 Request Timeout. HTTP/2
-  // and WebSocket connections and CONNECT tunnels are not concerned. A value of 0 disables this protective timeout.
-  // Default: disabled.
-  std::chrono::milliseconds headerReadTimeout{std::chrono::milliseconds{0}};
+  // and WebSocket connections and CONNECT tunnels are not concerned. Must be positive, std::chrono::milliseconds::max()
+  // disables this protective timeout. Default: disabled.
+  std::chrono::milliseconds headerReadTimeout{std::chrono::milliseconds::max()};
 
   // Maximum time without receiving body bytes while the body of an HTTP/1.1 request is awaited: by the server before
   // calling a synchronous handler, or by an async handler (its deferred work does not count). If exceeded, the server
   // answers 408 Request Timeout and closes the connection: this guards against slowloris-style uploads. The timer
-  // resets whenever body bytes are received. A value of 0 disables the timeout. Default: disabled.
-  std::chrono::milliseconds bodyReadTimeout{std::chrono::milliseconds{0}};
+  // resets whenever body bytes are received. Must be positive, std::chrono::milliseconds::max() disables the timeout.
+  // Default: disabled.
+  std::chrono::milliseconds bodyReadTimeout{std::chrono::milliseconds::max()};
 
   // Maximum duration of the lingering close of an HTTP/1.1 connection closed while its client may still be sending (a
   // response answering a request before its body was read, or with requests pipelined behind it): the server shuts its
@@ -471,7 +472,7 @@ struct HttpServerConfig {
   // Maximum number of closed connection objects to cache for reuse to reduce allocations.
   HttpServerConfig& withMaxCachedConnections(uint32_t nbCachedConnections);
 
-  // Set maximum accept batch size per event-loop iteration (0 = unlimited).
+  // Set maximum accept batch size per event-loop iteration (> 0, std::numeric_limits<uint32_t>::max() for no limit).
   HttpServerConfig& withMaxAcceptBatchSize(uint32_t batchSize);
 
   // Set the kernel send buffer size (SO_SNDBUF) of accepted connections (0 = system default, automatically tuned).
@@ -488,10 +489,10 @@ struct HttpServerConfig {
   //   The default {1.0F, 1.0F} disables adaptation and keeps a fixed pollInterval.
   HttpServerConfig& withPollIntervalFactors(float minFactor, float maxFactor);
 
-  // Set slow header read timeout (0=off)
+  // Set slow header read timeout (std::chrono::milliseconds::max() = off)
   HttpServerConfig& withHeaderReadTimeout(std::chrono::milliseconds timeout);
 
-  // Set blocking body read timeout (0=off)
+  // Set blocking body read timeout (std::chrono::milliseconds::max() = off)
   HttpServerConfig& withBodyReadTimeout(std::chrono::milliseconds timeout);
 
   // Set the maximum duration of the lingering close of an HTTP/1.1 connection (0=off)

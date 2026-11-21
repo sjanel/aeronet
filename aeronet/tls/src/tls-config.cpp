@@ -93,6 +93,14 @@ void TLSConfig::validate() {
   if (cipherPolicy != CipherPolicy::Default && !cipherList().empty()) {
     throw std::invalid_argument("TLS cipherList cannot be combined with a cipherPolicy other than Default");
   }
+  // max() disables it.
+  if (handshakeTimeout.count() <= 0) {
+    throw std::invalid_argument("TLS handshakeTimeout must be positive");
+  }
+  // max() for no limit.
+  if (maxConcurrentHandshakes == 0) {
+    throw std::invalid_argument("TLS maxConcurrentHandshakes must be positive");
+  }
 
   auto alpnProtocols = this->alpnProtocols();
   if (alpnMustMatch && alpnProtocols.empty()) {

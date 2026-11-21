@@ -972,7 +972,7 @@ TEST(ConnectionManagerErrors, HeaderReadTimeoutInReadLoop) {
 
 TEST(ConnectionManagerErrors, MaxBufferOverflow) {
   ts.postConfigUpdate([](HttpServerConfig& cfg) {
-    cfg.headerReadTimeout = {};
+    cfg.headerReadTimeout = std::chrono::milliseconds::max();
     cfg.maxHeaderBytes = 512;
     cfg.maxBodyBytes = 256;
   });

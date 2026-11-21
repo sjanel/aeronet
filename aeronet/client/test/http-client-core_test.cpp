@@ -1639,10 +1639,10 @@ TEST_F(HttpClientE2ETest, HeadFollowsRedirectWithoutMethodRewrite) {
   EXPECT_TRUE(resp.bodyInMemory().empty());  // HEAD: no body on the final response either
 }
 
-// With keep-alive idle expiry disabled (keepAliveTimeout == 0), a pooled connection is reused without the
+// With keep-alive idle expiry disabled (keepAliveTimeout == max()), a pooled connection is reused without the
 // staleness/age check firing -- the second request rides the same connection.
 TEST_F(HttpClientE2ETest, KeepAliveWithoutExpiryReusesConnection) {
-  HttpClient client(HttpClientConfig{}.withKeepAliveTimeout(std::chrono::milliseconds{0}));
+  HttpClient client(HttpClientConfig{}.withKeepAliveTimeout(HttpClientConfig::Duration::max()));
   auto first = client.get(Url("/hello")).value();
   EXPECT_EQ(first.status(), http::StatusCodeOK);
   auto second = client.get(Url("/hello")).value();  // reuses the pooled connection (no expiry check)
@@ -1700,7 +1700,7 @@ TEST_F(HttpClientE2ETest, ReleaseUnusedMemoryWithoutExpiryKeepsPooledConnections
   test::TestServer server2 = CreateSecondOrigin();
   const std::string url2 = SecondOriginUrl(server2);
 
-  HttpClient client(HttpClientConfig{}.withKeepAliveTimeout(std::chrono::milliseconds{0}));
+  HttpClient client(HttpClientConfig{}.withKeepAliveTimeout(HttpClientConfig::Duration::max()));
   EXPECT_EQ(client.get(Url("/hello")).value().bodyInMemory(), "world");
   EXPECT_EQ(client.get(url2).value().bodyInMemory(), "planet");
   client.releaseUnusedMemory();

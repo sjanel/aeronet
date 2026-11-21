@@ -28,7 +28,8 @@ struct WebSocketConfig {
   /// Time to wait for the peer's Close frame after sending one. The connection is then closed.
   std::chrono::milliseconds closeTimeout{std::chrono::milliseconds{5000}};
 
-  /// A connection on which nothing was received for this long is closed. 0 disables the idle timeout.
+  /// A connection on which nothing was received for this long is closed. Must be positive,
+  /// std::chrono::milliseconds::max() disables the idle timeout.
   /// It replaces HttpServerConfig::keepAliveTimeout, which does not apply to upgraded connections.
   std::chrono::milliseconds idleTimeout{std::chrono::seconds{60}};
 
@@ -41,7 +42,7 @@ struct WebSocketConfig {
   bool isServerSide{true};
 
   /// Send a Ping frame once the connection has been idle for half of idleTimeout, so that a live peer, which answers
-  /// with a Pong, never reaches the idle timeout. Without effect when idleTimeout is 0.
+  /// with a Pong, never reaches the idle timeout. Without effect when idleTimeout is max().
   bool autoPing{true};
 };
 

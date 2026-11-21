@@ -77,6 +77,7 @@ client:
     retryStatuses: [502, 503, 504]
   cache:
     refreshPeriod: 30s
+    maxEntries: 256
     methods: [GET, HEAD]
   tlsCaFile: /etc/ssl/internal-ca.pem
   proxyUrl: http://proxy.internal:3128

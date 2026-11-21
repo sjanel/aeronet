@@ -309,7 +309,7 @@ config.withCache(std::chrono::seconds{30}).withCacheMaxEntries(256);
 HttpClient client(config);
 ```
 
-Only successful (`2xx`) responses to `GET` and `HEAD` are stored by default. This is deliberately not an HTTP cache: `Cache-Control`, `ETag`, `Vary`, and revalidation are ignored. Use it for data whose staleness you choose, such as a key set or a configuration document. `clearResponseCache()` empties it.
+`withCache()` alone keeps responses 1 minute, up to 1024 of them; a `maxEntries` of 0 turns the cache off. Only successful (`2xx`) responses to `GET` and `HEAD` are stored by default. This is deliberately not an HTTP cache: `Cache-Control`, `ETag`, `Vary`, and revalidation are ignored. Use it for data whose staleness you choose, such as a key set or a configuration document. `clearResponseCache()` empties it.
 
 ## Forward proxy
 

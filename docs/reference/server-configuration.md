@@ -28,14 +28,14 @@ config.withPort(8080)
 | `reusePort` / `withReusePort()` | false | Request `SO_REUSEPORT` for independent listeners. |
 | `tcpNoDelay` / `withTcpNoDelay[Mode]()` | Auto | Nagle policy. Auto sets `TCP_NODELAY` on TLS connections and keeps Nagle's algorithm on cleartext ones; Enabled / Disabled force it. See [Settings](../operations/performance.md#settings). |
 | `enableKeepAlive` / `withKeepAliveMode()` | true | Allow HTTP/1.1 persistent connections. |
-| `keepAliveTimeout` / `withKeepAliveTimeout()` | 5 s | Idle time after a response before a persistent connection is closed. Also closes an HTTP/1.1 connection whose response made no progress for that long (a client that stopped reading it), keep-alive enabled or not: a client reading slowly but steadily is never closed. Also closes an HTTP/1.1 request whose body stalls, async routes included. WebSocket connections have their own [idle timeout](../protocols/websocket.md#idle-connections). Also bounds the [resolution of a CONNECT target](../protocols/connect.md#name-resolution) (`504` beyond). |
+| `keepAliveTimeout` / `withKeepAliveTimeout()` | 5 s | Idle time after a response before a persistent connection is closed. At least 1 ms. Also closes an HTTP/1.1 connection whose response made no progress for that long (a client that stopped reading it), keep-alive enabled or not: a client reading slowly but steadily is never closed. Also closes an HTTP/1.1 request whose body stalls, async routes included. WebSocket connections have their own [idle timeout](../protocols/websocket.md#idle-connections). Also bounds the [resolution of a CONNECT target](../protocols/connect.md#name-resolution) (`504` beyond). |
 | `maxRequestsPerConnection` | 100,000 | Bound requests served on a persistent connection. |
 | `maxCachedConnections` | 10 | Reusable closed `ConnectionState` objects retained to reduce allocations. |
-| `maxAcceptBatchSize` / `withMaxAcceptBatchSize()` | 64 | New accepts handled per event-loop iteration; `0` is unlimited. |
+| `maxAcceptBatchSize` / `withMaxAcceptBatchSize()` | 64 | New accepts handled per event-loop iteration; positive, `std::numeric_limits<uint32_t>::max()` for no limit. |
 | `maxHeaderBytes` / `withMaxHeaderBytes()` | 8 KiB | Maximum request line, headers, and terminating CRLFCRLF. A request line alone exceeding it is answered `414 URI Too Long` (the request target is too long), the rest of the head `431`. Also bounds each chunk-size line and the trailers of a chunked request body, and the empty lines received before a request line until it follows them. |
 | `maxBodyBytes` / `withMaxBodyBytes()` | 256 MiB | Decoded request body ceiling. |
-| `headerReadTimeout` / `withHeaderReadTimeout()` | disabled | Deadline to receive a whole HTTP/1.1 request head: from the accept for the first request of a connection (TLS handshake included), from its first byte for the next ones (from the answer of the previous one for a request received with it). Slowloris protection; HTTP/2, WebSocket and tunnel traffic are not concerned. |
-| `bodyReadTimeout` / `withBodyReadTimeout()` | disabled | Progress-based deadline while a handler waits for body data. |
+| `headerReadTimeout` / `withHeaderReadTimeout()` | disabled (`std::chrono::milliseconds::max()`) | Deadline to receive a whole HTTP/1.1 request head: from the accept for the first request of a connection (TLS handshake included), from its first byte for the next ones (from the answer of the previous one for a request received with it). Slowloris protection; HTTP/2, WebSocket and tunnel traffic are not concerned. Positive, `std::chrono::milliseconds::max()` disables it. |
+| `bodyReadTimeout` / `withBodyReadTimeout()` | disabled (`std::chrono::milliseconds::max()`) | Progress-based deadline while a handler waits for body data. Positive, `std::chrono::milliseconds::max()` disables it. |
 | `lingeringCloseTimeout` / `withLingeringCloseTimeout()` | 5 s | Maximum duration of the [lingering close](../guides/server-lifecycle.md#lingering-close) of an HTTP/1.1 connection closed while its client may still be sending; `0` closes it right away. |
 | `mergeUnknownRequestHeaders` / `withMergeUnknownRequestHeaders()` | true | Comma-merge repeated unknown headers; use false for stricter custom-header semantics. |
 | `traceMethodPolicy` / `withTracePolicy()` | Disabled | `Disabled`, `EnabledPlainAndTLS`, or `EnabledPlainOnly`. |
@@ -86,9 +86,9 @@ TLS requires `AERONET_ENABLE_OPENSSL=ON`: without it, `HttpServerConfig` has nei
 | `alpnMustMatch` | false | Fail a handshake with no ALPN overlap, including a client offering no protocol at all. |
 | `requestClientCert`, `requireClientCert` | false | Request a certificate, or require and verify one for strict mTLS. Requiring implies requesting. |
 | `withTlsTrustedClientCert()` | empty | Add a PEM trust anchor/leaf (or a bundle of them) for client-certificate validation. Their names are sent in the certificate request. |
-| `handshakeTimeout` | 10 s | Deadline from accept to TLS handshake completion; 0 disables it. |
+| `handshakeTimeout` | 10 s | Deadline from accept to TLS handshake completion. Positive, `std::chrono::milliseconds::max()` disables it. |
 | `idleBufferReleaseDelay` | 1 s | Time without activity after which an established connection releases the read and write buffers of OpenSSL (about 17 KB each), allocated again for its next request. Not shorter than `keepAliveTimeout` (or `max()`): never. See [Memory of idle connections](../protocols/tls.md#memory-of-idle-connections). |
-| `maxConcurrentHandshakes` | 0 | Concurrent handshake cap; 0 is unlimited. |
+| `maxConcurrentHandshakes` | no limit | Concurrent handshake cap; positive, `std::numeric_limits<uint32_t>::max()` (the default) for no limit. |
 | `withTlsHandshakeRateLimit()` | 0, 0 | Per-second handshake limit and burst cap. |
 | `logHandshake` | false | Log negotiated ALPN, cipher, version, and peer subject. |
 | `disableCompression` | true | Keep TLS-level compression off to mitigate CRIME. |

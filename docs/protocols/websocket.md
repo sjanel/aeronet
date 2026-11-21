@@ -138,7 +138,7 @@ router.setWebSocket("/ws", WebSocketEndpoint::WithCallbacks(websocket::WebSocket
 | --- | --- | --- |
 | `maxMessageSize` | 64 MiB | Maximum size of a reassembled message, decompressed. Must be greater than 0 (set `std::numeric_limits<std::size_t>::max()` to approximate no limit). A larger message closes the connection with `MessageTooBig` (1009), compressed or not. |
 | `maxFrameSize` | 16 MiB | Maximum payload of a single frame. Must be greater than 0 (same as above for no limit). A larger frame closes the connection with `MessageTooBig`. |
-| `idleTimeout` | 60 s | A connection on which nothing was received for this long is closed. `0` disables it. See [Idle connections](#idle-connections). |
+| `idleTimeout` | 60 s | A connection on which nothing was received for this long is closed. Positive, `std::chrono::milliseconds::max()` disables it. See [Idle connections](#idle-connections). |
 | `autoPing` | `true` | Send a Ping after half of `idleTimeout` without received data, so that live peers are never closed. |
 | `closeTimeout` | 5 s | Time to wait for the peer's Close frame after sending one, before closing the connection. See [Closing connections](#closing-connections). |
 | `deflateConfig` | see below | `permessage-deflate` settings, with zlib only. |

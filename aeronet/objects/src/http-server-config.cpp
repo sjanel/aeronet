@@ -467,8 +467,9 @@ void HttpServerConfig::validate() {
   if (maxBodyBytes == 0) {
     throw std::invalid_argument("maxBodyBytes must be > 0");
   }
-  if (keepAliveTimeout.count() < 0) {
-    throw std::invalid_argument("keepAliveTimeout must be non-negative");
+  // Positive: the maintenance re-arms deadlines at now + keepAliveTimeout, which must come after now.
+  if (keepAliveTimeout.count() < 1) {
+    throw std::invalid_argument("keepAliveTimeout must be at least 1 ms");
   }
   // Relative milliseconds in ConnectionState are stored as uint32_t. The maximum representable
   // value (~49.7 days) is reserved as a sentinel, so configured durations must be strictly below it.
@@ -478,17 +479,12 @@ void HttpServerConfig::validate() {
   }
   PollTimeoutPolicy{.baseTimeout = pollInterval, .minFactor = pollIntervalMinFactor, .maxFactor = pollIntervalMaxFactor}
       .validate();
-  if (headerReadTimeout.count() < 0) {
-    throw std::invalid_argument("headerReadTimeout must be non-negative");
+  // Not bounded: their deadlines saturate (see DeadlineAfter()), std::chrono::milliseconds::max() never expires.
+  if (headerReadTimeout.count() <= 0) {
+    throw std::invalid_argument("headerReadTimeout must be positive");
   }
-  if (headerReadTimeout > kMaxTimeoutMs) {
-    throw std::invalid_argument("headerReadTimeout exceeds maximum representable duration (~49.7 days)");
-  }
-  if (bodyReadTimeout.count() < 0) {
-    throw std::invalid_argument("bodyReadTimeout must be non-negative");
-  }
-  if (bodyReadTimeout > kMaxTimeoutMs) {
-    throw std::invalid_argument("bodyReadTimeout exceeds maximum representable duration (~49.7 days)");
+  if (bodyReadTimeout.count() <= 0) {
+    throw std::invalid_argument("bodyReadTimeout must be positive");
   }
   if (lingeringCloseTimeout.count() < 0) {
     throw std::invalid_argument("lingeringCloseTimeout must be non-negative");

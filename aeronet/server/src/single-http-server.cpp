@@ -293,12 +293,9 @@ void SingleHttpServer::updateMaintenanceTimer() {
   using namespace std::chrono;
 
   const HttpServerConfig& config = _ctx.config;
+  // The timeouts are positive, max() for a disabled one (without effect here).
   milliseconds minTimeout = milliseconds::max();
-  const auto consider = [&](milliseconds dur) {
-    if (dur.count() > 0) {
-      minTimeout = std::min(minTimeout, dur);
-    }
-  };
+  const auto consider = [&](milliseconds dur) { minTimeout = std::min(minTimeout, dur); };
 
   if (config.enableKeepAlive) {
     consider(config.keepAliveTimeout);

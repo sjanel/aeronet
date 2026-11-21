@@ -71,7 +71,7 @@ class HttpClientConfig {
 
   // Max idle age of a pooled keep-alive connection: when older, it is dropped instead of reused (the
   // origin server may have closed it after its own keep-alive timeout, saving a doomed reuse attempt).
-  // 0 disables expiry. Mirrors HttpServerConfig::keepAliveTimeout. Default: 30s.
+  // Must be positive, Duration::max() for no expiry. Mirrors HttpServerConfig::keepAliveTimeout. Default: 30s.
   Duration keepAliveTimeout{std::chrono::seconds{30}};
 
   // Over HTTP/1.1, maximum wait for the 100 (Continue) response of a request with 'Expect: 100-continue' and a body
@@ -122,20 +122,23 @@ class HttpClientConfig {
   // request headers + body, so requests that differ in any of those (e.g. a different `Authorization`) never
   // share an entry. File bodies are identified without reading their contents, using the byte range, and
   // current descriptor metadata. Only successful (2xx) responses are stored, and only for methods in `methods` (default
-  // GET + HEAD). Disabled by default (`refreshPeriod == 0`); enable it by setting a positive refresh period
-  // (`Duration::max()` caches for the client's whole lifetime). The cache lives in the HttpClient and shares
-  // its single-threaded assumption.
+  // GET + HEAD). Disabled by default (`maxEntries == 0`); enable it with withCache(), or by setting maxEntries. The
+  // cache lives in the HttpClient and shares its single-threaded assumption.
   struct RequestCache {
-    // Whether the cache is active. A zero refresh period keeps it off (opt-in).
-    [[nodiscard]] bool enabled() const noexcept { return refreshPeriod > Duration::zero(); }
+    static constexpr Duration kDefaultRefreshPeriod = std::chrono::minutes{1};
+    static constexpr std::uint32_t kDefaultMaxEntries = 1024;
 
-    // Time-to-live of a cached response: an entry at least this old is refetched on the next request. 0
-    // disables the cache; Duration::max() never expires an entry.
-    Duration refreshPeriod{Duration::zero()};
+    // Whether the cache is active. A cache of 0 entries stores nothing: off (opt-in).
+    [[nodiscard]] bool enabled() const noexcept { return maxEntries != 0; }
+
+    // Time-to-live of a cached response: an entry at least this old is refetched on the next request. Must be
+    // positive; Duration::max() never expires an entry.
+    Duration refreshPeriod{kDefaultRefreshPeriod};
 
     // Hard cap on the number of cached entries (memory guard). When inserting into a full cache, expired
-    // entries are pruned first, then -- if still full -- the least-recently-refreshed entry is evicted.
-    std::uint32_t maxEntries{1024};
+    // entries are pruned first, then -- if still full -- the least-recently-refreshed entry is evicted. 0 (the
+    // default) disables the cache.
+    std::uint32_t maxEntries{0};
 
     // Maximum size of a cached request in bytes (default: 16 MiB)
     // Will only consider requests for caching whose total size (headers + body in memory, excluding file payloads)
@@ -292,7 +295,7 @@ class HttpClientConfig {
     return *this;
   }
 
-  // Set the max idle age of pooled keep-alive connections (0 disables expiry).
+  // Set the max idle age of pooled keep-alive connections (Duration::max() for no expiry).
   HttpClientConfig& withKeepAliveTimeout(Duration timeout) {
     keepAliveTimeout = timeout;
     return *this;
@@ -304,13 +307,16 @@ class HttpClientConfig {
     return *this;
   }
 
-  // Enable (or, with a zero period, disable) the built-in response cache and set its TTL (see `cache`).
-  HttpClientConfig& withCache(Duration refreshPeriod) {
+  // Enable the built-in response cache with its TTL and its maximum number of entries (see `cache`).
+  // withCacheMaxEntries(0) disables it.
+  HttpClientConfig& withCache(Duration refreshPeriod = RequestCache::kDefaultRefreshPeriod,
+                              std::uint32_t maxEntries = RequestCache::kDefaultMaxEntries) {
     cache.refreshPeriod = refreshPeriod;
+    cache.maxEntries = maxEntries;
     return *this;
   }
 
-  // Set the maximum number of cached responses retained before eviction (see `cache.maxEntries`).
+  // Set the maximum number of cached responses retained before eviction (see `cache.maxEntries`). 0 disables the cache.
   HttpClientConfig& withCacheMaxEntries(std::uint32_t maxEntries) {
     cache.maxEntries = maxEntries;
     return *this;

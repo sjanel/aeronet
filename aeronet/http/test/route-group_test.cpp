@@ -3,7 +3,6 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
-#include <stdexcept>
 
 #include "aeronet/cors-policy.hpp"
 #include "aeronet/http-method.hpp"
@@ -260,14 +259,15 @@ TEST_F(RouteGroupTest, WebSocketHandlerRegistration) {
 }
 #endif
 
-TEST_F(RouteGroupTest, ExcessiveTimeoutThrows) {
-  auto api = router.group("/too-slow");
-  EXPECT_THROW(api.withTimeout(std::chrono::hours{24 * 50}), std::invalid_argument);
-}
-
-TEST_F(RouteGroupTest, MaxMillisecondsTimeoutDoesNotThrow) {
-  auto api = router.group("/sentinel");
-  EXPECT_NO_THROW(api.withTimeout(std::chrono::milliseconds::max()));
+TEST_F(RouteGroupTest, AnyTimeoutIsAccepted) {
+  auto longApi = router.group("/long");
+  longApi.withTimeout(std::chrono::hours{24 * 50});
+  longApi.setPath(http::Method::GET, "/x", MakeHandler());
+  auto maxApi = router.group("/max");
+  maxApi.withTimeout(std::chrono::milliseconds::max());
+  maxApi.setPath(http::Method::GET, "/x", MakeHandler());
+  EXPECT_EQ(router.match(http::Method::GET, "/long/x").pathConfig().requestTimeout, std::chrono::hours{24 * 50});
+  EXPECT_EQ(router.match(http::Method::GET, "/max/x").pathConfig().requestTimeout, std::chrono::milliseconds::max());
 }
 
 }  // namespace aeronet

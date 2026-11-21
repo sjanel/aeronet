@@ -39,6 +39,7 @@
 #include "aeronet/string-equal-ignore-case.hpp"
 #include "aeronet/string-trim.hpp"
 #include "aeronet/string-view-size-only-sentinel.hpp"
+#include "aeronet/timedef.hpp"
 #include "aeronet/transfer-coding.hpp"
 #include "http-error-build.hpp"
 #include "http1-writer-transport.hpp"
@@ -716,8 +717,7 @@ bool Http1Pipeline::rejectIncompleteHead(ConnectionIt cnxIt) {
 
   // Header read timeout enforcement: if headers of current pending request are not complete yet
   // (heuristic: no full request parsed and buffer not empty) and duration exceeded -> close.
-  if (ctx.config.headerReadTimeout.count() > 0 && state.parsingHeaders &&
-      ctx.connections.now - state.headerStartTp > ctx.config.headerReadTimeout) {
+  if (state.parsingHeaders && ctx.connections.now > DeadlineAfter(state.headerStartTp, ctx.config.headerReadTimeout)) {
     emitSimpleError(cnxIt, http::StatusCodeRequestTimeout, {});
     return true;
   }

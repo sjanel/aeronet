@@ -216,6 +216,11 @@ AeronetAddUnitTest(
 )
 
 AeronetAddUnitTest(
+    timedef_test
+    test/timedef_test.cpp
+)
+
+AeronetAddUnitTest(
     timestring_test
     test/timestring_test.cpp
     LIBRARIES

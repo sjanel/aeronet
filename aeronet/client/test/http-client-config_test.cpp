@@ -44,8 +44,11 @@ TEST(HttpClientConfigTest, InvalidRequestTimeout) {
 
 TEST(HttpClientConfigTest, KeepAliveTimeout) {
   HttpClientConfig config;
-  config.keepAliveTimeout = std::chrono::milliseconds{0};
+  config.keepAliveTimeout = HttpClientConfig::Duration::max();
   EXPECT_NO_THROW(config.validate());
+
+  config.keepAliveTimeout = std::chrono::milliseconds{0};
+  EXPECT_THROW(config.validate(), std::invalid_argument);
 
   config.keepAliveTimeout = std::chrono::milliseconds{-1};
   EXPECT_THROW(config.validate(), std::invalid_argument);
@@ -377,8 +380,18 @@ TEST(HttpClientConfigTest, WithProxyUrlAndCaFile) {
 TEST(HttpClientConfigTest, CacheDefaultsDisabled) {
   HttpClientConfig cfg;
   EXPECT_FALSE(cfg.cache.enabled());
-  EXPECT_EQ(cfg.cache.maxEntries, 1024U);
+  EXPECT_EQ(cfg.cache.maxEntries, 0U);
+  EXPECT_EQ(cfg.cache.refreshPeriod, HttpClientConfig::RequestCache::kDefaultRefreshPeriod);
   EXPECT_EQ(cfg.cache.methods, http::Method::GET | http::Method::HEAD);
+}
+
+TEST(HttpClientConfigTest, WithCacheEnablesTheDefaultCache) {
+  HttpClientConfig cfg;
+  cfg.withCache();
+  EXPECT_TRUE(cfg.cache.enabled());
+  EXPECT_EQ(cfg.cache.refreshPeriod, std::chrono::minutes{1});
+  EXPECT_EQ(cfg.cache.maxEntries, 1024U);
+  EXPECT_NO_THROW(cfg.validate());
 }
 
 TEST(HttpClientConfigTest, CacheBuildersSetFields) {
@@ -402,15 +415,26 @@ TEST(HttpClientConfigTest, CacheValidateRejectsEmptyMethods) {
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
 }
 
-TEST(HttpClientConfigTest, CacheValidateRejectsZeroMaxEntries) {
+TEST(HttpClientConfigTest, CacheZeroMaxEntriesDisablesIt) {
   HttpClientConfig cfg;
   cfg.withCache(std::chrono::seconds{5}).withCacheMaxEntries(0);
+  EXPECT_FALSE(cfg.cache.enabled());
+  EXPECT_NO_THROW(cfg.validate());
+}
+
+TEST(HttpClientConfigTest, CacheRefreshPeriodMustBePositive) {
+  HttpClientConfig cfg;
+  cfg.cache.refreshPeriod = HttpClientConfig::Duration::max();  // never expires
+  EXPECT_NO_THROW(cfg.validate());
+  cfg.cache.refreshPeriod = HttpClientConfig::Duration::zero();  // invalid even while the cache is off
+  EXPECT_THROW(cfg.validate(), std::invalid_argument);
+  cfg.withCache(std::chrono::milliseconds{-1});
   EXPECT_THROW(cfg.validate(), std::invalid_argument);
 }
 
 TEST(HttpClientConfigTest, CacheValidationSkippedWhenDisabled) {
-  HttpClientConfig cfg;                            // cache disabled by default (zero refresh period)
-  cfg.withCacheMaxEntries(0).withCacheMethods(0);  // nonsensical, but ignored while the cache is off
+  HttpClientConfig cfg;     // cache disabled by default (0 entries)
+  cfg.withCacheMethods(0);  // nonsensical, but ignored while the cache is off
   EXPECT_NO_THROW(cfg.validate());
 }
 

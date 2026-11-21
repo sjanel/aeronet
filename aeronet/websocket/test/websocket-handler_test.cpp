@@ -2647,7 +2647,7 @@ TEST(WebSocketHandlerTimeoutTest, NoPingWithoutAutoPing) {
 
 TEST(WebSocketHandlerTimeoutTest, IdleTimeoutDisabled) {
   WebSocketConfig config;
-  config.idleTimeout = std::chrono::milliseconds{0};
+  config.idleTimeout = std::chrono::milliseconds::max();
   WebSocketHandler handler(config);
   const auto lastActivity = Clock::now();
 
@@ -2676,7 +2676,7 @@ TEST(WebSocketHandlerTimeoutTest, CloseTimeoutElapsesWithoutPeerClose) {
 
 TEST(WebSocketHandlerTimeoutTest, CloseTimeoutAppliesWithoutIdleTimeout) {
   WebSocketConfig config;
-  config.idleTimeout = std::chrono::milliseconds{0};
+  config.idleTimeout = std::chrono::milliseconds::max();
   config.closeTimeout = std::chrono::milliseconds{200};
   WebSocketHandler handler(config);
   const auto lastActivity = Clock::now();

@@ -30,8 +30,8 @@ struct WebSocketEndpoint;
 /// Pass an instance to Router::setPath() or Router::setDefault() to configure specific
 /// options for that route.
 struct PathEntryConfig {
-  /// Maximum timeout representable by the internal uint32_t millisecond storage.
-  /// The absolute maximum (~49.7 days) is reserved as a sentinel; configured values must not exceed this.
+  /// Longest timeout of the internal uint32_t millisecond storage (~49.7 days, the maximum being reserved as a
+  /// sentinel): a longer per-route timeout is capped to it.
   static constexpr auto kMaxRequestTimeout = std::chrono::milliseconds(std::numeric_limits<uint32_t>::max() - 1);
 
 #ifdef AERONET_ENABLE_HTTP2
@@ -56,9 +56,6 @@ struct PathEntryConfig {
   /// Per-route handler deadline. std::chrono::milliseconds::max() means use the global timeout (or no limit).
   std::chrono::milliseconds requestTimeout = std::chrono::milliseconds::max();
 };
-
-// Cold path of PathHandlerEntry::timeout: logs the offending value, then throws std::invalid_argument.
-[[noreturn]] void ThrowRequestTimeoutTooLarge(std::chrono::milliseconds ms);
 
 // Object that stores handlers and options for a specific group of paths.
 class PathHandlerEntry {
@@ -110,11 +107,9 @@ class PathHandlerEntry {
     return *this;
   }
 
-  /// Set a per-route handler deadline. Overrides the global timeout for this route.
-  PathHandlerEntry& timeout(std::chrono::milliseconds ms) {
-    if (ms != std::chrono::milliseconds::max() && ms > PathEntryConfig::kMaxRequestTimeout) {
-      ThrowRequestTimeoutTooLarge(ms);
-    }
+  /// Set a per-route handler deadline. Overrides the global timeout for this route. Capped to
+  /// PathEntryConfig::kMaxRequestTimeout (~49.7 days).
+  PathHandlerEntry& timeout(std::chrono::milliseconds ms) noexcept {
     _pathConfig.requestTimeout = ms;
     return *this;
   }

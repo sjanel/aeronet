@@ -15,9 +15,11 @@
 #include "aeronet/internal/server-context.hpp"
 #include "aeronet/log.hpp"
 #include "aeronet/native-handle.hpp"
+#include "aeronet/path-handler-entry.hpp"
 #include "aeronet/protocol-handler.hpp"
 #include "aeronet/socket-ops.hpp"
 #include "aeronet/system-error.hpp"
+#include "aeronet/timedef.hpp"
 
 #ifdef AERONET_ENABLE_OPENSSL
 #include "aeronet/tls-handshake-failure-reasons.hpp"
@@ -172,6 +174,8 @@ bool ConnectionMaintenance::closeExpiredKeepAliveConnections() {
   const HttpServerConfig& config = ctx.config;
   bool closedAny = false;
   const auto now = ctx.connections.now;
+  // Checked by HttpServerConfig::validate(): a deadline re-armed at now + keepAliveTimeout leaves this loop.
+  assert(config.keepAliveTimeout.count() > 0);
 
   while (!_deadlines.empty()) {
     const auto& next = _deadlines.top();
@@ -234,10 +238,8 @@ bool ConnectionMaintenance::closeExpiredKeepAliveConnections() {
     if (outputPending) {
       // The writes retried by the sweeps may not have refreshed the last activity in time: a sweep runs this check
       // before its own retry (a tick period of keepAliveTimeout would always find it expired), and a sweep retries at
-      // most kMaxFlushRetriesPerSweep connections. Retry once more: a client still reading is kept. Not with a
-      // keepAliveTimeout of 0: re-armed at now, the deadline would come back in this very loop for as long as the
-      // writes progress.
-      if (config.keepAliveTimeout.count() != 0 && ctx.io.flushOutbound(cnxIt)) {
+      // most kMaxFlushRetriesPerSweep connections. Retry once more: a client still reading is kept.
+      if (ctx.io.flushOutbound(cnxIt)) {
         _deadlines.upsert(state, expired.fd, now + config.keepAliveTimeout);
         continue;
       }
@@ -332,7 +334,7 @@ void ConnectionMaintenance::updateBodyReception(ConnectionState& state, bool bod
   }
   // The body of a request whose head was received: its start is the reference of its relative timestamps.
   assert(state.headerStartTp.time_since_epoch().count() != 0);
-  if (_pCtx->config.bodyReadTimeout.count() == 0) {
+  if (_pCtx->config.bodyReadTimeout == std::chrono::milliseconds::max()) {
     return;
   }
   if (!state.waitingForBody) {
@@ -349,9 +351,11 @@ void ConnectionMaintenance::trackRequestDeadline(ConnectionState& state,
     ++_sweepState.requestDeadlineConnections;
   }
   // Set again each time the request is served with more of its body: counted from its start, the largest timeout
-  // (PathEntryConfig::kMaxRequestTimeout) no longer fits in 32 bits once some time elapsed. Capped to about 49.7 days.
+  // (PathEntryConfig::kMaxRequestTimeout, to which longer ones are capped) no longer fits in 32 bits once some time
+  // elapsed. Capped to about 49.7 days.
   const auto deadline =
-      std::chrono::duration_cast<std::chrono::milliseconds>(state.lastActivity - state.headerStartTp) + requestTimeout;
+      std::chrono::duration_cast<std::chrono::milliseconds>(state.lastActivity - state.headerStartTp) +
+      std::min(requestTimeout, PathEntryConfig::kMaxRequestTimeout);
   state.requestDeadlineMs = static_cast<uint32_t>(
       std::clamp<std::chrono::milliseconds::rep>(deadline.count(), 0, ConnectionState::kInactiveRelativeMs - 1));
 }
@@ -381,13 +385,13 @@ bool ConnectionMaintenance::needsFullConnectionMaintenanceSweep() const noexcept
   if (ctx.io.nbWritableConnections() != 0U || _sweepState.requestDeadlineConnections != 0U) {
     return true;
   }
-  if ((_sweepState.headerReadConnections != 0U && ctx.config.headerReadTimeout.count() > 0) ||
-      (_sweepState.bodyReadConnections != 0U && ctx.config.bodyReadTimeout.count() > 0)) {
+  if ((_sweepState.headerReadConnections != 0U && ctx.config.headerReadTimeout != std::chrono::milliseconds::max()) ||
+      (_sweepState.bodyReadConnections != 0U && ctx.config.bodyReadTimeout != std::chrono::milliseconds::max())) {
     return true;
   }
 #ifdef AERONET_ENABLE_OPENSSL
   // Only while handshakes are in progress: the established connections need no handshake timeout check.
-  if (ctx.tls.nbHandshakesInFlight() != 0U && ctx.config.tls.handshakeTimeout.count() > 0) {
+  if (ctx.tls.nbHandshakesInFlight() != 0U && ctx.config.tls.handshakeTimeout != std::chrono::milliseconds::max()) {
     return true;
   }
 #endif
@@ -496,14 +500,13 @@ bool ConnectionMaintenance::closeIfTimedOut(ConnectionIt cnxIt, std::chrono::ste
 
   std::string_view timeout;
   std::string_view counter;
-  if (config.headerReadTimeout.count() > 0 && state.parsingHeaders &&
-      now > state.headerStartTp + config.headerReadTimeout) {
+  if (state.parsingHeaders && now > DeadlineAfter(state.headerStartTp, config.headerReadTimeout)) {
     // Header read timeout: active while headers are being parsed and duration exceeded.
     timeout = "header read";
     counter = "aeronet.connections.closed_for_header_read_timeout";
-  } else if (config.bodyReadTimeout.count() > 0 && state.waitingForBody &&
-             state.bodyLastActivityMs != ConnectionState::kInactiveRelativeMs &&
-             now > state.headerStartTp + std::chrono::milliseconds(state.bodyLastActivityMs) + config.bodyReadTimeout) {
+  } else if (state.waitingForBody && state.bodyLastActivityMs != ConnectionState::kInactiveRelativeMs &&
+             now > DeadlineAfter(state.headerStartTp + std::chrono::milliseconds(state.bodyLastActivityMs),
+                                 config.bodyReadTimeout)) {
     // Body read timeout: triggered when the handler is waiting for missing body bytes.
     timeout = "body read";
     counter = "aeronet.connections.closed_for_body_read_timeout";
