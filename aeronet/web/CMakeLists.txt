@@ -49,7 +49,7 @@ AeronetAddUnitTest(
 )
 
 if(AERONET_ENABLE_HTTP_SERVER)
-    foreach(_web_test IN ITEMS web-client_test web-dom_test web-runtime_test)
+    foreach(_web_test IN ITEMS web-client_test web-dom_test web-network_test web-runtime_test)
         AeronetAddUnitTest(
             ${_web_test}
             test/${_web_test}.cpp

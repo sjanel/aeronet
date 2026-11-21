@@ -226,6 +226,26 @@ TEST(HttpHeader, ReverseIteratorWithEscapedQuotes) {
 
 #if AERONET_WANT_MALLOC_OVERRIDES
 
+TEST(HttpHeader, HeaderValueListContains) {
+  EXPECT_FALSE(http::HeaderValueListContains("", "a"));
+  EXPECT_TRUE(http::HeaderValueListContains("a", "a"));
+  EXPECT_TRUE(http::HeaderValueListContains(" \tPUT ,, PATCH\t", "PUT"));
+  EXPECT_TRUE(http::HeaderValueListContains(",PUT,", "PUT"));
+  EXPECT_FALSE(http::HeaderValueListContains("put, PATCH", "PUT"));
+  EXPECT_FALSE(http::HeaderValueListContains("PUTS, xPUT", "PUT"));
+  EXPECT_FALSE(http::HeaderValueListContains(R"("a,PUT", b)", "PUT"));
+  EXPECT_TRUE(http::HeaderValueListContains("GET, *", "*"));
+}
+
+TEST(HttpHeader, HeaderValueListContainsCI) {
+  EXPECT_FALSE(http::HeaderValueListContainsCI("", "x-a"));
+  EXPECT_TRUE(http::HeaderValueListContainsCI("X-A", "x-a"));
+  EXPECT_TRUE(http::HeaderValueListContainsCI(" x-b ,\tX-a ", "x-a"));
+  EXPECT_TRUE(http::HeaderValueListContainsCI("x-A,,", "X-a"));
+  EXPECT_FALSE(http::HeaderValueListContainsCI("x-ab, x", "x-a"));
+  EXPECT_FALSE(http::HeaderValueListContainsCI(R"("x-b, x-a")", "x-a"));
+}
+
 TEST(HttpHeader, ConstructorMallocFailureThrowsBadAlloc) {
   // The http::Header(name, value) constructor calls malloc.
   // When malloc returns nullptr, it must throw std::bad_alloc.

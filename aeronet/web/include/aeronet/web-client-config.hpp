@@ -37,8 +37,17 @@ struct WebClientConfig {
   // document never runs.
   std::chrono::milliseconds maxTimerDelay{std::chrono::minutes{1}};
 
+  // Maximum size of the bytecode of the scripts that a WebClient keeps for its next pages, in bytes: a script run again
+  // (same URL and content, at least 1 KiB) is read back instead of compiled, 15 to 70 times faster. The least recently
+  // used scripts are dropped beyond it (0 keeps none).
+  std::size_t maxScriptCacheBytes{64UL << 20U};
+
   // Maximum number of runs of a setInterval() callback, after which the interval is cleared.
   uint32_t maxIntervalRuns{100};
+
+  // Maximum number of requests (fetch(), XMLHttpRequest, navigator.sendBeacon()) that the scripts of a document make:
+  // the next ones fail as network errors.
+  uint32_t maxRequests{1000};
 
   // Maximum number of navigations started by a page (location assignments, <meta http-equiv="refresh">) in one
   // WebClient::navigate() call, beyond which it fails with WebErrc::tooManyNavigations. HTTP redirects are not

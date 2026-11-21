@@ -109,7 +109,7 @@ class TimerfdOverrideState {
 
   void recordCreateCall(int clockId, int flags) {
     std::scoped_lock<std::mutex> lock(_mutex);
-    _createCalls.push_back(TimerfdCreateCall{clockId, flags});
+    _createCalls.emplace_back(clockId, flags);
   }
 
   [[nodiscard]] vector<TimerfdCreateCall> createCalls() const {

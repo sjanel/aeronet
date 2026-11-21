@@ -13,6 +13,8 @@
 
 #include "aeronet/css-selector.hpp"
 #include "aeronet/html-document.hpp"
+#include "aeronet/http-client.hpp"
+#include "aeronet/http-request.hpp"
 #include "aeronet/http-status-code.hpp"
 #include "aeronet/internal/web-session.hpp"
 #include "aeronet/raw-chars.hpp"
@@ -24,6 +26,7 @@
 #include "js-engine.hpp"
 #include "memory-budget.hpp"
 #include "rejection-tracker.hpp"
+#include "request-queue.hpp"
 #include "script-queue.hpp"
 #include "timer-queue.hpp"
 #include "uncaught-errors.hpp"
@@ -35,6 +38,10 @@ namespace aeronet::internal {
 // The time 'timeout' after now, the latest time point when that is beyond it (max() means no timeout), now for a
 // negative timeout.
 [[nodiscard]] SteadyClock::time_point DeadlineIn(std::chrono::milliseconds timeout) noexcept;
+
+// The URL of the last request sent for 'request' (after the redirects followed), with 'fragment' (never sent, empty or
+// starting with '#'), serialized by 'resolver': valid until its next resolution.
+[[nodiscard]] std::string_view RequestUrl(UrlResolver& resolver, const HttpRequest& request, std::string_view fragment);
 
 // The link of a page to its session, which counts its pages (WebSession::livePages): their WebClient cannot move.
 class SessionLink {
@@ -165,6 +172,9 @@ class Page {
   // the next resolution.
   [[nodiscard]] std::string_view resolveUrl(std::string_view input) { return _urlResolver.resolve(baseUrl(), input); }
 
+  // The URL resolver of the page, whose views are valid until its next resolution.
+  [[nodiscard]] UrlResolver& urlResolver() noexcept { return _urlResolver; }
+
   // Starts the navigation to 'input', resolved against the base URL, when the current task ends (location setters).
   // A change of the fragment only changes the URL. Returns false, with a SyntaxError thrown in the context, for an
   // invalid URL.
@@ -191,11 +201,17 @@ class Page {
   // The timers of the page (setTimeout(), setInterval()).
   [[nodiscard]] TimerQueue& timers() noexcept { return _timers; }
 
+  // The requests of the scripts not sent yet (fetch(), XMLHttpRequest).
+  [[nodiscard]] RequestQueue& requests() noexcept { return _requests; }
+
   // The native memory that the scripts make the page hold.
   [[nodiscard]] MemoryBudget& memory() noexcept { return _memory; }
 
   // The buffer of the bindings that read the document through HtmlElement (textContent, innerHTML...), reused.
   [[nodiscard]] std::string& htmlBuffer() noexcept { return _htmlBuffer; }
+
+  // The buffer of the bindings that decode text (TextDecoder, the bodies of the responses), reused.
+  [[nodiscard]] RawChars& textBuffer() noexcept { return _textBuffer; }
 
   // The area of the origin of the page in 'areas', the localStorage or sessionStorage of its session.
   [[nodiscard]] StorageAreas::Area& storage(StorageAreas& areas) const { return areas.area(origin()); }
@@ -220,6 +236,11 @@ class Page {
 
   void runScript(lxb_dom_node* pScript);
 
+  // Runs 'code' (null-terminated at its size) as a classic script named 'filename', from the bytecode of the script
+  // cache of the session when it has it, else compiled (and cached when large enough). Returns its completion value,
+  // JS_EXCEPTION with the exception pending.
+  [[nodiscard]] JsValue evalScript(std::string_view code, const char* filename);
+
   // Makes 'code' (can be the content of _code) the null-terminated content of _code, the code that eval() runs.
   void setCode(std::string_view code);
 
@@ -228,8 +249,9 @@ class Page {
   // do: QuickJS reads the file name while it parses, and the script can resolve URLs when it runs. Returns the copy.
   [[nodiscard]] std::string_view setCodeFilename(std::string_view filename);
 
-  // Fetches the script of 'url' whose charset attribute is 'charset' (can be empty) into _code, decoded to UTF-8.
-  bool fetchScript(std::string_view url, std::string_view charset);
+  // Fetches the script of 'url' whose charset attribute is 'charset' (can be empty) into _code, decoded to UTF-8, with
+  // 'credentials' (those of its crossorigin attribute).
+  bool fetchScript(std::string_view url, std::string_view charset, RequestCredentials credentials);
 
   void flushDocumentWrite(lxb_dom_node* pScript);
 
@@ -246,7 +268,9 @@ class Page {
 
   TaskEnd endTask();
 
-  TaskEnd runDueTimers();
+  // The tasks due at the current time of the virtual clock: the timers due, then the requests of the scripts, in turn
+  // until none is left.
+  TaskEnd runDueTasks();
 
   [[nodiscard]] Refresh findRefresh();
 
@@ -264,6 +288,7 @@ class Page {
   ScriptQueue _scripts;
   UrlResolver _urlResolver;
   RawChars _code;           // null-terminated at its size, then the null-terminated file name of setCodeFilename()
+  RawChars _textBuffer;     // see textBuffer()
   std::string _htmlBuffer;  // the buffer type of HtmlElement
   MemoryBudget _memory;
   SelectorWatch _selector;
@@ -279,6 +304,7 @@ class Page {
   JsValue _location;  // window.location
   JsValue _dispatch;  // the dispatch function of the prelude
   TimerQueue _timers;
+  RequestQueue _requests{_engine.context(), _memory};
   RejectionTracker _rejections{_engine.context()};
 };
 

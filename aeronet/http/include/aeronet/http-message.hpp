@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "aeronet/amc-type-traits.hpp"
 #include "aeronet/concatenated-headers.hpp"
 #include "aeronet/decimal-writer.hpp"
 #include "aeronet/direct-compression-mode.hpp"
@@ -117,6 +118,11 @@ class HttpMessage {
   }
 
   ~HttpMessage() { destroyEmbeddedPayload(); }
+
+  // The embedded payload (if any) lives in the heap buffer of _data and _opts only points outside the object: moving a
+  // message around is copying its bytes. Inherited by HttpRequest and HttpResponse: they must only add trivially
+  // relocatable fields.
+  using trivially_relocatable = amc::is_trivially_relocatable<RawChars>::type;
 
   // --------/
   // GETTERS /

@@ -26,11 +26,14 @@ enum class CookieSameSite : uint8_t { Default, None, Lax, Strict };
 namespace internal {
 
 // How a request relates to the requests of its redirect chain (RFC 6265bis §5.2). HttpClient requests are navigations,
-// so SameSite=Lax cookies are still sent after a redirect to another site, but only with a safe method.
+// so SameSite=Lax cookies are still sent after a redirect to another site, but only with a safe method. The requests
+// of the documents of a web page (see PageRequestContext) are not.
 enum class CookieSiteContext : uint8_t {
-  SameSite,         // every URL of the chain is of the same site
-  CrossSiteSafe,    // the chain changed site, safe method (GET, HEAD...): no SameSite=Strict cookie
-  CrossSiteUnsafe,  // the chain changed site, unsafe method (POST...): no SameSite=Strict or Lax cookie
+  SameSite,              // every URL of the chain is of the same site (that of the document for a subresource)
+  CrossSiteSafe,         // the chain changed site, safe method (GET, HEAD...): no SameSite=Strict cookie
+  CrossSiteUnsafe,       // the chain changed site, unsafe method (POST...): no SameSite=Strict or Lax cookie
+  CrossSiteSubresource,  // a request of a document to another site: no SameSite=Strict or Lax cookie sent, nor stored
+  Omitted,               // a request without credentials: no cookie sent, nor stored
 };
 
 // The URL of a request, as the cookie rules see it.
@@ -177,10 +180,16 @@ class CookieJar {
   // goes after those of a path not shorter, and a replacement keeps its position.
   using Cookies = vector<StoredCookie>;
 
-  // Stores the cookie of 'setCookieValue' received from 'url', set by a script (document.cookie) when 'fromScript' is
-  // true. Returns false when it is refused.
+  // Where a cookie to store comes from.
+  enum class Source : uint8_t {
+    Response,           // a Set-Cookie header
+    CrossSiteResponse,  // a Set-Cookie header of a subresource of another site: SameSite=Strict and Lax refused
+    Script,             // document.cookie: HttpOnly refused
+  };
+
+  // Stores the cookie of 'setCookieValue' received from 'url'. Returns false when it is refused.
   bool store(internal::CookieRequestUrl url, std::string_view setCookieValue, SysTimePoint now,
-             bool fromScript = false);
+             Source source = Source::Response);
 
   // Appends to 'out' the cookie-pairs of a request to 'url' from 'jar', separated by "; ", without the HttpOnly ones
   // when kForScript is true (document.cookie), in a single resize_and_overwrite sized for every cookie of the domain.
@@ -189,10 +198,11 @@ class CookieJar {
   static void AppendCookies(Jar& jar, internal::CookieRequestUrl url, internal::CookieSiteContext context,
                             SysTimePoint now, std::string& out);
 
-  // Stores the cookies of the Set-Cookie headers of 'response', received for 'request'.
-  void storeResponseCookies(const HttpRequest& request, const HttpResponse& response, SysTimePoint now);
+  // Stores the cookies of the Set-Cookie headers of 'response', received for 'request' sent in 'context'.
+  void storeResponseCookies(const HttpRequest& request, const HttpResponse& response,
+                            internal::CookieSiteContext context, SysTimePoint now);
 
-  // Sets requestCookies() to the Cookie header value of 'request', whose cookies are marked as sent.
+  // Sets requestCookies() to the Cookie header value of 'request' sent in 'context', whose cookies are marked as sent.
   void prepareRequestCookies(const HttpRequest& request, internal::CookieSiteContext context, SysTimePoint now);
 
   // Sets requestCookies() to the Cookie header value that the first exchange of 'request' would send, for its cache

@@ -81,10 +81,16 @@ inline constexpr std::size_t kHtmlMemoryPerByte = 32;
 // UTF-8 as browsers decode it (HTML "fetch a classic script"): from the encoding of its byte order mark, else of the
 // charset parameter of 'contentType', else of 'charset' (the charset attribute of the script), else
 // 'documentEncoding', else UTF-8. Invalid sequences become U+FFFD. Returns 'bytes' itself, without its byte order mark,
-// when it is valid UTF-8, else the text decoded into 'buffer'. Throws std::bad_alloc on memory exhaustion.
+// when it is valid UTF-8, else the text decoded into 'buffer', whose previous contents are discarded. Throws
+// std::bad_alloc on memory exhaustion.
 [[nodiscard]] std::string_view DecodeScript(std::string_view bytes, std::string_view contentType,
                                             std::string_view charset, std::string_view documentEncoding,
                                             RawChars& buffer);
+
+// 'bytes' decoded as UTF-8, a byte order mark included (WHATWG Encoding "UTF-8 decode without BOM"): 'bytes' itself
+// exactly when it is valid UTF-8, else the text decoded into 'buffer' (its previous contents discarded), invalid
+// sequences becoming U+FFFD. Throws std::bad_alloc on memory exhaustion.
+[[nodiscard]] std::string_view DecodeUtf8(std::string_view bytes, RawChars& buffer);
 
 // Resolves URLs as browsers resolve those of a page (WHATWG URL Standard, URL parser of lexbor): "../a?b" against
 // "https://example.com/x/y" is "https://example.com/a?b". Its parser and the last base it parsed are kept: the URLs of

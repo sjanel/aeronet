@@ -7,6 +7,7 @@
 
 #include "aeronet/http-constants.hpp"
 #include "aeronet/http-header-is-valid.hpp"
+#include "aeronet/http-header-value-reverse-tokens-iterator.hpp"
 #include "aeronet/http-method.hpp"
 #include "aeronet/http-request-view.hpp"
 #include "aeronet/http-response.hpp"
@@ -23,27 +24,6 @@ constexpr std::string_view kNullOrigin = "null";
 // The wildcard of Access-Control-Allow-Headers, and with the name it never covers (Fetch, CORS-preflight fetch).
 constexpr std::string_view kAnyRequestHeader = "*";
 constexpr std::string_view kAnyRequestHeaderAndAuthorization = "*, authorization";
-
-std::string_view NextCsvToken(std::string_view& csv) {
-  const auto commaPos = csv.find(',');
-  const std::string_view token = commaPos == std::string_view::npos ? csv : csv.substr(0, commaPos);
-  if (commaPos == std::string_view::npos) {
-    csv = {};
-  } else {
-    csv.remove_prefix(commaPos + 1);
-  }
-  return TrimOws(token);
-}
-
-bool ListContainsToken(std::string_view list, std::string_view token) {
-  while (!list.empty()) {
-    const auto part = NextCsvToken(list);
-    if (!part.empty() && CaseInsensitiveEqual(part, token)) {
-      return true;
-    }
-  }
-  return false;
-}
 
 }  // namespace
 
@@ -226,7 +206,7 @@ CorsPolicy::PreflightResult CorsPolicy::handlePreflight(const HttpRequestView& r
       if (!requestedHeaders.empty()) {
         response.header(http::AccessControlAllowHeaders, requestedHeaders);
       }
-    } else if (ListContainsToken(requestedHeaders, http::Authorization)) {
+    } else if (http::HeaderValueListContainsCI(requestedHeaders, http::Authorization)) {
       response.header(http::AccessControlAllowHeaders, kAnyRequestHeaderAndAuthorization);
     } else {
       response.header(http::AccessControlAllowHeaders, kAnyRequestHeader);
@@ -279,17 +259,15 @@ bool CorsPolicy::requestHeadersAllowed(std::string_view headerList) const {
   if (!anyRequestHeader && _allowedRequestHeaders.empty()) {
     return false;
   }
-  do {
-    std::string_view token = NextCsvToken(headerList);
-    if (token.empty()) {
-      continue;
-    }
+  for (http::HeaderValueReverseTokensIterator it(headerList); it.hasNext();) {
+    const std::string_view token = it.next();
     // Any header name, which is a token: the list may then be sent back. Header names are case-insensitive, and
     // browsers send them lower-cased in Access-Control-Request-Headers.
-    if (anyRequestHeader ? !http::IsValidHeaderName(token) : !_allowedRequestHeaders.containsCI(token)) {
+    if (!token.empty() &&
+        (anyRequestHeader ? !http::IsValidHeaderName(token) : !_allowedRequestHeaders.containsCI(token))) {
       return false;
     }
-  } while (!headerList.empty());
+  }
   return true;
 }
 

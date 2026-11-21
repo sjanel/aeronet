@@ -35,4 +35,12 @@ class HeaderValueReverseTokensIterator {
   bool _emitLeadingEmpty;
 };
 
+// Whether the comma separated list 'headerValue' has the element 'token' (non empty), compared byte for byte. The
+// whitespace around the list and its elements is ignored.
+[[nodiscard]] bool HeaderValueListContains(std::string_view headerValue, std::string_view token) noexcept;
+
+// Whether the comma separated list 'headerValue' has the element 'token' (non empty), compared case-insensitively. The
+// whitespace around the list and its elements is ignored.
+[[nodiscard]] bool HeaderValueListContainsCI(std::string_view headerValue, std::string_view token) noexcept;
+
 }  // namespace aeronet::http

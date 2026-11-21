@@ -1,6 +1,5 @@
 #include "aeronet/web-client.hpp"
 
-#include <cassert>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -39,19 +38,6 @@ namespace {
 // The Accept header of the navigation requests of browsers.
 constexpr std::string_view kDocumentAccept = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
 
-// The URL of the last request sent for 'request' (after the redirects followed) with the fragment of 'requestedUrl'
-// (never sent), as browsers keep it, serialized by 'resolver': valid until its next resolution.
-std::string_view FinalUrl(internal::UrlResolver& resolver, const HttpRequest& request, std::string_view requestedUrl) {
-  const std::string_view target = request.target();
-  assert(!target.contains('#'));  // the HTTP client strips the fragments, of the redirects too
-  const std::size_t hash = requestedUrl.find('#');
-  const std::string_view fragment = hash == std::string_view::npos ? std::string_view{} : requestedUrl.substr(hash);
-  if (target.starts_with('/') || target.starts_with('?')) {
-    return resolver.resolve({}, {request.scheme(), "://", request.hostHeaderValue(), target, fragment});
-  }
-  return resolver.resolve({}, {target, fragment});  // absolute-form, sent to a forward proxy
-}
-
 std::expected<std::unique_ptr<internal::Page>, WebErrc> LoadPage(internal::WebSession& session,
                                                                  internal::UrlResolver& resolver,
                                                                  std::string_view url) {
@@ -60,13 +46,19 @@ std::expected<std::unique_ptr<internal::Page>, WebErrc> LoadPage(internal::WebSe
     log::warn("Document {} not requested: the HTTP client does not support its URL", url);
     return std::unexpected(WebErrc::invalidUrl);
   }
-  HttpRequest request = session.http.makeRequest(http::Method::GET, url).header(http::Accept, kDocumentAccept);
-  const HttpClientResult result = session.http.requestUpdating(request);
+  // With room for its Accept header: no reallocation.
+  HttpRequest request = session.http.makeRequest(kDocumentAccept.size() + 16U, http::Method::GET, url)
+                            .header(http::Accept, kDocumentAccept);
+  // The fragment of the URL, never sent, then of the last redirect that has one (RFC 9110 §10.2.2), as browsers keep
+  // it.
+  const std::size_t hash = url.find('#');
+  RawChars32 fragment(hash == std::string_view::npos ? std::string_view{} : url.substr(hash));
+  const HttpClientResult result = session.http.requestUpdating(request, {.pFragment = &fragment});
   if (!result) {
     log::warn("Request of the document {} failed: {}", url, ErrcToStr(result.error()));
     return std::unexpected(WebErrc::requestFailed);
   }
-  return std::make_unique<internal::Page>(session, FinalUrl(resolver, request, url), result->status(),
+  return std::make_unique<internal::Page>(session, internal::RequestUrl(resolver, request, fragment), result->status(),
                                           result->bodyInMemory(), result->headerValueOrEmpty(http::ContentType));
 }
 

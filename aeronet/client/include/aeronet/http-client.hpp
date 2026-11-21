@@ -56,6 +56,50 @@ class Http2ClientEngine;  // defined in http2-connection.cpp (native HTTP/2 clie
 }  // namespace http2::internal
 #endif
 
+// The credentials mode of a request made for a web page (Fetch Standard): whether it uses the cookie jar.
+enum class RequestCredentials : uint8_t {
+  Include,     // cookies sent and stored (navigations, classic scripts, fetch() with credentials: 'include')
+  SameOrigin,  // only while every URL of the redirect chain is of the origin of the document (fetch() by default)
+  Omit,        // no cookie sent nor stored
+};
+
+// The context of a request that HttpClient::requestUpdating() makes for a web page (aeronet/web): the cookie rules of a
+// browser (RFC 6265bis §5.2 and §5.7, credentials of the Fetch Standard), the fragment of its final URL, and the rules
+// of its redirects.
+struct PageRequestContext {
+  // Called before a redirect is followed, with 'pData' (pRedirectData), 'req' already pointing to the URL of its
+  // Location with the method and body that the redirect gives it (the headers can be changed), the redirect response
+  // 'redirect', and how the URL changed ('outcome': SameOrigin, SameSite or CrossSite). Returns false to stop there:
+  // requestUpdating() then returns 'redirect', and continues the chain when called again with 'req' (with
+  // crossSiteChain and crossOriginChain of the redirects followed so far).
+  using RedirectHook = bool (*)(void* pData, HttpRequest& req, const HttpResponse& redirect,
+                                HttpRequest::RedirectOutcome outcome);
+
+  // The URL of the document that makes the request when it is a subresource (a script, fetch(), XMLHttpRequest): its
+  // site (scheme and host) is the site for cookies. A request to another site, or redirected through one, sends no
+  // SameSite=Strict or Lax cookie and stores none. Empty for a navigation, which is its own site for cookies: after a
+  // redirect to another site, it sends no SameSite=Strict cookie (nor Lax ones for an unsafe method).
+  // Without {}, designated initializers that omit it ({.pFragment = ...}) warn about a missing initializer.
+  // NOLINTNEXTLINE(readability-redundant-member-init)
+  std::string_view documentUrl{};
+
+  // When not null, receives the fragment (with its '#') of the last Location with one among the redirects followed,
+  // the fragment of the final URL (RFC 9110 §10.2.2), and is left unchanged when none had one.
+  RawChars32* pFragment{};
+
+  // When not null, decides whether each redirect is followed (see RedirectHook), within HttpClientConfig::maxRedirects
+  // for each call. Null follows them all.
+  RedirectHook onRedirect{};
+  void* pRedirectData{};
+
+  RequestCredentials credentials{RequestCredentials::Include};
+
+  // For a chain of redirects continued after onRedirect stopped it: whether the redirects followed before went through
+  // another site (for the SameSite cookies) or another origin (for RequestCredentials::SameOrigin).
+  bool crossSiteChain{};
+  bool crossOriginChain{};
+};
+
 // Synchronous HTTP/1.1 + HTTP/2 client built on aeronet's non-blocking transport + event-loop bricks.
 //
 // Highlights:
@@ -274,10 +318,12 @@ class HttpClient {
   // Execute a request as request(HttpRequest&&) does, leaving 'req' as the last request sent: after the redirects
   // followed, its URL (originKey() and target()) is the final one, the URL of the returned response, and its method and
   // body are those that the redirects gave it (a 303 turns a POST into a GET). The response cache is not used: a
-  // cached response does not tell the URL it came from.
-  HttpClientResult requestUpdating(HttpRequest& req) {
+  // cached response does not tell the URL it came from. 'context' gives the cookie rules of a browser for a request of
+  // a web page (see PageRequestContext).
+  HttpClientResult requestUpdating(HttpRequest& req, const PageRequestContext& context = {}) {
     req.HttpMessage::finalizeHeadersAndBody();
-    return requestProcess(std::move(req), nullptr, CacheUse::Bypass);
+    // An rvalue of 'req' itself, not a moved-from copy: the redirects update it in place.
+    return requestProcess(std::move(req), nullptr, &context);
   }
 
   // Build a GET request to `url` asking the server to switch the connection to `protocol`, the value of its Upgrade
@@ -374,21 +420,22 @@ class HttpClient {
     bool reused{false};                                // taken from the idle pool
   };
 
-  enum class CacheUse : uint8_t { IfEligible, Bypass };
-
-  // Run a request, with its final response delivered to `sink` when not null (the cache is then bypassed).
-  HttpClientResult requestProcess(HttpRequest&& req, ResponseBodySink* sink, CacheUse cacheUse = CacheUse::IfEligible);
+  // Run a request, with its final response delivered to `sink` when not null (the cache is then bypassed). `pPage` is
+  // the context of a request of requestUpdating(), which bypasses the cache too, null for the others.
+  HttpClientResult requestProcess(HttpRequest&& req, ResponseBodySink* sink, const PageRequestContext* pPage = nullptr);
 
   // Run a request end to end (URL parse + redirect following), bypassing the response cache. request() wraps
   // this with the cache lookup/store when caching is enabled and the request is eligible, giving `pCacheKey`: when it
-  // views the request (see buildCacheKey()), a followed redirect first copies it into _cacheKeyScratch.
-  HttpClientResult requestUncached(HttpRequest&& req, std::string_view* pCacheKey = nullptr);
+  // views the request (see buildCacheKey()), a followed redirect first copies it into _cacheKeyScratch. `pPage` is the
+  // context of a request of requestUpdating(), null for the others (navigations).
+  HttpClientResult requestUncached(HttpRequest&& req, std::string_view* pCacheKey = nullptr,
+                                   const PageRequestContext* pPage = nullptr);
 
   // Perform a single (non-redirect) exchange against an absolute URL, returning the HttpResponse or an
   // HttpClientErrc on transport failure. Redirect rewrites are already applied to `req` by requestUncached.
   // `redirectFollowed` tells whether a redirect response would be followed (so is never given to a sink).
-  // `crossSite` tells whether a followed redirect changed the site (scheme or host), for the SameSite cookies.
-  HttpClientResult performExchange(HttpRequest& req, bool redirectFollowed, bool crossSite);
+  // `siteContext` tells which cookies of the jar the exchange sends and stores.
+  HttpClientResult performExchange(HttpRequest& req, bool redirectFollowed, internal::CookieSiteContext siteContext);
 
   // --- Built-in response cache (see HttpClientConfig::cache) ---
   // Whether `req` is eligible for caching (cache enabled and its method is in cache.methods).

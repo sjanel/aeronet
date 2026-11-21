@@ -760,9 +760,13 @@ TEST(WebClientTest, RedirectsGiveTheFinalUrl) {
   const std::string target = PagePath("<p id=t>");
   WebPage page = test::Navigate(client, StoreUrl("/redirect?to=" + test::PercentEncode(target)) + "#kept");
   EXPECT_EQ(page.url(), StoreUrl(target) + "#kept");
-  // HttpClient drops the fragment of a Location: the one of the requested URL is kept.
+  // The fragment of a Location replaces the one of the requested URL (RFC 9110 §10.2.2), that of the last redirect
+  // with one.
   WebPage own = test::Navigate(client, StoreUrl("/redirect?to=" + test::PercentEncode(target + "#own")) + "#asked");
-  EXPECT_EQ(own.url(), StoreUrl(target) + "#asked");
+  EXPECT_EQ(own.url(), StoreUrl(target) + "#own");
+  const std::string second = "/redirect?to=" + test::PercentEncode(target);
+  WebPage chain = test::Navigate(client, StoreUrl("/redirect?to=" + test::PercentEncode(second + "#first")) + "#asked");
+  EXPECT_EQ(chain.url(), StoreUrl(target) + "#first");
 }
 
 TEST(WebClientTest, ThroughAForwardProxy) {

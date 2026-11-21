@@ -1,12 +1,16 @@
 #include "aeronet/internal/web-session.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string_view>
 #include <utility>
 
+#include "aeronet/city-hash.hpp"
 #include "aeronet/http-client-config.hpp"
 #include "aeronet/http-client.hpp"
+#include "aeronet/raw-bytes.hpp"
 #include "aeronet/raw-chars.hpp"
 #include "aeronet/vector.hpp"
 #include "aeronet/web-client-config.hpp"
@@ -36,16 +40,60 @@ void StorageAreas::Item::setValue(std::string_view value) {
   _chars.append(value);
 }
 
+ScriptCache::Script::Script(std::string_view url, std::string_view code) noexcept
+    : url(url), code(code), hash(CityHash{}(code)) {}
+
+ScriptCache::Entry* ScriptCache::entryOf(const Script& script) noexcept {
+  const auto entryIt = std::ranges::find_if(_entries, [&script](const Entry& entry) {
+    return entry.hash == script.hash && entry.size == script.code.size() && std::string_view(entry.url) == script.url;
+  });
+  return entryIt == _entries.end() ? nullptr : &*entryIt;
+}
+
+std::span<const std::byte> ScriptCache::find(const Script& script) noexcept {
+  Entry* pEntry = entryOf(script);
+  if (pEntry == nullptr) {
+    return {};
+  }
+  pEntry->lastUse = ++_sequence;
+  return {pEntry->bytecode.data(), pEntry->bytecode.size()};
+}
+
+void ScriptCache::store(const Script& script, std::span<const std::byte> bytecode) {
+  if (bytecode.size() > _maxBytes) {
+    return;
+  }
+
+  Entry* pEntry = entryOf(script);
+  if (pEntry == nullptr) {
+    pEntry = &_entries.emplace_back(RawChars32(script.url), RawBytes(), script.hash, 0, script.code.size());
+  }
+
+  // Counted once copied: a failed copy leaves the entry as it was.
+  const std::size_t previousSize = pEntry->bytecode.size();
+  pEntry->bytecode.assign(bytecode.data(), bytecode.size());
+  _bytes = _bytes - previousSize + bytecode.size();
+  pEntry->lastUse = ++_sequence;
+
+  // The new entry, the most recently used one, fits alone: it stays.
+  while (_bytes > _maxBytes) {
+    const auto oldestIt = std::ranges::min_element(_entries, {}, &Entry::lastUse);
+    _bytes -= oldestIt->bytecode.size();
+    _entries.erase(oldestIt);
+  }
+}
+
 StorageAreas::Area& StorageAreas::area(std::string_view origin) {
   const auto areaIt =
       std::ranges::find_if(_areas, [origin](const Area& area) { return std::string_view(area.origin) == origin; });
   if (areaIt != _areas.end()) {
     return *areaIt;
   }
-  _areas.push_back({RawChars32(origin), {}, 0});
-  return _areas.back();
+
+  return _areas.emplace_back(RawChars32(origin));
 }
 
-WebSession::WebSession(WebClientConfig cfg) : config(WithCookies(std::move(cfg))), http(config.http) {}
+WebSession::WebSession(WebClientConfig cfg)
+    : config(WithCookies(std::move(cfg))), http(config.http), scripts(config.maxScriptCacheBytes) {}
 
 }  // namespace aeronet::internal

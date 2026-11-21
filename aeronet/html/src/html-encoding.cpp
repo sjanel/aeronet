@@ -137,13 +137,15 @@ void AppendUtf8(std::span<const lxb_codepoint_t> codepoints, RawChars& out) {
   out.setEnd(pOut);
 }
 
-// Decodes html from pEncoding to UTF-8 into out, invalid sequences being replaced by U+FFFD.
+// Decodes html from pEncoding to UTF-8 into out, whose previous contents are discarded, invalid sequences being
+// replaced by U+FFFD.
 void DecodeToUtf8(std::string_view html, const lxb_encoding_data_t* pEncoding, RawChars& out) {
   static constexpr lxb_codepoint_t kReplacement = LXB_ENCODING_REPLACEMENT_CODEPOINT;
   DecodeBuffer codepoints;
   lxb_encoding_decode_t decode{};
   static_cast<void>(lxb_encoding_decode_init(&decode, pEncoding, codepoints.data(), codepoints.size()));
   static_cast<void>(lxb_encoding_decode_replace_set(&decode, &kReplacement, 1));
+  out.clear();
   // Documents in a legacy encoding are mostly ASCII: about one UTF-8 byte per input byte.
   out.reserve(html.size());
   static_cast<void>(Decode(decode, html, [&out](std::span<const lxb_codepoint_t> chunk) { AppendUtf8(chunk, out); }));
@@ -177,11 +179,19 @@ std::string_view DecodeScript(std::string_view bytes, std::string_view contentTy
       pEncoding = lxb_encoding_data(LXB_ENCODING_UTF_8);
     }
   }
-  // Scripts are mostly ASCII: only the rest of a UTF-8 script is validated by the decoder.
-  if (pEncoding->encoding == LXB_ENCODING_UTF_8 && IsValidUtf8(bytes.substr(AsciiPrefixSize(bytes)))) {
-    return bytes;
+  if (pEncoding->encoding == LXB_ENCODING_UTF_8) {
+    return DecodeUtf8(bytes, buffer);
   }
   DecodeToUtf8(bytes, pEncoding, buffer);
+  return {buffer.data(), buffer.size()};
+}
+
+std::string_view DecodeUtf8(std::string_view bytes, RawChars& buffer) {
+  // Texts are mostly ASCII: only the rest is validated by the decoder.
+  if (IsValidUtf8(bytes.substr(AsciiPrefixSize(bytes)))) {
+    return bytes;
+  }
+  DecodeToUtf8(bytes, lxb_encoding_data(LXB_ENCODING_UTF_8), buffer);
   return {buffer.data(), buffer.size()};
 }
 

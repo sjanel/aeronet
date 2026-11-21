@@ -1294,8 +1294,7 @@ HpackDecoder::DecodeResult::Error HpackDecoder::mergeRepeatedField(SvToSvMap::it
   } else if (!storedValue.empty()) {
     // Joined once the whole block is decoded: joining each value as it comes would copy the previous ones again each
     // time, a quadratic cost for a block repeating a field.
-    _deferredJoins.push_back(
-        DeferredJoin{it->first, storedValue, static_cast<uint32_t>(_deferredJoins.size()), mergeSep});
+    _deferredJoins.emplace_back(it->first, storedValue, static_cast<uint32_t>(_deferredJoins.size()), mergeSep);
   }
   return DecodeResult::Error::None;
 }

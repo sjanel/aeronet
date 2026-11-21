@@ -1,9 +1,11 @@
 #include "aeronet/http-header-value-reverse-tokens-iterator.hpp"
 
+#include <cassert>
 #include <cstddef>
 #include <string_view>
 
 #include "aeronet/is-header-whitespace.hpp"
+#include "aeronet/string-equal-ignore-case.hpp"
 
 namespace aeronet::http {
 
@@ -60,6 +62,26 @@ std::string_view HeaderValueReverseTokensIterator::next() noexcept {
 
   _last = pos + 1;
   return {pTokenBeg, pTokenEnd};
+}
+
+bool HeaderValueListContains(std::string_view headerValue, std::string_view token) noexcept {
+  assert(!token.empty());
+  for (HeaderValueReverseTokensIterator it(headerValue); it.hasNext();) {
+    if (it.next() == token) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool HeaderValueListContainsCI(std::string_view headerValue, std::string_view token) noexcept {
+  assert(!token.empty());
+  for (HeaderValueReverseTokensIterator it(headerValue); it.hasNext();) {
+    if (CaseInsensitiveEqual(it.next(), token)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace aeronet::http
