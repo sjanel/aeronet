@@ -1388,6 +1388,47 @@ TEST_F(HttpRequestTest, ResolveRedirectRelativeWithQuestionMarkNonEmptyPath) {
   EXPECT_EQ(req.target(), "/y?q=1");
 }
 
+// A query reference replaces the query of the target (RFC 3986 §5.2.2).
+TEST_F(HttpRequestTest, ResolveRedirectQueryReplacesTheQuery) {
+  auto req = makeRequest(http::Method::GET, "https://example.com/x?old=1");
+  EXPECT_TRUE(HttpRequestTest::ResolveRedirect(req, "?q=1"));
+  EXPECT_EQ(req.target(), "/x?q=1");
+  EXPECT_TRUE(HttpRequestTest::ResolveRedirect(req, "?"));
+  EXPECT_EQ(req.target(), "/x?");
+}
+
+// Through a cleartext proxy, the target stays in absolute-form after a relative redirect.
+TEST_F(HttpRequestTest, ResolveRedirectRelativeThroughAProxy) {
+  config.withProxy("http://proxy.example.com:8080");
+  auto req = makeRequest(http::Method::GET, "http://example.com/a/b?old=1");
+  EXPECT_TRUE(HttpRequestTest::ResolveRedirect(req, "/y?q=1"));
+  EXPECT_EQ(req.target(), "http://example.com:80/y?q=1");
+  EXPECT_TRUE(HttpRequestTest::ResolveRedirect(req, "?r=2"));
+  EXPECT_EQ(req.target(), "http://example.com:80/y?r=2");
+  EXPECT_TRUE(HttpRequestTest::ResolveRedirect(req, "z"));
+  EXPECT_EQ(req.target(), "http://example.com:80/z");
+  // An https request goes through a tunnel: origin-form.
+  auto tunneled = makeRequest(http::Method::GET, "https://example.com/a/b");
+  EXPECT_TRUE(HttpRequestTest::ResolveRedirect(tunneled, "/y"));
+  EXPECT_EQ(tunneled.target(), "/y");
+}
+
+// The path of a URL without one is "/" (RFC 9112 §3.2.1): "http://h?q" is requested as "/?q".
+TEST_F(HttpRequestTest, UrlWithoutPathHasTheRootPath) {
+  for (bool withProxy : {false, true}) {
+    if (withProxy) {
+      config.withProxy("http://proxy.example.com:8080");
+    }
+    auto req = makeRequest(http::Method::GET, "http://example.com?q=1");
+    EXPECT_EQ(req.target(), withProxy ? "http://example.com:80/?q=1" : "/?q=1");
+    EXPECT_TRUE(HttpRequestTest::ResolveRedirect(req, "http://other.com?r=2"));
+    EXPECT_EQ(req.target(), withProxy ? "http://other.com:80/?r=2" : "/?r=2");
+    EXPECT_TRUE(HttpRequestTest::ResolveRedirect(req, "//third.com?s=3"));
+    EXPECT_EQ(req.target(), withProxy ? "http://third.com:80/?s=3" : "/?s=3");
+    EXPECT_TRUE(HttpRequest::IsValidUrl("http://example.com?q=1"));
+  }
+}
+
 TEST_F(HttpRequestTest, ResolveRedirectRejectedRelativeLeavesRequestUnchanged) {
   // A rejected location is detected before the buffer is modified, whether the new target would be longer or shorter
   // than the old one, and whether an inline body follows the head.

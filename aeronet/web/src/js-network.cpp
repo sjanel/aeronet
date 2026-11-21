@@ -108,18 +108,42 @@ class HeaderLines {
   std::string_view _lines;
 };
 
-// The elements of 'array', a non-empty Uint8Array given by the prelude.
-std::string_view Uint8ArrayView(JSContext* pCtx, JSValueConst array) noexcept {
+// The prelude gives the arguments of the natives, but it reads them from objects that page scripts can replace: the
+// getters of Request.prototype, Array.prototype.join(), the global Uint8Array... The natives check what they cannot
+// convert, and convert all their arguments before they keep anything from the page: a conversion can run a script
+// (toString()), which can resolve another URL or detach the buffer of a Uint8Array.
+
+// Sets 'bytes' to the elements of 'array', a non-empty Uint8Array given by the prelude. Returns false, with a TypeError
+// thrown, for another object or a Uint8Array whose buffer is detached (a QuickJS-ng buffer has a byte at least, so
+// JS_GetUint8Array() returns null only on failure).
+[[nodiscard]] bool Uint8ArrayView(JSContext* pCtx, JSValueConst array, std::string_view& bytes) noexcept {
   std::size_t size = 0;
   const uint8_t* pData = JS_GetUint8Array(pCtx, &size, array);
-  assert(pData != nullptr);
-  return {reinterpret_cast<const char*>(pData), size};
+  bytes = {reinterpret_cast<const char*>(pData), size};
+  return pData != nullptr;
 }
 
-// An int32 argument given by the prelude (a mode, an id).
-int32_t IntArgument(JSValueConst value) noexcept {
+// An id given by the prelude, from its own variables.
+int32_t IdArgument(JSValueConst value) noexcept {
   assert(JS_VALUE_GET_TAG(value) == JS_TAG_INT);
   return JS_VALUE_GET_INT(value);
+}
+
+// The enumerators of RequestMode and RequestCredentials, given by the prelude as int32 values.
+constexpr uint32_t kRequestModes = static_cast<uint32_t>(RequestMode::SameOrigin) + 1U;
+constexpr uint32_t kRequestCredentials = static_cast<uint32_t>(RequestCredentials::Omit) + 1U;
+
+// The enumerator 'value' below 'count', read by the prelude from the getters of a Request. -1, with a TypeError thrown,
+// for another value.
+int32_t EnumArgument(JSContext* pCtx, JSValueConst value, uint32_t count) noexcept {
+  if (JS_VALUE_GET_TAG(value) == JS_TAG_INT) {
+    const auto index = static_cast<uint32_t>(JS_VALUE_GET_INT(value));  // a negative value is above count
+    if (index < count) {
+      return static_cast<int32_t>(index);
+    }
+  }
+  JS_ThrowTypeError(pCtx, "aeronet: invalid mode or credentials of a request");
+  return -1;
 }
 
 // The bytes of the body argument of request(): none for null, the UTF-8 of a string, the elements of a non-empty
@@ -129,12 +153,12 @@ class BodyBytes {
   BodyBytes(JSContext* pCtx, JSValueConst body) noexcept {
     if (JS_IsString(body)) {
       _pCtx = pCtx;
-      _pData = JS_ToCStringLen(pCtx, &_size, body);
+      _pData = ToUtf8(pCtx, body, _size);  // a rope too
       _size = _pData == nullptr ? kFailed : _size;
     } else if (!JS_IsNull(body)) {
-      const std::string_view bytes = Uint8ArrayView(pCtx, body);
+      std::string_view bytes;
+      _size = Uint8ArrayView(pCtx, body, bytes) ? bytes.size() : kFailed;
       _pData = bytes.data();
-      _size = bytes.size();
     }
   }
 
@@ -149,7 +173,7 @@ class BodyBytes {
     }
   }
 
-  // Whether the conversion of a string body failed (memory exhaustion), its exception pending.
+  // Whether the conversion failed (memory exhaustion, not a Uint8Array), its exception pending.
   [[nodiscard]] bool failed() const noexcept { return _size == kFailed; }
 
   // Not for a failed conversion.
@@ -174,31 +198,47 @@ using RequestUse = JSValue (*)(Page& page, RequestQueue::Request&& request, JSVa
 // request to another origin in the same-origin mode, an unsafe one in the no-cors mode, a body with GET or HEAD, an
 // invalid header.
 JSValue MakeRequest(JSContext* pCtx, JSValueConst* argv, RequestUse use, JSValueConst callback) {
-  Page& page = Page::Of(pCtx);
   const JsString methodArg(pCtx, argv[kMethod]);
   if (methodArg.failed()) {
     return JS_EXCEPTION;
-  }
-  const http::Method method = http::ParseMethodStr(methodArg.view());
-  if (method == http::kMethodInvalid || method == http::Method::CONNECT || method == http::Method::TRACE) {
-    return JS_ThrowTypeError(pCtx, "aeronet: the HTTP method '%.*s' is not supported",
-                             static_cast<int>(methodArg.view().size()), methodArg.view().data());
   }
   const JsString urlArg(pCtx, argv[kUrl]);
   if (urlArg.failed()) {
     return JS_EXCEPTION;
   }
+  const JsString lines(pCtx, argv[kHeaders]);
+  if (lines.failed()) {
+    return JS_EXCEPTION;
+  }
+  const BodyBytes bodyBytes(pCtx, argv[kBody]);  // runs no script
+  if (bodyBytes.failed()) {
+    return JS_EXCEPTION;
+  }
+  const int32_t mode = EnumArgument(pCtx, argv[kMode], kRequestModes);
+  if (mode < 0) {
+    return JS_EXCEPTION;
+  }
+  const int32_t credentials = EnumArgument(pCtx, argv[kCredentials], kRequestCredentials);
+  if (credentials < 0) {
+    return JS_EXCEPTION;
+  }
+
+  const http::Method method = http::ParseMethodStr(methodArg.view());
+  if (method == http::kMethodInvalid || method == http::Method::CONNECT || method == http::Method::TRACE) {
+    return JS_ThrowTypeError(pCtx, "aeronet: the HTTP method '%.*s' is not supported",
+                             static_cast<int>(methodArg.view().size()), methodArg.view().data());
+  }
+  Page& page = Page::Of(pCtx);
   // In the buffer of the URL resolver, until the next resolution: none before the request copies it. Absolute, as
   // resolved by the prelude (Request, XMLHttpRequest.open()).
   const std::string_view url = WithoutFragment(page.resolveUrl(urlArg.view()));
-  assert(!url.empty());
   if (!IsHttpUrl(url) || !HttpRequest::IsValidUrl(url)) {
     return JS_ThrowTypeError(pCtx, "aeronet: only http and https URLs can be fetched, not '%.*s'",
                              static_cast<int>(url.size()), url.data());
   }
   const std::string_view origin = page.origin();
   const bool crossOrigin = !IsOfOrigin(url, origin);
-  const auto requestMode = static_cast<RequestMode>(IntArgument(argv[kMode]));
+  const auto requestMode = static_cast<RequestMode>(mode);
   if (requestMode == RequestMode::NoCors && !IsCorsSafelistedMethod(method)) {
     return JS_ThrowTypeError(pCtx, "aeronet: the method '%.*s' is not allowed in the no-cors mode",
                              static_cast<int>(methodArg.view().size()), methodArg.view().data());
@@ -211,19 +251,13 @@ JSValue MakeRequest(JSContext* pCtx, JSValueConst* argv, RequestUse use, JSValue
                              static_cast<int>(url.size()), url.data());
   }
 
-  const JsString lines(pCtx, argv[kHeaders]);
-  if (lines.failed()) {
-    return JS_EXCEPTION;
-  }
-
-  const BodyBytes bodyBytes(pCtx, argv[kBody]);
-  if (bodyBytes.failed()) {
-    return JS_EXCEPTION;
-  }
   const std::string_view body = bodyBytes.view();
-
-  // Refused by the Request constructor, dropped by XMLHttpRequest.send().
-  assert(body.empty() || (method != http::Method::GET && method != http::Method::HEAD));
+  // Refused by the Request constructor, dropped by XMLHttpRequest.send(), unless a page script replaced what the
+  // prelude reads the method from.
+  if (!body.empty() && (method == http::Method::GET || method == http::Method::HEAD)) {
+    return JS_ThrowTypeError(pCtx, "aeronet: a %.*s request has no body", static_cast<int>(methodArg.view().size()),
+                             methodArg.view().data());
+  }
   const std::string_view referrer = ReferrerOf(page.url(), origin, url);
   // The lines become headers of about their size, with room for Accept, Origin, Referer and the body headers: no
   // reallocation of the request.
@@ -235,7 +269,7 @@ JSValue MakeRequest(JSContext* pCtx, JSValueConst* argv, RequestUse use, JSValue
       JS_UNDEFINED,
       kRequestMemory + url.size() + capacity,
       requestMode,
-      static_cast<RequestCredentials>(IntArgument(argv[kCredentials])),
+      static_cast<RequestCredentials>(credentials),
       crossOrigin,
       false,
   };
@@ -395,11 +429,15 @@ JSValue ResponseRecord(Page& page, const RequestQueue::Request& request, const R
     if (request.mode == RequestMode::NoCors) {
       // An opaque response: nothing of it is readable.
       JsArray record(pCtx);
-      if (!record.push(JS_NewInt32(pCtx, 0)) || !record.push(NewString(pCtx, {})) ||
-          !record.push(NewString(pCtx, {})) || !record.push(JS_FALSE) || !record.push(NewString(pCtx, "opaque")) ||
-          !record.push(JS_NewArray(pCtx)) || !record.push(NewArrayBuffer(pCtx, {}))) {
-        return JS_EXCEPTION;
-      }
+      record.append({
+          JS_NewInt32(pCtx, 0),
+          NewString(pCtx, {}),
+          NewString(pCtx, {}),
+          JS_FALSE,
+          NewString(pCtx, "opaque"),
+          JS_NewArray(pCtx),
+          NewArrayBuffer(pCtx, {}),
+      });
       return record.release();
     }
     if (!CorsCheck(response, chain.requestOrigin(), credentials)) {
@@ -409,13 +447,7 @@ JSValue ResponseRecord(Page& page, const RequestQueue::Request& request, const R
     type = "cors";
   }
 
-  JsArray record(pCtx);
-  // The final URL, after the redirects: valid until the next resolution.
-  if (!record.push(JS_NewInt32(pCtx, response.status())) || !record.push(NewString(pCtx, response.reason())) ||
-      !record.push(NewString(pCtx, RequestUrl(page.urlResolver(), request.http, {}))) ||
-      !record.push(JS_NewBool(pCtx, chain.redirects != 0)) || !record.push(NewString(pCtx, type))) {
-    return JS_EXCEPTION;
-  }
+  // On memory exhaustion, the next values are still created, and freed: an error path, the record is small.
   JsArray headers(pCtx);
   const std::string_view exposeHeaders = response.headerValueOrEmpty("access-control-expose-headers");
   for (const auto& [name, value] : response.headers()) {
@@ -423,13 +455,19 @@ JSValue ResponseRecord(Page& page, const RequestQueue::Request& request, const R
                             : IsForbiddenResponseHeader(name)) {
       continue;  // not readable by the document
     }
-    if (!headers.push(NewString(pCtx, name)) || !headers.push(NewString(pCtx, value))) {
-      return JS_EXCEPTION;
-    }
+    headers.append({NewString(pCtx, name), NewString(pCtx, value)});
   }
-  if (!record.push(headers.release()) || !record.push(NewArrayBuffer(pCtx, response.bodyInMemory()))) {
-    return JS_EXCEPTION;
-  }
+  JsArray record(pCtx);
+  // The final URL, after the redirects, is valid until the next resolution: copied at once.
+  record.append({
+      JS_NewInt32(pCtx, response.status()),
+      NewString(pCtx, response.reason()),
+      NewString(pCtx, RequestUrl(page.urlResolver(), request.http, {})),
+      JS_NewBool(pCtx, chain.redirects != 0),
+      NewString(pCtx, type),
+      headers.release(),
+      NewArrayBuffer(pCtx, response.bodyInMemory()),
+  });
   return record.release();
 }
 
@@ -517,7 +555,7 @@ JSValue RequestSync(JSContext* pCtx, JSValueConst /*self*/, [[maybe_unused]] int
 // cancelRequest(id): drops the request 'id' if not sent yet.
 JSValue CancelRequest(JSContext* pCtx, JSValueConst /*self*/, [[maybe_unused]] int argc, JSValueConst* argv) {
   assert(argc == 1);
-  Page::Of(pCtx).requests().cancel(IntArgument(argv[0]));
+  Page::Of(pCtx).requests().cancel(IdArgument(argv[0]));
   return JS_UNDEFINED;
 }
 
@@ -526,18 +564,21 @@ JSValue CancelRequest(JSContext* pCtx, JSValueConst /*self*/, [[maybe_unused]] i
 JSValue Decode(JSContext* pCtx, JSValueConst /*self*/, [[maybe_unused]] int argc, JSValueConst* argv) {
   assert(argc == 2);
   const JsString contentType(pCtx, argv[1]);
-  if (contentType.failed()) {
+  std::string_view bytes;
+  if (contentType.failed() || !Uint8ArrayView(pCtx, argv[0], bytes)) {
     return JS_EXCEPTION;
   }
-  return NewString(
-      pCtx, DecodeScript(Uint8ArrayView(pCtx, argv[0]), contentType.view(), {}, {}, Page::Of(pCtx).textBuffer()));
+  return NewString(pCtx, DecodeScript(bytes, contentType.view(), {}, {}, Page::Of(pCtx).textBuffer()));
 }
 
 // decodeUtf8(bytes, fatal): the text of 'bytes' (a non-empty Uint8Array) decoded as UTF-8, a byte order mark included,
 // invalid sequences replaced by U+FFFD, or null for one when 'fatal' is true (TextDecoder, the bodies of fetch()).
 JSValue DecodeUtf8Bytes(JSContext* pCtx, JSValueConst /*self*/, [[maybe_unused]] int argc, JSValueConst* argv) {
   assert(argc == 2);
-  const std::string_view bytes = Uint8ArrayView(pCtx, argv[0]);
+  std::string_view bytes;
+  if (!Uint8ArrayView(pCtx, argv[0], bytes)) {
+    return JS_EXCEPTION;
+  }
   RawChars& buffer = Page::Of(pCtx).textBuffer();
   const std::string_view text = DecodeUtf8(bytes, buffer);
   // DecodeUtf8() returns 'bytes' itself exactly when they are valid.
@@ -558,13 +599,14 @@ JSValue EncodeUtf8(JSContext* pCtx, JSValueConst /*self*/, int argc, JSValueCons
 
 // parseUrl(input, base): the serialization of the URL parsed from 'input' against 'base' (null for none), '' when it
 // is not a valid URL.
-JSValue ParseUrl(JSContext* pCtx, JSValueConst /*self*/, int argc, JSValueConst* argv) {
-  const JsArgument input(pCtx, argc, argv, 0);
+JSValue ParseUrl(JSContext* pCtx, JSValueConst /*self*/, [[maybe_unused]] int argc, JSValueConst* argv) {
+  assert(argc == 2);
+  const JsString input(pCtx, argv[0]);
   if (input.failed()) {
     return JS_EXCEPTION;
   }
 
-  if (argc < 2 || JS_IsNull(argv[1]) || JS_IsUndefined(argv[1])) {
+  if (JS_IsNull(argv[1])) {
     return NewString(pCtx, Page::Of(pCtx).urlResolver().resolve({}, input.view()));
   }
 
@@ -583,7 +625,8 @@ JSValue ParseUrl(JSContext* pCtx, JSValueConst /*self*/, int argc, JSValueConst*
 
 // loadNetwork(shared): the object of the globals of the second part of the prelude (NetworkPreludeSource()), run with
 // the native helpers (this) and 'shared', the helpers of the first part.
-JSValue LoadNetwork(JSContext* pCtx, JSValueConst self, int argc, JSValueConst* argv) {
+JSValue LoadNetwork(JSContext* pCtx, JSValueConst self, [[maybe_unused]] int argc, JSValueConst* argv) {
+  assert(argc == 1);
   WebSession& session = Page::Of(pCtx).session();
   const JsValue function(pCtx,
                          PreludeFunction(pCtx, NetworkPreludeSource(), "aeronet:network", session.networkBytecode,
@@ -592,7 +635,7 @@ JSValue LoadNetwork(JSContext* pCtx, JSValueConst self, int argc, JSValueConst* 
     return JS_EXCEPTION;
   }
 
-  JSValueConst args[]{self, argc > 0 ? argv[0] : JS_UNDEFINED};
+  JSValueConst args[]{self, argv[0]};
 
   return JS_Call(pCtx, function.get(), JS_UNDEFINED, 2, args);
 }

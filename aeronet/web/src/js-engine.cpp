@@ -3,6 +3,7 @@
 #include <quickjs.h>
 
 #include <cassert>
+#include <cstddef>
 #include <new>
 #include <string>
 #include <string_view>
@@ -46,6 +47,23 @@ JSClassID NewClass(JSContext* pCtx, const char* name) noexcept {
     return 0;
   }
   return classId;
+}
+
+const char* NonStringToUtf8(JSContext* pCtx, JSValueConst value, std::size_t& size) noexcept {
+  // A string (ropes are joined), owned here: the C string keeps its own reference to it.
+  JsValue str(pCtx, JS_ToString(pCtx, value));
+  if (JS_IsException(str.get())) {
+    // As JS_ToCStringLen(): an Error whose conversion fails (a stack overflow in its toString()) converts to its
+    // message, the exception of the conversion left pending.
+    if (!JS_IsError(value)) {
+      return nullptr;
+    }
+    str = JsValue(pCtx, JS_GetPropertyStr(pCtx, value, "message"));
+    if (JS_VALUE_GET_TAG(str.get()) != JS_TAG_STRING) {
+      return nullptr;
+    }
+  }
+  return StringToUtf8(pCtx, str.get(), size);
 }
 
 std::string ExceptionText(JSContext* pCtx, JSValueConst exception) {

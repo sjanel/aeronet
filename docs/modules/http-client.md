@@ -220,7 +220,7 @@ Version bounds, cipher lists, and in-memory client certificates are listed in th
 
 ## Redirects
 
-Redirects (`301`, `302`, `303`, `307`, `308`) are followed by default, up to `maxRedirects` (5) per request; the last response is returned when the limit is reached, or when a `3xx` response has no `Location`. Following RFC 9110, a `303` turns the request into a body-less `GET`, as does a `301` or `302` answering a method other than `GET` or `HEAD`. `307` and `308` keep the method and body. A redirect that is not followed (invalid `Location`, downgrade to cleartext) leaves the request unchanged. Set `followRedirects = false` to receive the `3xx` responses.
+Redirects (`301`, `302`, `303`, `307`, `308`) are followed by default, up to `maxRedirects` (5) per request; the last response is returned when the limit is reached, or when a `3xx` response has no `Location`. Following RFC 9110, a `303` turns the request into a body-less `GET`, as does a `301` or `302` answering a method other than `GET` or `HEAD`. `307` and `308` keep the method and body. A redirect that is not followed (invalid `Location`, downgrade to cleartext) leaves the request unchanged. Set `followRedirects = false` to receive the `3xx` responses. A relative `Location` is resolved against the URL of the request (RFC 3986 §5.2): a query alone (`?page=2`) replaces its query, and through a cleartext [proxy](#forward-proxy) the target stays an absolute URL. A URL without a path (`http://host?q=1`, in a request or a `Location`) is requested with the path `/` (`/?q=1`).
 
 A redirect never weakens the protection of the request:
 
