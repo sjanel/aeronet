@@ -1,6 +1,7 @@
 #pragma once
 
 #include <lexbor/core/base.h>
+#include <lexbor/core/types.h>
 #include <lexbor/css/base.h>
 #include <lexbor/css/parser.h>
 #include <lexbor/css/selectors/selector.h>
@@ -14,6 +15,12 @@
 #include <string_view>
 
 namespace aeronet::internal {
+
+// The bytes of 'str', given to lexbor: never null, even for an empty view (as an absent attribute value), as lexbor
+// passes them to memcpy (undefined with a null pointer, even for 0 bytes) and some of its functions refuse null.
+inline const lxb_char_t* Chars(std::string_view str) noexcept {
+  return reinterpret_cast<const lxb_char_t*>(str.empty() ? "" : str.data());
+}
 
 // lexbor functions only fail on memory exhaustion in the way aeronet calls them: throws std::bad_alloc unless status
 // is LXB_STATUS_OK.

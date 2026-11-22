@@ -77,6 +77,19 @@ TEST(HtmlMutationAttributes, IdAndClassChangesAreSeenBySelectors) {
   EXPECT_EQ(second.outerHtml(), R"(<p class="y z">2</p>)");
 }
 
+// A view without data (default constructed, or the value of an absent attribute) is an empty string for lexbor.
+TEST(HtmlMutationAttributes, ViewsWithoutData) {
+  HtmlDocument doc("<p id=a>x</p>");
+  HtmlElement para = doc.querySelector("p");
+  para.setAttribute("copy", para.attribute("absent"));
+  para.setAttribute("id", std::string_view{});
+  EXPECT_TRUE(para.hasAttribute("copy"));
+  EXPECT_FALSE(para.hasAttribute(std::string_view{}));
+  EXPECT_TRUE(para.attribute(std::string_view{}).empty());
+  para.removeAttribute(std::string_view{});
+  EXPECT_EQ(para.outerHtml(), R"(<p id="" copy="">x</p>)");
+}
+
 TEST(HtmlMutationAttributes, RemoveAbsentAttributeDoesNothing) {
   HtmlDocument doc(R"(<p title="t">x</p>)");
   HtmlElement paragraph = doc.querySelector("p");
@@ -525,6 +538,33 @@ TEST(HtmlMutationElements, QueriedElementsCanBeModifiedAfterTheSearch) {
   // Attributes can change during a search.
   doc.forEach("li", [](HtmlElement item) { item.setAttribute("data-text", item.textContent()); });
   EXPECT_EQ(doc.querySelector("ul").innerHtml(), R"(<li data-text="1">1</li><li data-text="3">3</li>)");
+}
+
+// The child visited by a children() loop can be removed or moved: the loop goes on with the child that followed it.
+TEST(HtmlMutationElements, ChildrenLoopGoesOnAfterTheVisitedChildIsRemovedOrMoved) {
+  HtmlDocument doc("<ul><li class=ad>1</li><li class=ad>2</li><li>3</li><li class=ad>4</li></ul><ol><li>z</li></ol>");
+  HtmlElement list = doc.querySelector("ul");
+  int visited = 0;
+  for (HtmlElement item : list.children()) {
+    ++visited;
+    if (item.hasAttribute("class")) {
+      item.remove();
+    }
+  }
+  EXPECT_EQ(visited, 4);
+  EXPECT_EQ(list.innerHtml(), "<li>3</li>");
+
+  // Moved before the children of another element: the loop does not go on with them.
+  list.setInnerHtml("<li>a</li><li>b</li><li>c</li>");
+  HtmlElement ordered = doc.querySelector("ol");
+  visited = 0;
+  for (HtmlElement item : list.children()) {
+    ++visited;
+    ordered.insertAdjacentElement(AfterBegin, item);
+  }
+  EXPECT_EQ(visited, 3);
+  EXPECT_TRUE(list.children().empty());
+  EXPECT_EQ(ordered.innerHtml(), "<li>c</li><li>b</li><li>a</li><li>z</li>");
 }
 
 TEST(HtmlMutationElements, DocumentationExample) {

@@ -288,6 +288,22 @@ TEST_F(WebDomTest, InsertionErrors) {
   EXPECT_EQ(eval("root.childNodes.length"), "2");
 }
 
+// A template cannot be inserted into its own contents, nor into the contents of a template of them (DOM
+// "host-including inclusive ancestor"): the tree would contain itself, and its copies and serializations never end.
+TEST_F(WebDomTest, TemplateInsertedIntoItsOwnContents) {
+  eval(
+      "var outer = document.createElement('template'); var inner = document.createElement('template');"
+      "var cell = document.createElement('div'); outer.content.appendChild(inner); inner.content.appendChild(cell); 0");
+  EXPECT_EQ(errorName("outer.content.appendChild(outer)"), R"("HierarchyRequestError")");
+  EXPECT_EQ(errorName("cell.appendChild(outer)"), R"("HierarchyRequestError")");
+  EXPECT_EQ(errorName("cell.appendChild(inner)"), R"("HierarchyRequestError")");
+  EXPECT_EQ(errorName("cell.insertAdjacentElement('afterend', outer)"), R"("HierarchyRequestError")");
+  EXPECT_EQ(errorName("cell.appendChild(outer.content)"), R"("HierarchyRequestError")");
+  // Nothing moved: the copy and the serialization end.
+  EXPECT_EQ(eval("outer.cloneNode(true).content.firstChild.content.firstChild.nodeName"), R"("DIV")");
+  EXPECT_EQ(eval("outer.innerHTML"), R"("<template><div></div></template>")");
+}
+
 TEST_F(WebDomTest, Queries) {
   EXPECT_EQ(eval("[document.querySelectorAll('p').length, document.querySelector('.b').id, "
                  "document.querySelector('nothing'), document.getElementById('root').querySelectorAll('b').length, "
@@ -454,6 +470,29 @@ TEST_F(WebDomTest, PreludeChildAndParentNodeHelpers) {
                  "root.firstChild.nextSibling === first"),
             "true");
   EXPECT_EQ(eval("document.createElement('p').after('nothing'); 'no parent'"), R"("no parent")");
+}
+
+// The helpers insert their items as one node (DOM "convert nodes into a node"), beside the siblings that are not among
+// them, and change nothing when that node cannot be inserted.
+TEST_F(WebDomTest, PreludeHelpersFollowTheDomAlgorithms) {
+  eval(
+      "const list = document.createElement('ul'); let a, b, c;"
+      "const reset = () => { list.innerHTML = '<li>a</li><li>b</li><li>c</li>'; [a, b, c] = Array.from(list.children); "
+      "};"
+      "0");
+  EXPECT_EQ(eval("reset(); a.after(b, c); list.textContent"), R"("abc")");
+  EXPECT_EQ(eval("reset(); b.before(b, a); list.textContent"), R"("bac")");
+  EXPECT_EQ(eval("reset(); a.replaceWith(b, a); list.textContent"), R"("bac")");
+  EXPECT_EQ(eval("reset(); a.replaceWith(c, b); list.textContent"), R"("cb")");
+  EXPECT_EQ(eval("reset(); b.before(); b.after(); b.replaceWith(b); list.prepend(); list.append(); list.textContent"),
+            R"("abc")");
+  // An invalid insertion removes nothing.
+  EXPECT_EQ(errorName("reset(); b.replaceWith(list)"), R"("HierarchyRequestError")");
+  EXPECT_EQ(errorName("list.replaceChildren(list)"), R"("HierarchyRequestError")");
+  EXPECT_EQ(errorName("list.replaceChildren(Object.create(Node.prototype))"), R"("TypeError")");
+  EXPECT_EQ(errorName("Element.prototype.replaceChildren.call({}, 'x')"), R"("TypeError")");
+  EXPECT_EQ(eval("[list.textContent, b.parentNode === list]"), R"(["abc",true])");
+  EXPECT_EQ(eval("list.replaceChildren(c, 'd'); list.innerHTML"), R"("<li>c</li>d")");
 }
 
 TEST_F(WebDomTest, Events) {

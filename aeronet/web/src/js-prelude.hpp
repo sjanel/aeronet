@@ -14,9 +14,10 @@ namespace aeronet::internal {
 // The JavaScript part of the Web APIs of a page, run in each page after the native bindings: EventTarget, Event,
 // CustomEvent, classList, dataset, style, console, history, requestAnimationFrame, the ParentNode / ChildNode helpers,
 // and the layout stubs of the elements. It is a function expression: called with the object of the native helpers it
-// needs (log, reportError, setUrl, resolveUrl, those of InstallNetwork(), and the object of the lazy globals, which it
-// inserts between Window.prototype and EventTarget.prototype: see InstallWindow()), it returns the object of the
-// functions the page calls (dispatch) and the helpers of the lazy parts (shared). Null-terminated at size().
+// needs (log, reportError, setUrl, resolveUrl, replaceAll, those of InstallNetwork(), and the object of the lazy
+// globals, which it inserts between Window.prototype and EventTarget.prototype: see InstallWindow()), it returns the
+// object of the functions the page calls (dispatch) and the helpers of the lazy parts (shared). Null-terminated at
+// size().
 std::string_view PreludeSource() noexcept;
 
 // The parts of the prelude set up in a page by Page::lazyPart() on the first read of one of their globals (see

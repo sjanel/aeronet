@@ -41,10 +41,10 @@ class HtmlParentNode {
   [[nodiscard]] vector<HtmlElement> querySelectorAll(std::string_view selector) const;
   [[nodiscard]] vector<HtmlElement> querySelectorAll(const CssSelector& selector) const;
 
-  // Calls callback(HtmlElement) for each descendant element matching selector, without allocating.
-  // An exception thrown by callback stops the search and is propagated. The callback can change attributes, not the
-  // tree (setInnerHtml(), setTextContent(), insertions, remove()...): collect the elements with querySelectorAll()
-  // first.
+  // Calls callback(HtmlElement) for each descendant element matching selector, without collecting them. A callback
+  // returning a bool stops the search by returning false (its other return types are ignored). An exception thrown by
+  // callback stops the search and is propagated. The callback can change attributes, not the tree (setInnerHtml(),
+  // setTextContent(), insertions, remove()...): collect the elements with querySelectorAll() first.
   template <class Callback>
     requires std::invocable<Callback&, HtmlElement>
   void forEach(std::string_view selector, Callback&& callback) const {
@@ -171,9 +171,10 @@ class HtmlElement : public HtmlParentNode {
 
   explicit operator bool() const noexcept { return valid(); }
 
-  // The local name of the element (DOM localName): in lower case for HTML elements ("div", "tr"), unlike the
-  // upper-case tagName of the DOM, in the case of SVG for SVG elements ("foreignObject", "linearGradient"). The view
-  // points into the document.
+  // The name of the element, as the DOM localName: in lower case for HTML elements ("div", "tr"), unlike the upper-case
+  // tagName of the DOM, in the case of SVG for SVG elements ("foreignObject", "linearGradient"). An element created
+  // with a namespace prefix (only by the scripts of aeronet_web) has its qualified name: "svg:rect". The view points
+  // into the document.
   [[nodiscard]] std::string_view tagName() const noexcept;
 
   // The value of the attribute 'name' (matched in lower case for HTML elements), or an empty view if absent: see
@@ -274,7 +275,8 @@ class HtmlElement : public HtmlParentNode {
   explicit HtmlElement(lxb_dom_node* pNode) noexcept : HtmlParentNode(pNode) {}
 };
 
-// The child elements of an element (forward range of HtmlElement).
+// The child elements of an element (forward range of HtmlElement). The child being visited can be removed or moved
+// elsewhere: the iteration goes on with the element that followed it.
 class HtmlChildren {
  public:
   class iterator {
@@ -290,7 +292,7 @@ class HtmlChildren {
     [[nodiscard]] HtmlElement operator*() const noexcept { return _element; }
 
     iterator& operator++() noexcept {
-      _element = _element.nextSibling();
+      *this = iterator(_next);
       return *this;
     }
 
@@ -300,14 +302,17 @@ class HtmlChildren {
       return ret;
     }
 
-    bool operator==(const iterator&) const noexcept = default;
+    // Two iterators on the same element.
+    bool operator==(const iterator& other) const noexcept { return _element == other._element; }
 
    private:
     friend class HtmlChildren;
 
-    explicit iterator(HtmlElement element) noexcept : _element(element) {}
+    explicit iterator(HtmlElement element) noexcept
+        : _element(element), _next(element.valid() ? element.nextSibling() : HtmlElement()) {}
 
     HtmlElement _element;
+    HtmlElement _next;  // read on arrival at _element, which can then be removed or moved (unlinked from the next one)
   };
 
   [[nodiscard]] iterator begin() const noexcept { return iterator(_first); }
@@ -328,8 +333,13 @@ inline HtmlChildren HtmlElement::children() const noexcept { return HtmlChildren
 // Defined once HtmlElement is complete.
 template <class Fn>
 bool HtmlParentNode::CallElementCallback(HtmlElement element, void* pCallback) {
-  (*static_cast<Fn*>(pCallback))(element);
-  return true;
+  Fn& callback = *static_cast<Fn*>(pCallback);
+  if constexpr (std::is_same_v<std::remove_cvref_t<std::invoke_result_t<Fn&, HtmlElement>>, bool>) {
+    return callback(element);
+  } else {
+    callback(element);
+    return true;
+  }
 }
 
 }  // namespace aeronet

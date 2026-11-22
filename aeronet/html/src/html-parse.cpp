@@ -1,7 +1,6 @@
 #include "html-parse.hpp"
 
 #include <lexbor/core/array.h>
-#include <lexbor/core/types.h>
 #include <lexbor/dom/interfaces/node.h>
 #include <lexbor/html/interface.h>
 #include <lexbor/html/interfaces/document.h>
@@ -120,7 +119,7 @@ lxb_html_token_t* LimitTree(lxb_html_tokenizer_t* pTokenizer, lxb_html_token_t* 
 void ParseHtml(lxb_html_document_t* pDocument, std::string_view html) {
   CheckStatus(lxb_html_document_parse_chunk_begin(pDocument));
   const TreeLimiterScope limiter(Parser(pDocument));
-  CheckStatus(lxb_html_document_parse_chunk(pDocument, reinterpret_cast<const lxb_char_t*>(html.data()), html.size()));
+  CheckStatus(lxb_html_document_parse_chunk(pDocument, Chars(html), html.size()));
   CheckStatus(lxb_html_document_parse_chunk_end(pDocument));
 }
 
@@ -134,8 +133,7 @@ lxb_dom_node_t* ParseHtmlFragment(lxb_html_document_t* pDocument, std::uintptr_t
   lxb_html_parser_t* pParser = Parser(pDocument);
   CheckStatus(lxb_html_parse_fragment_chunk_begin(pParser, pDocument, contextTag, contextNs));
   const TreeLimiterScope limiter(pParser);
-  CheckStatus(
-      lxb_html_parse_fragment_chunk_process(pParser, reinterpret_cast<const lxb_char_t*>(html.data()), html.size()));
+  CheckStatus(lxb_html_parse_fragment_chunk_process(pParser, Chars(html), html.size()));
   return CheckCreated(lxb_html_parse_fragment_chunk_end(pParser));
 }
 

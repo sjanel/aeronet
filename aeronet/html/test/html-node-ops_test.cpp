@@ -10,9 +10,11 @@
 
 #include <cstddef>
 #include <new>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
+#include "../src/html-encoding.hpp"
 #include "../src/html-node-access.hpp"
 #include "../src/html-tree-walk.hpp"
 #include "aeronet/html-document.hpp"
@@ -193,6 +195,54 @@ TEST(HtmlAdjacentInsertionPointTest, BesideAnElementOfTemplateContents) {
   italic.insertAdjacentText(HtmlInsertPosition::AfterEnd, "2");
   italic.insertAdjacentElement(HtmlInsertPosition::AfterEnd, doc.createElement("u"));
   EXPECT_EQ(tmpl.innerHtml(), "<b>1</b>cell<i>t</i><u></u>2");
+}
+
+// The ancestors of the nodes of template contents go on with their template, at each nesting level: a template
+// inserted into its own contents would make a tree that contains itself.
+TEST(HtmlHostIncludingAncestorTest, TemplatesOfTheContents) {
+  HtmlDocument doc("<div><template><p><template><b>x</b></template></p></template></div>");
+  lxb_dom_node_t* pDiv = HtmlNodeAccess::Node(doc.querySelector("div"));
+  lxb_dom_node_t* pOuter = pDiv->first_child;
+  lxb_dom_node_t* pParagraph = ChildrenParent(pOuter)->first_child;
+  lxb_dom_node_t* pInner = pParagraph->first_child;
+  lxb_dom_node_t* pBold = ChildrenParent(pInner)->first_child;
+  for (const lxb_dom_node_t* pAncestor :
+       {pBold, ChildrenParent(pInner), pInner, pParagraph, pOuter, pDiv, HtmlNodeAccess::Node(doc)}) {
+    EXPECT_TRUE(IsHostIncludingInclusiveAncestor(pAncestor, pBold));
+  }
+  EXPECT_FALSE(IsHostIncludingInclusiveAncestor(pBold, pInner));
+  EXPECT_FALSE(IsHostIncludingInclusiveAncestor(pInner, pParagraph));
+  EXPECT_FALSE(IsHostIncludingInclusiveAncestor(pBold, nullptr));
+  // A document fragment without template (DOM createDocumentFragment()) has no ancestor.
+  lxb_dom_node_t* pFragment = NewDocumentFragment(pDiv);
+  lxb_dom_node_t* pChild = HtmlNodeAccess::Node(doc.createElement("i"));
+  InsertNode(pFragment, pChild, nullptr);
+  EXPECT_TRUE(IsHostIncludingInclusiveAncestor(pFragment, pChild));
+  EXPECT_FALSE(IsHostIncludingInclusiveAncestor(pDiv, pChild));
+  // A node without descendants, a template with empty contents too, is only its own ancestor.
+  EXPECT_TRUE(IsHostIncludingInclusiveAncestor(pChild, pChild));
+  EXPECT_FALSE(IsHostIncludingInclusiveAncestor(pChild, pFragment));
+  lxb_dom_node_t* pEmptyTemplate = HtmlNodeAccess::Node(doc.createElement("template"));
+  EXPECT_TRUE(IsHostIncludingInclusiveAncestor(pEmptyTemplate, pEmptyTemplate));
+  EXPECT_FALSE(IsHostIncludingInclusiveAncestor(pEmptyTemplate, ChildrenParent(pEmptyTemplate)));
+}
+
+// insertAdjacentElement() refuses to move a template into its own contents, which the DOM bindings of aeronet_web
+// reach.
+TEST(HtmlHostIncludingAncestorTest, TemplateInsertedIntoItsOwnContentsThrows) {
+  HtmlDocument doc("<div><template><i>t</i></template></div>");
+  const HtmlElement tmpl = doc.querySelector("template");
+  HtmlElement italic = HtmlNodeAccess::Element(ChildrenParent(HtmlNodeAccess::Node(tmpl))->first_child);
+  for (const HtmlInsertPosition position : {
+           HtmlInsertPosition::BeforeBegin,
+           HtmlInsertPosition::AfterBegin,
+           HtmlInsertPosition::BeforeEnd,
+           HtmlInsertPosition::AfterEnd,
+       }) {
+    EXPECT_THROW(italic.insertAdjacentElement(position, tmpl), std::invalid_argument);
+  }
+  // Nothing moved.
+  EXPECT_EQ(doc.querySelector("div").innerHtml(), "<template><i>t</i></template>");
 }
 
 TEST(HtmlDecodeScriptTest, Utf8IsNotCopied) {

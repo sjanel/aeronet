@@ -18,7 +18,8 @@ namespace {
 // The first part of the prelude: the DOM helpers, events, window, and the lazy globals of the second part. About 18
 // KB, compiled once per WebClient (its bytecode is read back by the next pages): keep it small. 'native' holds
 // log(level, text), reportError(error), setUrl(url) (history, same origin only), resolveUrl(url) (against the base URL,
-// '' if invalid), and the network and text helpers of InstallNetwork(). Adjacent literals of less than 16 KB each, the
+// '' if invalid), replaceAll(parent, node) (ParentNode.replaceChildren()), and the network and text helpers of
+// InstallNetwork(). Adjacent literals of less than 16 KB each, the
 // limit of MSVC for a string literal (64 KB once concatenated).
 constexpr std::string_view kPrelude =
     R"js((function (native) {
@@ -290,29 +291,49 @@ constexpr std::string_view kPrelude =
     async: reflectBoolean('async'), defer: reflectBoolean('defer'), noModule: reflectBoolean('nomodule'),
   });
 
+  // DOM "convert nodes into a node": the items go in one insertion, checked before any change.
   const toNode = item => item instanceof Node ? item : document.createTextNode(String(item));
+  const intoNode = items => {
+    if (items.length === 1) return toNode(items[0]);
+    const fragment = document.createDocumentFragment();
+    for (const item of items) fragment.appendChild(toNode(item));
+    return fragment;
+  };
+  // The first sibling of node in 'direction' that is not an item: it stays in place (DOM "viable sibling").
+  const viableSibling = (node, items, direction) => {
+    let sibling = node[direction];
+    while (sibling !== null && items.includes(sibling)) sibling = sibling[direction];
+    return sibling;
+  };
   const parentNodeMethods = {
-    append(...items) { for (const item of items) this.appendChild(toNode(item)); },
+    append(...items) { this.appendChild(intoNode(items)); },
     prepend(...items) {
-      const first = this.firstChild;
-      for (const item of items) this.insertBefore(toNode(item), first);
+      const node = intoNode(items);
+      this.insertBefore(node, this.firstChild);
     },
-    replaceChildren(...items) {
-      while (this.firstChild !== null) this.removeChild(this.firstChild);
-      this.append(...items);
-    },
+    replaceChildren(...items) { native.replaceAll(this, intoNode(items)); },
   };
   const childNodeMethods = {
-    before(...items) { for (const item of items) this.parentNode?.insertBefore(toNode(item), this); },
+    before(...items) {
+      const parent = this.parentNode;
+      if (parent === null) return;
+      const previous = viableSibling(this, items, 'previousSibling');
+      const node = intoNode(items);
+      parent.insertBefore(node, previous === null ? parent.firstChild : previous.nextSibling);
+    },
     after(...items) {
-      const next = this.nextSibling;
-      for (const item of items) this.parentNode?.insertBefore(toNode(item), next);
+      const parent = this.parentNode;
+      if (parent === null) return;
+      const next = viableSibling(this, items, 'nextSibling');
+      parent.insertBefore(intoNode(items), next);
     },
     replaceWith(...items) {
       const parent = this.parentNode;
-      const next = this.nextSibling;
-      this.remove();
-      for (const item of items) parent?.insertBefore(toNode(item), next);
+      if (parent === null) return;
+      const next = viableSibling(this, items, 'nextSibling');
+      const node = intoNode(items);
+      if (this.parentNode === parent) parent.replaceChild(node, this);
+      else parent.insertBefore(node, next);
     },
   };
   define(Element.prototype, parentNodeMethods);

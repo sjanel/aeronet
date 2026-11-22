@@ -45,6 +45,7 @@
 #include "aeronet/web-client.hpp"
 #include "aeronet/web-page.hpp"
 #include "cors.hpp"
+#include "html-encoding.hpp"
 #include "html-node-access.hpp"
 #include "html-node-ops.hpp"
 #include "html-tree-walk.hpp"

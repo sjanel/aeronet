@@ -11,6 +11,7 @@
 #include <lexbor/dom/interfaces/element.h>
 #include <lexbor/dom/interfaces/node.h>
 #include <lexbor/dom/interfaces/text.h>
+#include <lexbor/html/interfaces/template_element.h>
 #include <lexbor/ns/ns.h>
 #include <lexbor/url/url.h>
 
@@ -32,11 +33,6 @@ namespace aeronet::internal {
 
 namespace {
 
-const lxb_char_t* Chars(std::string_view str) noexcept {
-  // lexbor reads no byte of an empty string, but some of its functions refuse a null pointer.
-  return reinterpret_cast<const lxb_char_t*>(str.empty() ? "" : str.data());
-}
-
 // Parses 'input' against pBase (can be null). Null when it is not a valid URL, which is also how lexbor reports most
 // allocation failures of its URL parser.
 lxb_url_t* ParseUrl(lxb_url_parser_t* pParser, const lxb_url_t* pBase, std::string_view input) {
@@ -48,6 +44,13 @@ lxb_url_t* ParseUrl(lxb_url_parser_t* pParser, const lxb_url_t* pBase, std::stri
 bool IsTemplateContents(const lxb_dom_node_t* pNode) noexcept {
   return pNode != nullptr && pNode->type == LXB_DOM_NODE_TYPE_DOCUMENT_FRAGMENT &&
          reinterpret_cast<const lxb_dom_document_fragment_t*>(pNode)->host != nullptr;
+}
+
+// Whether pNode is the ancestor of another node: it has children, or it is a template whose contents have some.
+bool HasDescendants(const lxb_dom_node_t* pNode) noexcept {
+  return pNode->first_child != nullptr ||
+         (IsHtmlTemplate(pNode) &&
+          reinterpret_cast<const lxb_html_template_element_t*>(pNode)->content->node.first_child != nullptr);
 }
 
 // The node after pNode in the walk of the subtree of pTop, in pre-order, the contents of its templates included: those
@@ -204,6 +207,22 @@ void SetNodeData(lxb_dom_node_t* pNode, std::string_view data) {
   // The character data interfaces start with their node. The whole data is replaced: lexbor ignores the range.
   CheckStatus(lxb_dom_character_data_replace(reinterpret_cast<lxb_dom_character_data_t*>(pNode), Chars(data),
                                              data.size(), 0, 0));
+}
+
+bool IsHostIncludingInclusiveAncestor(const lxb_dom_node_t* pNode, const lxb_dom_node_t* pParent) noexcept {
+  // A node without descendants (an element just created, a text node) is only its own ancestor: no walk up the tree,
+  // which would make the insertions of new nodes at a growing depth quadratic.
+  if (!HasDescendants(pNode)) {
+    return pNode == pParent;
+  }
+  const lxb_dom_node_t* pAncestor = pParent;
+  while (pAncestor != nullptr && pAncestor != pNode) {
+    // The contents of a template have no parent: the walk goes on with the template.
+    pAncestor = IsTemplateContents(pAncestor)
+                    ? &reinterpret_cast<const lxb_dom_document_fragment_t*>(pAncestor)->host->node
+                    : pAncestor->parent;
+  }
+  return pAncestor != nullptr;
 }
 
 void InsertNode(lxb_dom_node_t* pParent, lxb_dom_node_t* pNode, lxb_dom_node_t* pReference) noexcept {

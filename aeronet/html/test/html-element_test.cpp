@@ -287,6 +287,22 @@ TEST_F(HtmlElementTest, ForEach) {
   EXPECT_EQ(mutableCounter.calls, 3);
 }
 
+TEST_F(HtmlElementTest, ForEachStopsWhenTheCallbackReturnsFalse) {
+  int calls = 0;
+  doc.forEach("td", [&calls](HtmlElement) { return ++calls < 2; });
+  EXPECT_EQ(calls, 2);
+  calls = 0;
+  doc.forEach(CssSelector("td"), [&calls](HtmlElement) {
+    ++calls;
+    return false;
+  });
+  EXPECT_EQ(calls, 1);
+  // Another return type is ignored: the search goes on.
+  calls = 0;
+  doc.forEach("td", [&calls](HtmlElement) { return ++calls; });
+  EXPECT_EQ(calls, 4);
+}
+
 TEST_F(HtmlElementTest, NestedQueriesInForEach) {
   // Each nesting depth uses its own matching engine and selector memory.
   const CssSelector cellSelector("td");

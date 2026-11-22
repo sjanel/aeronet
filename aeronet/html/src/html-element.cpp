@@ -23,6 +23,7 @@ namespace aeronet {
 namespace {
 
 using internal::AsElement;
+using internal::Chars;
 using internal::Checked;
 using internal::HtmlNodeAccess;
 
@@ -97,14 +98,12 @@ std::string_view HtmlElement::tagName() const noexcept {
 
 std::string_view HtmlElement::attribute(std::string_view name) const noexcept {
   std::size_t size = 0;
-  const lxb_char_t* pValue = lxb_dom_element_get_attribute(
-      AsElement(_pNode), reinterpret_cast<const lxb_char_t*>(name.data()), name.size(), &size);
+  const lxb_char_t* pValue = lxb_dom_element_get_attribute(AsElement(_pNode), Chars(name), name.size(), &size);
   return View(pValue, size);
 }
 
 bool HtmlElement::hasAttribute(std::string_view name) const noexcept {
-  return lxb_dom_element_has_attribute(AsElement(_pNode), reinterpret_cast<const lxb_char_t*>(name.data()),
-                                       name.size());
+  return lxb_dom_element_has_attribute(AsElement(_pNode), Chars(name), name.size());
 }
 
 HtmlAttributes HtmlElement::attributes() const noexcept { return HtmlAttributes(AsElement(_pNode)->first_attr); }

@@ -54,8 +54,7 @@ SelectorMatcherPtr MakeSelectorMatcher() {
 }
 
 lxb_css_selector_list_t* ParseSelectorList(lxb_css_parser_t* pParser, std::string_view selector) {
-  lxb_css_selector_list_t* pList =
-      lxb_css_selectors_parse(pParser, reinterpret_cast<const lxb_char_t*>(selector.data()), selector.size());
+  lxb_css_selector_list_t* pList = lxb_css_selectors_parse(pParser, Chars(selector), selector.size());
   // The parser logs each syntax error (its log is cleaned by each parse). Without any, the list is missing because
   // an allocation failed, which lexbor does not report in the status of the parser.
   if (pList == nullptr && lxb_css_log_length(pParser->log) == 0) {
